@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Animation/HumanBone.h"
-#include "Animation/HumanoidNameMatcher.h"
+#include "Animation/Humanoid/HumanoidNameMatcher.h"
 
 #include <string>
 #include <vector>

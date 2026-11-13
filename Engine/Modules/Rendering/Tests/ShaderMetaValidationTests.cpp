@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "Rendering/Materials/ShaderMetaValidation.h"
+#include "Rendering/Materials/Shader/ShaderMetaValidation.h"
 
 using namespace GameEngine::Rendering;
 

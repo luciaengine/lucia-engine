@@ -1,98 +1,84 @@
-#include "DayCycle/DayCycleProfile/DayCycleProfileInspector.h"
 #include "Inspectors/BuiltInInspectorRegistration.h"
-#include "Rendering/Sorting/RenderSortingEditor.h"
-#include "Inspectors/Sprite2DComponentTraits.h"
 
-#include "Editor/Entities/AnimationComponentTraits.h"
-#include "Editor/Entities/EntityComponentTraits.h"
-#include "Editor/Entities/OceanComponentTraits.h"
-#include "Editor/Entities/RenderingComponentTraits.h"
+#include "DayCycle/DayCycleProfile/DayCycleProfileInspector.h"
+#include "Inspectors/ShipRules/ShipRuleRow.h"
 #include "Editor/Registries/EditorPluginRegistry.h"
-#include "Editor/Entities/PlanarReflectionComponentTraits.h"
 #include "Inspectors/AmbientLightInspector.h"
-#include "Inspectors/AmbientOcclusionEffectInspector.h"
+#include "Inspectors/PostProcessEffects/AmbientOcclusionEffectInspector.h"
 #include "Inspectors/AnimatorInspector.h"
 #include "Inspectors/AtmosphericCloudLayerInspector.h"
 #include "Inspectors/VolumetricCloudsInspector.h"
 #include "Inspectors/AudioEmitterInspector.h"
 #include "Inspectors/AudioInspector.h"
-#include "Inspectors/BloomEffectInspector.h"
+#include "Inspectors/PostProcessEffects/BloomEffectInspector.h"
 #include "Inspectors/CameraInspector.h"
-#include "Inspectors/ChromaticAberrationEffectInspector.h"
-#include "Inspectors/DepthPixelationEffectInspector.h"
-#include "Inspectors/ColorFilterEffectInspector.h"
-#include "Inspectors/ColorGradeEffectInspector.h"
-#include "Inspectors/ContrastAdaptiveSharpenEffectInspector.h"
-#include "Inspectors/CrtEffectInspector.h"
-#include "Inspectors/CubeLutEffectInspector.h"
-#include "Inspectors/DebandEffectInspector.h"
-#include "Inspectors/DepthOfFieldEffectInspector.h"
-#include "Inspectors/ExposureAdjustmentEffectInspector.h"
-#include "Inspectors/FastBlurEffectInspector.h"
-#include "Inspectors/FilmSimulationEffectInspector.h"
-#include "Inspectors/HeatDistortionEffectInspector.h"
-#include "Inspectors/RainSettingsEffectInspector.h"
-#include "Inspectors/HeightFogEffectInspector.h"
+#include "Inspectors/PostProcessEffects/ChromaticAberrationEffectInspector.h"
+#include "Inspectors/PostProcessEffects/DepthPixelationEffectInspector.h"
+#include "Inspectors/PostProcessEffects/ColorFilterEffectInspector.h"
+#include "Inspectors/PostProcessEffects/ColorGradeEffectInspector.h"
+#include "Inspectors/PostProcessEffects/ContrastAdaptiveSharpenEffectInspector.h"
+#include "Inspectors/PostProcessEffects/CrtEffectInspector.h"
+#include "Inspectors/CubeLut/CubeLutAssetInspector.h"
+#include "Inspectors/CubeLut/CubeLutEffectInspector.h"
+#include "Inspectors/PostProcessEffects/DebandEffectInspector.h"
+#include "Inspectors/PostProcessEffects/DepthOfFieldEffectInspector.h"
+#include "Inspectors/PostProcessEffects/ExposureAdjustmentEffectInspector.h"
+#include "Inspectors/PostProcessEffects/FastBlurEffectInspector.h"
+#include "Inspectors/PostProcessEffects/FilmSimulationEffectInspector.h"
+#include "Inspectors/PostProcessEffects/HeatDistortionEffectInspector.h"
+#include "Inspectors/PostProcessEffects/RainSettingsEffectInspector.h"
+#include "Inspectors/PostProcessEffects/HeightFogEffectInspector.h"
 #include "Inspectors/HumanoidRigInspector.h"
 #include "Inspectors/LensFlareSourceInspector.h"
 #include "Inspectors/LightInspector.h"
 #include "Inspectors/MaterialInspector.h"
 #include "Inspectors/MeasureInspector.h"
-#include "Inspectors/TileMapLayerInspector.h"
+#include "Inspectors/Navigation/NavigationAgentInspector.h"
+#include "Inspectors/Navigation/NavigationSurfaceInspector.h"
 #include "Inspectors/MeshRendererInspector.h"
 #include "Inspectors/ModelInspector.h"
 #include "Inspectors/NativeSourceInspector.h"
 #include "Inspectors/OceanDepthCacheSourceInspector.h"
-#include "Inspectors/ReflectionProbeInspectorTools.h"
 #include "Inspectors/OceanWaveSpectrumInspector.h"
 #include "Inspectors/Particles/ParticleInspector.h"
-#include "Inspectors/PhysicsBodyInspector.h"
+#include "Inspectors/Physics/PhysicsBodyInspector.h"
 #include "Inspectors/CharacterControllerInspector.h"
-#include "Inspectors/PhysicsColliderInspector.h"
-#include "Inspectors/MovingPlatformInspector.h"
-#include "Inspectors/PhysicsMaterialInspector.h"
+#include "Inspectors/Physics/PhysicsColliderInspector.h"
 #include "Inspectors/PostProcessVolumeInspector.h"
 #include "Inspectors/RenderPipelineInspector.h"
-#include "Inspectors/TerrainMaterialLibraryInspector.h"
 #include "Inspectors/RetargetMapInspector.h"
-#include "Inspectors/ScreenSpaceReflectionsEffectInspector.h"
+#include "Inspectors/PostProcessEffects/ScreenSpaceReflectionsEffectInspector.h"
 #include "Inspectors/ScriptInspector.h"
 #include "Inspectors/ShaderInspector.h"
-#include "Inspectors/ShadowSettingsEffectInspector.h"
+#include "Inspectors/PostProcessEffects/ShadowSettingsEffectInspector.h"
 #include "Inspectors/SkeletonProfileInspector.h"
 #include "Inspectors/SkinnedMeshRendererInspector.h"
-#include "Inspectors/SkyEnvironmentInspector.h"
+#include "Sky/SkyEnvironment/SkyEnvironmentInspector.h"
 #include "Inspectors/SkyboxInspector.h"
-#include "Inspectors/SplineFenceInspector.h"
-#include "Inspectors/SplineFenceSpanPieceInspector.h"
-#include "Inspectors/SplineInspector.h"
-#include "Inspectors/SplinePlacementInspector.h"
+#include "Inspectors/SplineFence/SplineFenceInspector.h"
+#include "Inspectors/SplineFence/SplineFenceSpanPieceInspector.h"
+#include "Inspectors/Spline/SplineInspector.h"
+#include "Inspectors/Spline/SplinePlacementInspector.h"
 #include "Inspectors/SplineRecipe/Paving/SplinePavingInspector.h"
-#include "Inspectors/TextureInspector.h"
+#include "Inspectors/Texture/TextureInspector.h"
 #include "Inspectors/TransformInspector.h"
 #include "Inspectors/ValueCurveInspector.h"
-#include "Inspectors/VhsEffectInspector.h"
-#include "Inspectors/VignetteEffectInspector.h"
-#include "Inspectors/VolumetricFogEffectInspector.h"
+#include "Inspectors/PostProcessEffects/VhsEffectInspector.h"
+#include "Inspectors/PostProcessEffects/VignetteEffectInspector.h"
+#include "Inspectors/PostProcessEffects/VolumetricFogEffectInspector.h"
 #include "Inspectors/WindVolumeInspector.h"
+#include "SceneView/SceneViewEye.h"
 #include "Terrain/TerrainHeightmapInspector.h"
 #include "Terrain/TerrainInspector.h"
-#include "Terrain/TerrainModifierInspectors.h"
+#include "Terrain/TerrainColorZoneInspector.h"
+#include "Terrain/TerrainMaterialLibraryInspector.h"
+#include "Terrain/TerrainModifier/TerrainModifierInspectors.h"
 
 namespace GameEngine
 {
 
 void RegisterBuiltInInspectors()
 {
-    Editor::RegisterRenderSortingEditor();
-    Editor::RegisterPlanarReflectionComponentTraits();
-    // Editor traits of the built-in components with no inspector of their own; the
-    // inspectors below register their components' traits alongside the inspector.
-    Editor::RegisterEntityComponentTraits();
-    Editor::RegisterRenderingComponentTraits();
-    Editor::RegisterAnimationComponentTraits();
-    Editor::RegisterOceanComponentTraits();
-
     RegisterTransformInspector();
     RegisterMeshRendererInspector();
     RegisterSkinnedMeshRendererInspector();
@@ -103,17 +89,21 @@ void RegisterBuiltInInspectors()
     RegisterLightInspector();
     RegisterLensFlareSourceInspector();
     RegisterMeasureInspector();
-    RegisterTileMapLayerInspector();
     RegisterSkyEnvironmentInspector();
-    Editor::RegisterDayCycleProfileInspector();
     RegisterAmbientLightInspector();
     RegisterSkyboxInspector();
     RegisterOceanDepthCacheSourceInspector();
-    RegisterReflectionProbeInspector();
     RegisterOceanWaveSpectrumInspector();
     RegisterParticleInspector();
+    Editor::RegisterSceneViewEyeTraits();
     RegisterPostProcessVolumeInspector();
     RegisterWindVolumeInspector();
+    RegisterNavigationAgentInspector();
+    RegisterNavigationSurfaceInspector();
+    RegisterSplineWallInspector();
+    RegisterSplineExtrudeInspector();
+    RegisterSplinePavingInspector();
+    RegisterBuiltInComponentTraits();
     RegisterBloomEffectInspector();
     RegisterChromaticAberrationEffectInspector();
     RegisterDepthPixelationEffectInspector();
@@ -141,21 +131,21 @@ void RegisterBuiltInInspectors()
     RegisterPhysicsBodyInspector();
     RegisterCharacterControllerInspector();
     RegisterPhysicsColliderInspectors();
-    RegisterMovingPlatformInspector();
-    RegisterPhysicsMaterialInspector();
     RegisterTerrainInspector();
     RegisterTerrainModifierInspectors();
+    RegisterTerrainColorZoneInspector();
     RegisterSplineInspectors();
     RegisterSplinePlacementInspector();
-    RegisterSplinePavingInspector();
     RegisterSplineFenceInspector();
     RegisterSplineFenceSpanPieceInspector();
 
-    RegisterSprite2DComponentTraits();
     RegisterMaterialInspector();
     RegisterModelInspector();
     RegisterTextureInspector();
     RegisterAudioInspector();
+    Editor::ShipRuleRow::Register();
+    RegisterCubeLutAssetInspector();
+    Editor::RegisterDayCycleProfileInspector();
     RegisterScriptInspector();
     RegisterNativeSourceInspector();
     RegisterShaderInspector();

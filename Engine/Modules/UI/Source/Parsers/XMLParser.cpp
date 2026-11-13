@@ -22,34 +22,46 @@ namespace GameEngine { namespace UIParsing {
 
 namespace {
 
-thread_local const std::string* g_XmlTextPtr = nullptr;
-thread_local const std::string* g_XmlSourceName = nullptr;
-inline int ComputeLineNumber(const std::string& text, size_t offset)
-{
-    int ln = 1;
-    size_t n = std::min<size_t>(offset, text.size());
-    for (size_t i = 0; i < n; ++i) { if (text[i] == '\n') ++ln; }
-    return ln;
-}
 static std::unordered_set<std::string> s_WarnedUnknownTags;
 
 #if defined(GE_HAVE_PUGIXML) && GE_HAVE_PUGIXML
-static std::unique_ptr<UIElement> BuildTreePugi(const pugi::xml_node& node) {
+// The text being parsed and its file name. Nodes arrive in document order, so LineOf counts on
+// from the offset of the previous call.
+struct LayoutSource
+{
+    std::shared_ptr<const std::string> File;
+    const std::string& Text;
+    size_t CountedTo = 0;
+    int Line = 1;
+
+    // The line of the node's start tag, or 0 when pugixml has no offset for it.
+    int LineOf(const pugi::xml_node& node)
+    {
+        const ptrdiff_t offset = node.offset_debug();
+        if (offset < 0)
+            return 0;
+        const size_t end = std::min(static_cast<size_t>(offset), Text.size());
+        for (; CountedTo < end; ++CountedTo)
+        {
+            if (Text[CountedTo] == '\n')
+                ++Line;
+        }
+        return Line;
+    }
+};
+
+static std::unique_ptr<UIElement> BuildTreePugi(const pugi::xml_node& node, LayoutSource& layoutSource) {
     using namespace UIRegistration;
     if (!node) return nullptr;
     std::string tag = node.name();
     std::string tagLower = ToLowerAscii(tag);
+    const std::string& source = *layoutSource.File;
+    const int line = layoutSource.LineOf(node);
 
     // Create via factory if available; fallback to generic UIElement (preserve original case)
     std::unique_ptr<UIElement> out = ElementFactoryRegistry::Instance().Create(tagLower);
     if (!out) {
         // Emit one-time warning with file:line if available
-        int line = 0;
-        std::string source = g_XmlSourceName ? *g_XmlSourceName : std::string("(string)");
-        ptrdiff_t o = node.offset_debug();
-        if (o >= 0 && g_XmlTextPtr) {
-            line = ComputeLineNumber(*g_XmlTextPtr, static_cast<size_t>(o));
-        }
         std::string key = source + ":" + std::to_string(line) + ":" + tag;
         if (s_WarnedUnknownTags.insert(key).second) {
             if (line > 0)
@@ -104,12 +116,12 @@ static std::unique_ptr<UIElement> BuildTreePugi(const pugi::xml_node& node) {
     }
 
     // Apply registered attribute bindings (includes defaults and Text())
-    ElementFactoryRegistry::Instance().ApplyAttributes(*out, attrsLower, innerText);
+    ElementFactoryRegistry::Instance().ApplyAttributes(*out, attrsLower, innerText, source, line);
 
     // Recurse for child elements
     for (auto child : node.children()) {
         if (child.type() == pugi::node_element) {
-            if (auto c = BuildTreePugi(child)) out->AddChild(std::move(c));
+            if (auto c = BuildTreePugi(child, layoutSource)) out->AddChild(std::move(c));
         }
     }
     return out;
@@ -127,7 +139,7 @@ static std::string TrimCopy(const std::string& s)
 // instances are created — just plain data carriers. Tags are canonicalized to
 // the registry's canonical lowercase form, and inner text is stored as a "text"
 // attribute (unless an explicit text attribute already exists).
-static std::unique_ptr<UITemplateNode> BuildTreePugiTemplate(const pugi::xml_node& node)
+static std::unique_ptr<UITemplateNode> BuildTreePugiTemplate(const pugi::xml_node& node, LayoutSource& layoutSource)
 {
     using namespace UIRegistration;
     if (!node)
@@ -139,6 +151,8 @@ static std::unique_ptr<UITemplateNode> BuildTreePugiTemplate(const pugi::xml_nod
 
     auto out = std::make_unique<UITemplateNode>();
     out->TagName = reg.CanonicalTagLower(tagLower);
+    out->SourceFile = layoutSource.File;
+    out->SourceLine = layoutSource.LineOf(node);
 
     // Parse XML attributes into the template node.
     std::string classAttr;
@@ -200,11 +214,8 @@ static std::unique_ptr<UITemplateNode> BuildTreePugiTemplate(const pugi::xml_nod
     // Best-effort unknown tag warning (one-time per source:line:tag).
     if (!reg.HasFactory(out->TagName))
     {
-        int line = 0;
-        std::string source = g_XmlSourceName ? *g_XmlSourceName : std::string("(string)");
-        ptrdiff_t o = node.offset_debug();
-        if (o >= 0 && g_XmlTextPtr)
-            line = ComputeLineNumber(*g_XmlTextPtr, static_cast<size_t>(o));
+        const int line = out->SourceLine;
+        const std::string& source = *layoutSource.File;
         std::string key = source + ":" + std::to_string(line) + ":" + rawTag;
         if (s_WarnedUnknownTags.insert(key).second)
         {
@@ -220,7 +231,7 @@ static std::unique_ptr<UITemplateNode> BuildTreePugiTemplate(const pugi::xml_nod
     {
         if (child.type() == pugi::node_element)
         {
-            if (auto c = BuildTreePugiTemplate(child))
+            if (auto c = BuildTreePugiTemplate(child, layoutSource))
                 out->Children.push_back(std::move(c));
         }
     }
@@ -234,26 +245,8 @@ static std::unique_ptr<UITemplateNode> BuildTreePugiTemplate(const pugi::xml_nod
 
 bool XMLParser::ParseLayoutFromString(const std::string& xmlText,
                                       std::unique_ptr<UIElement>& outRoot) {
-#if defined(GE_HAVE_PUGIXML) && GE_HAVE_PUGIXML
-    pugi::xml_document doc;
-    pugi::xml_parse_result ok = doc.load_string(xmlText.c_str());
-    if (!ok) return false;
-    pugi::xml_node root = doc.document_element();
-    if (!root) return false;
     const std::string defaultSource = "(string)";
-    const std::string* prevText = g_XmlTextPtr;
-    const std::string* prevSource = g_XmlSourceName;
-    g_XmlTextPtr = &xmlText;
-    g_XmlSourceName = &defaultSource;
-    outRoot = BuildTreePugi(root);
-    g_XmlTextPtr = prevText;
-    g_XmlSourceName = prevSource;
-    return (bool)outRoot;
-#else
-    // Fallback: construct a single root element tagged "UI" when pugixml is unavailable
-    outRoot.reset(new UIElement());
-    return true;
-#endif
+    return ParseLayoutFromString(xmlText, outRoot, defaultSource);
 }
 
 bool XMLParser::ParseLayoutFromString(const std::string& xmlText,
@@ -265,13 +258,8 @@ bool XMLParser::ParseLayoutFromString(const std::string& xmlText,
     if (!ok) return false;
     pugi::xml_node root = doc.document_element();
     if (!root) return false;
-    const std::string* prevText = g_XmlTextPtr;
-    const std::string* prevSource = g_XmlSourceName;
-    g_XmlTextPtr = &xmlText;
-    g_XmlSourceName = &sourceName;
-    outRoot = BuildTreePugi(root);
-    g_XmlTextPtr = prevText;
-    g_XmlSourceName = prevSource;
+    LayoutSource layoutSource{std::make_shared<const std::string>(sourceName), xmlText};
+    outRoot = BuildTreePugi(root, layoutSource);
     return (bool)outRoot;
 #else
     // Fallback: construct a single root element tagged "UI" when pugixml is unavailable
@@ -309,13 +297,8 @@ bool XMLParser::ParseLayoutTemplateFromString(const std::string& xmlText,
     pugi::xml_node root = doc.document_element();
     if (!root)
         return false;
-    const std::string* prevText = g_XmlTextPtr;
-    const std::string* prevSource = g_XmlSourceName;
-    g_XmlTextPtr = &xmlText;
-    g_XmlSourceName = &sourceName;
-    outRoot = BuildTreePugiTemplate(root);
-    g_XmlTextPtr = prevText;
-    g_XmlSourceName = prevSource;
+    LayoutSource layoutSource{std::make_shared<const std::string>(sourceName), xmlText};
+    outRoot = BuildTreePugiTemplate(root, layoutSource);
     return (bool)outRoot;
 #else
     outRoot = std::make_unique<UITemplateNode>();

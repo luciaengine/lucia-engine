@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 # AssetCore Library - Core asset interfaces and types
-project(AssetCore VERSION 1.0.0 LANGUAGES CXX)
+project(AssetCore LANGUAGES CXX)
 
 # Source files
 set(ASSETCORE_SOURCES
@@ -35,7 +35,6 @@ set(ASSETCORE_HEADERS
     Include/AssetCore/NineSlice.h
     Include/AssetCore/SharedFileRead.h
     Include/AssetCore/SnapshotFingerprint.h
-    Include/AssetCore/Types.h
 )
 
 # Create static library
@@ -47,6 +46,9 @@ target_compile_features(AssetCore PUBLIC cxx_std_20)
 # Include directories
 target_include_directories(AssetCore PUBLIC Include)
 target_include_directories(AssetCore PRIVATE Source)
+# Engine/Include for Platform/Thread.h: SharedFileRead waits between open retries with
+# Platform::SleepPrecise. PRIVATE: no AssetCore header includes it.
+target_include_directories(AssetCore PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Include)
 
 # Link to core Types module for StringId and shared aliases
 if(TARGET Types)

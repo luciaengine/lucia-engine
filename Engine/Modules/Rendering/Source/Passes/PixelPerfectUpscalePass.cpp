@@ -3,11 +3,12 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Materials/MaterialHelper.h"
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Logger/Logger.h"
+#include "Mathematics/Vector2.h"
 
 #include <algorithm>
 #include <cmath>
@@ -25,14 +26,14 @@ namespace
 {
 // pixelperfect_upscale.frag's UpscalePC members, written by NAME against the
 // reflected block (never hand-mirrored — see TonemapPass for the drift-class
-// rationale). vec2 members are written as float[2].
+// rationale).
 struct UpscaleValues
 {
-    float sourceSize[2]{0.0f, 0.0f};
-    float referenceSize[2]{0.0f, 0.0f};
-    float sampleOrigin[2]{0.0f, 0.0f};
-    float outputOrigin[2]{0.0f, 0.0f};
-    float outputSize[2]{0.0f, 0.0f};
+    Mathematics::Vector2 sourceSize{0.0f, 0.0f};
+    Mathematics::Vector2 referenceSize{0.0f, 0.0f};
+    Mathematics::Vector2 sampleOrigin{0.0f, 0.0f};
+    Mathematics::Vector2 outputOrigin{0.0f, 0.0f};
+    Mathematics::Vector2 outputSize{0.0f, 0.0f};
     float zoom = 1.0f;
     int32_t outEncoding = 1;
     float paperWhiteNits = 203.0f;
@@ -375,11 +376,11 @@ RenderGraph::RGPass AddPixelPerfectUpscalePassRG(RenderGraph::RGFrame& frame,
             : NamedPushConstantWriter(shaders.meta, shaders.meta.PushConstants[0].Name);
     if (pushConstants.IsValid())
     {
-        pushConstants.AddRaw("sourceSize", pc.sourceSize, sizeof(pc.sourceSize));
-        pushConstants.AddRaw("referenceSize", pc.referenceSize, sizeof(pc.referenceSize));
-        pushConstants.AddRaw("sampleOrigin", pc.sampleOrigin, sizeof(pc.sampleOrigin));
-        pushConstants.AddRaw("outputOrigin", pc.outputOrigin, sizeof(pc.outputOrigin));
-        pushConstants.AddRaw("outputSize", pc.outputSize, sizeof(pc.outputSize));
+        pushConstants.Add("sourceSize", pc.sourceSize);
+        pushConstants.Add("referenceSize", pc.referenceSize);
+        pushConstants.Add("sampleOrigin", pc.sampleOrigin);
+        pushConstants.Add("outputOrigin", pc.outputOrigin);
+        pushConstants.Add("outputSize", pc.outputSize);
         pushConstants.Add("zoom", pc.zoom);
         pushConstants.Add("outEncoding", pc.outEncoding);
         pushConstants.Add("paperWhiteNits", pc.paperWhiteNits);

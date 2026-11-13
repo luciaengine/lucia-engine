@@ -3,8 +3,8 @@
 #include "Rendering/Core/Handle.h"
 #include "Rendering/Core/BufferManager.h"
 #include "Rendering/Core/TextureManager.h"
-#include "Rendering/Core/PipelineManager.h"
-#include "VulkanDevice.h"
+#include "Rendering/Core/Pipeline/PipelineManager.h"
+#include "VulkanDevice/VulkanDevice.h"
 
 namespace GameEngine {
 namespace Rendering {

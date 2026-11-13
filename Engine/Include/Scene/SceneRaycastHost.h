@@ -15,7 +15,7 @@ struct RaycastMesh
     ECS::EntityHandle Entity{};
     Rendering::MeshGPUHandle Mesh{};   ///< An invalid handle is a mesh not built yet, never hit.
     GUID ModelAsset{};
-    uint32 RenderLayers = ~0u;
+    Rendering::RenderLayerMask RenderLayers;
 };
 
 /// What a host application adds to a scene raycast beyond the options a game sets.

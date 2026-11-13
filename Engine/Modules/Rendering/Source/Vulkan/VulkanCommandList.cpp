@@ -4,7 +4,7 @@
  */
 
 #include "VulkanCommandList.h"
-#include "VulkanDevice.h"
+#include "VulkanDevice/VulkanDevice.h"
 #include "VulkanMappings.h"
 #include <algorithm>
 #include <cassert>
@@ -36,10 +36,10 @@ VkFormat GetVulkanFormat(TextureFormat format);
 namespace
 {
 #if !defined(NDEBUG)
-// Debug diagnostic for a render-graph barrier whose source stage the recording
+// Debug diagnostic for a render-graph barrier whose source or destination stage the recording
 // queue cannot express: log the first occurrence and every stride-th repeat, so a
 // per-barrier condition cannot flood the log.
-constexpr uint64_t kGraphSrcClampLogStride = 256;
+constexpr uint64_t kGraphQueueFloorLogStride = 256;
 #endif
 
 // Map a VkImageLayout to the pipeline stage + access mask that should be used
@@ -3330,6 +3330,63 @@ void VulkanCommandList::Barrier(const ResourceBarrier& barrier)
     BarrierBatch({barrier});
 }
 
+void VulkanCommandList::RecordStateAfterBarriers(const std::vector<ResourceBarrier>& barriers)
+{
+    for (const ResourceBarrier& barrier : barriers)
+    {
+        if (barrier.type != ResourceBarrier::Texture)
+            continue;
+        const VkImageLayout layout = VulkanMappings::TranslateResourceStateToLayout(barrier.stateAfter);
+        const ResourceBarrier::Subresource& range = barrier.subresource;
+        for (uint32_t mip = range.baseMip; mip < range.baseMip + range.levelCount; ++mip)
+            for (uint32_t layer = range.baseLayer; layer < range.baseLayer + range.layerCount; ++layer)
+                m_SubresourceLayouts[MakeSubKey(barrier.textureHandle, mip, layer)] = layout;
+    }
+}
+
+VkPipelineStageFlags VulkanCommandList::QueueExpressibleStages(VkPipelineStageFlags stages) const
+{
+    if (m_QueueType == IDevice::QueueType::Graphics)
+        return stages;
+    VkPipelineStageFlags allowed = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT | VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT |
+                                   VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT |
+                                   VK_PIPELINE_STAGE_TRANSFER_BIT;
+    if (m_QueueType == IDevice::QueueType::Compute)
+        allowed |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    return stages & allowed;
+}
+
+// Removes the stages this queue cannot run from one side of a barrier; a side with no
+// stage left also loses its access bits. The submission's semaphore wait orders the other queue.
+// A clamp on a render-graph barrier is a graph defect: Debug builds log it.
+void VulkanCommandList::ApplyQueueFloor(const ResourceBarrier& barrier, VkPipelineStageFlags& stage,
+                                        VkAccessFlags& access) const
+{
+    const VkPipelineStageFlags clamped = QueueExpressibleStages(stage);
+    if (clamped == stage)
+        return;
+#if !defined(NDEBUG)
+    if (barrier.rgAuthoritativeLayout)
+    {
+        static thread_local uint64_t s_GraphClampCount = 0;
+        if (s_GraphClampCount++ % kGraphQueueFloorLogStride == 0)
+        {
+            Logger::Log::Warning(
+                "VulkanCommandList: render-graph barrier stage 0x{:x} is not expressible on "
+                "queue type {} (floored to 0x{:x}) — the graph derived a scope this queue "
+                "cannot name. Occurrence {}.",
+                static_cast<uint64_t>(stage), static_cast<int>(m_QueueType),
+                static_cast<uint64_t>(clamped), s_GraphClampCount);
+        }
+    }
+#else
+    (void)barrier;
+#endif
+    if (clamped == 0)
+        access = 0;
+    stage = clamped;
+}
+
 void VulkanCommandList::BarrierBatch(const std::vector<ResourceBarrier>& barriers)
 {
     if (m_CommandBuffer == VK_NULL_HANDLE || !m_IsRecording)
@@ -3353,67 +3410,6 @@ void VulkanCommandList::BarrierBatch(const std::vector<ResourceBarrier>& barrier
             return VulkanMappings::TranslateResourceStateToAccess(s);
         }
         return VulkanMappings::TranslateResourceAccessMask(explicitMask);
-    };
-    // Clamp a barrier's SOURCE stage mask to what this command buffer's queue
-    // family can express. A src stage the queue lacks (e.g. FRAGMENT_SHADER on a
-    // compute queue) can only have come from a producer on ANOTHER queue — a
-    // same-queue producer's stages are queue-valid by construction — and that
-    // cross-queue dependency is carried by the submission's timeline-semaphore
-    // wait, not by this barrier. Masking the foreign stage out is therefore a
-    // correctness-preserving floor that keeps an illegal stage off the queue
-    // (VUID-vkCmdPipelineBarrier2-srcStageMask-09675), independent of render-graph
-    // queue bookkeeping. The graphics (universal) queue supports every stage.
-    auto clampSrcStageToQueue = [&](VkPipelineStageFlags stage) -> VkPipelineStageFlags
-    {
-        if (m_QueueType == IDevice::QueueType::Graphics)
-            return stage;
-        VkPipelineStageFlags allowed = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT |
-                                       VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT |
-                                       VK_PIPELINE_STAGE_ALL_COMMANDS_BIT |
-                                       VK_PIPELINE_STAGE_HOST_BIT |
-                                       VK_PIPELINE_STAGE_TRANSFER_BIT;
-        if (m_QueueType == IDevice::QueueType::Compute)
-            allowed |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT |
-                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-        return stage & allowed;
-    };
-    // Applies the floor and drops the source access scope with it when nothing
-    // survives — a foreign producer's writes are made available by the timeline
-    // wait, so keeping its access bits against an empty stage mask would name a
-    // dependency this barrier does not express.
-    //
-    // On a RENDER-GRAPH barrier the floor must never be load-bearing: the graph
-    // sanitizes the source scope at the producing submission's tail, so a clamp
-    // here means it derived an edge this queue cannot name. Debug builds report
-    // that rather than repairing it quietly. Barriers recorded outside the graph
-    // (a transfer-queue upload naming ShaderResource, say) are clamped by design
-    // and stay silent.
-    auto applySrcQueueFloor = [&](const ResourceBarrier& barrier, VkPipelineStageFlags& srcStage,
-                                  VkAccessFlags& srcAccess)
-    {
-        const VkPipelineStageFlags clamped = clampSrcStageToQueue(srcStage);
-        if (clamped == srcStage)
-            return;
-#if !defined(NDEBUG)
-        if (barrier.rgAuthoritativeLayout)
-        {
-            static thread_local uint64_t s_GraphClampCount = 0;
-            if (s_GraphClampCount++ % kGraphSrcClampLogStride == 0)
-            {
-                Logger::Log::Warning(
-                    "VulkanCommandList: render-graph barrier src stage 0x{:x} is not expressible on "
-                    "queue type {} (floored to 0x{:x}) — the graph derived a source scope this queue "
-                    "cannot name. Occurrence {}.",
-                    static_cast<uint64_t>(srcStage), static_cast<int>(m_QueueType),
-                    static_cast<uint64_t>(clamped), s_GraphClampCount);
-            }
-        }
-#else
-        (void)barrier;
-#endif
-        if (clamped == 0)
-            srcAccess = 0;
-        srcStage = clamped;
     };
     // The single oldLayout rule, shared by the sync2 and sync1 paths:
     //   graph-owned texture -> compiled stateBefore verbatim. The render graph's
@@ -3482,7 +3478,8 @@ void VulkanCommandList::BarrierBatch(const std::vector<ResourceBarrier>& barrier
             VkPipelineStageFlags dstStage = resolveStage(barrier.stateAfter, barrier.dstStageMask);
             VkAccessFlags srcAccess = resolveAccess(barrier.stateBefore, barrier.srcAccessMask);
             VkAccessFlags dstAccess = resolveAccess(barrier.stateAfter, barrier.dstAccessMask);
-            applySrcQueueFloor(barrier, srcStage, srcAccess);
+            ApplyQueueFloor(barrier, srcStage, srcAccess);
+            ApplyQueueFloor(barrier, dstStage, dstAccess);
 
             // Accumulate stage masks for the global barrier call
             srcStageMaskTotal |= srcStage;
@@ -3626,7 +3623,8 @@ void VulkanCommandList::BarrierBatch(const std::vector<ResourceBarrier>& barrier
             VkPipelineStageFlags dstStage = resolveStage(barrier.stateAfter, barrier.dstStageMask);
             VkAccessFlags srcAccess = resolveAccess(barrier.stateBefore, barrier.srcAccessMask);
             VkAccessFlags dstAccess = resolveAccess(barrier.stateAfter, barrier.dstAccessMask);
-            applySrcQueueFloor(barrier, srcStage, srcAccess);
+            ApplyQueueFloor(barrier, srcStage, srcAccess);
+            ApplyQueueFloor(barrier, dstStage, dstAccess);
             // Swapchain fresh from acquire (Undefined): force safe
             // synchronization points (acquire happens outside the graph).
             const bool isSwapchainImage = m_Device->IsSwapchainTextureHandle(barrier.textureHandle);
@@ -3712,7 +3710,8 @@ void VulkanCommandList::BarrierBatch(const std::vector<ResourceBarrier>& barrier
             VkPipelineStageFlags dstStage = resolveStage(barrier.stateAfter, barrier.dstStageMask);
             VkAccessFlags srcAccess = resolveAccess(barrier.stateBefore, barrier.srcAccessMask);
             VkAccessFlags dstAccess = resolveAccess(barrier.stateAfter, barrier.dstAccessMask);
-            applySrcQueueFloor(barrier, srcStage, srcAccess);
+            ApplyQueueFloor(barrier, srcStage, srcAccess);
+            ApplyQueueFloor(barrier, dstStage, dstAccess);
 
             VkBufferMemoryBarrier2 buf2{};
             buf2.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
@@ -3745,7 +3744,8 @@ void VulkanCommandList::BarrierBatch(const std::vector<ResourceBarrier>& barrier
             VkPipelineStageFlags dstStage = resolveStage(barrier.stateAfter, barrier.dstStageMask);
             VkAccessFlags srcAccess = resolveAccess(barrier.stateBefore, barrier.srcAccessMask);
             VkAccessFlags dstAccess = resolveAccess(barrier.stateAfter, barrier.dstAccessMask);
-            applySrcQueueFloor(barrier, srcStage, srcAccess);
+            ApplyQueueFloor(barrier, srcStage, srcAccess);
+            ApplyQueueFloor(barrier, dstStage, dstAccess);
 
             VkMemoryBarrier2 mem2{};
             mem2.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
@@ -4111,25 +4111,26 @@ void VulkanCommandList::CopyTextureSubresourceToBuffer(TextureHandle srcTexture,
     // Two-step barrier collapsed to single: oldLayout -> TRANSFER_SRC_OPTIMAL
     // Be conservatively correct for visibility: assume any prior producer and make writes visible
     VkAccessFlags srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    // The old layout is this list's layout record. It starts empty at every Begin and
+    // holds what barriers and copies on this list left, plus what the render graph
+    // noted through RecordStateAfterBarriers for transitions it placed on another list.
     VkImageLayout oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (auto it = m_SubresourceLayouts.find(MakeSubKey(srcTexture, mip, rangeCopy.baseArrayLayer));
+        it != m_SubresourceLayouts.end())
     {
-        uint64_t key = MakeSubKey(srcTexture, mip, rangeCopy.baseArrayLayer);
-        auto it = m_SubresourceLayouts.find(key);
-        oldLayout = (it != m_SubresourceLayouts.end()) ? it->second : VK_IMAGE_LAYOUT_UNDEFINED;
+        oldLayout = it->second;
     }
     if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED)
     {
-        // An UNDEFINED source layout lets the driver satisfy this transition by
-        // DISCARDING the subresource, so the readback can legally return blank
-        // data — intermittently, which reads as a flaky test rather than a bug.
-        // Render-graph passes journal a layout via their Read/Write edges; a
-        // caller recording straight onto a CommandList must barrier the
-        // subresource into its real state before reading it back.
-        Logger::Log::Warning(
+        // A transition from UNDEFINED lets the driver discard the subresource, so the
+        // copy would read back whatever the driver left. Refuse it and report.
+        Logger::Log::Error(
             "CopyTextureSubresourceToBuffer: mip {} layer {} has no recorded layout on this "
-            "command list; the UNDEFINED -> TRANSFER_SRC transition may discard its contents. "
-            "Barrier the subresource into its actual state before the copy.",
+            "command list; the copy is refused, because a transition from UNDEFINED may discard "
+            "its contents. Barrier the subresource into its current state on this command list "
+            "before the copy (in a render-graph pass, declare the read and the graph records it).",
             mip, rangeCopy.baseArrayLayer);
+        return;
     }
     VkImageMemoryBarrier toSrc{};
     toSrc.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -4687,17 +4688,18 @@ void VulkanCommandList::CopyBufferToTextureSubresource(BufferHandle srcBuffer, T
     range.baseArrayLayer = is3DTexture ? 0 : layer;
     range.layerCount = 1;
 
+    // The same rule as the readback: this list's layout record first, because it holds
+    // what this list did after the caller last knew the state; the caller's stated
+    // state only for a subresource this list has not touched.
     VkImageLayout oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (currentState != ResourceState::Undefined)
+    if (auto it = m_SubresourceLayouts.find(MakeSubKey(dstTexture, mip, range.baseArrayLayer));
+        it != m_SubresourceLayouts.end())
+    {
+        oldLayout = it->second;
+    }
+    else if (currentState != ResourceState::Undefined)
     {
         oldLayout = VulkanMappings::TranslateResourceStateToLayout(currentState);
-    }
-    else
-    {
-        uint64_t key = MakeSubKey(dstTexture, mip, range.baseArrayLayer);
-        auto it = m_SubresourceLayouts.find(key);
-        if (it != m_SubresourceLayouts.end())
-            oldLayout = it->second;
     }
 
     if (isSubRegion && oldLayout == VK_IMAGE_LAYOUT_UNDEFINED)
@@ -4714,7 +4716,15 @@ void VulkanCommandList::CopyBufferToTextureSubresource(BufferHandle srcBuffer, T
             width, height, mipW, mipH);
     }
 
-    const SrcStageAccess src = SrcMasksForOldLayout(oldLayout);
+    // A source stage this queue cannot run is another queue's access to the image, which
+    // the submission's semaphore wait orders. The transfer stage keeps this list's own
+    // earlier copies to the subresource ordered (a repeated upload in one list).
+    SrcStageAccess src = SrcMasksForOldLayout(oldLayout);
+    if (const VkPipelineStageFlags queueStages = QueueExpressibleStages(src.Stage); queueStages != src.Stage)
+    {
+        src.Stage = queueStages | VK_PIPELINE_STAGE_TRANSFER_BIT;
+        src.Access = VK_ACCESS_TRANSFER_WRITE_BIT;
+    }
 
     VkImageMemoryBarrier toDst{};
     toDst.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;

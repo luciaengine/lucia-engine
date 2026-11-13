@@ -10,16 +10,22 @@
 #include "Types/StringUtils.h"
 #include "UI/Controls/SearchDialog.h"
 #include "UI/Layout/ElementOverrideHelpers.h"
+#include "UI/Registration/ElementRegistration.h"
 #include "UI/Interaction/Payload.h"
 
 #include <any>
 #include <filesystem>
+#include <format>
 #include <string_view>
 
 namespace GameEngine
 {
 namespace
 {
+constexpr const char* kMissingAssetText = "Missing asset";
+// The model thumbnail's requested edge, in pixels.
+constexpr int kModelThumbnailSize = 64;
+
 // Display name for a GUID that names an engine built-in rather than a registry
 // asset. Meshes first, then materials — the two families are separate lookups
 // because IsPrimitive() means "primitive mesh".
@@ -30,27 +36,21 @@ std::string_view BuiltInAssetName(const GUID& guid)
         return mesh;
     return PrimitiveGenerator::MaterialNameFromGuid(guid);
 }
+
+// The name's tooltip for a registry asset: its file name as spelled on disk, then its GUID.
+// The registry path is a lookup key, case-folded on a case-insensitive volume: do not show it.
+std::string ResolvedAssetTooltip(const AssetMetadata& meta)
+{
+    return std::format("{}{}\nGUID {}", meta.Name, meta.Extension, meta.Guid.ToString());
+}
 } // namespace
 
 AssetField::AssetField()
 {
-    // Base adds the "asset-field" class + stylesheet and builds the name + clear
-    // button. Add the asset-specific chrome (icon, preview) BEFORE the name so the
-    // child/paint order is icon, preview, name, clear.
-    auto icon = std::make_unique<UIElement>();
-    icon->AddClass("asset-field-icon");
-    m_Icon = icon.get();
-    AddChild(std::move(icon));
-
-    // Preview strip: the texture file itself, or any thumbnail a provider answers
-    // with. Hidden until one of the two produces a picture.
-    auto preview = std::make_unique<UIElement>();
-    preview->AddClass("asset-field-preview");
-    preview->AddClass("hidden");
-    m_Preview = preview.get();
-    AddChild(std::move(preview));
-
-    BuildNameAndClearButton();
+    // The base builds the parts from the field's layout; the icon and the preview
+    // strip lead them, both hidden until a value shows them.
+    m_Icon = LayoutPart("asset-field-icon");
+    m_Preview = LayoutPart("asset-field-preview");
 }
 
 void AssetField::SetAcceptedTypes(std::vector<AssetType> types)
@@ -70,10 +70,20 @@ void AssetField::SetAssetRegistry(AssetRegistry* registry)
 
 void AssetField::SetValue(const GUID& guid)
 {
-    if (m_Value == guid)
+    if (m_Value == guid && !ResolutionChanged())
         return;
     m_Value = guid;
     UpdateDisplay();
+}
+
+bool AssetField::ResolutionChanged() const
+{
+    if (m_Value.IsNull())
+        return false;
+    AssetMetadata meta;
+    if (!m_Registry || !m_Registry->TryGetAssetMetadata(m_Value, meta))
+        return !m_ResolvedPath.empty();
+    return meta.Path != m_ResolvedPath || meta.Name != m_ResolvedName;
 }
 
 void AssetField::Clear()
@@ -91,7 +101,7 @@ void AssetField::ApplyValue(const GUID& guid)
         m_OnValueChanged(m_Value);
 }
 
-void AssetField::ClearPreviewStrip()
+void AssetField::ClearModelPreviewStrip()
 {
     if (!m_Preview)
         return;
@@ -99,138 +109,122 @@ void AssetField::ClearPreviewStrip()
     UI::Layout::ClearBackgroundOverride(*m_Preview);
 }
 
-void AssetField::ApplyThumbnail(uint32_t generation, AssetType assetType, const std::string& rel)
+void AssetField::SetIconClass(std::string iconClass)
 {
-    if (generation != m_PreviewRequestGen || !m_Preview)
+    if (!m_Icon)
         return;
-    if (rel.empty())
-    {
-        ClearPreviewStrip();
-        m_Icon->RemoveClass("hidden");
-        if (m_CurrentIconClass.empty())
-        {
-            m_CurrentIconClass = AssetSearchProvider::GetIconClassForType(assetType);
-            m_Icon->AddClass(m_CurrentIconClass);
-        }
-        return;
-    }
-    constexpr const char* kEnginePrefix = "engine:";
-    constexpr size_t kEnginePrefixLen = 7;
-    if (rel.rfind(kEnginePrefix, 0) == 0)
-        UI::Layout::SetBackgroundResourceName(*m_Preview, rel.substr(kEnginePrefixLen));
-    else
-        UI::Layout::SetBackgroundPath(*m_Preview, rel);
-    m_Preview->RemoveClass("hidden");
-    m_Icon->AddClass("hidden");
     if (!m_CurrentIconClass.empty())
-    {
         m_Icon->RemoveClass(m_CurrentIconClass);
-        m_CurrentIconClass.clear();
+    m_CurrentIconClass = std::move(iconClass);
+    if (m_CurrentIconClass.empty())
+    {
+        m_Icon->AddClass("hidden");
+        return;
     }
+    m_Icon->AddClass(m_CurrentIconClass);
+    m_Icon->RemoveClass("hidden");
 }
 
 void AssetField::UpdateDisplay()
 {
-    ++m_PreviewRequestGen;
+    m_ResolvedPath.clear();
+    m_ResolvedName.clear();
     if (m_Value.IsNull())
     {
+        ClearModelPreviewStrip();
+        SetIconClass({});
         ShowEmpty();
-        ClearPreviewStrip();
-        if (!m_CurrentIconClass.empty())
-        {
-            m_Icon->RemoveClass(m_CurrentIconClass);
-            m_CurrentIconClass.clear();
-        }
-        m_Icon->AddClass("hidden");
         return;
     }
 
-    // Try to resolve asset metadata
-    if (m_Registry)
+    AssetMetadata meta;
+    if (m_Registry && m_Registry->TryGetAssetMetadata(m_Value, meta))
     {
-        AssetMetadata meta;
-        if (m_Registry->TryGetAssetMetadata(m_Value, meta))
+        m_ResolvedPath = meta.Path;
+        m_ResolvedName = meta.Name;
+        ShowNamed(meta.Name, ResolvedAssetTooltip(meta));
+        SetIconClass(AssetSearchProvider::GetIconClassForType(meta.Type));
+
+        if (meta.Type == AssetType::Texture && m_Preview && !meta.Path.empty())
         {
-            ShowNamed(meta.Name);
-
-            // Type icon (hidden once a preview image arrives for this asset).
-            m_Icon->RemoveClass("hidden");
-            if (!m_CurrentIconClass.empty())
-                m_Icon->RemoveClass(m_CurrentIconClass);
-            m_CurrentIconClass = AssetSearchProvider::GetIconClassForType(meta.Type);
-            m_Icon->AddClass(m_CurrentIconClass);
-
-            if (meta.Type == AssetType::Texture && m_Preview && !meta.Path.empty())
-            {
-                // A texture is its own thumbnail: paint the file into the
-                // preview strip directly, the way MaterialTexturePreviewHost
-                // does — no provider round-trip, and the UI texture cache
-                // dedups with any larger preview of the same file.
-                UI::Layout::SetBackgroundPath(*m_Preview, meta.Path.string());
-                m_Preview->RemoveClass("hidden");
-                m_Icon->AddClass("hidden");
-                if (!m_CurrentIconClass.empty())
-                {
-                    m_Icon->RemoveClass(m_CurrentIconClass);
-                    m_CurrentIconClass.clear();
-                }
-            }
-            // Every other asset the provider can picture shows its picture. It
-            // answers for the types that have a handler — models, tile sets, tile
-            // maps, sprite sheets — and returns empty for the rest, which keeps
-            // the type icon below. Gating on the asset type here would mean this
-            // field has to learn about every new handler.
-            else if (m_Thumbnails && m_Preview)
-            {
-                const uint32_t gen = m_PreviewRequestGen;
-                const AssetType assetType = meta.Type;
-                ClearPreviewStrip();
-
-                const auto weakField = UIElement::MakeWeakRef(this);
-                auto applyThumb = [weakField, gen, assetType](const std::string& rel) {
-                    if (auto* field = weakField.Get())
-                        field->ApplyThumbnail(gen, assetType, rel);
-                };
-
-                // ThumbnailService delivers every ready callback on the UI thread
-                // (see ThumbnailService::DeliverOnUiThread), so applying the thumbnail
-                // from here is safe whether the handler answered from its cache or
-                // finished generating on a worker. Delivery is uniform rather than
-                // immediate — it lands on the next frame — so the callback is the
-                // single application path and the return value is deliberately not
-                // used as well; applying both would run applyThumb twice and clear
-                // m_CurrentIconClass on the second pass.
-                //
-                // The static-list variant is a models-only concept: it hands back a
-                // cached engine texture instead of the rotating Asset View preview.
-                // Asking for it on any other type requests a preview that does not
-                // exist.
-                const bool staticModelList = (assetType == AssetType::Model);
-                m_Thumbnails->GetOrRequest(meta.Path, 64, applyThumb, staticModelList);
-            }
-            else
-            {
-                ClearPreviewStrip();
-            }
-
-            return;
+            // A texture is its own thumbnail: the strip draws the file directly, and the
+            // UI texture cache shares it with larger previews of the same file.
+            ++m_ModelPreviewRequestGen; // invalidate any in-flight model thumb
+            UI::Layout::SetBackgroundPath(*m_Preview, meta.Path.string());
+            m_Preview->RemoveClass("hidden");
+            SetIconClass({});
         }
+        else if (meta.Type == AssetType::Model && m_Thumbnails && m_Preview)
+        {
+            ++m_ModelPreviewRequestGen;
+            const uint32_t requestGeneration = m_ModelPreviewRequestGen;
+            ClearModelPreviewStrip();
+
+            // GetOrRequest always fires the callback synchronously (via the
+            // model-handler or fallback path), so act only through the callback:
+            // acting on the return value as well would apply the thumbnail twice.
+            m_Thumbnails->GetOrRequest(
+                meta.Path, kModelThumbnailSize,
+                [this, requestGeneration](const std::string& thumbnailPath) {
+                    ApplyModelThumbnail(requestGeneration, thumbnailPath);
+                }, true);
+        }
+        else
+        {
+            ClearModelPreviewStrip();
+        }
+        return;
     }
 
-    ClearPreviewStrip();
-    m_Icon->AddClass("hidden");
+    ClearModelPreviewStrip();
+    SetIconClass({});
 
     // Engine built-ins — the default scene's primitive meshes and materials — are
     // deliberately not registry assets, so the metadata lookup above misses them
-    // by design. Name them anyway: a truncated GUID tells the author nothing
-    // about what is assigned, and built-ins are what a fresh scene is made of.
+    // by design. Name them anyway: built-ins are what a fresh scene is made of.
     if (const std::string_view builtIn = BuiltInAssetName(m_Value); !builtIn.empty())
     {
-        ShowNamed(std::string(builtIn));
+        ShowNamed(std::string(builtIn), std::format("Engine built-in\nGUID {}", m_Value.ToString()));
         return;
     }
 
-    ShowNamed(m_Value.ToString().substr(0, 13) + "...");
+    ShowMissing(kMissingAssetText,
+                std::format("No asset has the GUID {}. Choose another asset or clear the field.", m_Value.ToString()));
+}
+
+void AssetField::ApplyModelThumbnail(uint32_t requestGeneration, const std::string& thumbnailPath)
+{
+    if (requestGeneration != m_ModelPreviewRequestGen || !m_Preview)
+        return;
+    if (thumbnailPath.empty())
+    {
+        ClearModelPreviewStrip();
+        SetIconClass(AssetSearchProvider::GetIconClassForType(AssetType::Model));
+        return;
+    }
+    constexpr std::string_view kEnginePrefix = "engine:";
+    if (thumbnailPath.starts_with(kEnginePrefix))
+        UI::Layout::SetBackgroundResourceName(*m_Preview, thumbnailPath.substr(kEnginePrefix.size()));
+    else
+        UI::Layout::SetBackgroundPath(*m_Preview, thumbnailPath);
+    m_Preview->RemoveClass("hidden");
+    SetIconClass({});
+}
+
+void AssetField::SetOnReveal(RevealCallback cb)
+{
+    m_OnReveal = std::move(cb);
+    RefreshLinkStyle();
+}
+
+bool AssetField::CanReveal() const
+{
+    return m_OnReveal && !m_ResolvedPath.empty();
+}
+
+void AssetField::Reveal()
+{
+    m_OnReveal(m_ResolvedPath);
 }
 
 std::unique_ptr<ISearchProvider> AssetField::CreateProvider()
@@ -347,3 +341,9 @@ void AssetField::PerformDrop(const UI::Interaction::DropRequest& request)
 }
 
 } // namespace GameEngine
+
+namespace RegisterAssetField
+{
+static auto s_RegisterAssetField = GameEngine::UIRegistration::RegisterWithFactory<GameEngine::AssetField>(
+    "AssetField", []() { return std::make_unique<GameEngine::AssetField>(); });
+}

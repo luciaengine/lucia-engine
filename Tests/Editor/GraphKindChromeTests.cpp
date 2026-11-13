@@ -5,7 +5,7 @@
 #include "AssetCore/GUID.h"
 #include "EditorPanelIds.h"
 #include "Graph/GraphKindChrome.h"
-#include "Graph/GraphNodeRegistry.h"
+#include "Graph/GraphNode/GraphNodeRegistry.h"
 #include "Graph/GraphPanelFactory.h"
 #include "Graph/GraphTypeRegistry.h"
 #include "Graph/NodeColorSettings.h"

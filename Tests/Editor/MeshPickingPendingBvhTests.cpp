@@ -14,8 +14,8 @@
 #include <thread>
 #include <vector>
 
-#include "Picking/MeshBvhCache.h"
-#include "Picking/MeshPickingService.h"
+#include "Scene/MeshBvhCache.h"
+#include "Scene/SceneRaycast.h"
 
 #include "Assets/AssetManager.h"
 #include "Assets/ModelAsset.h"
@@ -36,10 +36,10 @@ using GameEngine::EngineCore;
 using GameEngine::GUID;
 using GameEngine::Mesh;
 using GameEngine::ECS::World;
-using GameEngine::Editor::Picking::MeshBvhCache;
-using GameEngine::Editor::Picking::PickableKind;
-using GameEngine::Editor::Picking::PickOptions;
-using GameEngine::Editor::Picking::RaycastScene;
+using GameEngine::Scene::MeshBvhCache;
+using GameEngine::Scene::PickableKind;
+using GameEngine::Scene::PickOptions;
+using GameEngine::Scene::RaycastScene;
 using GameEngine::Mathematics::Ray3D;
 using GameEngine::Mathematics::Vector3;
 

@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 
 #include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/Camera.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/MaterialSystem.h"
@@ -27,6 +28,8 @@
 #include "ECS/Components.h"
 #include "ECS/ECSTemplates.h"
 
+#include "Components/Hierarchy.h"
+#include "Components/SceneViewHidden.h"
 #include "Components/Transform.h"
 #include "Components/Hierarchy.h"
 #include "Components/Rendering/RenderSorting.h"
@@ -43,16 +46,17 @@
 #include "Components/Rendering/ParticleRenderer.h"
 #include "Components/Rendering/Particles.h"
 #include "Components/Rendering/SkinnedMeshRenderer.h"
-#include "Components/Rendering/WorldSectorCoord.h"
 
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/ShadowCasterChanges.h"
+#include "Mathematics/WorldPosition.h"
 
 #include "Assets/ModelAsset.h" // Mesh/Vertex for registry fixtures
 #include "AssetCore/GUID.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Materials/MaterialDocument.h"
+#include "TestCameraEye.h"
 
 #include <algorithm>
 #include <cstring>
@@ -331,6 +335,72 @@ TEST_F(ExtractionFastPathTest, LayerOnlyChangesPublishPayloadAndInvalidateShadow
     EXPECT_EQ(h.extraction->GetSubmissionsForTest()[0].instanceIndex, slot);
 }
 
+// A renderer whose layers miss every view's is drawn by none of them. Moving it to another layer is a
+// write into its MeshRenderer: the entity keeps its archetype, and the next frame puts the new layers in
+// its GPU instance word.
+TEST_F(ExtractionFastPathTest, RendererOutsideTheViewLayersEmitsNoSubmissionAndALayerEditKeepsTheArchetype)
+{
+    ExtractionHarness h;
+    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
+    auto actor = h.SpawnRenderable(0, 0, 0);
+    h.SpawnRenderable(1, 0, 0);
+    ASSERT_TRUE(h.PrimeToFastPath());
+    ASSERT_EQ(h.extraction->GetSubmissionsForTest().size(), 2u);
+    const ECS::Archetype* archetype = h.world->GetEntityArchetype(actor.GetHandle());
+    ASSERT_NE(archetype, nullptr);
+
+    h.world->GetComponentForWrite<MeshRenderer>(actor.GetHandle())->RenderLayers =
+        GameEngine::Rendering::RenderLayerMask::FromLayer(2);
+    h.StepFrame();
+
+    EXPECT_EQ(h.world->GetEntityArchetype(actor.GetHandle()), archetype) << "a layer edit never moves the entity";
+    const auto slot = h.world->GetComponent<MeshGPUData>(actor.GetHandle())->instanceIndex;
+    EXPECT_EQ(h.rs.GetGPUScene()->GetInstances()[slot].renderLayerMask, 1u << 2);
+    const auto& subs = h.extraction->GetSubmissionsForTest();
+    ASSERT_EQ(subs.size(), 1u) << "the view draws layer 0 only, so the renderer on layer 2 has no submission";
+    EXPECT_NE(subs[0].instanceIndex, slot);
+}
+
+// A view on no layer gets no submission but is still extracted this frame, so its controller presents its
+// clear and sky instead of holding its last image while it waits for an extraction that never comes.
+TEST_F(ExtractionFastPathTest, AViewOnNoLayerIsExtractedWithNoSubmission)
+{
+    ExtractionHarness h;
+    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
+    h.SpawnRenderable(0, 0, 0);
+    h.rs.Views().SetViewRenderLayerMask(h.viewId, GameEngine::Rendering::RenderLayerMask::None());
+    h.StepFrame();
+
+    EXPECT_TRUE(h.extraction->GetSubmissionsForTest().empty());
+    EXPECT_TRUE(h.rs.Views().IsViewExtractionCurrent(h.viewId))
+        << "the view on no layer was extracted this frame";
+}
+
+// The host declares its game view in its render step, after extraction. The frame that resumes the
+// camera still extracts the world for the view, so the view does not draw an empty world.
+TEST_F(ExtractionFastPathTest, AGameViewIsExtractedOnTheFrameItsCameraResumes)
+{
+    ExtractionHarness h;
+    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
+    h.SpawnRenderable(0, 0, 0);
+    ECS::Entity cameraEntity = h.world->Create();
+    cameraEntity.Set(MakeTransformAt(0, 0, -5));
+    Components::Camera camera{};
+    camera.WorldDrawingPaused = true;
+    cameraEntity.Set(camera);
+    h.world->ProcessCommands();
+    const std::optional<Engine::Renderer::Camera> pausedCamera = FindActiveCamera(*h.world);
+    ASSERT_TRUE(pausedCamera.has_value());
+    DeclareGameCameraView(h.rs.Views(), h.viewId, &*pausedCamera);
+    h.StepFrame();
+    ASSERT_TRUE(h.extraction->GetSubmissionsForTest().empty()) << "a paused view is extracted with no submission";
+
+    h.world->GetComponentForWrite<Components::Camera>(cameraEntity.GetHandle())->WorldDrawingPaused = false;
+    h.StepFrame();
+    EXPECT_EQ(h.extraction->GetSubmissionsForTest().size(), 1u)
+        << "the frame that resumes the camera extracts the renderable for the view";
+}
+
 TEST_F(ExtractionFastPathTest, LayerPayloadRecoversAnOutOfRangeDerivedSlot)
 {
     ExtractionHarness h;
@@ -396,104 +466,6 @@ TEST_F(ExtractionFastPathTest, LodGroupBiasEditEscalatesViaProbe)
     ASSERT_NE(mg, nullptr);
     EXPECT_FLOAT_EQ(h.rs.GetGPUScene()->GetInstances()[mg->instanceIndex].lodBias, 2.0f);
     ASSERT_TRUE(h.PrimeToFastPath());
-}
-
-TEST_F(ExtractionFastPathTest, WorldSectorCoordEditEscalatesViaProbe)
-{
-    ExtractionHarness h;
-    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
-    ECS::Entity e = h.SpawnRenderable(0.0f, 0.0f, 0.0f);
-    e.Set(WorldSectorCoord{});
-    ASSERT_TRUE(h.PrimeToFastPath());
-
-    // Editing the sector changes the packed sector AND the full-world
-    // boundingCenter (camera-relative rendering), so it must escalate.
-    if (auto* sc = h.world->GetComponentForWrite<WorldSectorCoord>(e.GetHandle()))
-        sc->x += 1;
-    h.StepFrame();
-    EXPECT_EQ(h.Stats().FastFrame, 0u);
-    EXPECT_NE(h.Stats().EscalationReasonBits &
-                  RenderExtractionSystem::kEscalationProbeSectorCoord,
-              0u);
-    ASSERT_TRUE(h.PrimeToFastPath());
-}
-
-// Regression for the pick-vs-render invisibility: TAGGING a mesh (adding
-// WorldSectorCoord to an entity that had none — the IPC set_component path) must
-// repack the GPUInstance sector AND recompose boundingCenter to full world.
-// Otherwise the vertex stage reconstructs the instance far out while culling sees
-// the sector-local bounds → frustum-culled at the true spot, rasterised offscreen
-// at the local spot → invisible everywhere. The add is a structural change that
-// escalates the full lane; the no-op guard must then REBUILD (the sector is part
-// of it now), not skip because the transform version is unchanged.
-//
-// The editor IPC protocol EXACTLY: tag first (frame N), let it process, THEN edit
-// the Transform (frame N+k, a separate IPC call). The follow-up transform edit
-// rides the fast path off the CACHED sector, so it must preserve the tag — if the
-// cache were stale (0) the sector would silently drop on the transform edit.
-TEST_F(ExtractionFastPathTest, WorldSectorCoordAddThenTransformEditKeepsSector)
-{
-    namespace Origin = GameEngine::Engine::Renderer;
-    ExtractionHarness h;
-    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
-    ECS::Entity e = h.SpawnRenderable(5.0f, 5.0f, 5.0f);
-    ASSERT_TRUE(h.PrimeToFastPath());
-    auto* mg = h.world->GetComponent<MeshGPUData>(e.GetHandle());
-    ASSERT_NE(mg, nullptr);
-    const uint32 slot = mg->instanceIndex;
-
-    // Untagged baseline: sector 0.
-    {
-        const auto& inst = h.rs.GetGPUScene()->GetInstances()[slot];
-        int32 bx, by, bz;
-        Origin::UnpackSector(inst.sectorPacked[0], inst.sectorPacked[1], bx, by, bz);
-        EXPECT_EQ(bx, 0);
-        EXPECT_EQ(by, 0);
-        EXPECT_EQ(bz, 0);
-    }
-
-    // Frame N: tag it far out, exactly as the DebugServer set_component IPC path does.
-    const WorldSectorCoord sector{3595, 0, 3595};
-    h.world->AddComponentImmediate<WorldSectorCoord>(e.GetHandle(), sector);
-    h.StepFrame();
-    EXPECT_EQ(h.Stats().FastFrame, 0u) << "adding WorldSectorCoord must escalate the full lane";
-    {
-        const auto& inst = h.rs.GetGPUScene()->GetInstances()[slot];
-        int32 sx, sy, sz;
-        Origin::UnpackSector(inst.sectorPacked[0], inst.sectorPacked[1], sx, sy, sz);
-        ASSERT_EQ(sx, 3595) << "frame N (tag add) must repack the sector";
-        EXPECT_EQ(sy, 0);
-        EXPECT_EQ(sz, 3595);
-
-        // boundingCenter must be FULL world (== ComposeEffectiveWorldTransform), so
-        // GPU culling agrees with the shader — the F1 bounds discriminator.
-        const auto* wt = h.world->GetComponent<WorldTransform>(e.GetHandle());
-        ASSERT_NE(wt, nullptr);
-        const WorldTransform composed =
-            ComposeEffectiveWorldTransform(*wt, &sector, Components::kWorldSectorSize);
-        EXPECT_FLOAT_EQ(inst.boundingCenter.x, composed.matrix[12]);
-        EXPECT_FLOAT_EQ(inst.boundingCenter.y, composed.matrix[13]);
-        EXPECT_FLOAT_EQ(inst.boundingCenter.z, composed.matrix[14]);
-    }
-
-    // Frame N+k: edit the Transform in a SEPARATE step (rides the fast path).
-    e.Set(Transform::FromTRS(Mathematics::Vector3{100.0f, 2.0f, 100.0f}, Mathematics::Quaternion{},
-                             Mathematics::Vector3{15.0f, 15.0f, 15.0f}));
-    h.StepFrame();
-
-    const auto& inst = h.rs.GetGPUScene()->GetInstances()[slot];
-    int32 sx, sy, sz;
-    Origin::UnpackSector(inst.sectorPacked[0], inst.sectorPacked[1], sx, sy, sz);
-    EXPECT_EQ(sx, 3595) << "the follow-up transform edit must PRESERVE the tag (cached sector)";
-    EXPECT_EQ(sy, 0);
-    EXPECT_EQ(sz, 3595);
-
-    const auto* wt = h.world->GetComponent<WorldTransform>(e.GetHandle());
-    ASSERT_NE(wt, nullptr);
-    const WorldTransform composed =
-        ComposeEffectiveWorldTransform(*wt, &sector, Components::kWorldSectorSize);
-    EXPECT_FLOAT_EQ(inst.boundingCenter.x, composed.matrix[12]);
-    EXPECT_FLOAT_EQ(inst.boundingCenter.z, composed.matrix[14]);
 }
 
 TEST_F(ExtractionFastPathTest, FirstFrameEscalatesViaUnprimedCaches)
@@ -831,7 +803,7 @@ TEST_F(ExtractionFastPathTest, UndoVersionBackwardRepaintsOnFastPath)
     EXPECT_FLOAT_EQ(h.rs.GetGPUScene()->GetInstances()[mg->instanceIndex].transform.Data()[13],
                     20.0f);
 
-    // Undo: byte-restore WorldTransform only (matrix AND the older Version) —
+    // Undo: byte-restore WorldTransform only (pose AND the older Version) —
     // the editor's undo shape. The data-only set stamps + emits to the feed;
     // Transform is untouched so the hierarchy's change gate leaves the
     // restored bytes in place.
@@ -1420,7 +1392,7 @@ struct PoolParityCapture
 // Who puts the movers into the component dirty feed, and in what order. The
 // hierarchy appends them in chunk order when only Transform is written. A
 // producer that also writes WorldTransform directly (a physics sync, say)
-// appends them in its own order; the hierarchy then finds the matrix already
+// appends them in its own order; the hierarchy then finds the pose already
 // current and appends nothing.
 enum class MoverWriteOrder
 {
@@ -1435,7 +1407,8 @@ void WriteMover(ECS::Entity& entity, const Transform& transform, MoverWriteOrder
     if (order == MoverWriteOrder::Hierarchy)
         return;
     WorldTransform world = *entity.Get<WorldTransform>();
-    std::memcpy(world.matrix, transform.matrix, sizeof(world.matrix));
+    world.Position = transform.Position;
+    world.Basis = transform.Basis;
     ++world.Version;
     entity.Set(world);
 }
@@ -1795,9 +1768,9 @@ TEST_F(ExtractionFastPathTest, MovingParticlesReportUnversionedMotionForTheViews
     ASSERT_TRUE(h.Initialize(m_Device.get(), true));
     // A second view of the same world whose clip volume is 100 units to the side.
     CameraData away = MakeIdentityCamera();
-    away.viewProj[12] = 100.0f;
+    away.viewProj[3][0] = 100.0f;
     const CameraId awayCamera = h.rs.Views().AllocateCamera("AwayCamera");
-    h.rs.Views().SetCameraData(awayCamera, away);
+    h.rs.Views().SetCameraData(awayCamera, ::GameEngine::Tests::TestCameraWithEye(away), kIdentityCameraRanges);
     const ViewId awayView = h.rs.Views().AllocateView("AwayView", awayCamera);
     h.rs.Views().SetViewWorldId(awayView, h.worldId);
     const auto step = [&h]
@@ -2124,6 +2097,155 @@ TEST_F(ExtractionFastPathTest, PrevTransformSettlesOnFullLaneToo)
     const MatrixPair after = CaptureMatrices(h, slot);
     EXPECT_TRUE(SameMatrix(after.prev, settled.prev));
     EXPECT_TRUE(SameMatrix(after.transform, settled.transform));
+}
+
+namespace
+{
+
+// The exact world position of a matrix's translation drawn in the instance's packed sector:
+// sector * kWorldSectorSize + translation, in double.
+Mathematics::WorldPosition InstanceWorldPosition(const GPUInstance& inst, const float* matrix)
+{
+    int32 sx = 0, sy = 0, sz = 0;
+    UnpackSector(inst.sectorPacked[0], inst.sectorPacked[1], sx, sy, sz);
+    return Mathematics::WorldPosition::FromSector(Mathematics::Vector3Int{sx, sy, sz},
+                                                  Mathematics::Vector3{matrix[12], matrix[13], matrix[14]});
+}
+
+void ExpectNearPosition(const Mathematics::WorldPosition& actual, const Mathematics::WorldPosition& expected,
+                        double tolerance, const char* what)
+{
+    EXPECT_NEAR(actual.X, expected.X, tolerance) << what;
+    EXPECT_NEAR(actual.Y, expected.Y, tolerance) << what;
+    EXPECT_NEAR(actual.Z, expected.Z, tolerance) << what;
+}
+
+// Moves one instance across x = 1,536 m (sector 1 to sector 2). On the crossing frame it packs
+// sector 2 and its previous matrix, read in sector 2, is where it was. An animated carrier is in
+// the always-refresh subset. Returns whether the move frame took the fast lane.
+bool CrossSectorEdgeAndCheck(ExtractionHarness& h, bool primeFastPath, bool animatedCarrier)
+{
+    constexpr double kTolerance = 1.0e-4;
+    const Mathematics::WorldPosition from{1535.9, 3.0, -2.0};
+    const Mathematics::WorldPosition to{1536.1, 3.0, -2.0};
+    ECS::Entity mover = h.SpawnRenderable(0.0f, 0.0f, 0.0f);
+    mover.Set(Transform::FromTRS(from, Mathematics::Quaternion{}, Mathematics::Vector3{1.0f, 1.0f, 1.0f}));
+    if (animatedCarrier)
+        mover.Set(AnimatorRef{});
+    h.world->ProcessCommands();
+    if (primeFastPath)
+        EXPECT_TRUE(h.PrimeToFastPath());
+    else
+    {
+        h.StepFrame();
+        h.StepFrame();
+    }
+    const auto* mg = h.world->GetComponent<MeshGPUData>(mover.GetHandle());
+    EXPECT_NE(mg, nullptr);
+    if (mg == nullptr)
+        return false;
+    const uint32 slot = mg->instanceIndex;
+
+    mover.Set(Transform::FromTRS(to, Mathematics::Quaternion{}, Mathematics::Vector3{1.0f, 1.0f, 1.0f}));
+    h.StepFrame();
+    const bool fastFrame = h.Stats().FastFrame != 0u;
+
+    const GPUInstance& inst = h.rs.GetGPUScene()->GetInstances()[slot];
+    int32 sx = 0, sy = 0, sz = 0;
+    UnpackSector(inst.sectorPacked[0], inst.sectorPacked[1], sx, sy, sz);
+    EXPECT_EQ(sx, 2) << "x = 1,536.1 m lies in sector 2";
+    EXPECT_EQ(sy, 0);
+    EXPECT_EQ(sz, 0);
+    ExpectNearPosition(InstanceWorldPosition(inst, inst.transform.Data()), to, kTolerance, "current matrix");
+    ExpectNearPosition(InstanceWorldPosition(inst, inst.prevTransform.Data()), from, kTolerance,
+                       "previous matrix, read in the current sector");
+    return fastFrame;
+}
+
+} // namespace
+
+// A three-level hierarchy whose root is at 300 km reaches the GPU instance exactly: the packed
+// sector times 1,024 m plus the sector-local translation is the double sum within 0.1 mm.
+// One float translation has a spacing of 31 mm at 300 km.
+TEST_F(ExtractionFastPathTest, HierarchyAt300KmReachesTheGpuInstanceToATenthOfAMillimeter)
+{
+    ExtractionHarness h;
+    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
+    const Mathematics::WorldPosition rootPosition{300000.0123, 1200.5, -299000.0071};
+    const Mathematics::WorldPosition childPosition{0.1234567, 2.5, 0.0137};
+    const Mathematics::WorldPosition grandchildPosition{0.0217, -0.75, 0.4321};
+    const Mathematics::Quaternion identity{};
+    const Mathematics::Vector3 unitScale{1.0f, 1.0f, 1.0f};
+
+    ECS::Entity root = h.world->Create(Transform::FromTRS(rootPosition, identity, unitScale));
+    ECS::Entity child = h.world->Create(Transform::FromTRS(childPosition, identity, unitScale));
+    child.Set(Parent{root.GetHandle()});
+    ECS::Entity grandchild = h.SpawnRenderable(0.0f, 0.0f, 0.0f);
+    grandchild.Set(Transform::FromTRS(grandchildPosition, identity, unitScale));
+    grandchild.Set(Parent{child.GetHandle()});
+    h.StepFrame();
+    h.StepFrame();
+
+    const auto* mg = h.world->GetComponent<MeshGPUData>(grandchild.GetHandle());
+    ASSERT_NE(mg, nullptr);
+    ASSERT_NE(mg->instanceIndex, 0xFFFFFFFFu);
+    const GPUInstance& inst = h.rs.GetGPUScene()->GetInstances()[mg->instanceIndex];
+    const Mathematics::WorldPosition expected{rootPosition.X + childPosition.X + grandchildPosition.X,
+                                              rootPosition.Y + childPosition.Y + grandchildPosition.Y,
+                                              rootPosition.Z + childPosition.Z + grandchildPosition.Z};
+    ExpectNearPosition(InstanceWorldPosition(inst, inst.transform.Data()), expected, 1.0e-4, "grandchild");
+}
+
+// The bounding center at 300 km is in the instance's packed sector: the sector times 1,024 m
+// plus the stored center is the exact center within 0.1 mm. A full-world float center has a
+// spacing of 31 mm at 300 km.
+TEST_F(ExtractionFastPathTest, BoundingCenterAt300KmIsSectorLocalAndExact)
+{
+    ExtractionHarness h;
+    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
+    const Mathematics::WorldPosition position{300000.0123, 1200.5, -299000.0071};
+    const Mathematics::Vector3 localCenter{0.25f, 0.5f, -0.125f};
+    ECS::Entity e = h.SpawnRenderable(0.0f, 0.0f, 0.0f);
+    e.Set(Transform::FromTRS(position, Mathematics::Quaternion{}, Mathematics::Vector3{1.0f, 1.0f, 1.0f}));
+    LocalBounds lb{};
+    lb.Box.center = localCenter;
+    lb.Box.halfExtents = {1.0f, 1.0f, 1.0f};
+    e.Set(lb);
+    h.StepFrame();
+    h.StepFrame();
+
+    const auto* mg = h.world->GetComponent<MeshGPUData>(e.GetHandle());
+    ASSERT_NE(mg, nullptr);
+    ASSERT_NE(mg->instanceIndex, 0xFFFFFFFFu);
+    const GPUInstance& inst = h.rs.GetGPUScene()->GetInstances()[mg->instanceIndex];
+    int32 sx = 0, sy = 0, sz = 0;
+    UnpackSector(inst.sectorPacked[0], inst.sectorPacked[1], sx, sy, sz);
+    const Mathematics::WorldPosition center =
+        Mathematics::WorldPosition::FromSector(Mathematics::Vector3Int{sx, sy, sz}, inst.boundingCenter);
+    const Mathematics::WorldPosition expected{position.X + localCenter.x, position.Y + localCenter.y,
+                                              position.Z + localCenter.z};
+    ExpectNearPosition(center, expected, 1.0e-4, "bounding center");
+}
+
+TEST_F(ExtractionFastPathTest, SectorEdgeCrossingKeepsTheMotionVectorOnThePatchLane)
+{
+    ExtractionHarness h;
+    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
+    EXPECT_TRUE(CrossSectorEdgeAndCheck(h, true, false)) << "a transform-only move must stay on the patch lane";
+}
+
+TEST_F(ExtractionFastPathTest, SectorEdgeCrossingKeepsTheMotionVectorOnTheAlwaysRefreshLane)
+{
+    ExtractionHarness h;
+    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
+    EXPECT_TRUE(CrossSectorEdgeAndCheck(h, true, true)) << "an animated carrier's move must stay on the fast lane";
+}
+
+TEST_F(ExtractionFastPathTest, SectorEdgeCrossingKeepsTheMotionVectorOnTheFullLane)
+{
+    ExtractionHarness h;
+    ASSERT_TRUE(h.Initialize(m_Device.get(), false));
+    EXPECT_FALSE(CrossSectorEdgeAndCheck(h, false, false));
 }
 
 TEST_F(ExtractionFastPathTest, FrameMoversListCarriesMoversNotSettles)
@@ -2511,9 +2633,15 @@ TEST_F(ExtractionFastPathTest, SortingEditsAndDisableRefreshStationarySubmission
     EXPECT_EQ(readOrder(), 2);
     actor.Set(RenderSorting{10, -5, false});
     h.StepFrame();
+    EXPECT_EQ(h.Stats().FastFrame, 0u);
+    EXPECT_EQ(h.Stats().DeltaFrame, 0u);
+    EXPECT_NE(h.Stats().EscalationReasonBits & RenderExtractionSystem::kEscalationSorting, 0u);
     EXPECT_EQ(readOrder(), -5);
     h.world->SetComponentEnabledImmediate(actor.GetHandle(), ECS::GetComponentTypeId<RenderSorting>(), false);
     h.StepFrame();
+    EXPECT_EQ(h.Stats().FastFrame, 0u);
+    EXPECT_EQ(h.Stats().DeltaFrame, 0u);
+    EXPECT_NE(h.Stats().EscalationReasonBits & RenderExtractionSystem::kEscalationSorting, 0u);
     EXPECT_EQ(readOrder(), 0);
 }
 
@@ -2523,25 +2651,36 @@ TEST_F(ExtractionFastPathTest, SortingParentMovementReparentAndRemovalRefreshDes
     ASSERT_TRUE(h.Initialize(m_Device.get(), true));
     auto actor = h.SpawnRenderable(0, 0, 0);
     auto parent = h.world->Create();
-    parent.Set(MakeTransformAt(0, 0, 2));
+    Transform parentTransform;
+    parentTransform.Position = Mathematics::WorldPosition{0.0, 0.0, 100000000.125};
+    parent.Set(parentTransform);
     parent.Set(RenderSorting{10, 3, true});
     actor.Set(Parent{parent.GetHandle()});
     ASSERT_TRUE(h.PrimeToFastPath());
     ASSERT_FALSE(h.extraction->GetSubmissionsForTest().empty());
     EXPECT_EQ(h.extraction->GetSubmissionsForTest().front().Sorting.Group, parent.GetHandle());
-    parent.Set(MakeTransformAt(0, 0, 7));
+    parentTransform.Position.Z = 100000000.375;
+    parent.Set(parentTransform);
     h.StepFrame();
     EXPECT_EQ(h.Stats().FastFrame, 0u);
-    EXPECT_FLOAT_EQ(h.extraction->GetSubmissionsForTest().front().Sorting.GroupPosition[2], 7);
+    EXPECT_EQ(h.Stats().DeltaFrame, 0u);
+    EXPECT_NE(h.Stats().EscalationReasonBits & RenderExtractionSystem::kEscalationSorting, 0u);
+    EXPECT_DOUBLE_EQ(h.extraction->GetSubmissionsForTest().front().Sorting.GroupPosition.Z, 100000000.375);
     auto other = h.world->Create();
     other.Set(MakeTransformAt(0, 0, 4));
     other.Set(RenderSorting{-10, -3, true});
     actor.Set(Parent{other.GetHandle()});
     h.StepFrame();
+    EXPECT_EQ(h.Stats().FastFrame, 0u);
+    EXPECT_EQ(h.Stats().DeltaFrame, 0u);
+    EXPECT_NE(h.Stats().EscalationReasonBits & RenderExtractionSystem::kEscalationSorting, 0u);
     EXPECT_EQ(h.extraction->GetSubmissionsForTest().front().Sorting.Group, other.GetHandle());
     EXPECT_EQ(h.extraction->GetSubmissionsForTest().front().Sorting.Order, -3);
     other.Remove<RenderSorting>();
     h.StepFrame();
+    EXPECT_EQ(h.Stats().FastFrame, 0u);
+    EXPECT_EQ(h.Stats().DeltaFrame, 0u);
+    EXPECT_NE(h.Stats().EscalationReasonBits & RenderExtractionSystem::kEscalationSorting, 0u);
     EXPECT_FALSE(h.extraction->GetSubmissionsForTest().front().Sorting.Authored);
 }
 
@@ -2550,18 +2689,24 @@ TEST_F(ExtractionFastPathTest, GroundSortingMovementRefreshesCachedSubmissions)
     ExtractionHarness harness;
     ASSERT_TRUE(harness.Initialize(m_Device.get(), true));
     auto actor = harness.SpawnRenderable(0, 2, 0);
+    Transform actorTransform;
+    actorTransform.Position = Mathematics::WorldPosition{0.0, 100000000.125, 0.0};
+    actor.Set(actorTransform);
     RenderSorting sorting;
     sorting.SortByY = true;
     sorting.SortOriginY = -0.5f;
     actor.Set(sorting);
     ASSERT_TRUE(harness.PrimeToFastPath());
     ASSERT_EQ(harness.extraction->GetSubmissionsForTest().size(), 1u);
-    EXPECT_FLOAT_EQ(harness.extraction->GetSubmissionsForTest().front().Sorting.SortY, 1.5f);
-    actor.Set(MakeTransformAt(0, -3, 0));
+    EXPECT_DOUBLE_EQ(harness.extraction->GetSubmissionsForTest().front().Sorting.SortY, 99999999.625);
+    actorTransform.Position.Y = 100000000.375;
+    actor.Set(actorTransform);
     harness.StepFrame();
     ASSERT_EQ(harness.extraction->GetSubmissionsForTest().size(), 1u);
     EXPECT_EQ(harness.Stats().FastFrame, 0u);
-    EXPECT_FLOAT_EQ(harness.extraction->GetSubmissionsForTest().front().Sorting.SortY, -3.5f);
+    EXPECT_EQ(harness.Stats().DeltaFrame, 0u);
+    EXPECT_NE(harness.Stats().EscalationReasonBits & RenderExtractionSystem::kEscalationSorting, 0u);
+    EXPECT_DOUBLE_EQ(harness.extraction->GetSubmissionsForTest().front().Sorting.SortY, 99999999.875);
     EXPECT_TRUE(harness.PrimeToFastPath());
 }
 

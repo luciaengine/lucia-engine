@@ -1,6 +1,6 @@
 #include "Inspectors/BoneLOD/BoneLODTreeProvider.h"
 
-#include "Animation/SkeletonData.h"
+#include "Animation/Skeleton/SkeletonData.h"
 
 #include <gtest/gtest.h>
 

@@ -75,7 +75,7 @@ std::unique_ptr<UIElement> MakeIndent(size_t columns)
 {
     auto indent = std::make_unique<UIElement>();
     indent->AddClass("agent-call-indent");
-    indent->Overrides().Set(Style::Width, StyleLength::Px(static_cast<float>(columns) * kColumnPx - kLineGapPx));
+    indent->Style().Set(Style::Width, StyleLength::Px(static_cast<float>(columns) * kColumnPx - kLineGapPx));
     return indent;
 }
 

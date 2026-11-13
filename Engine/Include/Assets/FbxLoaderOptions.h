@@ -22,9 +22,11 @@ namespace GameEngine {
 // (the right-to-left-handed bake). FBX source is FbxImport::Make(ufbx axes).
 inline constexpr uint8 kFbxImportGeometryVersion = 6u;
 
-// Salt for cooked glTF LODs, which store whole vertices. Change it when
-// LoadGLTF produces different geometry for the same source file.
-inline constexpr uint8 kGltfImportGeometryVersion = 2u;
+// Salt the glTF loader folds into its parse-options hash beside the one above,
+// so a change to what LoadGLTF produces for the same file recooks its LODs
+// (their generated shells store whole vertices). v1: generated tangents for a
+// normal-mapped primitive without TANGENT.
+inline constexpr uint8 kGltfImportGeometryVersion = 1u;
 
 struct FbxLoaderOptions {
     bool GenerateMissingTangents = true;

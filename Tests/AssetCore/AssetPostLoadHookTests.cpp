@@ -27,7 +27,7 @@ class CountingAsset : public Asset
         return ShouldLoadSucceed;
     }
 
-    bool LoadFromData(const Vector<uint8>& /*data*/) override
+    bool LoadFromData(std::span<const uint8> /*data*/) override
     {
         ++LoadCount;
         SetState(AssetState::Loaded);
@@ -65,7 +65,7 @@ class DefaultPostLoadAsset : public Asset
         return true;
     }
 
-    bool LoadFromData(const Vector<uint8>& /*data*/) override
+    bool LoadFromData(std::span<const uint8> /*data*/) override
     {
         SetState(AssetState::Loaded);
         return true;

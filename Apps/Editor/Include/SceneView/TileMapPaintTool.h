@@ -7,7 +7,7 @@
 #include "TileMap/TileMapTerrainBrush.h"
 
 #include "AssetCore/GUID.h"
-#include "AssetCore/Types.h"
+#include "Types/Types.h"
 #include "ECS/ECS.h"
 #include "Mathematics/Matrix4x4.h"
 #include "TileMapECS/TileMapRuntimeStore.h"

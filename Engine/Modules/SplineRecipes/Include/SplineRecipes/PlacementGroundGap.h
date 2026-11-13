@@ -19,7 +19,7 @@ struct Matrix4x4;
 
 namespace GameEngine::TerrainECS
 {
-struct PlanarHeightQuery;
+class SurfaceHeightQuery;
 }
 
 namespace GameEngine::SplineRecipes
@@ -120,7 +120,7 @@ struct PieceGroundGap
 // `out.Status` says whether the reading is usable; on anything but Measured the
 // gaps are left at zero rather than filled with a number that reads like a
 // measurement.
-void MeasurePieceGroundGap(const TerrainECS::PlanarHeightQuery& ground,
+void MeasurePieceGroundGap(const TerrainECS::SurfaceHeightQuery& ground,
                            const Mathematics::BoundingBox& localBox,
                            const Mathematics::Matrix4x4& worldMatrix, PieceGroundGap& out);
 
@@ -135,7 +135,7 @@ void MeasurePieceGroundGap(const TerrainECS::PlanarHeightQuery& ground,
 // controllers, so a piece created this frame is invisible here until that system
 // has run.
 void MeasureRouteGroundGaps(ECS::World& world, ECS::EntityHandle route,
-                            const TerrainECS::PlanarHeightQuery& ground,
+                            const TerrainECS::SurfaceHeightQuery& ground,
                             std::vector<PieceGroundGap>& out);
 
 } // namespace GameEngine::SplineRecipes

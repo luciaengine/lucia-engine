@@ -8,7 +8,7 @@
 #include <unordered_set>
 #include <vector>
 
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 #include "Rendering/ShaderCache/ShaderPackageContainer.h"
 
 namespace GameEngine::Rendering
@@ -83,6 +83,20 @@ using ShaderPackageRebuildActionFunc = std::string (*)(const std::string& packag
 void SetShaderPackageRebuildAction(ShaderPackageRebuildActionFunc action);
 /// Current host callback, for preserving a scoped host's predecessor.
 ShaderPackageRebuildActionFunc GetShaderPackageRebuildAction();
+
+/// The files a device reads offline-compiled shader stages from and records stage inputs to.
+struct PrecompiledShaderFiles
+{
+    /// The Metal library archive an export ships (kMetalLibraryArchiveFileName); empty for none.
+    std::filesystem::path MetalLibraries;
+    /// The file a development run records its stage inputs to (ShaderStageRecord); empty for none.
+    std::filesystem::path StageRecord;
+};
+
+/// The host sets the files once it knows its content and workspace roots. A device reads them at
+/// each pipeline build, on any thread, so a change applies to the builds that follow it.
+void SetPrecompiledShaderFiles(PrecompiledShaderFiles files);
+PrecompiledShaderFiles GetPrecompiledShaderFiles();
 
 // Read a .shaderpkg from disk, serving each stage in `kind` (see
 // ParseShaderPkgFromBytes). A package of another format version is refused with

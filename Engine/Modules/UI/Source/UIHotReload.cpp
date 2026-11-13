@@ -9,6 +9,7 @@
 #include "UI/Controls/AccordionItem.h"
 #include "UI/Controls/BaseField.h"
 #include "UI/Controls/Foldout.h"
+#include "UI/Controls/Mount.h"
 #include "UI/Controls/Slider.h"
 #include "UI/Controls/Toggle.h"
 #include "UI/Registration/ElementRegistration.h"
@@ -142,7 +143,7 @@ static std::unique_ptr<UIElement> CloneFromTemplate(const UITemplateNode& templ,
     std::string innerText;
     if (const std::string* t = templ.FindAttribute("text"))
         innerText = *t;
-    reg.ApplyAttributes(*out, templ.Attributes, innerText);
+    reg.ApplyAttributes(*out, templ.Attributes, innerText, templ.SourceFileName(), templ.SourceLine);
 
     // Recurse
     for (const auto& child : templ.Children)
@@ -446,7 +447,7 @@ static bool ReconcileElement(UIElement& existing, const UITemplateNode& templ, u
     std::string innerText;
     if (const std::string* t = templ.FindAttribute("text"))
         innerText = *t;
-    reg.ApplyAttributes(existing, attrsLower, innerText);
+    reg.ApplyAttributes(existing, attrsLower, innerText, templ.SourceFileName(), templ.SourceLine);
 
     // Reconcile children.
     ReconcileChildren(existing, templ, bindingId);
@@ -469,7 +470,18 @@ static UIElement* FindByInstanceId(UIElement* root, uint64 instanceId)
 
     // Mount targets are not part of the child list but must still participate in
     // hot reload target discovery (Dockspace mounts panels via Mount).
-    return FindByInstanceId(root->GetMountTarget(), instanceId);
+    if (auto* m = dynamic_cast<Mount*>(root))
+    {
+        if (UIElement* tgt = m->GetTarget())
+        {
+            if (auto* found = FindByInstanceId(tgt, instanceId))
+            {
+                return found;
+            }
+        }
+    }
+
+    return nullptr;
 }
 
 void DispatchLayoutReconciled(UIElement& target)
@@ -792,14 +804,16 @@ uint64 UIHotReload::RegisterLayoutBinding(const GUID& layoutGuid, UIElement* tar
     // from the new layout) while genuine code-added children (id 0) stay preserved.
     uint64 reuseBindingId = kUnboundBindingId;
     std::vector<std::string> carriedRootClasses;
+    std::string carriedRootId;
     for (const auto& existing : m_LayoutBindings)
     {
         if (existing.target == target)
         {
             reuseBindingId = existing.bindingId;
-            // Carry the prior layout's applied root classes so ApplyLayoutReload can
+            // Carry the prior layout's applied root classes and id so ApplyLayoutReload can
             // remove them when binding the new layout (else they accumulate on a swap).
             carriedRootClasses = existing.appliedRootClasses;
+            carriedRootId = existing.appliedRootId;
             break;
         }
     }
@@ -815,6 +829,7 @@ uint64 UIHotReload::RegisterLayoutBinding(const GUID& layoutGuid, UIElement* tar
     b.targetInstanceId = target->GetInstanceId();
     b.bindingId = reuseBindingId != kUnboundBindingId ? reuseBindingId : m_NextBindingId++;
     b.appliedRootClasses = std::move(carriedRootClasses);
+    b.appliedRootId = std::move(carriedRootId);
     b.mode = mode;
 
     m_LayoutBindings.push_back(b);
@@ -831,6 +846,47 @@ void UIHotReload::PublishLayoutReload(const GUID& layoutGuid)
     std::lock_guard<std::mutex> lk(m_Mutex);
     m_PendingLayouts.erase(std::remove(m_PendingLayouts.begin(), m_PendingLayouts.end(), layoutGuid),
                            m_PendingLayouts.end());
+}
+
+void UIHotReload::ApplyLayoutRootAttributes(UIElement& target, const UITemplateNode& layoutRoot)
+{
+    for (LayoutBinding& binding : m_LayoutBindings)
+    {
+        if (binding.target == &target)
+        {
+            ApplyRootAttributes(binding, target, layoutRoot);
+            return;
+        }
+    }
+    Logger::Log::Warning("UIHotReload: target instance {} (id '{}') has no layout binding; call RegisterLayoutBinding "
+                         "for it before ApplyLayoutRootAttributes",
+                         target.GetInstanceId(), target.GetId());
+}
+
+void UIHotReload::ApplyRootAttributes(LayoutBinding& binding, UIElement& target, const UITemplateNode& layoutRoot)
+{
+    // The target takes the layout root's classes and id, so a selector like `.sceneview-panel`
+    // and a lookup of the root's id find the target. The binding records what it applied, so
+    // a swap removes only those classes and keeps classes that code added.
+    for (const auto& cls : binding.appliedRootClasses)
+    {
+        if (!cls.empty())
+            target.RemoveClass(cls);
+    }
+    binding.appliedRootClasses.clear();
+    for (const auto& cls : layoutRoot.Classes)
+    {
+        if (!cls.empty())
+        {
+            target.AddClass(cls);
+            binding.appliedRootClasses.push_back(cls);
+        }
+    }
+    if (!layoutRoot.Id.empty())
+        target.SetId(layoutRoot.Id);
+    else if (!binding.appliedRootId.empty() && target.GetId() == binding.appliedRootId)
+        target.SetId(std::string{});
+    binding.appliedRootId = layoutRoot.Id;
 }
 
 void UIHotReload::ApplyLayoutReload(const GUID& layoutGuid)
@@ -910,29 +966,7 @@ void UIHotReload::ApplyLayoutReload(const GUID& layoutGuid)
         else
         {
             // Custom element target: reconcile only its children against the asset root's children.
-            // Historically we did not apply the asset root's own attributes/classes to the custom element,
-            // but this makes UXML root classes ineffective for panels that bind "children-only".
-            // Apply template root classes (only) so CSS selectors like `.sceneview-panel` work.
-            {
-                // Remove the classes the PREVIOUS layout applied (tracked per binding), so a
-                // layout swap replaces them instead of accumulating both layouts' root classes.
-                // Runtime-added classes were never recorded here, so they survive.
-                for (const auto& cls : b.appliedRootClasses)
-                {
-                    if (!cls.empty())
-                        target->RemoveClass(cls);
-                }
-                b.appliedRootClasses.clear();
-                // Add this layout's root classes and record them for the next swap.
-                for (const auto& cls : templRoot->Classes)
-                {
-                    if (!cls.empty())
-                    {
-                        target->AddClass(cls);
-                        b.appliedRootClasses.push_back(cls);
-                    }
-                }
-            }
+            ApplyRootAttributes(b, *target, *templRoot);
             ReconcileChildren(*target, *templRoot, b.bindingId);
             reconciledTargets.push_back(UIElement::MakeWeakRef(target));
         }
@@ -1087,7 +1121,7 @@ void UIHotReload::ApplyStyleReload(const GUID& styleGuid)
     }
 
     // Gather transitive importers and mark all impacted bindings dirty so CSS is recomputed.
-    // With the @import segment model, importers are not reloaded on leaf changes.
+    // With the @import segment model, we no longer need to reload importers on leaf changes.
     std::unordered_set<GUID> visited;
     visited.reserve(16);
 

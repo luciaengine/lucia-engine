@@ -1,23 +1,14 @@
 #pragma once
 
-// CBTDeepDecode.h — Earth-scale decode-precision prototype (arc slice S1, gated by
-// GE_CBT_DEEP_DECODE, default OFF).
+// CBTDeepDecode.h — the Earth-scale (sector, local) corner decode. On the wide arm every
+// spherical VertexEval stores its corners this way; the narrow arm and the planar domain
+// keep the fp32 world store.
 //
-// The problem this solves: gVertex stores fp32 WORLD corners. At Earth radius
-// (6.371e6 m, fp32 octave [2^22, 2^23)) a world component quantizes on a 0.5 m grid at
-// STORE time — before the #524 camera-relative origin subtraction can help — so facets
-// below a few metres are unrepresentable no matter how exact the int64 barycentric walk
-// is. kMaxDecodeSubdiv (40) guards ~2x short of that degeneracy and floors the Earth
-// facet at ~9.5 m; the 0.5 m walking bar is unreachable under fp32-world storage.
-//
-// The cure prototyped here: decode each corner to (integer SECTOR on the 1024 m world
-// grid, fp32 LOCAL offset) — the SAME representation instanced meshes already use for
-// Earth-scale (camera_relative.glsl GE_ClipFromSectorLocal; Components::WorldSectorCoord).
-// Local magnitude is <= 512·√3 m, so its fp32 ULP is ~6e-5 m; the sector delta to the
-// render origin is EXACT integer arithmetic. Consumption becomes
-//   rel = float(sector - originSector) * 1024 + local
-// which is the mesh path's math verbatim — the CBT draw stops being the one Earth-scale
-// consumer that cannot compose with the render origin at full precision.
+// An fp32 world store quantizes a corner on a 0.5 m grid at Earth radius (fp32 octave
+// [2^22, 2^23)), before the camera-relative origin subtraction. This store holds each corner as
+// an integer SECTOR on the 1024 m world grid and an fp32 LOCAL offset (|local| <= 512·√3 m, ULP
+// ~6e-5 m), as instanced meshes do (camera_relative.glsl GE_ClipFromSectorLocal).
+// The draw computes rel = float(sector - originSector) * 1024 + local.
 //
 // The decode arithmetic is df64 ("double-float": an unevaluated sum of two fp32 values,
 // Dekker/Knuth error-free transforms, ~2^-47 relative) — NOT fp64. Rationale (design §5):
@@ -53,17 +44,20 @@
 
 #include "CBTTerrain/CBTLayout.h"      // kMaxDecodeSubdiv
 #include "CBTTerrain/CBTSphereRoots.h" // CBTSphereRoot (exact integer root corners)
-#include "Platform/Environment.h"
+#include "Mathematics/WorldPosition.h"
 
 // The error-free transforms below are correct ONLY without FP contraction (see header
 // note). MSVC: float_control(push) saves the includer's fp_contract state so this
-// header cannot leak a contraction change into the including TU. Other compilers
-// may ignore STDC FP_CONTRACT, so the arithmetic and GPU bit-parity probes remain
-// required checks under the actual build flags. Df64ArithmeticHoldsExtendedPrecision
-// fails loudly if contraction breaks the transforms.
+// header cannot leak a contraction change into the including TU. GCC uses its scoped
+// optimization options; Clang honors the STDC pragma (leaking OFF there is conservative).
+// The Df64ArithmeticHoldsExtendedPrecision probe fails loudly if contraction ever breaks
+// the transforms regardless of pragma behavior.
 #if defined(_MSC_VER)
 #pragma float_control(push)
 #pragma fp_contract(off)
+#elif defined(__GNUC__) && !defined(__clang__)
+#pragma GCC push_options
+#pragma GCC optimize ("fp-contract=off")
 #else
 #pragma STDC FP_CONTRACT OFF
 #endif
@@ -76,22 +70,6 @@ namespace GameEngine::CBTTerrain::DeepDecode
 // the int64 walk-exactness ceiling (~52: Scale = 2^52 < 2^63; design §4). The heap key
 // itself (u64, findMSB-bounded) holds depth ~58 and is NOT the binding limit.
 inline constexpr uint32_t kDeepDecodeSubdiv = 50u;
-
-// World sector grid (metres). Mirror of camera_relative.glsl GE_SECTOR_SIZE /
-// Components::kWorldSectorCoord's 1024 — the render-origin machinery's intrinsic
-// constant. Deliberately a power of two: dividing/multiplying by it is exact in fp32.
-inline constexpr float kSectorSizeMeters = 1024.0f;
-
-// The env-gated cap the arc's probes exercise: kMaxDecodeSubdiv (the shipped 40) unless
-// the GE_CBT_DEEP_DECODE environment switch is on. Read per call, uncached, so tests can toggle the
-// flag in-process. The LIVE pipeline does not read this: CBTUpdateSystem reads the same
-// env var once (static-cached) and feeds ONE bool into both CBTClassifyDesc::DeepDecode
-// and ResolveTerrainMaxDepth (TerrainProvisioning SubdivCapFor — the S2b flag->cap
-// coupling), so storage mode and depth cap cannot desync mid-session.
-inline uint32_t SubdivCap()
-{
-    return Platform::EnvironmentSwitchEnabled("GE_CBT_DEEP_DECODE", false) ? kDeepDecodeSubdiv : kMaxDecodeSubdiv;
-}
 
 // ---------------------------------------------------------------------------
 // Exact integer LEB walk (CPU twin of Kernel_VertexEval's int64 walk)
@@ -229,17 +207,14 @@ inline DF MulF(DF a, float b)
     return FastTwoSum(p.Hi, p.Lo);
 }
 
-// Decode numerators satisfy |v| <= 2^50. Split into an exact signed upper limb
-// and two unsigned 16-bit limbs: every integer-to-float conversion is exact in
-// this range. Avoid a rounded float-to-int64 roundtrip losing its residual on
-// GPU backends. The normalized pair keeps ~2^-47 relative precision and exact
-// power-of-two scale invariance; this is not a full-range int64 conversion.
+// int64 -> df64. Not exact past 48 bits (fp32 holds 24; the residual may round), but
+// deterministic and exactly power-of-two-scale invariant — which is what crack-freedom
+// needs (header note). Relative error <= ~2^-47.
 inline DF FromI64(int64_t v)
 {
-    const float upper = static_cast<float>(static_cast<int32_t>(v >> 32)) * 4294967296.0f;
-    const float middle = static_cast<float>(static_cast<uint32_t>((static_cast<uint64_t>(v) >> 16) & 65535u)) * 65536.0f;
-    const float lower = static_cast<float>(static_cast<uint32_t>(static_cast<uint64_t>(v) & 65535u));
-    return Add({upper, 0.0f}, TwoSum(middle, lower));
+    const float hi = static_cast<float>(v);
+    const float lo = static_cast<float>(v - static_cast<int64_t>(hi));
+    return {hi, lo};
 }
 
 // Deterministic shared 1/sqrt seed (S2a): hardware rsqrt estimates differ CPU<->GPU (and
@@ -301,14 +276,16 @@ inline DeepVertex DecodeCorner(const CubeNum& num, float radiusMeters, float rel
     const DF w[3] = {Mul(cx, scaleR), Mul(cy, scaleR), Mul(cz, scaleR)};
 
     DeepVertex out{};
-    constexpr float kInvSector = 1.0f / kSectorSizeMeters; // exact power of two
+    // The sector size in fp32: a power of two, so a multiply or a divide by it is exact.
+    constexpr float kSectorSize = static_cast<float>(Mathematics::kWorldSectorSize);
+    constexpr float kInvSector = 1.0f / kSectorSize;
     for (int c = 0; c < 3; ++c)
     {
         // floor(x + 0.5) is the shared CPU/GPU tie convention (GLSL round()'s half-tie is
         // implementation-defined; roundf's half-away differs at negative ties). x + 0.5 is
         // exact while |x| < 2^22 (sector magnitude ~6.2e3 at Earth — vast margin).
         const float k = std::floor(w[c].Hi * kInvSector + 0.5f);
-        const DF local = Add(w[c], DF{-k * kSectorSizeMeters, 0.0f}); // k*1024 exact (< 2^23)
+        const DF local = Add(w[c], DF{-k * kSectorSize, 0.0f}); // k*1024 exact (< 2^23)
         out.Sector[c] = static_cast<int32_t>(k);
         out.Local[c] = local.Hi + local.Lo; // |local| <= 512 -> single fp32 holds it to ~6e-5 m
     }
@@ -320,8 +297,9 @@ inline DeepVertex DecodeCorner(const CubeNum& num, float radiusMeters, float rel
 // render origin the delta is small, so the result is fp32-precise at any planet radius.
 inline void ReconstructRel(const DeepVertex& v, const int32_t originSector[3], float out[3])
 {
+    constexpr float kSectorSize = static_cast<float>(Mathematics::kWorldSectorSize);
     for (int c = 0; c < 3; ++c)
-        out[c] = static_cast<float>(v.Sector[c] - originSector[c]) * kSectorSizeMeters + v.Local[c];
+        out[c] = static_cast<float>(v.Sector[c] - originSector[c]) * kSectorSize + v.Local[c];
 }
 
 // Double-precision reference decode (probes only — the "true" geometry the fp32/df64
@@ -343,4 +321,6 @@ inline void DecodeExact(const CubeNum& num, double radiusMeters, double reliefMe
 
 #if defined(_MSC_VER)
 #pragma float_control(pop)
+#elif defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
 #endif

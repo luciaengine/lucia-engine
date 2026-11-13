@@ -1,15 +1,17 @@
 #include "CBTTerrain/CBTResources.h"
 
 #include <algorithm>
+#include <limits>
 
 #include "CBTTerrain/CBTKernelSet.h"
+#include "CBTTerrain/CBTSphereFaceMap.h"
 
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Logger/Logger.h"
 
+#include <cassert>
 #include <cstring>
-#include <limits>
 
 namespace GameEngine::CBTTerrain
 {
@@ -157,20 +159,9 @@ bool CBTResources::Initialize(IDevice& device, const CBTKernelSet& kernelSet, ui
         }
         m_PersistentBytes += ubo.size;
 
-        // Sphere sculpt page POOL (binding 16) + page TABLE (binding 20). A planar terrain never reads
-        // them, so the rings start as placeholders that only keep the two bindings valid;
-        // InitializeRoots provisions the full rings when the tree is seeded for the sphere.
-        SculptRings placeholders{};
-        if (!CreateSculptRings(false, 0u, placeholders))
-        {
-            Shutdown();
-            return false;
-        }
-        AdoptSculptRings(placeholders);
-
         // Planet-shading surface params (plan §planet-shading) — a tiny host-visible UNIFORM ring the
         // fragment reads on the graphics side (radius, relief amplitude/frequency/octaves,
-        // sculpt-enabled). Per-slot stride padded to kCBTSurfaceParamsSlotStride so a per-slot
+        // the planet pages). Per-slot stride padded to kCBTSurfaceParamsSlotStride so a per-slot
         // offset-bind meets minUniformBufferOffsetAlignment. Not in the compute descriptor set.
         BufferDesc surf{};
         surf.size = static_cast<size_t>(kCBTFrameParamsRing) * kCBTSurfaceParamsSlotStride;
@@ -195,12 +186,12 @@ bool CBTResources::Initialize(IDevice& device, const CBTKernelSet& kernelSet, ui
         m_PersistentBytes += surf.size;
 
         // Phase E resident-window atlas (bindings 17/18). The indirection SSBO is a
-        // host-visible ring (kCBTFrameParamsRing slots of kAtlasMaxTiles rows), written
+        // host-visible ring (kCBTFrameParamsRing slots of kAtlasWindowRows rows), written
         // once per frame from the residency table — same discipline as the sculpt atlas.
         // Zeroed on create so an atlas-disabled default reads every row as kAtlasNoSlot.
         BufferDesc atlasRows{};
         atlasRows.size = static_cast<size_t>(kCBTFrameParamsRing) *
-                         static_cast<size_t>(kAtlasMaxTiles) * kAtlasRowBytes;
+                         static_cast<size_t>(kAtlasWindowRows) * kAtlasRowBytes;
         atlasRows.usage = static_cast<uint32_t>(BufferUsage::Storage);
         atlasRows.memoryUsage = BufferMemoryUsage::Upload;
         atlasRows.persistent = true;
@@ -313,11 +304,10 @@ bool CBTResources::Initialize(IDevice& device, const CBTKernelSet& kernelSet, ui
         }
         m_PersistentBytes += bytes;
 
-        // Bindings 22/23: the paged height resolve (wide arm only). The page-table ring is
-        // host-visible and written whole per frame slot when the terrain's table changes; zeroed
-        // so a slot never written reads an empty field (level count 0 resolves to 0).
-        m_PageTable = CreatePageTableRing(kCBTPageTableMinRingWords);
-        m_PageTableSlotWords = kCBTPageTableMinRingWords;
+        // Bindings 22/23: the paged height resolve (wide arm only). Binding 22 holds a zeroed header (level
+        // count 0 resolves to 0) until SetPageTable binds TerrainPageFeature's ring.
+        m_DefaultPageTable = CreateDefaultPageTable();
+        m_PageTable = m_DefaultPageTable;
         TextureDesc pcd{};
         pcd.width = 1;
         pcd.height = 1;
@@ -326,13 +316,12 @@ bool CBTResources::Initialize(IDevice& device, const CBTKernelSet& kernelSet, ui
         pcd.persistent = true;
         pcd.debugName = "CBT.DefaultPageCache";
         m_DefaultPageCache = device.CreateTexture(pcd);
-        if (!m_PageTable.IsValid() || !m_DefaultPageCache.IsValid())
+        if (!m_DefaultPageTable.IsValid() || !m_DefaultPageCache.IsValid())
         {
-            Logger::Log::Error("CBTResources: failed to create the page table ring or the default page cache");
+            Logger::Log::Error("CBTResources: failed to create the default page table or the default page cache");
             Shutdown();
             return false;
         }
-        m_PersistentBytes += PageTableRingBytes(m_PageTableSlotWords);
         for (auto& slot : m_BoundPageCache)
             slot = m_DefaultPageCache;
     }
@@ -390,107 +379,6 @@ bool CBTResources::Initialize(IDevice& device, const CBTKernelSet& kernelSet, ui
     return true;
 }
 
-bool CBTResources::CreateSculptRings(bool spherical, uint32_t pagePoolCount, SculptRings& out)
-{
-    // Spherical: `pagePoolCount` physical pages (radius-INDEPENDENT) and the fixed 6*cap^2 page table,
-    // per ring slot. Placeholder: kSculptPlaceholderSlotWords per slot, a whole
-    // minStorageBufferOffsetAlignment step so the per-slot offset bind stays valid.
-    out = {};
-    out.Spherical = spherical;
-    out.PagePoolCount = spherical ? pagePoolCount : 0u;
-    out.PoolSlotWords = spherical ? pagePoolCount * kSculptPageTexels : kSculptPlaceholderSlotWords;
-    out.TableSlotWords = spherical ? kSculptPageTableEntries : kSculptPlaceholderSlotWords;
-
-    BufferDesc sculpt{};
-    sculpt.size = static_cast<size_t>(kCBTFrameParamsRing) * out.PoolSlotWords * sizeof(float);
-    sculpt.usage = static_cast<uint32_t>(BufferUsage::Storage);
-    sculpt.memoryUsage = BufferMemoryUsage::Upload;
-    sculpt.persistent = true;
-    sculpt.debugName = spherical ? "CBT.SphereSculptPool" : "CBT.SphereSculptPoolPlaceholder";
-    out.Pool = m_Device->CreateBuffer(sculpt);
-
-    BufferDesc sculptTable{};
-    sculptTable.size = static_cast<size_t>(kCBTFrameParamsRing) * out.TableSlotWords * sizeof(uint32_t);
-    sculptTable.usage = static_cast<uint32_t>(BufferUsage::Storage);
-    sculptTable.memoryUsage = BufferMemoryUsage::Upload;
-    sculptTable.persistent = true;
-    sculptTable.debugName = spherical ? "CBT.SphereSculptPageTable" : "CBT.SphereSculptPageTablePlaceholder";
-    out.Table = m_Device->CreateBuffer(sculptTable);
-    if (!out.Pool.IsValid() || !out.Table.IsValid())
-    {
-        Logger::Log::Error("CBTResources: failed to create the sphere sculpt page pool / table SSBO ({}, {} KiB); "
-                           "the previous rings stay bound",
-                           spherical ? "spherical" : "placeholder", (sculpt.size + sculptTable.size) / 1024u);
-        if (out.Pool.IsValid())
-            m_Device->DestroyBuffer(out.Pool);
-        if (out.Table.IsValid())
-            m_Device->DestroyBuffer(out.Table);
-        out = {};
-        return false;
-    }
-    // Zeroed so the default (no edits) reads additive 0; the table defaults to kSculptNoPage
-    // (all-ones), so 0xFF fills every entry.
-    if (void* mapped = m_Device->MapBuffer(out.Pool))
-    {
-        std::memset(mapped, 0, sculpt.size);
-        m_Device->UnmapBuffer(out.Pool);
-    }
-    if (void* mapped = m_Device->MapBuffer(out.Table))
-    {
-        std::memset(mapped, 0xFF, sculptTable.size);
-        m_Device->UnmapBuffer(out.Table);
-    }
-    out.Bytes = sculpt.size + sculptTable.size;
-    return true;
-}
-
-void CBTResources::AdoptSculptRings(const SculptRings& rings)
-{
-    m_SphereSculpt = rings.Pool;
-    m_SphereSculptTable = rings.Table;
-    m_SculptPagePoolCount = rings.PagePoolCount;
-    m_SculptPoolSlotWords = rings.PoolSlotWords;
-    m_SculptTableSlotWords = rings.TableSlotWords;
-    m_SculptRingBytes = rings.Bytes;
-    m_SculptRingsSpherical = rings.Spherical;
-    m_PersistentBytes += rings.Bytes;
-}
-
-void CBTResources::DestroySculptRings()
-{
-    if (m_SphereSculpt.IsValid())
-        m_Device->DestroyBuffer(m_SphereSculpt);
-    m_SphereSculpt = {};
-    if (m_SphereSculptTable.IsValid())
-        m_Device->DestroyBuffer(m_SphereSculptTable);
-    m_SphereSculptTable = {};
-    m_PersistentBytes -= m_SculptRingBytes;
-    m_SculptRingBytes = 0;
-    m_SculptPagePoolCount = 0u;
-    m_SculptPoolSlotWords = 0u;
-    m_SculptTableSlotWords = 0u;
-    m_SculptRingsSpherical = false;
-}
-
-bool CBTResources::ProvisionSculptRings(bool spherical, uint32_t pagePoolCount)
-{
-    if (!m_Ready)
-        return false;
-    if (spherical == m_SculptRingsSpherical)
-        return true;
-    // Create first: a refused allocation leaves the previous rings, and the sets that point at them,
-    // untouched, so the GPU never reads a destroyed buffer.
-    SculptRings next{};
-    if (!CreateSculptRings(spherical, pagePoolCount, next))
-        return false;
-    DestroySculptRings();
-    AdoptSculptRings(next);
-    WriteDescriptorSet();
-    Logger::Log::Info("CBTResources: sphere sculpt rings {} ({} KiB host-visible)",
-                      spherical ? "provisioned" : "released to the placeholder", m_SculptRingBytes / 1024u);
-    return true;
-}
-
 Rendering::DescriptorSetHandle CBTResources::GetDescriptorSet(uint32_t kernelIndex) const
 {
     if (m_KernelSets.empty())
@@ -533,9 +421,6 @@ void CBTResources::WriteOneSet(Rendering::DescriptorSetHandle set,
     for (uint32_t slot = 0; slot < m_TextureRing && has(kCBTHeightTextureBinding); ++slot)
         m_Device->UpdateCombinedImageSamplerBinding(set, kCBTHeightTextureBinding,
                                                     m_BoundHeight[slot], m_HeightSampler, slot);
-    // Binding 16: the whole sphere sculpt ring SSBO (the shader indexes it by frame slot).
-    if (has(kCBTSphereSculptBinding))
-        m_Device->UpdateStorageBufferBinding(set, kCBTSphereSculptBinding, m_SphereSculpt, 0, 0);
     // Binding 17: the whole atlas indirection ring SSBO (the shader indexes it by frame slot).
     if (has(kCBTAtlasRowsBinding))
         m_Device->UpdateStorageBufferBinding(set, kCBTAtlasRowsBinding, m_AtlasRows, 0, 0);
@@ -548,10 +433,6 @@ void CBTResources::WriteOneSet(Rendering::DescriptorSetHandle set,
     for (uint32_t slot = 0; slot < m_TextureRing && has(kCBTAtlasCoarseBinding); ++slot)
         m_Device->UpdateCombinedImageSamplerBinding(set, kCBTAtlasCoarseBinding,
                                                     m_BoundAtlasCoarse[slot], m_HeightSampler, slot);
-    // Binding 20: the whole sphere sculpt page-table ring SSBO (the shader indexes it by frame slot).
-    if (has(kCBTSphereSculptPageTableBinding))
-        m_Device->UpdateStorageBufferBinding(set, kCBTSphereSculptPageTableBinding,
-                                             m_SphereSculptTable, 0, 0);
     // Binding 21: the height-range pyramid (wide arm only; the narrow layouts do not carry it).
     if (has(kCBTHeightRangeBinding) && m_HeightRange.IsValid())
         m_Device->UpdateStorageBufferBinding(set, kCBTHeightRangeBinding, m_HeightRange, 0, 0);
@@ -570,7 +451,8 @@ void CBTResources::WriteOneSet(Rendering::DescriptorSetHandle set,
                                       std::vector<TextureViewHandle>(m_NormalChainViews.begin(), m_NormalChainViews.end()));
 }
 
-void CBTResources::UploadFrameParams(uint32_t frameCounter, const CBTFrameParams& params)
+void CBTResources::UploadFrameParams(uint32_t frameCounter, const CBTFrameParams& params,
+                                     const SphereEditRegions& sphereDirty)
 {
     if (!m_FrameParams.IsValid())
         return;
@@ -581,46 +463,17 @@ void CBTResources::UploadFrameParams(uint32_t frameCounter, const CBTFrameParams
     auto* dst = reinterpret_cast<CBTFrameParams*>(static_cast<uint8_t*>(mapped) +
                                                   static_cast<size_t>(slot) * sizeof(CBTFrameParams));
     std::memcpy(dst, &params, sizeof(CBTFrameParams));
-    // The page table's slot stride travels with the frame that reads it (cbt_layout.glsl
-    // CBT_PageRingBase): ProvisionPageTableWords runs before this upload in the frame.
-    dst->AnalyticParams[kCBTPageRingWordsLane] = static_cast<float>(m_PageTableSlotWords);
+    // The first word of this frame's page tables travels with the frame that reads it (CBT_PageRingBase).
+    dst->PageParams[kCBTPageRingBaseLane] = static_cast<float>(m_PageTableBaseWord);
+    for (Mathematics::Vector4& rect : dst->SphereDirty)
+        rect = Mathematics::Vector4{};
+    for (uint32_t i = 0; i < sphereDirty.Count; ++i)
+    {
+        const SphereFaceUVRect& rect = sphereDirty.Rects[i];
+        assert(rect.Face < kCubeFaceCount6 && "a sphere dirty rect names a cube face");
+        dst->SphereDirty[rect.Face] = Mathematics::Vector4{rect.MinU, rect.MinV, rect.MaxU, rect.MaxV};
+    }
     m_Device->UnmapBuffer(m_FrameParams);
-}
-
-void CBTResources::UploadSphereSculptPool(uint32_t frameCounter, const float* pool, uint32_t texelCount)
-{
-    if (!m_SphereSculpt.IsValid() || pool == nullptr)
-        return;
-    if (!m_SculptRingsSpherical)
-        return;
-    const uint32_t poolTexels = m_SculptPoolSlotWords;
-    const uint32_t count = texelCount < poolTexels ? texelCount : poolTexels;
-    const uint32_t slot = CBTFrameRingSlot(frameCounter);
-    void* mapped = m_Device->MapBuffer(m_SphereSculpt);
-    if (!mapped)
-        return;
-    const size_t slotByteBase =
-        static_cast<size_t>(slot) * static_cast<size_t>(poolTexels) * sizeof(float);
-    std::memcpy(static_cast<uint8_t*>(mapped) + slotByteBase, pool,
-                static_cast<size_t>(count) * sizeof(float));
-    m_Device->UnmapBuffer(m_SphereSculpt);
-}
-
-void CBTResources::UploadSphereSculptPageTable(uint32_t frameCounter, const uint32_t* table,
-                                               uint32_t entryCount)
-{
-    if (!m_SphereSculptTable.IsValid() || table == nullptr || !m_SculptRingsSpherical)
-        return;
-    const uint32_t count = entryCount < m_SculptTableSlotWords ? entryCount : m_SculptTableSlotWords;
-    const uint32_t slot = CBTFrameRingSlot(frameCounter);
-    void* mapped = m_Device->MapBuffer(m_SphereSculptTable);
-    if (!mapped)
-        return;
-    const size_t slotByteBase =
-        static_cast<size_t>(slot) * static_cast<size_t>(m_SculptTableSlotWords) * sizeof(uint32_t);
-    std::memcpy(static_cast<uint8_t*>(mapped) + slotByteBase, table,
-                static_cast<size_t>(count) * sizeof(uint32_t));
-    m_Device->UnmapBuffer(m_SphereSculptTable);
 }
 
 BufferHandle CBTResources::CreateHeightChain(uint32_t words)
@@ -808,6 +661,7 @@ bool CBTResources::WaitForSourceReaders()
     return !m_SourceReadersSubmitted || WaitForGraphicsReaders();
 }
 
+
 bool CBTResources::WaitForGraphicsReaders()
 {
     const auto submitted = m_Device->LastGraphicsSubmissionToken();
@@ -825,6 +679,7 @@ bool CBTResources::WaitForGraphicsReaders()
     return SubmitGraphicsAndWait(*command);
 }
 
+
 bool CBTResources::SubmitGraphicsAndWait(CommandList& command)
 {
     if (!m_GraphicsCompletion.IsValid())
@@ -837,6 +692,7 @@ bool CBTResources::SubmitGraphicsAndWait(CommandList& command)
         return false;
     return m_Device->WaitGpuSyncToken({m_GraphicsCompletion, value});
 }
+
 
 bool CBTResources::UpdateTerrainSourceBinding(uint32_t binding, Rendering::TextureHandle texture,
                                               uint32_t slot)
@@ -932,85 +788,40 @@ bool CBTResources::SetPageCacheSource(uint32_t frameCounter, Rendering::TextureH
     return true;
 }
 
-size_t CBTResources::PageTableRingBytes(uint32_t slotWords)
-{
-    return static_cast<size_t>(kCBTFrameParamsRing) * slotWords * sizeof(uint32_t);
-}
-
-Rendering::BufferHandle CBTResources::CreatePageTableRing(uint32_t slotWords)
+Rendering::BufferHandle CBTResources::CreateDefaultPageTable()
 {
     using namespace Rendering;
     BufferDesc desc{};
-    desc.size = PageTableRingBytes(slotWords);
+    desc.size = kCBTPageHeaderWords * sizeof(uint32_t);
     desc.usage = static_cast<uint32_t>(BufferUsage::Storage);
     desc.memoryUsage = BufferMemoryUsage::Upload;
     desc.persistent = true;
-    desc.debugName = "CBT.PageTable";
-    const BufferHandle ring = m_Device->CreateBuffer(desc);
-    if (!ring.IsValid())
-        return ring;
-    // Zeroed so a slot never written reads an empty field (level count 0 resolves to 0).
-    if (void* mapped = m_Device->MapBuffer(ring))
-    {
-        std::memset(mapped, 0, desc.size);
-        m_Device->UnmapBuffer(ring);
-    }
-    return ring;
+    desc.debugName = "CBT.DefaultPageTable";
+    const BufferHandle table = m_Device->CreateBuffer(desc);
+    if (!table.IsValid())
+        return table;
+    const std::array<uint32_t, kCBTPageHeaderWords> zero{};
+    m_Device->UpdateBuffer(table, 0, sizeof(zero), zero.data());
+    m_PersistentBytes += desc.size;
+    return table;
 }
 
-bool CBTResources::ProvisionPageTableWords(uint32_t words)
+bool CBTResources::SetPageTable(Rendering::BufferHandle ring, uint32_t firstWord)
 {
-    if (!m_PageTable.IsValid())
+    if (!m_Ready)
         return false;
-    if (words <= m_PageTableSlotWords)
-        return true;
-    // Grow in whole steps so a terrain whose table grows a little does not reallocate each time.
-    const uint32_t slotWords =
-        (words + kCBTPageTableMinRingWords - 1u) / kCBTPageTableMinRingWords * kCBTPageTableMinRingWords;
-    // Create first: a refused allocation leaves the previous ring, and the sets that point at it.
-    const Rendering::BufferHandle next = CreatePageTableRing(slotWords);
-    if (!next.IsValid())
+    if (!m_DefaultPageTable.IsValid())
+        return !ring.IsValid();
+    const Rendering::BufferHandle target = ring.IsValid() ? ring : m_DefaultPageTable;
+    if (target != m_PageTable)
     {
-        Logger::Log::Error("CBTResources: failed to grow the page table ring to {} KiB; the terrain draws from its "
-                           "height texture",
-                           PageTableRingBytes(slotWords) / 1024u);
-        return false;
+        if (!WaitForSourceReaders())
+            return false;
+        m_PageTable = target;
+        WriteDescriptorSet();
     }
-    // The descriptor sets are shared by every frame slot and rewritten in place below. Wait for
-    // their previous graphics users before replacing the ring and its stride, without changing
-    // the device-wide idle state during render-graph declaration.
-    if (!WaitForSourceReaders())
-    {
-        m_Device->DestroyBuffer(next);
-        Logger::Log::Error("CBTResources: page-table growth has no completed graphics submission");
-        return false;
-    }
-    m_Device->DestroyBuffer(m_PageTable);
-    m_PersistentBytes -= PageTableRingBytes(m_PageTableSlotWords);
-    m_PageTable = next;
-    m_PageTableSlotWords = slotWords;
-    m_PersistentBytes += PageTableRingBytes(slotWords);
-    WriteDescriptorSet();
-    Logger::Log::Info("CBTResources: page table ring grown to {} words a frame slot ({} KiB host-visible)", slotWords,
-                      PageTableRingBytes(slotWords) / 1024u);
+    m_PageTableBaseWord = ring.IsValid() ? firstWord : 0u;
     return true;
-}
-
-void CBTResources::UploadPageTable(uint32_t frameCounter, std::span<const uint32_t> words)
-{
-    if (!m_PageTable.IsValid())
-        return;
-    const uint32_t slot = CBTFrameRingSlot(frameCounter);
-    const size_t count = std::min<size_t>(words.size(), m_PageTableSlotWords);
-    void* mapped = m_Device->MapBuffer(m_PageTable);
-    if (!mapped)
-        return;
-    uint32_t* dst = static_cast<uint32_t*>(mapped) + static_cast<size_t>(slot) * m_PageTableSlotWords;
-    if (count > 0u)
-        std::memcpy(dst, words.data(), count * sizeof(uint32_t));
-    else
-        std::memset(dst, 0, kCBTPageHeaderWords * sizeof(uint32_t)); // level count 0: no field
-    m_Device->UnmapBuffer(m_PageTable);
 }
 
 bool CBTResources::RebindSourceRingToDefault(
@@ -1031,6 +842,7 @@ bool CBTResources::RebindSourceRingToDefault(
     }
     return true;
 }
+
 
 bool CBTResources::RebindTerrainSourcesToDefault(bool& changed)
 {
@@ -1068,18 +880,18 @@ void CBTResources::UploadAtlasRows(uint32_t frameCounter, const void* rows, uint
     if (!m_AtlasRows.IsValid())
         return;
     const uint32_t slot = CBTFrameRingSlot(frameCounter);
-    const uint32_t clamped = rowCount < kAtlasMaxTiles ? rowCount : kAtlasMaxTiles;
+    const uint32_t clamped = rowCount < kAtlasWindowRows ? rowCount : kAtlasWindowRows;
     void* mapped = m_Device->MapBuffer(m_AtlasRows);
     if (!mapped)
         return;
     const size_t slotByteBase =
-        static_cast<size_t>(slot) * static_cast<size_t>(kAtlasMaxTiles) * kAtlasRowBytes;
+        static_cast<size_t>(slot) * static_cast<size_t>(kAtlasWindowRows) * kAtlasRowBytes;
     uint8_t* dst = static_cast<uint8_t*>(mapped) + slotByteBase;
     if (rows != nullptr && clamped > 0u)
         std::memcpy(dst, rows, static_cast<size_t>(clamped) * kAtlasRowBytes);
     // Zero the tail past the live rows so a shrunk table never resolves a stale tile
     // (a leftover 0 Slot would read as slot 0 resident; a full 0xFF row is kAtlasNoSlot).
-    const size_t tailRows = static_cast<size_t>(kAtlasMaxTiles) - clamped;
+    const size_t tailRows = static_cast<size_t>(kAtlasWindowRows) - clamped;
     if (tailRows > 0u)
         std::memset(dst + static_cast<size_t>(clamped) * kAtlasRowBytes, 0xFF,
                     tailRows * kAtlasRowBytes);
@@ -1090,10 +902,8 @@ void CBTResources::Shutdown()
 {
     if (m_Device)
     {
-        // Retirement covers queued attempts too; a reserved value might never have been submitted.
         if (m_GraphicsCompletion.IsValid() && WaitForGraphicsReaders())
             m_Device->DestroySemaphore(m_GraphicsCompletion);
-        // Unobservable work keeps the registered semaphore alive until device teardown.
         m_GraphicsCompletion = {};
         m_GraphicsCompletionValue = 0;
         if (m_DescriptorSet.IsValid())
@@ -1114,7 +924,6 @@ void CBTResources::Shutdown()
         if (m_FrameParams.IsValid())
             m_Device->DestroyBuffer(m_FrameParams);
         m_FrameParams = {};
-        DestroySculptRings();
         if (m_SurfaceParams.IsValid())
             m_Device->DestroyBuffer(m_SurfaceParams);
         m_SurfaceParams = {};
@@ -1144,9 +953,11 @@ void CBTResources::Shutdown()
             m_Device->DestroyBuffer(m_DrawLevelParams);
         m_DrawLevelParams = {};
         DestroyNormalChain();
-        if (m_PageTable.IsValid())
-            m_Device->DestroyBuffer(m_PageTable);
+        if (m_DefaultPageTable.IsValid())
+            m_Device->DestroyBuffer(m_DefaultPageTable);
+        m_DefaultPageTable = {};
         m_PageTable = {};
+        m_PageTableBaseWord = 0u;
         if (m_DefaultPageCache.IsValid())
             m_Device->DestroyTexture(m_DefaultPageCache);
         m_DefaultPageCache = {};
@@ -1162,8 +973,8 @@ void CBTResources::Shutdown()
     m_PersistentBytes = 0;
     m_ReadbackSize = 0;
     m_Ready = false;
-    m_SourceReadersSubmitted = false;
     m_Device = nullptr;
+    m_SourceReadersSubmitted = false;
 }
 
 void CBTResources::ReprovisionAfterDeviceRebuild()
@@ -1172,21 +983,12 @@ void CBTResources::ReprovisionAfterDeviceRebuild()
     // rebuild teardown, so calling Destroy* here would re-enter destruction on dead
     // handles. Nulling m_Device additionally makes the Shutdown() that Initialize()
     // runs first a no-op, so the re-bring-up cannot resurrect that path.
-    m_GraphicsCompletion = {};
-    m_GraphicsCompletionValue = 0;
     m_DescriptorSet = {};
     for (auto& b : m_Buffers)
         b = {};
     m_IdentityIndexBuffer = {};
     m_DrawCountBuffer = {};
     m_FrameParams = {};
-    m_SphereSculpt = {};
-    m_SphereSculptTable = {};
-    m_SculptPagePoolCount = 0u;
-    m_SculptPoolSlotWords = 0u;
-    m_SculptTableSlotWords = 0u;
-    m_SculptRingBytes = 0;
-    m_SculptRingsSpherical = false;
     m_SurfaceParams = {};
     m_DefaultHeight = {};
     m_BoundHeight = {};
@@ -1203,7 +1005,9 @@ void CBTResources::ReprovisionAfterDeviceRebuild()
     m_NormalChainViews = {};
     m_NormalChainMips = 0u;
     m_NormalChainLattice = 0u;
+    m_DefaultPageTable = {};
     m_PageTable = {};
+    m_PageTableBaseWord = 0u;
     m_DefaultPageCache = {};
     m_BoundPageCache = {};
     m_HeightSampler = {};
@@ -1212,10 +1016,12 @@ void CBTResources::ReprovisionAfterDeviceRebuild()
     m_PersistentBytes = 0;
     m_ReadbackSize = 0;
     m_Ready = false;
-    m_SourceReadersSubmitted = false;
     m_Device = nullptr;
     // m_TerrainSourceGeneration is deliberately NOT reset: it is a monotonic binding
     // version that readers compare for change, so rewinding it could mask a rebind.
+    m_SourceReadersSubmitted = false;
+    m_GraphicsCompletion = {};
+    m_GraphicsCompletionValue = 0;
 }
 
 BufferHandle CBTResources::GetBuffer(CBTBinding binding) const

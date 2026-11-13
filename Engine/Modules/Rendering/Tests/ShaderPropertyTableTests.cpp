@@ -6,9 +6,13 @@
 
 #include <gtest/gtest.h>
 
+#include "Rendering/Core/HotReloadIntegration.h"
 #include "Rendering/Materials/MaterialParamsLayout.h"
-#include "Rendering/Materials/ShaderPropertyTable.h"
+#include "Rendering/Materials/Shader/ShaderPropertyTable.h"
+#include "Rendering/Materials/Shader/ShaderPropertyTableCache.h"
 
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -144,11 +148,15 @@ TEST(ShaderPropertyGrammar, DisplayNameDerivesFromCamelCaseWhenAbsent)
     const auto t = ParseDeclaredProperties(Surface(
         "// @property float fresnelRimCap\n"
         "// @property float roughness\n"
-        "// @property float ao\n"));
+        "// @property float ao\n"
+        "// @property float detailUVScale\n"
+        "// @property color sRGBTint\n"));
     ASSERT_FALSE(t.Rejected()) << Errors(t);
     EXPECT_EQ(Prop(t, "fresnelRimCap").DisplayName, "Fresnel Rim Cap");
     EXPECT_EQ(Prop(t, "roughness").DisplayName, "Roughness");
     EXPECT_EQ(Prop(t, "ao").DisplayName, "AO");
+    EXPECT_EQ(Prop(t, "detailUVScale").DisplayName, "Detail UV Scale");
+    EXPECT_EQ(Prop(t, "sRGBTint").DisplayName, "sRGB Tint");
 }
 
 TEST(ShaderPropertyGrammar, DefaultsWithSpacesAfterCommasParse)
@@ -203,6 +211,13 @@ TEST(ShaderPropertyGrammar, MalformedRangeUnknownAttributeAndBadTokenAreErrors)
     EXPECT_TRUE(ParseDeclaredProperties(Surface("// @property float 9lives\n")).Rejected());
     EXPECT_TRUE(ParseDeclaredProperties(Surface("// @property enum e default=A\n")).Rejected());
     EXPECT_TRUE(ParseDeclaredProperties(Surface("// @property float a hdr\n")).Rejected());
+}
+
+TEST(ShaderPropertyGrammar, AnEmptyDefaultIsOneComponentThatIsNotANumber)
+{
+    const auto t = ParseDeclaredProperties(Surface("// @property float a default=\"\"\n"));
+    ASSERT_TRUE(t.Rejected());
+    EXPECT_NE(Errors(t).find("default component '' is not a number"), std::string::npos) << Errors(t);
 }
 
 TEST(ShaderPropertyGrammar, NonFiniteNumbersAreErrors)
@@ -391,4 +406,117 @@ TEST(ShaderPropertyUnion, SameNameDifferentTypeIsAnErrorAtTheSecondDeclaration)
     EXPECT_EQ(t.Errors[0].File, "s.glsl");
     EXPECT_EQ(t.Errors[0].Line, 2u);
     EXPECT_NE(t.Errors[0].Message.find("adapter_forward.glsl:1"), std::string::npos);
+}
+
+TEST(ShaderDeformationEnvelope, ReadsMetersAndTheScaleProperty)
+{
+    const ShaderPropertyTable t = BuildShaderPropertyTable(
+        {Surface("// @property float roughness default=0.5\n"),
+         Modifier("// @property float treeWindScale default=0 range=0,0.25\n"
+                  "// @deformationEnvelope 1.9 scaledBy=treeWindScale\n")});
+    ASSERT_FALSE(t.Rejected()) << Errors(t);
+    EXPECT_TRUE(t.DeformationEnvelope.Usable()) << t.DeformationEnvelope.Refusal;
+    EXPECT_FLOAT_EQ(t.DeformationEnvelope.Meters, 1.9f);
+    EXPECT_EQ(t.DeformationEnvelope.ScaledBy, "treeWindScale");
+    EXPECT_EQ(t.DeformationEnvelope.SourceLine, 2u);
+    EXPECT_EQ(t.DeformationEnvelope.ModifierFile, "modifier.glsl");
+
+    const ShaderPropertyTable silent = BuildShaderPropertyTable({Surface(""), Modifier("vec3 ModifyVertex();\n")});
+    EXPECT_FALSE(silent.DeformationEnvelope.Declared);
+    EXPECT_EQ(silent.DeformationEnvelope.ModifierFile, "modifier.glsl");
+}
+
+// A declaration culling cannot trust is refused with the fix in the message and a
+// zero margin; the shader itself still builds.
+TEST(ShaderDeformationEnvelope, RefusesWhatCullingCannotTrustWithoutRejectingTheShader)
+{
+    struct Case
+    {
+        const char* Declaration;
+        const char* Fix;
+    };
+    const Case cases[] = {
+        {"// @deformationEnvelope -0.3\n", "is not a distance in meters"},
+        {"// @deformationEnvelope inf\n", "is not a distance in meters"},
+        {"// @deformationEnvelope nan\n", "is not a distance in meters"},
+        {"// @deformationEnvelope\n", "is not a distance in meters"},
+        {"// @deformationEnvelope 0.3 0.4\n", "is not a distance in meters"},
+        {"// @deformationEnvelope 0.3 scaledBy=\n", "is not a distance in meters"},
+        {"// @deformationEnvelope 0.3 scaledBy=gust\n", "Add '// @property float gust'"},
+        {"// @deformationEnvelope 0.3 scaledBy=windOn\n", "scaledBy takes a float or vector property"},
+        {"// @deformationEnvelope 0.3\n// @deformationEnvelope 0.4\n", "on lines 2 and 3; keep one"},
+    };
+    for (const Case& c : cases)
+    {
+        SCOPED_TRACE(c.Declaration);
+        const ShaderPropertyTable t = BuildShaderPropertyTable(
+            {Surface("// @property float roughness default=0.5\n"),
+             Modifier(std::string("// @property bool windOn default=true\n") + c.Declaration)});
+        EXPECT_FALSE(t.Rejected()) << Errors(t);
+        EXPECT_TRUE(t.DeformationEnvelope.Declared);
+        EXPECT_FALSE(t.DeformationEnvelope.Usable());
+        EXPECT_NE(t.DeformationEnvelope.Refusal.find(c.Fix), std::string::npos) << t.DeformationEnvelope.Refusal;
+        EXPECT_NE(t.DeformationEnvelope.Refusal.find("modifier.glsl"), std::string::npos);
+    }
+}
+
+// A surface that declares nothing is read by lane name, so scaledBy may name a
+// lane; once the surface declares its properties, the lanes are gone.
+TEST(ShaderDeformationEnvelope, ScaledByReachesLaneNamesOnlyOnAnUndeclaredSurface)
+{
+    const char* modifier = "// @deformationEnvelope 1.21 scaledBy=windStrength\n";
+    const ShaderPropertyTable lanes = BuildShaderPropertyTable({Surface(""), Modifier(modifier)});
+    EXPECT_TRUE(lanes.DeformationEnvelope.Usable()) << lanes.DeformationEnvelope.Refusal;
+
+    const ShaderPropertyTable declared = BuildShaderPropertyTable(
+        {Surface("// @property float roughness default=0.5\n"), Modifier(modifier)});
+    EXPECT_FALSE(declared.DeformationEnvelope.Usable());
+}
+
+namespace
+{
+
+void WriteShader(const std::filesystem::path& path, const std::string& text)
+{
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << text;
+}
+
+} // namespace
+
+// Material registration resolves a table per material, so a hit must touch no
+// file. Removing the surface from disk shows where a hit comes from.
+TEST(ShaderPropertyTableCache, AHitReadsNoFileUntilAnEditIsAnnounced)
+{
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() /
+                          ("shader_property_table_cache_" +
+                           std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+    fs::remove_all(root);
+    fs::create_directories(root);
+    ShaderPropertyTableInputs inputs{};
+    inputs.AdapterPath = root / "adapter_forward.glsl";
+    inputs.SurfacePath = root / "surface.glsl";
+    WriteShader(inputs.AdapterPath, kAdapterDecls);
+    WriteShader(inputs.SurfacePath, "// @property color tint\n");
+    NotifyShaderSourcesChanged();
+    ShaderPropertyTableCache& cache = ShaderPropertyTableCache::Instance();
+
+    const auto first = cache.Resolve(inputs);
+    ASSERT_FALSE(first->Rejected()) << Errors(*first);
+    ASSERT_NE(first->Find("tint"), nullptr);
+
+    fs::remove(inputs.SurfacePath);
+    EXPECT_EQ(cache.Resolve(inputs), first) << "a hit is served from memory, not from the file";
+
+    NotifyShaderSourcesChanged();
+    EXPECT_TRUE(cache.Resolve(inputs)->Rejected()) << "an announced edit reads the surface again";
+
+    WriteShader(inputs.SurfacePath, "// @property float roughness\n");
+    const auto recreated = cache.Resolve(inputs);
+    ASSERT_FALSE(recreated->Rejected()) << Errors(*recreated);
+    EXPECT_NE(recreated->Find("roughness"), nullptr) << "a failed read is not stored";
+
+    std::error_code ec;
+    fs::remove_all(root, ec);
 }

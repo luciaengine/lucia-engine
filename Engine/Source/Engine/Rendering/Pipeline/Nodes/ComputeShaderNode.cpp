@@ -1,7 +1,5 @@
 #include "Engine/Rendering/Pipeline/Nodes/ComputeShaderNode.h"
 
-#include "Engine/Rendering/Pipeline/Nodes/ComputeDescriptorScratch.h"
-
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/Pipeline/ExpressionEvaluator.h"
@@ -10,9 +8,9 @@
 
 #include "Logger/Logger.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
-#include "Rendering/Materials/ShaderMetaValidation.h"
+#include "Rendering/Materials/Shader/ShaderMetaValidation.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
 
@@ -20,9 +18,9 @@
 #include <cmath>
 #include <array>
 #include <cstring>
-#include <unordered_map>
-
 #include <nlohmann/json.hpp>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace GameEngine::Engine::Renderer { using namespace ::GameEngine::Rendering; }
 
@@ -31,6 +29,25 @@ namespace GameEngine::Engine::Renderer::Pipeline::Nodes
 using namespace ::GameEngine::Rendering;
 namespace
 {
+// How the dispatch touches a bound graph buffer (blueprint "bufferUsages"). ReadWrite is a
+// read-modify-write: the pass declares the read too, so the previous writer's contents are made
+// visible to it, not merely ordered before it (write->write alone carries no read visibility).
+enum class BufferAccess : uint8_t
+{
+    Read,
+    Write,
+    ReadWrite
+};
+
+BufferAccess ParseBufferAccess(const std::string& usage)
+{
+    if (usage == "StorageReadWrite")
+        return BufferAccess::ReadWrite;
+    if (usage == "StorageWrite" || usage == "storageWrite" || usage == "UAV" || usage == "uav")
+        return BufferAccess::Write;
+    return BufferAccess::Read;
+}
+
 static std::string BindingLeafName(const std::string& ref)
 {
     if (ref.empty())
@@ -101,11 +118,6 @@ ComputeShaderNode::~ComputeShaderNode()
         m_Device->DestroySampler(m_LinearClampSampler);
         m_LinearClampSampler = {};
     }
-    if (m_Device && m_PointClampSampler.IsValid())
-    {
-        m_Device->DestroySampler(m_PointClampSampler);
-        m_PointClampSampler = {};
-    }
     m_PipelineId = {};
     m_Set0Layout = {};
     m_ShaderMeta.reset();
@@ -118,6 +130,8 @@ bool ComputeShaderNode::Initialize(std::string nodeId, std::string nodeJson, std
     m_Json = std::move(nodeJson);
 
     m_ShaderPkg.clear();
+    m_ShaderPkgFallbacks.clear();
+    m_ActiveShaderPkg.clear();
     m_TargetTextureRef.clear();
     m_TargetBufferRef.clear();
     m_DispatchX = 1;
@@ -148,6 +162,7 @@ bool ComputeShaderNode::Initialize(std::string nodeId, std::string nodeJson, std
     m_PipelineDebugName.clear();
     m_LoggedShaderPkgIssues = false;
     m_LoggedShaderPkgLoadFailure = false;
+    m_LoggedWorkgroupFallback = false;
     m_LoggedDispatchExprFailure = false;
     m_LoggedBindingsMissingFromMeta = false;
     m_LoggedMissingTextureBindings = false;
@@ -156,11 +171,6 @@ bool ComputeShaderNode::Initialize(std::string nodeId, std::string nodeJson, std
     {
         m_Device->DestroySampler(m_LinearClampSampler);
         m_LinearClampSampler = {};
-    }
-    if (m_Device && m_PointClampSampler.IsValid())
-    {
-        m_Device->DestroySampler(m_PointClampSampler);
-        m_PointClampSampler = {};
     }
     m_Device = nullptr;
 
@@ -181,6 +191,19 @@ bool ComputeShaderNode::Initialize(std::string nodeId, std::string nodeJson, std
             if (outError)
                 *outError = "ComputeShader node requires 'shaderPkg' (.shaderpkg path/name).";
             return false;
+        }
+        if (j.contains("shaderPkgFallbacks") && j["shaderPkgFallbacks"].is_array())
+        {
+            for (const auto& fallback : j["shaderPkgFallbacks"])
+            {
+                if (!fallback.is_string() || fallback.get<std::string>().empty())
+                {
+                    if (outError)
+                        *outError = "ComputeShader node's 'shaderPkgFallbacks' must list .shaderpkg paths.";
+                    return false;
+                }
+                m_ShaderPkgFallbacks.push_back(fallback.get<std::string>());
+            }
         }
 
         if (j.contains("targetTexture") && j["targetTexture"].is_string())
@@ -367,6 +390,18 @@ bool ComputeShaderNode::Initialize(std::string nodeId, std::string nodeJson, std
     return true;
 }
 
+// True when the device can run the compute workgroup `meta` declares: a package without a
+// declared size, or a device that reports no limit, counts as fitting.
+static bool WorkgroupFitsDevice(const GameEngine::Rendering::ShaderMeta& meta,
+                                const GameEngine::Rendering::RenderingDeviceCapabilities& caps)
+{
+    const auto stage = meta.Stages.find("cs");
+    if (stage == meta.Stages.end() || !stage->second.ComputeLocalSize || caps.maxComputeWorkGroupSize == 0)
+        return true;
+    const auto& size = *stage->second.ComputeLocalSize;
+    return uint64_t{size.X} * size.Y * size.Z <= caps.maxComputeWorkGroupSize;
+}
+
 void ComputeShaderNode::EnsureCachedPipeline(GameEngine::Rendering::IDevice* device)
 {
     if (!device)
@@ -379,33 +414,32 @@ void ComputeShaderNode::EnsureCachedPipeline(GameEngine::Rendering::IDevice* dev
             m_Device->DestroySampler(m_LinearClampSampler);
             m_LinearClampSampler = {};
         }
-        if (m_PointClampSampler.IsValid())
-        {
-            m_Device->DestroySampler(m_PointClampSampler);
-            m_PointClampSampler = {};
-        }
         m_CsBytes.clear();
         m_PipelineId = {};
         m_Set0Layout = {};
         m_ShaderMeta.reset();
         m_RunOnceDispatched = false;
         m_RunOnceDeclaredFrame = UINT64_MAX;
+        m_LoggedWorkgroupFallback = false;
     }
     m_Device = device;
 
-    if (!m_PointClampSampler.IsValid())
-        m_PointClampSampler = device->CreateSampler(Rendering::SamplerDesc::PointClamp("Pipeline.PointClamp"));
     if (!m_LinearClampSampler.IsValid())
     {
         auto sd = GameEngine::Rendering::SamplerDesc::MaterialLinearClamp("Pipeline.Compute.LinearClamp");
         m_LinearClampSampler = m_Device->CreateSampler(sd);
     }
 
-    if (m_CsBytes.empty() || !m_ShaderMeta)
+    // The node's package, or the first of its fallbacks whose workgroup the device can run.
+    const bool selecting = m_CsBytes.empty() || !m_ShaderMeta;
+    for (size_t candidate = 0; (m_CsBytes.empty() || !m_ShaderMeta) && candidate <= m_ShaderPkgFallbacks.size();
+         ++candidate)
     {
+        const std::string& candidatePkg = candidate == 0 ? m_ShaderPkg : m_ShaderPkgFallbacks[candidate - 1];
+        const bool lastCandidate = candidate == m_ShaderPkgFallbacks.size();
         GameEngine::Rendering::ShaderPackage pkg{};
         std::string loadErr;
-        bool loaded = m_RenderServices
+        bool loaded = candidate == 0 && m_RenderServices
             ? m_RenderServices->Spine().TryConsumePreLoadedShaderPackage(m_ShaderPkg, pkg)
             : false;
         // Any failure to produce the package — no resolver installed yet, the resolver
@@ -419,7 +453,7 @@ void ComputeShaderNode::EnsureCachedPipeline(GameEngine::Rendering::IDevice* dev
             try
             {
                 loadCallFailed = !GameEngine::Rendering::LoadShaderPkg(
-                    m_ShaderPkg, device->PreferredShaderSource(), pkg, &loadErr);
+                    candidatePkg, device->PreferredShaderSource(), pkg, &loadErr);
             }
             catch (const std::exception& e)
             {
@@ -432,10 +466,11 @@ void ComputeShaderNode::EnsureCachedPipeline(GameEngine::Rendering::IDevice* dev
             if (!m_LoggedShaderPkgLoadFailure)
             {
                 m_LoggedShaderPkgLoadFailure = true;
-                Logger::Log::Warning("RenderPipeline ComputeShader '{}': failed to load shaderpkg '{}': {}", m_Id, m_ShaderPkg, loadErr);
+                Logger::Log::Warning("RenderPipeline ComputeShader '{}': failed to load shaderpkg '{}': {}", m_Id, candidatePkg, loadErr);
             }
             m_CsBytes.clear();
             m_ShaderMeta.reset();
+            break;
         }
         else
         {
@@ -445,18 +480,32 @@ void ComputeShaderNode::EnsureCachedPipeline(GameEngine::Rendering::IDevice* dev
                 if (!m_LoggedShaderPkgLoadFailure)
                 {
                     m_LoggedShaderPkgLoadFailure = true;
-                    Logger::Log::Warning("RenderPipeline ComputeShader '{}': shaderpkg '{}' missing 'cs' stage bytes", m_Id, m_ShaderPkg);
+                    Logger::Log::Warning("RenderPipeline ComputeShader '{}': shaderpkg '{}' missing 'cs' stage bytes", m_Id, candidatePkg);
                 }
                 m_CsBytes.clear();
                 m_ShaderMeta.reset();
+                break;
             }
-            else
+            if (!lastCandidate && !WorkgroupFitsDevice(pkg.meta, device->GetCapabilities()))
             {
-                m_CsBytes = std::move(it->second);
-                m_ShaderMeta = std::make_unique<GameEngine::Rendering::ShaderMeta>(std::move(pkg.meta));
+                // Reported on the node's first selection only: a package that fails to load
+                // makes the selection run again every frame.
+                if (!m_LoggedWorkgroupFallback)
+                {
+                    Logger::Log::Info("RenderPipeline ComputeShader '{}': '{}' needs more invocations per "
+                                      "workgroup than this device's {}; trying '{}'",
+                                      m_Id, candidatePkg, device->GetCapabilities().maxComputeWorkGroupSize,
+                                      m_ShaderPkgFallbacks[candidate]);
+                }
+                continue;
             }
+            m_CsBytes = std::move(it->second);
+            m_ShaderMeta = std::make_unique<GameEngine::Rendering::ShaderMeta>(std::move(pkg.meta));
+            m_ActiveShaderPkg = candidatePkg;
         }
     }
+    if (selecting)
+        m_LoggedWorkgroupFallback = true;
 
     if (!m_PipelineId.IsValid() && !m_CsBytes.empty())
     {
@@ -499,12 +548,54 @@ void ComputeShaderNode::EnsureCachedPipeline(GameEngine::Rendering::IDevice* dev
                     GameEngine::Rendering::MaterialBuilder::MergeMode::Auto,
                     {true, 128}, patchLayout, &err))
             {
-                Logger::Log::Warning("RenderPipeline ComputeShader '{}': failed to apply shader meta from shaderpkg '{}': {}", m_Id, m_ShaderPkg, err);
+                Logger::Log::Warning("RenderPipeline ComputeShader '{}': failed to apply shader meta from shaderpkg '{}': {}", m_Id, m_ActiveShaderPkg, err);
             }
         }
 
         m_PipelineId = device->InternComputePipeline(std::move(cd));
     }
+}
+
+void ComputeShaderNode::RequestPausedViewPipelines(const PausedViewPrewarm& prewarm)
+{
+    // The gates of DeclareForView that read no frame resource. A runOnce node that dispatched bound
+    // its pipeline, so the pipeline is built.
+    GameEngine::Rendering::IDevice* device = prewarm.Services.GetDevice();
+    EnsureCachedPipeline(device);
+    if (!device || !m_PipelineId.IsValid() || (m_RunOnce && m_RunOnceDispatched))
+        return;
+    if (LacksRequiredLights(prewarm.Services, prewarm.View.id) ||
+        IsSkippedBy(prewarm.Services.GetEffectivePostProcessSettings(prewarm.View.id, prewarm.View.worldId),
+                    prewarm.RenderHeight))
+        return;
+    device->RequestComputePipeline(m_PipelineId);
+}
+
+bool ComputeShaderNode::LacksRequiredLights(const RenderServices& services, GameEngine::Rendering::ViewId viewId) const
+{
+    if (!m_RequiresLights)
+        return false;
+    const auto* vd = services.Views().FindViewDesc(viewId);
+    return services.GetWorldLights(vd ? vd->worldId : 0u).empty();
+}
+
+bool ComputeShaderNode::IsSkippedBy(const PostProcessSettings& settings, uint32_t renderHeight) const
+{
+    if (m_SkipWhenFields.empty())
+        return false;
+    // A copy, so the settings that ppOverrides push stay as they are for every node.
+    PostProcessSettings gateSettings = settings;
+    gateSettings.ResolveDerivedForRenderHeight(renderHeight);
+    // Tolerance mirrors FullscreenShaderNode: below any user-visible slider step, above
+    // PostProcessVolume float-blend noise.
+    constexpr float kSkipEpsilon = 1.0f / 1024.0f;
+    for (const auto& f : m_SkipWhenFields)
+    {
+        float v = 0.0f;
+        if (!gateSettings.TryReadField(f.Name, v) || std::abs(v - f.Value) > kSkipEpsilon)
+            return false;
+    }
+    return true;
 }
 
 void ComputeShaderNode::DeclareForView(ViewDeclare& d)
@@ -531,42 +622,16 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
 
     // The old activation predicate, evaluated at declaration (the spine's
     // node loop already mask-gates the view).
-    if (m_RequiresLights)
-    {
-        const auto* vd = d.Services.Views().FindViewDesc(d.View.id);
-        const uint64_t wId = vd ? vd->worldId : 0u;
-        if (d.Services.GetWorldLights(wId).empty())
-            return;
-    }
+    if (LacksRequiredLights(d.Services, d.View.id))
+        return;
     const PostProcessSettings settings =
         d.Services.GetEffectivePostProcessSettings(d.View.id, d.View.worldId);
 
     // Effect gate (blueprint skipWhen): a disabled effect declares no dispatch
     // — and, because target resources materialize on first resolve, allocates
-    // none of this node's outputs either. Evaluated on a copy carrying the
-    // per-view derived fields so height-derived gates read their live value,
-    // leaving the ppOverrides `settings` above byte-identical for every
-    // existing node.
-    if (!m_SkipWhenFields.empty())
-    {
-        PostProcessSettings gateSettings = settings;
-        gateSettings.ResolveDerivedForRenderHeight(d.RenderHeight);
-        // Tolerance mirrors FullscreenShaderNode: below any user-visible
-        // slider step, above PostProcessVolume float-blend noise.
-        constexpr float kSkipEpsilon = 1.0f / 1024.0f;
-        bool skip = true;
-        for (const auto& f : m_SkipWhenFields)
-        {
-            float v = 0.0f;
-            if (!gateSettings.TryReadField(f.Name, v) || std::abs(v - f.Value) > kSkipEpsilon)
-            {
-                skip = false; // unknown field or live effect: run
-                break;
-            }
-        }
-        if (skip)
-            return;
-    }
+    // none of this node's outputs either.
+    if (IsSkippedBy(settings, d.RenderHeight))
+        return;
 
     // Idle recompute elision (blueprint idleElide): collect the dispatch's
     // content inputs as they are resolved below; the gate decides just before
@@ -619,7 +684,7 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
     std::vector<BufBind> bufBinds;
     bufBinds.reserve(m_BufferBindings.size() + m_UniformWritesU32x4.size() +
                      m_PostProcessUniformBuffers.size());
-    std::vector<std::pair<RenderGraph::RGBuffer, bool>> bufEdges; // (buffer, isWrite)
+    std::vector<std::pair<RenderGraph::RGBuffer, BufferAccess>> bufEdges;
     for (const auto& bindingName : m_PostProcessUniformBuffers)
     {
         const auto* bindingMeta = m_ShaderMeta ? FindSet0Binding(*m_ShaderMeta, bindingName) : nullptr;
@@ -694,13 +759,10 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
         }
         if (b.Graph.IsValid())
         {
-            bool isWrite = false;
+            BufferAccess access = BufferAccess::Read;
             if (auto itU = m_BufferUsageStrings.find(kv.first); itU != m_BufferUsageStrings.end())
-            {
-                const std::string u = itU->second;
-                isWrite = (u == "StorageWrite" || u == "storageWrite" || u == "UAV" || u == "uav");
-            }
-            bufEdges.push_back({b.Graph, isWrite});
+                access = ParseBufferAccess(itU->second);
+            bufEdges.push_back({b.Graph, access});
         }
         bufBinds.push_back({kv.first, b.Buffer, b.Offset, b.Size});
     }
@@ -817,10 +879,10 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
             // their CONTENT above and their offsets are excluded by design.
             elisionBlob.Append(static_cast<uint64_t>(bb.Size));
         }
-        for (const auto& [g, isWrite] : bufEdges)
+        for (const auto& [g, access] : bufEdges)
         {
             (void)g;
-            elisionBlob.Append(isWrite);
+            elisionBlob.Append(static_cast<uint8_t>(access));
         }
         // Persistent (graph-tracked) buffer identities: Graph-valid bindings
         // resolve to pool physicals whose handle bits must break equality on
@@ -876,7 +938,6 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
         d.PassName().c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
-            p.UsePipeline(m_PipelineId);
             for (const auto& [t, isWrite] : texEdges)
             {
                 if (isWrite)
@@ -884,12 +945,12 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
                 else
                     p.Read(t, RenderGraph::RGTextureRead::Sampled);
             }
-            for (const auto& [b, isWrite] : bufEdges)
+            for (const auto& [b, access] : bufEdges)
             {
-                if (isWrite)
-                    p.Write(b, RenderGraph::RGBufferWrite::Storage);
-                else
+                if (access != BufferAccess::Write)
                     p.Read(b, RenderGraph::RGBufferRead::Storage);
+                if (access != BufferAccess::Read)
+                    p.Write(b, RenderGraph::RGBufferWrite::Storage);
             }
             if (targetTexRG.IsValid())
             {
@@ -969,29 +1030,31 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
                     }
                 };
 
-                // Parallel recording workers retain separate update arrays and resource lists.
-                thread_local Detail::ComputeDescriptorScratch scratch;
-                scratch.Reset();
+                std::vector<Rendering::DescriptorSetUpdate> updates;
+                updates.reserve(bufBinds.size() + texBinds.size() + m_Samplers.size() + 2);
 
                 for (const auto& bb : bufBinds)
                 {
                     if (!bb.Buf.IsValid())
                         continue;
-                    if (Detail::TryGetSet0BindingByName(*m_ShaderMeta, bb.Name, binding, dtype))
+                    if (Rendering::TryGetSet0BindingByName(*m_ShaderMeta, bb.Name, binding, dtype))
                     {
                         overrideTypeFromLayout(binding, dtype);
                         if (dtype == Rendering::DescriptorType::StorageBuffer ||
                             dtype == Rendering::DescriptorType::UniformBuffer)
                         {
-                            auto& update = scratch.Add(binding, dtype);
-                            update.buffers = {bb.Buf};
+                            Rendering::DescriptorSetUpdate u{};
+                            u.binding = binding;
+                            u.type = dtype;
+                            u.buffers = {bb.Buf};
                             // Ring-backed bindings live at a nonzero offset
                             // inside the shared upload buffer.
                             if (bb.Offset != 0 || bb.Size != 0)
                             {
-                                update.bufferOffsets = {static_cast<size_t>(bb.Offset)};
-                                update.bufferRanges = {static_cast<size_t>(bb.Size)};
+                                u.bufferOffsets = {static_cast<size_t>(bb.Offset)};
+                                u.bufferRanges = {static_cast<size_t>(bb.Size)};
                             }
+                            updates.push_back(std::move(u));
                         }
                     }
                 }
@@ -999,63 +1062,72 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
                 {
                     if (!tb.Tex.IsValid())
                         continue;
-                    if (Detail::TryGetSet0BindingByName(*m_ShaderMeta, tb.Name, binding, dtype))
+                    if (Rendering::TryGetSet0BindingByName(*m_ShaderMeta, tb.Name, binding, dtype))
                     {
                         overrideTypeFromLayout(binding, dtype);
-                        auto& update = scratch.Add(binding, dtype);
-                        update.textures = {tb.Tex};
+                        Rendering::DescriptorSetUpdate u{};
+                        u.binding = binding;
+                        u.type = dtype;
+                        u.textures = {tb.Tex};
                         if (dtype == Rendering::DescriptorType::CombinedImageSampler &&
                             m_LinearClampSampler.IsValid())
-                            update.samplers = {Detail::RequiresPointSampling(
-                                device->GetTextureFormat(tb.Tex), device->GetCapabilities())
-                                ? m_PointClampSampler : m_LinearClampSampler};
+                            u.samplers = {m_LinearClampSampler};
+                        updates.push_back(std::move(u));
                     }
                 }
                 for (const auto& kv : m_Samplers)
                 {
-                    if (Detail::TryGetSet0BindingByName(*m_ShaderMeta, kv.first, binding, dtype))
+                    if (Rendering::TryGetSet0BindingByName(*m_ShaderMeta, kv.first, binding, dtype))
                     {
                         overrideTypeFromLayout(binding, dtype);
                         if (dtype == Rendering::DescriptorType::Sampler &&
                             m_LinearClampSampler.IsValid())
                         {
-                            auto& update = scratch.Add(binding, Rendering::DescriptorType::Sampler);
-                            update.samplers = {m_LinearClampSampler};
+                            Rendering::DescriptorSetUpdate u{};
+                            u.binding = binding;
+                            u.type = Rendering::DescriptorType::Sampler;
+                            u.samplers = {m_LinearClampSampler};
+                            updates.push_back(std::move(u));
                         }
                     }
                 }
                 if (targetBuf.IsValid())
                 {
                     const std::string leaf = BindingLeafName(m_TargetBufferRef);
-                    if (Detail::TryGetSet0BindingByName(*m_ShaderMeta, leaf, binding, dtype) ||
-                        Detail::TryGetSet0BindingByName(*m_ShaderMeta, "TargetBuffer", binding,
+                    if (Rendering::TryGetSet0BindingByName(*m_ShaderMeta, leaf, binding, dtype) ||
+                        Rendering::TryGetSet0BindingByName(*m_ShaderMeta, "TargetBuffer", binding,
                                                         dtype))
                     {
                         overrideTypeFromLayout(binding, dtype);
                         if (dtype == Rendering::DescriptorType::StorageBuffer)
                         {
-                            auto& update = scratch.Add(binding, Rendering::DescriptorType::StorageBuffer);
-                            update.buffers = {targetBuf};
+                            Rendering::DescriptorSetUpdate u{};
+                            u.binding = binding;
+                            u.type = Rendering::DescriptorType::StorageBuffer;
+                            u.buffers = {targetBuf};
+                            updates.push_back(std::move(u));
                         }
                     }
                 }
                 if (targetTex.IsValid())
                 {
                     const std::string leaf = BindingLeafName(m_TargetTextureRef);
-                    if (Detail::TryGetSet0BindingByName(*m_ShaderMeta, leaf, binding, dtype) ||
-                        Detail::TryGetSet0BindingByName(*m_ShaderMeta, "TargetTexture", binding,
+                    if (Rendering::TryGetSet0BindingByName(*m_ShaderMeta, leaf, binding, dtype) ||
+                        Rendering::TryGetSet0BindingByName(*m_ShaderMeta, "TargetTexture", binding,
                                                         dtype))
                     {
                         overrideTypeFromLayout(binding, dtype);
                         if (dtype == Rendering::DescriptorType::StorageImage)
                         {
-                            auto& update = scratch.Add(binding, Rendering::DescriptorType::StorageImage);
-                            update.textures = {targetTex};
+                            Rendering::DescriptorSetUpdate u{};
+                            u.binding = binding;
+                            u.type = Rendering::DescriptorType::StorageImage;
+                            u.textures = {targetTex};
+                            updates.push_back(std::move(u));
                         }
                     }
                 }
 
-                const auto updates = scratch.Updates();
                 if (!updates.empty())
                     device->UpdateDescriptorSetBatch(set0, updates);
 
@@ -1063,9 +1135,12 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
                 // unbound by the batch above — on a device without
                 // nullDescriptor that is a VUID + undefined read. Default-fill
                 // the remainder with safe placeholders (real binds above win).
+                std::unordered_set<uint32_t> writtenBindings;
+                writtenBindings.reserve(updates.size());
+                for (const auto& u : updates)
+                    writtenBindings.insert(u.binding);
                 Detail::DefaultFillUnwrittenSet0Bindings(
-                    device, set0, m_Set0Layout, *m_ShaderMeta,
-                    [](uint32_t index) { return scratch.ContainsBinding(index); }, defaultBuffer,
+                    device, set0, m_Set0Layout, *m_ShaderMeta, writtenBindings, defaultBuffer,
                     defaultTexture, m_LinearClampSampler, m_Id, m_LoggedDefaultedBindings);
 
                 cl->BindDescriptorSet(0, set0, pipe);

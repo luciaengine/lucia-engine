@@ -11,17 +11,23 @@
  */
 #pragma once
 
+#include "Mathematics/Vector3.h"
+#include "Mathematics/Vector3Int.h"
 #include "Rendering/Core/BatchRegistry.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/PrevVisibleResetTracker.h"
 #include "Rendering/Core/RecomputeElision.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
+#include "Types/FlatMap.h"
+#include "Types/FlatSet.h"
 
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <memory_resource>
 #include <mutex>
 #include <span>
 #include <string>
@@ -150,7 +156,10 @@ class GPUDrawStreamBuilder
     // these from its camera before RegisterSlice.
     struct ViewLODParams
     {
-        float    cameraPos[3] = {0.0f, 0.0f, 0.0f};
+        // The LOD eye, relative to the origin of originSector. The scatter composes each
+        // instance center against originSector. Sector (0,0,0) makes cameraPos a world position.
+        Mathematics::Vector3 cameraPos{0.0f, 0.0f, 0.0f};
+        Mathematics::Vector3Int originSector{0, 0, 0};
         float    projScaleY   = 0.0f;          // proj[1][1]; <= 0 forces LOD0
         float    lodBiasGlobal = 0.0f;         // log2 bias; positive keeps detail
         uint32_t forceLod     = 0xFFFFFFFFu;   // 0xFFFFFFFF = auto-select
@@ -302,8 +311,15 @@ class GPUDrawStreamBuilder
         uint32_t capacity;     // snapshot live-instance count = per-batch draw bound
     };
 
+    /// Rows a batch table of `registry` can hold: one per winding parity of
+    /// each batch. Every Build*BatchTable writes into a `table` span at least
+    /// this long.
+    static size_t BatchTableCapacity(const BatchRegistry& registry);
+
     /// Snapshot the registry into a sorted table with exclusive-prefix record
-    /// offsets. `outTotalRecords` receives the per-slice record count
+    /// offsets, written to the front of `table` (BatchTableCapacity entries at
+    /// least) and returned; the merge map's memory comes from `scratch`.
+    /// `outTotalRecords` receives the per-slice record count
     /// (Σ capacities = live instances at snapshot). `meshPoolGroup` (indexed
     /// by meshIndex, MeshPoolGroupPlan values) is the draw-consolidation mesh
     /// axis: non-empty remaps every row's mesh field to its pool-group id and
@@ -311,9 +327,11 @@ class GPUDrawStreamBuilder
     /// per (classKey, mesh). Σ capacities is invariant either way. An empty
     /// span is the consolidation-OFF signal: today's per-mesh table,
     /// bit-for-bit. Pure; no GPU work.
-    static std::vector<BatchTableEntry> BuildBatchTable(const BatchRegistry& registry,
-                                                        std::span<const uint32_t> meshPoolGroup,
-                                                        uint32_t* outTotalRecords = nullptr);
+    static std::span<BatchTableEntry> BuildBatchTable(const BatchRegistry& registry,
+                                                      std::span<const uint32_t> meshPoolGroup,
+                                                      std::span<BatchTableEntry> table,
+                                                      std::pmr::memory_resource& scratch,
+                                                      uint32_t* outTotalRecords = nullptr);
 
     /// Reserved materialIndex values (top of the 24-bit sort domain) that stand
     /// in for the two shared-depth class buckets in the SHADOW batch table.
@@ -357,10 +375,12 @@ class GPUDrawStreamBuilder
     /// the mesh's single/double-sided class sentinel, material-dependent ones
     /// keep their (materialIndex, mesh) identity. Σ capacities == the color
     /// table's total (merging only reduces the row count, never the record
-    /// count). Pure; no GPU work.
-    static std::vector<BatchTableEntry> BuildShadowBatchTable(
+    /// count). Writes and returns the rows as BuildBatchTable does. Pure; no
+    /// GPU work.
+    static std::span<BatchTableEntry> BuildShadowBatchTable(
         const BatchRegistry& registry, std::span<const uint8_t> materialDepthClass,
-        std::span<const uint32_t> meshPoolGroup, uint32_t* outTotalRecords = nullptr);
+        std::span<const uint32_t> meshPoolGroup, std::span<BatchTableEntry> table,
+        std::pmr::memory_resource& scratch, uint32_t* outTotalRecords = nullptr);
 
     /// Color twin of BuildShadowBatchTable for the cascade=None color/depth-
     /// prepass table (P2 cross-material merge). `materialColorClass` is indexed
@@ -371,10 +391,12 @@ class GPUDrawStreamBuilder
     /// preserved (only the row count drops, so the shadowRecords==colorRecords
     /// contract survives). Asserts the class-id domain never aliases a real
     /// materialIndex present in the same table. An empty span is the flag-OFF
-    /// signal (callers use BuildBatchTable instead). Pure; no GPU work.
-    static std::vector<BatchTableEntry> BuildColorBatchTable(
+    /// signal (callers use BuildBatchTable instead). Writes and returns the
+    /// rows as BuildBatchTable does. Pure; no GPU work.
+    static std::span<BatchTableEntry> BuildColorBatchTable(
         const BatchRegistry& registry, std::span<const uint32_t> materialColorClass,
-        std::span<const uint32_t> meshPoolGroup, uint32_t* outTotalRecords = nullptr);
+        std::span<const uint32_t> meshPoolGroup, std::span<BatchTableEntry> table,
+        std::pmr::memory_resource& scratch, uint32_t* outTotalRecords = nullptr);
 
     /// Lazily create the scatter compute pipeline
     /// (Shaders/draw_command_scatter.shaderpkg via the same loader as the
@@ -388,7 +410,8 @@ class GPUDrawStreamBuilder
     /// shadow-arc readback reports drawnTriangles == 0 (passedCasters and the
     /// tripwires are unaffected — they never rode that atomic). Consumers use
     /// this to distinguish "gated off" from a genuine zero triangle count.
-    /// Valid only after GetOrCreateScatterPipeline succeeds.
+    /// Valid only after GetOrCreateScatterPipeline or RequestScatterPipelines
+    /// loads the scatter package.
     bool IsScatterStatsActive() const { return m_ScatterStatsActive; }
 
     /// What an introspection reader (debug-server render stats) may know about
@@ -404,8 +427,8 @@ class GPUDrawStreamBuilder
         /// builder — a genuine "not warmed yet", not a failure.
         bool PipelineReady = false;
         /// The only axis here that can move without PipelineReady moving with
-        /// it: its source is re-probed from a live package load on every
-        /// GetOrCreateScatterPipeline, whereas StatsActive mirrors a value
+        /// it: its source is probed from a live package load when the scatter
+        /// pipeline is interned, whereas StatsActive mirrors a value
         /// latched once behind m_ScatterVariantInit. That makes it the one
         /// witness that a read reached the create path on a build that then
         /// threw — which is the failure the purity case exists to catch.
@@ -430,7 +453,7 @@ class GPUDrawStreamBuilder
 
     /// Test-only: build a scatter pipeline for a specific (fetch, stats)
     /// variant, bypassing the GE_SCATTER_COMPACT/GE_SCATTER_STATS selection so
-    /// ONE test run can exercise every combination — the compact 32 B mirror vs
+    /// ONE test run can exercise every combination — the compact 40 B mirror vs
     /// the full-fat 240 B instance buffer, with the drawnTriangles atomic on or
     /// off — and assert identical scatter records across all of them. Returns an
     /// invalid handle if that variant's shaderpkg is unavailable. Never used by
@@ -438,7 +461,7 @@ class GPUDrawStreamBuilder
     PipelineHandle CreateScatterPipelineForVariant(bool compact, bool stats);
 
     /// Push constants for draw_command_scatter.comp. Field order MUST match
-    /// the shader's PushConstants block (100 B).
+    /// the shader's PushConstants block (112 B).
     struct ScatterPushConstants
     {
         uint32_t instanceCount;   // call-captured at snapshot time
@@ -495,6 +518,10 @@ class GPUDrawStreamBuilder
         // legal. Non-zero only where a real per-view pair is bound, and no view
         // asks for one until a motion consumer exists.
         uint32_t renderedHistoryEnabled;
+        // The slice's render origin sector (ViewLODParams::originSector); cameraPos is relative to it.
+        int32_t  originSectorX;
+        int32_t  originSectorY;
+        int32_t  originSectorZ;
     };
 
     /// Descriptor set layout for the scatter pipeline (14 storage buffers:
@@ -530,6 +557,11 @@ class GPUDrawStreamBuilder
     /// call with no compact pipeline is dropped loudly (same staging-gap
     /// semantics as a missing scatter package). Exposed for the GPU tests.
     PipelineHandle GetOrCreateGroupCompactPipeline();
+
+    /// Asks the device (IDevice::RequestComputePipeline) for the scatter
+    /// pipeline, and for the group-compact pipeline when `groupCompact` (draw
+    /// consolidation is active), without building them on this thread.
+    void RequestScatterPipelines(bool groupCompact);
 
     // ---- Per-slice scatter scheduling: arena + range map --------------------
     //
@@ -588,7 +620,7 @@ class GPUDrawStreamBuilder
     // behaviour bit-for-bit. The span is global + frame-invariant; it is
     // uploaded to the table ring ONCE per app frame (the first schedule call)
     // and the same GPU copy is bound by every later call this frame.
-    // `scatterHot` is GPUScene's coalesced 32 B/instance mirror (lever 1). When
+    // `scatterHot` is GPUScene's coalesced 40 B/instance mirror (lever 1). When
     // the compact fetch is active AND this buffer is valid, the scatter binds it
     // at binding 1 in place of `instances`; otherwise `instances` (240 B) is
     // bound, exactly as before. Callers pass both; the builder picks.
@@ -767,6 +799,13 @@ class GPUDrawStreamBuilder
     };
     RenderedHistoryRead GetRenderedHistoryForRead(uint32_t viewId) const;
 
+    /// Free every per-view buffer this builder keeps for `viewId`: the rendered
+    /// history pair, the LOD dwell-band history and the LOD crossfade state.
+    /// Call when the view is released; view ids are never reused, so nothing
+    /// else frees them before the device goes away. The buffers are retired,
+    /// not destroyed, so a frame still in flight keeps valid handles.
+    void ReleaseView(uint32_t viewId);
+
     /// True when this app frame published at least one range for the given
     /// (view, cascade, phase). A consumer that declares a pass per culling
     /// generation asks this at DECLARATION time, where it cannot yet resolve
@@ -785,7 +824,12 @@ class GPUDrawStreamBuilder
     /// draw record.
     BufferHandle GetSharedIndirectionBuffer() const { return m_SharedIndirection; }
 
-    size_t GetRangeCount() const { return m_RangeMap.size(); }
+    size_t GetRangeCount() const { return m_RangeMap.Size(); }
+
+    /// The range-map inserts of this frame that land before the last key; each one moved every range
+    /// after it. Slices publish in stream-key order, so only a row out of key order inside a slice, or
+    /// a later call with lower keys, counts here.
+    size_t GetRangeInsertsBeforeEnd() const { return m_RangeInsertsBeforeEnd; }
 
     /// Eventually-consistent tripwire counters (host-visible; values lag by
     /// up to frames-in-flight). Non-zero means the captured-snapshot
@@ -975,6 +1019,11 @@ class GPUDrawStreamBuilder
     PipelineHandle m_InstanceCompactPipeline;
     PipelineHandle m_GroupCompactPipeline;
     bool           m_GroupCompactFailureLogged = false;
+    // The transient set descriptions of each scatter and group-compact dispatch.
+    // They are built once, so a dispatch does not rebuild the layout on the heap.
+    const DescriptorSetDesc m_ScatterSetDesc{MakeScatterDescriptorSetLayout(), "GPUDrawScatter_DS0", true};
+    const DescriptorSetDesc m_GroupCompactSetDesc{MakeGroupCompactDescriptorSetLayout(),
+                                                  "GPUDrawGroupCompact_DS0", true};
     // Serializes GetOrCreateScatterPipeline's lazy init: on guard-refused frames
     // the spine doesn't pre-warm it, so record workers (A2.4-P0-R) can race the
     // one-time SPIR-V load + pipeline create + fallback-log member writes.
@@ -985,7 +1034,7 @@ class GPUDrawStreamBuilder
     // GE_SCATTER_COMPACT (default on), read once; Active is the variant the
     // pipeline actually compiled to — false if the compact shaderpkg was
     // unavailable and we fell back to the full-fat package. When Active, the
-    // scatter binds GPUScene's 32 B mirror at binding 1 instead of the 240 B
+    // scatter binds GPUScene's 40 B mirror at binding 1 instead of the 240 B
     // instance buffer. GPUScene reads the same env var, so the mirror it
     // maintains and this variant agree by construction.
     bool           m_ScatterCompactRequested      = false;
@@ -1005,12 +1054,18 @@ class GPUDrawStreamBuilder
     // (a per-frame path); the condition cannot arise with correct wiring.
     bool           m_ScatterHotMissingLogged      = false;
 
-    // Build a scatter compute pipeline from cooked stage bytes (descriptor
+    // Intern a scatter compute pipeline from cooked stage bytes (descriptor
     // layout + push-constant size + debug name). Shared by
-    // GetOrCreateScatterPipeline and CreateScatterPipelineForVariant so those
-    // settings never drift. May throw on a device create failure — callers
-    // wrap it.
-    PipelineHandle BuildScatterPipeline(std::vector<uint8_t> shaderBytes);
+    // InternScatterPipeline and CreateScatterPipelineForVariant so those
+    // settings never drift.
+    ComputePipelineId InternScatterPipelineFromBytes(std::vector<uint8_t> shaderBytes);
+    // Load the variant's shader and intern its pipeline once, and latch the
+    // variant axes. Invalid while the shader is missing. Call with
+    // m_ScatterInitMutex held.
+    ComputePipelineId InternScatterPipeline();
+    ComputePipelineId InternGroupCompactPipeline();
+    ComputePipelineId m_ScatterPipelineId{};
+    ComputePipelineId m_GroupCompactPipelineId{};
 
     BufferHandle m_SentinelBuffer{};
 
@@ -1027,6 +1082,9 @@ class GPUDrawStreamBuilder
     // touching the device. Shared by Shutdown (which destroys the buffers first)
     // and ReprovisionAfterDeviceRebuild (whose buffers are already dead).
     void ResetTrackingState();
+
+    // The range of `key`, inserted when absent. Counts an insert before the last key in m_RangeInsertsBeforeEnd.
+    BatchDrawRange& GetOrInsertRange(uint64_t key);
 
     BufferHandle m_SharedRecords{};      // indexed indirect draw commands, Indirect
     BufferHandle m_SharedCursors{};      // uint[], Indirect (the count buffer)
@@ -1199,7 +1257,17 @@ class GPUDrawStreamBuilder
 
     std::vector<SliceRegistration> m_FrameSlices;
     // Keyed by MakeStreamKey(viewId, cascadeIndex, materialIndex, meshIndex, phase).
-    std::unordered_map<uint64_t, BatchDrawRange> m_RangeMap;
+    // A FlatMap keeps its storage when it is cleared, so a warm frame allocates nothing here.
+    FlatMap<uint64_t, BatchDrawRange> m_RangeMap;
+    // The (view, cascade, phase) part of every m_RangeMap key that holds a valid
+    // range this frame: MakeStreamKey with zero material and mesh fields.
+    // Filled and cleared with m_RangeMap, so HasPublishedRangesForPhase is one
+    // lookup instead of a scan of every published batch.
+    FlatSet<uint64_t> m_PublishedSliceKeys;
+    // The slice indices of one ScheduleUnifiedScatter call in stream-key order, so the ranges of a
+    // slice go after those of the slices before it. A member, so a warm frame reuses its storage.
+    std::vector<uint32_t> m_SlicePublishOrder;
+    size_t                m_RangeInsertsBeforeEnd = 0;
 
     // ── Idle recompute elision state ──
     // Settle mirrors GPUCullingPipeline::kElisionSettleFrames: two are the

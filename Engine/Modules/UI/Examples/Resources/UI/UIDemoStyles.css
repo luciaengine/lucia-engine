@@ -124,8 +124,3 @@ label {
     color: #ffffff;
     text-outline: 1.5px var(--demo-text-outline);
 }
-
-/* Effects are authored styles and follow the demo's F6 language changes. */
-#titleLabel { text-shadow: 2px 2px 1px #000000cc; }
-#clickEcho { text-glow: 2px #50bfffff; }
-.effect-outline { font-size: 28px; color: #ffffff; text-outline: 1.5px #101020; }

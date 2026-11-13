@@ -19,15 +19,15 @@
 #include "Assets/Parsers/AnimationGraphAssetParser.h"
 #include "Assets/Parsers/ClipSetAssetParser.h"
 #include "Assets/Parsers/NavGridAssetParser.h"
-#include "Assets/Parsers/NavMeshAssetParser.h"
+#include "Assets/Parsers/NavSurfaceAssetParser.h"
 #include "Assets/Parsers/RenderPipelineAssetParser.h"
 #include "Assets/Parsers/SceneAssetParser.h"
+#include "Assets/Parsers/ShaderSourceAssetParser.h"
 #include "Assets/Parsers/SpriteFramesAssetParser.h"
 #include "Assets/Parsers/UILayoutAssetParser.h"
-#include "Assets/Parsers/LocalizationAssetParser.h"
 #include "Assets/Parsers/UIStyleAssetParser.h"
 #include "Assets/Parsers/XmlAssetParser.h"
-#include "Core/Application.h"
+#include "Core/ApplicationPaths.h"
 #include "Logger/Logger.h"
 #include <algorithm>
 #include <cctype>
@@ -72,7 +72,7 @@ bool ParserRegistry::Initialize()
 
     // Optional: dynamic parser plugins.
     // Default location: <exe>/Plugins/AssetParsers
-    LoadPluginsFromDirectory(PathUtils::GetExecutableDirectory() / "Plugins" / "AssetParsers");
+    LoadPluginsFromDirectory(ApplicationPaths::GetExecutableDirectory() / "Plugins" / "AssetParsers");
     LoadPluginsFromEnvironment();
 
     m_Initialized = true;
@@ -369,6 +369,20 @@ std::filesystem::path ParserRegistry::ResolveReadPath(const AssetMetadata& metad
     return parser ? parser->ResolveReadPath(metadata, assetManager) : metadata.Path;
 }
 
+AssetDecodeInputs ParserRegistry::ResolveDecodeInputs(const AssetMetadata& metadata, std::span<const uint8> bytes,
+                                                      AssetManager& assetManager) const
+{
+    const auto parser = FindParser(metadata.Path);
+    return parser ? parser->ResolveDecodeInputs(metadata, bytes, assetManager) : AssetDecodeInputs{};
+}
+
+AssetDecodeInputs ParserRegistry::ResolveDecodeInputsWithoutBytes(const AssetMetadata& metadata,
+                                                                  AssetManager& assetManager) const
+{
+    const auto parser = FindParser(metadata.Path);
+    return parser ? parser->ResolveDecodeInputsWithoutBytes(metadata, assetManager) : AssetDecodeInputs{};
+}
+
 std::vector<std::shared_ptr<AssetParser>> ParserRegistry::FindParsers(const std::string& extension) const
 {
     std::string normalizedExt = NormalizeExtension(extension);
@@ -474,11 +488,12 @@ void ParserRegistry::RegisterDefaultParsers()
     RegisterParser(std::make_shared<Ktx2TextureParser>());
     RegisterParser(std::make_shared<OtherTextureParser>());
 
-    RegisterParser(std::make_shared<LocalizationAssetParser>());
-
     // Register UI parsers (UI module assets)
     RegisterParser(std::make_shared<UILayoutAssetParser>());
     RegisterParser(std::make_shared<UIStyleAssetParser>());
+
+    // Register the shader source parser: its #include edges ship the included files
+    RegisterParser(std::make_shared<ShaderSourceAssetParser>());
 
     // Register generic XML parser (only used when UILayout sniffing rejects .xml)
     RegisterParser(std::make_shared<XmlAssetParser>());
@@ -501,14 +516,14 @@ void ParserRegistry::RegisterDefaultParsers()
 
     // Register navigation parsers
     RegisterParser(std::make_shared<NavGridAssetParser>());
-    RegisterParser(std::make_shared<NavMeshAssetParser>());
+    RegisterParser(std::make_shared<NavSurfaceAssetParser>());
 
     // Register material parser (.material -> Material v2 doc)
     RegisterParser(std::make_shared<MaterialAssetParser>());
 
-    // Both asset kinds use the scene text parser.
-    RegisterParser(std::make_shared<SceneAssetParser>());
-    RegisterParser(std::make_shared<SceneAssetParser>(AssetType::Prefab));
+    // Register the scene-text parsers (.scene and .prefab -> SceneAsset, INI-style).
+    RegisterParser(std::make_shared<SceneAssetParser>(AssetType::Scene, ".scene"));
+    RegisterParser(std::make_shared<SceneAssetParser>(AssetType::Prefab, ".prefab"));
 
     // Register lens-flare parsers (.flareatlas / .lensflare JSON).
     RegisterParser(std::make_shared<FlareAtlasParser>());

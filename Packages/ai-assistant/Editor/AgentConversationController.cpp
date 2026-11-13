@@ -122,7 +122,7 @@ void CheckTools(std::promise<std::string> answer, std::shared_ptr<CliSessionProv
 {
     try
     {
-        answer.set_value(provider->ToolsRefusal(node, port, *cancel));
+        answer.set_value(AssistantAttachment::ActingRefusal(*provider, node, port, SetupSurface::Panel, *cancel));
     }
     catch (const std::exception& e)
     {
@@ -196,7 +196,6 @@ struct AgentConversationController::TurnInFlight
     Conversation::TurnId Turn = 0;
     std::shared_ptr<IAgentProvider> Provider;
     std::vector<ConversationMessage> History;
-    /// The images of the user's message, copied so the request's span outlives later messages.
     std::vector<PromptFile> Images;
     AgentTurnRequest Request;
     CancelToken Cancel;
@@ -311,6 +310,7 @@ void AgentConversationController::FollowActing()
         m_ActingCheckCancel->Cancel();
     m_ActingCheckCancel.reset();
     m_ActingCheck = {};
+    m_ActingGeneration = AiAssistantSettings::SetupGeneration();
     m_ActingRefusal = AssistantAttachment::Unavailable();
     if (!m_ActingRefusal.empty())
         return;
@@ -362,14 +362,14 @@ void AgentConversationController::AttachTools(TurnInFlight& turn)
     gate.StartTurn(m_GateSession, turn.Turn);
 }
 
-bool AgentConversationController::Send(std::string text, std::vector<PromptFile> files,
-                                       std::string model)
+bool AgentConversationController::Send(std::string text, SentMarkups markups, std::string model,
+                                       std::string effort, std::vector<PromptFile> files)
 {
     if (text.size() > Conversation::kMaxMessageBytes)
         return false;
     const Conversation::TurnId turn =
-        m_Conversation.AddTurn(std::move(text), std::move(files), m_ProviderId,
-                               std::move(model), std::chrono::system_clock::now());
+        m_Conversation.AddTurn(std::move(text), std::move(markups), m_ProviderId, std::move(model),
+                               std::move(effort), std::chrono::system_clock::now(), std::move(files));
     m_Queue.push_back(turn);
     return true;
 }
@@ -385,9 +385,10 @@ void AgentConversationController::Retry(size_t messageIndex)
         return;
     // AddTurn takes copies, made before it grows the messages these refer to.
     const Conversation::TurnId turn = m_Conversation.AddTurn(messages[messageIndex - 1].Text,
-                                                             messages[messageIndex - 1].Files, m_ProviderId,
-                                                             reply.Model,
-                                                             std::chrono::system_clock::now());
+                                                             messages[messageIndex - 1].Markups, m_ProviderId,
+                                                             reply.Model, reply.Effort,
+                                                             std::chrono::system_clock::now(),
+                                                             messages[messageIndex - 1].Files);
     m_Queue.push_back(turn);
     m_Conversation.MarkRetried(m_Conversation.TurnOf(messageIndex));
 }
@@ -483,6 +484,9 @@ bool AgentConversationController::Update()
         if (!update.Result)
             continue;
         m_Conversation.Finish(update.Turn, *update.Result);
+        if (update.Result->Outcome == TurnOutcome::Succeeded && !update.Result->Model.empty())
+            if (const ConversationMessage* reply = m_Conversation.Reply(update.Turn); reply && !reply->Model.empty())
+                AiAssistantSettings::SetAnsweredModel(reply->ProviderId, reply->Model, update.Result->Model);
         if (!m_InFlight || m_InFlight->Turn != update.Turn)
             continue;
         if (m_InFlight->Tools && m_GateSession != 0)
@@ -496,6 +500,9 @@ bool AgentConversationController::Update()
         m_InFlight.reset();
     }
     TakeSessionList();
+    // A changed executable or connection makes the last tools answer stale.
+    if (AiAssistantSettings::SetupGeneration() != m_ActingGeneration)
+        FollowActing();
     TakeActingCheck();
     while (!m_InFlight && !m_Queue.empty())
         StartNextTurn();
@@ -532,6 +539,7 @@ void AgentConversationController::StartNextTurn()
             inFlight->Images.push_back(file);
     inFlight->Request.Images = inFlight->Images;
     inFlight->Request.Model = reply->Model;
+    inFlight->Request.Effort = reply->Effort;
     if (inFlight->Provider->Capabilities().OwnsTranscript)
         inFlight->Request.SessionId = AgentSessionState::Get().SessionId(reply->ProviderId);
     AttachTools(*inFlight);

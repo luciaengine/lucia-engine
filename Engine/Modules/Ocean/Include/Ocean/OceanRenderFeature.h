@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Engine/Rendering/IRenderFeature.h"
-#include "Engine/Rendering/WorldContentDigestTable.h"
 #include "Ocean/OceanAlbedoSim.h"
 #include "Ocean/OceanCaustics.h"
 #include "Ocean/OceanClipSim.h"
@@ -33,7 +32,7 @@
 #include "Ocean/OceanTime.h"
 #include "Ocean/OceanUnderwater.h"
 #include "Ocean/OceanWaveMaskSim.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/Handle.h"
 
 #include <array>
@@ -44,6 +43,11 @@
 #include <span>
 #include <unordered_map>
 #include <vector>
+
+namespace GameEngine::Mathematics
+{
+struct Matrix4x4;
+}
 
 namespace GameEngine::Rendering
 {
@@ -90,13 +94,26 @@ public:
     // outSampledCascades (optional): the RG imports of every dynamic sim cascade
     // the command binds, for the consuming pass's declared sampled reads. Points
     // into contributor scratch — consume before the next build for this view.
+    // `passKeywords` are the keywords of the pass the surface draws in.
     bool BuildSurfaceCommandForView(Engine::Renderer::RenderServices& rs,
                                     Rendering::RenderGraph::RGFrame& frame,
                                     ::GameEngine::Rendering::ViewId viewId,
                                     uint32 frameIndex,
+                                    Rendering::MaterialKeyword passKeywords,
                                     Engine::Renderer::DrawCommand& outCommand,
                                     std::span<const Rendering::RenderGraph::RGTexture>*
                                         outSampledCascades = nullptr);
+
+    // A paused view (OceanRenderNode::RequestPausedViewPipelines) asks the device for the pipelines
+    // of its first live frame: the simulation passes that serve a view that sees water, the wave
+    // simulation (which gameplay queries also run), and the surface at `formats`. The builds run off
+    // the calling thread. RequestSurfacePipeline returns true when it asked for the surface, that is
+    // when the surface draws into the view.
+    void RequestViewSimulationPipelines();
+    void RequestWaveSimulationPipelines();
+    bool RequestSurfacePipeline(Engine::Renderer::RenderServices& rs, ::GameEngine::Rendering::ViewId viewId,
+                                Rendering::MaterialKeyword passKeywords,
+                                const ::GameEngine::Rendering::PipelineFormatKey& formats);
 
     // ---- Camera-snapped concentric clipmap-ring mesh (single indexed draw) ----
     ::GameEngine::Rendering::BufferHandle GetGridVB() const { return m_GridVB; }
@@ -154,6 +171,9 @@ public:
     // copies: their waves are from an earlier ocean time, so queries use the
     // analytic surface until a new bake reads back.
     void BeginSimulationFrame();
+    // Adds the noted gameplay surface queries to the hold that HasRecentSurfaceQueries reads.
+    // It keeps the height fields' CPU copies. Declare thread.
+    void FoldSurfaceQueries() { m_SimulationDemand.Update(OceanSimulationDemand::Clock::now()); }
     // True while a gameplay surface query (SampleSurface, SampleSurfaces) arrived
     // within OceanSimulationDemand::kHold: the wave simulation and its height
     // field keep running for it with no water in view.
@@ -200,11 +220,11 @@ public:
         m_LastFlowDispatchFrame = frameIndex;
         return true;
     }
-    bool TryClaimDynWavesDispatch(uint64 appFrameEpoch)
+    bool TryClaimDynWavesDispatch(uint32 frameIndex)
     {
-        if (m_LastDynWavesDispatchEpoch == appFrameEpoch)
+        if (m_LastDynWavesDispatchFrame == frameIndex)
             return false;
-        m_LastDynWavesDispatchEpoch = appFrameEpoch;
+        m_LastDynWavesDispatchFrame = frameIndex;
         return true;
     }
     bool TryClaimWaveMaskDispatch(uint32 frameIndex)
@@ -214,11 +234,11 @@ public:
         m_LastWaveMaskDispatchFrame = frameIndex;
         return true;
     }
-    bool TryClaimFoamDispatch(uint64 appFrameEpoch)
+    bool TryClaimFoamDispatch(uint32 frameIndex)
     {
-        if (m_LastFoamDispatchEpoch == appFrameEpoch)
+        if (m_LastFoamDispatchFrame == frameIndex)
             return false;
-        m_LastFoamDispatchEpoch = appFrameEpoch;
+        m_LastFoamDispatchFrame = frameIndex;
         return true;
     }
 
@@ -236,17 +256,6 @@ public:
         if (m_LastAlbedoDispatchFrame == frameIndex)
             return false;
         m_LastAlbedoDispatchFrame = frameIndex;
-        return true;
-    }
-    // Once-per-frame claim for the planar-reflection capture. It re-renders the
-    // world (a full world pass), and all views share the single reflection
-    // target, so only the first view each frame records it (using that view's
-    // camera). Separate from the FFT claim because reflections are a world pass.
-    bool TryClaimReflectionDispatch(uint32 frameIndex)
-    {
-        if (m_LastReflectionDispatchFrame == frameIndex)
-            return false;
-        m_LastReflectionDispatchFrame = frameIndex;
         return true;
     }
     void SetFFTParams(const OceanFFTParamsGPU& params, bool spectrumDirty)
@@ -300,6 +309,16 @@ public:
     // readback ring's pendings with the frame's fence token — completion is
     // the token signaling, so any dispatch cadence (dyn-waves quiescence,
     // one-shot raster captures) is safe without resets.
+    void OnFrameAbortedRG(Rendering::RenderGraph::RGFrame& frame) override
+    {
+        m_HeightField.OnFrameAborted(frame);
+        for (auto& local : m_LocalHeightField)
+            local.OnFrameAborted(frame);
+        m_DynWavesReadback.OnFrameAborted(frame);
+        m_GPUQuery.OnFrameAborted(frame);
+        m_RasterDepthCapture.OnFrameAborted(frame);
+    }
+
     void OnFrameSubmittedRG(::GameEngine::Rendering::RenderGraph::RGFrame& frame,
                             const ::GameEngine::Rendering::IDevice::GpuSyncToken& token) override
     {
@@ -311,16 +330,6 @@ public:
         m_RasterDepthCapture.OnFrameSubmitted(frame, token);
     }
 
-    void OnFrameAbortedRG(Rendering::RenderGraph::RGFrame& frame) override
-    {
-        m_HeightField.OnFrameAborted(frame);
-        for (auto& local : m_LocalHeightField)
-            local.OnFrameAborted(frame);
-        m_DynWavesReadback.OnFrameAborted(frame);
-        m_GPUQuery.OnFrameAborted(frame);
-        m_RasterDepthCapture.OnFrameAborted(frame);
-    }
-
     // Frame-stream retirement (window closed): purge unstamped pendings keyed
     // to the dying frame so a recycled-address incarnation cannot falsely
     // stamp them.
@@ -330,10 +339,6 @@ public:
         for (auto& localHF : m_LocalHeightField)
             localHF.OnFrameStreamRetired(frame);
         m_DynWavesReadback.OnFrameStreamRetired(frame);
-        m_DynWaves.ForgetFrame(frame);
-        m_FoamSim.ForgetFrame(frame);
-        m_Shadows.ForgetFrame(frame);
-        m_SprayGPU.ForgetFrame(frame);
         m_GPUQuery.OnFrameStreamRetired(frame);
         m_RasterDepthCapture.OnFrameStreamRetired(frame);
     }
@@ -360,11 +365,11 @@ public:
     const IOceanCollisionProvider& GetCollisionProvider() const;
     bool IsGPUQueryReady() const { return m_GPUQueryReady; }
     OceanGPUQuery& GetGPUQuery() { return m_GPUQuery; }
-    bool TryClaimGPUQueryDispatch(uint64 appFrameEpoch)
+    bool TryClaimGPUQueryDispatch(uint32 frameIndex)
     {
-        if (m_LastGPUQueryDispatchEpoch == appFrameEpoch)
+        if (m_LastGPUQueryDispatchFrame == frameIndex)
             return false;
-        m_LastGPUQueryDispatchEpoch = appFrameEpoch;
+        m_LastGPUQueryDispatchFrame = frameIndex;
         return true;
     }
 
@@ -380,11 +385,7 @@ public:
     // behind the surface when the FFT claim is skipped by another view/path.
     bool IsFoamReady() const { return m_FoamReady; }
     OceanFoamSim& GetFoamSim() { return m_FoamSim; }
-    ::GameEngine::Rendering::TextureHandle GetFoamTexture(
-        const Rendering::RenderGraph::RGFrame& frame) const
-    {
-        return m_FoamSim.GetFoamTexture(frame);
-    }
+    ::GameEngine::Rendering::TextureHandle GetFoamTexture() const { return m_FoamSim.GetFoamTexture(); }
     ::GameEngine::Rendering::SamplerHandle GetFoamSampler() const { return m_FoamSim.GetFoamSampler(); }
 
     // ---- Displacement combine cascade (reserved perf path) ----
@@ -447,11 +448,7 @@ public:
     // never initialized.
     bool IsDynWavesReady() const { return m_DynWavesReady; }
     OceanDynWaves& GetDynWaves() { return m_DynWaves; }
-    ::GameEngine::Rendering::TextureHandle GetDynWavesTexture(
-        const Rendering::RenderGraph::RGFrame& frame) const
-    {
-        return m_DynWaves.GetTexture(frame);
-    }
+    ::GameEngine::Rendering::TextureHandle GetDynWavesTexture() const { return m_DynWaves.GetTexture(); }
     ::GameEngine::Rendering::SamplerHandle GetDynWavesSampler() const { return m_DynWaves.GetSampler(); }
     bool IsDynWavesReadbackReady() const { return m_DynWavesReadbackReady; }
     OceanDynWavesReadback& GetDynWavesReadback() { return m_DynWavesReadback; }
@@ -502,8 +499,7 @@ public:
     // water); LodCount 0 for the others. Each sim snaps on its own
     // schedule, so a texture sampled with another cascade's layout is drawn where
     // that cascade was snapped, not where it was written.
-    OceanSampledCascadeLayoutsGPU SampledCascadeLayouts(const Rendering::RenderGraph::RGFrame& frame,
-                                                       const SampledCascadeAvailability& available) const;
+    OceanSampledCascadeLayoutsGPU SampledCascadeLayouts(const SampledCascadeAvailability& available) const;
 
     // Authored cascade LOD-count limit (from OceanRenderer.LodCount), set by the
     // extraction system. Clamps the uploaded layout's LodCount down so the surface
@@ -518,10 +514,11 @@ public:
     // finest (LOD 0) cascade — smaller concentrates resolution nearer the camera.
     // LodDataResolution is the per-axis texel size of the snapped sim cascades
     // (foam/flow/dyn-waves/seabed/clip/albedo); a change resizes those textures.
-    // GeometryGridSize is the generated surface grid cells per edge.
     void SetCascadeBaseScale(float value) { m_CascadeBaseScale.store(value, std::memory_order_release); }
     void SetCascadeResolution(uint32 value) { m_CascadeResolution.store(value, std::memory_order_release); }
-    void SetGeometryGridSize(uint32 value) { m_GeometryGridSize.store(value, std::memory_order_release); }
+    // Cells per tile side of the surface ring mesh: 0 selects the default, any
+    // other value is even and in [8, 64] (ResolveOceanRingCellsPerTile).
+    void SetRingCellsPerTile(uint32 value);
     // Apply the authored base scale / resolution to every snapped sim and rebuild
     // the grid mesh if the requested density changed. Call once per frame BEFORE
     // the sims' BeginFrame snaps (so the new base scale takes effect this frame).
@@ -552,18 +549,21 @@ public:
         return m_WaveOriginOffsetZ.load(std::memory_order_acquire);
     }
 
-    // Stamp the per-view submersion result into the stored params' Underwater
-    // flag (1 = camera below the displaced surface this frame, so the surface
-    // shades two-sided + the overlay runs). The extraction system stored the
-    // authored toggle; this ANDs the render-time submersion onto it. Called by
-    // OceanRenderNode once per view after the camera snap.
-    // Pre-world node stamps the submersion state + depth here; that view's post-world
-    // underwater node reads GetSubmergedDepth() to drive the overlay (the overlay
-    // can't run in the same node — it must be scheduled after the world pass).
+    // Record this view's submersion sample: the flag (ANDed with the authored look) and the camera's
+    // depth under the displaced surface (negative above it). The pre-world node calls it once per
+    // view; the post-world underwater node reads the depth for its overlay.
     void SetUnderwaterActive(::GameEngine::Rendering::ViewId viewId, bool active, float submergedDepth);
     OceanParamsGPU GetParamsForView(::GameEngine::Rendering::ViewId viewId) const;
     float GetSubmergedDepthForView(::GameEngine::Rendering::ViewId viewId) const;
-    bool IsUnderwaterEnabled() const { return m_UnderwaterEnabled.load(std::memory_order_acquire); }
+    /// Height in meters of the camera above the displaced surface under it at which the
+    /// surface starts to cull back faces. It covers the error of the CPU surface sample
+    /// against the drawn surface: readback latency, texel spacing and sideways displacement.
+    static constexpr float kSurfaceCullClearance = 2.0f;
+    /// True when this view's camera can see the surface from below, so the surface draws
+    /// two-sided. False when the authored underwater look is off, or when the camera is at least
+    /// kSurfaceCullClearance above the displaced surface under it. True for a view with no
+    /// sample this frame.
+    bool IsSurfaceUndersideVisible(::GameEngine::Rendering::ViewId viewId) const;
 
     // ---- Underwater volumes (Crest volume / fly-through mode) ----
     // An axis-aligned box that confines the underwater overlay to a bounded water
@@ -627,7 +627,7 @@ public:
         float LocalWavelength = 12.0f;
         float LocalDirX = 1.0f;
         float LocalDirZ = 0.0f;
-        float LocalWaveExtra[kMaxOceanWaveMaskLocalWaves - 1u][4] = {};
+        Mathematics::Vector4 LocalWaveExtra[kMaxOceanWaveMaskLocalWaves - 1u];
         float LocalFFTBlend = 0.0f;
         uint32 LocalFFTStream = 0u;
     };
@@ -644,7 +644,7 @@ public:
         float LocalWavelength = 12.0f;
         float LocalDirX = 1.0f;
         float LocalDirZ = 0.0f;
-        float LocalWaveExtra[kMaxOceanWaveMaskLocalWaves - 1u][4] = {};
+        Mathematics::Vector4 LocalWaveExtra[kMaxOceanWaveMaskLocalWaves - 1u];
         float LocalFFTBlend = 0.0f;
         uint32 LocalFFTStream = 0u;
     };
@@ -684,7 +684,7 @@ public:
     // water-body footprint (box, stamp, polygon or surface-ribbon bounds), widened
     // by horizontalMargin metres, intersects its frustum. When the water bodies do
     // not confine the surface the ocean is unbounded, and the band spans the world.
-    bool IsWaterFootprintInView(const float* viewProj, float minY, float maxY,
+    bool IsWaterFootprintInView(const Mathematics::Matrix4x4& viewProj, float minY, float maxY,
                                 float horizontalMargin) const;
     float SampleWaterBodyWaveWeight(float x, float z) const;
     WaterBodyWaveOverrideSample SampleWaterBodyWaveOverride(float x, float z, float time) const;
@@ -718,25 +718,25 @@ public:
 
     bool HasOcean() const { return m_HasOcean.load(std::memory_order_acquire); }
     void SetHasOcean(bool value) { m_HasOcean.store(value, std::memory_order_release); }
-    // The surface writes depth (Opaque material) from its own node, and that
-    // depth changes only when the blocks it is drawn from change (the surface
-    // parameter block and the global and local FFT spectrum blocks: the ocean
-    // time, the wave, spectrum and surface settings) while some view sees the
-    // water. With those blocks unchanged (ocean time fixed or paused, no edit),
-    // or no water in view, the claim is false.
+    // The surface writes depth from its own node. The claim is true while some view sees the water and
+    // a block the surface is drawn from changes (the surface parameters, the global or local FFT
+    // spectrum; the ocean time only when the surface displaces). PublishDepthClaim sets it.
     bool WritesDynamicDepth() const override
     {
         return HasOcean() && m_SurfaceDepthChanging.load(std::memory_order_acquire);
     }
     // A view's post-world declare found water in view. Declare thread.
     void NoteWaterInView() { m_WaterInViewSincePublish.store(true, std::memory_order_release); }
-    // Decides WritesDynamicDepth for the frame about to render: true when a view
-    // saw water since the previous call and the published surface, FFT or local
-    // FFT block differs from the one at that call. The extraction system calls it once
-    // per update, after its last SetParams.
+    // True when the surface depth inputs changed at the last PublishDepthClaim, whether or not a
+    // view sees the water. A view that sees water reports its depth change from this (OceanRenderNode).
+    bool SurfaceDepthInputsChanged() const
+    {
+        return HasOcean() && m_SurfaceDepthInputsChanged.load(std::memory_order_acquire);
+    }
+    // Decides WritesDynamicDepth for the next frame: true when a view saw water since the last call and
+    // a surface, FFT or local FFT block changed. The ocean time counts only when the surface displaces.
+    // The extraction system calls it once per update, after its last SetParams.
     void PublishDepthClaim();
-    Engine::Renderer::WorldContentDigestTable& GetWorldContent() { return m_WorldContent; }
-    uint64_t ContentDigest(uint64_t worldId) const override { return m_WorldContent.Get(worldId); }
 
     // Authored flow / dynamic-wave toggles (from OceanSurface). Stored by the
     // extraction system; read by the contributor to gate binding + availability.
@@ -840,9 +840,9 @@ public:
     ::GameEngine::Rendering::SamplerHandle GetUserCausticsSampler() const { return m_UserTextureSampler; }
 
 private:
-    void CreateGridMesh(::GameEngine::Rendering::IDevice* device, uint32 gridSize);
+    void CreateGridMesh(::GameEngine::Rendering::IDevice* device, uint32 cellsPerTile);
     // Free the current clipmap VB/IB and rebuild at a new vertex density.
-    void RebuildGridMesh(::GameEngine::Rendering::IDevice* device, uint32 gridSize);
+    void RebuildGridMesh(::GameEngine::Rendering::IDevice* device, uint32 cellsPerTile);
 
     ::GameEngine::Rendering::IDevice* m_Device = nullptr;
     bool m_Initialized = false;
@@ -852,7 +852,7 @@ private:
     ::GameEngine::Rendering::BufferHandle m_GridIB;
     uint32 m_GridIndexCount = 0;
     uint32 m_GridVertexCount = 0;
-    uint32 m_GridSize = 0;
+    uint32 m_RingCellsPerTile = 0;
 
     // FFT wave simulation (displacement cascade array + compute pipelines).
     OceanFFT m_FFT;
@@ -865,14 +865,13 @@ private:
         0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu};
     uint32 m_LastSeabedDispatchFrame = 0xFFFFFFFFu;
     uint32 m_LastFlowDispatchFrame = 0xFFFFFFFFu;
-    uint64 m_LastDynWavesDispatchEpoch = ~uint64{0};
+    uint32 m_LastDynWavesDispatchFrame = 0xFFFFFFFFu;
     uint32 m_LastWaveMaskDispatchFrame = 0xFFFFFFFFu;
-    uint64 m_LastFoamDispatchEpoch = ~uint64{0};
+    uint32 m_LastFoamDispatchFrame = 0xFFFFFFFFu;
     uint32 m_LastClipDispatchFrame = 0xFFFFFFFFu;
     uint32 m_LastAlbedoDispatchFrame = 0xFFFFFFFFu;
-    uint32 m_LastReflectionDispatchFrame = 0xFFFFFFFFu;
     uint32 m_LastCombineDispatchFrame = 0xFFFFFFFFu;
-    uint64 m_LastGPUQueryDispatchEpoch = ~uint64{0};
+    uint32 m_LastGPUQueryDispatchFrame = 0xFFFFFFFFu;
 
     // Optional per-water-body local spectrum streams.
     std::array<OceanFFT, kMaxOceanLocalFFTStreams> m_LocalFFT;
@@ -934,9 +933,9 @@ private:
     // copy pipeline). Lazily built on first DeclareForView with a SceneColor.
     OceanSceneGrab m_SceneGrab;
 
-    // Planar reflection capture (feature-owned scaled colour target + a
-    // persistent secondary view/camera). Lazily built on first DeclareForView
-    // with PlanarReflections enabled.
+    // Planar reflection capture: one mirror (a scaled colour target + a hidden
+    // reflection view and camera) per view that draws water with
+    // PlanarReflections enabled, built on that view's first DeclareForView.
     OceanPlanarReflection m_PlanarReflection;
 
     // Underwater overlay (feature-owned runtime-compiled program + UBO ring).
@@ -985,6 +984,7 @@ private:
     std::atomic<bool> m_HasOcean{false};
     std::atomic<bool> m_WaterInViewSincePublish{false};
     std::atomic<bool> m_SurfaceDepthChanging{false};
+    std::atomic<bool> m_SurfaceDepthInputsChanged{false};
     // Every block the surface depth is a function of. The FFT blocks are recorded
     // as SetFFTParams / SetLocalFFTParams receive them: a spectrum-dirty flag is
     // not enough, since Chop reaches the surface without re-baking the spectrum.
@@ -999,7 +999,7 @@ private:
     SurfaceDepthInputs m_LatestDepthInputs{};
     // The inputs at the previous PublishDepthClaim.
     SurfaceDepthInputs m_ClaimedDepthInputs{};
-    Engine::Renderer::WorldContentDigestTable m_WorldContent;
+    static void ClearOceanTimes(SurfaceDepthInputs& inputs);
     OceanOriginShiftNotifier m_OriginShiftNotifier;
     std::atomic<float32> m_WaveOriginOffsetX{0.0f};
     std::atomic<float32> m_WaveOriginOffsetZ{0.0f};
@@ -1030,7 +1030,7 @@ private:
     std::atomic<bool> m_FlowEnabled{false};
     std::atomic<bool> m_DynWavesEnabled{false};
 
-    // Authored combine toggle (OceanRenderer.CombineDisplacementCascade).
+    // Authored combine toggle (OceanRenderer.CombineCascade).
     std::atomic<bool> m_CombineEnabled{false};
 
     // Authored clip + albedo toggles (from OceanSurface.ClipSurface / .Albedo), set
@@ -1048,7 +1048,7 @@ private:
     // Applied once per frame by ApplyCascadeConfig.
     std::atomic<float> m_CascadeBaseScale{0.0f};  // MinScale (LOD0 world extent)
     std::atomic<uint32> m_CascadeResolution{0};   // LodDataResolution (texels/axis)
-    std::atomic<uint32> m_GeometryGridSize{0};    // generated surface grid cells per edge
+    std::atomic<uint32> m_RequestedRingCellsPerTile{0}; // ring mesh cells per tile side, 0 = default
 
     std::unique_ptr<OceanForwardContributor> m_ForwardContributor;
 };

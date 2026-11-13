@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -8,8 +9,9 @@
 #include "Core/Application.h"
 #include "Core/Engine.h"
 
+#include "SceneView/SceneViewGizmos.h"
 #include "SceneView/TransformTool.h"
-#include "SceneViewController.h"
+#include "SceneView/SceneViewController.h"
 
 #include "Components/Hierarchy.h"
 #include "Components/Rendering/LocalBounds.h"
@@ -41,11 +43,13 @@ using GameEngine::Engine::Renderer::TransformHierarchySystem;
 
 using GameEngine::Mathematics::Quaternion;
 using GameEngine::Mathematics::Vector3;
+using GameEngine::Mathematics::WorldPosition;
 
 using GameEngine::Editor::SceneTools::GetGizmoLineGroups;
 using GameEngine::Editor::SceneTools::GetGizmoTriangleGroups;
 using GameEngine::Editor::SceneTools::GizmoCollector;
 using GameEngine::Editor::SceneTools::GizmoDepthMode;
+using GameEngine::Editor::SceneTools::kGizmoDepthModeDrawOrder;
 using GameEngine::Editor::SceneTools::GizmoHit;
 using GameEngine::Editor::SceneTools::GizmoHitKind;
 using GameEngine::Editor::SceneTools::GizmoRenderContext;
@@ -125,7 +129,7 @@ TEST_F(SceneViewTransformToolTests, RootEntityTranslationUpdatesWorldAndPivot)
     Quaternion startRot(1.0f, 0.0f, 0.0f, 0.0f);
     Vector3 startScale(1.0f, 1.0f, 1.0f);
 
-    Transform local = Transform::FromTRS(startPos, startRot, startScale);
+    Transform local = Transform::FromTRS(WorldPosition::FromVector3(startPos),startRot, startScale);
     entity.Set(local);
 
     world->ProcessCommands();
@@ -136,7 +140,7 @@ TEST_F(SceneViewTransformToolTests, RootEntityTranslationUpdatesWorldAndPivot)
     auto* worldBefore = world->GetComponent<WorldTransform>(entity.GetHandle());
     ASSERT_NE(worldBefore, nullptr);
 
-    Vector3 initialPivot(worldBefore->matrix[12], worldBefore->matrix[13], worldBefore->matrix[14]);
+    Vector3 initialPivot = worldBefore->GetPosition() - WorldPosition{};
 
     TransformTool tool(*GetWorld());
     tool.SetTargetEntity(entity.GetHandle());
@@ -164,7 +168,7 @@ TEST_F(SceneViewTransformToolTests, RootEntityTranslationUpdatesWorldAndPivot)
     auto* worldAfter = world->GetComponent<WorldTransform>(entity.GetHandle());
     ASSERT_NE(worldAfter, nullptr);
 
-    Vector3 worldPosAfter(worldAfter->matrix[12], worldAfter->matrix[13], worldAfter->matrix[14]);
+    Vector3 worldPosAfter = worldAfter->GetPosition() - WorldPosition{};
 
     EXPECT_NEAR(worldPosAfter[0], initialPivot[0] + deltaWorld[0], kPosEpsilon);
     EXPECT_NEAR(worldPosAfter[1], initialPivot[1] + deltaWorld[1], kPosEpsilon);
@@ -183,7 +187,7 @@ TEST_F(SceneViewTransformToolTests, TranslationKeepsOffsetPivotInSync)
 
     Entity entity = world->Create();
     entity.Set(Transform::FromTRS(
-        Vector3(0.0f, 0.0f, 0.0f),
+        WorldPosition{},
         Quaternion(1.0f, 0.0f, 0.0f, 0.0f),
         Vector3(1.0f, 1.0f, 1.0f)));
 
@@ -213,7 +217,7 @@ TEST_F(SceneViewTransformToolTests, TranslationKeepsOffsetPivotInSync)
 
     const auto* localAfter = world->GetComponent<Transform>(entity.GetHandle());
     ASSERT_NE(localAfter, nullptr);
-    const Vector3 posAfter = localAfter->GetPosition();
+    const Vector3 posAfter = localAfter->GetPosition() - WorldPosition{};
     EXPECT_NEAR(posAfter.x, deltaWorld[0], kPosEpsilon);
     EXPECT_NEAR(posAfter.y, deltaWorld[1], kPosEpsilon);
     EXPECT_NEAR(posAfter.z, deltaWorld[2], kPosEpsilon);
@@ -228,9 +232,9 @@ TEST_F(SceneViewTransformToolTests, InteractiveMultiSelectionAppliesSequentialPo
 {
     World* world = GetWorld();
     Entity first = world->Create(Transform::FromTRS(
-        Vector3(0.0f, 0.0f, 0.0f), Quaternion{}, Vector3(1.0f, 1.0f, 1.0f)));
+        WorldPosition{}, Quaternion{}, Vector3(1.0f, 1.0f, 1.0f)));
     Entity second = world->Create(Transform::FromTRS(
-        Vector3(10.0f, 0.0f, 0.0f), Quaternion{}, Vector3(1.0f, 1.0f, 1.0f)));
+        WorldPosition{10.0, 0.0, 0.0}, Quaternion{}, Vector3(1.0f, 1.0f, 1.0f)));
     world->ProcessCommands();
 
     TransformHierarchySystem hierarchySystem;
@@ -271,9 +275,9 @@ TEST_F(SceneViewTransformToolTests, InteractiveMultiSelectionAppliesSequentialPo
 
     // UIManager dispatches one coalesced pointer position per UI frame. The
     // transform tool applies each delivered delta directly to every target.
-    EXPECT_NEAR(world->GetComponent<Transform>(first.GetHandle())->GetPosition().x,
+    EXPECT_NEAR(world->GetComponent<Transform>(first.GetHandle())->GetPosition().X,
                 3.0f, kPosEpsilon);
-    EXPECT_NEAR(world->GetComponent<Transform>(second.GetHandle())->GetPosition().x,
+    EXPECT_NEAR(world->GetComponent<Transform>(second.GetHandle())->GetPosition().X,
                 13.0f, kPosEpsilon);
     ASSERT_TRUE(translateGizmo->HandlePointerEvent(
         makeEvent(PointerPhase::Up, 3.0f), planeHit));
@@ -285,7 +289,7 @@ TEST_F(SceneViewTransformToolTests, RefreshPivotUsesLocalBoundsCenter)
 
     Entity entity = world->Create();
     entity.Set(Transform::FromTRS(
-        Vector3(1.0f, 2.0f, 3.0f),
+        WorldPosition{1.0, 2.0, 3.0},
         Quaternion(1.0f, 0.0f, 0.0f, 0.0f),
         Vector3(1.0f, 1.0f, 1.0f)));
 
@@ -334,7 +338,7 @@ TEST_F(SceneViewTransformToolTests, RefreshPivotUsesSplineFirstPointInsteadOfTra
 
     Entity entity = world->Create();
     entity.Set(Transform::FromTRS(
-        Vector3(1.0f, 2.0f, 3.0f),
+        WorldPosition{1.0, 2.0, 3.0},
         Quaternion(1.0f, 0.0f, 0.0f, 0.0f),
         Vector3(1.0f, 1.0f, 1.0f)));
 
@@ -405,7 +409,7 @@ TEST_F(SceneViewTransformToolTests, RefreshPivotCanUseSplineCenter)
 
     Entity entity = world->Create();
     entity.Set(Transform::FromTRS(
-        Vector3(10.0f, 20.0f, 30.0f),
+        WorldPosition{10.0, 20.0, 30.0},
         Quaternion(1.0f, 0.0f, 0.0f, 0.0f),
         Vector3(1.0f, 1.0f, 1.0f)));
 
@@ -450,15 +454,15 @@ TEST_F(SceneViewTransformToolTests, ChildUnderRotatedScaledParentPreservesWorldD
     Quaternion parentRot(s, 0.0f, s, 0.0f);
     Vector3 parentScale(2.0f, 1.5f, 0.5f);
 
-    Transform parentLocal = Transform::FromTRS(parentPos, parentRot, parentScale);
+    Transform parentLocal = Transform::FromTRS(WorldPosition::FromVector3(parentPos),parentRot, parentScale);
 
     Vector3 childLocalPos(1.0f, 0.0f, 0.0f);
     Quaternion childRot(1.0f, 0.0f, 0.0f, 0.0f);
     Vector3 childScale(1.0f, 1.0f, 1.0f);
-    Transform childLocal = Transform::FromTRS(childLocalPos, childRot, childScale);
+    Transform childLocal = Transform::FromTRS(WorldPosition::FromVector3(childLocalPos),childRot, childScale);
 
     Parent parentComp{};
-    parentComp.parent = parent.GetHandle();
+    parentComp.Entity = parent.GetHandle();
 
     parent.Set(parentLocal);
     child.Set(childLocal);
@@ -474,9 +478,7 @@ TEST_F(SceneViewTransformToolTests, ChildUnderRotatedScaledParentPreservesWorldD
     ASSERT_NE(parentWorldBefore, nullptr);
     ASSERT_NE(childWorldBefore, nullptr);
 
-    Vector3 childWorldPosBefore(childWorldBefore->matrix[12],
-                                childWorldBefore->matrix[13],
-                                childWorldBefore->matrix[14]);
+    Vector3 childWorldPosBefore = childWorldBefore->GetPosition() - WorldPosition{};
 
     TransformTool tool(*GetWorld());
     tool.SetTargetEntity(child.GetHandle());
@@ -502,14 +504,13 @@ TEST_F(SceneViewTransformToolTests, ChildUnderRotatedScaledParentPreservesWorldD
     ASSERT_NE(childWorldAfter, nullptr);
 
     // Parent world transform must remain unchanged by child translation.
-    for (int i = 0; i < 16; ++i)
+    EXPECT_EQ(parentWorldAfter->Position, parentWorldBefore->Position);
+    for (int i = 0; i < 9; ++i)
     {
-        EXPECT_NEAR(parentWorldAfter->matrix[i], parentWorldBefore->matrix[i], 1.0e-5f);
+        EXPECT_NEAR(parentWorldAfter->Basis.Data()[i], parentWorldBefore->Basis.Data()[i], 1.0e-5f);
     }
 
-    Vector3 childWorldPosAfter(childWorldAfter->matrix[12],
-                               childWorldAfter->matrix[13],
-                               childWorldAfter->matrix[14]);
+    Vector3 childWorldPosAfter = childWorldAfter->GetPosition() - WorldPosition{};
 
     EXPECT_NEAR(childWorldPosAfter[0], childWorldPosBefore[0] + deltaWorld[0], kPosEpsilon);
     EXPECT_NEAR(childWorldPosAfter[1], childWorldPosBefore[1] + deltaWorld[1], kPosEpsilon);
@@ -533,15 +534,15 @@ TEST_F(SceneViewTransformToolTests, ChildUnderIdentityParentPreservesWorldDelta)
     Quaternion parentRot(1.0f, 0.0f, 0.0f, 0.0f);
     Vector3 parentScale(1.0f, 1.0f, 1.0f);
 
-    Transform parentLocal = Transform::FromTRS(parentPos, parentRot, parentScale);
+    Transform parentLocal = Transform::FromTRS(WorldPosition::FromVector3(parentPos),parentRot, parentScale);
 
     Vector3 childLocalPos(1.0f, 2.0f, -4.0f);
     Quaternion childRot(1.0f, 0.0f, 0.0f, 0.0f);
     Vector3 childScale(1.0f, 1.0f, 1.0f);
-    Transform childLocal = Transform::FromTRS(childLocalPos, childRot, childScale);
+    Transform childLocal = Transform::FromTRS(WorldPosition::FromVector3(childLocalPos),childRot, childScale);
 
     Parent parentComp{};
-    parentComp.parent = parent.GetHandle();
+    parentComp.Entity = parent.GetHandle();
 
     parent.Set(parentLocal);
     child.Set(childLocal);
@@ -557,9 +558,7 @@ TEST_F(SceneViewTransformToolTests, ChildUnderIdentityParentPreservesWorldDelta)
     ASSERT_NE(parentWorldBefore, nullptr);
     ASSERT_NE(childWorldBefore, nullptr);
 
-    Vector3 childWorldPosBefore(childWorldBefore->matrix[12],
-                                childWorldBefore->matrix[13],
-                                childWorldBefore->matrix[14]);
+    Vector3 childWorldPosBefore = childWorldBefore->GetPosition() - WorldPosition{};
 
     TransformTool tool(*GetWorld());
     tool.SetTargetEntity(child.GetHandle());
@@ -585,14 +584,13 @@ TEST_F(SceneViewTransformToolTests, ChildUnderIdentityParentPreservesWorldDelta)
     ASSERT_NE(childWorldAfter, nullptr);
 
     // Parent world transform must remain unchanged by child translation.
-    for (int i = 0; i < 16; ++i)
+    EXPECT_EQ(parentWorldAfter->Position, parentWorldBefore->Position);
+    for (int i = 0; i < 9; ++i)
     {
-        EXPECT_NEAR(parentWorldAfter->matrix[i], parentWorldBefore->matrix[i], 1.0e-5f);
+        EXPECT_NEAR(parentWorldAfter->Basis.Data()[i], parentWorldBefore->Basis.Data()[i], 1.0e-5f);
     }
 
-    Vector3 childWorldPosAfter(childWorldAfter->matrix[12],
-                               childWorldAfter->matrix[13],
-                               childWorldAfter->matrix[14]);
+    Vector3 childWorldPosAfter = childWorldAfter->GetPosition() - WorldPosition{};
 
     EXPECT_NEAR(childWorldPosAfter[0], childWorldPosBefore[0] + deltaWorld[0], kPosEpsilon);
     EXPECT_NEAR(childWorldPosAfter[1], childWorldPosBefore[1] + deltaWorld[1], kPosEpsilon);
@@ -614,7 +612,7 @@ TEST_F(SceneViewTransformToolTests, FrameLoop_OrderMatchesEngine_KeepsGizmoInSyn
     Quaternion startRot(1.0f, 0.0f, 0.0f, 0.0f);
     Vector3 startScale(1.0f, 1.0f, 1.0f);
 
-    Transform local = Transform::FromTRS(startPos, startRot, startScale);
+    Transform local = Transform::FromTRS(WorldPosition::FromVector3(startPos),startRot, startScale);
     entity.Set(local);
 
     world->ProcessCommands();
@@ -625,7 +623,7 @@ TEST_F(SceneViewTransformToolTests, FrameLoop_OrderMatchesEngine_KeepsGizmoInSyn
     auto* worldBefore = world->GetComponent<WorldTransform>(entity.GetHandle());
     ASSERT_NE(worldBefore, nullptr);
 
-    Vector3 initialWorldPos(worldBefore->matrix[12], worldBefore->matrix[13], worldBefore->matrix[14]);
+    Vector3 initialWorldPos = worldBefore->GetPosition() - WorldPosition{};
 
     TransformTool tool(*GetWorld());
     tool.SetTargetEntity(entity.GetHandle());
@@ -667,7 +665,7 @@ TEST_F(SceneViewTransformToolTests, FrameLoop_OrderMatchesEngine_KeepsGizmoInSyn
     auto* worldAfter = world->GetComponent<WorldTransform>(entity.GetHandle());
     ASSERT_NE(worldAfter, nullptr);
 
-    Vector3 worldPosAfter(worldAfter->matrix[12], worldAfter->matrix[13], worldAfter->matrix[14]);
+    Vector3 worldPosAfter = worldAfter->GetPosition() - WorldPosition{};
 
     // Let the gizmo resample its pivot from ECS state for this frame.
     ResetGizmoLineGroups(viewId);
@@ -698,7 +696,7 @@ TEST_F(SceneViewTransformToolTests, FrameLoop_BadOrderingProducesOneFrameDesync)
     Quaternion startRot(1.0f, 0.0f, 0.0f, 0.0f);
     Vector3 startScale(1.0f, 1.0f, 1.0f);
 
-    Transform local = Transform::FromTRS(startPos, startRot, startScale);
+    Transform local = Transform::FromTRS(WorldPosition::FromVector3(startPos),startRot, startScale);
     entity.Set(local);
 
     world->ProcessCommands();
@@ -709,7 +707,7 @@ TEST_F(SceneViewTransformToolTests, FrameLoop_BadOrderingProducesOneFrameDesync)
     auto* worldBefore = world->GetComponent<WorldTransform>(entity.GetHandle());
     ASSERT_NE(worldBefore, nullptr);
 
-    Vector3 worldPosFrame0(worldBefore->matrix[12], worldBefore->matrix[13], worldBefore->matrix[14]);
+    Vector3 worldPosFrame0 = worldBefore->GetPosition() - WorldPosition{};
 
     TransformTool tool(*GetWorld());
     tool.SetTargetEntity(entity.GetHandle());
@@ -762,7 +760,7 @@ TEST_F(SceneViewTransformToolTests, FrameLoop_BadOrderingProducesOneFrameDesync)
     auto* worldAfter = world->GetComponent<WorldTransform>(entity.GetHandle());
     ASSERT_NE(worldAfter, nullptr);
 
-    Vector3 worldPosFrame1(worldAfter->matrix[12], worldAfter->matrix[13], worldAfter->matrix[14]);
+    Vector3 worldPosFrame1 = worldAfter->GetPosition() - WorldPosition{};
 
     // Sanity: the world transform has moved by deltaWorld relative to frame 0.
     EXPECT_NEAR(worldPosFrame1[0], worldPosFrame0[0] + deltaWorld[0], kPosEpsilon);
@@ -800,7 +798,7 @@ TEST_F(SceneViewTransformToolTests, RootEntityRotationAroundWorldYAxisMatchesExp
     Quaternion startRot(1.0f, 0.0f, 0.0f, 0.0f);
     Vector3 startScale(1.0f, 1.0f, 1.0f);
 
-    Transform local = Transform::FromTRS(startPos, startRot, startScale);
+    Transform local = Transform::FromTRS(WorldPosition::FromVector3(startPos),startRot, startScale);
     entity.Set(local);
 
     world->ProcessCommands();
@@ -811,7 +809,7 @@ TEST_F(SceneViewTransformToolTests, RootEntityRotationAroundWorldYAxisMatchesExp
     auto* worldBefore = world->GetComponent<WorldTransform>(entity.GetHandle());
     ASSERT_NE(worldBefore, nullptr);
 
-    Vector3 pivot(worldBefore->matrix[12], worldBefore->matrix[13], worldBefore->matrix[14]);
+    Vector3 pivot = worldBefore->GetPosition() - WorldPosition{};
 
     TransformTool tool(*GetWorld());
     tool.SetTargetEntity(entity.GetHandle());
@@ -830,7 +828,8 @@ TEST_F(SceneViewTransformToolTests, RootEntityRotationAroundWorldYAxisMatchesExp
 
     // Extract rotation from WorldTransform by reconstructing a Transform.
     Transform worldTrsAfter;
-    std::memcpy(worldTrsAfter.matrix, worldAfter->matrix, sizeof(worldAfter->matrix));
+    worldTrsAfter.Position = worldAfter->Position;
+    worldTrsAfter.Basis = worldAfter->Basis;
     Quaternion worldRotAfter = worldTrsAfter.GetRotation();
 
     const float s = std::sqrt(0.5f);
@@ -856,7 +855,7 @@ TEST_F(SceneViewTransformToolTests, RootEntityScaleDeltaUpdatesLocalAndWorldScal
     Quaternion startRot(1.0f, 0.0f, 0.0f, 0.0f);
     Vector3 startScale(1.0f, 2.0f, 3.0f);
 
-    Transform local = Transform::FromTRS(startPos, startRot, startScale);
+    Transform local = Transform::FromTRS(WorldPosition::FromVector3(startPos),startRot, startScale);
     entity.Set(local);
 
     world->ProcessCommands();
@@ -867,7 +866,7 @@ TEST_F(SceneViewTransformToolTests, RootEntityScaleDeltaUpdatesLocalAndWorldScal
     auto* worldBefore = world->GetComponent<WorldTransform>(entity.GetHandle());
     ASSERT_NE(worldBefore, nullptr);
 
-    Vector3 pivot(worldBefore->matrix[12], worldBefore->matrix[13], worldBefore->matrix[14]);
+    Vector3 pivot = worldBefore->GetPosition() - WorldPosition{};
 
     TransformTool tool(*GetWorld());
     tool.SetTargetEntity(entity.GetHandle());
@@ -892,7 +891,8 @@ TEST_F(SceneViewTransformToolTests, RootEntityScaleDeltaUpdatesLocalAndWorldScal
     ASSERT_NE(worldAfter, nullptr);
 
     Transform worldTrsAfter;
-    std::memcpy(worldTrsAfter.matrix, worldAfter->matrix, sizeof(worldAfter->matrix));
+    worldTrsAfter.Position = worldAfter->Position;
+    worldTrsAfter.Basis = worldAfter->Basis;
     Vector3 worldScaleAfter = worldTrsAfter.GetScale();
 
     EXPECT_NEAR(worldScaleAfter.x, newLocalScale.x, kPosEpsilon);
@@ -900,141 +900,157 @@ TEST_F(SceneViewTransformToolTests, RootEntityScaleDeltaUpdatesLocalAndWorldScal
     EXPECT_NEAR(worldScaleAfter.z, newLocalScale.z, kPosEpsilon);
 }
 
-TEST_F(SceneViewTransformToolTests, WorldAndLocalAxisSpacesAreSwappedForPreRotatedRootEntity)
+namespace
 {
-    World* world = GetWorld();
+// A pointer event whose ray comes straight down `ringNormal` onto the point `pivot + onRing`.
+ScenePointerEvent RingPointerEvent(PointerPhase phase, const Vector3& pivot, const Vector3& onRing,
+                                   const Vector3& ringNormal, bool rotateSnap45)
+{
+    ScenePointerEvent event{};
+    event.button = PointerButton::Left;
+    event.phase = phase;
+    event.rotateSnap45 = rotateSnap45;
+    event.ray.origin = pivot + onRing + ringNormal * 10.0f;
+    event.ray.direction = ringNormal * -1.0f;
+    return event;
+}
 
-    Entity entity = world->Create();
-
-    // Start with a non-trivial rotation: 45 degrees around X axis.
-    Vector3 startPos(0.0f, 0.0f, 0.0f);
-    const float s = std::sqrt(0.5f);
-    Quaternion startRot(s, s, 0.0f, 0.0f);
-    Vector3 startScale(1.0f, 1.0f, 1.0f);
-
-    Transform local = Transform::FromTRS(startPos, startRot, startScale);
-    entity.Set(local);
-
-    world->ProcessCommands();
-
-    TransformHierarchySystem hierarchySystem;
-    hierarchySystem.Update(*world, 0.0f);
-
-    auto* worldBefore = world->GetComponent<WorldTransform>(entity.GetHandle());
-    ASSERT_NE(worldBefore, nullptr);
-
-    // Extract starting world rotation.
-    Transform worldTrsBefore;
-    std::memcpy(worldTrsBefore.matrix, worldBefore->matrix, sizeof(worldBefore->matrix));
-    Quaternion worldRotBefore = worldTrsBefore.GetRotation();
-
-    // Compute expected world rotations for pure world-axis and local-axis semantics
-    // using the Mathematics module, independent of TransformTool.
-    const auto& q0g = worldRotBefore.GetGLM();
-    Quaternion q0(q0g.w, q0g.x, q0g.y, q0g.z);
-
-    const float kAngle = 0.5f * 3.14159265358979323846f; // 90 degrees
-
-    // World-axis semantics: rotate around canonical world Y.
-    Quaternion qWorldSemantic = Quaternion::FromAxisAngle(Vector3(0.0f, 1.0f, 0.0f), kAngle) * q0;
-
-    // Local-axis semantics: rotate around the entity's local Y axis in world space.
-    Vector3 localYAxisWorld = q0.Rotate(Vector3(0.0f, 1.0f, 0.0f));
-    Quaternion qLocalSemantic = Quaternion::FromAxisAngle(localYAxisWorld, kAngle) * q0;
-
-    // 1) World axis space should now behave like the previous "local" semantics.
+// Drags `ring` a quarter turn around `normal`, from `tangent` through the halfway point to
+// `bitangent`, through the rotate gizmo's pointer path.
+void DragRingQuarterTurn(GameEngine::Editor::SceneTools::TransformRotateGizmo& rotateGizmo, const GizmoHit& ring,
+                         const Vector3& pivot, const Vector3& normal, const Vector3& tangent,
+                         const Vector3& bitangent, bool rotateSnap45)
+{
+    const Vector3 halfway = (tangent + bitangent) * std::sqrt(0.5f);
+    const Vector3 path[] = {tangent, halfway, bitangent, bitangent};
+    const PointerPhase phases[] = {PointerPhase::Down, PointerPhase::Move, PointerPhase::Move, PointerPhase::Up};
+    for (int step = 0; step < 4; ++step)
     {
-        Vector3 pivot(worldBefore->matrix[12], worldBefore->matrix[13], worldBefore->matrix[14]);
-
-        TransformTool tool(*GetWorld());
-        tool.SetTargetEntity(entity.GetHandle());
-        tool.SetPivot(pivot);
-        tool.SetMode(TransformMode::Rotate);
-        tool.SetAxisSpace(GameEngine::Editor::SceneTools::TransformAxisSpace::World);
-
-        tool.ApplyRotationDelta(1u, kAngle);
-
-        world->ProcessCommands();
-        hierarchySystem.Update(*world, 0.0f);
-
-        auto* worldAfter = world->GetComponent<WorldTransform>(entity.GetHandle());
-        ASSERT_NE(worldAfter, nullptr);
-
-        Transform worldTrsAfter;
-        std::memcpy(worldTrsAfter.matrix, worldAfter->matrix, sizeof(worldAfter->matrix));
-        Quaternion worldRotAfter = worldTrsAfter.GetRotation();
-
-        const glm::quat gLocal = qLocalSemantic.GetGLM();
-        Quaternion expectedLocalSemRot(gLocal.w, gLocal.x, gLocal.y, gLocal.z);
-
-        // Quaternions represent the same rotation up to a global sign flip.
-        // If the dot product is negative, flip the expected quaternion so we
-        // compare against the equivalent representation.
-        const auto& wra = worldRotAfter.GetGLM();
-        auto els = expectedLocalSemRot.GetGLM();
-        float dotLocal = wra.x * els.x + wra.y * els.y + wra.z * els.z + wra.w * els.w;
-        if (dotLocal < 0.0f)
-        {
-            els.x = -els.x;
-            els.y = -els.y;
-            els.z = -els.z;
-            els.w = -els.w;
-        }
-
-        EXPECT_NEAR(wra.x, els.x, kRotEpsilon);
-        EXPECT_NEAR(wra.y, els.y, kRotEpsilon);
-        EXPECT_NEAR(wra.z, els.z, kRotEpsilon);
-        EXPECT_NEAR(wra.w, els.w, kRotEpsilon);
+        ScenePointerEvent event = RingPointerEvent(phases[step], pivot, path[step], normal, rotateSnap45);
+        // The screen-space ring measures in the camera's (right, up) frame about its forward axis;
+        // the camera looks down -normal.
+        event.cameraRight = tangent;
+        event.cameraUp = bitangent;
+        event.cameraForward = normal * -1.0f;
+        ASSERT_TRUE(rotateGizmo.HandlePointerEvent(event, ring));
     }
+}
+} // namespace
 
-    // Reset entity to starting local transform.
-    entity.Set(local);
+// Dragging a rotate ring turns the entity about the axis the ring is drawn around, the way the
+// pointer went, in both axis spaces. The rings are drawn along the world axes in World space and
+// along the entity's axes in Local space (TransformTool::GetAxisDirections). The pointer goes a
+// quarter turn around the Y ring, from the ring's tangent (the Z axis) to its bitangent (the X
+// axis), so the entity's Z axis must end on the ring's X axis and its Y axis must stay where it was.
+TEST_F(SceneViewTransformToolTests, RotateRingDragTurnsAboutTheDrawnAxisTowardThePointer)
+{
+    using GameEngine::Editor::SceneTools::TransformAxisSpace;
+    using GameEngine::Editor::SceneTools::TransformRotateGizmo;
+    World* world = GetWorld();
+    TransformHierarchySystem hierarchySystem;
+
+    // 45 degrees about X, so the entity's Y and Z axes are not world axes.
+    const float halfAngle = 0.125f * 3.14159265358979323846f;
+    const Quaternion startRot(std::cos(halfAngle), std::sin(halfAngle), 0.0f, 0.0f);
+    const Vector3 pivot(0.0f, 0.0f, 0.0f);
+
+    for (const bool rotateSnap45 : {false, true})
+    {
+        for (const TransformAxisSpace space : {TransformAxisSpace::World, TransformAxisSpace::Local})
+        {
+            SCOPED_TRACE(space == TransformAxisSpace::World ? "World" : "Local");
+            SCOPED_TRACE(rotateSnap45 ? "snapped" : "free");
+            world->Clear();
+            Entity entity = world->Create(Transform::FromTRS(WorldPosition::FromVector3(pivot),startRot, Vector3(1.0f, 1.0f, 1.0f)));
+            world->ProcessCommands();
+            hierarchySystem.Update(*world, 0.0f);
+
+            Vector3 ringAxes[3] = {Vector3(1.0f, 0.0f, 0.0f), Vector3(0.0f, 1.0f, 0.0f), Vector3(0.0f, 0.0f, 1.0f)};
+            if (space == TransformAxisSpace::Local)
+            {
+                for (Vector3& ringAxis : ringAxes)
+                {
+                    ringAxis = startRot.Rotate(ringAxis);
+                }
+            }
+
+            TransformTool tool(*GetWorld());
+            tool.SetTargetEntity(entity.GetHandle());
+            tool.SetMode(TransformMode::Rotate);
+            tool.SetAxisSpace(space);
+            tool.SetPivot(pivot);
+
+            GizmoCollector collector;
+            tool.GatherGizmos(collector);
+            ASSERT_EQ(collector.GetGizmos().size(), 1u);
+            auto* rotateGizmo = dynamic_cast<TransformRotateGizmo*>(collector.GetGizmos()[0]);
+            ASSERT_NE(rotateGizmo, nullptr);
+
+            GizmoHit yRing{};
+            yRing.kind = GizmoHitKind::Axis;
+            yRing.handleId = 1u;
+            const Vector3& normal = ringAxes[1];
+            const Vector3& tangent = ringAxes[2];
+            const Vector3& bitangent = ringAxes[0];
+            DragRingQuarterTurn(*rotateGizmo, yRing, pivot, normal, tangent, bitangent, rotateSnap45);
+
+            const Quaternion after = world->GetComponent<Transform>(entity.GetHandle())->GetRotation();
+            const Vector3 entityY = after.Rotate(Vector3(0.0f, 1.0f, 0.0f));
+            const Vector3 entityZ = after.Rotate(Vector3(0.0f, 0.0f, 1.0f));
+            const Vector3 startY = startRot.Rotate(Vector3(0.0f, 1.0f, 0.0f));
+            const Vector3 startZ = startRot.Rotate(Vector3(0.0f, 0.0f, 1.0f));
+            // The turn about the ring's normal by +90 degrees, which carries the tangent onto the bitangent.
+            const Quaternion turn = Quaternion::FromAxisAngle(normal, 0.5f * 3.14159265358979323846f);
+            EXPECT_NEAR(Vector3::Dot(turn.Rotate(tangent), bitangent), 1.0f, kRotEpsilon);
+            EXPECT_NEAR(Vector3::Dot(entityY, turn.Rotate(startY)), 1.0f, kRotEpsilon);
+            EXPECT_NEAR(Vector3::Dot(entityZ, turn.Rotate(startZ)), 1.0f, kRotEpsilon);
+        }
+    }
+}
+
+// Dragging the screen-space ring (enhanced mode) a quarter turn from the camera's right to its up
+// turns the entity a quarter turn about the camera's forward axis, the way the pointer went: on
+// screen, the entity's point on the right moves to the top.
+TEST_F(SceneViewTransformToolTests, ScreenRingDragTurnsAboutTheViewAxisTowardThePointer)
+{
+    using GameEngine::Editor::SceneTools::TransformRotateGizmo;
+    World* world = GetWorld();
+    TransformHierarchySystem hierarchySystem;
+
+    const float halfAngle = 0.125f * 3.14159265358979323846f;
+    const Quaternion startRot(std::cos(halfAngle), std::sin(halfAngle), 0.0f, 0.0f);
+    const Vector3 pivot(0.0f, 0.0f, 0.0f);
+    Entity entity = world->Create(Transform::FromTRS(WorldPosition::FromVector3(pivot),startRot, Vector3(1.0f, 1.0f, 1.0f)));
     world->ProcessCommands();
     hierarchySystem.Update(*world, 0.0f);
 
-    auto* worldBefore2 = world->GetComponent<WorldTransform>(entity.GetHandle());
-    ASSERT_NE(worldBefore2, nullptr);
+    TransformTool tool(*GetWorld());
+    tool.SetTargetEntity(entity.GetHandle());
+    tool.SetMode(TransformMode::Rotate);
+    tool.SetRotateGizmoEnhanced(true);
+    tool.SetPivot(pivot);
 
-    // 2) Local axis space should now behave like the previous "world" semantics.
+    GizmoCollector collector;
+    tool.GatherGizmos(collector);
+    ASSERT_EQ(collector.GetGizmos().size(), 1u);
+    auto* rotateGizmo = dynamic_cast<TransformRotateGizmo*>(collector.GetGizmos()[0]);
+    ASSERT_NE(rotateGizmo, nullptr);
+
+    // A camera looking down +Z with +X right and +Y up.
+    const Vector3 right(1.0f, 0.0f, 0.0f);
+    const Vector3 up(0.0f, 1.0f, 0.0f);
+    const Vector3 forward(0.0f, 0.0f, 1.0f);
+    GizmoHit screenRing{};
+    screenRing.kind = GizmoHitKind::Axis;
+    screenRing.handleId = 3u; // TransformRotateGizmo's screen-space ring handle
+    DragRingQuarterTurn(*rotateGizmo, screenRing, pivot, forward * -1.0f, right, up, false);
+
+    const Quaternion after = world->GetComponent<Transform>(entity.GetHandle())->GetRotation();
+    const Quaternion turn = Quaternion::FromAxisAngle(forward, 0.5f * 3.14159265358979323846f);
+    EXPECT_NEAR(Vector3::Dot(turn.Rotate(right), up), 1.0f, kRotEpsilon);
+    for (const Vector3& axis : {Vector3(1.0f, 0.0f, 0.0f), Vector3(0.0f, 1.0f, 0.0f), Vector3(0.0f, 0.0f, 1.0f)})
     {
-        Vector3 pivot(worldBefore2->matrix[12], worldBefore2->matrix[13], worldBefore2->matrix[14]);
-
-        TransformTool tool(*GetWorld());
-        tool.SetTargetEntity(entity.GetHandle());
-        tool.SetPivot(pivot);
-        tool.SetMode(TransformMode::Rotate);
-        tool.SetAxisSpace(GameEngine::Editor::SceneTools::TransformAxisSpace::Local);
-
-        tool.ApplyRotationDelta(1u, kAngle);
-
-        world->ProcessCommands();
-        hierarchySystem.Update(*world, 0.0f);
-
-        auto* worldAfter = world->GetComponent<WorldTransform>(entity.GetHandle());
-        ASSERT_NE(worldAfter, nullptr);
-
-        Transform worldTrsAfter;
-        std::memcpy(worldTrsAfter.matrix, worldAfter->matrix, sizeof(worldAfter->matrix));
-        Quaternion worldRotAfter = worldTrsAfter.GetRotation();
-
-        const glm::quat gWorld = qWorldSemantic.GetGLM();
-        Quaternion expectedWorldSemRot(gWorld.w, gWorld.x, gWorld.y, gWorld.z);
-
-        const auto& wra2 = worldRotAfter.GetGLM();
-        auto ews = expectedWorldSemRot.GetGLM();
-        float dotWorld = wra2.x * ews.x + wra2.y * ews.y + wra2.z * ews.z + wra2.w * ews.w;
-        if (dotWorld < 0.0f)
-        {
-            ews.x = -ews.x;
-            ews.y = -ews.y;
-            ews.z = -ews.z;
-            ews.w = -ews.w;
-        }
-
-        EXPECT_NEAR(wra2.x, ews.x, kRotEpsilon);
-        EXPECT_NEAR(wra2.y, ews.y, kRotEpsilon);
-        EXPECT_NEAR(wra2.z, ews.z, kRotEpsilon);
-        EXPECT_NEAR(wra2.w, ews.w, kRotEpsilon);
+        EXPECT_NEAR(Vector3::Dot(after.Rotate(axis), turn.Rotate(startRot.Rotate(axis))), 1.0f, kRotEpsilon);
     }
 }
 
@@ -1072,7 +1088,7 @@ TEST_F(SceneViewTransformToolTests, ClearingMissingExternalPointTargetDoesNotCan
     Vector3 startPos(0.0f, 0.0f, 0.0f);
     Quaternion startRot(1.0f, 0.0f, 0.0f, 0.0f);
     Vector3 startScale(1.0f, 1.0f, 1.0f);
-    entity.Set(Transform::FromTRS(startPos, startRot, startScale));
+    entity.Set(Transform::FromTRS(WorldPosition::FromVector3(startPos),startRot, startScale));
     world->ProcessCommands();
 
     TransformTool tool(*GetWorld());
@@ -1133,7 +1149,7 @@ TEST_F(SceneViewTransformToolTests, ClearingMissingExternalPointTargetDoesNotCan
 
     auto* tAfter = world->GetComponent<Transform>(entity.GetHandle());
     ASSERT_NE(tAfter, nullptr);
-    const Vector3 posAfter = tAfter->GetPosition();
+    const Vector3 posAfter = tAfter->GetPosition() - WorldPosition{};
     EXPECT_NEAR(posAfter.x, 2.0f, kPosEpsilon);
     EXPECT_NEAR(posAfter.y, 0.0f, kPosEpsilon);
     EXPECT_NEAR(posAfter.z, 0.0f, kPosEpsilon);
@@ -1149,7 +1165,7 @@ TEST_F(SceneViewTransformToolTests, GizmoDragTranslateCoalescesToSingleUndoAndUn
     Vector3 startPos(0.0f, 0.0f, 0.0f);
     Quaternion startRot(1.0f, 0.0f, 0.0f, 0.0f);
     Vector3   startScale(1.0f, 1.0f, 1.0f);
-    Transform local = Transform::FromTRS(startPos, startRot, startScale);
+    Transform local = Transform::FromTRS(WorldPosition::FromVector3(startPos),startRot, startScale);
     entity.Set(local);
     world->ProcessCommands();
 
@@ -1219,7 +1235,7 @@ TEST_F(SceneViewTransformToolTests, GizmoDragTranslateCoalescesToSingleUndoAndUn
 
     auto* tAfter = world->GetComponent<Transform>(entity.GetHandle());
     ASSERT_NE(tAfter, nullptr);
-    Vector3 posAfter = tAfter->GetPosition();
+    Vector3 posAfter = tAfter->GetPosition() - WorldPosition{};
     EXPECT_NEAR(posAfter.x, 2.0f, kPosEpsilon);
     EXPECT_NEAR(posAfter.y, 0.0f, kPosEpsilon);
     EXPECT_NEAR(posAfter.z, 0.0f, kPosEpsilon);
@@ -1227,7 +1243,7 @@ TEST_F(SceneViewTransformToolTests, GizmoDragTranslateCoalescesToSingleUndoAndUn
     undo.Undo();
     auto* tUndo = world->GetComponent<Transform>(entity.GetHandle());
     ASSERT_NE(tUndo, nullptr);
-    Vector3 posUndo = tUndo->GetPosition();
+    Vector3 posUndo = tUndo->GetPosition() - WorldPosition{};
     EXPECT_NEAR(posUndo.x, startPos.x, kPosEpsilon);
     EXPECT_NEAR(posUndo.y, startPos.y, kPosEpsilon);
     EXPECT_NEAR(posUndo.z, startPos.z, kPosEpsilon);
@@ -1235,22 +1251,24 @@ TEST_F(SceneViewTransformToolTests, GizmoDragTranslateCoalescesToSingleUndoAndUn
     undo.Redo();
     auto* tRedo = world->GetComponent<Transform>(entity.GetHandle());
     ASSERT_NE(tRedo, nullptr);
-    Vector3 posRedo = tRedo->GetPosition();
+    Vector3 posRedo = tRedo->GetPosition() - WorldPosition{};
     EXPECT_NEAR(posRedo.x, 2.0f, kPosEpsilon);
     EXPECT_NEAR(posRedo.y, 0.0f, kPosEpsilon);
     EXPECT_NEAR(posRedo.z, 0.0f, kPosEpsilon);
 }
 
-// Manipulation handles are drawn unoccluded. Every group a transform gizmo
-// emits must carry AlwaysOnTop: a single SceneDepth group is enough to leave
-// part of a handle dimmed to 30% alpha wherever geometry sits in front of it.
-TEST_F(SceneViewTransformToolTests, TransformHandlesRenderAlwaysOnTop)
+// Manipulation handles are drawn unoccluded and after every other gizmo. Every
+// group a transform gizmo emits must carry Handle: a SceneDepth group leaves
+// part of a handle dimmed wherever geometry sits in front of it, and an
+// AlwaysOnTop group is drawn before a transparent world overlay that then tints
+// it.
+TEST_F(SceneViewTransformToolTests, TransformHandlesRenderAsHandles)
 {
     World* world = GetWorld();
 
     Entity entity = world->Create();
     entity.Set(Transform::FromTRS(
-        Vector3(0.0f, 0.0f, 0.0f),
+        WorldPosition{},
         Quaternion(1.0f, 0.0f, 0.0f, 0.0f),
         Vector3(1.0f, 1.0f, 1.0f)));
     world->ProcessCommands();
@@ -1292,7 +1310,7 @@ TEST_F(SceneViewTransformToolTests, TransformHandlesRenderAlwaysOnTop)
         // Either collection may legitimately be absent — the accessors return
         // null for an empty set, and the rotate rings are solid tubes, so that
         // gizmo emits triangles and no lines. What must hold is that the gizmo
-        // drew something and that everything it drew is always-on-top.
+        // drew something and that everything it drew is a handle.
         const auto* lineGroups = GetGizmoLineGroups(viewId);
         const auto* triGroups = GetGizmoTriangleGroups(viewId);
 
@@ -1302,7 +1320,7 @@ TEST_F(SceneViewTransformToolTests, TransformHandlesRenderAlwaysOnTop)
             for (const auto& group : *lineGroups)
             {
                 vertexCount += group.vertices.size();
-                EXPECT_EQ(group.depthMode, GizmoDepthMode::AlwaysOnTop)
+                EXPECT_EQ(group.depthMode, GizmoDepthMode::Handle)
                     << testCase.Name << " line group";
             }
         }
@@ -1311,7 +1329,7 @@ TEST_F(SceneViewTransformToolTests, TransformHandlesRenderAlwaysOnTop)
             for (const auto& group : *triGroups)
             {
                 vertexCount += group.vertices.size();
-                EXPECT_EQ(group.depthMode, GizmoDepthMode::AlwaysOnTop)
+                EXPECT_EQ(group.depthMode, GizmoDepthMode::Handle)
                     << testCase.Name << " triangle group";
             }
         }
@@ -1319,9 +1337,18 @@ TEST_F(SceneViewTransformToolTests, TransformHandlesRenderAlwaysOnTop)
 
         // The mode is sticky context state shared by every gizmo in the frame,
         // so the scope must restore it or the descriptive gizmos rendered after
-        // this one inherit always-on-top.
+        // this one inherit the handle mode.
         EXPECT_EQ(context.GetDepthMode(), GizmoDepthMode::SceneDepth) << testCase.Name;
     }
+}
+
+// The overlay pass draws the handles after every other depth mode, so a transparent world overlay
+// cannot tint them.
+TEST(SceneViewGizmoDrawOrder, HandlesDrawLast)
+{
+    ASSERT_FALSE(kGizmoDepthModeDrawOrder.empty());
+    EXPECT_EQ(kGizmoDepthModeDrawOrder.back(), GizmoDepthMode::Handle);
+    EXPECT_EQ(std::count(kGizmoDepthModeDrawOrder.begin(), kGizmoDepthModeDrawOrder.end(), GizmoDepthMode::Handle), 1);
 }
 
 // The opt-in must stay an opt-in: an unqualified draw still depth-tests, so a
@@ -1356,8 +1383,8 @@ TEST_F(SceneViewTransformToolTests, IndependentWorldBindingsDoNotEditCollidingHa
     auto a = first.Create();
     auto b = second.Create();
     ASSERT_EQ(a.GetHandle(), b.GetHandle());
-    a.Set(Transform::FromTRS(Vector3(1, 0, 0), Quaternion(1, 0, 0, 0), Vector3(1, 1, 1)));
-    b.Set(Transform::FromTRS(Vector3(10, 0, 0), Quaternion(1, 0, 0, 0), Vector3(1, 1, 1)));
+    a.Set(Transform::FromTRS(WorldPosition{1.0, 0.0, 0.0}, Quaternion(1, 0, 0, 0), Vector3(1, 1, 1)));
+    b.Set(Transform::FromTRS(WorldPosition{10.0, 0.0, 0.0}, Quaternion(1, 0, 0, 0), Vector3(1, 1, 1)));
     first.ProcessCommands();
     second.ProcessCommands();
     TransformHierarchySystem hierarchy;
@@ -1372,8 +1399,8 @@ TEST_F(SceneViewTransformToolTests, IndependentWorldBindingsDoNotEditCollidingHa
     second.ProcessCommands();
     hierarchy.Update(first, 0);
     hierarchy.Update(second, 0);
-    EXPECT_FLOAT_EQ(first.GetComponent<WorldTransform>(a.GetHandle())->matrix[12], 6);
-    EXPECT_FLOAT_EQ(second.GetComponent<WorldTransform>(b.GetHandle())->matrix[12], 10);
+    EXPECT_DOUBLE_EQ(first.GetComponent<WorldTransform>(a.GetHandle())->Position.X, 6.0);
+    EXPECT_DOUBLE_EQ(second.GetComponent<WorldTransform>(b.GetHandle())->Position.X, 10.0);
 }
 
 TEST(SceneViewOwnership, MeasureSelectionIsLocalAndResetsWithItsWorld)

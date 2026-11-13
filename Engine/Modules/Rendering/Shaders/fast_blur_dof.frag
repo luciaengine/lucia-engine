@@ -12,7 +12,7 @@ layout(set = 0, binding = 1) uniform sampler2D uDepth;
 
 layout(set = 0, binding = 2, std140) uniform ViewParamsBlock
 {
-    // 160 B core prefix of the shared ViewParams list.
+    // 176 B core prefix of the shared ViewParams list.
 #define GE_VP_MAT4(name) mat4 name;
 #define GE_VP_VEC4(name) vec4 name;
 #define GE_VIEWPARAMS_CORE_ONLY 1
@@ -65,13 +65,13 @@ void main()
     ivec2 depthSize = textureSize(uDepth, 0);
     ivec2 pix = ivec2(clamp(gl_FragCoord.xy, vec2(0.0), vec2(depthSize) - vec2(1.0)));
     float rawDepth = texelFetch(uDepth, pix, 0).r;
-    if (rawDepth <= 0.0)
+    if (IsBackgroundDepth(rawDepth))
     {
         oColor = vec4(centerRgb, center.a);
         return;
     }
 
-    float linearDepth = LinearizeReverseZ(rawDepth);
+    float linearDepth = LinearizeReverseZ(rawDepth, ViewParams.ge_depthTerms);
     float coc = CircleOfConfusion(linearDepth) * intensity;
     float radiusPx = coc * maxRadius;
     if (radiusPx <= 0.25)

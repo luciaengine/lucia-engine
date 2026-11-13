@@ -4,6 +4,7 @@
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
 #include "ECS/UnresolvedComponentStore.h"
+#include "Mathematics/Interpolation.h"
 
 #include <algorithm>
 #include <cassert>
@@ -204,16 +205,16 @@ bool MarkupService::SetTagColor(uint32 id, const float32 (&color)[4])
 MarkupService::WorldMarkups& MarkupService::WritableState(const ECS::World& world)
 {
     WorldMarkups& state = m_Worlds[world.GetWorldId()];
-    const uint64 generation = world.GetLifecycleResetGeneration();
-    if (state.ResetGeneration != generation)
-        state = WorldMarkups{generation};
+    const uint64 epoch = world.GetEntityHandleEpoch();
+    if (state.HandleEpoch != epoch)
+        state = WorldMarkups{epoch};
     return state;
 }
 
 const MarkupService::WorldMarkups* MarkupService::ReadableState(const ECS::World& world) const
 {
     const auto it = m_Worlds.find(world.GetWorldId());
-    if (it == m_Worlds.end() || it->second.ResetGeneration != world.GetLifecycleResetGeneration())
+    if (it == m_Worlds.end() || it->second.HandleEpoch != world.GetEntityHandleEpoch())
         return nullptr;
     return &it->second;
 }
@@ -308,7 +309,7 @@ uint32 OwnColorArgb(const Components::Markup& markup)
     const float32* c = markup.Color;
     if (c[0] == 0.0f && c[1] == 0.0f && c[2] == 0.0f && c[3] == 0.0f)
         return 0;
-    const auto byte = [](float32 v) { return static_cast<uint32>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f); };
+    const auto byte = [](float32 v) { return static_cast<uint32>(Math::Clamp01(v) * 255.0f + 0.5f); };
     return 0xFF000000u | (byte(c[0]) << 16) | (byte(c[1]) << 8) | byte(c[2]);
 }
 

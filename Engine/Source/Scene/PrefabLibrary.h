@@ -1,8 +1,13 @@
 #pragma once
 
-// One private template world for resolved prefabs, nesting and variants.
-// The engine library is main-thread owned; off-thread or standalone loads use a private library.
-// Spawns read immutable templates without a lock.
+// The prefab library: one private world that holds a template of every resident prefab, resolved
+// once from its file with its nesting and variant chain applied. A placed instance and a spawn are
+// batch clones of a template (World::CreateBatchFromWorld). The engine owns one (EngineCore,
+// beside its AssetManager); a scene load off the main thread or with no engine builds one of its
+// own for that load.
+//
+// Thread rule: written on the main thread only, at scene load, at PrefabRef resolution and at
+// asset reload completion, never while systems run. A spawn reads it with no lock.
 
 #include "AssetCore/GUID.h"
 #include "ECS/ClonePlan.h"
@@ -41,7 +46,7 @@ struct PrefabTemplate
     // recorded on (-1 for none).
     struct Row
     {
-        SceneLoadSkip Skip;
+        SceneDegradation::Skip Skip;
         std::int32_t EntityIndex = -1;
     };
     // Where an entity is authored: Files[File], at the entity's header line.
@@ -114,6 +119,10 @@ class PrefabLibrary
     void RebuildChanged(std::span<const GUID> changed);
     /// RebuildChanged for the absolute paths `files`.
     void RebuildFiles(std::span<const std::filesystem::path> files);
+    /// Rebuilds, as a new generation, every resident template that keeps a component of a type that
+    /// is registered now (a module loaded after the build), and gives the instances of every world
+    /// that holds it the new generation.
+    void RebuildForRegisteredTypes();
 
     /// While `deferred` is true, a rebuild does not change the instances of `world`, also after a
     /// World::Clear. Setting it back to false gives them the newest generation of every prefab the world
@@ -155,6 +164,8 @@ class PrefabLibrary
 
     void AssertWritable() const;
     void RebuildKeys(std::span<const std::string> changedFiles);
+    // Builds each of `stale` again from its files and gives the worlds that hold it the new generation.
+    void RebuildTemplates(std::span<const PrefabTemplate* const> stale);
     // Gives the instances of the world `worldId` the newest generation of every prefab `holds` names.
     // Returns true when an instance changed. Does nothing when that world is destroyed or cleared.
     bool PropagateToHolder(std::uint64_t worldId, WorldHolds& holds);
@@ -174,8 +185,10 @@ class PrefabLibrary
     mutable FastHashSet<GUID> m_ReportedNotResident;
 };
 
-// Propagates generation changes to outermost instances, preserving their overrides.
-// Returns true if any instance changes. Defined in PrefabOverrideEdits.cpp.
+// Gives every outermost instance of the prefab of `after` in `world` the change from the generation
+// `before` to `after`: the fields and components it does not override, the children the prefab gained
+// and the children it lost. Returns true when an instance changed. Defined with the override edits
+// (PrefabOverrideEdits.cpp).
 bool PropagatePrefabGeneration(ECS::World& world, PrefabLibrary& library, const PrefabTemplate& before,
                                const PrefabTemplate& after);
 

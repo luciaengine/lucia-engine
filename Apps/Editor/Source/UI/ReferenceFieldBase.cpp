@@ -1,12 +1,21 @@
 #include "UI/ReferenceFieldBase.h"
 
+#include "Logger/Logger.h"
+#include "UI/ControlLayoutLoader.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/SearchDialog.h"
 #include "UI/UIEvents.h"
 #include "UI/UIManager.h"
 
+#include <string>
+#include <utility>
+
 namespace GameEngine
 {
+namespace
+{
+constexpr const char* kLayoutAssetPath = "UI/controls/ReferenceField/ReferenceField.uxml";
+} // namespace
 
 ReferenceFieldBase::ReferenceFieldBase()
 {
@@ -14,6 +23,7 @@ ReferenceFieldBase::ReferenceFieldBase()
     // clear button + drop-valid/invalid states).
     AddClass("asset-field");
     RequestSubtreeStyleAssetPath("UI/controls/AssetField.css", "editor");
+    BuildFromLayout();
 }
 
 ReferenceFieldBase::~ReferenceFieldBase()
@@ -30,26 +40,42 @@ ReferenceFieldBase::~ReferenceFieldBase()
     m_SearchProvider.reset();
 }
 
-void ReferenceFieldBase::BuildNameAndClearButton()
+UIElement* ReferenceFieldBase::LayoutPart(std::string_view className) const
 {
-    auto name = std::make_unique<Label>();
-    name->AddClass("asset-field-name");
-    name->AddClass("empty");
-    name->SetText("(None)");
-    m_NameLabel = name.get();
-    AddChild(std::move(name));
+    for (const auto& child : GetChildren())
+    {
+        if (child && child->HasClass(std::string(className)))
+            return child.get();
+    }
+    return nullptr;
+}
 
-    auto clearBtn = std::make_unique<UIElement>();
-    clearBtn->AddClass("asset-field-clear");
-    clearBtn->AddClass("hidden");
-    clearBtn->SetTooltip("Clear");
-    m_ClearBtn = clearBtn.get();
-    AddChild(std::move(clearBtn));
+void ReferenceFieldBase::BuildFromLayout()
+{
+    std::unique_ptr<UIElement> layout = Editor::ControlLayoutLoader::Load(kLayoutAssetPath, {});
+    if (!layout)
+        return;
+    while (!layout->GetChildren().empty())
+        AddChild(layout->TakeChild(layout->GetChildren().front().get()));
 
-    // Clear on mouse-up (not mouse-down): clearing hides the button, so a
-    // mouse-down clear would leave the release landing on the field and trip the
-    // open-on-mouse-up handler below. On mouse-up the button is still present, so
-    // that handler's `e.target != m_ClearBtn` guard correctly suppresses the open.
+    auto* name = dynamic_cast<Label*>(LayoutPart("asset-field-name"));
+    UIElement* clear = LayoutPart("asset-field-clear");
+    UIElement* pick = LayoutPart("asset-field-pick");
+    if (!name || !clear || !pick)
+    {
+        Logger::Log::Error("ReferenceField: {} needs the name label, the clear button and the picker button.",
+                           kLayoutAssetPath);
+        return;
+    }
+    m_NameLabel = name;
+    m_ClearBtn = clear;
+    m_PickBtn = pick;
+    m_NameLabel->SetText(m_EmptyText);
+    m_ClearBtn->SetTooltip("Clear");
+    m_PickBtn->SetTooltip("Choose from a list");
+
+    // Clear on mouse-up: a clear on mouse-down hides the button, and the release then
+    // lands on the field. The field's mouse-up handler ignores a release on this button.
     m_ClearBtn->RegisterEventHandler(kEventMouseUp, [this](UIEvent& e) {
         if (e.Button == 0)
         {
@@ -58,14 +84,23 @@ void ReferenceFieldBase::BuildNameAndClearButton()
         }
     });
 
-    // Open on mouse-up so the release that triggered the picker does not clear
-    // focus from the dialog's search field the moment it appears.
-    RegisterEventHandler(kEventMouseUp, [this](UIEvent& e) {
-        if (e.Button == 0 && e.Target != m_ClearBtn)
-        {
-            OpenReferenceDialog();
+    // The field takes its own presses, so a host that claims presses (a graph
+    // node's pin) leaves the release to the part under the pointer.
+    RegisterEventHandler(kEventMouseDown, [](UIEvent& e) {
+        if (e.Button == 0)
             e.Stop();
-        }
+    });
+
+    // Act on mouse-up so the release that opens the picker does not clear focus
+    // from the dialog's search field the moment it appears.
+    RegisterEventHandler(kEventMouseUp, [this](UIEvent& e) {
+        if (e.Button != 0 || e.Target == m_ClearBtn)
+            return;
+        if (e.Target != m_PickBtn && CanReveal())
+            Reveal();
+        else
+            OpenReferenceDialog();
+        e.Stop();
     });
 }
 
@@ -115,17 +150,57 @@ void ReferenceFieldBase::OpenReferenceDialog()
 
 void ReferenceFieldBase::ShowEmpty()
 {
-    m_NameLabel->SetText("(None)");
+    if (!m_NameLabel)
+        return;
+    m_NameLabel->SetText(m_EmptyText);
+    m_NameLabel->SetTooltip({});
     m_NameLabel->AddClass("empty");
+    m_NameLabel->RemoveClass("missing");
     m_ClearBtn->AddClass("hidden");
+    RefreshLinkStyle();
 }
 
-void ReferenceFieldBase::ShowNamed(const std::string& name)
+void ReferenceFieldBase::ShowNamed(const std::string& name, const std::string& tooltip)
 {
+    if (!m_NameLabel)
+        return;
     m_NameLabel->SetText(name);
+    m_NameLabel->SetTooltip(tooltip);
     m_NameLabel->RemoveClass("empty");
+    m_NameLabel->RemoveClass("missing");
     if (m_Clearable)
         m_ClearBtn->RemoveClass("hidden");
+    RefreshLinkStyle();
+}
+
+void ReferenceFieldBase::ShowMissing(const std::string& text, const std::string& tooltip)
+{
+    if (!m_NameLabel)
+        return;
+    m_NameLabel->SetText(text);
+    m_NameLabel->SetTooltip(tooltip);
+    m_NameLabel->RemoveClass("empty");
+    m_NameLabel->AddClass("missing");
+    if (m_Clearable)
+        m_ClearBtn->RemoveClass("hidden");
+    RefreshLinkStyle();
+}
+
+void ReferenceFieldBase::RefreshLinkStyle()
+{
+    if (!m_NameLabel)
+        return;
+    if (CanReveal())
+        m_NameLabel->AddClass("link");
+    else
+        m_NameLabel->RemoveClass("link");
+}
+
+void ReferenceFieldBase::SetEmptyText(std::string text)
+{
+    m_EmptyText = std::move(text);
+    if (m_NameLabel && m_NameLabel->HasClass("empty"))
+        m_NameLabel->SetText(m_EmptyText);
 }
 
 void ReferenceFieldBase::SetClearable(bool clearable)

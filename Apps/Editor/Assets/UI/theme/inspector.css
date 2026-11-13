@@ -71,6 +71,13 @@
 	padding: 4px 6px 4px 10px;
 }
 
+/* A disabled dropdown draws no plate (controls/Dropdown.css), so its value starts on the row's value
+   column like the text values around it; the property row's padding above would otherwise win. */
+.inspector-field .dropdown.inspector-dropdown:disabled > .dropdown-header {
+	padding-left: 0px;
+	border-left-width: 0px;
+}
+
 /* Optical inset: 8×8 glyph reads a few px right of where the header padding centers it. */
 .inspector-field .dropdown.inspector-dropdown > .dropdown-header > .dropdown-chevron {
 	margin-right: 4px;
@@ -131,7 +138,7 @@
 .inspector-guide-title {
 	color: var(--ui_color_text);
 	font-size: 11px;
-	font-weight: 600;
+	font-weight: 500;
 }
 /* Interactive color-temperature picker (KelvinSlider): a chunky gradient track so the painted
    Kelvin gradient + thumb caret read clearly. */
@@ -222,7 +229,7 @@
 	background-color: #202020;
 	width: 100%;
 	/* Global value-box height (User Settings > UI > Appearance). Set on the UI root
-	   as --value_box_height by ValueBoxHeightSettings. */
+	   as --value_box_height by SettingsPanel::ApplySavedValueBoxHeightStyle. */
 	height: var(--value_box_height, 26px);
 }
 
@@ -335,6 +342,23 @@
 	color: #B3B3B3;
 }
 
+/* A pending asset's name in the inspector header (Editor::MakePendingAssetHeaderLabels): it
+   sizes to its text and is the one to shrink and ellipsise, so the state after it stays whole. */
+.inspector-header-fit {
+	flex: 0 1 auto;
+}
+
+/* The state right after that name while its load runs ("preparing…"). It never shrinks, and
+   the row's free space goes after it, so it stays beside the name at every width. */
+.inspector-header-suffix {
+	flex-shrink: 0;
+	margin-right: auto;
+	font-size: var(--ui_font_size_header);
+	white-space: nowrap;
+	align-self: center;
+	color: var(--ui_color_text_soft);
+}
+
 /* Editable entity name field: match label look (no box) */
 .inspector-header-container input.inspector-header,
 .inspector-header-container .inspector-header input {
@@ -349,6 +373,16 @@
 	border-radius: 4px;
 }
 
+/* The end of the header row (UI/inspectors/EntityHeader/EntityHeader.uxml): the override badge, then the
+   history arrows, spaced as the row spaces its items. A hidden badge takes no gap. */
+.inspector-header-trailing {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 8px;
+	flex-shrink: 0;
+}
+
 /* Entity selection history: 24×24 glyph in 36×36 hit area, no fill. */
 .inspector-header-history {
 	display: flex;
@@ -356,12 +390,12 @@
 	align-items: center;
 	flex-shrink: 0;
 	align-self: center;
-	gap: 0;
+	gap: 2px;
 	margin-right: 20px;
 }
 
-.inspector-header-history .icon-button.inspector-header-history-icon,
-.inspector-header-history button.icon-button.inspector-header-history-icon {
+.inspector-header-history .icon-button.inspector-header-history-icon {
+	flex-shrink: 0;
 	width: 36px;
 	height: 36px;
 	min-width: 36px;
@@ -385,15 +419,14 @@
 }
 
 .inspector-header-history .inspector-history-forward-btn {
-	background-image: url("editor:Icons/right-arrow.png");
+	background-image: url("editor:Icons/right-arrow.svg");
 }
 
 .inspector-header-history .inspector-history-back-btn {
-	background-image: url("editor:Icons/left-arrow.png");
+	background-image: url("editor:Icons/left-arrow.svg");
 }
 
-.inspector-header-history .icon-button.inspector-header-history-icon:hover,
-.inspector-header-history button.icon-button.inspector-header-history-icon:hover {
+.inspector-header-history .icon-button.inspector-header-history-icon:hover {
 	background-image-tint: var(--ui_icon_tint_hover);
 	opacity: 1;
 	background-color: transparent;
@@ -402,9 +435,7 @@
 }
 
 .inspector-header-history .icon-button.inspector-header-history-icon:active,
-.inspector-header-history button.icon-button.inspector-header-history-icon:active,
-.inspector-header-history .icon-button.inspector-header-history-icon.pressed,
-.inspector-header-history button.icon-button.inspector-header-history-icon.pressed {
+.inspector-header-history .icon-button.inspector-header-history-icon.pressed {
 	background-image-tint: var(--ui_icon_tint_hover);
 	opacity: 1;
 	background-color: transparent;
@@ -413,9 +444,7 @@
 }
 
 .inspector-header-history .icon-button.inspector-header-history-icon:focus,
-.inspector-header-history button.icon-button.inspector-header-history-icon:focus,
-.inspector-header-history .icon-button.inspector-header-history-icon:focus-visible,
-.inspector-header-history button.icon-button.inspector-header-history-icon:focus-visible {
+.inspector-header-history .icon-button.inspector-header-history-icon:focus-visible {
 	outline: none;
 	outline-offset: 0;
 	background-color: transparent;
@@ -436,9 +465,7 @@
 }
 
 .inspector-header-history .icon-button.inspector-header-history-icon:disabled:hover,
-.inspector-header-history button.icon-button.inspector-header-history-icon:disabled:hover,
-.inspector-header-history .icon-button.inspector-header-history-icon:disabled:active,
-.inspector-header-history button.icon-button.inspector-header-history-icon:disabled:active {
+.inspector-header-history .icon-button.inspector-header-history-icon:disabled:active {
 	opacity: 0;
 	pointer-events: none;
 }
@@ -488,11 +515,11 @@
 }
 
 .inspector-header-container .inspector-header-kind-icon.inspector-header-kind-folder {
-	background-image: url("editor:Icons/Folder@32px.png");
+	background-image: url("editor:Icons/Folder@32px.svg");
 }
 
 .inspector-header-container .inspector-header-kind-icon.inspector-header-kind-script {
-	background-image: url("editor:Icons/codeicon.png");
+	background-image: url("editor:Icons/codeicon.svg");
 }
 
 .inspector-header-container .inspector-header-kind-icon.inspector-header-kind-node {
@@ -560,36 +587,6 @@
 	margin-left: 12px;
 }
 
-/* Earth-scale authoring: read-only Sector + composed-world rows appended to the
-   Transform section for entities tagged with WorldSectorCoord. Self-contained
-   label+value row (auto-width label so long labels like "World (sector-composed)"
-   never overlap the value); value muted so it reads as display, not an editable
-   field. Independent of the trs-row's narrow/wide field layout. */
-.inspector-transform-info-row {
-	display: flex;
-	flex-direction: row;
-	align-items: baseline;
-	width: 100%;
-	min-width: 0;
-	gap: 8px;
-	margin-bottom: var(--inspector-row-gap);
-}
-
-.inspector-transform-info-row > .inspector-transform-info-label {
-	flex: 0 0 auto;
-	font-size: 13px;
-	white-space: nowrap;
-	cursor: default;
-}
-
-.inspector-transform-info-row > .inspector-transform-readonly-value {
-	flex: 1 1 auto;
-	min-width: 0;
-	opacity: 0.7;
-	white-space: nowrap;
-	overflow: hidden;
-}
-
 /* X/Y/Z inputs: match .inspector-field TextInput elsewhere in this file (Transform rows omit the .inspector-field wrapper). */
 .inspector-section.inspector-section-transform .inspector-transform-trs-row .inspector-vector3.vector3-field .float-field .float-field-input {
 	min-width: 56px;
@@ -618,8 +615,8 @@
 	flex-direction: row;
 	align-items: center;
 	gap: 6px;
-	/* Vertical row gap comes from the base .inspector-transform-trs-row margin-bottom; do not
-	   restate it here with calc(var(...)): length parsing does not support calc(). */
+	/* Vertical row gap comes from the base .inspector-transform-trs-row margin-bottom, which owns it;
+	   do not restate it here. */
 }
 
 .inspector-section.inspector-section-transform.inspector-transform-wide .inspector-transform-trs-row > .inspector-field-label {
@@ -646,6 +643,7 @@
 	flex-direction: row;
 	align-items: center;
 	padding: 4px 16px 4px 20px;
+	padding-left: calc(20px - var(--inspector-override-edge, 0px));
 	margin: 0 -8px;
 	cursor: pointer;
 	gap: 0;
@@ -780,7 +778,6 @@
 
 /* Compact per-element action menu at the far right of each flare foldout. */
 button.flare-element-header-menu,
-.button.flare-element-header-menu,
 .flare-element-header-menu {
 	width: 22px;
 	height: 22px;
@@ -796,7 +793,7 @@ button.flare-element-header-menu,
 	border-style: none;
 	border-color: transparent;
 	border-radius: 4px;
-	background-image: url("editor:Icons/options.png");
+	background-image: url("editor:Icons/options.svg");
 	background-size: 16px 16px;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -807,17 +804,11 @@ button.flare-element-header-menu,
 	outline-offset: 0;
 }
 
-button.flare-element-header-menu:hover,
-.button.flare-element-header-menu:hover,
 .flare-element-header-menu:hover {
 	background-image-tint: rgba(255, 255, 255, 1.0);
 	border-color: transparent;
 }
 
-button.flare-element-header-menu:active,
-button.flare-element-header-menu.pressed,
-.button.flare-element-header-menu:active,
-.button.flare-element-header-menu.pressed,
 .flare-element-header-menu:active,
 .flare-element-header-menu.pressed {
 	background-image-tint: rgba(255, 255, 255, 0.87);
@@ -825,8 +816,6 @@ button.flare-element-header-menu.pressed,
 	border-color: transparent;
 }
 
-button.flare-element-header-menu:focus,
-.button.flare-element-header-menu:focus,
 .flare-element-header-menu:focus {
 	outline: none;
 	outline-offset: 0;
@@ -856,7 +845,7 @@ button.flare-element-header-menu:focus,
 	background-size: 16px 16px;
 	background-repeat: no-repeat;
 	background-position: center;
-	background-image-tint: rgba(200, 200, 200, 1.0) !important;
+	background-image-tint: var(--ui_color_icon) !important;
 	background-image-saturation: 1.0;
 	opacity: 1.0;
 }
@@ -870,46 +859,46 @@ button.flare-element-header-menu:focus,
 }
 
 .inspector-section-icon.inspector-section-icon-transform {
-	background-image: url("editor:Icons/vector.png");
+	background-image: url("editor:Icons/vector.svg");
 }
 .inspector-section-icon.inspector-section-icon-mesh-renderer {
-	background-image: url("editor:Icons/Sphere.png");
+	background-image: url("editor:Icons/Sphere.svg");
 }
 .inspector-section-icon.inspector-section-icon-skinned-mesh {
-	background-image: url("editor:Icons/person.png");
+	background-image: url("editor:Icons/person.svg");
 }
 .inspector-section-icon.inspector-section-icon-material {
-	background-image: url("editor:Icons/material.png");
+	background-image: url("editor:Icons/material.svg");
 }
 .inspector-section-icon.inspector-section-icon-camera {
-	background-image: url("editor:Icons/videocam.png");
+	background-image: url("editor:Icons/videocam.svg");
 }
 .inspector-section-icon.inspector-section-icon-light-ambient {
-	background-image: url("editor:Icons/AmbientLight.png");
+	background-image: url("editor:Icons/AmbientLight.svg");
 }
 .inspector-section-icon.inspector-section-icon-light-directional {
-	background-image: url("editor:Icons/DirectionalLight.png");
+	background-image: url("editor:Icons/DirectionalLight.svg");
 }
 .inspector-section-icon.inspector-section-icon-light-spot {
-	background-image: url("editor:Icons/SpotLight.png");
+	background-image: url("editor:Icons/SpotLight.svg");
 }
 .inspector-section-icon.inspector-section-icon-light-point {
-	background-image: url("editor:Icons/PointLight.png");
+	background-image: url("editor:Icons/PointLight.svg");
 }
 .inspector-section-icon.inspector-section-icon-light-area {
-	background-image: url("editor:Icons/arealight.png");
+	background-image: url("editor:Icons/arealight.svg");
 }
 .inspector-section-icon.inspector-section-icon-light-volume {
-	background-image: url("editor:Icons/PointLight.png");
+	background-image: url("editor:Icons/PointLight.svg");
 }
 .inspector-section-icon.inspector-section-icon-sky {
-	background-image: url("editor:Icons/skyenvironment.png");
+	background-image: url("editor:Icons/skyenvironment.svg");
 }
 .inspector-section-icon.inspector-section-icon-reflection-probe {
-	background-image: url("editor:Icons/probe.png");
+	background-image: url("editor:Icons/probe.svg");
 }
 .inspector-section-icon.inspector-section-icon-post-process {
-	background-image: url("editor:Icons/postfx.png");
+	background-image: url("editor:Icons/postfx.svg");
 }
 .inspector-section-icon.inspector-section-icon-post-process-volume {
 	background-image: url("editor:Icons/color-filter.svg");
@@ -921,10 +910,10 @@ button.flare-element-header-menu:focus,
 	background-image: url("editor:Icons/wind.svg");
 }
 .inspector-section-icon.inspector-section-icon-terrain {
-	background-image: url("editor:Icons/terrain.png");
+	background-image: url("editor:Icons/terrain.svg");
 }
 .inspector-section-icon.inspector-section-icon-grass {
-	background-image: url("editor:Icons/grass.png");
+	background-image: url("editor:Icons/grass.svg");
 }
 .inspector-section-icon.inspector-section-icon-terrain-surface-rules {
 	background-image: url("editor:Icons/terrain-surface-rules.svg");
@@ -932,50 +921,54 @@ button.flare-element-header-menu:focus,
 .inspector-section-icon.inspector-section-icon-ocean {
 	background-image: url("editor:Icons/ocean.svg");
 }
+.inspector-section-icon.inspector-section-icon-markup {
+	background-image: url("editor:Icons/markup.svg");
+}
+/* After .inspector-section-icon, which it overrides at equal specificity. */
+.inspector-section-icon-navigation-surface {
+	background-image: url("editor:Icons/markup-path.svg");
+}
 .inspector-section-icon.inspector-section-icon-particles {
-	background-image: url("editor:Icons/sparkles.png");
+	background-image: url("editor:Icons/sparkles.svg");
 }
 .inspector-section-icon.inspector-section-icon-video-texture {
 	background-image: url("editor:Icons/film.svg");
 }
 .inspector-section-icon.inspector-section-icon-lens-flare {
-	background-image: url("editor:Icons/flame.png");
+	background-image: url("editor:Icons/flame.svg");
 }
 .inspector-section-icon.inspector-section-icon-spline {
-	background-image: url("editor:Icons/GizmoSpline.png");
+	background-image: url("editor:Icons/GizmoSpline.svg");
 }
 .inspector-section-icon.inspector-section-icon-measure {
-	background-image: url("editor:Icons/Ruler.png");
+	background-image: url("editor:Icons/Ruler.svg");
 }
 .inspector-section-icon.inspector-section-icon-physics,
 .inspector-section-icon.inspector-section-icon-physics-settings {
-	background-image: url("editor:Icons/PhysicsSettings.png");
+	background-image: url("editor:Icons/PhysicsSettings.svg");
 }
 .inspector-section-icon.inspector-section-icon-shape-cube {
-	background-image: url("editor:Icons/Cube.png");
+	background-image: url("editor:Icons/Cube.svg");
 }
 .inspector-section-icon.inspector-section-icon-shape-sphere {
-	background-image: url("editor:Icons/Sphere.png");
+	background-image: url("editor:Icons/Sphere.svg");
 }
 .inspector-section-icon.inspector-section-icon-shape-capsule {
-	background-image: url("editor:Icons/Capsule.png");
+	background-image: url("editor:Icons/Capsule.svg");
 }
 .inspector-section-icon.inspector-section-icon-shape-plane {
-	background-image: url("editor:Icons/Plane.png");
+	background-image: url("editor:Icons/Plane.svg");
 }
 .inspector-section-icon.inspector-section-icon-audio-emitter,
 .inspector-section-icon.inspector-section-icon-audio-listener {
-	background-image: url("editor:Icons/music-note-icon@32px.png");
+	background-image: url("editor:Icons/music-note-icon@32px.svg");
 }
 .inspector-section-icon.inspector-section-icon-animator,
 .inspector-section-icon.inspector-section-icon-animated-node {
 	background-image: url("editor:Icons/film.svg");
 }
 .inspector-section-icon.inspector-section-icon-lod-group {
-	background-image: url("editor:Icons/layout3split.png");
-}
-.inspector-section-icon.inspector-section-icon-render-layer {
-	background-image: url("editor:Icons/list.png");
+	background-image: url("editor:Icons/layout3split.svg");
 }
 .inspector-section-icon.inspector-section-icon-default {
 	background-image: url("editor:Icons/node.svg");
@@ -1004,7 +997,7 @@ button.flare-element-header-menu:focus,
    often enough ("Ambient gradient tint (diffuse only)"), and the inspector docks narrow. */
 .inspector-section-subheader {
 	font-size: 13px;
-	font-weight: 600;
+	font-weight: 500;
 	margin-top: 10px;
 	margin-bottom: 2px;
 	color: var(--ui_color_text_soft);
@@ -1029,7 +1022,7 @@ button.flare-element-header-menu:focus,
 	background-size: 16px 16px;
 	background-repeat: no-repeat;
 	background-position: center;
-	background-image: url("editor:Icons/options.png");
+	background-image: url("editor:Icons/options.svg");
 	background-image-tint: rgba(255, 255, 255, 0.66);
 	background-color: transparent;
 	border-radius: 4px;
@@ -1069,11 +1062,11 @@ button.flare-element-header-menu:focus,
 }
 
 .inspector-section-header-chevron.arrow-down {
-	background-image: url("editor:Icons/ArrowDown.png");
+	background-image: url("editor:Icons/ArrowDown.svg");
 }
 
 .inspector-section-header-chevron.arrow-up {
-	background-image: url("editor:Icons/ArrowUp.png");
+	background-image: url("editor:Icons/ArrowUp.svg");
 	opacity: 0.125;
 }
 
@@ -1107,7 +1100,7 @@ button.flare-element-header-menu:focus,
 }
 
 .inspector-section-collapse-arrow.arrow-up {
-	background-image: url("editor:Icons/ArrowUp.png");
+	background-image: url("editor:Icons/ArrowUp.svg");
 	opacity: 0.125;
 }
 
@@ -1153,7 +1146,7 @@ button.flare-element-header-menu:focus,
 .inspector-body-subheader {
 	color: var(--ui_color_text);
 	font-size: 12px;
-	font-weight: 600;
+	font-weight: 500;
 	height: 20px;
 	min-height: 20px;
 	margin-top: 8px;
@@ -1191,6 +1184,14 @@ button.flare-element-header-menu:focus,
 .rp-foldout.inspector-component-section > .foldout-content {
 	padding-left: 0px;
 	padding-right: 0px;
+}
+
+/* A section title with a status badge takes the label column's 37 %, so the header's 8 px gap puts the
+   badge at the left edge of the value column, as the rows below place their fields. */
+.inspector-component-section-title.foldout-title-badged {
+	flex: 0 0 37%;
+	width: 37%;
+	max-width: 37%;
 }
 
 /* A section nested inside a section indents instead of pulling out, the way the material inspector
@@ -1250,6 +1251,7 @@ button.flare-element-header-menu:focus,
 .inspector-filled-sections .inspector-section-header-row {
 	margin: 0;
 	padding: 5px 12px 5px 12px;
+	padding-left: calc(12px - var(--inspector-override-edge, 0px));
 	background-color: #222222;
 	border-radius: 0;
 }
@@ -1300,6 +1302,9 @@ button.flare-element-header-menu:focus,
 .inspector-filled-sections {
 	--inspector-section-dot-margin-left: -4px;
 	--inspector-section-dot-margin-right: 4px;
+	--inspector-row-override-mark-left: -12px;
+	--inspector-gutter-offset: 0px;
+	--inspector-header-overridden-padding-left: 5px;
 }
 
 .inspector-filled-sections .inspector-section-icon {
@@ -1321,9 +1326,70 @@ button.flare-element-header-menu:focus,
 	gap: 8px;
 }
 
+/* A full-width preview of what the rows around it set (InspectorUI::AddPreviewRow). It keeps its
+   height in a crowded column, as a notice does. */
+.inspector-preview-row {
+	display: flex;
+	flex-direction: column;
+	flex-shrink: 0;
+	margin: 0 0 6px 0;
+}
+
 /* Single source for vertical spacing between rows (component inspectors + embedded Material UI). */
 .inspector-panel .inspector-row {
 	margin-bottom: var(--inspector-row-gap);
+}
+
+/* The override edge marks a value that differs from the entity's source. It is 3 px wide, at the x of
+   the section headers' left edge in every look, and takes no space from the content. A header row
+   draws it as its left border and takes the width back from its padding. */
+.inspector-section-header-row-overridden {
+	--inspector-override-edge: 3px;
+	border-left: 3px solid var(--inspector-override-edge-color, var(--ui_color_prefab));
+}
+
+/* A row's edge is its own element, so the row's layout stays as it is. */
+.inspector-override-mark {
+	position: absolute;
+	left: 0px;
+	top: 0px;
+	bottom: 0px;
+	width: 3px;
+	background-color: var(--ui_color_prefab);
+	pointer-events: none;
+}
+
+/* A row's edge moves left past the section body's padding and the header row's offset. */
+.inspector-override-mark-row {
+	left: var(--inspector-row-override-mark-left, -36px);
+}
+
+.inspector-label-overridden {
+	font-weight: bold;
+}
+
+.inspector-header-overridden {
+	font-weight: bold;
+}
+
+/* The entity header clips its children, so its edge is its own left border, moved out to the gutter:
+   --inspector-gutter-offset is the x of the gutter from the left of an element in the Inspector's
+   padding. The padding keeps the content in place. */
+.inspector-header-container-overridden {
+	margin-left: var(--inspector-gutter-offset, -8px);
+	padding-left: var(--inspector-header-overridden-padding-left, 13px);
+	border-left: 3px solid var(--ui_color_prefab);
+}
+
+/* A faded section reads as a component the entity does not have: its title and its icon are muted. Its
+   override edge and pill keep the prefab color until the change is applied or reverted. */
+.inspector-section-faded {
+	--inspector-section-title: var(--ui_color_text_secondary);
+	--inspector-section-title-hover: var(--ui_color_text_secondary);
+}
+
+.inspector-section-icon-faded {
+	opacity: 0.5;
 }
 
 /* Buttons in inspector rows must not shrink so their text stays visible */
@@ -1412,6 +1478,21 @@ button.flare-element-header-menu:focus,
 	width: auto;
 	max-width: none;
 }
+/* The Inspector's columns for a host outside an Inspector section: each label cell has the same width and the
+   field fills the rest. */
+.inspector-columns .inspector-row .inspector-label-cell {
+	flex: 0 0 37%;
+	width: 37%;
+	min-width: 0;
+	max-width: 37%;
+}
+.inspector-columns .inspector-row .inspector-field {
+	flex: 1 1 0%;
+	min-width: 0;
+	width: auto;
+	max-width: none;
+	margin-right: 0;
+}
 /* Toggle-only value column: flex container for optional left/center/right alignment. */
 .inspector-section:not(.inspector-section-transform) .inspector-section-body .inspector-row .inspector-field.inspector-field-toggle {
 	display: flex;
@@ -1482,8 +1563,10 @@ button.flare-element-header-menu:focus,
 	color: var(--ui_color_text_secondary);
 }
 
-.inspector-field.inspector-slider-with-value > .inspector-slider-value-field .float-field-input,
-.inspector-field.inspector-slider-with-value > .inspector-slider-value-field .int-field-input {
+/* A value field with a suffix is the padded box itself and sizes its text input beside the suffix
+   (theme/core.css, .has-suffix), so only a field without one fills and pads its text input. */
+.inspector-field.inspector-slider-with-value > .inspector-slider-value-field:not(.has-suffix) .float-field-input,
+.inspector-field.inspector-slider-with-value > .inspector-slider-value-field:not(.has-suffix) .int-field-input {
 	box-sizing: border-box;
 	width: 100%;
 	min-width: 0;
@@ -1495,9 +1578,20 @@ button.flare-element-header-menu:focus,
 .inspector-field TextInput {
 	padding: 6px 12px;
 	border-radius: 6px;
-	background-color: #202020;
+	background-color: var(--ui_color_bg_field);
 	border: 1px solid transparent;
 	height: var(--value_box_height, 26px);
+}
+
+/* A value field of several lines: the one-line field's look, the value box's height its minimum, the
+   text wrapped to the field's width. */
+.inspector-text-area {
+	padding: 6px 12px;
+	border-radius: 6px;
+	background-color: var(--ui_color_bg_field);
+	border: 1px solid transparent;
+	min-height: var(--value_box_height, 26px);
+	white-space: pre-wrap;
 }
 
 /* Script variables: one row per field (name | value | type), same as early script inspector */
@@ -1601,6 +1695,21 @@ button.flare-element-header-menu:focus,
 	color: #FFFFFF;
 }
 
+/* A caption under a field column: what the value above it does, in plain words. */
+.inspector-field-caption {
+	font-size: 12px;
+	color: var(--ui_color_text_dim);
+	white-space: normal;
+	margin-top: 2px;
+}
+
+.inspector-field-caption-technique {
+	font-size: 12px;
+	color: var(--ui_color_switched_off_label);
+	margin-top: 2px;
+	margin-bottom: 6px;
+}
+
 .inspector-type-hint {
 	flex: 0 0 auto;
 	font-size: 13px;
@@ -1647,6 +1756,12 @@ button.flare-element-header-menu:focus,
 	min-width: 0;
 }
 
+/* A read-only value in a field column starts where the field inputs' text starts:
+   their 12 px padding plus their 1 px border. */
+.inspector-field.inspector-field-readout > .inspector-text {
+	padding-left: 13px;
+}
+
 .sky-day-key-label {
 	color: inherit;
 	opacity: 1.0;
@@ -1660,7 +1775,13 @@ button.flare-element-header-menu:focus,
 	width: 100%;
 }
 
-/* A sky day curve row (Inspectors/SkyDayCurveRow.cpp): the label stays at the top of the tall field,
+/* A picture choice row (InspectorUI::AddPictureChoiceRow): the label stays at the top of the tiles.
+   The field's own sheet is attached to the field's subtree, so the row rule lives here. */
+.inspector-section:not(.inspector-section-transform) .inspector-section-body .inspector-row.picture-choice-row {
+	align-items: flex-start;
+}
+
+/* A sky day curve row (Sky/SkyDayCurveRow.cpp): the label stays at the top of the tall field,
    the field stacks the graph, its readout and its presets, and the graph keeps a compact height until
    the row is expanded, when it fills the row's width at a fixed aspect. */
 .inspector-section:not(.inspector-section-transform) .inspector-section-body .inspector-row.sky-day-curve-row {
@@ -1857,88 +1978,8 @@ button.flare-element-header-menu:focus,
 	background-color: #5A4A12;
 }
 
-/* Terrain inspector: the library's materials as cards under the layer bindings
-   (TerrainRoleMaterials). Stretched, so the grid takes the column's width and
-   its cards have a width to wrap against. */
-.terrain-role-material-grid {
-	flex-direction: row;
-	flex-wrap: wrap;
-	gap: 8px;
-	margin-top: 4px;
-	margin-bottom: 6px;
-	align-self: stretch;
-}
-
-/* A material card, and the Add tile beside them. A card may grow to 1.5x its
-   base width to close out a row instead of leaving dead space; past that it
-   stops reading as a card. Overflow is clipped so a long name never paints
-   over the next card. */
-.terrain-role-material-card {
-	flex-direction: column;
-	flex-basis: 84px;
-	flex-grow: 1;
-	flex-shrink: 0;
-	min-width: 84px;
-	max-width: 126px;
-	padding: 6px;
-	border-radius: 6px;
-	border-width: 1px;
-	border-color: var(--ui_color_border_subtle);
-	overflow: hidden;
-	cursor: pointer;
-}
-
-/* The inspector label size. Two reserved lines, so every card keeps one height
-   whatever its name; the name wraps, breaks a word too long for the card, and
-   stays left-aligned so an overrun keeps its beginning. */
-.terrain-role-material-name {
-	font-size: 13px;
-	line-height: 17px;
-	margin-top: 5px;
-	height: 34px;
-	min-height: 34px;
-	max-height: 34px;
-	white-space: normal;
-	overflow-wrap: break-word;
-	text-align: left;
-	overflow: hidden;
-}
-
-/* The material's tint, wide and short so a row of cards reads as a palette.
-   Code sets only its background colour. */
-.terrain-role-material-swatch {
-	flex-direction: row;
-	align-items: flex-start;
-	height: 52px;
-	min-height: 52px;
-	border-radius: 4px;
-	border-width: 1px;
-	border-color: #202020;
-}
-
-/* Tells a white tint from a picture that failed to load. It sits on any tint,
-   so it carries its own contrast: a near-opaque dark plate under light text. */
-.terrain-role-material-tint-chip {
-	font-size: 12px;
-	color: #E8E8E8;
-	background-color: rgba(20, 20, 20, 0.72);
-	border-radius: 3px;
-	margin-top: 4px;
-	margin-left: 4px;
-	padding-left: 4px;
-	padding-right: 4px;
-	white-space: nowrap;
-}
-
-.terrain-role-material-add-glyph {
-	height: 52px;
-	min-height: 52px;
-	font-size: 22px;
-	color: #9A9A9A;
-	text-align: center;
-}
-
-/* Model asset inspector: Model / LOD / Rig segmented tabs. */
+/* The row of segmented buttons (Button.css: segmented-button): the Model asset inspector's Model / LOD / Rig
+   tabs, the Sky Environment's Star look. */
 .inspector-subtab-row {
 	flex-direction: row;
 	align-items: stretch;
@@ -1947,45 +1988,13 @@ button.flare-element-header-menu:focus,
 	min-width: 0;
 	margin: 2px 0 8px 0;
 	padding: 3px;
-	background-color: rgba(0, 0, 0, 0.28);
+	background-color: var(--ui_color_segmented_plate);
 	border-radius: 6px;
 }
 
-.inspector-asset-content button.inspector-subtab,
-.inspector-asset-content .button.inspector-subtab {
-	flex: 1 1 0;
-	min-width: 0;
-	min-height: 26px;
-	height: 26px;
-	margin: 0;
-	padding: 3px 8px;
-	border-width: 0;
-	border-style: none;
-	border-radius: 4px;
-	background-color: transparent;
-	background-image: none;
-	color: rgba(255, 255, 255, 0.68);
-	font-size: 12px;
-	font-weight: 500;
-}
-
-.inspector-asset-content button.inspector-subtab:hover,
-.inspector-asset-content .button.inspector-subtab:hover {
-	background-color: rgba(255, 255, 255, 0.08);
-	color: rgba(255, 255, 255, 0.9);
-}
-
-.inspector-asset-content button.inspector-subtab.active,
-.inspector-asset-content .button.inspector-subtab.active,
-.inspector-asset-content button.inspector-subtab.active:hover,
-.inspector-asset-content .button.inspector-subtab.active:hover {
-	background-color: rgba(255, 255, 255, 0.16);
-	color: var(--ui_color_text);
-}
-
-.inspector-asset-content button.inspector-subtab.pressed,
-.inspector-asset-content .button.inspector-subtab.pressed {
-	background-color: rgba(255, 255, 255, 0.12);
+/* A row of four choices too wide for one line: two rows of two (its buttons are segmented-button-pair). */
+.inspector-subtab-wrap {
+	flex-wrap: wrap;
 }
 
 .inspector-bake-axis-field {
@@ -2002,47 +2011,6 @@ button.flare-element-header-menu:focus,
 .inspector-bake-axis-field > .float-field {
 	flex: 1 1 auto;
 	min-width: 0;
-}
-
-/* The inspector's colour chip (InspectorUI::MakeColorSwatch). Code sets only its background. */
-.inspector-color-swatch {
-	width: 20px;
-	height: 20px;
-	min-width: 20px;
-	min-height: 20px;
-	border-radius: 3px;
-	border-width: 1px;
-	border-color: var(--ui_color_swatch_border);
-	cursor: pointer;
-}
-
-/* A colour chip that shows a value nobody edits here keeps the default arrow. */
-.inspector-color-swatch-readonly {
-	cursor: default;
-}
-
-/* The field holding a colour chip and its value text, side by side. */
-.inspector-color-swatch-field {
-	flex-direction: row;
-	align-items: center;
-	gap: 6px;
-}
-
-/* The value text beside a colour chip opens the picker too. */
-.inspector-color-swatch-value {
-	cursor: pointer;
-}
-
-/* The colour chip in a lens flare element's header: a glance at the tint, not a click target. */
-.flare-element-header-swatch {
-	width: 10px;
-	height: 10px;
-	min-width: 10px;
-	min-height: 10px;
-	border-radius: 2px;
-	border-width: 1px;
-	border-color: var(--ui_color_swatch_border);
-	pointer-events: none;
 }
 
 /* A row carrying a strength and the colour it tints (the grass backlight): the swatch belongs
@@ -2100,7 +2068,7 @@ button.flare-element-header-menu:focus,
 
 .inspector-model-axis-name {
 	font-size: 13px;
-	font-weight: 600;
+	font-weight: 500;
 }
 
 .inspector-model-axis-direction {
@@ -2229,7 +2197,7 @@ button.flare-element-header-menu:focus,
 	border-style: none;
 	border-color: transparent;
 	border-radius: 4px;
-	background-image: url("editor:Icons/options.png");
+	background-image: url("editor:Icons/options.svg");
 	background-size: 16px 16px;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -2378,17 +2346,10 @@ button.flare-element-header-menu:focus,
 
 /* Note: Smart Folder styles moved to smartfolders.css */
 
+/* Size and spacing only: the fill, border and states come from the Button control's sheet. */
 .inspector-button {
 	padding: 6px 12px;
 	margin-top: 8px;
-	background-color: rgba(255, 255, 255, 0.28);
-	border: 1px solid rgba(255, 255, 255, 0.42);
-	border-radius: 4px;
-	color: var(--ui_color_text);
-}
-
-.inspector-button:hover {
-	background-color: rgba(255, 255, 255, 0.36);
 }
 
 .inspector-field.spline-point-nav-field {
@@ -2765,7 +2726,7 @@ button.inspector-button.inspector-new-material-button,
 	min-height: 16px;
 	max-height: 16px;
 	cursor: pointer;
-	background-image: url("editor:Icons/LockOpen.png");
+	background-image: url("editor:Icons/LockOpen.svg");
 	background-size: 16px 16px;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -2789,7 +2750,7 @@ button.inspector-button.inspector-new-material-button,
 }
 
 .tab .inspector-lock-button.icon-button.locked {
-	background-image: url("editor:Icons/LockClosed.png");
+	background-image: url("editor:Icons/LockClosed.svg");
 	background-image-tint: #FF5456;
 	opacity: 1.0;
 	background-color: transparent;
@@ -3075,8 +3036,7 @@ button.inspector-button.inspector-new-material-button,
 }
 
 /* Extra air around the rule so slots do not read as cramped (tiling row still
-   contributes its own margin-bottom above the first divider in a slot).
-   Use plain px: length parsing does not support calc() (see transform-wide row comment). */
+   contributes its own margin-bottom above the first divider in a slot). */
 .material-inspector .material-texture-divider {
 	margin-top: 12px;
 	margin-bottom: 12px;
@@ -3162,33 +3122,97 @@ button.inspector-button.inspector-new-material-button,
 	background-image: url("editor:Icons/alert-circle.svg");
 }
 
-/* Right-aligned status tag in the section title for an unloaded component.
+/* Status tag in the section title (an unloaded component, a bake state), after the title; its
+   right margin takes the row's slack, so the options affordance stays at the row's end.
    white-space:nowrap is required — a label in a flex row without it wraps
    mid-word and collapses to min-content (same trap as .inspector-field-label). */
 .inspector-section-header-badge {
-	margin-left: auto;
-	margin-right: 6px;
+	margin-left: 0;
+	margin-right: auto;
 	padding: 1px 7px;
 	border-radius: 9px;
 	font-size: 12px;
 	font-weight: 600;
 	color: #1e1e1e;
-	background-color: #d7a13b;
+	background-color: var(--inspector-badge-fill, var(--ui_color_warning_badge));
 	flex-shrink: 0;
 	white-space: nowrap;
 	text-align: left;
 }
 
-/* Start status badges at the same 37% label/value split used by the rows below.
-   The extra offset accounts for the section body's left inset and row gap. */
-.inspector-section-header-row.has-header-badge {
-	position: relative;
+/* Badge kinds (InspectorSection::BadgeKind), each one class set by SetHeaderBadge beside the base
+   class; the amber above is Warning. They follow the base rule, which they override at equal
+   specificity. */
+.inspector-section-header-badge-error {
+	color: var(--ui_color_text_bright);
+	background-color: var(--ui_color_badge_background);
 }
 
-.inspector-section-header-row.has-header-badge .inspector-section-header-badge {
-	position: absolute;
-	left: 37%;
-	margin-left: 25px;
+.inspector-section-header-badge-success {
+	background-color: var(--ui_color_accent_green);
+}
+
+.inspector-section-header-badge-neutral {
+	color: var(--ui_color_badge_neutral_text);
+	background-color: var(--ui_color_badge_neutral);
+}
+
+/* An override pill draws its text in the color of its row's override edge on a tint of the prefab color,
+   so the pill, the edge and the prefab bar read as one mark. */
+.inspector-section-header-badge-override {
+	color: var(--inspector-override-edge-color, var(--ui_color_prefab));
+	background-color: var(--inspector-override-badge-fill, var(--ui_color_prefab_background));
+}
+
+/* A button that holds one badge Label: the badge draws the box and the fill, so the button has none.
+   This host rule wins the tie with the Button sheet's .button. */
+.badge-button {
+	padding: 0px;
+	min-height: 0px;
+	border-width: 0px;
+	background-color: transparent;
+}
+
+/* The button sets the fill its badge reads: lighter on hover, darker while pressed, as the editor's
+   other buttons do. The button itself stays transparent in every state. The owner sets .hovered on
+   pointer enter and leave (Prefabs/PrefabBar.cpp); Button sets .pressed. */
+.badge-button:hover {
+	background-color: transparent;
+}
+
+.badge-button.hovered {
+	--inspector-badge-fill: var(--ui_color_warning_badge_hover);
+	--inspector-override-badge-fill: var(--ui_color_prefab_background_hover);
+}
+
+.badge-button:active {
+	background-color: transparent;
+}
+
+.badge-button.pressed {
+	background-color: transparent;
+	--inspector-badge-fill: var(--ui_color_warning_badge_pressed);
+	--inspector-override-badge-fill: var(--ui_color_prefab_background_pressed);
+}
+
+/* A title with a badge after it (InspectorSection::SetHeaderBadge sets the class) takes its text's
+   width, and at least the 37% label column of the rows below, so the badge starts on the value
+   column when the title is short and after the title's text when it is long, never over it. The
+   title box starts --inspector-section-header-badge-offset further right than the value column's
+   offset from the split (the row's padding, the dot and the icon): the negative margin takes that
+   offset back, and the padding is the offset plus the 6 px kept between a long title's text and the
+   badge. A title that does not fit beside its badge stays on the header's one line and ends in an
+   ellipsis. */
+.inspector-section-header-badged {
+	--inspector-section-header-badge-offset: 27px;
+	flex: 0 1 auto;
+	width: auto;
+	min-width: 37%;
+	padding-right: calc(var(--inspector-section-header-badge-offset) + 6px);
+	margin-right: calc(-1 * var(--inspector-section-header-badge-offset));
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 /* Inline notice for an inspector state the user should know about — e.g. a modifier type that
@@ -3266,11 +3290,11 @@ button.inspector-button.inspector-new-material-button,
     background-size: 12px 12px;
     background-repeat: no-repeat;
     background-position: center;
-    background-image: url("editor:Icons/arrow-right.png");
+    background-image: url("editor:Icons/arrow-right.svg");
     background-image-tint: rgba(200, 200, 200, 1.0);
 }
 .inspector-leading-disclosure > .inspector-section-header-row > .foldout-chevron.expanded {
-    background-image: url("editor:Icons/arrow-down.png");
+    background-image: url("editor:Icons/arrow-down.svg");
 }
 
 /* One global preference covers component arrows and every inspector foldout. */
@@ -3294,7 +3318,7 @@ button.inspector-button.inspector-new-material-button,
 
 /* Preserve the enabled-state contrast while keeping whole-row hover feedback. */
 .inspector-section > .inspector-section-header-row > .inspector-section-header {
-    color: #DDDDDD;
+    color: var(--inspector-section-title, #DDDDDD);
 }
 .inspector-section > .inspector-section-header-row:hover > .inspector-section-header {
     color: var(--inspector-section-title-hover, #FFFFFF);
@@ -3316,73 +3340,30 @@ button.inspector-button.inspector-new-material-button,
     color: #FFFFFF;
 }
 
-.postfx-depth-pixelation-icon {
-	background-image: url("editor:Icons/PostFX/CRT.svg");
-	background-size: 16px 16px;
-}
 
-/* The override edge marks a value that differs from the entity's source. It is 3 px wide, at the x of
-   the section headers' left edge in every look, and takes no space from the content. A header row
-   draws it as its left border and takes the width back from its padding. */
-.inspector-section-header-row-overridden {
-	--inspector-override-edge: 3px;
-	border-left: 3px solid var(--inspector-override-edge-color, var(--ui_color_prefab));
-}
-
-/* A row's edge is its own element, so the row's layout stays as it is. */
-.inspector-override-mark {
-	position: absolute;
-	left: 0px;
-	top: 0px;
-	bottom: 0px;
-	width: 3px;
-	background-color: var(--ui_color_prefab);
-	pointer-events: none;
-}
-
-/* A row's edge moves left past the section body's padding and the header row's offset. */
-.inspector-override-mark-row {
-	left: var(--inspector-row-override-mark-left, -36px);
-}
-
-.inspector-label-overridden {
-	font-weight: bold;
-}
-
-.inspector-header-overridden {
-	font-weight: bold;
-}
-
-/* The entity header clips its children, so its edge is its own left border, moved out to the gutter:
-   --inspector-gutter-offset is the x of the gutter from the left of an element in the Inspector's
-   padding. The padding keeps the content in place. */
-.inspector-header-container-overridden {
-	margin-left: var(--inspector-gutter-offset, -8px);
-	padding-left: var(--inspector-header-overridden-padding-left, 13px);
-	border-left: 3px solid var(--ui_color_prefab);
-}
-
-/* A faded section reads as a component the entity does not have: its title and its icon are muted. Its
-   override edge and pill keep the prefab color until the change is applied or reverted. */
-.inspector-section-faded {
-	--inspector-section-title: var(--ui_color_text_secondary);
-	--inspector-section-title-hover: var(--ui_color_text_secondary);
-}
-
-.inspector-section-icon-faded {
-	opacity: 0.5;
+.inspector-color-swatch {
+	width: 20px;
+	height: 20px;
+	min-width: 20px;
+	min-height: 20px;
+	border-radius: 3px;
+	border-width: 1px;
+	border-color: var(--ui_color_swatch_border);
+	cursor: pointer;
 }
 
 
-.inspector-section-header-badge-override {
-	color: var(--inspector-override-edge-color, var(--ui_color_prefab));
-	background-color: var(--inspector-override-badge-fill, var(--ui_color_prefab_background));
-}
-
-.inspector-header-trailing {
-	display: flex;
+.inspector-color-swatch-field {
 	flex-direction: row;
 	align-items: center;
-	gap: 8px;
-	flex-shrink: 0;
+	gap: 6px;
+}
+
+
+.inspector-color-swatch-value {
+	cursor: pointer;
+}
+
+.inspector-color-swatch-readonly {
+    cursor: default;
 }

@@ -30,13 +30,13 @@
 #include "Animation/AnimationPose.h"
 #include "Animation/EvaluationContext.h"
 #include "Animation/HumanBone.h"
-#include "Animation/HumanoidImport.h"
-#include "Animation/HumanoidNameMatcher.h"
-#include "Animation/HumanoidRig.h"
+#include "Animation/Humanoid/HumanoidImport.h"
+#include "Animation/Humanoid/HumanoidNameMatcher.h"
+#include "Animation/Humanoid/HumanoidRig.h"
 #include "Animation/PoseStack.h"
 #include "Animation/RetargetMap.h"
-#include "Animation/SkeletonData.h"
-#include "Animation/SkeletonProfile.h"
+#include "Animation/Skeleton/SkeletonData.h"
+#include "Animation/Skeleton/SkeletonProfile.h"
 
 #include "Components/Animation/HumanoidRetargeterComponent.h"
 

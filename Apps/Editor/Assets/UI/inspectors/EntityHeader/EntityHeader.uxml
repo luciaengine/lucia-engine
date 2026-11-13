@@ -1,4 +1,4 @@
-<!-- EntityHeader (InspectorPanel::MountHistoryButtons): the end of the Inspector's header row, after
+<!-- EntityHeader (InspectorPanel::MountHeaderTrailingSlot): the end of the Inspector's header row, after
      the name. The badge is hidden until UpdateEntityNameOverrideMark gives it a text; the arrows walk the
      selection history. The ids are the contract with the code. -->
 <UIElement class="inspector-header-trailing">

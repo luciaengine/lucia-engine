@@ -4,11 +4,18 @@
 #include "AssetCore/Asset.h"
 #include "AssetCore/NineSlice.h"
 
+#include <filesystem>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace GameEngine {
+
+class AssetRegistry;
+class ByteBuffer;
+struct AssetDecodeInputs;
 
 /**
  * @brief Texture format types
@@ -175,6 +182,24 @@ public:
     static void SetGpuTranscodeTarget(TextureGpuTranscodeTarget target);
     static TextureGpuTranscodeTarget GetGpuTranscodeTarget();
 
+    /** The cooked artifacts a load of `sourceBytes` adopts, in order, with their normal-variance companions, and
+     * the cook plan that names them, which its decode takes as it is (TryLoadViaCook); empty without the import cook.
+     * The AssetIOService reads them next to the source, so the decode adopts an artifact without reading the disk. */
+    static AssetDecodeInputs ResolveCookDecodeInputs(const AssetRegistry& registry, const GUID& guid,
+                                                     const String& extensionLower,
+                                                     std::span<const uint8> sourceBytes);
+
+    /** The decode inputs of a cook hit, resolved before `source` is read: the plan keys the artifacts by the
+     * source's content hash, read through a fixed buffer. When the AssetIOService reads every file named, it
+     * does not read the source, and the decode adopts the artifact. Empty unless the import cook applies. */
+    static AssetDecodeInputs ResolveCookHitDecodeInputs(const AssetRegistry& registry, const GUID& guid,
+                                                        const std::filesystem::path& source);
+
+    /** The normal-variance companion beside the packaged `payload` when the texture's settings call for one
+     * (LoadPackagedTexture), so the AssetIOService reads it with the payload; empty otherwise. */
+    static AssetDecodeInputs ResolvePackagedDecodeInputs(const AssetRegistry& registry, const GUID& guid,
+                                                         const std::filesystem::path& payload);
+
     /**
      * @brief Load texture from file
      */
@@ -183,7 +208,7 @@ public:
     /**
      * @brief Load texture from memory data (for async loading)
      */
-    bool LoadFromData(const Vector<uint8>& data) override;
+    bool LoadFromData(std::span<const uint8> data) override;
 
     /**
      * @brief Unload texture from memory
@@ -268,18 +293,30 @@ public:
      */
     bool IsSwizzleBaked() const { return m_SwizzleBaked; }
 
+    /**
+     * @brief The BC4 normal-variance companion the cook wrote beside this normal map
+     * (HasNormalVarianceCompanion), or null. Its level j holds sigma of mip j + 1 in R.
+     */
+    const TextureAsset* GetNormalVarianceCompanion() const { return m_NormalVarianceCompanion.get(); }
+
+    /// The SVG text an asset loaded from, with its intrinsic size in CSS px
+    /// (its width/height or viewBox). Immutable once built; a reload swaps the
+    /// asset's pointer to a new one. Rasterize it at any size with
+    /// RasterizeSvgToRgbaAtDimensions (Assets/SvgRasterizer.h).
+    struct SvgSource
+    {
+        std::string Text;
+        float32 Width = 0.0f;
+        float32 Height = 0.0f;
+    };
 
     /**
-     * @brief Opt this asset into adopting an EXISTING cooked artifact even when
-     * loaded outside an AssetManager context. For GPU-upload consumers only
-     * (the render thread's synchronous GetOrUpload path): artifact adoption is
-     * cheap (source hash + cache read + KTX2 parse), and a cache MISS never
-     * cooks on these threads — cooking stays worker-only (async loads and
-     * TextureService::RequestRecook). Direct Load() CPU consumers (terrain
-     * masks, ocean extraction) must NOT set this: they rely on raw per-pixel
-     * payloads and source channel counts.
+     * @brief The SVG source the asset holds right now, null for a non-SVG
+     * asset. Safe from any thread; two snapshots compare equal by pointer
+     * exactly when no reload happened between them, which is how a consumer
+     * that baked from one tells a stale result from a current one.
      */
-    void SetAdoptCookedArtifacts(bool adopt) { m_AdoptCookedArtifacts = adopt; }
+    std::shared_ptr<const SvgSource> SnapshotSvgSource() const;
 
     /**
      * @brief Set texture filtering
@@ -302,31 +339,42 @@ private:
      * resolve per-asset cook settings from AssetDatabase meta, then load the
      * cached KTX2 artifact (or, inside an AssetManager load context, cook +
      * cache it) instead of raw-decoding the source. Returns false (caller falls
-     * back to the raw decode) outside both an AssetManager context and the
-     * SetAdoptCookedArtifacts opt-in, on a cache miss outside a load context,
-     * for authored containers, or when the cook would be byte-identical to the
-     * raw path. Invalid policy forbids fallback; enabled policy requires actual
+     * back to the raw decode) outside an AssetManager context, for authored
+     * containers, or when the cook would be byte-identical to the raw path. Invalid policy forbids fallback; enabled policy requires actual
      * decoded pixels and forbids placeholder success. See Assets/TextureCook.h.
+     * Empty `sourceBytes` only adopts: the plan comes from the file (or the reader's plan), and a miss returns false.
      */
-    bool TryLoadViaCook(const Vector<uint8>& sourceBytes, const String& extensionLower,
+    bool TryLoadViaCook(std::span<const uint8> sourceBytes, const String& extensionLower,
                         AlphaCoveragePolicy& coveragePolicy);
 
     /**
-     * @brief Load texture using stb_image
+     * @brief Reads the source image file at GetPath() and loads it through the cook, or
+     * decodes it with the Image module (the file's own channels; float for .hdr).
      */
-    bool LoadWithSTB();
+    bool DecodeSourceFile();
 
     // Nullopt for authored input; packaged input succeeds or fails without raw fallback.
-    std::optional<bool> LoadPackagedTexture(const Vector<uint8>* data);
+    std::optional<bool> LoadPackagedTexture(const std::span<const uint8>* data);
 
     // Replace a loaded block-compressed payload with its decode, every level, for a CPU reader
     // of a package (whose source the export removed): RGBA32F for BC6H, RGBA8 otherwise.
     bool DecodeBlockPayloadForCpuReaders();
 
     /**
-     * @brief Load texture from memory data using stb_image
+     * @brief Loads the source image file's bytes through the cook, or decodes them with
+     * the Image module (the file's own channels; float for .hdr).
      */
-    bool LoadWithSTBFromData(const Vector<uint8>& data);
+    bool DecodeSourceBytes(std::span<const uint8> data);
+
+    /**
+     * @brief Load DDS texture
+     */
+    bool LoadDDS();
+
+    /**
+     * @brief Load DDS texture from memory data
+     */
+    bool LoadDDSFromData(std::span<const uint8> data);
 
 #if defined(GE_HAVE_KTX)
     /**
@@ -337,18 +385,40 @@ private:
     /**
      * @brief Load KTX/KTX2 texture from memory data
      */
-    bool LoadWithKTXFromData(const Vector<uint8>& data);
+    bool LoadWithKTXFromData(std::span<const uint8> data);
+
+    /// Loads the KTX2 file in `data`. A container with no Basis payload, no supercompression and no
+    /// gaps between its levels puts them in place inside `data`, which becomes the payload with no
+    /// copy. Any other container copies its levels into a new payload.
+    bool LoadWithKTXFromOwnedData(ByteBuffer data);
+
+    /// Read (ReadAssetDecodeInputFile) and load a cooked normal-variance companion; null when it
+    /// is absent or not BC4.
+    std::unique_ptr<TextureAsset> LoadVarianceCompanion(const std::filesystem::path& file) const;
+
+    /// Load the companion an export wrote beside a packaged normal map's payload. False (and
+    /// an error) when the texture's settings call for one and it is missing or corrupt.
+    bool LoadPackagedVarianceCompanion(const AssetRegistry& registry, const std::filesystem::path& payload);
 
     /**
-     * @brief Shared tail of both KTX loaders: transcode (per the process-wide
-     * GPU target), adopt the container's full mip chain and DFD color space.
-     * Takes ownership semantics of nothing; caller destroys the ktx texture.
+     * @brief Adopts the cooked container at `artifact` (TryLoadViaCook's hit path), together with
+     * `varianceCompanion` when that path is not empty. A missing or empty file is a miss; a corrupt
+     * one is logged and dropped, so the caller recooks.
      */
-    bool PopulateFromKtxTexture(void* ktxTexture2Ptr, const char* sourceName);
+    bool AdoptCookArtifact(const std::filesystem::path& artifact, const std::filesystem::path& varianceCompanion,
+                           bool swizzleBaked);
+
+    /**
+     * @brief Shared tail of the KTX loaders: transcode, adopt the mip chain and DFD color space.
+     * The caller destroys the ktx texture. A non-null `file` holds the image data
+     * (LoadWithKTXFromOwnedData) and becomes the payload in place when its levels have no gaps.
+     */
+    bool PopulateFromKtxTexture(void* ktxTexture2Ptr, const char* sourceName, ByteBuffer* file);
 #endif
 
 
-    /// Rasterize an SVG string via ThorVG and populate pixel data members.
+    /// Rasterize an SVG string via ThorVG at the asset's own raster size,
+    /// populate the pixel data members and keep the source for SnapshotSvgSource.
     bool LoadFromSvgData(const std::string& svgText, const String& extensionLower);
 
     /**
@@ -366,13 +436,15 @@ private:
 	    uint64 m_DataSize;
 	    bool m_HasMipmaps;
 	    bool m_SwizzleBaked = false;
-	    bool m_AdoptCookedArtifacts = false;
 	    uint32 m_MipmapLevels;
 	    std::vector<TextureMipDesc> m_MipChain;
+	    std::unique_ptr<TextureAsset> m_NormalVarianceCompanion;
 	    TextureFilter m_MinFilter;
 	    TextureFilter m_MagFilter;
 	    TextureWrap m_WrapS;
 	    TextureWrap m_WrapT;
+	    std::shared_ptr<const SvgSource> m_SvgSource;
+	    mutable std::mutex m_SvgSourceMutex;
 
     DISALLOW_COPY_AND_ASSIGN(TextureAsset);
 };

@@ -3,7 +3,13 @@
 #include "Pathfinding/ObstacleAvoidance.h"
 #include "Pathfinding/PathBuffer.h"
 
+#include <DetourCommon.h>
+#include <DetourNavMesh.h>
+
+#include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <string>
 #include <vector>
 
 using namespace GameEngine;
@@ -76,19 +82,31 @@ NavMeshSettings MakeDetourSettings()
 {
     NavMeshSettings s;
     s.CellSize = 0.3f;
-    s.CellHeight = 0.2f;
     s.AgentRadius = 0.6f;
     s.AgentHeight = 2.0f;
-    s.AgentMaxClimb = 0.9f;
-    s.AgentMaxSlope = 45.0f;
-    s.RegionMinSize = 1.0f;
-    s.RegionMergeSize = 20.0f;
-    s.EdgeMaxLen = 12.0f;
-    s.EdgeMaxError = 1.3f;
-    s.DetailSampleDist = 6.0f;
-    s.DetailSampleMaxError = 1.0f;
-    s.VertsPerPoly = 6;
+    s.StepHeight = 0.9f;
+    s.MaxSlope = 45.0f;
     return s;
+}
+
+// A chart whose tiles (0, 0) to (1, 1) meet at the plane's centre: 64 cells of 0.3 m is 19.2 m, so
+// each tile holds a 10 m half of the 20 m plane and every path across it crosses a tile edge.
+NavMeshChart MakePlaneChart(const NavMeshSettings& settings)
+{
+    const float32 tileSize = DetourNavMap::GetTileSize(settings);
+    NavMeshChart chart;
+    chart.Origin = Mathematics::WorldPosition{-tileSize, -1.0, -tileSize};
+    chart.Span = 2.0f * tileSize;
+    return chart;
+}
+
+// The plane's vertices moved into `chart`'s frame, the input BuildTile reads.
+PlaneGeometry InChart(const PlaneGeometry& plane, const NavMeshChart& chart)
+{
+    PlaneGeometry local = plane;
+    for (size_t i = 0; i < local.Vertices.size(); i += 3)
+        chart.ToChart(plane.Vertices[i], plane.Vertices[i + 1], plane.Vertices[i + 2], &local.Vertices[i]);
+    return local;
 }
 
 DetourNavMap::InputGeometry MakePlaneInput(const PlaneGeometry& plane)
@@ -99,6 +117,27 @@ DetourNavMap::InputGeometry MakePlaneInput(const PlaneGeometry& plane)
     geo.Indices = plane.Indices.data();
     geo.TriangleCount = plane.TriangleCount;
     return geo;
+}
+
+// Initializes `navMap` with the plane's chart and builds and adds its four tiles from `plane`.
+bool BuildAllTiles(DetourNavMap& navMap, const NavMeshSettings& settings, const PlaneGeometry& plane)
+{
+    const NavMeshChart chart = MakePlaneChart(settings);
+    if (!navMap.Initialize(settings, chart))
+        return false;
+    const PlaneGeometry local = InChart(plane, chart);
+    for (int32 tz = 0; tz < 2; ++tz)
+    {
+        for (int32 tx = 0; tx < 2; ++tx)
+        {
+            NavMeshTileData tile;
+            std::string error;
+            if (!DetourNavMap::BuildTile(settings, {chart.Id, tx, tz}, MakePlaneInput(local), tile, error) ||
+                !navMap.AddTile(tile))
+                return false;
+        }
+    }
+    return navMap.GetTileCount() > 0;
 }
 
 } // anonymous namespace
@@ -114,8 +153,7 @@ protected:
     {
         m_Plane = DetourTestHelpers::BuildPlane();
         auto settings = DetourTestHelpers::MakeDetourSettings();
-        auto geometry = DetourTestHelpers::MakePlaneInput(m_Plane);
-        ASSERT_TRUE(m_NavMap.Build(settings, geometry))
+        ASSERT_TRUE(DetourTestHelpers::BuildAllTiles(m_NavMap, settings, m_Plane))
             << "Failed to build navmesh from test plane geometry ("
             << m_Plane.VertexCount << " verts, " << m_Plane.TriangleCount << " tris)";
     }
@@ -175,14 +213,6 @@ TEST(DetourNavMapTests, RaycastReturnsFalseWhenNotBuilt)
     EXPECT_FALSE(navMap.Raycast(0.0f, 0.0f, 0.0f, 5.0f, 0.0f, 5.0f, hitX, hitY, hitZ));
 }
 
-TEST(DetourNavMapTests, SerializeReturnsEmptyWhenNotBuilt)
-{
-    DetourNavMap navMap;
-    std::vector<uint8> data;
-    EXPECT_FALSE(navMap.Serialize(data));
-    EXPECT_TRUE(data.empty());
-}
-
 TEST(DetourNavMapTests, GetDebugCountsReturnZeroWhenNotBuilt)
 {
     DetourNavMap navMap;
@@ -199,18 +229,19 @@ TEST(DetourNavMapTests, BuildWithValidGeometrySucceeds)
     DetourNavMap navMap;
     auto plane = DetourTestHelpers::BuildPlane();
     auto settings = DetourTestHelpers::MakeDetourSettings();
-    auto geometry = DetourTestHelpers::MakePlaneInput(plane);
-    EXPECT_TRUE(navMap.Build(settings, geometry));
+    EXPECT_TRUE(DetourTestHelpers::BuildAllTiles(navMap, settings, plane));
     EXPECT_TRUE(navMap.IsBuilt());
+    EXPECT_EQ(navMap.GetTileCount(), 4u);
 }
 
-TEST(DetourNavMapTests, BuildWithNullGeometryFails)
+TEST(DetourNavMapTests, TileWithoutGeometryBuildsEmpty)
 {
-    DetourNavMap navMap;
-    auto settings = DetourTestHelpers::MakeDetourSettings();
-    DetourNavMap::InputGeometry empty;
-    EXPECT_FALSE(navMap.Build(settings, empty));
-    EXPECT_FALSE(navMap.IsBuilt());
+    const auto settings = DetourTestHelpers::MakeDetourSettings();
+    NavMeshTileData tile;
+    std::string error;
+    EXPECT_TRUE(DetourNavMap::BuildTile(settings, {0, 1, 0}, DetourNavMap::InputGeometry{}, tile, error)) << error;
+    EXPECT_TRUE(tile.Data.empty());
+    EXPECT_EQ(tile.Key, (NavTileKey{0, 1, 0}));
 }
 
 TEST(DetourNavMapTests, BuildProducesDebugMesh)
@@ -218,8 +249,7 @@ TEST(DetourNavMapTests, BuildProducesDebugMesh)
     DetourNavMap navMap;
     auto plane = DetourTestHelpers::BuildPlane();
     auto settings = DetourTestHelpers::MakeDetourSettings();
-    auto geometry = DetourTestHelpers::MakePlaneInput(plane);
-    ASSERT_TRUE(navMap.Build(settings, geometry));
+    ASSERT_TRUE(DetourTestHelpers::BuildAllTiles(navMap, settings, plane));
 
     EXPECT_GT(navMap.GetDebugVertexCount(), 0u);
     EXPECT_GT(navMap.GetDebugTriangleCount(), 0u);
@@ -232,21 +262,182 @@ TEST(DetourNavMapTests, RebuildReplacesNavMesh)
     DetourNavMap navMap;
     auto plane = DetourTestHelpers::BuildPlane();
     auto settings = DetourTestHelpers::MakeDetourSettings();
-    auto geometry = DetourTestHelpers::MakePlaneInput(plane);
 
-    ASSERT_TRUE(navMap.Build(settings, geometry));
+    ASSERT_TRUE(DetourTestHelpers::BuildAllTiles(navMap, settings, plane));
     EXPECT_GT(navMap.GetDebugVertexCount(), 0u);
 
-    // Build again with different cell size — should produce different mesh
+    // A coarser cell builds the same four tiles over a larger area.
     settings.CellSize = 0.5f;
-    ASSERT_TRUE(navMap.Build(settings, geometry));
+    ASSERT_TRUE(DetourTestHelpers::BuildAllTiles(navMap, settings, plane));
     EXPECT_TRUE(navMap.IsBuilt());
+    EXPECT_EQ(navMap.GetTileCount(), 4u);
     EXPECT_GT(navMap.GetDebugVertexCount(), 0u);
+}
+
+TEST(DetourNavMapTests, BuildTileAddTileRemoveTileRoundTrip)
+{
+    const auto settings = DetourTestHelpers::MakeDetourSettings();
+    const auto chart = DetourTestHelpers::MakePlaneChart(settings);
+    const auto plane = DetourTestHelpers::InChart(DetourTestHelpers::BuildPlane(), chart);
+    DetourNavMap navMap;
+    ASSERT_TRUE(navMap.Initialize(settings, chart));
+    EXPECT_EQ(navMap.GetTileCount(), 0u);
+
+    NavMeshTileData tile;
+    std::string error;
+    ASSERT_TRUE(DetourNavMap::BuildTile(settings, {chart.Id, 1, 1}, DetourTestHelpers::MakePlaneInput(plane), tile,
+                                        error))
+        << error;
+    ASSERT_FALSE(tile.Data.empty());
+    EXPECT_GT(tile.PolygonCount, 0u);
+
+    ASSERT_TRUE(navMap.AddTile(tile));
+    EXPECT_EQ(navMap.GetTileCount(), 1u);
+    EXPECT_EQ(navMap.GetPolygonCount(), tile.PolygonCount);
+    EXPECT_EQ(navMap.GetTileDataBytes(), tile.Data.size());
+
+    // Adding the same coordinates again replaces the tile rather than stacking a second one.
+    ASSERT_TRUE(navMap.AddTile(tile));
+    EXPECT_EQ(navMap.GetTileCount(), 1u);
+
+    EXPECT_TRUE(navMap.RemoveTile({chart.Id, 1, 1}));
+    EXPECT_EQ(navMap.GetTileCount(), 0u);
+    EXPECT_FALSE(navMap.RemoveTile({chart.Id, 1, 1}));
+}
+
+namespace
+{
+
+// Where a built tile's sections start, as Detour lays them out.
+struct TileLayout
+{
+    dtMeshHeader Header;
+    size_t Polys = 0;
+    size_t DetailMeshes = 0;
+    size_t DetailTris = 0;
+    size_t BvTree = 0;
+};
+
+TileLayout LayoutOf(const std::vector<uint8>& data)
+{
+    TileLayout layout;
+    std::memcpy(&layout.Header, data.data(), sizeof(dtMeshHeader));
+    const dtMeshHeader& h = layout.Header;
+    layout.Polys = dtAlign4(sizeof(dtMeshHeader)) + dtAlign4(sizeof(float) * 3 * h.vertCount);
+    layout.DetailMeshes = layout.Polys + dtAlign4(sizeof(dtPoly) * h.polyCount) + dtAlign4(sizeof(dtLink) * h.maxLinkCount);
+    layout.DetailTris = layout.DetailMeshes + dtAlign4(sizeof(dtPolyDetail) * h.detailMeshCount) +
+                        dtAlign4(sizeof(float) * 3 * h.detailVertCount);
+    layout.BvTree = layout.DetailTris + dtAlign4(4 * h.detailTriCount);
+    return layout;
+}
+
+template <typename T, typename Change>
+NavMeshTileData Patched(const NavMeshTileData& tile, size_t at, Change change)
+{
+    NavMeshTileData patched = tile;
+    T value;
+    std::memcpy(&value, patched.Data.data() + at, sizeof(T));
+    change(value);
+    std::memcpy(patched.Data.data() + at, &value, sizeof(T));
+    return patched;
+}
+
+} // namespace
+
+// Detour reads a tile's bytes as its header describes them, without bounds checks: AddTile refuses
+// bytes whose header does not match them or the key, or whose indices leave their arrays, and keeps
+// the tile it holds.
+TEST(DetourNavMapTests, AddTileRefusesBytesDetourCannotHold)
+{
+    const auto settings = DetourTestHelpers::MakeDetourSettings();
+    const auto chart = DetourTestHelpers::MakePlaneChart(settings);
+    const auto plane = DetourTestHelpers::InChart(DetourTestHelpers::BuildPlane(), chart);
+    NavMeshTileData tile;
+    std::string error;
+    ASSERT_TRUE(DetourNavMap::BuildTile(settings, {chart.Id, 1, 1}, DetourTestHelpers::MakePlaneInput(plane), tile,
+                                        error))
+        << error;
+    const TileLayout layout = LayoutOf(tile.Data);
+    ASSERT_GT(layout.Header.bvNodeCount, 0);
+    ASSERT_GT(layout.Header.detailTriCount, 0);
+
+    // The bytes of tile (1, 1) under the key of tile (0, 1), into an empty map.
+    {
+        DetourNavMap empty;
+        ASSERT_TRUE(empty.Initialize(settings, chart));
+        NavMeshTileData wrongKey = tile;
+        wrongKey.Key = {chart.Id, 0, 1};
+        std::string refusal;
+        EXPECT_FALSE(empty.AddTile(wrongKey, &refusal));
+        EXPECT_EQ(refusal, "the tile's coordinates are not its key's");
+        EXPECT_EQ(empty.GetTileCount(), 0u);
+    }
+
+    DetourNavMap navMap;
+    ASSERT_TRUE(navMap.Initialize(settings, chart));
+    ASSERT_TRUE(navMap.AddTile(tile));
+    const uint32 polygons = navMap.GetPolygonCount();
+    const int32 polyCount = layout.Header.polyCount;
+    const int32 vertCount = layout.Header.vertCount;
+    const int32 detailVertCount = layout.Header.detailVertCount;
+    const auto expectRefused = [&](const NavMeshTileData& bad, const char* reason) {
+        std::string refusal;
+        EXPECT_FALSE(navMap.AddTile(bad, &refusal)) << reason;
+        EXPECT_EQ(refusal, reason);
+    };
+
+    NavMeshTileData headerOnly = tile;
+    headerOnly.Data.resize(sizeof(dtMeshHeader));
+    expectRefused(headerOnly, "the tile's sections do not add up to its size");
+    expectRefused(Patched<dtMeshHeader>(tile, 0,
+                                        [](dtMeshHeader& h) { h.polyCount = int(DetourNavMap::kMaxPolygonsPerTile) + 1; }),
+                  "the tile's header does not describe a tile this engine builds");
+    expectRefused(Patched<dtPoly>(tile, layout.Polys, [&](dtPoly& p) { p.verts[0] = uint16(vertCount); }),
+                  "a polygon of the tile names a vertex it does not have");
+    expectRefused(Patched<dtPoly>(tile, layout.Polys, [&](dtPoly& p) { p.neis[0] = uint16(polyCount + 1); }),
+                  "a polygon of the tile names a neighbour it does not have");
+    expectRefused(Patched<dtPolyDetail>(tile, layout.DetailMeshes,
+                                        [&](dtPolyDetail& d) { d.vertBase = uint32(detailVertCount); d.vertCount = 1; }),
+                  "a detail mesh of the tile lies outside its arrays");
+    expectRefused(Patched<uint8>(tile, layout.DetailTris, [](uint8& corner) { corner = 255; }),
+                  "a detail triangle of the tile names a vertex it does not have");
+    expectRefused(Patched<dtBVNode>(tile, layout.BvTree, [&](dtBVNode& n) { n.i = polyCount; }),
+                  "a bounding-volume node of the tile names a polygon it does not have");
+
+    EXPECT_EQ(navMap.GetTileCount(), 1u);
+    EXPECT_EQ(navMap.GetPolygonCount(), polygons);
+}
+
+TEST(DetourNavMapTests, InitializeRefusesARotatedChart)
+{
+    const auto settings = DetourTestHelpers::MakeDetourSettings();
+    NavMeshChart chart = DetourTestHelpers::MakePlaneChart(settings);
+    chart.Rotation = Mathematics::Quaternion(0.70710678f, 0.0f, 0.70710678f, 0.0f);
+    DetourNavMap navMap;
+    EXPECT_FALSE(navMap.Initialize(settings, chart));
+    EXPECT_FALSE(navMap.IsBuilt());
 }
 
 // ===========================================================================
 // Pathfinding tests (on built navmesh)
 // ===========================================================================
+
+// The boundary of a flat square is its rim, inset by the agent radius: no tile border and no edge
+// between two polygons inside it is a boundary edge.
+TEST_F(DetourNavMapBuiltTest, BoundaryEdgesOutlineOnlyTheRim)
+{
+    const uint32 edges = m_NavMap.GetDebugBoundaryEdgeCount();
+    ASSERT_GT(edges, 0u);
+    const float32* vertices = m_NavMap.GetDebugVertices();
+    const uint32* indices = m_NavMap.GetDebugBoundaryIndices();
+    ASSERT_NE(indices, nullptr);
+    for (uint32 i = 0; i < edges * 2; ++i)
+    {
+        const float32* v = &vertices[static_cast<size_t>(indices[i]) * 3];
+        EXPECT_GT(std::max(std::abs(v[0]), std::abs(v[2])), DetourTestHelpers::kPlaneHalf - 2.0f)
+            << "boundary vertex inside the plane at (" << v[0] << ", " << v[2] << ")";
+    }
+}
 
 TEST_F(DetourNavMapBuiltTest, FindPathOnFlatPlaneReturnsComplete)
 {
@@ -273,6 +464,41 @@ TEST_F(DetourNavMapBuiltTest, FindPathOnFlatPlaneReturnsComplete)
     PathPoint last = m_PathBuffer.GetPoint(outPath, pointCount - 1);
     EXPECT_NEAR(last.X, 5.0f, 2.0f);
     EXPECT_NEAR(last.Z, 5.0f, 2.0f);
+}
+
+TEST_F(DetourNavMapBuiltTest, PathCrossesTileBordersComplete)
+{
+    // (-8, -8) and (8, 8) sit in opposite tiles of the 2 x 2 layout.
+    PathHandle outPath;
+    PathRequest request;
+    request.StartX = -8.0f;
+    request.StartZ = -8.0f;
+    request.EndX = 8.0f;
+    request.EndZ = 8.0f;
+    request.AgentRadius = 0.6f;
+    request.AgentHeight = 2.0f;
+    EXPECT_EQ(m_NavMap.FindPath(request, m_PathBuffer, outPath), PathStatus::Complete);
+}
+
+TEST_F(DetourNavMapBuiltTest, RemovedTileLeavesItsNeighboursPathable)
+{
+    ASSERT_TRUE(m_NavMap.RemoveTile({0, 1, 1}));
+
+    PathHandle outPath;
+    PathRequest request;
+    request.AgentRadius = 0.6f;
+    request.AgentHeight = 2.0f;
+    // Tile (0, 0) to tile (1, 0): both still present.
+    request.StartX = -8.0f;
+    request.StartZ = -8.0f;
+    request.EndX = 8.0f;
+    request.EndZ = -8.0f;
+    EXPECT_EQ(m_NavMap.FindPath(request, m_PathBuffer, outPath), PathStatus::Complete);
+
+    // A destination inside the removed tile has no polygon to land on.
+    request.EndX = 8.0f;
+    request.EndZ = 8.0f;
+    EXPECT_EQ(m_NavMap.FindPath(request, m_PathBuffer, outPath), PathStatus::Failed);
 }
 
 TEST_F(DetourNavMapBuiltTest, FindPathSameStartAndEndProducesPath)
@@ -359,64 +585,6 @@ TEST_F(DetourNavMapBuiltTest, RaycastToEdgeOfMeshHits)
     // Hit point Z should be near the mesh edge (~9.4 after agent radius erosion)
     EXPECT_GT(hitZ, 5.0f);
     EXPECT_LT(hitZ, 11.0f);
-}
-
-// ===========================================================================
-// Serialization round-trip
-// ===========================================================================
-
-TEST_F(DetourNavMapBuiltTest, SerializeProducesNonEmptyData)
-{
-    std::vector<uint8> data;
-    EXPECT_TRUE(m_NavMap.Serialize(data));
-    EXPECT_GT(data.size(), 40u); // minimum: header(40) + at least one tile
-
-    // Verify v2 multi-tile format header
-    ASSERT_GE(data.size(), 4u);
-    EXPECT_EQ(data[0], 'D');
-    EXPECT_EQ(data[1], 'T');
-    EXPECT_EQ(data[2], 'N');
-    EXPECT_EQ(data[3], 'M');
-}
-
-TEST_F(DetourNavMapBuiltTest, SerializeDeserializeRoundTrip)
-{
-    // Serialize the built navmesh
-    std::vector<uint8> data;
-    ASSERT_TRUE(m_NavMap.Serialize(data));
-    ASSERT_GT(data.size(), 0u);
-
-    // Deserialize into a fresh navmap
-    DetourNavMap restored;
-    ASSERT_TRUE(restored.Deserialize(data.data(), static_cast<uint32>(data.size())));
-    EXPECT_TRUE(restored.IsBuilt());
-
-    // Verify pathfinding works on the restored navmesh
-    PathBuffer pathBuffer;
-    PathHandle outPath;
-    PathRequest request;
-    request.StartX = -4.0f; request.StartY = 0.0f; request.StartZ = 0.0f;
-    request.EndX = 4.0f; request.EndY = 0.0f; request.EndZ = 0.0f;
-    request.AgentRadius = 0.6f;
-    request.AgentHeight = 2.0f;
-
-    PathStatus status = restored.FindPath(request, pathBuffer, outPath);
-    EXPECT_EQ(status, PathStatus::Complete);
-    EXPECT_GE(pathBuffer.GetPointCount(outPath), 2u);
-}
-
-TEST(DetourNavMapTests, DeserializeWithInvalidDataFails)
-{
-    DetourNavMap navMap;
-    uint8 garbage[] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00, 0x00, 0x00};
-    EXPECT_FALSE(navMap.Deserialize(garbage, sizeof(garbage)));
-    EXPECT_FALSE(navMap.IsBuilt());
-}
-
-TEST(DetourNavMapTests, DeserializeWithNullFails)
-{
-    DetourNavMap navMap;
-    EXPECT_FALSE(navMap.Deserialize(nullptr, 0));
 }
 
 // ===========================================================================
@@ -561,34 +729,6 @@ TEST_F(DetourNavMapBuiltTest, CrowdManagerDoubleInitialize)
     EXPECT_GT(posX, 0.0f) << "Agent should move after double-init";
 
     crowd.Shutdown();
-}
-
-TEST_F(DetourNavMapBuiltTest, SerializeFormatHeaderAndTruncation)
-{
-    std::vector<uint8> data;
-    ASSERT_TRUE(m_NavMap.Serialize(data));
-    ASSERT_GE(data.size(), 40u);
-
-    // Verify magic
-    EXPECT_EQ(data[0], 'D');
-    EXPECT_EQ(data[1], 'T');
-    EXPECT_EQ(data[2], 'N');
-    EXPECT_EQ(data[3], 'M');
-
-    // Verify version == 1
-    uint32 version = 0;
-    std::memcpy(&version, data.data() + 4, sizeof(uint32));
-    EXPECT_EQ(version, 1u);
-
-    // Verify tileCount > 0 (at offset 36 = 4+4+28)
-    uint32 tileCount = 0;
-    std::memcpy(&tileCount, data.data() + 36, sizeof(uint32));
-    EXPECT_GT(tileCount, 0u);
-
-    // Truncated data should fail to deserialize
-    DetourNavMap truncated;
-    uint32 truncSize = std::min(static_cast<uint32>(data.size() - 1), 50u);
-    EXPECT_FALSE(truncated.Deserialize(data.data(), truncSize));
 }
 
 TEST_F(DetourNavMapBuiltTest, CrowdAgentVelocityAndTargetReadback)

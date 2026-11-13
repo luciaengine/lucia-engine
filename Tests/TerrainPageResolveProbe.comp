@@ -49,6 +49,10 @@ float CBT_PageSlotFade(uint slot)
     return SlotFade[slot];
 }
 
+void CBT_PageUnresolved()
+{
+}
+
 CBTPageLevel CBT_PageLevelShape(uint level)
 {
     return Levels[level];

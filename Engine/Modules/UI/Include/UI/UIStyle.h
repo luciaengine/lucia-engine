@@ -7,10 +7,13 @@
 #include "Types/StringId.h"
 #include "UI/Selectors/SelectorTypes.h"
 #include <cstdint>
+#include <algorithm>
 #include <memory>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -63,19 +66,24 @@ struct Box4b
     bool operator==(const Box4b&) const = default;
 };
 
-// Length value that can be Auto (unset), Pixels, or Percent.
-// Used for properties where CSS distinguishes between "unset/auto" and a concrete length.
+// A length: Auto (unset), px, percent or a CSS viewport unit (vw, vh, vmin, vmax).
+// A viewport unit is one percent of the UI root's layout size in logical px.
+// Only sizes, flex-basis and insets carry one; YogaAdapter::ApplyStyle resolves it.
 struct StyleLength
 {
     enum class UnitType : uint8_t
     {
         Auto = 0,
         Px,
-        Percent
+        Percent,
+        Vw,
+        Vh,
+        Vmin,
+        Vmax
     };
 
     UnitType Unit = UnitType::Auto;
-    float Value = 0.0f; // for Px or Percent; ignored for Auto
+    float Value = 0.0f; // the number in Unit; ignored for Auto
 
     static StyleLength Auto() { return StyleLength{UnitType::Auto, 0.0f}; }
     static StyleLength Px(float px) { return StyleLength{UnitType::Px, px}; }
@@ -84,17 +92,21 @@ struct StyleLength
     bool IsAuto() const { return Unit == UnitType::Auto; }
     bool IsPercent() const { return Unit == UnitType::Percent; }
     bool IsPx() const { return Unit == UnitType::Px; }
+    bool IsViewport() const
+    {
+        return Unit == UnitType::Vw || Unit == UnitType::Vh || Unit == UnitType::Vmin || Unit == UnitType::Vmax;
+    }
     bool operator==(const StyleLength&) const = default;
 };
 
 // Per-edge border colors (ARGB 0xAARRGGBB), stored in TRBL order for consistency
-// with Box4 (top/right/bottom/left). Default alpha==0 means "unset" (transparent).
+// with Box4 (top/right/bottom/left). The default is transparent black.
 struct BorderColorsTRBL
 {
-    uint32_t Top = 0x000000FFu;
-    uint32_t Right = 0x000000FFu;
-    uint32_t Bottom = 0x000000FFu;
-    uint32_t Left = 0x000000FFu;
+    uint32_t Top = 0x00000000u;
+    uint32_t Right = 0x00000000u;
+    uint32_t Bottom = 0x00000000u;
+    uint32_t Left = 0x00000000u;
     bool operator==(const BorderColorsTRBL&) const = default;
 };
 
@@ -356,11 +368,21 @@ struct BackgroundImageSource
     // For Path or ResourceName kinds, holds the string value.
     std::string Value;
     // Optional explicit asset-source alias for Path resolution (e.g.
-    // "editor", "project"). When non-empty, ResolveBackgroundImagePath
+    // "editor", "project"). When non-empty, BackgroundImageCache::ResolvePath
     // looks up the path under exactly this source instead of falling
     // through implicit priority. Set by `url("editor:path")` or
     // `url("@editor/path")` syntax in CSS.
     std::string SourceAlias;
+
+    // The texture registered with UIManager::SetExternalTexture under `name`; the CSS
+    // spelling is `background-image: engine("name")`.
+    static BackgroundImageSource Resource(std::string name)
+    {
+        BackgroundImageSource source;
+        source.Kind = SourceKind::ResourceName;
+        source.Value = std::move(name);
+        return source;
+    }
 
     bool HasImage() const { return Kind != SourceKind::None; }
     bool operator==(const BackgroundImageSource&) const = default;
@@ -472,7 +494,125 @@ struct BackgroundPositionValue
     bool XIsPercent = true;
     float Y = 50.0f;
     bool YIsPercent = true;
+
+    // Both axes in percent, as `background-position: x% y%`: Percent(50, 50) centers the image.
+    static BackgroundPositionValue Percent(float x, float y) { return {x, true, y, true}; }
+
     bool operator==(const BackgroundPositionValue&) const = default;
+};
+
+// One CSS transform function (css-transforms-1, 2D only).
+// translateX(), scaleY(), skewX() and friends parse to the two-axis form, with
+// the other axis at its identity.
+enum class TransformFunction : uint8_t
+{
+    Translate,
+    Scale,
+    Rotate,
+    Skew,
+    Matrix
+};
+
+struct TransformOp
+{
+    TransformFunction Function = TransformFunction::Translate;
+    // Translate only: the offsets, in CSS px or as a percentage of the
+    // element's own border box.
+    StyleLength TranslateX = StyleLength::Px(0.0f);
+    StyleLength TranslateY = StyleLength::Px(0.0f);
+    // The other functions' numbers:
+    //   Scale   x, y
+    //   Rotate  the angle in degrees, clockwise on screen
+    //   Skew    the x angle and the y angle, in degrees
+    //   Matrix  a, b, c, d, e, f, as CSS matrix() takes them (e and f in CSS px)
+    float Args[6] = {0, 0, 0, 0, 0, 0};
+    bool operator==(const TransformOp&) const = default;
+};
+
+// The functions of a `transform` list, in order.
+using TransformOpList = std::vector<TransformOp>;
+
+// The `transform` property: a list of functions applied left to right, as in
+// CSS, about the element's transform-origin. An empty list is `none`.
+// Paint-only: layout never sees it, so a transformed element keeps its place in
+// the flow and its siblings do not move.
+//
+// The list lives out of line and is shared, as font-family is: almost no
+// element sets a transform, and every element's resolved style carries the
+// field, so an untransformed one pays a null pointer. A built list is never
+// written again; the builders copy it, so copies of a value never alias a
+// change. Equality compares the functions, not the pointers.
+//
+// The builders read like the CSS they stand for:
+//   TransformValue{}.Rotate(45.0f)                         rotate(45deg)
+//   TransformValue{}.Translate(StyleLength::Percent(-50),
+//                              StyleLength::Percent(-50))  translate(-50%, -50%)
+struct TransformValue
+{
+    bool IsNone() const { return !m_Ops || m_Ops->empty(); }
+    std::span<const TransformOp> Ops() const
+    {
+        return m_Ops ? std::span<const TransformOp>(*m_Ops) : std::span<const TransformOp>();
+    }
+    bool operator==(const TransformValue& other) const
+    {
+        const std::span<const TransformOp> a = Ops();
+        const std::span<const TransformOp> b = other.Ops();
+        return std::equal(a.begin(), a.end(), b.begin(), b.end());
+    }
+
+    // A value holding `ops`, in order; an empty list is `none`.
+    static TransformValue FromOps(TransformOpList ops)
+    {
+        TransformValue value;
+        if (!ops.empty())
+            value.m_Ops = std::make_shared<const TransformOpList>(std::move(ops));
+        return value;
+    }
+
+    // Adds `op` at the end of the list.
+    TransformValue& Append(const TransformOp& op)
+    {
+        auto list = m_Ops ? std::make_shared<TransformOpList>(*m_Ops) : std::make_shared<TransformOpList>();
+        list->push_back(op);
+        m_Ops = std::move(list);
+        return *this;
+    }
+    // A length in Px or Percent; an Auto length counts as 0px.
+    TransformValue& Translate(StyleLength x, StyleLength y)
+    {
+        TransformOp op{};
+        op.TranslateX = x.IsAuto() ? StyleLength::Px(0.0f) : x;
+        op.TranslateY = y.IsAuto() ? StyleLength::Px(0.0f) : y;
+        return Append(op);
+    }
+    TransformValue& Scale(float x, float y) { return Append({TransformFunction::Scale, {}, {}, {x, y, 0, 0, 0, 0}}); }
+    TransformValue& Rotate(float degrees)
+    {
+        return Append({TransformFunction::Rotate, {}, {}, {degrees, 0, 0, 0, 0, 0}});
+    }
+    TransformValue& Skew(float xDegrees, float yDegrees)
+    {
+        return Append({TransformFunction::Skew, {}, {}, {xDegrees, yDegrees, 0, 0, 0, 0}});
+    }
+    TransformValue& Matrix(float a, float b, float c, float d, float e, float f)
+    {
+        return Append({TransformFunction::Matrix, {}, {}, {a, b, c, d, e, f}});
+    }
+
+  private:
+    std::shared_ptr<const TransformOpList> m_Ops;
+};
+
+static_assert(sizeof(TransformValue) <= 16, "TransformValue is one shared pointer: keep the list out of line");
+
+// `transform-origin`: where the transform pivots, in CSS px or as a percentage
+// of the border box, from its top-left corner. The initial value is the centre.
+struct TransformOriginValue
+{
+    StyleLength X = StyleLength::Percent(50.0f);
+    StyleLength Y = StyleLength::Percent(50.0f);
+    bool operator==(const TransformOriginValue&) const = default;
 };
 
 enum class StylePropertyId : uint16_t
@@ -578,6 +718,8 @@ enum class StylePropertyId : uint16_t
     TextOutlineWidth,
     TextOutlineColor,
     SelectionColor,
+    Transform,
+    TransformOrigin,
     // Raw declaration captured when the value contains var(). This is expanded
     // and parsed at compute time after variable substitution so that var()
     // can appear anywhere, including inside shorthands.
@@ -585,7 +727,7 @@ enum class StylePropertyId : uint16_t
     _Count
 };
 
-// Canonical property → invalidation impact. Single source of truth
+// Canonical property → invalidation impact (C-13). Single source of truth
 // consumed by the dynamic style analysis (hover/pseudo escalation gating)
 // and anything else deciding whether a property change can move layout or
 // only repaint. Exhaustive switch, no default: a new StylePropertyId left
@@ -693,6 +835,16 @@ constexpr StylePropertyImpact GetStylePropertyImpact(StylePropertyId id)
     case StylePropertyId::TextAlign:
     case StylePropertyId::SelectionColor:
         return {false, true, true};
+
+    // Paint only. A transform reaches descendants too, but not through their
+    // primitives: they carry the index of the transform slot their nearest
+    // transformed ancestor owns, and the shader composes the chain. A changed
+    // transform is one slot rewrite in the drain (UIManager_PrimitiveGen.cpp);
+    // a switch to or from `none` changes which slot descendants point at, and
+    // the drain re-points the element's subtree itself.
+    case StylePropertyId::Transform:
+    case StylePropertyId::TransformOrigin:
+        return {false, true};
 
     // Paint only, confined to the element itself.
     // TextOverflow never feeds the Yoga solve — the measure is of the full
@@ -837,6 +989,8 @@ using StyleValue = std::variant<std::monostate,
                                 BackgroundImageSource,
                                 BackgroundSizeValue,
                                 BackgroundPositionValue,
+                                TransformValue,
+                                TransformOriginValue,
                                 StyleLength,
                                 StyleBox,
                                 std::vector<std::string>,
@@ -883,10 +1037,12 @@ struct CSSRule
 };
 
 // A stylesheet's tier in the cascade (CSS Cascade 4, "Cascade Sorting Order"): every UserAgent
-// declaration loses to every Author declaration before specificity or source order is compared.
+// declaration loses to every other declaration before specificity or source order is compared.
+// Control and Author compare after specificity: on equal specificity, Author wins.
 enum class StyleOrigin : uint8_t
 {
     UserAgent, // the UI module's default stylesheet
+    Control,   // a control's own stylesheet; loses every specificity tie to an Author sheet
     Author,    // themes and documents
 };
 
@@ -926,7 +1082,7 @@ struct StylesheetRuleIndex
     std::unordered_map<StringId, std::vector<uint32_t>> ByTag;
     std::vector<uint32_t> Universal;
 
-    // Sibling style sharing: buckets holding a "share-sensitive" rule —
+    // P4 sibling style sharing: buckets holding a "share-sensitive" rule —
     // one whose match can differ between same-key siblings (sibling
     // combinators anywhere in the chain; positional/:empty/attribute
     // selectors on the rightmost compound). An element probing any

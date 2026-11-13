@@ -2,7 +2,7 @@
 
 #include "Animation/AnimGraphNode.h"
 #include "Animation/AnimParam.h"
-#include "Animation/SkeletonData.h"
+#include "Animation/Skeleton/SkeletonData.h"
 #include "Types/StringId.h"
 
 #include <cstdint>

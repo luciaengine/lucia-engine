@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Animation/AnimParam.h"
-#include "Animation/AnimationGraphPlayer.h"
+#include "Animation/AnimationGraph/AnimationGraphPlayer.h"
 #include "Animation/AnimationPose.h"
 #include "Animation/EvaluationContext.h"
 #include "Animation/Nodes/ClipPlayerNode.h"

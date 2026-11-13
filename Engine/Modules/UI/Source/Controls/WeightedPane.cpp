@@ -10,10 +10,10 @@ WeightedPane::WeightedPane(float weight)
     SetFlexWeight(weight);
 }
 
-void WeightedPane::SetFlexWeight(float w)
+void WeightedPane::SetFlexWeight(float weight)
 {
-    m_Weight = std::max(0.0f, w);
-    Overrides().Set(Style::FlexGrow, m_Weight);
+    m_Weight = std::max(0.0f, weight);
+    Style().Set(Style::FlexGrow, m_Weight);
 }
 
 } // namespace GameEngine

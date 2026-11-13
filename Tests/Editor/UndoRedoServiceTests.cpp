@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -27,9 +28,10 @@
 #include "Editor/Entities/ComponentEnabledToggle.h"
 #include "Editor/Entities/EditorComponentTraits.h"
 #include "Inspectors/AnimatorInspector.h"
-#include "Inspectors/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
 #include "Inspectors/TransformInspector.h"
 #include "Panels/UndoHistory/UndoHistoryPanel.h"
+#include "RowContextMenuGesture.h"
 #include "UndoRedo/UndoRedoService.h"
 #include "UndoRedo/MultiEntityComponentSnapshot.h"
 #include "UndoRedo/EntityComponentsEdit.h"
@@ -71,6 +73,7 @@ using GameEngine::Components::Transform;
 using GameEngine::Components::Parent;
 using GameEngine::Mathematics::Quaternion;
 using GameEngine::Mathematics::Vector3;
+using GameEngine::Mathematics::WorldPosition;
 
 using GameEngine::Editor::UndoRedoService;
 
@@ -121,22 +124,24 @@ static std::array<float, 16> ComputeWorldMatrix(World* world, EntityHandle entit
     auto* t0 = world->GetComponent<Transform>(cur);
     if (!t0)
         return out;
-    for (int i = 0; i < 16; ++i) out[(size_t)i] = t0->matrix[i];
+    const GameEngine::Mathematics::Matrix4x4 local = t0->ToMatrix4x4(t0->GetPosition() - WorldPosition{});
+    std::copy(local.Data(), local.Data() + 16, out.begin());
 
     while (true)
     {
         auto* p = world->GetComponent<Parent>(cur);
-        if (!p || !p->parent.IsValid() || !world->IsValid(p->parent))
+        if (!p || !p->Entity.IsValid() || !world->IsValid(p->Entity))
             break;
 
-        auto* pt = world->GetComponent<Transform>(p->parent);
+        auto* pt = world->GetComponent<Transform>(p->Entity);
         if (!pt)
             break;
 
         std::array<float, 16> tmp{};
-        MultiplyMat4ColumnMajor(pt->matrix, out.data(), tmp.data());
+        const GameEngine::Mathematics::Matrix4x4 parentLocal = pt->ToMatrix4x4(pt->GetPosition() - WorldPosition{});
+        MultiplyMat4ColumnMajor(parentLocal.Data(), out.data(), tmp.data());
         out = tmp;
-        cur = p->parent;
+        cur = p->Entity;
     }
 
     return out;
@@ -200,21 +205,6 @@ static GameEngine::Label* FindRowLabelFor(UIElement* node, Vector3Field* field)
     }
     return nullptr;
 }
-
-// The interceptor is a process-wide static, so it must come back down however a
-// test leaves — including through a failed ASSERT — or every later menu in the
-// binary stays swallowed.
-class InterceptorGuard
-{
-public:
-    explicit InterceptorGuard(GameEngine::InterceptableContextMenu::Interceptor interceptor)
-    {
-        GameEngine::InterceptableContextMenu::SetInterceptor(std::move(interceptor));
-    }
-    InterceptorGuard(const InterceptorGuard&) = delete;
-    InterceptorGuard& operator=(const InterceptorGuard&) = delete;
-    ~InterceptorGuard() { GameEngine::InterceptableContextMenu::SetInterceptor(nullptr); }
-};
 
 // The dispatch the UI module's own control tests use: hand the element an event
 // and let its registered handlers run.
@@ -411,7 +401,7 @@ TEST_F(UndoRedoServiceTests, ComponentEnabledToggleTooltipIsTheOwnersWhenItRegis
     const EntityHandle hosted = world->CreateEntity();
     world->AddComponentImmediate(hosted, HostedToggleTooltipProbe{});
     Editor::EditorComponentTraits hostTraits;
-    hostTraits.HostsInspectorSection = [hostedId](GameEngine::ECS::ComponentTypeId typeId)
+    hostTraits.HostsInspectorSection = [](GameEngine::ECS::ComponentTypeId typeId)
     { return typeId == hostedId; };
     hostTraits.HostedEnableToggleTooltip = "Switch this effect on or off. Off leaves the probe host alone.";
     Editor::EditorComponentTraitsRegistry::Get().Register(GetComponentTypeId<ToggleTooltipProbeHost>(),
@@ -503,7 +493,7 @@ TEST_F(UndoRedoServiceTests, TransformSnapshotUndoRedoRestoresExactLocalPosition
     Vector3 startPos(1.0f, 2.0f, 3.0f);
     Quaternion rot(1.0f, 0.0f, 0.0f, 0.0f);
     Vector3 scale(1.0f, 1.0f, 1.0f);
-    Transform start = Transform::FromTRS(startPos, rot, scale);
+    Transform start = Transform::FromTRS(WorldPosition::FromVector3(startPos),rot, scale);
     e.Set(start);
     world->ProcessCommands();
 
@@ -513,11 +503,11 @@ TEST_F(UndoRedoServiceTests, TransformSnapshotUndoRedoRestoresExactLocalPosition
     UndoRedoService svc;
     UndoRedoService::SnapshotTarget target;
     target.debugLabel = "Transform";
-    target.Capture = [world, handle, typeId](UndoRedoService::SnapshotTarget::Snapshot& out)
+    target.Capture = [world, handle](UndoRedoService::SnapshotTarget::Snapshot& out)
     {
         return world->CaptureComponentBytes(handle, typeId, out);
     };
-    target.Apply = [world, handle, typeId](const UndoRedoService::SnapshotTarget::Snapshot& snap)
+    target.Apply = [world, handle](const UndoRedoService::SnapshotTarget::Snapshot& snap)
     {
         return world->ApplyComponentBytesImmediate(handle, typeId, snap);
     };
@@ -529,7 +519,7 @@ TEST_F(UndoRedoServiceTests, TransformSnapshotUndoRedoRestoresExactLocalPosition
     edit.Preview([&]()
                  {
                      // Apply a new transform in the same way the editor does: immediate set.
-                     Transform updated = Transform::FromTRS(endPos, rot, scale);
+                     Transform updated = Transform::FromTRS(WorldPosition::FromVector3(endPos),rot, scale);
                      world->AddComponentImmediate(handle, updated);
                  });
 
@@ -538,7 +528,7 @@ TEST_F(UndoRedoServiceTests, TransformSnapshotUndoRedoRestoresExactLocalPosition
     {
         auto* t = world->GetComponent<Transform>(handle);
         ASSERT_NE(t, nullptr);
-        Vector3 p =t->GetPosition();
+        Vector3 p =t->GetPosition() - WorldPosition{};
         EXPECT_NEAR(p.x, endPos.x, 1.0e-5f);
         EXPECT_NEAR(p.y, endPos.y, 1.0e-5f);
         EXPECT_NEAR(p.z, endPos.z, 1.0e-5f);
@@ -548,7 +538,7 @@ TEST_F(UndoRedoServiceTests, TransformSnapshotUndoRedoRestoresExactLocalPosition
     {
         auto* t = world->GetComponent<Transform>(handle);
         ASSERT_NE(t, nullptr);
-        Vector3 p =t->GetPosition();
+        Vector3 p =t->GetPosition() - WorldPosition{};
         EXPECT_NEAR(p.x, startPos.x, 1.0e-5f);
         EXPECT_NEAR(p.y, startPos.y, 1.0e-5f);
         EXPECT_NEAR(p.z, startPos.z, 1.0e-5f);
@@ -558,7 +548,7 @@ TEST_F(UndoRedoServiceTests, TransformSnapshotUndoRedoRestoresExactLocalPosition
     {
         auto* t = world->GetComponent<Transform>(handle);
         ASSERT_NE(t, nullptr);
-        Vector3 p =t->GetPosition();
+        Vector3 p =t->GetPosition() - WorldPosition{};
         EXPECT_NEAR(p.x, endPos.x, 1.0e-5f);
         EXPECT_NEAR(p.y, endPos.y, 1.0e-5f);
         EXPECT_NEAR(p.z, endPos.z, 1.0e-5f);
@@ -577,7 +567,7 @@ TEST_F(UndoRedoServiceTests, TransformInspectorEditPreviewsLiveAndCommitsOnce)
     Vector3 startPos(0.0f, 0.0f, 0.0f);
     Quaternion rot(1.0f, 0.0f, 0.0f, 0.0f);
     Vector3 scale(1.0f, 1.0f, 1.0f);
-    Transform start = Transform::FromTRS(startPos, rot, scale);
+    Transform start = Transform::FromTRS(WorldPosition::FromVector3(startPos),rot, scale);
     e.Set(start);
     world->ProcessCommands();
 
@@ -654,7 +644,7 @@ TEST_F(UndoRedoServiceTests, TransformInspectorEditPreviewsLiveAndCommitsOnce)
     {
         auto* cur = world->GetComponent<Transform>(handle);
         ASSERT_NE(cur, nullptr);
-        Vector3 p =cur->GetPosition();
+        Vector3 p =cur->GetPosition() - WorldPosition{};
         EXPECT_NEAR(p.x, 20.0f, 1.0e-5f);
         EXPECT_NEAR(p.y, startPos.y, 1.0e-5f);
         EXPECT_NEAR(p.z, startPos.z, 1.0e-5f);
@@ -671,7 +661,7 @@ TEST_F(UndoRedoServiceTests, TransformInspectorEditPreviewsLiveAndCommitsOnce)
     {
         auto* cur = world->GetComponent<Transform>(handle);
         ASSERT_NE(cur, nullptr);
-        Vector3 p =cur->GetPosition();
+        Vector3 p =cur->GetPosition() - WorldPosition{};
         EXPECT_NEAR(p.x, startPos.x, 1.0e-5f);
         EXPECT_NEAR(p.y, startPos.y, 1.0e-5f);
         EXPECT_NEAR(p.z, startPos.z, 1.0e-5f);
@@ -681,7 +671,7 @@ TEST_F(UndoRedoServiceTests, TransformInspectorEditPreviewsLiveAndCommitsOnce)
     {
         auto* cur = world->GetComponent<Transform>(handle);
         ASSERT_NE(cur, nullptr);
-        Vector3 p =cur->GetPosition();
+        Vector3 p =cur->GetPosition() - WorldPosition{};
         EXPECT_NEAR(p.x, 20.0f, 1.0e-5f);
         EXPECT_NEAR(p.y, startPos.y, 1.0e-5f);
         EXPECT_NEAR(p.z, startPos.z, 1.0e-5f);
@@ -702,8 +692,8 @@ TEST_F(UndoRedoServiceTests, TransformInspectorResetRowRestoresDefaultsAcrossSel
     const Quaternion rot(1.0f, 0.0f, 0.0f, 0.0f);
     Entity primary = world->Create();
     Entity peer = world->Create();
-    primary.Set(Transform::FromTRS(Vector3(3.0f, 4.0f, 5.0f), rot, Vector3(2.0f, 2.0f, 2.0f)));
-    peer.Set(Transform::FromTRS(Vector3(-1.0f, 0.0f, 7.0f), rot, Vector3(5.0f, 5.0f, 5.0f)));
+    primary.Set(Transform::FromTRS(WorldPosition{3.0, 4.0, 5.0},rot, Vector3(2.0f, 2.0f, 2.0f)));
+    peer.Set(Transform::FromTRS(WorldPosition{-1.0, 0.0, 7.0},rot, Vector3(5.0f, 5.0f, 5.0f)));
     world->ProcessCommands();
 
     const EntityHandle primaryHandle = primary.GetHandle();
@@ -777,8 +767,8 @@ TEST_F(UndoRedoServiceTests, TransformInspectorResetRowRestoresDefaultsAcrossSel
     SendMouse(*posLabel, GameEngine::kEventMouseDown, 0);
 
     {
-        const Vector3 p = world->GetComponent<Transform>(primaryHandle)->GetPosition();
-        const Vector3 s = world->GetComponent<Transform>(peerHandle)->GetPosition();
+        const Vector3 p = world->GetComponent<Transform>(primaryHandle)->GetPosition() - WorldPosition{};
+        const Vector3 s = world->GetComponent<Transform>(peerHandle)->GetPosition() - WorldPosition{};
         EXPECT_NEAR(p.x, 0.0f, 1.0e-5f);
         EXPECT_NEAR(p.z, 0.0f, 1.0e-5f);
         EXPECT_NEAR(s.x, 0.0f, 1.0e-5f);
@@ -786,11 +776,8 @@ TEST_F(UndoRedoServiceTests, TransformInspectorResetRowRestoresDefaultsAcrossSel
     }
 }
 
-// The menu model itself: right-clicking a row label has to offer Reset next to
-// Copy/Paste, and the command it carries has to reach the reset. Driven through
-// InterceptableContextMenu's interceptor, which every editor menu rides — Show()
-// publishes the resolved item tree plus a copy of the command handler instead of
-// opening a popup.
+// The row menu offers Reset beside Copy and Paste, and its command resets the row. InterceptableContextMenu
+// captures the menu that the row's right-click opens.
 TEST_F(UndoRedoServiceTests, TransformInspectorRowMenuOffersResetAndItsCommandResets)
 {
     World* world = GetWorld();
@@ -800,7 +787,7 @@ TEST_F(UndoRedoServiceTests, TransformInspectorRowMenuOffersResetAndItsCommandRe
 
     const Quaternion rot(1.0f, 0.0f, 0.0f, 0.0f);
     Entity primary = world->Create();
-    primary.Set(Transform::FromTRS(Vector3(0.0f, 0.0f, 0.0f), rot, Vector3(2.0f, 2.0f, 2.0f)));
+    primary.Set(Transform::FromTRS(WorldPosition{},rot, Vector3(2.0f, 2.0f, 2.0f)));
     world->ProcessCommands();
 
     const EntityHandle handle = primary.GetHandle();
@@ -817,10 +804,6 @@ TEST_F(UndoRedoServiceTests, TransformInspectorRowMenuOffersResetAndItsCommandRe
     ctx.Object = transform;
     ctx.Undo = &undo;
     ctx.ChangeNotifications = nullptr;
-    // The row menu is gated on a window, and Show() hands it straight to the
-    // interceptor without dereferencing it. A sentinel is enough to open the
-    // path; nothing in this test touches a real window.
-    ctx.Window = reinterpret_cast<GameEngine::Platform::Window*>(std::uintptr_t{1});
 
     InspectorFn* inspector = InspectorRegistry::Get().TryGetComponentInspector<Transform>();
     ASSERT_NE(inspector, nullptr);
@@ -830,20 +813,15 @@ TEST_F(UndoRedoServiceTests, TransformInspectorRowMenuOffersResetAndItsCommandRe
     ASSERT_GE(fields.size(), 4u);
     GameEngine::Label* scaleLabel = FindRowLabelFor(&root, fields[2]);
     ASSERT_NE(scaleLabel, nullptr);
+    ASSERT_NE(scaleLabel->GetParent(), nullptr);
 
-    std::optional<GameEngine::InterceptableContextMenu::Capture> captured;
-    InterceptorGuard guard(
-        [&captured](GameEngine::InterceptableContextMenu::Capture&& capture)
-        {
-            captured = std::move(capture);
-            return true;
-        });
+    // Control first: a left-click on the label opens no menu.
+    constexpr int kLeftMouseButton = 0;
+    ASSERT_FALSE(EditorTesting::OpenRowContextMenu(*scaleLabel->GetParent(), *scaleLabel, kLeftMouseButton).has_value())
+        << "a left-click opened the row context menu";
 
-    // Control first: a left-click on the label must not open a menu.
-    SendMouse(*scaleLabel, GameEngine::kEventMouseUp, 0);
-    ASSERT_FALSE(captured.has_value()) << "a left-click opened the row context menu";
-
-    SendMouse(*scaleLabel, GameEngine::kEventMouseUp, 1);
+    const std::optional<GameEngine::InterceptableContextMenu::Capture> captured =
+        EditorTesting::OpenRowContextMenu(*scaleLabel->GetParent(), *scaleLabel);
     ASSERT_TRUE(captured.has_value()) << "right-clicking the row label opened no menu";
 
     const GameEngine::InterceptableContextMenu::CapturedItem* resetItem = nullptr;
@@ -875,6 +853,24 @@ TEST_F(UndoRedoServiceTests, TransformInspectorRowMenuOffersResetAndItsCommandRe
     EXPECT_NEAR(world->GetComponent<Transform>(handle)->GetScale().x, 2.0f, 1.0e-5f);
 }
 
+// The Copy text of the three Transform rows: six significant digits, no trailing zeros, ", " between values.
+// Paste reads the text back to the same value within the six digits.
+TEST_F(UndoRedoServiceTests, TransformRowCopyTextHasSixSignificantDigits)
+{
+    EXPECT_EQ(GameEngine::TransformRowClipboardText(Vector3(0.0f, 0.9f, 0.0f)), "0, 0.9, 0");
+    EXPECT_EQ(GameEngine::TransformRowClipboardText(Vector3(0.0f, 0.0f, 0.0f)), "0, 0, 0");
+    EXPECT_EQ(GameEngine::TransformRowClipboardText(Vector3(1.1f, 0.15f, 1.1f)), "1.1, 0.15, 1.1");
+    EXPECT_EQ(GameEngine::TransformRowClipboardText(Vector3(1.23456789f, -0.000012345f, 123456789.0f)),
+              "1.23457, -1.2345e-05, 1.23457e+08");
+
+    const Vector3 value(1.23456789f, -0.000012345f, 123456789.0f);
+    Vector3 parsed;
+    ASSERT_TRUE(GameEngine::TryParseTransformRowClipboardText(GameEngine::TransformRowClipboardText(value), parsed));
+    EXPECT_NEAR(parsed.x, value.x, 1.0e-5f * std::abs(value.x));
+    EXPECT_NEAR(parsed.y, value.y, 1.0e-5f * std::abs(value.y));
+    EXPECT_NEAR(parsed.z, value.z, 1.0e-5f * std::abs(value.z));
+}
+
 // The inspector's undo snapshot covers the whole selection, not just the primary:
 // undoing a typed edit has to put every entity the edit moved back where it was.
 TEST_F(UndoRedoServiceTests, TransformInspectorEditUndoRestoresEveryEntityInSelection)
@@ -888,8 +884,8 @@ TEST_F(UndoRedoServiceTests, TransformInspectorEditUndoRestoresEveryEntityInSele
     const Vector3 scale(1.0f, 1.0f, 1.0f);
     Entity primary = world->Create();
     Entity peer = world->Create();
-    primary.Set(Transform::FromTRS(Vector3(0.0f, 0.0f, 0.0f), rot, scale));
-    peer.Set(Transform::FromTRS(Vector3(5.0f, 0.0f, 0.0f), rot, scale));
+    primary.Set(Transform::FromTRS(WorldPosition{},rot, scale));
+    peer.Set(Transform::FromTRS(WorldPosition{5.0, 0.0, 0.0},rot, scale));
     world->ProcessCommands();
 
     const EntityHandle primaryHandle = primary.GetHandle();
@@ -947,16 +943,16 @@ TEST_F(UndoRedoServiceTests, TransformInspectorEditUndoRestoresEveryEntityInSele
     ASSERT_EQ(undo.GetUndoCount(), 1u);
 
     // A value edit carries the peer by the primary's delta: 5 + 20.
-    EXPECT_NEAR(world->GetComponent<Transform>(primaryHandle)->GetPosition().x, 20.0f, 1.0e-5f);
-    EXPECT_NEAR(world->GetComponent<Transform>(peerHandle)->GetPosition().x, 25.0f, 1.0e-5f);
+    EXPECT_NEAR(world->GetComponent<Transform>(primaryHandle)->GetPosition().X, 20.0f, 1.0e-5f);
+    EXPECT_NEAR(world->GetComponent<Transform>(peerHandle)->GetPosition().X, 25.0f, 1.0e-5f);
 
     undo.Undo();
-    EXPECT_NEAR(world->GetComponent<Transform>(primaryHandle)->GetPosition().x, 0.0f, 1.0e-5f);
-    EXPECT_NEAR(world->GetComponent<Transform>(peerHandle)->GetPosition().x, 5.0f, 1.0e-5f);
+    EXPECT_NEAR(world->GetComponent<Transform>(primaryHandle)->GetPosition().X, 0.0f, 1.0e-5f);
+    EXPECT_NEAR(world->GetComponent<Transform>(peerHandle)->GetPosition().X, 5.0f, 1.0e-5f);
 
     undo.Redo();
-    EXPECT_NEAR(world->GetComponent<Transform>(primaryHandle)->GetPosition().x, 20.0f, 1.0e-5f);
-    EXPECT_NEAR(world->GetComponent<Transform>(peerHandle)->GetPosition().x, 25.0f, 1.0e-5f);
+    EXPECT_NEAR(world->GetComponent<Transform>(primaryHandle)->GetPosition().X, 20.0f, 1.0e-5f);
+    EXPECT_NEAR(world->GetComponent<Transform>(peerHandle)->GetPosition().X, 25.0f, 1.0e-5f);
 }
 
 TEST_F(UndoRedoServiceTests, AnimatorSlidersPreviewLiveAndRemainUndoable)
@@ -1386,7 +1382,7 @@ TEST_F(UndoRedoServiceTests, CreateEntityUndoRedo_PreservesHandle_ForSubsequentT
     Vector3 startPos(1.0f, 2.0f, 3.0f);
     Quaternion rot(1.0f, 0.0f, 0.0f, 0.0f);
     Vector3 scale(1.0f, 1.0f, 1.0f);
-    Transform start = Transform::FromTRS(startPos, rot, scale);
+    Transform start = Transform::FromTRS(WorldPosition::FromVector3(startPos),rot, scale);
     world->AddComponentImmediate(h, start);
 
     // Undo service with two commands: create + transform edit.
@@ -1421,17 +1417,17 @@ TEST_F(UndoRedoServiceTests, CreateEntityUndoRedo_PreservesHandle_ForSubsequentT
     const auto typeId = GameEngine::ECS::GetComponentTypeId<Transform>();
     UndoRedoService::SnapshotTarget target;
     target.debugLabel = "Transform";
-    target.Capture = [world, h, typeId](UndoRedoService::SnapshotTarget::Snapshot& out)
+    target.Capture = [world, h](UndoRedoService::SnapshotTarget::Snapshot& out)
     {
         return world->CaptureComponentBytes(h, typeId, out);
     };
-    target.Apply = [world, h, typeId](const UndoRedoService::SnapshotTarget::Snapshot& snap)
+    target.Apply = [world, h](const UndoRedoService::SnapshotTarget::Snapshot& snap)
     {
         return world->ApplyComponentBytesImmediate(h, typeId, snap);
     };
 
     Vector3 endPos(4.0f, -1.0f, 0.25f);
-    Transform end = Transform::FromTRS(endPos, rot, scale);
+    Transform end = Transform::FromTRS(WorldPosition::FromVector3(endPos),rot, scale);
 
     auto edit = svc.BeginInteractiveEdit("Transform Translate", target);
     ASSERT_TRUE((bool)edit);
@@ -1450,7 +1446,7 @@ TEST_F(UndoRedoServiceTests, CreateEntityUndoRedo_PreservesHandle_ForSubsequentT
     {
         auto* t = world->GetComponent<Transform>(h);
         ASSERT_NE(t, nullptr);
-        Vector3 p =t->GetPosition();
+        Vector3 p =t->GetPosition() - WorldPosition{};
         EXPECT_NEAR(p.x, startPos.x, 1.0e-5f);
         EXPECT_NEAR(p.y, startPos.y, 1.0e-5f);
         EXPECT_NEAR(p.z, startPos.z, 1.0e-5f);
@@ -1466,7 +1462,7 @@ TEST_F(UndoRedoServiceTests, CreateEntityUndoRedo_PreservesHandle_ForSubsequentT
     {
         auto* t = world->GetComponent<Transform>(h);
         ASSERT_NE(t, nullptr);
-        Vector3 p =t->GetPosition();
+        Vector3 p =t->GetPosition() - WorldPosition{};
         EXPECT_NEAR(p.x, startPos.x, 1.0e-5f);
         EXPECT_NEAR(p.y, startPos.y, 1.0e-5f);
         EXPECT_NEAR(p.z, startPos.z, 1.0e-5f);
@@ -1478,7 +1474,7 @@ TEST_F(UndoRedoServiceTests, CreateEntityUndoRedo_PreservesHandle_ForSubsequentT
     {
         auto* t = world->GetComponent<Transform>(h);
         ASSERT_NE(t, nullptr);
-        Vector3 p =t->GetPosition();
+        Vector3 p =t->GetPosition() - WorldPosition{};
         EXPECT_NEAR(p.x, endPos.x, 1.0e-5f);
         EXPECT_NEAR(p.y, endPos.y, 1.0e-5f);
         EXPECT_NEAR(p.z, endPos.z, 1.0e-5f);
@@ -1495,13 +1491,13 @@ TEST_F(UndoRedoServiceTests, CreateAsEmptyParent_PreservesChildWorldMatrix_UndoR
     // Create a parent with a non-trivial local transform.
     EntityHandle parent = world->CreateEntity();
     ASSERT_TRUE(parent.IsValid());
-    Transform parentT = Transform::FromTRS(Vector3(3.0f, 1.0f, -2.0f), Quaternion{}, Vector3(2.0f, 1.0f, 0.5f));
+    Transform parentT = Transform::FromTRS(WorldPosition{3.0, 1.0, -2.0},Quaternion{}, Vector3(2.0f, 1.0f, 0.5f));
     world->AddComponentImmediate(parent, parentT);
 
     // Create a child with a non-trivial local transform under the parent.
     EntityHandle child = world->CreateEntity();
     ASSERT_TRUE(child.IsValid());
-    Transform childLocal = Transform::FromTRS(Vector3(-1.0f, 0.5f, 2.0f), Quaternion{}, Vector3(1.0f, 2.0f, 1.0f));
+    Transform childLocal = Transform::FromTRS(WorldPosition{-1.0, 0.5, 2.0},Quaternion{}, Vector3(1.0f, 2.0f, 1.0f));
     world->AddComponentImmediate(child, childLocal);
     world->AddComponentImmediate(child, Parent{parent});
 
@@ -1706,7 +1702,7 @@ TEST_F(UndoRedoServiceTests, MultiTargetRestoreValidatesBeforeAnyWrite)
     world->AddComponentImmediate(first, Transform::FromTRS({10.0f, 0.0f, 0.0f}, Quaternion::Identity(), {1.0f, 1.0f, 1.0f}));
     before.pop_back();
     EXPECT_FALSE(target.Apply(before));
-    EXPECT_FLOAT_EQ(world->GetComponent<Transform>(first)->GetPosition().x, 10.0f);
+    EXPECT_DOUBLE_EQ(world->GetComponent<Transform>(first)->GetPosition().X, 10.0);
 }
 
 TEST_F(UndoRedoServiceTests, ScenePreviewsAreDirtyAndUndoToTheSavedStateIsClean)
@@ -1743,18 +1739,18 @@ TEST_F(UndoRedoServiceTests, HistoryPanelKeepsRevisionsInsideItsScrollViewport)
     Editor::UndoRedoService undo;
     UndoHistoryPanel panel;
     panel.SetUndoRedoService(&undo);
-    UIElement* list = panel.FindById("HistoryList");
+    UIElement* list = panel.FindById("HistoryList"_sid);
     ASSERT_NE(list, nullptr);
     ASSERT_NE(list->GetParent(), nullptr);
     EXPECT_TRUE(list->GetParent()->HasClass("scroll-content"));
-    EXPECT_NE(list->FindById("HistoryNode0"), nullptr);
+    EXPECT_NE(list->FindById("HistoryNode0"_sid), nullptr);
 }
 
 TEST_F(UndoRedoServiceTests, DetachedHistoryPanelDoesNotAccumulateRowsDuringEvents)
 {
     using namespace GameEngine;
     UndoHistoryPanel panel;
-    UIElement* list = panel.FindById("HistoryList");
+    UIElement* list = panel.FindById("HistoryList"_sid);
     ASSERT_NE(list, nullptr);
     ASSERT_EQ(list->GetChildren().size(), 0u);
     Editor::UndoRedoService undo;
@@ -1794,7 +1790,7 @@ TEST_F(UndoRedoServiceTests, HistoryPanelKeepsLongLinearChainsInOneLane)
         undo.Execute(std::make_unique<NoOpCommand>());
     UndoHistoryPanel panel;
     panel.SetUndoRedoService(&undo);
-    UIElement* list = panel.FindById("HistoryList");
+    UIElement* list = panel.FindById("HistoryList"_sid);
     ASSERT_NE(list, nullptr);
     ASSERT_EQ(list->GetChildren().size(), kChainLength + 1u);
     for (const auto& row : list->GetChildren())
@@ -1823,14 +1819,14 @@ TEST_F(UndoRedoServiceTests, HistoryPanelCarriesAncestorGuidesThroughNestedBranc
     undo.Execute(std::make_unique<NoOpCommand>()); // 6: final outer branch
     UndoHistoryPanel panel;
     panel.SetUndoRedoService(&undo);
-    UIElement* list = panel.FindById("HistoryList");
+    UIElement* list = panel.FindById("HistoryList"_sid);
     ASSERT_NE(list, nullptr);
     const std::uint64_t expectedOrder[] = {0, 1, 2, 3, 4, 5, 6};
     ASSERT_EQ(list->GetChildren().size(), std::size(expectedOrder));
     for (std::size_t index = 0; index < std::size(expectedOrder); ++index)
         EXPECT_EQ(list->GetChildren()[index]->GetId(), "HistoryNode" + std::to_string(expectedOrder[index]));
 
-    UIElement* nested = panel.FindById("HistoryNode4");
+    UIElement* nested = panel.FindById("HistoryNode4"_sid);
     ASSERT_NE(nested, nullptr);
     auto* nestedBranches = FindHistoryBranches(*nested);
     ASSERT_NE(nestedBranches, nullptr);
@@ -1840,7 +1836,7 @@ TEST_F(UndoRedoServiceTests, HistoryPanelCarriesAncestorGuidesThroughNestedBranc
     EXPECT_TRUE(nestedLanes[1]->HasClass("history-branch-elbow"));
     EXPECT_FALSE(nestedLanes[1]->HasClass("history-branch-continues"));
 
-    UIElement* continuation = panel.FindById("HistoryNode5");
+    UIElement* continuation = panel.FindById("HistoryNode5"_sid);
     ASSERT_NE(continuation, nullptr);
     auto* continuationBranches = FindHistoryBranches(*continuation);
     ASSERT_NE(continuationBranches, nullptr);
@@ -1850,7 +1846,7 @@ TEST_F(UndoRedoServiceTests, HistoryPanelCarriesAncestorGuidesThroughNestedBranc
     EXPECT_FALSE(continuationLanes[1]->HasClass("history-branch-continues"));
     EXPECT_FALSE(continuationLanes[1]->HasClass("history-branch-elbow"));
 
-    UIElement* last = panel.FindById("HistoryNode6");
+    UIElement* last = panel.FindById("HistoryNode6"_sid);
     ASSERT_NE(last, nullptr);
     auto* lastBranches = FindHistoryBranches(*last);
     ASSERT_NE(lastBranches, nullptr);
@@ -1869,19 +1865,19 @@ TEST_F(UndoRedoServiceTests, HistoryPanelMarksTheCurrentRevisionAfterSwitchingBr
     undo.Execute(std::make_unique<NoOpCommand>());
     UndoHistoryPanel panel;
     panel.SetUndoRedoService(&undo);
-    auto* first = dynamic_cast<Button*>(panel.FindById("HistoryNode1"));
+    auto* first = dynamic_cast<Button*>(panel.FindById("HistoryNode1"_sid));
     ASSERT_NE(first, nullptr);
     first->TriggerClick();
     panel.Rebuild();
     EXPECT_EQ(undo.GetCurrentNodeId(), 1u);
-    UIElement* current = panel.FindById("HistoryNode1");
+    UIElement* current = panel.FindById("HistoryNode1"_sid);
     ASSERT_NE(current, nullptr);
     EXPECT_TRUE(current->HasClass("history-current"));
-    auto* badge = dynamic_cast<Label*>(panel.FindById("HistoryCurrent"));
+    auto* badge = dynamic_cast<Label*>(panel.FindById("HistoryCurrent"_sid));
     ASSERT_NE(badge, nullptr);
     EXPECT_EQ(badge->GetText(), "Current");
     EXPECT_EQ(badge->GetParent(), current);
-    UIElement* other = panel.FindById("HistoryNode2");
+    UIElement* other = panel.FindById("HistoryNode2"_sid);
     ASSERT_NE(other, nullptr);
     EXPECT_FALSE(other->HasClass("history-current"));
 }
@@ -1906,12 +1902,12 @@ TEST_F(UndoRedoServiceTests, HistoryRowsShowOriginalTransformValuesAcrossBranche
     ASSERT_TRUE(undo.CommitPendingEdit());
     UndoHistoryPanel panel;
     panel.SetUndoRedoService(&undo);
-    auto* first = panel.FindById("HistoryNode1");
-    auto* second = panel.FindById("HistoryNode2");
+    auto* first = panel.FindById("HistoryNode1"_sid);
+    auto* second = panel.FindById("HistoryNode2"_sid);
     ASSERT_NE(first, nullptr);
     ASSERT_NE(second, nullptr);
-    auto* firstDetails = dynamic_cast<Label*>(first->FindById("HistoryDetails"));
-    auto* secondDetails = dynamic_cast<Label*>(second->FindById("HistoryDetails"));
+    auto* firstDetails = dynamic_cast<Label*>(first->FindById("HistoryDetails"_sid));
+    auto* secondDetails = dynamic_cast<Label*>(second->FindById("HistoryDetails"_sid));
     ASSERT_NE(firstDetails, nullptr);
     ASSERT_NE(secondDetails, nullptr);
     EXPECT_EQ(firstDetails->GetText(), "Position: (0, 0, 0) -> (2, 3, 4)");
@@ -2008,7 +2004,7 @@ TEST_F(UndoRedoServiceTests, HistoryShowsTheLatestPendingValuesBeforePublishing)
     edit.Commit();
     UndoHistoryPanel panel;
     panel.SetUndoRedoService(&undo);
-    auto* pending = dynamic_cast<Label*>(panel.FindById("HistoryPending"));
+    auto* pending = dynamic_cast<Label*>(panel.FindById("HistoryPending"_sid));
     ASSERT_NE(pending, nullptr);
     EXPECT_EQ(pending->GetText(), "Move (pending)\nPosition: (0, 0, 0) -> (2, 0, 0)");
     EXPECT_TRUE(undo.GetHistoryNodes().empty());
@@ -2151,16 +2147,16 @@ TEST_F(UndoRedoServiceTests, HistoryPanelRefreshesHiddenInspectorEditsWhenItsTab
     edit.Commit();
     UIElement::SetInEventDispatch(false);
     ui.DrainDeferredActionsOnce();
-    EXPECT_EQ(panel.FindById("HistoryPending"), nullptr);
+    EXPECT_EQ(panel.FindById("HistoryPending"_sid), nullptr);
     UIElement::SetInEventDispatch(true);
     mount->SwapTargetForActivation(&panel);
     UIElement::SetInEventDispatch(false);
     ui.DrainDeferredActionsOnce();
     EXPECT_EQ(panel.GetOwnerManager(), &ui);
-    auto* pending = dynamic_cast<Label*>(panel.FindById("HistoryPending"));
+    auto* pending = dynamic_cast<Label*>(panel.FindById("HistoryPending"_sid));
     ASSERT_NE(pending, nullptr);
     EXPECT_EQ(pending->GetText(), "Move (pending)\nPosition: (0, 0, 0) -> (2, 0, 0)");
-    auto* back = dynamic_cast<Button*>(panel.FindById("HistoryUndo"));
+    auto* back = dynamic_cast<Button*>(panel.FindById("HistoryUndo"_sid));
     ASSERT_NE(back, nullptr);
     EXPECT_TRUE(back->IsEnabled());
 }
@@ -2188,8 +2184,8 @@ TEST_F(UndoRedoServiceTests, HistoryPanelAcceptsLaterUpdatesAfterDiscardingAHidd
     undo.Execute(std::make_unique<NoOpCommand>());
     UIElement::SetInEventDispatch(false);
     ui.DrainDeferredActionsOnce();
-    EXPECT_NE(panel.FindById("HistoryNode2"), nullptr);
-    auto* count = dynamic_cast<Label*>(panel.FindById("HistoryCount"));
+    EXPECT_NE(panel.FindById("HistoryNode2"_sid), nullptr);
+    auto* count = dynamic_cast<Label*>(panel.FindById("HistoryCount"_sid));
     ASSERT_NE(count, nullptr);
     EXPECT_EQ(count->GetText(), "2 Actions");
     mount->SwapTargetForActivation(&inspector);
@@ -2200,7 +2196,7 @@ TEST_F(UndoRedoServiceTests, HistoryPanelAcceptsLaterUpdatesAfterDiscardingAHidd
     mount->SwapTargetForActivation(&panel);
     ui.DrainDeferredActionsOnce();
     EXPECT_EQ(count->GetText(), "0 Actions");
-    EXPECT_EQ(panel.FindById("HistoryNode2"), nullptr);
+    EXPECT_EQ(panel.FindById("HistoryNode2"_sid), nullptr);
 }
 
 namespace GameEngine

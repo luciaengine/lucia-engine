@@ -76,7 +76,8 @@ bool IsHeightFieldCollisionCurrent(ECS::World& world, const Physics::PhysicsWorl
                 return;
             Physics::AABB footprint;
             if (transform &&
-                HeightFieldFootprint(transform->matrix, shape.sizeX, shape.sizeZ, shape.heightScale, footprint) &&
+                HeightFieldFootprint(transform->ToMatrix4x4(transform->Position - Mathematics::WorldPosition{}).Data(),
+                                     shape.sizeX, shape.sizeZ, shape.heightScale, footprint) &&
                 !BoxesOverlap(footprint, box))
                 return;
 

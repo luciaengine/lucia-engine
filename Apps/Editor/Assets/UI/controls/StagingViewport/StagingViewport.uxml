@@ -1,0 +1,5 @@
+<!-- StagingViewport (Apps/Editor/Include/UI/Controls/StagingViewport.h): the image shows the staging
+     view's output; StagingViewport.cpp binds the texture by the id. -->
+<UIElement class="staging-viewport-fill">
+  <UIElement id="staging-viewport-image" class="staging-viewport-fill" />
+</UIElement>

@@ -44,6 +44,18 @@ enum class RGQueue : uint8_t
 };
 constexpr uint32_t kQueueCount = 3;
 
+// The queue's name in diagnostic replies.
+constexpr const char* RGQueueName(RGQueue queue)
+{
+    switch (queue)
+    {
+    case RGQueue::Graphics: return "Graphics";
+    case RGQueue::Compute: return "Compute";
+    case RGQueue::Transfer: return "Copy";
+    }
+    return "?";
+}
+
 // AccelerationStructure: a ray-query acceleration structure (a TLAS slot). The
 // graph orders its builder before its readers and derives the cross-queue wait
 // between them; it records no barrier for it, because the backend records the
@@ -113,6 +125,7 @@ enum class RGCullReason : uint8_t
     NotCulled,
     NoConsumer,     // its outputs reach no sink (present/export/external) and have no reader
     ProducerCulled, // its outputs have readers, but every reader was itself culled
+    Overwritten,    // a later pass writes every pixel of its output before any pass reads it
     Cycle           // part of a dependency cycle; dropped to keep the schedule valid
 };
 

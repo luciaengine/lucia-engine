@@ -76,8 +76,8 @@ TEST(RenderSorting, ParentGroupUsesViewDepthAndKeepsChildrenTogether)
     auto sibling = world.Create(Components::Parent{}, Components::RenderSorting{});
     parent.Set(Components::RenderSorting{10, 3, true});
     auto transform = Components::WorldTransform{};
-    transform.matrix[12] = 8;
-    transform.matrix[14] = 200;
+    transform.Position.X = 8;
+    transform.Position.Z = 200;
     parent.Set(transform);
     child.Set(Components::Parent{parent.GetHandle()});
     sibling.Set(Components::Parent{parent.GetHandle()});
@@ -89,7 +89,8 @@ TEST(RenderSorting, ParentGroupUsesViewDepthAndKeepsChildrenTogether)
     auto b = ResolveRenderSorting(world, sibling.GetHandle(), layers);
     EXPECT_EQ(a.Group, parent.GetHandle());
     EXPECT_EQ(a.Layer, 10);
-    const float position[]{1, 0, 0}, forward[]{1, 0, 0};
+    const Mathematics::WorldPosition position{1, 0, 0};
+    const float forward[]{1, 0, 0};
     auto keyA = MakeRenderSortKey(a, 100, position, forward);
     auto keyB = MakeRenderSortKey(b, 1, position, forward);
     EXPECT_EQ(keyA.Depth, 7);

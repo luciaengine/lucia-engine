@@ -260,6 +260,8 @@ class CurveField : public UIElement
     bool m_DragMoved = false;
     float m_DragStartX = 0.0f;
     float m_DragStartY = 0.0f;
+    // The dragged key's time when the drag began: the time moves by the pointer's horizontal travel.
+    float m_DragStartTime = 0.0f;
     float m_GrabOffsetX = 0.0f;
     float m_GrabOffsetY = 0.0f;
     // Value axis frozen during a drag so the curve does not chase the moving key.

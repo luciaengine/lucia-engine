@@ -3,15 +3,15 @@
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/QueryPool.h"
+#include "Types/Types.h"
 
-#include "MetalIndirectCountEncoder.h"
+#include "MetalIndirectCount/MetalIndirectCountEncoder.h"
 #include "MetalQueryPool.h"
 
 #include <Metal/Metal.hpp>
 
 #include <array>
 #include <cstdint>
-#include <unordered_map>
 #include <vector>
 
 namespace GameEngine
@@ -226,7 +226,9 @@ class MetalCommandList : public CommandList
         size_t Offset = 0;
     };
     std::array<BoundArgumentTable, kMaxDescriptorSets> m_EncoderBoundSets{};
-    std::unordered_map<MTL::Resource*, MTL::ResourceUsage> m_EncoderResidents;
+    // The usage that the open encoder declares for each resource. A new encoder clears the map, and the
+    // map keeps its storage. A bind allocates only when an encoder holds more residents than any before.
+    FastHashMap<MTL::Resource*, MTL::ResourceUsage> m_EncoderResidents;
     std::vector<MTL::Resource*> m_ScratchReadResidents;
     std::vector<MTL::Resource*> m_ScratchWriteResidents;
 

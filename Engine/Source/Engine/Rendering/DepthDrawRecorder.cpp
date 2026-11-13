@@ -1,5 +1,6 @@
 // Prepares depth/shadow draws before recording and replays frame-owned packets.
 #include "Engine/Rendering/DepthDrawRecorder.h"
+#include "Rendering/Core/DrawProducerRegistry.h"
 #include "Engine/Rendering/ParallaxReliefDepth.h"
 
 #include "Engine/Rendering/CpuDrawStreamBuilder.h"
@@ -894,11 +895,14 @@ void RecordPreparedDepthDraws(Rendering::RenderGraph::RGContext& context,
     uint32_t drawsIssued = 0;
     DrawGeometryBindings geometryBindings(*commands);
 
+    const auto& producerNames = Rendering::DrawProducerRegistry::ScopeNames();
     for (const auto& draw : data.Draws)
     {
         if (casters != CascadeCasters::All &&
             Rendering::IsSkinned(draw.VertexFlags) != (casters == CascadeCasters::Skinned))
             continue;
+        const auto producer = draw.Entity ? Rendering::DrawProducerRegistry::kInstances : draw.Command.Producer;
+        context.SetProfilerScope(producerNames[producer].data());
         const auto& geometry = draw.Geometry;
         geometryBindings.BindVertexBuffer(geometry.coreVB, 0);
         const auto optionalStreams = CollectOptionalStreamBinds(draw.VertexFlags, geometry);
@@ -960,6 +964,7 @@ void RecordPreparedDepthDraws(Rendering::RenderGraph::RGContext& context,
                            pass.PipelineBinds, pass.DescriptorBinds, data.Consolidated,
                            0u /* group census logged by the color pass */);
     }
+    context.SetProfilerScope(nullptr);
 
     binder.EndPass(pass);
 }

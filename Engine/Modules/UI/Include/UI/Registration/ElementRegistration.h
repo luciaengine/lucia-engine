@@ -1,5 +1,10 @@
 #pragma once
 
+#include "Types/FlatMap.h"
+#include "Types/StringId.h"
+#include "Types/StringUtils.h"
+#include "UI/UIElement.h"
+
 #include <concepts>
 #include <cstdint>
 #include <functional>
@@ -14,11 +19,6 @@
 #include <type_traits>
 #include <cmath>
 #include <sstream>
-
-#include "Types/FlatMap.h"
-#include "Types/StringId.h"
-#include "Types/StringUtils.h"
-#include "UI/UIElement.h"
 
 namespace GameEngine { namespace UIRegistration {
 
@@ -162,8 +162,9 @@ inline std::string ToString(uint32_t v) { return std::to_string(v); }
 struct AttrHandler {
     // NamesLower includes primary name and aliases (all lower-case)
     std::vector<std::string> NamesLower;
-    // Apply with string value; closure will dynamic_cast to the target type
-    std::function<void(UIElement&, std::string_view)> Apply;
+    // Apply with string value; closure will dynamic_cast to the target type. Returns false when
+    // the element is not of that type, so the value goes nowhere.
+    std::function<bool(UIElement&, std::string_view)> Apply;
     // Optional default application (string-based), executed when attribute missing
     std::function<void(UIElement&)> ApplyDefault;
     // If true, this handler binds inner text content instead of an attribute
@@ -269,7 +270,7 @@ public:
     // Comparison is against the tag's canonical HASH rather than against a registered id, so
     // an element whose factory has since been unregistered still matches its own tag. That is
     // what lets an orphaned element survive a reconcile instead of being replaced (and it is
-    // also why an unknown tag reconciles against itself rather than being rebuilt).
+    // also why an unknown tag now reconciles against itself rather than being rebuilt).
     bool IsSameType(const UIElement& el, std::string_view tagLower) const;
 
     // The element's tag identity: its creation stamp, or the id registered for its C++ type
@@ -301,12 +302,18 @@ public:
     // calling this, and callers must keep doing so: an element carrying no attribute map is a
     // state no document produces, and code that replays an element's authored state later —
     // ManagedElementProxy re-materialization — reads that map rather than a private copy.
+    //
+    // An authored name that nothing takes is logged as a warning that names sourceFile, sourceLine,
+    // the element and the attribute, once per process for each of those four.
     void ApplyAttributes(UIElement& el,
                          const std::unordered_map<std::string, std::string>& attrsLower,
-                         const std::string& innerText) const;
+                         const std::string& innerText,
+                         std::string_view sourceFile,
+                         int sourceLine) const;
 
 private:
     std::unique_ptr<UIElement> CreateTyped(const std::type_info& type, std::string_view tag) const;
+    // Removes a key from its type's canonical tags. Call it before the key's type_info changes or goes.
     void ForgetCanonicalTag(const std::string& key);
 
     // The two lookups above, taking a key the caller has ALREADY lowered. The public forms
@@ -415,10 +422,12 @@ public:
         auto h = std::make_shared<AttrHandler>();
         h->NamesLower.push_back(ToLowerAscii(name));
         h->Apply = [setter](UIElement& el, std::string_view s){
-            if (auto* p = dynamic_cast<T*>(&el)) {
-                auto* b = static_cast<Owner*>(p);
-                (b->*setter)( Parser<V>::Parse(s) );
-            }
+            auto* p = dynamic_cast<T*>(&el);
+            if (!p)
+                return false;
+            auto* b = static_cast<Owner*>(p);
+            (b->*setter)( Parser<V>::Parse(s) );
+            return true;
         };
         h->Owner = m_Owner;
         ElementFactoryRegistry::Instance().RegisterAttrHandler(h);
@@ -450,11 +459,13 @@ public:
         auto h = std::make_shared<AttrHandler>();
         h->NamesLower.push_back(ToLowerAscii(name));
         h->Apply = [field](UIElement& el, std::string_view s){
-            if (auto* p = dynamic_cast<T*>(&el)) {
-                auto* b = static_cast<Owner*>(p);
-                b->*field = Parser<V>::Parse(s);
-                el.MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
-            }
+            auto* p = dynamic_cast<T*>(&el);
+            if (!p)
+                return false;
+            auto* b = static_cast<Owner*>(p);
+            b->*field = Parser<V>::Parse(s);
+            el.MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
+            return true;
         };
         h->Owner = m_Owner;
         ElementFactoryRegistry::Instance().RegisterAttrHandler(h);
@@ -469,10 +480,12 @@ public:
         auto h = std::make_shared<AttrHandler>();
         h->NamesLower.push_back(ToLowerAscii(name));
         h->Apply = [setter](UIElement& el, std::string_view s){
-            if (auto* p = dynamic_cast<T*>(&el)) {
-                auto* b = static_cast<Owner*>(p);
-                (b->*setter)( Parser<V>::Parse(s) );
-            }
+            auto* p = dynamic_cast<T*>(&el);
+            if (!p)
+                return false;
+            auto* b = static_cast<Owner*>(p);
+            (b->*setter)( Parser<V>::Parse(s) );
+            return true;
         };
         h->Owner = m_Owner;
         ElementFactoryRegistry::Instance().RegisterAttrHandler(h);
@@ -493,9 +506,11 @@ public:
         auto h = std::make_shared<AttrHandler>();
         h->IsText = true;
         h->Apply = [setter](UIElement& el, std::string_view s){
-            if (auto* p = dynamic_cast<T*>(&el)) {
-                (p->*setter)(std::string(s));
-            }
+            auto* p = dynamic_cast<T*>(&el);
+            if (!p)
+                return false;
+            (p->*setter)(std::string(s));
+            return true;
         };
         h->Owner = m_Owner;
         ElementFactoryRegistry::Instance().RegisterAttrHandler(h);

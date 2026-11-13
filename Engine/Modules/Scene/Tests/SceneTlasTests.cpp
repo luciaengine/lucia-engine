@@ -11,6 +11,7 @@
 #include <thread>
 #include <vector>
 
+#include "DeathTestChild.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 
 #include "Components/Rendering/LocalBounds.h"
@@ -23,7 +24,7 @@
 #include "ECSModules/Rendering/Systems/RenderExtractionSystem.h"
 #include "Mathematics/Geometry.h"
 #include "Mathematics/Vector3.h"
-#include "Types/FunctionRef.h"
+#include "Mathematics/WorldPosition.h"
 #include "Scene/SceneTlas.h"
 
 namespace
@@ -46,17 +47,10 @@ RenderExtractionSystem::WorldRenderableRecord MakeRecord(
     RenderExtractionSystem::WorldRenderableRecord rec{};
     rec.entity = entity;
     // Identity rotation + unit scale; translate to worldPos.
-    for (int i = 0; i < 16; ++i) rec.worldTransform.matrix[i] = 0.0f;
-    rec.worldTransform.matrix[0]  = 1.0f;
-    rec.worldTransform.matrix[5]  = 1.0f;
-    rec.worldTransform.matrix[10] = 1.0f;
-    rec.worldTransform.matrix[15] = 1.0f;
-    rec.worldTransform.matrix[12] = worldPos.x;
-    rec.worldTransform.matrix[13] = worldPos.y;
-    rec.worldTransform.matrix[14] = worldPos.z;
+    rec.worldTransform.Position = Mathematics::WorldPosition::FromVector3(worldPos);
     rec.worldTransform.Version = version;
 
-    rec.meshRenderer.renderLayerMask = layerMask;
+    rec.meshRenderer.RenderLayers = GameEngine::Rendering::RenderLayerMask{layerMask};
 
     rec.hasBounds = true;
     rec.bounds.Box.center      = {0.0f, 0.0f, 0.0f};
@@ -113,17 +107,6 @@ TEST_F(SceneTlasFixture, EmptyTlasReturnsZero)
     auto cb = [&](const TlasInstance&, float32, float32) { ++hits; return true; };
     tlas.TraverseRay(ray, {}, cb);
     EXPECT_EQ(hits, 0);
-}
-
-TEST_F(SceneTlasFixture, FunctionRefBindsLambda)
-{
-    int captured = 0;
-    auto lambda = [&captured](int x) { captured = x; return x > 0; };
-    FunctionRef<bool(int)> ref = lambda;
-    EXPECT_TRUE(ref(42));
-    EXPECT_EQ(captured, 42);
-    EXPECT_FALSE(ref(-1));
-    EXPECT_EQ(captured, -1);
 }
 
 // ---- SyncFromRecords structural correctness ----------------------------
@@ -307,7 +290,7 @@ TEST_F(SceneTlasFixture, TraverseRayLayerMaskFilters)
 
     // Only bit 1 — e2 only.
     TraverseRayOptions opts;
-    opts.LayerMask = 0x2u;
+    opts.LayerMask = GameEngine::Rendering::RenderLayerMask::FromLayer(1);
 
     std::vector<uint32> hits;
     auto cb = [&](const TlasInstance& inst, float32, float32) {
@@ -488,7 +471,7 @@ TEST_F(SceneTlasFixture, TraverseSphereLayerMaskFilters)
     });
 
     TraverseSphereOptions opts;
-    opts.LayerMask = 0x2u;
+    opts.LayerMask = GameEngine::Rendering::RenderLayerMask::FromLayer(1);
 
     std::vector<uint32> hits;
     auto cb = [&](const TlasInstance& inst) { hits.push_back(inst.Entity.id); };
@@ -579,7 +562,7 @@ TEST_F(SceneTlasFixture, ConcurrentTraverseIsSafe)
 
 // ---- E.5.1: multi-sector replication & traversal ----------------------------
 //
-// At the default sectorSize (Components::kWorldSectorSize = 1024m), all of the
+// At the default sectorSize (Mathematics::kWorldSectorSize = 1024m), all of the
 // existing tests above sit inside sector (0,0,0). The cases below shrink sectorSize to exercise sector
 // routing, replication, and cross-sector traversal with per-query EntityId
 // dedup.
@@ -1024,83 +1007,16 @@ TEST_F(SceneTlasFixture, SphereAabbPreCullSkipsNonOverlappingSectors)
     EXPECT_EQ(hits[0], near.id);
 }
 
-TEST_F(SceneTlasFixture, WorldSectorCoordPresentComposesWorldMatrix)
-{
-    // E.5.2: When a record has hasSectorCoord=true, the worldTransform is
-    // interpreted as sector-local. Composed world position = sector*sectorSize
-    // + localTranslation. Verify a ray in the COMPOSED world position picks
-    // it up, while the sector-local origin doesn't.
-    ECS::World world;
-    SceneTlas tlas;
-    tlas.SetSectorSizeForTesting(50.0f);
-
-    auto e = MakeHandle(77);
-    auto rec = MakeRecord(e, {0.0f, 0.0f, 0.0f}, {0.5f, 0.5f, 0.5f});
-    rec.hasSectorCoord     = true;
-    rec.sectorCoord.x      = 2;  // composed world x = 100
-    rec.sectorCoord.y      = 0;
-    rec.sectorCoord.z      = 0;
-    tlas.SyncFromRecords(std::vector{rec});
-
-    EXPECT_EQ(tlas.InstanceCount(), 1u);
-
-    // Ray at the COMPOSED position should hit.
-    Mathematics::Ray3D rayWorld;
-    rayWorld.origin    = {100.0f, -10.0f, 0.0f};
-    rayWorld.direction = {0.0f,    1.0f,  0.0f};
-    int hits = 0;
-    tlas.TraverseRay(rayWorld, {}, [&](const TlasInstance&, float32, float32) {
-        ++hits; return true;
-    });
-    EXPECT_EQ(hits, 1);
-
-    // Ray at the SECTOR-LOCAL origin should miss (entity is no longer there).
-    Mathematics::Ray3D rayLocal;
-    rayLocal.origin    = {0.0f, -10.0f, 0.0f};
-    rayLocal.direction = {0.0f,  1.0f,  0.0f};
-    hits = 0;
-    tlas.TraverseRay(rayLocal, {}, [&](const TlasInstance&, float32, float32) {
-        ++hits; return true;
-    });
-    EXPECT_EQ(hits, 0);
-}
-
-TEST_F(SceneTlasFixture, WorldSectorCoordZeroIsNoOp)
-{
-    // hasSectorCoord=true with sector (0,0,0) is equivalent to no
-    // composition (the offset is zero).
-    ECS::World world;
-    SceneTlas tlas;
-    tlas.SetSectorSizeForTesting(50.0f);
-
-    auto e = MakeHandle(78);
-    auto rec = MakeRecord(e, {10.0f, 0.0f, 0.0f});
-    rec.hasSectorCoord = true;
-    // sectorCoord is default-constructed to (0,0,0)
-    tlas.SyncFromRecords(std::vector{rec});
-
-    EXPECT_EQ(tlas.InstanceCount(), 1u);
-
-    Mathematics::Ray3D ray;
-    ray.origin    = {10.0f, -10.0f, 0.0f};
-    ray.direction = { 0.0f,  1.0f,  0.0f};
-    int hits = 0;
-    tlas.TraverseRay(ray, {}, [&](const TlasInstance&, float32, float32) {
-        ++hits; return true;
-    });
-    EXPECT_EQ(hits, 1);
-}
-
 TEST_F(SceneTlasFixture, BackCompatDefaultSectorSizeKeepsAllInPrimary)
 {
-    // The default sectorSize (Components::kWorldSectorSize = 1024m, the ONE
+    // The default sectorSize (Mathematics::kWorldSectorSize = 1024m, the ONE
     // constant shared with the render path) means typical scenes (entities
     // within a sector of origin) all live in PrimarySector — the no-op single-
     // sector path. Verify the parity test passes with default settings: a ray
     // hitting an entity at world position (100,0,0) still reports it.
     ECS::World world;
     SceneTlas tlas;  // no SetSectorSizeForTesting — keep the default
-    EXPECT_FLOAT_EQ(tlas.GetSectorSize(), Components::kWorldSectorSize);
+    EXPECT_FLOAT_EQ(tlas.GetSectorSize(), static_cast<float32>(Mathematics::kWorldSectorSize));
 
     auto e = MakeHandle(1);
     tlas.SyncFromRecords(std::vector{ MakeRecord(e, {100.0f, 0.0f, 0.0f}) });
@@ -1281,8 +1197,8 @@ TEST_F(SceneTlasFixture, ConcurrentTraverseAcrossMultiSectorIsSafe)
 // ===========================================================================
 //
 // These tests exercise picker-shaped flows across multiple TLAS features
-// without launching the editor binary. They mimic the patterns the editor's
-// MeshPickingService runs during click-pick, drop-placement, marquee
+// without launching the editor binary. They mimic the patterns the scene
+// raycast (SceneRaycast) runs during click-pick, drop-placement, marquee
 // selection, and hot-reload — but limited to the engine-level surface so
 // they run in CI on every commit.
 //
@@ -1421,44 +1337,6 @@ TEST_F(MeshPickingIntegrationFixture, PickerFollowsEntityAcrossSectorMigrations)
     }
 }
 
-// 4. WorldSectorCoord-aware pick: an entity with sectorCoord=(2,0,0) and
-//    sector-local origin (0,0,0) should be picked at world position
-//    (sectorCoord * sectorSize) — not at the local origin.
-TEST_F(MeshPickingIntegrationFixture, PickerHonorsWorldSectorCoordTeleport)
-{
-    ECS::World world;
-    SceneTlas tlas;
-    tlas.SetSectorSizeForTesting(50.0f);
-
-    auto e = MakeHandle(7);
-    auto rec = MakeRecord(e, {0.0f, 0.0f, 0.0f}, {0.5f, 0.5f, 0.5f});
-    rec.hasSectorCoord = true;
-    rec.sectorCoord    = {2, 0, 0};  // composed world x = 100
-    tlas.SyncFromRecords(std::vector{rec});
-
-    // Ray at the COMPOSED world position should hit.
-    Mathematics::Ray3D rayWorld;
-    rayWorld.origin    = {100.0f, -10.0f, 0.0f};
-    rayWorld.direction = {  0.0f,   1.0f, 0.0f};
-    bool composedHit = false;
-    tlas.TraverseRay(rayWorld, {}, [&](const TlasInstance& inst, float32, float32) {
-        composedHit = (inst.Entity.id == e.id);
-        return false;
-    });
-    EXPECT_TRUE(composedHit);
-
-    // Ray at the SECTOR-LOCAL origin should miss (entity isn't there in
-    // world space).
-    Mathematics::Ray3D rayLocal;
-    rayLocal.origin    = {0.0f, -10.0f, 0.0f};
-    rayLocal.direction = {0.0f,  1.0f,  0.0f};
-    bool localHit = false;
-    tlas.TraverseRay(rayLocal, {}, [&](const TlasInstance& inst, float32, float32) {
-        localHit = (inst.Entity.id == e.id);
-        return false;
-    });
-    EXPECT_FALSE(localHit);
-}
 
 // 5. Two ECS Worlds each have their own SceneTlas. A pick query in one
 //    world must not see entities in the other.
@@ -1640,7 +1518,7 @@ TEST_F(MeshPickingIntegrationFixture, LayerMaskFiltersAcrossSectors)
     ray.origin    = {0.0f, 0.0f, 0.0f};
     ray.direction = {1.0f, 0.0f, 0.0f};
     TraverseRayOptions opts;
-    opts.LayerMask = 0x1u;  // only entities on layer 0x1
+    opts.LayerMask = GameEngine::Rendering::RenderLayerMask::Default();  // only entities on layer 0
 
     std::vector<uint32> ids;
     tlas.TraverseRay(ray, opts, [&](const TlasInstance& inst, float32, float32) {
@@ -1695,15 +1573,13 @@ ECS::EntityHandle MakeRealEntity(ECS::World& world,
     // frame sync point, which these tests never reach).
     ECS::EntityHandle e = world.CreateEntity();
 
-    Components::WorldTransform wt{};  // matrix defaults to identity
-    wt.matrix[12] = pos.x;
-    wt.matrix[13] = pos.y;
-    wt.matrix[14] = pos.z;
+    Components::WorldTransform wt{};  // the basis defaults to identity
+    wt.Position = Mathematics::WorldPosition::FromVector3(pos);
     wt.Version = 1u;
     world.AddComponentImmediate<Components::WorldTransform>(e, wt);
 
     Components::MeshRenderer mr{};
-    mr.renderLayerMask = 0xFFFFFFFFu;
+    mr.RenderLayers = GameEngine::Rendering::RenderLayerMask::All();
     world.AddComponentImmediate<Components::MeshRenderer>(e, mr);
 
     Components::LocalBounds lb{};
@@ -1723,9 +1599,7 @@ void MoveEntity(ECS::World& world, ECS::EntityHandle e, const Mathematics::Vecto
 {
     auto* wt = world.GetComponentForWrite<Components::WorldTransform>(e);
     ASSERT_NE(wt, nullptr);
-    wt->matrix[12] = pos.x;
-    wt->matrix[13] = pos.y;
-    wt->matrix[14] = pos.z;
+    wt->Position = Mathematics::WorldPosition::FromVector3(pos);
     Components::BumpWorldTransform(world, e, *wt);
 }
 
@@ -1778,8 +1652,8 @@ namespace
 {
 
 // Occupies a one-worker pool's only worker until released, so a job
-// submitted behind it stays in flight: the main thread runs nothing of the
-// pool's without a Wait on that job's counter.
+// submitted behind it stays in flight until the blocker is released or the
+// main thread joins that job itself.
 class WorkerBlocker
 {
 public:
@@ -1846,6 +1720,30 @@ TEST_F(SceneTlasRequestFixture, FirstRequestReconcilesAndIdleRequestsDoNothing)
         EXPECT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
     EXPECT_EQ(tlas.GetReconcileCountForTesting(), 1u);
     EXPECT_EQ(tlas.GetRefitLeafCountForTesting(), refits);
+}
+
+// The version goes up when the tree changes and holds while it does not.
+TEST_F(SceneTlasRequestFixture, VersionChangesOnlyWithTheTree)
+{
+    ECS::World world;
+    auto e = MakeRealEntity(world, {5.0f, 0.0f, 0.0f});
+    SceneTlas& tlas = GetSceneTlas(world);
+    ASSERT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
+    const uint64 reconciled = tlas.Version();
+    EXPECT_NE(reconciled, 0u) << "the first reconcile did not change the version";
+
+    for (int i = 0; i < 3; ++i)
+        ASSERT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
+    EXPECT_EQ(tlas.Version(), reconciled) << "an idle request changed the version";
+
+    MoveEntity(world, e, {6.0f, 0.0f, 0.0f});
+    ASSERT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
+    const uint64 refit = tlas.Version();
+    EXPECT_GT(refit, reconciled) << "a refit did not change the version";
+
+    MakeRealEntity(world, {20.0f, 0.0f, 0.0f});
+    ASSERT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
+    EXPECT_GT(tlas.Version(), refit) << "a reconcile did not change the version";
 }
 
 // The S1 counter: movers do no TLAS work until a request, however many
@@ -1949,9 +1847,9 @@ TEST_F(SceneTlasRequestFixture, UndoStyleRestoreIsRefit)
 }
 
 // On a world with a job system the work runs as a job: the request returns
-// Updating, a second request joins the work in flight instead of starting
-// more, and the tree is Ready once the job is done.
-TEST_F(SceneTlasRequestFixture, RequestOnAPoolRunsAsAJobAndJoins)
+// Updating, a second request starts no more work while it is in flight, and
+// the tree is Ready once the job is done.
+TEST_F(SceneTlasRequestFixture, RequestOnAPoolRunsAsAJobAndStartsNoMoreWhileInFlight)
 {
     JobSystem::WorkStealingThreadPool pool(1);
     ECS::World world;
@@ -1970,7 +1868,7 @@ TEST_F(SceneTlasRequestFixture, RequestOnAPoolRunsAsAJobAndJoins)
     }
     WaitUntilNoWorkInFlight(tlas);
     EXPECT_EQ(tlas.GetRefitLeafCountForTesting(), refitsBefore + tlas.GetLeafCountForTesting())
-        << "the joined request started more work (one entity: its replica leaves, once)";
+        << "the second request started more work (one entity: its replica leaves, once)";
     EXPECT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
     EXPECT_EQ(SphereHitCount(tlas, {15.0f, 0.0f, 0.0f}, 1.0f, e), 1);
 }
@@ -1998,6 +1896,128 @@ TEST_F(SceneTlasRequestFixture, TheJobReadsOnlyItsSnapshot)
 
     tlas.WaitCurrent(world);
     EXPECT_EQ(SphereHitCount(tlas, {25.0f, 0.0f, 0.0f}, 1.0f, e), 1);
+}
+
+#if GE_DEBUG_INSTRUMENTATION
+namespace
+{
+std::atomic<uint32> s_RunForkVisits{0};
+
+void CountRunForkVisit(JobSystem::WorkStealingThreadPool::TaggedVisitPoint)
+{
+    s_RunForkVisits.fetch_add(1, std::memory_order_relaxed);
+}
+} // namespace
+
+// A request's work is a Submit task, never a Run fork. Every Run unit runs
+// through a queue visit, and the pool's visit hook counts each visit.
+TEST_F(SceneTlasRequestFixture, ARequestPublishesItsWorkAsAPolledTaskNotAsARunFork)
+{
+    s_RunForkVisits.store(0, std::memory_order_relaxed);
+    JobSystem::WorkStealingThreadPool::SetTaggedVisitHookForTests(&CountRunForkVisit);
+    {
+        JobSystem::WorkStealingThreadPool pool(2);
+        ECS::World world;
+        world.SetJobSystem(&pool);
+        auto e = MakeRealEntity(world, {5.0f, 0.0f, 0.0f});
+        SceneTlas tlas;
+        EXPECT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Updating); // the reconcile
+        WaitUntilNoWorkInFlight(tlas);
+        EXPECT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
+
+        MoveEntity(world, e, {15.0f, 0.0f, 0.0f});
+        EXPECT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Updating); // the refit
+        WaitUntilNoWorkInFlight(tlas);
+        EXPECT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
+        EXPECT_EQ(SphereHitCount(tlas, {15.0f, 0.0f, 0.0f}, 1.0f, e), 1);
+    } // the pool joins its workers: every visit it ran has been counted
+    JobSystem::WorkStealingThreadPool::SetTaggedVisitHookForTests(nullptr);
+    EXPECT_EQ(s_RunForkVisits.load(std::memory_order_relaxed), 0u) << "the request's work ran as a Run fork";
+}
+#endif
+
+// WaitCurrent runs work queued behind the busy only worker on the calling
+// thread. The refit counts as done, so no reconcile follows it.
+TEST_F(SceneTlasRequestFixture, WaitCurrentRunsWorkQueuedBehindABusyWorkerOnTheCallingThread)
+{
+    JobSystem::WorkStealingThreadPool pool(1);
+    ECS::World world;
+    world.SetJobSystem(&pool);
+    auto e = MakeRealEntity(world, {5.0f, 0.0f, 0.0f});
+    SceneTlas& tlas = GetSceneTlas(world);
+    tlas.WaitCurrent(world);
+
+    MoveEntity(world, e, {15.0f, 0.0f, 0.0f});
+    WorkerBlocker blocker(pool);
+    ASSERT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Updating);
+    tlas.WaitCurrent(world);
+    EXPECT_FALSE(tlas.IsWorkInFlightForTesting());
+    EXPECT_EQ(tlas.GetReconcileCountForTesting(), 1u) << "the joined refit was redone as a reconcile";
+    EXPECT_EQ(SphereHitCount(tlas, {15.0f, 0.0f, 0.0f}, 1.0f, e), 1);
+}
+
+// Destroying the TLAS (a world released, the engine shutting down) while its
+// work is still queued behind a busy worker does not wait for a worker.
+TEST_F(SceneTlasRequestFixture, DestroyingWithWorkQueuedBehindABusyWorkerDoesNotWaitForAWorker)
+{
+    JobSystem::WorkStealingThreadPool pool(1);
+    ECS::World world;
+    world.SetJobSystem(&pool);
+    MakeRealEntity(world, {5.0f, 0.0f, 0.0f});
+    WorkerBlocker blocker(pool);
+    {
+        SceneTlas tlas;
+        ASSERT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Updating);
+        ASSERT_TRUE(tlas.IsWorkInFlightForTesting());
+    }
+}
+
+// A pool that has shut down takes no more tasks: the request runs its work on
+// the calling thread and the tree is ready on return, for the reconcile and
+// for the refit.
+TEST_F(SceneTlasRequestFixture, ARequestOnAShutDownPoolRunsItsWorkInline)
+{
+    JobSystem::WorkStealingThreadPool pool(1);
+    ECS::World world;
+    world.SetJobSystem(&pool);
+    auto e = MakeRealEntity(world, {5.0f, 0.0f, 0.0f});
+    SceneTlas tlas;
+    pool.Shutdown();
+
+    EXPECT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
+    EXPECT_EQ(SphereHitCount(tlas, {5.0f, 0.0f, 0.0f}, 1.0f, e), 1);
+    MoveEntity(world, e, {15.0f, 0.0f, 0.0f});
+    EXPECT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
+    EXPECT_EQ(SphereHitCount(tlas, {15.0f, 0.0f, 0.0f}, 1.0f, e), 1);
+}
+
+// The shutdown drain cancels a queued refit; the next request reconciles and
+// the tree answers for the move. Shutdown joins the held worker, so it runs on
+// its own thread while the main thread releases the blocker.
+TEST_F(SceneTlasRequestFixture, ARefitCancelledByShutdownIsReconciledAtTheNextRequest)
+{
+    JobSystem::WorkStealingThreadPool pool(1);
+    ECS::World world;
+    world.SetJobSystem(&pool);
+    auto e = MakeRealEntity(world, {5.0f, 0.0f, 0.0f});
+    SceneTlas tlas;
+    tlas.WaitCurrent(world);
+    ASSERT_EQ(tlas.GetReconcileCountForTesting(), 1u);
+
+    MoveEntity(world, e, {15.0f, 0.0f, 0.0f});
+    WorkerBlocker blocker(pool);
+    ASSERT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Updating);
+    std::thread shutter([&pool] { pool.Shutdown(); });
+    while (!pool.IsShuttingDown())
+        std::this_thread::yield();
+    blocker.Release();
+    shutter.join();
+
+    EXPECT_FALSE(tlas.IsWorkInFlightForTesting());
+    EXPECT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
+    EXPECT_EQ(tlas.GetReconcileCountForTesting(), 2u) << "the cancelled refit was not followed by a reconcile";
+    EXPECT_EQ(SphereHitCount(tlas, {15.0f, 0.0f, 0.0f}, 1.0f, e), 1) << "the tree misses the move";
+    EXPECT_EQ(SphereHitCount(tlas, {5.0f, 0.0f, 0.0f}, 1.0f, e), 0);
 }
 
 // I5: answers after on-demand requests equal a reference reconciled from
@@ -2031,8 +2051,9 @@ TEST_F(SceneTlasRequestFixture, OnDemandAnswersMatchAReferenceReconciledEveryFra
             const ECS::EntityHandle e = entities[pick(rng)];
             if (!world.IsValid(e))
                 continue;
-            const float32* at = world.GetComponent<Components::WorldTransform>(e)->matrix;
-            MoveEntity(world, e, {at[12] + jitter(rng), 0.0f, at[14] + jitter(rng)});
+            const Mathematics::Vector3 at =
+                world.GetComponent<Components::WorldTransform>(e)->GetPosition() - Mathematics::WorldPosition{};
+            MoveEntity(world, e, {at.x + jitter(rng), 0.0f, at.z + jitter(rng)});
         }
         if (frame == 7)
         {
@@ -2049,8 +2070,8 @@ TEST_F(SceneTlasRequestFixture, OnDemandAnswersMatchAReferenceReconciledEveryFra
         {
             if (!world.IsValid(e))
                 continue;
-            const float32* m = world.GetComponent<Components::WorldTransform>(e)->matrix;
-            const Mathematics::Vector3 at{m[12], m[13], m[14]};
+            const Mathematics::Vector3 at =
+                world.GetComponent<Components::WorldTransform>(e)->GetPosition() - Mathematics::WorldPosition{};
             ASSERT_EQ(SphereHitCount(onDemand, at, 0.25f, e) > 0, SphereHitCount(reference, at, 0.25f, e) > 0)
                 << "frame " << frame << " entity " << e.id << " at its current position";
         }
@@ -2107,19 +2128,6 @@ TEST_F(SceneTlasRequestFixture, DISABLED_RequestKickProbe)
 }
 
 #if !defined(NDEBUG)
-namespace
-{
-// A death-test child dies on a CRT assert; on Windows that must print to
-// stderr instead of opening a dialog nobody can dismiss.
-void SuppressCrtDialogsInDeathTestChild()
-{
-#if defined(_WIN32)
-    _set_error_mode(_OUT_TO_STDERR);
-    _set_abort_behavior(0, _WRITE_ABORT_MSG);
-#endif
-}
-} // namespace
-
 // A WorldTransform written without a write grant (a raw pointer the change
 // filter never saw) leaves a leaf stale; the debug validator on requests that
 // find nothing changed reports it and reconciles.
@@ -2131,7 +2139,7 @@ TEST_F(SceneTlasRequestFixture, ValidatorReconcilesAWriteWithoutAGrant)
     ASSERT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
 
     auto* silent = const_cast<Components::WorldTransform*>(world.GetComponent<Components::WorldTransform>(e));
-    silent->matrix[12] = 30.0f;
+    silent->Position.X = 30.0;
     ++silent->Version;
     for (int i = 0; i < 64; ++i)
         ASSERT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
@@ -2145,7 +2153,7 @@ TEST_F(SceneTlasRequestFixture, TraversalWhileWorkIsInFlightAsserts)
     GTEST_FLAG_SET(death_test_style, "threadsafe");
     EXPECT_DEATH(
         {
-            SuppressCrtDialogsInDeathTestChild();
+            GameEngine::TestUtils::SuppressCrtDialogsInDeathTestChild();
             JobSystem::WorkStealingThreadPool pool(1);
             ECS::World world;
             world.SetJobSystem(&pool);
@@ -2291,7 +2299,7 @@ TEST_F(SceneTlasFeedFixture, CountStaleLeavesDetectsSilentBump)
     {
         auto* wt = world.GetComponentForWrite<Components::WorldTransform>(e);
         ASSERT_NE(wt, nullptr);
-        wt->matrix[12] = 9.0f;
+        wt->Position.X = 9.0;
         ++wt->Version;
     }
     // Stale count is per replica LEAF: an entity whose bounds straddle
@@ -2330,8 +2338,8 @@ void NudgeEntity(ECS::World& world, ECS::EntityHandle e,
 {
     auto* wt = world.GetComponentForWrite<Components::WorldTransform>(e);
     ASSERT_NE(wt, nullptr);
-    wt->matrix[12] += dx;
-    wt->matrix[14] += dz;
+    wt->Position.X += dx;
+    wt->Position.Z += dz;
     ++wt->Version;
 }
 
@@ -2580,10 +2588,11 @@ TEST_F(SceneTlasParallelFixture, UnwiredWorldStaysSerialAndNeverTouchesEngineCor
         // workload grid sits far from the ±1-unit nudges), so every request
         // takes the refit, not the reconcile.
         for (std::size_t i = 0; i < entities.size(); i += 5)
-            MoveEntity(world, entities[i],
-                       {world.GetComponent<Components::WorldTransform>(entities[i])->matrix[12],
-                        0.25f + 0.1f * static_cast<float32>(frame),
-                        world.GetComponent<Components::WorldTransform>(entities[i])->matrix[14]});
+        {
+            const Mathematics::Vector3 at =
+                world.GetComponent<Components::WorldTransform>(entities[i])->GetPosition() - Mathematics::WorldPosition{};
+            MoveEntity(world, entities[i], {at.x, 0.25f + 0.1f * static_cast<float32>(frame), at.z});
+        }
         EXPECT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready) << "an unwired world runs inline";
         EXPECT_EQ(tlas.CountStaleLeavesForValidation(world), 0u);
     }

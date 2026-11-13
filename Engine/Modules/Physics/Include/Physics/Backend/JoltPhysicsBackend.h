@@ -18,6 +18,7 @@ public:
     void OptimizeBroadphase() override;
 
     ShapeHandle CreateShape(const ShapeDefinition& definition, const Vector3& bakedScale) override;
+    HeightFieldShapeBuilder GetHeightFieldShapeBuilder() const override;
     void DestroyShape(ShapeHandle shape) override;
     bool IsShapeValid(ShapeHandle shape) const override;
 
@@ -26,12 +27,15 @@ public:
                                  uint32 x, uint32 z,
                                  uint32 sizeX, uint32 sizeZ) override;
     void ActivateBodiesInAABB(const AABB& worldBox) override;
+    void GetDynamicBodiesInAABB(const AABB& worldBox, std::vector<BodyBounds>& outBodies) const override;
+    float32 GetContactDistance() const override;
 
     BodyHandle CreateBody(const BodySettings& settings) override;
     void DestroyBody(BodyHandle body) override;
     bool IsBodyValid(BodyHandle body) const override;
 
     Transform GetBodyTransform(BodyHandle body) const override;
+    WorldPosition GetCenterOfMassPosition(BodyHandle body) const override;
     void SetBodyTransform(BodyHandle body, const Transform& transform, ActivationMode activation) override;
     void MoveKinematic(BodyHandle body, const Transform& target, float32 deltaTime) override;
 
@@ -40,19 +44,18 @@ public:
 
     Vector3 GetAngularVelocity(BodyHandle body) const override;
     void SetAngularVelocity(BodyHandle body, const Vector3& velocity) override;
-    Vector3 GetCenterOfMassPosition(BodyHandle body) const override;
     void AddForce(BodyHandle body, const Vector3& force) override;
-    void AddForceAtPosition(BodyHandle body, const Vector3& force, const Vector3& worldPosition) override;
+    void AddForceAtPosition(BodyHandle body, const Vector3& force, const WorldPosition& worldPosition) override;
     void AddTorque(BodyHandle body, const Vector3& torque) override;
     void AddImpulse(BodyHandle body, const Vector3& impulse) override;
-    void AddImpulseAtPosition(BodyHandle body, const Vector3& impulse, const Vector3& worldPosition) override;
+    void AddImpulseAtPosition(BodyHandle body, const Vector3& impulse, const WorldPosition& worldPosition) override;
 
     CharacterHandle CreateCharacter(const CharacterSettings& settings) override;
     void DestroyCharacter(CharacterHandle character) override;
     bool IsCharacterValid(CharacterHandle character) const override;
 
     Transform GetCharacterTransform(CharacterHandle character) const override;
-    void SetCharacterPosition(CharacterHandle character, const Vector3& position) override;
+    void SetCharacterPosition(CharacterHandle character, const WorldPosition& position) override;
 
     Vector3 GetCharacterLinearVelocity(CharacterHandle character) const override;
     void SetCharacterLinearVelocity(CharacterHandle character, const Vector3& velocity) override;

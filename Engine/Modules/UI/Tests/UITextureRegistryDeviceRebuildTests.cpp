@@ -14,7 +14,7 @@
 
 #include "UI/UITextureRegistry.h"
 
-#include "Core/Application.h"
+#include "Core/ApplicationPaths.h"
 #include "Logger/CallbackSink.h"
 #include "Logger/Logger.h"
 #include "Rendering/Core/CommandList.h"
@@ -22,7 +22,6 @@
 #include "Rendering/Text/FontAtlas.h"
 
 #include "ScopedEnvVar.h"
-#include "UIRgTestHarness.h"
 
 #include <gtest/gtest.h>
 
@@ -38,6 +37,25 @@ using GameEngine::Rendering::Tests::ScopedEnvVar;
 
 namespace
 {
+
+// Headless device: no swapchain, no presentation paths.
+std::unique_ptr<IDevice> MakeHeadlessDevice()
+{
+#ifdef _WIN32
+    _putenv_s("GE_HEADLESS_TEST", "1");
+#else
+    setenv("GE_HEADLESS_TEST", "1", 1);
+#endif
+    DeviceDesc dd{};
+    dd.preferredAPI = GraphicsAPI::Vulkan;
+    dd.enableDynamicRendering = true;
+    dd.enableSwapchain = false;
+    dd.enableDebugLayer = false;
+    auto dev = DeviceFactory::CreateDevice(dd);
+    if (!dev || !dev->Initialize(dd))
+        return nullptr;
+    return dev;
+}
 
 // Mirrors the render loop: TickDeviceRecovery drives the rebuild retry and must
 // run unconditionally, before BeginFrame.
@@ -173,18 +191,18 @@ TEST(UITextureRegistryDeviceRebuild, NoDroppedDescriptorWritesAfterRebuild)
         << "nothing was registered post-rebuild, so a zero drop count would be vacuous";
 
     Logger::Log::Initialize({});
-    auto sink = Logger::MakeUnique<Logger::CallbackSink>();
+    auto sink = std::make_unique<Logger::CallbackSink>();
     auto* sinkPtr = sink.get();
     auto dropCount = std::make_shared<std::atomic<int>>(0);
     // Matches both backends: the descriptor-buffer path logs "dropped N of M
     // descriptor-buffer write(s)", the legacy pool path "dropping descriptor
     // write with unresolvable handle".
-    const Logger::uint64 callbackId = sinkPtr->RegisterCallback(
+    const std::uint64_t callbackId = sinkPtr->RegisterCallback(
         [dropCount](const Logger::LogMessage& msg)
         {
-            const bool dropped = msg.Message.find("dropped") != Logger::String::npos
-                              || msg.Message.find("dropping") != Logger::String::npos;
-            if (dropped && msg.Message.find("descriptor") != Logger::String::npos)
+            const bool dropped = msg.Message.find("dropped") != std::string::npos
+                              || msg.Message.find("dropping") != std::string::npos;
+            if (dropped && msg.Message.find("descriptor") != std::string::npos)
                 dropCount->fetch_add(1);
         });
     Logger::Log::AddSink(std::move(sink));
@@ -192,7 +210,7 @@ TEST(UITextureRegistryDeviceRebuild, NoDroppedDescriptorWritesAfterRebuild)
     Logger::Log::Flush();
     ASSERT_EQ(dropCount->load(), 0) << "nothing dropped before the set was materialised";
 
-    const DescriptorSetHandle set = registry.CreateTransientFrameSet();
+    const DescriptorSetHandle set = registry.GetFrameSet();
     Logger::Log::Flush();
 
     EXPECT_TRUE(set.IsValid()) << "the UI texture set could not be created after a rebuild";
@@ -206,7 +224,7 @@ TEST(UITextureRegistryDeviceRebuild, NoDroppedDescriptorWritesAfterRebuild)
 // --- Band dummy (binding 1 slot 0) across a rebuild ---
 //
 // Binding 1 reserves slot 0 for a zero-filled integer dummy, and
-// CreateTransientFrameSet writes every band slot from it, because the shader
+// GetFrameSet writes every band slot from it, because the shader
 // turns band texel data into a loop trip count — an unwritten slot is a
 // recycled descriptor and a potential GPU hang, not a wrong pixel. That gives
 // the heal two extra obligations, pinned separately below: the band dummy is
@@ -222,7 +240,7 @@ namespace
 bool LoadShapedSlugAtlas(Rendering::Text::FontAtlas& atlas, unsigned pixelSize)
 {
     const std::filesystem::path fontPath =
-        PathUtils::GetExecutableDirectory() / "Assets" / "Fonts" / "Roboto-Regular.ttf";
+        ApplicationPaths::GetExecutableDirectory() / "Assets" / "Fonts" / "Roboto-Regular.ttf";
     std::error_code ec;
     if (!std::filesystem::exists(fontPath, ec))
         return false;
@@ -258,7 +276,7 @@ bool LoadShapedSlugAtlas(Rendering::Text::FontAtlas& atlas, unsigned pixelSize)
 // The band dummy is a device resource like the white dummy and the samplers:
 // after a rebuild the pre-rebuild handle names a destroyed VkObject while still
 // reporting IsValid(). The heal must re-provision it, and the healed handle
-// must be one the rebuilt device resolves — observable as the transient set
+// must be one the rebuilt device resolves — observable as the frame set
 // materialising every band slot with zero dropped descriptor writes.
 TEST(UITextureRegistryDeviceRebuild, BandDummyIsReprovisionedAfterRebuild)
 {
@@ -277,24 +295,24 @@ TEST(UITextureRegistryDeviceRebuild, BandDummyIsReprovisionedAfterRebuild)
     // Drain anything earlier tests enqueued before the sink below exists, so
     // the baseline asserts observe only this test's messages.
     Logger::Log::Flush();
-    auto sink = Logger::MakeUnique<Logger::CallbackSink>();
+    auto sink = std::make_unique<Logger::CallbackSink>();
     auto* sinkPtr = sink.get();
     auto dropCount = std::make_shared<std::atomic<int>>(0);
     auto healLineSeen = std::make_shared<std::atomic<bool>>(false);
     auto bandDummyLive = std::make_shared<std::atomic<bool>>(false);
     // Drop matching as in NoDroppedDescriptorWritesAfterRebuild; the heal line
     // additionally reports whether each re-provisioned resource came up valid.
-    const Logger::uint64 callbackId = sinkPtr->RegisterCallback(
+    const std::uint64_t callbackId = sinkPtr->RegisterCallback(
         [dropCount, healLineSeen, bandDummyLive](const Logger::LogMessage& msg)
         {
-            const bool dropped = msg.Message.find("dropped") != Logger::String::npos
-                              || msg.Message.find("dropping") != Logger::String::npos;
-            if (dropped && msg.Message.find("descriptor") != Logger::String::npos)
+            const bool dropped = msg.Message.find("dropped") != std::string::npos
+                              || msg.Message.find("dropping") != std::string::npos;
+            if (dropped && msg.Message.find("descriptor") != std::string::npos)
                 dropCount->fetch_add(1);
-            if (msg.Message.find("UITextureRegistry: device rebuild") != Logger::String::npos)
+            if (msg.Message.find("UITextureRegistry: device rebuild") != std::string::npos)
             {
                 healLineSeen->store(true);
-                if (msg.Message.find("bandDummy=true") != Logger::String::npos)
+                if (msg.Message.find("bandDummy=true") != std::string::npos)
                     bandDummyLive->store(true);
             }
         });
@@ -302,18 +320,18 @@ TEST(UITextureRegistryDeviceRebuild, BandDummyIsReprovisionedAfterRebuild)
 
     Logger::Log::Flush();
     ASSERT_FALSE(healLineSeen->load())
-        << "the heal ran before CreateTransientFrameSet, so the pin below would "
+        << "the heal ran before GetFrameSet, so the pin below would "
            "not be observing this call";
     ASSERT_EQ(dropCount->load(), 0) << "nothing dropped before the set was materialised";
 
     // The heal runs inside this call, ahead of the descriptor writes; the set
     // then writes every band slot, unoccupied ones from the band dummy.
-    const DescriptorSetHandle set = registry.CreateTransientFrameSet();
+    const DescriptorSetHandle set = registry.GetFrameSet();
     Logger::Log::Flush();
 
     EXPECT_TRUE(set.IsValid()) << "the UI texture set could not be created after a rebuild";
     ASSERT_TRUE(healLineSeen->load())
-        << "CreateTransientFrameSet did not heal, so every band-slot write below "
+        << "GetFrameSet did not heal, so every band-slot write below "
            "used the pre-rebuild band dummy";
     EXPECT_TRUE(bandDummyLive->load())
         << "the heal did not re-provision the band dummy (bandDummy=false): every "
@@ -371,4 +389,30 @@ TEST(UITextureRegistryDeviceRebuild, BandSlotAllocationRestartsAtOneAfterRebuild
     EXPECT_EQ(indices.front().BandTexIdx, 1u)
         << "post-heal band slot numbering does not restart at 1 as it does on a "
            "fresh registry";
+}
+
+// The heal frees every slot. A reservation from before the rebuild ends with it,
+// so it cannot write the texture that takes its slot after the rebuild.
+TEST(UITextureRegistryDeviceRebuild, PreRebuildReservationNeverWritesItsSlot)
+{
+    ScopedEnvVar forcedLoss("GE_VK_FORCE_DEVICE_LOST", "2");
+    auto dev = MakeHeadlessDevice();
+    if (!dev)
+        GTEST_SKIP() << "no Vulkan device available";
+
+    UI::UITextureRegistry registry(dev.get());
+    const auto stale = registry.ReserveSlot();
+    ASSERT_TRUE(stale.IsValid());
+    if (!DriveRebuild(*dev))
+        GTEST_SKIP() << "injected loss did not produce a rebuild on this adapter";
+
+    const TextureHandle registeredTex = CreatePixelTexture(*dev, "UIDevRebuild_Registered");
+    const TextureHandle staleTex = CreatePixelTexture(*dev, "UIDevRebuild_Stale");
+    ASSERT_TRUE(registeredTex.IsValid() && staleTex.IsValid());
+    const uint32_t registered = registry.Register(registeredTex);
+    ASSERT_EQ(registered, stale.Index()) << "the slot was not reused, so this pin would prove nothing";
+
+    registry.UpdateSlot(stale, staleTex);
+    EXPECT_EQ(registry.GetTextureHandlesForSlots({registered})[0].id, registeredTex.id)
+        << "a reservation from before the rebuild wrote the slot's next owner";
 }

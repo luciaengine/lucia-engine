@@ -241,7 +241,7 @@ TEST_F(PlayModeChangeReviewTests, AppliedSubtreeDeletionPreservesIdentityAndUndo
     ASSERT_TRUE(world->IsValid(root));
     ASSERT_TRUE(world->IsValid(child));
     ASSERT_NE(world->GetComponent<Parent>(child), nullptr);
-    EXPECT_EQ(world->GetComponent<Parent>(child)->parent, root);
+    EXPECT_EQ(world->GetComponent<Parent>(child)->Entity, root);
     pm.ApplyPendingChanges({true});
     EXPECT_FALSE(world->IsValid(root));
     EXPECT_FALSE(world->IsValid(child));
@@ -257,7 +257,7 @@ TEST_F(PlayModeChangeReviewTests, AppliedSubtreeDeletionPreservesIdentityAndUndo
     ASSERT_TRUE(world->IsValid(root));
     ASSERT_TRUE(world->IsValid(child));
     ASSERT_NE(world->GetComponent<Parent>(child), nullptr);
-    EXPECT_EQ(world->GetComponent<Parent>(child)->parent, root);
+    EXPECT_EQ(world->GetComponent<Parent>(child)->Entity, root);
     EXPECT_EQ(world->GetComponent<Name>(root)->View(), "Root");
     EXPECT_EQ(world->GetComponent<Name>(sibling)->View(), "Sibling");
     undo.Redo();
@@ -295,7 +295,7 @@ TEST_F(PlayModeChangeReviewTests, DiscardedSubtreeDeletionRestoresOriginalHandle
     ASSERT_TRUE(world->IsValid(child));
     EXPECT_TRUE(world->IsValid(sibling));
     ASSERT_NE(world->GetComponent<Parent>(child), nullptr);
-    EXPECT_EQ(world->GetComponent<Parent>(child)->parent, parent);
+    EXPECT_EQ(world->GetComponent<Parent>(child)->Entity, parent);
     EXPECT_FALSE(undo.CanUndo());
 }
 

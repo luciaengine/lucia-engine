@@ -1,9 +1,10 @@
 #include "Ocean/OceanSplineRaster.h"
-#include "Ocean/OceanShaderProgram.h"
-#include "Ocean/OceanPreparedDispatch.h"
-#include "Rendering/Materials/ShaderLayoutShape.h"
-#include "OceanShaderDirectory.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Mathematics/Interpolation.h"
+#include "Ocean/OceanShader/OceanShaderProgram.h"
+#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
+#include "OceanShader/OceanShaderDirectory.h"
+#include "Rendering/Core/CommandList.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Logger/Logger.h"
 #include <algorithm>
 #include <cmath>
@@ -14,50 +15,6 @@
 namespace GameEngine::Ocean
 {
 using namespace Rendering;
-namespace
-{
-struct alignas(16) SplineRasterParamsGPU
-{
-    OceanCascadeLayoutGPU Layout;
-    uint32 Grid[4];
-};
-
-struct SplineRasterDispatch
-{
-    ComputePipelineId Pipeline;
-    DescriptorSetLayoutDesc Layout;
-    RenderGraph::RGTexture Target;
-    RenderGraph::RGUploadRing::Alloc Triangles, Tiles, Params;
-    size_t TriangleBytes = 0, TileBytes = 0;
-    uint32 Groups = 0, Lods = 0;
-    OceanPreparedDispatch Commands;
-
-    bool Prepare(RenderGraph::RGPrepareContext& ctx)
-    {
-        Commands = {};
-        auto* device = ctx.GetDevice();
-        if (!device || !Triangles.Valid() || !Tiles.Valid() || !Params.Valid())
-            return false;
-        const auto pipeline = ctx.PreparePipeline(Pipeline);
-        const auto target = ctx.GetTexture(Target);
-        if (!pipeline || !target.IsValid())
-            return false;
-        DescriptorSetDesc desc{};
-        desc.layout = Layout;
-        desc.transient = true;
-        desc.debugName = "Ocean.SplineRaster.DS";
-        const auto set = device->CreateDescriptorSet(desc);
-        if (!set.IsValid())
-            return false;
-        device->UpdateBufferBinding(set, 0, Params.Buffer, Params.Offset, sizeof(SplineRasterParamsGPU));
-        device->UpdateStorageBufferBinding(set, 1, Triangles.Buffer, Triangles.Offset, TriangleBytes);
-        device->UpdateStorageBufferBinding(set, 2, Tiles.Buffer, Tiles.Offset, TileBytes);
-        device->UpdateStorageImageBinding(set, 3, target);
-        Commands = {pipeline, set, Groups, Groups, Lods, target};
-        return Commands.IsValid();
-    }
-};
-} // namespace
 std::vector<OceanRibbonTriangleGPU> BuildOceanRibbon(const std::vector<OceanRibbonPoint> &points,
                                                      const OceanRibbonStyle &style)
 {
@@ -73,7 +30,7 @@ std::vector<OceanRibbonTriangleGPU> BuildOceanRibbon(const std::vector<OceanRibb
         const auto &b = points[i];
         if (std::hypot(b.X - a.X, b.Z - a.Z) < 1e-5f)
             continue;
-        float vertex[4][4]{}, velocity[4][4]{};
+        Mathematics::Vector4 vertex[4], velocity[4];
         for (uint32 j = 0; j < 4; ++j)
         {
             const auto &p = j < 2 ? a : b;
@@ -90,13 +47,13 @@ std::vector<OceanRibbonTriangleGPU> BuildOceanRibbon(const std::vector<OceanRibb
         for (const auto &ids : {std::array<uint32, 3>{0, 1, 2}, std::array<uint32, 3>{2, 1, 3}})
         {
             OceanRibbonTriangleGPU t{};
-            std::copy_n(vertex[ids[0]], 4, t.A);
-            std::copy_n(vertex[ids[1]], 4, t.B);
-            std::copy_n(vertex[ids[2]], 4, t.C);
-            std::copy_n(velocity[ids[0]], 4, t.FlowA);
-            std::copy_n(velocity[ids[1]], 4, t.FlowB);
-            std::copy_n(velocity[ids[2]], 4, t.FlowC);
-            std::copy_n(style.Color, 4, t.Color);
+            t.A = vertex[ids[0]];
+            t.B = vertex[ids[1]];
+            t.C = vertex[ids[2]];
+            t.FlowA = velocity[ids[0]];
+            t.FlowB = velocity[ids[1]];
+            t.FlowC = velocity[ids[2]];
+            t.Color = style.Color;
             t.Values[0] = style.Width;
             t.Values[1] = std::max(style.Depth, 0.0f);
             t.Values[2] = feather;
@@ -111,7 +68,7 @@ std::vector<OceanRibbonTriangleGPU> BuildOceanRibbon(const std::vector<OceanRibb
     }
     return out;
 }
-bool SampleOceanRibbonTriangle(const OceanRibbonTriangleGPU &t, float x, float z, float bary[3])
+bool SampleOceanRibbonTriangle(const OceanRibbonTriangleGPU &t, float x, float z, Mathematics::Vector3 &bary)
 {
     const float bx = t.B[0] - t.A[0], bz = t.B[1] - t.A[1], cx = t.C[0] - t.A[0], cz = t.C[1] - t.A[1];
     const float det = bx * cz - bz * cx;
@@ -122,7 +79,7 @@ bool SampleOceanRibbonTriangle(const OceanRibbonTriangleGPU &t, float x, float z
     bary[0] = 1 - bary[1] - bary[2];
     return bary[0] >= -1e-6f && bary[1] >= -1e-6f && bary[2] >= -1e-6f;
 }
-float OceanRibbonEdgeDistance(const OceanRibbonTriangleGPU &t, const float b[3])
+float OceanRibbonEdgeDistance(const OceanRibbonTriangleGPU &t, const Mathematics::Vector3 &b)
 {
     const float cross = t.A[2] * b[0] + t.B[2] * b[1] + t.C[2] * b[2];
     return (1 - std::abs(cross)) * t.Values[0];
@@ -140,7 +97,7 @@ RibbonTileRange TileRangeOf(const OceanRibbonTriangleGPU &t, const OceanCascadeL
 {
     const float minX = std::min({t.A[0], t.B[0], t.C[0]}), maxX = std::max({t.A[0], t.B[0], t.C[0]});
     const float minZ = std::min({t.A[1], t.B[1], t.C[1]}), maxZ = std::max({t.A[1], t.B[1], t.C[1]});
-    const auto *cascade = layout.CascadeOriginScale[lod];
+    const Mathematics::Vector4& cascade = layout.CascadeOriginScale[lod];
     const float tile = cascade[2] * 8;
     const int last = static_cast<int>(groups) - 1;
     return {std::max(0, static_cast<int>(std::floor((minX - cascade[0]) / tile))),
@@ -167,14 +124,14 @@ static float RibbonFlowWeight(const OceanRibbonTriangleGPU &t, float edge)
 {
     if (t.Values[2] <= 1e-5f)
         return 1;
-    const float w = std::clamp(edge / t.Values[2], 0.0f, 1.0f);
+    const float w = Math::Clamp01(edge / t.Values[2]);
     return w * w * (3 - 2 * w);
 }
 // The innermost triangle of one ribbon at a query point.
 struct RibbonFlowHit
 {
     const OceanRibbonTriangleGPU *Triangle = nullptr;
-    float Bary[3]{};
+    Mathematics::Vector3 Bary;
     float Edge = 0;
 };
 // Adds a ribbon's current when the point lies inside its true edge.
@@ -183,7 +140,7 @@ static void AddRibbonFlow(const RibbonFlowHit &hit, OceanCurrentSample &result)
     if (!hit.Triangle || hit.Edge < 0)
         return;
     const auto &t = *hit.Triangle;
-    const float *b = hit.Bary;
+    const Mathematics::Vector3 &b = hit.Bary;
     const float w = RibbonFlowWeight(t, hit.Edge);
     result.Valid = true;
     result.FlowX += (t.FlowA[0] * b[0] + t.FlowB[0] * b[1] + t.FlowC[0] * b[2]) * w;
@@ -207,7 +164,7 @@ bool OceanSplineRaster::SetTriangles(std::vector<OceanRibbonTriangleGPU> triangl
         if (t.Meta[0] & 32u)
             underwater.push_back(t);
         if (t.Meta[0] & 4u)
-            for (const float *v : {t.A, t.B, t.C})
+            for (const float *v : {t.A.v, t.B.v, t.C.v})
             {
                 m_ClipBounds[0] = m_HasClipBounds ? std::min(m_ClipBounds[0], v[0]) : v[0];
                 m_ClipBounds[1] = m_HasClipBounds ? std::min(m_ClipBounds[1], v[1]) : v[1];
@@ -217,7 +174,7 @@ bool OceanSplineRaster::SetTriangles(std::vector<OceanRibbonTriangleGPU> triangl
             }
         if ((t.Meta[0] & 16u) == 0u)
             continue;
-        for (const float *v : {t.A, t.B, t.C})
+        for (const float *v : {t.A.v, t.B.v, t.C.v})
         {
             m_SurfaceBounds[0] = m_HasSurfaceBounds ? std::min(m_SurfaceBounds[0], v[0]) : v[0];
             m_SurfaceBounds[1] = m_HasSurfaceBounds ? std::min(m_SurfaceBounds[1], v[1]) : v[1];
@@ -237,7 +194,7 @@ bool OceanSplineRaster::SetTriangles(std::vector<OceanRibbonTriangleGPU> triangl
             node.B[axis] = -node.A[axis];
         }
         for (size_t i = begin; i < end; ++i)
-            for (const float *v : {underwater[i].A, underwater[i].B, underwater[i].C})
+            for (const float *v : {underwater[i].A.v, underwater[i].B.v, underwater[i].C.v})
             {
                 const float xyz[] = {v[0], v[3], v[1]};
                 for (uint32 axis = 0; axis < 3; ++axis)
@@ -280,7 +237,7 @@ void OceanSplineRaster::BuildQueryGrid()
         return;
     float minX = std::numeric_limits<float>::max(), minZ = minX, maxX = -minX, maxZ = -minX;
     for (const auto &t : m_Triangles)
-        for (const float *v : {t.A, t.B, t.C})
+        for (const float *v : {t.A.v, t.B.v, t.C.v})
         {
             minX = std::min(minX, v[0]);
             maxX = std::max(maxX, v[0]);
@@ -350,7 +307,7 @@ void OceanSplineRaster::RebaseOrigin(float x, float z, float y)
     m_ClipBounds[2] -= x;
     m_ClipBounds[3] -= z;
     for (auto &t : m_Triangles)
-        for (float *v : {t.A, t.B, t.C})
+        for (float *v : {t.A.v, t.B.v, t.C.v})
         {
             v[0] -= x;
             v[1] -= z;
@@ -368,7 +325,7 @@ void OceanSplineRaster::RebaseOrigin(float x, float z, float y)
             t.B[2] -= z;
         }
         else
-            for (float *v : {t.A, t.B, t.C})
+            for (float *v : {t.A.v, t.B.v, t.C.v})
             {
                 v[0] -= x;
                 v[1] -= z;
@@ -379,7 +336,7 @@ void OceanSplineRaster::RebaseOrigin(float x, float z, float y)
 bool OceanSplineRaster::Contains(float x, float z) const
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
-    float b[3];
+    Mathematics::Vector3 b;
     for (const uint32 index : TrianglesAt(x, z))
     {
         const auto &t = m_Triangles[index];
@@ -419,7 +376,7 @@ void OceanSplineRaster::ApplyFlow(float x, float z, OceanCurrentSample &result) 
     // innermost triangle, so a shared diagonal or a bend overlap does not add twice.
     uint32 ribbon = std::numeric_limits<uint32>::max();
     RibbonFlowHit best;
-    float b[3];
+    Mathematics::Vector3 b;
     for (const uint32 index : TrianglesAt(x, z))
     {
         const auto &t = m_Triangles[index];
@@ -443,7 +400,7 @@ bool OceanSplineRaster::SampleDepth(float x, float z, float &depth) const
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
     bool found = false;
-    float b[3];
+    Mathematics::Vector3 b;
     for (const uint32 index : TrianglesAt(x, z))
     {
         const auto &t = m_Triangles[index];
@@ -461,7 +418,7 @@ bool OceanSplineRaster::UnderwaterDepth(float x, float y, float z, float &depth)
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
     bool found = false;
-    float b[3];
+    Mathematics::Vector3 b;
     depth = 0;
     for (const uint32 index : TrianglesAt(x, z))
     {
@@ -582,32 +539,45 @@ bool OceanSplineRaster::Declare(RenderGraph::RGFrame &frame, IDevice *device, ui
     const auto &packed = bins.Packed;
     const auto tris = frame.AllocUpload(m_Triangles.size() * sizeof(OceanRibbonTriangleGPU));
     const auto tiles = frame.AllocUpload(packed.size() * sizeof(uint32));
-    const auto u = frame.AllocUpload<SplineRasterParamsGPU>();
+    struct alignas(16) Params
+    {
+        OceanCascadeLayoutGPU Layout;
+        uint32 Grid[4];
+    };
+    const auto u = frame.AllocUpload<Params>();
     if (!tris.Valid() || !tiles.Valid() || !u.Valid())
         return false;
     std::memcpy(tris.Ptr, m_Triangles.data(), m_Triangles.size() * sizeof(OceanRibbonTriangleGPU));
     std::memcpy(tiles.Ptr, packed.data(), packed.size() * sizeof(uint32));
     *u.Ptr = {layout, {resolution, groups, 0, 0}};
-    auto* dispatch = frame.AllocatePassData<SplineRasterDispatch>();
-    dispatch->Pipeline = m_Pipelines[field];
-    dispatch->Layout = m_Layout;
-    dispatch->Target = target;
-    dispatch->Triangles = tris;
-    dispatch->Tiles = tiles;
-    dispatch->Params = {u.Buffer, u.Offset, u.Ptr};
-    dispatch->TriangleBytes = m_Triangles.size() * sizeof(OceanRibbonTriangleGPU);
-    dispatch->TileBytes = packed.size() * sizeof(uint32);
-    dispatch->Groups = groups;
-    dispatch->Lods = layout.LodCount;
+    const auto pipe = m_Pipelines[field];
+    const auto dsLayout = m_Layout;
     frame.AddPass(("OceanSplineRaster" + std::to_string(field)).c_str(), PassPhase::kEarlySetup,
-                  [dispatch, target](RenderGraph::RGPassBuilder &p) {
-                      p.UsePipeline(dispatch->Pipeline);
+                  [&](RenderGraph::RGPassBuilder &p) {
                       p.Read(target, RenderGraph::RGTextureRead::Storage);
                       p.Write(target, RenderGraph::RGTextureWrite::Storage);
-                      p.Prepare([dispatch](RenderGraph::RGPrepareContext& ctx) { return dispatch->Prepare(ctx); });
                   },
-                  [dispatch](RenderGraph::RGContext &ctx) {
-                      RecordOceanPreparedDispatch(ctx.Cmd, dispatch->Commands);
+                  [pipe, dsLayout, target, tris, tiles, params = u.Buffer, offset = u.Offset, groups,
+                   lods = layout.LodCount, triBytes = m_Triangles.size() * sizeof(OceanRibbonTriangleGPU),
+                   tileBytes = packed.size() * sizeof(uint32)](RenderGraph::RGContext &ctx) {
+                      auto *dev = ctx.GetDevice();
+                      if (!dev || !ctx.Cmd)
+                          return;
+                      const auto pso = dev->GetOrCreateComputePipeline(pipe);
+                      if (!pso)
+                          return;
+                      DescriptorSetDesc desc{};
+                      desc.layout = dsLayout;
+                      desc.transient = true;
+                      desc.debugName = "Ocean.SplineRaster.DS";
+                      const auto ds = dev->CreateDescriptorSet(desc);
+                      dev->UpdateBufferBinding(ds, 0, params, offset, sizeof(Params));
+                      dev->UpdateStorageBufferBinding(ds, 1, tris.Buffer, tris.Offset, triBytes);
+                      dev->UpdateStorageBufferBinding(ds, 2, tiles.Buffer, tiles.Offset, tileBytes);
+                      dev->UpdateStorageImageBinding(ds, 3, ctx.GetTexture(target));
+                      ctx.Cmd->SetPipeline(pso);
+                      ctx.Cmd->BindDescriptorSet(0, ds, pso);
+                      ctx.Cmd->Dispatch(groups, groups, lods);
                   });
     frame.MarkOutput(target, RenderGraph::RGImageLayout::ShaderReadOnly);
     return true;

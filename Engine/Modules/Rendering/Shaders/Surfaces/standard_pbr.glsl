@@ -100,41 +100,53 @@ vec4 GE_StandardSampleAt(GE_MaterialTexture map, vec4 st, vec4 st2, vec2 uv0, ve
     vec2 uvPerPixelY = vec2(dot(uvFootprint.zw, st.xy), dot(uvFootprint.zw, st2.xy));
     return textureGrad(map, GE_TransformUV(uv0, st, st2), uvPerPixelX, uvPerPixelY);
 }
-#endif
-
-#ifndef GE_PARALLAX_MARCH
-// The branch reads one flat material value for each primitive.
-vec4 GE_StandardSampleBlend(GE_MaterialTexture map, vec2 uvA, vec2 uvB, float blend)
-{
-#ifdef GE_WGSL_COOK
-    // Derivatives must precede the material feature branch.
-    vec2 uvPerPixelX = dFdx(uvB);
-    vec2 uvPerPixelY = dFdy(uvB);
-#endif
-    vec4 first = texture(map, uvA);
-    if (!GE_FORWARD_HEX_TILING || Mat.uParams0.z < 0.5)
-        return first;
-#ifdef GE_WGSL_COOK
-    return mix(first, textureGrad(map, uvB, uvPerPixelX, uvPerPixelY), blend);
 #else
-    return mix(first, texture(map, uvB), blend);
-#endif
+// One map at `uv` through its own tiling and the material's hex blend.
+vec4 GE_StandardSampleHex(GE_MaterialTexture map, vec2 uv, vec4 st, vec4 st2)
+{
+    vec2 uvA, uvB;
+    float blend = 0.0;
+    GE_ComputeHexBlendUV(uv, st, st2, Mat.uParams0.z, Mat.uParams0.w, Mat.uParams3.x, uvA, uvB, blend);
+    return mix(texture(map, uvA), texture(map, uvB), blend);
 }
 
-vec3 GE_StandardSampleNormalBlend(GE_MaterialTexture map, vec2 uvA, vec2 uvB, float blend)
+// The tangent-space normal at `uv` through its own tiling and the hex blend: each sample is decoded,
+// then the two are mixed.
+vec3 GE_StandardSampleHexNormal(GE_MaterialTexture map, vec2 uv, vec4 st, vec4 st2)
 {
-#ifdef GE_WGSL_COOK
-    vec2 uvPerPixelX = dFdx(uvB);
-    vec2 uvPerPixelY = dFdy(uvB);
+    vec2 uvA, uvB;
+    float blend = 0.0;
+    GE_ComputeHexBlendUV(uv, st, st2, Mat.uParams0.z, Mat.uParams0.w, Mat.uParams3.x, uvA, uvB, blend);
+    return mix(GE_DecodeTangentNormal(texture(map, uvA)), GE_DecodeTangentNormal(texture(map, uvB)), blend);
+}
 #endif
-    vec3 first = GE_DecodeTangentNormal(texture(map, uvA));
-    if (!GE_FORWARD_HEX_TILING || Mat.uParams0.z < 0.5)
-        return first;
-#ifdef GE_WGSL_COOK
-    return mix(first, GE_DecodeTangentNormal(textureGrad(map, uvB, uvPerPixelX, uvPerPixelY)), blend);
-#else
-    return mix(first, GE_DecodeTangentNormal(texture(map, uvB)), blend);
+
+// The crossfade (material keyword UV1Crossfade): the albedo, metallic-roughness, occlusion and normal
+// maps also sample at uv1, and the vertex alpha is the weight of the uv1 samples, not an opacity.
+#if defined(GE_UV1_CROSSFADE) && defined(HAS_UV1) && defined(HAS_COLOR) && !defined(GE_PARALLAX_MARCH)
+#define GE_STANDARD_UV1_CROSSFADE
 #endif
+
+#if defined(GE_STANDARD_UV1_CROSSFADE) && defined(HAS_TANGENT)
+// The world normal of tangent-space `tn` in the frame of uv1: T is the rise of uv1.x from screen
+// derivatives, B = cross(N, T) times the mesh's handedness. Where the derivatives read zero (the
+// compat profile), the uv0 tangent stands in.
+vec3 GE_StandardUV1NormalWS(SurfaceInput sIn, vec3 tn)
+{
+    vec3 N = sIn.TBN[2];
+    vec3 dpdx = GE_DFDX(sIn.positionRelWS);
+    vec3 dpdy = GE_DFDY(sIn.positionRelWS);
+    vec2 duvdx = GE_DFDX(sIn.uv1);
+    vec2 duvdy = GE_DFDY(sIn.uv1);
+    // The gradient of uv1.x in the surface plane. The determinant's sign keeps it pointing up the
+    // gradient on either winding of the screen.
+    float determinant = dot(N, cross(dpdx, dpdy));
+    vec3 T = (cross(dpdy, N) * duvdx.x + cross(N, dpdx) * duvdy.x) * (determinant < 0.0 ? -1.0 : 1.0);
+    T -= N * dot(N, T);
+    float lengthSquared = dot(T, T);
+    T = lengthSquared > 1.0e-20 ? T * inversesqrt(lengthSquared) : sIn.TBN[0];
+    vec3 B = cross(N, T) * (sIn.tangentWS.w < 0.0 ? -1.0 : 1.0);
+    return normalize(mat3(T, B, N) * tn);
 }
 #endif
 
@@ -160,23 +172,12 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
   #endif
     vec4 albedo = GE_StandardSampleAt(albedoMap, sIn.textureST[0], sIn.textureST2[0], reliefUv0, sIn.uvFootprint);
 #else
-    vec2 uvAlbedoA, uvAlbedoB;
-    float uvAlbedoBlend = 0.0;
-    GE_ComputeHexBlendUV(sIn.uv0, sIn.textureST[0], sIn.textureST2[0], Mat.uParams0.z, Mat.uParams0.w, Mat.uParams3.x,
-                         uvAlbedoA, uvAlbedoB, uvAlbedoBlend);
-
-    vec2 uvMRA, uvMRB;
-    float uvMRBlend = 0.0;
-    GE_ComputeHexBlendUV(sIn.uv0, sIn.textureST[2], sIn.textureST2[2], Mat.uParams0.z, Mat.uParams0.w, Mat.uParams3.x,
-                         uvMRA, uvMRB, uvMRBlend);
-
-    vec2 uvNormalA, uvNormalB;
-    float uvNormalBlend = 0.0;
-    GE_ComputeHexBlendUV(sIn.uv0, sIn.textureST[1], sIn.textureST2[1], Mat.uParams0.z, Mat.uParams0.w, Mat.uParams3.x,
-                         uvNormalA, uvNormalB, uvNormalBlend);
-
     // Albedo: texture * UBO tint
-    vec4 albedo = GE_StandardSampleBlend(albedoMap, uvAlbedoA, uvAlbedoB, uvAlbedoBlend);
+    vec4 albedo = GE_StandardSampleHex(albedoMap, sIn.uv0, sIn.textureST[0], sIn.textureST2[0]);
+  #ifdef GE_STANDARD_UV1_CROSSFADE
+    float uv1Weight = sIn.vertexColor.a;
+    albedo = mix(albedo, GE_StandardSampleHex(albedoMap, sIn.uv1, sIn.textureST[0], sIn.textureST2[0]), uv1Weight);
+  #endif
 #endif
     o.baseColor = albedo.rgb * Mat.uBaseColor.rgb * sIn.vertexColor.rgb;
 #if defined(GE_PARALLAX_MARCH) && defined(ALPHA_TEST)
@@ -184,6 +185,8 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     // the undisplaced UV, exactly where the depth prepass and the cascades read it.
     o.opacity = GE_StandardSampleAt(albedoMap, sIn.textureST[0], sIn.textureST2[0], sIn.uv0, sIn.uvFootprint).a
               * Mat.uBaseColor.a * sIn.vertexColor.a;
+#elif defined(GE_STANDARD_UV1_CROSSFADE)
+    o.opacity = albedo.a * Mat.uBaseColor.a;
 #else
     o.opacity = albedo.a * Mat.uBaseColor.a * sIn.vertexColor.a;
 #endif
@@ -193,7 +196,10 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     vec4 mr = GE_StandardSampleAt(metallicRoughnessMap, sIn.textureST[2], sIn.textureST2[2], reliefUv0,
                                   sIn.uvFootprint);
 #else
-    vec4 mr = GE_StandardSampleBlend(metallicRoughnessMap, uvMRA, uvMRB, uvMRBlend);
+    vec4 mr = GE_StandardSampleHex(metallicRoughnessMap, sIn.uv0, sIn.textureST[2], sIn.textureST2[2]);
+  #ifdef GE_STANDARD_UV1_CROSSFADE
+    mr = mix(mr, GE_StandardSampleHex(metallicRoughnessMap, sIn.uv1, sIn.textureST[2], sIn.textureST2[2]), uv1Weight);
+  #endif
 #endif
     o.roughness = mr.g * Mat.uParams0.y;
     o.metallic = mr.b * Mat.uParams0.x;
@@ -214,17 +220,11 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     vec3 emissiveTex =
         GE_StandardSampleAt(emissiveMap, sIn.textureST[3], sIn.textureST2[3], reliefUv0, sIn.uvFootprint).rgb;
 #else
-    vec2 uvAOA, uvAOB;
-    float uvAOBlend = 0.0;
-    GE_ComputeHexBlendUV(sIn.uv0, sIn.textureST[4], sIn.textureST2[4], Mat.uParams0.z, Mat.uParams0.w, Mat.uParams3.x,
-                         uvAOA, uvAOB, uvAOBlend);
-    o.ao = GE_StandardSampleBlend(aoMap, uvAOA, uvAOB, uvAOBlend).r;
-
-    vec2 uvEmissiveA, uvEmissiveB;
-    float uvEmissiveBlend = 0.0;
-    GE_ComputeHexBlendUV(sIn.uv0, sIn.textureST[3], sIn.textureST2[3], Mat.uParams0.z, Mat.uParams0.w, Mat.uParams3.x,
-                         uvEmissiveA, uvEmissiveB, uvEmissiveBlend);
-    vec3 emissiveTex = GE_StandardSampleBlend(emissiveMap, uvEmissiveA, uvEmissiveB, uvEmissiveBlend).rgb;
+    o.ao = GE_StandardSampleHex(aoMap, sIn.uv0, sIn.textureST[4], sIn.textureST2[4]).r;
+  #ifdef GE_STANDARD_UV1_CROSSFADE
+    o.ao = mix(o.ao, GE_StandardSampleHex(aoMap, sIn.uv1, sIn.textureST[4], sIn.textureST2[4]).r, uv1Weight);
+  #endif
+    vec3 emissiveTex = GE_StandardSampleHex(emissiveMap, sIn.uv0, sIn.textureST[3], sIn.textureST2[3]).rgb;
 #endif
     // Emission authored in nits: texture x colour x luminance, scaled into scene-linear by the
     // reference-white anchor (OpenPBR emission_color x emission_luminance; an unbound texture
@@ -238,9 +238,14 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     vec3 tn = GE_DecodeTangentNormal(
         GE_StandardSampleAt(normalMap, sIn.textureST[1], sIn.textureST2[1], reliefUv0, sIn.uvFootprint));
   #else
-    vec3 tn = GE_StandardSampleNormalBlend(normalMap, uvNormalA, uvNormalB, uvNormalBlend);
+    vec3 tn = GE_StandardSampleHexNormal(normalMap, sIn.uv0, sIn.textureST[1], sIn.textureST2[1]);
   #endif
     o.normalWS = normalize(sIn.TBN * tn);
+  #ifdef GE_STANDARD_UV1_CROSSFADE
+    vec3 uv1Normal = GE_StandardUV1NormalWS(
+        sIn, GE_StandardSampleHexNormal(normalMap, sIn.uv1, sIn.textureST[1], sIn.textureST2[1]));
+    o.normalWS = normalize(mix(o.normalWS, uv1Normal, uv1Weight));
+  #endif
 #else
     o.normalWS = normalize(sIn.normalWS);
 #endif
@@ -254,11 +259,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     vec3 ctn = GE_DecodeTangentNormal(
         GE_StandardSampleAt(coatNormalMap, sIn.textureST[5], sIn.textureST2[5], reliefUv0, sIn.uvFootprint));
     #else
-    vec2 uvCoatNormalA, uvCoatNormalB;
-    float uvCoatNormalBlend = 0.0;
-    GE_ComputeHexBlendUV(sIn.uv0, sIn.textureST[5], sIn.textureST2[5], Mat.uParams0.z, Mat.uParams0.w, Mat.uParams3.x,
-                         uvCoatNormalA, uvCoatNormalB, uvCoatNormalBlend);
-    vec3 ctn = GE_StandardSampleNormalBlend(coatNormalMap, uvCoatNormalA, uvCoatNormalB, uvCoatNormalBlend);
+    vec3 ctn = GE_StandardSampleHexNormal(coatNormalMap, sIn.uv0, sIn.textureST[5], sIn.textureST2[5]);
     #endif
     o.coatNormalWS = normalize(sIn.TBN * ctn);
   #else

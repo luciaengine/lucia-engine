@@ -111,12 +111,11 @@ void main()
             GE_DecodeNormalVS(texelFetch(uNormalRoughness, pixel, 0)));
         moments = texelFetch(uMoments, q, 0);
         validHistory = moments.a > 0.0 &&
-            GE_SssrDepthHistoryValid(GE_SssrDecodeHistoryDepth(surface.a), GE_LinearZ(previousDepth)) &&
+            GE_SssrDepthHistoryValid(GE_SssrDecodeHistoryDepth(surface.a), LinearizeReverseZ(previousDepth, ge_depthTerms)) &&
             dot(normalWS, GE_OctDecode(surface.rg)) > 0.9 && abs(roughness - surface.b) < 0.1 &&
             GE_SssrIsFinite(moments);
     }
-    float relativeVariance = max(moments.g - moments.r * moments.r, 0.0) /
-                             max(moments.r * moments.r, 1e-4);
+    float relativeVariance = GE_SssrTemporalVariance(moments.rg) / max(moments.r * moments.r, 1e-4);
     rate = GE_SssrAdaptiveRate(rate, roughness, validHistory, relativeVariance, moments.a);
     uint shift = uint(findMSB(rate)); // log2(rate); 0 for rate 1
     uvec2 phase =

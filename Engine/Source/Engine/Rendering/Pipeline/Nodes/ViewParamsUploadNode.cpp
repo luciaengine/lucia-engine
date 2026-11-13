@@ -2,11 +2,13 @@
 
 #include "Engine/Rendering/CameraUtils.h"
 #include "Engine/Rendering/PostProcessSettings.h"
+#include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
 
 #include "Core/Time.h"
 #include "Rendering/Common/Math.h"
 #include "Rendering/Core/ViewParamsLayout.h"
+#include "Rendering/Passes/TonemapPass.h"
 
 #include <algorithm>
 #include <cmath>
@@ -62,7 +64,7 @@ void ViewParamsUploadNode::DeclareForView(ViewDeclare& d)
 {
     // Dissolved into the upload ring: payload computed and written at
     // declaration — no pass, no graph declaration (host-coherent). Sized
-    // from the STRUCT (sizeof(ViewParamsUBO), asserted in ViewParamsLayout.h above); the
+    // from the STRUCT (sizeof(ViewParamsUBO), asserted in ViewParamsLayout.h); the
     // blueprint's size entry is not consulted on this Upload path.
     const auto* vd = d.Services.Views().FindViewDesc(d.View.id);
     if (!vd || vd->cameraId == 0)
@@ -87,24 +89,27 @@ void ViewParamsUploadNode::DeclareForView(ViewDeclare& d)
     }
     const Rendering::CameraData* cam = &jittered;
 
-    GameEngine::Rendering::Matrix4x4 projM;
-    std::memcpy(projM.Data(), cam->proj, sizeof(cam->proj));
+    GameEngine::Rendering::Matrix4x4 projM = cam->proj;
     GameEngine::Rendering::Matrix4x4 invProjM = GameEngine::Mathematics::Inverse(projM);
 
     ViewParamsUBO ubo{};
     std::memcpy(ubo.ge_invProj, invProjM.Data(), sizeof(ubo.ge_invProj));
-    std::memcpy(ubo.ge_view, cam->view, sizeof(ubo.ge_view));
-    float zn = 0.1f, zf = 1000.0f;
-    ExtractNearFarLH_ZO(cam->proj, zn, zf);
-    ubo.ge_nearFar[0] = zn;
-    ubo.ge_nearFar[1] = zf;
-    const float logRatio = std::log(zf / std::max(zn, 1e-4f));
-    ubo.ge_nearFar[2] = (logRatio > 1e-6f) ? (1.0f / logRatio) : 0.0f;
-    const float shaderAnimationTime = d.Services.GetShaderAnimationTimeSeconds();
-    ubo.ge_nearFar[3] = shaderAnimationTime;
+    std::memcpy(ubo.ge_view, cam->view.Data(), sizeof(ubo.ge_view));
+    const ProjectionDepthTerms depthTerms = ProjectionDepthTerms::Of(cam->proj);
+    ubo.ge_depthTerms[0] = depthTerms.M22;
+    ubo.ge_depthTerms[1] = depthTerms.M32;
+    ubo.ge_depthTerms[2] = depthTerms.M23;
+    ubo.ge_depthTerms[3] = depthTerms.M33;
+    // Near is the linearized depth at raw 1; the range is the carried culling range.
+    const float zn = LinearizeReverseZDepthLH_ZO(1.0f, depthTerms);
+    const float range = d.Services.Views().ResolveCameraRanges(d.View.id).CullingRange;
+    const float logRatio = std::log(range / std::max(zn, 1e-4f));
+    ubo.ge_viewRanges[0] = zn;
+    ubo.ge_viewRanges[1] = range;
+    ubo.ge_viewRanges[2] = (logRatio > 1e-6f) ? (1.0f / logRatio) : 0.0f;
+    ubo.ge_viewRanges[3] = d.Services.GetShaderAnimationTimeSeconds();
 
-    GameEngine::Rendering::Matrix4x4 viewM;
-    std::memcpy(viewM.Data(), cam->view, sizeof(cam->view));
+    GameEngine::Rendering::Matrix4x4 viewM = cam->view;
     GameEngine::Rendering::Matrix4x4 invViewM = GameEngine::Mathematics::Inverse(viewM);
     const float* iv = invViewM.Data();
     ubo.ge_cameraPosWS[0] = iv[12];
@@ -115,6 +120,18 @@ void ViewParamsUploadNode::DeclareForView(ViewDeclare& d)
     // point without a per-pixel matrix inverse (SSR reprojection).
     std::memcpy(ubo.ge_invView, invViewM.Data(), sizeof(ubo.ge_invView));
 
+    // The relative frame takes the same arithmetic on the origin-relative view, so in sector
+    // (0,0,0), where viewRel is a copy of view, each field holds its absolute partner's bits.
+    const GameEngine::Rendering::Matrix4x4 invViewRelM = GameEngine::Mathematics::Inverse(cam->viewRel);
+    std::memcpy(ubo.ge_viewRel, cam->viewRel.Data(), sizeof(ubo.ge_viewRel));
+    std::memcpy(ubo.ge_invViewRel, invViewRelM.Data(), sizeof(ubo.ge_invViewRel));
+    ubo.ge_cameraPosRel[0] = invViewRelM[3][0];
+    ubo.ge_cameraPosRel[1] = invViewRelM[3][1];
+    ubo.ge_cameraPosRel[2] = invViewRelM[3][2];
+    ubo.ge_cameraPosRel[3] = 0.0f;
+    for (int32 axis = 0; axis < 4; ++axis)
+        ubo.ge_renderOrigin[axis] = static_cast<float>(cam->renderOriginSector[axis]);
+
     // THE view extent — the same numbers buffer-size expressions and
     // dispatch sizing use.
     const float sw = std::max(static_cast<float>(d.RenderWidth), 1.0f);
@@ -123,8 +140,8 @@ void ViewParamsUploadNode::DeclareForView(ViewDeclare& d)
     ubo.ge_screenSize[1] = sh;
     ubo.ge_screenSize[2] = 1.0f / sw;
     ubo.ge_screenSize[3] = 1.0f / sh;
-    std::memcpy(ubo.ge_viewProj, cam->viewProj, sizeof(ubo.ge_viewProj));
-    std::memcpy(ubo.ge_proj, cam->proj, sizeof(ubo.ge_proj)); // ge_proj == the projection ge_invProj inverts
+    std::memcpy(ubo.ge_viewProj, cam->viewProj.Data(), sizeof(ubo.ge_viewProj));
+    std::memcpy(ubo.ge_proj, cam->proj.Data(), sizeof(ubo.ge_proj)); // ge_proj == the projection ge_invProj inverts
 
     // TAAU texture-sharpness compensation: material sampling adds this bias per
     // sample (adapter_forward's GE_MaterialTexture texture() overload) so texture
@@ -132,11 +149,7 @@ void ViewParamsUploadNode::DeclareForView(ViewDeclare& d)
     // from the ACTUAL extent ratio (even-snap included), so it tracks the slider
     // live; exactly 0.0 when the view is not upscaling — the scale-1.0
     // byte-neutrality gate.
-    // The pixel-perfect crossing is excluded: its Render/Output ratio is the
-    // camera's integer zoom, and sharpening material sampling against it would
-    // fight the point-sampled art grid instead of compensating an upscale.
-    ubo.ge_mipBiasParams[0] = ComputeTaauMipBias(
-        d.RenderWidth, d.PixelPerfectCrossing ? d.RenderWidth : d.OutputWidth);
+    ubo.ge_mipBiasParams[0] = ComputeTaauMipBias(d.RenderWidth, d.OutputWidth);
 
     // Previous frame's UNJITTERED world->clip. This history is independent of
     // the active AA mode, so SSSR's temporal lane also works with AA off/MSAA.
@@ -150,9 +163,16 @@ void ViewParamsUploadNode::DeclareForView(ViewDeclare& d)
     const ViewTemporalSample* previous = d.Services.TemporalHistory().Advance(
         d.View.id, d.Frame.FrameIndex(), currentSample, d.Frame.SubmittedFrameCount(),
         &previousValid);
-    const float* prevViewProj =
-        (previousValid && previous) ? previous->Camera.viewProj : stored->viewProj;
-    std::memcpy(ubo.ge_prevViewProj, prevViewProj, sizeof(ubo.ge_prevViewProj));
+    const Rendering::CameraData& prevCamera = (previousValid && previous) ? previous->Camera : *stored;
+    std::memcpy(ubo.ge_prevViewProj, prevCamera.viewProj.Data(), sizeof(ubo.ge_prevViewProj));
+    // The previous relative view-projection takes positions relative to the previous frame's
+    // origin: move it into this frame's sector.
+    std::memcpy(ubo.ge_prevViewProjRel, prevCamera.viewProjRel.Data(), sizeof(ubo.ge_prevViewProjRel));
+    if (!std::equal(prevCamera.renderOriginSector, prevCamera.renderOriginSector + 3, stored->renderOriginSector))
+    {
+        RebaseTranslationColumnBySectorDelta(prevCamera.viewProjRel.Data(), prevCamera.renderOriginSector,
+                                             stored->renderOriginSector, ubo.ge_prevViewProjRel);
+    }
 
     // Sub-pixel NDC jitter, current (xy) and previous (zw) frame. A consumer
     // reprojecting through the UNJITTERED ge_prevViewProj adds zw to land on the
@@ -166,13 +186,14 @@ void ViewParamsUploadNode::DeclareForView(ViewDeclare& d)
         ubo.ge_taaJitter[3] = tempAA->PrevNdcJitterY;
     }
 
-    // The exposure the tonemap applies to this view, from the same effective settings the
-    // AutoExposure and Tonemap nodes read. While auto exposure meters the view, forward shading
-    // takes the metered scale from ExposureHistory instead (GE_ViewExposureScale).
+    // The exposure and the look the tonemap applies to this view, from the effective settings the
+    // AutoExposure and Tonemap nodes read. While auto exposure meters the view, shaders read the metered
+    // scale from ExposureHistory (GE_ViewExposureScale). The view's no-look output overrides the blended look.
     const PostProcessSettings& post = d.Services.GetEffectivePostProcessSettings(d.View.id, d.View.worldId);
     ubo.ge_exposureParams[0] = post.Exposure;
     ubo.ge_exposureParams[1] = post.IsAutoExposureActive() ? 1.0f : 0.0f;
-
+    ubo.ge_exposureParams[2] = static_cast<float>(
+        post.ViewOutput == PostProcessViewOutput::NoLook ? Passes::kTonemapNoLookArm : post.Look);
 
     float bandStart = 0, bandEnd = 0;
     int distanceMode = 0;

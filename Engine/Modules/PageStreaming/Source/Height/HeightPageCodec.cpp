@@ -66,11 +66,11 @@ void EncodeHeightPage(const PageStoreHeader& header, uint32 level, std::span<con
     int32 lowest = std::numeric_limits<int32>::max();
     int32 highest = std::numeric_limits<int32>::lowest();
     std::vector<int32> integers(kPageSampleCount);
-    for (std::size_t sampleIndex = 0; sampleIndex < kPageSampleCount; ++sampleIndex)
+    for (std::size_t i = 0; i < kPageSampleCount; ++i)
     {
-        integers[sampleIndex] = NearestInteger(samples[sampleIndex], step);
-        lowest = std::min(lowest, integers[sampleIndex]);
-        highest = std::max(highest, integers[sampleIndex]);
+        integers[i] = NearestInteger(samples[i], step);
+        lowest = std::min(lowest, integers[i]);
+        highest = std::max(highest, integers[i]);
     }
     out.MinWord = std::min(lowest, FloorInteger(footprintMin, step));
     out.MaxWord = std::max(highest, CeilInteger(footprintMax, step));
@@ -84,8 +84,8 @@ void EncodeHeightPage(const PageStoreHeader& header, uint32 level, std::span<con
     else
     {
         auto* words = reinterpret_cast<uint16*>(out.Bytes.data());
-        for (std::size_t sampleIndex = 0; sampleIndex < kPageSampleCount; ++sampleIndex)
-            words[sampleIndex] = static_cast<uint16>(integers[sampleIndex] - out.MinWord);
+        for (std::size_t i = 0; i < kPageSampleCount; ++i)
+            words[i] = static_cast<uint16>(integers[i] - out.MinWord);
     }
     out.Hash = Hashing::Fnv1a64(out.Bytes.data(), out.Bytes.size());
 }
@@ -99,18 +99,18 @@ void DecodeHeightPage(const PageStoreHeader& header, uint32 level, const PageInd
     if (entry.HasWideWords())
     {
         int32 integer = 0;
-        for (std::size_t sampleIndex = 0; sampleIndex < kPageSampleCount; ++sampleIndex)
+        for (std::size_t i = 0; i < kPageSampleCount; ++i)
         {
-            std::memcpy(&integer, bytes.data() + sampleIndex * sizeof(int32), sizeof(int32));
-            out[sampleIndex] = IntegerValue(integer, step);
+            std::memcpy(&integer, bytes.data() + i * sizeof(int32), sizeof(int32));
+            out[i] = IntegerValue(integer, step);
         }
         return;
     }
     uint16 word = 0;
-    for (std::size_t sampleIndex = 0; sampleIndex < kPageSampleCount; ++sampleIndex)
+    for (std::size_t i = 0; i < kPageSampleCount; ++i)
     {
-        std::memcpy(&word, bytes.data() + sampleIndex * sizeof(uint16), sizeof(uint16));
-        out[sampleIndex] = IntegerValue(static_cast<int64>(entry.MinWord) + word, step);
+        std::memcpy(&word, bytes.data() + i * sizeof(uint16), sizeof(uint16));
+        out[i] = IntegerValue(static_cast<int64>(entry.MinWord) + word, step);
     }
 }
 

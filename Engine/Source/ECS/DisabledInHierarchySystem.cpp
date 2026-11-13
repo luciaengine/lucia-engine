@@ -30,7 +30,7 @@ void DisabledInHierarchySystem::BindTo(World& world)
     m_TaggedQuery->IncludeDisabled();
 
     AutoComponentRegistrar<Parent>::EnsureRegistered();
-    world.SetParentRelation(GetComponentTypeId<Parent>(), static_cast<uint32>(offsetof(Parent, parent)));
+    world.SetParentRelation(GetComponentTypeId<Parent>(), static_cast<uint32>(offsetof(Parent, Entity)));
 }
 
 bool DisabledInHierarchySystem::HasParentColumnChange(uint64 entryVersion)
@@ -96,7 +96,7 @@ void DisabledInHierarchySystem::CollectCandidates(World& world)
         [&](EntityHandle entity, const Parent& parent)
         {
             EntityState& state = TouchState(entity);
-            state.Parent = parent.parent;
+            state.Parent = parent.Entity;
             addCandidate(state, entity);
         });
 

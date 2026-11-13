@@ -171,26 +171,17 @@ ShadowReceiverReduce::Setup ShadowReceiverReduce::MakeSetup(const CameraData& ca
     measured.BinNear = nearPlane;
     measured.BinFar = std::max(std::min(farPlane, maxShadowDistance), nearPlane * 2.0f);
 
-    // Positions are reconstructed render-origin-relative, against the same
-    // origin the cascade fit derives from the camera.
-    float viewRel[16];
-    float viewProjRel[16];
-    int32 originSector[4];
-    ComputeRebasedView(camera.view, camera.proj, camera.viewProj, camera.cameraPos[0],
-                       camera.cameraPos[1], camera.cameraPos[2], viewRel, viewProjRel,
-                       originSector);
-    float originX = 0.0f;
-    float originY = 0.0f;
-    float originZ = 0.0f;
-    SectorToWorld(Components::WorldSectorCoord{originSector[0], originSector[1], originSector[2]},
-                  originX, originY, originZ);
-    for (int axis = 0; axis < 3; ++axis)
-        measured.RenderOriginSector[axis] = originSector[axis];
+    // Positions are reconstructed render-origin-relative, against the sector and
+    // the rebased view the camera drew its depth with.
+    const Matrix4x4& viewProjRel = camera.viewProjRel;
+    const Mathematics::Vector3Int originSector = CameraRenderOriginSector(camera);
+    const Mathematics::Vector3 origin = SectorToWorld(originSector);
+    measured.RenderOriginSector[0] = originSector.x;
+    measured.RenderOriginSector[1] = originSector.y;
+    measured.RenderOriginSector[2] = originSector.z;
 
     ParamsGPU& params = setup.Params;
-    Matrix4x4 viewProj;
-    std::memcpy(viewProj.Data(), viewProjRel, sizeof(viewProjRel));
-    const Matrix4x4 invViewProj = Mathematics::Inverse(viewProj);
+    const Matrix4x4 invViewProj = Mathematics::Inverse(viewProjRel);
     std::memcpy(params.InvViewProjRel, invViewProj.Data(), sizeof(params.InvViewProjRel));
     // Rows of the column-major light rotation: light-space axis i of a position
     // p is dot(row i, p).
@@ -204,9 +195,9 @@ ShadowReceiverReduce::Setup ShadowReceiverReduce::MakeSetup(const CameraData& ca
         rows[i][2] = m[8 + i];
         rows[i][3] = 0.0f;
     }
-    params.CameraPosRel[0] = camera.cameraPos[0] - originX;
-    params.CameraPosRel[1] = camera.cameraPos[1] - originY;
-    params.CameraPosRel[2] = camera.cameraPos[2] - originZ;
+    params.CameraPosRel[0] = camera.cameraPos.x - origin.x;
+    params.CameraPosRel[1] = camera.cameraPos.y - origin.y;
+    params.CameraPosRel[2] = camera.cameraPos.z - origin.z;
     params.CameraForward[0] = measured.CameraForward.x;
     params.CameraForward[1] = measured.CameraForward.y;
     params.CameraForward[2] = measured.CameraForward.z;
@@ -281,9 +272,8 @@ void ShadowReceiverReduce::DeclareLate(RenderGraph::RGFrame& frame, ShadowMapRen
     const uint64_t paramsOffset = params.Offset;
     frame.AddPass(
         request.PassName.c_str(), PassPhase::kDefault,
-        [this, &request](RenderGraph::RGPassBuilder& p)
+        [&request](RenderGraph::RGPassBuilder& p)
         {
-            p.UsePipeline(request.Multisampled ? m_Multisampled.Id : m_SingleSample.Id);
             // Stage-qualified: the dispatch samples the depth, so the barrier out
             // of its writers must name the compute stage.
             p.Read(request.Depth, RenderGraph::RGTextureRead::SampledCompute);
@@ -333,7 +323,7 @@ void ShadowReceiverReduce::Record(RenderGraph::RGContext& ctx, ShadowMapRenderFe
 
     uint32_t binding = 0;
     DescriptorType type{};
-    if (Detail::TryGetSet0BindingByName(*pipeline.Meta, "ReceiverBoundsBuffer", binding, type))
+    if (Rendering::TryGetSet0BindingByName(*pipeline.Meta, "ReceiverBoundsBuffer", binding, type))
     {
         DescriptorSetUpdate u{};
         u.binding = binding;
@@ -341,7 +331,7 @@ void ShadowReceiverReduce::Record(RenderGraph::RGContext& ctx, ShadowMapRenderFe
         u.buffers = {slot};
         dev->UpdateDescriptorSet(set0, u);
     }
-    if (Detail::TryGetSet0BindingByName(*pipeline.Meta, "ReceiverReduceParams", binding, type))
+    if (Rendering::TryGetSet0BindingByName(*pipeline.Meta, "ReceiverReduceParams", binding, type))
     {
         DescriptorSetUpdate u{};
         u.binding = binding;

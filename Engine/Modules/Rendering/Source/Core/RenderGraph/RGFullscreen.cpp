@@ -1,9 +1,10 @@
 #include "Rendering/Core/RenderGraph/RGFullscreen.h"
 
 #include "Rendering/Core/CommandList.h"
-#include "Rendering/Core/PipelineTypes.h"
-#include "Rendering/Materials/ShaderLayoutShape.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
+#include "Logger/Logger.h"
 
 #include <algorithm>
 #include <array>
@@ -118,7 +119,7 @@ void RecordFullscreenPass(RGContext& context, const FullscreenPassData& data)
 }
 
 void DeclareFullscreenPass(RGPassBuilder& pass, FullscreenPassData& data,
-                           RGTexture target, const RGAttachmentOps& attachmentOps)
+                           RGTexture target, RGTexture secondTarget, const RGAttachmentOps& attachmentOps)
 {
     for (uint32_t index = 0; index < data.TextureCount; ++index)
         if (data.Textures[index].Texture.IsValid())
@@ -130,6 +131,8 @@ void DeclareFullscreenPass(RGPassBuilder& pass, FullscreenPassData& data,
             pass.Read(buffer.Declare, buffer.IsStorage ? RGBufferRead::Storage : RGBufferRead::Uniform);
     }
     pass.AttachColor(0, target, attachmentOps);
+    if (secondTarget.IsValid())
+        pass.AttachColor(1, secondTarget, attachmentOps);
     pass.Prepare([data = &data](RGPrepareContext& context) { return PrepareFullscreenPass(context, *data); });
 }
 } // namespace
@@ -137,23 +140,53 @@ void DeclareFullscreenPass(RGPassBuilder& pass, FullscreenPassData& data,
 RGPass AddFullscreenPass(RGFrame& frame, const RGFullscreenDesc& desc)
 {
     assert(desc.Name && desc.Target.IsValid() && "AddFullscreenPass: name + target required");
-    assert(desc.Textures.size() <= kMaxFullscreenTextureInputs);
-    assert(desc.Buffers.size() <= kMaxFullscreenBufferInputs);
+    if (desc.Textures.size() > kMaxFullscreenTextureInputs ||
+        desc.Buffers.size() > kMaxFullscreenBufferInputs)
+    {
+        Logger::Log::Error("AddFullscreenPass '{}': {} textures and {} buffers exceed the limits of {} textures "
+                           "and {} buffers; no pass was declared",
+                           desc.Name, desc.Textures.size(), desc.Buffers.size(), kMaxFullscreenTextureInputs,
+                           kMaxFullscreenBufferInputs);
+        return {};
+    }
+
+    const RGResourceDesc& targetDesc = frame.Graph().ResourceDesc(desc.Target.Id);
+    if (desc.SecondTarget.IsValid())
+    {
+        const RGResourceDesc& second = frame.Graph().ResourceDesc(desc.SecondTarget.Id);
+        if (second.Width != targetDesc.Width || second.Height != targetDesc.Height ||
+            second.SampleCount != targetDesc.SampleCount)
+        {
+            Logger::Log::Error("AddFullscreenPass '{}': the second target is {}x{} x{} and the target is {}x{} x{}; "
+                               "give both the same size and sample count. The pass is not declared",
+                               desc.Name, second.Width, second.Height, second.SampleCount, targetDesc.Width,
+                               targetDesc.Height, targetDesc.SampleCount);
+            return {};
+        }
+    }
+    const uint32_t width = desc.Width == 0 ? targetDesc.Width : desc.Width;
+    const uint32_t height = desc.Height == 0 ? targetDesc.Height : desc.Height;
+    RGAttachmentOps attachmentOps = desc.Ops;
+    if (attachmentOps.WritesEveryPixel && (width != targetDesc.Width || height != targetDesc.Height))
+    {
+        assert(false && "AddFullscreenPass: WritesEveryPixel needs a viewport that covers the target");
+        attachmentOps.WritesEveryPixel = false;
+    }
 
     FullscreenPassData* data = frame.AllocatePassData<FullscreenPassData>();
-    data->TextureCount = static_cast<uint32_t>(std::min(desc.Textures.size(), data->Textures.size()));
-    data->BufferCount = static_cast<uint32_t>(std::min(desc.Buffers.size(), data->Buffers.size()));
+    data->TextureCount = static_cast<uint32_t>(desc.Textures.size());
+    data->BufferCount = static_cast<uint32_t>(desc.Buffers.size());
     std::copy_n(desc.Textures.begin(), data->TextureCount, data->Textures.begin());
     std::copy_n(desc.Buffers.begin(), data->BufferCount, data->Buffers.begin());
     data->PipelineId = desc.Pipeline;
     data->Layout = desc.Layout;
-    const RGResourceDesc& targetDesc = frame.Graph().ResourceDesc(desc.Target.Id);
-    data->Width = desc.Width == 0 ? targetDesc.Width : desc.Width;
-    data->Height = desc.Height == 0 ? targetDesc.Height : desc.Height;
+    data->Width = width;
+    data->Height = height;
 
     return frame.AddPass(
         desc.Name, desc.Phase,
-        [data, &desc](RGPassBuilder& pass) { DeclareFullscreenPass(pass, *data, desc.Target, desc.Ops); },
+        [data, &desc, attachmentOps](RGPassBuilder& pass)
+        { DeclareFullscreenPass(pass, *data, desc.Target, desc.SecondTarget, attachmentOps); },
         [data](RGContext& context) { RecordFullscreenPass(context, *data); });
 }
 

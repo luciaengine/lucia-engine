@@ -1,0 +1,12 @@
+/* Where SceneViewExposureHintOverlay's notice sits in the Scene View. Its look is the shared notice
+   control's opaque information kind (controls/InspectorNotice/InspectorNotice.css). */
+
+/* Centered along the top of the overlay layer (ViewOverlayLayer.css), never wider than the layer. The
+   sentence wraps beside the buttons, or the buttons go under it in a narrow view. Unlike the layer, the
+   notice takes pointer input for its buttons. */
+.scene-view-exposure-hint {
+	width: 560px;
+	max-width: 100%;
+	margin: 0 0 6px 0;
+	pointer-events: auto;
+}

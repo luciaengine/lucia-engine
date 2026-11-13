@@ -3,6 +3,7 @@
 
 #include "Includes/view_params.glsl"
 #include "Includes/octahedral_normal.glsl"
+#include "Includes/reverse_z.glsl"
 
 layout(push_constant) uniform SssrParams
 {
@@ -51,17 +52,6 @@ vec2 GE_NdcToUv(vec2 ndc)
     return sssr.viewportRect.xy + v * sssr.viewportRect.zw;
 }
 
-// Reverse-Z raw depth (near=1, far=0) -> linear view-space meters. Same formula
-// as Includes/reverse_z.glsl, using the anonymous-block ge_nearFar accessor the
-// SSR passes declare. Edge-stopping on linear Z is uniform with distance, unlike
-// weighting raw depth (which compresses toward the far plane).
-float GE_LinearZ(float rawDepth)
-{
-    float zNear = max(ge_nearFar.x, 1e-5);
-    float zFar = max(ge_nearFar.y, zNear + 1.0);
-    return (zNear * zFar) / max(rawDepth * (zFar - zNear) + zNear, 1e-6);
-}
-
 vec3 GE_ViewPosition(vec2 uv, float rawDepth)
 {
     vec4 p = ge_invProj * vec4(GE_UvToNdc(uv), rawDepth, 1.0);
@@ -78,6 +68,7 @@ vec2 GE_ProjectView(vec3 positionVS, out float rawDepth)
 
 // View.NormalRoughness layout (RGBA16F, written by the forward opaque pass):
 //   .rg = octahedral view-space normal, .b = perceptual roughness, .a = planar reflection coverage.
+// The composite uses the forward pass's separate specular response.
 vec3 GE_DecodeNormalVS(vec4 normalRoughness) { return GE_OctDecode(normalRoughness.rg); }
 float GE_Roughness(vec4 normalRoughness) { return normalRoughness.b; }
 

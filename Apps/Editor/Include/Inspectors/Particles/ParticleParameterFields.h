@@ -1,7 +1,7 @@
 #pragma once
 
 #include "InspectorRegistry.h"
-#include "Particles/ParticleStackDocument.h"
+#include "Particles/ParticleStack/ParticleStackDocument.h"
 
 #include <memory>
 

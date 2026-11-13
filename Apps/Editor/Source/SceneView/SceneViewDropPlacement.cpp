@@ -1,8 +1,5 @@
 #include "SceneView/SceneViewDropPlacement.h"
 
-#include "Assets/AssetPlacementRegistry.h"
-#include "AssetCore/AssetTypes.h"
-#include "Types/StringUtils.h"
 #include "Components/Hierarchy.h"
 #include "Components/Rendering/MeshRenderer.h"
 #include "Components/Transform.h"
@@ -13,7 +10,10 @@
 #include "Mathematics/Ray.h"
 #include "Physics/PhysicsQuery.h"
 #include "PhysicsECS/PhysicsWorldService.h"
-#include "Picking/MeshPickingService.h"
+#include "Picking/ScenePick.h"
+#include "AssetCore/AssetTypes.h"
+#include "Types/PathUtils.h"
+#include "Types/StringUtils.h"
 
 #include <cmath>
 #include <format>
@@ -48,11 +48,11 @@ bool HasDisabledInAncestryOrSelf(ECS::World& world, ECS::EntityHandle entity)
         return true;
     int safety = 64;
     const Parent* p = world.GetComponent<Parent>(entity);
-    while (p && p->parent.IsValid() && safety-- > 0)
+    while (p && p->Entity.IsValid() && safety-- > 0)
     {
-        if (world.GetComponent<ECS::Disabled>(p->parent) != nullptr)
+        if (world.GetComponent<ECS::Disabled>(p->Entity) != nullptr)
             return true;
-        p = world.GetComponent<Parent>(p->parent);
+        p = world.GetComponent<Parent>(p->Entity);
     }
     return false;
 }
@@ -76,29 +76,31 @@ SceneViewDropPoint ResolveSceneViewDropPoint(const Mathematics::Ray3D& cameraRay
     if (auto* phys = PhysicsECS::PhysicsWorldService::TryGet())
     {
         Physics::RayCastQuery q{};
-        q.ray.origin = ray.origin;
-        q.ray.direction = ray.direction;
+        q.origin = WorldPosition::FromVector3(ray.origin);
+        q.direction = ray.direction;
         q.maxDistance = 1.0e6f;
         Physics::RayCastResult hit{};
         if (phys->RayCast(q, hit) && hit.HasHit())
         {
-            point.Position = Vector3(hit.hitPoint.x, hit.hitPoint.y, hit.hitPoint.z);
+            // The drop point is a 32-bit position: the subtraction rounds the exact hit point once.
+            point.Position = hit.hitPoint - WorldPosition{};
             return point;
         }
     }
 
-    // Per-triangle mesh fallback. Drop wherever the cursor hits — no
+    // Per-triangle mesh fallback. Drop wherever the cursor hits - no
     // orientation gating. Matches Godot/Unreal behavior: the user is
     // intentionally aiming at the surface they want to drop on. Future
     // follow-up: optional modifier to align the placed object's up-axis
     // to the hit normal (Unreal's "Surface Snap" feature).
-    Picking::PickOptions pickOpts;
+    Scene::PickOptions pickOpts;
     pickOpts.IncludeTerrain  = true;
+    pickOpts.IncludeBoundsFallback = true; // a renderer with no CPU mesh still takes the drop
     pickOpts.IgnoreEntities  = ignoreEntities;
-    const auto pick = Picking::RaycastScene(ray, world, pickOpts);
+    const auto pick = Picking::PickScene(ray, world, pickOpts);
     if (pick.Hit)
     {
-        point.Position = pick.Best.WorldPosition;
+        point.Position = pick.Best.Point;
         point.OnPendingMesh = pick.Best.MeshBvhPending;
         return point;
     }
@@ -125,10 +127,11 @@ SceneViewDropMesh PickSceneViewDropMesh(const Mathematics::Ray3D& cameraRay,
     ray.origin = cameraRay.origin;
     ray.direction = NormalizeDir(cameraRay.direction);
 
-    Picking::PickOptions pickOpts;
+    Scene::PickOptions pickOpts;
     pickOpts.IncludeTerrain = false;
+    pickOpts.IncludeBoundsFallback = true;
     pickOpts.IgnoreEntities = ignoreEntities;
-    const auto pick = Picking::RaycastScene(ray, world, pickOpts);
+    const auto pick = Picking::PickScene(ray, world, pickOpts);
     SceneViewDropMesh mesh;
     if (!pick.Hit || HasDisabledInAncestryOrSelf(world, pick.Best.Entity))
         return mesh;
@@ -137,37 +140,46 @@ SceneViewDropMesh PickSceneViewDropMesh(const Mathematics::Ray3D& cameraRay,
     return mesh;
 }
 
-bool IsPlacedModelExtension(std::string_view extension)
+bool IsPlacedModelFile(const std::filesystem::path& file)
 {
-    const std::string lower = ToLowerAscii(extension);
-    return lower == ".glb" || lower == ".gltf" || lower == ".obj" || lower == ".fbx";
+    const std::string extension = LowerCaseExtension(file);
+    return extension == ".glb" || extension == ".gltf" || extension == ".obj" || extension == ".fbx";
+}
+
+std::string DescribeUnplaceableFile(const std::filesystem::path& file)
+{
+    const AssetType type = GetAssetTypeFromExtension(file.extension().string());
+    if (type == AssetType::NavigationGrid)
+        return "Navigation Grid files cannot be placed in a scene. Add a Navigation Surface component and "
+               "assign the file to its Authored Cells.";
+    // A model format the drop does not import, or a file of no known type, is named by its extension.
+    if (type == AssetType::Model || type == AssetType::Unknown)
+        return std::format("{} files cannot be placed in a scene.", file.extension().string());
+    return std::format("{} files cannot be placed in a scene.", IdentifierToWords(AssetTypeToString(type)));
 }
 
 std::string DescribeRefusedDrop(std::span<const std::filesystem::path> files)
 {
-    const std::filesystem::path* first = nullptr;
-    for (const auto& file : files)
+    const std::filesystem::path* firstFile = nullptr;
+    for (const std::filesystem::path& file : files)
     {
         if (file.empty())
             continue;
         const AssetType type = GetAssetTypeFromExtension(file.extension().string());
-        if (IsPlacedModelExtension(file.extension().string()) || AssetPlacementRegistry::Get().Find(type) ||
-            type == AssetType::LensFlareDefinition || type == AssetType::Scene)
+        if (IsPlacedModelFile(file) || type == AssetType::Prefab || type == AssetType::LensFlareDefinition)
             return {};
-        if (!first)
-            first = &file;
+        if (!firstFile)
+            firstFile = &file;
     }
-    if (!first)
+    if (!firstFile)
         return "Nothing to drop.";
-    const AssetType type = GetAssetTypeFromExtension(first->extension().string());
-    if (files.size() == 1 && (type == AssetType::Texture || type == AssetType::Material))
-        return {};
-    if (type == AssetType::NavigationGrid)
-        return "Navigation Grid files cannot be placed in a scene. Add a Navigation Surface component and "
-               "assign the file to its Authored Cells.";
-    if (type == AssetType::Model || type == AssetType::Unknown)
-        return std::format("{} files cannot be placed in a scene.", first->extension().string());
-    return std::format("{} files cannot be placed in a scene.", IdentifierToWords(AssetTypeToString(type)));
+    if (files.size() == 1)
+    {
+        const AssetType type = GetAssetTypeFromExtension(firstFile->extension().string());
+        if (type == AssetType::Texture || type == AssetType::Material)
+            return {};
+    }
+    return DescribeUnplaceableFile(*firstFile);
 }
 
 } // namespace GameEngine::Editor

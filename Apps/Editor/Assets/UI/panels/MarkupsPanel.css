@@ -19,12 +19,15 @@
 	border-color: var(--ui_color_border);
 }
 
-/* The selected view owns markups-tab-chosen independently of the button interaction state. */
+/* Every Button carries .button, so the tab rules name it to outrank the shared .button
+   and .button.active rules (0,2,0). */
 .button.markups-tab {
+	padding-left: 8px;
+	padding-right: 8px;
 	opacity: 0.7;
 }
 
-.button.secondary.markups-tab-chosen {
+.button.markups-tab.active {
 	background-color: var(--ui_color_accent_blue);
 	border-color: var(--ui_color_accent_blue);
 	color: var(--ui_color_text_bright);
@@ -96,9 +99,9 @@
 	opacity: 0.5;
 }
 
-/* Activity rows use the theme's primary and secondary list stripe plates. */
+/* Activity rows: a hairline between rows and every other row on a darker plate, so a row that
+   wraps over several lines keeps its edges. */
 .markups-activity-row {
-	background-color: var(--ui_color_list_stripe_primary);
 	align-items: flex-start;
 	padding-top: 4px;
 	padding-bottom: 4px;
@@ -106,8 +109,8 @@
 	border-color: var(--ui_color_border_subtle);
 }
 
-.markups-activity-row-alt {
-	background-color: var(--ui_color_list_stripe_secondary);
+.markups-activity-row.markups-activity-row-alt {
+	background-color: var(--ui_color_bg_plate);
 }
 
 .markups-activity-row:hover {
@@ -186,8 +189,9 @@
 }
 
 /* An entry's kind at a glance, in the Activity tab and the Thread alike: a speech bubble for a
-   comment, a plus for created, a pencil for an edit, a square in the status's color (set per
-   entry) for a status change; every marker takes one 14 px slot, so the text column lines up. */
+   comment, a hollow circle for created, a pencil for an edit, a square in the status's color
+   (set per entry) for a status change; every marker takes one 14 px slot, so the text column
+   lines up. */
 .markup-entry-marker {
 	width: 14px;
 	height: 14px;
@@ -204,11 +208,11 @@
 }
 
 .markup-entry-marker.markup-entry-created {
-	background-image: url("editor:Icons/plus.png");
+	background-image: url("editor:Icons/created.svg");
 }
 
 .markup-entry-marker.markup-entry-edit {
-	background-image: url("editor:Icons/draw_curve.png");
+	background-image: url("editor:Icons/draw_curve.svg");
 }
 
 .markup-entry-marker.markup-entry-status {
@@ -229,7 +233,7 @@
 /* The way back to the status color, beside the color row's swatch: a bare glyph. */
 /* The reset glyph on the theme's icon button (.icon-button sizes and plates it). */
 .markup-inspector-color-reset {
-	background-image: url("editor:Icons/ResetReload.png");
+	background-image: url("editor:Icons/ResetReload.svg");
 	background-size: 14px 14px;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -286,7 +290,7 @@
 	min-height: 20px;
 	padding: 0;
 	flex-shrink: 0;
-	background-image: url("editor:Icons/eye.png");
+	background-image: url("editor:Icons/eye.svg");
 	background-size: 14px 14px;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -394,13 +398,13 @@
 	flex-direction: column;
 }
 
-/* The hint in an empty comment field: the search fields' placeholder look (theme/widgets.css
-   .search-field-with-filter-placeholder), dim and italic. */
+/* The hint in an empty comment field: the text fields' placeholder look
+   (controls/FieldPlaceholder/FieldPlaceholder.css), quiet and italic. */
 .markup-inspector-comment-placeholder {
 	position: absolute;
 	left: 7px;
 	top: 5px;
-	color: var(--ui_color_text_dim);
+	color: var(--ui_color_text_placeholder);
 	font-style: italic;
 	pointer-events: none;
 }
@@ -428,7 +432,7 @@
 
 .markup-inspector-thread-title {
 	padding: 4px 8px;
-	font-weight: 600;
+	font-weight: 500;
 	border-bottom-width: 1px;
 	border-color: var(--ui_color_border_subtle);
 }
@@ -468,15 +472,6 @@
 	white-space: normal;
 }
 
-/* "Created ... · changed ..." under the Tags row. */
-.markup-inspector-history {
-	margin-top: 4px;
-	margin-bottom: 6px;
-	color: var(--ui_color_text_dim);
-	font-size: 12px;
-	white-space: normal;
-}
-
 /* A mark-up's kind (MarkupKind): a box, a sphere or a region, on its panel row and in a region's
    member list. */
 .markup-kind-glyph {
@@ -492,7 +487,7 @@
 }
 
 .markup-kind-glyph.markup-kind-box {
-	background-image: url("editor:Icons/cube.svg");
+	background-image: url("editor:Icons/Cube.svg");
 }
 
 .markup-kind-glyph.markup-kind-sphere {
@@ -523,108 +518,16 @@
 .markup-region-title {
 	margin-top: 8px;
 	padding: 2px 0;
-	font-weight: 600;
+	font-weight: 500;
 }
 
 .markup-region-value {
 	color: var(--ui_color_text_secondary);
 }
 
-.markup-member-group {
-	flex-direction: column;
-	margin-top: 4px;
-	margin-bottom: 6px;
-	border-width: 1px;
-	border-radius: 4px;
-	border-color: var(--ui_color_border_subtle);
-	background-color: var(--ui_color_bg_hover_alt);
-}
-
-.markup-member-heading {
-	padding: 4px 8px;
-	font-weight: 600;
-	border-bottom-width: 1px;
-	border-color: var(--ui_color_border_subtle);
-}
-
-.markup-member-list {
-	flex-direction: column;
-}
-
-/* One mark-up the region may hold: its member checkbox, kind, title, note and Include | Exclude. */
-.markup-member-row {
-	flex-direction: row;
-	align-items: center;
-	gap: 6px;
-	padding: 3px 8px;
-	min-height: 24px;
-}
-
-/* A candidate that is not a member, and a member that was deleted: their titles, by one class. */
-.markup-member-title-out {
-	color: var(--ui_color_text_dim);
-}
-
-.markup-member-title-deleted {
-	color: var(--ui_color_text_disabled);
-}
-
-.markup-member-title {
-	flex-shrink: 1;
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
-
-.markup-member-note {
-	flex-grow: 1;
-	flex-shrink: 1;
-	color: var(--ui_color_text_dim);
-	font-size: 12px;
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
-
-/* The member's mode, two segments; the filled one is the mode, Exclude in amber. */
-.markup-member-mode {
-	flex-direction: row;
-	flex-shrink: 0;
-	margin-left: auto;
-	padding: 2px;
-	gap: 2px;
-	border-radius: 4px;
-	background-color: rgba(0, 0, 0, 0.28);
-}
-
-.markup-member-mode .button {
-	min-width: 52px;
-	margin: 0;
-	border-width: 0;
-	border-style: none;
-	background-color: transparent;
-	background-image: none;
-	color: var(--ui_color_text_dim);
-}
-
-.markup-member-mode .button.active {
-	background-color: rgba(255, 255, 255, 0.16);
-	color: var(--ui_color_text);
-}
-
-.markup-member-mode .button.markup-member-mode-exclude.active {
-	color: var(--ui_color_warning_text);
-}
-
-.markup-member-empty {
-	padding: 4px 8px;
-	color: var(--ui_color_text_dim);
-	font-size: 12px;
-}
-
 /* The Mark-up section's Path block, under its title. */
 .markup-path-heading {
 	margin-top: 6px;
 	padding: 4px 0px;
-	font-weight: 600;
+	font-weight: 500;
 }

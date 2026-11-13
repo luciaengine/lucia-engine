@@ -12,6 +12,7 @@
 namespace GameEngine::MarkupECS
 {
 
+using Mathematics::DistanceToSegment;
 using Mathematics::Vector2;
 
 namespace
@@ -36,7 +37,7 @@ float32 DistanceToRing(const Vector2& p, std::span<const Vector2> ring)
 {
     float32 nearest = std::numeric_limits<float32>::max();
     for (std::size_t i = 0, j = ring.size() - 1; i < ring.size(); j = i++)
-        nearest = std::min(nearest, Mathematics::DistanceToSegment(p, ring[j], ring[i]));
+        nearest = std::min(nearest, DistanceToSegment(p, ring[j], ring[i]));
     return nearest;
 }
 
@@ -193,8 +194,9 @@ Vector2 RegionLabelPoint(std::span<const Vector2> ring)
     return best.Center;
 }
 
-std::vector<Vector2> DecimateRegionRing(std::span<const Vector2> ring)
+std::vector<Vector2> DecimateRegionRing(std::span<const Vector2> ring, std::size_t maxPoints)
 {
+    maxPoints = std::max(maxPoints, kMinRegionKnots);
     std::vector<Vector2> kept(ring.begin(), ring.end());
     if (ring.size() <= kMinRegionKnots)
         return kept;
@@ -210,7 +212,7 @@ std::vector<Vector2> DecimateRegionRing(std::span<const Vector2> ring)
     {
         Spline::SimplifyPolylineIndices(polyline, tolerance, indices);
         indices.pop_back(); // the repeated first point
-        if (indices.size() <= kMaxRegionKnots)
+        if (indices.size() <= maxPoints)
             break;
     }
     kept.clear();

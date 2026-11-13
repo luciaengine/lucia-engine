@@ -80,9 +80,9 @@ void GamepadCameraControllerSystem::Update(ECS::World& world, float32 deltaTime)
     const float dt = std::max(deltaTime, 0.0f);
 
     const float rawMoveX = ApplyDeadzone(m_InputSystem->GetGamepadAxis(0, GamepadAxis::LeftX), kMoveStickDeadzone);
-    const float rawMoveZ = ApplyDeadzone(-m_InputSystem->GetGamepadAxis(0, GamepadAxis::LeftY), kMoveStickDeadzone);
+    const float rawMoveZ = ApplyDeadzone(m_InputSystem->GetGamepadAxis(0, GamepadAxis::LeftY), kMoveStickDeadzone);
     const float lookX = ApplyDeadzone(m_InputSystem->GetGamepadAxis(0, GamepadAxis::RightX), kLookStickDeadzone);
-    const float lookY = ApplyDeadzone(-m_InputSystem->GetGamepadAxis(0, GamepadAxis::RightY), kLookStickDeadzone);
+    const float lookY = ApplyDeadzone(m_InputSystem->GetGamepadAxis(0, GamepadAxis::RightY), kLookStickDeadzone);
     const float leftTrigger = m_InputSystem->GetGamepadAxis(0, GamepadAxis::LeftTrigger);
     const float rightTrigger = m_InputSystem->GetGamepadAxis(0, GamepadAxis::RightTrigger);
     const float rawMoveY = ApplyDeadzone(rightTrigger - leftTrigger, kMoveStickDeadzone);
@@ -104,13 +104,12 @@ void GamepadCameraControllerSystem::Update(ECS::World& world, float32 deltaTime)
 
     bool updated = false;
     world.Query<ECS::Write<Transform>, ECS::Write<WorldTransform>, ECS::Read<GameEngine::Components::Camera>>().Each(
-        [&](ECS::EntityHandle entity, ECS::Writable<Transform> transformRow, ECS::Writable<WorldTransform> worldTransformRow,
-            const GameEngine::Components::Camera&)
+        [&](ECS::EntityHandle entity, ECS::Writable<Transform> transformRow, ECS::Writable<WorldTransform> worldTransformRow, const GameEngine::Components::Camera&)
         {
+            auto& transform = transformRow.Mutable();
+            auto& worldTransform = worldTransformRow.Mutable();
             if (updated)
                 return;
-            Transform& transform = transformRow.Mutable();
-            WorldTransform& worldTransform = worldTransformRow.Mutable();
 
             if (!m_OrientationInitialized)
             {
@@ -118,11 +117,12 @@ void GamepadCameraControllerSystem::Update(ECS::World& world, float32 deltaTime)
                 m_OrientationInitialized = true;
             }
 
-            Vector3 position = transform.GetPosition();
+            Mathematics::WorldPosition position = transform.GetPosition();
             const Vector3 scale = transform.GetScale();
 
             m_YawRadians += lookX * kYawSpeedDegrees * kDegToRad * dt;
-            m_PitchRadians += lookY * kPitchSpeedDegrees * kDegToRad * dt;
+            // A positive pitch about +X tilts the view down, so a right stick pushed up (+Y) lowers the pitch.
+            m_PitchRadians -= lookY * kPitchSpeedDegrees * kDegToRad * dt;
             const float pitchLimit = kPitchLimitDegrees * kDegToRad;
             m_PitchRadians = std::clamp(m_PitchRadians, -pitchLimit, pitchLimit);
 
@@ -136,8 +136,8 @@ void GamepadCameraControllerSystem::Update(ECS::World& world, float32 deltaTime)
             position = position + up * (moveY * kVerticalSpeed * dt);
 
             transform = Transform::FromTRS(position, rotation, scale);
-            for (int i = 0; i < 16; ++i)
-                worldTransform.matrix[i] = transform.matrix[i];
+            worldTransform.Position = transform.Position;
+            worldTransform.Basis = transform.Basis;
             GameEngine::Components::BumpWorldTransform(world, entity, worldTransform);
             updated = true;
         });

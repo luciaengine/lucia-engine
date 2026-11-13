@@ -1,3 +1,4 @@
+#include "Core/ApplicationPaths.h"
 #include "DebugHandlerHelpers.h"
 
 namespace GameEngine
@@ -52,9 +53,9 @@ server.RegisterHandler("get_build_settings", [](const EditorDebugServer::Request
         json result = json::object();
         result["workspaceRoot"] = wsRoot.string();
         result["assetRoot"] = assetRoot.string();
-        result["sdkPath"] = (PathUtils::GetExecutableDirectory() / "SDK").string();
-        result["sdkLibDebugExists"] = std::filesystem::is_directory(PathUtils::GetExecutableDirectory() / "SDK" / "lib" / "Debug");
-        result["sdkLibReleaseExists"] = std::filesystem::is_directory(PathUtils::GetExecutableDirectory() / "SDK" / "lib" / "Release");
+        result["sdkPath"] = (ApplicationPaths::GetExecutableDirectory() / "SDK").string();
+        result["sdkLibDebugExists"] = std::filesystem::is_directory(ApplicationPaths::GetExecutableDirectory() / "SDK" / "lib" / "Debug");
+        result["sdkLibReleaseExists"] = std::filesystem::is_directory(ApplicationPaths::GetExecutableDirectory() / "SDK" / "lib" / "Release");
 
         // Count files in asset root
         int assetFileCount = 0;

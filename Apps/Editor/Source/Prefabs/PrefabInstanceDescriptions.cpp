@@ -1,16 +1,26 @@
 #include "Prefabs/PrefabInstanceDescriptions.h"
 
 #include "Prefabs/PrefabHierarchyRows.h"
+#include "Prefabs/PrefabOverrideRecordsCommand.h"
+#include "UndoRedo/UndoRedoService.h"
 
 #include "ECS/ComponentFieldRegistry.h"
 #include "ECS/Entity.h"
+#include "Scene/SceneSchemaRegistry.h"
 #include "Types/StringUtils.h"
 
 #include <algorithm>
+#include <memory>
+#include <optional>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 namespace GameEngine::Editor
 {
+
+// The name of the records command. The step it joins keeps the name of the edit.
+static constexpr const char* kKeepOverridesLabel = "Keep prefab overrides";
 
 const Scene::PrefabInstanceEntity* DescribedPrefabInstance::Find(ECS::EntityHandle entity) const
 {
@@ -26,14 +36,18 @@ PrefabInstanceDescriptions& PrefabInstanceDescriptions::Get()
     return s_Descriptions;
 }
 
-void PrefabInstanceDescriptions::Track(EditorChangeNotifications& notifications)
+void PrefabInstanceDescriptions::Track(EditorChangeNotifications& notifications, UndoRedoService* undo,
+                                       std::function<bool()> isInPlayMode)
 {
+    m_Undo = undo;
+    m_IsInPlayMode = std::move(isInPlayMode);
     const uint64 channel = notifications.GetChannelId();
     if (std::find(m_TrackedChannels.begin(), m_TrackedChannels.end(), channel) != m_TrackedChannels.end())
         return;
     m_TrackedChannels.push_back(channel);
     notifications.SubscribeComponentChanged(
-        [this](const EditorChangeNotifications::ComponentChangedEvent& change) { OnComponentChanged(change); });
+        [this, &notifications](const EditorChangeNotifications::ComponentChangedEvent& change)
+        { OnComponentChanged(notifications, change); });
     notifications.SubscribeWorldStructureChanged(
         [this](const EditorChangeNotifications::WorldStructureChangedEvent& change) { OnWorldStructureChanged(change); });
 }
@@ -86,15 +100,53 @@ void PrefabInstanceDescriptions::ResetForWorld(const ECS::World& world)
     m_Instances.Clear();
 }
 
-void PrefabInstanceDescriptions::OnComponentChanged(const EditorChangeNotifications::ComponentChangedEvent& change)
+void PrefabInstanceDescriptions::OnComponentChanged(EditorChangeNotifications& notifications,
+                                                    const EditorChangeNotifications::ComponentChangedEvent& change)
 {
     // A drag reports each step; the description changes with the commit.
     if (change.kind == EditorChangeNotifications::ChangeKind::Preview || !change.world ||
         change.world->GetWorldId() != m_WorldId)
         return;
     const ECS::EntityHandle root = FindOutermostInstanceRoot(*change.world, change.entity);
-    if (root.IsValid())
-        m_Instances.Erase(root.id);
+    if (!root.IsValid())
+        return;
+    // Stop restores the edit world, so a record written in Play would outlive the value it marks.
+    const bool inPlay = m_IsInPlayMode && m_IsInPlayMode();
+    if (change.kind == EditorChangeNotifications::ChangeKind::Commit && !inPlay)
+        RecordOverridesBeforeEdit(notifications, change, root);
+    m_Instances.Erase(root.id);
+}
+
+void PrefabInstanceDescriptions::RecordOverridesBeforeEdit(EditorChangeNotifications& notifications,
+                                                           const EditorChangeNotifications::ComponentChangedEvent& change,
+                                                           ECS::EntityHandle root)
+{
+    const bool ownsMutation = HistoryMutationScope::IsActiveFor(m_Undo);
+    if (HistoryMutationScope::IsRestoringFor(m_Undo))
+        return;
+    const uint64 action = ownsMutation ? m_Undo->GetPendingActionId() : 0;
+    if (ownsMutation && action == 0)
+        return;
+    if (m_Epoch != change.world->GetEntityHandleEpoch())
+        return;
+    const Entry* entry = m_Instances.Find(root.id);
+    if (!entry || entry->Root != root || !entry->Description)
+        return;
+    const Scene::PrefabInstanceEntity* described = entry->Description->Find(change.entity);
+    const std::string_view token = Scene::SceneSchemaRegistry::SchemaTokenForComponentType(change.componentType);
+    if (!described || token.empty())
+        return;
+    std::vector<Scene::PrefabOverrideTarget> targets;
+    for (const Scene::PrefabOverride& prefabOverride : described->Overrides)
+        if (prefabOverride.Kind == Scene::PrefabOverrideKind::Field && prefabOverride.Component == token)
+            targets.push_back({change.entity, prefabOverride});
+    const std::vector<Scene::PrefabOverrideTarget> added = Scene::RecordPrefabOverrides(*change.world, targets);
+    if (added.empty() || !m_Undo)
+        return;
+    auto command = std::make_unique<PrefabOverrideRecordsCommand>(
+        *change.world, &notifications, added, std::span<const Scene::PrefabOverrideTarget>(), kKeepOverridesLabel);
+    if (action != 0)
+        m_Undo->AppendConsequence(action, std::move(command));
 }
 
 void PrefabInstanceDescriptions::OnWorldStructureChanged(
@@ -105,7 +157,7 @@ void PrefabInstanceDescriptions::OnWorldStructureChanged(
         m_Instances.Clear();
 }
 
-std::string_view ReflectedFieldForSceneKey(ECS::ComponentTypeId typeId, std::string_view key)
+std::string_view InspectorFieldForSceneKey(ECS::ComponentTypeId typeId, std::string_view key)
 {
     std::string_view arrayField;
     for (const ECS::FieldInfo& field : ECS::ComponentFieldRegistry::Get(typeId))
@@ -117,19 +169,7 @@ std::string_view ReflectedFieldForSceneKey(ECS::ComponentTypeId typeId, std::str
         if (indexFollows && field.Name.size() > arrayField.size())
             arrayField = field.Name;
     }
-    return arrayField;
-}
-
-void NotifyPrefabIdentityChanges(EditorChangeNotifications* notifications, ECS::World& world,
-                                 std::span<const Scene::PrefabIdentityBefore> members)
-{
-    NotifyWorldStructure(notifications, &world);
-    if (!notifications)
-        return;
-    for (const Scene::PrefabIdentityBefore& member : members)
-        if (world.IsValid(member.Entity))
-            notifications->NotifyComponentChanged(
-                {&world, member.Entity, 0, EditorChangeNotifications::ChangeKind::InspectorRebuild});
+    return arrayField.empty() ? key : arrayField;
 }
 
 } // namespace GameEngine::Editor

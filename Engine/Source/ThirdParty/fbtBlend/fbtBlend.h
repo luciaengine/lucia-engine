@@ -834,6 +834,8 @@ protected:
 	mutable FBThash m_hash;
 
 public:
+	fbtCharHashKey& operator=(const fbtCharHashKey&) = default;
+
 	fbtCharHashKey() : m_key(0), m_hash(FBT_NPOS) {}
 	fbtCharHashKey(char* k) : m_key(k), m_hash(FBT_NPOS) {hash();}
 	fbtCharHashKey(const char* k) : m_key(const_cast<char*>(k)), m_hash(FBT_NPOS) {}
@@ -889,6 +891,8 @@ protected:
 	mutable FBThash m_hash;
 
 public:
+	fbtSizeHashKey& operator=(const fbtSizeHashKey&) = default;
+
 	fbtSizeHashKey()
         : m_key(0), m_hash(FBT_NPOS)
 	{
@@ -1444,6 +1448,8 @@ template <const FBTuint16 L>
 class fbtFixedString
 {
 public:
+	fbtFixedString& operator=(const fbtFixedString&) = default;
+
 	typedef char Pointer[L+1];
 
 
@@ -3459,7 +3465,7 @@ int fbtFile::reflect(const char* path, const int mode, const fbtEndian& /*endian
 	//fs->writef("%s%c%c%i", m_uhid, cp, ce, m_version);
 	char header[12] = {0,0,0,0,0,0,0,0,0,0,0,0};
 	char version[33];
-	sprintf(version, "%i",m_version);
+	snprintf(version, sizeof(version), "%i", m_version);
 	
 	strncpy(&header[0], m_uhid, 7); // 7 first bytes of header
 	header[7] = cp;					// 8th byte = pointer size
@@ -3869,7 +3875,7 @@ FBTsize fbtGzStream::write(const void* src, FBTsize nr)
 {
 	if (m_mode == fbtStream::SM_READ) return -1;
 	if (!src || !m_handle) return -1;
-    return gzwrite((gzFile)m_handle,(const voidp) src, nr);
+    return gzwrite((gzFile)m_handle, src, nr);
 }
 
 

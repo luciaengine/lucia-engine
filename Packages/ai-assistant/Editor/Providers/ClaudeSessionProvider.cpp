@@ -4,6 +4,8 @@
 #include "CliSessionFiles.h"
 #include "JsonFields.h"
 
+#include "Types/StringUtils.h"
+
 #include <array>
 #include <charconv>
 #include <optional>
@@ -46,6 +48,18 @@ std::optional<Version> ParseVersion(std::string_view text)
 std::string VersionText(const Version& version)
 {
     return std::to_string(version[0]) + "." + std::to_string(version[1]) + "." + std::to_string(version[2]);
+}
+
+// The folders the Claude desktop app installs to: the per-user installer, the Microsoft
+// Store package and the macOS bundle. Matched as path fragments, either separator.
+bool IsUnderDesktopAppFolder(std::string_view executable)
+{
+    constexpr std::string_view kFolders[] = {"AnthropicClaude", "WindowsApps\\Claude", "WindowsApps/Claude",
+                                             "Claude.app/"};
+    for (std::string_view folder : kFolders)
+        if (ContainsIgnoreCase(executable, folder))
+            return true;
+    return false;
 }
 } // namespace
 
@@ -92,6 +106,11 @@ std::vector<std::string> ClaudeSessionProvider::TurnArguments(const AgentTurnReq
         arguments.push_back("--model");
         arguments.push_back(request.Model);
     }
+    if (!request.Effort.empty())
+    {
+        arguments.push_back("--effort");
+        arguments.push_back(request.Effort);
+    }
     if (!request.SystemPrompt.empty())
     {
         arguments.push_back("--append-system-prompt");
@@ -113,6 +132,8 @@ void ClaudeSessionProvider::ReadLine(std::string_view line, TurnState& turn) con
         const std::string sessionId = JsonFields::String(record, "session_id");
         if (!sessionId.empty())
             turn.Events.OnSessionId(sessionId);
+        // The model the alias or the user's own setting resolved to.
+        turn.Result.Model = JsonFields::String(record, "model");
     }
     else if (type == "stream_event")
     {
@@ -149,10 +170,11 @@ void ClaudeSessionProvider::ReadToolCalls(const nlohmann::json& record, TurnStat
 }
 
 // The first line of a tool_result's text (a string, or the first text block), at most
-// kMaxErrorBytes; empty when it carries no text.
+// kMaxErrorBytes and then ending in an ellipsis; empty when it carries no text. The call's
+// row shows two lines of it and its Details the whole.
 std::string ClaudeSessionProvider::FirstErrorLine(const nlohmann::json& toolResult)
 {
-    constexpr size_t kMaxErrorBytes = 200;
+    constexpr size_t kMaxErrorBytes = 4096;
     const auto content = toolResult.find("content");
     std::string text;
     if (content != toolResult.end() && content->is_string())
@@ -171,6 +193,7 @@ std::string ClaudeSessionProvider::FirstErrorLine(const nlohmann::json& toolResu
         while (end > 0 && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80)
             --end;
         text.resize(end);
+        text += "\xE2\x80\xA6";
     }
     return text;
 }
@@ -240,27 +263,89 @@ void ClaudeSessionProvider::ReadResult(const nlohmann::json& record, TurnState& 
     }
 }
 
-CliSessionProvider::LoginStatus ClaudeSessionProvider::CheckLogin(const CancelToken& cancel) const
+SetupStep ClaudeSessionProvider::CheckLogin(const CancelToken& cancel, SetupSurface surface) const
 {
     const CommandOutput output = RunCommand({"auth", "status"}, cancel);
+    SetupStep step{.Name = "Logged in", .State = SetupStepState::Failed, .Program = Executable(),
+                   .ExitCode = output.ExitCode};
     if (!output.Failure.empty())
-        return {false, output.Failure};
+    {
+        step.Found = output.Failure + ".";
+        step.Fix = ProgramFix(surface);
+        return step;
+    }
 
+    // Never FirstOutput: the status holds the account's email and organization.
     const nlohmann::json status = nlohmann::json::parse(output.Stdout, nullptr, false);
     if (!status.is_object())
-        return {false, "Could not read `claude auth status` (exit code " + std::to_string(output.ExitCode) + ")."};
+    {
+        step.Found =
+            "\"claude auth status\" printed no login status (exit code " + std::to_string(output.ExitCode) + ").";
+        step.Fix = "Run \"claude auth status\" in a terminal to see the error.";
+        return step;
+    }
 
     const auto loggedIn = status.find("loggedIn");
     if (loggedIn == status.end() || !loggedIn->is_boolean() || !loggedIn->get<bool>())
-        return {false, "Not logged in: run `claude auth login`."};
+    {
+        step.Found = "Not logged in.";
+        step.Fix = LoginFix("claude auth login", surface);
+        return step;
+    }
 
     // Only the method: the same output holds the account's email and organization.
     std::string method = JsonFields::String(status, "authMethod");
     if (method.empty())
         method = "unknown";
-    if (method == "claude.ai")
-        return {true, "Logged in (claude.ai)"};
-    return {true, "Logged in (" + method + "): turns are billed through that credential"};
+    step.State = SetupStepState::Passed;
+    step.Found = method == "claude.ai" ? "Logged in (claude.ai)."
+                                       : "Logged in (" + method + "): turns are billed through that credential.";
+    return step;
+}
+
+SetupStep ClaudeSessionProvider::CheckProgram(const CancelToken& cancel, SetupSurface surface) const
+{
+    constexpr std::string_view kCommand = "claude --version";
+    const CommandOutput output = RunCommand({"--version"}, cancel);
+    if (std::optional<SetupStep> failed = FailedProgramStep(output, kCommand, surface))
+        return *std::move(failed);
+
+    const std::optional<Version> version = ParseVersion(output.FirstOutput);
+    if (!version)
+        return NotTheCliStep(output, surface);
+
+    SetupStep step{.Name = "Claude Code", .State = SetupStepState::Passed, .Program = Executable(),
+                   .ExitCode = output.ExitCode,
+                   .FirstOutput = output.FirstOutput};
+    step.Found = "Claude Code " + VersionText(*version) + " at " + Executable() + ".";
+    const Version minimum = {kMinimumVersion[0], kMinimumVersion[1], kMinimumVersion[2]};
+    if (*version < minimum)
+    {
+        step.State = SetupStepState::Failed;
+        step.Fix = "Claude Code " + VersionText(minimum) + " or later is required: run \"claude update\".";
+    }
+    return step;
+}
+
+std::string ClaudeSessionProvider::ProgramToPick() const
+{
+#if defined(_WIN32)
+    return "Claude Code's claude.exe";
+#else
+    return "Claude Code's claude program";
+#endif
+}
+
+std::string ClaudeSessionProvider::InstallSource() const
+{
+    return "install it from claude.com/claude-code";
+}
+
+std::string ClaudeSessionProvider::DesktopAppHint(bool printedNothing) const
+{
+    if (!printedNothing && !IsUnderDesktopAppFolder(Executable()))
+        return {};
+    return "The Claude desktop app is a different program: it cannot run the editor's AI Assistant.";
 }
 
 CliSessionList ClaudeSessionProvider::ListSessions(const CancelToken& cancel) const
@@ -269,36 +354,30 @@ CliSessionList ClaudeSessionProvider::ListSessions(const CancelToken& cancel) co
                                                cancel);
 }
 
-std::string ClaudeSessionProvider::CheckReadiness(const CancelToken& cancel) const
-{
-    const CommandOutput output = RunCommand({"--version"}, cancel);
-    if (!output.Failure.empty())
-        return output.Failure;
-
-    const Version minimum = {kMinimumVersion[0], kMinimumVersion[1], kMinimumVersion[2]};
-    const std::optional<Version> version = ParseVersion(output.Stdout);
-    if (!version)
-        return "Could not read the Claude Code version from `claude --version`.";
-    if (*version < minimum)
-        return "Claude Code " + VersionText(minimum) + " or later is required (found " + VersionText(*version) +
-               "): run `claude update`.";
-
-    const LoginStatus login = CheckLogin(cancel);
-    return login.LoggedIn ? std::string() : login.Text;
-}
-
 void ClaudeSessionProvider::ReadTextDelta(const nlohmann::json& record, TurnState& turn)
 {
     const nlohmann::json& event = JsonFields::Object(record, "event");
-    if (JsonFields::String(event, "type") != "content_block_delta")
-        return;
-    const nlohmann::json& delta = JsonFields::Object(event, "delta");
-    if (JsonFields::String(delta, "type") != "text_delta")
-        return;
-    const std::string text = JsonFields::String(delta, "text");
-    if (text.empty())
-        return;
-    turn.Result.Text += text;
-    turn.Events.OnTextDelta(text);
+    const std::string type = JsonFields::String(event, "type");
+    std::string text;
+    if (type == "content_block_start")
+    {
+        // A text block after another (the text after a tool call, in the same message or the
+        // next) is a paragraph of its own.
+        const nlohmann::json& block = JsonFields::Object(event, "content_block");
+        if (JsonFields::String(block, "type") != "text")
+            return;
+        turn.TextBlocks.BeginBlock();
+        text = JsonFields::String(block, "text");
+    }
+    else if (type == "content_block_delta")
+    {
+        const nlohmann::json& delta = JsonFields::Object(event, "delta");
+        if (JsonFields::String(delta, "type") != "text_delta")
+            return;
+        text = JsonFields::String(delta, "text");
+    }
+    const std::string_view appended = turn.TextBlocks.Append(turn.Result.Text, text);
+    if (!appended.empty())
+        turn.Events.OnTextDelta(appended);
 }
 } // namespace GameEngine

@@ -12,7 +12,7 @@
 #include "Engine/Rendering/TextureService.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/RendererProfile.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
 #include "StagedTestPaths.h"

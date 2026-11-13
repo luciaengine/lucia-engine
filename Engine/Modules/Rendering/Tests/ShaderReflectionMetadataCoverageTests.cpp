@@ -7,7 +7,7 @@
 #include <string>
 #include <string_view>
 
-#include "Rendering/Materials/ShaderReflection.h"
+#include "Rendering/Materials/Shader/ShaderReflection.h"
 #include "Rendering/Common/Utils.h"
 #include "TestUtils.h"
 #include "PushBlockMslLayout.h"

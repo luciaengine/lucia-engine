@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "Panels/ScriptDiagnosticsByAssembly.h"
+#include "Panels/Script/ScriptDiagnosticsByAssembly.h"
 
 #include <string>
 #include <vector>

@@ -7,8 +7,8 @@
 #include "Thumbnails/FolderBakeReport.h"
 #include "Thumbnails/TextureThumbnailHandler.h"
 #include "Thumbnails/ThumbnailService.h"
-#include "Thumbnails/ModelThumbnailHandler.h"
-#include "Thumbnails/ModelThumbnailCachePolicy.h"
+#include "Thumbnails/ModelThumbnail/ModelThumbnailHandler.h"
+#include "Thumbnails/ModelThumbnail/ModelThumbnailCachePolicy.h"
 
 #include "JobSystem/WorkStealingThreadPool.h"
 

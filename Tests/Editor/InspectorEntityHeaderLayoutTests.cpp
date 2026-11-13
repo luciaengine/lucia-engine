@@ -34,8 +34,8 @@ TEST(InspectorEntityHeaderLayout, HistoryButtonsShareOneRowAndKeepTheHeaderCompa
     std::unique_ptr<GameEngine::UIElement> trailing;
     ASSERT_TRUE(GameEngine::UIParsing::XMLParser::ParseLayoutFromString(layout, trailing, "EntityHeader.uxml"));
     ASSERT_NE(trailing, nullptr);
-    auto* back = dynamic_cast<GameEngine::Button*>(trailing->FindById("inspector-history-back"));
-    auto* forward = dynamic_cast<GameEngine::Button*>(trailing->FindById("inspector-history-forward"));
+    auto* back = dynamic_cast<GameEngine::Button*>(trailing->FindById(GameEngine::HashStringId("inspector-history-back")));
+    auto* forward = dynamic_cast<GameEngine::Button*>(trailing->FindById(GameEngine::HashStringId("inspector-history-forward")));
     ASSERT_NE(back, nullptr);
     ASSERT_NE(forward, nullptr);
     header->AddChild(std::move(trailing));

@@ -7,8 +7,8 @@
 // the controller an EditorContext or a preview host, so every call below is
 // unreachable and a no-op at link time is sufficient.
 
-#include "ShaderGraph/MaterialGraphPreviewHost.h"
-#include "ShaderGraph/MaterialGraphPreviews.h"
+#include "ShaderGraph/MaterialGraph/MaterialGraphPreviewHost.h"
+#include "ShaderGraph/MaterialGraph/MaterialGraphPreviews.h"
 
 namespace GameEngine
 {

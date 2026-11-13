@@ -23,8 +23,6 @@
 #include "UI/UIManager.h"
 #include "UIRgTestHarness.h"
 
-#include "TestTempDir.h"
-
 // The rule-cache validator (CSSParser::*RuleCacheValidation* hooks) is compiled
 // only where GE_DEBUG_INSTRUMENTATION is 1 (CSSParser.h guards them with it).
 // These tests reference those hooks directly, so the whole suite follows the
@@ -41,10 +39,10 @@ namespace
 
 std::filesystem::path MakeTempCssPath(const char* prefix)
 {
-    static const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("ui_rule_cache_validator")};
+    const auto tmpDir = std::filesystem::temp_directory_path();
     const uint64_t t = (uint64_t)std::chrono::high_resolution_clock::now().time_since_epoch().count();
     const uint64_t tid = (uint64_t)std::hash<std::thread::id>{}(std::this_thread::get_id());
-    return directory.Path() / (std::string(prefix) + "_" + std::to_string(t) + "_" + std::to_string(tid) + ".css");
+    return tmpDir / (std::string(prefix) + "_" + std::to_string(t) + "_" + std::to_string(tid) + ".css");
 }
 
 // Test fixture: enables the validator for the duration of each test and
@@ -117,8 +115,8 @@ TEST_F(RuleCacheValidatorTest, AdjacentSiblingComboInvalidatesFollowingSibling)
 
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
-    UIElement* a = r->FindById("a");
-    UIElement* b = r->FindById("b");
+    UIElement* a = r->FindById("a"_sid);
+    UIElement* b = r->FindById("b"_sid);
     ASSERT_NE(a, nullptr);
     ASSERT_NE(b, nullptr);
 
@@ -169,7 +167,7 @@ TEST_F(RuleCacheValidatorTest, GeneralSiblingComboInvalidatesAllFollowingSibling
     ResetDivergences();
 
     UIElement* r = ui.GetRootElement();
-    UIElement* a = r->FindById("a");
+    UIElement* a = r->FindById("a"_sid);
     ASSERT_NE(a, nullptr);
 
     a->AddClass("marker");
@@ -215,7 +213,7 @@ TEST_F(RuleCacheValidatorTest, EmptyPseudoFlipOnChildInsertRemove)
     ResetDivergences();
 
     UIElement* r = ui.GetRootElement();
-    UIElement* box = r->FindById("box");
+    UIElement* box = r->FindById("box"_sid);
     ASSERT_NE(box, nullptr);
 
     // Mutation 1: insert a child → :empty no longer matches #box.
@@ -280,7 +278,7 @@ TEST_F(RuleCacheValidatorTest, NthChildInvalidatesOnSiblingInsert)
     EXPECT_EQ(Divergences(), 0u) << "Inserting a sibling at index 0 shifts :nth-child for every following sibling";
 
     // Mutation: remove the inserted sibling. Indices shift back.
-    UIElement* inserted = r->FindById("c0");
+    UIElement* inserted = r->FindById("c0"_sid);
     ASSERT_NE(inserted, nullptr);
     r->RemoveChild(inserted);
     ui.Update(0.0f, /*interactive=*/true);

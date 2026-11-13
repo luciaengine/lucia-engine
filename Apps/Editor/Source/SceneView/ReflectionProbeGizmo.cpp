@@ -8,7 +8,6 @@
 #include "Core/Engine.h"
 #include "ECS/Components.h"
 #include "ECS/ECS.h"
-#include "ECS/ECSTemplates.h"
 #include "ECS/Query.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/Vector3.h"
@@ -40,12 +39,11 @@ struct ProbeVolume
 ProbeVolume ExtractProbeVolume(const WorldTransform& xf)
 {
     ProbeVolume volume{};
-    const float* m = xf.matrix;
-    volume.Center = Vector3(m[12], m[13], m[14]);
+    volume.Center = xf.GetPosition() - Mathematics::WorldPosition{};
 
-    const Vector3 ax(m[0], m[1], m[2]);
-    const Vector3 ay(m[4], m[5], m[6]);
-    const Vector3 az(m[8], m[9], m[10]);
+    const Vector3 ax(xf.Basis[0]);
+    const Vector3 ay(xf.Basis[1]);
+    const Vector3 az(xf.Basis[2]);
     const float sx = ax.Length();
     const float sy = ay.Length();
     const float sz = az.Length();
@@ -158,31 +156,7 @@ void ReflectionProbeGizmo::Render(GizmoRenderContext& context)
                   const Color blendColor(0.28f, 0.78f, 1.0f, isSelected ? 0.32f : 0.22f);
                   const Vector3& halfExtents = volume.HalfExtents;
 
-                  if (probe.InfluenceShape == Components::ReflectionProbeInfluenceShape::Box)
-                  {
-                      ProbeVolume projection = volume;
-                      const float scale[3] = {probe.ProjectionScaleX, probe.ProjectionScaleY, probe.ProjectionScaleZ};
-                      for (int i = 0; i < 3; ++i)
-                      {
-                          projection.Center[i] += volume.AxisX[i] * probe.ProjectionOffsetX +
-                              volume.AxisY[i] * probe.ProjectionOffsetY + volume.AxisZ[i] * probe.ProjectionOffsetZ;
-                          projection.HalfExtents[i] *= std::max(0.001f, scale[i]);
-                      }
-                      const auto transform = MakeVolumeTransform(projection);
-                      const Vector3 lo = {-projection.HalfExtents[0], -projection.HalfExtents[1], -projection.HalfExtents[2]};
-                      const Vector3 hi = {projection.HalfExtents[0], projection.HalfExtents[1], projection.HalfExtents[2]};
-                      const Color projectionColor = {1.0f, 0.65f, 0.18f, 0.7f};
-                      context.DrawTransformedWireBox(lo, hi, transform, projectionColor, 1.0f);
-                  }
-                  const Vector3 origin = {
-                      pos[0] + volume.AxisX[0] * probe.OriginOffsetX + volume.AxisY[0] * probe.OriginOffsetY + volume.AxisZ[0] * probe.OriginOffsetZ,
-                      pos[1] + volume.AxisX[1] * probe.OriginOffsetX + volume.AxisY[1] * probe.OriginOffsetY + volume.AxisZ[1] * probe.OriginOffsetZ,
-                      pos[2] + volume.AxisX[2] * probe.OriginOffsetX + volume.AxisY[2] * probe.OriginOffsetY + volume.AxisZ[2] * probe.OriginOffsetZ};
-                  const Color originColor = {1.0f, 0.82f, 0.28f, 0.86f};
-                  context.DrawColoredLine(pos, origin, originColor, 1.2f);
-                  context.DrawWireSphere(origin, iconRadius * 0.45f, originColor, 1.0f);
-                  const bool boxInfluence = probe.InfluenceShape == Components::ReflectionProbeInfluenceShape::Box;
-                  if (boxInfluence)
+                  if (probe.BoxProjection)
                   {
                       const Mathematics::Matrix4x4 volumeTransform = MakeVolumeTransform(volume);
                       const Vector3 boxMin = halfExtents * -1.0f;
@@ -206,6 +180,17 @@ void ReflectionProbeGizmo::Render(GizmoRenderContext& context)
                           }
                       }
 
+                      const Vector3 origin = pos + volume.AxisX * probe.OriginOffsetX +
+                                             volume.AxisY * probe.OriginOffsetY +
+                                             volume.AxisZ * probe.OriginOffsetZ;
+                      if (std::fabs(probe.OriginOffsetX) > 0.0001f ||
+                          std::fabs(probe.OriginOffsetY) > 0.0001f ||
+                          std::fabs(probe.OriginOffsetZ) > 0.0001f)
+                      {
+                          const Color originColor(1.0f, 0.82f, 0.28f, 0.86f);
+                          context.DrawColoredLine(pos, origin, originColor, 1.2f);
+                          context.DrawWireSphere(origin, iconRadius * 0.45f, originColor, 1.0f);
+                      }
                       return;
                   }
 

@@ -30,9 +30,6 @@ public:
         prefs.TryGetDouble("tooltip.hoverResetDelaySeconds", resetDelay);
         prefs.TryGetBool("tooltip.enabled", m_Enabled);
         prefs.TryGetBool("tooltip.middleMouseShow", m_MiddleMouseShow);
-        int64_t arrowCol = 0;
-        if (prefs.TryGetInt64("tooltip.arrowColor", arrowCol))
-            m_ArrowColor = static_cast<uint32_t>(arrowCol);
 
         m_HoverDelaySeconds = static_cast<float>(delay);
         m_HoverResetDelaySeconds = static_cast<float>(resetDelay);
@@ -49,7 +46,6 @@ public:
         prefs.SetDouble("tooltip.hoverResetDelaySeconds", static_cast<double>(m_HoverResetDelaySeconds));
         prefs.SetBool("tooltip.enabled", m_Enabled);
         prefs.SetBool("tooltip.middleMouseShow", m_MiddleMouseShow);
-        prefs.SetInt64("tooltip.arrowColor", static_cast<int64_t>(m_ArrowColor));
 
         prefs.Save(&err);
     }
@@ -58,7 +54,6 @@ public:
     float GetHoverResetDelaySeconds() const { return m_HoverResetDelaySeconds; }
     bool GetEnabled()                 const { return m_Enabled; }
     bool GetMiddleMouseShow()         const { return m_MiddleMouseShow; }
-    uint32_t GetArrowColor()          const { return m_ArrowColor; }
 
     void SetHoverDelaySeconds(float value)
     {
@@ -86,12 +81,6 @@ public:
         Save();
     }
 
-    void SetArrowColor(uint32_t argb)
-    {
-        m_ArrowColor = argb;
-        Save();
-    }
-
 private:
     TooltipSettings() { Load(); }
 
@@ -116,7 +105,6 @@ private:
     float    m_HoverResetDelaySeconds = 0.5f;
     bool     m_Enabled         = true;
     bool     m_MiddleMouseShow = false;
-    uint32_t m_ArrowColor      = 0xFF000000u; // black default
 };
 
 } // namespace Editor

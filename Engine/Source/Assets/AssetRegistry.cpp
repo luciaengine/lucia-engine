@@ -17,7 +17,6 @@
 #include "AssetDatabase/RedirectChain.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Logger/Logger.h"
-#include "Types/Fnv1a.h"
 #include "Types/StringUtils.h"
 #include <algorithm>
 #include <cassert>
@@ -153,6 +152,15 @@ static std::string MakeRootPrefixKey(const std::filesystem::path& root)
     return PathMapKey(NormalizePathForMap(root)) + '/';
 }
 
+// The path with every symlink resolved, or the path unchanged when it cannot be
+// resolved. One walk of the path on the filesystem.
+static std::filesystem::path ResolveThroughLinks(const std::filesystem::path& path)
+{
+    std::error_code ec;
+    std::filesystem::path resolved = std::filesystem::weakly_canonical(path, ec);
+    return ec ? path : resolved;
+}
+
 // The overlap policy's second key for a root: the prefix key of the path with
 // every symlink resolved, so two spellings of one directory nest under
 // RootPrefixKeysNest even when their lexical keys share no prefix. Compare-only
@@ -161,9 +169,7 @@ static std::string MakeRootPrefixKey(const std::filesystem::path& root)
 // resolved.
 static std::string MakeCanonicalRootPrefixKey(const std::filesystem::path& root)
 {
-    std::error_code ec;
-    const std::filesystem::path resolved = std::filesystem::weakly_canonical(root, ec);
-    return MakeRootPrefixKey(ec ? root : resolved);
+    return MakeRootPrefixKey(ResolveThroughLinks(root));
 }
 
 static std::string NormalizeRegistryAssetSourceAlias(std::string_view alias)
@@ -422,14 +428,26 @@ static std::string ComputePartialHash_Fnv1a64(const std::filesystem::path& path,
     if (!in.IsOpen())
         return {};
 
+    uint64_t h = 14695981039346656037ULL;
+    auto fnvStep = [&](uint8_t b)
+    {
+        h ^= static_cast<uint64_t>(b);
+        h *= 1099511628211ULL;
+    };
+
     // Mix in file size (helps distinguish small collisions).
-    uint64_t h = Hashing::Fnv1a64Value(Hashing::kFnv1a64OffsetBasis, sizeForMix);
+    for (int i = 0; i < 8; ++i)
+    {
+        fnvStep(static_cast<uint8_t>((sizeForMix >> (i * 8)) & 0xFF));
+    }
 
     std::vector<uint8_t> buf;
     buf.resize(maxBytes);
     const int64_t got = in.Read(buf.data(), buf.size());
-    if (got > 0)
-        h = Hashing::Fnv1a64(buf.data(), static_cast<size_t>(got), h);
+    for (int64_t i = 0; i < got; ++i)
+    {
+        fnvStep(buf[static_cast<size_t>(i)]);
+    }
 
     return HashToHex(h);
 }
@@ -467,8 +485,18 @@ static std::string ComputeSparseHash_Fnv1a64(const std::filesystem::path& path, 
         usize > kSampleSize ? usize - kSampleSize : 0
     };
 
+    uint64_t h = 14695981039346656037ULL;
+    auto fnvStep = [&](uint8_t b)
+    {
+        h ^= static_cast<uint64_t>(b);
+        h *= 1099511628211ULL;
+    };
+
     // Mix in file size first.
-    uint64_t h = Hashing::Fnv1a64Value(Hashing::kFnv1a64OffsetBasis, static_cast<uint64_t>(fileSize));
+    for (int i = 0; i < 8; ++i)
+    {
+        fnvStep(static_cast<uint8_t>((static_cast<uint64_t>(fileSize) >> (i * 8)) & 0xFF));
+    }
 
     // Mix in offset marker to distinguish samples at different positions.
     std::vector<uint8_t> buf(kSampleSize);
@@ -476,15 +504,20 @@ static std::string ComputeSparseHash_Fnv1a64(const std::filesystem::path& path, 
     {
         const size_t offset = offsets[sampleIdx];
 
-        // Mix in offset as a position marker, always 8 bytes wide.
-        h = Hashing::Fnv1a64Value(h, static_cast<uint64_t>(offset));
+        // Mix in offset as a position marker.
+        for (int i = 0; i < 8; ++i)
+        {
+            fnvStep(static_cast<uint8_t>((offset >> (i * 8)) & 0xFF));
+        }
 
         if (!in.SeekTo(offset))
             continue;
 
         const int64_t got = in.Read(buf.data(), kSampleSize);
-        if (got > 0)
-            h = Hashing::Fnv1a64(buf.data(), static_cast<size_t>(got), h);
+        for (int64_t i = 0; i < got; ++i)
+        {
+            fnvStep(buf[static_cast<size_t>(i)]);
+        }
     }
 
     return HashToHex(h);
@@ -636,6 +669,23 @@ const AssetRegistry::SourceEntry* AssetRegistry::FindSourceForPath(const std::fi
     return const_cast<AssetRegistry*>(this)->FindSourceForPath(absPath);
 }
 
+std::optional<std::filesystem::path> AssetRegistry::TryResolveIntoSource(const std::filesystem::path& path) const
+{
+    // A relative path joins the project root, so its spelling is under a source root.
+    if (path.empty() || path.is_relative())
+        return std::nullopt;
+    {
+        std::shared_lock<std::shared_mutex> readLock(m_RegistryMutex);
+        if (FindSourceForPath(path))
+            return std::nullopt;
+    }
+    std::filesystem::path resolved = ResolveThroughLinks(path).lexically_normal();
+    std::shared_lock<std::shared_mutex> readLock(m_RegistryMutex);
+    if (!FindSourceForPath(resolved))
+        return std::nullopt;
+    return resolved;
+}
+
 bool AssetRegistry::TryBuildSourceScopedKeyForPath(const std::filesystem::path& absPath,
                                                     std::string& outKey,
                                                     GUID& outNamespaceGuid,
@@ -702,7 +752,7 @@ bool AssetRegistry::SetupSourceStore(SourceEntry& entry)
 
     const bool dbExisted = std::filesystem::exists(entry.DbFile, ec);
 
-    auto store = GameEngine::MakeUnique<AssetDatabase::AssetStore_TextJsonl>();
+    auto store = GameEngine::MakeUnique<AssetDatabase::AssetStore_TextJsonl>(m_JobSystem);
     // A store file other processes can reach gets an advisory lock beside it
     // before anything can write through it (see AssetSourceDesc).
     if (entry.StoreIsSharedAcrossProcesses)
@@ -754,7 +804,7 @@ bool AssetRegistry::SetupSourceStore(SourceEntry& entry)
         std::error_code manifestEc;
         if (std::filesystem::exists(entry.IdentityManifestFile, manifestEc))
         {
-            AssetDatabase::AssetStore_TextJsonl manifest;
+            AssetDatabase::AssetStore_TextJsonl manifest(m_JobSystem);
             std::string err;
             if (!manifest.LoadFromFile(entry.IdentityManifestFile, &err))
             {
@@ -943,7 +993,7 @@ bool AssetRegistry::SetupSourceStore(SourceEntry& entry)
             std::vector<AssetDatabase::AssetSourceSnapshotRecord> records;
             std::vector<AssetDatabase::AssetSourceSnapshotDirectory> directories;
             std::string err;
-            if (AssetDatabase::AssetSourceSnapshot::Load(snapshotFile, snapshotMountRoot,
+            if (AssetDatabase::AssetSourceSnapshot::Load(snapshotFile, m_JobSystem, snapshotMountRoot,
                                                          snapshotIgnoreSig, records, directories, &err))
             {
                 // Belt-and-braces: the format already encodes a hash of the
@@ -2380,6 +2430,11 @@ bool AssetRegistry::RebindSource(std::string_view sourceAlias, const AssetSource
     newEntry->CanonicalRootPrefixKey = MakeCanonicalRootPrefixKey(newEntry->Root);
     ResolveSourceDbPaths(newDesc, *newEntry);
     newEntry->IgnoreRules = AssetIgnoreRules::LoadForAssetRoot(newEntry->Root);
+    {
+        std::lock_guard<std::mutex> logLock(m_MissingAssetLogMutex);
+        m_IgnoredFolderWarnings.clear();
+        m_IgnoredFolderByParent.clear();
+    }
 
     const bool setupOk = SetupSourceStore(*newEntry);
     if (setupOk && !newEntry->DerivedIdentity && newEntry->HasStore())
@@ -3200,6 +3255,23 @@ AssetType AssetRegistry::ClassifyAssetType(const std::filesystem::path& path) co
         GetCompoundExtensionFromPath(normPath.string()));
 }
 
+std::optional<AssetIgnoreRules::IgnoredFolder> AssetRegistry::FindIgnoredFolderCached(
+    const AssetIgnoreRules& rules, std::string_view canonicalRel, const std::filesystem::path& projectRoot)
+{
+    const size_t lastSlash = canonicalRel.find_last_of('/');
+    const std::string parent(canonicalRel.substr(0, lastSlash == std::string_view::npos ? 0 : lastSlash));
+    {
+        std::lock_guard<std::mutex> logLock(m_MissingAssetLogMutex);
+        const auto cached = m_IgnoredFolderByParent.find(parent);
+        if (cached != m_IgnoredFolderByParent.end())
+            return cached->second;
+    }
+    std::optional<AssetIgnoreRules::IgnoredFolder> ignoredFolder = rules.FindIgnoredFolder(canonicalRel, projectRoot);
+    std::lock_guard<std::mutex> logLock(m_MissingAssetLogMutex);
+    m_IgnoredFolderByParent.emplace(parent, ignoredFolder);
+    return ignoredFolder;
+}
+
 bool AssetRegistry::RegisterAsset(const std::filesystem::path& path)
 {
     // GetAssetRoot() takes a brief shared_lock + returns a copy, so the
@@ -3267,6 +3339,11 @@ bool AssetRegistry::RegisterAsset(const std::filesystem::path& path)
         }
     }
 
+    // A path that reaches a source root through a symbolic link registers under
+    // its resolved spelling, so both spellings name one asset.
+    if (const std::optional<std::filesystem::path> resolved = TryResolveIntoSource(spelledPath))
+        return RegisterAsset(*resolved);
+
     // Directories are not assets; skip to avoid file_size() and other file-only operations.
     if (std::filesystem::is_directory(normPath))
     {
@@ -3284,6 +3361,19 @@ bool AssetRegistry::RegisterAsset(const std::filesystem::path& path)
             {
                 std::shared_lock<std::shared_mutex> readLock(m_RegistryMutex);
                 rules = ProjectIgnoreRules();
+            }
+            const std::optional<AssetIgnoreRules::IgnoredFolder> ignoredFolder =
+                FindIgnoredFolderCached(rules, canonicalRel, projectRoot);
+            if (ignoredFolder)
+            {
+                // A user sees the folder on disk, so the first skipped file says why.
+                const std::string folder = ignoredFolder->Folder.generic_string();
+                std::lock_guard<std::mutex> logLock(m_MissingAssetLogMutex);
+                if (m_IgnoredFolderWarnings.insert(folder).second)
+                    Logger::Log::Warning("Files in {} are not registered as assets: {}. Rename or move the folder "
+                                         "to register them.",
+                                         folder, ignoredFolder->Reason);
+                return false;
             }
             if (rules.ShouldIgnoreCanonicalRelativePath(canonicalRel))
             {
@@ -3842,6 +3932,9 @@ bool AssetRegistry::RegisterAsset(const std::filesystem::path& path, std::string
     {
         return RegisterAsset(path);
     }
+
+    if (const std::optional<std::filesystem::path> resolved = TryResolveIntoSource(path))
+        return RegisterAsset(*resolved, preferredSourceAlias);
 
     // Ensure the asset is registered (may create it with a project GUID first).
     if (!RegisterAsset(path))
@@ -5410,30 +5503,34 @@ bool AssetRegistry::TryGetAssetMetadata(const GUID& guid, AssetMetadata& outMeta
 
 bool AssetRegistry::TryGetAssetMetadata(const std::filesystem::path& path, AssetMetadata& outMetadata) const
 {
-    std::shared_lock<std::shared_mutex> readLock(m_RegistryMutex);
-    const std::filesystem::path normPath = NormalizePathForMap(
-        path.is_relative() ? (ProjectRoot() / path) : path);
-    const GUID* guid = FindPathGuidLocked(PathMapKey(normPath));
-    if (!guid)
     {
-        return false;
+        std::shared_lock<std::shared_mutex> readLock(m_RegistryMutex);
+        const std::filesystem::path normPath = NormalizePathForMap(
+            path.is_relative() ? (ProjectRoot() / path) : path);
+        if (const GUID* guid = FindPathGuidLocked(PathMapKey(normPath)))
+        {
+            const AssetMetadata* md = FindAssetLocked(*guid);
+            if (!md)
+                return false;
+            outMetadata = *md; // copy to stable output
+            return true;
+        }
     }
-    const AssetMetadata* md = FindAssetLocked(*guid);
-    if (!md)
-    {
-        return false;
-    }
-    outMetadata = *md; // copy to stable output
-    return true;
+    const std::optional<std::filesystem::path> resolved = TryResolveIntoSource(path);
+    return resolved && TryGetAssetMetadata(*resolved, outMetadata);
 }
 
 GUID AssetRegistry::GetAssetGUID(const std::filesystem::path& path) const
 {
-    std::shared_lock<std::shared_mutex> readLock(m_RegistryMutex);
-    const std::filesystem::path normPath = NormalizePathForMap(
-        path.is_relative() ? (ProjectRoot() / path) : path);
-    const GUID* guid = FindPathGuidLocked(PathMapKey(normPath));
-    return guid ? *guid : GUID::Null();
+    {
+        std::shared_lock<std::shared_mutex> readLock(m_RegistryMutex);
+        const std::filesystem::path normPath = NormalizePathForMap(
+            path.is_relative() ? (ProjectRoot() / path) : path);
+        if (const GUID* guid = FindPathGuidLocked(PathMapKey(normPath)))
+            return *guid;
+    }
+    const std::optional<std::filesystem::path> resolved = TryResolveIntoSource(path);
+    return resolved ? GetAssetGUID(*resolved) : GUID::Null();
 }
 
 GUID AssetRegistry::GetOrCreateAssetGUID(const std::filesystem::path& path)
@@ -5509,6 +5606,10 @@ GUID AssetRegistry::GetOrCreateAssetGUID(const std::filesystem::path& path)
         }
     }
 
+    // A path that reaches a source root through a symbolic link mints under its resolved spelling.
+    if (const std::optional<std::filesystem::path> resolved = TryResolveIntoSource(path))
+        return GetOrCreateAssetGUID(*resolved);
+
     // S10 atomic claim: every random mint is arbitrated under the writer
     // lock, so concurrent first registrations of one path (direct
     // RegisterAsset, scan staging workers, dependency extraction) converge
@@ -5574,10 +5675,15 @@ bool AssetRegistry::IsAssetRegistered(const GUID& guid) const
 
 bool AssetRegistry::IsAssetRegistered(const std::filesystem::path& path) const
 {
-    std::shared_lock<std::shared_mutex> readLock(m_RegistryMutex);
-    const std::filesystem::path normPath = NormalizePathForMap(
-        path.is_relative() ? (ProjectRoot() / path) : path);
-    return FindPathGuidLocked(PathMapKey(normPath)) != nullptr;
+    {
+        std::shared_lock<std::shared_mutex> readLock(m_RegistryMutex);
+        const std::filesystem::path normPath = NormalizePathForMap(
+            path.is_relative() ? (ProjectRoot() / path) : path);
+        if (FindPathGuidLocked(PathMapKey(normPath)) != nullptr)
+            return true;
+    }
+    const std::optional<std::filesystem::path> resolved = TryResolveIntoSource(path);
+    return resolved && IsAssetRegistered(*resolved);
 }
 
 size_t AssetRegistry::GetAssetCount() const
@@ -5633,12 +5739,10 @@ GUID AssetRegistry::ResolveGuid(const GUID& guid) const
     // "project" alias regardless of mount kind — so this store IS the manifest
     // store in the Player, and the manifest's redirect records resolve here. No
     // package-specific branch is needed.
-    AssetDatabase::IAssetStore* store = nullptr;
-    {
-        std::shared_lock<std::shared_mutex> readLock(m_RegistryMutex);
-        store = ProjectStore();
-    }
-
+    // The shared lock is held across the chase: the scene read calls this on a worker, and
+    // UnregisterSource and RebindSource take the unique lock before they destroy the store.
+    std::shared_lock<std::shared_mutex> readLock(m_RegistryMutex);
+    AssetDatabase::IAssetStore* store = ProjectStore();
     if (!store)
         return guid;
 
@@ -5971,6 +6075,95 @@ Vector<AssetRegistry::MissingAssetInfo> AssetRegistry::GetMissingAssets() const
     }
 
     return out;
+}
+
+bool AssetRegistry::TryRelinkAssetPath(const GUID& guid, const std::filesystem::path& newPath)
+{
+    if (guid.IsNull() || newPath.empty())
+    {
+        return false;
+    }
+
+    const std::filesystem::path projectRoot = GetAssetRoot();
+    const std::filesystem::path normNew = NormalizePathForMap(
+        newPath.is_relative() ? (projectRoot / newPath) : newPath);
+
+    std::error_code ec;
+    if (!std::filesystem::exists(normNew, ec) || !std::filesystem::is_regular_file(normNew, ec))
+    {
+        return false;
+    }
+
+    AssetDatabase::IAssetStore* store = nullptr;
+    AssetDatabase::IAssetDbCache* cache = nullptr;
+    std::filesystem::path assetRoot;
+    {
+        std::shared_lock<std::shared_mutex> readLock(m_RegistryMutex);
+        store = ProjectStore();
+        cache = ProjectCache();
+        assetRoot = ProjectRoot();
+    }
+
+    if (!store)
+    {
+        return false;
+    }
+
+    std::string canonicalRel;
+    if (!AssetPaths::TryMakeCanonicalRelativePath(assetRoot, normNew, canonicalRel))
+    {
+        canonicalRel = AssetDatabase::AssetStore_TextJsonl::NormalizeCanonicalPath(normNew.generic_string());
+    }
+
+    AssetDatabase::AssetRecord rec{};
+    if (!store->TryGetAsset(guid, rec))
+    {
+        rec.guid = guid;
+    }
+    rec.path = canonicalRel;
+    if (!IsRecognizedAssetType(rec.type))
+    {
+        rec.type = AssetType::Unknown;
+    }
+    const AssetType inferredType = ClassifyAssetType(normNew);
+    if (inferredType != AssetType::Unknown)
+    {
+        rec.type = inferredType;
+        rec.typeId = AssetTypeToString(inferredType);
+    }
+    rec.missing = false;
+
+    (void)store->UpsertAsset(rec, nullptr);
+    (void)store->MarkMissing(guid, false, nullptr);
+    if (auto pinnedDirty = ProjectSourcePinned())
+        pinnedDirty->StoreDirty.store(true, std::memory_order_relaxed);
+
+    if (cache)
+    {
+        (void)cache->UpsertAsset(rec, nullptr);
+
+        int64_t size = 0;
+        int64_t mtime = 0;
+        if (TryGetFileStats(normNew, size, mtime))
+        {
+            const std::string fileId = ReadFileIdentity(normNew).ToString();
+            std::string hash;
+            if (size <= (256 * 1024))
+            {
+                hash = ComputePartialHash_Fnv1a64(normNew, 64 * 1024, static_cast<uint64_t>(size));
+            }
+            else
+            {
+                // For large files, use sparse sampling for future reconciliation.
+                hash = ComputeSparseHash_Fnv1a64(normNew, size);
+            }
+            (void)cache->UpdateFileFingerprint(guid, mtime, size, hash, fileId, nullptr);
+        }
+    }
+
+    // Register/update in-memory metadata entry for the relinked asset.
+    (void)RegisterAsset(normNew);
+    return true;
 }
 
 // ============================================================================
@@ -6391,14 +6584,11 @@ static bool FixupTextFileReplaceGuid(const std::filesystem::path& path,
                 }
             }
 
-            std::string repl = hadDash ? to.ToString() : to.ToCompactString();
+            const std::string repl = hadDash ? to.ToString() : to.ToCompactString();
             if (anyUpper)
-            {
-                std::transform(repl.begin(), repl.end(), repl.begin(), [](unsigned char c)
-                               { return static_cast<char>(std::toupper(c)); });
-            }
-
-            out.append(repl);
+                out.append(ToUpperAscii(repl));
+            else
+                out.append(repl);
             outChanged = true;
         }
         else
@@ -7420,6 +7610,10 @@ void AssetRegistry::ScanDirectory(const std::filesystem::path& directory, bool r
     }
 
     Logger::Log::Debug("Scanning directory: {}", directory.string());
+    {
+        std::lock_guard<std::mutex> logLock(m_MissingAssetLogMutex);
+        m_IgnoredFolderByParent.clear();
+    }
 
     // Use ignore rules rooted at the directory being scanned. If scanning the primary asset root,
     // include any <AssetRoot>/.assetignore overrides; otherwise fall back to defaults.
@@ -7492,6 +7686,24 @@ std::future<size_t> AssetRegistry::ScanDirectoryAsync(const std::filesystem::pat
     }
 
     return coordinator->ScanDirectoryAsync(directory, recursive);
+}
+
+std::future<bool> AssetRegistry::LoadAssetMetadataAsync(const std::filesystem::path& assetPath)
+{
+    // Metadata lives in the authoritative store + derived cache (no sidecar files),
+    // so a metadata "load" is just ensuring the asset is registered and present
+    // in the store.
+    std::promise<bool> promise;
+    promise.set_value(RegisterAsset(assetPath));
+    return promise.get_future();
+}
+
+std::future<bool> AssetRegistry::SaveAssetMetadataAsync(const AssetMetadata& metadata)
+{
+    // Saving metadata is now a store upsert; the on-disk flush happens later (or on shutdown).
+    std::promise<bool> promise;
+    promise.set_value(SaveAssetMetadata(metadata));
+    return promise.get_future();
 }
 
 bool AssetRegistry::SaveToFile(const std::filesystem::path& path)
@@ -7612,7 +7824,7 @@ void AssetRegistry::TickPersistence()
     // stalls on database writes. Uses flushInProgress to prevent concurrent
     // flushes on the same source.
     auto submitAsyncFlush = [this](SourceEntry* src, AssetDatabase::IAssetStore* store,
-                                    std::filesystem::path dbFile, bool isProject) {
+                                    std::filesystem::path dbFile) {
         // Atomic claim: only one thread proceeds if multiple ticks see dirty=true
         // before any flush starts.
         bool expected = false;
@@ -7628,7 +7840,7 @@ void AssetRegistry::TickPersistence()
 
         if (m_JobSystem)
         {
-            m_JobSystem->Submit([src, store, dbFile = std::move(dbFile), alias, isProject]() {
+            m_JobSystem->Submit([src, store, dbFile = std::move(dbFile), alias]() {
                 FlushClaimRelease release{src->FlushInProgress};
                 std::string err;
                 // Never park a job worker on another process's write lock: the
@@ -7676,7 +7888,7 @@ void AssetRegistry::TickPersistence()
 
             if (store && !dbFile.empty())
             {
-                submitAsyncFlush(m_ProjectSource.get(), store, std::move(dbFile), true);
+                submitAsyncFlush(m_ProjectSource.get(), store, std::move(dbFile));
             }
         }
     }
@@ -7723,7 +7935,7 @@ void AssetRegistry::TickPersistence()
             std::filesystem::path dbFile = src->DbFile;
             if (store && !dbFile.empty())
             {
-                submitAsyncFlush(src, store, std::move(dbFile), false);
+                submitAsyncFlush(src, store, std::move(dbFile));
             }
         }
     }
@@ -7733,7 +7945,7 @@ bool AssetRegistry::LoadFromFile(const std::filesystem::path& path)
 {
     const std::filesystem::path filePath = path.empty() ? ProjectDbFile() : path;
 
-    auto newStore = GameEngine::MakeUnique<AssetDatabase::AssetStore_TextJsonl>();
+    auto newStore = GameEngine::MakeUnique<AssetDatabase::AssetStore_TextJsonl>(m_JobSystem);
     std::string err;
     if (!newStore->LoadFromFile(filePath, &err))
     {
@@ -8001,12 +8213,32 @@ AssetImportSettingsOrigin AssetRegistry::GetImportSettingsOrigin(
 
     const SourceEntry* found = FindSourceForPath(normPath);
     if (!found)
-        return origin;
+    {
+        readLock.unlock();
+        const std::optional<std::filesystem::path> resolved = TryResolveIntoSource(assetPath);
+        return resolved ? GetImportSettingsOrigin(*resolved) : origin;
+    }
 
     origin.SourceAlias = found->Alias;
     origin.Writable = found != m_ProjectSource.get() && SourceAcceptsMetaWrites(found);
     return origin;
 }
+
+namespace
+{
+
+// Sets `key` to `*value`, or removes it when `value` is null, in the store and then in its cache mirror.
+bool WriteKeyValue(AssetDatabase::IAssetStore& store, AssetDatabase::IAssetDbCache* cache, const GUID& guid,
+                   const std::string& key, const std::string* value)
+{
+    if (!(value ? store.SetKeyValue(guid, key, *value, nullptr) : store.RemoveKeyValue(guid, key, nullptr)))
+        return false;
+    if (cache)
+        (void)(value ? cache->SetKeyValue(guid, key, *value, nullptr) : cache->RemoveKeyValue(guid, key, nullptr));
+    return true;
+}
+
+} // namespace
 
 bool AssetRegistry::TryGetMetaValue(const std::filesystem::path& assetPath,
                                     const std::string& key,
@@ -8055,7 +8287,10 @@ bool AssetRegistry::TryGetMetaValue(const std::filesystem::path& assetPath,
             }
         }
         if (!npStore)
-            return false;
+        {
+            const std::optional<std::filesystem::path> resolved = TryResolveIntoSource(assetPath);
+            return resolved && TryGetMetaValue(*resolved, key, outValue);
+        }
         std::string npCanonicalRel;
         if (npRoot.empty() || !AssetPaths::TryMakeCanonicalRelativePath(npRoot, normPath, npCanonicalRel) || npCanonicalRel.empty())
             return false;
@@ -8079,10 +8314,26 @@ bool AssetRegistry::SetMetaValue(const std::filesystem::path& assetPath,
                                  const std::string& key,
                                  const std::string& value)
 {
+    return WriteMetaValue(assetPath, key, &value);
+}
+
+bool AssetRegistry::RemoveMetaValue(const std::filesystem::path& assetPath, const std::string& key)
+{
+    return WriteMetaValue(assetPath, key, nullptr);
+}
+
+bool AssetRegistry::WriteMetaValue(const std::filesystem::path& assetPath,
+                                   const std::string& key,
+                                   const std::string* value)
+{
     if (assetPath.empty() || key.empty())
     {
         return false;
     }
+
+    // Resolve a linked spelling once, before the calls below look the path up.
+    if (const std::optional<std::filesystem::path> resolved = TryResolveIntoSource(assetPath))
+        return WriteMetaValue(*resolved, key, value);
 
     // Ensure the asset has an identity in the store.
     if (!RegisterAsset(assetPath))
@@ -8165,27 +8416,18 @@ bool AssetRegistry::SetMetaValue(const std::filesystem::path& assetPath,
         rec.missing = false;
         (void)npStore->UpsertAsset(rec, nullptr);
 
-        if (!npStore->SetKeyValue(guid, key, value, nullptr))
+        if (!WriteKeyValue(*npStore, npCache, guid, key, value))
             return false;
         npSrc->StoreDirty.store(true, std::memory_order_relaxed);
-        if (npCache)
-        {
-            (void)npCache->SetKeyValue(guid, key, value, nullptr);
-        }
         return true;
     }
 
-    if (!store->SetKeyValue(guid, key, value, nullptr))
+    if (!WriteKeyValue(*store, cache, guid, key, value))
     {
         return false;
     }
     if (auto pinnedDirty = ProjectSourcePinned())
         pinnedDirty->StoreDirty.store(true, std::memory_order_relaxed);
-
-    if (cache)
-    {
-        (void)cache->SetKeyValue(guid, key, value, nullptr);
-    }
 
     return true;
 }

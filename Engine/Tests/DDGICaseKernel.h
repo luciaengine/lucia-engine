@@ -8,7 +8,7 @@
 #include "StagedTestPaths.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 
 #include <array>
 #include <cstring>

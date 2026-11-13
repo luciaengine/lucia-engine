@@ -1,5 +1,4 @@
 #include "Panels/GraphPanel.h"
-#include "Types/Fnv1a.h"
 #include "Platform/SystemMetrics.h"
 #include "AssetCore/SharedFileRead.h"
 #include "Assets/AssetManager.h"
@@ -7,10 +6,11 @@
 #include "Panels/SaveSceneChangesModal.h"
 #include "EditorContext.h"
 #include "Graph/GraphModel.h"
+#include "Graph/GraphPanelFactory.h"
 #include "Graph/GraphTypeRegistry.h"
-#include "Graph/GraphNodeRegistry.h"
+#include "Graph/GraphNode/GraphNodeRegistry.h"
 #include "Graph/GraphKindChrome.h"
-#include "Graph/GraphNodeIcons.h"
+#include "Graph/GraphNode/GraphNodeIcons.h"
 #include "Graph/GraphSubgraphStore.h"
 #include "Graph/GraphNest.h"
 #include "Graph/GraphTransitionStore.h"
@@ -34,6 +34,7 @@
 #include "UI/Controls/ScrollView.h"
 #include "UI/Controls/TextField.h"
 #include "UI/Controls/Toggle.h"
+#include "Types/StringUtils.h"
 #include <string_view>
 #include "EditorContextMenu/UIContextMenu.h"
 #include "UI/PanelSearchBar.h"
@@ -46,7 +47,6 @@
 #include "UI/StyleProperties.h"
 #include "Panels/SettingsPanel.h"
 #include "UI/UIEvents.h"
-#include "Scheduler/Scheduler.h"
 #include "Logger/Logger.h"
 #include "Platform/Shell.h"
 #include <algorithm>
@@ -58,6 +58,7 @@
 #include <iomanip>
 #include <memory>
 #include <limits>
+#include <span>
 #include <sstream>
 #include <string>
 #include <unordered_set>
@@ -66,6 +67,23 @@
 namespace GameEngine {
 
 namespace {
+
+// True when a node parameter that holds an asset GUID names a GUID in `assets`.
+bool NodeReferencesAnyAsset(const Graph::Node& node, std::string_view kindId, std::span<const GUID> assets)
+{
+    const NodeTypeMeta* meta = GraphNodeRegistry::Get().FindNodeMeta(kindId, node.TypeId);
+    if (!meta)
+        return false;
+    for (const NodeParamSpec& spec : meta->Parameters)
+    {
+        if (spec.AssetReference == AssetType::Unknown)
+            continue;
+        const GUID referenced(node.Parameters.GetString(spec.Id, ""));
+        if (!referenced.IsNull() && std::find(assets.begin(), assets.end(), referenced) != assets.end())
+            return true;
+    }
+    return false;
+}
 
 constexpr float kNodePaletteCollapsedHeight = 48.f;
 constexpr float kNodePaletteWidth = 220.f;
@@ -249,27 +267,28 @@ public:
                          std::vector<std::uint8_t> before,
                          std::vector<std::uint8_t> after,
                          std::string name)
-        : m_Panel(UIElement::MakeWeakRef(panel)), m_Path(panel->GetCurrentGraphPath()),
-          m_Before(std::move(before)), m_After(std::move(after)), m_Name(std::move(name))
+        : m_Panel(panel), m_Before(std::move(before)), m_After(std::move(after)), m_Name(std::move(name))
     {
     }
 
     const char* GetName() const override { return m_Name.c_str(); }
 
-    void Do() override { TryRedo(); }
-    void Undo() override { TryUndo(); }
-    void Redo() override { TryRedo(); }
-    bool TryUndo() override { return Apply(m_Before); }
-    bool TryRedo() override { return Apply(m_After); }
+    void Do() override
+    {
+        if (m_Panel && !m_After.empty())
+            m_Panel->ApplyGraphSnapshot(m_After);
+    }
+
+    void Undo() override
+    {
+        if (m_Panel && !m_Before.empty())
+            m_Panel->ApplyGraphSnapshot(m_Before);
+    }
+
+    void Redo() override { Do(); }
 
 private:
-    bool Apply(const std::vector<std::uint8_t>& bytes)
-    {
-        auto* panel = m_Panel.Get();
-        return panel && panel->GetCurrentGraphPath() == m_Path && panel->ApplyGraphSnapshot(bytes);
-    }
-    UIElement::WeakRef<GraphPanel> m_Panel;
-    std::filesystem::path m_Path;
+    GraphPanel* m_Panel = nullptr;
     std::vector<std::uint8_t> m_Before;
     std::vector<std::uint8_t> m_After;
     std::string m_Name;
@@ -375,6 +394,13 @@ float ApplyVariableFieldDragPrecision(float deltaX, int mods)
     return deltaX;
 }
 
+// A scrub that passed its threshold locks the pointer until the release (UIManager::LockCapturedPointer).
+void LockScrubPointer(UIElement* element)
+{
+    if (UIManager* owner = element->GetOwnerManager())
+        owner->LockCapturedPointer();
+}
+
 class VariableFloatField final : public FloatField {
 public:
     VariableFloatField()
@@ -401,6 +427,13 @@ public:
                 if (e.Button != 0 || (!m_ScrubPending && !m_Scrubbing))
                     return;
                 EndScrub();
+                e.Stop();
+            });
+            editor->RegisterEventHandler(kEventMouseCancel, [this](UIEvent& e)
+            {
+                if (!m_ScrubPending && !m_Scrubbing)
+                    return;
+                CancelScrub();
                 e.Stop();
             });
         }
@@ -439,7 +472,10 @@ private:
             return;
 
         if (!m_Scrubbing)
+        {
             m_SuppressTextFocus = true;
+            LockScrubPointer(this);
+        }
         m_Scrubbing = true;
         const int mods = GetVariableFieldModifierKeys(this);
         const float adjustedDeltaX = ApplyVariableFieldDragPrecision(deltaX, mods);
@@ -472,6 +508,22 @@ private:
             FloatField::OnFocusChanged(true);
             SelectAll();
         }
+    }
+
+    // Escape or another button during the scrub: the value goes back to where
+    // the scrub started, committed through the same value-changed path.
+    void CancelScrub()
+    {
+        const bool wasScrubbing = m_Scrubbing;
+        m_ScrubPending = false;
+        m_Scrubbing = false;
+        m_SuppressTextFocus = false;
+        SetFocusable(m_FocusableBeforeScrub);
+        if (!wasScrubbing)
+            return;
+        SetValue(m_ScrubStartValue);
+        FloatField::OnFocusChanged(false);
+        NotifyValueChanged();
     }
 
     void OnFocusChanged(bool focused) override
@@ -535,6 +587,11 @@ private:
             EndScrub();
             e.Stop();
         }
+        else if (e.Id == kEventMouseCancel && (m_ScrubPending || m_Scrubbing))
+        {
+            CancelScrub();
+            e.Stop();
+        }
     }
 };
 
@@ -564,6 +621,13 @@ public:
                 if (e.Button != 0 || (!m_ScrubPending && !m_Scrubbing))
                     return;
                 EndScrub();
+                e.Stop();
+            });
+            editor->RegisterEventHandler(kEventMouseCancel, [this](UIEvent& e)
+            {
+                if (!m_ScrubPending && !m_Scrubbing)
+                    return;
+                CancelScrub();
                 e.Stop();
             });
         }
@@ -602,7 +666,10 @@ private:
             return;
 
         if (!m_Scrubbing)
+        {
             m_SuppressTextFocus = true;
+            LockScrubPointer(this);
+        }
         m_Scrubbing = true;
         const int mods = GetVariableFieldModifierKeys(this);
         const float adjustedDeltaX = ApplyVariableFieldDragPrecision(deltaX, mods);
@@ -632,6 +699,22 @@ private:
             IntField::OnFocusChanged(true);
             SelectAll();
         }
+    }
+
+    // Escape or another button during the scrub: the value goes back to where
+    // the scrub started, committed through the same value-changed path.
+    void CancelScrub()
+    {
+        const bool wasScrubbing = m_Scrubbing;
+        m_ScrubPending = false;
+        m_Scrubbing = false;
+        m_SuppressTextFocus = false;
+        SetFocusable(m_FocusableBeforeScrub);
+        if (!wasScrubbing)
+            return;
+        SetValue(m_ScrubStartValue);
+        IntField::OnFocusChanged(false);
+        NotifyValueChanged();
     }
 
     void OnFocusChanged(bool focused) override
@@ -693,6 +776,11 @@ private:
         if (e.Id == kEventMouseUp && (m_ScrubPending || m_Scrubbing))
         {
             EndScrub();
+            e.Stop();
+        }
+        else if (e.Id == kEventMouseCancel && (m_ScrubPending || m_Scrubbing))
+        {
+            CancelScrub();
             e.Stop();
         }
     }
@@ -776,7 +864,7 @@ void StyleGraphVariableColorSwatch(UIElement* swatch, uint32_t argb)
 {
     if (!swatch)
         return;
-    swatch->Overrides()
+    swatch->Style()
         .Set(Style::Width, StyleLength::Px(20.0f))
         .Set(Style::Height, StyleLength::Px(20.0f))
         .Set(Style::MinWidth, StyleLength::Px(20.0f))
@@ -793,10 +881,7 @@ std::string NormalizeGraphVariableValue(const std::string& type, const std::stri
     const std::string normalized = NormalizeGraphVariableType(type);
     if (normalized == "bool")
     {
-        std::string lower = TrimCopy(value);
-        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
-            return static_cast<char>(std::tolower(c));
-        });
+        const std::string lower = ToLowerAscii(TrimCopy(value));
         return (lower == "true" || lower == "1" || lower == "yes" || lower == "on") ? "true" : "false";
     }
     if (normalized == "int")
@@ -867,14 +952,6 @@ bool LoadGraphModelFromPath(const std::filesystem::path& path, Graph::Model& out
         return false;
     GraphNodeRegistry::Get().HydrateGraphModelPorts(outModel);
     return true;
-}
-
-std::string LowerAsciiCopy(std::string value)
-{
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    return value;
 }
 
 } // namespace
@@ -970,6 +1047,9 @@ GraphPanel::~GraphPanel()
     if (g_InspectorGraphPanel == this)
         g_InspectorGraphPanel = nullptr;
     g_LiveGraphPanels.erase(this);
+    // FilesChanged and the queued rebind both run on this thread, so no call is in flight here.
+    m_AssetFilesRebind.Cancel();
+    m_AssetFilesSubscription.Reset();
     if (m_PaletteSearchField && m_PaletteSearchField->GetParent())
         EditorSearchBars::UnregisterFocusTarget(m_PaletteSearchField->GetParent());
     if (m_VariablesSearchField && m_VariablesSearchField->GetParent())
@@ -1022,7 +1102,49 @@ void GraphPanel::SetContext(const EditorContext* ctx)
         m_Canvas->SetAssetServices(
             m_Context && m_Context->Assets ? &m_Context->Assets->GetRegistry() : nullptr,
             m_Context ? m_Context->Thumbnails : nullptr);
+    SubscribeAssetFiles();
     Notify(GraphPanelEvent::ContextChanged);
+}
+
+void GraphPanel::SubscribeAssetFiles()
+{
+    m_AssetFilesRebind.Cancel();
+    m_AssetFilesSubscription.Reset();
+    if (!m_Context || !m_Context->Assets)
+        return;
+    m_AssetFilesRebind = UI::UiCoalescedPost(GetPostHandle(), [this]() {
+        if (m_Canvas)
+            m_Canvas->RebindVisibleNodes();
+    });
+    // FilesChanged fires on the main thread, which is this panel's UI thread.
+    m_AssetFilesSubscription = m_Context->Assets->FilesChanged.Subscribe(
+        [this](std::span<const GUID> changed) { OnAssetFilesChanged(changed); });
+}
+
+void GraphPanel::OnAssetFilesChanged(std::span<const GUID> changed)
+{
+    const Graph::Model* model = m_Canvas ? m_Canvas->GetModel() : nullptr;
+    if (!model)
+        return;
+    bool anyNode = false;
+    for (const Graph::Node& node : model->Nodes)
+    {
+        if (!NodeReferencesAnyAsset(node, model->KindId, changed))
+            continue;
+        anyNode = true;
+        // The Update refresh pushes the selected node to the Inspector again, so its rows resolve too.
+        if (node.Id == m_Canvas->GetSelectedNodeId())
+            m_InspectorRefreshDeferred = true;
+    }
+    if (anyNode)
+        m_AssetFilesRebind.Request();
+}
+
+void GraphPanel::SetPingAsset(std::function<void(const std::filesystem::path&)> ping)
+{
+    m_PingAsset = std::move(ping);
+    if (m_Canvas)
+        m_Canvas->SetPingAsset(m_PingAsset);
 }
 
 void GraphPanel::Update()
@@ -1115,7 +1237,7 @@ void GraphPanel::ApplyPanelScrollbarPreference()
     {
         if (!scroll)
             return;
-        scroll->Overrides()
+        scroll->Style()
             .Set(Style::OverflowXProp, Overflow::Hidden)
             .Set(Style::OverflowYProp, showScrollbars ? Overflow::Visible : Overflow::Hidden);
         scroll->MarkDirty(UIElement::LayoutDirty | UIElement::StyleDirty | UIElement::VisualDirty);
@@ -1183,7 +1305,7 @@ void GraphPanel::UpdatePanelOverflowIndicators()
 
         auto place = [&](UIElement* indicator, float top)
         {
-            indicator->Overrides()
+            indicator->Style()
                 .Set(Style::Position, PositionType::Absolute)
                 .Set(Style::PositionLeft, StyleLength::Px(localLeft))
                 .Set(Style::PositionTop, StyleLength::Px(std::round(top)))
@@ -1236,7 +1358,7 @@ void GraphPanel::ApplyNodePaletteBounds()
     {
         if (m_PaletteHeightOverrideApplied)
         {
-            m_Palette->Overrides()
+            m_Palette->Style()
                 .Set(Style::Height, StyleLength::Px(kNodePaletteCollapsedHeight))
                 .Set(Style::MaxHeight, StyleLength::Px(kNodePaletteCollapsedHeight));
             m_PaletteHeightOverrideApplied = false;
@@ -1294,7 +1416,7 @@ void GraphPanel::ApplyNodePaletteBounds()
     if (!heightChanged && !m_DraggingPalette)
         return;
 
-    m_Palette->Overrides()
+    m_Palette->Style()
         .Set(Style::Position, PositionType::Absolute)
         .Set(Style::PositionLeft, StyleLength::Px(std::round(left)))
         .Set(Style::PositionTop, StyleLength::Px(std::round(top)))
@@ -1345,7 +1467,7 @@ void GraphPanel::ApplyVariablesPanelBounds()
     {
         if (m_VariablesHeightOverrideApplied)
         {
-            m_VariablesPanel->Overrides()
+            m_VariablesPanel->Style()
                 .Set(Style::Height, StyleLength::Px(kVariablesPanelCollapsedHeight))
                 .Set(Style::MaxHeight, StyleLength::Px(kVariablesPanelCollapsedHeight));
             m_VariablesHeightOverrideApplied = false;
@@ -1382,7 +1504,7 @@ void GraphPanel::ApplyVariablesPanelBounds()
     if (!heightChanged && !m_DraggingVariablesPanel)
         return;
 
-    m_VariablesPanel->Overrides()
+    m_VariablesPanel->Style()
         .Set(Style::Position, PositionType::Absolute)
         .Set(Style::PositionLeft, StyleLength::Px(std::round(left)))
         .Set(Style::PositionTop, StyleLength::Px(std::round(top)))
@@ -1410,12 +1532,9 @@ bool GraphPanel::MatchSearch(const std::string& displayName, const std::string& 
 {
     if (search.empty())
         return true;
-    std::string q = search;
-    std::transform(q.begin(), q.end(), q.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    std::string d = displayName;
-    std::transform(d.begin(), d.end(), d.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    std::string t = typeId;
-    std::transform(t.begin(), t.end(), t.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const std::string q = ToLowerAscii(search);
+    const std::string d = ToLowerAscii(displayName);
+    const std::string t = ToLowerAscii(typeId);
     return d.find(q) != std::string::npos || t.find(q) != std::string::npos;
 }
 
@@ -1473,14 +1592,16 @@ void GraphPanel::RebuildPalette()
             if (!MatchSearch(meta.DisplayName, meta.TypeId, search))
                 continue;
             auto item = std::make_unique<UIElement>();
+            // A Button's look without a Button's input handling: the item requests the Button sheet.
             item->AddClass("button");
+            item->RequestSubtreeStyleAssetPath("UI/controls/Button.css", "editor");
             item->AddClass("node-graph-palette-node-button");
             if (m_ColorPaletteNodes)
             {
                 const uint32_t nodeColor = NodeColorSettings::GetNodeColorArgb(kind, meta.TypeId);
                 const uint32_t borderColor = WithAlpha(nodeColor, 0xFFu);
                 item->AddClass("node-graph-palette-node-button-colored");
-                item->Overrides()
+                item->Style()
                     .Set(Style::BackgroundColor, WithAlpha(nodeColor, 0xEEu))
                     .Set(Style::BorderWidth, Box4{1.f, 1.f, 1.f, 1.f})
                     .Set(Style::BorderColor, BorderColorsTRBL{borderColor, borderColor, borderColor, borderColor});
@@ -1489,7 +1610,7 @@ void GraphPanel::RebuildPalette()
             label->SetText(meta.DisplayName);
             label->AddClass("button-text");
             if (m_ColorPaletteNodes)
-                label->Overrides().Set(Style::Color, 0xFFFFFFFFu);
+                label->Style().Set(Style::Color, 0xFFFFFFFFu);
             auto icon = std::make_unique<UIElement>();
             icon->AddClass("graph-node-palette-icon");
             GraphNodeIcons::ApplyIconClass(*icon, meta.IconStem);
@@ -1558,30 +1679,22 @@ void GraphPanel::SchedulePaletteRebuild()
         return;
 
     m_PaletteRebuildScheduled = true;
-    Scheduler::IScheduler* sched = GetScheduler();
-    if (!sched)
-    {
-        m_PaletteRebuildScheduled = false;
-        if (m_NodePalettePanelVisible)
-        {
-            RebuildPalette();
-            ApplyNodePaletteBounds();
-        }
-        return;
-    }
+    // Unattached, no manager drains a post: rebuild now.
+    if (!PostAction([this] { RunScheduledPaletteRebuild(); }))
+        RunScheduledPaletteRebuild();
+}
 
-    sched->ScheduleNext([this]()
-    {
-        m_PaletteRebuildScheduled = false;
-        if (!m_NodePalettePanelVisible)
-            return;
-        RebuildPalette();
-        ApplyNodePaletteBounds();
-        if (m_PaletteScroll)
-            m_PaletteScroll->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
-        this->UIElement::MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
-        RequestRelayout();
-    });
+void GraphPanel::RunScheduledPaletteRebuild()
+{
+    m_PaletteRebuildScheduled = false;
+    if (!m_NodePalettePanelVisible)
+        return;
+    RebuildPalette();
+    ApplyNodePaletteBounds();
+    if (m_PaletteScroll)
+        m_PaletteScroll->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
+    this->UIElement::MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
+    RequestRelayout();
 }
 
 Graph::Variable* GraphPanel::FindGraphVariable(const std::string& name)
@@ -1840,8 +1953,8 @@ std::vector<Graph::Variable> GraphPanel::CollectVariablesForDisplay() const
     if (m_VariablesSortMode == VariablesSortMode::Name)
     {
         std::sort(variables.begin(), variables.end(), [](const Graph::Variable& a, const Graph::Variable& b) {
-            const std::string aName = LowerAsciiCopy(a.Name);
-            const std::string bName = LowerAsciiCopy(b.Name);
+            const std::string aName = ToLowerAscii(a.Name);
+            const std::string bName = ToLowerAscii(b.Name);
             return aName == bName ? a.Name < b.Name : aName < bName;
         });
     }
@@ -2250,7 +2363,7 @@ void GraphPanel::RebuildVariablesPanel()
     if (!m_VariablesPanel || !m_VariablesContent)
         return;
 
-    m_VariablesPanel->Overrides()
+    m_VariablesPanel->Style()
         .Set(Style::Display, m_VariablesPanelVisible ? DisplayMode::Flex : DisplayMode::None);
     if (!m_VariablesPanelVisible)
         return;
@@ -2548,27 +2661,19 @@ void GraphPanel::ScheduleVariablesPanelRebuild()
     if (m_VariablesRebuildScheduled)
         return;
     m_VariablesRebuildScheduled = true;
-    Scheduler::IScheduler* sched = GetScheduler();
-    if (!sched)
-    {
-        m_VariablesRebuildScheduled = false;
-        if (m_VariablesPanelVisible)
-        {
-            RebuildVariablesPanel();
-            ApplyVariablesPanelBounds();
-        }
+    // Unattached, no manager drains a post: rebuild now.
+    if (!PostAction([this] { RunScheduledVariablesPanelRebuild(); }))
+        RunScheduledVariablesPanelRebuild();
+}
+
+void GraphPanel::RunScheduledVariablesPanelRebuild()
+{
+    m_VariablesRebuildScheduled = false;
+    RebuildVariablesPanel();
+    if (!m_VariablesPanelVisible)
         return;
-    }
-    sched->ScheduleNext([this]()
-    {
-        m_VariablesRebuildScheduled = false;
-        RebuildVariablesPanel();
-        if (m_VariablesPanelVisible)
-        {
-            ApplyVariablesPanelBounds();
-            RequestRelayout();
-        }
-    });
+    ApplyVariablesPanelBounds();
+    RequestRelayout();
 }
 
 void GraphPanel::AddNodeFromPalette(const std::string& typeId)
@@ -2863,7 +2968,7 @@ void GraphPanel::ShowPaletteNodeDragGhost(const std::string& typeId, float scree
         auto ghost = std::make_unique<UIElement>();
         ghost->SetId("NodeGraphPaletteNodeDragGhost");
         ghost->AddClass("node-graph-palette-node-drag-ghost");
-        ghost->Overrides()
+        ghost->Style()
             .Set(Style::Position, PositionType::Absolute)
             .Set(Style::PointerEvents, false)
             .Set(Style::Display, DisplayMode::Flex)
@@ -2875,12 +2980,13 @@ void GraphPanel::ShowPaletteNodeDragGhost(const std::string& typeId, float scree
             .Set(Style::Opacity, 0.82f)
             .Set(Style::ZIndex, 30)
             .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{4.f, 4.f, 4.f, 4.f})
-            .Set(Style::BorderWidth, Box4{1.f, 1.f, 1.f, 1.f});
+            .Set(Style::BorderWidth, Box4{1.f, 1.f, 1.f, 1.f})
+            .Set(Style::BorderColor, BorderColorsTRBL{0xFF3A8FFFu, 0xFF3A8FFFu, 0xFF3A8FFFu, 0xFF3A8FFFu});
 
         auto label = std::make_unique<Label>();
         label->AddClass("node-graph-palette-node-drag-ghost-label");
         label->SetText(displayName);
-        label->Overrides()
+        label->Style()
             .Set(Style::FontSize, StyleLength::Px(13.f))
             .Set(Style::Color, 0xFFFFFFFFu)
             .Set(Style::FlexShrink, 1.f)
@@ -2891,7 +2997,7 @@ void GraphPanel::ShowPaletteNodeDragGhost(const std::string& typeId, float scree
         auto valueLabel = std::make_unique<Label>();
         valueLabel->AddClass("node-graph-palette-node-drag-ghost-value");
         valueLabel->SetText(valueSummary);
-        valueLabel->Overrides()
+        valueLabel->Style()
             .Set(Style::FontSize, StyleLength::Px(11.f))
             .Set(Style::Color, 0xFFCFCFCFu)
             .Set(Style::FlexShrink, 1.f)
@@ -2905,19 +3011,19 @@ void GraphPanel::ShowPaletteNodeDragGhost(const std::string& typeId, float scree
     }
     else
     {
-        m_PaletteNodeDragGhost->Overrides().Set(Style::Display, DisplayMode::Flex);
+        m_PaletteNodeDragGhost->Style().Set(Style::Display, DisplayMode::Flex);
         if (m_PaletteNodeDragGhostLabel)
             m_PaletteNodeDragGhostLabel->SetText(displayName);
         if (m_PaletteNodeDragGhostValueLabel)
         {
             m_PaletteNodeDragGhostValueLabel->SetText(valueSummary);
-            m_PaletteNodeDragGhostValueLabel->Overrides()
+            m_PaletteNodeDragGhostValueLabel->Style()
                 .Set(Style::Display, valueSummary.empty() ? DisplayMode::None : DisplayMode::Flex);
         }
     }
 
     const uint32_t nodeColor = NodeColorSettings::GetNodeColorArgb(m_Model.KindId, typeId);
-    m_PaletteNodeDragGhost->Overrides().Set(Style::BackgroundColor, WithAlpha(nodeColor, 0xDDu));
+    m_PaletteNodeDragGhost->Style().Set(Style::BackgroundColor, WithAlpha(nodeColor, 0xDDu));
     UpdatePaletteNodeDragGhost(screenX, screenY);
 }
 
@@ -2992,7 +3098,7 @@ void GraphPanel::UpdatePaletteNodeDragGhost(float screenX, float screenY)
     const float roundedTop = std::round(top);
     const float absoluteX = bodyX + roundedLeft;
     const float absoluteY = bodyY + roundedTop;
-    m_PaletteNodeDragGhost->Overrides()
+    m_PaletteNodeDragGhost->Style()
         .Set(Style::Width, StyleLength::Px(std::round(ghostW)))
         .Set(Style::Height, StyleLength::Px(std::round(ghostH)))
         .Set(Style::PositionLeft, StyleLength::Px(roundedLeft))
@@ -3001,7 +3107,7 @@ void GraphPanel::UpdatePaletteNodeDragGhost(float screenX, float screenY)
                                               std::round(ghostW), std::round(ghostH));
     if (m_PaletteNodeDragGhostLabel)
     {
-        m_PaletteNodeDragGhostLabel->Overrides()
+        m_PaletteNodeDragGhostLabel->Style()
             .Set(Style::FontSize, StyleLength::Px(fontSize))
             .Set(Style::Width, StyleLength::Px(std::round(ghostW)))
             .Set(Style::Height, StyleLength::Px(std::round(nameRowH)));
@@ -3010,7 +3116,7 @@ void GraphPanel::UpdatePaletteNodeDragGhost(float screenX, float screenY)
     }
     if (m_PaletteNodeDragGhostValueLabel)
     {
-        m_PaletteNodeDragGhostValueLabel->Overrides()
+        m_PaletteNodeDragGhostValueLabel->Style()
             .Set(Style::FontSize, StyleLength::Px(valueFontSize))
             .Set(Style::Width, StyleLength::Px(std::round(ghostW)))
             .Set(Style::Height, StyleLength::Px(std::round(valueRowH)));
@@ -3072,7 +3178,7 @@ void GraphPanel::ApplyNodePaletteDrag(float x, float y)
     const int leftPx = static_cast<int>(std::round(newLeft));
     const int topPx = static_cast<int>(std::round(newTop));
 
-    m_Palette->Overrides()
+    m_Palette->Style()
         .Set(Style::Position, PositionType::Absolute)
         .Set(Style::PositionLeft, StyleLength::Px(static_cast<float>(leftPx)))
         .Set(Style::PositionTop, StyleLength::Px(static_cast<float>(topPx)))
@@ -3150,7 +3256,7 @@ void GraphPanel::ApplyNodePaletteCollapsedState()
     if (m_PaletteCollapsed)
     {
         m_Palette->AddClass("node-graph-palette-collapsed");
-        m_Palette->Overrides()
+        m_Palette->Style()
             .Set(Style::Height, StyleLength::Px(kNodePaletteCollapsedHeight))
             .Set(Style::MaxHeight, StyleLength::Px(kNodePaletteCollapsedHeight));
         UILayoutAccess::SetLastLayoutRect(*m_Palette, m_Palette->GetLayoutX(), m_Palette->GetLayoutY(),
@@ -3209,7 +3315,7 @@ void GraphPanel::ApplyVariablesPanelDrag(float x, float y)
     newLeft = std::clamp(newLeft, kFloatingPanelMargin, maxLeft);
     newTop = std::clamp(newTop, kFloatingPanelMargin, maxTop);
 
-    m_VariablesPanel->Overrides()
+    m_VariablesPanel->Style()
         .Set(Style::Position, PositionType::Absolute)
         .Set(Style::PositionLeft, StyleLength::Px(std::round(newLeft)))
         .Set(Style::PositionTop, StyleLength::Px(std::round(newTop)))
@@ -3287,7 +3393,7 @@ void GraphPanel::ApplyVariablesPanelCollapsedState()
     if (m_VariablesCollapsed)
     {
         m_VariablesPanel->AddClass("node-graph-variables-collapsed");
-        m_VariablesPanel->Overrides()
+        m_VariablesPanel->Style()
             .Set(Style::Height, StyleLength::Px(kVariablesPanelCollapsedHeight))
             .Set(Style::MaxHeight, StyleLength::Px(kVariablesPanelCollapsedHeight));
         UILayoutAccess::SetLastLayoutRect(*m_VariablesPanel, m_VariablesPanel->GetLayoutX(), m_VariablesPanel->GetLayoutY(),
@@ -3327,13 +3433,9 @@ const GraphCanvas::NodeFactoryFn& GraphPanel::KindNodeFactory()
 
 void GraphPanel::ScheduleLoadTestGraph()
 {
-    Scheduler::IScheduler* sched = GetScheduler();
-    auto load = [this]() { LoadTestGraph(); };
-
-    if (sched)
-        sched->ScheduleNext(std::move(load));
-    else
-        load();
+    // Unattached (no manager to drain a post), load now.
+    if (!PostAction([this]() { LoadTestGraph(); }))
+        LoadTestGraph();
 }
 
 void GraphPanel::LoadTestGraph()
@@ -3536,7 +3638,7 @@ void GraphPanel::SetupUI()
 
     const std::vector<GraphToolbarEntry> kindEntries =
         m_KindHooks.ToolbarEntries ? m_KindHooks.ToolbarEntries() : std::vector<GraphToolbarEntry>{};
-    auto addEntries = [this, &toolbarRight](const std::vector<GraphToolbarEntry>& entries,
+    auto addEntries = [&toolbarRight](const std::vector<GraphToolbarEntry>& entries,
                                             GraphToolbarEntry::Place place)
     {
         for (const GraphToolbarEntry& entry : entries)
@@ -3593,7 +3695,6 @@ void GraphPanel::SetupUI()
 
     auto searchBuilt = BuildPanelSearchBar(
         "nodegraph-search-field",
-        []() { return SettingsPanel::GetSearchBarsVisible(); },
         {},
         [this](const std::string& value) {
             if (m_Canvas)
@@ -4060,20 +4161,15 @@ void GraphPanel::SetupUI()
         m_NodeDragInProgress = true;
         if (!m_Undo || !m_Canvas)
             return;
-        if (!m_SelectionHistory.UpdateSelection(m_Canvas->GetSelectedNodeIds(), m_Undo))
-            return;
         Editor::UndoRedoService::SnapshotTarget target;
         target.debugLabel = "Graph";
-        target.Identity = {reinterpret_cast<std::uintptr_t>(this), Hashing::Fnv1a64(m_CurrentPath.generic_string())};
-        target.Capture = [panel = UIElement::MakeWeakRef(this), path = m_CurrentPath](Editor::UndoRedoService::SnapshotTarget::Snapshot& out) -> bool
+        target.Capture = [this](Editor::UndoRedoService::SnapshotTarget::Snapshot& out) -> bool
         {
-            auto* owner = panel.Get();
-        return owner && owner->m_CurrentPath == path && owner->CaptureGraphSnapshot(out);
+            return CaptureGraphSnapshot(out);
         };
-        target.Apply = [panel = UIElement::MakeWeakRef(this), path = m_CurrentPath](const Editor::UndoRedoService::SnapshotTarget::Snapshot& in) -> bool
+        target.Apply = [this](const Editor::UndoRedoService::SnapshotTarget::Snapshot& in) -> bool
         {
-            auto* owner = panel.Get();
-        return owner && owner->m_CurrentPath == path && owner->ApplyGraphSnapshot(in);
+            return ApplyGraphSnapshot(in);
         };
         m_GraphDragEdit = m_Undo->BeginInteractiveEdit("Move Nodes", std::move(target));
     });
@@ -4089,6 +4185,7 @@ void GraphPanel::SetupUI()
         Notify(GraphPanelEvent::NodeDragEnded);
     });
     m_Canvas = canvas.get();
+    m_Canvas->SetPingAsset(m_PingAsset);
     canvasWrapper->AddChild(std::move(canvas));
     SyncCanvasNodeFactory();
     SyncConnectionStyleButton();
@@ -4231,12 +4328,23 @@ void GraphPanel::RefreshGraphViewAfterModelChange()
     this->UIElement::MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
 }
 
+// The dock id is unique per docked panel. A default layout dock has no id; it is the only
+// dock of its kind, so the kind's layout dock id is unique there.
+std::string GraphPanel::SaveChangesPromptPrefix() const
+{
+    if (!GetId().empty())
+        return GetId();
+    if (const char* layoutDockId = GraphDockPanelIdForKind(m_PanelKindId))
+        return layoutDockId;
+    return m_PanelKindId;
+}
+
 void GraphPanel::EnsureUnsavedChangesModal()
 {
     if (m_UnsavedChangesModal)
         return;
 
-    auto modal = std::make_unique<SaveSceneChangesModal>();
+    auto modal = std::make_unique<SaveSceneChangesModal>(SaveChangesPromptPrefix());
     m_UnsavedChangesModal = modal.get();
     UIManager* ui = GetOwnerManager();
     UIElement* uiRoot = ui ? ui->GetRootElement() : nullptr;
@@ -4278,9 +4386,8 @@ void GraphPanel::EnsureUnsavedChangesModal()
                 return;
             }
         };
-        if (Scheduler::IScheduler* sched = GetScheduler())
-            sched->ScheduleNext(std::move(run));
-        else
+        // Unattached (no manager to drain a post), run now.
+        if (!PostAction(run))
             run();
     });
 
@@ -4315,9 +4422,8 @@ void GraphPanel::EnsureUnsavedChangesModal()
                 return;
             }
         };
-        if (Scheduler::IScheduler* sched = GetScheduler())
-            sched->ScheduleNext(std::move(run));
-        else
+        // Unattached (no manager to drain a post), run now.
+        if (!PostAction(run))
             run();
     });
 
@@ -4331,9 +4437,8 @@ void GraphPanel::EnsureUnsavedChangesModal()
             m_PendingNewGraphPath.clear();
             m_PendingQuitCallback = nullptr;
         };
-        if (Scheduler::IScheduler* sched = GetScheduler())
-            sched->ScheduleNext(std::move(run));
-        else
+        // Unattached (no manager to drain a post), run now.
+        if (!PostAction(run))
             run();
     });
 }
@@ -4693,22 +4798,16 @@ Editor::UndoRedoService::InteractiveEdit GraphPanel::BeginGraphParameterEdit(con
 {
     if (!m_Undo)
         return {};
-    if (m_Canvas && !m_SelectionHistory.UpdateSelection(m_Canvas->GetSelectedNodeIds(), m_Undo))
-        return {};
 
     Editor::UndoRedoService::SnapshotTarget target;
     target.debugLabel = "Graph";
-    target.Identity = {reinterpret_cast<std::uintptr_t>(this), Hashing::Fnv1a64(m_CurrentPath.generic_string()),
-        Hashing::Fnv1a64(m_GraphParameterEditNodeId + ":" + m_GraphParameterEditKey + ":" + m_GraphTransitionEditLinkId)};
-    target.Capture = [panel = UIElement::MakeWeakRef(this), path = m_CurrentPath](Editor::UndoRedoService::SnapshotTarget::Snapshot& out) -> bool
+    target.Capture = [this](Editor::UndoRedoService::SnapshotTarget::Snapshot& out) -> bool
     {
-        auto* owner = panel.Get();
-        return owner && owner->m_CurrentPath == path && owner->CaptureGraphSnapshot(out);
+        return CaptureGraphSnapshot(out);
     };
-    target.Apply = [panel = UIElement::MakeWeakRef(this), path = m_CurrentPath](const Editor::UndoRedoService::SnapshotTarget::Snapshot& in) -> bool
+    target.Apply = [this](const Editor::UndoRedoService::SnapshotTarget::Snapshot& in) -> bool
     {
-        auto* owner = panel.Get();
-        return owner && owner->m_CurrentPath == path && owner->ApplyGraphSnapshot(in);
+        return ApplyGraphSnapshot(in);
     };
     return m_Undo->BeginInteractiveEdit(actionName ? actionName : "Edit Node Parameter", std::move(target));
 }
@@ -4717,22 +4816,16 @@ Editor::UndoRedoService::InteractiveEdit GraphPanel::BeginGraphVariableEdit(cons
 {
     if (!m_Undo)
         return {};
-    if (m_Canvas && !m_SelectionHistory.UpdateSelection(m_Canvas->GetSelectedNodeIds(), m_Undo))
-        return {};
 
     Editor::UndoRedoService::SnapshotTarget target;
     target.debugLabel = "Graph";
-    target.Identity = {reinterpret_cast<std::uintptr_t>(this), Hashing::Fnv1a64(m_CurrentPath.generic_string()),
-        Hashing::Fnv1a64(m_GraphVariableEditName)};
-    target.Capture = [panel = UIElement::MakeWeakRef(this), path = m_CurrentPath](Editor::UndoRedoService::SnapshotTarget::Snapshot& out) -> bool
+    target.Capture = [this](Editor::UndoRedoService::SnapshotTarget::Snapshot& out) -> bool
     {
-        auto* owner = panel.Get();
-        return owner && owner->m_CurrentPath == path && owner->CaptureGraphSnapshot(out);
+        return CaptureGraphSnapshot(out);
     };
-    target.Apply = [panel = UIElement::MakeWeakRef(this), path = m_CurrentPath](const Editor::UndoRedoService::SnapshotTarget::Snapshot& in) -> bool
+    target.Apply = [this](const Editor::UndoRedoService::SnapshotTarget::Snapshot& in) -> bool
     {
-        auto* owner = panel.Get();
-        return owner && owner->m_CurrentPath == path && owner->ApplyGraphSnapshot(in);
+        return ApplyGraphSnapshot(in);
     };
     return m_Undo->BeginInteractiveEdit(actionName ? actionName : "Edit Graph Variable", std::move(target));
 }
@@ -4956,7 +5049,7 @@ void GraphPanel::UpdateNodePalettePanelToggleButton()
 {
     if (m_Palette)
     {
-        m_Palette->Overrides()
+        m_Palette->Style()
             .Set(Style::Display, m_NodePalettePanelVisible ? DisplayMode::Flex : DisplayMode::None);
         m_Palette->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
     }
@@ -4999,7 +5092,7 @@ void GraphPanel::UpdateVariablesPanelToggleButton()
 {
     if (m_VariablesPanel)
     {
-        m_VariablesPanel->Overrides()
+        m_VariablesPanel->Style()
             .Set(Style::Display, m_VariablesPanelVisible ? DisplayMode::Flex : DisplayMode::None);
         m_VariablesPanel->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
     }
@@ -5031,9 +5124,8 @@ void GraphPanel::TogglePaletteNodeColors()
         this->UIElement::MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
     };
 
-    if (Scheduler::IScheduler* sched = GetScheduler())
-        sched->ScheduleNext(std::move(apply));
-    else
+    // Unattached (no manager to drain a post), apply now.
+    if (!PostAction(apply))
         apply();
 }
 
@@ -5130,8 +5222,6 @@ void GraphPanel::OnCanvasSelectionChanged(const std::string& nodeId)
         Logger::Log::Warning("GraphPanel: m_Canvas is null");
         return;
     }
-    if (!m_SelectionHistory.UpdateSelection(m_Canvas->GetSelectedNodeIds(), m_Undo))
-        return;
     
     if (!m_Canvas->GetModel()) {
         Logger::Log::Warning("GraphPanel: m_Canvas->GetModel() is null");
@@ -5231,8 +5321,6 @@ void GraphPanel::OnCanvasSelectionChanged(const std::string& nodeId)
 
 void GraphPanel::OnCanvasLinkSelected(const std::string& linkId)
 {
-    if (m_Canvas && !m_SelectionHistory.UpdateSelection(m_Canvas->GetSelectedNodeIds(), m_Undo))
-        return;
     g_InspectorGraphPanel = this;
     if (!m_OnTransitionSelected)
         return;
@@ -5501,8 +5589,6 @@ void GraphPanel::OnCanvasWireDropMenu(float screenX, float screenY,
 
 bool GraphPanel::OpenGraph(const std::filesystem::path& path)
 {
-    if (m_Undo && !m_Undo->CommitPendingEdit())
-        return false;
     if (path.empty())
         return false;
     Graph::Model loaded;
@@ -5591,8 +5677,6 @@ std::filesystem::path GraphPanel::PromptSaveAsPath()
 
 bool GraphPanel::SaveGraph()
 {
-    if (m_Undo && !m_Undo->CommitPendingEdit())
-        return false;
     if (m_CurrentPath.empty())
     {
         const std::filesystem::path chosen = PromptSaveAsPath();

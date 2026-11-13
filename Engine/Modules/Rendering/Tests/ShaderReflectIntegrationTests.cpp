@@ -3,8 +3,8 @@
 #include <vector>
 #include <nlohmann/json.hpp>
 
-#include "Rendering/Materials/ShaderReflection.h"
-#include "Rendering/Materials/ShaderMetaJson.h"
+#include "Rendering/Materials/Shader/ShaderReflection.h"
+#include "Rendering/Materials/Shader/ShaderMetaJson.h"
 
 #include "TestUtils.h"
 

@@ -1,17 +1,17 @@
 #include "Ocean/OceanSceneGrab.h"
-#include "Ocean/OceanShaderProgram.h"
-#include "Rendering/Materials/ShaderLayoutShape.h"
-#include "OceanShaderDirectory.h"
+#include "Ocean/OceanShader/OceanShaderProgram.h"
+#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
+#include "OceanShader/OceanShaderDirectory.h"
 
 #include "Engine/Rendering/Pipeline/PipelineResourceNames.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
 #include "Engine/Rendering/RenderServices.h"
 
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineDescTranslator.h"
+#include "Rendering/Core/Pipeline/PipelineDescTranslator.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Core/RenderGraph/RGFullscreen.h"
-#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
 #include "Logger/Logger.h"
 
 #include <array>
@@ -204,6 +204,7 @@ bool OceanSceneGrab::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d, 
     const RenderGraph::RGTexture grab = d.Frame.ImportExternalTexture(
         grabName.c_str(), viewGrab.Texture, ResourceState::ShaderResource,
         static_cast<TextureFormat>(viewGrab.Format));
+    d.MarkPreExposed(grab); // a copy of scene colour, stored at the frame's pre-exposure
     if (outGraphTexture)
         *outGraphTexture = grab;
 
@@ -271,6 +272,17 @@ bool OceanSceneGrab::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d, 
 
     viewGrab.ReadyFrameIndex = frameIndex;
     return true;
+}
+
+void OceanSceneGrab::RequestPipeline(IDevice& device, const PipelineFormatKey& source)
+{
+    // The grab is one single-sample target in the format of the colour it grabs (EnsureTexture).
+    const bool msaa = source.RasterizationSamples > 1;
+    if (source.ColorCount == 0 || !(msaa ? EnsureResolvePipeline(device) : EnsurePipeline(device)))
+        return;
+    const RenderGraph::RGAttachmentKeyInput grab{0u, false, source.ColorFormats[0], 1u};
+    device.RequestGraphicsPipeline(msaa ? m_ResolvePipelineId : m_CopyPipelineId,
+                                   RenderGraph::DeriveFormatKey(&grab, 1u, TextureFormat{}));
 }
 
 RenderGraph::RGTexture OceanSceneGrab::ImportForSampling(RenderGraph::RGFrame& frame,

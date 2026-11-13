@@ -1,12 +1,17 @@
 # GameEngine AssetDatabase.assetdb (authoritative)
 # Format: JSON Lines (one JSON object per line).
 {"format":"assetdb","version":2}
-{"guid":"b67164fc-be56-420a-b0e8-2b7d09e692a3","path":"editor/icons/arrow-up-circle.png","type":"Texture"}
+{"guid":"8cf59664-9b4e-4493-8c73-e5142cfcb0e6","path":"editor/icons/arrow-up-circle.svg","type":"Texture"}
 {"guid":"c490fd86-8b7f-4397-9c2f-cc2759bba39e","path":"editor/icons/chatbox.svg","type":"Texture"}
-{"guid":"8e6ae783-af7c-40bb-be73-26e936436ebc","path":"editor/icons/view-ring.png","type":"Texture"}
+{"guid":"9b680fde-2495-40d9-bb58-a3bfba4e3409","path":"editor/icons/mic-listening.svg","type":"Texture"}
+{"guid":"5dbfd6e9-ec93-4c9d-9138-c7cd0284f8e2","path":"editor/icons/mic.svg","type":"Texture"}
+{"guid":"dee641cd-f00d-431c-b6b2-f330f1556c39","path":"editor/icons/view-ring.svg","type":"Texture"}
 {"guid":"aefe6faa-71f0-46ab-a320-4684426ca0f5","path":"editor/ui/controls/agentconversationrow.uxml","type":"UILayout"}
+{"guid":"f03c834b-339c-4c39-99c8-908a26a96a54","path":"editor/ui/controls/agentmodelpopover.uxml","type":"UILayout"}
+{"guid":"566637fb-5af5-41dd-96e5-d4b794585f9a","path":"editor/ui/controls/aiassistantsetup/aiassistantapikeyrow.css","type":"UIStyle"}
+{"guid":"110537a4-0f34-4248-ab24-88b7566f3946","path":"editor/ui/controls/aiassistantsetup/aiassistantapikeyrow.uxml","type":"UILayout"}
+{"guid":"9bea96a6-f9b1-444f-b2b8-709d392f3298","path":"editor/ui/controls/aiassistantsetup/aiassistantsetuppage.css","type":"UIStyle"}
+{"guid":"bd8364ef-1b8b-440f-bae8-a2c29c694aaa","path":"editor/ui/controls/aiassistantsetup/aiassistantsetuppage.uxml","type":"UILayout"}
 {"guid":"68f7706d-7f46-4150-a1ea-0b554ee39e18","path":"editor/ui/promptpanelchrome.css","type":"UIStyle"}
 {"guid":"72728eff-00db-4347-a444-c747040e35f0","path":"editor/ui/panels/promptpanel.css","type":"UIStyle"}
 {"guid":"d6ed612a-b969-46cc-ad4a-3be9340bc4da","path":"editor/ui/panels/promptpanel.uxml","type":"UILayout"}
-{"guid":"2f6ebb18-6c09-4b28-8911-06bdb0cf1086","path":"editor/icons/prohibited.svg","type":"Texture"}
-{"guid":"2755ead3-bf8a-4caf-bca6-90499d7ebb96","path":"editor/ui/controls/promptfileitem.uxml","type":"UILayout"}

@@ -9,7 +9,7 @@
 #include "Rendering/Sky/SolarPath.h"
 #include "SceneView/ComponentGizmoRegistry.h"
 #include "SceneView/SceneViewGizmos.h"
-#include "Sky/SkySunDayKind.h"
+#include "Sky/SkySun/SkySunDayKind.h"
 #include "Types/Color.h"
 
 #include <algorithm>
@@ -66,7 +66,7 @@ constexpr float kNearlyVerticalUp = 0.9f;
 
 // Opaque colours: the halo's layering needs every stroke opaque. The axis is cyan so it never
 // matches a sky; north is compass red; the day's arc is amber, its night half the same amber dimmed.
-const Color kHaloColor(0.22f, 0.22f, 0.24f, 1.0f);
+const Color kHaloColor(0.04f, 0.04f, 0.06f, 1.0f);
 const Color kHorizonColor(0.90f, 0.92f, 0.95f, 1.0f);
 const Color kAxisColor(0.15f, 0.95f, 0.95f, 1.0f);
 const Color kNorthColor(0.95f, 0.25f, 0.20f, 1.0f);
@@ -103,7 +103,7 @@ Dome DomeFor(const GizmoRenderContext& context, const ECS::World& world, ECS::En
 {
     Dome dome;
     if (const auto* xf = world.GetComponent<Components::WorldTransform>(entity))
-        dome.Center = Vector3(xf->matrix[12], xf->matrix[13], xf->matrix[14]);
+        dome.Center = xf->GetPosition() - Mathematics::WorldPosition{};
     if (const Vector3* camera = context.GetCameraWorldPosition())
     {
         dome.Camera = *camera;
@@ -194,9 +194,7 @@ void StrokeCircle(GizmoRenderContext& context, const Dome& dome, const Vector3& 
 Vector3 SunDirection(const Rendering::SolarFrame& frame, float hours)
 {
     const float theta = (hours / kHoursPerDay - 0.25f) * kTwoPi;
-    Vector3 direction;
-    Rendering::SolarDirection(frame, std::cos(theta), std::sin(theta), direction.v);
-    return direction;
+    return Rendering::SolarDirection(frame, std::cos(theta), std::sin(theta));
 }
 
 // A solid triangle over a dark outline, outside the horizon ring, pointing toward `heading` and

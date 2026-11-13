@@ -110,8 +110,6 @@ std::string TextureThumbnailHandler::GetOrRequestInlineImage(const std::filesyst
     // An empty answer from the cache is the source itself when it is no larger than the copy
     // would be, and no image otherwise.
     auto answer = [this, image, onReady = std::move(onReady)](const std::string& cached) {
-        if (!onReady)
-            return;
         if (!cached.empty())
             onReady(cached);
         else
@@ -372,8 +370,8 @@ TextureThumbnailHandler::Outcome TextureThumbnailHandler::GenerateThumbnail(
     int longEdge,
     DeclineReason* outDeclineReason)
 {
-    Vector<uint8> bytes;
-    if (!ReadFileBytesShared(sourcePath, bytes) || bytes.empty())
+    ByteBuffer bytes;
+    if (!ReadFileBytesShared(sourcePath, bytes) || bytes.Size() == 0)
     {
         // A failed or empty read says nothing about the source (a locked file,
         // a transient share violation). Retrying costs one read; remembering it
@@ -426,8 +424,8 @@ TextureThumbnailHandler::Outcome TextureThumbnailHandler::GenerateThumbnail(
 
     // The compressed bytes are dead once the pixels exist, and two decodes
     // holding both at once is the peak this handler is budgeted against.
-    bytes.clear();
-    bytes.shrink_to_fit();
+    bytes = ByteBuffer();
+
 
     // sRGB-aware filtering: browsing is dominated by color textures, and
     // averaging those in gamma space darkens every thumbnail. Alpha weights the

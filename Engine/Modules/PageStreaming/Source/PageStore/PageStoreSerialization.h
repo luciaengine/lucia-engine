@@ -39,8 +39,10 @@ inline constexpr std::string_view kNewerPageStoreRefusal =
     "the page store was written by a newer engine or is damaged: update the engine, or export the game again "
     "(in the editor, opening the scene cooks the terrain again)";
 
-/// Returns the field kind for a supported format/filter pair, otherwise no value.
-/// Height, weights, normals, grass control and premultiplied color each have one encoding.
+/// The kind of field whose store holds `format` pages under `filter`: heights in steps under the
+/// height tent, splat weights as four linear bytes under the weights tent, normals as BC5 under the
+/// normal tent, grass control as two linear bytes under the plain tent, color as sRGB bytes under
+/// the premultiplied tent. Empty for a pair that no kind uses.
 std::optional<PageFieldKind> PageEncodingKind(PageFieldFormat format, PageFieldFilter filter);
 
 /// The name of `kind` as a refusal reads it, for example "grass control".
@@ -50,9 +52,22 @@ const char* PageFieldKindName(PageFieldKind kind);
 /// DataOffset() bytes.
 std::vector<uint8> SerializePageStoreHead(const PageStoreLayout& layout);
 
-/// Validates the requested store kind, version, directories, page ranges and byte extents.
-/// Returns an empty string and fills out on success, otherwise a reason with the required fix.
+/// Reads and validates the head of the `kind` store at `baseOffset` of the open `file`, whose
+/// store occupies at most `availableBytes` from there. Every count is checked against its bound
+/// and every present page against the available bytes before anything is allocated from it; the
+/// pages end at the store's last byte. A store whose format and filter are not `kind`'s, or of
+/// another format version, is refused with the way to cook it again. Returns an empty string and
+/// fills `out`, else the reason.
 std::string ReadPageStoreHead(SharedFileReader& file, PageFieldKind kind, uint64 baseOffset, uint64 availableBytes,
                               PageStoreLayout& out);
+
+/// The layout of a store with `header` whose present pages are `present` (any order): for a sparse
+/// store too large for a dense presence table, such as an authored planet layer. None when an
+/// address is outside the store or repeats.
+std::optional<PageStoreLayout> MakeSparsePageStoreLayout(const PageStoreHeader& header,
+                                                         std::span<const PageAddress> present);
+
+/// The page of face `face` and level `level` whose Morton code is `code`: the inverse of PageMortonCode.
+PageAddress PageOfMortonCode(uint8 face, uint8 level, uint64 code);
 
 } // namespace GameEngine::PageStreaming

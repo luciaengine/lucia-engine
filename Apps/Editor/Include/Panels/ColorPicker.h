@@ -14,6 +14,10 @@ class Slider;
 class TextField;
 class UIElement;
 
+/// The top of the picker's HDR intensity dial; an inspector row that edits an HDR color uses it as its
+/// maximum intensity.
+inline constexpr float kColorPickerMaxIntensity = 8.0f;
+
 // HSV (0-360, 0-1, 0-1) + HDR intensity (>= 1 for emissive).
 // Note: For simple HSV/RGB conversion without intensity, use `ColorHSV` from Types/Color.h.
 struct ColorPickerValue
@@ -226,7 +230,6 @@ private:
     // Common elements
     Slider* m_AlphaSlider = nullptr;
     Label* m_AlphaValueLabel = nullptr;
-    TextField* m_AlphaField = nullptr;
     Slider* m_IntensitySlider = nullptr;
     Label* m_IntensityValueLabel = nullptr;
     TextField* m_HField = nullptr;
@@ -237,7 +240,6 @@ private:
     TextField* m_BField = nullptr;
     TextField* m_AField = nullptr; // Alpha text field in RGBA row
     UIElement* m_SwatchEl = nullptr;
-    UIElement* m_SwatchCheckerboard = nullptr; // for alpha visualization
     TextField* m_HexField = nullptr;
     UIElement* m_ModeToggleBtn = nullptr;
     UIElement* m_PaletteRow = nullptr;

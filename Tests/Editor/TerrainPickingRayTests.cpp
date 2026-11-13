@@ -14,7 +14,7 @@
 #include <sstream>
 #include <string>
 
-#include "Picking/TerrainPicking.h"
+#include "Scene/TerrainPicking.h"
 #include "PagedTiledTerrain.h"
 #include "Scene/TerrainPicking.h"
 
@@ -29,10 +29,10 @@
 
 using GameEngine::Mathematics::Ray3D;
 using GameEngine::Mathematics::Vector3;
-using GameEngine::Editor::Picking::MarchTerrainSurface;
-using GameEngine::Editor::Picking::RaycastTerrain;
-using GameEngine::Editor::Picking::SolvePlanetSurfaceHit;
-using GameEngine::Editor::Picking::TerrainPickHit;
+using GameEngine::Scene::MarchTerrainSurface;
+using GameEngine::Scene::RaycastTerrain;
+using GameEngine::Scene::SolvePlanetSurfaceHit;
+using GameEngine::Scene::TerrainPickHit;
 
 namespace
 {
@@ -386,7 +386,7 @@ TEST(TerrainPickingRay, SphericalTerrainNeverReportsItsResidualFootprintPosition
     terrain.TerrainDataGeneration = handle.Generation;
 
     Components::WorldTransform xf{}; // identity, then lifted on Y
-    xf.matrix[13] = kFootprintY;
+    xf.Position.Y = kFootprintY;
 
     const GameEngine::ECS::EntityHandle e = world.CreateEntity();
     world.AddComponentImmediate(e, terrain);

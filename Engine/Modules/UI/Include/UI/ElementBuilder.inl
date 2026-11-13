@@ -7,7 +7,7 @@ ElementBuilder<T>::ElementBuilder(std::string_view tag)
     : m_Element(UIRegistration::ElementFactoryRegistry::Instance().Create<T>(tag))
 {
     if (m_Element)
-        UIRegistration::ElementFactoryRegistry::Instance().ApplyAttributes(*m_Element, {}, {});
+        UIRegistration::ElementFactoryRegistry::Instance().ApplyAttributes(*m_Element, {}, {}, {}, 0);
 }
 
 template<class T> requires std::derived_from<T, UIElement>

@@ -1,18 +1,17 @@
 #include "Ocean/OceanShadowSim.h"
-#include "Engine/Rendering/FrameOrchestrator.h"
 #include "Engine/Rendering/Pipeline/PipelineResourceNames.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Logger/Logger.h"
-#include "Ocean/OceanFrameStamp.h"
-#include "Ocean/OceanPreparedDispatch.h"
-#include "Ocean/OceanShaderProgram.h"
-#include "Rendering/Materials/ShaderLayoutShape.h"
-#include "OceanShaderDirectory.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Ocean/OceanShader/OceanShaderProgram.h"
+#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
+#include "OceanShader/OceanShaderDirectory.h"
+#include "Rendering/Core/CommandList.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace GameEngine::Ocean
 {
@@ -21,14 +20,14 @@ namespace
 {
 struct alignas(16) ShadowInputGPU
 {
-    float Rect[4]{};
-    float Values[4]{};
+    Mathematics::Vector4 Rect;
+    Mathematics::Vector4 Values;
 };
 struct alignas(16) ShadowParamsGPU
 {
     OceanCascadeLayoutGPU Current{}, Previous{};
-    float Simulation[4]{}; // sea level, previous weight, soft jitter diameter, hard jitter diameter
-    float Frame[4]{};      // history valid, seed, input count, pad
+    Mathematics::Vector4 Simulation; // sea level, previous weight, soft jitter diameter, hard jitter diameter
+    Mathematics::Vector4 Frame;      // history valid, seed, input count, pad
     ShadowInputGPU Inputs[64]{};
 };
 static_assert(sizeof(ShadowParamsGPU) == 2336);
@@ -37,29 +36,10 @@ struct OceanShadowSim::History
 {
     OceanCascadeArray Fields[2];
     uint32 Index = 0;
-    RenderGraph::RGFrameStamp RecordedFrame, PlannedFrame;
-    FramePlan* Plan = nullptr;
-    uint64 ClaimedEpoch = ~0ull;
+    OceanFrameStamp Declared;
     std::chrono::steady_clock::time_point LastUsed{};
     float Time = 0, Sun[3]{};
     bool Valid = false;
-};
-struct OceanShadowSim::FramePlan
-{
-    // Keep both arrays alive if a later declaration prunes or replaces the map entry.
-    std::shared_ptr<History> Lease;
-    RenderGraph::RGFrameStamp Owner;
-    uint32 WriteIndex = 0;
-    OceanCascadeLayoutGPU Layout{};
-    float Time = 0, Sun[3]{}, Channels[2]{};
-    TextureHandle ExpectedOutput{};
-    RenderGraph::RGTexture Previous{}, Output{}, ShadowArray{};
-    Engine::Renderer::Pipeline::PipelineBufferBindingRG ShadowData{};
-    BufferHandle Params{};
-    uint64 ParamsOffset = 0;
-    SamplerHandle ShadowSampler{};
-    OceanPreparedDispatch Commands;
-    bool Recorded = false;
 };
 OceanShadowSim::OceanShadowSim() = default;
 OceanShadowSim::~OceanShadowSim()
@@ -123,7 +103,7 @@ bool OceanShadowSim::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare &d, 
     const uint64 frame = d.Frame.FrameIndex();
     if (!m_Settings.Enabled)
     {
-        m_Histories.Clear();
+        m_Histories.clear();
         return false;
     }
     const auto data = d.ResolveBuffer(Engine::Renderer::Pipeline::Names::Res::ShadowData);
@@ -136,43 +116,40 @@ bool OceanShadowSim::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare &d, 
     const uint32 resolution = std::clamp(m_Settings.Resolution, 32u, 1024u);
     const uint32 count = std::clamp(m_Settings.CascadeCount, 1u, kMaxOceanLodCascades);
     const auto now = std::chrono::steady_clock::now();
-    m_Histories.EraseIf([&](ViewId view, const auto& entry) {
-        return view != d.View.id && entry && now - entry->LastUsed > kOceanViewHistoryIdleTimeout;
+    std::erase_if(m_Histories, [&](const auto &entry) {
+        return entry.first != d.View.id && entry.second &&
+               now - entry.second->LastUsed > kOceanViewHistoryIdleTimeout;
     });
-    auto &slot = m_Histories.GetOrInsert(d.View.id);
+    auto &slot = m_Histories[d.View.id];
     if (!slot || slot->Fields[0].GetResolution() != resolution || slot->Fields[0].GetLodCount() != count)
     {
-        slot = std::make_shared<History>();
+        slot = std::make_unique<History>();
         const std::string prefix = "Ocean.Shadows.View" + std::to_string(d.View.id);
         for (uint32 i = 0; i < 2; ++i)
             if (!slot->Fields[i].Initialize(m_Device, resolution, count, TextureFormat::R16G16_FLOAT, 64.0f,
                                             (prefix + (i ? ".B" : ".A")).c_str()))
             {
-                m_Histories.Erase(d.View.id);
+                slot.reset();
                 return false;
             }
     }
     auto &h = *slot;
     h.LastUsed = now;
-    if (h.PlannedFrame.IsFor(d.Frame))
+    if (h.Declared.IsFrame(frame))
         return true;
-    const uint64 epoch = d.Services.Spine().WorldFrameEpoch();
-    if (h.ClaimedEpoch == epoch)
-        return false;
     const float elapsed = params.Time - h.Time;
     float sunChange = 0;
     for (uint32 i = 0; i < 3; ++i)
         sunChange += std::abs(h.Sun[i] - params.SunDirection[i]);
     const bool history =
-        h.Valid && elapsed >= 0 && elapsed < 1.0f && sunChange < 0.02f &&
-        h.RecordedFrame.Frame == &d.Frame && h.RecordedFrame.FrameIndex + 1u == frame;
+        h.Valid && elapsed >= 0 && elapsed < 1.0f && sunChange < 0.02f && h.Declared.PrecedesFrame(frame);
     const uint32 write = h.Index ^ 1u;
-    const auto projected = h.Fields[write].ProjectedLayout(camera->cameraPos[0], camera->cameraPos[2]);
+    h.Fields[write].SnapToCamera(camera->cameraPos.x, camera->cameraPos.z);
     const auto upload = d.Frame.AllocUpload<ShadowParamsGPU>();
     if (!upload.Valid())
         return false;
     ShadowParamsGPU u{};
-    u.Current = projected;
+    u.Current = h.Fields[write].GetLayout();
     u.Previous = h.Fields[h.Index].GetLayout();
     u.Simulation[0] = params.SeaLevel;
     u.Simulation[1] =
@@ -200,156 +177,72 @@ bool OceanShadowSim::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare &d, 
     }
     u.Frame[2] = static_cast<float>(inputCount);
     *upload.Ptr = u;
-    auto* plan = d.Frame.AllocatePassData<FramePlan>();
-    plan->Lease = slot;
-    plan->Owner.Stamp(d.Frame);
-    plan->WriteIndex = write;
-    plan->Layout = projected;
-    plan->Time = params.Time;
-    std::copy_n(params.SunDirection, 3, plan->Sun);
-    plan->Channels[0] = m_Settings.HardChannelScale;
-    plan->Channels[1] = m_Settings.SoftChannelScale;
-    plan->ExpectedOutput = h.Fields[write].GetTexture();
-    plan->Previous = h.Fields[h.Index].ImportRG(d.Frame);
-    plan->Output = h.Fields[write].ImportRG(d.Frame);
-    plan->ShadowArray = array;
-    plan->ShadowData = data;
-    plan->Params = upload.Buffer;
-    plan->ParamsOffset = upload.Offset;
-    plan->ShadowSampler = resources->shadowSampler;
+    const auto previous = h.Fields[h.Index].ImportRG(d.Frame), output = h.Fields[write].ImportRG(d.Frame);
+    const auto pipe = m_Pipeline;
+    const auto layout = m_Layout;
+    const auto sampler = m_Sampler;
+    const auto shadowSampler = resources->shadowSampler;
     d.Frame.AddPass(
         "OceanShadowAccumulate", PassPhase::kEarlySetup,
-        [this, plan, view = d.View.id](RenderGraph::RGPassBuilder &p) {
-            p.UsePipeline(m_Pipeline);
-            p.Read(plan->ShadowArray, RenderGraph::RGTextureRead::SampledCompute);
-            p.Read(plan->Previous, RenderGraph::RGTextureRead::SampledCompute);
-            p.Write(plan->Output, RenderGraph::RGTextureWrite::Storage);
-            if (plan->ShadowData.Graph.IsValid())
-                p.Read(plan->ShadowData.Graph, RenderGraph::RGBufferRead::Uniform);
-            p.Prepare([this, plan, view](RenderGraph::RGPrepareContext& ctx) { return Prepare(view, *plan, ctx); });
+        [&](RenderGraph::RGPassBuilder &p) {
+            p.Read(array, RenderGraph::RGTextureRead::SampledCompute);
+            p.Read(previous, RenderGraph::RGTextureRead::SampledCompute);
+            p.Write(output, RenderGraph::RGTextureWrite::Storage);
+            if (data.Graph.IsValid())
+                p.Read(data.Graph, RenderGraph::RGBufferRead::Uniform);
         },
-        [this, plan, view = d.View.id](RenderGraph::RGContext &ctx) { Record(view, *plan, ctx); });
-    d.Frame.MarkOutput(plan->Output, RenderGraph::RGImageLayout::ShaderReadOnly);
-    h.PlannedFrame.Stamp(d.Frame);
-    h.Plan = plan;
-    h.ClaimedEpoch = epoch;
-    return true;
-}
-
-bool OceanShadowSim::IsCurrentPlan(ViewId view, const FramePlan& plan) const
-{
-    const auto* slot = m_Histories.Find(view);
-    if (!slot || !*slot || *slot != plan.Lease || plan.Recorded)
-        return false;
-    const auto& h = **slot;
-    return h.Plan == &plan && h.PlannedFrame.Frame == plan.Owner.Frame &&
-        h.PlannedFrame.FrameIndex == plan.Owner.FrameIndex &&
-        h.Fields[plan.WriteIndex].GetTexture() == plan.ExpectedOutput;
-}
-
-bool OceanShadowSim::Prepare(ViewId view, FramePlan& plan, RenderGraph::RGPrepareContext& ctx) const
-{
-    plan.Commands = {};
-    if (!IsCurrentPlan(view, plan))
-        return false;
-    auto* device = ctx.GetDevice();
-    if (!device)
-        return false;
-    const auto pipeline = ctx.PreparePipeline(m_Pipeline);
-    const auto previous = ctx.GetTexture(plan.Previous);
-    const auto output = ctx.GetTexture(plan.Output);
-    const auto array = ctx.GetTexture(plan.ShadowArray);
-    const auto& data = plan.ShadowData;
-    const auto dataBuffer = data.Graph.IsValid() ? ctx.GetBuffer(data.Graph) : data.Buffer;
-    if (!pipeline || !previous.IsValid() || output != plan.ExpectedOutput || !array.IsValid() ||
-        !dataBuffer.IsValid() || !plan.Params.IsValid())
-        return false;
-    DescriptorSetDesc desc{};
-    desc.layout = m_Layout;
-    desc.transient = true;
-    desc.debugName = "Ocean.Shadows.DS";
-    const auto set = device->CreateDescriptorSet(desc);
-    if (!set.IsValid())
-        return false;
-    device->UpdateBufferBinding(set, 0, plan.Params, plan.ParamsOffset, sizeof(ShadowParamsGPU));
-    device->UpdateCombinedImageSamplerBinding(set, 1, previous, m_Sampler);
-    device->UpdateStorageImageBinding(set, 2, output);
-    device->UpdateBufferBinding(set, 8, dataBuffer, data.Offset, data.Size);
-    device->UpdateCombinedImageSamplerBinding(set, 9, array, plan.ShadowSampler);
-    const auto& field = plan.Lease->Fields[plan.WriteIndex];
-    const uint32 groups = (field.GetResolution() + 7u) / 8u;
-    plan.Commands = {pipeline, set, groups, groups, field.GetLodCount(), output};
-    return true;
-}
-
-void OceanShadowSim::Record(ViewId view, FramePlan& plan, RenderGraph::RGContext& ctx)
-{
-    if (!IsCurrentPlan(view, plan) || plan.Commands.Target != plan.ExpectedOutput ||
-        !RecordOceanPreparedDispatch(ctx.Cmd, plan.Commands))
-        return;
-    plan.Recorded = true;
-    auto& h = *plan.Lease;
-    h.Fields[plan.WriteIndex].CommitLayout(plan.Layout);
-    h.Index = plan.WriteIndex;
-    h.RecordedFrame = plan.Owner;
-    h.Time = plan.Time;
+        [pipe, layout, sampler, shadowSampler, previous, output, array, data, buffer = upload.Buffer,
+         offset = upload.Offset, resolution, count](RenderGraph::RGContext &ctx) {
+            auto *device = ctx.GetDevice();
+            if (!device || !ctx.Cmd)
+                return;
+            const auto pso = device->GetOrCreateComputePipeline(pipe);
+            if (!pso)
+                return;
+            DescriptorSetDesc desc{};
+            desc.layout = layout;
+            desc.transient = true;
+            desc.debugName = "Ocean.Shadows.DS";
+            const auto ds = device->CreateDescriptorSet(desc);
+            device->UpdateBufferBinding(ds, 0, buffer, offset, sizeof(ShadowParamsGPU));
+            device->UpdateCombinedImageSamplerBinding(ds, 1, ctx.GetTexture(previous), sampler);
+            device->UpdateStorageImageBinding(ds, 2, ctx.GetTexture(output));
+            device->UpdateBufferBinding(ds, 8, data.Buffer, data.Offset, data.Size);
+            device->UpdateCombinedImageSamplerBinding(ds, 9, ctx.GetTexture(array), shadowSampler);
+            ctx.Cmd->SetPipeline(pso);
+            ctx.Cmd->BindDescriptorSet(0, ds, pso);
+            ctx.Cmd->Dispatch((resolution + 7u) / 8u, (resolution + 7u) / 8u, count);
+        });
+    d.Frame.MarkOutput(output, RenderGraph::RGImageLayout::ShaderReadOnly);
+    h.Index = write;
+    h.Declared.Frame = frame;
+    h.Time = params.Time;
     h.Valid = true;
-    std::copy_n(plan.Sun, 3, h.Sun);
+    std::copy_n(params.SunDirection.v, 3, h.Sun);
+    return true;
 }
-
-const OceanShadowSim::FramePlan* OceanShadowSim::FindPlan(ViewId view, const RenderGraph::RGFrame& frame) const
-{
-    const auto* slot = m_Histories.Find(view);
-    return slot && *slot && (*slot)->PlannedFrame.IsFor(frame) ? (*slot)->Plan : nullptr;
-}
-
-bool OceanShadowSim::FillSampling(ViewId view, const RenderGraph::RGFrame& frame,
-                                  OceanShadowSamplingGPU& out) const
+bool OceanShadowSim::FillSampling(ViewId view, uint64 frame, OceanShadowSamplingGPU &out) const
 {
     out = {};
-    const auto* plan = FindPlan(view, frame);
-    if (!plan)
+    const auto it = m_Histories.find(view);
+    if (it == m_Histories.end() || !it->second || !it->second->Declared.IsFrame(frame))
         return false;
-    out.Layout = plan->Layout;
-    out.Channels[0] = plan->Channels[0];
-    out.Channels[1] = plan->Channels[1];
+    out.Layout = it->second->Fields[it->second->Index].GetLayout();
+    out.Channels[0] = m_Settings.HardChannelScale;
+    out.Channels[1] = m_Settings.SoftChannelScale;
     out.Channels[2] = 1.0f;
     return true;
 }
-
 TextureHandle OceanShadowSim::GetTexture(ViewId view) const
 {
-    const auto* slot = m_Histories.Find(view);
-    return slot && *slot && (*slot)->Valid ? (*slot)->Fields[(*slot)->Index].GetTexture() : TextureHandle{};
+    const auto it = m_Histories.find(view);
+    return it != m_Histories.end() && it->second ? it->second->Fields[it->second->Index].GetTexture()
+                                                 : TextureHandle{};
 }
-
-TextureHandle OceanShadowSim::GetTexture(ViewId view, const RenderGraph::RGFrame& frame) const
+RenderGraph::RGTexture OceanShadowSim::ImportRG(RenderGraph::RGFrame &frame, ViewId view) const
 {
-    const auto* plan = FindPlan(view, frame);
-    return plan ? plan->ExpectedOutput : GetTexture(view);
-}
-
-RenderGraph::RGTexture OceanShadowSim::ImportRG(RenderGraph::RGFrame& frame, ViewId view) const
-{
-    const auto* plan = FindPlan(view, frame);
-    const auto* slot = m_Histories.Find(view);
-    if (plan)
-        return plan->Lease->Fields[plan->WriteIndex].ImportRG(frame);
-    return slot && *slot && (*slot)->Valid ? (*slot)->Fields[(*slot)->Index].ImportRG(frame)
-                                         : RenderGraph::RGTexture{};
-}
-
-void OceanShadowSim::ForgetFrame(const RenderGraph::RGFrame& frame)
-{
-    for (auto& [view, h] : m_Histories)
-    {
-        if (h->PlannedFrame.Frame == &frame)
-        {
-            h->PlannedFrame = {};
-            h->Plan = nullptr;
-        }
-        if (h->RecordedFrame.Frame == &frame)
-            h->RecordedFrame = {};
-    }
+    const auto it = m_Histories.find(view);
+    return it != m_Histories.end() && it->second ? it->second->Fields[it->second->Index].ImportRG(frame)
+                                                 : RenderGraph::RGTexture{};
 }
 } // namespace GameEngine::Ocean

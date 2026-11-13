@@ -11,7 +11,6 @@
 #include "Engine/Rendering/AnimationSampling.h"
 
 #include <algorithm>
-#include <cstring>
 
 namespace GameEngine
 {
@@ -26,10 +25,10 @@ void RigidAnimationSystem::Update(ECS::World& world, [[maybe_unused]] float32 de
                              ECS::Read<SkeletonRef>,
                              ECS::Read<AnimatedNodeRef>,
                              ECS::Write<Transform>>();
-    query.Each([&](ECS::EntityHandle, ECS::Writable<AnimatorRef> animatorRow, const SkeletonRef& skeletonRef,
-                   const AnimatedNodeRef& nodeRef, ECS::Writable<Transform> transformRow)
+    query.Each([&](ECS::EntityHandle, ECS::Writable<AnimatorRef> animatorRow, const SkeletonRef& skeletonRef, const AnimatedNodeRef& nodeRef, ECS::Writable<Transform> transformRow)
     {
-        const AnimatorRef& animator = animatorRow.Get();
+        auto& animator = animatorRow.Mutable();
+        auto& transform = transformRow.Mutable();
         if (animator.ClipIndex == 0 || skeletonRef.skeletonId == 0)
             return;
 
@@ -50,11 +49,11 @@ void RigidAnimationSystem::Update(ECS::World& world, [[maybe_unused]] float32 de
             {
                 if (animator.IsLooping())
                 {
-                    animatorRow.Mutable().Time = static_cast<float>(WrapClipTime(animator.Time, 0.0f, duration));
+                    animator.Time = static_cast<float>(WrapClipTime(animator.Time, 0.0f, duration));
                 }
                 else if (animator.Time > duration)
                 {
-                    animatorRow.Mutable().Time = duration;
+                    animator.Time = duration;
                 }
             }
         }
@@ -64,7 +63,8 @@ void RigidAnimationSystem::Update(ECS::World& world, [[maybe_unused]] float32 de
         if (matrixOffset + 16u > m_NodeWorldMatrices.size())
             return;
 
-        std::memcpy(transformRow.Mutable().matrix, m_NodeWorldMatrices.data() + matrixOffset, sizeof(float32) * 16u);
+        transform = Components::Transform::FromMatrix4x4(
+            Mathematics::Matrix4x4::FromColumnMajor(m_NodeWorldMatrices.data() + matrixOffset));
     });
 }
 

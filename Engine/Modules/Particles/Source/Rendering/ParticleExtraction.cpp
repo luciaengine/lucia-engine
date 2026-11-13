@@ -27,7 +27,6 @@
 #include "Rendering/Common/Frustum.h"
 #include "Rendering/Common/MatrixUtils.h"
 #include "Rendering/Core/DeviceFrameCounter.h"
-#include "Rendering/Core/HashUtils.h"
 #include "Types/ScopedSubscription.h"
 
 #include <algorithm>
@@ -169,7 +168,8 @@ struct ParticleExtraction::Impl
         // emitter or simulation keeps all three).
         double LastElapsed = -1.0;
         float LastInterpolation = -1.0f;
-        std::array<float, 16> LastTransform{};
+        Mathematics::WorldPosition LastPosition{};
+        Mathematics::Matrix3x3 LastBasis;
         GUID MaterialGuid = GUID::Null();
         // The effective document the emitter draws with, serialized: its key in m_SharedMaterials.
         std::string MaterialDescription;
@@ -222,7 +222,8 @@ struct ParticleExtraction::Impl
         const Material* MaterialPtr = nullptr;
         GameEngine::Rendering::MeshGPUHandle Mesh{};
         ECS::EntityId Emitter = 0;
-        uint32 SpawnIndex = 0, LayerMask = 1;
+        uint32 SpawnIndex = 0;
+        GameEngine::Rendering::RenderLayerMask Layers;
         // The emitter's particles moved since the previous frame (its clock or transform changed).
         bool Moving = false;
         Components::ParticleDrawOrder Order = Components::ParticleDrawOrder::ViewDepth;
@@ -245,6 +246,7 @@ struct ParticleExtraction::Impl
     std::unordered_map<GameEngine::Rendering::ViewId, std::vector<DrawCommand>> m_ParticleForwardCommands;
     // RAII: unregisters on destruction, safe if RenderServices died first.
     ScopedSubscription m_ParticleForwardProducer;
+    Rendering::DrawProducerId m_DrawProducer = Rendering::DrawProducerRegistry::kOther; // "Particles"
     uint64 m_ParticleFrameCounter = 0u;
     // Unwraps the device's frame slot so all kSortedIndirectionSlots elements
     // rotate: the slot's VALUE would cap the rotation at the device's pacing.
@@ -406,10 +408,11 @@ struct ParticleExtraction::Impl
         const Particles::ParticleRuntime* simulation = &found->second.Simulation;
         const bool moving = simulation->Elapsed() != cache.LastElapsed ||
                             simulation->Interpolation() != cache.LastInterpolation ||
-                            !std::equal(cache.LastTransform.begin(), cache.LastTransform.end(), xf.matrix);
+                            !(cache.LastPosition == xf.Position) || cache.LastBasis.GetGLM() != xf.Basis.GetGLM();
         cache.LastElapsed = simulation->Elapsed();
         cache.LastInterpolation = simulation->Interpolation();
-        std::copy_n(xf.matrix, 16, cache.LastTransform.begin());
+        cache.LastPosition = xf.Position;
+        cache.LastBasis = xf.Basis;
         // A prewarming emitter shows nothing until its prewarm completes, rather than fast-forwarding.
         if (simulation->IsPrewarming() || (simulation->Count() == 0 && simulation->Trails().ActiveCount() == 0))
             return;
@@ -479,11 +482,11 @@ struct ParticleExtraction::Impl
         item.Emitter = entity.id;
         item.Moving = moving;
         item.Order = renderer.DrawOrder;
-        item.LayerMask = renderer.RenderLayerMask;
+        item.Layers = renderer.RenderLayers;
         item.LodStart = renderer.ThinningStart;
         item.LodEnd = renderer.ThinningEnd;
-        std::copy_n(xf.matrix + 12, 3, &item.EmitterPosition.x);
-        const Mathematics::Matrix4x4 emitterTransform{glm::make_mat4(xf.matrix)};
+        item.EmitterPosition = xf.GetPosition() - Mathematics::WorldPosition{};
+        const Mathematics::Matrix4x4 emitterTransform = xf.ToMatrix4x4(item.EmitterPosition);
         const bool local = emitter.LocalSpace;
         const auto& channels = simulation->Channels();
         const float interpolation = simulation->Interpolation();
@@ -518,7 +521,7 @@ struct ParticleExtraction::Impl
             {
                 ExtractedLight light;
                 light.type = Components::LightType::Point;
-                std::copy_n(&position.x, 3, light.positionWS);
+                light.positionWS = Mathematics::WorldPosition::FromVector3(position);
                 light.range = lightRanges[index];
                 light.intensity = lightIntensities[index];
                 for (int channel = 0; channel < 3; ++channel)
@@ -529,7 +532,7 @@ struct ParticleExtraction::Impl
                 ++particleLights;
             }
             const float age = Lerp(previousAges[index], ages[index], interpolation);
-            const float t = std::clamp(age / std::max(lifetimes[index], 0.001f), 0.0f, 1.0f);
+            const float t = Math::Clamp01(age / std::max(lifetimes[index], 0.001f));
             const float size = Lerp(previousSizes[index], sizes[index], interpolation);
             data.PositionSize = {position.x, position.y, position.z, size};
             const Mathematics::Vector3 velocity = local ? EmitterVector(emitterTransform, velocities[index]) : velocities[index];
@@ -547,9 +550,9 @@ struct ParticleExtraction::Impl
             // their basis from each draw camera in GLSL.
             for (int a = 0; a < 3; ++a)
             {
-                data.AxisX[a] = xf.matrix[a];
-                data.AxisY[a] = xf.matrix[4 + a];
-                data.AxisZ[a] = xf.matrix[8 + a];
+                data.AxisX[a] = xf.Basis[0][a];
+                data.AxisY[a] = xf.Basis[1][a];
+                data.AxisZ[a] = xf.Basis[2][a];
             }
             if (!renderer.InheritScale)
             {
@@ -717,14 +720,17 @@ void ParticleExtraction::Extract(ECS::World& world, uint64 worldId, RenderServic
     m_Impl->m_RenderServicesAlive = rs->LifetimeToken();
     auto* device = rs->GetDevice();
     if (!m_Impl->m_ParticleForwardProducer)
+    {
+        m_Impl->m_DrawProducer = Rendering::DrawProducerRegistry::Register("Particles");
         m_Impl->m_ParticleForwardProducer = rs->RegisterForwardEmit(
             [this](ForwardEmitContext& context)
             { EmitForwardCommands(context); }, {.WritesDepth = false});
+    }
     const auto& views = rs->Views().GetViews();
     auto& matchingViews = m_Impl->m_MatchingViews;
     matchingViews.clear();
     for (const auto& view : views)
-        if ((view.worldId == 0 || view.worldId == worldId) && view.ActiveRenderLayerMask() != 0)
+        if ((view.worldId == 0 || view.worldId == worldId) && view.ActiveRenderLayerMask() != GameEngine::Rendering::RenderLayerMask::None())
             matchingViews.push_back(&view);
     if (matchingViews.empty())
         return;
@@ -734,7 +740,7 @@ void ParticleExtraction::Extract(ECS::World& world, uint64 worldId, RenderServic
         meshHandle = meshReg.RegisterSubmesh({PrimitiveGenerator::PlaneSpriteUvGuid(), 0u}, PrimitiveGenerator::GeneratePlaneSpriteUv());
     const uint64 frameId = ++m_Impl->m_ParticleFrameCounter;
     const uint32 frameSlot =
-        m_Impl->m_SortedIndirectionFrameCounter.Tick(device->GetFrameIndex()) % Impl::kSortedIndirectionSlots;
+        static_cast<uint32>(m_Impl->m_SortedIndirectionFrameCounter.Tick(device->GetFrameIndex()) % Impl::kSortedIndirectionSlots);
     const uint32 recordBudget = std::min(m_Impl->m_ParticleState->Budget * 4u, 262144u);
     uint32 particleLights = 0;
 
@@ -750,8 +756,10 @@ void ParticleExtraction::Extract(ECS::World& world, uint64 worldId, RenderServic
         const auto* renderer = world.GetComponent<Components::ParticleRenderer>(entry.Entity);
         if (renderer && !ECS::Entity(&world, entry.Entity).IsEnabled<Components::ParticleRenderer>())
             continue;
+        const Components::Transform pose = Components::Transform::FromMatrix4x4(entry.Transform);
         Components::WorldTransform xf{};
-        std::copy_n(entry.Transform.Data(), 16, xf.matrix);
+        xf.Position = pose.Position;
+        xf.Basis = pose.Basis;
         m_Impl->ProcessEmitter(frame, m_Impl->m_EmitterCaches, entry.Entity, xf, entry.Emitter,
                                renderer ? *renderer : kDefaultRenderer);
     }
@@ -808,25 +816,23 @@ void ParticleExtraction::Extract(ECS::World& world, uint64 worldId, RenderServic
         const auto* camera = rs->Views().FindCameraData(view->cameraId);
         if (!camera)
             continue;
-        Rendering::Matrix4x4 viewProjection;
-        std::copy_n(camera->viewProj, 16, viewProjection.Data());
         Rendering::Vector4 planes[6];
-        Rendering::ExtractFrustumPlanes(viewProjection, planes);
+        Rendering::ExtractFrustumPlanes(camera->viewProj, planes);
         m_Impl->m_Indices.clear();
         bool viewSeesMotion = false;
         for (uint32 i = 0; i < m_Impl->m_Particles.size(); ++i)
         {
             const auto& item = m_Impl->m_DrawItems[i];
             const auto& particle = m_Impl->m_Particles[i];
-            if ((item.LayerMask & view->ActiveRenderLayerMask()) == 0)
+            if (!item.Layers.Intersects(view->ActiveRenderLayerMask()))
                 continue;
             const auto& p = particle.PositionSize;
             if (!Rendering::TestSphereFrustum(Rendering::Vector3(p[0], p[1], p[2]), item.Radius, planes))
                 continue;
             if (item.LodEnd > item.LodStart)
             {
-                const float dx = p[0] - camera->cameraPos[0], dy = p[1] - camera->cameraPos[1], dz = p[2] - camera->cameraPos[2];
-                const float fraction = std::clamp((item.LodEnd - std::sqrt(dx * dx + dy * dy + dz * dz)) / (item.LodEnd - item.LodStart), 0.0f, 1.0f);
+                const float dx = p[0] - camera->cameraPos.x, dy = p[1] - camera->cameraPos.y, dz = p[2] - camera->cameraPos.z;
+                const float fraction = Math::Clamp01((item.LodEnd - std::sqrt(dx * dx + dy * dy + dz * dz)) / (item.LodEnd - item.LodStart));
                 uint32 hash = item.SpawnIndex * 747796405u + static_cast<uint32>(item.Emitter) * 2891336453u;
                 hash = (hash ^ (hash >> 16)) * 2246822519u;
                 if (static_cast<float>(hash & 0xFFFFFFu) / 16777216.0f >= fraction)
@@ -894,6 +900,7 @@ void ParticleExtraction::Extract(ECS::World& world, uint64 worldId, RenderServic
             if (const auto* mesh = meshReg.Find(item.Mesh))
             {
                 DrawCommand command{};
+                command.Producer = m_Impl->m_DrawProducer;
                 command.Material = item.MaterialPtr;
                 command.Geometry.Mesh = item.Mesh;
                 command.VertexFlags = mesh->vertexFlags;

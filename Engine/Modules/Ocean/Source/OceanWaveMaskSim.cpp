@@ -1,14 +1,14 @@
 #include "Ocean/OceanWaveMaskSim.h"
-#include "Ocean/OceanShaderProgram.h"
-#include "Rendering/Materials/ShaderLayoutShape.h"
-#include "OceanShaderDirectory.h"
+#include "Ocean/OceanShader/OceanShaderProgram.h"
+#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
+#include "OceanShader/OceanShaderDirectory.h"
 
 #include "Logger/Logger.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
 
 #include <algorithm>
@@ -207,30 +207,29 @@ void OceanWaveMaskSim::FillParams(OceanWaveMaskParamsGPU& out)
     out = m_Params;
 }
 
-OceanPreparedDispatch OceanWaveMaskSim::PrepareDispatch(
-    IDevice* device, BufferHandle paramsBuffer, uint64 paramsOffset) const
+void OceanWaveMaskSim::RecordDispatch(IDevice* device, CommandList* cl,
+                                      BufferHandle paramsBuffer, uint64 paramsOffset)
 {
-    if (!m_Ready || !device || !paramsBuffer.IsValid())
-        return {};
+    if (!m_Ready || !cl || !device || !paramsBuffer.IsValid())
+        return;
 
     const TextureHandle mask = m_Mask.GetTexture();
     const uint32 layers = m_LodCount;
 
-    PipelineHandle pipe = device->TryGetWarmComputePipeline(m_Pipe);
+    PipelineHandle pipe = device->GetOrCreateComputePipeline(m_Pipe);
     if (!pipe)
-        return {};
+        return;
 
     // Sync is graph-derived: the pass declares Write on the mask + both local
     // pages, the first declared reader restores ShaderReadOnly, and MarkOutput
     // covers reader-less frames. No manual barriers in here.
+    cl->SetPipeline(pipe);
 
     DescriptorSetDesc dsDesc{};
     dsDesc.layout = m_Layout;
     dsDesc.transient = true;
     dsDesc.debugName = "OceanWaveMask_DS";
     DescriptorSetHandle ds = device->CreateDescriptorSet(dsDesc);
-    if (!ds.IsValid())
-        return {};
 
     device->UpdateBufferBinding(ds, 0, paramsBuffer, paramsOffset, sizeof(OceanWaveMaskParamsGPU));
     device->UpdateStorageImageBinding(ds, 1, mask);
@@ -245,13 +244,10 @@ OceanPreparedDispatch OceanWaveMaskSim::PrepareDispatch(
                                                   m_Sampler);
     }
 
-    const uint32 g8 = (m_Resolution + 7u) / 8u;
-    return {pipe, ds, g8, g8, layers, mask};
-}
+    cl->BindDescriptorSet(0, ds, pipe);
 
-void OceanWaveMaskSim::RecordDispatch(CommandList* cl, const OceanPreparedDispatch& dispatch)
-{
-    RecordOceanPreparedDispatch(cl, dispatch);
+    const uint32 g8 = (m_Resolution + 7u) / 8u;
+    cl->Dispatch(g8, g8, layers);
 }
 
 RenderGraph::RGTexture OceanWaveMaskSim::ImportMaskRG(RenderGraph::RGFrame& frame) const

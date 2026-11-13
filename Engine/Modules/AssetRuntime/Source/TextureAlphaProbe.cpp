@@ -1,7 +1,5 @@
 #include "Assets/TextureAlphaProbe.h"
 
-#include "Types/StringUtils.h"
-
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -155,6 +153,14 @@ TextureAlphaContent ProbeTga(const uint8* bytes, size_t size)
     return TextureAlphaContent::MaybeAlpha;
 }
 
+std::string LowerAscii(std::string_view s)
+{
+    std::string out(s);
+    std::transform(out.begin(), out.end(), out.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return out;
+}
+
 } // namespace
 
 TextureAlphaContent ProbeTextureAlphaFromBytes(const uint8* bytes, size_t size,
@@ -172,7 +178,7 @@ TextureAlphaContent ProbeTextureAlphaFromBytes(const uint8* bytes, size_t size,
     if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF)
         return TextureAlphaContent::NoAlphaSource; // JPEG never carries alpha
 
-    if (ToLowerAscii(extensionHint) == ".tga")
+    if (LowerAscii(extensionHint) == ".tga")
         return ProbeTga(bytes, size);
 
     return TextureAlphaContent::MaybeAlpha;

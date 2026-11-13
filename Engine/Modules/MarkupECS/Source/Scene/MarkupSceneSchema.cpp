@@ -423,7 +423,7 @@ class MarkupSceneSchema final : public ISceneComponentSchema
 
     // The component's own lines need no service; the status (a tag name) and the notes do,
     // so a world saved without MarkupService keeps the component and its switch state.
-    void Serialize(const ECS::World& world, ECS::EntityHandle entity, [[maybe_unused]] const SceneSaveContext& ctx,
+    void Serialize(const ECS::World& world, ECS::EntityHandle entity, [[maybe_unused]] const SceneWriteContext& ctx,
                    std::vector<std::string>& outLines) const override
     {
         const auto* markup = world.GetComponent<Markup>(entity);
@@ -462,15 +462,15 @@ class MarkupSceneSchema final : public ISceneComponentSchema
                                     : FormatEntry(*service, notes->Entries[i])));
     }
 
-    bool ApplyProperty(ECS::World& world, ECS::EntityHandle entity, const SceneLoadContext& ctx,
+    bool ApplyProperty(ECS::World& world, ECS::EntityHandle entity, const SceneReadContext& ctx,
                        std::string_view property, std::string_view value, std::string* outError) const override
     {
         // A mark-up's notes are not a component, and an instance overrides components only,
-        // so a mark-up inside a blueprint or a subscene could not keep its thread.
-        if (!ctx.EntityIdPrefix.empty() || (ctx.SceneFile && ctx.SceneFile->extension() == ".blueprint"))
+        // so a mark-up inside a prefab or a subscene could not keep its thread.
+        if (!ctx.EntityIdPrefix.empty() || (ctx.SceneFile && ctx.SceneFile->extension() == ".prefab"))
         {
             if (outError)
-                *outError = "A mark-up belongs to a scene, not to a blueprint or a subscene; move it into the "
+                *outError = "A mark-up belongs to a scene, not to a prefab or a subscene; move it into the "
                             "scene that places the instance";
             return false;
         }
@@ -486,7 +486,7 @@ class MarkupSceneSchema final : public ISceneComponentSchema
         {
             if (!service)
                 return Refuse(outError, "MarkupService not initialized");
-            if (!ApplyServiceProperty(*service, world, entity, markup, property, value, outError))
+            if (!ApplyServiceProperty(ctx, *service, world, entity, markup, property, value, outError))
                 return false;
         }
         if (property == "revision" && service)
@@ -533,9 +533,9 @@ class MarkupSceneSchema final : public ISceneComponentSchema
 
     // The lines that name a tag or carry the notes. Each reads its whole value before it
     // writes, so a refused line changes nothing.
-    static bool ApplyServiceProperty(MarkupService& service, const ECS::World& world, ECS::EntityHandle entity,
-                                     Markup& markup, std::string_view property, std::string_view value,
-                                     std::string* outError)
+    static bool ApplyServiceProperty(const SceneReadContext& ctx, MarkupService& service, const ECS::World& world,
+                                     ECS::EntityHandle entity, Markup& markup, std::string_view property,
+                                     std::string_view value, std::string* outError)
     {
         std::string text;
         size_t index = 0;
@@ -584,7 +584,7 @@ class MarkupSceneSchema final : public ISceneComponentSchema
                 entries[index] = std::move(entry);
             return read;
         }
-        return Refuse(outError, "Unknown Markup property");
+        return ReportUnknownField(ctx, "Markup", property, outError);
     }
 };
 

@@ -1,8 +1,10 @@
 #include "Assets/DownloadPillOverlay.h"
-#include "Assets/PolyhavenDownloadManager.h"
-#include "Assets/PolyhavenService.h"
+#include "Assets/Polyhaven/PolyhavenDownloadManager.h"
+#include "Assets/Polyhaven/PolyhavenService.h"
 #include "ECS/Entity.h"
+#include "Mathematics/Interpolation.h"
 #include "UI/Controls/Label.h"
+#include "UI/Controls/ProgressBar.h"
 #include "UI/Layout/ElementOverrideHelpers.h"
 #include "UI/StyleProperties.h"
 #include "UI/UIElement.h"
@@ -21,7 +23,7 @@ namespace
 {
 int PercentOf(float fraction)
 {
-    return static_cast<int>(std::clamp(fraction, 0.0f, 1.0f) * 100.0f + 0.5f);
+    return static_cast<int>(Math::Clamp01(fraction) * 100.0f + 0.5f);
 }
 } // namespace
 
@@ -41,7 +43,7 @@ void DownloadPillOverlay::Build(const std::string& id, Widgets& out)
     auto pill = std::make_unique<UIElement>();
     pill->SetId(id);
     pill->AddClass("download-pill");
-    pill->Overrides()
+    pill->Style()
         .Set(Style::Position, PositionType::Absolute)
         .Set(Style::PointerEvents, false)
         .Set(Style::Opacity, 0.0f);
@@ -58,13 +60,10 @@ void DownloadPillOverlay::Build(const std::string& id, Widgets& out)
     out.Text = text.get();
     pill->AddChild(std::move(text));
 
-    auto track = std::make_unique<UIElement>();
-    track->AddClass("download-pill-track");
-    auto fill = std::make_unique<UIElement>();
-    fill->AddClass("download-pill-fill");
-    out.Fill = fill.get();
-    track->AddChild(std::move(fill));
-    pill->AddChild(std::move(track));
+    auto progress = std::make_unique<ProgressBar>();
+    progress->AddClass("download-pill-progress");
+    out.Progress = progress.get();
+    pill->AddChild(std::move(progress));
 
     out.Pill = pill.get();
     out.ImageSlug.clear();
@@ -87,15 +86,16 @@ void DownloadPillOverlay::ApplyState(Widgets& w, const std::string& name, float 
     if (w.Text)
         w.Text->SetText(text);
 
-    if (w.Fill)
+    if (w.Progress)
     {
-        // Indeterminate until the file count is known: a short teaser fill.
-        const float f = hasFraction ? std::clamp(fraction, 0.0f, 1.0f) : 0.12f;
-        w.Fill->Overrides().Set(Style::Width, StyleLength::Percent(f * 100.0f));
+        // Indeterminate only until the file count is known; from then on the fill shows the
+        // same value as the text.
+        w.Progress->SetIndeterminate(!hasFraction);
+        w.Progress->SetValueWithoutNotify(fraction);
     }
 
     // hostX/Y are the pill's absolute left/top within the host.
-    w.Pill->Overrides()
+    w.Pill->Style()
         .Set(Style::Position, PositionType::Absolute)
         .Set(Style::PositionLeft, StyleLength::Px(hostX))
         .Set(Style::PositionTop, StyleLength::Px(hostY))
@@ -109,7 +109,7 @@ void DownloadPillOverlay::ApplyImage(Widgets& w, const std::string& slug)
     w.ImageSlug = slug;
 
     std::error_code ec;
-    const std::filesystem::path thumb = PolyhavenService::GetCacheDir() / (slug + ".png");
+    const std::filesystem::path thumb = PolyhavenService::GetThumbnailPath(slug);
     if (!slug.empty() && std::filesystem::exists(thumb, ec))
     {
         w.Image->RemoveClass("download-pill-image-empty");
@@ -125,7 +125,7 @@ void DownloadPillOverlay::ApplyImage(Widgets& w, const std::string& slug)
 void DownloadPillOverlay::Hide(Widgets& w)
 {
     if (w.Pill)
-        w.Pill->Overrides().Set(Style::Opacity, 0.0f);
+        w.Pill->Style().Set(Style::Opacity, 0.0f);
     // Force the preview image to re-apply when the pill next shows a slug.
     w.ImageSlug.clear();
     w.LastPercent = -1000;

@@ -18,10 +18,11 @@ class Label;
 class Button;
 struct EditorContext;
 namespace Rendering { class IDevice; }
+namespace Editor { class StagingViewport; }
 
 // Dockable panel that shows a large preview of the currently selected asset.
-// The actual preview image is provided by the shared thumbnail system; this
-// panel just displays the resolved thumbnail texture.
+// A model, material or lens flare renders into the panel's staging view through
+// the thumbnail system's preview lane; other assets show their resolved thumbnail texture.
 class AssetViewPanel : public DockPanel
 {
 public:
@@ -71,6 +72,12 @@ private:
     void SchedulePreviewRefresh(int remainingAttempts);
     void UpdatePreviewVisual();
     void ApplyAssetPreviewBackground(const std::string& relOrEngine, uint64_t visualGeneration);
+    // Creates the staging view once the editor context has a pool, and attaches it to the
+    // thumbnail system's preview lane; detaches a released view.
+    void SyncPreviewStagingView();
+    // Detaches the preview lane and releases the view while the panel is hidden.
+    void ReleasePreviewStagingView();
+    void ShowPreviewViewport(bool show);
     void UpdateAnimationBadge(const std::string& text);
     void StepAnimation(float deltaSteps);
     void UpdateLensFlareNamePill(bool visible);
@@ -125,14 +132,13 @@ private:
     float m_FilterPillSecondsRemaining = 0.0f;
     std::unordered_map<std::string, float> m_HdriExposureByPath;
 
-    // Engine resource currently bound to `m_Image` (e.g. `engine:editor_material_thumb_<guid>`).
-    // Tracked so we can avoid swapping the bound resource until the *new*
-    // selection's render is ready — keeps the previous content on screen
-    // during the transition instead of going blank for several frames.
+    // The model, material or lens flare the staging view shows (e.g. `engine:editor_material_thumb_<guid>`).
+    // The view keeps the previous asset on screen until the new asset's first frame overwrites it.
     std::string m_DisplayedEngineResource;
-    // Engine resource we want to switch to but is not yet ready. Polled
-    // each Update() until ready.
+    // The engine resource the staging view shows once it writes the new asset's first frame. Polled each Update().
     std::string m_PendingEngineResource;
+    // Null without a staging view pool: then the panel shows no 3D preview.
+    Editor::StagingViewport* m_PreviewViewport = nullptr;
 
     // Video preview state
     Video::VideoPlayer m_VideoPlayer;

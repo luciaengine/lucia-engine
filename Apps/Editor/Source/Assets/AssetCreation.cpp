@@ -1,7 +1,5 @@
 #include "Assets/AssetCreation.h"
 
-#include <algorithm>
-
 #include "AssetCore/Asset.h"
 #include "UndoRedo/UndoRedoService.h"
 #include "UndoRedo/CreateTextFileCommand.h"
@@ -10,7 +8,6 @@
 #include "Assets/MaterialAsset.h"
 #include "Assets/ModelAsset.h"
 #include "Assets/NavGridAsset.h"
-#include "Assets/NavMeshAsset.h"
 #include "Assets/Textures/TextureMimeType.h"
 #include "Components/Rendering/MeshRenderer.h"
 #include "Editor/Entities/EntityMaterialTextureAssign.h"
@@ -27,6 +24,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <mutex>
@@ -244,39 +242,6 @@ AssetFileResult CreateDefaultNavGridFile(const std::filesystem::path& dir,
     return {target};
 }
 
-AssetFileResult CreateDefaultNavMeshFile(const std::filesystem::path& dir,
-                                         const std::string& baseName,
-                                         UndoRedoService* undo,
-                                         AssetManager* assets)
-{
-    return CreateAssetFile(dir, baseName, ".navmesh",
-        [](const std::string& /*name*/) {
-            Pathfinding::NavMeshSettings settings;
-            nlohmann::json json;
-            json["version"] = 1;
-
-            nlohmann::json s;
-            s["cellSize"] = settings.CellSize;
-            s["cellHeight"] = settings.CellHeight;
-            s["agentRadius"] = settings.AgentRadius;
-            s["agentHeight"] = settings.AgentHeight;
-            s["agentMaxClimb"] = settings.AgentMaxClimb;
-            s["agentMaxSlope"] = settings.AgentMaxSlope;
-            s["regionMinSize"] = settings.RegionMinSize;
-            s["regionMergeSize"] = settings.RegionMergeSize;
-            s["edgeMaxLen"] = settings.EdgeMaxLen;
-            s["edgeMaxError"] = settings.EdgeMaxError;
-            s["detailSampleDist"] = settings.DetailSampleDist;
-            s["detailSampleMaxError"] = settings.DetailSampleMaxError;
-            s["vertsPerPoly"] = settings.VertsPerPoly;
-            json["settings"] = s;
-            json["sourceGeometry"] = nlohmann::json::array();
-
-            return json.dump(4) + "\n";
-        },
-        "Create Navigation Mesh", undo, assets);
-}
-
 // Extract embedded images from a model to disk, returning a map from
 // embedded index to the written file path (relative to the material file location).
 static std::unordered_map<uint32, std::filesystem::path> ExtractEmbeddedTextures(
@@ -308,7 +273,7 @@ static std::unordered_map<uint32, std::filesystem::path> ExtractEmbeddedTextures
     for (uint32 i = 0; i < static_cast<uint32>(images.size()); ++i)
     {
         const auto& img = images[i];
-        if (img.Data.empty())
+        if (img.Data.Size() == 0)
             continue;
 
         std::string filename = modelStem + "_tex" + std::to_string(i) +
@@ -319,8 +284,8 @@ static std::unordered_map<uint32, std::filesystem::path> ExtractEmbeddedTextures
         {
             std::ofstream out(texPath, std::ios::binary | std::ios::trunc);
             if (out.is_open())
-                out.write(reinterpret_cast<const char*>(img.Data.data()),
-                          static_cast<std::streamsize>(img.Data.size()));
+                out.write(reinterpret_cast<const char*>(img.Data.Data()),
+                          static_cast<std::streamsize>(img.Data.Size()));
         }
 
         extracted[i] = texPath;

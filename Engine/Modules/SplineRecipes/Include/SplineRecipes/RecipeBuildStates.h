@@ -25,8 +25,10 @@ inline constexpr std::string_view kNoRenderDeviceReason =
     "The editor has no render device, so it cannot build the mesh.";
 inline constexpr std::string_view kSplineTooShortReason =
     "The spline has fewer than 2 points. Add points to build it.";
-inline constexpr std::string_view kNoFencePieceReason =
-    "The fence has no span or post mesh. Assign a mesh to one of its slots.";
+inline constexpr std::string_view kNoFencePartReason =
+    "The fence has no Span or Post part. Add a Span part with Add Part.";
+inline constexpr std::string_view kNoFencePartMeshReason =
+    "No Span or Post part of the fence has a mesh. Give one of them a mesh.";
 inline constexpr std::string_view kNoTileReason =
     "There is no tile to place. Add a mesh to Straight 1.";
 inline constexpr std::string_view kNothingToPaveReason =

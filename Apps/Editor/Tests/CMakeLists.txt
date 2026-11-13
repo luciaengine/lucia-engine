@@ -31,30 +31,6 @@ ge_stage_runtime_dependencies(EditorDeviceLossTests)
 
 add_test(NAME EditorDeviceLossTests COMMAND EditorDeviceLossTests)
 
-add_executable(EditorLogViewTests
-    LogViewTests.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Panels/LogView.cpp
-)
-
-target_include_directories(EditorLogViewTests
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/../Include
-)
-
-target_link_libraries(EditorLogViewTests
-    PRIVATE
-        Engine
-        GTest::gtest
-        GTest::gtest_main
-)
-
-target_compile_features(EditorLogViewTests PRIVATE cxx_std_20)
-
-ge_set_output_tests(EditorLogViewTests)
-ge_stage_runtime_dependencies(EditorLogViewTests)
-
-add_test(NAME EditorLogViewTests COMMAND EditorLogViewTests)
-
 add_executable(EditorCaptureOutputDirectoryTests
     CaptureOutputDirectoryTests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Editor/CaptureOutputDirectory.cpp
@@ -105,6 +81,31 @@ ge_stage_runtime_dependencies(EditorScreenshotCaptureWaitTests)
 
 add_test(NAME EditorScreenshotCaptureWaitTests COMMAND EditorScreenshotCaptureWaitTests)
 
+add_executable(EditorFrameSequenceRecordingTests
+    FrameSequenceRecordingTests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/DebugServer/Capture/FrameSequence/FrameSequenceRecording.cpp
+)
+
+target_include_directories(EditorFrameSequenceRecordingTests
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../Include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../Source
+)
+
+target_link_libraries(EditorFrameSequenceRecordingTests
+    PRIVATE
+        Engine
+        GTest::gtest
+        GTest::gtest_main
+)
+
+target_compile_features(EditorFrameSequenceRecordingTests PRIVATE cxx_std_20)
+
+ge_set_output_tests(EditorFrameSequenceRecordingTests)
+ge_stage_runtime_dependencies(EditorFrameSequenceRecordingTests)
+
+add_test(NAME EditorFrameSequenceRecordingTests COMMAND EditorFrameSequenceRecordingTests)
+
 add_executable(EditorThumbnailTests
     TextureThumbnailHandlerTests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/TextureThumbnailHandler.cpp
@@ -121,14 +122,6 @@ target_link_libraries(EditorThumbnailTests
         GTest::gtest
         GTest::gtest_main
 )
-target_include_directories(EditorThumbnailTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
-
-# stb's implementations live inside Engine.dll; the headers are needed here so
-# the handler can call stbir_resize_uint8_srgb and the test can read back PNGs.
-if(TARGET stb::stb)
-    target_link_libraries(EditorThumbnailTests PRIVATE stb::stb)
-endif()
-target_compile_definitions(EditorThumbnailTests PRIVATE GE_HAVE_STB)
 
 target_compile_features(EditorThumbnailTests PRIVATE cxx_std_20)
 
@@ -155,7 +148,6 @@ target_link_libraries(EditorUniversalSearchTests
         GTest::gtest
         GTest::gtest_main
 )
-target_include_directories(EditorUniversalSearchTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 
 target_compile_features(EditorUniversalSearchTests PRIVATE cxx_std_20)
 
@@ -170,17 +162,21 @@ add_executable(EditorThumbnailRoutingTests
     ThumbnailServiceRoutingTests.cpp
     ThumbnailResultCacheTests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ThumbnailService.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Inspectors/CubeLut/CubeLutStripBands.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Inspectors/CubeLut/CubeLutStripRequest.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Inspectors/CubeLut/CubeLutThumbnailHandler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/FolderBakeReport.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/TextureThumbnailHandler.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnailHandler.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnailBakeQueue.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnailBakedImages.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnailCacheFiles.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnailImports.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnailPngPersistence.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnailPreviewScene.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnailRenderLanes.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnail/ModelThumbnailHandler.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnail/ModelThumbnailBakeQueue.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnail/ModelThumbnailBakedImages.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnail/ModelThumbnailCacheFiles.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnail/ModelThumbnailImports.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnail/ModelThumbnailPngPersistence.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnail/ModelThumbnailPreviewScene.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnail/ModelThumbnailRenderLanes.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ShaderGraphThumbnailMaterial.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Prefabs/PrefabThumbnailHandler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Editor/Assets/ShaderGlslOpen.cpp
 )
 
@@ -197,12 +193,7 @@ target_link_libraries(EditorThumbnailRoutingTests
         GTest::gtest
         GTest::gtest_main
 )
-target_include_directories(EditorThumbnailRoutingTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 
-if(TARGET stb::stb)
-    target_link_libraries(EditorThumbnailRoutingTests PRIVATE stb::stb)
-endif()
-target_compile_definitions(EditorThumbnailRoutingTests PRIVATE GE_HAVE_STB)
 target_compile_features(EditorThumbnailRoutingTests PRIVATE cxx_std_20)
 
 ge_set_output_tests(EditorThumbnailRoutingTests)
@@ -210,14 +201,15 @@ ge_stage_runtime_dependencies(EditorThumbnailRoutingTests)
 
 add_test(NAME EditorThumbnailRoutingTests COMMAND EditorThumbnailRoutingTests)
 
-# Execute the production scheduling, publication, slot-release, import-release, idle and
-# folder-bake queue methods with deterministic hosts.
+# Execute the production scheduling, publication, slot-release, import-release, idle,
+# folder-bake queue and lane-drain methods with deterministic hosts.
 # This standalone target needs no full Editor or GPU to catch a whole-sweep return.
 set(THUMBNAIL_CACHE_TEST_HEADERS)
-# Each phase is extracted from the file that owns it: <phase>:<file under Source/Thumbnails>.
+# Each phase is extracted from the file that owns it: <phase>:<file under Source/Thumbnails/ModelThumbnail>.
 foreach(entry IN ITEMS Schedule:ModelThumbnailPngPersistence.cpp Persist:ModelThumbnailPngPersistence.cpp
                        Release:ModelThumbnailBakedImages.cpp Imports:ModelThumbnailImports.cpp
-                       Idle:ModelThumbnailHandler.cpp Bakes:ModelThumbnailBakeQueue.cpp)
+                       Idle:ModelThumbnailHandler.cpp Bakes:ModelThumbnailBakeQueue.cpp
+                       Focus:ModelThumbnailRenderLanes.cpp Drain:ModelThumbnailRenderLanes.cpp)
     string(REPLACE ":" ";" entry_parts "${entry}")
     list(GET entry_parts 0 phase)
     list(GET entry_parts 1 phase_source)
@@ -226,26 +218,25 @@ foreach(entry IN ITEMS Schedule:ModelThumbnailPngPersistence.cpp Persist:ModelTh
     add_custom_command(OUTPUT "${header}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/generated"
         COMMAND ${CMAKE_COMMAND}
-            -DSRC=${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/${phase_source}
+            -DSRC=${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnail/${phase_source}
             -DOUT=${header}
             "-DBEGIN_MARKER=// GE_THUMBNAIL_CACHE_${phase_upper}_BEGIN"
             "-DEND_MARKER=// GE_THUMBNAIL_CACHE_${phase_upper}_END"
             -P ${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Tests/ExtractShaderBlock.cmake
-        DEPENDS ../Source/Thumbnails/${phase_source}
+        DEPENDS ../Source/Thumbnails/ModelThumbnail/${phase_source}
             ${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Tests/ExtractShaderBlock.cmake
         VERBATIM)
     list(APPEND THUMBNAIL_CACHE_TEST_HEADERS "${header}")
 endforeach()
-add_executable(EditorThumbnailPersistenceTests ThumbnailPersistenceTests.cpp
+add_executable(EditorThumbnailPersistenceTests ThumbnailPersistenceTests.cpp ThumbnailDrainTests.cpp
     ${THUMBNAIL_CACHE_TEST_HEADERS}
     ${CMAKE_SOURCE_DIR}/Engine/Modules/AssetCore/Source/GUID.cpp)
 target_include_directories(EditorThumbnailPersistenceTests PRIVATE
     ../Include ${CMAKE_CURRENT_BINARY_DIR}/generated
     ${CMAKE_SOURCE_DIR}/Engine/Modules/AssetCore/Include)
-target_link_libraries(EditorThumbnailPersistenceTests PRIVATE GTest::gtest_main Types)
-if(TARGET stb::stb)
-    target_link_libraries(EditorThumbnailPersistenceTests PRIVATE stb::stb)
-endif()
+# Image: the extracted block's resample and encode, and the readback's decode.
+# Mathematics: the extracted block's Clamp01.
+target_link_libraries(EditorThumbnailPersistenceTests PRIVATE Image Logger Mathematics GTest::gtest_main)
 target_compile_features(EditorThumbnailPersistenceTests PRIVATE cxx_std_20)
 if(MSVC)
     target_compile_definitions(EditorThumbnailPersistenceTests PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -277,24 +268,27 @@ add_executable(AgentProviderTests
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/AgentSessionStateTests.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/CliSessionFilesTests.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/AssistantAttachmentTests.cpp
-    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/PromptFilesTests.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/ReplyTextBlocksTests.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AssistantAttachment.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AssistantMode.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AssistantTools.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AgentSessionState.cpp
-    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AiAssistantLoginStatusRow.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AiAssistantSettings.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Setup/AiAssistantSetupPage.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Setup/AiAssistantApiKeyRow.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/ModelDisplayName.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/SseParser.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ClaudeApiStream.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ClaudeApiProvider.cpp
-    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ClaudeUserContent.cpp
-    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/PromptFiles.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ApiKeyStore.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/CliSessionProvider.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ClaudeSessionProvider.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/CodexSessionProvider.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ReplyTextBlocks.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/CliSessionFiles.cpp)
 target_include_directories(AgentProviderTests PRIVATE
-    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor)
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor
+    ${CMAKE_SOURCE_DIR}/Engine/Tests)
 target_link_libraries(AgentProviderTests PRIVATE
     Engine EditorSDK PlatformTestSupport nlohmann_json::nlohmann_json GTest::gtest_main)
 target_compile_features(AgentProviderTests PRIVATE cxx_std_20)
@@ -322,14 +316,10 @@ add_custom_command(TARGET AgentProviderTests POST_BUILD
 # tool classes, its asking, its ledger and its undo steps; continued sessions over the
 # Claude session connection running FakeAgentCli, and the Session control's rows.
 add_executable(AiAssistantPanelTests
-    ${CMAKE_SOURCE_DIR}/Engine/Modules/UI/Tests/UITestShaderSetup.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/AiAssistantPanelTests.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/AssistantGateTests.cpp
-    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/PromptFileTrayTests.cpp
-    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/PromptFileTray.cpp
-    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/PromptFileItem.cpp
-    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/PromptFileDropZone.cpp
-    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/PromptFileThumbnail.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/DictationTextTests.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/MarkupContextTests.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AssistantGate.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AssistantActionLedger.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AssistantTurnUndo.cpp
@@ -347,52 +337,112 @@ add_executable(AiAssistantPanelTests
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AssistantTools.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AgentConversationController.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AgentSessionSearchProvider.cpp
-    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/PromptInputLayout.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AgentConnectionDropdown.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AgentModelPopover.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/ModeControlFit.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AgentConversationRowModel.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AgentConversationRow.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AgentReplyActions.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AiAssistantPanelService.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/MarkupActions.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/MarkupChips.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/MarkupTokenPicker.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/MarkupContext.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/MarkupSearchProvider.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Conversation.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AgentStatusMessages.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/DictationText.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/TurnMailbox.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AgentSessionState.cpp
-    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AiAssistantLoginStatusRow.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AiAssistantSettings.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Setup/AiAssistantSetupPage.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Setup/AiAssistantApiKeyRow.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/ModelDisplayName.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/SseParser.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ClaudeApiStream.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ClaudeApiProvider.cpp
-    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ClaudeUserContent.cpp
-    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/PromptFiles.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ApiKeyStore.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/CliSessionProvider.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ClaudeSessionProvider.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/CodexSessionProvider.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ReplyTextBlocks.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/CliSessionFiles.cpp)
 target_include_directories(AiAssistantPanelTests PRIVATE
-    ${CMAKE_SOURCE_DIR}/Tests
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor
     # UIRgTestHarness.h: a headless device for a real UIManager.
     ${CMAKE_SOURCE_DIR}/Engine/Modules/UI/Tests)
 target_link_libraries(AiAssistantPanelTests PRIVATE
-    Engine EditorSDK nlohmann_json::nlohmann_json GTest::gtest_main)
+    Engine EditorSDK PlatformTestSupport SharedHeadlessDeviceTestSupport nlohmann_json::nlohmann_json GTest::gtest_main)
 target_compile_features(AiAssistantPanelTests PRIVATE cxx_std_20)
-target_compile_definitions(AiAssistantPanelTests PRIVATE UI_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}")
-add_dependencies(AiAssistantPanelTests CompileShaders)
 ge_set_output_tests(AiAssistantPanelTests)
 ge_stage_runtime_dependencies(AiAssistantPanelTests)
+# The setup page's tiles, step rows and fix notices build from these layouts, read from the
+# install-assets root.
+ge_stage_test_asset(AiAssistantPanelTests
+    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/InspectorNotice/InspectorNotice.uxml"
+    "Assets/UI/controls/InspectorNotice/InspectorNotice.uxml")
+ge_stage_test_asset(AiAssistantPanelTests
+    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/PictureChoiceField/PictureChoiceField.uxml"
+    "Assets/UI/controls/PictureChoiceField/PictureChoiceField.uxml")
+ge_stage_test_asset(AiAssistantPanelTests
+    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/SetupStepList/SetupStepList.uxml"
+    "Assets/UI/controls/SetupStepList/SetupStepList.uxml")
+ge_stage_test_asset(AiAssistantPanelTests
+    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/SetupStepList/SetupStepRow.uxml"
+    "Assets/UI/controls/SetupStepList/SetupStepRow.uxml")
 add_dependencies(AiAssistantPanelTests FakeAgentCli)
-ge_stage_test_asset(AiAssistantPanelTests
-    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Fonts/Roboto-Regular.ttf"
-    "Assets/Fonts/Roboto-Regular.ttf")
-ge_stage_test_asset(AiAssistantPanelTests
-    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Fonts/RobotoMono-Regular.ttf"
-    "Assets/Fonts/RobotoMono-Regular.ttf")
 add_custom_command(TARGET AiAssistantPanelTests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:AiAssistantPanelTests>/AiAssistantPanelFixtures
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/Fixtures/claude-dead-session.stdout
-        $<TARGET_FILE_DIR:AiAssistantPanelTests>/AiAssistantPanelFixtures/claude-dead-session.stdout)
-add_custom_command(TARGET AiAssistantPanelTests POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
-        ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI
-        $<TARGET_FILE_DIR:AiAssistantPanelTests>/AiAssistantPanelFixtures/ai-assistant/Editor/UI)
+        $<TARGET_FILE_DIR:AiAssistantPanelTests>/AiAssistantPanelFixtures/claude-dead-session.stdout
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        $<TARGET_FILE_DIR:AiAssistantPanelTests>/AiAssistantPanelFixtures/ai-assistant/Editor/UI/panels
+        $<TARGET_FILE_DIR:AiAssistantPanelTests>/AiAssistantPanelFixtures/ai-assistant/Editor/UI/controls
+        $<TARGET_FILE_DIR:AiAssistantPanelTests>/AiAssistantPanelFixtures/ai-assistant/Editor/UI/controls/AiAssistantSetup
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/.assetmanifest
+        $<TARGET_FILE_DIR:AiAssistantPanelTests>/AiAssistantPanelFixtures/ai-assistant/.assetmanifest
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AiAssistantSetup/AiAssistantSetupPage.uxml
+        ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AiAssistantSetup/AiAssistantSetupPage.css
+        ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AiAssistantSetup/AiAssistantApiKeyRow.uxml
+        ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AiAssistantSetup/AiAssistantApiKeyRow.css
+        $<TARGET_FILE_DIR:AiAssistantPanelTests>/AiAssistantPanelFixtures/ai-assistant/Editor/UI/controls/AiAssistantSetup
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/panels/PromptPanel.css
+        $<TARGET_FILE_DIR:AiAssistantPanelTests>/AiAssistantPanelFixtures/ai-assistant/Editor/UI/panels/PromptPanel.css
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AgentConversationRow.uxml
+        $<TARGET_FILE_DIR:AiAssistantPanelTests>/AiAssistantPanelFixtures/ai-assistant/Editor/UI/controls/AgentConversationRow.uxml
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AgentModelPopover.uxml
+        $<TARGET_FILE_DIR:AiAssistantPanelTests>/AiAssistantPanelFixtures/ai-assistant/Editor/UI/controls/AgentModelPopover.uxml)
 add_test(NAME AiAssistantPanelTests COMMAND AiAssistantPanelTests)
+
+add_executable(EditorLogViewTests
+    LogViewTests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Panels/LogView.cpp
+)
+
+target_include_directories(EditorLogViewTests
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../Include
+)
+
+target_link_libraries(EditorLogViewTests
+    PRIVATE
+        Engine
+        GTest::gtest
+        GTest::gtest_main
+)
+
+target_compile_features(EditorLogViewTests PRIVATE cxx_std_20)
+
+ge_set_output_tests(EditorLogViewTests)
+ge_stage_runtime_dependencies(EditorLogViewTests)
+
+add_test(NAME EditorLogViewTests COMMAND EditorLogViewTests)
 
 add_executable(EditorSceneViewPixelPerfectTests
     SceneViewPixelPerfectTests.cpp
@@ -417,7 +467,3 @@ ge_set_output_tests(EditorSceneViewPixelPerfectTests)
 ge_stage_runtime_dependencies(EditorSceneViewPixelPerfectTests)
 
 add_test(NAME EditorSceneViewPixelPerfectTests COMMAND EditorSceneViewPixelPerfectTests)
-
-target_sources(AiAssistantPanelTests PRIVATE
-    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AgentConversationRow.cpp
-    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AgentReplyActions.cpp)

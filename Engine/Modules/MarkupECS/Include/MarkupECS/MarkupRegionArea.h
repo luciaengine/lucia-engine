@@ -42,6 +42,29 @@ struct MarkupFootprint
 // shape, a region whose spline is not a closed ring, and a zero scale.
 std::optional<MarkupFootprint> ReadMarkupFootprint(const ECS::World& world, ECS::EntityHandle entity);
 
+// What ReadMarkupFootprint reads a mark-up's footprint from: whether it is a live mark-up with a
+// shape, which shape, its placement and, for a region, its outline's spline and version. Equal
+// keys give the same footprint.
+struct MarkupFootprintKey
+{
+    enum class Kind : uint8
+    {
+        None,
+        Box,
+        Sphere,
+        Region,
+    };
+    Kind Shape = Kind::None;
+    float32 Matrix[16] = {};
+    uint32 SplineIndex = 0;
+    uint32 SplineGeneration = 0;
+    uint64 SplineVersion = 0;
+
+    bool operator==(const MarkupFootprintKey&) const = default;
+};
+
+MarkupFootprintKey ReadMarkupFootprintKey(const ECS::World& world, ECS::EntityHandle entity);
+
 // A region's area: its base outline and its members' footprints. Inside = (the base or any
 // Include member) and not any Exclude member. A member region contributes its base outline
 // only, so nothing recurses and no cycle can form; a member that is no longer a live mark-up

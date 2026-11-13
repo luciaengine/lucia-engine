@@ -245,7 +245,7 @@ TEST(ListViewTests, ScrollIndexIntoViewReachesRowsAppendedSinceLastPublish)
     auto root = std::make_unique<UIElement>();
     auto list = std::make_unique<ListView>();
     ListView* listRaw = list.get();
-    listRaw->Overrides()
+    listRaw->Style()
         .Set(Style::Width, StyleLength::Px(200.0f))
         .Set(Style::Height, StyleLength::Px(100.0f));
     root->AddChild(std::move(list));
@@ -314,7 +314,7 @@ TEST(ListViewTests, DropHitTestSkipsStaleUnboundSlots)
     root->SetId("root");
     auto list = std::make_unique<ListView>();
     ListView* listRaw = list.get();
-    listRaw->Overrides()
+    listRaw->Style()
         .Set(Style::Width, StyleLength::Px(200.0f))
         .Set(Style::Height, StyleLength::Px(100.0f));
     root->AddChild(std::move(list));
@@ -395,7 +395,7 @@ struct ListClickFixture
         root->SetId("root");
         auto list = std::make_unique<ListView>();
         List = list.get();
-        List->Overrides()
+        List->Style()
             .Set(Style::Width, StyleLength::Px(200.0f))
             .Set(Style::Height, StyleLength::Px(100.0f));
         root->AddChild(std::move(list));

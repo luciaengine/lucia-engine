@@ -36,7 +36,7 @@ server.RegisterHandler("spawn_model", [&app, &server](const EditorDebugServer::R
             GUID clipGuid;
             std::string rootName;
             bool hasPosition = false;
-            float px = 0, py = 0, pz = 0;
+            float64 px = 0.0, py = 0.0, pz = 0.0;
             bool loop = true, paused = false;
             float speed = 1.0f;
             bool kicked = false;
@@ -50,9 +50,9 @@ server.RegisterHandler("spawn_model", [&app, &server](const EditorDebugServer::R
         {
             const auto& p = ctx.params["position"];
             state->hasPosition = true;
-            state->px = p.value("x", 0.0f);
-            state->py = p.value("y", 0.0f);
-            state->pz = p.value("z", 0.0f);
+            state->px = p.value("x", 0.0);
+            state->py = p.value("y", 0.0);
+            state->pz = p.value("z", 0.0);
         }
         state->loop   = ctx.params.value("loop", true);
         state->paused = ctx.params.value("paused", false);
@@ -109,9 +109,7 @@ server.RegisterHandler("spawn_model", [&app, &server](const EditorDebugServer::R
                     if (auto* xf = world2->GetComponent<Components::Transform>(created.rootEntity))
                     {
                         Components::Transform updated = *xf;
-                        updated.matrix[12] = state->px;
-                        updated.matrix[13] = state->py;
-                        updated.matrix[14] = state->pz;
+                        updated.Position = Mathematics::WorldPosition{state->px, state->py, state->pz};
                         world2->AddComponentImmediate(created.rootEntity, updated);
                     }
                 }
@@ -230,15 +228,12 @@ server.RegisterHandler("spawn_humanoid_test_pair", [&app](const EditorDebugServe
         if (ctx.params.contains("position") && ctx.params["position"].is_object())
         {
             const auto& p = ctx.params["position"];
-            const float px = p.value("x", 0.0f);
-            const float py = p.value("y", 0.0f);
-            const float pz = p.value("z", 0.0f);
+            const Mathematics::WorldPosition position{
+                p.value("x", 0.0), p.value("y", 0.0), p.value("z", 0.0)};
             if (auto* xf = world->GetComponent<Components::Transform>(created.rootEntity))
             {
                 Components::Transform updated = *xf;
-                updated.matrix[12] = px;
-                updated.matrix[13] = py;
-                updated.matrix[14] = pz;
+                updated.Position = position;
                 world->AddComponentImmediate(created.rootEntity, updated);
             }
         }

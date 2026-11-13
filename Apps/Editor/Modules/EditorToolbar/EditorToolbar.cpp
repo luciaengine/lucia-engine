@@ -1,15 +1,21 @@
 #include "EditorToolbar/EditorToolbar.h"
+#include "EditorToolbar/EditorMenuBarBuilder.h"
 #include "Core/Engine.h"
 #include "Editor/Registries/EditorMenuRegistry.h"
-#include "EditorApplication.h"
+#include "Editor/Shortcuts/EditorShortcuts.h"
+#include "EditorApplication/EditorApplication.h"
+#include "EditorContextMenu/UIContextMenu.h"
 #include "EditorPanelManager.h"
 #include "Platform/Toolbar.h"
+#include "Platform/Capabilities.h"
 #include "Platform/Window.h"
 #include "UI/EditorIcons.h"
+#include "UI/Controls/EditorTitleBar.h"
 #include "Scripting/EditorScriptMenuRegistry.h"
 
 #include <algorithm>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -39,7 +45,8 @@ static void BuildUndoRedoTitles(EditorApplication* app, std::string& undoTitle, 
             undoTitle += name;
         }
     }
-    undoTitle += "\tCtrl+Z";
+    const bool commandModifier = Platform::PrimaryShortcutModifierIsCommand();
+    undoTitle += commandModifier ? "\tCmd+Z" : "\tCtrl+Z";
 
     redoTitle = "Redo";
     if (app && app->CanRedo())
@@ -50,7 +57,7 @@ static void BuildUndoRedoTitles(EditorApplication* app, std::string& undoTitle, 
             redoTitle += name;
         }
     }
-    redoTitle += "\tCtrl+Y";
+    redoTitle += commandModifier ? "\tCmd+Shift+Z" : "\tCtrl+Y";
 }
 } // namespace
 
@@ -66,6 +73,7 @@ bool EditorToolbar::Install(Platform::Window* window, EditorApplication* app)
     m_Toolbar = CreateNativeToolbar();
     if (!m_Toolbar)
         return false;
+    m_Toolbar->SetMenuFactory([] { return CreateContextMenu(); });
     if (!m_Toolbar->Install(window))
     {
         m_Toolbar.reset();
@@ -73,6 +81,17 @@ bool EditorToolbar::Install(Platform::Window* window, EditorApplication* app)
     }
 
     m_App = app;
+    m_Window = window;
+    m_ExitItem = Editor::EditorMenuRegistry::Get().RegisterMenuItem({
+        .Path = "File/Exit",
+        .Priority = 4,
+        .Action = [app]() {
+            if (!app->TryInterceptQuitForDirtyScene())
+                app->RequestExit();
+        },
+        .SeparatorBefore = true});
+    m_ShortcutBindingsSaved = Editor::ShortcutBindingsSaved().Subscribe(
+        [this](const Editor::ShortcutCatalogEntry&, const std::vector<Editor::ShortcutBinding>&) { m_RefreshPending = true; });
     m_Toolbar->SetCommandHandler([this](uint32_t cmd)
                                  {
         if (!m_App)
@@ -117,6 +136,13 @@ bool EditorToolbar::Install(Platform::Window* window, EditorApplication* app)
 
 void EditorToolbar::Uninstall()
 {
+    if (auto* titleBar = m_TitleBar.Get())
+        titleBar->Bind(nullptr, nullptr);
+    m_TitleBar = {};
+    m_ExitItem.Reset();
+    m_ShortcutBindingsSaved.Reset();
+    m_Window = nullptr;
+    m_RefreshPending = false;
     if (m_Toolbar)
     {
         m_Toolbar->Uninstall();
@@ -136,7 +162,36 @@ void EditorToolbar::Refresh()
 {
     if (!m_Toolbar || !m_App)
         return;
+    if (m_Toolbar->GetOpenMenu())
+    {
+        m_RefreshPending = true;
+        return;
+    }
+    m_RefreshPending = false;
     Build(m_App);
+}
+
+void EditorToolbar::AttachToUI(UIElement* root)
+{
+    if (!root || !m_Toolbar || m_Toolbar->GetPresentation() == ToolbarPresentation::NativeMenuBar)
+        return;
+    // layout.uxml declares the title bar as the root's first child.
+    m_TitleBar = root->FindById<EditorTitleBar>("EditorTitleBar"_sid);
+    if (auto* titleBar = m_TitleBar.Get())
+        titleBar->Bind(m_Toolbar.get(), m_Window);
+}
+
+void EditorToolbar::Update(UIElement* root)
+{
+    // Consume both flags even when one already asks for the rebuild.
+    const bool scriptDirty = Editor::ScriptMenuRegistry::Get().ConsumeToolbarDirty();
+    const bool nativeDirty = Editor::EditorMenuRegistry::Get().ConsumeDirty();
+    if (m_RefreshPending || scriptDirty || nativeDirty)
+        Refresh();
+    if (!m_TitleBar.Get() && root)
+        AttachToUI(root);
+    if (auto* titleBar = m_TitleBar.Get())
+        titleBar->UpdateState(m_Caption);
 }
 
 void EditorToolbar::UpdateUndoRedoTitles()
@@ -176,23 +231,31 @@ void EditorToolbar::SetItemIcon(uint32_t commandId, const std::string& imagePath
 
 void EditorToolbar::Build(EditorApplication* app)
 {
-    // Build minimal menu structure (extend as needed)
     Clear();
     m_WindowPanelCommands.clear();
+    if (!m_Toolbar)
+        return;
 
-    // Edit — first menu becomes the macOS application menu (shown as "Lucia Engine").
-    const uint32_t editMenu = AddMenu("Edit");
-    {
-        std::string undoTitle;
-        std::string redoTitle;
-        BuildUndoRedoTitles(app, undoTitle, redoTitle);
-        AddItem(editMenu, undoTitle, kCmdEditUndo);
-        SetItemIcon(kCmdEditUndo, EditorIcons::kUndo);
-        AddItem(editMenu, redoTitle, kCmdEditRedo);
-    }
+    const std::vector<EditorMenuPathItem> items = CollectContributedMenuItems();
+    EditorMenuBarBuilder builder(*m_Toolbar);
+    builder.Build(
+        items, [this, app](uint32_t editMenu) { FillEditMenu(app, editMenu); },
+        [this](uint32_t windowMenu) { return FillWindowMenu(windowMenu); });
+}
 
-    // Window — quick access to all editor panels plus the layout submenu.
-    const uint32_t windowMenu = AddMenu("Window");
+void EditorToolbar::FillEditMenu(EditorApplication* app, uint32_t editMenu)
+{
+    std::string undoTitle;
+    std::string redoTitle;
+    BuildUndoRedoTitles(app, undoTitle, redoTitle);
+    AddItem(editMenu, undoTitle, kCmdEditUndo);
+    SetItemIcon(kCmdEditUndo, EditorIcons::kUndo);
+    AddItem(editMenu, redoTitle, kCmdEditRedo);
+}
+
+// Window: every editor panel, then the Layout submenu.
+uint32_t EditorToolbar::FillWindowMenu(uint32_t windowMenu)
+{
     if (m_PanelManager)
     {
         const auto panelEntries = m_PanelManager->GetPanelMenuEntries();
@@ -210,116 +273,40 @@ void EditorToolbar::Build(EditorApplication* app)
     const uint32_t layoutMenu = AddSubMenu(windowMenu, "Layout");
     AddItem(layoutMenu, "Reset Layout", kCmdWindowLayoutReset);
     SetItemIcon(kCmdWindowLayoutReset, EditorIcons::kReset);
+    return layoutMenu;
+}
 
-    // Registry-driven menus: native module items (EditorMenuRegistry — engine
-    // packages) and script items (Editor-managed snapshot) walk the same
-    // path->submenu machinery, seeded with the built-in menus so both extend
-    // them without creating duplicates. Native items come first — package
-    // affordances sit above script-contributed ones within a menu. Top-level
-    // menus with no built-in items (Tools) are created on demand by the walk,
-    // so an editor with no contributors shows no dangling empty menu.
+// The native module items (EditorMenuRegistry) come before the script items within a menu. File/Exit
+// becomes the application's quit command where the platform has one.
+std::vector<EditorMenuPathItem> EditorToolbar::CollectContributedMenuItems()
+{
+    const auto nativeItems = Editor::EditorMenuRegistry::Get().Snapshot(); // pre-sorted
+    auto scriptItems = Editor::ScriptMenuRegistry::Get().GetToolbarItems();
+    std::sort(scriptItems.begin(), scriptItems.end(),
+              [](const Editor::ScriptToolbarMenuItem& a, const Editor::ScriptToolbarMenuItem& b)
+              {
+                  if (a.priority != b.priority)
+                      return a.priority < b.priority;
+                  return a.path < b.path;
+              });
+
+    std::vector<EditorMenuPathItem> items;
+    items.reserve(nativeItems.size() + scriptItems.size());
+    for (const auto& item : nativeItems)
     {
-        const auto nativeItems = Editor::EditorMenuRegistry::Get().Snapshot(); // pre-sorted
-        auto scriptItems = Editor::ScriptMenuRegistry::Get().GetToolbarItems();
-        if (!nativeItems.empty() || !scriptItems.empty())
-        {
-            std::sort(scriptItems.begin(), scriptItems.end(),
-                      [](const Editor::ScriptToolbarMenuItem& a, const Editor::ScriptToolbarMenuItem& b)
-                      {
-                          if (a.priority != b.priority)
-                              return a.priority < b.priority;
-                          return a.path < b.path;
-                      });
-
-            // Cache menu ids by prefix path (e.g. "Tools" or "Tools/Sub").
-            std::unordered_map<std::string, uint32_t> prefixToMenuId;
-            // Seed with built-in menus so contributors extend them without creating duplicates.
-            prefixToMenuId["Edit"] = editMenu;
-            prefixToMenuId["Window"] = windowMenu;
-            prefixToMenuId["Window/Layout"] = layoutMenu;
-
-            auto splitPath = [](const std::string& path) -> std::vector<std::string>
-            {
-                std::vector<std::string> parts;
-                std::string cur;
-                for (char c : path)
-                {
-                    if (c == '/')
-                    {
-                        if (!cur.empty())
-                        {
-                            parts.push_back(cur);
-                            cur.clear();
-                        }
-                    }
-                    else
-                    {
-                        cur.push_back(c);
-                    }
-                }
-                if (!cur.empty())
-                    parts.push_back(cur);
-                return parts;
-            };
-
-            auto addPathItem = [&](const std::string& path, uint32_t commandId)
-            {
-                auto parts = splitPath(path);
-                if (parts.size() < 2)
-                {
-                    // Toolbar items require at least "Menu/Item".
-                    return;
-                }
-
-                std::string prefix;
-                uint32_t parentMenuId = 0;
-
-                for (size_t i = 0; i < parts.size(); ++i)
-                {
-                    const std::string& segment = parts[i];
-                    if (segment.empty())
-                        continue;
-                    if (!prefix.empty())
-                        prefix += '/';
-                    prefix += segment;
-                    const bool isLeaf = (i + 1 == parts.size());
-
-                    if (!isLeaf)
-                    {
-                        auto found = prefixToMenuId.find(prefix);
-                        if (found == prefixToMenuId.end())
-                        {
-                            const uint32_t menuId = (parentMenuId == 0)
-                                                        ? AddMenu(segment)
-                                                        : AddSubMenu(parentMenuId, segment);
-                            prefixToMenuId.emplace(prefix, menuId);
-                            parentMenuId = menuId;
-                        }
-                        else
-                        {
-                            parentMenuId = found->second;
-                        }
-                    }
-                    else
-                    {
-                        if (parentMenuId != 0)
-                        {
-                            AddItem(parentMenuId, segment, commandId);
-                        }
-                    }
-                }
-            };
-
-            for (const auto& it : nativeItems)
-                addPathItem(it.Path, it.CommandId);
-            for (const auto& it : scriptItems)
-            {
-                if (it.path.empty() || it.commandId == 0)
-                    continue;
-                addPathItem(it.path, it.commandId);
-            }
-        }
+        if (item.Path == "File/Exit" && m_Toolbar->SetApplicationQuitCommand(item.CommandId))
+            continue;
+        std::string shortcut = item.ShortcutGroup.empty() || item.ShortcutName.empty()
+                                   ? std::string()
+                                   : Editor::CatalogShortcutLabel(item.ShortcutGroup.c_str(), item.ShortcutName.c_str());
+        items.push_back({item.Path, item.CommandId, std::move(shortcut), item.SeparatorBefore});
     }
+    for (const auto& item : scriptItems)
+    {
+        if (!item.path.empty() && item.commandId != 0)
+            items.push_back({item.path, item.commandId, {}});
+    }
+    return items;
 }
 
 } // namespace GameEngine

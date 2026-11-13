@@ -9,7 +9,7 @@
 // invalidation edges (assets root, cache root, handler registration, and a
 // still-absent disk cache) still let a later call discover the real result.
 
-#include "Thumbnails/ModelThumbnailHandler.h"
+#include "Thumbnails/ModelThumbnail/ModelThumbnailHandler.h"
 #include "Thumbnails/TextureThumbnailHandler.h"
 #include "Thumbnails/ThumbnailService.h"
 

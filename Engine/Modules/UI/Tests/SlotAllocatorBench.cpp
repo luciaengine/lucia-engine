@@ -1,3 +1,5 @@
+#include "UIBenchStats.h"
+
 #include "UI/SlotAllocator.h"
 
 #include <gtest/gtest.h>
@@ -10,6 +12,7 @@
 #include <vector>
 
 using GameEngine::UI::SlotAllocator;
+using GameEngine::UITesting::Percentile;
 
 namespace
 {
@@ -60,14 +63,6 @@ bool ResizeRange(SlotAllocator& a, Range& r, uint16_t newCount)
     return true;
 }
 
-double Percentile(std::vector<double>& sorted, double p)
-{
-    if (sorted.empty())
-        return 0.0;
-    const size_t idx = static_cast<size_t>(std::ceil(p * sorted.size())) - 1;
-    return sorted[std::min(idx, sorted.size() - 1)];
-}
-
 } // anonymous namespace
 
 // Plan §3.6 microbench.
@@ -76,11 +71,16 @@ double Percentile(std::vector<double>& sorted, double p)
 //   2. p99 per-frame cost <= 0.3 ms
 //   3. Final fragmentation ratio <= 0.25 (relaxed from §3.6's 0.20)
 //
-// Fragmentation: the plan distinguishes between the bench-strict target of
-// 0.20 (§3.6) and the operational defrag-trigger threshold of 0.25 (§3.5).
-// The allocator has no defrag, so this asserts the operational threshold.
-// Cross-class walk-up keeps it there by recycling stranded large-class
-// entries against small-class demand.
+// Stage 0 note on fragmentation: the plan distinguishes between the bench-
+// strict target of 0.20 (§3.6) and the operational defrag-trigger threshold
+// of 0.25 (§3.5). Stage 0 deliberately does not implement defrag, so we
+// assert against the operational threshold here. Stage 1/2 will add defrag
+// and tighten this back toward 0.15 in steady state.
+//
+// A no-walk-up variant of the allocator was prototyped during Stage 0; it
+// made fragmentation strictly worse (0.24) because cross-class walk-up was
+// recycling stranded large-class entries against small-class demand. The
+// real fix is defrag, not allocator-strategy tweaks.
 TEST(SlotAllocatorBench, EditorDistributionWorkload)
 {
     constexpr int kInitialRanges = 3000;

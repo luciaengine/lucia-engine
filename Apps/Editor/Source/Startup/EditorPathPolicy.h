@@ -10,9 +10,6 @@ struct BuiltinSyncStats;
 // Install-provided Editor assets (shipped with the app / staged next to the executable).
 std::filesystem::path GetEditorInstallAssetsRoot();
 
-// User-writable root for editor-owned caches.
-std::filesystem::path GetEditorUserCacheRoot();
-
 // A user-writable default project location used when the user hasn't chosen a project yet.
 std::filesystem::path GetDefaultProjectRoot();
 

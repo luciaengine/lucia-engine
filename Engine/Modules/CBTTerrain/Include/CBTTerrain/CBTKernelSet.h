@@ -15,7 +15,7 @@
 #include <vector>
 
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/PipelineIdentifiers.h"
+#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
 
 namespace GameEngine::Rendering
 {

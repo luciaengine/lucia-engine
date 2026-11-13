@@ -2,7 +2,7 @@
 
 #include "Engine/Rendering/ExposureReadbackFeature.h"
 #include "Engine/Rendering/RenderServices.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 
 #include <algorithm>
 

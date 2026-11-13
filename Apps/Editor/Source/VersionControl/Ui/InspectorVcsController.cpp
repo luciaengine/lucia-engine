@@ -15,6 +15,7 @@
 #include "Platform/ContextMenu.h"
 #include "Scene/SceneSchemaRegistry.h"
 #include "Scene/WorldSnapshotCommand.h"
+#include "Types/StringUtils.h"
 #include "UI/Controls/Label.h"
 #include "UI/EditorIcons.h"
 #include "UI/InspectorSection.h"
@@ -23,7 +24,7 @@
 #include "UI/UIEvents.h"
 #include "UndoRedo/UndoRedoService.h"
 #include "VersionControl/EditorVersionControlService.h"
-#include "VersionControl/SceneDiffLiveOverlay.h"
+#include "VersionControl/SceneDiff/SceneDiffLiveOverlay.h"
 
 #include <algorithm>
 #include <cctype>
@@ -52,10 +53,7 @@ std::string NormalizeComponentName(std::string_view text)
     // keys use the serialized component name ("Light.intensity"). Compare the
     // unqualified type name so Inspector sections can resolve their scene
     // properties across compilers and registration paths.
-    if (const size_t separator = text.rfind("::");
-        separator != std::string_view::npos)
-        text.remove_prefix(separator + 2);
-    return NormalizeName(text);
+    return NormalizeName(UnqualifiedName(text));
 }
 
 Label* FindRowLabel(UIElement* element)
@@ -163,7 +161,7 @@ void InsertDiffDot(UIElement* row, Label* label,
     dot->AddClass("inspector-vcs-diff-dot");
     if (const char* cssClass = DiffClass(property.State))
         dot->AddClass(cssClass);
-    dot->Overrides().Set(Style::BackgroundTint,
+    dot->Style().Set(Style::BackgroundTint,
                          SceneDiffStateColorArgb(property.State));
 
     dot->SetTooltip(DiffTooltip(providerName, property));
@@ -469,8 +467,12 @@ void InspectorVcsController::RevertProperty(const ScenePropertyDiff& property)
         return;
 
     const std::vector<uint8_t> before = m_Panel.m_World->SerializeWorld();
-    Scene::SceneLoadContext loadContext{};
+    // A baseline line naming a field the component does not have reverts nothing, as a scene load
+    // applies nothing for it.
+    std::vector<std::string> unknownFields;
+    Scene::SceneReadContext loadContext{};
     loadContext.TargetWorld = m_Panel.m_World;
+    loadContext.UnknownFields = &unknownFields;
     std::string error;
     if (!schema->ApplyProperty(
             *m_Panel.m_World, m_Panel.m_Entity, loadContext, field,
@@ -479,6 +481,12 @@ void InspectorVcsController::RevertProperty(const ScenePropertyDiff& property)
         Logger::Log::Warning(
             "Inspector scene diff: failed to revert '{}': {}",
             property.Key, error);
+        return;
+    }
+    if (!unknownFields.empty())
+    {
+        Logger::Log::Warning("Inspector scene diff: the revert skips a line of the committed version: {}",
+                             Scene::UnknownFieldMessage(component, field));
         return;
     }
     m_Panel.m_World->ProcessCommands();

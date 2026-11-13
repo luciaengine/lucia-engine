@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Particles/ParticleProcessorRegistry.h"
+#include "Particles/ParticleProcessor/ParticleProcessorRegistry.h"
 
 #include <array>
 #include <span>

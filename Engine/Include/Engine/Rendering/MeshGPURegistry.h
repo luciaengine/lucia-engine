@@ -33,15 +33,15 @@
 //     excludes every mutator, its own included. Developer builds assert when a
 //     lock-free lookup runs against a scope another thread holds.
 
+#include "Types/FlatMap.h"
 #include "Types/ScopedSubscription.h"
 #include "AssetCore/GUID.h"
-#include "Engine/Rendering/BucketPoolAllocator.h"
 #include "Engine/Rendering/MeshGPUResidency.h"
 #include "Engine/Rendering/MeshLODThresholds.h"
 #include "Mathematics/Geometry.h"
+#include "Memory/RangeAllocator.h"
 #include "Rendering/Core/Handle.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/HashUtils.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
 
 #include <array>
@@ -51,7 +51,6 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <span>
 #include <unordered_map>
 #include <vector>
 
@@ -59,7 +58,11 @@ namespace GameEngine
 {
 class ModelAsset;
 struct Mesh;
-struct Vertex;
+
+namespace Engine::Renderer
+{
+struct ConvertedModelMaterial;
+}
 
 namespace Rendering
 {
@@ -76,25 +79,25 @@ using MeshGPUBucketKey = VertexAttributeFlags;
 
 inline constexpr uint32_t kInvalidMeshGPUPoolIndex = UINT32_MAX;
 
-// Per-vertex streams an entry can own: core, tangent, color, UV1, joints,
-// weights, joints1, weights1 and UV2..UV7. Every stream of one entry sits at
-// the same vertex offset.
-inline constexpr uint32_t kMeshGPUVertexStreamCount = 14;
-
 // One GPU buffer + suballocator for a bucket stream. A stream can own
 // multiple sibling pools so large meshes and later overflow do not invalidate
 // existing entries.
 struct MeshGPUStreamPool
 {
     BufferHandle buffer{};
-    BucketPoolAllocator allocator;
+    // In bytes. Held by pointer: the allocator's stats record cannot move, and
+    // the pool vectors reallocate as sibling pools are appended.
+    std::unique_ptr<Memory::RangeAllocator> allocator;
     uint64_t capacityBytes = 0;
-    uint32_t strideBytes = 1;
+    // The stream's stride in bytes (4 for index pools). Every range's size is
+    // rounded up to a whole multiple of it, so every offset is one too; any
+    // nonzero value works, and 0 or 1 leaves sizes unrounded.
+    uint64_t alignmentBytes = 1;
 };
 
 // Per-bucket GPU storage. One or more VkBuffers per stream the bucket owns +
 // lazy uint16 / uint32 index pools. Allocations are suballocated via
-// BucketPoolAllocator (byte-offsets), and the result is recorded on each
+// Memory::RangeAllocator (byte offsets), and the result is recorded on each
 // MeshGPUEntry as (pool index, vertexOffset/firstIndex) in *vertices* /
 // *indices* -- the conversion happens at upload time using per-stream strides.
 struct MeshGPUBucket
@@ -205,16 +208,16 @@ struct MeshGPUEntry
     // bytes). Returned to the pools' deferred-free queue on
     // UnregisterModel so frames-in-flight that were still reading the
     // range can finish before it is reused.
-    BucketPoolAllocator::Allocation coreSubAlloc{};
-    BucketPoolAllocator::Allocation tangentSubAlloc{};
-    BucketPoolAllocator::Allocation colorSubAlloc{};
-    BucketPoolAllocator::Allocation uv1SubAlloc{};
-    BucketPoolAllocator::Allocation jointsSubAlloc{};
-    BucketPoolAllocator::Allocation weightsSubAlloc{};
-    BucketPoolAllocator::Allocation joints1SubAlloc{};
-    BucketPoolAllocator::Allocation weights1SubAlloc{};
-    std::array<BucketPoolAllocator::Allocation, 6> extraUvSubAlloc{};
-    BucketPoolAllocator::Allocation indexSubAlloc{};
+    Memory::RangeAllocator::Allocation coreSubAlloc{};
+    Memory::RangeAllocator::Allocation tangentSubAlloc{};
+    Memory::RangeAllocator::Allocation colorSubAlloc{};
+    Memory::RangeAllocator::Allocation uv1SubAlloc{};
+    Memory::RangeAllocator::Allocation jointsSubAlloc{};
+    Memory::RangeAllocator::Allocation weightsSubAlloc{};
+    Memory::RangeAllocator::Allocation joints1SubAlloc{};
+    Memory::RangeAllocator::Allocation weights1SubAlloc{};
+    std::array<Memory::RangeAllocator::Allocation, 6> extraUvSubAlloc{};
+    Memory::RangeAllocator::Allocation indexSubAlloc{};
 
     // Per-stream pool selectors into the owning bucket. Optional streams keep
     // kInvalidMeshGPUPoolIndex when absent.
@@ -315,9 +318,9 @@ struct hash<GameEngine::Rendering::MeshGPUKey>
 {
     size_t operator()(const GameEngine::Rendering::MeshGPUKey& k) const noexcept
     {
-        const uint64_t h = GameEngine::Rendering::HashUtils::HashCombine(
-            std::hash<GameEngine::GUID>{}(k.assetGuid), k.submeshIndex);
-        return static_cast<size_t>(h);
+        size_t h = std::hash<GameEngine::GUID>{}(k.assetGuid);
+        h ^= std::hash<uint32_t>{}(k.submeshIndex) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        return h;
     }
 };
 } // namespace std
@@ -406,10 +409,11 @@ struct MeshGPUResidencyStats
 // which sibling pool within that stream it is.
 //
 // Fragmentation in these pools has a cost the allocator's own counters are the
-// only witness to: a failed best-fit appends a sibling pool at double the
+// only witness to: a failed allocation appends a sibling pool at double the
 // capacity, so fragmentation converts into GPU memory growth and into extra
-// pool groups (and therefore extra indirect draws). Reporting Stats::fragRatio
-// and Stats::freeRangeCount is what lets that be measured rather than asserted.
+// pool groups (and therefore extra indirect draws). Reporting
+// Stats::Fragmentation and Stats::FreeRanges is what lets that be measured
+// rather than asserted.
 struct MeshGPUPoolStats
 {
     MeshGPUBucketKey BucketKey = VertexAttributeFlags::None;
@@ -418,7 +422,8 @@ struct MeshGPUPoolStats
     const char* Stream = "";
     // Index of this pool within its stream's sibling list.
     uint32_t PoolIndex = 0;
-    BucketPoolAllocator::Stats Allocator{};
+    // In bytes.
+    Memory::RangeAllocator::Stats Allocator{};
 };
 
 class MeshGPURegistry
@@ -500,11 +505,18 @@ class MeshGPURegistry
     std::vector<MeshGPUHandle> RegisterModelMeshes(const GUID& assetGuid,
                                                     const ModelAsset& asset);
 
+    // The model's embedded materials as its first spawn converted and registered
+    // them, or null before that spawn. Kept with the model's mesh handles and
+    // dropped with them, so the next spawn of a reloaded model registers again.
+    using ModelMaterialList = std::vector<Engine::Renderer::ConvertedModelMaterial>;
+    std::shared_ptr<const ModelMaterialList> FindModelMaterials(const GUID& assetGuid) const;
+    void KeepModelMaterials(const GUID& assetGuid, std::shared_ptr<const ModelMaterialList> materials);
+
     // Register a single submesh by key. Used internally and for manual registration.
     // `mesh` is the CPU-side mesh data to upload. Set retainCpuMesh for
     // generated/runtime meshes that have no asset-backed CPU source, so
     // consumers that need to read the geometry back on the CPU can still find
-    // it: editor ray picking (MeshPickingService) and the DDGI software trace
+    // it: the scene raycast (SceneRaycast) and the DDGI software trace
     // lane (DDGISceneService, which builds its BVH from CPU triangles and
     // silently omits any mesh it cannot resolve). Asset-backed meshes need it
     // only if the asset may be evicted, since those consumers fall back to
@@ -517,28 +529,6 @@ class MeshGPURegistry
     // Intended for runtime-generated meshes (morph targets, procedural edits)
     // that need to be replaced without unregistering the source model.
     bool UnregisterSubmesh(const MeshGPUKey& key);
-
-    // Rewrite a registered submesh's Vertex attributes (position, normal, UV0
-    // and tangent) for a change that keeps the vertex count, the attribute set
-    // and every other stream: a morph-target weight change. The handle, the
-    // index range and the GPUScene row index stay; the row's vertex offset and
-    // bounds follow the new vertices.
-    //
-    // Frames in flight still read the entry's current vertex range, so the
-    // bytes go to a sibling range of every vertex stream that no frame has
-    // drawn from for a full frames-in-flight window. The entry keeps a few such
-    // ranges and rotates through them: a new one takes every stream once
-    // (`vertices` plus `source`'s other streams), a reused one takes only the
-    // core and tangent streams.
-    //
-    // `source` is the mesh the entry was registered from. Returns false and
-    // changes nothing when `vertices` does not fit the entry (vertex count,
-    // tangent presence, own-vertex LOD levels), when every range is still in
-    // use, or when a new range cannot be allocated; the caller then registers
-    // the mesh again.
-    bool RewriteSubmeshVertices(MeshGPUHandle handle,
-                                const Mesh& source,
-                                std::span<const Vertex> vertices);
 
     // Look up a previously registered entry by handle.
     const MeshGPUEntry* Find(MeshGPUHandle handle) const;
@@ -639,6 +629,14 @@ class MeshGPURegistry
     // lookup regenerates them from their deterministic GUIDs.
     MeshGPUReprovisionReport ReprovisionAfterDeviceRebuild(
         const std::function<MeshGPUCpuSource(const MeshGPUKey&)>& sourceLookup);
+
+    // How many mesh content hashes RegisterSubmesh computed. A model's registration uses the hashes its load
+    // computed, so it adds none.
+    uint64_t GetComputedContentHashCountForTest() const
+    {
+        TableScope scope(*this);
+        return m_ComputedContentHashCount;
+    }
 
     // Query: how many distinct model assets are registered?
     size_t GetRegisteredModelCount() const
@@ -810,6 +808,14 @@ class MeshGPURegistry
     // wait-free obligation that puts on them.
     void NotifyUnregister(const GUID& assetGuid);
 
+    // Registers a submesh of `asset` with the content hash its load computed. Hashes the mesh only when the
+    // asset holds no hashes for its current meshes.
+    MeshGPUHandle RegisterModelSubmesh(const MeshGPUKey& key, const ModelAsset& asset);
+
+    // RegisterSubmesh with `contentHash`, the ComputeMeshContentHash of `mesh`, already known.
+    MeshGPUHandle RegisterHashedSubmesh(const MeshGPUKey& key, const Mesh& mesh, uint64_t contentHash,
+                                        bool retainCpuMesh);
+
     // Upload a CPU-side Mesh to GPU buffers, creating a MeshGPUEntry.
     MeshGPUEntry UploadMesh(const Mesh& mesh);
 
@@ -843,35 +849,16 @@ class MeshGPURegistry
     // UploadMesh).
     MeshGPUBucket& GetOrCreateBucket(MeshGPUBucketKey key);
 
-    // Return all of an entry's bucket suballocations, its spare vertex groups
-    // included, to the pools' deferred-free queue, stamped to retire
-    // kMaxFramesInFlight after the current frame, and retire the upload stamp
-    // those suballocations belonged to.
-    void ReleaseEntryToBucket(MeshGPUHandle handle, MeshGPUEntry& entry);
-
-    // One range request per per-vertex stream of a group; see AllocateVertexGroup.
-    struct VertexStreamRequest;
-
-    // Allocate every requested stream at one shared vertex offset, in the first
-    // pool group that fits all of them, else in a pool group appended to the
-    // bucket. On failure nothing stays allocated.
-    bool AllocateVertexGroup(std::vector<VertexStreamRequest>& streams, VertexAttributeFlags flags);
-
-    // A vertex group a rewritten entry does not draw from: a range in each
-    // per-vertex stream pool the entry owns (indexed like the entry's streams,
-    // invalid where it owns none), all at one vertex offset.
-    struct SpareVertexGroup
-    {
-        std::array<BucketPoolAllocator::Allocation, kMeshGPUVertexStreamCount> allocs{};
-        std::array<uint32_t, kMeshGPUVertexStreamCount> poolIndices{};
-        // m_CurrentFrameIndex when the entry stopped drawing from this group.
-        uint64_t retiredFrame = 0;
-    };
+    // Return all of an entry's bucket suballocations to the pools'
+    // deferred-free queue, stamped to retire kMaxFramesInFlight after
+    // the current frame, and retire the upload stamp those suballocations
+    // belonged to.
+    void ReleaseEntryToBucket(MeshGPUEntry& entry);
 
     // THE mutual-exclusion point for m_Entries, m_KeyToHandle, m_ModelHandles,
-    // m_Buckets, the GPUScene mesh rows and m_Residency's writer half. Taken
-    // through TableScope and never directly, so scope entry and exit are the
-    // one place the developer-build counter below is maintained.
+    // m_ModelMaterials, m_Buckets, the GPUScene mesh rows and m_Residency's
+    // writer half. Taken through TableScope and never directly, so scope entry
+    // and exit are the one place the developer-build counter below is maintained.
     mutable std::recursive_mutex m_TableMutex;
 
 #if GE_DEBUG_INSTRUMENTATION
@@ -921,18 +908,17 @@ class MeshGPURegistry
     // Generational storage for entries (handle -> entry).
     GenerationalVector<MeshGPUEntry> m_Entries;
     uint64_t m_ContentRevision = 1;
-
-    // Entries RewriteSubmeshVertices has rotated; released with the entry.
-    std::unordered_map<MeshGPUHandle, std::vector<SpareVertexGroup>> m_SpareVertexGroups;
-    // Packed core and tangent bytes of one rewrite, kept to reuse the storage.
-    std::vector<uint8_t> m_RewriteCoreBytes;
-    std::vector<float> m_RewriteTangents;
+    uint64_t m_ComputedContentHashCount = 0;
 
     // Dedup map: composite key -> handle.
     std::unordered_map<MeshGPUKey, MeshGPUHandle> m_KeyToHandle;
 
     // Per-asset index: GUID -> list of submesh handles (in submesh order).
     std::unordered_map<GUID, std::vector<MeshGPUHandle>> m_ModelHandles;
+
+    // Per-asset materials: GUID -> the converted materials its first spawn registered.
+    // Invariant: an entry exists only beside an m_ModelHandles entry and is erased with it.
+    FlatMap<GUID, std::shared_ptr<const ModelMaterialList>> m_ModelMaterials;
 
     // Bucket storage. Keyed by the vertex-attribute flag set; one bucket
     // per layout. Buckets are created lazily by UploadMesh and live until

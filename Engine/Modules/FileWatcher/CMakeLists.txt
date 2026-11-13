@@ -1,11 +1,15 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(FileWatcher VERSION 1.0.0 LANGUAGES CXX)
+project(FileWatcher LANGUAGES CXX)
 
 set(FILEWATCHER_SOURCES
     Source/FileIdentity.cpp
     Source/FileWatcher.cpp
 )
+if(NOT WIN32)
+    # The polling backend's tree walk. On Windows a rescan after lost events walks with std::filesystem.
+    list(APPEND FILEWATCHER_SOURCES Source/DirectoryTreeWalk.cpp)
+endif()
 
 add_library(FileWatcher OBJECT ${FILEWATCHER_SOURCES})
 
@@ -34,7 +38,7 @@ target_link_libraries(FileWatcher
     PUBLIC Logger Types
 )
 
-if(APPLE AND NOT GE_MOBILE)
+if(APPLE)
     # FSEvents wakes the polling loop the moment the filesystem reports a change
     # instead of leaving detection latency to the poll interval alone.
     target_link_libraries(FileWatcher PUBLIC "-framework CoreServices")

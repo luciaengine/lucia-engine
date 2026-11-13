@@ -4,8 +4,11 @@
 #include "Components/Terrain/TerrainModifierVolume.h"
 #include "Components/Terrain/TerrainModifiers.h"
 #include "ECS/ECS.h"
+#include "TerrainECS/GeneratedNoiseRelief.h"
+#include "TerrainECS/TerrainZonePayload.h"
 
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <string_view>
 
@@ -38,7 +41,57 @@ struct ComponentTypeList
 using ModifierRootComponents = ComponentTypeList<
     Components::TerrainModifierVolume,
     Components::TerrainSculptZone,
-    Components::TerrainPaintZone>;
+    Components::TerrainPaintZone,
+    Components::TerrainColorZone>;
+
+// The zone kinds: payload-backed modifier roots, one payload format each. The
+// payload saver, the zone gizmo and the gather fold over this list, so a zone kind
+// added here is saved, drawn and gathered.
+using ZoneComponents = ComponentTypeList<
+    Components::TerrainSculptZone,
+    Components::TerrainPaintZone,
+    Components::TerrainColorZone>;
+
+// The payload format a zone kind stores, and whether a spherical terrain's bake
+// applies it (only the sculpt zone; keep in step with IsSphereSupportedModifier).
+// Specialized per zone below — a zone added to ZoneComponents without one fails
+// to compile.
+template <typename TZone>
+struct TerrainZoneKind;
+
+template <>
+struct TerrainZoneKind<Components::TerrainSculptZone>
+{
+    static constexpr ZonePayloadFormat Format = ZonePayloadFormat::SculptOffsetR32F;
+    static constexpr bool SphereSupported = true;
+};
+
+template <>
+struct TerrainZoneKind<Components::TerrainPaintZone>
+{
+    static constexpr ZonePayloadFormat Format = ZonePayloadFormat::PaintMaskR8;
+    static constexpr bool SphereSupported = false;
+};
+
+template <>
+struct TerrainZoneKind<Components::TerrainColorZone>
+{
+    static constexpr ZonePayloadFormat Format = ZonePayloadFormat::ColorRGBA32F;
+    static constexpr bool SphereSupported = false;
+};
+
+// Calls fn.template operator()<TZone>() once per zone kind, in ZoneComponents order.
+template <typename Fn, typename... Ts>
+void ForEachZoneKindIn(ComponentTypeList<Ts...>, Fn&& fn)
+{
+    (fn.template operator()<Ts>(), ...);
+}
+
+template <typename Fn>
+void ForEachZoneKind(Fn&& fn)
+{
+    ForEachZoneKindIn(ZoneComponents{}, fn);
+}
 
 // Types the gather reads as passengers on a volume entity: the effect stack.
 // The region and the transform belong to the volume, so an effect's own column
@@ -51,7 +104,8 @@ using ModifierEffectComponents = ComponentTypeList<
     Components::TerrainPaintLayerEffect,
     Components::TerrainSurfaceRulesEffect,
     Components::TerrainGroundClaimEffect,
-    Components::TerrainGrassEffect>;
+    Components::TerrainGrassEffect,
+    Components::TerrainColorEffect>;
 
 // Subscribe a world to the Added/Removed events the modifier change gate
 // consumes. Removed<T> is the only detector for a component remove or an entity
@@ -111,7 +165,7 @@ struct TerrainEffectChrome<Components::TerrainStampEffect>
 {
     static constexpr std::string_view Title = "Stamp";
     static constexpr std::string_view Description =
-        "Projects a height texture over the region - craters, cliff details, sculpt data.";
+        "Projects a height texture over the volume - craters, cliff details, sculpt data.";
 };
 
 template <>
@@ -135,7 +189,7 @@ struct TerrainEffectChrome<Components::TerrainGroundClaimEffect>
 {
     static constexpr std::string_view Title = "Ground Claim";
     static constexpr std::string_view Description =
-        "Marks ground this region owns, so pooled flattens grade up to it and stop. Writes no height.";
+        "Marks ground this volume owns, so pooled flattens grade up to it and stop. Writes no height.";
 };
 
 template <>
@@ -143,7 +197,15 @@ struct TerrainEffectChrome<Components::TerrainGrassEffect>
 {
     static constexpr std::string_view Title = "Grass";
     static constexpr std::string_view Description =
-        "Shortens or thins planar grass relative to its global profile, with the region's falloff.";
+        "Makes the terrain's grass shorter or sparser inside the volume, fading out over its falloff.";
+};
+
+template <>
+struct TerrainEffectChrome<Components::TerrainColorEffect>
+{
+    static constexpr std::string_view Title = "Color";
+    static constexpr std::string_view Description =
+        "Colors the ground and the base of its grass - worn paths, lush patches, dry yards.";
 };
 
 // One canonical effect type as runtime data.
@@ -190,5 +252,14 @@ bool AddTerrainEffectDefault(ECS::World& world, ECS::EntityHandle entity,
 // marks the effect's column, which is what the modifier change gate scans.
 bool SetTerrainEffectStackOrder(ECS::World& world, ECS::EntityHandle entity,
                                 ECS::ComponentTypeId typeId, int32 stackOrder);
+
+// The volume of the scene's Generated noise: an enabled Shape::Global volume with Weight above 0 that holds
+// an enabled TerrainNoiseEffect in Generated mode; the highest volume Priority wins (ties: the lowest entity
+// index). Invalid when there is none.
+ECS::EntityHandle FindGeneratedNoiseVolume(ECS::World& world);
+
+// The preset of the FindGeneratedNoiseVolume effect and the volume's Weight; null when there is none.
+// A Flat base evaluates it as its relief (TerrainService::BuildTiledTerrainConfig).
+std::optional<GeneratedNoiseRelief> ResolveGeneratedNoiseRelief(ECS::World& world);
 
 } // namespace GameEngine::TerrainECS

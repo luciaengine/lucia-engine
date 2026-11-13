@@ -1,7 +1,9 @@
 #include "Engine/Build/BuildPipeline.h"
+#include "Core/ApplicationPaths.h"
 #include "Engine/Build/AppIconGenerator.h"
 #include "Engine/Build/BuildHost.h"
 #include "Engine/Build/DirectoryCopy.h"
+#include "Engine/Build/ExportRequirements.h"
 #include "Engine/Build/LinuxRuntimeTemplate.h"
 #include "Engine/Build/MacBundleAssembler.h"
 #include "Engine/Build/NativeAotProject.h"
@@ -14,10 +16,15 @@
 #include "Engine/Build/TexturePackageCook.h"
 #include "Engine/Build/PlayerSourcePreparation.h"
 #include "Engine/Build/RuntimeDependencyStaging.h"
+#include "Engine/Build/ShellUtil.h"
+#include "Engine/Build/ShipRules.h"
 #include "Engine/Build/StagedAssetCook.h"
 #include "Scripting/ScriptTargetFramework.h"
 #include "Engine/Build/CancellableShellProcess.h"
 #include "Engine/GameUI/UIScaleProjectSettings.h"
+#include "Rendering/ShaderCache/MetalLibraryArchive.h"
+#include "Rendering/ShaderCache/MetalLibraryBake.h"
+#include "Rendering/ShaderCache/ShaderStageRecord.h"
 #include "Assets/Packages/PackagesIndex.h"
 #include "Scripting/NativeAotScriptsLibrary.h"
 #include "Scripting/PathResolver.h"
@@ -32,7 +39,7 @@
 #include "Assets/LodAssetSettings.h"
 #include "Assets/RuntimeAssetMetadata.h"
 #include "Assets/MeshLODCache.h"
-#include "TerrainECS/TerrainBakeCache.h"
+#include "Assets/ShaderProgramAsset.h"
 #include "Assets/MeshLODGenerator.h"
 #include "Assets/ModelAsset.h"
 #include "Core/Application.h" // PathUtils
@@ -58,6 +65,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -65,6 +73,7 @@
 #include <unordered_map>
 #include <map>
 #include <sstream>
+#include <thread>
 #include <unordered_set>
 
 namespace fs = std::filesystem;
@@ -658,14 +667,14 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
     // and engine ABIs all come from the SDK template, and the project's content is
     // injected into a copy of it (no per-game recompile). For that target, assets
     // and game.config are written straight into the bundle's Contents/Resources,
-    // the content root the Player resolves from its Contents/MacOS (PathUtils::
+    // the content root the Player resolves from its Contents/MacOS (ApplicationPaths::
     // InstallContentRootFor); otherwise they go flat into the staging dir.
     const bool macBundle = IsMacBundleTarget(settings);
     // Filesystem-safe .app folder name: the display name (CFBundleName, game.config)
     // keeps the raw value, but the bundle directory + the fs::rename/remove_all of the
     // output must never contain path separators or leading dots (a malicious/typo'd game
     // name like "../x" or "a/b" must not escape the output dir).
-    std::string gameName = PathUtils::SanitizeForFolderName(settings.playerConfig.gameName);
+    std::string gameName = ApplicationPaths::SanitizeForFolderName(settings.playerConfig.gameName);
     // SanitizeForFolderName scrubs separators/illegal chars but keeps dots; strip any
     // leading dots so the name can't begin a path escape ("../x") of the output dir.
     while (!gameName.empty() && gameName.front() == '.')
@@ -674,7 +683,7 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
         gameName = "Game";
     const fs::path bundlePath = stagingDir / (gameName + ".app");
     const fs::path contentRoot =
-        macBundle ? PathUtils::InstallContentRootFor(bundlePath / "Contents" / "MacOS") : stagingDir;
+        macBundle ? ApplicationPaths::InstallContentRootFor(bundlePath / "Contents" / "MacOS") : stagingDir;
 
     // Helper: check for cancellation between phases.
     auto checkCancel = [this]() -> bool {
@@ -791,19 +800,20 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
     // 6. Collect assets
     ReportProgress(BuildProgress::Stage::CollectingAssets, 0.45f, "Collecting assets...");
     if (checkCancel()) return false;
-    manifest = CollectAssets(settings);
-    AssetCollector runtimeCollector(EngineCore::GetInstance().GetAssetManager());
-    if (!runtimeCollector.CollectRuntimeHumanoidProfile(manifest))
+    ShipRules shipRules;
     {
-        ReportProgress(BuildProgress::Stage::Failed, 0.0f,
-                       "Runtime humanoid profile is missing or conflicts with project content; see the asset collection log");
-        return false;
-    }
-    if (!runtimeCollector.CollectDefaultUIFont(manifest))
-    {
-        ReportProgress(BuildProgress::Stage::Failed, 0.0f,
-                       "Default game UI font is missing; see the asset collection log");
-        return false;
+        AssetCollector collector(EngineCore::GetInstance().GetAssetManager());
+        std::string collectError;
+        if (!collector.CollectGameContent(settings.scenes, settings.renderPipelinePath,
+                                          EngineCore::GetInstance().GetResolvedAssetRoot(), manifest,
+                                          m_Progress.warnings, collectError))
+        {
+            for (std::string_view line : Split(collectError, '\n'))
+                m_Progress.errors.emplace_back(line);
+            ReportProgress(BuildProgress::Stage::Failed, 0.0f, collectError);
+            return false;
+        }
+        shipRules = collector.GetShipRules();
     }
     // ctx.manifest binds the local `manifest`, updated in place above — so the
     // PreAssetCopy/PostAssetCopy/PrePackage hooks below see the collected manifest.
@@ -813,6 +823,18 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
     {
         ReportProgress(BuildProgress::Stage::Failed, 0.0f, "PreAssetCopy hook failed");
         return false;
+    }
+
+    // 7a. Step 6 adds no Never asset, so a Never entry here comes from a PreAssetCopy step.
+    {
+        const size_t errorsBefore = m_Progress.errors.size();
+        shipRules.ReportNeverEntries(manifest, EngineCore::GetInstance().GetResolvedAssetRoot(),
+                                     "a build step added it. Change the step or the rule.", m_Progress.errors);
+        if (m_Progress.errors.size() > errorsBefore)
+        {
+            ReportProgress(BuildProgress::Stage::Failed, 0.0f, m_Progress.errors[errorsBefore]);
+            return false;
+        }
     }
 
     // 8. Copy assets. Always the FULL manifest: the staging dir is recreated
@@ -842,6 +864,18 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
             return false;
         m_Progress.warnings.push_back("Engine shader copy failed or skipped");
     }
+
+    // 9a. Cook the material variants into the content root's read-only shader cache. A missing
+    // tool or a package that cannot be staged fails the build; a variant that does not cook is a
+    // warning.
+    if (!CookMaterialVariants(contentRoot, settings))
+    {
+        if (!m_Progress.cancelled)
+            ReportProgress(BuildProgress::Stage::Failed, 0.0f, "Failed to cook material shaders");
+        return false;
+    }
+    if (!CompileMetalLibraries(contentRoot, settings))
+        return false;
 
     // 9b. Stage third-party notices/licenses for bundled engine modules and assets.
     if (!CopyThirdPartyNotices(contentRoot, settings))
@@ -958,7 +992,7 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
     std::string cookError;
     AssetManager& assets = EngineCore::GetInstance().GetAssetManager();
     if (!CookStagedContent(contentRoot, manifest, assets.GetRegistry(), assets.GetParserRegistry(),
-                           assets.GetTextureCookWorkers(),
+                           assets.GetTextureCookWorkers(), &EngineCore::GetInstance().GetJobSystem(),
                            [this]() { return m_CancelRequested.load(); },
                            textureStats, cookError))
     {
@@ -979,12 +1013,7 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
     // cook failure is non-fatal: the Player falls back to runtime generation.
     CookMeshLODs(contentRoot, manifest);
 
-    // 13e. Stage the project's baked terrains beside the manifest, where the
-    // packaged Player looks them up by content key; a terrain with no bake there
-    // is baked at load as before.
-    StageTerrainBakes(contentRoot, settings, manifest);
-
-    // 13f. Pack each shipped terrain heightmap's cooked pages into its terrain container
+    // 13e. Pack each shipped terrain heightmap's cooked pages into its terrain container
     // (Assets/Cooked/Terrain/<guid>.geterrain), cooking it in the project cache first when it changed.
     {
         AssetManager& pageAssets = EngineCore::GetInstance().GetAssetManager();
@@ -1667,61 +1696,6 @@ bool BuildPipeline::CompileScriptsNativeAOT(const BuildSettings& s,
 // CollectAssets
 // ---------------------------------------------------------------------------
 
-AssetManifest BuildPipeline::CollectAssets(const BuildSettings& s)
-{
-    auto& am = EngineCore::GetInstance().GetAssetManager();
-    AssetCollector collector(am);
-    AssetManifest manifest = collector.CollectFromScenes(s.scenes);
-
-    // If the dependency-based collector found nothing, fall back to copying
-    // the entire project Assets directory. This handles cases where the asset
-    // registry hasn't scanned the project yet or scene paths don't match.
-    if (manifest.entries.empty())
-    {
-        Logger::Log::Warning("Build: AssetCollector found no assets via dependency graph, falling back to full copy");
-        manifest = collector.CollectAllAssets();
-    }
-
-    // If the collector found nothing useful, copy all files from the project's
-    // Assets directory. This is the simplest reliable fallback — the dependency
-    // graph may not be populated when the build runs on a background thread.
-    if (manifest.entries.empty())
-    {
-        const auto& assetRoot = EngineCore::GetInstance().GetResolvedAssetRoot();
-        std::error_code ec;
-        if (fs::is_directory(assetRoot, ec))
-        {
-            for (const auto& entry : fs::recursive_directory_iterator(assetRoot, ec))
-            {
-                if (!entry.is_regular_file())
-                    continue;
-                // Skip Shaders — copied separately by CopyEngineShaders.
-                auto rel = fs::relative(entry.path(), assetRoot);
-                if (rel.generic_string().rfind("Shaders/", 0) == 0)
-                    continue;
-                // Don't ship C++/C# source, build files, or Editor/-convention
-                // folders. Checked on the root-relative path so the deny only
-                // sees segments under the asset root.
-                if (!AssetCollector::IsShippableContent(rel))
-                    continue;
-                AssetManifestEntry me;
-                me.sourcePath = entry.path();
-                me.outputPath = fs::path("Assets") / rel;
-                manifest.entries.push_back(std::move(me));
-            }
-            Logger::Log::Info("Build: Added {} asset files from project directory", manifest.entries.size());
-        }
-    }
-
-    // Whichever way the content was collected, the pipeline game.config names ships
-    // in the manifest: the Player resolves it by path through the .assetmanifest. A
-    // packaged game has no stand-in pipeline, so one missing from the package draws nothing.
-    if (!collector.CollectRenderPipeline(s.renderPipelinePath, manifest))
-        m_Progress.warnings.push_back("Selected render pipeline not found; the game will draw nothing: " +
-                                      s.renderPipelinePath);
-
-    return manifest;
-}
 
 // ---------------------------------------------------------------------------
 // Package staging (P2)
@@ -1939,7 +1913,7 @@ bool BuildPipeline::CopyEngineShaders(const fs::path& stagingDir)
 {
     // Engine shaders are not GUID-tracked. Copy the entire Shaders directory the build staged
     // with the Editor executable that is running this build.
-    const fs::path shaderSrc = PathUtils::GetInstallAssetsRoot() / "Shaders";
+    const fs::path shaderSrc = ApplicationPaths::GetInstallAssetsRoot() / "Shaders";
     if (!fs::is_directory(shaderSrc))
     {
         Logger::Log::Warning("Build: Engine shaders not found, skipping");
@@ -1953,6 +1927,222 @@ bool BuildPipeline::CopyEngineShaders(const fs::path& stagingDir)
     Logger::Log::Info("Build: Copied engine shaders from '{}'", shaderSrc.string());
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// CookMaterialVariants
+// ---------------------------------------------------------------------------
+
+namespace
+{
+// The last lines of a child's output, for an error that names the failure without the whole log.
+std::string OutputTail(const std::string& output, std::size_t lineCount)
+{
+    std::size_t start = output.size();
+    for (std::size_t lines = 0; start > 0 && lines <= lineCount;)
+    {
+        --start;
+        if (output[start] == '\n')
+            ++lines;
+    }
+    return output.substr(start);
+}
+
+// The cook's summary lines ("MaterialVariantCook: ..."), how many variants it cooked and reused, in the
+// export log.
+void LogCookSummary(const std::string& output)
+{
+    constexpr std::string_view kSummary = "MaterialVariantCook: ";
+    std::size_t lineStart = 0;
+    while (lineStart < output.size())
+    {
+        std::size_t lineEnd = output.find_first_of("\r\n", lineStart);
+        if (lineEnd == std::string::npos)
+            lineEnd = output.size();
+        const std::string_view line = std::string_view(output).substr(lineStart, lineEnd - lineStart);
+        if (line.starts_with(kSummary))
+            Logger::Log::Info("Build: {}", line);
+        lineStart = lineEnd + 1;
+    }
+}
+
+} // namespace
+
+DesktopMaterialCookInputs BuildPipeline::MakeMaterialCookInputs(const fs::path& contentRoot,
+                                                                const BuildSettings& s) const
+{
+    std::vector<MaterialCookScanRoot> packageRoots;
+    for (const ResolvedPackage& package : m_PackageResolution.MountOrder)
+    {
+        // A package without an assets folder (code only) has no materials to cook.
+        if (!package.AssetsDir.empty() && fs::is_directory(package.AssetsDir))
+            packageRoots.push_back({package.AssetsDir, package.Alias});
+    }
+    // The cook composes the project assets and the engine shader tree this export staged, so its keys
+    // are the ones the packaged runtime computes.
+    DesktopMaterialCookInputs inputs = ExportMaterialCookInputs(contentRoot, s.projectRoot, packageRoots);
+    // A program the editor already compiled is the same program under the same key, so the cook copies it.
+    const fs::path editorCache = ShaderProgramAsset::GetShaderCacheRoots().Writable;
+    if (!editorCache.empty() && fs::is_directory(editorCache) && editorCache != inputs.Cache)
+        inputs.ReuseCache = editorCache;
+    return inputs;
+}
+
+bool BuildPipeline::CookMaterialVariants(const fs::path& contentRoot, const BuildSettings& s)
+{
+    const fs::path tool = FindMaterialVariantCook();
+    if (tool.empty())
+    {
+        m_Progress.errors.push_back(
+            "MaterialVariantCook is missing from the Tools folder beside this Editor's Apps folder; the Editor "
+            "build stages it there. Build the Editor target again, then export.");
+        return false;
+    }
+    const DesktopMaterialCookInputs inputs = MakeMaterialCookInputs(contentRoot, s);
+    if (!fs::is_directory(inputs.EngineShaders))
+    {
+        m_Progress.warnings.push_back("Material variant cook skipped: the export staged no engine shaders.");
+        return true;
+    }
+
+    std::string command = "\"" + tool.generic_string() + "\"";
+    for (const std::string& argument : DesktopMaterialCookArguments(inputs))
+        command += " \"" + argument + "\"";
+    Logger::Log::Info("Build: material variant cook: {}", command);
+    RemoveMaterialCookOutputs(inputs.Cache);
+    const ShellProcessResult result = RunShellCommandImpl(command + " 2>&1", nullptr);
+    if (result.cancelled)
+        return FailIfCancelled(), false;
+    // A material that does not cook is reported, not fatal: the game compiles it on first use and
+    // shows the same compile error the editor does. Everything that cooked still ships.
+    const MaterialCookOutcome cook =
+        ReadMaterialCookOutcome(inputs.Cache, result.exitCode, OutputTail(result.output, 25));
+    if (!cook.Error.empty())
+    {
+        m_Progress.errors.push_back(cook.Error);
+        return false;
+    }
+    if (!cook.Warning.empty())
+        m_Progress.warnings.push_back(cook.Warning);
+    LogCookSummary(result.output);
+    if (!cook.Record)
+        return true;
+
+    const std::vector<fs::path>& packages = cook.Record->Packages;
+    std::string error;
+    if (!StageCookedShaderPackages(packages, inputs.Cache, contentRoot / ".Cache" / "Shaders", error))
+    {
+        m_Progress.errors.push_back(error);
+        return false;
+    }
+    Logger::Log::Info("Build: staged {} cooked shader package(s) into '{}'", packages.size(),
+                      (contentRoot / ".Cache" / "Shaders").string());
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// CompileMetalLibraries
+// ---------------------------------------------------------------------------
+
+#if defined(__APPLE__)
+namespace
+{
+// One command that compiles every job, as many at a time as the machine has cores. The job list holds
+// the source and library paths NUL-separated, so a path with spaces stays one argument.
+std::string MetalCompileCommand(const fs::path& jobList, std::span<const std::string> flags)
+{
+    std::string flagList;
+    for (const std::string& flag : flags)
+        flagList += flag + " ";
+    return "xargs -0 -n 2 -P " + std::to_string(std::max(1u, std::thread::hardware_concurrency())) +
+           " sh -c 'xcrun -sdk macosx metal -c " + flagList + "\"$0\" -o \"$1.air\" && xcrun -sdk macosx metallib " +
+           "\"$1.air\" -o \"$1\"' < " + ShellQuote(jobList) + " 2>&1";
+}
+} // namespace
+#endif
+
+bool BuildPipeline::CompileMetalLibraries([[maybe_unused]] const fs::path& contentRoot,
+                                          [[maybe_unused]] const BuildSettings& s)
+{
+#if defined(__APPLE__)
+    // A Mac game loads the stages that development runs recorded from libraries compiled here, instead
+    // of compiling their MSL at run time. Without a record or the toolchain it compiles them at run time.
+    if (!IsMacBundleTarget(s))
+        return true;
+    const fs::path record = Rendering::ShaderStageRecordFile(s.projectRoot);
+    if (!fs::is_regular_file(record))
+    {
+        Logger::Log::Info("Build: no Metal libraries: a development run of the game records its shader stages to '{}'",
+                          record.string());
+        return true;
+    }
+    bool checkCancelled = false;
+    const bool toolchainInstalled =
+        IsExportRequirementInstalled(MetalToolchainRequirement(), [&](const std::string& command) {
+            const ShellProcessResult result = RunShellCommandImpl(command + " 2>&1", nullptr);
+            checkCancelled |= result.cancelled;
+            return result.exitCode;
+        });
+    if (checkCancelled)
+        return FailIfCancelled(), false;
+    if (!toolchainInstalled)
+    {
+        const std::string message = "Metal libraries skipped: " + DescribeMissingExportRequirement(MetalToolchainRequirement());
+        Logger::Log::Warning("Build: {}", message);
+        m_Progress.warnings.push_back(message);
+        return true;
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    const fs::path bundleCache = contentRoot / ".Cache" / "Shaders";
+    // A recorded stage's SPIR-V is in a package or a .spv file under the shader folders the cook reads or
+    // writes, or in the project's own cache.
+    std::vector<fs::path> packageRoots = DesktopShaderPackageRoots(MakeMaterialCookInputs(contentRoot, s));
+    if (const fs::path projectCache = s.projectRoot / ".Cache" / "Shaders";
+        std::ranges::find(packageRoots, projectCache) == packageRoots.end())
+        packageRoots.push_back(projectCache);
+    const fs::path workDir = s.projectRoot / ".Build" / "MetalLibraries";
+    bool cancelled = false;
+    const Rendering::MetalLibraryBake bake = Rendering::BakeMetalLibraries(
+        record, packageRoots, workDir,
+        [&](std::span<const Rendering::MetalLibraryCompileJob> jobs, std::span<const std::string> flags) {
+            cancelled = !RunMetalCompileJobs(jobs, flags, workDir / "jobs.txt");
+        });
+    if (cancelled)
+        return FailIfCancelled(), false;
+    if (!bake.Archive.empty())
+    {
+        std::ofstream out(bundleCache / Rendering::kMetalLibraryArchiveFileName, std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char*>(bake.Archive.data()), static_cast<std::streamsize>(bake.Archive.size()));
+        if (!out)
+            m_Progress.warnings.push_back("Metal libraries were compiled but could not be written to '" +
+                                          bundleCache.string() + "'");
+    }
+    Logger::Log::Info("Build: Metal libraries: {} recorded stages, {} found in shader files, {} compiled, {} bytes, "
+                      "{:.1f} s",
+                      bake.RecordedStages, bake.ResolvedStages, bake.CompiledStages, bake.Archive.size(),
+                      std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+#endif
+    return true;
+}
+
+#if defined(__APPLE__)
+bool BuildPipeline::RunMetalCompileJobs(std::span<const Rendering::MetalLibraryCompileJob> jobs,
+                                        std::span<const std::string> flags, const fs::path& jobList)
+{
+    {
+        std::ofstream out(jobList, std::ios::binary | std::ios::trunc);
+        for (const Rendering::MetalLibraryCompileJob& job : jobs)
+            out << job.Source.string() << '\0' << job.Library.string() << '\0';
+    }
+    const ShellProcessResult result = RunShellCommandImpl(MetalCompileCommand(jobList, flags), nullptr);
+    if (result.cancelled)
+        return false;
+    if (result.exitCode != 0)
+        m_Progress.warnings.push_back("Some Metal libraries did not compile; those stages compile at run time:\n" +
+                                      OutputTail(result.output, 25));
+    return true;
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // CopyThirdPartyNotices
@@ -2148,6 +2338,7 @@ bool BuildPipeline::WriteGameConfig(const fs::path& stagingDir, const BuildSetti
     // in the session would otherwise bake into the game.
     cfg.renderQuality = Rendering::AntiAliasingProjectSettings::Load(s.projectRoot);
     cfg.sortingLayers = Rendering::SortingLayers::Load(s.projectRoot);
+    cfg.renderLayerNames = Rendering::RenderLayerNames::Load(s.projectRoot);
 
     // The game UI scale policy authored in the project settings.
     cfg.uiScale = UIScaleProjectSettings::Load(s.projectRoot);
@@ -2213,7 +2404,8 @@ bool BuildPipeline::StageAssetManifest(const fs::path& contentRoot, const AssetM
             rel.erase(0, assetsPrefix.size());
         }
         AssetDatabase::AssetStore_TextJsonl& store =
-            stores[isPackageEntry ? entry.sourceAlias : std::string()];
+            stores.try_emplace(isPackageEntry ? entry.sourceAlias : std::string(),
+                               &EngineCore::GetInstance().GetJobSystem()).first->second;
 
         // Store the path FIELD case-preserved (NormalizeCanonicalPath:
         // forward-slash + lexically-normal, real on-disk case) — the packaged
@@ -2323,7 +2515,7 @@ bool BuildPipeline::StageAssetManifest(const fs::path& contentRoot, const AssetM
     // The project manifest always ships (even empty — the Player's packaged
     // mount detection keys off its presence); package manifests only where a
     // package staged assets.
-    stores[std::string()];
+    stores.try_emplace(std::string(), &EngineCore::GetInstance().GetJobSystem());
 
     for (auto& [alias, store] : stores)
     {
@@ -2412,38 +2604,6 @@ bool BuildPipeline::CookMeshLODs(const fs::path& contentRoot, const AssetManifes
     Logger::Log::Info("Build: Cooked LOD cache for {} models ({} skipped, no LODs), {} bytes -> '{}'",
                       cooked, skippedNoLods, totalBytes, lodDir.generic_string());
     return true;
-}
-
-// ---------------------------------------------------------------------------
-// StageTerrainBakes
-// ---------------------------------------------------------------------------
-
-void BuildPipeline::StageTerrainBakes(const fs::path& contentRoot, const BuildSettings& s,
-                                      const AssetManifest& manifest)
-{
-    // The editor keeps one artifact per terrain, under the scene the terrain was
-    // loaded from (TerrainBakeCache.h). Stage the folders of exactly the scenes this
-    // package ships; every other scene's artifacts stay in the project cache.
-    std::vector<GUID> scenes;
-    std::unordered_map<GUID, std::string> scenePaths;
-    for (const auto& entry : manifest.entries)
-    {
-        if (entry.type != AssetType::Scene)
-            continue;
-        scenes.push_back(entry.guid);
-        scenePaths[entry.guid] = entry.sourcePath.generic_string();
-    }
-    std::vector<fs::path> failures;
-    const auto staged = TerrainECS::StageTerrainBakeArtifacts(s.projectRoot / ".Cache" / "TerrainBake", scenes,
-                                                              contentRoot / "Assets" / ".terrainbake", failures);
-    for (const fs::path& failure : failures)
-        m_Progress.warnings.push_back("Terrain bake staging: failed to copy " + failure.string());
-    // The editor stores each terrain's current bake when its scene is saved, so a saved
-    // scene's folder holds exactly its terrains.
-    for (const TerrainECS::TerrainBakeStagedScene& scene : staged)
-        if (scene.Artifacts > 0)
-            Logger::Log::Info("Build: Scene '{}' ships {} baked terrain(s) ({} bytes)", scenePaths[scene.Scene],
-                              scene.Artifacts, scene.Bytes);
 }
 
 // ---------------------------------------------------------------------------

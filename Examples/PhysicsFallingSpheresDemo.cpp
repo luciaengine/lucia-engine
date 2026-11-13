@@ -3,6 +3,7 @@
 #include "Platform/Window.h"
 
 #include "Engine/Rendering/RenderDeviceContext.h"
+#include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
 
 #include "Input/KeyCodes.h"
@@ -19,7 +20,7 @@
 #include <span>
 
 #include "Mathematics/MatrixOps.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 
 #include "ECS/World.h"
 #include "ECS/ECSTemplates.h"
@@ -111,7 +112,7 @@ static void LogLowestSphere(const char* tag,
         if (pw && pb->initialized && pw->IsBodyValid(pb->body))
         {
             const auto pt = pw->GetBodyTransform(pb->body);
-            minPhysY = std::min(minPhysY, static_cast<float>(pt.position.y));
+            minPhysY = std::min(minPhysY, static_cast<float>(pt.position.Y));
         }
     }
 
@@ -549,14 +550,17 @@ int main()
         const Mathematics::Vector3 at(0.0f, 0.0f, 0.0f);
         const Mathematics::Vector3 up(0.0f, 1.0f, 0.0f);
         const Mathematics::Matrix4x4 view = Mathematics::MakeLookAtLH(eye, at, up);
-        const Mathematics::Matrix4x4 proj = Mathematics::MakePerspectiveLH_ZO_ReverseZ(60.0f * (3.14159265358979323846f / 180.0f), aspect, 0.1f, 200.0f);
+        constexpr Rendering::CameraRanges kCameraRanges{0.1f, 200.0f};
+        const Mathematics::Matrix4x4 proj = Mathematics::MakePerspectiveLH_ZO_ReverseZ(
+            60.0f * (3.14159265358979323846f / 180.0f), aspect, kCameraRanges.Near, kCameraRanges.CullingRange);
         const Mathematics::Matrix4x4 viewProj = proj * view;
 
         Rendering::CameraData cd{};
-        std::memcpy(cd.view, view.Data(), sizeof(cd.view));
-        std::memcpy(cd.proj, proj.Data(), sizeof(cd.proj));
-        std::memcpy(cd.viewProj, viewProj.Data(), sizeof(cd.viewProj));
-        rs->Views().SetCameraData(camId, cd);
+        cd.view = view;
+        cd.proj = proj;
+        cd.viewProj = viewProj;
+        Engine::Renderer::SetCameraEye(cd, Mathematics::WorldPosition::FromVector3(eye));
+        rs->Views().SetCameraData(camId, cd, kCameraRanges);
         rs->Views().SetViewCamera(viewId, camId);
 
         // Run fixed-step simulation + extraction.
@@ -590,7 +594,7 @@ int main()
                             return;
 
                         const auto tPhys = pw->GetBodyTransform(pb.body);
-                        Logger::Log::Info("[Demo] Ground body static at y={}", tPhys.position.y);
+                        Logger::Log::Info("[Demo] Ground body static at y={}", tPhys.position.Y);
                         loggedGroundOnce = true;
                     });
             }
@@ -613,9 +617,11 @@ int main()
             loggedPostOnce = true;
             if (const auto* wt = world.GetComponent<GameEngine::Components::WorldTransform>(groundEnts.post))
             {
-                const float wx = wt->matrix[12];
-                const float wy = wt->matrix[13];
-                const float wz = wt->matrix[14];
+                const GameEngine::Mathematics::Vector3 postPosition =
+                    wt->GetPosition() - GameEngine::Mathematics::WorldPosition{};
+                const float wx = postPosition.x;
+                const float wy = postPosition.y;
+                const float wz = postPosition.z;
 
                 const auto* mg = world.GetComponent<GameEngine::Components::MeshGPUData>(groundEnts.post);
                 const uint32 inst = mg ? mg->instanceIndex : 0xFFFFFFFFu;

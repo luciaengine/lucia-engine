@@ -1,14 +1,12 @@
 #pragma once
 
-#include "EditorApplication.h" // EditorApplication::EditorWindowContext
-#include "Editor/Registries/EditorPanelRegistry.h"
+#include "EditorApplication/EditorApplication.h" // EditorApplication::EditorWindowContext
 
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -58,30 +56,52 @@ class EditorPanelManager
 
     // -- Panel activation --
 
-    /// Shows or activates the panel `panelId` in the given window context. A
-    /// panel absent from the layout docks as a tab in the leaf holding
-    /// preferredLeafPanelId when that panel is docked, otherwise at its panel
-    /// type's default placement (EditorPanelTypeDescriptor::DefaultAnchorPanelId).
+    /// Generic: show or activate a named panel in the given window context.
+    /// If preferredLeafPanelId is non-empty, tries to place the new tab
+    /// in the same leaf as that panel (falls back to first leaf).
     void ShowOrActivatePanel(EditorWindowContext* ctx, const std::string& panelId,
                              const std::string& preferredLeafPanelId = {});
 
+    /// Brings an open panel to the front: raises its floating frame or activates its dock tab.
+    /// Never opens a closed panel. False when the panel is not open in `ctx`.
+    bool ActivateOpenPanel(EditorWindowContext* ctx, const std::string& panelId);
+
+    /// Opens a panel in its preferred workspace section. This placement is
+    /// independent of the authored startup layout.
+    void ShowOrActivatePanelAtDefaultPlacement(EditorWindowContext* ctx,
+                                               const std::string& panelId);
+
+    void ShowOrActivateUIDemoPanel(EditorWindowContext* ctx);
+    void ShowOrActivateSettingsPanel(EditorWindowContext* ctx);
     /// Activates the Settings panel and shows `category`.
     void ShowOrActivateSettingsPanelToCategory(EditorWindowContext* ctx, SettingsCategory category);
     /// Activates the Settings panel and shows the EditorSettingsRegistry category `categoryId`.
     void ShowOrActivateSettingsPanelToRegistryCategory(EditorWindowContext* ctx, std::string_view categoryId);
-    /// Activates the graph panel the user opened last, or the Shader Graph tab.
+    void ShowOrActivateScriptEditorPanel(EditorWindowContext* ctx);
     void ShowOrActivateGraphPanel(EditorWindowContext* ctx);
-    /// Opens the Web panel at the editor documentation URL in the main window.
-    void ShowOrActivateHelpPanel();
+    void ShowOrActivateAnimationPanel(EditorWindowContext* ctx);
+    void ShowOrActivateTodoPanel(EditorWindowContext* ctx);
+    void ShowOrActivateBookmarksPanel(EditorWindowContext* ctx);
+    void ShowOrActivateUndoHistoryPanel(EditorWindowContext* ctx);
+    void ShowOrActivateBuildPanel(EditorWindowContext* ctx);
+    void ShowOrActivateMixerPanel(EditorWindowContext* ctx);
+    void ShowOrActivateWebPanel(EditorWindowContext* ctx);
+    /// Opens the Web panel in the main window at the editor documentation, or at @p page under it
+    /// (a path under WebPanel::kHelpDocsURL).
+    void ShowOrActivateHelpPanel(std::string_view page = {});
 
     // -- Per-frame panel updates --
-    // Each panel registers its callback once, so UpdatePanels dispatches through a
-    // flat list rather than a type scan on every frame.
-    using UpdateCallback = std::function<void(const Editor::PanelUpdateContext&)>;
-    /// Wires a panel built from a registered panel type (EditorPanelRegistry):
-    /// registers the type's Update hook for it, and ShowOrActivatePanel places
-    /// and shows `panelId` the way the type declares.
-    void AdoptPanelOfType(const std::string& panelId, UIElement* panel, std::string_view typeKey);
+    // Panels register a callback once (typically in their constructor) so UpdatePanels
+    // dispatches via a flat list rather than a dynamic_cast scan on every frame.
+    struct PanelUpdateContext
+    {
+        Rendering::IDevice* device = nullptr;
+        RenderDocCapture* renderDoc = nullptr;
+        // Main window's live per-frame render graph (m_Windows[0]->RenderGraphStream.Frame).
+        // Source for the render-graph / profiler / VRAM panels' introspection.
+        Rendering::RenderGraph::RGFrame* rg2Frame = nullptr;
+    };
+    using UpdateCallback = std::function<void(const PanelUpdateContext&)>;
     // alwaysUpdate=false (default): UpdatePanels skips this entry when the
     // panel root has zero layout dimensions (inactive dock tab, hidden via
     // display:none, etc.). Set true for callbacks that must run even when
@@ -95,7 +115,12 @@ class EditorPanelManager
                       Rendering::RenderGraph::RGFrame* rg2Frame);
 
     // -- Panel closing --
+    /// Closes the tab that holds the focus in ctx, else the active tab of its first leaf, through
+    /// ClosePanelTab. A floating window with no tab closes.
     void CloseActiveTabOrWindow(EditorWindowContext* ctx);
+    /// Closes one panel's tab in ctx: the menu's Close, the middle click and Ctrl+W all come here.
+    /// It clears a focus held inside the panel. A floating window closes with its last tab.
+    void ClosePanelTab(EditorWindowContext* ctx, const std::string& panelId);
 
     // -- Dock tree helpers --
     static DockNode* FindFirstLeaf(DockNode* n);
@@ -108,20 +133,13 @@ class EditorPanelManager
   private:
     friend class EditorApplication;
     void ClearUpdateCallbacks();
+    bool IsMainWindow(const EditorWindowContext* ctx) const;
 
     /// Rebuild the "dock" DockspaceElement inside ctx after a model change.
     static void RebuildDockspace(EditorWindowContext* ctx);
     /// Rebuild immediately when a panel must be detached or mounted within the current event.
     static void RebuildDockspaceNow(EditorWindowContext* ctx, DockingManager* model);
     static void RefreshPanelUI(EditorWindowContext* ctx, const std::string& panelId);
-
-    /// The panel type `panelId` was adopted with; an empty descriptor for panels
-    /// no type built (package panels, per-asset graph docks).
-    Editor::EditorPanelTypeDescriptor PanelTypeOf(const std::string& panelId) const;
-    /// Queues the type's OnShown hook for the panel at the next UI safe point.
-    void QueueShownHook(EditorWindowContext* ctx, const std::string& panelId,
-                        const Editor::EditorPanelTypeDescriptor& type);
-    bool IsStoredPanel(const UIElement* panel) const;
 
     struct UpdateEntry
     {
@@ -135,7 +153,6 @@ class EditorPanelManager
     std::vector<std::unique_ptr<EditorWindowContext>>* m_Windows = nullptr;
     std::vector<UpdateEntry> m_UpdateCallbacks;
     std::vector<UpdateEntry> m_PendingCallbacks;
-    std::unordered_map<std::string, std::string> m_PanelTypeKeys; // panel id -> panel type key
     bool m_UpdatingPanels = false;
     std::function<bool()> m_IsLayoutDirty;
     Editor::FloatingFrameHost* m_FloatingFrames = nullptr;

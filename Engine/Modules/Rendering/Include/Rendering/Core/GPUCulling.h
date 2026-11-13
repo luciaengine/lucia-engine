@@ -3,14 +3,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include "Rendering/CameraTypes.h"
+#include "Mathematics/Vector3Int.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Common/Frustum.h"
 #include "Rendering/Common/Math.h"
+#include "Rendering/Core/CullDeformationMargins.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/Handle.h"
 #include "Rendering/Core/PrevVisibleResetTracker.h"
@@ -39,18 +42,6 @@ struct GPUCullingConfig
 // silently desync culling and bucketer dispatches.
 inline constexpr uint8_t kCullingCascadeIndexNone = 0xFFu;
 
-// Camera-relative frustum-plane translation (Earth-scale precision). Adds
-// n*origin to each inward-pointing plane's offset so the GPU can test
-// (boundingCenter - origin) in small magnitudes: dot(center, n) + d is
-// big-minus-big at planetary distance (both ~1e6+) and collapses into garbage
-// that culls everything, while the shader's small-minus-small dot on
-// (center - origin) with the translated offset recovers the true distance.
-// Mathematically identical to the world-space test, and a bit-for-bit no-op
-// when origin is (0,0,0) (the dark-ship gate). Must stay paired with the shader
-// subtracting the same origin (frustum_culling.comp / hzb_culling.comp). `planes`
-// is a run of 6 inward-pointing, CPU-normalized planes from ExtractFrustumPlanes.
-void MakeFrustumPlanesCameraRelative(Vector4* planes, const Vector3& origin);
-
 // Maximum cascades a single fused culling dispatch can fan out into. Must
 // match `kMaxViewsPerCullingDispatch` in GPUScene.h (which sizes
 // `GPUCullingData::frustumPlanes`) and `kMaxShadowCascades` in
@@ -73,29 +64,27 @@ struct ViewCullingInput
     // OnScheduleCulling hook); the pipeline allocates an independent
     // visibility-buffer slice per pair.
     uint8_t cascadeIndex = kCullingCascadeIndexNone;
+    // The view matrices and the planes take points relative to the origin of originSector
+    // (CameraData::viewRel and viewProjRel). The kernel composes each instance center against it.
     Matrix4x4 viewMatrix;
     Matrix4x4 projMatrix;
     Matrix4x4 viewProjMatrix;
     Vector4 frustumPlanes[6];
-    Vector3 cameraPosition;
     float nearPlane = 0.1f;
     Vector3 cameraForward;
     float farPlane = 1000.0f;
-    // Camera-relative culling origin (Earth-scale precision): the view's render
-    // origin in world meters (camera sector * sector size), or (0,0,0) when the
-    // origin is inactive. The frustum test is done as dot(center - origin, n)
-    // with plane offsets translated by n*origin, so a planetary boundingCenter
-    // and its plane offset stay small-magnitude instead of the big-minus-big
-    // collapse of dot(center, n) + d that culls everything. Origin (0,0,0) makes
-    // the whole transform a no-op => byte-identical to the world-space test.
-    Vector3 cameraRelativeOrigin{0.0f, 0.0f, 0.0f};
+    // The view's render origin sector (CameraRenderOriginSector).
+    Mathematics::Vector3Int originSector{0, 0, 0};
     // Per-view candidate set: [firstInstance, firstInstance + instanceCount)
     // within the GPUScene instance buffer. This allows different views to
     // cull different subranges of the global instance set while sharing the
     // same GPUScene backend.
     uint32_t firstInstance = 0;
     uint32_t instanceCount = 0;
-    uint32_t renderLayerMask = 0xFFFFFFFFu;
+    RenderLayerMask renderLayerMask = RenderLayerMask::All();
+    // A dispatch of the editor Scene View, color or shadow: drop instances its
+    // eye hides (kInstanceFlagEditorHidden).
+    bool dropEditorHidden = false;
     uint32_t frameIndex = 0;
     float deltaTime = 0.0f;
     // Two-phase HZB occlusion (R2.1): reserve a SECOND visibility slice for
@@ -116,7 +105,7 @@ struct ViewCullingInput
 struct CascadeCullingGroup
 {
     ViewId viewId = 0;
-    uint32_t renderLayerMask = 0xFFFFFFFFu;
+    RenderLayerMask renderLayerMask = RenderLayerMask::All();
     // 1..kMaxCullingViewsPerDispatch; selects the PSO variant.
     uint32_t cascadeCount = 0;
     // Slice c of the group publishes its ViewVisibilityRange at cascadeIndex
@@ -131,6 +120,9 @@ struct CascadeCullingGroup
     // stays visible and every slice keeps the conservative margin, exactly
     // as the single-view (cascadeIndexNone) dispatch does.
     bool shadowCasterDispatch = true;
+    // The group belongs to the editor Scene View: its slices drop instances the
+    // eye hides (kInstanceFlagEditorHidden), as ViewCullingInput does.
+    bool dropEditorHidden = false;
     // Per-cascade light view-projection matrices. Currently unused by the
     // culling shader (cluster_cull tests against frustum planes only) but
     // kept here so downstream consumers can mirror what the bucketer expects.
@@ -138,14 +130,12 @@ struct CascadeCullingGroup
     // Per-cascade frustum planes [c][L,R,B,T,N,F]. Slots [cascadeCount..]
     // are ignored by the selected PSO variant.
     Vector4 frustumPlanes[kMaxCullingViewsPerDispatch][6];
-    Vector3 cameraPosition;
     float nearPlane = 0.1f;
     Vector3 cameraForward;
     float farPlane = 1000.0f;
-    // Camera-relative culling origin shared by every cascade in the group — the
-    // parent view's render origin (0,0,0 when inactive). See
-    // ViewCullingInput::cameraRelativeOrigin.
-    Vector3 cameraRelativeOrigin{0.0f, 0.0f, 0.0f};
+    // The render origin sector of the parent view, shared by every slice. The planes take
+    // points relative to its origin, as in ViewCullingInput.
+    Mathematics::Vector3Int originSector{0, 0, 0};
     // Candidate set shared by every cascade in the group.
     uint32_t firstInstance = 0;
     uint32_t instanceCount = 0;
@@ -305,6 +295,15 @@ class GPUCullingPipeline
     // epilogue passes skip with the same decision. Pending prevVisible resets
     // force a recompute (the reset fill must be declared before any skip).
     void SetElisionFrameContext(const ElisionFrameContext& ctx) { m_ElisionCtx = ctx; }
+    // The per-material deformation margins (local meters, indexed by
+    // GPUInstance::materialIndex) both culling kernels bind this frame, set
+    // before EndFrame. Uploaded once per frame and keyed into the elision record,
+    // so a margin edit on an otherwise idle frame re-culls. An empty span culls
+    // every instance on its own radius.
+    void SetMaterialDeformationMargins(std::span<const float> margins)
+    {
+        m_MaterialDeformationMargins.assign(margins.begin(), margins.end());
+    }
     // Advances whenever a pass that writes the visibility buffer is DECLARED
     // (EndFrameRG dispatches, deferred phase-B occlusion). The scatter gates
     // key on it: an unchanged epoch proves the visibility content the scatter
@@ -336,6 +335,11 @@ class GPUCullingPipeline
     // per-view occlusion history re-imports all-visible (one frame of over-draw,
     // not a correctness bug — the history is designed to self-heal).
     void ReprovisionAfterDeviceRebuild();
+
+    // Asks the device (IDevice::RequestComputePipeline) for the pipelines that the culls of an
+    // occlusion view bind in its first live frame: the HZB cull of both phases, the visibility union
+    // and the runtime visibility aggregate.
+    void RequestOcclusionViewPipelines();
 
   private:
     IDevice* m_Device = nullptr;
@@ -374,10 +378,13 @@ class GPUCullingPipeline
     std::vector<ViewVisibilityRange> m_ViewVisibilityRanges;
     std::vector<PerViewVisibilityInfo> m_ViewVisibilityLayout;
 
+    ComputePipelineId m_VisibilityUnionPipelineId{};
     PipelineHandle m_VisibilityUnionPipeline = INVALID_PIPELINE_HANDLE;
     bool m_VisibilityUnionPipelineAttempted = false;
     bool m_VisibilityUnionLoadFailureLogged = false;
     bool CreateVisibilityUnionPipeline();
+    // Loads the shader and interns the pipeline once. Invalid while the shader is missing.
+    ComputePipelineId InternVisibilityUnionPipeline();
 
     // Phase 6-iii: per-runtime visibility flags + aggregate pipeline.
     // kRuntimeVisibleCapacity is the hard cap on SkeletonStore runtime ids the
@@ -386,10 +393,12 @@ class GPUCullingPipeline
     // value and the skinning consumer uses the same cap to decide whether to
     // gate at all (out-of-range ids fall back to "always animate").
     static constexpr uint32_t kRuntimeVisibleCapacity = 4096;
+    ComputePipelineId m_RuntimeVisibilityPipelineId{};
     PipelineHandle m_RuntimeVisibilityPipeline = INVALID_PIPELINE_HANDLE;
     bool m_RuntimeVisibilityPipelineAttempted = false;
     bool m_RuntimeVisibilityLoadFailureLogged = false;
     bool CreateRuntimeVisibilityPipeline();
+    ComputePipelineId InternRuntimeVisibilityPipeline();
 
     PublishArm m_LastPublishArm = PublishArm::None;
 
@@ -401,6 +410,11 @@ class GPUCullingPipeline
     static constexpr uint32_t kElisionSettleFrames = 3;
     RecomputeElisionGate m_ElisionGate;
     ElisionFrameContext m_ElisionCtx{};
+    std::vector<float> m_MaterialDeformationMargins;
+    // This frame's upload of m_MaterialDeformationMargins; invalid until the
+    // first dispatch of the frame asks for it.
+    CullDeformationMargins m_FrameDeformationMargins{};
+    const CullDeformationMargins& FrameDeformationMargins(RenderGraph::RGFrame& frame);
     uint64_t m_ElisionFrameStamp = 0;     // ticks per BeginFrame (the gate's stamp)
     uint64_t m_VisibilityWriteEpoch = 0;
     bool m_ElidedThisFrame = false;
@@ -436,10 +450,12 @@ class GPUCullingPipeline
     // A single PSO (own 6-binding layout: +prevVisible SSBO, +HZB combined
     // image sampler, +stats SSBO on top of the frustum set) drives both phases;
     // GPUCullingData::hzbMode selects mode 1 (phase A) vs mode 2 (phase B).
+    ComputePipelineId m_HzbCullingPipelineId{};
     PipelineHandle m_HzbCullingPipeline = INVALID_PIPELINE_HANDLE;
     bool m_HzbCullingPipelineAttempted = false;
     bool m_HzbCullingLoadFailureLogged = false;
     bool EnsureHzbCullingPipeline();
+    ComputePipelineId InternHzbCullingPipeline();
     // Point-clamp sampler for the R32F pyramid (nearest — the HZB test reads
     // exact texel depths, never interpolates). Lazily created, app-lifetime.
     SamplerHandle m_HzbSampler{};
@@ -504,9 +520,9 @@ class GPUCullingPipeline
                              uint32_t instanceBytes, RenderGraph::RGBuffer visibility,
                              RenderGraph::RGBuffer prevVisible, uint32_t prevVisibleBytes,
                              RenderGraph::RGBuffer stats, RenderGraph::RGTexture hzb,
-                             const GPUCullingData& cullingData, uint32_t sliceOffsetElements,
-                             uint32_t firstInstance, uint32_t sliceInstanceCount,
-                             uint64_t sliceStableKey);
+                             const GPUCullingData& cullingData, const CullDeformationMargins& margins,
+                             uint32_t sliceOffsetElements, uint32_t firstInstance,
+                             uint32_t sliceInstanceCount, uint64_t sliceStableKey);
 };
 
 class GPUCullingFactory

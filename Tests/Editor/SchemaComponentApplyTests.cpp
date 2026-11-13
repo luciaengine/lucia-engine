@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "DebugServer/SchemaComponentApply.h"
+#include "DebugServer/Components/SchemaComponentApply.h"
 
 #include "Components/Terrain/Terrain.h"
 #include "Components/Terrain/TerrainGrass.h"
@@ -65,7 +65,7 @@ TEST(SchemaComponentApplyTests, ARefusedKeyLeavesTheComponentAsItWas)
     EXPECT_FALSE(refusal.empty());
     const auto* terrain = world.GetComponent<Components::Terrain>(e);
     ASSERT_NE(terrain, nullptr);
-    EXPECT_EQ(terrain->BaseSource, Components::TerrainBaseSource::ProceduralNoise);
+    EXPECT_EQ(terrain->BaseSource, Components::TerrainBaseSource::Flat);
     EXPECT_FLOAT_EQ(terrain->SizeX, 640.0f);
     EXPECT_TRUE(terrain->TerrainAssetGuid.IsNull());
 }

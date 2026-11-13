@@ -4,8 +4,8 @@
 #include <cstring>
 #include <nlohmann/json.hpp>
 
-#include "Rendering/Materials/ShaderReflection.h"
-#include "Rendering/Materials/ShaderMetaJson.h"
+#include "Rendering/Materials/Shader/ShaderReflection.h"
+#include "Rendering/Materials/Shader/ShaderMetaJson.h"
 #include "Rendering/Common/Utils.h"
 #include <Rendering/Core/Device.h>
 #include <Rendering/Core/CommandList.h>

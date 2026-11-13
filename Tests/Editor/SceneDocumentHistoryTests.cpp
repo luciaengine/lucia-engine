@@ -2,7 +2,7 @@
 
 #include "EditorChangeNotifications.h"
 #include "Scene/SceneDocumentManager.h"
-#include "UndoRedo/SplineUndoHelpers.h"
+#include "UndoRedo/Spline/SplineUndoHelpers.h"
 #include "UndoRedo/UndoRedoService.h"
 
 #include "Components/Spline/SplineComponent.h"

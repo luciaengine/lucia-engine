@@ -411,6 +411,25 @@ inline VkImageAspectFlags TranslateAspect(TextureAspect a)
     return flags;
 }
 
+// The present-mode field of the swapchain Info log line. displayPaced is true when
+// the present engine caps the frame rate to the display refresh (FIFO, FIFO_RELAXED).
+inline std::string_view PresentModeLogField(VkPresentModeKHR mode)
+{
+    switch (mode)
+    {
+    case VK_PRESENT_MODE_IMMEDIATE_KHR:
+        return "presentMode=IMMEDIATE displayPaced=false";
+    case VK_PRESENT_MODE_MAILBOX_KHR:
+        return "presentMode=MAILBOX displayPaced=false";
+    case VK_PRESENT_MODE_FIFO_KHR:
+        return "presentMode=FIFO displayPaced=true";
+    case VK_PRESENT_MODE_FIFO_RELAXED_KHR:
+        return "presentMode=FIFO_RELAXED displayPaced=true";
+    default:
+        return "presentMode=UNKNOWN displayPaced=unknown";
+    }
+}
+
 } // namespace VulkanMappings
 
 } // namespace Rendering

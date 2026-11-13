@@ -4,11 +4,10 @@ project(Ocean LANGUAGES CXX)
 
 add_library(Ocean OBJECT
     Source/OceanRenderFeature.cpp
+    Source/OceanRingMesh.cpp
     Source/OceanFootprintFrustum.cpp
     Source/OceanSimulationDemand.cpp
-    Source/OceanFieldRanges.cpp
-    Source/OceanShaderProgram.cpp
-    Source/OceanPreparedDispatch.cpp
+    Source/OceanShader/OceanShaderProgram.cpp
     Source/OceanFFT.cpp
     Source/OceanCascadeArray.cpp
     Source/OceanSprayGPU.cpp
@@ -25,9 +24,9 @@ add_library(Ocean OBJECT
     Source/OceanInputDrawSource.cpp
     Source/OceanTime.cpp
     Source/OceanSettingsAsset.cpp
-    Source/OceanPresetAsset.cpp
-    Source/OceanPresetCache.cpp
-    Source/OceanPresetOverrideValidator.cpp
+    Source/OceanPreset/OceanPresetAsset.cpp
+    Source/OceanPreset/OceanPresetCache.cpp
+    Source/OceanPreset/OceanPresetOverrideValidator.cpp
     Source/OceanValidation.cpp
     Source/OceanDepthCacheAsset.cpp
     Source/OceanSeabedDepth.cpp
@@ -47,7 +46,7 @@ add_library(Ocean OBJECT
     Source/OceanUnderwater.cpp
     Source/OceanLightShafts.cpp
     Source/OceanRenderNode.cpp
-    Source/OceanShaderDirectory.cpp
+    Source/OceanShader/OceanShaderDirectory.cpp
     Source/Systems/OceanExtractionSystem.cpp
     Source/Systems/OceanBuoyancySystem.cpp
     Source/Systems/RegisterOceanSystems.cpp

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <span>
 
 namespace GameEngine::Image
 {
@@ -31,5 +32,8 @@ struct ImageHeader
 /// to the first image data chunk), so a listing can call it for every image it shows.
 /// Allocates no pixels and applies no budget. Thread-safe.
 ImageHeader ReadImageHeader(const std::filesystem::path& file);
+
+/// Reads the same header from a compressed image held in memory, without allocating pixels.
+ImageHeader ReadImageHeader(std::span<const uint8_t> fileBytes);
 
 } // namespace GameEngine::Image

@@ -19,6 +19,7 @@
 #include "Logger/Logger.h"
 #include "Scene/AssetManagerSceneResolver.h"
 #include "Scene/PrefabLibrary.h"
+#include "Scene/PrefabOverrideRecords.h"
 #include "Scene/PrefabPlacement.h"
 #include "Scene/SceneDoc.h"
 #include "Scene/SceneIO.h"
@@ -58,7 +59,7 @@ struct SubtreeEntity
 };
 
 // The children of each entity of a world, disabled branches included.
-using ChildrenByParent = FastHashMap<ECS::EntityId, std::vector<ECS::EntityHandle>>;
+using ChildrenByParent = std::unordered_map<ECS::EntityId, std::vector<ECS::EntityHandle>>;
 
 // What ReidentifySubtrees does with the entities of a subtree.
 enum class Reidentify
@@ -92,11 +93,11 @@ static std::string DisplayNameOf(const ECS::World& world, ECS::EntityHandle enti
 // The nearest prefab instance root above `entity`, or the invalid handle.
 static ECS::EntityHandle FindEnclosingInstance(const ECS::World& world, ECS::EntityHandle entity)
 {
-    for (const auto* parent = world.GetComponent<Components::Parent>(entity); parent && parent->parent.IsValid();
-         parent = world.GetComponent<Components::Parent>(parent->parent))
+    for (const auto* parent = world.GetComponent<Components::Parent>(entity); parent && parent->Entity.IsValid();
+         parent = world.GetComponent<Components::Parent>(parent->Entity))
     {
-        if (world.GetComponent<Components::PrefabInstance>(parent->parent))
-            return parent->parent;
+        if (world.GetComponent<Components::PrefabInstance>(parent->Entity))
+            return parent->Entity;
     }
     return {};
 }
@@ -107,13 +108,13 @@ static ChildrenByParent CollectChildrenByParent(ECS::World& world)
     world.Query<ECS::Read<Components::Parent>>().IncludeDisabled().Each(
         [&childrenOf](ECS::EntityHandle child, const Components::Parent& parent)
         {
-            if (parent.parent.IsValid())
-                childrenOf[parent.parent.id].push_back(child);
+            if (parent.Entity.IsValid())
+                childrenOf[parent.Entity.id].push_back(child);
         });
     return childrenOf;
 }
 
-// A new id in the prefab file from `preferred`, at most kMaxPrefabIdLength bytes.
+// A new id in the prefab file from `preferred`, at most kMaxPrefabIdLength characters.
 static std::string AllocatePrefabId(std::string preferred, std::unordered_set<std::string>& used)
 {
     if (preferred.size() > kMaxPrefabIdLength)
@@ -196,31 +197,32 @@ static bool WritePrefabFile(ECS::World& world, std::span<const SubtreeEntity> su
         return false;
     }
     const std::span<const ECS::EntityHandle> copies = remap.GetTargets();
-    for (std::size_t index = 0; index < copies.size(); ++index)
-        scratch.AddComponentImmediate(copies[index], MakeTag(SceneTagForPath(subtree[index].FilePath)));
+    for (std::size_t i = 0; i < copies.size(); ++i)
+        scratch.AddComponentImmediate(copies[i], MakeTag(SceneTagForPath(subtree[i].FilePath)));
     scratch.RemoveComponentImmediate<Components::Parent>(copies.front());
     scratch.AddComponentImmediate(copies.front(), Components::Transform{});
 
-    SaveOptions options;
+    SceneWriteOptions options;
     options.writePrefabHeader = true;
     options.assetResolver = &resolver;
-    if (!SaveSceneToFile(scratch, prefabFile, options))
+    const SceneIOResult writeResult = WriteSceneFile(scratch, prefabFile, options);
+    if (!writeResult)
     {
-        outError = "Cannot write the prefab " + prefabFile.string() + ": " + GetLastSceneIOError().message;
+        outError = "Cannot write the prefab " + prefabFile.string() + ": " + writeResult.Error->message;
         return false;
     }
     return true;
 }
 
-// The resident template of `prefab`, built from its file through `options.assetResolver` when it is
+// The resident template of `prefab`, built from its file through `options.Read.AssetResolver` when it is
 // not resident. Null, with the cause in `outError`, when the file cannot be placed; when the project
 // has no such prefab, `missingFix` follows the cause.
-static const PrefabTemplate* ResolveForPlacement(PrefabLibrary& library, const GUID& prefab, const LoadOptions& options,
+static const PrefabTemplate* ResolveForPlacement(PrefabLibrary& library, const GUID& prefab, const SceneLoadOptions& options,
                                                  std::string_view missingFix, std::string& outError)
 {
     if (const PrefabTemplate* resident = library.FindByGuid(prefab))
         return resident;
-    ISceneAssetResolver& resolver = *options.assetResolver;
+    ISceneAssetResolver& resolver = *options.Read.AssetResolver;
     std::filesystem::path path;
     AssetType type = AssetType::Unknown;
     if (!resolver.TryGetPathAndType(resolver.ResolveGuid(prefab), path, type) || type != AssetType::Prefab)
@@ -245,8 +247,8 @@ ECS::EntityHandle PlacePrefab(ECS::World& world, const GUID& prefab, const Compo
            "Scene::PlacePrefab runs on the main thread only, outside any job");
     AssetManagerSceneResolver resolver(engine.GetAssetManager(), engine.GetResolvedAssetRoot(),
                                        AssetManagerSceneResolver::UnknownFile::Register);
-    LoadOptions options{.mode = LoadMode::Additive};
-    options.assetResolver = &resolver;
+    SceneLoadOptions options;
+    options.Read.AssetResolver = &resolver;
     std::string error;
     const PrefabTemplate* prefabTemplate =
         ResolveForPlacement(*library, prefab, options, "Place a .prefab file from the project.", error);
@@ -278,9 +280,9 @@ ECS::EntityHandle PlacePrefab(ECS::World& world, const GUID& prefab, const Compo
     std::unordered_set<std::string> used = CollectSceneIdentities(world);
     const std::string instanceId = AllocateUniqueSceneEntityId(preferred, used);
     const std::span<const ECS::EntityHandle> targets = remap.GetTargets();
-    for (std::size_t index = 0; index < targets.size(); ++index)
-        world.AddComponentImmediate(targets[index],
-                                    MakeTag(SceneTagForPath(JoinPath(instanceId, prefabTemplate->Addresses[index]))));
+    for (std::size_t i = 0; i < targets.size(); ++i)
+        world.AddComponentImmediate(targets[i],
+                                    MakeTag(SceneTagForPath(JoinPath(instanceId, prefabTemplate->Addresses[i]))));
     HoldReferencedPrefabs(*library, world, options, targets);
     return root;
 }
@@ -399,8 +401,8 @@ static void HoldInstancePrefabs(ECS::World& world, std::span<const GUID> sources
         return;
     AssetManagerSceneResolver resolver(engine.GetAssetManager(), engine.GetResolvedAssetRoot(),
                                        AssetManagerSceneResolver::UnknownFile::Register);
-    LoadOptions options{.mode = LoadMode::Additive};
-    options.assetResolver = &resolver;
+    SceneLoadOptions options;
+    options.Read.AssetResolver = &resolver;
     for (const GUID& source : sources)
     {
         std::string error;
@@ -596,8 +598,8 @@ CreatedPrefab CreatePrefab(ECS::World& world, ECS::EntityHandle root, const std:
                    ": the file is outside the project's assets. Save the prefab in a folder of the project.";
         return {};
     }
-    LoadOptions loadOptions{.mode = LoadMode::Additive};
-    loadOptions.assetResolver = &resolver;
+    SceneLoadOptions loadOptions;
+    loadOptions.Read.AssetResolver = &resolver;
     std::string buildError;
     const PrefabTemplate* prefabTemplate = BuildTemplateFromFile(*library, path, guid, loadOptions, buildError);
     if (!prefabTemplate)
@@ -621,7 +623,8 @@ CreatedPrefab CreatePrefab(ECS::World& world, ECS::EntityHandle root, const std:
     }
 
     // The subtree becomes the instance in place: the marker on the root and every entity's scene
-    // identity from its address, so a scene save writes the instance as a [prefab] section.
+    // identity from its address, so a scene save writes the instance as a [prefab] section. The new instance
+    // holds no record: the prefab has every value of the subtree.
     const auto* rootTag = world.GetComponent<Components::SceneEntityTag>(root);
     std::string instanceId;
     if (rootTag && !rootTag->View().empty())
@@ -636,6 +639,7 @@ CreatedPrefab CreatePrefab(ECS::World& world, ECS::EntityHandle root, const std:
     for (const SubtreeEntity& entity : subtree)
     {
         created.Members.push_back(CaptureIdentity(world, entity.Handle));
+        PrefabOverrideRecords::Get().Forget(world, entity.Handle, {}, {});
         world.AddComponentImmediate(entity.Handle, MakeTag(SceneTagForPath(JoinPath(instanceId, entity.Address))));
     }
     Components::PrefabInstance marker{};

@@ -14,8 +14,8 @@
 #include "Engine/Rendering/ShaderCompilationCache.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/HashUtils.h"
-#include "Rendering/Core/PipelineIdentifiers.h"
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 
 #include <array>
 #include <functional>
@@ -35,6 +35,8 @@ namespace GameEngine::Rendering::RenderGraph
 {
 class RGPrepareContext;
 }
+
+namespace GameEngine { class SceneLoadTracker; }
 
 namespace GameEngine::Engine::Renderer
 {
@@ -234,6 +236,11 @@ class PipelineVariantCache
     // at declare time (a forward producer's prepass head) emits that command
     // only once this holds, so a pass never relies on a draw it cannot record.
     // Declaration thread.
+    /// Request a scene draw's color variant and concrete pass formats before it is shown.
+    void WarmColorVariant(const Material& material, VertexAttributeFlags vertexFlags,
+                          PrimitiveTopology topology, MaterialKeyword passKeywords,
+                          FrontFace frontFace, const Rendering::PipelineFormatKey& format);
+
     bool EnsureConcreteWarm(const Material& material, GraphicsPipelineId id,
                             const Rendering::PipelineFormatKey& fk);
 
@@ -242,7 +249,8 @@ class PipelineVariantCache
     // can alias the SPIR-V storage owned by the shader cache without a copy.
     // `declaredMeta`, when set, is the meta the pipeline's set layouts are built
     // from instead of the variant's own (CompatVertexStageDepthMeta); it must be
-    // the meta the binder walks for this pipeline.
+    // the meta the binder walks for this pipeline. `debugName` names the pipeline
+    // in captures and logs only.
     GraphicsPipelineId InternDepthPipelineId(
         const std::shared_ptr<const SharedShaderVariant>& variant,
         VertexAttributeFlags vertexFlags,
@@ -253,6 +261,7 @@ class PipelineVariantCache
         FrontFace frontFace,
         DepthFragmentMode fragmentMode,
         bool patchBindlessTextureSet,
+        std::string debugName,
         const Rendering::ShaderMeta* declaredMeta = nullptr);
 
     // Shared depth-only pipeline (Shape B): one pipeline id per
@@ -316,6 +325,9 @@ class PipelineVariantCache
     // consumer of the material that renders inside this window caches a frame
     // without those draws.
     bool HasPipelineBuildsInFlight(const Material& material) const;
+    bool HasAnyPipelineBuildsInFlight() const;
+    void ReportLoadingWork(SceneLoadTracker& tracker);
+    void StopReportingLoadingWork();
 
     // Apply the variant units the compile workers (or the inline headless path)
     // queued since the last drain: insert/republish the cache nodes, clear the
@@ -429,6 +441,9 @@ class PipelineVariantCache
     using VariantCacheMap =
         std::unordered_map<InstancedVariantKey, InstancedVariantEntry, InstancedVariantKeyHash>;
 
+    InstancedVariantKey MakeColorVariantKey(const Material& material, VertexAttributeFlags vertexFlags,
+                                            uint32_t sampleCount, MaterialKeyword passKeywords,
+                                            PrimitiveTopology topology, FrontFace frontFace) const;
     std::pair<PipelineHandle, const VariantServeUnit*> ResolveColorVariant(
         const Material& material,
         VertexAttributeFlags vertexFlags,
@@ -486,6 +501,7 @@ class PipelineVariantCache
         // reassigns the live m_MaterialBuildContext's vectors every BeginFrame, which
         // would tear under an off-thread GetOrCompile mid-copy during source-set churn.
         MaterialBuildContext BuildContext;
+        std::filesystem::path MaterialAssetPath;
         std::string Name;
         uint32_t MaterialVersion = 0;
         // The registry binding the compile was submitted for: the material's
@@ -608,6 +624,8 @@ class PipelineVariantCache
     void FireVariantPublished(const GUID& guid) const { VariantPublished.Invoke(guid); }
     std::unordered_set<InstancedVariantKey, InstancedVariantKeyHash> m_ColorCompilesInFlight;
     std::unordered_set<InstancedVariantKey, InstancedVariantKeyHash> m_DepthCompilesInFlight;
+    std::unordered_map<InstancedVariantKey, std::vector<Rendering::PipelineFormatKey>, InstancedVariantKeyHash>
+        m_WarmColorFormats;
 
     // Diagnostic count of variant compiles the async publish-gate path ran (the
     // work that used to block the record thread on a cold miss). Bumped on the
@@ -639,6 +657,9 @@ class PipelineVariantCache
     };
     mutable std::mutex m_ConcreteWarmMutex;
     std::unordered_map<uint64_t, ConcreteWarmWait> m_ConcreteWarmWaits;
+
+    struct LoadReport;
+    std::shared_ptr<LoadReport> m_LoadReport;
 
     // Lazy-loaded SPV + reflected variant for the shared depth-only shader.
     // [0] = non-skinned, [1] = skinned.

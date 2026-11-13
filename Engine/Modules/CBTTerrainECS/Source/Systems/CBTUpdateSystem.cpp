@@ -9,7 +9,9 @@
 #include "Components/Terrain/Terrain.h"    // Components::Terrain (domain + tuning + handles)
 #include "Components/Terrain/TerrainPlanetRelief.h" // Components::TerrainPlanetRelief (base relief)
 #include "Engine/Rendering/RenderServices.h"
+#include "Mathematics/Interpolation.h"
 #include "Terrain/TerrainTypes.h" // TerrainNeedsTiling (a tiled terrain keeps its lattice cap)
+#include "TerrainECS/Planet/PlanetPageRequester.h"
 #include "TerrainECS/TerrainRenderFeature.h" // unified-height dirty rect (tiled streaming)
 #include "TerrainECS/TerrainService.h" // TerrainService, TerrainData, DirtyRegionLog
 
@@ -17,10 +19,10 @@
 #include "ECS/Query.h"
 #include "Core/CpuProfiler.h"
 #include "Logger/Logger.h"
-#include "Platform/Environment.h"
 
 #include <algorithm> // std::clamp
 #include <bit>       // std::bit_cast (provision-signal dedupe key)
+#include <cstdlib>   // std::getenv / std::atoi (the GE_CBT_* A/B toggles)
 
 namespace GameEngine::CBTTerrainECS
 {
@@ -32,26 +34,15 @@ namespace GameEngine::CBTTerrainECS
 // ample. Larger only lengthens the (cheap) full re-eval tail after the last edit.
 constexpr uint32 kSphereEditForceEvalFrames = 3u;
 
-// Edit-driven retessellation (round-8b): Classify's geometric-error crease term refines a facet
-// straddling a live sculpt cliff the screen-space AREA metric cannot see (a coarse facet whose
-// projected size did not change). Ships default-ON; GE_CBT_EDIT_RETESS=0 forces the pre-slice
-// area-only metric for an A/B on the same build (and is a kill-switch if it ever regresses).
-bool EditRetessEnabled()
-{
-    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_CBT_EDIT_RETESS", true);
-    return enabled;
-}
-
-// Near-field force-split occupancy gate (round-8e saturation-deadlock fix). Under pool pressure the
-// invisible near-plane/behind-eye force-split re-fills the deepest pool level every frame, pinning the
-// pool at 100% so the topology freezes and a static-camera edit / TargetPixelError change can never
-// re-tessellate (her "updates only happen when the camera moves"). Gating that force-split off above
-// the occupancy ceiling keeps the visible field headroom and the crease term below its occupancy
-// ceiling. Ships default-ON; GE_CBT_NEARFIELD_GATE=0 forces the pre-slice unconditional force-split
-// for an A/B on the same build (and is a kill-switch if it ever regresses).
+// Above the occupancy ceiling, the near-field force-split stops, so the pool keeps headroom and a
+// static-camera edit can still re-tessellate. On by default; GE_CBT_NEARFIELD_GATE=0 turns it off.
 bool NearFieldGateEnabled()
 {
-    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_CBT_NEARFIELD_GATE", true);
+    static const bool enabled = [] {
+        if (const char* v = std::getenv("GE_CBT_NEARFIELD_GATE"))
+            return std::atoi(v) != 0;
+        return true;
+    }();
     return enabled;
 }
 
@@ -60,20 +51,27 @@ bool NearFieldGateEnabled()
 // setting: a pool that pins is never the better default.
 bool PoolPressureEnabled()
 {
-    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_CBT_POOL_PRESSURE", true);
+    static const bool enabled = [] {
+        if (const char* v = std::getenv("GE_CBT_POOL_PRESSURE"))
+            return std::atoi(v) != 0;
+        return true;
+    }();
     return enabled;
 }
 
-// Earth-scale (sector, local) gVertex storage (decode-precision arc S2a). Ships default-OFF:
-// GE_CBT_DEEP_DECODE=1 flips the spherical VertexEval to the df64 (sector, local) store and every
-// consumer to exact sector-delta reconstruction — the representation that carries walking-bar
-// precision at Earth radius (the S2b cap lift rides on it). Same truthiness as
-// DeepDecode::SubdivCap so the library and the pipeline read one contract; static-cached (the
-// pipeline reads it per frame — tests drive CBTClassifyDesc::DeepDecode directly instead).
-bool DeepDecodeEnabled()
+// What the classify keeps of the ground wholly behind the eye (CBTClassifyDesc::BehindEye).
+CBTTerrain::BehindEyeRelease ToBehindEyeRelease(Components::TerrainBehindCameraDetail detail)
 {
-    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_CBT_DEEP_DECODE", false);
-    return enabled;
+    switch (detail)
+    {
+    case Components::TerrainBehindCameraDetail::AlwaysKeep:
+        return CBTTerrain::BehindEyeRelease::AlwaysKeep;
+    case Components::TerrainBehindCameraDetail::AlwaysRelease:
+        return CBTTerrain::BehindEyeRelease::AlwaysRelease;
+    case Components::TerrainBehindCameraDetail::ReleaseWhenNeeded:
+        break;
+    }
+    return CBTTerrain::BehindEyeRelease::ReleaseWhenNeeded;
 }
 
 // The imported heightmap's sample grid when one drives the terrain's heights
@@ -111,15 +109,8 @@ void CBTUpdateSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     CBTTerrain::CBTClassifyDesc classify{};
     classify.Mode = CBTTerrain::kClassifyScreenSpace; // C4 production metric
     classify.FocusRoot = CBTTerrain::kFocusRootAll;   // unused under screen-space
-    classify.EditRetessEnabled = EditRetessEnabled() ? 1u : 0u;
     classify.NearFieldGate = NearFieldGateEnabled() ? 1u : 0u;
     classify.PoolPressure = PoolPressureEnabled() ? 1u : 0u;
-    // ONE read feeds both the storage mode and the depth cap (ResolveTerrainMaxDepth
-    // below): the cap is a representation limit, so the two must flip together — cap 50
-    // with the fp32 world store would ship the measured Earth-magnitude degeneracy
-    // (decode-precision arc S2b; TerrainProvisioning.cpp SubdivCapFor).
-    const bool deepDecode = DeepDecodeEnabled();
-    classify.DeepDecode = deepDecode ? 1u : 0u;
 
     // The domain + refinement tuning come straight off the Terrain component now
     // (post-merge), via the shared active-terrain resolver so the renderer and the
@@ -134,21 +125,21 @@ void CBTUpdateSystem::Update(ECS::World& world, float32 /*deltaTime*/)
         FindActiveTerrain(world, tuning);
         relief = ResolveActivePlanetRelief(world);
     }
+    // The release acts only where the inspector shows the setting: one rule for both.
+    const auto* terrainService = TerrainECS::TerrainService::TryGet();
+    classify.BehindEye = terrainService && TerrainECS::BehindCameraDetailApplies(tuning, *terrainService)
+                             ? ToBehindEyeRelease(tuning.BehindCameraDetail)
+                             : CBTTerrain::BehindEyeRelease::AlwaysKeep;
 
     // C7: the rendering domain + planet tuning. The feature re-seeds the tree on a
-    // planar<->spherical switch, a retired terrain or a lowered depth cap (EnsureSeeded,
+    // planar<->spherical switch, a retired or replaced drawn terrain or a lowered depth cap (EnsureSeeded,
     // render-side).
     CBTRenderFeature::DomainConfig domain{};
     const bool spherical = (tuning.Domain == Components::TerrainDomain::Spherical);
 
-    // Reset the service-global sculpt store when the active spherical PLANET changes identity — a
-    // different entity, or none (deleted / domain-switched away). The sculpt is per-planet authored
-    // data; without this, a create->edit->delete->recreate sequence leaves the new planet with the
-    // old planet's Dv + stale content (the sub-texel "brush does nothing at 20k" resurrection this
-    // slice exists to kill). A same-entity persist keeps the store: a live radius edit on the SAME
-    // planet re-derives Dv through the next ConfigurePlanetSculpt (modifier/render path), which
-    // REMAPS the authored content onto the new grid (SphereSculptLayer::Configure) instead of
-    // resetting it.
+    // Reset the planet layers when the active spherical planet changes identity: a different
+    // entity, or none (deleted or switched away from the sphere domain). A new planet must not
+    // take the old planet's sculpt.
     const ECS::EntityHandle currentPlanet =
         (active && spherical) ? FindActiveTerrainEntity(world) : ECS::EntityHandle{};
     if (currentPlanet != m_ActivePlanetEntity)
@@ -158,31 +149,30 @@ void CBTUpdateSystem::Update(ECS::World& world, float32 /*deltaTime*/)
                 service->ResetPlanetSculpt();
         m_ActivePlanetEntity = currentPlanet;
     }
-
-    // Sphere sculpt persistence: a planet carrying a saved .tsculpt ref restores it here —
-    // guid-keyed (once per payload), and AFTER the identity reset above so a scene swap in one
-    // frame clears the loaded guid first and the new scene's payload restores the same tick.
-    // The restore adopts the SAVED grid; the per-frame ConfigurePlanetSculpt (render/modifier
-    // path) then remaps to the live radius grid when they differ — load composes with resize.
+    // The planet's sculpt comes from its height layer asset: a scene open or a new asset reference loads it.
     if (currentPlanet.IsValid())
         if (auto* service = TerrainECS::TerrainService::TryGet())
-            service->EnsureSphereSculptLoaded(tuning.SphereSculptGuid.ToGuid());
+        {
+            const float32 texel = tuning.SamplesPerMeter > 0.0f ? 1.0f / tuning.SamplesPerMeter : 0.0f;
+            service->EnsurePlanetHeightLayerLoaded(currentPlanet.id,
+                                                   TerrainECS::PlanetFaceSamples(tuning.PlanetRadius, texel),
+                                                   tuning.HeightLayerGuid.ToGuid());
+        }
 
     if (active)
     {
         // (face,rect) region identity (plan §planet-editing): a spherical terrain's edits
-        // live in the CBT feature's sphere sculpt layer, keyed by (face, face-local rect);
+        // live in the planet page layers, keyed by (face, face-local rect);
         // a planar terrain's edits live in the TerrainData heightfield's UV DirtyRegionLog.
         // Consume the one that matches the active domain.
         if (spherical)
         {
-            // The authoritative sculpt layer + physics mirror live in TerrainService (the brush
-            // and TerrainModifierSystem write it directly), so this reads TerrainService — no
-            // per-frame push, and the physics colliders sample TerrainService's mirror directly.
+            // The planet's sculpt and modifier layers live in TerrainService (the brush and
+            // TerrainModifierSystem write them directly), so this reads TerrainService.
             auto* service = TerrainECS::TerrainService::TryGet();
-            const uint64 version = service ? service->SphereSculptVersion() : 0u;
+            const uint64 version = service ? service->PlanetLayerVersion() : 0u;
 
-            // While the editable sculpt version advances (a live planet edit) — and for a short
+            // While the planet layer version advances (a live planet edit) — and for a short
             // settle after — force a full-pool VertexEval instead of trusting the region-scoped
             // MODIFIED re-eval below. A modifier dragged across the surface bumps the version at a
             // new footprint every frame while the per-frame dirty rect trails behind it, so the
@@ -191,9 +181,9 @@ void CBTUpdateSystem::Update(ECS::World& world, float32 /*deltaTime*/)
             // editing frame makes every live bisector match the current sculpt, so no stale trail
             // survives, regardless of how the dirty rect is scoped or which frame it lands. It runs
             // ONLY while editing, so a quiescent planet keeps the gated re-eval (idle cost unchanged).
-            if (version != m_LastSphereSculptVersion)
+            if (version != m_LastPlanetLayerVersion)
             {
-                m_LastSphereSculptVersion = version;
+                m_LastPlanetLayerVersion = version;
                 m_SphereForceEvalFrames = kSphereEditForceEvalFrames;
             }
             if (m_SphereForceEvalFrames > 0u)
@@ -204,8 +194,8 @@ void CBTUpdateSystem::Update(ECS::World& world, float32 /*deltaTime*/)
 
             CBTTerrain::SphereEditRegions regions{};
             if (service)
-                service->ConsumeSphereSculptDirtyRegions(regions); // drains the render dirty union
-            ConsumeSphereSculpt(version, feature.GetUpdateSubmissionCount(), regions, classify);
+                service->ConsumePlanetLayerDirtyRegions(regions);
+            ConsumePlanetLayerEdits(feature.GetUpdateSubmissionCount(), regions, classify);
         }
         else
         {
@@ -230,6 +220,7 @@ void CBTUpdateSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     }
     domain.DomainMode = spherical ? CBTTerrain::kDomainSpherical : CBTTerrain::kDomainPlanar;
     domain.PlanetRadius = tuning.PlanetRadius;
+    domain.PlanetEntity = currentPlanet.id;
     domain.ReliefAmplitude = relief.Amplitude;
     domain.ReliefFrequency = relief.Frequency;
     // Clamp octaves like MaxDepth: the count drives an unbounded per-vertex/per-pixel GPU loop,
@@ -241,40 +232,18 @@ void CBTUpdateSystem::Update(ECS::World& world, float32 /*deltaTime*/)
 
     // The refinement depth cap is auto-derived from the domain + size / radius and, for an
     // imported heightmap, the import's own spacing (or the internal MaxDepthOverride),
-    // already clamped to the ceiling the active gVertex representation carries (40 fp32-world
-    // / 50 deep — the deepDecode read above). Nobody tunes a heap depth: the correct value is
-    // computable.
+    // already clamped to the ceiling the domain's gVertex store carries on this arm (SubdivCapFor).
+    // Nobody tunes a heap depth: the correct value is computable.
     const ImportedHeightSource imported =
         active ? ResolveImportedHeightSource(tuning) : ImportedHeightSource{};
     classify.TargetDepth =
-        ResolveTerrainMaxDepth(tuning, imported, deepDecode, feature.UsesNarrowHeap());
+        ResolveTerrainMaxDepth(tuning, imported, feature.UsesNarrowHeap());
 
     feature.SetActive(active, classify, tuning.TargetPixelError, tuning.SeaLevel, domain,
                       static_cast<uint32>(tuning.DebugView));
 
-    Engine::Renderer::WorldContentDigestTable& content = feature.GetWorldContent();
-    if (!m_WorldContentTracking)
-        m_WorldContentTracking = content.Track(world.GetWorldId());
-    content.Set(world.GetWorldId(), ComputeTerrainContentDigest(active, tuning));
-
     if (active)
         LogProvisionSignal(tuning, classify.TargetDepth);
-}
-
-uint64 CBTUpdateSystem::ComputeTerrainContentDigest(bool active, const Components::Terrain& terrain)
-{
-    if (!active)
-        return 0u;
-    uint64 digest = Hashing::Fnv1a64("CBTTerrain");
-    digest = Hashing::Fnv1a64Value(digest, terrain.Domain);
-    digest = Hashing::Fnv1a64Value(digest, terrain.TerrainAssetGuid.ToGuid());
-    digest = Hashing::Fnv1a64Value(digest, terrain.TerrainAssetType);
-    digest = Hashing::Fnv1a64Value(digest, terrain.BaseSource);
-    digest = Hashing::Fnv1a64Value(digest, terrain.SphereSculptGuid.ToGuid());
-    digest = Hashing::Fnv1a64Value(digest, terrain.MaterialLibraryGuid.ToGuid());
-    digest = Hashing::Fnv1a64Value(digest, terrain.CastShadows);
-    digest = Hashing::Fnv1a64Value(digest, terrain.RenderLayerMask);
-    return digest;
 }
 
 void CBTUpdateSystem::LogProvisionSignal(const Components::Terrain& tuning, uint32 resolvedMaxDepth)
@@ -310,15 +279,9 @@ void CBTUpdateSystem::LogProvisionSignal(const Components::Terrain& tuning, uint
                           std::max(tuning.SizeX, tuning.SizeZ), resolvedMaxDepth, depthKind);
 }
 
-void CBTUpdateSystem::ConsumeSphereSculpt(uint64 sphereVersion, uint64 updateRecordCount,
-                                          const CBTTerrain::SphereEditRegions& regions,
-                                          CBTTerrain::CBTClassifyDesc& classify)
+void CBTUpdateSystem::ConsumePlanetLayerEdits(uint64 updateSubmissionCount, const CBTTerrain::SphereEditRegions& regions,
+                                              CBTTerrain::CBTClassifyDesc& classify)
 {
-    // Once any dab has landed, keep the VertexEval additive sculpt sample on for every
-    // subsequent frame (the relief must persist, not just the edit frame). Before the
-    // first dab it stays off, so the C7 default is byte-identical + free.
-    classify.SphereSculptEnabled = sphereVersion > 0u ? 1u : 0u;
-
     // Ingest the drained dirty union (clear-on-read from TerrainService, so every non-empty call
     // is new content that must not be dropped — this is what preserves several dabs that land
     // between two CBT updates during a fast stroke). Each face's rect is the union since it was
@@ -327,7 +290,7 @@ void CBTUpdateSystem::ConsumeSphereSculpt(uint64 sphereVersion, uint64 updateRec
     for (uint32 ri = 0; ri < regions.Count; ++ri)
     {
         const CBTTerrain::SphereFaceUVRect& r = regions.Rects[ri];
-        if (r.IsEmpty() || r.Face >= kSphereFaceCount)
+        if (r.IsEmpty() || r.Face >= CBTTerrain::kCubeFaceCount)
             continue;
         SphereFaceDirty& f = m_SphereFaces[r.Face];
         if (!f.Pending)
@@ -343,57 +306,34 @@ void CBTUpdateSystem::ConsumeSphereSculpt(uint64 sphereVersion, uint64 updateRec
         }
     }
 
-    // Confirm the in-flight face once a CBT.Update recorded its rect (the record count advanced
-    // past what we saw when we pushed). If the accumulated rect did not grow since the push it is
-    // fully consumed (clear Pending); if a later dab extended it before it recorded, leave it
-    // Pending so the grown extent re-pushes. Release the in-flight slot so a different pending
-    // face drains next (round-robin).
-    if (m_SphereInFlightFace >= 0 && updateRecordCount != m_SphereInFlightRecordCount)
+    // An update recorded since the last push: a face whose pushed rect did not grow since is done; a
+    // grown one stays pending and goes again at its new extent.
+    if (m_SpherePushed.Count != 0u && updateSubmissionCount != m_SpherePushedRecordCount)
     {
-        SphereFaceDirty& f = m_SphereFaces[static_cast<uint32>(m_SphereInFlightFace)];
-        const bool grew = f.MinU != m_SphereInFlightMinU || f.MinV != m_SphereInFlightMinV ||
-                          f.MaxU != m_SphereInFlightMaxU || f.MaxV != m_SphereInFlightMaxV;
-        if (!grew)
-            f.Pending = false;
-        m_SphereInFlightFace = -1;
+        for (uint32 i = 0; i < m_SpherePushed.Count; ++i)
+        {
+            const CBTTerrain::SphereFaceUVRect& pushed = m_SpherePushed.Rects[i];
+            SphereFaceDirty& f = m_SphereFaces[pushed.Face];
+            if (f.MinU == pushed.MinU && f.MinV == pushed.MinV && f.MaxU == pushed.MaxU && f.MaxV == pushed.MaxV)
+                f.Pending = false;
+        }
+        m_SpherePushed = {};
     }
 
-    // Re-push the in-flight face every frame until it is recorded (the no-scene-view re-arm the
-    // planar path also carries).
-    if (m_SphereInFlightFace >= 0)
+    // Every pending face goes to Classify in this update; the list is rebuilt each update. With no face
+    // pending the list is empty, so Classify skips its dirty branch and the work stays quiescent.
+    classify.SphereDirty = {};
+    for (uint32 face = 0; face < CBTTerrain::kCubeFaceCount; ++face)
     {
-        const SphereFaceDirty& f = m_SphereFaces[static_cast<uint32>(m_SphereInFlightFace)];
-        classify.DirtyFace = static_cast<uint32>(m_SphereInFlightFace);
-        classify.DirtyMinU = f.MinU;
-        classify.DirtyMinV = f.MinV;
-        classify.DirtyMaxU = f.MaxU;
-        classify.DirtyMaxV = f.MaxV;
-        return;
+        const SphereFaceDirty& f = m_SphereFaces[face];
+        if (f.Pending)
+            classify.SphereDirty.Rects[classify.SphereDirty.Count++] =
+                CBTTerrain::SphereFaceUVRect{face, f.MinU, f.MinV, f.MaxU, f.MaxV};
     }
-
-    // Pick the next pending face round-robin (no face starves while a fast drag re-dirties one)
-    // and push it. Nothing pending => leave the rect empty (quiescent) so Classify's dirty branch
-    // is skipped and the work-quiescence invariant holds.
-    for (uint32 k = 0; k < kSphereFaceCount; ++k)
-    {
-        const uint32 face = (m_SphereDrainCursor + k) % kSphereFaceCount;
-        SphereFaceDirty& f = m_SphereFaces[face];
-        if (!f.Pending)
-            continue;
-        classify.DirtyFace = face;
-        classify.DirtyMinU = f.MinU;
-        classify.DirtyMinV = f.MinV;
-        classify.DirtyMaxU = f.MaxU;
-        classify.DirtyMaxV = f.MaxV;
-        m_SphereInFlightFace = static_cast<int32>(face);
-        m_SphereInFlightRecordCount = updateRecordCount;
-        m_SphereInFlightMinU = f.MinU;
-        m_SphereInFlightMinV = f.MinV;
-        m_SphereInFlightMaxU = f.MaxU;
-        m_SphereInFlightMaxV = f.MaxV;
-        m_SphereDrainCursor = (face + 1u) % kSphereFaceCount;
+    if (classify.SphereDirty.Count == 0u)
         return;
-    }
+    m_SpherePushed = classify.SphereDirty;
+    m_SpherePushedRecordCount = updateSubmissionCount;
 }
 
 bool CBTUpdateSystem::ComputeTerrainActive(ECS::World& world)
@@ -417,39 +357,27 @@ bool CBTUpdateSystem::ComputeTerrainActive(ECS::World& world)
     return active;
 }
 
-void CBTUpdateSystem::ConsumeDirtyRegion(ECS::World& world, uint64 updateRecordCount,
+void CBTUpdateSystem::ConsumeDirtyRegion(ECS::World& world, uint64 updateSubmissionCount,
                                          CBTTerrain::CBTClassifyDesc& classify)
 {
-    // C5 (plan §8): consume CBT's OWN cursor into the first terrain's region-dirty
+    // C5 (plan §8): consume CBT's OWN cursor into the drawn terrain's region-dirty
     // log (E0), map the edited texel rect to UV, and hand it to Classify so the
     // overlapping bisectors reclassify this update — the new heights arrive through
     // the region heightmap upload (E2), which the CBT.Update read edge orders before
     // VertexEval. CollectSince never clears the log, so extraction's and physics'
-    // cursors are untouched. Single-terrain scope: CBT renders terrain 0 (the render
-    // feature warns on multi-terrain), so this tracks the first enabled terrain.
+    // cursors are untouched. The CBT draws one terrain, so this tracks the drawn terrain
+    // (FindActiveTerrainEntity) when it has a single-terrain handle.
     auto* service = TerrainECS::TerrainService::TryGet();
     if (!service)
         return;
 
-    bool found = false;
-    TerrainECS::TerrainHandle handle{};
-    world.Query<ECS::Read<Components::Terrain>>().Each(
-        [&](const Components::Terrain& terrain)
-        {
-            // Disambiguate the handle the SAME way TerrainExtractionSystem does
-            // (TerrainExtractionSystem.cpp / TerrainSceneSchemas.cpp): a terrain is
-            // live when index OR generation is non-zero. TerrainService hands the
-            // first terrain slot index 0 / generation 1, so a `handle == 0` test
-            // would treat that valid terrain as unset and make CBT's default
-            // single-terrain scene early-return every frame (an empty rect that never
-            // reclassifies — C5 inert in its default config).
-            if (found || (terrain.TerrainDataHandle == 0 && terrain.TerrainDataGeneration == 0))
-                return;
-            handle = TerrainECS::TerrainHandle{terrain.TerrainDataHandle, terrain.TerrainDataGeneration};
-            found = true;
-        });
-    if (!found)
+    const ECS::EntityHandle drawn = FindActiveTerrainEntity(world);
+    const auto* terrain = drawn.IsValid() ? world.GetComponent<Components::Terrain>(drawn) : nullptr;
+    // A terrain is live when index OR generation is non-zero: TerrainService hands the first
+    // terrain slot index 0 and generation 1, so a `handle == 0` test misses that valid terrain.
+    if (!terrain || (terrain->TerrainDataHandle == 0 && terrain->TerrainDataGeneration == 0))
         return;
+    const TerrainECS::TerrainHandle handle{terrain->TerrainDataHandle, terrain->TerrainDataGeneration};
 
     const TerrainECS::TerrainData* data = service->GetTerrainData(handle);
     if (!data)
@@ -466,7 +394,7 @@ void CBTUpdateSystem::ConsumeDirtyRegion(ECS::World& world, uint64 updateRecordC
     // record count moved past what we saw when we pushed). Only then commit the log
     // cursor past that edit — otherwise the edit was never handed to the GPU (a frame
     // with no scene view / instance not ready), so hold the cursor and re-arm below.
-    if (cursor.InFlight && updateRecordCount != cursor.InFlightRecordCount)
+    if (cursor.InFlight && updateSubmissionCount != cursor.InFlightRecordCount)
     {
         cursor.CommittedVersion = cursor.InFlightVersion;
         cursor.InFlight = false;
@@ -487,20 +415,20 @@ void CBTUpdateSystem::ConsumeDirtyRegion(ECS::World& world, uint64 updateRecordC
     // reclassify without the pad. The log's Max is exclusive, so the raw upper edge is MaxX/W.
     const float invW = 1.0f / static_cast<float>(width);
     const float invH = 1.0f / static_cast<float>(height);
-    classify.DirtyMinU = std::clamp((static_cast<float>(region.MinX) - 1.0f) * invW, 0.0f, 1.0f);
-    classify.DirtyMinV = std::clamp((static_cast<float>(region.MinZ) - 1.0f) * invH, 0.0f, 1.0f);
-    classify.DirtyMaxU = std::clamp((static_cast<float>(region.MaxX) + 1.0f) * invW, 0.0f, 1.0f);
-    classify.DirtyMaxV = std::clamp((static_cast<float>(region.MaxZ) + 1.0f) * invH, 0.0f, 1.0f);
+    classify.DirtyMinU = Math::Clamp01((static_cast<float>(region.MinX) - 1.0f) * invW);
+    classify.DirtyMinV = Math::Clamp01((static_cast<float>(region.MinZ) - 1.0f) * invH);
+    classify.DirtyMaxU = Math::Clamp01((static_cast<float>(region.MaxX) + 1.0f) * invW);
+    classify.DirtyMaxV = Math::Clamp01((static_cast<float>(region.MaxZ) + 1.0f) * invH);
 
     // Mark the rect in-flight at the current heightfield version; do NOT commit the
     // cursor until a later frame confirms an update recorded it (above).
     cursor.InFlight = true;
     cursor.InFlightVersion = data->HeightfieldVersion;
-    cursor.InFlightRecordCount = updateRecordCount;
+    cursor.InFlightRecordCount = updateSubmissionCount;
 }
 
 void CBTUpdateSystem::ConsumeUnifiedTiledDirtyRegion(TerrainECS::TerrainRenderFeature* feature,
-                                                     uint64 updateRecordCount,
+                                                     uint64 updateSubmissionCount,
                                                      const Components::Terrain& tuning,
                                                      CBTTerrain::CBTClassifyDesc& classify)
 {
@@ -527,17 +455,36 @@ void CBTUpdateSystem::ConsumeUnifiedTiledDirtyRegion(TerrainECS::TerrainRenderFe
 
     // Run the discipline even when nothing was drained (taken == false) so an
     // unconfirmed pending rect from a prior frame re-arms or commits on schedule.
-    ConsumeUnifiedDirtyRect(taken, minU, minV, maxU, maxV, updateRecordCount, classify);
+    ConsumeUnifiedDirtyRect(taken, minU, minV, maxU, maxV, updateSubmissionCount, classify);
 }
 
 void CBTUpdateSystem::ConsumeUnifiedDirtyRect(bool takenHasRect, float minU, float minV, float maxU,
-                                              float maxV, uint64 updateRecordCount,
+                                              float maxV, uint64 updateSubmissionCount,
                                               CBTTerrain::CBTClassifyDesc& classify)
 {
-    // Clear the pending union only after a recorded CBT.Update submits. Canceled work
-    // keeps the union armed. Paged copies share graph accesses with their consumers;
-    // legacy height copies use an explicit upload-to-update dependency.
-    if (m_UnifiedInFlight && updateRecordCount != m_UnifiedInFlightRecordCount)
+    // Confirm: a CBT.Update recorded the rect we pushed last time (the feature's record
+    // count advanced past what we saw), so the streamed region reached the GPU — drop the
+    // pending union. Otherwise the update never ran (no scene view / instance not ready):
+    // hold the union and re-arm below.
+    //
+    // Confirmation keys off the update being DECLARED, not the region copy having landed.
+    // On a SINGLE-graph frame (the shipping game / editor-scene view) the copy (TerrainUpload)
+    // and VertexEval (CBT.Update) run in that one graph, and CBTRenderNode::DeclareForView adds
+    // an ordering edge from the copy's pass to the update's, so a committed rect is always
+    // sampled post-copy. The phase does not carry that: the copy declares no access the update
+    // shares, so it forms a scheduling component of one and without the edge the scheduler is
+    // free to emit the update's whole component ahead of it. The one hazard left is a MULTI-
+    // graph frame where TerrainUpload's once-per-frame flush is claimed by graph A while
+    // CBT.Update is claimed by graph B and B submits before A: VertexEval then samples pre-
+    // copy texels yet this commits the (one-shot streamed) rect -> frozen stale. The reviewer
+    // could not confirm that interleaving is reachable, it needs no new machinery for the
+    // shipping path, and the C5 edit path shares the exact same upload+read-edge machinery
+    // (self-healing there only because brush drags re-dirty every frame). The precondition —
+    // the upload flush and CBT.Update landing in different graphs — is now caught by a loud
+    // tripwire at the CBT.Update claim site (CBTRenderNode::DeclareForView, via
+    // TerrainRenderFeature::HeightmapUploadClaimedInOtherGraph), so a future change that
+    // splits them fails loudly instead of silently committing against pre-copy texels.
+    if (m_UnifiedInFlight && updateSubmissionCount != m_UnifiedInFlightRecordCount)
     {
         m_UnifiedInFlight = false;
         m_UnifiedPendingHasRect = false;
@@ -576,7 +523,7 @@ void CBTUpdateSystem::ConsumeUnifiedDirtyRect(bool takenHasRect, float minU, flo
     // Mark the rect in-flight at the current record count; hold it until a later frame
     // confirms an update recorded it (above).
     m_UnifiedInFlight = true;
-    m_UnifiedInFlightRecordCount = updateRecordCount;
+    m_UnifiedInFlightRecordCount = updateSubmissionCount;
 }
 
 } // namespace GameEngine::CBTTerrainECS

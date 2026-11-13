@@ -23,10 +23,10 @@ constexpr int kLeftButton = 0;
 
 bool SetPx(UIElement& element, const StyleProp<StyleLength>& property, float px)
 {
-    const auto existing = element.Overrides().Get(property);
+    const auto existing = element.Style().Get(property);
     if (existing.has_value() && existing->IsPx() && std::fabs(existing->Value - px) <= 0.5f)
         return false;
-    element.Overrides().Set(property, StyleLength::Px(px));
+    element.Style().Set(property, StyleLength::Px(px));
     return true;
 }
 } // namespace
@@ -46,7 +46,7 @@ AgentCallImageView::AgentCallImageView(const std::string& idSuffix)
 
 void AgentCallImageView::RequestPicture()
 {
-    if (!m_Image || Overrides().Get(Style::BackgroundImage).has_value())
+    if (!m_Image || Style().Get(Style::BackgroundImage).has_value())
         return;
     // The thumbnail service's copy at about the display size (up to 1024 px), downscaled once off
     // the UI thread and kept on disk; the capture itself only when it is no larger.
@@ -58,12 +58,12 @@ void AgentCallImageView::ReleasePicture()
 {
     // The UI keeps a background image it loaded until its cache's byte budget is exceeded;
     // this one goes as soon as the image leaves the panel.
-    const auto source = Overrides().Get(Style::BackgroundImage);
+    const auto source = Style().Get(Style::BackgroundImage);
     if (!source)
         return;
     UIManager* ui = GetOwnerManager();
     if (ui && source->Kind == BackgroundImageSource::SourceKind::Path && !source->Value.empty())
-        ui->EvictBackgroundTexture(source->Value);
+        ui->BackgroundImages().Evict(source->Value);
     UI::Layout::DisableBackgroundOverride(*this);
 }
 

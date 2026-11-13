@@ -5,14 +5,14 @@ namespace GameEngine::TerrainECS
 
 bool TerrainHeightIsPaged(const TerrainHeightSourceInputs& inputs)
 {
-    if (inputs.ModifiersPending || !inputs.GpuReadsPages)
+    if (inputs.ModifiersPending || !inputs.PagesOnLattice || !inputs.GpuReadsPages)
         return false;
-    return TerrainHeightHasCpuPages(inputs);
+    return inputs.GeneratedBase || inputs.CookedStoreOpen;
 }
 
 bool TerrainHeightHasCpuPages(const TerrainHeightSourceInputs& inputs)
 {
-    return inputs.PagesOnLattice && inputs.CpuDirectoryFits && (inputs.GeneratedBase || inputs.CookedStoreOpen);
+    return inputs.PagesOnLattice && (inputs.GeneratedBase || inputs.CookedStoreOpen || inputs.DecodedHeightmapBase);
 }
 
 } // namespace GameEngine::TerrainECS

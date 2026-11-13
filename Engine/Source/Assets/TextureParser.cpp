@@ -3,6 +3,7 @@
 #include "Assets/AssetManager.h"
 #include "Assets/PackagedTexturePayload.h"
 #include "Assets/TextureAsset.h"
+#include "Types/PathUtils.h"
 
 namespace GameEngine
 {
@@ -15,5 +16,25 @@ std::filesystem::path TextureParser::ResolveReadPath(
     const AssetMetadata& metadata, const AssetManager& assetManager) const
 {
     return ResolvePackagedTexturePayload(assetManager.GetRegistry(), metadata.Guid).value_or(metadata.Path);
+}
+
+AssetDecodeInputs TextureParser::ResolveDecodeInputs(
+    const AssetMetadata& metadata, std::span<const uint8> bytes, AssetManager& assetManager) const
+{
+    // A packaged payload loads as it is read (TextureAsset::LoadPackagedTexture), never through the cook.
+    const AssetRegistry& registry = assetManager.GetRegistry();
+    if (const auto payload = ResolvePackagedTexturePayload(registry, metadata.Guid))
+        return TextureAsset::ResolvePackagedDecodeInputs(registry, metadata.Guid, *payload);
+    return TextureAsset::ResolveCookDecodeInputs(registry, metadata.Guid,
+                                                 LowerCaseExtension(metadata.Path), bytes);
+}
+
+AssetDecodeInputs TextureParser::ResolveDecodeInputsWithoutBytes(const AssetMetadata& metadata,
+                                                                 AssetManager& assetManager) const
+{
+    const AssetRegistry& registry = assetManager.GetRegistry();
+    if (ResolvePackagedTexturePayload(registry, metadata.Guid))
+        return {};
+    return TextureAsset::ResolveCookHitDecodeInputs(registry, metadata.Guid, metadata.Path);
 }
 } // namespace GameEngine

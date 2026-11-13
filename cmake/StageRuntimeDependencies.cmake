@@ -58,6 +58,43 @@ endif()
 # CMake behaviour change that might treat "" as the current working directory.
 list(FILTER _ge_search_dirs EXCLUDE REGEX "^$")
 
+# Refresh already-staged runtime libraries from the search dirs BEFORE the
+# dependency scan. file(GET_RUNTIME_DEPENDENCIES) emulates the platform
+# loader: on Windows a scanned module's imports resolve against the module's
+# OWN directory before any DIRECTORIES entry. The executable is scanned in the
+# staged destination, so its first-party imports (Engine.dll, EditorSDK.dll,
+# ...) resolve to the PREVIOUS build's staged copies and the scan reads THEIR
+# import tables. A dependency edge added since the last staging run (e.g.
+# Engine.dll gaining a DirectXTex.dll import) is invisible to that first scan:
+# the stale table names no such import, the new transitive DLL is never
+# discovered, and the build stays green while the staged app dies at launch
+# with STATUS_DLL_NOT_FOUND. Search-dir ORDER cannot prevent this — the
+# own-directory probe runs before DIRECTORIES — so make the staged copies
+# current first; the scan then reads current import tables everywhere. The
+# next-newest staged state heals on the SECOND build, which is exactly the
+# trap: warm trees miss a freshly merged dependency once per config, silently.
+file(REAL_PATH "${GE_RUNTIME_DEPS_DEST_DIR}" _ge_pre_refresh_dest_real)
+file(GLOB _ge_pre_refresh_staged
+    "${GE_RUNTIME_DEPS_DEST_DIR}/*.dll"
+    "${GE_RUNTIME_DEPS_DEST_DIR}/*.dylib"
+    "${GE_RUNTIME_DEPS_DEST_DIR}/*.so")
+foreach(_ge_pre_staged IN LISTS _ge_pre_refresh_staged)
+  get_filename_component(_ge_pre_name "${_ge_pre_staged}" NAME)
+  foreach(_ge_pre_dir IN LISTS _ge_search_dirs)
+    if(NOT EXISTS "${_ge_pre_dir}/${_ge_pre_name}")
+      continue()
+    endif()
+    # The destination itself is one of the search dirs — never "refresh" a
+    # staged file from itself; keep looking for a real source further down.
+    file(REAL_PATH "${_ge_pre_dir}" _ge_pre_dir_real)
+    if(_ge_pre_dir_real STREQUAL _ge_pre_refresh_dest_real)
+      continue()
+    endif()
+    ge_staged_copy("${_ge_pre_dir}/${_ge_pre_name}" "${GE_RUNTIME_DEPS_DEST_DIR}" "StageRuntimeDependencies")
+    break()
+  endforeach()
+endforeach()
+
 # Filter out OS/system libraries; we only want app-local deps.
 # Note: We intentionally do NOT exclude MSVC runtime DLLs here because that choice
 # is policy-dependent; however, most dev machines have the runtime installed.
@@ -132,7 +169,7 @@ function(_ge_stage_from_get_runtime_deps _mode_or_libs)
 
   if(_mode_or_libs STREQUAL "EXECUTABLE")
     file(GET_RUNTIME_DEPENDENCIES
-        EXECUTABLES "${_ge_scan_executable}"
+        EXECUTABLES "${GE_RUNTIME_DEPS_EXECUTABLE}"
         DIRECTORIES ${_ge_search_dirs}
         RESOLVED_DEPENDENCIES_VAR _resolved
         UNRESOLVED_DEPENDENCIES_VAR _unresolved
@@ -229,7 +266,6 @@ function(_ge_stage_from_get_runtime_deps _mode_or_libs)
     endforeach()
   endif()
 
-  set(_sources "")
   foreach(_dep IN LISTS _resolved)
     if(EXISTS "${_dep}")
       get_filename_component(_dep_name "${_dep}" NAME)
@@ -258,7 +294,9 @@ function(_ge_stage_from_get_runtime_deps _mode_or_libs)
       endif()
 
       ge_staged_copy("${_dep_to_copy}" "${GE_RUNTIME_DEPS_DEST_DIR}" "StageRuntimeDependencies")
-      list(APPEND _sources "${_dep_to_copy}")
+      if(_dep_name MATCHES "\\.[dD][lL][lL]$")
+        ge_staged_link_debug_symbols("${_dep_to_copy}" "${GE_RUNTIME_DEPS_DEST_DIR}" "StageRuntimeDependencies")
+      endif()
       if(GE_RUNTIME_DEPS_VERBOSE)
         message(STATUS "StageRuntimeDependencies: staged ${_dep_name}")
       endif()
@@ -266,59 +304,76 @@ function(_ge_stage_from_get_runtime_deps _mode_or_libs)
   endforeach()
 
   set(_ge_resolved "${_resolved}" PARENT_SCOPE)
-  set(_ge_sources "${_sources}" PARENT_SCOPE)
   set(_ge_unresolved "${_unresolved}" PARENT_SCOPE)
 endfunction()
 
-# Start outside the shared staged directory. A loader-style scan otherwise
-# reads old staged import tables before search directories are consulted
-# (notably on Windows), and even a later fresh scan cannot undo a copy of a
-# retired import. The scan copy has no neighboring old libraries: resolution
-# starts in the current source directories. It is inspected, never launched.
-get_filename_component(_ge_executable_name "${GE_RUNTIME_DEPS_EXECUTABLE}" NAME)
-string(RANDOM LENGTH 12 _ge_scan_tag)
-set(_ge_scan_dir "${GE_RUNTIME_DEPS_DEST_DIR}/.runtime-scan-${_ge_scan_tag}")
-file(MAKE_DIRECTORY "${_ge_scan_dir}")
-set(_ge_scan_executable "${_ge_scan_dir}/${_ge_executable_name}")
-file(COPY_FILE "${GE_RUNTIME_DEPS_EXECUTABLE}" "${_ge_scan_executable}")
-
-# Follow current source libraries to a fixed point. Bundles can leave @rpath
-# imports unresolved until their fresh sources are located explicitly, so scan
-# those sources too, including through multiple newly introduced import levels.
-# Never refresh every library in the destination: test executables share a
-# directory, and an unrelated target's producer may still be linking its output.
-set(_ge_scan_queue "EXECUTABLE")
-set(_ge_scanned_sources "")
-while(_ge_scan_queue)
-  list(APPEND _ge_scanned_sources ${_ge_scan_queue})
-  _ge_stage_from_get_runtime_deps("${_ge_scan_queue}")
-  set(_ge_next_sources "${_ge_sources}")
-
-  # Bundles may expose only a Contents/Frameworks rpath. Find an unresolved
-  # @rpath import in the source directories, stage it, and scan its current
-  # imports using the same queue as normally resolved libraries.
-  foreach(_u IN LISTS _ge_unresolved)
-    if(NOT _u MATCHES "^@rpath/([^/]+)$")
-      continue()
-    endif()
-    set(_rel "${CMAKE_MATCH_1}")
-    foreach(_dir IN LISTS _ge_search_dirs)
-      if(EXISTS "${_dir}/${_rel}")
-        ge_staged_copy("${_dir}/${_rel}" "${GE_RUNTIME_DEPS_DEST_DIR}" "StageRuntimeDependencies")
-        list(APPEND _ge_next_sources "${_dir}/${_rel}")
-        break()
-      endif()
-    endforeach()
-  endforeach()
-  list(REMOVE_DUPLICATES _ge_next_sources)
-  list(REMOVE_ITEM _ge_next_sources ${_ge_scanned_sources})
-  set(_ge_scan_queue "${_ge_next_sources}")
-endwhile()
-file(REMOVE_RECURSE "${_ge_scan_dir}")
-
-# Verify and report unresolved imports from the actual staged executable.
-set(_ge_scan_executable "${GE_RUNTIME_DEPS_EXECUTABLE}")
+# First pass: scan the executable itself.
 _ge_stage_from_get_runtime_deps("EXECUTABLE")
+
+# Second pass (macOS): some bundles rely on @rpath deps but only expose an rpath to
+# Contents/Frameworks. In that case `file(GET_RUNTIME_DEPENDENCIES)` cannot resolve
+# @rpath/<name> until we locate and copy the library once.
+set(_ge_second_pass_libs "")
+set(_ge_unresolved_remaining "")
+foreach(_u IN LISTS _ge_unresolved)
+  if(_u MATCHES "^@rpath/(.+)$")
+    set(_rel "${CMAKE_MATCH_1}")
+    # Only handle simple dylib basenames here.
+    if(NOT _rel MATCHES "/")
+      set(_found "")
+      foreach(_dir IN LISTS _ge_search_dirs)
+        if(EXISTS "${_dir}/${_rel}")
+          set(_found "${_dir}/${_rel}")
+          break()
+        endif()
+      endforeach()
+
+      if(_found)
+        execute_process(
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_found}" "${GE_RUNTIME_DEPS_DEST_DIR}"
+            RESULT_VARIABLE _copy_rc2
+        )
+        if(NOT _copy_rc2 EQUAL 0)
+          message(WARNING "StageRuntimeDependencies: failed copying unresolved '${_found}' -> '${GE_RUNTIME_DEPS_DEST_DIR}' (rc=${_copy_rc2})")
+          list(APPEND _ge_unresolved_remaining "${_u}")
+        else()
+          list(APPEND _ge_second_pass_libs "${_found}")
+          if(GE_RUNTIME_DEPS_VERBOSE)
+            message(STATUS "StageRuntimeDependencies: resolved ${_u} via ${_found}")
+          endif()
+        endif()
+      else()
+        list(APPEND _ge_unresolved_remaining "${_u}")
+      endif()
+    else()
+      list(APPEND _ge_unresolved_remaining "${_u}")
+    endif()
+  else()
+    list(APPEND _ge_unresolved_remaining "${_u}")
+  endif()
+endforeach()
+
+if(_ge_second_pass_libs)
+  # Scan deps of the located libraries and stage them.
+  _ge_stage_from_get_runtime_deps("${_ge_second_pass_libs}")
+
+  # If we staged a library into the destination dir, treat @rpath/<name> as resolved
+  # when the staged file now exists. This suppresses noisy warnings in bundle builds.
+  set(_ge_pruned "")
+  foreach(_u IN LISTS _ge_unresolved_remaining _ge_unresolved)
+    if(_u MATCHES "^@rpath/(.+)$")
+      set(_rel "${CMAKE_MATCH_1}")
+      if(NOT _rel MATCHES "/" AND EXISTS "${GE_RUNTIME_DEPS_DEST_DIR}/${_rel}")
+        continue()
+      endif()
+    endif()
+    list(APPEND _ge_pruned "${_u}")
+  endforeach()
+  list(REMOVE_DUPLICATES _ge_pruned)
+  set(_ge_unresolved "${_ge_pruned}")
+else()
+  set(_ge_unresolved "${_ge_unresolved_remaining}")
+endif()
 
 if(_ge_unresolved)
   # Unresolved deps are common when delay-loading or relying on system-installed components.

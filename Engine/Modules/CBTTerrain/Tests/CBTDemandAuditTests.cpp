@@ -234,13 +234,10 @@ TEST_F(CBTDemandAuditTest, SplitDemandHistogramAtSurfacePose)
                            (static_cast<uint64_t>(heap[slot * 2u + 1u]) << 32);
         const uint32_t depth = HeapDepth(h);
 
-        const uint32_t base = slot * kVertexWordsPerSlot;
         auto corner = [&](uint32_t k) {
-            float x, y, z;
-            std::memcpy(&x, &verts[base + k * 4u + 0u], 4);
-            std::memcpy(&y, &verts[base + k * 4u + 1u], 4);
-            std::memcpy(&z, &verts[base + k * 4u + 2u], 4);
-            return std::array<double, 3>{x, y, z};
+            double world[3];
+            ReadCornerWorld(verts, slot, k, world);
+            return std::array<double, 3>{world[0], world[1], world[2]};
         };
         const std::array<double, 3> c0 = corner(0), c1 = corner(1), c2 = corner(2);
 

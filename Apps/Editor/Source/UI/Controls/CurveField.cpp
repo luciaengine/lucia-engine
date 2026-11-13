@@ -12,11 +12,11 @@
 #include "UI/StyleProperties.h"
 
 #include <algorithm>
+#include <limits>
+#include <optional>
 #include <cassert>
 #include <chrono>
 #include <cmath>
-#include <limits>
-#include <optional>
 #include <cstdio>
 #include <string>
 
@@ -139,7 +139,7 @@ CurveField::CurveField() : m_PlotHeightPx(kFieldHeightPx)
     AddClass("curve-field");
     RequestSubtreeStyleAssetPath(kCurveFieldStyleAssetPath, "editor");
     SetFocusable(true);
-    Overrides()
+    Style()
         .Set(Style::Height, StyleLength::Px(kFieldHeightPx))
         .Set(Style::MinHeight, StyleLength::Px(kFieldHeightPx));
     // Cursor is set per hover/drag state in UpdateCursor (grab only over a point), not statically.
@@ -149,8 +149,10 @@ void CurveField::SetConfig(const Config& config)
 {
     assert((!config.LogarithmicValues || config.LogarithmicFloor > 0.0f) &&
            "a logarithmic CurveField needs LogarithmicFloor above 0, the floor its keys are evaluated with");
-    // Label rows extend the plot's height. Hosts without labels keep their authored height.
-    // The height changes only when label rows or the label font size change.
+    // The time-label strip is added under the plot, not taken out of it: the control grows by the
+    // strip when labels are switched on and shrinks back when they are switched off. Only a change of
+    // the option, of the second label line (or, with labels on, of their font size) touches the
+    // height, so a host that sets its own height on a graph without labels keeps it.
     const bool labelsChanged = config.TimeAxisLabels != m_Config.TimeAxisLabels ||
                                static_cast<bool>(config.SecondaryTimeLabel) !=
                                    static_cast<bool>(m_Config.SecondaryTimeLabel);
@@ -164,7 +166,7 @@ void CurveField::SetConfig(const Config& config)
 void CurveField::ApplyLabelStripHeight()
 {
     const float height = m_PlotHeightPx + TimeLabelStripPx(m_Config, m_TimeLabelFontSizePx);
-    Overrides().Set(Style::Height, StyleLength::Px(height)).Set(Style::MinHeight, StyleLength::Px(height));
+    Style().Set(Style::Height, StyleLength::Px(height)).Set(Style::MinHeight, StyleLength::Px(height));
 }
 
 // The labels' font size and the plot's height come from the resolved style (CurveField.css, or a
@@ -351,7 +353,7 @@ float CurveField::EffectiveValueMax() const
 float CurveField::ToScreenX(const GraphRect& r, float time) const
 {
     const float n = (time - m_Config.TimeMin) / SpanOrEpsilon(m_Config.TimeMin, m_Config.TimeMax);
-    return r.X + std::clamp(n, 0.0f, 1.0f) * r.W;
+    return r.X + Math::Clamp01(n) * r.W;
 }
 
 float CurveField::ToScreenY(const GraphRect& r, float value) const
@@ -362,22 +364,22 @@ float CurveField::ToScreenY(const GraphRect& r, float value) const
         const float logLo = std::log2(lo);
         const float logValue = std::log2(std::max(value, lo));
         const float n = (logValue - logLo) / SpanOrEpsilon(logLo, std::log2(std::max(EffectiveValueMax(), lo)));
-        return r.Y + (1.0f - std::clamp(n, 0.0f, 1.0f)) * r.H;
+        return r.Y + (1.0f - Math::Clamp01(n)) * r.H;
     }
     const float n = (value - lo) / SpanOrEpsilon(lo, EffectiveValueMax());
-    return r.Y + (1.0f - std::clamp(n, 0.0f, 1.0f)) * r.H;
+    return r.Y + (1.0f - Math::Clamp01(n)) * r.H;
 }
 
 float CurveField::FromScreenTime(const GraphRect& r, float px) const
 {
-    const float n = std::clamp((px - r.X) / r.W, 0.0f, 1.0f);
+    const float n = Math::Clamp01((px - r.X) / r.W);
     return m_Config.TimeMin + n * SpanOrEpsilon(m_Config.TimeMin, m_Config.TimeMax);
 }
 
 float CurveField::FromScreenValue(const GraphRect& r, float py) const
 {
     const float lo = EffectiveValueMin();
-    const float n = std::clamp(1.0f - (py - r.Y) / r.H, 0.0f, 1.0f);
+    const float n = Math::Clamp01(1.0f - (py - r.Y) / r.H);
     if (m_Config.LogarithmicValues)
     {
         const float logLo = std::log2(lo);
@@ -493,7 +495,7 @@ void CurveField::UpdateCursor()
     const CursorStyle cursor = (m_Drag >= 0)      ? CursorStyle::Grabbing
                                : (m_Hover >= 0)   ? CursorStyle::Grab
                                                   : CursorStyle::Auto;
-    Overrides().Set(Style::Cursor, cursor);
+    Style().Set(Style::Cursor, cursor);
 }
 
 bool CurveField::TryHandleCurveDoubleClick(float globalX, float globalY)
@@ -570,7 +572,11 @@ void CurveField::ApplyDrag(float globalX, float globalY)
         const float gap = kMinTimeGapFrac * std::abs(SpanOrEpsilon(m_Config.TimeMin, m_Config.TimeMax));
         const float lo = (m_Drag > 0) ? m_Keys[m_Drag - 1].Time + gap : m_Config.TimeMin;
         const float hi = (m_Drag < n - 1) ? m_Keys[m_Drag + 1].Time - gap : m_Config.TimeMax;
-        k.Time = (lo <= hi) ? std::clamp(FromScreenTime(r, anchorX), lo, hi) : k.Time;
+        // The time moves by the pointer's horizontal travel only, so a drag that moves only the value
+        // leaves the time exactly as it was.
+        const float startAnchorX = m_DragStartX + m_GrabOffsetX;
+        const float time = m_DragStartTime + (FromScreenTime(r, anchorX) - FromScreenTime(r, startAnchorX));
+        k.Time = (lo <= hi) ? std::clamp(time, lo, hi) : k.Time;
     }
 
     m_DragMoved = true;
@@ -792,6 +798,7 @@ void CurveField::OnEvent(UIEvent& e)
         const float hy = ToScreenY(r, m_Keys[hit].Value);
         m_GrabOffsetX = hx - e.X;
         m_GrabOffsetY = hy - e.Y;
+        m_DragStartTime = m_Keys[hit].Time;
         m_HudValue = m_Keys[hit].Value;
         m_HudTime = m_Keys[hit].Time;
 

@@ -11,14 +11,14 @@
 #include "Assets/TextureCook.h"
 #include "Core/Engine.h"
 #include "Logger/Logger.h"
-#include "Platform/Environment.h"
 #include "Mathematics/MatrixOps.h"
-#include "Rendering/CameraDerivation.h"
+#include "Rendering/Camera/CameraDerivation.h"
 #include "Rendering/Common/Frustum.h"
 #include "Rendering/Common/MatrixUtils.h"
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <optional>
@@ -164,7 +164,11 @@ uint64_t UploadedCompatInstanceListBytes(const ResolvedPassResources& resources)
 
 bool DrawAttributionEnabled()
 {
-    static const bool s_Enabled = Platform::EnvironmentSwitchEnabled("GE_DRAW_ATTRIBUTION", false);
+    static const bool s_Enabled = []
+    {
+        const char* env = std::getenv("GE_DRAW_ATTRIBUTION");
+        return env != nullptr && env[0] != '0';
+    }();
     return s_Enabled;
 }
 
@@ -255,10 +259,7 @@ AreaShadowFrameInfo BuildAreaShadowFrameInfo(std::span<const ExtractedLight> lig
     if (!shadowLight)
         return out;
 
-    Mathematics::Vector3 pos{
-        shadowLight->positionWS[0],
-        shadowLight->positionWS[1],
-        shadowLight->positionWS[2]};
+    const Mathematics::Vector3 pos = shadowLight->positionWS - Mathematics::WorldPosition{};
     Mathematics::Vector3 dir{
         shadowLight->directionWS[0],
         shadowLight->directionWS[1],
@@ -303,7 +304,7 @@ AreaShadowFrameInfo BuildAreaShadowFrameInfo(std::span<const ExtractedLight> lig
     }
 
     out.valid = true;
-    out.position = pos;
+    out.position = shadowLight->positionWS;
     out.direction = dir;
     out.lightSize = std::max(extent, 0.001f);
     out.nearPlane = cullNear;
@@ -345,10 +346,7 @@ SpotShadowFrameInfo BuildSpotShadowFrameInfo(std::span<const ExtractedLight> lig
     if (!shadowLight)
         return out;
 
-    Mathematics::Vector3 pos{
-        shadowLight->positionWS[0],
-        shadowLight->positionWS[1],
-        shadowLight->positionWS[2]};
+    const Mathematics::Vector3 pos = shadowLight->positionWS - Mathematics::WorldPosition{};
     Mathematics::Vector3 dir{
         shadowLight->directionWS[0],
         shadowLight->directionWS[1],
@@ -373,7 +371,7 @@ SpotShadowFrameInfo BuildSpotShadowFrameInfo(std::span<const ExtractedLight> lig
     const float fovY = std::clamp(2.0f * halfAngle, 0.02f, 0.98f * kPi);
 
     out.valid = true;
-    out.position = pos;
+    out.position = shadowLight->positionWS;
     out.direction = dir;
     out.nearPlane = std::min(kSpotShadowNearPlane, range * 0.5f);
     out.farPlane = std::max(range, out.nearPlane + 0.1f);
@@ -384,14 +382,14 @@ SpotShadowFrameInfo BuildSpotShadowFrameInfo(std::span<const ExtractedLight> lig
     return out;
 }
 
-void PopulatePointShadowGeometry(PointShadowFrameInfo& out, const Mathematics::Vector3& positionWS,
+void PopulatePointShadowGeometry(PointShadowFrameInfo& out, const Mathematics::WorldPosition& positionWS,
                                  float rawRange, uint32_t tier, uint32_t packedLightIndex,
                                  const PointShadowCameraCull* cull)
 {
     out.packedLightIndex = packedLightIndex;
     out.resolutionTier = tier;
 
-    const Mathematics::Vector3 pos = positionWS;
+    const Mathematics::Vector3 pos = positionWS - Mathematics::WorldPosition{};
     const float range = std::max(rawRange, kPointShadowNearPlane + 0.1f);
 
     // S1 camera culling (only on the declaration + GPU-cull paths, which pass
@@ -426,7 +424,7 @@ void PopulatePointShadowGeometry(PointShadowFrameInfo& out, const Mathematics::V
     }};
 
     out.valid = true;
-    out.position = pos;
+    out.position = positionWS;
     out.nearPlane = std::min(kPointShadowNearPlane, range * 0.5f);
     out.farPlane = std::max(range, out.nearPlane + 0.1f);
     out.lightProj = Mathematics::MakePerspectiveLH_ZO_ReverseZ(
@@ -447,23 +445,23 @@ float PointShadowScreenCoverageRadiusPx(const ::GameEngine::Rendering::CameraDat
     // scale to a reference screen half-height so the planner's pixel thresholds
     // are viewport-agnostic. Camera INSIDE the sphere => a very large coverage.
     constexpr float kReferenceScreenHalfHeightPx = 540.0f; // half a 1080p view
-    const Mathematics::Vector3 camPos{camData.cameraPos[0], camData.cameraPos[1],
-                                      camData.cameraPos[2]};
+    const Mathematics::Vector3 camPos{camData.cameraPos.x, camData.cameraPos.y,
+                                      camData.cameraPos.z};
     const float dist = std::max((lightPositionWS - camPos).Length(), 1e-3f);
-    const float focalY = std::fabs(camData.proj[5]);
+    const float focalY = std::fabs(camData.proj[1][1]);
     return (focalY * range / dist) * kReferenceScreenHalfHeightPx;
 }
 
 std::optional<PointShadowCameraCull> MakePointShadowCullInputs(
-    const ::GameEngine::Rendering::CameraData& camData)
+    const ::GameEngine::Rendering::CameraData& camData, const ::GameEngine::Rendering::CameraRanges& ranges)
 {
     // Degenerate camera (thumbnail before its first update): a zero projection
     // inverts to NaN corners. Skip culling — every face renders (safe fallback).
-    if (camData.proj[0] == 0.0f && camData.proj[5] == 0.0f)
+    if (camData.proj[0][0] == 0.0f && camData.proj[1][1] == 0.0f)
         return std::nullopt;
 
     const ::GameEngine::Rendering::CameraDerivedData cam =
-        ::GameEngine::Rendering::DeriveCameraData(camData);
+        ::GameEngine::Rendering::DeriveCameraData(camData, ranges);
 
     PointShadowCameraCull out{};
     out.CameraPosition = cam.Position;

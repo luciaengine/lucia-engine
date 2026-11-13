@@ -1,31 +1,27 @@
 #include "Prefabs/PrefabHierarchyRows.h"
 
 #include "Assets/AssetCreation.h"
-#include "Assets/AssetPlacementRegistry.h"
 #include "Assets/AssetsFolderDropRegistry.h"
 #include "Editor/DragDropPayloads.h"
 #include "Editor/Entities/EditorComponentTraits.h"
 #include "Editor/Entities/EntityDisplayName.h"
-#include "Editor/Hierarchy/HierarchyEntityDecode.h"
+#include "Editor/Hierarchy/HierarchyEntity/HierarchyEntityDecode.h"
 #include "Editor/Registries/EditorPluginRegistry.h"
 #include "Editor/Shortcuts/EditorShortcuts.h"
 #include "InspectorRegistry.h"
 #include "Inspectors/DefaultComponentInspector.h"
-#include "Prefabs/PrefabRemovedComponents.h"
 #include "Prefabs/CreatePrefab/CreatePrefabCommand.h"
 #include "Prefabs/CreatePrefab/CreatePrefabDialog.h"
 #include "Prefabs/PrefabOverridesList/PrefabOverridesList.h"
 #include "Prefabs/PrefabBar.h"
-#include "Prefabs/PrefabService.h"
 #include "Prefabs/PrefabInstanceDescriptions.h"
+#include "Prefabs/PrefabRemovedComponents.h"
 #include "Prefabs/PrefabThumbnailHandler.h"
 #include "Prefabs/UnpackPrefabCommand.h"
 #include "SceneView/SceneViewNoticeOverlay.h"
-#include "UI/Controls/Button.h"
-#include "UI/EditorIcons.h"
-#include "UI/InspectorSection.h"
-#include "UI/UIManager.h"
 #include "Thumbnails/IThumbnailProvider.h"
+#include "UI/EditorIcons.h"
+#include "UI/UIManager.h"
 #include "EditorContext.h"
 #include "UndoRedo/UndoRedoService.h"
 
@@ -50,7 +46,6 @@
 #include <format>
 #include <functional>
 #include <memory>
-#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -104,7 +99,7 @@ bool CanUnpack(ECS::World& world, ECS::EntityHandle entity)
     const AssetRegistry& registry = EngineCore::GetInstance().GetAssetManager().GetRegistry();
     const auto* parent = world.GetComponent<Components::Parent>(entity);
     return ClassifyPrefabRow(world, entity, registry).Role == PrefabRowRole::InstanceRoot &&
-           !FindInstanceRoot(world, parent ? parent->parent : ECS::EntityHandle{}).IsValid();
+           !FindInstanceRoot(world, parent ? parent->Entity : ECS::EntityHandle{}).IsValid();
 }
 
 // The path of the prefab file of the nearest instance at or above `entity`; empty when there is none
@@ -197,7 +192,7 @@ std::string ReferenceFieldWords(const Scene::OutgoingReference& reference)
     for (const ECS::FieldInfo& field : ECS::ComponentFieldRegistry::Get(reference.Component))
     {
         if (field.Name == reference.Field)
-            return IdentifierToWords(field.Name);
+            return FieldDisplayName(field);
     }
     return IdentifierToWords(reference.Field);
 }
@@ -232,7 +227,7 @@ UIElement& FindDialogRoot(UIElement& host)
 // Opens the dialog under `root` for `request`, and attaches the dialog on the first open.
 void ShowCreatePrefabDialog(UIElement& root, CreatePrefabDialogRequest request)
 {
-    auto* dialog = dynamic_cast<CreatePrefabDialog*>(root.FindById(CreatePrefabDialog::kElementId));
+    auto* dialog = dynamic_cast<CreatePrefabDialog*>(root.FindById(HashStringId(CreatePrefabDialog::kElementId)));
     if (!dialog)
     {
         auto owned = std::make_unique<CreatePrefabDialog>();
@@ -281,7 +276,9 @@ void OpenCreatePrefabDialog(UIElement& host, CreatePrefabTarget target, const st
 // lists a folder.
 std::filesystem::path DefaultPrefabFolder(const EditorContext* editor)
 {
-    const std::filesystem::path folder = editor ? editor->AssetsRoot : std::filesystem::path{};
+    std::filesystem::path folder;
+    if (editor && editor->AssetsPanelFolder)
+        folder = editor->AssetsPanelFolder();
     std::error_code ec;
     if (folder.empty() || !std::filesystem::is_directory(folder, ec))
         return EngineCore::GetInstance().GetResolvedAssetRoot();
@@ -331,13 +328,12 @@ UI::Interaction::DropFeedback CanDropEntityOnFolder(const AssetsFolderDrop& drop
 // The drop makes a prefab of each root at once in the drop folder, named for the root, with a number
 // when the name is taken, and returns the new files; the menu's dialog is the path that asks for a
 // name. A notice states what happens to the fields that name an entity outside the prefabs.
-std::vector<std::filesystem::path> CreatePrefabFromFolderDrop(const AssetsFolderDrop& drop,
-                                                                  EditorChangeNotifications& notifications)
+std::vector<std::filesystem::path> CreatePrefabFromFolderDrop(const AssetsFolderDrop& drop)
 {
     if (!CanDropEntityOnFolder(drop).Allowed)
         return {};
     const EditorContext& editor = *drop.EditorCtx;
-    const CreatePrefabTarget target{editor.World, DraggedRoots(drop), &notifications, editor.UndoRedo,
+    const CreatePrefabTarget target{editor.World, DraggedRoots(drop), editor.ChangeNotifications, editor.UndoRedo,
                                     {}, editor.OnSceneDirty};
     std::vector<std::filesystem::path> files;
     std::size_t outgoing = 0;
@@ -363,6 +359,7 @@ std::vector<std::filesystem::path> CreatePrefabFromFolderDrop(const AssetsFolder
     return files;
 }
 
+// Selects the prefab file of the target's instance in the Assets panel.
 void SelectPrefabAsset(const HierarchyCommandContext& context)
 {
     if (!context.HasTargetEntity || !context.World || !context.PingAsset)
@@ -450,7 +447,7 @@ ComponentOverrides QueryPrefabComponentOverrides(ECS::World& world, ECS::EntityH
         else if (entry.Kind == Scene::PrefabOverrideKind::Field)
         {
             answer.Overridden = true;
-            const std::string_view field = ReflectedFieldForSceneKey(typeId, entry.Field);
+            const std::string_view field = InspectorFieldForSceneKey(typeId, entry.Field);
             if (!field.empty() && !answer.IsFieldOverridden(field))
                 answer.Fields.emplace_back(field);
         }
@@ -472,7 +469,10 @@ void AddRemovedComponentHeaders(const InspectorContext& context)
             removed.push_back(entry.Component);
     if (removed.empty())
         return;
-    const OverrideMenuTarget entity{context.World, context.Entity, 0, {}, context.Undo, context.ChangeNotifications};
+    const OverrideMenuTarget entity{.World = context.World,
+                                    .Entity = context.Entity,
+                                    .Undo = context.Undo,
+                                    .Notifications = context.ChangeNotifications};
     context.Parent->AddChild(std::make_unique<PrefabRemovedComponents>(removed, entity, context.RequestInspectorRefresh));
 }
 
@@ -504,7 +504,8 @@ class PrefabHierarchyMenu final : public IEditorPlugin
         const uint32_t unpackFlags = FlagsFor(CanUnpack(world, entity));
         builder.AddItem("Prefab", 0, MenuItemFlag_None, kPrefabMenuPriority, EditorIcons::kCube);
         builder.AddItem("Prefab/Create Prefab\xe2\x80\xa6", kCmdCreatePrefab, FlagsFor(createRefusal.empty()),
-                        kPrefabMenuPriority, {}, CatalogShortcutLabel(kShortcutGroup, kCreatePrefabShortcut), createRefusal);
+                        kPrefabMenuPriority, {}, CatalogShortcutLabel(kShortcutGroup, kCreatePrefabShortcut),
+                        createRefusal);
         builder.AddItem(SelectPrefabLabel(world, entity), kCmdSelectPrefabAsset, selectFlags, kPrefabMenuPriority);
         builder.AddItem("Prefab/Unpack", kCmdUnpackPrefab, unpackFlags, kPrefabMenuPriority);
         builder.AddItem("Prefab/Unpack Completely", kCmdUnpackPrefabCompletely, unpackFlags, kPrefabMenuPriority);
@@ -562,43 +563,34 @@ void RefreshViewsOf(EditorChangeNotifications& notifications, ECS::World& world)
     notifications.NotifyWorldStructureChanged(change);
 }
 
-ECS::EntityHandle PlacePrefabAsset(ECS::World& world, AssetManager& assets, const std::filesystem::path& path,
-                                    const Components::Transform& at, ECS::EntityHandle parent)
-{
-    return PrefabService(assets).Place(world, path, at, parent);
-}
-
 } // namespace
 
-void RegisterPrefabEditor(EditorChangeNotifications& notifications, IThumbnailProvider* thumbnails,
-                          std::function<bool()> isInPlayMode, std::function<SceneDocumentManager*()> document)
+void RegisterPrefabEditor(EditorChangeNotifications& notifications, UndoRedoService* undo,
+                          IThumbnailProvider* thumbnails, std::function<bool()> isInPlayMode,
+                          std::function<SceneDocumentManager*()> document)
 {
-    AssetPlacementRegistry::Get().Register(AssetType::Prefab, &PlacePrefabAsset);
     OverridesListReopen() = {};
     OverridesListContext() = {std::move(document), isInPlayMode, &OverridesListReopen()};
-    PrefabInstanceDescriptions::Get().Track(notifications);
+    PrefabInstanceDescriptions::Get().Track(notifications, undo, isInPlayMode);
     InstancesChangedSubscription() = Scene::SubscribePrefabInstancesChanged(
         [&notifications](ECS::World& world) { RefreshViewsOf(notifications, world); });
     EditorComponentTraits traits;
-    traits.HiddenInInspector = true;
     traits.HierarchyRowClass = "hierarchy-entity-prefab";
     traits.IsPickClimbRoot = true;
     traits.DecorateHierarchyRow = &DecoratePrefabRow;
+    traits.HideInInspector = true;
     EditorComponentTraitsRegistry::Get().Register(ECS::GetComponentTypeId<Components::PrefabInstance>(),
                                                   std::move(traits));
     InspectorRegistry::Get().RegisterEntityBanner("prefab-bar", EntityBannerPlacement::BeforeComponents, &AddPrefabBar);
     InspectorRegistry::Get().RegisterEntityBanner("prefab-removed-components", EntityBannerPlacement::AfterComponents,
-                                                   &AddRemovedComponentHeaders);
+                                                  &AddRemovedComponentHeaders);
     InspectorRegistry::Get().SetComponentOverridesAnswerer(&QueryPrefabComponentOverrides);
     InspectorRegistry::Get().SetOverrideMenuAnswerer(
-        [isInPlayMode](const OverrideMenuTarget& target) {
-            return isInPlayMode && isInPlayMode() ? std::vector<OverrideMenuEntry>{} : QueryPrefabOverrideMenu(target);
-        });
+        [isInPlayMode = std::move(isInPlayMode)](const OverrideMenuTarget& target)
+        { return isInPlayMode && isInPlayMode() ? std::vector<OverrideMenuEntry>{} : QueryPrefabOverrideMenu(target); });
     EditorPluginRegistry::Get().RegisterPlugin(Menu());
     AssetsFolderDropRegistry::Get().Register(UI::Interaction::GetPayloadTypeId<HierarchyEntityDragPayload>(),
-                                           {&CanDropEntityOnFolder, [&notifications](const AssetsFolderDrop& drop) {
-                                                return CreatePrefabFromFolderDrop(drop, notifications);
-                                            }});
+                                             {&CanDropEntityOnFolder, &CreatePrefabFromFolderDrop});
     if (thumbnails)
         thumbnails->RegisterHandler(AssetType::Prefab, std::make_unique<PrefabThumbnailHandler>());
 }

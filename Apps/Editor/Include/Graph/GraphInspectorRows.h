@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Graph/GraphNodeRegistry.h"
+#include "Graph/GraphNode/GraphNodeRegistry.h"
 
 #include <string>
 #include <string_view>
@@ -8,6 +8,9 @@
 #include <vector>
 
 namespace GameEngine {
+
+class UIElement;
+struct GraphTransitionDesc;
 
 enum class GraphInspectorRowKind
 {
@@ -30,6 +33,7 @@ struct GraphInspectorRow
     std::string Key;
     int VecAxis = -1;
     int VecCount = 0;
+    /* NodeAsset rows: the asset type the field accepts. */
     AssetType AssetReference = AssetType::Unknown;
 };
 
@@ -43,5 +47,9 @@ const NodeTypeMeta* FindNodeTypeMeta(std::string_view kindId, std::string_view t
 std::vector<GraphInspectorRow> PlanGraphInspectorRows(
     const std::unordered_map<std::string, std::string>& parameters,
     const NodeTypeMeta* schema);
+
+/** Adds the Conditions section's state to `conditions`: a warning notice when `transition` has no condition, because
+    compile skips such a transition. A notice, not an info card, so the "Show Info Cards" switch does not hide it. */
+void AddGraphTransitionConditionsNotice(UIElement* conditions, const GraphTransitionDesc& transition);
 
 } // namespace GameEngine

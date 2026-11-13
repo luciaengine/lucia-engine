@@ -36,10 +36,12 @@
 #include "Rendering/Core/BufferRing.h"
 #include "Rendering/Core/Device.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace GameEngine
@@ -51,11 +53,8 @@ class FrameBufferAllocator
 {
   public:
     // Deepest ring any caller can ask for. A RING DEPTH, not the device's pacing:
-    // the two differ by the caller's write phase and by how many frames read a slot
-    // (see BeginFrame). The deepest the rule can demand is the deepest pacing, plus
-    // one for an update-phase write, plus one for a reader that outlives the writing
-    // frame.
-    static constexpr uint32_t kMaxRingSlots = IDevice::kMaxSupportedFramesInFlight + 2;
+    // the deepest pacing plus the margins of BeginFrame's rule (IDevice::FrameRingDepth).
+    static constexpr uint32_t kMaxRingSlots = IDevice::kMaxFrameRingDepth;
 
     struct Allocation
     {
@@ -173,6 +172,7 @@ class FrameBufferAllocator
             ring.Shutdown();
         }
         m_Rings.clear();
+        ReleaseRetiredRings();
         m_Initialized = false;
         m_HasCurrentSlot = false;
         m_HasPreviousSlot = false;
@@ -194,6 +194,11 @@ class FrameBufferAllocator
         // are gone even though the slot indices survive.
         m_HasCurrentSlot = false;
         m_HasPreviousSlot = false;
+        for (auto& retired : m_RetiredRings)
+            retired.Reprovision();
+        m_RetiredRings.clear();
+        m_FrameCopies.clear();
+        m_CurrentRingFirstByte = 0;
         for (auto& ring : m_Rings)
         {
             const size_t priorCapacity = ring.Reprovision();
@@ -262,6 +267,7 @@ class FrameBufferAllocator
         // device did not advance, or there is only one ring to go round.
         if (m_HasPreviousSlot && m_PreviousSlot == m_CurrentSlot)
             m_HasPreviousSlot = false;
+        ReleaseRetiredRings();
         MaybeGrowCurrentSlot();
         m_Rings[m_CurrentSlot].ResetForNewFrame();
     }
@@ -296,6 +302,46 @@ class FrameBufferAllocator
         GrowCurrentSlot(capacityBytes);
         return capacityBytes <= ring.GetCapacity();
     }
+
+    // Make room for one more Allocate of `bytes` at `alignment` (a power of two) in this frame.
+    // A short ring grows now; TakeFrameCopies moves its bytes to the same offsets on the GPU.
+    // Callers keep offsets, never an Allocation's buffer or pointer. Update phase, one thread.
+    bool MakeRoomInFrame(size_t bytes, size_t alignment)
+    {
+        assert(m_Initialized);
+        assert(alignment > 0 && (alignment & (alignment - 1)) == 0);
+        BufferRing& ring = m_Rings[m_CurrentSlot];
+        const size_t demand = ((ring.GetHead() + alignment - 1) & ~(alignment - 1)) + bytes;
+        if (demand <= ring.GetCapacity())
+            return true;
+        if (m_MaxCapacityBytes == 0 || demand > m_MaxCapacityBytes)
+            return false;
+
+        BufferRing grown;
+        if (!grown.Initialize(m_Device, GrownCapacity(ring.GetCapacity(), demand), m_Usage, m_DefaultAlign,
+                              SlotDebugName().c_str()))
+            return false;
+        grown.ContinueFrameOf(ring);
+        if (ring.GetHead() > m_CurrentRingFirstByte)
+            m_FrameCopies.push_back({ring.GetBuffer(), m_CurrentRingFirstByte, ring.GetHead() - m_CurrentRingFirstByte});
+        m_CurrentRingFirstByte = ring.GetHead();
+        m_RetiredRings.push_back(std::move(ring));
+        ring = std::move(grown);
+        return true;
+    }
+
+    /// One GPU copy of bytes written before an in-frame growth: `Source` holds them at
+    /// [Offset, Offset + Bytes), and the current ring takes them at the same offsets.
+    struct FrameCopy
+    {
+        BufferHandle Source;
+        size_t Offset = 0;
+        size_t Bytes = 0;
+    };
+
+    /// The copies this frame's in-frame growths owe the current ring, emptied by the call.
+    /// Record them before any reader of the ring. Their sources live until the next BeginFrame.
+    std::vector<FrameCopy> TakeFrameCopies() { return std::exchange(m_FrameCopies, {}); }
 
     // Thread-safe suballocate from the current frame's ring (lock-free CAS).
     // Multiple threads can call this concurrently; each gets a disjoint region.
@@ -353,10 +399,11 @@ class FrameBufferAllocator
         return m_HasPreviousSlot ? m_Rings[m_PreviousSlot].GetCapacity() : 0;
     }
 
-    // Query the capacity of each ring.
+    // Capacity of the current slot's ring, the buffer GetCurrentBuffer returns.
+    // Slots grow independently, so other rings can be larger or smaller.
     size_t GetCapacity() const
     {
-        return m_Rings.empty() ? 0 : m_Rings[0].GetCapacity();
+        return m_Rings.empty() ? 0 : m_Rings[m_CurrentSlot].GetCapacity();
     }
 
     // Query how much has been allocated in the current frame.
@@ -394,29 +441,42 @@ class FrameBufferAllocator
         if (demand <= currentCap || currentCap >= m_MaxCapacityBytes)
             return;
 
-        // Double until we cover the demand, capped at max.
+        const size_t newCap = GrownCapacity(currentCap, demand);
+        if (newCap <= currentCap)
+            return;
+
+        const std::string name = SlotDebugName();
+        // The accepted mapping remains live until the replacement succeeds.
+        BufferRing replacement;
+        if (replacement.Initialize(m_Device, newCap, m_Usage, m_DefaultAlign, name.c_str()))
+            ring = std::move(replacement);
+    }
+
+    // `currentCap` doubled until it covers `demand`, clamped to maxCapacityBytes.
+    size_t GrownCapacity(size_t currentCap, size_t demand) const
+    {
         size_t newCap = currentCap > 0 ? currentCap : 1;
         while (newCap < demand)
         {
             const size_t doubled = newCap * 2;
             if (doubled <= newCap)
-            {
-                newCap = m_MaxCapacityBytes; // overflow guard
-                break;
-            }
+                return m_MaxCapacityBytes; // overflow guard
             newCap = doubled;
         }
-        if (newCap > m_MaxCapacityBytes)
-            newCap = m_MaxCapacityBytes;
-        if (newCap <= currentCap)
-            return;
+        return (std::min)(newCap, m_MaxCapacityBytes);
+    }
 
-        std::string name = m_DebugName + ".Frame" + std::to_string(m_CurrentSlot);
-        // Keep the accepted capacity mapped until the replacement is ready.
-        // Growth temporarily holds both buffers; a refused replacement changes nothing.
-        BufferRing replacement;
-        if (replacement.Initialize(m_Device, newCap, m_Usage, m_DefaultAlign, name.c_str()))
-            ring = std::move(replacement);
+    std::string SlotDebugName() const { return m_DebugName + ".Frame" + std::to_string(m_CurrentSlot); }
+
+    // The frame that recorded the copies is submitted, so the device's deferred destroy
+    // covers the sources. Copies nobody took are dropped with them.
+    void ReleaseRetiredRings()
+    {
+        for (auto& retired : m_RetiredRings)
+            retired.Shutdown();
+        m_RetiredRings.clear();
+        m_FrameCopies.clear();
+        m_CurrentRingFirstByte = 0;
     }
 
     std::vector<BufferRing> m_Rings;
@@ -436,6 +496,11 @@ class FrameBufferAllocator
     size_t m_DefaultAlign = 16;
     std::string m_DebugName;
     size_t m_MaxCapacityBytes = 0; // 0 disables grow-on-demand
+
+    // In-frame growth: the replaced rings stay alive as copy sources until the next BeginFrame.
+    std::vector<BufferRing> m_RetiredRings;
+    std::vector<FrameCopy> m_FrameCopies;
+    size_t m_CurrentRingFirstByte = 0; // first offset the current ring's own mapping wrote this frame
 };
 
 } // namespace Rendering

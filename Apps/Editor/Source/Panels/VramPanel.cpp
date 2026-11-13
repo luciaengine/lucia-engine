@@ -166,7 +166,7 @@ void VramPanel::BuildUI()
     // Source-specific empty hint, shown (and the table hidden) when the list is empty.
     auto empty = std::make_unique<Label>();
     empty->AddClass("vram-empty");
-    empty->Overrides().Set(Style::Display, DisplayMode::None);
+    empty->Style().Set(Style::Display, DisplayMode::None);
     m_EmptyLabel = empty.get();
     AddChild(std::move(empty));
 
@@ -508,10 +508,10 @@ void VramPanel::UpdateEmptyState()
         m_EmptyLabel->SetText(m_ListSource == ListSource::GpuAllocations
             ? "No GPU allocations reported (backend has no resource enumeration, or nothing is allocated yet)."
             : "No render graph resources. Play the scene or run a frame to populate.");
-        m_EmptyLabel->Overrides().Set(Style::Display, empty ? DisplayMode::Flex : DisplayMode::None);
+        m_EmptyLabel->Style().Set(Style::Display, empty ? DisplayMode::Flex : DisplayMode::None);
     }
     if (m_Table)
-        m_Table->Overrides().Set(Style::Display, empty ? DisplayMode::None : DisplayMode::Flex);
+        m_Table->Style().Set(Style::Display, empty ? DisplayMode::None : DisplayMode::Flex);
 }
 
 void VramPanel::SaveColumnLayout()

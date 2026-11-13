@@ -1,6 +1,6 @@
-#include "TerrainECS/TerrainHeightPageFeature.h"
+#include "TerrainECS/TerrainPageFeature.h"
 #include "TerrainPageGpuProbe.h"
-#include "TerrainECS/TerrainHeightPages.h"
+#include "TerrainECS/TerrainPages.h"
 #include "TerrainECS/TerrainUploadNode.h"
 
 #include "Engine/Rendering/RenderServices.h"
@@ -10,6 +10,7 @@
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
 #include <algorithm>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <span>
@@ -44,7 +45,14 @@ PagedTerrainRequest PublicationRequest(uint64 identity)
     return request;
 }
 
-void LoadPublication(TerrainHeightPages& pages, const PagedTerrainRequest& request, uint64 firstFrame)
+void FillHeightUpload(HeightPageUpload& upload, float32 height)
+{
+    upload.Bytes.resize(PageStreaming::kPageSampleCount * sizeof(float32));
+    const std::span<float32> samples = PageStreaming::HeightSamples(upload.Bytes);
+    std::fill(samples.begin(), samples.end(), height);
+}
+
+void LoadPublication(TerrainPages& pages, const PagedTerrainRequest& request, uint64 firstFrame)
 {
     const Mathematics::Vector3 camera{128.0f, 10.0f, 128.0f};
     const PageLevelView view = MakePageLevelView(kPageLevelReferenceRows, 1.0f, 11.0f);
@@ -55,7 +63,7 @@ void LoadPublication(TerrainHeightPages& pages, const PagedTerrainRequest& reque
     }
 }
 
-void LoadSettledPublication(TerrainHeightPages& pages, const PagedTerrainRequest& request)
+void LoadSettledPublication(TerrainPages& pages, const PagedTerrainRequest& request)
 {
     FlatMap<uint32, HeightPageUpload> payloads;
     const Mathematics::Vector3 camera{128.0f, 10.0f, 128.0f};
@@ -91,8 +99,8 @@ protected:
             GTEST_SKIP() << "Vulkan validation layer unavailable";
         m_Services = std::make_unique<Engine::Renderer::RenderServices>();
         ASSERT_TRUE(m_Services->Initialize(m_Device.get()));
-        m_Publication = &m_Services->EnsureFeature<TerrainHeightPageFeature>();
-        m_Pages = std::make_unique<TerrainHeightPages>(nullptr, nullptr, HeightPageProfile{64, kDesktopHeightPages.DenseTableWords});
+        m_Publication = &m_Services->EnsureFeature<TerrainPageFeature>();
+        m_Pages = std::make_unique<TerrainPages>(nullptr, nullptr, HeightPageProfile{64, kDesktopHeightPages.DenseTableWords}, kDesktopSurfacePages);
         m_Pages->Update(1, 1.0f / 60.0f, false, 2);
         ASSERT_TRUE(m_Upload.Initialize("Upload", "{}", nullptr));
         m_Persistent = std::make_unique<Rendering::RenderGraph::RGResourcePool>(m_Device.get());
@@ -143,8 +151,8 @@ protected:
 
     std::unique_ptr<Rendering::IDevice> m_Device;
     std::unique_ptr<Engine::Renderer::RenderServices> m_Services;
-    std::unique_ptr<TerrainHeightPages> m_Pages;
-    TerrainHeightPageFeature* m_Publication = nullptr;
+    std::unique_ptr<TerrainPages> m_Pages;
+    TerrainPageFeature* m_Publication = nullptr;
     TerrainUploadNode m_Upload;
     std::unique_ptr<Rendering::RenderGraph::RGResourcePool> m_Persistent;
     std::unique_ptr<Rendering::RenderGraph::RGTransientPool> m_Transient;
@@ -153,6 +161,41 @@ protected:
 };
 
 } // namespace
+
+TEST(TerrainPageFeature, DelayedPublicationsKeepOnePayloadPerSlotInEachField)
+{
+    TerrainPages pages(nullptr, nullptr, HeightPageProfile{64, kDesktopHeightPages.DenseTableWords},
+                       SurfacePageProfile{4u});
+    pages.Update(1, 1.0f / 60.0f, false, 2);
+    TerrainPageFeature feature;
+    constexpr uint64 kHeightBytes = PageStreaming::kPageSampleCount * sizeof(float32);
+    const uint64 surfaceBytes = PageStreaming::PagePayloadBytes(PageStreaming::PageFieldFormat::Rgba8);
+    for (uint32 publication = 0; publication < 64; ++publication)
+    {
+        for (uint32 slot : {1u, 3u})
+        {
+            HeightPageUpload height;
+            height.Slot = slot;
+            height.Bytes.assign(kHeightBytes, static_cast<uint8>(publication));
+            pages.Uploads().push_back(std::move(height));
+            SurfacePageUpload surface;
+            surface.Slot = slot;
+            surface.PlaneMask = 1u;
+            surface.Bytes.assign(surfaceBytes, static_cast<uint8>(publication));
+            pages.Surface().Uploads().push_back(std::move(surface));
+        }
+        feature.Publish(pages);
+        const auto readiness = feature.GetReadiness();
+        EXPECT_EQ(readiness.PublishedUploads, 2u);
+        EXPECT_EQ(readiness.PublishedSurfaceUploads, 2u);
+        EXPECT_EQ(readiness.PendingBytes, 2u * (kHeightBytes + surfaceBytes));
+        EXPECT_EQ(readiness.LatchedUploads, 0u);
+        EXPECT_EQ(readiness.LatchedSurfaceUploads, 0u);
+        EXPECT_TRUE(pages.Uploads().empty());
+        EXPECT_TRUE(pages.Surface().Uploads().empty());
+    }
+}
+
 
 TEST_F(TerrainHeightPagePublication, AbandonedAndOlderSnapshotsKeepNewerDirtyCoverage)
 {
@@ -166,13 +209,13 @@ TEST_F(TerrainHeightPagePublication, AbandonedAndOlderSnapshotsKeepNewerDirtyCov
     Execute();
     std::span<const uint32> words;
     uint64 version = 0, content = 0, originalRevision = 0;
-    ASSERT_TRUE(m_Publication->LatchedTable(3, words, version, content, nullptr, &originalRevision));
+    ASSERT_TRUE(m_Publication->LatchedTable(3, words, version, &content, nullptr, &originalRevision));
     m_Publication->AcknowledgePublication(3, originalRevision);
     RewritePublication(payloads.front(), 0.1f, 0.2f);
     m_Frame->BeginFrame(2);
     DeclareUpload();
     uint64 firstRevision = 0;
-    ASSERT_TRUE(m_Publication->LatchedTable(3, words, version, content, m_Frame.get(), &firstRevision));
+    ASSERT_TRUE(m_Publication->LatchedTable(3, words, version, &content, m_Frame.get(), &firstRevision));
     HeightPageDirtyRect region;
     ASSERT_TRUE(m_Publication->DirtyRegionSince(3, 7, originalRevision, firstRevision, m_Frame.get(), region));
     EXPECT_FLOAT_EQ(region.MinU, 0.1f);
@@ -186,7 +229,7 @@ TEST_F(TerrainHeightPagePublication, AbandonedAndOlderSnapshotsKeepNewerDirtyCov
     m_Frame->BeginFrame(4); // P1 abandoned; its payload and P2 coalesce at the same slot.
     DeclareUpload();
     uint64 secondRevision = 0;
-    ASSERT_TRUE(m_Publication->LatchedTable(3, words, version, content, m_Frame.get(), &secondRevision));
+    ASSERT_TRUE(m_Publication->LatchedTable(3, words, version, &content, m_Frame.get(), &secondRevision));
     ASSERT_GT(secondRevision, firstRevision);
     ASSERT_TRUE(m_Publication->DirtyRegionSince(3, 7, originalRevision, secondRevision, m_Frame.get(), region));
     EXPECT_FLOAT_EQ(region.MinU, 0.1f);
@@ -200,7 +243,7 @@ TEST_F(TerrainHeightPagePublication, AbandonedAndOlderSnapshotsKeepNewerDirtyCov
     m_Frame->BeginFrame(6);
     DeclareUpload();
     uint64 thirdRevision = 0;
-    ASSERT_TRUE(m_Publication->LatchedTable(3, words, version, content, m_Frame.get(), &thirdRevision));
+    ASSERT_TRUE(m_Publication->LatchedTable(3, words, version, &content, m_Frame.get(), &thirdRevision));
     EXPECT_FALSE(m_Publication->DirtyRegionSince(3, 7, firstRevision, thirdRevision, m_Frame.get(), region))
         << "a lagging consumer has no retained coverage before the latest caught-up acknowledgement";
     ASSERT_TRUE(m_Publication->DirtyRegionSince(3, 7, secondRevision, thirdRevision, m_Frame.get(), region));
@@ -221,7 +264,7 @@ TEST_F(TerrainHeightPagePublication, MissingBoundsAndStaleDeviceAcknowledgementR
     Execute();
     std::span<const uint32> words;
     uint64 version = 0, content = 0, originalRevision = 0;
-    ASSERT_TRUE(m_Publication->LatchedTable(3, words, version, content, nullptr, &originalRevision));
+    ASSERT_TRUE(m_Publication->LatchedTable(3, words, version, &content, nullptr, &originalRevision));
     m_Publication->AcknowledgePublication(3, originalRevision);
     m_Pages->Uploads().push_back(payloads.front());
     m_Pages->DirtyRects().clear();
@@ -229,7 +272,7 @@ TEST_F(TerrainHeightPagePublication, MissingBoundsAndStaleDeviceAcknowledgementR
     m_Frame->BeginFrame(2);
     DeclareUpload();
     uint64 missingRevision = 0;
-    ASSERT_TRUE(m_Publication->LatchedTable(3, words, version, content, m_Frame.get(), &missingRevision));
+    ASSERT_TRUE(m_Publication->LatchedTable(3, words, version, &content, m_Frame.get(), &missingRevision));
     HeightPageDirtyRect region;
     EXPECT_FALSE(m_Publication->DirtyRegionSince(3, 7, originalRevision, missingRevision, m_Frame.get(), region));
     Execute();
@@ -248,7 +291,7 @@ TEST_F(TerrainHeightPagePublication, MissingBoundsAndStaleDeviceAcknowledgementR
         frameKey += 2;
         DeclareUpload();
         uint64 invalidRevision = 0;
-        ASSERT_TRUE(m_Publication->LatchedTable(3, words, version, content, m_Frame.get(), &invalidRevision));
+        ASSERT_TRUE(m_Publication->LatchedTable(3, words, version, &content, m_Frame.get(), &invalidRevision));
         EXPECT_FALSE(m_Publication->DirtyRegionSince(3, 7, missingRevision, invalidRevision, m_Frame.get(), region));
         Execute();
         m_Publication->AcknowledgePublication(3, invalidRevision);
@@ -262,7 +305,7 @@ TEST_F(TerrainHeightPagePublication, MissingBoundsAndStaleDeviceAcknowledgementR
     m_Frame->BeginFrame(frameKey);
     DeclareUpload();
     uint64 resetRevision = 0;
-    ASSERT_TRUE(m_Publication->LatchedTable(3, words, version, content, m_Frame.get(), &resetRevision));
+    ASSERT_TRUE(m_Publication->LatchedTable(3, words, version, &content, m_Frame.get(), &resetRevision));
     EXPECT_GT(resetRevision, missingRevision);
     EXPECT_FALSE(m_Publication->DirtyRegionSince(3, 7, missingRevision, resetRevision, m_Frame.get(), region));
     Execute();
@@ -278,11 +321,11 @@ TEST_F(TerrainHeightPagePublication, AbandonedUploadRetainsSubmittedTableAndRetr
     m_Frame->BeginFrame(0);
     DeclareUpload();
     Execute();
-    ASSERT_TRUE(m_Publication->CacheTexture().IsValid());
+    ASSERT_TRUE(m_Publication->GetReadiness().CacheReady);
     std::span<const uint32> words;
     uint64 committedVersion = 0;
     uint64 contentGeneration = 0;
-    ASSERT_TRUE(m_Publication->LatchedTable(original.Terrain, words, committedVersion, contentGeneration));
+    ASSERT_TRUE(m_Publication->LatchedTable(original.Terrain, words, committedVersion, &contentGeneration));
 
     const PagedTerrainRequest replacement = PublicationRequest(29);
     LoadPublication(*m_Pages, replacement, 30);
@@ -305,14 +348,14 @@ TEST_F(TerrainHeightPagePublication, AbandonedUploadRetainsSubmittedTableAndRetr
 
     m_Publication->Latch(*m_Device, 3);
     uint64 visibleVersion = 0;
-    ASSERT_TRUE(m_Publication->LatchedTable(original.Terrain, words, visibleVersion, contentGeneration));
+    ASSERT_TRUE(m_Publication->LatchedTable(original.Terrain, words, visibleVersion, &contentGeneration));
     EXPECT_EQ(visibleVersion, committedVersion) << "a declared copy was never submitted";
     EXPECT_TRUE(m_Publication->HasStagedUploads()) << "the abandoned payload must remain retryable";
 
     m_Frame->BeginFrame(4);
     DeclareUpload();
     Execute();
-    ASSERT_TRUE(m_Publication->LatchedTable(replacement.Terrain, words, visibleVersion, contentGeneration));
+    ASSERT_TRUE(m_Publication->LatchedTable(replacement.Terrain, words, visibleVersion, &contentGeneration));
     EXPECT_EQ(visibleVersion, requestedVersion);
     EXPECT_FALSE(m_Publication->HasStagedUploads());
 }
@@ -322,7 +365,7 @@ TEST_F(TerrainHeightPagePublication, FirstCacheAndTableStayPlannedUntilTheirCopy
     LoadPublication(*m_Pages, PublicationRequest(11), 2);
     ASSERT_FALSE(m_Pages->Uploads().empty());
     for (auto& upload : m_Pages->Uploads())
-        std::fill(upload.Samples.begin(), upload.Samples.end(), 0.5f);
+        FillHeightUpload(upload, 0.5f);
     m_Publication->Publish(*m_Pages);
     m_Frame->BeginFrame(0);
     DeclareUpload();
@@ -330,22 +373,22 @@ TEST_F(TerrainHeightPagePublication, FirstCacheAndTableStayPlannedUntilTheirCopy
     uint64 version = 0;
     uint64 generation = 0;
     EXPECT_FALSE(m_Publication->CacheTexture().IsValid());
-    EXPECT_FALSE(m_Publication->LatchedTable(3, words, version, generation));
+    EXPECT_FALSE(m_Publication->LatchedTable(3, words, version, &generation));
     EXPECT_TRUE(m_Publication->CacheTexture(m_Frame.get()).IsValid());
-    EXPECT_TRUE(m_Publication->LatchedTable(3, words, version, generation, m_Frame.get()));
+    EXPECT_TRUE(m_Publication->LatchedTable(3, words, version, &generation, m_Frame.get()));
     Rendering::RenderGraph::RGFrame other(m_Device.get(), m_Persistent.get(), m_Transient.get(), m_Ring.get());
     other.BeginFrame(0);
     EXPECT_FALSE(m_Publication->CacheTexture(&other).IsValid());
-    EXPECT_FALSE(m_Publication->LatchedTable(3, words, version, generation, &other));
+    EXPECT_FALSE(m_Publication->LatchedTable(3, words, version, &generation, &other));
     TerrainPageGpuProbe probe(*m_Device);
     ASSERT_TRUE(probe.Initialize());
-    ASSERT_TRUE(m_Publication->LatchedTable(3, words, version, generation, m_Frame.get()));
+    ASSERT_TRUE(m_Publication->LatchedTable(3, words, version, &generation, m_Frame.get()));
     const std::vector<TerrainPageGpuProbe::QueryPoint> points{{0.5f, 0.5f, 100.0f}};
     const auto results = probe.Declare(*m_Frame, m_Publication->CacheTexture(m_Frame.get()), words, points);
     Execute();
     EXPECT_FLOAT_EQ(probe.Read(results, 1).front(), 0.5f);
-    EXPECT_TRUE(m_Publication->CacheTexture().IsValid());
-    EXPECT_TRUE(m_Publication->LatchedTable(3, words, version, generation));
+    EXPECT_TRUE(m_Publication->GetReadiness().CacheReady);
+    EXPECT_TRUE(m_Publication->LatchedTable(3, words, version, &generation));
     EXPECT_FALSE(m_Publication->HasStagedUploads());
 }
 
@@ -365,7 +408,7 @@ TEST_F(TerrainHeightPagePublication, InvalidatedPendingGraphCancelsInsteadOfSamp
     m_Frame->BeginFrame(2);
     DeclareUpload();
     Execute();
-    EXPECT_TRUE(m_Publication->CacheTexture().IsValid());
+    EXPECT_TRUE(m_Publication->GetReadiness().CacheReady);
     EXPECT_FALSE(m_Publication->HasStagedUploads());
 }
 
@@ -390,7 +433,7 @@ TEST_F(TerrainHeightPagePublication, ASubmittedPassWithoutRecordedCopiesRetainsI
     m_Frame->BeginFrame(1);
     DeclareUpload();
     Execute();
-    EXPECT_TRUE(m_Publication->CacheTexture().IsValid());
+    EXPECT_TRUE(m_Publication->GetReadiness().CacheReady);
 }
 
 TEST_F(TerrainHeightPagePublication, DelayedRewritesCoalesceByPhysicalSlot)
@@ -402,7 +445,7 @@ TEST_F(TerrainHeightPagePublication, DelayedRewritesCoalesceByPhysicalSlot)
     {
         m_Pages->Uploads() = payloads;
         for (auto& upload : m_Pages->Uploads())
-            std::fill(upload.Samples.begin(), upload.Samples.end(), static_cast<float>(update + 1) / 128.0f);
+            FillHeightUpload(upload, static_cast<float>(update + 1) / 128.0f);
         m_Publication->Publish(*m_Pages);
         const auto readiness = m_Publication->GetReadiness();
         EXPECT_EQ(readiness.PublishedUploads, payloads.size());
@@ -419,7 +462,7 @@ TEST_F(TerrainHeightPagePublication, DelayedRewritesCoalesceByPhysicalSlot)
     std::span<const uint32> words;
     uint64 version = 0;
     uint64 generation = 0;
-    ASSERT_TRUE(m_Publication->LatchedTable(3, words, version, generation, m_Frame.get()));
+    ASSERT_TRUE(m_Publication->LatchedTable(3, words, version, &generation, m_Frame.get()));
     const std::vector<TerrainPageGpuProbe::QueryPoint> points{{0.5f, 0.5f, 100.0f}};
     const auto results = probe.Declare(*m_Frame, m_Publication->CacheTexture(m_Frame.get()), words, points);
     Execute();
@@ -454,7 +497,7 @@ TEST_F(TerrainHeightPagePublication, ReadersAroundASameSlotRewriteSeeTheirOwnPay
     LoadSettledPublication(*m_Pages, PublicationRequest(11));
     ASSERT_FALSE(m_Pages->Uploads().empty());
     for (auto& upload : m_Pages->Uploads())
-        std::fill(upload.Samples.begin(), upload.Samples.end(), 0.25f);
+        FillHeightUpload(upload, 0.25f);
     const std::vector<HeightPageUpload> original = m_Pages->Uploads();
     m_Publication->Publish(*m_Pages);
     m_Frame->BeginFrame(0);
@@ -463,7 +506,7 @@ TEST_F(TerrainHeightPagePublication, ReadersAroundASameSlotRewriteSeeTheirOwnPay
     std::span<const uint32> words;
     uint64 oldVersion = 0;
     uint64 oldGeneration = 0;
-    ASSERT_TRUE(m_Publication->LatchedTable(3, words, oldVersion, oldGeneration));
+    ASSERT_TRUE(m_Publication->LatchedTable(3, words, oldVersion, &oldGeneration));
     const std::vector<uint32> oldWords(words.begin(), words.end());
     const uint32 topLevel = oldWords[2] - 1u;
     const uint32 rootEntry = oldWords[CBTTerrain::kCBTPageFadeOffsetWords + oldWords[4] +
@@ -473,7 +516,7 @@ TEST_F(TerrainHeightPagePublication, ReadersAroundASameSlotRewriteSeeTheirOwnPay
     { return upload.Slot == rewrittenSlot; });
     ASSERT_NE(rewritten, original.end());
     m_Pages->Uploads() = {*rewritten};
-    std::fill(m_Pages->Uploads().front().Samples.begin(), m_Pages->Uploads().front().Samples.end(), 0.75f);
+    FillHeightUpload(m_Pages->Uploads().front(), 0.75f);
     m_Publication->Publish(*m_Pages);
     EXPECT_TRUE(m_Publication->HasPendingPublication(3, oldVersion, oldGeneration));
     TerrainPageGpuProbe probe(*m_Device);
@@ -485,7 +528,7 @@ TEST_F(TerrainHeightPagePublication, ReadersAroundASameSlotRewriteSeeTheirOwnPay
     DeclareUpload();
     uint64 newVersion = 0;
     uint64 newGeneration = 0;
-    ASSERT_TRUE(m_Publication->LatchedTable(3, words, newVersion, newGeneration, m_Frame.get()));
+    ASSERT_TRUE(m_Publication->LatchedTable(3, words, newVersion, &newGeneration, m_Frame.get()));
     EXPECT_EQ(newVersion, oldVersion) << "the rewrite changes payload without changing table words";
     EXPECT_GT(newGeneration, oldGeneration);
     const auto after = probe.Declare(*m_Frame, m_Publication->CacheTexture(m_Frame.get()), words, points);
@@ -493,9 +536,10 @@ TEST_F(TerrainHeightPagePublication, ReadersAroundASameSlotRewriteSeeTheirOwnPay
     { return upload.Slot != rewrittenSlot; });
     ASSERT_NE(untouched, original.end()) << "the partial-write witness needs a second populated slot";
     PageTable untouchedTable;
-    untouchedTable.Reset(1, 1, m_Pages->SlotCount());
-    untouchedTable.Entries[0] = PageStreaming::PackPageEntry(untouched->Slot, 0);
-    untouchedTable.SlotFade[untouched->Slot] = 1.0f;
+    untouchedTable.Reset(1, 1, 1u, m_Pages->SlotCount(),
+                         {kDesktopHeightPages.DenseTableWords, 1u, 1u});
+    untouchedTable.SetEntry({0, 0, 0, 0}, PageStreaming::PackPageEntry(untouched->Slot, 0));
+    untouchedTable.SetSlotFade(untouched->Slot, 1.0f);
     std::vector<uint32> untouchedWords;
     PackPageTableWords(untouchedTable, m_Pages->Geometry(), untouchedWords);
     const auto preserved = probe.Declare(*m_Frame, m_Publication->CacheTexture(m_Frame.get()), untouchedWords, points);

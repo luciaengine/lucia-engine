@@ -57,8 +57,7 @@ void SkinningUploadSystem::Update(ECS::World& world, float32 /*deltaTime*/) {
         const SkeletonData* sk = store.Get(skelId);
         if (!sk) continue;
 
-        const uint32 jointCount = sk->SkinJointCount > 0 && sk->JointNodes.size() == sk->SkinJointCount
-            ? sk->SkinJointCount : sk->BoneCount;
+        const size_t jointCount = (sk->SkinJointCount > 0) ? (size_t)sk->SkinJointCount : (size_t)sk->BoneCount;
         if (jointCount == 0 || runtime->CompactSkinMatrices.empty()) continue;
 
         // Upload into the shared palette atlas SSBO.
@@ -78,8 +77,8 @@ void SkinningUploadSystem::Update(ECS::World& world, float32 /*deltaTime*/) {
             // Retire the offset to the identity block. Leaving the previous
             // value would point this frame's skinning at a slot the atlas has
             // already handed to another runtime — a visibly wrong pose, not a
-            // dropped frame. Refusal is what records the demand that grows the
-            // ring, so this is a one-cycle bind pose, not a permanent one.
+            // dropped frame. The atlas grows to hold every palette of the frame,
+            // so a refusal means the crowd is past the pool's cap.
             runtime->SetAtlasPaletteOffset(SkinPaletteAtlas::kIdentityPaletteOffsetBones);
 
             // Always warn on upload failure — atlas is likely full.

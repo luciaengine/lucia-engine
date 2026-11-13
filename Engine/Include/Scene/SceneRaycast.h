@@ -3,6 +3,7 @@
 #include "ECS/ECS.h"
 #include "Mathematics/Ray.h"
 #include "Mathematics/Vector3.h"
+#include "Rendering/RenderLayerMask.h"
 #include "Types/Types.h"
 
 #include <limits>
@@ -34,7 +35,7 @@ struct PickOptions
     /// top of its world box. Off by default: a box is not a surface. A click that selects sets it.
     bool                          IncludeBoundsFallback = false;
     bool                          IncludeDisabled      = false;   ///< Include ECS::Disabled entities.
-    uint32                        LayerMask            = ~0u;
+    Rendering::RenderLayerMask    LayerMask            = Rendering::RenderLayerMask::All();
     /// The farthest hit, in units of the ray direction's length: meters for a unit direction.
     float32                       MaxDistance          = std::numeric_limits<float32>::infinity();
     /// Entities the ray passes through, such as a drag-drop preview's own entities.
@@ -58,12 +59,15 @@ struct PickHit
     uint32                        SubmeshIndex  = 0u;
     uint32                        TriangleIndex = ~0u;
     Mathematics::Vector3          Barycentrics{};
-    Mathematics::Vector3          WorldPosition{};
+    Mathematics::Vector3          Point{};
     Mathematics::Vector3          WorldNormal{};
     float32                       Distance      = 0.0f;
     /// A Bounds hit standing in for a mesh still preparing its picking data. A caller that would
     /// write the hit into the scene refuses it and asks again once the data is published.
     bool                          MeshBvhPending = false;
+    /// A terrain hit whose height came from a page coarser than the finest: the finest page there
+    /// was not on the CPU, so a later read can move the hit.
+    bool                          CoarseHeight   = false;
 };
 
 struct PickResult

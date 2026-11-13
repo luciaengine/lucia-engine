@@ -1,0 +1,668 @@
+#include "EditorApplication/EditorApplication.h"
+
+#include "Core/Engine.h"
+#include "Docking/LayoutPresetController.h"
+#include "Docking/WorkingLayoutPersistence.h"
+#include "Editor/Settings/SettingsStore.h"
+#include "EditorDockNodeJson.h"
+#include "EditorPanelManager.h"
+#include "Logger/Logger.h"
+#include "Panels/RenameLayoutModal.h"
+#include "Panels/SaveSceneChangesModal.h"
+#include "Platform/Shell.h"
+#include "UI/Controls/LayoutPresetToolbar.h"
+#include "UI/UIElement.h"
+#include "UI/UIManager.h"
+
+#include <fstream>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include <nlohmann/json.hpp>
+
+namespace GameEngine
+{
+
+void EditorApplication::RenameLayoutPreset(int index, const std::string& newName)
+{
+    if (index <= 0 || index >= static_cast<int>(m_LayoutPresets.size()))
+        return;
+
+    std::string trimmed = newName;
+    while (!trimmed.empty() && (trimmed.front() == ' ' || trimmed.front() == '\t'))
+        trimmed.erase(trimmed.begin());
+    while (!trimmed.empty() && (trimmed.back() == ' ' || trimmed.back() == '\t'))
+        trimmed.pop_back();
+    if (trimmed.empty())
+        return;
+    if (m_LayoutPresets[(size_t)index].name == trimmed)
+        return;
+
+    m_LayoutPresets[(size_t)index].name = trimmed;
+    SyncLayoutPresetToolbar();
+    SaveLayoutPresetsToPreferences();
+}
+
+void EditorApplication::PromptRenameLayoutPreset(int index)
+{
+    if (index <= 0 || index >= static_cast<int>(m_LayoutPresets.size()))
+        return;
+
+    if (!m_RenameLayoutModal)
+    {
+        if (m_Windows.empty() || !m_Windows[0] || !m_Windows[0]->ui)
+            return;
+        UIElement* rootEl = m_Windows[0]->ui->GetRootElement();
+        if (!rootEl)
+            return;
+        auto modal = std::make_unique<RenameLayoutModal>();
+        m_RenameLayoutModal = modal.get();
+        rootEl->AddChild(std::move(modal));
+    }
+
+    const std::string currentName = m_LayoutPresets[(size_t)index].name;
+    m_RenameLayoutModal->SetOnCommit([this, index](const std::string& newName)
+                                     { this->RenameLayoutPreset(index, newName); });
+    m_RenameLayoutModal->SetOnCancel([]() {});
+    m_RenameLayoutModal->Show("Rename Layout", currentName);
+}
+
+bool EditorApplication::ExportLayoutPresetToFile(int index, const std::filesystem::path& path) const
+{
+    if (index < 0 || index >= static_cast<int>(m_LayoutPresets.size()))
+        return false;
+    const LayoutPreset& p = m_LayoutPresets[(size_t)index];
+    if (!p.layout)
+        return false;
+
+    nlohmann::json entry = nlohmann::json::object();
+    entry["name"] = p.name;
+    entry["layout"] = DockNodeToJson(p.layout.get());
+
+    nlohmann::json root = nlohmann::json::object();
+    root["schemaVersion"] = 1;
+    root["presets"] = nlohmann::json::array({entry});
+
+    std::ofstream out(path);
+    if (!out.is_open())
+        return false;
+    out << root.dump(2);
+    return out.good();
+}
+
+bool EditorApplication::ExportAllLayoutPresetsToFile(const std::filesystem::path& path) const
+{
+    nlohmann::json presets = nlohmann::json::array();
+    for (size_t i = 1; i < m_LayoutPresets.size(); ++i)
+    {
+        const LayoutPreset& p = m_LayoutPresets[i];
+        if (p.name.empty() || !p.layout)
+            continue;
+        nlohmann::json entry = nlohmann::json::object();
+        entry["name"] = p.name;
+        entry["layout"] = DockNodeToJson(p.layout.get());
+        presets.push_back(std::move(entry));
+    }
+
+    nlohmann::json root = nlohmann::json::object();
+    root["schemaVersion"] = 1;
+    root["presets"] = std::move(presets);
+
+    std::ofstream out(path);
+    if (!out.is_open())
+        return false;
+    out << root.dump(2);
+    return out.good();
+}
+
+int EditorApplication::ImportLayoutPresetsFromFile(const std::filesystem::path& path)
+{
+    std::ifstream in(path);
+    if (!in.is_open())
+        return 0;
+
+    nlohmann::json root;
+    try
+    {
+        in >> root;
+    }
+    catch (...)
+    {
+        return 0;
+    }
+
+    const auto itPresets = root.find("presets");
+    if (itPresets == root.end() || !itPresets->is_array())
+        return 0;
+
+    int imported = 0;
+    for (const auto& p : *itPresets)
+    {
+        if (!p.is_object())
+            continue;
+        const auto itName = p.find("name");
+        const auto itLayout = p.find("layout");
+        if (itName == p.end() || !itName->is_string())
+            continue;
+        if (itLayout == p.end() || !itLayout->is_object())
+            continue;
+
+        std::unique_ptr<DockNode> layout = DockNodeFromJson(*itLayout);
+        if (!layout)
+            continue;
+
+        std::string name = itName->get<std::string>();
+        std::string unique = name;
+        int suffix = 2;
+        auto nameExists = [this](const std::string& n)
+        {
+            for (const auto& existing : m_LayoutPresets)
+                if (existing.name == n)
+                    return true;
+            return false;
+        };
+        while (nameExists(unique))
+        {
+            unique = name + " (" + std::to_string(suffix) + ")";
+            ++suffix;
+        }
+
+        LayoutPreset lp;
+        lp.name = std::move(unique);
+        lp.layout = std::move(layout);
+        m_LayoutPresets.emplace_back(std::move(lp));
+        ++imported;
+    }
+
+    if (imported > 0)
+    {
+        SyncLayoutPresetToolbar();
+        SaveLayoutPresetsToPreferences();
+    }
+    return imported;
+}
+
+void EditorApplication::ExportLayoutPresetInteractive(int index)
+{
+    if (index < 0 || index >= static_cast<int>(m_LayoutPresets.size()))
+        return;
+    const std::string stem = m_LayoutPresets[(size_t)index].name.empty()
+                                 ? std::string("Layout")
+                                 : m_LayoutPresets[(size_t)index].name;
+    const std::filesystem::path initial = stem + ".layout.json";
+    const std::filesystem::path picked =
+        Platform::SaveFile(initial, "Layout Preset", "*.layout.json");
+    if (!picked.empty())
+        ExportLayoutPresetToFile(index, picked);
+}
+
+void EditorApplication::ExportAllLayoutPresetsInteractive()
+{
+    const std::filesystem::path initial = "Layouts.layouts.json";
+    const std::filesystem::path picked =
+        Platform::SaveFile(initial, "Layout Presets", "*.layouts.json");
+    if (!picked.empty())
+        ExportAllLayoutPresetsToFile(picked);
+}
+
+void EditorApplication::ImportLayoutPresetsInteractive()
+{
+    const std::filesystem::path picked =
+        Platform::SelectFile({}, "Layout Presets", "*.layout.json;*.layouts.json;*.json");
+    if (!picked.empty())
+        ImportLayoutPresetsFromFile(picked);
+}
+
+void EditorApplication::InitializeLayoutPresets()
+{
+    m_LayoutPresets.clear();
+
+    // Prefer the editor-authored default docking tree (parsed from layout.uxml).
+    if (m_DefaultDockLayout)
+    {
+        LayoutPreset preset;
+        preset.name = "Default";
+        preset.layout = CloneDockNode(m_DefaultDockLayout.get());
+        m_LayoutPresets.emplace_back(std::move(preset));
+        m_ActiveLayoutPresetIndex = 0;
+        return;
+    }
+
+    // Fallback: capture current docking root if available.
+    if (m_Docking && m_Docking->GetRoot())
+    {
+        LayoutPreset preset;
+        preset.name = "Default";
+        preset.layout = CloneDockNode(m_Docking->GetRoot());
+        m_LayoutPresets.emplace_back(std::move(preset));
+        m_ActiveLayoutPresetIndex = 0;
+        return;
+    }
+
+    m_ActiveLayoutPresetIndex = -1;
+}
+
+void EditorApplication::LoadLayoutPresetsFromPreferences()
+{
+    // Load persisted presets from the project folder so they travel with the
+    // project (checked into VCS alongside other project settings). Default
+    // preset (index 0) always comes from layout.uxml / captured default.
+    // Reopening the last project at startup switches to it before the dock and
+    // the default preset exist; a load then would put the first saved preset at
+    // index 0, which the save skips. The load after the dock is built restores them.
+    if (!m_Docking || m_LayoutPresets.empty())
+        return;
+
+    const auto& workspaceRoot = EngineCore::GetInstance().GetWorkspaceRoot();
+    if (workspaceRoot.empty())
+        return;
+    GameEngine::Editor::SettingsStore prefs = GameEngine::Editor::OpenProjectSettings(workspaceRoot);
+    std::string err;
+    (void)prefs.Load(&err); // missing file is OK
+
+    const auto& root = prefs.Json();
+    const auto it = root.find("ui.layoutPresets");
+    if (it == root.end() || !it->is_object())
+        return;
+
+    const nlohmann::json& obj = *it;
+
+    // Append user presets (skip index 0).
+    const auto itPresets = obj.find("presets");
+    if (itPresets != obj.end() && itPresets->is_array())
+    {
+        for (const auto& p : *itPresets)
+        {
+            if (!p.is_object())
+                continue;
+
+            const auto itName = p.find("name");
+            const auto itLayout = p.find("layout");
+            if (itName == p.end() || !itName->is_string())
+                continue;
+            if (itLayout == p.end() || !itLayout->is_object())
+                continue;
+
+            std::unique_ptr<DockNode> layout = DockNodeFromJson(*itLayout);
+            if (!layout)
+                continue;
+
+            LayoutPreset lp;
+            lp.name = itName->get<std::string>();
+            lp.layout = std::move(layout);
+            m_LayoutPresets.emplace_back(std::move(lp));
+        }
+    }
+
+    // Restore active preset selection.
+    int desired = -1;
+    std::string activeName;
+    const auto itActiveName = obj.find("activeName");
+    if (itActiveName != obj.end() && itActiveName->is_string())
+        activeName = itActiveName->get<std::string>();
+
+    if (!activeName.empty())
+    {
+        for (int i = 0; i < static_cast<int>(m_LayoutPresets.size()); ++i)
+        {
+            if (m_LayoutPresets[(size_t)i].name == activeName)
+            {
+                desired = i;
+                break;
+            }
+        }
+    }
+    if (desired < 0)
+    {
+        const auto itActiveIndex = obj.find("activeIndex");
+        if (itActiveIndex != obj.end() && itActiveIndex->is_number_integer())
+            desired = itActiveIndex->get<int>();
+    }
+
+    if (desired < -1)
+        desired = -1;
+    if (desired >= static_cast<int>(m_LayoutPresets.size()))
+        desired = static_cast<int>(m_LayoutPresets.size()) - 1;
+
+    // Apply the stored layout without touching UI (dockspace bind/rebuild happens later in Initialize()).
+    if (desired >= 0 && desired < static_cast<int>(m_LayoutPresets.size()))
+    {
+        const auto& preset = m_LayoutPresets[(size_t)desired];
+        UIManager* mainUi =
+            (!m_Windows.empty() && m_Windows[0]) ? m_Windows[0]->ui.get() : nullptr;
+        if (!Editor::LayoutPresetController::Apply(
+                *m_Docking, mainUi, preset.layout.get(), false))
+        {
+            OnLayoutPresetRestoreFailed();
+            return;
+        }
+
+        m_ActiveLayoutPresetIndex = desired;
+        // Named from the active index, so the line reports the preset the toolbar shows.
+        Logger::Log::Info("Editor: restored layout preset '{}'",
+                          m_LayoutPresets[static_cast<size_t>(m_ActiveLayoutPresetIndex)].name);
+        return;
+    }
+
+    // Preserve "no highlight" state if requested.
+    if (desired == -1)
+    {
+        m_ActiveLayoutPresetIndex = -1;
+    }
+}
+
+void EditorApplication::OnLayoutPresetRestoreFailed()
+{
+    m_ActiveLayoutPresetIndex = -1;
+    SaveLayoutPresetsToPreferences();
+    UIManager* mainUi =
+        (!m_Windows.empty() && m_Windows[0]) ? m_Windows[0]->ui.get() : nullptr;
+    Editor::LayoutPresetController::SetActiveToolbarIndex(
+        mainUi, m_ActiveLayoutPresetIndex);
+}
+
+void EditorApplication::SaveLayoutPresetsToPreferences() const
+{
+    // Persist into the project folder so presets are shared with the project
+    // (e.g. committed to VCS), not per-user.
+    const auto& workspaceRoot = EngineCore::GetInstance().GetWorkspaceRoot();
+    if (workspaceRoot.empty())
+        return;
+    GameEngine::Editor::SettingsStore prefs = GameEngine::Editor::OpenProjectSettings(workspaceRoot);
+    std::string err;
+    (void)prefs.Load(&err); // keep existing keys
+
+    nlohmann::json obj = nlohmann::json::object();
+    obj["schemaVersion"] = 1;
+
+    std::string activeName;
+    if (m_ActiveLayoutPresetIndex >= 0 && m_ActiveLayoutPresetIndex < static_cast<int>(m_LayoutPresets.size()))
+    {
+        activeName = m_LayoutPresets[(size_t)m_ActiveLayoutPresetIndex].name;
+    }
+    obj["activeIndex"] = m_ActiveLayoutPresetIndex;
+    if (!activeName.empty())
+        obj["activeName"] = activeName;
+
+    nlohmann::json presets = nlohmann::json::array();
+    for (size_t i = 1; i < m_LayoutPresets.size(); ++i)
+    {
+        const LayoutPreset& p = m_LayoutPresets[i];
+        if (p.name.empty() || !p.layout)
+            continue;
+        nlohmann::json entry = nlohmann::json::object();
+        entry["name"] = p.name;
+        entry["layout"] = DockNodeToJson(p.layout.get());
+        presets.push_back(std::move(entry));
+    }
+    obj["presets"] = std::move(presets);
+
+    prefs.SetJson("ui.layoutPresets", obj);
+    (void)prefs.Save(&err);
+}
+
+
+void EditorApplication::RestoreWorkingLayout(bool rebuildDockspace)
+{
+    // UI replay keeps the fixed layout its scripts target.
+    if (!m_Docking || m_UiReplayScenarioPath.has_value())
+        return;
+    std::unique_ptr<DockNode> working = Editor::WorkingLayoutPersistence::Load(
+        EngineCore::GetInstance().GetWorkspaceRoot(), *m_Docking);
+    if (!working)
+        return;
+
+    // Load already reduced the tree to the panels this dock can show, plus the
+    // placeholders package panels bind to when they register.
+    if (rebuildDockspace)
+        DismissTornOffPanelsForLayoutRestore();
+    m_Docking->SetRoot(std::move(working));
+    if (rebuildDockspace && !m_Windows.empty())
+        EditorPanelManager::RebuildDockspace(m_Windows[0].get());
+}
+
+void EditorApplication::SaveWorkingLayout()
+{
+    if (!m_Docking || m_UiReplayScenarioPath.has_value())
+        return;
+
+    // Play fullscreen swaps in a Game-View-only tree; the working layout is
+    // the one it put aside.
+    const DockNode* layout = m_PlayPrevDockLayout.get();
+    if (!layout)
+    {
+        Editor::LayoutPresetController::SyncSplitRatios(
+            (!m_Windows.empty() && m_Windows[0]) ? m_Windows[0]->ui.get() : nullptr);
+        layout = m_Docking->GetRoot();
+    }
+    const std::vector<std::string> separateWindowPanelIds = SeparateWindowPanelIds();
+    Editor::WorkingLayoutPersistence::Save(
+        EngineCore::GetInstance().GetWorkspaceRoot(), layout, *m_Docking, separateWindowPanelIds);
+}
+
+void EditorApplication::SyncLayoutPresetToolbar()
+{
+    if (m_Windows.empty())
+        return;
+    auto& main = m_Windows[0];
+    if (!main || !main->ui)
+        return;
+
+    UIElement* root = main->ui->GetRootElement();
+    if (!root)
+        return;
+
+    auto* toolbar = dynamic_cast<LayoutPresetToolbar*>(root->FindById("LayoutButtonContainer"_sid));
+    if (!toolbar)
+        return;
+
+    // Bind callbacks (idempotent; toolbar rebuilds itself when callbacks change).
+    toolbar->SetOnRecallPreset([this](int index)
+                               { this->RequestSwitchLayoutPreset(index); });
+    toolbar->SetOnRemovePreset([this](int index)
+                               { this->RemoveLayoutPreset(index); });
+    toolbar->SetOnSavePreset([this]()
+                             {
+                                 const int n = static_cast<int>(m_LayoutPresets.size());
+                                 const std::string name = "Layout " + std::to_string(n);
+                                 this->SaveCurrentLayoutAsPreset(name); });
+    toolbar->SetOnOverwritePreset([this](int index)
+                                  { this->OverwriteLayoutPreset(index); });
+    toolbar->SetOnRenamePreset([this](int index)
+                               { this->PromptRenameLayoutPreset(index); });
+    toolbar->SetOnExportPreset([this](int index)
+                               { this->ExportLayoutPresetInteractive(index); });
+    toolbar->SetOnExportAllPresets([this]()
+                                   { this->ExportAllLayoutPresetsInteractive(); });
+    toolbar->SetOnImportPresets([this]()
+                                { this->ImportLayoutPresetsInteractive(); });
+
+    // Push current preset names + active index.
+    std::vector<std::string> names;
+    names.reserve(m_LayoutPresets.size());
+    for (const auto& p : m_LayoutPresets)
+    {
+        names.push_back(p.name);
+    }
+    toolbar->SetPresets(std::move(names));
+    toolbar->SetActiveIndex(m_ActiveLayoutPresetIndex);
+}
+
+void EditorApplication::RecallLayoutPreset(int index)
+{
+    if (index < 0 || index >= static_cast<int>(m_LayoutPresets.size()))
+        return;
+    if (!m_Docking)
+        return;
+
+    const LayoutPreset& preset = m_LayoutPresets[(size_t)index];
+    if (!preset.layout)
+        return;
+
+    UIManager* mainUi =
+        (!m_Windows.empty() && m_Windows[0]) ? m_Windows[0]->ui.get() : nullptr;
+    DismissTornOffPanelsForLayoutRestore();
+    if (!Editor::LayoutPresetController::Apply(
+            *m_Docking, mainUi, preset.layout.get(), true))
+    {
+        OnLayoutPresetRestoreFailed();
+        return;
+    }
+
+    m_ActiveLayoutPresetIndex = index;
+    SaveLayoutPresetsToPreferences();
+
+    Editor::LayoutPresetController::SetActiveToolbarIndex(
+        mainUi, m_ActiveLayoutPresetIndex);
+}
+
+bool EditorApplication::IsActiveLayoutDirty() const
+{
+    if (!m_Docking || !m_Docking->GetRoot())
+        return false;
+    if (m_ActiveLayoutPresetIndex < 0 ||
+        m_ActiveLayoutPresetIndex >= static_cast<int>(m_LayoutPresets.size()))
+        return false;
+
+    const LayoutPreset& active = m_LayoutPresets[(size_t)m_ActiveLayoutPresetIndex];
+    if (!active.layout)
+        return false;
+
+    UIManager* mainUi =
+        (!m_Windows.empty() && m_Windows[0]) ? m_Windows[0]->ui.get() : nullptr;
+    return Editor::LayoutPresetController::IsCurrentLayoutDirty(
+        *m_Docking, mainUi, active.layout.get());
+}
+
+void EditorApplication::RequestSwitchLayoutPreset(int index)
+{
+    if (index < 0 || index >= static_cast<int>(m_LayoutPresets.size()))
+        return;
+
+    // Allow re-clicking the active preset to reload it when the layout has been modified.
+    if (index == m_ActiveLayoutPresetIndex && !IsActiveLayoutDirty())
+        return;
+
+    if (!IsActiveLayoutDirty())
+    {
+        RecallLayoutPreset(index);
+        return;
+    }
+
+    // Lazy-create the modal on first use; reuse thereafter.
+    if (!m_LayoutChangesModal)
+    {
+        if (m_Windows.empty() || !m_Windows[0] || !m_Windows[0]->ui)
+        {
+            RecallLayoutPreset(index);
+            return;
+        }
+        UIElement* rootEl = m_Windows[0]->ui->GetRootElement();
+        if (!rootEl)
+        {
+            RecallLayoutPreset(index);
+            return;
+        }
+        auto modal = std::make_unique<SaveSceneChangesModal>("layout");
+        m_LayoutChangesModal = modal.get();
+        rootEl->AddChild(std::move(modal));
+    }
+
+    const std::string activeName =
+        (m_ActiveLayoutPresetIndex >= 0 && m_ActiveLayoutPresetIndex < (int)m_LayoutPresets.size())
+            ? m_LayoutPresets[(size_t)m_ActiveLayoutPresetIndex].name
+            : std::string("current layout");
+
+    m_LayoutChangesModal->SetOnSave([this, index]()
+                                    {
+                                        const int n = static_cast<int>(m_LayoutPresets.size());
+                                        const std::string name = "Layout " + std::to_string(n);
+                                        SaveCurrentLayoutAsPreset(name);
+                                        RecallLayoutPreset(index);
+                                    });
+    m_LayoutChangesModal->SetOnDontSave([this, index]()
+                                        { RecallLayoutPreset(index); });
+    m_LayoutChangesModal->SetOnCancel([]() {});
+
+    m_LayoutChangesModal->Show(
+        "Unsaved layout changes",
+        "\"" + activeName + "\" has unsaved changes. Save them as a new layout before switching?");
+}
+
+void EditorApplication::SaveCurrentLayoutAsPreset(const std::string& name)
+{
+    if (!m_Docking || !m_Docking->GetRoot())
+        return;
+
+    Editor::LayoutPresetController::SyncSplitRatios(
+        (!m_Windows.empty() && m_Windows[0]) ? m_Windows[0]->ui.get() : nullptr);
+
+    LayoutPreset preset;
+    preset.name = name.empty() ? "Layout" : name;
+    preset.layout = CloneDockNode(m_Docking->GetRoot());
+    if (!preset.layout)
+        return;
+
+    m_LayoutPresets.emplace_back(std::move(preset));
+    m_ActiveLayoutPresetIndex = static_cast<int>(m_LayoutPresets.size()) - 1;
+
+    SyncLayoutPresetToolbar();
+    SaveLayoutPresetsToPreferences();
+}
+
+void EditorApplication::RemoveLayoutPreset(int index)
+{
+    // Never remove the default preset.
+    if (index <= 0 || index >= static_cast<int>(m_LayoutPresets.size()))
+        return;
+
+    const bool removedWasActive = (m_ActiveLayoutPresetIndex == index);
+
+    m_LayoutPresets.erase(m_LayoutPresets.begin() + index);
+
+    if (removedWasActive)
+    {
+        // Keep current layout; just clear the "active preset" highlight.
+        m_ActiveLayoutPresetIndex = -1;
+    }
+    else if (m_ActiveLayoutPresetIndex > index)
+    {
+        m_ActiveLayoutPresetIndex--;
+    }
+
+    if (m_ActiveLayoutPresetIndex >= static_cast<int>(m_LayoutPresets.size()))
+    {
+        m_ActiveLayoutPresetIndex = static_cast<int>(m_LayoutPresets.size()) - 1;
+    }
+
+    SyncLayoutPresetToolbar();
+    SaveLayoutPresetsToPreferences();
+}
+
+void EditorApplication::OverwriteLayoutPreset(int index)
+{
+    // Never overwrite the default preset.
+    if (index <= 0 || index >= static_cast<int>(m_LayoutPresets.size()))
+        return;
+
+    if (!m_Docking || !m_Docking->GetRoot())
+        return;
+
+    Editor::LayoutPresetController::SyncSplitRatios(
+        (!m_Windows.empty() && m_Windows[0]) ? m_Windows[0]->ui.get() : nullptr);
+
+    auto cloned = CloneDockNode(m_Docking->GetRoot());
+    if (!cloned)
+        return;
+
+    m_LayoutPresets[index].layout = std::move(cloned);
+    m_ActiveLayoutPresetIndex = index;
+
+    SyncLayoutPresetToolbar();
+    SaveLayoutPresetsToPreferences();
+}
+
+
+} // namespace GameEngine

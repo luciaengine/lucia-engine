@@ -1,13 +1,11 @@
 #pragma once
 
 #include "Ocean/OceanCascadeArray.h"
-#include "Ocean/OceanPreparedDispatch.h"
 #include "Ocean/OceanTypes.h"
 
 #include "Rendering/Core/Device.h" // DescriptorSetLayoutDesc
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/PipelineIdentifiers.h"
-#include "Rendering/Core/RenderGraph/RGFrameStamp.h"
+#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
 
 #include <cstdint>
 
@@ -29,7 +27,8 @@ namespace GameEngine::Ocean
 //
 // Ping-pong over two persistent OceanCascadeArrays: read previous, write next —
 // the wave equation needs the prior state. One instance lives on
-// OceanRenderFeature. The graph orders the prepared dispatch and its readers. A failed init leaves the
+// OceanRenderFeature. RecordDispatch() records the compute pass (with manual
+// barriers) onto a command list, mirroring OceanFoamSim. A failed init leaves the
 // surface on the spectrum waves only (DynamicWavesAvailable stays 0).
 //
 // The cascade shares the foam cascade's resolution / LOD count / base scale; it
@@ -60,39 +59,35 @@ public:
         m_Resolution = m_State[0].GetResolution();
     }
 
-    // No-frame accessors expose recorded history; frame accessors expose its planned output.
+    // The dynamic-wave cascade the surface samples this frame (the just-written
+    // target) + its sampler and snapped layout.
     ::GameEngine::Rendering::TextureHandle GetTexture() const;
-    ::GameEngine::Rendering::TextureHandle GetTexture(const Rendering::RenderGraph::RGFrame& frame) const;
     ::GameEngine::Rendering::SamplerHandle GetSampler() const { return m_Sampler; }
     const OceanCascadeLayoutGPU& GetLayout() const;
-    const OceanCascadeLayoutGPU& GetLayout(const Rendering::RenderGraph::RGFrame& frame) const;
 
-    // Frame consumers import the planned final output; each step imports its own pair.
+    // RG imports of the ping-pong pair at their resting state (call after
+    // BeginFrame flipped the index). Write = this frame's target (the texture
+    // GetTexture returns), Prev = last frame's history the dispatch samples.
     ::GameEngine::Rendering::RenderGraph::RGTexture ImportWriteRG(
+        ::GameEngine::Rendering::RenderGraph::RGFrame& frame) const;
+    ::GameEngine::Rendering::RenderGraph::RGTexture ImportPrevRG(
         ::GameEngine::Rendering::RenderGraph::RGFrame& frame) const;
     ::GameEngine::Rendering::RenderGraph::RGTexture ImportWriteRG(
         ::GameEngine::Rendering::RenderGraph::RGFrame& frame, uint32 writeIndex) const;
     ::GameEngine::Rendering::RenderGraph::RGTexture ImportPrevRG(
         ::GameEngine::Rendering::RenderGraph::RGFrame& frame, uint32 writeIndex) const;
 
-    /// Render-thread declaration; the frame owns the plan until it resets or is destroyed.
-    /// Call ForgetFrame before destroying the stream; planning does not commit history.
-    const OceanCascadeFramePlan& PlanSubsteps(Rendering::RenderGraph::RGFrame& frame,
-                                             float cameraX, float cameraZ);
+    // Begin a new sim frame (call once per frame at schedule time, before the
+    // forward contributor binds the texture): advance the ping-pong index so the
+    // frame's write target is fixed, then snap only that target to the camera. The
+    // read target keeps the layout it was written with so history can be sampled by
+    // world position. RecordDispatch (which runs at graph-execution time) must not
+    // mutate the index — only this does.
+    void BeginFrame(float cameraX, float cameraZ);
+    uint32 BeginSubstep(float cameraX, float cameraZ);
 
-    /// Render-thread retirement releases borrowed plan pointers and preserves recorded history.
-    void ForgetFrame(const Rendering::RenderGraph::RGFrame& frame)
-    {
-        if (m_PlannedFrame.Frame == &frame)
-        {
-            m_PlannedFrame = {};
-            m_Plan = nullptr;
-            m_NextSubstep = 0;
-        }
-    }
-
-    /// Retain unconsumed work until quiescence expires it, then append this frame's inputs.
-    /// The bounded impulse list retains the oldest pending inputs first.
+    // Per-frame impulse list + the sim scalars + dt. Replaces the prior frame's
+    // impulse set (impulses are additive each frame they are present).
     void SetFrameInputs(const OceanWaveImpulseGPU* impulses, uint32 count, float waveSpeed,
                         float damping, float deltaTime);
     void ConfigureSimulation(float32 frequency, uint32 maximumSubsteps,
@@ -117,24 +112,28 @@ public:
     // TimeScale=0 and fixed-time capture must preserve a frozen disturbance.
     bool IsQuiescent() const { return m_SimulatedSecondsSinceImpulse >= kQuiescentSeconds; }
 
-    // Upload one immutable step's parameters before preparing its descriptor bindings.
-    void FillParams(OceanDynWavesParamsGPU& out, const OceanCascadeStep& step,
+    // Finalize this frame's GPU params (cascade layouts follow the ping-pong
+    // index BeginFrame fixed). Called at DECLARE time; the caller writes the
+    // result into a render-graph upload-ring allocation and hands the
+    // {buffer, offset} to RecordDispatch.
+    void FillParams(OceanDynWavesParamsGPU& out);
+    void FillParams(OceanDynWavesParamsGPU& out, uint32 writeIndex,
                     uint32 substepIndex) const;
 
-    /// Declare this ID with RGPassBuilder::UsePipeline before preparation.
-    ::GameEngine::Rendering::ComputePipelineId GetPipelineId() const { return m_Pipe; }
-
-    /// Render-thread preparation borrows this frame's plan and upload; it does not consume steps.
-    OceanPreparedSimulationDispatch PrepareDispatch(Rendering::IDevice* device,
-        Rendering::BufferHandle paramsBuffer, uint64 paramsOffset,
-        const OceanCascadeFramePlan& plan, uint32 substepIndex) const;
-    /// Record on the render thread in substep order; stale or consumed plans do not dispatch.
-    void RecordDispatch(Rendering::CommandList* commands,
-                        const OceanPreparedSimulationDispatch& dispatch);
+    // Records the wave-equation + injection dispatch with barriers, leaving the
+    // written cascade sampleable by the world pass. Advances nothing (BeginFrame
+    // already flipped the ping-pong index). Params come from the frame's upload
+    // ring (FillParams above) — no per-class buffer ring.
+    void RecordDispatch(::GameEngine::Rendering::IDevice* device,
+                        ::GameEngine::Rendering::CommandList* cl,
+                        ::GameEngine::Rendering::BufferHandle paramsBuffer,
+                        uint64 paramsOffset);
+    void RecordDispatch(::GameEngine::Rendering::IDevice* device,
+                        ::GameEngine::Rendering::CommandList* cl,
+                        ::GameEngine::Rendering::BufferHandle paramsBuffer,
+                        uint64 paramsOffset, uint32 writeIndex);
 
 private:
-    bool IsCurrentPlan(const OceanPreparedSimulationDispatch& dispatch) const;
-
     // Match the foam cascade so the layouts coincide (see OceanFoamSim).
     static constexpr uint32 kDynResolution = 256;
     static constexpr uint32 kDynLodCount = 4;
@@ -148,12 +147,10 @@ private:
     uint32 m_Resolution = kDynResolution;
     uint32 m_LodCount = kDynLodCount;
 
-    // Only recorded steps change the index and persistent cascade layouts.
+    // Ping-pong cascades. m_WriteIndex is written this frame; the other is read
+    // with its previous snapped layout.
     OceanCascadeArray m_State[2];
     uint32 m_WriteIndex = 0;
-    Rendering::RenderGraph::RGFrameStamp m_PlannedFrame;
-    const OceanCascadeFramePlan* m_Plan = nullptr;
-    uint32 m_NextSubstep = 0;
 
     // Simulated seconds since the last impulse (advanced by SetFrameInputs' dt,
     // reset by a non-empty list). Starts quiescent: a scene with no interaction

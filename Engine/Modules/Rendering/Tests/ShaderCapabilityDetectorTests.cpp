@@ -2,7 +2,7 @@
 
 #include <gtest/gtest.h>
 
-#include "Rendering/Materials/ShaderCapabilityDetector.h"
+#include "Rendering/Materials/Shader/ShaderCapabilityDetector.h"
 
 using namespace GameEngine::Rendering;
 

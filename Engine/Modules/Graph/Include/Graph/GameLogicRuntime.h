@@ -72,8 +72,8 @@ public:
     virtual void SetBusVolume(int bus, float volume) { (void)bus; (void)volume; }
 
     virtual GameLogicEntityId CreateEntity(std::string_view name) { (void)name; return 0; }
-    /// Hosts override this to spawn a resident prefab through Scene::SpawnPrefab.
-    /// Position is in world units; rotation is in Euler degrees. Returns the root, or 0 on failure.
+    /// Spawns the prefab with the GUID text `prefabGuid` with its root at `position`, turned by `rotation` (Euler
+    /// degrees), through Scene::SpawnPrefab. Returns the root, or 0 when the prefab is not loaded.
     virtual GameLogicEntityId SpawnPrefab(std::string_view prefabGuid, GameLogicVec3 position, GameLogicVec3 rotation)
     {
         (void)prefabGuid;

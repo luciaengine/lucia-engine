@@ -10,7 +10,7 @@
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/Vector3.h"
 #include "Mathematics/Vector4.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/PerViewReadbackRings.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h" // RGFrame, RGFrameStamp
@@ -23,6 +23,11 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+namespace GameEngine::Mathematics
+{
+struct WorldPosition;
+} // namespace GameEngine::Mathematics
 
 // Explicit imports from the Rendering module (CodingStyle: no namespace-scope using-directives in headers).
 namespace GameEngine::Engine::Renderer
@@ -170,8 +175,7 @@ struct CascadeFrameData
     // caster and its receiver agree to fp32-of-small-magnitude instead of the
     // big·big cancellation that speckles self-shadows at planetary distance, and
     // the clip-space texel snap can resolve the grid at any camera magnitude.
-    // When the render origin is inactive (RenderOriginSector all zero) this is a
-    // byte-for-byte copy of LightVP (the dark-ship gate).
+    // In sector (0,0,0) this is a bit copy of LightVP.
     Mathematics::Matrix4x4 LightVPRel[kMaxShadowCascades];
     float SplitDistances[kMaxShadowCascades]{};           // view-space split planes
     // PCSS metrics per cascade: orthographic half-extent (world units) and
@@ -191,10 +195,8 @@ struct CascadeFrameData
     float DepthBias = 0.001f;
     float NormalBias = 0.02f;
     float MaxShadowDistance = 100.0f;
-    // Render origin sector the LightVPRel matrices (and the depth-pass shadow
-    // camera) were rebased against — the camera's sector for this frame. Zero =>
-    // origin inactive => LightVPRel == LightVP and the whole path is byte-identical
-    // to the pre-feature build. Mirrors CameraData::renderOriginSector.
+    // The camera's render origin sector for this frame: LightVPRel and the depth-pass
+    // shadow camera are relative to it. Mirrors CameraData::renderOriginSector.
     int32 RenderOriginSector[3]{};
 
     // ── Per-cascade cull-content inputs (fit-freeze lane) ──
@@ -218,7 +220,7 @@ struct CascadeFrameData
     bool CasterFootprintApplies[kMaxShadowCascades]{};
     // GPU LOD selection inputs for this cascade's bucketer slice (xyz + the
     // 2D-ortho flag in w), plus |proj[1][1]| — MakeViewLODParams' inputs.
-    float LodCameraPos[kMaxShadowCascades][4]{};
+    Mathematics::Vector4 LodCameraPos[kMaxShadowCascades]{};
     float LodProjScaleY[kMaxShadowCascades]{};
 };
 
@@ -341,20 +343,31 @@ struct alignas(16) ShadowDataGPU
     // basis does not vary by cascade, and a per-cascade home for it would read
     // as a bug to anyone who found it later.
     float shadowFilterParams[4];
-    // Sun-space terrain clearance grid. XZ is view-relative; heights are terrain-relative.
-    float terrainShadowGrid0[4]; // xy: grid center XZ; zw: terrain corner XZ, view-relative
-    float terrainShadowGrid1[4]; // xy: terrain extent XZ; zw: horizontal sun direction XZ
-    float terrainShadowGrid2[4]; // x: elevation tangent; y: texel meters; zw: first u/v sample
-    float terrainShadowGrid3[4]; // xy: grid dimensions; z: base height; w: meters per normalized height
-    uint32_t terrainShadowSource[4]; // xy: map/height indices; z: present; w: map side in texels
-    // Optional source-camera depth plane in receiver-relative world space.
-    // Zero xyz selects the ordinary receiver camera depth.
+    // The terrain's sun-space clearance map (TerrainShadowMap, terrain_shadow.glsl), zero when
+    // none is published. Positions relative to the view's render origin, heights relative to the
+    // terrain's base:
+    //   terrainShadowGrid0: x, y = grid center X, Z; z, w = terrain corner X, Z
+    //   terrainShadowGrid1: x, y = terrain extent X, Z; z, w = sun horizontal direction X, Z
+    //   terrainShadowGrid2: x = tan(elevation); y = texel (m); z, w = u of sample 0, v of line 0
+    //   terrainShadowGrid3: x = samples per line; y = lines; z = the terrain's base height;
+    //                       w = meters per normalized height
+    //   terrainShadowSource: x = map bindless index; y = height texture bindless index;
+    //                        z = 1 when present; w = map side (texels)
+    //   terrainShadowField: x = the lit field's bindless index (0: none); y = its levels; zw = 0
+    //   terrainShadowHeightSpan: x, y = the extent the height texture spans X, Z; zw = 0
+    // The terrain extent (grid1.xy) is the authored size; the height span can be larger (whole tiles).
+    Mathematics::Vector4 terrainShadowGrid0;
+    Mathematics::Vector4 terrainShadowGrid1;
+    Mathematics::Vector4 terrainShadowGrid2;
+    Mathematics::Vector4 terrainShadowGrid3;
+    uint32_t terrainShadowSource[4];
     float ShadowReferenceDepth[4];
-    uint32_t terrainShadowField[4]; // x: lit-field index (0 absent); y: mip levels; zw: zero
+    uint32_t terrainShadowField[4];
+    Mathematics::Vector4 terrainShadowHeightSpan;
 };
-static_assert(sizeof(ShadowDataGPU) == 576, "ShadowDataGPU must be 576 bytes");
+static_assert(sizeof(ShadowDataGPU) == 592, "ShadowDataGPU must be 592 bytes");
 
-/// Rebase shared directional cascades, terrain coordinates and source-view depth.
+/// Rebase directional cascades, terrain coordinates and source-view depth.
 void RebaseDirectionalShadowData(ShadowDataGPU& data, const Rendering::CameraData& source,
                                 const Rendering::CameraData& receiver);
 
@@ -453,6 +466,13 @@ class ShadowMapRenderFeature : public IRenderFeature
     // express light space in.
     static Mathematics::Matrix4x4 CascadeLightRotation(const Mathematics::Vector3& lightDirection);
 
+    // View depth (world units) before cascade `cascadeIndex`'s far split over
+    // which a receiver also samples the next cascade and fades into it, as
+    // GE_CascadeBlendBand (shadow_cascade_blend.glsl) selects it: a fixed
+    // fraction of the cascade's depth range, cascade 0's measured from the
+    // camera. 0 for the last cascade, which blends into nothing.
+    static float CascadeBlendBand(const CascadeFrameData& frame, uint32_t cascadeIndex);
+
     // Populate the complete GPU-side ShadowData UBO for a view. Writes matrices,
     // splits, per-cascade PCSS metrics (worldPerTexel, depthSpan), and all
     // runtime scalar fields (debug mode, PCF quality, PCSS params). Promotes
@@ -507,8 +527,7 @@ class ShadowMapRenderFeature : public IRenderFeature
     // !Valid fit falls back to the current frame's LightVPRel + metrics
     // (first frames, post-invalidate, standalone calls — those slots render
     // this frame anyway). When the snapshot equals the current frame's fit
-    // the selection reproduces frame.LightVPRel bit-for-bit — the cap-0
-    // dark-ship guarantee.
+    // the selection reproduces frame.LightVPRel bit-for-bit.
     static void SelectCascadeSamplingFit(const CascadeContentFit* fit,
                                          const CascadeFrameData& frame, uint32_t cascadeIndex,
                                          float resolution, float outShadowVP[16],
@@ -586,9 +605,10 @@ class ShadowMapRenderFeature : public IRenderFeature
     // frame by RenderServices::ImportShadowMapArrayRG); the feature only
     // *adopts* the pooled physical so its consumers (PCSS bindless views,
     // MSM moments sampling, the world pass binding table) keep working against it.
-    // A physical change (pool realloc on config change) invalidates the
-    // PCSS bindless registrations + cached frame data — but never destroys the
-    // texture; the pool defer-destroys the old physical itself. RenderServices
+    // A physical change (a pool realloc, or a new array after the pool frees an idle
+    // one) invalidates the PCSS bindless registrations, the retained-layer records and
+    // the content fits. It keeps the frame's cascade fit and never destroys the
+    // texture; the pool releases the old physical itself. RenderServices
     // is required because the old physical's bindless slots (and the per-layer
     // views written into them) are released through TextureService.
     //
@@ -967,6 +987,19 @@ class ShadowMapRenderFeature : public IRenderFeature
     // The map published for `viewId` in `frameStamp`, or null when none was.
     const TerrainShadowMap* FindTerrainShadowMap(ViewId viewId, uint64_t frameStamp) const;
 
+    // The clearance map's grid as both receiver paths read it (ShadowDataGPU's terrainShadowGrid*,
+    // the ray-traced mask's TerrainGrid*), positions relative to `origin`.
+    struct TerrainShadowGrid
+    {
+        Mathematics::Vector4 Grid0;
+        Mathematics::Vector4 Grid1;
+        Mathematics::Vector4 Grid2;
+        Mathematics::Vector4 Grid3;
+        Mathematics::Vector4 HeightSpan;
+    };
+    static TerrainShadowGrid TerrainShadowGridOf(const TerrainShadowMap& map,
+                                                 const Mathematics::WorldPosition& origin);
+
     // Tracks whether the "no shadow-casting light" warning has been emitted,
     // so it only fires once until a shadow light reappears.
     bool HasWarnedNoLight() const { return m_WarnedNoLight; }
@@ -1079,8 +1112,8 @@ class ShadowMapRenderFeature : public IRenderFeature
     void UpdateSDSMBounds(Rendering::ViewId viewId, float newNear, float newFar);
     // Convert reverse-Z readback bounds, optionally suppressing raster jitter
     // with conservative, distance-relative rounding after linearization.
-    static SDSMBounds ResolveSDSMBounds(float minNdc, float maxNdc, float nearPlane,
-                                      float farPlane, bool orthographic, bool stabilize);
+    static SDSMBounds ResolveSDSMBounds(float minNdc, float maxNdc, const ProjectionDepthTerms& depthTerms,
+                                      float nearPlane, float farPlane, bool stabilize);
 
     // Latest decoded receiver measurement of a view (invalid until the first
     // readback lands), kept across frames that read back nothing new.
@@ -1430,7 +1463,7 @@ class ShadowMapRenderFeature : public IRenderFeature
     {
         // The fit with the render origin added back to its eye — world space,
         // for world-space caster culling. Equals VPRel byte-for-byte when the
-        // origin is inactive.
+        // origin is sector (0,0,0).
         Mathematics::Matrix4x4 VP;
         // The fit as built: render-origin-relative eye, so its clip translation
         // resolves the shadow texel grid at any camera magnitude. The depth pass
@@ -1539,7 +1572,7 @@ class ShadowMapRenderFeature : public IRenderFeature
         Mathematics::Vector3 LightDir;    // normalized, exact-compare
         Mathematics::Vector3 CameraPos;   // LOD drift reference
         Mathematics::Matrix4x4 CullCameraViewProj;
-        float LodCameraPos[4]{};
+        Mathematics::Vector4 LodCameraPos;
         float LodProjScaleY = 0.0f;
         // View depth of the capture-time slice's far end (the LOD drift bound
         // scales with it).

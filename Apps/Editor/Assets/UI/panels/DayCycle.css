@@ -96,11 +96,6 @@
 	color: var(--ui_color_text_secondary);
 }
 
-.day-cycle-preset {
-	min-width: 140px;
-	flex-grow: 1;
-}
-
 .day-cycle-scrub {
 	flex-direction: row;
 	align-items: center;
@@ -238,9 +233,9 @@
 	color: var(--ui_color_text_secondary);
 }
 
-/* The scrub strip keeps a 28-pixel drag area above its axis labels. */
+/* The scrub strip: the tracks' axis with a thin grab band. */
 .day-cycle-scrub-graph {
-	--curve-field-plot-height: 56px;
+	--curve-field-plot-height: 28px;
 }
 
 .day-cycle-scrub-off {

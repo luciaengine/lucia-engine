@@ -1,3 +1,4 @@
+#include "Core/ApplicationPaths.h"
 // Minimal cross-platform CoreCLR hosting smoke test.
 // Verifies that CoreCLRHost can boot a runtime from a runtimeconfig and
 // invoke CoreBridge.SanityPing via the load_assembly_and_get_function_pointer
@@ -5,9 +6,13 @@
 
 #include <gtest/gtest.h>
 
-#include "Core/Application.h" // PathUtils::GetExecutableDirectory
+#include "Core/Application.h" // ApplicationPaths::GetExecutableDirectory
 #include "Scripting/CoreCLRHost.h"
 #include "Scripting/PathResolver.h"
+#include "ScopedCurrentPath.h"
+#include "TestTempDir.h"
+
+#include <filesystem>
 
 using namespace GameEngine;
 
@@ -23,7 +28,7 @@ TEST(CoreClrHostingSmoke, InitializeAndSanityPing)
         GTEST_SKIP() << "Scripts runtimeconfig.json not found; ensure CoreBridge/HotReload are staged.";
     }
 
-    std::filesystem::path exeDir = PathUtils::GetExecutableDirectory();
+    std::filesystem::path exeDir = ApplicationPaths::GetExecutableDirectory();
     std::filesystem::path preferred = exeDir.parent_path() / "GameEngine.CoreBridge.dll";
     std::filesystem::path coreBridgeDll = ScriptingPaths::ResolveCoreBridgeDll(preferred);
     if (coreBridgeDll.empty() || !std::filesystem::exists(coreBridgeDll))
@@ -31,21 +36,31 @@ TEST(CoreClrHostingSmoke, InitializeAndSanityPing)
         GTEST_SKIP() << "GameEngine.CoreBridge.dll not found near test binary; hosting cannot be validated.";
     }
 
-    CoreCLRHost host;
-    ASSERT_FALSE(host.IsInitialized());
-    ASSERT_TRUE(host.Initialize(runtimeConfig));
+    // The host runs from an empty working directory and must write nothing into it.
+    const TestUtils::ScopedTempDir workingDirectory(TestUtils::MakeUniqueTempDirectory("gameengine-coreclr-cwd"));
+    {
+        const TestUtils::ScopedCurrentPath workingDirectoryGuard(workingDirectory.Path());
+        ASSERT_TRUE(workingDirectoryGuard.IsActive());
 
-    void* fnPtr = host.GetManagedFunction(
-        String(coreBridgeDll.string().c_str()),
-        String("GameEngine.CoreBridge.CoreBridge, GameEngine.CoreBridge"),
-        String("SanityPing"));
+        CoreCLRHost host;
+        ASSERT_FALSE(host.IsInitialized());
+        ASSERT_TRUE(host.Initialize(runtimeConfig));
 
-    ASSERT_NE(fnPtr, nullptr);
+        void* fnPtr = host.GetManagedFunction(
+            String(coreBridgeDll.string().c_str()),
+            String("GameEngine.CoreBridge.CoreBridge, GameEngine.CoreBridge"),
+            String("SanityPing"));
 
-    using SanityPingFn = int32(CORECLR_DELEGATE_CALLTYPE*)();
-    auto sanityPing = reinterpret_cast<SanityPingFn>(fnPtr);
-    int32 value = sanityPing();
-    EXPECT_EQ(value, 42);
+        ASSERT_NE(fnPtr, nullptr);
+
+        using SanityPingFn = int32(CORECLR_DELEGATE_CALLTYPE*)();
+        auto sanityPing = reinterpret_cast<SanityPingFn>(fnPtr);
+        int32 value = sanityPing();
+        EXPECT_EQ(value, 42);
+    }
+
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(workingDirectory.Path()))
+        ADD_FAILURE() << "The host wrote into the working directory: " << entry.path().string();
 }
 
 TEST(CoreClrHostingSmoke, FailsWhenRuntimeConfigMissing)

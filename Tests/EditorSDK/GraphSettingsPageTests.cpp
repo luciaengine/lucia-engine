@@ -9,7 +9,7 @@
 
 #include "Editor/Settings/EditorSettingsRegistry.h"
 #include "Graph/GraphCanvas.h"
-#include "Graph/GraphNodeRegistry.h"
+#include "Graph/GraphNode/GraphNodeRegistry.h"
 
 #include <gtest/gtest.h>
 

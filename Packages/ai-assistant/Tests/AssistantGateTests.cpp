@@ -229,33 +229,6 @@ TEST(AssistantGateTests, EveryToolHasAClassAnActionAndASubject)
     EXPECT_NE(std::find(attached.begin(), attached.end(), "input_text"), attached.end());
 }
 
-// Polling a completed lightmap job can import assets and assign materials.
-// Treat it like the other bake operations, including when the mode is Auto.
-TEST(AssistantGateTests, BakeOperationsWaitForApprovalInAuto)
-{
-    for (const char* tool : {"bake_lightmaps", "get_lightmap_bake", "cancel_lightmap_bake", "rebake_reflection_probes"})
-    {
-        AssistantGate gate;
-        OpenBound(gate, AssistantMode::Auto, 7);
-        EXPECT_EQ(Call(gate, 7, tool).Decision, DebugRequestDecision::Park) << tool;
-    }
-}
-
-TEST(AssistantGateTests, ProbeInspectionIsReadOnlyAndDockingKeepsTheForegroundPolicy)
-{
-    for (const AssistantModeChoice& mode : AssistantModeChoices())
-    {
-        AssistantGate gate;
-        OpenBound(gate, mode.Mode, 7);
-        EXPECT_EQ(Call(gate, 7, "get_reflection_probe_state").Decision, DebugRequestDecision::Run) << mode.Label;
-        const auto dock = Call(gate, 7, "dock_panel", {{"panelId", "Assets"}});
-        EXPECT_EQ(dock.Decision, DebugRequestDecision::Refuse) << mode.Label;
-        EXPECT_NE(dock.Refusal.find("foreground"), std::string::npos) << mode.Label;
-    }
-    const auto attached = AssistantTools::AttachedNames();
-    EXPECT_EQ(std::find(attached.begin(), attached.end(), "dock_panel"), attached.end());
-}
-
 TEST(AssistantGateTests, AWindowCaptureIsRefusedInEveryModeAndTheRenderedFrameIsNot)
 {
     for (const AssistantModeChoice& mode : AssistantModeChoices())

@@ -1,7 +1,7 @@
 #include "SceneView/SceneOverlayPick.h"
 
 #include "Mathematics/Ray.h"
-#include "Picking/MeshPickingService.h"
+#include "Scene/SceneRaycast.h"
 #include "SceneView/SceneViewEvents.h"
 
 #include <algorithm>
@@ -46,10 +46,10 @@ bool IsHiddenByScene(ECS::World& world, const ScenePointerEvent& event, const Ma
         ray.origin = point - event.cameraForward * pointDistance;
         ray.direction = event.cameraForward;
     }
-    Picking::PickOptions options;
+    Scene::PickOptions options;
     options.WaitForSceneTlas = false; // the caller saw the scene TLAS ready
     options.MaxDistance = pointDistance;
-    const Picking::PickResult cover = Picking::RaycastScene(ray, world, options);
+    const Scene::PickResult cover = Scene::RaycastScene(ray, world, options);
     const float tolerance = std::max(kOcclusionMinTolerance, pointDistance * kOcclusionTolerancePerMeter);
     return cover.Hit && cover.Best.Distance < pointDistance - tolerance;
 }

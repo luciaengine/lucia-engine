@@ -4,41 +4,33 @@ using System.Runtime.InteropServices;
 namespace GameEngine.Scripting
 {
     /// <summary>
-    /// A prefab asset reference for a component field. Assign it in the Inspector to keep
-    /// the prefab loaded with the scene for <see cref="EntityCommands.Spawn"/>.
+    /// A reference to a prefab asset by its GUID, for a component field. Assign the prefab to the field in the
+    /// Inspector; a component in a loaded scene that holds it keeps the prefab loaded, so
+    /// <see cref="EntityCommands.Spawn"/> can spawn it. The same 16 bytes as the engine's PrefabRef.
     /// </summary>
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    [StructLayout(LayoutKind.Sequential, Size = 16)]
     public readonly struct PrefabRef : IEquatable<PrefabRef>
     {
-        private readonly ulong m_First;
-        private readonly ulong m_Second;
+        /// <summary>The GUID of the prefab asset.</summary>
+        public readonly AssetGuid Guid;
 
-        public PrefabRef(Guid guid)
+        /// <summary>A reference to the prefab with the GUID <paramref name="guid"/>.</summary>
+        public PrefabRef(AssetGuid guid)
         {
-            Span<byte> bytes = stackalloc byte[16];
-            guid.TryWriteBytes(bytes, bigEndian: true, out _);
-            m_First = MemoryMarshal.Read<ulong>(bytes);
-            m_Second = MemoryMarshal.Read<ulong>(bytes[8..]);
+            Guid = guid;
         }
 
-        public Guid Guid
-        {
-            get
-            {
-                Span<byte> bytes = stackalloc byte[16];
-                MemoryMarshal.Write(bytes, in m_First);
-                MemoryMarshal.Write(bytes[8..], in m_Second);
-                return new Guid(bytes, bigEndian: true);
-            }
-        }
+        /// <summary>No prefab.</summary>
+        public static PrefabRef None => default;
 
-        public bool IsNone => m_First == 0 && m_Second == 0;
+        /// <summary>Whether this is <see cref="None"/>.</summary>
+        public bool IsNone => Guid.IsNone;
 
-        public bool Equals(PrefabRef other) => m_First == other.m_First && m_Second == other.m_Second;
-        public override bool Equals(object? value) => value is PrefabRef other && Equals(other);
-        public override int GetHashCode() => HashCode.Combine(m_First, m_Second);
+        public bool Equals(PrefabRef other) => Guid == other.Guid;
+        public override bool Equals(object? obj) => obj is PrefabRef other && Equals(other);
+        public override int GetHashCode() => Guid.GetHashCode();
         public override string ToString() => Guid.ToString();
-        public static bool operator ==(PrefabRef left, PrefabRef right) => left.Equals(right);
-        public static bool operator !=(PrefabRef left, PrefabRef right) => !left.Equals(right);
+        public static bool operator ==(PrefabRef a, PrefabRef b) => a.Equals(b);
+        public static bool operator !=(PrefabRef a, PrefabRef b) => !a.Equals(b);
     }
 }

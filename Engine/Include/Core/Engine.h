@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cassert>
 #include <cstdint>
+#include <functional>
 #include <future>
 #include <mutex>
 #include <optional>
@@ -23,6 +24,9 @@ class WorkStealingThreadPool;
 namespace GameEngine
 {
 namespace Scene { class PrefabLibrary; }
+class SceneLoader;
+class SceneLoadTracker;
+
 namespace Input
 {
 class InputSystem;
@@ -30,6 +34,10 @@ class InputSystem;
 namespace ECS
 {
 class World;
+}
+namespace Scene
+{
+class PrefabLibrary;
 }
 namespace NativeScripting
 {
@@ -96,7 +104,6 @@ enum class EngineLifecycleState : uint8_t
 };
 
 class SceneLoadTracker;
-class SceneLoadingGates;
 
 /**
  * @brief Main engine class that manages all subsystems
@@ -115,6 +122,13 @@ class EngineCore
     // Optional: override default scripting configuration before Initialize().
     // Tests and tools (e.g. Editor) can call this to control workspace/scripts roots.
     void SetScriptsConfig(const ScriptsConfig& config);
+
+    /**
+     * @brief Set the work the next Initialize runs once, on its own thread, after the job
+     * system and the startup channel exist and before the asset manager and the script
+     * manager start. Initialize clears the hook, also when it fails.
+     */
+    void SetStartupJobsHook(std::function<void(JobSystem::JobChannel&)> hook);
 
     /**
      * @brief Shutdown the engine
@@ -155,10 +169,28 @@ class EngineCore
                m_InitializingThread.load(std::memory_order_acquire) == std::this_thread::get_id();
     }
 
+    /**
+     * @brief True once Initialize() has been called in this process, whatever it returned.
+     *
+     * Never cleared: not by a failed run, not by Shutdown(). It records that some
+     * caller drives this engine's lifecycle, which is how the scripting ABI tells an
+     * engine nobody has started (standalone hosting initializes it) from one it must
+     * leave alone.
+     */
+    bool HasEverInitialized() const { return m_EverInitialized.load(std::memory_order_acquire); }
+
+    /**
+     * @brief True on the thread that ran the most recent Initialize(), the thread that runs
+     * the engine's frames. Recorded on every configuration, scripting on or off; false on
+     * every thread before the first Initialize().
+     */
     bool IsMainThread() const { return m_MainThreadId.load(std::memory_order_acquire) == std::this_thread::get_id(); }
+
+    /**
+     * @brief True when the scripting ABI's bootstrap initialized this engine for a host with
+     * no frame loop (ApplicationConfig::StandaloneHosted): the caller is the only thread.
+     */
     bool IsStandaloneHosted() const { return m_StandaloneHosted.load(std::memory_order_acquire); }
-    /// Test seam: observe the queue owner without constructing it.
-    bool HasScriptManagerForTests() const { return m_ScriptManager != nullptr; }
 
     /// What a request to reach the main thread got.
     enum class MainThreadPost : uint8
@@ -184,16 +216,6 @@ class EngineCore
     MainThreadPost RequestManagedPostDrain();
 
     /**
-     * @brief True once Initialize() has been called in this process, whatever it returned.
-     *
-     * Never cleared: not by a failed run, not by Shutdown(). It records that some
-     * caller drives this engine's lifecycle, which is how the scripting ABI tells an
-     * engine nobody has started (standalone hosting initializes it) from one it must
-     * leave alone.
-     */
-    bool HasEverInitialized() const { return m_EverInitialized.load(std::memory_order_acquire); }
-
-    /**
      * @brief Get asset manager.
      *
      * Precondition: Initialize() has constructed the manager. A host that drives
@@ -215,7 +237,13 @@ class EngineCore
     // run before/without a full engine init (e.g. loading a model from a bare test
     // harness) fall back to defaults instead of asserting on a manager it never had.
     AssetManager* TryGetAssetManager() noexcept { return m_AssetManager.get(); }
+
+    /// The prefab library (one per engine, beside the AssetManager), or null before Initialize.
+    /// Engine-internal: its header is private to the scene sources. Main thread only.
     Scene::PrefabLibrary* TryGetPrefabLibrary() noexcept { return m_PrefabLibrary.get(); }
+
+    /// Test seam: whether a ScriptManager exists, read without constructing one.
+    bool HasScriptManagerForTests() const { return m_ScriptManager != nullptr; }
 
     /**
      * @brief Get script manager (lazily constructs if missing to support C-ABI test scenarios)
@@ -352,6 +380,9 @@ class EngineCore
 
     /// Read the readiness snapshot from the start of the current frame on the main thread.
     SceneLoadTracker& GetSceneLoadTracker() { return *m_SceneLoadTracker; }
+    /// The one way to replace the scene a game shows (docs/scripting/scene-loader.mdx).
+    /// Lives as long as the engine instance.
+    SceneLoader& GetSceneLoader() { return *m_SceneLoader; }
     // Control whether Engine::Update automatically steps the rendering loop.
     // Default is true; tools like the Editor can disable this and drive the
     // rendering loop explicitly at a more appropriate point in their frame.
@@ -387,10 +418,10 @@ class EngineCore
     void DisableRenderingHotReload();
 
   private:
-    // Points the terrain service's bake cache at this run's location (packaged
-    // staged copy, the project workspace's .Cache, or off). Called when the world
-    // services start and whenever the workspace root changes.
-    void ApplyTerrainBakeCacheLocation();
+    // Points the terrain service's height page stores at this run's location (the
+    // build's terrain containers, the project workspace's .Cache, or none). Called when
+    // the world services start and whenever the workspace root changes.
+    void ApplyTerrainPageStoreLocation();
 
     // Scopes one Initialize(): Commit() publishes Initialized; destruction without a
     // commit rolls the engine back to Uninitialized with nothing outstanding.
@@ -449,8 +480,8 @@ class EngineCore
     UniquePtr<JobSystem::WorkStealingThreadPool> m_JobSystem;
     UniquePtr<AssetManager> m_AssetManager;
     UniquePtr<SceneLoadTracker> m_SceneLoadTracker;
-    UniquePtr<SceneLoadingGates> m_SceneLoadingGates;
     UniquePtr<Scene::PrefabLibrary> m_PrefabLibrary;
+    UniquePtr<SceneLoader> m_SceneLoader; // reports to m_SceneLoadTracker
     // Engine-managed rendering loop state
     UniquePtr<Engine::Renderer::RenderingLoop> m_RenderingLoop;
     bool m_RenderingLoopEnabled = false;
@@ -470,6 +501,8 @@ class EngineCore
     // The "Engine startup" channel (GetStartupChannel); created by Initialize after the
     // job system, destroyed by Shutdown (and a failed Initialize) before it.
     UniquePtr<JobSystem::JobChannel> m_StartupChannel;
+    // SetStartupJobsHook's hook: called once by the next Initialize, then cleared.
+    std::function<void(JobSystem::JobChannel&)> m_StartupJobsHook;
 
     // Engine-owned AudioSystem/backend (may remain null if init fails).
     UniquePtr<Audio::AudioSystem> m_AudioSystem;

@@ -8,19 +8,20 @@
 
 #pragma once
 
-#include "Rendering/CameraTypes.h"                // CameraData/Info, ViewDesc, ViewClearConfig, ViewTargets
+#include "Rendering/Camera/CameraTypes.h"                // CameraData/Info, ViewDesc, ViewClearConfig, ViewTargets
 #include "Rendering/Core/Device.h"                // IDevice, BufferHandle, kMaxSupportedFramesInFlight
 #include "Engine/Rendering/AntiAliasing.h"        // AntiAliasingMode, jitter primitives
 #include "Rendering/Core/Handle.h"                // TextureHandle, SamplerHandle
 #include "Rendering/Core/RenderGraph/RGFrame.h"   // RGTexture, RGFrameStamp
-#include "Rendering/Materials/ShaderVariantKey.h" // MaterialKeyword
+#include "Rendering/Materials/Shader/ShaderVariantKey.h" // MaterialKeyword
 #include "Engine/Rendering/CameraAspectRatio.h"   // ViewLetterbox, PixelPerfectViewState
-#include "Engine/Rendering/SortedTransparentCommand.h"
-#include "Engine/Rendering/DrawCommand.h"         // DrawCommand
+#include "Engine/Rendering/DrawCommand.h"
+#include "Engine/Rendering/SortedTransparentCommand.h"         // DrawCommand
 #include "Engine/Rendering/DepthPassTypes.h"      // DepthPassType
+#include "Engine/Rendering/ParallaxReliefDepth.h" // ReliefDepthSource
 #include "Components/Rendering/PostProcessVolume.h" // kDefaultManualExposureEv
+#include "Components/Rendering/ExposureCompensationCurve.h"
 #include "Engine/Rendering/PostProcessSettings.h" // PostProcessSettings
-#include "Engine/Rendering/ExposureScale.h"
 #include "Engine/Rendering/VolumetricFogTypes.h"  // VolumetricFogLocalVolume
 #include "Types/Types.h"
 
@@ -32,6 +33,7 @@
 #include <span>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace GameEngine::Engine::Renderer
@@ -62,17 +64,20 @@ public:
     // rather than the spatial volume. Mode is Components::ExposureMode as int32.
     struct CameraExposure
     {
-        int32 Mode = static_cast<int32>(Components::ExposureMode::Fixed);
-        float32 Exposure = Rendering::EvToLinearExposure(Components::kDefaultManualExposureEv);
+        int32 Mode = 3; // 3 = Auto
+        float32 Exposure = 1.0f;
         float32 ManualExposureEV = Components::kDefaultManualExposureEv;
         float32 ExposureCompensation = 0.0f;
         float32 Aperture = 16.0f;
         float32 ShutterTime = 0.01f;
         float32 Iso = 100.0f;
-        float32 AutoExposureMinEv = 4.0f; // keep in lockstep with Components::Camera::AutoExposureMinEv
+        float32 AutoExposureMinEv = Components::kDefaultAutoExposureMinEv;
         float32 AutoExposureMaxEv = 18.0f;
         float32 AutoExposureSpeedUp = 1.0f;
         float32 AutoExposureSpeedDown = 3.0f;
+        int32 AutoExposureMeter = 0; // Components::ExposureMeter as int32; 0 = Picture
+        // Components::Camera::AutoExposureCompensationCurve; the resolve samples it per view per frame.
+        ::GameEngine::Math::Curve AutoExposureCompensationCurve = Components::DefaultExposureCompensationCurve();
         // Lens focus for physical DoF: focus-plane distance in world units, the
         // focal length ToCameraExposure derives from the camera's FovY, and the
         // sensor/gate height the derivation (and CoC-to-pixel scale) used.
@@ -100,7 +105,7 @@ public:
     };
 
     using PerFrameLightBuffers =
-        std::array<Rendering::BufferHandle, Rendering::IDevice::kMaxSupportedFramesInFlight>;
+        std::array<Rendering::BufferHandle, Rendering::IDevice::kMaxFrameRingDepth>;
 
     // Persistent per-view state, created on first touch and destroyed AS A UNIT
     // by ReleaseView — one erase point instead of scattered per-map erases (the
@@ -112,11 +117,12 @@ public:
         // Forward DrawCommand stream. Producers append during the emit step;
         // the world pass execute lambda walks it and records draws. Contents
         // are frame-scoped (cleared in BeginWorldDrawFrame); capacity persists.
+        std::vector<SortedTransparentCommand> SortedTransparentCommands;
+        Rendering::RenderGraph::RGFrameStamp FrameForwardEmittedFor;
         std::vector<DrawCommand> ForwardCommands;
         // Alpha-blended contributor draws that must execute after late surface
         // features (ocean/refraction) instead of being captured into them.
         std::vector<DrawCommand> LateForwardCommands;
-        std::vector<SortedTransparentCommand> SortedTransparentCommands;
         // Render-graph textures the ForwardCommands sample descriptor-direct
         // (EmitForwardSampledRead). AddWorldPassForView declares each as a
         // SampledVertex read so the writing sim orders before the draw and the
@@ -147,7 +153,6 @@ public:
         };
         std::vector<ForwardSampledBuffer> ForwardSampledBufferRG;
         Rendering::RenderGraph::RGFrameStamp ForwardSampledFor;
-        Rendering::RenderGraph::RGFrameStamp FrameForwardEmittedFor;
         // Forward draws of this frame that write their own depth
         // (ForwardDrawDepth::ColourPass). Non-zero keeps the view's world depth
         // writable under a prepass. Cleared with the command stream.
@@ -200,6 +205,12 @@ public:
         // (readers treat that as single-sample).
         uint32_t WorldColorSampleCount = 0;
 
+        // The deforming-motion state this view last logged, as the value of the
+        // producer's refusal enum (0 = producing); kDeformationMotionNotLogged
+        // before the first line. The producer logs only when it changes.
+        static constexpr uint8_t kDeformationMotionNotLogged = 0xFFu;
+        uint8_t DeformationMotionLogged = kDeformationMotionNotLogged;
+
         // Attachment formats of the view's camera prepass (its depth target's format and sample
         // count), snapshotted when the prepass is declared and one frame stale the same way. A
         // forward producer pins its prepass head's pipeline at the earlier emit point and emits the
@@ -207,29 +218,79 @@ public:
         // (PipelineVariantCache::EnsureConcreteWarm). DepthFormat undefined = no prepass yet.
         Rendering::PipelineFormatKey PrepassFormatKey{};
 
-        // Light UBO ring, one slot per device frame in flight: WriteViewLightBuffer
-        // fills the slot GetFrameIndex() names inside an acquired frame while older
-        // frames still read theirs. GPU-owned: device-destroyed by
-        // DestroyPerViewGpuResources.
-        PerFrameLightBuffers LightBuffers{};
+        // Attachment formats of the view's opaque world pass (colour, the providers' extra colour
+        // slices, depth), snapshotted at its declaration the same way. A forward producer that
+        // re-interns a pipeline at emit requests its build for these formats on a worker and draws
+        // only once the device has built it (PipelineVariantCache::EnsureConcreteWarm).
+        // ColorCount 0 = no world pass and no paused frame yet (RecordPausedViewWarmKeys).
+        Rendering::PipelineFormatKey WorldColorFormatKey{};
+        // Where that world pass's parallax materials take their relief depth from, snapshotted with
+        // it: the scene warm keys a parallax material's colour variant on it as the pass does.
+        ReliefDepthSource WorldReliefDepthSource = ReliefDepthSource::NoPrepass;
+        // The keywords that world pass drew its entities with, snapshotted with it and, unlike
+        // WorldPassKeywords, kept across BeginFrame: the scene warm reads it outside the frame's
+        // declaration window. nullopt = no world pass and no paused frame yet.
+        std::optional<Rendering::MaterialKeyword> DeclaredWorldPassKeywords;
+
+        // The light UBO that WriteViewLightBuffer wrote last. The world pass and the shader-graph
+        // preview bind this buffer, so a pass never binds a slot that its frame did not write.
+        Rendering::BufferHandle CurrentLightBuffer() const { return m_LightBuffers[m_LightSlot]; }
+        // Makes `slot` the current slot and returns its buffer. Only WriteViewLightBuffer calls it:
+        // it creates the buffer on demand and fills it.
+        Rendering::BufferHandle& SelectLightBuffer(uint32_t slot)
+        {
+            m_LightSlot = slot;
+            return m_LightBuffers[slot];
+        }
+        // Empties the light ring and returns its buffers, for the owner to destroy or forget.
+        PerFrameLightBuffers TakeLightBuffers() { return std::exchange(m_LightBuffers, {}); }
+        // True when a slot of the light ring holds a buffer.
+        bool HasLiveLightBuffer() const
+        {
+            for (const auto& buf : m_LightBuffers)
+                if (buf.IsValid())
+                    return true;
+            return false;
+        }
         // HasTransmissionInView memo, stamped with the device frame index so it
         // self-invalidates next frame without manual clearing. {frameIndex, result}.
         std::pair<uint64_t, bool> TransmissionMemo{~0ull, false};
+
+    private:
+        // Light UBO ring, IDevice::GetFrameRingDepth() deep: WriteViewLightBuffer fills one slot
+        // inside an acquired frame while older frames still read theirs. Only the accessors above
+        // reach it, so a reader binds only CurrentLightBuffer(). GPU-owned.
+        PerFrameLightBuffers m_LightBuffers{};
+        uint32_t m_LightSlot = 0;
     };
 
     // — camera registry —
     Rendering::CameraId AllocateCamera(const char* debugName);
     bool ReleaseCamera(Rendering::CameraId id); // refuses while a view references it
-    void SetCameraData(Rendering::CameraId id, const Rendering::CameraData& data);
+    /// The camera's matrices and its near distance and culling range, set together by the camera's owner.
+    /// Culling, light and shadow code read the ranges here, never from the projection matrix.
+    void SetCameraData(Rendering::CameraId id, const Rendering::CameraData& data,
+                       const Rendering::CameraRanges& ranges);
     const Rendering::CameraData* FindCameraData(Rendering::CameraId id) const;
+    /// Zero ranges for an unknown camera or one whose owner has not set them.
+    Rendering::CameraRanges FindCameraRanges(Rendering::CameraId id) const;
+    /// The ranges of the camera that view `viewId` looks through.
+    Rendering::CameraRanges ResolveCameraRanges(Rendering::ViewId viewId) const;
+    /// The main camera of world `worldId`: the one camera the sky's sun state, the sky-view LUT's
+    /// altitude band and the world-level volume blend read. Among the views that draw the world (a view
+    /// with world id 0 draws every world; `worldId` 0 asks for every world), take part this frame, draw
+    /// through the active render pipeline and look through a registered camera, it is the camera of the first Game view
+    /// in allocation order, else of the first EditorScene view. Previews and utility captures never count.
+    /// Null when no such view exists.
+    const Rendering::CameraData* FindMainCameraData(uint64 worldId) const;
     const std::vector<Rendering::CameraInfo>& GetCameras() const { return m_Cameras; }
 
     void SetViewpointCamera(Rendering::CameraId id) { m_ViewpointCamera = id; }
     Rendering::CameraId GetViewpointCamera() const { return m_ViewpointCamera; }
 
-    void SetCameraPostProcessMask(Rendering::CameraId id, uint32 mask);
-    uint32 GetCameraPostProcessMask(Rendering::CameraId id) const;
-    bool HasCameraPostProcessMask(Rendering::CameraId id) const;
+    void SetCameraVolumeLayers(Rendering::CameraId id, Rendering::RenderLayerMask volumeLayers);
+    Rendering::RenderLayerMask GetCameraVolumeLayers(Rendering::CameraId id) const;
+    bool HasCameraVolumeLayers(Rendering::CameraId id) const;
     void SetCameraExposure(Rendering::CameraId id, const CameraExposure& exposure);
     const CameraExposure* FindCameraExposure(Rendering::CameraId id) const;
 
@@ -290,13 +351,12 @@ public:
         float PrevNdcJitterX = 0.0f;
         float PrevNdcJitterY = 0.0f;
         bool NdcFrozen = false;
-        // Unjittered camera snapshots for the resolve's reprojection: Curr is
-        // the frame being declared, Prev the previous rendered frame's.
+        // Unjittered camera snapshots for the current and previous declared frames.
         Rendering::CameraData CurrCamera{};
         Rendering::CameraData PrevCamera{};
         uint64 FrameStamp = ~0ull;
         uint64 PrevFrameStamp = ~0ull;
-        // True when the view has an earlier camera snapshot.
+        // The resolve checks this snapshot's frame against the submitted history's frame.
         bool PrevValid = false;
     };
     // `mode` selects the jitter generator (TAA Halton vs TemporalFXAA edge
@@ -320,9 +380,19 @@ public:
                                                     uint32 renderWidth, uint32 renderHeight);
 
     void SetViewCamera(Rendering::ViewId id, Rendering::CameraId cameraId);
+    void SetViewDropsEditorHidden(Rendering::ViewId id, bool enabled);
     void SetViewBackgroundOnly(Rendering::ViewId id, bool enabled);
-    void SetViewRenderLayerMask(Rendering::ViewId id, uint32 mask);
+    void SetViewRenderLayerMask(Rendering::ViewId id, Rendering::RenderLayerMask layers);
     void SetViewActiveRenderPipeline(Rendering::ViewId id, bool enabled);
+    /// Pauses or resumes the world drawing of a view (ViewDesc::worldPaused). A paused view
+    /// clears its output to its clear colour and keeps presenting the UI over it.
+    void SetViewWorldPaused(Rendering::ViewId id, bool paused);
+    /// Makes the world pause of a view follow its world's active camera
+    /// (ViewDesc::worldPauseFollowsActiveCamera).
+    void SetViewWorldPauseFollowsActiveCamera(Rendering::ViewId id);
+    /// Pauses or resumes the world drawing of each view of `worldId` whose pause follows its
+    /// world's active camera.
+    void SetActiveCameraViewsWorldPaused(uint64 worldId, bool paused);
 
     void SetViewWorldId(Rendering::ViewId id, uint64 worldId);
     void SetViewCullingStrategy(Rendering::ViewId id,
@@ -346,6 +416,12 @@ public:
     uint32 GetViewWorldColorSampleCount(Rendering::ViewId id) const;
     // PerViewResources::PrepassFormatKey (DepthFormat undefined until the view's first prepass).
     Rendering::PipelineFormatKey GetViewPrepassFormatKey(Rendering::ViewId id) const;
+    // PerViewResources::WorldColorFormatKey (ColorCount 0 until the view's first world pass or paused frame).
+    Rendering::PipelineFormatKey GetViewWorldColorFormatKey(Rendering::ViewId id) const;
+    // PerViewResources::WorldReliefDepthSource (NoPrepass until the view's first world pass).
+    ReliefDepthSource GetViewWorldReliefDepthSource(Rendering::ViewId id) const;
+    // PerViewResources::DeclaredWorldPassKeywords (nullopt until the view's first world pass or paused frame).
+    std::optional<Rendering::MaterialKeyword> GetViewDeclaredWorldPassKeywords(Rendering::ViewId id) const;
     // PerViewResources::WorldViewportHeight in pixels, after render scale (0 until the view's
     // first world pass). Callers converting a world size to a screen size need this paired with
     // the projection's Y scale; 0 means "not known yet" and must not be divided by.
@@ -398,11 +474,14 @@ public:
         return it != m_ViewShadowResources.end() ? &it->second : nullptr;
     }
 
+    /// The forced LOD level that returns a view to automatic LOD selection.
+    static constexpr uint32_t kAutomaticLod = 0xFFFFFFFFu;
+
     // Per-view LOD force override (setter only; ResolveViewForceLOD stays on
     // RenderServices, blending this against the global force level).
     void SetViewForcedLOD(Rendering::ViewId viewId, uint32_t level)
     {
-        if (level == 0xFFFFFFFFu)
+        if (level == kAutomaticLod)
             m_ViewForcedLOD.erase(viewId);
         else
             m_ViewForcedLOD[viewId] = level;
@@ -467,7 +546,7 @@ public:
 
     // Device-destroys the GPU-owned members of one entry and resets them to
     // invalid; CPU-side fields are untouched (device teardown must not lose
-    // view state). Asserts a live LightBuffers handle implies a live device.
+    // view state). Asserts a live light buffer implies a live device.
     void DestroyPerViewGpuResources(PerViewResources& pv);
 
     // — frame + device hooks (called by RenderServices only) —
@@ -508,8 +587,8 @@ private:
     std::unordered_map<Rendering::ViewId, uint64> m_ViewExtractionFrames;
     std::unordered_map<uint64, uint64> m_WorldExtractionFrames;
 
-    // Per-camera post-process layer mask (defaults to 0xFFFFFFFFu when absent).
-    std::unordered_map<Rendering::CameraId, uint32> m_CameraPostProcessMasks;
+    // Per-camera volume layers (every layer when absent).
+    std::unordered_map<Rendering::CameraId, Rendering::RenderLayerMask> m_CameraVolumeLayers;
     // Per-camera exposure (absent => the view falls back to volume/world exposure).
     std::unordered_map<Rendering::CameraId, CameraExposure> m_CameraExposures;
 

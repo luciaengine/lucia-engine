@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
 #include "ScopedShaderCompileTarget.h"
 
 #include <atomic>
@@ -12,8 +12,8 @@ using namespace GameEngine::Rendering;
 TEST(ShaderCompileTarget, PublishedTupleIsCapturedAsOneValue)
 {
     GameEngine::TestSupport::ScopedShaderCompileTarget restore{CurrentShaderCompileTarget()};
-    constexpr ShaderCompileTarget kFirst{SpirvTarget::Spirv_1_3, false, true};
-    constexpr ShaderCompileTarget kSecond{SpirvTarget::Spirv_1_6, true, false};
+    constexpr ShaderCompileTarget kFirst{SpirvTarget::Spirv_1_3, false, true, true};
+    constexpr ShaderCompileTarget kSecond{SpirvTarget::Spirv_1_6, true, false, false};
     constexpr int kIterations = 100000;
     ApplyShaderCompileProfile(kFirst);
     std::atomic<bool> start{false};
@@ -42,7 +42,7 @@ TEST(ShaderCompileTarget, ConcurrentScalarSettersPreserveTheOtherFields)
 {
     GameEngine::TestSupport::ScopedShaderCompileTarget restore{CurrentShaderCompileTarget()};
     constexpr int kIterations = 1000;
-    std::barrier phase(4);
+    std::barrier phase(5);
     std::jthread compatibility([&phase]
     {
         for (int iteration = 0; iteration < kIterations; ++iteration)
@@ -70,6 +70,15 @@ TEST(ShaderCompileTarget, ConcurrentScalarSettersPreserveTheOtherFields)
             phase.arrive_and_wait();
         }
     });
+    std::jthread clipDistance([&phase]
+    {
+        for (int iteration = 0; iteration < kIterations; ++iteration)
+        {
+            phase.arrive_and_wait();
+            SetClipDistancesAvailable(true);
+            phase.arrive_and_wait();
+        }
+    });
     bool lostUpdate = false;
     for (int iteration = 0; iteration < kIterations; ++iteration)
     {
@@ -77,10 +86,11 @@ TEST(ShaderCompileTarget, ConcurrentScalarSettersPreserveTheOtherFields)
         phase.arrive_and_wait();
         phase.arrive_and_wait();
         lostUpdate = lostUpdate || CurrentShaderCompileTarget() !=
-            ShaderCompileTarget{SpirvTarget::Spirv_1_6, true, true};
+            ShaderCompileTarget{SpirvTarget::Spirv_1_6, true, true, true};
     }
     compatibility.join();
     interpolation.join();
     spirv.join();
+    clipDistance.join();
     EXPECT_FALSE(lostUpdate);
 }

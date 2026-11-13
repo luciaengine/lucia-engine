@@ -13,6 +13,7 @@
 #include "UI/Controls/ListView.h"
 #include "UI/Controls/ScrollView.h"
 #include "UI/Controls/TreeView.h"
+#include "UI/Layout/ElementOverrideHelpers.h"
 #include "UI/Parsers/CSSParser.h"
 #include "UI/Registration/ElementRegistration.h"
 #include "UI/StyleProperties.h"
@@ -306,10 +307,10 @@ TEST(UIScrollVirtualizationTests, ScrollView_Width100UsesScrollportWidth_AndLong
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
 
-    auto* scroll = dynamic_cast<ScrollView*>(r->FindById("sv"));
+    auto* scroll = dynamic_cast<ScrollView*>(r->FindById("sv"_sid));
     ASSERT_NE(scroll, nullptr);
 
-    UIElement* fillEl = r->FindById("fill");
+    UIElement* fillEl = r->FindById("fill"_sid);
     ASSERT_NE(fillEl, nullptr);
 
     const float vw = scroll->GetViewportWidth();
@@ -381,7 +382,7 @@ TEST(UIScrollVirtualizationTests, GridView_RebindsVisibleCellsImmediatelyAfterSc
     const uint64_t minBefore = *std::min_element(gidsBefore.begin(), gidsBefore.end());
     EXPECT_EQ(minBefore, 1u);
 
-    auto* grid = dynamic_cast<GridView*>(r->FindById("gv"));
+    auto* grid = dynamic_cast<GridView*>(r->FindById("gv"_sid));
     ASSERT_NE(grid, nullptr);
     ASSERT_FALSE(grid->GetChildren().empty());
 
@@ -499,7 +500,7 @@ TEST(UIScrollVirtualizationTests, TreeView_RebindsVisibleRowsImmediatelyAfterScr
     ASSERT_TRUE(collectMinVisibleNodeId(minBefore));
     EXPECT_EQ(minBefore, 1u);
 
-    auto* tree = dynamic_cast<TreeView*>(r->FindById("tv"));
+    auto* tree = dynamic_cast<TreeView*>(r->FindById("tv"_sid));
     ASSERT_NE(tree, nullptr);
     ASSERT_FALSE(tree->GetChildren().empty());
     auto* scroll = dynamic_cast<ScrollView*>(tree->GetChildren()[0].get());
@@ -532,7 +533,7 @@ TEST(UIScrollVirtualizationTests, TreeView_CollectBoundIdsReportsTheRowsItHolds)
     auto owner = std::make_unique<TreeView>();
     TreeView* tree = owner.get();
     tree->SetDataProvider(&provider);
-    tree->Overrides().Set(Style::Width, StyleLength::Px(320.0f)).Set(Style::Height, StyleLength::Px(900.0f));
+    tree->Style().Set(Style::Width, StyleLength::Px(320.0f)).Set(Style::Height, StyleLength::Px(900.0f));
     root->AddChild(std::move(owner));
     UIManager ui(dev);
     ui.SetLayoutSizeOverride(400, 1000);
@@ -560,7 +561,7 @@ TEST(UIScrollVirtualizationTests, TreeView_CollectBoundIdsReportsTheRowsItHolds)
     EXPECT_EQ(tall, rowIds());
 
     // Shrink; the view trims its pool after enough unchanged passes of its virtualization.
-    tree->Overrides().Set(Style::Height, StyleLength::Px(60.0f));
+    tree->Style().Set(Style::Height, StyleLength::Px(60.0f));
     for (int i = 0; i < 60; ++i)
     {
         tree->EnqueuePumpWork(ui);
@@ -571,8 +572,9 @@ TEST(UIScrollVirtualizationTests, TreeView_CollectBoundIdsReportsTheRowsItHolds)
     EXPECT_EQ(shrunk, rowIds());
 }
 
-// FindBoundRow and BoundIdOf answer for the rows the view holds bound only: once its viewport has shrunk,
-// the pooled rows it no longer binds answer no id, and an item it no longer shows finds no row.
+// FindBoundRow, FindBoundRowTitle and BoundIdOf answer for the rows the view holds bound only: once its
+// viewport has shrunk, the pooled rows it no longer binds answer no id, and an item it no longer shows
+// finds no row and no title.
 TEST(UIScrollVirtualizationTests, TreeView_FindsOnlyTheRowsItHoldsBound)
 {
     auto* dev = SharedHeadlessDevice();
@@ -586,7 +588,7 @@ TEST(UIScrollVirtualizationTests, TreeView_FindsOnlyTheRowsItHoldsBound)
     auto owner = std::make_unique<TreeView>();
     TreeView* tree = owner.get();
     tree->SetDataProvider(&provider);
-    tree->Overrides().Set(Style::Width, StyleLength::Px(320.0f)).Set(Style::Height, StyleLength::Px(900.0f));
+    tree->Style().Set(Style::Width, StyleLength::Px(320.0f)).Set(Style::Height, StyleLength::Px(900.0f));
     root->AddChild(std::move(owner));
     UIManager ui(dev);
     ui.SetLayoutSizeOverride(400, 1000);
@@ -598,7 +600,7 @@ TEST(UIScrollVirtualizationTests, TreeView_FindsOnlyTheRowsItHoldsBound)
     ASSERT_FALSE(tall.empty());
 
     // Shrink for fewer passes than the trim waits for: the pool keeps rows it no longer binds.
-    tree->Overrides().Set(Style::Height, StyleLength::Px(60.0f));
+    tree->Style().Set(Style::Height, StyleLength::Px(60.0f));
     for (int i = 0; i < 3; ++i)
     {
         tree->EnqueuePumpWork(ui);
@@ -623,6 +625,10 @@ TEST(UIScrollVirtualizationTests, TreeView_FindsOnlyTheRowsItHoldsBound)
         const UIElement* row = tree->FindBoundRow(id);
         ASSERT_NE(row, nullptr) << "held item " << id << " found no row";
         EXPECT_EQ(tree->BoundIdOf(row), id);
+        const Label* title = tree->FindBoundRowTitle(id);
+        ASSERT_NE(title, nullptr) << "held item " << id << " found no title";
+        EXPECT_EQ(title->GetParent(), row) << "the title is not on the item's row";
+        EXPECT_TRUE(title->HasClass("tree-title"));
     }
     std::size_t letGo = 0;
     for (const TreeId id : tall)
@@ -631,6 +637,7 @@ TEST(UIScrollVirtualizationTests, TreeView_FindsOnlyTheRowsItHoldsBound)
             continue;
         ++letGo;
         EXPECT_EQ(tree->FindBoundRow(id), nullptr) << "item " << id << " the view no longer shows found a row";
+        EXPECT_EQ(tree->FindBoundRowTitle(id), nullptr);
     }
     EXPECT_GT(letGo, 0u) << "the view still shows every item, so this test is vacuous";
 }
@@ -694,7 +701,7 @@ TEST(UIScrollVirtualizationTests, ListView_DoesNotAllowOverscroll_WhenItemHeight
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
 
-    auto* list = dynamic_cast<ListView*>(r->FindById("lv"));
+    auto* list = dynamic_cast<ListView*>(r->FindById("lv"_sid));
     ASSERT_NE(list, nullptr);
     const float viewportH = list->GetViewportHeight();
     const float expectedContentH = (float)kCount * (float)std::lround(kItemHeight);
@@ -802,7 +809,7 @@ TEST(UIScrollVirtualizationTests, ListView_RebindsVisibleCellsImmediatelyAfterSc
         const uint64_t minBefore = collectMinBoundIndex();
         EXPECT_EQ(minBefore, 0u) << "Expected initial visible indices to include 0";
 
-        auto* list = dynamic_cast<ListView*>(r->FindById("lv"));
+        auto* list = dynamic_cast<ListView*>(r->FindById("lv"_sid));
         ASSERT_NE(list, nullptr);
         ASSERT_FALSE(list->GetChildren().empty());
         ScrollView* scroll = nullptr;
@@ -825,6 +832,130 @@ TEST(UIScrollVirtualizationTests, ListView_RebindsVisibleCellsImmediatelyAfterSc
 
     runCase(/*correctnessMode=*/false);
     runCase(/*correctnessMode=*/true);
+}
+
+namespace
+{
+// A work item that queues itself again on every run, so each drain point spends its whole pass
+// budget and leaves the item queued for the next drain point of the frame.
+struct VirtualizationChainState
+{
+    int Runs = 0;
+    bool RequestsRelayout = false;
+    bool DirtiesLayout = false;
+    bool Requeues = true;
+};
+VirtualizationChainState s_VirtualizationChain;
+
+// The chain alternates the host between this height and one pixel more, so each run dirties layout.
+constexpr int kChainHostHeightPx = 100;
+
+void RunVirtualizationChain(UIElement* host, UIManager& ui, VirtualizationCoordinator::Reason reason)
+{
+    ++s_VirtualizationChain.Runs;
+    if (s_VirtualizationChain.RequestsRelayout)
+        ui.RequestRelayout();
+    if (s_VirtualizationChain.DirtiesLayout)
+        UI::Layout::SetForcedHeight(*host, kChainHostHeightPx + (s_VirtualizationChain.Runs % 2));
+    if (s_VirtualizationChain.Requeues)
+        ui.EnqueueVirtualizationWork(host, &RunVirtualizationChain, reason);
+}
+
+// Builds a 200x100 host, settles two frames and queues the chain on the host.
+std::unique_ptr<UIManager> MakeVirtualizationChainHost(IDevice* device)
+{
+    UIRegistration::RegisterBuiltInControls();
+    auto root = std::make_unique<UIElement>();
+    root->SetId("root");
+    auto host = std::make_unique<UIElement>();
+    host->SetId("host");
+    root->AddChild(std::move(host));
+
+    auto ui = std::make_unique<UIManager>(device);
+    ui->SetUpdateProfilingEnabled(true);
+    ui->SetRoot(std::move(root));
+    Stylesheet sheet{};
+    EXPECT_TRUE(CSSParser::ParseStylesFromString(R"(
+#root { width: 200px; height: 100px; }
+#host { width: 200px; height: 100px; }
+)", sheet));
+    ui->AddStylesheet(std::make_shared<Stylesheet>(sheet));
+    ui->Update(0.0f, /*interactive=*/false);
+    ui->Update(0.0f, /*interactive=*/false);
+
+    UIElement* hostElement = ui->GetRootElement()->FindById("host"_sid);
+    EXPECT_NE(hostElement, nullptr);
+    s_VirtualizationChain = {};
+    if (hostElement)
+        ui->EnqueueVirtualizationWork(hostElement, &RunVirtualizationChain, VirtualizationCoordinator::Reason::DataChanged);
+    return ui;
+}
+
+// Runs one Update and returns how many passes the chain ran in it.
+int RunsInOneUpdate(UIManager& ui, uint32_t expectedLateRelayouts)
+{
+    s_VirtualizationChain.Runs = 0;
+    ui.Update(0.0f, /*interactive=*/false);
+    UIManager::UpdateProfileFrame profile{};
+    EXPECT_TRUE(ui.GetLastUpdateProfileFrame(profile));
+    EXPECT_EQ(profile.LateRelayoutCount, expectedLateRelayouts);
+    return s_VirtualizationChain.Runs;
+}
+
+void StopVirtualizationChain(UIManager& ui)
+{
+    s_VirtualizationChain.RequestsRelayout = false;
+    s_VirtualizationChain.DirtiesLayout = false;
+    s_VirtualizationChain.Requeues = false;
+    ui.Update(0.0f, /*interactive=*/false);
+}
+} // namespace
+
+// Work that is still queued when the late relayout runs drains in that relayout, also when the
+// post-event drain of the same Update already ran work. Otherwise it waits one frame.
+TEST(UIScrollVirtualizationTests, VirtualizationCoordinator_LateRelayoutDrainsAfterEarlierDrainRan)
+{
+    auto* dev = SharedHeadlessDevice();
+    if (!dev)
+    {
+        GTEST_SKIP() << "Device init failed";
+    }
+    std::unique_ptr<UIManager> ui = MakeVirtualizationChainHost(dev);
+
+    const int runsWithoutLateRelayout = RunsInOneUpdate(*ui, /*expectedLateRelayouts=*/0u);
+    ASSERT_GT(runsWithoutLateRelayout, 0);
+
+    s_VirtualizationChain.RequestsRelayout = true;
+    const int runsWithLateRelayout = RunsInOneUpdate(*ui, /*expectedLateRelayouts=*/1u);
+    EXPECT_GT(runsWithLateRelayout, runsWithoutLateRelayout)
+        << "The late-relayout drain did not run after the post-event drain ran work.";
+
+    StopVirtualizationChain(*ui);
+}
+
+// When the first pre-solve drain dirties layout, the Yoga tree is rebuilt and a second flush and
+// drain run before the solve, also when the first drain already ran work.
+TEST(UIScrollVirtualizationTests, VirtualizationCoordinator_PreSolveRebuildDrainsAfterFirstDrainRan)
+{
+    auto* dev = SharedHeadlessDevice();
+    if (!dev)
+    {
+        GTEST_SKIP() << "Device init failed";
+    }
+    std::unique_ptr<UIManager> ui = MakeVirtualizationChainHost(dev);
+
+    // Both frames run a late relayout, so only the second pre-solve pass can differ between them.
+    s_VirtualizationChain.RequestsRelayout = true;
+    const int runsWithoutRebuild = RunsInOneUpdate(*ui, /*expectedLateRelayouts=*/1u);
+    ASSERT_GT(runsWithoutRebuild, 0);
+
+    s_VirtualizationChain.RequestsRelayout = false;
+    s_VirtualizationChain.DirtiesLayout = true;
+    const int runsWithRebuild = RunsInOneUpdate(*ui, /*expectedLateRelayouts=*/1u);
+    EXPECT_GT(runsWithRebuild, runsWithoutRebuild)
+        << "The pre-solve drain after the Yoga rebuild did not run after the first drain ran work.";
+
+    StopVirtualizationChain(*ui);
 }
 
 TEST(UIScrollVirtualizationTests, CorrectnessMode_DisablesFastPathsAndForcesHeavyPass)
@@ -901,7 +1032,7 @@ TEST(UIScrollVirtualizationTests, VirtualizationCoordinator_DropsWorkForRemovedC
 
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
-    auto* list = dynamic_cast<ListView*>(r->FindById("lv"));
+    auto* list = dynamic_cast<ListView*>(r->FindById("lv"_sid));
     ASSERT_NE(list, nullptr);
 
     // Enqueue work, then destroy the control before the next Update() drains the queue.
@@ -911,84 +1042,6 @@ TEST(UIScrollVirtualizationTests, VirtualizationCoordinator_DropsWorkForRemovedC
     // Must not crash and must not run the work item.
     ui.Update(0.0f, /*interactive=*/false);
     DriveUiRender(ui, rg);
-}
-
-// A work item that re-enqueues itself on every run, so each drain point spends its whole
-// iteration budget and leaves the item queued for the next drain point in the frame.
-static int s_ChainRuns = 0;
-static bool s_ChainRequestsRelayout = false;
-static bool s_ChainReenqueues = true;
-
-static void VirtualizationCoordinator_Chain(UIElement* ctx, UIManager& ui, VirtualizationCoordinator::Reason reason)
-{
-    ++s_ChainRuns;
-    if (s_ChainRequestsRelayout)
-        ui.RequestRelayout();
-    if (s_ChainReenqueues)
-        ui.EnqueueVirtualizationWork(ctx, &VirtualizationCoordinator_Chain, reason);
-}
-
-// Work still queued when the late relayout runs must drain in that relayout, even though the
-// earlier drain in the same Update already ran work; otherwise it waits a frame.
-TEST(UIScrollVirtualizationTests, VirtualizationCoordinator_LateRelayoutDrainsAfterEarlierDrainRan)
-{
-    auto dev = MakeHeadlessDevice();
-    if (!dev)
-    {
-        GTEST_SKIP() << "Device init failed";
-    }
-
-    UIRegistration::RegisterBuiltInControls();
-
-    auto root = std::make_unique<UIElement>();
-    root->SetId("root");
-    auto host = std::make_unique<UIElement>();
-    host->SetId("host");
-    root->AddChild(std::move(host));
-
-    UIManager ui(dev.get());
-    ui.SetUpdateProfilingEnabled(true);
-    ui.SetRoot(std::move(root));
-
-    Stylesheet sheet{};
-    ASSERT_TRUE(CSSParser::ParseStylesFromString(R"(
-#root { width: 200px; height: 100px; }
-#host { width: 200px; height: 100px; }
-)", sheet));
-    ui.AddStylesheet(std::make_shared<Stylesheet>(sheet));
-
-    ui.Update(0.0f, /*interactive=*/false);
-    ui.Update(0.0f, /*interactive=*/false);
-
-    UIElement* hostEl = ui.GetRootElement()->FindById("host");
-    ASSERT_NE(hostEl, nullptr);
-
-    s_ChainRuns = 0;
-    s_ChainRequestsRelayout = false;
-    s_ChainReenqueues = true;
-    ui.EnqueueVirtualizationWork(hostEl, &VirtualizationCoordinator_Chain, VirtualizationCoordinator::Reason::DataChanged);
-
-    // Without a relayout request only the pre-solve and post-event drains run.
-    ui.Update(0.0f, /*interactive=*/false);
-    UIManager::UpdateProfileFrame profile{};
-    ASSERT_TRUE(ui.GetLastUpdateProfileFrame(profile));
-    ASSERT_EQ(profile.LateRelayoutCount, 0u);
-    const int runsWithoutLateRelayout = s_ChainRuns;
-    ASSERT_GT(runsWithoutLateRelayout, 0);
-
-    // The chain now requests a relayout, so the late relayout fires after the post-event drain
-    // has run work, and its own drain must run too.
-    s_ChainRuns = 0;
-    s_ChainRequestsRelayout = true;
-    ui.Update(0.0f, /*interactive=*/false);
-    ASSERT_TRUE(ui.GetLastUpdateProfileFrame(profile));
-    ASSERT_EQ(profile.LateRelayoutCount, 1u);
-    EXPECT_GT(s_ChainRuns, runsWithoutLateRelayout)
-        << "The late-relayout drain did not run after the post-event drain ran work.";
-
-    s_ChainRequestsRelayout = false;
-    s_ChainReenqueues = false;
-    ui.Update(0.0f, /*interactive=*/false);
 }
 
 // C-8: a MarkChanged on a visible ListView row (no scroll/viewport change) must
@@ -1046,7 +1099,7 @@ TEST(UIScrollVirtualizationTests, ListView_MarkChanged_RepaintsAffectedRowWithou
 
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
-    UIElement* cell0 = r->FindById("lvcell-0");
+    UIElement* cell0 = r->FindById("lvcell-0"_sid);
     ASSERT_NE(cell0, nullptr);
     EXPECT_EQ(cell0->GetTextContent(), "Row 0");
 
@@ -1056,7 +1109,7 @@ TEST(UIScrollVirtualizationTests, ListView_MarkChanged_RepaintsAffectedRowWithou
     ui.Update(0.0f, /*interactive=*/false);
     DriveUiRender(ui, rg);
 
-    UIElement* cell0After = r->FindById("lvcell-0");
+    UIElement* cell0After = r->FindById("lvcell-0"_sid);
     ASSERT_NE(cell0After, nullptr);
     EXPECT_EQ(cell0After->GetTextContent(), "CHANGED-0")
         << "Change pump must rebind the affected row without a scroll/viewport event";

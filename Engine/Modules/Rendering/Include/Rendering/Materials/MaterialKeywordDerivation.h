@@ -1,10 +1,12 @@
 #pragma once
 
 #include "Rendering/Materials/MaterialAlphaMode.h"
+#include "Rendering/Materials/MaterialBlend/MaterialBlend.h"
 #include "Rendering/Materials/ShaderCompileTarget.h"
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -45,13 +47,16 @@ void ApplyVertexModifierKeyword(ShaderVariantKey& key,
                                 const std::filesystem::path& materialDir,
                                 const MaterialBuildContext& context);
 
-/// Add the keyword a material's alpha mode compiles into its variant key: AlphaTest for
-/// Mask (the adapter discards below the cutoff) and AlphaBlend for Blend (the adapter
-/// keeps the surface opacity as the output alpha the blend state reads). Opaque adds
-/// neither, and its output alpha is full coverage. Every site that derives a key from a
-/// material's alpha mode calls this, so registration, prewarm and the build service
-/// agree on the variant.
-void ApplyAlphaModeKeyword(ShaderVariantKey& key, MaterialAlphaMode alphaMode);
+/// Add the keywords a material's alpha mode and blend compile into its variant key: AlphaTest for
+/// Mask (the adapter discards below the cutoff) and AlphaBlend for Blend (the adapter keeps the
+/// surface opacity as the output alpha the blend state reads). Opaque adds neither, and its output
+/// alpha is full coverage. A Blend material also takes the keyword of how its blend composites it
+/// (ClassifyBlendComposite): PremultipliedBlend, AdditiveBlend, MultiplyBlend or UnfoggedBlend, none
+/// for straight alpha over; the fog reads it to fade the surface toward its blend's identity. Every
+/// site that derives a key from a material's alpha mode calls this, so registration, prewarm and the
+/// build service agree on the variant.
+void ApplyAlphaModeKeywords(ShaderVariantKey& key, MaterialAlphaMode alphaMode,
+                            const std::optional<MaterialBlendState>& blend);
 
 /// The texture name the relief march reads its height map through, on every surface that
 /// declares one (`// @texture heightMap`).

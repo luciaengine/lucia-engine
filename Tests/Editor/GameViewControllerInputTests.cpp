@@ -12,7 +12,8 @@
 #include "ECS/Entity.h"
 #include "Engine/GameUI/GameUIHost.h"
 #include "Engine/GameUI/GameplayUI.h"
-#include "GameViewController.h"
+#include "EditorChangeNotifications.h"
+#include "GameView/GameViewController.h"
 #include "Input/InputSystem.h"
 #include "UI/Controls/Button.h"
 #include "UI/Internal/LayoutAccess.h"
@@ -259,8 +260,7 @@ class GameViewControllerReadbackTests : public testing::Test
         camera.ExposureControl = Components::ExposureMode::Auto;
         World.AddComponentImmediate(CameraEntity, camera);
         Components::Transform transform;
-        transform.matrix[12] = 12.0f;
-        transform.matrix[13] = 3.0f;
+        transform.Position = Mathematics::WorldPosition{12.0, 3.0, 0.0};
         World.AddComponentImmediate(CameraEntity, transform);
     }
 
@@ -272,13 +272,110 @@ class GameViewControllerReadbackTests : public testing::Test
         ASSERT_TRUE(Controller.DeclareTargetsRG(frame, 160, 90, 1, &World, targets));
         Device->WaitForIdle();
     }
+
+    // The Engine Update half of one app frame, in its order: the registry ages the
+    // on-demand requests, then extraction marks every participating view.
+    void RunEngineUpdate(uint64_t frameIndex)
+    {
+        auto& views = Services.Views();
+        views.BeginFrame();
+        const Rendering::ViewDesc* desc = views.FindViewDesc(Controller.GetViewId());
+        if (desc && desc->Participates())
+            views.MarkViewExtracted(desc->id, frameIndex);
+        views.MarkWorldExtracted(World.GetWorldId(), frameIndex);
+    }
+
+    // One app frame up to the declare: the end of App Update, then Engine Update.
+    void RunAppFrame(uint64_t frameIndex, bool tabActive)
+    {
+        Controller.RequestFrameWhenActive(&World, tabActive, 160, 90);
+        RunEngineUpdate(frameIndex);
+    }
 };
 
-TEST_F(GameViewControllerReadbackTests, SnapshotTracksDeclaredCameraAndSurvivesAnExtractionWait)
+// A tab press does nothing; the release a frame or more later activates the tab in App
+// Update. The release frame's declare must find this frame's extraction current.
+TEST_F(GameViewControllerReadbackTests, AnActivationOneFrameAfterThePressRendersInItsOwnFrame)
+{
+    RunAppFrame(1, false);
+    RunAppFrame(2, false);
+    RunAppFrame(3, true);
+    Declare(3);
+    EXPECT_FALSE(Controller.IsWaitingForExtraction())
+        << "the release frame presents an older image instead of its own frame";
+}
+
+TEST_F(GameViewControllerReadbackTests, APressAndReleaseInOneFrameRendersInThatFrame)
+{
+    RunAppFrame(1, true);
+    Declare(1);
+    EXPECT_FALSE(Controller.IsWaitingForExtraction());
+    EXPECT_FALSE(Controller.MissedActivationRequest());
+}
+
+TEST_F(GameViewControllerReadbackTests, AHiddenGameViewRequestsNoViewAndNoMetering)
+{
+    for (uint64_t frameIndex = 1; frameIndex <= 8; ++frameIndex)
+        RunAppFrame(frameIndex, false);
+    EXPECT_EQ(Controller.GetViewId(), 0u) << "a hidden Game View allocates no view";
+    EXPECT_FALSE(Controller.GetDeclaredCamera().has_value());
+}
+
+TEST_F(GameViewControllerReadbackTests, AnActiveViewStaysCurrentEveryFrameAfterItsActivation)
+{
+    for (uint64_t frameIndex = 1; frameIndex <= 4; ++frameIndex)
+    {
+        RunAppFrame(frameIndex, true);
+        Declare(frameIndex);
+        EXPECT_FALSE(Controller.IsWaitingForExtraction()) << "frame " << frameIndex;
+        ASSERT_TRUE(Controller.GetDeclaredCamera().has_value());
+        EXPECT_EQ(Controller.GetDeclaredCamera()->FrameIndex, frameIndex);
+    }
+}
+
+// The safety net: an activation after extraction (no request this frame) waits one frame,
+// says so, and renders the next frame from its own declare's request.
+TEST_F(GameViewControllerReadbackTests, AnActivationAfterExtractionWaitsOneFrameAndReportsIt)
+{
+    RunAppFrame(1, false);
+    Declare(1);
+    EXPECT_TRUE(Controller.IsWaitingForExtraction());
+    EXPECT_TRUE(Controller.MissedActivationRequest());
+    RunAppFrame(2, true);
+    Declare(2);
+    EXPECT_FALSE(Controller.IsWaitingForExtraction());
+    EXPECT_FALSE(Controller.MissedActivationRequest());
+}
+
+// A requested view whose world was not extracted waits, but no activation path was missed.
+TEST_F(GameViewControllerReadbackTests, AWorldWithoutExtractionWaitsWithoutAMissedRequest)
+{
+    Controller.RequestFrameWhenActive(&World, true, 160, 90);
+    Services.Views().BeginFrame();
+    Declare(1);
+    EXPECT_TRUE(Controller.IsWaitingForExtraction());
+    EXPECT_FALSE(Controller.MissedActivationRequest());
+}
+
+// A system creates the camera after the request: the wait is covered, so the panel shows the
+// Game View's own clear and never another view's image.
+TEST_F(GameViewControllerReadbackTests, ACameraCreatedAfterTheRequestWaitsOnTheGameViewsOwnClear)
+{
+    World.DestroyEntityImmediate(CameraEntity);
+    RunAppFrame(1, true);
+    AddCamera();
+    Declare(1);
+    EXPECT_TRUE(Controller.IsWaitingForExtraction());
+    EXPECT_FALSE(Controller.MissedActivationRequest());
+    EXPECT_TRUE(Controller.GetNoCameraPhysicalRG().IsValid())
+        << "a covered wait declares no clear, so the panel binds another view's image";
+}
+
+TEST_F(GameViewControllerReadbackTests, DeclaredCameraTracksDeclaresAndSurvivesAnExtractionWait)
 {
     EXPECT_FALSE(Controller.GetDeclaredCamera().has_value());
-    Controller.PrepareForActivation(&World, 160, 90);
-    EXPECT_FALSE(Controller.GetDeclaredCamera().has_value()) << "activation is not a declared frame";
+    Controller.RequestFrameWhenActive(&World, true, 160, 90);
+    EXPECT_FALSE(Controller.GetDeclaredCamera().has_value()) << "a request is not a declared frame";
     const auto view = Controller.GetViewId();
     Services.Views().MarkWorldExtracted(World.GetWorldId(), 7);
     Services.Views().MarkViewExtracted(view, 7);
@@ -291,7 +388,8 @@ TEST_F(GameViewControllerReadbackTests, SnapshotTracksDeclaredCameraAndSurvivesA
     EXPECT_EQ(Controller.GetDeclaredCamera()->Height, 90u);
     EXPECT_EQ(Controller.GetDeclaredCamera()->ExposureMode, Components::ExposureMode::Auto);
 
-    World.GetComponentForWrite<Components::Transform>(CameraEntity)->matrix[12] = 17.0f;
+    // An extraction wait keeps the last declared camera; there is no presented copy.
+    World.GetComponentForWrite<Components::Transform>(CameraEntity)->Position.X = 17.0;
     Services.Views().MarkWorldExtracted(World.GetWorldId(), 8);
     Declare(8);
     EXPECT_TRUE(Controller.IsWaitingForExtraction());
@@ -305,18 +403,13 @@ TEST_F(GameViewControllerReadbackTests, SnapshotTracksDeclaredCameraAndSurvivesA
     EXPECT_EQ(Controller.GetDeclaredCamera()->FrameIndex, 9u);
     EXPECT_FLOAT_EQ(Controller.GetDeclaredCamera()->Data.cameraPos[0], 17.0f);
 
-    Controller.PrepareForActivation(nullptr, 160, 90);
-    EXPECT_FALSE(Controller.GetDeclaredCamera().has_value());
-    Services.Views().MarkViewExtracted(view, 8);
-    Declare(10);
-    ASSERT_TRUE(Controller.GetDeclaredCamera().has_value());
     Controller.DeactivateRenderView();
     EXPECT_FALSE(Controller.GetDeclaredCamera().has_value());
 }
 
 TEST_F(GameViewControllerReadbackTests, MeteringFollowsAutoCameraAndReleasesOnlyItsOwnView)
 {
-    Controller.PrepareForActivation(&World, 160, 90);
+    Controller.RequestFrameWhenActive(&World, true, 160, 90);
     const auto view = Controller.GetViewId();
     auto* readback = Services.GetFeature<Engine::Renderer::ExposureReadbackFeature>();
     ASSERT_NE(readback, nullptr);
@@ -328,14 +421,14 @@ TEST_F(GameViewControllerReadbackTests, MeteringFollowsAutoCameraAndReleasesOnly
     EXPECT_FLOAT_EQ(scale, 123.0f) << "no invented metered exposure before a completed GPU sample";
 
     World.GetComponentForWrite<Components::Camera>(CameraEntity)->ExposureControl = Components::ExposureMode::Fixed;
-    Controller.PrepareForActivation(&World, 160, 90);
+    Controller.RequestFrameWhenActive(&World, true, 160, 90);
     EXPECT_FALSE(readback->IsReadbackEnabled(view));
     World.GetComponentForWrite<Components::Camera>(CameraEntity)->ExposureControl = Components::ExposureMode::Auto;
-    Controller.PrepareForActivation(&World, 160, 90);
+    Controller.RequestFrameWhenActive(&World, true, 160, 90);
     EXPECT_TRUE(readback->IsReadbackEnabled(view));
-    Controller.PrepareForActivation(nullptr, 160, 90);
+    Controller.RequestFrameWhenActive(nullptr, true, 160, 90);
     EXPECT_FALSE(readback->IsReadbackEnabled(view));
-    Controller.PrepareForActivation(&World, 160, 90);
+    Controller.RequestFrameWhenActive(&World, true, 160, 90);
     EXPECT_TRUE(readback->IsReadbackEnabled(view));
     Controller.DeactivateRenderView();
     EXPECT_FALSE(readback->IsReadbackEnabled(view));

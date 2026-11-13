@@ -1,4 +1,5 @@
 #include "Core/EngineLoggerBridge.h"
+#include <string>
 #include "Logger/Logger.h"
 #include "LoggerModuleProbe.h"
 #include "NativeScripting/BuildCacheRecord.h"
@@ -28,7 +29,7 @@ class CaptureSink : public Logger::LogSink
     void Write(const Logger::LogMessage& message) override { Messages.push_back(message); }
     void Flush() override {}
     bool ShouldLog(Logger::LogLevel) const override { return true; }
-    Logger::String GetName() const override { return "NativeModuleCapture"; }
+    std::string GetName() const override { return "NativeModuleCapture"; }
 };
 
 void RejectLoggingModule(bool drainFirst, bool logOnDetach)

@@ -4,6 +4,7 @@
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/Quaternion.h"
 #include "Mathematics/Vector3.h"
+#include "Mathematics/WorldPosition.h"
 
 namespace GameEngine::ECS
 {
@@ -16,7 +17,7 @@ namespace GameEngine::Editor
 /// Decomposed translation / rotation / scale of an entity, in local or world space.
 struct EntityTRS
 {
-    Mathematics::Vector3 Position;
+    Mathematics::WorldPosition Position;
     Mathematics::Quaternion Rotation;
     Mathematics::Vector3 Scale{1.0f, 1.0f, 1.0f};
 };
@@ -38,19 +39,19 @@ EntityTRS ComputeWorldTRSForEntity(ECS::World* world, ECS::EntityHandle handle);
 /// World TRS of the entity's parent, or the identity for a root entity.
 void GetParentWorldTRS(ECS::World* world,
                        ECS::EntityHandle handle,
-                       Mathematics::Vector3& outPos,
+                       Mathematics::WorldPosition& outPos,
                        Mathematics::Quaternion& outRot,
                        Mathematics::Vector3& outScale);
 
 /// Inverse of CombineTRS for position: the local position that places the child
 /// at worldPos under the given parent world TRS. A zero parent scale axis is left
 /// undivided.
-Mathematics::Vector3 ComputeLocalPositionFromWorld(const Mathematics::Vector3& worldPos,
-                                                   const Mathematics::Vector3& parentPos,
+Mathematics::WorldPosition ComputeLocalPositionFromWorld(const Mathematics::WorldPosition& worldPos,
+                                                   const Mathematics::WorldPosition& parentPos,
                                                    const Mathematics::Quaternion& parentRot,
                                                    const Mathematics::Vector3& parentScale);
 
-/// Sector-local world matrix rebuilt from the local Transforms up the Parent chain.
+/// Absolute world matrix rebuilt from the local Transforms up the Parent chain.
 ///
 /// Like ComputeWorldTRSForEntity it reads Transform rather than the cached
 /// WorldTransform, so it sees an edit made earlier in the same frame. An entity
@@ -61,10 +62,8 @@ bool TryComputeHierarchyWorldMatrix(ECS::World* world,
                                     ECS::EntityHandle entity,
                                     Mathematics::Matrix4x4& outMatrix);
 
-/// Absolute world matrix: the hierarchy world matrix composed with the entity's
-/// WorldSectorCoord through Components::ComposeEffectiveWorldTransform, the same
-/// composition the render and pick paths use. Equal to the hierarchy matrix for an
-/// entity without a sector tag.
+/// Absolute world matrix rebuilt from the exact hierarchy pose, with translation
+/// narrowed to float at this matrix boundary. WorldTransform positions are absolute.
 bool TryComputeEntityWorldMatrix(ECS::World* world,
                                  ECS::EntityHandle entity,
                                  Mathematics::Matrix4x4& outMatrix);
@@ -78,7 +77,7 @@ bool TryComputeEntityWorldMatrix(ECS::World* world,
 /// Returns false when the entity has no initialized body in a live physics world.
 bool TrySetPhysicsBodyWorldPose(ECS::World* world,
                                 ECS::EntityHandle entity,
-                                const Mathematics::Vector3& worldPos,
+                                const Mathematics::WorldPosition& worldPos,
                                 const Mathematics::Quaternion& worldRot);
 
 } // namespace GameEngine::Editor

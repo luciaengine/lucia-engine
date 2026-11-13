@@ -1,12 +1,12 @@
 #include "UI/Controls/ListView.h"
 #include "Input/InputSystem.h"
 #include "Input/KeyCodes.h"
+#include "Mathematics/Interpolation.h"
 #include "Platform/SystemMetrics.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/ScrollView.h"
-#include "DropFeedbackClasses.h"
 #include "UI/Controls/VirtualWindowCore.h"
-#include "UI/Interaction/DragDropManager.h"
+#include "UI/Interaction/DragDrop/DragDropManager.h"
 #include "UI/Interaction/ItemResizeGesture.h"
 #include "UI/Layout/ElementOverrideHelpers.h"
 #include "UI/StyleProperties.h"
@@ -88,7 +88,7 @@ ListView::ListView()
     auto headerHost = std::make_unique<UIElement>();
     m_HeaderHost = headerHost.get();
     m_HeaderHost->AddClass("list-header-host");
-    m_HeaderHost->Overrides()
+    m_HeaderHost->Style()
         .Set(Style::Display, DisplayMode::None)
         .Set(Style::FlexGrow, 0.0f)
         .Set(Style::FlexShrink, 0.0f)
@@ -111,7 +111,7 @@ ListView::ListView()
 
     auto sv = std::make_unique<ScrollView>();
     m_Scroll = sv.get();
-    m_Scroll->Overrides()
+    m_Scroll->Style()
         .Set(Style::FlexGrow, 1.0f)
         .Set(Style::MinWidth, StyleLength::Px(0.0f))
         .Set(Style::MinHeight, StyleLength::Px(0.0f));
@@ -218,8 +218,41 @@ void ListView::EnqueuePumpWork(UIManager& ui)
 
 void ListView::AutoScrollDuringDrag(float mouseX, float mouseY)
 {
-    if (m_Scroll)
-        m_Scroll->AutoScrollNearEdge(mouseX, mouseY);
+    if (!m_Scroll)
+        return;
+    UIElement* clip = m_Scroll->GetClipViewport();
+    if (!clip)
+        return;
+
+    const float vx = clip->GetLayoutX();
+    const float vy = clip->GetLayoutY();
+    const float vw = clip->GetLayoutWidth();
+    const float vh = clip->GetLayoutHeight();
+    if (!(vh > 0.0f) || !(vw > 0.0f))
+        return;
+    if (mouseX < vx || mouseX >= vx + vw || mouseY < vy || mouseY >= vy + vh)
+        return;
+
+    constexpr float kEdgePx = 28.0f;
+    constexpr float kMaxSpeedPxPerFrame = 18.0f;
+
+    const float distTop = mouseY - vy;
+    const float distBot = (vy + vh) - mouseY;
+
+    float dy = 0.0f;
+    if (distTop < kEdgePx)
+    {
+        const float t = Math::Clamp01((kEdgePx - distTop) / kEdgePx);
+        dy = -kMaxSpeedPxPerFrame * t;
+    }
+    else if (distBot < kEdgePx)
+    {
+        const float t = Math::Clamp01((kEdgePx - distBot) / kEdgePx);
+        dy = kMaxSpeedPxPerFrame * t;
+    }
+
+    if (dy != 0.0f)
+        m_Scroll->ScrollBy(0.0f, dy);
 }
 
 bool ListView::AcceptsPayload(UI::Interaction::PayloadTypeId typeId) const
@@ -287,11 +320,20 @@ void ListView::UpdateDropPreviewClasses()
     {
         if (!s.cell)
             continue;
-        const bool hovered = m_DropPreview.Visible &&
-                             m_DropPreview.Hit.Location == UI::Interaction::DropLocation::OnItem &&
-                             s.boundId != 0 &&
-                             s.boundId == m_DropPreview.Hit.TargetId;
-        UI::SetDropFeedbackClasses(*s.cell, hovered, m_DropPreview.Allowed);
+        s.cell->RemoveClass("drop-hover");
+        s.cell->RemoveClass("drop-allowed");
+        s.cell->RemoveClass("drop-denied");
+        if (m_DropPreview.Visible &&
+            m_DropPreview.Hit.Location == UI::Interaction::DropLocation::OnItem &&
+            s.boundId != 0 &&
+            s.boundId == m_DropPreview.Hit.TargetId)
+        {
+            s.cell->AddClass("drop-hover");
+            if (m_DropPreview.Allowed)
+                s.cell->AddClass("drop-allowed");
+            else
+                s.cell->AddClass("drop-denied");
+        }
     }
 }
 
@@ -309,7 +351,7 @@ void ListView::SetHeader(std::unique_ptr<UIElement> header)
 
     if (!header)
     {
-        m_HeaderHost->Overrides().Set(Style::Display, DisplayMode::None);
+        m_HeaderHost->Style().Set(Style::Display, DisplayMode::None);
         UI::Layout::ClearForcedHeight(*m_HeaderHost);
         m_HeaderHeightPx = 0;
         return;
@@ -317,7 +359,7 @@ void ListView::SetHeader(std::unique_ptr<UIElement> header)
 
     m_HeaderContent = header.get();
     m_HeaderWrapper->AddChild(std::move(header));
-    m_HeaderHost->Overrides().Set(Style::Display, DisplayMode::Flex);
+    m_HeaderHost->Style().Set(Style::Display, DisplayMode::Flex);
 
     // Ensure the host has a non-zero height even though the header wrapper is absolutely positioned.
     // We'll refine this on the next OnPostLayout() once the header content has a measured height.
@@ -872,7 +914,9 @@ void ListView::UnbindCell(int slot)
             ui->ClearHoverForSubtree(s.cell);
     }
     s.cell->RemoveClass("selected");
-    UI::SetDropFeedbackClasses(*s.cell, false, false);
+    s.cell->RemoveClass("drop-hover");
+    s.cell->RemoveClass("drop-allowed");
+    s.cell->RemoveClass("drop-denied");
     if (s.userContent)
         s.userContent->RemoveClass("selected");
     s.boundId = 0;
@@ -957,11 +1001,20 @@ bool ListView::BindCell(int slotIndex, int itemIndex, int yOffsetPx)
             slot.userContent->RemoveClass("selected");
     }
 
-    const bool dropHovered = m_DropPreview.Visible &&
-                             m_DropPreview.Hit.Location == UI::Interaction::DropLocation::OnItem &&
-                             lid != 0 &&
-                             lid == m_DropPreview.Hit.TargetId;
-    UI::SetDropFeedbackClasses(*slot.cell, dropHovered, m_DropPreview.Allowed);
+    slot.cell->RemoveClass("drop-hover");
+    slot.cell->RemoveClass("drop-allowed");
+    slot.cell->RemoveClass("drop-denied");
+    if (m_DropPreview.Visible &&
+        m_DropPreview.Hit.Location == UI::Interaction::DropLocation::OnItem &&
+        lid != 0 &&
+        lid == m_DropPreview.Hit.TargetId)
+    {
+        slot.cell->AddClass("drop-hover");
+        if (m_DropPreview.Allowed)
+            slot.cell->AddClass("drop-allowed");
+        else
+            slot.cell->AddClass("drop-denied");
+    }
 
     // Pass userContent to the binder so users get their actual element, not the wrapper
     if (m_ItemBinder && slot.userContent)
@@ -1133,7 +1186,7 @@ void ListView::UpdateVirtualization(VirtualizationCoordinator::Reason reason)
         if (changes.Version != m_LastProviderChangeVersion)
             m_LastProviderChangeVersion = changes.Version;
 
-        // A structural provider mutation (MarkStructureChanged) can arrive as
+        // C-7: a structural provider mutation (MarkStructureChanged) can arrive as
         // any changeset kind — items were added/removed/reordered even if the
         // reported ids are a Subset (or None). Treat structure-version movement
         // like an All change: force the full rebind and rebuild the height cache
@@ -1147,7 +1200,7 @@ void ListView::UpdateVirtualization(VirtualizationCoordinator::Reason reason)
 
         // An All change means same-id cells may carry new content and item heights
         // may have shifted, so force the BindCell subtree-refresh gate and rebuild
-        // the height cache next pass.
+        // the height cache next pass (mirrors the pre-core forceFullRebind).
         if (changes.Kind == ChangeSetKind::All)
         {
             m_DataDirty = true;
@@ -1186,7 +1239,7 @@ void ListView::UpdateVirtualization(VirtualizationCoordinator::Reason reason)
 
         // m_DataDirty forces a full rebind: bump the structure generation so the
         // guard cannot match m_Last and the core skips its ring shortcut. This is
-        // the single place the "m_DataDirty => full rebind" rule is applied and
+        // the single translation of the old "m_DataDirty => full rebind" rule and
         // covers provider swap, refresh, append, and selection-driven refreshes.
         if (m_DataDirty)
             ++m_StructureGeneration;
@@ -1205,8 +1258,8 @@ void ListView::UpdateVirtualization(VirtualizationCoordinator::Reason reason)
             m_WindowCore.Update(guard, reason, /*lanes=*/1, changesView, host,
                                 /*allowShrink=*/!UIElement::IsInEventDispatch());
 
-        // Forward the aggregated impact once; BindCell raises no per-cell
-        // notify. Impact mirrors
+        // Forward the aggregated impact once (accepted delta from the pre-core code:
+        // the per-cell notifies inside BindCell are gone). Impact mirrors
         // VirtualizationImpact bit-for-bit (static_asserted above).
         if (impact != UI::VirtualWindowCore::Impact::None)
         {
@@ -1773,9 +1826,9 @@ void ListView::SetContentWidth(float widthPx)
     if (m_Content)
     {
         if (m_ExplicitContentWidthPx > 0.0f)
-            m_Content->Overrides().Set(Style::MinWidth, StyleLength::Px((float)std::lround(m_ExplicitContentWidthPx)));
+            m_Content->Style().Set(Style::MinWidth, StyleLength::Px((float)std::lround(m_ExplicitContentWidthPx)));
         else
-            m_Content->Overrides().Reset(Style::MinWidth);
+            m_Content->Style().Reset(Style::MinWidth);
     }
     // Update header wrapper rect immediately so column resize takes effect this frame
     // instead of waiting for OnPostLayout (which would use the previous frame's width).

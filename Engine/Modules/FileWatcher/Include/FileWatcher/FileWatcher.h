@@ -1,15 +1,27 @@
 #pragma once
 
 #include "FileWatcher/FileIdentity.h"
+#include "Types/FunctionRef.h"
 #include "Types/Types.h"
 #include <atomic>
 #include <condition_variable>
 #include <filesystem>
+#include <memory>
 #include <mutex>
+#include <string_view>
 #include <thread>
+#include <vector>
+
+#ifdef PLATFORM_WINDOWS
+struct _OVERLAPPED;
+#endif
 
 namespace GameEngine
 {
+#ifndef PLATFORM_WINDOWS
+class DirectoryTreeWalk;
+#endif
+
 /**
  * @brief File change event types
  */
@@ -38,7 +50,12 @@ struct FileChangeEvent
 using FileChangeCallback = Function<void(const FileChangeEvent&)>;
 
 /**
- * @brief Cross-platform file system watcher
+ * @brief Cross-platform file system watcher.
+ *
+ * After the platform loses change events, the lost changes arrive later as ordinary
+ * per-file events from a rescan, with no event of their own for the loss; on any
+ * platform a directory created, renamed or deleted can arrive as per-file events
+ * instead of one event for the directory, and a change can occasionally be heard twice.
  */
 class FileWatcher
 {
@@ -118,7 +135,7 @@ class FileWatcher
     void WatchingThread();
 
     /**
-     * @brief Check if file extension should be watched
+     * @brief Check the name rules and the excluded-directory rules for a path that the platform reported
      */
     bool ShouldWatchFile(const std::filesystem::path& path) const;
 
@@ -139,6 +156,12 @@ class FileWatcher
     void WatchWindows();
 
     /**
+     * @brief Arm the next ReadDirectoryChangesW request on the watched directory.
+     * @return ERROR_SUCCESS when a request is pending, otherwise the reason there is none.
+     */
+    uint32 IssueDirectoryRead(void* directory, _OVERLAPPED& overlapped, std::vector<uint8>& buffer);
+
+    /**
      * @brief Process Windows file change notifications
      */
     void ProcessWindowsFileChanges(uint8* buffer, uint32 bufferSize);
@@ -150,16 +173,75 @@ class FileWatcher
     void WatchPolling();
 
     /**
-     * @brief Visits every regular file under the watch directory that passes
-     *        the extension and excluded-directory filters.
+     * @brief Record every watched file in the snapshot the next scan diffs against.
      */
-    void ForEachWatchedFile(const Function<void(const std::filesystem::directory_entry&)>& visit);
+    void SnapshotWatchedFiles();
+
+    /**
+     * @brief Notify a change the platform reported itself, after recording it in the
+     * snapshot, so a later rescan reports only the changes whose events were lost.
+     */
+    void NotifyReportedChange(const FileChangeEvent& event);
+
+    /**
+     * @brief Move the snapshot entries of the files under a renamed directory to its
+     * new path.
+     */
+    void MoveSnapshotEntriesUnder(const std::filesystem::path& oldDirectory,
+                                  const std::filesystem::path& newDirectory);
+
+    /**
+     * @brief Drop the snapshot entries of the files under a deleted directory.
+     */
+    void EraseSnapshotEntriesUnder(const std::filesystem::path& directory);
+
+    /**
+     * @brief React to the platform reporting that change events were lost (its
+     * notification buffer overflowed): rescan the tree against the snapshot and report
+     * every difference as an ordinary Created / Modified / Deleted / Renamed event, so
+     * subscribers see the lost changes the way they see any other. A walk that
+     * fails leaves the rescan owed to RetryOwedLostEventsRescan.
+     */
+    void RescanAfterLostEvents();
+
+    /**
+     * @brief Walk again for a lost-events rescan whose walk failed, if one is owed
+     * and the last walk for it is at least one poll interval old. The Windows loop
+     * calls it on each slice in which the platform reported nothing, until a walk
+     * succeeds. The polling backend owes nothing: every poll walks the tree.
+     */
+    void RetryOwedLostEventsRescan();
+
+    /**
+     * @brief Check the name rules of a watched file: the engine's own files, build
+     *        artifacts, hidden files and the extension filters.
+     */
+    bool IsWatchedFileName(std::string_view fileName) const;
+
+    /**
+     * @brief Visits every regular file under the watch directory that passes
+     *        the extension and excluded-directory filters, with its last write time.
+     * @return false when the watcher was asked to stop before the walk finished.
+     */
+    bool ForEachWatchedFile(
+        FunctionRef<void(const std::filesystem::path&, std::filesystem::file_time_type)> visit);
 
     /**
      * @brief One polling scan: diffs the tree against the previous scan and
      *        reports Created / Modified / Deleted / Renamed.
      */
     void PollOnce();
+
+    /**
+     * @brief Compare one file that the scan found with the snapshot. Record a change
+     *        for ReportScanChanges and change no snapshot entry.
+     */
+    void RecordScannedFile(const std::filesystem::path& path, std::filesystem::file_time_type lastWrite);
+
+    /**
+     * @brief Report the changes of a complete scan and apply them to the snapshot.
+     */
+    void ReportScanChanges();
 
     /**
      * @brief Sleep until the next poll is due, the watcher is stopping, or the
@@ -217,21 +299,63 @@ class FileWatcher
     void* m_ChangeSignalQueue = nullptr;
 #endif
 
-    // Polling backend: what the previous scan saw for each watched file. The
-    // identity pairs a path that vanished with one that appeared in the same
-    // scan into a single Renamed event. It is read when a path is first seen
-    // and again when its timestamp changes, because a safe-save replaces the
-    // file behind the path and with it the identity.
+    // Snapshot of the watched tree: what the last scan, or the last event the
+    // platform reported, saw for each watched file. The polling backend diffs
+    // every scan against it. The Windows backend keeps it current from the
+    // events it reports, an event for a directory moving or dropping the entries
+    // of the files under it, and diffs a rescan against it when the platform
+    // says events were lost. The identity pairs a path that vanished with one that
+    // appeared in the same scan into a single Renamed event. It is read when a
+    // path is first seen and again when its timestamp changes, because a
+    // safe-save replaces the file behind the path and with it the identity.
+    // Watcher thread only.
     struct PolledFile
     {
         std::filesystem::file_time_type LastWrite;
         FileIdentity Identity;
+        // The number of the last scan that found the file.
+        uint64 LastScan;
     };
-    HashMap<std::filesystem::path, PolledFile> m_PolledFiles;
+    using PolledFileMap = FastHashMap<std::filesystem::path, PolledFile>;
+    PolledFileMap m_PolledFiles;
+
+    // The state of one scan, kept from scan to scan so that a scan of a tree
+    // that did not change allocates nothing. Watcher thread only.
+    struct ModifiedFile
+    {
+        // The snapshot entry. It stays valid until the snapshot gets or loses an entry.
+        PolledFileMap::value_type* Entry;
+        PolledFile Scanned;
+    };
+    struct AppearedFile
+    {
+        std::filesystem::path Path;
+        PolledFile Scanned;
+        bool IsRenameTarget;
+    };
+    uint64 m_ScanNumber = 0;
+    std::vector<ModifiedFile> m_ScanModified;
+    // Files that are not in the snapshot, in walk order. Their Created events wait
+    // until the scan is complete: a file with the identity of a file that went in
+    // the same scan is that file's new name, not a new file.
+    std::vector<AppearedFile> m_ScanAppeared;
+    FastHashMap<FileIdentity, size_t> m_ScanAppearedByIdentity;
+#ifndef PLATFORM_WINDOWS
+    std::unique_ptr<DirectoryTreeWalk> m_Walk;
+    // The relative path that the excluded-directory rules read.
+    String m_ExclusionScratch;
+#endif
     // Whether the watch root was absent on the previous poll, so its going and
     // coming back are each logged once instead of every poll. A missing root is
     // a state (an asset mount mid-restage), not an error. Watcher thread only.
     bool m_WatchDirectoryMissing = false;
+    // Whether a lost-events rescan's walk failed and none has succeeded since,
+    // so the changes it was to report are still unreported. Watcher thread only.
+    bool m_LostEventsRescanOwed = false;
+    // When an owed rescan last walked. A walk of a large tree takes
+    // hundreds of milliseconds, so an owed rescan walks at most once per poll
+    // interval. Watcher thread only.
+    std::chrono::steady_clock::time_point m_LastOwedRescanWalk;
 
     // Debouncing and duplicate prevention. All accessed from watcher thread only.
     HashMap<std::filesystem::path, std::chrono::steady_clock::time_point> m_LastEventTimes;
@@ -262,6 +386,7 @@ class FileWatcher
     DISALLOW_COPY_AND_ASSIGN(FileWatcher);
 
     friend class FileWatcherExclusionTest;
+    friend class FileWatcherLostEventsTest;
 };
 
 } // namespace GameEngine

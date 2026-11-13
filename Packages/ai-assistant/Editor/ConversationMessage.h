@@ -54,8 +54,29 @@ struct ToolCall
     std::string Id;
     /// How the call ended, as the provider reported it.
     ToolCallEnd End = ToolCallEnd::Unknown;
-    /// The first line of the error a Failed call's result carried; empty otherwise.
+    /// The first line of the error the call's result carried (ClaudeSessionProvider::FirstErrorLine),
+    /// on a Failed call and on a Refused one alike; a later report with no text keeps it. Empty
+    /// when no report carried one.
     std::string Error;
+};
+
+/// A mark-up token a user message holds, with the mark-up's title when the message was sent.
+struct MarkupMention
+{
+    /// The token as typed (MarkupToken::Text).
+    std::string Token;
+    /// The title of the mark-up it named then; empty when it named none, the mark-up had no
+    /// title, or mark-ups could not be read (play mode).
+    std::string Title;
+};
+
+/// What a user message's mark-up tokens add to it when it is sent (MarkupContext::ForPrompt).
+struct SentMarkups
+{
+    /// What the turn sends after the message's text: the mark-up blocks; empty when it named none.
+    std::string Blocks;
+    /// One per token, in the prompt's order.
+    std::vector<MarkupMention> Mentions;
 };
 
 /// One message of a conversation in the AI Assistant panel.
@@ -66,15 +87,15 @@ struct ConversationMessage
     /// The message text: what the user sent, or the assistant's reply so far; at most
     /// Conversation::kMaxMessageBytes.
     std::string Text;
-    /// On a user message: the files picked with it, read when they were picked. Text files reach the
-    /// provider as blocks in SentText; images reach it as images, on this message's own turn only.
+    /// On a user message: the mark-ups its tokens named when it was sent. The row shows Text, with
+    /// a chip per token named by its mention's title.
+    SentMarkups Markups;
     std::vector<PromptFile> Files;
-    /// What a provider receives for a user message: its text, then its mark-up blocks, then the
-    /// blocks of its text files.
+    /// What a provider receives for a user message: its text, then its mark-up blocks.
     std::string SentText() const
     {
         std::string sent = Text;
-        for (const std::string& blocks : {PromptFiles::Blocks(Files)})
+        for (const std::string& blocks : {Markups.Blocks, PromptFiles::Blocks(Files)})
             if (!blocks.empty())
                 sent += "\n\n" + blocks;
         return sent;
@@ -85,8 +106,15 @@ struct ConversationMessage
     bool Retried = false;
     /// IAgentProvider::Id() of the provider that answered (empty on a user message).
     std::string ProviderId;
-    /// The model that answered, as named in settings (empty on a user message).
+    /// The model the reply asked for, as named in settings; empty for the provider's
+    /// default and on a user message.
     std::string Model;
+    /// The effort the reply asked for (an AiAssistantSettings::EffortChoices() id);
+    /// empty for the provider's default and on a user message.
+    std::string Effort;
+    /// The model that answered, as the provider reported it (TurnResult::Model); empty
+    /// until the turn finishes and when the provider reports none.
+    std::string AnsweredModel;
     /// When the message was created.
     std::chrono::system_clock::time_point Time;
     /// Where the message stands; a user message is always Complete.
@@ -96,6 +124,9 @@ struct ConversationMessage
     /// On a finished assistant message: what the turn said beside its text (the
     /// failure and its fix, or why a reply ended short); empty otherwise.
     std::string Notice;
+    /// On a Failed assistant message: the setup check refused the turn before a reply was
+    /// asked for (TurnResult::NotReady), so Notice is the failed step's finding and fix.
+    bool NotReady = false;
     /// The provider's cost estimate for the turn that wrote the message, in US
     /// dollars; shown, never summed. Zero where the provider reports none.
     double CostUsd = 0.0;

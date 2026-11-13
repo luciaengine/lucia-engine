@@ -3,38 +3,33 @@
 // analog of Unity's "outermost prefab root" pick).
 #pragma once
 
-#include <vector>
-
 #include "ECS/Entity.h"
+
+#include <vector>
 
 namespace GameEngine::ECS
 {
 class World;
 }
 
-namespace GameEngine::Editor::Picking
+namespace GameEngine::Scene
 {
 struct PickHit;
+}
 
-// Resolve the outermost registered authoring root at or above the hit, when
-// present. Otherwise select the topmost contiguous
-// ancestor that belongs to the same model instance as `entity` — mesh
-// ancestors referencing the same model asset, plus the Transform-only
-// container/helper nodes ModelEntityFactory creates inside one instance.
-// Plain grouping nodes whose subtree renders anything from a different asset
-// are never crossed, so deep scene hierarchies (City > Buildings > Room)
-// don't swallow the pick. Without an authoring root, entities without an asset-backed MeshRenderer
-// (lights, probes, primitives, plugin pick-root components) resolve to
-// themselves.
+namespace GameEngine::Editor::Picking
+{
+
+// The entity a root-mode pick selects: the outermost climb root (IsPickClimbRoot) at or above
+// `entity`; else the topmost ancestor of the same model instance, never across a node that renders
+// another asset; else `entity` itself.
 ECS::EntityHandle ResolvePickRoot(ECS::World& world, ECS::EntityHandle entity);
 
-// Ordered click-through candidates from a distance-sorted, pickability-
-// filtered hit list. Root mode prepends the nearest hit's instance root:
-// [root, nearest exact hit, deeper exact hits...]. Generated runtime pieces
-// collapse to their root in this list; authored children stay independent. Exact mode is just the
-// exact hit entities nearest-to-farthest. Deduplicated, order preserved.
+// Ordered click-through candidates from a distance-sorted, pickability-filtered hit list.
+// Root mode: the nearest hit's root, then each hit; a runtime-only hit becomes its outermost pick climb root if it has one.
+// Exact mode: the hits nearest to farthest. Deduplicated, order preserved.
 void BuildPickCandidates(ECS::World& world,
-                         const std::vector<PickHit>& sortedHits,
+                         const std::vector<Scene::PickHit>& sortedHits,
                          bool exactPick,
                          std::vector<ECS::EntityHandle>& outCandidates);
 } // namespace GameEngine::Editor::Picking

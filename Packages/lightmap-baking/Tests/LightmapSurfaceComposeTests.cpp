@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Materials/ShaderComposer.h"
+#include "Rendering/Materials/Shader/ShaderComposer.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "StagedTestPaths.h"
 #include <atomic>

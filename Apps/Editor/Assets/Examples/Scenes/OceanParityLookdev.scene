@@ -43,7 +43,7 @@ Transform.rotation = (0.14, 0, 0, 0.99015)
 PostProcessVolume.enabled = true
 PostProcessVolume.weight = 1
 PostProcessVolume.isGlobal = true
-PostProcessVolume.tonemap = 4
+PostProcessVolume.look = Neutral
 
 [entity id="ocean"]
 Name.value = "Ocean - shadows, materials and GPU spray"

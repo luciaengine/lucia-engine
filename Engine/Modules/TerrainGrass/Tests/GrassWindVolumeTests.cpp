@@ -3,8 +3,8 @@
 #include "ECS/ECSTemplates.h"
 #include "Engine/Rendering/WindVolumeResolver.h"
 #include "GlslShim.h"
+#include <bit>
 #include <gtest/gtest.h>
-#include <cstring>
 
 namespace Shader
 {
@@ -26,25 +26,22 @@ ECS::EntityHandle AddWind(ECS::World& world, Components::WindVolume v,
     world.AddComponentImmediate(e, xf);
     return e;
 }
-std::vector<Rendering::WindVolumeGPU> ExtractGPU(ECS::World& world, uint32 mask = ~0u)
+std::vector<Rendering::WindVolumeGPU> ExtractGPU(ECS::World& world)
 {
     std::vector<Rendering::WindVolumeGPU> out;
-    WindVolumeResolver::ExtractGPU(world, out, mask);
+    WindVolumeResolver::ExtractGPU(world, out);
     return out;
 }
-void CheckParity(ECS::World& world, float x, float y, float z, uint32 mask = ~0u)
+void CheckParity(ECS::World& world, float x, float y, float z)
 {
     const ResolvedWind base{0.8f, 0.1f, -0.6f, 0.16f, 0.9f, 20.0f, 0.0f};
     auto gpu = Shader::GrassResolvedWind{Shader::vec3(base.VelocityX, base.VelocityY, base.VelocityZ),
         base.Turbulence, base.GustFrequency, base.GustScale, base.Weight};
-    for (const auto& packed : ExtractGPU(world, mask))
+    for (const auto& packed : ExtractGPU(world))
     {
-        Shader::GrassWindVolume volume;
-        static_assert(sizeof(volume) == sizeof(packed));
-        std::memcpy(&volume, &packed, sizeof(volume));
-        gpu = Shader::grassBlendVolume(gpu, volume, Shader::vec3(x, y, z));
+        gpu = Shader::grassBlendVolume(gpu, std::bit_cast<Shader::GrassWindVolume>(packed), Shader::vec3(x, y, z));
     }
-    const auto cpu = WindVolumeResolver::ResolveAt(world, x, y, z, base, mask);
+    const auto cpu = WindVolumeResolver::ResolveAt(world, x, y, z, base);
     EXPECT_NEAR(cpu.VelocityX, gpu.velocity.x, 1e-5f);
     EXPECT_NEAR(cpu.VelocityY, gpu.velocity.y, 1e-5f);
     EXPECT_NEAR(cpu.VelocityZ, gpu.velocity.z, 1e-5f);
@@ -67,10 +64,10 @@ TEST(GrassWindVolumes, ShaderMatchesCpuForEveryShapeAndBlendAtRotatedScaledSites
         v.Weight = 0.65f;
         v.Speed = 3.0f;
         Components::WorldTransform xf{};
-        xf.matrix[0] = 0; xf.matrix[2] = -4;
-        xf.matrix[5] = 8;
-        xf.matrix[8] = 2; xf.matrix[10] = 0;
-        xf.matrix[12] = 10; xf.matrix[13] = 2; xf.matrix[14] = -4;
+        xf.Basis[0] = glm::vec3(0.0f, 0.0f, -4.0f);
+        xf.Basis[1] = glm::vec3(0.0f, 8.0f, 0.0f);
+        xf.Basis[2] = glm::vec3(2.0f, 0.0f, 0.0f);
+        xf.Position = Mathematics::WorldPosition{10.0, 2.0, -4.0};
         AddWind(world, v, xf);
         for (int x = 5; x <= 15; ++x)
         for (int y = -4; y <= 8; ++y)
@@ -98,19 +95,17 @@ TEST(GrassWindVolumes, PriorityTiesGlobalLocalAndCalmBlendMatchCpu)
     }
 }
 
-TEST(GrassWindVolumes, DisabledFilteredAndRemovedVolumesLeaveNoSnapshot)
+TEST(GrassWindVolumes, DisabledAndRemovedVolumesLeaveNoSnapshot)
 {
     ECS::World world;
     Components::WindVolume v{};
     ECS::Entity(&world, AddWind(world, v)).SetEnabled<Components::WindVolume>(false);
     auto disabled = AddWind(world, v);
     world.AddComponentImmediate(disabled, ECS::Disabled{});
-    v.LayerMask = 2;
-    auto filtered = AddWind(world, v);
-    EXPECT_TRUE(ExtractGPU(world, 1).empty());
-    EXPECT_EQ(ExtractGPU(world, 2).size(), 1u);
-    CheckParity(world, 0, 0, 0, 1);
-    world.RemoveComponentImmediate<Components::WindVolume>(filtered);
+    auto live = AddWind(world, v);
+    EXPECT_EQ(ExtractGPU(world).size(), 1u);
+    CheckParity(world, 0, 0, 0);
+    world.RemoveComponentImmediate<Components::WindVolume>(live);
     EXPECT_TRUE(ExtractGPU(world).empty());
 }
 
@@ -118,7 +113,7 @@ TEST(GrassWindVolumes, DegenerateTransformOnlyAffectsGlobalVolumes)
 {
     ECS::World world;
     Components::WorldTransform xf{};
-    xf.matrix[0] = 0;
+    xf.Basis[0].x = 0.0f;
     Components::WindVolume v{};
     AddWind(world, v, xf);
     CheckParity(world, 0, 0, 0);

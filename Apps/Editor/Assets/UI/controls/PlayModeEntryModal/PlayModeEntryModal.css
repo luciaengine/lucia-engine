@@ -1,0 +1,22 @@
+/* PlayModeEntryModal: the build progress bar and the failure state. The window, header, message
+   and footer come from Modal.css. */
+
+/* The track and fill are the ProgressBar's default look. */
+.play-entry-progress {
+	width: 100%;
+}
+
+/* The pulse dims only the fill, so the track keeps its contrast against the plate. */
+.play-entry-progress .progress-bar-fill {
+	opacity: 1;
+	transition: opacity 0.7s ease;
+}
+
+/* The low half of the pulse shown while the build gives no measure of progress. */
+.play-entry-progress-dim .progress-bar-fill {
+	opacity: 0.35;
+}
+
+.play-entry-failed {
+	color: var(--ui_color_warning_text);
+}

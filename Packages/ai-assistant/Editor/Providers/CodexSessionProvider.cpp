@@ -72,7 +72,7 @@ std::vector<std::string> CodexSessionProvider::TurnArguments(const AgentTurnRequ
     if (!WorkingDirectory().empty())
     {
         arguments.push_back("-C");
-        arguments.push_back(PathUtf8(WorkingDirectory()));
+        arguments.push_back(WorkingDirectory().string());
     }
     arguments.insert(arguments.end(), {"-s", "read-only"});
     if (request.Tools)
@@ -93,10 +93,6 @@ std::vector<std::string> CodexSessionProvider::TurnArguments(const AgentTurnRequ
         arguments.push_back("resume");
         arguments.push_back(request.SessionId);
     }
-    // The images go last, so they belong to `exec` or, when resuming, to `resume` (each has its
-    // own --image for the prompt it sends); in the `=` form the prompt's `-` is not read as one.
-    for (const PromptFile& image : request.Images)
-        arguments.push_back("--image=" + PathUtf8(image.Path));
     arguments.push_back("-");
     return arguments;
 }
@@ -113,7 +109,7 @@ std::string CodexSessionProvider::ToolsBlocker(const std::string& node, uint16_t
         return {};
     if (output.Failure.empty() && output.Stdout.find("CONNECTED") != std::string::npos)
         return "Codex's shell can reach the editor's port outside the assistant's checks, so Codex runs as a "
-               "conversation only. Use Claude (local session) for the editor's tools.";
+               "conversation only. Use Claude (Subscription) for the editor's tools.";
     std::string reason = output.Failure.empty() ? "exit code " + std::to_string(output.ExitCode) : output.Failure;
     if (const std::string stderrLine = QuotedLastLine(output.Stderr); !stderrLine.empty())
         reason += ": " + stderrLine;
@@ -164,14 +160,11 @@ void CodexSessionProvider::ReadItem(const nlohmann::json& item, TurnState& turn)
     const std::string type = JsonFields::String(item, "type");
     if (type == "agent_message")
     {
-        std::string text = JsonFields::String(item, "text");
-        if (text.empty())
-            return;
-        // Each message arrives whole; a later one starts a new paragraph.
-        if (!turn.Result.Text.empty())
-            text.insert(0, "\n\n");
-        turn.Result.Text += text;
-        turn.Events.OnTextDelta(text);
+        // Each message arrives whole, as a block of its own.
+        turn.TextBlocks.BeginBlock();
+        const std::string_view appended = turn.TextBlocks.Append(turn.Result.Text, JsonFields::String(item, "text"));
+        if (!appended.empty())
+            turn.Events.OnTextDelta(appended);
     }
     else if (type != "error" && type != "reasoning" && !type.empty())
     {
@@ -179,21 +172,65 @@ void CodexSessionProvider::ReadItem(const nlohmann::json& item, TurnState& turn)
     }
 }
 
-CliSessionProvider::LoginStatus CodexSessionProvider::CheckLogin(const CancelToken& cancel) const
+SetupStep CodexSessionProvider::CheckLogin(const CancelToken& cancel, SetupSurface surface) const
 {
     const CommandOutput output = RunCommand({"login", "status"}, cancel);
+    SetupStep step{.Name = "Logged in", .State = SetupStepState::Failed, .Program = Executable(),
+                   .ExitCode = output.ExitCode};
     if (!output.Failure.empty())
-        return {false, output.Failure};
+    {
+        step.Found = output.Failure + ".";
+        step.Fix = ProgramFix(surface);
+        return step;
+    }
     if (output.ExitCode != 0)
-        return {false, "Not logged in: run `codex login`."};
+    {
+        step.Found = "Not logged in.";
+        step.Fix = LoginFix("codex login", surface);
+        return step;
+    }
 
-    // Codex 0.162 prints the status on stderr.
+    // Codex 0.162 prints the status on stderr. Never FirstOutput: the line can end in a
+    // masked key.
     std::string_view line = FirstLine(output.Stdout);
     if (line.empty())
         line = FirstLine(output.Stderr);
     if (const std::size_t cut = line.find(" - "); cut != std::string_view::npos)
         line = line.substr(0, cut);
-    return {true, line.empty() ? std::string("Logged in") : std::string(line)};
+    step.State = SetupStepState::Passed;
+    step.Found = line.empty() ? std::string("Logged in") : std::string(line);
+    return step;
+}
+
+SetupStep CodexSessionProvider::CheckProgram(const CancelToken& cancel, SetupSurface surface) const
+{
+    constexpr std::string_view kCommand = "codex --version";
+    const CommandOutput output = RunCommand({"--version"}, cancel);
+    if (std::optional<SetupStep> failed = FailedProgramStep(output, kCommand, surface))
+        return *std::move(failed);
+    if (output.ExitCode != 0)
+        return NotTheCliStep(output, surface);
+    return {.Name = "Codex", .State = SetupStepState::Passed, .Found = output.FirstOutput + " at " + Executable() + ".",
+            .Program = Executable(), .ExitCode = output.ExitCode, .FirstOutput = output.FirstOutput};
+}
+
+std::string CodexSessionProvider::ProgramToPick() const
+{
+#if defined(_WIN32)
+    return "codex.exe (the native Codex program, not npm's codex.cmd)";
+#else
+    return "the codex program";
+#endif
+}
+
+std::string CodexSessionProvider::InstallSource() const
+{
+    return "install the Codex CLI from github.com/openai/codex";
+}
+
+std::string CodexSessionProvider::DesktopAppHint(bool) const
+{
+    return {};
 }
 
 CliSessionList CodexSessionProvider::ListSessions(const CancelToken& cancel) const
@@ -204,11 +241,5 @@ CliSessionList CodexSessionProvider::ListSessions(const CancelToken& cancel) con
 bool CodexSessionProvider::IsUnknownSessionError(std::string_view stderrTail) const
 {
     return stderrTail.find("no rollout found for thread id") != std::string_view::npos;
-}
-
-std::string CodexSessionProvider::CheckReadiness(const CancelToken& cancel) const
-{
-    const LoginStatus login = CheckLogin(cancel);
-    return login.LoggedIn ? std::string() : login.Text;
 }
 } // namespace GameEngine

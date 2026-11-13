@@ -884,7 +884,7 @@ TEST(FlexDefaultsParity, ContainerDisplayFlipRestylesItsChildren)
     ExpectRect(Rel(fx, "d28root", "d28a"), 0.0f, 0.0f, 200.0f, 80.0f, "d28a block");
     ExpectRect(Rel(fx, "d28root", "d28b"), 0.0f, 80.0f, 200.0f, 80.0f, "d28b block");
 
-    container->Overrides().Set(GameEngine::Style::Display, GameEngine::DisplayMode::Flex);
+    container->Style().Set(GameEngine::Style::Display, GameEngine::DisplayMode::Flex);
     fx.Settle();
 
     // A flex column with the CSS initial shrink of 1 takes the 60px of overflow
@@ -892,7 +892,7 @@ TEST(FlexDefaultsParity, ContainerDisplayFlipRestylesItsChildren)
     ExpectRect(Rel(fx, "d28root", "d28a"), 0.0f, 0.0f, 200.0f, 50.0f, "d28a flex");
     ExpectRect(Rel(fx, "d28root", "d28b"), 0.0f, 50.0f, 200.0f, 50.0f, "d28b flex");
 
-    container->Overrides().Set(GameEngine::Style::Display, GameEngine::DisplayMode::Block);
+    container->Style().Set(GameEngine::Style::Display, GameEngine::DisplayMode::Block);
     fx.Settle();
 
     ExpectRect(Rel(fx, "d28root", "d28a"), 0.0f, 0.0f, 200.0f, 80.0f, "d28a block again");

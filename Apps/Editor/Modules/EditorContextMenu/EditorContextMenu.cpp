@@ -1,9 +1,11 @@
 #include "EditorContextMenu/EditorContextMenu.h"
+#include "EditorContextMenu/DirectoryMenuEditItems.h"
+#include "EditorContextMenu/EditMenuGroup.h"
 
 #include "Platform/ContextMenu.h"
 #include "Platform/Clipboard.h"
 #include "EditorContextMenu/UIContextMenu.h"
-#include "Types/StringUtils.h"
+#include "Types/PathUtils.h"
 #include "Platform/Shell.h"
 #include "Platform/Window.h"
 #include "Scripting/EditorScriptMenuRegistry.h"
@@ -16,6 +18,7 @@
 #include "Editor/Vcs/EditorVcsProviderRegistry.h"
 #include "VCSIntegration/IVCSIntegration.h"
 #include "Editor/Settings/SettingsStore.h"
+#include "Editor/Shortcuts/EditorShortcuts.h"
 #include "Panels/SettingsPanel.h"
 #include "Assets/AssetRegistry.h"
 #include "Assets/CodeAssetTemplates.h"
@@ -49,7 +52,6 @@ constexpr uint32_t kCmdDirectoryCreateMaterial = 0x300D;
 constexpr uint32_t kCmdDirectoryCreateShaderGraph = 0x3023;
 constexpr uint32_t kCmdDirectoryCreateSurfaceShader = 0x300E;
 constexpr uint32_t kCmdDirectoryCreateNavGrid = 0x300F;
-constexpr uint32_t kCmdDirectoryCreateNavMesh = 0x3014;
 // The six "Create code asset" command ids live in Editor::kCmdCreate* (CodeAssetTemplates.h)
 // so the descriptor table and this dispatch switch share a single source of truth.
 constexpr uint32_t kCmdDirectoryCreateAnimationLibrary = 0x3019;
@@ -58,7 +60,6 @@ constexpr uint32_t kCmdDirectoryCreateTimeline = 0x301B;
 constexpr uint32_t kCmdDirectoryCreateClipSet = 0x301C;
 constexpr uint32_t kCmdDirectoryCreateSpriteFrames = 0x301D;
 constexpr uint32_t kCmdDirectoryImport = 0x301E;
-constexpr uint32_t kCmdDirectoryDelete = 0x3022;
 constexpr uint32_t kCmdAssetDbFixUpRedirects = 0x3006;
 constexpr uint32_t kCmdAssetDbReportMissing = 0x3007;
 constexpr uint32_t kCmdAssetDbReportConflicts = 0x3008;
@@ -397,19 +398,19 @@ void EditorContextMenu::EnsureMenu()
                     m_OnDirectoryAction(path, DirectoryAction::CreateNavGrid);
                 }
                 break;
-            case kCmdDirectoryCreateNavMesh:
-                if (m_OnDirectoryAction)
-                {
-                    m_OnDirectoryAction(path, DirectoryAction::CreateNavMesh);
-                }
-                break;
             case kCmdDirectoryImport:
                 if (m_OnDirectoryAction)
                 {
                     m_OnDirectoryAction(path, DirectoryAction::Import);
                 }
                 break;
-            case kCmdDirectoryDelete:
+            case kDirectoryCmdRename:
+                if (m_OnDirectoryAction)
+                {
+                    m_OnDirectoryAction(path, DirectoryAction::Rename);
+                }
+                break;
+            case kDirectoryCmdDelete:
                 if (m_OnDirectoryAction)
                 {
                     m_OnDirectoryAction(path, DirectoryAction::Delete);
@@ -657,9 +658,6 @@ void EditorContextMenu::EnsureMenu()
 	            // Items other modules registered for folders.
 	            if (m_IsDirectory && Editor::EditorMenuRegistry::Get().TryInvokeDirectoryItem(cmd, path))
 	                break;
-	            // Items other modules registered for files.
-	            if (!m_IsDirectory && Editor::EditorMenuRegistry::Get().TryInvokeAssetFileItem(cmd, path))
-	                break;
 	            // Script-driven context menu items (Editor-managed snapshot)
 	            {
 	                uint64_t dom = 0;
@@ -751,7 +749,10 @@ void EditorContextMenu::ShowAssetMenu(const std::filesystem::path& assetPath,
                         tagLabel == "Edit tag" ? EditorIcons::kBrush : EditorIcons::kPlus);
     }
 
-    builder.AddItem("Open", kCmdAssetOpen, MenuItemFlag_None, 0, EditorIcons::kFolderOpen)
+    // The open rows lead, then the edits (Rename, Delete) between two separators, then the rest:
+    // the order of the folder tree's menu and the Hierarchy's entity menu.
+    constexpr int kPriorityOpenRows = -60;
+    builder.AddItem("Open", kCmdAssetOpen, MenuItemFlag_None, kPriorityOpenRows, EditorIcons::kFolderOpen)
         .AddItem(showLabel, kCmdAssetShowInFileManager, MenuItemFlag_None, 0, EditorIcons::kEye)
         .AddItem("Copy Full Path", kCmdAssetCopyPath, MenuItemFlag_None, 0, EditorIcons::kCopy);
 
@@ -768,7 +769,7 @@ void EditorContextMenu::ShowAssetMenu(const std::filesystem::path& assetPath,
     // This sets ProjectSettings.json + updates RenderServices live.
     if (!isDirectory)
     {
-        std::string ext = ToLowerAscii(assetPath.extension().string());
+        std::string ext = LowerCaseExtension(assetPath);
         if (ext == ".rendergraph" || ext == ".renderpipeline")
         {
             builder.AddItem("Render Pipeline", 0, MenuItemFlag_None, -500, EditorIcons::kSettings);
@@ -776,20 +777,14 @@ void EditorContextMenu::ShowAssetMenu(const std::filesystem::path& assetPath,
         }
     }
 
-    // File actions are owned and registered by the feature accepting the file.
-    if (!isDirectory)
-    {
-        for (const auto& item : Editor::EditorMenuRegistry::Get().AssetFileMenuSnapshot(assetPath))
-            builder.AddItem(item.Path, item.CommandId, MenuItemFlag_None, item.Priority, item.Icon);
-    }
-
     // If a handler is provided, allow opening C# scripts in the internal Script Editor.
     if (!isDirectory && m_OnEditAction)
     {
-        std::string ext = ToLowerAscii(assetPath.extension().string());
+        std::string ext = LowerCaseExtension(assetPath);
         if (ext == ".cs" || ext == ".rendergraph" || ext == ".renderpipeline" || ext == ".glsl" || ext == ".hlsl")
         {
-            builder.AddItem("Edit (Internal)", kCmdAssetEditInternal, MenuItemFlag_None, 0, EditorIcons::kBrush);
+            builder.AddItem("Edit (Internal)", kCmdAssetEditInternal, MenuItemFlag_None, kPriorityOpenRows + 1,
+                            EditorIcons::kBrush);
         }
     }
 
@@ -832,13 +827,14 @@ void EditorContextMenu::ShowAssetMenu(const std::filesystem::path& assetPath,
         }
     }
 
-    // Sorted by (priority, path): the separator leads, Rename sits above Delete.
     if (onRename || onDelete)
-        builder.AddItem("---file-ops", 0, MenuItemFlag_None, 998);
+        builder.AddItem("---file-ops", 0, MenuItemFlag_None, EditMenuGroup::kSeparatorPriority)
+            .AddItem("---file-ops-end", 0, MenuItemFlag_None, EditMenuGroup::kEndSeparatorPriority);
     if (onRename)
-        builder.AddItem("Rename", kCmdAssetRename, MenuItemFlag_None, 999, EditorIcons::kPencil);
+        builder.AddItem("Rename", kCmdAssetRename, MenuItemFlag_None, EditMenuGroup::kRenamePriority, EditorIcons::kPencil,
+                        Editor::CatalogShortcutLabel("Assets", "Rename"));
     if (onDelete)
-        builder.AddItem("Delete", kCmdAssetDelete, MenuItemFlag_None, 1000, EditorIcons::kTrash);
+        builder.AddItem("Delete", kCmdAssetDelete, MenuItemFlag_None, EditMenuGroup::kDeletePriority, EditorIcons::kTrash);
 
     builder.Build(m_Menu.get());
 
@@ -856,7 +852,7 @@ void EditorContextMenu::ShowAssetMenu(const std::filesystem::path& assetPath,
             ? std::vector<std::filesystem::path>{assetPath}
             : m_PathsForBookmarks;
         const std::vector<EditorTagDefinition> tags = EditorTags::Load();
-        m_Menu->SetStateProvider([this, paths, tags](uint32_t cmd) -> MenuItemState {
+        m_Menu->SetStateProvider([paths, tags](uint32_t cmd) -> MenuItemState {
             MenuItemState state{.Enabled = true, .Checked = false};
             if (cmd >= kCmdAssetAssignTagBase && cmd < kCmdAssetAssignTagBase + kCmdAssetAssignTagMaxCount)
             {
@@ -904,7 +900,7 @@ void EditorContextMenu::ShowAssetMenu(const std::filesystem::path& assetPath,
 void EditorContextMenu::ShowDirectoryMenu(const std::filesystem::path& directoryPath,
                                           float x, float y,
                                           const std::function<void(const std::filesystem::path&, DirectoryAction)>& onDirectoryAction,
-                                          bool includeDelete)
+                                          bool includeEdits)
 {
     if (!m_Window)
     {
@@ -959,8 +955,7 @@ void EditorContextMenu::ShowDirectoryMenu(const std::filesystem::path& directory
         .AddItem("Create/Animation/Clip Set", kCmdDirectoryCreateClipSet, MenuItemFlag_None, -1080, EditorIcons::kFilm)
         .AddItem("Create/Animation/Sprite Frames", kCmdDirectoryCreateSpriteFrames, MenuItemFlag_None, -1079, EditorIcons::kFilm)
         .AddItem("Create/---6", 0, MenuItemFlag_None, -1078)
-        .AddItem("Create/Navigation Grid", kCmdDirectoryCreateNavGrid, MenuItemFlag_None, -1077, EditorIcons::kNavGrid)
-        .AddItem("Create/Navigation Mesh", kCmdDirectoryCreateNavMesh, MenuItemFlag_None, -1076, EditorIcons::kNavGrid);
+        .AddItem("Create/Navigation Grid", kCmdDirectoryCreateNavGrid, MenuItemFlag_None, -1077, EditorIcons::kNavGrid);
 
     // The six "Create code asset" rows are table-driven (sorted into place by their priorities).
     {
@@ -1016,11 +1011,8 @@ void EditorContextMenu::ShowDirectoryMenu(const std::filesystem::path& directory
         }
     }
 
-    if (includeDelete)
-    {
-        builder.AddItem("---delete", 0, MenuItemFlag_None, 1000)
-            .AddItem("Delete", kCmdDirectoryDelete, MenuItemFlag_None, 1000, EditorIcons::kTrash);
-    }
+    if (includeEdits)
+        AddDirectoryEditItems(builder);
 
     builder.Build(m_Menu.get());
 

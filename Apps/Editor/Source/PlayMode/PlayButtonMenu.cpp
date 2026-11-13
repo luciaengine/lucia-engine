@@ -19,6 +19,7 @@ std::vector<ContextMenuManipulator::Item> PlayButtonMenuItems(
 {
     std::vector<ContextMenuManipulator::Item> items;
     items.push_back({.Path = kPlayButtonAudioEnabledItem,
+                     .IconPath = AudioEnabledSettings::IsEnabled(audio) ? EditorIcons::kAudioEnabled : EditorIcons::kAudioMuted,
                      .OnActivate =
                          [audio, onChanged = std::move(onAudioEnabledChanged)]
                          {
@@ -26,14 +27,8 @@ std::vector<ContextMenuManipulator::Item> PlayButtonMenuItems(
                              if (onChanged)
                                  onChanged(enabled);
                          },
-                     .State =
-                         [audio]
-                         {
-                             const bool enabled = AudioEnabledSettings::IsEnabled(audio);
-                             return ContextMenuManipulator::ItemState{
-                                 .Checked = enabled,
-                                 .IconPath = enabled ? EditorIcons::kAudioEnabled : EditorIcons::kAudioMuted};
-                         }});
+                     .State = [audio]
+                     { return ContextMenuManipulator::ItemState{.Checked = AudioEnabledSettings::IsEnabled(audio)}; }});
     return items;
 }
 

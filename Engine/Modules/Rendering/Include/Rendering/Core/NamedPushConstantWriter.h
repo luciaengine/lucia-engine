@@ -6,7 +6,7 @@
 #include <cstring>
 #include <cstdint>
 #include <optional>
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 #include "Rendering/Core/CommandList.h"
 
 namespace GameEngine { namespace Rendering {

@@ -2,7 +2,7 @@
 
 #include "Logger/Logger.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
@@ -88,7 +88,6 @@ void DepthUpsamplePass::Declare(RenderGraph::RGFrame& frame,
         passName.c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
-            p.UsePipeline(variant.PipelineId);
             RenderGraph::RGAttachmentOps depthOps{};
             depthOps.Load = RenderGraph::RGLoadOp::DontCare;
             depthOps.Store = RenderGraph::RGStoreOp::Store;

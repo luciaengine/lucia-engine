@@ -39,6 +39,10 @@ set(ASSET_TEST_SOURCES
     AssetDbIgnoresMetaSidecarsTests.cpp
     AssetDbTypeInferencePersistenceTests.cpp
     TerrainMaterialLibraryAssetTests.cpp
+    NavSurfaceAssetTests.cpp
+    DayCycleProfileAssetTests.cpp
+    AiOptionSetAssetTypeTests.cpp
+    AiStateTreeAssetTypeTests.cpp
     AssetDbHardeningTests.cpp
     AssetDbDerivedReconcileTests.cpp
     AssetDbDerivedRedirectTests.cpp
@@ -69,6 +73,9 @@ set(ASSET_TEST_SOURCES
     BuildRenderPipelineCollectionTests.cpp
     BuildSceneCollectionTests.cpp
     BuildDefaultUIFontCollectionTests.cpp
+    BuildUIControlAssetCollectionTests.cpp
+    WebExportContentTests.cpp
+    ShipRulesTests.cpp
     FbxLoaderOptionsTests.cpp
 )
 
@@ -145,6 +152,7 @@ add_executable(AssetPerformanceBenchmarks
     AssetPerformanceRegressionFramework.cpp
     AssetDbLargeProjectPerformanceTests.cpp
     SnapshotWarmStartBenchmark.cpp
+    AssetReadBenchmark.cpp
     ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp
 )
 

@@ -19,9 +19,8 @@
 #include "Components/Rendering/LocalBounds.h"
 #include "Components/Spline/SplineComponent.h"
 #include "Components/Transform.h"
-#include "Components/Rendering/WorldSectorCoord.h"
 #include "Editor/Entities/EditorComponentTraits.h"
-#include "Editor/Entities/EntityWorldPose.h"
+#include "Editor/Entities/EditorECSHelpers.h"
 #include "SceneView/LightGizmo.h"
 #include "SceneView/SceneViewProjection.h"
 #include "SplineECS/SplineService.h"
@@ -35,15 +34,16 @@
 #include "Mathematics/VectorOps.h"
 #include "Mathematics/Vector2.h"
 #include "Mathematics/Vector3.h"
-#include "Platform/Environment.h"
+#include "Mathematics/WorldPosition.h"
 #include "PhysicsECS/Components/PhysicsBody.h"
-#include "Picking/MeshPickingService.h"
+#include "Picking/ScenePick.h"
 #include "Types/Color.h"
 #include "Types/ColorUtils.h"
 #include "UndoRedo/MultiEntityComponentSnapshot.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <vector>
@@ -63,7 +63,17 @@ namespace
 {
 inline bool IsFrameTraceEnabled()
 {
-    static bool s_Enabled = Platform::EnvironmentSwitchEnabled("GE_FRAME_TRACE", false);
+    static bool s_Enabled = []()
+    {
+        const char* env = std::getenv("GE_FRAME_TRACE");
+        if (!env || !*env)
+        {
+            return false;
+        }
+
+        // Treat "0" as explicit off; anything else enables tracing.
+        return !(env[0] == '0' && env[1] == '\0');
+    }();
     return s_Enabled;
 }
 
@@ -166,6 +176,145 @@ const GizmoAxisDirections kWorldAxisDirections = {
     Vector3(0.0f, 1.0f, 0.0f),
     Vector3(0.0f, 0.0f, 1.0f)};
 
+struct TRS
+{
+    Vector3 position;
+    Quaternion rotation;
+    Vector3 scale{1.0f, 1.0f, 1.0f};
+};
+
+inline TRS IdentityTRS()
+{
+    return TRS{};
+}
+
+inline TRS GetLocalTRS(Entity& e)
+{
+    TRS t = IdentityTRS();
+    if (const Transform* xf = e.Get<Transform>())
+    {
+        t.position = xf->GetPosition() - Mathematics::WorldPosition{};
+        t.rotation = xf->GetRotation();
+        t.scale = xf->GetScale();
+    }
+    return t;
+}
+
+inline TRS CombineTRS(const TRS& parent, const TRS& local)
+{
+    TRS out{};
+    // Scale
+    out.scale = Vector3(
+        parent.scale.x * local.scale.x,
+        parent.scale.y * local.scale.y,
+        parent.scale.z * local.scale.z);
+
+    // Rotation: compose in the same space as the engine matrices.
+    out.rotation = parent.rotation * local.rotation;
+
+    // Position: match FromTRS / TransformHierarchySystem.
+    //   worldPos = parentPos + R(parentRot) * (parentScale * localPos)
+    Vector3 scaledLocal(
+        local.position.x * parent.scale.x,
+        local.position.y * parent.scale.y,
+        local.position.z * parent.scale.z);
+    Vector3 rotated = parent.rotation.Rotate(scaledLocal);
+    out.position = parent.position + rotated;
+
+    return out;
+}
+
+inline TRS ComputeWorldTRSForEntity(World* world, EntityHandle handle)
+{
+    if (!world)
+    {
+        return IdentityTRS();
+    }
+
+    if (!handle.IsValid())
+    {
+        return IdentityTRS();
+    }
+
+    // Reconstruct world TRS from the local Transform + Parent hierarchy.
+    //
+    // We intentionally *do not* rely on the cached WorldTransform here,
+    // because the editor applies local transform deltas in response to
+    // pointer events, while the WorldTransform component is updated later
+    // by TransformHierarchySystem. Using WorldTransform would therefore lag
+    // one frame behind the gizmo interactions, causing rotation deltas to
+    // be applied on top of an out-of-date world orientation.
+    Entity e(world, handle);
+    if (!e.IsValid())
+    {
+        return IdentityTRS();
+    }
+
+    TRS local = GetLocalTRS(e);
+
+    if (auto* parentComp = e.Get<Parent>())
+    {
+        TRS parentWorld = ComputeWorldTRSForEntity(world, parentComp->Entity);
+        return CombineTRS(parentWorld, local);
+    }
+
+    // No valid parent: world == local
+    return local;
+}
+
+inline void GetParentWorldTRS(World* world,
+                              EntityHandle handle,
+                              Vector3& outPos,
+                              Quaternion& outRot,
+                              Vector3& outScale)
+{
+    TRS identity = IdentityTRS();
+    outPos = identity.position;
+    outRot = identity.rotation;
+    outScale = identity.scale;
+
+    if (!world)
+    {
+        return;
+    }
+
+    Entity e(world, handle);
+    if (!e.IsValid())
+    {
+        return;
+    }
+
+    auto* parentComp = e.Get<Parent>();
+    if (!parentComp)
+    {
+        return; // identity parent
+    }
+
+    TRS parentWorld = ComputeWorldTRSForEntity(world, parentComp->Entity);
+    outPos = parentWorld.position;
+    outRot = parentWorld.rotation;
+    outScale = parentWorld.scale;
+}
+
+inline Vector3 ComputeLocalPositionFromWorld(const Vector3& worldPos,
+                                              const Vector3& parentPos,
+                                              const Quaternion& parentRot,
+                                              const Vector3& parentScale)
+{
+    // Undo parent translation
+    Vector3 delta = worldPos - parentPos;
+
+    // Undo parent rotation.
+    //   parentScale * localPos = R(parentRot^-1) * deltaWorld
+    Vector3 unrotated = parentRot.Conjugated().Rotate(delta);
+
+    // Undo parent scale (component-wise, safe against zeros)
+    return Vector3(
+        (parentScale.x != 0.0f) ? (unrotated.x / parentScale.x) : unrotated.x,
+        (parentScale.y != 0.0f) ? (unrotated.y / parentScale.y) : unrotated.y,
+        (parentScale.z != 0.0f) ? (unrotated.z / parentScale.z) : unrotated.z);
+}
+
 inline bool HasAncestorInSet(World* world,
                              EntityHandle entity,
                              const std::vector<EntityHandle>& candidates)
@@ -177,13 +326,13 @@ inline bool HasAncestorInSet(World* world,
     while (e.IsValid())
     {
         const auto* parent = e.Get<Parent>();
-        if (!parent || !parent->parent.IsValid())
+        if (!parent || !parent->Entity.IsValid())
             return false;
 
-        if (std::find(candidates.begin(), candidates.end(), parent->parent) != candidates.end())
+        if (std::find(candidates.begin(), candidates.end(), parent->Entity) != candidates.end())
             return true;
 
-        e = Entity(world, parent->parent);
+        e = Entity(world, parent->Entity);
     }
 
     return false;
@@ -201,24 +350,18 @@ inline bool TryBuildWorldMatrixForEntity(World* world, EntityHandle entity, Math
     }
     else if (world->GetComponent<Transform>(entity))
     {
-        const EntityTRS worldTrs = ComputeWorldTRSForEntity(world, entity);
-        const Transform localMatrix = Transform::FromTRS(worldTrs.Position, worldTrs.Rotation, worldTrs.Scale);
-        std::memcpy(worldXf.matrix, localMatrix.matrix, sizeof(localMatrix.matrix));
+        const TRS worldTrs = ComputeWorldTRSForEntity(world, entity);
+        const Transform pose = Transform::FromTRS(Mathematics::WorldPosition::FromVector3(worldTrs.position),
+                                                  worldTrs.rotation, worldTrs.scale);
+        worldXf.Position = pose.Position;
+        worldXf.Basis = pose.Basis;
     }
     else
     {
         return false;
     }
 
-    // Compose the sector so the gizmo, world-position queries, and measure
-    // endpoints land on the SAME absolute world position the mesh renders and
-    // picks at. ComposeEffectiveWorldTransform is the single source of truth
-    // (also used by SceneTlas + MeshPickingService); a null/zero sector returns
-    // the matrix unchanged (dark-ship for untagged entities).
-    const auto* sector = world->GetComponent<Components::WorldSectorCoord>(entity);
-    const WorldTransform composed =
-        Components::ComposeEffectiveWorldTransform(worldXf, sector, Components::kWorldSectorSize);
-    outMatrix = Mathematics::Matrix4x4::FromColumnMajor(composed.matrix);
+    outMatrix = worldXf.ToMatrix4x4(worldXf.GetPosition() - Mathematics::WorldPosition{});
     return true;
 }
 
@@ -267,9 +410,10 @@ inline bool TryComputeEditorPivotForEntity(World* world, EntityHandle entity, Ve
 
     // Plugin-owned components whose gizmo pivots at the entity origin
     // (registered traits) short-circuit the rendered-content anchors below.
-    for (const ECS::ComponentTypeId typeId : Editor::EditorComponentTraitsRegistry::Get().GizmoPivotAtEntityOriginTypes())
+    const auto registered = Editor::EditorComponentTraitsRegistry::Get().Snapshot();
+    for (const auto& [typeId, traits] : *registered)
     {
-        if (world->HasComponent(entity, typeId))
+        if (traits.GizmoPivotAtEntityOrigin && world->HasComponent(entity, typeId))
         {
             outPivot = worldMatrix.TransformPoint(localPivot);
             return true;
@@ -336,18 +480,20 @@ inline void PreviewWorldTransform(ECS::World* world,
     if (!world || !entity.IsValid() || !world->IsValid(entity))
         return;
 
-    const Transform worldMatrix = Transform::FromTRS(worldPos, worldRot, worldScale);
+    const Transform worldPose =
+        Transform::FromTRS(Mathematics::WorldPosition::FromVector3(worldPos), worldRot, worldScale);
     WorldTransform preview{};
     if (const auto* existing = world->GetComponent<WorldTransform>(entity))
         preview = *existing;
 
-    if (std::memcmp(preview.matrix, worldMatrix.matrix, sizeof(preview.matrix)) == 0 &&
+    if (std::memcmp(&preview, &worldPose, Components::kTransformPoseBytes) == 0 &&
         world->GetComponent<WorldTransform>(entity))
     {
         return;
     }
 
-    std::memcpy(preview.matrix, worldMatrix.matrix, sizeof(preview.matrix));
+    preview.Position = worldPose.Position;
+    preview.Basis = worldPose.Basis;
     ++preview.Version;
     world->AddComponentImmediate(entity, preview);
 }
@@ -363,7 +509,7 @@ inline bool MoveEntityWorldPositionPreservingRotationScale(ECS::World* world,
     if (!transform)
         return false;
 
-    EntityTRS worldTrs = ComputeWorldTRSForEntity(world, entity);
+    TRS worldTrs = ComputeWorldTRSForEntity(world, entity);
     Vector3 parentPos;
     Quaternion parentRot;
     Vector3 parentScale{1.0f, 1.0f, 1.0f};
@@ -373,16 +519,17 @@ inline bool MoveEntityWorldPositionPreservingRotationScale(ECS::World* world,
                                                               parentPos,
                                                               parentRot,
                                                               parentScale);
-    const Transform updated = Transform::FromTRS(newLocalPos,
+    const Transform updated = Transform::FromTRS(Mathematics::WorldPosition::FromVector3(newLocalPos),
                                                  transform->GetRotation(),
                                                  transform->GetScale());
     {
         GE_CPU_PROFILE_SCOPE("ECS.AddComponentImmediate.Transform");
         world->AddComponentImmediate(entity, updated);
     }
-    PreviewWorldTransform(world, entity, newWorldPos, worldTrs.Rotation, worldTrs.Scale);
+    PreviewWorldTransform(world, entity, newWorldPos, worldTrs.rotation, worldTrs.scale);
     return true;
 }
+
 } // namespace
 
 void TransformTranslateGizmo::SetPivot(const Vector3& position)
@@ -427,7 +574,7 @@ void TransformTranslateGizmo::Render(GizmoRenderContext& context)
     // Handles are a control surface, not a place in the world: occluding them
     // against the geometry they move only makes them harder to grab. Covers
     // every draw below, plane quads included — those are drag targets too.
-    GizmoDepthModeScope depthScope(context, GizmoDepthMode::AlwaysOnTop);
+    GizmoDepthModeScope depthScope(context, GizmoDepthMode::Handle);
 
     // Draw planar handles (XY, YZ, ZX) first on the base gizmo triangle
     // layer, then the axis cylinders/arrows on a higher layer so that the
@@ -1002,7 +1149,7 @@ void TransformRotateGizmo::Render(GizmoRenderContext& context)
     // Manipulation, not description — the rings are grab targets, and the drag
     // feedback (angle arc, start/end lines, snap guides) is only readable at
     // full strength.
-    GizmoDepthModeScope depthScope(context, GizmoDepthMode::AlwaysOnTop);
+    GizmoDepthModeScope depthScope(context, GizmoDepthMode::Handle);
 
     const Vector3 center = m_Pivot;
 
@@ -1735,21 +1882,23 @@ bool TransformRotateGizmo::HandlePointerEvent(const ScenePointerEvent& event,
 
         m_TotalAngleDelta += delta;
 
-        // Flip the sign so that dragging clockwise around the ring (from the
-        // camera's point of view) produces a clockwise rotation of the target
-        // object on screen. The underlying rotation math keeps its right-handed,
-        // test-verified semantics; this inversion only affects the interaction
-        // mapping.
+        // The angle is applied as measured. For an axis ring and the screen
+        // ring, (tangent, bitangent, normal) is right-handed, so the angle grows
+        // in the direction a positive turn about the normal carries the tangent,
+        // and the target turns the way the pointer went. The edge-on fallback
+        // measures the pointer's travel along the in-view perpendicular instead,
+        // which is not a direction in the ring plane, so the invariant does not
+        // apply there; it keeps this sign.
         const float snapStep = m_Owner->GetRotateSnapIncrementRad();
         float toApply = 0.0f;
         if (event.rotateSnap45)
         {
             const float snapTotal = std::round(m_TotalAngleDelta / snapStep) * snapStep;
-            toApply = -snapTotal - m_CumulativeAppliedRotation;
+            toApply = snapTotal - m_CumulativeAppliedRotation;
         }
         else
         {
-            toApply = -delta;
+            toApply = delta;
         }
 
         if (std::fabs(toApply) < 1.0e-5f)
@@ -1814,7 +1963,7 @@ void TransformScaleGizmo::Render(GizmoRenderContext& context)
 {
     // Manipulation, not description — the axis boxes and the centre cube are
     // grab targets.
-    GizmoDepthModeScope depthScope(context, GizmoDepthMode::AlwaysOnTop);
+    GizmoDepthModeScope depthScope(context, GizmoDepthMode::Handle);
 
     // Compute axis length - use constant screen size if enabled
     float axisLength = m_AxisLength;
@@ -2213,22 +2362,6 @@ bool TransformScaleGizmo::HandlePointerEvent(const ScenePointerEvent& event,
     return false;
 }
 
-namespace
-{
-using GameEngine::Editor::SceneTools::TransformAxisSpace;
-
-// Map the user-facing axis space toggle to the **effective** axis space used by
-// the gizmo visuals and transform math. We intentionally flip the semantics so
-// that selecting "World" in the UI gives behaviour that previously lived under
-// "Local" (object-aligned axes), and vice versa.
-inline TransformAxisSpace GetEffectiveAxisSpace(TransformAxisSpace space)
-{
-    return (space == TransformAxisSpace::World)
-               ? TransformAxisSpace::Local
-               : TransformAxisSpace::World;
-}
-} // namespace
-
 TransformTool::TransformTool(GameEngine::ECS::World& world) : m_World(&world)
 {
     const Vector3 origin(0.0f, 0.0f, 0.0f);
@@ -2530,12 +2663,10 @@ bool TransformTool::GetAxisDirections(GizmoAxisDirections& outAxisDirs) const
     // even if we early-out below.
     outAxisDirs = kWorldAxisDirections;
 
-    // Visual axis space remains intuitive:
     // - World  : canonical world basis.
     // - Local  : axes rotated by the entity's world rotation.
-    // The semantic swap between World/Local is handled separately in
-    // ApplyRotationDelta via GetEffectiveAxisSpace; we keep the visuals
-    // unchanged.
+    // ApplyRotationDelta turns about the same axes, so a ring turns the target
+    // about the axis it is drawn around.
     if (m_AxisSpace == TransformAxisSpace::World || !m_TargetEntity.IsValid())
     {
         return false;
@@ -2550,8 +2681,8 @@ bool TransformTool::GetAxisDirections(GizmoAxisDirections& outAxisDirs) const
     // Use the same world TRS reconstruction as the gizmo application code so
     // that the visual axes always match the transform being edited, even
     // within the same frame.
-    EntityTRS worldTrs = ComputeWorldTRSForEntity(world, m_TargetEntity);
-    Quaternion worldRot = worldTrs.Rotation;
+    TRS worldTrs = ComputeWorldTRSForEntity(world, m_TargetEntity);
+    Quaternion worldRot = worldTrs.rotation;
     // FromTRS is LH: matrix * v == worldRot.Rotate(v). Gizmo axes follow that.
     Quaternion visualRot = worldRot;
     for (std::uint32_t axis = 0; axis < 3u; ++axis)
@@ -2839,14 +2970,14 @@ void TransformTool::EnsureTransformDragBaselines(GameEngine::ECS::World* world)
 
         TransformDragBaseline base{};
         base.entity = entity;
-        base.localPos = t->GetPosition();
+        base.localPos = t->GetPosition() - Mathematics::WorldPosition{};
         base.localRot = t->GetRotation();
         base.localScale = t->GetScale();
 
-        EntityTRS worldTrs = ComputeWorldTRSForEntity(world, entity);
-        base.worldPos = worldTrs.Position;
-        base.worldRot = worldTrs.Rotation;
-        base.worldScale = worldTrs.Scale;
+        TRS worldTrs = ComputeWorldTRSForEntity(world, entity);
+        base.worldPos = worldTrs.position;
+        base.worldRot = worldTrs.rotation;
+        base.worldScale = worldTrs.scale;
         GetParentWorldTRS(world, entity, base.parentPos, base.parentRot, base.parentScale);
         m_TransformDragBaselines.push_back(base);
     }
@@ -2932,9 +3063,10 @@ void TransformTool::ApplyTranslationDelta(const Vector3& deltaWorld)
                                                                       base.parentRot,
                                                                       base.parentScale);
 
-            (void)TrySetPhysicsBodyWorldPose(world, base.entity, targetWorldPos, base.worldRot);
+            (void)Editor::TeleportPhysicsBody(world, base.entity, targetWorldPos, base.worldRot);
 
-            Transform updated = Transform::FromTRS(newLocalPos, base.localRot, base.localScale);
+            Transform updated = Transform::FromTRS(Mathematics::WorldPosition::FromVector3(newLocalPos),
+                                                   base.localRot, base.localScale);
             {
                 GE_CPU_PROFILE_SCOPE("ECS.AddComponentImmediate.Transform");
                 world->AddComponentImmediate(base.entity, updated);
@@ -2988,13 +3120,12 @@ void TransformTool::ApplyRotationDelta(std::uint32_t axisIndex, float deltaRadia
         return;
     }
 
-    // Resolve the world-space rotation axis from the index + effective axis
-    // space, then defer to the arbitrary-axis path so both the X/Y/Z rings and
+    // Resolve the world-space rotation axis from the index + axis space, then
+    // defer to the arbitrary-axis path so both the X/Y/Z rings and
     // the screen-space ring share one implementation.
     const Vector3& worldIndexAxis = kWorldAxisDirections[axisIndex];
     Vector3 axis = worldIndexAxis;
-    const TransformAxisSpace effectiveSpace = GetEffectiveAxisSpace(m_AxisSpace);
-    if (effectiveSpace != TransformAxisSpace::World)
+    if (m_AxisSpace != TransformAxisSpace::World)
     {
         GameEngine::ECS::World* world = &GetWorld();
         if (!world->IsValid(m_TargetEntity))
@@ -3003,7 +3134,7 @@ void TransformTool::ApplyRotationDelta(std::uint32_t axisIndex, float deltaRadia
         }
         // Local axis space: rotate around the entity's local axes, expressed in
         // world space via the current world rotation.
-        const Quaternion worldRot = ComputeWorldTRSForEntity(world, m_TargetEntity).Rotation;
+        const Quaternion worldRot = ComputeWorldTRSForEntity(world, m_TargetEntity).rotation;
         const Vector3 worldAxis = worldRot.Rotate(worldIndexAxis);
         const float lenSq = worldAxis.LengthSquared();
         if (lenSq > 1.0e-8f)
@@ -3048,8 +3179,8 @@ void TransformTool::ApplyRotationDeltaWorldAxis(const Vector3& worldAxis, float 
         if (targets.empty())
             return;
 
-        EntityTRS worldTrs = ComputeWorldTRSForEntity(world, m_TargetEntity);
-        Vector3 pivotWorld = worldTrs.Position;
+        TRS worldTrs = ComputeWorldTRSForEntity(world, m_TargetEntity);
+        Vector3 pivotWorld = worldTrs.position;
         const bool measurePivot =
             TryComputeMeasureEndpointCenterForEntity(world, m_TargetEntity, pivotWorld);
 
@@ -3057,9 +3188,9 @@ void TransformTool::ApplyRotationDeltaWorldAxis(const Vector3& worldAxis, float 
 
         for (const auto& entity : targets)
         {
-            EntityTRS entityWorldTrs = ComputeWorldTRSForEntity(world, entity);
-            Vector3 entityWorldPos = entityWorldTrs.Position;
-            Quaternion entityWorldRot = entityWorldTrs.Rotation;
+            TRS entityWorldTrs = ComputeWorldTRSForEntity(world, entity);
+            Vector3 entityWorldPos = entityWorldTrs.position;
+            Quaternion entityWorldRot = entityWorldTrs.rotation;
             Quaternion newWorldRot = (deltaRot * entityWorldRot).Normalized();
 
             Vector3 parentPos;
@@ -3078,14 +3209,15 @@ void TransformTool::ApplyRotationDeltaWorldAxis(const Vector3& worldAxis, float 
                 Quaternion parentInvRot = parentRot.Conjugated();
                 Quaternion localRot = (parentInvRot * newWorldRot).Normalized();
 
-                Transform updated = Transform::FromTRS(newLocalPos, localRot, localScale);
+                Transform updated =
+                    Transform::FromTRS(Mathematics::WorldPosition::FromVector3(newLocalPos), localRot, localScale);
                 {
                     GE_CPU_PROFILE_SCOPE("ECS.AddComponentImmediate.Transform");
                     world->AddComponentImmediate(entity, updated);
                 }
             }
 
-            (void)TrySetPhysicsBodyWorldPose(world, entity, entityWorldPos, newWorldRot);
+            (void)Editor::TeleportPhysicsBody(world, entity, entityWorldPos, newWorldRot);
         }
 
         if (measurePivot)
@@ -3096,9 +3228,9 @@ void TransformTool::ApplyRotationDeltaWorldAxis(const Vector3& worldAxis, float 
                 const Vector3 offset = pivotWorld - newMeasureCenter;
                 if (offset.x != 0.0f || offset.y != 0.0f || offset.z != 0.0f)
                 {
-                    const EntityTRS updatedTargetTrs = ComputeWorldTRSForEntity(world, m_TargetEntity);
+                    const TRS updatedTargetTrs = ComputeWorldTRSForEntity(world, m_TargetEntity);
                     (void)MoveEntityWorldPositionPreservingRotationScale(
-                        world, m_TargetEntity, updatedTargetTrs.Position + offset);
+                        world, m_TargetEntity, updatedTargetTrs.position + offset);
                 }
             }
         }
@@ -3152,7 +3284,7 @@ void TransformTool::ApplyScaleDelta(const Vector3& deltaScale)
             if (!t)
                 continue;
 
-            Vector3 localPos = t->GetPosition();
+            const Mathematics::WorldPosition localPos = t->GetPosition();
             Quaternion localRot = t->GetRotation();
             Vector3 localScale = t->GetScale();
 
@@ -3182,16 +3314,16 @@ void TransformTool::ApplyScaleDelta(const Vector3& deltaScale)
                 const Vector3 offset = pivotWorld - newMeasureCenter;
                 if (offset.x != 0.0f || offset.y != 0.0f || offset.z != 0.0f)
                 {
-                    const EntityTRS updatedTargetTrs = ComputeWorldTRSForEntity(world, m_TargetEntity);
+                    const TRS updatedTargetTrs = ComputeWorldTRSForEntity(world, m_TargetEntity);
                     (void)MoveEntityWorldPositionPreservingRotationScale(
-                        world, m_TargetEntity, updatedTargetTrs.Position + offset);
+                        world, m_TargetEntity, updatedTargetTrs.position + offset);
                 }
             }
         }
 
         Vector3 updatedPivot{};
         if (!TryComputeEditorPivotForEntity(world, m_TargetEntity, updatedPivot))
-            updatedPivot = ComputeWorldTRSForEntity(world, m_TargetEntity).Position;
+            updatedPivot = ComputeWorldTRSForEntity(world, m_TargetEntity).position;
         m_TranslateGizmo.SetPivot(updatedPivot);
         m_RotateGizmo.SetPivot(updatedPivot);
         m_ScaleGizmo.SetPivot(updatedPivot);
@@ -3475,7 +3607,8 @@ void TransformTool::CollectMarqueePicks(std::vector<GameEngine::ECS::EntityHandl
             return;
 
         const GameEngine::Mathematics::BoundingBox kDefault{};
-        const auto box = (bounds ? bounds->Box : kDefault).TransformToAABB(worldXf.matrix);
+        const auto box = (bounds ? bounds->Box : kDefault).TransformToAABB(
+            worldXf.ToMatrix4x4(worldXf.GetPosition() - Mathematics::WorldPosition{}).Data());
 
         Mathematics::Vector2 corners[8];
         int   cornerCount = 0;

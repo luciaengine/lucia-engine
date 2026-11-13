@@ -3,7 +3,7 @@
 #include "Components/Rendering/RenderSorting.h"
 #include "ECS/World.h"
 #include "ECS/ECSTemplates.h"
-#include "Inspectors/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
 #include "UndoRedo/UndoRedoService.h"
 
 #include <algorithm>

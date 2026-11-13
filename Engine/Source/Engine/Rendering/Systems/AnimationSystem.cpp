@@ -15,27 +15,25 @@
 #include "Assets/AnimationClip.h"
 #include "Assets/AssetManager.h"
 #include "Assets/ModelAsset.h"
-#include "Assets/BoneLOD/ModelBoneLOD.h"
 #include "Assets/RuntimeHumanoidProfile.h"
 #include "Engine/Rendering/AnimationSampling.h"
 #include "Engine/Rendering/AnimationEventDispatch.h"
 #include "Animation/PoseToSkinMatrices.h"
-#include "Animation/Compression/AnimationClipData.h"
-#include "Animation/BoneEvaluationPlan.h"
 #include "Engine/Rendering/GPUAnimationDataStore.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/SkinPaletteAtlas.h"
 #include "Logger/Logger.h"
-#include "Platform/Environment.h"
 
-#include "Animation/HumanoidImport.h"
-#include "Animation/HumanoidRig.h"
+#include "Animation/Humanoid/HumanoidImport.h"
+#include "Animation/Humanoid/HumanoidRig.h"
 #include "Animation/RetargetMap.h"
-#include "Animation/SkeletonProfile.h"
+#include "Animation/Skeleton/SkeletonProfile.h"
 
 #include "Core/Engine.h"
+#include "Mathematics/Interpolation.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -151,6 +149,28 @@ bool IsTransformAnimPath(AnimPath path)
     return path == AnimPath::Translation || path == AnimPath::Rotation || path == AnimPath::Scale;
 }
 
+float SampleScalarChannel(const AnimChannel& channel, float time)
+{
+    if (channel.keys.empty())
+        return 0.0f;
+
+    size_t hi = 0;
+    while (hi < channel.keys.size() && channel.keys[hi].time < time)
+        ++hi;
+    size_t lo = (hi == 0) ? 0 : (hi - 1);
+    if (hi >= channel.keys.size())
+        hi = channel.keys.size() - 1;
+
+    const AnimKeyframe& k0 = channel.keys[lo];
+    const AnimKeyframe& k1 = channel.keys[hi];
+    const float dt = k1.time - k0.time;
+    const float alpha = (dt > 0.0f) ? Math::Clamp01((time - k0.time) / dt) : 0.0f;
+    const AnimInterp segInterp = k0.hasSegmentInterpOverride ? k0.segmentInterp : channel.interp;
+    if (segInterp == AnimInterp::Step || dt <= 0.0f)
+        return k0.translation[0];
+    return k0.translation[0] + (k1.translation[0] - k0.translation[0]) * alpha;
+}
+
 void ApplyMorphAnimationChannels(ECS::World& world,
                                  ECS::EntityHandle entity,
                                  const AnimationClip& clip,
@@ -184,38 +204,32 @@ void ApplyMorphAnimationChannels(ECS::World& world,
 
     bool changed = false;
     const uint32 count = std::min<uint32>(morph->weightCount, static_cast<uint32>(mesh.MorphTargets.size()));
-    const auto data = clip.GetRuntimeData();
-    if (!data)
-        return;
-    for (const auto& channel : data->Tracks())
+    for (const AnimChannel& channel : clip.GetChannels())
     {
-        if (channel.Path != AnimPath::MorphWeight)
+        if (channel.path != AnimPath::MorphWeight)
             continue;
-        if (channel.BoneIndex != UINT32_MAX && mesh.SourceNodeIndex >= 0 &&
-            channel.BoneIndex != static_cast<uint32>(mesh.SourceNodeIndex))
+        if (channel.boneIndex != UINT32_MAX && mesh.SourceNodeIndex >= 0 &&
+            channel.boneIndex != static_cast<uint32>(mesh.SourceNodeIndex))
             continue;
 
-        for (uint32 targetIndex = 0; targetIndex < count; ++targetIndex)
+        for (uint32 i = 0; i < count; ++i)
         {
-            const MorphTarget& target = mesh.MorphTargets[targetIndex];
-            if (channel.TargetNameId != 0)
+            const MorphTarget& target = mesh.MorphTargets[i];
+            if (channel.targetNameId != 0)
             {
                 const StringId targetId = target.Name.empty() ? 0u : HashStringId(target.Name);
-                if (targetId != channel.TargetNameId)
+                if (targetId != channel.targetNameId)
                     continue;
             }
-            else if (!channel.TargetName.empty() && channel.TargetName != target.Name)
+            else if (!channel.targetName.empty() && channel.targetName != target.Name)
             {
                 continue;
             }
 
-            Mathematics::Vector4 sampled;
-            if (!data->Sample(channel, time, sampled))
-                break;
-            const float value = sampled.x;
-            if (std::abs(morph->weights[targetIndex] - value) > 1e-6f)
+            const float value = SampleScalarChannel(channel, time);
+            if (std::abs(morph->weights[i] - value) > 1e-6f)
             {
-                morph->weights[targetIndex] = value;
+                morph->weights[i] = value;
                 changed = true;
             }
             break;
@@ -232,8 +246,7 @@ void ApplyMorphAnimationChannels(ECS::World& world,
 // One line per skeleton that the GPU animation path cannot hold, naming its model.
 // Once per process: the scene's animation system and the model thumbnail's each
 // route the skeleton, on their own threads.
-void WarnSkeletonOverGPULimitsOnce(uint32 skeletonId, const SkeletonData& skeleton,
-    const Animation::BoneEvaluationPlan* plan)
+void WarnSkeletonOverGPULimitsOnce(uint32 skeletonId, const SkeletonData& skeleton)
 {
     static std::mutex s_WarnedMutex;
     static std::unordered_set<uint32> s_WarnedSkeletons;
@@ -246,62 +259,14 @@ void WarnSkeletonOverGPULimitsOnce(uint32 skeletonId, const SkeletonData& skelet
         ? "skeleton " + std::to_string(skeletonId)
         : skeleton.SourceModelPath.filename().string();
     Logger::Log::Warning(
-        "Current bone selection of '{}' needs {} GPU bones and {} levels; the GPU animation "
-        "path holds {} and {}, so this selection animates on the CPU. Reduce the bone budget or accept CPU sampling.",
-        model, plan ? plan->SkinNodes().size() : skeleton.JointClosure.size(),
-        plan ? plan->SkinLevelOffsets().size() - 1u : skeleton.JointClosureLevelCount(),
+        "Skeleton of '{}' needs {} GPU bones (joints and their ancestors) and {} levels; the GPU animation "
+        "path holds {} and {}, so it animates on the CPU path. Split the rig under those counts, or accept "
+        "CPU sampling.",
+        model, skeleton.JointClosure.size(), skeleton.JointClosureLevelCount(),
         GPUAnimationDataStore::kMaxBones, GPUAnimationDataStore::kMaxHierarchyLevels);
 }
 
 } // anonymous namespace
-
-void AnimationSystem::CollectWorkItem(ECS::World& world, ECS::EntityHandle entity,
-    ECS::Writable<Components::AnimatorRef> animatorRow, const Components::SkeletonRef& reference,
-    const Components::MeshRenderer* meshRenderer, Components::MorphTargetWeights* morphWeights,
-    ClipStore& clipStore, SkeletonStore& skeletonStore, float32 deltaTime)
-{
-    if (animatorRow->ClipIndex == 0 || reference.skeletonId == 0 || reference.runtimeId == 0) return;
-    const uint64 runtimeGeneration = skeletonStore.GetRuntimeGeneration(reference.runtimeId);
-    const bool proceduralReference = reference.runtimeGeneration == 0u && reference.sourceModelGuid.IsNull();
-    if (runtimeGeneration == 0u || skeletonStore.GetRuntimeSkeletonId(reference.runtimeId) != reference.skeletonId ||
-        (!proceduralReference && reference.runtimeGeneration != runtimeGeneration))
-        return;
-
-    // Retargeted entities are evaluated by HumanoidRetargetSystem.
-    if (world.HasComponent<HumanoidRetargeterComponent>(entity)) return;
-
-    auto clip = clipStore.Get(animatorRow->ClipIndex);
-    if (!clip) return;
-
-    auto* skeleton = skeletonStore.Get(reference.skeletonId);
-    if (!skeleton || skeleton->BoneCount == 0) return;
-
-    AnimatorRef& animator = animatorRow.Mutable();
-    TickAnimatorRef(animator, clipStore, deltaTime, ClaimClipPlaybackEvents(world, entity));
-
-    // Morph weights hard-cut to the incoming clip. Dual-sample lerp is
-    // skeletal locals only.
-    ApplyMorphAnimationChannels(world, entity, *clip, animator.Time, meshRenderer, morphWeights);
-
-    WorkItem item{};
-    item.SkeletonId = reference.skeletonId;
-    item.RuntimeId = reference.runtimeId;
-    item.ClipIndex = animator.ClipIndex;
-    item.Time = animator.Time;
-    item.CachedSkeleton = skeleton;
-    item.Entity = entity;
-    item.PrevClipIndex = animator.IsBlending() ? animator.PrevClipIndex : 0u;
-    item.PrevTime = animator.PrevTime;
-    item.BlendAlpha = animator.BlendAlpha();
-    item.RuntimeGeneration = runtimeGeneration;
-    item.BoneSelection = m_BoneLODPolicy.Find(reference.runtimeId);
-    const auto data = clip->GetRuntimeData();
-    const auto previousClip = clipStore.Get(item.PrevClipIndex);
-    const auto previousData = previousClip ? previousClip->GetRuntimeData() : nullptr;
-    item.ClipRevision = data ? data->Revision() : 0u;
-    item.PreviousClipRevision = previousData ? previousData->Revision() : 0u;
-    m_WorkItems.push_back(item);
-}
 
 void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
     auto& clipStore = ClipStore::Instance();
@@ -313,27 +278,56 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
     // every visit (stamp-at-visit), which would fire Changed<MeshRenderer>
     // consumers every frame a clip plays anywhere in the scene.
     m_WorkItems.clear();
-    m_BoneLODPolicy.Update(world, m_RenderServices ? &m_RenderServices->Views() : nullptr,
-        m_RenderServices ? EngineCore::GetInstance().TryGetAssetManager() : nullptr,
-        m_RenderServices ? m_RenderServices->GetLODGlobalBias() : 0.0f);
     auto q = world.Query<ECS::Write<AnimatorRef>,
                          ECS::Read<SkeletonRef>,
                          ECS::Optional<Components::MeshRenderer>,
                          ECS::Optional<Components::MorphTargetWeights>>();
-    q.Each([this, &world, &clipStore, &skStore, deltaTime](ECS::EntityHandle entity,
-               ECS::Writable<AnimatorRef> animatorRow, const SkeletonRef& reference,
-               const Components::MeshRenderer* meshRenderer, Components::MorphTargetWeights* morphWeights)
-    {
-        CollectWorkItem(world, entity, animatorRow, reference, meshRenderer, morphWeights,
-            clipStore, skStore, deltaTime);
+    q.Each([&](ECS::EntityHandle entity,
+               ECS::Writable<AnimatorRef> animRow,
+               const SkeletonRef& sref,
+               const Components::MeshRenderer* meshRenderer,
+               Components::MorphTargetWeights* morph) {
+        const auto& current = animRow.Get();
+        if (current.ClipIndex == 0 || sref.skeletonId == 0 || sref.runtimeId == 0) return;
+
+        // Skip entities already routed through HumanoidRetargetSystem so we
+        // don't double-sample the clip onto the (now-unused) AnimatorRef
+        // path. The HumanoidRetargeter component takes precedence; the
+        // animation wave runs Animation -> HumanoidRetarget sequentially.
+        if (world.HasComponent<HumanoidRetargeterComponent>(entity)) return;
+
+        auto clip = clipStore.Get(current.ClipIndex);
+        if (!clip) return;
+
+        auto* skel = skStore.Get(sref.skeletonId);
+        if (!skel || skel->BoneCount == 0) return;
+
+        auto& anim = animRow.Mutable();
+        TickAnimatorRef(anim, clipStore, deltaTime, ClaimClipPlaybackEvents(world, entity));
+
+        // Morph weights hard-cut to the incoming clip. Dual-sample lerp is
+        // skeletal locals only.
+        ApplyMorphAnimationChannels(world, entity, *clip, anim.Time, meshRenderer, morph);
+
+        WorkItem item{};
+        item.SkeletonId = sref.skeletonId;
+        item.RuntimeId = sref.runtimeId;
+        item.ClipIndex = anim.ClipIndex;
+        item.Time = anim.Time;
+        item.CachedSkeleton = skel;
+        item.Entity = entity;
+        item.PrevClipIndex = anim.IsBlending() ? anim.PrevClipIndex : 0u;
+        item.PrevTime = anim.PrevTime;
+        item.BlendAlpha = anim.BlendAlpha();
+        m_WorkItems.push_back(item);
     });
 
     // Deduplicate by runtimeId — multi-submesh models sharing a runtimeId
     // collapse to one work item (last entity wins).
     {
         m_UniqueByRuntimeId.clear();
-        for (size_t workItemIndex = 0; workItemIndex < m_WorkItems.size(); ++workItemIndex)
-            m_UniqueByRuntimeId[m_WorkItems[workItemIndex].RuntimeId] = workItemIndex;
+        for (size_t i = 0; i < m_WorkItems.size(); ++i)
+            m_UniqueByRuntimeId[m_WorkItems[i].RuntimeId] = i;
 
         m_CompactedWorkItems.clear();
         m_CompactedWorkItems.reserve(m_UniqueByRuntimeId.size());
@@ -367,12 +361,7 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
                     it->second.TimeBits != timeBits(item.Time) ||
                     it->second.PrevClipIndex != item.PrevClipIndex ||
                     it->second.PrevTimeBits != timeBits(item.PrevTime) ||
-                    it->second.BlendAlphaBits != timeBits(item.BlendAlpha) ||
-                    it->second.RuntimeGeneration != item.RuntimeGeneration ||
-                    it->second.BoneData != (item.BoneSelection ? item.BoneSelection->Data : nullptr) ||
-                    it->second.BoneReduced != (item.BoneSelection && item.BoneSelection->Reduced) ||
-                    it->second.ClipRevision != item.ClipRevision ||
-                    it->second.PreviousClipRevision != item.PreviousClipRevision)
+                    it->second.BlendAlphaBits != timeBits(item.BlendAlpha))
                 {
                     paletteChanged = true;
                     break;
@@ -389,12 +378,7 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
                     timeBits(item.Time),
                     item.PrevClipIndex,
                     timeBits(item.PrevTime),
-                    timeBits(item.BlendAlpha),
-                    item.RuntimeGeneration,
-                    item.BoneSelection ? item.BoneSelection->Data : nullptr,
-                    item.BoneSelection && item.BoneSelection->Reduced,
-                    item.ClipRevision,
-                    item.PreviousClipRevision};
+                    timeBits(item.BlendAlpha)};
             if (m_RenderServices)
                 m_RenderServices->NotifySkinPaletteContentChanged(world.GetWorldId());
         }
@@ -442,9 +426,9 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
         {
             constexpr AssetType types[] = {AssetType::SkeletonProfile, AssetType::HumanoidRig,
                                            AssetType::RetargetMap, AssetType::Model, AssetType::Animation};
-            for (size_t watcherIndex = 0; watcherIndex < m_BootstrapWatchers.size(); ++watcherIndex)
-                m_BootstrapWatchers[watcherIndex] = AssetReloadInvalidator(
-                    assetManager->GetEventDispatcher(), types[watcherIndex],
+            for (size_t n = 0; n < m_BootstrapWatchers.size(); ++n)
+                m_BootstrapWatchers[n] = AssetReloadInvalidator(
+                    assetManager->GetEventDispatcher(), types[n],
                     [dirty = m_BootstrapContentDirty](const GUID&)
                     {
                         // Watcher callbacks own only a signal, never the system.
@@ -460,7 +444,6 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
             m_BootstrapWorldReset != reset)
         {
             m_BootstrapAttempted.clear();
-            m_GPUSafeCache.Clear();
             m_BootstrapSourceVersion = sourceVersion;
             m_BootstrapWorldId = world.GetWorldId();
             m_BootstrapWorldReset = reset;
@@ -476,9 +459,9 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
         std::unique_ptr<Animation::SkeletonProfile> profile;
         bool profileAttempted = false;
 
-        for (size_t workItemIndex = 0; workItemIndex < m_WorkItems.size(); ++workItemIndex)
+        for (size_t i = 0; i < m_WorkItems.size(); ++i)
         {
-            const auto& item = m_WorkItems[workItemIndex];
+            const auto& item = m_WorkItems[i];
             const uint64_t key = (static_cast<uint64_t>(item.SkeletonId) << 32)
                                   | static_cast<uint64_t>(item.ClipIndex);
             if (m_BootstrapAttempted.count(key)) continue;
@@ -563,17 +546,14 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
                 bool structuralMismatchSeen = false;
                 uint32 channelsResolved = 0;
                 uint32 channelsUnresolved = 0;
-                const auto bootstrapData = clipForBootstrap->GetRuntimeData();
-                const auto bootstrapTracks = bootstrapData ? bootstrapData->Tracks() :
-                    std::span<const Animation::AnimationClipData::Track>{};
-                for (const auto& channel : bootstrapTracks)
+                for (const auto& channel : clipForBootstrap->GetChannels())
                 {
-                    if (!IsTransformAnimPath(channel.Path)) continue;
-                    if (channel.TargetNameId == 0) continue;
-                    if (channel.BoneIndex == UINT32_MAX) continue;
-                    const bool inRange = channel.BoneIndex < item.CachedSkeleton->BoneCount
-                                      && channel.BoneIndex < boneNameIds.size();
-                    if (inRange && boneNameIds[channel.BoneIndex] == channel.TargetNameId)
+                    if (!IsTransformAnimPath(channel.path)) continue;
+                    if (channel.targetNameId == 0) continue;
+                    if (channel.boneIndex == UINT32_MAX) continue;
+                    const bool inRange = channel.boneIndex < item.CachedSkeleton->BoneCount
+                                      && channel.boneIndex < boneNameIds.size();
+                    if (inRange && boneNameIds[channel.boneIndex] == channel.targetNameId)
                     {
                         // Self-consistent — same-rig (possibly with duplicate
                         // names). Treat as resolved without consulting
@@ -582,13 +562,13 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
                         continue;
                     }
                     const uint32 resolved = item.CachedSkeleton->ResolveBoneIndex(
-                        channel.TargetNameId, UINT32_MAX);
+                        channel.targetNameId, UINT32_MAX);
                     if (resolved == UINT32_MAX) {
                         ++channelsUnresolved;
                         continue;
                     }
                     ++channelsResolved;
-                    if (resolved != channel.BoneIndex) {
+                    if (resolved != channel.boneIndex) {
                         structuralMismatchSeen = true;
                     }
                 }
@@ -819,10 +799,10 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
                     auto srcModelFut = assetManager->LoadAssetAsync(
                         srcModelGuid, AssetLoadPriority::High);
                     auto srcModelAsset = srcModelFut.get();
-                    if (auto* sourceModel = dynamic_cast<ModelAsset*>(srcModelAsset.get());
-                        sourceModel && sourceModel->IsLoaded())
+                    if (auto* m = dynamic_cast<ModelAsset*>(srcModelAsset.get());
+                        m && m->IsLoaded())
                     {
-                        sourceSkeletonId = sourceModel->GetSkeletonId();
+                        sourceSkeletonId = m->GetSkeletonId();
                     }
                 }
                 if (sourceSkeletonId == 0)
@@ -846,7 +826,7 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
             rc.Speed = 1.0f;
             rc.Loop = true;
             toAdd.push_back({item.Entity, rc});
-            dropIndices.push_back(workItemIndex);
+            dropIndices.push_back(i);
 
             Logger::Log::Info(
                 "[AnimationSystem] auto-bootstrap: cross-rig clip routed via HumanoidRetargetSystem "
@@ -886,7 +866,9 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
     // refuses to upload samples on the CPU as well.
     //
     // GE_FORCE_CPU_ANIM=1 still forces the CPU path globally for debugging.
-    const bool forceCpu = Platform::EnvironmentSwitchEnabled("GE_FORCE_CPU_ANIM", false);
+    const char* forceCpuEnv = std::getenv("GE_FORCE_CPU_ANIM");
+    const bool forceCpu = forceCpuEnv && forceCpuEnv[0] && forceCpuEnv[0] != '0';
+    // Without render services (a headless host) every item samples on the CPU.
     const bool gpuReady = !forceCpu && m_RenderServices && m_RenderServices->IsComputeSkinningReady();
 
     static bool s_LoggedFirst = false;
@@ -895,9 +877,6 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
     {
         auto clipPtr = clipStore.Get(item.ClipIndex);
         if (!clipPtr) continue;
-        const SharedPtr<const Animation::BoneEvaluationPlan> fullDetail;
-        const auto& plan = item.BoneSelection && item.BoneSelection->Reduced
-            ? item.BoneSelection->Data->ReducedPlan() : fullDetail;
 
         // Cross-rig humanoid retargeting lives in HumanoidRetargetSystem
         // (Phase 6). Entities with a HumanoidRetargeterComponent are
@@ -906,7 +885,7 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
         const bool blending = item.PrevClipIndex != 0 && item.BlendAlpha < 1.0f;
         const bool itemGpuSafe = !blending && gpuReady
             && IsClipSkeletonGPUSafe(item.SkeletonId, item.ClipIndex,
-                                     *item.CachedSkeleton, clipStore, plan.get());
+                                     *item.CachedSkeleton, clipStore);
 
         if (!s_LoggedFirst) {
             Logger::Log::Info("[AnimationSystem] First animated frame: gpuReady={}, gpuSafe={}, workItems={}",
@@ -920,37 +899,34 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
             auto* runtime = skStore.GetRuntime(item.RuntimeId);
             if (!prev || !runtime || !item.CachedSkeleton) continue;
             SampleAnimationPose(*item.CachedSkeleton, prev.get(), item.PrevTime,
-                                nullptr, nullptr, m_BlendFrom, plan.get());
+                                nullptr, nullptr, m_BlendFrom);
             SampleAnimationPose(*item.CachedSkeleton, clipPtr.get(), item.Time,
-                                nullptr, nullptr, m_Workspace, plan.get());
-            Animation::BlendLocalPoses(*item.CachedSkeleton, m_Workspace, m_BlendFrom, item.BlendAlpha, plan.get());
+                                nullptr, nullptr, m_Workspace);
+            BlendLocalPoses(m_Workspace, m_BlendFrom, item.BlendAlpha);
             ::GameEngine::Animation::BuildPoseToSkinMatrices(
-                *item.CachedSkeleton, nullptr, &runtime->CompactSkinMatrices, m_Workspace, plan.get());
+                *item.CachedSkeleton, nullptr, &runtime->CompactSkinMatrices, m_Workspace);
             continue;
         }
 
-        const uint32 skeletonGpuIndex = itemGpuSafe ? m_RenderServices->GetGPUAnimationDataStore().EnsureSkeletonUploaded(item.SkeletonId, plan)
+        const uint32 skelGPUIdx = itemGpuSafe ? m_RenderServices->GetGPUAnimationDataStore().EnsureSkeletonUploaded(item.SkeletonId)
                                               : GPUAnimationDataStore::kNotUploaded;
-        // A refused upload uses CPU sampling without changing the palette layout.
-        if (itemGpuSafe && skeletonGpuIndex == GPUAnimationDataStore::kNotUploaded
-            && !GPUAnimationDataStore::FitsKernelLimits(*item.CachedSkeleton, plan.get()))
-            WarnSkeletonOverGPULimitsOnce(item.SkeletonId, *item.CachedSkeleton, plan.get());
-        const uint32 clipGpuIndex = skeletonGpuIndex != GPUAnimationDataStore::kNotUploaded
-            ? m_RenderServices->GetGPUAnimationDataStore().EnsureClipUploaded(item.ClipIndex)
-            : GPUAnimationDataStore::kNotUploaded;
-        if (clipGpuIndex != GPUAnimationDataStore::kNotUploaded
-            && m_RenderServices->GetGPUAnimationDataStore().TryReserveInstanceCapacity(
-                m_RenderServices->GetGPUAnimationDataStore().GetInstanceCount() + 1u))
+        // A route cached before a reload grew the skeleton past the limits:
+        // the store refused it, so say why it now samples on the CPU.
+        if (itemGpuSafe && skelGPUIdx == GPUAnimationDataStore::kNotUploaded
+            && !GPUAnimationDataStore::FitsKernelLimits(*item.CachedSkeleton))
+            WarnSkeletonOverGPULimitsOnce(item.SkeletonId, *item.CachedSkeleton);
+        if (skelGPUIdx != GPUAnimationDataStore::kNotUploaded)
         {
             // Uploaded, so gpuReady held and the render services exist.
             auto& gpuStore = m_RenderServices->GetGPUAnimationDataStore();
             auto& atlas = m_RenderServices->GetSkinPaletteAtlas();
-            const uint32 jointCount = (item.CachedSkeleton->SkinJointCount > 0 &&
-                item.CachedSkeleton->JointNodes.size() == item.CachedSkeleton->SkinJointCount)
+            const uint32 jc = (item.CachedSkeleton->SkinJointCount > 0)
                 ? item.CachedSkeleton->SkinJointCount : item.CachedSkeleton->BoneCount;
-            if (jointCount == 0) continue;
+            if (jc == 0) continue;
 
-            uint32 atlasOffset = atlas.Reserve(jointCount);
+            uint32 clipGPUIdx = gpuStore.EnsureClipUploaded(item.ClipIndex);
+
+            uint32 atlasOffset = atlas.Reserve(jc);
             auto* runtime = skStore.GetRuntime(item.RuntimeId);
             if (atlasOffset == UINT32_MAX)
             {
@@ -963,56 +939,56 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
                 continue;
             }
 
-            GPUAnimInstance instance{};
-            instance.skeletonGPUIndex = skeletonGpuIndex;
-            instance.clipGPUIndex = clipGpuIndex;
-            instance.time = item.Time;
-            instance.atlasOutputOffset = atlasOffset;
-            // Runtime visibility gates compute work for off-screen instances.
-            instance.runtimeId = item.RuntimeId;
-            if (gpuStore.TryAddInstance(instance))
-            {
-                if (runtime)
-                    runtime->SetAtlasPaletteOffset(atlasOffset);
-                gpuStore.MarkGPUHandled(item.RuntimeId);
-                continue;
-            }
+            if (runtime) runtime->SetAtlasPaletteOffset(atlasOffset);
+
+            GPUAnimInstance gpuInst{};
+            gpuInst.skeletonGPUIndex = skelGPUIdx;
+            gpuInst.clipGPUIndex = clipGPUIdx;
+            gpuInst.time = item.Time;
+            gpuInst.atlasOutputOffset = atlasOffset;
+            // Phase 6-iii: stash runtime id so the skinning compute can read
+            // the per-runtime visibility flag and early-out when off-screen.
+            gpuInst.runtimeId = item.RuntimeId;
+            gpuStore.AddInstance(gpuInst);
+            gpuStore.MarkGPUHandled(item.RuntimeId);
         }
-        // Refused GPU admission keeps the runtime on the CPU palette-upload path.
-        auto* runtime = skStore.GetRuntime(item.RuntimeId);
-        if (!runtime || !item.CachedSkeleton)
-            continue;
-        SampleAnimationPose(*item.CachedSkeleton, clipPtr.get(), item.Time,
-                            nullptr, &runtime->CompactSkinMatrices, m_Workspace, plan.get());
+        else
+        {
+            // CPU sample: name-resolution-aware, and no bone or level limit.
+            // SkinningUploadSystem will upload the resulting
+            // CompactSkinMatrices to the atlas SSBO.
+            auto clip = clipStore.Get(item.ClipIndex);
+            auto* runtime = skStore.GetRuntime(item.RuntimeId);
+            if (!clip || !runtime || !item.CachedSkeleton) continue;
+            SampleAnimationPose(*item.CachedSkeleton, clip.get(), item.Time,
+                                nullptr, &runtime->CompactSkinMatrices, m_Workspace);
+        }
     }
 }
 
 bool AnimationSystem::IsClipSkeletonGPUSafe(uint32 skeletonId, uint32 clipIndex,
                                              const SkeletonData& skeleton,
-                                             ClipStore& clipStore,
-                                             const Animation::BoneEvaluationPlan* plan) {
-    if (plan && !plan->IsForSkeleton(skeleton))
-        return false;
-    if (!GPUAnimationDataStore::FitsKernelLimits(skeleton, plan))
+                                             ClipStore& clipStore) {
+    // Cache per (skeletonId, clipIndex); m_GPUSafeCache states what a model
+    // reload leaves stale.
+    const uint64_t key = (static_cast<uint64_t>(skeletonId) << 32) | static_cast<uint64_t>(clipIndex);
+    if (auto it = m_GPUSafeCache.find(key); it != m_GPUSafeCache.end())
+        return it->second;
+
+    if (!GPUAnimationDataStore::FitsKernelLimits(skeleton))
     {
-        WarnSkeletonOverGPULimitsOnce(skeletonId, skeleton, plan);
+        WarnSkeletonOverGPULimitsOnce(skeletonId, skeleton);
+        m_GPUSafeCache.emplace(key, false);
         return false;
     }
-    const uint64_t key = (static_cast<uint64_t>(skeletonId) << 32) | static_cast<uint64_t>(clipIndex);
-    const auto clip = clipStore.Get(clipIndex);
-    const auto data = clip ? clip->GetRuntimeData() : nullptr;
-    if (!data)
-        return false;
-    if (const auto* found = m_GPUSafeCache.Find(key); found && found->Revision == data->Revision())
-        return found->Safe;
 
     bool safe = true;
-    if (!skeleton.BoneNameIds.empty())
+    if (auto clip = clipStore.Get(clipIndex); clip && !skeleton.BoneNameIds.empty())
     {
-        for (const auto& channel : data->Tracks())
+        for (const auto& channel : clip->GetChannels())
         {
-            if (!IsTransformAnimPath(channel.Path)) continue;
-            if (channel.TargetNameId == 0) continue; // legacy clip; trust stored boneIndex
+            if (!IsTransformAnimPath(channel.path)) continue;
+            if (channel.targetNameId == 0) continue; // legacy clip; trust stored boneIndex
 
             // Self-consistency: the clip's stored boneIndex must point to a
             // bone whose name hashes to the channel's targetNameId. For
@@ -1025,20 +1001,23 @@ bool AnimationSystem::IsClipSkeletonGPUSafe(uint32 skeletonId, uint32 clipIndex,
             // For cross-rig (clip authored against a different skeleton),
             // names don't align positionally → fails → CPU sample handles
             // it via name resolution + drop policy.
-            const bool inRange = channel.BoneIndex < skeleton.BoneCount
-                              && channel.BoneIndex < skeleton.BoneNameIds.size();
-            const StringId boneName = inRange ? skeleton.BoneNameIds[channel.BoneIndex] : 0u;
-            if (!inRange || boneName != channel.TargetNameId)
+            const bool inRange = channel.boneIndex < skeleton.BoneCount
+                              && channel.boneIndex < skeleton.BoneNameIds.size();
+            const StringId boneName = inRange ? skeleton.BoneNameIds[channel.boneIndex] : 0u;
+            if (!inRange || boneName != channel.targetNameId)
             {
                 safe = false;
-                static const bool s_Diag = Platform::EnvironmentSwitchEnabled("GE_ANIM_GPUSAFE_DIAG", false);
+                static const bool s_Diag = []() {
+                    const char* v = std::getenv("GE_ANIM_GPUSAFE_DIAG");
+                    return v && v[0] && v[0] != '0';
+                }();
                 if (s_Diag)
                 {
                     Logger::Log::Info(
                         "[AnimGPUSafeDiag] skeletonId={} clipIndex={} channelBone={} "
                         "stored={} storedName={} reason={} (boneCount={}, namedBones={})",
-                        skeletonId, clipIndex, channel.TargetNameId,
-                        channel.BoneIndex, boneName,
+                        skeletonId, clipIndex, channel.targetNameId,
+                        channel.boneIndex, boneName,
                         !inRange ? "stored-out-of-range" : "name-mismatch",
                         skeleton.BoneCount, skeleton.BoneNameIds.size());
                 }
@@ -1046,7 +1025,7 @@ bool AnimationSystem::IsClipSkeletonGPUSafe(uint32 skeletonId, uint32 clipIndex,
             }
         }
     }
-    m_GPUSafeCache.InsertOrAssign(key, ClipSafety{data->Revision(), safe});
+    m_GPUSafeCache.emplace(key, safe);
     return safe;
 }
 
@@ -1113,7 +1092,7 @@ void SampleByRefsForTest(Components::AnimatorRef& animRef, uint32 skeletonId, fl
         {
             SampleAnimationPose(*skel, prev.get(), animRef.PrevTime, nullptr, nullptr, blendFrom);
             SampleAnimationPose(*skel, clip.get(), animRef.Time, nullptr, nullptr, workspace);
-            Animation::BlendLocalPoses(*skel, workspace, blendFrom, animRef.BlendAlpha());
+            BlendLocalPoses(workspace, blendFrom, animRef.BlendAlpha());
             ::GameEngine::Animation::BuildPoseToSkinMatrices(
                 *skel, nullptr, &runtime->CompactSkinMatrices, workspace);
             return;

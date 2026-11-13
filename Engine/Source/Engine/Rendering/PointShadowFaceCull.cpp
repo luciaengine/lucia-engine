@@ -3,7 +3,6 @@
 #include "Rendering/Common/Frustum.h"
 
 #include <algorithm>
-#include <cmath>
 
 namespace GameEngine
 {
@@ -62,15 +61,6 @@ inline Vector4 RebasePlane(const Vector4& p, const Vector3& origin)
                         + static_cast<double>(p.y) * origin.y
                         + static_cast<double>(p.z) * origin.z);
     return Vector4{p.x, p.y, p.z, static_cast<float>(w)};
-}
-
-inline Vector3 Normalize3(const Vector3& v)
-{
-    const float len = std::sqrt(Dot3(v, v));
-    if (len <= 1e-8f)
-        return Vector3{0.0f, 0.0f, 0.0f};
-    const float inv = 1.0f / len;
-    return Vector3{v.x * inv, v.y * inv, v.z * inv};
 }
 
 // The +axis direction and its two orthogonal tangents for each cube face. Face
@@ -132,7 +122,7 @@ FaceFrustum BuildFaceFrustum(const Vector3& lightPos, float farPlane, const Face
     // Region is { along-d >= |along-u|, along-d >= |along-v| }, i.e. the four
     // 45° diagonal half-spaces through the apex. Inward normals d±u, d±v.
     auto sidePlane = [&](const Vector3& sign) {
-        const Vector3 n = Normalize3(Vector3{d.x + sign.x, d.y + sign.y, d.z + sign.z});
+        const Vector3 n = Vector3{d.x + sign.x, d.y + sign.y, d.z + sign.z}.NormalizeOrZero();
         return Vector4{n.x, n.y, n.z, -Dot3(n, lightPos)};
     };
     out.Planes[0] = sidePlane(Vector3{-u.x, -u.y, -u.z});

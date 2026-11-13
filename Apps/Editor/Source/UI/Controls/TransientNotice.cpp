@@ -35,7 +35,7 @@ TransientNotice::TransientNotice()
     std::unique_ptr<UIElement> plate = Editor::ControlLayoutLoader::Load(kLayoutAssetPath, kRequiredIds);
     if (!plate)
         return;
-    m_Text = dynamic_cast<Label*>(plate->FindById(kTextId));
+    m_Text = dynamic_cast<Label*>(plate->FindById(HashStringId(kTextId)));
     if (!m_Text)
         Logger::Log::Error("TransientNotice: {} needs a Label with id '{}' in its plate.", kLayoutAssetPath, kTextId);
     AddChild(std::move(plate));
@@ -48,9 +48,9 @@ void TransientNotice::Show(const std::string& text, std::chrono::steady_clock::t
         m_Text->SetText(text);
     // A placed notice overrides the sheet's bottom edge; an unplaced one returns to it.
     if (top)
-        Overrides().Set(Style::PositionTop, StyleLength::Px(*top)).Set(Style::PositionBottom, StyleLength::Auto());
+        Style().Set(Style::PositionTop, StyleLength::Px(*top)).Set(Style::PositionBottom, StyleLength::Auto());
     else
-        Overrides().Reset(Style::PositionTop).Reset(Style::PositionBottom);
+        Style().Reset(Style::PositionTop).Reset(Style::PositionBottom);
     MarkDirty(LayoutDirty);
     m_HideAt = now + kShownDuration;
     if (m_Shown)

@@ -1,0 +1,8 @@
+<!-- EditorBuildStatus (Apps/Editor/Include/UI/Controls/EditorBuildStatus.h): the status bar's left
+     corner. The two ids are the contract with EditorBuildStatus.cpp, which sets their text. The
+     labels take the status bar's text look (bottom-toolbar-status, core.css). -->
+<UIElement class="editor-build-status">
+  <Label id="BuildConfigStatus" class="bottom-toolbar-status" />
+  <UIElement class="editor-build-status-divider" />
+  <Label id="EditorVersionStatus" class="bottom-toolbar-status" />
+</UIElement>

@@ -1,15 +1,18 @@
 #pragma once
 
 #include "ECS/Systems.h"
+#include "TerrainECS/CoarseTileStandIn.h" // the coarse-patch scratch
 #include "Engine/Rendering/SunGlareRenderFeature.h" // ViewSkyline (per-frame scratch)
-#include "TerrainECS/CoarseTileStandIn.h"
 #include "TerrainECS/GrassWindVolumeExtractor.h"
 #include "Terrain/Heightfield.h" // HeightfieldData scratch for atlas normal regen
 #include "TerrainECS/TerrainAtlas.h" // kAtlasUpgradeFadeSeconds (device-free, pure)
 #include "TerrainECS/TerrainReprovisionDebounce.h" // coalesce SamplesPerMeter/size drags
+#include "Types/FlatMap.h"
+#include "Types/FlatSet.h"
 #include "Types/Types.h"
 
 #include <memory>
+#include <span>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -22,13 +25,7 @@ class RenderServices;
 namespace GameEngine::Terrain
 {
 struct TerrainGPUParams;
-}
-
-namespace GameEngine::Components
-{
-struct Terrain;
-struct WorldTransform;
-}
+} // namespace GameEngine::Terrain
 
 namespace GameEngine::TerrainECS
 {
@@ -36,11 +33,10 @@ namespace GameEngine::TerrainECS
 class TileStreamingManager;
 class AtlasResidencyController;
 class TerrainService;
-struct TerrainData;
-struct TerrainInstanceInfo;
+class TerrainFieldUploader;
+class TerrainSkyline;
 struct TerrainTileData;
-struct TileCoord;
-class TerrainGrassFieldUploader;
+struct TerrainInstanceInfo;
 
 // ECS system that handles terrain data lifecycle and heightmap/splat/normal GPU upload.
 // The CBT renderer consumes the extracted params + bindless textures; the upload flush
@@ -71,6 +67,9 @@ struct AtlasResidencySnapshot
 class TerrainExtractionSystem : public ECS::ISystem
 {
 public:
+    // Tile streaming and atlas fades follow the view while the game is paused.
+    static constexpr ECS::SystemTime Time = ECS::SystemTime::Real;
+
     explicit TerrainExtractionSystem(Engine::Renderer::RenderServices* renderServices);
     ~TerrainExtractionSystem() override;
 
@@ -89,104 +88,42 @@ public:
     // wants it.
     bool TryGetAtlasResidency(uint32 tiledTerrainIndex, AtlasResidencySnapshot& outSnapshot) const;
 
-    // Extraction ticks on which a terrain's regional grass controls existed but were not yet
-    // sampleable, so placement was refused for that terrain. Monotonic across the session, and
-    // the only frame-exact answer to "how long does adding a region blank the grass". A single
-    // step is the one tick a freshly created control texture needs; a climbing count is the
-    // gate firing repeatedly, which would be a defect rather than a transient.
+    // Extraction ticks on which placement was refused for a terrain because its grass control
+    // field was not sampleable: its first compose had not landed, or its texture was not yet
+    // uploaded and published. Monotonic across the session, and the frame-exact answer to "how
+    // long was the grass held back". A climb while a terrain waits for its first field (the
+    // compose runs as a job after a scene opens) is expected; a climb on a terrain whose field
+    // is already composed is the gate firing repeatedly, which would be a defect.
     uint64 GrassControlSuppressedTicks() const { return m_GrassControlSuppressedTicks; }
 
 private:
-    struct ExtractionFrame;
-    struct TerrainEntityContext;
-    struct SingleTerrainExtraction;
-    struct TiledTerrainExtraction;
-    struct AtlasPatchContext;
-    struct UnifiedTileUpload;
-    struct GrassControlState;
-    void CollectViews(ExtractionFrame& frame);
-    Components::Terrain& TerrainForWrite(const TerrainEntityContext& context);
-    void ExtractTerrain(ECS::World& world, ECS::EntityHandle entity,
-                        const Components::Terrain& terrain,
-                        const Components::WorldTransform& worldXf, ExtractionFrame& frame);
-    void ExtractTiledTerrain(const TerrainEntityContext& context, ExtractionFrame& frame);
-    bool ProvisionTiledTerrain(const TerrainEntityContext& context, ExtractionFrame& frame,
-                                    TiledTerrainExtraction& extraction);
-    void StreamTiledTerrain(const TerrainEntityContext& context, ExtractionFrame& frame,
-                                    TiledTerrainExtraction& extraction);
-    void UpdateAtlasResidency(const TerrainEntityContext& context, ExtractionFrame& frame,
-                                    TiledTerrainExtraction& extraction);
-    bool SyncTiledQuadtree(const TerrainEntityContext& context, ExtractionFrame& frame,
-                                    TiledTerrainExtraction& extraction);
-    bool ProvisionGlobalTerrain(const TerrainEntityContext& context, ExtractionFrame& frame,
-                                    TiledTerrainExtraction& extraction);
-    void SyncGlobalTerrainAndMorphRanges(const TerrainEntityContext& context, ExtractionFrame& frame,
-                                    TiledTerrainExtraction& extraction);
-    void UploadUnifiedTiles(const TerrainEntityContext& context, ExtractionFrame& frame,
-                                    TiledTerrainExtraction& extraction);
-    bool IsResidentFullTile(const TiledTerrainExtraction& extraction, int32 nx, int32 nz) const;
-    void UploadUnifiedTile(const TerrainEntityContext& context, ExtractionFrame& frame,
-                           TiledTerrainExtraction& extraction, const TileCoord& coord, bool kTileUploadDebug);
-    bool TryUploadUnifiedTileRegion(UnifiedTileUpload& upload);
-    void UploadCoarseUnifiedTile(UnifiedTileUpload& upload);
-    void UploadUnifiedTileSurface(UnifiedTileUpload& upload);
-    void UploadAtlasTiles(const TerrainEntityContext& context, ExtractionFrame& frame,
-                                    TiledTerrainExtraction& extraction);
-    void PublishAtlasHeightSourceChanged(AtlasPatchContext& patch, const TileCoord& coord);
-    const Terrain::HeightfieldData* FindAtlasNeighborHeightfield(const AtlasPatchContext& patch, int32 nx, int32 nz) const;
-    void UploadAtlasSplatSlot(AtlasPatchContext& patch, TerrainTileData* tp, uint32 slot);
-    void PatchAtlasSlotRegion(AtlasPatchContext& patch, const TileCoord& coord, TerrainTileData& tp,
-                              uint32 slot, int32 x0, int32 z0, int32 x1, int32 z1);
-    void PatchAtlasSlot(AtlasPatchContext& patch, const TileCoord& coord, uint32 slot,
-                        bool isFull, bool wholeSlot);
-    bool TryPatchAtlasSlotRegion(AtlasPatchContext& patch, const TileCoord& coord, TerrainTileData* tp,
-                                 uint32 slot, bool fullNative, bool wholeSlot);
-    void UploadAtlasSlotNormal(AtlasPatchContext& patch, const TileCoord& coord, TerrainTileData* tp,
-                               uint32 slot, const CoarseTileStandIn* standIn);
-    const CoarseTileStandIn& ResolveCoarseStandIn(const TerrainTileData& tile, uint32 resolution,
-                                               float32 tileWorldSize, float32 heightScale);
-    void PatchAtlasSlotSplatOnly(AtlasPatchContext& patch, const TileCoord& coord, uint32 slot);
-    void PatchDirtyAtlasTiles(AtlasPatchContext& patch);
-    void AdoptGpuHeightReadback(AtlasPatchContext& patch, int32 tileX, int32 tileZ, const float32* samples,
-                                uint32 rectW, uint32 rectH, int32 rectMinX, int32 rectMinZ);
-    void DispatchAtlasGpuBake(AtlasPatchContext& patch);
-    uint32 RebuildAtlasCoarseFields(AtlasPatchContext& patch);
-    void PublishTiledTerrain(const TerrainEntityContext& context, ExtractionFrame& frame,
-                                    TiledTerrainExtraction& extraction);
-    void ExtractSingleTerrain(const TerrainEntityContext& context, ExtractionFrame& frame);
-    bool ProvisionSingleTerrain(const TerrainEntityContext& context, ExtractionFrame& frame,
-                                SingleTerrainExtraction& single);
-    void ComputeSingleTerrainMorphRanges(TerrainData& terrainData);
-    void UploadSingleTerrainMaps(const TerrainEntityContext& context, ExtractionFrame& frame,
-                                 SingleTerrainExtraction& single);
-    void PublishSingleTerrain(const TerrainEntityContext& context, ExtractionFrame& frame,
-                              const SingleTerrainExtraction& single);
-    Terrain::TerrainGPUParams BuildTiledTerrainParams(const TerrainEntityContext& context, ExtractionFrame& frame,
-                                    TiledTerrainExtraction& extraction);
-    TerrainExtractionSystem::GrassControlState ApplyTiledGrassControls(const TerrainEntityContext& context, ExtractionFrame& frame,
-                                    TiledTerrainExtraction& extraction, Terrain::TerrainGPUParams& params);
-    void LogTiledGrassParams(const Terrain::TerrainGPUParams& params, TiledTerrainExtraction& extraction);
-    TerrainInstanceInfo MakeTiledInstanceInfo(const TerrainEntityContext& context, ExtractionFrame& frame,
-                                    TiledTerrainExtraction& extraction,
-                                    const Terrain::TerrainGPUParams& params, const GrassControlState& controls);
-    Terrain::TerrainGPUParams BuildSingleTerrainParams(const TerrainEntityContext& context, ExtractionFrame& frame,
-                                     const SingleTerrainExtraction& single);
-    bool ApplySingleGrassControls(const TerrainEntityContext& context, ExtractionFrame& frame,
-                                     const SingleTerrainExtraction& single, Terrain::TerrainGPUParams& params);
-    TerrainInstanceInfo MakeSingleInstanceInfo(const TerrainEntityContext& context, ExtractionFrame& frame,
-                                     const SingleTerrainExtraction& single,
-                                     const Terrain::TerrainGPUParams& params, bool grassControlsSuppressed);
-    void PublishTerrainFrame(ECS::World& world, ExtractionFrame& frame);
-
     uint64 m_GrassControlSuppressedTicks = 0;
 
-    // Marches the terrain skyline along the sun's azimuth for each view and leaves the answer
+    // Answers the terrain skyline along the sun's azimuth for each view and leaves the answer
     // on the sun-glare feature. Here rather than in the renderer because the renderer cannot
     // depend on TerrainECS (the dependency runs the other way), and the glare's render node has
     // a camera but no ECS world.
     void PublishSunGlareSkyline(ECS::World& world);
+
+    // Puts the extracted terrains and their params in DrawOrderKey order, the drawn terrain first, and
+    // logs one line when the drawn terrain or the active count changes while several are active.
+    void PublishInDrawnTerrainOrder(const ECS::World& world, std::span<const uint64> drawOrder,
+                                    std::vector<ECS::EntityHandle>& entities,
+                                    std::vector<TerrainInstanceInfo>& infos,
+                                    std::vector<Terrain::TerrainGPUParams>& params);
+    ECS::EntityHandle m_LoggedDrawnTerrain{};
+    size_t m_LoggedActiveTerrainCount = 0;
     // Reused across frames so the per-frame refill does not allocate.
     std::vector<Engine::Renderer::SunGlareRenderFeature::ViewSkyline> m_SkylineScratch;
+    // Each view's skyline, kept across frames, and the publish that last saw the view.
+    struct ViewSkylineState
+    {
+        std::unique_ptr<TerrainSkyline> Skyline;
+        uint64 LastPublish = 0;
+    };
+    FlatMap<uint32, ViewSkylineState> m_ViewSkylines;
+    std::vector<uint32> m_RetiredSkylineViews; // reused by the publish
+    uint64 m_SkylinePublish = 0;
     GrassWindVolumeExtractor m_GrassWindVolumes;
 
     // Drop every per-terrain tracker (tile streaming state, atlas controller, coarse-build/
@@ -199,10 +136,18 @@ private:
     // so a teardown outside this system (scene close, entity delete, component remove)
     // would otherwise hand a reused index the previous terrain's state.
     void ForgetRetiredTiledTerrains(TerrainService& service);
+    void ForgetDestroyedSizeRefusals(const ECS::World& world);
+
+    // The stand-in a coarse patch of `tile` uploads: the tile's own when it matches this
+    // resolution, extent, height scale and heightfield version, else one built into
+    // m_CoarseStandInScratch from the tile's heightfield (byte-identical to the job's).
+    const CoarseTileStandIn& ResolveCoarseStandIn(const TerrainTileData& tile, uint32 tileRes, float32 tileWorldSize,
+                                                  float32 heightScale);
 
     Engine::Renderer::RenderServices* m_RenderServices = nullptr;
     std::unique_ptr<TileStreamingManager> m_StreamingManager;
-    std::unique_ptr<TerrainGrassFieldUploader> m_GrassFieldUploader;
+    std::unique_ptr<TerrainFieldUploader> m_GrassFieldUploader;
+    std::unique_ptr<TerrainFieldUploader> m_ColorMapUploader;
 
     // This system's cursor into each terrain's HeightfieldDirtyLog: the
     // HeightfieldVersion whose data was last uploaded to the GPU. Keyed by
@@ -217,18 +162,18 @@ private:
     // The TerrainRenderFeature::GetDeviceResourceEpoch every terrain was last uploaded for.
     uint64 m_UploadedDeviceResourceEpoch = 0;
 
-    // Reusable scratch for upsampling a Coarse (not-yet-Full) streamed tile's
-    // heightfield/splatmap to the unified tile-region resolution so it renders a
-    // smooth low-frequency approximation of its Full bake instead of a flat/black
-    // hole. Re-derived only when a coarse tile is dirty (once per stream-in), so
-    // a parked camera pays nothing. The *Patch buffers hold the interior-clamped
-    // sub-block actually uploaded (boundary texels shared with a resident-Full
+    // A Coarse (not-yet-Full) streamed tile renders a smooth low-frequency approximation of its
+    // Full bake instead of a flat/black hole: its stand-in (CoarseTileStandIn, the heights
+    // upsampled to the tile resolution and their normal), which the coarse streaming job builds.
+    // m_CoarseStandInScratch holds one built here when the tile's own no longer matches. The
+    // splat is upsampled here (it is baked after the tile arrives). The *Patch buffers hold the
+    // interior-clamped sub-block actually uploaded (boundary texels shared with a resident-Full
     // neighbor are excluded so a coarse write never stomps the Full edge).
+    CoarseTileStandIn m_CoarseStandInScratch;
     std::vector<uint8> m_CoarseSplatScratch;
     std::vector<float32> m_CoarseHeightPatch;
     std::vector<uint32> m_CoarseSplatPatch;
     std::vector<uint32> m_CoarseNormalPatch;
-    CoarseTileStandIn m_CoarseStandInScratch;
 
     // Phase E: single-slot pack scratch (slotStride^2 floats) reused across the atlas slot
     // patches so each tile upload does not reallocate. Resized on a tileRes change.
@@ -250,7 +195,12 @@ private:
     std::vector<float32> m_UnifiedHeightRegionScratch;
     std::vector<uint32> m_UnifiedSurfaceRegionScratch;
 
-    // The slot scratch includes the atlas apron. The tile scratch holds the upsampled splat.
+    // Quality-sweep slice 1: atlas SPLAT (RGBA8) + NORMAL (R16G16F) slot sources ride the same
+    // slot geometry as height. Reused per-patch scratch so streaming does not reallocate. The
+    // *SlotScratch hold the packed slotStride^2 block (apron included) uploaded to the atlas; the
+    // *TileScratch holds the upsampled splat of a coarse tile at tileRes. A Full tile's normal
+    // follows its post-modifier heights, with its border ring read against the neighbours; a
+    // coarse tile's comes from its stand-in.
     std::vector<uint8> m_AtlasSplatSlotScratch;
     std::vector<uint8> m_AtlasNormalSlotScratch;
     std::vector<uint8> m_AtlasSplatTileScratch;
@@ -292,9 +242,11 @@ private:
     std::vector<float32> m_AtlasCoarseScratch;
     std::unordered_set<uint32> m_AtlasCoarseBuilt;
 
-    // Warn-once (keyed by TiledTerrainHandle index): the atlas indirection table silently caps at
-    // kAtlasMaxTiles.
-    std::unordered_set<uint32> m_AtlasOverCapWarnedTiled;
+    // The entities whose planar size PlanarTerrainSizeError refuses, so the refusal logs once. An
+    // entity leaves the set when its size is accepted or the entity is destroyed. The set empties
+    // when the world starts a new run of entity handles (World::GetEntityHandleEpoch).
+    FlatSet<ECS::EntityHandle> m_SizeRefusedEntities;
+    uint64 m_SizeRefusalHandleEpoch = 0;
 
     // Settle gate for a tiled terrain's structural re-provision (SamplesPerMeter / world size),
     // keyed by TiledTerrainHandle index. A resolution/size change from an inspector drag emits a

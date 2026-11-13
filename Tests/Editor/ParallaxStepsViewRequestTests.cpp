@@ -7,7 +7,7 @@
 
 #include <gtest/gtest.h>
 
-#include "DebugServer/ParallaxStepsViewRequest.h"
+#include "DebugServer/Parallax/ParallaxStepsViewRequest.h"
 
 #include <nlohmann/json.hpp>
 

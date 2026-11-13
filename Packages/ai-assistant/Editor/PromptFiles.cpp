@@ -1,6 +1,9 @@
 #include "PromptFiles.h"
 
-#include "Engine/Rendering/RgbaImageOps.h"
+#include "Image/Decode.h"
+#include "Image/Encode.h"
+#include "Image/ImageHeader.h"
+#include "Image/Resample.h"
 #include "Types/Utf8.h"
 
 #include <algorithm>
@@ -58,21 +61,22 @@ SentImage ImageToSend(const std::string& name, std::string bytes, std::string_vi
 {
     if (bytes.size() <= PromptFiles::kMaxImageBytes)
         return {std::move(bytes), std::string(mediaType), {}};
-    uint32_t width = 0, height = 0;
-    if (ReadImageDimensions(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size(), width, height) &&
-        uint64_t{width} * height > PromptFiles::kMaxSourceImagePixels)
-        return {{}, {}, name + " is " + std::to_string(width) + " x " + std::to_string(height) +
+    const std::span<const uint8_t> fileBytes(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size());
+    const Image::ImageHeader header = Image::ReadImageHeader(fileBytes);
+    if (header.Valid && uint64_t{header.Width} * header.Height > PromptFiles::kMaxSourceImagePixels)
+        return {{}, {}, name + " is " + std::to_string(header.Width) + " x " + std::to_string(header.Height) +
                             " pixels; an image to scale down can have at most " +
                             std::to_string(PromptFiles::kMaxSourceImagePixels / 1'000'000) +
                             " megapixels, so save a smaller copy and add it"};
-    const DecodedImage scaled = DownscaleRgbaToLongEdge(
-        DecodeImageToRGBA(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()), PromptFiles::kMaxImageLongEdge);
-    if (!scaled.valid)
+    Image::Image8 scaled = Image::Decode8(fileBytes, name, Image::DecodeChannels::Rgba);
+    if (scaled.Valid && std::max(scaled.Width, scaled.Height) > PromptFiles::kMaxImageLongEdge)
+        scaled = Image::ResampleToLongEdge(scaled.Pixels, scaled.Width, scaled.Height, PromptFiles::kMaxImageLongEdge);
+    if (!scaled.Valid)
         return {{}, {}, name + " is " + Megabytes(bytes.size()) + " and could not be scaled down; save a copy under " +
                             Megabytes(PromptFiles::kMaxImageBytes) + " and add it"};
-    if (std::vector<uint8_t> png = EncodeRgbaPng(scaled); !png.empty() && png.size() <= PromptFiles::kMaxImageBytes)
+    if (std::vector<uint8_t> png = Image::EncodePng(scaled.Pixels, scaled.Width, scaled.Height); !png.empty() && png.size() <= PromptFiles::kMaxImageBytes)
         return {std::string(png.begin(), png.end()), "image/png", {}};
-    if (std::vector<uint8_t> jpeg = EncodeRgbaJpeg(scaled, kScaledJpegQuality);
+    if (std::vector<uint8_t> jpeg = Image::EncodeJpeg(scaled.Pixels, scaled.Width, scaled.Height, kScaledJpegQuality);
         !jpeg.empty() && jpeg.size() <= PromptFiles::kMaxImageBytes)
         return {std::string(jpeg.begin(), jpeg.end()), "image/jpeg", {}};
     return {{}, {}, name + " could not be scaled down to " + Megabytes(PromptFiles::kMaxImageBytes) +

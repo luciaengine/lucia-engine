@@ -22,7 +22,6 @@
 #include "Assets/MaterialAsset.h"
 #include "Assets/ModelAsset.h"
 #include "Assets/TextureAsset.h"
-#include "Engine/Rendering/EmbeddedImageDecoder.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
@@ -33,13 +32,12 @@
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
 #include "Logger/Logger.h"
-#include "Platform/Environment.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/BindlessResourceManager.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/DeviceFormatting.h"
-#include "Rendering/Core/PipelineTypes.h"
-#include "Rendering/CameraDerivation.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Camera/CameraDerivation.h"
 #include "Rendering/Core/CullingStrategy.h"
 #include "Rendering/Core/FrustumCullingStrategy.h"
 #include "Rendering/Core/GPUCulling.h"
@@ -47,16 +45,15 @@
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/Materials/MaterialBuilder.h"
-#include "Rendering/Materials/ShaderReflection.h"
+#include "Rendering/Materials/Shader/ShaderReflection.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Passes/SRGBEncodePass.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Rendering/Utils/BufferHelpers.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
-#include "Rendering/Utils/CubeLutFileParser.h"
-#include "Rendering/Utils/CubeLutGpuUpload.h"
+#include "Rendering/Utils/CubeLut/CubeLutFileParser.h"
+#include "Rendering/Utils/CubeLut/CubeLutGpuUpload.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
-#include "Types/Fnv1a.h"
 #include "Types/StringId.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/MatrixOps.h"
@@ -68,10 +65,12 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cassert>
 #include <cstring>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -89,11 +88,15 @@ using namespace ::GameEngine::Rendering;
 namespace
 {
 // L1a kill switch (GE_SHADOW_CACHE=0 forces every shadowed point light to
-// re-render its faces each frame). On unless switched off, read once (mirrors
-// IsCasterReductionEnabled / GE_SHADOW_WALK_EARLYOUT).
+// re-render its faces each frame). ON-unless-"0", read once — the standard
+// GE_ flag idiom (mirrors IsCasterReductionEnabled / GE_SHADOW_WALK_EARLYOUT).
 bool IsPointShadowCacheEnabled()
 {
-    static const bool s_Enabled = Platform::EnvironmentSwitchEnabled("GE_SHADOW_CACHE", true);
+    static const bool s_Enabled = []()
+    {
+        const char* env = std::getenv("GE_SHADOW_CACHE");
+        return !env || std::strcmp(env, "0") != 0;
+    }();
     return s_Enabled;
 }
 
@@ -103,12 +106,27 @@ bool IsPointShadowCacheEnabled()
 // mask — never a camera-relative value (that would re-hash every camera move
 // and defeat the cache). FNV-1a over the raw float bits so an unmoved light
 // produces a byte-stable key frame to frame.
-uint64_t HashPointShadowContent(const float positionWS[3], float range, uint8_t faceMask, uint32_t renderLayerMask)
+uint64_t HashPointShadowContent(const Mathematics::Vector3& positionWS, float range, uint8_t faceMask, uint32_t renderLayerMask)
 {
-    uint64_t h = Hashing::Fnv1a64(positionWS, sizeof(float) * 3);
-    h = Hashing::Fnv1a64Value(h, range);
-    h = Hashing::Fnv1a64Value(h, renderLayerMask);
-    return Hashing::Fnv1a64Value(h, faceMask);
+    constexpr uint64_t kFnvOffset = 14695981039346656037ull;
+    constexpr uint64_t kFnvPrime = 1099511628211ull;
+    uint64_t h = kFnvOffset;
+    const auto mix32 = [&](uint32_t v)
+    {
+        for (int byte = 0; byte < 4; ++byte)
+        {
+            h ^= (v >> (byte * 8)) & 0xFFu;
+            h *= kFnvPrime;
+        }
+    };
+    mix32(std::bit_cast<uint32_t>(positionWS.x));
+    mix32(std::bit_cast<uint32_t>(positionWS.y));
+    mix32(std::bit_cast<uint32_t>(positionWS.z));
+    mix32(std::bit_cast<uint32_t>(range));
+    mix32(renderLayerMask);
+    h ^= faceMask;
+    h *= kFnvPrime;
+    return h;
 }
 
 const char* PointShadowDirtyCauseName(PointShadowDirtyCause cause)
@@ -189,7 +207,7 @@ bool RenderServices::ViewNeedsShadowCascadePasses(Rendering::ViewId viewId) cons
     for (const auto& v : m_ViewRegistry.GetViews())
     {
         if (v.id == viewId)
-            return v.ActiveRenderLayerMask() != 0u && HasShadowCasters(viewId);
+            return v.ActiveRenderLayerMask() != Rendering::RenderLayerMask::None() && HasShadowCasters(viewId);
     }
     return false;
 }
@@ -233,7 +251,7 @@ FeatureDeclareContext RenderServices::MakeFeatureDeclareContext(
     // Present only under the gate: active render layers + shadow casters + a
     // valid light of that family. GetWorldLights is read once here.
     if (const auto* view = m_ViewRegistry.FindViewDesc(viewId);
-        view && view->ActiveRenderLayerMask() != 0u && HasShadowCasters(viewId))
+        view && view->ActiveRenderLayerMask() != Rendering::RenderLayerMask::None() && HasShadowCasters(viewId))
     {
         const auto lights = GetWorldLights(view->worldId);
         if (auto area = BuildAreaShadowFrameInfo(lights); area.valid)
@@ -313,9 +331,9 @@ Rendering::RenderGraph::RGTexture RenderServices::ImportShadowMapArrayRG(
     // `initialState`: the pool + import-state write-back own lifetime and
     // state truth (a desc change = pool realloc + fresh Undefined physical,
     // which replaces the feature's recreate block structurally).
-    // ACCEPTED EDGES (slice-4 decisions): (1) on the config-change frame the
-    // world samples the fresh Undefined-cleared array for ONE frame (matches
-    // the old recreate hiccup); (2) pool idle-eviction of a view's array frees
+    // ACCEPTED EDGES (slice-4 decisions): (1) a desc change or an idle eviction gives
+    // the next import a fresh Undefined array; every cascade renders into it on that
+    // frame, before the world samples it; (2) pool idle-eviction of a view's array frees
     // the image while the PCSS bindless slots still hold single-layer views of
     // it — the pool releases pooled physicals without notifying the consumers
     // that registered views on them, so the views outlive their image until the
@@ -404,6 +422,37 @@ ResolvedPassResources RenderServices::BuildShadowPassResources(
                                 camOffset);
 }
 
+void RenderServices::PublishAreaShadow(ShadowDeclareSeam, Rendering::RenderGraph::RGFrame& frame,
+                                       Rendering::ViewId viewId,
+                                       Rendering::RenderGraph::RGTexture map,
+                                       Rendering::RenderGraph::RGFrame::TypedUpload<AreaShadowDataGPU> data)
+{
+    auto& vfr = ViewFrameRGFor(frame, viewId);
+    vfr.AreaShadowMap = map;
+    vfr.AreaShadowData = data;
+}
+
+void RenderServices::PublishSpotShadow(ShadowDeclareSeam, Rendering::RenderGraph::RGFrame& frame,
+                                       Rendering::ViewId viewId,
+                                       Rendering::RenderGraph::RGTexture map,
+                                       Rendering::RenderGraph::RGFrame::TypedUpload<SpotShadowDataGPU> data)
+{
+    auto& vfr = ViewFrameRGFor(frame, viewId);
+    vfr.SpotShadowMap = map;
+    vfr.SpotShadowData = data;
+}
+
+void RenderServices::PublishPointShadow(ShadowDeclareSeam, Rendering::RenderGraph::RGFrame& frame,
+                                        Rendering::ViewId viewId,
+                                        Rendering::RenderGraph::RGTexture map,
+                                        Rendering::BufferHandle slotBuffer, uint64_t slotBufferOffset,
+                                        uint64_t slotBufferBytes)
+{
+    auto& vfr = ViewFrameRGFor(frame, viewId);
+    vfr.PointShadowMap = map;
+    vfr.PointShadowData = {slotBuffer, slotBufferOffset, slotBufferBytes};
+}
+
 void RenderServices::PublishDirectionalShadowDataRG(Rendering::RenderGraph::RGFrame& frame,
     Rendering::ViewId viewId, Rendering::RenderGraph::RGFrame::TypedUpload<ShadowDataGPU> data)
 {
@@ -440,37 +489,6 @@ bool RenderServices::ShareDirectionalShadowsRG(Rendering::RenderGraph::RGFrame& 
     return true;
 }
 
-void RenderServices::PublishAreaShadow(ShadowDeclareSeam, Rendering::RenderGraph::RGFrame& frame,
-                                       Rendering::ViewId viewId,
-                                       Rendering::RenderGraph::RGTexture map,
-                                       Rendering::RenderGraph::RGFrame::TypedUpload<AreaShadowDataGPU> data)
-{
-    auto& vfr = ViewFrameRGFor(frame, viewId);
-    vfr.AreaShadowMap = map;
-    vfr.AreaShadowData = data;
-}
-
-void RenderServices::PublishSpotShadow(ShadowDeclareSeam, Rendering::RenderGraph::RGFrame& frame,
-                                       Rendering::ViewId viewId,
-                                       Rendering::RenderGraph::RGTexture map,
-                                       Rendering::RenderGraph::RGFrame::TypedUpload<SpotShadowDataGPU> data)
-{
-    auto& vfr = ViewFrameRGFor(frame, viewId);
-    vfr.SpotShadowMap = map;
-    vfr.SpotShadowData = data;
-}
-
-void RenderServices::PublishPointShadow(ShadowDeclareSeam, Rendering::RenderGraph::RGFrame& frame,
-                                        Rendering::ViewId viewId,
-                                        Rendering::RenderGraph::RGTexture map,
-                                        Rendering::BufferHandle slotBuffer, uint64_t slotBufferOffset,
-                                        uint64_t slotBufferBytes)
-{
-    auto& vfr = ViewFrameRGFor(frame, viewId);
-    vfr.PointShadowMap = map;
-    vfr.PointShadowData = {slotBuffer, slotBufferOffset, slotBufferBytes};
-}
-
 void RenderServices::PublishPcssPyramid(ShadowDeclareSeam, Rendering::RenderGraph::RGFrame& frame,
                                         Rendering::ViewId viewId,
                                         Rendering::RenderGraph::RGTexture pyramid)
@@ -485,13 +503,14 @@ void RenderServices::SetPointShadowBudget(uint32_t budget)
 
 void RenderServices::NotifyShadowCasterContentChanged(
     uint64 worldId, std::span<const ShadowCasterChangeSphere> changedCasterSpheres,
-    bool unattributed, bool affectsRigidCasters)
+    ShadowCasterChangeScope scope, bool affectsRigidCasters)
 {
-    ShadowCasterChanges& changes = m_ShadowCasterChanges[worldId];
+    assert(scope == ShadowCasterChangeScope::Bounded || changedCasterSpheres.empty());
+    ShadowCasterChanges& changes = m_ShadowCasterChanges.GetOrInsert(worldId);
     ++changes.Version;
     if (affectsRigidCasters)
-        ++changes.RigidVersion;
-    changes.Unattributed = unattributed;
+        changes.RigidVersion = changes.Version;
+    changes.Scope = scope;
     // The stored set explains exactly the advance to `Version`; the planner
     // applies it only across that single step (any gap globalizes there).
     changes.Spheres.assign(changedCasterSpheres.begin(), changedCasterSpheres.end());
@@ -501,7 +520,8 @@ const RenderServices::PointShadowAssignment& RenderServices::EnsurePointShadowAs
     Rendering::ViewId viewId, uint64 worldId, const Rendering::CameraData& camData)
 {
     const auto* viewDesc = m_ViewRegistry.FindViewDesc(viewId);
-    const uint32_t renderLayerMask = viewDesc ? viewDesc->ActiveRenderLayerMask() : 0xFFFFFFFFu;
+    const Rendering::RenderLayerMask renderLayerMask =
+        viewDesc ? viewDesc->ActiveRenderLayerMask() : Rendering::RenderLayerMask::All();
     PointShadowAssignment& entry = m_PointShadowAssignments[viewId];
     const uint64_t deviceFrame = m_Device ? m_Device->GetFrameIndex() : 0u;
     // Idempotent per (view, device frame): the first consumer this frame advances
@@ -535,7 +555,7 @@ const RenderServices::PointShadowAssignment& RenderServices::EnsurePointShadowAs
         return entry;
 
     const auto lights = GetWorldLights(worldId);
-    const auto pointCull = MakePointShadowCullInputs(camData);
+    const auto pointCull = MakePointShadowCullInputs(camData, m_ViewRegistry.ResolveCameraRanges(viewId));
     const PointShadowCameraCull* cull = pointCull ? &*pointCull : nullptr;
 
     // Enumerate shadow-casting point candidates (clusterable index matches the
@@ -558,10 +578,9 @@ const RenderServices::PointShadowAssignment& RenderServices::EnsurePointShadowAs
             light.castsShadows == 0)
             continue;
 
-        const Mathematics::Vector3 pos{light.positionWS[0], light.positionWS[1],
-                                       light.positionWS[2]};
+        const Mathematics::Vector3 pos = light.positionWS - Mathematics::WorldPosition{};
         Candidate c{};
-        PopulatePointShadowGeometry(c.Geometry, pos, light.range, light.shadowResolutionTier, cluster,
+        PopulatePointShadowGeometry(c.Geometry, light.positionWS, light.range, light.shadowResolutionTier, cluster,
                                     cull);
         if (!c.Geometry.valid)
             continue; // off-screen (S1 light-level reject) or every face culled
@@ -577,13 +596,13 @@ const RenderServices::PointShadowAssignment& RenderServices::EnsurePointShadowAs
         // L1a: the camera face mask is part of the cached key — a face becoming
         // visible must re-render the light (its layer was culled/never drawn).
         c.Plan.ContentHash =
-            HashPointShadowContent(light.positionWS, light.range, c.Geometry.faceMask,
-                                   renderLayerMask);
+            HashPointShadowContent(pos, light.range, c.Geometry.faceMask,
+                                   renderLayerMask.Bits);
         // L1b: world-space influence sphere for caster-proximity keying (same
         // world-space source as the content hash — never camera-relative).
-        c.Plan.InfluenceSphere[0] = light.positionWS[0];
-        c.Plan.InfluenceSphere[1] = light.positionWS[1];
-        c.Plan.InfluenceSphere[2] = light.positionWS[2];
+        c.Plan.InfluenceSphere[0] = pos.x;
+        c.Plan.InfluenceSphere[1] = pos.y;
+        c.Plan.InfluenceSphere[2] = pos.z;
         c.Plan.InfluenceSphere[3] = light.range;
         candidates.push_back(std::move(c));
     }
@@ -631,10 +650,10 @@ const RenderServices::PointShadowAssignment& RenderServices::EnsurePointShadowAs
     // advance. The span aliases the per-world store, which the single-writer
     // discipline keeps stable for the rest of this frame; Plan() does not
     // retain it.
-    if (const auto csIt = m_ShadowCasterChanges.find(worldId); csIt != m_ShadowCasterChanges.end())
+    if (const ShadowCasterChanges* changes = m_ShadowCasterChanges.Find(worldId))
     {
-        cache.ChangedCasters = csIt->second.Spheres;
-        cache.Unattributed = csIt->second.Unattributed;
+        cache.ChangedCasters = changes->Spheres;
+        cache.Unattributed = changes->Scope != ShadowCasterChangeScope::Bounded;
     }
 
     const auto plan = m_PointShadowPlanners[viewId].Plan(
@@ -739,26 +758,11 @@ Rendering::RenderGraph::RGPass RenderServices::AddDeformationMotionPassForView(
 
     if (!motionTarget.IsValid() || !depth.IsValid())
         return {};
-    // Single-sample only, by design. Attachments of one pass must agree on
-    // sample count, and a hardware average of this payload would mix two
-    // surfaces' motion — or a sentinel with a real vector — into a value
-    // describing neither. Multisampling and temporal anti-aliasing are
-    // mutually exclusive here and the reflection consumer withholds itself
-    // under multisampling, so no consumer of this target exists on such a
-    // view; the guard is what keeps that a refusal rather than a mismatch.
-    if (frame.Graph().ResourceDesc(depth.Id).SampleCount != 1)
-    {
-        static bool warnedOnce = false;
-        if (!warnedOnce)
-        {
-            warnedOnce = true;
-            Logger::Log::Warning(
-                "Deformation motion: view {} renders multisampled depth, and the motion payload "
-                "has no correct multisample resolve — no deforming motion is produced for it.",
-                static_cast<uint32_t>(viewId));
-        }
-        return {};
-    }
+    // Single-sample and full-viewport only: the producer refuses a
+    // multisampled or letterboxed view before it asks for this pass
+    // (ClassifyDeformationMotionView), so this pass sets neither.
+    assert(frame.Graph().ResourceDesc(depth.Id).SampleCount == 1u);
+    assert(!m_ViewRegistry.GetViewLetterbox(viewId).active);
 
     std::string passName = "DeformationMotion[View#";
     passName += std::to_string(static_cast<uint32_t>(viewId));
@@ -772,20 +776,9 @@ Rendering::RenderGraph::RGPass RenderServices::AddDeformationMotionPassForView(
     params.Phase = phase;
     params.DepthBiasEnable = false;
     params.RasterizationSamples = 1;
-    const ViewLetterbox letterbox = m_ViewRegistry.GetViewLetterbox(viewId);
-    if (letterbox.active)
-    {
-        params.ViewportX = letterbox.x;
-        params.ViewportY = letterbox.y;
-        params.ViewportWidth = letterbox.width;
-        params.ViewportHeight = letterbox.height;
-    }
-    else
-    {
-        const auto& d = frame.Graph().ResourceDesc(motionTarget.Id);
-        params.ViewportWidth = d.Width;
-        params.ViewportHeight = d.Height;
-    }
+    const auto& targetDesc = frame.Graph().ResourceDesc(motionTarget.Id);
+    params.ViewportWidth = targetDesc.Width;
+    params.ViewportHeight = targetDesc.Height;
 
     // The raster domain is the prepass's, jitter included: this pass tests
     // GreaterOrEqual against the depth that prepass wrote, so a clip position
@@ -834,15 +827,13 @@ Rendering::RenderGraph::RGPass RenderServices::AddDeformationMotionPassForView(
     params.Resources = BuildPassResourcesRG(frame, viewId, Rendering::MaterialKeyword::None,
                                             nullptr, cam.Buffer, cam.Offset);
 
-    auto* preparedDepth = AllocatePreparedDepthOnlyPass(frame, std::move(params));
+    auto* preparedDepth = AllocatePreparedDepthOnlyPass(frame, params);
     return frame.AddPass(
         passName.c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
-            p.Prepare([this, preparedDepth](RenderGraph::RGPrepareContext& prepare)
-            {
-                return PrepareDepthOnlyPass(prepare, *preparedDepth, MakeDepthDrawServices());
-            });
+            p.Prepare([this, preparedDepth](RenderGraph::RGPrepareContext& context)
+            { return PrepareDepthOnlyPass(context, *preparedDepth, MakeDepthDrawServices()); });
             RenderGraph::RGAttachmentOps colorOps{};
             // One owner clears this target. The producer runs first and owns
             // the clear; the mover lane that follows loads, so neither erases
@@ -860,8 +851,8 @@ Rendering::RenderGraph::RGPass RenderServices::AddDeformationMotionPassForView(
             if (m_FrameRG.For.IsFor(frame) && m_FrameRG.DrawStreamOrdering.IsValid())
                 p.Read(m_FrameRG.DrawStreamOrdering, RenderGraph::RGBufferRead::Indirect);
         },
-        [preparedDepth](RenderGraph::RGContext& ctx) mutable
-        { RecordPreparedDepthOnlyPass(ctx, *preparedDepth); });
+        [preparedDepth](RenderGraph::RGContext& context)
+        { RecordPreparedDepthOnlyPass(context, *preparedDepth); });
 }
 
 Rendering::RenderGraph::RGPass RenderServices::AddWorldDepthPrepassImpl(
@@ -875,9 +866,7 @@ Rendering::RenderGraph::RGPass RenderServices::AddWorldDepthPrepassImpl(
     // The non-occluding prepass loads the camera prepass's depth and adds the non-occluding heads.
     const bool isNonOccluding = !isRecover && heads == PrepassHeads::NonOccluding;
 
-    // Pixelation bands discard out-of-band geometry in their color fragment
-    // shader. A vertex-only depth prepass would occlude the background with
-    // those rejected fragments. Let the band color pass write its own depth.
+    // Band color fragments reject geometry by distance; their color pass writes matching depth.
     if (IsDepthPixelationView(viewId))
         return {};
 
@@ -957,15 +946,13 @@ Rendering::RenderGraph::RGPass RenderServices::AddWorldDepthPrepassImpl(
     params.Resources = BuildPassResourcesRG(frame, viewId, Rendering::MaterialKeyword::None,
                                             nullptr, cam.Buffer, cam.Offset);
 
-    auto* preparedDepth = AllocatePreparedDepthOnlyPass(frame, std::move(params));
+    auto* preparedDepth = AllocatePreparedDepthOnlyPass(frame, params);
     const RenderGraph::RGPass pass = frame.AddPass(
         passName.c_str(), Rendering::PassPhase::kWorldRender,
         [&](RenderGraph::RGPassBuilder& p)
         {
-            p.Prepare([this, preparedDepth](RenderGraph::RGPrepareContext& prepare)
-            {
-                return PrepareDepthOnlyPass(prepare, *preparedDepth, MakeDepthDrawServices());
-            });
+            p.Prepare([this, preparedDepth](RenderGraph::RGPrepareContext& context)
+            { return PrepareDepthOnlyPass(context, *preparedDepth, MakeDepthDrawServices()); });
             // A2.4-P0-R: the depth prepass exec is self-contained (own
             // viewport/scissor + per-draw binds) — eligible for secondary record.
             p.RecordInSecondary();
@@ -1018,8 +1005,8 @@ Rendering::RenderGraph::RGPass RenderServices::AddWorldDepthPrepassImpl(
             // the read that keeps this alive. A frame where the world CLEARS
             // depth instead culls the prepass — correct dead-work elimination.
         },
-        [preparedDepth](RenderGraph::RGContext& ctx) mutable
-        { RecordPreparedDepthOnlyPass(ctx, *preparedDepth); });
+        [preparedDepth](RenderGraph::RGContext& context)
+        { RecordPreparedDepthOnlyPass(context, *preparedDepth); });
 
     if (isNonOccluding)
         return pass;

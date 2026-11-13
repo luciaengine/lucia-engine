@@ -2,7 +2,7 @@
 
 #include "Assets/AssetRegistry.h"
 #include "ColorPicker/ColorPickerScope.h"
-#include "ColorPicker/ColorPickerWindow.h"
+#include "ColorPicker/ColorPickerWindow/ColorPickerWindow.h"
 #include "Core/Engine.h"
 #include "Logger/Logger.h"
 #include "Mathematics/Vector2.h"

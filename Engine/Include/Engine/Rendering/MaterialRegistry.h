@@ -27,7 +27,7 @@
 #include "Engine/Rendering/Material.h"
 #include "Rendering/Core/Handle.h"
 #include "Rendering/Materials/MaterialDocument.h"
-#include "Rendering/Materials/ShaderVariantKey.h"
+#include "Rendering/Materials/Shader/ShaderVariantKey.h"
 
 #include <functional>
 #include <memory>
@@ -112,14 +112,9 @@ class MaterialRegistry
     Material* Find(const GUID& guid);
     const Material* Find(const GUID& guid) const;
 
-    // Registration generation of the Material currently bound to `guid`, or 0
-    // when the GUID is unbound. A generation is issued when Register binds the
-    // GUID to a new Material object; a re-Register of a bound GUID re-applies
-    // the document in place and keeps the object and its generation.
-    // Generations come from one registry-wide counter, so a later binding of a
-    // GUID always carries a larger generation than any earlier binding of it.
-    // Work snapshotted against a binding (a variant compile) compares its
-    // snapshot to this value to tell whether that binding is still current.
+    // The registration generation of the Material bound to `guid`, or 0 when no
+    // Material is bound. Register issues a new generation only when it binds a new
+    // Material object. A re-Register of a bound GUID keeps the generation.
     uint64_t GetRegistrationGeneration(const GUID& guid) const;
 
     // --- Lifecycle ---
@@ -195,17 +190,9 @@ class MaterialRegistry
 
     std::unordered_map<GUID, Registration> m_Materials;
 
-    // Last generation Register issued; 0 means none yet, so 0 never names a
-    // binding. Never reset, not even by Shutdown: a counter that returned to an
-    // earlier value would let a stale snapshot compare equal again. No mutex
-    // and no atomic, like m_Materials: Register writes it and every
-    // Registration::Generation, and GetRegistrationGeneration reads them, all
-    // on the single thread the registry is confined to (see Thread safety at
-    // the top of this file), which is also the serial thread that runs
-    // PipelineVariantCache's frame-begin compile drain and publish apply.
-    // Compile workers never read the registry; they carry the snapshot by value.
-    // Registration and generation reads are serialized on the registry owner thread;
-    // compile workers carry the captured GUID and generation by value.
+    // The last generation Register issued. It starts at 0, so 0 names no binding.
+    // Shutdown does not reset it, so a stale snapshot never compares equal again.
+    // Only the registry's own thread reads or writes it (see Thread safety above).
     uint64_t m_LastRegistrationGeneration = 0;
 };
 

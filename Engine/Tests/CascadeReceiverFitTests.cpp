@@ -28,8 +28,9 @@
 #include "Mathematics/Geometry.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/MatrixOps.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Common/Frustum.h"
+#include "TestCameraEye.h"
 
 #include <gtest/gtest.h>
 
@@ -109,13 +110,13 @@ Rendering::CameraData MakeCamera(const Pose& pose, const Lens& lens = {})
             ? MakeOrthographicLH_ZO_ReverseZ(-halfY * lens.Aspect, halfY * lens.Aspect, -halfY, halfY, kNear, kFar)
             : MakePerspectiveLH_ZO_ReverseZ(lens.FovYDeg * kPi / 180.0f, lens.Aspect, kNear, kFar);
     const Matrix4x4 viewProj = proj * view;
-    std::memcpy(cam.view, view.Data(), sizeof(cam.view));
-    std::memcpy(cam.proj, proj.Data(), sizeof(cam.proj));
-    std::memcpy(cam.viewProj, viewProj.Data(), sizeof(cam.viewProj));
-    cam.cameraPos[0] = pose.Position.x;
-    cam.cameraPos[1] = pose.Position.y;
-    cam.cameraPos[2] = pose.Position.z;
-    return cam;
+    cam.view = view;
+    cam.proj = proj;
+    cam.viewProj = viewProj;
+    cam.cameraPos.x = pose.Position.x;
+    cam.cameraPos.y = pose.Position.y;
+    cam.cameraPos.z = pose.Position.z;
+    return ::GameEngine::Tests::TestCameraWithEye(cam);
 }
 
 // A visible receiver: the nearest ground or tower hit along a grid ray.

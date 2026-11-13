@@ -6,7 +6,7 @@ namespace GameEngine::Editor
 {
 
 // The directory this editor process writes debug-server capture files into:
-// take_screenshot PNGs and capture_resource images.
+// take_screenshot PNGs, capture_resource images and frame recordings.
 //
 // Process-scoped, and that is the whole point. The file names are derived from a
 // per-process sequence number and from resource names, so two editors sharing one

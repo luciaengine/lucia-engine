@@ -43,10 +43,8 @@ ECS::EntityHandle SpawnPrefab(ECS::World& world, const GUID& prefab, const Compo
         Logger::Log::Error("Scene::SpawnPrefab needs an initialized engine: call EngineCore::Initialize first.");
         return {};
     }
-    const bool onMainThread = ScriptingAbi::IsMainThreadOutsideJobFor(EngineCore::GetInstance());
-    assert(onMainThread && "Scene::SpawnPrefab runs on the main thread only, outside any job");
-    if (!onMainThread)
-        return {};
+    assert(ScriptingAbi::IsMainThreadOutsideJobFor(EngineCore::GetInstance()) &&
+           "Scene::SpawnPrefab runs on the main thread only, outside any job");
     const PrefabTemplate* prefabTemplate = library->FindByGuid(prefab);
     if (!prefabTemplate)
     {
@@ -59,10 +57,8 @@ ECS::EntityHandle SpawnPrefab(ECS::World& world, const GUID& prefab, const Compo
 
 void DespawnPrefab(ECS::World& world, ECS::EntityHandle root)
 {
-    const bool onMainThread = ScriptingAbi::IsMainThreadOutsideJobFor(EngineCore::GetInstance());
-    assert(onMainThread && "Scene::DespawnPrefab runs on the main thread only, outside any job");
-    if (!onMainThread)
-        return;
+    assert(ScriptingAbi::IsMainThreadOutsideJobFor(EngineCore::GetInstance()) &&
+           "Scene::DespawnPrefab runs on the main thread only, outside any job");
     Components::DestroySubtree(world, root);
 }
 

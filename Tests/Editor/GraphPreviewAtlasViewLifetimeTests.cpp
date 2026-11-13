@@ -3,7 +3,7 @@
 // class, so Shutdown has to give both back — a material graph opened and closed
 // repeatedly in one session would otherwise grow m_Cameras without bound.
 
-#include "ShaderGraph/GraphPreviewAtlas.h"
+#include "ShaderGraph/GraphPreview/GraphPreviewAtlas.h"
 
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/ViewRegistry.h"

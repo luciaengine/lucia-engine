@@ -10,6 +10,7 @@
 #include "UI/UIElement.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 
 using GameEngine::UIElement;
@@ -26,27 +27,28 @@ TEST(InspectorColorSwatchRow, TheRowAsksTheStylesheetForItsLook)
     UIElement root;
     const GameEngine::InspectorUI::ColorSwatchRow row = GameEngine::InspectorUI::AddColorSwatchRow(
         &root, "Tint", "A tooltip", kInitialArgb, "(0.20, 0.40, 0.60)");
-    ASSERT_NE(row.Title, nullptr);
-    ASSERT_NE(row.Field, nullptr);
+    ASSERT_NE(row.Name, nullptr);
     ASSERT_NE(row.Swatch, nullptr);
     ASSERT_NE(row.Value, nullptr);
 
     EXPECT_TRUE(row.Swatch->HasClass("inspector-color-swatch"));
-    EXPECT_TRUE(row.Field->HasClass("inspector-color-swatch-field"));
+    ASSERT_NE(row.Swatch->GetParent(), nullptr);
+    EXPECT_TRUE(row.Swatch->GetParent()->HasClass("inspector-color-swatch-field"));
     EXPECT_TRUE(row.Value->HasClass("inspector-color-swatch-value"));
     EXPECT_EQ(row.Value->GetText(), "(0.20, 0.40, 0.60)");
 }
 
 TEST(InspectorColorSwatchRow, CodeSetsOnlyTheChipColour)
 {
-    auto swatch = GameEngine::InspectorUI::MakeColorSwatch(kInitialArgb);
+    auto swatch = std::make_unique<UIElement>();
+    GameEngine::InspectorUI::StyleColorSwatch(swatch.get(), kInitialArgb);
     ASSERT_NE(swatch, nullptr);
-    EXPECT_EQ(swatch->Overrides().Get(Style::BackgroundColor), std::optional<std::uint32_t>(kInitialArgb));
-    EXPECT_FALSE(swatch->Overrides().Get(Style::Width).has_value())
+    EXPECT_EQ(swatch->Style().Get(Style::BackgroundColor), std::optional<std::uint32_t>(kInitialArgb));
+    EXPECT_FALSE(swatch->Style().Get(Style::Width).has_value())
         << "the chip sizes itself from code instead of the stylesheet";
-    EXPECT_FALSE(swatch->Overrides().Get(Style::BorderColor).has_value())
+    EXPECT_FALSE(swatch->Style().Get(Style::BorderColor).has_value())
         << "the chip paints its border from code instead of the stylesheet";
 
-    GameEngine::InspectorUI::SetColorSwatchColor(swatch.get(), kPickedArgb);
-    EXPECT_EQ(swatch->Overrides().Get(Style::BackgroundColor), std::optional<std::uint32_t>(kPickedArgb));
+    GameEngine::InspectorUI::StyleColorSwatch(swatch.get(), kPickedArgb);
+    EXPECT_EQ(swatch->Style().Get(Style::BackgroundColor), std::optional<std::uint32_t>(kPickedArgb));
 }

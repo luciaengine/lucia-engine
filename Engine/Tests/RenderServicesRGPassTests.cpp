@@ -1,9 +1,10 @@
-#include "Engine/Rendering/Pipeline/Nodes/WorldRenderNode.h"
+#include <gtest/gtest.h>
 
 #include "Engine/Rendering/DDGIProbeFeature.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/ShadowFrameInfo.h"
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
+#include "Engine/Rendering/SkinPaletteAtlas.h"
 #include "Engine/Rendering/DrawCommand.h"
 #include "Engine/Rendering/DrawCommandProducer.h"
 #include "Engine/Rendering/Material.h"
@@ -11,28 +12,30 @@
 #include "Engine/Rendering/MaterialSsboLayout.h"
 #include "Engine/Rendering/PerFrameWritePool.h"
 #include "Rendering/Core/Device.h"
+#include "Rendering/Core/DrawProducerRegistry.h"
 #include "Rendering/Core/GPUDrawStreamBuilder.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Materials/MaterialDocument.h"
 #include "AssetCore/GUID.h"
+#include "TestCameraEye.h"
 #include "Assets/ModelAsset.h"
 #include "Mathematics/Matrix4x4.h"
+#include "Engine/Rendering/Pipeline/Nodes/WorldRenderNode.h"
 #include "Types/StringId.h"
-#include "PerFrameWritePoolRotation.h"
-#include "TestDeviceHelper.h"
 
 #include <algorithm>
 #include <cstring>
 #include <string>
 #include <vector>
 
-#include <gtest/gtest.h>
-
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
 using namespace GameEngine::Engine::Renderer;
+
+#include "PerFrameWritePoolRotation.h"
+#include "TestDeviceHelper.h"
 
 // Slice-3 pins for the RenderGraph pass arms (AddWorldPassForView /
 // AddWorldDepthPrepassForView / AddShadowCascadePassForView /
@@ -92,18 +95,15 @@ struct RsFixture
             return false;
         const CameraId camId = Rs.Views().AllocateCamera("RGPassTestCam");
         CameraData cd{};
-        for (int i = 0; i < 16; i += 5)
-        {
-            cd.view[i] = 1.0f;
-            cd.proj[i] = 1.0f;
-            cd.viewProj[i] = 1.0f;
-        }
-        Rs.Views().SetCameraData(camId, cd);
+        cd.view = Mathematics::Matrix4x4::Identity();
+        cd.proj = Mathematics::Matrix4x4::Identity();
+        cd.viewProj = Mathematics::Matrix4x4::Identity();
+        Rs.Views().SetCameraData(camId, ::GameEngine::Tests::TestCameraWithEye(cd), {0.1f, 1000.0f});
         View = Rs.Views().AllocateView("RGPassTestView", camId);
-        Rs.Views().SetViewRenderLayerMask(View, 1u);
+        Rs.Views().SetViewRenderLayerMask(View, GameEngine::Rendering::RenderLayerMask::Default());
         Rendering::ViewClearConfig clear{};
         clear.clearColor = true;
-        clear.clearColorValue[3] = 1.0f;
+        clear.clearColorValue.a = 1.0f;
         clear.clearDepth = true;
         clear.clearDepthValue = 0.0f;
         // Targets stay 0 — the RenderGraph arms take frame-local values; the view
@@ -138,6 +138,14 @@ RenderGraph::RGPassId PassIdByName(const RenderGraph::RGGraph& g, const std::str
         if (name == g.PassName(a.Pass))
             return a.Pass;
     return RenderGraph::kInvalidId;
+}
+
+bool HasScopeRow(const RenderGraph::RGFrame::RGProfilingSnapshot& profiling, const std::string& name)
+{
+    for (const RenderGraph::RGFrame::RGScopeTiming& scope : profiling.Scopes)
+        if (name == scope.Name)
+            return true;
+    return false;
 }
 
 RenderGraph::RGResourceId ResourceIdByName(const RenderGraph::RGGraph& g, const std::string& name)
@@ -294,6 +302,144 @@ TEST(RenderServicesRGPassTests, ContributorDispatchAndPrepassOrderingWithoutFenc
         depHandle.Reset();
     }
     f.Down();
+}
+
+// The world pass opens each contributor draw's scope row under the name its producer registered.
+// A draw recorded under another producer's scope, or under none, loses its producer's row.
+TEST(RenderServicesRGPassTests, WorldPassScopeRowsNameEachContributorsRegisteredProducer)
+{
+    RsFixture f;
+    if (!f.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    bool statisticsSupported = false;
+    {
+        const Rendering::DrawProducerId terrain = Rendering::DrawProducerRegistry::Register("Terrain");
+        const Rendering::DrawProducerId grass = Rendering::DrawProducerRegistry::Register("Grass");
+        ASSERT_NE(terrain, grass);
+
+        auto fwdHandle = f.Rs.RegisterForwardEmit(
+            [&](ForwardEmitContext& ctx)
+            {
+                if (ctx.ViewId != f.View)
+                    return;
+                for (const Rendering::DrawProducerId producer : {terrain, grass})
+                {
+                    DrawCommand cmd{};
+                    cmd.Producer = producer;
+                    ctx.Services->EmitForwardCommand(ctx.ViewId, cmd, ForwardDrawDepth::ColourPass);
+                }
+            });
+
+        FramePools pools(f.Device.get());
+        RenderGraph::RGFrame frame(f.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        frame.SetProfilingEnabled(true);
+        frame.SetPipelineStatisticsEnabled(true);
+        statisticsSupported = frame.PipelineStatisticsSupported();
+
+        std::string worldName;
+        for (uint64_t frameIndex = 0; statisticsSupported && frameIndex < 3; ++frameIndex)
+        {
+            frame.BeginFrame(frameIndex);
+            RenderGraph::RGTexture color = frame.ImportPersistentTexture("RGScope.Color", ColorTargetDesc());
+            RenderGraph::RGTexture depth = frame.ImportPersistentTexture("RGScope.Depth", DepthTargetDesc());
+            f.Rs.BeginWorldDrawFrame();
+            f.Rs.BuildWorldBatchKeys();
+            RenderServices::WorldPassTargetsRG targets{};
+            targets.Color = color;
+            targets.Depth = depth;
+            const auto world = f.Rs.AddWorldPassForView(frame, f.View, targets);
+            ASSERT_TRUE(world.Pass.IsValid());
+            worldName = frame.Graph().PassName(world.Pass.Id);
+            frame.MarkOutput(world.EffectiveColor);
+            frame.Execute();
+            f.Device->WaitForIdle();
+        }
+
+        const RenderGraph::RGFrame::RGProfilingSnapshot profiling = frame.LastFrameProfiling();
+        if (statisticsSupported)
+        {
+            EXPECT_TRUE(HasScopeRow(profiling, worldName + ".Terrain")) << "the Terrain draw opens the Terrain row";
+            EXPECT_TRUE(HasScopeRow(profiling, worldName + ".Grass")) << "the Grass draw opens the Grass row";
+            EXPECT_FALSE(HasScopeRow(profiling, worldName + ".Other"))
+                << "every draw of the pass is under its producer's row";
+        }
+
+        fwdHandle.Reset();
+    }
+    f.Down();
+    if (!statisticsSupported)
+        GTEST_SKIP() << "no pipeline-statistics queries on this device";
+}
+
+// The camera prepass opens each contributor head's scope row under the name its producer registered.
+// The Terrain head is a camera prepass head. The Grass head is a non-occluding head that the camera
+// prepass draws because the view declares no non-occluding prepass.
+TEST(RenderServicesRGPassTests, DepthPrepassScopeRowsNameEachContributorsRegisteredProducer)
+{
+    RsFixture f;
+    if (!f.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    bool statisticsSupported = false;
+    {
+        const Rendering::DrawProducerId terrain = Rendering::DrawProducerRegistry::Register("Terrain");
+        const Rendering::DrawProducerId grass = Rendering::DrawProducerRegistry::Register("Grass");
+        ASSERT_NE(terrain, grass);
+
+        auto fwdHandle = f.Rs.RegisterForwardEmit(
+            [&](ForwardEmitContext& ctx)
+            {
+                if (ctx.ViewId != f.View)
+                    return;
+                DrawCommand terrainDraw{};
+                terrainDraw.Producer = terrain;
+                ctx.Services->EmitForwardCommand(ctx.ViewId, terrainDraw, ForwardDrawDepth::Prepass, &terrainDraw);
+                DrawCommand grassDraw{};
+                grassDraw.Producer = grass;
+                ctx.Services->EmitForwardCommand(ctx.ViewId, grassDraw, ForwardDrawDepth::PrepassNonOccluding,
+                                                 &grassDraw);
+            });
+
+        FramePools pools(f.Device.get());
+        RenderGraph::RGFrame frame(f.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        frame.SetProfilingEnabled(true);
+        frame.SetPipelineStatisticsEnabled(true);
+        statisticsSupported = frame.PipelineStatisticsSupported();
+
+        std::string prepassName;
+        for (uint64_t frameIndex = 0; statisticsSupported && frameIndex < 3; ++frameIndex)
+        {
+            frame.BeginFrame(frameIndex);
+            RenderGraph::RGTexture color = frame.ImportPersistentTexture("RGDepthScope.Color", ColorTargetDesc());
+            RenderGraph::RGTexture depth = frame.ImportPersistentTexture("RGDepthScope.Depth", DepthTargetDesc());
+            f.Rs.BeginWorldDrawFrame();
+            f.Rs.BuildWorldBatchKeys();
+            const RenderGraph::RGPass prepass = f.Rs.AddWorldDepthPrepassForView(frame, f.View, depth, 0.0f);
+            ASSERT_TRUE(prepass.IsValid());
+            prepassName = frame.Graph().PassName(prepass.Id);
+            RenderServices::WorldPassTargetsRG targets{};
+            targets.Color = color;
+            targets.Depth = depth;
+            const auto world = f.Rs.AddWorldPassForView(frame, f.View, targets);
+            ASSERT_TRUE(world.Pass.IsValid());
+            frame.MarkOutput(world.EffectiveColor);
+            frame.Execute();
+            f.Device->WaitForIdle();
+        }
+
+        const RenderGraph::RGFrame::RGProfilingSnapshot profiling = frame.LastFrameProfiling();
+        if (statisticsSupported)
+        {
+            EXPECT_TRUE(HasScopeRow(profiling, prepassName + ".Terrain")) << "the Terrain head opens the Terrain row";
+            EXPECT_TRUE(HasScopeRow(profiling, prepassName + ".Grass")) << "the Grass head opens the Grass row";
+            EXPECT_FALSE(HasScopeRow(profiling, prepassName + ".Other"))
+                << "every head of the prepass is under its producer's row";
+        }
+
+        fwdHandle.Reset();
+    }
+    f.Down();
+    if (!statisticsSupported)
+        GTEST_SKIP() << "no pipeline-statistics queries on this device";
 }
 
 // T2b — the EmitForwardSampledRead declare-hook: a producer-emitted forward
@@ -470,9 +616,12 @@ TEST(RenderServicesRGPassTests, EffectiveColorFollowsResolveCollapseAndMismatch)
         FramePools pools(f.Device.get());
         RenderGraph::RGFrame frame(f.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
 
-        // (a) MSAA color + same-format 1-sample resolve => resolve attach.
+        // (a) MSAA color + same-format 1-sample resolve => the world pass draws
+        // the MSAA color and a resolve pass after it samples it into the resolve.
         frame.BeginFrame(0);
-        RenderGraph::RGTexture msaa = frame.ImportPersistentTexture("RGT4.Msaa", ColorTargetDesc(4));
+        TextureDesc sampledMsaa = ColorTargetDesc(4);
+        sampledMsaa.usage |= static_cast<uint32_t>(TextureUsage::ShaderResource);
+        RenderGraph::RGTexture msaa = frame.ImportPersistentTexture("RGT4.Msaa", sampledMsaa);
         RenderGraph::RGTexture resolve = frame.ImportPersistentTexture("RGT4.Resolve", ColorTargetDesc());
         f.Rs.BeginWorldDrawFrame();
         f.Rs.BuildWorldBatchKeys();
@@ -491,7 +640,14 @@ TEST(RenderServicesRGPassTests, EffectiveColorFollowsResolveCollapseAndMismatch)
                 if (r.Tex == msaa.Id)
                     rec = &r;
             ASSERT_NE(rec, nullptr);
-            EXPECT_EQ(rec->Resolve, resolve.Id) << "MSAA resolve attachment recorded";
+            EXPECT_EQ(rec->Pass, world.Pass.Id);
+            EXPECT_EQ(rec->Resolve, RenderGraph::kInvalidId) << "no attachment resolve on the world pass";
+            const RenderGraph::RGPassId resolvePass =
+                PassIdByName(frame.Graph(), std::string(frame.Graph().PassName(world.Pass.Id)) + ".ColorResolve");
+            ASSERT_NE(resolvePass, RenderGraph::kInvalidId) << "the resolve pass is declared";
+            EXPECT_TRUE(frame.Graph().HasReadAccess(resolvePass, msaa.Id));
+            EXPECT_TRUE(frame.Graph().HasWriteAccess(resolvePass, resolve.Id));
+            EXPECT_GT(ScheduledIndexOf(frame.Graph(), resolvePass), ScheduledIndexOf(frame.Graph(), world.Pass.Id));
         }
 
         // (b) MSAA off + pipeline resolve => collapse: render straight into
@@ -521,6 +677,9 @@ TEST(RenderServicesRGPassTests, EffectiveColorFollowsResolveCollapseAndMismatch)
             }
             EXPECT_TRUE(attachedToPipeRes);
             EXPECT_FALSE(attachedToColor1) << "collapsed: the 1-sample color is not attached";
+            EXPECT_EQ(PassIdByName(frame.Graph(), std::string(frame.Graph().PassName(world.Pass.Id)) + ".ColorResolve"),
+                      RenderGraph::kInvalidId)
+                << "a 1-sample color declares no resolve pass";
         }
 
         // (c) MSAA on + format-mismatched resolve => no resolve, effective =
@@ -540,6 +699,9 @@ TEST(RenderServicesRGPassTests, EffectiveColorFollowsResolveCollapseAndMismatch)
         frame.MarkOutput(world.EffectiveColor);
         frame.Execute();
         f.Device->WaitForIdle();
+        EXPECT_EQ(PassIdByName(frame.Graph(), std::string(frame.Graph().PassName(world.Pass.Id)) + ".ColorResolve"),
+                  RenderGraph::kInvalidId)
+            << "a resolve target of another format declares no resolve pass";
     }
     f.Down();
 }
@@ -654,178 +816,10 @@ TEST(RenderServicesRGPassTests, ShadowCascadesShareOnePoolImportWithTheWorldPass
     f.Down();
 }
 
-namespace
-{
-class CascadeFitFrame
-{
-  public:
-    CascadeFitFrame(RsFixture& fixture, RenderGraph::RGFrame& frame,
-                    ShadowMapRenderFeature& feature, uint32_t resolution)
-        : m_Fixture(fixture), m_Frame(frame), m_Feature(feature), m_Resolution(resolution)
-    {
-    }
-
-    RenderGraph::RGPass Declare(uint64_t frameIndex, const CascadeFrameData& fit)
-    {
-        m_Frame.BeginFrame(frameIndex);
-        m_Fixture.Rs.BeginWorldDrawFrame();
-        m_Fixture.Rs.BuildWorldBatchKeys();
-        m_Feature.CacheFrameData(m_Fixture.View, fit);
-        auto context = m_Fixture.Rs.MakeFeatureDeclareContext(
-            m_Frame, m_Fixture.View, 1, m_Resolution, nullptr, {});
-        // A cleared cascade without contributors can become cacheable.
-        context.ViewNeedsCascades = true;
-        return m_Feature.DeclareCascadePass(m_Frame, m_Fixture.Rs, context, 0, "AbortFit.Cascade");
-    }
-
-    ShadowDataGPU BuildSamplingData(const CascadeFrameData& fit)
-    {
-        ShadowDataGPU data{};
-        m_Feature.BuildShadowDataGPU(fit, m_Fixture.View, m_Fixture.Rs, m_Frame, 0, data);
-        return data;
-    }
-
-    void Execute()
-    {
-        const auto color = m_Frame.ImportPersistentTexture("AbortFit.Anchor", ColorTargetDesc());
-        m_Frame.AddPass("AbortFit.Anchor", 0,
-                       [color](RenderGraph::RGPassBuilder& pass)
-                       { pass.AttachColor(0, color, {.Load = RenderGraph::RGLoadOp::Clear}); },
-                       [](RenderGraph::RGContext&) {});
-        m_Frame.MarkOutput(color);
-        m_Frame.Execute();
-        m_Fixture.Device->WaitForIdle();
-    }
-
-    void ExpectSamplingFit(const ShadowDataGPU& data, const CascadeFrameData& expected) const
-    {
-        EXPECT_EQ(std::memcmp(data.shadowVP[0], expected.LightVPRel[0].Data(), sizeof(data.shadowVP[0])), 0);
-        EXPECT_FLOAT_EQ(data.shadowPcssCascades[0][0], 2 * expected.OrthoHalfExtent[0] / m_Resolution);
-        EXPECT_FLOAT_EQ(data.shadowPcssCascades[0][1], expected.DepthSpan[0]);
-    }
-
-  private:
-    RsFixture& m_Fixture;
-    RenderGraph::RGFrame& m_Frame;
-    ShadowMapRenderFeature& m_Feature;
-    uint32_t m_Resolution;
-};
-} // namespace
-
-TEST(RenderServicesRGPassTests, AbortedPreparationKeepsTheRenderedCascadeFit)
-{
-    RsFixture fixture;
-    if (!fixture.Up())
-        GTEST_SKIP() << "No Vulkan device available";
-    {
-        FramePools pools(fixture.Device.get());
-        RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
-        auto& feature = fixture.Rs.EnsureFeature<ShadowMapRenderFeature>();
-        CascadedShadowConfig config{};
-        config.NumCascades = 1;
-        config.Resolution = 128;
-        ASSERT_TRUE(feature.Initialize(fixture.Device.get(), config));
-        feature.SetMotionCap(0);
-
-        CascadeFrameData fitA{};
-        fitA.NumCascades = 1;
-        fitA.LightVP[0] = Mathematics::Matrix4x4::Identity();
-        fitA.LightVPRel[0] = Mathematics::Matrix4x4::Identity();
-        fitA.OrthoHalfExtent[0] = 16.0f;
-        fitA.DepthSpan[0] = 32.0f;
-        CascadeFrameData fitB = fitA;
-        fitB.LightVP[0].Data()[12] = 0.25f;
-        fitB.LightVPRel[0].Data()[12] = 0.25f;
-        fitB.OrthoHalfExtent[0] = 24.0f;
-        fitB.DepthSpan[0] = 48.0f;
-
-        CascadeFitFrame cascadeFrame(fixture, frame, feature, config.Resolution);
-
-        ASSERT_TRUE(cascadeFrame.Declare(0, fitA).IsValid());
-        cascadeFrame.Execute();
-        EXPECT_EQ(frame.Stats().PreparationFailures, 0u);
-        ASSERT_TRUE(cascadeFrame.Declare(1, fitA).IsValid());
-        // Two identical renders settle the cull/content cache.
-        cascadeFrame.Execute();
-
-        ASSERT_TRUE(cascadeFrame.Declare(2, fitB).IsValid());
-        // Same-frame receivers need the scheduled fit.
-        cascadeFrame.ExpectSamplingFit(cascadeFrame.BuildSamplingData(fitB), fitB);
-        frame.AddPass("AbortFit.FailPreparation", 0,
-                      [](RenderGraph::RGPassBuilder& pass)
-                      {
-                          pass.PreventCulling();
-                          pass.Prepare([](RenderGraph::RGPrepareContext&) { return false; });
-                      }, [](RenderGraph::RGContext&) {});
-        const auto submitted = frame.SubmittedFrameCount();
-        cascadeFrame.Execute();
-        EXPECT_EQ(frame.SubmittedFrameCount(), submitted);
-        EXPECT_EQ(frame.Stats().PreparationFailures, 1u);
-
-        ASSERT_FALSE(cascadeFrame.Declare(3, fitA).IsValid()) << "the settled A layer must be reused";
-        // Aborted B must not replace retained A.
-        cascadeFrame.ExpectSamplingFit(cascadeFrame.BuildSamplingData(fitA), fitA);
-        cascadeFrame.Execute();
-    }
-    fixture.Down();
-}
-
-TEST(RenderServicesRGPassTests, InPlaceGeometryReplacementInvalidatesRetainedCascadeDepth)
-{
-    RsFixture fixture;
-    if (!fixture.Up())
-        GTEST_SKIP() << "No Vulkan device available";
-    {
-        Mesh mesh{};
-        mesh.Vertices.resize(3);
-        mesh.Vertices[0].Position[0] = -0.5f;
-        mesh.Vertices[1].Position[0] = 0.5f;
-        mesh.Vertices[2].Position[1] = 0.5f;
-        mesh.Indices = {0, 1, 2};
-        const MeshGPUKey key{GUID::Generate(), 0};
-        const auto handle = fixture.Rs.GetMeshGPURegistry().RegisterSubmesh(key, mesh);
-        ASSERT_TRUE(handle.IsValid());
-        const uint64_t geometryBefore = fixture.Rs.GetMeshGPURegistry().GetContentRevision();
-        const uint64_t casterBefore = fixture.Rs.ShadowCasterContentVersion(0u);
-
-        FramePools pools(fixture.Device.get());
-        RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
-        auto& feature = fixture.Rs.EnsureFeature<ShadowMapRenderFeature>();
-        CascadedShadowConfig config{};
-        config.NumCascades = 1;
-        config.Resolution = 128;
-        ASSERT_TRUE(feature.Initialize(fixture.Device.get(), config));
-        feature.SetMotionCap(0);
-        CascadeFrameData fit{};
-        fit.NumCascades = 1;
-        fit.LightVP[0] = Mathematics::Matrix4x4::Identity();
-        fit.LightVPRel[0] = Mathematics::Matrix4x4::Identity();
-        CascadeFitFrame cascade(fixture, frame, feature, config.Resolution);
-        ASSERT_TRUE(cascade.Declare(0u, fit).IsValid());
-        cascade.Execute();
-        ASSERT_TRUE(cascade.Declare(1u, fit).IsValid());
-        cascade.Execute();
-        ASSERT_FALSE(cascade.Declare(2u, fit).IsValid()) << "the unchanged layer must be cached";
-        cascade.Execute();
-
-        mesh.Vertices[2].Position[1] = 0.75f;
-        ASSERT_EQ(fixture.Rs.GetMeshGPURegistry().RegisterSubmesh(key, mesh), handle);
-        ASSERT_GT(fixture.Rs.GetMeshGPURegistry().GetContentRevision(), geometryBefore);
-        ASSERT_EQ(fixture.Rs.ShadowCasterContentVersion(0u), casterBefore);
-        EXPECT_TRUE(cascade.Declare(3u, fit).IsValid())
-            << "replacing geometry in a stable handle must invalidate retained depth";
-        cascade.Execute();
-    }
-    fixture.Down();
-}
-
-// F3 (slice-3-final review) — the F1 UAF's REAL trigger: a pooled-physical
-// change on a LATER frame (the first adopt skips invalidation, so T5 could
-// never reach the cache erase). The arm fetches the cache AFTER the
-// adopt-triggered invalidation: the change frame declines (one-frame skip,
-// the old recreate semantics) and the next frame recovers. Under the
-// pre-fix order this frame would have READ FREED MEMORY and declared.
-TEST(RenderServicesRGPassTests, CascadeArmSkipsOneFrameOnAPooledPhysicalChange)
+// A pooled-physical change on a later frame (a first adopt has nothing to drop).
+// The node caches the frame's cascade fit before the arm imports and adopts, and
+// the adopt keeps that fit, so every cascade renders into the new physical then.
+TEST(RenderServicesRGPassTests, CascadeArmRendersIntoANewPooledPhysicalOnTheChangeFrame)
 {
     RsFixture f;
     if (!f.Up())
@@ -836,10 +830,9 @@ TEST(RenderServicesRGPassTests, CascadeArmSkipsOneFrameOnAPooledPhysicalChange)
 
         auto& feature = f.Rs.EnsureFeature<ShadowMapRenderFeature>();
         CascadedShadowConfig cfg{};
-        cfg.NumCascades = 1;
+        cfg.NumCascades = 2;
         cfg.Resolution = 128;
         ASSERT_TRUE(feature.Initialize(f.Device.get(), cfg));
-        feature.SetMotionCap(0);
 
         auto depHandle = f.Rs.RegisterDepthEmit(
             [&](DepthEmitContext& ctx, DepthPassType passType)
@@ -848,26 +841,19 @@ TEST(RenderServicesRGPassTests, CascadeArmSkipsOneFrameOnAPooledPhysicalChange)
                     ctx.Services->EmitDepthCommand(ctx.ViewId, passType, DrawCommand{});
             });
 
-        auto runFrame = [&](uint64_t n) -> RenderGraph::RGPass
+        RenderGraph::RGPass cascades[2]{};
+        auto runFrame = [&](uint64_t n)
         {
             frame.BeginFrame(n);
             f.Rs.BeginWorldDrawFrame();
             f.Rs.BuildWorldBatchKeys();
             CascadeFrameData fd{};
-            fd.NumCascades = 1;
+            fd.NumCascades = 2;
             feature.CacheFrameData(f.View, fd);
-            const float direction[3]{0.0f, -1.0f, 0.0f};
             const FeatureDeclareContext ctx = f.Rs.MakeFeatureDeclareContext(
-                frame, f.View, cfg.NumCascades, cfg.Resolution, direction, {});
-            feature.Declare(frame, f.Rs, ctx);
-            const RenderGraph::RGPass c0{PassIdByName(frame.Graph(), "Cascade0")};
-            if (!c0.IsValid())
-            {
-                ShadowDataGPU data{};
-                feature.BuildShadowDataGPU(fd, f.View, f.Rs, frame, 0, data);
-                EXPECT_FLOAT_EQ(data.shadowParams[2], 0.0f)
-                    << "a newly adopted, unwritten array must not be sampled";
-            }
+                frame, f.View, cfg.NumCascades, cfg.Resolution, nullptr, {});
+            cascades[0] = feature.DeclareCascadePass(frame, f.Rs, ctx, 0, "C0");
+            cascades[1] = feature.DeclareCascadePass(frame, f.Rs, ctx, 1, "C1");
             RenderGraph::RGTexture color = frame.ImportPersistentTexture("F3.Color", ColorTargetDesc());
             frame.AddPass("Anchor", 0,
                           [&](RenderGraph::RGPassBuilder& p)
@@ -876,32 +862,126 @@ TEST(RenderServicesRGPassTests, CascadeArmSkipsOneFrameOnAPooledPhysicalChange)
             frame.MarkOutput(color);
             frame.Execute();
             f.Device->WaitForIdle();
-            return c0;
         };
 
-        // Frame 0: first adopt (no invalidation) — declares.
-        EXPECT_TRUE(runFrame(0).IsValid());
+        runFrame(0);
+        ASSERT_TRUE(cascades[0].IsValid() && cascades[1].IsValid());
 
-        // Simulate a pooled-physical change (pool eviction/realloc of a
-        // hidden view, a future config setter): plant a DIFFERENT physical
-        // on the feature so the next arm's adopt sees a CHANGE and runs the
-        // invalidation path that erases the cached frame data.
+        // Plant a different physical on the feature, so the next frame's adopt
+        // sees a change, as after a pool realloc or an idle-array age-out.
         TextureDesc otherDesc = DepthTargetDesc();
         otherDesc.arrayLayers = 2;
         const TextureHandle otherTex = f.Device->CreateTexture(otherDesc);
         ASSERT_TRUE(otherTex.IsValid());
         feature.AdoptPooledShadowMap(f.View, otherTex, f.Rs, frame);
 
-        // Change frame: adopt invalidates the just-cached frame data; the
-        // arm must observe the null cache and decline — not read freed
-        // memory through a pre-fetched pointer.
-        EXPECT_FALSE(runFrame(1).IsValid()) << "one-frame skip on the physical-change frame";
-
-        // Recovery: the feature holds the pooled physical again.
-        EXPECT_TRUE(runFrame(2).IsValid());
+        runFrame(1);
+        const TextureHandle adopted = feature.GetShadowMapTexture(f.View, frame);
+        ASSERT_TRUE(adopted.IsValid());
+        ASSERT_NE(adopted, otherTex) << "precondition: the change frame adopts a new physical";
+        for (uint32_t c = 0; c < 2; ++c)
+        {
+            ASSERT_TRUE(cascades[c].IsValid()) << "cascade " << c << " skipped on the change frame";
+            const RenderGraph::RGAttachmentRec* rec = nullptr;
+            for (const auto& r : frame.Attachments())
+                if (r.Pass == cascades[c].Id)
+                    rec = &r;
+            ASSERT_NE(rec, nullptr);
+            EXPECT_EQ(frame.PhysicalTexture(RenderGraph::RGTexture{rec->Tex}), adopted)
+                << "cascade " << c << " writes the physical the feature serves";
+        }
 
         depHandle.Reset();
         f.Device->DestroyTexture(otherTex);
+    }
+    f.Down();
+}
+
+// A long pause: no frame imports the view's cascade array, so the pool frees it
+// after kPersistentMaxIdleFrames. The next import makes a new array, and every
+// cascade must render into it then, or the frame publishes 0 cascades (fully lit).
+TEST(RenderServicesRGPassTests, CascadesRenderOnTheFrameAfterThePoolFreesAnIdleArray)
+{
+    RsFixture f;
+    if (!f.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        FramePools pools(f.Device.get());
+        RenderGraph::RGFrame frame(f.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+
+        auto& feature = f.Rs.EnsureFeature<ShadowMapRenderFeature>();
+        CascadedShadowConfig cfg{};
+        cfg.NumCascades = 2;
+        cfg.Resolution = 128;
+        ASSERT_TRUE(feature.Initialize(f.Device.get(), cfg));
+
+        auto depHandle = f.Rs.RegisterDepthEmit(
+            [&](DepthEmitContext& ctx, DepthPassType passType)
+            {
+                if (ctx.ViewId == f.View && passType == DepthPassType::ShadowCascade)
+                    ctx.Services->EmitDepthCommand(ctx.ViewId, passType, DrawCommand{});
+            });
+
+        struct FrameResult
+        {
+            TextureHandle Array;
+            uint32_t CascadesOnArray = 0;
+            float PublishedCascades = 0.0f;
+        };
+        const float lightDir[3] = {0.0f, -1.0f, 0.0f};
+        // A frame with shadows runs ShadowMapNode's order: fit cached, Declare, ShadowData.
+        auto runFrame = [&](uint64_t n, bool shadows)
+        {
+            FrameResult result{};
+            frame.BeginFrame(n);
+            if (shadows)
+            {
+                f.Rs.BeginWorldDrawFrame();
+                f.Rs.BuildWorldBatchKeys();
+                CascadeFrameData fd{};
+                fd.NumCascades = cfg.NumCascades;
+                feature.CacheFrameData(f.View, fd);
+                const FeatureDeclareContext ctx = f.Rs.MakeFeatureDeclareContext(
+                    frame, f.View, cfg.NumCascades, cfg.Resolution, lightDir, {});
+                feature.Declare(frame, f.Rs, ctx);
+                ShadowDataGPU data{};
+                feature.BuildShadowDataGPU(fd, f.View, f.Rs, frame, static_cast<uint32_t>(n), data);
+                result.PublishedCascades = data.shadowParams[2];
+            }
+            RenderGraph::RGTexture color = frame.ImportPersistentTexture("AgeOut.Color", ColorTargetDesc());
+            frame.AddPass("Anchor", 0,
+                          [&](RenderGraph::RGPassBuilder& p)
+                          { p.AttachColor(0, color, {.Load = RenderGraph::RGLoadOp::Clear}); },
+                          [](RenderGraph::RGContext&) {});
+            frame.MarkOutput(color);
+            frame.Execute();
+            f.Device->WaitForIdle();
+            if (shadows)
+            {
+                result.Array = feature.GetShadowMapTexture(f.View, frame);
+                for (const auto& r : frame.Attachments())
+                    if (frame.PhysicalTexture(RenderGraph::RGTexture{r.Tex}) == result.Array)
+                        ++result.CascadesOnArray;
+            }
+            return result;
+        };
+
+        const FrameResult first = runFrame(0, true);
+        ASSERT_TRUE(first.Array.IsValid());
+        ASSERT_EQ(first.CascadesOnArray, cfg.NumCascades);
+
+        // The pool frees the array at the end of the first frame that has gone
+        // more than kPersistentMaxIdleFrames frames without an import.
+        constexpr uint64_t kIdle = RenderGraph::RGFrame::kPersistentMaxIdleFrames;
+        runFrame(kIdle + 1, false);
+        const FrameResult resumed = runFrame(kIdle + 2, true);
+        ASSERT_TRUE(resumed.Array.IsValid());
+        ASSERT_NE(resumed.Array, first.Array) << "precondition: the import after the age-out makes a new array";
+        EXPECT_EQ(resumed.CascadesOnArray, cfg.NumCascades) << "every cascade renders into the new array";
+        EXPECT_EQ(resumed.PublishedCascades, static_cast<float>(cfg.NumCascades))
+            << "a frame that publishes 0 cascades is drawn fully lit";
+
+        depHandle.Reset();
     }
     f.Down();
 }
@@ -1342,7 +1422,7 @@ TEST(RenderServicesRGPassTests, CascadeProducerReadSetSurvivesTheFeatureMove)
         // SkinPaletteAtlas publishes (BeginWorldDrawFrame alone does not).
         const uint32_t frameIdx = f.Device->GetFrameIndex();
         f.Rs.GetPerFrameWritePool().BeginFrame(frameIdx);
-        f.Rs.GetSkinPaletteAtlas().BeginFrame(f.Rs.GetPerFrameWritePool());
+        f.Rs.GetSkinPaletteAtlas().BeginFrame(f.Rs.GetPerFrameWritePool(), 0);
         f.Rs.BuildWorldBatchKeys();
 
         CascadeFrameData fd{};
@@ -1377,6 +1457,68 @@ TEST(RenderServicesRGPassTests, CascadeProducerReadSetSurvivesTheFeatureMove)
             << "cascade must Read the published SkinPaletteAtlas id (skinning->cascade RAW edge)";
 
         depHandle.Reset();
+    }
+    f.Down();
+}
+
+// A palette upload past the bone-palette ring's capacity grows the ring in the frame. The frame
+// then copies the replaced ring's bytes into the atlas before the world pass reads it.
+// A frame without a growth declares no copy.
+TEST(RenderServicesRGPassTests, AnInFrameGrowthCopiesThePalettesBeforeTheFirstAtlasReader)
+{
+    RsFixture f;
+    if (!f.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        FramePools pools(f.Device.get());
+        for (uint32_t frameIndex = 0; frameIndex < 2; ++frameIndex)
+        {
+            const bool grows = frameIndex == 0;
+            RenderGraph::RGFrame frame(f.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+            frame.BeginFrame(frameIndex);
+            f.Rs.BeginWorldDrawFrame();
+            f.Rs.GetPerFrameWritePool().BeginFrame(frameIndex);
+            SkinPaletteAtlas& atlas = f.Rs.GetSkinPaletteAtlas();
+            atlas.BeginFrame(f.Rs.GetPerFrameWritePool(), 0);
+            if (grows)
+            {
+                const auto boneCount =
+                    static_cast<uint32_t>(atlas.GetCapacityBytes() / SkinPaletteAtlas::kBytesPerBone + 1);
+                const std::vector<float> palette(static_cast<size_t>(boneCount) * 16u, 0.0f);
+                ASSERT_TRUE(atlas.Upload(palette.data(), boneCount).valid);
+            }
+            f.Rs.BuildWorldBatchKeys();
+            f.Rs.ScheduleGpuSkinningAndRetarget(frame);
+
+            const RenderGraph::RGTexture color = frame.ImportPersistentTexture("GrowthCopy.Color", ColorTargetDesc());
+            const RenderGraph::RGTexture depth = frame.ImportPersistentTexture("GrowthCopy.Depth", DepthTargetDesc());
+            RenderServices::WorldPassTargetsRG targets{};
+            targets.Color = color;
+            targets.Depth = depth;
+            const auto world = f.Rs.AddWorldPassForView(frame, f.View, targets);
+            ASSERT_TRUE(world.Pass.IsValid());
+            frame.MarkOutput(world.EffectiveColor);
+            frame.Execute();
+            f.Device->WaitForIdle();
+
+            const RenderGraph::RGGraph& graph = frame.Graph();
+            const RenderGraph::RGBuffer atlasBuffer = f.Rs.FrameRG().SkinPaletteAtlas;
+            ASSERT_TRUE(graph.HasReadAccess(world.Pass.Id, atlasBuffer.Id)) << "the world pass reads the atlas";
+            RenderGraph::RGPassId copy = RenderGraph::kInvalidId;
+            for (RenderGraph::RGPassId pass = 0; pass < graph.PassCount(); ++pass)
+                if (std::string(graph.PassName(pass)) == "SkinPaletteGrowthCopy")
+                    copy = pass;
+            if (!grows)
+            {
+                EXPECT_EQ(copy, RenderGraph::kInvalidId) << "a frame without a growth declares no copy";
+                continue;
+            }
+            ASSERT_NE(copy, RenderGraph::kInvalidId) << "the growth frame declares the copy";
+            EXPECT_TRUE(graph.HasWriteAccess(copy, atlasBuffer.Id)) << "the copy declares its atlas write";
+            EXPECT_FALSE(graph.IsCulled(copy)) << "the graph keeps the copy";
+            EXPECT_LT(ScheduledIndexOf(graph, copy), ScheduledIndexOf(graph, world.Pass.Id))
+                << "the copy runs before the world pass reads the atlas";
+        }
     }
     f.Down();
 }
@@ -1587,12 +1729,12 @@ TEST(RenderServicesRGPassTests, OnDemandViewLapsesOutOfCullingWhenNotReArmed)
         const ViewId onDemand = f.Rs.Views().AllocateView("OnDemandTestView", camId,
                                                   ViewPurpose::EditorScene,
                                                   ViewParticipation::OnDemand);
-        f.Rs.Views().SetViewRenderLayerMask(onDemand, 1u);
+        f.Rs.Views().SetViewRenderLayerMask(onDemand, GameEngine::Rendering::RenderLayerMask::Default());
 
         const auto mask = [&](ViewId id) -> uint32_t
         {
             const ViewDesc* v = f.Rs.Views().FindViewDesc(id);
-            return v ? v->ActiveRenderLayerMask() : 0u;
+            return v ? v->ActiveRenderLayerMask().Bits : 0u;
         };
 
         // f.View is an Always view (fixture default); the fresh OnDemand view is
@@ -1641,7 +1783,7 @@ TEST(RenderServicesRGPassTests, WorldScatterRegistersSlicesOnlyForParticipatingV
 
         const ViewId dormant = f.Rs.Views().AllocateView(
             "DormantTestView", f.Rs.Views().FindViewDesc(f.View)->cameraId);
-        f.Rs.Views().SetViewRenderLayerMask(dormant, 0u);
+        f.Rs.Views().SetViewRenderLayerMask(dormant, GameEngine::Rendering::RenderLayerMask::None());
 
         FramePools pools(f.Device.get());
         RenderGraph::RGFrame frame(f.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
@@ -1662,6 +1804,132 @@ TEST(RenderServicesRGPassTests, WorldScatterRegistersSlicesOnlyForParticipatingV
 
         frame.Execute();
         f.Device->WaitForIdle();
+    }
+    f.Down();
+}
+
+// The deforming-motion producer reads per-instance validity from the view's
+// rendered level and phase history, so every camera view keeps it without a
+// switch: a TAA or reflections view with wind in it gets exact motion by
+// default.
+TEST(RenderServicesRGPassTests, ACameraViewKeepsTheRenderedHistoryTheMotionProducerReads)
+{
+    RsFixture f;
+    if (!f.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        auto* builder = f.Rs.GetDrawStreamBuilder();
+        ASSERT_NE(builder, nullptr);
+        if (!builder->GetOrCreateScatterPipeline().IsValid())
+            GTEST_SKIP() << "draw_command_scatter.shaderpkg unavailable";
+
+        Rendering::GPUInstance instance{};
+        f.Rs.GetGPUScene()->AddInstance(instance);
+
+        FramePools pools(f.Device.get());
+        RenderGraph::RGFrame frame(f.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        frame.BeginFrame(0);
+        f.Rs.BeginWorldDrawFrame();
+        f.Rs.BuildWorldBatchKeys();
+        f.Rs.ScheduleGpuSkinningAndRetarget(frame);
+        f.Rs.ScheduleViewCullingDispatches(frame, 1.0f / 60.0f);
+        f.Rs.ScheduleWorldBucketerDispatches(frame);
+
+        EXPECT_TRUE(builder->GetRenderedHistoryForRead(static_cast<uint32_t>(f.View)).IsValid())
+            << "the camera slice asks for the history the producer reads validity from";
+
+        frame.Execute();
+        f.Device->WaitForIdle();
+    }
+    f.Down();
+}
+
+// A released view frees its rendered history: view ids are never reused, so a
+// pair kept past the release would stay allocated until the device goes away.
+TEST(RenderServicesRGPassTests, AReleasedViewDropsItsRenderedHistory)
+{
+    RsFixture f;
+    if (!f.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        auto* builder = f.Rs.GetDrawStreamBuilder();
+        ASSERT_NE(builder, nullptr);
+        if (!builder->GetOrCreateScatterPipeline().IsValid())
+            GTEST_SKIP() << "draw_command_scatter.shaderpkg unavailable";
+
+        Rendering::GPUInstance instance{};
+        f.Rs.GetGPUScene()->AddInstance(instance);
+
+        const uint32_t viewId = static_cast<uint32_t>(f.View);
+        FramePools pools(f.Device.get());
+        for (uint64_t frameIndex = 0; frameIndex < 2; ++frameIndex)
+        {
+            if (frameIndex == 1)
+            {
+                ASSERT_TRUE(f.Rs.Views().ReleaseView(f.View));
+            }
+            RenderGraph::RGFrame frame(f.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+            frame.BeginFrame(frameIndex);
+            f.Rs.BeginWorldDrawFrame();
+            f.Rs.BuildWorldBatchKeys();
+            f.Rs.ScheduleGpuSkinningAndRetarget(frame);
+            f.Rs.ScheduleViewCullingDispatches(frame, 1.0f / 60.0f);
+            f.Rs.ScheduleWorldBucketerDispatches(frame);
+
+            EXPECT_EQ(builder->GetRenderedHistoryForRead(viewId).IsValid(), frameIndex == 0)
+                << "frame " << frameIndex << ": the history lives exactly as long as the view";
+
+            frame.Execute();
+            f.Device->WaitForIdle();
+        }
+    }
+    f.Down();
+}
+
+// The per-slice answer is this frame's, not the first frame's: the slice flags
+// are reset with the range map, so a view that stops participating stops
+// reporting ranges on the next frame.
+TEST(RenderServicesRGPassTests, PublishedRangesForAPhaseAreThisFramesOnly)
+{
+    RsFixture f;
+    if (!f.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        auto* builder = f.Rs.GetDrawStreamBuilder();
+        ASSERT_NE(builder, nullptr);
+        if (!builder->GetOrCreateScatterPipeline().IsValid())
+            GTEST_SKIP() << "draw_command_scatter.shaderpkg unavailable";
+
+        Rendering::GPUInstance instance{};
+        f.Rs.GetGPUScene()->AddInstance(instance);
+
+        using Phase = GPUDrawStreamBuilder::SlicePhase;
+        const uint32_t viewId = static_cast<uint32_t>(f.View);
+        FramePools pools(f.Device.get());
+        for (uint64_t frameIndex = 0; frameIndex < 2; ++frameIndex)
+        {
+            // The second frame puts the view to sleep: it registers no slice.
+            if (frameIndex == 1)
+                f.Rs.Views().SetViewRenderLayerMask(f.View, GameEngine::Rendering::RenderLayerMask::None());
+            RenderGraph::RGFrame frame(f.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+            frame.BeginFrame(frameIndex);
+            f.Rs.BeginWorldDrawFrame();
+            f.Rs.BuildWorldBatchKeys();
+            f.Rs.ScheduleGpuSkinningAndRetarget(frame);
+            f.Rs.ScheduleViewCullingDispatches(frame, 1.0f / 60.0f);
+            f.Rs.ScheduleWorldBucketerDispatches(frame);
+
+            EXPECT_EQ(builder->HasPublishedRangesForPhase(viewId, GPUDrawStreamBuilder::kCascadeIndexNone,
+                                                          Phase::A),
+                      frameIndex == 0)
+                << "frame " << frameIndex;
+            EXPECT_FALSE(builder->HasPublishedRangesForPhase(
+                viewId, GPUDrawStreamBuilder::kCascadeIndexNone, Phase::B))
+                << "no phase-B slice was registered on frame " << frameIndex;
+
+            frame.Execute();
+            f.Device->WaitForIdle();
+        }
     }
     f.Down();
 }
@@ -1931,6 +2199,138 @@ TEST(RenderServicesRGPassTests, MaterialParamsPackSkipGate)
             RunFrame();
         EXPECT_GT(f.Rs.Materials().GetMaterialSSBOPackCount(), afterEdit)
             << "an unregister (generation bump) must bust the pack-skip stamp";
+    }
+    f.Down();
+}
+
+// A property edit rewrites only the edited material's row in each ring slot,
+// and every row still holds its material's current bytes. Animating one
+// material per frame must not cost a copy of the whole material table.
+TEST(RenderServicesRGPassTests, MaterialParamsRepackWritesOnlyTheChangedRow)
+{
+    RsFixture f;
+    if (!f.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    if (!f.Rs.Textures().IsBindlessEnabled())
+    {
+        f.Down();
+        GTEST_SKIP() << "Bindless unavailable — PackMaterialSSBO is gated on it";
+    }
+    {
+        std::vector<Material*> materials;
+        std::vector<GUID> guids;
+        for (int i = 0; i < 4; ++i)
+        {
+            guids.push_back(GUID::Generate());
+            materials.push_back(RegisterPackGateMaterial(f.Rs, guids.back(), "DeltaPack"));
+            ASSERT_NE(materials.back(), nullptr);
+        }
+
+        uint32_t frameCounter = 0;
+        auto RunFrame = [&]()
+        {
+            f.Rs.BeginWorldDrawFrame();
+            f.Rs.GetPerFrameWritePool().BeginFrame(frameCounter++);
+            f.Rs.BuildWorldBatchKeys();
+            f.Rs.Materials().FinalizeFrameBuffers();
+        };
+        auto& pool = f.Rs.GetPerFrameWritePool();
+        pool.BeginFrame(frameCounter++);
+        const uint32_t slots = Testing::RotateBackToCurrentSlot(
+            pool, FrameWriteUsage::MaterialParams, [&] { pool.BeginFrame(frameCounter++); });
+
+        // Each packed row must equal its material's parameter bytes.
+        auto ExpectRowsMatchMaterials = [&](const char* when)
+        {
+            const auto packed = f.Rs.Materials().PackedMaterialParams();
+            const size_t stride = kMaterialEntryStride;
+            const auto* base = static_cast<const uint8_t*>(f.Device->MapBuffer(packed.Buffer));
+            ASSERT_NE(base, nullptr);
+            for (const Material* mat : materials)
+            {
+                const size_t bytes = std::min<size_t>(mat->GetCacheSize(), kMaterialParamBytes);
+                const uint8_t* row = base + packed.Offset + mat->GetGpuSceneMaterialIndex() * stride;
+                EXPECT_EQ(std::memcmp(row, mat->GetCacheData(), bytes), 0)
+                    << mat->GetName() << " row differs from its material " << when;
+                uint32_t varianceIndex = 0;
+                std::memcpy(&varianceIndex, row + kNormalVarianceIndexOffset, sizeof(varianceIndex));
+                EXPECT_EQ(varianceIndex, mat->GetNormalVarianceIndex())
+                    << mat->GetName() << " row's normal-variance lane differs from its material " << when;
+            }
+            f.Device->UnmapBuffer(packed.Buffer);
+        };
+
+        for (uint32_t i = 0; i < slots; ++i)
+            RunFrame();
+        const uint64_t afterFirstCycle = f.Rs.Materials().GetMaterialSSBORowWriteCount();
+        ASSERT_GT(afterFirstCycle, 0u) << "the first cycle packs every slot in full";
+
+        materials[1]->SetFloat(HashStringId("roughness"), 0.37f);
+        for (uint32_t i = 0; i < slots; ++i)
+        {
+            RunFrame();
+            ExpectRowsMatchMaterials("after the edit");
+        }
+        EXPECT_EQ(f.Rs.Materials().GetMaterialSSBORowWriteCount() - afterFirstCycle, slots)
+            << "one edited material must rewrite one row per ring slot";
+
+        // Idle frames write nothing.
+        const uint64_t afterEdit = f.Rs.Materials().GetMaterialSSBORowWriteCount();
+        for (uint32_t i = 0; i < slots * 2u; ++i)
+            RunFrame();
+        EXPECT_EQ(f.Rs.Materials().GetMaterialSSBORowWriteCount(), afterEdit);
+
+        // The packed bytes of the current slot's row for `mat`: parameters,
+        // texture indices, UV transforms, sampler word and the zeroed tail.
+        auto CopyRow = [&](const Material* mat)
+        {
+            const auto packed = f.Rs.Materials().PackedMaterialParams();
+            const auto* base = static_cast<const uint8_t*>(f.Device->MapBuffer(packed.Buffer));
+            std::vector<uint8_t> row(kMaterialEntryStride);
+            if (base)
+            {
+                const uint8_t* src =
+                    base + packed.Offset + mat->GetGpuSceneMaterialIndex() * kMaterialEntryStride;
+                std::memcpy(row.data(), src, row.size());
+                f.Device->UnmapBuffer(packed.Buffer);
+            }
+            return row;
+        };
+
+        // A UV-transform edit, packed as a delta. Every slot's rows are kept to
+        // compare with the full pack that follows.
+        materials[2]->SetTextureTransform(TextureSlot::kAlbedo, 2.0f, 3.0f, 0.25f, 0.5f);
+        std::vector<std::vector<std::vector<uint8_t>>> deltaRows(slots);
+        for (uint32_t i = 0; i < slots; ++i)
+        {
+            RunFrame();
+            const uint32_t slot = pool.GetCurrentSlot(FrameWriteUsage::MaterialParams);
+            ASSERT_LT(slot, slots);
+            for (int m = 0; m < 3; ++m)
+                deltaRows[slot].push_back(CopyRow(materials[m]));
+        }
+        EXPECT_EQ(f.Rs.Materials().GetMaterialSSBORowWriteCount() - afterEdit, slots)
+            << "a UV-transform edit must rewrite one row per ring slot";
+        const uint64_t afterTransformEdit = f.Rs.Materials().GetMaterialSSBORowWriteCount();
+
+        // An unregister moves the slot mapping, so each slot packs in full again,
+        // and every surviving row must be byte-identical to its delta-packed bytes.
+        f.Rs.Materials().Registry().Unregister(guids[3]);
+        materials.pop_back();
+        for (uint32_t i = 0; i < slots; ++i)
+        {
+            RunFrame();
+            ExpectRowsMatchMaterials("after an unregister");
+            const uint32_t slot = pool.GetCurrentSlot(FrameWriteUsage::MaterialParams);
+            ASSERT_LT(slot, slots);
+            for (int m = 0; m < 3; ++m)
+                EXPECT_EQ(CopyRow(materials[m]), deltaRows[slot][m])
+                    << materials[m]->GetName() << " in ring slot " << slot
+                    << ": the delta pack and the full pack wrote different bytes";
+        }
+        EXPECT_GE(f.Rs.Materials().GetMaterialSSBORowWriteCount() - afterTransformEdit,
+                  static_cast<uint64_t>(slots) * materials.size())
+            << "a mapping change must repack every row of every slot";
     }
     f.Down();
 }
@@ -2214,6 +2614,172 @@ TEST(RenderServicesRGPassTests, GlossyResolveDeclaresTheLobeTargetsItBindsWithLo
     }
     f.Down();
 }
+
+namespace
+{
+class CascadeFitFrame
+{
+  public:
+    CascadeFitFrame(RsFixture& fixture, RenderGraph::RGFrame& frame,
+                    ShadowMapRenderFeature& feature, uint32_t resolution)
+        : m_Fixture(fixture), m_Frame(frame), m_Feature(feature), m_Resolution(resolution)
+    {
+    }
+
+    RenderGraph::RGPass Declare(uint64_t frameIndex, const CascadeFrameData& fit)
+    {
+        m_Frame.BeginFrame(frameIndex);
+        m_Fixture.Rs.BeginWorldDrawFrame();
+        m_Fixture.Rs.BuildWorldBatchKeys();
+        m_Feature.CacheFrameData(m_Fixture.View, fit);
+        auto context = m_Fixture.Rs.MakeFeatureDeclareContext(
+            m_Frame, m_Fixture.View, 1, m_Resolution, nullptr, {});
+        // A cleared cascade without contributors can become cacheable.
+        context.ViewNeedsCascades = true;
+        return m_Feature.DeclareCascadePass(m_Frame, m_Fixture.Rs, context, 0, "AbortFit.Cascade");
+    }
+
+    ShadowDataGPU BuildSamplingData(const CascadeFrameData& fit)
+    {
+        ShadowDataGPU data{};
+        m_Feature.BuildShadowDataGPU(fit, m_Fixture.View, m_Fixture.Rs, m_Frame, 0, data);
+        return data;
+    }
+
+    void Execute()
+    {
+        const auto color = m_Frame.ImportPersistentTexture("AbortFit.Anchor", ColorTargetDesc());
+        m_Frame.AddPass("AbortFit.Anchor", 0,
+                       [color](RenderGraph::RGPassBuilder& pass)
+                       { pass.AttachColor(0, color, {.Load = RenderGraph::RGLoadOp::Clear}); },
+                       [](RenderGraph::RGContext&) {});
+        m_Frame.MarkOutput(color);
+        m_Frame.Execute();
+        m_Fixture.Device->WaitForIdle();
+    }
+
+    void ExpectSamplingFit(const ShadowDataGPU& data, const CascadeFrameData& expected) const
+    {
+        EXPECT_EQ(std::memcmp(data.shadowVP[0], expected.LightVPRel[0].Data(), sizeof(data.shadowVP[0])), 0);
+        EXPECT_FLOAT_EQ(data.shadowPcssCascades[0][0], 2 * expected.OrthoHalfExtent[0] / m_Resolution);
+        EXPECT_FLOAT_EQ(data.shadowPcssCascades[0][1], expected.DepthSpan[0]);
+    }
+
+  private:
+    RsFixture& m_Fixture;
+    RenderGraph::RGFrame& m_Frame;
+    ShadowMapRenderFeature& m_Feature;
+    uint32_t m_Resolution;
+};
+} // namespace
+
+TEST(RenderServicesRGPassTests, AbortedPreparationKeepsTheRenderedCascadeFit)
+{
+    RsFixture fixture;
+    if (!fixture.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        FramePools pools(fixture.Device.get());
+        RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        auto& feature = fixture.Rs.EnsureFeature<ShadowMapRenderFeature>();
+        CascadedShadowConfig config{};
+        config.NumCascades = 1;
+        config.Resolution = 128;
+        ASSERT_TRUE(feature.Initialize(fixture.Device.get(), config));
+        feature.SetMotionCap(0);
+
+        CascadeFrameData fitA{};
+        fitA.NumCascades = 1;
+        fitA.LightVP[0] = Mathematics::Matrix4x4::Identity();
+        fitA.LightVPRel[0] = Mathematics::Matrix4x4::Identity();
+        fitA.OrthoHalfExtent[0] = 16.0f;
+        fitA.DepthSpan[0] = 32.0f;
+        CascadeFrameData fitB = fitA;
+        fitB.LightVP[0].Data()[12] = 0.25f;
+        fitB.LightVPRel[0].Data()[12] = 0.25f;
+        fitB.OrthoHalfExtent[0] = 24.0f;
+        fitB.DepthSpan[0] = 48.0f;
+
+        CascadeFitFrame cascadeFrame(fixture, frame, feature, config.Resolution);
+
+        ASSERT_TRUE(cascadeFrame.Declare(0, fitA).IsValid());
+        cascadeFrame.Execute();
+        EXPECT_EQ(frame.Stats().PreparationFailures, 0u);
+        ASSERT_TRUE(cascadeFrame.Declare(1, fitA).IsValid());
+        // Two identical renders settle the cull/content cache.
+        cascadeFrame.Execute();
+
+        ASSERT_TRUE(cascadeFrame.Declare(2, fitB).IsValid());
+        // Same-frame receivers need the scheduled fit.
+        cascadeFrame.ExpectSamplingFit(cascadeFrame.BuildSamplingData(fitB), fitB);
+        frame.AddPass("AbortFit.FailPreparation", 0,
+                      [](RenderGraph::RGPassBuilder& pass)
+                      {
+                          pass.PreventCulling();
+                          pass.Prepare([](RenderGraph::RGPrepareContext&) { return false; });
+                      }, [](RenderGraph::RGContext&) {});
+        const auto submitted = frame.SubmittedFrameCount();
+        cascadeFrame.Execute();
+        EXPECT_EQ(frame.SubmittedFrameCount(), submitted);
+        EXPECT_EQ(frame.Stats().PreparationFailures, 1u);
+
+        ASSERT_FALSE(cascadeFrame.Declare(3, fitA).IsValid()) << "the settled A layer must be reused";
+        // Aborted B must not replace retained A.
+        cascadeFrame.ExpectSamplingFit(cascadeFrame.BuildSamplingData(fitA), fitA);
+        cascadeFrame.Execute();
+    }
+    fixture.Down();
+}
+
+TEST(RenderServicesRGPassTests, InPlaceGeometryReplacementInvalidatesRetainedCascadeDepth)
+{
+    RsFixture fixture;
+    if (!fixture.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        Mesh mesh{};
+        mesh.Vertices.resize(3);
+        mesh.Vertices[0].Position[0] = -0.5f;
+        mesh.Vertices[1].Position[0] = 0.5f;
+        mesh.Vertices[2].Position[1] = 0.5f;
+        mesh.Indices = {0, 1, 2};
+        const MeshGPUKey key{GUID::Generate(), 0};
+        const auto handle = fixture.Rs.GetMeshGPURegistry().RegisterSubmesh(key, mesh);
+        ASSERT_TRUE(handle.IsValid());
+        const uint64_t geometryBefore = fixture.Rs.GetMeshGPURegistry().GetContentRevision();
+        const uint64_t casterBefore = fixture.Rs.ShadowCasterContentVersion(0u);
+
+        FramePools pools(fixture.Device.get());
+        RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        auto& feature = fixture.Rs.EnsureFeature<ShadowMapRenderFeature>();
+        CascadedShadowConfig config{};
+        config.NumCascades = 1;
+        config.Resolution = 128;
+        ASSERT_TRUE(feature.Initialize(fixture.Device.get(), config));
+        feature.SetMotionCap(0);
+        CascadeFrameData fit{};
+        fit.NumCascades = 1;
+        fit.LightVP[0] = Mathematics::Matrix4x4::Identity();
+        fit.LightVPRel[0] = Mathematics::Matrix4x4::Identity();
+        CascadeFitFrame cascade(fixture, frame, feature, config.Resolution);
+        ASSERT_TRUE(cascade.Declare(0u, fit).IsValid());
+        cascade.Execute();
+        ASSERT_TRUE(cascade.Declare(1u, fit).IsValid());
+        cascade.Execute();
+        ASSERT_FALSE(cascade.Declare(2u, fit).IsValid()) << "the unchanged layer must be cached";
+        cascade.Execute();
+
+        mesh.Vertices[2].Position[1] = 0.75f;
+        ASSERT_EQ(fixture.Rs.GetMeshGPURegistry().RegisterSubmesh(key, mesh), handle);
+        ASSERT_GT(fixture.Rs.GetMeshGPURegistry().GetContentRevision(), geometryBefore);
+        ASSERT_EQ(fixture.Rs.ShadowCasterContentVersion(0u), casterBefore);
+        EXPECT_TRUE(cascade.Declare(3u, fit).IsValid())
+            << "replacing geometry in a stable handle must invalidate retained depth";
+        cascade.Execute();
+    }
+    fixture.Down();
+}
+
 
 TEST(RenderServicesRGPassTests, SortedArtworkWithoutMeshSubmissionsKeepsItsDrainActive)
 {

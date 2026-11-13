@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGReadbackRing.h"
 

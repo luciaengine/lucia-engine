@@ -5,7 +5,7 @@
 #include "ECS/World.h"
 #include "Engine/Rendering/SortingLayers.h"
 #include "InspectorRegistry.h"
-#include "Inspectors/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
 #include "UndoRedo/UndoRedoService.h"
 

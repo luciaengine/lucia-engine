@@ -1,4 +1,3 @@
-#include "Assets/AssetGridDragState.h"
 #include "Editor/Settings/BuildSettingsPage.h"
 
 #include "Editor/Assets/AssetRelativePath.h"
@@ -44,7 +43,13 @@ namespace GameEngine
 
 // Asset grid drag state, defined in BookmarksPanel.cpp — the drop slots below
 // accept a plain asset-grid drag as well as a DragDropManager payload.
-
+struct DragState
+{
+    bool active = false;
+    std::filesystem::path assetPath;
+    std::string scenePath;
+    std::string entityId;
+};
 extern DragState g_DragState;
 
 namespace Editor
@@ -66,7 +71,7 @@ std::string PlatformCategoryId(const std::string& platformName)
 std::unique_ptr<UIElement> MakeColumn(float marginTopPx, float gapPx)
 {
     auto column = std::make_unique<UIElement>();
-    column->Overrides()
+    column->Style()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Column)
         .Set(Style::Gap, StyleLength::Px(gapPx))
@@ -78,7 +83,7 @@ std::unique_ptr<UIElement> MakeSettingsRow()
 {
     auto row = std::make_unique<UIElement>();
     row->AddClass("settings-row");
-    row->Overrides()
+    row->Style()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Row)
         .Set(Style::AlignItems, AlignItems::Center)
@@ -128,7 +133,7 @@ void SetBlockVisibleDeferred(UIElement* block, bool visible)
         return;
     block->PostAction([block, visible]()
     {
-        block->Overrides().Set(Style::Visibility, visible);
+        block->Style().Set(Style::Visibility, visible);
         block->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty | UIElement::ChildrenDirty);
         if (UIElement* parent = block->GetParent())
             parent->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty |
@@ -262,11 +267,11 @@ class BuildSceneListDropTarget final : public UIElement, public UI::Interaction:
         label->SetText("Drop .scene assets or scene bookmarks here");
         label->AddClass("settings-description");
         EditorUI::StyleInfoCardText(label.get());
-        label->Overrides()
+        label->Style()
             .Set(Style::PaddingTop, StyleLength::Px(4.0f))
             .Set(Style::PaddingBottom, StyleLength::Px(4.0f));
         AddChild(std::move(label));
-        Overrides().Set(Style::MinHeight, StyleLength::Px(28.0f));
+        Style().Set(Style::MinHeight, StyleLength::Px(28.0f));
 
         // Asset-grid drag (g_DragState), for the path that does not go through
         // DragDropManager.
@@ -274,20 +279,20 @@ class BuildSceneListDropTarget final : public UIElement, public UI::Interaction:
         {
             if (e.Button != 0)
                 return;
-            if (!g_DragState.Active || g_DragState.AssetPath.empty())
+            if (!g_DragState.active || g_DragState.assetPath.empty())
                 return;
-            const std::string ext = g_DragState.AssetPath.extension().string();
+            const std::string ext = g_DragState.assetPath.extension().string();
             if (ext != ".scene" && ext != ".SCENE")
                 return;
             auto& assetManager = EngineCore::GetInstance().GetAssetManager();
             const std::string rel =
-                TryMakeAssetRelativePathString(assetManager, g_DragState.AssetPath);
+                TryMakeAssetRelativePathString(assetManager, g_DragState.assetPath);
             if (rel.empty())
                 return;
             if (m_OnDrop)
                 m_OnDrop({rel});
-            g_DragState.Active = false;
-            g_DragState.AssetPath.clear();
+            g_DragState.active = false;
+            g_DragState.assetPath.clear();
             e.Stop();
         });
     }
@@ -365,12 +370,12 @@ class BuildSceneListDropTarget final : public UIElement, public UI::Interaction:
     {
         if (!state.Visible)
         {
-            Overrides().Reset(Style::BorderWidth);
-            Overrides().Reset(Style::BorderColor);
+            Style().Reset(Style::BorderWidth);
+            Style().Reset(Style::BorderColor);
             return;
         }
         const uint32_t color = state.Allowed ? 0xE650C878u : 0xE6DC5050u;
-        Overrides()
+        Style()
             .Set(Style::BorderWidth, Box4{2.0f, 2.0f, 2.0f, 2.0f})
             .Set(Style::BorderColor, BorderColorsTRBL{color, color, color, color});
     }
@@ -408,7 +413,7 @@ void AppendSceneRow(UIElement* rowsContainer, const std::string& platformName,
 
     auto row = std::make_unique<UIElement>();
     row->AddClass("settings-build-scene-row");
-    row->Overrides()
+    row->Style()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Row)
         .Set(Style::AlignItems, AlignItems::Center)
@@ -425,6 +430,7 @@ void AppendSceneRow(UIElement* rowsContainer, const std::string& platformName,
 
     auto remove = std::make_unique<Button>();
     remove->SetText("×");
+    remove->AddClass("icon-button");
     remove->AddClass("bookmark-remove");
     remove->RegisterEventHandler(kEventButtonClick, [rowsContainer, platformName](UIEvent& e)
     {
@@ -474,11 +480,11 @@ std::unique_ptr<UIElement> CreatePlatformSceneListBlock(const std::string& platf
     const bool useGlobal = LoadBuildPlatformUseGlobalScenes(platformName);
 
     auto list = MakeColumn(8.0f, 0.0f);
-    list->Overrides().Set(Style::Visibility, !useGlobal);
+    list->Style().Set(Style::Visibility, !useGlobal);
     UIElement* listPtr = list.get();
 
     auto rows = std::make_unique<UIElement>();
-    rows->Overrides().Set(Style::Display, DisplayMode::Flex).Set(Style::FlexDir, FlexDirection::Column);
+    rows->Style().Set(Style::Display, DisplayMode::Flex).Set(Style::FlexDir, FlexDirection::Column);
     UIElement* rowsPtr = rows.get();
 
     auto dropTarget = std::make_unique<BuildSceneListDropTarget>(
@@ -542,20 +548,20 @@ class BuildIconDropSlot final : public UIElement, public UI::Interaction::IDropT
         {
             if (e.Button != 0)
                 return;
-            if (!g_DragState.Active || g_DragState.AssetPath.empty())
+            if (!g_DragState.active || g_DragState.assetPath.empty())
                 return;
-            if (!IsSupportedBuildIconImage(g_DragState.AssetPath))
+            if (!IsSupportedBuildIconImage(g_DragState.assetPath))
                 return;
             auto& assetManager = EngineCore::GetInstance().GetAssetManager();
             const std::string rel =
-                TryMakeAssetRelativePathString(assetManager, g_DragState.AssetPath);
+                TryMakeAssetRelativePathString(assetManager, g_DragState.assetPath);
             if (rel.empty())
                 return;
             ApplyRelativePath(rel);
             if (m_OnChanged)
                 m_OnChanged(rel);
-            g_DragState.Active = false;
-            g_DragState.AssetPath.clear();
+            g_DragState.active = false;
+            g_DragState.assetPath.clear();
             e.Stop();
         });
     }
@@ -662,7 +668,7 @@ std::unique_ptr<UIElement> CreateIconEditorBlock(const std::string& iconPrefKey,
     auto block = MakeColumn(8.0f, 6.0f);
 
     auto row = std::make_unique<UIElement>();
-    row->Overrides()
+    row->Style()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Row)
         .Set(Style::AlignItems, AlignItems::FlexStart)
@@ -686,7 +692,7 @@ std::unique_ptr<UIElement> CreateIconEditorBlock(const std::string& iconPrefKey,
     row->AddChild(std::move(slot));
 
     auto fields = std::make_unique<UIElement>();
-    fields->Overrides()
+    fields->Style()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Column)
         .Set(Style::Gap, StyleLength::Px(6.0f))
@@ -713,7 +719,7 @@ std::unique_ptr<UIElement> CreateIconEditorBlock(const std::string& iconPrefKey,
 
     auto pathRow = std::make_unique<UIElement>();
     pathRow->AddClass("settings-build-scene-row");
-    pathRow->Overrides()
+    pathRow->Style()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Row)
         .Set(Style::AlignItems, AlignItems::Center)
@@ -722,6 +728,7 @@ std::unique_ptr<UIElement> CreateIconEditorBlock(const std::string& iconPrefKey,
 
     auto clear = std::make_unique<Button>();
     clear->SetText("×");
+    clear->AddClass("icon-button");
     clear->AddClass("bookmark-remove");
     clear->SetTooltip("Clear icon override (use Editor default icon).");
     clear->RegisterEventHandler(kEventButtonClick, [commitIcon, pathFieldPtr](UIEvent&)
@@ -736,7 +743,7 @@ std::unique_ptr<UIElement> CreateIconEditorBlock(const std::string& iconPrefKey,
     auto hint = std::make_unique<EditorUI::CollapsibleInfoCard>(
         "Drag an image from the Assets panel onto the preview. When empty, the Editor "
         "application icon is used.");
-    hint->Overrides().Set(Style::PaddingLeft, StyleLength::Px(0.0f));
+    hint->Style().Set(Style::PaddingLeft, StyleLength::Px(0.0f));
     fields->AddChild(std::move(hint));
 
     row->AddChild(std::move(fields));
@@ -752,7 +759,7 @@ std::unique_ptr<UIElement> CreatePlatformIconBlock(const std::string& platformNa
     const bool useGlobal = LoadBuildPlatformUseGlobalIcon(platformName);
     auto editor = CreateIconEditorBlock(BuildPlatformPrefKey(platformName, "icon"),
                                         LoadBuildPlatformIcon(platformName));
-    editor->Overrides().Set(Style::Visibility, !useGlobal);
+    editor->Style().Set(Style::Visibility, !useGlobal);
     UIElement* editorPtr = editor.get();
 
     AppendStoreToggleRow(*block, "Use Global App Icon",
@@ -777,7 +784,7 @@ std::unique_ptr<UIElement> CreatePlatformRenderPipelineBlock(const std::string& 
                                            : ResolveBuildRenderPipelineForPlatform(platformName);
 
     auto pipeline = MakeColumn(0.0f, 0.0f);
-    pipeline->Overrides().Set(Style::Visibility, !useGlobal);
+    pipeline->Style().Set(Style::Visibility, !useGlobal);
     UIElement* pipelinePtr = pipeline.get();
 
     auto row = MakeSettingsRow();
@@ -799,7 +806,7 @@ std::unique_ptr<UIElement> CreatePlatformRenderPipelineBlock(const std::string& 
     pipeline->AddChild(std::move(row));
 
     auto useGlobalRow = MakeSettingsRow();
-    useGlobalRow->Overrides().Set(Style::MarginTop, StyleLength::Px(8.0f));
+    useGlobalRow->Style().Set(Style::MarginTop, StyleLength::Px(8.0f));
     useGlobalRow->AddChild(MakeRowLabel("Use global render pipeline"));
     auto toggle = std::make_unique<Toggle>();
     toggle->SetChecked(useGlobal);
@@ -861,10 +868,10 @@ void AppendBuildPageFields(SettingsCategoryDescriptor& build, const BuildSetting
             if (hooks.OpenBuildPanel)
                 hooks.OpenBuildPanel();
         };
-        open.Control = std::move(control);
         // Already front-most: the row would only take the user where they are.
-        open.IsVisible = [hooks]()
+        control.IsVisible = [hooks]()
         { return !(hooks.IsBuildPanelActive && hooks.IsBuildPanelActive()); };
+        open.Control = std::move(control);
         build.Fields.push_back(std::move(open));
     }
 
@@ -945,7 +952,8 @@ void AppendBuildPageFields(SettingsCategoryDescriptor& build, const BuildSetting
                             []() { return CreateGlobalSceneListBlock(); });
         scenes.SectionHeader = "Global scene list";
         scenes.SectionDescription =
-            "Scenes included when a platform has \"Use global scene list\" enabled.";
+            "Scenes included when a platform has \"Use global scene list\" enabled. The first scene opens "
+            "when the game starts. With no scene in any list, the game ships the project's startup scene.";
         build.Fields.push_back(std::move(scenes));
     }
 }
@@ -1030,9 +1038,9 @@ void AppendWebExportFields(SettingsCategoryDescriptor& platform, const std::stri
     SettingsFieldDescriptor templateDir = MakeStorePathField(
         "Player template", SettingsFieldDescriptor::PathField::Kind::Directory,
         BuildPlatformPrefKey(platformName, "playerTemplate"), {},
-        "Directory holding WebPlayer.html, WebPlayer.js and WebPlayer.wasm from a wasm Player "
-        "build (cmake --build --preset wasm-debug --target WebPlayer). Leave empty to use the "
-        "engine tree's build/wasm-release/bin or build/wasm-debug/bin.",
+        "Directory holding WebPlayer.html, WebPlayer.js, WebPlayer.wasm and "
+        "THIRD_PARTY_NOTICES.md from a wasm Player build (cmake --build --preset wasm-debug "
+        "--target WebPlayer). Leave empty to use the engine tree's build/wasm-release/bin or build/wasm-debug/bin.",
         "build web export player template wasm emscripten browser");
     templateDir.SectionHeader = "Web export";
     platform.Fields.push_back(std::move(templateDir));

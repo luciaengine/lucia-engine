@@ -22,9 +22,6 @@ public:
     // If title is non-empty it overrides the filename-derived header text.
     void Open(const std::filesystem::path& videoPath, const std::string& title = {});
 
-    /// Open the bundled Lucia Engine identity movie with looping enabled.
-    void OpenIntro();
-
     bool IsOpen() const;
     void Close();
 

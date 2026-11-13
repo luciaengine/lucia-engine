@@ -5,16 +5,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <mutex>
+#include <string>
+#include <vector>
 
 #if defined(__APPLE__) || defined(__linux__)
 #include <cxxabi.h>
 #include <dlfcn.h>
-#if defined(__ANDROID__)
-#include <unwind.h>
-#else
 #include <execinfo.h>
-#endif
 #elif defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -37,24 +36,23 @@ namespace
 // On Linux they look like:
 //   "./Editor(_ZN9GameEngine3BarEv+0x24) [0x100001234]"
 // We best-effort parse a human-friendly {module, symbol} pair and demangle.
-String DemangleIfCxx(const char* mangled)
+std::string DemangleIfCxx(const char* mangled)
 {
     if (!mangled || !*mangled)
         return {};
     int status = 0;
-    char* buf = abi::__cxa_demangle(mangled, nullptr, nullptr, &status);
-    if (status == 0 && buf)
+    char* demangled = abi::__cxa_demangle(mangled, nullptr, nullptr, &status);
+    if (status == 0 && demangled)
     {
-        String out(buf);
-        std::free(buf);
+        std::string out(demangled);
+        std::free(demangled);
         return out;
     }
-    if (buf)
-        std::free(buf);
-    return String(mangled);
+    if (demangled)
+        std::free(demangled);
+    return std::string(mangled);
 }
 
-#if !defined(__ANDROID__)
 void ParseSymbolLineApple(const char* line, BacktraceFrame& out)
 {
     // skip leading frame index and whitespace
@@ -81,7 +79,7 @@ void ParseSymbolLineApple(const char* line, BacktraceFrame& out)
     // symbol up to " + offset"
     const char* symStart = p;
     const char* plus = std::strstr(p, " + ");
-    String mangled;
+    std::string mangled;
     if (plus)
         mangled.assign(symStart, plus - symStart);
     else
@@ -92,23 +90,36 @@ void ParseSymbolLineApple(const char* line, BacktraceFrame& out)
 
 #endif
 
-#if defined(__ANDROID__)
-struct AndroidUnwindState
-{
-    void** Addresses;
-    int Count = 0;
-    int Capacity;
-};
+#if defined(_WIN32)
 
-_Unwind_Reason_Code CaptureAndroidFrame(_Unwind_Context* context, void* argument)
+// Adds the folder of one module to the list when the list does not have it.
+BOOL CALLBACK AppendModuleFolder(PCWSTR modulePath, DWORD64, ULONG, PVOID context)
 {
-    auto& state = *static_cast<AndroidUnwindState*>(argument);
-    const auto address = _Unwind_GetIP(context);
-    if (address != 0)
-        state.Addresses[state.Count++] = reinterpret_cast<void*>(address);
-    return state.Count >= state.Capacity ? _URC_END_OF_STACK : _URC_NO_REASON;
+    auto& folders = *static_cast<std::vector<std::filesystem::path>*>(context);
+    std::filesystem::path folder = std::filesystem::path(modulePath).parent_path();
+    if (folder.empty())
+        return TRUE;
+    if (std::find(folders.begin(), folders.end(), folder) == folders.end())
+        folders.push_back(std::move(folder));
+    return TRUE;
 }
-#endif
+
+// The folders of the loaded modules as a DbgHelp search path.
+std::wstring LoadedModuleSearchPath(HANDLE process)
+{
+    std::vector<std::filesystem::path> folders;
+    EnumerateLoadedModulesW64(process, AppendModuleFolder, &folders);
+
+    std::wstring searchPath;
+    for (const std::filesystem::path& folder : folders)
+    {
+        if (!searchPath.empty())
+            searchPath += L';';
+        searchPath += folder.native();
+    }
+    return searchPath;
+}
+
 #endif
 
 } // namespace
@@ -119,9 +130,29 @@ std::mutex& DbgHelpMutex()
     return s_Mutex;
 }
 
-Vector<BacktraceFrame> CaptureBacktrace(int maxFrames, int skipFrames)
+#if defined(_WIN32)
+void LoadDbgHelpModules()
 {
-    Vector<BacktraceFrame> out;
+    // Guarded by DbgHelpMutex(), which the caller holds.
+    static bool s_Started = false;
+    HANDLE process = GetCurrentProcess();
+    const std::wstring searchPath = LoadedModuleSearchPath(process);
+    if (!s_Started)
+    {
+        s_Started = true;
+        // SYMOPT_IGNORE_CVREC: a module with no PDB in the search path gets export names only.
+        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES | SYMOPT_IGNORE_CVREC);
+        if (SymInitializeW(process, searchPath.c_str(), TRUE))
+            return;
+    }
+    SymSetSearchPathW(process, searchPath.c_str());
+    SymRefreshModuleList(process);
+}
+#endif
+
+std::vector<BacktraceFrame> CaptureBacktrace(int maxFrames, int skipFrames)
+{
+    std::vector<BacktraceFrame> out;
     if (maxFrames <= 0)
         return out;
     if (skipFrames < 0)
@@ -131,13 +162,7 @@ Vector<BacktraceFrame> CaptureBacktrace(int maxFrames, int skipFrames)
     // Add 2 extra slots so we can reliably skip CaptureBacktrace itself.
     const int alloc = std::min(maxFrames + skipFrames + 2, 256);
     void* addrs[256];
-#if defined(__ANDROID__)
-    AndroidUnwindState state{addrs, 0, alloc};
-    _Unwind_Backtrace(CaptureAndroidFrame, &state);
-    const int captured = state.Count;
-#else
     int captured = ::backtrace(addrs, alloc);
-#endif
     if (captured <= 0)
         return out;
 
@@ -148,16 +173,13 @@ Vector<BacktraceFrame> CaptureBacktrace(int maxFrames, int skipFrames)
     if (count <= 0)
         return out;
 
-#if !defined(__ANDROID__)
     char** symbols = ::backtrace_symbols(addrs + start, count);
-#endif
     out.reserve(static_cast<size_t>(count));
     for (int i = 0; i < count; ++i)
     {
         BacktraceFrame f;
         f.Address = reinterpret_cast<std::uintptr_t>(addrs[start + i]);
 
-#if !defined(__ANDROID__)
         if (symbols && symbols[i])
         {
 #if defined(__APPLE__)
@@ -168,8 +190,6 @@ Vector<BacktraceFrame> CaptureBacktrace(int maxFrames, int skipFrames)
 #endif
         }
 
-#endif
-
         // Resolve module name via dladdr if not set yet.
         if (f.Module.empty())
         {
@@ -177,21 +197,14 @@ Vector<BacktraceFrame> CaptureBacktrace(int maxFrames, int skipFrames)
             if (dladdr(addrs[start + i], &info) && info.dli_fname)
             {
                 const char* base = std::strrchr(info.dli_fname, '/');
-                f.Module = base ? String(base + 1) : String(info.dli_fname);
+                f.Module = base ? std::string(base + 1) : std::string(info.dli_fname);
             }
         }
 
-#if defined(__ANDROID__)
-        Dl_info symbolInfo{};
-        if (dladdr(addrs[start + i], &symbolInfo) && symbolInfo.dli_sname)
-            f.Symbol = DemangleIfCxx(symbolInfo.dli_sname);
-#endif
         out.push_back(std::move(f));
     }
-#if !defined(__ANDROID__)
     if (symbols)
         std::free(symbols);
-#endif
     return out;
 
 #elif defined(_WIN32)
@@ -203,10 +216,7 @@ Vector<BacktraceFrame> CaptureBacktrace(int maxFrames, int skipFrames)
     static std::atomic<bool> s_symInitialized{false};
     HANDLE process = GetCurrentProcess();
     if (!s_symInitialized.exchange(true))
-    {
-        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
-        SymInitialize(process, nullptr, TRUE);
-    }
+        LoadDbgHelpModules();
 
     void* addrs[128];
     const int alloc = std::min(maxFrames + skipFrames + 1, 128);
@@ -245,7 +255,7 @@ Vector<BacktraceFrame> CaptureBacktrace(int maxFrames, int skipFrames)
             if (GetModuleFileNameA(mod, modName, MAX_PATH))
             {
                 const char* base = std::strrchr(modName, '\\');
-                f.Module = base ? String(base + 1) : String(modName);
+                f.Module = base ? std::string(base + 1) : std::string(modName);
             }
         }
 

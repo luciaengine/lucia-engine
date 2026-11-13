@@ -1,13 +1,52 @@
-// The vertex modifier reads evaluated positions/UVs from CBT storage buffers; no vertex buffer is bound.
-// Each three vertex indices address one visible bisector and its three corners.
-// Set 2 binds those streams plus the draw-level/height chain; far planar corners filter by distance, near corners retain cached bits.
+// CBT vertex output modifier (graphics side of the CBT/LEB terrain renderer).
+// Included by adapter_vertex.glsl via GE_VERTEX_MODIFIER_PATH when the material's
+// customVertexShader=true (which the clamp turns into HAS_VERTEX_OUTPUT_MODIFIER +
+// CUSTOM_VERTEX_SHADER). There is NO vertex buffer: geometry is decoded entirely
+// from the CBT SSBOs the compute update wrote this frame.
+//
+// Draw contract (plan §8 C3/C6): the camera forward pass issues DrawIndexedIndirectCount
+// over the VISIBLE bisector stream (Classify frustum-culls into it) with an identity
+// index buffer, so gl_VertexIndex walks 0..(3*visibleBisectors-1). Each run of three
+// consecutive vertex ids is one bisector triangle:
+//   triangle = gl_VertexIndex / 3     -> bisector slot via IndicesVisible[triangle]
+//   corner   = gl_VertexIndex % 3     -> which of the LEB corners (0,1,2)
+//
+// C4: the compute VertexEval already displaced each corner to its real WORLD
+// position (height sampled from the SAME terrain heightmap CDLOD samples) and stored
+// the terrain UV alongside. Those cached corners are camera-independent, so the update
+// keeps them while the camera moves. The draw then moves a far planar vertex to the
+// prefiltered height its distance asks for (CBT_DrawnCornerHeight, cbt_height_chain.glsl):
+// the surface at the detail the screen can show there, so far facets stop aliasing the
+// level-0 relief. Near vertices keep the cached corner bit for bit.
+//
+// Set 2 (the DrawBindings route terrain uses): CBT_DESCRIPTOR_SET=2 puts the draw's
+// buffers on set 2, resolved by the MaterialBinder from DrawBindings by instance
+// name (gIdxVis / gVertex / TerrainParamsBuffer for the flags, and gCbtChain / gCbtDrawLevel
+// outside the compat profile). CBT_GRAPHICS_INCLUDE keeps the include int64-free and
+// strips every compute-only write/atomic helper.
 #define CBT_GRAPHICS_INCLUDE
 #define CBT_DESCRIPTOR_SET 2
 #include "cbt_layout.glsl"
+#include "cbt_terrain_params.glsl"
+
+// GE_SHARED_CBT_INSTANCE_FLAGS_BEGIN
+// The terrain params flags set bit 0 for receive shadows (Terrain/TerrainTypes.h). The instance
+// flags set bit 1 for receive shadows (the fragment gate reads it).
+// The other bits have different meanings in the two words.
+const uint kCBTTerrainFlagReceiveShadows = 1u;
+const uint kCBTInstanceFlagReceiveShadows = 2u;
+uint CBT_InstanceFlags(uint terrainFlags)
+{
+    return (terrainFlags & kCBTTerrainFlagReceiveShadows) != 0u ? kCBTInstanceFlagReceiveShadows : 0u;
+}
+// GE_SHARED_CBT_INSTANCE_FLAGS_END
 
 #if defined(CBT_DRAW_HEIGHT_CHAIN)
-// Choose the corner height from its distance-filtered chain level, or retain its cached Y if disabled or mismatched.
-// The rule depends only on shared UV, cached position and frame eye, so neighboring facets share one height.
+// The height a planar corner at world `pos` and terrain `uv` draws at: the chain level of its distance
+// from the CBT camera, or the cached height `pos.y` where the rule asks for level 0, the chain is off
+// (scale 0: the sphere, the atlas and paged arms, the narrow heap) or the chain was built for another
+// lattice than the bound one. A pure function of (uv, pos, the frame's eye), so every facet that
+// shares the corner draws it at one height.
 float CBT_DrawnCornerHeight(vec3 pos, vec2 uv)
 {
     CBTDrawLevelParamsData p = gCbtDrawLevel.Params;
@@ -20,8 +59,12 @@ float CBT_DrawnCornerHeight(vec3 pos, vec2 uv)
 }
 #endif
 
-void ModifyVertex(inout VertexOutput v, InstanceData inst)
+// inst is inout: the draw has no instance record, so the terrain's own row sets the flags the
+// fragment reads.
+void ModifyVertex(inout VertexOutput v, inout InstanceData inst)
 {
+    inst.flags = CBT_InstanceFlags(terrains[0].Flags);
+
     uint vid = uint(gl_VertexIndex);
     uint triangle = vid / 3u;
     uint corner = vid - triangle * 3u;
@@ -40,12 +83,9 @@ void ModifyVertex(inout VertexOutput v, InstanceData inst)
     else if (corner == 1u) { pos = vd.corner1.xyz; uv = vec2(vd.corner1.w, vd.meta.y); packedSector = vd.sector1; }
     else                   { pos = vd.corner2.xyz; uv = vec2(vd.corner2.w, vd.meta.z); packedSector = vd.sector2; }
 
-    // Storage mode rides the per-slot deepTag (terrain S2a). Legacy slots (0): pos is the
-    // fp32 WORLD position and the adapter takes the GE_ClipFromWorld path — byte-identical
-    // to the pre-S2a draw (dark-ship). Deep slots (1): pos is the SECTOR-LOCAL offset and
-    // this corner's integer world sector rides v.sector, so the adapter projects through
-    // GE_ClipFromSectorLocal — the exact-integer-delta reconstruction that keeps Earth-
-    // magnitude geometry fp32-precise in clip space.
+    // deepTag 0: pos is the fp32 WORLD position and the adapter projects through GE_ClipFromWorld.
+    // deepTag 1: pos is the SECTOR-LOCAL offset and v.sector holds the corner's integer sector,
+    // so the adapter projects through GE_ClipFromSectorLocal (fp32-precise at Earth magnitude).
     v.position = pos;
     if (vd.deepTag.x != 0u)
     {
@@ -61,4 +101,10 @@ void ModifyVertex(inout VertexOutput v, InstanceData inst)
     v.normal = vec3(0.0, 1.0, 0.0);              // placeholder; the surface samples the normalmap
     v.uv0 = uv;                                  // terrain UV: normalmap + future splat lookups
     v.custom0 = vec4(float(slot), 0.0, 0.0, vd.meta.w); // .x = slot (debug), .w = normalmap index
+#if defined(GE_CLIP_DISTANCE) && defined(CBT_DRAW_HEIGHT_CHAIN)
+    // The terrain ends at its authored size. uv is linear in world X and Z, so the clip is exact;
+    // the rasterizer keeps a distance >= 0 (uv at or inside the extent).
+    gl_ClipDistance[0] = gCbtDrawLevel.Params.surfaceExtent.x - uv.x;
+    gl_ClipDistance[1] = gCbtDrawLevel.Params.surfaceExtent.y - uv.y;
+#endif
 }

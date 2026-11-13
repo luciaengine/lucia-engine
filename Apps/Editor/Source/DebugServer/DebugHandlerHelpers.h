@@ -18,7 +18,6 @@
 #include "AssetCore/GUID.h"
 #include "Components/Rendering/Particles.h"
 #include "Components/Rendering/RenderLayer.h"
-#include "Components/Rendering/WorldSectorCoord.h"
 #include "Scene/SceneSchemaRegistry.h"
 #include "Scene/SceneIOContext.h"
 #include "Components/Spline/SplineComponent.h"
@@ -37,7 +36,7 @@
 #include "DebugServer/BenchSceneHandlers.h"
 #include "DebugServer/CameraProjectionReport.h"
 #include "Editor/CaptureOutputDirectory.h"
-#include "DebugServer/ComponentValueReader.h"
+#include "DebugServer/Components/ComponentValueReader.h"
 #include "DebugServer/DebugServerReply.h"
 #include "DebugServer/EditorDebugServer.h"
 #include "DebugServer/ElementPointerTarget.h"
@@ -49,24 +48,24 @@
 #include "DebugServer/ThumbnailDebugHandlers.h"
 #include "DebugServer/InjectedInput.h"
 #include "DebugServer/OpenAssetPath.h"
-#include "DebugServer/ParallaxDebugHandlers.h"
-#include "DebugServer/PhysicsDebugHandlers.h"
+#include "DebugServer/Parallax/ParallaxDebugHandlers.h"
+#include "DebugServer/Physics/PhysicsDebugHandlers.h"
 #include "DebugServer/PlayModeRequest.h"
 #include "DebugServer/PointerCoordsRequest.h"
 #include "DebugServer/ReflectedEnumValue.h"
 #include "DebugServer/SceneDegradedReport.h"
 #include "DebugServer/TileMapDebugHandlers.h"
 #include "DebugServer/SceneHierarchyReport.h"
-#include "DebugServer/SchemaComponentApply.h"
-#include "DebugServer/RenderDocCapture.h"
+#include "DebugServer/Components/SchemaComponentApply.h"
+#include "DebugServer/Capture/RenderDocCapture.h"
 #include "DebugServer/RenderGraphResourceFilter.h"
 #include "DebugServer/ScreenshotCaptureWait.h"
-#include "DebugServer/TerrainDebugHandlers.h"
+#include "DebugServer/Terrain/TerrainDebugHandlers.h"
 #include "DebugServer/UITreeDump.h"
 #include "DebugServer/ViewFocusRequest.h"
 #include "DebugServer/DockPanelRequest.h"
-#include "DebugServer/WindowPrintCapture.h"
-#include "UI/Interaction/DragDropManager.h"
+#include "DebugServer/Capture/WindowPrintCapture.h"
+#include "UI/Interaction/DragDrop/DragDropManager.h"
 #include "ECS/ComponentFactory.h"
 #include "ECS/Systems.h"
 #include "ECSModules/Rendering/RenderingLoop.h"
@@ -78,13 +77,13 @@
 #include "ECSModules/Rendering/SkeletonStore.h"
 #include "Editor/Hierarchy/HierarchyEnableState.h"
 #include "Editor/Settings/FbxImportSettings.h"
-#include "Editor/Settings/RenderProjectSettings.h"
+#include "Editor/Settings/Render/RenderProjectSettings.h"
 #include "Editor/Settings/SettingsStore.h"
 #include "Editor/Assets/ShaderGlslOpen.h"
-#include "EditorApplication.h"
+#include "EditorApplication/EditorApplication.h"
 #include "Search/UniversalSearchController.h"
 #include "EditorChangeNotifications.h"
-#include "GameViewController.h"
+#include "GameView/GameViewController.h"
 #include "MovieRecorderController.h"
 #include "Video/VideoWriter.h"
 #include "EditorContextMenu/InterceptableContextMenu.h"
@@ -114,7 +113,7 @@
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Logger/LogLevel.h"
 #include "Logger/RingBufferSink.h"
-#include "Panels/AnimationWindowPanel.h"
+#include "Panels/Animation/AnimationWindowPanel.h"
 #include "Panels/AssetViewPanel.h"
 #include "Panels/AssetsPanel.h"
 #include "Panels/BuildPanel.h"
@@ -124,7 +123,7 @@
 #include "Graph/GraphKindChrome.h"
 #include "Graph/GraphPanelFactory.h"
 #include "Panels/SettingsPanel.h"
-#include "Panels/SceneViewPanel.h"
+#include "SceneView/SceneViewPanel.h"
 #include "PhysicsECS/Components/BoxColliderShape.h"
 #include "PhysicsECS/Components/CapsuleColliderShape.h"
 #include "PhysicsECS/Components/HeightFieldColliderShape.h"
@@ -142,13 +141,12 @@
 #include "SceneView/SceneViewFraming.h"
 #include "SceneView/SceneViewRenderCoordinator.h"
 #include "SceneView/SceneViewToolStripRegistry.h"
-#include "SceneViewController.h"
-#include "SceneView/TerrainBrushTool.h"
+#include "SceneView/SceneViewController.h"
+#include "Terrain/TerrainBrushTool.h"
 #include "Spline/SplineData.h"
 #include "Spline/SplineEvaluator.h"
 #include "SplineECS/SplineService.h"
 #include "Terrain/TerrainEntityProvisioning.h"
-#include "TerrainECS/TerrainFactory.h"
 #include "TerrainECS/TerrainService.h"
 #include "TerrainECS/TerrainRenderFeature.h"
 #include "TerrainGrass/TerrainGrassClamps.h"
@@ -172,7 +170,7 @@
 #include "UndoRedo/DuplicateEntitiesCommand.h"
 #include "UndoRedo/EntityComponentsEdit.h"
 #include "UndoRedo/GenericEditUndo.h"
-#include "UndoRedo/SplineUndoHelpers.h"
+#include "UndoRedo/Spline/SplineUndoHelpers.h"
 #include "UndoRedo/UndoRedoService.h"
 
 #include <nlohmann/json.hpp>
@@ -616,24 +614,6 @@ struct ComponentApplyResult
             world->AddComponentImmediate(entity, xf);
         else
             *world->GetComponentForWrite<Components::Transform>(entity) = xf;
-    }
-    else if (componentName == "WorldSectorCoord")
-    {
-        // Debug/IPC tagging surface for camera-relative rendering (Earth-scale).
-        // WorldSectorCoord is also user-addable in the Inspector; this IPC path
-        // is the test/automation equivalent (place a mesh far out at a precise
-        // sector + small local so it renders AND picks at the same world spot).
-        // Merges onto any existing sector.
-        Components::WorldSectorCoord sc{};
-        if (const auto* existing = world->GetComponent<Components::WorldSectorCoord>(entity))
-            sc = *existing;
-        sc.x = fields.Value("x", sc.x);
-        sc.y = fields.Value("y", sc.y);
-        sc.z = fields.Value("z", sc.z);
-        if (!world->GetComponent<Components::WorldSectorCoord>(entity))
-            world->AddComponentImmediate(entity, sc);
-        else
-            *world->GetComponentForWrite<Components::WorldSectorCoord>(entity) = sc;
     }
     else if (componentName == "Parent")
     {

@@ -11,6 +11,7 @@
 #include "CBTTerrain/CBTKernelSet.h"
 #include "CBTTerrain/CBTLayout.h"
 #include "CBTTerrain/CBTResources.h"
+#include "CBTTerrain/CBTSphereFaceMap.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 
@@ -21,6 +22,17 @@ class CommandList;
 
 namespace GameEngine::CBTTerrain
 {
+
+struct CBTPoolCensus;
+
+// What the planar area metric keeps of a facet wholly behind the eye (CBTClassifyDesc::BehindEye; the GLSL mirror
+// is CBT_BEHIND_EYE_*). Such a facet refines like its mirror image in view, so it keeps as many leaves as the view.
+enum class BehindEyeRelease : uint32_t
+{
+    AlwaysKeep = 0u,        // no gate: it refines like its mirror image at every keep step
+    ReleaseWhenNeeded = 1u, // the keep band at its distance excess: each keep step releases one octave, farthest first
+    AlwaysRelease = 2u,     // band 0 at every keep step: it splits no more and merges
+};
 
 // Drives the Classify metric. Mode selects between the C4 production metric
 // (kClassifyScreenSpace — projected edge length vs a target pixel error, camera +
@@ -47,24 +59,16 @@ struct CBTClassifyDesc
     float DirtyMaxU = 0.0f;
     float DirtyMaxV = 0.0f;
 
-    // Planet-editing v1 (plan §planet-editing). On the SPHERE, the dirty rect above is a
-    // FACE-LOCAL UV rect and DirtyFace selects the cube face — Classify reclassifies only
-    // bisectors on that face. SphereSculptEnabled gates VertexEval's additive sculpt
-    // sample (true once any dab has landed). Both ignored in planar mode.
-    uint32_t DirtyFace = 0u;
-    uint32_t SphereSculptEnabled = 0u;
+    // On the sphere the rect above stays empty: each changed face carries its own face-local UV rect
+    // here, at most one per face, and Classify reclassifies the bisectors of every listed face in the
+    // same update. Planar ignores it.
+    SphereEditRegions SphereDirty{};
 
     // Quiescence gate for VertexEval (plan §planet-shading perf). 0 (default) evaluates the
     // whole live pool, refreshing screen-space classification inputs before culling after a
     // parameter change. 1 evaluates only the compact MODIFIED stream, so a quiescent frame
     // launches no vertex workgroups. First use always initializes the root geometry.
     uint32_t GateVertexEval = 0u;
-
-    // Edit-driven retessellation A/B (round-8b). 1 (default) = Classify carries the geometric-error
-    // crease term that refines a facet straddling a live sculpt cliff the area metric cannot see;
-    // 0 = the pre-slice area-only metric (the fails-before behavior). CBTUpdateSystem drives it
-    // from GE_CBT_EDIT_RETESS so the fix can be A/B'd — and disabled — on the same build.
-    uint32_t EditRetessEnabled = 1u;
 
     // Near-field force-split occupancy gate A/B (round-8e saturation-deadlock fix). 1 (default) =
     // under pool pressure, stop force-splitting invisible near-plane/behind-eye grazing geometry so
@@ -73,14 +77,6 @@ struct CBTClassifyDesc
     // drives it from GE_CBT_NEARFIELD_GATE so the fix can be A/B'd — and disabled — on the same build.
     uint32_t NearFieldGate = 1u;
 
-    // Earth-scale (sector, local) gVertex storage A/B (decode-precision arc S2a). 1 = spherical
-    // VertexEval decodes corners via the df64 path (cbt_deep_decode.glsl, GLSL twin of
-    // CBTDeepDecode.h) and stores (integer 1024 m sector anchor, fp32 local offset) — the
-    // GE_ClipFromSectorLocal representation, immune to the Earth-magnitude fp32 store
-    // quantization the S1 probes measured. 0 (default) = the fp32 world store, byte-identical to
-    // the pre-S2a pipeline (the dark-ship). CBTUpdateSystem drives it from GE_CBT_DEEP_DECODE.
-    uint32_t DeepDecode = 0u;
-
     // Planar pool-pressure scale. 1 (default) = a planar view whose visible field exceeds the pool
     // has its split/merge thresholds scaled up until the pool holds it with headroom (Kernel_Reset
     // steps the scale; Kernel_Classify applies it). 0 holds the scale at 1x. This is an A/B arm for
@@ -88,9 +84,28 @@ struct CBTClassifyDesc
     // GE_CBT_POOL_PRESSURE for the same purpose on a live build); it is not a setting.
     uint32_t PoolPressure = 1u;
 
-    // Stable update inputs use the merge threshold for both planar split and merge, so one pose has one target tree.
-    // Moving inputs retain the hysteresis band. The render feature derives this state; it is not a rest-gate input.
+    // The rest rule (CBTLayout.h kSettle*), set per recorded update by CBTRenderFeature::RestSettle. kSettleMoved keeps
+    // the split and merge hysteresis band; kSettleHeld (a still camera) uses one threshold, so the tree settles to the
+    // one tree the pose asks for; kSettleLasted also lets the keep step's rest search step down.
     uint32_t Settle = 0u;
+
+    // 1 = this update counts the pool census (CBTPoolCensus): Kernel_Reset clears it and Kernel_Classify fills it.
+    // 0 (default) = no census atomics; the census keeps the last counted update's numbers. Not an input of the rest gate.
+    uint32_t Census = 0u;
+
+    // What the planar area metric keeps of a facet wholly behind the eye.
+    BehindEyeRelease BehindEye = BehindEyeRelease::ReleaseWhenNeeded;
+
+    /// True when a planar rect or any sphere face rect is dirty this frame.
+    bool HasDirtyRegion() const
+    {
+        if (DirtyMaxU > DirtyMinU && DirtyMaxV > DirtyMinV)
+            return true;
+        for (uint32_t i = 0; i < SphereDirty.Count; ++i)
+            if (!SphereDirty.Rects[i].IsEmpty())
+                return true;
+        return false;
+    }
 };
 
 // Inert classify (nothing to split or merge): leaves the tree unchanged.
@@ -144,6 +159,11 @@ struct CBTTessellationStats
     // Planar off-frustum keep step (kWQOffFrustumKeepStep): how far the off-frustum keep band has
     // collapsed under pool pressure, 0 (ungated) to kOffFrustumKeepSteps (band 0).
     int32_t OffFrustumKeepStep = 0;
+    // The rest's keep floor (kWQOffFrustumKeepFloor): >= 0 a floor, or kKeepFloorArriving /
+    // kKeepFloorProbing, the rest phase.
+    int32_t OffFrustumKeepFloor = 0;
+    // The leaves the planar criterion wanted to merge last update, counted at rest only (kWQMergeCandidateCounter).
+    int32_t MergeCandidates = 0;
 };
 
 class CBTInstance
@@ -180,8 +200,8 @@ class CBTInstance
     // (HeapID = 2^baseDepth + i). Planar seeds 2 twin unit-square triangles
     // (baseDepth 1); spherical seeds the 24 cube-sphere pie slices with cross-face
     // twins (baseDepth 5, CBTSphereRoots.h). Copies and reduction share one graphics
-    // submission. A live restart retires the prior graphics token before replacing sculpt-ring
-    // descriptors; the upload retires with its submission. No device-wide drain is needed.
+    // submission. A live restart retires the prior graphics token before replacing the
+    // topology; the upload retires with its submission. No device-wide drain is needed.
     // Unreachable payload records retain their bytes; new live slots are initialized before use.
     bool InitializeRoots(uint32_t domainMode = kDomainPlanar);
 
@@ -193,6 +213,12 @@ class CBTInstance
     // frames, with this frame's counter (its UBO ring element is rewritten by that frame's
     // update). No-op when `depth` does not exceed the base depth.
     void RefineUniform(uint32_t depth, uint32_t frameCounter);
+
+    // Refines a tree RefineUniform took to `uniformDepth` to its settled shape at `params`, before its
+    // first draw: one synchronous update per level to the cap, plus one. Call after SetHeightSource,
+    // between frames, with this frame's counter. Returns the passes it ran.
+    uint32_t RefineToView(const CBTClassifyDesc& classify, const CBTFrameParams& params, uint32_t uniformDepth,
+                      uint32_t frameCounter);
 
     // This frame's ring frame counter — see CBTResources::AdvanceFrameCounter, which owns it.
     // Every per-frame entry point below takes the returned value, and RecordUpdate pushes it
@@ -225,11 +251,16 @@ class CBTInstance
     void SetValidateEachUpdate(bool enabled) { m_ValidateEachUpdate = enabled; }
     bool ValidatesEachUpdate() const { return m_ValidateEachUpdate; }
 
-    /// Binds this frame's height texture, or the flat default. Call before recording.
-    /// Returns false if the shared descriptor set's graphics readers cannot be retired.
+    // Rebinds the terrain height texture the VertexEval kernel samples for this frame
+    // (binding 15 ring element CBTFrameRingSlot(frameCounter)), or the built-in flat
+    // default when invalid. Call with the SAME frameCounter passed to RecordUpdate this
+    // frame — the shader reduces the pushed counter identically — so a mid-session handle
+    // change never rewrites an in-flight ring element. The same texture the CDLOD path
+    // samples (plan §8 C4).
     bool SetHeightSource(uint32_t frameCounter, Rendering::TextureHandle heightTexture);
 
-    /// Restores default source bindings before recording. Returns success separately from changed.
+    /// Rebinds source rings after their prior graphics readers retire, without a device-wide drain.
+    /// False leaves the operation pending; changed reports the bindings already replaced.
     bool RefreshTerrainSources(bool& changed);
     uint64_t GetTerrainSourceGeneration() const { return m_Resources.GetTerrainSourceGeneration(); }
     uint32_t CountTerrainSourceSlots(Rendering::TextureHandle texture) const
@@ -261,24 +292,7 @@ class CBTInstance
     {
         return m_Resources.SetPageCacheSource(frameCounter, cacheTexture);
     }
-    bool ProvisionPageTableWords(uint32_t words) { return m_Resources.ProvisionPageTableWords(words); }
-    void UploadPageTable(uint32_t frameCounter, std::span<const uint32_t> words)
-    {
-        m_Resources.UploadPageTable(frameCounter, words);
-    }
-
-    // Uploads the sphere sculpt page POOL + page TABLE into this frame's ring slot (planet editing
-    // v2). Call with the SAME frameCounter passed to RecordUpdate; a host-visible write that completes
-    // before submit (like the params UBO). See CBTResources::UploadSphereSculptPool / PageTable.
-    void UploadSphereSculptPool(uint32_t frameCounter, const float* pool, uint32_t texelCount)
-    {
-        m_Resources.UploadSphereSculptPool(frameCounter, pool, texelCount);
-    }
-    void UploadSphereSculptPageTable(uint32_t frameCounter, const uint32_t* table, uint32_t entryCount)
-    {
-        m_Resources.UploadSphereSculptPageTable(frameCounter, table, entryCount);
-    }
-    uint32_t GetSculptPagePoolCount() const { return m_Resources.GetSculptPagePoolCount(); }
+    bool SetPageTable(Rendering::BufferHandle ring, uint32_t firstWord) { return m_Resources.SetPageTable(ring, firstWord); }
 
     // Uploads the planet-shading surface params into this frame's ring slot (the fragment
     // reads them on the graphics side — plan §planet-shading). Same host-visible ring
@@ -347,6 +361,10 @@ class CBTInstance
     // The perf oracle asserts a quiescent gated frame evaluates ~0, not the whole live pool.
     int32_t ReadVertexEvalCount() { return ReadWorkQueueCounter(kWQVertexEvalCounter); }
 
+    // The census of the last update recorded with CBTClassifyDesc::Census (zeros before the first). Debug query
+    // only: a self-contained submit and wait, like ReadTessellationStats.
+    CBTPoolCensus ReadPoolCensus();
+
     // Debug: copy `wordCount` u32 words starting at `firstWord` of `binding` into a private
     // host-visible buffer and return them (self-contained submit + wait, state-restoring).
     // `wordCount` is clamped to what remains of the source past `firstWord`, so the returned
@@ -356,6 +374,11 @@ class CBTInstance
                                          uint32_t firstWord = 0);
 
   private:
+    // Records, submits and waits one update per pass; `forceFirstVertexEval` re-evaluates every
+    // corner in the first pass.
+    void SubmitUpdatesAndWait(CBTClassifyDesc classify, const CBTFrameParams& params, uint32_t passes,
+                              uint32_t frameCounter, bool forceFirstVertexEval);
+
     // One word of a render-loop-owned buffer, read through its region of the shared readback
     // buffer with a copy this call records itself.
     uint32_t ReadSharedReadbackWord(CBTBinding binding, uint64_t readbackOffset,
@@ -371,15 +394,22 @@ class CBTInstance
     void PrepareIndirect(Rendering::CommandList& cl, CBTPushConstants pc, uint32_t counterSlot);
     void RecordDataBarrier(Rendering::CommandList& cl);
     void RecordReduce(Rendering::CommandList& cl, const CBTPushConstants& pc);
-    // Rebuild the planar height-range pyramid after a height, source or chain-range change.
-    // Include chain-level ranges when their lattice matches the texture.
-    // Atlas, sphere, narrow heaps and oversized lattices do not build this pyramid.
+    // The planar split: rebuilds the height-range pyramid from this frame's height texture, with the
+    // ranges of the chain levels when the chain holds the texture's lattice, level by level: every block
+    // when another texture is bound, the chain's ranges came or went, or any height may have changed
+    // (`forced`: a forced corner refresh or a whole chain rebuild); only the blocks that read the edit
+    // rect, and the blocks above them, when `edited`. No-op for the atlas source, a spherical domain, the
+    // narrow-heap arm and a lattice too large for the buffer.
     void RecordHeightRangeBuild(Rendering::CommandList& cl, const CBTClassifyDesc& classify,
                                 const CBTFrameParams& params, CBTPushConstants pc,
-                                uint32_t frameCounter, bool heightsChanged);
-    // Rebuild all filtered heights for a new source/lattice, a grown buffer or a forced refresh.
-    // Edits rebuild only tents that read the dirty rectangle; dependent normal texels follow.
-    // A disabled or unprovisioned chain does no work. Return whether any height level was rebuilt.
+                                uint32_t frameCounter, bool forced, bool edited);
+    // The draw's prefiltered height chain (CBTLayout.h kCBTHeightChain*), level by level beside the
+    // pyramid: every level when another texture or lattice is bound, the buffer was regrown or the
+    // corners are force-refreshed (`forced`); only the samples whose tents read the edit rect when
+    // `edited`. No-op when the frame turns the chain off (HeightChain.x 0: the sphere, the atlas
+    // and paged arms, the narrow heap) or the buffer is not provisioned for the lattice. The far-field
+    // normal chain follows, over the texels whose normals read the rebuilt samples, when its texture
+    // is provisioned for the lattice. Returns whether it rebuilt the whole height chain.
     bool RecordHeightChainBuild(Rendering::CommandList& cl, const CBTClassifyDesc& classify,
                                 const CBTFrameParams& params, CBTPushConstants pc, uint32_t frameCounter,
                                 bool forced, bool edited);

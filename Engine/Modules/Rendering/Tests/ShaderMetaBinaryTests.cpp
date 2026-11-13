@@ -7,7 +7,7 @@
 // past its buffer or allocate on a length it invented.
 #include "Rendering/ShaderCache/ShaderMetaBinary.h"
 
-#include "Rendering/Materials/ShaderMetaJson.h"
+#include "Rendering/Materials/Shader/ShaderMetaJson.h"
 #include "Types/Fnv1a.h"
 
 #include <cstring>

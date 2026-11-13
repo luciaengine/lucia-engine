@@ -1,3 +1,4 @@
+#include "Core/ApplicationPaths.h"
 // Cross-image ownership of UI event-handler callables.
 //
 // A native user module's std::function is code and constant data inside a
@@ -25,7 +26,7 @@
 // LoadLibrary at runtime, and — decisively — it compiles its OWN copy of the
 // header-inline RegisterEventHandler, exactly as a native user system does.
 
-#include "Core/Application.h" // PathUtils::GetExecutableDirectory
+#include "Core/Application.h" // ApplicationPaths::GetExecutableDirectory
 #include "NativeScripting/BuildCacheRecord.h"
 #include "NativeScripting/EngineBuildIdentity.h"
 #include "NativeScripting/NativeScriptManager.h"
@@ -97,7 +98,7 @@ using SetOnTreeSelectionChangedFn = void (*)(void*, int*);
 
 std::filesystem::path ProbeModulePath()
 {
-    const std::filesystem::path exeDir = GameEngine::PathUtils::GetExecutableDirectory();
+    const std::filesystem::path exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
     return exeDir / "NativeScriptingProbe.dll";
 }
 

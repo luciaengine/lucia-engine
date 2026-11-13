@@ -1,12 +1,11 @@
 #include "Assets/ModelAsset.h"
-
-#include "Assets/BoneLOD/ModelBoneLOD.h"
 #include "Assets/ImportedMaterialCache.h"
 #include "Assets/MeshLODGeometry.h"
 #include "AssetCore/SharedFileRead.h"
 #include "AssetCore/SubassetDeriveKeys.h"
 #include "Assets/AnimationClip.h"
 #include "Assets/AssetDecodeCancellation.h"
+#include "Assets/AssetDecodeInputFiles.h"
 #include "Assets/AssetManager.h"
 #include "Assets/AssetRegistry.h"
 #include "Core/Engine.h"
@@ -20,9 +19,9 @@
 #include "ECSModules/Rendering/ClipStore.h"
 #include "ECSModules/Rendering/SkeletonStore.h"
 
-#include "Animation/HumanoidImport.h"
-#include "Animation/HumanoidRig.h"
-#include "Animation/SkeletonProfile.h"
+#include "Animation/Humanoid/HumanoidImport.h"
+#include "Animation/Humanoid/HumanoidRig.h"
+#include "Animation/Skeleton/SkeletonProfile.h"
 #include "Assets/RuntimeHumanoidProfile.h"
 
 #include <glm/glm.hpp>
@@ -45,9 +44,9 @@
 
 namespace GameEngine {
 
-static bool VerticesHaveTangents(const Vector<Vertex>& vertices)
+static bool MeshHasTangents(const Mesh& mesh)
 {
-    for (const Vertex& v : vertices)
+    for (const Vertex& v : mesh.Vertices)
     {
         if ((v.Tangent[0] * v.Tangent[0] + v.Tangent[1] * v.Tangent[1] + v.Tangent[2] * v.Tangent[2]) > 1e-10f)
             return true;
@@ -71,25 +70,28 @@ static glm::vec3 BuildFallbackTangent(const glm::vec3& n)
     return SafeNormalize(glm::cross(axis, n), glm::vec3(1.0f, 0.0f, 0.0f));
 }
 
-// Rewrites every vertex's tangent from the triangle list `indices` over `vertices`. Leaves the
-// tangents as they are when no triangle has a usable UV parameterization.
-static void GenerateTangents(Vector<Vertex>& vertices, const Vector<uint32>& indices)
+void GenerateMeshTangents(Mesh& mesh, bool forceRegenerate)
 {
-    std::vector<glm::vec3> tangent(vertices.size(), glm::vec3(0.0f));
-    std::vector<glm::vec3> bitangent(vertices.size(), glm::vec3(0.0f));
+    if (mesh.Vertices.empty() || mesh.Indices.size() < 3)
+        return;
+    if (!forceRegenerate && MeshHasTangents(mesh))
+        return;
+
+    std::vector<glm::vec3> tangent(mesh.Vertices.size(), glm::vec3(0.0f));
+    std::vector<glm::vec3> bitangent(mesh.Vertices.size(), glm::vec3(0.0f));
     bool anyAccumulated = false;
 
-    for (size_t i = 0; i + 2 < indices.size(); i += 3)
+    for (size_t i = 0; i + 2 < mesh.Indices.size(); i += 3)
     {
-        const uint32 i0 = indices[i + 0];
-        const uint32 i1 = indices[i + 1];
-        const uint32 i2 = indices[i + 2];
-        if (i0 >= vertices.size() || i1 >= vertices.size() || i2 >= vertices.size())
+        const uint32 i0 = mesh.Indices[i + 0];
+        const uint32 i1 = mesh.Indices[i + 1];
+        const uint32 i2 = mesh.Indices[i + 2];
+        if (i0 >= mesh.Vertices.size() || i1 >= mesh.Vertices.size() || i2 >= mesh.Vertices.size())
             continue;
 
-        const Vertex& v0 = vertices[i0];
-        const Vertex& v1 = vertices[i1];
-        const Vertex& v2 = vertices[i2];
+        const Vertex& v0 = mesh.Vertices[i0];
+        const Vertex& v1 = mesh.Vertices[i1];
+        const Vertex& v2 = mesh.Vertices[i2];
         const glm::vec3 p0(v0.Position[0], v0.Position[1], v0.Position[2]);
         const glm::vec3 p1(v1.Position[0], v1.Position[1], v1.Position[2]);
         const glm::vec3 p2(v2.Position[0], v2.Position[1], v2.Position[2]);
@@ -116,9 +118,9 @@ static void GenerateTangents(Vector<Vertex>& vertices, const Vector<uint32>& ind
     if (!anyAccumulated)
         return;
 
-    for (size_t i = 0; i < vertices.size(); ++i)
+    for (size_t i = 0; i < mesh.Vertices.size(); ++i)
     {
-        Vertex& v = vertices[i];
+        Vertex& v = mesh.Vertices[i];
         glm::vec3 n(v.Normal[0], v.Normal[1], v.Normal[2]);
         n = SafeNormalize(n, glm::vec3(0.0f, 1.0f, 0.0f));
 
@@ -133,24 +135,16 @@ static void GenerateTangents(Vector<Vertex>& vertices, const Vector<uint32>& ind
     }
 }
 
-void GenerateMeshTangents(Mesh& mesh, bool forceRegenerate)
+Mesh CreateMorphedMesh(const Mesh& sourceMesh, const float* weights, size_t weightCount)
 {
-    if (mesh.Vertices.empty() || mesh.Indices.size() < 3)
-        return;
-    if (!forceRegenerate && VerticesHaveTangents(mesh.Vertices))
-        return;
-    GenerateTangents(mesh.Vertices, mesh.Indices);
-}
-
-void ApplyMorphTargets(const Mesh& sourceMesh, const float* weights, size_t weightCount,
-                       Vector<Vertex>& outVertices)
-{
-    outVertices.assign(sourceMesh.Vertices.begin(), sourceMesh.Vertices.end());
+    Mesh out = sourceMesh;
+    out.MorphTargets.clear();
 
     if (!weights || weightCount == 0 || sourceMesh.MorphTargets.empty() || sourceMesh.Vertices.empty())
-        return;
+        return out;
 
     const size_t vertexCount = sourceMesh.Vertices.size();
+    const bool hadTangents = MeshHasTangents(sourceMesh);
     bool normalsChanged = false;
     const size_t targetCount = std::min(weightCount, sourceMesh.MorphTargets.size());
 
@@ -171,7 +165,7 @@ void ApplyMorphTargets(const Mesh& sourceMesh, const float* weights, size_t weig
                 const uint32 vertexIndex = target.VertexIndices[entry];
                 if (vertexIndex >= vertexCount)
                     continue;
-                Vertex& v = outVertices[vertexIndex];
+                Vertex& v = out.Vertices[vertexIndex];
                 const float* delta = target.PositionDeltas.data() + entry * 3u;
                 v.Position[0] += delta[0] * weight;
                 v.Position[1] += delta[1] * weight;
@@ -186,7 +180,7 @@ void ApplyMorphTargets(const Mesh& sourceMesh, const float* weights, size_t weig
                 const uint32 vertexIndex = target.VertexIndices[entry];
                 if (vertexIndex >= vertexCount)
                     continue;
-                Vertex& v = outVertices[vertexIndex];
+                Vertex& v = out.Vertices[vertexIndex];
                 const float* delta = target.NormalDeltas.data() + entry * 3u;
                 v.Normal[0] += delta[0] * weight;
                 v.Normal[1] += delta[1] * weight;
@@ -197,7 +191,7 @@ void ApplyMorphTargets(const Mesh& sourceMesh, const float* weights, size_t weig
 
     if (normalsChanged)
     {
-        for (Vertex& v : outVertices)
+        for (Vertex& v : out.Vertices)
         {
             const float len2 = v.Normal[0] * v.Normal[0] + v.Normal[1] * v.Normal[1] + v.Normal[2] * v.Normal[2];
             if (len2 > 1e-12f)
@@ -210,8 +204,72 @@ void ApplyMorphTargets(const Mesh& sourceMesh, const float* weights, size_t weig
         }
     }
 
-    if (sourceMesh.Indices.size() >= 3 && VerticesHaveTangents(sourceMesh.Vertices))
-        GenerateTangents(outVertices, sourceMesh.Indices);
+    if (hadTangents)
+        GenerateMeshTangents(out, true);
+
+    out.MinBounds[0] = out.MinBounds[1] = out.MinBounds[2] = std::numeric_limits<float>::max();
+    out.MaxBounds[0] = out.MaxBounds[1] = out.MaxBounds[2] = std::numeric_limits<float>::lowest();
+    for (const Vertex& v : out.Vertices)
+    {
+        for (int c = 0; c < 3; ++c)
+        {
+            out.MinBounds[c] = std::min(out.MinBounds[c], v.Position[c]);
+            out.MaxBounds[c] = std::max(out.MaxBounds[c], v.Position[c]);
+        }
+    }
+
+    return out;
+}
+
+uint64 ComputeMeshContentHash(const Mesh& mesh)
+{
+    using Hashing::Fnv1a64;
+    using Hashing::Fnv1a64Value;
+    using Hashing::Fnv1a64Values;
+    uint64 h = Hashing::kFnv1a64OffsetBasis;
+    h = Fnv1a64Value(h, static_cast<uint32>(mesh.PrimitiveTopology));
+    h = Fnv1a64Value(h, mesh.MinBounds);
+    h = Fnv1a64Value(h, mesh.MaxBounds);
+    h = Fnv1a64Value(h, static_cast<uint64>(mesh.Vertices.size()));
+    if (!mesh.Vertices.empty())
+        h = Fnv1a64(mesh.Vertices.data(), mesh.Vertices.size() * sizeof(Vertex), h);
+    h = Fnv1a64Values(h, mesh.Indices);
+    h = Fnv1a64Value(h, static_cast<uint64>(mesh.ExtraLODs.size()));
+    for (const auto& lod : mesh.ExtraLODs)
+        h = Fnv1a64Values(h, lod);
+    // The LOD errors, sloppy flags and coverages select the LOD thresholds, so a change to them alone
+    // must re-upload.
+    h = Fnv1a64Values(h, mesh.ExtraLODErrors);
+    if (!mesh.ExtraLODSloppy.empty())
+        h = Fnv1a64(mesh.ExtraLODSloppy.data(), mesh.ExtraLODSloppy.size() * sizeof(uint8), h);
+    // AuthoredLODs selects the threshold table, so equal bytes with a different provenance do not match.
+    h = Fnv1a64Value(h, mesh.AuthoredLODs);
+    h = Fnv1a64Value(h, static_cast<uint64>(mesh.ExtraLODVertices.size()));
+    for (const auto& block : mesh.ExtraLODVertices)
+    {
+        h = Fnv1a64Value(h, static_cast<uint64>(block.size()));
+        if (!block.empty())
+            h = Fnv1a64(block.data(), block.size() * sizeof(Vertex), h);
+    }
+    h = Fnv1a64Values(h, mesh.ExtraLODCoverage);
+    h = Fnv1a64Values(h, mesh.Color0);
+    if (!mesh.ExtraLODColor0.empty())
+    {
+        h = Fnv1a64Value(h, static_cast<uint64>(mesh.ExtraLODColor0.size()));
+        for (const auto& colors : mesh.ExtraLODColor0)
+            h = Fnv1a64Values(h, colors);
+    }
+    h = Fnv1a64Values(h, mesh.TexCoords1);
+    h = Fnv1a64Value(h, static_cast<uint64>(mesh.ExtraTexCoords.size()));
+    for (const auto& uv : mesh.ExtraTexCoords)
+        h = Fnv1a64Values(h, uv);
+    h = Fnv1a64Values(h, mesh.Joints0);
+    h = Fnv1a64Values(h, mesh.Weights0);
+    h = Fnv1a64Values(h, mesh.Joints1);
+    h = Fnv1a64Values(h, mesh.Weights1);
+    h = Fnv1a64Value(h, mesh.Skinned);
+    h = Fnv1a64Value(h, static_cast<uint64>(mesh.MorphTargets.size()));
+    return h;
 }
 
 // Optional importer libraries
@@ -313,7 +371,10 @@ bool ModelAsset::Load() {
     }
 
     SetState(AssetState::Loading);
-    Logger::Log::Info("Loading model: {}", GetPath().string());
+    Logger::Log::Debug("Loading model: {}", GetPath().string());
+    // A synchronous load reads its own inputs; one nested in a decode must not take the
+    // decode's (ScopedAssetDecodeInputFiles).
+    const ScopedAssetDecodeInputFiles readsTheDisk(nullptr);
 
     if (!Exists()) {
         Logger::Log::Error("Model file does not exist: {}", GetPath().string());
@@ -322,7 +383,7 @@ bool ModelAsset::Load() {
     }
 
     // Read file data
-    Vector<uint8> fileData;
+    ByteBuffer fileData;
     if (!ReadFileBytesShared(GetPath(), fileData)) {
         Logger::Log::Error("Failed to read model file: {}", GetPath().string());
         SetState(AssetState::Failed);
@@ -332,7 +393,7 @@ bool ModelAsset::Load() {
     return LoadFromData(fileData);
 }
 
-bool ModelAsset::LoadFromData(const Vector<uint8>& data) {
+bool ModelAsset::LoadFromData(std::span<const uint8> data) {
     if (GetState() == AssetState::Loaded) {
         return true;
     }
@@ -415,12 +476,17 @@ bool ModelAsset::LoadFromData(const Vector<uint8>& data) {
             SetState(AssetState::Failed);
             return false;
     }
+    // A reload writes the joint counts of the skeleton that live runtimes use.
+    if (m_SkeletonId != 0)
+        Engine::Renderer::SkeletonStore::Instance().JointCountsWritten();
 
     if (success) {
         // Fold `_LOD<N>` submesh families into authored LOD chains before bounds /
         // counts so both reflect the consumed submesh array (format-agnostic — it
         // operates on the assembled submesh names every loader produced).
         ConsumeLodSuffixFamilies(m_Meshes);
+        for (EmbeddedImage& image : m_EmbeddedImages)
+            image.ContentHash = Hashing::Fnv1a64(image.Data.Data(), image.Data.Size());
         CalculateBoundingBox();
         CalculateCounts();
         SetState(AssetState::Loaded);
@@ -599,7 +665,10 @@ uint64 FoldSlotSourceIntoConfigHash(uint64 configHash, uint64 slotSourceHash)
 {
     if (slotSourceHash == 0)
         return configHash;
-    return Hashing::Fnv1a64Value(configHash, slotSourceHash);
+    constexpr uint64 kFnvPrime = 1099511628211ull;
+    const auto* bytes = reinterpret_cast<const uint8*>(&slotSourceHash);
+    for (int i = 0; i < 8; ++i) { configHash ^= bytes[i]; configHash *= kFnvPrime; }
+    return configHash;
 }
 
 // Editor iteration cache file for a model's cooked LODs. Loose files under the
@@ -641,6 +710,7 @@ std::filesystem::path PlayerLodCacheFile(AssetManager* assetManager, const GUID&
 } // namespace
 
 uint32 ModelAsset::GenerateLODs(const MeshLODConfig& config, bool generateSkinned) {
+    m_MeshContentHashes.clear(); // the meshes change, so a registration hashes them itself
     const auto lodStart = std::chrono::steady_clock::now();
     uint32 maxLods = 1;
     size_t sourceTris = 0;
@@ -805,7 +875,12 @@ void ModelAsset::PostLoad() {
     // the load-time mesh set never covered. Runs on both initial load and
     // hot-reload (idempotent — a demoted material is no longer Mask).
     DemoteInferredMaskMaterials();
-    BuildBoneLOD();
+
+    // The meshes are final here. Hash them in the load, so their GPU registration on the main thread does not.
+    m_MeshContentHashes.clear();
+    m_MeshContentHashes.reserve(m_Meshes.size());
+    for (const Mesh& mesh : m_Meshes)
+        m_MeshContentHashes.push_back(ComputeMeshContentHash(mesh));
 
     // Record the final materials (after the demotion above, so the record matches
     // what registration converts) in the derived cache, where consumers that need
@@ -816,15 +891,17 @@ void ModelAsset::PostLoad() {
             WriteImportedMaterialCache(*file, m_Materials);
     }
 
-    // Auto-import HumanoidRig sidecar for skinned models. The sidecar is
-    // what HumanoidRetargetSystem ingests as the source / target rig — the
-    // ModelAsset itself never carries humanoid metadata. Skip cleanly for
-    // non-skinned models. assets.model.rigKind=none opts the file out.
+    // Write the HumanoidRig sidecar that HumanoidRetargetSystem reads. Only a model with skin joints,
+    // a skinned mesh or an animation is a candidate: the loaders give a static model a node skeleton too.
+    // assets.model.rigKind=none opts the file out.
     if (m_SkeletonId == 0) return;
 
     auto& skStore = ::GameEngine::Engine::Renderer::SkeletonStore::Instance();
     const auto* skel = skStore.Get(m_SkeletonId);
     if (!skel || skel->BoneCount == 0) return;
+    const bool hasSkinnedMesh = std::any_of(m_Meshes.begin(), m_Meshes.end(),
+                                            [](const Mesh& mesh) { return mesh.IsSkinned(); });
+    if (skel->SkinJointCount == 0 && !hasSkinnedMesh && !m_HasAnimations) return;
 
     AssetManager* assetManager = AssetManager::GetThreadCurrent();
     if (!assetManager) {
@@ -875,9 +952,9 @@ void ModelAsset::PostLoad() {
     // bytes would only report a change to the file watcher (the Assets panel
     // lists the folder again) and touch a committed file.
     Vector<uint8> derived;
-    Vector<uint8> existing;
+    ByteBuffer existing;
     const bool unchanged = sidecarExists && rig.SaveToData(derived) &&
-                           ReadFileBytesShared(sidecar, existing) && existing == derived;
+                           ReadFileBytesShared(sidecar, existing) && std::ranges::equal(existing, derived);
     if (!unchanged)
     {
         if (!rig.SaveToPath(sidecar)) {
@@ -912,6 +989,7 @@ static void CopySkeletonStoreEntry(uint32 dstId, uint32 srcId)
     if (!dst)
         return;
     *dst = *src;
+    store.JointCountsWritten();
 }
 
 bool ModelAsset::AdoptReloadedPayload(Asset& staged) {
@@ -930,12 +1008,16 @@ bool ModelAsset::AdoptReloadedPayload(Asset& staged) {
     const uint32 stagedSkeletonId = other->m_SkeletonId;
     std::swap(m_Format, other->m_Format);
     std::swap(m_Meshes, other->m_Meshes);
+    std::swap(m_MeshContentHashes, other->m_MeshContentHashes);
     std::swap(m_Materials, other->m_Materials);
     std::swap(m_EmbeddedImages, other->m_EmbeddedImages);
     std::swap(m_Cameras, other->m_Cameras);
     std::swap(m_Lights, other->m_Lights);
     std::swap(m_SceneNodes, other->m_SceneNodes);
-    std::swap(m_Extras, other->m_Extras);
+    {
+        std::scoped_lock lock(m_ExtrasMutex, other->m_ExtrasMutex);
+        std::swap(m_Extras, other->m_Extras);
+    }
     std::swap(m_TotalVertexCount, other->m_TotalVertexCount);
     std::swap(m_TotalIndexCount, other->m_TotalIndexCount);
     std::swap(m_SourceContentHash, other->m_SourceContentHash);
@@ -946,7 +1028,6 @@ bool ModelAsset::AdoptReloadedPayload(Asset& staged) {
     std::swap(m_EmbeddedClipGuids, other->m_EmbeddedClipGuids);
     std::swap(m_PendingRuntimeClips, other->m_PendingRuntimeClips);
     std::swap(m_SubassetDeriveKeys, other->m_SubassetDeriveKeys);
-    std::swap(m_BoneLOD, other->m_BoneLOD);
     for (int i = 0; i < 3; ++i) {
         std::swap(m_MinBounds[i], other->m_MinBounds[i]);
         std::swap(m_MaxBounds[i], other->m_MaxBounds[i]);
@@ -955,11 +1036,6 @@ bool ModelAsset::AdoptReloadedPayload(Asset& staged) {
     {
         m_SkeletonId = liveSkeletonId;
         CopySkeletonStoreEntry(liveSkeletonId, stagedSkeletonId);
-        if (m_BoneLOD)
-        {
-            const auto* skeleton = Engine::Renderer::SkeletonStore::Instance().Get(liveSkeletonId);
-            m_BoneLOD = skeleton ? m_BoneLOD->Rebind(*skeleton) : nullptr;
-        }
     }
     else
     {
@@ -970,15 +1046,25 @@ bool ModelAsset::AdoptReloadedPayload(Asset& staged) {
     return true;
 }
 
+std::shared_ptr<const ModelExtras> ModelAsset::GetExtras() const {
+    std::lock_guard<std::mutex> lock(m_ExtrasMutex);
+    return m_Extras;
+}
+
+void ModelAsset::SetExtras(std::shared_ptr<const ModelExtras> extras) {
+    std::lock_guard<std::mutex> lock(m_ExtrasMutex);
+    m_Extras = std::move(extras);
+}
+
 void ModelAsset::Unload() {
-    m_BoneLOD.reset();
     m_Meshes.clear();
+    m_MeshContentHashes.clear();
     m_Materials.clear();
     m_EmbeddedImages.clear();
     m_Cameras.clear();
     m_Lights.clear();
     m_SceneNodes.clear();
-    m_Extras = {};
+    SetExtras(std::make_shared<const ModelExtras>());
     m_TotalVertexCount = 0;
     m_TotalIndexCount = 0;
     m_HasAnimations = false;
@@ -999,7 +1085,7 @@ void ModelAsset::Unload() {
     Logger::Log::Debug("Model unloaded: {}", GetName());
 }
 
-bool ModelAsset::LoadOBJ(const Vector<uint8>& data) {
+bool ModelAsset::LoadOBJ(std::span<const uint8> data) {
 #if defined(GE_HAVE_TINYOBJ)
     // Use tinyobjloader when available for robustness and speed
     tinyobj::attrib_t attrib;

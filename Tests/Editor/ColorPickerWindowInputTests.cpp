@@ -13,7 +13,7 @@
 
 #include <gtest/gtest.h>
 
-#include "ColorPicker/ColorPickerWindowInput.h"
+#include "ColorPicker/ColorPickerWindow/ColorPickerWindowInput.h"
 #include "Core/WindowInputRouter.h"
 #include "Input/InputSystem.h"
 #include "Input/KeyCodes.h"

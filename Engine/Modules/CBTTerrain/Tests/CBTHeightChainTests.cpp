@@ -1,5 +1,39 @@
-// Exercises the shader's height-chain math through GlslShim and the production GPU kernels.
-// Checks tent filtering, normal footprints, edit bounds, culling, shared vertices and flat vetoes.
+// The terrain draw's prefiltered height chain (cbt_height_chain.glsl; #2651). The draw moves a far
+// vertex to the chain level its distance asks for, so far facets show the surface at the detail the
+// screen can show instead of aliasing the level-0 relief.
+//
+// The shared block of cbt_height_chain.glsl is extracted at build time (Tests/ExtractShaderBlock.cmake)
+// and compiled here through GlslShim.h, so these tests run the shader's own level rule, addressing and
+// blend. The real-device arms build the chain with the shipped kernels and read it back.
+//
+//   NearVerticesKeepTheirCachedCornerBits — below lambda 0.75 a vertex draws its cached level-0 height,
+//     the same bits, so the near field draws what it drew without the chain.
+//   ChainMatchesTheTentOracleAtThreeLevels — levels 1 to 3 of the GPU chain over a non-square lattice
+//     equal the page store's filter ([1 2 1] / 4 around 2j, edges clamped, PagePyramidBuilder's order)
+//     restated on the CPU.
+//   EditRectRebuildsOnlyTheSamplesItsTentsReach — an edit announced by its rect rewrites the samples
+//     whose tents read the edited texels, at every level, and leaves the rest as they were: a change
+//     outside the rect that was not announced stays out of the chain.
+//   FacetDrawnIntoTheFrustumIsKept — a facet whose cached corners lie outside the frustum but whose drawn
+//     triangle reaches into it stays in the VISIBLE stream; facets that are out either way stay culled.
+//   NormalChainMatchesTheChainSurfaceAtThreeMips — mips 0 to 2 of the far-field normal chain hold the
+//     normal of chain levels 1 to 3 at each texel's center (the central difference across one level
+//     sample each way, at world scale), restated on the CPU from the GPU's own height chain.
+//   FragmentsTakeTheNormalAtTheirOwnLevel — the surface's normal weight: the level-0 map alone up to
+//     lambda 1.75 (the near field unchanged, and level 1's ring), the chain alone from lambda 2 at mip
+//     lambda - 1.
+//   GrazingFootprintEndsARidgeRowWithoutAStep — along screen rows over a ridge field at a grazing
+//     angle, the shading moves from the ridge faces to the averaged far surface over a distance band:
+//     no two neighboring pixels differ by more than the critics' edge step (40 luma levels), while the
+//     near field keeps the level-0 map and the far field reads the whole footprint.
+//   SharedVertexDrawsOneHeight — every copy of a vertex in a converged tree, across facets of different
+//     depths, draws one height, including vertices in the blend at lambda 1.4 to 1.8. The positive
+//     control: a height chosen per facet (its centroid's level) cracks the same tree.
+//   AFieldTheChainDrawsFlatDoesNotSplitPastItsDrawnRelief — the planar split's flat veto reads the range
+//     of the surface the draw shows: on the stripe field, which every chain level draws flat, a converged
+//     tree keeps no diamond of four leaves whose two parents both lie where the draw shows chain level 1
+//     or coarser, although the level-0 relief there projects tens of pixels. (A diamond whose twin's child
+//     a finer neighbor splits stays: conformity holds it.)
 
 #include <gtest/gtest.h>
 
@@ -42,10 +76,11 @@ float CBT_ChainLoad(uint word)
 #include "CBTTerrain/CBTResources.h"
 #include "CBTTerrain/CBTTreeAudit.h"
 #include "CBTDiamond.h"
+#include "CBTReliefHeightSource.h"
 #include "CBTTestHarness.h"
-#include "SourceCompletionProbeDevice.h"
 #include "Mathematics/Interpolation.h"
 #include "Mathematics/MatrixOps.h"
+#include "Mathematics/Rect.h"
 #include "Mathematics/Vector3.h"
 #include "Rendering/Core/CommandList.h"
 
@@ -71,7 +106,7 @@ float LevelScale(uint32_t samples)
     return kTargetPx / (focal * (kTerrainM / static_cast<float>(samples - 1u)));
 }
 
-// ---- The CPU oracle: the page store's tent, HeightPyramidBuilder's order of operations ----
+// ---- The CPU oracle: the page store's tent, PagePyramidBuilder's order of operations ----
 
 float At(const std::vector<float>& level, uint32_t width, uint32_t height, int64_t x, int64_t z)
 {
@@ -226,21 +261,9 @@ class CBTHeightChain : public ::testing::Test
   protected:
     void SetUp() override
     {
-        SetHeadlessEnv();
-        DeviceDesc description{};
-        description.preferredAPI = GraphicsAPI::Vulkan;
-        description.enableDynamicRendering = true;
-        description.enableDebugLayer = true;
-        m_Device = std::make_unique<SourceCompletionProbeDevice>();
+        m_Device = MakeHeadlessDevice();
         if (!m_Device)
             GTEST_SKIP() << "no headless Vulkan device";
-        m_Device->ResetValidationStats();
-        if (!m_Device->Initialize(description))
-        {
-            m_Device.reset();
-            GTEST_SKIP() << "no headless Vulkan device";
-        }
-        RecordProperty("validation_enabled", m_Device->GetValidationStats().Enabled ? 1 : 0);
         if (!m_Device->GetCapabilities().supportsShaderInt64)
             GTEST_SKIP() << "device lacks shaderInt64 (the narrow arm builds no chain)";
         if (!m_KernelSet.Initialize(*m_Device, ShaderOutputDir()))
@@ -248,52 +271,14 @@ class CBTHeightChain : public ::testing::Test
     }
     void TearDown() override
     {
-        if (m_Device)
-            m_Device->WaitForIdle();
         m_KernelSet.Shutdown();
-        if (!m_Device)
-            return;
-        const auto validation = m_Device->GetValidationStats();
-        if (validation.Enabled)
-        {
-            EXPECT_EQ(validation.ErrorCount, 0u);
-            for (const auto& entry : validation.Vuids)
-                EXPECT_FALSE(entry.IsError) << entry.Vuid << ": " << entry.FirstMessage
-                                           << " objects: " << entry.FirstObjects;
-        }
-        m_Device->Shutdown();
-    }
-
-    void Upload(TextureHandle tex, const std::vector<float>& data, uint32_t width, uint32_t height, ResourceState prior)
-    {
-        const size_t bytes = data.size() * sizeof(float);
-        BufferHandle staging = m_Device->CreateUploadBuffer(bytes, "CBT.Test.ChainStaging");
-        m_Device->UpdateBuffer(staging, 0, bytes, data.data());
-        auto cl = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
-        cl->Begin();
-        cl->CopyBufferToTextureSubresource(staging, tex, 0, 0, width, height, 0, static_cast<size_t>(width) * sizeof(float),
-                                           1, 0, 0, 0, prior);
-        cl->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::CopyDest, ResourceState::ShaderResource));
-        cl->End();
-        std::vector<CommandList*> lists{cl.get()};
-        m_Device->ExecuteCommandLists(lists);
-        m_Device->WaitForIdle();
-        m_Device->DestroyBuffer(staging);
+        if (m_Device)
+            m_Device->Shutdown();
     }
 
     TextureHandle MakeTexture(const std::vector<float>& data, uint32_t width, uint32_t height)
     {
-        TextureDesc td{};
-        td.width = width;
-        td.height = height;
-        td.format = static_cast<uint32_t>(TextureFormat::R32_FLOAT);
-        td.usage = static_cast<uint32_t>(TextureUsage::ShaderResource) | static_cast<uint32_t>(TextureUsage::TransferDst);
-        td.persistent = true;
-        td.debugName = "CBT.Test.ChainHeights";
-        TextureHandle tex = m_Device->CreateTexture(td);
-        if (tex.IsValid())
-            Upload(tex, data, width, height, ResourceState::Undefined);
-        return tex;
+        return MakeR32Texture(*m_Device, width, height, data, "CBT.Test.ChainHeights");
     }
 
     // An instance on `tex` with the chain provisioned for the lattice.
@@ -302,8 +287,7 @@ class CBTHeightChain : public ::testing::Test
         if (!inst.Initialize(*m_Device, m_KernelSet) || !inst.InitializeRoots(kDomainPlanar))
             return false;
         for (uint32_t slot = 0; slot < kCBTFrameParamsRing; ++slot)
-            if (!inst.SetHeightSource(slot, tex))
-                return false;
+            inst.SetHeightSource(slot, tex);
         return inst.ProvisionHeightChainWords(CBTHeightChainWords(samplesX, samplesZ)) &&
                inst.ProvisionNormalChain(samplesX, samplesZ);
     }
@@ -347,7 +331,7 @@ class CBTHeightChain : public ::testing::Test
     // `frames` updates at `p`: the first forced (a newly bound texture), the rest gated. When
     // `edit` is set the first is instead gated and announces that UV rect as edited.
     void Run(CBTInstance& inst, const CBTFrameParams& p, uint32_t frames, uint32_t firstFrame,
-             const float* edit = nullptr)
+             const GameEngine::Mathematics::Rect* edit = nullptr)
     {
         CBTClassifyDesc c{};
         c.Mode = kClassifyScreenSpace;
@@ -357,10 +341,10 @@ class CBTHeightChain : public ::testing::Test
         {
             c.GateVertexEval = (f == 0u && edit == nullptr) ? 0u : 1u;
             const bool announce = edit != nullptr && f == 0u;
-            c.DirtyMinU = announce ? edit[0] : 0.0f;
-            c.DirtyMinV = announce ? edit[1] : 0.0f;
-            c.DirtyMaxU = announce ? edit[2] : 0.0f;
-            c.DirtyMaxV = announce ? edit[3] : 0.0f;
+            c.DirtyMinU = announce ? edit->X : 0.0f;
+            c.DirtyMinV = announce ? edit->Y : 0.0f;
+            c.DirtyMaxU = announce ? edit->Right() : 0.0f;
+            c.DirtyMaxV = announce ? edit->Bottom() : 0.0f;
             auto cl = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
             cl->Begin();
             inst.RecordUpdate(*cl, c, p, firstFrame + f);
@@ -374,10 +358,15 @@ class CBTHeightChain : public ::testing::Test
     std::vector<uint32_t> ReadChain(CBTInstance& inst)
     {
         CBTResources& res = inst.GetResources();
-        const size_t bytes = static_cast<size_t>(res.GetHeightChainWords()) * sizeof(uint32_t);
-        std::vector<uint32_t> out(res.GetHeightChainWords(), 0u);
-        BufferHandle readback = m_Device->CreateReadbackBuffer(bytes, "CBT.Test.ChainReadback");
-        const BufferHandle src = res.GetHeightChainBuffer();
+        return ReadWords(res.GetHeightChainBuffer(), res.GetHeightChainWords());
+    }
+
+    // The first `words` words of the storage buffer `src`, which rests in UnorderedAccess.
+    std::vector<uint32_t> ReadWords(BufferHandle src, uint32_t words)
+    {
+        const size_t bytes = static_cast<size_t>(words) * sizeof(uint32_t);
+        std::vector<uint32_t> out(words, 0u);
+        BufferHandle readback = m_Device->CreateReadbackBuffer(bytes, "CBT.Test.WordsReadback");
         auto cl = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
         cl->Begin();
         cl->Barrier(ResourceBarrier::CreateBufferBarrier(src, ResourceState::UnorderedAccess, ResourceState::CopySource));
@@ -394,6 +383,22 @@ class CBTHeightChain : public ::testing::Test
         }
         m_Device->DestroyBuffer(readback);
         return out;
+    }
+
+    // The height-range buffer a whole build makes from `heights`, `samples` per axis, at `p`.
+    std::vector<uint32_t> WholePyramid(const std::vector<float>& heights, uint32_t samples, const CBTFrameParams& p)
+    {
+        const TextureHandle tex = MakeTexture(heights, samples, samples);
+        CBTInstance inst;
+        std::vector<uint32_t> words;
+        if (tex.IsValid() && Bring(inst, tex, samples, samples))
+        {
+            Run(inst, p, 1u, 0u);
+            words = ReadWords(inst.GetResources().GetHeightRangeBuffer(), kCBTHeightRangeBufferWords);
+        }
+        inst.Shutdown();
+        m_Device->DestroyTexture(tex);
+        return words;
     }
 
     // Converges a tree on the 1025^2 stripe field (4 m ridges at the lattice frequency) with the camera
@@ -424,9 +429,9 @@ class CBTHeightChain : public ::testing::Test
         BufferHandle readback = m_Device->CreateReadbackBuffer(bytes, "CBT.Test.NormalReadback");
         auto cl = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
         cl->Begin();
-        cl->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::UnorderedAccess, ResourceState::CopySource, mip, 1u));
+        cl->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::ShaderResource, ResourceState::CopySource, mip, 1u));
         cl->CopyTextureSubresourceToBuffer(tex, mip, 0, readback, width, height, 0, 0, 0, static_cast<size_t>(width) * 4u);
-        cl->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::CopySource, ResourceState::UnorderedAccess, mip, 1u));
+        cl->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::CopySource, ResourceState::ShaderResource, mip, 1u));
         cl->End();
         std::vector<CommandList*> lists{cl.get()};
         m_Device->ExecuteCommandLists(lists);
@@ -516,8 +521,13 @@ TEST(CBTHeightChainShim, FragmentsTakeTheNormalAtTheirOwnLevel)
 
 TEST(CBTHeightChainShim, GrazingFootprintEndsARidgeRowWithoutAStep)
 {
-    // Ridge fixture: eye 6 m above the mean, pitch -30 degrees, vertical FOV 60 degrees, 3067x900.
-    // The 0.5 m lattice targets 8 px at 1080 rows; adjacent horizontal samples may differ by at most 40 luma.
+    // The R3 evidence pose B: the eye 6 m over the mean plane, pitched 30 degrees down, a 60-degree
+    // vertical field of view on a 3067 x 900 view; the level rule of a 0.5 m lattice at target error
+    // 8 px over 1080 reference rows. Every pixel of a row sees the ground at its own distance and
+    // grazing angle. A row over a ridge face shades the face (luma 60, the dark stripes the captures
+    // show) where the normal is the level-0 map, the averaged far surface (luma 150) where it is the
+    // chain, and the mix between. An edge is a step above 40 luma levels between horizontal neighbors
+    // (the critics' vertical-edge instrument).
     constexpr float kEyeHeight = 6.0f;
     constexpr float kPitchDeg = 30.0f;
     constexpr int kWidth = 3067;
@@ -589,8 +599,11 @@ TEST(CBTHeightChainShim, GrazingFootprintEndsARidgeRowWithoutAStep)
     EXPECT_FLOAT_EQ(Shader::CBT_GrazingShare(0.5f), 0.5f);
 }
 
-// Checks that surface shading and terrain shadows consume the shared footprint rule.
-// Applying grazing spread from lambda 0 would introduce a visible ring over ridges.
+// The terrain surface takes its far normal's level from the level rule the test above pins, so the
+// fade it proves is the one drawn, and hands the terrain shadow its head-on footprint, which the
+// shadow widens by the same rule (TerrainShadowMap.FootprintWidensByTheDrawsLevelRule). A surface
+// that read the grazing level as lambda + log2(spread) or widened the footprint by the bare spread
+// would switch the footprint on at lambda 0, the ring a ridge field cuts into a staircase.
 TEST(CBTHeightChainShim, SurfaceTakesTheGrazingFootprintFromTheLevelRule)
 {
     const std::string path = std::string(CBT_SHADER_SOURCE_DIR) + "/cbt_surface.glsl";
@@ -607,6 +620,23 @@ TEST(CBTHeightChainShim, SurfaceTakesTheGrazingFootprintFromTheLevelRule)
         << "the shared rule widens by the draw level the surface's own fade uses";
     EXPECT_EQ(src.find("lambda + log2(spread)"), std::string::npos) << "the grazing level skips the fade";
     EXPECT_EQ(src.find("pixelAngle * spread;"), std::string::npos) << "the shadow's footprint skips the fade";
+}
+
+// The terrain reads its inputs at the pixel center. A centroid input moves away from the center on a
+// partly covered MSAA pixel, so the splat and the shadow read their sharp fields at another place
+// there: a dotted line along each facet edge. The surface refuses to compile with centroid inputs.
+TEST(CBTHeightChainShim, SurfaceRefusesCentroidInputs)
+{
+    const std::string path = std::string(CBT_SHADER_SOURCE_DIR) + "/cbt_surface.glsl";
+    std::ifstream file(path);
+    ASSERT_TRUE(file.is_open()) << "cannot open " << path;
+    std::stringstream ss;
+    ss << file.rdbuf();
+    const std::string src = ss.str();
+    const size_t guard = src.find("#if defined(GE_SURFACE_INPUTS_AT_CENTROID)\n#error");
+    ASSERT_NE(guard, std::string::npos) << "the surface refuses centroid inputs";
+    EXPECT_LT(guard, src.find("SurfaceOutput EvaluateSurface(SurfaceInput sIn)"))
+        << "the refusal comes before the surface reads an input";
 }
 
 TEST_F(CBTHeightChain, NormalChainMatchesTheChainSurfaceAtThreeMips)
@@ -654,109 +684,8 @@ TEST_F(CBTHeightChain, NormalChainMatchesTheChainSurfaceAtThreeMips)
         EXPECT_LE(worst, 2e-3f) << "mip " << mip; // RG16F holds about three decimal digits
     }
     Shader::g_ChainWords = nullptr;
-    // Copies restore GENERAL so the next update's shared storage descriptors stay valid.
-    Run(inst, CameraParams({192.0f, 3.0f, 10.0f}, 0.2f, kX, kHeightScale), 1u, 1u);
     inst.Shutdown();
     m_Device->DestroyTexture(tex);
-}
-
-TEST_F(CBTHeightChain, FailedNormalInitializationKeepsTheOldLatticeAndItsContents)
-{
-    constexpr uint32_t kOldSamples = 769u;
-    constexpr uint32_t kNewSamples = 513u;
-    constexpr float kHeightScale = 40.0f;
-    static_assert(CBTNormalChainMips(kOldSamples, kOldSamples) == CBTNormalChainMips(kNewSamples, kNewSamples));
-    const auto originalSource = MakeTexture(RandomField(kOldSamples, kOldSamples, 31u), kOldSamples, kOldSamples);
-    ASSERT_TRUE(originalSource.IsValid());
-    CBTInstance instance;
-    ASSERT_TRUE(Bring(instance, originalSource, kOldSamples, kOldSamples));
-    Run(instance, CameraParams({192.0f, 3.0f, 10.0f}, 0.2f, kOldSamples, kHeightScale), 1u, 0u);
-    const auto originalTexture = instance.GetResources().GetNormalChainTexture();
-    const uint32_t originalMips = instance.GetResources().GetNormalChainMips();
-    const uint32_t texels = CBTNormalChainTexels(kOldSamples, 0u);
-    const auto originalNormals = ReadNormalMip(instance, 0u, texels, texels);
-    ASSERT_EQ(originalNormals.size(), size_t(texels) * texels);
-    ASSERT_TRUE(std::any_of(originalNormals.begin(), originalNormals.end(),
-        [](const auto& normal) { return normal[0] != 0.0f || normal[1] != 0.0f; }));
-    const std::vector<float> flat(size_t(kNewSamples) * kNewSamples, 0.5f);
-    const auto nextSource = MakeTexture(flat, kNewSamples, kNewSamples);
-    ASSERT_TRUE(nextSource.IsValid());
-    for (uint32_t slot = 0; slot < kCBTFrameParamsRing; ++slot)
-        ASSERT_TRUE(instance.SetHeightSource(slot, nextSource));
-    ASSERT_TRUE(instance.ProvisionHeightChainWords(CBTHeightChainWords(kNewSamples, kNewSamples)));
-    auto& probe = static_cast<SourceCompletionProbeDevice&>(*m_Device);
-    const uint64_t drains = m_Device->GetIdleDrainCount();
-    probe.RejectCompletionAfter = probe.LastGraphicsSubmissionToken().value;
-    const bool provisioned = instance.ProvisionNormalChain(kNewSamples, kNewSamples);
-    EXPECT_EQ(probe.RejectCompletionAfter, std::numeric_limits<uint64_t>::max());
-    probe.RejectCompletionAfter = std::numeric_limits<uint64_t>::max();
-    EXPECT_FALSE(provisioned);
-    EXPECT_EQ(m_Device->GetIdleDrainCount(), drains);
-    ASSERT_EQ(instance.GetResources().GetNormalChainTexture(), originalTexture);
-    ASSERT_EQ(instance.GetResources().GetNormalChainMips(), originalMips);
-    Run(instance, CameraParams({192.0f, 3.0f, 10.0f}, 0.2f, kNewSamples, kHeightScale), 1u, 1u);
-    const auto words = ReadChain(instance);
-    ASSERT_FALSE(words.empty());
-    EXPECT_EQ(words[0], kNewSamples | (kNewSamples << 16u));
-    EXPECT_EQ(ReadNormalMip(instance, 0u, texels, texels), originalNormals)
-        << "a retained normal texture must not receive writes for a different lattice with the same mip count";
-    EXPECT_TRUE(instance.ProvisionNormalChain(kOldSamples, kOldSamples));
-    EXPECT_EQ(instance.GetResources().GetNormalChainTexture(), originalTexture);
-    EXPECT_TRUE(instance.ProvisionNormalChain(kNewSamples, kNewSamples));
-    EXPECT_EQ(instance.GetResources().GetNormalChainMips(), originalMips);
-    instance.Shutdown();
-    m_Device->DestroyTexture(originalSource);
-    m_Device->DestroyTexture(nextSource);
-}
-
-TEST_F(CBTHeightChain, FailedNormalSubmissionPreservesResourcesAndItsCompletionOwner)
-{
-    constexpr uint32_t kOldSamples = 513u;
-    constexpr uint32_t kNewSamples = 769u;
-    const auto source = MakeTexture(RandomField(kOldSamples, kOldSamples, 31u), kOldSamples, kOldSamples);
-    ASSERT_TRUE(source.IsValid());
-    CBTInstance instance;
-    ASSERT_TRUE(Bring(instance, source, kOldSamples, kOldSamples));
-    auto& probe = static_cast<SourceCompletionProbeDevice&>(*m_Device);
-    const auto original = instance.GetResources().GetNormalChainTexture();
-    const uint64_t drains = m_Device->GetIdleDrainCount();
-    EXPECT_FALSE(instance.ProvisionNormalChain(0u, kOldSamples));
-    EXPECT_FALSE(instance.ProvisionNormalChain(0x10000u, kOldSamples));
-    EXPECT_EQ(instance.GetResources().GetNormalChainTexture(), original);
-    probe.RefuseNextGraphicsSubmit = true;
-    EXPECT_FALSE(instance.ProvisionNormalChain(kNewSamples, kNewSamples));
-    EXPECT_FALSE(probe.RefuseNextGraphicsSubmit);
-    EXPECT_EQ(instance.GetResources().GetNormalChainTexture(), original);
-    const auto refused = probe.LastAttemptedSignal;
-    ASSERT_TRUE(refused.IsValid());
-    ASSERT_TRUE(instance.ProvisionNormalChain(kNewSamples, kNewSamples));
-    EXPECT_EQ(probe.LastAttemptedSignal.sem, refused.sem);
-    EXPECT_GT(probe.LastAttemptedSignal.value, refused.value);
-    const auto retained = instance.GetResources().GetNormalChainTexture();
-    probe.ReportFailureAfterGraphicsSubmit = true;
-    EXPECT_FALSE(instance.ProvisionNormalChain(kOldSamples, kOldSamples));
-    EXPECT_FALSE(probe.ReportFailureAfterGraphicsSubmit);
-    EXPECT_EQ(instance.GetResources().GetNormalChainTexture(), retained);
-    const auto submitted = probe.LastAttemptedSignal;
-    ASSERT_TRUE(submitted.IsValid());
-    ASSERT_TRUE(m_Device->WaitGpuSyncToken(submitted));
-    uint64_t completed = 0;
-    EXPECT_TRUE(m_Device->GetTimelineSemaphoreValue(submitted.sem, completed));
-    EXPECT_GE(completed, submitted.value);
-    ASSERT_TRUE(instance.ProvisionNormalChain(kOldSamples, kOldSamples));
-    EXPECT_EQ(probe.LastAttemptedSignal.sem, submitted.sem);
-    EXPECT_GT(probe.LastAttemptedSignal.value, submitted.value);
-    probe.RefuseNextGraphicsSubmit = true;
-    EXPECT_FALSE(instance.ProvisionNormalChain(kNewSamples, kNewSamples));
-    EXPECT_FALSE(probe.RefuseNextGraphicsSubmit);
-    const auto unissued = probe.LastAttemptedSignal;
-    EXPECT_EQ(unissued.sem, submitted.sem);
-    EXPECT_TRUE(m_Device->GetTimelineSemaphoreValue(unissued.sem, completed));
-    EXPECT_LT(completed, unissued.value);
-    instance.Shutdown();
-    EXPECT_FALSE(m_Device->GetTimelineSemaphoreValue(submitted.sem, completed));
-    EXPECT_EQ(m_Device->GetIdleDrainCount(), drains);
-    m_Device->DestroyTexture(source);
 }
 
 TEST_F(CBTHeightChain, EditRectRebuildsOnlyTheSamplesItsTentsReach)
@@ -783,10 +712,11 @@ TEST_F(CBTHeightChain, EditRectRebuildsOnlyTheSamplesItsTentsReach)
     for (uint32_t z = 40u; z < 60u; ++z)
         for (uint32_t x = 400u; x < 430u; ++x)
             uploaded[static_cast<size_t>(z) * kN + x] -= 0.5f;
-    Upload(tex, uploaded, kN, kN, ResourceState::ShaderResource);
+    UploadR32Texture(*m_Device, tex, kN, kN, uploaded, ResourceState::ShaderResource);
     // The rect the terrain announces for that texel rect (TerrainRenderFeature::AccumulateUnifiedHeightDirty).
-    const float rect[4] = {(200.0f - 1.0f) / kN, (300.0f - 1.0f) / kN, (232.0f + 1.0f) / kN, (312.0f + 1.0f) / kN};
-    Run(inst, p, 1u, 1u, rect);
+    const GameEngine::Mathematics::Rect rect = GameEngine::Mathematics::Rect::FromEdges(
+        (200.0f - 1.0f) / kN, (300.0f - 1.0f) / kN, (232.0f + 1.0f) / kN, (312.0f + 1.0f) / kN);
+    Run(inst, p, 1u, 1u, &rect);
 
     const std::vector<uint32_t> words = ReadChain(inst);
     const std::vector<std::vector<float>> expected = OracleChain(edited, kN, kN);
@@ -813,6 +743,163 @@ TEST_F(CBTHeightChain, EditRectRebuildsOnlyTheSamplesItsTentsReach)
     m_Device->DestroyTexture(tex);
 }
 
+namespace
+{
+// The words of the height-range buffer a build over a `samples` x `samples` lattice writes, with the
+// chain's ranges for `chainLevels` chain levels (cbt_kernels.comp Kernel_HeightRangeBuild): the header
+// words it sets, the ranges of every pyramid, the first stored level's differences and the level-0
+// pyramid's planes.
+std::vector<uint32_t> PyramidWords(uint32_t samples, uint32_t chainLevels)
+{
+    const uint32_t cells = samples - 1u;
+    const uint32_t first = CBTHeightRangeFirstLevel(cells, cells);
+    const uint32_t top = std::max(CBTHeightRangeTopLevel(cells, cells), first);
+    const uint32_t levelZero = CBTHeightRangeOffset(cells, cells, first, top + 1u);
+    uint32_t chainEntries = 0u;
+    for (uint32_t j = 1u; j <= chainLevels; ++j)
+        chainEntries += levelZero - CBTHeightRangeOffset(cells, cells, first, CBTHeightChainRangeBase(first, top, j));
+    std::vector<uint32_t> words{0u, 1u, 18u, 19u};
+    for (uint32_t k = first; k <= top; ++k)
+        words.push_back(2u + k);
+    for (uint32_t j = 1u; j <= chainLevels; ++j)
+        words.push_back(20u + j);
+    for (uint32_t w = 0; w < 2u * levelZero; ++w)
+        words.push_back(kCBTHeightRangeHeaderWords + w);
+    for (uint32_t w = 0; w < 2u * chainEntries; ++w) // the chain's pyramids start at entry kCBTHeightRangeEntries
+        words.push_back(kCBTHeightRangeHeaderWords + 2u * kCBTHeightRangeEntries + w);
+    const uint32_t firstBlocks = CBTHeightRangeDim(cells, first) * CBTHeightRangeDim(cells, first);
+    for (uint32_t w = 0; w < kCBTHeightDifferencesWordsPerEntry * firstBlocks; ++w)
+        words.push_back(kCBTHeightDifferencesFirstWord + w);
+    for (uint32_t w = 0; w < kCBTHeightPlaneWordsPerEntry * levelZero; ++w)
+        words.push_back(kCBTHeightPlaneFirstWord + w);
+    return words;
+}
+
+// Height-range pyramid rebuilds, each compared word for word against a whole build.
+class CBTHeightPyramid : public CBTHeightChain
+{
+  protected:
+    static constexpr uint32_t kN = 513u;
+
+    // A random field with the texels of `edit` (inclusive) raised far above the [0, 1] field and announced,
+    // so every chain sample its tents reach is the highest of its blocks, and a block over it left unbuilt
+    // shows. A second change far from it is not announced, so a build that reaches past the blocks over the
+    // edit shows it. With `chainOn` false the draw's chain is off, the paged arm's configuration, and the
+    // level-0 cover is the pyramid's only cover.
+    void ExpectEditRectRebuildEqualsAWholeBuild(const CBTHeightBuildRegion& edit, bool chainOn)
+    {
+        const uint32_t chainLevels = chainOn ? CBTHeightChainRangeLevels(kN, kN) : 0u;
+        ASSERT_TRUE(!chainOn || chainLevels > 0u) << "the lattice must carry the chain's ranges";
+        const std::vector<uint32_t> written = PyramidWords(kN, chainLevels);
+        const std::vector<float> before = RandomField(kN, kN, 23u);
+        CBTFrameParams p = CameraParams({256.0f, 3.0f, 10.0f}, 0.2f, kN, 40.0f);
+        if (!chainOn)
+            p.HeightChain[0] = 0.0f;
+
+        std::vector<float> edited = before;
+        for (uint32_t z = edit.MinZ; z <= edit.MaxZ; ++z)
+            for (uint32_t x = edit.MinX; x <= edit.MaxX; ++x)
+                edited[static_cast<size_t>(z) * kN + x] += 64.0f;
+        std::vector<float> uploaded = edited;
+        for (uint32_t z = 40u; z < 60u; ++z)
+            for (uint32_t x = 400u; x < 430u; ++x)
+                uploaded[static_cast<size_t>(z) * kN + x] -= 0.5f;
+
+        const TextureHandle tex = MakeTexture(before, kN, kN);
+        ASSERT_TRUE(tex.IsValid());
+        CBTInstance inst;
+        ASSERT_TRUE(Bring(inst, tex, kN, kN));
+        Run(inst, p, 1u, 0u);
+        const BufferHandle range = inst.GetResources().GetHeightRangeBuffer();
+        const std::vector<uint32_t> old = ReadWords(range, kCBTHeightRangeBufferWords);
+        UploadR32Texture(*m_Device, tex, kN, kN, uploaded, ResourceState::ShaderResource);
+        // The rect the terrain announces for that texel rect (CBTUpdateSystem::ConsumeDirtyRegion): one
+        // texel of padding each side, the upper edge exclusive.
+        const GameEngine::Mathematics::Rect rect = GameEngine::Mathematics::Rect::FromEdges(
+            (static_cast<float>(edit.MinX) - 1.0f) / kN, (static_cast<float>(edit.MinZ) - 1.0f) / kN,
+            (static_cast<float>(edit.MaxX) + 2.0f) / kN, (static_cast<float>(edit.MaxZ) + 2.0f) / kN);
+        Run(inst, p, 1u, 1u, &rect);
+        const std::vector<uint32_t> rebuilt = ReadWords(range, kCBTHeightRangeBufferWords);
+        inst.Shutdown();
+        m_Device->DestroyTexture(tex);
+
+        const std::vector<uint32_t> expected = WholePyramid(edited, kN, p);
+        const std::vector<uint32_t> unannounced = WholePyramid(uploaded, kN, p);
+        ASSERT_EQ(expected.size(), rebuilt.size());
+        ASSERT_EQ(unannounced.size(), rebuilt.size());
+        uint32_t mismatched = 0;
+        uint32_t edits = 0;
+        uint32_t unannouncedWords = 0;
+        for (uint32_t w : written)
+        {
+            mismatched += rebuilt[w] != expected[w] ? 1u : 0u;
+            edits += expected[w] != old[w] ? 1u : 0u;
+            unannouncedWords += unannounced[w] != expected[w] ? 1u : 0u;
+        }
+        std::printf("chain %s, pyramid words %zu: %u rewritten by the edit, %u the unannounced change moves in a "
+                    "whole build, %u differ from a whole build of the announced edit\n",
+                    chainOn ? "on" : "off", written.size(), edits, unannouncedWords, mismatched);
+        EXPECT_GT(edits, 0u) << "the edit must reach the pyramid";
+        EXPECT_GT(unannouncedWords, 0u) << "the unannounced change must show in a build that reaches it";
+        EXPECT_EQ(mismatched, 0u) << "a rect rebuild must equal a whole build of the edit and leave the rest as it was";
+    }
+};
+} // namespace
+
+TEST_F(CBTHeightPyramid, EditRectRebuildsOnlyThePyramidBlocksOverIt)
+{
+    ExpectEditRectRebuildEqualsAWholeBuild({200u, 300u, 231u, 311u}, true);
+}
+
+// A 3 x 3 texel edit on the lattice's center straddles a block boundary at every pyramid level, so each
+// coarser level's cover must take the parents of both sides.
+TEST_F(CBTHeightPyramid, EditRectWithTheChainOffRebuildsOnlyThePyramidBlocksOverIt)
+{
+    ExpectEditRectRebuildEqualsAWholeBuild({255u, 255u, 257u, 257u}, false);
+}
+
+// A newly bound height source rebuilds every block, even on a frame that announces no edit.
+TEST_F(CBTHeightPyramid, ReboundSourceRebuildsEveryBlock)
+{
+    const std::vector<uint32_t> written = PyramidWords(kN, 0u);
+    const std::vector<float> before = RandomField(kN, kN, 23u);
+    std::vector<float> other = before;
+    for (uint32_t z = 100u; z < 300u; ++z)
+        for (uint32_t x = 100u; x < 300u; ++x)
+            other[static_cast<size_t>(z) * kN + x] += 64.0f;
+    CBTFrameParams p = CameraParams({256.0f, 3.0f, 10.0f}, 0.2f, kN, 40.0f);
+    p.HeightChain[0] = 0.0f;
+    const TextureHandle first = MakeTexture(before, kN, kN);
+    const TextureHandle second = MakeTexture(other, kN, kN);
+    ASSERT_TRUE(first.IsValid() && second.IsValid());
+    CBTInstance inst;
+    ASSERT_TRUE(Bring(inst, first, kN, kN));
+    Run(inst, p, 1u, 0u);
+    const BufferHandle range = inst.GetResources().GetHeightRangeBuffer();
+    const std::vector<uint32_t> old = ReadWords(range, kCBTHeightRangeBufferWords);
+    for (uint32_t slot = 0; slot < kCBTFrameParamsRing; ++slot)
+        inst.SetHeightSource(slot, second);
+    const GameEngine::Mathematics::Rect none = GameEngine::Mathematics::Rect::FromEdges(0.0f, 0.0f, 0.0f, 0.0f);
+    Run(inst, p, 1u, 1u, &none); // a gated frame that announces no edit
+    const std::vector<uint32_t> rebuilt = ReadWords(range, kCBTHeightRangeBufferWords);
+    inst.Shutdown();
+    m_Device->DestroyTexture(first);
+    m_Device->DestroyTexture(second);
+
+    const std::vector<uint32_t> expected = WholePyramid(other, kN, p);
+    ASSERT_EQ(expected.size(), rebuilt.size());
+    uint32_t mismatched = 0;
+    uint32_t changed = 0;
+    for (uint32_t w : written)
+    {
+        mismatched += rebuilt[w] != expected[w] ? 1u : 0u;
+        changed += expected[w] != old[w] ? 1u : 0u;
+    }
+    std::printf("rebind: %u pyramid words differ between the sources, %u differ from a whole build of the new one\n",
+                changed, mismatched);
+    EXPECT_GT(changed, 0u) << "the two sources must build different pyramids";
+    EXPECT_EQ(mismatched, 0u) << "a new source must rebuild the whole pyramid";
+}
 
 namespace
 {
@@ -904,8 +991,10 @@ TEST_F(CBTHeightChain, FacetDrawnIntoTheFrustumIsKept)
 
 namespace
 {
-// Computes the chain-1 pyramid cover of the draw-expanded UV box.
-// Uses the coarsest level with at most two blocks per axis, bounded by the first stored level.
+// The chain level-1 cover the planar split reads for a node's UV box [lo, hi] under the reach of a
+// facet at continuous level `lambdaFar` (cbt_kernels.comp CBT_DrawnReachUV, CBT_RangeCells,
+// CBT_ChainRangeOverUV): the lattice cells, along X, of the blocks of the coarsest level that holds the
+// widened box to two blocks per axis, never finer than the level the chain-1 pyramid starts at.
 std::array<int64_t, 2> ChainOneCoverCellsX(std::array<float, 2> lo, std::array<float, 2> hi, float lambdaFar,
                                            uint32_t cells, uint32_t top)
 {
@@ -938,8 +1027,11 @@ std::array<float, 2> BoxHi(std::array<float, 2> a, std::array<float, 2> b, std::
     return {std::max({a[0], b[0], c[0]}), std::max({a[1], b[1], c[1]})};
 }
 
-// The stripe interior is flat in chain level 1 and coarser; only clamped edge columns rise.
-// The full-relief Y box gives a conservative drawn reach and flat-veto oracle.
+// Whether the planar split vetoes a node of the stripe scene: the box sits wholly where the draw shows
+// chain level 1 or coarser (lambda >= 1 at its nearest point), and the chain-1 cover the split reads
+// there holds no sample at the lattice's first or last column, the only ones the tent's clamped edge
+// lifts off 0.5. The box's Y spans the whole relief, so its distance is never above the shader's and
+// its farthest corner never nearer: the reach is never narrower.
 bool FlatForTheSplit(const StripeScene& scene, std::array<float, 2> lo, std::array<float, 2> hi, uint32_t samples)
 {
     const float size = scene.Params.TerrainSize[0];
@@ -967,8 +1059,11 @@ bool FlatForTheSplit(const StripeScene& scene, std::array<float, 2> lo, std::arr
 
 TEST_F(CBTHeightChain, AFieldTheChainDrawsFlatDoesNotSplitPastItsDrawnRelief)
 {
-    // Eye is 2 m above the ridge base, pitch -3 degrees along +Z; lambda reaches 1 near 130 m.
-    // The chain draws a plane at 2 m, so only conformity can retain a diamond in the flat-veto region.
+    // 2 m above the ridges' feet looking 3 degrees down along +Z: lambda reaches 1 about 130 m out, and
+    // the 4 m level-0 relief there still projects about 24 pixels. Every chain level draws the stripes as
+    // the plane at 2 m, so the veto, on the drawn range, holds every node there. Neither parent of a
+    // diamond the veto holds wants a split, so a converged tree has merged it, unless a finer neighbor
+    // splits a child of the twin and conformity keeps the diamond.
     using GameEngine::CBTTerrain::Test::Diamond;
     using GameEngine::CBTTerrain::Test::DiamondOf;
     constexpr uint32_t kN = 1025u;

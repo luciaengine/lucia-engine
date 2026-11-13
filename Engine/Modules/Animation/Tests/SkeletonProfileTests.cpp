@@ -1,7 +1,11 @@
 #include <gtest/gtest.h>
 
+#include <string>
+#include <vector>
+#include "LogCapture.h"
+
 #include "Animation/HumanBone.h"
-#include "Animation/SkeletonProfile.h"
+#include "Animation/Skeleton/SkeletonProfile.h"
 
 #include "AssetCore/GUID.h"
 
@@ -92,6 +96,14 @@ bool BonesEqual(const ProfileBone& a, const ProfileBone& b)
     return qa.w == qb.w && qa.x == qb.x && qa.y == qb.y && qa.z == qb.z;
 }
 
+/// Loads a profile of one Hips bone with `fields` added to it; the log lines go to `lines`.
+bool LoadHipsBone(SkeletonProfile& profile, const std::string& fields, std::vector<std::string>& lines)
+{
+    TestLog::ScopedLogCapture capture(&lines);
+    const std::string text = R"({"bones": [{"bone": "Hips", )" + fields + "}]}";
+    return profile.LoadFromData(Vector<uint8>(text.begin(), text.end()));
+}
+
 } // namespace
 
 TEST(SkeletonProfileTest, HumanBoneStringRoundTrip)
@@ -147,14 +159,6 @@ TEST(SkeletonProfileTest, RoundTripByteExact)
     }
 }
 
-TEST(SkeletonProfileTest, MalformedJsonReturnsFalse)
-{
-    SkeletonProfile p(GUID(), std::filesystem::path("test://malformed.profile.json"));
-    const std::string broken = "{ this is not valid json :: ";
-    Vector<uint8> bytes(broken.begin(), broken.end());
-    EXPECT_FALSE(p.LoadFromData(bytes));
-}
-
 TEST(SkeletonProfileTest, MissingVersionDefaultsToZero)
 {
     SkeletonProfile p(GUID(), std::filesystem::path("test://no-version.profile.json"));
@@ -181,4 +185,58 @@ TEST(SkeletonProfileTest, FindBoneReturnsNullForMissing)
     FillFiveBoneProfile(profile);
     EXPECT_NE(profile.FindBone(HumanBone::Hips), nullptr);
     EXPECT_EQ(profile.FindBone(HumanBone::LeftEye), nullptr);
+}
+
+// A skeleton profile that is not JSON, or whose field holds a value of the wrong type, is refused with
+// the file and the place or the field named, and never throws: the web build has no exception
+// catching.
+TEST(SkeletonProfileTest, AnUnreadableFileIsRefusedNamingThePlaceOrTheField)
+{
+    std::vector<std::string> lines;
+    bool truncatedLoaded = true;
+    bool mistypedLoaded = true;
+    {
+        TestLog::ScopedLogCapture capture(&lines);
+        const std::string truncatedText = R"({"name": [)";
+        const std::string mistypedText = R"({"bones": [{"bone": "Hips", "restRotation": [1, 0, "x", 0]}]})";
+        SkeletonProfile truncated(GUID(), std::filesystem::path("Animations/Truncated.profile.json"));
+        truncatedLoaded = truncated.LoadFromData(Vector<uint8>(truncatedText.begin(), truncatedText.end()));
+        SkeletonProfile mistyped(GUID(), std::filesystem::path("Animations/Mistyped.profile.json"));
+        mistypedLoaded = mistyped.LoadFromData(Vector<uint8>(mistypedText.begin(), mistypedText.end()));
+    }
+    EXPECT_FALSE(truncatedLoaded);
+    EXPECT_FALSE(mistypedLoaded);
+    EXPECT_NE(TestLog::FirstLineContaining(
+                  lines, "'Animations/Truncated.profile.json' is not loaded: it is not JSON (parse error at line 1, column"),
+              "");
+    EXPECT_NE(TestLog::FirstLineContaining(lines, "'Animations/Mistyped.profile.json' is not loaded: 'bones[0].restRotation[2]' is a string; write it as a number"), "");
+}
+
+// A vector or rotation field that is present but is not an array of enough numbers is refused with
+// the field named. An absent field takes its default.
+TEST(SkeletonProfileTest, AVectorFieldThatIsNotEnoughNumbersIsRefusedAndAnAbsentOneTakesItsDefault)
+{
+    const std::pair<std::string, std::string> cases[] = {
+        {R"("restScale": [1, 1])", "'bones[0].restScale' is an array of 2 elements; write it as [x, y, z]"},
+        {R"("restScale": "1,1,1")", "'bones[0].restScale' is a string; write it as [x, y, z]"},
+        {R"("localUp": 1)", "'bones[0].localUp' is a number; write it as [x, y, z]"},
+        {R"("restRotation": [1, 0, 0])", "'bones[0].restRotation' is an array of 3 elements; write it as [w, x, y, z]"},
+        {R"("restRotation": {"w": 1})", "'bones[0].restRotation' is an object; write it as [w, x, y, z]"},
+    };
+    for (const auto& [field, refusal] : cases)
+    {
+        SkeletonProfile profile(GUID(), std::filesystem::path("Animations/Bad.profile.json"));
+        std::vector<std::string> lines;
+        EXPECT_FALSE(LoadHipsBone(profile, field, lines)) << field;
+        EXPECT_NE(TestLog::FirstLineContaining(lines, refusal), "") << field;
+    }
+
+    SkeletonProfile absent(GUID(), std::filesystem::path("Animations/Absent.profile.json"));
+    std::vector<std::string> lines;
+    EXPECT_TRUE(LoadHipsBone(absent, R"("parent": "None")", lines));
+    EXPECT_EQ(TestLog::FirstLineContaining(lines, "is not loaded"), "");
+    const ProfileBone* hips = absent.FindBone(HumanBone::Hips);
+    ASSERT_NE(hips, nullptr);
+    EXPECT_EQ(hips->RestScale.x, 1.0f);
+    EXPECT_EQ(hips->LocalUp.y, 1.0f);
 }

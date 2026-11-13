@@ -1,23 +1,33 @@
 #include "TerrainECS/TerrainModifierSystem.h"
-#include "TerrainECS/TerrainBakeCache.h"
+#include "AreaFlatten/AreaReferenceSurface.h"
+#include "Mathematics/Interpolation.h"
+#include "TerrainGrass/TerrainGrassCompose.h"
+#include "TerrainRowBands.h"
+#include "TerrainBakeKeyBuilder.h"
+#include "TerrainECS/TerrainColorMap/TerrainColorMapBaker.h"
 #include "Components/SceneEntityTag.h"
+#include "Types/Fnv1a.h"
 #include "TerrainECS/TerrainModifierComponents.h" // the canonical set the gather reads (change gate)
 #include "TerrainECS/TerrainAtlas.h" // shared coarse field lattice
 #include "TerrainECS/TerrainSizingPlan.h" // same unified/atlas engagement rule as extraction
-#include "TerrainECS/TerrainSurfaceRuleEval.h"   // per-texel rule row evaluation
-#include "Noise/FractalNoise2D.h"
+#include "TerrainECS/TerrainSurface/TerrainSurfaceRuleEval.h"   // per-texel rule row evaluation
+#include "Noise/FractalNoise.h"
 #include "TerrainECS/TerrainRuleNoise.h"
 #include "TerrainECS/TerrainSplatComposite.h"    // the RGBA8 splat write paint and rules share
-#include "CBTTerrain/CBTSphereFaceMap.h"  // ClassifySphereCapEdit, SphereEditRegions (planet bake)
+#include "Planet/PlanetLayerCap.h"
+#include "TerrainECS/Planet/PlanetPageRequester.h" // PlanetFaceSamples
 #include "CBTTerrain/CBTPlanetShading.h"  // AnyTangent (sphere modifier tangent frame)
 #include "Components/Terrain/Terrain.h"
+#include "PageStreaming/PageStore/PageStoreFormat.h"
 #include "Components/Terrain/TerrainModifiers.h"
 #include "Components/Spline/SplineComponent.h"
 #include "Components/Transform.h"
 #include "ECS/Components.h"
 #include "ECS/ECS.h"
 #include "ECS/ECSTemplates.h"
+#include "Mathematics/Geometry.h"
 #include "Mathematics/Matrix4x4.h"
+#include "Mathematics/Transcendental.h"
 #include "Spline/SplineData.h"
 #include "Terrain/TerrainTypes.h" // kMaxTerrainMaterialLayers (the paint-layer clamp bound)
 #include "Spline/SplineEvaluator.h"
@@ -39,7 +49,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
-#include <future>
 #include <limits>
 #include <string>
 #include <utility>
@@ -244,7 +253,7 @@ const ResolvedEffect* FindPooledFlatten(const ResolvedModifier& mod)
 float32 ExtractYaw(const Components::WorldTransform& xf)
 {
     // atan2(forward.x, forward.z) from the 3rd column of the rotation matrix.
-    return std::atan2(xf.matrix[8], xf.matrix[10]);
+    return Math::Atan2(xf.Basis[2].x, xf.Basis[2].z);
 }
 
 // The authored bound and the bound the fBM loop actually enforces have to be the
@@ -258,7 +267,7 @@ static_assert(Components::kMaxNoiseOctaves == Noise::kMaxOctaves,
 // Undefined at k <= 0 — callers guard.
 float32 PolynomialSmoothMin(float32 a, float32 b, float32 k)
 {
-    const float32 t = std::clamp(0.5f + 0.5f * (b - a) / k, 0.0f, 1.0f);
+    const float32 t = Math::Clamp01(0.5f + 0.5f * (b - a) / k);
     return (b + (a - b) * t) - k * t * (1.0f - t);
 }
 
@@ -307,121 +316,209 @@ float32 BlendHeight(float32 current, float32 value, float32 weight,
     }
 }
 
-// Pack the priority-sorted resolved modifiers into the GPU height-bake row layout
-// (slice-1b). Returns false — the caller then falls back to the CPU bake — if any
-// HEIGHT-affecting modifier is a type/shape the slice-1 kernel does not implement
-// (Stamp/Spline/SculptZone, or a spline shape). Splat-only modifiers never touch height,
-// so they are simply not packed.
-bool PackModifiersForGpuBake(const std::vector<ResolvedModifier>& mods,
-                             std::vector<ModifierGpu>& out)
+// The refusal for a volume effect kind the kernel has no row for.
+GpuHeightBakeRefusalReason HeightEffectRefusal(ResolvedEffect::Kind kind)
 {
+    switch (kind)
+    {
+    case ResolvedEffect::Kind::HeightOffset: return GpuHeightBakeRefusalReason::HeightOffset;
+    case ResolvedEffect::Kind::Stamp:        return GpuHeightBakeRefusalReason::Stamp;
+    case ResolvedEffect::Kind::GroundClaim:  return GpuHeightBakeRefusalReason::GroundClaim;
+    default:                                 return GpuHeightBakeRefusalReason::OtherEffect;
+    }
+}
+
+// Why the kernel cannot compute `modifier` as a whole, or None. Checked in this order: shape, global
+// scope, modifier kind, inward feather or weight.
+GpuHeightBakeRefusalReason ModifierGpuRefusal(const ResolvedModifier& modifier)
+{
+    using Reason = GpuHeightBakeRefusalReason;
+    if (modifier.Shape == Components::TerrainModifierShape::Spline)
+        return Reason::SplineShape;
+    // The kernel's ComputeWeight knows circles and rectangles only, and a global volume packed as
+    // either would bake its authored half-extents as a footprint instead of covering the world.
+    if (modifier.GlobalScope)
+        return Reason::GlobalVolume;
+    // A zone's payload has no kernel twin.
+    if (modifier.ModType != ResolvedModifier::Type::Volume)
+        return modifier.ModType == ResolvedModifier::Type::SculptZone ? Reason::SculptZone : Reason::OtherEffect;
+    // A volume packs one record per height effect, which is exact only for the plain outward
+    // falloff. The kernel has no inward feather (one ramp across the edge) and no master weight.
+    if (modifier.FalloffInward > 0.0f || modifier.Weight != 1.0f)
+        return Reason::InwardFeatherOrWeight;
+    return Reason::None;
+}
+
+// Why the kernel cannot compute one height effect of a volume, or None. Checked in this order:
+// pooling, height from the volume, erosion, effect kind.
+GpuHeightBakeRefusalReason EffectGpuRefusal(const ResolvedEffect& fx)
+{
+    using Reason = GpuHeightBakeRefusalReason;
+    // Pooling adds the values of several modifiers, then applies the average once. The kernel reads one
+    // record per texel and has no scratch to add into, and it has no Average id: a packed pooled effect
+    // bakes as Add. Every poolable kind refuses.
+    if (IsPooled(fx))
+        return Reason::PooledBlend;
+    switch (fx.EffectKind)
+    {
+    case ResolvedEffect::Kind::Flatten:
+        // The kernel has no reference-height lookup: only an absolute target is expressible.
+        return fx.Flatten.UseVolumeHeight ? Reason::HeightFromVolume : Reason::None;
+    case ResolvedEffect::Kind::Noise:
+        // The kernel has no erosion twin (no erosion_filter.glsl).
+        return fx.Noise.Erosion.Strength > 0.0f ? Reason::Erosion : Reason::None;
+    default:
+        return HeightEffectRefusal(fx.EffectKind);
+    }
+}
+
+// The kernel row of a volume's flatten or noise effect that EffectGpuRefusal accepts.
+ModifierGpu PackEffectRow(const ResolvedModifier& modifier, const ResolvedEffect& fx)
+{
+    ModifierGpu row{};
+    row.Shape = (modifier.Shape == Components::TerrainModifierShape::Circle)
+                    ? static_cast<uint32>(ModifierGpuShape::Circle)
+                    : static_cast<uint32>(ModifierGpuShape::Rectangle);
+    row.CenterX = modifier.Position.x;
+    row.CenterZ = modifier.Position.z;
+    row.Yaw = modifier.YawRadians;
+    row.Radius = modifier.Radius;
+    row.RectHalfX = modifier.RectHalfX;
+    row.RectHalfZ = modifier.RectHalfZ;
+    row.Falloff = modifier.Falloff;
+    if (fx.EffectKind == ResolvedEffect::Kind::Flatten)
+    {
+        row.Type = static_cast<uint32>(ModifierGpuType::Flatten);
+        row.Blend = static_cast<uint32>(fx.Flatten.Blend);
+        row.BlendSmoothing = fx.Flatten.BlendSmoothing;
+        row.NoiseFreqOrTarget = fx.Flatten.TargetHeight;
+        return row;
+    }
+    row.Type = static_cast<uint32>(ModifierGpuType::Noise);
+    row.Blend = static_cast<uint32>(fx.Noise.Blend);
+    row.BlendSmoothing = fx.Noise.BlendSmoothing;
+    row.Octaves = fx.Noise.Octaves;
+    row.NoiseFreqOrTarget = fx.Noise.Frequency;
+    row.NoiseAmp = fx.Noise.Amplitude;
+    row.NoiseLacunarity = fx.Noise.Lacunarity;
+    row.NoisePersistence = fx.Noise.Persistence;
+    row.Seed = fx.Noise.Seed;
+    return row;
+}
+
+// Keeps the first refusal in `first` and counts each later one in `others`.
+void NoteGpuRefusal(GpuHeightBakeRefusal& first, uint32& others, GpuHeightBakeRefusalReason reason,
+                    ECS::EntityHandle entity)
+{
+    if (first.Reason == GpuHeightBakeRefusalReason::None)
+        first = GpuHeightBakeRefusal{reason, entity};
+    else
+        ++others;
+}
+
+// Packs the priority-sorted modifiers into the GPU height kernel's rows. Returns the first modifier
+// the kernel cannot compute and why (None when all pack), and counts the refusing effects after it in
+// `outOtherRefusals`. `out` is empty on a refusal.
+GpuHeightBakeRefusal PackModifiersForGpuBake(const std::vector<ResolvedModifier>& mods, std::vector<ModifierGpu>& out,
+                                             uint32& outOtherRefusals)
+{
+    using Reason = GpuHeightBakeRefusalReason;
     out.clear();
     out.reserve(mods.size());
-
-    // Shape framing for a volume's effects: the kernel keys on
-    // circle-vs-rectangle plus the entity-space extents.
-    auto packShape = [](const ResolvedModifier& m) {
-        ModifierGpu g{};
-        g.Shape = (m.Shape == Components::TerrainModifierShape::Circle)
-                      ? static_cast<uint32>(ModifierGpuShape::Circle)
-                      : static_cast<uint32>(ModifierGpuShape::Rectangle);
-        g.CenterX = m.Position.x;
-        g.CenterZ = m.Position.z;
-        g.Yaw = m.YawRadians;
-        g.Radius = m.Radius;
-        g.RectHalfX = m.RectHalfX;
-        g.RectHalfZ = m.RectHalfZ;
-        g.Falloff = m.Falloff;
-        return g;
-    };
-
-    for (const auto& m : mods)
+    outOtherRefusals = 0;
+    GpuHeightBakeRefusal first;
+    for (const auto& modifier : mods)
     {
-        if (m.IsSplatOnlyModifier())
+        if (modifier.IsSplatOnlyModifier())
             continue; // paint layer / paint zone / paint-only volume — no height contribution
-        if (m.Shape == Components::TerrainModifierShape::Spline)
-            return false;
-        // The kernel's ComputeWeight knows circles and rectangles only, and a
-        // global volume packed as either would bake its authored half-extents as
-        // a footprint instead of covering the world. There is no SHAPE_GLOBAL to
-        // pack it as, so the whole bake falls back to the CPU — the same refusal
-        // a spline shape takes.
-        if (m.GlobalScope)
-            return false;
-
-        if (m.ModType == ResolvedModifier::Type::Volume)
+        if (const Reason reason = ModifierGpuRefusal(modifier); reason != Reason::None)
         {
-            // The kernel evaluates shape weight per modifier record, so a volume
-            // packs as one record per height effect. That is exact only while
-            // the volume's weight is the plain shape falloff the kernel also
-            // computes: an inward feather or a master weight has no kernel
-            // twin, and effects it cannot evaluate force the whole bake to CPU.
-            //
-            // The inward-feather refusal is what holds CPU/GPU parity: the
-            // kernel implements only ShapeFalloffWeight's outward-only branch,
-            // so a volume with BOTH falloffs — whose weight is one ramp spanning
-            // the edge, not a band that stops at it — must never reach it.
-            if (m.FalloffInward > 0.0f || m.Weight != 1.0f)
-                return false;
-            for (const auto& fx : m.Effects)
-            {
-                // Splat-only effects contribute nothing to the heightfield — ApplySplatModifiers
-                // owns them, on whichever arm runs the splat — so they neither pack a row nor
-                // refuse the height bake. Refusing on them would price a rules or paint effect
-                // as if it were an unimplemented HEIGHT effect, dropping the whole terrain's GPU
-                // height bake to the CPU because of a modifier that never touches a height.
-                if (ResolvedEffect::IsSplat(fx.EffectKind))
-                    continue;
-                // Pooling is a cross-modifier accumulate-then-apply, and the
-                // kernel evaluates one modifier record per texel with no scratch
-                // to accumulate into. Refused rather than packed, for EVERY
-                // poolable kind: the kernel declares no Average id and its blend
-                // switch falls through to Add, so a packed pooled effect would
-                // bake as an additive raise instead of an average.
-                if (IsPooled(fx))
-                    return false;
-                ModifierGpu g = packShape(m);
-                if (fx.EffectKind == ResolvedEffect::Kind::Flatten)
-                {
-                    // The kernel has no reference-height lookup: only an
-                    // absolute target is expressible.
-                    if (fx.Flatten.UseVolumeHeight)
-                        return false;
-                    g.Type = static_cast<uint32>(ModifierGpuType::Flatten);
-                    g.Blend = static_cast<uint32>(fx.Flatten.Blend);
-                    g.BlendSmoothing = fx.Flatten.BlendSmoothing;
-                    g.NoiseFreqOrTarget = fx.Flatten.TargetHeight;
-                }
-                else if (fx.EffectKind == ResolvedEffect::Kind::Noise)
-                {
-                    // The kernel has no erosion twin yet (no erosion_filter.glsl),
-                    // so an armed erosion block forces the whole bake to CPU
-                    // rather than silently baking un-eroded noise on the GPU.
-                    if (fx.Noise.Erosion.Strength > 0.0f)
-                        return false;
-                    g.Type = static_cast<uint32>(ModifierGpuType::Noise);
-                    g.Blend = static_cast<uint32>(fx.Noise.Blend);
-                    g.BlendSmoothing = fx.Noise.BlendSmoothing;
-                    g.Octaves = fx.Noise.Octaves;
-                    g.NoiseFreqOrTarget = fx.Noise.Frequency;
-                    g.NoiseAmp = fx.Noise.Amplitude;
-                    g.NoiseLacunarity = fx.Noise.Lacunarity;
-                    g.NoisePersistence = fx.Noise.Persistence;
-                    g.Seed = fx.Noise.Seed;
-                }
-                else
-                {
-                    return false; // height-offset / stamp not GPU-bakeable in slice 1
-                }
-                out.push_back(g);
-            }
+            NoteGpuRefusal(first, outOtherRefusals, reason, modifier.Entity);
             continue;
         }
-
-        // A sculpt zone's payload has no kernel twin: the whole bake falls to CPU.
-        return false;
+        for (const auto& fx : modifier.Effects)
+        {
+            // Splat-only effects contribute nothing to the heightfield — ApplySplatModifiers
+            // owns them, on whichever arm runs the splat — so they neither pack a row nor
+            // refuse the height bake.
+            if (ResolvedEffect::IsSplat(fx.EffectKind))
+                continue;
+            if (const Reason reason = EffectGpuRefusal(fx); reason != Reason::None)
+                NoteGpuRefusal(first, outOtherRefusals, reason, modifier.Entity);
+            else if (first.Reason == Reason::None)
+                out.push_back(PackEffectRow(modifier, fx));
+        }
     }
-    return true;
+    if (first.Reason != Reason::None)
+        out.clear();
+    return first;
+}
+
+// The heights of a tile the modifier bake has applied every modifier to, or null when the tile is
+// not resident at full detail, not baked yet, or not on the terrain's tile grid.
+const Terrain::HeightfieldData* BakedTileHeights(const TiledTerrainData& tiled, const TileCoord& coord)
+{
+    const auto it = tiled.Tiles.find(coord);
+    if (it == tiled.Tiles.end() || !it->second)
+        return nullptr;
+    const TerrainTileData& tile = *it->second;
+    if (tile.LodState != TileLodState::Full || !tile.ModifiersApplied ||
+        tile.Heightfield.GetWidth() != tiled.Config.TileConfig.HeightmapWidth ||
+        tile.Heightfield.GetHeight() != tiled.Config.TileConfig.HeightmapHeight)
+        return nullptr;
+    return &tile.Heightfield;
+}
+
+// The terrain gates of the GPU height bake, in check order. The kernel writes only through the
+// atlas slot table of a whole-resident terrain and composes only the Generated noise base.
+GpuHeightBakeRefusalReason GpuHeightBakeTerrainRefusal(const TiledTerrainData& tiled)
+{
+    if (!IsGpuHeightBakeEnabled())
+        return GpuHeightBakeRefusalReason::Disabled;
+    if (!tiled.AtlasGpuBakeEligible)
+        return GpuHeightBakeRefusalReason::TextureLayout;
+    if (!tiled.Config.Base.Noise)
+        return GpuHeightBakeRefusalReason::BaseSource;
+    return GpuHeightBakeRefusalReason::None;
+}
+
+// Stores the bake decision on the terrain's report. Each change increases the report's revision and
+// logs the decision once, so a drag does not log every step.
+void RecordHeightBakeDecision(TiledTerrainData& tiled, ECS::EntityHandle terrainEntity,
+                              GpuHeightBakeRefusalReason terrainRefusal, const GpuHeightBakeRefusal& modifierRefusal,
+                              uint32 otherModifierRefusals)
+{
+    TerrainHeightBakeReport& report = tiled.HeightBakeReport;
+    const TerrainHeightBakePath path =
+        terrainRefusal == GpuHeightBakeRefusalReason::None && modifierRefusal.Reason == GpuHeightBakeRefusalReason::None
+            ? TerrainHeightBakePath::Gpu
+            : TerrainHeightBakePath::Cpu;
+    const bool changed = report.Path != path || report.TerrainRefusal != terrainRefusal ||
+                         report.ModifierRefusal != modifierRefusal ||
+                         report.OtherModifierRefusals != otherModifierRefusals;
+    if (!changed)
+        return;
+    report.Path = path;
+    report.TerrainRefusal = terrainRefusal;
+    report.ModifierRefusal = modifierRefusal;
+    report.OtherModifierRefusals = otherModifierRefusals;
+    ++report.Revision;
+    if (path == TerrainHeightBakePath::Gpu)
+    {
+        Logger::Log::Info("Terrain.HeightBakePath terrain={} path=gpu", terrainEntity.id);
+        return;
+    }
+    if (terrainRefusal != GpuHeightBakeRefusalReason::None)
+    {
+        // A reason on the terrain itself names no volume; get_terrain_stats names the modifier one.
+        Logger::Log::Info("Terrain.HeightBakePath terrain={} path=cpu refusal=\"{}\" modifierRefusal=\"{}\"",
+                          terrainEntity.id, GpuHeightBakeRefusalName(terrainRefusal),
+                          GpuHeightBakeRefusalName(modifierRefusal.Reason));
+        return;
+    }
+    Logger::Log::Info("Terrain.HeightBakePath terrain={} path=cpu refusal=\"{}\" entity={} otherRefusals={}",
+                      terrainEntity.id, GpuHeightBakeRefusalName(modifierRefusal.Reason), modifierRefusal.Entity.id,
+                      otherModifierRefusals);
 }
 
 // Record one tile's sample rect into the GPU bake batch (slice-1b/1c) so the extraction
@@ -445,13 +542,16 @@ void RecordGpuBakeTile(TiledTerrainData& tiled, const TerrainTileData& tp, const
 
 constexpr float32 kDegToRad = 0.01745329251994329577f;
 
+// The splat's slope term reads the adjacent heights, so a splat rect is the height rect plus this.
+constexpr int32 kSplatSlopePad = 2;
+
 // Bilinear sample of a single-channel mask at UV in [0,1] (clamped), texel
 // centers aligned to the UV corners (heightfield-style edge mapping).
 float32 SampleMaskBilinear(const float32* texels, uint32 width, uint32 height,
                            float32 u, float32 v)
 {
-    u = std::clamp(u, 0.0f, 1.0f);
-    v = std::clamp(v, 0.0f, 1.0f);
+    u = Math::Clamp01(u);
+    v = Math::Clamp01(v);
 
     const float32 fx = u * static_cast<float32>(width - 1);
     const float32 fz = v * static_cast<float32>(height - 1);
@@ -574,8 +674,9 @@ void ComputeModifierBounds(ResolvedModifier& mod)
     else // Rectangle
     {
         // Compute rotated rectangle AABB (conservative).
-        const float32 c = std::cos(mod.YawRadians);
-        const float32 s = std::sin(mod.YawRadians);
+        const Math::SinAndCos yaw = Math::SinCos(mod.YawRadians);
+        const float32 c = yaw.Cos;
+        const float32 s = yaw.Sin;
         const float32 hx = mod.RectHalfX + f;
         const float32 hz = mod.RectHalfZ + f;
         const float32 extX = std::abs(c * hx) + std::abs(s * hz);
@@ -592,8 +693,8 @@ void ComputeModifierBounds(ResolvedModifier& mod)
 float32 SampleMaskR8Bilinear(const uint8* texels, uint32 width, uint32 height,
                              float32 u, float32 v)
 {
-    u = std::clamp(u, 0.0f, 1.0f);
-    v = std::clamp(v, 0.0f, 1.0f);
+    u = Math::Clamp01(u);
+    v = Math::Clamp01(v);
     const float32 fx = u * static_cast<float32>(width - 1);
     const float32 fz = v * static_cast<float32>(height - 1);
     const uint32 x0 = static_cast<uint32>(fx);
@@ -616,10 +717,10 @@ float32 SampleMaskR8Bilinear(const uint8* texels, uint32 width, uint32 height,
 // A zone's effective world half-extents are its local extents times this scale.
 void ExtractXZScale(const Components::WorldTransform& xf, float32& scaleX, float32& scaleZ)
 {
-    scaleX = std::sqrt(xf.matrix[0] * xf.matrix[0] + xf.matrix[1] * xf.matrix[1]
-                       + xf.matrix[2] * xf.matrix[2]);
-    scaleZ = std::sqrt(xf.matrix[8] * xf.matrix[8] + xf.matrix[9] * xf.matrix[9]
-                       + xf.matrix[10] * xf.matrix[10]);
+    scaleX = std::sqrt(xf.Basis[0].x * xf.Basis[0].x + xf.Basis[0].y * xf.Basis[0].y
+                       + xf.Basis[0].z * xf.Basis[0].z);
+    scaleZ = std::sqrt(xf.Basis[2].x * xf.Basis[2].x + xf.Basis[2].y * xf.Basis[2].y
+                       + xf.Basis[2].z * xf.Basis[2].z);
 }
 
 // Map a zone payload's accumulated dirty texel rect into a world-space AABB via
@@ -635,17 +736,18 @@ void ComputeZonePayloadWorldRect(ResolvedModifier& mod, const TerrainZonePayload
     const float32 invW = 1.0f / static_cast<float32>(payload.Width - 1);
     const float32 invH = 1.0f / static_cast<float32>(payload.Height - 1);
     // Expand the texel rect by one texel (bilinear reach) before mapping to UV.
-    const float32 u0 = std::clamp((payload.DirtyMinX - 1) * invW, 0.0f, 1.0f);
-    const float32 u1 = std::clamp(payload.DirtyMaxX * invW, 0.0f, 1.0f);
-    const float32 v0 = std::clamp((payload.DirtyMinZ - 1) * invH, 0.0f, 1.0f);
-    const float32 v1 = std::clamp(payload.DirtyMaxZ * invH, 0.0f, 1.0f);
+    const float32 u0 = Math::Clamp01((payload.DirtyMinX - 1) * invW);
+    const float32 u1 = Math::Clamp01(payload.DirtyMaxX * invW);
+    const float32 v0 = Math::Clamp01((payload.DirtyMinZ - 1) * invH);
+    const float32 v1 = Math::Clamp01(payload.DirtyMaxZ * invH);
 
     // UV -> zone-local (the payload spans [-RectHalf, +RectHalf] in each axis).
     const float32 lx[2] = {(2.0f * u0 - 1.0f) * mod.RectHalfX, (2.0f * u1 - 1.0f) * mod.RectHalfX};
     const float32 lz[2] = {(2.0f * v0 - 1.0f) * mod.RectHalfZ, (2.0f * v1 - 1.0f) * mod.RectHalfZ};
 
-    const float32 c = std::cos(mod.YawRadians);
-    const float32 s = std::sin(mod.YawRadians);
+    const Math::SinAndCos yaw = Math::SinCos(mod.YawRadians);
+    const float32 c = yaw.Cos;
+    const float32 s = yaw.Sin;
     float32 minX = std::numeric_limits<float32>::max();
     float32 minZ = std::numeric_limits<float32>::max();
     float32 maxX = -std::numeric_limits<float32>::max();
@@ -668,18 +770,6 @@ void ComputeZonePayloadWorldRect(ResolvedModifier& mod, const TerrainZonePayload
     mod.PayloadDirtyMaxZ = maxZ + mod.Falloff;
 }
 
-// Analytic sphere modifiers (sculpt shape-accuracy S2): GE_TERRAIN_ANALYTIC_MODIFIERS=1 evaluates
-// closed-form-primitive modifiers (circular flattens today) AT SAMPLE TIME instead of rasterizing
-// them into sculpt-store texels — exact circles at any planet radius. Default OFF (dark-ship).
-// One flag read for the whole terrain stack (S3 shares it with the brush's transient stroke path):
-// TerrainService::AnalyticModifiersEnabled, which reads the env fresh so a mid-session flip is a
-// state change (it folds into the terrain-state hash and forces the clearing full re-bake — the
-// no-double-apply transition the dark-ship oracles toggle).
-bool AnalyticModifiersEnabled()
-{
-    return TerrainService::AnalyticModifiersEnabled();
-}
-
 uint64 ComputeTerrainStateHash(ECS::World& world, TerrainService& terrainService)
 {
     auto hashFloat = [](float32 f) -> uint64 {
@@ -694,9 +784,10 @@ uint64 ComputeTerrainStateHash(ECS::World& world, TerrainService& terrainService
                   const Components::Terrain& terrain,
                   const Components::WorldTransform& worldXf)
         {
-            hash = HashCombine(hash, hashFloat(worldXf.matrix[12]));
-            hash = HashCombine(hash, hashFloat(worldXf.matrix[13]));
-            hash = HashCombine(hash, hashFloat(worldXf.matrix[14]));
+            const Mathematics::Vector3 position = worldXf.GetPosition() - Mathematics::WorldPosition{};
+            hash = HashCombine(hash, hashFloat(position.x));
+            hash = HashCombine(hash, hashFloat(position.y));
+            hash = HashCombine(hash, hashFloat(position.z));
             hash = HashCombine(hash, hashFloat(terrain.SizeX));
             hash = HashCombine(hash, hashFloat(terrain.SizeZ));
             hash = HashCombine(hash, hashFloat(terrain.HeightScale));
@@ -705,9 +796,8 @@ uint64 ComputeTerrainStateHash(ECS::World& world, TerrainService& terrainService
             // Domain + planet radius shape the sphere modifier bake: footprints are authored in
             // world METRES, so a radius change moves every modifier's ANGULAR footprint on the
             // sphere. Folding them makes a planet resize a terrain-state change -> full sphere
-            // re-bake at the new radius, re-deriving the modifier layer exactly (the freehand dab
-            // layer is remapped by SphereSculptLayer::Configure; the modifier layer is derived
-            // data, so re-derivation beats resampling). Spherical-only so planar radius noise
+            // re-bake at the new radius, re-deriving the modifier layer exactly (the modifier layer
+            // is derived data, so re-derivation beats resampling). Spherical-only so planar radius noise
             // (an unused field) can never churn planar re-bakes.
             hash = HashCombine(hash, static_cast<uint64>(terrain.Domain));
             if (terrain.Domain == Components::TerrainDomain::Spherical)
@@ -726,11 +816,6 @@ uint64 ComputeTerrainStateHash(ECS::World& world, TerrainService& terrainService
                 hash = HashCombine(hash, hashFloat(relief.Amplitude));
                 hash = HashCombine(hash, hashFloat(relief.Frequency));
                 hash = HashCombine(hash, static_cast<uint64>(relief.Octaves));
-                // The analytic-modifier flag (S2) partitions WHICH modifiers bake into the store
-                // vs publish as placements, so a flip is a terrain-state change: the forced full
-                // re-bake clears the store's modifier layer and re-derives it under the new
-                // partition — the no-double-apply / no-stale-bake transition in both directions.
-                hash = HashCombine(hash, AnalyticModifiersEnabled() ? 0x414e414cull : 0ull);
             }
 
             // Base source (§3.1): enum + heightmap ref + decoded-content
@@ -787,8 +872,8 @@ uint64 ComputeTerrainStateHash(ECS::World& world, TerrainService& terrainService
 // True when any enabled tiled terrain has a tile whose authored modifiers have not been
 // applied yet — i.e. a tile just streamed in. Covers BOTH LODs: a Full arrival needs its
 // height + splat bake, and a COARSE arrival needs the surface rules composited over its
-// coarse splat, or the distant ring renders the unbaked base and pops on upgrade. Wakes the
-// gather (ShouldGather) and forces a bake pass (Update) even though the terrain-
+// coarse splat, or the distant ring renders the unbaked base and pops on upgrade. Owes a
+// bake (ConsumeChangeGate) and forces a bake pass (Update) even though the terrain-
 // state hash is unchanged (residency is deliberately out of that hash). The bake
 // scopes to the un-applied tiles alone (BakeTiledStreamedTiles), so a stream-in
 // costs one tile's bake — never a full re-bake / collider re-cook of every tile.
@@ -826,8 +911,8 @@ bool AnyTiledTileNeedsModifierBake(ECS::World& world, TerrainService& terrainSer
     return needs;
 }
 
-// True when an enabled tiled terrain would page but its height page overlay is not built yet
-// (TiledTerrainData::AwaitsPageOverlay): wakes the gather so the overlay is baked. O(terrains).
+// True when an enabled tiled terrain has height pages but its height page overlay is not built yet
+// (TiledTerrainData::AwaitsPageOverlay): owes a bake that reads the last gather. O(terrains).
 bool AnyTiledTerrainAwaitsPageOverlay(ECS::World& world, TerrainService& terrainService)
 {
     bool awaits = false;
@@ -884,8 +969,7 @@ const Spline::SplineData* AppendWorldSpline(std::deque<Spline::SplineData>& stor
     if (!splineData || !splineData->IsValid())
         return nullptr;
 
-    Mathematics::Matrix4x4 worldM;
-    std::memcpy(worldM.Data(), xf.matrix, sizeof(xf.matrix));
+    const Mathematics::Matrix4x4 worldM = xf.ToMatrix4x4(xf.GetPosition() - Mathematics::WorldPosition{});
 
     Spline::SplineData& worldSpline = storage.emplace_back(*splineData);
     for (auto& pt : worldSpline.Points)
@@ -894,8 +978,6 @@ const Spline::SplineData* AppendWorldSpline(std::deque<Spline::SplineData>& stor
     return &worldSpline;
 }
 
-// Passed to the apply helpers when the bake is not region-clamped.
-constexpr int32 kRegionUnbounded = std::numeric_limits<int32>::max();
 
 // Reduction seeds for a heightfield min/max scan: min starts above any real
 // height, max below, so the first sample replaces both. Named so the sentinel
@@ -908,14 +990,8 @@ constexpr float32 kHeightRangeSeedMax = -1e30f;
 // edit must increment it by the touched-tile count, never the resident-tile count.
 std::atomic<uint64> g_TileHeightRescanCount{0};
 
-// Monotonic count of procedural-splat texels renormalized by the spread settle flush
-// (RenormalizeTileSplatRows), for the settle-spike bound oracle: no single settle frame
-// may renormalize more than the per-frame texel budget (+ one row of round-up slop), and
-// the total across a settle equals the resident tiles' splat area (each texel once).
-std::atomic<uint64> g_SplatRenormalizeTexelCount{0};
-
-// Monotonic count of change-gate openings that reached GatherModifiers, for the
-// quiet-frame oracle (GetGatherCountForTests). An idle frame must not increment it.
+// Monotonic count of GatherModifiers runs, for the quiet-frame oracle
+// (GetGatherCountForTests). An idle frame, a streamed tile's bake or a settle bake must not increment it.
 std::atomic<uint64> g_GatherCount{0};
 
 // Kill switch for the incremental per-tile height range (block grid).
@@ -958,11 +1034,6 @@ bool BakeTimingEnabled()
     }();
     return enabled;
 }
-
-// Minimum total touched-texel count to justify the parallel dispatch. Below it the
-// serial path runs (a brush dab is ~2k texels/tile — the fan-out would cost more
-// than the work); a large-radius modifier edit is ~10^5+ texels and fans out.
-static constexpr uint64 kParallelBakeMinTexels = 96u * 1024u;
 
 // Blocks-per-axis of the coarse per-tile height min/max grid (TerrainTileData::
 // HeightBlock*). 8x8 = 64 blocks per tile: a 48x48 sculpt dab on a 1025^2 tile
@@ -1091,28 +1162,17 @@ void RefreshTileHeightRangeRegion(TerrainTileData& tile,
     AggregateTileHeightBlocks(tile);
 }
 
-// Aggregate the resident (Full) tiles' CACHED per-tile min/max into the global
-// height range the splat normalization uses. O(tiles), NOT O(all samples): each
-// tile's CachedMin/MaxH is kept current by the streaming integration (on load) and
-// by RefreshTileHeightRange in the bakes (on edit), so this never re-scans samples.
-// A per-frame O(all-samples) rescan here was the tiled-terrain idle/edit hammer
-// (4 tiles * 1025^2 = millions of reads); revision/cache bookkeeping replaces it.
+// Aggregate the resident (Full) tiles' cached per-tile min/max into the terrain's height
+// range (CachedGlobal*, read by level selection and GetHeightRangeMeters). O(tiles): the
+// streaming integration and RefreshTileHeightRange keep each tile's range current.
 void ComputeResidentGlobalHeightRange(const TiledTerrainData& tiled,
                                       float32& outMinH, float32& outMaxH)
 {
-    // Floor the aggregate to the deterministic procedural-noise band
-    // [0, kTileNoiseAmplitude] rather than seeding at the resident tiles' observed
-    // extremes. The base never leaves the band (the noise by construction, a 16-bit
-    // heightmap by its [0, 1] decode, a flat base at 0; a raw float heightmap outside
-    // it widens the band as an authored edit does), so the bakes that ASSIGN
-    // CachedGlobal* from this (BakeTiledFull / BakeTiledRegion) reproduce
-    // [0, kTileNoiseAmplitude] regardless of which tiles are resident — matching
-    // the TiledTerrainData seed the streaming job path uses, so a height edit no
-    // longer re-arms residency drift for the whole terrain. Authored edits that
-    // push samples outside the band widen it (the min/max below), keeping the
-    // snow/rock height thresholds stable as the user carves.
-    outMinH = 0.0f;
-    outMaxH = kTileNoiseAmplitude;
+    // The nominal band joined with the resident tiles' data (WidenToNominalHeightBand). The noise
+    // base can rise up to 8.7 percent above the band (TerrainNoiseStack.cpp), so the range can
+    // grow as more tiles become resident.
+    outMinH = std::numeric_limits<float32>::max();
+    outMaxH = std::numeric_limits<float32>::lowest();
     for (const auto& [coord, tilePtr] : tiled.Tiles)
     {
         if (!tilePtr || tilePtr->LodState != TileLodState::Full)
@@ -1120,6 +1180,7 @@ void ComputeResidentGlobalHeightRange(const TiledTerrainData& tiled,
         outMinH = std::min(outMinH, tilePtr->CachedMinH);
         outMaxH = std::max(outMaxH, tilePtr->CachedMaxH);
     }
+    WidenToNominalHeightBand(outMinH, outMaxH, NominalHeightBandTop(tiled.Config));
 }
 
 // Kill switch for the modifier change gate: GE_TERRAIN_CHANGE_GATING=0
@@ -1147,62 +1208,6 @@ bool ModifierCoalesceEnabled()
     }();
     return enabled;
 }
-
-// Kill switch for the deferred stroke-settle splat renormalize (#526).
-// GE_TERRAIN_DEFER_RESPLAT=0 restores the pre-#526 behavior: a range-shifting
-// height edit renormalizes every resident tile's splat immediately, in the same
-// frame, instead of deferring to a stroke-settle flush. It exists to A/B the
-// deferral against the immediate path when diagnosing splat-normalization seams.
-bool DeferSplatResplatEnabled()
-{
-    static const bool enabled = []
-    {
-        const char* v = std::getenv("GE_TERRAIN_DEFER_RESPLAT");
-        return !(v && v[0] == '0');
-    }();
-    return enabled;
-}
-
-// GE_TERRAIN_INCREMENTAL_QUADTREE=0 restores the pre-fix behavior: a height edit
-// marks the whole global quadtree dirty (QuadtreeDirty), forcing a full rebuild
-// that rescans EVERY resident tile's heightfield min/max per dab — O(all samples)
-// per stroke frame, the dominant sculpt-stroke hitch on large tiled terrains. The
-// default patches only the tiles the edit actually touched into the global
-// quadtree, which is byte-identical to a full rebuild (untouched tiles' nodes are
-// unchanged). Kept as a kill switch to A/B the two paths.
-bool IncrementalQuadtreeEnabled()
-{
-    static const bool enabled = []
-    {
-        const char* v = std::getenv("GE_TERRAIN_INCREMENTAL_QUADTREE");
-        return !(v && v[0] == '0');
-    }();
-    return enabled;
-}
-
-// GE_TERRAIN_SPREAD_SETTLE=0 restores the pre-fix one-shot settle flush: the deferred
-// whole-terrain splat renormalize runs for EVERY resident tile in the single settle
-// frame — the ~1.4s stroke-release spike on large tiled terrains (a 16-tile 2 km
-// terrain regenerates 16 x 1025^2 procedural-splat texels at once). The default spreads
-// it across settle frames at a bounded texel budget, settling byte-identically over ~1s
-// of wall-clock without any single frame hitching. Kept as an A/B lever.
-bool SpreadSettleEnabled()
-{
-    static const bool enabled = []
-    {
-        const char* v = std::getenv("GE_TERRAIN_SPREAD_SETTLE");
-        return !(v && v[0] == '0');
-    }();
-    return enabled;
-}
-
-// Per-frame procedural-splat texel budget for the spread settle renormalize. Sized so a
-// settle frame's splat regen stays well under the ~50 ms interactive frame target on
-// DebugFast (one 1025^2 tile is ~1.05M texels, so this is ~1/4 of a tile per frame). The
-// spread visits every resident tile's splat exactly once across as many frames as the
-// budget requires, so a 16-tile terrain settles over ~1 s of frames instead of one spike.
-// Per-frame work is bounded by this budget plus at most one texel row of round-up slop.
-constexpr std::size_t kSplatRenormalizeTexelsPerFrame = 262144;
 
 // One Changed<> probe per modifier archetype. Parameter edits stamp the
 // modifier component column; moves stamp WorldTransform (self-moves through
@@ -1354,9 +1359,9 @@ enum class SpherePlacementKind : uint8 { Flatten, Noise, Stamp, SculptZone };
 struct SphereModifierPlacement
 {
     SpherePlacementKind Type;
-    std::array<float32, 3> N{};   // centre direction = normalize(worldPos)
-    std::array<float32, 3> E1{};  // tangent frame at N (AnyTangent) — the local X axis
-    std::array<float32, 3> E2{};  // = cross(N, E1) — the local Z axis
+    Mathematics::Vector3 N{};   // centre direction = normalize(worldPos)
+    Mathematics::Vector3 E1{};  // tangent frame at N (AnyTangent) — the local X axis
+    Mathematics::Vector3 E2{};  // = cross(N, E1) — the local Z axis
     float32 CosYaw = 1.0f, SinYaw = 0.0f;
     Components::TerrainModifierShape Shape = Components::TerrainModifierShape::Circle;
     float32 Radius = 0.0f, RectHalfX = 0.0f, RectHalfZ = 0.0f, Falloff = 0.0f;
@@ -1401,10 +1406,11 @@ SphereModifierPlacement MakeSphereFrame(const ResolvedModifier& mod, float32 pla
     p.CenterDistance = len;
     p.N = {mod.Position.x / len, mod.Position.y / len, mod.Position.z / len};
     p.E1 = CBTTerrain::AnyTangent(p.N);
-    p.E2 = {p.N[1] * p.E1[2] - p.N[2] * p.E1[1], p.N[2] * p.E1[0] - p.N[0] * p.E1[2],
-            p.N[0] * p.E1[1] - p.N[1] * p.E1[0]};
-    p.CosYaw = std::cos(mod.YawRadians);
-    p.SinYaw = std::sin(mod.YawRadians);
+    p.E2 = {p.N.y * p.E1.z - p.N.z * p.E1.y, p.N.z * p.E1.x - p.N.x * p.E1.z,
+            p.N.x * p.E1.y - p.N.y * p.E1.x};
+    const Math::SinAndCos yaw = Math::SinCos(mod.YawRadians);
+    p.CosYaw = yaw.Cos;
+    p.SinYaw = yaw.Sin;
     p.Shape = mod.Shape;
     p.Radius = mod.Radius;
     p.RectHalfX = mod.RectHalfX;
@@ -1454,8 +1460,9 @@ void FillSphereStamp(SphereModifierPlacement& p, const ResolvedModifier& mod,
     p.StampHeightScale = params.HeightScale;
     p.StampBlend = params.Blend;
     const float32 rot = mod.YawRadians + params.Rotation * kDegToRad;
-    p.StampCosRot = std::cos(-rot); // inverse-rotate the tangent-plane sample, mirror of the planar path
-    p.StampSinRot = std::sin(-rot);
+    const Math::SinAndCos inverseRot = Math::SinCos(-rot);
+    p.StampCosRot = inverseRot.Cos; // inverse-rotate the tangent-plane sample, mirror of the planar path
+    p.StampSinRot = inverseRot.Sin;
     const bool circle = mod.Shape == Components::TerrainModifierShape::Circle;
     p.StampExtentX = (circle ? mod.Radius : mod.RectHalfX) + mod.Falloff;
     p.StampExtentZ = (circle ? mod.Radius : mod.RectHalfZ) + mod.Falloff;
@@ -1515,9 +1522,14 @@ void AppendSpherePlacements(const ResolvedModifier& mod, float32 planetRadius,
         case ResolvedEffect::Kind::Noise:   FillSphereNoise(p, fx.Noise); break;
         case ResolvedEffect::Kind::Flatten: FillSphereFlattenEffect(p, fx.Flatten); break;
         case ResolvedEffect::Kind::Stamp:   FillSphereStamp(p, mod, fx.Stamp); break;
-        // Paint needs a per-face sphere splat layer, and a constant height offset
-        // has no sphere twin yet: surfaced, never silently applied.
+        // Splat, claim, grass and constant height-offset effects have no sphere
+        // path yet. Never publish an uninitialized placement for them.
         case ResolvedEffect::Kind::PaintLayer:
+        case ResolvedEffect::Kind::Rules:
+        case ResolvedEffect::Kind::GroundClaim:
+        case ResolvedEffect::Kind::Grass:
+        case ResolvedEffect::Kind::Color:
+        case ResolvedEffect::Kind::Count:
         case ResolvedEffect::Kind::HeightOffset:
             outUnsupported = true;
             continue;
@@ -1554,7 +1566,7 @@ float32 SphereShapeWeight(const SphereModifierPlacement& p, float32 l0, float32 
 // a self-contained offset work here. That is Add and Subtract; Set already falls through to Add
 // on the stamp branch for exactly this reason, and Min / Max / SmoothMin / SmoothMax — whose
 // operand IS the height already there — fall through the same way. Supporting them means turning
-// the summation at the BakePlanetModifierRegions call site into an ordered fold over a running
+// the summation in BakeSphereFootprints into an ordered fold over a running
 // height, which is a change to the sphere bake's contract, not to this function.
 float32 EvaluateSpherePlacement(const SphereModifierPlacement& p, float32 dx, float32 dy, float32 dz,
                                 float32 reliefAtDir)
@@ -1562,10 +1574,10 @@ float32 EvaluateSpherePlacement(const SphereModifierPlacement& p, float32 dx, fl
     if (!p.Valid)
         return 0.0f;
     // Reject the far hemisphere: only directions near N project meaningfully into the tangent plane.
-    if (dx * p.N[0] + dy * p.N[1] + dz * p.N[2] <= 0.0f)
+    if (dx * p.N.x + dy * p.N.y + dz * p.N.z <= 0.0f)
         return 0.0f;
-    const float32 l0 = p.PlanetRadius * (dx * p.E1[0] + dy * p.E1[1] + dz * p.E1[2]);
-    const float32 l1 = p.PlanetRadius * (dx * p.E2[0] + dy * p.E2[1] + dz * p.E2[2]);
+    const float32 l0 = p.PlanetRadius * (dx * p.E1.x + dy * p.E1.y + dz * p.E1.z);
+    const float32 l1 = p.PlanetRadius * (dx * p.E2.x + dy * p.E2.y + dz * p.E2.z);
     const float32 weight = SphereShapeWeight(p, l0, l1);
     if (weight <= 0.0f)
         return 0.0f;
@@ -1622,61 +1634,172 @@ float32 EvaluateSpherePlacement(const SphereModifierPlacement& p, float32 dx, fl
     return offset * weight;
 }
 
-// The (face, UV rect) regions a modifier at `worldPos` with `footprintRadius` world metres touches
-// on a planet of `planetRadius` — the spherical cap classification, exactly like a #488 dab.
-// `virtualDim` is the live sculpt grid dim: the sampled-AABB classification undershoots the
-// toward-edge cap extent by up to ~0.13*angular, so the rect is inflated by the SAME margin
-// ApplyDab uses (0.3*angular + 2 texels, expressed in UV) — without it an off-centre bake clips
-// the modifier's rim by up to ~13% of its radius (the S1 secondary find). The per-texel eval
-// inside the bake decides the actual writes, so the inflation only widens the SET region.
-CBTTerrain::SphereEditRegions ModifierFaceRegions(const Mathematics::Vector3& worldPos,
-                                                  float32 footprintRadius, float32 planetRadius,
-                                                  uint32 virtualDim)
+// A footprint on a planet: the world position of a modifier and its footprint radius in meters.
+struct SphereFootprint
 {
-    if (planetRadius <= 0.0f)
-        return {};
-    const float32 kPi = 3.14159265358979323846f;
-    const float32 angular = std::min(footprintRadius / planetRadius, kPi);
-    CBTTerrain::SphereEditRegions regions =
-        CBTTerrain::ClassifySphereCapEdit(worldPos.x, worldPos.y, worldPos.z, angular);
-    const float32 texelUV = virtualDim > 1u ? 1.0f / static_cast<float32>(virtualDim - 1u) : 0.0f;
-    const float32 marginUV = 0.3f * angular + 2.0f * texelUV;
-    for (uint32 i = 0; i < regions.Count; ++i)
+    Mathematics::Vector3 Position;
+    float32 Radius = 0.0f;
+};
+
+// Replaces the modifier layer's values over each footprint of `dirty` with the sum of the placements
+// that write the same level (PlanetLayerCap), evaluated at each lattice point of that level. Each
+// placement writes the level of its own footprint, so the layer holds the sum of every placement and a
+// planet-scale modifier stays a few pages a side.
+void BakeSphereFootprints(PageStreaming::HeightPageLayer& layer, float32 planetRadius,
+                          const Components::TerrainPlanetRelief& relief, bool anyFlatten,
+                          std::span<const SphereModifierPlacement> placements, std::span<const SphereFootprint> dirty,
+                          std::vector<PageStreaming::PageFaceRect>& changed)
+{
+    std::vector<uint32> levels(placements.size());
+    for (std::size_t i = 0; i < placements.size(); ++i)
     {
-        CBTTerrain::SphereFaceUVRect& r = regions.Rects[i];
-        r.MinU = std::max(r.MinU - marginUV, 0.0f);
-        r.MinV = std::max(r.MinV - marginUV, 0.0f);
-        r.MaxU = std::min(r.MaxU + marginUV, 1.0f);
-        r.MaxV = std::min(r.MaxV + marginUV, 1.0f);
+        const SphereModifierPlacement& p = placements[i];
+        levels[i] = PlanetLayerCap(layer, p.N, p.FootprintRadius / planetRadius)
+                        .Level();
     }
-    return regions;
+    std::vector<Mathematics::Vector3> directions;
+    std::vector<float32> values;
+    for (const SphereFootprint& footprint : dirty)
+    {
+        const PlanetLayerCap cap(layer, footprint.Position, footprint.Radius / planetRadius);
+        for (uint8 face = 0; face < PageStreaming::kPageStoreMaxFaces; ++face)
+        {
+            const std::optional<PageStreaming::PageSampleRect>& rect = cap.Rect(face);
+            if (!rect)
+                continue;
+            cap.Directions(face, directions);
+            values.assign(directions.size(), 0.0f);
+            for (std::size_t sample = 0; sample < directions.size(); ++sample)
+            {
+                const Mathematics::Vector3& d = directions[sample];
+                const float32 reliefAtDir =
+                    anyFlatten ? CBTTerrain::PlanetRelief(d.x, d.y, d.z, relief.Amplitude, relief.Frequency, relief.Octaves)
+                               : 0.0f;
+                for (std::size_t i = 0; i < placements.size(); ++i)
+                    if (levels[i] == cap.Level())
+                        values[sample] += EvaluateSpherePlacement(placements[i], d.x, d.y, d.z, reliefAtDir);
+            }
+            changed.push_back(PageStreaming::PageFaceRect{face, layer.ReplaceAtLevel(face, cap.Level(), *rect, values)});
+        }
+    }
 }
 
-// Union `src`'s face rects into `acc` (per-face merge, bounded by the six cube faces).
-void UnionSphereRegions(CBTTerrain::SphereEditRegions& acc, const CBTTerrain::SphereEditRegions& src)
+// The most cells from the origin on one world axis. Inside int32 and exact as a float, so the cast is defined.
+constexpr float32 kAppliedGroundCellLimit = static_cast<float32>(1 << 30);
+
+// The applied-ground cell that holds `metres` on one world axis.
+int32 AppliedGroundCellOf(float32 metres, float32 cellMetres)
 {
-    for (uint32 i = 0; i < src.Count; ++i)
-    {
-        const CBTTerrain::SphereFaceUVRect& r = src.Rects[i];
-        bool merged = false;
-        for (uint32 j = 0; j < acc.Count; ++j)
-            if (acc.Rects[j].Face == r.Face)
-            {
-                acc.Rects[j].MinU = std::min(acc.Rects[j].MinU, r.MinU);
-                acc.Rects[j].MinV = std::min(acc.Rects[j].MinV, r.MinV);
-                acc.Rects[j].MaxU = std::max(acc.Rects[j].MaxU, r.MaxU);
-                acc.Rects[j].MaxV = std::max(acc.Rects[j].MaxV, r.MaxV);
-                merged = true;
-                break;
-            }
-        if (!merged && acc.Count < acc.Rects.size())
-            acc.Rects[acc.Count++] = r;
-    }
+    return static_cast<int32>(
+        std::clamp(std::floor(metres / cellMetres), -kAppliedGroundCellLimit, kAppliedGroundCellLimit));
+}
+
+// True when `worldReach` meets every applied-ground cell in XZ.
+bool MeetsEveryAppliedGroundCell(const Mathematics::AABB& worldReach, float32 cellMetres)
+{
+    const float32 low = -kAppliedGroundCellLimit * cellMetres;
+    const float32 high = (kAppliedGroundCellLimit + 1.0f) * cellMetres;
+    return worldReach.min.x <= low && worldReach.max.x >= high && worldReach.min.z <= low && worldReach.max.z >= high;
+}
+
+// True when the cells [firstX, lastX] x [firstZ, lastZ] meet `worldReach` in XZ.
+bool AppliedGroundCellsMeetReach(int32 firstX, int32 lastX, int32 firstZ, int32 lastZ,
+                                 const Mathematics::AABB& worldReach, float32 cellMetres)
+{
+    return static_cast<float32>(firstX) * cellMetres <= worldReach.max.x &&
+           static_cast<float32>(lastX + 1) * cellMetres >= worldReach.min.x &&
+           static_cast<float32>(firstZ) * cellMetres <= worldReach.max.z &&
+           static_cast<float32>(lastZ + 1) * cellMetres >= worldReach.min.z;
+}
+
+// True when the cells [firstA, lastA] and [firstB, lastB] of one axis have a cell in common.
+bool AppliedGroundCellRangesShareACell(int32 firstA, int32 lastA, int32 firstB, int32 lastB)
+{
+    return firstA <= lastB && firstB <= lastA;
+}
+
+uint64 AppliedGroundCellKey(int32 cellX, int32 cellZ)
+{
+    return (static_cast<uint64>(static_cast<uint32>(cellX)) << 32) | static_cast<uint32>(cellZ);
 }
 
 } // anonymous namespace
 
-bool TerrainModifierSystem::ShouldGather(ECS::World& world, TerrainService& terrainService)
+uint64 TerrainModifierSystem::GetAppliedGroundRevisionIn(const Mathematics::AABB& worldReach) const
+{
+    // Each bake that moves ground raises its cells, a span or the floor to m_AppliedGroundRevision: it is the maximum.
+    if (MeetsEveryAppliedGroundCell(worldReach, kAppliedGroundCellMetres))
+        return m_AppliedGroundRevision;
+    uint64 revision = m_AppliedGroundFloor;
+    for (const AppliedGroundSpan& span : m_AppliedGroundSpans)
+    {
+        if (span.Revision > revision &&
+            AppliedGroundCellsMeetReach(span.FirstX, span.LastX, span.FirstZ, span.LastZ, worldReach,
+                                        kAppliedGroundCellMetres))
+            revision = span.Revision;
+    }
+    for (const auto& [key, cellRevision] : m_AppliedGroundCells)
+    {
+        const int32 cellX = static_cast<int32>(key >> 32);
+        const int32 cellZ = static_cast<int32>(key & 0xFFFFFFFFull);
+        if (cellRevision > revision &&
+            AppliedGroundCellsMeetReach(cellX, cellX, cellZ, cellZ, worldReach, kAppliedGroundCellMetres))
+            revision = cellRevision;
+    }
+    return revision;
+}
+
+void TerrainModifierSystem::RaiseAppliedGround(bool fullBake, const DirtyUnion& heightDirty)
+{
+    if (fullBake)
+    {
+        m_AppliedGroundFloor = m_AppliedGroundRevision;
+        m_AppliedGroundCells.Clear();
+        m_AppliedGroundSpans.clear();
+        return;
+    }
+    const int32 firstX = AppliedGroundCellOf(heightDirty.MinX, kAppliedGroundCellMetres);
+    const int32 lastX = AppliedGroundCellOf(heightDirty.MaxX, kAppliedGroundCellMetres);
+    const int32 firstZ = AppliedGroundCellOf(heightDirty.MinZ, kAppliedGroundCellMetres);
+    const int32 lastZ = AppliedGroundCellOf(heightDirty.MaxZ, kAppliedGroundCellMetres);
+    const int64 cells = (static_cast<int64>(lastX) - firstX + 1) * (static_cast<int64>(lastZ) - firstZ + 1);
+    if (cells > kMaxAppliedGroundCellsPerBake)
+    {
+        AppliedGroundSpan merged{firstX, lastX, firstZ, lastZ, m_AppliedGroundRevision};
+        // A kept span that has a cell in common with the new span joins it. The union can then meet a further span.
+        for (size_t spanIndex = 0; spanIndex < m_AppliedGroundSpans.size();)
+        {
+            const AppliedGroundSpan& span = m_AppliedGroundSpans[spanIndex];
+            if (!AppliedGroundCellRangesShareACell(span.FirstX, span.LastX, merged.FirstX, merged.LastX) ||
+                !AppliedGroundCellRangesShareACell(span.FirstZ, span.LastZ, merged.FirstZ, merged.LastZ))
+            {
+                ++spanIndex;
+                continue;
+            }
+            merged.FirstX = std::min(merged.FirstX, span.FirstX);
+            merged.LastX = std::max(merged.LastX, span.LastX);
+            merged.FirstZ = std::min(merged.FirstZ, span.FirstZ);
+            merged.LastZ = std::max(merged.LastZ, span.LastZ);
+            m_AppliedGroundSpans.erase(m_AppliedGroundSpans.begin() + static_cast<std::ptrdiff_t>(spanIndex));
+            spanIndex = 0;
+        }
+        if (m_AppliedGroundSpans.size() == kMaxAppliedGroundSpans)
+        {
+            m_AppliedGroundFloor = std::max(m_AppliedGroundFloor, m_AppliedGroundSpans.front().Revision);
+            m_AppliedGroundSpans.erase(m_AppliedGroundSpans.begin());
+        }
+        m_AppliedGroundSpans.push_back(merged);
+        return;
+    }
+    for (int32 z = firstZ; z <= lastZ; ++z)
+    {
+        for (int32 x = firstX; x <= lastX; ++x)
+            m_AppliedGroundCells.InsertOrAssign(AppliedGroundCellKey(x, z), m_AppliedGroundRevision);
+    }
+}
+
+TerrainModifierSystem::ChangeGateResult TerrainModifierSystem::ConsumeChangeGate(ECS::World& world,
+                                                                                 TerrainService& terrainService)
 {
     // Consume the asset-evict force flag before any early-out so it can't
     // stick across a gating toggle. A hot-reloaded mask/heightmap changes no
@@ -1685,7 +1808,7 @@ bool TerrainModifierSystem::ShouldGather(ECS::World& world, TerrainService& terr
     m_ForceGatherAfterAssetEvict = false;
 
     if (!ChangeGatingEnabled() || !ECS::ChangeFilter::Enabled())
-        return true;
+        return ChangeGateResult::InputsChanged;
 
     // M14 gate contract: entry-sample before the scans, write back the SAME
     // sample after — never an end-of-run resample (a concurrent writer's
@@ -1735,17 +1858,6 @@ bool TerrainModifierSystem::ShouldGather(ECS::World& world, TerrainService& terr
         anyChanged = true;
     m_LastSeenTerrainStateHash = terrainStateHash;
 
-    // Streamed-tile wake: a tile that just streamed in carries the base but no
-    // modifiers, and its residency change is deliberately absent from the hash
-    // above (that would force a full re-bake of every tile). Wake explicitly so
-    // the scoped new-tile bake runs. Only scanned when nothing else already
-    // demands a gather.
-    if (!anyChanged && AnyTiledTileNeedsModifierBake(world, terrainService))
-        anyChanged = true;
-    // A terrain that would page waits for its height page overlay (TiledTerrainData::AwaitsPageOverlay).
-    if (!anyChanged && AnyTiledTerrainAwaitsPageOverlay(world, terrainService))
-        anyChanged = true;
-
     // Zone-payload edit epoch: a brush stroke mutates the service store and no
     // ECS component, so the Changed<>/lifecycle scans above can't see it. The
     // epoch bumps on any zone-payload edit/create/evict/restore.
@@ -1779,7 +1891,15 @@ bool TerrainModifierSystem::ShouldGather(ECS::World& world, TerrainService& terr
     m_LastLifecycleSwapGeneration = swapGeneration;
     m_LastLifecycleResetGeneration = resetGeneration;
 
-    return anyChanged;
+    if (anyChanged)
+        return ChangeGateResult::InputsChanged;
+
+    // A tile that just streamed in carries the base but no modifiers, and a terrain
+    // with height pages waits for its overlay (TiledTerrainData::AwaitsPageOverlay).
+    // Residency is no input of the gather, so the bake reads the last gather.
+    if (AnyTiledTileNeedsModifierBake(world, terrainService) || AnyTiledTerrainAwaitsPageOverlay(world, terrainService))
+        return ChangeGateResult::BakeOwed;
+    return ChangeGateResult::Quiet;
 }
 
 uint64 TerrainModifierSystem::HashModifierState(const ResolvedModifier& mod)
@@ -1796,6 +1916,10 @@ uint64 TerrainModifierSystem::HashModifierState(const ResolvedModifier& mod)
 
 namespace
 {
+
+// The version of the surface page bake. Bump it with every change that can alter a stored surface page for
+// the same inputs: it is in every surface store key, so a bump makes each surface store again once.
+constexpr uint32 kSurfaceStoreVersion = 1u;
 
 // Feeds every input of one modifier's bake to `sink`, in a fixed order: the one
 // field list behind both the in-session change hash (HashModifierGeometry) and the
@@ -1837,6 +1961,11 @@ void VisitModifierInputs(const ResolvedModifier& mod, Sink& sink)
     // so an edit to that spline has to move the hash.
     if (mod.ResolvedSpline)
         sink.Spline(*mod.ResolvedSpline);
+    // A closed area's reference surface also reads the roads at its openings, so
+    // an edit to one of those roads changes the area's output. The key is a
+    // content hash of every input the surface reads.
+    if (mod.AreaSurface)
+        sink.Value(mod.AreaSurface->GetInputKey());
 
     // A volume's output is its whole ordered effect stack: every parameter, and
     // the order itself (two effects swapping StackOrder changes the result).
@@ -1851,7 +1980,7 @@ void VisitModifierInputs(const ResolvedModifier& mod, Sink& sink)
     // of those would pass for precisely the change it is meant to catch. MSVC's
     // unhandled-enumerator warning (C4062) is off by default, so the switch's
     // missing `default:` is not a guard on its own either.
-    static_assert(static_cast<int32>(ResolvedEffect::Kind::Count) == 8,
+    static_assert(static_cast<int32>(ResolvedEffect::Kind::Count) == 9,
                   "ResolvedEffect::Kind gained a member. Fold its parameters into the switch "
                   "below (and into the GPU packer), or edits to it will not re-bake.");
 
@@ -1922,7 +2051,15 @@ void VisitModifierInputs(const ResolvedModifier& mod, Sink& sink)
             case ResolvedEffect::Kind::Grass:
                 sink.Float(fx.Grass.HeightScale);
                 sink.Float(fx.Grass.DensityScale);
+                sink.Float(fx.Grass.GroundDarkeningScale);
                 break;
+            case ResolvedEffect::Kind::Color:
+                for (const float32 channel : fx.Color.Linear)
+                    sink.Float(channel);
+                sink.Float(fx.Color.Strength);
+                break;
+            case ResolvedEffect::Kind::Count:
+                break; // Sentinel, not an authored effect.
             case ResolvedEffect::Kind::Rules:
                 // Every authored field of every live row: dragging one band
                 // handle must move this hash, or the edit bakes never.
@@ -1975,6 +2112,10 @@ void VisitModifierInputs(const ResolvedModifier& mod, Sink& sink)
         sink.Float(mod.PaintZone.Strength);
         sink.Value(static_cast<uint64>(mod.PaintZone.Width));
         sink.Value(static_cast<uint64>(mod.PaintZone.Height));
+        break;
+    case ResolvedModifier::Type::ColorZone:
+        sink.Value(static_cast<uint64>(mod.ColorZone.Width));
+        sink.Value(static_cast<uint64>(mod.ColorZone.Height));
         break;
     }
     sink.ZonePayload(mod);
@@ -2056,94 +2197,59 @@ struct ModifierBakeKeySink
             if (loaded)
                 Key.Bytes(mod.PaintZone.Mask, static_cast<std::size_t>(mod.PaintZone.Width) * mod.PaintZone.Height);
         }
+        else if (mod.ModType == ResolvedModifier::Type::ColorZone)
+        {
+            const bool loaded = mod.ColorZone.Color != nullptr;
+            Key.Value(loaded ? mod.ColorZone.Width : 0u);
+            Key.Value(loaded ? mod.ColorZone.Height : 0u);
+            if (loaded)
+                Key.Bytes(mod.ColorZone.Color, static_cast<std::size_t>(mod.ColorZone.Width) * mod.ColorZone.Height
+                                                   * ZonePayloadBytesPerTexel(ZonePayloadFormat::ColorRGBA32F));
+        }
     }
 };
 
-// The content key of one single terrain's full bake: the terrain's sample grid,
-// placement and base source content, then every modifier in bake order.
-uint64 ComputeSingleTerrainBakeKey(const std::vector<ResolvedModifier>& modifiers, const TerrainData& data,
-                                   Components::TerrainBaseSource baseSource,
-                                   const Terrain::HeightfieldData* baseHeightmap,
-                                   float32 originX, float32 originY, float32 originZ)
+// True when an enabled region of the grass stack, weighted above zero, reaches the XZ rectangle
+// [minX, maxX] x [minZ, maxZ] with a height or density scale other than one.
+bool AnyGrassRegionReaches(std::span<const ResolvedModifier> modifiers, float32 minX, float32 minZ, float32 maxX,
+                           float32 maxZ)
 {
-    TerrainBakeKeyBuilder key;
-    key.Value(data.Heightfield.GetWidth());
-    key.Value(data.Heightfield.GetHeight());
-    key.Float(data.Config.WorldSizeX);
-    key.Float(data.Config.WorldSizeZ);
-    key.Float(data.Config.HeightScale);
-    key.Float(originX);
-    key.Float(originY);
-    key.Float(originZ);
-    key.Value(static_cast<uint32>(baseSource));
-    // Only a heightmap base reads content; a missing or undecodable one bakes
-    // flat, which is its own key.
-    const bool heightmapBase = baseSource == Components::TerrainBaseSource::HeightmapAsset &&
-                               baseHeightmap != nullptr && !baseHeightmap->IsEmpty();
-    key.Value(static_cast<uint32>(heightmapBase ? 1u : 0u));
-    if (heightmapBase)
-    {
-        key.Value(baseHeightmap->GetWidth());
-        key.Value(baseHeightmap->GetHeight());
-        key.Bytes(baseHeightmap->GetRawSamples(), baseHeightmap->GetSampleCount() * sizeof(float32));
-    }
-    key.Value(static_cast<uint64>(modifiers.size()));
-    ModifierBakeKeySink sink{key};
     for (const ResolvedModifier& mod : modifiers)
     {
-        key.Value(static_cast<uint32>(mod.Enabled ? 1u : 0u));
-        VisitModifierInputs(mod, sink);
+        const bool reaches = mod.Enabled && mod.Weight > 0 && mod.BoundsMaxX >= minX && mod.BoundsMinX <= maxX &&
+                             mod.BoundsMaxZ >= minZ && mod.BoundsMinZ <= maxZ;
+        if (!reaches)
+            continue;
+        for (const ResolvedEffect& fx : mod.Effects)
+            if (fx.Grass.HeightScale != 1.0f || fx.Grass.DensityScale != 1.0f)
+                return true;
     }
-    return key.Key();
+    return false;
 }
 
-// Loads the terrain's artifact into `data` as a full bake would leave it when it
-// holds `key`. False on any miss; a missing file or an earlier state of the terrain
-// is the ordinary miss, anything else is logged.
-bool ApplyCachedTerrainBake(TerrainData& data, const std::filesystem::path& file, uint64 key)
+// Reads each modifier's scene identity for BakesBefore. An untagged entity (a runtime
+// spawn) keeps HasSceneId false.
+void AssignSceneIds(const ECS::World& world, std::span<ResolvedModifier> modifiers)
 {
-    TerrainBakeArtifact artifact;
-    const TerrainBakeCacheStatus status =
-        ReadTerrainBake(file, key, data.Heightfield.GetWidth(), data.Heightfield.GetHeight(), artifact);
-    if (status != TerrainBakeCacheStatus::Hit)
+    for (ResolvedModifier& mod : modifiers)
     {
-        if (status != TerrainBakeCacheStatus::Missing && status != TerrainBakeCacheStatus::KeyMismatch)
-            Logger::Log::Warning("Terrain bake cache: '{}' rejected ({}); baking instead", file.string(),
-                                 TerrainBakeCacheStatusName(status));
-        return false;
+        const auto* tag = world.GetComponent<Components::SceneEntityTag>(mod.Entity);
+        mod.HasSceneId = tag != nullptr;
+        mod.SceneIdHash = tag ? Hashing::Fnv1a64(tag->View()) : 0;
     }
-    std::memcpy(data.Heightfield.GetMutableSamples(), artifact.Heights.data(),
-                artifact.Heights.size() * sizeof(float32));
-    data.Splatmap = std::move(artifact.Splat);
-    data.SplatmapWidth = artifact.Width;
-    data.SplatmapHeight = artifact.Height;
-    data.SplatBakeMinH = artifact.SplatMinH;
-    data.SplatBakeMaxH = artifact.SplatMaxH;
-    data.SplatBakeRangeValid = true;
-    data.SplatmapFullDirty = true;
-    return true;
 }
 
-// The full bake now in `data`, as an artifact.
-TerrainBakeArtifact CopyTerrainBake(const TerrainData& data)
+// The bake order: lower Priority first. A tie resolves by scene identity, then by
+// entity id, so an archetype move (a component added or removed) never reorders it.
+bool BakesBefore(const ResolvedModifier& a, const ResolvedModifier& b)
 {
-    TerrainBakeArtifact artifact;
-    artifact.Width = data.Heightfield.GetWidth();
-    artifact.Height = data.Heightfield.GetHeight();
-    artifact.Heights.assign(data.Heightfield.GetRawSamples(),
-                            data.Heightfield.GetRawSamples() + data.Heightfield.GetSampleCount());
-    artifact.Splat = data.Splatmap;
-    artifact.SplatMinH = data.SplatBakeMinH;
-    artifact.SplatMaxH = data.SplatBakeMaxH;
-    return artifact;
-}
-
-// Stores the full bake now in `data` under `key`, replacing the terrain's artifact.
-void StoreTerrainBake(const TerrainData& data, const std::filesystem::path& file, uint64 key)
-{
-    const TerrainBakeArtifact artifact = CopyTerrainBake(data);
-    if (!WriteTerrainBake(file, key, artifact))
-        Logger::Log::Warning("Terrain bake cache: could not write '{}'; the next open bakes again", file.string());
+    if (a.Priority != b.Priority)
+        return a.Priority < b.Priority;
+    if (a.HasSceneId != b.HasSceneId)
+        return a.HasSceneId;
+    if (a.SceneIdHash != b.SceneIdHash)
+        return a.SceneIdHash < b.SceneIdHash;
+    return a.Entity.id < b.Entity.id;
 }
 
 } // namespace
@@ -2153,6 +2259,55 @@ uint64 TerrainModifierSystem::HashModifierGeometry(const ResolvedModifier& mod)
     ModifierChangeHashSink sink;
     VisitModifierInputs(mod, sink);
     return sink.Hash;
+}
+
+uint64 TerrainModifierSystem::SurfaceStoreKey(const TiledTerrainData& tiled, PageStreaming::PageFieldKind plane,
+                                              uint64 heightKey, float32 originY,
+                                              const TerrainColorGroundWrite& write) const
+{
+    const bool colorWritten = write.Enabled || !m_ColorZones.empty();
+    if ((plane == PageStreaming::PageFieldKind::GrassControl && m_GrassModifiers.empty()) ||
+        (plane == PageStreaming::PageFieldKind::Color && !colorWritten))
+        return 0u;
+    TerrainBakeKeyBuilder key;
+    key.Value(PageStreaming::kPageStoreFormatVersion);
+    key.Value(kSurfaceStoreVersion);
+    key.Value(static_cast<uint32>(plane));
+    key.Value(heightKey);
+    key.Value(tiled.Config.TilesPerAxisX);
+    key.Value(tiled.Config.TilesPerAxisZ);
+    key.Value(tiled.Config.TileConfig.HeightmapWidth);
+    key.Float(tiled.Config.TileWorldSize);
+    key.Float(tiled.Config.HeightScale);
+    key.Float(tiled.WorldOriginX);
+    key.Float(originY);
+    key.Float(tiled.WorldOriginZ);
+    key.Value(static_cast<uint32>(write.Enabled ? 1u : 0u));
+    if (write.Enabled)
+    {
+        key.Float(write.Amount);
+        for (const float32 channel : write.SoilLinear)
+            key.Float(channel);
+        key.Value(write.GrassLayer);
+        key.Float(write.MaskThreshold);
+    }
+    ModifierBakeKeySink sink{key};
+    // The Splat and Normal bakes read no grass region, so a grass edit keeps their keys.
+    const bool readsGrass =
+        plane == PageStreaming::PageFieldKind::GrassControl || plane == PageStreaming::PageFieldKind::Color;
+    for (const std::vector<ResolvedModifier>* set : {&m_AppliedModifiers, &m_GrassModifiers, &m_ColorZones})
+    {
+        if (set == &m_GrassModifiers && !readsGrass)
+            continue;
+        key.Value(static_cast<uint64>(set->size()));
+        for (const ResolvedModifier& mod : *set)
+        {
+            key.Value(static_cast<uint32>(mod.Enabled ? 1u : 0u));
+            VisitModifierInputs(mod, sink);
+        }
+    }
+    // Zero means no store.
+    return key.Key() == 0u ? 1u : key.Key();
 }
 
 void TerrainModifierSystem::ClampRuleCountsToCaps(Components::TerrainSurfaceRulesEffect& block,
@@ -2192,7 +2347,7 @@ void TerrainModifierSystem::ClampRuleCountsToCaps(Components::TerrainSurfaceRule
 }
 
 // Reading a new component type here means adding it to the canonical lists in
-// TerrainModifierComponents.h — ShouldGather wakes the gather from those, so a
+// TerrainModifierComponents.h — ConsumeChangeGate wakes the gather from those, so a
 // type read here but absent there is a bake input the change gate cannot see.
 // Two exceptions signal by other means: Components::Terrain via the terrain
 // state hash, and SplineComponent via the spline epoch.
@@ -2291,7 +2446,9 @@ void TerrainModifierSystem::GatherModifiers(ECS::World& world,
             fx.HeightOffset.PoolGroup = ResolvePoolGroup(*c);
             fx.HeightOffset.RespectClaims = c->RespectClaims;
         }
-        if (const auto* c = w.GetComponent<Components::TerrainNoiseEffect>(e); c && c->Enabled)
+        // A Generated noise is the base relief (ResolveGeneratedNoiseRelief), never a stack entry.
+        if (const auto* c = w.GetComponent<Components::TerrainNoiseEffect>(e); c && c->Enabled &&
+            c->Mode == Components::TerrainNoiseMode::Displace)
         {
             auto& fx = add(ResolvedEffect::Kind::Noise, c->StackOrder);
             fx.Noise.Frequency = c->Frequency;
@@ -2387,6 +2544,15 @@ void TerrainModifierSystem::GatherModifiers(ECS::World& world,
             auto& fx = add(ResolvedEffect::Kind::Grass, c->StackOrder);
             fx.Grass.HeightScale = Components::ClampTerrainGrassEffectScale(c->HeightScale);
             fx.Grass.DensityScale = Components::ClampTerrainGrassEffectScale(c->DensityScale);
+            fx.Grass.GroundDarkeningScale = Components::ClampTerrainGrassEffectScale(c->GroundDarkeningScale);
+        }
+        if (const auto* c = w.GetComponent<Components::TerrainColorEffect>(e); c && c->Enabled)
+        {
+            auto& fx = add(ResolvedEffect::Kind::Color, c->StackOrder);
+            fx.Color.Linear[0] = Components::ClampTerrainColorEffectValue(c->Color.r);
+            fx.Color.Linear[1] = Components::ClampTerrainColorEffectValue(c->Color.g);
+            fx.Color.Linear[2] = Components::ClampTerrainColorEffectValue(c->Color.b);
+            fx.Color.Strength = Components::ClampTerrainColorEffectValue(c->Strength);
         }
 
         std::stable_sort(out.begin(), out.end(),
@@ -2418,7 +2584,7 @@ void TerrainModifierSystem::GatherModifiers(ECS::World& world,
             mod.GlobalScope = vol.Shape == Components::TerrainVolumeShape::Global;
             mod.Priority = vol.Priority;
             mod.Enabled = true;
-            mod.Position = Mathematics::Vector3(xf.matrix[12], xf.matrix[13], xf.matrix[14]);
+            mod.Position = xf.GetPosition() - Mathematics::WorldPosition{};
             mod.YawRadians = ExtractYaw(xf);
             mod.Radius = vol.Radius;
             mod.RectHalfX = vol.RectHalfX;
@@ -2481,7 +2647,7 @@ void TerrainModifierSystem::GatherModifiers(ECS::World& world,
             if (vol.Shape == Components::TerrainVolumeShape::SplinePath && mod.ResolvedSpline)
             {
                 RoutePolyline& polyline = m_RoutePolylines.emplace_back();
-                BuildRoutePolyline(*mod.ResolvedSpline, mod.StationSpacing, polyline);
+                BuildRoutePolyline(*mod.ResolvedSpline, mod.StationSpacing, mod.Falloff, polyline);
                 mod.Route = &polyline;
             }
 
@@ -2501,7 +2667,7 @@ void TerrainModifierSystem::GatherModifiers(ECS::World& world,
         float32 scaleX = 1.0f, scaleZ = 1.0f;
         ExtractXZScale(xf, scaleX, scaleZ);
         mod.Shape = Components::TerrainModifierShape::Rectangle;
-        mod.Position = Mathematics::Vector3(xf.matrix[12], xf.matrix[13], xf.matrix[14]);
+        mod.Position = xf.GetPosition() - Mathematics::WorldPosition{};
         mod.YawRadians = ExtractYaw(xf);
         mod.RectHalfX = extentX * scaleX;
         mod.RectHalfZ = extentZ * scaleZ;
@@ -2561,7 +2727,8 @@ void TerrainModifierSystem::GatherModifiers(ECS::World& world,
             {
                 mod.PayloadGuid = guid;
                 const TerrainZonePayload* payload = terrainService.ResolveZonePayload(guid);
-                if (payload && !payload->IsSculpt() && payload->Width > 0 && payload->Height > 0)
+                if (payload && payload->Format == ZonePayloadFormat::PaintMaskR8 && payload->Width > 0
+                    && payload->Height > 0)
                 {
                     mod.PaintZone.Mask = payload->Mask.data();
                     mod.PaintZone.Width = payload->Width;
@@ -2574,19 +2741,51 @@ void TerrainModifierSystem::GatherModifiers(ECS::World& world,
             outModifiers.push_back(mod);
         });
 
-    // Sort by priority (lower priority first). Stable, so modifiers sharing a
-    // priority keep gather order instead of whatever an unstable sort happens to
-    // produce — cross-volume ordering has to be reproducible bake to bake.
-    std::stable_sort(outModifiers.begin(), outModifiers.end(),
-                     [](const ResolvedModifier& a, const ResolvedModifier& b) {
-                         return a.Priority < b.Priority;
-                     });
+    m_ColorZones.clear();
+    world.Query<ECS::Read<Components::TerrainColorZone>, ECS::Read<Components::WorldTransform>>()
+        .Each([&](ECS::EntityHandle e, const Components::TerrainColorZone& comp,
+                  const Components::WorldTransform& xf)
+        {
+            ResolvedModifier mod{};
+            mod.Entity = e;
+            mod.ModType = ResolvedModifier::Type::ColorZone;
+            setupZoneTransform(mod, xf, comp.ExtentX, comp.ExtentZ, comp.Falloff, comp.Priority);
+            mod.ColorZone.Color = nullptr;
+            mod.ColorZone.Width = 0;
+            mod.ColorZone.Height = 0;
+
+            const GUID guid = comp.PayloadRef.ToGuid();
+            if (!guid.IsNull())
+            {
+                mod.PayloadGuid = guid;
+                const TerrainZonePayload* payload = terrainService.ResolveZonePayload(guid);
+                if (payload && payload->Format == ZonePayloadFormat::ColorRGBA32F && payload->Width > 0
+                    && payload->Height > 0)
+                {
+                    mod.ColorZone.Color = payload->Color.data();
+                    mod.ColorZone.Width = payload->Width;
+                    mod.ColorZone.Height = payload->Height;
+                    mod.DataVersion = payload->DataVersion;
+                    ComputeZonePayloadWorldRect(mod, *payload);
+                }
+            }
+            ComputeModifierBounds(mod);
+            m_ColorZones.push_back(mod);
+        });
+    // The bake order (BakesBefore) is the same in every bake and every process that
+    // loads the same scene. Stable: two records of one entity (a volume and a zone)
+    // keep the fixed query sequence above.
+    AssignSceneIds(world, outModifiers);
+    AssignSceneIds(world, m_ColorZones);
+    std::stable_sort(outModifiers.begin(), outModifiers.end(), BakesBefore);
+
+    // Every volume's bounds and route exist now, so each closed area can read the
+    // roads at its openings.
+    m_AreaSurfaces.Resolve(world, outModifiers, ModifierParallelBakeEnabled() ? m_JobPool : nullptr);
 
     // One gather owns the shapes and ordering, but grass has its own derived
-    // field and invalidation. Removing it before the existing ground hash/bake
-    // keeps grass value edits on mixed volumes from re-cooking ground. Adding
-    // or removing a component still follows the existing archetype tie order
-    // for equal-priority ground volumes; that structural input is not erased.
+    // field and invalidation. Removing it before the ground hash and bake keeps
+    // grass edits on mixed volumes, value or presence, from re-cooking ground.
     for (auto& mod : outModifiers)
     {
         if (mod.ModType != ResolvedModifier::Type::Volume
@@ -2602,6 +2801,24 @@ void TerrainModifierSystem::GatherModifiers(ECS::World& world,
             return fx.EffectKind == ResolvedEffect::Kind::Grass;
         });
     }
+    // A Color effect writes the colour map only, so it leaves the ground stack the same way and
+    // joins the colour zones: the volume, carrying its Color effect alone, is one more writer.
+    for (auto& mod : outModifiers)
+    {
+        if (mod.ModType != ResolvedModifier::Type::Volume) continue;
+        const auto color = std::find_if(mod.Effects.begin(), mod.Effects.end(), [](const ResolvedEffect& fx) {
+            return fx.EffectKind == ResolvedEffect::Kind::Color;
+        });
+        if (color == mod.Effects.end()) continue;
+        ResolvedModifier writer = mod;
+        writer.Effects = {*color};
+        m_ColorZones.push_back(std::move(writer));
+        mod.Effects.erase(color);
+    }
+    std::stable_sort(m_ColorZones.begin(), m_ColorZones.end(), BakesBefore);
+    m_ColorZonesStamp = 0;
+    for (const ResolvedModifier& zone : m_ColorZones)
+        m_ColorZonesStamp = HashCombine(HashCombine(m_ColorZonesStamp, zone.Entity.id), HashModifierState(zone));
     std::erase_if(outModifiers, [](const ResolvedModifier& mod) {
         return mod.ModType == ResolvedModifier::Type::Volume && mod.Effects.empty();
     });
@@ -2610,9 +2827,30 @@ void TerrainModifierSystem::GatherModifiers(ECS::World& world,
     WarnOnClaimedGroundWithNoPaint(outModifiers);
 }
 
+bool TerrainModifierSystem::GrassStackMatches(const std::vector<GrassBakeSnapshot>& snapshot) const
+{
+    if (m_GrassModifiers.size() != snapshot.size()) return false;
+    for (size_t i = 0; i < m_GrassModifiers.size(); ++i)
+        if (m_GrassModifiers[i].Entity != snapshot[i].Entity || HashModifierState(m_GrassModifiers[i]) != snapshot[i].Hash)
+            return false;
+    return true;
+}
+
 void TerrainModifierSystem::BakeGrassFields(ECS::World& world, TerrainService& service)
 {
     const uint64 terrainHash = ComputeTerrainStateHash(world, service);
+    if (m_GrassCompose)
+    {
+        // A compose is in flight. Its result is out of date when the stack or a terrain changed
+        // since it was requested: it is dropped when it lands. Either way one request follows it,
+        // which also reaches a field that appeared meanwhile (a tile streamed in) and composes
+        // nothing when nothing changed. However many gathers land meanwhile, one request is owed.
+        if (terrainHash != m_RequestedGrassBaseline.TerrainHash || !GrassStackMatches(m_RequestedGrassBaseline.Snapshot))
+            ++m_GrassGeneration;
+        m_GrassComposeOwed = true;
+        return;
+    }
+    m_GrassComposeOwed = false;
     // Re-entering/created terrain must reconcile even an empty current stack:
     // a disabled owner may still hold pixels from a region removed meanwhile.
     if (m_GrassModifiers.empty() && m_LastGrassSnapshot.empty()
@@ -2621,10 +2859,9 @@ void TerrainModifierSystem::BakeGrassFields(ECS::World& world, TerrainService& s
     // once before allocating a diff or searching for changed/removed owners.
     // Continue through fields below: streaming may replace/introduce tile data
     // without changing either the authored terrain or modifier stack.
-    bool unchanged = m_HasGrassBaseline && m_GrassModifiers.size() == m_LastGrassSnapshot.size();
-    for (size_t i = 0; unchanged && i < m_GrassModifiers.size(); ++i)
-        unchanged = m_GrassModifiers[i].Entity == m_LastGrassSnapshot[i].Entity
-                 && HashModifierState(m_GrassModifiers[i]) == m_LastGrassSnapshot[i].Hash;
+    // The diff is against the APPLIED stack, so a request whose result was dropped is covered by the
+    // next one.
+    const bool unchanged = m_HasGrassBaseline && GrassStackMatches(m_LastGrassSnapshot);
     std::vector<GrassBakeSnapshot> next;
     uint64 hash = m_LastGrassHash;
     DirtyUnion dirty;
@@ -2661,86 +2898,199 @@ void TerrainModifierSystem::BakeGrassFields(ECS::World& world, TerrainService& s
         // removed footprint does not describe the changed overlap elsewhere.
         full = full || oldOrder != newOrder;
     }
-    auto update = [&](TerrainGrassField& field, uint32 w, uint32 h,
-                      float32 sizeX, float32 sizeZ, float32 originX, float32 originZ)
-    {
-        if (w < 2 || h < 2 || sizeX <= 0 || sizeZ <= 0) return;
-        const bool entire = full || !field.Initialized || field.Width != w || field.Height != h
-                            || field.AppliedHash != m_LastGrassHash;
-        if (entire)
-            ComposeTerrainGrassField(field, w, h, sizeX, sizeZ, originX, originZ, m_GrassModifiers);
-        else if (dirty.Any && dirty.MaxX >= originX && dirty.MinX <= originX + sizeX
-                 && dirty.MaxZ >= originZ && dirty.MinZ <= originZ + sizeZ)
-        {
-            // Clamp world bounds before converting: a global region carries
-            // infinities, which must never be converted directly to an integer.
-            auto lo = [](float32 value, float32 origin, float32 size, uint32 samples) {
-                return std::max(0, static_cast<int32>(std::floor(std::clamp((value-origin)/size, 0.0f, 1.0f)
-                                                                * (samples-1))) - 1);
-            };
-            auto hi = [](float32 value, float32 origin, float32 size, uint32 samples) {
-                return std::min(static_cast<int32>(samples-1), static_cast<int32>(std::ceil(
-                    std::clamp((value-origin)/size, 0.0f, 1.0f) * (samples-1))) + 1);
-            };
-            ComposeTerrainGrassField(field, w, h, sizeX, sizeZ, originX, originZ, m_GrassModifiers,
-                                     lo(dirty.MinX, originX, sizeX, w), lo(dirty.MinZ, originZ, sizeZ, h),
-                                     hi(dirty.MaxX, originX, sizeX, w), hi(dirty.MaxZ, originZ, sizeZ, h));
-        }
-        field.AppliedHash = hash;
-    };
+    const auto requestStart = std::chrono::steady_clock::now();
+    auto request = std::make_shared<TerrainGrassComposeRequest>();
     world.Query<ECS::Read<Components::Terrain>, ECS::Read<Components::WorldTransform>>()
         .Each([&](const Components::Terrain& terrain, const Components::WorldTransform& xf)
         {
             // TerrainGrass is planar-only; this effect cannot enable planet grass.
             if (terrain.Domain != Components::TerrainDomain::Planar) return;
+            const Mathematics::Vector3 position = xf.GetPosition() - Mathematics::WorldPosition{};
             if (terrain.TiledTerrainHandle != 0 || terrain.TiledTerrainGeneration != 0)
             {
-                auto* tiled = service.GetTiledTerrainData({terrain.TiledTerrainHandle, terrain.TiledTerrainGeneration});
+                const TiledTerrainHandle tiledHandle{terrain.TiledTerrainHandle, terrain.TiledTerrainGeneration};
+                auto* tiled = service.GetTiledTerrainData(tiledHandle);
                 if (!tiled) return;
+                if (full || dirty.Any)
+                    PublishGrassSurfaceChanged(*tiled, full, dirty);
                 // Extraction publishes the service origin later in the tick.
                 // Use the current authored transform, never last frame's cache.
-                const float32 ox = xf.matrix[12] - terrain.SizeX * 0.5f;
-                const float32 oz = xf.matrix[14] - terrain.SizeZ * 0.5f;
+                const float32 ox = position.x - terrain.SizeX * 0.5f;
+                const float32 oz = position.z - terrain.SizeZ * 0.5f;
                 // The renderer covers whole tiles, including a partial authored
                 // edge tile. Its UVs use that extent, not the requested size.
                 const auto extent = ComputeTiledRenderExtent(tiled->Config);
                 const float32 sizeX = extent.WorldSizeX, sizeZ = extent.WorldSizeZ;
-                tiled->GrassRegionsActive = std::any_of(m_GrassModifiers.begin(), m_GrassModifiers.end(), [&](const auto& mod) {
-                    return mod.Enabled && mod.Weight > 0 && mod.BoundsMaxX >= ox && mod.BoundsMinX <= ox + sizeX
-                        && mod.BoundsMaxZ >= oz && mod.BoundsMinZ <= oz + sizeZ
-                        && std::any_of(mod.Effects.begin(), mod.Effects.end(), [](const auto& fx) {
-                            return fx.Grass.HeightScale != 1.0f || fx.Grass.DensityScale != 1.0f;
-                        });
-                });
+                TerrainGrassComposeTarget target;
+                target.Tiled = tiledHandle;
+                target.RegionsActive = AnyGrassRegionReaches(m_GrassModifiers, ox, oz, ox + sizeX, oz + sizeZ);
                 if (extent.UnifiedWidth <= kMaxUnifiedTiledResolution && extent.UnifiedHeight <= kMaxUnifiedTiledResolution)
                 {
                     // This route already owns full-size unified terrain textures.
                     // Compose controls on the same global lattice, independently of
                     // which height tiles have streamed in.
-                    update(tiled->GrassUnifiedField, extent.UnifiedWidth, extent.UnifiedHeight,
-                           sizeX, sizeZ, ox, oz);
+                    target.Owner = TerrainGrassFieldOwner::TiledUnified;
+                    AddGrassComposeTarget(*request, target, tiled->GrassUnifiedField, extent.UnifiedWidth,
+                                          extent.UnifiedHeight, sizeX, sizeZ, ox, oz, full, dirty);
                     return;
                 }
                 // Evaluate on global world coordinates, including tiles that have
                 // never streamed. Residency cannot erase a suppression region.
-                update(tiled->GrassCoarseField, kAtlasCoarseFieldDim, kAtlasCoarseFieldDim, sizeX, sizeZ, ox, oz);
+                target.Owner = TerrainGrassFieldOwner::TiledCoarse;
+                AddGrassComposeTarget(*request, target, tiled->GrassCoarseField, kAtlasCoarseFieldDim,
+                                      kAtlasCoarseFieldDim, sizeX, sizeZ, ox, oz, full, dirty);
+                target.Owner = TerrainGrassFieldOwner::TiledTile;
                 for (auto& [coord, tile] : tiled->Tiles)
                 {
                     if (!tile || tile->LodState == TileLodState::Empty) continue;
                     const float32 size = tiled->Config.TileWorldSize;
-                    update(tile->GrassField, tiled->Config.TileConfig.HeightmapWidth, tiled->Config.TileConfig.HeightmapHeight,
-                           size, size, ox + coord.X * size, oz + coord.Z * size);
+                    target.Tile = coord;
+                    AddGrassComposeTarget(*request, target, tile->GrassField, tiled->Config.TileConfig.HeightmapWidth,
+                                          tiled->Config.TileConfig.HeightmapHeight, size, size, ox + coord.X * size,
+                                          oz + coord.Z * size, full, dirty);
                 }
             }
             else if (auto* data = service.GetTerrainData({terrain.TerrainDataHandle, terrain.TerrainDataGeneration}))
-                update(data->GrassField, data->Heightfield.GetWidth(), data->Heightfield.GetHeight(),
-                       data->Config.WorldSizeX, data->Config.WorldSizeZ,
-                       xf.matrix[12] - terrain.SizeX * 0.5f, xf.matrix[14] - terrain.SizeZ * 0.5f);
+            {
+                TerrainGrassComposeTarget target;
+                target.Owner = TerrainGrassFieldOwner::Single;
+                target.Terrain = {terrain.TerrainDataHandle, terrain.TerrainDataGeneration};
+                AddGrassComposeTarget(*request, target, data->GrassField, data->Heightfield.GetWidth(),
+                                      data->Heightfield.GetHeight(), data->Config.WorldSizeX, data->Config.WorldSizeZ,
+                                      position.x - terrain.SizeX * 0.5f, position.z - terrain.SizeZ * 0.5f,
+                                      full, dirty);
+            }
         });
-    if (!unchanged) m_LastGrassSnapshot = std::move(next);
-    m_LastGrassHash = hash;
-    m_LastGrassTerrainHash = terrainHash;
+    m_RequestedGrassBaseline.Snapshot = unchanged ? m_LastGrassSnapshot : std::move(next);
+    m_RequestedGrassBaseline.Hash = hash;
+    m_RequestedGrassBaseline.TerrainHash = terrainHash;
+    request->Generation = m_GrassGeneration;
+    const bool composes = std::any_of(request->Targets.begin(), request->Targets.end(),
+                                      [](const TerrainGrassComposeTarget& target) { return target.Compose; });
+    m_GrassCompose = request;
+    m_GrassComposeRequestedAt = requestStart;
+    // The compose's row bands go to the pool like the ground bake's (RunRowBands), under the same switch.
+    JobSystem::WorkStealingThreadPool* const composeJobs = ModifierParallelBakeEnabled() ? m_JobPool : nullptr;
+    // An empty stack composes nothing but a clear (O(1)), so it stays in place: a terrain with no
+    // grass regions never waits for a job before its grass draws.
+    if (composes && m_JobPool && !m_GrassModifiers.empty())
+    {
+        // Off the frame: the job owns its request, and the result swaps in at the start of the first
+        // update after it finishes (ApplyGrassCompose).
+        SnapshotTerrainGrassModifiers(m_GrassModifiers, *request);
+        m_GrassComposeTask = std::make_unique<JobSystem::TaskHandle>(m_JobPool->Submit(
+            [request, composeJobs] { ComposeTerrainGrassRequest(*request, request->Modifiers, composeJobs); }));
+        if (BakeTimingEnabled())
+            Logger::Log::Info("Terrain.BakeTiming grass request ms={} targets={} generation={}",
+                              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                                        requestStart).count(),
+                              request->Targets.size(), request->Generation);
+        return;
+    }
+    // No pool (headless), an empty stack or nothing to compose: in place, this update, from the
+    // gather's stack.
+    ComposeTerrainGrassRequest(*request, m_GrassModifiers, composeJobs);
+    ApplyGrassCompose(service);
+}
+
+void TerrainModifierSystem::AddGrassComposeTarget(TerrainGrassComposeRequest& request, TerrainGrassComposeTarget target,
+                                                  const TerrainGrassField& field, uint32 w, uint32 h, float32 sizeX,
+                                                  float32 sizeZ, float32 originX, float32 originZ, bool full,
+                                                  const DirtyUnion& dirty) const
+{
+    if (w < 2 || h < 2 || sizeX <= 0 || sizeZ <= 0) return;
+    target.SourceVersion = field.Version;
+    target.SourceInitialized = field.Initialized;
+    target.Width = w; target.Height = h;
+    target.SizeX = sizeX; target.SizeZ = sizeZ; target.OriginX = originX; target.OriginZ = originZ;
+    target.Entire = full || !field.Initialized || field.Width != w || field.Height != h
+                    || field.AppliedHash != m_LastGrassHash;
+    target.Compose = target.Entire || (dirty.Any && dirty.MaxX >= originX && dirty.MinX <= originX + sizeX
+                                       && dirty.MaxZ >= originZ && dirty.MinZ <= originZ + sizeZ);
+    if (target.Compose && !target.Entire)
+    {
+        // The dirty bounds' samples, one more on each side, inside the field.
+        target.MinX = std::max(0, AxisSample(dirty.MinX, originX, sizeX, w, false) - 1);
+        target.MinZ = std::max(0, AxisSample(dirty.MinZ, originZ, sizeZ, h, false) - 1);
+        target.MaxX = std::min(static_cast<int32>(w - 1), AxisSample(dirty.MaxX, originX, sizeX, w, true) + 1);
+        target.MaxZ = std::min(static_cast<int32>(h - 1), AxisSample(dirty.MaxZ, originZ, sizeZ, h, true) + 1);
+    }
+    if (target.Compose)
+    {
+        // The job composes a copy; the live field keeps drawing until the result swaps in.
+        target.Field = field;
+        target.Field.Dirty = false;
+    }
+    request.Targets.push_back(std::move(target));
+}
+
+void TerrainModifierSystem::WaitForGrassComposeForTests()
+{
+    if (m_GrassComposeTask && m_GrassComposeTask->IsValid())
+        m_GrassComposeTask->Wait();
+}
+
+void TerrainModifierSystem::ApplyGrassCompose(TerrainService& service)
+{
+    if (!m_GrassCompose) return;
+    // Done before Composed: the job sets Composed before its handle completes, so a finished
+    // handle with Composed still false is a job that never ran.
+    if (m_GrassComposeTask && m_GrassComposeTask->IsValid() && !m_GrassComposeTask->IsDone()) return;
+    if (!m_GrassCompose->Composed.load(std::memory_order_acquire))
+    {
+        // The pool refused or cancelled the job (shutdown): nothing was composed.
+        m_GrassCompose.reset();
+        m_GrassComposeTask.reset();
+        m_GrassComposeOwed = true;
+        return;
+    }
+    const std::shared_ptr<TerrainGrassComposeRequest> request = std::move(m_GrassCompose);
+    m_GrassComposeTask.reset();
+    if (request->Generation != m_GrassGeneration)
+    {
+        m_GrassComposeOwed = true;
+        if (BakeTimingEnabled())
+            Logger::Log::Info("Terrain.BakeTiming grass dropped generation={} current={}", request->Generation,
+                              m_GrassGeneration);
+        return;
+    }
+    bool composed = false;
+    for (TerrainGrassComposeTarget& target : request->Targets)
+    {
+        TerrainGrassField* live = FindTerrainGrassField(service, target);
+        if (!live) continue; // its terrain or tile is gone
+        if (live->Version != target.SourceVersion || live->Initialized != target.SourceInitialized)
+        {
+            // Replaced meanwhile; the owed compose covers it whole. The replacement reachable today
+            // (a tile streamed out and back in) is a fresh field of the same lattice and stack, so
+            // the result would be content-equivalent; this guards a field replaced under the same
+            // handle with different content.
+            m_GrassComposeOwed = true;
+            continue;
+        }
+        // The terrain's flag describes the fields it shows, so it changes with them.
+        if (target.Owner == TerrainGrassFieldOwner::TiledUnified || target.Owner == TerrainGrassFieldOwner::TiledCoarse)
+            service.GetTiledTerrainData(target.Tiled)->GrassRegionsActive = target.RegionsActive;
+        if (target.Compose)
+        {
+            const uint64 versionBefore = live->Version;
+            ApplyTerrainGrassComposeTarget(target, *live);
+            composed = true;
+            if (BakeTimingEnabled())
+                Logger::Log::Info("Terrain.BakeTiming grass ms={} samples={}x{} entire={} modifiers={} changed={}",
+                                  target.ComposeTime.count(), target.Width, target.Height, target.Entire ? 1 : 0,
+                                  m_RequestedGrassBaseline.Snapshot.size(), live->Version != versionBefore ? 1 : 0);
+        }
+        live->AppliedHash = m_RequestedGrassBaseline.Hash;
+    }
+    m_LastGrassSnapshot = std::move(m_RequestedGrassBaseline.Snapshot);
+    m_LastGrassHash = m_RequestedGrassBaseline.Hash;
+    m_LastGrassTerrainHash = m_RequestedGrassBaseline.TerrainHash;
     m_HasGrassBaseline = true;
+    if (composed && BakeTimingEnabled())
+        Logger::Log::Info("Terrain.BakeTiming grass applied generation={} request-to-apply ms={}", request->Generation,
+                          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                                    m_GrassComposeRequestedAt).count());
 }
 
 // A claim-respecting effect reads the claim buffer at the slot it APPLIES in —
@@ -2917,9 +3267,16 @@ float32 ComputeWeight(const ResolvedModifier& mod, float32 worldX, float32 world
             return 0.0f;
         // SplineFillInterior chooses "inside this loop" (SplineArea) over "along
         // this loop" (SplinePath); on an open spline the two agree.
+        //
+        // The ramp is exactly zero once the signed distance reaches the outer
+        // falloff (ShapeFalloffWeight), so a sample whose segment bounds are all
+        // that far away skips the curve search: most of a winding route's box is
+        // far from its band, and every one of those samples would otherwise
+        // refine the route. A NaN falloff leaves the cutoff NaN, which never cuts.
+        const float32 cutoff = std::max(mod.Falloff, 0.0f);
         const float32 sd = mod.SplineFillInterior
-            ? Spline::SignedDistanceToSplineXZ(*mod.ResolvedSpline, worldX, worldZ)
-            : Spline::SignedDistanceToSplineBandXZ(*mod.ResolvedSpline, worldX, worldZ);
+            ? Spline::SignedDistanceToSplineXZ(*mod.ResolvedSpline, worldX, worldZ, cutoff)
+            : Spline::SignedDistanceToSplineBandXZ(*mod.ResolvedSpline, worldX, worldZ, cutoff);
         distFromEdge = -sd;
     }
     else if (mod.Shape == Components::TerrainModifierShape::Circle)
@@ -2930,8 +3287,9 @@ float32 ComputeWeight(const ResolvedModifier& mod, float32 worldX, float32 world
     else // Rectangle
     {
         // Rotate point into local space of the rectangle.
-        const float32 c = std::cos(-mod.YawRadians);
-        const float32 s = std::sin(-mod.YawRadians);
+        const Math::SinAndCos inverseYaw = Math::SinCos(-mod.YawRadians);
+        const float32 c = inverseYaw.Cos;
+        const float32 s = inverseYaw.Sin;
         const float32 lx = std::abs(c * dx - s * dz);
         const float32 lz = std::abs(s * dx + c * dz);
 
@@ -2954,6 +3312,12 @@ float32 TerrainModifierSystem::ComputeVolumeReferenceHeight(const ResolvedModifi
         // The station polyline is the volume's geometry, so the grade the caller
         // already measured against it IS the reference — one object, one answer.
         return routeSample->Height;
+    }
+    if (mod.AreaSurface)
+    {
+        // A closed area grades to the surface its rim and its openings define,
+        // built once per edit; a sample here is a bilinear read.
+        return mod.AreaSurface->Sample(worldX, worldZ);
     }
     if (mod.Shape == Components::TerrainModifierShape::Spline && mod.ResolvedSpline)
     {
@@ -2997,8 +3361,9 @@ StampSampleBasis TerrainModifierSystem::MakeStampBasis(const ResolvedModifier& m
     }
 
     const float32 rotation = mod.YawRadians + basis.Params->Rotation * kDegToRad;
-    basis.Cos = std::cos(-rotation);
-    basis.Sin = std::sin(-rotation);
+    const Math::SinAndCos inverseRotation = Math::SinCos(-rotation);
+    basis.Cos = inverseRotation.Cos;
+    basis.Sin = inverseRotation.Sin;
     const bool circle = mod.Shape == Components::TerrainModifierShape::Circle;
     const float32 extentX = (circle ? mod.Radius : mod.RectHalfX) + mod.Falloff;
     const float32 extentZ = (circle ? mod.Radius : mod.RectHalfZ) + mod.Falloff;
@@ -3421,8 +3786,9 @@ void TerrainModifierSystem::ApplyHeightModifiers(Terrain::HeightfieldData& heigh
         float32 zoneInvExtZ = 0.0f;
         if (zoneHasPayload)
         {
-            zoneCos = std::cos(-mod.YawRadians);
-            zoneSin = std::sin(-mod.YawRadians);
+            const Math::SinAndCos inverseYaw = Math::SinCos(-mod.YawRadians);
+            zoneCos = inverseYaw.Cos;
+            zoneSin = inverseYaw.Sin;
             zoneInvExtX = mod.RectHalfX > 0.0f ? 1.0f / mod.RectHalfX : 0.0f;
             zoneInvExtZ = mod.RectHalfZ > 0.0f ? 1.0f / mod.RectHalfZ : 0.0f;
         }
@@ -3717,17 +4083,33 @@ bool PackSurfaceRulesForGpuSplat(const std::vector<ResolvedModifier>& mods,
     return true;
 }
 
+SplatTexelLattice MakeGridSplatLattice(float32 originX, float32 originZ, float32 worldSizeX, float32 worldSizeZ,
+                                       uint32 width, uint32 height)
+{
+    SplatTexelLattice lattice;
+    if (width == 0u || height == 0u)
+        return lattice;
+    lattice.SpacingX = worldSizeX / static_cast<float32>(width - 1u);
+    lattice.SpacingZ = worldSizeZ / static_cast<float32>(height - 1u);
+    lattice.WorldX.resize(width);
+    lattice.WorldZ.resize(height);
+    for (uint32 x = 0; x < width; ++x)
+        lattice.WorldX[x] = originX + static_cast<float32>(x) * lattice.SpacingX;
+    for (uint32 z = 0; z < height; ++z)
+        lattice.WorldZ[z] = originZ + static_cast<float32>(z) * lattice.SpacingZ;
+    return lattice;
+}
+
 void TerrainModifierSystem::ApplySplatModifiers(std::vector<uint8>& splatmap,
                                                  uint32 splatmapWidth, uint32 splatmapHeight,
                                                  const Terrain::HeightfieldData& heightfield,
-                                                 float32 worldSizeX, float32 worldSizeZ,
-                                                 float32 terrainOriginX,
-                                                 float32 terrainOriginZ,
+                                                 const SplatTexelLattice& lattice,
                                                  float32 heightScale,
-                                                 float32 splatMinH, float32 splatMaxH,
                                                  const std::vector<ResolvedModifier>& modifiers,
                                                  int32 regionMinX, int32 regionMinZ,
-                                                 int32 regionMaxX, int32 regionMaxZ)
+                                                 int32 regionMaxX, int32 regionMaxZ,
+                                                 BakeWarningLatch& layerClampWarnings,
+                                                 BakeWarningLatch& unaddressableRulesWarnings)
 {
     if (splatmap.empty())
         return;
@@ -3737,8 +4119,9 @@ void TerrainModifierSystem::ApplySplatModifiers(std::vector<uint8>& splatmap,
     if (w == 0 || h == 0)
         return;
 
-    const float32 spacingX = worldSizeX / static_cast<float32>(w - 1);
-    const float32 spacingZ = worldSizeZ / static_cast<float32>(h - 1);
+    assert(lattice.WorldX.size() == w && lattice.WorldZ.size() == h);
+    const float32 spacingX = lattice.SpacingX;
+    const float32 spacingZ = lattice.SpacingZ;
 
     // Surface rules measure the heightfield at the splat's own indices, which is
     // exact only while the two grids are the same size — as every generator
@@ -3746,7 +4129,6 @@ void TerrainModifierSystem::ApplySplatModifiers(std::vector<uint8>& splatmap,
     // rather than dropping the whole pass.
     const bool rulesAddressable =
         heightfield.GetWidth() == w && heightfield.GetHeight() == h;
-    const float32 heightRange = std::max(splatMaxH - splatMinH, 0.001f);
 
     // ---- Ground claims, on the SPLAT's own grid --------------------------------
     //
@@ -3794,7 +4176,7 @@ void TerrainModifierSystem::ApplySplatModifiers(std::vector<uint8>& splatmap,
     auto clampLayer = [&](uint32 layerIdx, const char* what) {
         if (layerIdx < Terrain::kMaxTerrainMaterialLayers)
             return layerIdx;
-        if (m_LayerClampWarnings.First(layerIdx))
+        if (layerClampWarnings.First(layerIdx))
         {
             Logger::Log::Warning(
                 "Terrain.Paint layer index {} is out of range (max {}); clamping. Check the "
@@ -3827,8 +4209,9 @@ void TerrainModifierSystem::ApplySplatModifiers(std::vector<uint8>& splatmap,
         float32 zoneInvExtZ = 0.0f;
         if (zoneHasMask)
         {
-            zoneCos = std::cos(-mod.YawRadians);
-            zoneSin = std::sin(-mod.YawRadians);
+            const Math::SinAndCos inverseYaw = Math::SinCos(-mod.YawRadians);
+            zoneCos = inverseYaw.Cos;
+            zoneSin = inverseYaw.Sin;
             zoneInvExtX = mod.RectHalfX > 0.0f ? 1.0f / mod.RectHalfX : 0.0f;
             zoneInvExtZ = mod.RectHalfZ > 0.0f ? 1.0f / mod.RectHalfZ : 0.0f;
         }
@@ -3840,13 +4223,13 @@ void TerrainModifierSystem::ApplySplatModifiers(std::vector<uint8>& splatmap,
         // Clamp to the bake region: only region texels were regenerated from
         // the fresh heightfield — painting outside would double-apply.
         const int32 minSX = std::max({0, regionMinX,
-                                      ModifierSampleIndex(mod.BoundsMinX, terrainOriginX, spacingX)});
+                                      ModifierSampleIndex(mod.BoundsMinX, lattice.WorldX.front(), spacingX)});
         const int32 minSZ = std::max({0, regionMinZ,
-                                      ModifierSampleIndex(mod.BoundsMinZ, terrainOriginZ, spacingZ)});
+                                      ModifierSampleIndex(mod.BoundsMinZ, lattice.WorldZ.front(), spacingZ)});
         const int32 maxSX = std::min({static_cast<int32>(w - 1), regionMaxX,
-                                      ModifierSampleIndex(mod.BoundsMaxX, terrainOriginX, spacingX) + 1});
+                                      ModifierSampleIndex(mod.BoundsMaxX, lattice.WorldX.front(), spacingX) + 1});
         const int32 maxSZ = std::min({static_cast<int32>(h - 1), regionMaxZ,
-                                      ModifierSampleIndex(mod.BoundsMaxZ, terrainOriginZ, spacingZ) + 1});
+                                      ModifierSampleIndex(mod.BoundsMaxZ, lattice.WorldZ.front(), spacingZ) + 1});
 
         if (minSX > maxSX || minSZ > maxSZ)
             continue;
@@ -3856,10 +4239,10 @@ void TerrainModifierSystem::ApplySplatModifiers(std::vector<uint8>& splatmap,
         auto accumulateClaim = [&](float32 strength) {
             for (int32 sz = minSZ; sz <= maxSZ; ++sz)
             {
-                const float32 worldZ = terrainOriginZ + static_cast<float32>(sz) * spacingZ;
+                const float32 worldZ = lattice.WorldZ[static_cast<std::size_t>(sz)];
                 for (int32 sx = minSX; sx <= maxSX; ++sx)
                 {
-                    const float32 worldX = terrainOriginX + static_cast<float32>(sx) * spacingX;
+                    const float32 worldX = lattice.WorldX[static_cast<std::size_t>(sx)];
                     const float32 weight = ComputeWeight(mod, worldX, worldZ);
                     if (weight <= 0.0f)
                         continue;
@@ -3873,10 +4256,10 @@ void TerrainModifierSystem::ApplySplatModifiers(std::vector<uint8>& splatmap,
                               bool respectClaims) {
             for (int32 sz = minSZ; sz <= maxSZ; ++sz)
             {
-                const float32 worldZ = terrainOriginZ + static_cast<float32>(sz) * spacingZ;
+                const float32 worldZ = lattice.WorldZ[static_cast<std::size_t>(sz)];
                 for (int32 sx = minSX; sx <= maxSX; ++sx)
                 {
-                    const float32 worldX = terrainOriginX + static_cast<float32>(sx) * spacingX;
+                    const float32 worldX = lattice.WorldX[static_cast<std::size_t>(sx)];
                     // Claimed ground keeps what the claimant painted. Masked to
                     // zero, the `weight <= 0` early-out below skips the composite
                     // and the texel is left exactly as it was — and that skip is
@@ -3913,7 +4296,7 @@ void TerrainModifierSystem::ApplySplatModifiers(std::vector<uint8>& splatmap,
                 return;
             if (!rulesAddressable)
             {
-                if (m_UnaddressableRulesWarnings.First(HashCombine(HashCombine(HashCombine(w, h),
+                if (unaddressableRulesWarnings.First(HashCombine(HashCombine(HashCombine(w, h),
                                                                           heightfield.GetWidth()),
                                                               heightfield.GetHeight())))
                 {
@@ -3927,10 +4310,10 @@ void TerrainModifierSystem::ApplySplatModifiers(std::vector<uint8>& splatmap,
 
             for (int32 sz = minSZ; sz <= maxSZ; ++sz)
             {
-                const float32 worldZ = terrainOriginZ + static_cast<float32>(sz) * spacingZ;
+                const float32 worldZ = lattice.WorldZ[static_cast<std::size_t>(sz)];
                 for (int32 sx = minSX; sx <= maxSX; ++sx)
                 {
-                    const float32 worldX = terrainOriginX + static_cast<float32>(sx) * spacingX;
+                    const float32 worldX = lattice.WorldX[static_cast<std::size_t>(sx)];
                     // Masked once here rather than per row: every row's weight is
                     // this volume weight times the row's own, so scaling it is
                     // exactly `weight *= 1 - claim` for each of them — and a
@@ -3947,7 +4330,7 @@ void TerrainModifierSystem::ApplySplatModifiers(std::vector<uint8>& splatmap,
 
                     const TerrainRuleSample sample =
                         MakeTerrainRuleSample(normal.x, normal.y, normal.z, sampleH, heightScale,
-                                              splatMinH, heightRange, worldX, worldZ);
+                                              worldX, worldZ);
 
                     uint8* pixel = &splatmap[(static_cast<size_t>(sz) * w + sx) * 4];
                     for (uint32 r = 0; r < rules.RuleCount; ++r)
@@ -4006,7 +4389,7 @@ void TerrainModifierSystem::ComposeTileHeights(Terrain::HeightfieldData& field,
     const float32 tileWorldSize = tiled.Config.TileWorldSize;
     FillTiledBaseRegion(field, tiled.Config, tiled.WorldOriginX, tiled.WorldOriginZ,
                         tileWorldOriginX, tileWorldOriginZ, tileWorldSize, tileWorldSize,
-                        minX, minZ, maxX, maxZ);
+                        minX, minZ, maxX, maxZ, 0.0f);
     ApplyHeightModifiers(field, tileWorldSize, tileWorldSize, heightScale, tileWorldOriginX,
                          terrainOriginY, tileWorldOriginZ, modifiers, minX, minZ, maxX, maxZ);
 }
@@ -4017,16 +4400,19 @@ bool TerrainModifierSystem::ComposeTiledGroundBlock(const TiledTerrainData& tile
                                                     uint32 countX, uint32 countZ,
                                                     std::vector<float32>& outNormalized) const
 {
-    return ComposeLatticeBlock(tiled, heightScale, terrainOriginY, m_AppliedModifiers, firstLatticeX, firstLatticeZ,
-                               countX, countZ, outNormalized);
+    uint64 composedSamples = 0;
+    return BuildLatticeBlock(tiled, heightScale, terrainOriginY, m_AppliedModifiers, firstLatticeX, firstLatticeZ,
+                             countX, countZ, LatticeBlockSource::Compose, outNormalized, composedSamples);
 }
 
-bool TerrainModifierSystem::ComposeLatticeBlock(const TiledTerrainData& tiled, float32 heightScale,
-                                                float32 terrainOriginY,
-                                                const std::vector<ResolvedModifier>& modifiers,
-                                                int64 firstLatticeX, int64 firstLatticeZ, uint32 countX,
-                                                uint32 countZ, std::vector<float32>& outNormalized)
+bool TerrainModifierSystem::BuildLatticeBlock(const TiledTerrainData& tiled, float32 heightScale,
+                                              float32 terrainOriginY,
+                                              const std::vector<ResolvedModifier>& modifiers,
+                                              int64 firstLatticeX, int64 firstLatticeZ, uint32 countX,
+                                              uint32 countZ, LatticeBlockSource source,
+                                              std::vector<float32>& outNormalized, uint64& outComposedSamples)
 {
+    outComposedSamples = 0;
     const uint32 tileW = tiled.Config.TileConfig.HeightmapWidth;
     const uint32 tileH = tiled.Config.TileConfig.HeightmapHeight;
     const float32 tileSize = tiled.Config.TileWorldSize;
@@ -4089,18 +4475,26 @@ bool TerrainModifierSystem::ComposeLatticeBlock(const TiledTerrainData& tiled, f
             if (minIx > maxIx || minIz > maxIz)
                 continue;
 
-            const float32 tileOriginX =
-                tiled.WorldOriginX + static_cast<float32>(tx) * tileSize;
-            const float32 tileOriginZ =
-                tiled.WorldOriginZ + static_cast<float32>(tz) * tileSize;
+            // A resident tile the bake applied the modifiers to holds this composition already:
+            // the bake ran the same ComposeTileHeights over it.
+            const Terrain::HeightfieldData* heights = nullptr;
+            if (source == LatticeBlockSource::BakedTiles)
+                heights = BakedTileHeights(tiled, TileCoord{static_cast<int32>(tx), static_cast<int32>(tz)});
+            if (!heights)
+            {
+                const float32 tileOriginX =
+                    tiled.WorldOriginX + static_cast<float32>(tx) * tileSize;
+                const float32 tileOriginZ =
+                    tiled.WorldOriginZ + static_cast<float32>(tz) * tileSize;
 
-            // The same composition the bakes run, because it is literally the same
-            // function. Clamping to the sub-rect is exact: both steps inside it
-            // resolve per world sample, so a clamped pass equals a full one within
-            // its rect — which is also what lets BakeTiledRegion re-bake a dirty
-            // rect and leave the rest of the tile standing.
-            ComposeTileHeights(scratch, tiled, tileOriginX, tileOriginZ, heightScale,
-                               terrainOriginY, modifiers, minIx, minIz, maxIx, maxIz);
+                // The tile bake's own function. A pass clamped to the sub-rect equals a full pass
+                // inside it, because each sample resolves on its own world position.
+                ComposeTileHeights(scratch, tiled, tileOriginX, tileOriginZ, heightScale,
+                                   terrainOriginY, modifiers, minIx, minIz, maxIx, maxIz);
+                heights = &scratch;
+                outComposedSamples +=
+                    static_cast<uint64>(maxIx - minIx + 1) * static_cast<uint64>(maxIz - minIz + 1);
+            }
 
             for (int32 iz = minIz; iz <= maxIz; ++iz)
             {
@@ -4110,7 +4504,7 @@ bool TerrainModifierSystem::ComposeLatticeBlock(const TiledTerrainData& tiled, f
                     const int64 outX = tileFirstGlobalX + ix - firstLatticeX;
                     outNormalized[static_cast<std::size_t>(outZ) * countX +
                                   static_cast<std::size_t>(outX)] =
-                        scratch.GetSample(static_cast<uint32>(ix), static_cast<uint32>(iz));
+                        heights->GetSample(static_cast<uint32>(ix), static_cast<uint32>(iz));
                 }
             }
         }
@@ -4127,7 +4521,7 @@ void TerrainModifierSystem::BakeTiledFull(TiledTerrainData& tiled, float32 heigh
 
     // GPU eval-skip (slice-1c): the GPU produces every tile's height into the atlas; the CPU
     // heightfield stays stale until the settle readback refreshes it, so skip ALL CPU height
-    // work (fill / modifiers / range / splat / quadtree) and only record the tiles to dispatch.
+    // work (fill / modifiers / range / splat) and only record the tiles to dispatch.
     if (gpuEvalSkip)
     {
         for (auto& [coord, tilePtr] : tiled.Tiles)
@@ -4161,12 +4555,10 @@ void TerrainModifierSystem::BakeTiledFull(TiledTerrainData& tiled, float32 heigh
                 tileFn(*tile);
             return;
         }
-        // Match the region bake's fork/join: Wait helps drain jobs, including when this system
-        // is already running on a worker inside a scheduler wave. ParallelFor cannot join there.
-        JobSystem::JobCounter counter;
-        for (const auto& [coord, tile] : fullTiles)
-            m_JobPool->Run([&tileFn, tile]() { tileFn(*tile); }, counter);
-        m_JobPool->Wait(counter);
+        // One unit per tile; legal when this system already runs on a worker inside a
+        // scheduler wave.
+        JobSystem::ParallelFor(m_JobPool, fullTiles.size(),
+                               [&tileFn, &fullTiles](std::size_t i) { tileFn(*fullTiles[i].second); });
     };
 
     // Pass 1: regenerate the base + apply height modifiers on every Full tile.
@@ -4181,28 +4573,27 @@ void TerrainModifierSystem::BakeTiledFull(TiledTerrainData& tiled, float32 heigh
     });
     const auto heightEnd = std::chrono::steady_clock::now();
 
-    // Global height range for consistent splat generation across tiles.
     float32 globalMinH, globalMaxH;
     ComputeResidentGlobalHeightRange(tiled, globalMinH, globalMaxH);
 
-    // Pass 2: all heights and the shared normalization range are final before any splat worker
-    // samples them. Each splat vector and its dimensions belong to one tile exclusively.
+    // Pass 2: all heights are final before any splat worker samples them. Each splat vector
+    // and its dimensions belong to one tile exclusively.
     const auto splatStart = std::chrono::steady_clock::now();
     runTiles([&](TerrainTileData& tile) {
         ResetSplatmap(
             tile.Heightfield, tile.Splatmap, tile.SplatmapWidth, tile.SplatmapHeight);
-        ApplySplatModifiers(tile.Splatmap, tile.SplatmapWidth, tile.SplatmapHeight,
-                            tile.Heightfield, tileSize, tileSize,
-                            tile.WorldOriginX, tile.WorldOriginZ,
-                            heightScale, globalMinH, globalMaxH,
-                            modifiers, 0, 0, kRegionUnbounded, kRegionUnbounded);
+        ApplySplatModifiers(tile.Splatmap, tile.SplatmapWidth, tile.SplatmapHeight, tile.Heightfield,
+                            MakeGridSplatLattice(tile.WorldOriginX, tile.WorldOriginZ, tileSize, tileSize, tile.SplatmapWidth, tile.SplatmapHeight),
+                            heightScale,
+                            modifiers, 0, 0, kRegionUnbounded, kRegionUnbounded,
+                            m_LayerClampWarnings, m_UnaddressableRulesWarnings);
     });
     const auto splatEnd = std::chrono::steady_clock::now();
     for (const auto& [coord, tile] : fullTiles)
     {
         tile->MarkFullDirty();
-        tile->SplatmapDirty = true;
-        tile->ModifiersApplied = true;
+        tile->MarkSplatChanged();
+        tile->MarkModifiersApplied();
         outBakedTiles.push_back(coord);
     }
     if (BakeTimingEnabled() && !fullTiles.empty())
@@ -4211,126 +4602,42 @@ void TerrainModifierSystem::BakeTiledFull(TiledTerrainData& tiled, float32 heigh
             std::chrono::duration<double, std::milli>(splatEnd - splatStart).count(),
             fullTiles.size(), parallel ? 1 : 0);
 
-    tiled.SplatBakeMinH = globalMinH;
-    tiled.SplatBakeMaxH = globalMaxH;
-    tiled.SplatBakeRangeValid = true;
+    tiled.ResidentSplatsBaked = true;
     tiled.CachedGlobalMinH = globalMinH;
     tiled.CachedGlobalMaxH = globalMaxH;
 
     ++tiled.Revision;
-    tiled.QuadtreeDirty = true;
-    tiled.GlobalHeightRangeDirty = true;
 }
 
-// Re-bake EVERY resident Full tile's splatmap against (globalMinH, globalMaxH) and commit
-// that range. Used for the first bake (no committed range) and for the deferred
-// stroke-settle flush. Whole-terrain cost (reset + rule evaluation per texel), so it must
-// run at most once per settle — an active stroke defers to it via SplatResplatPending.
-void TerrainModifierSystem::RenormalizeAllTileSplats(TiledTerrainData& tiled, float32 tileSize,
-                                     const std::vector<ResolvedModifier>& modifiers,
-                                     float32 globalMinH, float32 globalMaxH,
-                                     std::vector<TileCoord>& outBakedTiles)
+// Whole-terrain cost (reset + rule evaluation per texel): only the first splat bake runs it.
+void TerrainModifierSystem::BakeAllTileSplats(TiledTerrainData& tiled, float32 tileSize,
+                                              const std::vector<ResolvedModifier>& modifiers,
+                                              std::vector<TileCoord>& outBakedTiles)
 {
-    GE_CPU_PROFILE_SCOPE("Terrain.SplatRenormalize");
+    GE_CPU_PROFILE_SCOPE("Terrain.SplatBakeAll");
     for (auto& [coord, tilePtr] : tiled.Tiles)
     {
         if (!tilePtr || tilePtr->LodState != TileLodState::Full) continue;
         ResetSplatmap(
             tilePtr->Heightfield,
             tilePtr->Splatmap, tilePtr->SplatmapWidth, tilePtr->SplatmapHeight);
-        ApplySplatModifiers(tilePtr->Splatmap, tilePtr->SplatmapWidth, tilePtr->SplatmapHeight,
-                            tilePtr->Heightfield, tileSize, tileSize,
-                            tilePtr->WorldOriginX, tilePtr->WorldOriginZ,
-                            tiled.Config.HeightScale, globalMinH, globalMaxH,
-                            modifiers, 0, 0, kRegionUnbounded, kRegionUnbounded);
-        tilePtr->SplatmapDirty = true;
+        ApplySplatModifiers(tilePtr->Splatmap, tilePtr->SplatmapWidth, tilePtr->SplatmapHeight, tilePtr->Heightfield,
+                            MakeGridSplatLattice(tilePtr->WorldOriginX, tilePtr->WorldOriginZ, tileSize, tileSize, tilePtr->SplatmapWidth, tilePtr->SplatmapHeight),
+                            tiled.Config.HeightScale,
+                            modifiers, 0, 0, kRegionUnbounded, kRegionUnbounded,
+                            m_LayerClampWarnings, m_UnaddressableRulesWarnings);
+        tilePtr->MarkSplatChanged();
         outBakedTiles.push_back(coord);
     }
-    tiled.SplatBakeMinH = globalMinH;
-    tiled.SplatBakeMaxH = globalMaxH;
-    tiled.SplatBakeRangeValid = true;
-}
-
-std::size_t TerrainModifierSystem::RenormalizeTileSplatRows(
-    TerrainTileData& tile, float32 tileSize, float32 heightScale,
-    const std::vector<ResolvedModifier>& modifiers,
-    float32 globalMinH, float32 globalMaxH, int32 rowStart, int32 rowEnd)
-{
-    const int32 w = static_cast<int32>(tile.Heightfield.GetWidth());
-    const int32 h = static_cast<int32>(tile.Heightfield.GetHeight());
-    if (w < 2 || h < 2)
-        return 0;
-    // Ensure the splatmap is sized to the heightfield. A tile that became resident without
-    // a baked splat (a stream-in no modifier touched) needs one sized here; every band
-    // resets then re-bakes its rows, so the settled splat is byte-identical to
-    // RenormalizeAllTileSplats' whole-tile path (which also sizes then resets). Cheap size
-    // check per band; the assign fires at most once.
-    const std::size_t need = static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4u;
-    if (tile.Splatmap.size() != need || tile.SplatmapWidth != static_cast<uint32>(w) ||
-        tile.SplatmapHeight != static_cast<uint32>(h))
-    {
-        tile.Splatmap.assign(need, 0);
-        tile.SplatmapWidth = static_cast<uint32>(w);
-        tile.SplatmapHeight = static_cast<uint32>(h);
-    }
-    rowStart = std::max(rowStart, 0);
-    rowEnd = std::min(rowEnd, h - 1);
-    if (rowStart > rowEnd)
-        return 0;
-    // Region variant re-bakes only splat rows [rowStart,rowEnd]; the splatmap is
-    // already sized (the tile was splat-baked before the deferral). Reading heights
-    // at ±1 across a row boundary is safe — heights are frozen during settle.
-    ResetSplatmapRegion(
-        tile.Heightfield, tile.Splatmap,
-        0, rowStart, w - 1, rowEnd);
-    ApplySplatModifiers(tile.Splatmap, tile.SplatmapWidth, tile.SplatmapHeight,
-                        tile.Heightfield, tileSize, tileSize,
-                        tile.WorldOriginX, tile.WorldOriginZ,
-                        heightScale, globalMinH, globalMaxH,
-                        modifiers, 0, rowStart, w - 1, rowEnd);
-    const std::size_t texels = static_cast<std::size_t>(w) *
-                               static_cast<std::size_t>(rowEnd - rowStart + 1);
-    g_SplatRenormalizeTexelCount.fetch_add(texels, std::memory_order_relaxed);
-    return texels;
+    tiled.ResidentSplatsBaked = true;
 }
 
 bool TerrainModifierSystem::RunBakeRowBands(
     std::span<const BakeBandRegion> regions,
     const std::function<void(std::size_t, int32, int32, int32, int32)>& rowFn)
 {
-    uint64 totalTexels = 0;
-    for (const BakeBandRegion& r : regions)
-        totalTexels += static_cast<uint64>(r.MaxX - r.MinX + 1) * static_cast<uint64>(r.MaxZ - r.MinZ + 1);
-    const bool parallel =
-        ModifierParallelBakeEnabled() && m_JobPool != nullptr && totalTexels >= kParallelBakeMinTexels;
-    if (!parallel)
-    {
-        for (std::size_t i = 0; i < regions.size(); ++i)
-            rowFn(i, regions[i].MinX, regions[i].MaxX, regions[i].MinZ, regions[i].MaxZ);
-        m_LastBakeBandCount = 0;
-        return false;
-    }
-    // Flatten every region into fixed-height row bands so the pool stays busy even
-    // when there are few regions. The per-sample noise, modifier and splat evaluators
-    // are pure functions of world position, so a band split is byte-identical to one
-    // whole-region call. Bands are launched through the JobCounter fork-join (Run +
-    // Wait), NOT ParallelFor: the wave scheduler runs a multi-system wave's members on
-    // pool workers, and this bake is one of them. Wait(counter) participates in
-    // draining the bands (the joining worker executes them itself), so it is safe to
-    // join from a worker, where ParallelFor's barrier is not.
-    struct Band { std::size_t Region; int32 MinX, MaxX, Z0, Z1; };
-    std::vector<Band> bands;
-    for (std::size_t i = 0; i < regions.size(); ++i)
-        for (int32 z = regions[i].MinZ; z <= regions[i].MaxZ; z += kBakeBandRows)
-            bands.push_back(Band{i, regions[i].MinX, regions[i].MaxX, z,
-                                 std::min(z + kBakeBandRows - 1, regions[i].MaxZ)});
-    JobSystem::JobCounter counter;
-    for (const Band& band : bands)
-        m_JobPool->Run([&rowFn, band]() { rowFn(band.Region, band.MinX, band.MaxX, band.Z0, band.Z1); },
-                       counter);
-    m_JobPool->Wait(counter);
-    m_LastBakeBandCount = static_cast<uint32>(bands.size());
-    return true;
+    m_LastBakeBandCount = RunRowBands(ModifierParallelBakeEnabled() ? m_JobPool : nullptr, regions, rowFn);
+    return m_LastBakeBandCount != 0;
 }
 
 bool TerrainModifierSystem::BakeSingleTerrainHeights(TerrainData& data, Components::TerrainBaseSource baseSource,
@@ -4348,7 +4655,7 @@ bool TerrainModifierSystem::BakeSingleTerrainHeights(TerrainData& data, Componen
 }
 
 void TerrainModifierSystem::BakeSingleTerrainSplat(TerrainData& data, float32 originX, float32 originZ,
-                                                   float32 minH, float32 maxH, bool resetRect,
+                                                   bool resetRect,
                                                    const std::vector<ResolvedModifier>& modifiers, int32 minX,
                                                    int32 minZ, int32 maxX, int32 maxZ)
 {
@@ -4357,8 +4664,9 @@ void TerrainModifierSystem::BakeSingleTerrainSplat(TerrainData& data, float32 or
         if (resetRect)
             ResetSplatmapRegion(data.Heightfield, data.Splatmap, x0, z0, x1, z1);
         ApplySplatModifiers(data.Splatmap, data.SplatmapWidth, data.SplatmapHeight, data.Heightfield,
-                            data.Config.WorldSizeX, data.Config.WorldSizeZ, originX, originZ,
-                            data.Config.HeightScale, minH, maxH, modifiers, x0, z0, x1, z1);
+                            MakeGridSplatLattice(originX, originZ, data.Config.WorldSizeX, data.Config.WorldSizeZ, data.SplatmapWidth, data.SplatmapHeight),
+                            data.Config.HeightScale, modifiers, x0, z0, x1, z1,
+                            m_LayerClampWarnings, m_UnaddressableRulesWarnings);
     });
 }
 
@@ -4449,8 +4757,8 @@ void TerrainModifierSystem::BakeTiledRegion(TiledTerrainData& tiled, float32 hei
             });
 
         // Per-tile range refresh + dirty bookkeeping: cheap, and they touch shared
-        // state (the quadtree dirty list, the baked-tiles signal), so keep them
-        // serial after the parallel height pass has produced the final samples.
+        // state (the baked-tiles signal), so keep them serial after the parallel
+        // height pass has produced the final samples.
         for (const auto& r : heightRegions)
         {
             // A region height edit can move this tile's min/max in either direction,
@@ -4460,50 +4768,26 @@ void TerrainModifierSystem::BakeTiledRegion(TiledTerrainData& tiled, float32 hei
             RefreshTileHeightRangeRegion(*r.Tile, r.MinX, r.MinZ, r.MaxX, r.MaxZ);
             r.Tile->MarkRegionDirty(r.MinX, r.MinZ, r.MaxX + 1, r.MaxZ + 1);
             outBakedTiles.push_back(r.Coord);
-            // The tile's heights moved, so its global-quadtree node min/max are
-            // stale. Record it for an incremental patch instead of forcing a full
-            // rebuild of every resident tile (FinalizeGlobalQuadtreeUpdates).
-            tiled.DirtyQuadtreeTiles.push_back(r.Coord);
         }
         heightPassMs = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - tHeight0).count();
     }
 
-    // GPU eval-skip: heights are stale on the CPU until the settle readback, so the splat
-    // (height-range + slope) and the quadtree/global-range bookkeeping cannot run yet — the
-    // readback-adopt reschedules them exactly like a CPU bake would (via MarkRegionDirty +
-    // SplatResplatPending). Skip the rest of the CPU bake here.
+    // GPU eval-skip: the CPU heights are stale until the settle readback, so the splat and the
+    // global height range cannot update here. The readback records each tile's ReadbackSplatRegion,
+    // and BakeTiledReadbackSplats updates the splat and the range on the next update.
     if (gpuEvalSkip)
         return;
 
-    // Height-based splat layers depend on the GLOBAL range across all tiles; a
-    // region splat regen is exact only while that range is unchanged. Only a
-    // height edit can move the range, so rescan solely for those (matching the
-    // single-terrain path); a paint-only edit leaves heights byte-identical, so
-    // the cached range is exactly what a rescan would produce — reuse it and
-    // skip the full-terrain sample scan.
-    float32 globalMinH = tiled.SplatBakeMinH;
-    float32 globalMaxH = tiled.SplatBakeMaxH;
-    // On the FIRST bake the committed range is not valid yet, so SplatBakeMin/MaxH are the
-    // uninitialized [0,0] sentinel. That range IS the domain every HeightNormalized rule
-    // condition normalizes against, and a degenerate one is not merely imprecise: the
-    // heightRange clamp floors it at 0.001, so every texel above the terrain's minimum
-    // reads as a normalized height far past 1.0 and any altitude-capped row (the default
-    // snow row) claims the whole terrain. Recompute the real global range whenever the
-    // committed one can't be trusted (first bake) or a height edit moved it.
-    if (heightDirty.Any || !tiled.SplatBakeRangeValid)
-        ComputeResidentGlobalHeightRange(tiled, globalMinH, globalMaxH);
-
-    const bool rangeStable = tiled.SplatBakeRangeValid &&
-                             tiled.SplatBakeMinH == globalMinH &&
-                             tiled.SplatBakeMaxH == globalMaxH;
-
-    // Region-splat the tiles intersecting the splat dirty rect, normalized against
-    // (minH, maxH). Shared by the stable-range path and the deferred stroke path.
+    // The splat rules read heights in meters, not a resident range, so a region splat of the
+    // touched tiles is exact. The first splat bake covers every resident tile.
     double splatPassMs = 0.0; // GE_TERRAIN_BAKE_TIMING attribution
-    auto regionSplat = [&](float32 minH, float32 maxH) {
-        if (!splatDirty.Any)
-            return;
+    if (!tiled.ResidentSplatsBaked)
+    {
+        BakeAllTileSplats(tiled, tileSize, modifiers, outBakedTiles);
+    }
+    else if (splatDirty.Any)
+    {
         GE_CPU_PROFILE_SCOPE("Terrain.RegionSplat");
         const auto tSplat0 = std::chrono::steady_clock::now();
         std::vector<BakeRegionRect> splatRegions;
@@ -4514,7 +4798,7 @@ void TerrainModifierSystem::BakeTiledRegion(TiledTerrainData& tiled, float32 hei
             if (tilePtr->SplatmapWidth != w || tilePtr->Splatmap.empty())
                 continue; // never splat-baked; the full bake owns first generation
             int32 minX, minZ, maxX, maxZ;
-            if (!tileSampleRect(*tilePtr, splatDirty, 2, minX, minZ, maxX, maxZ))
+            if (!tileSampleRect(*tilePtr, splatDirty, kSplatSlopePad, minX, minZ, maxX, maxZ))
                 continue;
             splatRegions.push_back(BakeRegionRect{tilePtr.get(), coord, minX, minZ, maxX, maxZ});
         }
@@ -4525,71 +4809,26 @@ void TerrainModifierSystem::BakeTiledRegion(TiledTerrainData& tiled, float32 hei
                 ResetSplatmapRegion(
                     tp.Heightfield, tp.Splatmap,
                     minX, z0, maxX, z1);
-                ApplySplatModifiers(tp.Splatmap, tp.SplatmapWidth, tp.SplatmapHeight,
-                                    tp.Heightfield, tileSize, tileSize,
-                                    tp.WorldOriginX, tp.WorldOriginZ,
-                                    heightScale, minH, maxH,
-                                    modifiers, minX, z0, maxX, z1);
+                ApplySplatModifiers(tp.Splatmap, tp.SplatmapWidth, tp.SplatmapHeight, tp.Heightfield,
+                            MakeGridSplatLattice(tp.WorldOriginX, tp.WorldOriginZ, tileSize, tileSize, tp.SplatmapWidth, tp.SplatmapHeight),
+                                    heightScale,
+                                    modifiers, minX, z0, maxX, z1, m_LayerClampWarnings, m_UnaddressableRulesWarnings);
             });
         for (const auto& r : splatRegions)
         {
-            r.Tile->SplatmapDirty = true;
+            r.Tile->MarkSplatChanged();
             outBakedTiles.push_back(r.Coord);
         }
-        splatPassMs += std::chrono::duration<double, std::milli>(
+        splatPassMs = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - tSplat0).count();
-    };
-
-    if (rangeStable)
-    {
-        // Committed range unchanged: region splat on the touched tiles is bit-exact.
-        regionSplat(globalMinH, globalMaxH);
-    }
-    else if (tiled.SplatBakeRangeValid && !DeferSplatResplatEnabled())
-    {
-        // Kill switch (GE_TERRAIN_DEFER_RESPLAT=0): pre-#526 behavior — the range
-        // shifted, so renormalize every resident tile against the new range right
-        // now. Correct but O(all tiles) per dab; used only to A/B the deferral.
-        RenormalizeAllTileSplats(tiled, tileSize, modifiers, globalMinH, globalMaxH, outBakedTiles);
-    }
-    else if (tiled.SplatBakeRangeValid)
-    {
-        // The global range shifted DURING an active stroke (a raise/lower dab moved
-        // the resident min/max). Renormalizing every resident tile here would cost
-        // O(all tiles) procedural-splat regen PER DAB — the dominant brush-stroke
-        // hitch (~150 ms/tile in Debug). Defer it: region-splat only the touched
-        // tiles against the STILL-COMMITTED range so they track their new heights and
-        // stay consistent with the not-yet-renormalized untouched tiles, and flag the
-        // terrain. FlushDeferredSplatResplat runs the one full renormalize against the
-        // FINAL range once the stroke settles -> settled splat == full bake.
-        regionSplat(tiled.SplatBakeMinH, tiled.SplatBakeMaxH);
-        tiled.SplatResplatPending = true;
-        tiled.SplatResplatIdleFrames = 0;
-        m_AnyResplatPending = true;
-    }
-    else
-    {
-        // First bake / no committed range yet: full renormalize now (one-time cost,
-        // not on the edit hot path).
-        RenormalizeAllTileSplats(tiled, tileSize, modifiers, globalMinH, globalMaxH, outBakedTiles);
     }
 
-    // Only a height edit moves the global range, the quadtree node min/max, or
-    // the collider heights — a paint-only edit touches none of these, so it must
-    // not bump Revision / QuadtreeDirty / GlobalHeightRangeDirty (which would
-    // force a needless global quadtree rebuild each paint-drag frame). Mirrors
-    // the single-terrain path, which rebuilds the quadtree only for heights.
+    // Only a height edit moves the global range or the collider heights — a
+    // paint-only edit touches neither, so it must not bump Revision.
     if (heightDirty.Any)
     {
-        tiled.CachedGlobalMinH = globalMinH;
-        tiled.CachedGlobalMaxH = globalMaxH;
+        ComputeResidentGlobalHeightRange(tiled, tiled.CachedGlobalMinH, tiled.CachedGlobalMaxH);
         ++tiled.Revision;
-        // Default: patch only the edited tiles (recorded above) into the global
-        // quadtree. The full O(all-samples) rebuild is reserved for structural
-        // changes (tile load/unload, first bake) and the kill-switch path.
-        if (!IncrementalQuadtreeEnabled())
-            tiled.QuadtreeDirty = true;
-        tiled.GlobalHeightRangeDirty = true;
     }
 
     // De-duplicate tiles that were both height- and splat-baked (one line per
@@ -4629,30 +4868,6 @@ void TerrainModifierSystem::BakeTiledStreamedTiles(TiledTerrainData& tiled, floa
         return false;
     };
 
-    // RETAINED PENDING ANALYSIS — the force-bake below is provably value-identical for the
-    // tiles it currently forces, and is kept only because the seam it was added for (round-6 #3)
-    // has not been re-derived under the rules bake.
-    //
-    // What it was: streaming jobs used to bake an arrival's splat against a CachedGlobal range
-    // snapshotted at job-submit, so an edit that widened the committed range after that snapshot
-    // left the arrival on a stale range — a permanent tile-boundary seam against its resplatted
-    // neighbour. Jobs no longer capture a range at all: they size the splat and leave it unbaked,
-    // so that specific staleness cannot occur.
-    //
-    // Why it is still a no-op rather than wrong: this predicate only ADDS tiles that
-    // anyModifierIntersects already rejected. No modifier reaches them, so their bake resets to
-    // zero and composites nothing — the same bytes they already hold. The cost is a wasted bake
-    // (plus a height re-fill and version bump), not a wrong result.
-    //
-    // What still needs deriving before it can go: the committed range is residency-dependent, and
-    // it is the domain every HeightNormalized row normalizes against. Two tiles evaluated against
-    // different committed ranges resolve identical border heights to different row weights — the
-    // same seam CLASS, reached through the rules rather than through a captured snapshot. Removing
-    // this needs that case measured, not assumed absent.
-    const bool committedRangeOffBand =
-        tiled.SplatBakeRangeValid &&
-        (tiled.SplatBakeMinH < 0.0f || tiled.SplatBakeMaxH > kTileNoiseAmplitude);
-
     // COARSE tiles: composite the rules over the coarse splat at coarse resolution, once.
     //
     // Every full-detail splat path below gates on LodState == Full, and material now comes
@@ -4665,15 +4880,8 @@ void TerrainModifierSystem::BakeTiledStreamedTiles(TiledTerrainData& tiled, floa
     // Cheap by construction — coarse resolution, once per arrival (CoarseSplatBaked), and
     // ONLY while the tile is coarse. ModifiersApplied is deliberately NOT set: the full bake
     // must still run when this tile upgrades.
-    //
-    // Deferred until the committed range is VALID: that range is the domain every
-    // HeightNormalized row normalizes against, and the [0,0] sentinel would collapse it
-    // onto the 0.001 heightRange clamp and hand the whole tile to any altitude-capped row.
-    // A tile that arrives before the first bake commits a range simply bakes on a later tick.
     for (auto& [coarseCoord, coarsePtr] : tiled.Tiles)
     {
-        if (!tiled.SplatBakeRangeValid)
-            break;
         if (!coarsePtr || coarsePtr->LodState != TileLodState::Coarse || coarsePtr->CoarseSplatBaked)
             continue;
         const uint32 cw = coarsePtr->Heightfield.GetWidth();
@@ -4682,12 +4890,12 @@ void TerrainModifierSystem::BakeTiledStreamedTiles(TiledTerrainData& tiled, floa
             continue;
         ResetSplatmap(coarsePtr->Heightfield, coarsePtr->Splatmap,
                       coarsePtr->SplatmapWidth, coarsePtr->SplatmapHeight);
-        ApplySplatModifiers(coarsePtr->Splatmap, coarsePtr->SplatmapWidth, coarsePtr->SplatmapHeight,
-                            coarsePtr->Heightfield, tileSize, tileSize,
-                            coarsePtr->WorldOriginX, coarsePtr->WorldOriginZ,
-                            heightScale, tiled.SplatBakeMinH, tiled.SplatBakeMaxH,
-                            modifiers, 0, 0, kRegionUnbounded, kRegionUnbounded);
-        coarsePtr->SplatmapDirty = true;
+        ApplySplatModifiers(coarsePtr->Splatmap, coarsePtr->SplatmapWidth, coarsePtr->SplatmapHeight, coarsePtr->Heightfield,
+                            MakeGridSplatLattice(coarsePtr->WorldOriginX, coarsePtr->WorldOriginZ, tileSize, tileSize, coarsePtr->SplatmapWidth, coarsePtr->SplatmapHeight),
+                            heightScale,
+                            modifiers, 0, 0, kRegionUnbounded, kRegionUnbounded,
+                            m_LayerClampWarnings, m_UnaddressableRulesWarnings);
+        coarsePtr->MarkSplatChanged();
         coarsePtr->CoarseSplatBaked = true;
     }
 
@@ -4698,7 +4906,7 @@ void TerrainModifierSystem::BakeTiledStreamedTiles(TiledTerrainData& tiled, floa
     {
         if (!tilePtr || tilePtr->LodState != TileLodState::Full || tilePtr->ModifiersApplied)
             continue;
-        if (anyModifierIntersects(*tilePtr, false) || committedRangeOffBand)
+        if (anyModifierIntersects(*tilePtr, false))
             bakeTiles.push_back(coord);
         else
             // No modifier reaches this tile, so the UNBAKED base is already its final splat:
@@ -4706,336 +4914,190 @@ void TerrainModifierSystem::BakeTiledStreamedTiles(TiledTerrainData& tiled, floa
             // applied costs nothing and skips a bake that would write the same zeros back.
             // (A Shape::Global rules volume has infinite bounds, so on a terrain carrying the
             // default rows this branch does not fire — every tile intersects and bakes.)
-            tilePtr->ModifiersApplied = true;
+            tilePtr->MarkModifiersApplied();
     }
     if (bakeTiles.empty())
         return;
 
-    // Pass 1: the base + height modifiers on the arrivals a HEIGHT-writing modifier reaches,
-    // then refresh each one's cached range. Re-filling the deterministic base makes this
-    // bit-identical to how BakeTiledFull treats it. An arrival only splat writers reach (the
-    // scene's global surface rules reach every tile) still holds exactly that base, as the
-    // streaming job filled it with the same FillTiledBaseRegion, so its heights, their cached
-    // range and their dirty state are left alone: a re-fill would rewrite the same samples and
-    // re-trigger the height upload, the normal regen and the quadtree sync for nothing.
-    std::vector<uint8> heightsComposed(bakeTiles.size(), 0u);
-    bool anyHeightsComposed = false;
-    for (std::size_t i = 0; i < bakeTiles.size(); ++i)
+    // Pass 1, on an arrival's first bake frame: the base + height modifiers on the arrivals a
+    // HEIGHT-writing modifier reaches, then refresh each one's cached range. Re-filling the
+    // deterministic base makes this bit-identical to how BakeTiledFull treats it. An arrival only
+    // splat writers reach (the scene's global surface rules reach every tile) still holds exactly
+    // that base, as the streaming job filled it with the same FillTiledBaseRegion, so its heights,
+    // their cached range and their dirty state are left alone: a re-fill would rewrite the same
+    // samples and re-trigger the height upload and the normal regen for nothing.
+    // The compose runs in row bands across the pool (RunBakeRowBands): each band writes only its
+    // own rows of its own tile, and reads the modifier stack, the routes and the base config, which
+    // nothing writes during the bake. The range refresh and the dirty marks run here after the join.
+    std::vector<TerrainTileData*> composeTiles;
+    std::vector<BakeBandRegion> composeRects;
+    for (const TileCoord coord : bakeTiles)
     {
-        auto* t = tiled.Tiles[bakeTiles[i]].get();
+        auto* t = tiled.Tiles[coord].get();
+        if (t->ArrivalHeightsComposed)
+            continue;
+        t->ArrivalHeightsComposed = true;
         if (!anyModifierIntersects(*t, true))
             continue;
-        ComposeTileHeights(t->Heightfield, tiled, t->WorldOriginX, t->WorldOriginZ,
-                           heightScale, terrainOriginY, modifiers,
-                           0, 0, kRegionUnbounded, kRegionUnbounded);
-        RefreshTileHeightRange(*t);
-        heightsComposed[i] = 1u;
-        anyHeightsComposed = true;
+        composeTiles.push_back(t);
+        composeRects.push_back(BakeBandRegion{0, 0, static_cast<int32>(t->Heightfield.GetWidth()) - 1,
+                                              static_cast<int32>(t->Heightfield.GetHeight()) - 1});
+    }
+    if (!composeTiles.empty())
+    {
+        RunBakeRowBands(composeRects, [&composeTiles, &tiled, &modifiers, heightScale, terrainOriginY](
+                                          std::size_t i, int32 minX, int32 maxX, int32 z0, int32 z1) {
+            TerrainTileData* t = composeTiles[i];
+            ComposeTileHeights(t->Heightfield, tiled, t->WorldOriginX, t->WorldOriginZ, heightScale, terrainOriginY,
+                               modifiers, minX, z0, maxX, z1);
+        });
+        m_LastArrivalHeightBandCount = m_LastBakeBandCount;
+        for (TerrainTileData* t : composeTiles)
+        {
+            RefreshTileHeightRange(*t);
+            t->MarkFullDirty();
+        }
     }
 
-    // Splat over the CURRENT global range across all resident tiles (O(tiles)
-    // over cached per-tile min/max — matches BakeTiledFull's normalization when
-    // the other tiles' cached ranges are current, which they are). Other tiles
-    // keep their existing splat here: a stream-in must not regen or version-bump
-    // any tile but the ones that arrived (the E6-review#3 churn contract). When the
-    // arrivals push the aggregate past the committed splat range, the already-
-    // resident tiles are left at the OLD range while the new tile normalizes against
-    // the wider one — a hard normalization seam at the new tile's border. That is
-    // reconciled below by scheduling the deferred whole-terrain renormalize, so the
-    // settle brings every resident tile onto the one final range (it must not depend
-    // on a later authored edit, which under heavy atlas eviction may never come —
-    // the persistent snow/grass tile-boundary seam).
-    float32 globalMinH, globalMaxH;
-    ComputeResidentGlobalHeightRange(tiled, globalMinH, globalMaxH);
-
-    // The arrivals' splat runs in row bands across the job pool (RunBakeRowBands): a whole
-    // tile is a million texels, and the rules' slope term reads only the arrival's own heights,
-    // final by now, so the bands are byte-identical to one call per tile.
-    // The tiles are resolved here, on the calling thread: the bands only index this vector.
+    // Only the arrivals splat here: a stream-in must not regen or version-bump any other tile.
+    // The rules read heights in meters, so an arrival's splat does not depend on its neighbors.
+    // The arrivals' splat runs at most kArrivalSplatRowsPerFrame rows a frame, a tile's rows in
+    // order and the tiles in tile-map order, in row bands across the job pool (RunBakeRowBands):
+    // the rules' slope term
+    // reads only the arrival's own heights, final by now, so the bands and the frames are
+    // byte-identical to one call per tile. The tiles are resolved here, on the calling thread:
+    // the bands only index this vector.
     std::vector<TerrainTileData*> splatTiles;
     std::vector<BakeBandRegion> splatRects;
     splatTiles.reserve(bakeTiles.size());
     splatRects.reserve(bakeTiles.size());
+    uint32 rowBudget = kArrivalSplatRowsPerFrame;
     for (const TileCoord coord : bakeTiles)
     {
+        if (rowBudget == 0)
+            break;
         auto* t = tiled.Tiles[coord].get();
+        if (t->Splatmap.size() != static_cast<size_t>(t->Heightfield.GetWidth()) * t->Heightfield.GetHeight() * 4u)
+            ResetSplatmap(t->Heightfield, t->Splatmap, t->SplatmapWidth, t->SplatmapHeight);
+        const uint32 rows = std::min(rowBudget, t->SplatmapHeight - t->ArrivalSplatNextRow);
         splatTiles.push_back(t);
-        ResetSplatmap(t->Heightfield, t->Splatmap, t->SplatmapWidth, t->SplatmapHeight);
-        splatRects.push_back(BakeBandRegion{0, 0, static_cast<int32>(t->SplatmapWidth) - 1,
-                                            static_cast<int32>(t->SplatmapHeight) - 1});
+        splatRects.push_back(BakeBandRegion{0, static_cast<int32>(t->ArrivalSplatNextRow),
+                                            static_cast<int32>(t->SplatmapWidth) - 1,
+                                            static_cast<int32>(t->ArrivalSplatNextRow + rows) - 1});
+        rowBudget -= rows;
     }
     RunBakeRowBands(splatRects, [&](std::size_t i, int32 minX, int32 maxX, int32 z0, int32 z1) {
         TerrainTileData* t = splatTiles[i];
-        ApplySplatModifiers(t->Splatmap, t->SplatmapWidth, t->SplatmapHeight,
-                            t->Heightfield, tileSize, tileSize,
-                            t->WorldOriginX, t->WorldOriginZ,
-                            heightScale, globalMinH, globalMaxH,
-                            modifiers, minX, z0, maxX, z1);
+        ResetSplatmapRegion(t->Heightfield, t->Splatmap, minX, z0, maxX, z1);
+        ApplySplatModifiers(t->Splatmap, t->SplatmapWidth, t->SplatmapHeight, t->Heightfield,
+                            MakeGridSplatLattice(t->WorldOriginX, t->WorldOriginZ, tileSize, tileSize, t->SplatmapWidth, t->SplatmapHeight),
+                            heightScale,
+                            modifiers, minX, z0, maxX, z1, m_LayerClampWarnings, m_UnaddressableRulesWarnings);
     });
 
     static const bool kTileStreamDebug = std::getenv("GE_TERRAIN_TILE_DEBUG") != nullptr;
-    for (std::size_t i = 0; i < bakeTiles.size(); ++i)
+    for (std::size_t i = 0; i < splatTiles.size(); ++i)
     {
-        const TileCoord coord = bakeTiles[i];
-        auto* t = tiled.Tiles[coord].get();
-        if (heightsComposed[i] != 0u)
-            t->MarkFullDirty();
-        t->SplatmapDirty = true;
-        t->ModifiersApplied = true;
-        outBakedTiles.push_back(coord);
+        TerrainTileData* t = splatTiles[i];
+        t->ArrivalSplatNextRow = static_cast<uint32>(splatRects[i].MaxZ) + 1u;
+        if (t->ArrivalSplatNextRow < t->SplatmapHeight)
+            continue;
+        t->MarkSplatChanged();
+        t->MarkModifiersApplied();
+        outBakedTiles.push_back(t->Coord);
 
         if (kTileStreamDebug)
-            Logger::Log::Info("Terrain.TileStream in tile=({},{}) bake=region", coord.X, coord.Z);
+            Logger::Log::Info("Terrain.TileStream in tile=({},{}) bake=region", t->Coord.X, t->Coord.Z);
     }
 
     // An edited streamed tile can extend the global height range; keep the
-    // quadtree/global aggregate in sync WITHOUT re-baking any existing tile (the
-    // same bookkeeping the streaming integration does on load). Revision tracks
+    // global aggregate in sync WITHOUT re-baking any existing tile (the same
+    // bookkeeping the streaming integration does on load). Revision tracks
     // tile-content changes, so bump it here too (RevisionTracksTileMutations).
+    float32 globalMinH, globalMaxH;
+    ComputeResidentGlobalHeightRange(tiled, globalMinH, globalMaxH);
     tiled.CachedGlobalMinH = std::min(tiled.CachedGlobalMinH, globalMinH);
     tiled.CachedGlobalMaxH = std::max(tiled.CachedGlobalMaxH, globalMaxH);
-    if (anyHeightsComposed)
-        tiled.QuadtreeDirty = true;
     ++tiled.Revision;
-
-    // The arrivals extended the aggregate beyond the range every already-resident
-    // tile was splat-normalized against (SplatBakeMinH/MaxH). Schedule the deferred
-    // whole-terrain renormalize so the settle re-normalizes ALL resident tiles onto
-    // the one final range (== a full bake) and the tile-boundary seam heals without
-    // waiting for the next authored edit. No SplatResplatIdleFrames reset: the
-    // settle countdown stays churn-robust so continuous streaming can't starve it.
-    if (tiled.SplatBakeRangeValid &&
-        (globalMinH < tiled.SplatBakeMinH || globalMaxH > tiled.SplatBakeMaxH))
-    {
-        tiled.SplatResplatPending = true;
-        m_AnyResplatPending = true;
-    }
 }
 
-void TerrainModifierSystem::FlushDeferredSplatResplat(ECS::World& world, TerrainService& terrainService)
+void TerrainModifierSystem::BakeGpuReadbackSplats(ECS::World& world, TerrainService& terrainService)
 {
-    // A stroke defers its whole-terrain splat renormalize (SplatResplatPending) to keep
-    // editing real-time. Settle it after a couple of quiet frames so a momentary
-    // mid-stroke pause doesn't trigger a premature full re-splat the next dab re-defers.
-    constexpr uint32 kSplatResplatSettleFrames = 2;
-    const bool spreadSettle = SpreadSettleEnabled();
-
-    // The retained stack, not a local. This flush runs ahead of — and independently
-    // of — the change gate, so a gather into a local here would clear the arenas
-    // and then return through a closed gate that never refills m_AppliedModifiers.
+    GE_CPU_PROFILE_SCOPE("Terrain.ReadbackSplat");
+    // Runs outside the change gate, so the retained stack is gathered here first.
+    GatherModifiers(world, terrainService);
     const std::vector<ResolvedModifier>& modifiers = m_AppliedModifiers;
-    bool gatheredModifiers = false;
-    bool stillPending = false;
-
-    world.Query<ECS::Read<Components::Terrain>, ECS::Read<Components::WorldTransform>>()
-        .Each([&](ECS::EntityHandle /*entity*/, const Components::Terrain& terrain,
-                  const Components::WorldTransform& worldXf)
-        {
+    world.Query<ECS::Read<Components::Terrain>>().Each(
+        [&](ECS::EntityHandle /*entity*/, const Components::Terrain& terrain) {
             if (terrain.TiledTerrainHandle == 0 && terrain.TiledTerrainGeneration == 0)
-            {
-                // ---- Single terrain settle ----
-                TerrainHandle handle{terrain.TerrainDataHandle, terrain.TerrainDataGeneration};
-                auto* data = terrainService.GetTerrainData(handle);
-                if (!data || !data->SplatResplatPending)
-                    return;
-
-                if (++data->SplatResplatIdleFrames < kSplatResplatSettleFrames)
-                {
-                    stillPending = true; // wait one more quiet frame
-                    return;
-                }
-
-                // Full re-bake against the FINAL heights: ResetSplatmapAndCommitRange
-                // re-caches the exact range and marks the whole splat for upload, then the
-                // rules and paint modifiers composite on top — byte-identical to a fresh
-                // full bake.
-                if (!gatheredModifiers)
-                {
-                    GatherModifiers(world, terrainService);
-                    gatheredModifiers = true;
-                }
-                const float32 originX = worldXf.matrix[12] - terrain.SizeX * 0.5f;
-                const float32 originZ = worldXf.matrix[14] - terrain.SizeZ * 0.5f;
-                data->ResetSplatmapAndCommitRange();
-                ApplySplatModifiers(data->Splatmap, data->SplatmapWidth, data->SplatmapHeight,
-                                    data->Heightfield,
-                                    data->Config.WorldSizeX, data->Config.WorldSizeZ,
-                                    originX, originZ, data->Config.HeightScale,
-                                    data->SplatBakeMinH, data->SplatBakeMaxH, modifiers,
-                                    0, 0, kRegionUnbounded, kRegionUnbounded);
-                data->SplatmapDirty = true;
-                data->SplatResplatPending = false;
-                data->SplatResplatIdleFrames = 0;
                 return;
-            }
-            TiledTerrainHandle tiledHandle{terrain.TiledTerrainHandle, terrain.TiledTerrainGeneration};
-            auto* tiled = terrainService.GetTiledTerrainData(tiledHandle);
-            if (!tiled || !tiled->SplatResplatPending)
-                return;
-
-            if (++tiled->SplatResplatIdleFrames < kSplatResplatSettleFrames)
-            {
-                // A fresh range-shifting dab restarted the countdown. Abort any spread
-                // in progress so it re-freezes against the FINAL range once quiet again
-                // (a spread half-done against a now-stale range would not settle to a
-                // full bake). Some tiles keep the old frozen range mid-stroke — an
-                // acceptable splat preview lag, healed by the completed spread at settle.
-                tiled->SplatRenormalizeActive = false;
-                stillPending = true; // wait one more quiet frame
-                return;
-            }
-
-            if (!gatheredModifiers)
-            {
-                GatherModifiers(world, terrainService);
-                gatheredModifiers = true;
-            }
-
-            if (!spreadSettle)
-            {
-                // Kill switch (GE_TERRAIN_SPREAD_SETTLE=0): one-shot flush — renormalize
-                // EVERY resident tile against the final range in this single frame (the
-                // pre-fix ~1.4s stroke-release spike; kept only to A/B the spread).
-                float32 globalMinH = tiled->SplatBakeMinH;
-                float32 globalMaxH = tiled->SplatBakeMaxH;
-                ComputeResidentGlobalHeightRange(*tiled, globalMinH, globalMaxH);
-                std::vector<TileCoord> baked;
-                RenormalizeAllTileSplats(*tiled, tiled->Config.TileWorldSize, modifiers,
-                                         globalMinH, globalMaxH, baked);
-                tiled->SplatResplatPending = false;
-                tiled->SplatResplatIdleFrames = 0;
-                tiled->SplatRenormalizeActive = false;
-                return;
-            }
-
-            GE_CPU_PROFILE_SCOPE("Terrain.SplatRenormalize");
-
-            // First settled frame of this spread: snapshot the resident-Full tiles and
-            // FREEZE the final global range, so every row band across every frame
-            // normalizes against one range — the fully-spread result is byte-identical
-            // to a one-shot RenormalizeAllTileSplats (each texel visited exactly once).
-            if (!tiled->SplatRenormalizeActive)
-            {
-                float32 globalMinH = tiled->SplatBakeMinH;
-                float32 globalMaxH = tiled->SplatBakeMaxH;
-                ComputeResidentGlobalHeightRange(*tiled, globalMinH, globalMaxH);
-                tiled->SplatRenormalizeMinH = globalMinH;
-                tiled->SplatRenormalizeMaxH = globalMaxH;
-                tiled->SplatRenormalizeQueue.clear();
-                // Every resident Full tile with a valid heightfield — matching the one-shot
-                // RenormalizeAllTileSplats, which also sizes+generates the splat for any Full
-                // tile (a stream-in that arrived without a cooked splat included).
-                for (auto& [coord, tilePtr] : tiled->Tiles)
-                    if (tilePtr && tilePtr->LodState == TileLodState::Full &&
-                        tilePtr->Heightfield.GetWidth() >= 2 && tilePtr->Heightfield.GetHeight() >= 2)
-                        tiled->SplatRenormalizeQueue.push_back(coord);
-                std::sort(tiled->SplatRenormalizeQueue.begin(), tiled->SplatRenormalizeQueue.end());
-                tiled->SplatRenormalizeTileCursor = 0;
-                tiled->SplatRenormalizeRowCursor = 0;
-                tiled->SplatRenormalizeActive = true;
-            }
-
-            // Renormalize row bands until this frame's texel budget is spent. A tile is
-            // marked SplatmapDirty (-> one whole-tile upload) only once its LAST row is
-            // done, so the GPU never sees a half-renormalized tile.
-            const float32 tileSize = tiled->Config.TileWorldSize;
-            std::size_t texelsThisFrame = 0;
-            while (texelsThisFrame < kSplatRenormalizeTexelsPerFrame &&
-                   tiled->SplatRenormalizeTileCursor < tiled->SplatRenormalizeQueue.size())
-            {
-                const TileCoord coord = tiled->SplatRenormalizeQueue[tiled->SplatRenormalizeTileCursor];
-                auto it = tiled->Tiles.find(coord);
-                if (it == tiled->Tiles.end() || !it->second ||
-                    it->second->LodState != TileLodState::Full)
-                {
-                    // Evicted / changed LOD since the snapshot: a later authored edit or
-                    // stream-in re-bakes it. Skip to the next queued tile.
-                    ++tiled->SplatRenormalizeTileCursor;
-                    tiled->SplatRenormalizeRowCursor = 0;
-                    continue;
-                }
-                TerrainTileData& tp = *it->second;
-                const int32 rows = static_cast<int32>(tp.Heightfield.GetHeight());
-                const int32 width = static_cast<int32>(tp.Heightfield.GetWidth());
-                if (rows < 2 || width < 2)
-                {
-                    ++tiled->SplatRenormalizeTileCursor;
-                    tiled->SplatRenormalizeRowCursor = 0;
-                    continue;
-                }
-                const std::size_t budgetLeft = kSplatRenormalizeTexelsPerFrame - texelsThisFrame;
-                const int32 rowsThisStep = std::max<int32>(
-                    1, static_cast<int32>(budgetLeft / static_cast<std::size_t>(width)));
-                const int32 rowStart = tiled->SplatRenormalizeRowCursor;
-                const int32 rowEnd = std::min(rows - 1, rowStart + rowsThisStep - 1);
-                texelsThisFrame += RenormalizeTileSplatRows(tp, tileSize,
-                                                            tiled->Config.HeightScale, modifiers,
-                                                            tiled->SplatRenormalizeMinH,
-                                                            tiled->SplatRenormalizeMaxH,
-                                                            rowStart, rowEnd);
-                if (rowEnd >= rows - 1)
-                {
-                    tp.SplatmapDirty = true; // tile complete: one whole-tile re-upload
-                    ++tiled->SplatRenormalizeTileCursor;
-                    tiled->SplatRenormalizeRowCursor = 0;
-                }
-                else
-                {
-                    tiled->SplatRenormalizeRowCursor = rowEnd + 1;
-                }
-            }
-
-            if (tiled->SplatRenormalizeTileCursor >= tiled->SplatRenormalizeQueue.size())
-            {
-                // Spread complete: commit the frozen range (mid-stroke region splats
-                // read SplatBakeMinH/MaxH, so it must move only once every tile is on the
-                // new range) and clear the deferral.
-                tiled->SplatBakeMinH = tiled->SplatRenormalizeMinH;
-                tiled->SplatBakeMaxH = tiled->SplatRenormalizeMaxH;
-                tiled->SplatBakeRangeValid = true;
-                tiled->SplatResplatPending = false;
-                tiled->SplatResplatIdleFrames = 0;
-                tiled->SplatRenormalizeActive = false;
-                tiled->SplatRenormalizeQueue.clear();
-            }
-            else
-            {
-                stillPending = true; // more row bands to spread next frame
-            }
+            auto* tiled = terrainService.GetTiledTerrainData(
+                TiledTerrainHandle{terrain.TiledTerrainHandle, terrain.TiledTerrainGeneration});
+            if (tiled != nullptr)
+                BakeTiledReadbackSplats(*tiled, modifiers);
         });
-
-    m_AnyResplatPending = stillPending;
 }
 
+void TerrainModifierSystem::BakeTiledReadbackSplats(TiledTerrainData& tiled,
+                                                    const std::vector<ResolvedModifier>& modifiers)
+{
+    const float32 tileSize = tiled.Config.TileWorldSize;
+    if (!tiled.ResidentSplatsBaked)
+    {
+        // A GPU bake ran before any CPU splat bake: the first splat bake covers every tile,
+        // and the terrain's range follows the readback heights.
+        std::vector<TileCoord> bakedTiles;
+        BakeAllTileSplats(tiled, tileSize, modifiers, bakedTiles);
+        for (auto& [coord, tilePtr] : tiled.Tiles)
+            if (tilePtr)
+                tilePtr->ReadbackSplatRegion = {};
+        ComputeResidentGlobalHeightRange(tiled, tiled.CachedGlobalMinH, tiled.CachedGlobalMaxH);
+        return;
+    }
+    bool heightsReplaced = false;
+    for (auto& [coord, tilePtr] : tiled.Tiles)
+    {
+        if (!tilePtr || tilePtr->ReadbackSplatRegion.IsEmpty())
+            continue;
+        heightsReplaced = true;
+        TerrainTileData& tile = *tilePtr;
+        const DirtyRegionLog::Region region = tile.ReadbackSplatRegion;
+        tile.ReadbackSplatRegion = {};
+        const int32 w = static_cast<int32>(tile.Heightfield.GetWidth());
+        const int32 h = static_cast<int32>(tile.Heightfield.GetHeight());
+        // A tile with no baked splat gets its first splat from the full bake.
+        if (tile.LodState != TileLodState::Full || tile.Splatmap.empty() ||
+            tile.SplatmapWidth != static_cast<uint32>(w) || tile.SplatmapHeight != static_cast<uint32>(h))
+            continue;
+        const int32 minX = std::max(0, region.MinX - kSplatSlopePad);
+        const int32 minZ = std::max(0, region.MinZ - kSplatSlopePad);
+        const int32 maxX = std::min(w - 1, region.MaxX - 1 + kSplatSlopePad);
+        const int32 maxZ = std::min(h - 1, region.MaxZ - 1 + kSplatSlopePad);
+        ResetSplatmapRegion(tile.Heightfield, tile.Splatmap, minX, minZ, maxX, maxZ);
+        ApplySplatModifiers(tile.Splatmap, tile.SplatmapWidth, tile.SplatmapHeight, tile.Heightfield,
+                            MakeGridSplatLattice(tile.WorldOriginX, tile.WorldOriginZ, tileSize, tileSize,
+                                                 tile.SplatmapWidth, tile.SplatmapHeight),
+                            tiled.Config.HeightScale, modifiers, minX, minZ, maxX, maxZ,
+                            m_LayerClampWarnings, m_UnaddressableRulesWarnings);
+        tile.MarkSplatChanged();
+    }
+    // The readback refreshed each tile's CachedMinH/MaxH; the terrain's range follows them.
+    if (heightsReplaced)
+        ComputeResidentGlobalHeightRange(tiled, tiled.CachedGlobalMinH, tiled.CachedGlobalMaxH);
+}
 
-void TerrainModifierSystem::BakeSphereModifiers(TerrainService& terrainService, float32 planetRadius,
+void TerrainModifierSystem::BakeSphereModifiers(TerrainService& terrainService, uint32 planet, uint32 faceSamples,
+                                                float32 planetRadius,
                                                 const Components::TerrainPlanetRelief& relief,
                                                 const std::vector<ResolvedModifier>& modifiers,
                                                 const std::vector<uint64>& modifierGeometryHashes,
                                                 bool fullBake)
 {
-    // Size the sculpt page store's virtual resolution from the planet radius before any write, so
-    // the modifier bake (and every reader) iterate the same radius-scaled dim. Idempotent + frozen
-    // after the first edit — cheap to call each bake.
-    terrainService.ConfigurePlanetSculpt(planetRadius);
-    const uint32 virtualDim = terrainService.GetPlanetSculptGeometry().VirtualDim;
-
     // Resolve every sphere-supported modifier onto the sphere (sorted by priority already), and
-    // flag any unsupported type for the one-shot honest warning. With the analytic flag on (S2),
-    // closed-form-primitive modifiers — circular flattens today — are PARTITIONED OUT of the store
-    // bake and published as analytic placements instead: the store's modifier layer then never
-    // contains them (no double-apply by construction), and the sampling chokepoints evaluate the
-    // exact shape at any radius. Rect flattens and every payload-carrying type (noise, stamp,
-    // sculpt zone) stay store-baked. Overflow beyond the bounded set falls back to the bake
-    // (shape quality degrades to the store ceiling for the excess — warned once, never dropped).
-    const bool analyticOn = AnalyticModifiersEnabled();
+    // flag any unsupported type for the one-shot warning.
     std::vector<SphereModifierPlacement> placements;
     placements.reserve(modifiers.size());
-    std::array<CBTTerrain::SphereAnalyticFlatten, CBTTerrain::kMaxSphereAnalyticModifiers>
-        analytic{};
-    uint32 analyticCount = 0u;
     bool anyUnsupported = false;
-    bool analyticOverflow = false;
     for (const auto& mod : modifiers)
     {
         // Pooling has no meaning on a planet: the pool accumulates across its
@@ -5067,45 +5129,8 @@ void TerrainModifierSystem::BakeSphereModifiers(TerrainService& terrainService, 
         }
         // A volume contributes one placement per sphere-bakeable effect; every
         // other modifier contributes exactly one.
-        std::vector<SphereModifierPlacement> modPlacements;
-        AppendSpherePlacements(mod, planetRadius, modPlacements, anyUnsupported);
-        for (SphereModifierPlacement& p : modPlacements)
-        {
-            // The analytic path is a closed-form circular flatten with the plain
-            // shape falloff; an inward feather or a master weight has no analytic
-            // twin, so those bake through the store instead. As with the GPU
-            // height bake, the closed form carries only ShapeFalloffWeight's
-            // outward-only branch, so refusing the inward feather here is what
-            // keeps the analytic eval and the store bake the same function.
-            const bool analyticEligible = analyticOn &&
-                                          p.Type == SpherePlacementKind::Flatten &&
-                                          p.Shape == Components::TerrainModifierShape::Circle &&
-                                          p.FalloffInward <= 0.0f && p.MasterWeight == 1.0f;
-            if (analyticEligible && analyticCount < CBTTerrain::kMaxSphereAnalyticModifiers)
-            {
-                // Copy the EXACT placement frame (N/E1/E2 from MakeSphereFrame) so the analytic
-                // eval and a store bake of the same modifier are the same closed form to the bit.
-                CBTTerrain::SphereAnalyticFlatten& f = analytic[analyticCount++];
-                f.N = p.N;
-                f.E1 = p.E1;
-                f.E2 = p.E2;
-                f.Radius = p.Radius;
-                f.Falloff = p.Falloff;
-                f.TargetRadius = p.TargetRadius;
-                f.PlanetRadius = p.PlanetRadius;
-                f.Valid = true;
-                continue; // published analytically — excluded from the store bake below
-            }
-            if (analyticEligible)
-                analyticOverflow = true; // over the bounded set — falls back to the store bake
-            placements.push_back(std::move(p));
-        }
+        AppendSpherePlacements(mod, planetRadius, placements, anyUnsupported);
     }
-
-    // Publish the placement set (empty when the flag is off or no eligible modifier exists — the
-    // dark-ship). An unchanged publish is a no-op; a changed one advances the combined sculpt
-    // version so upload / Classify / physics gates re-arm even before the region bake below runs.
-    terrainService.SetPlanetAnalyticModifiers(analytic.data(), analyticCount);
 
     if (anyUnsupported && !m_SphereUnsupportedWarned)
     {
@@ -5113,37 +5138,25 @@ void TerrainModifierSystem::BakeSphereModifiers(TerrainService& terrainService, 
         Logger::Log::Warning(
             "TerrainModifierSystem: a spherical terrain carries modifiers not yet baked onto "
             "planets (Noise, Flatten, Stamp and Sculpt zones bake with a circle or rectangle "
-            "shape; Paint and Spline modifiers, and any volume with Shape=Spline Path/Area or "
+            "shape; Paint and Spline modifiers, surface-rules, ground-claim and grass effects, "
+            "and any volume with Shape=Spline Path/Area or "
             "Shape=Global, do not yet); those modifiers are ignored on the sphere.");
     }
-    if (analyticOverflow && !m_SphereAnalyticOverflowWarned)
-    {
-        m_SphereAnalyticOverflowWarned = true;
-        Logger::Log::Warning(
-            "TerrainModifierSystem: more than {} analytic-eligible flatten modifiers on the "
-            "planet; the excess bakes into the sculpt store instead (shape accuracy limited by "
-            "the store's texel budget there).",
-            CBTTerrain::kMaxSphereAnalyticModifiers);
-    }
 
-    // The dirty (face, UV rect) regions to re-derive. A full bake re-derives every face; a region
-    // bake unions each changed modifier's old ∪ new footprint (the sphere analogue of the planar
-    // old∪new bounds diff), classifying a world footprint to cube-face rects exactly like a #488 dab.
-    CBTTerrain::SphereEditRegions dirty;
-    if (fullBake)
+    // A layer made for another lattice (the radius or Samples Per Meter changed) is baked again whole.
+    const TerrainService::PlanetPageOverlay* overlay = terrainService.FindPlanetPageOverlay(planet);
+    const bool fresh = fullBake || !overlay || !overlay->Modifiers ||
+                       !overlay->Modifiers->FitsLevels(PageStreaming::BuildPageStoreLevels(faceSamples, faceSamples));
+
+    // The footprints to bake again. A full bake bakes every current modifier's footprint into a new
+    // layer; a region bake takes each changed modifier's old and new footprint (the sphere analogue
+    // of the planar old and new bounds diff).
+    std::vector<SphereFootprint> dirty;
+    if (fresh)
     {
-        // Bound the full re-bake to the CURRENT modifiers' footprints; the clear-all inside
-        // BakePlanetModifierRegions(fullBake=true) resets any removed/moved modifier's vacated
-        // pages. Iterating whole faces at a radius-scaled virtual dim would be tens of millions of
-        // texels — a whole-face region set is a scale trap on a large planet.
         for (const auto& mod : modifiers)
-        {
-            if (!IsSphereSupportedModifier(mod))
-                continue;
-            UnionSphereRegions(
-                dirty, ModifierFaceRegions(mod.Position, ModifierFootprintRadius(mod), planetRadius,
-                                           virtualDim));
-        }
+            if (IsSphereSupportedModifier(mod))
+                dirty.push_back({mod.Position, ModifierFootprintRadius(mod)});
     }
     else
     {
@@ -5162,121 +5175,57 @@ void TerrainModifierSystem::BakeSphereModifiers(TerrainService& terrainService, 
                     prev = &m_LastBakeSnapshot[j];
                     break;
                 }
-            const float32 fpR = ModifierFootprintRadius(mod);
             if (!prev)
             {
-                // Added: dirty where it is.
-                UnionSphereRegions(
-                    dirty, ModifierFaceRegions(mod.Position, fpR, planetRadius, virtualDim));
+                dirty.push_back({mod.Position, ModifierFootprintRadius(mod)}); // added
             }
-            else if (prev->GeometryHash != modifierGeometryHashes[i] ||
-                     prev->PayloadVersion != mod.DataVersion)
+            else if (prev->GeometryHash != modifierGeometryHashes[i] || prev->PayloadVersion != mod.DataVersion)
             {
-                // Moved / re-parameterized / brush-stroked: dirty where it was AND where it is.
-                UnionSphereRegions(dirty, ModifierFaceRegions(prev->WorldPos, prev->FootprintRadius,
-                                                              planetRadius, virtualDim));
-                UnionSphereRegions(
-                    dirty, ModifierFaceRegions(mod.Position, fpR, planetRadius, virtualDim));
+                // Moved, re-parameterized or brush-stroked: where it was and where it is.
+                dirty.push_back({prev->WorldPos, prev->FootprintRadius});
+                dirty.push_back({mod.Position, ModifierFootprintRadius(mod)});
             }
         }
         for (size_t j = 0; j < m_LastBakeSnapshot.size(); ++j)
-        {
-            if (matched[j] || !m_LastBakeSnapshot[j].SphereSupported)
-                continue;
-            // Removed: dirty where it was.
-            UnionSphereRegions(dirty, ModifierFaceRegions(m_LastBakeSnapshot[j].WorldPos,
-                                                          m_LastBakeSnapshot[j].FootprintRadius,
-                                                          planetRadius, virtualDim));
-        }
+            if (!matched[j] && m_LastBakeSnapshot[j].SphereSupported)
+                dirty.push_back({m_LastBakeSnapshot[j].WorldPos, m_LastBakeSnapshot[j].FootprintRadius}); // removed
     }
 
     // A region bake with an empty diff is quiescent (idle planets bake nothing). A full bake still
-    // runs on an empty footprint set so the clear-all resets any removed modifier's vacated pages.
-    if (!fullBake && dirty.Count == 0u)
+    // makes its new layer on an empty footprint set, so the pages lose a removed modifier.
+    if (!fresh && dirty.empty())
+        return;
+    if (!(planetRadius > 0.0f))
         return;
 
-    // Flatten cancels the base relief per texel, so it needs the closed-form relief at each
-    // direction; the other types don't, so skip the noise eval unless a flatten is present.
+    // Flatten cancels the base relief per sample, so it needs the closed-form relief at each
+    // direction; the other types do not, so the relief is found only when a flatten is present.
     bool anyFlatten = false;
     for (const SphereModifierPlacement& p : placements)
-        if (p.Type == SpherePlacementKind::Flatten)
-        {
-            anyFlatten = true;
-            break;
-        }
+        anyFlatten = anyFlatten || p.Type == SpherePlacementKind::Flatten;
 
-    const CBTTerrain::SphereEditRegions baked = terrainService.BakePlanetModifierRegions(
-        dirty,
-        [&placements, &relief, anyFlatten](float32 dx, float32 dy, float32 dz) {
-            const float32 reliefAtDir =
-                anyFlatten ? CBTTerrain::PlanetRelief(dx, dy, dz, relief.Amplitude, relief.Frequency,
-                                                      relief.Octaves)
-                           : 0.0f;
-            float32 offset = 0.0f;
-            for (const SphereModifierPlacement& p : placements)
-                offset += EvaluateSpherePlacement(p, dx, dy, dz, reliefAtDir);
-            return offset;
-        },
-        fullBake);
+    terrainService.WritePlanetModifierLayer(
+        planet, faceSamples, fresh,
+        [&](PageStreaming::HeightPageLayer& layer, std::vector<PageStreaming::PageFaceRect>& changed) {
+            BakeSphereFootprints(layer, planetRadius, relief, anyFlatten, placements, dirty, changed);
+        });
 
     static const bool kEditDebug = std::getenv("GE_TERRAIN_ZONE_DEBUG") != nullptr;
-    if (kEditDebug && baked.Count > 0u)
-    {
-        std::string faces;
-        for (uint32 i = 0; i < baked.Count; ++i)
-        {
-            if (i != 0)
-                faces += ',';
-            faces += std::to_string(baked.Rects[i].Face);
-        }
-        Logger::Log::Info("Planet.ModifierBake faces=[{}] mods={} full={}", faces, placements.size(),
-                          fullBake ? 1 : 0);
-    }
+    if (kEditDebug)
+        Logger::Log::Info("Planet.ModifierBake footprints={} mods={} full={}", dirty.size(), placements.size(),
+                          fresh ? 1 : 0);
 }
 
 TerrainModifierSystem::TerrainModifierSystem() = default;
 
 TerrainModifierSystem::~TerrainModifierSystem()
 {
-    if (m_BakeStoreWrites && m_BakeStoreWrites->IsValid())
-        m_BakeStoreWrites->Wait();
+    // The grass job owns everything it reads, so it never needs waiting for (the system may be
+    // destroyed on a pool worker, where waiting is illegal); a queued one is cancelled rather than
+    // run for a system that will never apply it.
+    if (m_GrassComposeTask && m_GrassComposeTask->IsValid())
+        m_GrassComposeTask->Cancel();
 }
-
-// A save's copy of each stored terrain's bake. Whichever of the store job and the next
-// Update claims it first takes it; the other waits for that copy (the job before it
-// writes, Update before it bakes over the data in place).
-struct BakeStoreSnapshot
-{
-    struct Store
-    {
-        std::filesystem::path File;
-        uint64 Key = 0;
-        std::shared_ptr<const TerrainData> Data;
-    };
-    std::vector<Store> Stores;
-    std::vector<TerrainBakeArtifact> Artifacts; // one per store, once taken
-    std::atomic<bool> Claimed{false};
-    std::promise<void> TakenPromise;
-    std::shared_future<void> Taken = TakenPromise.get_future().share();
-
-    // Copies every store's bake if this caller claims the copy; otherwise waits for the
-    // claimant's. Returns once Artifacts is complete.
-    void Take()
-    {
-        if (Claimed.exchange(true, std::memory_order_acq_rel))
-        {
-            Taken.wait();
-            return;
-        }
-        Artifacts.reserve(Stores.size());
-        for (Store& store : Stores)
-        {
-            Artifacts.push_back(CopyTerrainBake(*store.Data));
-            store.Data.reset();
-        }
-        TakenPromise.set_value();
-    }
-};
 
 void TerrainModifierSystem::BakeAwaitedPageOverlays(ECS::World& world, TerrainService& terrainService,
                                                     const std::vector<ResolvedModifier>& modifiers)
@@ -5290,124 +5239,29 @@ void TerrainModifierSystem::BakeAwaitedPageOverlays(ECS::World& world, TerrainSe
             auto* tiled = terrainService.GetTiledTerrainData(
                 TiledTerrainHandle{terrain.TiledTerrainHandle, terrain.TiledTerrainGeneration});
             if (tiled && tiled->AwaitsPageOverlay())
-                BakeHeightPageOverlay(*tiled, terrain.HeightScale, worldXf.matrix[13], modifiers, false, DirtyUnion{});
+                BakeHeightPageOverlay(*tiled, terrain.HeightScale,
+                                      (worldXf.GetPosition() - Mathematics::WorldPosition{}).y, modifiers, false, DirtyUnion{},
+                                      GpuHeightBakeTerrainRefusal(*tiled) != GpuHeightBakeRefusalReason::None);
         });
-}
-
-void TerrainModifierSystem::TakePendingBakeStoreSnapshot()
-{
-    if (!m_PendingBakeStoreSnapshot)
-        return;
-    m_PendingBakeStoreSnapshot->Take();
-    m_PendingBakeStoreSnapshot.reset();
 }
 
 void TerrainModifierSystem::Update(ECS::World& world, float32 /*deltaTime*/)
 {
     UpdateBakes(world);
-    if (m_BakeStoreRequested)
-        StoreRequestedBakes(world);
+    if (auto* terrainService = TerrainService::TryGet())
+    {
+        m_ColorMapBaker.Update(world, *terrainService, m_ColorZones, m_ColorZonesStamp);
+        m_SurfacePages.Update(world, *terrainService, *this, m_JobPool);
+    }
 }
 
-void TerrainModifierSystem::RequestBakeCacheStore(ECS::World& world, const GUID& previousScene, const GUID& savedScene)
+void TerrainModifierSystem::UpdateBakes(ECS::World& world)
 {
-    world.Query<ECS::Write<Components::Terrain>>().Each(
-        [&](ECS::Writable<Components::Terrain> terrainWrite)
-        {
-            auto& terrain = terrainWrite.Mutable();
-            if (terrain.BakeOriginScene.IsNull() || terrain.BakeOriginScene == previousScene)
-                terrain.BakeOriginScene = savedScene;
-        });
-    m_BakeStoreScene = savedScene;
-    m_BakeStoreRequested = true;
-}
-
-void TerrainModifierSystem::StoreRequestedBakes(ECS::World& world)
-{
+    GE_CPU_PROFILE_SCOPE("Terrain.Modifier");
     auto* terrainService = TerrainService::TryGet();
     if (!terrainService)
         return;
-    const TerrainBakeCacheConfig& bakeCache = terrainService->GetBakeCache();
-    if (!bakeCache.Writable)
-    {
-        m_BakeStoreRequested = false;
-        return;
-    }
-    // A deferred geometry bake, a pending splat renormalize or an interactive edit means
-    // the in-memory result is a preview, not the full bake of the current inputs: wait
-    // for the update that settles it.
-    if (m_GeometryBakePending || m_AnyResplatPending || terrainService->IsInteractiveModifierEdit())
-        return;
-    // The previous store's writes still running: take the snapshot on a later update
-    // rather than wait for them here.
-    if (m_BakeStoreWrites && m_BakeStoreWrites->IsValid() && !m_BakeStoreWrites->IsDone())
-        return;
 
-    // Settled: a region bake's result equals a full bake of the same inputs whenever no
-    // renormalize is pending (TerrainRegionBake.RegionBakeMatchesFullBake,
-    // SingleDiscreteRangeShiftRegionBakeMatchesFullBake and
-    // SingleInteractiveRangeShiftDefersThenSettlesToFullBake pin it), so the field
-    // is stored as it is, under the key of the stack it was baked from.
-    //
-    // The update keys each terrain (the key reads the modifier stack and its payloads,
-    // which the editor changes on this thread) and shares its data. The job copies the
-    // bake, which is megabytes per terrain, then writes what changed and prunes; the next
-    // update copies it instead when the job has not started (BakeStoreSnapshot).
-    auto snapshot = std::make_shared<BakeStoreSnapshot>();
-    std::vector<std::filesystem::path> live;
-    terrainService->BeginModifierAccess();
-    world.Query<ECS::Read<Components::Terrain>, ECS::Read<Components::WorldTransform>>().Each(
-        [&](ECS::EntityHandle entity, const Components::Terrain& terrain, const Components::WorldTransform& worldXf)
-        {
-            if (terrain.Domain != Components::TerrainDomain::Planar || terrain.TiledTerrainHandle != 0 ||
-                terrain.TiledTerrainGeneration != 0 || terrain.BakeOriginScene != m_BakeStoreScene)
-                return;
-            const auto* sceneTag = world.GetComponent<Components::SceneEntityTag>(entity);
-            const std::filesystem::path file = TerrainBakeFile(
-                bakeCache.Directory, terrain.BakeOriginScene, sceneTag ? sceneTag->View() : std::string_view{});
-            const TerrainHandle handle{terrain.TerrainDataHandle, terrain.TerrainDataGeneration};
-            const auto* data = terrainService->GetTerrainData(handle);
-            if (file.empty() || !data || m_AppliedModifiers.empty() || data->Splatmap.empty())
-                return;
-            live.push_back(file);
-            std::shared_ptr<const Terrain::HeightfieldData> baseHeightmap;
-            if (terrain.BaseSource == Components::TerrainBaseSource::HeightmapAsset && !terrain.TerrainAssetGuid.IsNull())
-                baseHeightmap = terrainService->ResolveHeightmapAsset(terrain.TerrainAssetGuid.ToGuid());
-            const uint64 key = ComputeSingleTerrainBakeKey(
-                m_AppliedModifiers, *data, terrain.BaseSource, baseHeightmap.get(),
-                worldXf.matrix[12] - terrain.SizeX * 0.5f, worldXf.matrix[13], worldXf.matrix[14] - terrain.SizeZ * 0.5f);
-            snapshot->Stores.push_back({file, key, terrainService->ShareTerrainData(handle)});
-        });
-    terrainService->EndModifierAccess();
-    m_BakeStoreRequested = false;
-
-    m_PendingBakeStoreSnapshot = snapshot;
-    auto storeAndPrune = [snapshot, live = std::move(live), directory = bakeCache.Directory,
-                          scene = m_BakeStoreScene]() {
-        snapshot->Take();
-        for (size_t i = 0; i < snapshot->Stores.size(); ++i)
-        {
-            const BakeStoreSnapshot::Store& store = snapshot->Stores[i];
-            if (ReadTerrainBakeKey(store.File) == store.Key)
-                continue; // already the current state: a save with no edit writes nothing
-            if (!WriteTerrainBake(store.File, store.Key, snapshot->Artifacts[i]))
-                Logger::Log::Warning("Terrain bake cache: could not write '{}' at save; the next open bakes again",
-                                     store.File.string());
-        }
-        PruneTerrainBakeScene(directory, scene, live);
-    };
-    // A job of the process's one bake-store channel: the writes wait on the disk, so they
-    // hold no compute worker, and a world's store is scheduled behind any other world's
-    // (the cap schedules; it is not a lock).
-    if (m_JobPool)
-        m_BakeStoreWrites = std::make_unique<JobSystem::TaskHandle>(
-            terrainService->BakeStoreChannel(*m_JobPool).Submit(std::move(storeAndPrune)));
-    else
-        storeAndPrune();
-}
-
-void TerrainModifierSystem::PrepareModifierFrame(ECS::World& world, TerrainService& terrainService)
-{
     // Capture the World's pool for the large-region bake fan-out. Null in contexts
     // with no pool (headless tests) → the bake runs serially.
     m_JobPool = world.GetJobSystem();
@@ -5420,38 +5274,17 @@ void TerrainModifierSystem::PrepareModifierFrame(ECS::World& world, TerrainServi
     // Hot-reload lane: evict decoded mask/heightmap caches for assets whose
     // reload events were enqueued (possibly on the watcher thread) since last
     // frame, before the gate decides whether to look.
-    DrainAssetInvalidations(terrainService);
-
-}
-
-void TerrainModifierSystem::UpdateBakes(ECS::World& world)
-{
-    GE_CPU_PROFILE_SCOPE("Terrain.Modifier");
-    auto* terrainService = TerrainService::TryGet();
-    if (!terrainService)
-        return;
-
-    PrepareModifierFrame(world, *terrainService);
+    DrainAssetInvalidations(*terrainService);
 
     terrainService->BeginModifierAccess();
 
-    // A GPU-bake settle readback (slice-1c) refreshed a heightfield last frame and set the
-    // terrain's SplatResplatPending — arm the deferred renormalize so it runs the SAME #526
-    // path as a CPU bake (regenerate splat from the readback-refreshed heights).
-    if (terrainService->TakeGpuReadbackSplatPending())
-        m_AnyResplatPending = true;
+    // A grass compose that finished since the last update swaps in first, before this update's
+    // gather can ask for another.
+    ApplyGrassCompose(*terrainService);
 
-    // Settle any deferred whole-terrain splat renormalize a stroke left owed. Runs
-    // every frame a terrain carries the flag (rare): counts frames since the last
-    // range-shifting dab and, once quiet, runs the one full renormalize against the
-    // final range (settled == full bake). A dab this frame re-defers below, resetting
-    // the count, so it never fires mid-stroke. Independent of the change gate, so it
-    // still settles when ShouldGather stays true (e.g. spline-modifier scenes).
-    if (m_AnyResplatPending)
-    {
-        TakePendingBakeStoreSnapshot();
-        FlushDeferredSplatResplat(world, *terrainService);
-    }
+    // A GPU-bake settle readback refreshed tile heights last frame: the splat follows them.
+    if (terrainService->TakeGpuReadbackSplatPending())
+        BakeGpuReadbackSplats(world, *terrainService);
 
     // Interactive geometry-drag coalescing (see the header). `interactiveDrag` is
     // set while the editor drives a modifier/zone transform gizmo; the deferred
@@ -5476,20 +5309,27 @@ void TerrainModifierSystem::UpdateBakes(ECS::World& world)
     }
     m_WasInteractiveDrag = interactiveDrag;
 
-    // Change gate: on frames where no modifier (or terrain) input could have
-    // changed, skip the gather + content hash entirely — the previous bake is
-    // still correct. The downstream hash remains the authority on whether a
-    // bake actually runs; the gate only decides whether it is worth looking.
-    if (!ShouldGather(world, *terrainService) && !forceSettleBake)
+    // A quiet frame with no settle bake skips the gather and the hash: the last bake is still correct.
+    // The hash decides whether a bake runs; the gate decides only whether to look.
+    const ChangeGateResult gate = ConsumeChangeGate(world, *terrainService);
+    if (gate == ChangeGateResult::Quiet && !forceSettleBake)
     {
+        // A grass compose owed by an edit that landed while another ran: the last gather's stack is
+        // still the newest.
+        if (m_GrassComposeOwed && !m_GrassCompose)
+            BakeGrassFields(world, *terrainService);
         terrainService->EndModifierAccess();
         return;
     }
 
-    g_GatherCount.fetch_add(1, std::memory_order_relaxed);
     // ComposeTiledGroundBlock answers off-camera ground queries from this stack, so
-    // it must describe the state this bake is about to apply.
-    GatherModifiers(world, *terrainService);
+    // it must describe the state this bake is about to apply. Only an input change
+    // gathers again: on an owed bake or a settle bake the last gather still holds the inputs.
+    if (gate == ChangeGateResult::InputsChanged)
+    {
+        g_GatherCount.fetch_add(1, std::memory_order_relaxed);
+        GatherModifiers(world, *terrainService);
+    }
     // A terrain whose height a modifier may touch pages only once its height page overlay holds
     // the gathered set (TerrainHeightIsPaged).
     terrainService->SetHeightModifiersPresent(!m_AppliedModifiers.empty());
@@ -5556,8 +5396,6 @@ void TerrainModifierSystem::UpdateBakes(ECS::World& world)
         terrainService->EndModifierAccess();
         return; // Nothing changed.
     }
-    // A bake follows and writes the terrain data in place: a save's copy is taken first.
-    TakePendingBakeStoreSnapshot();
 
     // A PURE streamed-tile wake: neither the modifier set nor the terrain config
     // changed, we are here only to bake tiles that streamed in. It must NEVER take
@@ -5714,7 +5552,10 @@ void TerrainModifierSystem::UpdateBakes(ECS::World& world)
     // that carries height; a splat-only pass leaves every height byte-identical, so
     // it must not bump this and make composed-ground consumers rebuild for nothing.
     if (fullBake || heightDirty.Any)
+    {
         ++m_AppliedGroundRevision;
+        RaiseAppliedGround(fullBake, heightDirty);
+    }
 
     // Apply modifiers to all active terrains.
     world.Query<ECS::Read<Components::Terrain>, ECS::Read<Components::WorldTransform>>()
@@ -5722,18 +5563,19 @@ void TerrainModifierSystem::UpdateBakes(ECS::World& world)
                   const Components::Terrain& terrain,
                   const Components::WorldTransform& worldXf)
         {
-            const float32 centerX = worldXf.matrix[12];
-            const float32 centerZ = worldXf.matrix[14];
+            const Mathematics::Vector3 position = worldXf.GetPosition() - Mathematics::WorldPosition{};
+            const float32 centerX = position.x;
+            const float32 centerZ = position.z;
             const float32 originX = centerX - terrain.SizeX * 0.5f;
             const float32 originZ = centerZ - terrain.SizeZ * 0.5f;
             // The terrain's own world Y: heightfield samples are read back as
             // `normalized * HeightScale + originY`, so world-authored effect
             // targets have to be measured against it.
-            const float32 originY = worldXf.matrix[13];
+            const float32 originY = position.y;
 
             // ---- Spherical (planet) path ----
             // A planet has no planar heightfield (the cube-sphere is displaced procedurally), so
-            // the modifier stack bakes into TerrainService's sphere sculpt atlas instead of a
+            // the modifier stack bakes into the planet's modifier height page layer instead of a
             // heightfield. The planet is centred at the entity origin (== world origin per C7), so
             // this ignores the planar SizeX/Z origin above.
             if (terrain.Domain == Components::TerrainDomain::Spherical)
@@ -5744,7 +5586,11 @@ void TerrainModifierSystem::UpdateBakes(ECS::World& world)
                 const auto* reliefPtr = world.GetComponent<Components::TerrainPlanetRelief>(entity);
                 const Components::TerrainPlanetRelief relief =
                     reliefPtr ? *reliefPtr : Components::TerrainPlanetRelief{};
-                BakeSphereModifiers(*terrainService, terrain.PlanetRadius, relief, modifiers,
+                const float32 texel = terrain.SamplesPerMeter > 0.0f ? 1.0f / terrain.SamplesPerMeter : 0.0f;
+                const uint32 faceSamples = PlanetFaceSamples(terrain.PlanetRadius, texel);
+                if (faceSamples == 0u)
+                    return; // the planet streams no height pages (TerrainHeightPageDriver logs why)
+                BakeSphereModifiers(*terrainService, entity.id, faceSamples, terrain.PlanetRadius, relief, modifiers,
                                     modifierGeometryHashes, fullBake);
                 return;
             }
@@ -5769,13 +5615,16 @@ void TerrainModifierSystem::UpdateBakes(ECS::World& world)
                 // bake functions only record the affected tiles into GpuBakeBatch, the extraction
                 // system dispatches them, and the stroke-settle readback refreshes the CPU store.
                 //
-                // The kernel composes the tile noise as its base (BaseFreq/BaseAmp/... below), so a
+                // The kernel composes the tile noise as its base (BaseFreq/BaseGain/... below), so a
                 // terrain with any other base keeps the CPU bake, which fills from that base.
                 std::vector<ModifierGpu> gpuMods;
-                const bool gpuEvalSkip =
-                    IsGpuHeightBakeEnabled() && tiled->AtlasGpuBakeEligible &&
-                    tiled->Config.Base.Source == Components::TerrainBaseSource::ProceduralNoise &&
-                    PackModifiersForGpuBake(modifiers, gpuMods);
+                const GpuHeightBakeRefusalReason terrainRefusal = GpuHeightBakeTerrainRefusal(*tiled);
+                uint32 otherModifierRefusals = 0;
+                const GpuHeightBakeRefusal modifierRefusal =
+                    PackModifiersForGpuBake(modifiers, gpuMods, otherModifierRefusals);
+                const bool gpuEvalSkip = terrainRefusal == GpuHeightBakeRefusalReason::None &&
+                                         modifierRefusal.Reason == GpuHeightBakeRefusalReason::None;
+                RecordHeightBakeDecision(*tiled, entity, terrainRefusal, modifierRefusal, otherModifierRefusals);
                 tiled->GpuBakeBatch.Clear();
 
                 std::vector<TileCoord> bakedTiles;
@@ -5801,7 +5650,10 @@ void TerrainModifierSystem::UpdateBakes(ECS::World& world)
                 // The height pages carry the same modifiers as the tiles (Q1 (a)): what they add
                 // to the base pages, over the whole terrain, not only its resident tiles.
                 if (fullBake || heightDirty.Any || tiled->AwaitsPageOverlay())
-                    BakeHeightPageOverlay(*tiled, terrain.HeightScale, originY, modifiers, fullBake, heightDirty);
+                    BakeHeightPageOverlay(*tiled, terrain.HeightScale, originY, modifiers, fullBake, heightDirty,
+                                          terrainRefusal != GpuHeightBakeRefusalReason::None);
+                if (fullBake || heightDirty.Any || splatDirty.Any)
+                    PublishSurfaceChanged(*tiled, fullBake, heightDirty, splatDirty);
 
                 // Falsifiable runtime signal (GE_TERRAIN_TILE_DEBUG): one line
                 // per edit frame naming the tiles baked + the world dirty rect.
@@ -5843,43 +5695,20 @@ void TerrainModifierSystem::UpdateBakes(ECS::World& world)
                     tiled->GpuBakeBatch.Modifiers = std::move(gpuMods);
                     tiled->GpuBakeBatch.HeightScale = terrain.HeightScale;
                     tiled->GpuBakeBatch.TerrainOriginY = originY;
-                    tiled->GpuBakeBatch.BaseFreq = kTileNoiseFrequency;
-                    tiled->GpuBakeBatch.BaseAmp = kTileNoiseAmplitude;
-                    tiled->GpuBakeBatch.BaseOctaves = kTileNoiseOctaves;
-                    tiled->GpuBakeBatch.BaseSeed = kTileNoiseSeed;
-                    // The GPU splat kernel normalizes altitude against the committed global height
-                    // range. The eval-skip bake returned (BakeTiledRegion @gpuEvalSkip / BakeTiledFull)
-                    // BEFORE the CPU path's #602 recompute+commit ran, so on the FIRST GPU bake the
-                    // committed range is still the uninitialized [0,0] sentinel. Feeding [0,0] to the
-                    // kernel is the same local-fallback normalization family as #602's creation seam
-                    // (a degenerate divide the SplatEligible guard only MASKS, never corrects — which
-                    // also left the GPU splat preview dead for the whole first stroke). Commit the
-                    // deterministic resident band now (mirrors BakeTiledRegion's !SplatBakeRangeValid
-                    // recompute; the CPU heights are the pre-stroke base, floored to the noise band by
-                    // ComputeResidentGlobalHeightRange) so the GPU splat runs live from the first
-                    // stroke against the SAME band the CPU region-splat would use — never [0,0].
-                    if (!tiled->SplatBakeRangeValid)
-                    {
-                        float32 gpuSplatMinH = 0.0f, gpuSplatMaxH = 0.0f;
-                        ComputeResidentGlobalHeightRange(*tiled, gpuSplatMinH, gpuSplatMaxH);
-                        tiled->SplatBakeMinH = gpuSplatMinH;
-                        tiled->SplatBakeMaxH = gpuSplatMaxH;
-                        tiled->SplatBakeRangeValid = true;
-                    }
+                    const Terrain::TerrainNoiseStack& noise = *tiled->Config.Base.Noise;
+                    tiled->GpuBakeBatch.BaseFreq = noise.TopFrequency;
+                    tiled->GpuBakeBatch.BaseGain = noise.Gain;
+                    tiled->GpuBakeBatch.BaseOctaves = noise.Octaves;
+                    tiled->GpuBakeBatch.BaseSeed = noise.TopSeed;
+                    tiled->GpuBakeBatch.BaseAmplitude = noise.Amplitude;
                     // GPU splat: the kernel derives the procedural classification and composites
                     // the authored surface-rule rows on top, so the pass runs whenever the packer
                     // can express every splat writer in the bake. A PAINT modifier still cannot be
                     // expressed — the CPU splat is then a procedural-plus-paint composite the GPU
                     // would overwrite — so a paint-carrying bake keeps the CPU splat until settle.
-                    // The committed range (now always valid) is what the CPU region-splat would
-                    // use mid-stroke, so the GPU splat matches it; a mid-stroke range extension
-                    // makes it a stale preview the settle readback re-splats CPU-side (no GPU-side
-                    // renormalize).
                     tiled->GpuBakeBatch.SplatEligible = PackSurfaceRulesForGpuSplat(
                         modifiers, tiled->GpuBakeBatch.SurfaceRules,
                         tiled->GpuBakeBatch.SurfaceRuleConditions);
-                    tiled->GpuBakeBatch.SplatMinH = tiled->SplatBakeMinH;
-                    tiled->GpuBakeBatch.SplatMaxH = tiled->SplatBakeMaxH;
                     // Eval-skip left the CPU heightfield stale — the readback of every dispatched
                     // tile is load-bearing (refreshes physics / normal / splat at settle).
                     tiled->GpuBakeBatch.Settle = true;
@@ -5939,11 +5768,11 @@ void TerrainModifierSystem::UpdateBakes(ECS::World& world)
                 if (!heightsInRegion && !splatInRegion)
                     return; // Dirty region doesn't touch this terrain.
 
-                // New global height range after this frame's edit. Read from the
-                // region-patched quadtree root (O(1)); only a height edit can move
-                // it, so a paint-only change keeps the committed range.
-                float32 newMinH = data->SplatBakeMinH;
-                float32 newMaxH = data->SplatBakeMaxH;
+                // The height range after this frame's edit: the data range from the
+                // region-patched quadtree root (O(1)), widened to the nominal band. Only a
+                // height edit can move it, so a paint-only change keeps the committed range.
+                float32 newMinH = data->HeightRangeMinH;
+                float32 newMaxH = data->HeightRangeMaxH;
                 if (heightsInRegion)
                 {
                     // Region re-bake: reset the region to the base source,
@@ -5973,78 +5802,40 @@ void TerrainModifierSystem::UpdateBakes(ECS::World& world)
                                 newMaxH = std::max(newMaxH, s);
                             }
                     }
+                    WidenToNominalHeightBand(newMinH, newMaxH, kNominalHeightBandTop);
                 }
 
                 const bool splatBaked = data->SplatmapWidth == w && data->SplatmapHeight == h
                                         && !data->Splatmap.empty();
 
-                // Re-bake the touched rect against (minH, maxH). Shared by the stable-range
-                // and deferred-preview paths (the single-terrain analogue of the tiled
-                // regionSplat lambda).
-                auto regionSplat = [&](float32 minH, float32 maxH) {
-                    if (!splatInRegion || !splatBaked)
-                        return;
-                    BakeSingleTerrainSplat(*data, originX, originZ, minH, maxH, /*resetRect*/ true, modifiers,
-                                           sMinX, sMinZ, sMaxX, sMaxZ);
-                };
-
-                // Full re-bake against the current heights: re-caches the range and sets
-                // SplatmapFullDirty so the GPU upload goes full-texture (a height-rect
-                // band would leave stale weights outside it). Commits the range in full,
-                // so any deferred renormalize is discharged.
-                auto fullSplat = [&]() {
+                // The splat rules read heights in meters, so a region splat of the touched rect
+                // is exact. A first splat bake or a size change generates the whole splat, and
+                // ResetSplatmapAndCommitRange sets SplatmapFullDirty for a full-texture upload.
+                const bool splatWasFull = !splatBaked || !data->HeightRangeValid;
+                if (splatWasFull)
+                {
                     data->ResetSplatmapAndCommitRange();
-                    BakeSingleTerrainSplat(*data, originX, originZ, data->SplatBakeMinH, data->SplatBakeMaxH,
-                                           /*resetRect*/ false, modifiers, 0, 0,
+                    BakeSingleTerrainSplat(*data, originX, originZ, /*resetRect*/ false, modifiers, 0, 0,
                                            static_cast<int32>(data->SplatmapWidth) - 1,
                                            static_cast<int32>(data->SplatmapHeight) - 1);
-                    data->SplatResplatPending = false;
-                    data->SplatResplatIdleFrames = 0;
-                };
-
-                if (!heightsInRegion)
-                {
-                    // Paint-only edit: heights (and the range) are unchanged, so a
-                    // region splat against the committed range is exact. A first
-                    // splat bake / size mismatch falls back to a full generate.
-                    if (splatBaked && data->SplatBakeRangeValid)
-                        regionSplat(data->SplatBakeMinH, data->SplatBakeMaxH);
-                    else
-                        fullSplat();
-                }
-                else if (data->SplatBakeRangeValid && splatBaked
-                         && data->SplatBakeMinH == newMinH && data->SplatBakeMaxH == newMaxH)
-                {
-                    // Committed range unchanged: region splat is bit-exact.
-                    regionSplat(data->SplatBakeMinH, data->SplatBakeMaxH);
-                }
-                else if (data->SplatBakeRangeValid && splatBaked
-                         && interactiveDrag && DeferSplatResplatEnabled())
-                {
-                    // Range shifted DURING an interactive drag: renormalizing the whole
-                    // splat every throttled preview is the O(all-samples) hitch that pins
-                    // the #560 cadence at its cap. Instead region-splat the touched rect
-                    // against the STILL-COMMITTED range (a consistent preview against the
-                    // not-yet-renormalized rest) and defer the one full renormalize to the
-                    // stroke-settle flush. The mouse-release settle bake (interactiveDrag
-                    // == false) takes the eager branch below, so the released result is
-                    // immediately byte-identical to a full bake; FlushDeferredSplatResplat
-                    // covers the tail if the drag ends without a net-change settle bake.
-                    regionSplat(data->SplatBakeMinH, data->SplatBakeMaxH);
-                    data->SplatResplatPending = true;
-                    data->SplatResplatIdleFrames = 0;
-                    m_AnyResplatPending = true;
                 }
                 else
                 {
-                    // Range shifted on a discrete edit / the mouse-release settle bake /
-                    // the kill switch (GE_TERRAIN_DEFER_RESPLAT=0), or this is the first
-                    // splat bake with no committed range: renormalize the whole splat now
-                    // so the result is immediately byte-identical to a full bake. Off the
-                    // per-frame drag hot path, so the O(all-samples) cost is paid once.
-                    fullSplat();
+                    if (splatInRegion)
+                        BakeSingleTerrainSplat(*data, originX, originZ, /*resetRect*/ true, modifiers,
+                                               sMinX, sMinZ, sMaxX, sMaxZ);
+                    if (heightsInRegion)
+                    {
+                        data->HeightRangeMinH = newMinH;
+                        data->HeightRangeMaxH = newMaxH;
+                    }
                 }
-                data->SplatmapDirty = true;
+                if (splatWasFull)
+                    data->MarkSplatChanged();
+                else if (splatInRegion && splatBaked)
+                    data->MarkSplatChanged({sMinX, sMinZ, sMaxX + 1, sMaxZ + 1});
+                else
+                    data->SplatmapDirty = true;
 
                 if (heightsInRegion)
                 {
@@ -6057,53 +5848,28 @@ void TerrainModifierSystem::UpdateBakes(ECS::World& world)
                 return;
             }
 
-            // A full bake is a pure function of its inputs, so the derived-data
-            // cache serves one baked before for the same key (TerrainBakeCache.h).
-            const auto bakeStart = std::chrono::steady_clock::now();
-            // The terrain's one artifact is named by its identity: the scene it was
-            // loaded from and its scene tag. A terrain without one is not cached.
-            const TerrainBakeCacheConfig& bakeCache = terrainService->GetBakeCache();
-            const auto* sceneTag = world.GetComponent<Components::SceneEntityTag>(entity);
-            const std::filesystem::path bakeFile = TerrainBakeFile(
-                bakeCache.Directory, terrain.BakeOriginScene, sceneTag ? sceneTag->View() : std::string_view{});
-            const uint64 bakeKey = bakeFile.empty()
-                ? 0u
-                : ComputeSingleTerrainBakeKey(modifiers, *data, terrain.BaseSource, baseHeightmap.get(),
-                                              originX, originY, originZ);
-            const bool cacheHit = !bakeFile.empty() && ApplyCachedTerrainBake(*data, bakeFile, bakeKey);
-            if (!cacheHit)
-            {
-                const auto heightStart = std::chrono::steady_clock::now();
-                const bool heightParallel =
-                    BakeSingleTerrainHeights(*data, terrain.BaseSource, baseHeightmap.get(), originX, originY,
-                                             originZ, modifiers, 0, 0, static_cast<int32>(w - 1),
-                                             static_cast<int32>(h - 1));
-                const auto splatStart = std::chrono::steady_clock::now();
-                data->ResetSplatmapAndCommitRange();
-                BakeSingleTerrainSplat(*data, originX, originZ, data->SplatBakeMinH, data->SplatBakeMaxH,
-                                       /*resetRect*/ false, modifiers, 0, 0,
-                                       static_cast<int32>(data->SplatmapWidth) - 1,
-                                       static_cast<int32>(data->SplatmapHeight) - 1);
-                if (BakeTimingEnabled())
-                    Logger::Log::Info("Terrain.BakeTiming single heightMs={} splatMs={} samples={} parallel={}",
-                        std::chrono::duration<double, std::milli>(splatStart - heightStart).count(),
-                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - splatStart).count(),
-                        static_cast<uint64>(w) * h, heightParallel ? 1 : 0);
-                if (bakeCache.Writable && !bakeFile.empty())
-                    StoreTerrainBake(*data, bakeFile, bakeKey);
-            }
+            const auto heightStart = std::chrono::steady_clock::now();
+            const bool heightParallel =
+                BakeSingleTerrainHeights(*data, terrain.BaseSource, baseHeightmap.get(), originX, originY, originZ,
+                                         modifiers, 0, 0, static_cast<int32>(w - 1), static_cast<int32>(h - 1));
+            const auto splatStart = std::chrono::steady_clock::now();
+            data->ResetSplatmapAndCommitRange();
+            BakeSingleTerrainSplat(*data, originX, originZ, /*resetRect*/ false, modifiers, 0, 0, static_cast<int32>(data->SplatmapWidth) - 1,
+                                   static_cast<int32>(data->SplatmapHeight) - 1);
             if (BakeTimingEnabled())
-                Logger::Log::Info("Terrain.BakeTiming single-full ms={} cache={} key={:016x}",
-                                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
-                                                                            bakeStart).count(),
-                                  bakeFile.empty() ? "off" : (cacheHit ? "hit" : "miss"), bakeKey);
+                Logger::Log::Info("Terrain.BakeTiming single heightMs={} splatMs={} samples={} parallel={}",
+                    std::chrono::duration<double, std::milli>(splatStart - heightStart).count(),
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - splatStart).count(),
+                    static_cast<uint64>(w) * h, heightParallel ? 1 : 0);
 
-            // A full bake renormalizes the entire splat against the current range,
-            // discharging any deferred renormalize a prior region edit left owed.
-            data->SplatResplatPending = false;
-            data->SplatResplatIdleFrames = 0;
             data->MarkFullDirty();
-            data->SplatmapDirty = true;
+            data->MarkSplatChanged();
+            // The colour map follows the splat it was composed over: it is composed now.
+            const TerrainColorComposeInputs colorInputs = TerrainColorMapBaker::SingleTerrainInputs(
+                *data, originX, originZ, TerrainColorMapBaker::ResolveGroundWrite(world, entity), m_ColorZones);
+            TerrainColorMapBaker::UpdateSingle(
+                *data, colorInputs,
+                TerrainColorMapBaker::InputsStamp(colorInputs, data->GrassField.Version, m_ColorZonesStamp));
             terrainService->RebuildQuadtree(handle);
         });
 
@@ -6121,7 +5887,7 @@ void TerrainModifierSystem::UpdateBakes(ECS::World& world)
 
     m_LastModifierHash = postBakeHash;
     m_LastTerrainStateHash = postBakeTerrainStateHash;
-    // Keep ShouldGather's baseline in sync so the gate is also quiet next frame.
+    // Keep ConsumeChangeGate's baseline in sync so the gate is also quiet next frame.
     m_LastSeenTerrainStateHash = postBakeTerrainStateHash;
     // Base inputs are bake-invariant (component fields + content versions),
     // so the pre-bake value is the post-bake baseline.
@@ -6290,19 +6056,9 @@ uint64 TerrainModifierSystem::GetTileHeightRescanCountForTests()
     return g_TileHeightRescanCount.load(std::memory_order_relaxed);
 }
 
-uint64 TerrainModifierSystem::GetSplatRenormalizeTexelCountForTests()
-{
-    return g_SplatRenormalizeTexelCount.load(std::memory_order_relaxed);
-}
-
 uint64 TerrainModifierSystem::GetGatherCountForTests()
 {
     return g_GatherCount.load(std::memory_order_relaxed);
-}
-
-std::size_t TerrainModifierSystem::GetSplatRenormalizeTexelBudgetForTests()
-{
-    return kSplatRenormalizeTexelsPerFrame;
 }
 
 void TerrainModifierSystem::DrainAssetInvalidations(TerrainService& terrainService)

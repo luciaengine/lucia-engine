@@ -8,7 +8,7 @@
 
 #include "Engine/Rendering/DrawCommandProducer.h" // DepthPassType
 #include "Engine/Rendering/PassBindingContext.h"  // ResolvedPassResources
-#include "Rendering/CameraTypes.h"                 // ViewId
+#include "Rendering/Camera/CameraTypes.h"                 // ViewId
 #include "Rendering/Core/GPUDrawStreamBuilder.h"    // GPUDrawStreamBuilder::SlicePhase
 
 #include <cstdint>

@@ -10,9 +10,9 @@
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
 #include "Rendering/Materials/MaterialDocument.h"
-#include "Rendering/Materials/ShaderComposer.h"
-#include "Rendering/Materials/ShaderPropertyTable.h"
-#include "Rendering/Materials/ShaderVariantKey.h"
+#include "Rendering/Materials/Shader/ShaderComposer.h"
+#include "Rendering/Materials/Shader/ShaderPropertyTable.h"
+#include "Rendering/Materials/Shader/ShaderVariantKey.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Logger/CallbackSink.h"
 #include "Logger/Logger.h"
@@ -209,7 +209,7 @@ TEST(ComposeDeclaredProperties, VertexModifierDeclarationsReachBothStages)
 TEST(ComposeDeclaredProperties, ANameTheAdapterReadsIsNotWarnedAsUnread)
 {
     Logger::Log::Initialize({});
-    auto sink = Logger::MakeUnique<Logger::CallbackSink>();
+    auto sink = std::make_unique<Logger::CallbackSink>();
     auto* sinkPtr = sink.get();
     struct Captured
     {
@@ -217,10 +217,10 @@ TEST(ComposeDeclaredProperties, ANameTheAdapterReadsIsNotWarnedAsUnread)
         std::vector<std::string> Lines;
     };
     auto captured = std::make_shared<Captured>();
-    const Logger::uint64 callbackId = sinkPtr->RegisterCallback(
+    const std::uint64_t callbackId = sinkPtr->RegisterCallback(
         [captured](const Logger::LogMessage& msg)
         {
-            if (msg.Message.find("is never read") != Logger::String::npos)
+            if (msg.Message.find("is never read") != std::string::npos)
             {
                 std::lock_guard lock(captured->Mutex);
                 captured->Lines.emplace_back(msg.Message.c_str());

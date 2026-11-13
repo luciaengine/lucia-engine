@@ -24,6 +24,11 @@ elseif(APPLE)
     )
 else()
     add_executable(Player ${PLAYER_SOURCES})
+    # The packaged game loads the engine libraries that the export stages beside the executable.
+    set_target_properties(Player PROPERTIES
+        BUILD_WITH_INSTALL_RPATH TRUE
+        INSTALL_RPATH "$ORIGIN"
+    )
 endif()
 
 target_link_libraries(Player PRIVATE GameEngine::Engine)

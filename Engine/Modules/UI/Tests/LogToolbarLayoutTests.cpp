@@ -1,3 +1,4 @@
+#include "Core/ApplicationPaths.h"
 #include "IsolatedUIFixture.h"
 
 #include "Core/Application.h"
@@ -14,7 +15,7 @@ namespace
 {
 std::string ReadLogToolbarAsset(const char* relative)
 {
-    const auto path = GameEngine::PathUtils::GetExecutableDirectory() / "Assets/UI" / relative;
+    const auto path = GameEngine::ApplicationPaths::GetExecutableDirectory() / "Assets/UI" / relative;
     std::ifstream input(path, std::ios::binary);
     std::ostringstream text;
     text << input.rdbuf();

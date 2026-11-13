@@ -1,0 +1,15 @@
+/* SettingsSectionBreak (Apps/Editor/Source/Editor/Settings/SettingsSectionBreak.h): a named group's header with
+   its description card under it. The header and the card keep the Settings page's shared look. */
+.settings-section-break {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.settings-section-break-body {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    box-sizing: border-box;
+}

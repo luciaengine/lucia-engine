@@ -1,8 +1,8 @@
 #pragma once
 
 #include "Particles/ParticleChannels.h"
-#include "Particles/ParticleProcessorRegistry.h"
-#include "Particles/ParticleStackDocument.h"
+#include "Particles/ParticleProcessor/ParticleProcessorRegistry.h"
+#include "Particles/ParticleStack/ParticleStackDocument.h"
 #include "Particles/Processors/ParticleEventProcessor.h"
 #include "Particles/Processors/ParticleTrailProcessor.h"
 #include "Types/StringId.h"

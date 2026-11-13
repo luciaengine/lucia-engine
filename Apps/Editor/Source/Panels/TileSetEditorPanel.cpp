@@ -13,7 +13,7 @@
 #include "Assets/TextureAsset.h"
 #include "AssetCore/Asset.h"
 #include "AssetCore/AssetTypes.h"
-#include "AssetCore/Types.h"
+#include "Types/Types.h"
 #include "Logger/Logger.h"
 #include "TileMap/TileSetAsset.h"
 #include "TileMap/TileSetAtlasLookup.h"

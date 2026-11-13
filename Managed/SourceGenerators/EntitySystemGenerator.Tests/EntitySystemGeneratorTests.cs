@@ -62,7 +62,7 @@ public class EntitySystemGeneratorTests
                 public T Value => _hasValue ? _value : throw new InvalidOperationException();
                 public T GetValueOrDefault() => _value;
                 public T GetValueOrDefault(T defaultValue) => _hasValue ? _value : defaultValue;
-                internal ReadOnlyOptional(T value) { _value = value; _hasValue = true; }
+                public ReadOnlyOptional(T value) { _value = value; _hasValue = true; }
                 public static ReadOnlyOptional<T> None => default;
             }
 
@@ -117,7 +117,7 @@ public class EntitySystemGeneratorTests
                 Unknown = 0, Bool = 1, Int8 = 2, Int16 = 3, Int32 = 4, Int64 = 5,
                 UInt8 = 6, UInt16 = 7, UInt32 = 8, UInt64 = 9, Float = 10, Double = 11,
                 Vec2 = 12, Vec3 = 13, Vec4 = 14, Quat = 15, Mat4 = 16, Color = 17,
-                AssetGuid = 18, EntityHandle = 19, String = 20, Bytes = 21,
+                AssetGuid = 18, EntityHandle = 19, String = 20, Bytes = 21, RenderLayerMask = 22,
             }
 
             public readonly struct ComponentFieldDesc
@@ -126,10 +126,10 @@ public class EntitySystemGeneratorTests
                 public readonly uint Offset;
                 public readonly uint Size;
                 public readonly ComponentFieldType Type;
-                public ComponentFieldDesc(string name, uint offset, uint size, ComponentFieldType type,
-                                          ushort assetCategory = 0)
+                public readonly ushort AssetCategory;
+                public ComponentFieldDesc(string name, uint offset, uint size, ComponentFieldType type, ushort assetCategory = 0)
                 {
-                    Name = name; Offset = offset; Size = size; Type = type;
+                    Name = name; Offset = offset; Size = size; Type = type; AssetCategory = assetCategory;
                 }
             }
         }
@@ -192,19 +192,28 @@ public class EntitySystemGeneratorTests
                 public void RemoveComponent<T>(uint entityId) where T : unmanaged, IComponent { }
                 public void SetComponent<T>(uint entityId, in T component) where T : unmanaged, IComponent { }
             }
+
+            [StructLayout(LayoutKind.Sequential, Size = 16)]
+            public readonly struct AssetGuid
+            {
+                private readonly byte m_First;
+            }
+
+            [StructLayout(LayoutKind.Sequential, Size = 16)]
+            public readonly struct PrefabRef
+            {
+                public readonly AssetGuid Guid;
+            }
         }
         """;
 
     /// <summary>
-    /// Creates a Roslyn compilation containing the stub types and the supplied user source.
+    /// Creates a Roslyn compilation of the supplied user source and the stub types. With
+    /// <paramref name="stubsInOwnAssembly"/>, the stubs are a referenced assembly, as the engine is to a game,
+    /// so the generated code sees only their public members.
     /// </summary>
-    private static CSharpCompilation CreateCompilation(string userSource)
+    private static CSharpCompilation CreateCompilation(string userSource, bool stubsInOwnAssembly = false)
     {
-        var syntaxTrees = new[]
-        {
-            CSharpSyntaxTree.ParseText(StubSource, path: "Stubs.cs"),
-            CSharpSyntaxTree.ParseText(userSource, path: "UserCode.cs"),
-        };
 
         // Gather the minimal set of runtime references needed for compilation.
         var references = new List<MetadataReference>();
@@ -230,13 +239,19 @@ public class EntitySystemGeneratorTests
                 references.Add(MetadataReference.CreateFromFile(path));
         }
 
-        return CSharpCompilation.Create(
-            assemblyName: "TestAssembly",
-            syntaxTrees: syntaxTrees,
-            references: references,
-            options: new CSharpCompilationOptions(
-                OutputKind.DynamicallyLinkedLibrary,
-                allowUnsafe: true));
+        var options = new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true);
+        var stubTree = CSharpSyntaxTree.ParseText(StubSource, path: "Stubs.cs");
+        var userTree = CSharpSyntaxTree.ParseText(userSource, path: "UserCode.cs");
+        if (!stubsInOwnAssembly)
+            return CSharpCompilation.Create("TestAssembly", new[] { stubTree, userTree }, references, options);
+
+        var stubs = CSharpCompilation.Create("GameEngine.Scripting.ABI", new[] { stubTree }, references, options);
+        using var image = new MemoryStream();
+        var emitted = stubs.Emit(image);
+        if (!emitted.Success)
+            throw new InvalidOperationException("The stubs do not compile: " + string.Join("; ", emitted.Diagnostics));
+        references.Add(MetadataReference.CreateFromImage(image.ToArray()));
+        return CSharpCompilation.Create("TestAssembly", new[] { userTree }, references, options);
     }
 
     /// <summary>
@@ -245,9 +260,9 @@ public class EntitySystemGeneratorTests
     /// </summary>
     private static (Compilation OutputCompilation, ImmutableArray<SyntaxTree> GeneratedTrees,
         ImmutableArray<Diagnostic> Diagnostics)
-        RunGenerator(string userSource)
+        RunGenerator(string userSource, bool stubsInOwnAssembly = false)
     {
-        var compilation = CreateCompilation(userSource);
+        var compilation = CreateCompilation(userSource, stubsInOwnAssembly);
         var generator = new EntitySystemGenerator();
         GeneratorDriver driver = CSharpGeneratorDriver.Create(generator);
         driver = driver.RunGeneratorsAndUpdateCompilation(
@@ -271,9 +286,9 @@ public class EntitySystemGeneratorTests
     /// </summary>
     private static (Compilation OutputCompilation, string HubText,
         ImmutableArray<Diagnostic> Diagnostics)
-        RunGeneratorSchemaHub(string userSource)
+        RunGeneratorSchemaHub(string userSource, bool stubsInOwnAssembly = false)
     {
-        var compilation = CreateCompilation(userSource);
+        var compilation = CreateCompilation(userSource, stubsInOwnAssembly);
         var generator = new EntitySystemGenerator();
         GeneratorDriver driver = CSharpGeneratorDriver.Create(generator);
         driver = driver.RunGeneratorsAndUpdateCompilation(
@@ -1359,7 +1374,7 @@ class Outer
             }
             """;
 
-        var (outputCompilation, generatedTrees, diagnostics) = RunGenerator(source);
+        var (outputCompilation, generatedTrees, diagnostics) = RunGenerator(source, stubsInOwnAssembly: true);
 
         Assert.Single(generatedTrees);
         var text = generatedTrees[0].GetText().ToString();
@@ -1531,36 +1546,6 @@ class Outer
     // EntityCommands_GeneratesCommandsInjection
     // ------------------------------------------------------------------
     [Fact]
-    public void EntityCommands_CompileAgainstSeparateApiAssembly()
-    {
-        const string source = """
-            using GameEngine.Scripting;
-            [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
-            public struct Health : IComponent { public float Value; }
-            public partial struct SpawnSystem : IEntitySystem
-            {
-                public void Execute(ref Health health, EntityCommands commands, float deltaTime) { }
-            }
-            """;
-        var compilation = CreateCompilation(source);
-        var stubTree = compilation.SyntaxTrees.First();
-        var apiCompilation = compilation.RemoveAllSyntaxTrees()
-            .AddSyntaxTrees(stubTree).WithAssemblyName("GameEngine.Scripting.ABI");
-        using var apiImage = new MemoryStream();
-        var apiResult = apiCompilation.Emit(apiImage);
-        Assert.True(apiResult.Success, string.Join("\n", apiResult.Diagnostics));
-        compilation = compilation.RemoveSyntaxTrees(stubTree)
-            .AddReferences(MetadataReference.CreateFromImage(apiImage.ToArray()));
-
-        GeneratorDriver driver = CSharpGeneratorDriver.Create(new EntitySystemGenerator());
-        driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
-
-        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
-        var errors = output.GetDiagnostics().Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
-        Assert.True(!errors.Any(), string.Join("\n", errors));
-    }
-
-    [Fact]
     public void EntityCommands_GeneratesCommandsInjection()
     {
         const string source = """
@@ -1581,14 +1566,13 @@ class Outer
             }
             """;
 
-        var (outputCompilation, generatedTrees, diagnostics) = RunGenerator(source);
+        var (outputCompilation, generatedTrees, diagnostics) = RunGenerator(source, stubsInOwnAssembly: true);
 
         Assert.Single(generatedTrees);
         var text = generatedTrees[0].GetText().ToString();
 
         // Should create __commands variable.
-        Assert.Contains("var __commands = new GameEngine.Scripting.EntityCommands", text);
-        Assert.Contains("new GameEngine.Scripting.EntityCommands(worldHandle)", text);
+        Assert.Contains("var __commands = new GameEngine.Scripting.EntityCommands(worldHandle);", text);
 
         // Should pass __commands to Execute.
         Assert.Contains("__commands", text);
@@ -2263,6 +2247,87 @@ class Outer
         Assert.Empty(compilationErrors);
     }
 
+    // A component the engine owns is a readonly mirror: a ref of it would write the chunk the engine
+    // writes, so it is an error with the fix "take it as in"; the same parameter as in is accepted.
+    [Fact]
+    public void DiagnosticGE0027_RefOfEngineOwnedComponent()
+    {
+        const string source = """
+            using System.Runtime.InteropServices;
+            using GameEngine.Scripting;
+
+            namespace TestGame
+            {
+                [StructLayout(LayoutKind.Explicit, Size = 4)]
+                [BuiltInComponent("GameEngine::Components::Clock")]
+                public readonly partial struct Clock : IComponent { [FieldOffset(0)] public readonly float Elapsed; }
+
+                public partial struct WritesSystem : IEntitySystem
+                {
+                    public void Execute(ref Clock clock, float deltaTime) { }
+                }
+
+                public partial struct ReadsSystem : IEntitySystem
+                {
+                    public void Execute(in Clock clock, float deltaTime) { }
+                }
+            }
+            """;
+
+        var (_, _, diagnostics) = RunGenerator(source);
+
+        var refused = Assert.Single(diagnostics, d => d.Id == "GE0027");
+        Assert.Equal(DiagnosticSeverity.Error, refused.Severity);
+        Assert.Contains("take it as 'in'", refused.GetMessage());
+        Assert.Contains("'clock'", refused.GetMessage());
+    }
+
+    // A ref of a mirror whose fields the engine keeps in part (a hidden GPU handle) may set fields, but a
+    // whole-value assignment would write the engine's bytes too: an error with the fix "set the fields you
+    // change". A mirror with no such field (Transform) takes a whole value.
+    [Fact]
+    public void DiagnosticGE0028_WholeValueWriteOfEngineFields()
+    {
+        const string source = """
+            using System.Runtime.InteropServices;
+            using GameEngine.Scripting;
+
+            namespace TestGame
+            {
+                [StructLayout(LayoutKind.Explicit, Size = 16)]
+                [BuiltInComponent("GameEngine::Components::Renderer")]
+                public partial struct Renderer : IComponent
+                {
+                    [FieldOffset(0)] public uint MeshId;
+                    [FieldOffset(8)] private ulong m_MeshGpuHandleId;
+                }
+
+                [StructLayout(LayoutKind.Explicit, Size = 4)]
+                [BuiltInComponent("GameEngine::Components::Pose")]
+                public partial struct Pose : IComponent { [FieldOffset(0)] public float Yaw; }
+
+                public partial struct RestoreSystem : IEntitySystem
+                {
+                    public void Execute(ref Renderer renderer, ref Pose pose, float deltaTime)
+                    {
+                        Renderer saved = renderer;
+                        renderer.MeshId = 3;
+                        renderer = saved;
+                        pose = default;
+                    }
+                }
+            }
+            """;
+
+        var (_, _, diagnostics) = RunGenerator(source);
+
+        var refused = Assert.Single(diagnostics, d => d.Id == "GE0028");
+        Assert.Equal(DiagnosticSeverity.Error, refused.Severity);
+        Assert.Contains("set the fields you change", refused.GetMessage());
+        Assert.Contains("renderer = saved", refused.Location.SourceTree!.ToString()
+            .Substring(refused.Location.SourceSpan.Start, refused.Location.SourceSpan.Length));
+    }
+
     [Fact]
     public void MixedBuiltInAndUserComponents_BothRegistrationPaths()
     {
@@ -2508,39 +2573,6 @@ class Outer
     }
 
     [Fact]
-    public void ComponentSchema_PrefabRefUsesPackedGuidAndPrefabAssetCategory()
-    {
-        const string source = """
-            namespace GameEngine.Scripting
-            {
-                [System.Runtime.InteropServices.StructLayout(
-                    System.Runtime.InteropServices.LayoutKind.Sequential, Pack = 1)]
-                public readonly struct PrefabRef
-                {
-                    private readonly ulong first;
-                    private readonly ulong second;
-                }
-            }
-
-            namespace TestGame
-            {
-                public struct Spawner : GameEngine.Scripting.IComponent
-                {
-                    public byte Mode;
-                    public GameEngine.Scripting.PrefabRef Prefab;
-                }
-            }
-            """;
-
-        var (compilation, hub, diagnostics) = RunGeneratorSchemaHub(source);
-        Assert.DoesNotContain(diagnostics, d => d.Severity == DiagnosticSeverity.Error);
-        Assert.DoesNotContain(compilation.GetDiagnostics(), d => d.Severity == DiagnosticSeverity.Error);
-        Assert.Contains(
-            "new GameEngine.ECS.ComponentFieldDesc(\"Prefab\", 1, 16, (GameEngine.ECS.ComponentFieldType)18, 46)",
-            hub);
-    }
-
-    [Fact]
     public void ComponentSchema_Offsets_MatchRuntimeManagedLayout()
     {
         var (outputCompilation, hubText, diagnostics) = RunGeneratorSchemaHub(SchemaBatterySource);
@@ -2668,6 +2700,68 @@ class Outer
         Assert.False(f.ContainsKey("Nested"));
         Assert.Equal(0u, f["Before"].Offset);
         Assert.Equal(12u, f["After"].Offset); // the skipped 8-byte Inner still consumed layout
+    }
+
+    [Fact]
+    public void ComponentSchema_RenderLayerMaskField_IsTheRenderLayerMaskFieldType()
+    {
+        // A render layer field registers as the native RenderLayerMask field type (22), one 4-byte word,
+        // so the scene writes it as layer numbers; an unmapped struct would be skipped instead.
+        const string source = """
+            using System.Runtime.InteropServices;
+            using GameEngine.Scripting;
+
+            namespace GameEngine.Scripting
+            {
+                [StructLayout(LayoutKind.Sequential)]
+                public readonly struct RenderLayerMask { public readonly uint Bits; }
+            }
+
+            namespace TestGame
+            {
+                [StructLayout(LayoutKind.Sequential)]
+                public struct Layered : IComponent
+                {
+                    public float Before;
+                    public RenderLayerMask Layers;
+                }
+            }
+            """;
+
+        var (_, hubText, diagnostics) = RunGeneratorSchemaHub(source);
+        Assert.DoesNotContain(diagnostics, d => d.Severity == DiagnosticSeverity.Error);
+
+        var f = ParseHubFields(hubText, "TestGame.Layered");
+        Assert.Equal(2, f.Count);
+        AssertHubField(f, "Layers", 4, 4, 22);
+    }
+
+    [Fact]
+    public void ComponentSchema_PrefabRefField_IsAnAssetGuidThatNamesThePrefabCategory()
+    {
+        // A PrefabRef field registers as an AssetGuid field (18) of the prefab category (AssetType::Prefab, 46), so
+        // the scene saves it, the Inspector offers prefabs and a scene that holds it keeps the prefab loaded. The
+        // stubs are a referenced assembly, as the engine is to a game, so the private fields of AssetGuid are not seen.
+        const string source = """
+            using System.Runtime.InteropServices;
+            using GameEngine.Scripting;
+
+            namespace TestGame
+            {
+                [StructLayout(LayoutKind.Sequential)]
+                public struct Barracks : IComponent
+                {
+                    public float Before;
+                    public PrefabRef Soldier;
+                }
+            }
+            """;
+
+        var (_, hubText, diagnostics) = RunGeneratorSchemaHub(source, stubsInOwnAssembly: true);
+        Assert.DoesNotContain(diagnostics, d => d.Severity == DiagnosticSeverity.Error);
+        Assert.Contains(
+            "new GameEngine.ECS.ComponentFieldDesc(\"Soldier\", 4, 16, (GameEngine.ECS.ComponentFieldType)18, 46)",
+            hubText);
     }
 
     [Fact]

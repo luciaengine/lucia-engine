@@ -71,8 +71,10 @@ struct AgentCallRowModel
     /// (the conversation's ledger), in arrival order and folded (a call with an image or
     /// assets keeps a row of its own), its step read in
     /// `history`, then each call of `streamCalls` (the provider's report) the ledger has no
-    /// record of, matched by tool and order: a call the CLI refused itself, or a provider
-    /// without the editor's tools.
+    /// record of (a call the CLI refused itself, one that failed before the editor, or a
+    /// provider without the editor's tools). A call the CLI refused matches no record;
+    /// any other matches a record of its tool with the same arguments and outcome first,
+    /// then with the same arguments, then by order.
     static std::vector<AgentCallRowModel> For(std::span<const ToolCall> streamCalls,
                                               std::span<const AssistantAction> actions, uint64_t turn,
                                               const AssistantUndoSnapshot& history);

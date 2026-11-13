@@ -10,6 +10,10 @@
 
 namespace GameEngine {
 
+namespace UI::Layout {
+enum class PopupSide : uint8_t;
+}
+
 class Button;
 class Dropdown;
 class Label;
@@ -31,12 +35,11 @@ public:
     void DismissPopup() override { Close(); }
 
     /// Opens under `anchor` (over it when the window has no room below), with an empty search field that has
-    /// the focus. The list closes if the anchor is removed.
-    void Open(UIElement& anchor);
+    /// the focus. `anchor` must stay alive while the list is open.
+    void Open(const UIElement& anchor);
     void Close();
 
     void OnPostLayout() override;
-    bool PressWithinPopupGroup(const UIElement* pressTarget) const override;
 
 private:
     struct Row {
@@ -48,7 +51,6 @@ private:
         Dropdown* Level = nullptr;
     };
 
-    void BindLayout();
     void BuildRows();
     void AppendRow(uint16_t channel);
     void SyncRow(const Row& row);
@@ -62,7 +64,7 @@ private:
 
     LogView& m_View;
     bool m_Open = false;
-    UIElement::WeakRef<> m_Anchor;
+    const UIElement* m_Anchor = nullptr;
     UIElement* m_Panel = nullptr;
     ScrollView* m_Scroll = nullptr;
     UIElement* m_Columns = nullptr;
@@ -73,8 +75,7 @@ private:
     std::vector<Row> m_Rows;
     float m_PlacedX = -1.0f;
     float m_PlacedY = -1.0f;
-    std::optional<bool> m_PlaceAbove;
-    bool m_BindAttempted = false;
+    std::optional<UI::Layout::PopupSide> m_Side;
 };
 
 } // namespace GameEngine

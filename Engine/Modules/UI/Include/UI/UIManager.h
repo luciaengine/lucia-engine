@@ -1,11 +1,9 @@
 #pragma once
 
-#include "Localization/LocalizationCatalog.h"
 #include <algorithm>
 #include <cstdint>
 #include <array>
 #include <fstream>
-#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -23,6 +21,8 @@
 
 #include "AssetCore/GUID.h"
 #include "AssetCore/NineSlice.h"
+#include "GenerationalVector/GenerationalHandle.h"
+#include "Mathematics/Interpolation.h"
 #include "Mathematics/Vector2.h"
 #include "Rendering/Core/RenderGraph/RGFrameStamp.h"
 #include "Rendering/Core/RenderGraph/RGTypes.h"
@@ -31,10 +31,12 @@
 #include "Rendering/Geometry/ShapeBuilder.h"
 #include "Scheduler/Scheduler.h"
 #include "UI/ModifierKeyState.h"
+#include "UI/Internal/ElementIdIndex.h"
 #include "UI/ResolvedStyle.h"
 #include "UI/UICompatDrawRuns.h"
 #include "UI/SimpleSlotAllocator.h"
 #include "UI/SlotAllocator.h"
+#include "UI/BackgroundImageCache.h"
 #include "UI/UIEvents.h"
 #include "UI/UIPlatform.h"
 #include "UI/UIPrimitive.h"
@@ -56,7 +58,6 @@ struct YGNode;
 using RetainedYGNodeRef = YGNode*;
 struct BuiltNode;
 struct UpdateContext;
-struct SheetSetRef;
 struct YogaBuildItem; // MT-4.0 cascade seam; defined in UIManager_Internal.h
 #endif
 
@@ -72,6 +73,7 @@ class FontAtlas;
 namespace RenderGraph
 {
 class RGFrame;
+class RGContext;
 struct RGTexture;
 enum class RGLoadOp : uint8_t; // defined in RGFrame.h; fwd-declared to keep it out of this header
 }
@@ -100,6 +102,8 @@ namespace UI
 template <typename T> class FrameBufferRing; // forward
 struct UIPrimitive;                          // forward
 struct UIClipRect;                           // forward
+class UIOpaqueInteriors;                     // forward
+struct UIOpaqueInterior;                     // forward
 class UITextureRegistry;                     // forward
 }
 
@@ -116,13 +120,12 @@ class UIManager
     explicit UIManager(Rendering::IDevice* device);
     UIManager(Rendering::IDevice* device, AssetManager* assetManager);
     ~UIManager();
-    static bool IsAlive(const UIManager* manager);
 
-    // Deferred outcome of the declared-transition registry mirror.
+    // Deferred outcome of the declared-transition registry mirror (MT-4.1).
     // ResolveCascadeForElement computes this from the freshly cascaded
     // rs.Transitions + ownership and OUTPUTS it instead of mutating
     // m_TransitioningElements inline, so the cascade compute stage stays
-    // manager-container-free. The caller applies
+    // manager-container-free (MT-4.2 runs it on a worker). The caller applies
     // it on the UI thread via ApplyTransitionRegistration. Public because the
     // module-internal YogaBuildItem (UIManager_Internal.h) carries it across
     // the compute -> apply seam.
@@ -169,14 +172,9 @@ class UIManager
     /// releases do not cover this.
     void ResetModifierKeys();
 
-    /// Reconcile held modifiers against the platform mask carried by a pointer
-    /// event. A modifier held from before this window took focus produces no key
-    /// event here, so a click is the first and only chance to observe it.
-    void SyncModifierKeys(int mods);
-
-    /// Reconcile held modifiers against a live query of the platform's modifier
-    /// state. Like SyncModifierKeys this releases a tracked key the platform
-    /// no longer reports held. See ModifierKeyState::ApplyLiveMask.
+    /// Reconcile held modifiers against the platform's live modifier state: a live
+    /// query or a pointer event's mask. A modifier the mask reports is held, one it
+    /// omits is released. See ModifierKeyState::ApplyLiveMask.
     void ReconcileModifierKeys(int liveMods);
 
     /// True when focus last moved via Tab/Shift+Tab or while a key event was dispatched (a key handler's
@@ -189,9 +187,10 @@ class UIManager
     // Optional JobSystem for background parsing / heavy hotpaths.
     void SetJobSystem(JobSystem::WorkStealingThreadPool* jobSystem) { m_JobSystem = jobSystem; }
 
-    // ---- Design-space probe: level-wave cascade (UITests/bench ONLY) --------
-    // NOT a product code path and never called by Update(). A probe of a
-    // multithreaded UI style cascade: it re-drives the REAL
+    // ---- Design-space probe: level-wave cascade (UIStyleTests/bench ONLY) ---
+    // NOT a product code path and never called by Update(). This is the third,
+    // previously-untested MT design for the UI style cascade (after MT-4 fork-
+    // join and MT-4.3 work-first claim, both killed on measurement). It re-drives the REAL
     // per-element cascade (ResolveCascadeForElement) over the current tree in
     // one of two orders so a harness can A/B them:
     //   levelWave == false : DFS preorder, single shared donor cache — this is
@@ -202,7 +201,7 @@ class UIManager
     //                        driven with ONE ParallelFor over GROUPS (a group's
     //                        donor computes, its sharees copy), then a barrier
     //                        before the next level. Barriers = tree depth.
-    // Both orders honour sibling style sharing and produce byte-identical resolved
+    // Both orders honour P4 sibling sharing and produce byte-identical resolved
     // styles (the harness asserts this). coldCaches invalidates the per-element
     // rule cache first (full structural rematch); warm leaves it populated.
     struct CascadeProbeResult
@@ -224,6 +223,9 @@ class UIManager
     // The callback receives the CursorStyle from the hovered element's computed style.
     using CursorCallback = std::function<void(CursorStyle)>;
     void SetCursorCallback(CursorCallback callback) { m_CursorCallback = std::move(callback); }
+
+    // Called with true when the captured pointer's lock begins and with false when it ends
+    // (LockCapturedPointer). While locked, the host hides and holds the platform cursor.
     using PointerLockCallback = std::function<void(bool locked)>;
     void SetPointerLockCallback(PointerLockCallback callback) { m_PointerLockCallback = std::move(callback); }
 
@@ -234,13 +236,22 @@ class UIManager
         float    HoverDelaySeconds      = 0.5f;
         float    HoverResetDelaySeconds = 0.5f;
         bool     MiddleMouseShow        = false;
-        uint32_t ArrowColor             = 0; // 0 = use CSS default
     };
     using TooltipConfigProvider = std::function<TooltipConfig()>;
     void SetTooltipConfigProvider(TooltipConfigProvider provider) { m_TooltipConfigProvider = std::move(provider); }
 
     /** Immediately hide the active tooltip overlay (e.g. when the hovered target moves under the cursor). */
     void DismissActiveTooltip();
+
+    /** Shows `source`'s tooltip now, anchored to `source`, wherever the pointer is: for a message the
+        user must see without pointing at it, such as the reason a typed name is refused. The bubble
+        follows the element's tooltip text and stays until UnpinTooltip(source) or until `source` is
+        destroyed; while `source` is hidden or out of the tree (its dock tab swapped out) the bubble
+        is hidden and it comes back when `source` shows again. It shows even when hover tooltips are
+        turned off. One element holds the pin; pinning another moves it. */
+    void PinTooltip(UIElement& source);
+    /** Ends the pin `source` holds and hides its bubble; does nothing when another element holds it. */
+    void UnpinTooltip(const UIElement& source);
 
     // Per-frame update. This is the primary entry point for UI time,
     // input dispatch, layout and geometry generation.
@@ -264,9 +275,9 @@ class UIManager
         const std::unordered_set<const Stylesheet*>& sheets,
         uint64_t sheetHash);
 
-    // RenderGraph arm: declares the UI overlay pass into an immediate-mode
+    // RenderGraph arm (slice 8b): declares the UI overlay pass into an immediate-mode
     // frame, attaching `target` with ClearOps — the UI pass is the target's
-    // clearer. Declared
+    // clearer (it absorbs the old Editor.ClearPresentationTarget). Declared
     // fresh every frame: no retained pass state, no recreate hashing. The
     // pass is declared even with zero primitives or an unready UI (clear-only
     // frame — the target must never present unwritten memory); the exec body
@@ -279,8 +290,8 @@ class UIManager
     // `targetSpace` is the HOST's declaration of the attachment's colour
     // space — required, no default: it drives the SDF shader's output arm
     // (HDR paper-white lift) and the subpixel text activation gate, and a
-    // space stated by writing nothing is exactly how a wrong value hides.
-    // A display-bound attachment passes
+    // space stated by writing nothing is exactly how a wrong value hides
+    // (#767 P2a / #784). A display-bound attachment passes
     // UITargetSpace::ForDisplay(activeMode); an offscreen attachment passes
     // what its own consumers expect, never the display's mode.
     // The UI owns/clears the target (editor chrome, backbuffer direct-attach).
@@ -347,9 +358,10 @@ class UIManager
     // "The cursor is not over this surface." Negative by construction so that
     // IsMousePositionKnown() rejects it and no element's layout rect can contain it.
     static constexpr float kMousePositionUnknown = -1.0f;
-    // A locked capture accepts unbounded positions. Otherwise negative positions
-    // mean the pointer is outside this surface. Check before hit-testing.
-    bool IsMousePositionKnown() const { return IsCapturedPointerLocked() || (m_MouseX >= 0.0f && m_MouseY >= 0.0f); }
+    // True when the cursor is inside the window and the position is valid.
+    // OnCursorEnter(false) sets the position to kMousePositionUnknown; callers
+    // that poll GetMousePosition() should check this before doing hit-tests.
+    bool IsMousePositionKnown() const { return m_MouseX >= 0.0f && m_MouseY >= 0.0f; }
     bool IsMouseDown() const { return m_MouseDown; }
     bool IsMouseCaptured() const { return m_MouseCaptured; }
 
@@ -362,7 +374,22 @@ class UIManager
     /// release went to the menu instead of back to the capturing element, and
     /// every row then sat under a pointer whose hover was pinned elsewhere.
     void ReleaseMouseCapture();
-    // Locks the captured drag until its capture ends.
+
+    /// Takes the pointer for `element` until ReleaseMouseCapture() or the button's release.
+    ///
+    /// Moves, releases and cancels are routed to the element whether or not the pointer is over it, and
+    /// hover moves to it on the next update. The press path calls this for a control that claims a
+    /// press. A null element releases the capture.
+    void CaptureMouse(UIElement* element);
+
+    /// Releases the pointer only when the element with `instanceId` holds it, so one element cannot end
+    /// another's drag. The id is compared, not resolved, so a holder removed this frame can still
+    /// release; on the next update a removed holder's capture ends by itself. Returns whether it released.
+    bool ReleaseMouseCaptureHeldBy(uint64_t instanceId);
+
+    /// Locks the pointer until the current capture ends: the cursor hides and moves run past the screen
+    /// edges. Escape or another button sends kEventMouseCancel to the capture element. Call it only once
+    /// the press is a drag, so a click never hides the cursor. Does nothing without a capture.
     void LockCapturedPointer();
 
     const std::string& GetCaptureId() const { return m_CaptureId; }
@@ -371,40 +398,41 @@ class UIManager
     // text metrics in response to pointer events (e.g., fields, scrollbars).
     const std::vector<StylesheetHandle>& GetStylesheets() const { return m_GlobalStylesheets; }
 
-    // How many background images have a load or upload in flight. Non-zero means
-    // some element is drawing nothing where it will draw once its texture lands,
-    // so a capture taken now is of a transient frame. The material-side counter
-    // says nothing about this — the two decode paths are separate — so a
-    // screenshot of UI chrome reads this one.
-    size_t PendingBackgroundImageCount() const { return m_BgUploadInFlight.size(); }
     Rendering::Text::FontAtlas* GetDefaultFontAtlas() const { return m_FontAtlas.get(); }
     Rendering::Text::FontAtlas* ResolveFontForStyle(const ResolvedStyle& style);
-    enum class TextWarmupStatus : uint8_t { Pending, Ready, Failed };
-    // Owner-thread operation after style resolution. Prepares hidden labels too,
-    // including fallback glyphs and GPU atlas resources, before revealing a screen.
-    TextWarmupStatus PrepareTextSubtree(UIElement* root);
+    /// The lines `text` takes in `element`'s text face (the font, size, line height and line
+    /// breaking of its last layout) wrapped at `widthLogical`: the count the element's own
+    /// measure reports for that text. For a control that fits text to a line budget within one
+    /// layout. 0 when the element has not been laid out as text yet.
+    int MeasureTextLineCount(const UIElement& element, const std::string& text, float widthLogical);
+    /// The width, in logical px, `text` takes on one line in `element`'s text face (the font,
+    /// size and letter spacing of its last layout): what the element's own measure reports for
+    /// that text unwrapped. For a control that sizes itself to a text it has not shown yet,
+    /// within one layout. 0 when the element has not been laid out as text yet.
+    float MeasureTextWidth(const UIElement& element, std::string_view text);
     const ResolvedStyle* TryGetResolvedStyleFor(const UIElement* el) const;
     float GetTimeSeconds() const { return m_Time; }
 
     // Slug text rendering tuning.
-    // TextContrast scales the colour-keyed contrast measured out of Chrome on
-    // macOS: a bulge on partially covered pixels that is strong for light
-    // text, weak for mid greys and slightly thinning for near-black text.
-    // 1.0 (default) is Chrome; 0 blends plain coverage.
+    // TextContrast is Skia's SK_GAMMA_CONTRAST: the strength of the
+    // colour-keyed coverage boost that compensates for source-over blending
+    // reproducing a physically correct — and therefore perceptually thin —
+    // average of ink and paper. The boost is keyed on the glyph's luminance
+    // (full for near-black text, tapering to nothing for near-white text),
+    // because that asymmetry, not glyph size, is what the error depends on.
+    // Chrome ships 1.0 on Windows; 0 disables the boost entirely.
     // See Shaders/UI/text_mask_gamma.glsl for the model.
     float GetTextContrast() const { return m_TextContrast; }
-    void SetTextContrast(float contrast) { m_TextContrast = std::clamp(contrast, 0.0f, 1.0f); }
+    void SetTextContrast(float contrast) { m_TextContrast = Math::Clamp01(contrast); }
     // TextBlendGamma selects the TARGET space coverage should blend linearly
     // in, and is a policy switch rather than a taste knob — hence no Settings
-    // UI. 0 (default) = linear, i.e. area-exact ink: on a linear attachment
-    // (a HUD over the scene, the Player) the identity retarget, so the
-    // contrast term is the whole correction. 1.0 = display-encoded space, the
-    // space Chrome blends text in and the one the contrast term is measured
-    // for; the editor selects it for its encoded attachment, where it is the
-    // identity retarget (Editor::ApplyEditorTextBlend). On a linear
-    // attachment 1.0 reproduces the encoded blend only approximately, because
-    // the retarget guesses the backdrop as the paint's inverse: #e6e6e6 text
-    // over #383838 lands 2-4% short of the encoded-blend ink. See
+    // UI. 0 (default) = linear, i.e. area-exact ink; this is the target Skia's
+    // mask gamma is built for with SK_GAMMA_SRGB. 1.0 = display-encoded space,
+    // the "gamma-space blending" look. What the target MEANS depends on the
+    // attachment's actual blend space: against today's linear attachments the
+    // 0 default is the identity retarget and the correction reduces to
+    // TextContrast; against an encoded-byte attachment (#767 flip) the same 0
+    // selects the full Skia-direction correction. See
     // Shaders/UI/text_mask_gamma.glsl for the bidirectional model.
     float GetTextBlendGamma() const { return m_TextBlendGamma; }
     void SetTextBlendGamma(float gamma) { m_TextBlendGamma = std::clamp(gamma, 0.0f, 4.0f); }
@@ -433,6 +461,10 @@ class UIManager
     //   < 1.0 sharpens (edges pushed toward 0/1)
     float GetTextSmoothingGamma() const { return m_TextSmoothingGamma; }
     void SetTextSmoothingGamma(float gamma) { m_TextSmoothingGamma = std::max(0.1f, gamma); }
+
+    /// On by default. Off, the UI draw shades every primitive in painter's order; the pixels
+    /// are the same and the GPU cost is higher.
+    void SetOpaquePrePassEnabled(bool enabled) { m_OpaquePrePassEnabled = enabled; }
     // Subpixel RGB text AA (ClearType-style, opt-in, default off). Glyph
     // coverage is evaluated per display subpixel (RGB stripe, R leftmost) and
     // blended per channel via dual-source blending — ~3x horizontal resolution
@@ -485,6 +517,9 @@ class UIManager
     void SetScaleSettings(const UI::UIScaleSettings& settings) { m_ScaleSettings = settings; }
     // Retained-mode diagnostics/safety toggles.
     // Correctness mode setter/getter is declared in the debug controls section below.
+    // Kill switch for TryPointerOnlyFrame (also GE_UI_DISABLE_NOOP_FAST_PATH=1):
+    // when disabled, bare mouse moves take the heavy pass like any other input.
+    void SetFastPathNoOpDisabled(bool disabled) { m_DisableFastPathNoOp = disabled; }
 
     // Canonical range for the HDR UI black-floor lift (nits). The authoritative
     // clamp lives in ApplyRenderRuntimeConfig below; editor settings and widgets
@@ -621,7 +656,9 @@ private:
     // interner doesn't keep entries that reference now-stale sheet
     // pointer lists. Called by ReplaceGlobalStylesheetBlock,
     // AttachStyleFromAsset, AddStylesheet, and the async file-stylesheet
-    // attach paths.
+    // attach paths — historically only ReplaceGlobalStylesheetBlock did
+    // this, leaving the others to rely on the per-frame full rebuild
+    // (now bypassed under primary flip).
     void InvalidateAllInternedSheetSets();
 
 public:
@@ -631,64 +668,18 @@ public:
     void MarkStyleDirtySubtree(UIElement* subtreeRoot);
     // Convenience: mark the entire UI tree dirty for style recomputation.
     void MarkStyleDirtyAll();
-    // Request background texture. Asset loads are deduped centrally in AssetManager; UI dedupes the GPU upload only.
-    // Callback is invoked on the UI thread (via deferred action flush) with (handle,width,height). Handle may be null on failure.
-    void RequestBackgroundTexture(const GUID& guid,
-                                  std::function<void(Rendering::TextureHandle, uint32_t, uint32_t)> onReady);
-    // Resolve a CSS background-image path to an asset GUID. When `sourceAlias`
-    // is non-empty, the path is looked up under exactly that asset source
-    // ("editor", "project", etc.) — matches CSS `url("editor:path")` syntax.
-    // When empty, falls back to implicit source priority (project first).
-    GUID ResolveBackgroundImagePath(const std::string& path,
-                                    const std::string& sourceAlias = {});
-    void EnsureBackgroundTextureUploaded(const GUID& guid);
-    // Resolve `path` (+ optional `sourceAlias`, e.g. "editor") like CSS background-image,
-    // ensure GPU upload when possible, and register the cached texture into `reg`.
-    // Returns UITextureRegistry index 0 if not cached yet (async load) or on failure.
-    // Optional outputs are image pixel dimensions when the cache entry exists.
-    // Pass a sampler handle to override the default (e.g. GetNearestClampSampler() for pixel-art).
-    uint32_t TryRegisterResolvedBackgroundTexture(const std::string& path,
-                                                  const std::string& sourceAlias,
-                                                  UI::UITextureRegistry& reg,
-                                                  uint32_t* outWidth = nullptr,
-                                                  uint32_t* outHeight = nullptr,
-                                                  Rendering::SamplerHandle sampler = {});
+    /// The textures this manager draws CSS background images from: resolve a
+    /// background-image path, upload or request an image, evict it after the
+    /// file changed. The cache is owned here and fed by paint and frame end.
+    UI::BackgroundImageCache& BackgroundImages() { return m_BackgroundImages; }
+    const UI::BackgroundImageCache& BackgroundImages() const { return m_BackgroundImages; }
     // Returns the nearest-neighbor (point) clamp sampler used for pixel-art / no-filter rendering.
     Rendering::SamplerHandle GetNearestClampSampler() const { return m_SamplerNearestClamp; }
-    // Returns the GPU texture handle and pixel dimensions for a background image path if it is
-    // already in the cache (does NOT trigger a load). Returns an invalid handle if not cached.
-    Rendering::TextureHandle TryGetBackgroundTextureHandle(const std::string& path,
-                                                           uint32_t* outWidth = nullptr,
-                                                           uint32_t* outHeight = nullptr) const;
-    // As above, resolved by GUID. Triggers an upload if not yet cached (so editor
-    // controls — e.g. the 9-slice inspector — can draw a texture they reference by
-    // GUID). Returns an invalid handle until the upload completes.
-    Rendering::TextureHandle TryGetBackgroundTextureHandleByGuid(const GUID& guid,
-                                                                 uint32_t* outWidth = nullptr,
-                                                                 uint32_t* outHeight = nullptr);
-    // Evict a cached background texture so the next render re-loads it from disk.
-    // Call this before re-applying the same path when the file on disk has changed.
-    void EvictBackgroundTexture(const std::string& path);
-    // Evict by GUID (used by the AssetReloaded hot-reload listener).
-    void EvictBackgroundTexture(const GUID& guid);
-    // Once per rendered frame: age the background-texture cache and, when it
-    // exceeds its byte budget, evict the least-recently-painted entries.
-    void EvictStaleBackgroundTextures();
+    // Once per rendered frame: age the background-image cache (evicting idle
+    // textures over its budget, never one the current draw binds) and repaint
+    // for SVG sizes that finished settling.
+    void EndBackgroundImageFrame();
 
-    // Test-only inspection of the background texture cache. Returns true when
-    // the cache currently holds a valid handle for `guid`. Used by hot-reload
-    // tests to verify that AssetReloaded events evicted the cached entry.
-    bool HasBackgroundTextureCachedForTesting(const GUID& guid) const;
-    // Test-only: mip levels of the cached background texture for `guid`, 0 when none is cached.
-    uint32_t BackgroundTextureMipLevelsForTesting(const GUID& guid) const;
-    // Test-only seed of the background texture cache. Skips disk load + GPU
-    // upload so hot-reload tests can assert eviction without booting a real
-    // texture pipeline. The dummy handle is stored as 'sharedOwned' so the
-    // destructor / eviction path does not try to destroy it.
-    void SeedBackgroundTextureForTesting(const GUID& guid,
-                                         Rendering::TextureHandle handle,
-                                         uint32_t width = 1,
-                                         uint32_t height = 1);
     // Test-only seed of the font GUID -> atlas key map without going through
     // the resolver. Used by C2 tests to assert that a Font reload triggers
     // eviction of the matching atlas entry.
@@ -702,10 +693,16 @@ public:
     // Test-only peek at a persistent clip slot. Returns nullptr when the slot
     // is out of bounds. Used by text-overflow clip regression tests.
     const UI::UIClipRect* PeekClipRectForTesting(uint16_t slot) const;
+    // Test-only peek at a persistent transform slot (UIElement::
+    // m_TransformSlotIdx). Returns nullptr when the slot is out of bounds.
+    const UI::UITransformSlot* PeekTransformSlotForTesting(uint32_t slot) const;
     // Test-only: position of `el`'s first persistent primitive slot in the
     // frame's draw order, or -1 when the element emitted nothing. Later
     // positions draw on top. Used by overlay-ordering regression tests.
     int FindDrawOrderPosForTesting(const UIElement& el) const;
+    // Test-only peek at the hover tooltip's arrow primitives this frame, in draw
+    // order. Returns nullptr when the arrow is hidden or `index` is past its count.
+    const UI::UIPrimitive* PeekTooltipArrowForTesting(uint16_t index) const;
     // Test-only read of what the whole-stylesheet analysis concluded a
     // `:focus-visible` flip can disturb. Production reads this pair alone in
     // exactly one place -- the modality-flip branch in UIManager::DispatchEvents
@@ -729,6 +726,9 @@ public:
     // Data-driven helpers (file-based)
     bool LoadLayoutFromFile(const std::string& path);
     bool AttachStyleFromFile(const std::string& path);
+    // Asynchronous variants (parse off-thread; apply on UI thread when ready).
+    void LoadLayoutFromFileAsync(const std::string& path);
+    void AttachStyleFromFileAsync(const std::string& path);
     void SetRoot(std::unique_ptr<UIElement> root);
 
     // External texture registry for engine-provided textures (e.g., scene view)
@@ -752,7 +752,7 @@ public:
     void SetExternalTexture(const std::string& name, Rendering::TextureHandle handle,
                             uint32_t width, uint32_t height,
                             UI::UITextureSpace space);
-    // RenderGraph arm, two-phase by design. REGISTRATION is persistent —
+    // RenderGraph arm (slice 8b), two-phase by design. REGISTRATION is persistent —
     // it makes `name` resolvable for primitive generation (size/space for
     // background-size math) and routes the binding through the per-frame
     // publish map. PUBLICATION is per-frame: the host publishes the CURRENT
@@ -768,7 +768,6 @@ public:
     void PublishExternalTextureRG(const std::string& name, Rendering::RenderGraph::RGFrame& frame,
                                    Rendering::RenderGraph::RGTexture tex);
     void RemoveExternalTexture(const std::string& name);
-    void ClearElementBackgroundTexture(UIElement& el);
 
     // On-demand external-texture requests. Primitive generation records each
     // engine texture name it cannot resolve this frame; the producer (e.g. the
@@ -779,7 +778,7 @@ public:
 
     // A producer that temporarily deferred misses can ask visible primitives
     // to resolve their external images again without rebuilding layout.
-    void RequestExternalTextureRefresh() { MarkPrimitivesNeedRegen(0x200u); }
+    void RequestExternalTextureRefresh() { MarkPrimitivesNeedRegen(PrimitiveRegenCause::TextureSlots); }
 
     // ---------------------------------------------------------------------
     // Font loading (host-resolved, async-capable)
@@ -794,8 +793,6 @@ public:
     struct FontResolveResult
     {
         std::vector<std::uint8_t> Bytes; // font file bytes (TTF/OTF/etc.)
-        // Ordered packaged fallback files chosen by the host, not discovered by filename.
-        std::vector<std::filesystem::path> FallbackFonts;
         int FaceIndex = 0;              // reserved for collections (.ttc); currently unused by FontAtlas
         std::string DebugName;          // optional diagnostics (path, OS family, etc.)
         // Optional asset GUID of the resolved font file. When non-null, UIManager
@@ -815,9 +812,6 @@ public:
 
     // Install/replace the font resolver. Passing an empty function disables host font loading.
     void SetFontResolver(FontResolverFn&& resolver);
-    bool SetTextLanguage(const std::string& language);
-    void SetLocalizationCatalog(std::shared_ptr<Localization::LocalizationCatalog> catalog);
-    const std::shared_ptr<Localization::LocalizationCatalog>& GetLocalizationCatalog() const { return m_LocalizationCatalog; }
 
     // Install a synchronous default face used while host-resolved family fonts
     // are still loading. Hosts should provide their primary UI face here to keep
@@ -827,34 +821,6 @@ public:
     // Optional prefetch hook: request that a family be loaded for future frames.
     // This is safe to call before the first Update() to avoid initial layout shifts.
     void RequestFontFamily(const std::string& family);
-
-    enum class FontWarmupStatus { Pending, Ready, Failed };
-    struct FontWarmupRequest
-    {
-        // Empty selects the explicitly installed default face, never an arbitrary fallback.
-        std::string Family;
-        std::string Text;
-        float PixelSize = 20.0f;
-        int Weight = 400;
-        FontStyle Style = FontStyle::Normal;
-        FontVariant Variant = FontVariant::Normal;
-        float LetterSpacing = 0.0f;
-    };
-    // UI-thread preparation for loading screens. Resolves the exact requested face
-    // and shapes the supplied UTF-8 text into CPU glyph data before first display.
-    // Poll after draining UI actions; Pending is not success and Failed may be
-    // retried after the resolver's normal backoff. Does not imply GPU upload readiness.
-    FontWarmupStatus PrewarmFontText(const FontWarmupRequest& request);
-
-    struct FontLoadProgress
-    {
-        size_t Pending = 0;
-        size_t Failed = 0;
-        bool Ready() const { return Pending == 0 && Failed == 0; }
-    };
-    // Snapshot of requested families, not a promise about unrequested text/fonts.
-    FontLoadProgress GetFontLoadProgress() const;
-
 
     // No-op under RenderGraph (the old RGTextureRef render-target override is gone);
     // retained because the editor host still calls it on HDR/surface changes.
@@ -895,11 +861,12 @@ public:
     // current pointer position on the last completed layout, with an active
     // capture outranking it; the answer is what routes the event onward (a
     // consumed press reaches neither the app InputSystem nor a runtime sink).
+    // A press belongs to the button that began it: only that button's release
+    // ends it, and another button's edges while it is held dispatch nothing.
     bool OnMouseButton(int button, bool down);
-    // Terminate an in-flight press whose release will never arrive, because the pointer
-    // stream itself ended (the Game View viewport the host reads pointer from was left).
-    // Not a release: the armed control is disarmed and capture is dropped, but nothing
-    // activates.
+    // Ends an in-flight press with no release: the pointer stream ended (the Game View viewport
+    // was left), or Escape or another button cancelled a locked drag. The armed control disarms
+    // and the capture drops, but nothing activates.
     void CancelPress();
     // Called when the OS reports the cursor entering/leaving this window.
     // This helps keep hover state correct even if the cursor leaves the window
@@ -989,6 +956,7 @@ public:
     void SetScrollFocusFallbackEnabled(bool enabled) { m_ScrollFocusFallbackEnabled = enabled; }
 
     // Debug controls / profiling accessors (useful for tests and perf investigation)
+    void SetTextDebugOverlayEnabled(bool enabled) { m_TextDebugOverlayEnabled = enabled; }
     bool IsTextDebugOverlayEnabled() const { return m_TextDebugOverlayEnabled; }
     void RequestTextDebugDump() { m_TextDebugDumpRequested = true; }
 
@@ -997,6 +965,26 @@ public:
     // Intended for debugging invalidation/caching issues in scroll/virtualized views and for CI tests.
     void SetCorrectnessModeEnabled(bool enabled) { m_CorrectnessModeEnabled = enabled; }
     bool IsCorrectnessModeEnabled() const { return m_CorrectnessModeEnabled; }
+    void SetCorrectnessModeAssertsEnabled(bool enabled) { m_CorrectnessModeAssertsEnabled = enabled; }
+    bool IsCorrectnessModeAssertsEnabled() const { return m_CorrectnessModeAssertsEnabled; }
+
+    // One bit per trigger that asks for a full primitive regeneration.
+    // UpdateProfileFrame::GenAllPrimitivesRegenCause holds the bits seen in a frame.
+    enum class PrimitiveRegenCause : uint32_t
+    {
+        MarkDirty         = 0x1u,    // style, layout or children dirty mark
+        TreeRebuilt       = 0x2u,    // element added or removed
+        ForceGlobalStyle  = 0x4u,
+        ViewportChanged   = 0x8u,
+        RelayoutRequested = 0x10u,
+        ActiveTransitions = 0x40u,
+        NewlyVisibleRect  = 0x80u,   // rect change on an element with no primitive capacity
+        TextureSlots      = 0x200u,  // texture slot indices in cached primitives became stale
+        DrainBail         = 0x400u,  // invariant break, or a culled element became visible
+        RangelessContent  = 0x800u,  // content mark on an element that owns no primitive range
+        FontResolved      = 0x1000u, // a font install changed text measurement or glyphs
+        TooltipArrow      = 0x2000u, // the tooltip arrow moved, turned or appeared
+    };
 
     // Update profiling (CPU-side). Populated when update profiling is enabled.
     struct UpdateProfileFrame
@@ -1006,9 +994,11 @@ public:
         double TotalMs = 0.0;
         double SchedulerMs = 0.0;
         double BuildYogaMs = 0.0;
-        // BuildYogaMs split: style-cascade compute vs Yoga style application,
-        // BuildYogaRecursive passes only (the ConvergePostLayout re-resolve
-        // counts toward PostLayoutMs).
+        // BuildYogaMs split for the MT-4 (parallel cascade) go/no-go gate:
+        // style-cascade compute vs Yoga style application, build-pass sites
+        // only (the converge re-cascade is timed by PostLayoutRetryMs).
+        // MT-4 becomes worth doing when CascadeComputeMs sustains >~4ms
+        // while CascadeShared/CascadeCalls stays under ~0.30.
         double CascadeComputeMs = 0.0;
         double YogaApplyMs = 0.0;
         double YogaMs = 0.0;
@@ -1017,7 +1007,8 @@ public:
         double EventDispatchMs = 0.0;
         double GeometryMs = 0.0;
         double CleanupMs = 0.0;
-        // TransitionEngine::Advance wall time.
+        // TransitionEngine::Advance wall time (was untimed — folded into the
+        // TotalMs tail). Slice D's registry conversion is measured here.
         double TransitionMs = 0.0;
         // 1 when the mode-0 idle gate serviced this frame (no input, nothing
         // pending — Update skipped straight to the tooltip/cursor tail).
@@ -1026,34 +1017,21 @@ public:
         // regressions be attributed from profile history without relying on
         // the budgeted GE_UI_IDLE_LOG diagnostic.
         uint32_t IdleDecline = 0;
-        // Primitive-generation instrumentation. Populated by GenerateAllPrimitives
+        // Block E (E0/E1) instrumentation. Populated by GenerateAllPrimitives
         // once per frame so per-scenario captures see the per-frame
         // primitive-gen cost (otherwise hidden inside the render path).
-        // GenAllPrimitivesMs: wall-clock spent in GenerateAllPrimitives.
-        // GenAllPrimitivesSkipped: 1 if the idle skip (no regen, empty drain
-        // queue) took the early-return path, else 0.
+        // genAllPrimitivesMs: wall-clock spent in GenerateAllPrimitives.
+        // genAllPrimitivesSkipped: 1 if E0 took the early-return path, else 0.
         double GenAllPrimitivesMs       = 0.0;
         uint32_t GenAllPrimitivesSkipped = 0;
-        // Parallel drain shape: how many work items the drain processed,
+        // MT-3 parallel drain shape: how many work items the drain processed,
         // how many emit tasks it forked (1 = sequential), and how many items
         // hit an off-thread tripwire and re-emitted on the UI thread.
         uint32_t DrainItems         = 0;
         uint32_t DrainParallelTasks = 0;
         uint32_t DrainEscalated     = 0;
-        // Bitmask of which trigger(s) flipped m_PrimitivesNeedRegen this
-        // frame. Lets us see why sweep scenarios force full regen.
-        //   1  = MarkDirty (Style/Layout/ChildrenDirty)
-        //   2  = treeRebuiltThisFrame (AddChild/Remove/AddElement)
-        //   4  = forceGlobalStyle
-        //   8  = viewportChanged
-        //   16 = relayoutRequestedPre
-        //   32 = retired (scroll translation is drain-only)
-        //   64 = HasActiveTransitions
-        //   128 = writeBack rectChanged with cap == 0 (newly visible)
-        //   256 = retired (override-rect patches are drain-only)
-        //   1024 = drain bail (invariant break or culled element became visible)
-        //   2048 = content mark on an element that owns no primitive range
-        //          (never emitted, or emitted nothing and its range was freed)
+        // OR of the PrimitiveRegenCause bits that asked for a full primitive
+        // regeneration this frame.
         uint32_t GenAllPrimitivesRegenCause = 0;
         uint32_t LateRelayoutCount = 0;
         // Time spent specifically in the late-relayout's BuildYoga + Yoga
@@ -1072,7 +1050,7 @@ public:
         // spike frame tells you every trigger that contributed.
         uint32_t LateRelayoutReasons = 0;
         uint32_t LayoutOverridePatchCount = 0;
-        // Subtree-skip fast path instrumentation. Useful for verifying
+        // Slice 2 subtree-skip fast path instrumentation. Useful for verifying
         // the fast path actually fires and diagnosing why it doesn't.
         uint32_t SubtreeFastPathHits          = 0;  // subtrees served from cache
         uint32_t SubtreeSlowPathWalks         = 0;  // subtrees taking the full slow path
@@ -1084,9 +1062,9 @@ public:
         //   2   = forceGlobalStyle / computeLayoutSignaturesAll
         //   4   = ChildrenDirty on parent
         //   8   = SubtreeDirty bit
-        //   16  = Overrides::NeedsCascadeRerun
-        //   32  = Overrides::IsLayoutDirty
-        //   64  = Overrides::IsVisualDirty
+        //   16  = Style().NeedsCascadeRerun()
+        //   32  = Style().IsLayoutDirty()
+        //   64  = Style().IsVisualDirty()
         //   128 = DisplayMode == None (skip-skip; expected)
         //   256 = !CachedSubtreeValid
         //   512 = LocalSheetsHash mismatch
@@ -1111,7 +1089,7 @@ public:
         // Broken-out timers for the blocks that were previously lumped into
         // the implicit "untracked" gap (totalMs − sum of other phases).
         // Populated when UI profiling is enabled.
-        double PreSolveDrainMs        = 0.0;  // FlushScrollCallbacks + drainVirtualizationQueueBounded
+        double PreSolveDrainMs        = 0.0;  // FlushScrollCallbacks + DrainVirtualizationQueueBounded
         double IndicesAndClipsMs      = 0.0;  // ApplyScrollTransforms + Clamp + RebuildNodeIndices/ClipCaches/ZIndex
         double SolveAndApplyMs        = 0.0;  // SolveAndApplyLayout (including Yoga + commit)
         double FocusOrderMs           = 0.0;  // BuildFocusOrder + post-rebuild focus refresh
@@ -1143,6 +1121,14 @@ public:
     {
         return m_UpdateProfilingHistory.empty() ? 0.0 : m_UpdateProfilingHistory.back().BuildYogaMs;
     }
+    double GetLastUpdateGeometryMs() const
+    {
+        return m_UpdateProfilingHistory.empty() ? 0.0 : m_UpdateProfilingHistory.back().GeometryMs;
+    }
+    double GetLastUpdateTotalMs() const
+    {
+        return m_UpdateProfilingHistory.empty() ? 0.0 : m_UpdateProfilingHistory.back().TotalMs;
+    }
     uint32_t GetLastSubtreeFastPathHits() const
     {
         return m_UpdateProfilingHistory.empty() ? 0u : m_UpdateProfilingHistory.back().SubtreeFastPathHits;
@@ -1169,6 +1155,23 @@ public:
         return m_UpdateProfilingHistory;
     }
 
+    // Peak frame in the history ring, selected by totalMs. Returns false if
+    // empty. Useful for catching mutation-frame spikes from a polling client
+    // that may miss the exact frame via back()-only access.
+    bool GetPeakUpdateProfileFrame(UpdateProfileFrame& out) const
+    {
+        if (m_UpdateProfilingHistory.empty())
+            return false;
+        const UpdateProfileFrame* best = &m_UpdateProfilingHistory.front();
+        for (const auto& f : m_UpdateProfilingHistory)
+        {
+            if (f.TotalMs > best->TotalMs)
+                best = &f;
+        }
+        out = *best;
+        return true;
+    }
+
 private:
     // Block E1 helper. Adjust m_DrawOrderIdx on every element whose
     // draw-order slice starts at-or-after `threshold` by `delta`.
@@ -1192,11 +1195,9 @@ private:
     // unclipped empty box still descends into children that paint.
     void NotifyDirty_UpdateRegenFlag(UIElement* el, unsigned flags);
 
-    // Sets m_PrimitivesNeedRegen and OR-folds
-    // `causeBit` into the current frame's regen-cause bitmask so the
-    // perf scenarios can attribute "why didn't this frame skip" to a
-    // specific trigger. See UpdateProfileFrame::GenAllPrimitivesRegenCause.
-    void MarkPrimitivesNeedRegen(uint32_t causeBit);
+    // Sets m_PrimitivesNeedRegen and adds `cause` to the last pushed profile
+    // frame. A cause raised inside Update lands on the previous frame's record.
+    void MarkPrimitivesNeedRegen(PrimitiveRegenCause cause);
     // The content-only pipeline escalates rangeless elements straight to a
     // full regen (see the definition in UIManager.cpp), which needs the
     // private mark above.
@@ -1207,7 +1208,7 @@ public:
     // can fast-path when nothing changed (retained mode).
     void NotifyElementDirty(UIElement* el, unsigned flags)
     {
-        // The hint flags below are atomic, but the queue push and
+        // C-6: the hint flags below are atomic, but the queue push and
         // regen-cause bookkeeping this routes to are not. Off-thread
         // callers must go through the UiDispatcher.
         AssertUiThread();
@@ -1216,7 +1217,7 @@ public:
         // thread's style-field writes are visible to the resolve walk that
         // consumes the flag (matters on weakly-ordered targets).
         m_ResolvedStylesDirty.store(true, std::memory_order_release);
-        // Route the mutation by flag scope. Layout-affecting
+        // Block E (E0/E1): route the mutation by flag scope. Layout-affecting
         // flags trigger a full regen on next render; visual-only mutations
         // (already pushed onto m_PrimitiveDataDirty below) are handled
         // surgically by DrainPrimitiveDataDirty without touching unrelated
@@ -1255,8 +1256,10 @@ public:
                 PushPrimitiveDataDirty(el);
         }
     }
-    // Internal hint: UIElements call into this when their tree structure changes
-    // (children added/removed, Mount target swapped). This is used to detect
+    // Internal hint, called on a structural tree change: a child added, inserted,
+    // removed or taken; a Mount target set, adopted into this manager or destroyed;
+    // a root replacement; a display:none flip in the layout pass. Dock tab activation
+    // (Mount::SwapTargetForActivation) calls nothing. This is used to detect
     // mid-frame mutations without guessing based on "pending action" counts.
     void NotifyTreeStructureChanged()
     {
@@ -1266,13 +1269,19 @@ public:
         m_ResolvedStylesDirty.store(true, std::memory_order_release);
     }
 
-    // Monotonic generation bumped by every structural tree change (child add/remove,
-    // Mount swap). Lets callers gate "re-resolve an element by id" work on whether the
-    // tree could have changed since they last looked, instead of walking every time.
+    // Monotonic generation bumped by NotifyTreeStructureChanged. Lets callers gate
+    // "re-resolve an element by id" work on whether the tree could have changed since
+    // they last looked. Dock tab activation (Mount::SwapTargetForActivation) does not
+    // move it, so a result kept on it must not depend on which tab a Mount shows.
     uint64_t GetTreeStructureGeneration() const
     {
         return m_TreeStructureGeneration.load(std::memory_order_relaxed);
     }
+
+    // Monotonic generation bumped when an element enters or leaves the id index: a new
+    // owner, or SetId (a dock tab activation renames its Mount). With the tree structure
+    // generation unchanged too, FindById from the root returns what it returned before.
+    uint64_t GetElementIdGeneration() const { return m_ElementIdIndex.Generation(); }
 
     // Backtrace-on-mark diagnostic behind GE_UI_DIRTY_TRACE_ID (see
     // NotifyElementDirty). Out-of-line in UIManager.cpp.
@@ -1325,11 +1334,10 @@ public:
     // path routes through it so the outgoing tree is always announced.
     void AdoptRoot(std::unique_ptr<UIElement> newRoot);
 
-    // Return persistent render slots owned by `el` (primitive range, clip
-    // slot, draw-order slice) to this manager's allocators. Called when the
-    // element is destroyed or changes owner, and when a dockspace's render
-    // state is invalidated. No-op for elements with no slots allocated.
-    // Idempotent.
+    // Event-driven UI rewrite, Stage 1: return persistent render slots
+    // owned by `el` (primitive range, clip slot, draw-order slice) to
+    // this manager's allocators. Called from ~UIElement when the element
+    // owns slots. No-op for elements with no slots allocated. Idempotent.
     void FreeRenderSlots(UIElement* el);
 
   private:
@@ -1349,22 +1357,18 @@ public:
     // also removing its sheets is never what a caller wants).
     void UnregisterSubtreeStyleBinding(UIElement* target, const GUID& styleGuid);
 
-    // Internal helpers
-    // Uploads the asset's pixels as RGBA8 with a full mip chain; `outMipLevels` reports the
-    // levels uploaded.
-    static Rendering::TextureHandle CreateUIBackgroundTextureFromAsset(Rendering::IDevice* device, const TextureAsset* texA,
-                                                                       uint32_t& outMipLevels);
-    // Read a cached background texture's 9-slice metadata (AssetRegistry KV) for the
-    // GUID; returns a disabled NineSlice when absent/unparseable. Internal only —
-    // the hot path reads the resolved slice off CachedTexture.Slice.
-    NineSlice ResolveNineSlice(const GUID& guid);
+    // The background-image cache's hooks: repaint the tree when a texture
+    // lands, and drop the texture-registry slot of a texture it destroys.
+    void RepaintForBackgroundImages();
+    void ReleaseBackgroundImageSlot(Rendering::TextureHandle handle);
     std::string EnsureElementId(UIElement* element);
 
 #if defined(GE_HAVE_YOGA) && GE_HAVE_YOGA
-    // Drop the manager-side retained-layout caches (sheet-set interner, skip
-    // gates) so the next BuildYogaRecursive rebuilds them. The YGNodes are
-    // owned by UIElement::m_YogaState and destroyed with their elements
-    // (e.g. when m_Root is reassigned).
+    // Drop retained-mode layout caches that depend on the prior NodeRec
+    // generation (interner, gates). Per-element RetainedYogaNode ownership
+    // lives on UIElement::m_YogaState now; the YGNodes themselves get
+    // destroyed when their owning UIElements destruct (e.g. when m_Root is
+    // reassigned).
     void ResetRetainedYogaTree();
 #endif
     bool ConsumeRelayoutRequest()
@@ -1386,11 +1390,11 @@ public:
     // TransitionEngine::Advance iterates this instead of walking the tree;
     // erased on owner change / destruction.
     //
-    // The cascade does not mutate this set inline. Registration is
-    // manager-container state, which the compute stage must stay clear of.
-    // ResolveCascadeForElement OUTPUTS a
-    // TransitionRegistration decision (computed from the freshly cascaded
-    // rs.Transitions + ownership); each caller
+    // MT-4.1: the cascade no longer mutates this set inline. Registration is
+    // manager-container state, which the compute stage must stay clear of so
+    // MT-4.2 can run the cascade on a worker. ResolveCascadeForElement now
+    // OUTPUTS a TransitionRegistration decision (computed from the freshly
+    // cascaded rs.Transitions + ownership, exactly as before); each caller
     // applies it on the UI thread via ApplyTransitionRegistration — the build
     // path defers it onto the YogaBuildItem (applied in ApplyElementBuild in
     // DFS/item order), the converge/pseudo re-resolve callers apply it inline.
@@ -1420,7 +1424,7 @@ public:
     std::vector<ScrollView*> m_ScrollViewRegistry;
     std::vector<DismissablePopup*> m_DismissablePopupRegistry;
 
-    // Per-frame provider change pump. Virtualized views register while
+    // C-8 per-frame provider change pump. Virtualized views register while
     // attached; PumpVirtualizedControlChanges (called once per Update, before
     // the idle/pointer gates) reads each control's ProviderChangeVersion() and,
     // on movement since LastSeenVersion, enqueues its DataChanged coordinator
@@ -1438,6 +1442,8 @@ public:
     // owned-but-detached elements (inactive dock tabs) stay unfindable,
     // matching the old walk's semantics.
     std::unordered_map<uint64_t, UIElement*> m_ElementsByInstanceId;
+    friend class UIElement;
+    UI::ElementIdIndex m_ElementIdIndex;
 
     // Attach/detach settle queue: the top of each subtree whose root-reachability may
     // have moved since the last settle (UIManager_AttachEvents.cpp). Raw pointers, kept
@@ -1452,7 +1458,7 @@ public:
     std::vector<UIElement*> m_AttachSettleWalk;
 
 #ifdef _DEBUG
-    // MarkDirty and the primitive-data queue are UI-thread-only — the
+    // C-6: MarkDirty and the primitive-data queue are UI-thread-only — the
     // hint flags are atomic, but the queue push and regen-cause bookkeeping
     // are not. Captured at the first Update (construction may run on a
     // loader thread), asserted on every dirty notification. Same pattern
@@ -1476,12 +1482,13 @@ public:
     // or re-homed element from the declared-transition registry.
     void UnregisterTransitioningElement(UIElement* el) { m_TransitioningElements.erase(el); }
 
-    // Called by ~UIElement / SetOwnerManager via forwarder: drop the id
-    // mapping when it still points at the departing element (a reparent to
-    // another manager inserts into that manager's own map). Takes the id
-    // because UIElement is only forward-declared here.
-    void UnregisterElementInstanceId(uint64_t instanceId, UIElement* el)
+    // Called by ~UIElement / SetOwnerManager via forwarder: drop the authored-id
+    // and instance-id mappings for the departing element. A reparent inserts
+    // the element into the new manager's indexes. Takes the instance id because
+    // UIElement is only forward-declared here.
+    void UnregisterElementLookups(uint64_t instanceId, UIElement* el)
     {
+        m_ElementIdIndex.Unregister(*el);
         auto it = m_ElementsByInstanceId.find(instanceId);
         if (it != m_ElementsByInstanceId.end() && it->second == el)
             m_ElementsByInstanceId.erase(it);
@@ -1508,17 +1515,22 @@ public:
     // C-8 pump registry (ListView/GridView/TreeView).
     void RegisterVirtualizedControl(IVirtualizedControl* control);
     void UnregisterVirtualizedControl(IVirtualizedControl* control);
+
+  private:
     // Deferred dockspace rebuilds, queued by DockspaceElement::RequestRebuildFromModel
     // and run by Update after event dispatch.
+    friend class DockspaceElement;
     void RequestDockspaceRebuild(DockspaceElement* dockspace);
     void CancelDockspaceRebuild(DockspaceElement* dockspace);
 
-  private:
     JobSystem::WorkStealingThreadPool* m_JobSystem = nullptr;
     // Shared with the post routes of the elements this manager owns (UI::UiPostTarget), which
     // any thread may read; ~UIManager closes it, so a post that arrives after that is refused
     // instead of queued where nothing will drain it. Never null.
     std::shared_ptr<UI::UiDispatcher> m_Dispatcher = std::make_shared<UI::UiDispatcher>();
+    // CSS background images: uploads, SVG bakes, settle waits and eviction.
+    // Declared after m_Dispatcher, which it posts its completions through.
+    UI::BackgroundImageCache m_BackgroundImages;
 
     // The lifetime token UIManagerRefs observe: reset after detach notifications and before
     // destroying the owned tree. Owned by this manager alone, so no reference can revive it.
@@ -1537,8 +1549,12 @@ public:
     TooltipConfigProvider m_TooltipConfigProvider;
 
     // Async hot-reload helpers (best-effort; results are applied on UI thread).
-    std::shared_ptr<int> m_AsyncLifetime;
+    // False once ~UIManager starts: an async load or parse result still queued for the final
+    // drain is dropped rather than applied to a manager that is tearing down. UI thread only;
+    // workers never read it, they post through the shared dispatcher, which ~UIManager closes.
     bool m_AppliesAsyncResults = true;
+    uint64_t m_AsyncLayoutParseGeneration = 0;
+    std::unordered_map<std::string, uint64_t> m_AsyncStyleParseGeneration;
 
     // Simple demo state
     float m_Time = 0.0f;
@@ -1605,7 +1621,7 @@ public:
     bool m_ScrollWheelMoved = false; // set by OnScroll; consumed by Update() for fast-path gating
     bool m_ScrollOffsetsChanged = false; // set by ScrollView; consumed by Update() for fast-path gating
     bool m_MouseDown = false;
-    int m_MouseButton = 0; // 0=LMB, 1=RMB, 2=MMB, etc.
+    int m_MouseButton = 0; // the button that began the press in progress, or the last one (0=LMB, 1=RMB, 2=MMB)
     // A button transition (press, release, or CancelPress) happened since the
     // last heavy pass. Dispatch itself is synchronous, so this is not an event
     // queue: it is the per-frame work signal that a transition leaves behind —
@@ -1642,11 +1658,24 @@ public:
     bool m_PointerMoveDispatchedThisFrame = false;
     // Cursor callback and tracking
     CursorCallback m_CursorCallback;
+    CursorStyle m_LastCursorStyle = CursorStyle::Auto;
+    // Pointer lock: the capture instance that asked for it (0 = none), and
+    // whether the host was last told the pointer is locked.
     PointerLockCallback m_PointerLockCallback;
     uint64_t m_PointerLockCaptureInstanceId = 0;
     bool m_PointerLocked = false;
-    CursorStyle m_LastCursorStyle = CursorStyle::Auto;
     std::string m_FocusId;                            // persistent focus by element id
+    // The element under the root that m_FocusId names. Keeps the last hit and looks up
+    // again only when the focus id or a tree generation changed, or the held element
+    // was destroyed or left the root (an inactive dock tab).
+    UIElement* FindFocusedElement();
+    // The element FindFocusedElement found for m_HeldFocusId, and the two tree
+    // generations of that lookup. While both are unchanged the element is alive:
+    // its destruction unregisters its id, which moves the id generation.
+    UIElement* m_HeldFocus = nullptr;
+    std::string m_HeldFocusId;
+    uint64_t m_HeldFocusStructureGeneration = 0;
+    uint64_t m_HeldFocusIdGeneration = 0;
     std::string m_LastFocusIdNotified;                // to notify BaseField::OnFocusChanged
     // The element last told FocusIn, by instance id, so its FocusOut reaches it even after
     // it has left the tree (an unmounted panel): resolved through m_ElementsByInstanceId,
@@ -1669,17 +1698,14 @@ public:
     // events, and the source of UIEvent::Mods for every pointer event.
     UI::ModifierKeyState m_Modifiers;
 
-    // Tab focus order
+    // Text values by element id (for inputs), and tab focus order
+    std::unordered_map<std::string, std::string> m_TextValues;
     std::vector<std::string> m_FocusOrder;
 
     // Persistent font atlas (loaded once and synced on demand).
     // NOTE: We use shared_ptr so family-specific lookups can alias the default atlas when they
     // resolve to the same font bytes. This prevents multiple FontAtlas instances with the same
     // atlasId from diverging in content and thrashing the renderer cache.
-    void RefreshLocalizedText();
-    std::shared_ptr<Localization::LocalizationCatalog> m_LocalizationCatalog;
-    EventSubscription m_LocalizationSubscription;
-    std::string m_TextLanguage = "und";
     std::shared_ptr<Rendering::Text::FontAtlas> m_FontAtlas;
     // Set once Update has tried to load the default atlas from the staged engine fonts (the
     // path taken when no host font resolver is installed); the attempt is never repeated.
@@ -1740,14 +1766,35 @@ public:
     Rendering::GraphicsPipelineId m_SdfPipelineIdSubpixel{};
     Rendering::GraphicsPipelineId m_SdfPipelineIdEncoded{};
     Rendering::GraphicsPipelineId m_SdfPipelineIdSubpixelEncoded{};
+    // The four main draws that test the opaque pre-pass depth, at encoded * 2 + subpixel.
+    // The four above carry no depth state, for a pass with no depth attachment.
+    std::array<Rendering::GraphicsPipelineId, 4> m_SdfPipelineIdOverPrePass{};
     Rendering::DescriptorSetLayoutDesc m_SdfSsboSetLayout;  // set 0: primitive + clip SSBOs
+
+    // The opaque pre-pass (UIOpaqueInteriors): its interiors, their ring, and
+    // a linear and an encoded pipeline. Off under the compat profile and when
+    // the shaders are not staged; the main draw then runs alone.
+    std::unique_ptr<UI::UIOpaqueInteriors> m_SdfOpaqueInteriors;
+    std::unique_ptr<UI::FrameBufferRing<UI::UIOpaqueInterior>> m_SdfOpaqueRing;
+    std::vector<uint8_t> m_UiOpaqueVertShader;
+    std::vector<uint8_t> m_UiOpaqueFragShader;
+    std::vector<uint8_t> m_UiOpaqueFragShaderEncoded;
+    bool m_OpaquePrePassEnabled = true;
+    bool m_SdfOpaqueAvailable = false;
+    bool m_SdfOpaqueEncodedAvailable = false;
+    Rendering::PipelineDesc m_SdfOpaquePipelineDesc;
+    Rendering::PipelineDesc m_SdfOpaquePipelineDescEncoded;
+    Rendering::GraphicsPipelineId m_SdfOpaquePipelineId{};
+    Rendering::GraphicsPipelineId m_SdfOpaquePipelineIdEncoded{};
+    Rendering::DescriptorSetLayoutDesc m_SdfOpaqueSetLayout; // set 0: the interiors
 
     // SDF push constants (minimal — clips are in SSBO)
     struct SdfPushConstants
     {
         float TargetSize[2];
         float TimeSeconds;
-        // Scale on the colour-keyed contrast term. See SetTextContrast.
+        // Strength of the colour-keyed coverage boost (Skia SK_GAMMA_CONTRAST).
+        // See SetTextContrast.
         float TextContrast = 1.0f;
         // TARGET blend space for coverage: 0 = linear, 1.0 = display-encoded.
         // From SetTextBlendGamma via ResolveTextCoverageConstants; which arm
@@ -1795,9 +1842,12 @@ public:
     // SDF per-frame SSBO buffers (auto-growing)
     std::unique_ptr<UI::FrameBufferRing<UI::UIPrimitive>> m_SdfPrimRing;
     std::unique_ptr<UI::FrameBufferRing<UI::UIClipRect>> m_SdfClipRing;
+    std::unique_ptr<UI::FrameBufferRing<UI::UITransformSlot>> m_SdfTransformRing;
     // Stage 2 part 3: ring buffer for the DrawOrder SSBO. Size mirrors
     // m_DrawOrder; each entry is a uint32_t slot index into m_PersistentPrimitives.
     std::unique_ptr<UI::FrameBufferRing<uint32_t>> m_SdfDrawOrderRing;
+    // Reads the primitive ring's capacity for the ring sizing tests.
+    friend struct UIManagerSdfRingAccess;
 
     // SDF texture registry (font atlas pages, background images -> bindless indices)
     std::unique_ptr<UI::UITextureRegistry> m_SdfTextureRegistry;
@@ -1806,13 +1856,14 @@ public:
     // by GenerateAllPrimitives for exactly the store(s) it mutated (full
     // regen bumps all three; a drain bumps only what it touched — a text
     // re-emit bumps primitives without forcing the draw-order and clip
-    // buffers to re-upload); the idle skip path bumps nothing.
+    // buffers to re-upload); the E0 skip path bumps nothing.
     // PrepareSdfFrameData keys each ring's UploadIfChanged on its own store
     // version, and the primitive ring additionally consumes dirty-range
     // marks (MarkRangeDirty at the drain write sites) so a drain frame
     // uploads the touched slot span instead of the whole store.
     uint64_t m_PrimitiveStoreVersion = 1;
     uint64_t m_ClipStoreVersion = 1;
+    uint64_t m_TransformStoreVersion = 1;
     uint64_t m_DrawOrderStoreVersion = 1;
 
     // Compat profile only: the per-texture partition of the draw order, and the
@@ -1827,6 +1878,11 @@ public:
     bool m_SdfCompatProfile = false;
 
     void EnsureSdfPipelineDesc();
+    void EnsureSdfOpaquePipelineDesc();
+    // Draws the opaque interiors front to back; the UI pass's first draw.
+    void RecordSdfOpaquePrePass(Rendering::RenderGraph::RGContext& ctx, const SdfPushConstants& pc,
+                                Rendering::BufferHandle opaqueBuf, uint32_t opaqueCount,
+                                bool blendEncoded);
     void InitSdfRenderer();
 
     // Create the three SSBO ring buffers. Shared by InitSdfRenderer and the
@@ -1858,7 +1914,6 @@ public:
         uint32_t TargetW = 0;
         uint32_t TargetH = 0;
     };
-    struct SdfRenderGraphPass;
     SdfFrameData PrepareSdfFrameData();
 
     // Debug capture (extracted from Update to reduce file size). Reads
@@ -1866,7 +1921,7 @@ public:
     // per-element clip rects; tree traversal walks m_Root + Mount portals.
     void EmitDebugCapture();
 
-    // Sibling style sharing: per-build-pass donor snapshots (defined in
+    // P4 sibling style sharing: per-build-pass donor snapshots (defined in
     // UIManager_Internal.h; lives behind a pointer so this header only
     // needs the forward declaration). Active only for the duration of a
     // root BuildYogaRecursive pass — ConvergePostLayout re-resolves because
@@ -1882,13 +1937,13 @@ public:
     // GameUIHost.obj was not recompiled).
     std::unique_ptr<CascadeShareCache> m_CascadeShareCache;
 
-    // The share cache + its active flag threaded explicitly through
+    // MT-4.1: the share cache + its active flag threaded explicitly through
     // the cascade compute stage instead of read from manager members. The
-    // root build pass binds one context to m_CascadeShareCache; the
-    // converge/pseudo re-resolve callers pass nullptr (share inactive).
-    // RunLevelWaveCascadeProbe gives each parallel lane its own donor cache
-    // (Entries) but they all share the one Hover pointer — sharing is
-    // sibling-scoped, so a per-lane cache loses nothing.
+    // sequential path binds one context to m_CascadeShareCache for the root
+    // build pass; the converge/pseudo re-resolve callers pass nullptr (share
+    // inactive). MT-4.2 hands each subtree worker its own donor cache (Entries)
+    // but they all share the one Hover pointer — sharing is sibling-scoped, so a
+    // per-task cache loses nothing.
     struct CascadeShareContext
     {
         CascadeShareCache* Cache = nullptr;  // per-context donor snapshots (Entries)
@@ -1902,7 +1957,7 @@ public:
 
     // Style resolution helpers (shared by BuildYogaRecursive and ConvergePostLayout).
     // Returns true when the cascade was served from the sibling-share cache
-    // instead of a full ComputeStyleInto — callers use it for the
+    // (P4) instead of a full ComputeStyleInto — callers use it for the
     // CascadeShared profile counter. shareCtx is the sibling-share context
     // (nullptr / Active==false disables sharing). outTransition receives the
     // deferred declared-transition registry decision the caller must apply.
@@ -1929,18 +1984,18 @@ public:
     UIElement* ActiveTarget() const { return m_MouseCaptured ? m_CaptureElement : m_Hovered; }
 
     // Yoga tree building (extracted from Update). BuildYogaRecursive is the
-    // recursive orchestrator; its per-element body runs as three
+    // recursive orchestrator; MT-4.0 split its per-element body into three
     // explicit stages sharing a YogaBuildItem:
     //   1. CollectYogaInputs  — UI thread: ensure the Yoga node exists, resolve
     //      + intern the sheet set, compute sheet hashes. Returns false only on
     //      node-create OOM. May mutate ctx flat tables + the interner/rule-index
-    //      caches, which the compute stage then only reads.
+    //      caches (all UI-thread state MT-4.2 pre-warms so workers stay read-only).
     //   2. ComputeElementCascade — element-local cascade (ResolveCascadeForElement
     //      + FinalizeElementStyle). No YG* mutation and no manager-container
-    //      mutation: the sibling-share cache is per-context state
+    //      mutation (MT-4.1): the P4d share cache is now per-context state
     //      threaded via CascadeShareContext, and prof counters / the transition
-    //      registry decision are recorded onto the YogaBuildItem. YG* mutation
-    //      trips the seam assert (CascadeComputeActive).
+    //      registry decision are recorded onto the YogaBuildItem. Guarded by the
+    //      seam assert.
     //   3. ApplyElementBuild — UI thread: merges the compute stage's deferred
     //      effects (prof counters + declared-transition registry), replays the
     //      Yoga mutations (measure bind, ApplyStyle, mark-dirty, child insert,
@@ -1958,12 +2013,6 @@ public:
     ::BuiltNode ApplyElementBuild(UIElement* el, const ResolvedStyle* parentStyle,
                                   ::UpdateContext& ctx, const ::YogaBuildItem& item,
                                   CascadeShareContext* shareCtx);
-    void MergeCascadeComputeEffects(UIElement* el, ::UpdateContext& ctx, const ::YogaBuildItem& item);
-    bool TrackDisplayModeFlip(const ResolvedStyle& cs, RetainedYogaNode& retainedNode, ::UpdateContext& ctx);
-    bool ApplyYogaLayoutInputs(UIElement* el, const ResolvedStyle* parentStyle, ::UpdateContext& ctx,
-                               const ::YogaBuildItem& item);
-    void BuildYogaChildren(UIElement* el, const ::YogaBuildItem& item, bool becomingVisible,
-                           ::UpdateContext& ctx, CascadeShareContext* shareCtx);
     // Subtree-skip gate factored out of BuildYogaRecursive. Returns true when
     // el's subtree is verifiably clean (early-out with outBuilt); false to
     // proceed to compute+apply (side effects: prof reason counters +
@@ -1972,7 +2021,7 @@ public:
                                  ::UpdateContext& ctx, ::BuiltNode& outBuilt);
     // Element-state + sibling-share-key computation factored out of
     // ResolveCascadeForElement. Single source of truth for the share key so the
-    // donor's registered key matches every sharee's lookup key (sibling
+    // donor's registered key matches every sharee's lookup key (P4d sibling
     // sharing through the shared cascade cache).
     UIParsing::ElementState BuildCascadeElementState(UIElement* el) const;
     bool ComputeCascadeShareKey(UIElement* el,
@@ -1981,7 +2030,6 @@ public:
         const std::unordered_set<const UIElement*>* hover,
         uint64_t& outKey, uint16_t& outStateBits, uint32_t& outSheetSetId) const;
     const StylesheetRuleIndex* GetOrBuildRuleIndex(const Stylesheet* s);
-    void ApplyElementStyleOverrides(UIElement* el, ResolvedStyle& cs, bool allowLiveTextureRegistration);
     static void ResetFlatSheetTable(::UpdateContext& ctx, UIManager& mgr);
     static void AddSheetForAnalysis(const Stylesheet* s, ::UpdateContext& ctx);
 
@@ -2029,13 +2077,29 @@ public:
     void RebuildTypedNodeLists(::UpdateContext& ctx);
     bool FlushScrollCallbacks(::UpdateContext& ctx);
 
-    // The single Yoga->element rect commit. Incremental mode
+    // Runs queued virtualization work for a bounded number of passes. Returns true when work ran.
+    bool DrainVirtualizationQueueBounded();
+
+    // One scroll-callback flush, then one bounded virtualization drain, before the first Yoga
+    // solve. Both steps always run; the flags tell which step did work.
+    struct PreSolveDrainPass
+    {
+        bool ScrollCallbacksFlushed = false;
+        bool VirtualizationRan = false;
+        uint64_t TreeGenerationAfterFlush = 0;
+        double FlushMs = 0.0;
+        double VirtualizationMs = 0.0;
+    };
+    PreSolveDrainPass RunPreSolveDrainPass(::UpdateContext& updateContext);
+
+    // The single Yoga->element rect commit (slice E2). Incremental mode
     // routes changed rects to the primitive drain; blunt mode is for
     // post-rebuild/converge callers whose paths trigger a full regen.
     void CommitLayoutRects(UIElement* root, bool incremental);
 
-    // Rebuild the per-element effective clip rects consumed by the
-    // debug capture (DebugCaptureWriter::GetClipFor in UIManager_Debug.cpp). Walks the live tree (m_Root + children + Mount portal
+    // Stage 7 step 6 sub 1: rebuild the per-element effective clip rects
+    // consumed by the debug-capture overlay (UIManager_Debug.cpp's
+    // getClipFor). Walks the live tree (m_Root + children + Mount portal
     // targets), threading an `overflow:hidden` clip stack down the
     // descent. Output goes into m_DebugClipCache; absence from the map
     // means "no clip applies to this element".
@@ -2058,7 +2122,7 @@ public:
     UIElement* HitTestTree(float mx, float my, bool requirePointerEvents = true) const;
     // Translates committed layout rects for a subtree (following Mount
     // targets). markForDrain additionally queues every node the full
-    // primitive DFS would visit for drain re-emission at the new rects
+    // primitive DFS would visit for E1 drain re-emission at the new rects
     // (EmitWalkEntersSubtree).
     void TranslateLayoutSubtree(UIElement* root, float dx, float dy, bool markForDrain = false);
     // Mark-only variant of the walk above (Mount-aware, same gates) for
@@ -2147,7 +2211,7 @@ public:
     // no input and every decline condition (dirty tree, transitions, font
     // resolve, viewport, virtualization, generations) is interactivity-neutral.
     bool TryIdleFrame(unsigned dirtyNow, bool viewportOrScaleChanged, bool debugCaptureActive);
-    // Per-frame provider change pump. Runs once per Update, before the idle/
+    // C-8 per-frame provider change pump. Runs once per Update, before the idle/
     // pointer gates: probes each registered virtualized control's provider
     // version and, on movement, enqueues its DataChanged coordinator work so
     // HasPending() declines the idle gate that same frame. O(registered
@@ -2177,52 +2241,16 @@ public:
     // Tooltip overlay + cursor-style tail, shared by the heavy pass and the
     // pointer-only frame gate's early return.
     void UpdateTooltipAndCursor(bool interactive);
+    // Tells the host when the pointer lock begins or ends: it holds while the
+    // capture that asked for it does.
     void SyncPointerLock();
+    // True while the current capture holds the pointer lock it asked for.
     bool IsCapturedPointerLocked() const;
     // Finalize + push the per-frame update profile (TotalMs, dirty-source
     // top-N, history cap). Shared by the heavy tail and the gate's early
     // return so pointer-only frames still appear in profiling history.
     void PublishUpdateProfile(UpdateProfileFrame& prof, bool profEnabled,
                               std::chrono::high_resolution_clock::time_point totalStart);
-    struct UpdateFrameState;
-    struct TabFocusCandidate;
-    void StartUpdateProfiling(UpdateFrameState& frame);
-    void LoadDefaultFontAtlasOnce();
-    void DrainSchedulerAndDispatcher(UpdateFrameState& frame);
-    void RecoverHoverAndCapture();
-    void ResolveFrameInputs(UpdateFrameState& frame);
-    bool TryIdleUpdateFrame(UpdateFrameState& frame);
-    void LogIdleGateDecline(const UpdateFrameState& frame);
-    bool TryPointerOnlyUpdateFrame(UpdateFrameState& frame);
-    void LogHeavyInputFrame(const UpdateFrameState& frame);
-    void BeginHeavyPass(UpdateFrameState& frame);
-    void CollectFrameStylesheets(std::vector<StylesheetHandle>& rootSheets,
-                                 std::unordered_set<const Stylesheet*>& analysisSheets,
-                                 uint64_t& analysisSheetHash);
-    void SeedRootSheetSet(std::vector<const Stylesheet*>& flatSheets,
-                          std::vector<StylesheetHandle>& flatHandles,
-                          std::vector<const StylesheetRuleIndex*>& flatIndices,
-                          std::vector<::SheetSetRef>& sheetSetRefs,
-                          const std::vector<StylesheetHandle>& rootSheets);
-    void BuildInitialYogaTree(::UpdateContext& ctx, UpdateFrameState& frame);
-    void CacheScrollViewInstanceIds(const ::UpdateContext& ctx);
-    bool DrainVirtualizationQueueBounded(int maxIterations);
-    void RunPreSolveDrain(::UpdateContext& ctx, UpdateFrameState& frame);
-    void SolveInitialLayout(::UpdateContext& ctx, UpdateFrameState& frame);
-    void RefreshFocusOrderAndClips(::UpdateContext& ctx, UpdateFrameState& frame);
-    void RebuildAfterEventMutations(::UpdateContext& ctx, UpdateFrameState& frame);
-    void RebuildTabFocusOrder(UIElement* rootEl);
-    void CollectTabFocusCandidates(UIElement* el, std::vector<TabFocusCandidate>& out, size_t& domOrder);
-    void RestoreHoverAndCaptureAfterRebuild(UIElement* rootEl, bool hadCaptureRebuild,
-                                            const std::string& captureIdRebuild);
-    void SettleAfterEvents(::UpdateContext& ctx, UpdateFrameState& frame);
-    void RunLateRelayout(::UpdateContext& ctx, UpdateFrameState& frame);
-    void LogUpdateSpike(const ::UpdateContext& ctx, const UpdateFrameState& frame);
-    void FinishUpdateProfiling(UpdateFrameState& frame);
-    void ReportUnconvergedDirtyFlags();
-    void ApplyLayoutTransitions(::UpdateContext& ctx, UpdateFrameState& frame);
-    void DispatchCompletedTransitions();
-    void MarkPrimitiveRegenCauses(const ::UpdateContext& ctx, const UpdateFrameState& frame);
     void BuildFocusOrder(::UpdateContext& ctx);
     void NotifyFocusChange();
     UIElement* FocusNotifiedElement() const;
@@ -2236,7 +2264,6 @@ public:
     // emitted into per-task scratch (possibly on JobSystem workers), applied
     // strictly in queue order on the UI thread.
     struct DrainItem;
-    struct PrimitiveDrainState;
     void GenerateAllPrimitives();
     // Block E1: drain the m_PrimitiveDataDirty queue by re-emitting only
     // the listed elements' primitives into their existing slot ranges.
@@ -2248,27 +2275,14 @@ public:
     // cache pre-warm) → emit (parallel across JobSystem workers when the
     // drain is large enough) → apply (UI thread, strict queue order).
     bool DrainPrimitiveDataDirty();
-    void BailDrainToFullRegen(PrimitiveDrainState& state);
-    bool HasDrawOrderSlice(uint32_t start, size_t count) const;
-    void CollectDrainItems(std::vector<DrainItem>& items, PrimitiveGenContext& ctx, PrimitiveDrainState& state);
-    void ReleaseDeferredRGBindingsOf(UIElement* el);
-    bool RewriteDrainClipSlot(UIElement* el);
-    DrainItem BuildDrainItem(UIElement* el, PrimitiveGenContext& ctx);
-    size_t ComputeDrainTaskCount(size_t itemCount) const;
-    uint32_t EmitDrainItems(std::vector<DrainItem>& items,
-                           std::vector<std::vector<UI::UIPrimitive>>& taskScratch, size_t numTasks);
-    void EmitDrainSlice(std::vector<DrainItem>& sliceItems, std::vector<UI::UIPrimitive>& scratch,
-                        uint32_t taskIdx, size_t sliceBegin, size_t sliceEnd, bool offThread);
-    void ApplyDrainItem(DrainItem& item, PrimitiveGenContext& ctx,
-                        const std::vector<std::vector<UI::UIPrimitive>>& taskScratch, PrimitiveDrainState& state);
-    void ReplaceRelocatedDrawOrderSlice(UIElement* el, uint16_t oldCount, size_t emittedCount,
-                                       uint32_t writeStart, PrimitiveDrainState& state);
-    bool ResizeDrawOrderSlice(UIElement* el, uint16_t oldCount, size_t emittedCount, PrimitiveDrainState& state);
     void GeneratePrimitivesForElement(UIElement* el, PrimitiveGenContext& ctx, float parentAbsX, float parentAbsY);
     // Generate one deferred overlay subtree: overlays escape their ancestors'
     // clip and opacity, so the subtree runs against a fresh viewport clip at
-    // full opacity.
-    void GenerateOverlayPrimitives(UIElement* el, PrimitiveGenContext& ctx, float parentAbsX, float parentAbsY);
+    // full opacity. It keeps its owner's CSS transform, `ownerTransformIdx`
+    // (the slot in effect where the walk found it), as a popup inside a
+    // transformed element does on the web.
+    void GenerateOverlayPrimitives(UIElement* el, PrimitiveGenContext& ctx, float parentAbsX, float parentAbsY,
+                                   uint32_t ownerTransformIdx);
     // Emit the hover tooltip's arrow into its dedicated persistent slot. The
     // arrow has no UIElement; GenerateAllPrimitives calls this between the
     // lower overlay layers and the HoverTooltip layer so the arrow draws
@@ -2279,12 +2293,35 @@ public:
     // element the last full DFS skipped has become visible and needs a full
     // regen to re-establish its slots.
     bool ElementRectIntersectsNearestClip(const UIElement* el) const;
+    // CSS transform support: writes `el`'s transform slot from its current
+    // layout rect and style, chained to `parentIdx`, allocating the slot if
+    // the element has none. Returns the slot, or kNoTransform when the
+    // element's transform is `none` (a slot it held is freed).
+    uint32_t WriteElementTransformSlot(UIElement* el, uint32_t parentIdx);
+    // Drain support for a CSS transform that switched to or from `none`:
+    // gives `el` its own transform slot or frees it, then re-points what
+    // paints in the element's space at the space it paints in now: its own
+    // primitives and clip, and its descendants' down to the next transformed
+    // element, whose slot is re-chained (an overlay in the subtree paints in
+    // the same space and is re-pointed with it). False, with nothing
+    // changed, when part of the subtree was culled at the last full DFS: the
+    // transform may have moved it into view, and only the full walk emits it.
+    bool RepointTransformSpace(UIElement* el);
+    // RepointTransformSpace's precondition: every visible element it would
+    // re-point was emitted by the last full DFS.
+    bool SubtreeEmittedForRepoint(UIElement* el, bool isRoot) const;
+    // RepointTransformSpace's walk: stamps `space` on what paints in it.
+    void RepointSubtreeTransform(UIElement* el, uint32_t space, bool isRoot);
+    // Drain support: rewrites the clip slot `el` owns from its current layout
+    // rect, folding in the recorded parent clip when both are in one
+    // transform space. False when `el` owns no clip slot.
+    bool RewriteClipSlotFromLayout(UIElement* el);
     // Drain support: whether a control that renders its own text, and owned
     // no primitive range at its last full DFS, would emit anything now. Emits
     // into the drain context's scratch tail and discards the result.
     bool OwnTextEmissionPaints(UIElement* el, PrimitiveGenContext& ctx);
 
-    // After an element's self-emission has pushed `count` primitives
+    // Stage 2: after an element's self-emission has pushed `count` primitives
     // into ctx.primitives starting at scratchStart, finalize them by allocating
     // (or reusing) a persistent slot range in m_PersistentPrimitives via
     // m_PrimitiveAllocator, copying the primitives into that range, pushing
@@ -2311,8 +2348,9 @@ public:
     // so the caller pushes Selection, emits the glyph run, then pushes Caret.
     struct TextInputOverlays
     {
-        std::vector<UI::UIPrimitive> Selections;
+        UI::UIPrimitive Selection{};
         UI::UIPrimitive Caret{};
+        bool HasSelection = false;
         bool HasCaret = false;
     };
     // Requires RefreshTextInputScroll to have run for this element this frame.
@@ -2322,17 +2360,19 @@ public:
     // x/y/w/h stay the border box it is clipped to (background-clip).
     void EmitBackgroundImagePrimitive(UIElement* el, PrimitiveGenContext& ctx, const VisualStyle& vs, const Box4& borderWidth, float x, float y, float w, float h, uint16_t clipIdx);
     struct ResolvedBgSlot;
-    ResolvedBgSlot ResolveBackgroundTextureSlot(UIElement* el, PrimitiveGenContext& ctx, const BackgroundImageStyle& bgImg, float elW, float elH);
+    // `paddingW/H` is the positioning area in physical px: background-size
+    // measures against it, and an SVG's raster size is chosen from it.
+    ResolvedBgSlot ResolveBackgroundTextureSlot(UIElement* el, PrimitiveGenContext& ctx, const BackgroundImageStyle& bgImg, float paddingW, float paddingH);
     Rendering::Text::FontAtlas* ResolveFontForVisualStyle(const VisualStyle& vs, PrimitiveGenContext& ctx);
     std::vector<UI::UIPrimitive> m_SdfPrimitiveBuffer;
     std::vector<UI::UIClipRect> m_SdfClipBuffer;
 
     // Deferred RG texture bindings: populated during GenerateAllPrimitives,
-    // consumed during RenderRG. Maps descriptor slot index to the external
+    // consumed during RenderRG. Maps a slot reservation to the external
     // texture name that needs resolving during the render pass.
     struct DeferredRGBinding
     {
-        uint32_t Slot = 0;
+        GenerationalVector::Handle Reservation; // Index() is the descriptor slot
         UIElement* Owner = nullptr; // element that reserved this slot (for per-element release on incremental re-emit)
         // RenderGraph arm: resolve through the per-frame publish map at RenderRG
         // declare time. NEVER an RenderGraph id — bindings outlive frames, RenderGraph ids
@@ -2368,42 +2408,15 @@ public:
     Rendering::SamplerHandle m_SamplerRepeatY{}; // U:Clamp  V:Repeat
     Rendering::SamplerHandle m_SamplerNearestClamp{}; // U:Clamp V:Clamp nearest filter
 
-    struct CachedTexture
-    {
-        Rendering::TextureHandle Handle = Rendering::INVALID_TEXTURE_HANDLE;
-        uint32_t Width = 1;
-        uint32_t Height = 1;
-        // Levels the texture carries; the cache's byte budget counts every one.
-        uint32_t MipLevels = 1;
-        // True when the handle comes from the device-level shared background
-        // texture broker. Shared handles are not destroyed by individual
-        // UIManager instances.
-        bool SharedOwned = false;
-        // 9-slice layout authored on the texture asset (resolved from AssetRegistry
-        // metadata at upload). Default = un-sliced (single-quad fast path).
-        NineSlice Slice{};
-        // m_BgCacheFrame value the last time this entry was resolved for paint.
-        // EvictStaleBackgroundTextures ages entries on it once the cache
-        // exceeds its byte budget.
-        uint64_t LastUsedFrame = 0;
-    };
 
-    // Path->GUID resolution cache. Keys include the optional asset source
-    // alias so editor:Icons/foo.png cannot collide with project Icons/foo.png.
-    std::unordered_map<std::string, GUID> m_BgPathToGuid; // caches successful GUIDs
-
-    std::unordered_map<GUID, CachedTexture> m_BgTextureCache;                // GUID -> texture handle + size
-    // Monotonic paint-frame counter for m_BgTextureCache aging; advanced by
-    // EvictStaleBackgroundTextures once per rendered frame.
-    uint64_t m_BgCacheFrame = 0;
     Rendering::TextureHandle m_White1x1 = Rendering::INVALID_TEXTURE_HANDLE; // fallback
 
     // Asset hot-reload integration.
     // Subscribes to AssetEventDispatcher for Texture/Font reload + modified events
     // and propagates them to the relevant UIManager caches:
-    //   - Texture: EvictBackgroundTexture(guid) tears down the cached GPU handle
-    //     so the next paint creates a fresh one from disk; also drops the old
-    //     UITextureRegistry slot (E7).
+    //   - Texture: m_BackgroundImages.OnTextureReloaded(guid) tears down the
+    //     cached GPU textures so the next paint creates fresh ones from disk;
+    //     also drops the old UITextureRegistry slots (E7).
     //   - Font:    drops m_FontAtlases / m_FontAtlasAliases entries that resolved
     //     to that font GUID and triggers reflow.
     // Pending lists are populated from the dispatcher (any thread) and drained
@@ -2490,21 +2503,6 @@ public:
     bool AcceptTextureSpaceForFormat(const std::string& name, Rendering::TextureFormat format,
                                      UI::UITextureSpace space);
 
-    // In-flight GPU upload dedupe and ready-callback fan-out for background textures
-    // In-flight upload markers, stamped. The dedupe check reads this before
-    // issuing a request, so a completion that never arrives would otherwise
-    // block every later attempt for the session — a background image that
-    // misses its callback once stays missing. A stale entry is retried instead
-    // of believed, and a bounded number of times so a genuinely absent image
-    // cannot spin.
-    struct BackgroundUploadRequest
-    {
-        std::chrono::steady_clock::time_point Issued;
-        uint32_t Attempts = 0;
-    };
-    std::unordered_map<GUID, BackgroundUploadRequest> m_BgUploadInFlight;
-    std::unordered_map<GUID, std::vector<std::function<void(Rendering::TextureHandle, uint32_t, uint32_t)>>> m_BgReadyCallbacks;
-
     // Keyboard and text events dispatch synchronously from OnKey/OnChar, so
     // there is no queue to inspect for "was there input this frame". This
     // records it for Update's fast-path gating instead, and is cleared by the
@@ -2556,7 +2554,9 @@ public:
         // this offset was applied. A newer stamp on the content means its
         // committed rect was rewritten to the Yoga base since then, so the
         // stored offset is no longer baked into the rect and must be
-        // re-applied in full.
+        // re-applied in full (replaces the old global
+        // layoutRectsJustRecomputed flag, which double-translated once
+        // E3's pruning let unvisited scroll content keep translated rects).
         uint32_t ContentCommitGen = 0;
     };
     std::unordered_map<uint64_t, AppliedScrollOffset> m_AppliedScrollByInstanceId;
@@ -2573,7 +2573,7 @@ public:
   public:
     // Per-element effective clip rect, populated by RebuildClipCaches
     // whenever debug capture is enabled. Element absent from the map
-    // means "no clip applies".
+    // means "no clip applies" (i.e. the prior NodeRec.hasClip == false).
     // Cleared at the start of each RebuildClipCaches call.
     //
     // Public so the recursive walk helper in UIManager_Layout.cpp can
@@ -2622,6 +2622,9 @@ public:
     bool m_TextDebugDisableElementScissor = false;
     bool m_TextDebugDisableClipStack = false;
     int m_TextDebugExpandScissorPx = 0;
+
+    // Layout diagnostics (controlled by hotkey)
+    int m_LayoutDiagFrames = 0; // when >0, print tree/grid widths for N frames
 
     // Stylesheet / dynamic pseudo-state analysis (computed during layout/style builds).
     struct DynamicStyleAnalysis
@@ -2679,7 +2682,7 @@ public:
     //    change in-place (e.g., UIStyleAsset hot reload) so analysis and caches can refresh.
     uint64_t m_StylesheetSetGeneration = 1;
     uint64_t m_StylesheetContentGeneration = 1;
-    // Epoch stamped into per-element rule caches at build time.
+    // P4 (C-10): epoch stamped into per-element rule caches at build time.
     // Bumped alongside the generations above whenever sheet content or the
     // sheet set changes; caches from an older epoch are never trusted
     // (invalidation walks miss detached subtrees, whose caches would
@@ -2708,13 +2711,11 @@ public:
     bool m_DirtyTraceEnabled = false;
     std::unordered_map<UIElement*, std::pair<uint32_t, unsigned>> m_PerFrameDirtyCount;
 
-    // Font resolution can complete asynchronously (posted via the dispatcher). A font completion
-    // affects text measurement and rendering, but forcing a full rebuild for *every* completion
-    // can cause rebuild storms during editor startup when multiple font keys resolve over time.
-    //
-    // We coalesce: mark that a font resolved, and only invalidate cached geometry once the
-    // current in-flight batch finishes (in-flight becomes empty).
+    // A font change that can affect any text: the default face changed or a font asset reloaded.
+    // The next heavy pass rechecks every retained text input and regenerates all primitives.
     bool m_FontResolvedDirty = false;
+    // Font keys installed since the last Update. Update marks only the text that resolves through them.
+    std::vector<std::string> m_FontKeysInstalled;
 
 #if defined(GE_HAVE_YOGA) && GE_HAVE_YOGA
   public:
@@ -2724,9 +2725,10 @@ public:
 
     // Text measurement context for Yoga measure callbacks. One instance per
     // RetainedYogaNode that has a measure function attached. Lives until the
-    // owning UIElement is destroyed. Owned per retained node so the Yoga
-    // context pointer stays stable across frames, including on fast paths
-    // that skip YGNodeSetContext.
+    // owning UIElement is destroyed. Previously pooled in a thread_local that
+    // got reset each frame — a fast-path that skipped YGNodeSetContext would
+    // then point at a reused pool slot. Owned per-retained-node here, so the
+    // Yoga context pointer stays stable across frames.
     struct TextMeasureCtx
     {
         Rendering::Text::FontAtlas* Atlas = nullptr;
@@ -2782,14 +2784,9 @@ public:
         // LoadFontBytes), NOT the pointer: a pointer survives in-place
         // reloads and can be reused by the allocator across destroy/recreate.
         uint32_t AtlasId = 0;
-        uint64_t LayoutRevision = 0;
 
         bool operator==(const MeasureInputs&) const = default;
     };
-
-  private:
-    MeasureInputs BindTextMeasure(UIElement* el, RetainedYGNodeRef n, RetainedYogaNode& retainedNode,
-                                  const ::UpdateContext& ctx);
 
   public:
     // Persistent interner for effective stylesheet sets. An element's
@@ -2810,9 +2807,11 @@ public:
       public:
         SheetSetInterner();
 
-        // Takes a span of handles. The interner holds StylesheetHandle
-        // copies internally so the referenced Stylesheets stay alive as
-        // long as the entry is in the interner.
+        // Step 4: takes a span of handles instead of raw pointers.
+        // The interner holds StylesheetHandle copies internally so the
+        // referenced Stylesheets stay alive as long as the entry is in
+        // the interner — eliminates the per-frame Clear() workaround
+        // for dangling pointers.
         // `mgr` is used to build StylesheetRuleIndex pointers for
         // entries that don't yet have them; the mgr reference is not
         // retained. Returns a stable ID.
@@ -2832,10 +2831,10 @@ public:
         // the clear and resolves to nothing until BuildYogaRecursive
         // re-primes it.
         uint32_t Generation() const { return m_Generation; }
-        // Drops every entry and advances Generation(). Called by
-        // ResetRetainedYogaTree and InvalidateAllInternedSheetSets; handle
-        // ownership keeps entries valid otherwise, so other call sites
-        // should not need this.
+        // Drops every entry; only safe when no element references the
+        // interner IDs anymore (scene reload, ~UIManager). Step 4's
+        // whole point is that handle ownership keeps entries valid
+        // otherwise — call sites outside those paths should not need this.
         void Clear();
 
       private:
@@ -2871,15 +2870,32 @@ public:
   private:
     SheetSetInterner m_SheetSetInterner;
 
-    // Persistent CPU mirrors of the GPU SSBOs. Primitives and clips live
-    // in allocator-managed slots addressed by UIElement's render handles
-    // (m_PrimitiveRangeStart / m_ClipSlotIdx); m_DrawOrder lists primitive
-    // slot indices in DFS pre-order.
+    // Event-driven UI rewrite, Stage 1 (additive, currently unused at
+    // runtime): persistent CPU mirrors of the GPU SSBOs, paired with
+    // their slot allocators. Stage 2 starts wiring PrimitiveGen output
+    // into m_PersistentPrimitives via m_PrimitiveAllocator; Stage 3
+    // mirrors clips; Stage 4 introduces m_DrawOrder + its allocator
+    // and switches the render pipeline to read through these fields.
+    //
+    // Today these stay default-constructed and are not referenced by
+    // any code path. Their presence is purely so UIElement's render
+    // handle fields (m_PrimitiveRangeStart / m_ClipSlotIdx / etc.) have
+    // an addressable destination, and so ~UIElement can route through
+    // UIManagerFreeRenderSlots when those handles do start getting set.
     std::vector<UI::UIPrimitive> m_PersistentPrimitives;
     UI::SlotAllocator            m_PrimitiveAllocator;
     std::vector<UI::UIClipRect>  m_PersistentClipRects;
     UI::SimpleSlotAllocator      m_ClipAllocator;
+    // CSS transforms: one slot per transformed element (UIElement::
+    // m_TransformSlotIdx). Slot 0 is the identity every untransformed
+    // primitive points at; AllocateTransformSlot never hands it out.
+    std::vector<UI::UITransformSlot> m_PersistentTransforms;
+    UI::SimpleSlotAllocator          m_TransformAllocator;
+    // Set once a transform past UI::kMaxTransformChainDepth has been
+    // ignored and logged, so the log says it once per manager.
+    bool m_LoggedTransformChainDepth = false;
     std::vector<uint32_t>        m_DrawOrder;
+    UI::SlotAllocator            m_DrawOrderAllocator;
 
     // Stage 2: PrimitiveGen frame counter, paired with UIElement::
     // m_LastPrimitiveGenFrame for re-entrancy detection. Bumped at the
@@ -2893,35 +2909,37 @@ public:
     // by that walk; the drain rejects surgery on any element that wasn't.
     uint32_t m_LastFullDfsGenFrame = 0;
 
-    // Idle-frame skip for GenerateAllPrimitives.
-    // Set true by NotifyElementDirty for layout-affecting marks (MarkDirty on
-    // any element of this manager) and by Update for the few mutation paths
-    // that don't route through MarkDirty (Yoga solve, dock rebuild, viewport /
-    // scroll, sheet hot-reload, transitions). Cleared at the end of a
-    // successful GenerateAllPrimitives. When false (and m_DrawOrder non-empty),
-    // the render path skips the full DFS: it drains m_PrimitiveDataDirty, or
-    // with nothing queued reuses the existing snapshot.
+    // Block E (E0) — idle-frame skip for GenerateAllPrimitives.
+    // Set true by NotifyElementDirty (via MarkDirty on any element of this
+    // manager) and by Update for the few mutation paths that don't route
+    // through MarkDirty (Yoga solve, dock rebuild, viewport / scroll,
+    // sheet hot-reload, transitions). Cleared at the end of a successful
+    // GenerateAllPrimitives. When false (and m_DrawOrder non-empty),
+    // the render path skips PrimitiveGen and re-uploads the existing snapshot.
     //
-    // Default true so the first frame always generates. The MarkDirty route
-    // (NotifyElementDirty) asserts the UI thread; off-thread callers go
-    // through the UiDispatcher.
+    // Default true so the first frame always generates. Atomic because
+    // MarkDirty can fire from worker threads (e.g. async font / asset
+    // callbacks) before being marshalled onto the UI thread.
     std::atomic<bool> m_PrimitivesNeedRegen{true};
 
-    // Dedicated slot for the tooltip overlay arrow primitive.
+    // Dedicated slot range for the tooltip overlay arrow primitives.
     // The arrow is emitted by m_TooltipOverlay (not a UIElement), so it
     // cannot route through the per-element slot path. Allocated lazily
-    // on first emission, retained for the lifetime of this UIManager.
-    // SlotAllocator::kInvalidSlot when not yet allocated.
+    // on first emission and moved when the arrow needs more primitives
+    // than its capacity. SlotAllocator::kInvalidSlot when not yet allocated.
     uint32_t m_TooltipArrowSlot = 0xFFFFFFFFu;
+    uint16_t m_TooltipArrowSlotCap = 0;
+    // The arrow primitives in this frame's draw order; 0 while it is hidden.
+    uint16_t m_TooltipArrowCount = 0;
 
-    // Dedicated clip slot for the anonymous viewport clip used by
+    // Stage 3: dedicated clip slot for the anonymous viewport clip used by
     // deferred-overlay rendering (tooltips, dropdowns, modals). Lifecycle
     // mirrors m_TooltipArrowSlot — allocated lazily, retained for the
     // lifetime of this UIManager. Per-element clips are owned by the
     // element via UIElement::m_ClipSlotIdx.
     uint32_t m_ViewportClipSlot = 0xFFFFFFFFu;
 
-    // :focus-within chain. Set of (focused element +
+    // Stage 5 Block D: :focus-within chain. Set of (focused element +
     // every ancestor up to the root). Recomputed by RebuildFocusWithinChain()
     // when focus changes; consulted by ResolveCascadeForElement to populate
     // ElementState::FocusWithin.
@@ -2947,7 +2965,7 @@ public:
     // from the :focus-within chain.
     void RemoveFromDirtyQueues(UIElement* el);
 
-    // Recompute m_FocusWithinChain from the current m_FocusId
+    // Stage 5 Block D: recompute m_FocusWithinChain from the current m_FocusId
     // (focused element + every ancestor). Marks the symmetric difference of
     // the OLD and NEW chain elements through MarkPseudoStateScope so
     // :focus/:focus-visible/:focus-within rules re-cascade (and relayout when
@@ -2980,8 +2998,9 @@ public:
         const DynamicStyleAnalysis::PseudoInfo& a,
         const DynamicStyleAnalysis::PseudoInfo& b);
 
-    // Self-pseudo marker entry points for two element-driven state flips:
-    // a Toggle/Checkbox value change (:checked) and a custom-state add/remove. Both route the
+    // Self-pseudo marker entry points for the two element-driven state flips
+    // that MarkPseudoStateScope did not previously cover: a Toggle/Checkbox
+    // value change (:checked) and a custom-state add/remove. Both route the
     // element's own scope through the same analysis-driven decision the focus
     // family uses, so the flip raises LayoutDirty only when the corresponding
     // rules affect layout and fans out per their descendant/sibling
@@ -3003,6 +3022,14 @@ public:
     // Update.
     bool m_ForceFullRebuildNextFrame = false;
 
+    // Tactical gate (path B): bumped on AddStylesheet / RemoveStylesheet /
+    // m_GlobalStylesheets change / asset-reload. Compared against
+    // m_StylesheetGenAtLastClear to decide whether the per-frame
+    // interner-clear + PSSID-zero + pre-cascade re-intern triple needs
+    // to run this frame.
+    uint64_t m_StylesheetGen = 1;
+    uint64_t m_StylesheetGenAtLastClear = 0;
+
   public:
     // Trigger a full rebuild on the next Update. Called from SetRoot etc.
     // once the primary flip lands; currently a no-op hint (full rebuild
@@ -3010,26 +3037,26 @@ public:
     void RequestFullRebuild() { m_ForceFullRebuildNextFrame = true; }
   private:
 
-    // Master toggle for the subtree-skip fast path. Reads env
+    // Master toggle for the subtree-skip fast path (Slice 2). Reads env
     // GE_UI_SUBTREE_SKIP once in the ctor ("0"/"false"/"off" disable).
-    // Default ON; SetSubtreeSkipEnabled flips it at runtime for A/B
-    // comparisons.
+    // Default ON once step 2 has been validated; can be flipped off at
+    // runtime via SetSubtreeSkipEnabled for A/B comparisons.
   public:
     void SetSubtreeSkipEnabled(bool v) { m_SubtreeSkipEnabled = v; }
     bool IsSubtreeSkipEnabled() const { return m_SubtreeSkipEnabled; }
   private:
     bool m_SubtreeSkipEnabled = true;
   public:
-    // Focus-order rebuild skip. When structure is stable and layout wasn't
-    // solved, the previous frame's m_FocusOrder is still valid and
-    // RefreshFocusOrderAndClips reuses it. Env: GE_UI_INDICES_CLIPS_SKIP=0
-    // disables (rebuilds the focus order every frame).
+    // IndicesAndClips-rebuild skip. When structure is stable and layout wasn't
+    // solved, the derived maps and clip caches from the previous frame are
+    // still valid — rebuilding them is pure waste. Env: GE_UI_INDICES_CLIPS_SKIP=0
+    // disables (forces the rebuild every frame, matches pre-fix behaviour).
     void SetIndicesAndClipsSkipEnabled(bool v) { m_IndicesAndClipsSkipEnabled = v; }
     bool IsIndicesAndClipsSkipEnabled() const { return m_IndicesAndClipsSkipEnabled; }
   private:
-    // Master skip knob (env: GE_UI_INDICES_CLIPS_SKIP=0 disables). Its only
-    // consumer is the FocusOrder rebuild skip in RefreshFocusOrderAndClips;
-    // no index-map or clip rebuild reads it.
+    // Master skip knob (env: GE_UI_INDICES_CLIPS_SKIP=0 disables). Reused
+    // post-Stage-7-step-7 as a global gate for the FocusOrder rebuild skip
+    // — the original index-map/clip skip it was named for is gone.
     bool m_IndicesAndClipsSkipEnabled = true;
     // Same one-shot prime flag for m_FocusOrder — required because the
     // vector is empty on the first frame even though structure-change
@@ -3039,9 +3066,6 @@ public:
 
     // Normalize a CSS font family name for internal lookup/dedup (case-insensitive, trimmed).
     static std::string NormalizeFontFamilyKey(const std::string& family);
-    // One key for resolution, in-flight lookup and warmup. Empty means no named family.
-    static std::string MakeFontRequestKey(const std::string& family, int weight,
-                                          FontStyle style, FontVariant variant);
 
     // Returns an already-loaded atlas for (family,weight,style,variant), or (if missing) kicks off a host
     // resolution request (deduped) and returns nullptr until ready.
@@ -3058,6 +3082,17 @@ public:
     // never runs. Schedules a restyle at backoff expiry so the retry can
     // actually fire (the scheduler drains before the idle gate).
     void ScheduleFontRetryRestyle(std::chrono::milliseconds backoff);
+
+    // Marks layout and visual dirty on each text whose font stack reaches an installed key
+    // before a loaded one, so the text that drew with a fallback face is included.
+    void MarkTextUsingInstalledFonts();
+    // True when an installed key comes before every other loaded key of the style's font stack.
+    bool FontStackReachesInstalledKey(const VisualStyle& visual) const;
+
+    // Internal helper: run scheduler/dispatcher, rebuild Yoga layout, handle
+    // input + events, and generate per-frame geometry into the CPU caches.
+    // Returns true when geometry is valid for rendering this frame.
+    bool BuildLayoutAndGeometry(bool interactive);
 };
 
 #if defined(GE_HAVE_YOGA) && GE_HAVE_YOGA
@@ -3081,16 +3116,19 @@ struct RetainedYogaNode
     // while its Yoga input has moved — without this the re-push is skipped.
     bool PrevParentBlockFlow = false;
     bool HasPrevInputs = false;
+    // The root's logical size the last push resolved a viewport unit against;
+    // zero when PrevLayout has none. A resize or a UI scale change leaves
+    // PrevLayout unchanged while the resolved px move, so this re-arms the push.
+    Mathematics::Vector2 PrevViewportBasis{};
 
     // UIManager::m_LayoutCommitGeneration at the last CommitLayoutRects
     // visit — "when was this element's rect last rewritten from Yoga".
     // ApplyScrollTransforms compares it to decide whether its applied
-    // offset is still baked into the committed rect (CommitLayoutRects
-    // prunes unchanged subtrees, so a solve does not imply every rect was
-    // recommitted).
+    // offset is still baked into the committed rect (E3 pruning means a
+    // solve no longer implies every rect was recommitted).
     uint32_t LastCommitGen = 0;
 
-    // Subtree-skip gate state. Set true at the
+    // Subtree-skip gate state (Stage 7 step 7 option 2). Set true at the
     // end of a successful slow-path BuildYogaRecursive run; the early-exit
     // gate at the top of the function refuses to skip until this becomes
     // true. Cleared by ResetRetainedYogaTree (implicit — node is destroyed),
@@ -3106,7 +3144,7 @@ struct RetainedYogaNode
     // hot-reload (NotifyStylesheetContentChanged advances the counter).
     uint64_t                                   CachedStylesheetContentGen  = 0;
 
-    // Per-node text measurement context. Allocated lazily
+    // Per-node text measurement context (Slice 2 step 3). Allocated lazily
     // when this element first needs a Yoga measure function; persists
     // across frames, so fast-path appends don't need to re-bind the
     // Yoga context pointer.
@@ -3128,12 +3166,11 @@ struct RetainedYogaNode
 
     // Last observed DisplayMode == None state. display:none transitions
     // (via a StyleDirty-driven cascade that flips DisplayMode) change
-    // which descendants BuildYogaRecursive visits — they are included or
-    // excluded via the display:none early-return branch — without firing
-    // ChildrenDirty on any element. Tracking the flag here lets
-    // BuildYogaRecursive bump the structure counter on the transition
-    // frame, which is how the focus-order skip gate learns the visited
-    // set changed.
+    // ctx.nodes size — descendants are included or excluded via the
+    // display:none early-return branch — without firing ChildrenDirty
+    // on any element. Tracking the flag here lets BuildYogaRecursive
+    // bump the structure counter on the transition frame, which is
+    // how the IndicesAndClips-skip gate learns the node list changed.
     bool PrevDisplayModeNone = false;
 
     // Persistent sheet-set ID (SheetSetInterner). Populated by

@@ -1,11 +1,10 @@
 #pragma once
 
 #include "Ocean/OceanQuery.h"
-#include "Ocean/OceanPreparedDispatch.h"
 #include "Ocean/OceanTypes.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/PipelineIdentifiers.h"
+#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
 #include "Rendering/Core/RenderGraph/RGReadbackRing.h"
 
 #include <atomic>
@@ -25,12 +24,6 @@ namespace GameEngine::Ocean
 inline constexpr uint32 kMaxOceanGPUQueryPointsPerDispatch = 256u;
 using OceanGPUQueryToken = uint64;
 
-struct OceanPreparedQueryDispatch
-{
-    OceanPreparedReadbackDispatch Readback;
-    OceanGPUQueryToken Token = 0;
-};
-
 struct OceanGPUQueryParamsGPU
 {
     uint32 PointCount = 0u;
@@ -49,7 +42,7 @@ struct OceanGPUQueryParamsGPU
     float32 _Pad1 = 0.0f;
 
     OceanCascadeLayoutGPU CombinedCascade;
-    float32 Points[kMaxOceanGPUQueryPointsPerDispatch][4] = {};
+    Mathematics::Vector4 Points[kMaxOceanGPUQueryPointsPerDispatch];
 };
 static_assert(sizeof(OceanGPUQueryParamsGPU) ==
                   48 + sizeof(OceanCascadeLayoutGPU) +
@@ -70,7 +63,7 @@ public:
     OceanGPUQueryToken Enqueue(const OceanSurfaceQueryPoint* points, uint32 count,
                                float32 minimumSpatialLength = 0.0f);
     bool HasPending() const;
-    OceanGPUQueryToken PrepareNext(const OceanParamsGPU& oceanParams,
+    bool PrepareNext(const OceanParamsGPU& oceanParams,
                      const OceanCascadeLayoutGPU& combinedLayout,
                      bool combinedAvailable);
     void FillParams(OceanGPUQueryParamsGPU& out) const { out = m_Params; }
@@ -79,25 +72,19 @@ public:
                         ::GameEngine::Rendering::SamplerHandle fftSampler,
                         ::GameEngine::Rendering::TextureHandle combined,
                         ::GameEngine::Rendering::SamplerHandle combinedSampler);
-    /// Declare this ID with RGPassBuilder::UsePipeline before preparation.
-    ::GameEngine::Rendering::ComputePipelineId GetPipelineId() const { return m_Pipeline; }
+    void RecordDispatch(::GameEngine::Rendering::IDevice* device,
+                        ::GameEngine::Rendering::CommandList* commandList,
+                        const ::GameEngine::Rendering::RenderGraph::RGFrame& frame,
+                        ::GameEngine::Rendering::BufferHandle paramsBuffer,
+                        uint64 paramsOffset);
+    void PollCompleted(::GameEngine::Rendering::IDevice* device);
+    bool TryTake(OceanGPUQueryToken token, std::vector<OceanSurfaceSample>& out);
+    void Clear();
 
-    /// Render-thread preparation reserves a frame-owned slot without consuming pending work.
-    /// Keep the parameter upload alive through recording; notify submission or abort afterward.
-    bool PrepareDispatch(Rendering::IDevice* device, Rendering::RenderGraph::RGFrame& frame,
-                         Rendering::BufferHandle paramsBuffer, uint64 paramsOffset,
-                         const OceanGPUQueryParamsGPU& params, OceanGPUQueryToken token,
-                         OceanPreparedQueryDispatch& prepared);
-    /// Render-thread recording validates the reservation before writing its physical slot.
-    void RecordDispatch(Rendering::CommandList* commands, const OceanPreparedQueryDispatch& prepared);
-    /// Render-thread notification releases this frame's reservations that were not submitted.
     void OnFrameAborted(const Rendering::RenderGraph::RGFrame& frame)
     {
         m_Readback.CancelUnsubmitted(frame);
     }
-    void PollCompleted(::GameEngine::Rendering::IDevice* device);
-    bool TryTake(OceanGPUQueryToken token, std::vector<OceanSurfaceSample>& out);
-    void Clear();
 
     void OnFrameSubmitted(const ::GameEngine::Rendering::RenderGraph::RGFrame& frame,
                           const ::GameEngine::Rendering::IDevice::GpuSyncToken& token)
@@ -124,9 +111,9 @@ private:
     };
     struct ResultGPU
     {
-        float32 Position[4] = {};
-        float32 Normal[4] = {};
-        float32 Displacement[4] = {};
+        Mathematics::Vector4 Position;
+        Mathematics::Vector4 Normal;
+        Mathematics::Vector4 Displacement;
     };
 
     ::GameEngine::Rendering::IDevice* m_Device = nullptr;

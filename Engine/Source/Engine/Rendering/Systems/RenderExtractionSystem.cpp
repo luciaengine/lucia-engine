@@ -1,21 +1,29 @@
-#include "Components/Hierarchy.h"
-#include "ECS/OrderedHandleSet.h"
 #include "ECSModules/Rendering/Systems/RenderExtractionSystem.h"
 #include "ECS/Components.h"
 #include "ECS/Entity.h"
 #include "ECS/OrderedHandleSet.h"
+#include "Mathematics/Interpolation.h"
+#include "Mathematics/Vector3.h"
+#include "Mathematics/WorldPosition.h"
+#include "Types/ColorUtils.h"
 
 #include "ECS/ECSTemplates.h"
+#include "Engine/Rendering/Camera.h"
 #include "Engine/Rendering/DrawCommand.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/PostProcessSettings.h"
 #include "Engine/Rendering/PostProcessEffectRegistry.h"
+#include "CameraExposureStamp.h"
 #include "Engine/Rendering/Exposure.h"
 #include "Engine/Rendering/PrimitiveGenerator.h"
 #include "Engine/Rendering/RenderOrigin.h"
+#include "Engine/Rendering/RenderSorting.h"
+#include "Components/Rendering/RenderSorting.h"
+#include "Components/Hierarchy.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/WindVolumeResolver.h"
 #include "Core/Engine.h"
 #include "Rendering/Common/MatrixUtils.h"
 
@@ -30,24 +38,22 @@
 #include "Components/Rendering/GIEmitter.h"
 #include "Components/Rendering/MeshRenderer.h"
 #include "Components/Rendering/Particles.h"
-#include "Components/Rendering/RenderSorting.h"
-#include "Engine/Rendering/RenderSorting.h"
-#include "Engine/Rendering/SortingLayers.h"
 #include "Components/Rendering/PostProcessVolume.h"
 #include "Components/Rendering/MorphTargetWeights.h"
 #include "Components/Rendering/SkinnedMeshRenderer.h"
 #include "Components/Rendering/SkyEnvironment.h"
+#include "Components/SceneViewHidden.h"
 #include "Components/Rendering/Ocean.h"
 #include "ECSModules/Rendering/SkeletonStore.h"
 #include "GPUFogParticles/GPUFogParticlesMaterial.h"
-#include "JobSystem/JobCounter.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Logger/Logger.h"
-#include "Platform/Environment.h"
 #include "Ocean/OceanRenderFeature.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Core/GPUInstanceWorldKey.h"
-#include "Rendering/Core/HashUtils.h"
+#include "Types/FalseSharing.h"
+#include "Types/Fnv1a.h"
+#include "Types/FunctionRef.h"
 #include "Types/StringUtils.h"
 
 #include <algorithm>
@@ -58,7 +64,6 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
-#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -74,30 +79,60 @@ namespace
 
 inline bool IsFrameTraceEnabled()
 {
-    static bool s_Enabled = GameEngine::Platform::EnvironmentSwitchEnabled("GE_FRAME_TRACE", false);
+    static bool s_Enabled = []()
+    {
+        const char* env = std::getenv("GE_FRAME_TRACE");
+        if (!env || !*env)
+        {
+            return false;
+        }
+
+        // Treat "0" as explicit off; anything else enables tracing.
+        return !(env[0] == '0' && env[1] == '\0');
+    }();
     return s_Enabled;
 }
 
 inline bool IsLightDiagEnabled()
 {
-    static bool s_Enabled = GameEngine::Platform::EnvironmentSwitchEnabled("GE_RENDER_DIAG_LIGHTS", false);
+    static bool s_Enabled = []()
+    {
+        const char* env = std::getenv("GE_RENDER_DIAG_LIGHTS");
+        if (!env || !*env)
+        {
+            return false;
+        }
+        return !(env[0] == '0' && env[1] == '\0');
+    }();
     return s_Enabled;
 }
 
 inline bool IsExtractionDiagEnabled()
 {
-    static bool s_Enabled = GameEngine::Platform::EnvironmentSwitchEnabled("GE_RENDER_DIAG_WORLD_DRAW_VALUES", false);
+    static bool s_Enabled = []()
+    {
+        const char* env = std::getenv("GE_RENDER_DIAG_WORLD_DRAW_VALUES");
+        if (!env || !*env)
+            return false;
+        return !(env[0] == '0' && env[1] == '\0');
+    }();
     return s_Enabled;
 }
 
 // Fusion S3 lane selector: the dirty-feed fast path is the default;
-// GE_EXTRACTION_FEED=0 pins the full lane (unset or empty means ON).
-// Process-static latch —
+// GE_EXTRACTION_FEED=0 pins the full lane (ON-unless-"0", the standard
+// flag idiom — unset/empty/non-"0" all mean ON). Process-static latch —
 // unit tests select the lane through the constructor bool seam instead of
 // per-fixture env pins (the flip arc's G1 lesson).
 inline bool IsExtractionFeedEnabled()
 {
-    static bool s_Enabled = GameEngine::Platform::EnvironmentSwitchEnabled("GE_EXTRACTION_FEED", true);
+    static bool s_Enabled = []()
+    {
+        const char* env = std::getenv("GE_EXTRACTION_FEED");
+        if (!env || !*env)
+            return true;
+        return !(env[0] == '0' && env[1] == '\0');
+    }();
     return s_Enabled;
 }
 
@@ -108,46 +143,15 @@ inline bool IsExtractionFeedEnabled()
 // Bulk motion has no ceiling: the patch lane runs in parallel at any count.
 constexpr uint32_t kMaxAlwaysRefreshDefault = 4096u;
 
-inline void Normalize3(float& x, float& y, float& z)
-{
-    const float len2 = x * x + y * y + z * z;
-    if (len2 <= 1e-12f)
-    {
-        x = 0.0f;
-        y = 1.0f;
-        z = 0.0f;
-        return;
-    }
-    const float invLen = 1.0f / std::sqrt(len2);
-    x *= invLen;
-    y *= invLen;
-    z *= invLen;
-}
+// A light basis axis of zero length gives +Y.
+constexpr GameEngine::Mathematics::Vector3 kFallbackLightAxis(0.0f, 1.0f, 0.0f);
 
-struct WorldTimeOfDayState
+void StoreLightAxis(const GameEngine::Mathematics::Vector3& axis, float (&out)[3])
 {
-    float hours = 12.0f;
-    float dayKeyTimesHours[4] = {0.0f, 6.0f, 12.0f, 18.0f};
-};
-
-WorldTimeOfDayState FindWorldTimeOfDayState(GameEngine::ECS::World& world)
-{
-    WorldTimeOfDayState state{};
-    bool found = false;
-    world.Query<
-             GameEngine::ECS::Read<GameEngine::Components::SkyEnvironment>>()
-        .Each([&](GameEngine::ECS::EntityHandle,
-                  const GameEngine::Components::SkyEnvironment& sky)
-              {
-                  if (found)
-                      return;
-                  state.hours = sky.TimeOfDayHours;
-                  state.dayKeyTimesHours[0] = sky.DayKeyTimesHours.Midnight;
-                  state.dayKeyTimesHours[1] = sky.DayKeyTimesHours.Dawn;
-                  state.dayKeyTimesHours[2] = sky.DayKeyTimesHours.Midday;
-                  state.dayKeyTimesHours[3] = sky.DayKeyTimesHours.Sunset;
-                  found = true; });
-    return state;
+    const GameEngine::Mathematics::Vector3 unit = axis.NormalizeOr(kFallbackLightAxis);
+    out[0] = unit.x;
+    out[1] = unit.y;
+    out[2] = unit.z;
 }
 
 inline void ReleaseMeshGpuInstance(GameEngine::Rendering::GPUScene& scene,
@@ -207,21 +211,20 @@ using namespace ::GameEngine::Rendering;
 // public header. All members retain capacity across frames.
 struct RenderExtractionParallelState
 {
-    ECS::OrderedHandleSet feedOrder;
-    enum class Op : uint8_t { Drop, Skip, Update, Add, NeedsComponent };
+    enum class Op : uint8_t { Drop, Skip, Update, Add };
 
     // One per record, index-aligned with m_Records: chunk c owns the slots in
     // its range exclusively, so prepare never shares a write target.
     struct Prepared
     {
         Op op = Op::Drop;
-        Components::MeshGPUData* meshGpu = nullptr; // null only for NeedsComponent
+        Components::MeshGPUData* meshGpu = nullptr;
         ECS::EntityHandle entity{};
-        GPUInstance payload{};                       // valid for Update/Add/NeedsComponent
+        GPUInstance payload{};                       // valid for Update/Add
         MeshGPUHandle meshHandle{};
         const Material* material = nullptr;
         uint32 flags = 0u;
-        uint32 renderLayerMask = 0u;
+        RenderLayerMask renderLayerMask = RenderLayerMask::None();
         RenderSortingData Sorting{};
         uint32 stableInstanceIndex = 0xFFFFFFFFu;    // Update/Skip emission index
         // Mover qualification needs both palette endpoints, and Skip carries no
@@ -231,10 +234,9 @@ struct RenderExtractionParallelState
         // Update only: a payload input other than the transform changed, so the
         // apply moves the slot's continuity stamp along with the row.
         bool continuityBreak = false;
-        // MeshGPUEntry::uploadSeq the payload was built against; the apply
-        // writes it into the Last* caches for NeedsComponent (no MeshGPUData
-        // existed in prepare).
-        uint64 meshUploadSequence = 0u;
+        // Skip/Update: how many submissions prepare emitted into its chunk's
+        // list, which the apply splices back in record order.
+        uint32 subCount = 0u;
     };
 
     // Per-chunk accumulators merged in the serial apply (conc-F1): a racing ++
@@ -266,16 +268,26 @@ struct RenderExtractionParallelState
     };
 
     std::vector<Prepared> prepared;   // index-aligned with m_Records
-    std::vector<ChunkResult> chunks;  // one per chunk
+    // One per chunk. A worker writes the counters and the list of its chunk once per
+    // record; the padding keeps workers on neighboring chunks off one another's lines.
+    std::vector<FalseSharingPadded<ChunkResult>> chunks;
 
-    // Fast-frame reads, and the MeshGPUData grants of the rows the lane
-    // patches, are each resolved under one world lock. No structural writes
+    // Fast-frame reads are resolved under one world lock. No structural writes
     // occur on this lane, so these pointers remain valid through serial apply.
     using DirtyRead = std::tuple<const Components::WorldTransform*,
                                  const Components::MeshGPUData*,
                                  const Components::MeshRenderer*>;
     std::vector<DirtyRead> dirtyReads;
-    std::vector<Components::MeshGPUData*> dirtyGrants;
+    // Patch-lane scratch, index-aligned with dirtyReads after compaction: each
+    // write's GPUScene row, whether it is a frame mover (its prevTransform
+    // differs) and its mover record, built where the row is.
+    std::vector<GPUScene::InstanceWrite> patchWrites;
+    std::vector<uint8_t> patchIsMover;
+    std::vector<RenderServices::FrameMoverRecord> patchMoverRecords;
+    std::vector<RenderServices::FrameMoverRecord> patchMovers;
+    // Patch-lane ordering of the feed snapshot: unique, by entity index. The
+    // snapshot spans two windows, so a steady mover appears twice.
+    ECS::OrderedHandleSet feedOrder;
     using RefreshRead = std::tuple<const Components::WorldTransform*,
                                    const Components::MeshGPUData*,
                                    const Components::MeshRenderer*,
@@ -286,7 +298,9 @@ struct RenderExtractionParallelState
                                    const Components::AnimatorRef*,
                                    const Components::LODGroup*,
                                    const ECS::ComponentDisabled<Components::MeshRenderer>*,
-                                   const ECS::ComponentDisabled<Components::SkinnedMeshRenderer>*>;
+                                   const ECS::ComponentDisabled<Components::SkinnedMeshRenderer>*,
+                                   const Components::SceneViewHidden*,
+                                   const Components::SceneViewHiddenInHierarchy*>;
     std::vector<RefreshRead> refreshReads;
 };
 
@@ -301,23 +315,26 @@ using WorldRenderableRecord = RenderExtractionSystem::WorldRenderableRecord;
 constexpr std::size_t kMaxChangedCasterSpheres = 64u;
 
 // GE_SHADOW_PROXIMITY=0 forces every caster bump unattributed — the pre-L1b
-// world-scoped invalidation (A/B lane and kill switch, on unless switched
-// off). Read once; stable for the process.
+// world-scoped invalidation (A/B lane and kill switch, standard GE_ flag
+// idiom: ON unless explicitly "0"). Read once; stable for the process.
 bool IsShadowProximityKeyingEnabled()
 {
-    static const bool s_Enabled = GameEngine::Platform::EnvironmentSwitchEnabled("GE_SHADOW_PROXIMITY", true);
+    static const bool s_Enabled = []()
+    {
+        const char* env = std::getenv("GE_SHADOW_PROXIMITY");
+        return !env || std::strcmp(env, "0") != 0;
+    }();
     return s_Enabled;
 }
 
-// The Last* cache write, isolated so prepare (Update/Add, meshGpu already
-// present), apply (NeedsComponent, component added there) and the fast
+// The Last* cache write, isolated so prepare (Update/Add) and the fast
 // path's always-refresh subset stay identical.
 // Field-based (not record-based) because the fast path has no record — it
 // writes the same caches from fresh component reads.
 void WriteLastCaches(Components::MeshGPUData& meshGpu, uint32 mshIdx, uint32 matIdx,
                      uint64 meshUploadSequence, uint32 transformVersion, uint32 flags,
                      uint32 skinPaletteOffset, float lodBias, uint32 runtimeId,
-                     const float boundsCenter[3], float boundsRadius, int32 sectorX,
+                     const Vector3& boundsCenter, float boundsRadius, int32 sectorX,
                      int32 sectorY, int32 sectorZ, bool prevDiffers)
 {
     meshGpu.meshIndex = mshIdx;
@@ -328,9 +345,9 @@ void WriteLastCaches(Components::MeshGPUData& meshGpu, uint32 mshIdx, uint32 mat
     meshGpu.LastSkinPaletteOffset = skinPaletteOffset;
     meshGpu.LastLodBias = lodBias;
     meshGpu.LastRuntimeId = runtimeId;
-    meshGpu.LastBoundsCenter[0] = boundsCenter[0];
-    meshGpu.LastBoundsCenter[1] = boundsCenter[1];
-    meshGpu.LastBoundsCenter[2] = boundsCenter[2];
+    meshGpu.LastBoundsCenter[0] = boundsCenter.x;
+    meshGpu.LastBoundsCenter[1] = boundsCenter.y;
+    meshGpu.LastBoundsCenter[2] = boundsCenter.z;
     meshGpu.LastBoundsRadius = boundsRadius;
     meshGpu.LastSectorX = sectorX;
     meshGpu.LastSectorY = sectorY;
@@ -356,15 +373,14 @@ struct SkinPaletteOffsets
     bool Active() const { return Current != 0u; }
 };
 
-SkinPaletteOffsets ResolveSkinPaletteOffsets(uint32 skeletonId, bool hasClipAnimation,
+SkinPaletteOffsets ResolveSkinPaletteOffsets(uint32 skeletonId, bool hasActiveAnimation,
                                              uint32 runtimeId)
 {
     SkinPaletteOffsets offsets{};
-    if (skeletonId == 0 || runtimeId == 0)
+    if (skeletonId == 0 || !hasActiveAnimation || runtimeId == 0)
         return offsets;
     const auto* runtime = SkeletonStore::Instance().GetRuntime(runtimeId);
-    if (runtime == nullptr || (!hasClipAnimation && !runtime->GraphPoseActive) ||
-        runtime->CompactSkinMatrices.empty())
+    if (runtime == nullptr || runtime->CompactSkinMatrices.empty())
         return offsets;
     offsets.Current = runtime->AtlasPaletteOffsetBones;
     offsets.Previous = runtime->PrevAtlasPaletteValid
@@ -381,25 +397,45 @@ bool PayloadPrevDiffers(const GPUInstance& payload)
                        sizeof(float) * 16) != 0;
 }
 
+// Last frame's model matrix (the GPUScene row) in this frame's sector: `row` itself when the
+// sector did not change, else `row` moved by the sector change.
+Mathematics::Matrix4x4 PreviousMatrixInSector(const Mathematics::Matrix4x4& row, const Components::MeshGPUData& meshGpu,
+                                              const Mathematics::Vector3Int& sector)
+{
+    const Mathematics::Vector3Int lastSector(meshGpu.LastSectorX, meshGpu.LastSectorY, meshGpu.LastSectorZ);
+    if (lastSector == sector)
+        return row;
+    return GameEngine::Engine::Renderer::PremultiplyTranslationBySectorDelta(row, lastSector, sector);
+}
+
 // GPUInstance flag bits from their extraction inputs. Shared by the parallel
 // prepare and the fast path's subset refresh so the two can't disagree on
-// bit layout (bit 0 castShadows, bit 1 receiveShadows, bits 2/3 depth class,
-// bit 4 mirrored, bit 5 sorted transparent, bit 6 DDGI GI emitter,
-// upper 16 = worldKey).
-uint32 ComputeInstanceFlags(bool castShadows, bool receiveShadows,
-                            Rendering::MaterialDepthClass depthClass, bool sortedTransparent,
-                            bool giEmitter, uint64 worldId)
+// bit layout (bit 0 cast shadows, bit 1 receiveShadows, bits 2/3 depth class,
+// bit 4 mirrored, bit 5 sorted transparent, bit 6 DDGI GI emitter, bit 7 shadows
+// only, bit 8 editor hidden, upper 16 = worldKey). A mesh casts when its Shadow
+// Casting is not Off and its LocalBounds (when it has one) casts; Shadows Only sets
+// bit 7 beside bit 0 and clears bit 6. The Scene View eye sets bit 8 and nothing
+// else: the Scene View's culls drop the instance, and every other view still draws
+// it, its shadow and its emission.
+uint32 ComputeInstanceFlags(Components::ShadowCasting shadowCasting, bool boundsCastShadows,
+                            bool receiveShadows, Rendering::MaterialDepthClass depthClass,
+                            bool sortedTransparent, bool giEmitter, bool editorHidden, uint64 worldId)
 {
     uint32 flags = 0u;
-    if (castShadows)
+    if (shadowCasting != Components::ShadowCasting::Off && boundsCastShadows)
         flags |= 1u;
+    if (shadowCasting == Components::ShadowCasting::ShadowsOnly)
+        flags |= Rendering::kInstanceFlagShadowsOnly;
     if (receiveShadows)
         flags |= 2u;
     flags |= Rendering::DepthClassInstanceFlagBits(depthClass);
     if (sortedTransparent)
         flags |= Rendering::kInstanceFlagSortedTransparent;
-    if (giEmitter)
+    // Emission belongs to a drawn surface: a shadows-only proxy publishes no DDGI light.
+    if (giEmitter && shadowCasting != Components::ShadowCasting::ShadowsOnly)
         flags |= Rendering::kInstanceFlagGIEmitter;
+    if (editorHidden)
+        flags |= Rendering::kInstanceFlagEditorHidden;
     const uint32 worldKey16 = Rendering::PackWorldKey16(worldId);
     flags |= (worldKey16 << 16);
     return flags;
@@ -412,58 +448,44 @@ uint32 ComputeInstanceFlags(bool castShadows, bool receiveShadows,
 // LOCAL space (the Last* cache representation; radius < 0 = no bounds).
 // prevMatrix = the transform this instance rendered with LAST frame (the
 // GPUScene CPU mirror's transform, read before this frame's UpdateInstance
-// overwrites it) — the motion-vector source. nullptr = no history (first
-// frame, recycled slot, or a render-origin sector change whose prev lives in
-// a different sector frame): prev := current, zero object MV.
-void BuildGpuInstancePayload(GPUInstance& instance, const float* matrix,
-                             const float* prevMatrix, bool hasBounds,
-                             const float boundsCenter[3], float localBoundsRadius,
+// overwrites it), moved into this frame's sector — the motion-vector source.
+// An instance with no history passes `matrix`: zero object MV.
+void BuildGpuInstancePayload(GPUInstance& instance, const Mathematics::Matrix4x4& matrix,
+                             const Mathematics::Matrix4x4& prevMatrix, bool hasBounds,
+                             const Vector3& boundsCenter, float localBoundsRadius,
                              uint32 mshIdx, uint32 matIdx, uint32 flags, float lodBias,
                              uint32 skinPaletteOffset, uint32 runtimeId,
-                             int32 sectorX, int32 sectorY, int32 sectorZ, uint32 renderLayerMask)
+                             int32 sectorX, int32 sectorY, int32 sectorZ, RenderLayerMask renderLayers)
 {
     instance = GPUInstance{};
-    std::memcpy(instance.transform.Data(), matrix, sizeof(float) * 16);
-    std::memcpy(instance.prevTransform.Data(), prevMatrix != nullptr ? prevMatrix : matrix,
-                sizeof(float) * 16);
+    instance.transform = matrix;
+    instance.prevTransform = prevMatrix;
     bool mirrored = false;
     Vector4 normalColumn0;
-    MatrixUtils::ComputeNormalMatrixColumns(matrix,
+    MatrixUtils::ComputeNormalMatrixColumns(matrix.Data(),
                                             normalColumn0,
                                             instance.normalMatrixCol1,
                                             instance.normalMatrixCol2,
                                             &mirrored);
     instance.normalMatrixCol0 = Vector3(normalColumn0.x, normalColumn0.y, normalColumn0.z);
-    instance.renderLayerMask = renderLayerMask;
-    // Camera-relative rendering: the transform column stays SECTOR-LOCAL (small);
-    // the integer sector is packed into the reserved words and the vertex stage
-    // reconstructs the camera-relative position. boundingCenter, by contrast, is
-    // kept FULL-WORLD (sector origin added back) because GPU culling / LOD run in
-    // world space this slice. For an untagged entity the sector is (0,0,0), so
-    // the packed words are zero and boundingCenter is unchanged — byte-identical.
-    GameEngine::Engine::Renderer::PackSector(sectorX, sectorY, sectorZ,
-                                             instance.sectorPacked[0], instance.sectorPacked[1]);
-    const float sectorOx = static_cast<float>(sectorX) * GameEngine::Engine::Renderer::kSectorSize;
-    const float sectorOy = static_cast<float>(sectorY) * GameEngine::Engine::Renderer::kSectorSize;
-    const float sectorOz = static_cast<float>(sectorZ) * GameEngine::Engine::Renderer::kSectorSize;
+    instance.renderLayerMask = renderLayers.Bits;
+    // Camera-relative rendering: the transform column and boundingCenter are local
+    // to the instance sector, packed into the reserved words. Each consumer
+    // composes them against its own origin sector.
+    GameEngine::Rendering::PackSector(sectorX, sectorY, sectorZ, instance.sectorPacked[0], instance.sectorPacked[1]);
     if (hasBounds)
     {
-        const float* m = matrix;
-        const float* c = boundsCenter;
-        instance.boundingCenter = Vector3(
-            m[0] * c[0] + m[4] * c[1] + m[8] * c[2] + m[12] + sectorOx,
-            m[1] * c[0] + m[5] * c[1] + m[9] * c[2] + m[13] + sectorOy,
-            m[2] * c[0] + m[6] * c[1] + m[10] * c[2] + m[14] + sectorOz);
+        const float* elements = matrix.Data();
+        instance.boundingCenter = matrix.TransformPoint(boundsCenter);
         // The sphere has to contain the mesh under the WHOLE transform, which
         // is that transform's largest singular value — the same number as its
         // largest COLUMN only while the basis is perpendicular, and short of it
         // on a sheared one (MatrixUtils::LargestAxisScale).
-        instance.boundingRadius = localBoundsRadius * MatrixUtils::LargestAxisScale(m);
+        instance.boundingRadius = localBoundsRadius * MatrixUtils::LargestAxisScale(elements);
     }
     else
     {
-        instance.boundingCenter =
-            Vector3(matrix[12] + sectorOx, matrix[13] + sectorOy, matrix[14] + sectorOz);
+        instance.boundingCenter = Vector3(matrix[3][0], matrix[3][1], matrix[3][2]);
         instance.boundingRadius = 1.0f;
     }
     instance.meshIndex = mshIdx;
@@ -472,7 +494,7 @@ void BuildGpuInstancePayload(GPUInstance& instance, const float* matrix,
     // Winding parity is a pure function of the world matrix (re-derived on every
     // build from the det sign above), so it is NOT stored in LastFlags: the
     // transform-version gate already forces a rebuild on any matrix change,
-    // including a mirror toggle, and the fast path rebuilds from wt->matrix.
+    // including a mirror toggle, and the fast path rebuilds from the WorldTransform.
     if (mirrored && Rendering::MirroredWindingEnabled())
         instance.flags |= Rendering::kInstanceFlagMirrored;
     instance.lodBias = lodBias;
@@ -485,24 +507,157 @@ void BuildGpuInstancePayload(GPUInstance& instance, const float* matrix,
 void EmitSubmissions(std::vector<WorldSubmissionRecord>& subs,
                      const std::vector<const ViewDesc*>& matchingViews,
                      MeshGPUHandle meshHandle, const Material* material,
-                     uint32 instanceIndex, uint32 flags, uint32 renderLayerMask,
+                     uint32 instanceIndex, uint32 flags, RenderLayerMask renderLayers,
                      const RenderSortingData& sorting, ECS::EntityHandle owner)
 {
     for (const ViewDesc* view : matchingViews)
     {
-        if ((renderLayerMask & view->ActiveRenderLayerMask()) == 0u)
+        if (!renderLayers.Intersects(view->ActiveRenderLayerMask()))
             continue;
         WorldSubmissionRecord sub{};
         sub.viewId = view->id;
         sub.meshHandle = meshHandle;
         sub.material = material;
         sub.instanceIndex = instanceIndex;
-        sub.renderLayerMask = renderLayerMask;
+        sub.renderLayerMask = renderLayers;
         sub.flags = flags;
         sub.Sorting = sorting;
         sub.SortingOwner = owner;
         subs.push_back(sub);
     }
+}
+
+// One renderable's term of the world's membership digest (an order-independent
+// wrapping sum over the gathered records): what it renders, not where.
+uint64 RecordDigestTerm(const WorldRenderableRecord& rec)
+{
+    using ::GameEngine::Hashing::Fnv1a64Value;
+    constexpr uint64 kFnvOffsetBasis = 14695981039346656037ull;
+    uint64 recDigest = Fnv1a64Value(kFnvOffsetBasis, rec.meshRenderer.meshGpuHandleId);
+    recDigest = Fnv1a64Value(recDigest, rec.meshRenderer.materialAssetGuid);
+    recDigest = Fnv1a64Value(recDigest, rec.meshRenderer.shadowCasting);
+    recDigest = Fnv1a64Value(recDigest, rec.meshRenderer.RenderLayers.Bits);
+    // In the digest or a live toggle does nothing until an unrelated field
+    // happens to re-arm extraction.
+    recDigest = Fnv1a64Value(recDigest, rec.giEmitter);
+    if (rec.Sorting.Authored)
+    {
+        recDigest = Fnv1a64Value(recDigest, rec.Sorting.Layer);
+        recDigest = Fnv1a64Value(recDigest, rec.Sorting.Order);
+        recDigest = Fnv1a64Value(recDigest, rec.Sorting.Group.id);
+        recDigest = Fnv1a64Value(recDigest, rec.Sorting.MemberOrder);
+        recDigest = Fnv1a64Value(recDigest, rec.Sorting.SortByY);
+        recDigest = Fnv1a64Value(recDigest, rec.Sorting.SortY);
+        recDigest = Fnv1a64Value(recDigest, rec.Sorting.GroupSortByY);
+        recDigest = Fnv1a64Value(recDigest, rec.Sorting.GroupPosition.X);
+        recDigest = Fnv1a64Value(recDigest, rec.Sorting.GroupPosition.Y);
+        recDigest = Fnv1a64Value(recDigest, rec.Sorting.GroupPosition.Z);
+    }
+    return recDigest;
+}
+
+// The world-mesh gather query: every enabled renderable with what its record reads.
+template <typename Required = void>
+auto RenderableQuery(ECS::World& world)
+{
+    return world.Query<
+        ECS::Read<Components::WorldTransform>,
+        ECS::Read<Components::MeshRenderer>,
+        std::conditional_t<std::is_same_v<Required, Components::LocalBounds>,
+                           ECS::Read<Components::LocalBounds>, ECS::Optional<Components::LocalBounds>>,
+        ECS::Optional<Components::SkinnedMeshRenderer>,
+        ECS::Optional<Components::SkeletonRef>,
+        ECS::Optional<Components::AnimatorRef>,
+        std::conditional_t<std::is_same_v<Required, Components::LODGroup>,
+                           ECS::Read<Components::LODGroup>, ECS::Optional<Components::LODGroup>>,
+        ECS::Optional<Components::MeshGPUData>,
+        ECS::Optional<Components::GIEmitter>,
+        ECS::Optional<Components::Transform>,
+        ECS::Optional<Components::SceneViewHidden>,
+        ECS::Optional<Components::SceneViewHiddenInHierarchy>>();
+}
+
+// Appends a record for every renderable `query` (a RenderableQuery, possibly
+// change-filtered) visits. HLOD residency suppression: a member whose cluster
+// is proxy-active (or an inactive proxy entity) has had its GPUScene slot freed
+// by the HLODSelectSystem; it is counted in `hlodSkipped`, not recorded, so it
+// is not re-added to any view while suppressed. Clearing hlodEvicted
+// (proxy-exit) lets the next full lane re-add it via Op::Add. C6: eviction
+// never touches mr.enabled / ECS::Disabled, so picking + outline + undo keep
+// working off the still-live entity. A renderable whose WorldTransform the
+// hierarchy has not resolved yet (Version 0 beside a Transform: created after
+// it ran this tick) is counted in `pendingUnresolved`, not recorded: preparing
+// it now would draw it at the origin and give its next frame a motion vector
+// from there; the pending count (E8) brings it in next frame.
+template <typename T>
+auto ComponentPointer(const T& value)
+{
+    if constexpr (std::is_pointer_v<T>)
+        return value;
+    else
+        return &value;
+}
+
+template <typename Required = void, typename QueryT>
+void AppendRenderableRecords(QueryT& query, std::vector<WorldRenderableRecord>& out, uint32& hlodSkipped,
+                             uint32& pendingUnresolved, ECS::World& world, const Rendering::SortingLayers& layers)
+{
+    const bool hasSorting = world.Query<ECS::Read<Components::RenderSorting>>().Count() != 0;
+    bool hasGroups = false;
+    if (hasSorting)
+        world.Query<ECS::Read<Components::RenderSorting>>().Each(
+            [&](const Components::RenderSorting& sorting) { hasGroups |= sorting.GroupChildren; });
+    using BoundsArg = std::conditional_t<std::is_same_v<Required, Components::LocalBounds>,
+                                          const Components::LocalBounds&, const Components::LocalBounds*>;
+    using LodArg = std::conditional_t<std::is_same_v<Required, Components::LODGroup>,
+                                       const Components::LODGroup&, const Components::LODGroup*>;
+    query.Each([&](ECS::EntityHandle e, const Components::WorldTransform& xf,
+                   const Components::MeshRenderer& mr, BoundsArg bounds,
+                   const Components::SkinnedMeshRenderer* smr,
+                   const Components::SkeletonRef* skelRef, const Components::AnimatorRef* anim,
+                   LodArg lod, Components::MeshGPUData* meshGpu,
+                   const Components::GIEmitter* giEmitter, const Components::Transform* local,
+                   const Components::SceneViewHidden* hidden,
+                   const Components::SceneViewHiddenInHierarchy* hiddenInHierarchy)
+               {
+                   if (meshGpu && meshGpu->hlodEvicted)
+                   {
+                       ++hlodSkipped;
+                       return;
+                   }
+                   if (local && xf.Version == 0u)
+                   {
+                       ++pendingUnresolved;
+                       return;
+                   }
+                   const auto* wb = ComponentPointer(bounds);
+                   const auto* lodGroup = ComponentPointer(lod);
+                   WorldRenderableRecord rec{};
+                   rec.entity = e;
+                   rec.worldTransform = xf;
+                   rec.meshRenderer = mr;
+                   rec.Sorting.Layer = layers.Priority(0);
+                   if (hasSorting)
+                       rec.Sorting = ResolveRenderSorting(world, e, layers, hasGroups);
+                   rec.giEmitter = giEmitter != nullptr;
+                   rec.editorHidden = hidden != nullptr || hiddenInHierarchy != nullptr;
+                   rec.alwaysRefreshCarrier = smr != nullptr || skelRef != nullptr || anim != nullptr;
+                   rec.meshGpu = meshGpu;
+                   if (wb)
+                   {
+                       rec.hasBounds = true;
+                       rec.bounds = *wb;
+                   }
+                   if (smr && smr->skeletonId != 0)
+                       rec.skeletonId = smr->skeletonId;
+                   if (skelRef && skelRef->runtimeId != 0)
+                       rec.runtimeId = skelRef->runtimeId;
+                   if (anim && anim->ClipIndex != 0)
+                       rec.hasActiveAnimation = true;
+                   if (lodGroup)
+                       rec.lodBias = lodGroup->Bias;
+                   out.push_back(rec);
+               });
 }
 
 // Pure per-record prepare (parallel-safe). Reads rec + const registries; writes
@@ -523,33 +678,11 @@ void PrepareRecord(const WorldRenderableRecord& rec,
 {
     using Op = RenderExtractionParallelState::Op;
     out.op = Op::Drop;
+    out.subCount = 0u;
 
     // Membership digest term — accumulated for EVERY record BEFORE the readiness
     // gates below (so streaming/recompiling assets don't thrash probe rebakes).
-    // Order-independent wrapping sum.
-    {
-        using ::GameEngine::Rendering::HashUtils::HashValue;
-        uint64 recDigest = HashValue(Hashing::kFnv1a64OffsetBasis, rec.meshRenderer.meshGpuHandleId);
-        recDigest = HashValue(recDigest, rec.meshRenderer.materialAssetGuid);
-        recDigest = HashValue(recDigest, rec.meshRenderer.castShadows);
-        recDigest = HashValue(recDigest, rec.meshRenderer.renderLayerMask);
-        // In the digest or a live toggle does nothing until an unrelated field
-        // happens to re-arm extraction.
-        recDigest = HashValue(recDigest, rec.giEmitter);
-        if (rec.Sorting.Authored)
-        {
-            recDigest = HashValue(recDigest, rec.Sorting.Layer);
-            recDigest = HashValue(recDigest, rec.Sorting.Order);
-            recDigest = HashValue(recDigest, rec.Sorting.Group.id);
-            recDigest = HashValue(recDigest, rec.Sorting.MemberOrder);
-            recDigest = HashValue(recDigest, rec.Sorting.SortByY);
-            recDigest = HashValue(recDigest, rec.Sorting.SortY);
-            recDigest = HashValue(recDigest, rec.Sorting.GroupSortByY);
-            for (const float coordinate : rec.Sorting.GroupPosition.v)
-                recDigest = HashValue(recDigest, coordinate);
-        }
-        cr.digestPartial += recDigest;
-    }
+    cr.digestPartial += RecordDigestTerm(rec);
 
     MeshGPUHandle meshHandle(rec.meshRenderer.meshGpuHandleId);
     if (!meshHandle.IsValid())
@@ -596,10 +729,15 @@ void PrepareRecord(const WorldRenderableRecord& rec,
         return;
     }
 
-    Components::MeshGPUData* meshGpu = rec.meshGpu; // null => first-frame (NeedsComponent, D2)
+    // MeshRenderer requires MeshGPUData (MeshRenderer.h), so every record
+    // carries one from the entity's creation.
+    Components::MeshGPUData* meshGpu = rec.meshGpu;
+    assert(meshGpu && "A MeshRenderer entity without MeshGPUData: the requirement in MeshRenderer.h was bypassed");
+    if (!meshGpu)
+        return;
     // A reset may leave a derived component without a backing row. Re-enter
     // the existing Add path before reading either its layer or transform.
-    if (meshGpu && meshGpu->instanceIndex != 0xFFFFFFFFu &&
+    if (meshGpu->instanceIndex != 0xFFFFFFFFu &&
         meshGpu->instanceIndex >= scene.GetInstances().size())
         meshGpu->instanceIndex = 0xFFFFFFFFu;
 
@@ -613,50 +751,39 @@ void PrepareRecord(const WorldRenderableRecord& rec,
         return;
     }
 
-    const bool castShadows = rec.meshRenderer.castShadows &&
-                             (!rec.hasBounds || rec.bounds.CastShadows);
-    const uint32 flags = ComputeInstanceFlags(castShadows, rec.meshRenderer.receiveShadows,
+    const uint32 flags = ComputeInstanceFlags(rec.meshRenderer.shadowCasting,
+                                              !rec.hasBounds || rec.bounds.CastShadows,
+                                              rec.meshRenderer.receiveShadows,
                                               rs.Materials().GetMaterialDepthClass(matIdx),
                                               IsOrderDependentBlendMaterial(*material),
-                                              rec.giEmitter, worldId);
+                                              rec.giEmitter, rec.editorHidden, worldId);
 
     // Bone-palette atlas offset (SkinDiag logging is intentionally omitted here —
     // it is env-gated diagnostics that would log unordered from workers).
     const SkinPaletteOffsets paletteOffsets =
-        ResolveSkinPaletteOffsets(rec.skeletonId, rec.hasClipAnimation, rec.runtimeId);
+        ResolveSkinPaletteOffsets(rec.skeletonId, rec.hasActiveAnimation, rec.runtimeId);
     const uint32 skinPaletteOffset = paletteOffsets.Current;
 
     const float boundsRadius = rec.hasBounds ? rec.bounds.Box.Radius() : -1.0f;
-    // Render-origin sector (camera-relative rendering). Adding/editing a
-    // WorldSectorCoord changes the packed sector AND the full-world boundingCenter
-    // without touching the transform version, so it MUST participate in the
-    // no-op check — otherwise a component-ADD escalates the full lane but this
-    // guard skips the rebuild and sectorPacked stays 0 (instance renders where it
-    // does not cull → invisible).
-    const int32 secX = rec.hasSectorCoord ? rec.sectorCoord.x : 0;
-    const int32 secY = rec.hasSectorCoord ? rec.sectorCoord.y : 0;
-    const int32 secZ = rec.hasSectorCoord ? rec.sectorCoord.z : 0;
     // Every payload input except the transform. Split out from the no-op
     // check because it also decides continuity: a rebuild caused by any of
     // these breaks the instance's frame-to-frame continuity (the payload the
     // previous frame rendered with is not the payload this one renders with),
     // whereas a transform-only rebuild does not — prevTransform carries that
-    // history exactly. The upload sequence is what sees an in-place mesh
+    // history exactly. The sector is a function of the transform, so it is not
+    // in this list. The upload sequence is what sees an in-place mesh
     // reload: the handle and the mesh row survive it, the geometry does not.
     const bool nonTransformInputsUnchanged =
-        meshGpu != nullptr &&
         meshGpu->instanceIndex != 0xFFFFFFFFu &&
         meshGpu->meshIndex == mshIdx &&
         meshGpu->materialIndex == matIdx &&
         meshGpu->LastMeshUploadSequence == meshEntry->uploadSeq &&
         meshGpu->LastFlags == flags &&
-        scene.GetInstances()[meshGpu->instanceIndex].renderLayerMask == rec.meshRenderer.renderLayerMask &&
+        scene.GetInstances()[meshGpu->instanceIndex].renderLayerMask == rec.meshRenderer.RenderLayers.Bits &&
         meshGpu->LastSkinPaletteOffset == skinPaletteOffset &&
         meshGpu->LastLodBias == rec.lodBias &&
         meshGpu->LastRuntimeId == rec.runtimeId &&
         meshGpu->LastBoundsRadius == boundsRadius &&
-        meshGpu->LastSectorX == secX && meshGpu->LastSectorY == secY &&
-        meshGpu->LastSectorZ == secZ &&
         (!rec.hasBounds ||
          (meshGpu->LastBoundsCenter[0] == rec.bounds.Box.center.x &&
           meshGpu->LastBoundsCenter[1] == rec.bounds.Box.center.y &&
@@ -672,15 +799,17 @@ void PrepareRecord(const WorldRenderableRecord& rec,
     // Version-contract tripwire. The read of GPUScene here happens during the
     // parallel phase; it is safe because no thread WRITES GPUScene in prepare
     // (§2.3). The warn-once guard is atomic so concurrent chunks can't tear it.
-    if (instanceUnchanged && meshGpu &&
+    Mathematics::Vector3Int tripwireSector;
+    if (instanceUnchanged &&
         std::memcmp(scene.GetInstances()[meshGpu->instanceIndex].transform.Data(),
-                    rec.worldTransform.matrix, sizeof(rec.worldTransform.matrix)) != 0)
+                    GameEngine::Engine::Renderer::SectorLocalMatrix(rec.worldTransform, tripwireSector).Data(),
+                    sizeof(float) * 16u) != 0)
     {
         static std::atomic<bool> s_VersionContractWarned{false};
         if (!s_VersionContractWarned.exchange(true, std::memory_order_relaxed))
         {
             Logger::Log::Error(
-                "RenderExtraction: WorldTransform.matrix changed without a Version bump "
+                "RenderExtraction: WorldTransform changed without a Version bump "
                 "(entity={}) — it will render at a stale transform. See the direct-writer "
                 "contract in Transform.h.",
                 rec.entity.id);
@@ -693,19 +822,20 @@ void PrepareRecord(const WorldRenderableRecord& rec,
     out.meshHandle = meshHandle;
     out.material = material;
     out.flags = flags;
-    out.renderLayerMask = rec.meshRenderer.renderLayerMask;
+    out.renderLayerMask = rec.meshRenderer.RenderLayers;
     out.Sorting = rec.Sorting;
     out.skinPaletteOffset = paletteOffsets.Current;
     out.prevSkinPaletteOffset = paletteOffsets.Previous;
-    out.meshUploadSequence = meshEntry->uploadSeq;
 
     if (instanceUnchanged)
     {
         ++cr.diag.skippedCount;
         out.op = Op::Skip;
         out.stableInstanceIndex = meshGpu->instanceIndex;
+        const std::size_t emittedBefore = cr.subs.size();
         EmitSubmissions(cr.subs, matchingViews, meshHandle, material,
-                        meshGpu->instanceIndex, flags, rec.meshRenderer.renderLayerMask, rec.Sorting, rec.entity);
+                        meshGpu->instanceIndex, flags, rec.meshRenderer.RenderLayers, rec.Sorting, rec.entity);
+        out.subCount = static_cast<uint32>(cr.subs.size() - emittedBefore);
         return;
     }
 
@@ -713,29 +843,25 @@ void PrepareRecord(const WorldRenderableRecord& rec,
     // even for a null meshGpu, CONC-F2). Motion-vector history: last frame's
     // transform still sits in the GPUScene CPU mirror (prepare only READS the
     // scene, §2.3 — the same guarantee the tripwire above relies on). A sector
-    // change means prev lives in a different sector frame: drop history.
+    // change moves that matrix into the new sector, so the motion vector holds.
     ++cr.diag.rebuildCount;
-    const float boundsCenter[3] = {rec.bounds.Box.center.x, rec.bounds.Box.center.y,
-                                   rec.bounds.Box.center.z};
-    const float* prevMatrix = nullptr;
-    if (meshGpu != nullptr && meshGpu->instanceIndex != 0xFFFFFFFFu &&
-        meshGpu->LastSectorX == secX && meshGpu->LastSectorY == secY &&
-        meshGpu->LastSectorZ == secZ)
-        prevMatrix = scene.GetInstances()[meshGpu->instanceIndex].transform.Data();
-    // secX/secY/secZ computed above (part of the no-op check).
-    BuildGpuInstancePayload(out.payload, rec.worldTransform.matrix, prevMatrix, rec.hasBounds,
+    const Vector3& boundsCenter = rec.bounds.Box.center;
+    Mathematics::Vector3Int sector;
+    const Mathematics::Matrix4x4 localMatrix =
+        GameEngine::Engine::Renderer::SectorLocalMatrix(rec.worldTransform, sector);
+    const bool hasHistory = meshGpu->instanceIndex != 0xFFFFFFFFu;
+    const Mathematics::Matrix4x4 prevMatrix =
+        hasHistory ? PreviousMatrixInSector(scene.GetInstances()[meshGpu->instanceIndex].transform, *meshGpu, sector)
+                   : localMatrix;
+    const int32 secX = sector.x;
+    const int32 secY = sector.y;
+    const int32 secZ = sector.z;
+    BuildGpuInstancePayload(out.payload, localMatrix, prevMatrix, rec.hasBounds,
                             boundsCenter, boundsRadius, mshIdx, matIdx, flags,
                             rec.lodBias, skinPaletteOffset, rec.runtimeId, secX, secY, secZ,
-                            rec.meshRenderer.renderLayerMask);
+                            rec.meshRenderer.RenderLayers);
     const bool prevDiffers = PayloadPrevDiffers(out.payload);
 
-    if (meshGpu == nullptr)
-    {
-        // First-frame: prepare must NOT AddComponent (structural change forbidden
-        // mid-iteration). Defer AddComponent + AddInstance + emission to apply.
-        out.op = Op::NeedsComponent;
-        return;
-    }
     if (meshGpu->instanceIndex == 0xFFFFFFFFu)
     {
         // Component present but no GPUScene slot yet: defer AddInstance + emission
@@ -756,12 +882,14 @@ void PrepareRecord(const WorldRenderableRecord& rec,
     WriteLastCaches(*meshGpu, mshIdx, matIdx, meshEntry->uploadSeq, rec.worldTransform.Version,
                     flags, skinPaletteOffset, rec.lodBias, rec.runtimeId, boundsCenter,
                     boundsRadius, secX, secY, secZ, prevDiffers);
+    const std::size_t emittedBefore = cr.subs.size();
     EmitSubmissions(cr.subs, matchingViews, meshHandle, material,
-                    meshGpu->instanceIndex, flags, rec.meshRenderer.renderLayerMask, rec.Sorting, rec.entity);
+                    meshGpu->instanceIndex, flags, rec.meshRenderer.RenderLayers, rec.Sorting, rec.entity);
+    out.subCount = static_cast<uint32>(cr.subs.size() - emittedBefore);
 }
 
 // A2.1 parallel PROCESS: fork the pure per-record prepare over m_Records index
-// ranges (Run + participating Wait — never ParallelFor, §1.1), then a serial
+// ranges (one ParallelFor unit per chunk, legal on a worker), then a serial
 // apply that performs every GPUScene mutation and merges the per-chunk
 // accumulators in record order (D6).
 // The fork-join chunk plan both extraction lanes use: about kChunksPerWorker
@@ -789,10 +917,9 @@ ChunkPlan PlanChunks(JobSystem::WorkStealingThreadPool* js, std::size_t count)
 }
 
 // Runs body(begin, end) over [0, count) as fork-join chunks on `js` when the
-// plan has more than one chunk, inline otherwise. The participating Wait is
-// the full lane's, so it is deadlock-free from a pool worker (CONC-F3).
+// plan has more than one chunk, inline otherwise; legal from a pool worker.
 void ForkJoinRanges(JobSystem::WorkStealingThreadPool* js, std::size_t count,
-                    const std::function<void(std::size_t begin, std::size_t end)>& body)
+                    FunctionRef<void(std::size_t begin, std::size_t end)> body)
 {
     if (count == 0)
         return;
@@ -802,14 +929,14 @@ void ForkJoinRanges(JobSystem::WorkStealingThreadPool* js, std::size_t count,
         body(0, count);
         return;
     }
-    JobSystem::JobCounter counter;
-    for (std::size_t c = 0; c < plan.ChunkCount; ++c)
+    const auto runChunk = [&body, &plan, count](std::size_t c)
     {
         const std::size_t begin = c * plan.ChunkSize;
-        const std::size_t end = std::min(begin + plan.ChunkSize, count);
-        js->Run([&body, begin, end] { body(begin, end); }, counter);
-    }
-    js->Wait(counter);
+        body(begin, std::min(begin + plan.ChunkSize, count));
+    };
+    JobSystem::ParallelForOptions options;
+    options.Helpers = plan.Workers;
+    JobSystem::ParallelFor(js, plan.ChunkCount, runChunk, options);
 }
 
 // Resolves handles [begin, end) into their reads. GetComponentsBatch takes
@@ -849,13 +976,17 @@ void BuildPatchedInstances(std::span<const RenderExtractionParallelState::DirtyR
         GPUScene::InstanceWrite& write = writes[i];
         write.InstanceIndex = meshGpu->instanceIndex;
         const bool hasBounds = meshGpu->LastBoundsRadius >= 0.0f; // -1 = extracted without bounds
-        const float* prevMatrix = rows[meshGpu->instanceIndex].transform.Data();
-        BuildGpuInstancePayload(write.Instance, wt->matrix, prevMatrix, hasBounds,
-                                meshGpu->LastBoundsCenter, meshGpu->LastBoundsRadius,
+        Mathematics::Vector3Int sector;
+        const Mathematics::Matrix4x4 localMatrix = GameEngine::Engine::Renderer::SectorLocalMatrix(*wt, sector);
+        const Mathematics::Matrix4x4 prevMatrix =
+            PreviousMatrixInSector(rows[meshGpu->instanceIndex].transform, *meshGpu, sector);
+        BuildGpuInstancePayload(write.Instance, localMatrix, prevMatrix, hasBounds,
+                                Vector3(meshGpu->LastBoundsCenter[0], meshGpu->LastBoundsCenter[1],
+                                        meshGpu->LastBoundsCenter[2]),
+                                meshGpu->LastBoundsRadius,
                                 meshGpu->meshIndex, meshGpu->materialIndex, meshGpu->LastFlags,
                                 meshGpu->LastLodBias, meshGpu->LastSkinPaletteOffset,
-                                meshGpu->LastRuntimeId, meshGpu->LastSectorX,
-                                meshGpu->LastSectorY, meshGpu->LastSectorZ, mr->renderLayerMask);
+                                meshGpu->LastRuntimeId, sector.x, sector.y, sector.z, mr->RenderLayers);
         const bool differs = PayloadPrevDiffers(write.Instance);
         isMover[i] = (differs && mr) ? 1u : 0u;
         if (isMover[i] != 0u)
@@ -863,6 +994,9 @@ void BuildPatchedInstances(std::span<const RenderExtractionParallelState::DirtyR
                                write.Instance.skinPaletteOffset,
                                RenderServices::kNoPreviousSkinPalette};
         meshGpu->LastTransformVersion = wt->Version;
+        meshGpu->LastSectorX = sector.x;
+        meshGpu->LastSectorY = sector.y;
+        meshGpu->LastSectorZ = sector.z;
         meshGpu->LastPrevDiffers = differs;
     }
 }
@@ -895,9 +1029,8 @@ void ProcessRecordsParallel(
     // the inline chunk below) — EngineCore is never consulted. The primary
     // world is wired at creation (EnsurePrimaryWorld) to the same engine pool
     // the SystemManager dispatched THIS extraction on (RenderingLoop::Initialize
-    // → EngineCore::GetJobSystem), and forking to that same pool is what makes
-    // the participating Wait deadlock-free (CONC-F3): an extraction worker
-    // joins by executing its own tagged chunks.
+    // → EngineCore::GetJobSystem); the fork claims chunks on that pool from
+    // whichever thread runs this extraction, a worker included.
     auto* js = world.GetJobSystem();
     const ChunkPlan plan = PlanChunks(js, recCount);
     const std::size_t workers = plan.Workers;
@@ -905,10 +1038,10 @@ void ProcessRecordsParallel(
     const std::size_t numChunks = plan.ChunkCount;
 
     // §7 Q2 diagnostic (logged once per process): does extraction fork from a
-    // worker (participating Wait — contends with sibling wave systems, degrades
-    // toward serial) or the main thread (parks; all workers free to steal)? This
-    // is the single fact that attributes a failed prepare speedup, so it is worth
-    // one line at process start.
+    // worker (one worker fewer to help, contending with sibling wave systems) or
+    // the main thread (every worker free to help)? This is the single fact that
+    // attributes a failed prepare speedup, so it is worth one line at process
+    // start.
     {
         static std::atomic<bool> s_LoggedWorkerContext{false};
         // Latch on the first world that actually forks (numChunks > 1), so
@@ -933,7 +1066,7 @@ void ProcessRecordsParallel(
     state.chunks.resize(numChunks);
     for (std::size_t c = 0; c < numChunks; ++c)
     {
-        auto& cr = state.chunks[c];
+        auto& cr = state.chunks[c].Value;
         cr.digestPartial = 0u;
         cr.diag = {};
         cr.subs.clear(); // retains capacity across frames
@@ -946,7 +1079,7 @@ void ProcessRecordsParallel(
     {
         const std::size_t begin = c * chunkSize;
         const std::size_t end = std::min(begin + chunkSize, recCount);
-        auto& cr = state.chunks[c];
+        auto& cr = state.chunks[c].Value;
         for (std::size_t i = begin; i < end; ++i)
             PrepareRecord(records[i], state.prepared[i], cr, meshReg, matReg,
                           matchingViews, rs, worldId, extractDiag, scene, allowPrevSettle);
@@ -956,21 +1089,7 @@ void ProcessRecordsParallel(
     const std::size_t capBefore = scene.GetInstances().capacity();
 #endif
 
-    if (js && numChunks > 1)
-    {
-        JobSystem::JobCounter counter;
-        for (std::size_t c = 0; c < numChunks; ++c)
-            js->Run([&prepareChunk, c] { prepareChunk(c); }, counter);
-        // On a worker this participates (runs only same-counter chunks); on the
-        // main thread it parks while workers drain (§1.3). Deadlock-free either
-        // way (CONC-F3).
-        js->Wait(counter);
-    }
-    else
-    {
-        for (std::size_t c = 0; c < numChunks; ++c)
-            prepareChunk(c);
-    }
+    JobSystem::ParallelFor(js, numChunks, prepareChunk);
 
 #ifdef _DEBUG
     // R3: prepare defers every AddInstance to apply, so the instance buffer must
@@ -982,7 +1101,7 @@ void ProcessRecordsParallel(
 
     // ---- APPLY (serial, record order) ----
     const auto applyStart = PrepClock::now();
-    for (const auto& cr : state.chunks)
+    for (const auto& [cr] : state.chunks)
     {
         contentDigest += cr.digestPartial;
         rebuildCount += cr.diag.rebuildCount;
@@ -996,9 +1115,34 @@ void ProcessRecordsParallel(
         pendingSentinelIndex += cr.diag.pendingSentinelIndex;
     }
 
+    // Submissions leave in record order, each record's in place: a new
+    // instance's (emitted here, once AddInstance gave it a slot) beside its
+    // neighbours' (emitted in prepare), so a spawn frame emits the same order
+    // a still frame replays. That order is the slot order wherever slots were
+    // handed out in record order, which keeps the compat lists' per-frame sort
+    // (CpuDrawStreamBuilder::EmitLists) cheap after a spawn, and it is the
+    // order sorted transparency breaks depth ties on (SortedTransparentRuns).
+    // Prepare filled chunk c's list with records [c * chunkSize, ...) in
+    // order, so a chunk's cursor ends exactly at the end of its list.
+    std::size_t spliceChunk = 0;
+    std::size_t spliceCursor = 0;
     for (std::size_t i = 0; i < recCount; ++i)
     {
         auto& prep = state.prepared[i];
+        if (const std::size_t chunk = i / chunkSize; chunk != spliceChunk)
+        {
+            assert(spliceCursor == state.chunks[spliceChunk].Value.subs.size() &&
+                   "the apply's splice left submissions of a prepare chunk unread");
+            spliceChunk = chunk;
+            spliceCursor = 0;
+        }
+        if (prep.subCount != 0u)
+        {
+            const auto& chunkSubs = state.chunks[spliceChunk].Value.subs;
+            const auto first = chunkSubs.begin() + static_cast<std::ptrdiff_t>(spliceCursor);
+            submissions.insert(submissions.end(), first, first + prep.subCount);
+            spliceCursor += prep.subCount;
+        }
         switch (prep.op)
         {
         case Op::Drop:
@@ -1030,38 +1174,10 @@ void ProcessRecordsParallel(
             EmitSubmissions(submissions, matchingViews, prep.meshHandle, prep.material,
                             prep.meshGpu->instanceIndex, prep.flags, prep.renderLayerMask, prep.Sorting, prep.entity);
             break;
-        case Op::NeedsComponent:
-        {
-            const auto& rec = records[i];
-            Components::MeshGPUData init{};
-            world.AddComponentImmediate<Components::MeshGPUData>(rec.entity, init);
-            auto* mg = world.GetComponentForWrite<Components::MeshGPUData>(rec.entity);
-            if (!mg)
-                break;
-            mg->instanceIndex = scene.AddInstance(prep.payload);
-            const float boundsCenter[3] = {rec.bounds.Box.center.x, rec.bounds.Box.center.y,
-                                           rec.bounds.Box.center.z};
-            WriteLastCaches(*mg, prep.payload.meshIndex, prep.payload.materialIndex,
-                            prep.meshUploadSequence, rec.worldTransform.Version, prep.flags,
-                            prep.payload.skinPaletteOffset, rec.lodBias, rec.runtimeId,
-                            boundsCenter, rec.hasBounds ? rec.bounds.Box.Radius() : -1.0f,
-                            rec.hasSectorCoord ? rec.sectorCoord.x : 0,
-                            rec.hasSectorCoord ? rec.sectorCoord.y : 0,
-                            rec.hasSectorCoord ? rec.sectorCoord.z : 0,
-                            /*prevDiffers*/ false); // first frame: prev := current
-            EmitSubmissions(submissions, matchingViews, prep.meshHandle, prep.material,
-                            mg->instanceIndex, prep.flags, prep.renderLayerMask, prep.Sorting, prep.entity);
-            break;
-        }
         }
     }
-
-    // Append the chunk-local Update/Skip emissions in chunk order (== record
-    // order). Submission order is immaterial to draw order (re-established by
-    // WorldDrawBuilder's total-order sort, CONC-F16) — chosen only for
-    // determinism.
-    for (const auto& cr : state.chunks)
-        submissions.insert(submissions.end(), cr.subs.begin(), cr.subs.end());
+    assert((recCount == 0 || spliceCursor == state.chunks[spliceChunk].Value.subs.size()) &&
+           "the apply's splice left submissions of the last prepare chunk unread");
 
     applyMs = elapsed(applyStart, PrepClock::now());
 }
@@ -1150,18 +1266,20 @@ namespace
 {
 constexpr float kDominantWeightEpsilon = 1e-4f;
 
-bool ComputeSpatialWeight(const PostProcessExtractedVolume& vol, const float cameraPos[3],
-                          bool hasCameraPos, float& outSpatialWeight)
+bool ComputeSpatialWeight(const PostProcessExtractedVolume& vol, const Rendering::CameraData* camera,
+                          float& outSpatialWeight)
 {
     outSpatialWeight = 1.0f;
     if (vol.IsGlobal)
         return true;
-    if (!hasCameraPos || !vol.ValidSpatial)
+    if (!camera || !vol.ValidSpatial)
         return false;
 
-    const float vx = cameraPos[0] - vol.Center[0];
-    const float vy = cameraPos[1] - vol.Center[1];
-    const float vz = cameraPos[2] - vol.Center[2];
+    const Mathematics::Vector3 eye = CameraEyeRelativeToOrigin(*camera);
+    const Mathematics::Vector3 center = ViewRelativePoint(*camera, vol.Center);
+    const float vx = eye.x - center.x;
+    const float vy = eye.y - center.y;
+    const float vz = eye.z - center.z;
 
     const float lx = vx * vol.AxisX[0] + vy * vol.AxisX[1] + vz * vol.AxisX[2];
     const float ly = vx * vol.AxisY[0] + vy * vol.AxisY[1] + vz * vol.AxisY[2];
@@ -1237,9 +1355,10 @@ void CopyFogVolumeBounds(PostProcessSettings& dst, const PostProcessExtractedVol
     dst.VolumetricFogVolumeShape = vol.Shape;
     dst.VolumetricFogVolumeValid = (!vol.IsGlobal && vol.ValidSpatial) ? 1 : 0;
     dst.VolumetricFogVolumeBlendDistance = std::max(vol.BlendDistance, 0.0f);
-    dst.VolumetricFogVolumeCenterX = vol.Center[0];
-    dst.VolumetricFogVolumeCenterY = vol.Center[1];
-    dst.VolumetricFogVolumeCenterZ = vol.Center[2];
+    const Mathematics::Vector3 center = vol.Center - Mathematics::WorldPosition{};
+    dst.VolumetricFogVolumeCenterX = center.x;
+    dst.VolumetricFogVolumeCenterY = center.y;
+    dst.VolumetricFogVolumeCenterZ = center.z;
     dst.VolumetricFogVolumeAxisXX = vol.AxisX[0];
     dst.VolumetricFogVolumeAxisXY = vol.AxisX[1];
     dst.VolumetricFogVolumeAxisXZ = vol.AxisX[2];
@@ -1327,11 +1446,11 @@ struct ResolvedVolumeStack
     const PostProcessExtractedVolume* ShadowVolume = nullptr;
 };
 
-// Folds the priority-sorted volumes, as seen from cameraPos, into one settings
-// block. With a layerMask, volumes whose PostProcessMask misses it are skipped.
+// Folds the priority-sorted volumes, as seen from the camera's eye, into one settings
+// block. With camera volume layers, volumes whose VolumeLayers miss them are skipped.
 ResolvedVolumeStack ResolveVolumeStack(std::span<const PostProcessExtractedVolume> volumes,
-                                       const float cameraPos[3], bool hasCameraPos,
-                                       std::optional<uint32> layerMask)
+                                       const Rendering::CameraData* camera,
+                                       std::optional<RenderLayerMask> cameraVolumeLayers)
 {
     ResolvedVolumeStack stack;
     stack.FogVolumes.reserve(std::min<size_t>(volumes.size(), kMaxVolumetricFogLocalVolumes));
@@ -1342,10 +1461,10 @@ ResolvedVolumeStack ResolveVolumeStack(std::span<const PostProcessExtractedVolum
     DominantVolume dominantShadow;
     for (const PostProcessExtractedVolume& v : volumes)
     {
-        if (layerMask && (v.LayerMask & *layerMask) == 0u)
+        if (cameraVolumeLayers && !v.VolumeLayers.Intersects(*cameraVolumeLayers))
             continue;
         float spatialWeight = 1.0f;
-        const bool spatialContributes = ComputeSpatialWeight(v, cameraPos, hasCameraPos, spatialWeight);
+        const bool spatialContributes = ComputeSpatialWeight(v, camera, spatialWeight);
         const float weight = v.BaseWeight * spatialWeight;
         if (spatialContributes)
         {
@@ -1387,21 +1506,16 @@ ResolvedVolumeStack ResolveVolumeStack(std::span<const PostProcessExtractedVolum
     {
         // Stack order is discrete; use the dominant active volume to avoid
         // threshold-driven order popping while crossing blend boundaries.
-        resolved.ColorFilterStackOrder = dominant.Volume->Settings.ColorFilterStackOrder;
         resolved.CasStackOrder = dominant.Volume->Settings.CasStackOrder;
         if (dominantCubeLut.Volume)
         {
-            resolved.LutStackOrder = dominantCubeLut.Volume->Settings.LutStackOrder;
-            resolved.LutInputEncoding = dominantCubeLut.Volume->Settings.LutInputEncoding;
-            resolved.LutTextureFormat = dominantCubeLut.Volume->Settings.LutTextureFormat;
+            resolved.LutStage = dominantCubeLut.Volume->Settings.LutStage;
             const auto& gd = dominantCubeLut.Volume->CubeLutAssetGuid.GetData();
             std::memcpy(resolved.LutAssetGuidWords, gd.data(), sizeof(resolved.LutAssetGuidWords));
         }
         else
         {
-            resolved.LutStackOrder = dominant.Volume->Settings.LutStackOrder;
-            resolved.LutInputEncoding = dominant.Volume->Settings.LutInputEncoding;
-            resolved.LutTextureFormat = dominant.Volume->Settings.LutTextureFormat;
+            resolved.LutStage = dominant.Volume->Settings.LutStage;
             resolved.LutAssetGuidWords[0] = 0;
             resolved.LutAssetGuidWords[1] = 0;
         }
@@ -1422,67 +1536,28 @@ ResolvedVolumeStack ResolveVolumeStack(std::span<const PostProcessExtractedVolum
     stack.ShadowVolume = dominantShadow.Volume;
     return stack;
 }
+
+// The volume's night tint for the tonemap: its strength, and its color's hue at luminance 1 (the color
+// is authored as a picker shows it; only its hue is used). A black color has no hue and tints nothing.
+void ExtractNightTint(const Components::PostProcessVolume& volume, PostProcessSettings& settings)
+{
+    const ColorLinear& color = volume.NightTintColor;
+    const float luminance = ColorUtils::LinearRec709Luminance(color);
+    if (luminance <= 0.0f)
+    {
+        settings.NightTintStrength = 0.0f;
+        return;
+    }
+    settings.NightTintStrength = volume.NightTintStrength;
+    settings.NightTintR = color.r / luminance;
+    settings.NightTintG = color.g / luminance;
+    settings.NightTintB = color.b / luminance;
+}
 } // namespace
 
 void RenderExtractionSystem::ExtractPostProcessVolumes(ECS::World& world, uint64 worldId, RenderServices* rs)
 {
     m_Volumes.clear();
-    const WorldTimeOfDayState worldTimeOfDay = FindWorldTimeOfDayState(world);
-    // Overwrite a view's exposure with its camera's (the camera owns the sensor; volumes contribute
-    // only grading). Mirrors the volume exposure resolve but sourced from the registered camera.
-    auto applyCameraExposure = [](PostProcessSettings& s, const ViewRegistry::CameraExposure& ce)
-    {
-        const auto mode = static_cast<Components::ExposureMode>(ce.Mode);
-        const float ev100 = Rendering::ExposureEv100ForMode(mode, ce.ManualExposureEV,
-                                                            ce.Aperture, ce.ShutterTime, ce.Iso);
-        s.Exposure = Rendering::ResolveExposureScale(mode, ce.Exposure, ev100, ce.ExposureCompensation);
-        if (mode == Components::ExposureMode::Auto)
-        {
-            s.AutoExposureActive    = true;
-            s.AutoExposureMinEv     = ce.AutoExposureMinEv;
-            s.AutoExposureMaxEv     = ce.AutoExposureMaxEv;
-            s.AutoExposureSpeedUp   = ce.AutoExposureSpeedUp;
-            s.AutoExposureSpeedDown = ce.AutoExposureSpeedDown;
-            // All EV trims ride the bias, applied post-clamp (TryWriteField), so compensation
-            // stays effective even when adaptation is pinned at the MinEv/MaxEv envelope edge.
-            // The default bias is the engine's display-brightness anchor for Auto metering
-            // (see kDefaultAutoExposureBiasEv) — Manual/Physical/Fixed take no default trim.
-            s.AutoExposureBiasEv    = kDefaultAutoExposureBiasEv + ce.ExposureCompensation;
-        }
-        else
-        {
-            s.AutoExposureActive = false;
-        }
-        // The lens: physical DoF reads the camera's focus plane, derived focal
-        // length, and the same f-number that drives physical exposure.
-        s.DofFocusDistance = std::max(ce.FocusDistance, Components::Camera::kFocusDistanceMin);
-        s.DofFocalLengthMm = std::max(ce.FocalLengthMm, 1.0f);
-        s.DofAperture = std::max(ce.Aperture, Components::Camera::kApertureMin);
-        s.DofSensorHeightMm = std::max(ce.SensorHeightMm, 1.0f);
-        s.DofApertureBladeCount = std::clamp(
-            ce.ApertureBladeCount,
-            static_cast<int32>(Components::Camera::kApertureBladeCountMin),
-            static_cast<int32>(Components::Camera::kApertureBladeCountMax));
-        s.DofApertureRoundness = std::clamp(ce.ApertureRoundness, 0.0f, 1.0f);
-        s.DofApertureRotation = std::clamp(ce.ApertureRotation, 0.0f, 360.0f);
-        s.DofAnamorphicSqueeze = std::clamp(ce.AnamorphicSqueeze, 1.0f, 4.0f);
-        s.DofDebugMode = ce.FocusDebugMode != 0 ? 1 : 0;
-        s.DofDebugAlpha = std::clamp(ce.FocusDebugAlpha, 0.0f, 1.0f);
-        // Volume exposure modifiers (ExposureAdjustmentEffect) ride the blended settings and
-        // stack on the sensor resolve above: compensation in log space (added to the post-clamp
-        // metering bias in Auto, like the camera's own compensation); the clamps only narrow
-        // the adaptation envelope — a volume can tighten the camera's range, never widen it.
-        if (s.AutoExposureActive)
-        {
-            Rendering::NarrowAutoExposureEnvelope(s.AutoExposureMinEv, s.AutoExposureMaxEv,
-                                                  s.ExposureClampMinEv, s.ExposureClampMaxEv);
-            s.AutoExposureBiasEv += s.ExposureCompensationEv;
-        }
-        else
-        {
-            s.Exposure *= std::exp2(s.ExposureCompensationEv);
-        }
-    };
 
     // Snapshot the effect registrations once per extraction (descriptor storage
     // is process-lifetime stable; ForEach allocates, the volume loop must not).
@@ -1493,11 +1568,7 @@ void RenderExtractionSystem::ExtractPostProcessVolumes(ECS::World& world, uint64
             if (d.Extract || d.NeutralizeSettings)
                 effectHooks.push_back(&d);
         });
-    PostProcessExtractContext extractCtx{};
-    extractCtx.Services = rs;
-    extractCtx.TimeOfDayHours = worldTimeOfDay.hours;
-    std::memcpy(extractCtx.DayKeyTimesHours, worldTimeOfDay.dayKeyTimesHours,
-                sizeof(extractCtx.DayKeyTimesHours));
+    const PostProcessExtractContext extractCtx = MakePostProcessExtractContext(world, rs);
 
     world.Query<
              GameEngine::ECS::Read<GameEngine::Components::PostProcessVolume>,
@@ -1509,26 +1580,21 @@ void RenderExtractionSystem::ExtractPostProcessVolumes(ECS::World& world, uint64
                   PostProcessExtractedVolume ev{};
                   ev.Priority = vol.Priority;
                   ev.BaseWeight = vol.Weight;
-                  ev.LayerMask = vol.PostProcessMask;
+                  ev.VolumeLayers = vol.VolumeLayers;
                   ev.IsGlobal = vol.IsGlobal;
                   ev.Shape = static_cast<int32>(vol.Shape);
                   ev.BlendDistance = vol.BlendDistance;
-                  ev.Center[0] = xf.matrix[12];
-                  ev.Center[1] = xf.matrix[13];
-                  ev.Center[2] = xf.matrix[14];
+                  ev.Center = xf.GetPosition();
                   // Exposure is not a volume property — it belongs to the camera (the sensor), applied
                   // per-view below, or to the world default for camera-less views. Volumes contribute
                   // only grading / tonemap / bloom / fog.
-                  ev.Settings.TonemapMode    = static_cast<int32>(vol.Tonemap);
-                  ev.Settings.DitherMode     = vol.DitherMode;
-                  ev.Settings.IctcpChromaCompression =
-                      std::clamp(vol.IctcpChromaCompression, 0.0f, 1.0f);
+                  ev.Settings.Look           = static_cast<int32>(vol.Look);
+                  ExtractNightTint(vol, ev.Settings);
                   ev.ValidSpatial = true;
 
-                  const float* mtx = xf.matrix;
-                  const float ax[3] = {mtx[0], mtx[1], mtx[2]};
-                  const float ay[3] = {mtx[4], mtx[5], mtx[6]};
-                  const float az[3] = {mtx[8], mtx[9], mtx[10]};
+                  const GameEngine::Mathematics::Vector3 ax(xf.Basis[0]);
+                  const GameEngine::Mathematics::Vector3 ay(xf.Basis[1]);
+                  const GameEngine::Mathematics::Vector3 az(xf.Basis[2]);
                   const float sx = std::sqrt(ax[0] * ax[0] + ax[1] * ax[1] + ax[2] * ax[2]);
                   const float sy = std::sqrt(ay[0] * ay[0] + ay[1] * ay[1] + ay[2] * ay[2]);
                   const float sz = std::sqrt(az[0] * az[0] + az[1] * az[1] + az[2] * az[2]);
@@ -1572,7 +1638,7 @@ void RenderExtractionSystem::ExtractPostProcessVolumes(ECS::World& world, uint64
         // Still stamp the default Auto sensor so camera-less views (the editor Scene View) auto-meter
         // even with zero volumes, matching the resolved-volumes path below.
         PostProcessSettings worldSettings{};
-        applyCameraExposure(worldSettings, ViewRegistry::CameraExposure{});
+        ApplyCameraExposure(worldSettings, ViewRegistry::CameraExposure{});
         rs->SetWorldPostProcessSettings(worldId, worldSettings);
         rs->SetWorldVolumetricFogVolumes(worldId, {});
     }
@@ -1582,27 +1648,8 @@ void RenderExtractionSystem::ExtractPostProcessVolumes(ECS::World& world, uint64
                          [](const PostProcessExtractedVolume& a, const PostProcessExtractedVolume& b)
                          { return a.Priority < b.Priority; });
 
-        bool hasWorldCameraPos = false;
-        float worldCameraPos[3] = {0.0f, 0.0f, 0.0f};
-        const Rendering::CameraData* worldCamData = nullptr;
-        const auto& views = rs->Views().GetViews();
-        for (const auto& view : views)
-        {
-            if (view.worldId != 0 && view.worldId != worldId)
-                continue;
-            const auto* cam = rs->Views().FindCameraData(view.cameraId);
-            if (!cam)
-                continue;
-            worldCameraPos[0] = cam->cameraPos[0];
-            worldCameraPos[1] = cam->cameraPos[1];
-            worldCameraPos[2] = cam->cameraPos[2];
-            worldCamData = cam;
-            hasWorldCameraPos = true;
-            break;
-        }
-
-        ResolvedVolumeStack worldStack =
-            ResolveVolumeStack(m_Volumes, worldCameraPos, hasWorldCameraPos, std::nullopt);
+        const Rendering::CameraData* worldCamData = rs->Views().FindMainCameraData(worldId);
+        ResolvedVolumeStack worldStack = ResolveVolumeStack(m_Volumes, worldCamData, std::nullopt);
         // Directional shadows are world-global, so the dominant spatially
         // contributing volume carrying a ShadowSettingsEffect wins.
         if (worldStack.ShadowVolume)
@@ -1612,15 +1659,15 @@ void RenderExtractionSystem::ExtractPostProcessVolumes(ECS::World& world, uint64
         // the blended world settings so a scene with post-processing auto-meters even though no volume
         // carries exposure. Camera-driven views override this per-view from their own sensor below.
         PostProcessSettings worldSettings = worldStack.Any ? worldStack.Settings : PostProcessSettings{};
-        applyCameraExposure(worldSettings, ViewRegistry::CameraExposure{});
+        ApplyCameraExposure(worldSettings, ViewRegistry::CameraExposure{});
         rs->SetWorldPostProcessSettings(worldId, worldSettings);
         rs->SetWorldVolumetricFogVolumes(worldId, std::move(worldStack.FogVolumes));
     }
 
-    // Per-view filtering: views whose camera registered a PostProcess mask via
+    // Per-view filtering: views whose camera registered volume layers via
     // CameraSystem get a filtered blend that only includes volumes whose
-    // PostProcessMask intersects the camera's mask. Views without a registered
-    // mask (e.g. the editor Scene View, which manages its own override) are
+    // VolumeLayers intersect the camera's. Views without registered
+    // volume layers (e.g. the editor Scene View, which manages its own override) are
     // left untouched and fall back to the world-level settings.
     {
         const auto& views = rs->Views().GetViews();
@@ -1630,22 +1677,12 @@ void RenderExtractionSystem::ExtractPostProcessVolumes(ECS::World& world, uint64
                 continue;
             if (view.cameraId == 0)
                 continue;
-            if (!rs->Views().HasCameraPostProcessMask(view.cameraId))
+            if (!rs->Views().HasCameraVolumeLayers(view.cameraId))
                 continue;
 
-            const uint32 cameraMask = rs->Views().GetCameraPostProcessMask(view.cameraId);
+            const RenderLayerMask cameraMask = rs->Views().GetCameraVolumeLayers(view.cameraId);
             const auto* cam = rs->Views().FindCameraData(view.cameraId);
-            const bool hasViewCameraPos = (cam != nullptr);
-            float viewCameraPos[3] = {0.0f, 0.0f, 0.0f};
-            if (cam)
-            {
-                viewCameraPos[0] = cam->cameraPos[0];
-                viewCameraPos[1] = cam->cameraPos[1];
-                viewCameraPos[2] = cam->cameraPos[2];
-            }
-
-            ResolvedVolumeStack viewStack =
-                ResolveVolumeStack(m_Volumes, viewCameraPos, hasViewCameraPos, cameraMask);
+            ResolvedVolumeStack viewStack = ResolveVolumeStack(m_Volumes, cam, cameraMask);
             PostProcessSettings perView = viewStack.Settings;
             const bool any = viewStack.Any;
 
@@ -1665,15 +1702,17 @@ void RenderExtractionSystem::ExtractPostProcessVolumes(ECS::World& world, uint64
                     perView.ExposureCompensationEv = 0.0f;
                     perView.ExposureClampMinEv = kExposureClampNoOpMinEv;
                     perView.ExposureClampMaxEv = kExposureClampNoOpMaxEv;
+                    perView.ExposureClampMinWeight = 0.0f;
+                    perView.ExposureClampMaxWeight = 0.0f;
                 }
-                applyCameraExposure(perView, *camExp);
+                ApplyCameraExposure(perView, *camExp);
             }
             else if (any)
             {
                 // Masked but camera-less view (e.g. the bookmark preview): the contributing volume
                 // carries only grading, so stamp the world-default Auto sensor instead of leaving the
                 // static Exposure=1.0 default, which would blow the preview out under physical lighting.
-                applyCameraExposure(perView, ViewRegistry::CameraExposure{});
+                ApplyCameraExposure(perView, ViewRegistry::CameraExposure{});
             }
 
             if (any)
@@ -1715,31 +1754,33 @@ bool RenderExtractionSystem::EvaluateFastPathPreconditions(ECS::World& world, ui
     if (world.GetComponentDirtyFeed().Overflowed())
         reasons |= kEscalationFeedOverflow;
 
-    // E4 — structural version vs the sample taken at the END of the last
-    // full pass (see the prime block in Update for the TLAS asymmetry note).
-    if (world.GetStructuralChangeVersion() != m_FullPassStructuralVersion)
+    // E4 — structural version vs the one the last full pass entered with.
+    m_FrameStructuralVersion = world.GetStructuralChangeVersion();
+    if (m_FrameStructuralVersion != m_FullPassStructuralVersion)
         reasons |= kEscalationStructuralChange;
 
-    // E5 — Changed<> probes over the four record columns extraction reads
+    // E5 — Changed<> probes over the three record columns extraction reads
     // and never writes, morph carriers included (their MeshRenderer/
     // LocalBounds edits change submission fields the replay depends on).
     // Evaluated every frame on both lanes so the gates advance and edits are
     // consumed, not latched stale (D3).
     const uint64 probeVersion = world.GetGlobalSystemVersion();
+    m_ProbeSince.LastRunVersion = std::min({m_ProbeGateMeshRenderer.LastRunVersion,
+                                            m_ProbeGateLocalBounds.LastRunVersion,
+                                            m_ProbeGateLodGroup.LastRunVersion});
     if (ProbeColumnChanged<Components::MeshRenderer>(world, m_ProbeGateMeshRenderer, probeVersion))
         reasons |= kEscalationProbeMeshRenderer;
     if (ProbeColumnChanged<Components::LocalBounds>(world, m_ProbeGateLocalBounds, probeVersion))
         reasons |= kEscalationProbeLocalBounds;
-    if (ProbeColumnChanged<Components::WorldSectorCoord>(world, m_ProbeGateSectorCoord, probeVersion))
-        reasons |= kEscalationProbeSectorCoord;
     if (ProbeColumnChanged<Components::LODGroup>(world, m_ProbeGateLodGroup, probeVersion))
         reasons |= kEscalationProbeLodGroup;
 
     // Authored order changes invalidate cached stationary submissions. Parent and group
     // transform changes may affect descendants that have no sorting component of their own.
-    const bool sortingSectorChanged = ProbeColumnChanged<Components::WorldSectorCoord>(world, m_ProbeGateSectorCoordSorting, probeVersion);
     const bool sortingChanged = ProbeColumnChanged<Components::RenderSorting>(world, m_ProbeGateSorting, probeVersion);
     const bool parentsChanged = ProbeColumnChanged<Components::Parent>(world, m_ProbeGateSortingParents, probeVersion);
+    // Exact world positions share the WorldTransform stamp with the basis. Group
+    // movement is probed here; ordinary movement stays on the O(dirty) feed lane.
     bool groupTransformChanged = false;
     auto sortingTransforms = world.Query<ECS::Read<Components::RenderSorting>, ECS::Read<Components::WorldTransform>,
                                          ECS::Optional<Components::MeshRenderer>>();
@@ -1752,10 +1793,10 @@ bool RenderExtractionSystem::EvaluateFastPathPreconditions(ECS::World& world, ui
     m_ProbeGateSortingTransforms.LastRunVersion = probeVersion;
     const uint64 sortingRevision = m_SortingSnapshotRevision;
     const bool hasSorting = world.Query<ECS::Read<Components::RenderSorting>>().Count() != 0;
-    if (sortingChanged || groupTransformChanged || ((hasSorting || m_HadSorting) && (parentsChanged || sortingSectorChanged ||
+    if (sortingChanged || groupTransformChanged || ((hasSorting || m_HadSorting) && (parentsChanged ||
         world.GetStructuralChangeVersion() != m_FullPassStructuralVersion)) ||
         sortingRevision != m_SortingRevision)
-        reasons |= kEscalationProbeMeshRenderer;
+        reasons |= kEscalationSorting;
     m_SortingRevision = sortingRevision;
     m_HadSorting = hasSorting;
 
@@ -1831,12 +1872,13 @@ uint64 RenderExtractionSystem::ComputeMaterialDigest() const
     // draw set), but a full-vs-fast submission-membership divergence during
     // failed-recompile windows; bump-on-recompile is the cheap upgrade if
     // soak ever shows it mattering.
-    using GameEngine::Rendering::HashUtils::Fnv1a64;
-    using GameEngine::Rendering::HashUtils::HashValue;
+    using GameEngine::Hashing::Fnv1a64;
+    using GameEngine::Hashing::Fnv1a64Value;
+    constexpr uint64 kFnvOffsetBasis = 14695981039346656037ull;
     auto& materials = m_RenderServices->Materials();
-    uint64 digest = HashValue(Hashing::kFnv1a64OffsetBasis, materials.MaterialSSBOGeneration());
+    uint64 digest = Fnv1a64Value(kFnvOffsetBasis, materials.MaterialSSBOGeneration());
     const auto depthClasses = materials.MaterialDepthClassSpan();
-    digest = HashValue(digest, static_cast<uint64>(depthClasses.size()));
+    digest = Fnv1a64Value(digest, static_cast<uint64>(depthClasses.size()));
     if (!depthClasses.empty())
         digest = Fnv1a64(depthClasses.data(), depthClasses.size(), digest);
     return digest;
@@ -1857,27 +1899,28 @@ RenderExtractionSystem::ComputeViewFingerprints(uint64 worldId) const
     // misreading the churn as an escalation storm. The persistent hash leaves
     // the OnDemand views out, so that churn is distinguishable from a change
     // to what the Always views draw (IsOnDemandViewChurnOnly).
-    using GameEngine::Rendering::HashUtils::HashValue;
-    ViewFingerprints fingerprints{Hashing::kFnv1a64OffsetBasis, Hashing::kFnv1a64OffsetBasis};
+    using GameEngine::Hashing::Fnv1a64Value;
+    constexpr uint64 kFnvOffsetBasis = 14695981039346656037ull;
+    ViewFingerprints fingerprints{kFnvOffsetBasis, kFnvOffsetBasis};
     uint32 matchingCount = 0;
     uint32 persistentCount = 0;
     for (const auto& view : m_RenderServices->Views().GetViews())
     {
         if (view.worldId != 0 && view.worldId != worldId)
             continue;
-        fingerprints.All = HashValue(fingerprints.All, view.id);
-        fingerprints.All = HashValue(fingerprints.All, view.worldId);
-        fingerprints.All = HashValue(fingerprints.All, view.ActiveRenderLayerMask());
+        fingerprints.All = Fnv1a64Value(fingerprints.All, view.id);
+        fingerprints.All = Fnv1a64Value(fingerprints.All, view.worldId);
+        fingerprints.All = Fnv1a64Value(fingerprints.All, view.ActiveRenderLayerMask().Bits);
         ++matchingCount;
         if (view.participation == Rendering::ViewParticipation::OnDemand)
             continue;
-        fingerprints.Persistent = HashValue(fingerprints.Persistent, view.id);
-        fingerprints.Persistent = HashValue(fingerprints.Persistent, view.worldId);
-        fingerprints.Persistent = HashValue(fingerprints.Persistent, view.ActiveRenderLayerMask());
+        fingerprints.Persistent = Fnv1a64Value(fingerprints.Persistent, view.id);
+        fingerprints.Persistent = Fnv1a64Value(fingerprints.Persistent, view.worldId);
+        fingerprints.Persistent = Fnv1a64Value(fingerprints.Persistent, view.ActiveRenderLayerMask().Bits);
         ++persistentCount;
     }
-    fingerprints.All = HashValue(fingerprints.All, matchingCount);
-    fingerprints.Persistent = HashValue(fingerprints.Persistent, persistentCount);
+    fingerprints.All = Fnv1a64Value(fingerprints.All, matchingCount);
+    fingerprints.Persistent = Fnv1a64Value(fingerprints.Persistent, persistentCount);
     return fingerprints;
 }
 
@@ -1928,14 +1971,20 @@ void RenderExtractionSystem::TrackChangedCasterSphere(const Rendering::GPUInstan
     // Enclosing BOTH poses is what makes range-boundary crossings sound in both
     // directions (a caster leaving a light's range still triggers the one final
     // re-render that removes its shadow).
-    const float dx = current.boundingCenter.x - previous.boundingCenter.x;
-    const float dy = current.boundingCenter.y - previous.boundingCenter.y;
-    const float dz = current.boundingCenter.z - previous.boundingCenter.z;
+    // The spheres are in world space: each center is composed against sector (0,0,0).
+    const Mathematics::Vector3Int worldSector{0, 0, 0};
+    const Vector3 previousCenter = SectorLocalPointRelativeTo(
+        previous.boundingCenter, previous.sectorPacked[0], previous.sectorPacked[1], worldSector);
+    const Vector3 currentCenter = SectorLocalPointRelativeTo(
+        current.boundingCenter, current.sectorPacked[0], current.sectorPacked[1], worldSector);
+    const float dx = currentCenter.x - previousCenter.x;
+    const float dy = currentCenter.y - previousCenter.y;
+    const float dz = currentCenter.z - previousCenter.z;
     const float halfDist = 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
     ShadowCasterChangeSphere s{};
-    s.X = 0.5f * (previous.boundingCenter.x + current.boundingCenter.x);
-    s.Y = 0.5f * (previous.boundingCenter.y + current.boundingCenter.y);
-    s.Z = 0.5f * (previous.boundingCenter.z + current.boundingCenter.z);
+    s.X = 0.5f * (previousCenter.x + currentCenter.x);
+    s.Y = 0.5f * (previousCenter.y + currentCenter.y);
+    s.Z = 0.5f * (previousCenter.z + currentCenter.z);
     s.Radius = halfDist + std::max(previous.boundingRadius, current.boundingRadius);
     m_ChangedCasterSpheres.push_back(s);
 }
@@ -1953,6 +2002,12 @@ uint32 RenderExtractionSystem::PatchDirtyInstances(ECS::World& world, GPUScene& 
     if (!m_AlwaysRefreshSet.empty())
         std::erase_if(m_FeedScratch, [&](ECS::EntityHandle e)
                       { return m_AlwaysRefreshSet.contains(e.id); });
+    // The delta lane rebuilt these from their current pose earlier in this run.
+    // A second pass would read the LastPrevDiffers latch it just set as a
+    // stopped mover's settle and zero the motion vector it wrote.
+    if (!m_DeltaPreparedIds.empty())
+        std::erase_if(m_FeedScratch, [&](ECS::EntityHandle e)
+                      { return std::binary_search(m_DeltaPreparedIds.begin(), m_DeltaPreparedIds.end(), e.id); });
     if (m_FeedScratch.empty())
         return 0;
 
@@ -1996,48 +2051,38 @@ uint32 RenderExtractionSystem::PatchDirtyInstances(ECS::World& world, GPUScene& 
     }
     m_FeedScratch.resize(writeCount);
     reads.resize(writeCount);
-    // Grant MeshGPUData only for the selected entities, batched: one lock and
-    // one version for the pass.
-    auto& grants = m_ParallelState->dirtyGrants;
-    grants.resize(writeCount);
-    world.GetComponentsBatchForWrite<Components::MeshGPUData>(std::span{m_FeedScratch}, std::span{grants});
+    // This is the same write-grant contract as GetComponentForWrite, batched
+    // once for the selected entities. The owning World is mutable and the fast
+    // lane performs no structural changes; only these granted pointers are cast.
+    world.StampComponentWriteBatch(m_FeedScratch.data(), writeCount,
+                                   ECS::GetComponentTypeId<Components::MeshGPUData>());
+
+    // Build every write's row on the world's pool (inline when it has none),
+    // then attribute changed casters against the rows still holding the
+    // previous pose, then write the rows, then publish the movers. Each step
+    // keeps the entity-index order, so the rows, the caster spheres and the
+    // mover list match a per-entity loop's exactly, and the dirty words match
+    // it as a set (the flush sorts their list).
+    auto& writes = m_ParallelState->patchWrites;
+    auto& isMover = m_ParallelState->patchIsMover;
+    auto& moverRecords = m_ParallelState->patchMoverRecords;
+    writes.resize(writeCount);
+    isMover.resize(writeCount);
+    moverRecords.resize(writeCount);
+    ForkJoinRanges(js, writeCount, [&](std::size_t begin, std::size_t end)
+                   { BuildPatchedInstances(reads, scene, writes, isMover, moverRecords, begin, end); });
+    for (std::size_t i = 0; i < writeCount && !m_ChangedCasterOverflow; ++i)
+        TrackChangedCasterSphere(scene.GetInstances()[writes[i].InstanceIndex], writes[i].Instance);
+    scene.UpdateInstances(writes, [js](std::size_t count, FunctionRef<void(std::size_t, std::size_t)> body)
+                          { ForkJoinRanges(js, count, body); });
+
+    auto& movers = m_ParallelState->patchMovers;
+    movers.clear();
+    movers.reserve(writeCount);
     for (std::size_t i = 0; i < writeCount; ++i)
-    {
-        const Components::WorldTransform* wt = std::get<0>(reads[i]);
-        const Components::MeshRenderer* mr = std::get<2>(reads[i]);
-        Components::MeshGPUData* meshGpu = grants[i];
-        // Every non-transform GPUInstance input lives in the Last* caches
-        // (D2); their inputs either escalate (E5/E6/E7) or live in the
-        // always-refresh subset, so on a fast frame they are current.
-        GPUInstance payload;
-        const bool hasBounds = meshGpu->LastBoundsRadius >= 0.0f; // -1 = extracted without bounds
-        const GPUInstance& previousInstance = scene.GetInstances()[meshGpu->instanceIndex];
-        const float* prevMatrix = previousInstance.transform.Data();
-        BuildGpuInstancePayload(payload, wt->matrix, prevMatrix, hasBounds,
-                                meshGpu->LastBoundsCenter,
-                                meshGpu->LastBoundsRadius, meshGpu->meshIndex,
-                                meshGpu->materialIndex, meshGpu->LastFlags,
-                                meshGpu->LastLodBias, meshGpu->LastSkinPaletteOffset,
-                                meshGpu->LastRuntimeId, meshGpu->LastSectorX,
-                                meshGpu->LastSectorY, meshGpu->LastSectorZ, mr->renderLayerMask);
-        const bool prevDiffers = PayloadPrevDiffers(payload);
-        // Before UpdateInstance overwrites the mirror `previousInstance` aliases.
-        TrackChangedCasterSphere(previousInstance, payload);
-        scene.UpdateInstance(meshGpu->instanceIndex, payload);
-        if (prevDiffers)
-        {
-            // Skinned entities never reach this loop — every one of them is an
-            // always-refresh member, skipped above — so there is no pose delta
-            // to express and no previous palette to name.
-            if (mr)
-                m_RenderServices->AddFrameMover(meshGpu->instanceIndex,
-                                                MeshGPUHandle(mr->meshGpuHandleId),
-                                                payload.skinPaletteOffset,
-                                                RenderServices::kNoPreviousSkinPalette);
-        }
-        meshGpu->LastTransformVersion = wt->Version;
-        meshGpu->LastPrevDiffers = prevDiffers;
-    }
+        if (isMover[i] != 0u)
+            movers.push_back(moverRecords[i]);
+    m_RenderServices->AddFrameMovers(movers);
     return static_cast<uint32>(writeCount);
 }
 
@@ -2047,9 +2092,13 @@ void RenderExtractionSystem::RebuildAlwaysRefreshSubset(ECS::World& world)
     // volatile through channels no probe covers (SkinningUpload's palette
     // offsets, AnimatorRef playback state, SkeletonStore runtime state) get
     // a full per-entity re-prepare every fast frame instead. Rebuilt on
-    // every full pass; membership changes are component add/removes and
-    // Disabled-tag flips — all structural (E4) — so the set cannot go stale
-    // between full passes. Require an extraction bridge: animation controllers
+    // every full pass. Membership changes are component add/removes and
+    // Disabled-tag flips, all structural (E4). Between full passes the
+    // structural delta lane keeps the set usable: a frame that would add a
+    // carrier the set lacks takes the full lane (GatherStructuralDeltaRecords);
+    // a destroyed member's reads resolve to nothing and are skipped; a member
+    // that stops being a carrier stays in the set, refreshed needlessly, until
+    // the next full pass. Require an extraction bridge: animation controllers
     // and skeleton-only entities cannot update GPU instances and must not spend
     // the subset budget or pin an otherwise static scene onto the full lane.
     // Adding their rendering components escalates via E4 and rebuilds this set.
@@ -2078,7 +2127,7 @@ void RenderExtractionSystem::RebuildAlwaysRefreshSubset(ECS::World& world)
 uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPUScene& scene,
                                                           MeshGPURegistry& meshReg,
                                                           MaterialRegistry& matReg,
-                                                          uint64 worldId, bool& rigidCasterRefreshed)
+                                                          uint64 worldId)
 {
     uint32 refreshed = 0;
     if (m_AlwaysRefresh.empty())
@@ -2090,7 +2139,8 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
                              Components::LocalBounds, Components::SkinnedMeshRenderer,
                              Components::SkeletonRef, Components::AnimatorRef,
                              Components::LODGroup, ECS::ComponentDisabled<Components::MeshRenderer>,
-                             ECS::ComponentDisabled<Components::SkinnedMeshRenderer>>(
+                             ECS::ComponentDisabled<Components::SkinnedMeshRenderer>,
+                             Components::SceneViewHidden, Components::SceneViewHiddenInHierarchy>(
         std::span{m_AlwaysRefresh}, std::span{reads});
     for (std::size_t i = 0; i < m_AlwaysRefresh.size(); ++i)
     {
@@ -2099,8 +2149,13 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
         // reassigned by SkinningUpload, AnimatorRef playback state) are
         // picked up here, same frame, same as today's gather latency.
         const ECS::EntityHandle e = m_AlwaysRefresh[i];
-        const auto& [wt, mgRead, mr, giEmitterTag, lb, smr, skelRef, anim, lodGroup, rendererOff, skinnedOff] =
-            reads[i];
+        // The delta lane re-prepared this carrier from the same fresh reads
+        // earlier in this run; a second pass would read the LastPrevDiffers
+        // latch it set as a stopped mover's settle and zero its motion vector.
+        if (std::binary_search(m_DeltaPreparedIds.begin(), m_DeltaPreparedIds.end(), e.id))
+            continue;
+        const auto& [wt, mgRead, mr, giEmitterTag, lb, smr, skelRef, anim, lodGroup, rendererOff, skinnedOff,
+                     hidden, hiddenInHierarchy] = reads[i];
         if (!wt || !mgRead || mgRead->instanceIndex == 0xFFFFFFFFu)
             continue; // never extracted / released: creation is the full lane's job (E4)
         // Tag component: presence is the signal (Components::GIEmitter).
@@ -2118,10 +2173,7 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
             if (mgRead->meshIndex != 0xFFFFFFFFu)
             {
                 if (auto* meshGpu = world.GetComponentForWrite<Components::MeshGPUData>(e))
-                {
-                    rigidCasterRefreshed = true;
                     ClearMeshGpuInstance(scene, *meshGpu);
-                }
             }
             continue;
         }
@@ -2149,18 +2201,17 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
         const uint32 skeletonId =
             (smr && !skinnedOff && smr->skeletonId != 0) ? smr->skeletonId : 0u;
         const uint32 runtimeId = (skelRef && skelRef->runtimeId != 0) ? skelRef->runtimeId : 0u;
-        const bool hasClipAnimation = anim && anim->ClipIndex != 0;
+        const bool hasActiveAnimation = anim && anim->ClipIndex != 0;
         const float lodBias = lodGroup ? lodGroup->Bias : 0.0f;
 
-        const bool castShadows = mr->castShadows && (!hasBounds || lb->CastShadows);
-        rigidCasterRefreshed |= castShadows && !Rendering::IsSkinned(meshEntry->vertexFlags);
         const uint32 flags =
-            ComputeInstanceFlags(castShadows, mr->receiveShadows,
+            ComputeInstanceFlags(mr->shadowCasting, !hasBounds || lb->CastShadows, mr->receiveShadows,
                                  m_RenderServices->Materials().GetMaterialDepthClass(matIdx),
-                                 IsOrderDependentBlendMaterial(*material), giEmitter, worldId);
+                                 IsOrderDependentBlendMaterial(*material), giEmitter,
+                                 hidden != nullptr || hiddenInHierarchy != nullptr, worldId);
 
         const SkinPaletteOffsets paletteOffsets =
-            ResolveSkinPaletteOffsets(skeletonId, hasClipAnimation, runtimeId);
+            ResolveSkinPaletteOffsets(skeletonId, hasActiveAnimation, runtimeId);
         const uint32 skinPaletteOffset = paletteOffsets.Current;
 
         const float boundsRadius = hasBounds ? lb->Box.Radius() : -1.0f;
@@ -2201,16 +2252,15 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
         auto* meshGpu = world.GetComponentForWrite<Components::MeshGPUData>(e);
         if (!meshGpu)
             continue;
-        const float boundsCenter[3] = {hasBounds ? lb->Box.center.x : 0.0f,
-                                       hasBounds ? lb->Box.center.y : 0.0f,
-                                       hasBounds ? lb->Box.center.z : 0.0f};
+        const Vector3 boundsCenter = hasBounds ? lb->Box.center : Vector3(0.0f, 0.0f, 0.0f);
         GPUInstance payload;
         const GPUInstance& previousInstance = scene.GetInstances()[meshGpu->instanceIndex];
-        const float* prevMatrix = previousInstance.transform.Data();
-        BuildGpuInstancePayload(payload, wt->matrix, prevMatrix, hasBounds, boundsCenter,
+        Mathematics::Vector3Int sector;
+        const Mathematics::Matrix4x4 localMatrix = GameEngine::Engine::Renderer::SectorLocalMatrix(*wt, sector);
+        const Mathematics::Matrix4x4 prevMatrix = PreviousMatrixInSector(previousInstance.transform, *meshGpu, sector);
+        BuildGpuInstancePayload(payload, localMatrix, prevMatrix, hasBounds, boundsCenter,
                                 boundsRadius, mshIdx, matIdx, flags, lodBias,
-                                skinPaletteOffset, runtimeId,
-                                meshGpu->LastSectorX, meshGpu->LastSectorY, meshGpu->LastSectorZ, mr->renderLayerMask);
+                                skinPaletteOffset, runtimeId, sector.x, sector.y, sector.z, mr->RenderLayers);
         const bool prevDiffers = PayloadPrevDiffers(payload);
         // Before UpdateInstance overwrites the mirror `previousInstance` aliases.
         // A refreshed caster counts as changed whatever field moved — a palette
@@ -2232,11 +2282,231 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
                                             paletteOffsets.Current, paletteOffsets.Previous);
         WriteLastCaches(*meshGpu, mshIdx, matIdx, meshEntry->uploadSeq, wt->Version, flags,
                         skinPaletteOffset, lodBias, runtimeId, boundsCenter, boundsRadius,
-                        meshGpu->LastSectorX, meshGpu->LastSectorY, meshGpu->LastSectorZ,
-                        prevDiffers);
+                        sector.x, sector.y, sector.z, prevDiffers);
         ++refreshed;
     }
     return refreshed;
+}
+
+void RenderExtractionSystem::ReleaseUngatheredInstances(ECS::World& world, GPUScene& scene)
+{
+    // A row the gather skips keeps its GPU slot; this pass is what releases it
+    // (MeshRenderer gone) or tombstones it in place (entity or renderer
+    // disabled). Removing rows from the free-list leaves holes below
+    // GetInstanceCount(), so the slot-scanning culling / draw-command passes
+    // must see an explicit tombstone.
+    world.Query<
+             GameEngine::ECS::Write<GameEngine::Components::MeshGPUData>,
+             GameEngine::ECS::Optional<GameEngine::Components::MeshRenderer>,
+             GameEngine::ECS::Optional<GameEngine::ECS::Disabled>,
+             GameEngine::ECS::Optional<GameEngine::ECS::DisabledInHierarchy>,
+             GameEngine::ECS::Optional<
+                 GameEngine::ECS::ComponentDisabled<GameEngine::Components::MeshRenderer>>>()
+        .IncludeDisabled()
+        .Each([&](ECS::Writable<GameEngine::Components::MeshGPUData> meshGpuRow,
+                  const GameEngine::Components::MeshRenderer* mr,
+                  const GameEngine::ECS::Disabled* disabled,
+                  const GameEngine::ECS::DisabledInHierarchy* inactive,
+                  const GameEngine::ECS::ComponentDisabled<
+                      GameEngine::Components::MeshRenderer>* rendererOff)
+              {
+                  auto& meshGpu = meshGpuRow.Mutable();
+                  if (!mr)
+                      ReleaseMeshGpuInstance(scene, meshGpu);
+                  else if (disabled || inactive || rendererOff)
+                      ClearMeshGpuInstance(scene, meshGpu); });
+}
+
+bool RenderExtractionSystem::IsStructuralDeltaEligible(uint32 reasons) const
+{
+    constexpr uint32 kCoverable = kEscalationStructuralChange | kEscalationProbeMeshRenderer |
+                                  kEscalationProbeLocalBounds | kEscalationProbeLodGroup;
+    // Sorting changes can affect descendants outside the changed record columns
+    // below, so kEscalationSorting deliberately requires the full lane.
+    // Slotless or HLOD-skipped renderables are tracked by no slot, so the
+    // count check could not see them leave: such a world keeps the full lane.
+    return m_FeedFastPath && m_KeyedStatePrimed && reasons != 0 && (reasons & ~kCoverable) == 0 &&
+           m_TrackedSlotless == 0 && m_TrackedHlodSkipped == 0;
+}
+
+bool RenderExtractionSystem::GatherStructuralDeltaRecords(ECS::World& world,
+                                                          std::vector<WorldRenderableRecord>& out) const
+{
+    out.clear();
+    uint32 hlodSkipped = 0;
+    uint32 pendingUnresolved = 0;
+    auto meshes = RenderableQuery(world);
+    meshes.Changed<Components::MeshRenderer>(m_ProbeSince);
+    AppendRenderableRecords(meshes, out, hlodSkipped, pendingUnresolved, world, m_SortingLayers);
+    auto bounds = RenderableQuery<Components::LocalBounds>(world);
+    bounds.Changed<Components::LocalBounds>(m_ProbeSince);
+    AppendRenderableRecords<Components::LocalBounds>(bounds, out, hlodSkipped, pendingUnresolved, world, m_SortingLayers);
+    auto lods = RenderableQuery<Components::LODGroup>(world);
+    lods.Changed<Components::LODGroup>(m_ProbeSince);
+    AppendRenderableRecords<Components::LODGroup>(lods, out, hlodSkipped, pendingUnresolved, world, m_SortingLayers);
+    std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return a.entity.id < b.entity.id; });
+    out.erase(std::unique(out.begin(), out.end(),
+                          [](const auto& a, const auto& b) { return a.entity == b.entity; }), out.end());
+    // An unresolved pose waits for the full lane's pending count (E8).
+    if (hlodSkipped != 0 || pendingUnresolved != 0)
+        return false;
+    // A carrier joins a subset only the full lane builds.
+    for (const WorldRenderableRecord& rec : out)
+    {
+        if (!rec.meshGpu || (rec.alwaysRefreshCarrier && !m_AlwaysRefreshSet.contains(rec.entity.id)))
+            return false;
+    }
+    bool newMorphCarrier = false;
+    auto morphs = world.Query<ECS::Read<Components::MorphTargetWeights>>();
+    morphs.With<Components::WorldTransform, Components::MeshRenderer>();
+    morphs.Changed<Components::MorphTargetWeights>(m_ProbeSince);
+    morphs.Each([&](ECS::EntityHandle e, const Components::MorphTargetWeights&)
+                { newMorphCarrier = newMorphCarrier || !m_AlwaysRefreshSet.contains(e.id); });
+    return !newMorphCarrier;
+}
+
+void RenderExtractionSystem::RebuildKeyedRenderableState(const GPUScene& scene, uint32 hlodSkipped)
+{
+    m_Submissions.Clear();
+    for (const WorldSubmissionRecord& record : m_LaneSubmissions)
+        m_Submissions.Append(record);
+    const std::size_t slots = scene.GetInstances().size();
+    m_SlotDigest.assign(slots, 0u);
+    m_SlotTracked.assign(slots, 0u);
+    m_TrackedSlots = 0;
+    m_TrackedSlotless = 0;
+    for (const WorldRenderableRecord& rec : m_Records)
+    {
+        const uint32 slot = rec.meshGpu ? rec.meshGpu->instanceIndex : 0xFFFFFFFFu;
+        if (slot < slots)
+        {
+            m_SlotTracked[slot] = 1u;
+            m_SlotDigest[slot] = RecordDigestTerm(rec);
+            ++m_TrackedSlots;
+        }
+        else
+        {
+            ++m_TrackedSlotless;
+        }
+    }
+    m_TrackedHlodSkipped = hlodSkipped;
+    m_ReleaseCursor = scene.GetReleasedSlotCount();
+    m_KeyedStatePrimed = true;
+}
+
+RenderExtractionSystem::StructuralDeltaResult RenderExtractionSystem::RunStructuralDelta(
+    ECS::World& world, GPUScene& scene, RenderServices& rs, uint64 worldId,
+    const std::vector<const ViewDesc*>& matchingViews, MeshGPURegistry& meshReg, MaterialRegistry& matReg,
+    bool extractDiag)
+{
+    StructuralDeltaResult result;
+
+    // Read-only first: anything this lane cannot carry is refused before a
+    // cache is touched.
+    if (!GatherStructuralDeltaRecords(world, m_DeltaRecords))
+        return result;
+    if (!scene.ReadReleasedSlotsSince(m_ReleaseCursor, m_ReleasedScratch))
+        return result;
+
+    // Slots freed since the last run (destroyed renderables; another world's
+    // slots are tracked by no record here and change nothing).
+    m_EraseSlots.clear();
+    const auto untrack = [this](uint32 slot)
+    {
+        m_EraseSlots.push_back(slot);
+        if (slot < m_SlotTracked.size() && m_SlotTracked[slot] != 0u)
+        {
+            m_SlotTracked[slot] = 0u;
+            m_CachedMeshDigest -= m_SlotDigest[slot];
+            --m_TrackedSlots;
+        }
+    };
+    for (const uint32 slot : m_ReleasedScratch)
+        untrack(slot);
+    // The re-prepared renderables drop what they held; the prepare restates it.
+    for (const WorldRenderableRecord& rec : m_DeltaRecords)
+        untrack(rec.meshGpu->instanceIndex);
+
+    // Every enabled renderable stays accounted for: tracked by a slot, or one
+    // of this pass's records (each ends tracked or slotless). A renderable that
+    // left the gather without freeing its slot (a disable, a MeshRenderer
+    // removed from a live entity) breaks the equality, and the full lane
+    // releases or tombstones it. Checked before a row is written, so the full
+    // lane starts from the rows the frame began with: a row this lane rebuilt
+    // would read to the full lane as a stopped mover to settle.
+    const std::size_t renderables =
+        world.Query<ECS::Read<Components::WorldTransform>, ECS::Read<Components::MeshRenderer>>().Count();
+    if (renderables != static_cast<std::size_t>(m_TrackedSlots) + m_DeltaRecords.size())
+        return result;
+
+    m_DeltaPreparedIds.clear();
+    for (const WorldRenderableRecord& rec : m_DeltaRecords)
+        m_DeltaPreparedIds.push_back(rec.entity.id);
+    std::sort(m_DeltaPreparedIds.begin(), m_DeltaPreparedIds.end());
+
+    m_LaneSubmissions.clear();
+    uint64 laneDigest = 0;
+    uint32 rebuildCount = 0, skippedCount = 0;
+    uint32 skipNoMeshHandle = 0, skipNoMeshEntry = 0, skipNoMatGuid = 0, skipNoMatFound = 0, skipNoPipeline = 0;
+    uint32 pendingMaterialLoad = 0, pendingSentinelIndex = 0;
+    if (!m_DeltaRecords.empty())
+    {
+        ProcessRecordsParallel(world, scene, rs, worldId, matchingViews, meshReg, matReg, extractDiag,
+                               m_DeltaRecords, m_LaneSubmissions, *m_ParallelState, laneDigest, rebuildCount,
+                               skippedCount, skipNoMeshHandle, skipNoMeshEntry, skipNoMatGuid, skipNoMatFound,
+                               skipNoPipeline, pendingMaterialLoad, pendingSentinelIndex, result.PrepareMs,
+                               result.ApplyMs, m_AllowPrevSettle);
+    }
+
+    // A slot handed to a new tenant may still hold a previous tenant's records
+    // when that tenant's release came after the last run; clear before keying.
+    if (m_SlotTracked.size() < scene.GetInstances().size())
+    {
+        m_SlotTracked.resize(scene.GetInstances().size(), 0u);
+        m_SlotDigest.resize(scene.GetInstances().size(), 0u);
+    }
+    uint32 slotless = 0;
+    for (const WorldRenderableRecord& rec : m_DeltaRecords)
+    {
+        const uint32 slot = rec.meshGpu->instanceIndex;
+        const uint64 term = RecordDigestTerm(rec);
+        m_CachedMeshDigest += term;
+        if (slot < m_SlotTracked.size())
+        {
+            m_EraseSlots.push_back(slot);
+            m_SlotTracked[slot] = 1u;
+            m_SlotDigest[slot] = term;
+            ++m_TrackedSlots;
+        }
+        else
+        {
+            ++slotless;
+        }
+    }
+    // One order-keeping pass over the retained records for every slot this
+    // frame freed or re-prepared, then this frame's records after them.
+    m_Submissions.Erase(m_EraseSlots);
+    for (const WorldSubmissionRecord& record : m_LaneSubmissions)
+        m_Submissions.Append(record);
+
+    m_ReleaseCursor = scene.GetReleasedSlotCount();
+    result.Prepared = static_cast<uint32>(m_DeltaRecords.size());
+    result.Rebuilt = rebuildCount;
+    result.Skipped = skippedCount;
+    assert(renderables == static_cast<std::size_t>(m_TrackedSlots) + slotless &&
+           "a delta record ended neither tracked nor slotless");
+
+    m_TrackedSlotless = slotless;
+    // Slotless records this pass left pending pin the next frame to the full
+    // lane (E8), exactly as a full pass would.
+    m_LastPendingMeshEntry = skipNoMeshEntry;
+    m_LastPendingMaterialLoad = pendingMaterialLoad;
+    m_LastPendingPipeline = skipNoPipeline;
+    m_LastPendingSentinelIndex = pendingSentinelIndex;
+    m_LastPendingTransient = skipNoMeshEntry + pendingMaterialLoad + skipNoPipeline + pendingSentinelIndex;
+    m_FullPassStructuralVersion = m_FrameStructuralVersion;
+    result.Applied = true;
+    return result;
 }
 
 void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
@@ -2250,10 +2520,9 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
         return;
 
     const uint64 worldId = world.GetWorldId();
-    ExtractPostProcessVolumes(world, worldId, rs);
-    for (const auto& hooks : Rendering::PostProcessEffectRegistry::AllViewPreparations())
-        if (hooks.AfterWorldExtraction)
-            hooks.AfterWorldExtraction(*rs, worldId);
+    // The host declares its game view after extraction, so the camera's pause reaches the view here,
+    // before the view fingerprints and the submissions read it.
+    ApplyActiveCameraWorldPause(rs->Views(), world);
 
     // prevTransform settle discipline: the LastPrevDiffers settle rebuild may
     // fire only on the FIRST extraction run of a feed swap window — a
@@ -2310,9 +2579,9 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
     }
     uint32_t escalationReasons = 0;
     bool fastFrame = false;
+    m_DeltaPreparedIds.clear();
     uint32_t feedPatchedCount = 0;
     uint32_t subsetRefreshedCount = 0;
-    bool rigidCasterRefreshed = false;
     // L1b: fresh caster-change attribution each frame (the published set explains
     // exactly this frame's caster content-version bump, if one happens). A frame
     // that ends without overflow closes the log episode, so a persistent crowd
@@ -2333,38 +2602,15 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
     // before any system runs, so all extraction systems (terrain, render,
     // particles) start from a clean slate.
 
-    // Clear cached GPUScene instances for disabled renderers in place. Removing
-    // rows from the free-list leaves holes below GetInstanceCount(), so the
-    // slot-scanning culling / draw-command passes must see an explicit
-    // tombstone. If the MeshRenderer component itself is gone, release the slot.
-    // Fast frames skip CLEANUP entirely: disable/removal transitions are
-    // E4/E5 triggers, so tombstoning happens on the escalated frame (Q3) —
-    // and the O(N) MeshGPUData cleanup scan stays off fast frames.
-    if (!fastFrame)
-    {
-        // The one extraction query that must still see what the gather no
-        // longer does: a row the gather skips keeps its GPU slot, and this pass
-        // is what tombstones it.
-        world.Query<
-                 GameEngine::ECS::Write<GameEngine::Components::MeshGPUData>,
-                 GameEngine::ECS::Optional<GameEngine::Components::MeshRenderer>,
-                 GameEngine::ECS::Optional<GameEngine::ECS::Disabled>,
-                 GameEngine::ECS::Optional<GameEngine::ECS::DisabledInHierarchy>,
-                 GameEngine::ECS::Optional<
-                     GameEngine::ECS::ComponentDisabled<GameEngine::Components::MeshRenderer>>>()
-            .IncludeDisabled()
-            .Each([&](GameEngine::ECS::Writable<GameEngine::Components::MeshGPUData> meshGpu,
-                      const GameEngine::Components::MeshRenderer* mr,
-                      const GameEngine::ECS::Disabled* disabled,
-                      const GameEngine::ECS::DisabledInHierarchy* inactive,
-                      const GameEngine::ECS::ComponentDisabled<
-                          GameEngine::Components::MeshRenderer>* rendererOff)
-                  {
-                      if (!mr)
-                          ReleaseMeshGpuInstance(*scene, meshGpu.Mutable());
-                      else if (disabled || inactive || rendererOff)
-                          ClearMeshGpuInstance(*scene, meshGpu.Mutable()); });
-    }
+    bool deltaFrame = !fastFrame && IsStructuralDeltaEligible(escalationReasons);
+    StructuralDeltaResult delta;
+
+    // Fast and delta frames skip CLEANUP: disable/removal transitions are E4/E5
+    // triggers the fast lane escalates on and the delta lane's count check
+    // sends to the full lane, so tombstoning happens on the full-lane frame
+    // (Q3) — and the O(N) Write<MeshGPUData> grant stops stamping idle chunks.
+    if (!fastFrame && !deltaFrame)
+        ReleaseUngatheredInstances(world, *scene);
 
     // Extract lights (CPU-side) for future Forward+/Deferred lighting passes.
     // Today this is used for diagnostics and to establish a stable data path.
@@ -2397,7 +2643,7 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                       out.fogContribution = std::max(light.FogContribution, 0.0f);
                       out.fogDensityBoost = std::max(light.FogDensityBoost, 0.0f);
                       out.fogAnisotropy = std::clamp(light.FogAnisotropy, -0.95f, 0.95f);
-                      out.fogOriginFade = std::clamp(light.FogOriginFade, 0.0f, 1.0f);
+                      out.fogOriginFade = Math::Clamp01(light.FogOriginFade);
                       out.castsLight = light.CastsLight ? 1u : 0u;
                       out.castsShadows = light.CastsShadows ? 1u : 0u;
                       out.cascadeCount = light.CascadeCount;
@@ -2407,24 +2653,12 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                           static_cast<uint32_t>(light.ShadowResolutionTier);
                       out.shadowAngularDiameter = std::max(light.ShadowAngularDiameter, 0.0f);
 
-                      // WorldTransform matrix is stored column-major; translation is the last column.
-                      out.positionWS[0] = xf.matrix[12];
-                      out.positionWS[1] = xf.matrix[13];
-                      out.positionWS[2] = xf.matrix[14];
+                      out.positionWS = xf.GetPosition();
 
                       // Shine along entity forward (+Z column). Matches cameras and Unity.
-                      out.directionWS[0] = xf.matrix[8];
-                      out.directionWS[1] = xf.matrix[9];
-                      out.directionWS[2] = xf.matrix[10];
-                      Normalize3(out.directionWS[0], out.directionWS[1], out.directionWS[2]);
-                      out.rightWS[0] = xf.matrix[0];
-                      out.rightWS[1] = xf.matrix[1];
-                      out.rightWS[2] = xf.matrix[2];
-                      Normalize3(out.rightWS[0], out.rightWS[1], out.rightWS[2]);
-                      out.upWS[0] = xf.matrix[4];
-                      out.upWS[1] = xf.matrix[5];
-                      out.upWS[2] = xf.matrix[6];
-                      Normalize3(out.upWS[0], out.upWS[1], out.upWS[2]);
+                      StoreLightAxis(Mathematics::Vector3(xf.Basis[2]), out.directionWS);
+                      StoreLightAxis(Mathematics::Vector3(xf.Basis[0]), out.rightWS);
+                      StoreLightAxis(Mathematics::Vector3(xf.Basis[1]), out.upWS);
 
                       rs->SubmitLight(worldId, out);
                       ++lightCount; });
@@ -2433,6 +2667,10 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
 
     if (rs)
         rs->SetWorldWeatherWind(worldId, WindVolumeResolver::ExtractForGpu(world));
+    ExtractPostProcessVolumes(world, worldId, rs);
+    for (const auto& hooks : Rendering::PostProcessEffectRegistry::AllViewPreparations())
+        if (hooks.AfterWorldExtraction)
+            hooks.AfterWorldExtraction(*rs, worldId);
     m_Particles.Extract(world, worldId, rs, deltaTime);
     // Single source of truth: order the world's lights strongest-first after
     // every SubmitLight, the particle lights included, and before any consumer
@@ -2459,7 +2697,10 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                 if (view.worldId != 0 && view.worldId != worldId)
                     continue;
                 matchingViews.push_back(&view);
-                if (view.ActiveRenderLayerMask() != 0u)
+                // Every participating view is extracted this frame, one on no layer included: its
+                // image (clear and sky) is current, so its controller presents it instead of the
+                // last one.
+                if (view.Participates())
                     rs->Views().MarkViewExtracted(view.id, sceneFrameIndex);
             }
             rs->Views().MarkWorldExtracted(worldId, sceneFrameIndex);
@@ -2491,46 +2732,76 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
             // renderable still registers as a change. Visibility toggles count
             // as membership by design (a hidden object should leave probe
             // captures); transforms and transient particles are excluded.
-            uint64 contentDigest = Hashing::kFnv1a64OffsetBasis;
+            constexpr uint64 kFnvOffsetBasis = 14695981039346656037ull;
+            uint64 contentDigest = kFnvOffsetBasis;
 
-            if (fastFrame)
+            if (deltaFrame)
             {
-                // FAST PATH (fusion S2b): no CLEANUP, no gather, no record
-                // store — an O(dirty) patch from the Last* caches + fresh
-                // WorldTransform reads, an O(subset) re-prepare for the
-                // always-refresh archetypes, and a verbatim replay of the
-                // last full pass's submissions and mesh digest. Every input
-                // that could invalidate the replay escalated at Update entry.
+                delta = RunStructuralDelta(world, *scene, *rs, worldId, matchingViews, meshReg, matReg,
+                                           IsExtractionDiagEnabled());
+                if (delta.Applied)
+                {
+                    prepareMs = delta.PrepareMs;
+                    applyMs = delta.ApplyMs;
+                    rebuildCount = delta.Rebuilt;
+                    skippedCount = delta.Skipped;
+                }
+                else
+                {
+                    // Nothing it could not account for is left half-done: the
+                    // full lane rebuilds every cache it edited.
+                    deltaFrame = false;
+                    ReleaseUngatheredInstances(world, *scene);
+                }
+            }
+
+            if (fastFrame || deltaFrame)
+            {
+                // FAST PATH (fusion S2b), also the rest of a structural delta
+                // frame: no CLEANUP, no gather, no record store. An O(dirty)
+                // patch from the Last* caches + fresh WorldTransform reads, an
+                // O(subset) re-prepare for the always-refresh archetypes (both
+                // skip what the delta lane re-prepared this run), and a replay
+                // of the retained submission set and mesh digest. On a fast
+                // frame every input that could invalidate the replay escalated
+                // at Update entry; on a delta frame the delta lane re-prepared
+                // the renderables whose inputs changed and dropped the freed
+                // slots' records.
                 const auto processStart = ExtractionClock::now();
                 feedPatchedCount = PatchDirtyInstances(world, *scene);
                 subsetRefreshedCount =
-                    RefreshAlwaysRefreshSubset(world, *scene, meshReg, matReg, worldId, rigidCasterRefreshed);
+                    RefreshAlwaysRefreshSubset(world, *scene, meshReg, matReg, worldId);
                 processMs = elapsedMs(processStart, ExtractionClock::now());
 
                 // Counters describe the last full pass on fast frames (D8).
                 recordCountOut = static_cast<uint32_t>(m_Records.size());
-                submissionCountOut = static_cast<uint32_t>(m_Submissions.size());
+                submissionCountOut = static_cast<uint32_t>(m_Submissions.Size());
+                // This world freed no slot since the last run (a release is a
+                // structural change), so the entries are other worlds'.
+                if (fastFrame)
+                    m_ReleaseCursor = scene->GetReleasedSlotCount();
 
-                // Replay: cached submissions are valid because none of their
-                // inputs can have changed on a fast frame (E4/E5/E7/E9 guard
-                // them; instance allocation/release happens only on full-lane
-                // frames). Order is the full lane's deterministic order. The
-                // zero-matching-views transition escalates via E9 and the
+                // Replay: the retained submissions are valid because their
+                // inputs changed only where a lane re-prepared them: none on a
+                // fast frame (E4/E5/E7/E9 guard them), and on a delta frame
+                // the delta lane re-prepared every renderable in a changed
+                // chunk and dropped the records of the slots GPUScene freed.
+                // Order: the last full lane's record order, edited by delta
+                // frames (see KeyedWorldSubmissions). The zero-matching-views transition escalates via E9 and the
                 // full lane rebuilds the cache (empty), so the replay can't
                 // run outside its validity domain (correctness A9); the
                 // views-empty state never reaches here (outer gate mirrors
                 // the full lane's).
-                if (!m_Submissions.empty())
+                if (m_Submissions.Size() != 0)
                 {
                     const auto submitStart = ExtractionClock::now();
-                    std::span<const WorldSubmissionRecord> batch(m_Submissions.data(),
-                                                                 m_Submissions.size());
-                    rs->SubmitWorldSubmissions(batch);
+                    rs->SubmitWorldSubmissions(m_Submissions.Records(), m_Submissions.Revision());
                     submitMs = elapsedMs(submitStart, ExtractionClock::now());
                 }
 
-                // Mesh-membership digest replays from the cache; the
-                // particle term is per-frame and re-added below on both lanes.
+                // Mesh-membership digest replays from the cache; the ocean
+                // term is genuinely per-frame and re-added below on both
+                // lanes.
                 contentDigest = m_CachedMeshDigest;
 
 #if GE_DEBUG_INSTRUMENTATION
@@ -2578,77 +2849,15 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
             else
             {
             m_Records.clear();
-            m_Submissions.clear();
+            m_LaneSubmissions.clear();
             auto& records = m_Records;
-            auto& submissions = m_Submissions;
+            auto& submissions = m_LaneSubmissions;
+            uint32 hlodSkipped = 0;
 
+            uint32_t pendingUnresolvedTransform = 0;
             const auto gatherStart = ExtractionClock::now();
-            const bool hasSorting = world.Query<ECS::Read<Components::RenderSorting>>().Count() != 0;
-            bool hasSortingGroups = false;
-            if (hasSorting)
-                world.Query<ECS::Read<Components::RenderSorting>>().Each(
-                    [&](const Components::RenderSorting& sorting) { hasSortingGroups |= sorting.GroupChildren; });
-            world.Query<
-                     GameEngine::ECS::Read<GameEngine::Components::WorldTransform>,
-                     GameEngine::ECS::Read<GameEngine::Components::MeshRenderer>,
-                     GameEngine::ECS::Optional<GameEngine::Components::LocalBounds>,
-                     GameEngine::ECS::Optional<GameEngine::Components::WorldSectorCoord>,
-                     GameEngine::ECS::Optional<GameEngine::Components::SkinnedMeshRenderer>,
-                     GameEngine::ECS::Optional<GameEngine::Components::SkeletonRef>,
-                     GameEngine::ECS::Optional<GameEngine::Components::AnimatorRef>,
-                     GameEngine::ECS::Optional<GameEngine::Components::LODGroup>,
-                     GameEngine::ECS::Optional<GameEngine::Components::MeshGPUData>,
-                     GameEngine::ECS::Optional<GameEngine::Components::GIEmitter>>()
-                .Each([&](GameEngine::ECS::EntityHandle e,
-                          const GameEngine::Components::WorldTransform& xf,
-                          const GameEngine::Components::MeshRenderer& mr,
-                          const GameEngine::Components::LocalBounds* wb,
-                          const GameEngine::Components::WorldSectorCoord* sc,
-                          const GameEngine::Components::SkinnedMeshRenderer* smr,
-                          const GameEngine::Components::SkeletonRef* skelRef,
-                          const GameEngine::Components::AnimatorRef* anim,
-                          const GameEngine::Components::LODGroup* lodGroup,
-                          GameEngine::Components::MeshGPUData* meshGpu,
-                          const GameEngine::Components::GIEmitter* giEmitter)
-                      {
-                          // HLOD residency suppression: a member whose cluster is
-                          // proxy-active (or an inactive proxy entity) has had its
-                          // GPUScene slot freed by the HLODSelectSystem. Skip it so
-                          // it is not re-added to any view (color or shadow) while
-                          // suppressed. Clearing hlodEvicted (proxy-exit) lets the
-                          // next full lane re-add it via Op::Add. C6: eviction never
-                          // touches mr.enabled / ECS::Disabled, so picking + outline
-                          // + undo keep working off the still-live entity.
-                          if (meshGpu && meshGpu->hlodEvicted)
-                              return;
-                          WorldRenderableRecord rec{};
-                          rec.entity = e;
-                          rec.worldTransform = xf;
-                          rec.meshRenderer = mr;
-                          rec.Sorting.Layer = m_SortingLayers.Priority(0);
-                          if (hasSorting)
-                              rec.Sorting = ResolveRenderSorting(world, e, m_SortingLayers, hasSortingGroups);
-                          rec.giEmitter = giEmitter != nullptr;
-                          rec.meshGpu = meshGpu;
-                          if (wb)
-                          {
-                              rec.hasBounds = true;
-                              rec.bounds = *wb;
-                          }
-                          if (sc)
-                          {
-                              rec.hasSectorCoord = true;
-                              rec.sectorCoord    = *sc;
-                          }
-                          if (smr && smr->skeletonId != 0)
-                              rec.skeletonId = smr->skeletonId;
-                          if (skelRef && skelRef->runtimeId != 0)
-                              rec.runtimeId = skelRef->runtimeId;
-                          if (anim && anim->ClipIndex != 0)
-                              rec.hasClipAnimation = true;
-                          if (lodGroup)
-                              rec.lodBias = lodGroup->Bias;
-                          records.push_back(rec); });
+            auto renderables = RenderableQuery(world);
+            AppendRenderableRecords(renderables, records, hlodSkipped, pendingUnresolvedTransform, world, m_SortingLayers);
             gatherMs = elapsedMs(gatherStart, ExtractionClock::now());
             recordCountOut = static_cast<uint32_t>(records.size());
 
@@ -2732,29 +2941,33 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                 }
             }
 
+            RebuildKeyedRenderableState(*scene, hlodSkipped);
+
             // Fast-path cache re-prime. The full lane is the sole repair
             // path: everything the fast frames patch against or replay is
             // rebuilt here, unconditionally, whatever the escalation reason.
             if (m_FeedFastPath)
             {
-                // Mesh-only digest (the per-frame particle term is re-added
-                // on both lanes below, before the publish).
+                // Mesh-only digest (the per-frame ocean term is re-added on
+                // both lanes below, before the publish).
                 m_CachedMeshDigest = contentDigest;
                 RebuildAlwaysRefreshSubset(world);
                 m_LastPendingMeshEntry = skipNoMeshEntry;
                 m_LastPendingMaterialLoad = pendingMaterialLoad;
                 m_LastPendingPipeline = skipNoPipeline;
                 m_LastPendingSentinelIndex = pendingSentinelIndex;
+                m_LastPendingUnresolvedTransform = pendingUnresolvedTransform;
                 m_LastPendingTransient = skipNoMeshEntry + pendingMaterialLoad +
-                                         skipNoPipeline + pendingSentinelIndex;
+                                         skipNoPipeline + pendingSentinelIndex +
+                                         pendingUnresolvedTransform;
                 m_LastMaterialDigest = m_FrameMaterialDigest;
                 m_LastViewFingerprint = m_FrameViewFingerprints.All;
                 m_LastPersistentViewFingerprint = m_FrameViewFingerprints.Persistent;
-                // E4 compare value sampled at full-lane END, post-apply — NOT
-                // at entry: this lane's apply creates MeshGPUData
-                // components and would trip its own gate, buying a wasted
-                // second full frame after every creation burst (api-perf F7).
-                m_FullPassStructuralVersion = world.GetStructuralChangeVersion();
+                // E4 compare value: the version this frame entered with. The
+                // full lane makes no structural change (MeshGPUData exists from
+                // the entity's creation), so a structural change made beside it
+                // this frame still escalates the next one.
+                m_FullPassStructuralVersion = m_FrameStructuralVersion;
                 m_CachesPrimed = true;
                 m_CachesWorldId = worldId;
             }
@@ -2770,7 +2983,7 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                 // Arbitrary stable tag for "an ocean renderer".
                 constexpr uint64 kOceanContentTag = 0x0CEA0CEAull;
                 const uint64 oceanTerm =
-                    GameEngine::Rendering::HashUtils::HashValue(Hashing::kFnv1a64OffsetBasis, kOceanContentTag);
+                    GameEngine::Hashing::Fnv1a64Value(kFnvOffsetBasis, kOceanContentTag);
                 world.Query<GameEngine::ECS::Read<GameEngine::Components::OceanRenderer>>()
                     .Each([&](const GameEngine::Components::OceanRenderer&)
                           {
@@ -2831,8 +3044,7 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
             worldId,
             unattributed ? std::span<const ShadowCasterChangeSphere>{}
                          : std::span<const ShadowCasterChangeSphere>(m_ChangedCasterSpheres),
-            unattributed,
-            !fastFrame || feedPatchedCount > 0 || rigidCasterRefreshed);
+            unattributed ? ShadowCasterChangeScope::Unbounded : ShadowCasterChangeScope::Bounded);
     }
     // Idle-recompute-elision content version: the same lane verdict. The
     // animated-vertex term that also belongs here is raised by the batch-key
@@ -2890,11 +3102,14 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
         stats.WindowTicks = static_cast<uint32_t>(m_StatWindowCount);
         stats.EscalationReasonBits = escalationReasons;
         stats.FeedPatchedCount = feedPatchedCount;
+        stats.DeltaFrame = deltaFrame ? 1u : 0u;
+        stats.DeltaPreparedCount = delta.Prepared;
         stats.SubsetRefreshedCount = subsetRefreshedCount;
         stats.PendingMeshEntry = m_LastPendingMeshEntry;
         stats.PendingMaterialLoad = m_LastPendingMaterialLoad;
         stats.PendingPipeline = m_LastPendingPipeline;
         stats.PendingSentinelIndex = m_LastPendingSentinelIndex;
+        stats.PendingUnresolvedTransform = m_LastPendingUnresolvedTransform;
         const Particles::ParticleExtractionStats particles = m_Particles.Stats();
         stats.ParticleEmitterCount = particles.EmitterCount;
         stats.LiveParticles = particles.LiveParticles;

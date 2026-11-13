@@ -7,13 +7,15 @@
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/SortedTransparentCull.h"
 #include "Engine/Rendering/WorldDrawTypes.h"
-#include "Rendering/CameraDerivation.h"
+#include "Rendering/Camera/CameraDerivation.h"
 #include "Rendering/Common/Frustum.h"
 #include "Rendering/Core/GPUScene.h"
 
 #include "Logger/Logger.h"
+#include "Memory/ScratchScope.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -88,6 +90,7 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
     // peel predicate in recordEntityBatch and the extraction class bit exactly
     // (Risk 3) — all three use IsOrderDependentBlendMaterial. Candidate Key
     // indexes `pending`.
+    Memory::ScratchScope scratch;
     struct PendingRecord
     {
         uint32_t InstanceIndex;
@@ -97,8 +100,14 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
         RenderSortingData Sorting;
         ECS::EntityHandle Entity;
     };
-    std::vector<PendingRecord> pending;
-    std::vector<TransparentSphere> candidates;
+    // The cull runs in the frame of the view's render origin sector: the planes come from
+    // viewProjRel and each sector-local center is composed against the sector, as the GPU cull does.
+    const Rendering::CameraData cam = m_ViewRegistry.ResolveCameraData(viewId);
+    const Mathematics::Vector3Int originSector = CameraRenderOriginSector(cam);
+    std::pmr::vector<PendingRecord> pending{&scratch.Resource()};
+    std::pmr::vector<TransparentSphere> candidates{&scratch.Resource()};
+    pending.reserve(submissions.size());
+    candidates.reserve(submissions.size());
     for (const WorldSubmissionRecord& sub : submissions)
     {
         if (!sub.material || !IsOrderDependentBlendMaterial(*sub.material))
@@ -113,35 +122,23 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
             continue;
         const Rendering::GPUInstance& inst = instances[sub.instanceIndex];
         candidates.push_back({static_cast<uint32_t>(pending.size()),
-                              {inst.boundingCenter.x, inst.boundingCenter.y, inst.boundingCenter.z},
+                              Rendering::SectorLocalPointRelativeTo(inst.boundingCenter, inst.sectorPacked[0],
+                                                                    inst.sectorPacked[1], originSector),
                               inst.boundingRadius});
         pending.push_back({sub.instanceIndex, sub.material, sub.meshHandle, entry, sub.Sorting, sub.SortingOwner});
     }
     if (candidates.empty())
         return;
 
-    // Resolve the view frustum ONCE, in the SAME world space as GPUScene's
-    // boundingCenter, then cull camera-relative: the planes and centres are
-    // both rebased against the view's render origin — the EXACT arithmetic the
-    // GPU cull performs (RenderServicesGpuDriven fills ViewCullingContext the
-    // same way) — so sector-tagged (planetary) transparents cull correctly and
-    // an instance moving between the batched and sorted paths never flips its
-    // cull decision. Origin (0,0,0) makes every rebase a bit-for-bit no-op.
-    const Rendering::CameraData cam = m_ViewRegistry.ResolveCameraData(viewId);
-    const Rendering::CameraDerivedData camDerived = Rendering::DeriveCameraData(cam);
+    const Rendering::CameraDerivedData camDerived =
+        Rendering::DeriveCameraData(cam, m_ViewRegistry.ResolveCameraRanges(viewId));
     Vector4 frustumPlanes[6];
-    Rendering::ExtractFrustumPlanes(camDerived.ViewProjMatrix, frustumPlanes);
-    Rendering::Vector3 origin{0.0f, 0.0f, 0.0f};
-    {
-        const auto originSector =
-            ComputeRenderOriginSector(cam.cameraPos[0], cam.cameraPos[1], cam.cameraPos[2]);
-        SectorToWorld(originSector, origin.x, origin.y, origin.z);
-    }
+    Rendering::ExtractFrustumPlanes(cam.viewProjRel, frustumPlanes);
 
-    std::vector<TransparentCentroid> visible;
+    std::pmr::vector<TransparentCentroid> visible{&scratch.Resource()};
     visible.reserve(candidates.size());
     const uint32_t culledCount =
-        CullTransparentsToFrustum(candidates, frustumPlanes, origin, visible);
+        CullTransparentsToFrustum(candidates, frustumPlanes, visible);
     if (visible.empty())
         return; // everything off-screen; the batched path GPU-culls it identically
 
@@ -160,15 +157,15 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
     // Per-unique-material key cache (materials repeat heavily across records).
     std::vector<std::pair<const Material*, SortedTransparentRunMaterialKey>> matKeyCache;
 
-    std::pmr::monotonic_buffer_resource scratch;
-    std::pmr::vector<RenderSortKey> sortingKeys{&scratch};
-    std::pmr::vector<ECS::EntityHandle> sortingEntities{&scratch};
+
+    std::pmr::vector<RenderSortKey> sortingKeys{&scratch.Resource()};
+    std::pmr::vector<ECS::EntityHandle> sortingEntities{&scratch.Resource()};
     sortingKeys.reserve(visible.size());
     sortingEntities.reserve(visible.size());
     holder.Records.reserve(visible.size());
-    const Rendering::Vector3 camPos = camDerived.Position;
+    const Rendering::Vector3 camPos = CameraEyeRelativeToOrigin(cam);
     const Rendering::Vector3 camFwd = camDerived.Forward;
-    const float cameraPosition[]{camPos.x, camPos.y, camPos.z};
+    const Mathematics::WorldPosition cameraPosition = CameraEye(cam);
     const float cameraForward[]{camFwd.x, camFwd.y, camFwd.z};
     for (const TransparentCentroid& vis : visible)
     {
@@ -213,9 +210,9 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
             holder.Runs.push_back({p.Mat, p.Mesh});
         }
 
-        const float viewDepth = (vis.Center[0] - camPos.x) * camFwd.x +
-                                (vis.Center[1] - camPos.y) * camFwd.y +
-                                (vis.Center[2] - camPos.z) * camFwd.z;
+        const float viewDepth = (vis.Center.x - camPos.x) * camFwd.x +
+                                (vis.Center.y - camPos.y) * camFwd.y +
+                                (vis.Center.z - camPos.z) * camFwd.z;
         holder.Records.push_back({p.InstanceIndex, p.Entry->indexCount, p.Entry->firstIndex,
                                   static_cast<int32_t>(p.Entry->vertexOffset), group, viewDepth});
         sortingEntities.push_back(p.Entity);
@@ -223,8 +220,11 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
     }
 
     BuildTransparentComposition(holder.Records, sortingKeys, sortingEntities, contributors,
-                                scratch, holder.Partition, holder.CompositionMeshOrder,
+                                scratch.Resource(), holder.Partition, holder.CompositionMeshOrder,
                                 holder.CompositionSlots, m_Profile.IsCompat());
+    holder.CameraPos = camPos;
+    holder.CameraForward = camFwd;
+    holder.OriginSector = originSector;
     holder.Stats.Collected = static_cast<uint32_t>(candidates.size());
     holder.Stats.Culled = culledCount;
     holder.Stats.Records = static_cast<uint32_t>(holder.Records.size());
@@ -312,15 +312,14 @@ void RenderServices::AddSortedTransparentDrainForView(Rendering::RenderGraph::RG
         viewResources.ForwardSampledFor.IsFor(frame)
             ? std::span<const RenderGraph::RGTexture>(viewResources.ForwardSampledRG)
             : std::span<const RenderGraph::RGTexture>{};
-    std::pmr::monotonic_buffer_resource compositionScratch;
-    std::pmr::vector<ForwardBufferReadRG> contributorBuffers{&compositionScratch};
+    Memory::ScratchScope compositionScratch;
+    std::pmr::vector<ForwardBufferReadRG> contributorBuffers{&compositionScratch.Resource()};
     for (const auto& read : viewResources.ForwardSampledBufferRG)
         if (read.For.IsFor(frame))
             contributorBuffers.push_back({read.Buffer, read.Access});
     if (holder.Records.empty() && !contributors.empty())
     {
-        std::pmr::monotonic_buffer_resource scratch;
-        BuildTransparentComposition({}, {}, {}, contributors, scratch, holder.Partition,
+        BuildTransparentComposition({}, {}, {}, contributors, compositionScratch.Resource(), holder.Partition,
                                     holder.CompositionMeshOrder, holder.CompositionSlots, m_Profile.IsCompat());
         holder.Commands.clear();
         for (const auto& slot : holder.CompositionSlots)

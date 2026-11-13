@@ -60,9 +60,9 @@ inline Rendering::GPUDrawStreamBuilder::ViewLODParams MakePointFaceLodParams(
     const PointShadowLodKey& knobs)
 {
     Rendering::GPUDrawStreamBuilder::ViewLODParams p{};
-    p.cameraPos[0] = lightPositionWS.x;
-    p.cameraPos[1] = lightPositionWS.y;
-    p.cameraPos[2] = lightPositionWS.z;
+    p.cameraPos.x = lightPositionWS.x;
+    p.cameraPos.y = lightPositionWS.y;
+    p.cameraPos.z = lightPositionWS.z;
     p.projScaleY = kPointShadowFaceProjScaleY;
     p.lodBiasGlobal = knobs.Bias;
     p.forceLod = knobs.ForceLevel;

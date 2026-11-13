@@ -132,3 +132,12 @@ TEST(TileMapParallax, WorldLockedLayerIsUnmovedByQuantization)
     EXPECT_FLOAT_EQ(offset.X, 0.0f);
     EXPECT_FLOAT_EQ(offset.Y, 0.0f);
 }
+
+TEST(TileMapParallax, LargeCameraKeepsSmallContinuousSlide)
+{
+    constexpr double kCamera = 1.0e8 + 0.125;
+    const auto first = ComputeParallaxOffset(kCamera, 0.0, 0.5f, 1.0f, 0.0f, 0.0f);
+    const auto next = ComputeParallaxOffset(kCamera + 0.25, 0.0, 0.5f, 1.0f, 0.0f, 0.0f);
+    EXPECT_DOUBLE_EQ(first.X, kCamera * 0.5);
+    EXPECT_DOUBLE_EQ(next.X - first.X, 0.125);
+}

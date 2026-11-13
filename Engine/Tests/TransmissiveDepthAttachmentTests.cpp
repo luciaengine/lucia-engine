@@ -10,13 +10,15 @@
 #include "Engine/Rendering/WorldDrawTypes.h"
 #include "AssetCore/GUID.h"
 #include "Assets/ModelAsset.h" // Mesh + Vertex for the registry submesh
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Materials/ShaderVariantKey.h"
+#include "Rendering/Materials/Shader/ShaderVariantKey.h"
 
 #include "RGPassQuery.h"
 #include "TestDeviceHelper.h"
+#include "SharedHeadlessDevice.h"
+#include "TestCameraEye.h"
 
 #include <vector>
 
@@ -166,18 +168,15 @@ PassDepthDecl DeclareTransmissiveWorld(Rendering::IDevice* device, uint32_t samp
 
     const CameraId camId = rs.Views().AllocateCamera("TransCam");
     CameraData cd{};
-    for (int i = 0; i < 16; i += 5)
-    {
-        cd.view[i] = 1.0f;
-        cd.proj[i] = 1.0f;
-        cd.viewProj[i] = 1.0f;
-    }
-    rs.Views().SetCameraData(camId, cd);
+    cd.view = Mathematics::Matrix4x4::Identity();
+    cd.proj = Mathematics::Matrix4x4::Identity();
+    cd.viewProj = Mathematics::Matrix4x4::Identity();
+    rs.Views().SetCameraData(camId, ::GameEngine::Tests::TestCameraWithEye(cd), {0.1f, 1000.0f});
     const ViewId viewId = rs.Views().AllocateView("TransView", camId);
-    rs.Views().SetViewRenderLayerMask(viewId, 1u);
+    rs.Views().SetViewRenderLayerMask(viewId, RenderLayerMask::Default());
     Rendering::ViewClearConfig clear{};
     clear.clearColor = true;
-    clear.clearColorValue[3] = 1.0f;
+    clear.clearColorValue.a = 1.0f;
     clear.clearDepth = true;
     clear.clearDepthValue = 0.0f; // reverse-Z far
     rs.Views().SetViewTargets(viewId, 0, 0, 0, clear);
@@ -246,7 +245,7 @@ PassDepthDecl DeclareTransmissiveWorld(Rendering::IDevice* device, uint32_t samp
     rec.viewId = viewId;
     rec.meshHandle = mesh;
     rec.material = &glass;
-    rec.renderLayerMask = 1u;
+    rec.renderLayerMask = RenderLayerMask::Default();
     rs.SubmitWorldSubmissions(std::span<const WorldSubmissionRecord>(&rec, 1u));
     rs.BuildWorldBatchKeys();
 
@@ -291,18 +290,15 @@ PassDepthDecl DeclareLateTransparentWorld(Rendering::IDevice* device, uint32_t s
 
     const CameraId camId = rs.Views().AllocateCamera("LateCam");
     CameraData cd{};
-    for (int i = 0; i < 16; i += 5)
-    {
-        cd.view[i] = 1.0f;
-        cd.proj[i] = 1.0f;
-        cd.viewProj[i] = 1.0f;
-    }
-    rs.Views().SetCameraData(camId, cd);
+    cd.view = Mathematics::Matrix4x4::Identity();
+    cd.proj = Mathematics::Matrix4x4::Identity();
+    cd.viewProj = Mathematics::Matrix4x4::Identity();
+    rs.Views().SetCameraData(camId, ::GameEngine::Tests::TestCameraWithEye(cd), {0.1f, 1000.0f});
     const ViewId viewId = rs.Views().AllocateView("LateView", camId);
-    rs.Views().SetViewRenderLayerMask(viewId, 1u);
+    rs.Views().SetViewRenderLayerMask(viewId, RenderLayerMask::Default());
     Rendering::ViewClearConfig clear{};
     clear.clearColor = true;
-    clear.clearColorValue[3] = 1.0f;
+    clear.clearColorValue.a = 1.0f;
     clear.clearDepth = true;
     clear.clearDepthValue = 0.0f; // reverse-Z far
     rs.Views().SetViewTargets(viewId, 0, 0, 0, clear);
@@ -378,7 +374,7 @@ PassDepthDecl DeclareLateTransparentWorld(Rendering::IDevice* device, uint32_t s
     rec.viewId = viewId;
     rec.meshHandle = mesh;
     rec.material = &opaque;
-    rec.renderLayerMask = 1u;
+    rec.renderLayerMask = RenderLayerMask::Default();
     rs.SubmitWorldSubmissions(std::span<const WorldSubmissionRecord>(&rec, 1u));
     rs.BuildWorldBatchKeys();
 
@@ -440,6 +436,142 @@ PassDepthDecl DeclareLateTransparentWorld(Rendering::IDevice* device, uint32_t s
     frame.Execute();
     device->WaitForIdle();
 
+    rs.Shutdown();
+    return out;
+}
+
+// What the glass pass declared for the screen-space reflection slices the world pass wrote.
+struct ReflectionSliceDecl
+{
+    bool PassDeclared = false;  // positive control: the glass pass ran at all
+    bool SlicesWritten = false; // the world pass published the three slices as written
+    uint32_t SlicesAttached = 0;
+    bool LoadedAndStored = true;
+    bool AtTheWorldLocations = true;
+};
+
+/// WorldRender + TransmissiveRender over one single-sample view holding a transmissive batch, with
+/// screen-space reflections active or not for the view.
+ReflectionSliceDecl DeclareGlassUnderReflections(Rendering::IDevice* device, bool reflectionsActive)
+{
+    ReflectionSliceDecl out{};
+    RenderServices rs;
+    if (!rs.Initialize(device))
+        return out;
+
+    const CameraId camId = rs.Views().AllocateCamera("GlassReflectCam");
+    CameraData cd{};
+    cd.view = Mathematics::Matrix4x4::Identity();
+    cd.proj = Mathematics::Matrix4x4::Identity();
+    cd.viewProj = Mathematics::Matrix4x4::Identity();
+    rs.Views().SetCameraData(camId, ::GameEngine::Tests::TestCameraWithEye(cd), {0.1f, 1000.0f});
+    const ViewId viewId = rs.Views().AllocateView("GlassReflectView", camId);
+    rs.Views().SetViewRenderLayerMask(viewId, GameEngine::Rendering::RenderLayerMask::Default());
+    Rendering::ViewClearConfig clear{};
+    clear.clearColor = true;
+    clear.clearDepth = true;
+    rs.Views().SetViewTargets(viewId, 0, 0, 0, clear);
+    PostProcessSettings pp{};
+    pp.SSSRIntensity = reflectionsActive ? 1.0f : 0.0f;
+    rs.Views().SetViewPostProcessOverride(viewId, pp);
+
+    RenderPipelineNodeRegistry registry;
+    if (!registry.Register("WorldRender", [] { return std::make_unique<Nodes::WorldRenderNode>(); },
+                           true)
+        || !registry.Register("TransmissiveRender",
+                              [] { return std::make_unique<Nodes::TransmissivePassNode>(); }, true))
+    {
+        rs.Shutdown();
+        return out;
+    }
+    RenderPipelineBlueprint bp;
+    bp.pipelineName = "GlassReflectTest";
+    {
+        RenderPipelineBlueprint::Pass p;
+        p.id = "World";
+        p.type = "WorldRender";
+        p.enabled = true;
+        p.perView = true;
+        p.passJson = R"({"id":"World","type":"WorldRender"})";
+        bp.passes.push_back(p);
+    }
+    {
+        RenderPipelineBlueprint::Pass p;
+        p.id = "Transmissive";
+        p.type = "TransmissiveRender";
+        p.enabled = true;
+        p.perView = true;
+        p.passJson = R"({"id":"Transmissive","type":"TransmissiveRender","draws":["glass"]})";
+        bp.passes.push_back(p);
+    }
+    bp.outputs.push_back({"FinalColor", "View.Resolve"});
+    RenderPipelineInstance instance(rs, registry);
+    instance.SetBlueprint(bp);
+
+    Material glass = Material::TestFactory::Create(GUID::Generate(), "GlassMat", 32u);
+    Material::TestFactory::SetGraphicsPipelineId(glass, Rendering::GraphicsPipelineId{1u});
+    Material::TestFactory::SetGpuSceneMaterialIndex(glass, 1u);
+    {
+        Rendering::ShaderVariantKey key{};
+        key.materialKeywords |= Rendering::MaterialKeyword::Transmission;
+        Material::TestFactory::SetVariantKey(glass, key);
+    }
+
+    FramePools pools(device);
+    RenderGraph::RGFrame frame(device, &pools.Persistent, &pools.Transient, &pools.Ring);
+    frame.BeginFrame(0);
+    RenderGraph::RGTexture color = frame.ImportPersistentTexture("GR.Color", ColorTargetDesc(1u));
+    RenderGraph::RGTexture depth = frame.ImportPersistentTexture("GR.Depth", DepthTargetDesc(1u));
+
+    const Rendering::MeshGPUHandle mesh = RegisterTestMesh(rs);
+    rs.BeginWorldDrawFrame();
+    WorldSubmissionRecord rec{};
+    rec.viewId = viewId;
+    rec.meshHandle = mesh;
+    rec.material = &glass;
+    rec.renderLayerMask = GameEngine::Rendering::RenderLayerMask::Default();
+    rs.SubmitWorldSubmissions(std::span<const WorldSubmissionRecord>(&rec, 1u));
+    rs.BuildWorldBatchKeys();
+
+    const std::vector<ViewTargetsRG> targets = {ViewTargetsRG{viewId, color, depth, {}}};
+    const std::vector<Rendering::ViewDesc> views(rs.Views().GetViews().begin(),
+                                                 rs.Views().GetViews().end());
+    instance.Declare(frame, targets, views);
+
+    const auto passes = GameEngine::Testing::RGQuery::DeclaredIds(
+        frame.Graph(), Subtree{"TransmissiveRenderEntities"});
+    out.PassDeclared = passes.size() == 1u;
+    // The world pass's slice locations (ReflectionsProvider): normal 1, weight 2, radiance 3.
+    const std::pair<const char*, uint32_t> slices[] = {{"View.NormalRoughness.Written", 1u},
+                                                       {"View.SSRSpecularWeight.Written", 2u},
+                                                       {"View.SSRSpecularRadiance.Written", 3u}};
+    const auto* resources = instance.FrameResourcesFor(&frame);
+    out.SlicesWritten = resources != nullptr;
+    for (const auto& [name, location] : slices)
+    {
+        RenderGraph::RGTexture slice{};
+        if (resources)
+            if (const auto it = resources->Textures.find({viewId, name}); it != resources->Textures.end())
+                slice = it->second;
+        if (!slice.IsValid())
+        {
+            out.SlicesWritten = false;
+            continue;
+        }
+        for (const auto& att : frame.Attachments())
+        {
+            if (!out.PassDeclared || att.Pass != passes.front() || att.IsDepth || att.Tex != slice.Id)
+                continue;
+            ++out.SlicesAttached;
+            out.LoadedAndStored &= att.Ops.Load == RenderGraph::RGLoadOp::Load &&
+                                   att.Ops.Store == RenderGraph::RGStoreOp::Store;
+            out.AtTheWorldLocations &= att.Slot == location;
+        }
+    }
+
+    frame.MarkOutput(color);
+    frame.Execute();
+    device->WaitForIdle();
     rs.Shutdown();
     return out;
 }

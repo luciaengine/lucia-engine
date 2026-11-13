@@ -2,15 +2,23 @@
 
 // A paged height field for the resolve's oracles: a page cache driven a frame at a time, its page
 // table and the cache texture's texels, filled from an analytic field. Shared by the CPU oracles
-// (TerrainPageResidencyTests) and the device parity test (TerrainPageResolveGpuTests).
+// (TerrainPageResidencyTests) and the device parity test (TerrainPageResolveGpuTests); the requests
+// of a flat paged tile and a flat paged planet, shared by the height pages' tests and the classify's
+// consume tests.
 
 #include "TerrainECS/PagedHeightSampler.h"
+#include "TerrainECS/Planet/PlanetPageRequester.h"
+#include "TerrainECS/TerrainPages.h"
 
+#include "PageStreaming/GeneratedHeightPageProvider.h"
 #include "PageStreaming/PageCache.h"
 #include "PageStreaming/PageStore/PageStoreFormat.h"
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
+#include <memory>
+#include <span>
 #include <vector>
 
 namespace GameEngine::TerrainECS::Test
@@ -41,20 +49,73 @@ inline std::vector<float32> PageSamples(const PageStreaming::PageStoreLevel& sha
     return samples;
 }
 
+// One flat tile of `samples` samples, one meter apart, all its pages pinned in 64 slots: 257 samples
+// make a pyramid of 3 x 3, 2 x 2 and 1 pages; 128 samples make one level-0 page.
+inline PagedTerrainRequest FlatTileRequest(uint32 samples)
+{
+    PageStreaming::GeneratedHeightLattice lattice;
+    lattice.Source = PageStreaming::GeneratedHeightSource::Flat;
+    lattice.TileWorldSize = static_cast<float32>(samples - 1u);
+    lattice.TileSamples = samples;
+    lattice.TilesX = 1;
+    lattice.TilesZ = 1;
+    PagedTerrainRequest request;
+    request.Terrain = 3;
+    request.TerrainGeneration = 7;
+    request.SourceIdentity = 11;
+    request.Source.Generated = std::make_shared<const PageStreaming::GeneratedHeightPageProvider>(lattice);
+    request.Shape.Level0TexelX = 1.0f;
+    request.Shape.Level0TexelZ = 1.0f;
+    request.Shape.SamplesX = samples;
+    request.Shape.SamplesZ = samples;
+    request.Shape.MaxHeight = 1.0f;
+    return request;
+}
+
+// Planet 7: a flat 2 km planet at 2 m (a dense six-face table), drawn by render terrain 3.
+inline PlanetPagedRequest FlatPlanetRequest(bool gpuPages)
+{
+    PageStreaming::GeneratedPlanetLattice lattice;
+    lattice.ReferenceRadius = 2000.0;
+    lattice.FaceSamples = PlanetFaceSamples(lattice.ReferenceRadius, 2.0f);
+    lattice.HeightRow = [](std::span<const Mathematics::Vector3>, float32, std::span<float32> outHeights) {
+        std::fill(outHeights.begin(), outHeights.end(), 0.0f);
+    };
+    lattice.HeightRange = [](const Mathematics::Vector3&, float32, float32) { return PageStreaming::PageHeightRange{}; };
+    PlanetPagedRequest request;
+    request.Planet = 7;
+    request.RenderTerrain = 3;
+    request.GpuPages = gpuPages;
+    request.SourceIdentity = 1;
+    request.Name = "planet";
+    request.Source.Generated = std::make_shared<const PageStreaming::GeneratedHeightPageProvider>(lattice);
+    request.Shape.ReferenceRadius = lattice.ReferenceRadius;
+    request.Shape.FaceSamples = lattice.FaceSamples;
+    return request;
+}
+
+// A budget every test field's dense table fits: one tier.
+inline constexpr PageTableBudget kDenseFieldTable{1ull << 40, 1u, 1u};
+
 // The cache, its page table and its texels, driven a frame at a time: one stream's field.
 struct PagedField
 {
     static constexpr uint32 kStream = 0;
 
+    using PageSamplesFunction =
+        std::function<std::vector<float32>(const PageStreaming::PageStoreLevel&, const PageStreaming::PageAddress&)>;
+
     PageStreaming::PageCache Cache;
     PageTable Table;
     PageCacheGeometry Geometry;
     std::vector<float32> Texels;
+    /// The stored samples of each page the cache uploads: the analytic field by default.
+    PageSamplesFunction Samples = PageSamples;
     uint64 Frame = 0;
     uint32 LastTableWrites = 0;
 
     explicit PagedField(uint32 slots, float32 fadeSeconds = 0.4f, uint32 samplesX = kFieldX, uint32 samplesZ = kFieldZ,
-                        PageTableBudget budget = {1ull << 21, 10u, 160u})
+                        const PageTableBudget& budget = kDenseFieldTable)
     {
         Cache.Configure(slots, 2, fadeSeconds);
         Table.Reset(samplesX, samplesZ, 1u, slots, budget);
@@ -73,7 +134,7 @@ struct PagedField
         for (const PageStreaming::PageUploadRequest& upload : Cache.Uploads())
         {
             const PageStreaming::PageAddress& address = upload.Page.Address;
-            const std::vector<float32> samples = PageSamples(Table.Levels()[address.Level], address);
+            const std::vector<float32> samples = Samples(Table.Levels()[address.Level], address);
             for (uint32 r = 0; r < PageStreaming::kPageStrideSamples; ++r)
                 for (uint32 c = 0; c < PageStreaming::kPageStrideSamples; ++c)
                     Texels[std::size_t(Geometry.TexelZ(upload.Slot, r)) * Geometry.CacheDim +

@@ -8,8 +8,8 @@
 
 #include <vector>
 
-#include "Picking/MeshPickingService.h"
-#include "Picking/TerrainPicking.h"
+#include "Scene/SceneRaycast.h"
+#include "Scene/TerrainPicking.h"
 
 #include "Components/Terrain/Terrain.h"
 #include "Components/Transform.h"
@@ -25,11 +25,11 @@ using GameEngine::ECS::World;
 using GameEngine::Mathematics::Ray3D;
 using GameEngine::Mathematics::Vector3;
 using GameEngine::TerrainECS::TerrainService;
-using GameEngine::Editor::Picking::PickableKind;
-using GameEngine::Editor::Picking::PickHit;
-using GameEngine::Editor::Picking::PickOptions;
-using GameEngine::Editor::Picking::RaycastScene;
-using GameEngine::Editor::Picking::RaycastSceneAll;
+using GameEngine::Scene::PickableKind;
+using GameEngine::Scene::PickHit;
+using GameEngine::Scene::PickOptions;
+using GameEngine::Scene::RaycastScene;
+using GameEngine::Scene::RaycastSceneAll;
 
 namespace Components = GameEngine::Components;
 

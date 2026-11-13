@@ -35,38 +35,38 @@ constexpr float32 kWakeBoxPaddingMeters = 2.0f;
 
 struct EntityPose
 {
-    Physics::Vector3 Position;
+    Mathematics::WorldPosition Position;
     Physics::Quaternion Rotation = Physics::Quaternion::Identity();
     Physics::Vector3 Scale{1.0f, 1.0f, 1.0f};
-    float32 Matrix[16]; // full column-major local-to-world, for offset points
+    Mathematics::Matrix3x3 Basis;
 };
 
 EntityPose PoseFromWorldTransform(const Components::WorldTransform& wt)
 {
     Components::Transform t;
-    for (int i = 0; i < 16; ++i)
-        t.matrix[i] = wt.matrix[i];
+    t.Position = wt.Position;
+    t.Basis = wt.Basis;
 
     EntityPose pose;
-    const auto pos = t.GetPosition();
     const auto rot = t.GetRotation();
     const auto scl = t.GetScale();
-    pose.Position = Physics::Vector3(pos.x, pos.y, pos.z);
+    pose.Position = wt.Position;
     {
         const auto& q = rot.GetGLM();
         pose.Rotation = Physics::Quaternion(q.w, q.x, q.y, q.z);
     }
     pose.Scale = Physics::Vector3(scl.x, scl.y, scl.z);
-    for (int i = 0; i < 16; ++i)
-        pose.Matrix[i] = wt.matrix[i];
+    pose.Basis = wt.Basis;
     return pose;
 }
 
-Physics::Vector3 TransformPoint(const float32* m, float32 x, float32 y, float32 z)
+Mathematics::WorldPosition TransformPoint(const EntityPose& pose, float64 x, float64 y, float64 z)
 {
-    return Physics::Vector3(m[0] * x + m[4] * y + m[8] * z + m[12],
-                            m[1] * x + m[5] * y + m[9] * z + m[13],
-                            m[2] * x + m[6] * y + m[10] * z + m[14]);
+    const float32* basis = pose.Basis.Data();
+    return Mathematics::WorldPosition{
+        pose.Position.X + Math::MulAdd(float64(basis[6]), z, Math::MulAdd(float64(basis[3]), y, float64(basis[0]) * x)),
+        pose.Position.Y + Math::MulAdd(float64(basis[7]), z, Math::MulAdd(float64(basis[4]), y, float64(basis[1]) * x)),
+        pose.Position.Z + Math::MulAdd(float64(basis[8]), z, Math::MulAdd(float64(basis[5]), y, float64(basis[2]) * x))};
 }
 
 bool NearlyEqual(const Physics::Vector3& a, const Physics::Vector3& b)
@@ -165,10 +165,10 @@ void TileMapCollisionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
         const float32 cellW = data.CellWidth;
         const float32 cellH = data.CellHeight;
         const float32 halfDepth = kColliderDepthInCellWidths * cellW * 0.5f;
-        const float32 x0 = static_cast<float32>(coord.X) * TileMap::kChunkSize * cellW;
-        const float32 y0 = static_cast<float32>(coord.Y) * TileMap::kChunkSize * cellH;
-        const float32 x1 = x0 + TileMap::kChunkSize * cellW;
-        const float32 y1 = y0 + TileMap::kChunkSize * cellH;
+        const float64 x0 = static_cast<float64>(coord.X) * TileMap::kChunkSize * cellW;
+        const float64 y0 = static_cast<float64>(coord.Y) * TileMap::kChunkSize * cellH;
+        const float64 x1 = x0 + TileMap::kChunkSize * cellW;
+        const float64 y1 = y0 + TileMap::kChunkSize * cellH;
 
         Physics::AABB box;
         box.min = Physics::Vector3(std::numeric_limits<float32>::max(),
@@ -177,11 +177,13 @@ void TileMapCollisionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
         box.max = Physics::Vector3(std::numeric_limits<float32>::lowest(),
                                    std::numeric_limits<float32>::lowest(),
                                    std::numeric_limits<float32>::lowest());
-        for (float32 lx : {x0, x1})
-            for (float32 ly : {y0, y1})
+        for (float64 lx : {x0, x1})
+            for (float64 ly : {y0, y1})
                 for (float32 lz : {zOffset - halfDepth, zOffset + halfDepth})
                 {
-                    const Physics::Vector3 world = TransformPoint(pose.Matrix, lx, ly, lz);
+                    // The wake query consumes an absolute float AABB.
+                    const Physics::Vector3 world =
+                        TransformPoint(pose, lx, ly, lz) - Mathematics::WorldPosition{};
                     box.min.x = std::min(box.min.x, world.x);
                     box.min.y = std::min(box.min.y, world.y);
                     box.min.z = std::min(box.min.z, world.z);
@@ -287,9 +289,9 @@ void TileMapCollisionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
             groupFor(outline.Mode, outline.Material).Compound.children.push_back(child);
         }
 
-        const Physics::Vector3 chunkOrigin = TransformPoint(
-            pose.Matrix, static_cast<float32>(coord.X) * TileMap::kChunkSize * cellW,
-            static_cast<float32>(coord.Y) * TileMap::kChunkSize * cellH, state.ZOffset);
+        const Mathematics::WorldPosition chunkOrigin = TransformPoint(
+            pose, static_cast<float64>(coord.X) * TileMap::kChunkSize * cellW,
+            static_cast<float64>(coord.Y) * TileMap::kChunkSize * cellH, state.ZOffset);
 
         size_t childCount = 0;
         for (SurfaceGroup& group : groups)
@@ -417,9 +419,9 @@ void TileMapCollisionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
                             const TileMap::ChunkCoord coord = TileMap::UnpackChunkCoord(packed);
                             Physics::Transform pose2;
                             pose2.position = TransformPoint(
-                                pose.Matrix,
-                                static_cast<float32>(coord.X) * TileMap::kChunkSize * cellW,
-                                static_cast<float32>(coord.Y) * TileMap::kChunkSize * cellH,
+                                pose,
+                                static_cast<float64>(coord.X) * TileMap::kChunkSize * cellW,
+                                static_cast<float64>(coord.Y) * TileMap::kChunkSize * cellH,
                                 state.ZOffset);
                             pose2.rotation = pose.Rotation;
                             for (Physics::BodyHandle handle : chunk.Bodies)

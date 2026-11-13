@@ -36,7 +36,9 @@ struct MarkupHighlightState;
 // one until 170 m), at most kLabelCap of them, the nearest. A volume whose top center is out of the
 // view but whose center is in it (a framed one) keeps its pill, held at the view's edge, and
 // one the camera is inside keeps it at the view's top center while its top is out of view.
-// A pill stays inside its pane and clear of the pane's axis widget.
+// A pill stays inside its pane and clear of the pane's axis widget, and a region member's pill
+// yields to its region's: where the two overlap, the member's stands under the region's, or is
+// hidden when the view has no room below.
 // Hidden, switched-off and out-of-view mark-ups have none, and none draw in play mode or
 // while the pane's mark-up gizmos are hidden. Each pane projects with its own camera.
 // Main thread only.
@@ -49,6 +51,8 @@ class MarkupLabelOverlay final : public ViewOverlay
     // view pixels; MarkupLabelOverlay.css sizes the pill to match.
     static constexpr float kPillHeight = 22.0f;
     static constexpr float kPillGap = 6.0f;
+    // The gap between a region's pill and its member's pill standing under it, in view pixels.
+    static constexpr float kPillStackGap = 2.0f;
     // The highest a point may sit so the pill standing on it stays in the view.
     static constexpr float kMinAnchorY = kPillHeight + kPillGap + 4.0f;
 
@@ -63,6 +67,19 @@ class MarkupLabelOverlay final : public ViewOverlay
         bool Unseen = false;   // the agent changed it since the viewer last looked
         bool Selected = false;
         bool Hovered = false; // its Mark-ups panel row or Hierarchy row is under the pointer
+        // The region whose member this mark-up is (the first such region); none when it is no
+        // region's member.
+        ECS::EntityHandle Region{};
+    };
+
+    // A pill as laid out in its view, in view pixels: centered on CenterX, HalfWidth either
+    // side, its top edge at Top, kPillHeight tall; Hidden when it yields with no room.
+    struct PillBox
+    {
+        float CenterX = 0.0f;
+        float Top = 0.0f;
+        float HalfWidth = 0.0f;
+        bool Hidden = false;
     };
 
     // The labels of `world`'s mark-ups in `view` (a pane's camera and size, as
@@ -77,6 +94,13 @@ class MarkupLabelOverlay final : public ViewOverlay
     // axis widget; none when empty) on the side away from the widget's half of the view.
     static float PillCenterX(float anchorX, float top, float halfWidth, float viewWidth,
                              const Mathematics::Rect& reserved);
+
+    // The member's yield, `boxes` laid out for `placements` (one each, in order): a pill whose
+    // Region has a pill it overlaps moves down to the first row under the region's pill (rows
+    // kPillHeight + kPillStackGap apart) clear of the region's other members' pills, placed again
+    // by PillCenterX, and is Hidden when no such row fits in a view `viewHeight` tall.
+    static void YieldToRegions(const std::vector<Placement>& placements, std::vector<PillBox>& boxes,
+                               float viewWidth, float viewHeight, const Mathematics::Rect& reserved);
 
     void Present(ViewOverlayView view, UIElement& layer, const ViewOverlayCamera& camera) override;
     void Update() override;
@@ -94,6 +118,7 @@ class MarkupLabelOverlay final : public ViewOverlay
         uint32_t DotArgb = 0;
         float X = -1.0f;
         float Y = -1.0f;
+        float HalfWidth = 0.0f; // as last laid out while shown, kept while the pill is hidden
         bool Shown = false;
         bool UnreadShown = false;
         bool Selected = false;
@@ -108,6 +133,7 @@ class MarkupLabelOverlay final : public ViewOverlay
         float OffsetX = 0.0f; // the viewport's top-left corner from the overlay layer's
         float OffsetY = 0.0f;
         float ViewWidth = 0.0f;
+        float ViewHeight = 0.0f;
         Mathematics::Rect Reserved{}; // the pane's axis widget in view pixels; empty when hidden
     };
 
@@ -115,12 +141,15 @@ class MarkupLabelOverlay final : public ViewOverlay
     // Shows m_Placements in `layer`, adding pills as needed and hiding the rest.
     void Show(LabelLayer& layer, ECS::World& world);
     static void AddPill(LabelLayer& layer, UIElement& container);
-    // Shows `placement` in `pill`, placed by PillCenterX in `layer`'s view.
-    static void ShowPill(Pill& pill, const Placement& placement, ECS::World& world, const LabelLayer& layer);
+    // Lays out m_Boxes for m_Placements in `layer`'s view: PillCenterX, then YieldToRegions.
+    void LayOut(LabelLayer& layer);
+    // Shows `placement` in `pill` at `box`, or hides the pill when the box is Hidden.
+    static void ShowPill(Pill& pill, const Placement& placement, const PillBox& box, ECS::World& world);
     static void Hide(LabelLayer& layer);
 
     std::vector<LabelLayer> m_Layers;
     std::vector<Placement> m_Placements;
+    std::vector<PillBox> m_Boxes;
 };
 
 } // namespace GameEngine::Editor

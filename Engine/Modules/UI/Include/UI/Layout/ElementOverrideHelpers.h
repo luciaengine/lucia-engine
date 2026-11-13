@@ -14,7 +14,7 @@ namespace GameEngine::UI::Layout
 namespace Detail
 {
 
-inline bool TryReadPx(const StyleOverrides& overrides, const StyleProp<StyleLength>& prop, float& outValue)
+inline bool TryReadPx(const StyleDeclaration& overrides, const StyleProp<StyleLength>& prop, float& outValue)
 {
     const std::optional<StyleLength> value = overrides.Get(prop);
     if (!value.has_value() || !value->IsPx())
@@ -25,9 +25,17 @@ inline bool TryReadPx(const StyleOverrides& overrides, const StyleProp<StyleLeng
 
 } // namespace Detail
 
+/// The element's resolved horizontal padding and border, in logical px: what a control is
+/// wider than its content box.
+inline float HorizontalInsetPx(const UIElement& element)
+{
+    const auto& layout = element.GetResolvedStyle().Layout;
+    return layout.Padding.Left + layout.Padding.Right + layout.BorderWidth.Left + layout.BorderWidth.Right;
+}
+
 inline bool TryGetAbsolutePosition(const UIElement& element, Mathematics::Rect& outRect)
 {
-    const std::optional<PositionType> position = element.Overrides().Get(Style::Position);
+    const std::optional<PositionType> position = element.Style().Get(Style::Position);
     if (!position.has_value() || *position != PositionType::Absolute)
         return false;
 
@@ -35,10 +43,10 @@ inline bool TryGetAbsolutePosition(const UIElement& element, Mathematics::Rect& 
     float top = 0.0f;
     float width = 0.0f;
     float height = 0.0f;
-    if (!Detail::TryReadPx(element.Overrides(), Style::PositionLeft, left) ||
-        !Detail::TryReadPx(element.Overrides(), Style::PositionTop, top) ||
-        !Detail::TryReadPx(element.Overrides(), Style::Width, width) ||
-        !Detail::TryReadPx(element.Overrides(), Style::Height, height))
+    if (!Detail::TryReadPx(element.Style(), Style::PositionLeft, left) ||
+        !Detail::TryReadPx(element.Style(), Style::PositionTop, top) ||
+        !Detail::TryReadPx(element.Style(), Style::Width, width) ||
+        !Detail::TryReadPx(element.Style(), Style::Height, height))
     {
         return false;
     }
@@ -73,12 +81,12 @@ inline bool SetAbsolutePosition(UIElement& element, const Mathematics::Rect& rec
 
     if (positionOnlyFastPath && !sizeChanged)
     {
-        element.Overrides().SetPositionOnlyPx(clamped.X, clamped.Y);
+        element.Style().SetPositionOnlyPx(clamped.X, clamped.Y);
         element.MarkDirty(UIElement::VisualDirty);
         return true;
     }
 
-    element.Overrides()
+    element.Style()
         .Set(Style::Position, PositionType::Absolute)
         .Set(Style::PositionLeft, StyleLength::Px(clamped.X))
         .Set(Style::PositionTop, StyleLength::Px(clamped.Y))
@@ -94,23 +102,23 @@ inline bool SetAbsolutePosition(UIElement& element, const Mathematics::Rect& rec
 inline bool ClearAbsolutePosition(UIElement& element)
 {
     const bool hasAbsoluteKeys =
-        element.Overrides().Has(Style::Position.id) ||
-        element.Overrides().Has(Style::PositionLeft.id) ||
-        element.Overrides().Has(Style::PositionTop.id) ||
-        element.Overrides().Has(Style::PositionRight.id) ||
-        element.Overrides().Has(Style::PositionBottom.id) ||
-        element.Overrides().Has(Style::Width.id) ||
-        element.Overrides().Has(Style::Height.id);
+        element.Style().Has(Style::Position.id) ||
+        element.Style().Has(Style::PositionLeft.id) ||
+        element.Style().Has(Style::PositionTop.id) ||
+        element.Style().Has(Style::PositionRight.id) ||
+        element.Style().Has(Style::PositionBottom.id) ||
+        element.Style().Has(Style::Width.id) ||
+        element.Style().Has(Style::Height.id);
     if (!hasAbsoluteKeys)
         return false;
 
-    element.Overrides().Reset(Style::Position);
-    element.Overrides().Reset(Style::PositionLeft);
-    element.Overrides().Reset(Style::PositionTop);
-    element.Overrides().Reset(Style::PositionRight);
-    element.Overrides().Reset(Style::PositionBottom);
-    element.Overrides().Reset(Style::Width);
-    element.Overrides().Reset(Style::Height);
+    element.Style().Reset(Style::Position);
+    element.Style().Reset(Style::PositionLeft);
+    element.Style().Reset(Style::PositionTop);
+    element.Style().Reset(Style::PositionRight);
+    element.Style().Reset(Style::PositionBottom);
+    element.Style().Reset(Style::Width);
+    element.Style().Reset(Style::Height);
     element.MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
     return true;
 }
@@ -119,23 +127,23 @@ inline bool SetElementInvisible(UIElement& element, bool invisible)
 {
     if (invisible)
     {
-        const std::optional<bool> visibility = element.Overrides().Get(Style::Visibility);
-        const std::optional<bool> pointerEvents = element.Overrides().Get(Style::PointerEvents);
+        const std::optional<bool> visibility = element.Style().Get(Style::Visibility);
+        const std::optional<bool> pointerEvents = element.Style().Get(Style::PointerEvents);
         if (visibility.has_value() && !visibility.value() && pointerEvents.has_value() && !pointerEvents.value())
             return false;
 
-        element.Overrides().Set(Style::Visibility, false);
-        element.Overrides().Set(Style::PointerEvents, false);
+        element.Style().Set(Style::Visibility, false);
+        element.Style().Set(Style::PointerEvents, false);
     }
     else
     {
-        const bool hadVisibilityOverride = element.Overrides().Has(Style::Visibility.id);
-        const bool hadPointerEventsOverride = element.Overrides().Has(Style::PointerEvents.id);
+        const bool hadVisibilityOverride = element.Style().Has(Style::Visibility.id);
+        const bool hadPointerEventsOverride = element.Style().Has(Style::PointerEvents.id);
         if (!hadVisibilityOverride && !hadPointerEventsOverride)
             return false;
 
-        element.Overrides().Reset(Style::Visibility);
-        element.Overrides().Reset(Style::PointerEvents);
+        element.Style().Reset(Style::Visibility);
+        element.Style().Reset(Style::PointerEvents);
     }
 
     // `visibility` inherits through the cascade; without `StyleDirty`, descendants keep a
@@ -148,17 +156,17 @@ inline bool SetElementHidden(UIElement& element, bool hidden)
 {
     if (hidden)
     {
-        const std::optional<DisplayMode> currentDisplay = element.Overrides().Get(Style::Display);
+        const std::optional<DisplayMode> currentDisplay = element.Style().Get(Style::Display);
         if (currentDisplay.has_value() && currentDisplay.value() == DisplayMode::None)
             return false;
 
-        element.Overrides().Set(Style::Display, DisplayMode::None);
+        element.Style().Set(Style::Display, DisplayMode::None);
     }
     else
     {
-        if (!element.Overrides().Has(Style::Display.id))
+        if (!element.Style().Has(Style::Display.id))
             return false;
-        element.Overrides().Reset(Style::Display);
+        element.Style().Reset(Style::Display);
     }
 
     element.MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
@@ -168,23 +176,23 @@ inline bool SetElementHidden(UIElement& element, bool hidden)
 inline bool SetForcedHeight(UIElement& element, int heightPx)
 {
     const float clampedHeight = static_cast<float>(std::max(0, heightPx));
-    const std::optional<StyleLength> currentHeight = element.Overrides().Get(Style::Height);
+    const std::optional<StyleLength> currentHeight = element.Style().Get(Style::Height);
     if (currentHeight.has_value() && currentHeight->IsPx() && currentHeight->Value == clampedHeight)
         return false;
 
-    element.Overrides().Set(Style::Height, StyleLength::Px(clampedHeight));
+    element.Style().Set(Style::Height, StyleLength::Px(clampedHeight));
     element.MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
     return true;
 }
 
 inline bool ClearForcedHeight(UIElement& element)
 {
-    if (!element.Overrides().Has(Style::Height.id))
+    if (!element.Style().Has(Style::Height.id))
         return false;
 
     Mathematics::Rect absoluteRect{};
     if (!TryGetAbsolutePosition(element, absoluteRect))
-        element.Overrides().Reset(Style::Height);
+        element.Style().Reset(Style::Height);
     element.MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
     return true;
 }
@@ -194,50 +202,63 @@ inline void SetBackgroundPath(UIElement& element, const std::string& path)
     BackgroundImageSource source{};
     source.Kind = BackgroundImageSource::SourceKind::Path;
     source.Value = path;
-    element.Overrides()
+    element.Style()
         .Set(Style::BackgroundImage, source)
         .Set(Style::BackgroundRepeatProp, BackgroundRepeat::NoRepeat)
         .Set(Style::BackgroundSize, BackgroundSizeValue{BackgroundSizeMode::Contain})
-        .Set(Style::BackgroundPosition, BackgroundPositionValue{50.0f, true, 50.0f, true})
+        .Set(Style::BackgroundPosition, BackgroundPositionValue::Percent(50.0f, 50.0f))
         .Reset(Style::BackgroundTint);
     element.MarkDirty(UIElement::VisualDirty);
 }
 
 inline void SetBackgroundResourceName(UIElement& element, const std::string& resourceName)
 {
-    BackgroundImageSource source{};
-    source.Kind = BackgroundImageSource::SourceKind::ResourceName;
-    source.Value = resourceName;
-    element.Overrides()
-        .Set(Style::BackgroundImage, source)
+    element.Style()
+        .Set(Style::BackgroundImage, BackgroundImageSource::Resource(resourceName))
         .Set(Style::BackgroundRepeatProp, BackgroundRepeat::NoRepeat)
         .Set(Style::BackgroundSize, BackgroundSizeValue{BackgroundSizeMode::Contain})
-        .Set(Style::BackgroundPosition, BackgroundPositionValue{50.0f, true, 50.0f, true})
+        .Set(Style::BackgroundPosition, BackgroundPositionValue::Percent(50.0f, 50.0f))
         .Reset(Style::BackgroundTint);
     element.MarkDirty(UIElement::VisualDirty);
 }
 
 inline void ClearBackgroundOverride(UIElement& element)
 {
-    BackgroundImageSource source{};
-    source.Kind = BackgroundImageSource::SourceKind::ResourceName;
-    source.Value.clear();
-    element.Overrides()
-        .Set(Style::BackgroundImage, source)
+    element.Style()
+        .Set(Style::BackgroundImage, BackgroundImageSource::Resource({}))
         .Set(Style::BackgroundRepeatProp, BackgroundRepeat::NoRepeat)
         .Set(Style::BackgroundSize, BackgroundSizeValue{BackgroundSizeMode::Contain})
-        .Set(Style::BackgroundPosition, BackgroundPositionValue{50.0f, true, 50.0f, true})
+        .Set(Style::BackgroundPosition, BackgroundPositionValue::Percent(50.0f, 50.0f))
         .Set(Style::BackgroundTint, 0x00000000u);
     element.MarkDirty(UIElement::VisualDirty);
 }
 
+// Shows the texture registered as `resourceName` (a render-graph output) as a centered cover background.
+// A viewport calls this on every frame, so it writes nothing while the element shows that texture: a
+// write dirties the element and, through the sibling-combinator invalidation, the whole tree.
+inline void BindViewportTexture(UIElement& element, const std::string& resourceName)
+{
+    const auto current = element.Style().Get(Style::BackgroundImage);
+    if (current.has_value() && current->Kind == BackgroundImageSource::SourceKind::ResourceName &&
+        current->Value == resourceName)
+        return;
+    // The reset before the set also requests a cascade re-run for the rebind.
+    element.Style()
+        .Reset(Style::BackgroundImage)
+        .Set(Style::BackgroundImage, BackgroundImageSource::Resource(resourceName))
+        .Set(Style::BackgroundRepeatProp, BackgroundRepeat::NoRepeat)
+        .Set(Style::BackgroundSize, BackgroundSizeValue{BackgroundSizeMode::Cover})
+        .Set(Style::BackgroundPosition, BackgroundPositionValue::Percent(50.0f, 50.0f))
+        .Reset(Style::BackgroundTint);
+}
+
 inline void DisableBackgroundOverride(UIElement& element)
 {
-    element.Overrides().Reset(Style::BackgroundImage);
-    element.Overrides().Reset(Style::BackgroundRepeatProp);
-    element.Overrides().Reset(Style::BackgroundSize);
-    element.Overrides().Reset(Style::BackgroundPosition);
-    element.Overrides().Reset(Style::BackgroundTint);
+    element.Style().Reset(Style::BackgroundImage);
+    element.Style().Reset(Style::BackgroundRepeatProp);
+    element.Style().Reset(Style::BackgroundSize);
+    element.Style().Reset(Style::BackgroundPosition);
+    element.Style().Reset(Style::BackgroundTint);
     element.MarkDirty(UIElement::VisualDirty);
 }
 

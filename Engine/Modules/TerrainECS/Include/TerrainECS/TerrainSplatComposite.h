@@ -24,6 +24,11 @@ inline void CompositeSplatTexel(uint8* pixel, uint32 layerIdx, float32 weight, b
 {
     if (replace)
     {
+        // An all-zero texel is the implicit base: the first material at 255.
+        // A zero weight leaves every texel as it is.
+        if (weight > 0.0f && pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] == 0)
+            pixel[0] = 255;
+
         // The ramp weight is the replacement FRACTION: every channel
         // lerps from what the mix already held toward its pure-layer
         // value, which preserves the weight sum and makes the edge

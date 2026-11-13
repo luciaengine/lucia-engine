@@ -1,150 +1,129 @@
 #include "Engine/Rendering/AnimationComputePass.h"
 #include "Engine/Rendering/GPUAnimationDataStore.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 
-namespace GameEngine::Engine::Renderer
-{
+namespace GameEngine { namespace Engine { namespace Renderer {
 
 using namespace GameEngine::Rendering;
 
-struct AnimationComputePass::PreparedDispatch
-{
-    PipelineHandle Pipeline;
-    DescriptorSetHandle Descriptors;
-    struct Parameters
-    {
-        uint32_t InstanceCount = 0;
-        uint32_t GateEnabled = 0;
-        uint32_t RuntimeVisibleCap = 0;
-    };
-    Parameters Constants;
-};
-
 void AnimationComputePass::Declare(RenderGraph::RGFrame& frame, RenderGraph::RGBuffer atlas,
-                                   RenderGraph::RGBuffer runtimeVisible)
-{
-    if (!m_DataStore || m_ComputeShader.empty() || !atlas.IsValid())
-        return;
-    // Preview worlds can append instances after declaration. Preparation reads
-    // the final live count before any command list records.
+                                   RenderGraph::RGBuffer runtimeVisible) {
+    if (!m_DataStore || m_ComputeShader.empty() || !atlas.IsValid()) return;
+    // No declare-time instance-count gate: thumbnail/preview worlds queue
+    // instances AFTER the main world's declaration (old-arm contract), and
+    // RecordDispatch re-checks the live count at exec — an unused dispatch
+    // declaration is effectively free.
     const bool gate = m_GateEnabled && runtimeVisible.IsValid();
-    auto* dispatch = frame.AllocatePassData<PreparedDispatch>();
     frame.AddPass("AnimSkinningCompute",
                   static_cast<int32_t>(GameEngine::Rendering::PassPhase::kEarlySetup),
-                  [this, dispatch, atlas, runtimeVisible, gate](RenderGraph::RGPassBuilder& builder)
-                  {
-                      builder.Prepare([this, dispatch, atlas, runtimeVisible, gate](RenderGraph::RGPrepareContext& context)
-                      {
-                          return PrepareDispatch(context, context.GetBuffer(atlas),
-                                                 gate ? context.GetBuffer(runtimeVisible) : BufferHandle{}, *dispatch);
-                      });
-                      builder.Write(atlas);
+                  [&](RenderGraph::RGPassBuilder& p) {
+                      p.Write(atlas);
                       if (gate)
-                          builder.Read(runtimeVisible); // Orders skinning before the visibility aggregate.
+                          p.Read(runtimeVisible); // BEFORE the aggregate's Write — the WAR edge
                   },
-                  [this, dispatch](RenderGraph::RGContext& context)
-                  {
-                      RecordDispatch(context.Cmd, *dispatch);
+                  [this, atlas, runtimeVisible, gate](RenderGraph::RGContext& ctx) {
+                      RecordDispatch(ctx.GetDevice(), ctx.Cmd, ctx.GetBuffer(atlas),
+                                     gate ? ctx.GetBuffer(runtimeVisible) : BufferHandle{});
                   });
 }
 
-bool AnimationComputePass::PrepareDispatch(RenderGraph::RGPrepareContext& context,
-                                           BufferHandle atlasBuffer,
-                                           BufferHandle visibilityBuffer,
-                                           PreparedDispatch& dispatch)
-{
-    dispatch = {};
-    auto* device = context.GetDevice();
-    if (!m_DataStore || m_ComputeShader.empty() || !device)
-        return false;
+void AnimationComputePass::RecordDispatch(IDevice* dev, CommandList* cl,
+                                          BufferHandle dispatchAtlasBuf,
+                                          BufferHandle runtimeVisBuf) {
+    if (!m_DataStore || m_ComputeShader.empty() || !cl || !dev) return;
 
     const uint32_t instanceCount = m_DataStore->GetInstanceCount();
-    if (instanceCount == 0)
-        return true;
+    if (instanceCount == 0) return;
 
-    if (!m_DataStore->FlushInstances())
-        return false;
+    m_DataStore->FlushInstances();
 
-    // Bindings cover skeletons, clips, instances, the atlas and visibility.
-    constexpr uint32_t kStorageBindingCount = 7;
-    DescriptorSetLayoutDesc layout{};
-    layout.debugName = "AnimCompute_Set0";
-    for (uint32_t bindingIndex = 0; bindingIndex < kStorageBindingCount; ++bindingIndex)
-    {
-        DescriptorBinding binding{};
-        binding.binding = bindingIndex;
-        binding.type = DescriptorType::StorageBuffer;
-        binding.count = 1;
-        binding.shaderStages = kShaderStageCompute;
-        layout.bindings.push_back(binding);
+    // Descriptor set layout: 7 storage buffers; binding 6 is the runtime-visibility flags.
+    // The shader declares all but binding 5 (the bone palette atlas) `readonly`, so the layout marks them read-only too.
+    constexpr uint32_t kBonePaletteBinding = 5;
+    DescriptorSetLayoutDesc set0{};
+    set0.debugName = "AnimCompute_Set0";
+    for (uint32_t i = 0; i < 7; ++i) {
+        DescriptorBinding b{};
+        b.binding = i;
+        b.type = DescriptorType::StorageBuffer;
+        b.count = 1;
+        b.shaderStages = kShaderStageCompute;
+        b.flags = i == kBonePaletteBinding ? 0u : kDescriptorBindingReadOnlyStorage;
+        set0.bindings.push_back(b);
     }
+
+    // Phase 6-iii push constants: (instanceCount, gateEnabled, runtimeVisibleCap).
+    struct AnimSkinningPC
+    {
+        uint32_t instanceCount;
+        uint32_t gateEnabled;
+        uint32_t runtimeVisibleCap;
+    };
 
     if (!m_PipelineId.IsValid())
     {
-        ::GameEngine::Rendering::ComputePipelineDesc pipelineDescription{};
-        pipelineDescription.ComputeShader = std::make_shared<const std::vector<uint8_t>>(m_ComputeShader);
-        pipelineDescription.DescriptorSetLayouts.push_back(device->InternDescriptorSetLayout(layout));
-        pipelineDescription.PushConstants.Size      = sizeof(PreparedDispatch::Parameters);
-        pipelineDescription.PushConstants.StageMask = kShaderStageCompute;
-        pipelineDescription.DebugName = "AnimSkinning_Compute";
-        m_PipelineId = device->InternComputePipeline(pipelineDescription);
+        ::GameEngine::Rendering::ComputePipelineDesc cd{};
+        cd.ComputeShader = std::make_shared<const std::vector<uint8_t>>(m_ComputeShader);
+        cd.DescriptorSetLayouts.push_back(dev->InternDescriptorSetLayout(set0));
+        cd.PushConstants.Size      = sizeof(AnimSkinningPC);
+        cd.PushConstants.StageMask = kShaderStageCompute;
+        cd.DebugName = "AnimSkinning_Compute";
+        m_PipelineId = dev->InternComputePipeline(cd);
     }
-    const PipelineHandle pipeline = context.PreparePipeline(m_PipelineId);
-    if (!pipeline)
-        return false;
+    PipelineHandle pipe = dev->GetOrCreateComputePipeline(m_PipelineId);
+    if (!pipe) return;
 
-    auto skeletonHeaders = m_DataStore->GetSkeletonHeaderBuffer();
-    auto skeletonData   = m_DataStore->GetSkeletonDataBuffer();
-    auto clipHeaders = m_DataStore->GetClipHeaderBuffer();
-    auto clipData   = m_DataStore->GetClipDataBuffer();
-    auto instances   = m_DataStore->GetInstanceBuffer();
+    cl->SetPipeline(pipe);
 
-    if (!skeletonHeaders.IsValid() || !skeletonData.IsValid() ||
-        !clipHeaders.IsValid() || !clipData.IsValid() ||
-        !instances.IsValid()   || !atlasBuffer.IsValid())
-        return false;
+    DescriptorSetDesc dsDesc{};
+    dsDesc.layout = set0;
+    dsDesc.transient = true;
+    dsDesc.debugName = "AnimCompute_DS0";
+    DescriptorSetHandle ds = dev->CreateDescriptorSet(dsDesc);
 
-    DescriptorSetDesc descriptorDescription{};
-    descriptorDescription.layout = layout;
-    descriptorDescription.transient = true;
-    descriptorDescription.debugName = "AnimCompute_DS0";
-    const DescriptorSetHandle descriptors = device->CreateDescriptorSet(descriptorDescription);
-    if (!descriptors.IsValid())
-        return false;
+    auto skelHeaderBuf = m_DataStore->GetSkeletonHeaderBuffer();
+    auto skelDataBuf   = m_DataStore->GetSkeletonDataBuffer();
+    auto clipHeaderBuf = m_DataStore->GetClipHeaderBuffer();
+    auto clipDataBuf   = m_DataStore->GetClipDataBuffer();
+    auto instanceBuf   = m_DataStore->GetInstanceBuffer();
+    auto atlasBuf      = dispatchAtlasBuf;
 
-    // Used-byte ranges keep reads within uploaded data. The atlas uses its
-    // whole allocation because instances write distinct palette offsets.
-    device->UpdateStorageBufferBinding(descriptors, 0, skeletonHeaders, 0, m_DataStore->GetSkeletonHeaderUsedBytes());
-    device->UpdateStorageBufferBinding(descriptors, 1, skeletonData,   0, m_DataStore->GetSkeletonDataUsedBytes());
-    device->UpdateStorageBufferBinding(descriptors, 2, clipHeaders, 0, m_DataStore->GetClipHeaderUsedBytes());
-    device->UpdateStorageBufferBinding(descriptors, 3, clipData,   0, m_DataStore->GetClipDataUsedBytes());
-    device->UpdateStorageBufferBinding(descriptors, 4, instances,   m_DataStore->GetInstanceBufferOffset(),
-                                    instanceCount * sizeof(GPUAnimInstance));
-    device->UpdateStorageBufferBinding(descriptors, 5, atlasBuffer,      0, 0);
-
-    // The disabled gate never reads binding 6, so the instance buffer supplies
-    // a valid descriptor when no visibility buffer is available.
-    const bool useGate = visibilityBuffer.IsValid();
-    GameEngine::Rendering::BufferHandle visibilityBinding =
-        useGate ? visibilityBuffer : instances;
-    device->UpdateStorageBufferBinding(descriptors, 6, visibilityBinding, 0, 0);
-
-    dispatch.Pipeline = pipeline;
-    dispatch.Descriptors = descriptors;
-    dispatch.Constants.InstanceCount = instanceCount;
-    dispatch.Constants.GateEnabled = useGate ? 1u : 0u;
-    dispatch.Constants.RuntimeVisibleCap = useGate ? m_RuntimeVisibleCap : 0u;
-    return true;
-}
-
-void AnimationComputePass::RecordDispatch(CommandList* commands, const PreparedDispatch& dispatch)
-{
-    if (!commands || dispatch.Constants.InstanceCount == 0)
+    if (!skelHeaderBuf.IsValid() || !skelDataBuf.IsValid() ||
+        !clipHeaderBuf.IsValid() || !clipDataBuf.IsValid() ||
+        !instanceBuf.IsValid()   || !atlasBuf.IsValid())
         return;
-    commands->SetPipeline(dispatch.Pipeline);
-    commands->BindDescriptorSet(0, dispatch.Descriptors, dispatch.Pipeline);
-    commands->SetPushConstants(dispatch.Constants);
-    commands->Dispatch(dispatch.Constants.InstanceCount, 1, 1);
+
+    // Bind the exact written byte range so out-of-bound shader reads are caught by
+    // robust-buffer-access rather than silently returning stale data from the upload
+    // buffer's tail. Execute already returns when instanceCount == 0, which implies
+    // EnsureSkeletonUploaded/EnsureClipUploaded ran at least once, so the used-byte
+    // accessors are guaranteed > 0 here. Atlas remains whole-buffer — the compute
+    // shader writes to per-instance offsets that can span the full allocation.
+    dev->UpdateStorageBufferBinding(ds, 0, skelHeaderBuf, 0, m_DataStore->GetSkeletonHeaderUsedBytes());
+    dev->UpdateStorageBufferBinding(ds, 1, skelDataBuf,   0, m_DataStore->GetSkeletonDataUsedBytes());
+    dev->UpdateStorageBufferBinding(ds, 2, clipHeaderBuf, 0, m_DataStore->GetClipHeaderUsedBytes());
+    dev->UpdateStorageBufferBinding(ds, 3, clipDataBuf,   0, m_DataStore->GetClipDataUsedBytes());
+    dev->UpdateStorageBufferBinding(ds, 4, instanceBuf,   m_DataStore->GetInstanceBufferOffset(),
+                                    instanceCount * sizeof(GPUAnimInstance));
+    dev->UpdateStorageBufferBinding(ds, 5, atlasBuf,      0, 0);
+
+    // Phase 6-iii binding 6: runtime-visibility flag buffer. Bind the live
+    // buffer when the gate is enabled and the buffer is valid; otherwise
+    // fall back to the instance buffer (any valid buffer suffices — the
+    // shader's `if (gateEnabled != 0u)` predicate skips the read entirely).
+    const bool useGate = runtimeVisBuf.IsValid();
+    GameEngine::Rendering::BufferHandle runtimeVisBindBuf =
+        useGate ? runtimeVisBuf : instanceBuf;
+    dev->UpdateStorageBufferBinding(ds, 6, runtimeVisBindBuf, 0, 0);
+
+    cl->BindDescriptorSet(0, ds, pipe);
+
+    AnimSkinningPC pc{};
+    pc.instanceCount     = instanceCount;
+    pc.gateEnabled       = useGate ? 1u : 0u;
+    pc.runtimeVisibleCap = useGate ? m_RuntimeVisibleCap : 0u;
+    cl->SetPushConstants(pc);
+    cl->Dispatch(instanceCount, 1, 1);
 }
 
-} // namespace GameEngine::Engine::Renderer
+}}} // namespace GameEngine::Engine::Renderer

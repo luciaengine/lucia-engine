@@ -44,8 +44,12 @@ struct MarkupDrawItem
     bool Hovered = false;      // its Mark-ups panel row or Hierarchy row is under the pointer
     bool CameraInside = false; // draws no body
     bool OutOfView = false;    // its bounding sphere is outside the view's frustum: draws no body
+    // An Exclude member of a region the viewer has not hidden: at rest (neither selected nor
+    // hovered) it draws no body, only its outline, so the hole it cuts reads as a hole and the
+    // ground shows through it; selected or hovered it draws as any mark-up.
+    bool ExcludeMember = false;
 
-    bool DrawsBody() const { return !CameraInside && !OutOfView; }
+    bool DrawsBody() const { return !CameraInside && !OutOfView && !(ExcludeMember && !Selected && !Hovered); }
 };
 
 // The hover highlight, one drawing for a box and a sphere alike: the hovered mark-up's body (the
@@ -73,10 +77,12 @@ inline std::array<float32, 3> MarkupHoverRgb(const std::array<float32, 3>& rgb)
 // mark-up in view. A region or a path in view resolves its display in the bridge's cache on `frame`
 // (ResolveMarkupRegionDisplay); one out of view is not built. Returns how many lead `items` as the
 // ones that draw a body: at most kMarkupBodyCap, highlighted first, then the nearest, those that
-// draw no body (the camera inside, or out of view) last, counted. Main thread only.
+// draw no body (the camera inside, out of view, or an Exclude member at rest) last, counted. Main
+// thread only. `excludedScratch` is the collection's scratch, kept by the caller beside `items` to
+// reuse its allocation.
 std::size_t CollectMarkupDrawItems(ECS::World& world, const MarkupEditorBridge& bridge,
                                    const MarkupHighlightState& highlight, const Mathematics::Vector3& cameraPos,
                                    const Mathematics::Vector4* frustumPlanes, uint64 frame,
-                                   std::vector<MarkupDrawItem>& items);
+                                   std::vector<MarkupDrawItem>& items, std::vector<uint32>& excludedScratch);
 
 } // namespace GameEngine::Editor

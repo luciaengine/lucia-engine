@@ -10,6 +10,7 @@ namespace GameEngine
 #define GE_RUNTIME_ASSET_METADATA_KEYS(ENTRY) \
     ENTRY(kAudioAllowVirtualizationMetaKey, Audio, "audio.allowVirtualization") \
     ENTRY(kAudioLoadPolicyMetaKey, Audio, "audio.loadPolicy") \
+    ENTRY(kCubeLutInputEncodingMetaKey, CubeLut, "assets.cubeLut.inputEncoding") \
     ENTRY(kFbxAdjustPivotsMetaKey, Model, "assets.fbx.adjustPivots") \
     ENTRY(kFbxBakeRotationMetaKey, Model, "assets.fbx.bakeRotation") \
     ENTRY(kFbxBakeRotationAxesMetaKey, Model, "assets.fbx.bakeRotationAxes") \
@@ -29,7 +30,6 @@ namespace GameEngine
     ENTRY(kLodSlot2MetaKey, Model, "assets.lod.slot2") \
     ENTRY(kLodSlot3MetaKey, Model, "assets.lod.slot3") \
     ENTRY(kLodUseGlobalMetaKey, Model, "assets.lod.useGlobal") \
-    ENTRY(kBoneLODSettingsMetaKey, Model, "assets.model.boneLOD") \
     ENTRY(kModelRigKindMetaKey, Model, "assets.model.rigKind") \
     ENTRY(kTextureAlphaCoverageMetaKey, Texture, "assets.texture.alphaCoverage") \
     ENTRY(kTextureAlphaCutoffMetaKey, Texture, "assets.texture.alphaCutoff") \

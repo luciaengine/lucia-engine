@@ -1,14 +1,14 @@
 #include "Scene/MeshBvhDiskFormat.h"
 
-#include <format>
-#include <fstream>
-#include <string_view>
-#include <system_error>
-
 #include "FileSystem/FileSystem.h"
 #include "Logger/Logger.h"
 #include "Mathematics/Vector3.h"
 #include "Types/Fnv1a.h"
+
+#include <format>
+#include <fstream>
+#include <string_view>
+#include <system_error>
 
 namespace GameEngine::Scene
 {
@@ -17,6 +17,7 @@ namespace
 {
 
 constexpr const char* kBvhCacheSubdir = "MeshBvh";
+constexpr const char* kBvhFileExtension = ".meshbvh";
 
 // File header preceding the engine-serialized BVH payload.
 struct FileHeader
@@ -24,28 +25,15 @@ struct FileHeader
     uint32 Magic;
     uint32 FileVersion;
     uint32 BuilderVersion;
-    uint32 _pad;                  // align the u64 field to 8
+    uint32 _pad;                  // align the u64 fields to 8
     uint64 GeometryHash;
+    uint64 PayloadChecksum;       // Fnv1a64 of every payload byte
 };
-static_assert(sizeof(FileHeader) == 24, "MeshBvh file header must be 24 bytes");
-
-std::string GuidCompact(const GUID& guid)
-{
-    // Hex-stringified GUID without separators — short and filesystem-safe.
-    std::string s = guid.ToString();
-    std::string out;
-    out.reserve(s.size());
-    for (char c : s)
-    {
-        if (c != '-' && c != '{' && c != '}')
-            out.push_back(c);
-    }
-    return out;
-}
+static_assert(sizeof(FileHeader) == 32, "MeshBvh file header must be 32 bytes");
 
 std::filesystem::path AssetCacheDir(const std::filesystem::path& cacheRoot, const GUID& guid)
 {
-    return cacheRoot / kBvhCacheSubdir / GuidCompact(guid);
+    return cacheRoot / kBvhCacheSubdir / guid.ToCompactString();
 }
 
 std::filesystem::path SubmeshCachePath(const std::filesystem::path& cacheRoot,
@@ -53,7 +41,7 @@ std::filesystem::path SubmeshCachePath(const std::filesystem::path& cacheRoot,
                                        uint32 submesh)
 {
     return AssetCacheDir(cacheRoot, guid) /
-           ("sm" + std::to_string(submesh) + "_v" + std::to_string(kBvhBuilderVersion) + ".meshbvh");
+           ("sm" + std::to_string(submesh) + "_v" + std::to_string(kBvhBuilderVersion) + kBvhFileExtension);
 }
 
 // Logs why a cached BVH file was not used and returns false. A load runs once per build, so
@@ -107,19 +95,22 @@ bool PersistBvh(const std::filesystem::path& cacheRoot,
         PersistFailureLog::Warn(modelGuid, "create_directories: " + ec.message());
         return false;
     }
+    GameEngine::FileSystem::RemoveOrphanedTemporaryFiles(dir, kBvhFileExtension);
 
+    // Another process can write the same entry at the same time: each writer stages its own file.
     const auto finalPath = SubmeshCachePath(cacheRoot, modelGuid, submesh);
-    const auto tempPath  = finalPath.string() + ".tmp";
+    const auto tempPath  = GameEngine::FileSystem::MakeTemporarySiblingPath(finalPath);
 
     std::vector<uint8> bvhBytes;
     bvh.Serialize(bvhBytes);
 
-    FileHeader hdr{};
-    hdr.Magic             = kBvhFileMagic;
-    hdr.FileVersion       = kBvhFileVersion;
-    hdr.BuilderVersion    = kBvhBuilderVersion;
-    hdr._pad              = 0;
-    hdr.GeometryHash      = geometryHash;
+    FileHeader header{};
+    header.Magic           = kBvhFileMagic;
+    header.FileVersion     = kBvhFileVersion;
+    header.BuilderVersion  = kBvhBuilderVersion;
+    header._pad            = 0;
+    header.GeometryHash    = geometryHash;
+    header.PayloadChecksum = Hashing::Fnv1a64(bvhBytes.data(), bvhBytes.size());
 
     {
         std::ofstream out(tempPath, std::ios::binary | std::ios::trunc);
@@ -128,7 +119,7 @@ bool PersistBvh(const std::filesystem::path& cacheRoot,
             PersistFailureLog::Warn(modelGuid, "open temp for write");
             return false;
         }
-        out.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
+        out.write(reinterpret_cast<const char*>(&header), sizeof(header));
         if (!bvhBytes.empty())
             out.write(reinterpret_cast<const char*>(bvhBytes.data()), bvhBytes.size());
         out.close();
@@ -197,6 +188,8 @@ bool TryLoadBvh(const std::filesystem::path& cacheRoot,
     in.read(reinterpret_cast<char*>(payload.data()), payloadSize);
     if (!in)
         return RejectLoad(modelGuid, submesh, path, "the payload is truncated");
+    if (Hashing::Fnv1a64(payload.data(), payload.size()) != hdr.PayloadChecksum)
+        return RejectLoad(modelGuid, submesh, path, "the payload does not match its checksum");
 
     if (!outBvh.Deserialize(payload, source))
         return RejectLoad(modelGuid, submesh, path, "the payload does not match the source mesh");

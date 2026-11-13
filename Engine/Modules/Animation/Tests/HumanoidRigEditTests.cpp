@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 
 #include "Animation/HumanBone.h"
-#include "Animation/HumanoidRig.h"
-#include "Animation/HumanoidRigEdit.h"
+#include "Animation/Humanoid/HumanoidRig.h"
+#include "Animation/Humanoid/HumanoidRigEdit.h"
 
 #include "AssetCore/GUID.h"
 #include "Mathematics/Quaternion.h"

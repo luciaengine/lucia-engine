@@ -7,7 +7,7 @@
 
 #pragma once
 
-#include "Rendering/CameraTypes.h" // CameraData, ViewId
+#include "Rendering/Camera/CameraTypes.h" // CameraData, ViewId
 #include "Types/Types.h"
 
 #include <unordered_map>

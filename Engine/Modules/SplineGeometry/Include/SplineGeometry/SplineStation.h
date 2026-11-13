@@ -16,7 +16,7 @@ enum class SplineStationJoin : uint8
     Advance = 0,
     // A crease across the run: the ring stands at the previous ring's Distance
     // and is NOT stitched to it, so the faces either side keep their own
-    // normals up to the shared edge. A mitred corner is such a pair: the same
+    // normals up to the shared edge. A mitered corner is such a pair: the same
     // positions, shaded once as the incoming leg and once as the outgoing one.
     Crease,
     // Another ring of a corner that turns about one point: the previous ring's
@@ -24,10 +24,10 @@ enum class SplineStationJoin : uint8
     Pivot,
 };
 
-// Sides of travel a station's MitreRight applies to (bit flags).
-inline constexpr uint8 kSplineMitreLeftSide = 1u;
-inline constexpr uint8 kSplineMitreRightSide = 2u;
-inline constexpr uint8 kSplineMitreBothSides = kSplineMitreLeftSide | kSplineMitreRightSide;
+// Sides of travel a station's MiterRight applies to (bit flags).
+inline constexpr uint8 kSplineMiterLeftSide = 1u;
+inline constexpr uint8 kSplineMiterRightSide = 2u;
+inline constexpr uint8 kSplineMiterBothSides = kSplineMiterLeftSide | kSplineMiterRightSide;
 
 // One station of the draped path: the frame a cross-section is placed into,
 // plus the per-station channels that shape it there.
@@ -77,13 +77,13 @@ struct SplineStripStation
     // takes the previous ring's Distance, so a corner's rings share one U.
     SplineStationJoin Join = SplineStationJoin::Advance;
     // The lateral axis that PLACES the profile points on the sides named by
-    // MitreSides, where it differs from Right (Right, Up and Forward still shade
-    // them). A mitre ring passes the bisector's right scaled by 1 / cos(θ/2) on
+    // MiterSides, where it differs from Right (Right, Up and Forward still shade
+    // them). A miter ring passes the bisector's right scaled by 1 / cos(θ/2) on
     // both sides, which puts the faces of both legs on one edge; a round
     // corner's fan passes it on the inside of the turn only, where every ring
-    // meets at the inner mitre point. The builder rolls it as it rolls Right.
-    Mathematics::Vector3 MitreRight{};
-    uint8 MitreSides = 0;
+    // meets at the inner miter point. The builder rolls it as it rolls Right.
+    Mathematics::Vector3 MiterRight{};
+    uint8 MiterSides = 0;
     // Metres along Up added to the profile points marked Grounded, and to no
     // other point: negative sinks them. A wall's base takes the fall of the
     // ground across it here, so its downhill edge stands in the ground rather
@@ -94,13 +94,14 @@ struct SplineStripStation
     // on the ground; where a Crease ring's top stands at another height than
     // the ring before it, the builder closes the step with a riser.
     float32 TopOffset = 0.0f;
-    // A road lowers the crown to meet a flat paved region.
+    // The multiplier, from 0 to 1, of every profile height above zero: 1 keeps the profile, 0 brings
+    // a crown down to the level of its edges. A road eases its crown to 0 where it meets a flat lid.
     float32 RiseScale = 1.0f;
     // Per side of travel, the length a side face has run beyond the centreline
     // up to this station, per metre the face stands from it: a side-face vertex
     // x metres to that side takes U from Distance + |x| · FaceTurn (x in the
     // metres of Distance, SplineStripParams::LateralMetresPerUnit). On a curve it
-    // is the cumulative turn in radians, positive on the outside; a mitre adds
+    // is the cumulative turn in radians, positive on the outside; a miter adds
     // tan(θ/2) at its ring and again past it, the extra length of the outer face
     // (and the shortfall of the inner). Zero, the default, is the centreline U
     // on every face, which is what paths and roads take.

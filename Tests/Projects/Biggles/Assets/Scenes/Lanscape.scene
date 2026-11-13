@@ -127,7 +127,7 @@ SkyEnvironment.ShowSun = true
 SkyEnvironment.ShowMoon = true
 SkyEnvironment.SunSize2D = 1
 SkyEnvironment.SkyPan2D = 0
-SkyEnvironment.MoonPhase01 = 0.5
+SkyEnvironment.MoonArcPosition = 0.5
 SkyEnvironment.MoonArcPosition = 0.5
 SkyEnvironment.AutoMoonArc = true
 SkyEnvironment.MoonCycleDays = 8
@@ -135,13 +135,6 @@ SkyEnvironment.MoonSize = 1
 SkyEnvironment.MoonSize2D = 0.334
 SkyEnvironment.MoonExposureEV = 4
 SkyEnvironment.FallingStarsEnabled = true
-SkyEnvironment.FallingStarAmount = 0.35
-SkyEnvironment.FallingStarFrequency = 0.35
-SkyEnvironment.FallingStarSpeed = 4
-SkyEnvironment.FallingStarLength = 1
-SkyEnvironment.FallingStarThickness = 0.485
-SkyEnvironment.FallingStarDotSize = 0.1
-SkyEnvironment.FallingStarDotSize2D = 0.979
 SkyEnvironment.SunDirOverride = (0, 1, 0)
 SkyEnvironment.GroundAlbedoMidnight = (0.04, 0.045, 0.055)
 SkyEnvironment.GroundAlbedoDawn = (0.085, 0.078, 0.072)
@@ -182,14 +175,7 @@ SkyEnvironment.GroundHorizonCosWidthBezier = 0.25,0.03,0.75,0.03,0.02,0.02
 SkyEnvironment.GroundHorizonNightCosWidthCurve = 0,0.06;6,0.03;12,0.02;18,0.05
 SkyEnvironment.GroundHorizonNightCosWidthCurveMode = keyCurve
 SkyEnvironment.GroundHorizonNightCosWidthBezier = 0.25,0.03,0.75,0.02,0.06,0.06
-SkyEnvironment.StarDensity = 0.5
-SkyEnvironment.StarBrightness = 0.6
-SkyEnvironment.StarSize = 1
-SkyEnvironment.StarDiamondShape = 0.5
-SkyEnvironment.StarCoreSize = 0.15
-SkyEnvironment.StarGlowFalloff = 10
-SkyEnvironment.TwinkleSpeed = 0.5
-SkyEnvironment.TwinkleIntensity = 0.3
+SkyEnvironment.StarTwinkleAmount = 0.3
 Transform.position = (0, 0, 0)
 Transform.rotation = (0, 0, 0, 1)
 Transform.scale = (1, 1, 1)
@@ -205,10 +191,8 @@ Name.value = "Post FX"
 PostProcessVolume.enabled = true
 PostProcessVolume.weight = 1
 PostProcessVolume.priority = 0
-PostProcessVolume.postProcessMask = 4294967295
-PostProcessVolume.tonemap = 0
-PostProcessVolume.ditherMode = 0
-PostProcessVolume.ictcpChromaCompression = 0
+PostProcessVolume.volumeLayers = all
+PostProcessVolume.look = Neutral
 PostProcessVolume.isGlobal = true
 PostProcessVolume.shape = 0
 PostProcessVolume.blendDistance = 1
@@ -250,8 +234,8 @@ HierarchyOrder.order = 0
 MeshRenderer.meshAsset = [path="Models/Planes/AircoDH2/scene.gltf" guid="78fd7c8b-97d3-4f9e-9a7d-b76084b32c6f"]
 MeshRenderer.material = [guid="42ae5d9d-24dc-4846-ba2d-824dbd0e2957"]
 MeshRenderer.enabled = true
-MeshRenderer.renderLayerMask = 1
-MeshRenderer.castShadows = true
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
 MeshRenderer.receiveShadows = true
 MeshRenderer.motionVectors = true
 Name.value = "scene_submesh0"
@@ -270,8 +254,8 @@ MeshRenderer.meshAsset = [path="Models/Planes/AircoDH2/scene.gltf" guid="78fd7c8
 MeshRenderer.meshId = 1
 MeshRenderer.material = [guid="dcaa5d9d-24da-4846-88be-b8b96f8afada"]
 MeshRenderer.enabled = true
-MeshRenderer.renderLayerMask = 1
-MeshRenderer.castShadows = true
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
 MeshRenderer.receiveShadows = true
 MeshRenderer.motionVectors = true
 Name.value = "scene_submesh1"
@@ -290,8 +274,8 @@ MeshRenderer.meshAsset = [path="Models/Planes/AircoDH2/scene.gltf" guid="78fd7c8
 MeshRenderer.meshId = 2
 MeshRenderer.material = [guid="dcaa5d9d-24da-4846-88be-b8b96f8afada"]
 MeshRenderer.enabled = true
-MeshRenderer.renderLayerMask = 1
-MeshRenderer.castShadows = true
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
 MeshRenderer.receiveShadows = true
 MeshRenderer.motionVectors = true
 Name.value = "scene_submesh2"
@@ -310,8 +294,8 @@ MeshRenderer.meshAsset = [path="Models/Planes/AircoDH2/scene.gltf" guid="78fd7c8
 MeshRenderer.meshId = 3
 MeshRenderer.material = [guid="dcaa5d9d-24da-4846-88be-b8b96f8afada"]
 MeshRenderer.enabled = true
-MeshRenderer.renderLayerMask = 1
-MeshRenderer.castShadows = true
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
 MeshRenderer.receiveShadows = true
 MeshRenderer.motionVectors = true
 Name.value = "scene_submesh3"
@@ -330,8 +314,8 @@ MeshRenderer.meshAsset = [path="Models/Planes/AircoDH2/scene.gltf" guid="78fd7c8
 MeshRenderer.meshId = 4
 MeshRenderer.material = [guid="dcaa5d9d-24da-4846-88be-b8b96f8afada"]
 MeshRenderer.enabled = true
-MeshRenderer.renderLayerMask = 1
-MeshRenderer.castShadows = true
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
 MeshRenderer.receiveShadows = true
 MeshRenderer.motionVectors = true
 Name.value = "scene_submesh4"
@@ -350,8 +334,8 @@ MeshRenderer.meshAsset = [path="Models/Planes/AircoDH2/scene.gltf" guid="78fd7c8
 MeshRenderer.meshId = 5
 MeshRenderer.material = [guid="8fac5d9d-24db-4846-a9ba-6e556a32b323"]
 MeshRenderer.enabled = true
-MeshRenderer.renderLayerMask = 1
-MeshRenderer.castShadows = true
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
 MeshRenderer.receiveShadows = true
 MeshRenderer.motionVectors = true
 Name.value = "scene_submesh5"
@@ -370,8 +354,8 @@ MeshRenderer.meshAsset = [path="Models/Planes/AircoDH2/scene.gltf" guid="78fd7c8
 MeshRenderer.meshId = 6
 MeshRenderer.material = [guid="f5af5d9d-24dd-4846-be66-5e454b0a7c31"]
 MeshRenderer.enabled = true
-MeshRenderer.renderLayerMask = 1
-MeshRenderer.castShadows = true
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
 MeshRenderer.receiveShadows = true
 MeshRenderer.motionVectors = true
 Name.value = "scene_submesh6"
@@ -390,8 +374,8 @@ MeshRenderer.meshAsset = [path="Models/Planes/AircoDH2/scene.gltf" guid="78fd7c8
 MeshRenderer.meshId = 7
 MeshRenderer.material = [guid="f5af5d9d-24dd-4846-be66-5e454b0a7c31"]
 MeshRenderer.enabled = true
-MeshRenderer.renderLayerMask = 1
-MeshRenderer.castShadows = true
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
 MeshRenderer.receiveShadows = true
 MeshRenderer.motionVectors = true
 Name.value = "scene_submesh7"
@@ -410,8 +394,8 @@ MeshRenderer.meshAsset = [path="Models/Planes/AircoDH2/scene.gltf" guid="78fd7c8
 MeshRenderer.meshId = 8
 MeshRenderer.material = [guid="f5af5d9d-24dd-4846-be66-5e454b0a7c31"]
 MeshRenderer.enabled = true
-MeshRenderer.renderLayerMask = 1
-MeshRenderer.castShadows = true
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
 MeshRenderer.receiveShadows = true
 MeshRenderer.motionVectors = true
 Name.value = "scene_submesh8"
@@ -430,8 +414,8 @@ MeshRenderer.meshAsset = [path="Models/Planes/AircoDH2/scene.gltf" guid="78fd7c8
 MeshRenderer.meshId = 9
 MeshRenderer.material = [guid="f5af5d9d-24dd-4846-be66-5e454b0a7c31"]
 MeshRenderer.enabled = true
-MeshRenderer.renderLayerMask = 1
-MeshRenderer.castShadows = true
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
 MeshRenderer.receiveShadows = true
 MeshRenderer.motionVectors = true
 Name.value = "scene_submesh9"
@@ -450,8 +434,8 @@ MeshRenderer.meshAsset = [path="Models/Planes/AircoDH2/scene.gltf" guid="78fd7c8
 MeshRenderer.meshId = 10
 MeshRenderer.material = [guid="f5af5d9d-24dd-4846-be66-5e454b0a7c31"]
 MeshRenderer.enabled = true
-MeshRenderer.renderLayerMask = 1
-MeshRenderer.castShadows = true
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
 MeshRenderer.receiveShadows = true
 MeshRenderer.motionVectors = true
 Name.value = "scene_submesh10"
@@ -470,8 +454,8 @@ MeshRenderer.meshAsset = [path="Models/Planes/AircoDH2/scene.gltf" guid="78fd7c8
 MeshRenderer.meshId = 11
 MeshRenderer.material = [guid="f5af5d9d-24dd-4846-be66-5e454b0a7c31"]
 MeshRenderer.enabled = true
-MeshRenderer.renderLayerMask = 1
-MeshRenderer.castShadows = true
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
 MeshRenderer.receiveShadows = true
 MeshRenderer.motionVectors = true
 Name.value = "scene_submesh11"
@@ -490,8 +474,8 @@ MeshRenderer.meshAsset = [path="Models/Planes/AircoDH2/scene.gltf" guid="78fd7c8
 MeshRenderer.meshId = 12
 MeshRenderer.material = [guid="f5af5d9d-24dd-4846-be66-5e454b0a7c31"]
 MeshRenderer.enabled = true
-MeshRenderer.renderLayerMask = 1
-MeshRenderer.castShadows = true
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
 MeshRenderer.receiveShadows = true
 MeshRenderer.motionVectors = true
 Name.value = "scene_submesh12"
@@ -511,11 +495,11 @@ Camera.fovY = 60
 Camera.orthographicSize = 10
 Camera.nearZ = 0.01
 Camera.farZ = 1000
-Camera.cullingMask = 4294967295
+Camera.visibleLayers = all
 Camera.postProcessProfileId = 0
 Camera.msaaSamples = 0
 Camera.antiAliasing = 0
-Camera.postProcessMask = 4294967295
+Camera.volumeLayers = all
 Camera.aspectPreset = 0
 Camera.customAspectWidth = 16
 Camera.customAspectHeight = 9
@@ -582,7 +566,7 @@ PhysicsCollider.overrideMaterial = false
 PhysicsCollider.materialFriction = 0.5
 PhysicsCollider.materialRestitution = 0.1
 Terrain.terrainAssetType = 0
-Terrain.baseSource = 0
+Terrain.baseSource = 2
 Terrain.enabled = true
 Terrain.sizeX = 512
 Terrain.sizeZ = 512
@@ -592,7 +576,7 @@ Terrain.domain = 0
 Terrain.targetPixelError = 11
 Terrain.materialTiling = 10
 Terrain.materialLibrary = "00146e68-fe92-4fa5-b966-afe45dfe5e2f"
-Terrain.renderLayerMask = 1
+Terrain.renderLayers = [0]
 Terrain.castShadows = true
 Terrain.receiveShadows = true
 Transform.position = (0, 0, 0)
@@ -601,6 +585,14 @@ Transform.scale = (1, 1, 1)
 
 
 
+
+[entity id="terrain_noise"]
+Name.value = "Terrain Noise"
+Transform.position = (0, 0, 0)
+TerrainModifierVolume.shape = 4
+TerrainNoiseEffect.enabled = true
+TerrainNoiseEffect.mode = 1
+TerrainNoiseEffect.preset = 0
 
 [entity id="flat_middle" parent="terrain"]
 HierarchyOrder.order = 0

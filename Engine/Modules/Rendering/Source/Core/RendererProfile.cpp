@@ -42,6 +42,7 @@ RendererProfile RendererProfile::FromCapabilities(const RenderingDeviceCapabilit
     profile.MaterialSamplerAnisotropy =
         std::clamp(caps.maxSamplerAnisotropy, 1.0f, kMaterialSamplerAnisotropy);
     profile.UseInterpolationFunctions = caps.supportsShaderInterpolationFunctions;
+    profile.UseClipDistance = caps.supportsShaderClipDistance;
     return profile;
 }
 
@@ -56,6 +57,7 @@ void RendererProfile::LogResolved() const
     Logger::Log::Info("  int64 compute         : {}", UseInt64Compute ? "on" : "off");
     Logger::Log::Info("  material anisotropy   : {}x", MaterialSamplerAnisotropy);
     Logger::Log::Info("  interpolation funcs   : {}", UseInterpolationFunctions ? "on" : "off");
+    Logger::Log::Info("  clip distance         : {}", UseClipDistance ? "on" : "off");
 }
 
 bool ApplyForceCompatOverride(RenderingDeviceCapabilities& caps)
@@ -72,6 +74,8 @@ bool ApplyForceCompatOverride(RenderingDeviceCapabilities& caps)
     caps.supportsShaderInt64 = false;
     // WGSL has no interpolate-at-offset builtin.
     caps.supportsShaderInterpolationFunctions = false;
+    // Clip distances are an optional WebGPU feature.
+    caps.supportsShaderClipDistance = false;
     caps.supportsMeshShaders = false;
     caps.supportsRayTracing = false;
     caps.supportsRayQuery = false;

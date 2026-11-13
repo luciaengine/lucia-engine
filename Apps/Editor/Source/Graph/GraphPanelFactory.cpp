@@ -1,10 +1,10 @@
 #include "Graph/GraphPanelFactory.h"
 
 #include "Logger/Logger.h"
-#include "Panels/AnimationGraphPanel.h"
+#include "Panels/Animation/AnimationGraphPanel.h"
 #include "Panels/GameLogicGraphPanel.h"
 #include "Panels/GraphPanel.h"
-#include "Panels/ShaderGraphPanel.h"
+#include "ShaderGraph/ShaderGraphPanel.h"
 
 #include <string>
 

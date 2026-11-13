@@ -63,8 +63,10 @@ namespace {
 Components::WorldTransform MakeTransform(float x, float scale = 4.0f)
 {
     Components::WorldTransform xf{};
-    xf.matrix[0] = xf.matrix[5] = xf.matrix[10] = scale;
-    xf.matrix[12] = x;
+    xf.Basis[0].x = scale;
+    xf.Basis[1].y = scale;
+    xf.Basis[2].z = scale;
+    xf.Position = Mathematics::WorldPosition{x, 0.0, 0.0};
     return xf;
 }
 ECS::EntityHandle AddProbe(ECS::World& world, float x, uint32 priority = 0)
@@ -76,6 +78,54 @@ ECS::EntityHandle AddProbe(ECS::World& world, float x, uint32 priority = 0)
     world.AddComponentImmediate(e, MakeTransform(x));
     return e;
 }
+
+Components::WorldTransform MakeTransform(const Mathematics::Vector3& position, const Mathematics::Vector3& scale)
+{
+    Components::WorldTransform xf{};
+    xf.Basis[0].x = scale.x;
+    xf.Basis[1].y = scale.y;
+    xf.Basis[2].z = scale.z;
+    xf.Position = Mathematics::WorldPosition::FromVector3(position);
+    return xf;
+}
+
+ECS::EntityHandle AddCamera(ECS::World& world, float x)
+{
+    ECS::EntityHandle e = world.CreateEntity();
+    world.AddComponentImmediate(e, Components::Camera{});
+    world.AddComponentImmediate(e, MakeTransform(Vector3(x, 0.0f, 0.0f), Vector3(1.0f, 1.0f, 1.0f)));
+    return e;
+}
+
+void MoveCamera(ECS::World& world, ECS::EntityHandle camera, float x)
+{
+    auto* xf = world.GetComponentForWrite<Components::WorldTransform>(camera);
+    ASSERT_NE(xf, nullptr);
+    xf->Position.X = x;
+}
+
+void Drive(ReflectionProbeSystem& system, ECS::World& world, int frames)
+{
+    for (int i = 0; i < frames; ++i)
+        system.Update(world, 0.016f);
+}
+
+// A box probe at the origin with the given scale (half-extents = scale / 2) and a camera at
+// cameraPosition.
+void AddBoxProbeAndCamera(ECS::World& world, const Vector3& scale, const Vector3& cameraPosition)
+{
+    ECS::EntityHandle probeEntity = world.CreateEntity();
+    Components::ReflectionProbe probe{};
+    probe.BoxProjection = true;
+    probe.BlendDistance = 0.0f;
+    world.AddComponentImmediate(probeEntity, probe);
+    world.AddComponentImmediate(probeEntity, MakeTransform(Vector3(), scale));
+
+    ECS::EntityHandle cameraEntity = world.CreateEntity();
+    world.AddComponentImmediate(cameraEntity, Components::Camera{});
+    world.AddComponentImmediate(cameraEntity, MakeTransform(cameraPosition, Vector3(1.0f, 1.0f, 1.0f)));
+}
+
 } // namespace
 
 TEST(ReflectionProbeSystem, TwoRoomsRetainBothCapturesWhenCameraLeavesBothVolumes)
@@ -94,7 +144,7 @@ TEST(ReflectionProbeSystem, TwoRoomsRetainBothCapturesWhenCameraLeavesBothVolume
     ASSERT_EQ(feature->GetLocalProbeCount(world.GetWorldId()), 2u);
     const auto* first = feature->GetLocalProbeCapture(world.GetWorldId(), 0);
     const auto* second = feature->GetLocalProbeCapture(world.GetWorldId(), 1);
-    world.GetComponentForWrite<Components::WorldTransform>(camera)->matrix[12] = 100.0f;
+    world.GetComponentForWrite<Components::WorldTransform>(camera)->Position.X = 100.0f;
     for (int i = 0; i < 10; ++i) system.Update(world, 0.016f);
     EXPECT_EQ(feature->GetLocalProbeCapture(world.GetWorldId(), 0), first);
     EXPECT_EQ(feature->GetLocalProbeCapture(world.GetWorldId(), 1), second);
@@ -217,7 +267,7 @@ TEST(ReflectionProbeSystem, MaterialEditsInvalidateOnceCaptureButBlendControlsDo
 }
 
 #include "Rendering/Core/CommandList.h"
-#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
 #include "TestDeviceHelper.h"
 #include <array>
 #include <cmath>
@@ -413,12 +463,12 @@ TEST(ReflectionProbeSystem, MovingGeometryInvalidatesOnlyIntersectingCaptureRang
     auto* ibl = rs.GetFeature<ImageBasedLightingFeature>();
     auto digest = [&](uint32_t index) { return ibl->GetLocalProbeDesc(world.GetWorldId(), index)->SceneEditDigest; };
     auto west = digest(0), east = digest(1);
-    world.GetComponentForWrite<Components::WorldTransform>(wall)->matrix[12] = 1;
+    world.GetComponentForWrite<Components::WorldTransform>(wall)->Position.X = 1;
     system.Update(world, 0.016f);
     EXPECT_NE(digest(0), west);
     EXPECT_EQ(digest(1), east);
     west = digest(0);
-    world.GetComponentForWrite<Components::WorldTransform>(wall)->matrix[12] = 20;
+    world.GetComponentForWrite<Components::WorldTransform>(wall)->Position.X = 20;
     system.Update(world, 0.016f);
     EXPECT_NE(digest(0), west) << "Removing a wall from the old room changes that room's capture";
     EXPECT_NE(digest(1), east) << "Entering the new room invalidates its capture too";

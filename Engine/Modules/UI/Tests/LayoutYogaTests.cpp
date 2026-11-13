@@ -1,10 +1,14 @@
 #include <gtest/gtest.h>
+#include "Mathematics/Vector2.h"
 #include "UI/Layout/YogaLayout.h"
 #include "UI/ResolvedStyle.h"
 #include <vector>
 
 using namespace GameEngine;
 using namespace GameEngine::UILayout;
+
+// The styles here hold px and percentages only, so no length reads the viewport.
+static const Mathematics::Vector2 kNoViewportUnits{};
 
 TEST(LayoutYogaTests, DirectionRTLFlipsStartForRow)
 {
@@ -20,16 +24,16 @@ TEST(LayoutYogaTests, DirectionRTLFlipsStartForRow)
         rootStyle.Layout.FlexDirection = FlexDirection::Row;
         rootStyle.Layout.HasFlexDirection = true;
         rootStyle.Layout.Direction = Direction::LTR;
-        YogaAdapter::ApplyStyle(root, rootStyle);
+        YogaAdapter::ApplyStyle(root, rootStyle, kNoViewportUnits);
 
         // Child 0
         YGNodeRef c0 = YogaAdapter::CreateNode();
         ResolvedStyle s0; s0.Layout.Width = StyleLength::Px(100.0f); s0.Layout.Height = StyleLength::Px(10.0f);
-        YogaAdapter::ApplyStyle(c0, s0);
+        YogaAdapter::ApplyStyle(c0, s0, kNoViewportUnits);
         // Child 1
         YGNodeRef c1 = YogaAdapter::CreateNode();
         ResolvedStyle s1; s1.Layout.Width = StyleLength::Px(100.0f); s1.Layout.Height = StyleLength::Px(10.0f);
-        YogaAdapter::ApplyStyle(c1, s1);
+        YogaAdapter::ApplyStyle(c1, s1, kNoViewportUnits);
 
         YGNodeInsertChild(root, c0, 0);
         YGNodeInsertChild(root, c1, 1);
@@ -53,16 +57,16 @@ TEST(LayoutYogaTests, DirectionRTLFlipsStartForRow)
         rootStyle.Layout.FlexDirection = FlexDirection::Row;
         rootStyle.Layout.HasFlexDirection = true;
         rootStyle.Layout.Direction = Direction::RTL;
-        YogaAdapter::ApplyStyle(root, rootStyle);
+        YogaAdapter::ApplyStyle(root, rootStyle, kNoViewportUnits);
 
         // Child 0
         YGNodeRef c0 = YogaAdapter::CreateNode();
         ResolvedStyle s0; s0.Layout.Width = StyleLength::Px(100.0f); s0.Layout.Height = StyleLength::Px(10.0f);
-        YogaAdapter::ApplyStyle(c0, s0);
+        YogaAdapter::ApplyStyle(c0, s0, kNoViewportUnits);
         // Child 1
         YGNodeRef c1 = YogaAdapter::CreateNode();
         ResolvedStyle s1; s1.Layout.Width = StyleLength::Px(100.0f); s1.Layout.Height = StyleLength::Px(10.0f);
-        YogaAdapter::ApplyStyle(c1, s1);
+        YogaAdapter::ApplyStyle(c1, s1, kNoViewportUnits);
 
         YGNodeInsertChild(root, c0, 0);
         YGNodeInsertChild(root, c1, 1);
@@ -96,12 +100,12 @@ TEST(LayoutYogaTests, DirectionDoesNotAffectColumnMainAxis)
         rootStyle.Layout.FlexDirection = FlexDirection::Column;
         rootStyle.Layout.HasFlexDirection = true;
         rootStyle.Layout.Direction = dir;
-        YogaAdapter::ApplyStyle(root, rootStyle);
+        YogaAdapter::ApplyStyle(root, rootStyle, kNoViewportUnits);
 
         YGNodeRef c0 = YogaAdapter::CreateNode();
-        ResolvedStyle s0; s0.Layout.Height = StyleLength::Px(10.0f); s0.Layout.Width = StyleLength::Px(50.0f); YogaAdapter::ApplyStyle(c0, s0);
+        ResolvedStyle s0; s0.Layout.Height = StyleLength::Px(10.0f); s0.Layout.Width = StyleLength::Px(50.0f); YogaAdapter::ApplyStyle(c0, s0, kNoViewportUnits);
         YGNodeRef c1 = YogaAdapter::CreateNode();
-        ResolvedStyle s1; s1.Layout.Height = StyleLength::Px(10.0f); s1.Layout.Width = StyleLength::Px(50.0f); YogaAdapter::ApplyStyle(c1, s1);
+        ResolvedStyle s1; s1.Layout.Height = StyleLength::Px(10.0f); s1.Layout.Width = StyleLength::Px(50.0f); YogaAdapter::ApplyStyle(c1, s1, kNoViewportUnits);
 
         YGNodeInsertChild(root, c0, 0);
         YGNodeInsertChild(root, c1, 1);
@@ -137,14 +141,14 @@ TEST(LayoutYogaTests, DefaultBlockDisplayStacksVertically)
 
     YGNodeRef root = YogaAdapter::CreateNode();
     ResolvedStyle rootStyle; // defaults: Block display, no explicit flex-direction
-    YogaAdapter::ApplyStyle(root, rootStyle);
+    YogaAdapter::ApplyStyle(root, rootStyle, kNoViewportUnits);
 
     auto makeChild = [](){
         YGNodeRef n = YogaAdapter::CreateNode();
         ResolvedStyle s;
         s.Layout.Width = StyleLength::Px(50.0f);
         s.Layout.Height = StyleLength::Px(20.0f);
-        YogaAdapter::ApplyStyle(n, s);
+        YogaAdapter::ApplyStyle(n, s, kNoViewportUnits);
         return n;
     };
 
@@ -176,14 +180,14 @@ TEST(LayoutYogaTests, DisplayFlexWithoutFlexDirectionDefaultsToRow)
     YGNodeRef root = YogaAdapter::CreateNode();
     ResolvedStyle rootStyle;
     rootStyle.Layout.DisplayMode = DisplayMode::Flex; // mimic CSS display:flex without flex-direction
-    YogaAdapter::ApplyStyle(root, rootStyle);
+    YogaAdapter::ApplyStyle(root, rootStyle, kNoViewportUnits);
 
     auto makeChild = [](){
         YGNodeRef n = YogaAdapter::CreateNode();
         ResolvedStyle s;
         s.Layout.Width = StyleLength::Px(100.0f);
         s.Layout.Height = StyleLength::Px(10.0f);
-        YogaAdapter::ApplyStyle(n, s);
+        YogaAdapter::ApplyStyle(n, s, kNoViewportUnits);
         return n;
     };
 
@@ -219,9 +223,9 @@ TEST(LayoutYogaTests, JustifyContentVariantsLTRandRTL)
         rs.Layout.HasFlexDirection = true;
         rs.Layout.Direction = dir;
         rs.Layout.JustifyContent = jc;
-        YogaAdapter::ApplyStyle(root, rs);
-        YGNodeRef a = YogaAdapter::CreateNode(); ResolvedStyle sa; sa.Layout.Width = StyleLength::Px(100.0f); sa.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(a, sa);
-        YGNodeRef b = YogaAdapter::CreateNode(); ResolvedStyle sb; sb.Layout.Width = StyleLength::Px(100.0f); sb.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(b, sb);
+        YogaAdapter::ApplyStyle(root, rs, kNoViewportUnits);
+        YGNodeRef a = YogaAdapter::CreateNode(); ResolvedStyle sa; sa.Layout.Width = StyleLength::Px(100.0f); sa.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(a, sa, kNoViewportUnits);
+        YGNodeRef b = YogaAdapter::CreateNode(); ResolvedStyle sb; sb.Layout.Width = StyleLength::Px(100.0f); sb.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(b, sb, kNoViewportUnits);
         YGNodeInsertChild(root, a, 0); YGNodeInsertChild(root, b, 1);
         YogaAdapter::CalculateLayout(root, 300, 50);
         float xA = YGNodeLayoutGetLeft(a); float xB = YGNodeLayoutGetLeft(b);
@@ -261,10 +265,10 @@ TEST(LayoutYogaTests, AlignItemsAndAlignSelf)
     rs.Layout.HasFlexDirection = true;
     rs.Layout.Height = StyleLength::Px(100.0f);
     rs.Layout.AlignItems = AlignItems::FlexEnd;
-    YogaAdapter::ApplyStyle(root, rs);
+    YogaAdapter::ApplyStyle(root, rs, kNoViewportUnits);
 
-    YGNodeRef a = YogaAdapter::CreateNode(); ResolvedStyle sa; sa.Layout.Width = StyleLength::Px(50.0f); sa.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(a, sa);
-    YGNodeRef b = YogaAdapter::CreateNode(); ResolvedStyle sb; sb.Layout.Width = StyleLength::Px(50.0f); sb.Layout.Height = StyleLength::Px(10.0f); sb.Layout.AlignSelf = AlignItems::FlexStart; YogaAdapter::ApplyStyle(b, sb);
+    YGNodeRef a = YogaAdapter::CreateNode(); ResolvedStyle sa; sa.Layout.Width = StyleLength::Px(50.0f); sa.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(a, sa, kNoViewportUnits);
+    YGNodeRef b = YogaAdapter::CreateNode(); ResolvedStyle sb; sb.Layout.Width = StyleLength::Px(50.0f); sb.Layout.Height = StyleLength::Px(10.0f); sb.Layout.AlignSelf = AlignItems::FlexStart; YogaAdapter::ApplyStyle(b, sb, kNoViewportUnits);
 
     YGNodeInsertChild(root, a, 0); YGNodeInsertChild(root, b, 1);
     YogaAdapter::CalculateLayout(root, 200, 100);
@@ -290,9 +294,9 @@ TEST(LayoutYogaTests, FlexGrowDistribution)
     ResolvedStyle rs;
     rs.Layout.FlexDirection = FlexDirection::Row;
     rs.Layout.HasFlexDirection = true;
-    YogaAdapter::ApplyStyle(root, rs);
-    YGNodeRef a = YogaAdapter::CreateNode(); ResolvedStyle sa; sa.Layout.FlexGrow = 1; sa.Layout.Width = StyleLength::Px(0.0f); sa.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(a, sa);
-    YGNodeRef b = YogaAdapter::CreateNode(); ResolvedStyle sb; sb.Layout.FlexGrow = 2; sb.Layout.Width = StyleLength::Px(0.0f); sb.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(b, sb);
+    YogaAdapter::ApplyStyle(root, rs, kNoViewportUnits);
+    YGNodeRef a = YogaAdapter::CreateNode(); ResolvedStyle sa; sa.Layout.FlexGrow = 1; sa.Layout.Width = StyleLength::Px(0.0f); sa.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(a, sa, kNoViewportUnits);
+    YGNodeRef b = YogaAdapter::CreateNode(); ResolvedStyle sb; sb.Layout.FlexGrow = 2; sb.Layout.Width = StyleLength::Px(0.0f); sb.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(b, sb, kNoViewportUnits);
     YGNodeInsertChild(root, a, 0); YGNodeInsertChild(root, b, 1);
 
     YogaAdapter::CalculateLayout(root, 300, 20);
@@ -318,10 +322,10 @@ TEST(LayoutYogaTests, AbsolutePositioningDoesNotAffectFlow)
     ResolvedStyle rs;
     rs.Layout.FlexDirection = FlexDirection::Row;
     rs.Layout.HasFlexDirection = true;
-    YogaAdapter::ApplyStyle(root, rs);
+    YogaAdapter::ApplyStyle(root, rs, kNoViewportUnits);
 
-    YGNodeRef abs = YogaAdapter::CreateNode(); ResolvedStyle sa; sa.Layout.PositionType = PositionType::Absolute; sa.Layout.PositionLeft = StyleLength::Px(20); sa.Layout.PositionTop = StyleLength::Px(30); sa.Layout.Width = StyleLength::Px(40.0f); sa.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(abs, sa);
-    YGNodeRef flow = YogaAdapter::CreateNode(); ResolvedStyle sf; sf.Layout.Width = StyleLength::Px(100.0f); sf.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(flow, sf);
+    YGNodeRef abs = YogaAdapter::CreateNode(); ResolvedStyle sa; sa.Layout.PositionType = PositionType::Absolute; sa.Layout.PositionLeft = StyleLength::Px(20); sa.Layout.PositionTop = StyleLength::Px(30); sa.Layout.Width = StyleLength::Px(40.0f); sa.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(abs, sa, kNoViewportUnits);
+    YGNodeRef flow = YogaAdapter::CreateNode(); ResolvedStyle sf; sf.Layout.Width = StyleLength::Px(100.0f); sf.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(flow, sf, kNoViewportUnits);
 
     YGNodeInsertChild(root, abs, 0); YGNodeInsertChild(root, flow, 1);
 
@@ -353,9 +357,9 @@ TEST(LayoutYogaTests, GapWithWrapCreatesInterRowAndInterItemSpacing)
     rs.Layout.RowGap = 10;
     rs.Layout.ColumnGap = 10;
     rs.Layout.AlignContent = AlignContent::FlexStart;
-    YogaAdapter::ApplyStyle(root, rs);
+    YogaAdapter::ApplyStyle(root, rs, kNoViewportUnits);
 
-    auto addChild = [](){ YGNodeRef n = YogaAdapter::CreateNode(); ResolvedStyle s; s.Layout.Width = StyleLength::Px(100.0f); s.Layout.Height = StyleLength::Px(20.0f); YogaAdapter::ApplyStyle(n, s); return n; };
+    auto addChild = [](){ YGNodeRef n = YogaAdapter::CreateNode(); ResolvedStyle s; s.Layout.Width = StyleLength::Px(100.0f); s.Layout.Height = StyleLength::Px(20.0f); YogaAdapter::ApplyStyle(n, s, kNoViewportUnits); return n; };
     YGNodeRef a = addChild(); YGNodeRef b = addChild(); YGNodeRef c = addChild(); YGNodeRef d = addChild();
 
     YGNodeInsertChild(root, a, 0); YGNodeInsertChild(root, b, 1); YGNodeInsertChild(root, c, 2); YGNodeInsertChild(root, d, 3);
@@ -389,9 +393,9 @@ TEST(LayoutYogaTests, FlexShrinkDistribution)
     ResolvedStyle rs;
     rs.Layout.FlexDirection = FlexDirection::Row;
     rs.Layout.HasFlexDirection = true;
-    YogaAdapter::ApplyStyle(root, rs);
-    YGNodeRef a = YogaAdapter::CreateNode(); ResolvedStyle sa; sa.Layout.Width = StyleLength::Px(100.0f); sa.Layout.Height = StyleLength::Px(10.0f); sa.Layout.FlexShrink = 1.0f; YogaAdapter::ApplyStyle(a, sa);
-    YGNodeRef b = YogaAdapter::CreateNode(); ResolvedStyle sb; sb.Layout.Width = StyleLength::Px(100.0f); sb.Layout.Height = StyleLength::Px(10.0f); sb.Layout.FlexShrink = 1.0f; YogaAdapter::ApplyStyle(b, sb);
+    YogaAdapter::ApplyStyle(root, rs, kNoViewportUnits);
+    YGNodeRef a = YogaAdapter::CreateNode(); ResolvedStyle sa; sa.Layout.Width = StyleLength::Px(100.0f); sa.Layout.Height = StyleLength::Px(10.0f); sa.Layout.FlexShrink = 1.0f; YogaAdapter::ApplyStyle(a, sa, kNoViewportUnits);
+    YGNodeRef b = YogaAdapter::CreateNode(); ResolvedStyle sb; sb.Layout.Width = StyleLength::Px(100.0f); sb.Layout.Height = StyleLength::Px(10.0f); sb.Layout.FlexShrink = 1.0f; YogaAdapter::ApplyStyle(b, sb, kNoViewportUnits);
     YGNodeInsertChild(root, a, 0); YGNodeInsertChild(root, b, 1);
 
     YogaAdapter::CalculateLayout(root, 150, 20);
@@ -419,9 +423,9 @@ TEST(LayoutYogaTests, JustifyContentSpaceVariantsLTRandRTL)
         rs.Layout.HasFlexDirection = true;
         rs.Layout.Direction = dir;
         rs.Layout.JustifyContent = jc;
-        YogaAdapter::ApplyStyle(root, rs);
-        YGNodeRef a = YogaAdapter::CreateNode(); ResolvedStyle sa; sa.Layout.Width = StyleLength::Px(100.0f); sa.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(a, sa);
-        YGNodeRef b = YogaAdapter::CreateNode(); ResolvedStyle sb; sb.Layout.Width = StyleLength::Px(100.0f); sb.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(b, sb);
+        YogaAdapter::ApplyStyle(root, rs, kNoViewportUnits);
+        YGNodeRef a = YogaAdapter::CreateNode(); ResolvedStyle sa; sa.Layout.Width = StyleLength::Px(100.0f); sa.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(a, sa, kNoViewportUnits);
+        YGNodeRef b = YogaAdapter::CreateNode(); ResolvedStyle sb; sb.Layout.Width = StyleLength::Px(100.0f); sb.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(b, sb, kNoViewportUnits);
         YGNodeInsertChild(root, a, 0); YGNodeInsertChild(root, b, 1);
         YogaAdapter::CalculateLayout(root, 300, 50);
         float xA = YGNodeLayoutGetLeft(a); float xB = YGNodeLayoutGetLeft(b);
@@ -469,8 +473,8 @@ TEST(LayoutYogaTests, AlignContentVariantsWithMultiLine)
         rs.Layout.HasFlexDirection = true;
         rs.Layout.FlexWrap = true;
         rs.Layout.AlignContent = ac;
-        YogaAdapter::ApplyStyle(root, rs);
-        auto add = [](){ YGNodeRef n = YogaAdapter::CreateNode(); ResolvedStyle s; s.Layout.Width = StyleLength::Px(100.0f); s.Layout.Height = StyleLength::Px(20.0f); YogaAdapter::ApplyStyle(n, s); return n; };
+        YogaAdapter::ApplyStyle(root, rs, kNoViewportUnits);
+        auto add = [](){ YGNodeRef n = YogaAdapter::CreateNode(); ResolvedStyle s; s.Layout.Width = StyleLength::Px(100.0f); s.Layout.Height = StyleLength::Px(20.0f); YogaAdapter::ApplyStyle(n, s, kNoViewportUnits); return n; };
         YGNodeRef a = add(); YGNodeRef b = add(); YGNodeRef c = add(); YGNodeRef d = add();
         YGNodeInsertChild(root, a, 0); YGNodeInsertChild(root, b, 1); YGNodeInsertChild(root, c, 2); YGNodeInsertChild(root, d, 3);
         YogaAdapter::CalculateLayout(root, 210, 100); // 2 per row, 2 rows, total content height 40
@@ -507,10 +511,10 @@ TEST(LayoutYogaTests, OrderSortingReordersAndIsStable)
     ResolvedStyle rs;
     rs.Layout.FlexDirection = FlexDirection::Row;
     rs.Layout.HasFlexDirection = true;
-    YogaAdapter::ApplyStyle(root, rs);
+    YogaAdapter::ApplyStyle(root, rs, kNoViewportUnits);
     // Two equal-width children
-    YGNodeRef a = YogaAdapter::CreateNode(); ResolvedStyle sa; sa.Layout.Width = StyleLength::Px(100.0f); sa.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(a, sa);
-    YGNodeRef b = YogaAdapter::CreateNode(); ResolvedStyle sb; sb.Layout.Width = StyleLength::Px(100.0f); sb.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(b, sb);
+    YGNodeRef a = YogaAdapter::CreateNode(); ResolvedStyle sa; sa.Layout.Width = StyleLength::Px(100.0f); sa.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(a, sa, kNoViewportUnits);
+    YGNodeRef b = YogaAdapter::CreateNode(); ResolvedStyle sb; sb.Layout.Width = StyleLength::Px(100.0f); sb.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(b, sb, kNoViewportUnits);
 
     // B has lower order -> should come first; equals are stable by originalIndex
     std::vector<YogaAdapter::ChildWithOrder> kids = {
@@ -538,10 +542,10 @@ TEST(LayoutYogaTests, UnsettingOrderRestoresOriginalIndex)
     ResolvedStyle rs;
     rs.Layout.FlexDirection = FlexDirection::Row;
     rs.Layout.HasFlexDirection = true;
-    YogaAdapter::ApplyStyle(root, rs);
+    YogaAdapter::ApplyStyle(root, rs, kNoViewportUnits);
     // Two equal-width children inserted A then B
-    YGNodeRef a = YogaAdapter::CreateNode(); ResolvedStyle sa; sa.Layout.Width = StyleLength::Px(100.0f); sa.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(a, sa);
-    YGNodeRef b = YogaAdapter::CreateNode(); ResolvedStyle sb; sb.Layout.Width = StyleLength::Px(100.0f); sb.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(b, sb);
+    YGNodeRef a = YogaAdapter::CreateNode(); ResolvedStyle sa; sa.Layout.Width = StyleLength::Px(100.0f); sa.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(a, sa, kNoViewportUnits);
+    YGNodeRef b = YogaAdapter::CreateNode(); ResolvedStyle sb; sb.Layout.Width = StyleLength::Px(100.0f); sb.Layout.Height = StyleLength::Px(10.0f); YogaAdapter::ApplyStyle(b, sb, kNoViewportUnits);
 
     // Both orders default (unset) -> stable original order A,B
     std::vector<YogaAdapter::ChildWithOrder> kids = {
@@ -573,9 +577,9 @@ TEST(LayoutYogaTests, OrderWithWrapReordersAcrossLines)
     rs.Layout.HasFlexDirection = true;
     rs.Layout.FlexWrap = true;
     rs.Layout.AlignContent = AlignContent::FlexStart;
-    YogaAdapter::ApplyStyle(root, rs);
+    YogaAdapter::ApplyStyle(root, rs, kNoViewportUnits);
 
-    auto add = [](){ YGNodeRef n = YogaAdapter::CreateNode(); ResolvedStyle s; s.Layout.Width = StyleLength::Px(100.0f); s.Layout.Height = StyleLength::Px(20.0f); YogaAdapter::ApplyStyle(n, s); return n; };
+    auto add = [](){ YGNodeRef n = YogaAdapter::CreateNode(); ResolvedStyle s; s.Layout.Width = StyleLength::Px(100.0f); s.Layout.Height = StyleLength::Px(20.0f); YogaAdapter::ApplyStyle(n, s, kNoViewportUnits); return n; };
     YGNodeRef a = add(); YGNodeRef b = add(); YGNodeRef c = add(); YGNodeRef d = add();
 
     // Orders: b(-1), d(0), c(1), a(2) -> two rows: (b,d) then (c,a)
@@ -606,9 +610,9 @@ TEST(LayoutYogaTests, ColumnDirectionOrderAffectsVerticalPositions)
     if (!YogaAdapter::IsAvailable()) { GTEST_SKIP() << "Yoga not available"; }
 
     YGNodeRef root = YogaAdapter::CreateNode();
-    ResolvedStyle rs; rs.Layout.FlexDirection = FlexDirection::Column; YogaAdapter::ApplyStyle(root, rs);
+    ResolvedStyle rs; rs.Layout.FlexDirection = FlexDirection::Column; YogaAdapter::ApplyStyle(root, rs, kNoViewportUnits);
 
-    auto add = [](){ YGNodeRef n = YogaAdapter::CreateNode(); ResolvedStyle s; s.Layout.Height = StyleLength::Px(10.0f); s.Layout.Width = StyleLength::Px(50.0f); YogaAdapter::ApplyStyle(n, s); return n; };
+    auto add = [](){ YGNodeRef n = YogaAdapter::CreateNode(); ResolvedStyle s; s.Layout.Height = StyleLength::Px(10.0f); s.Layout.Width = StyleLength::Px(50.0f); YogaAdapter::ApplyStyle(n, s, kNoViewportUnits); return n; };
     YGNodeRef a = add(); YGNodeRef b = add(); YGNodeRef c = add();
 
     // b(-1), a(0), c(1) -> y positions 0,10,20 respectively
@@ -638,7 +642,7 @@ TEST(LayoutYogaTests, NestedContainersOrderAppliedIndependently)
     ResolvedStyle rs;
     rs.Layout.FlexDirection = FlexDirection::Row;
     rs.Layout.HasFlexDirection = true;
-    YogaAdapter::ApplyStyle(root, rs);
+    YogaAdapter::ApplyStyle(root, rs, kNoViewportUnits);
 
     // Two containers each 200px wide, with two 100px children
     auto makeContainer = [](){
@@ -648,10 +652,10 @@ TEST(LayoutYogaTests, NestedContainersOrderAppliedIndependently)
         ps.Layout.HasFlexDirection = true;
         ps.Layout.Width = StyleLength::Px(200.0f);
         ps.Layout.Height = StyleLength::Px(40.0f);
-        YogaAdapter::ApplyStyle(p, ps);
+        YogaAdapter::ApplyStyle(p, ps, kNoViewportUnits);
         return p;
     };
-    auto makeChild = [](){ YGNodeRef n = YogaAdapter::CreateNode(); ResolvedStyle s; s.Layout.Width = StyleLength::Px(100.0f); s.Layout.Height = StyleLength::Px(20.0f); YogaAdapter::ApplyStyle(n, s); return n; };
+    auto makeChild = [](){ YGNodeRef n = YogaAdapter::CreateNode(); ResolvedStyle s; s.Layout.Width = StyleLength::Px(100.0f); s.Layout.Height = StyleLength::Px(20.0f); YogaAdapter::ApplyStyle(n, s, kNoViewportUnits); return n; };
 
     YGNodeRef p0 = makeContainer(); YGNodeRef p1 = makeContainer();
     YGNodeRef a0 = makeChild(); YGNodeRef b0 = makeChild(); // inside p0

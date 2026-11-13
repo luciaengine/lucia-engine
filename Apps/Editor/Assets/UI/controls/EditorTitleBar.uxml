@@ -1,0 +1,9 @@
+<UIElement>
+  <UIElement id="title-bar-icon" class="title-bar-icon" />
+  <UIElement id="title-bar-menus" class="title-bar-menus" />
+  <Button id="title-bar-overflow" class="title-bar-menu title-bar-overflow" text="Menus" />
+  <Label id="title-bar-title" class="title-bar-title" />
+  <Label id="title-bar-minimize" class="title-bar-caption-icon" />
+  <Label id="title-bar-maximize" class="title-bar-caption-icon" />
+  <Label id="title-bar-close" class="title-bar-caption-icon title-bar-close" />
+</UIElement>

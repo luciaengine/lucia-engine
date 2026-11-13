@@ -46,7 +46,7 @@ std::optional<RingSpot> RingWalk::FirstCrossing(const Vector2& from, const Vecto
         if (!fractions || fractions->x >= nearest)
             continue;
         nearest = fractions->x;
-        first = RingSpot{a + (b - a) * fractions->y, m_Start[i] + (b - a).Length() * fractions->y, i};
+        first = RingSpot{Mathematics::Lerp(a, b, fractions->y), m_Start[i] + (b - a).Length() * fractions->y, i};
     }
     return first;
 }

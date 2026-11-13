@@ -96,6 +96,8 @@ struct Animator
     char assignedAnimation[kAnimationNameCapacity] = {};
     char rootNode[kNodePathCapacity] = {};
     char rootMotionTrack[kNodePathCapacity] = {};
+    // Playback rate. Clip, timeline and graph sources read it each tick, so a change
+    // applies on the next tick.
     float32 speedScale = 1.0f;
     float32 blendSeconds = 0.0f;
     float32 seekTimeSeconds = 0.0f;
@@ -114,15 +116,16 @@ struct Animator
     AnimatorCallbackMethod callbackMethod = AnimatorCallbackMethod::Deferred;
     AnimatorDiscreteCallbackMode discreteCallbackMode = AnimatorDiscreteCallbackMode::Recessive;
 
-    // [DoNotSerialize] GraphStore handle. 0 = none.
+    // [DoNotSerialize] @ge-readonly GraphStore handle. 0 = none.
     uint64 graphRuntimeId = 0;
-    // [DoNotSerialize] AnimationEventCollectorStore handle: the events this
+    // [DoNotSerialize] @ge-readonly AnimationEventCollectorStore handle: the events this
     // animator's playback fired in the last animation wave. 0 = none yet;
     // AnimationEventCollectorSystem gives one at the start of the next wave.
     uint64 eventCollectorId = 0;
-    // [DoNotSerialize] GUID the current graphRuntimeId was instantiated from.
+    // [DoNotSerialize] @ge-readonly GUID the current graphRuntimeId was instantiated from.
     GUID graphInstanceGuid{};
-    // [DoNotSerialize] Pause freezes graph DeltaTime without destroying the player.
+    // [DoNotSerialize] @ge-readonly Pause freezes graph DeltaTime without destroying the player;
+    // AnimationGraphSystem writes it.
     bool graphPaused = false;
     uint8 pendingGraphParamCount = 0;
     AnimatorGraphParamWrite pendingGraphParams[kPendingGraphParamCapacity] = {};
@@ -159,27 +162,38 @@ struct Animator
         source = AnimatorPlaybackSource::Clip;
     }
 
-    std::string_view AssignedAnimation() const { return assignedAnimation; }
-    std::string_view RootNode() const { return rootNode; }
-    std::string_view RootMotionTrack() const { return rootMotionTrack; }
+    template <size_t Capacity>
+    static void CopyFixedString(char (&target)[Capacity], std::string_view value)
+    {
+        std::memset(target, 0, sizeof(target));
+        const size_t count = std::min(value.size(), sizeof(target) - 1);
+        if (count > 0)
+            std::memcpy(target, value.data(), count);
+    }
+
+    std::string_view AssignedAnimation() const { return FixedStringView(assignedAnimation); }
+    std::string_view RootNode() const { return FixedStringView(rootNode); }
+    std::string_view RootMotionTrack() const { return FixedStringView(rootMotionTrack); }
 
     void SetAssignedAnimation(std::string_view animationName)
     {
-        CopyToFixedString(assignedAnimation, animationName);
+        CopyFixedString(assignedAnimation, animationName);
     }
 
     void SetRootNode(std::string_view path)
     {
-        CopyToFixedString(rootNode, path);
+        CopyFixedString(rootNode, path);
     }
 
     void SetRootMotionTrack(std::string_view track)
     {
-        CopyToFixedString(rootMotionTrack, track);
+        CopyFixedString(rootMotionTrack, track);
     }
 
     // Hard-cut to a named embedded clip (or first embedded clip if the name
-    // is empty). Consumed for Clip source by ProcessClipAnimatorCommands.
+    // is empty). The clip starts from 0, also when it already plays, so call it once when the
+    // state changes: a call each frame holds the clip at its first frame.
+    // Consumed for Clip source by ProcessClipAnimatorCommands.
     void PlayState(std::string_view animationName)
     {
         ClearClipSource();

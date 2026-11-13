@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineIdentifiers.h"
+#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
 #include <cstdint>
@@ -50,6 +50,8 @@ struct RGFullscreenDesc
     std::span<const RGFullscreenTextureInput> Textures{};
     std::span<const RGFullscreenBufferInput> Buffers{};
     RGTexture Target{};
+    // Color attachment 1, with Ops and the size of Target. Invalid = one output.
+    RGTexture SecondTarget{};
     RGAttachmentOps Ops{}; // Load for blend-composite, DontCare for overwrite
     // Viewport/scissor. 0 => the Target's RGResourceDesc dimensions; pass the
     // view's render size explicitly when the physical target is larger (view
@@ -60,9 +62,10 @@ struct RGFullscreenDesc
 
 // Declares the reads/attachment and records the canonical fullscreen body.
 // Capacity: at most kMaxFullscreenTextureInputs/kMaxFullscreenBufferInputs
-// inputs (asserted). Frame-owned pass state copies the input spans.
+// inputs. Frame-owned pass state copies the input spans. Declarations over either cap
+// are refused without adding a partial pass; an error names the pass and its cap.
 inline constexpr uint32_t kMaxFullscreenTextureInputs = 20;
-inline constexpr uint32_t kMaxFullscreenBufferInputs = 4;
+inline constexpr uint32_t kMaxFullscreenBufferInputs = 6;
 RGPass AddFullscreenPass(RGFrame& frame, const RGFullscreenDesc& desc);
 
 // The self-read snapshot: copy `source` into `dest` so a composite pass can

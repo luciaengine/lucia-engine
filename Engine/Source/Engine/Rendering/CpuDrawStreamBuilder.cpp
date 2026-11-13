@@ -7,9 +7,10 @@
 #include "Engine/Rendering/WorldDrawBuilder.h"
 #include "Engine/Rendering/WorldDrawTypes.h"
 #include "JobSystem/ParallelAlgorithms.h"
-#include "Rendering/CameraDerivation.h"
+#include "Rendering/Camera/CameraDerivation.h"
 #include "Rendering/Common/Frustum.h"
 #include "Rendering/Core/GPUCulling.h"
+#include "Rendering/Core/GPUInstanceDepthClass.h"
 #include "Rendering/Core/GPUScene.h"
 
 #include <algorithm>
@@ -29,7 +30,7 @@ enum CandidateState : uint8_t
 {
     kRejected = 0,
     kResolvedBit = 1u << 0,
-    kVisibleBit = 1u << 1, // inside the view frustum
+    kVisibleBit = 1u << 1, // inside the view frustum and drawn in color (not shadows only)
     kCasterBit = 1u << 2,  // castShadows submission flag
 };
 
@@ -45,6 +46,27 @@ uint64_t MakeBatchKey(uint32_t materialIndex, uint32_t meshIndex)
     return (static_cast<uint64_t>(materialIndex) << 32) | meshIndex;
 }
 } // namespace
+
+// ParallelFor hands every worker a pointer to the caller's functor, so a range
+// body that captures by reference reads the calling thread's stack on every
+// iteration, while the calling thread runs a range of its own and writes its
+// per-call temporaries (the sphere centre TestSphereFrustum takes by reference)
+// a few bytes away. When the two share a cache line, which depends only on the
+// stack depth at the call, each sphere test on the calling thread invalidates
+// the line every worker reads. Each range therefore copies this block once and
+// reads only that copy and the objects it points at.
+struct CpuDrawStreamBuilder::CullInputs
+{
+    const WorldSubmissionRecord* Records = nullptr;
+    const Rendering::MeshGPURegistry* MeshRegistry = nullptr;
+    const Rendering::GPUInstance* Instances = nullptr;
+    size_t InstanceCount = 0;
+    // The view's render origin sector; Planes take points relative to its origin.
+    Mathematics::Vector3Int OriginSector{0, 0, 0};
+    Rendering::Vector4 Planes[6];
+    // The view is the editor Scene View: its camera and caster sets leave out what the eye hides.
+    bool DropEditorHidden = false;
+};
 
 void CpuDrawStreamBuilder::Clear()
 {
@@ -96,60 +118,30 @@ void CpuDrawStreamBuilder::BuildView(Rendering::ViewId viewId, const WorldDrawBu
     if (submissions.empty())
         return;
 
-    // Cull camera-relative, in the SAME arithmetic the GPU frustum cull uses
-    // (SortedTransparentCull.h documents the equivalence): planes translated by
-    // the view's render origin, centres differenced against it. At origin
-    // (0,0,0) both steps are bit-for-bit no-ops.
     const Rendering::CameraData cam = views.ResolveCameraData(viewId);
-    const Rendering::CameraDerivedData camDerived = Rendering::DeriveCameraData(cam);
-    Rendering::Vector4 planes[6];
-    Rendering::ExtractFrustumPlanes(camDerived.ViewProjMatrix, planes);
-    Rendering::Vector3 origin{0.0f, 0.0f, 0.0f};
-    {
-        const auto originSector =
-            ComputeRenderOriginSector(cam.cameraPos[0], cam.cameraPos[1], cam.cameraPos[2]);
-        SectorToWorld(originSector, origin.x, origin.y, origin.z);
-    }
-    Rendering::MakeFrustumPlanesCameraRelative(planes, origin);
-
     const std::vector<Rendering::GPUInstance>& instances = scene.GetInstances();
-    const size_t instanceCount = instances.size();
+
+    CullInputs inputs;
+    inputs.Records = submissions.data();
+    inputs.MeshRegistry = &meshRegistry;
+    inputs.Instances = instances.data();
+    inputs.InstanceCount = instances.size();
+    const Rendering::ViewDesc* view = views.FindViewDesc(viewId);
+    inputs.DropEditorHidden = view != nullptr && view->DropsEditorHidden();
+    // Cull relative to the view's render origin, in the arithmetic the GPU frustum
+    // cull uses: planes from the rebased view-projection, each center composed
+    // against the origin sector (SectorLocalPointRelativeTo).
+    Rendering::ExtractFrustumPlanes(cam.viewProjRel, inputs.Planes);
+    inputs.OriginSector = CameraRenderOriginSector(cam);
 
     m_Candidates.resize(submissions.size());
     Candidate* candidates = m_Candidates.data();
-    const WorldSubmissionRecord* records = submissions.data();
 
     // Resolve + cull every submission independently: no shared writes, one
     // slot per input, so the fan-out needs no synchronisation and the
     // compaction below stays deterministic regardless of chunk order.
-    auto resolveRange = [&](size_t begin, size_t end) {
-        for (size_t i = begin; i < end; ++i)
-        {
-            const WorldSubmissionRecord& rec = records[i];
-            Candidate& out = candidates[i];
-            out.State = kRejected;
-
-            if (!rec.material || !rec.material->GetGraphicsPipelineId().IsValid())
-                continue;
-            const Rendering::MeshGPUEntry* entry = meshRegistry.Find(rec.meshHandle);
-            if (!entry || entry->gpuMeshIndex == ~0u || entry->indexCount == 0u)
-                continue;
-            if (rec.instanceIndex >= instanceCount)
-                continue; // not resident in GPUScene yet (first frame after spawn)
-
-            out.Key = MakeBatchKey(rec.material->GetGpuSceneMaterialIndex(), entry->gpuMeshIndex);
-            out.Instance = rec.instanceIndex;
-
-            const Rendering::GPUInstance& inst = instances[rec.instanceIndex];
-            const Rendering::Vector3 center(inst.boundingCenter.x - origin.x,
-                                            inst.boundingCenter.y - origin.y,
-                                            inst.boundingCenter.z - origin.z);
-            out.State = kResolvedBit;
-            if (Rendering::TestSphereFrustum(center, inst.boundingRadius, planes))
-                out.State |= kVisibleBit;
-            if ((rec.flags & kSubmissionFlagCastShadows) != 0u)
-                out.State |= kCasterBit;
-        }
+    const auto resolveRange = [&inputs, candidates](size_t begin, size_t end) {
+        ResolveAndCullRange(inputs, candidates, begin, end);
     };
     JobSystem::ParallelFor(pool, submissions.size(), resolveRange, kCullMinBatchSize);
 
@@ -177,6 +169,38 @@ void CpuDrawStreamBuilder::BuildView(Rendering::ViewId viewId, const WorldDrawBu
     ViewLists& viewLists = m_ByView[viewId];
     m_Stats.CameraBatches += EmitLists(viewLists, InstanceSet::Camera, m_CameraEntries, pool);
     m_Stats.ShadowBatches += EmitLists(viewLists, InstanceSet::ShadowCasters, m_ShadowEntries, pool);
+}
+
+void CpuDrawStreamBuilder::ResolveAndCullRange(CullInputs inputs, Candidate* candidates,
+                                               size_t begin, size_t end)
+{
+    for (size_t i = begin; i < end; ++i)
+    {
+        const WorldSubmissionRecord& rec = inputs.Records[i];
+        Candidate& out = candidates[i];
+        out.State = kRejected;
+
+        if (!rec.material || !rec.material->GetGraphicsPipelineId().IsValid())
+            continue;
+        const Rendering::MeshGPUEntry* entry = inputs.MeshRegistry->Find(rec.meshHandle);
+        if (!entry || entry->gpuMeshIndex == ~0u || entry->indexCount == 0u)
+            continue;
+        if (rec.instanceIndex >= inputs.InstanceCount)
+            continue; // not resident in GPUScene yet (first frame after spawn)
+
+        out.Key = MakeBatchKey(rec.material->GetGpuSceneMaterialIndex(), entry->gpuMeshIndex);
+        out.Instance = rec.instanceIndex;
+
+        const Rendering::GPUInstance& inst = inputs.Instances[rec.instanceIndex];
+        const Rendering::Vector3 center = Rendering::SectorLocalPointRelativeTo(
+            inst.boundingCenter, inst.sectorPacked[0], inst.sectorPacked[1], inputs.OriginSector);
+        out.State = kResolvedBit;
+        if (Rendering::InstanceInColorPass(rec.flags, inputs.DropEditorHidden) &&
+            Rendering::TestSphereFrustum(center, inst.boundingRadius, inputs.Planes))
+            out.State |= kVisibleBit;
+        if (Rendering::InstanceInShadowPass(rec.flags, inputs.DropEditorHidden))
+            out.State |= kCasterBit;
+    }
 }
 
 uint32_t CpuDrawStreamBuilder::EmitLists(ViewLists& view, InstanceSet set,
@@ -214,7 +238,7 @@ uint32_t CpuDrawStreamBuilder::EmitLists(ViewLists& view, InstanceSet set,
             if (entries[keyEnd].Instance != entries[keyEnd - 1].Instance)
                 view.Indices.push_back(entries[keyEnd].Instance);
         }
-        index.push_back(KeyedList{key, InstanceList{first, static_cast<uint32_t>(view.Indices.size()) - first}});
+        index.emplace(key, InstanceList{first, static_cast<uint32_t>(view.Indices.size()) - first});
         ++batches;
         keyBegin = keyEnd;
     }
@@ -228,12 +252,10 @@ CpuDrawStreamBuilder::InstanceList CpuDrawStreamBuilder::GetInstances(
     if (itView == m_ByView.end())
         return {};
     const auto& index = itView->second.Index[static_cast<size_t>(set)];
-    const uint64_t key = MakeBatchKey(materialIndex, meshIndex);
-    auto itKey = std::lower_bound(index.begin(), index.end(), key,
-                                  [](const KeyedList& entry, uint64_t k) { return entry.Key < k; });
-    if (itKey == index.end() || itKey->Key != key)
+    auto itKey = index.find(MakeBatchKey(materialIndex, meshIndex));
+    if (itKey == index.end())
         return {};
-    return itKey->List;
+    return itKey->second;
 }
 
 std::span<const uint32_t> CpuDrawStreamBuilder::GetIndexList(Rendering::ViewId viewId) const

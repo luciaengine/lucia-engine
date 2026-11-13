@@ -2,6 +2,7 @@
 
 #include "Mathematics/Curve.h"
 #include "Mathematics/Easing.h"
+#include "Mathematics/Interpolation.h"
 #include "Types/Types.h"
 
 #include <algorithm>
@@ -161,8 +162,8 @@ struct ValueCurve
 inline float32 EvaluateValueCurveCubicBezier01(const ValueCurve& curve, float32 normalizedTime)
 {
     return Math::EvalCubicBezierAnchored01(
-        std::clamp(curve.CubicBezierAnchorStartY, 0.0f, 1.0f),
-        std::clamp(curve.CubicBezierAnchorEndY, 0.0f, 1.0f),
+        Math::Clamp01(curve.CubicBezierAnchorStartY),
+        Math::Clamp01(curve.CubicBezierAnchorEndY),
         curve.CubicBezierControl1X,
         curve.CubicBezierControl1Y,
         curve.CubicBezierControl2X,
@@ -172,7 +173,7 @@ inline float32 EvaluateValueCurveCubicBezier01(const ValueCurve& curve, float32 
 
 inline float32 EvaluateValueCurve01(const ValueCurve& curve, float32 normalizedTime)
 {
-    const float32 t01 = std::clamp(normalizedTime, 0.0f, 1.0f);
+    const float32 t01 = Math::Clamp01(normalizedTime);
     if (curve.ShapeMode == ValueCurveShapeMode::CubicBezier)
         return EvaluateValueCurveCubicBezier01(curve, t01);
     if (curve.UseBuiltinEasing)
@@ -207,7 +208,7 @@ inline float32 EvaluateValueCurveValue(const ValueCurve& curve, float32 elapsedS
         }
         else
         {
-            t01 = std::clamp(cycleT, 0.0f, 1.0f);
+            t01 = Math::Clamp01(cycleT);
         }
     }
 

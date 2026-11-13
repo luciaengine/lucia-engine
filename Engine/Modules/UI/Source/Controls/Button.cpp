@@ -2,17 +2,31 @@
 
 #include "Input/KeyCodes.h"
 #include "UI/Controls/Label.h"
+#include "UI/Layout/ElementOverrideHelpers.h"
 #include "UI/ModuleOwnedHandlers.h"
 #include "UI/UIEvents.h"
+#include "UI/UIManager.h"
 
 #include <utility>
 
 namespace GameEngine
 {
+float Button::WidthForText(std::string_view text) const
+{
+    UIManager* ui = GetOwnerManager();
+    if (!ui || !m_LabelChild)
+        return 0.0f;
+    const float measured = ui->MeasureTextWidth(*m_LabelChild, text);
+    if (measured <= 0.0f)
+        return 0.0f;
+    const auto& labelLayout = m_LabelChild->GetResolvedStyle().Layout;
+    return measured + UI::Layout::HorizontalInsetPx(*this) + UI::Layout::HorizontalInsetPx(*m_LabelChild) +
+           labelLayout.Margin.Left + labelLayout.Margin.Right;
+}
 
 Button::Button()
 {
-    // Control styling is an Editor-shipped UIStyle asset.
+    // Control styling is a UI module UIStyle asset.
     AddClass("button");
     RequestSubtreeStyleAssetPath("UI/controls/Button.css", "editor");
 

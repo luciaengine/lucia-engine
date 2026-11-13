@@ -14,22 +14,23 @@
 #include "MarkupECS/MarkupRegionArea.h"
 #include "MarkupECS/MarkupRegionOutline.h"
 #include "MarkupECS/MarkupService.h"
-#include "Markups/ConvertMarkupToRegionCommand.h"
+#include "Markups/ConvertMarkupShapeCommand.h"
 #include "Markups/MarkupPathPort.h"
-#include "Markups/MarkupRegionDisplay.h"
+#include "Markups/MarkupRegion/MarkupRegionDisplay.h"
 #include "Markups/MarkupEditorBridge.h"
 #include "Markups/MarkupNotesEditCommand.h"
 #include "Markups/MarkupPresentation.h"
-#include "Markups/MarkupRegionPort.h"
+#include "Markups/MarkupRegion/MarkupRegionPort.h"
 #include "Mathematics/Quaternion.h"
 #include "Mathematics/Vector3.h"
 #include "SceneView/SceneViewFraming.h"
-#include "SceneViewController.h"
+#include "SceneView/SceneViewController.h"
+#include "UI/ContextMenuLabels.h"
 #include "UndoRedo/DuplicateEntitiesCommand.h"
 #include "UndoRedo/EntityComponentsEdit.h"
 #include "UndoRedo/GenericEditUndo.h"
 #include "UndoRedo/MultiEntityComponentSnapshot.h"
-#include "UndoRedo/SplineUndoHelpers.h"
+#include "UndoRedo/Spline/SplineUndoHelpers.h"
 #include "UndoRedo/UndoRedoService.h"
 
 #include <algorithm>
@@ -45,6 +46,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -156,7 +158,7 @@ VolumeGeometry ReadGeometry(const ECS::World& world, ECS::EntityHandle entity)
     if (const auto* transform = world.GetComponent<Components::Transform>(entity))
     {
         const Mathematics::Vector3 scale = transform->GetScale();
-        geometry.Center = transform->GetPosition();
+        geometry.Center = transform->GetPosition() - Mathematics::WorldPosition{};
         geometry.Rotation = transform->GetRotation();
         if (geometry.Shape == MarkupVolumeShape::Sphere)
         {
@@ -173,9 +175,10 @@ VolumeGeometry ReadGeometry(const ECS::World& world, ECS::EntityHandle entity)
     return geometry;
 }
 
-// Which run of revisions an answer's `revision` belongs to: the world and its lifecycle
-// reset generation. A reader whose epoch changed since its last answer (the scene was
-// reopened or replaced) lists everything again instead of trusting `since`.
+// When a reader's `since` stops being enough: the world and its lifecycle reset generation.
+// A reader whose epoch changed since its last answer (the scene was reopened, replaced or
+// restored in place by an undo, a redo or the end of play, which can remove mark-ups without
+// a revision) lists everything again instead of trusting `since`.
 std::string Epoch(const ECS::World& world)
 {
     return std::to_string(world.GetWorldId()) + "." + std::to_string(world.GetLifecycleResetGeneration());
@@ -230,15 +233,6 @@ json BuildRow(const MarkupRequestContext& context, ECS::EntityHandle entity)
     const MarkupECS::MarkupNotes* notes = MarkupService::Get().FindNotes(world, entity);
     const VolumeGeometry geometry = ReadGeometry(world, entity);
 
-    json tags = json::array();
-    if (notes)
-    {
-        for (const uint32 tag : notes->Tags)
-        {
-            if (tag != MarkupService::kInvalidTag)
-                tags.push_back(TagName(tag));
-        }
-    }
     const auto* name = world.GetComponent<Components::Name>(entity);
     const auto* sceneTag = world.GetComponent<Components::SceneEntityTag>(entity);
     Mathematics::Vector3 center = geometry.Center;
@@ -263,7 +257,7 @@ json BuildRow(const MarkupRequestContext& context, ECS::EntityHandle entity)
                 {"title", name ? std::string(name->View()) : std::string()},
                 {"kind", kind},
                 {"status", TagName(markup.Status)},
-                {"tags", tags},
+                {"tags", MarkupTagNames(world, entity)},
                 {"author", AuthorName(markup.Author)},
                 {"updatedBy", AuthorName(markup.UpdatedBy)},
                 {"created", Iso8601(markup.CreatedUnix)},
@@ -273,7 +267,8 @@ json BuildRow(const MarkupRequestContext& context, ECS::EntityHandle entity)
                 {"hasUpdate", context.Bridge->HasUnseenUpdate(world, entity)},
                 {"center", Vector3Json(center)},
                 {"radius", radius},
-                {"entryCount", ReadableEntryCount(notes)}};
+                {"entryCount", ReadableEntryCount(notes)},
+                {"color", ContextMenuLabels::ArgbToHexRGB(MarkupDisplayArgb(markup))}};
 }
 
 // The mark-up `params.entityId` names, or a refusal naming the fix.
@@ -382,7 +377,7 @@ Components::Transform VolumeTransform(MarkupVolumeShape shape, const Mathematics
     const Mathematics::Vector3 scale = shape == MarkupVolumeShape::Sphere
                                            ? Mathematics::Vector3(halfExtents.x, halfExtents.x, halfExtents.x) * 2.0f
                                            : halfExtents * 2.0f;
-    return Components::Transform::FromTRS(center, rotation, scale);
+    return Components::Transform::FromTRS(Mathematics::WorldPosition::FromVector3(center), rotation, scale);
 }
 
 std::optional<json> ReadRotation(const json& value, Mathematics::Quaternion& outRotation)
@@ -482,29 +477,50 @@ ECS::EntityHandle AddMarkupEntity(ECS::World& world, const NewMarkup& added, int
     return entity;
 }
 
+// "<head><tail> <n>" for the smallest n from `from` that no mark-up in the world is titled, as it
+// is stored: `head` is cut so the title fits a Name with `tail` and the number whole.
+std::string FreeNumberedTitle(ECS::World& world, const std::string& head, std::string_view tail, std::size_t& from)
+{
+    constexpr std::size_t kTitleCapacity = sizeof(Components::Name::value) - 1;
+    for (;; ++from)
+    {
+        const std::string suffix = std::string(tail) + " " + std::to_string(from);
+        const std::string title = head.substr(0, kTitleCapacity - suffix.size()) + suffix;
+        bool taken = false;
+        world.Query<ECS::Read<Components::Markup>, ECS::Read<Components::Name>>().Each(
+            [&taken, &title](ECS::EntityHandle, const Components::Markup&, const Components::Name& name) {
+                taken = taken || name.View() == title;
+            });
+        if (!taken)
+            return title;
+    }
+}
+
 // One Exclude region per polygon, parented under `region` (placed by `regionWorld`), titled
-// after it, by the same author with the same status; the new entities are appended to
-// `created` and returned as Exclude members.
+// after it with the next index no mark-up's title uses, by the same author with the same status;
+// the new entities are appended to `created` and returned as Exclude members.
 std::vector<MarkupRegionMember> AddExclusionRegions(ECS::World& world, ECS::EntityHandle region,
-                                                    const float32 (&regionWorld)[16], const NewMarkup& parent,
+                                                    const Mathematics::Matrix4x4& regionWorld, const NewMarkup& parent,
                                                     std::span<const std::vector<Vector2>> exclusions,
                                                     float32 extrudeHeight, int64 nowUnix,
                                                     std::vector<ECS::EntityHandle>& created)
 {
     std::vector<MarkupRegionMember> members;
+    std::size_t index = 1;
     for (std::size_t i = 0; i < exclusions.size(); ++i)
     {
         NewMarkup exclusion = parent;
-        exclusion.Title = parent.Title + " exclusion " + std::to_string(i + 1);
+        exclusion.Title = FreeNumberedTitle(world, parent.Title, " exclusion", index);
         exclusion.Description.clear();
-        const RegionPlacement placement = NewRegionPlacement(exclusions[i], regionWorld, regionWorld[13]);
+        const RegionPlacement placement = NewRegionPlacement(exclusions[i], regionWorld, regionWorld[3].y);
         exclusion.Transform = placement.Local;
         const ECS::EntityHandle entity = AddMarkupEntity(world, exclusion, nowUnix);
         if (!entity.IsValid())
             continue;
         world.AddComponentImmediate(entity, Components::Parent{region});
-        AddRegionParts(world, entity, placement.World.matrix, exclusions[i], Spline::SplineType::Linear,
-                       extrudeHeight);
+        AddRegionParts(world, entity,
+                       placement.World.ToMatrix4x4(placement.World.GetPosition() - Mathematics::WorldPosition{}),
+                       exclusions[i], Spline::SplineType::Linear, extrudeHeight);
         created.push_back(entity);
         members.push_back({entity, MarkupMemberMode::Exclude});
     }
@@ -571,10 +587,12 @@ void AddRegionMarkup(ECS::World& world, const NewMarkup& added, const NewRegion&
     if (!entity.IsValid())
         return;
     created.push_back(entity);
-    AddRegionParts(world, entity, added.Transform.matrix, region.Knots, region.Type, region.ExtrudeHeight);
+    const Mathematics::Matrix4x4 placed =
+        added.Transform.ToMatrix4x4(added.Transform.GetPosition() - Mathematics::WorldPosition{});
+    AddRegionParts(world, entity, placed, region.Knots, region.Type, region.ExtrudeHeight);
     std::vector<MarkupRegionMember> members = region.Members;
     const std::vector<MarkupRegionMember> exclusions = AddExclusionRegions(
-        world, entity, added.Transform.matrix, added, region.Exclusions, region.ExtrudeHeight, nowUnix, created);
+        world, entity, placed, added, region.Exclusions, region.ExtrudeHeight, nowUnix, created);
     members.insert(members.end(), exclusions.begin(), exclusions.end());
     SetRegionMembers(world, entity, members);
 }
@@ -594,7 +612,9 @@ void AddNewMarkup(ECS::World& world, const NewMarkup& added, const NewRegion* re
     if (!entity.IsValid())
         return;
     if (path)
-        AddPathParts(world, entity, added.Transform.matrix, path->Points, path->Type);
+        AddPathParts(world, entity,
+                     added.Transform.ToMatrix4x4(added.Transform.GetPosition() - Mathematics::WorldPosition{}),
+                     path->Points, path->Type);
     else
         world.AddComponentImmediate(entity, MarkupVolume{shape, {}});
     created.push_back(entity);
@@ -760,7 +780,7 @@ json CreateMarkup(const MarkupRequestContext& context, const json& params)
             return *refusal;
         const float32 groundY =
             MarkupTerrainHeightAt(*context.World, MarkupECS::RegionLabelPoint(region.Knots)).value_or(0.0f);
-        added.Transform = NewRegionPlacement(region.Knots, Components::WorldTransform{}.matrix, groundY).Local;
+        added.Transform = NewRegionPlacement(region.Knots, Mathematics::Matrix4x4::Identity(), groundY).Local;
     }
     else
     {
@@ -839,6 +859,12 @@ json CreateMarkup(const MarkupRequestContext& context, const json& params)
         answer["exclusionIds"] = std::move(exclusions);
     }
     return SceneRevision(world, std::move(answer));
+}
+
+std::string FreeMarkupTitle(ECS::World& world, const std::string& name)
+{
+    std::size_t from = 1;
+    return FreeNumberedTitle(world, name, {}, from);
 }
 
 namespace
@@ -953,18 +979,22 @@ void RecordRegionWrite(const MarkupRequestContext& context, UndoRedoService::Sna
     edit.Commit();
 }
 
-// What markup_update changes on a region, or converts a volume into one, read before anything
-// is written.
+// What markup_update changes on a region, or converts a volume into (a region or a path), read
+// before anything is written.
 struct RegionUpdate
 {
     bool Convert = false; // a volume becomes a region (kind: "region")
+    std::optional<ConvertedPath> ToPath; // a volume becomes a path (kind: "path" with points)
     std::optional<std::vector<Vector2>> Knots;
     std::optional<Spline::SplineType> Type;
     std::optional<float32> ExtrudeHeight;
     std::optional<std::vector<MarkupRegionMember>> Members;
     std::vector<std::vector<Vector2>> Exclusions;
 
-    bool Any() const { return Convert || Knots || Type || ExtrudeHeight || Members || !Exclusions.empty(); }
+    bool Any() const
+    {
+        return Convert || ToPath || Knots || Type || ExtrudeHeight || Members || !Exclusions.empty();
+    }
 };
 
 bool HasRegionParameter(const json& params)
@@ -984,6 +1014,27 @@ std::optional<json> ReadRegionUpdate(const MarkupRequestContext& context, const 
 {
     const ECS::World& world = *context.World;
     const bool isRegion = world.GetComponent<MarkupRegion>(entity) != nullptr;
+    if (params.contains("kind") && params["kind"] == "path")
+    {
+        if (isRegion)
+            return Refusal("A region does not become a path; the conversion is from a box or a sphere");
+        if (HasVolumeParameter(params) || params.contains("outline") || params.contains("extrudeHeight") ||
+            params.contains("members") || params.contains("exclusions"))
+            return Refusal("A path's shape is its points: pass points and type, not a volume's or a region's fields");
+        if (!params.contains("points"))
+            return Refusal("Converting to a path takes points: [[x, y, z], ...] in meters, 2 to 256 along the way");
+        ConvertedPath& path = out.ToPath.emplace();
+        if (auto refusal = ReadPathPoints(params["points"], path.Points))
+            return RefuseRequest(*refusal);
+        if (params.contains("type"))
+        {
+            if (auto refusal = ReadRegionType(params["type"], path.Type))
+                return RefuseRequest(*refusal);
+        }
+        return std::nullopt;
+    }
+    if (params.contains("points"))
+        return Refusal("points belong to a path: pass kind: \"path\" to convert this volume");
     if (params.contains("kind"))
     {
         if (params["kind"] == "region")
@@ -991,7 +1042,8 @@ std::optional<json> ReadRegionUpdate(const MarkupRequestContext& context, const 
         else if (params["kind"] == "volume" && isRegion)
             return Refusal("A region does not become a volume again; the conversion is one way");
         else if (params["kind"] != "volume")
-            return Refusal("kind must be \"region\" to convert a volume; a mark-up keeps its kind otherwise");
+            return Refusal("kind must be \"region\" or \"path\" to convert a volume; a mark-up keeps its kind "
+                           "otherwise");
     }
     if (params.contains("closed") && params["closed"] != true)
         return Refusal("A region is always closed; closed: false is refused");
@@ -1072,13 +1124,12 @@ void AddExclusionsToRegion(const MarkupRequestContext& context, ECS::EntityHandl
     parent.Component.Color[0] = parent.Component.Color[1] = parent.Component.Color[2] = parent.Component.Color[3] = 0.0f;
     parent.Author = author;
     const float32 height = world.GetComponent<MarkupRegion>(region)->ExtrudeHeight;
-    Components::WorldTransform regionWorld{};
-    std::copy_n(MarkupPlacement(world, region).Data(), 16, regionWorld.matrix);
+    const Mathematics::Matrix4x4 regionWorld = MarkupPlacement(world, region);
     std::vector<ECS::EntityHandle> created;
     std::vector<MarkupRegionMember> members = CurrentMembers(world, region);
     const auto attach = [&]() {
         const std::vector<MarkupRegionMember> added =
-            AddExclusionRegions(world, region, regionWorld.matrix, parent, exclusions, height, nowUnix, created);
+            AddExclusionRegions(world, region, regionWorld, parent, exclusions, height, nowUnix, created);
         members.insert(members.end(), added.begin(), added.end());
     };
     if (!context.Undo)
@@ -1107,11 +1158,23 @@ void ApplyRegionUpdate(const MarkupRequestContext& context, ECS::EntityHandle en
                        MarkupAuthor author, int64 nowUnix)
 {
     ECS::World& world = *context.World;
-    if (update.Convert)
+    if (update.ToPath)
     {
-        auto command = std::make_unique<ConvertMarkupToRegionCommand>(
-            kConvertToRegionLabel, world, entity, context.Notifications, *update.Knots,
-            update.Type.value_or(Spline::SplineType::Linear), update.ExtrudeHeight.value_or(8.0f));
+        ConvertedPath path = *update.ToPath;
+        StandPathOnGround(world, path.Points);
+        auto command = std::make_unique<ConvertMarkupShapeCommand>(kConvertToPathLabel, world, entity,
+                                                                   context.Notifications, std::move(path));
+        if (context.Undo)
+            context.Undo->Execute(std::move(command));
+        else
+            command->Do();
+    }
+    else if (update.Convert)
+    {
+        auto command = std::make_unique<ConvertMarkupShapeCommand>(
+            kConvertToRegionLabel, world, entity, context.Notifications,
+            ConvertedRegion{*update.Knots, update.Type.value_or(Spline::SplineType::Linear),
+                            update.ExtrudeHeight.value_or(8.0f)});
         if (context.Undo)
             context.Undo->Execute(std::move(command));
         else
@@ -1183,7 +1246,7 @@ json UpdateMarkup(const MarkupRequestContext& context, const json& params)
     if (IsMarkupPath(*context.World, entity) &&
         (params.contains("kind") || params.contains("points") || HasRegionParameter(params) ||
          HasVolumeParameter(params)))
-        return Refusal("A path keeps its kind and its points here: move its points with Edit path in the "
+        return Refusal("A path keeps its kind and its points here: move its points with Edit Path in the "
                        "inspector, or create the path again with markup_create");
     RegionUpdate region;
     if (const auto refusal = ReadRegionUpdate(context, params, entity, region))
@@ -1270,6 +1333,14 @@ json UpdateMarkup(const MarkupRequestContext& context, const json& params)
         context.Bridge->SetHidden(world, {&entity, 1}, *hidden);
 
     return SceneRevision(world, json{{"markup", BuildRow(context, entity)}});
+}
+
+std::optional<json> ResolveMarkupRequest(const MarkupRequestContext& context, const json& params,
+                                         ECS::EntityHandle& outEntity)
+{
+    if (const auto refusal = CheckContext(context))
+        return refusal;
+    return ResolveMarkup(context, params, outEntity);
 }
 
 json CommentOnMarkup(const MarkupRequestContext& context, const json& params)
@@ -1362,6 +1433,17 @@ json ContainsInMarkup(const MarkupRequestContext& context, const json& params)
     return SceneRevision(world, json{{"inside", std::move(inside)}, {"insideCount", count}});
 }
 
+std::optional<MarkupWorldVolume> ReadMarkupFrameVolume(const MarkupRequestContext& context, ECS::EntityHandle markup)
+{
+    // The volume where it is in the world, as the Scene View draws it: a parented mark-up's
+    // local position is not where it stands.
+    if (context.World->GetComponent<MarkupRegion>(markup))
+        return RegionFrameVolume(*context.World, markup);
+    if (IsMarkupPath(*context.World, markup))
+        return PathFrameVolume(context, markup);
+    return ReadMarkupWorldVolume(*context.World, markup);
+}
+
 json FrameMarkup(const MarkupRequestContext& context, const json& params, SceneViewCameraPose& outPose)
 {
     if (const auto refusal = CheckContext(context))
@@ -1373,13 +1455,7 @@ json FrameMarkup(const MarkupRequestContext& context, const json& params, SceneV
     Mathematics::Vector3 direction(1.0f, -0.5f, 1.0f);
     if (params.contains("direction") && !ReadVector3(params["direction"], direction))
         return Refusal("direction must be [x, y, z], from the camera toward the mark-up");
-    // The volume where it is in the world, as the Scene View draws it: a parented mark-up's
-    // local position is not where it stands.
-    const std::optional<MarkupWorldVolume> volume = context.World->GetComponent<MarkupRegion>(entity)
-                                                        ? RegionFrameVolume(*context.World, entity)
-                                                    : IsMarkupPath(*context.World, entity)
-                                                        ? PathFrameVolume(context, entity)
-                                                        : ReadMarkupWorldVolume(*context.World, entity);
+    const std::optional<MarkupWorldVolume> volume = ReadMarkupFrameVolume(context, entity);
     if (!volume)
         return Refusal("The mark-up has no shape to frame; a region needs an outline of three points or more");
     float distance = MarkupFrameDistance(*volume, context.FrameTanHalfFov);

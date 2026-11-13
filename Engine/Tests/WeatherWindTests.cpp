@@ -31,12 +31,12 @@ TEST(WeatherWind, RotatedLocalVolumeBlendsRainAtItsBoundaryAndPacksTheSameBounds
     wind.BlendDistance = 2.0f;
     Components::WorldTransform transform{};
     // Rotate the local X extent onto world Z, and translate to x=10.
-    transform.matrix[0] = 0.0f;
-    transform.matrix[2] = 4.0f;
-    transform.matrix[8] = -2.0f;
-    transform.matrix[10] = 0.0f;
-    transform.matrix[5] = 6.0f;
-    transform.matrix[12] = 10.0f;
+    transform.Basis[0].x = 0.0f;
+    transform.Basis[0].z = 4.0f;
+    transform.Basis[2].x = -2.0f;
+    transform.Basis[2].z = 0.0f;
+    transform.Basis[1].y = 6.0f;
+    transform.Position.X = 10.0f;
     AddWind(world, wind, transform);
     EXPECT_FLOAT_EQ(WindVolumeResolver::ResolveAt(world, 10, 0, 0).RainAmount, 0.0f);
     const auto boundary = WindVolumeResolver::ResolveAt(world, 12, 0, 0);

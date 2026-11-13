@@ -13,6 +13,7 @@
 
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 
@@ -60,7 +61,7 @@ TEST(GridViewTests, DropHitTestSkipsStaleUnboundSlots)
     GridView* gridRaw = grid.get();
     // At least two columns at the default cell metrics (icon 80 -> cell
     // 96x120), with headroom for scrollbar gutter/chrome.
-    gridRaw->Overrides()
+    gridRaw->Style()
         .Set(Style::Width, StyleLength::Px(300.0f))
         .Set(Style::Height, StyleLength::Px(160.0f));
     root->AddChild(std::move(grid));
@@ -164,7 +165,7 @@ struct GridClickFixture
         root->SetId("root");
         auto grid = std::make_unique<GridView>();
         Grid = grid.get();
-        Grid->Overrides()
+        Grid->Style()
             .Set(Style::Width, StyleLength::Px(300.0f))
             .Set(Style::Height, StyleLength::Px(160.0f));
         root->AddChild(std::move(grid));
@@ -464,4 +465,27 @@ TEST(GridViewTests, WheelDownUndoesWheelUpOnTheSizeGrid)
             wheel(30.0f);
         EXPECT_FLOAT_EQ(grid.GetIconSize(), snappedStart) << "four detents up then down from " << start;
     }
+}
+
+// ScrollView reads its custom properties by HashStringId. The grid's overrides
+// must use the same key, or the cascade does not deliver them.
+TEST(GridViewTests, ScrollViewReceivesTheGridCustomPropertyOverrides)
+{
+    auto* dev = SharedHeadlessDevice();
+    if (!dev)
+        GTEST_SKIP() << "No device";
+
+    auto root = std::make_unique<UIElement>();
+    auto grid = std::make_unique<GridView>();
+    UIElement* scrollView = grid->GetChildren()[0].get();
+    root->AddChild(std::move(grid));
+
+    UIManager ui(dev);
+    ui.SetRoot(std::move(root));
+    ui.Update(0.0f, /*interactive=*/false);
+
+    const ResolvedStyle& rs = scrollView->GetResolvedStyle();
+    ASSERT_FLOAT_EQ(rs.Layout.FlexGrow, 1.0f) << "the scroll view's style was never resolved";
+    EXPECT_EQ(rs.GetCustomNumber(HashStringId("--ui_scrollview_measure_horizontal")), std::optional<float>(0.0f));
+    EXPECT_EQ(rs.GetCustomNumber(HashStringId("--ui_scrollview_primary_modifier_passthrough")), std::optional<float>(1.0f));
 }

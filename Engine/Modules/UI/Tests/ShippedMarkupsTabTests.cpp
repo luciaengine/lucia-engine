@@ -1,3 +1,4 @@
+#include "Core/ApplicationPaths.h"
 // The Mark-ups panel's view toggle, as the editor ships it: the chosen view's tab, a small
 // secondary button marked markups-tab-chosen, fills with the accent blue and not with the secondary variant's
 // own active color. Read from the staged sheets.
@@ -22,7 +23,7 @@ namespace
 
 std::string ReadShippedCss(const std::string& relative)
 {
-    std::ifstream in(PathUtils::GetExecutableDirectory() / "Assets" / "UI" / relative, std::ios::binary);
+    std::ifstream in(ApplicationPaths::GetExecutableDirectory() / "Assets" / "UI" / relative, std::ios::binary);
     if (!in)
         return {};
     std::ostringstream ss;

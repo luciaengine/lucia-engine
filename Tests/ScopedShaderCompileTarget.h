@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Rendering/Materials/ShaderProfileDefines.h"
+#include "Rendering/Materials/Shader/ShaderProfileDefines.h"
 
 namespace GameEngine::TestSupport
 {

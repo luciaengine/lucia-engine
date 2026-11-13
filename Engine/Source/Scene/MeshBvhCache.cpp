@@ -93,7 +93,7 @@ DiskPlan PlanDisk(const GUID& guid, uint32 submesh, const Mesh& source)
     // Skinned meshes are cached too: the bind-pose BVH is the correct BVH for current
     // bind-pose-only picking. When deformed picking lands later, bumping kBvhBuilderVersion in
     // MeshBvhDiskFormat.h forces a re-bake.
-    if (!view.IsValid() || view.TriangleCount() < kDiskCacheTriThreshold)
+    if (!view.IsValid())
         return plan;
     const auto root = EngineCore::GetInstance().GetAssetManager().GetRegistry().TryGetCacheRoot(guid);
     if (!root.has_value())

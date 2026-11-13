@@ -52,20 +52,19 @@ void VolumetricCloudsParamsUploadNode::DeclareForView(ViewDeclare& d)
     FillVolumetricCloudsParamsUBO(pp, ubo);
 
     // The cloud sun always tracks the primary directional light, with the sky
-    // sun as fallback (ResolveHeightFogSunLighting's chain). The resolved
+    // sun as fallback (ResolveFogSunLighting's chain). The resolved
     // direction points TOWARD the sun — the shader's light-march direction.
-    const float fallbackDir[3] = {ubo.sunDirX, ubo.sunDirY, ubo.sunDirZ};
-    const float fallbackColor[3] = {ubo.sunColorR, ubo.sunColorG, ubo.sunColorB};
-    const ResolvedFogSun sun = ResolveHeightFogSunLighting(
-        d.Services, d.View.id, /*trackDirectionalLight*/ true,
-        /*sunIntensityScale*/ 1.0f, fallbackDir, fallbackColor, ubo.sunIntensity);
-    ubo.sunDirX = sun.direction[0];
-    ubo.sunDirY = sun.direction[1];
-    ubo.sunDirZ = sun.direction[2];
-    ubo.sunColorR = sun.color[0];
-    ubo.sunColorG = sun.color[1];
-    ubo.sunColorB = sun.color[2];
-    ubo.sunIntensity = sun.intensity;
+    const ResolvedFogSun fallback{Mathematics::Vector3(ubo.sunDirX, ubo.sunDirY, ubo.sunDirZ),
+                                  ColorLinear(ubo.sunColorR, ubo.sunColorG, ubo.sunColorB), ubo.sunIntensity};
+    const ResolvedFogSun sun = ResolveFogSunLighting(
+        d.Services, d.View.id, /*trackDirectionalLight*/ true, /*sunIntensityScale*/ 1.0f, fallback);
+    ubo.sunDirX = sun.Direction.x;
+    ubo.sunDirY = sun.Direction.y;
+    ubo.sunDirZ = sun.Direction.z;
+    ubo.sunColorR = sun.Color.r;
+    ubo.sunColorG = sun.Color.g;
+    ubo.sunColorB = sun.Color.b;
+    ubo.sunIntensity = sun.Intensity;
 
     *alloc.Ptr = ubo;
     d.PublishBuffer(m_BufferRef,

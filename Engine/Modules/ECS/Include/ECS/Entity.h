@@ -11,6 +11,7 @@
 #include "ECS/LifecycleEvents.h"
 #include "ECS/AutoRegistration.h"
 #include "ECS/QueryPolicy.h"
+#include "ECS/SimulationClock.h"
 #include "Logger/Logger.h"
 #include <algorithm>
 #include <atomic>
@@ -28,6 +29,7 @@ namespace ECS {
 class World;
 class ArchetypeMatchCache;
 class ArchetypeMatchList;
+struct ScriptWritableRange;
 class ClonePlan;
 class EntityRemap;
 class UnresolvedComponentStore; // ECS/UnresolvedComponentStore.h
@@ -227,7 +229,7 @@ public:
 // Main world class with optimized storage
 class World {
 private:
-    // Archetype performs swap-and-pop defragmentation and must keep per-entity
+    // Archetype moves the table's last row into a removed slot and must keep per-entity
     // metadata (chunkIndex) consistent. World owns the metadata; Archetype updates
     // it via UpdateEntityLocationUnsafe under World's lock.
     friend class Archetype;
@@ -235,6 +237,8 @@ private:
     // Stable identifier for this World instance. Useful for associating
     // renderer views/cameras and other subsystems with a specific ECS world.
     uint64 m_WorldId = 0;
+
+    SimulationClock m_SimulationClock;
 
     // Entity storage. freeIndices is strictly LIFO (push_back/pop_back), so a
     // vector beats a deque: no per-block heap allocations during destroy
@@ -285,11 +289,9 @@ private:
     // OnAdd: invoked after a component is first added to an entity (not on update/set of existing).
     // OnSet: invoked after a component's value is written (both initial add and subsequent updates).
     //
-    // Invoke receives the source entity handle. Callbacks registered via the
-    // legacy `void(*)(T&)` API ignore the entity; the entity-aware
-    // `void(*)(EntityHandle, T&)` API uses it. Both coexist.
+    // Invoke receives the source world and entity; registrations use the context they need.
     struct ComponentHook {
-        void(*Invoke)(EntityHandle, void* componentPtr, void* userData);
+        void(*Invoke)(const World&, EntityHandle, void* componentPtr, void* userData);
         void* UserData = nullptr;             // per-registration context (e.g. typed callback pointer)
         std::size_t ComponentSize;            // sizeof(T), for batch iteration stride
         uint64 RegistrationId = 0;
@@ -376,10 +378,12 @@ public:
     ~World();
 
     uint64 GetWorldId() const { return m_WorldId; }
-
     /// Find a live world by ID on the thread that owns its lifetime.
     static World* FindLiveWorld(uint64 worldId);
-    /// Returns a live world's handle namespace epoch without retaining the world.
+    /// The world fixed-step simulation clock.
+    SimulationClock& GetSimulationClock() { return m_SimulationClock; }
+    const SimulationClock& GetSimulationClock() const { return m_SimulationClock; }
+    /// Returns a live world handle namespace epoch without retaining the world.
     static std::optional<uint64> FindLiveEntityHandleEpoch(uint64 worldId);
     /// Clear invalidates the namespace; serialized undo restores the same namespace.
     uint64 GetEntityHandleEpoch() const { return m_EntityHandleEpoch.load(std::memory_order_relaxed); }
@@ -452,6 +456,12 @@ public:
     // component. Useful for maintaining side indices (e.g. RelationIndex).
     template<Component T>
     ComponentHookToken RegisterOnRemove(void(*callback)(EntityHandle, T&)) {
+        return RegisterComponentHook<T>(ComponentHookKind::Remove, callback);
+    }
+
+    /// Receives the world that owns the removed component and its entity.
+    template<Component T>
+    ComponentHookToken RegisterOnRemove(void(*callback)(const World&, EntityHandle, T&)) {
         return RegisterComponentHook<T>(ComponentHookKind::Remove, callback);
     }
 
@@ -541,21 +551,21 @@ public:
     void InvokeRemoveHook(ComponentTypeId typeId, EntityHandle entity, void* ptr) const {
         auto it = m_OnRemoveHooks.find(typeId);
         if (it != m_OnRemoveHooks.end()) {
-            it->second.Invoke(entity, ptr, it->second.UserData);
+            it->second.Invoke(*this, entity, ptr, it->second.UserData);
         }
     }
 
     void InvokeAddHook(ComponentTypeId typeId, EntityHandle entity, void* ptr) const {
         auto it = m_OnAddHooks.find(typeId);
         if (it != m_OnAddHooks.end()) {
-            it->second.Invoke(entity, ptr, it->second.UserData);
+            it->second.Invoke(*this, entity, ptr, it->second.UserData);
         }
     }
 
     void InvokeSetHook(ComponentTypeId typeId, EntityHandle entity, void* ptr) const {
         auto it = m_OnSetHooks.find(typeId);
         if (it != m_OnSetHooks.end()) {
-            it->second.Invoke(entity, ptr, it->second.UserData);
+            it->second.Invoke(*this, entity, ptr, it->second.UserData);
         }
     }
 
@@ -925,6 +935,11 @@ public:
                                             ComponentTypeId typeId,
                                             const void* data,
                                             std::size_t sizeBytes);
+            /// Merge script-writable byte ranges with the current component or its defaults.
+            bool SetComponentBytesFromScriptImmediate(EntityHandle entity, ComponentTypeId typeId,
+                                                       const void* data, std::size_t sizeBytes,
+                                                       std::span<const ScriptWritableRange> writable);
+
             bool RemoveComponentByTypeIdImmediate(EntityHandle entity, ComponentTypeId typeId);
 
             // Migrate a component whose byte layout changed across a hot-reload: resize the
@@ -947,8 +962,7 @@ public:
 
     // ARCHETYPE MANAGEMENT
 
-    // Compact empty chunks across all archetypes. Frees memory and updates entity metadata.
-    // Returns total chunks freed. Safe to call periodically (e.g. after ProcessCommands).
+    // Free spare chunks without moving live entities; call outside query iteration.
     size_t CompactAllChunks();
 
     // Access component size registry (public for ArchetypeTable initialization).
@@ -1003,13 +1017,9 @@ public:
     // GetGlobalSystemVersion() per the ChangeGate contract.
     uint64 GetEntityColumnVersion(EntityHandle entity, ComponentTypeId typeId) const;
 
-    // Record write grants for a batch of entities' `typeId` column — the same
-    // stamp GetComponentForWrite and a Writable<T> write issue, for writers
-    // that mutate through pointers cached OUTSIDE the granting call (today:
-    // the transform hierarchy's node cache, whose WorldTransform pointers are
-    // captured once at topology rebuild). Without it the write is invisible to
-    // every Changed<T> consumer: stamping is what Changed<T> filters on, and
-    // the mutated bytes themselves carry no signal.
+    // Records the write grant for a writer whose pointer no grant covers: a read
+    // binding written only on change, or a pointer cached outside a query visit
+    // (the transform hierarchy, render extraction). Without it no Changed<T> sees the write.
     //
     // Batched deliberately — one lock and one version for the whole pass:
     // never slower than per-entity stamping, and entities moved together get
@@ -1418,7 +1428,7 @@ private:
         static_assert(sizeof(void*) >= sizeof(callback), "void* must be able to hold a function pointer");
         ComponentHook hook{};
         hook.UserData = reinterpret_cast<void*>(callback);
-        hook.Invoke = [](EntityHandle, void* ptr, void* data) {
+        hook.Invoke = [](const World&, EntityHandle, void* ptr, void* data) {
             reinterpret_cast<void(*)(T&)>(data)(*static_cast<T*>(ptr));
         };
         hook.ComponentSize = sizeof(T);
@@ -1433,8 +1443,23 @@ private:
         static_assert(sizeof(void*) >= sizeof(callback), "void* must be able to hold a function pointer");
         ComponentHook hook{};
         hook.UserData = reinterpret_cast<void*>(callback);
-        hook.Invoke = [](EntityHandle entity, void* ptr, void* data) {
+        hook.Invoke = [](const World&, EntityHandle entity, void* ptr, void* data) {
             reinterpret_cast<void(*)(EntityHandle, T&)>(data)(entity, *static_cast<T*>(ptr));
+        };
+        hook.ComponentSize = sizeof(T);
+        return InstallComponentHook(kind, GetComponentTypeId<T>(), hook);
+    }
+
+    template<Component T>
+    ComponentHookToken RegisterComponentHook(ComponentHookKind kind, void(*callback)(const World&, EntityHandle, T&)) {
+        if (!callback)
+            return {};
+        AutoComponentRegistrar<T>::EnsureRegistered();
+        static_assert(sizeof(void*) >= sizeof(callback), "void* must be able to hold a function pointer");
+        ComponentHook hook{};
+        hook.UserData = reinterpret_cast<void*>(callback);
+        hook.Invoke = [](const World& world, EntityHandle entity, void* ptr, void* data) {
+            reinterpret_cast<void(*)(const World&, EntityHandle, T&)>(data)(world, entity, *static_cast<T*>(ptr));
         };
         hook.ComponentSize = sizeof(T);
         return InstallComponentHook(kind, GetComponentTypeId<T>(), hook);

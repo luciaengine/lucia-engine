@@ -5,7 +5,7 @@
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/SpecializationConstants.h"
 
 namespace GameEngine::Engine::Renderer

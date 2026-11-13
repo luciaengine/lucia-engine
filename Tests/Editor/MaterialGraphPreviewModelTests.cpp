@@ -4,7 +4,7 @@
 // the surface text no longer varies with the value (so the digest cannot move,
 // so no recompile), and the value still arrives, in the lane the shader reads.
 
-#include "ShaderGraph/MaterialGraphPreviewModel.h"
+#include "ShaderGraph/MaterialGraph/MaterialGraphPreviewModel.h"
 
 #include "Rendering/Materials/MaterialDocument.h"
 

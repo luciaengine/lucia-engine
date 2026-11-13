@@ -12,11 +12,6 @@
 
 namespace GameEngine { namespace EngineIntegration {
 
-namespace {
-    bool ReadFileAll(const std::filesystem::path& p, std::vector<uint8_t>& out) {
-        return ReadFileBytesShared(p, out) && !out.empty();
-    }
-}
 
 uint32_t RegisterShaderHotReloadBridge(Rendering::IDevice& device, AssetEventDispatcher& dispatcher) {
     return dispatcher.AddCallback([&device](const AssetEvent& e){

@@ -13,11 +13,22 @@ struct AssistantAction;
 struct AssistantUndoSnapshot;
 struct ConversationMessage;
 
+/// A mark-up a user message names, shown under it as a chip that frames it.
+struct MarkupChip
+{
+    /// The token as typed (MarkupToken::Text).
+    std::string Token;
+    /// The chip's text: the mark-up's title when the message was sent, else what the token names
+    /// it by.
+    std::string Label;
+    bool operator==(const MarkupChip&) const = default;
+};
+
 /// What one row of the AI Assistant panel shows for a message, apart from the
 /// elements that show it.
 struct AgentConversationRowModel
 {
-    /// "You", or the connection and model that answered ("Claude (API) · claude-opus-5-5").
+    /// "You", or the connection and model that answered ("Claude (API key) · claude-opus-5-5").
     std::string Header;
     /// The message text; on a reply, what has streamed so far, and on a stopped or
     /// truncated reply followed by an ellipsis where it was cut.
@@ -38,6 +49,9 @@ struct AgentConversationRowModel
     /// counts ("5 undo steps · 1 refused"), led by "Reply truncated at 64 KB" on a
     /// truncated reply; empty on a user message.
     std::string Status;
+    /// On a reply the setup check refused (ConversationMessage::NotReady): the failed
+    /// step's finding and fix, shown in an error notice instead of Status.
+    std::string SetupRefusal;
     /// The user wrote the message.
     bool FromUser = false;
     /// The reply is being written, so the row offers Stop.
@@ -45,7 +59,13 @@ struct AgentConversationRowModel
     /// The reply has text that will not change (finished, or stopped part-way), so the
     /// row offers the registered reply actions.
     bool ShowsReplyActions = false;
+    /// The ids of the registered reply actions the reply offers (AgentReplyAction::ShownFor its
+    /// prompt), in registration order; the panel fills them, knowing the prompt.
+    std::vector<std::string> ReplyActions;
+    /// On a user message: the names of the attached files, in input order.
     std::vector<std::string> FileChips;
+    /// On a user message: the mark-ups its tokens name, one chip each, in order.
+    std::vector<MarkupChip> MarkupChips;
     /// The reply failed: the status reads as an error, and the row offers Retry (its
     /// prompt sent again as a new turn) where a finished reply offers its actions.
     bool Failed = false;
@@ -56,6 +76,10 @@ struct AgentConversationRowModel
     /// The row has a body: false for a reply with no text (queued, cancelled before
     /// it started, or not yet streaming).
     bool ShowsText = true;
+
+    /// "Claude (Subscription) · Opus 5.5 · High": the connection, the model that answered (the
+    /// one asked for until the turn reports it) and the effort asked for, if any, of a reply.
+    static std::string ReplyHeader(const ConversationMessage& message);
 
     /// The row for `message`, the message of turn `turn`; `actions` are the calls the
     /// conversation's assistant made to the editor (its ledger), of which the row shows

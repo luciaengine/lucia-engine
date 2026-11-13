@@ -1,41 +1,38 @@
 #include "TerrainECS/PageLevelRule.h"
 
+#include "Mathematics/Interpolation.h"
+#include "PageWedge.h"
+#include "TerrainECS/PagedHeightSampler.h"
+
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
+#include <numbers>
 
 namespace GameEngine::TerrainECS
 {
 namespace
 {
 
-constexpr float32 kReferenceRows = static_cast<float32>(kPageLevelReferenceRows);
-constexpr float32 kBlendStart = 0.75f;
-
-// Distance from `camera` to the box of a page's footprint: its world rectangle and the field's
-// height range.
-float32 DistanceToFootprint(const PageRequestTerrain& terrain, const PageStreaming::PageAddress& address,
-                            const Mathematics::Vector3& camera)
+// True when `a` and `b` ask a requester for the same pages: every member equal.
+bool SameCamera(const PageRequestCamera& a, const PageRequestCamera& b)
 {
-    const float32 span = static_cast<float32>(PageStreaming::kPageOwnedSamples << address.Level);
-    const float32 minX = terrain.OriginX + static_cast<float32>(address.X) * span * terrain.Level0TexelX;
-    const float32 minZ = terrain.OriginZ + static_cast<float32>(address.Z) * span * terrain.Level0TexelZ;
-    const float32 maxX = minX + span * terrain.Level0TexelX;
-    const float32 maxZ = minZ + span * terrain.Level0TexelZ;
-    const float32 dx = std::max({minX - camera.x, 0.0f, camera.x - maxX});
-    const float32 dz = std::max({minZ - camera.z, 0.0f, camera.z - maxZ});
-    const float32 dy = std::max({terrain.MinHeight - camera.y, 0.0f, camera.y - terrain.MaxHeight});
-    return std::sqrt(dx * dx + dy * dy + dz * dz);
+    const Mathematics::Vector3& p = a.Position;
+    const Mathematics::Vector3& f = a.Forward;
+    return p.x == b.Position.x && p.y == b.Position.y && p.z == b.Position.z && f.x == b.Forward.x &&
+           f.y == b.Forward.y && f.z == b.Forward.z && a.HorizontalHalfFov == b.HorizontalHalfFov &&
+           a.HasDirection == b.HasDirection;
 }
 
-float32 NearestDistance(const PageRequestTerrain& terrain, const PageStreaming::PageAddress& address,
-                        std::span<const Mathematics::Vector3> cameras)
+constexpr float32 kReferenceRows = static_cast<float32>(kPageLevelReferenceRows);
+constexpr float32 kBlendStart = 0.75f;
+// Positive when the bearing of (bx, bz) is greater than the bearing of (ax, az), the two less than
+// pi apart. The bearing is atan2(x, z): 0 along +Z, pi / 2 along +X.
+float32 BearingTurn(float32 ax, float32 az, float32 bx, float32 bz)
 {
-    float32 nearest = std::numeric_limits<float32>::max();
-    for (const Mathematics::Vector3& camera : cameras)
-        nearest = std::min(nearest, DistanceToFootprint(terrain, address, camera));
-    return nearest;
+    return az * bx - ax * bz;
 }
 
 } // namespace
@@ -58,36 +55,180 @@ float32 GeometryPageLevel(float32 distance, float32 level0Texel, const PageLevel
 float32 PageParentBlend(float32 level)
 {
     const float32 inRing = level - std::floor(level);
-    return std::clamp((inRing - kBlendStart) / (1.0f - kBlendStart), 0.0f, 1.0f);
+    return Math::Clamp01((inRing - kBlendStart) / (1.0f - kBlendStart));
 }
 
-uint32 FirstPinnedPageLevel(const PageRequestTerrain& terrain, std::span<const PageStreaming::PageStoreLevel> levels)
+bool SamePagePlacement(const PageRequestTerrain& a, const PageRequestTerrain& b)
+{
+    return a.OriginX == b.OriginX && a.OriginZ == b.OriginZ && a.Level0TexelX == b.Level0TexelX &&
+           a.Level0TexelZ == b.Level0TexelZ && a.SamplesX == b.SamplesX && a.SamplesZ == b.SamplesZ &&
+           a.MinHeight == b.MinHeight && a.MaxHeight == b.MaxHeight;
+}
+
+uint32 FirstPinnedPageLevel(std::span<const PageStreaming::PageStoreLevel> levels, uint32 faces, float32 level0Texel,
+                            uint32 cacheSlots)
 {
     if (levels.empty())
         return 0;
-    const uint64 pages = static_cast<uint64>(levels.back().FirstEntry) + levels.back().PagesX * levels.back().PagesZ;
-    if (pages <= terrain.CacheSlots / kPinWholePyramidCacheFraction)
+    const uint64 cap = cacheSlots / kPinWholePyramidCacheFraction;
+    const uint64 pages = faces * PageStreaming::DensePageCount(levels);
+    if (pages <= cap)
         return 0;
-    const float32 texel = std::max(terrain.Level0TexelX, terrain.Level0TexelZ);
-    for (uint32 level = 0; level < levels.size(); ++level)
-        if (texel * static_cast<float32>(1u << level) >= kPinnedPageTexelMeters)
-            return level;
-    return static_cast<uint32>(levels.size()) - 1u;
+    // Coarsest first while the pinned pages stay within the cap and the level's texel is at least
+    // kPinnedPageTexelMeters; the top level always, so every fallback walk ends on a page.
+    uint32 first = static_cast<uint32>(levels.size()) - 1u;
+    uint64 pinned = faces * static_cast<uint64>(levels.back().PagesX) * levels.back().PagesZ;
+    while (first > 0 && level0Texel * static_cast<float32>(1u << (first - 1u)) >= kPinnedPageTexelMeters)
+    {
+        const uint64 finer = faces * static_cast<uint64>(levels[first - 1u].PagesX) * levels[first - 1u].PagesZ;
+        if (pinned + finer > cap)
+            break;
+        pinned += finer;
+        --first;
+    }
+    return first;
 }
 
-void HeightPageRequester::Configure(const PageRequestTerrain& terrain)
+uint32 WedgePageCacheSlots(const PageLevelView& view, float32 horizontalHalfFov, float32 level0Texel,
+                           float32 horizonMeters, uint32 levels)
+{
+    // A level's reach is 2 x scale x FocalPixels / TargetPixels. A wedge of `wedge` radians that reaches
+    // `sides` page sides holds wedge/2 sides^2 + (2 + wedge)(2/pi) sides + 1 pages, plus the foot outside it.
+    const float64 wedge = 2.0 * (static_cast<float64>(horizontalHalfFov) + kPageWedgeMarginRadians);
+    const float64 foot = std::numbers::pi * kPageWedgeFootPages * kPageWedgeFootPages *
+                         std::max(0.0, 1.0 - wedge / (2.0 * std::numbers::pi));
+    float64 streamed = 0.0;
+    for (uint32 level = 0; level < levels; ++level)
+    {
+        const float64 scale = std::ldexp(static_cast<float64>(level0Texel), static_cast<int>(level));
+        const float64 reach = std::min(2.0 * scale * view.FocalPixels / view.TargetPixels,
+                                       static_cast<float64>(horizonMeters));
+        const float64 sides = reach / (scale * PageStreaming::kPageOwnedSamples);
+        streamed += 0.5 * wedge * sides * sides + (2.0 + wedge) * (2.0 / std::numbers::pi) * sides + 1.0 + foot;
+    }
+    const float64 slots = streamed * kPinWholePyramidCacheFraction / (kPinWholePyramidCacheFraction - 1u);
+    const uint32 rows = MakePageCacheGeometry(static_cast<uint32>(std::ceil(slots))).SlotsPerRow;
+    return rows * rows;
+}
+
+bool FootprintMeetsWedge(std::span<const Mathematics::Vector2> corners, const Mathematics::Vector2& forward,
+                         float32 cosReach)
+{
+    // The foot is outside the footprint, so its corners span less than pi of bearing: the turn
+    // orders them, and the lowest and highest corners bound the footprint's bearings.
+    Mathematics::Vector2 low = corners.front();
+    Mathematics::Vector2 high = low;
+    for (const Mathematics::Vector2& corner : corners.subspan(1))
+    {
+        if (BearingTurn(low.x, low.y, corner.x, corner.y) < 0.0f)
+            low = corner;
+        if (BearingTurn(high.x, high.y, corner.x, corner.y) > 0.0f)
+            high = corner;
+    }
+    const float32 lowDot = forward.x * low.x + forward.y * low.y;
+    const float32 highDot = forward.x * high.x + forward.y * high.y;
+    if (BearingTurn(low.x, low.y, forward.x, forward.y) >= 0.0f &&
+        BearingTurn(forward.x, forward.y, high.x, high.y) >= 0.0f && (lowDot > 0.0f || highDot > 0.0f))
+        return true; // forward lies between the bounding corners
+    // Else the gap to forward is the angle to the nearer bounding corner.
+    return lowDot >= cosReach * std::sqrt(low.x * low.x + low.y * low.y) ||
+           highDot >= cosReach * std::sqrt(high.x * high.x + high.y * high.y);
+}
+
+void PageRequester::Configure(const PageRequestTerrain& terrain, PageRequestArea area)
 {
     m_Terrain = terrain;
+    m_Area = area;
     m_Levels = PageStreaming::BuildPageStoreLevels(terrain.SamplesX, terrain.SamplesZ);
-    m_FirstPinned = FirstPinnedPageLevel(terrain, m_Levels);
+    m_FirstPinned = FirstPinnedPageLevel(m_Levels, 1u, std::max(terrain.Level0TexelX, terrain.Level0TexelZ),
+                                         terrain.CacheSlots);
+    m_Built = false;
 }
 
-void HeightPageRequester::Build(std::span<const Mathematics::Vector3> cameras, const PageLevelView& view,
-                                std::vector<PageStreaming::PageWant>& out)
+PageRequester::Footprint PageRequester::FootprintOf(const PageRequestTerrain& terrain,
+                                                    const PageStreaming::PageAddress& address)
 {
+    const float32 span = static_cast<float32>(PageStreaming::kPageOwnedSamples << address.Level);
+    Footprint box;
+    box.MinX = terrain.OriginX + static_cast<float32>(address.X) * span * terrain.Level0TexelX;
+    box.MinZ = terrain.OriginZ + static_cast<float32>(address.Z) * span * terrain.Level0TexelZ;
+    box.MaxX = box.MinX + span * terrain.Level0TexelX;
+    box.MaxZ = box.MinZ + span * terrain.Level0TexelZ;
+    return box;
+}
+
+float32 PageRequester::DistanceToFootprint(const PageRequestTerrain& terrain, const Footprint& box,
+                                           const Mathematics::Vector3& camera)
+{
+    const float32 dx = std::max({box.MinX - camera.x, 0.0f, camera.x - box.MaxX});
+    const float32 dz = std::max({box.MinZ - camera.z, 0.0f, camera.z - box.MaxZ});
+    const float32 dy = std::max({terrain.MinHeight - camera.y, 0.0f, camera.y - terrain.MaxHeight});
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+bool PageRequester::InWedge(const Footprint& box, const WedgeView& view)
+{
+    if (view.EveryBearing)
+        return true;
+    const float32 dx = std::max({box.MinX - view.Position.x, 0.0f, view.Position.x - box.MaxX});
+    const float32 dz = std::max({box.MinZ - view.Position.z, 0.0f, view.Position.z - box.MaxZ});
+    const float32 pageWidth = std::max(box.MaxX - box.MinX, box.MaxZ - box.MinZ);
+    if (std::sqrt(dx * dx + dz * dz) <= kPageWedgeFootPages * pageWidth)
+        return true;
+    const std::array<Mathematics::Vector2, 4> corners = {
+        Mathematics::Vector2(box.MinX - view.Position.x, box.MinZ - view.Position.z),
+        Mathematics::Vector2(box.MaxX - view.Position.x, box.MinZ - view.Position.z),
+        Mathematics::Vector2(box.MinX - view.Position.x, box.MaxZ - view.Position.z),
+        Mathematics::Vector2(box.MaxX - view.Position.x, box.MaxZ - view.Position.z)};
+    return FootprintMeetsWedge(corners, Mathematics::Vector2(view.ForwardX, view.ForwardZ), view.CosReach);
+}
+
+float32 PageRequester::NearestDistance(const PageStreaming::PageAddress& address, PageRequestArea area) const
+{
+    const Footprint box = FootprintOf(m_Terrain, address);
+    float32 nearest = std::numeric_limits<float32>::max();
+    for (const WedgeView& view : m_Views)
+        if (area == PageRequestArea::Disc || InWedge(box, view))
+            nearest = std::min(nearest, DistanceToFootprint(m_Terrain, box, view.Position));
+    return nearest;
+}
+
+void PageRequester::PrepareViews(std::span<const PageRequestCamera> cameras)
+{
+    m_Views.clear();
+    for (const PageRequestCamera& camera : cameras)
+    {
+        WedgeView view;
+        view.Position = camera.Position;
+        const float32 forwardLength =
+            std::sqrt(camera.Forward.x * camera.Forward.x + camera.Forward.z * camera.Forward.z);
+        const float32 reach = camera.HorizontalHalfFov + kPageWedgeMarginRadians;
+        // No direction, a view straight up or down, or a reach of pi or more: every bearing.
+        view.EveryBearing = !camera.HasDirection || forwardLength < kPageWedgeMinForward ||
+                            reach >= std::numbers::pi_v<float32>;
+        if (!view.EveryBearing)
+        {
+            view.ForwardX = camera.Forward.x / forwardLength;
+            view.ForwardZ = camera.Forward.z / forwardLength;
+            view.CosReach = std::cos(reach);
+        }
+        m_Views.push_back(view);
+    }
+}
+
+bool PageRequester::Build(std::span<const PageRequestCamera> cameras, const PageLevelView& view,
+                          std::vector<PageStreaming::PageWant>& out)
+{
+    // A parked camera asks for the same set: the walk below depends only on these and Configure.
+    if (m_Built && view == m_BuiltView && std::ranges::equal(cameras, m_BuiltCameras, SameCamera))
+        return false;
+    m_Built = true;
+    m_BuiltView = view;
+    m_BuiltCameras.assign(cameras.begin(), cameras.end());
     out.clear();
     if (m_Levels.empty() || cameras.empty())
-        return;
+        return true;
+    PrepareViews(cameras);
     const float32 texel = std::max(m_Terrain.Level0TexelX, m_Terrain.Level0TexelZ);
 
     // Every page of the pinned levels, coarsest first; the walk below descends from the finest
@@ -100,36 +241,45 @@ void HeightPageRequester::Build(std::span<const Mathematics::Vector3> cameras, c
             for (uint32 x = 0; x < m_Levels[level].PagesX; ++x)
             {
                 const PageStreaming::PageAddress address{0, static_cast<uint8>(level), x, z};
-                out.push_back(PageStreaming::PageWant{address, NearestDistance(m_Terrain, address, cameras), true});
+                const float32 distance = NearestDistance(address, PageRequestArea::Disc);
+                out.push_back(PageStreaming::PageWant{address, distance, true});
                 if (level == m_FirstPinned)
-                    m_Frontier.push_back(address);
+                    m_Frontier.push_back(FrontierPage{
+                        address, m_Area == PageRequestArea::Disc ? distance : NearestDistance(address, m_Area)});
             }
         }
     }
 
+    // A frontier page carries its distance over the area, so the walk measures each page once.
     while (!m_Frontier.empty())
     {
-        const PageStreaming::PageAddress page = m_Frontier.back();
+        const FrontierPage page = m_Frontier.back();
         m_Frontier.pop_back();
-        if (page.Level == 0)
+        const uint32 level = page.Address.Level;
+        if (level == 0)
             continue;
-        const float32 distance = NearestDistance(m_Terrain, page, cameras);
-        if (GeometryPageLevel(distance, texel, view) >= static_cast<float32>(page.Level))
+        if (GeometryPageLevel(page.Distance, texel, view) >= static_cast<float32>(level))
             continue; // the whole footprint is content with this level or coarser
-        const PageStreaming::PageStoreLevel& finer = m_Levels[page.Level - 1u];
+        const PageStreaming::PageStoreLevel& finer = m_Levels[level - 1u];
         for (uint32 dz = 0; dz < 2u; ++dz)
         {
             for (uint32 dx = 0; dx < 2u; ++dx)
             {
-                const PageStreaming::PageAddress child{0, static_cast<uint8>(page.Level - 1u), 2u * page.X + dx,
-                                                       2u * page.Z + dz};
+                const PageStreaming::PageAddress child{0, static_cast<uint8>(level - 1u), 2u * page.Address.X + dx,
+                                                       2u * page.Address.Z + dz};
                 if (child.X >= finer.PagesX || child.Z >= finer.PagesZ)
                     continue;
-                out.push_back(PageStreaming::PageWant{child, NearestDistance(m_Terrain, child, cameras), false});
-                m_Frontier.push_back(child);
+                // Wanted only where its own nearest point needs its level: elsewhere every point of
+                // its footprint resolves its parent's level or a coarser one.
+                const float32 childDistance = NearestDistance(child, m_Area);
+                if (GeometryPageLevel(childDistance, texel, view) >= static_cast<float32>(level))
+                    continue;
+                out.push_back(PageStreaming::PageWant{child, childDistance, false});
+                m_Frontier.push_back(FrontierPage{child, childDistance});
             }
         }
     }
+    return true;
 }
 
 } // namespace GameEngine::TerrainECS

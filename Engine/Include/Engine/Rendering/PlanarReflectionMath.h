@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Components/Rendering/PlanarReflection.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include <glm/glm.hpp>
 #include <cstdint>
 

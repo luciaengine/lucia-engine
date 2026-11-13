@@ -110,11 +110,9 @@ private:
         m_StartAPx = m_IsRow ? m_PaneA->GetLayoutWidth() : m_PaneA->GetLayoutHeight();
         m_StartBPx = m_IsRow ? m_PaneB->GetLayoutWidth() : m_PaneB->GetLayoutHeight();
         m_HandlePx = m_IsRow ? GetLayoutWidth() : GetLayoutHeight();
-        // Space shared by the two panes = parent main axis minus this splitter (not wA+wB, which can
-        // disagree by a pixel or two and skew ratio vs Yoga's flex distribution).
-        // The splitter's MARGINS come out too: they are space the panes cannot
-        // have, and counting them as available maps mouse travel onto a longer
-        // span than exists, so the handle trails the cursor for the whole drag.
+        // Space shared by the two panes = parent main axis minus this splitter and its main-axis
+        // margins. Not wA+wB: that can differ by a pixel or two from Yoga's flex distribution.
+        // Margins counted as pane space make the handle trail the cursor.
         {
             const float parentMain = m_IsRow ? p->GetLayoutWidth() : p->GetLayoutHeight();
             const Box4& margin = GetResolvedStyle().Layout.Margin;

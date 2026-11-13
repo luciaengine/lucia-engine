@@ -104,7 +104,7 @@ TEST(SceneExportStrip, ExportKeepsAPropAndItsChildWithoutTheMeasureOnIt)
         authoredWorld.AddComponentImmediate(lake, Components::Name{"Lake Shore"});
         authoredWorld.AddComponentImmediate(lake, Components::Markup{});
         authoredWorld.AddComponentImmediate(lake, Components::MarkupVolume{});
-        ASSERT_TRUE(Scene::SaveSceneToFile(authoredWorld, root / relative));
+        ASSERT_TRUE(Scene::WriteSceneFile(authoredWorld, root / relative));
     }
     const std::string authored = ReadText(root / relative);
     ASSERT_NE(authored.find("\nMeasure."), std::string::npos) << authored;
@@ -125,13 +125,13 @@ TEST(SceneExportStrip, ExportKeepsAPropAndItsChildWithoutTheMeasureOnIt)
     TexturePackageCookStats textureStats;
     std::string error;
     ASSERT_TRUE(CookStagedContent(root, manifest, registry, parsers,
-                                  /*textureWorkers=*/nullptr, NeverCancelled, textureStats, error))
+                                  /*textureWorkers=*/nullptr, /*manifestParsePool=*/nullptr, NeverCancelled, textureStats, error))
         << error;
     EXPECT_EQ(ReadText(root / relative),
               WithoutLines(authored, {"Measure.", "Markup.", "MarkupVolume.", "Name.value = \"Lake Shore\""}));
 
     ECS::World world;
-    ASSERT_TRUE(Scene::LoadSceneFromFile(world, root / relative, Scene::LoadOptions{Scene::LoadMode::Replace}));
+    ASSERT_TRUE(Scene::ReadSceneInto(world, root / relative, Scene::SceneReadOptions{}));
     const ECS::EntityHandle crate = FindByTag(world, "crate");
     const ECS::EntityHandle lid = FindByTag(world, "lid");
     ASSERT_TRUE(crate.IsValid());
@@ -141,7 +141,7 @@ TEST(SceneExportStrip, ExportKeepsAPropAndItsChildWithoutTheMeasureOnIt)
     EXPECT_EQ(world.GetComponent<Components::Name>(crate)->View(), "Crate");
     const auto* parent = world.GetComponent<Components::Parent>(lid);
     ASSERT_NE(parent, nullptr);
-    EXPECT_EQ(parent->parent.id, crate.id);
+    EXPECT_EQ(parent->Entity.id, crate.id);
     const ECS::EntityHandle lake = FindByTag(world, "lake");
     ASSERT_TRUE(lake.IsValid());
     EXPECT_FALSE(world.HasComponent<Components::Markup>(lake));
@@ -152,7 +152,7 @@ TEST(SceneExportStrip, ExportKeepsAPropAndItsChildWithoutTheMeasureOnIt)
 
 // On an entity that carries a mark-up, its title and its spline are conversation and shape:
 // they go with it, and its transform stays; the reader matches component tokens ignoring case,
-// and so does the strip. The same components on scene content ship. A blueprint instance's
+// and so does the strip. The same components on scene content ship. A prefab instance's
 // removal (`-C`), addition (`+C`) and bare addition (`C`) of an editor-only component go as its
 // field lines do.
 TEST(SceneExportStrip, AMarkupEntityLosesItsTitleAndSplineAndSceneContentKeepsThem)
@@ -172,12 +172,12 @@ TEST(SceneExportStrip, AMarkupEntityLosesItsTitleAndSplineAndSceneContentKeepsTh
         "Name.value = \"Road\"\n"
         "Spline.pointCount = 5\n"
         "\n"
-        "[blueprint id=\"cart\" source=\"r_cart\"]\n"
+        "[prefab id=\"cart\" source=\"r_cart\"]\n"
         "-Measure\n"
         "Measure.start = (0, 0, 0)\n"
         "Transform.position = (3, 0, 3)\n"
         "\n"
-        "[blueprint id=\"barrow\" source=\"r_barrow\"]\n"
+        "[prefab id=\"barrow\" source=\"r_barrow\"]\n"
         "+Measure\n"
         "Measure\n"
         "Transform.position = (5, 0, 5)\n";
@@ -197,10 +197,10 @@ TEST(SceneExportStrip, AMarkupEntityLosesItsTitleAndSplineAndSceneContentKeepsTh
               "Name.value = \"Road\"\n"
               "Spline.pointCount = 5\n"
               "\n"
-              "[blueprint id=\"cart\" source=\"r_cart\"]\n"
+              "[prefab id=\"cart\" source=\"r_cart\"]\n"
               "Transform.position = (3, 0, 3)\n"
               "\n"
-              "[blueprint id=\"barrow\" source=\"r_barrow\"]\n"
+              "[prefab id=\"barrow\" source=\"r_barrow\"]\n"
               "Transform.position = (5, 0, 5)\n");
 }
 
@@ -226,7 +226,7 @@ TEST(SceneExportStrip, ARegionLeavesOnlyItsEntityAndTransform)
         authoredWorld.AddComponentImmediate(forest, Components::SceneEntityTag{"forest"});
         authoredWorld.AddComponentImmediate(forest, Components::Name{"Forest"});
         authoredWorld.AddComponentImmediate(
-            forest, Components::Transform::FromTRS(Mathematics::Vector3(45.0f, 0.0f, 30.0f), Mathematics::Quaternion::Identity(),
+            forest, Components::Transform::FromTRS(Mathematics::WorldPosition{45.0, 0.0, 30.0}, Mathematics::Quaternion::Identity(),
                                                    Mathematics::Vector3(1.0f, 1.0f, 1.0f)));
         authoredWorld.AddComponentImmediate(forest, Components::Markup{});
         SplineECS::SplineService& splines = SplineECS::SplineService::Get();
@@ -242,7 +242,7 @@ TEST(SceneExportStrip, ARegionLeavesOnlyItsEntityAndTransform)
         region.MemberCount = 1;
         region.Members[0] = {lake, Components::MarkupMemberMode::Exclude};
         authoredWorld.AddComponentImmediate(forest, region);
-        ASSERT_TRUE(Scene::SaveSceneToFile(authoredWorld, root / relative));
+        ASSERT_TRUE(Scene::WriteSceneFile(authoredWorld, root / relative));
     }
     const std::string authored = ReadText(root / relative);
     ASSERT_NE(authored.find("\nMarkupRegion.member0 = exclude \"lake\""), std::string::npos) << authored;
@@ -262,7 +262,7 @@ TEST(SceneExportStrip, ARegionLeavesOnlyItsEntityAndTransform)
     TexturePackageCookStats textureStats;
     std::string error;
     ASSERT_TRUE(CookStagedContent(root, manifest, registry, parsers,
-                                  /*textureWorkers=*/nullptr, NeverCancelled, textureStats, error))
+                                  /*textureWorkers=*/nullptr, /*manifestParsePool=*/nullptr, NeverCancelled, textureStats, error))
         << error;
     EXPECT_EQ(ReadText(root / relative),
               WithoutLines(authored, {"Markup.", "MarkupVolume.", "MarkupRegion.", "Spline.", "Name.value = \"Forest\""}));

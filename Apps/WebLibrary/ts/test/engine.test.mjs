@@ -33,7 +33,7 @@ test('a library built against another release rejects naming both versions and t
     abi.engineVersion = '0.2.0';
     const load = async () => abi;
     await assert.rejects(createEngine({ canvas: fakeCanvas() }, new FakeHost(), load, { version: '0.1.0', fingerprint: '0123456789abcdef' }),
-        { code: 'VersionMismatch', message: /engine module is release 0.2.0 and this library is 0.1.0.*Update @openengine\/web to 0.2.0/ });
+        { code: 'VersionMismatch', message: /engine module is release 0.2.0 and this library is 0.1.0.*Update @game-crafters-guild\/openengine-web to 0.2.0/ });
     const matching = await createEngine({ canvas: fakeCanvas() }, new FakeHost(), async () => new StubAbi(),
         { version: '0.1.0', fingerprint: fingerprint(new StubAbi().reflectionJson()) });
     assert.ok(matching.scene.camera);

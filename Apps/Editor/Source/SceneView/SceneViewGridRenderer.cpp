@@ -1,11 +1,12 @@
 #include "SceneView/SceneViewGridRenderer.h"
 
 #include "Mathematics/MatrixOps.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/CommandList.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
+#include "Rendering/Core/ReverseZ.h"
 
 #include <cstring>
 #include <vector>
@@ -32,7 +33,7 @@ struct GridPC
 struct Grid2DPC
 {
     float invVP[16];
-    float cells[4]; // xy = grid origin, zw = cell size; z <= 0 selects zoom decades
+    float cameraPos[4]; // unused by 2D shader; kept for layout parity with GridPC
     float gridColor[4]; // rgb = non-axis line color, a unused
     float opacity;
     float camDistance;
@@ -108,7 +109,7 @@ static GraphicsPipelineDesc BuildGridPipelineDesc(const std::vector<uint8_t>& vs
     // OFF so the grid doesn't occlude gizmos drawn after it.
     gd.DepthStencil.depthTestEnable  = true;
     gd.DepthStencil.depthWriteEnable = false;
-    gd.DepthStencil.depthCompareOp   = CompareOp::GreaterOrEqual;
+    gd.DepthStencil.depthCompareOp   = ReverseZ::kNearerOrEqual;
 
     ColorBlendAttachmentState blend{};
     blend.blendEnable = true;
@@ -130,7 +131,7 @@ static void FillGridPCCommon(float invVPOut[16], float cameraPosOut[4], float gr
                              float& opacityOut, const Rendering::CameraData& cam,
                              const float camPos[3], float gridOpacity, uint32_t gridColor)
 {
-    Mathematics::Matrix4x4 invVP = Mathematics::Inverse(Mathematics::Matrix4x4::FromColumnMajor(cam.viewProj));
+    Mathematics::Matrix4x4 invVP = Mathematics::Inverse(cam.viewProj);
     std::memcpy(invVPOut, invVP.Data(), sizeof(float) * 16);
 
     cameraPosOut[0] = camPos[0];
@@ -153,65 +154,57 @@ static void FillGridPCCommon(float invVPOut[16], float cameraPosOut[4], float gr
 // Record
 // ---------------------------------------------------------------------------
 
-PipelineHandle SceneViewGridRenderer::PrepareRG(const RenderGraph::RGPrepareContext& context,
-                                                  bool is2DMode)
-{
-    IDevice* device = context.GetDevice();
-    if (device == nullptr)
-        return {};
-    std::vector<uint8_t> vertexShader;
-    std::vector<uint8_t> fragmentShader;
-    const bool loaded = is2DMode ? LoadGrid2DShaderBytes(vertexShader, fragmentShader)
-                                 : LoadGridShaderBytes(vertexShader, fragmentShader);
-    if (!loaded)
-        return {};
-    const GraphicsPipelineId pipeline = device->InternGraphicsPipeline(
-        BuildGridPipelineDesc(vertexShader, fragmentShader,
-                              is2DMode ? "SV_InfiniteGrid2D" : "SV_InfiniteGrid"));
-    return context.PreparePipeline(pipeline);
-}
-
-void SceneViewGridRenderer::RecordRG(const Rendering::RenderGraph::RGContext& context,
-                                      Rendering::PipelineHandle pipeline,
-                                      const Rendering::CameraData* camera,
-                                      const float cameraPosition[3],
+void SceneViewGridRenderer::RecordRG(const Rendering::RenderGraph::RGContext& ctx,
+                                      const Rendering::CameraData* cam,
+                                      const float camPos[3],
                                       bool is2DMode,
-                                      float cameraDistance,
-                                      float viewportHeight,
+                                      float camDistance,
+                                      float viewportH,
                                       float gridOpacity,
-                                      uint32_t gridColor,
-                                      const float cells2D[4])
+                                      uint32_t gridColor)
 {
-    if (!camera)
+    if (!cam)
         return;
 
-    CommandList* commands = context.Cmd;
-    if (!commands || !pipeline.IsValid())
+    auto* cl = ctx.Cmd;
+    auto* device = ctx.GetDevice();
+    if (!cl || !device)
         return;
-    commands->SetPipeline(pipeline);
+
+    // The format key (incl. sample count) comes from the RenderGraph pass's declared
+    // attachments, so no member sample-keyed cache is needed: intern the desc
+    // (device-deduped) and resolve through the device's variant cache.
+    std::vector<uint8_t> vs, fs;
+    const bool loaded = is2DMode ? LoadGrid2DShaderBytes(vs, fs) : LoadGridShaderBytes(vs, fs);
+    if (!loaded)
+        return;
+    const PipelineHandle pipe = ctx.GetOrCreatePipelineVariant(device->InternGraphicsPipeline(
+        BuildGridPipelineDesc(vs, fs, is2DMode ? "SV_InfiniteGrid2D" : "SV_InfiniteGrid")));
+    if (!pipe.IsValid())
+        return;
+
+    cl->SetPipeline(pipe);
 
     if (!is2DMode)
     {
-        GridPC constants{};
-        FillGridPCCommon(constants.invVP, constants.cameraPos, constants.gridColor, constants.opacity, *camera, cameraPosition,
+        GridPC pc{};
+        FillGridPCCommon(pc.invVP, pc.cameraPos, pc.gridColor, pc.opacity, *cam, camPos,
                          gridOpacity, gridColor);
-        constants.fadeStart = 80.0f;
-        constants.fadeEnd = 200.0f;
-        commands->SetPushConstants(constants);
+        pc.fadeStart = 80.0f;
+        pc.fadeEnd = 200.0f;
+        cl->SetPushConstants(pc);
     }
     else
     {
-        Grid2DPC constants{};
-        float unusedCameraPos[4];
-        FillGridPCCommon(constants.invVP, unusedCameraPos, constants.gridColor, constants.opacity, *camera, cameraPosition,
+        Grid2DPC pc{};
+        FillGridPCCommon(pc.invVP, pc.cameraPos, pc.gridColor, pc.opacity, *cam, camPos,
                          gridOpacity, gridColor);
-        std::memcpy(constants.cells, cells2D, sizeof(constants.cells));
-        constants.camDistance = cameraDistance;
-        constants.viewportH = viewportHeight;
-        commands->SetPushConstants(constants);
+        pc.camDistance = camDistance;
+        pc.viewportH = viewportH;
+        cl->SetPushConstants(pc);
     }
 
-    commands->Draw(3u, 1u);
+    cl->Draw(3u, 1u);
 }
 
 } // namespace GameEngine

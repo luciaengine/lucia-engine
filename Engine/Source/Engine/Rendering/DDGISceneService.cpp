@@ -11,8 +11,8 @@
 #include "Engine/Rendering/DDGIMaterialUpdates.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialSystem.h"
+#include "Engine/Rendering/RenderOrigin.h"
 #include "Logger/Logger.h"
-#include "Types/Fnv1a.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Core/CommandList.h"
@@ -53,11 +53,6 @@ constexpr float kMaxSaneWorldUnits = 1.0e6f;
 // specific to the software lane rather than a divergence from its filter.
 constexpr float kMinInvertibleDeterminant = 1.0e-12f;
 
-// Sentinel for Material::GetGpuSceneMaterialIndex on a material that has not
-// been assigned an SSBO row. Mirrors Material::kInvalidSSBOIndex, which is
-// private.
-constexpr uint32_t kUnassignedMaterialSlot = 0xFFFFFFFFu;
-
 // A plan-mesh slot recorded for a gpuMeshIndex that failed to resolve this
 // sweep, so the next instance referencing it skips the lookup instead of
 // retrying it per instance.
@@ -69,15 +64,24 @@ constexpr uint32_t kUnresolvedMeshSlot = 0xFFFFFFFFu;
 // settles, not one per frame.
 constexpr float kStructuralIdleGateMs = 200.0f;
 
+constexpr uint64_t kFnvOffsetBasis = 1469598103934665603ull;
+constexpr uint64_t kFnvPrime       = 1099511628211ull;
+
 void HashBytes(uint64_t& hash, const void* data, size_t bytes)
 {
-    hash = Hashing::Fnv1a64(data, bytes, hash);
+    const auto* cursor = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < bytes; ++i)
+    {
+        hash ^= cursor[i];
+        hash *= kFnvPrime;
+    }
 }
 
 template <typename T>
 void HashValue(uint64_t& hash, const T& value)
 {
-    hash = Hashing::Fnv1a64Value(hash, value);
+    static_assert(std::is_trivially_copyable_v<T>, "hashed value must be trivially copyable");
+    HashBytes(hash, &value, sizeof(T));
 }
 
 bool IsSaneTransform(const Mathematics::Matrix4x4& transform, float boundingRadius)
@@ -96,6 +100,11 @@ bool IsSaneTransform(const Mathematics::Matrix4x4& transform, float boundingRadi
 
 
 }  // namespace
+
+bool DDGITracesInstance(const Rendering::GPUInstance& instance)
+{
+    return (instance.flags & Rendering::kInstanceFlagShadowsOnly) == 0u;
+}
 
 DDGISceneService::DDGISceneService(Rendering::IDevice* device,
                                    Rendering::MeshGPURegistry* meshRegistry,
@@ -147,9 +156,10 @@ bool DDGISceneService::Tick(float deltaTimeSeconds)
     const uint64_t sceneEpoch    = m_GpuScene->GetContentEpoch();
     const uint64_t materialEpoch = Material::GetGlobalContentEpoch();
     const uint64_t reloadCounter = m_ReloadCounter.load(std::memory_order_relaxed);
-    // The atlas epoch is a signal in its own right: a base-colour or emissive
-    // texture finishing its stream-in gives a material a layer it did not have,
-    // and that changes the baked records without touching any other epoch.
+    // The atlas epoch is a signal in its own right: the baked records carry the
+    // atlas's layer indices, and a layout change reaches them through it. (A
+    // texture finishing its stream-in lands through Material::SetTexture, which
+    // also moves the material epoch.)
     const uint64_t atlasEpoch = m_MapAtlas ? m_MapAtlas->GetLayoutEpoch() : 0;
     const bool signalsMoved = !m_HaveEpochs || sceneEpoch != m_LastSceneEpoch ||
                               materialEpoch != m_LastMaterialEpoch ||
@@ -246,7 +256,7 @@ DDGISceneService::PlanHashes DDGISceneService::SweepScene()
             [&](const GUID&, const Material& material)
             {
                 const uint32_t slot = material.GetGpuSceneMaterialIndex();
-                if (slot != kUnassignedMaterialSlot)
+                if (slot != Material::kInvalidSSBOIndex)
                     materialBySlot[slot] = &material;
             });
     }
@@ -265,7 +275,7 @@ DDGISceneService::PlanHashes DDGISceneService::SweepScene()
         const SceneBvh::UberMaterial baked = BakeUberMaterial(
             found != materialBySlot.end() ? found->second : nullptr, m_MapAtlas);
 
-        uint64_t materialHash = Hashing::kFnv1a64OffsetBasis;
+        uint64_t materialHash = kFnvOffsetBasis;
         HashBytes(materialHash, &baked, sizeof(baked));
         const auto range = m_PlanMaterialSlotByHash.equal_range(materialHash);
         for (auto it = range.first; it != range.second; ++it)
@@ -284,16 +294,16 @@ DDGISceneService::PlanHashes DDGISceneService::SweepScene()
     m_PlanParticipants.reserve(instances.size());
     for (const Rendering::GPUInstance& instance : instances)
     {
-        // Sector-tagged (camera-relative) instances are unhandled by either
-        // lane yet. Skinned instances participate: each gets its OWN plan
-        // slot below (a shared slot cannot hold two different poses), whose
-        // pooled BVH range the per-tick GPU refit re-poses
-        // (ddgi_bvh_refit.comp) — the software twin of the hardware lane's
-        // per-instance posed BLASes.
-        if ((instance.sectorPacked[0] | instance.sectorPacked[1]) != 0u)
+        // Skinned instances participate: each gets its OWN plan slot below (a
+        // shared slot cannot hold two different poses), whose pooled BVH range
+        // the per-tick GPU refit re-poses (ddgi_bvh_refit.comp) — the software
+        // twin of the hardware lane's per-instance posed BLASes.
+        if (!DDGITracesInstance(instance))
             continue;
         const bool isSkinned = instance.skinPaletteOffset != 0u && instance.runtimeId != 0u;
-        if (!IsSaneTransform(instance.transform, instance.boundingRadius))
+        const Mathematics::Matrix4x4 worldMatrix =
+            ComposeWorldModelMatrix(instance.transform, instance.sectorPacked[0], instance.sectorPacked[1]);
+        if (!IsSaneTransform(worldMatrix, instance.boundingRadius))
             continue;
 
         // The material rides on the instance record, so a plan slot is per MESH
@@ -317,8 +327,8 @@ DDGISceneService::PlanHashes DDGISceneService::SweepScene()
             if (identity != identityByGpuIndex.end())
             {
                 resolved.ContentHash = identity->second.ContentHash;
-                // Two-tier CPU geometry resolve, matching the editor picking
-                // path (MeshPickingService::ResolveCpuMesh): the registry's own
+                // Two-tier CPU geometry resolve, matching the scene raycast
+                // (SceneRaycast.cpp ResolveCpuMesh): the registry's own
                 // copy covers generated/procedural meshes that no ModelAsset
                 // backs, otherwise go through the asset. Never force-load — a
                 // mesh that is not resident yet simply sits this rebuild out,
@@ -363,14 +373,14 @@ DDGISceneService::PlanHashes DDGISceneService::SweepScene()
         if (planSlot == kUnresolvedMeshSlot)
             continue;
         m_PlanParticipants.push_back(
-            Participant{instance.transform, instance.meshIndex, planSlot, materialSlot,
+            Participant{worldMatrix, instance.meshIndex, planSlot, materialSlot,
                         (instance.flags & Rendering::kInstanceFlagGIEmitter) != 0u});
     }
 
     // Values do not affect BVH topology. Keep table layout, map bindings and
     // instance slot assignments structural so deduplication changes cannot
     // patch a record still shared by a different material.
-    uint64_t structureHash = Hashing::kFnv1a64OffsetBasis;
+    uint64_t structureHash = kFnvOffsetBasis;
     HashValue(structureHash, m_PlanMeshes.size());
     HashValue(structureHash, m_PlanParticipants.size());
     HashValue(structureHash, m_PlanMaterials.size());
@@ -397,7 +407,7 @@ DDGISceneService::PlanHashes DDGISceneService::SweepScene()
 
     // Full: the structure plus the world transforms, which is what the packed
     // instance records actually hold.
-    uint64_t transformHash = Hashing::kFnv1a64OffsetBasis;
+    uint64_t transformHash = kFnvOffsetBasis;
     for (const Participant& participant : m_PlanParticipants)
         HashBytes(transformHash, participant.WorldFromLocal.Data(), sizeof(float) * 16);
     uint64_t fullHash = structureHash;

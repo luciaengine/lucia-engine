@@ -1,7 +1,7 @@
 #include "Graph/NodeColorSettings.h"
 
 #include "Editor/Settings/SettingsStore.h"
-#include "Graph/GraphNodeRegistry.h"
+#include "Graph/GraphNode/GraphNodeRegistry.h"
 
 #include <nlohmann/json.hpp>
 

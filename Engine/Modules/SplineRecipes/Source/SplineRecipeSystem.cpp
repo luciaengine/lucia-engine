@@ -37,7 +37,7 @@ void AddSplineRecipeSystemsToSchedule(ECS::SystemScheduleBuilder& b,
                                       Engine::Renderer::RenderServices* renderServices)
 {
     b.Add<SplineRecipeSystem>("SplineRecipes", ECS::SystemPhase::Extraction, 1,
-                              {"TerrainModifiers", "SplineExtraction", "SplineNetwork"}, renderServices);
+                              {"TerrainModifiers", "SplineExtraction"}, renderServices);
 }
 
 } // namespace GameEngine::SplineRecipes

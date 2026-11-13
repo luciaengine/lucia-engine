@@ -1,3 +1,4 @@
+#include "Core/ApplicationPaths.h"
 // EditorSDK phase 1 end-to-end: generate → compile → load a REAL native
 // Editor-kind package module against the EditorSDK interface, and assert its
 // registrations land in the process-wide editor registries.
@@ -15,7 +16,7 @@
 // project open) — the fixture's inspector must arrive via the late-plugin
 // replay, not by luck of ordering.
 
-#include "Core/Application.h" // PathUtils::GetExecutableDirectory
+#include "Core/Application.h" // ApplicationPaths::GetExecutableDirectory
 #include "Editor/Entities/EditorComponentTraits.h"
 #include "Editor/Registries/BuildExporterRegistry.h"
 #include "Editor/Registries/EditorMenuRegistry.h"
@@ -151,7 +152,7 @@ FixtureRegistrar s_Registrar;
 
 std::map<std::string, std::string> LoadConfigOrFail()
 {
-    const fs::path exeDir = GameEngine::PathUtils::GetExecutableDirectory();
+    const fs::path exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
     std::string cfgErr;
     auto kv = ReadConfigFile(exeDir / "editorsdk_config.txt", cfgErr);
     EXPECT_TRUE(cfgErr.empty()) << cfgErr;
@@ -221,7 +222,7 @@ bool PluginRegisteredWithId(std::string_view id)
 TEST(EditorModuleBuildLoad, AiAssistantEditorModuleBuildsAndRegistersPanel)
 {
     const auto kv = LoadConfigOrFail();
-    const fs::path exeDir = GameEngine::PathUtils::GetExecutableDirectory();
+    const fs::path exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
     const fs::path sourceDir = exeDir / "TestData" / "Packages" / "ai-assistant" / "Editor";
     ASSERT_TRUE(fs::is_directory(sourceDir)) << sourceDir.string();
 
@@ -338,7 +339,7 @@ TEST(EditorModuleBuildLoad, EditorKindModuleBuildsAgainstEditorSdkAndRegisters)
 TEST(EditorModuleBuildLoad, EztreeEditorModuleBuildsAndRegistersRealPlugin)
 {
     const auto kv = LoadConfigOrFail();
-    const fs::path exeDir = GameEngine::PathUtils::GetExecutableDirectory();
+    const fs::path exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
     const fs::path pkgRoot = exeDir / "TestData" / "Packages" / "eztree";
     ASSERT_TRUE(fs::is_directory(pkgRoot / "Editor")) << (pkgRoot / "Editor").string();
     ASSERT_TRUE(fs::is_directory(pkgRoot / "Native"));
@@ -415,7 +416,7 @@ TEST(EditorModuleBuildLoad, EztreeEditorModuleBuildsAndRegistersRealPlugin)
 TEST(EditorModuleBuildLoad, UnityImportEditorModuleBuildsAndRegistersMenuAndOverlay)
 {
     const auto kv = LoadConfigOrFail();
-    const fs::path exeDir = GameEngine::PathUtils::GetExecutableDirectory();
+    const fs::path exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
     const fs::path pkgRoot = exeDir / "TestData" / "Packages" / "unity-import";
     ASSERT_TRUE(fs::is_directory(pkgRoot / "Editor")) << (pkgRoot / "Editor").string();
 
@@ -475,7 +476,7 @@ TEST(EditorModuleBuildLoad, UnityImportEditorModuleBuildsAndRegistersMenuAndOver
 TEST(EditorModuleBuildLoad, GitVcsEditorModuleBuildsAndRegistersProvider)
 {
     const auto kv = LoadConfigOrFail();
-    const fs::path exeDir = GameEngine::PathUtils::GetExecutableDirectory();
+    const fs::path exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
     const fs::path pkgRoot = exeDir / "TestData" / "Packages" / "git-vcs";
     ASSERT_TRUE(fs::is_directory(pkgRoot / "Editor")) << (pkgRoot / "Editor").string();
 
@@ -564,7 +565,7 @@ TEST(EditorModuleBuildLoad, GitVcsEditorModuleBuildsAndRegistersProvider)
 TEST(EditorModuleBuildLoad, SvnVcsEditorModuleBuildsAndRegistersProvider)
 {
     const auto kv = LoadConfigOrFail();
-    const fs::path exeDir = GameEngine::PathUtils::GetExecutableDirectory();
+    const fs::path exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
     const fs::path pkgRoot = exeDir / "TestData" / "Packages" / "svn-vcs";
     ASSERT_TRUE(fs::is_directory(pkgRoot / "Editor")) << (pkgRoot / "Editor").string();
 
@@ -638,7 +639,7 @@ TEST(EditorModuleBuildLoad, SvnVcsEditorModuleBuildsAndRegistersProvider)
 TEST(EditorModuleBuildLoad, DiversionVcsEditorModuleBuildsAndRegistersProvider)
 {
     const auto kv = LoadConfigOrFail();
-    const fs::path exeDir = GameEngine::PathUtils::GetExecutableDirectory();
+    const fs::path exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
     const fs::path pkgRoot = exeDir / "TestData" / "Packages" / "diversion-vcs";
     ASSERT_TRUE(fs::is_directory(pkgRoot / "Editor")) << (pkgRoot / "Editor").string();
 
@@ -714,7 +715,7 @@ TEST(EditorModuleBuildLoad, DiversionVcsEditorModuleBuildsAndRegistersProvider)
 TEST(EditorModuleBuildLoad, LoreVcsEditorModuleBuildsAndRegistersProvider)
 {
     const auto kv = LoadConfigOrFail();
-    const fs::path exeDir = GameEngine::PathUtils::GetExecutableDirectory();
+    const fs::path exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
     const fs::path pkgRoot = exeDir / "TestData" / "Packages" / "lore-vcs";
     ASSERT_TRUE(fs::is_directory(pkgRoot / "Editor")) << (pkgRoot / "Editor").string();
 

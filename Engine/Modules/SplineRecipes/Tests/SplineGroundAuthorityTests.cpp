@@ -635,6 +635,7 @@ TEST(SplineGroundAuthority, APavedAreaOnAutoOwnsItsGroundOnASplineAreaVolumeAndC
     ASSERT_NE(grass, nullptr);
     EXPECT_EQ(grass->HeightScale, 0.0f);
     EXPECT_EQ(grass->DensityScale, 0.0f);
+    EXPECT_EQ(grass->GroundDarkeningScale, 0.0f);
     const auto* paint = world.GetComponent<Components::TerrainPaintLayerEffect>(area);
     ASSERT_NE(paint, nullptr);
     ASSERT_LT(paint->LayerIndex, Terrain::kTerrainLayerRoleCount);

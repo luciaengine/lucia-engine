@@ -1,12 +1,12 @@
 #include "Ocean/OceanGPUQuery.h"
-#include "Ocean/OceanShaderProgram.h"
-#include "Rendering/Materials/ShaderLayoutShape.h"
-#include "OceanShaderDirectory.h"
+#include "Ocean/OceanShader/OceanShaderProgram.h"
+#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
+#include "OceanShader/OceanShaderDirectory.h"
 
 #include "Logger/Logger.h"
 #include "Rendering/Core/CommandList.h"
-#include "Rendering/Core/PipelineTypes.h"
-#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
 
 #include <algorithm>
 #include <cstring>
@@ -85,7 +85,7 @@ bool OceanGPUQuery::Initialize(IDevice* device)
     output.flags = BufferCreateFlags::PersistentlyMapped;
     output.debugName = "Ocean_GPUQuery_Readback";
     const uint32 ringCount = std::max(device->GetFramesInFlight(), 1u) + 2u;
-    if (!m_Readback.Init(device, output, ringCount, RenderGraph::RGReadbackRetention::PreserveUnread))
+    if (!m_Readback.Init(device, output, ringCount))
         return false;
     m_Ready = true;
     return true;
@@ -111,21 +111,18 @@ OceanGPUQueryToken OceanGPUQuery::Enqueue(const OceanSurfaceQueryPoint* points, 
 bool OceanGPUQuery::HasPending() const
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
-    return m_Active.Token != 0u || !m_Pending.empty();
+    return !m_Pending.empty();
 }
 
-OceanGPUQueryToken OceanGPUQuery::PrepareNext(const OceanParamsGPU& ocean,
+bool OceanGPUQuery::PrepareNext(const OceanParamsGPU& ocean,
                                 const OceanCascadeLayoutGPU& combinedLayout,
                                 bool combinedAvailable)
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
-    if (m_Active.Token == 0u)
-    {
-        if (m_Pending.empty())
-            return 0u;
-        m_Active = std::move(m_Pending.front());
-        m_Pending.pop_front();
-    }
+    if (m_Pending.empty())
+        return false;
+    m_Active = std::move(m_Pending.front());
+    m_Pending.pop_front();
     m_Params = {};
     m_Params.PointCount = static_cast<uint32>(m_Active.Points.size());
     m_Params.FFTCascadeCount = ocean.FFTCascadeCount;
@@ -144,7 +141,7 @@ OceanGPUQueryToken OceanGPUQuery::PrepareNext(const OceanParamsGPU& ocean,
         m_Params.Points[i][2] = m_Active.MinimumSpatialLength;
         m_Params.Points[i][3] = ocean.Time;
     }
-    return m_Active.Token;
+    return true;
 }
 
 void OceanGPUQuery::SetFrameInputs(TextureHandle fft, SamplerHandle fftSampler,
@@ -156,69 +153,44 @@ void OceanGPUQuery::SetFrameInputs(TextureHandle fft, SamplerHandle fftSampler,
     m_CombinedSampler = combinedSampler;
 }
 
-bool OceanGPUQuery::PrepareDispatch(IDevice* device, RenderGraph::RGFrame& frame,
-    BufferHandle paramsBuffer, uint64 paramsOffset, const OceanGPUQueryParamsGPU& params,
-    OceanGPUQueryToken token, OceanPreparedQueryDispatch& prepared)
+void OceanGPUQuery::RecordDispatch(IDevice* device, CommandList* commandList,
+                                   const RenderGraph::RGFrame& frame,
+                                   BufferHandle paramsBuffer, uint64 paramsOffset)
 {
-    prepared.Readback.Commands = {};
-    prepared.Readback.Owner = {};
-    if (!m_Ready || !device || !paramsBuffer.IsValid() || !m_FFT.IsValid() ||
-        !m_FFTSampler.IsValid() || token == 0u)
-        return true;
-    {
-        std::lock_guard<std::mutex> lock(m_Mutex);
-        if (m_Active.Token != token)
-            return true;
-    }
-    if ((prepared.Token != 0u && prepared.Token != token) ||
-        params.PointCount == 0u || params.PointCount > kMaxOceanGPUQueryPointsPerDispatch)
-        return false;
-    const PipelineHandle pipeline = device->TryGetWarmComputePipeline(m_Pipeline);
-    if (!pipeline.IsValid())
-        return false;
-    DescriptorSetDesc desc{};
-    desc.layout = m_Layout;
-    desc.transient = true;
-    desc.debugName = "OceanGPUQuery_DS";
-    const auto set = device->CreateDescriptorSet(desc);
-    if (!set.IsValid())
-        return false;
-    auto& readback = prepared.Readback;
-    if (readback.Output.IsValid() &&
-        !m_Readback.HasPendingWrite(frame, readback.Output, readback.Reservation))
-        readback.Output = {};
-    prepared.Token = token;
-    if (!readback.Output.IsValid())
-        readback.Output = m_Readback.ReserveWrite(frame,
-            {token, params.PointCount, params.Points[0][3]}, readback.Reservation);
-    if (!readback.Output.IsValid())
-        return true;
-    device->UpdateBufferBinding(set, 0u, paramsBuffer, paramsOffset, sizeof(OceanGPUQueryParamsGPU));
-    device->UpdateCombinedImageSamplerBinding(set, 1u, m_FFT, m_FFTSampler);
-    device->UpdateCombinedImageSamplerBinding(set, 2u,
-        m_Combined.IsValid() ? m_Combined : m_FFT,
-        m_CombinedSampler.IsValid() ? m_CombinedSampler : m_FFTSampler);
-    device->UpdateStorageBufferBinding(set, 3u, readback.Output, 0u,
-                                       sizeof(ResultGPU) * kMaxOceanGPUQueryPointsPerDispatch);
-    readback.Owner.Stamp(frame);
-    readback.Commands = {pipeline, set, (params.PointCount + 63u) / 64u, 1u, 1u, {}};
-    return true;
-}
+    if (!m_Ready || !device || !commandList || !paramsBuffer.IsValid() ||
+        !m_FFT.IsValid() || !m_FFTSampler.IsValid() || m_Active.Token == 0u)
+        return;
+    const PipelineHandle pipeline = device->GetOrCreateComputePipeline(m_Pipeline);
+    if (!pipeline)
+        return;
+    ReadbackMeta metadata{m_Active.Token, static_cast<uint32>(m_Active.Points.size()),
+                          m_Params.Points[0][3]};
+    const BufferHandle output = m_Readback.BeginWrite(frame, metadata);
+    if (!output.IsValid())
+        return;
 
-void OceanGPUQuery::RecordDispatch(CommandList* commands, const OceanPreparedQueryDispatch& prepared)
-{
-    const auto& readback = prepared.Readback;
-    if (!readback.Owner.Frame || !readback.Owner.IsFor(*readback.Owner.Frame) ||
-        !m_Readback.HasPendingWrite(*readback.Owner.Frame, readback.Output, readback.Reservation))
-        return;
-    if (!RecordOceanPreparedDispatch(commands, readback.Commands))
-        return;
-    m_Readback.RecordResolve(commands, readback.Output);
-    if (!m_Readback.MarkRecorded(readback.Output, readback.Reservation))
-        return;
-    std::lock_guard<std::mutex> lock(m_Mutex);
-    if (m_Active.Token == prepared.Token)
-        m_Active = {};
+    commandList->SetPipeline(pipeline);
+    DescriptorSetDesc setDesc{};
+    setDesc.layout = m_Layout;
+    setDesc.transient = true;
+    setDesc.debugName = "OceanGPUQuery_DS";
+    const DescriptorSetHandle set = device->CreateDescriptorSet(setDesc);
+    device->UpdateBufferBinding(set, 0u, paramsBuffer, paramsOffset,
+                                sizeof(OceanGPUQueryParamsGPU));
+    device->UpdateCombinedImageSamplerBinding(set, 1u, m_FFT, m_FFTSampler);
+    device->UpdateCombinedImageSamplerBinding(
+        set, 2u, m_Combined.IsValid() ? m_Combined : m_FFT,
+        m_CombinedSampler.IsValid() ? m_CombinedSampler : m_FFTSampler);
+    device->UpdateStorageBufferBinding(set, 3u, output, 0u,
+                                       sizeof(ResultGPU) * kMaxOceanGPUQueryPointsPerDispatch);
+    commandList->BindDescriptorSet(0u, set, pipeline);
+    commandList->Dispatch((metadata.Count + 63u) / 64u, 1u, 1u);
+
+    // No-op unless the backend keeps the mappable slot in a second allocation
+    // (RGReadbackRing::RecordResolve).
+    m_Readback.RecordResolve(commandList, output);
+
+    m_Active = {};
 }
 
 void OceanGPUQuery::PollCompleted(IDevice* device)
@@ -226,24 +198,25 @@ void OceanGPUQuery::PollCompleted(IDevice* device)
     if (!m_Ready || !device)
         return;
     ReadbackMeta metadata{};
-    while (const auto* mapped = static_cast<const ResultGPU*>(
-        m_Readback.MapOldestReady(device, &metadata)))
+    const auto* mapped = static_cast<const ResultGPU*>(
+        m_Readback.MapNewestReady(device, &metadata));
+    if (!mapped || metadata.Token == 0u || metadata.Count == 0u)
+        return;
+    std::vector<OceanSurfaceSample> samples(metadata.Count);
+    for (uint32 i = 0u; i < metadata.Count; ++i)
     {
-        std::vector<OceanSurfaceSample> samples(metadata.Count);
-        for (uint32 i = 0u; i < metadata.Count; ++i)
-        {
-            OceanSurfaceSample& sample = samples[i];
-            sample.Valid = true;
-            sample.Source = OceanQuerySource::GPUQuery;
-            std::memcpy(sample.PositionWS, mapped[i].Position, sizeof(float32) * 3u);
-            std::memcpy(sample.NormalWS, mapped[i].Normal, sizeof(float32) * 3u);
-            std::memcpy(sample.DisplacementWS, mapped[i].Displacement, sizeof(float32) * 3u);
-            sample.Height = sample.PositionWS[1];
-        }
-        m_Readback.Unmap(device);
-        std::lock_guard<std::mutex> lock(m_Mutex);
-        m_Completed[metadata.Token] = std::move(samples);
+        OceanSurfaceSample& sample = samples[i];
+        sample.Valid = true;
+        sample.Source = OceanQuerySource::GPUQuery;
+        sample.PositionWS = Mathematics::Vector3(mapped[i].Position.x, mapped[i].Position.y, mapped[i].Position.z);
+        sample.NormalWS = Mathematics::Vector3(mapped[i].Normal.x, mapped[i].Normal.y, mapped[i].Normal.z);
+        sample.DisplacementWS =
+            Mathematics::Vector3(mapped[i].Displacement.x, mapped[i].Displacement.y, mapped[i].Displacement.z);
+        sample.Height = sample.PositionWS[1];
     }
+    m_Readback.Unmap(device);
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    m_Completed[metadata.Token] = std::move(samples);
 }
 
 bool OceanGPUQuery::TryTake(OceanGPUQueryToken token, std::vector<OceanSurfaceSample>& out)

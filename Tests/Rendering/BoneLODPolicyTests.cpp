@@ -1,4 +1,5 @@
 #include "Engine/Rendering/BoneLOD/BoneLODPolicy.h"
+#include "Engine/Rendering/RenderOrigin.h"
 #include "Animation/BoneEvaluationPlan.h"
 #include "Assets/AnimationClip.h"
 #include "Assets/AssetManager.h"
@@ -200,14 +201,16 @@ protected:
         return entity;
     }
 
-    void SetCamera(Rendering::CameraId cameraId, float z)
+    void SetCamera(Rendering::CameraId cameraId, double z)
     {
         Rendering::CameraData camera{};
         const auto projection = Mathematics::Matrix4x4::PerspectiveReverseZ(std::numbers::pi_v<float> * 0.5f,
             1.0f, 0.1f, 2000.0f);
-        std::copy_n(projection.Data(), 16u, camera.proj);
-        camera.cameraPos[2] = z;
-        Services.Views().SetCameraData(cameraId, camera);
+        camera.proj = projection;
+        camera.view = Mathematics::Matrix4x4::Translation(Mathematics::Vector3(0.0f, 0.0f, -static_cast<float>(z)));
+        camera.viewProj = camera.proj * camera.view;
+        Renderer::SetCameraEye(camera, Mathematics::WorldPosition{0.0, 0.0, z});
+        Services.Views().SetCameraData(cameraId, camera, Rendering::CameraRanges{0.1f, 2000.0f});
     }
 
     void UpdatePolicy() { Policy.Update(World, &Services.Views(), Assets, 0.0f); }
@@ -259,6 +262,18 @@ TEST_F(BoneLODPolicyTest, AggregatesViewsAndRemovesRetiredViewDemand)
     EXPECT_TRUE(Reduced());
 }
 
+TEST_F(BoneLODPolicyTest, LargeWorldTranslationPreservesSmallBoundsAndViewDemand)
+{
+    constexpr double kWorldOffset = 1.0e8 + 0.125;
+    World.GetComponentForWrite<Components::WorldTransform>(Body)->Position.Z = kWorldOffset;
+    SetCamera(Camera, kWorldOffset + 1000.0);
+    UpdatePolicy();
+    EXPECT_TRUE(Reduced());
+    SetCamera(Camera, kWorldOffset + 10.0);
+    UpdatePolicy();
+    EXPECT_FALSE(Reduced());
+}
+
 TEST_F(BoneLODPolicyTest, ConflictingConsumersUseMaximumNormalizedDemand)
 {
     Components::BoneLOD first;
@@ -268,7 +283,7 @@ TEST_F(BoneLODPolicyTest, ConflictingConsumersUseMaximumNormalizedDemand)
     Components::BoneLOD second;
     second.SwitchCoverage = 0.2f;
     World.AddComponentImmediate(sibling, second);
-    World.GetComponentForWrite<Components::WorldTransform>(sibling)->matrix[14] = 950.0f;
+    World.GetComponentForWrite<Components::WorldTransform>(sibling)->Position.Z = 950.0;
     UpdatePolicy();
     EXPECT_FALSE(Reduced());
 }
@@ -559,13 +574,12 @@ TEST_F(BoneLODPolicyTest, SceneRoundTripPreservesTheInstanceOptInAndFullDetailOv
     settings.FullDetailOverride = true;
     authored.AddComponentImmediate(entity, settings);
     const auto file = Temporary.Path() / "BoneLOD.scene";
-    ASSERT_TRUE(Scene::SaveSceneToFile(authored, file));
+    const auto written = Scene::WriteSceneFile(authored, file);
+    ASSERT_TRUE(written) << (written.Error ? written.Error->message : "");
     ECS::World loaded;
-    Scene::SceneLoadDegradation degradation;
-    Scene::LoadOptions options;
-    options.outDegradation = &degradation;
-    ASSERT_TRUE(Scene::LoadSceneFromFile(loaded, file, options)) << Scene::GetLastSceneIOError().message;
-    EXPECT_FALSE(degradation.IsDegraded());
+    const auto read = Scene::ReadSceneInto(loaded, file);
+    ASSERT_TRUE(read) << (read.Error ? read.Error->message : "");
+    EXPECT_FALSE(read.Degradation.IsDegraded());
     uint32 count = 0u;
     loaded.Query<ECS::Read<Components::BoneLOD>>().Each([&count](const Components::BoneLOD& restored)
     {

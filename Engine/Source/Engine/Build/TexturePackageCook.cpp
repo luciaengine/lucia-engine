@@ -9,6 +9,9 @@
 #include "Assets/PackagedTexturePayload.h"
 #include "FileSystem/FileSystem.h"
 #include "Logger/Logger.h"
+#include "TerrainECS/Scene/TerrainSceneSchemas.h"
+#include "Types/FlatSet.h"
+#include "Types/StringUtils.h"
 
 #include <algorithm>
 #include <cctype>
@@ -22,7 +25,7 @@ namespace GameEngine
 namespace fs = std::filesystem;
 namespace
 {
-bool ValidArtifact(const Vector<uint8>& bytes, TextureCookOutput output,
+bool ValidArtifact(std::span<const uint8> bytes, TextureCookOutput output,
                    const TextureCookInputs& inputs, bool hdr)
 {
     if (bytes.empty())
@@ -45,7 +48,26 @@ bool ValidArtifact(const Vector<uint8>& bytes, TextureCookOutput output,
                texture.GetWidth(), texture.GetHeight(), inputs.Settings);
 }
 
-bool PublishArtifact(const fs::path& destination, const Vector<uint8>& bytes, std::string& error)
+// A normal-variance companion (HasNormalVarianceCompanion): single-channel BC4, linear.
+bool ValidVarianceCompanion(std::span<const uint8> bytes)
+{
+    TextureAsset texture(GUID::Null(), "cooked-variance-validation.ktx2");
+    return !bytes.empty() && texture.LoadFromData(bytes) && texture.GetWidth() && texture.GetHeight() &&
+           texture.GetFormat() == TextureFormat::BC4 && texture.GetColorSpace() == TextureColorSpace::Linear;
+}
+
+// The artifact at `file`, and its companion beside it when `withCompanion`; both valid or neither read.
+bool ReadArtifactPair(const fs::path& file, bool withCompanion, TextureCookOutput output,
+                      const TextureCookInputs& inputs, bool hdr, ByteBuffer& cooked, ByteBuffer& companion)
+{
+    if (!ReadFileBytesShared(file, cooked) || !ValidArtifact(cooked, output, inputs, hdr))
+        return false;
+    companion = ByteBuffer();
+    return !withCompanion ||
+           (ReadFileBytesShared(TextureCookVarianceCompanionPath(file), companion) && ValidVarianceCompanion(companion));
+}
+
+bool PublishArtifact(const fs::path& destination, std::span<const uint8> bytes, std::string& error)
 {
     static std::atomic<uint64> sequence{0};
     std::error_code directoryError;
@@ -85,16 +107,36 @@ bool PublishArtifact(const fs::path& destination, const Vector<uint8>& bytes, st
     return true;
 }
 
-// Removes a texture's other artifacts from a derived cache once `kept` is published there: the
-// editor sweeps a texture's superseded keys only when it cooks, and one that adopts the
-// export's artifact never does.
-void RemoveSupersededArtifacts(const fs::path& kept, const GUID& guid)
+// The textures a packaged scene or prefab names as a terrain heightmap. TerrainService reads
+// their 16-bit source by path, so these sources ship. The field follows an entity section ('.')
+// or a prefab override's address ('/').
+FlatSet<GUID> CollectTerrainHeightmapTextures(const AssetManifest& manifest, const AssetRegistry& registry)
 {
-    const std::string prefix = guid.ToString() + "-";
-    std::error_code error;
-    for (fs::directory_iterator it(kept.parent_path(), error), end; !error && it != end; it.increment(error))
-        if (it->path() != kept && it->path().filename().string().rfind(prefix, 0) == 0)
-            fs::remove(it->path(), error);
+    const std::string_view field = Scene::kTerrainHeightmapSceneField;
+    FlatSet<GUID> heightmaps;
+    for (const auto& entry : manifest.entries)
+    {
+        if (entry.type != AssetType::Scene && entry.type != AssetType::Prefab)
+            continue;
+        for (const DepEdge& edge : registry.GetResolvedDependencyEdges(entry.guid))
+        {
+            const std::string_view locator = edge.FieldLocator;
+            if (edge.Target.IsNull() || locator.size() <= field.size() || !EndsWithIgnoreCase(locator, field))
+                continue;
+            const char separator = locator[locator.size() - field.size() - 1];
+            if (separator == '.' || separator == '/')
+                heightmaps.Insert(edge.Target);
+        }
+    }
+    return heightmaps;
+}
+
+// The companion first, so a published parent always has its companion beside it.
+bool PublishArtifactPair(const fs::path& destination, std::span<const uint8> cooked, std::span<const uint8> companion,
+                         std::string& error)
+{
+    return (companion.empty() || PublishArtifact(TextureCookVarianceCompanionPath(destination), companion, error)) &&
+           PublishArtifact(destination, cooked, error);
 }
 
 // One usage for every slot that binds a texture, one bit per usage. An unknown slot may read the
@@ -131,7 +173,7 @@ std::unordered_map<GUID, TextureCookUsage> CollectPackagedTextureUsages(
         // relative image paths here; a null load context keeps its parser from
         // registering assets in the caller's registry as a side effect.
         MaterialAsset material(entry.guid, entry.sourcePath);
-        Vector<uint8> bytes;
+        ByteBuffer bytes;
         bool loaded = false;
         if (ReadFileBytesShared(contentRoot / entry.outputPath, bytes))
         {
@@ -203,6 +245,7 @@ bool StagePackagedTextureCooks(const fs::path& contentRoot,
                               const AssetManifest& manifest,
                               const AssetRegistry& sourceRegistry,
                               TextureCookWorkers* encodeWorkers,
+                              JobSystem::WorkStealingThreadPool* manifestParsePool,
                               const std::function<bool()>& cancelRequested,
                               TexturePackageCookStats& stats,
                               std::string& error)
@@ -213,6 +256,7 @@ bool StagePackagedTextureCooks(const fs::path& contentRoot,
     std::map<fs::path, std::unique_ptr<AssetDatabase::AssetStore_TextJsonl>> stores;
     std::unordered_set<std::string> staged;
     std::vector<fs::path> replacedSources;
+    const FlatSet<GUID> terrainHeightmaps = CollectTerrainHeightmapTextures(manifest, sourceRegistry);
     try
     {
         for (const auto& entry : manifest.entries)
@@ -238,7 +282,7 @@ bool StagePackagedTextureCooks(const fs::path& contentRoot,
             auto& store = stores[mountRoot];
             if (!store)
             {
-                store = std::make_unique<AssetDatabase::AssetStore_TextJsonl>();
+                store = std::make_unique<AssetDatabase::AssetStore_TextJsonl>(manifestParsePool);
                 if (!store->LoadFromFile(assetRoot / ".assetmanifest", &error))
                     return false;
             }
@@ -266,11 +310,8 @@ bool StagePackagedTextureCooks(const fs::path& contentRoot,
                 error = "Invalid texture import policy for '" + entry.outputPath.string() + "': " + error;
                 return false;
             }
-            // No material binds an unclassified texture and no author classified it, so its
-            // consumers include readers that open the source by path rather than through
-            // TextureAsset: a terrain heightmap (TerrainService::ResolveHeightmapAsset reads
-            // 16-bit samples the RGBA8 payload cannot hold). Its source ships beside the
-            // payload.
+            // No material binds an unclassified texture, so a reader can open its source by path
+            // rather than through TextureAsset. Its source ships beside the payload.
             const bool unclassified = inputs.Settings.Usage == TextureCookUsage::Auto &&
                 inputs.Settings.Compression == TextureCookCompression::Auto && extension != ".hdr";
             if (unclassified)
@@ -288,13 +329,13 @@ bool StagePackagedTextureCooks(const fs::path& contentRoot,
                                                          IsTextureCookEncoderAvailable());
             if (!NeedsTextureCook(inputs, output))
                 continue;
-            Vector<uint8> sourceBytes;
-            if (!ReadFileBytesShared(source, sourceBytes) || sourceBytes.empty())
+            ByteBuffer sourceBytes;
+            if (!ReadFileBytesShared(source, sourceBytes) || sourceBytes.Size() == 0)
             {
                 error = "Could not read staged texture: " + source.string();
                 return false;
             }
-            const uint64 sourceHash = ComputeTextureCookSourceHash(sourceBytes.data(), sourceBytes.size());
+            const uint64 sourceHash = ComputeTextureCookSourceHash(sourceBytes.Data(), sourceBytes.Size());
             ++stats.Textures;
             if (cancelled()) { error = kTextureCookCancelledError; return false; }
             const auto filename = TextureCookArtifactName(entry.guid, sourceHash, inputs, output);
@@ -314,56 +355,59 @@ bool StagePackagedTextureCooks(const fs::path& contentRoot,
                 const bool sourceCooks = cacheRoot && sourceRegistry.GetDerivedArtifactPolicy(entry.guid).CooksOnMiss;
                 const auto sourceCacheFile = cacheRoot
                     ? *cacheRoot / AssetDatabase::kTextureCacheDirectoryName / filename : fs::path{};
-                Vector<uint8> cooked;
+                // A normal map's variance companion travels with it (TextureAsset::LoadPackagedTexture).
+                const bool withCompanion = HasNormalVarianceCompanion(inputs, output);
+                ByteBuffer cooked;
+                ByteBuffer companion;
                 bool inSourceCache = false;
-                const bool alreadyStaged = ReadFileBytesShared(destination, cooked) &&
-                                           ValidArtifact(cooked, output, inputs, hdr);
+                const bool alreadyStaged = ReadArtifactPair(destination, withCompanion, output, inputs, hdr, cooked, companion);
                 bool reused = alreadyStaged;
                 if (!reused && cacheRoot)
-                    reused = inSourceCache = ReadFileBytesShared(sourceCacheFile, cooked) &&
-                                             ValidArtifact(cooked, output, inputs, hdr);
+                    reused = inSourceCache =
+                        ReadArtifactPair(sourceCacheFile, withCompanion, output, inputs, hdr, cooked, companion);
                 if (!reused)
                 {
                     Logger::Log::Info("Build: Baking texture '{}' ({})", entry.outputPath.string(), filename);
                     std::vector<uint8> encoded;
-                    if (!CookTexture(sourceBytes.data(), sourceBytes.size(), extension,
+                    std::vector<uint8> encodedCompanion;
+                    if (!CookTexture(sourceBytes.Data(), sourceBytes.Size(), source.string(), extension,
                                      inputs, output, encoded, error, cancelRequested,
-                                     encodeWorkers))
+                                     encodeWorkers, &encodedCompanion))
                     {
                         if (error != kTextureCookCancelledError)
                             error = "Texture bake failed for '" + entry.outputPath.string() + "': " + error;
                         return false;
                     }
-                    cooked.assign(encoded.begin(), encoded.end());
-                    if (!ValidArtifact(cooked, output, inputs, hdr))
+                    cooked = ByteBuffer::CopyOf(encoded);
+                    companion = ByteBuffer::CopyOf(encodedCompanion);
+                    if (!ValidArtifact(cooked, output, inputs, hdr) ||
+                        (withCompanion && !ValidVarianceCompanion(companion)))
                     {
                         error = "Cooked texture failed validation: " + entry.outputPath.string();
                         return false;
                     }
                 }
                 if (cancelled()) { error = kTextureCookCancelledError; return false; }
-                // Valid staged artifacts already have the required recipe key
-                // and format. Republishing them would allocate new storage for
-                // APFS/reflink clones and turn validation into a full cache rewrite.
-                // Authoring-cache hits still need publication into this mount.
-                if (!alreadyStaged && !PublishArtifact(destination, cooked, error))
+                if (!alreadyStaged && !PublishArtifactPair(destination, cooked, companion, error))
                     return false;
                 std::string cacheError;
                 if (sourceCooks && !inSourceCache)
                 {
-                    if (PublishArtifact(sourceCacheFile, cooked, cacheError))
-                        RemoveSupersededArtifacts(sourceCacheFile, entry.guid);
+                    // The editor removes superseded artifacts only when it cooks, and one that
+                    // adopts this artifact does not cook.
+                    if (PublishArtifactPair(sourceCacheFile, cooked, companion, cacheError))
+                        RemoveSupersededTextureCookArtifacts(sourceCacheFile, entry.guid, output);
                     else
                         Logger::Log::Warning("Build: {}; the editor cooks '{}' again on its next load",
                                              cacheError, entry.outputPath.string());
                 }
                 ++stats.Artifacts;
                 stats.ReusedArtifacts += reused ? 1 : 0;
-                stats.Bytes += cooked.size();
+                stats.Bytes += cooked.Size() + companion.Size();
             }
             if (!store->UpsertAsset(record, &error))
                 return false;
-            if (!unclassified)
+            if (!unclassified && !terrainHeightmaps.Contains(entry.guid))
                 replacedSources.push_back(source);
         }
         if (cancelled()) { error = kTextureCookCancelledError; return false; }

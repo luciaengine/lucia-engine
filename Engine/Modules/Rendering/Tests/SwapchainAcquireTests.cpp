@@ -1,4 +1,4 @@
-#include "Source/Vulkan/VulkanDevice.h"
+#include "Source/Vulkan/VulkanDevice/VulkanDevice.h"
 #include "Source/Vulkan/VulkanFaultInjection.h"
 #include "Tests/ScopedEnvVar.h"
 #include "TestTempDir.h"

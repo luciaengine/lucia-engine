@@ -2,16 +2,14 @@
 
 #include "Rendering/Core/Device.h" // DescriptorSetLayoutDesc
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/PipelineIdentifiers.h"
+#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Core/RenderGraph/RGReadbackRing.h"
-#include "Rendering/Core/RenderGraph/RGFrameStamp.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Types/Types.h"
 
 #include <cstdint>
 #include <mutex>
-#include <memory>
 #include <vector>
 
 namespace GameEngine::Engine::Renderer::Pipeline
@@ -31,106 +29,141 @@ struct OceanRasterDepthCaptureSettings
 {
     bool Enabled = false;
     uint32 Resolution = 512u;
-    uint32 RenderLayerMask = 0xFFFFFFFFu;
+    Rendering::RenderLayerMask CaptureLayers = Rendering::RenderLayerMask::All();
     float32 SizeX = 512.0f;
     float32 SizeZ = 512.0f;
     float32 TopPadding = 64.0f;
     float32 DeepWaterDepth = 60000.0f;
 };
 
-struct OceanRasterDepthSampling
-{
-    Rendering::TextureHandle Texture;
-    Rendering::SamplerHandle Sampler;
-    Rendering::RenderGraph::RGTexture Graph;
-    float32 OriginX = 0, OriginZ = 0, SizeX = 1, SizeZ = 1, Deep = 60000;
-};
-
-// Top-down geometry capture. Sampling begins one world frame after the first
-// recorded capture; updating owners sample their planned output in the same graph.
+// Hidden top-down dynamic raster producer for the seabed-depth cascade. It renders
+// regular MeshRenderer geometry through a secondary orthographic view, then
+// converts that reverse-Z depth buffer into an R32F water-depth texture. The
+// texture is consumed by OceanSeabedDepth with one-frame latency.
 class OceanRasterDepthCapture
 {
 public:
-    OceanRasterDepthCapture();
     ~OceanRasterDepthCapture();
 
     bool DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d,
                         float32 centerX, float32 centerZ, float32 seaLevel,
                         const OceanRasterDepthCaptureSettings& settings);
-    /// Render-thread sampling retains the selected output generation and its matching footprint.
-    /// The result remains valid for this frame; foreign frames see only committed captures.
-    bool GetSampling(Rendering::RenderGraph::RGFrame& frame, OceanRasterDepthSampling& out) const;
-    Rendering::ViewId GetCaptureViewId() const { return m_ViewId; }
+
+    bool HasSampleableCapture(uint32 /*frameIndex*/) const
+    {
+        return m_OutputTexture.IsValid() && m_Sampler.IsValid() &&
+               m_HasSampleableTexture;
+    }
+
+    ::GameEngine::Rendering::TextureHandle GetTexture() const { return m_OutputTexture; }
+    ::GameEngine::Rendering::SamplerHandle GetSampler() const { return m_Sampler; }
+
+    // Import the water-depth output at its resting-state contract (rests in
+    // ShaderResource; the readback frames MarkOutput it back). Centralizes the
+    // claim — the seabed bake's declared read and the readback pass must agree
+    // (import dedups by physical, first claim wins). Invalid when not ready.
+    ::GameEngine::Rendering::RenderGraph::RGTexture ImportRG(
+        ::GameEngine::Rendering::RenderGraph::RGFrame& frame) const;
+    float32 GetOriginX() const { return m_OriginX; }
+    float32 GetOriginZ() const { return m_OriginZ; }
+    float32 GetSizeX() const { return m_SizeX; }
+    float32 GetSizeZ() const { return m_SizeZ; }
+    float32 GetDeepWaterDepth() const { return m_DeepWaterDepth; }
+    ::GameEngine::Rendering::ViewId GetCaptureViewId() const { return m_ViewId; }
     bool SampleDepth(float32 worldX, float32 worldZ, float32& outDepth) const;
     void InvalidateReadback();
 
-    void OnFrameSubmitted(const Rendering::RenderGraph::RGFrame& frame,
-                          const Rendering::IDevice::GpuSyncToken& token)
-    {
-        m_Readback.OnFrameSubmitted(frame, token);
-    }
-    /// Render-thread notification cancels this frame's unsubmitted readback reservations.
+    // Post-submit stamp: attaches the submission's fence token to this frame's
+    // pending readback (RGReadbackRing completion contract).
     void OnFrameAborted(const Rendering::RenderGraph::RGFrame& frame)
     {
         m_Readback.CancelUnsubmitted(frame);
     }
-    /// Render-thread retirement clears borrowed plans before the frame is destroyed.
-    void OnFrameStreamRetired(const Rendering::RenderGraph::RGFrame& frame);
+
+    void OnFrameSubmitted(const ::GameEngine::Rendering::RenderGraph::RGFrame& frame,
+                          const ::GameEngine::Rendering::IDevice::GpuSyncToken& token)
+    {
+        m_Readback.OnFrameSubmitted(frame, token);
+    }
+    void OnFrameStreamRetired(const ::GameEngine::Rendering::RenderGraph::RGFrame& frame)
+    {
+        m_Readback.OnFrameStreamRetired(frame);
+    }
 
 private:
-    friend struct RasterDepthCaptureTestAccess;
-    struct OutputGeneration;
-    struct Snapshot;
-    struct FramePlan;
-    bool EnsurePipeline(Rendering::IDevice& device);
-    bool EnsureOutput(Rendering::IDevice& device, uint32 resolution);
-    bool EnsureReadbackRing(Rendering::IDevice& device, uint32 resolution);
-    void EnsureView(Engine::Renderer::RenderServices& rs, const Rendering::ViewDesc& mainView);
-    Rendering::CameraData MakeTopDownCamera(float32 centerX, float32 centerZ, float32 seaLevel,
-                                             const OceanRasterDepthCaptureSettings& settings) const;
-    FramePlan* PlanSnapshot(Rendering::RenderGraph::RGFrame& frame, const Snapshot& snapshot,
-                            uint64 epoch, bool convert);
-    bool IsCurrentPlan(const FramePlan& plan) const;
-    bool PrepareConverter(FramePlan& plan, Rendering::RenderGraph::RGPrepareContext& ctx) const;
-    void RecordConverter(FramePlan& plan, Rendering::RenderGraph::RGContext& ctx);
-    void ScheduleReadback(Rendering::RenderGraph::RGFrame& frame, FramePlan& plan);
-    bool PrepareReadback(FramePlan& plan, Rendering::RenderGraph::RGPrepareContext& ctx);
-    void RecordReadback(const FramePlan& plan, Rendering::RenderGraph::RGContext& ctx);
+    bool EnsurePipeline(::GameEngine::Rendering::IDevice& device);
+    bool EnsureOutput(::GameEngine::Rendering::IDevice& device, uint32 resolution);
+    bool EnsureReadbackRing(::GameEngine::Rendering::IDevice& device, uint32 resolution);
+    void EnsureView(Engine::Renderer::RenderServices& rs,
+                    const ::GameEngine::Rendering::ViewDesc& mainView);
+    ::GameEngine::Rendering::CameraData MakeTopDownCamera(float32 centerX, float32 centerZ,
+                                                          float32 seaLevel,
+                                                          const OceanRasterDepthCaptureSettings& settings) const;
+    void ScheduleReadback(::GameEngine::Rendering::RenderGraph::RGFrame& frame,
+                          ::GameEngine::Rendering::RenderGraph::RGTexture output,
+                          uint32 resolution);
     void ResolveReadyReadback();
 
-    Rendering::IDevice* m_Device = nullptr;
+    ::GameEngine::Rendering::IDevice* m_Device = nullptr;
     Engine::Renderer::RenderServices* m_RenderServices = nullptr;
     bool m_PipelineLoadAttempted = false;
     bool m_WarnedLoadFailed = false;
-    Rendering::ViewId m_ViewId = 0;
-    Rendering::CameraId m_CameraId = 0;
-    bool m_ViewAllocated = false;
-    bool m_CaptureArmed = false;
-    uint64 m_ArmedEpoch = 0;
-    uint64 m_ClaimedEpoch = ~0ull;
-    uint64 m_CaptureSerial = 0;
-    std::shared_ptr<OutputGeneration> m_OutputGeneration;
-    std::unique_ptr<Snapshot> m_Committed;
-    Rendering::RenderGraph::RGFrameStamp m_PlannedFrame;
-    FramePlan* m_Plan = nullptr;
-    bool m_ReadbackPending = false;
-    Rendering::SamplerHandle m_Sampler;
-    Rendering::ComputePipelineId m_PipelineId{};
-    Rendering::DescriptorSetLayoutDesc m_Layout{};
 
+    ::GameEngine::Rendering::ViewId m_ViewId = 0;
+    ::GameEngine::Rendering::CameraId m_CameraId = 0;
+    bool m_ViewAllocated = false;
+    // OnDemand capture cycle: the view is fed only on requested frames, and a
+    // request made during declaration covers the NEXT frame (extraction for the
+    // current frame already ran). Arm on the dirty frame, capture on the next.
+    bool m_CaptureArmed = false;
+    uint64 m_ArmedAtFrame = 0;
+
+    ::GameEngine::Rendering::TextureHandle m_OutputTexture;
+    ::GameEngine::Rendering::SamplerHandle m_Sampler;
+    uint32 m_Resolution = 0u;
+    bool m_HasSampleableTexture = false;
+    uint32 m_FramesUntilSampleable = 0u;
+    bool m_HaveLastSampleableTickFrame = false;
+    uint64 m_LastSampleableTickFrame = 0u;
+
+    bool m_HasCaptureFootprint = false;
+    bool m_HaveLastCaptureFrame = false;
+    uint64 m_LastCaptureFrame = 0u;
+    Rendering::RenderLayerMask m_CaptureMask = Rendering::RenderLayerMask::None();
+    uint64 m_CaptureWorldId = 0u;
+    float32 m_CaptureSeaLevel = 0.0f;
+    float32 m_CaptureTopPadding = 0.0f;
+
+    float32 m_OriginX = 0.0f;
+    float32 m_OriginZ = 0.0f;
+    float32 m_SizeX = 1.0f;
+    float32 m_SizeZ = 1.0f;
+    float32 m_DeepWaterDepth = 60000.0f;
+
+    ::GameEngine::Rendering::ComputePipelineId m_PipelineId{};
+    ::GameEngine::Rendering::DescriptorSetLayoutDesc m_Layout{};
+
+    // Footprint metadata stamped when the copy is scheduled; the CPU sample
+    // window must match the tile the data was CAPTURED for, not the current one.
     struct ReadbackMeta
     {
-        float32 OriginX = 0, OriginZ = 0, SizeX = 1, SizeZ = 1, Deep = 60000;
-        uint32 Resolution = 0;
+        float32 OriginX = 0.0f;
+        float32 OriginZ = 0.0f;
+        float32 SizeX = 1.0f;
+        float32 SizeZ = 1.0f;
+        float32 Deep = 60000.0f;
     };
-    Rendering::RenderGraph::RGReadbackRing<ReadbackMeta> m_Readback;
-    uint32 m_ReadbackResolution = 0;
+    ::GameEngine::Rendering::RenderGraph::RGReadbackRing<ReadbackMeta> m_Readback;
+    uint32 m_ReadbackResolution = 0u;
+
     mutable std::mutex m_ReadbackMutex;
     std::vector<float32> m_CPUWaterDepth;
-    uint32 m_CPUReadbackResolution = 0;
     bool m_HasReadbackData = false;
-    float32 m_ReadOriginX = 0, m_ReadOriginZ = 0, m_ReadSizeX = 1, m_ReadSizeZ = 1;
-    float32 m_ReadDeepWaterDepth = 60000;
+    float32 m_ReadOriginX = 0.0f;
+    float32 m_ReadOriginZ = 0.0f;
+    float32 m_ReadSizeX = 1.0f;
+    float32 m_ReadSizeZ = 1.0f;
+    float32 m_ReadDeepWaterDepth = 60000.0f;
 };
 
 } // namespace GameEngine::Ocean

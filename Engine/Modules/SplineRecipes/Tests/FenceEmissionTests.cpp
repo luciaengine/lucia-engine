@@ -9,7 +9,7 @@
 #include "SplineRecipes/FenceEmission.h"
 #include "SplineLayout/FenceLayout.h"
 #include "SplineLayout/TileLayout.h"
-#include "SplineLayout/SpanMitre.h"
+#include "SplineLayout/SpanMiter.h"
 
 #include <array>
 #include <string>
@@ -286,18 +286,18 @@ TEST(FenceEmission, ARegisteredCrestCarriesItsWallsLengthScale)
     }
 }
 
-// A mitred span and a registered crest draw the cut variant the pools name for
+// A mitered span and a registered crest draw the cut variant the pools name for
 // them (fence design section 4c), keep their pose and scale, and sign with the
 // variant's mesh, so a rebuild that moves a piece onto another variant is never
 // read as mesh-stable. Every other piece draws its pool piece as before.
-TEST(FenceEmission, MitredPiecesDrawTheirVariantsUnderTheVariantsMesh)
+TEST(FenceEmission, MiteredPiecesDrawTheirVariantsUnderTheVariantsMesh)
 {
     const Pools pools;
     const FenceLayoutResult built = HandBuiltLayout();
     std::array<FencePoolPiece, 2> variants{};
     variants[0].Renderer.meshGpuHandleId = 101u;
     variants[1].Renderer.meshGpuHandleId = 202u;
-    const uint32 kPool = SplineLayout::kNoMitreVariant;
+    const uint32 kPool = SplineLayout::kNoMiterVariant;
     const std::array<uint32, 2> spanVariants{kPool, 0u};
     const std::array<uint32, 4> crestVariants{kPool, 1u, kPool, kPool};
     FenceEmissionPools view = pools.View(false);
@@ -310,12 +310,12 @@ TEST(FenceEmission, MitredPiecesDrawTheirVariantsUnderTheVariantsMesh)
     EXPECT_EQ(emissions[0].Source, &pools.Spans[built.Spans[0].PoolSlot]);
     EXPECT_EQ(emissions[0].Signature, kSignatureSpanBase + built.Spans[0].PoolSlot);
     EXPECT_EQ(emissions[1].Source, &variants[0]);
-    EXPECT_EQ(emissions[1].Signature, SplineRecipes::kSignatureMitreVariant | 101u);
+    EXPECT_EQ(emissions[1].Signature, SplineRecipes::kSignatureMiterVariant | 101u);
     EXPECT_EQ(emissions[1].LengthScale, built.Spans[1].LengthScale);
     EXPECT_EQ(emissions[1].Pose, &built.Spans[1].Pose);
 
     EXPECT_EQ(emissions[3].Source, &variants[1]) << "the row's first crest";
-    EXPECT_EQ(emissions[3].Signature, SplineRecipes::kSignatureMitreVariant | 202u);
+    EXPECT_EQ(emissions[3].Signature, SplineRecipes::kSignatureMiterVariant | 202u);
     EXPECT_EQ(std::string(emissions[3].RoleLabel), "Crest");
     EXPECT_EQ(emissions[2].Source, &pools.Caps[1]);
     EXPECT_EQ(emissions[4].Source, &pools.Crests[1]);

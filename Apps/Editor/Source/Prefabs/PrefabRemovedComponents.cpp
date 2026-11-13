@@ -1,8 +1,8 @@
 #include "Prefabs/PrefabRemovedComponents.h"
 
 #include "InspectorRegistry.h"
-#include "Editor/Entities/EditorComponentTraits.h"
-#include "Inspectors/DefaultComponentInspector.h"
+#include "Inspectors/ComponentIconClass.h"
+#include "Inspectors/InspectorOverrideRows.h"
 #include "UI/InspectorSection.h"
 
 #include "Scene/SceneSchemaRegistry.h"

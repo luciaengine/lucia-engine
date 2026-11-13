@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
-#include "Rendering/Materials/ShaderReflection.h"
-#include "Rendering/Materials/ShaderMeta.h"
-#include "Rendering/Materials/ShaderMetaJson.h"
+#include "Rendering/Materials/Shader/ShaderReflection.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderMetaJson.h"
 #include <nlohmann/json.hpp>
 #include <vector>
 

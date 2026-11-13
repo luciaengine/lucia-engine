@@ -7,7 +7,7 @@
 #include "Components/Rendering/SkyEnvironment.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
-#include "Sky/SkySunPathSwitch.h"
+#include "Sky/SkySun/SkySunPathSwitch.h"
 #include "UndoRedo/UndoRedoService.h"
 
 using namespace GameEngine;

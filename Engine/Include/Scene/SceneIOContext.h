@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace GameEngine::Scene
 {
@@ -17,7 +18,7 @@ namespace GameEngine::Scene
 // pattern: schemas now receive ctx by const reference, so the helpers they
 // call (TryResolveResourceIdToAssetReference, TryGetEmbedDefinition,
 // TryResolveAssetReference) have no hidden TLS coupling.
-struct SceneLoadContext
+struct SceneReadContext
 {
     const std::filesystem::path* SceneFile = nullptr;
     std::filesystem::path AssetRoot;
@@ -26,7 +27,7 @@ struct SceneLoadContext
 
     // Per-load tables — populated at load start, consumed by ResolveResourceId helper.
     std::unordered_map<std::string, std::filesystem::path> ResourceAbsPathById;
-    std::unordered_map<std::string, GUID> ResourceGuidById;
+    std::unordered_map<std::string, std::string> ResourceGuidById;
 
     struct EmbedDef
     {
@@ -46,7 +47,8 @@ struct SceneLoadContext
     // Entity-reference resolution for EntityHandle fields. EntityIdMap maps a scene
     // entity-id string -> the live handle created this load; it is fully populated
     // before any component is applied, so forward references resolve directly.
-    // EntityIdPrefix namespaces ids for instanced blueprints/subscenes.
+    // EntityIdPrefix namespaces ids for subscenes and additive loads; a prefab file's lines resolve
+    // against a map of the file's own ids, with no prefix.
     const std::unordered_map<std::string, ECS::EntityHandle>* EntityIdMap = nullptr;
     std::string EntityIdPrefix;
 
@@ -68,11 +70,18 @@ struct SceneLoadContext
     };
     mutable std::unordered_map<std::string, std::unordered_map<ECS::EntityId, RetiredFoldClaim>>
         RetiredFoldClaims;
+
+    // Where a schema puts an authored property name that its component has no field for
+    // (ReportUnknownField). The scene loader points it at a list for one component block, then records
+    // each name in the load report with its file and line; the editor's version-control revert points
+    // it at a list and logs each name. Null elsewhere, and the schema refuses the name. mutable so the
+    // caller can point it while schemas receive ctx by const reference.
+    mutable std::vector<std::string>* UnknownFields = nullptr;
 };
 
 // Per-scene-save state threaded through schema dispatch (Serialize) and
-// FormatAssetReferenceForSave. Mirrors SceneLoadContext on the save side.
-struct SceneSaveContext
+// FormatAssetReferenceForSave. Mirrors SceneReadContext on the save side.
+struct SceneWriteContext
 {
     const std::filesystem::path* SceneFile = nullptr;
     std::filesystem::path AssetRoot;
@@ -86,7 +95,11 @@ struct SceneSaveContext
     // authored path of a reference whose GUID still names no asset from it.
     const ECS::UnresolvedComponentStore* Unresolved = nullptr; // not owned
 
-    // Prefab comparison includes default and cleared values so they can override the source.
+    // Write a line for every field a schema can write, a field at its empty state included: a null
+    // asset reference as its clear form `0`, an unset entity reference as `""`, an empty string as
+    // `""`, every struct-array element. A plain save leaves those lines out, because a load starts
+    // from the same state; the prefab override writer sets it for the two texts it compares, so a
+    // field an instance clears differs from the prefab's line and is saved.
     bool WriteEveryField = false;
 };
 

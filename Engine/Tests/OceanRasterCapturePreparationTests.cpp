@@ -1,3 +1,4 @@
+#include "TestCameraEye.h"
 #include <gtest/gtest.h>
 
 #include "Ocean/OceanRasterDepthCapture.h"
@@ -10,8 +11,8 @@
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/GPUScene.h"
-#include "Rendering/Core/PipelineTypes.h"
-#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
 #include "Rendering/Core/PassPhase.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "TestTempDir.h"
@@ -506,12 +507,13 @@ class RasterCapturePreparationTest : public ::testing::Test
         ASSERT_TRUE(services.Initialize(m_Device.get()));
         const auto cameraId = services.Views().AllocateCamera("RasterCaptureProbe.Camera");
         CameraData camera{};
-        for (int index = 0; index < 16; index += 5)
-            camera.view[index] = camera.proj[index] = camera.viewProj[index] = 1.0f;
-        services.Views().SetCameraData(cameraId, camera);
+        camera.view = Mathematics::Matrix4x4::Identity();
+        camera.proj = Mathematics::Matrix4x4::Identity();
+        camera.viewProj = Mathematics::Matrix4x4::Identity();
+        services.Views().SetCameraData(cameraId, ::GameEngine::Tests::TestCameraWithEye(camera), {0.1f, 1000.0f});
         const auto view = services.Views().AllocateView("RasterCaptureProbe.Main", cameraId);
         services.Views().SetViewWorldId(view, 1u);
-        services.Views().SetViewRenderLayerMask(view, 1u);
+        services.Views().SetViewRenderLayerMask(view, Rendering::RenderLayerMask::Default());
         GPUInstance instance{};
         instance.meshIndex = services.GetGPUScene()->AddMesh(GPUMesh{});
         instance.boundingRadius = 1.0f;

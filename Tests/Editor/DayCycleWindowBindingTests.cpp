@@ -73,7 +73,7 @@ TEST_F(DayCycleWindowBindingTests, WorkingCopyRenameRefreshesTheMountedTitleAndU
         {
             manager.GetDispatcher()->Drain();
             window->Refresh();
-            title = dynamic_cast<Label*>(window->FindById("DayCycleProfileName"));
+            title = dynamic_cast<Label*>(window->FindById("DayCycleProfileName"_sid));
             if (title && title->GetText() == "Default")
                 break;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));

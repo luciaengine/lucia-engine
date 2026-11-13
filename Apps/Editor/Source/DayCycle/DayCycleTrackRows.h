@@ -47,8 +47,11 @@ struct DayCycleTrackRowsContext
     bool ScrubRow = false;
 };
 
-/// Shared track rows for the window and asset inspector, synchronized through one working copy.
-/// Each row shows a graph, current value, source, dusk split and track controls on a shared axis.
+/// The rows of a Day Cycle profile's tracks, one per track the table declares, on one shared axis:
+/// a header with the playhead's hour, elevation and value, the graph, and a column with the value
+/// now, where it comes from, Separate dusk and Add or Remove track. The Day Cycle window and the
+/// profile's inspector both build their rows here. The rows follow the working copy: an edit from
+/// either surface reaches both.
 class DayCycleTrackRows
 {
   public:
@@ -59,9 +62,10 @@ class DayCycleTrackRows
     DayCycleTrackRows(const DayCycleTrackRows&) = delete;
     DayCycleTrackRows& operator=(const DayCycleTrackRows&) = delete;
 
-    /// Updates playheads in degrees and local solar hours; hours show only under `hourPlacesSun`.
-    /// `duskHalf` selects the setting half. Playheads outside the axis are hidden.
-    /// Rebuilds rows whose track or dusk split changed.
+    /// Moves every row's playhead to the sun now: `hours` of local solar time (printed only when
+    /// `hourPlacesSun`: a sun set by hand or following a light has no hour), `elevationDegrees` high,
+    /// on the setting half when `duskHalf`. A playhead beyond the axis is not drawn. A row whose
+    /// track was added, removed, split or joined since the last call is rebuilt here.
     void SetPlayhead(float hours, float elevationDegrees, bool duskHalf, bool hourPlacesSun);
     /// Turns the scrub strip off (dimmed, not draggable) or on.
     void SetScrubOff(bool off);

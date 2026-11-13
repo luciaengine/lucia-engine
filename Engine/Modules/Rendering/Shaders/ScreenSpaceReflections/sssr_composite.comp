@@ -9,7 +9,6 @@ layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D uOutput;
 layout(set = 0, binding = 5) uniform sampler2D uSpecularRadiance;
 layout(set = 0, binding = 6, rgba16f) uniform writeonly image2D uSceneHistoryOut;
 layout(set = 0, binding = 8) uniform sampler2D uSpecularWeight;
-
 layout(set = 0, binding = 9) uniform sampler2D uPlanarMask;
 
 #include "ScreenSpaceReflections/sssr_common.glsl"

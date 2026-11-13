@@ -1,5 +1,5 @@
 #include "Panels/DiffPanel.h"
-#include "VersionControl/SceneDiff.h"
+#include "VersionControl/SceneDiff/SceneDiff.h"
 
 #include "UI/Controls/TextArea.h"
 #include "UI/ResolvedStyle.h"

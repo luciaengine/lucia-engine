@@ -1,12 +1,10 @@
 #include "UI/Controls/TextField.h"
 #include "UI/TextSegmentation.h"
-#include "../TextSegmentation_Unicode.h"
 #include "UI/Utf8Helpers.h"
 #include "Input/InputSystem.h"
 #include "Input/KeyCodes.h"
 #include "Platform/SystemMetrics.h"
 #include "Types/ColorUtils.h"
-#include "Types/Fnv1a.h"
 #include "UI/CaretBlink.h"
 #include "UI/Parsers/CSSParser.h"
 #include "UI/UIManager.h"
@@ -17,7 +15,7 @@
 
 #include "Logger/Logger.h"
 #include "../UIAttributeAccess.h"
-#include "../UIManager_Internal.h"
+#include "../UIManager/UIManager_Internal.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -32,6 +30,12 @@ namespace GameEngine
 
 using namespace Rendering::Text;
 using namespace Rendering::Geometry;
+
+namespace
+{
+// U+2022 BULLET in UTF-8: a masked field draws one per code point of its value.
+constexpr std::string_view kMaskBullet = "\xE2\x80\xA2";
+} // namespace
 
 #ifdef _DEBUG
 // Opt-in diagnostics for TextInput interactions. Disabled by default; flip
@@ -231,7 +235,7 @@ void TextInput::OnPointerDown(float mouseX, float /*mouseY*/,
 	            m_TextScrollX,
 	            oldCaret,
 	            m_CaretIndex,
-	            GetValue());
+	            GetTextContent());
 	        // For harder-to-reproduce editor issues, also dump the full caret map in
 	        // screen space along with distances to the click. This mirrors the logic
 	        // in FindCaretIndexForScreenX so a single log line can explain why a
@@ -357,7 +361,7 @@ void TextInput::OnPointerDrag(float mouseX, float /*mouseY*/,
 	            oldSelEnd,
 	            m_SelectionStart,
 	            m_SelectionEnd,
-	            GetValue());
+	            GetTextContent());
 		        if (!geo.CaretXByBytePhysical->empty())
 	        {
 	            std::ostringstream oss;
@@ -483,6 +487,9 @@ bool TextInput::OnKey(int key, int mods, UI::IPlatformApi* platform)
 
         if (key == Input::kKeyCode_C || key == Input::kKeyCode_X)
         {
+            // A masked value never reaches the clipboard, and cut removes nothing it cannot copy.
+            if (m_Masked)
+                return true;
             if (platform && HasSelection())
             {
                 int a = std::clamp(std::min(m_SelectionStart, m_SelectionEnd), 0, (int)s.size());
@@ -555,7 +562,7 @@ bool TextInput::OnKey(int key, int mods, UI::IPlatformApi* platform)
             if (pos > 0)
             {
                 BeginEditingSession();
-                size_t prev = TextSegmentation::PrevGrapheme(s, pos);
+                size_t prev = Utf8::Prev(s, pos);
                 s.erase(prev, pos - prev);
                 m_CaretIndex = (int)prev;
                 ClearSelection();
@@ -579,7 +586,7 @@ bool TextInput::OnKey(int key, int mods, UI::IPlatformApi* platform)
             if (pos < s.size())
             {
                 BeginEditingSession();
-                size_t next = TextSegmentation::NextGrapheme(s, pos);
+                size_t next = Utf8::Next(s, pos);
                 s.erase(pos, next - pos);
                 ClearSelection();
                 SetValue(s);
@@ -589,10 +596,31 @@ bool TextInput::OnKey(int key, int mods, UI::IPlatformApi* platform)
         }
         return true;
     case Input::kKeyCode_Left:
+    {
+        size_t pos = (size_t)std::clamp(m_CaretIndex, 0, (int)s.size());
+        // A masked value is one word: a word step would show where its spaces are.
+        int newCaret = !primaryMod ? (int)Utf8::Prev(s, pos)
+                       : m_Masked  ? 0
+                                   : (int)TextSegmentation::PrevBoundary(s, pos);
+        if (shift)
+        {
+            AnchorSelectionForExtend();
+            m_CaretIndex = newCaret;
+            m_SelectionEnd = m_CaretIndex;
+        }
+        else
+        {
+            m_CaretIndex = newCaret;
+            ClearSelection();
+        }
+        return true;
+    }
     case Input::kKeyCode_Right:
     {
-        const size_t pos = (size_t)std::clamp(m_CaretIndex, 0, (int)s.size());
-        const int newCaret = HorizontalCaretStop(s, pos, key == Input::kKeyCode_Right, primaryMod);
+        size_t pos = (size_t)std::clamp(m_CaretIndex, 0, (int)s.size());
+        int newCaret = !primaryMod ? (int)Utf8::Next(s, pos)
+                       : m_Masked  ? (int)s.size()
+                                   : (int)TextSegmentation::NextBoundary(s, pos);
         if (shift)
         {
             AnchorSelectionForExtend();
@@ -723,6 +751,29 @@ void TextInput::AnchorSelectionForExtend()
         m_SelectionStart = m_CaretIndex;
 }
 
+void TextInput::SetMasked(bool masked)
+{
+    if (m_Masked == masked)
+        return;
+    m_Masked = masked;
+    m_MaskedText.clear();
+    m_MeasureCacheValid = false;
+    MarkDirty(VisualDirty | LayoutDirty);
+}
+
+// Rebuilt only when the code point count changes: the bullets do not depend on the value.
+const std::string& TextInput::MaskedText() const
+{
+    const size_t count = Utf8::CountCodePoints(GetValue());
+    if (m_MaskedText.size() != count * kMaskBullet.size())
+    {
+        m_MaskedText.clear();
+        for (size_t index = 0; index < count; ++index)
+            m_MaskedText += kMaskBullet;
+    }
+    return m_MaskedText;
+}
+
 void TextInput::ClearSelection()
 {
     m_SelectionStart = m_SelectionEnd = -1;
@@ -751,6 +802,12 @@ void TextInput::SelectWordAt(float mouseX, float x, float y, float W, float H,
         MarkDirty(VisualDirty);
         return;
     }
+    // A word of a masked value would show where its spaces and punctuation are.
+    if (m_Masked)
+    {
+        SelectAll();
+        return;
+    }
 
     // The click resolves to a caret boundary, the same way a single click does,
     // and the segment is selected from there. Measured against Chrome: word
@@ -769,41 +826,47 @@ void TextInput::SelectWordAt(float mouseX, float x, float y, float W, float H,
     MarkDirty(VisualDirty);
 }
 
-int TextInput::HorizontalCaretStop(const std::string& text, size_t pos, bool forward, bool byWord)
-{
-    if (auto* owner = GetOwnerManager())
-        if (auto* font = owner->ResolveFontForStyle(GetResolvedStyle()))
-        {
-            const auto& visual = GetResolvedStyle().Visual;
-            const float scale = std::max(0.01f, owner->GetContentScale());
-            const auto& measured = EnsureMeasureCache(font, std::max(1.0f, visual.FontSize * scale),
-                                                       visual.LetterSpacing * scale);
-            return static_cast<int>(byWord
-                ? TextSegmentation::Detail::VisualWordBoundary(text, pos, forward, measured.caretXByByte)
-                : measured.NextVisualCaret(pos, forward));
-        }
-    // Without a resolved font there is no visual order; use logical boundaries.
-    if (byWord)
-        return static_cast<int>(forward ? TextSegmentation::NextBoundary(text, pos)
-                                        : TextSegmentation::PrevBoundary(text, pos));
-    return static_cast<int>(forward ? TextSegmentation::NextGrapheme(text, pos)
-                                    : TextSegmentation::PrevGrapheme(text, pos));
-}
-
 const Rendering::Text::FontAtlas::MeasureResult& TextInput::EnsureMeasureCache(
     Rendering::Text::FontAtlas* font, float pixelSize, float letterSpacingPx) const
 {
     const std::string& value = GetValue();
     const std::uintptr_t fptr = reinterpret_cast<std::uintptr_t>(font);
+    std::uint64_t key = 14695981039346656037ull;
     // FNV-1a over value bytes, pixelSize, letter-spacing, and font pointer
-    std::uint64_t key = Hashing::Fnv1a64(value);
-    key = Hashing::Fnv1a64Value(key, pixelSize);
-    key = Hashing::Fnv1a64Value(key, letterSpacingPx);
-    key = Hashing::Fnv1a64Value(key, fptr);
-    const auto revision = font->GetLayoutRevision();
-    key = Hashing::Fnv1a64Value(key, revision);
+    for (char c : value)
+    {
+        key ^= static_cast<std::uint64_t>(static_cast<unsigned char>(c));
+        key *= 1099511628211ull;
+    }
+    auto fnv = [](const void* data, size_t len, std::uint64_t h) -> std::uint64_t {
+        const auto* p = static_cast<const unsigned char*>(data);
+        for (size_t i = 0; i < len; ++i) { h ^= p[i]; h *= 1099511628211ull; }
+        return h;
+    };
+    key = fnv(&pixelSize, sizeof(pixelSize), key);
+    key = fnv(&letterSpacingPx, sizeof(letterSpacingPx), key);
+    key = fnv(&fptr, sizeof(fptr), key);
+    key = fnv(&m_Masked, sizeof(m_Masked), key);
 
-    if (!m_MeasureCacheValid || m_MeasureCacheKey != key)
+    if ((!m_MeasureCacheValid || m_MeasureCacheKey != key) && m_Masked)
+    {
+        // The bullets are measured; the caret map stays indexed by the value's bytes, each
+        // offset at the bullet of the code points before it.
+        const FontAtlas::MeasureResult shown = font->MeasureText(MaskedText(), pixelSize, letterSpacingPx);
+        m_MeasureCache.metrics = shown.metrics;
+        m_MeasureCache.caretXByByte.assign(value.size() + 1, 0.0f);
+        size_t codePoints = 0;
+        for (size_t offset = 0; offset <= value.size(); ++offset)
+        {
+            const size_t shownOffset = std::min(codePoints * kMaskBullet.size(), shown.caretXByByte.size() - 1);
+            m_MeasureCache.caretXByByte[offset] = shown.caretXByByte.empty() ? 0.0f : shown.caretXByByte[shownOffset];
+            if (offset < value.size() && (value[offset] & 0xC0) != 0x80)
+                ++codePoints;
+        }
+        m_MeasureCacheKey = key;
+        m_MeasureCacheValid = true;
+    }
+    else if (!m_MeasureCacheValid || m_MeasureCacheKey != key)
     {
         m_MeasureCache = font->MeasureText(value, pixelSize, letterSpacingPx);
         m_MeasureCacheKey = key;

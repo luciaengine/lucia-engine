@@ -1,3 +1,4 @@
+#include "Core/ApplicationPaths.h"
 // The Mark-ups panel's Activity stripes, as the editor ships them: every second row sits on the
 // theme's secondary list stripe, an opaque plate the first row does not draw. Read from the staged
 // sheets.
@@ -22,7 +23,7 @@ namespace
 
 std::string ReadShippedCss(const std::string& relative)
 {
-    std::ifstream in(PathUtils::GetExecutableDirectory() / "Assets" / "UI" / relative, std::ios::binary);
+    std::ifstream in(ApplicationPaths::GetExecutableDirectory() / "Assets" / "UI" / relative, std::ios::binary);
     if (!in)
         return {};
     std::ostringstream ss;

@@ -1,3 +1,4 @@
+#include "TestCameraEye.h"
 #include "Assets/ModelAsset.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/RenderServices.h"
@@ -88,11 +89,12 @@ TEST_P(SortedTransparentPixel, MeshOnlyInterleavedSurfacesCompositeBackToFront)
 
     const auto cameraId = m_Services.Views().AllocateCamera("BlendCamera");
     CameraData camera{};
-    for (int i = 0; i < 16; i += 5)
-        camera.view[i] = camera.proj[i] = camera.viewProj[i] = 1.0f;
-    m_Services.Views().SetCameraData(cameraId, camera);
+    camera.view = Mathematics::Matrix4x4::Identity();
+    camera.proj = Mathematics::Matrix4x4::Identity();
+    camera.viewProj = Mathematics::Matrix4x4::Identity();
+    m_Services.Views().SetCameraData(cameraId, ::GameEngine::Tests::TestCameraWithEye(camera), {0.1f, 1000.0f});
     const auto view = m_Services.Views().AllocateView("BlendView", cameraId);
-    m_Services.Views().SetViewRenderLayerMask(view, 1u);
+    m_Services.Views().SetViewRenderLayerMask(view, Rendering::RenderLayerMask::Default());
 
     Mesh triangle{};
     triangle.Vertices.resize(3);

@@ -3,6 +3,7 @@
 #include "Assets/AssetManager.h"
 #include "Core/Engine.h"
 #include "EditorPanelManager.h"
+#include "Editor/Settings/AudioEnabledSettings.h"
 #include "Editor/Settings/SettingsStore.h"
 #include "EditorPanelIds.h"
 #include "EditorContextMenu/UIContextMenu.h"
@@ -10,13 +11,11 @@
 #include "Platform/ContextMenu.h"
 #include "UI/EditorIcons.h"
 #include "Platform/Window.h"
-#include "PlayMode/PlayModeManager.h"
 #include "PlayMode/PlayButtonMenu.h"
 #include "PlayMode/PlayButtonState.h"
-#include "Editor/Settings/AudioEnabledSettings.h"
+#include "PlayMode/PlayModeManager.h"
 #include "UI/Assets/UILayoutAsset.h"
 #include "UI/Assets/UIStyleAsset.h"
-#include "UI/ClassBackgroundImageQuery.h"
 #include "UI/Controls/Button.h"
 #include "UI/Interaction/ContextMenuManipulator.h"
 #include "UI/Registration/ElementRegistration.h"
@@ -56,10 +55,10 @@ constexpr ToolbarButtonInfo kToolbarButtons[] = {
     {"TopToolbarBuild",          "Build",               "editor:Icons/game-controller.svg"},
     {"TopToolbarSettings",       "Settings",            "editor:Icons/settings.svg"},
     {"TopToolbarHelp",           "Help",                "editor:Icons/help.svg"},
-    {"TopToolbarCenter2",        "Stop",                "editor:Icons/stop.png"},
-    {"TopToolbarRecord",         "Record",              "editor:Icons/recording_off_button.png"},
+    {"TopToolbarCenter2",        "Stop",                "editor:Icons/stop.svg"},
+    {"TopToolbarRecord",         "Record",              "editor:Icons/recording_off_button.svg"},
     {"TopToolbarCenter3",        "Pause",               "editor:Icons/pause.svg"},
-    {"TopToolbarCenter4",        "Play",                "editor:Icons/play.png"},
+    {"TopToolbarCenter4",        "Play",                "editor:Icons/play.svg"},
     {"TopToolbarCenter1",        "Play Fullscreen",     "editor:Icons/fullscreen.svg"},
     {"TopToolbarUndoHistory",    "Undo History",        "editor:Icons/undo.svg"},
     {"TopToolbarRight1",         "Script Editor",       "editor:Icons/log.svg"},
@@ -73,7 +72,6 @@ constexpr ToolbarButtonInfo kToolbarButtons[] = {
     {"TopToolbarVram",           "VRAM",                "editor:Icons/hardware-chip.svg"},
     {"TopToolbarRenderGraph",    "Render Graph",        "editor:Icons/pie-chart.svg"},
     {"TopToolbarLog",            "Log",                 "editor:Icons/alert-circle.svg"},
-    {"TopToolbarTilePalette",    "Tile Palette",         "editor:Icons/TilePalette.svg"},
     {"TopToolbarRight2",         "Info",                "editor:Icons/info.svg"},
     {"TopToolbarPanelMenu",      "Panels",              "editor:Icons/menulist.svg"},
 };
@@ -132,25 +130,6 @@ UIElement* FindFirstByClass(UIElement* el, const char* className)
     return nullptr;
 }
 
-// The launcher button's own mark, worn by a row for a panel that declares no
-// icon class of its own. Authored in CSS like every other icon, so the class
-// name — not an image path — is what appears here.
-constexpr const char* kPanelMenuGenericIconClass = "menulist-icon";
-
-std::string PanelMenuIconPath(const UIManager& ui, std::string_view iconClass)
-{
-    // Panel launcher rows belong to the platform context menu, not the retained
-    // UI tree, so no stylesheet can style them. The image each row shows is
-    // still authored in CSS — `background-image` on the panel's tab-icon class
-    // — and is read back from the loaded cascade, so the URL exists in exactly
-    // one place. An empty result means CSS declared nothing for either class,
-    // and a row with no icon beats a row with a guessed one.
-    std::string url = UIStyleQuery::ResolveClassBackgroundImageUrl(ui.GetStylesheets(), iconClass);
-    if (url.empty())
-        url = UIStyleQuery::ResolveClassBackgroundImageUrl(ui.GetStylesheets(),
-                                                          kPanelMenuGenericIconClass);
-    return url;
-}
 } // namespace
 
 EditorTopToolbar::EditorTopToolbar()
@@ -221,15 +200,8 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     if (!rootEl)
         return;
 
-    if (auto* button = dynamic_cast<Button*>(rootEl->FindById("TopToolbarRight2")))
-    {
-        button->SetTooltip("Info");
-        if (cb.onInfoClicked)
-            button->RegisterEventHandler(kEventButtonClick, [fn = cb.onInfoClicked](UIEvent&) { fn(); });
-    }
-
     // Universal Search launcher (same palette as Ctrl/Cmd+K).
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarUniversalSearch)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarUniversalSearch))))
     {
         btn->SetTooltip("Universal Search (Ctrl/Cmd+K)");
         if (cb.onUniversalSearchClicked)
@@ -238,7 +210,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
 
     // Panel launcher. Its contents are queried on every click so panels
     // contributed by packages after startup are included automatically.
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarPanelMenu)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarPanelMenu))))
     {
         btn->SetTooltip("Panels");
         if (window && cb.getPanelMenuEntries && cb.onPanelMenuEntryClicked)
@@ -261,14 +233,11 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
                 if (!m_PanelMenu)
                     return;
 
-                const UIManager* ui = GetOwnerManager();
                 for (uint32_t i = 0; i < entries.size(); ++i)
                 {
                     const uint32_t commandId = i + 1;
                     m_PanelMenu->AddItem(0, entries[i].title, commandId);
-                    if (ui)
-                        m_PanelMenu->SetItemIcon(commandId,
-                                                 PanelMenuIconPath(*ui, entries[i].iconClass));
+                    m_PanelMenu->SetItemIcon(commandId, entries[i].iconPath);
                 }
                 m_PanelMenu->SetCommandHandler(
                     [entries = std::move(entries), openPanel](uint32_t commandId)
@@ -286,7 +255,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Settings button
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarSettings)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarSettings))))
     {
         btn->SetTooltip("Settings");
         if (cb.onSettingsClicked)
@@ -294,7 +263,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Help button
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarHelp)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarHelp))))
     {
         btn->SetTooltip("Help");
         btn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&)
@@ -305,22 +274,15 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Node Graph button
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarNodeGraph)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarNodeGraph))))
     {
         btn->SetTooltip("Node Graph");
         if (cb.onNodeGraphClicked)
             btn->RegisterEventHandler(kEventButtonClick, [fn = cb.onNodeGraphClicked](UIEvent&) { fn(); });
     }
 
-    if (auto* button = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarTilePalette)))
-    {
-        button->SetTooltip("Tile Palette");
-        if (cb.onTilePaletteClicked)
-            button->RegisterEventHandler(kEventButtonClick, [fn = cb.onTilePaletteClicked](UIEvent&) { fn(); });
-    }
-
     // Bookmarks button
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarBookmarks)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarBookmarks))))
     {
         btn->SetTooltip("Bookmarks");
         if (cb.onBookmarksClicked)
@@ -328,7 +290,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Fullscreen toggle button (play fullscreen preference)
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById("TopToolbarCenter1")))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById("TopToolbarCenter1"_sid)))
     {
         btn->SetTooltip("Play Fullscreen");
         m_FullscreenButton = btn;
@@ -337,7 +299,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Stop button
-    if (auto* stopBtn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarCenter2)))
+    if (auto* stopBtn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarCenter2))))
     {
         stopBtn->SetTooltip("Stop");
         m_StopButton = stopBtn;
@@ -346,7 +308,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Movie record shortcut
-    if (auto* recordBtn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarRecord)))
+    if (auto* recordBtn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarRecord))))
     {
         recordBtn->SetTooltip("Record");
         m_RecordButton = recordBtn;
@@ -355,7 +317,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Pause button
-    if (auto* pauseBtn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarCenter3)))
+    if (auto* pauseBtn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarCenter3))))
     {
         pauseBtn->SetTooltip("Pause");
         m_PauseButton = pauseBtn;
@@ -363,24 +325,25 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
             pauseBtn->RegisterEventHandler(kEventButtonClick, [fn = cb.onPauseClicked](UIEvent&) { fn(); });
     }
 
-    // Play button
-    if (auto* playBtn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarCenter4)))
+    // Play button. Its right-click menu carries the editor-wide "Audio Enabled" toggle; the
+    // saved choice is applied to the engine's audio system here, at startup.
+    if (auto* playBtn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarCenter4))))
     {
         m_PlayButton = playBtn;
         if (cb.onPlayClicked)
             playBtn->RegisterEventHandler(kEventButtonClick, [fn = cb.onPlayClicked](UIEvent&) { fn(); });
         Audio::AudioSystem* audio = EngineCore::GetInstance().GetAudioSystem();
-        SetAudioEnabled(Editor::AudioEnabledSettings::IsEnabled(audio));
-        playBtn->AddManipulator(ContextMenuManipulator::Create([this, audio]()
-        {
-            SetAudioEnabled(Editor::AudioEnabledSettings::IsEnabled(audio));
-            return Editor::PlayButtonMenuItems(audio,
-                [this](bool enabled) { SetAudioEnabled(enabled); });
-        }));
+        SetAudioEnabled(Editor::AudioEnabledSettings::ApplySaved(audio));
+        playBtn->AddManipulator(ContextMenuManipulator::Create(
+            [this, audio]
+            {
+                return Editor::PlayButtonMenuItems(audio,
+                    [this](bool enabled) { SetAudioEnabled(enabled); });
+            }));
     }
 
     // Save scene (same as Editor.Global.SaveScene: save to path, or Save As modal if untitled)
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarLeft1)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarLeft1))))
     {
         btn->SetTooltip("Save Scene");
         m_SaveButton = btn;
@@ -410,7 +373,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Project folder button
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarLeft2)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarLeft2))))
     {
         btn->SetTooltip("Open Project Folder");
         if (cb.onProjectFolderClicked)
@@ -418,7 +381,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Web panel button
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarLeft3)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarLeft3))))
     {
         btn->SetTooltip("Web Panel");
         if (cb.onWebClicked)
@@ -426,13 +389,13 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Script Editor button (with legacy id fallback)
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarRight1)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarRight1))))
     {
         btn->SetTooltip("Script Editor");
         if (cb.onScriptEditorClicked)
             btn->RegisterEventHandler(kEventButtonClick, [fn = cb.onScriptEditorClicked](UIEvent&) { fn(); });
     }
-    else if (auto* legacyBtn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarScriptEditor)))
+    else if (auto* legacyBtn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarScriptEditor))))
     {
         legacyBtn->SetTooltip("Script Editor");
         if (cb.onScriptEditorClicked)
@@ -440,7 +403,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Todos button
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarTodos)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarTodos))))
     {
         btn->SetTooltip("Todos");
         if (cb.onTodosClicked)
@@ -448,7 +411,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Undo History button
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarUndoHistory)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarUndoHistory))))
     {
         btn->SetTooltip("Undo History");
         if (cb.onUndoHistoryClicked)
@@ -456,7 +419,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Packages button
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarPackages)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarPackages))))
     {
         btn->SetTooltip("Packages");
         if (cb.onPackagesClicked)
@@ -464,7 +427,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Build button
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarBuild)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarBuild))))
     {
         btn->SetTooltip("Build");
         if (cb.onBuildClicked)
@@ -472,7 +435,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Mixer button
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarMixer)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarMixer))))
     {
         btn->SetTooltip("Mixer");
         if (cb.onMixerClicked)
@@ -480,7 +443,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Visual Profiler button
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarVisualProfiler)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarVisualProfiler))))
     {
         btn->SetTooltip("Visual Profiler");
         if (cb.onVisualProfilerClicked)
@@ -488,7 +451,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Monitors button
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarMonitors)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarMonitors))))
     {
         btn->SetTooltip("Monitors");
         if (cb.onMonitorsClicked)
@@ -496,7 +459,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Render Graph button
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarRenderGraph)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarRenderGraph))))
     {
         btn->SetTooltip("Render Graph");
         if (cb.onRenderGraphClicked)
@@ -504,7 +467,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Animation button
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarAnimation)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarAnimation))))
     {
         btn->SetTooltip("Animation");
         if (cb.onAnimationClicked)
@@ -512,7 +475,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Timeline button
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarTimeline)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarTimeline))))
     {
         btn->SetTooltip("Timeline");
         if (cb.onTimelineClicked)
@@ -520,7 +483,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Log button
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarLog)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarLog))))
     {
         btn->SetTooltip("Log");
         if (cb.onLogClicked)
@@ -528,7 +491,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // VRAM button
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarVram)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarVram))))
     {
         btn->SetTooltip("VRAM");
         if (cb.onVramClicked)
@@ -536,7 +499,7 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // CPU Profiler button
-    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(EditorPanelIds::TopToolbarCpuProfiler)))
+    if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarCpuProfiler))))
     {
         btn->SetTooltip("CPU Profiler");
         if (cb.onCpuProfilerClicked)
@@ -544,18 +507,12 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 }
 
-void EditorTopToolbar::SetAudioEnabled(bool enabled)
-{
-    if (m_PlayButton)
-        m_PlayButton->SetTooltip(enabled ? "Play. Right-click for options."
-                                         : "Play (audio muted). Right-click for options.");
-}
-
 void EditorTopToolbar::UpdatePlayModeState(Editor::PlayModeState s)
 {
     // Toolbar behavior:
-    // - Play: the click handler acts in Edit; Play/Paused keep its audio menu reachable.
-    // - Pause: enabled while playing/paused; pressed styling indicates paused.
+    // - Play: see Editor::ApplyPlayButtonState (clickable in Edit, menu reachable during
+    //         play, the green icon from its own state class while play mode runs).
+    // - Pause: enabled only while playing/paused; pressed styling indicates paused.
     // - Stop: enabled while playing/paused/review; disabled in Edit.
     if (m_PlayButton)
         Editor::ApplyPlayButtonState(*m_PlayButton, s);
@@ -563,7 +520,7 @@ void EditorTopToolbar::UpdatePlayModeState(Editor::PlayModeState s)
     {
         const bool enablePause =
             (s == Editor::PlayModeState::Play || s == Editor::PlayModeState::Paused);
-        m_PauseButton->SetDisabled(!enablePause);
+        m_PauseButton->SetEnabled(enablePause);
         if (s == Editor::PlayModeState::Paused)
             m_PauseButton->AddClass("pressed");
         else
@@ -577,7 +534,7 @@ void EditorTopToolbar::UpdatePlayModeState(Editor::PlayModeState s)
              s == Editor::PlayModeState::ChangeReview ||
              s == Editor::PlayModeState::EnteringPlay ||
              s == Editor::PlayModeState::ExitingPlay);
-        m_StopButton->SetDisabled(!enableStop);
+        m_StopButton->SetEnabled(enableStop);
     }
 }
 
@@ -614,6 +571,12 @@ void EditorTopToolbar::SetFullscreenActive(bool active)
         m_FullscreenButton->AddClass("pressed");
     else
         m_FullscreenButton->RemoveClass("pressed");
+}
+
+void EditorTopToolbar::SetAudioEnabled(bool enabled)
+{
+    if (m_PlayButton)
+        m_PlayButton->SetTooltip(enabled ? "Play. Right-click for options." : "Play (audio muted). Right-click for options.");
 }
 
 void EditorTopToolbar::SetRecordActive(bool active)
@@ -654,7 +617,7 @@ void EditorTopToolbar::ApplyButtonVisibilityFromPrefs(UIElement* rootEl)
         bool hidden = false;
         if (CanHideToolbarButton(info.id))
             prefs.TryGetBool(MakeVisibilityPrefKey(info.id), hidden);
-        ApplyHiddenClass(rootEl->FindById(info.id), hidden);
+        ApplyHiddenClass(rootEl->FindById(HashStringId(info.id)), hidden);
     }
 }
 
@@ -672,7 +635,7 @@ void EditorTopToolbar::WireRightClickToggles(UIElement* rootEl, Platform::Window
         for (uint32_t i = 0; i < std::size(kToolbarButtons); ++i)
         {
             const auto& entry = kToolbarButtons[i];
-            UIElement* button = rootEl->FindById(entry.id);
+            UIElement* button = rootEl->FindById(HashStringId(entry.id));
             const bool visible = button && !button->HasClass("hidden");
             const uint32_t commandId = i + 1;
             uint32_t flags = visible ? MenuItemFlag_Checked : MenuItemFlag_None;
@@ -690,7 +653,7 @@ void EditorTopToolbar::WireRightClickToggles(UIElement* rootEl, Platform::Window
             const auto& entry = kToolbarButtons[commandId - 1];
             if (!CanHideToolbarButton(entry.id))
                 return;
-            UIElement* button = rootEl->FindById(entry.id);
+            UIElement* button = rootEl->FindById(HashStringId(entry.id));
             if (!button)
                 return;
             const bool nowHidden = !button->HasClass("hidden");

@@ -1,5 +1,8 @@
 #pragma once
 
+#include "Mathematics/Vector3.h"
+#include "Types/Color.h"
+
 #include <cstdint>
 
 namespace GameEngine
@@ -18,15 +21,23 @@ namespace Engine::Renderer
 class ImageBasedLightingFeature;
 struct FeatureCullingContext;
 
+/// The three-color ambient gradient tint (scene-linear RGB). White is the identity.
+struct EnvironmentAmbientGradientTint
+{
+    ColorLinear Sky{1.0f, 1.0f, 1.0f};
+    ColorLinear Equator{1.0f, 1.0f, 1.0f};
+    ColorLinear Ground{1.0f, 1.0f, 1.0f};
+};
+
 struct EnvironmentLocalReflectionData
 {
     bool BoxProjection = false;
-    float ProbePositionWS[3] = {0.0f, 0.0f, 0.0f};
-    float BoxCenterWS[3] = {0.0f, 0.0f, 0.0f};
-    float BoxHalfExtentsWS[3] = {0.0f, 0.0f, 0.0f};
-    float BoxAxisXWS[3] = {1.0f, 0.0f, 0.0f};
-    float BoxAxisYWS[3] = {0.0f, 1.0f, 0.0f};
-    float BoxAxisZWS[3] = {0.0f, 0.0f, 1.0f};
+    Mathematics::Vector3 ProbePositionWS;
+    Mathematics::Vector3 BoxCenterWS;
+    Mathematics::Vector3 BoxHalfExtentsWS;
+    Mathematics::Vector3 BoxAxisXWS{1.0f, 0.0f, 0.0f};
+    Mathematics::Vector3 BoxAxisYWS{0.0f, 1.0f, 0.0f};
+    Mathematics::Vector3 BoxAxisZWS{0.0f, 0.0f, 1.0f};
 };
 
 // Context handed to an environment source when the IBL generation node asks it
@@ -86,15 +97,7 @@ class IEnvironmentSource
     // (up=sky, horizon=equator, down=ground). Applied at sampling time via the EnvData UBO,
     // so it is deliberately kept OUT of InputDigest (changing it never re-bakes). White =
     // identity: the default leaves every consumer byte-identical.
-    virtual void AmbientGradientTint(float outSky[3], float outEquator[3], float outGround[3]) const
-    {
-        for (int i = 0; i < 3; ++i)
-        {
-            outSky[i] = 1.0f;
-            outEquator[i] = 1.0f;
-            outGround[i] = 1.0f;
-        }
-    }
+    virtual EnvironmentAmbientGradientTint AmbientGradientTint() const { return {}; }
 
     // Optional local-reflection projection data consumed by the IBL shader. The
     // default is a distant/global environment with no parallax correction.

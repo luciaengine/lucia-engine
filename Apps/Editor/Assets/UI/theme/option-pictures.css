@@ -1,0 +1,95 @@
+/* Which image each option picture class means.
+ *
+ * A picture shows what an option does, for a choice a user judges by its look: a preset in a
+ * dropdown (Dropdown::Option::pictureClass) or a tile of a PictureChoiceField. The code that
+ * declares the option names the class; this file is the only place that names the image, and the
+ * picture draws untinted. Size and spacing belong to the control that shows it.
+ *
+ * One stem per picture: the class is `option-picture--<stem>` and the file is
+ * `Icons/OptionPictures/<stem>.png`, or `<stem>.svg` for a line drawing. OptionPicturesTests asserts
+ * every class a source declares has a rule here, every rule is declared, and every file exists.
+ *
+ * A look (a star preset, a grass preset) is a 144 x 96 crop of the Scene View at the poses in
+ * Icons/OptionPictures/star-pictures.txt and grass-pictures.txt, so it can be made again when a
+ * preset changes. A shape (a curb corner, a road mouth) is a 72 x 48 line drawing in the icon style:
+ * white strokes, the paving a light fill. */
+
+.option-picture--star-look-vivid {
+	background-image: url("editor:Icons/OptionPictures/star-look-vivid.png");
+}
+
+.option-picture--star-look-restrained {
+	background-image: url("editor:Icons/OptionPictures/star-look-restrained.png");
+}
+
+.option-picture--star-look-classic {
+	background-image: url("editor:Icons/OptionPictures/star-look-classic.png");
+}
+
+.option-picture--star-look-physical {
+	background-image: url("editor:Icons/OptionPictures/star-look-physical.png");
+}
+
+.option-picture--star-seen-by-eye {
+	background-image: url("editor:Icons/OptionPictures/star-seen-by-eye.png");
+}
+
+.option-picture--star-seen-by-camera {
+	background-image: url("editor:Icons/OptionPictures/star-seen-by-camera.png");
+}
+
+.option-picture--grass-meadow {
+	background-image: url("editor:Icons/OptionPictures/grass-meadow.png");
+}
+
+.option-picture--grass-lawn {
+	background-image: url("editor:Icons/OptionPictures/grass-lawn.png");
+}
+
+.option-picture--grass-steppe {
+	background-image: url("editor:Icons/OptionPictures/grass-steppe.png");
+}
+
+.option-picture--grass-stylized {
+	background-image: url("editor:Icons/OptionPictures/grass-stylized.png");
+}
+
+.option-picture--paving-corner-miter {
+	background-image: url("editor:Icons/OptionPictures/paving-corner-miter.svg");
+}
+
+.option-picture--paving-corner-round {
+	background-image: url("editor:Icons/OptionPictures/paving-corner-round.svg");
+}
+
+.option-picture--paving-mouth-flared {
+	background-image: url("editor:Icons/OptionPictures/paving-mouth-flared.svg");
+}
+
+.option-picture--paving-mouth-straight {
+	background-image: url("editor:Icons/OptionPictures/paving-mouth-straight.svg");
+}
+
+.option-picture--paving-seam-hard-cut {
+	background-image: url("editor:Icons/OptionPictures/paving-seam-hard-cut.svg");
+}
+
+.option-picture--paving-seam-blend {
+	background-image: url("editor:Icons/OptionPictures/paving-seam-blend.svg");
+}
+
+.option-picture--paving-seam-joint-line {
+	background-image: url("editor:Icons/OptionPictures/paving-seam-joint-line.svg");
+}
+
+.option-picture--paving-seam-stone-course {
+	background-image: url("editor:Icons/OptionPictures/paving-seam-stone-course.svg");
+}
+
+.option-picture--paving-conform-terrain-only {
+	background-image: url("editor:Icons/OptionPictures/paving-conform-terrain-only.svg");
+}
+
+.option-picture--paving-conform-scene {
+	background-image: url("editor:Icons/OptionPictures/paving-conform-scene.svg");
+}

@@ -2,6 +2,7 @@
 
 #include "Terrain/TerrainMaterialRecord.h"
 #include "Types/Types.h"
+#include "Mathematics/Interpolation.h"
 #include "Mathematics/Vector3.h"
 
 #include <algorithm>
@@ -31,9 +32,9 @@ enum class HeightfieldFormat : uint32
 static constexpr uint32 kMaxHeightmapDimension = 8193;
 static constexpr float32 kDefaultSamplesPerMeter = 1.0f;
 
-// The per-tile sample cap. A terrain whose derived resolution exceeds this is split into a tile
-// grid; the tile's world size follows from this cap and the sample density. Every consumer of
-// "does this terrain tile" must resolve it through TerrainNeedsTiling below.
+// The per-tile sample cap. A terrain whose derived resolution exceeds this spans more than one
+// tile; the tile's world size follows from this cap and the sample density. Every consumer of
+// "does this terrain exceed one tile" must resolve it through TerrainNeedsTiling below.
 static constexpr uint32 kMaxTileResolution = 1025;
 
 // Configuration for creating a terrain instance.
@@ -88,13 +89,9 @@ struct TerrainConfig
     }
 };
 
-// Does this terrain split into a tile grid? Editor provisioning, the extraction system and the
-// tile-geometry derivation must give the SAME answer: provisioning withholds the eager single
-// heightfield AND its heightfield collider for a terrain it expects to tile, while extraction
-// owns tiled provisioning — so a terrain the two classify differently renders with no collision.
-// Resolved through the renderer's own FromSamplesPerMeter rounding, never from raw
-// size * density, because the derived resolution rounds the product down before adding the
-// shared edge sample.
+// Does this terrain exceed the per-tile cap? A planet below the cap keeps one heightfield. Uses the
+// FromSamplesPerMeter rounding, never raw size * density: the derived resolution rounds the product
+// down before it adds the shared edge sample.
 inline bool TerrainNeedsTiling(float32 worldSizeX, float32 worldSizeZ, float32 samplesPerMeter)
 {
     const TerrainConfig derived = TerrainConfig::FromSamplesPerMeter(
@@ -151,6 +148,9 @@ static constexpr uint32 kTerrainFlagHasHeightmap = 4u;
 static constexpr uint32 kTerrainFlagHasNormalmap = 8u;
 static constexpr uint32 kTerrainFlagHasSplatmap = 16u;
 static constexpr uint32 kTerrainFlagHasGrassControls = 32u;
+// The terrain's unified colour map is uploaded and readable (ColorMapBindless; TerrainColorMap.h).
+// Mirrored in cbt_surface.glsl and terrain_grass_surface.glsl.
+static constexpr uint32 kTerrainFlagHasColorMap = 64u;
 
 // TerrainGPUParams::GrassEnabled bits (shared with the grass shaders that read the params SSBO).
 // bit3 and bit4 are CPU-side only: the upload-time reduction composes the per-view grass draw mode
@@ -168,9 +168,13 @@ static constexpr uint32 kTerrainGrassBitBlendMode = 8u;
 // whose texture alpha probes uniformly opaque. Set from the PROBED texture, not from the authored
 // render mode — the mode says how soft alpha would resolve, this says whether any exists.
 static constexpr uint32 kTerrainGrassBitAlphaNeeded = 16u;
+// Root Color is Auto. With kTerrainGrassBitSplatRootColor the blade's canopy gradient starts from
+// the ground colour at its root (GrassBladeCanopyRoot in terrain_grass_surface.glsl); without it the
+// uploaded GrassRootColor, the tip in shade, is the root.
+static constexpr uint32 kTerrainGrassBitAutoRootColor = 32u;
 
 // Per-terrain GPU constants stored in an SSBO array (one entry per terrain).
-// 272 bytes (68 words). Lighting is in the View UBO, not here; the per-material shading inputs
+// 280 bytes (70 words). Lighting is in the View UBO, not here; the per-material shading inputs
 // are in the material table (TerrainMaterialRecord), which this buffer only points into.
 struct TerrainGPUParams
 {
@@ -197,12 +201,11 @@ struct TerrainGPUParams
     uint32 Flags = 0;                  // bit 0 = receive shadows
     uint32 NormalmapBindless = 0;      // bindless index for R16G16_FLOAT normal map (0 = none)
     uint32 HeightmapBindless = 0;      // bindless index for height map (0 = none)
-    uint32 GrassEnabled = 1;           // kTerrainGrassBit*: bit0 enabled, bit1 splat root, bit2 texture card, bit3 blend mode
+    uint32 GrassEnabled = 1;           // kTerrainGrassBit*: bit0 enabled, bit1 splat root, bit2 texture card, bit3 blend mode, bit4 alpha needed, bit5 auto root
     float32 GrassDensity = 21.0f;      // blades per square metre at the camera
-    // [22][23] The authored blade size, and the aspect ceiling ties them: Components::TerrainGrass
-    // carries why the width sits just under BladeHeight * MaxWidthRatio.
+    // [22][23] The authored blade size in metres.
     float32 GrassBladeHeight = 0.72f;
-    float32 GrassBladeWidth = 0.043f;
+    float32 GrassBladeWidth = 0.036f;
     float32 GrassMaskThreshold = 0.45f;
     // density falloff exponent: 1 = linear to Range, higher spends more of the budget near the camera
     float32 GrassDensityFalloff = 2.0f;
@@ -211,15 +214,15 @@ struct TerrainGPUParams
     float32 GrassWindStrength = 1.0f;
     uint32 GrassLayerIndex = 0;
     float32 GrassBrightness = 1.0f;    // material brightness multiplier
-    // master gate over the grounding read: the gust shading, the root-shade ramp and the
-    // blade's blend into its ground. Nothing to do with cast shadows.
+    // how much a blade reads as growing out of its ground: the light and dark waves of the gusts
+    // and the blade's blend into its ground color. Nothing to do with cast shadows.
     float32 GrassGroundingStrength = 1.0f;
     float32 GrassRandomScale = 0.35f;  // random blade scale amount
     float32 GrassRandomBrightness = 0.42f;// per-blade value jitter: the field's tonal separation
-    float32 GrassTranslucency = 0.35f; // fake sun backlight strength
-    uint32 GrassRootColor = 0xFF335F1Au;// root color, ARGB
-    uint32 GrassTipColor = 0xFFB3DB4Du; // tip color, ARGB
-    uint32 GrassBacklightColor = 0xFFE6F06Au;// fake sun backlight color, ARGB
+    float32 GrassTranslucency = 0.7f; // light through a blade tip over its sunlit face's, 0..1
+    uint32 GrassRootColor = 0xFF4E6130u; // resolved root color, sRGB ARGB: the default tip at 0.4 of its linear luminance
+    uint32 GrassTipColor = 0xFF79954Du; // tip color, sRGB ARGB (the surface decodes it to linear)
+    uint32 GrassBacklightColor = 0xFFBCCE61u;// the colour of the light through a blade, sRGB ARGB
     float32 GrassWindDirection = -2.5f; // radians
     float32 GrassWindGustSpeed = 0.9f;
     float32 GrassWindGustScale = 0.05f;
@@ -239,27 +242,37 @@ struct TerrainGPUParams
     float32 GrassTextureCardsPerSquareMeter = 1.5f; // cards per square metre at the camera
     float32 GrassTextureSize = 1.0f;    // texture card square size
     float32 GrassPlacementSeed = 3.0f;  // authored placement seed; hashed per (cell, slot) so the same seed reproduces the same blades
-    // aspect ceiling: blade width is clamped to GrassBladeHeight * this. A ceiling, not the
-    // width control — GrassBladeWidth is that, and this only bites at extreme aspect ratios.
-    float32 GrassMaxWidthRatio = 0.06f;
+    // The blade's shape (Components::TerrainGrass carries the units and the physics): tilt from
+    // vertical at the root and bend over the length in radians, twist in turns root to tip, the
+    // height fraction where the taper starts, and the tuft fan in radians per clump cell.
+    float32 GrassBladeTilt = 0.25f;
+    float32 GrassBladeBend = 0.35f;
+    float32 GrassBladeTwist = 0.25f;
+    float32 GrassBladeTaperStart = 0.6f;
+    float32 GrassTuftFan = 0.25f;
     // clump lattice edge in metres; <= 0 disables clumping and restores the plain field
     float32 GrassClumpSize = 1.1f;
     float32 GrassClumpHeightVariance = 0.3f;
     float32 GrassClumpAlignment = 0.45f;      // yaw pull toward the clump's common facing
-    float32 GrassClumpGather = 0.25f;         // position pull toward the clump centre
+    float32 GrassClumpTaper = 0.35f;          // outer blades of a tuft shorter than its centre ones
     // +/- 30 deg between tufts at 1.0; blades inside a tuft take a fixed share of it
     float32 GrassHueVariation = 0.45f;
-    float32 GrassRootShade = 0.82f;           // shade-ramp floor at the root
-    // how far the near-field shading normal leaves the canopy normal toward the blade's own
-    float32 GrassBladeNormalForm = 0.75f;
-    // brightness handed back for the diffuse response that form gives up; rides the same weight
-    float32 GrassBladeScatterGain = 0.6f;
+    // depth of the canopy shade at a blade root and on the ground under a full field
+    // (TerrainGrassCanopyOcclusionDepth); 0 on a row that places no blade
+    float32 GrassCanopyOcclusion = 0.0f;
     float32 GrassRootFadeStart = 0.0f;        // height fraction where the ground colour starts to leave
-    float32 GrassRootFadeEnd = 1.0f;          // height fraction where the tip colour has fully arrived
+    float32 GrassRootFadeEnd = 0.275f;        // where the tip colour has fully arrived
     uint32 GrassControlBindless = 0;         // optional RG8: height, density; absent means (1,1)
+    uint32 ColorMapBindless = 0;             // optional RGBA8 sRGB colour map; absent means identity
+    // height fraction where the ground's share of an automatic root's gradient ends (GroundTintHeight)
+    float32 GrassGroundTintHeight = 0.5f;
+    // Meters the lattice reaches past the terrain's authored edge on each axis: a tiled terrain's
+    // WorldSizeX/Z covers whole tiles. Its ground ends at WorldSize - LatticeOverhang.
+    float32 LatticeOverhangX = 0.0f;
+    float32 LatticeOverhangZ = 0.0f;
 };
 
-static_assert(sizeof(TerrainGPUParams) == 272, "TerrainGPUParams must be 272 bytes");
+static_assert(sizeof(TerrainGPUParams) == 296, "TerrainGPUParams must be 296 bytes");
 
 // Blades per square metre at the camera for this row, in the units the row's mode actually places:
 // cards for a texture-card terrain, blades otherwise. The placement kernels select the same way, so
@@ -284,6 +297,62 @@ inline bool TerrainGrassRowPlaces(const TerrainGPUParams& params)
         && TerrainGrassNearDensity(params) > 0.0f
         && params.GrassBladeHeight > 0.0f
         && params.GrassBladeWidth > 0.0f;
+}
+
+// The place kernel's largest per-blade jitter factors. Mirror of grass_placement.glsl
+// (kGrassBladeHeightJitterMax and the two after it); GrassCellBoxTests holds the two equal.
+inline constexpr float32 kTerrainGrassBladeHeightJitterMax = 1.35f;
+inline constexpr float32 kTerrainGrassBladeWidthJitterMax = 1.25f;
+inline constexpr float32 kTerrainGrassCardSizeJitterMax = 1.15f;
+// The vertex stage's leaf width cap as a share of the blade height, its pixel floor's widest
+// expansion of the half-width, and how deep it sinks the root along the ground normal, in meters.
+// Mirror of kGrassMaxBladeAspect, kGrassMaxWidthExpansion and kGrassRootEmbed.
+inline constexpr float32 kTerrainGrassMaxBladeAspect = 0.2f;
+inline constexpr float32 kTerrainGrassMaxWidthExpansion = 6.0f;
+inline constexpr float32 kTerrainGrassRootEmbedDepth = 0.01f;
+
+/// The farthest, in meters, that any vertex of this row's blades or cards lies from its root: the chord
+/// (at most the height, at any lean, bend or wind), the floored half-width and the root embed. Every
+/// factor takes its authored value; the growth ramp and the control map's height factor are at most 1.
+inline float32 TerrainGrassBladeReach(const TerrainGPUParams& params)
+{
+    const float32 scale = 1.0f + std::max(params.GrassRandomScale, 0.0f);
+    float32 height = 0.0f;
+    float32 halfWidth = 0.0f;
+    if ((params.GrassEnabled & kTerrainGrassBitTextureCard) != 0u)
+    {
+        // A card is a square of its width, centered on its root.
+        height = std::max(params.GrassTextureSize, 0.0f) * scale * kTerrainGrassCardSizeJitterMax;
+        halfWidth = 0.5f * height;
+    }
+    else
+    {
+        height = std::max(params.GrassBladeHeight, 0.0f) * scale * kTerrainGrassBladeHeightJitterMax
+            * (1.0f + Math::Clamp01(params.GrassClumpHeightVariance));
+        const float32 width = std::max(params.GrassBladeWidth, 0.0f) * scale * kTerrainGrassBladeWidthJitterMax;
+        halfWidth = 0.5f * std::min(width, height * kTerrainGrassMaxBladeAspect);
+    }
+    return height + halfWidth * kTerrainGrassMaxWidthExpansion + kTerrainGrassRootEmbedDepth;
+}
+
+// The canopy shade a row's field casts on its blade bases and on the ground under it, sun and sky
+// alike (Includes/terrain_grass_canopy.glsl): the field's one-sided coverage at its near density,
+// blades per square metre x leaf width x blade height (0.54 for the shipped meadow, 0.92 for a
+// 64 /m2 lawn of 0.4 m blades with 36 mm leaves), times the scale below and the authored Canopy Shade
+// (1 is the shipped amount), and capped so the densest field still leaves its base lit. The scale is
+// set on the rendered default meadow.
+inline constexpr float32 kTerrainGrassCanopyOcclusionScale = 0.2f;
+inline constexpr float32 kTerrainGrassCanopyOcclusionMax = 0.6f;
+
+// 0 for a row that places no blade, and for a texture-card row: a card is not a blade, and its
+// coverage is its texture's, which this cannot see. Runs after the enabled bit is final.
+inline float32 TerrainGrassCanopyOcclusionDepth(const TerrainGPUParams& params, float32 canopyShade)
+{
+    if (!TerrainGrassRowPlaces(params) || (params.GrassEnabled & kTerrainGrassBitTextureCard) != 0u)
+        return 0.0f;
+    const float32 cover = params.GrassDensity * params.GrassBladeWidth * params.GrassBladeHeight;
+    return std::clamp(cover * kTerrainGrassCanopyOcclusionScale * std::max(canopyShade, 0.0f), 0.0f,
+                      kTerrainGrassCanopyOcclusionMax);
 }
 
 } // namespace GameEngine::Terrain

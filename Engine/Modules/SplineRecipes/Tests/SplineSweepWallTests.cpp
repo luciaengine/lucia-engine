@@ -78,7 +78,7 @@ Spline::SplineData LinearSpline(const std::vector<V3>& points, bool closed)
 }
 
 Components::SplineWall WallOf(float32 thickness,
-                              Components::SplineWallCorner corner = Components::SplineWallCorner::Mitre,
+                              Components::SplineWallCorner corner = Components::SplineWallCorner::Miter,
                               Components::SplineWallGrade grade = Components::SplineWallGrade::Racked)
 {
     Components::SplineWall wall;
@@ -228,7 +228,7 @@ uint32 CapTriangles(const WallRun& run)
 
 } // namespace
 
-// A Linear wall's authored points are stations with mitred rings, whether the
+// A Linear wall's authored points are stations with mitered rings, whether the
 // point falls on a drape sample or between two: every ring of the run, measured
 // across the wall perpendicular to the leg it stands on, is the full thickness,
 // and no side face folds. A sweep that cuts across the corner on the
@@ -408,18 +408,18 @@ TEST(SplineSweepWall, AWallAcrossATwentyDegreeSlopeKeepsItsBaseInTheGround)
         }
         EXPECT_LE(highest, 1.0e-4f) << "run " << run;
         // Sunk by the fall and no more: the uphill edge is buried by at most the
-        // fall across the whole width, 1 m · tan 20°, or across the mitre's
+        // fall across the whole width, 1 m · tan 20°, or across the miter's
         // diagonal, √2 times that, at the 90-degree corner.
         const float32 widest = run == 0u ? 1.0f : std::sqrt(2.0f);
         EXPECT_GE(lowest, -widest * fall - 1.0e-4f) << "run " << run;
     }
 }
 
-// A corner past the mitre limit is validation, reported once: rebuilding the
+// A corner past the miter limit is validation, reported once: rebuilding the
 // same wall says nothing more, nor does dragging the point to another turn that
 // is still past the limit; fixing the corner clears the report, and breaking it
 // again reports it again, naming the point.
-TEST(SplineSweepWall, ACornerPastTheMitreLimitIsReportedOncePerChange)
+TEST(SplineSweepWall, ACornerPastTheMiterLimitIsReportedOncePerChange)
 {
     const auto wallTurning = [](float32 degrees)
     {
@@ -431,14 +431,14 @@ TEST(SplineSweepWall, ACornerPastTheMitreLimitIsReportedOncePerChange)
     };
     const WallRun hairpinRun = wallTurning(150.0f);
     ASSERT_EQ(hairpinRun.Issues.size(), 1u);
-    EXPECT_EQ(hairpinRun.Issues[0].Kind, SG::SplineCornerIssueKind::PastMitreLimit);
+    EXPECT_EQ(hairpinRun.Issues[0].Kind, SG::SplineCornerIssueKind::PastMiterLimit);
     EXPECT_EQ(hairpinRun.Issues[0].PointIndex, 1u);
     EXPECT_NEAR(hairpinRun.Issues[0].TurnDegrees, 150.0f, 0.05f);
 
     std::vector<std::string> logged;
     const std::vector<std::string> hairpin = SplineRecipes::CornerValidation("SplineWall", hairpinRun.Issues);
     ASSERT_EQ(hairpin.size(), 1u);
-    EXPECT_NE(hairpin[0].find("point 1 turns past the 120-degree mitre limit"), std::string::npos)
+    EXPECT_NE(hairpin[0].find("point 1 turns past the 120-degree miter limit"), std::string::npos)
         << hairpin[0];
     EXPECT_EQ(hairpin[0].rfind("SplineWall: ", 0), 0u) << "the line opens with the recipe's name";
 
@@ -507,7 +507,7 @@ TEST(SplineSweepWall, TheBaseSinksByTheWallsOwnThickness)
 }
 
 // A leg too short for its corners is reported through the same validation as the
-// mitre limit, naming the points and the fix.
+// miter limit, naming the points and the fix.
 TEST(SplineSweepWall, LegsTooShortForTheirCornersAreReportedWithTheFix)
 {
     const WallRun shortEnd = BuildWall(
@@ -613,7 +613,7 @@ SplineRecipes::SweepSamples SampleShape(const Spline::SplineData& data, const Sp
 TEST(SplineSweepWall, ABezierPointWithBrokenHandlesIsACornerAndACollinearOneIsNot)
 {
     SplineRecipes::SweepShape shape;
-    shape.Corners = SG::SplineCornerStyle::Mitre;
+    shape.Corners = SG::SplineCornerStyle::Miter;
     shape.FollowCurve = true;
 
     const SplineRecipes::SweepSamples broken = SampleShape(BezierElbow(true), shape);
@@ -764,7 +764,7 @@ TEST(SplineSweepWall, ASteppedWallOnAHillLevelsEachRunsTop)
     const Ground hill = [](float32 x, float32 z) { return 0.05f * (x + z); };
     const WallRun run = BuildWall(
         LinearSpline({V3(0.0f, 0.0f, 0.0f), V3(0.0f, 0.0f, 10.0f), V3(10.0f, 0.0f, 10.0f)}, false),
-        hill, WallOf(0.6f, Components::SplineWallCorner::Mitre, Components::SplineWallGrade::Stepped));
+        hill, WallOf(0.6f, Components::SplineWallCorner::Miter, Components::SplineWallGrade::Stepped));
     ASSERT_EQ(run.Chunks.size(), 1u);
     const SG::SplineStripMesh& mesh = run.Chunks.front();
     uint32 creases = 0;

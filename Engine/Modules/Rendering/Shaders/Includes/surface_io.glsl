@@ -10,8 +10,6 @@
 #ifndef GE_SURFACE_IO_GLSL
 #define GE_SURFACE_IO_GLSL
 
-#include "forward_shader_specialization.glsl"
-
 // Emission authoring anchor: a surface emitting this many nits maps to scene-linear 1.0
 // (BT.2408 reference white). Fixed so a material's authored nits read the same on SDR and
 // HDR; the terminal tonemap/encode places scene-linear 1.0 at the actual display paperwhite.
@@ -118,7 +116,7 @@ struct SurfaceOutput
     vec3 coatNormalWS; // clear-coat shading normal; == normalWS unless a coat normal map perturbs it (GE_COAT_NORMAL_ENABLED)
     vec3 emissive;
     float opacity;
-    float planarReflectionMask; // 0 = dry/non-planar, 1 = full planar coverage; independent of opacity
+    float planarReflectionMask; // Material coverage of a planar reflection, independent of opacity.
 
     // Extended (used by specific lighting models)
     float ao;
@@ -153,8 +151,6 @@ struct SurfaceOutput
     // OpenPBR transmission (refractive dielectric / glass). transmissionWeight splits energy
     // out of the diffuse budget into a refracted environment sample; transmissionColor tints it.
     float transmissionWeight;
-    float transmissionRefractionStrength; // screen-space thin refraction scale
-    float transmissionBlur; // screen-space blur radius in pixels; 0 keeps the single-tap path
     vec3 transmissionColor;
     float refractionDistance; // world units; path length for the thick (two-surface) refraction lens
 
@@ -174,10 +170,41 @@ struct SurfaceOutput
     // occlusion. Ordinary materials use 1; surfaces that provide their own
     // horizon/self-occlusion model (the unbounded ocean) use 0.
     float iblGroundDarkening;
+
+    // Share of the light around the surface that reaches it, 0..1, default 1: occlusion the surface
+    // knows of itself that no shadow map and no occlusion pass holds (the grass canopy over the lower
+    // blades and the ground under a field). The lighting scales the whole response by it, direct and
+    // ambient, diffuse, specular and transmitted alike, and leaves the emission.
+    float lightVisibility;
+
+    // Share of the pixel the standard environment reflection covers, 0..1, default 1. It scales
+    // the whole base specular lobe of the environment term (F0 * scale + bias) and the part of it
+    // that screen-space reflections replace. specularWeight scales F0 only and keeps the grazing
+    // bias. A surface that adds its own reflection of the environment to its emission (the
+    // ocean) sets the share its own reflection does not cover.
+    float environmentSpecularCoverage;
+
+    // The weight of the environment reflection the surface adds beside the standard lobe (water:
+    // its own Fresnel and dials), on the radiance the standard lobe reflects; screen-space
+    // reflections replace it. Default 0.
+    vec3 environmentReflectionWeight;
+
+    // The reflected radiance the surface put in its emission (a planar capture, a procedural sky),
+    // premultiplied by its weight (rgb), and that weight (a); screen-space reflections replace it
+    // together with the standard lobe and environmentReflectionWeight. Default 0.
+    vec4 emittedReflection;
 #ifdef GE_USER_PARTICLE_LIT
     vec3 particlePositive;
     vec3 particleNegative;
     mat3 particleBasis;
+#endif
+#ifdef GE_DIFFUSE_TRANSMISSION_ENABLED
+    // Diffuse transmission through a thin surface (a leaf, paper, a lampshade). The share of the
+    // diffuse light that leaves through the far face instead of the near one, 0..1, and the albedo
+    // of that light. The near face keeps (1 - diffuseTransmission) of its diffuse reflection; the
+    // far face sends diffuseTransmission * diffuseTransmissionAlbedo of the light that reaches it.
+    float diffuseTransmission;
+    vec3 diffuseTransmissionAlbedo;
 #endif
 
 #ifdef GE_PARALLAX_MARCH
@@ -239,8 +266,6 @@ SurfaceOutput DefaultSurfaceOutput()
     o.specularIor = 1.5;
     o.diffuseRoughness = 0.0;
     o.transmissionWeight = 0.0;
-    o.transmissionRefractionStrength = 0.3;
-    o.transmissionBlur = 0.0;
     o.transmissionColor = vec3(1.0);
     o.refractionDistance = 1.0;
     o.attenuationColor = vec3(1.0);  // white -> log(1)=0 -> no absorption
@@ -249,10 +274,18 @@ SurfaceOutput DefaultSurfaceOutput()
     o.thinFilmIor = 1.3;
     o.thinFilmWeight = 0.0;
     o.iblGroundDarkening = 1.0;
+    o.lightVisibility = 1.0;
+    o.environmentSpecularCoverage = 1.0;
+    o.environmentReflectionWeight = vec3(0.0);
+    o.emittedReflection = vec4(0.0);
 #ifdef GE_USER_PARTICLE_LIT
     o.particlePositive = vec3(1.0);
     o.particleNegative = vec3(1.0);
     o.particleBasis = mat3(1.0);
+#endif
+#ifdef GE_DIFFUSE_TRANSMISSION_ENABLED
+    o.diffuseTransmission = 0.0;
+    o.diffuseTransmissionAlbedo = vec3(0.0);
 #endif
 #ifdef GE_PARALLAX_MARCH
     o.primaryLightOcclusion = 1.0;
@@ -271,23 +304,6 @@ SurfaceOutput DefaultSurfaceOutput()
 #endif
     return o;
 }
-
-// Optional material-owned lighting response. Default surfaces preserve the
-// renderer's visibility and indirect-light budget without additional state.
-#ifdef GE_USER_CUSTOM_LIGHTING
-bool ge_SurfaceReceivesShadows = true;
-float GE_SurfaceDirectionalVisibility(float visibility, float depth, vec3 directionToLight);
-vec3 GE_SurfaceDiffuseIrradiance(vec3 environment, vec3 ambientFloor);
-#else
-float GE_SurfaceDirectionalVisibility(float visibility, float depth, vec3 directionToLight)
-{
-    return visibility;
-}
-vec3 GE_SurfaceDiffuseIrradiance(vec3 environment, vec3 ambientFloor)
-{
-    return environment + ambientFloor;
-}
-#endif
 
 SurfaceInput DefaultSurfaceInput()
 {
@@ -316,11 +332,22 @@ SurfaceInput DefaultSurfaceInput()
     si.particleColorScale = 1.0;
     si.particleNearFade = 1.0;
 #endif
+#ifdef GE_COMPAT_PROFILE
+    // Whole-array stores, no loop: the WGSL cook turns a loop-indexed store into a private array the
+    // Mali compiler keeps in memory: about half the forward pass on a Mali-G78.
+    const vec4 kIdentityRow0 = vec4(1.0, 0.0, 0.0, 0.0);
+    const vec4 kIdentityRow1 = vec4(0.0, 1.0, 0.0, 0.0);
+    si.textureST = vec4[8](kIdentityRow0, kIdentityRow0, kIdentityRow0, kIdentityRow0,
+                           kIdentityRow0, kIdentityRow0, kIdentityRow0, kIdentityRow0);
+    si.textureST2 = vec4[8](kIdentityRow1, kIdentityRow1, kIdentityRow1, kIdentityRow1,
+                            kIdentityRow1, kIdentityRow1, kIdentityRow1, kIdentityRow1);
+#else
     for (int i = 0; i < 8; ++i)
     {
         si.textureST[i] = vec4(1.0, 0.0, 0.0, 0.0);
         si.textureST2[i] = vec4(0.0, 1.0, 0.0, 0.0);
     }
+#endif
 #ifdef GE_PARALLAX_MARCH
     si.uvFootprint = vec4(0.0);
     si.positionFootprintX = vec3(0.0);
@@ -378,7 +405,7 @@ void GE_ComputeHexBlendUV(vec2 uv, vec4 st, vec4 st2, float hexEnabled, float he
                           out vec2 uvA, out vec2 uvB, out float blend)
 {
     vec2 transformed = GE_TransformUV(uv, st, st2);
-    if (!GE_FORWARD_HEX_TILING || hexEnabled < 0.5)
+    if (hexEnabled < 0.5)
     {
         uvA = transformed;
         uvB = transformed;

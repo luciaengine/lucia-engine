@@ -2,6 +2,7 @@
 #include "Core/Engine.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
+#include "Rendering/ShaderCache/ShaderStageRecord.h"
 #include "TestTempDir.h"
 
 #include <filesystem>
@@ -23,21 +24,21 @@ struct HookSnapshot
     Rendering::Utils::ShaderFileLoaderFunc Loader = Rendering::Utils::GetShaderFileLoader();
     Rendering::Utils::ShaderPathResolverFunc Resolver = Rendering::Utils::GetShaderPathResolver();
     Rendering::ShaderPackageRebuildActionFunc Rebuild = Rendering::GetShaderPackageRebuildAction();
-    fs::path Cache = ShaderProgramAsset::GetShaderCacheRoot();
+    ShaderCacheRoots Cache = ShaderProgramAsset::GetShaderCacheRoots();
 
     void ExpectCurrent() const
     {
         EXPECT_EQ(Rendering::Utils::GetShaderFileLoader(), Loader);
         EXPECT_EQ(Rendering::Utils::GetShaderPathResolver(), Resolver);
         EXPECT_EQ(Rendering::GetShaderPackageRebuildAction(), Rebuild);
-        EXPECT_EQ(ShaderProgramAsset::GetShaderCacheRoot(), Cache);
+        EXPECT_EQ(ShaderProgramAsset::GetShaderCacheRoots(), Cache);
     }
     void Restore() const
     {
         Rendering::Utils::SetShaderFileLoader(Loader);
         Rendering::Utils::SetShaderPathResolver(Resolver);
         Rendering::SetShaderPackageRebuildAction(Rebuild);
-        ShaderProgramAsset::SetShaderCacheRoot(Cache);
+        ShaderProgramAsset::SetShaderCacheRoots(Cache);
     }
 };
 
@@ -58,7 +59,7 @@ protected:
         Rendering::Utils::SetShaderFileLoader(&HostLoader);
         Rendering::Utils::SetShaderPathResolver(&HostResolver);
         Rendering::SetShaderPackageRebuildAction(&HostRebuild);
-        ShaderProgramAsset::SetShaderCacheRoot(Temporary.Path() / "HostCache");
+        ShaderProgramAsset::SetShaderCacheRoots({{Temporary.Path() / "HostCooked"}, Temporary.Path() / "HostCache"});
     }
     void TearDown() override
     {
@@ -81,7 +82,7 @@ TEST_F(EngineShaderHookLifetimeTest, ShutdownRestoresAllFourHostValues)
     EXPECT_NE(Rendering::Utils::GetShaderFileLoader(), host.Loader);
     EXPECT_NE(Rendering::Utils::GetShaderPathResolver(), host.Resolver);
     EXPECT_NE(Rendering::GetShaderPackageRebuildAction(), host.Rebuild);
-    EXPECT_NE(ShaderProgramAsset::GetShaderCacheRoot(), host.Cache);
+    EXPECT_NE(ShaderProgramAsset::GetShaderCacheRoots(), host.Cache);
     Engine.Shutdown();
     host.ExpectCurrent();
 }
@@ -93,7 +94,7 @@ TEST_F(EngineShaderHookLifetimeTest, RepeatedInitializeAndShutdownPreserveTheCap
     ASSERT_TRUE(Engine.Initialize(Config));
     Engine.Shutdown();
     host.ExpectCurrent();
-    ShaderProgramAsset::SetShaderCacheRoot(Temporary.Path() / "NextHostCache");
+    ShaderProgramAsset::SetShaderCacheRoots({{Temporary.Path() / "NextCooked"}, Temporary.Path() / "NextHostCache"});
     const HookSnapshot afterShutdown;
     Engine.Shutdown();
     afterShutdown.ExpectCurrent();
@@ -108,9 +109,50 @@ TEST_F(EngineShaderHookLifetimeTest, EachLifetimeCapturesItsOwnHostIncludingNull
     Rendering::Utils::SetShaderFileLoader(nullptr);
     Rendering::Utils::SetShaderPathResolver(nullptr);
     Rendering::SetShaderPackageRebuildAction(nullptr);
-    ShaderProgramAsset::SetShaderCacheRoot({});
+    ShaderProgramAsset::SetShaderCacheRoots({});
     const HookSnapshot second;
     ASSERT_TRUE(Engine.Initialize(Config));
     Engine.Shutdown();
     second.ExpectCurrent();
+}
+
+namespace
+{
+// The stage record of a run on the project at @p workspaceRoot. Only a Mac exports to Mac, so only a Mac records.
+fs::path StageRecordOnThisHost([[maybe_unused]] const fs::path& workspaceRoot)
+{
+#if defined(__APPLE__)
+    return Rendering::ShaderStageRecordFile(workspaceRoot);
+#else
+    return {};
+#endif
+}
+} // namespace
+
+// An editor that opens another project records the stage inputs in the new workspace, where an
+// export of that project reads them.
+TEST_F(EngineShaderHookLifetimeTest, WorkspaceSwitchMovesTheStageRecord)
+{
+    ASSERT_TRUE(Engine.Initialize(Config));
+    const fs::path first = Engine.GetWorkspaceRoot();
+    EXPECT_EQ(Rendering::GetPrecompiledShaderFiles().StageRecord, StageRecordOnThisHost(first));
+    fs::create_directories(Temporary.Path() / "Other" / "Assets");
+    Engine.SetWorkspaceRoot(Temporary.Path() / "Other");
+    ASSERT_NE(Engine.GetWorkspaceRoot(), first);
+    EXPECT_EQ(Rendering::GetPrecompiledShaderFiles().StageRecord, StageRecordOnThisHost(Engine.GetWorkspaceRoot()));
+}
+
+// No export reads the stages of a run without a project: the editor's staging workspace, or a test
+// in the executable's folder (the build output).
+TEST_F(EngineShaderHookLifetimeTest, ARunWithoutAProjectRecordsNoStages)
+{
+    Config.WorkspaceDirectoryIsFallback = true;
+    ASSERT_TRUE(Engine.Initialize(Config));
+    EXPECT_TRUE(Rendering::GetPrecompiledShaderFiles().StageRecord.empty()) << "staging workspace";
+    Engine.Shutdown();
+
+    Config.WorkspaceDirectoryIsFallback = false;
+    Config.WorkspaceDirectory = ".";
+    ASSERT_TRUE(Engine.Initialize(Config));
+    EXPECT_TRUE(Rendering::GetPrecompiledShaderFiles().StageRecord.empty()) << "the executable's folder";
 }

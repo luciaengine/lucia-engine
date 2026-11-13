@@ -1,7 +1,8 @@
-#include "Source/Vulkan/VulkanDevice.h"
+#include "Source/Vulkan/VulkanDevice/VulkanDevice.h"
 
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -18,8 +19,9 @@
 #include "Platform/Environment.h"
 #include "Source/Vulkan/ValidationStats.h"
 #include "Source/Vulkan/VulkanDebugUtilsLabels.h"
-#include "Source/Vulkan/VulkanDeviceFault.h"
-#include "Source/Vulkan/VulkanGpuCheckpoints.h"
+#include "Source/Vulkan/VulkanDevice/VulkanDeviceFault.h"
+#include "Source/Vulkan/VulkanGpu/VulkanGpuCheckpoints.h"
+#include "Source/Vulkan/VulkanHandleHelpers.h"
 #include "Source/Vulkan/VulkanSharedInstance.h"
 #include "Source/Vulkan/VulkanToolingInfo.h"
 #include "Source/Vulkan/VulkanValidationLayerSettings.h"
@@ -358,6 +360,234 @@ TEST(DeviceDiagnostics, RegionCopyPreservesUntouchedTexels)
         }
     }
 
+    dev->DestroyBuffer(seedBuf);
+    dev->DestroyBuffer(bandBuf);
+    dev->DestroyBuffer(readback);
+    dev->DestroyTexture(tex);
+    dev->Present();
+}
+
+namespace
+{
+constexpr uint32_t kSecondListReadbackSize = 4u;
+constexpr float kReadbackSentinel = -1.0f;
+
+float SecondListSeedTexel(uint32_t x, uint32_t y)
+{
+    return static_cast<float>(y * 10u + x);
+}
+
+// Seeds a texture on one command list and leaves it at rest in ShaderResource, then reads
+// it back on a second list, whose layout record starts empty. When `readerMovesTheTexture`
+// is set, the second list first barriers the texture into UnorderedAccess, so its record
+// holds that layout at the copy. The readback buffer starts filled with kReadbackSentinel,
+// so a refused copy is visible in the result.
+std::vector<float> ReadBackOnASecondList(IDevice& dev, bool readerMovesTheTexture)
+{
+    constexpr uint32_t kSize = kSecondListReadbackSize;
+    constexpr size_t kRowPitch = static_cast<size_t>(kSize) * sizeof(float);
+    TextureDesc td{};
+    td.width = kSize;
+    td.height = kSize;
+    td.depth = 1u;
+    td.mipLevels = 1u;
+    td.arrayLayers = 1u;
+    td.sampleCount = 1u;
+    td.format = static_cast<uint32_t>(TextureFormat::R32_FLOAT);
+    td.usage = static_cast<uint32_t>(TextureUsage::ShaderResource | TextureUsage::TransferSrc |
+                                     TextureUsage::TransferDst);
+    td.debugName = "SecondListReadback.Tex";
+    const TextureHandle tex = dev.CreateTexture(td);
+    EXPECT_TRUE(tex.IsValid());
+
+    std::vector<float> seed(static_cast<size_t>(kSize) * kSize);
+    for (uint32_t y = 0; y < kSize; ++y)
+        for (uint32_t x = 0; x < kSize; ++x)
+            seed[y * kSize + x] = SecondListSeedTexel(x, y);
+    const size_t bytes = seed.size() * sizeof(float);
+    const BufferHandle seedBuf = dev.CreateUploadBuffer(bytes, "SecondListReadback.Seed");
+    dev.UpdateBuffer(seedBuf, 0, bytes, seed.data());
+    const BufferHandle readback = dev.CreateReadbackBuffer(bytes, "SecondListReadback.Read");
+    const std::vector<float> sentinel(seed.size(), kReadbackSentinel);
+    if (void* mapped = dev.MapBuffer(readback))
+    {
+        std::memcpy(mapped, sentinel.data(), bytes);
+        dev.UnmapBuffer(readback);
+    }
+
+    auto writer = dev.CreateCommandList(IDevice::QueueType::Graphics);
+    writer->Begin();
+    writer->CopyBufferToTextureSubresource(seedBuf, tex, 0, 0, kSize, kSize, 0, kRowPitch);
+    writer->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::CopyDest,
+                                                          ResourceState::ShaderResource));
+    writer->End();
+
+    auto reader = dev.CreateCommandList(IDevice::QueueType::Graphics);
+    reader->Begin();
+    if (readerMovesTheTexture)
+        reader->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::ShaderResource,
+                                                              ResourceState::UnorderedAccess));
+    reader->CopyTextureSubresourceToBuffer(tex, 0, 0, readback, kSize, kSize, 0, 0, 0, 0);
+    reader->End();
+
+    dev.ExecuteCommandLists({writer.get(), reader.get()});
+    dev.WaitForIdle();
+
+    std::vector<float> result(seed.size(), 0.0f);
+    if (const void* mapped = dev.MapBuffer(readback))
+    {
+        std::memcpy(result.data(), mapped, bytes);
+        dev.UnmapBuffer(readback);
+    }
+    dev.DestroyBuffer(seedBuf);
+    dev.DestroyBuffer(readback);
+    dev.DestroyTexture(tex);
+    return result;
+}
+} // namespace
+
+// With no layout recorded on the list, the layout is unknown, and a transition from UNDEFINED
+// may discard the texels. The copy is refused: the readback buffer keeps the values it held
+// before, and the refusal is reported once.
+TEST(DeviceDiagnostics, ReadbackWithNoKnownLayoutIsRefused)
+{
+    SetEnvHeadless();
+    DeviceDesc dd{}; dd.preferredAPI = GraphicsAPI::Vulkan; dd.enableDynamicRendering = true;
+    auto dev = DeviceFactory::CreateDevice(dd);
+    ASSERT_TRUE(dev);
+    ASSERT_TRUE(dev->Initialize(dd));
+    ASSERT_TRUE(dev->BeginFrame());
+
+    Logger::Log::Initialize({});
+    auto sink = std::make_unique<Logger::CallbackSink>();
+    auto* sinkPtr = sink.get();
+    auto refusals = std::make_shared<std::atomic<int>>(0);
+    const std::uint64_t callbackId = sinkPtr->RegisterCallback(
+        [refusals](const Logger::LogMessage& msg)
+        {
+            if (msg.Message.find("the copy is refused") != std::string::npos)
+                refusals->fetch_add(1);
+        });
+    Logger::Log::AddSink(std::move(sink));
+
+    const std::vector<float> result = ReadBackOnASecondList(*dev, false);
+    Logger::Log::Flush(); // delivery to sinks is asynchronous
+    sinkPtr->UnregisterCallback(callbackId);
+    for (size_t i = 0; i < result.size(); ++i)
+        EXPECT_FLOAT_EQ(result[i], kReadbackSentinel) << "texel " << i << " was copied";
+    EXPECT_EQ(refusals->load(), 1) << "a refused copy must be reported once";
+    dev->Present();
+}
+
+// When the reading list moves the texture before the copy, the copy transitions from the layout
+// the list recorded: the texels come back and the validation layer reports no layout mismatch.
+TEST(DeviceDiagnostics, ReadbackAfterTheListMovedTheTextureCopiesFromTheRecordedLayout)
+{
+    SetEnvHeadless();
+    ScopedEnvVar validation("GE_VK_VALIDATION", "1");
+    ScopedEnvVar validationAssert("GE_VK_VALIDATION_ASSERT", "0");
+    DeviceDesc dd{}; dd.preferredAPI = GraphicsAPI::Vulkan; dd.enableDynamicRendering = true;
+    dd.enableDebugLayer = true;
+    auto dev = DeviceFactory::CreateDevice(dd);
+    ASSERT_TRUE(dev);
+    ASSERT_TRUE(dev->Initialize(dd));
+    ASSERT_TRUE(dev->GetValidationStats().Enabled);
+    ASSERT_TRUE(dev->BeginFrame());
+    dev->ResetValidationStats();
+
+    const std::vector<float> result = ReadBackOnASecondList(*dev, true);
+    for (uint32_t y = 0; y < kSecondListReadbackSize; ++y)
+        for (uint32_t x = 0; x < kSecondListReadbackSize; ++x)
+            EXPECT_FLOAT_EQ(result[y * kSecondListReadbackSize + x], SecondListSeedTexel(x, y))
+                << "texel (" << x << "," << y << ")";
+    EXPECT_EQ(dev->GetValidationStats().ErrorCount, 0u);
+    dev->Present();
+}
+
+// A region upload on a list that moved the texture first transitions from the layout the list
+// recorded, not from the resting state the caller states: the band lands, the rows outside it
+// survive, and the validation layer reports no layout mismatch.
+TEST(DeviceDiagnostics, RegionUploadAfterTheListMovedTheTextureUsesTheRecordedLayout)
+{
+    SetEnvHeadless();
+    ScopedEnvVar validation("GE_VK_VALIDATION", "1");
+    ScopedEnvVar validationAssert("GE_VK_VALIDATION_ASSERT", "0");
+    DeviceDesc dd{}; dd.preferredAPI = GraphicsAPI::Vulkan; dd.enableDynamicRendering = true;
+    dd.enableDebugLayer = true;
+    auto dev = DeviceFactory::CreateDevice(dd);
+    ASSERT_TRUE(dev);
+    ASSERT_TRUE(dev->Initialize(dd));
+    ASSERT_TRUE(dev->GetValidationStats().Enabled);
+    ASSERT_TRUE(dev->BeginFrame());
+    dev->ResetValidationStats();
+
+    constexpr uint32_t kSize = kSecondListReadbackSize;
+    constexpr uint32_t kBandRow = 1u;
+    constexpr uint32_t kBandRows = 2u;
+    constexpr float kBandOffset = 500.0f;
+    constexpr size_t kRowPitch = static_cast<size_t>(kSize) * sizeof(float);
+    TextureDesc td{};
+    td.width = kSize;
+    td.height = kSize;
+    td.depth = 1u;
+    td.mipLevels = 1u;
+    td.arrayLayers = 1u;
+    td.sampleCount = 1u;
+    td.format = static_cast<uint32_t>(TextureFormat::R32_FLOAT);
+    td.usage = static_cast<uint32_t>(TextureUsage::ShaderResource | TextureUsage::TransferSrc |
+                                     TextureUsage::TransferDst);
+    td.debugName = "RegionUploadAfterMove.Tex";
+    const TextureHandle tex = dev->CreateTexture(td);
+    ASSERT_TRUE(tex.IsValid());
+
+    std::vector<float> seed(static_cast<size_t>(kSize) * kSize);
+    for (uint32_t y = 0; y < kSize; ++y)
+        for (uint32_t x = 0; x < kSize; ++x)
+            seed[y * kSize + x] = SecondListSeedTexel(x, y);
+    std::vector<float> band(static_cast<size_t>(kSize) * kBandRows);
+    for (uint32_t r = 0; r < kBandRows; ++r)
+        for (uint32_t x = 0; x < kSize; ++x)
+            band[r * kSize + x] = kBandOffset + SecondListSeedTexel(x, kBandRow + r);
+    const size_t bytes = seed.size() * sizeof(float);
+    const BufferHandle seedBuf = dev->CreateUploadBuffer(bytes, "RegionUploadAfterMove.Seed");
+    dev->UpdateBuffer(seedBuf, 0, bytes, seed.data());
+    const BufferHandle bandBuf = dev->CreateUploadBuffer(band.size() * sizeof(float), "RegionUploadAfterMove.Band");
+    dev->UpdateBuffer(bandBuf, 0, band.size() * sizeof(float), band.data());
+    const BufferHandle readback = dev->CreateReadbackBuffer(bytes, "RegionUploadAfterMove.Read");
+
+    auto writer = dev->CreateCommandList(IDevice::QueueType::Graphics);
+    writer->Begin();
+    writer->CopyBufferToTextureSubresource(seedBuf, tex, 0, 0, kSize, kSize, 0, kRowPitch);
+    writer->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::CopyDest,
+                                                          ResourceState::ShaderResource));
+    writer->End();
+
+    auto reader = dev->CreateCommandList(IDevice::QueueType::Graphics);
+    reader->Begin();
+    reader->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::ShaderResource,
+                                                          ResourceState::UnorderedAccess));
+    reader->CopyBufferToTextureSubresource(bandBuf, tex, 0, 0, kSize, kBandRows, 0, kRowPitch, 1, 0, 0,
+                                           kBandRow, ResourceState::ShaderResource);
+    reader->CopyTextureSubresourceToBuffer(tex, 0, 0, readback, kSize, kSize);
+    reader->End();
+
+    dev->ExecuteCommandLists({writer.get(), reader.get()});
+    dev->WaitForIdle();
+
+    std::vector<float> result(seed.size(), 0.0f);
+    if (const void* mapped = dev->MapBuffer(readback))
+    {
+        std::memcpy(result.data(), mapped, bytes);
+        dev->UnmapBuffer(readback);
+    }
+    for (uint32_t y = 0; y < kSize; ++y)
+    {
+        const bool inBand = y >= kBandRow && y < kBandRow + kBandRows;
+        for (uint32_t x = 0; x < kSize; ++x)
+            EXPECT_FLOAT_EQ(result[y * kSize + x], (inBand ? kBandOffset : 0.0f) + SecondListSeedTexel(x, y))
+                << "texel (" << x << "," << y << ")";
+    }
+    EXPECT_EQ(dev->GetValidationStats().ErrorCount, 0u);
     dev->DestroyBuffer(seedBuf);
     dev->DestroyBuffer(bandBuf);
     dev->DestroyBuffer(readback);
@@ -733,6 +963,18 @@ TEST(ValidationLogPolicy, OverflowOrdinalsAreThinnedOnTheSameStride)
     EXPECT_TRUE(ShouldLogValidationOccurrence(outcome));
     outcome.Count = kValidationLogRepeatStride + 1;
     EXPECT_FALSE(ShouldLogValidationOccurrence(outcome));
+}
+
+TEST(ValidationAssertPolicy, LayerErrorsTrapButLoaderErrorsDoNot)
+{
+    // On a machine with two drivers, one that fails enumeration gives a loader ERROR of GENERAL type.
+    // That ERROR must not trap a Debug Player. A validation-layer ERROR still traps.
+    constexpr VkDebugUtilsMessageSeverityFlagsEXT kError = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    constexpr VkDebugUtilsMessageSeverityFlagsEXT kWarning = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT;
+    EXPECT_TRUE(ValidationMessageTraps(kError, VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT, false));
+    EXPECT_FALSE(ValidationMessageTraps(kError, VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT, false));
+    EXPECT_FALSE(ValidationMessageTraps(kWarning, VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT, false));
+    EXPECT_FALSE(ValidationMessageTraps(kError, VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT, true));
 }
 
 TEST(VuidSuppressions, TableSeedsEmptyAndLookupMatchesExactly)
@@ -3047,4 +3289,39 @@ TEST(DeviceDiagnostics, StaticDepthWritePipelineSupportsReadOnlyLegacyPass)
     device->DestroyTexture(depth);
     device->DestroyPipeline(pipeline);
     device->Shutdown();
+}
+
+// A depth-stencil image must not share a memory block with other resources:
+// on NVIDIA the first bind of a depth image into a shared block costs about 700 ms (#5331).
+TEST(DeviceDiagnostics, ADepthStencilTextureOwnsADedicatedAllocation)
+{
+    SetEnvHeadless();
+    DeviceDesc dd{}; dd.preferredAPI = GraphicsAPI::Vulkan; dd.enableDynamicRendering = true;
+    auto dev = DeviceFactory::CreateDevice(dd);
+    ASSERT_TRUE(dev);
+    ASSERT_TRUE(dev->Initialize(dd));
+    auto* vk = static_cast<VulkanDevice*>(dev.get());
+    ASSERT_NE(vk->GetVmaAllocator(), nullptr);
+
+    TextureDesc td{};
+    td.width = 1u;
+    td.height = 1u;
+    td.depth = 1u;
+    td.mipLevels = 1u;
+    td.arrayLayers = 1u;
+    td.sampleCount = 1u;
+    td.format = static_cast<uint32_t>(TextureFormat::D32_FLOAT);
+    td.usage = static_cast<uint32_t>(TextureUsage::DepthStencil | TextureUsage::ShaderResource);
+    td.debugName = "DedicatedDepthTest.Depth";
+    const TextureHandle depth = dev->CreateTexture(td);
+    ASSERT_TRUE(depth.IsValid());
+    const VulkanTexture* texture = GetVulkanTextureConst(depth);
+    ASSERT_NE(texture, nullptr);
+    ASSERT_NE(texture->allocation, nullptr);
+
+    VmaAllocationInfo2 info{};
+    vmaGetAllocationInfo2(vk->GetVmaAllocator(), texture->allocation, &info);
+    EXPECT_EQ(info.dedicatedMemory, VK_TRUE) << "a depth-stencil image was placed in a shared memory block";
+
+    dev->DestroyTexture(depth);
 }

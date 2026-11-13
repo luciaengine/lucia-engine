@@ -2,20 +2,19 @@
 
 #include "Animation/AnimationEvent.h"
 #include "AssetCore/Asset.h"
+#include "Types/ByteBuffer.h"
 #include "Types/Types.h"
 #include "Types/StringId.h"
 #include <algorithm>
-#include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace GameEngine
 {
 namespace Animation
 {
-
-class AnimationClipData;
 
 enum class AnimPath
 {
@@ -32,7 +31,7 @@ enum class AnimInterp
     CubicSpline
 };
 
-// Per-tangent-handle type. Auto=0 so memset-initialized keyframes default to Auto.
+// Per-tangent-handle type. Auto=0 so a value-initialized keyframe defaults to Auto.
 enum class AnimTangentType : uint8
 {
     Auto,      // smooth Catmull-Rom slope, anti-overshoot
@@ -65,7 +64,7 @@ struct AnimKeyframe
     float32 outTangent[4];
     float32 inWeight[4];
     float32 outWeight[4];
-    // Per-component tangent types; Auto=0 so memset-initialized keyframes get Auto by default.
+    // Per-component tangent types; Auto=0 so a value-initialized keyframe gets Auto by default.
     AnimTangentType inTangentType[4];
     AnimTangentType outTangentType[4];
     // Bitmask: bit i set means component i has independent in/out tangents (broken tangent).
@@ -103,12 +102,6 @@ struct ClipRootMotion
     bool Rotation = true;
 };
 
-struct AnimationSyncMarker
-{
-    float Time = 0.0f;
-    String Name;
-};
-
 /**
  * @brief The playback settings a clip's source file declares.
  *
@@ -122,7 +115,6 @@ struct AnimationClipSettings
     std::optional<bool> Loop;
     std::optional<float32> Speed;
     std::optional<ClipRootMotion> RootMotion;
-    std::vector<AnimationSyncMarker> SyncMarkers;
     ClipTranslationMode Translations = ClipTranslationMode::Absolute;
 };
 
@@ -133,20 +125,28 @@ class AnimationClip : public ::GameEngine::Asset
         : ::GameEngine::Asset(guid, ::GameEngine::AssetType::Animation, path) {}
 
     bool Load() override; // parse clip from file/container (gltf/fbx)
-    bool LoadFromData(const Vector<uint8>& data) override;
+    bool LoadFromData(std::span<const uint8> data) override;
     void Unload() override;
 
     float32 GetDuration() const
     {
         return m_Duration;
     }
-    void SetDuration(float32 duration);
-    /// Authoring view, materialized from the lossless archive. Edits, loads and
-    /// borrowed authoring views must be externally serialized. First reads are synchronized.
-    const std::vector<AnimChannel>& GetChannels() const;
-    /// Immutable playback snapshot. Retain it through sampling or GPU upload.
-    SharedPtr<const AnimationClipData> GetRuntimeData() const;
-    size_t GetMemoryUsage() const override;
+    void SetDuration(float32 duration)
+    {
+        m_Duration = std::max(0.0f, duration);
+    }
+    const std::vector<AnimChannel>& GetChannels() const
+    {
+        return m_Channels;
+    }
+    /// True when the clip has no length and no key: it has nothing to play.
+    /// A clip of length 0 with keys is a pose: it holds its keys at every time.
+    bool IsEmpty() const
+    {
+        return m_Duration <= 0.0f && std::none_of(m_Channels.begin(), m_Channels.end(),
+                                                  [](const AnimChannel& channel) { return !channel.keys.empty(); });
+    }
     uint32 GetSelectedAnimationIndex() const
     {
         return m_SelectedAnimation;
@@ -210,10 +210,9 @@ class AnimationClip : public ::GameEngine::Asset
     std::vector<std::string> EnumerateAnimationNames() const;
 
   private:
-    bool LoadSourceData(const Vector<uint8>& input);
-    bool LoadEditableData(const Vector<uint8>& data);
-    bool RebuildRuntimeData();
-    void AdoptLoadedData(AnimationClip& loaded, SharedPtr<const AnimationClipData> runtime);
+    bool LoadEditableData(std::span<const uint8> data);
+    // Logs that the .anim file is not loaded and why, and clears the channels; returns false.
+    bool RefuseEditableData(std::string_view reason);
     void RecomputeDuration();
 
     uint32 m_SelectedAnimation = 0u;
@@ -221,10 +220,7 @@ class AnimationClip : public ::GameEngine::Asset
     uint32 m_SourceAnimationIndex = 0u;
 
     float32 m_Duration = 0.0f;
-    mutable std::vector<AnimChannel> m_Channels;
-    mutable std::mutex m_AuthoringMutex;
-    SharedPtr<const AnimationClipData> m_RuntimeData;
-    float32 m_PublishedDuration = 0.0f;
+    std::vector<AnimChannel> m_Channels;
     AnimationClipSettings m_Settings;
     AnimationEventTrack m_EventTrack;
 
@@ -233,7 +229,7 @@ class AnimationClip : public ::GameEngine::Asset
     // Intentionally retained across Unload() and freed with the clip. Only Load()
     // fills it: a clip parsed from bytes its caller holds (LoadFromData) keeps no
     // copy of the file.
-    Vector<uint8> m_CachedFileData;
+    ByteBuffer m_CachedFileData;
 };
 
 } // namespace Animation

@@ -6,6 +6,7 @@
 #include "Components/Audio/AudioListener.h"
 #include "Components/Rendering/Camera.h"
 #include "Components/Rendering/Light.h"
+#include "Components/Rendering/LightPhotometry.h"
 #include "Components/Rendering/Particles.h"
 #include "Components/Rendering/PostProcessVolume.h"
 #include "Components/Rendering/SkyEnvironment.h"
@@ -59,6 +60,8 @@ constexpr TerrainAreaPreset kTerrainAreaPresets[] = {
      ECS::GetComponentTypeId<Components::TerrainGroundClaimEffect>()},
     {Preset::TerrainGrassArea, "Terrain: Grass Area",
      ECS::GetComponentTypeId<Components::TerrainGrassEffect>()},
+    {Preset::TerrainColorArea, "Terrain: Color Area",
+     ECS::GetComponentTypeId<Components::TerrainColorEffect>()},
 };
 
 static_assert(std::size(kTerrainAreaPresets) == TerrainECS::kTerrainEffectTypeCount,
@@ -154,6 +157,18 @@ const char* PresetUndoDisplayName(ComponentPreset p)
 
     switch (p)
     {
+    case Preset::TerrainFlattenArea:
+    case Preset::TerrainHeightOffsetArea:
+    case Preset::TerrainNoiseArea:
+    case Preset::TerrainStampArea:
+    case Preset::TerrainPaintArea:
+    case Preset::TerrainRulesArea:
+    case Preset::TerrainGroundClaimArea:
+    case Preset::TerrainGrassArea:
+    case Preset::TerrainColorArea:
+        break; // Handled by FindTerrainAreaPreset above.
+    case Preset::Count:
+        break; // Sentinel, not a preset.
     case Preset::Camera:
         return "Camera";
     case Preset::Light:
@@ -212,6 +227,18 @@ std::vector<ECS::ComponentTypeId> ComponentTypeIdsForPreset(ComponentPreset p)
 
     switch (p)
     {
+    case Preset::TerrainFlattenArea:
+    case Preset::TerrainHeightOffsetArea:
+    case Preset::TerrainNoiseArea:
+    case Preset::TerrainStampArea:
+    case Preset::TerrainPaintArea:
+    case Preset::TerrainRulesArea:
+    case Preset::TerrainGroundClaimArea:
+    case Preset::TerrainGrassArea:
+    case Preset::TerrainColorArea:
+        break; // Handled by FindTerrainAreaPreset above.
+    case Preset::Count:
+        break; // Sentinel, not a preset.
     case Preset::Camera:
         return {ECS::GetComponentTypeId<Components::Camera>()};
     case Preset::Light:
@@ -263,6 +290,16 @@ std::vector<ECS::ComponentTypeId> ComponentTypeIdsForPreset(ComponentPreset p)
     return {};
 }
 
+Components::Light MakeDefaultDirectionalLight()
+{
+    Components::Light light{};
+    light.Type = Components::LightType::Directional;
+    light.Intensity = Components::kClearNoonSunIlluminanceLux;
+    light.IntensityUnit = Components::LightUnit::Lux;
+    light.CastsShadows = true;
+    return light;
+}
+
 namespace
 {
 
@@ -301,16 +338,6 @@ Components::PlaneColliderShape GroundPlaneShape()
     plane.d = 0.0f;
     plane.halfExtent = kStaticPlaneHalfExtent;
     return plane;
-}
-
-// A directional light at clear-noon sun illuminance, in physical units.
-Components::Light SunLight()
-{
-    Components::Light light{};
-    light.Type = Components::LightType::Directional;
-    light.Intensity = Components::kClearNoonSunIlluminanceLux;
-    light.IntensityUnit = Components::LightUnit::Lux;
-    return light;
 }
 
 // The spline supplies the region, so the volume takes its shape from it.
@@ -352,11 +379,22 @@ std::vector<ECS::ComponentTypeId> ApplyComponentPreset(ECS::World& world, ECS::E
 
     switch (p)
     {
+    case Preset::TerrainFlattenArea:
+    case Preset::TerrainHeightOffsetArea:
+    case Preset::TerrainNoiseArea:
+    case Preset::TerrainStampArea:
+    case Preset::TerrainPaintArea:
+    case Preset::TerrainRulesArea:
+    case Preset::TerrainGroundClaimArea:
+    case Preset::TerrainGrassArea:
+    case Preset::TerrainColorArea:
+    case Preset::Count:
+        break; // Terrain areas are handled by the preset table.
     case Preset::Camera:
         AddIfMissing(world, entity, Components::Camera{}, added);
         break;
     case Preset::Light:
-        AddIfMissing(world, entity, SunLight(), added);
+        AddIfMissing(world, entity, MakeDefaultDirectionalLight(), added);
         break;
     case Preset::SkyEnvironment:
         AddIfMissing(world, entity, Components::SkyEnvironment{}, added);

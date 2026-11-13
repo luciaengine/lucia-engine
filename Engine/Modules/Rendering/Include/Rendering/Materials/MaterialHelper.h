@@ -1,7 +1,7 @@
 #pragma once
 #include <string>
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Materials/ReflectionCache.h"
 #include "Rendering/Materials/MaterialBuilder.h"
 

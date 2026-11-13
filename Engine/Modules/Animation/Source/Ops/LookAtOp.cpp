@@ -1,10 +1,10 @@
 #include "Animation/Ops/LookAtOp.h"
 
 #include "Animation/AnimationPose.h"
-#include "Animation/HumanoidRig.h"
+#include "Animation/Humanoid/HumanoidRig.h"
 #include "Animation/PoseUtilities.h"
 #include "Animation/QuaternionMath.h"
-#include "Animation/SkeletonData.h"
+#include "Animation/Skeleton/SkeletonData.h"
 
 #include <glm/gtc/quaternion.hpp>
 

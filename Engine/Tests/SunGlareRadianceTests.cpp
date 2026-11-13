@@ -34,17 +34,24 @@
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 
 #include "Platform/Shell.h"
+#include "Components/Rendering/LightPhotometry.h"
+#include "Engine/Rendering/SunGlareRenderFeature.h"
+#include "Mathematics/Vector3.h"
+#include "Rendering/Sky/AtmosphereTransmittance.h"
+#include "Rendering/Sky/SkySettings.h"
 
 #include "TestDeviceHelper.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <numbers>
 #include <sstream>
 #include <string>
@@ -61,7 +68,7 @@ namespace
 struct GlareProbePC
 {
     float kernelParams[4]; // angular radius, irradiance, sample count, mode
-    float sweepParams[4];  // smallest polar angle swept, largest
+    float sweepParams[4];  // smallest polar angle swept, largest; mode 3: sun direction, disc radius
     float visParams[4];    // probe uv, probe radius uv
     float cascadeVP[16];   // mode 3: the cascade's light view-projection, column-major
     float cascadeProbe[4]; // mode 3: xyz world position under test, w depth bias
@@ -70,9 +77,14 @@ struct GlareProbePC
 // The sun's apparent angular radius, radians — the width SunGlareRenderNode gives the kernel's
 // core. Half of the ~0.533 degree apparent diameter.
 constexpr float kSunAngularRadius = 0.004651f;
-// Irradiance of a 100 klx sun on the engine's unitless scale: 100000 / 203
-// (LightPhotometry.h), times the sky's ground-to-TOA anchor of 1.33.
-constexpr float kShippedSunIrradiance = 655.2f;
+// The angular radius of the disc both visibility terms sample: SunGlareRenderNode's probe ring,
+// 1.4 sun radii.
+constexpr float kVisibilityDiscRadius = 1.4f * kSunAngularRadius;
+// Above-atmosphere irradiance of a 100 klx sun on the engine's unitless scale, as the sky uploads it:
+// 100000 / 203 (LightPhotometry.h) times the sky's ground-to-top-of-atmosphere lift.
+const float kShippedSunIrradiance =
+    100000.0f / Components::kReferenceWhiteNits *
+    Rendering::SkySourceIlluminanceScale(Rendering::ScatteringAtmosphere());
 // The fraction sun_glare.glsl documents. Read back from the device rather than trusted, but
 // the tests need a value to compare the readback against.
 constexpr double kDocumentedGlareFraction = 0.01;
@@ -127,11 +139,14 @@ std::string StripLineComments(const std::string& source)
 std::string LoadRepoFileWithoutComments(const char* relativePath)
 {
 #ifndef GE_RENDERER_REPO_ROOT
-    (void)relativePath;
+    ADD_FAILURE() << "Missing repository root for shipped input: " << relativePath;
     return {};
 #else
     const std::filesystem::path path = std::filesystem::path(GE_RENDERER_REPO_ROOT) / relativePath;
-    return StripLineComments(ReadTextFile(path));
+    const std::string source = StripLineComments(ReadTextFile(path));
+    if (source.empty())
+        ADD_FAILURE() << "Missing or empty shipped input: " << relativePath;
+    return source;
 #endif
 }
 
@@ -304,24 +319,20 @@ class SunGlareRadianceTest : public ::testing::Test
     }
 
     // A one-layer depth-comparison array carrying a single stored depth, so the cascade lookup
-    // has something real to compare against. `storedDepth` is reverse-Z NDC: a LARGER value is a
-    // nearer occluder, so 0.9 stands for something close in front of the eye and 0.0 for an
-    // empty cascade cleared to the far plane -- which is what the island scene turned out to
-    // have, and the reason this term needed a test of its own.
-    // A one-layer depth-comparison array carrying a single stored depth, so the cascade lookup
     // has something real to compare against. `storedDepth` is reverse-Z NDC: a LARGER value is
     // a nearer occluder, so 0.9 stands for something close in front of the receiver and 0.0 for
-    // an empty cascade cleared to the far plane -- which is what the island scene turned out to
-    // have, and the reason this term needed a behavioural test at all.
+    // an empty cascade cleared to the far plane.
     //
     // Written by CLEARING a depth render pass rather than by uploading a buffer:
     // CopyBufferToTextureSubresource hardcodes VK_IMAGE_ASPECT_COLOR_BIT
-    // (VulkanCommandList.cpp), so a buffer copy into a depth image silently writes nothing --
-    // which is exactly what the first version of this test did, and what its own
-    // two-different-maps-same-answer check caught.
+    // (VulkanCommandList.cpp), so a buffer copy into a depth image silently writes nothing; the
+    // tests' two-different-maps-same-answer check catches a map that was never written.
+    //
+    // 256 texels a side, so the bilinear comparison's one-texel ramp at the map's border is
+    // narrow beside the disc's footprint in the edge-crossing test.
     TextureHandle MakeShadowArray(float storedDepth)
     {
-        constexpr uint32_t kW = 4u, kH = 4u;
+        constexpr uint32_t kW = 256u, kH = 256u;
         TextureDesc td{};
         td.width = kW;
         td.height = kH;
@@ -364,24 +375,50 @@ class SunGlareRadianceTest : public ::testing::Test
         return m_DummyShadow;
     }
 
-    // GE_SunGlareCascadeSunlit at `posWS`, through a cascade whose stored depth is
-    // `storedDepth`. The light view-projection is the IDENTITY, so posWS.z IS the receiver's
-    // NDC depth and posWS.xy lands directly in the cascade's [-1, 1] box.
-    float ProbeCascade(float storedDepth, float posX, float posY, float posZ, float bias = 0.0f)
+    // The cascade term at the eye `posWS`: the fraction of the sun's disc the beam reaches,
+    // through a cascade whose every texel stores `shadow`'s one depth. The sun is straight up
+    // the light's depth axis, and the light view-projection turns the map by `mapTurn` radians
+    // about that axis and scales it by `lateralScale` NDC units per world unit: posWS.z IS the
+    // eye's NDC depth, and the map's NDC x is lateralScale times posWS.xy measured along
+    // (cos mapTurn, sin mapTurn). With no turn and unit scale, posWS.xy lands directly in the
+    // cascade's [-1, 1] box.
+    float ProbeCascade(TextureHandle shadow, float posX, float posY, float posZ, float bias,
+                       float mapTurn, float lateralScale)
     {
-        TextureHandle shadow = MakeShadowArray(storedDepth);
-        TextureHandle dummyDepth = MakeDepth(0u);
         GlareProbePC pc{};
         pc.kernelParams[0] = kSunAngularRadius;
         pc.kernelParams[3] = 3.0f; // mode 3
-        for (int i = 0; i < 16; ++i)
-            pc.cascadeVP[i] = (i % 5 == 0) ? 1.0f : 0.0f; // identity, column-major
+        pc.sweepParams[2] = 1.0f;  // toward the sun: +Z, the reverse-Z light's nearer side
+        pc.sweepParams[3] = kVisibilityDiscRadius;
+        const float scaledCosTurn = lateralScale * std::cos(mapTurn);
+        const float scaledSinTurn = lateralScale * std::sin(mapTurn);
+        // Column-major: NDC x = scaledCosTurn * x + scaledSinTurn * y,
+        // NDC y = -scaledSinTurn * x + scaledCosTurn * y, NDC z = z.
+        pc.cascadeVP[0] = scaledCosTurn;
+        pc.cascadeVP[1] = -scaledSinTurn;
+        pc.cascadeVP[4] = scaledSinTurn;
+        pc.cascadeVP[5] = scaledCosTurn;
+        pc.cascadeVP[10] = 1.0f;
+        pc.cascadeVP[15] = 1.0f;
         pc.cascadeProbe[0] = posX;
         pc.cascadeProbe[1] = posY;
         pc.cascadeProbe[2] = posZ;
         pc.cascadeProbe[3] = bias;
-        const std::vector<float> raw = Dispatch(pc, 1u, dummyDepth, shadow);
+        const std::vector<float> raw = Dispatch(pc, 1u, EnsureDummyDepth(), shadow);
         return raw[0];
+    }
+
+    // The same at no turn, through a fresh cascade storing `storedDepth`.
+    float ProbeCascade(float storedDepth, float posX, float posY, float posZ, float bias = 0.0f)
+    {
+        return ProbeCascade(MakeShadowArray(storedDepth), posX, posY, posZ, bias, 0.0f, 1.0f);
+    }
+
+    TextureHandle EnsureDummyDepth()
+    {
+        if (!m_DummyDepth.IsValid())
+            m_DummyDepth = MakeDepth(0u);
+        return m_DummyDepth;
     }
 
     std::vector<float> Dispatch(const GlareProbePC& pc, uint32_t slots, TextureHandle depth,
@@ -523,6 +560,7 @@ class SunGlareRadianceTest : public ::testing::Test
     SamplerHandle m_Sampler{};
     SamplerHandle m_ShadowSampler{};
     TextureHandle m_DummyShadow{};
+    TextureHandle m_DummyDepth{};
     std::vector<BufferHandle> m_Buffers;
     std::vector<TextureHandle> m_Textures;
 };
@@ -715,6 +753,68 @@ TEST_F(SunGlareRadianceTest, CascadeBiasPushesTheReceiverTowardTheLight)
            "for reverse-Z";
 }
 
+// An occluder's edge crossing the sun's disc where only the cascades see it: a sun off screen,
+// or a caster the depth probe cannot reach. The term is the FRACTION of the disc the beam
+// reaches, so as the edge sweeps across the disc the halo fades through every tap the edge
+// passes, instead of switching off in the frame the eye's own point enters the shadow.
+//
+// The edge is the map's own border. Every texel stores an occluder 0.4 in front of the eye, and
+// a lookup outside the map reads lit, so the line NDC x = 1 is the silhouette of a half-plane
+// occluder. The RHI's buffer-to-texture copy writes the color aspect only, so a depth map
+// holding two different values cannot be uploaded; the border is the edge that can. The map is
+// turned against the tap pattern so that no two taps cross the edge in the same step.
+TEST_F(SunGlareRadianceTest, CascadeEdgeCrossingTheDiscFadesThroughEveryTap)
+{
+    constexpr int kSteps = 400;
+    constexpr float kMapTurn = 0.35f; // radians, about 20 degrees
+    // NDC units per world unit across the map: the sweep then spans half the map, about 64
+    // texels, so the border's one-texel bilinear ramp is a small part of it.
+    constexpr float kLateralScale = 50.0f;
+    // An occluder at distance d hides the disc over a lateral band of d times the disc's
+    // diameter. The sweep covers four times that on each side of the edge.
+    constexpr float kOccluderDistance = 0.4f;
+    constexpr float kHalfSweep = 4.0f * kOccluderDistance * kVisibilityDiscRadius;
+    // The largest share of the pattern's weight one tap carries: the center tap, 1 of 8.5.
+    constexpr float kMaxStep = 0.125f;
+
+    const TextureHandle shadow = MakeShadowArray(0.5f + kOccluderDistance);
+    const float cosTurn = std::cos(kMapTurn);
+    const float sinTurn = std::sin(kMapTurn);
+    std::vector<float> visibility;
+    visibility.reserve(kSteps + 1);
+    for (int i = 0; i <= kSteps; ++i)
+    {
+        // From outside the map's border to inside it, along the map's turned x axis, in world
+        // units: the border is at 1 / kLateralScale.
+        const float along = 1.0f / kLateralScale + kHalfSweep -
+                            2.0f * kHalfSweep * static_cast<float>(i) / static_cast<float>(kSteps);
+        visibility.push_back(
+            ProbeCascade(shadow, along * cosTurn, along * sinTurn, 0.5f, 0.0f, kMapTurn, kLateralScale));
+    }
+
+    EXPECT_FLOAT_EQ(visibility.front(), 1.0f) << "the disc reads hidden with the edge clear of it";
+    EXPECT_FLOAT_EQ(visibility.back(), 0.0f) << "the disc reads visible behind the occluder";
+
+    float largestStep = 0.0f;
+    int levels = 0;
+    for (int i = 1; i <= kSteps; ++i)
+    {
+        const float step = visibility[i - 1] - visibility[i];
+        EXPECT_GE(step, -1e-6f) << "the halo brightened at step " << i
+                                << " while the occluder only advanced";
+        largestStep = std::max(largestStep, step);
+        if (step > 1e-6f)
+            ++levels;
+    }
+    EXPECT_LE(largestStep, kMaxStep + 1e-3f)
+        << "one step of the edge took out more than any single tap carries: the term is not "
+           "sampling the disc";
+    EXPECT_LE(largestStep, 0.25f);
+    EXPECT_GE(levels, 8) << "the fade passed through too few levels to read as continuous";
+    RecordProperty("largestStep", std::to_string(largestStep));
+    RecordProperty("levels", levels);
+}
+
 // ---------------------------------------------------------------------------
 // Source contracts. No device needed; these pin what the probe above measures.
 // ---------------------------------------------------------------------------
@@ -725,8 +825,8 @@ TEST(SunGlareSourceContract, GlarePassReachesTheKernelThroughTheSharedInclude)
         LoadRepoFileWithoutComments("Engine/Modules/Rendering/Shaders/sun_glare.frag");
     const std::string vert =
         LoadRepoFileWithoutComments("Engine/Modules/Rendering/Shaders/sun_glare.vert");
-    if (frag.empty() || vert.empty())
-        GTEST_SKIP() << "GE_RENDERER_REPO_ROOT not defined; shader source unavailable";
+    ASSERT_FALSE(frag.empty());
+    ASSERT_FALSE(vert.empty());
 
     EXPECT_NE(frag.find("#include \"Includes/sun_glare.glsl\""), std::string::npos)
         << "sun_glare.frag no longer includes the shared kernel; the device probe would be "
@@ -755,8 +855,8 @@ TEST(SunGlareSourceContract, TheMultisampledVariantIsAThinWrapperOverTheSharedVe
         LoadRepoFileWithoutComments("Engine/Modules/Rendering/Shaders/sun_glare.vert");
     const std::string multi =
         LoadRepoFileWithoutComments("Engine/Modules/Rendering/Shaders/sun_glare_ms.vert");
-    if (single.empty() || multi.empty())
-        GTEST_SKIP() << "GE_RENDERER_REPO_ROOT not defined; shader source unavailable";
+    ASSERT_FALSE(single.empty());
+    ASSERT_FALSE(multi.empty());
 
     EXPECT_NE(single.find("uniform sampler2D uSceneDepth"), std::string::npos);
     EXPECT_NE(multi.find("uniform sampler2DMS uSceneDepth"), std::string::npos)
@@ -778,8 +878,8 @@ TEST(SunGlareSourceContract, ThereIsExactlyOneGlareFractionConstant)
         LoadRepoFileWithoutComments("Engine/Modules/Rendering/Shaders/Includes/sun_glare.glsl");
     const std::string frag =
         LoadRepoFileWithoutComments("Engine/Modules/Rendering/Shaders/sun_glare.frag");
-    if (include.empty() || frag.empty())
-        GTEST_SKIP() << "GE_RENDERER_REPO_ROOT not defined; shader source unavailable";
+    ASSERT_FALSE(include.empty());
+    ASSERT_FALSE(frag.empty());
 
     EXPECT_EQ(CountOccurrences(include, "#define GE_SUN_GLARE_FRACTION"), 1u)
         << "the glare fraction is the term's ONE dial; a second definition is a second dial";
@@ -790,7 +890,7 @@ TEST(SunGlareSourceContract, ThereIsExactlyOneGlareFractionConstant)
         << "the glare pass no longer bounds what it writes to the fp16 target";
 }
 
-TEST(SunGlareSourceContract, VisibilityIsTheProductOfBothIndependentTerms)
+TEST(SunGlareSourceContract, VisibilityCombinesTheThreeTermsWithoutCountingAnOccluderTwice)
 {
     const std::string vsBody =
         LoadRepoFileWithoutComments("Engine/Modules/Rendering/Shaders/Includes/sun_glare_vs.glsl");
@@ -798,21 +898,30 @@ TEST(SunGlareSourceContract, VisibilityIsTheProductOfBothIndependentTerms)
         LoadRepoFileWithoutComments("Engine/Modules/Rendering/Shaders/sun_glare.vert");
     const std::string multi =
         LoadRepoFileWithoutComments("Engine/Modules/Rendering/Shaders/sun_glare_ms.vert");
-    if (vsBody.empty() || single.empty() || multi.empty())
-        GTEST_SKIP() << "GE_RENDERER_REPO_ROOT not defined; shader source unavailable";
+    ASSERT_FALSE(vsBody.empty());
+    ASSERT_FALSE(single.empty());
+    ASSERT_FALSE(multi.empty());
 
     // No term alone can see every occluder in this engine: the cascades cannot see CBT terrain
     // (it casts no shadows), the screen probe cannot see anything while the sun is off screen,
-    // and the CPU skyline march sees only terrain. The product is the fix; dropping any one of
-    // them silently reopens a hole, and the off-frame one was a visible one-frame POP.
-    EXPECT_NE(vsBody.find("GE_SunGlareCascadeSunlit"), std::string::npos)
+    // and the CPU skyline march sees only terrain. Dropping any one of them silently reopens a
+    // hole, and the off-frame one was a visible one-frame POP. The cascades and the skyline see
+    // disjoint occluders and multiply; the probe sees both, so it takes the minimum with their
+    // product: multiplied in, a caster on screen covering half the disc would read 0.25.
+    const std::string castersPass =
+        LoadRepoFileWithoutComments("Engine/Modules/Rendering/Shaders/sun_glare_casters.comp");
+    ASSERT_FALSE(castersPass.empty());
+    EXPECT_NE(castersPass.find("GE_SunGlareCastersVisibility("), std::string::npos)
         << "the cascade term is gone: an off-frame or behind-camera sun would glare through "
            "any occluder";
+    EXPECT_NE(vsBody.find("uCasters.casters"), std::string::npos)
+        << "the vertex stage no longer reads the cascade term its pass writes";
     EXPECT_NE(vsBody.find("GE_SUN_GLARE_PROBE("), std::string::npos)
         << "the screen probe is gone: CBT terrain casts no shadows, so the sun would glare "
            "through every hill";
-    EXPECT_NE(vsBody.find("sunlit * onScreen * pc.horizon.x"), std::string::npos)
-        << "visibility is no longer the product of all three terms";
+    EXPECT_NE(vsBody.find("min(onScreen, sunlit * pc.horizon.x)"), std::string::npos)
+        << "visibility is no longer the minimum of the screen probe and the product of the "
+           "cascade and skyline terms";
     EXPECT_NE(vsBody.find("pc.horizon.x"), std::string::npos)
         << "the terrain-skyline term is gone: a sun just outside the frame edge would be "
            "unoccludable, and the halo would step the frame its centre crosses in";
@@ -831,8 +940,7 @@ TEST(SunGlareSourceContract, TheMultisampledProbeAveragesOverSamplesRatherThanPi
 {
     const std::string include =
         LoadRepoFileWithoutComments("Engine/Modules/Rendering/Shaders/Includes/sun_glare.glsl");
-    if (include.empty())
-        GTEST_SKIP() << "GE_RENDERER_REPO_ROOT not defined; shader source unavailable";
+    ASSERT_FALSE(include.empty());
 
     const std::size_t ms = include.find("GE_SunGlareScreenVisibilityMS");
     ASSERT_NE(ms, std::string::npos);
@@ -850,11 +958,11 @@ TEST(SunGlareSourceContract, TheMultisampledProbeAveragesOverSamplesRatherThanPi
 TEST(SunGlareSourceContract, ShadowBlockPrefixMatchesTheShadowSamplingHeader)
 {
     const std::string vert =
-        LoadRepoFileWithoutComments("Engine/Modules/Rendering/Shaders/Includes/sun_glare_vs.glsl");
+        LoadRepoFileWithoutComments("Engine/Modules/Rendering/Shaders/sun_glare_casters.comp");
     const std::string header =
         LoadRepoFileWithoutComments("Engine/Modules/Rendering/Shaders/Includes/shadow_sampling.glsl");
-    if (vert.empty() || header.empty())
-        GTEST_SKIP() << "GE_RENDERER_REPO_ROOT not defined; shader source unavailable";
+    ASSERT_FALSE(vert.empty());
+    ASSERT_FALSE(header.empty());
 
     // The glare declares a std140 PREFIX of the cascades' ShadowData block rather than
     // including the whole shadow header, which would drag in the PCSS, MSM and bindless
@@ -891,9 +999,9 @@ TEST(SunGlareSourceContract, TheProbeReadsThePostWorldDepthAttachmentWithNoResol
     const std::string node = LoadRepoFileWithoutComments(
         "Engine/Source/Engine/Rendering/Pipeline/Nodes/SunGlareRenderNode.cpp");
     const std::string graph =
-        LoadRepoFileWithoutComments("Assets/RenderPipelines/ForwardPlus.rendergraph");
-    if (node.empty() || graph.empty())
-        GTEST_SKIP() << "GE_RENDERER_REPO_ROOT not defined; source unavailable";
+        LoadRepoFileWithoutComments("Engine/Assets/RenderPipelines/ForwardPlus.rendergraph");
+    ASSERT_FALSE(node.empty());
+    ASSERT_FALSE(graph.empty());
 
     EXPECT_NE(node.find("depth = d.ViewDepth"), std::string::npos)
         << "the glare no longer binds the scene depth attachment";
@@ -922,46 +1030,61 @@ TEST(SunGlareSourceContract, TheProbeReadsThePostWorldDepthAttachmentWithNoResol
         << "the variant is no longer selected from the attachment's own sample count";
 }
 
-// The skyline term is a CPU march against the terrain heightfield, and the two properties that
-// make it the right fix are both in the node: it does not consult the sun's screen position, and
-// it is faded over the SUN'S OWN angular radius rather than a chosen width.
-TEST(SunGlareSourceContract, TheSkylineTermIsIndependentOfWhereTheCameraPoints)
+namespace
 {
-    const std::string node = LoadRepoFileWithoutComments(
-        "Engine/Source/Engine/Rendering/Pipeline/Nodes/SunGlareRenderNode.cpp");
-    if (node.empty())
-        GTEST_SKIP() << "GE_RENDERER_REPO_ROOT not defined; source unavailable";
+// A unit vector toward a sun whose elevation has the tangent `elevationTangent`, at the azimuth
+// `azimuthRad` around +Y.
+Mathematics::Vector3 SunAtElevationTangent(float elevationTangent, float azimuthRad)
+{
+    const float horizontal = 1.0f / std::sqrt(1.0f + elevationTangent * elevationTangent);
+    return {horizontal * std::cos(azimuthRad), elevationTangent * horizontal, horizontal * std::sin(azimuthRad)};
+}
+} // namespace
 
-    EXPECT_NE(node.find("GetSkylineTangent(d.View.id)"), std::string::npos)
-        << "the node no longer reads the terrain skyline, so a sun behind a hill and off frame "
-           "is unoccludable";
-    // The march itself is on the terrain side, because the renderer cannot depend on TerrainECS
-    // (TerrainECS owns a render feature, so the dependency runs the other way). Pin that the
-    // publisher exists and marches along the SUN's azimuth rather than the camera's.
-    const std::string publisher = LoadRepoFileWithoutComments(
-        "Engine/Modules/TerrainECS/Source/Systems/TerrainExtractionSystem.cpp");
-    ASSERT_FALSE(publisher.empty());
-    EXPECT_NE(publisher.find("TerrainHorizonTangent("), std::string::npos)
-        << "nothing marches the terrain skyline any more";
-    EXPECT_NE(publisher.find("settings.scatteringSunDir[0], settings.scatteringSunDir[2]"),
-              std::string::npos)
-        << "the skyline is no longer marched along the SUN's azimuth";
-    // Gated on the terrain being resolvable, NOT on the sun being on screen: the whole point is
-    // that this term survives the sun leaving the frame.
-    EXPECT_EQ(CountOccurrences(node, "onScreen ? horizonVisibility"), 0u)
-        << "the skyline term is gated on the sun being on screen, which is the hole it exists "
-           "to close";
-    EXPECT_EQ(CountOccurrences(node, "onScreen && horizonVisibility"), 0u);
-    // The fade width is the sun's own angular radius, so it is geometry rather than a dial.
-    EXPECT_NE(node.find("2.0f * radiusTangent"), std::string::npos)
-        << "the skyline fade is no longer spanned by the sun's angular diameter";
-    // Four uses: the kernel core width, the probe ring scale on each axis, and the skyline fade
-    // width. A fifth occurrence is probably a new constant in disguise.
-    EXPECT_EQ(CountOccurrences(node, "kSunAngularRadiusRad"), 4u);
-    // The sun's angular radius is named once, in SkySettings.h, and the glare and the sky read
-    // the same name. A local definition here is the duplication coming back.
-    EXPECT_EQ(CountOccurrences(node, "kSunAngularRadiusRad ="), 0u)
-        << "the glare node redefines the sun's angular radius instead of using the shared one";
+// The skyline term fades the disc over its own diameter: hidden when the skyline is one sun radius
+// above the disc's center, half hidden at the center, clear one radius below. The term reads only
+// the sun and the published skyline, so the answer is the same at every azimuth.
+TEST(SunGlareSkyline, TheDiscFadesOverItsOwnDiameterAcrossThePublishedSkyline)
+{
+    using ::GameEngine::Engine::Renderer::SunGlareRenderFeature;
+    constexpr uint32_t kViewId = 7u;
+    constexpr float kSkylineTangent = 0.0875f; // a ridge about 5 degrees above the horizontal
+    const SunGlareRenderFeature::ViewSkyline skyline{kViewId, kSkylineTangent};
+    SunGlareRenderFeature feature;
+    feature.SetSkylines(&skyline, 1u);
+
+    for (const float azimuth : {0.0f, 1.3f, 3.0f, 4.7f})
+    {
+        EXPECT_NEAR(feature.GetSkylineVisibility(
+                        kViewId, SunAtElevationTangent(kSkylineTangent + kSunAngularRadiusRad, azimuth)),
+                    1.0f, 1e-3f)
+            << "a disc one radius clear of the skyline is not fully visible, azimuth " << azimuth;
+        EXPECT_NEAR(feature.GetSkylineVisibility(kViewId, SunAtElevationTangent(kSkylineTangent, azimuth)), 0.5f,
+                    1e-2f)
+            << "a disc centered on the skyline is not half visible, azimuth " << azimuth;
+        EXPECT_NEAR(feature.GetSkylineVisibility(
+                        kViewId, SunAtElevationTangent(kSkylineTangent - kSunAngularRadiusRad, azimuth)),
+                    0.0f, 1e-3f)
+            << "a disc one radius below the skyline is not hidden, azimuth " << azimuth;
+    }
+}
+
+// A view with no published skyline, or with an entry that has nothing to say (no skyline or NaN),
+// has no terrain to report on. That reads as fully visible, never as flat ground that hides a
+// setting sun.
+TEST(SunGlareSkyline, AViewWithNoSkylineSeesTheWholeDisc)
+{
+    using ::GameEngine::Engine::Renderer::SunGlareRenderFeature;
+    const SunGlareRenderFeature::ViewSkyline skylines[] = {
+        {1u, 0.5f}, {2u, SunGlareRenderFeature::kNoSkyline}, {4u, std::numeric_limits<float>::quiet_NaN()}};
+    SunGlareRenderFeature feature;
+    feature.SetSkylines(skylines, std::size(skylines));
+    const Mathematics::Vector3 lowSun = SunAtElevationTangent(-0.01f, 0.0f);
+
+    EXPECT_NEAR(feature.GetSkylineVisibility(1u, lowSun), 0.0f, 1e-3f) << "the published ridge does not hide the sun";
+    EXPECT_EQ(feature.GetSkylineVisibility(2u, lowSun), 1.0f);
+    EXPECT_EQ(feature.GetSkylineVisibility(3u, lowSun), 1.0f) << "an unpublished view reads as flat ground";
+    EXPECT_EQ(feature.GetSkylineVisibility(4u, lowSun), 1.0f) << "a NaN skyline does not read as fully visible";
 }
 
 // The probe ring must not reach far past the disc. At three sun radii the taps on the occluded
@@ -971,8 +1094,7 @@ TEST(SunGlareSourceContract, TheProbeRingStaysCloseToTheDisc)
 {
     const std::string node = LoadRepoFileWithoutComments(
         "Engine/Source/Engine/Rendering/Pipeline/Nodes/SunGlareRenderNode.cpp");
-    if (node.empty())
-        GTEST_SKIP() << "GE_RENDERER_REPO_ROOT not defined; source unavailable";
+    ASSERT_FALSE(node.empty());
 
     const std::size_t at = node.find("kProbeRadiusInSunRadii = ");
     ASSERT_NE(at, std::string::npos);
@@ -986,9 +1108,8 @@ TEST(SunGlareSourceContract, TheProbeRingStaysCloseToTheDisc)
 TEST(SunGlareSourceContract, BlueprintCompositesTheGlareBeforeTonemap)
 {
     const std::string graph =
-        LoadRepoFileWithoutComments("Assets/RenderPipelines/ForwardPlus.rendergraph");
-    if (graph.empty())
-        GTEST_SKIP() << "GE_RENDERER_REPO_ROOT not defined; blueprint unavailable";
+        LoadRepoFileWithoutComments("Engine/Assets/RenderPipelines/ForwardPlus.rendergraph");
+    ASSERT_FALSE(graph.empty());
 
     const std::size_t glare = graph.find("\"type\": \"SunGlare\"");
     ASSERT_NE(glare, std::string::npos)

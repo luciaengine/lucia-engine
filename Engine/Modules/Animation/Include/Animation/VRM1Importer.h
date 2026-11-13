@@ -1,9 +1,9 @@
 #pragma once
 
 #include "Animation/HumanBone.h"
-#include "Animation/HumanoidRig.h"
-#include "Animation/SkeletonData.h"
-#include "Animation/SkeletonProfile.h"
+#include "Animation/Humanoid/HumanoidRig.h"
+#include "Animation/Skeleton/SkeletonData.h"
+#include "Animation/Skeleton/SkeletonProfile.h"
 
 #include <string>
 #include <vector>

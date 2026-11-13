@@ -14,7 +14,8 @@
 // they capture by value only (the sole pointer capture, &m_GridRenderer, is
 // safe because the controller strictly outlives this frame's Execute()).
 
-#include "SceneViewController.h"
+#include "Mathematics/Interpolation.h"
+#include "SceneView/SceneViewController.h"
 
 #include "Assets/AssetManager.h"
 #include "Assets/AssetRegistry.h"
@@ -23,6 +24,7 @@
 #include "Components/Rendering/MeshRenderer.h"
 #include "Components/Transform.h"
 #include "Core/Application.h"
+#include "Core/ApplicationPaths.h"
 #include "Core/Engine.h"
 #include "ECS/Components.h"
 #include "Engine/GameUI/GameUIHost.h"
@@ -30,7 +32,6 @@
 #include "ECSModules/Rendering/SkeletonStore.h"
 #include "Editor/Registries/EditorPluginRegistry.h"
 #include "SceneView/SelectionOutlineContributors.h"
-#include "Editor/EditorPaths.h"
 #include "Editor/Settings/SceneViewSettings.h"
 #include "Engine/Rendering/Camera.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
@@ -41,17 +42,18 @@
 #include "Mathematics/Vector4.h"
 #include "Rendering/Common/Frustum.h"
 #include "Mathematics/Vector3.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineDescTranslator.h"
+#include "Rendering/Core/Pipeline/PipelineDescTranslator.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
+#include "Rendering/Core/ReverseZ.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
 #include "Rendering/Geometry/VertexLayoutBuilder.h"
 #include "SceneView/SceneViewGizmos.h"
 #include "SceneView/SceneViewOverlayShared.h"
 #include "SceneView/SceneViewTools.h"
-#include "Types/Fnv1a.h"
+#include "Types/Color.h"
 
 #include <algorithm>
 #include <cmath>
@@ -114,7 +116,7 @@ void MakeIdentity4(float m[16])
 }
 
 // One packed gizmo group: an absolute firstVertex into the ring buffer plus
-// the per-group color. Only triangles carry layer/sort keys; alwaysOnTop
+// the per-group color. Only triangles carry layer/sort keys; depthMode
 // applies to both and selects which depth pass owns the draw.
 struct GizmoGroupDraw
 {
@@ -124,7 +126,7 @@ struct GizmoGroupDraw
     int32_t layer = 0;
     float depthKey = 0.0f;
     bool isTransparent = false;
-    bool alwaysOnTop = false;
+    Editor::SceneTools::GizmoDepthMode depthMode = Editor::SceneTools::GizmoDepthMode::SceneDepth;
 };
 
 // Pack xyz-triplet group vertices into a 16-byte-stride ring alloc. Returns
@@ -165,8 +167,7 @@ bool PackGizmoGroups(RenderGraph::RGFrame& frame, const GroupVec& groups, uint32
         draw.firstVertex = baseVertex + cursor;
         draw.vertexCount = vc;
         draw.color = group.color;
-        draw.alwaysOnTop =
-            (group.depthMode == Editor::SceneTools::GizmoDepthMode::AlwaysOnTop);
+        draw.depthMode = group.depthMode;
         outDraws.push_back(draw);
 
         const float* src = group.vertices.data();
@@ -491,7 +492,7 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
                                     markupCollected ? markupCollected->CollectedBodies() : 0);
     // The mark-up gizmo builds a region's display only while it is in this view.
     Mathematics::Vector4 markupFrustum[6];
-    ExtractFrustumPlanes(Mathematics::Matrix4x4::FromColumnMajor(cam.viewProj), markupFrustum);
+    ExtractFrustumPlanes(cam.viewProj, markupFrustum);
     m_MarkupGizmo.SetViewFrustum(markupFrustum);
 
     const auto& svSettings = Editor::SceneViewSettings::Get();
@@ -534,8 +535,7 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
                     hasActiveCamera = true;
                 }
             }
-            m_CameraFrameGizmo.SetCamera(hasActiveCamera, activeCamera.params,
-                                         activeCamera.worldTransform.Data());
+            m_CameraFrameGizmo.SetCamera(hasActiveCamera, activeCamera.params, activeCamera.WorldTransform());
             collector.AddGizmo(&m_CameraFrameGizmo);
         }
         collector.AddGizmo(&m_SplineSceneGizmo);
@@ -611,15 +611,15 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
                 draw.isTransparent = (draw.color.a < 0.999f);
                 if (draw.isTransparent)
                 {
-                    const float* viewM = cam.view;
+                    const Mathematics::Matrix4x4& view = cam.view;
                     double accumZ = 0.0;
                     for (uint32_t v = 0; v < vc; ++v)
                     {
                         const float x = group.vertices[static_cast<size_t>(v) * 3u + 0u];
                         const float y = group.vertices[static_cast<size_t>(v) * 3u + 1u];
                         const float z = group.vertices[static_cast<size_t>(v) * 3u + 2u];
-                        accumZ += static_cast<double>(viewM[2] * x + viewM[6] * y +
-                                                      viewM[10] * z + viewM[14]);
+                        accumZ += static_cast<double>(view[0][2] * x + view[1][2] * y +
+                                                      view[2][2] * z + view[3][2]);
                     }
                     draw.depthKey = static_cast<float>(accumZ / static_cast<double>(vc));
                 }
@@ -668,11 +668,11 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
                 pdTris.topology = PrimitiveTopology::TriangleList;
                 outTris = PipelineDescTranslator::InternGraphics(*device, pdTris);
             };
-            internPair(CompareOp::GreaterOrEqual, "SV_Gizmos_Lines", "SV_Gizmos_Triangles",
+            internPair(ReverseZ::kNearerOrEqual, "SV_Gizmos_Lines", "SV_Gizmos_Triangles",
                        idLinesVisible, idTrisVisible);
-            internPair(CompareOp::Less, "SV_Gizmos_Lines_Occluded", "SV_Gizmos_Triangles_Occluded",
+            internPair(ReverseZ::kFarther, "SV_Gizmos_Lines_Occluded", "SV_Gizmos_Triangles_Occluded",
                        idLinesOccluded, idTrisOccluded);
-            // Opt-in third pair for GizmoDepthMode::AlwaysOnTop: no depth test,
+            // Opt-in third pair for GizmoDepthMode::AlwaysOnTop and Handle: no depth test,
             // so the group draws once at full strength wherever it lands.
             internPair(CompareOp::Always, "SV_Gizmos_Lines_Always",
                        "SV_Gizmos_Triangles_Always", idLinesAlways, idTrisAlways);
@@ -714,7 +714,6 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
                 float CamDistance = 0.0f;
                 float Opacity = 1.0f;
                 uint32_t Color = 0;
-                Grid2DCells Cells;
             } grid;
             grid.Show = m_ShowGrid;
             grid.CamPos[0] = static_cast<float>(m_CamPos[0]);
@@ -724,25 +723,11 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
             grid.CamDistance = m_CamDistance;
             grid.Opacity = m_Is2DMode ? svSettings.GetGridOpacity2D() : svSettings.GetGridOpacity3D();
             grid.Color = m_Is2DMode ? svSettings.GetGridColor2D() : svSettings.GetGridColor3D();
-            grid.Cells = m_Grid2DCells;
 
-            PipelineHandle* gridPipeline = frame.AllocatePassData<PipelineHandle>();
             frame.AddPass(
                 "SV.Gizmos_Overlay", kOverlayPhase,
                 [&](RenderGraph::RGPassBuilder& p)
                 {
-                    p.Prepare([gridRenderer = &m_GridRenderer, grid, gridPipeline](RenderGraph::RGPrepareContext& context)
-                              {
-                                  if (grid.Show)
-                                      *gridPipeline = gridRenderer->PrepareRG(context, grid.Is2D);
-                                  return true;
-                              });
-                    p.UsePipeline(idLinesVisible);
-                    p.UsePipeline(idLinesOccluded);
-                    p.UsePipeline(idTrisVisible);
-                    p.UsePipeline(idTrisOccluded);
-                    p.UsePipeline(idLinesAlways);
-                    p.UsePipeline(idTrisAlways);
                     RenderGraph::RGAttachmentOps colorOps{};
                     colorOps.Load = RenderGraph::RGLoadOp::Clear;
                     colorOps.Store = RenderGraph::RGStoreOp::Store;
@@ -763,34 +748,29 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
                  set0 = GizmoCameraSet0Layout(), camBuf = camAlloc.Buffer,
                  camOff = camAlloc.Offset, camValid = camAlloc.Valid(), lineBuf,
                  lineDraws = std::move(lineDraws), triBuf, triDraws = std::move(triDraws), w, h,
-                 cam, grid, gridRenderer = &m_GridRenderer, gridPipeline](RenderGraph::RGContext& context)
+                 cam, grid, gridRenderer = &m_GridRenderer](RenderGraph::RGContext& ctx)
                 {
-                    auto* commands = context.Cmd;
-                    auto* device = context.GetDevice();
-                    if (!commands || !device)
+                    auto* cl = ctx.Cmd;
+                    auto* dev = ctx.GetDevice();
+                    if (!cl || !dev)
                         return;
 
-                    commands->SetViewport(0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h));
-                    commands->SetScissor(0, 0, static_cast<int>(w), static_cast<int>(h));
+                    cl->SetViewport(0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h));
+                    cl->SetScissor(0, 0, static_cast<int>(w), static_cast<int>(h));
 
                     if (grid.Show)
-                    {
-                        const float cells[4] = {grid.Cells.OriginX, grid.Cells.OriginY,
-                                                grid.Cells.Valid ? grid.Cells.Width : 0.0f,
-                                                grid.Cells.Valid ? grid.Cells.Height : 0.0f};
-                        gridRenderer->RecordRG(context, *gridPipeline, &cam, grid.CamPos, grid.Is2D,
-                                               grid.CamDistance, static_cast<float>(h),
-                                               grid.Opacity, grid.Color, cells);
-                    }
+                        gridRenderer->RecordRG(ctx, &cam, grid.CamPos, grid.Is2D,
+                                                grid.CamDistance, static_cast<float>(h),
+                                                grid.Opacity, grid.Color);
 
                     if (!camValid || (!lineDraws.size() && !triDraws.size()))
                         return;
-                    const PipelineHandle pipeLinesVisible = context.GetOrCreatePipelineVariant(idLinesVisible);
-                    const PipelineHandle pipeLinesOccluded = context.GetOrCreatePipelineVariant(idLinesOccluded);
-                    const PipelineHandle pipeTrisVisible = context.GetOrCreatePipelineVariant(idTrisVisible);
-                    const PipelineHandle pipeTrisOccluded = context.GetOrCreatePipelineVariant(idTrisOccluded);
-                    const PipelineHandle pipeLinesAlways = context.GetOrCreatePipelineVariant(idLinesAlways);
-                    const PipelineHandle pipeTrisAlways = context.GetOrCreatePipelineVariant(idTrisAlways);
+                    const PipelineHandle pipeLinesVisible = ctx.GetOrCreatePipelineVariant(idLinesVisible);
+                    const PipelineHandle pipeLinesOccluded = ctx.GetOrCreatePipelineVariant(idLinesOccluded);
+                    const PipelineHandle pipeTrisVisible = ctx.GetOrCreatePipelineVariant(idTrisVisible);
+                    const PipelineHandle pipeTrisOccluded = ctx.GetOrCreatePipelineVariant(idTrisOccluded);
+                    const PipelineHandle pipeLinesAlways = ctx.GetOrCreatePipelineVariant(idLinesAlways);
+                    const PipelineHandle pipeTrisAlways = ctx.GetOrCreatePipelineVariant(idTrisAlways);
                     if (!pipeLinesVisible.IsValid() || !pipeLinesOccluded.IsValid() ||
                         !pipeTrisVisible.IsValid() || !pipeTrisOccluded.IsValid() ||
                         !pipeLinesAlways.IsValid() || !pipeTrisAlways.IsValid())
@@ -800,10 +780,10 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
                     dsDesc.layout = set0;
                     dsDesc.transient = true;
                     dsDesc.debugName = "SV_Gizmos_DS";
-                    const DescriptorSetHandle ds = device->CreateDescriptorSet(dsDesc);
+                    const DescriptorSetHandle ds = dev->CreateDescriptorSet(dsDesc);
                     if (!ds.IsValid())
                         return;
-                    device->UpdateBufferBinding(ds, 5, camBuf, static_cast<uint32_t>(camOff),
+                    dev->UpdateBufferBinding(ds, 5, camBuf, static_cast<uint32_t>(camOff),
                                              static_cast<uint32_t>(sizeof(CameraData)));
 
                     GizmoPC pc{};
@@ -816,32 +796,34 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
                     // version did.
                     const auto drawSubset = [&](PipelineHandle pipe, BufferHandle buf,
                                                 const std::vector<GizmoGroupDraw>& draws,
-                                                bool alwaysOnTop, float alphaScale)
+                                                Editor::SceneTools::GizmoDepthMode depthMode,
+                                                float alphaScale)
                     {
                         if (draws.empty() || !buf.IsValid())
                             return;
                         bool bound = false;
                         for (const GizmoGroupDraw& draw : draws)
                         {
-                            if (draw.alwaysOnTop != alwaysOnTop)
+                            if (draw.depthMode != depthMode)
                                 continue;
                             if (!bound)
                             {
-                                commands->SetPipeline(pipe);
-                                commands->BindDescriptorSet(0, ds, pipe);
-                                commands->SetVertexBuffer(buf, 0);
+                                cl->SetPipeline(pipe);
+                                cl->BindDescriptorSet(0, ds, pipe);
+                                cl->SetVertexBuffer(buf, 0);
                                 bound = true;
                             }
                             pc.color[0] = draw.color.r;
                             pc.color[1] = draw.color.g;
                             pc.color[2] = draw.color.b;
                             pc.color[3] = draw.color.a * alphaScale;
-                            commands->SetPushConstants(pc);
-                            commands->Draw(draw.vertexCount, 1u, draw.firstVertex, 0u);
+                            cl->SetPushConstants(pc);
+                            cl->Draw(draw.vertexCount, 1u, draw.firstVertex, 0u);
                         }
                     };
 
-                    // Always-on-top first, then occluded, then visible.
+                    // Always-on-top first, then occluded, then visible, then the
+                    // handles.
                     //
                     // Always-on-top leads because its members are backdrops: the
                     // spline's width band has to sit UNDER the curve and knots
@@ -852,24 +834,25 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
                     // test partitions each primitive's pixels between the two,
                     // but where two DIFFERENT primitives land on the same pixel
                     // the full-strength fragment blends on top.
-                    struct DepthPass
+                    //
+                    // Handles last: the transform handles the user grabs sit on
+                    // top of everything, a transparent world overlay included.
+                    using Editor::SceneTools::GizmoDepthMode;
+                    for (const GizmoDepthMode mode : Editor::SceneTools::kGizmoDepthModeDrawOrder)
                     {
-                        PipelineHandle Lines;
-                        PipelineHandle Tris;
-                        float AlphaScale;
-                        bool AlwaysOnTop;
-                    };
-                    const DepthPass depthPasses[3] = {
-                        {pipeLinesAlways, pipeTrisAlways, 1.0f, true},
-                        {pipeLinesOccluded, pipeTrisOccluded, Editor::SceneTools::kGizmoOccludedAlphaScale, false},
-                        {pipeLinesVisible, pipeTrisVisible, 1.0f, false},
-                    };
-                    for (const DepthPass& pass : depthPasses)
-                    {
-                        drawSubset(pass.Lines, lineBuf, lineDraws, pass.AlwaysOnTop,
-                                   pass.AlphaScale);
-                        drawSubset(pass.Tris, triBuf, triDraws, pass.AlwaysOnTop,
-                                   pass.AlphaScale);
+                        if (mode == GizmoDepthMode::SceneDepth)
+                        {
+                            drawSubset(pipeLinesOccluded, lineBuf, lineDraws, mode,
+                                       Editor::SceneTools::kGizmoOccludedAlphaScale);
+                            drawSubset(pipeTrisOccluded, triBuf, triDraws, mode,
+                                       Editor::SceneTools::kGizmoOccludedAlphaScale);
+                            drawSubset(pipeLinesVisible, lineBuf, lineDraws, mode, 1.0f);
+                            drawSubset(pipeTrisVisible, triBuf, triDraws, mode, 1.0f);
+                            continue;
+                        }
+                        // AlwaysOnTop and Handle: no depth test, full strength.
+                        drawSubset(pipeLinesAlways, lineBuf, lineDraws, mode, 1.0f);
+                        drawSubset(pipeTrisAlways, triBuf, triDraws, mode, 1.0f);
                     }
                 });
         }
@@ -913,7 +896,6 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
             "SV.Gizmos_Composite", kOverlayPhase,
             [&](RenderGraph::RGPassBuilder& p)
             {
-                p.UsePipeline(idComposite);
                 RenderGraph::RGAttachmentOps ops{};
                 ops.Load = RenderGraph::RGLoadOp::Load; // blend over the scene (derives ColorLoad)
                 ops.Store = RenderGraph::RGStoreOp::Store;
@@ -959,11 +941,10 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
         if (!m_GameUI)
             // The Scene View overlays onto the editor's shared scene+gizmos target,
             // so a Fullscreen UIDocument must NOT clear it (neverClearTarget=true).
-            // Font from the staged editor assets next to Editor.exe.
             m_GameUI = GameUIHost::CreateForHost(
                 device, &EngineCore::GetInstance().GetAssetManager(),
-                &EngineCore::GetInstance().GetJobSystem(),
-                Editor::GetEditorGlobalPaths().installAssetsRoot, /*neverClearTarget=*/true);
+                &EngineCore::GetInstance().GetJobSystem(), ApplicationPaths::GetInstallAssetsRoot(),
+                /*neverClearTarget=*/true);
         m_GameUiScale.Apply(*m_GameUI->GetUIManager());
         // The HUD composites onto the scene pipeline's finalColor: its
         // declared space is the PRODUCER's stamp (#784), not the display's.
@@ -996,8 +977,7 @@ void SceneViewController::DeclareSelectionOutlineRG(RenderGraph::RGFrame& frame,
     MeshGPURegistry& meshReg = rs->GetMeshGPURegistry();
     auto& skeletonStore = Engine::Renderer::SkeletonStore::Instance();
 
-    glm::mat4 viewProj;
-    std::memcpy(&viewProj[0][0], m_FrameCameraData.viewProj, sizeof(float) * 16);
+    const glm::mat4 viewProj = m_FrameCameraData.viewProj.GetGLM();
 
     // Resolve every selection/hover draw NOW — the exec lambda replays the
     // snapshot with zero ECS/registry access.
@@ -1039,7 +1019,7 @@ void SceneViewController::DeclareSelectionOutlineRG(RenderGraph::RGFrame& frame,
         MaskDraw d{};
         d.alphaTest = alphaTexture.IsValid();
         d.alphaTexture = alphaTexture;
-        d.alphaCutoff = std::clamp(alphaCutoff, 0.0f, 1.0f);
+        d.alphaCutoff = Math::Clamp01(alphaCutoff);
         d.uvScale[0] = uvScaleX;
         d.uvScale[1] = uvScaleY;
         d.uvOffset[0] = uvOffsetX;
@@ -1065,8 +1045,7 @@ void SceneViewController::DeclareSelectionOutlineRG(RenderGraph::RGFrame& frame,
             }
         }
 
-        glm::mat4 model;
-        std::memcpy(&model[0][0], xf.matrix, sizeof(float) * 16);
+        const glm::mat4 model = xf.ToMatrix4x4(xf.GetPosition() - Mathematics::WorldPosition{}).GetGLM();
         const glm::mat4 vpm = viewProj * model;
         std::memcpy(d.vpm, &vpm[0][0], sizeof(d.vpm));
 
@@ -1147,16 +1126,24 @@ void SceneViewController::DeclareSelectionOutlineRG(RenderGraph::RGFrame& frame,
     // m_OutlineMaskAnimated / m_OutlineMaskHasPlugin and forces a per-frame
     // re-render while either holds. (The mask is on-top, so foreign occluders
     // never affect it.) ──
-    uint64_t key = Hashing::kFnv1a64OffsetBasis;
-    auto foldBytes = [&key](const void* p, size_t n) { key = Hashing::Fnv1a64(p, n, key); };
+    uint64_t key = 1469598103934665603ull; // FNV-1a offset basis
+    auto foldBytes = [&key](const void* p, size_t n)
+    {
+        const auto* b = static_cast<const uint8_t*>(p);
+        for (size_t i = 0; i < n; ++i)
+        {
+            key ^= b[i];
+            key *= 1099511628211ull;
+        }
+    };
     auto foldU64 = [&](uint64_t v) { foldBytes(&v, sizeof(v)); };
     foldU64((static_cast<uint64_t>(w) << 32) | h);
-    foldBytes(m_FrameCameraData.viewProj, sizeof(float) * 16);
+    foldBytes(m_FrameCameraData.viewProj.Data(), sizeof(float) * 16);
     for (const ECS::EntityHandle e : contributors)
     {
         foldU64(static_cast<uint64_t>(ECS::EntityHandleHash{}(e)));
         if (const auto* xf = world->GetComponent<Components::WorldTransform>(e))
-            foldBytes(xf->matrix, sizeof(float) * 16);
+            foldBytes(xf, Components::kTransformPoseBytes);
         else
             foldU64(0);
         uint64_t contentWord = 0;
@@ -1339,9 +1326,6 @@ void SceneViewController::DeclareSelectionOutlineRG(RenderGraph::RGFrame& frame,
             "SV.SelectionMask", kOverlayPhase,
             [&](RenderGraph::RGPassBuilder& p)
             {
-                p.UsePipeline(idStatic);
-                p.UsePipeline(idSkinned);
-                p.UsePipeline(idAlpha);
                 RenderGraph::RGAttachmentOps ops{};
                 ops.Load = RenderGraph::RGLoadOp::Clear;
                 ops.Store = RenderGraph::RGStoreOp::Store;
@@ -1485,7 +1469,6 @@ void SceneViewController::DeclareSelectionOutlineRG(RenderGraph::RGFrame& frame,
         "SV.Selection_Outline", kOverlayPhase,
         [&](RenderGraph::RGPassBuilder& p)
         {
-            p.UsePipeline(idOutline);
             RenderGraph::RGAttachmentOps ops{};
             ops.Load = RenderGraph::RGLoadOp::Load; // blend over the scene (derives ColorLoad)
             ops.Store = RenderGraph::RGStoreOp::Store;

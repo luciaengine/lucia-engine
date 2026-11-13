@@ -1,8 +1,9 @@
 #include "Engine/Rendering/2D/SpriteRenderFeature.h"
+#include "Engine/Rendering/RenderOrigin.h"
 
 #include "EngineTestShaderSetup.h"
 #include "Mathematics/Vector4.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
@@ -122,8 +123,7 @@ protected:
         }
         BindBuffer(0, &instance, sizeof(instance), BufferUsage::Storage);
         CameraData camera{};
-        for (int32 diagonal = 0; diagonal < 16; diagonal += 5)
-            camera.view[diagonal] = camera.proj[diagonal] = camera.viewProj[diagonal] = 1;
+        Engine::Renderer::SetCameraEye(camera, Mathematics::WorldPosition{});
         BindBuffer(5, &camera, sizeof(camera), BufferUsage::Uniform);
         Engine::Renderer::SpriteLight light{};
         light.DirectionFalloff[2] = 1;

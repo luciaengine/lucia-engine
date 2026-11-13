@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Particles/ParticleChannels.h"
-#include "Particles/ParticleProcessorRegistry.h"
+#include "Particles/ParticleProcessor/ParticleProcessorRegistry.h"
 #include "Particles/Processors/ParticleProcessorTypes.h"
 
 #include <array>

@@ -4,8 +4,8 @@
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/PipelineIdentifiers.h"
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 
 #include <cstdint>
 #include <memory>

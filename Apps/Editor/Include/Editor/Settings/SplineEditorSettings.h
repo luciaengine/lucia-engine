@@ -75,10 +75,6 @@ public:
         prefs.TryGetDouble("spline.simplifyTolerance", simplifyTolerance);
         prefs.TryGetDouble("spline.smoothingIterations", smoothingIterations);
 
-        double autoConnectTolerance = static_cast<double>(m_AutoConnectTolerance);
-        double closeLoopTolerance = static_cast<double>(m_CloseLoopTolerance);
-        prefs.TryGetDouble("spline.autoConnectTolerance", autoConnectTolerance);
-        prefs.TryGetDouble("spline.closeLoopTolerance", closeLoopTolerance);
         prefs.TryGetBool("spline.autoConnect", m_AutoConnect);
         prefs.TryGetBool("spline.autoCloseLoop", m_AutoCloseLoop);
         prefs.TryGetBool("spline.constantScreenSize", m_ConstantScreenSize);
@@ -146,8 +142,6 @@ public:
         m_HandleThickness = static_cast<float>(handleThickness);
         m_SimplifyTolerance = static_cast<float>(simplifyTolerance);
         m_SmoothingIterations = static_cast<int>(smoothingIterations);
-        m_AutoConnectTolerance = static_cast<float>(autoConnectTolerance);
-        m_CloseLoopTolerance = static_cast<float>(closeLoopTolerance);
         Validate();
     }
 
@@ -165,8 +159,6 @@ public:
         prefs.SetDouble("spline.handleThickness", static_cast<double>(m_HandleThickness));
         prefs.SetDouble("spline.simplifyTolerance", static_cast<double>(m_SimplifyTolerance));
         prefs.SetDouble("spline.smoothingIterations", static_cast<double>(m_SmoothingIterations));
-        prefs.SetDouble("spline.autoConnectTolerance", static_cast<double>(m_AutoConnectTolerance));
-        prefs.SetDouble("spline.closeLoopTolerance", static_cast<double>(m_CloseLoopTolerance));
         prefs.SetBool("spline.autoConnect", m_AutoConnect);
         prefs.SetBool("spline.autoCloseLoop", m_AutoCloseLoop);
         prefs.SetBool("spline.constantScreenSize", m_ConstantScreenSize);
@@ -231,11 +223,6 @@ public:
     bool GetDrapeToSurface() const { return m_DrapeToSurface; }
     float GetConformMaxSegmentLength() const { return m_ConformMaxSegmentLength; }
     bool GetStickToMesh() const { return m_StickToMesh; }
-    float GetAutoConnectTolerance() const { return m_AutoConnectTolerance; }
-    float GetCloseLoopTolerance() const
-    {
-        return m_AutoCloseLoop ? m_CloseLoopTolerance : 0.0f;
-    }
 
     void SetAutoConnect(bool value) { m_AutoConnect = value; Save(); }
     void SetAutoCloseLoop(bool value) { m_AutoCloseLoop = value; Save(); }
@@ -293,18 +280,6 @@ public:
     void SetStickToMesh(bool value)
     {
         m_StickToMesh = value;
-        Save();
-    }
-    void SetAutoConnectTolerance(float value)
-    {
-        m_AutoConnectTolerance = value;
-        Validate();
-        Save();
-    }
-    void SetCloseLoopTolerance(float value)
-    {
-        m_CloseLoopTolerance = value;
-        Validate();
         Save();
     }
 
@@ -409,14 +384,6 @@ private:
         if (m_SmoothingIterations < 0) m_SmoothingIterations = 0;
         if (m_SmoothingIterations > 8) m_SmoothingIterations = 8;
 
-        if (!(m_AutoConnectTolerance > 0.0f)) m_AutoConnectTolerance = 2.0f;
-        if (m_AutoConnectTolerance < 0.05f)   m_AutoConnectTolerance = 0.05f;
-        if (m_AutoConnectTolerance > 50.0f)   m_AutoConnectTolerance = 50.0f;
-
-        if (!(m_CloseLoopTolerance > 0.0f)) m_CloseLoopTolerance = 2.0f;
-        if (m_CloseLoopTolerance < 0.05f)   m_CloseLoopTolerance = 0.05f;
-        if (m_CloseLoopTolerance > 50.0f)   m_CloseLoopTolerance = 50.0f;
-
         if (!(m_ConformMaxSegmentLength > 0.0f)) m_ConformMaxSegmentLength = 0.5f;
         if (m_ConformMaxSegmentLength < 0.05f)   m_ConformMaxSegmentLength = 0.05f;
         if (m_ConformMaxSegmentLength > 20.0f)   m_ConformMaxSegmentLength = 20.0f;
@@ -452,8 +419,6 @@ private:
     bool     m_DrapeToSurface = true;
     float    m_ConformMaxSegmentLength = 0.5f;
     bool     m_StickToMesh = true;
-    float    m_AutoConnectTolerance = 2.0f;
-    float    m_CloseLoopTolerance = 2.0f;
 };
 
 } // namespace Editor

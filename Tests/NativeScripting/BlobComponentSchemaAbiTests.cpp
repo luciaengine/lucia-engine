@@ -189,7 +189,7 @@ TEST_F(BlobComponentSchemaAbiTests, SceneRoundTripThroughAbiSchema)
                                               sizeof(v)),
                   GE_Result_Ok);
 
-        ASSERT_TRUE(GameEngine::Scene::SaveSceneToFile(world, scenePath));
+        ASSERT_TRUE(GameEngine::Scene::WriteSceneFile(world, scenePath));
     }
 
     // The C# component serializes under its SIMPLE name (the .scene component token cannot
@@ -202,8 +202,9 @@ TEST_F(BlobComponentSchemaAbiTests, SceneRoundTripThroughAbiSchema)
 
     {
         World world;
-        ASSERT_TRUE(GameEngine::Scene::LoadSceneFromFile(world, scenePath))
-            << "load error: " << GameEngine::Scene::GetLastSceneIOError().message;
+        const auto readResult = GameEngine::Scene::ReadSceneInto(world, scenePath);
+        ASSERT_TRUE(readResult)
+            << "load error: " << readResult.Error->message;
 
         const auto handle = FindByName(world, "Subject");
         ASSERT_TRUE(handle.IsValid());
@@ -486,7 +487,7 @@ TEST_F(BlobComponentSchemaAbiTests, UnregisteredBlobRoundTripsAndRevivesOnReRegi
         ASSERT_EQ(GE_ECSABI_SetComponentBytes(HandleOf(&world), e.GetHandle().id, id,
                                               reinterpret_cast<const uint8_t*>(&v), sizeof(v)),
                   GE_Result_Ok);
-        ASSERT_TRUE(GameEngine::Scene::SaveSceneToFile(world, pathA));
+        ASSERT_TRUE(GameEngine::Scene::WriteSceneFile(world, pathA));
     }
     EXPECT_NE(ReadFile(pathA).find("LocalTag.Value = 7.5"), std::string::npos) << ReadFile(pathA);
 
@@ -497,14 +498,15 @@ TEST_F(BlobComponentSchemaAbiTests, UnregisteredBlobRoundTripsAndRevivesOnReRegi
     // Session 2: load + save with the type unregistered — preserved, not dropped.
     {
         World world;
-        ASSERT_TRUE(GameEngine::Scene::LoadSceneFromFile(world, pathA))
-            << GameEngine::Scene::GetLastSceneIOError().message;
+        const auto readResult = GameEngine::Scene::ReadSceneInto(world, pathA);
+        ASSERT_TRUE(readResult)
+            << readResult.Error->message;
         const auto h = FindByName(world, "Subject");
         ASSERT_TRUE(h.IsValid());
         const auto* store = world.TryGetUnresolvedComponents();
         ASSERT_NE(store, nullptr) << "component was dropped instead of preserved";
         ASSERT_NE(store->Map().find(h), store->Map().end());
-        ASSERT_TRUE(GameEngine::Scene::SaveSceneToFile(world, pathB));
+        ASSERT_TRUE(GameEngine::Scene::WriteSceneFile(world, pathB));
     }
     EXPECT_NE(ReadFile(pathB).find("LocalTag.Value = 7.5"), std::string::npos)
         << "preservation must echo the authored casing\n"
@@ -513,8 +515,8 @@ TEST_F(BlobComponentSchemaAbiTests, UnregisteredBlobRoundTripsAndRevivesOnReRegi
     // Session 3: a second unregistered cycle is byte-stable from the entity body on.
     {
         World world;
-        ASSERT_TRUE(GameEngine::Scene::LoadSceneFromFile(world, pathB));
-        ASSERT_TRUE(GameEngine::Scene::SaveSceneToFile(world, pathC));
+        ASSERT_TRUE(GameEngine::Scene::ReadSceneInto(world, pathB));
+        ASSERT_TRUE(GameEngine::Scene::WriteSceneFile(world, pathC));
     }
     {
         std::string b = ReadFile(pathB);
@@ -531,7 +533,7 @@ TEST_F(BlobComponentSchemaAbiTests, UnregisteredBlobRoundTripsAndRevivesOnReRegi
     ASSERT_EQ(RegisterSchema(kName, sizeof(LocalTagBlob), fields), id);
     {
         World world;
-        ASSERT_TRUE(GameEngine::Scene::LoadSceneFromFile(world, pathC));
+        ASSERT_TRUE(GameEngine::Scene::ReadSceneInto(world, pathC));
         const auto h = FindByName(world, "Subject");
         ASSERT_TRUE(h.IsValid());
         LocalTagBlob loaded{};
@@ -569,7 +571,7 @@ TEST_F(BlobComponentSchemaAbiTests, QualifiedNameBlobLinesRegroupOnReRegister)
         std::strncpy(name.value, "QSubject", sizeof(name.value) - 1);
         e.Set(name);
         world.ProcessCommands();
-        ASSERT_TRUE(GameEngine::Scene::SaveSceneToFile(world, pathA));
+        ASSERT_TRUE(GameEngine::Scene::WriteSceneFile(world, pathA));
 
         std::string text = ReadFile(pathA);
         const auto hdr = text.find("[entity ");
@@ -584,13 +586,13 @@ TEST_F(BlobComponentSchemaAbiTests, QualifiedNameBlobLinesRegroupOnReRegister)
     // Unregistered round trip: preserved byte-stably (under the first segment).
     {
         World world;
-        ASSERT_TRUE(GameEngine::Scene::LoadSceneFromFile(world, pathA));
+        ASSERT_TRUE(GameEngine::Scene::ReadSceneInto(world, pathA));
         const auto h = FindByName(world, "QSubject");
         ASSERT_TRUE(h.IsValid());
         const auto* store = world.TryGetUnresolvedComponents();
         ASSERT_NE(store, nullptr);
         ASSERT_NE(store->Map().find(h), store->Map().end());
-        ASSERT_TRUE(GameEngine::Scene::SaveSceneToFile(world, pathB));
+        ASSERT_TRUE(GameEngine::Scene::WriteSceneFile(world, pathB));
     }
     EXPECT_NE(ReadFile(pathB).find("QualPack.QTag.Value = 3"), std::string::npos)
         << "preservation must echo the authored casing\n"
@@ -606,8 +608,9 @@ TEST_F(BlobComponentSchemaAbiTests, QualifiedNameBlobLinesRegroupOnReRegister)
     ASSERT_NE(id, 0u);
     {
         World world;
-        ASSERT_TRUE(GameEngine::Scene::LoadSceneFromFile(world, pathB))
-            << GameEngine::Scene::GetLastSceneIOError().message;
+        const auto readResult = GameEngine::Scene::ReadSceneInto(world, pathB);
+        ASSERT_TRUE(readResult)
+            << readResult.Error->message;
         const auto h = FindByName(world, "QSubject");
         ASSERT_TRUE(h.IsValid());
         QTagBlob loaded{};

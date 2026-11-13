@@ -11,6 +11,7 @@
 #include "SplineECS/SplineService.h"
 #include "UI/UIElement.h"
 
+#include <string>
 #include <vector>
 
 namespace GameEngine::Editor
@@ -45,27 +46,34 @@ const char* MarkupKindName(MarkupKind kind)
     return "";
 }
 
-std::unique_ptr<UIElement> BuildMarkupKindGlyph(MarkupKind kind)
+std::vector<std::string> MarkupKindGlyphClasses(MarkupKind kind)
 {
-    auto glyph = std::make_unique<UIElement>();
-    glyph->AddClass("markup-kind-glyph");
+    std::vector<std::string> classes{"markup-kind-glyph"};
     switch (kind)
     {
     case MarkupKind::Box:
-        glyph->AddClass("markup-kind-box");
+        classes.emplace_back("markup-kind-box");
         break;
     case MarkupKind::Sphere:
-        glyph->AddClass("markup-kind-sphere");
+        classes.emplace_back("markup-kind-sphere");
         break;
     case MarkupKind::Region:
-        glyph->AddClass("markup-kind-region");
+        classes.emplace_back("markup-kind-region");
         break;
     case MarkupKind::Path:
-        glyph->AddClass("markup-kind-path");
+        classes.emplace_back("markup-kind-path");
         break;
     case MarkupKind::None:
         break;
     }
+    return classes;
+}
+
+std::unique_ptr<UIElement> BuildMarkupKindGlyph(MarkupKind kind)
+{
+    auto glyph = std::make_unique<UIElement>();
+    for (const std::string& glyphClass : MarkupKindGlyphClasses(kind))
+        glyph->AddClass(glyphClass);
     glyph->SetTooltip(MarkupKindName(kind));
     return glyph;
 }

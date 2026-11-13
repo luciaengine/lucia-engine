@@ -1,14 +1,14 @@
 #include "Ocean/OceanClipSim.h"
-#include "Ocean/OceanShaderProgram.h"
-#include "Rendering/Materials/ShaderLayoutShape.h"
-#include "OceanShaderDirectory.h"
+#include "Ocean/OceanShader/OceanShaderProgram.h"
+#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
+#include "OceanShader/OceanShaderDirectory.h"
 
 #include "Logger/Logger.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
 
 #include <algorithm>
 #include <cstring>
@@ -26,7 +26,7 @@ namespace
 {
 
 // Grow `bounds` (min X, min Z, max X, max Z) to hold `box` in the same order.
-void ExpandBounds(float bounds[4], bool& hasBounds, const float box[4])
+void ExpandBounds(Mathematics::Vector4& bounds, bool& hasBounds, const Mathematics::Vector4& box)
 {
     bounds[0] = hasBounds ? std::min(bounds[0], box[0]) : box[0];
     bounds[1] = hasBounds ? std::min(bounds[1], box[1]) : box[1];
@@ -128,12 +128,12 @@ bool OceanClipSim::BeginFrame(float cameraX, float cameraZ)
 {
     // The union of every source's XZ bounds: outside it the bake writes the
     // default state, so a coarsest layer over it holds all authored water.
-    float bounds[4] = {};
+    Mathematics::Vector4 bounds;
     bool hasBounds = false;
     for (uint32 i = 0; i < m_Params.SourceCount; ++i)
     {
-        const float* rect = m_Params.Sources[i].OriginExtent;
-        const float box[4] = {rect[0] - rect[2], rect[1] - rect[3], rect[0] + rect[2], rect[1] + rect[3]};
+        const Mathematics::Vector4& rect = m_Params.Sources[i].OriginExtent;
+        const Mathematics::Vector4 box(rect[0] - rect[2], rect[1] - rect[3], rect[0] + rect[2], rect[1] + rect[3]);
         ExpandBounds(bounds, hasBounds, box);
     }
     for (uint32 i = 0; i < m_Params.PolygonCount; ++i)
@@ -187,42 +187,39 @@ void OceanClipSim::FillParams(OceanClipParamsGPU& out)
     out = m_Params;
 }
 
-OceanPreparedDispatch OceanClipSim::PrepareDispatch(
-    IDevice* device, BufferHandle paramsBuffer, uint64 paramsOffset) const
+void OceanClipSim::RecordDispatch(IDevice* device, CommandList* cl,
+                                  BufferHandle paramsBuffer, uint64 paramsOffset)
 {
-    if (!m_Ready || !device || !paramsBuffer.IsValid())
-        return {};
+    if (!m_Ready || !cl || !device || !paramsBuffer.IsValid())
+        return;
 
     const TextureHandle clip = m_Clip.GetTexture();
     const uint32 layers = m_LodCount;
 
-    PipelineHandle pipe = device->TryGetWarmComputePipeline(m_Pipe);
+    PipelineHandle pipe = device->GetOrCreateComputePipeline(m_Pipe);
     if (!pipe)
-        return {};
+        return;
 
     // Sync is graph-derived: the pass declares Write on the cascade, the first
     // declared reader restores ShaderReadOnly, and MarkOutput covers reader-less
     // frames. No manual barriers in here.
+
+    cl->SetPipeline(pipe);
 
     DescriptorSetDesc dsDesc{};
     dsDesc.layout = m_Layout;
     dsDesc.transient = true;
     dsDesc.debugName = "OceanClip_DS";
     DescriptorSetHandle ds = device->CreateDescriptorSet(dsDesc);
-    if (!ds.IsValid())
-        return {};
 
     device->UpdateBufferBinding(ds, 0, paramsBuffer, paramsOffset, sizeof(OceanClipParamsGPU));
     device->UpdateStorageImageBinding(ds, 1, clip);
 
-    const uint32 g8 = (m_Resolution + 7u) / 8u;
-    return {pipe, ds, g8, g8, layers, clip};
-}
+    cl->BindDescriptorSet(0, ds, pipe);
 
-void OceanClipSim::RecordDispatch(CommandList* cl, const OceanPreparedDispatch& dispatch)
-{
-    if (!RecordOceanPreparedDispatch(cl, dispatch))
-        return;
+    const uint32 g8 = (m_Resolution + 7u) / 8u;
+    cl->Dispatch(g8, g8, layers);
+
     m_DispatchDirty = false;
 }
 

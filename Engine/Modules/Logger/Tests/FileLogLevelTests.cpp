@@ -12,13 +12,13 @@
 
 #include "Logger/Logger.h"
 #include "Logger/RingBufferSink.h"
-#include "TestTempDir.h"
 
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -51,9 +51,11 @@ class FileLogLevelTest : public ::testing::Test
     {
         SetFileLogLevelEnv(nullptr);
 
-        m_Path = m_TempDir.Path() /
+        m_Path = std::filesystem::temp_directory_path() /
                  ("ge_file_log_level_" +
                   std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()) + ".log");
+        std::error_code ec;
+        std::filesystem::remove(m_Path, ec);
 
         Log::Config cfg;
         cfg.GlobalMinLevel = LogLevel::Debug;
@@ -72,6 +74,8 @@ class FileLogLevelTest : public ::testing::Test
         m_Ring = nullptr;
         Log::Shutdown();
         SetFileLogLevelEnv(nullptr);
+        std::error_code ec;
+        std::filesystem::remove(m_Path, ec);
     }
 
     void AttachFileSinkAtResolvedLevel()
@@ -93,7 +97,6 @@ class FileLogLevelTest : public ::testing::Test
         return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     }
 
-    GameEngine::TestUtils::ScopedTempDir m_TempDir{GameEngine::TestUtils::MakeUniqueTempDirectory("ge_file_log_level")};
     std::filesystem::path m_Path;
     RingBufferSink* m_Ring = nullptr;
 };
@@ -117,7 +120,7 @@ TEST_F(FileLogLevelTest, DefaultLeavesTheRingAtTheGlobalLevel)
 
     // The file sink's level is its own; the ring keeps every record the global
     // level admits, which is what live log queries read.
-    EXPECT_EQ(m_Ring->GetMessages(LogLevel::Debug).size(), 2u);
+    EXPECT_EQ(m_Ring->GetMessages({.MinLevel = LogLevel::Debug}).Messages.size(), 2u);
     EXPECT_EQ(Log::GetLogLevel(), LogLevel::Debug);
 }
 
@@ -217,6 +220,22 @@ TEST_F(FileLogLevelTest, UnrecognizedEnvironmentValueResolvesToInfo)
     // Handed back so the host can name it: a fallback nobody can see reads as
     // "the variable did nothing".
     EXPECT_EQ(resolved.unrecognizedValue, "verbose");
+}
+
+TEST_F(FileLogLevelTest, TheAnnouncementWarnsOfATypoThenNamesTheLevel)
+{
+    SetFileLogLevelEnv("verbose");
+    AnnounceFileSink("Test log file", "probe.log", ResolveFileLogLevel());
+    Log::Flush();
+
+    const std::vector<RingBufferSink::StoredMessage> messages = m_Ring->GetMessages({}).Messages;
+    ASSERT_EQ(messages.size(), 2u);
+    EXPECT_EQ(messages[0].Level, LogLevel::Warning);
+    EXPECT_NE(messages[0].Message.find("GE_LOG_FILE_LEVEL='verbose' names no log level"), std::string::npos)
+        << messages[0].Message;
+    EXPECT_EQ(messages[1].Level, LogLevel::Info);
+    EXPECT_NE(messages[1].Message.find("Test log file 'probe.log' (records INFO and above"), std::string::npos)
+        << messages[1].Message;
 }
 
 } // namespace

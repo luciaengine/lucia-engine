@@ -23,9 +23,9 @@ function(ge_add_shader_reflect_targets)
         message(STATUS "ShaderReflectCore already defined")
     else()
         add_library(ShaderReflectCore STATIC
-            ${_GE_RENDERING_ROOT}/Source/Materials/ShaderReflection.cpp
-            ${_GE_RENDERING_ROOT}/Source/Materials/ShaderMetaJson.cpp
-            ${_GE_RENDERING_ROOT}/Source/Materials/ShaderMetaValidation.cpp
+            ${_GE_RENDERING_ROOT}/Source/Materials/Shader/ShaderReflection.cpp
+            ${_GE_RENDERING_ROOT}/Source/Materials/Shader/ShaderMetaJson.cpp
+            ${_GE_RENDERING_ROOT}/Source/Materials/Shader/ShaderMetaValidation.cpp
             # The package container and its meta payload codec. Standard
             # library and ShaderMeta.h only, which is what lets the cook tool
             # and the engine share one reader and one writer.

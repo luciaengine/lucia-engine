@@ -1,4 +1,3 @@
-#include "Audio/AudioTypes.h"
 // The engine's lifecycle as a page drives it: ge_create, ge_tick, ge_update_assets, ge_resize
 // and ge_shutdown (Apps/WebLibrary/ts/src/abi.ts).
 
@@ -11,6 +10,7 @@
 #include "WebPackReader.h"
 
 #include "Assets/AssetManager.h"
+#include "Audio/AudioTypes.h"
 #include "Core/Engine.h"
 #include "Core/EngineLoggerBridge.h"
 #include "Logger/Logger.h"
@@ -166,9 +166,9 @@ ApplicationConfig MakeApplicationConfig()
 {
     ApplicationConfig config;
     config.Name = "Web page";
-    config.AudioOutput = Audio::AudioOutput::Device;
     // The canvas is the window; its CSS size, not this, sizes the drawing buffer.
     config.Fullscreen = false;
+    config.AudioOutput = Audio::AudioOutput::Device;
     config.AssetDirectory = std::string(kContentRoot) + "Assets";
     // The module's file system is memory: runtime caches stay inside it.
     config.WorkspaceDirectory = std::string(kContentRoot) + ".workspace";

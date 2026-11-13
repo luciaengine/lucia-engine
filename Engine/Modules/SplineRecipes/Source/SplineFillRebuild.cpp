@@ -6,7 +6,7 @@
 #include "SplineLayout/TileLayout.h"
 #include "Components/Terrain/Terrain.h"
 #include "ECS/World.h"
-#include "TerrainECS/PlanarHeightQuery.h"
+#include "TerrainECS/SurfaceHeightQuery.h"
 #include "TerrainECS/TerrainModifierSystem.h"
 #include "TerrainECS/TerrainService.h"
 
@@ -34,6 +34,17 @@ constexpr uint32 kFillChunkCells = 128u;
 // whether or not the camera has ever been near it.
 constexpr float32 kOutsideFootprintHeight = 1.0e9f;
 
+// The tiled data of the terrain ResolveSurfaceHeightQuery reads at `point` (FindSurfaceHeightTerrain,
+// when it is planar and tiled), or null.
+const TerrainECS::TiledTerrainData* FindQueriedTiledTerrain(ECS::World& world, const Mathematics::Vector3& point)
+{
+    TerrainECS::TerrainService* service = TerrainECS::TerrainService::TryGet();
+    const Components::Terrain* terrain = TerrainECS::FindSurfaceHeightTerrain(world, point).Terrain;
+    if (!service || !terrain || terrain->Domain == Components::TerrainDomain::Spherical)
+        return nullptr;
+    return service->GetTiledTerrainData(
+        TerrainECS::TiledTerrainHandle{terrain->TiledTerrainHandle, terrain->TiledTerrainGeneration});
+}
 
 } // namespace
 
@@ -59,8 +70,9 @@ WaterFillRun BuildWaterFillRun(ECS::World& world,
         maxZ = std::max(maxZ, station.Position.z);
     }
     // The terrain under the center of the run's XZ bounds is the ground the whole run fills against.
-    const TerrainECS::PlanarHeightQuery terrain = TerrainECS::ResolvePlanarHeightQuery(world);
-    const TerrainECS::TiledTerrainData* tiled = terrain.Tiled;
+    const Mathematics::Vector3 runCenter((minX + maxX) * 0.5f, worldStations.front().Position.y, (minZ + maxZ) * 0.5f);
+    const TerrainECS::SurfaceHeightQuery terrain = TerrainECS::ResolveSurfaceHeightQuery(world, runCenter);
+    const TerrainECS::TiledTerrainData* tiled = terrain.IsValid() ? FindQueriedTiledTerrain(world, runCenter) : nullptr;
     // A tiled terrain's grid sits on its TILE lattice, the lattice ComposeTiledGroundBlock addresses. A
     // cooked height store can sit on another lattice (the one SampleHeight reads), so the fill aligns
     // to the tiles it composes, not to the query's lattice.
@@ -132,7 +144,7 @@ WaterFillRun BuildWaterFillRun(ECS::World& world,
     // with no resampling.
     std::vector<float32> composed;
     const bool composedWindow =
-        tileLattice && modifierSystem->ComposeTiledGroundBlock(*tiled, terrain.HeightScale, terrain.OriginY,
+        tileLattice && modifierSystem->ComposeTiledGroundBlock(*tiled, terrain.HeightScale(), terrain.OriginY(),
                                                                firstX, firstZ, grid.CountX, grid.CountZ, composed);
 
     std::vector<float32> heights(static_cast<size_t>(grid.CountX) * grid.CountZ, 0.0f);
@@ -150,14 +162,17 @@ WaterFillRun BuildWaterFillRun(ECS::World& world,
             }
             if (composedWindow)
             {
-                heights[index] = terrain.OriginY + composed[index] * terrain.HeightScale;
+                heights[index] = terrain.OriginY() + composed[index] * terrain.HeightScale();
                 continue;
             }
             // A fill floods the ground as drawn up close, so it takes only the finest height
             // (RequireFinest). A corner without it (a page not on the CPU yet, or a height store
             // still cooking) bounds the surface like a bank, as the edge of the world does.
-            float32 sample = 0.0f;
-            heights[index] = terrain.SampleHeight(worldX, worldZ, sample) ? sample : kOutsideFootprintHeight;
+            TerrainECS::SurfaceHeightSample sample;
+            heights[index] = terrain.SampleHeight(Mathematics::Vector3(worldX, 0.0f, worldZ),
+                                                  TerrainECS::SurfaceHeightPolicy::RequireFinest, sample)
+                                 ? sample.Height
+                                 : kOutsideFootprintHeight;
         }
     }
     grid.Heights = heights;
@@ -165,7 +180,7 @@ WaterFillRun BuildWaterFillRun(ECS::World& world,
     SG::SplineFillParams params;
     params.MaxHalfWidth = reach;
     params.EdgeDrop = std::max(0.0f, recipe.EdgeDrop);
-    params.SeaLevelFloor = recipe.SeaLevelFloor;
+    params.FloorHeight = recipe.FloorHeight;
     // MaxWetCorners is left at the field's own default ON PURPOSE. Passing the
     // WINDOW budget here aliases the two guards, and since wet corners are a
     // subset of the window the water guard could then never fire.

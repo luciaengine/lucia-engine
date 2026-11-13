@@ -38,12 +38,20 @@ public:
     /// The Allow button while the call waits for the user's answer; null otherwise.
     UIElement* AnswerFocus() const;
     /// Stacks the row for a narrow panel: the summary under the action, the undo state and
-    /// Details beside it when they fit and on the next line when they do not, without the
-    /// wide layout's width cap.
+    /// Details after its last piece when they fit beside it and on the next line when they
+    /// do not, without the wide layout's width cap.
     void SetStacked(bool stacked);
     /// Sizes the row's inline image to the row's width (AgentCallImageView::Fit). Returns true
     /// while its size still moved.
     bool FitImage();
+    /// Cuts the reason a call did not run to at most two lines at the row's width, after a whole
+    /// word, with an ellipsis (Details holds it whole), measured as the label's layout measures
+    /// it; runs again only when the width changed. Returns true when the reason's text changed.
+    bool FitReason();
+    /// Reserves the Details toggle's width for the wider of "Details" and "Hide details", so
+    /// opening Details neither moves the trail nor re-cuts the reason. Returns true when the
+    /// width was set.
+    bool FitDetailsToggle();
 
 private:
     void Answer(AssistantAnswer answer);
@@ -53,6 +61,14 @@ private:
     void ShowDetails(const std::vector<AgentCallPieces>& lines);
     void ShowMedia(const AgentCallRowModel& model);
     void ShowResources(const std::vector<std::string>& references);
+    void ShowSummary(const AgentCallRowModel& model);
+    /// Puts the trail after the summary's last piece in a stacked row, at the line's end otherwise.
+    void PlaceTrail();
+    /// The width the reason wraps at: the summary's, less the pieces before it in its unit.
+    float ReasonWrapWidth() const;
+    /// The reason's first `bytes` cut after a whole word or token, with an ellipsis; the whole
+    /// reason when `bytes` covers it.
+    std::string ReasonCut(size_t bytes) const;
 
     std::string m_IdSuffix;
     AnswerHandler m_OnAnswer;
@@ -79,6 +95,12 @@ private:
     bool m_DetailsOpen = false;
     /// The Details lines changed while closed; they are built when Details opens.
     bool m_DetailsStale = true;
+    bool m_Stacked = false;
+    /// The summary's last words when the call did not run (its reason); null otherwise.
+    Label* m_Reason = nullptr;
+    std::string m_FullReason;
+    /// The width the reason was last fitted at; negative before the first fit.
+    float m_ReasonFitWidth = -1.0f;
     /// What the elements show now; nullopt before the first Show().
     std::optional<AgentCallRowModel> m_Shown;
 };

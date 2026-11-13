@@ -1,6 +1,6 @@
 #include "Automation/EditorSmokeHooks.h"
 
-#include "Assets/PolyhavenDownloadManager.h"
+#include "Assets/Polyhaven/PolyhavenDownloadManager.h"
 
 #include <cstdlib>
 #include <string>

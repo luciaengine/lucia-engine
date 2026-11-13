@@ -8,7 +8,7 @@
 //     assertions run against a real VkDevice and skip when none can be created.
 
 #include "Source/Vulkan/VulkanBufferResidency.h"
-#include "Source/Vulkan/VulkanDevice.h"
+#include "Source/Vulkan/VulkanDevice/VulkanDevice.h"
 
 #include <gtest/gtest.h>
 

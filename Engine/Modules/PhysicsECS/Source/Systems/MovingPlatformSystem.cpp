@@ -33,9 +33,9 @@ void StopPlatform(Physics::PhysicsWorld& physics, Physics::BodyHandle body)
 // factor exists, and speed becomes an approximation that varies along the path.
 float32 ArcLengthScale(const Components::WorldTransform& xf)
 {
-    const float32 sx = std::sqrt(xf.matrix[0] * xf.matrix[0] + xf.matrix[1] * xf.matrix[1] + xf.matrix[2] * xf.matrix[2]);
-    const float32 sy = std::sqrt(xf.matrix[4] * xf.matrix[4] + xf.matrix[5] * xf.matrix[5] + xf.matrix[6] * xf.matrix[6]);
-    const float32 sz = std::sqrt(xf.matrix[8] * xf.matrix[8] + xf.matrix[9] * xf.matrix[9] + xf.matrix[10] * xf.matrix[10]);
+    const float32 sx = glm::length(xf.Basis[0]);
+    const float32 sy = glm::length(xf.Basis[1]);
+    const float32 sz = glm::length(xf.Basis[2]);
     return (sx + sy + sz) / 3.0f;
 }
 } // namespace
@@ -104,11 +104,9 @@ void MovingPlatformSystem::Update(ECS::World& world, float32 deltaTime)
         const float32 localDistance = (scale > 0.0f) ? (platform.distance / scale) : 0.0f;
         const Mathematics::Vector3 localPos = Spline::EvaluateAtDistance(*data, localDistance).Position;
 
-        Mathematics::Matrix4x4 pathToWorld;
-        std::memcpy(pathToWorld.Data(), pathXf->matrix, sizeof(pathXf->matrix));
-        const Mathematics::Vector3 worldPos = pathToWorld.TransformPoint(localPos);
+        const Mathematics::WorldPosition worldPos = pathXf->Position + Mathematics::Vector3(pathXf->Basis.GetGLM() * localPos.GetGLM());
 
-        if (!std::isfinite(worldPos.x) || !std::isfinite(worldPos.y) || !std::isfinite(worldPos.z))
+        if (!std::isfinite(worldPos.X) || !std::isfinite(worldPos.Y) || !std::isfinite(worldPos.Z))
         {
             StopPlatform(*pw, body.body);
             return;
@@ -120,7 +118,7 @@ void MovingPlatformSystem::Update(ECS::World& world, float32 deltaTime)
         // them; spinning the deck would need the rider's own contact point to
         // pick up the tangential term, which GetPointVelocity exposes.
         Physics::Transform target = pw->GetBodyTransform(body.body);
-        target.position = Physics::Vector3(worldPos.x, worldPos.y, worldPos.z);
+        target.position = worldPos;
 
         pw->MoveKinematic(body.body, target, deltaTime);
     });

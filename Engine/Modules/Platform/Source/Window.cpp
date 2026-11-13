@@ -11,6 +11,7 @@
 #include <GLFW/glfw3.h>
 
 #if defined(__EMSCRIPTEN__)
+#include <emscripten/em_js.h>
 #include <emscripten/emscripten.h>
 #include <emscripten/html5.h>
 #endif
@@ -55,9 +56,40 @@ extern "C" {
     void GE_MacOS_RemoveTitleBarRightClickMonitor(void* monitor);
 }
 #elif defined(__linux__)
+#include "WebView/WebViewHost_Linux.h"
+
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 #include <X11/cursorfont.h>
+#endif
+
+#if defined(__EMSCRIPTEN__)
+// The JS side of the canvas window. Both run on the calling thread, which is
+// the main runtime thread: the Window API is main-thread only.
+// clang-format off
+EM_JS(void, GeWebSetCanvasCursor, (const char* css), {
+    var canvas = (typeof Module !== "undefined" && Module["canvas"])
+                     ? Module["canvas"]
+                     : document.getElementById("canvas");
+    if (canvas)
+        canvas.style.cursor = UTF8ToString(css);
+});
+
+// emscripten's GLFW sizes the drawing buffer by GLFW.getDevicePixelRatio(), on every
+// size change and on a devicePixelRatio change; the page's ratio replaces it.
+EM_JS(void, GeWebSetGlfwPixelRatio, (double ratio), {
+    GLFW.geRequestedPixelRatio = ratio;
+    if (!GLFW.geBrowserDevicePixelRatio)
+    {
+        GLFW.geBrowserDevicePixelRatio = GLFW.getDevicePixelRatio;
+        GLFW.getDevicePixelRatio = function() {
+            return GLFW.geRequestedPixelRatio > 0 ? GLFW.geRequestedPixelRatio
+                                                  : GLFW.geBrowserDevicePixelRatio();
+        };
+    }
+    GLFW.onDevicePixelRatioChange();
+});
+// clang-format on
 #endif
 
 namespace {
@@ -107,19 +139,6 @@ namespace {
         default:
             return "default";
         }
-    }
-
-    void ApplyWebCanvasCursor(const char* css)
-    {
-        MAIN_THREAD_EM_ASM(
-            {
-                var canvas = (typeof Module !== 'undefined' && Module['canvas'])
-                                 ? Module['canvas']
-                                 : document.getElementById('canvas');
-                if (canvas)
-                    canvas.style.cursor = UTF8ToString($0);
-            },
-            css);
     }
 
     // The page owns the window geometry on this target: its CSS sizes the
@@ -258,6 +277,25 @@ inline void ApplyExecutableIconToWindow(GLFWwindow* handle)
     SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(hIcon));
     SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hIcon));
 }
+// Measures the frame of a window that is not fullscreen or minimized: each side of the outer
+// rect minus the client rect. GLFW assumes a standard caption, but a custom title bar puts the
+// caption in the client rect.
+bool MeasureWindowFrame(GLFWwindow* handle, HWND& outWindow, RECT& outFrame)
+{
+    if (glfwGetWindowMonitor(handle))
+        return false;
+    outWindow = glfwGetWin32Window(handle);
+    if (!outWindow || IsIconic(outWindow))
+        return false;
+    RECT outer{};
+    GetWindowRect(outWindow, &outer);
+    RECT client{};
+    GetClientRect(outWindow, &client);
+    MapWindowPoints(outWindow, nullptr, reinterpret_cast<POINT*>(&client), 2);
+    outFrame = {client.left - outer.left, client.top - outer.top, outer.right - client.right,
+                outer.bottom - client.bottom};
+    return true;
+}
 } // namespace
 #endif
 
@@ -361,7 +399,24 @@ bool Window::Create(const WindowDesc& desc)
     glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
 #endif
 
-    m_Handle = glfwCreateWindow(desc.Width, desc.Height, desc.Title.c_str(), nullptr, desc.Share);
+    int createWidth = desc.Width;
+    int createHeight = desc.Height;
+#if defined(__EMSCRIPTEN__)
+    // The requested size is a desktop concept: here the page's CSS sizes the
+    // canvas, and the window starts at that size. Created at the desktop
+    // default (1280 x 720) instead, GLFW pins the canvas to 1280 CSS px, which
+    // widens a phone's layout viewport to 1280 before the size can be read.
+    {
+        const int cssWidth = EM_ASM_INT({ return Module['canvas'] ? Module['canvas'].clientWidth : 0; });
+        const int cssHeight = EM_ASM_INT({ return Module['canvas'] ? Module['canvas'].clientHeight : 0; });
+        if (cssWidth > 0 && cssHeight > 0)
+        {
+            createWidth = cssWidth;
+            createHeight = cssHeight;
+        }
+    }
+#endif
+    m_Handle = glfwCreateWindow(createWidth, createHeight, desc.Title.c_str(), nullptr, desc.Share);
     if (!m_Handle)
     {
 #if defined(__EMSCRIPTEN__)
@@ -372,8 +427,8 @@ bool Window::Create(const WindowDesc& desc)
         Logger::Log::Error(
             "Window::Create: glfwCreateWindow failed for '{}' ({}x{}, hidden={}, errorCode={}, error='{}')",
             desc.Title,
-            desc.Width,
-            desc.Height,
+            createWidth,
+            createHeight,
             createHidden ? "true" : "false",
             glfwErrorCode,
             glfwError ? glfwError : "");
@@ -694,6 +749,16 @@ void Window::SetWindowSize(int width, int height)
 {
     if (!m_Handle)
         return;
+#if defined(_WIN32)
+    HWND hwnd = nullptr;
+    RECT frame{};
+    if (MeasureWindowFrame(m_Handle, hwnd, frame))
+    {
+        SetWindowPos(hwnd, nullptr, 0, 0, width + frame.left + frame.right, height + frame.top + frame.bottom,
+                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        return;
+    }
+#endif
     glfwSetWindowSize(m_Handle, width, height);
 }
 
@@ -776,8 +841,18 @@ void Window::GetPosition(int& outX, int& outY) const
 
 void Window::SetPosition(int x, int y)
 {
-    if (m_Handle)
-        glfwSetWindowPos(m_Handle, x, y);
+    if (!m_Handle)
+        return;
+#if defined(_WIN32)
+    HWND hwnd = nullptr;
+    RECT frame{};
+    if (MeasureWindowFrame(m_Handle, hwnd, frame))
+    {
+        SetWindowPos(hwnd, nullptr, x - frame.left, y - frame.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        return;
+    }
+#endif
+    glfwSetWindowPos(m_Handle, x, y);
 }
 
 void Window::GetFrameSize(int& left, int& top, int& right, int& bottom) const
@@ -882,22 +957,7 @@ void Window::SetWebPixelRatio(double ratio)
 {
     if (!m_Handle)
         return;
-    // emscripten's GLFW sizes the drawing buffer by GLFW.getDevicePixelRatio(), on every
-    // size change and on a devicePixelRatio change; the page's ratio replaces it.
-    EM_ASM(
-        {
-            GLFW.geRequestedPixelRatio = $0;
-            if (!GLFW.geBrowserDevicePixelRatio)
-            {
-                GLFW.geBrowserDevicePixelRatio = GLFW.getDevicePixelRatio;
-                GLFW.getDevicePixelRatio = function() {
-                    return GLFW.geRequestedPixelRatio > 0 ? GLFW.geRequestedPixelRatio
-                                                          : GLFW.geBrowserDevicePixelRatio();
-                };
-            }
-            GLFW.onDevicePixelRatioChange();
-        },
-        ratio);
+    GeWebSetGlfwPixelRatio(ratio);
 }
 
 void Window::NotifyWebFullscreenChanged(bool isFullscreen)
@@ -964,6 +1024,9 @@ void Window::PollEvents()
     OnDisplayConfigurationChanged();
 #endif
     glfwPollEvents();
+#if defined(__linux__)
+    PumpWebViewEvents();
+#endif
     if (s_DisplayConfigurationChanged)
     {
         s_DisplayConfigurationChanged = false;
@@ -1608,6 +1671,10 @@ void Window::MouseButtonThunk(GLFWwindow* win, int button, int action, int mods)
                 self->m_MouseMove(static_cast<float>(cx), static_cast<float>(cy));
         }
 #endif
+#if defined(__linux__)
+        if (action == GLFW_PRESS)
+            ReturnWebViewFocus(win);
+#endif
         if (self->m_MouseButton)
             self->m_MouseButton(button, action == GLFW_PRESS, mods);
     }
@@ -1684,7 +1751,7 @@ void Window::SetCursor(CursorType type)
         return;
 
 #if defined(__EMSCRIPTEN__)
-    ApplyWebCanvasCursor(WebCanvasCssCursor(type));
+    GeWebSetCanvasCursor(WebCanvasCssCursor(type));
     return;
 #endif
 
@@ -1738,7 +1805,7 @@ void Window::ResetCursor()
         return;
 
 #if defined(__EMSCRIPTEN__)
-    ApplyWebCanvasCursor("default");
+    GeWebSetCanvasCursor("default");
     return;
 #endif
 

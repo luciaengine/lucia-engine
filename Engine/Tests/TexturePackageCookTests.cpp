@@ -207,7 +207,7 @@ protected:
             if (const auto found = Meta.find(key.Name); found != Meta.end())
                 record.kv[key.Name] = found->second;
         }
-        AssetDatabase::AssetStore_TextJsonl store;
+        AssetDatabase::AssetStore_TextJsonl store{nullptr};
         ASSERT_TRUE(store.UpsertAsset(record, &Error)) << Error;
         ASSERT_TRUE(store.SaveToFile(MountRoot / "Assets" / ".assetmanifest", &Error)) << Error;
         Manifest.entries = {{Id, AssetType::Texture, source,
@@ -233,7 +233,7 @@ protected:
         const auto usage = usages.find(Id);
         StageTextureImportMetadata(Manager.GetRegistry(), Manifest.entries[0],
             usage == usages.end() ? TextureCookUsage::Auto : usage->second, record);
-        AssetDatabase::AssetStore_TextJsonl store;
+        AssetDatabase::AssetStore_TextJsonl store{nullptr};
         ASSERT_TRUE(store.UpsertAsset(record, &Error)) << Error;
         ASSERT_TRUE(store.SaveToFile(MountRoot / "Assets" / ".assetmanifest", &Error)) << Error;
         // Source registry remains at its original metadata until the Player remount.
@@ -246,7 +246,7 @@ protected:
     bool Bake()
     {
         return StagePackagedTextureCooks(Temp.Path(), Manifest, Manager.GetRegistry(),
-            /*encodeWorkers=*/nullptr,
+            /*encodeWorkers=*/nullptr, /*manifestParsePool=*/nullptr,
             [this]() { return Cancel->load(); }, Stats, Error);
     }
     fs::path Artifact(TextureCookOutput output, uint8 red = 80) const
@@ -281,7 +281,7 @@ TEST_F(TexturePackageCookTest, ColdMaterialExportInfersColorWithoutViewingOrMuta
     ASSERT_TRUE(Bake()) << Error;
     EXPECT_EQ(Stats.UnclassifiedTextures, 0u);
     EXPECT_TRUE(fs::exists(Artifact(TextureCookOutput::BC7)));
-    AssetDatabase::AssetStore_TextJsonl store;
+    AssetDatabase::AssetStore_TextJsonl store{nullptr};
     ASSERT_TRUE(store.LoadFromFile(MountRoot / "Assets" / ".assetmanifest", &Error));
     AssetDatabase::AssetRecord record;
     ASSERT_TRUE(store.TryGetAsset(Id, record));
@@ -557,7 +557,7 @@ TEST_F(TexturePackageCookTest, UsesStagedBytesAndMetadataInEachMountNamespace)
     ASSERT_TRUE(Bake()) << Error;
     EXPECT_TRUE(fs::exists(Artifact(TextureCookOutput::Uncompressed)));
     EXPECT_FALSE(fs::exists(Temp.Path() / "Tex"));
-    AssetDatabase::AssetStore_TextJsonl store;
+    AssetDatabase::AssetStore_TextJsonl store{nullptr};
     ASSERT_TRUE(store.LoadFromFile(MountRoot / "Assets" / ".assetmanifest", &Error));
     AssetDatabase::AssetRecord record;
     ASSERT_TRUE(store.TryGetAsset(Id, record));
@@ -574,7 +574,7 @@ TEST_F(TexturePackageCookTest, FreshStagingReusesValidatedAuthoringCacheWithoutR
     fs::create_directories(authoring / "Assets");
     fs::create_directories(authoring / "Tex");
     fs::copy_file(stagedArtifact, authoring / "Tex" / stagedArtifact.filename());
-    AssetDatabase::AssetStore_TextJsonl store;
+    AssetDatabase::AssetStore_TextJsonl store{nullptr};
     ASSERT_TRUE(store.LoadFromFile(MountRoot / "Assets" / ".assetmanifest", &Error));
     AssetDatabase::AssetRecord record;
     ASSERT_TRUE(store.TryGetAsset(Id, record));
@@ -612,15 +612,15 @@ TEST_F(TexturePackageCookTest, RejectsMismatchedStagedIdentityAndBakesTheCookByt
     for (size_t i = 18; i < bytes.size(); ++i) bytes[i] = static_cast<uint8>((i * 73 + i / 9) % 256);
     WriteBytes(MountRoot / "Assets" / "Leaves.tga", bytes);
     ASSERT_TRUE(StagePackagedTextureCooks(Temp.Path(), Manifest, Manager.GetRegistry(),
-        /*encodeWorkers=*/nullptr, {}, Stats, Error)) << Error;
+        /*encodeWorkers=*/nullptr, /*manifestParsePool=*/nullptr, {}, Stats, Error)) << Error;
     const auto name = TextureCookArtifactName(Id, ComputeTextureCookSourceHash(bytes.data(), bytes.size()),
                                               Inputs(Meta), TextureCookOutput::BC7);
-    Vector<uint8> actual;
+    ByteBuffer actual;
     ASSERT_TRUE(ReadFileBytesShared(MountRoot / "Tex" / name, actual));
     std::vector<uint8> expected;
     ASSERT_TRUE(CookTexture(bytes.data(), bytes.size(), ".tga", Inputs(Meta), TextureCookOutput::BC7,
                            expected, Error)) << Error;
-    EXPECT_EQ(actual, expected); // The export bakes the editor cook's bytes under the editor cook's name.
+    EXPECT_EQ(std::vector<uint8>(actual.begin(), actual.end()), expected); // The export bakes the editor cook's bytes under the editor cook's name.
 }
 
 // A package texture loads only through its packaged payload. One without payload
@@ -746,7 +746,7 @@ TEST_P(TexturePackageCoverageTest, StagedCoverageKeepsExactCutoffAndLoadsBakedMi
     Meta[kTextureAlphaCoverageMetaKey] = "1";
     Meta[kTextureAlphaCutoffMetaKey] = TextureAlphaCutoffMetaValue(cutoff);
     StageSource(GetParam());
-    AssetDatabase::AssetStore_TextJsonl store;
+    AssetDatabase::AssetStore_TextJsonl store{nullptr};
     ASSERT_TRUE(store.LoadFromFile(MountRoot / "Assets" / ".assetmanifest", &Error));
     AssetDatabase::AssetRecord staged;
     ASSERT_TRUE(store.TryGetAsset(Id, staged));
@@ -763,7 +763,7 @@ TEST_P(TexturePackageCoverageTest, StagedCoverageKeepsExactCutoffAndLoadsBakedMi
     ASSERT_TRUE(Bake()) << Error;
     const auto artifact = Artifact(TextureCookOutput::Uncompressed);
     EXPECT_NE(artifact.filename().string(), ordinaryName);
-    Vector<uint8> baked;
+    ByteBuffer baked;
     ASSERT_TRUE(ReadFileBytesShared(artifact, baked));
     const auto modified = fs::last_write_time(artifact);
     Mount();
@@ -850,7 +850,7 @@ TEST_F(TexturePackageCookTest, MetalDeviceAdoptsTheShippedBc7Artifact)
     ASSERT_FALSE(bc7.empty());
     WriteBytes(Artifact(TextureCookOutput::BC7), bc7);
     const fs::path manifest = MountRoot / "Assets" / ".assetmanifest";
-    AssetDatabase::AssetStore_TextJsonl store;
+    AssetDatabase::AssetStore_TextJsonl store{nullptr};
     ASSERT_TRUE(store.LoadFromFile(manifest, &Error)) << Error;
     ASSERT_TRUE(store.SetKeyValue(Id, kTexturePackagedMetaKey,
                                   Artifact(TextureCookOutput::BC7).filename().string(), &Error)) << Error;
@@ -942,7 +942,7 @@ TEST_F(TexturePackageCookTest, MissingOrCorruptHdrBakePreservesFloatRangeForFile
     WriteBytes(path, source);
     AssetDatabase::AssetRecord record;
     record.guid = Id; record.type = AssetType::Texture; record.path = "Light.hdr";
-    AssetDatabase::AssetStore_TextJsonl store;
+    AssetDatabase::AssetStore_TextJsonl store{nullptr};
     ASSERT_TRUE(store.UpsertAsset(record, &Error));
     ASSERT_TRUE(store.SaveToFile(MountRoot / "Assets" / ".assetmanifest", &Error));
     Mount();
@@ -998,7 +998,7 @@ TEST_F(TexturePackageCookTest, SourceFreePackageKeepsImplicitExplicitAndReferrer
     // A project file has higher implicit priority; references authored in art still prefer art.
     const auto projectRoot = Temp.Path() / "Project" / "Assets";
     WriteBytes(projectRoot / "Leaves.tga", SmallTga(90));
-    AssetDatabase::AssetStore_TextJsonl projectStore;
+    AssetDatabase::AssetStore_TextJsonl projectStore{nullptr};
     AssetDatabase::AssetRecord projectRecord;
     projectRecord.guid = GUID::Derive(Id, "project");
     projectRecord.path = "Leaves.tga";
@@ -1064,7 +1064,7 @@ TEST_F(TexturePackageCookTest, DamagedPayloadIsRefusedWithoutSourceOrRecook)
 TEST_F(TexturePackageCookTest, PackagedPayloadFilenameCannotEscapeTheMount)
 {
     ASSERT_TRUE(Bake()) << Error;
-    AssetDatabase::AssetStore_TextJsonl store;
+    AssetDatabase::AssetStore_TextJsonl store{nullptr};
     const auto manifest = MountRoot / "Assets" / ".assetmanifest";
     ASSERT_TRUE(store.LoadFromFile(manifest, &Error));
     ASSERT_TRUE(store.SetKeyValue(Id, kTexturePackagedMetaKey, "../outside.ktx2", &Error));

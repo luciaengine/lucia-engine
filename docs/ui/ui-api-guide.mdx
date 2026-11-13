@@ -1,0 +1,492 @@
+---
+title: UI API guide
+description: Declare UI with XML or typed C++, style it with CSS, register controls, and update properties at runtime.
+sidebar:
+  order: 1
+---
+
+This guide covers how to build UI with XML/CSS and C++, how to register controls,
+and how to update styles and properties at runtime.
+
+## Quick start
+
+```cpp title="Load a layout and render it each frame"
+#include "UI/UIManager.h"
+#include "UI/UITargetSpace.h"
+
+GameEngine::UIManager ui(device, assetManager);
+ui.LoadLayoutFromFile("Assets/UI/MyLayout.xml");
+ui.AttachStyleFromFile("Assets/UI/MyTheme.css");
+
+while (running) {
+    ui.Update(dt);
+    // The host begins this frame and supplies its target and target color space.
+    if (!ui.RenderRG(frame, target, targetSpace)) {
+        // No pass was declared: skip encoding/presenting this target.
+        continue;
+    }
+}
+```
+
+`frame` is a `Rendering::RenderGraph::RGFrame`, `target` is a texture from that frame,
+and `targetSpace` is the host's explicit `UI::UITargetSpace` for the attachment.
+The three-argument overload clears the target. To composite a HUD over existing
+scene content, pass `Rendering::RenderGraph::RGLoadOp::Load` as the fourth argument.
+The host executes the completed graph after declaration. Do not retain frame texture IDs.
+
+Code-declared root:
+
+```cpp title="Declare a root in C++"
+#include "UI/ElementBuilder.h"
+
+auto root = GameEngine::UI::Element<GameEngine::UIElement>().Id("Root").Class("root").Build();
+if (root)
+    ui.SetRoot(std::move(root));
+```
+
+## Loading layouts and styles
+
+- File-based: `LoadLayoutFromFile`, `AttachStyleFromFile` (and async variants).
+- Asset-based: `LoadLayoutFromAsset`, `AttachStyleFromAsset`.
+- Subtree styles: `AttachStyleToSubtreeFromAsset` / `AttachStyleToSubtreeFromAssetPath`.
+
+## Authoring layouts (XML)
+
+Tag names map to registered controls (see `UI/Controls` and `UI/Registration`).
+
+Common attributes:
+- `id` (or `name`) -> `UIElement::SetId`
+- `class` -> `AddClass` for each token
+- `style` -> parsed into the element's authored style, replaced when the layout reloads; where it and `Style()` declare the same property, `Style()` wins (see [Element style](#element-style-code))
+
+Example:
+
+```xml title="A settings panel layout"
+<UIElement id="SettingsPanel" class="panel">
+  <Label text="Audio" />
+  <Checkbox id="MusicEnabled" checked="true" text="Music" />
+  <Slider id="Volume" min="0" max="1" value="0.8" step="0.01" />
+</UIElement>
+```
+
+Notes:
+- Controls that register `Text()` bindings can use inner text as well as a `text`
+  attribute (e.g. `<Button>Ok</Button>`).
+- Unknown tags fall back to `UIElement` with a warning.
+
+## Styling (CSS)
+
+Every UI manager loads the UI module's default stylesheet under your sheets. It gives unstyled
+engine controls a visible track, thumb, knob, and box, and any rule of yours wins over it. Its
+color properties, including the slider track's `--slider-track-fill`, `--slider-track`, and
+`--slider-tick`, are listed in [UI control defaults](./ui-control-defaults.mdx).
+
+`transform` and `transform-origin` rotate, scale, move and skew an element and its
+children at paint time, without changing layout; see [Transforms](./transform.mdx).
+
+Selectors supported include tag, `.class`, `#id`, `[attr=value]`, and pseudo-classes
+like `:hover`, `:active`, `:focus`, `:focus-visible`, and `:checked`.
+
+`:focus-visible` matches keyboard focus only: focus that Tab moved, or that your code moved
+(`UIManager::FocusElement`, `SetFocusById`) while a key event was being dispatched, such as a
+shortcut that takes the user to a button. Focus moved by a click matches `:focus` alone, so
+use `:focus-visible` for focus rings.
+
+Attribute selectors read authored attributes stored on the element. `id` and `name`
+are special-cased to `UIElement::GetId()`. Attribute names are normalized to
+lowercase and matched case-insensitively. Prefer lowercase attribute names in
+XML and CSS for consistency.
+
+Custom properties (`--vars`) can be read from code:
+
+```cpp title="Read custom properties from code"
+const auto* style = el.GetResolvedStyle();
+if (style) {
+    float pad = style->GetCustomNumber("--pad", 0.0f);
+    uint32_t accent = style->GetCustomColor("--accent", 0xFF000000u);
+}
+```
+
+For hot paths, pre-hash with `StringId`:
+
+```cpp title="Pre-hash a custom property name"
+using namespace GameEngine;
+constexpr StringId kPad = "--pad"_sid;
+float pad = style->GetCustomNumber(kPad, 0.0f);
+```
+
+### Borders
+
+Each side of a border has its own width and color: `border-top`, `border-right`,
+`border-bottom` and `border-left`, their `-width` and `-color` longhands, and
+`border-width`, which takes one to four values. A side with a width paints in its own
+color, and a side with width 0 paints nothing. A border color that no rule sets is
+transparent.
+
+`border-style` is one value for the whole box: `solid`, `dashed`, `dotted` or `none`.
+A per-side `none` or `hidden` (`border-top: none`) removes that side. A per-side
+`dashed` or `dotted` (`border-left: 3px dashed`) does not change its side: the side
+paints in the box's `border-style`, and the UI logs a warning once per declaration.
+Write `border-style: dashed` to dash every side.
+
+Where two sides of different colors meet at a square corner, the corner splits on
+the line from its outer point to its inner point, as in a browser. A 1px top beside a
+3px left gives most of the corner to the left side.
+
+Where two sides of different colors meet at a rounded corner, each side runs around
+the corner and narrows to nothing. The color that most sides share paints first, and
+the other sides paint over it in the order top, right, bottom, left. The colors do not
+split on the corner's diagonal as they do in a browser. A 1px top beside a 3px left on a
+4px radius gives the first 3 pixels of the top's row to the left side at each left
+corner. Set `border-radius: 0` where the split must be exact. The UI logs a warning
+once per class list that has such a corner, or once per id for an element without a
+class. A transparent side does not count: the side next to it keeps the whole corner.
+
+Where a translucent color meets another color at a corner, square or rounded, both
+colors paint the corner, so the corner differs from both sides. Use opaque colors where
+two border colors meet. An element `opacity` below 1, as in a fade, has the same effect
+on each side in a color that most sides do not share: the background shows through
+that side, and its corners differ from both sides.
+
+Dots and dashes take the color of their side, and dashes run only along sides that
+have a width. Every dot and dash uses the width of the widest side.
+
+```css title="An ember bar on the left of a focused menu entry"
+.menu-entry { border-width: 0 0 0 3px; border-color: rgba(224, 138, 42, 0); }
+.menu-entry:focus { border-left-color: #e08a2a; }
+```
+
+## Declaring layout in C++
+
+Declare a control or a static layout in a `.uxml` file. Use the typed C++ builder
+for a tree that is built at run time from data: the rows of a list, the widgets of
+an inspector field, a tree built from a scene. If the tree is the same every time,
+it belongs in a `.uxml` file. Both paths create the same retained controls, with the
+same CSS cascade, layout, input, and rendering. Put layout, sizes, spacing, colors,
+and fonts in CSS and select them with classes.
+
+```cpp title="Build one row per item"
+#include "UI/ElementBuilder.h"
+#include "UI/Controls/Button.h"
+#include "UI/Controls/Label.h"
+#include "UI/UIEvents.h"
+
+using namespace GameEngine;
+
+auto list = UI::Element<UIElement>().Class("item-list");
+for (const Item& item : items)
+{
+    UIElement::WeakRef<Label> status;
+    auto caption = UI::Element<Label>().Class("item-name")
+        .Set(&Label::SetText, item.Name).Capture(status);
+    list.Children(UI::Element<UIElement>().Class("item-row").Children(
+        std::move(caption),
+        UI::Element<Button>().Set(&Button::SetText, "Run")
+            .On(kEventButtonClick, [status](UIEvent&)
+            {
+                if (Label* label = status.Get())
+                    label->SetText("Running");
+            })));
+}
+
+if (auto root = std::move(list).Build())
+    host->AddChild(std::move(root));
+```
+
+Capture a control before you create a handler that copies its reference. C++ does
+not set the evaluation order of sibling arguments to `Children`.
+
+`Element<T>()` creates `T` through its registered factory, which also covers controls
+whose constructors take arguments. The UI module registers the built-in controls.
+Register a custom control through the registration API. When one C++ type has
+several canonical tags, name one with `Element<T>("tag")`. A registered alias gives
+the canonical tag's CSS identity.
+
+| Operation | Behavior |
+|---|---|
+| `Id(value)` | Sets the element ID. |
+| `Class(name, ...)` | Adds one or more CSS classes in argument order. A class that is already present is not added again. |
+| `Set(setter, arguments...)` | Calls a void member setter now. The compiler checks the setter and its arguments. Inherited setters work. |
+| `Children(children...)` | Takes builders or `unique_ptr` subtrees and appends them in argument order. |
+| `On(eventId, handler)` | Registers a handler that lives as long as the element. |
+| `Capture(reference)` | Sets a `UIElement::WeakRef<T>` now. The builder keeps no reference to the variable. |
+| `Build()` | Ends an rvalue builder and returns its `unique_ptr<T>`. |
+
+IDs and classes are case-sensitive, and an empty ID has hash zero.
+
+Builders are move-only. Compose fragments with ordinary C++ functions, loops, and
+conditions. A named builder takes repeated `Children` calls; end it with
+`std::move(builder).Build()`. A subtree parsed from XML, or a control you already
+made, can go to `Children` as an owned child. `MaskField` builds its option rows
+this way, one `Checkbox` per option.
+
+Build and update the tree on the UI thread; post work from other threads through
+the UI dispatcher. A weak reference expires when its control is destroyed and does
+not keep the control alive.
+
+Registered defaults apply before your setters. `Set` changes control state and does
+not add XML attributes, so style with classes and pseudo states, not attribute
+selectors.
+
+A missing or ambiguous registration, a factory of the wrong type, or a null child
+fails the whole declaration. The log names the registration fix. The builder still
+takes every child, destroys the incomplete tree, and `Build` returns null, also on a
+second call. Check the result before you replace a root. References captured from a
+failed tree expire.
+
+Build the tree once and update live controls through their setters. `On` returns
+no token; for a handler you remove on its own, call `RegisterEventHandler` after
+`Build`. A change to the C++ structure needs a rebuild; CSS hot reload works as it
+does for XML.
+
+## Element style (code)
+
+`UIElement::Style()` is the element's own style: typed declarations your code sets on top of
+the stylesheets and the element's `style` attribute, returned as a `StyleDeclaration`.
+Property keys live in the `Style` namespace (`UI/StyleProperties.h`) and carry their value
+type, so a wrong value type does not compile. Each write marks the element for exactly what
+the property affects (layout, paint, or a restyle of its subtree); setting the value a property
+already holds marks nothing.
+
+```cpp title="Set an element's style from code"
+el.Style()
+  .Set(Style::Width, StyleLength::Px(200.0f))
+  .Set(Style::Height, StyleLength::Px(40.0f))
+  .Set(Style::BackgroundColor, 0xFF202020u);
+el.Style().SetCustomNumber("--pad"_sid, 4.0f);
+```
+
+Keep static presentation in CSS.
+
+Reading a value back:
+
+```cpp title="Read back a declared value"
+if (auto bg = el.Style().Get(Style::BackgroundColor))
+    LOG_INFO("Background color: 0x{:08X}", *bg);
+```
+
+`Reset` removes the declaration, and the property returns to what the element's `style`
+attribute or the stylesheets give it:
+
+```cpp title="Return a property to its authored value"
+el.Style().Reset(Style::BackgroundColor);
+```
+
+The `style="..."` attribute in a layout is kept apart from `Style()`: a reload of the layout
+replaces it and leaves `Style()` alone. Where both declare the same property, `Style()` wins,
+as a script's inline style does in a browser, so a value written from code holds until the
+code resets it.
+
+A live texture is bound by name: register it with `UIManager::SetExternalTexture` (or
+`SetExternalTextureRG`), then name it as the background image:
+
+```cpp title="A live background texture"
+el.Style()
+  .Set(Style::BackgroundImage, BackgroundImageSource::Resource("scene_main"))
+  .Set(Style::BackgroundSize, BackgroundSizeValue{BackgroundSizeMode::Cover})
+  .Set(Style::BackgroundTint, 0xFFFFFFFFu);
+```
+
+## Events
+
+In C++, event IDs are hashed `StringId` values (see `UI/UIEvents.h`). A game script in C# subscribes to the element's events, such as a button's `Clicked`.
+
+:::::tabs
+::::tab[C++]
+
+```cpp title="Handle events"
+using namespace GameEngine;
+
+auto token = el.RegisterEventHandler(kEventMouseDown, [](UIEvent& e) {
+    e.Stop();
+});
+
+el.RegisterEventHandler(HashEvent("My.CustomEvent"), [](UIEvent& e) {
+    // handle custom event
+});
+```
+
+::::
+::::tab[C#]
+
+```csharp title="Handle a button's click"
+using GameEngine.Scripting;
+
+if (Ui.FindElement("StartButton") is Ui.Button start)
+    start.Clicked += args => StartGame();
+```
+
+::::
+:::::
+
+### Pointer button events
+
+Every element raises three events for the mouse buttons. They arrive for every button, on the element under the pointer, and bubble to its ancestors, so a panel hears a press that began on one of its children.
+
+| Event | When it fires |
+|---|---|
+| `PointerPressed` | A button goes down. |
+| `PointerReleased` | The button that began the press comes up over the element. |
+| `PointerCancelled` | The press ends without a release: the pointer left the game's surface, for example the editor's Game View, while the button was held. No release follows. |
+
+Each event passes a `Ui.PointerButtonArgs`:
+
+- `Button`: the button that began the press, a `MouseButton` (`Left`, `Right`, `Middle`, `Back`, `Forward`, ...), the same type `Input.IsMouseButtonDown` takes.
+- `X` and `Y`: the pointer in the element's layout space, the same space as `PointerEntered` and `MouseMoved`. A cancel has no position, and both read -1.
+- `Mods`: the modifier keys held, a `ModifierFlags`.
+
+A press is not a click. A button's `Clicked` fires on release, for the left button or Space and Enter, and only on that button. Use `PointerPressed` to act as soon as a button goes down, or to tell the right button from the left. A control that arms itself on `PointerPressed` acts on `PointerReleased`, and disarms on `PointerCancelled` without acting. A press belongs to the button that began it: until that button comes up, other buttons raise no events.
+
+```csharp title="Act on a right click"
+using GameEngine.Scripting;
+
+if (Ui.FindElement("InventoryGrid") is Ui.Element grid)
+{
+    bool armed = false;
+    grid.PointerPressed += press => armed = press.Button == MouseButton.Right;
+    grid.PointerReleased += release =>
+    {
+        if (armed)
+            ApplyModifier(release.X, release.Y);
+        armed = false;
+    };
+    grid.PointerCancelled += _ => armed = false;
+}
+```
+
+## Finding an element and setting its text
+
+:::::tabs
+::::tab[C++]
+
+```cpp title="Find a label and set its text"
+#include "Engine/GameUI/GameplayUI.h"
+#include "UI/Controls/Label.h"
+
+using namespace GameEngine;
+
+if (auto* score = dynamic_cast<Label*>(GameUI::FindElementById("Score"_sid)))
+    score->SetText("42");
+```
+
+::::
+::::tab[C#]
+
+```csharp title="Find a label and set its text"
+using GameEngine.Scripting;
+
+if (Ui.FindElement("Score") is Ui.Label score)
+    score.SetText("42");
+```
+
+::::
+:::::
+
+`GameUI::FindElementById` searches every mounted UI document. The root element of a document's layout is the document's container: its classes and its id apply to the container, so a lookup of the root's id finds the container. In C++ an element id is a `StringId`: write an id you know in code as a `"Score"_sid` literal, which is hashed at compile time, and hash an id built at runtime with `HashStringId(name)`. When two documents use the same id, the document owned by the lowest entity id wins, so the result is stable. To look in one document only, call `FindById` on its root, `GameUI::FindDocumentRoot(entity)`. The optional second argument of `FindElementById` receives the entity whose document matched.
+
+`Ui.FindElement` searches every mounted UI document, or only one when you pass its entity, and returns a wrapper typed from the element's tag, such as `Ui.Button`, `Ui.Label`, [`Ui.ProgressBar`](ui-control-defaults.mdx#the-progress-bar) (its `Value`, `Max` and `Indeterminate`), or [`Ui.MarkdownText`](ui-control-defaults.mdx#markdown-text). Tags without a dedicated wrapper return `Ui.Element`. Elements also take classes from a script (`AddClass`), which is how a HUD shows, hides, and expresses state through its stylesheet.
+
+### Element calls from a script
+
+Each call returns `false` when the element no longer exists. The calls that set a style (`SetWidthPercent`, `SetZIndex` and `SetOffset`) write the element's style (`Style()` in C++), so a value a script sets wins over the stylesheet and over the element's own `style` attribute, and stays until the script sets it again.
+
+| Call | What it does |
+|---|---|
+| `SetWidthPercent(float percent)` | Sets the element's width as a percentage of its parent's. |
+| `SetZIndex(int zIndex)` | Orders the element among its siblings: a higher value is drawn in front and is the one the pointer finds. It does not lift the element above its parent's siblings. |
+| `SetOffset(Vector2 offset)` | Sets the element's CSS `left` and `top` in UI pixels. An element with `position: absolute` is placed from the inside of its parent's border; any other element moves by the offset from where layout places it. The value stays through a .uxml reload. |
+| `TryGetRect(out Rect rect)` | Reports the element's box from the last layout, in window space and UI pixels. A parent that clips does not shrink it, and for a transformed element it is the bounds of the transformed box. `Rect` has `Position`, `Size` (both `Vector2`), `Right`, `Bottom` and `Contains(Vector2)`, which counts the edges as inside. |
+| `CapturePointer()` | The element holds the pointer: every move, release and cancel goes to it, wherever the pointer is, until `ReleasePointer` or the button's release, whichever comes first. A drag keeps going when a fast pointer leaves a small element. |
+| `ReleasePointer()` | Ends the element's own capture. From an element that does not hold the pointer it does nothing and returns `false`, so it never ends another element's drag. |
+
+```csharp title="Bring a window to the front when it is clicked"
+private int m_TopZIndex;
+
+void OnWindowPressed(Ui.Element window) => window.SetZIndex(++m_TopZIndex);
+```
+
+```csharp title="Move a window by the pointer's motion while it is dragged"
+private Vector2 m_WindowPosition;
+private Vector2 m_LastPointer;
+private bool m_Dragging;
+
+void MakeDraggable(Ui.Element window)
+{
+    window.PointerPressed += press =>
+    {
+        window.CapturePointer();
+        m_Dragging = true;
+        m_LastPointer = new Vector2(press.X, press.Y);
+    };
+    window.PointerReleased += _ => m_Dragging = false;
+    window.PointerCancelled += _ => m_Dragging = false;
+    window.MouseMoved += move =>
+    {
+        if (!m_Dragging)
+            return;
+        var pointer = new Vector2(move.X, move.Y);
+        m_WindowPosition += pointer - m_LastPointer;
+        m_LastPointer = pointer;
+        window.SetOffset(m_WindowPosition);
+    };
+}
+```
+
+```csharp title="Place a tooltip under a button"
+if (button.TryGetRect(out Rect rect))
+    m_TooltipPosition = new Vector2(rect.X, rect.Bottom + 4f);
+```
+
+## Creating new controls
+
+1. Subclass `UIElement` (optionally implement `ITextMeasurable`).
+2. Override `OnGeneratePrimitives` to emit custom SDF primitives.
+3. Override `OnPostLayout` if you need layout-dependent setup.
+4. Register the control and its attributes with `UIRegistration`.
+
+Example:
+
+```cpp title="A custom control"
+class Badge : public UIElement {
+public:
+    Badge() : UIElement("Badge") {}
+    void SetText(const std::string& text) { m_Text = text; MarkDirty(VisualDirty); }
+
+    void OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx,
+                              const ResolvedStyle& style,
+                              float x, float y, float w, float h) override;
+
+private:
+    std::string m_Text;
+};
+```
+
+Registration and attribute binding:
+
+```cpp title="Register the control and its attributes"
+using namespace GameEngine::UIRegistration;
+
+static auto s_reg_badge = Register<Badge>("Badge")
+    .Text(&Badge::SetText)
+    .Attr("text", &Badge::SetText)
+    .TagAlias("badge");
+```
+
+For custom attribute types, specialize `Parser<T>`:
+
+```cpp title="Parse a custom attribute type"
+template<>
+struct Parser<Badge::Mode> {
+    static Badge::Mode Parse(std::string_view s) { /* ... */ }
+};
+```
+
+## Modifying attributes and properties
+
+Prefer dedicated APIs:
+- `SetId`, `AddClass`, `RemoveClass`
+- `SetEnabled`, `SetFocusable`, `SetTabIndex`
+- `Style()` for style changes (typed `StyleDeclaration` API)
+
+Inline `style` and arbitrary attributes are intended for XML/CSS parsing rather
+than runtime code.

@@ -1,4 +1,4 @@
-#include "UI/Interaction/DragDropGhostRendererRegistry.h"
+#include "UI/Interaction/DragDrop/DragDropGhostRendererRegistry.h"
 
 #include "Editor/DragDropPayloads.h"
 #include "Input/KeyCodes.h"

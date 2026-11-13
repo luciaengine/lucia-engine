@@ -1,9 +1,58 @@
 #version 460
 #extension GL_EXT_ray_query : require
 
-// Trace one opaque sun-cone ray per pixel with no facing cull; TAA integrates soft-shadow visibility.
-// Reconstruct reverse-Z positions in left-handed view space and bind the TLAS as an acceleration-structure descriptor.
-// Terrain is outside the TLAS; combine its clearance/filtered field with the ray result, including beyond ray range.
+// RT shadow-mask pass (DirectionalShadowMode::RayTraced, G1): one ray-query shadow
+// ray per full-res pixel toward the primary shadow-casting directional light,
+// written to an R8 mask (1 = lit, 0 = occluded). Consumed by GE_SampleShadow
+// (shadow_sampling.glsl) under the RTShadowMask pass keyword in place of
+// cascade sampling.
+//
+// SOFT shadows via 1-ray + TAA (uRayParams.w = tan of the sun's angular
+// half-angle, the same slope the cascade PCSS path uses): the ray direction is
+// jittered per pixel inside that cone (tangent basis around uLightDirWS, uniform
+// concentric disk sample scaled by the tangent). One ray per pixel, so the
+// per-frame write is still binary; the FRACTIONAL penumbra emerges from temporal
+// accumulation — the jitter phase (uTemporal.x) advances only for a view whose
+// TAA history will integrate it, and stays 0 elsewhere so the spatial denoise
+// (rt_shadow_denoise.comp) sees a frame-stable stipple. Because the occluder is
+// intersected at its true distance, the penumbra widens with BOTH the angular
+// size AND the occluder->receiver gap — the RT advantage over the cascade PCSS
+// path, which only estimates the gap from a blocker search.
+// At tangent 0 the cone collapses and the traced direction is byte-identical to
+// the hard ray (the jitter block is skipped entirely).
+//
+// Position reconstruction follows gtao.comp exactly: reverse-Z raw depth
+// unprojected through uInvProj with the engine's negative-viewport convention
+// (ndc.y = 1 - 2*uv.y), left-handed view space (+Z forward). View-space
+// normals are reconstructed from best-of-neighbour depth differences (no
+// normal G-buffer in the depth-only Forward+ pipeline) and used only for the
+// self-intersection origin offset.
+//
+// The TLAS is a real descriptor binding (DescriptorType::AccelerationStructure),
+// not an accelerationStructureEXT(uvec2) address cast: MSL's
+// raytracing::acceleration_structure is always resource-bound, so SPIRV-Cross
+// cannot translate OpConvertUToAccelerationStructureKHR at all. A descriptor
+// binding is the one form both Vulkan and Metal can carry — the same choice the
+// DDGI ray-query kernels make. RTShadowMaskService binds the slot through
+// NamedDescriptorWriter::TryAddAccelerationStructure.
+//
+// Culling / watertightness choices (documented per the G1 brief):
+//  - No facing cull: TLAS instances set TriangleFacingCullDisable (a caster
+//    occludes regardless of winding), and the ray carries no cull flags.
+//  - gl_RayFlagsOpaqueEXT: every triangle is treated opaque — alpha-tested
+//    cutouts (foliage) cast SOLID shadows in v1 (enumerated residual; an
+//    any-hit alpha lane needs bindless material access in the query loop).
+//  - gl_RayFlagsTerminateOnFirstHitEXT: occlusion query — any hit ends it.
+//  - Traversal watertightness is the spec default (no water-tight opt-outs).
+//
+// The terrain is not in the TLAS. Where its clearance map is published for the
+// view (uTerrainSource.x), each pixel also reads it (terrain_shadow.glsl) and is
+// lit only where both see the sun; beyond the max shadow distance, where no ray
+// is traced, the map alone decides, as the raster path does. The terrain's
+// penumbra comes from the map's analytic term with the same tangent as the cone
+// (uRayParams.w) and, like the cone, no bound on its width. A pixel near the
+// ground that covers more than one of the map's samples reads the lit field over
+// its footprint, through the raster path's function (GE_TerrainShadowFootprintLit).
 
 #include "Includes/shadow_distance_fade.glsl"
 
@@ -19,16 +68,21 @@ layout(set = 0, binding = 2, std140) uniform RTShadowMaskParams
     vec4 uLightDirWS;   // xyz = normalized direction TOWARD the light, w = maxShadowDistance
     vec4 uRayParams;    // x = tMin, y = tMax, z = normal-offset bias (world units),
                         // w = tan(light angular half-angle); 0 = hard shadow
-    vec4 uTemporal;     // x: jitter phase (0 without TAA); y: rays/pixel; z: fade; w: zero
-    // Terrain clearance uniforms share ShadowDataGPU grid packing in the full world frame.
-    // uTerrainSource packs presence, map side and field levels; uTerrainView.x is draw-level scale.
-    // Scale zero disables footprint-field reads.
+    vec4 uTemporal;     // x = cone-jitter phase (a short frame cycle while TAA
+                        // resolves the jitter, else 0), y = rays per pixel,
+                        // z = authored distance fade fraction, w reserved
+    // The terrain's clearance map (terrain_shadow.glsl) in the full world frame, ShadowData's
+    // terrainShadowGrid* layout; uTerrainSource x = 1 when present, y = map side (texels), z = the lit
+    // field's levels (0: none); uTerrainView x = the terrain draw's level scale (0: no level rule, and
+    // no pixel reads the field); uTerrainHeightSpan xy = the extent the height texture spans (ShadowData's
+    // terrainShadowHeightSpan).
     vec4 uTerrainGrid0;
     vec4 uTerrainGrid1;
     vec4 uTerrainGrid2;
     vec4 uTerrainGrid3;
     uvec4 uTerrainSource;
     vec4 uTerrainView;
+    vec4 uTerrainHeightSpan;
 };
 
 layout(set = 0, binding = 3) uniform accelerationStructureEXT uTlas;
@@ -45,7 +99,7 @@ vec2 GE_TerrainShadowReadClearance(vec2 gridCoord)
 float GE_TerrainShadowReadGround(float x, float z)
 {
     vec2 dim = vec2(textureSize(uTerrainHeight, 0));
-    vec2 terrainUV = clamp((vec2(x, z) - uTerrainGrid0.zw) / uTerrainGrid1.xy, 0.0, 1.0);
+    vec2 terrainUV = clamp((vec2(x, z) - uTerrainGrid0.zw) / uTerrainHeightSpan.xy, 0.0, 1.0);
     return textureLod(uTerrainHeight, (terrainUV * (dim - 1.0) + 0.5) / dim, 0.0).r * uTerrainGrid3.w;
 }
 #define GE_TERRAIN_SHADOW_READS_FIELD 1
@@ -67,9 +121,15 @@ vec3 ViewPosFromRaw(vec2 uv, float raw)
     return vp.xyz / vp.w;
 }
 
-// Compute terrain visibility for the reconstructed receiver; keep its height unless below ground.
-// A near-ground pixel reads the shared footprint field using view distance/cosine and draw level.
-// The mask assumes a level mean surface because it has no filtered normal.
+// The share of the sun the terrain lets reach the pixel at uv, whose view-space position is posVS
+// (1 lit, 0 shadowed). The mask cannot tell the terrain's pixels from the rest, so every receiver
+// keeps its height, a base sunk into the terrain counting as on the ground; a receiver within its
+// pixel's footprint of the ground reads the lit field over that footprint as the terrain's surface
+// does in the raster path. The mask passes what it measures: the head-on footprint (the distance
+// times the view ray's angle per pixel), the view's cosine against the mean surface, which is level
+// here (the mask has no prefiltered surface), and the draw level (the log2 of the distance times the
+// draw's level scale). The shared rule (GE_TerrainShadowFootprint) widens the footprint as the
+// raster path's does.
 float TerrainLit(vec2 uv, vec3 posVS)
 {
     if (uTerrainSource.x == 0u)

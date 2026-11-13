@@ -1,8 +1,7 @@
 #include "NativeScripting/NativeSourceTree.h"
 
 #include "AssetCore/AssetIgnoreRules.h"
-#include "NativeScripting/BuildCacheRecord.h"
-#include "Types/Fnv1a.h"
+#include "NativeScripting/BuildCacheRecord.h" // Fnv1aHash
 
 #include <algorithm>
 #include <cctype>
@@ -89,19 +88,6 @@ bool IsWatchedNativeSourceExtension(const std::filesystem::path& path)
            extension == ".h" || extension == ".hpp" || extension == ".hxx" || extension == ".hh";
 }
 
-std::vector<std::filesystem::path> CollectWatchedNativeSources(const std::filesystem::path& sourceRoot,
-                                                             const std::filesystem::path& packageRoot)
-{
-    std::vector<std::filesystem::path> paths;
-    ForEachWatchedNativeSource(sourceRoot, packageRoot,
-        [&paths](const std::filesystem::path& path, const std::filesystem::path& relative) {
-            if (!IsPlayerTemplateSource(relative)) paths.push_back(path);
-            return true;
-        });
-    std::sort(paths.begin(), paths.end());
-    return paths;
-}
-
 bool HasWatchedNativeSource(const std::filesystem::path& sourceRoot)
 {
     bool found = false;
@@ -135,7 +121,7 @@ std::uint64_t HashWatchedNativeSources(const std::filesystem::path& sourceRoot,
     std::sort(entries.begin(), entries.end());
     std::uint64_t hash = seed;
     for (const std::string& entry : entries)
-        hash = Hashing::Fnv1a64(entry, hash);
+        hash = Fnv1aHash(entry, hash);
     return hash;
 }
 

@@ -1,4 +1,5 @@
 #include "Engine/Build/AppIconGenerator.h"
+#include "Core/ApplicationPaths.h"
 
 #include "Engine/Build/BuildPipeline.h"
 #include "Engine/Build/CancellableShellProcess.h"
@@ -38,11 +39,14 @@ struct RgbaImage
 
 static bool LoadRgbaImage(const fs::path& path, RgbaImage& out, std::string& error)
 {
-    int w = 0;
-    int h = 0;
-    int comp = 0;
-    stbi_uc* data = stbi_load(path.string().c_str(), &w, &h, &comp, 4);
-    if (!data)
+    ByteBuffer fileBytes;
+    if (!ReadFileBytesShared(path, fileBytes))
+    {
+        error = "Failed to read icon image: " + path.string();
+        return false;
+    }
+    Image::Image8 decoded = Image::Decode8(fileBytes, path.string(), Image::DecodeChannels::Rgba);
+    if (!decoded.Valid)
     {
         error = "Failed to decode icon image: " + path.string();
         return false;
@@ -371,7 +375,7 @@ fs::path ResolveDefaultEditorApplicationIconPath(const fs::path& editorSdkPath, 
     fs::path runtimeRoot = runtimeDepsPath;
     if (sdkRoot.empty() || runtimeRoot.empty())
     {
-        const fs::path exeDir = PathUtils::GetExecutableDirectory();
+        const fs::path exeDir = ApplicationPaths::GetExecutableDirectory();
         if (sdkRoot.empty())
             sdkRoot = exeDir / "SDK";
         if (runtimeRoot.empty())

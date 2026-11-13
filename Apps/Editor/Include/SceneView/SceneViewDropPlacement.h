@@ -3,10 +3,9 @@
 #include "ECS/ECS.h"
 #include "Mathematics/Types.h"
 
-#include <span>
 #include <filesystem>
+#include <span>
 #include <string>
-#include <string_view>
 
 namespace GameEngine
 {
@@ -22,12 +21,6 @@ struct Ray3D;
 
 namespace GameEngine::Editor
 {
-
-/// Returns whether an extension names a model format the editor can place.
-bool IsPlacedModelExtension(std::string_view extension);
-
-/// Gives the reason and remedy when none of the dropped files can be placed or assigned.
-std::string DescribeRefusedDrop(std::span<const std::filesystem::path> files);
 
 // Shown when a drop is refused because the point it aims at is on a mesh still being
 // prepared for picking (SceneViewDropPoint::OnPendingMesh, SceneViewDropMesh::Pending).
@@ -66,5 +59,17 @@ struct SceneViewDropMesh
 SceneViewDropMesh PickSceneViewDropMesh(const Mathematics::Ray3D& cameraRay,
                                         ECS::World& world,
                                         std::span<const ECS::EntityHandle> ignoreEntities = {});
+
+// True for a model file a drop places as an entity tree: glTF, GLB, OBJ or FBX.
+bool IsPlacedModelFile(const std::filesystem::path& file);
+
+// The notice for a dropped file that a Scene View or Hierarchy drop does not place: a file that is not
+// a placed model, a prefab or a lens flare. It names the kind of file and, where one exists, the way
+// to use it in a scene.
+std::string DescribeUnplaceableFile(const std::filesystem::path& file);
+
+// Why a drop of `files` on the Scene View or the Hierarchy places nothing, or empty when it places
+// something: one file it places, or a texture or a material dropped alone, which the drop assigns.
+std::string DescribeRefusedDrop(std::span<const std::filesystem::path> files);
 
 } // namespace GameEngine::Editor

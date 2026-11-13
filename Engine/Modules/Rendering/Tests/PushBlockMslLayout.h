@@ -8,7 +8,7 @@
 // smaller than the struct Metal binds and the API validation layer aborts the
 // draw or dispatch. A block is safe on every backend when the two agree.
 
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 
 #include <algorithm>
 #include <cstdint>

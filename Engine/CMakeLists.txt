@@ -1,8 +1,8 @@
 # Engine library
 set(ENGINE_SOURCES
-    Source/Engine/Rendering/SortingLayers.cpp
-    Source/Engine/Rendering/BoneLOD/BoneLODPolicy.cpp
-    Source/Engine/Rendering/RenderSorting.cpp
+    Source/Engine/Rendering/2D/Systems/SpriteAnimationSystem.cpp
+    Source/Engine/Rendering/2D/SpriteRenderFeature.cpp
+    Source/Engine/Rendering/SortedTransparentComposition.cpp
 	Source/Core/Application.cpp
     Source/Core/Time.cpp
     Source/Core/CpuProfiler.cpp
@@ -10,20 +10,21 @@ set(ENGINE_SOURCES
     Source/Core/NvtxRange.cpp
     Source/Core/DeferredActionQueue.cpp
     Source/Core/Engine.cpp
-    Source/Scene/SceneLoadingGates.cpp
     Source/Core/EngineLoggerBridge.cpp
     Source/Core/WindowInputRouter.cpp
     Source/Core/WindowUiBootstrap.cpp
-    Source/Core/PathUtils.cpp
+    Source/Core/ApplicationPaths.cpp
     Source/Core/StandardPaths.cpp
     # Source/Components/ComponentReflection.cpp is generated at build time as
     # ComponentReflection.gen.cpp by the ComponentScanner tool — wired in via
     # target_sources(Engine ...) in the codegen block near the bottom of this file.
     Source/Assets/NavGridAsset.cpp
-    Source/Assets/NavMeshAsset.cpp
+    Source/Assets/NavSurfaceAsset.cpp
     Source/Assets/DayCycleProfile.cpp
     Source/Assets/DayCycleTracks.cpp
     Source/Assets/SceneAsset.cpp
+    Source/Assets/CubeLutAsset.cpp
+    Source/Assets/CubeLutColorSettings.cpp
     Source/Assets/CoreAssetRegistrations.cpp
     Source/Assets/TextureAsset.cpp
     Source/Assets/TextureParser.cpp
@@ -32,10 +33,12 @@ set(ENGINE_SOURCES
     Source/Assets/AlphaCutoffThreshold.cpp
     Source/Assets/TextureCook.cpp
     Source/Assets/TextureCookWorkers.cpp
+    Source/Assets/TextureCookActivity.cpp
     Source/Assets/AssetDecodeGate.cpp
     Source/Assets/Textures/BC7TransparentEndpointRepair.cpp
     Source/Assets/Textures/TextureMimeType.cpp
     Source/Assets/AssetDecodeCancellation.cpp
+    Source/Assets/AssetDecodeInputFiles.cpp
     Source/Assets/SvgRasterizer.cpp
     Source/Assets/AudioAsset.cpp
     Source/Assets/AlphaUVFootprint.cpp
@@ -56,9 +59,6 @@ set(ENGINE_SOURCES
     Source/Assets/LodAssetSettings.cpp
     Source/Assets/ProjectLodReimport.cpp
     Source/Assets/ModelAssetSettings.cpp
-    Source/Assets/BoneLOD/BoneLODAssetSettings.cpp
-    Source/Assets/BoneLOD/ModelBoneLOD.cpp
-    Source/Assets/BoneLOD/ModelAssetBoneLOD.cpp
     Source/Assets/AuthoredLodImport.cpp
     Source/Assets/HlodClustering.cpp
     Source/Assets/HlodBenefit.cpp
@@ -87,8 +87,9 @@ set(ENGINE_SOURCES
     Source/Assets/Packages/PackagesIndex.cpp
     Source/Core/CommandLine.cpp
 
-    # Scene/Blueprint IO (INI schema)
+    # Scene/Prefab IO (INI schema)
     Source/Scene/SceneValue.cpp
+    Source/Scene/RenderLayerMaskText.cpp
     Source/Scene/SceneSchemaRegistry.cpp
     Source/Scene/FieldSerializerRegistry.cpp
     Source/Scene/ReflectionSceneSchema.cpp
@@ -97,37 +98,34 @@ set(ENGINE_SOURCES
     Source/Components/Rendering/SkySunIlluminance.cpp
     Source/Components/Rendering/SkySunPath.cpp
     Source/Scene/SceneIO.cpp
-    Source/Scene/PrefabPlacement.h
-    Source/Scene/PrefabAuthoring.cpp
-    Source/Scene/PrefabOverrideEdits.cpp
-    Source/Scene/PrefabOverrideWriter.h
-    Source/Scene/PrefabOverrideWriter.cpp
-    Source/Scene/PrefabSpawn.cpp
-    Source/Scene/PrefabLibrary.cpp
-    Source/Scene/PrefabPlacement.cpp
-    Source/Scene/PrefabLibrary.h
     Source/Scene/AssetManagerSceneResolver.cpp
-    Source/Scene/SceneDoc.h
-
+    Source/Scene/PrefabLibrary.cpp
     Source/Scene/SceneRaycast.cpp
-    Source/Scene/TerrainPicking.cpp
     Source/Scene/MeshBvhCache.cpp
     Source/Scene/MeshBvhDiskFormat.cpp
+    Source/Scene/TerrainPicking.cpp
+    Source/Scene/PrefabPlacement.cpp
+    Source/Scene/PrefabSpawn.cpp
+    Source/Scene/PrefabAuthoring.cpp
+    Source/Scene/PrefabOverrideWriter.cpp
+    Source/Scene/PrefabOverrideEdits.cpp
+    Source/Scene/PrefabOverrideRecords.cpp
+    Source/Scene/KeptComponentResolver.cpp
     Source/Scene/SceneEngineEmbedMaterializer.cpp
 
     # Derives the hierarchy half of entity enable state.
     Source/ECS/DisabledInHierarchySystem.cpp
-
-    # Job System files moved to JobSystem library
-    Source/Jobs/FileChangeTracker.cpp
-    Source/Jobs/DependencyGraphAnalyzer.cpp
-    Source/Jobs/IncrementalCompilationTask.cpp
+    Source/ECS/HierarchyTagDerivation.cpp
+    Source/ECS/SceneViewHiddenInHierarchySystem.cpp
+    Source/ECS/SceneViewHiddenInHierarchySystem.h
 
     # Rendering hot-reload bridge (Engine-side wiring)
     Source/RenderingHotReloadBridge.cpp
 
     # Rendering ECS integration sources (engine-owned, ECS-dependent)
+	Source/Engine/Rendering/PostProcessVolumeExtract.cpp
 	Source/Engine/Rendering/Systems/RenderExtractionSystem.cpp
+	Source/Engine/Rendering/Systems/KeyedWorldSubmissions.cpp
 	Source/Engine/Rendering/Systems/HLODSelectSystem.cpp
     Source/Engine/Rendering/Systems/TransformHierarchySystem.cpp
 	Source/Engine/Rendering/Systems/CameraSystem.cpp
@@ -211,6 +209,7 @@ set(ENGINE_SOURCES
 
 set(ENGINE_HEADERS
     Include/Core/Application.h
+    Include/Core/ApplicationPaths.h
     Include/Core/DeferredActionQueue.h
     Include/Core/WindowInputRouter.h
     Include/Core/WindowUiBootstrap.h
@@ -224,9 +223,11 @@ set(ENGINE_HEADERS
     Include/Assets/ParserRegistry.h
     Include/Assets/FileWatchingService.h
     Include/Assets/CoreAssetRegistrations.h
+    Include/Assets/SceneAsset.h
+    Include/Assets/CubeLutAsset.h
     Include/Assets/DayCycleProfile.h
     Include/Assets/DayCycleTracks.h
-    Include/Assets/SceneAsset.h
+    Include/Assets/CubeLutColorSettings.h
 
     Include/Assets/TextureAsset.h
     Include/Assets/AudioAsset.h
@@ -250,20 +251,19 @@ set(ENGINE_HEADERS
     Include/Assets/AsyncRegistryTasks.h
     Include/Core/CommandLine.h
 
+    Include/Platform/Platform.h
     # Core Job System headers moved to JobSystem library
     Include/Jobs/HotReloadTasks.h
-    Include/Jobs/FileChangeTracker.h
-    Include/Jobs/DependencyGraphAnalyzer.h
 
     # Rendering authoring components
     Include/Components/Rendering/MeshRenderer.h
     Include/Components/Rendering/LocalBounds.h
     Include/Components/Rendering/Camera.h
+    Include/Components/Rendering/ExposureCompensationCurve.h
     Include/Components/Rendering/Light.h
     Include/Components/Rendering/ReflectionProbe.h
     Include/Components/Rendering/PlanarReflection.h
     Include/Components/Rendering/LODGroup.h
-    Include/Components/Rendering/RenderLayer.h
     Include/Components/Rendering/PostProcessVolume.h
     Include/Components/Rendering/WindVolume.h
     Include/Components/Rendering/PostProcessEffects/BloomEffect.h
@@ -283,7 +283,6 @@ set(ENGINE_HEADERS
     Include/Engine/Rendering/WindVolumeResolver.h
     Include/Components/Rendering/SkinnedMeshRenderer.h
     Include/Components/Rendering/MorphTargetWeights.h
-    Include/Components/Rendering/WorldSectorCoord.h
     Include/Components/Animation/SkeletonRef.h
     Include/Components/Animation/AnimatorRef.h
     Include/Components/Animation/Animator.h
@@ -294,6 +293,7 @@ set(ENGINE_HEADERS
 
     Include/ECS/SystemScheduling.h
     Include/ECS/DisabledInHierarchySystem.h
+    Include/ECS/HierarchyTagDerivation.h
 
     # Animation authoring components/assets
     Include/Assets/AnimationClip.h
@@ -302,30 +302,31 @@ set(ENGINE_HEADERS
     Include/Jobs/IHotReloadTransport.h
     Include/Jobs/PipeTransport.h
 
-    Include/Jobs/IncrementalCompilationTask.h
-
     # Renderer-owned material compiler
     Include/Engine/Rendering/MaterialCompiler.h
     Include/Engine/Rendering/PackageShaderDirs.h
     Include/Engine/Rendering/OceanDepthCacheBaker.h
 
-    # Scene/Blueprint IO (INI schema)
+    # Scene/Prefab IO (INI schema)
     Include/Scene/SceneValue.h
+    Include/Scene/RenderLayerMaskText.h
     Include/Scene/SceneSchemaRegistry.h
     Include/Scene/SceneIO.h
+    Include/Scene/SceneRaycast.h
+    Include/Scene/SceneRaycastHost.h
+    Include/Scene/TerrainPicking.h
+    Include/Scene/KeptComponentResolver.h
 
     # Scene authoring/persistence components
     Include/Components/SceneEntityTag.h
-    Include/Components/SceneBlueprintInstance.h
     Include/Components/PrefabInstance.h
-    Include/Scene/PrefabAuthoring.h
-    Include/Scene/PrefabSpawn.h
-    Include/Scene/AssetManagerSceneResolver.h
     Include/Components/SceneSubsceneInstance.h
 
 	# Rendering hot-reload bridge header
 	Include/Engine/RenderingHotReloadBridge.h
 	Include/Engine/Rendering/RenderDeviceContext.h
+	Include/Engine/Rendering/StagingView.h
+	Include/Engine/Rendering/StagingViewPool.h
     Include/Engine/Rendering/AnimationSampling.h
     Include/Engine/Rendering/ProjectMaterialPrewarmService.h
 
@@ -340,15 +341,19 @@ set(ENGINE_HEADERS
 # OBJECT so its symbols land in Engine.dll's export table alongside the rest of
 # the engine modules (see GE_ENGINE_MODULES below).
 add_library(RenderServices OBJECT
-	Source/Engine/Rendering/EmbeddedImageDecoder.cpp
-	Source/Engine/Rendering/RgbaImageOps.cpp
 	Source/Engine/Rendering/TextureMipUpload.cpp
 	Source/Engine/Rendering/RenderWorldHooks.cpp
+	Source/Engine/Rendering/StagingView.cpp
+	Source/Engine/Rendering/StagingViewPool.cpp
 	Source/Engine/Rendering/RenderServices.cpp
 	Source/Engine/Rendering/AntiAliasingEnvOverrides.cpp
 	Source/Engine/Rendering/CameraAntiAliasing.cpp
 	Source/Engine/Rendering/AntiAliasingProjectSettings.cpp
 	Source/Engine/Rendering/LodProjectSettings.cpp
+	Source/Engine/Rendering/RenderLayerNames.cpp
+    Source/Engine/Rendering/SortingLayers.cpp
+    Source/Engine/Rendering/RenderSorting.cpp
+    Source/Engine/Rendering/ViewExposureScale.cpp
 	Source/Engine/Rendering/HlodRuntime.cpp
 	Source/Engine/Rendering/RenderServicesDetail.cpp
 	Source/Engine/Rendering/PointShadowFaceCull.cpp
@@ -357,14 +362,12 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/ServedGenerationTable.cpp
 	Source/Engine/Rendering/TextureService.cpp
 	Source/Engine/Rendering/RenderServicesViewState.cpp
-	Source/Engine/Rendering/WorldContentDigestTable.cpp
 	Source/Engine/Rendering/ViewRegistry.cpp
 	Source/Engine/Rendering/ViewTemporalHistory.cpp
 	Source/Engine/Rendering/DynamicResolutionController.cpp
 	Source/Engine/Rendering/RenderServicesMaterials.cpp
 	Source/Engine/Rendering/MaterialSystem.cpp
 	Source/Engine/Rendering/RenderServicesFrameGraph.cpp
-	Source/Engine/Rendering/RenderServicesDepthPixelation.cpp
 	Source/Engine/Rendering/FrameOrchestrator.cpp
 	Source/Engine/Rendering/RenderServicesGpuDriven.cpp
 	Source/Engine/Rendering/LodCrossfadeLiveness.cpp
@@ -380,8 +383,8 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/DDGIMaterialMapAtlas.cpp
 	Source/Engine/Rendering/DDGISceneService.cpp
 	Source/Engine/Rendering/DDGIEmitterAreas.cpp
+	Source/Engine/Rendering/DDGIEmitterMaterials.cpp
 	Source/Engine/Rendering/DDGIUberMaterialBake.cpp
-	Source/Engine/Rendering/DDGIFieldRanges.cpp
 	Source/Engine/Rendering/DDGICameraIdleGate.cpp
 	Source/Engine/Rendering/DDGIEligibleView.cpp
 	Source/Engine/Rendering/DDGISolveBudget.cpp
@@ -389,7 +392,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/DepthDrawRecorder.cpp
 	Source/Engine/Rendering/RenderServicesWorldPass.cpp
 	Source/Engine/Rendering/RenderServicesSortedTransparent.cpp
-	Source/Engine/Rendering/SortedTransparentComposition.cpp
+    Source/Engine/Rendering/RenderServicesDepthPixelation.cpp
 	Source/Engine/Rendering/WorldDrawBuilder.cpp
 	Source/Engine/Rendering/CpuDrawStreamBuilder.cpp
 	Source/Engine/Rendering/MaterialBinder.cpp
@@ -397,8 +400,8 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/MeshGPURegistry.cpp
 	Source/Engine/Rendering/MeshGPUResidency.cpp
 	Source/Engine/Rendering/MeshPoolGroupPlan.cpp
-	Source/Engine/Rendering/BucketPoolAllocator.cpp
 	Source/Engine/Rendering/Material.cpp
+	Source/Engine/Rendering/MaterialDeformationMargins.cpp
 	Source/Engine/Rendering/MaterialRegistry.cpp
 	Source/Engine/Rendering/SceneColorGrab.cpp
 	Source/Engine/Rendering/ModelMaterialBridge.cpp
@@ -407,10 +410,10 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/ViewFinalize.cpp
 	Source/Engine/Rendering/ViewReadbackUtils.cpp
 	Source/Engine/Rendering/ExposureReadbackFeature.cpp
+	Source/Engine/Rendering/IncidentLightMeter.cpp
+	Source/Engine/Rendering/IrradianceReadbackFeature.cpp
 	Source/Engine/Rendering/SkyRenderFeature.cpp
 	Source/Engine/Rendering/LensFlareRenderFeature.cpp
-	Source/Engine/Rendering/ViewExposureScale.cpp
-	Source/Engine/Rendering/2D/SpriteRenderFeature.cpp
 	Source/Engine/Rendering/SunGlareRenderFeature.cpp
 	Source/Engine/Rendering/SunScreenProjection.cpp
 	Source/Engine/Rendering/CascadeMotionScheduler.cpp
@@ -425,35 +428,39 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/SkyEnvironmentSource.cpp
 	Source/Engine/Rendering/SceneReflectionProbeEnvironmentSource.cpp
 	Source/Engine/Rendering/SceneProbeRecaptureSchedule.cpp
+	Source/Engine/Rendering/MirrorCaptureView.cpp
+	Source/Engine/Rendering/PlanarReflectionMath.cpp
+	Source/Engine/Rendering/PlanarReflectionFeature.cpp
+	Source/Engine/Rendering/Systems/PlanarReflectionSystem.cpp
+	Source/Engine/Rendering/Pipeline/Nodes/PlanarReflectionNode.cpp
 	Source/Engine/Rendering/RetargetRenderFeature.cpp
 	Source/Engine/Rendering/Pipeline/ReflectionsProvider.cpp
 	Source/Engine/Rendering/DeformationMotionParams.cpp
 	Source/Engine/Rendering/Pipeline/ViewMotionVectors.cpp
+	Source/Engine/Rendering/Pipeline/ViewContentStamp.cpp
+	Source/Engine/Rendering/Pipeline/ViewExposureCompensation.cpp
+	Source/Engine/Rendering/Pipeline/ViewExposureHistory.cpp
+	Source/Engine/Rendering/Pipeline/ForwardFogKeywords.cpp
 	Source/Engine/Rendering/Pipeline/DeformationMotionProducer.cpp
+	Source/Engine/Rendering/Pipeline/DeformationMotionViewClassifier.cpp
 	Source/Engine/Rendering/Pipeline/RenderPipeline.cpp
 	Source/Engine/Rendering/Pipeline/DepthUpsamplePass.cpp
 	Source/Engine/Rendering/Pipeline/PipelineEnumTables.cpp
 	Source/Engine/Rendering/Pipeline/ExpressionEvaluator.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/WorldRenderNode.cpp
-	Source/Engine/Rendering/Pipeline/Nodes/ForwardShaderSpecialization.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/SortedTransparentNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/TransmissivePassNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/DepthPrepassNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/DepthResolveNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/AONode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/ScreenSpaceReflectionsNode.cpp
-    Source/Engine/Rendering/Pipeline/Nodes/PlanarReflectionNode.cpp
-    Source/Engine/Rendering/PlanarReflectionMath.cpp
-    Source/Engine/Rendering/MirrorCaptureView.cpp
-    Source/Engine/Rendering/PlanarReflectionFeature.cpp
-    Source/Engine/Rendering/Systems/PlanarReflectionSystem.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/FidelityFXDofNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/AutoExposureNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/TemporalAANode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/SmaaNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/TemporalFxaaNode.cpp
-	Source/Engine/Rendering/Pipeline/Nodes/PixelPerfectUpscaleNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/RenderScaleUpscaleNode.cpp
+	Source/Engine/Rendering/Pipeline/Nodes/PixelPerfectUpscaleNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/LightUploadNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/ViewParamsUploadNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/HeightFogParamsUploadNode.cpp
@@ -463,11 +470,13 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/Pipeline/Nodes/ColorGradeParamsUploadNode.cpp
 	Source/Engine/Rendering/FogSunLightingResolver.cpp
 	Source/Engine/Rendering/HeightFogParamsUBO.cpp
+	Source/Engine/Rendering/SkyBackdrop.cpp
 	Source/Engine/Rendering/VolumetricCloudsParamsUBO.cpp
 	Source/Engine/Rendering/ColorGradeParamsUBO.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/FullscreenShaderNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/ComputeShaderNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/SkyRenderNode.cpp
+	Source/Engine/Rendering/Pipeline/Nodes/ClearColorBackdrop.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/LensFlareRenderNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/SunGlareRenderNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/EngineNodeTypes.cpp
@@ -526,8 +535,6 @@ target_link_libraries(RenderServices
 		# unique_ptr) reach ECS World/Entity/EntityHandle. PRIVATE: compile-time
 		# usage requirements only; ECS objects link once into Engine as elsewhere.
 		ECS
-		# Decode, encode, and resample usage; Image objects link once into Engine.
-		Image
 )
 # GetPipelineOutputSpaceRG returns UI::UITextureSpace (#767): compile-time
 # include only, the same shim Engine itself uses for UI asset integration;
@@ -548,20 +555,10 @@ target_include_directories(RenderServices PRIVATE ${CMAKE_SOURCE_DIR}/ThirdParty
 set_source_files_properties(Source/Engine/Rendering/ScreenSpaceShadows/ScreenSpaceShadowDispatch.cpp
     PROPERTIES COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->")
 
-# Engine.dll references five C-ABI hot-reload entry points (GE_PreloadAssemblyContext,
-# GE_SwapPreloadedContext, GE_CleanupOldContext, GE_ClearCompilerCache, GE_GetCompilerStats)
-# from IncrementalCompilationTask / AssemblyPrepTask / MainThreadSwapTask. Their real
-# implementations live in GameEngine.Native.dll, which depends on Engine.dll — a SHARED↔SHARED
-# cycle that the linker can't resolve at Engine.dll's link step.
-#
-# Phase 1 (this commit): link the no-op stubs into Engine.dll so it self-resolves. This means
-# C# script hot-reload silently does nothing at runtime (the stubs return GE_Result_Ok).
-#
-# Phase 1 follow-up: replace the direct GE_* calls with a runtime function-pointer table that
-# GameEngine.Native.dll registers with Engine.dll on init. Restores hot-reload in production
-# without re-creating the link cycle.
+# HotReloadNativeStubs.cpp gives Engine the five GE_* hot-reload entry points. Each one calls the
+# function that GameEngine.Native registers at load, or returns GE_Result_Ok if none is registered.
+# GameEngine.Native links Engine, so a link from Engine to GameEngine.Native makes a link cycle.
 list(APPEND ENGINE_SOURCES Source/HotReloadNativeStubs.cpp)
-
 
 # Engine is now a SHARED library (Phase 1 of the native-C++ scripting plan).
 # Each consumer (Editor, Player, GameEngine.Native, future user DLLs) links
@@ -578,32 +575,32 @@ list(APPEND ENGINE_SOURCES Source/HotReloadNativeStubs.cpp)
 # One static binary on wasm: Emscripten dynamic linking (MAIN_MODULE/
 # SIDE_MODULE) is rejected for size/DCE cost, and a single static Engine copy
 # satisfies the single-shared-copy invariants by construction.
-if(GE_WASM OR GE_MOBILE)
+if(GE_WASM)
     add_library(Engine STATIC ${ENGINE_SOURCES} ${ENGINE_HEADERS})
 else()
     add_library(Engine SHARED ${ENGINE_SOURCES} ${ENGINE_HEADERS})
     target_compile_definitions(Engine PRIVATE GAMEENGINE_BUILD_DLL)
+    ge_add_production_allocation_hook(Engine)
+    # The engine-ABI digest folds this binary's link stamp (ReadBinaryLinkStamp); an
+    # ELF link writes one only when asked.
+    if(UNIX AND NOT APPLE)
+        target_link_options(Engine PRIVATE -Wl,--build-id=sha1)
+    endif()
 endif()
-# Count allocations inside the shared Engine for the allocation regression owners.
-# Keep existing mimalloc and per-executable replacement hooks unchanged.
-if(BUILD_TESTING AND NOT ENABLE_MIMALLOC)
-    target_sources(Engine PRIVATE
-        ${CMAKE_SOURCE_DIR}/Engine/Modules/Memory/Source/ProductionAllocationHook.cpp)
-    set_source_files_properties(
-        ${CMAKE_SOURCE_DIR}/Engine/Modules/Memory/Source/ProductionAllocationHook.cpp
-        PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
-endif()
+# Engine/Source holds the engine's private headers, included by their path under it
+# (ECS/SceneViewHiddenInHierarchySystem.h); no path there repeats one under Include.
+target_include_directories(Engine PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Source")
 # DO NOT enable WINDOWS_EXPORT_ALL_SYMBOLS — see the GenerateEngineExportsDef
 # block further down for why we generate Engine.dll's .def file ourselves.
 
 # Model-to-entity factory, render setup utilities, and primitive generator (depends on ECS + RenderServices).
 target_sources(Engine PRIVATE
     Source/Engine/Rendering/Systems/LensFlareExtractionSystem.cpp
-    Source/Engine/Rendering/2D/Systems/SpriteAnimationSystem.cpp
     Source/Engine/Rendering/ModelEntityFactory.cpp
     Source/Engine/Rendering/MeshNameRegistry.cpp
     Source/Engine/Rendering/ModelRenderSetup.cpp
     Source/Engine/Rendering/SceneBuildPump.cpp
+    Source/Engine/Rendering/SceneDrawWarm.cpp
     Source/Engine/Rendering/SceneResolveService.cpp
     Source/Engine/Rendering/PrimitiveGenerator.cpp
     Source/Engine/Rendering/MeshReprovisionSource.cpp
@@ -612,60 +609,46 @@ target_sources(Engine PRIVATE
 # ---------------------------------------------------------------------------
 # Built-in component reflection codegen.
 #
-# The ComponentScanner C# tool (Managed/ComponentScanner) scans the C++ headers
-# under Include/Components and emits one GE_REGISTER_COMPONENT(...) /
-# GE_REGISTER_COMPONENT_NO_ADD(...) line per reflected component struct into
-# ComponentReflection.gen.cpp, which compiles into Engine in place of the old
-# hand-written Source/Components/ComponentReflection.cpp.
+# ComponentScanner (Tools/ComponentScanner) scans the C++ headers under
+# Include/Components and emits one GE_REGISTER_COMPONENT_BEGIN/_FIELD/_END block per
+# reflected component struct into ComponentReflection.gen.cpp, which compiles into
+# Engine, and from the same parse the web library's components.d.ts and
+# components.json.
 #
-# This runs at build time: any change to a component header re-runs the scan
-# (the headers are in the custom command's DEPENDS via a CONFIGURE_DEPENDS glob),
-# and any change to the scanner's own sources rebuilds it first.
+# This runs at build time: any change to a component header re-runs the scan (the
+# headers are in the custom command's DEPENDS via a CONFIGURE_DEPENDS glob), and any
+# change to the scanner's own sources rebuilds it first.
 #
-# This subdirectory is processed before the root CMakeLists resolves
-# DOTNET_EXECUTABLE / defines ge_add_managed_assembly, so we locate dotnet here
-# (find_program caches the result, so the root block's later lookup is a no-op)
-# and drive the scanner build + generation with plain custom commands.
+# GE_COMPONENT_SCANNER_EXECUTABLE: optional host-native scanner for a cross-compile
+# whose target binaries cannot run on the build host (the Steam Deck x64 build on an
+# arm64 host; Tools/Scripts/build-steamdeck-docker.sh builds one from the standalone
+# Tools/ComponentScanner project). The wasm presets need none: there the custom
+# command runs the target through CMAKE_CROSSCOMPILING_EMULATOR (node).
 # ---------------------------------------------------------------------------
-if(NOT DOTNET_EXECUTABLE OR DOTNET_EXECUTABLE STREQUAL "DOTNET_EXECUTABLE-NOTFOUND")
-    set(_ge_cs_dotnet_hints "")
-    if(DEFINED ENV{DOTNET_ROOT} AND NOT "$ENV{DOTNET_ROOT}" STREQUAL "")
-        list(APPEND _ge_cs_dotnet_hints "$ENV{DOTNET_ROOT}")
-    endif()
-    list(APPEND _ge_cs_dotnet_hints
-        "/usr/local/share/dotnet" "/usr/share/dotnet" "/opt/homebrew/share/dotnet"
-        "/usr/local/bin" "/opt/homebrew/bin")
-    if(WIN32)
-        list(APPEND _ge_cs_dotnet_hints "C:/Program Files/dotnet" "C:/Program Files (x86)/dotnet")
-    endif()
-    find_program(DOTNET_EXECUTABLE
-        NAMES dotnet dotnet.exe
-        HINTS ${_ge_cs_dotnet_hints}
-        PATH_SUFFIXES "" "bin")
-endif()
-
-if(NOT DOTNET_EXECUTABLE OR DOTNET_EXECUTABLE STREQUAL "DOTNET_EXECUTABLE-NOTFOUND")
+set(GE_COMPONENT_SCANNER_EXECUTABLE "" CACHE FILEPATH
+    "Host-native ComponentScanner for a cross-compile whose binaries the host cannot run")
+if(GE_COMPONENT_SCANNER_EXECUTABLE AND NOT EXISTS "${GE_COMPONENT_SCANNER_EXECUTABLE}")
     message(FATAL_ERROR
-        "ComponentScanner requires 'dotnet' to generate ComponentReflection.gen.cpp, "
-        "but it was not found. Install the .NET 10 SDK, or set DOTNET_ROOT / DOTNET_EXECUTABLE.")
+        "GE_COMPONENT_SCANNER_EXECUTABLE='${GE_COMPONENT_SCANNER_EXECUTABLE}' does not exist")
+endif()
+# The scanner is also a DEPENDS of the generation below: a rebuilt scanner regenerates the
+# outputs (a target named only in COMMAND is built first, but its change re-runs nothing).
+if(GE_COMPONENT_SCANNER_EXECUTABLE)
+    set(_ge_component_scanner_command "${GE_COMPONENT_SCANNER_EXECUTABLE}")
+    message(STATUS "Using host ComponentScanner for codegen: ${GE_COMPONENT_SCANNER_EXECUTABLE}")
+else()
+    add_subdirectory("${CMAKE_SOURCE_DIR}/Tools/ComponentScanner" "${CMAKE_BINARY_DIR}/Tools/ComponentScanner")
+    # The target name, not its file: a custom command runs a target through the
+    # configured CMAKE_CROSSCOMPILING_EMULATOR.
+    set(_ge_component_scanner_command ComponentScanner)
 endif()
 
-set(_GE_COMPONENT_SCANNER_CSPROJ "${CMAKE_SOURCE_DIR}/Managed/ComponentScanner/ComponentScanner.csproj")
-set(_GE_COMPONENT_SCANNER_DLL "${CMAKE_SOURCE_DIR}/Managed/ComponentScanner/bin/$<CONFIG>/net10.0/ComponentScanner.dll")
 set(_GE_COMPONENT_GEN_DIR "${CMAKE_BINARY_DIR}/generated")
 set(_GE_COMPONENT_GEN_CPP "${_GE_COMPONENT_GEN_DIR}/ComponentReflection.gen.cpp")
 # The web library's component types, from the same scan: build products, never committed.
 set(_GE_COMPONENT_GEN_DTS "${_GE_COMPONENT_GEN_DIR}/components.d.ts")
 set(_GE_COMPONENT_GEN_JSON "${_GE_COMPONENT_GEN_DIR}/components.json")
-set(_GE_COMPONENT_SCANNER_STAMP "${CMAKE_BINARY_DIR}/_managed_stamps/ComponentScanner.$<CONFIG>.stamp")
 file(MAKE_DIRECTORY "${_GE_COMPONENT_GEN_DIR}")
-file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/_managed_stamps")
-
-# The scanner's own sources, re-globbed before each build (outside its obj/
-# and bin/ outputs) so an added source rebuilds the scanner.
-include("${CMAKE_SOURCE_DIR}/cmake/ManagedProjectSources.cmake")
-ge_managed_project_sources(_ge_component_scanner_sources
-    "${CMAKE_SOURCE_DIR}/Managed/ComponentScanner")
 
 # Component headers to scan: the core Engine/Include/Components plus each engine
 # module that ships its own Include/Components tree (e.g. HeightFog, Particles).
@@ -684,6 +667,18 @@ set(_ge_scan_in_args "")
 foreach(_root ${_ge_component_scan_roots})
     list(APPEND _ge_scan_in_args --in "${_root}")
 endforeach()
+# A component field may name an enum a module declares outside its Components tree
+# (NavigationSurface::GridType is Pathfinding::GridType): the scanner reads it from the header
+# the component header includes, found under these module include roots, and lists that header
+# in the depfile so an edit to it re-runs the scan.
+file(GLOB _ge_module_include_roots LIST_DIRECTORIES true "${CMAKE_CURRENT_SOURCE_DIR}/Modules/*/Include")
+foreach(_root ${_ge_module_include_roots})
+    if(IS_DIRECTORY "${_root}")
+        list(APPEND _ge_scan_in_args --enum-include-root "${_root}")
+    endif()
+endforeach()
+# The depfile names this build tree's paths: keep it out of generated/, which the SDK stages.
+set(_GE_COMPONENT_GEN_DEPFILE "${CMAKE_CURRENT_BINARY_DIR}/ComponentReflection.gen.d")
 
 # Re-glob the scanned headers (core + module) at build time so adding either
 # re-triggers the scan without re-running configure.
@@ -691,31 +686,18 @@ file(GLOB_RECURSE _ge_component_headers CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/Include/Components/*.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/Modules/*/Include/Components/*.h")
 
-# Build the scanner (stamped — a no-op MSBuild visit when nothing changed).
-add_custom_command(
-    OUTPUT "${_GE_COMPONENT_SCANNER_STAMP}"
-    # --unset=Platform: vcvars shells export Platform=x64, which would reroute the
-    # output to bin/x64/<Config>/ away from _GE_COMPONENT_SCANNER_DLL below.
-    COMMAND ${CMAKE_COMMAND} -E env --unset=TargetName --unset=TARGETNAME
-            --unset=Platform --unset=PLATFORM
-            "${DOTNET_EXECUTABLE}" build "${_GE_COMPONENT_SCANNER_CSPROJ}"
-            --configuration $<CONFIG>
-            -nologo -v:minimal /p:UseSharedCompilation=true
-    COMMAND ${CMAKE_COMMAND} -E touch "${_GE_COMPONENT_SCANNER_STAMP}"
-    DEPENDS ${_ge_component_scanner_sources}
-    COMMENT "Building ComponentScanner (component-reflection codegen tool)"
-    VERBATIM)
-
 # Run the scanner over the component headers to (re)generate the reflection TU and,
 # from the same parse, the web library's components.d.ts and components.json.
 add_custom_command(
     OUTPUT "${_GE_COMPONENT_GEN_CPP}" "${_GE_COMPONENT_GEN_DTS}" "${_GE_COMPONENT_GEN_JSON}"
-    COMMAND "${DOTNET_EXECUTABLE}" "${_GE_COMPONENT_SCANNER_DLL}"
+    COMMAND ${_ge_component_scanner_command}
             ${_ge_scan_in_args}
             --out "${_GE_COMPONENT_GEN_CPP}"
             --emit-dts "${_GE_COMPONENT_GEN_DTS}"
             --emit-json "${_GE_COMPONENT_GEN_JSON}"
-    DEPENDS ${_ge_component_headers} "${_GE_COMPONENT_SCANNER_STAMP}"
+            --depfile "${_GE_COMPONENT_GEN_DEPFILE}"
+    DEPENDS ${_ge_component_headers} ${_ge_component_scanner_command}
+    DEPFILE "${_GE_COMPONENT_GEN_DEPFILE}"
     COMMENT "Generating ComponentReflection.gen.cpp from component headers"
     VERBATIM)
 
@@ -723,23 +705,101 @@ add_custom_command(
 set_source_files_properties("${_GE_COMPONENT_GEN_CPP}" PROPERTIES
     GENERATED TRUE)
 
-# The reflection TUs (generated + hand-written) contain nothing but file-scope
-# registrar statics — no symbol any other TU references. As members of a STATIC
-# Engine archive (the wasm build) the linker silently drops them and every
-# reflected component loses its field table at runtime; the SHARED desktop
-# Engine includes every member, which is what kept the defect latent. An OBJECT
-# library's objects reach every consumer's final link unconditionally, on both
-# link shapes. Each file is its own TU (UNITY_BUILD OFF) so GE_REFLECT explicit
-# specializations / per-line auto-register statics stay isolated.
-#
-# LensFlareSourceReflection / CubeLutEffectReflection / UIDocumentReflection:
-# hand-registered (AssetRef<> fields the scanner can't parse; UIDocument also
-# carries the hand-written UIRenderMode enum-name table).
+# The script API description: the same scanner reads every module's
+# Include/<Module>/<Name>ScriptApi.h into one <Name>.json, and refuses a script marker in any
+# other header of a module's Include tree, of Engine/Include and of Engine/ECSModules. The
+# build scans into the binary dir, so a refused declaration fails the build; the committed
+# copy, Engine/Scripting/engine-api/, is rewritten only by the UpdateEngineApi target, and
+# ApiDescriptionDriftTests fails while it differs from a fresh scan. The scan writes one file
+# per marked module, which the build cannot name ahead of it, so a stamp is its output.
+set(_GE_ENGINE_API_SCAN_DIR "${_GE_COMPONENT_GEN_DIR}/engine-api")
+set(_GE_ENGINE_API_SCAN_STAMP "${_GE_COMPONENT_GEN_DIR}/engine-api.stamp")
+set(_ge_engine_api_scan_args
+    --api-modules "${CMAKE_CURRENT_SOURCE_DIR}/Modules"
+    --api-search "${CMAKE_CURRENT_SOURCE_DIR}/Include"
+    --api-search "${CMAKE_CURRENT_SOURCE_DIR}/ECSModules")
+# The component roots: the same scan mirrors every engine component in C#
+# (Tools/ComponentScanner/ComponentMirror.h). Every run passes them, UpdateEngineApi included: the
+# C# writer cleans Generated/ recursively, so a run without them would delete Generated/Components.
+foreach(_root ${_ge_component_scan_roots})
+    list(APPEND _ge_engine_api_scan_args --api-components "${_root}")
+endforeach()
+file(GLOB_RECURSE _ge_api_scanned_files CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/Modules/*/Include/*"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Include/*"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ECSModules/*")
+# The same scan writes each script module's native binding (NativeBindingEmitter.h): the thunks
+# and the function table in generated/scripting/<Name>.script.gen.cpp, and the table's type in
+# the matching .h. Each Modules/*/Include/*/<Name>ScriptApi.h is the <Name> script module.
+set(_GE_SCRIPT_BINDING_DIR "${_GE_COMPONENT_GEN_DIR}/scripting")
+file(GLOB _ge_script_api_headers CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/Modules/*/Include/*/*ScriptApi.h")
+set(_ge_script_binding_sources "")
+set(_ge_script_binding_files "")
+foreach(_header ${_ge_script_api_headers})
+    string(REGEX REPLACE "^.*/([^/]+)ScriptApi\\.h$" "\\1" _module "${_header}")
+    list(APPEND _ge_script_binding_sources "${_GE_SCRIPT_BINDING_DIR}/${_module}.script.gen.cpp")
+    list(APPEND _ge_script_binding_files
+        "${_GE_SCRIPT_BINDING_DIR}/${_module}.script.gen.cpp" "${_GE_SCRIPT_BINDING_DIR}/${_module}.script.gen.h")
+endforeach()
+list(REMOVE_DUPLICATES _ge_script_binding_sources)
+list(REMOVE_DUPLICATES _ge_script_binding_files)
+# The component mirrors' layout pins: the sizeof, alignof and offsetof of every mirrored component
+# and the values of their enums, so a C++ edit that moves a byte fails the engine build.
+list(APPEND _ge_script_binding_sources "${_GE_SCRIPT_BINDING_DIR}/Components.layout.gen.cpp")
+list(APPEND _ge_script_binding_files "${_GE_SCRIPT_BINDING_DIR}/Components.layout.gen.cpp")
+add_custom_command(
+    OUTPUT "${_GE_ENGINE_API_SCAN_STAMP}"
+    BYPRODUCTS ${_ge_script_binding_files}
+    COMMAND ${_ge_component_scanner_command} ${_ge_engine_api_scan_args} --emit-api "${_GE_ENGINE_API_SCAN_DIR}"
+            --emit-native "${_GE_SCRIPT_BINDING_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E touch "${_GE_ENGINE_API_SCAN_STAMP}"
+    DEPENDS ${_ge_api_scanned_files} ${_ge_component_scanner_command}
+    COMMENT "Scanning the script API headers"
+    VERBATIM)
+add_custom_target(EngineApiScan DEPENDS "${_GE_ENGINE_API_SCAN_STAMP}")
+set_target_properties(EngineApiScan PROPERTIES FOLDER "Tools")
+add_dependencies(Engine EngineApiScan)
+# The committed outputs of the scan: the description with component-classes.txt, and the C# binding
+# with the component mirrors (Managed/Scripting.Bindings/Generated/Components), which
+# ApiDescriptionDriftTests compares with a fresh scan.
+add_custom_target(UpdateEngineApi
+    COMMAND ${_ge_component_scanner_command} ${_ge_engine_api_scan_args}
+            --emit-api "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/engine-api"
+            --emit-csharp "${CMAKE_SOURCE_DIR}/Managed/Scripting.Bindings/Generated"
+    COMMENT "Regenerating Engine/Scripting/engine-api and Managed/Scripting.Bindings/Generated"
+    VERBATIM)
+set_target_properties(UpdateEngineApi PROPERTIES FOLDER "Tools")
+
+# The native script bindings: the generated thunk units and what they call. Desktop builds link
+# the objects into GameEngine.Native, the library the managed bindings load; the wasm build,
+# where Engine is STATIC and there is no GameEngine.Native, puts them on every consumer's link
+# line as explicit objects (the same reason as EngineComponentReflection below), so the
+# ge_<module>_<function> exports survive the link.
+add_library(EngineScriptBindings OBJECT
+    ${_ge_script_binding_sources}
+    Source/Scripting/ScriptThunks.cpp)
+set_source_files_properties(${_ge_script_binding_files} PROPERTIES GENERATED TRUE)
+add_dependencies(EngineScriptBindings EngineApiScan)
+set_target_properties(EngineScriptBindings PROPERTIES UNITY_BUILD OFF FOLDER "Engine")
+target_include_directories(EngineScriptBindings PRIVATE
+    $<TARGET_PROPERTY:Engine,INCLUDE_DIRECTORIES>
+    "${CMAKE_CURRENT_SOURCE_DIR}/Source")
+target_compile_definitions(EngineScriptBindings PRIVATE
+    $<TARGET_PROPERTY:Engine,COMPILE_DEFINITIONS>
+    GE_SCRIPTING_BUILD)
+target_link_libraries(EngineScriptBindings PRIVATE Input Scene)
+
+# The generated reflection TU contains nothing but file-scope registrar statics —
+# no symbol any other TU references. As a member of a STATIC Engine archive (the
+# wasm build) the linker silently drops it and every reflected component loses its
+# field table at runtime; the SHARED desktop Engine includes every member, which is
+# what kept the defect latent. An OBJECT library's objects reach every consumer's
+# final link unconditionally, on both link shapes. The TU is built alone
+# (UNITY_BUILD OFF) so GE_REFLECT explicit specializations / per-line auto-register
+# statics stay isolated.
 add_library(EngineComponentReflection OBJECT
-    "${_GE_COMPONENT_GEN_CPP}"
-    Source/Components/LensFlareSourceReflection.cpp
-    Source/Components/CubeLutEffectReflection.cpp
-    Source/Components/UIDocumentReflection.cpp)
+    "${_GE_COMPONENT_GEN_CPP}")
 set_target_properties(EngineComponentReflection PROPERTIES UNITY_BUILD OFF)
 target_include_directories(EngineComponentReflection PRIVATE
     $<TARGET_PROPERTY:Engine,INCLUDE_DIRECTORIES>)
@@ -760,11 +820,12 @@ get_target_property(_ge_engine_lib_type Engine TYPE)
 if(_ge_engine_lib_type STREQUAL "STATIC_LIBRARY")
     target_link_libraries(Engine PUBLIC $<TARGET_OBJECTS:EngineComponentReflection>)
     add_dependencies(Engine EngineComponentReflection)
+    target_link_libraries(Engine PUBLIC $<TARGET_OBJECTS:EngineScriptBindings>)
+    add_dependencies(Engine EngineScriptBindings)
 else()
     target_link_libraries(Engine PRIVATE EngineComponentReflection)
 endif()
 
-target_sources(EngineComponentReflection PRIVATE Source/Components/AnimatedSprite2DReflection.cpp Source/Components/Sprite2DReflection.cpp)
 target_sources(Engine PRIVATE Source/Components/CoreComponentInstantiations.cpp)
 target_sources(Engine PRIVATE Source/Components/DDGIComponentInstantiations.cpp)
 target_sources(Engine PRIVATE Source/Components/AnimationComponentInstantiations.cpp)
@@ -781,6 +842,10 @@ target_sources(Engine PRIVATE
 target_sources(Engine PRIVATE
     Source/Engine/Hosting/HudPointer.cpp
     Source/Engine/Hosting/RuntimeHost.cpp)
+target_sources(Engine PRIVATE
+    Source/Engine/Loading/SceneLoader.cpp
+    Source/Engine/Loading/SceneLoaderScriptApi.cpp
+    Source/Engine/Loading/SceneLoadOperation.cpp)
 
 # Build system: GameConfig, Camera utility, BuildPipeline, AssetCollector (Player support)
 target_sources(Engine PRIVATE
@@ -790,44 +855,41 @@ target_sources(Engine PRIVATE
     Source/Engine/Build/AppIconGenerator.cpp
     Source/Engine/Build/BuildHost.cpp
     Source/Engine/Build/BuildPipeline.cpp
+    Source/Engine/Build/MobileContentStaging.cpp
+    Source/Engine/Build/MobileExportRunner.cpp
+    Source/Engine/Build/PythonBuildTool.cpp
     Source/Engine/Build/TerrainPageExport.cpp
     Source/Engine/Build/TexturePackageCook.cpp
     Source/Engine/Build/StagedAssetCook.cpp
     Source/Engine/Build/SceneExportStrip.cpp
+    Source/Engine/Build/ShipRules.cpp
     Source/Engine/Build/BuildPlatforms.cpp
+    Source/Engine/Build/WebExportContent.cpp
     Source/Engine/Build/WebExportRunner.cpp
-    Source/Engine/Build/MobileExportRunner.cpp
-    Source/Engine/Build/PythonBuildTool.cpp
-    Source/Engine/Build/MobileContentStaging.cpp
+    Source/Engine/Build/MaterialVariantCookTool.cpp
+    Source/Engine/Build/ExportRequirements.cpp
     Source/Engine/Build/MacBundleAssembler.cpp
     Source/Engine/Build/NativeAotProject.cpp
+    Source/Engine/Build/ShippedScriptSources.cpp
     Source/Engine/Build/NativeScriptStaging.cpp
     Source/Engine/Build/OutputPromotion.cpp
     Source/Engine/Build/PackageBuildStaging.cpp
     Source/Engine/Build/PackagedGameLayout.cpp
     Source/Engine/Build/PlayerSourcePreparation.cpp
     Source/Engine/Build/RuntimeDependencyStaging.cpp
+    Source/Engine/Build/CancellableShellProcess.cpp
     Source/Engine/Build/DirectoryCopy.cpp
     Source/Engine/Build/DotnetHost.cpp
     Source/Engine/Rendering/Camera.cpp
-    Source/Engine/Rendering/TileMapCameraPixelGrid.cpp
-	Source/Engine/Rendering/CameraAspectRatio.cpp
+    Source/Engine/Rendering/CameraAspectRatio.cpp
 )
-
-if(GE_MOBILE)
-    target_sources(Engine PRIVATE Source/Engine/Build/CancellableShellProcess_Mobile.cpp)
-else()
-    target_sources(Engine PRIVATE Source/Engine/Build/CancellableShellProcess.cpp)
-endif()
 
 # Video player + writer backends: AVFoundation on macOS, FFmpeg on Windows/Linux.
 if(APPLE)
-    target_sources(Engine PRIVATE Source/Engine/Video/VideoPlayer.mm)
-    if(GE_MOBILE)
-        target_sources(Engine PRIVATE Source/Engine/Video/VideoWriterNull.cpp)
-    else()
-        target_sources(Engine PRIVATE Source/Engine/Video/VideoWriter.mm)
-    endif()
+    target_sources(Engine PRIVATE
+        Source/Engine/Video/VideoPlayer.mm
+        Source/Engine/Video/VideoWriter.mm
+    )
     # ObjC++ cannot share a C++-only precompiled header or be concatenated into
     # a generated C++ unity translation unit.
     set_source_files_properties(
@@ -845,14 +907,15 @@ if(APPLE)
         "-framework VideoToolbox"
     )
 else()
-    find_package(FFMPEG COMPONENTS AVCODEC AVFORMAT AVUTIL SWSCALE QUIET)
-    if(FFMPEG_FOUND)
+    include(${CMAKE_SOURCE_DIR}/cmake/FFmpeg.cmake)
+    ge_find_ffmpeg()
+    if(GE_FFMPEG_FOUND)
         target_sources(Engine PRIVATE
             Source/Engine/Video/VideoPlayerFFmpeg.cpp
             Source/Engine/Video/VideoWriterFFmpeg.cpp
         )
-        target_include_directories(Engine PRIVATE ${FFMPEG_INCLUDE_DIRS})
-        target_link_libraries(Engine PRIVATE ${FFMPEG_LIBRARIES})
+        target_include_directories(Engine PRIVATE ${GE_FFMPEG_INCLUDE_DIR})
+        target_link_libraries(Engine PRIVATE ${GE_FFMPEG_LIBRARIES})
         target_compile_definitions(Engine PRIVATE GE_HAVE_FFMPEG=1)
     else()
         message(STATUS "FFmpeg not found — video playback and recording disabled (null backends)")
@@ -918,8 +981,9 @@ endif()
 target_compile_definitions(Engine PRIVATE GE_ENABLE_NVTX=$<BOOL:${GE_NVTX_ACTIVE}>)
 message(STATUS "NVTX ranges: ${GE_NVTX_ACTIVE} (runtime gate: GE_NVTX)")
 
-# Engine version (from project(GameEngine VERSION ...)) — available as GE_ENGINE_VERSION string
-target_compile_definitions(Engine PUBLIC GE_ENGINE_VERSION="${PROJECT_VERSION}")
+# Generated headers: Core/EngineVersion.h, written from the root VERSION file by the root
+# CMakeLists.txt, and Jobs/CompileServerVersion.h, written below.
+target_include_directories(Engine PUBLIC "${CMAKE_BINARY_DIR}/generated")
 
 # GE_ENGINE_BUILD_CONFIG: the configuration this Engine library is built in ("DebugFast",
 # "Release", ...), from the generator's per-config $<CONFIG>. The build pipeline compares it with
@@ -940,7 +1004,6 @@ if(EXISTS "${COMPILE_SERVER_VERSION_TXT}")
     set(_GEN_DIR "${CMAKE_BINARY_DIR}/generated")
     file(MAKE_DIRECTORY "${_GEN_DIR}/Jobs")
     configure_file("${CMAKE_SOURCE_DIR}/Engine/Include/Jobs/CompileServerVersion.h.in" "${_GEN_DIR}/Jobs/CompileServerVersion.h" @ONLY)
-    target_include_directories(Engine PUBLIC "${_GEN_DIR}")
 else()
     message(WARNING "CompileServer version file not found: ${COMPILE_SERVER_VERSION_TXT}")
 endif()
@@ -1038,8 +1101,7 @@ if(MSVC)
         target_compile_definitions(Engine PRIVATE ECS_SIMD_ENABLED=1 ECS_SIMD_ARM64=1)
         message(STATUS "Enabling ARM64 NEON SIMD support for Engine (MSVC, system processor ARM64)")
     else()
-        # x64 AVX2 support
-        target_compile_options(Engine PRIVATE /arch:AVX2)
+        # x64 AVX2 support (/arch:AVX2 is set for every target at the top level)
         target_compile_definitions(Engine PRIVATE ECS_SIMD_ENABLED=1 ECS_SIMD_X64=1)
         message(STATUS "Enabling x64 AVX2 SIMD support for Engine (MSVC, assuming x64 target)")
     endif()
@@ -1054,7 +1116,6 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         include(CheckCXXCompilerFlag)
         check_cxx_compiler_flag("-mavx2" COMPILER_SUPPORTS_AVX2)
         if(COMPILER_SUPPORTS_AVX2)
-            target_compile_options(Engine PRIVATE -mavx2)
             target_compile_definitions(Engine PRIVATE ECS_SIMD_ENABLED=1 ECS_SIMD_X64=1)
             message(STATUS "Enabling x64 AVX2 SIMD support for Engine (GCC/Clang)")
         endif()
@@ -1073,13 +1134,12 @@ target_link_libraries(Engine PRIVATE nlohmann_json::nlohmann_json)
 
 # RenderServices also uses JSON for RenderPipeline compilation.
 target_link_libraries(RenderServices PRIVATE nlohmann_json::nlohmann_json)
+# The material system, the variant cache, the texture service and the resolve service
+# report their pending work to the tracker; their headers only forward-declare it.
+target_link_libraries(RenderServices PRIVATE SceneLoadTracker)
 
-# stb_image for EmbeddedImageDecoder (embedded texture decoding) and RgbaImageOps (resize, PNG and JPEG encode).
-if(TARGET stb::stb)
-    target_link_libraries(RenderServices PRIVATE stb::stb)
-elseif(STB_INCLUDE_DIRS)
-    target_include_directories(RenderServices PRIVATE ${STB_INCLUDE_DIRS})
-endif()
+# TextureService.h holds decoded embedded images (Image/PixelImage.h).
+target_link_libraries(RenderServices PUBLIC Image)
 
 # GLM usage requirements propagate to Engine consumers via Scene -> Mathematics.
 # Do not link glm::glm directly on Engine here — that duplicates libglm on
@@ -1112,8 +1172,8 @@ endif()
 # splices each module's .obj files into Engine's SHARED link, and CMake's
 # __create_def walks them for export when WINDOWS_EXPORT_ALL_SYMBOLS=ON.
 #
-# Editor-only modules (VCSIntegration, which lives in
-# EditorSDK.dll) are NOT listed here — Engine.dll doesn't use them, and
+# The editor-only module VCSIntegration, which lives in EditorSDK.dll, is
+# NOT listed here: Engine.dll does not use it, and
 # packaged games must ship no VCS code (every VCS provider is an
 # Packages/*-vcs Editor-kind package module). Header-only INTERFACE
 # libs (Mathematics, Types) are also omitted since they have no .obj files
@@ -1124,14 +1184,14 @@ endif()
 # other ECS-ish modules; Editor.exe drops its direct Graph link to avoid
 # duplicate-state across the DLL boundary.
 set(GE_ENGINE_MODULES
-    SceneLoadTracker
-    Logger Image AssetCore AssetDatabase JobSystem ECS FileWatcher AssetRuntime Audio Scripting NativeScripting
-    Platform FileSystem FileSystemCore Memory GameEngineRendering RenderServices VolumetricFog HeightFog GPUFogParticles Particles ParticlesAuthoring ParticlesAssets ParticlesSystems ParticlesRendering Animation Sprite2D NumericExpression UI Physics PhysicsECS
-    Pathfinding PathfindingECS Terrain PageStreaming TerrainECS TerrainGrass CBTTerrain CBTTerrainECS Ocean Spline SplineGeometry SplineLayout SplineECS SplineRecipes MeshPicking TileMap TileMapECS MarkupECS Graph
-    GenerationalVector Scheduler Scene SceneBvh Text Localization Input PluginAPI
+    Logger AssetCore AssetDatabase JobSystem ECS FileWatcher AssetRuntime Audio Scripting NativeScripting
+    Platform FileSystem FileSystemCore Memory GameEngineRendering RenderServices VolumetricFog HeightFog GPUFogParticles Particles ParticlesAuthoring ParticlesAssets ParticlesSystems ParticlesRendering Animation NumericExpression UI Physics PhysicsECS
+    Pathfinding PathfindingECS AI AIECS SpatialGrid SpatialGridECS Terrain PageStreaming TerrainECS TerrainGrass CBTTerrain CBTTerrainECS Ocean Spline SplineGeometry SplineLayout SplineECS SplineRecipes MarkupECS Graph
+    GenerationalVector Scheduler SceneLoadTracker Scene SceneBvh MeshPicking Text Input PluginAPI Image
+    Sprite2D TileMap TileMapECS
     PlatformServices PlatformProvider${GE_PLATFORM_BACKEND})
 target_link_libraries(Engine
-    PRIVATE ${GE_ENGINE_MODULES} ${PLATFORM_LIBS} concurrentqueue::concurrentqueue
+    PRIVATE ${GE_ENGINE_MODULES} ${PLATFORM_LIBS} concurrentqueue::concurrentqueue Localization
 )
 foreach(_ge_mod IN LISTS GE_ENGINE_MODULES)
     # Splice each OBJECT module's .obj files into Engine via TARGET_OBJECTS so
@@ -1144,6 +1204,17 @@ foreach(_ge_mod IN LISTS GE_ENGINE_MODULES)
     target_compile_definitions(Engine INTERFACE
         $<TARGET_PROPERTY:${_ge_mod},INTERFACE_COMPILE_DEFINITIONS>)
 endforeach()
+# Engine holds the process's allocation counter (the Memory module's), and links Memory
+# privately, so it carries Memory's link-interface marker itself (cmake/AllocationHook.cmake).
+set_target_properties(Engine PROPERTIES INTERFACE_GE_ALLOCATION_COUNTER_LINKED ON)
+set_property(TARGET Engine APPEND PROPERTY COMPATIBLE_INTERFACE_BOOL GE_ALLOCATION_COUNTER_LINKED)
+
+# Every interface definition and include directory of Engine and these modules reaches
+# every target that links Engine; cmake/EnginePublicInterface.cmake lists the reviewed
+# ones. Checked once every directory has declared its interface.
+include(${CMAKE_SOURCE_DIR}/cmake/EnginePublicInterface.cmake)
+cmake_language(EVAL CODE
+    "cmake_language(DEFER DIRECTORY \"${CMAKE_SOURCE_DIR}\" CALL ge_check_engine_public_interface Engine ${GE_ENGINE_MODULES})")
 
 # Engine.dll's exports.def is generated by GenerateEngineExportsDef.cmake at
 # PRE_LINK time. It invokes the same internal `cmake -E __create_def` helper
@@ -1200,7 +1271,7 @@ target_compile_definitions(Engine PRIVATE GE_HAVE_FBTBLEND=1)
 set_source_files_properties(Source/ThirdParty/fbtBlend/fbtBlend.cpp PROPERTIES
     SKIP_PRECOMPILE_HEADERS ON
     SKIP_UNITY_BUILD_INCLUSION ON
-    COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<CXX_COMPILER_ID:AppleClang>:-Wno-shorten-64-to-32>")
+    COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->")
 
 # ModelAssetLoadBlend.cpp transitively includes fbtBlend.h which is large +
 # emits MSVC narrowing warnings even with #pragma warning push/disable at the
@@ -1210,7 +1281,7 @@ set_source_files_properties(Source/ThirdParty/fbtBlend/fbtBlend.cpp PROPERTIES
 set_source_files_properties(Source/Assets/ModelAssetLoadBlend.cpp PROPERTIES
     SKIP_PRECOMPILE_HEADERS ON
     SKIP_UNITY_BUILD_INCLUSION ON
-    COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<CXX_COMPILER_ID:AppleClang>:-Wno-shorten-64-to-32>")
+    COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->")
 
 # Optional zlib for fbtBlend (Blender < 3.0 PM_COMPRESSED .blend files).
 find_package(ZLIB QUIET)
@@ -1289,20 +1360,6 @@ if(TARGET meshoptimizer::meshoptimizer)
     target_compile_definitions(Engine PRIVATE
         GE_MESHOPT_VERSION="meshopt-${GE_MESHOPT_VERSION_STR}")
     message(STATUS "Cooked-LOD cache meshopt version key: meshopt-${GE_MESHOPT_VERSION_STR}")
-endif()
-
-# stb_image (header-only via vcpkg config target or include path)
-# Try modern imported target first
-if(TARGET stb::stb)
-    target_link_libraries(Engine PRIVATE stb::stb)
-    target_compile_definitions(Engine PRIVATE GE_HAVE_STB)
-endif()
-
-# Fallback: detect headers directly if no CMake target is exported
-find_path(STB_INCLUDE_DIRS "stb_image.h")
-if(STB_INCLUDE_DIRS)
-    target_include_directories(Engine PRIVATE ${STB_INCLUDE_DIRS})
-    target_compile_definitions(Engine PRIVATE GE_HAVE_STB)
 endif()
 
 # Fold the stb_image_resize2 version into the texture-cook cache config hash: a
@@ -1411,6 +1468,15 @@ else()
 	message(STATUS "Engine: .NET hosting library not available on this platform, using stubs")
 endif()
 
+# WebView2Loader.dll loads with the first web view rather than with Engine.dll: only the editor's
+# Web panel creates one, and the game export does not ship the loader, so a load-time import would
+# stop every exported game before it starts. RuntimeDependencyStagingTests checks that every
+# load-time import of Engine.dll ships with a game or is part of Windows.
+if(WIN32 AND MSVC)
+	target_link_options(Engine PRIVATE "/DELAYLOAD:WebView2Loader.dll")
+	target_link_libraries(Engine PRIVATE delayimp)
+endif()
+
 
 # Native ABI DLL: GameEngine.Native
 # Only build the native scripting shim when scripting support is enabled.
@@ -1426,13 +1492,12 @@ if(ENABLE_SCRIPTING)
       Source/Scripting/UIElementABI.cpp
       Source/Scripting/UIElementValueABI.cpp
       Source/Scripting/UIElementTypeABI.cpp
-      Source/Scripting/PhysicsABI.cpp
-      Source/Scripting/TileMapABI.cpp
       Source/Scripting/PlatformServicesABI.cpp
   )
 
   # Export symbols from this target
   target_compile_definitions(GameEngine.Native PRIVATE GE_SCRIPTING_BUILD)
+  ge_add_production_allocation_hook(GameEngine.Native)
 
   # Phase 1: Engine is now SHARED. GameEngine.Native links against Engine's
   # import lib (Windows) / soname (POSIX) like any other dynamic consumer.
@@ -1440,6 +1505,9 @@ if(ENABLE_SCRIPTING)
   # Engine's static .o files into a SHARED GameEngine.Native; with Engine
   # itself SHARED, those flags would error or be no-ops.
   target_link_libraries(GameEngine.Native PRIVATE Engine)
+  # The generated script API thunks and tables (EngineScriptBindings above): GE_<Module>_GetInterface
+  # is an export of this library.
+  target_link_libraries(GameEngine.Native PRIVATE EngineScriptBindings)
 
 	  # When mimalloc is enabled, ensure the native ABI DLL participates in the same
 	  # allocator/override setup as the host Editor executable to avoid cross-module
@@ -1492,7 +1560,7 @@ if(ENABLE_SCRIPTING)
 			        if(_GE_MIMALLOC_OVERRIDE_LIB)
 			          target_link_libraries(GameEngine.Native PRIVATE ${_GE_MIMALLOC_OVERRIDE_LIB})
 			        else()
-			          target_sources(GameEngine.Native PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Source/Memory/MimallocOverrides.cpp)
+			          target_sources(GameEngine.Native PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Modules/Memory/Source/MimallocOverrides.cpp)
 			        endif()
 			      else()
 			        message(STATUS "GameEngine.Native: mimalloc target is not a shared library; disabling mimalloc (falling back to system allocator)")
@@ -1533,9 +1601,9 @@ if(ENABLE_SCRIPTING)
   # MSVC's linker may resolve ABI symbols from Engine.lib (no export
   # decoration) instead of the DLL's .obj (dllexport), silently dropping them
   # from the export table.
+  ge_windows_export_all_symbols(GameEngine.Native)
   set_target_properties(GameEngine.Native PROPERTIES
       OUTPUT_NAME "GameEngine.Native"
-      WINDOWS_EXPORT_ALL_SYMBOLS ON
       RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
       RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}/bin/Debug
       RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/bin/Release
@@ -1569,32 +1637,6 @@ if(BUILD_TESTING)
     find_package(GTest CONFIG QUIET)
 endif()
 if(BUILD_TESTING AND (GTest_FOUND OR TARGET GTest::gtest))
-    # The output an engine opens from the default ApplicationConfig: Silent,
-    # so no audio device opens unless an application asks for one.
-    add_executable(EngineAudioOutputTests Tests/EngineAudioOutputTests.cpp
-        ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp)
-    target_link_libraries(EngineAudioOutputTests PRIVATE Engine GTest::gtest GTest::gtest_main)
-    target_include_directories(EngineAudioOutputTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
-    set_target_properties(EngineAudioOutputTests PROPERTIES
-        CXX_STANDARD 20
-        CXX_STANDARD_REQUIRED ON
-        FOLDER "Engine/Tests"
-    )
-    ge_set_output_tests(EngineAudioOutputTests)
-    ge_stage_runtime_dependencies(EngineAudioOutputTests)
-    add_test(NAME EngineAudioOutputTests COMMAND $<TARGET_FILE:EngineAudioOutputTests>)
-
-    # The scene-build pump's shader-source read owns an EngineCore lifecycle (job
-    # system + AssetManager), so it stays out of the EngineCore-free material aggregate.
-
-    add_executable(EngineMaterialSourcePrefetchTests Tests/MaterialSourcePrefetchTests.cpp)
-    target_link_libraries(EngineMaterialSourcePrefetchTests PRIVATE Engine GTest::gtest GTest::gtest_main)
-    target_compile_features(EngineMaterialSourcePrefetchTests PRIVATE cxx_std_20)
-    set_target_properties(EngineMaterialSourcePrefetchTests PROPERTIES FOLDER "Engine/Tests")
-    ge_set_output_tests(EngineMaterialSourcePrefetchTests)
-    ge_stage_runtime_dependencies(EngineMaterialSourcePrefetchTests)
-    add_test(NAME EngineMaterialSourcePrefetchTests COMMAND $<TARGET_FILE:EngineMaterialSourcePrefetchTests>)
-
     # Link the runtime API through Engine, with no editor include directories or
     # implementation TUs. This catches missing DLL exports as well as API drift.
     add_executable(EngineSplineLayoutTests Tests/SplineLayoutRuntimeTests.cpp)
@@ -1608,7 +1650,6 @@ endif()
 if(GTest_FOUND OR TARGET GTest::gtest)
     add_executable(EngineHotReloadBridgeSmokeTests Tests/RenderingHotReloadBridgeSmokeTests.cpp)
     target_link_libraries(EngineHotReloadBridgeSmokeTests PRIVATE Engine GTest::gtest GTest::gtest_main)
-    target_include_directories(EngineHotReloadBridgeSmokeTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
     if(TARGET GameEngine.Native)
         target_link_libraries(EngineHotReloadBridgeSmokeTests PRIVATE GameEngine.Native)
     endif()
@@ -1626,6 +1667,8 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     add_executable(OceanDepthCacheBakerTests Tests/OceanDepthCacheBakerTests.cpp
         ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp)
     target_link_libraries(OceanDepthCacheBakerTests PRIVATE Engine GTest::gtest)
+    target_include_directories(OceanDepthCacheBakerTests PRIVATE
+        ${CMAKE_SOURCE_DIR}/Tests) # PagedTiledTerrain.h
     set_target_properties(OceanDepthCacheBakerTests PROPERTIES
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON
@@ -1643,6 +1686,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     add_executable(TextureAlphaCoverageGpuTests Tests/TextureAlphaCoverageGpuTests.cpp
         ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp)
     target_link_libraries(TextureAlphaCoverageGpuTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+    target_include_directories(TextureAlphaCoverageGpuTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
     set_target_properties(TextureAlphaCoverageGpuTests PROPERTIES
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON
@@ -1652,6 +1696,22 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     ge_stage_runtime_dependencies(TextureAlphaCoverageGpuTests)
     add_test(NAME TextureAlphaCoverageGpuTests COMMAND $<TARGET_FILE:TextureAlphaCoverageGpuTests>)
     set_tests_properties(TextureAlphaCoverageGpuTests PROPERTIES LABELS "Texture;GPU;Integration")
+
+    # The texture drain's command lists and submits, counted on a VulkanDevice subclass; the
+    # drain reads the EngineCore asset registry and the uploads decode on its job system.
+    add_executable(TextureUploadBatchGpuTests Tests/TextureUploadBatchGpuTests.cpp
+        ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp)
+    target_include_directories(TextureUploadBatchGpuTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Modules/Rendering")
+    target_link_libraries(TextureUploadBatchGpuTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+    set_target_properties(TextureUploadBatchGpuTests PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        FOLDER "Engine/Tests"
+    )
+    ge_set_output_tests(TextureUploadBatchGpuTests)
+    ge_stage_runtime_dependencies(TextureUploadBatchGpuTests)
+    add_test(NAME TextureUploadBatchGpuTests COMMAND $<TARGET_FILE:TextureUploadBatchGpuTests>)
+    set_tests_properties(TextureUploadBatchGpuTests PROPERTIES LABELS "Texture;GPU;Integration")
 endif()
 
 if(GTest_FOUND OR TARGET GTest::gtest)
@@ -1661,6 +1721,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     add_executable(TextureCookUsageTagTests Tests/TextureCookUsageTagTests.cpp
         ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp)
     target_link_libraries(TextureCookUsageTagTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+    target_include_directories(TextureCookUsageTagTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
     set_target_properties(TextureCookUsageTagTests PROPERTIES
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON
@@ -1705,13 +1766,13 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     ge_stage_runtime_dependencies(EngineHotReloadBridgeSelectiveInvalidationTests)
     add_test(NAME EngineHotReloadBridgeSelectiveInvalidationTests COMMAND $<TARGET_FILE:EngineHotReloadBridgeSelectiveInvalidationTests>)
 endif()
-# Engine tests: Application Tick/RunPlatformLoop driver contract
+# Engine tests: Application Tick/RunPlatformLoop driver and game-exit contracts
 if(GTest_FOUND OR TARGET GTest::gtest)
     add_executable(EngineApplicationTickTests
         Tests/ApplicationTickTests.cpp
         )
+    target_include_directories(EngineApplicationTickTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests)
     target_link_libraries(EngineApplicationTickTests PRIVATE Engine GTest::gtest GTest::gtest_main)
-    target_include_directories(EngineApplicationTickTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
     set_target_properties(EngineApplicationTickTests PROPERTIES
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON
@@ -1720,6 +1781,19 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     ge_set_output_tests(EngineApplicationTickTests)
     ge_stage_runtime_dependencies(EngineApplicationTickTests)
     add_test(NAME EngineApplicationTickTests COMMAND $<TARGET_FILE:EngineApplicationTickTests>)
+    if(TARGET GameEngine.Native)
+        add_executable(EngineApplicationExitTests Tests/ApplicationExitTests.cpp)
+        target_link_libraries(EngineApplicationExitTests PRIVATE Engine GameEngine.Native GTest::gtest GTest::gtest_main)
+        set_target_properties(EngineApplicationExitTests PROPERTIES
+            CXX_STANDARD 20
+            CXX_STANDARD_REQUIRED ON
+            FOLDER "Engine/Tests"
+        )
+        ge_set_output_tests(EngineApplicationExitTests)
+        ge_stage_runtime_dependencies(EngineApplicationExitTests)
+        add_test(NAME EngineApplicationExitTests COMMAND $<TARGET_FILE:EngineApplicationExitTests>)
+        set_tests_properties(EngineApplicationExitTests PROPERTIES WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+    endif()
 endif()
 
 # Engine tests: shaderpkg WGSL chunk round-trip
@@ -1728,7 +1802,6 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         Tests/ShaderPackageWgslTests.cpp
         )
     target_link_libraries(ShaderPackageWgslTests PRIVATE Engine GTest::gtest GTest::gtest_main)
-    target_include_directories(ShaderPackageWgslTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
     set_target_properties(ShaderPackageWgslTests PROPERTIES
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON
@@ -1747,7 +1820,9 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         Tests/OceanScheduleTests.cpp
         )
     target_link_libraries(OceanQueryTests PRIVATE Engine GTest::gtest GTest::gtest_main)
-    target_include_directories(OceanQueryTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
+    target_include_directories(OceanQueryTests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/Modules/Ocean/Source  # OceanRingMesh.h
+        ${CMAKE_SOURCE_DIR}/Tests)                        # DeathTestChild.h
     set_target_properties(OceanQueryTests PROPERTIES
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON
@@ -1773,10 +1848,9 @@ endif()
 if(GTest_FOUND OR TARGET GTest::gtest)
     add_executable(MeshLODGeneratorTests
         Tests/MeshLODGeneratorTests.cpp
+        Tests/MeshLODVisibleErrorTests.cpp
         Tests/MeshLODGeometryTests.cpp
         Tests/LodAssetSettingsTests.cpp
-        Tests/BoneLODAssetSettingsTests.cpp
-        Tests/ModelBoneLODTests.cpp
         Tests/MeshLODCacheTests.cpp
         Tests/PackagedModelLodTests.cpp
         Tests/AuthoredLODColorTests.cpp
@@ -1808,7 +1882,6 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     # test instantiates (World + MeshRenderer/WorldTransform/... e.Set paths); the
     # other HLOD suites are pure and need only Engine.
     target_link_libraries(EngineHlodBakeTests PRIVATE Engine GameEngine.Native GTest::gtest GTest::gtest_main)
-    target_include_directories(EngineHlodBakeTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
     set_target_properties(EngineHlodBakeTests PROPERTIES
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON
@@ -1854,24 +1927,27 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         # tree's Managed/ breaks the moment the build output is relocated.
         # CompileServerHost is defined later at the root scope (ENABLE_SCRIPTING
         # block); add_dependencies resolves it at generate time.
-        add_dependencies(EngineCompileServerUtilTests CompileServerHost)
         # The host build's stop script is staged too: a test runs it against
-        # hosts launched from the staged copy.
-        add_custom_command(TARGET EngineCompileServerUtilTests POST_BUILD
+        # hosts launched from the staged copy. A target of its own, so every suite in this
+        # folder that compiles through the staged host (ScriptingAbiIntegrationTests too)
+        # depends on it and meets the host of this build, whether or not its own exe relinks.
+        add_custom_target(StageTestCompileServerHost
             COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
                     "${CMAKE_SOURCE_DIR}/Managed/CompileServerHost/bin/$<CONFIG>/net10.0"
                     "$<TARGET_FILE_DIR:EngineCompileServerUtilTests>/Managed/CompileServerHost/bin/$<CONFIG>/net10.0"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${CMAKE_SOURCE_DIR}/Managed/CompileServerHost/StopHostRunningFromOutput.ps1"
                     "$<TARGET_FILE_DIR:EngineCompileServerUtilTests>/StopHostRunningFromOutput.ps1"
-            COMMENT "Staging CompileServerHost beside EngineCompileServerUtilTests")
+            COMMENT "Staging CompileServerHost beside the test executables")
+        add_dependencies(StageTestCompileServerHost CompileServerHost)
+        add_dependencies(EngineCompileServerUtilTests StageTestCompileServerHost)
     endif()
     add_test(NAME EngineCompileServerUtilTests COMMAND $<TARGET_FILE:EngineCompileServerUtilTests>)
 endif()
 
 # Engine tests: HotReloadPipeline compile-failure reporting, stage lifetime and
 # cancellation, on every platform. The suite drives the pipeline with fake
-# compilers and the mock loader and swapper, and the swap stage against a
+# compilers and the mock loader, and the swap stage against a
 # headless engine with the CLR disabled, so it needs neither GameEngine.Native
 # nor the managed test projects. It links
 # Engine only: JobSystem (issue #340) and Scripting (issue #356) are already
@@ -1973,7 +2049,6 @@ endif()
             function(ge_add_render_services_test target_name)
                 cmake_parse_arguments(PARSE_ARGV 1 GE_RENDER_TEST "OPT_IN" "" "")
                 add_executable(${target_name} ${GE_RENDER_TEST_UNPARSED_ARGUMENTS} Tests/EngineTestShaderSetup.cpp)
-                target_include_directories(${target_name} PRIVATE ${CMAKE_SOURCE_DIR}/Tests)
                 if(WIN32)
                     target_sources(${target_name} PRIVATE Tests/TestIsolationTripwireMain.cpp)
                     target_link_libraries(${target_name} PRIVATE Engine GameEngine.Native GTest::gtest)
@@ -2009,6 +2084,7 @@ endif()
                 Tests/MaterialVariantCookTests.cpp
                 Tests/MaterialBlendTests.cpp
                 Tests/MaterialRegistryTests.cpp
+                Tests/MaterialDeformationMarginsTests.cpp
                 Tests/ParallaxShadingCompositionTests.cpp
                 Tests/ProjectMaterialPrewarmServiceTests.cpp
                 Tests/ServedGenerationTableTests.cpp
@@ -2017,23 +2093,16 @@ endif()
                 Tests/ShaderCompilationCacheTests.cpp
                 Tests/CompileConcurrencyGateTests.cpp
                 # MaterialVariantCookTests exercises the offline web cook itself,
-                # not a re-implementation of it: the same TU the cook tool links.
+                # not a re-implementation of it: the same sources the cook tool links.
+                ${CMAKE_SOURCE_DIR}/Tools/MaterialVariantCook/CookWorkers.cpp
                 ${CMAKE_SOURCE_DIR}/Tools/MaterialVariantCook/WebWgslCook.cpp
                 ${CMAKE_SOURCE_DIR}/Packages/eztree/Native/EZTreeECS/EZTreeRuntimeMaterials.cpp)
             target_include_directories(EngineMaterialTests PRIVATE
+                ${CMAKE_SOURCE_DIR}/Engine/Source/Engine/Rendering # SceneDrawWarm.h
                 ${CMAKE_SOURCE_DIR}/Tools/MaterialVariantCook
                 ${CMAKE_SOURCE_DIR}/Tests # TestTempDir.h
                 ${CMAKE_SOURCE_DIR}/Packages/eztree/Native)
             ge_stage_shader_graph_nodes(EngineMaterialTests)
-
-            # The material and declare suites share the CBT shader-source fixture.
-            add_custom_target(StageCBTTestShaders
-                COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
-                        "${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT"
-                        "$<TARGET_FILE_DIR:EngineMaterialTests>/Assets/Shaders/CBT"
-                COMMENT "Staging CBT shader sources for rendering tests"
-                VERBATIM)
-            add_dependencies(EngineMaterialTests StageCBTTestShaders)
 
             # Textures: the texture service and bindless indexing, alpha probes, the
             # import and package cooks, KTX2 loading, SVG rasterization, video textures.
@@ -2098,7 +2167,9 @@ endif()
                 Tests/RenderServicesWorldMaterialTests.cpp
                 Tests/MaskVertexAlphaDepthTests.cpp
                 Tests/DisabledInHierarchyTests.cpp
+                Tests/SceneViewHiddenInHierarchyTests.cpp
                 Tests/ExtractionFastPathTests.cpp
+                Tests/KeyedWorldSubmissionsTests.cpp
                 Tests/HlodEvictionStickTests.cpp
                 Tests/HlodRuntimeReconcileTests.cpp
                 Tests/ExtractionStampAuditTests.cpp
@@ -2109,7 +2180,6 @@ endif()
                 Tests/MeshGPUResidencyGateTests.cpp
                 Tests/LodCrossfadeLivenessTests.cpp
                 Tests/MeshPoolGroupPlanTests.cpp
-                Tests/BucketPoolAllocatorTests.cpp
                 Tests/GPUMeshTableTests.cpp
                 Tests/LodViewBudgetTests.cpp
                 Tests/BatchRegistryTests.cpp
@@ -2122,57 +2192,39 @@ endif()
                 Tests/PropCoverageFloorTests.cpp
                 Tests/HzbBuildComputeTests.cpp
                 Tests/HzbSpdParityTests.cpp
-                Tests/HzbSpdMinMaxParityTests.cpp
+                Tests/ClusterDepthMinMaxParityTests.cpp
                 Tests/HzbCullingComputeTests.cpp
+                Tests/VertexModifierEnvelopeSampledTests.cpp
                 Tests/GPUDrawStreamBuilderTests.cpp
                 Tests/DrawStreamLookupKeyTests.cpp
                 Tests/PerFrameWritePoolTests.cpp
                 Tests/ModelRenderSetupTests.cpp
                 Tests/SceneBuildPumpTests.cpp
                 Tests/SceneResolveFrameTests.cpp
+                Tests/CompileLoadReportTests.cpp
                 Tests/SceneResolveServiceTests.cpp
-                Tests/SortedTransparentPixelTests.cpp
                 Tests/SortedTransparentCullTests.cpp
                 Tests/SortedTransparentRunTests.cpp
-                Tests/RenderSortingTests.cpp
+                Tests/GPUSortTests.cpp
                 Tests/SortedTransparentDeciderTests.cpp
+                Tests/SortedTransparentBuildAllocationTests.cpp
                 Tests/SkinPaletteAtlasTests.cpp
                 Tests/SkinPaletteRefusalTests.cpp
                 Tests/SkeletonStoreRuntimeTests.cpp
                 Tests/SkeletonRuntimeOwnershipTests.cpp
                 Tests/ModelEntityFactoryHelperNodeTests.cpp
+                Tests/ModelEntityFactoryMaterialTests.cpp
                 Tests/ModelEntityFactoryPlacementTests.cpp
                 Tests/PrimitiveGeneratorTests.cpp
                 Tests/MeshReloadBoundsRefreshTests.cpp
                 Tests/RenderOriginTests.cpp
                 Tests/RenderOriginDecodeComputeTests.cpp
                 Tests/LodCrossfadeShaderContractTests.cpp)
-
-            target_compile_definitions(EngineWorldDrawTests PRIVATE
-                GE_ENGINE_ALLOCATION_COUNTING=$<IF:$<AND:$<NOT:$<BOOL:${ENABLE_MIMALLOC}>>,$<BOOL:${GE_DEBUG_INSTRUMENTATION_VALUE}>>,1,0>)
-            if(NOT ENABLE_MIMALLOC)
-                set(_allocation_hook_source
-                    ${CMAKE_SOURCE_DIR}/Engine/Modules/Memory/Source/AllocationHook.cpp)
-                target_sources(EngineWorldDrawTests PRIVATE ${_allocation_hook_source})
-                set_source_files_properties(${_allocation_hook_source}
-                    PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
-                ge_add_render_services_test(MemoryCounterTests
-                    ${CMAKE_SOURCE_DIR}/Engine/Modules/Memory/Tests/AllocationCountScopeTests.cpp
-                    ${CMAKE_SOURCE_DIR}/Engine/Modules/Memory/Tests/AllocationSiteTagTests.cpp
-                    ${CMAKE_SOURCE_DIR}/Engine/Modules/Memory/Tests/ScopedAllocationFaultTests.cpp
-                    ${CMAKE_SOURCE_DIR}/Engine/Modules/Memory/Tests/EngineAllocationHookTests.cpp
-                    ${_allocation_hook_source})
-                target_include_directories(MemoryCounterTests PRIVATE
-                    ${CMAKE_SOURCE_DIR}/Engine/Modules/Memory/Testing)
-            endif()
-
-            ge_add_render_services_test(ComputeDescriptorScratchTests
-                Tests/ComputeDescriptorScratchTests.cpp)
-            target_compile_definitions(ComputeDescriptorScratchTests PRIVATE
-                GE_DESCRIPTOR_ALLOCATION_COUNTING=$<NOT:$<BOOL:${ENABLE_MIMALLOC}>>)
-            if(NOT ENABLE_MIMALLOC)
-                target_sources(ComputeDescriptorScratchTests PRIVATE ${_allocation_hook_source})
-            endif()
+            # Engine/Source: the private headers the world-draw tests reach (ECS/SceneViewHiddenInHierarchySystem.h,
+            # Engine/Rendering/MaterialSystemTesting.h).
+            target_include_directories(EngineWorldDrawTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Source")
+            # Modules/Rendering: the shader source cache's read counter (Source/Materials/Shader/ShaderSourceCache.h).
+            target_include_directories(EngineWorldDrawTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Modules/Rendering")
 
             # Opt-in render checks no gate runs: the Slang lane's parity gate, which needs an
             # external slangc (GE_SLANGC), and the extraction fast path's manual
@@ -2192,12 +2244,10 @@ endif()
                 Tests/CascadeMotionSchedulerTests.cpp
                 Tests/CascadeShadowCacheTests.cpp
                 Tests/SkinnedShadowInvalidationTests.cpp
-                Tests/RigidCascadeRestoreTests.cpp
                 Tests/VertexModifierContentInvalidationTests.cpp
                 Tests/ShadowSamplingFitTests.cpp
                 Tests/ShadowSamplingShaderContractTests.cpp
                 Tests/ShadowPcssDecisionTests.cpp
-                Tests/ShadowFilterDefaultTests.cpp
                 Tests/ShadowMinMaxPyramidTests.cpp
                 Tests/ShadowFilterComputeTests.cpp
                 Tests/RTShadowMaskShaderContractTests.cpp
@@ -2222,22 +2272,30 @@ endif()
             # sun glare, temporal anti-aliasing jitter, GTAO and screen-space reflections.
             ge_add_render_services_test(EnginePostProcessTests
                 Tests/TemporalAAJitterTests.cpp
-                Tests/SssrRefineBudgetTests.cpp
-                Tests/SssrHistoryPolicyTests.cpp
                 Tests/PlanarReflectionTests.cpp
                 Tests/PlanarCompositeComputeTests.cpp
+                Tests/SssrRefineBudgetTests.cpp
+                Tests/SssrHistoryPolicyTests.cpp
                 Tests/GtaoPackingContractTests.cpp
                 Tests/SssrCompositeWeightTests.cpp
                 Tests/SssrBlueNoiseFrameMaskTests.cpp
                 Tests/SssrPrefilterTileDispatchTests.cpp
                 Tests/SssrPrefilterFootprintTests.cpp
                 Tests/SunGlareRadianceTests.cpp
+                Tests/SunScreenProjectionTests.cpp
                 Tests/SssrDispatchArgsBoundsTests.cpp
                 Tests/ExposureTests.cpp
                 Tests/AutoExposureComputeTests.cpp
+                Tests/IncidentLightMeterTests.cpp
                 Tests/PostProcessBlendCoverageTests.cpp
+                Tests/CubeLutReloadTests.cpp
+                Tests/HeightFogSkyColorTests.cpp
+                Tests/HeightFogRenderingTests.cpp
                 Tests/BloomExposureUnitsContractTests.cpp
+                Tests/PreExposureSourceContractTests.cpp
+                Tests/PreExposureReaderTests.cpp
                 Tests/LensFlareImporterTests.cpp)
+            target_include_directories(EnginePostProcessTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 
             # The render services themselves and the lighting they carry:
             # the feature registry, device recovery, views and cameras, project settings,
@@ -2245,9 +2303,12 @@ endif()
             ge_add_render_services_test(EngineRenderServicesTests
                 Tests/RenderServicesFeatureRegistryConcurrencyTests.cpp
                 Tests/LodProjectSettingsTests.cpp
+                Tests/RenderLayerMaskTests.cpp
+                Tests/RenderLayerNamesTests.cpp
                 Tests/AntiAliasingProjectSettingsTests.cpp
                 Tests/UIScaleProjectSettingsTests.cpp
                 Tests/RenderServicesDeviceRecoveryTests.cpp
+                Tests/RenderDeviceContextCreationTests.cpp
                 Tests/ViewLightBufferWriterTests.cpp
                 Tests/DeviceLostEcsRecoveryTests.cpp
                 Tests/CameraProjectionTests.cpp
@@ -2258,9 +2319,11 @@ endif()
                 Tests/DDGIGlossyAtlasLayoutTests.cpp
                 Tests/DDGIReflectionParallaxTests.cpp
                 Tests/DDGIMaterialMapContractTests.cpp
+                Tests/DDGIMaterialSweepGateTests.cpp
                 Tests/DDGICameraIdleGateTests.cpp
                 Tests/DDGISolveBudgetTests.cpp
                 Tests/DDGIProbeWindowTests.cpp
+                Tests/DDGIVolumeExtentsTests.cpp
                 Tests/DDGIDepthNormalComputeTests.cpp
                 Tests/DDGIBlendComputeTests.cpp
                 Tests/DDGIParallaxComputeTests.cpp
@@ -2270,11 +2333,8 @@ endif()
                 Tests/DDGIRelocationComputeTests.cpp
                 Tests/DDGIResolveBlurComputeTests.cpp
                 Tests/OceanCascadeLayoutTests.cpp
-                Tests/OceanPreparedDispatchTests.cpp
-                Tests/OceanSprayPreparationTests.cpp
-                Tests/OceanReadbackPreparationTests.cpp
-                Tests/OceanRasterCapturePreparationTests.cpp
                 Tests/OceanSeabedDepthShaderTests.cpp
+                Tests/OceanRingLayoutShaderTests.cpp
                 Tests/OceanShallowClarityShaderTests.cpp
                 Tests/OceanSurfaceComposeTests.cpp
                 Tests/OceanTemporalHistoryTests.cpp
@@ -2283,43 +2343,50 @@ endif()
                 Tests/OceanSplineRasterTests.cpp
                 Tests/LightPhotometryTests.cpp
                 Tests/AmbientLightSystemTests.cpp
-                Tests/WorldContentDigestTableTests.cpp
                 Tests/ReflectionProbeSystemTests.cpp
                 Tests/SceneReflectionProbeRecaptureTests.cpp
                 Tests/IblShaderContractTests.cpp
+                Tests/BrdfLutTableTests.cpp
                 Tests/GlassTransmissionShaderContractTests.cpp
                 Tests/SkyGroundBounceContractTests.cpp
-                Tests/SkyLutRestingLayoutTests.cpp
                 Tests/SkySunColorTests.cpp
                 Tests/SkySunAnchorTests.cpp
                 Tests/SkySunIlluminanceTests.cpp
                 Tests/SkySunPathTests.cpp
+                Tests/SkySunStateTests.cpp
+                Tests/SkyPreviewHourTests.cpp
                 Tests/SkySunDriveTests.cpp
                 Tests/SkyMoonlightTests.cpp
                 Tests/SkyGroundFloorParityTests.cpp
                 Tests/SkyDiffuseConvolveChromaticityTests.cpp
                 Tests/SkyTransmittanceLutParityTests.cpp
+                Tests/SkyAtmosphereLutReferenceTests.cpp
+                Tests/SkyViewLutAltitudeTests.cpp
                 Tests/ParticleCoverageTests.cpp
                 Tests/ParticleNearFadeTests.cpp
                 Tests/SunDiscRadianceTests.cpp
+                Tests/SkyNightProbeTests.cpp
                 Tests/SunDiscSizeTests.cpp
+                Tests/StarModelTests.cpp
+                Tests/NightTintTests.cpp
+                Tests/ExposureCompensationUndoTests.cpp
                 Tests/IblEnvDataRingTests.cpp
+                Tests/IrradianceReadbackTests.cpp
                 Tests/LightContributionSortTests.cpp
                 Tests/AnimationClockPersistenceTests.cpp
                 Tests/ReadbackSourceSpaceTests.cpp
                 Tests/ShaderAnimationClockContractTests.cpp)
-            # OceanCascadeLayoutTest initializes the camera-snapped ocean sims, which
-            # compile their GLSL at runtime from <install assets root>/Shaders/Ocean
-            # (OceanShaderDirectory) with "Includes/..." alongside; stage both next to
-            # the test exe so the sims initialize instead of declining.
-            add_custom_command(TARGET EngineRenderServicesTests POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
-                        "${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Ocean"
-                        "$<TARGET_FILE_DIR:EngineRenderServicesTests>/Assets/Shaders/Ocean"
-                COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
-                        "${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Includes"
-                        "$<TARGET_FILE_DIR:EngineRenderServicesTests>/Assets/Shaders/Includes"
-                COMMENT "Staging ocean sim shaders for EngineRenderServicesTests")
+            target_include_directories(EngineRenderServicesTests PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/Modules/Ocean/Source) # OceanRingMesh.h
+            # The screen-space shadow tests dispatch these compiled kernels; without
+            # glslc the commands below would compile nothing and the tests would
+            # read missing files.
+            if(NOT GLSLC_EXECUTABLE)
+                message(FATAL_ERROR
+                    "EngineScreenSpaceShadowTests needs glslc to compile its test shaders, and none "
+                    "was found: install the Vulkan SDK or configure with the vcpkg toolchain "
+                    "(the shaderc port provides glslc), or configure with -DBUILD_TESTING=OFF.")
+            endif()
             set(_ge_sss_test_spv "${CMAKE_CURRENT_BINARY_DIR}/Tests/Shaders/screen_space_shadow_test.spv")
             add_custom_command(OUTPUT "${_ge_sss_test_spv}"
                 COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/Tests/Shaders"
@@ -2382,16 +2449,18 @@ endif()
 
 			if(GTest_FOUND OR TARGET GTest::gtest)
 			    # Keep allocation injection isolated. Compile the real retirement
-			    # owners here so this executable's scoped operator-new failure
-			    # reaches their STL allocations, including on Windows DLL builds.
+			    # owners here so the scoped allocation faults reach their STL
+			    # allocations through this executable's hook in every configuration,
+			    # including Windows Release, where Engine.dll carries no hook.
 			    add_executable(MeshRetirementTests
 			        Tests/MeshRetirementTests.cpp
-			        Tests/MeshRetirementAllocationFault.cpp
 			        Source/Engine/Rendering/MeshGPURegistry.cpp
 			        Source/Engine/Rendering/MeshGPUResidency.cpp
-			        Source/Engine/Rendering/BucketPoolAllocator.cpp
+			        Modules/Memory/Source/RangeAllocator.cpp
 			        Modules/Rendering/Source/Core/GPUScene.cpp)
 			    target_link_libraries(MeshRetirementTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+			    # RangeAllocator.cpp includes the Memory module's private registry header.
+			    target_include_directories(MeshRetirementTests PRIVATE Modules/Memory/Source)
 			    if(MSVC)
 			        target_compile_options(MeshRetirementTests PRIVATE /bigobj)
 			    endif()
@@ -2409,15 +2478,29 @@ endif()
 			    # from EnginePostProcessTests so shader/control tests do not depend on
 			    # the render-services executables' platform-specific tripwire main.
 			    add_executable(BloomRenderingTests Tests/BloomRenderingTests.cpp)
-			    target_link_libraries(BloomRenderingTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+			    target_link_libraries(BloomRenderingTests PRIVATE Engine nlohmann_json::nlohmann_json GTest::gtest GTest::gtest_main)
 			    target_compile_definitions(BloomRenderingTests PRIVATE
-			        RENDERING_SHADER_OUTPUT_DIR="${CMAKE_BINARY_DIR}/Shaders")
+			        RENDERING_SHADER_OUTPUT_DIR="${CMAKE_BINARY_DIR}/Shaders"
+			        GE_RENDERER_REPO_ROOT="${CMAKE_SOURCE_DIR}")
 			    add_dependencies(BloomRenderingTests CompileShaders)
 			    set_target_properties(BloomRenderingTests PROPERTIES
 			        CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON FOLDER "Engine/Tests")
 			    ge_set_output_tests(BloomRenderingTests)
 			    ge_stage_runtime_dependencies(BloomRenderingTests)
 			    add_test(NAME BloomRenderingTests COMMAND $<TARGET_FILE:BloomRenderingTests>)
+
+			    # A surface fogged in its own shader takes the fog the resolved scene's passes give a pixel
+			    # showing a surface at the same distance: both shaders run as they ship.
+			    add_executable(FogForwardParityTests Tests/FogForwardParityTests.cpp)
+			    target_link_libraries(FogForwardParityTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+			    target_compile_definitions(FogForwardParityTests PRIVATE
+			        RENDERING_SHADER_OUTPUT_DIR="${CMAKE_BINARY_DIR}/Shaders")
+			    add_dependencies(FogForwardParityTests CompileShaders)
+			    set_target_properties(FogForwardParityTests PROPERTIES
+			        CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON FOLDER "Engine/Tests")
+			    ge_set_output_tests(FogForwardParityTests)
+			    ge_stage_runtime_dependencies(FogForwardParityTests)
+			    add_test(NAME FogForwardParityTests COMMAND $<TARGET_FILE:FogForwardParityTests>)
 
 			    add_executable(PostProcessDofControlTests
 			            Tests/PostProcessBlendCoverageTests.cpp)
@@ -2441,8 +2524,7 @@ endif()
 			    # GLFW directly as well: the focus-at-bind row runs GLFW's null
 			    # platform through the same glfw3 DLL Engine loads.
 			    find_package(glfw3 CONFIG REQUIRED)
-			    target_link_libraries(WindowInputRoutingTests PRIVATE Engine glfw GTest::gtest GTest::gtest_main)
-			    target_include_directories(WindowInputRoutingTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
+			    target_link_libraries(WindowInputRoutingTests PRIVATE Engine SharedHeadlessDeviceTestSupport glfw GTest::gtest GTest::gtest_main)
 			    target_include_directories(WindowInputRoutingTests PRIVATE
 			        ${CMAKE_SOURCE_DIR}/Engine/Modules/UI/Tests)
 			    set_target_properties(WindowInputRoutingTests PROPERTIES
@@ -2530,13 +2612,23 @@ endif()
 			endif()
 
 			if(GTest_FOUND OR TARGET GTest::gtest)
-            add_executable(EngineSceneReadinessTests Tests/EngineSceneReadinessTests.cpp)
-            target_link_libraries(EngineSceneReadinessTests PRIVATE Engine GTest::gtest GTest::gtest_main)
-            target_include_directories(EngineSceneReadinessTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests)
-            ge_set_output_tests(EngineSceneReadinessTests)
-            ge_stage_runtime_dependencies(EngineSceneReadinessTests)
-            add_test(NAME EngineSceneReadinessTests COMMAND $<TARGET_FILE:EngineSceneReadinessTests>)
+			    # The output an engine opens from the default ApplicationConfig: Silent,
+			    # so no audio device opens unless an application asks for one.
+			    add_executable(EngineAudioOutputTests Tests/EngineAudioOutputTests.cpp
+			        ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp)
+			    target_link_libraries(EngineAudioOutputTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+			    target_include_directories(EngineAudioOutputTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
+			    set_target_properties(EngineAudioOutputTests PROPERTIES
+			        CXX_STANDARD 20
+			        CXX_STANDARD_REQUIRED ON
+			        FOLDER "Engine/Tests"
+			    )
+			    ge_set_output_tests(EngineAudioOutputTests)
+			    ge_stage_runtime_dependencies(EngineAudioOutputTests)
+			    add_test(NAME EngineAudioOutputTests COMMAND $<TARGET_FILE:EngineAudioOutputTests>)
+			endif()
 
+			if(GTest_FOUND OR TARGET GTest::gtest)
 			    # Which EngineCore GetInstance() returns once an owned engine is gone.
 			    # Its own binary: the test controls when the process's default
 			    # instance is created, which any earlier test in a shared binary would
@@ -2601,6 +2693,7 @@ endif()
 			if(GTest_FOUND OR TARGET GTest::gtest)
 			    add_executable(EngineSourceRebindAsyncTests Tests/SourceRebindAsyncTests.cpp)
 			    target_link_libraries(EngineSourceRebindAsyncTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+			    target_include_directories(EngineSourceRebindAsyncTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # Jobs/JoinOnScopeExit.h
 			    set_target_properties(EngineSourceRebindAsyncTests PROPERTIES
 			        CXX_STANDARD 20
 			        CXX_STANDARD_REQUIRED ON
@@ -2705,7 +2798,8 @@ endif()
 			    add_executable(CpuTextureSourceTests Tests/CpuTextureSourceTests.cpp)
 			    target_include_directories(CpuTextureSourceTests PRIVATE
 			        "${CMAKE_CURRENT_SOURCE_DIR}/Source/Engine/Rendering"
-			        "${CMAKE_CURRENT_SOURCE_DIR}/Modules/Rendering")
+			        "${CMAKE_CURRENT_SOURCE_DIR}/Modules/Rendering"
+			        "${CMAKE_CURRENT_SOURCE_DIR}/Modules/PathfindingECS/Tests")
 			    target_link_libraries(CpuTextureSourceTests PRIVATE Engine GTest::gtest GTest::gtest_main)
 			    set_target_properties(CpuTextureSourceTests PROPERTIES
 			        CXX_STANDARD 20
@@ -2737,10 +2831,38 @@ endif()
 			    add_test(NAME PixelPerfectCameraTests COMMAND $<TARGET_FILE:PixelPerfectCameraTests>)
 			    set_tests_properties(PixelPerfectCameraTests PROPERTIES WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
+			    add_executable(GamepadCameraControllerTests Tests/GamepadCameraControllerTests.cpp)
+			    target_link_libraries(GamepadCameraControllerTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+			    set_target_properties(GamepadCameraControllerTests PROPERTIES
+			        CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON FOLDER "Engine/Tests")
+			    ge_set_output_tests(GamepadCameraControllerTests)
+			    ge_stage_runtime_dependencies(GamepadCameraControllerTests)
+			    add_test(NAME GamepadCameraControllerTests COMMAND $<TARGET_FILE:GamepadCameraControllerTests>)
+			    set_tests_properties(GamepadCameraControllerTests PROPERTIES WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
 			    add_executable(RenderPipelineDeclareTests
 			        Tests/RenderPipelineDeclareTests.cpp
+			        Tests/StagingViewPoolTests.cpp
 			        # Which depth the auto-exposure meter reads, and the ocean step's post-ocean resolve.
 			        Tests/MeteringDepthDeclareTests.cpp
+			        # The water surface keeps writing the screen-space reflection slices.
+			        Tests/OceanReflectionSlicesDeclareTests.cpp
+			        # The height fog's sky colour: the fog pass reads the backdrop SkyRender publishes.
+			        Tests/HeightFogSkyBackdropDeclareTests.cpp
+			        # An orthographic view's light grid: the cluster under a point light lists it.
+			        Tests/OrthographicLightGridDeclareTests.cpp
+			        # Point, spot and area lights and their shadows in the relative frame, far from the origin.
+			        Tests/LocalLightRelativeFrameTests.cpp
+			        # The sun glare's caster term and the ocean's god rays read the sun's cascades far from the origin.
+			        Tests/CascadeReaderRelativeFrameTests.cpp
+			        # The view output reaches the Tonemap node: no look skips the blended look.
+			        Tests/TonemapViewOutputDeclareTests.cpp
+			        # The shipped pre-exposure snapshot's pin and the textures it scales.
+			        Tests/PreExposureDeclareTests.cpp
+			        # AddFullscreenPass's input caps: the underwater overlay's five buffers fit, over-cap is refused.
+			        Tests/FullscreenPassInputsDeclareTests.cpp
+			        # Which workgroup size a ComputeShader node with shaderPkgFallbacks runs.
+			        Tests/ComputeShaderWorkgroupSelectionTests.cpp
 			        # The motion payload's reconstruction lanes, rendered: same
 			        # target because it needs the same staged-shader resolver and
 			        # the same Engine-level producer builder.
@@ -2748,7 +2870,7 @@ endif()
 			        # The compatibility profile's instance-list fetch, rendered from the
 			        # shipped instance_io.glsl: same staged-shader resolver.
 			        Tests/CompatInstanceListFetchTests.cpp
-			        # The producer's decisions: arm selection, the discontinuity
+			        # The producer's decisions: its view refusals, the discontinuity
 			        # policy, lane membership, and the segment keyword choice.
 			        Tests/DeformationMotionProducerTests.cpp
 			        Tests/ViewTemporalHistoryTests.cpp
@@ -2761,10 +2883,12 @@ endif()
 			        Tests/EngineTestShaderSetup.cpp
 			        ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp
 			        )
-			    target_link_libraries(RenderPipelineDeclareTests PRIVATE Engine RenderGraphTestSupport GTest::gtest GTest::gtest_main)
-			    if(TARGET RenderPipelineDeclareTests)
-			        target_include_directories(RenderPipelineDeclareTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests)
-			    endif()
+			    target_link_libraries(RenderPipelineDeclareTests PRIVATE Engine RenderGraphTestSupport SharedHeadlessDeviceTestSupport
+			        GTest::gtest GTest::gtest_main)
+			    target_include_directories(RenderPipelineDeclareTests PRIVATE
+                ${CMAKE_SOURCE_DIR}/Tests
+			        ${CMAKE_SOURCE_DIR}/Engine/Source/Engine/Rendering # SceneDrawWarm.h
+			        ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainGrass/Source) # GrassBladeInstanceGPU.h
                 if(MSVC)
                     target_compile_options(RenderPipelineDeclareTests PRIVATE /bigobj)
                 endif()
@@ -2779,25 +2903,9 @@ endif()
 			    )
 			    ge_set_output_tests(RenderPipelineDeclareTests)
 			    ge_stage_runtime_dependencies(RenderPipelineDeclareTests)
-			    add_dependencies(RenderPipelineDeclareTests StageCBTTestShaders)
-			    # The grass-placement device oracles compile terrain_grass_place.comp at runtime;
-			    # it #includes Includes/bindless_textures.glsl (IncludeRoot), cbt_atlas.glsl (CBT
-			    # dir) and grass_placement.glsl (its own dir). Stage all three next to the test exe so EnsureComputePipeline's exe-relative
-			    # candidate resolves — tests run from the build dir, not the repo root, so without this
-			    # the shader isn't found, the compute never dispatches, and the oracles read placed=0.
-			    add_custom_command(TARGET RenderPipelineDeclareTests POST_BUILD
-			        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
-			                "${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainGrass/Shaders/TerrainGrass"
-			                "$<TARGET_FILE_DIR:RenderPipelineDeclareTests>/Assets/Shaders/TerrainGrass"
-			        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
-			                "${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Includes"
-			                "$<TARGET_FILE_DIR:RenderPipelineDeclareTests>/Assets/Shaders/Includes"
-			        COMMENT "Staging grass compact + atlas shaders for RenderPipelineDeclareTests device oracles"
-			        VERBATIM)
-			    # The CBT terrain declare tests bring up the CBT feature, which loads its compiled kernels
-			    # from Assets/Shaders/CBT next to the executable. CBTCompileShaders is declared after this
-			    # directory, and only when glslc is found, so the copy is decided at generate time and
-			    # Engine/Modules/CBTTerrain adds the build edge.
+			    # The CBT feature loads its compiled kernels from Assets/Shaders/CBT. StageTestAssets creates that
+			    # folder first; a copy of several files needs it. CBTCompileShaders exists only with glslc and is
+			    # declared later, so the copy is chosen at generate time; Engine/Modules/CBTTerrain adds the build edge.
 			    add_custom_command(TARGET RenderPipelineDeclareTests POST_BUILD
 			        COMMAND "$<IF:$<TARGET_EXISTS:CBTCompileShaders>,${CMAKE_COMMAND};-E;copy_if_different;${CMAKE_BINARY_DIR}/Shaders/cbt_kernels.comp.spv;${CMAKE_BINARY_DIR}/Shaders/cbt_kernels_heap32.comp.spv;$<TARGET_FILE_DIR:RenderPipelineDeclareTests>/Assets/Shaders/CBT,${CMAKE_COMMAND};-E;true>"
 			        COMMAND_EXPAND_LISTS
@@ -2818,9 +2926,7 @@ endif()
                         CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON FOLDER "Engine/Tests")
                     ge_set_output_tests(RenderGraphCallbackProbe)
 
-                    add_executable(RenderPipelineCallbackLifetimeTests
-                        Tests/RenderPipelineCallbackLifetimeTests.cpp
-                        Tests/RenderPipelinePostProcessCallbackTests.cpp)
+                    add_executable(RenderPipelineCallbackLifetimeTests Tests/RenderPipelineCallbackLifetimeTests.cpp)
                     target_link_libraries(RenderPipelineCallbackLifetimeTests PRIVATE Engine GTest::gtest GTest::gtest_main)
                     target_compile_definitions(RenderPipelineCallbackLifetimeTests PRIVATE
                         CALLBACK_PROBE_MODULE_NAME="$<TARGET_FILE_NAME:RenderGraphCallbackProbe>")
@@ -2834,7 +2940,7 @@ endif()
 
                 # Headless shader correctness gates, independent of the editor
                 # benchmark scripts and of pipeline-declaration fixture state.
-                foreach(aa_test IN ITEMS TaaResolveHistoryTests SsaaResolveTests)
+                foreach(aa_test IN ITEMS TaaResolveHistoryTests SsaaResolveTests MsaaColorResolveTests)
                     add_executable(${aa_test} Tests/${aa_test}.cpp)
                     target_link_libraries(${aa_test} PRIVATE Engine RenderGraphTestSupport GTest::gtest GTest::gtest_main)
                     set_target_properties(${aa_test} PROPERTIES
@@ -2875,7 +2981,6 @@ endif()
 			        Tests/EngineTestShaderSetup.cpp
 			        )
 			    target_link_libraries(HeadlessViewFixtureTests PRIVATE Engine RenderGraphTestSupport GTest::gtest GTest::gtest_main)
-			    target_include_directories(HeadlessViewFixtureTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 			    target_compile_definitions(HeadlessViewFixtureTests PRIVATE
 			        ENGINE_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}")
 			    set_target_properties(HeadlessViewFixtureTests PROPERTIES
@@ -2898,7 +3003,7 @@ endif()
 			        WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 			endif()
 
-			# Engine tests: S2.3 validating RenderPipelineCompiler + the 24-blueprint fleet gate.
+			# Engine tests: S2.3 validating RenderPipelineCompiler + the 24-prefab fleet gate.
 			if(GTest_FOUND OR TARGET GTest::gtest)
 			    add_executable(RenderPipelineCompilerTests
 			        Tests/RenderPipelineCompilerTests.cpp
@@ -2907,7 +3012,7 @@ endif()
 			        Tests/RenderPipelineNodeModuleReloadTests.cpp
 			        )
 			    target_link_libraries(RenderPipelineCompilerTests PRIVATE Engine GTest::gtest GTest::gtest_main)
-			    target_include_directories(RenderPipelineCompilerTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
+			    target_include_directories(RenderPipelineCompilerTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests)
 			    set_target_properties(RenderPipelineCompilerTests PROPERTIES
 			        CXX_STANDARD 20
 			        CXX_STANDARD_REQUIRED ON
@@ -2935,6 +3040,7 @@ endif()
 			        ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp
 			        )
 			    target_link_libraries(RuntimeHostTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+			    target_include_directories(RuntimeHostTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # ScopedPlatformCacheRoot.h
 			    target_compile_definitions(RuntimeHostTests PRIVATE ENGINE_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}")
 			    set_target_properties(RuntimeHostTests PROPERTIES
 			        CXX_STANDARD 20
@@ -2943,11 +3049,55 @@ endif()
 			    )
 			    ge_set_output_tests(RuntimeHostTests)
 			    ge_stage_runtime_dependencies(RuntimeHostTests)
+			    ge_stage_test_asset(RuntimeHostTests
+			        "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Fonts/Roboto-Regular.ttf"
+			        "Assets/Fonts/Roboto-Regular.ttf")
+			    ge_stage_test_asset(RuntimeHostTests
+			        "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Fonts/RobotoMono-Regular.ttf"
+			        "Assets/Fonts/RobotoMono-Regular.ttf")
 			    # The frame's finalize and terminal encode load "Shaders/<name>.shaderpkg" from the
 			    # build root; the edge resolves at generate time.
 			    add_dependencies(RuntimeHostTests CompileShaderPkgs)
 			    add_test(NAME RuntimeHostTests COMMAND $<TARGET_FILE:RuntimeHostTests>)
 			    set_tests_properties(RuntimeHostTests PROPERTIES
+			        WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+			endif()
+
+			# Engine tests: the scene loader on a headless engine.
+			if(GTest_FOUND OR TARGET GTest::gtest)
+			    add_executable(SceneLoaderTests
+			        Tests/SceneLoaderTests.cpp
+			        ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp
+			        )
+			    target_link_libraries(SceneLoaderTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+			    set_target_properties(SceneLoaderTests PROPERTIES
+			        CXX_STANDARD 20
+			        CXX_STANDARD_REQUIRED ON
+			        FOLDER "Engine/Tests"
+			    )
+			    ge_set_output_tests(SceneLoaderTests)
+			    ge_stage_runtime_dependencies(SceneLoaderTests)
+			    add_test(NAME SceneLoaderTests COMMAND $<TARGET_FILE:SceneLoaderTests>)
+			    set_tests_properties(SceneLoaderTests PROPERTIES
+			        WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+			endif()
+
+			# Engine tests: the SceneLoader script API through its generated table, on a headless engine.
+			if(TARGET GameEngine.Native AND (GTest_FOUND OR TARGET GTest::gtest))
+			    add_executable(SceneLoaderScriptApiTests
+			        Tests/SceneLoaderScriptApiTests.cpp
+			        ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp
+			        )
+			    target_link_libraries(SceneLoaderScriptApiTests PRIVATE Engine GameEngine.Native GTest::gtest GTest::gtest_main)
+			    set_target_properties(SceneLoaderScriptApiTests PROPERTIES
+			        CXX_STANDARD 20
+			        CXX_STANDARD_REQUIRED ON
+			        FOLDER "Engine/Tests"
+			    )
+			    ge_set_output_tests(SceneLoaderScriptApiTests)
+			    ge_stage_runtime_dependencies(SceneLoaderScriptApiTests)
+			    add_test(NAME SceneLoaderScriptApiTests COMMAND $<TARGET_FILE:SceneLoaderScriptApiTests>)
+			    set_tests_properties(SceneLoaderScriptApiTests PROPERTIES
 			        WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 			endif()
 
@@ -2992,8 +3142,8 @@ endif()
         target_include_directories(TerrainRenderFeatureTests PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/Tests
             ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainECS/Source
+            ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainGrass/Source
             ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering
-            ${CMAKE_SOURCE_DIR}/Tests # TestTempDir.h
             ${Vulkan_INCLUDE_DIRS})
         target_compile_definitions(TerrainRenderFeatureTests PRIVATE
             GRASS_REGION_MODULES_DIR="${CMAKE_SOURCE_DIR}/Engine/Modules")
@@ -3007,42 +3157,14 @@ endif()
 		    add_test(NAME TerrainRenderFeatureTests COMMAND $<TARGET_FILE:TerrainRenderFeatureTests>)
 	endif()
 
-	if(GTest_FOUND OR TARGET GTest::gtest)
-	    add_executable(TileMapECSTests
-	        Tests/TileMapRenderFeatureTests.cpp
-	        Tests/EngineTestShaderSetup.cpp
-	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TransparentArtworkOrderTests.cpp
-	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileChunkInstancesTests.cpp
-	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileMapCollisionSystemTests.cpp
-	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileMapParallaxTests.cpp
-	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileMapPixelGridTests.cpp
-	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileMapRuntimeStoreTests.cpp
-	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileSetGpuTablesTests.cpp)
-	    target_link_libraries(TileMapECSTests PRIVATE Engine GTest::gtest GTest::gtest_main)
-	    target_compile_definitions(TileMapECSTests PRIVATE ENGINE_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}")
-	    add_dependencies(TileMapECSTests CompileShaderPkgs)
-	    set_target_properties(TileMapECSTests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON FOLDER "Engine/Tests/TileMap")
-	    ge_set_output_tests(TileMapECSTests)
-	    ge_stage_runtime_dependencies(TileMapECSTests)
-	    add_test(NAME TileMapECSTests COMMAND $<TARGET_FILE:TileMapECSTests>)
-	endif()
-
 	# Engine tests: GPU compute skinning validation (requires Vulkan device)
 	if(GTest_FOUND OR TARGET GTest::gtest)
 	    add_executable(GPUAnimationComputeTests
 	        Tests/GPUAnimationComputeTests.cpp
-	        Tests/EngineTestShaderSetup.cpp
 	        )
 	    target_link_libraries(GPUAnimationComputeTests PRIVATE
 	        Engine GameEngine.Native
 	        GTest::gtest GTest::gtest_main)
-	    if(APPLE)
-	        # Native fault injection derives from MetalDevice, which includes metal-cpp.
-	        target_include_directories(GPUAnimationComputeTests SYSTEM PRIVATE
-	            ${CMAKE_SOURCE_DIR}/ThirdParty/metal-cpp)
-	    endif()
-	    target_compile_definitions(GPUAnimationComputeTests PRIVATE
-	        ENGINE_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}")
 	    set_target_properties(GPUAnimationComputeTests PROPERTIES
 	        CXX_STANDARD 20
 	        CXX_STANDARD_REQUIRED ON
@@ -3072,7 +3194,6 @@ endif()
 	    # Engine.dll; linking it directly as well would put a second copy of the
 	    # module's file-scope state in the exe (issue #356, same disease as
 	    # #340). Animation headers propagate via Engine's re-exported INTERFACE.
-	    target_include_directories(RetargetGPUParityTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests)
 	    target_link_libraries(RetargetGPUParityTests PRIVATE
 	        Engine GameEngine.Native
 	        GTest::gtest GTest::gtest_main)
@@ -3104,7 +3225,7 @@ endif()
 
 	# Engine tests: Phase 6 ECS bridge — HumanoidRetargetSystem end-to-end,
 	# auto-bootstrap, layered-blend integration, hot-reload race, same-rig
-	# coexistence. Clip-upload lifecycle cases use a native headless device.
+	# coexistence. Runs in pure CPU mode (no GPU device required).
 	if(GTest_FOUND OR TARGET GTest::gtest)
 	    add_executable(HumanoidRetargetSystemTests
 	        Tests/HumanoidRetargetSystemTests.cpp
@@ -3193,7 +3314,7 @@ endif()
 	endif()
 
 	# Engine tests: Phase B1 .blend file smoke parse via vendored fbtBlend.
-	# Skip-gates if Tools/ai/retarget-redesign/blend-samples/ is not extracted.
+	# Skip-gates if Tests/BlendSamples/ is not extracted.
 	# Compiles the vendored fbtBlend.cpp shim directly so this test target does
 	# not depend on the full Engine link chain (lets Phase B1 land standalone,
 	# decoupled from concurrent retarget-pipeline work in RenderServices).
@@ -3244,7 +3365,7 @@ endif()
 	endif()
 
 	# Engine tests: Phase B2 .blend model importer (mesh + skeleton extraction).
-	# Skip-gates when Tools/ai/retarget-redesign/blend-samples/ is not extracted.
+	# Skip-gates when Tests/BlendSamples/ is not extracted.
 	if(GTest_FOUND OR TARGET GTest::gtest)
 	    add_executable(BlendModelLoadTests
 	        Tests/BlendModelLoadTests.cpp
@@ -3263,7 +3384,7 @@ endif()
 	endif()
 
 	# Engine tests: Phase B3 .blend Action -> AnimationClip extraction.
-	# Skip-gates when Tools/ai/retarget-redesign/blend-samples/ is not extracted.
+	# Skip-gates when Tests/BlendSamples/ is not extracted.
 	if(GTest_FOUND OR TARGET GTest::gtest)
 	    add_executable(BlendActionExtractTests
 	        Tests/BlendActionExtractTests.cpp
@@ -3282,13 +3403,13 @@ endif()
 	endif()
 
 	# Engine tests: ModelAsset::PostLoad humanoid auto-bootstrap on real
-	# store-licensed test fixtures. Skip-gated when Assets/Models/FBXTest/ isn't present.
+	# store-licensed test fixtures. Skip-gated when Engine/Assets/Models/FBXTest/ isn't present.
 	if(GTest_FOUND OR TARGET GTest::gtest)
 	    add_executable(RuntimeHumanoidProfileTests Tests/RuntimeHumanoidProfileTests.cpp
 	        ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp)
 	    target_link_libraries(RuntimeHumanoidProfileTests PRIVATE Engine GTest::gtest GTest::gtest_main)
 	    target_compile_definitions(RuntimeHumanoidProfileTests PRIVATE
-	        RUNTIME_PROFILE_FIXTURE="${CMAKE_SOURCE_DIR}/Assets/SkeletonProfiles/HumanoidStandard.profile.json")
+	        RUNTIME_PROFILE_FIXTURE="${CMAKE_SOURCE_DIR}/Engine/Assets/SkeletonProfiles/HumanoidStandard.profile.json")
 	    set_target_properties(RuntimeHumanoidProfileTests PROPERTIES
 	        CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON FOLDER "Engine/Tests")
 	    ge_set_output_tests(RuntimeHumanoidProfileTests)
@@ -3443,6 +3564,7 @@ endif()
 	        Tests/CoreClrHostingSmokeTests.cpp
 	    )
 		    target_link_libraries(EngineCoreClrSmokeTests PRIVATE Engine GameEngine.Native GTest::gtest GTest::gtest_main)
+		    target_include_directories(EngineCoreClrSmokeTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # ScopedCurrentPath.h, TestTempDir.h
 		    # Ensure the smoke test can see the real .NET hosting headers when available.
 		    if(NETHOST_LIBRARY)
 		        target_include_directories(EngineCoreClrSmokeTests PRIVATE ${NETHOST_INCLUDE_DIR})
@@ -3540,16 +3662,170 @@ endif()
 	    add_test(NAME ParticleCompatibilityTests COMMAND $<TARGET_FILE:ParticleCompatibilityTests>)
 
         # The particle module links no engine: the processor registry's module stamp is the one ECS
-        # source it needs beyond the logger, compiled in.
+        # source it needs beyond the logger, compiled in. Memory is linked directly: ECS links Memory,
+        # so this executable's own copy of the allocation counter compiles empty, and an OBJECT
+        # library's objects reach only the targets that link it directly.
         add_executable(ParticleRuntimeTests Tests/ParticleRuntimeTests.cpp Modules/ECS/Source/ModuleRegistration.cpp)
-        target_include_directories(ParticleRuntimeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Include)
-        target_link_libraries(ParticleRuntimeTests PRIVATE Particles ParticlesAuthoring AssetCore Logger GTest::gtest GTest::gtest_main)
+        target_include_directories(ParticleRuntimeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Include
+            ${CMAKE_CURRENT_SOURCE_DIR}/Modules/Particles/Source)
+        target_link_libraries(ParticleRuntimeTests PRIVATE Particles ParticlesAuthoring AssetCore Logger Memory GTest::gtest GTest::gtest_main)
         ge_set_output_tests(ParticleRuntimeTests)
         ge_stage_runtime_dependencies(ParticleRuntimeTests)
         add_test(NAME ParticleRuntimeTests COMMAND $<TARGET_FILE:ParticleRuntimeTests>)
 
 	endif()
 
+	# Engine tests: Scene file load/save (schema round-trips, hierarchy authoring order), plus the
+	# field-bound passes those schemas apply and the reflected read shape those bounds are read
+	# back through. Both extra suites need the REAL component reflection, which only exists once
+	# Engine is linked and its generated reflection TU has run its static initializers — in a
+	# suite without Engine they would sweep an empty registry and pass vacuously. The clamp suite
+	# additionally lives with the module that owns the pass but builds here, because constructing
+	# a real component needs Engine and its component reflection, which TerrainGrassStatsTests
+	# does without.
+	if(GTest_FOUND OR TARGET GTest::gtest)
+	    add_executable(EngineSceneIOTests
+	        Tests/WeatherWindTests.cpp
+	        Tests/SceneIOTests.cpp
+	        Tests/EmbeddedAnimationPersistenceTests.cpp
+	        Tests/PrefabLibraryTests.cpp
+	        Tests/PrefabSpawnTests.cpp
+	        Tests/PrefabTimingTests.cpp
+	        Tests/SceneIntegerTests.cpp
+	        Tests/SceneSimulationTickTests.cpp
+	        Tests/SceneStructArrayTests.cpp
+	        Tests/SceneSchemaOwnershipTests.cpp
+	        Tests/SceneExportStripTests.cpp
+	        Tests/SplineSceneSerializationTests.cpp
+	        Tests/ReflectedComponentJsonTests.cpp
+	        Tests/ReflectedFieldMetadataTests.cpp
+	        Modules/TerrainGrass/Tests/TerrainGrassClampsTests.cpp
+	        Modules/TerrainGrass/Tests/TerrainGrassPresetsTests.cpp)
+	    target_link_libraries(EngineSceneIOTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+	    # PrefabLibraryTests reads the engine's private prefab library header and the shared TestTempDir.h.
+	    target_include_directories(EngineSceneIOTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Source" ${CMAKE_SOURCE_DIR}/Tests)
+	    # TerrainGrassClamps.SceneSchemaCarriesNoInlineClampCall reads the scene schema and fails on
+	    # any field bound written inline there instead of in the shared clamp pass.
+	    # SceneIO.CommittedScenesLoadWithNoSkippedFieldAndNoUnknownComponent loads the committed scenes
+	    # from the source tree; ReflectedFieldMetadata reads its golden from Engine/Tests/Fixtures.
+	    target_compile_definitions(EngineSceneIOTests PRIVATE
+	        TERRAIN_GRASS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/Modules/TerrainGrass/Source"
+	        GE_REPO_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+	    if(TARGET GameEngine.Native)
+	        target_link_libraries(EngineSceneIOTests PRIVATE GameEngine.Native)
+	    endif()
+	    set_target_properties(EngineSceneIOTests PROPERTIES
+	        CXX_STANDARD 20
+	        CXX_STANDARD_REQUIRED ON
+	        FOLDER "Engine/Tests"
+	    )
+	    ge_set_output_tests(EngineSceneIOTests)
+	    ge_stage_runtime_dependencies(EngineSceneIOTests)
+	    add_test(NAME EngineSceneIOTests COMMAND $<TARGET_FILE:EngineSceneIOTests>)
+	endif()
+
+	# Engine tests: the scene raycast (Scene::RaycastScene) over the renderers, the BVH cache with its
+	# disk format, and the terrain hit. The pending-BVH and terrain suites initialize the engine; the
+	# shutdown environment stops it before main returns.
+	if(GTest_FOUND OR TARGET GTest::gtest)
+	    add_executable(SceneRaycastTests
+	        Tests/SceneRaycastPendingBvhTests.cpp
+	        Tests/SceneRaycastTerrainInclusionTests.cpp
+	        Tests/TerrainPickingRayTests.cpp
+	        Tests/MeshBvhDiskFormatTests.cpp
+	        ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownEnvironment.cpp)
+	    target_link_libraries(SceneRaycastTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+	    # PagedTiledTerrain.h and TestTempDir.h, shared across the test trees.
+	    # Engine/Source: the BVH cache and its disk format, private headers the tests reach.
+	    target_include_directories(SceneRaycastTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+	    set_target_properties(SceneRaycastTests PROPERTIES
+	        CXX_STANDARD 20
+	        CXX_STANDARD_REQUIRED ON
+	        FOLDER "Engine/Tests"
+	    )
+	    ge_set_output_tests(SceneRaycastTests)
+	    ge_stage_runtime_dependencies(SceneRaycastTests)
+	    add_test(NAME SceneRaycastTests COMMAND $<TARGET_FILE:SceneRaycastTests>)
+	endif()
+
+	if(GTest_FOUND OR TARGET GTest::gtest)
+	    add_executable(ValueCurveEvaluatorTests
+	        Tests/ValueCurveEvaluatorTests.cpp
+	        )
+	    target_link_libraries(ValueCurveEvaluatorTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+	    set_target_properties(ValueCurveEvaluatorTests PROPERTIES
+	        CXX_STANDARD 20
+	        CXX_STANDARD_REQUIRED ON
+	        FOLDER "Engine/Tests"
+	    )
+	    ge_set_output_tests(ValueCurveEvaluatorTests)
+	    ge_stage_runtime_dependencies(ValueCurveEvaluatorTests)
+	    add_test(NAME ValueCurveEvaluatorTests COMMAND $<TARGET_FILE:ValueCurveEvaluatorTests>)
+
+	    add_executable(AsyncVideoRecorderTests
+	        Tests/AsyncVideoRecorderTests.cpp
+	    )
+	    target_link_libraries(AsyncVideoRecorderTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+	    set_target_properties(AsyncVideoRecorderTests PROPERTIES
+	        CXX_STANDARD 20
+	        CXX_STANDARD_REQUIRED ON
+	        FOLDER "Engine/Tests"
+	    )
+	    ge_set_output_tests(AsyncVideoRecorderTests)
+	    ge_stage_runtime_dependencies(AsyncVideoRecorderTests)
+	    add_test(NAME AsyncVideoRecorderTests COMMAND $<TARGET_FILE:AsyncVideoRecorderTests>)
+
+	    # Closed-loop writer tests inspect the container with ffmpeg directly,
+	    # so they link it in addition to the Engine (whose linkage is PRIVATE).
+	    if(GE_FFMPEG_FOUND)
+	        add_executable(VideoWriterFFmpegTests
+	            Tests/VideoWriterFFmpegTests.cpp
+	        )
+	        target_link_libraries(VideoWriterFFmpegTests PRIVATE Engine GTest::gtest GTest::gtest_main ${GE_FFMPEG_LIBRARIES})
+	        target_include_directories(VideoWriterFFmpegTests PRIVATE ${GE_FFMPEG_INCLUDE_DIR})
+	        set_target_properties(VideoWriterFFmpegTests PROPERTIES
+	            CXX_STANDARD 20
+	            CXX_STANDARD_REQUIRED ON
+	            FOLDER "Engine/Tests"
+	        )
+	        ge_set_output_tests(VideoWriterFFmpegTests)
+	        ge_stage_runtime_dependencies(VideoWriterFFmpegTests)
+	        add_test(NAME VideoWriterFFmpegTests COMMAND $<TARGET_FILE:VideoWriterFFmpegTests>)
+	    endif()
+	endif()
+
+if(BUILD_TESTING AND TARGET GTest::gtest_main)
+    # The registry's derived cache, registered the way the editor registers it: the texture cook
+    # reads the scenes' dependency edges from it.
+    add_executable(PackagedTextureExportTests Tests/PackagedTextureExportTests.cpp
+        ${CMAKE_SOURCE_DIR}/Tests/Assets/AssetDbCacheFactoryTestEnv.cpp)
+    target_link_libraries(PackagedTextureExportTests PRIVATE Engine AssetDatabaseSqlite GTest::gtest_main)
+    target_include_directories(PackagedTextureExportTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests)
+    target_compile_features(PackagedTextureExportTests PRIVATE cxx_std_20)
+    ge_set_output_tests(PackagedTextureExportTests)
+    ge_stage_runtime_dependencies(PackagedTextureExportTests)
+    add_test(NAME PackagedTextureExportTests COMMAND PackagedTextureExportTests)
+
+    add_executable(ShipRulesExportTests Tests/ShipRulesExportTests.cpp)
+    target_link_libraries(ShipRulesExportTests PRIVATE Engine GTest::gtest_main)
+    target_include_directories(ShipRulesExportTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests)
+    target_compile_features(ShipRulesExportTests PRIVATE cxx_std_20)
+    ge_set_output_tests(ShipRulesExportTests)
+    ge_stage_runtime_dependencies(ShipRulesExportTests)
+    add_test(NAME ShipRulesExportTests COMMAND ShipRulesExportTests)
+endif()
+
+if(BUILD_TESTING AND TARGET GTest::gtest_main)
+    add_executable(EngineShaderHookLifetimeTests Tests/EngineShaderHookLifetimeTests.cpp)
+    target_link_libraries(EngineShaderHookLifetimeTests PRIVATE Engine GTest::gtest_main)
+    target_include_directories(EngineShaderHookLifetimeTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests)
+    target_compile_features(EngineShaderHookLifetimeTests PRIVATE cxx_std_20)
+    ge_set_output_tests(EngineShaderHookLifetimeTests)
+    ge_stage_runtime_dependencies(EngineShaderHookLifetimeTests)
+    add_test(NAME EngineShaderHookLifetimeTests COMMAND EngineShaderHookLifetimeTests)
+endif()
+
+if(BUILD_TESTING)
 	if(GTest_FOUND OR TARGET GTest::gtest)
 	    add_executable(SpriteRuntimeTests
 	        Tests/RenderYSortingTests.cpp
@@ -3586,112 +3862,4 @@ endif()
 	    add_test(NAME SpriteQuadTests COMMAND $<TARGET_FILE:SpriteQuadTests>)
 	endif()
 
-	# Engine tests: Scene file load/save (schema round-trips, hierarchy authoring order), plus the
-	# field-bound passes those schemas apply and the reflected read shape those bounds are read
-	# back through. Both extra suites need the REAL component reflection, which only exists once
-	# Engine is linked and its generated reflection TU has run its static initializers — in a
-	# suite without Engine they would sweep an empty registry and pass vacuously. The clamp suite
-	# additionally lives with the module that owns the pass but builds here, because constructing
-	# a real component pulls the AssetCore closure TerrainGrassStatsTests deliberately does without.
-	if(GTest_FOUND OR TARGET GTest::gtest)
-	    add_executable(EngineSceneIOTests
-	        Tests/WeatherWindTests.cpp
-	        Tests/SceneIOTests.cpp
-	        Tests/PrefabLibraryTests.cpp
-	        Tests/PrefabFormatTests.cpp
-	        Tests/PrefabSpawnTests.cpp
-	        Tests/EmbeddedAnimationPersistenceTests.cpp
-	        Tests/SceneIntegerTests.cpp
-	        Tests/SceneStructArrayTests.cpp
-	        Tests/SceneSchemaOwnershipTests.cpp
-	        Tests/SceneExportStripTests.cpp
-	        Tests/SplineSceneSerializationTests.cpp
-	        Tests/ReflectedComponentJsonTests.cpp
-	        Modules/TerrainGrass/Tests/TerrainGrassClampsTests.cpp
-        Modules/TerrainGrass/Tests/TerrainGrassPresetTests.cpp)
-	    target_link_libraries(EngineSceneIOTests PRIVATE Engine GTest::gtest GTest::gtest_main)
-	    target_include_directories(EngineSceneIOTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests ${CMAKE_CURRENT_SOURCE_DIR}/Source)
-	    # TerrainGrassClamps.SceneSchemaCarriesNoInlineClampCall reads the scene schema and fails on
-	    # any field bound written inline there instead of in the shared clamp pass.
-	    target_compile_definitions(EngineSceneIOTests PRIVATE
-	        TERRAIN_GRASS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/Modules/TerrainGrass/Source")
-	    if(TARGET GameEngine.Native)
-	        target_link_libraries(EngineSceneIOTests PRIVATE GameEngine.Native)
-	    endif()
-	    set_target_properties(EngineSceneIOTests PROPERTIES
-	        CXX_STANDARD 20
-	        CXX_STANDARD_REQUIRED ON
-	        FOLDER "Engine/Tests"
-	    )
-	    ge_set_output_tests(EngineSceneIOTests)
-	    ge_stage_runtime_dependencies(EngineSceneIOTests)
-	    add_test(NAME EngineSceneIOTests COMMAND $<TARGET_FILE:EngineSceneIOTests>)
-	endif()
-
-	if(GTest_FOUND OR TARGET GTest::gtest)
-	    add_executable(ValueCurveEvaluatorTests
-	        Tests/ValueCurveEvaluatorTests.cpp
-	        )
-	    target_link_libraries(ValueCurveEvaluatorTests PRIVATE Engine GTest::gtest GTest::gtest_main)
-	    set_target_properties(ValueCurveEvaluatorTests PROPERTIES
-	        CXX_STANDARD 20
-	        CXX_STANDARD_REQUIRED ON
-	        FOLDER "Engine/Tests"
-	    )
-	    ge_set_output_tests(ValueCurveEvaluatorTests)
-	    ge_stage_runtime_dependencies(ValueCurveEvaluatorTests)
-	    add_test(NAME ValueCurveEvaluatorTests COMMAND $<TARGET_FILE:ValueCurveEvaluatorTests>)
-
-	    add_executable(AsyncVideoRecorderTests
-	        Tests/AsyncVideoRecorderTests.cpp
-	    )
-	    target_link_libraries(AsyncVideoRecorderTests PRIVATE Engine GTest::gtest GTest::gtest_main)
-	    target_include_directories(AsyncVideoRecorderTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
-	    set_target_properties(AsyncVideoRecorderTests PROPERTIES
-	        CXX_STANDARD 20
-	        CXX_STANDARD_REQUIRED ON
-	        FOLDER "Engine/Tests"
-	    )
-	    ge_set_output_tests(AsyncVideoRecorderTests)
-	    ge_stage_runtime_dependencies(AsyncVideoRecorderTests)
-	    add_test(NAME AsyncVideoRecorderTests COMMAND $<TARGET_FILE:AsyncVideoRecorderTests>)
-
-	    # Closed-loop writer tests inspect the container with ffmpeg directly,
-	    # so they link it in addition to the Engine (whose linkage is PRIVATE).
-	    if(FFMPEG_FOUND)
-	        add_executable(VideoWriterFFmpegTests
-	            Tests/VideoWriterFFmpegTests.cpp
-	        )
-	        target_link_libraries(VideoWriterFFmpegTests PRIVATE Engine GTest::gtest GTest::gtest_main ${FFMPEG_LIBRARIES})
-	        target_include_directories(VideoWriterFFmpegTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
-	        target_include_directories(VideoWriterFFmpegTests PRIVATE ${FFMPEG_INCLUDE_DIRS})
-	        set_target_properties(VideoWriterFFmpegTests PROPERTIES
-	            CXX_STANDARD 20
-	            CXX_STANDARD_REQUIRED ON
-	            FOLDER "Engine/Tests"
-	        )
-	        ge_set_output_tests(VideoWriterFFmpegTests)
-	        ge_stage_runtime_dependencies(VideoWriterFFmpegTests)
-	        add_test(NAME VideoWriterFFmpegTests COMMAND $<TARGET_FILE:VideoWriterFFmpegTests>)
-	    endif()
-	endif()
-
-if(BUILD_TESTING AND TARGET GTest::gtest_main)
-    add_executable(PackagedTextureExportTests Tests/PackagedTextureExportTests.cpp)
-    target_link_libraries(PackagedTextureExportTests PRIVATE Engine GTest::gtest_main)
-    target_include_directories(PackagedTextureExportTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests)
-    target_compile_features(PackagedTextureExportTests PRIVATE cxx_std_20)
-    ge_set_output_tests(PackagedTextureExportTests)
-    ge_stage_runtime_dependencies(PackagedTextureExportTests)
-    add_test(NAME PackagedTextureExportTests COMMAND PackagedTextureExportTests)
-endif()
-
-if(BUILD_TESTING AND TARGET GTest::gtest_main)
-    add_executable(EngineShaderHookLifetimeTests Tests/EngineShaderHookLifetimeTests.cpp)
-    target_link_libraries(EngineShaderHookLifetimeTests PRIVATE Engine GTest::gtest_main)
-    target_include_directories(EngineShaderHookLifetimeTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests)
-    target_compile_features(EngineShaderHookLifetimeTests PRIVATE cxx_std_20)
-    ge_set_output_tests(EngineShaderHookLifetimeTests)
-    ge_stage_runtime_dependencies(EngineShaderHookLifetimeTests)
-    add_test(NAME EngineShaderHookLifetimeTests COMMAND EngineShaderHookLifetimeTests)
 endif()

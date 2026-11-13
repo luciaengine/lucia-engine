@@ -1,6 +1,8 @@
-// The build state the recipe controllers keep for each recipe, and the scene's settled summary.
+// What the recipe controllers keep for each recipe: the build state, the scene's settled summary and
+// the bounds of a fence's parts.
 
 #include "Assets/AssetManager.h"
+#include "Assets/ModelAsset.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
 #include "Components/Rendering/LocalBounds.h"
@@ -9,6 +11,7 @@
 #include "Components/Spline/SplineComponent.h"
 #include "Components/Spline/SplineExtrude.h"
 #include "Components/Spline/SplineFence.h"
+#include "Components/Spline/SplinePlacement.h"
 #include "Components/Terrain/Terrain.h"
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h"
@@ -21,13 +24,17 @@
 #include "SharedHeadlessDevice.h"
 #include "SplineECS/SplineService.h"
 #include "SplineRecipes/RecipeBuildStates.h"
-#include "SplineRecipes/SplineRecipesScriptApi.h"
+#include "SplineRecipes/FenceRecipeLayout.h"
 #include "SplineRecipes/RecipeControllers.h"
+#include "SplineRecipes/SplineRecipesScriptApi.h"
 #include "SplineRecipes/SplineSurfaceConform.h"
 #include "TerrainECS/TerrainService.h"
 
 #include <gtest/gtest.h>
 
+#include <memory>
+#include <span>
+#include <thread>
 
 namespace GameEngine::SplineRecipes
 {
@@ -83,8 +90,8 @@ protected:
             SplineECS::SplineService::Shutdown();
     }
 
-    // A straight extrude recipe with the recipe's defaults, along `pointCount` points 12 m apart.
-    ECS::EntityHandle CreateExtrude(uint32 pointCount)
+    // A straight spline entity along `pointCount` points 12 m apart, with no recipe yet.
+    ECS::EntityHandle CreateSplineEntity(uint32 pointCount)
     {
         auto& splines = SplineECS::SplineService::Get();
         const auto handle = splines.CreateSpline(Spline::SplineType::Linear, false);
@@ -98,9 +105,47 @@ protected:
         spline.SplineDataIndex = handle.Index();
         spline.SplineDataGeneration = handle.Generation();
         m_World.AddComponentImmediate(entity, spline);
-        m_World.AddComponentImmediate(entity, Components::SplineExtrude{});
         m_World.AddComponentImmediate(entity, Components::WorldTransform{});
         return entity;
+    }
+
+    // A straight extrude recipe with the recipe's defaults, along `pointCount` points 12 m apart.
+    ECS::EntityHandle CreateExtrude(uint32 pointCount)
+    {
+        const ECS::EntityHandle entity = CreateSplineEntity(pointCount);
+        m_World.AddComponentImmediate(entity, Components::SplineExtrude{});
+        return entity;
+    }
+
+    // A fence of one Span part with `mesh`, on two points, that does not conform: it needs no ground.
+    ECS::EntityHandle CreateFence(const GUID& mesh)
+    {
+        const ECS::EntityHandle entity = CreateSplineEntity(2);
+        Components::SplineFence fence{};
+        fence.Parts[0].Mesh.Set(mesh);
+        fence.ConformMode = Components::SplinePlacementConform::None;
+        m_World.AddComponentImmediate(entity, fence);
+        return entity;
+    }
+
+    // A resident model of one cube mesh with `halfExtent`, under a new GUID. The fixture's teardown
+    // leaves it registered: each test makes its own GUIDs.
+    static GUID RegisterCubeModel(float32 halfExtent)
+    {
+        const GUID guid = GUID::Generate();
+        auto model = std::make_shared<ModelAsset>(guid, "cube.fbx");
+        Vector<Mesh> meshes;
+        meshes.push_back(Engine::Renderer::PrimitiveGenerator::GenerateCube(halfExtent));
+        model->SetMeshesForTest(std::move(meshes));
+        EngineCore::GetInstance().GetAssetManager().RegisterLoadedAsset(guid, model);
+        return guid;
+    }
+
+    // Runs the controllers until `recipe` is Built, at most `maxUpdates` times.
+    void UpdateUntilBuilt(ECS::EntityHandle recipe, uint32 maxUpdates)
+    {
+        for (uint32 i = 0; i < maxUpdates && StateOf(recipe) != BuildState::Built; ++i)
+            Update();
     }
 
     void Update()
@@ -115,9 +160,7 @@ protected:
         const ECS::EntityHandle entity = m_World.CreateEntity();
         m_World.AddComponentImmediate(entity, Components::Terrain{});
         Components::WorldTransform transform{};
-        transform.matrix[12] = center.x;
-        transform.matrix[13] = center.y;
-        transform.matrix[14] = center.z;
+        transform.Position = Mathematics::WorldPosition::FromVector3(center);
         m_World.AddComponentImmediate(entity, transform);
         return entity;
     }
@@ -130,9 +173,7 @@ protected:
         renderer.modelAssetGuid.Set(model);
         m_World.AddComponentImmediate(entity, renderer);
         Components::WorldTransform transform{};
-        transform.matrix[12] = position.x;
-        transform.matrix[13] = position.y;
-        transform.matrix[14] = position.z;
+        transform.Position = Mathematics::WorldPosition::FromVector3(position);
         m_World.AddComponentImmediate(entity, transform);
         return entity;
     }
@@ -176,6 +217,13 @@ TEST_F(SplineRecipeBuildStateTests, ARecipeIsPendingUntilItsFirstBuildAndBuiltAf
     EXPECT_EQ(StateOf(road), BuildState::Built);
     EXPECT_TRUE(m_Controllers.BuildStates().IsSceneSettled(m_World));
     EXPECT_TRUE(m_Controllers.BuildStates().IsSceneSettledAtLastUpdate(m_World));
+
+    // A reset drops what the last update found: a recipe of the next scene keeps it unsettled.
+    m_Controllers.ReleaseSceneScoped(m_World, &m_RenderServices);
+    m_World.Clear();
+    CreateExtrude(2);
+    EXPECT_FALSE(m_Controllers.BuildStates().IsSceneSettledAtLastUpdate(m_World))
+        << "the update before the reset settled the scene";
 }
 
 // A process with no render device builds no recipe: each recipe fails at once with the reason,
@@ -199,6 +247,48 @@ TEST_F(SplineRecipeBuildStateTests, WithNoRenderDeviceEveryRecipeFailsAndTheScen
     EXPECT_TRUE(states.IsSceneSettled(m_World)) << "a run with no render device kept the scene unsettled";
     EXPECT_TRUE(states.IsSceneSettledAtLastUpdate(m_World));
     EXPECT_EQ(ChunkCount(), 0u);
+}
+
+// A host can update its own world beside the world of the rendering loop. The states of the loop's
+// recipe system then answer for that world from its recipes: settled with none, so a navigation
+// bake there does not wait for an update that never comes.
+TEST_F(SplineRecipeBuildStateTests, AWorldTheControllersDoNotUpdateIsSettledOnlyWithNoRecipe)
+{
+    CreateExtrude(2);
+    Update();
+    const RecipeBuildStates& states = m_Controllers.BuildStates();
+    ASSERT_TRUE(states.IsSceneSettledAtLastUpdate(m_World));
+
+    ECS::World other;
+    EXPECT_TRUE(states.IsSceneSettledAtLastUpdate(other))
+        << "a world with no recipe waits for an update of the controllers";
+
+    const ECS::EntityHandle road = other.CreateEntity();
+    other.AddComponentImmediate(road, Components::SplineComponent{});
+    other.AddComponentImmediate(road, Components::SplineExtrude{});
+    other.AddComponentImmediate(road, Components::WorldTransform{});
+    EXPECT_FALSE(states.IsSceneSettledAtLastUpdate(other)) << "a recipe that no update has seen settled the scene";
+}
+
+// The script API answers on the main thread only: a call from another thread is refused and
+// returns the default, not the state.
+TEST_F(SplineRecipeBuildStateTests, AQueryFromAnotherThreadIsRefused)
+{
+    const ECS::EntityHandle prop = m_World.CreateEntity();
+    m_World.AddComponentImmediate(prop, Components::WorldTransform{});
+    ASSERT_TRUE(SplineRecipes::IsSceneSettled(m_World)) << "a world with no recipe is not settled on the main thread";
+    ASSERT_EQ(SplineRecipes::StateOf(m_World, prop).State, BuildState::Built);
+
+    bool settled = true;
+    BuildState state = BuildState::Built;
+    std::thread caller([&] {
+        settled = SplineRecipes::IsSceneSettled(m_World);
+        state = SplineRecipes::StateOf(m_World, prop).State;
+    });
+    caller.join();
+
+    EXPECT_FALSE(settled) << "IsSceneSettled answered off the main thread";
+    EXPECT_EQ(state, BuildState::Pending) << "StateOf answered off the main thread";
 }
 
 TEST_F(SplineRecipeBuildStateTests, ARecipeOverATerrainThatIsNotLoadedIsHeldAndBuildsWhenItLands)
@@ -338,6 +428,96 @@ TEST_F(SplineRecipeBuildStateTests, AWaitPastTheBudgetBuildsWithoutTheModelAndFa
     EXPECT_TRUE(m_Controllers.BuildStates().IsSceneSettled(m_World));
 }
 
+// The part bounds follow a part's mesh: the rebuild after a mesh change lists the new mesh's box
+// and does not list the old one.
+TEST_F(SplineRecipeBuildStateTests, AFencesPartBoundsFollowAPartsMeshChange)
+{
+    constexpr uint32 kMaxUpdates = 8;
+    constexpr float32 kSmallHalfExtent = 0.5f;
+    constexpr float32 kLargeHalfExtent = 1.25f;
+    const GUID small = RegisterCubeModel(kSmallHalfExtent);
+    const GUID large = RegisterCubeModel(kLargeHalfExtent);
+    const ECS::EntityHandle fence = CreateFence(small);
+    EXPECT_TRUE(m_Controllers.FencePartBounds(fence).empty()) << "a fence that has not built lists no bounds";
+
+    UpdateUntilBuilt(fence, kMaxUpdates);
+    ASSERT_EQ(StateOf(fence), BuildState::Built);
+    std::span<const FenceMeshBounds> bounds = m_Controllers.FencePartBounds(fence);
+    ASSERT_EQ(bounds.size(), 1u);
+    EXPECT_EQ(bounds[0].Mesh.ToGuid(), small);
+    EXPECT_NEAR(bounds[0].Bounds.HalfExtents.y, kSmallHalfExtent, 1e-4f);
+
+    m_World.GetComponentForWrite<Components::SplineFence>(fence)->Parts[0].Mesh.Set(large);
+    Update();
+    UpdateUntilBuilt(fence, kMaxUpdates);
+    ASSERT_EQ(StateOf(fence), BuildState::Built);
+    bounds = m_Controllers.FencePartBounds(fence);
+    ASSERT_EQ(bounds.size(), 1u) << "the old mesh is still listed after the part changed its mesh";
+    EXPECT_EQ(bounds[0].Mesh.ToGuid(), large);
+    EXPECT_NEAR(bounds[0].Bounds.HalfExtents.y, kLargeHalfExtent, 1e-4f);
+}
+
+// A world snapshot restore (a play Stop, an undo) does not bring the generated pieces back: the
+// controllers build them again, so the world holds one entity per piece after each restore.
+TEST_F(SplineRecipeBuildStateTests, ASnapshotRestoreLeavesOneEntityPerGeneratedPiece)
+{
+    constexpr uint32 kMaxUpdates = 8;
+    constexpr uint32 kRestores = 2;
+    const ECS::EntityHandle road = CreateExtrude(4);
+    const ECS::EntityHandle fence = CreateFence(RegisterCubeModel(0.5f));
+    UpdateUntilBuilt(road, kMaxUpdates);
+    UpdateUntilBuilt(fence, kMaxUpdates);
+    ASSERT_EQ(StateOf(road), BuildState::Built);
+    ASSERT_EQ(StateOf(fence), BuildState::Built);
+    const uint32 pieces = ChunkCount();
+    ASSERT_GT(pieces, 0u);
+    const std::size_t built = m_World.GetEntityCount();
+    const auto snapshot = m_World.SerializeWorld();
+
+    for (uint32 restore = 1; restore <= kRestores; ++restore)
+    {
+        m_World.DeserializeWorld(snapshot);
+        m_World.ProcessCommands();
+        Update();
+        UpdateUntilBuilt(road, kMaxUpdates);
+        UpdateUntilBuilt(fence, kMaxUpdates);
+        ASSERT_EQ(StateOf(road), BuildState::Built);
+        ASSERT_EQ(StateOf(fence), BuildState::Built);
+        EXPECT_EQ(ChunkCount(), pieces) << "after restore " << restore;
+        EXPECT_EQ(m_World.GetEntityCount(), built) << "after restore " << restore;
+    }
+}
+
+// A world snapshot restore does not bring the placement tiles back: the placement controller builds
+// them again, so the world holds one entity per tile after each restore.
+TEST_F(SplineRecipeBuildStateTests, ASnapshotRestoreLeavesOneEntityPerPlacementTile)
+{
+    constexpr uint32 kMaxUpdates = 8;
+    constexpr uint32 kRestores = 2;
+    const ECS::EntityHandle path = CreateSplineEntity(2);
+    Components::SplinePlacement placement{};
+    placement.StraightPool[0].Set(RegisterCubeModel(0.5f));
+    placement.ConformMode = Components::SplinePlacementConform::None;
+    m_World.AddComponentImmediate(path, placement);
+    UpdateUntilBuilt(path, kMaxUpdates);
+    ASSERT_EQ(StateOf(path), BuildState::Built);
+    const uint32 tiles = ChunkCount();
+    ASSERT_GT(tiles, 0u);
+    const std::size_t built = m_World.GetEntityCount();
+    const auto snapshot = m_World.SerializeWorld();
+
+    for (uint32 restore = 1; restore <= kRestores; ++restore)
+    {
+        m_World.DeserializeWorld(snapshot);
+        m_World.ProcessCommands();
+        Update();
+        UpdateUntilBuilt(path, kMaxUpdates);
+        ASSERT_EQ(StateOf(path), BuildState::Built);
+        EXPECT_EQ(ChunkCount(), tiles) << "after restore " << restore;
+        EXPECT_EQ(m_World.GetEntityCount(), built) << "after restore " << restore;
+    }
+}
+
 // The spline's points move without a version bump, so only a rebuild can move the chunk.
 TEST(SplineConformHoldBudget, IsTwiceTheSlowestMeasuredColdSceneLoad)
 {
@@ -376,7 +556,7 @@ TEST_F(SplineRecipeBuildStateTests, AMaterialSwapRebindsTheChunkAndRunsNoRebuild
     const auto* renderer = m_World.GetComponent<Components::MeshRenderer>(chunk);
     ASSERT_NE(renderer, nullptr) << "the swap replaced the chunk entity";
     EXPECT_EQ(renderer->materialAssetGuid.ToGuid(), material);
-    EXPECT_FALSE(renderer->castShadows);
+    EXPECT_EQ(renderer->shadowCasting, Components::ShadowCasting::Off);
     EXPECT_FALSE(m_World.GetComponent<Components::LocalBounds>(chunk)->CastShadows);
     EXPECT_FLOAT_EQ(ChunkTop(chunk), builtTop)
         << "the material swap rebuilt the geometry";
@@ -389,6 +569,9 @@ TEST_F(SplineRecipeBuildStateTests, AMaterialSwapRebindsTheChunkAndRunsNoRebuild
     EXPECT_EQ(m_World.GetComponent<Components::MeshRenderer>(chunk)->materialAssetGuid.ToGuid(), material);
 }
 
+// The documented reading of the query in a process whose recipe system never ran
+// (docs/scripting/spline-recipes.mdx): a recipe is Pending, so only a world with no
+// recipe is settled, and an entity with no recipe is Built.
 TEST(SplineRecipesQuery, WithNoRecipeSystemOnlyAWorldWithNoRecipeIsSettled)
 {
     ECS::World world;

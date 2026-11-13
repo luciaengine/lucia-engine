@@ -1,8 +1,8 @@
 // Stage 2 substep 2.2 — assert ContentHash and PipelineFormatKey hashing
 // invariants. These guard the cache-key contract: same content → same id.
 
-#include "Rendering/Core/PipelineCache.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineCache.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 
 #include <gtest/gtest.h>
 

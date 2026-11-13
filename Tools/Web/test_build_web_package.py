@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """build_web_package.py over a stub engine module: the package's file list and manifest, the
-size report, the refusal of a stub or incomplete module, and the version derivation.
+size report, the refusal of a stub or incomplete module, the notices of the package and of a
+game, and the version derivation.
 
     python Tools/Web/test_build_web_package.py
 
@@ -11,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fnmatch
 import io
 import json
 import sys
@@ -20,9 +22,74 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_web_package as package  # noqa: E402
+import builtin_shader_cook  # noqa: E402
+import engine_pack  # noqa: E402
+import export_web_player  # noqa: E402
 import gepak  # noqa: E402
 
+kSourceVersion = package.SourceVersion(package.kRepoRoot / "VERSION")
 kHasBundler = (package.kFacadeDir / "node_modules" / "esbuild" / "bin" / "esbuild").is_file()
+
+# Shader sources that hold third-party code, by the repository notice that covers them.
+# Patterns are relative to the repository root.
+# A new shader port adds its row here; the test checks only the ports this table names.
+kShaderPortNotices = {
+    "Engine/Modules/Ocean/NOTICE": ("Engine/Modules/Rendering/Shaders/Ocean/*",),
+    "Engine/Modules/VolumetricClouds/ThirdParty/SebLague-Clouds/LICENSE": (
+        "Engine/Modules/VolumetricClouds/Shaders/volumetric_clouds_*",),
+    "Packages/fidelityfx-dof/LICENSE.txt": ("Packages/fidelityfx-dof/Assets/Shaders/ffx_dof_*.comp",),
+    "ThirdParty/BendScreenSpaceShadows/LICENSE.txt": (
+        "Engine/Modules/Rendering/Shaders/ScreenSpaceShadows/screen_space_shadow.comp",),
+    "ThirdParty/FidelityFX-Denoiser/LICENSE.txt": (
+        "Engine/Modules/Rendering/Shaders/ScreenSpaceReflections/sssr_prefilter.comp",
+        "Engine/Modules/Rendering/Shaders/ScreenSpaceReflections/sssr_reproject.comp"),
+    "ThirdParty/GTAO/LICENSE.txt": ("Engine/Modules/Rendering/Shaders/AmbientOcclusion/gtao.comp",
+                                    "Engine/Modules/Rendering/Shaders/AmbientOcclusion/gtao_blur.comp",
+                                    "Engine/Modules/Rendering/Shaders/AmbientOcclusion/gtao_upsample.comp"),
+    "ThirdParty/KhronosPbrNeutral/LICENSE.txt": ("Engine/Modules/Rendering/Shaders/tonemap.frag",),
+    "ThirdParty/KinoBloom/LICENSE.md": ("Engine/Modules/Rendering/Shaders/bloom_octave_gather.frag",
+                                        "Engine/Modules/Rendering/Shaders/fog_glow_*.frag"),
+    "ThirdParty/MinimalAgX/LICENSE.txt": ("Engine/Modules/Rendering/Shaders/tonemap.frag",),
+    "ThirdParty/OCASMDepthVeil/LICENSE": ("Engine/Modules/Rendering/Shaders/bloom_threshold.frag",),
+    "ThirdParty/OpenColorIO/LICENSE.txt": ("Engine/Modules/Rendering/Shaders/Includes/tonemap_aces2*.glsl",),
+    "ThirdParty/PunikontaVhs/LICENSE.md": ("Engine/Modules/Rendering/Shaders/vhs.frag",),
+    "ThirdParty/SENaturalBloomDirtyLens/LICENSE.txt": (
+        "Engine/Modules/Rendering/Shaders/bloom_lens_dirt.frag",
+        "Engine/Modules/Rendering/Shaders/bloom_lens_dirt_gather.frag"),
+    "ThirdParty/SpeedballGi/LICENSE.md": ("Engine/Modules/Rendering/Shaders/Includes/ddgi_common.glsl",
+                                          "Engine/Modules/Rendering/Shaders/ddgi_blend.comp",
+                                          "Engine/Modules/Rendering/Shaders/ddgi_upload.comp"),
+    "ThirdParty/Slug/LICENSE-MIT": ("Engine/Modules/Rendering/Shaders/UI/slug_functions.glsl",),
+    "Packages/film-simulation/LICENSE.txt": ("Packages/film-simulation/Assets/Shaders/film_simulation_grain.frag",),
+}
+
+# Rows that ship although the source model below holds none of their files: MaterialVariantCook
+# composes the ocean surface programs into the engine pack and into every game's cook.
+kShippedPorts = {"Engine/Modules/Ocean/NOTICE"}
+
+# Rows that no web package or game ships, with the reason. The test fails when the source model
+# carries one. Every row is carried by the model or marked here or in kShippedPorts.
+kUnshippedPorts = {
+    "ThirdParty/Slug/LICENSE-MIT": "ui_sdf is an editor stage shader; the pack cooks only the IBL ones, a game none",
+    "Packages/film-simulation/LICENSE.txt": "film_simulation_grain is an editor package, not a library package",
+    "ThirdParty/GTAO/LICENSE.txt": "the gtao packages are editor packages, not library packages",
+    "ThirdParty/PunikontaVhs/LICENSE.md": "the vhs packages are editor packages, not library packages",
+}
+
+
+def EnginePackShaderSources() -> set[str]:
+    """Every shader source the engine pack cooks or carries, relative to the repository root."""
+    sources = []
+    for stages in engine_pack.kPackPackages.values():
+        for stage in stages.values():
+            sources.append(stage if isinstance(stage, str) else stage[0])
+    sources += [builtin_shader_cook.kEditorStageShaders[name][0] for name in engine_pack.kIblStageShaders]
+    paths = [builtin_shader_cook.ResolveShaderSource(name, engine_pack.kEngineShaders) for name in sources]
+    for directory in export_web_player.kEngineShaderDirs:
+        paths += (engine_pack.kEngineShaders / directory).rglob("*")
+    for root, _ in export_web_player.kPackageShaderMounts:
+        paths += root.rglob("*")
+    return {path.relative_to(package.kRepoRoot).as_posix() for path in paths if path.is_file()}
 
 
 class StubTree:
@@ -50,7 +117,7 @@ class StubTree:
         args = argparse.Namespace(st_dir=self.dirs["st"], mt_dir=self.dirs["mt"],
                                   component_dts=self.dts, engine_pack=self.pack,
                                   pack_build_tree=None, seed_project=None,
-                                  vcpkg_share=self.share, version="2026.10.1", allow_stub=True)
+                                  vcpkg_share=self.share, version=kSourceVersion, allow_stub=True)
         for key, value in overrides.items():
             setattr(args, key, value)
         return args
@@ -81,13 +148,13 @@ class PackageTests(unittest.TestCase):
         self.assertIn("## coi-serviceworker", notices)
 
         manifest = json.loads((self.out / "package.json").read_text(encoding="utf-8"))
-        self.assertEqual((manifest["name"], manifest["version"]), ("@openengine/web", "2026.10.1"))
+        self.assertEqual((manifest["name"], manifest["version"]), ("@openengine/web", kSourceVersion))
         self.assertEqual(manifest["exports"]["."]["default"], "./opengine.mjs")
         self.assertIs(manifest["sideEffects"], False)
         self.assertEqual(sorted(manifest["files"]),
                          sorted([*(name for name in package.PackageFiles() if name != "package.json"),
                                  "examples/"]))
-        self.assertIn('var kPackageVersion = "2026.10.1";',
+        self.assertIn(f'var kPackageVersion = "{kSourceVersion}";',
                       (self.out / "opengine.mjs").read_text(encoding="utf-8"))
 
     @unittest.skipUnless(kHasBundler, "the facade's bundler is not installed: npm ci in Apps/WebLibrary/ts")
@@ -105,7 +172,7 @@ class PackageTests(unittest.TestCase):
         package.Build(self.tree.Args(), self.out)
         report = io.StringIO()
         with contextlib.redirect_stdout(report):
-            self.assertEqual(package.Check(self.out, allowStub=True), [])
+            self.assertEqual(package.Check(self.out, allowStub=True, reportSizes=False), [])
         rows = {line[:32].strip(): [int(value.replace(",", "")) for value in line[32:].split()]
                 for line in report.getvalue().splitlines()[1:-1]}
         pack = rows["opengine-core.gepak"]
@@ -129,7 +196,7 @@ class PackageTests(unittest.TestCase):
         self.assertTrue(all((self.out / name).stat().st_size <= 4096 for name in parts))
         self.assertEqual(package.JoinPack(self.out), whole)
         with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(package.Check(self.out, allowStub=True), [])
+            self.assertEqual(package.Check(self.out, allowStub=True, reportSizes=False), [])
         (self.out / parts[1]).write_bytes(b"x" + (self.out / parts[1]).read_bytes()[1:])
         with self.assertRaises(package.PackageError):
             package.JoinPack(self.out)
@@ -158,7 +225,7 @@ class PackageTests(unittest.TestCase):
 
     def test_notices_carry_complete_toolchain_texts_and_example_credits(self):
         self.out.mkdir()
-        package.WriteNotices(self.out, self.tree.share)
+        package.WriteNotices(self.out, self.tree.share, "package")
         notices = (self.out / package.kNoticesName).read_text(encoding="utf-8")
         for relative in ("Tools/Web/licenses/toolchain-notices.md",
                          "Tools/Web/licenses/rust-dependency-notices.md",
@@ -173,6 +240,44 @@ class PackageTests(unittest.TestCase):
         self.assertIn("Tint / Dawn 36cf1fae0cd8", notices)
         self.assertIn("ABeautifulGame.glb", notices)
 
+    def test_every_shader_port_the_engine_pack_carries_has_its_notice_in_every_game(self):
+        sources = EnginePackShaderSources()
+        listed = {notice.Path for notice in package.kRepoNotices if not notice.PackageOnly}
+        self.assertLessEqual(kShippedPorts | kUnshippedPorts.keys(), kShaderPortNotices.keys())
+        self.assertEqual(kShippedPorts & kUnshippedPorts.keys(), set())
+        for notice, patterns in kShaderPortNotices.items():
+            for pattern in patterns:
+                self.assertTrue(any(package.kRepoRoot.glob(pattern)), f"{pattern} matches no file")
+            carried = sorted(source for source in sources
+                             if any(fnmatch.fnmatchcase(source, pattern) for pattern in patterns))
+            with self.subTest(notice=notice):
+                if notice in kUnshippedPorts:
+                    self.assertEqual(carried, [], f"marked not shipped ({kUnshippedPorts[notice]})")
+                elif carried or notice in kShippedPorts:
+                    self.assertIn(notice, listed, f"the engine pack carries {carried or patterns}")
+                else:
+                    self.fail("the source model holds none of its files: mark the row shipped or not shipped")
+
+    def test_the_game_and_editor_notices_are_the_list_without_the_package_only_entries(self):
+        for carrier in ("game", "editor"):
+            out = self.out / carrier
+            out.mkdir(parents=True)
+            package.WriteNotices(out, self.tree.share, carrier)
+            notices = (out / package.kNoticesName).read_text(encoding="utf-8")
+            self.assertIn(package.kNoticeCarriers[carrier], notices)
+            self.assertIn("## jolt (vcpkg port, a dependency of the engine's wasm build)", notices)
+            for notice in package.kRepoNotices:
+                with self.subTest(carrier=carrier, notice=notice.Name):
+                    self.assertEqual(f"## {notice.Name}\n" in notices, not notice.PackageOnly)
+
+    def test_only_the_service_worker_and_the_examples_are_package_only(self):
+        # A game ships the player and the shaders, so it carries every other notice.
+        packageOnly = {notice.Path for notice in package.kRepoNotices if notice.PackageOnly}
+        self.assertEqual(packageOnly, {"Apps/WebLibrary/coi-serviceworker.LICENSE",
+                                       "Apps/WebLibrary/examples/ASSET_PROVENANCE.md",
+                                       "Tools/Web/licenses/CC-BY-4.0.txt",
+                                       "Tools/Web/licenses/CC0-1.0.txt"})
+
     def test_a_stub_module_is_refused_by_name(self):
         with self.assertRaises(package.PackageError) as refusal:
             package.CopyModules(self.tree.dirs, self.out, allowStub=False)
@@ -186,13 +291,30 @@ class PackageTests(unittest.TestCase):
             package.CopyModules(self.tree.dirs, self.out, allowStub=True)
         self.assertIn(f"{self.tree.dirs['mt'] / 'opengine-core.mt.js'} is missing", str(refusal.exception))
 
-    def test_the_version_comes_from_the_release_tag(self):
-        self.assertEqual(package.PackageVersion("v2026.10.0", "abc1234567"), "2026.10.0")
-        self.assertEqual(package.PackageVersion("v2026.10.0-alpha.1", "abc1234567"), "2026.10.0-alpha.1")
-        self.assertEqual(package.PackageVersion(None, "abc1234567"), "0.0.0-dev.abc1234567")
+    def test_the_version_comes_from_the_version_file_and_the_release_tag(self):
+        self.assertEqual(package.PackageVersion("v2026.10.0", "abc1234567", "2026.10.0"), "2026.10.0")
+        self.assertEqual(package.PackageVersion("v2026.10.0-alpha.1", "abc1234567", "2026.10.0-alpha.1"),
+                         "2026.10.0-alpha.1")
+        self.assertEqual(package.PackageVersion(None, "abc1234567", "2026.10.0-alpha.4"),
+                         "2026.10.0-alpha.4-dev.abc1234567")
         for tag in ("v12", "v2026.10.0-rc.1", "release-2026.10.0"):
             with self.assertRaises(package.PackageError):
-                package.PackageVersion(tag, "abc1234567")
+                package.PackageVersion(tag, "abc1234567", "2026.10.0")
+
+    def test_a_release_tag_that_differs_from_the_version_file_is_refused_naming_both(self):
+        with self.assertRaises(package.PackageError) as refusal:
+            package.PackageVersion("v2026.10.0-alpha.3", "abc1234567", "2026.10.0-alpha.4")
+        self.assertIn("v2026.10.0-alpha.3", str(refusal.exception))
+        self.assertIn("2026.10.0-alpha.4", str(refusal.exception))
+
+    def test_a_version_argument_that_differs_from_the_version_file_is_refused_naming_both(self):
+        with self.assertRaises(package.PackageError) as refusal:
+            package.Build(self.tree.Args(version="2000.1.0-alpha.1"), self.out)
+        self.assertIn("2000.1.0-alpha.1", str(refusal.exception))
+        self.assertIn(kSourceVersion, str(refusal.exception))
+
+    def test_the_repository_version_file_holds_a_release_version(self):
+        self.assertTrue(package.kReleaseTag.match(f"v{package.SourceVersion(package.kRepoRoot / 'VERSION')}"))
 
     def test_a_prerelease_publishes_under_its_channel_never_latest(self):
         self.assertEqual(package.PrereleaseChannel("2026.10.0-alpha.1"), "alpha")

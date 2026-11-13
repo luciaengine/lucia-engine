@@ -19,6 +19,7 @@ RenderingDeviceCapabilities DesktopCapabilities()
     caps.supportsBindlessResources = true;
     caps.supportsBufferDeviceAddress = true;
     caps.supportsShaderInterpolationFunctions = true;
+    caps.supportsShaderClipDistance = true;
     return caps;
 }
 
@@ -65,4 +66,18 @@ TEST(RendererProfile, ForcedCompatibilityTakesNoInterpolationFunctions)
     ASSERT_TRUE(ApplyForceCompatOverride(caps));
     EXPECT_FALSE(caps.supportsShaderInterpolationFunctions);
     EXPECT_FALSE(RendererProfile::FromCapabilities(caps).UseInterpolationFunctions);
+}
+
+TEST(RendererProfile, ClipDistanceFollowsShaderClipDistance)
+{
+    RenderingDeviceCapabilities caps = DesktopCapabilities();
+    EXPECT_TRUE(RendererProfile::FromCapabilities(caps).UseClipDistance);
+    caps.supportsShaderClipDistance = false;
+    EXPECT_FALSE(RendererProfile::FromCapabilities(caps).UseClipDistance)
+        << "a device without shaderClipDistance must not be handed gl_ClipDistance";
+
+    caps = DesktopCapabilities();
+    ScopedForceCompat forced;
+    ASSERT_TRUE(ApplyForceCompatOverride(caps));
+    EXPECT_FALSE(RendererProfile::FromCapabilities(caps).UseClipDistance) << "WGSL takes no clip distance";
 }

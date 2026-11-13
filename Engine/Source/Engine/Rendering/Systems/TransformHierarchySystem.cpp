@@ -7,11 +7,12 @@
 #include "Components/TransformDirtyFeed.h"
 #include "Components/Hierarchy.h"
 #include "Logger/Logger.h"
-#include "Platform/Environment.h"
+#include "JobSystem/WorkStealingThreadPool.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 
@@ -23,29 +24,20 @@ using GameEngine::Components::Parent;
 
 namespace {
 
-// Multiply 4x4 column-major matrices: out = a * b
-inline void MultiplyColumnMajor4x4(const float32* a, const float32* b, float32* out) {
-    for (int col = 0; col < 4; ++col) {
-        for (int row = 0; row < 4; ++row) {
-            const int o = col * 4 + row;
-            out[o] = a[0 * 4 + row] * b[col * 4 + 0]
-                   + a[1 * 4 + row] * b[col * 4 + 1]
-                   + a[2 * 4 + row] * b[col * 4 + 2]
-                   + a[3 * 4 + row] * b[col * 4 + 3];
-        }
-    }
-}
-
-// Compute WorldTransform = Transform for one entity, bumping Version only when
-// the bytes actually change. This is the per-entity root computation shared by
+// Compute WorldTransform = Transform for one entity, bumping Version when the
+// bytes change or the entity was never resolved (Version 0: a WorldTransform
+// is placed with the entity, before any resolve, and an identity pose would
+// otherwise never leave 0). This is the per-entity root computation shared by
 // the cached hierarchy (for root nodes) and the flat parallel path; keeping it in one
 // place is what guarantees bitwise-identical output across the two paths.
 // Returns true when the bytes changed (Version bumped) — the caller owns the
 // matching dirty-feed emission (per-entity on the hierarchy path, chunk-batched
 // on the flat parallel path), so a bump can never outrun its feed entry.
-inline bool WriteRootWorldTransform(const float32* local, WorldTransform& out) {
-    if (std::memcmp(out.matrix, local, sizeof(float32) * 16) != 0) {
-        std::memcpy(out.matrix, local, sizeof(float32) * 16);
+static_assert(sizeof(Transform) == sizeof(std::array<uint64, 8>), "Node::localSnapshot holds one Transform");
+
+inline bool WriteRootWorldTransform(const Transform& local, WorldTransform& out) {
+    if (out.Version == 0u || std::memcmp(&out, &local, Components::kTransformPoseBytes) != 0) {
+        std::memcpy(&out, &local, Components::kTransformPoseBytes);
         ++out.Version;
         return true;
     }
@@ -55,7 +47,10 @@ inline bool WriteRootWorldTransform(const float32* local, WorldTransform& out) {
 // GE_HIER_PROFILE=1 logs a per-phase decomposition of Update() every
 // kProfileLogInterval active frames. The cached path reports entity scanning,
 // direct-index construction, CSR rebuilding, and subtree propagation separately.
-const bool kProfileEnabled = Platform::EnvironmentSwitchEnabled("GE_HIER_PROFILE", false);
+const bool kProfileEnabled = [] {
+    const char* v = std::getenv("GE_HIER_PROFILE");
+    return v && v[0] == '1';
+}();
 constexpr uint32 kProfileLogInterval = 120u;
 
 // Dirty subtrees propagate on the job system from this many up; below it the
@@ -71,13 +66,13 @@ inline double DeltaMs(ProfileClock::time_point a, ProfileClock::time_point b) {
 }
 
 struct HierarchyProfiler {
-    double ensureMs = 0.0, scanMs = 0.0, indexMs = 0.0, topologyMs = 0.0, propagateMs = 0.0;
+    double scanMs = 0.0, indexMs = 0.0, topologyMs = 0.0, propagateMs = 0.0;
     uint32 frames = 0;
     size_t lastNodeCount = 0, lastRootCount = 0, lastEdgeCount = 0;
 
-    void Accumulate(double ensure, double scan, double index, double topology, double propagate,
+    void Accumulate(double scan, double index, double topology, double propagate,
                     size_t nodes, size_t roots, size_t edges) {
-        ensureMs += ensure; scanMs += scan; indexMs += index; topologyMs += topology; propagateMs += propagate;
+        scanMs += scan; indexMs += index; topologyMs += topology; propagateMs += propagate;
         lastNodeCount = nodes; lastRootCount = roots; lastEdgeCount = edges;
         if (++frames >= kProfileLogInterval) Log();
     }
@@ -85,23 +80,23 @@ struct HierarchyProfiler {
         if (frames == 0) return;
         const double f = static_cast<double>(frames);
         Logger::Log::Info(
-            "[HierProfile] cached nodes={} roots={} edges={} | ensure={:.3f} scan={:.3f} "
+            "[HierProfile] cached nodes={} roots={} edges={} | scan={:.3f} "
             "index={:.3f} topology={:.3f} propagate={:.3f} total={:.3f} ms (avg/{} frames)",
             lastNodeCount, lastRootCount, lastEdgeCount,
-            ensureMs / f, scanMs / f, indexMs / f, topologyMs / f, propagateMs / f,
-            (ensureMs + scanMs + indexMs + topologyMs + propagateMs) / f, frames);
-        ensureMs = scanMs = indexMs = topologyMs = propagateMs = 0.0;
+            scanMs / f, indexMs / f, topologyMs / f, propagateMs / f,
+            (scanMs + indexMs + topologyMs + propagateMs) / f, frames);
+        scanMs = indexMs = topologyMs = propagateMs = 0.0;
         frames = 0;
     }
 };
 
 struct FlatProfiler {
-    double ensureMs = 0.0, detectMs = 0.0, computeMs = 0.0;
+    double detectMs = 0.0, computeMs = 0.0;
     uint32 frames = 0;
     size_t lastNodeCount = 0;
 
-    void Accumulate(double ensure, double detect, double compute, size_t nodes) {
-        ensureMs += ensure; detectMs += detect; computeMs += compute;
+    void Accumulate(double detect, double compute, size_t nodes) {
+        detectMs += detect; computeMs += compute;
         lastNodeCount = nodes;
         if (++frames >= kProfileLogInterval) Log();
     }
@@ -109,11 +104,11 @@ struct FlatProfiler {
         if (frames == 0) return;
         const double f = static_cast<double>(frames);
         Logger::Log::Info(
-            "[HierProfile] flat nodes={} | ensure={:.3f} detect={:.3f} compute={:.3f} "
+            "[HierProfile] flat nodes={} | detect={:.3f} compute={:.3f} "
             "total={:.3f} ms (avg/{} frames)",
-            lastNodeCount, ensureMs / f, detectMs / f, computeMs / f,
-            (ensureMs + detectMs + computeMs) / f, frames);
-        ensureMs = detectMs = computeMs = 0.0;
+            lastNodeCount, detectMs / f, computeMs / f,
+            (detectMs + computeMs) / f, frames);
+        detectMs = computeMs = 0.0;
         frames = 0;
     }
 };
@@ -129,7 +124,7 @@ bool HasAnyValidParent(ECS::World& world) {
     using namespace GameEngine::ECS;
     bool found = false;
     world.Query<Read<Parent>>().IncludeDisabled().Each([&](EntityHandle, const Parent& p) {
-        if (p.parent.IsValid()) found = true;
+        if (p.Entity.IsValid()) found = true;
     });
     return found;
 }
@@ -142,12 +137,9 @@ TransformHierarchySystem::TransformHierarchySystem(bool forceSerial)
     : m_ForceSerial(forceSerial) {}
 
 void TransformHierarchySystem::Update(ECS::World& world, float32 /*deltaTime*/) {
-    const bool filterOn = ECS::ChangeFilter::Enabled();
-
     // Gates pair with the world whose counters produced them.
     if (m_GateWorldId != world.GetWorldId()) {
         m_GateWorldId = world.GetWorldId();
-        m_EnsureGateValid = false;
         m_FlatGateValid = false;
         m_ParentGateValid = false;
         m_TransformGateValid = false;
@@ -156,32 +148,27 @@ void TransformHierarchySystem::Update(ECS::World& world, float32 /*deltaTime*/) 
         m_Nodes.clear();
     }
 
-    const auto tStart = Mark();
-    // Ensure gate: an entity that needs a WorldTransform can only appear via
-    // a structural change (gaining Transform is an archetype move), so the
-    // full ensure query is skipped while structuralChangeVersion is stable —
-    // the remaining 0.28 ms floor from the Step-0 A/B. Entry-sampled: the
-    // adds the ensure pass itself performs can bump the version, so cache the
-    // post-pass value and avoid an extra empty ensure on the next frame.
-    const std::size_t structuralVersion = world.GetStructuralChangeVersion();
-    if (!filterOn || !m_EnsureGateValid || m_EnsureStructuralVersion != structuralVersion) {
-        EnsureWorldTransforms(world);
-        m_EnsureStructuralVersion = world.GetStructuralChangeVersion();
-        m_EnsureGateValid = true;
-    }
-    const double ensureMs = DeltaMs(tStart, Mark());
-
+    // Every entity with a Transform holds a WorldTransform from creation
+    // (RequiredComponents<Transform>, Transform.h): no pass adds it here.
+    // A structural change rebuilds the topology only when it changed what the
+    // cache describes: a Parent column edit (placement of a new Parent-holder
+    // stamps it too) or a node that moved or died (removing a Parent moves the
+    // holder to another archetype). Spawning
+    // and destroying unparented entities leaves the cache and the flat gate
+    // alone, so the flat pass resolves only the chunks those changes stamped.
+    // The force-serial seam caches every entity and has no flat pass, so any
+    // structural change rebuilds it. With the change filter off
+    // (GE_ECS_CHANGE_FILTER=0) no Parent column gate reports a new
+    // Parent-holder, so any structural change rebuilds as well.
     const std::size_t currentStructuralVersion = world.GetStructuralChangeVersion();
     const uint64 entryVersion = world.GetGlobalSystemVersion();
-    const bool structuralChange =
-        !m_TopologyValid || m_TopologyStructuralVersion != currentStructuralVersion;
-    const bool parentChange =
-        !structuralChange && HasParentColumnChange(world, entryVersion);
-
-    const bool rebuilt = structuralChange || parentChange;
+    const bool structuralChange = m_TopologyValid && m_TopologyStructuralVersion != currentStructuralVersion;
+    const bool rebuilt = !m_TopologyValid || HasParentColumnChange(world, entryVersion) ||
+                         (structuralChange && (m_ForceSerial || !ECS::ChangeFilter::Enabled() ||
+                                             !IsTopologyCacheCurrent(world)));
+    m_TopologyStructuralVersion = currentStructuralVersion;
     if (rebuilt) {
         RebuildTopology(world);
-        m_TopologyStructuralVersion = world.GetStructuralChangeVersion();
         m_TopologyValid = true;
 
         // The rebuild snapshots all Parent and Transform values present at
@@ -198,71 +185,43 @@ void TransformHierarchySystem::Update(ECS::World& world, float32 /*deltaTime*/) 
         if (rebuilt)
             m_LastPropagatedNodeCount = m_LastFlatCount;
         if (kProfileEnabled) {
-            g_flatProfiler.Accumulate(ensureMs, 0.0, DeltaMs(tCompute, Mark()), m_LastFlatCount);
+            g_flatProfiler.Accumulate(0.0, DeltaMs(tCompute, Mark()), m_LastFlatCount);
         }
         return;
     }
 
     // Roots without a Parent component take the flat pass first: their
-    // children read the world matrix it writes.
+    // children read the world pose it writes.
     m_ChangedFlatRoots.clear();
     if (!m_ForceSerial)
         ResolveFlatParallel(world, FlatScope::Unparented);
 
     if (rebuilt) {
         const auto tPropagateStart = Mark();
-        PropagateRoots(world, m_Roots, StampCollection::AlreadyGranted);
+        PropagateRoots(world, m_Roots);
         if (kProfileEnabled) {
-            g_hierarchyProfiler.Accumulate(ensureMs, 0.0, 0.0, 0.0, DeltaMs(tPropagateStart, Mark()),
+            g_hierarchyProfiler.Accumulate(0.0, 0.0, 0.0, DeltaMs(tPropagateStart, Mark()),
                                            m_Nodes.size(), m_Roots.size(), m_ChildIndices.size());
         }
         return;
     }
 
-    ResolveChangedSubtrees(world, ensureMs);
-}
-
-void TransformHierarchySystem::EnsureWorldTransforms(ECS::World& world) {
-    using namespace GameEngine::ECS;
-
-    // IMPORTANT: Do not mutate archetypes while iterating query results.
-    // Adding a component can move entities between archetypes and invalidate
-    // references captured from the query (e.g. `const Transform& local`).
-    m_NeedWorldTransform.clear();
-    {
-        auto qEnsure = world.Query<Read<Transform>, Optional<WorldTransform>>();
-        qEnsure.IncludeDisabled();
-        qEnsure.Each([&](EntityHandle e, const Transform& /*local*/, const WorldTransform* wt) {
-            if (!wt)
-                m_NeedWorldTransform.push_back(e);
-        });
-    }
-    for (EntityHandle e : m_NeedWorldTransform)
-    {
-        if (!world.IsValid(e))
-            continue;
-        WorldTransform init{};
-        world.AddComponentImmediate<WorldTransform>(e, init);
-    }
+    ResolveChangedSubtrees(world);
 }
 
 void TransformHierarchySystem::ResolveFlatParallel(ECS::World& world, FlatScope scope) {
     using namespace GameEngine::ECS;
 
-    auto q = world.Query<Read<Transform>, Write<WorldTransform>>();
+    // WorldTransform is bound as a read, so a visit stamps nothing: a chunk
+    // gets a write grant only when a row in it changed (see the stamp below).
+    auto q = world.Query<Read<Transform>, Read<WorldTransform>>();
     q.IncludeDisabled();
     if (scope == FlatScope::Unparented)
         q.Without<Parent>();
 
-    // Changed<Transform> chunk skip (the S0-proven gate on the real
-    // per-column mechanism). Sound here only because every entity on this
-    // pass is a root — WorldTransform derives from this chunk's Transform
-    // alone (design C10/M1). Entry-sample the version BEFORE iterating and
-    // write that sample back as the next gate (design M14): a writer
-    // stamping after the sample compares greater next run. The query's own
-    // WorldTransform write-visit stamps never re-trigger the gate — it
-    // filters the Transform column only (C14). The scope changes only with a
-    // topology rebuild, which invalidates the gate.
+    // Changed<Transform> chunk skip. It is sound because each entity here is a root: its WorldTransform comes from
+    // its own Transform only. The gate is the version from before the pass, so a later writer opens it again, and it
+    // reads only the Transform column, so the WorldTransform stamps of this pass do not open it.
     const bool filterOn = ChangeFilter::Enabled();
     uint64 entryVersion = 0;
     if (filterOn) {
@@ -282,48 +241,85 @@ void TransformHierarchySystem::ResolveFlatParallel(ECS::World& world, FlatScope 
     // thread-local scratch and appended once per chunk — the feed lock is
     // taken only for chunks containing actual movers, never per entity. The
     // scratch has no cross-frame or cross-world state (filled and drained
-    // within one callback), so world churn can't dangle it. A changed entity
-    // that is a cached hierarchy root is recorded the same way, so its
-    // subtree propagates this frame.
+    // within one callback), so world churn can't dangle it.
+    //
+    // A cached hierarchy root is recorded when its WorldTransform Version
+    // differs from the one its children last composed against: this pass's
+    // write bumps it, and so does a direct writer's BumpWorldTransform that
+    // left the bytes already equal to the local pose. Its subtree then
+    // propagates this frame. Each root lives in one chunk, so a task writes
+    // only its own roots' composedWorldVersion.
     const bool feedOn = world.IsComponentDirtyFeedEnabledFor(
         ECS::GetComponentTypeId<WorldTransform>());
     const bool recordRoots = scope == FlatScope::Unparented;
     std::atomic<size_t> total{0};
+    m_StampScratch.clear();
     q.ParallelBatchEach([this, &total, &world, feedOn, recordRoots](const ECS::EntityHandle* entities,
                                                                     const Transform* locals,
-                                                                    WorldTransform* worlds,
+                                                                    const WorldTransform* readWorlds,
                                                                     std::size_t chunkCount) {
-        thread_local std::vector<ECS::EntityHandle> tl_ChangedScratch;
-        thread_local std::vector<size_t> tl_ChangedRoots;
-        tl_ChangedScratch.clear();
-        tl_ChangedRoots.clear();
-        for (std::size_t i = 0; i < chunkCount; ++i) {
-            if (!WriteRootWorldTransform(locals[i].matrix, worlds[i]))
-                continue;
-            if (feedOn)
-                tl_ChangedScratch.push_back(entities[i]);
-            if (recordRoots) {
-                const size_t node = FindNodeIndex(entities[i]);
-                if (node != SIZE_MAX)
-                    tl_ChangedRoots.push_back(node);
-            }
-        }
-        if (!tl_ChangedScratch.empty())
-            world.EmitComponentDirtyBatch(ECS::GetComponentTypeId<WorldTransform>(),
-                                          tl_ChangedScratch.data(), tl_ChangedScratch.size());
-        if (!tl_ChangedRoots.empty()) {
-            std::lock_guard lock(m_ChangedFlatRootsMutex);
-            m_ChangedFlatRoots.insert(m_ChangedFlatRoots.end(), tl_ChangedRoots.begin(),
-                                      tl_ChangedRoots.end());
-        }
+        ResolveFlatChunk(world, entities, locals, readWorlds, chunkCount, feedOn, recordRoots);
         total.fetch_add(chunkCount, std::memory_order_relaxed);
     });
     m_LastFlatCount = total.load(std::memory_order_relaxed);
+    if (!m_StampScratch.empty()) {
+        world.StampComponentWriteBatch(m_StampScratch.data(), m_StampScratch.size(),
+                                       ECS::GetComponentTypeId<WorldTransform>());
+        m_StampScratch.clear();
+    }
 
     if (filterOn) {
         m_FlatGate.LastRunVersion = entryVersion;
         m_FlatGateValid = true;
     }
+}
+
+void TransformHierarchySystem::ResolveFlatChunk(ECS::World& world, const ECS::EntityHandle* entities,
+                                                const Transform* locals, const WorldTransform* readWorlds,
+                                                std::size_t chunkCount, bool feedOn, bool recordRoots) {
+    // Written only where WriteRootWorldTransform finds a change; the stamp
+    // after the pass grants exactly those chunks, as GetComponentForWrite would.
+    WorldTransform* worlds = const_cast<WorldTransform*>(readWorlds);
+    thread_local std::vector<ECS::EntityHandle> tl_ChangedScratch;
+    thread_local std::vector<size_t> tl_ChangedRoots;
+    tl_ChangedScratch.clear();
+    tl_ChangedRoots.clear();
+    std::size_t firstChangedRow = chunkCount;
+    for (std::size_t row = 0; row < chunkCount; ++row) {
+        if (WriteRootWorldTransform(locals[row], worlds[row])) {
+            firstChangedRow = std::min(firstChangedRow, row);
+            if (feedOn)
+                tl_ChangedScratch.push_back(entities[row]);
+        }
+        if (!recordRoots)
+            continue;
+        const size_t node = FindNodeIndex(entities[row]);
+        if (node == SIZE_MAX || m_Nodes[node].composedWorldVersion == worlds[row].Version)
+            continue;
+        m_Nodes[node].composedWorldVersion = worlds[row].Version;
+        tl_ChangedRoots.push_back(node);
+    }
+    if (!tl_ChangedScratch.empty())
+        world.EmitComponentDirtyBatch(ECS::GetComponentTypeId<WorldTransform>(),
+                                      tl_ChangedScratch.data(), tl_ChangedScratch.size());
+    if (firstChangedRow == chunkCount && tl_ChangedRoots.empty())
+        return;
+    std::lock_guard lock(m_FlatPassMutex);
+    // One entity names its chunk for the stamp.
+    if (firstChangedRow < chunkCount)
+        m_StampScratch.push_back(entities[firstChangedRow]);
+    m_ChangedFlatRoots.insert(m_ChangedFlatRoots.end(), tl_ChangedRoots.begin(), tl_ChangedRoots.end());
+}
+
+bool TransformHierarchySystem::IsTopologyCacheCurrent(ECS::World& world) const {
+    for (const Node& node : m_Nodes) {
+        if (!world.IsValid(node.entity))
+            return false;
+        if (world.GetComponent<Transform>(node.entity) != node.local ||
+            world.GetComponent<WorldTransform>(node.entity) != node.worldRead)
+            return false;
+    }
+    return true;
 }
 
 bool TransformHierarchySystem::HasParentColumnChange(ECS::World& world,
@@ -345,7 +341,7 @@ bool TransformHierarchySystem::HasParentColumnChange(ECS::World& world,
         q.IncludeDisabled();
         q.Each([&](EntityHandle entity, const Parent& parent) {
             const size_t index = FindNodeIndex(entity);
-            if (index != SIZE_MAX && m_Nodes[index].parentEntity != parent.parent)
+            if (index != SIZE_MAX && m_Nodes[index].parentEntity != parent.Entity)
                 changed = true;
         });
     } else {
@@ -370,14 +366,16 @@ size_t TransformHierarchySystem::FindNodeIndex(ECS::EntityHandle entity) const {
 }
 
 void TransformHierarchySystem::AddNode(ECS::EntityHandle entity, const Transform& local,
-                                       WorldTransform& worldTransform, ECS::EntityHandle parent) {
+                                       const WorldTransform& worldTransform, ECS::EntityHandle parent) {
     Node node{};
     node.entity = entity;
     node.local = &local;
-    node.world = &worldTransform;
+    // Propagation writes through this pointer only where the pose changes,
+    // and PropagateRoots stamps exactly those entities.
+    node.world = const_cast<WorldTransform*>(&worldTransform);
     node.worldRead = &worldTransform;
     node.parentEntity = parent;
-    std::memcpy(node.localSnapshot.data(), local.matrix, sizeof(local.matrix));
+    std::memcpy(node.localSnapshot.data(), &local, sizeof(Transform));
     m_Nodes.push_back(node);
 }
 
@@ -423,7 +421,8 @@ void TransformHierarchySystem::AddFlatOwnedRoots(ECS::World& world) {
         node.local = local;
         node.worldRead = worldTransform;
         node.flatOwned = true;
-        std::memcpy(node.localSnapshot.data(), local->matrix, sizeof(local->matrix));
+        node.composedWorldVersion = worldTransform->Version;
+        std::memcpy(node.localSnapshot.data(), local, sizeof(Transform));
         if (parent.index >= m_NodeIndexByEntityIndex.size())
             m_NodeIndexByEntityIndex.resize(static_cast<size_t>(parent.index) + 1,
                                             std::numeric_limits<uint32>::max());
@@ -447,14 +446,15 @@ size_t TransformHierarchySystem::PropagateSubtree(size_t rootIndex, std::vector<
         Node& node = m_Nodes[index];
         const size_t parentIndex = m_ResolvedParent[index];
         if (parentIndex != SIZE_MAX) {
-            float32 next[16];
-            MultiplyColumnMajor4x4(m_Nodes[parentIndex].worldRead->matrix, node.local->matrix, next);
-            if (std::memcmp(node.world->matrix, next, sizeof(next)) != 0) {
-                std::memcpy(node.world->matrix, next, sizeof(next));
+            WorldTransform next;
+            Components::ComposeWorldPose(*m_Nodes[parentIndex].worldRead, *node.local, next);
+            if (node.world->Version == 0u ||
+                std::memcmp(node.world, &next, Components::kTransformPoseBytes) != 0) {
+                std::memcpy(node.world, &next, Components::kTransformPoseBytes);
                 ++node.world->Version;
                 changed.push_back(node.entity);
             }
-        } else if (!node.flatOwned && WriteRootWorldTransform(node.local->matrix, *node.world)) {
+        } else if (!node.flatOwned && WriteRootWorldTransform(*node.local, *node.world)) {
             changed.push_back(node.entity);
         }
         ++visited;
@@ -478,8 +478,7 @@ void TransformHierarchySystem::PropagateRootChunk(std::span<const size_t> roots,
     m_ChunkVisited[chunk] = visited;
 }
 
-void TransformHierarchySystem::PropagateRoots(ECS::World& world, std::span<const size_t> roots,
-                                              StampCollection stamps) {
+void TransformHierarchySystem::PropagateRoots(ECS::World& world, std::span<const size_t> roots) {
     const auto worldTransformType = ECS::GetComponentTypeId<WorldTransform>();
     JobSystem::WorkStealingThreadPool* js = m_ForceSerial ? nullptr : world.GetJobSystem();
     size_t visited = 0;
@@ -500,13 +499,11 @@ void TransformHierarchySystem::PropagateRoots(ECS::World& world, std::span<const
             m_ChunkChanged.resize(chunkCount);
             m_ChunkVisited.resize(chunkCount);
         }
-        JobSystem::JobCounter counter;
-        for (size_t c = 0; c < chunkCount; ++c) {
+        const auto propagateChunk = [this, roots, chunkSize](size_t c) {
             const size_t begin = c * chunkSize;
-            const size_t end = std::min(roots.size(), begin + chunkSize);
-            js->Run([this, roots, begin, end, c] { PropagateRootChunk(roots, begin, end, c); }, counter);
-        }
-        js->Wait(counter);
+            PropagateRootChunk(roots, begin, std::min(roots.size(), begin + chunkSize), c);
+        };
+        JobSystem::ParallelFor(js, chunkCount, propagateChunk);
         for (size_t c = 0; c < chunkCount; ++c) {
             visited += m_ChunkVisited[c];
             m_StampScratch.insert(m_StampScratch.end(), m_ChunkChanged[c].begin(),
@@ -519,11 +516,9 @@ void TransformHierarchySystem::PropagateRoots(ECS::World& world, std::span<const
         return;
     world.EmitComponentDirtyBatch(worldTransformType, m_StampScratch.data(), m_StampScratch.size());
     // Cached-node writes go through pointers captured at rebuild, outside any
-    // query visit, so nothing else stamps the WorldTransform grant that
-    // Changed<WorldTransform> consumers filter on. The rebuild pass is the
-    // exception: its gather bound Write<WorldTransform> and stamped already.
-    if (stamps == StampCollection::Collect)
-        world.StampComponentWriteBatch(m_StampScratch.data(), m_StampScratch.size(), worldTransformType);
+    // query visit, so only this stamp grants the WorldTransform column that
+    // Changed<WorldTransform> consumers filter on.
+    world.StampComponentWriteBatch(m_StampScratch.data(), m_StampScratch.size(), worldTransformType);
     m_StampScratch.clear();
 }
 
@@ -546,20 +541,20 @@ void TransformHierarchySystem::RebuildTopology(ECS::World& world) {
     }
 
     // The cached nodes: every entity under the test seam, otherwise only the
-    // Parent-holders (their Write<WorldTransform> visit grants the rebuild's
-    // own writes) plus the roots above them, which the flat pass owns.
+    // Parent-holders plus the roots above them, which the flat pass owns. The
+    // gather reads WorldTransform, so a rebuild stamps only what propagation changes.
     if (m_ForceSerial) {
-        auto q = world.Query<Read<Transform>, Write<WorldTransform>, Optional<Parent>>();
+        auto q = world.Query<Read<Transform>, Read<WorldTransform>, Optional<Parent>>();
         q.IncludeDisabled();
-        q.Each([this](EntityHandle entity, const Transform& local,
-                   Writable<WorldTransform> worldTransform, const Parent* parent) {
-            AddNode(entity, local, worldTransform.Mutable(), parent ? parent->parent : EntityHandle{});
+        q.Each([this](EntityHandle entity, const Transform& local, const WorldTransform& worldTransform,
+                      const Parent* parent) {
+            AddNode(entity, local, worldTransform, parent ? parent->Entity : EntityHandle{});
         });
     } else {
-        auto q = world.Query<Read<Transform>, Write<WorldTransform>, Read<Parent>>();
+        auto q = world.Query<Read<Transform>, Read<WorldTransform>, Read<Parent>>();
         q.IncludeDisabled();
-        q.Each([this](EntityHandle entity, const Transform& local, Writable<WorldTransform> worldTransform,
-                      const Parent& parent) { AddNode(entity, local, worldTransform.Mutable(), parent.parent); });
+        q.Each([this](EntityHandle entity, const Transform& local, const WorldTransform& worldTransform,
+                      const Parent& parent) { AddNode(entity, local, worldTransform, parent.Entity); });
     }
 
     size_t maxEntityIndex = 0;
@@ -645,8 +640,7 @@ void TransformHierarchySystem::RebuildTopology(ECS::World& world) {
     m_DirtyPass = 0;
 }
 
-void TransformHierarchySystem::ResolveChangedSubtrees(ECS::World& world,
-                                                       double ensureMs) {
+void TransformHierarchySystem::ResolveChangedSubtrees(ECS::World& world) {
     using namespace GameEngine::ECS;
 
     const auto tDetectStart = Mark();
@@ -667,11 +661,9 @@ void TransformHierarchySystem::ResolveChangedSubtrees(ECS::World& world,
         if (index == SIZE_MAX)
             return;
         Node& node = m_Nodes[index];
-        if (std::memcmp(node.localSnapshot.data(), local.matrix,
-                        sizeof(local.matrix)) == 0)
+        if (std::memcmp(node.localSnapshot.data(), &local, sizeof(Transform)) == 0)
             return;
-        std::memcpy(node.localSnapshot.data(), local.matrix,
-                    sizeof(local.matrix));
+        std::memcpy(node.localSnapshot.data(), &local, sizeof(Transform));
         m_DirtyNodes.push_back(index);
     });
     m_TransformGate.LastRunVersion = entryVersion;
@@ -697,12 +689,11 @@ void TransformHierarchySystem::ResolveChangedSubtrees(ECS::World& world,
     const size_t topmostCount = m_DirtyNodes.size();
     const auto tPropagateStart = Mark();
 
-    PropagateRoots(world, m_DirtyNodes, StampCollection::Collect);
+    PropagateRoots(world, m_DirtyNodes);
 
     if (kProfileEnabled) {
         const auto tEnd = Mark();
         g_hierarchyProfiler.Accumulate(
-            ensureMs,
             DeltaMs(tDetectStart, tFilterStart),
             DeltaMs(tFilterStart, tPropagateStart),
             0.0,

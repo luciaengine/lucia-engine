@@ -10,7 +10,6 @@
 #include "AssetDatabase/IAssetStore.h"
 #include "AssetDatabase/RedirectChain.h"
 #include "Logger/Logger.h"
-#include "Types/Fnv1a.h"
 #include "Types/StringUtils.h"
 
 #include <algorithm>
@@ -222,14 +221,26 @@ static std::string ComputePartialHash_Fnv1a64(const std::filesystem::path& path,
     if (!in.IsOpen())
         return {};
 
+    uint64_t h = 14695981039346656037ULL;
+    auto fnvStep = [&](uint8_t b)
+    {
+        h ^= static_cast<uint64_t>(b);
+        h *= 1099511628211ULL;
+    };
+
     // Mix in file size (helps distinguish small collisions).
-    uint64_t h = Hashing::Fnv1a64Value(Hashing::kFnv1a64OffsetBasis, sizeForMix);
+    for (int i = 0; i < 8; ++i)
+    {
+        fnvStep(static_cast<uint8_t>((sizeForMix >> (i * 8)) & 0xFF));
+    }
 
     std::vector<char> buf;
     buf.resize(maxBytes);
     const int64 got = in.Read(buf.data(), buf.size());
-    if (got > 0)
-        h = Hashing::Fnv1a64(buf.data(), static_cast<size_t>(got), h);
+    for (int64 i = 0; i < got; ++i)
+    {
+        fnvStep(static_cast<uint8_t>(buf[static_cast<size_t>(i)]));
+    }
 
     return HashToHex(h);
 }
@@ -267,8 +278,18 @@ static std::string ComputeSparseHash_Fnv1a64(const std::filesystem::path& path, 
         usize > kSampleSize ? usize - kSampleSize : 0
     };
 
+    uint64_t h = 14695981039346656037ULL;
+    auto fnvStep = [&](uint8_t b)
+    {
+        h ^= static_cast<uint64_t>(b);
+        h *= 1099511628211ULL;
+    };
+
     // Mix in file size first.
-    uint64_t h = Hashing::Fnv1a64Value(Hashing::kFnv1a64OffsetBasis, static_cast<uint64_t>(fileSize));
+    for (int i = 0; i < 8; ++i)
+    {
+        fnvStep(static_cast<uint8_t>((static_cast<uint64_t>(fileSize) >> (i * 8)) & 0xFF));
+    }
 
     // Mix in offset marker to distinguish samples at different positions.
     std::vector<char> buf(kSampleSize);
@@ -276,15 +297,20 @@ static std::string ComputeSparseHash_Fnv1a64(const std::filesystem::path& path, 
     {
         const size_t offset = offsets[sampleIdx];
 
-        // Mix in offset as a position marker, always 8 bytes wide.
-        h = Hashing::Fnv1a64Value(h, static_cast<uint64_t>(offset));
+        // Mix in offset as a position marker.
+        for (int i = 0; i < 8; ++i)
+        {
+            fnvStep(static_cast<uint8_t>((offset >> (i * 8)) & 0xFF));
+        }
 
         if (!in.SeekTo(offset))
             continue;
 
         const int64 got = in.Read(buf.data(), kSampleSize);
-        if (got > 0)
-            h = Hashing::Fnv1a64(buf.data(), static_cast<size_t>(got), h);
+        for (int64 i = 0; i < got; ++i)
+        {
+            fnvStep(static_cast<uint8_t>(buf[static_cast<size_t>(i)]));
+        }
     }
 
     return HashToHex(h);

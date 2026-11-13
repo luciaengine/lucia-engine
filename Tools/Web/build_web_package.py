@@ -31,12 +31,19 @@ The package, flat so the facade finds the engine module beside itself (its defau
 the layout of the demo site, with the engine pack split into parts under 100 MB that the
 binding joins (opengine-core.gepak.parts.json lists them); `--site-models <dir>` adds the
 .glb files the site hosts itself under <dir>/models, and `--site-without-particles` drops the
-particle programs from the site's pack. `--check` verifies the file list and prints the raw,
+particle programs from the site's pack. `--check` verifies the file list; `--check --sizes` also prints the raw,
 gzip and brotli size of each file and of what a page downloads at each build.
 
-The version is the packaged commit's release tag without its `v`: `v<year>.<month>.<patch>`, with
-an optional prerelease suffix `-alpha.<n>` or `-beta.<n>` (`v2026.10.0-alpha.1` is version
-`2026.10.0-alpha.1`). A commit without one is `0.0.0-dev.<commit>`. A prerelease's package.json
+`--game-notices <dir> --vcpkg-share <share>` writes only THIRD_PARTY_NOTICES.md for the web
+player template (the WebPlayer build runs it into its bin directory): the same list without the
+entries only the package ships. Tools/Web/export_web_player.py copies it into every game.
+`--editor-notices <dir>` writes the same list for the web editor (the WebEditor build runs it).
+
+The version is the engine's, from the repository root's VERSION file: `<year>.<month>.<patch>`,
+with an optional prerelease suffix `-alpha.<n>` or `-beta.<n>`. A packaged commit carrying a
+release tag (`v` plus the version, `v2026.10.0-alpha.4`) is that version, and a tag that differs
+from VERSION is refused; a commit without one is `<VERSION>-dev.<commit>`. `--version` names the
+version outright and must equal VERSION. A prerelease's package.json
 names its npm dist-tag (`alpha`, `beta`) in publishConfig, so a plain `npm publish` never moves
 `latest` to it.
 """
@@ -50,6 +57,7 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -85,33 +93,53 @@ kNoticesName = "THIRD_PARTY_NOTICES.md"
 # The vcpkg ports of the wasm build whose license the notices carry: every port with a copyright
 # file except the test frameworks and the header-only API registries the module links nothing of.
 kNoticeExcludedPorts = ("benchmark", "gtest", "egl-registry", "opengl-registry", "vulkan-headers")
-# Third-party runtime code/content and the toolchain used to build the package.
-# Toolchain books identify host-only and conditional entries separately. metal-cpp
-# (Apple only) and the Sponza test scene are not part of the web build.
+
+
+@dataclass(frozen=True)
+class Notice:
+    """A third-party component and the repository file that holds its license text."""
+    Name: str
+    Path: str
+    # True when only the library package ships the component (its examples and its service
+    # worker). The notices of an exported game leave it out.
+    PackageOnly: bool = False
+
+
+# Third-party runtime code/content and the toolchain that builds the package, the web player
+# and the web editor. Toolchain books identify host-only and conditional entries separately.
+# metal-cpp (Apple only) and the Sponza test scene are not part of the web build.
 kRepoNotices = (
-    ("Roboto (the UI fallback font in the pack)", "Apps/Editor/Assets/Fonts/LICENSE.txt"),
-    ("ufbx (the FBX importer)", "Engine/Source/ThirdParty/ufbx/LICENSE"),
-    ("GT7 tone mapper (Includes/tonemap_gt7.glsl in the pack)", "Engine/Modules/Rendering/Shaders/Includes/tonemap_gt7.glsl"),
-    ("OpenColorIO (the ACES 2 tone mapper tables)", "ThirdParty/OpenColorIO/LICENSE.txt"),
-    ("BakingLab ACES", "ThirdParty/BakingLabAces/LICENSE.txt"),
-    ("Bend Screen Space Shadows", "ThirdParty/BendScreenSpaceShadows/LICENSE.txt"),
-    ("AMD FidelityFX Denoiser", "ThirdParty/FidelityFX-Denoiser/LICENSE.txt"),
-    ("Khronos PBR Neutral", "ThirdParty/KhronosPbrNeutral/LICENSE.txt"),
-    ("KinoBloom", "ThirdParty/KinoBloom/LICENSE.md"),
-    ("Minimal AgX", "ThirdParty/MinimalAgX/LICENSE.txt"),
-    ("OCASM Depth Veil", "ThirdParty/OCASMDepthVeil/LICENSE"),
-    ("Punikonta VHS", "ThirdParty/PunikontaVhs/LICENSE.md"),
-    ("Runevision Erosion Filter", "ThirdParty/RunevisionErosionFilter/LICENSE-MPL-2.0.txt"),
-    ("SE Natural Bloom Dirty Lens", "ThirdParty/SENaturalBloomDirtyLens/LICENSE.txt"),
-    ("Speedball GI", "ThirdParty/SpeedballGi/LICENSE.md"),
-    ("coi-serviceworker", "Apps/WebLibrary/coi-serviceworker.LICENSE"),
-    ("Web build toolchain (pinned host tools and bundled libraries)", "Tools/Web/licenses/toolchain-notices.md"),
-    ("Rust compiler dependencies (pinned source inventories)", "Tools/Web/licenses/rust-dependency-notices.md"),
-    ("Example asset sources and credits", "Apps/WebLibrary/examples/ASSET_PROVENANCE.md"),
-    ("Example assets: Creative Commons Attribution 4.0 (verbatim from KhronosGroup/glTF-Sample-Assets LICENSES/CC-BY-4.0.txt at 2bac6f8c57bf471df0d2a1e8a8ec023c7801dddf)",
-     "Tools/Web/licenses/CC-BY-4.0.txt"),
-    ("Example assets: CC0 1.0 Universal (verbatim from KhronosGroup/glTF-Sample-Assets LICENSES/CC0-1.0.txt at 2bac6f8c57bf471df0d2a1e8a8ec023c7801dddf)",
-     "Tools/Web/licenses/CC0-1.0.txt"),
+    Notice("Roboto (the UI fallback font in the pack)", "Apps/Editor/Assets/Fonts/LICENSE.txt"),
+    Notice("ufbx (the FBX importer)", "Engine/Source/ThirdParty/ufbx/LICENSE"),
+    Notice("OpenColorIO (the ACES 2 tone mapper tables)", "ThirdParty/OpenColorIO/LICENSE.txt"),
+    Notice("Bend Screen Space Shadows", "ThirdParty/BendScreenSpaceShadows/LICENSE.txt"),
+    Notice("AMD FidelityFX Denoiser", "ThirdParty/FidelityFX-Denoiser/LICENSE.txt"),
+    Notice("AMD FidelityFX Depth of Field", "Packages/fidelityfx-dof/LICENSE.txt"),
+    Notice("SebLague Clouds (the volumetric clouds)",
+           "Engine/Modules/VolumetricClouds/ThirdParty/SebLague-Clouds/LICENSE"),
+    Notice("Ocean surface (adapted from Crest and Wicked Engine)", "Engine/Modules/Ocean/NOTICE"),
+    Notice("fdlibm (Sin, Cos, Atan, Atan2 and Pow in Mathematics)", "ThirdParty/fdlibm/LICENSE.txt"),
+    Notice("Khronos PBR Neutral", "ThirdParty/KhronosPbrNeutral/LICENSE.txt"),
+    Notice("KinoBloom", "ThirdParty/KinoBloom/LICENSE.md"),
+    Notice("Minimal AgX", "ThirdParty/MinimalAgX/LICENSE.txt"),
+    Notice("OCASM Depth Veil", "ThirdParty/OCASMDepthVeil/LICENSE"),
+    Notice("Punikonta VHS", "ThirdParty/PunikontaVhs/LICENSE.md"),
+    Notice("Runevision Erosion Filter", "ThirdParty/RunevisionErosionFilter/LICENSE-MPL-2.0.txt"),
+    Notice("SE Natural Bloom Dirty Lens", "ThirdParty/SENaturalBloomDirtyLens/LICENSE.txt"),
+    Notice("Speedball GI", "ThirdParty/SpeedballGi/LICENSE.md"),
+    Notice("Slug (the UI text shader)", "ThirdParty/Slug/LICENSE-MIT"),
+    Notice("Film simulation grain (adapted from AMD FidelityFX Lens)", "Packages/film-simulation/LICENSE.txt"),
+    Notice("GTAO (the ambient occlusion shaders)", "ThirdParty/GTAO/LICENSE.txt"),
+    Notice("miniz (the zip archive reader of the web editor)", "Engine/Source/ThirdParty/miniz/LICENSE"),
+    Notice("coi-serviceworker", "Apps/WebLibrary/coi-serviceworker.LICENSE", PackageOnly=True),
+    Notice("Web build toolchain (pinned host tools and bundled libraries)", "Tools/Web/licenses/toolchain-notices.md"),
+    Notice("Rust compiler dependencies (pinned source inventories)", "Tools/Web/licenses/rust-dependency-notices.md"),
+    Notice("Example asset sources and credits", "Apps/WebLibrary/examples/ASSET_PROVENANCE.md",
+           PackageOnly=True),
+    Notice("Example assets: Creative Commons Attribution 4.0 (verbatim from KhronosGroup/glTF-Sample-Assets LICENSES/CC-BY-4.0.txt at 2bac6f8c57bf471df0d2a1e8a8ec023c7801dddf)",
+           "Tools/Web/licenses/CC-BY-4.0.txt", PackageOnly=True),
+    Notice("Example assets: CC0 1.0 Universal (verbatim from KhronosGroup/glTF-Sample-Assets LICENSES/CC0-1.0.txt at 2bac6f8c57bf471df0d2a1e8a8ec023c7801dddf)",
+           "Tools/Web/licenses/CC0-1.0.txt", PackageOnly=True),
 )
 kWasmMagic = b"\0asm"
 kReleaseTag = re.compile(r"^v(\d{4}\.\d{1,2}\.\d+)(?:-(alpha|beta)\.\d+)?$")
@@ -146,12 +174,25 @@ def PackageFiles() -> list[str]:
     return sorted(files)
 
 
-def PackageVersion(releaseTag: str | None, commit: str) -> str:
+def SourceVersion(versionFile: Path) -> str:
+    """The engine version the VERSION file holds."""
+    version = versionFile.read_text(encoding="utf-8").strip()
+    if not kReleaseTag.match(f"v{version}"):
+        raise PackageError(f"{versionFile} holds '{version}', which is not <year>.<month>.<patch>, "
+                           "optionally followed by -alpha.<n> or -beta.<n>")
+    return version
+
+
+def PackageVersion(releaseTag: str | None, commit: str, sourceVersion: str) -> str:
     if releaseTag is None:
-        return f"0.0.0-dev.{commit}"
+        return f"{sourceVersion}-dev.{commit}"
     if not kReleaseTag.match(releaseTag):
         raise PackageError(f"release tag '{releaseTag}' is not v<year>.<month>.<patch>, optionally "
                            "followed by -alpha.<n> or -beta.<n>")
+    if releaseTag[1:] != sourceVersion:
+        raise PackageError(f"release tag '{releaseTag}' does not match VERSION, which holds "
+                           f"'{sourceVersion}': tag the commit v{sourceVersion}, or change VERSION "
+                           "in the commit the tag names")
     return releaseTag[1:]
 
 
@@ -170,7 +211,7 @@ def CommitVersion(repo: Path) -> str:
     releases = sorted(tag for tag in tags if kReleaseTag.match(tag))
     if len(releases) > 1:
         raise PackageError(f"HEAD carries more than one release tag: {', '.join(releases)}")
-    return PackageVersion(releases[0] if releases else None, commit)
+    return PackageVersion(releases[0] if releases else None, commit, SourceVersion(repo / "VERSION"))
 
 
 def ModuleProblems(directory: Path, build: str, allowStub: bool) -> list[str]:
@@ -237,23 +278,33 @@ def RewriteOnce(path: Path, old: str, new: str) -> None:
     path.write_text(text.replace(old, new), encoding="utf-8", newline="\n")
 
 
-def WriteNotices(out: Path, vcpkgShare: Path) -> None:
-    """THIRD_PARTY_NOTICES.md: each third-party component's license text, from the wasm build's
-    vcpkg ports and the repository's third-party folders."""
+# What carries the code and content of each notices file, by the name WriteNotices takes.
+kNoticeCarriers = {
+    "package": "The engine module (opengine-core.st/mt.wasm), the engine pack and the examples",
+    "game": "The web player (WebPlayer.wasm) and the engine shaders of this game",
+    "editor": "The web editor's module (WebEditor.wasm) and its preloaded content (WebEditor.data)",
+}
+
+
+def WriteNotices(out: Path, vcpkgShare: Path, carrier: str) -> None:
+    """THIRD_PARTY_NOTICES.md for a kNoticeCarriers entry: each third-party component's license
+    text, from the wasm build's vcpkg ports and the repository's third-party folders. Only the
+    package's notices hold the package-only entries; every exported game copies the game's."""
     sections = []
     ports = sorted(path.parent for path in vcpkgShare.glob("*/copyright")
                    if path.parent.name not in kNoticeExcludedPorts)
     if not ports:
         raise PackageError(f"{vcpkgShare} holds no vcpkg port copyright files: pass the wasm build "
-                           "tree's vcpkg_installed/<triplet>/share")
+                           "tree's vcpkg_installed/<triplet>/share. The wasm configure "
+                           "(cmake --preset wasm-debug) installs the ports there.")
     for port in ports:
         sections.append((f"{port.name} (vcpkg port, a dependency of the engine's wasm build)", port / "copyright"))
-    sections += [(name, kRepoRoot / path) for name, path in kRepoNotices]
+    sections += [(notice.Name, kRepoRoot / notice.Path) for notice in kRepoNotices
+                 if carrier == "package" or not notice.PackageOnly]
     text = ["# Third-party notices", "",
-            "The engine module (opengine-core.st/mt.wasm), the engine pack and the examples carry the "
-            "third-party code and content below. Build-tool notices are also included and identify "
-            "their own scope; host tools are not embedded in the WebAssembly module. "
-            "License texts are reproduced from the stated sources.", ""]
+            f"{kNoticeCarriers[carrier]} carry the third-party code and content below. Build-tool "
+            "notices are also included and identify their own scope; host tools are not embedded in "
+            "the WebAssembly module. License texts are reproduced from the stated sources.", ""]
     for name, path in sections:
         if not path.is_file():
             raise PackageError(f"the notice for {name} is missing: {path}")
@@ -297,9 +348,11 @@ def Build(args: argparse.Namespace, out: Path) -> str:
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
+    sourceVersion = SourceVersion(kRepoRoot / "VERSION")
+    if args.version and args.version != sourceVersion:
+        raise PackageError(f"--version {args.version} does not match VERSION, which holds "
+                           f"'{sourceVersion}': pass --version {sourceVersion}, or change VERSION")
     version = args.version or CommitVersion(kRepoRoot)
-    if args.version and not kReleaseTag.match(f"v{version}"):
-        raise PackageError(f"--version {version} is not <year>.<month>.<patch>[-alpha.<n>|-beta.<n>]")
 
     CopyModules({"st": args.st_dir, "mt": args.mt_dir}, out, args.allow_stub)
     if args.engine_pack:
@@ -319,7 +372,7 @@ def Build(args: argparse.Namespace, out: Path) -> str:
     shutil.copy2(args.component_dts, out / kComponentTypes)
     for name in (*kDocuments, *kServiceWorker):
         shutil.copy2(kLibraryDir / name, out / name)
-    WriteNotices(out, args.vcpkg_share)
+    WriteNotices(out, args.vcpkg_share, "package")
     shutil.copy2(kRepoRoot / "LICENSE", out / "LICENSE")
     CopyExamples(out)
     WritePackageJson(out, version)
@@ -416,8 +469,9 @@ def CompressedSizes(paths: list[Path]) -> dict[Path, tuple[int, int, int]]:
             for path, size in zip(paths, brotli)}
 
 
-def Check(out: Path, allowStub: bool) -> list[str]:
-    """Problems with the package at `out`; prints its sizes when it is complete."""
+def Check(out: Path, allowStub: bool, reportSizes: bool) -> list[str]:
+    """Problems with the package at `out`. With `reportSizes`, a complete package also prints its
+    compressed sizes (gzip 9 and brotli 11 over the whole package: minutes; a report, not a check)."""
     packFiles = PackFiles(out)
     expected = [name for name in PackageFiles() if name != kEnginePackName] + packFiles
     problems = [f"{name} is missing" for name in expected if not (out / name).is_file()]
@@ -437,6 +491,10 @@ def Check(out: Path, allowStub: bool) -> list[str]:
     if problems:
         return problems
 
+    manifest = json.loads((out / "package.json").read_text(encoding="utf-8"))
+    if not reportSizes:
+        print(f"package {kPackageName}@{manifest['version']}: {len(expected)} files and examples/ complete")
+        return []
     shared = [kFacadeName, kBindingName, *packFiles]
     names = sorted({*shared, *(name for build in kBuilds for name in ModuleFiles(build))})
     sizes = CompressedSizes([out / name for name in names])
@@ -448,7 +506,6 @@ def Check(out: Path, allowStub: bool) -> list[str]:
         files = [out / name for name in (*shared, *ModuleFiles(build))]
         totals = [sum(sizes[path][column] for path in files) for column in range(3)]
         print(f"{'page download at ' + build:32} {totals[0]:12,} {totals[1]:12,} {totals[2]:12,}")
-    manifest = json.loads((out / "package.json").read_text(encoding="utf-8"))
     print(f"package {kPackageName}@{manifest['version']}: {len(expected)} files and examples/ complete")
     return []
 
@@ -459,13 +516,23 @@ def main() -> int:
     parser.add_argument("--out", type=Path, help="the package directory to write or check")
     parser.add_argument("--site", type=Path,
                         help="write the demo site instead: the gallery and <site>/package")
+    notices = parser.add_mutually_exclusive_group()
+    notices.add_argument("--game-notices", type=Path,
+                         help="write only the web player template's THIRD_PARTY_NOTICES.md into this "
+                              "directory, with --vcpkg-share (the WebPlayer build runs this)")
+    notices.add_argument("--editor-notices", type=Path,
+                         help="write only the web editor's THIRD_PARTY_NOTICES.md into this directory, "
+                              "with --vcpkg-share (the WebEditor build runs this)")
     parser.add_argument("--site-models", type=Path,
                         help="with --site: a folder of .glb files the site hosts under models/")
     parser.add_argument("--site-without-particles", action="store_true",
                         help="with --site: drop the particle programs from the site's engine pack "
                              "(its pages draw no particles; the package keeps the full pack)")
     parser.add_argument("--check", action="store_true",
-                        help="verify the package and print its sizes; builds nothing")
+                        help="verify the package; builds nothing")
+    parser.add_argument("--sizes", action="store_true",
+                        help="with --check: also print the raw, gzip and brotli size of each file "
+                             "and of a page download (minutes over the whole package)")
     parser.add_argument("--st-dir", type=Path, help="the single-threaded tree's bin directory")
     parser.add_argument("--mt-dir", type=Path, help="the threaded tree's bin directory")
     parser.add_argument("--component-dts", type=Path,
@@ -478,10 +545,21 @@ def main() -> int:
                         help="the build tree engine_pack.py cooks from, without --engine-pack")
     parser.add_argument("--seed-project", type=Path, default=kSeedProject,
                         help="the project engine_pack.py cooks variants for, without --engine-pack")
-    parser.add_argument("--version", help="the package version, instead of the commit's")
+    parser.add_argument("--version", help="the package version, instead of the commit's; must equal VERSION")
     parser.add_argument("--allow-stub", action="store_true",
                         help="accept zero-length module files (a package for tests)")
     args = parser.parse_args()
+    noticesDirectory = args.game_notices or args.editor_notices
+    if noticesDirectory:
+        carrier = "game" if args.game_notices else "editor"
+        if not args.vcpkg_share:
+            parser.error(f"--{carrier}-notices needs --vcpkg-share")
+        try:
+            WriteNotices(noticesDirectory, args.vcpkg_share, carrier)
+        except PackageError as error:
+            print(f"build_web_package: {error}", file=sys.stderr)
+            return 1
+        return 0
     if (args.out is None) == (args.site is None):
         parser.error("give one of --out and --site")
 
@@ -502,7 +580,7 @@ def main() -> int:
                           f"{dropped} particle programs")
                 SplitPack(out)
             print(f"build_web_package: {kPackageName}@{version} -> {out}")
-        problems = Check(out, args.allow_stub)
+        problems = Check(out, args.allow_stub, reportSizes=args.sizes or not args.check)
     except (PackageError, EnginePackError, ExportError, subprocess.CalledProcessError) as error:
         print(f"build_web_package: {error}", file=sys.stderr)
         return 1

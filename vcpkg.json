@@ -53,6 +53,10 @@
       "platform": "!wasm32 & !android & !ios"
     },
     {
+      "name": "gameinput",
+      "platform": "windows & (x64 | arm64) & !uwp"
+    },
+    {
       "name": "vulkan-memory-allocator",
       "platform": "!wasm32"
     },
@@ -106,7 +110,8 @@
       "platform": "!wasm32"
     },
     "utf8proc",
-    "unordered-dense"
+    "unordered-dense",
+    { "name": "webview2", "platform": "windows" }
   ],
 
   "default-features": [ "video", "physics", "nav", "ui-extras", "tests" ],

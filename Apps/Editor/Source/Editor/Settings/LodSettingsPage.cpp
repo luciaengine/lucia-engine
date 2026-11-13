@@ -7,8 +7,6 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Logger/Logger.h"
 
-#include <functional>
-#include <optional>
 #include <string>
 #include <utility>
 
@@ -53,14 +51,6 @@ const std::filesystem::path& WorkspaceRoot()
     return EngineCore::GetInstance().GetWorkspaceRoot();
 }
 
-// Push settings at the live renderer without writing the project file. Slider
-// drags preview through here once per tick.
-void Apply(const Rendering::LodProjectSettings& settings)
-{
-    if (auto* renderServices = EngineCore::GetInstance().GetRenderServices())
-        settings.ApplyTo(*renderServices);
-}
-
 // Persist the mutated settings and push them at the live renderer. Every row
 // funnels through here so the file and the running frame can never disagree
 // about what the page last committed.
@@ -68,19 +58,8 @@ void CommitAndApply(const Rendering::LodProjectSettings& settings, const char* w
 {
     if (!SaveLodProjectSettings(WorkspaceRoot(), settings))
         Logger::Log::Warning("LodSettings: cannot save {} -- no writable project settings", what);
-    Apply(settings);
-}
-
-// A slider's Preview: the stored settings with one float replaced, applied
-// live and never saved. The commit's Set persists the value on release.
-std::function<void(float)> MakePreview(std::optional<float> Rendering::LodProjectSettings::*member)
-{
-    return [member](float value)
-    {
-        Rendering::LodProjectSettings settings = Rendering::LodProjectSettings::Load(WorkspaceRoot());
-        settings.*member = value;
-        Apply(settings);
-    };
+    if (auto* renderServices = EngineCore::GetInstance().GetRenderServices())
+        settings.ApplyTo(*renderServices);
 }
 
 // The enable + percent row pair for one view class. Both classes take the same
@@ -134,12 +113,6 @@ void AppendViewClassRows(SettingsCategoryDescriptor& category, const char* class
     percentSlider.Step = kBudgetPercentStep;
     percentSlider.Get = [member]()
     { return (Rendering::LodProjectSettings::Load(WorkspaceRoot()).*member).BudgetPercent; };
-    percentSlider.Preview = [member](float value)
-    {
-        Rendering::LodProjectSettings settings = Rendering::LodProjectSettings::Load(WorkspaceRoot());
-        (settings.*member).BudgetPercent = value;
-        Apply(settings);
-    };
     percentSlider.Set = [member](float value)
     {
         Rendering::LodProjectSettings settings = Rendering::LodProjectSettings::Load(WorkspaceRoot());
@@ -221,12 +194,12 @@ void RegisterLodSettingsCategory()
     budgetSlider.Step = kErrorBudgetStepPx;
     budgetSlider.Get = []()
     { return Rendering::LodProjectSettings::Load(WorkspaceRoot()).EffectiveErrorBudgetPx(); };
-    budgetSlider.Preview = MakePreview(&Rendering::LodProjectSettings::ErrorBudgetPx);
     budgetSlider.Set = [](float value)
     {
         Rendering::LodProjectSettings settings = Rendering::LodProjectSettings::Load(WorkspaceRoot());
-        // A release that did not move the thumb commits the stored value; it
-        // must not write the file or overwrite a runtime override.
+        // The row fires its callback once with the value it was seeded from, so
+        // an unchanged value must not write the file or overwrite a runtime
+        // override: opening the page is not an edit.
         if (settings.EffectiveErrorBudgetPx() == value)
             return;
         settings.ErrorBudgetPx = value;
@@ -249,7 +222,6 @@ void RegisterLodSettingsCategory()
     skinnedSlider.Step = kSkinnedBudgetScaleStep;
     skinnedSlider.Get = []()
     { return Rendering::LodProjectSettings::Load(WorkspaceRoot()).EffectiveSkinnedBudgetScale(); };
-    skinnedSlider.Preview = MakePreview(&Rendering::LodProjectSettings::SkinnedBudgetScale);
     skinnedSlider.Set = [](float value)
     {
         Rendering::LodProjectSettings settings = Rendering::LodProjectSettings::Load(WorkspaceRoot());
@@ -287,7 +259,6 @@ void RegisterLodSettingsCategory()
     crossfadeSlider.Step = kCrossfadeDurationStep;
     crossfadeSlider.Get = []()
     { return Rendering::LodProjectSettings::Load(WorkspaceRoot()).EffectiveCrossfadeDuration(); };
-    crossfadeSlider.Preview = MakePreview(&Rendering::LodProjectSettings::CrossfadeDuration);
     crossfadeSlider.Set = [](float value)
     {
         Rendering::LodProjectSettings settings = Rendering::LodProjectSettings::Load(WorkspaceRoot());
@@ -317,7 +288,6 @@ void RegisterLodSettingsCategory()
     hysteresisSlider.Step = kHysteresisBandStep;
     hysteresisSlider.Get = []()
     { return Rendering::LodProjectSettings::Load(WorkspaceRoot()).EffectiveHysteresisBand(); };
-    hysteresisSlider.Preview = MakePreview(&Rendering::LodProjectSettings::HysteresisBand);
     hysteresisSlider.Set = [](float value)
     {
         Rendering::LodProjectSettings settings = Rendering::LodProjectSettings::Load(WorkspaceRoot());

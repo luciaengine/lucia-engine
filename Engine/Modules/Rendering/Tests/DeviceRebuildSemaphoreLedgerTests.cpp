@@ -24,7 +24,7 @@
 // some unrelated owner is stranding semaphores and every later reading is
 // unattributable. The suite says so rather than reporting the leak it came for.
 
-#include "Source/Vulkan/VulkanDevice.h"
+#include "Source/Vulkan/VulkanDevice/VulkanDevice.h"
 
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"

@@ -607,12 +607,11 @@ TEST_F(CBTSphereDomainTest, CornersLandOnSphereShell)
     {
         if (heap[slot * 2u] == 0u && heap[slot * 2u + 1u] == 0u)
             continue;
-        const uint32_t base = slot * kVertexWordsPerSlot;
-        for (uint32_t k = 0; k < 3u; ++k)
+        for (uint32_t corner = 0; corner < 3u; ++corner)
         {
-            float xyz[3];
-            std::memcpy(xyz, &verts[base + k * 4u], sizeof(xyz));
-            const float len = std::sqrt(xyz[0] * xyz[0] + xyz[1] * xyz[1] + xyz[2] * xyz[2]);
+            double xyz[3];
+            ReadCornerWorld(verts, slot, corner, xyz);
+            const float len = static_cast<float>(std::sqrt(xyz[0] * xyz[0] + xyz[1] * xyz[1] + xyz[2] * xyz[2]));
             ASSERT_GE(len, radius - maxRelief) << "corner inside the shell (slot " << slot << ")";
             ASSERT_LE(len, radius + maxRelief) << "corner outside the shell (slot " << slot << ")";
             ++checked;
@@ -904,12 +903,11 @@ TEST_F(CBTSphereDomainTest, ScreenSpaceExtendedCapConformsAndLandsOnShell)
     {
         if (heap[slot * 2u] == 0u && heap[slot * 2u + 1u] == 0u)
             continue;
-        const uint32_t base = slot * kVertexWordsPerSlot;
-        for (uint32_t k = 0; k < 3u; ++k)
+        for (uint32_t corner = 0; corner < 3u; ++corner)
         {
-            float xyz[3];
-            std::memcpy(xyz, &verts[base + k * 4u], sizeof(xyz));
-            const float len = std::sqrt(xyz[0] * xyz[0] + xyz[1] * xyz[1] + xyz[2] * xyz[2]);
+            double xyz[3];
+            ReadCornerWorld(verts, slot, corner, xyz);
+            const float len = static_cast<float>(std::sqrt(xyz[0] * xyz[0] + xyz[1] * xyz[1] + xyz[2] * xyz[2]));
             ASSERT_NEAR(len, radius, 1.0f) << "extended-depth corner off the shell (slot " << slot << ")";
             ++checked;
         }
@@ -989,10 +987,9 @@ TEST_F(CBTSphereDomainTest, TargetPixelErrorCostCurveAtSurfacePose)
             const uint64_t hid =
                 static_cast<uint64_t>(heap[slot * 2u]) | (static_cast<uint64_t>(heap[slot * 2u + 1u]) << 32);
             maxND = std::max(maxND, HeapDepth(hid) - kSphereBaseDepth);
-            const uint32_t base = slot * kVertexWordsPerSlot;
-            float c0[3], c2[3];
-            std::memcpy(c0, &verts[base + 0u], sizeof(c0)); // corner0.xyz
-            std::memcpy(c2, &verts[base + 8u], sizeof(c2)); // corner2.xyz — the LEB split edge is (c0,c2)
+            double c0[3], c2[3];
+            ReadCornerWorld(verts, slot, 0u, c0);
+            ReadCornerWorld(verts, slot, 2u, c2); // the LEB split edge is (c0,c2)
             const double dx = c0[0] - c2[0], dy = c0[1] - c2[1], dz = c0[2] - c2[2];
             edges.push_back(std::sqrt(dx * dx + dy * dy + dz * dz));
             ++live;
@@ -1072,31 +1069,6 @@ struct PoolScan
     double MinEdge = 0.0, MedEdge = 0.0, MaxEdge = 0.0;
 };
 
-// DeepTag-aware world corner fetch (S2b): a legacy slot's Corner*.xyz IS the fp32 world
-// position; a deep slot (DeepTag[0] == 1, S2a (sector, local) storage) holds the sector-
-// local offset, and the world position is sector * 1024 + local — reconstructed in double
-// (exact: the sector product is integer, |local| <= 512), so the pose scans measure true
-// geometry in BOTH storage modes. Word offsets per CBTVertexData (locked by the layout
-// static_asserts): corner0 @ 0, corner2 @ 8, Sector0 @ 16, Sector2 @ 20, DeepTag @ 22.
-void FetchCornerWorld(const std::vector<uint32_t>& verts, uint32_t slotBase, uint32_t cornerOfs,
-                      uint32_t sectorOfs, double out[3])
-{
-    float local[3];
-    std::memcpy(local, &verts[slotBase + cornerOfs], sizeof(local));
-    if (verts[slotBase + 22u] == 0u) // DeepTag[0]: legacy world-corner slot
-    {
-        out[0] = local[0];
-        out[1] = local[1];
-        out[2] = local[2];
-        return;
-    }
-    const uint32_t w0 = verts[slotBase + sectorOfs];
-    const uint32_t w1 = verts[slotBase + sectorOfs + 1u];
-    out[0] = 1024.0 * static_cast<double>(UnpackSectorLo(w0)) + static_cast<double>(local[0]);
-    out[1] = 1024.0 * static_cast<double>(UnpackSectorHi(w0)) + static_cast<double>(local[1]);
-    out[2] = 1024.0 * static_cast<double>(UnpackSectorLo(w1)) + static_cast<double>(local[2]);
-}
-
 PoolScan ScanLivePool(CBTInstance& instance)
 {
     const auto heap = instance.DebugReadWords(CBTBinding::HeapID, kDefaultBisectorPoolSize * 2u);
@@ -1112,10 +1084,9 @@ PoolScan ScanLivePool(CBTInstance& instance)
         const uint64_t hid =
             static_cast<uint64_t>(heap[slot * 2u]) | (static_cast<uint64_t>(heap[slot * 2u + 1u]) << 32);
         s.MaxNumSubdiv = std::max(s.MaxNumSubdiv, HeapDepth(hid) - kSphereBaseDepth);
-        const uint32_t base = slot * kVertexWordsPerSlot;
         double c0[3], c2[3];
-        FetchCornerWorld(verts, base, 0u, 16u, c0);
-        FetchCornerWorld(verts, base, 8u, 20u, c2); // corner2 — the LEB split edge is (c0,c2)
+        ReadCornerWorld(verts, slot, 0u, c0);
+        ReadCornerWorld(verts, slot, 2u, c2); // the LEB split edge is (c0,c2)
         const double dx = c0[0] - c2[0], dy = c0[1] - c2[1], dz = c0[2] - c2[2];
         const double len = std::sqrt(dx * dx + dy * dy + dz * dz);
         ++s.Live; // occupancy counts every live slot
@@ -1150,10 +1121,9 @@ PoolScan ScanNearPatch(CBTInstance& instance, const std::array<double, 3>& cente
     {
         if (heap[slot * 2u] == 0u && heap[slot * 2u + 1u] == 0u)
             continue;
-        const uint32_t base = slot * kVertexWordsPerSlot;
         double c0[3], c2[3];
-        FetchCornerWorld(verts, base, 0u, 16u, c0);
-        FetchCornerWorld(verts, base, 8u, 20u, c2); // corner2 — the LEB split edge is (c0,c2)
+        ReadCornerWorld(verts, slot, 0u, c0);
+        ReadCornerWorld(verts, slot, 2u, c2); // the LEB split edge is (c0,c2)
         const double mx = 0.5 * (c0[0] + c2[0]);
         const double my = 0.5 * (c0[1] + c2[1]);
         const double mz = 0.5 * (c0[2] + c2[2]);
@@ -2286,17 +2256,9 @@ TEST_F(CBTSphereDomainTest, EarthWalkingPoseFacetFloorPinnedByDecodeCap)
     EXPECT_EQ(instance.ReadValidationErrorCount(), 0u);
 }
 
-// S2b PAYOFF GATE (the arc's passes-after): the SAME Earth walking pose with the deep
-// (sector, local) storage live AND the flag-coupled cap lift (numSubdiv 50 — what
-// TerrainProvisioning SubdivCapFor derives with GE_CBT_DEEP_DECODE on; the fails-before
-// twin above pins 12.15 m at the fp32 cap 40). Justification for the flipped pins (the
-// #617 rule): the deep cap floors the Earth split edge at (pi*R/2)*2^-25 = 0.298 m, so the
-// under-feet median lands in the [floor, ~1.6x floor] band the metric equilibrium allows —
-// under the 0.5 m walking bar that was 24x out of reach. Storage carries it: the df64
-// (sector, local) decode error at nd 50 is <= 2e-5 m (0.02% of the facet short edge; the
-// fp32 world store would be at 275% — the S1 measured table), and the conformity oracle
-// runs on the raised 2^50 common grid. Also measures the honest cost datum: occupancy +
-// quiescent CBT.Update wall clock at the lifted cap (S1 headroom claim re-checked).
+// The Earth walking pose at the sphere's deep cap (numSubdiv 50): the split-edge floor is
+// (pi*R/2)*2^-25 = 0.298 m, so the under-feet median clears the 0.5 m walking bar. The df64
+// store error at numSubdiv 50 is at most 2e-5 m; the test above pins 12.15 m at cap 40.
 TEST_F(CBTSphereDomainTest, EarthWalkingPoseDeepDecodeClearsWalkingBar)
 {
     using namespace GameEngine::Mathematics;
@@ -2357,7 +2319,6 @@ TEST_F(CBTSphereDomainTest, EarthWalkingPoseDeepDecodeClearsWalkingBar)
     CBTClassifyDesc classify{};
     classify.Mode = kClassifyScreenSpace;
     classify.TargetDepth = cap;
-    classify.DeepDecode = 1u; // the flag-ON pipeline (CBTUpdateSystem's coupled read)
 
     constexpr uint32_t kApproach = 140u;
     for (uint32_t f = 0; f < kApproach; ++f)

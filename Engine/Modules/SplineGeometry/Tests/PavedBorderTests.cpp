@@ -421,7 +421,7 @@ TEST(PavedBorder, NewPointsTakeTheCornerStyleWithTheMiterLimit)
     for (const PavedBorderRun& border : BuildPavedBorder(RunsOf({}, acute, {}), PavedBorderSettings{}, Flat, {}))
         pastLimit += static_cast<int>(std::count_if(border.CornerIssues.begin(), border.CornerIssues.end(),
                                                     [](const SplineCornerIssue& issue) {
-                                                        return issue.Kind == SplineCornerIssueKind::PastMitreLimit;
+                                                        return issue.Kind == SplineCornerIssueKind::PastMiterLimit;
                                                     }));
     EXPECT_EQ(pastLimit, 2) << "the two acute notches turn 150 degrees";
 }

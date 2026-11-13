@@ -1,12 +1,11 @@
 #include "Terrain/TerrainRoleMaterials.h"
 
-#include "Inspectors/InspectorComponentSection.h"
+#include "Inspectors/InspectorComponent/InspectorComponentSection.h"
 #include "Inspectors/InspectorDragHelpers.h"
-#include "Inspectors/TerrainMaterialLibraryInspector.h"
+#include "Terrain/TerrainMaterialLibraryInspector.h"
 #include "Terrain/TerrainLayers.h"
 #include "UndoRedo/UndoRedoService.h"
 
-#include "AssetCore/AssetEvents.h"
 #include "AssetCore/SharedFileRead.h"
 #include "Assets/AssetManager.h"
 #include "Assets/TerrainMaterialLibraryAsset.h"
@@ -40,11 +39,69 @@ constexpr const char* kLayerRoleTooltip =
     "Which material each of the splat's four channels shades with. Where a channel appears is "
     "decided by slope, altitude and paint strokes; these bindings decide what it looks like.";
 
+// Card metrics. The swatch is wide and short so a row of cards reads as a palette rather than as
+// four tiles, and the name sits under it.
+//
+// A card may stretch up to half again its base width to close out a row: cards of one fixed width
+// leave whatever the row cannot divide as dead space on the right, and past 1.5x a card stops
+// looking like a card. Capped rather than free growth, because two materials on a panel-wide row
+// would otherwise take half the inspector each.
+constexpr float kCardWidthPx = 84.0f;
+constexpr float kCardMaxWidthPx = 126.0f;
+constexpr float kCardSwatchHeightPx = 52.0f;
+constexpr float kCardPaddingPx = 6.0f;
+constexpr float kCardRadiusPx = 6.0f;
+constexpr float kSwatchRadiusPx = 4.0f;
+constexpr float kGridGapPx = 8.0f;
+// The panel's label size (.inspector-label), not the 12px floor: these names are the smallest text
+// in the section and they carry a material's identity, so they read at the size its labels do.
+constexpr float kCardNameFontPx = 13.0f;
+// Two lines, reserved rather than grown into: every card keeps one height whatever its name is, so
+// a row of them stays a grid. A third line is clipped at the bottom — the UI has no line-clamp or
+// text-overflow, so an ellipsis cannot be asked for, and losing the tail of a long name beats
+// losing its start.
+constexpr float kCardNameLineHeightPx = 17.0f;
+constexpr float kCardNameBlockHeightPx = 2.0f * kCardNameLineHeightPx;
+constexpr float kAddTileGlyphFontPx = 22.0f;
+constexpr float kSwatchChipFontPx = 12.0f;
+
+constexpr std::uint32_t kCardBorderArgb = 0xFF3A3A3Au;
+constexpr std::uint32_t kSwatchBorderArgb = 0xFF202020u;
+constexpr std::uint32_t kAddTileGlyphArgb = 0xFF9A9A9Au;
+// The chip sits on an arbitrary tint, so it carries its own contrast: a near-opaque dark plate
+// under light text, legible over white and over black alike.
+constexpr std::uint32_t kSwatchChipBackgroundArgb = 0xB8141414u;
+constexpr std::uint32_t kSwatchChipTextArgb = 0xFFE8E8E8u;
+
 // What a material is called when it is called nothing: the library inspector shows the same word
 // on an unnamed card, so a nameless material reads the same in both surfaces.
 std::string MaterialDisplayName(const TerrainMaterialEntry& entry)
 {
     return entry.Name.empty() ? std::string("Material") : entry.Name;
+}
+
+void StyleCardSurface(UIElement& card)
+{
+    card.Style()
+        .Set(Style::FlexDir, FlexDirection::Column)
+        .Set(Style::FlexBasis, StyleLength::Px(kCardWidthPx))
+        .Set(Style::FlexGrow, 1.0f)
+        .Set(Style::FlexShrink, 0.0f)
+        .Set(Style::MinWidth, StyleLength::Px(kCardWidthPx))
+        .Set(Style::MaxWidth, StyleLength::Px(kCardMaxWidthPx))
+        .Set(Style::PaddingTop, StyleLength::Px(kCardPaddingPx))
+        .Set(Style::PaddingRight, StyleLength::Px(kCardPaddingPx))
+        .Set(Style::PaddingBottom, StyleLength::Px(kCardPaddingPx))
+        .Set(Style::PaddingLeft, StyleLength::Px(kCardPaddingPx))
+        .Set(Style::BorderRadius,
+             CornerRadiiTLTRBRBL{kCardRadiusPx, kCardRadiusPx, kCardRadiusPx, kCardRadiusPx})
+        .Set(Style::BorderWidth, Box4{1.0f, 1.0f, 1.0f, 1.0f})
+        .Set(Style::BorderColor,
+             BorderColorsTRBL{kCardBorderArgb, kCardBorderArgb, kCardBorderArgb, kCardBorderArgb})
+        // Whatever a name spills past its two reserved lines is caught here rather than painted
+        // over the card beside it.
+        .Set(Style::OverflowProp, Overflow::Hidden)
+        .Set(Style::Cursor, CursorStyle::Pointer);
 }
 
 Label* AddCardName(UIElement& card, const std::string& text, const std::string& id)
@@ -53,8 +110,21 @@ Label* AddCardName(UIElement& card, const std::string& text, const std::string& 
     Label* raw = name.get();
     raw->SetId(id);
     raw->AddClass("inspector-text");
-    raw->AddClass("terrain-role-material-name");
     raw->SetText(text);
+    raw->Style()
+        .Set(Style::FontSize, StyleLength::Px(kCardNameFontPx))
+        .Set(Style::LineHeight, kCardNameLineHeightPx)
+        .Set(Style::MarginTop, StyleLength::Px(5.0f))
+        .Set(Style::Height, StyleLength::Px(kCardNameBlockHeightPx))
+        .Set(Style::MinHeight, StyleLength::Px(kCardNameBlockHeightPx))
+        .Set(Style::MaxHeight, StyleLength::Px(kCardNameBlockHeightPx))
+        // Wraps onto a second line rather than being cut mid-word, and breaks a word too long for
+        // the card instead of running past it. Left-aligned so a name that does overrun keeps its
+        // BEGINNING: a centred single line loses both ends and reads as neither.
+        .Set(Style::WhiteSpaceProp, WhiteSpace::Normal)
+        .Set(Style::OverflowWrapProp, OverflowWrap::BreakWord)
+        .Set(Style::TextAlignProp, TextAlign::Left)
+        .Set(Style::OverflowProp, Overflow::Hidden);
     card.AddChild(std::move(name));
     return raw;
 }
@@ -98,7 +168,7 @@ void AddMaterialCard(UIElement& grid, const TerrainMaterialEntry& entry,
     auto card = std::make_unique<UIElement>();
     UIElement* raw = card.get();
     raw->SetId(id + "-card");
-    raw->AddClass("terrain-role-material-card");
+    StyleCardSurface(*raw);
     raw->SetTooltip(name + " — slot " + slot +
                     ", which is what painted ground stores. Double-click to edit its name, "
                     "textures and values in the library.");
@@ -106,10 +176,20 @@ void AddMaterialCard(UIElement& grid, const TerrainMaterialEntry& entry,
     auto swatch = std::make_unique<UIElement>();
     UIElement* swatchRaw = swatch.get();
     swatchRaw->SetId(id + "-swatch");
-    swatchRaw->AddClass("terrain-role-material-swatch");
-    // The tint is linear and every CSS colour is an sRGB byte, so the card shows the encoded
-    // value the library inspector's own swatch does.
-    swatchRaw->Overrides().Set(Style::BackgroundColor, TerrainMaterialTintToSwatchArgb(entry));
+    swatchRaw->Style()
+        .Set(Style::FlexDir, FlexDirection::Row)
+        .Set(Style::AlignItems, AlignItems::FlexStart)
+        .Set(Style::Height, StyleLength::Px(kCardSwatchHeightPx))
+        .Set(Style::MinHeight, StyleLength::Px(kCardSwatchHeightPx))
+        .Set(Style::BorderRadius,
+             CornerRadiiTLTRBRBL{kSwatchRadiusPx, kSwatchRadiusPx, kSwatchRadiusPx,
+                                 kSwatchRadiusPx})
+        .Set(Style::BorderWidth, Box4{1.0f, 1.0f, 1.0f, 1.0f})
+        .Set(Style::BorderColor, BorderColorsTRBL{kSwatchBorderArgb, kSwatchBorderArgb,
+                                                  kSwatchBorderArgb, kSwatchBorderArgb})
+        // The tint is linear and every CSS colour is an sRGB byte, so the card shows the encoded
+        // value the library inspector's own swatch does.
+        .Set(Style::BackgroundColor, TerrainMaterialTintToSwatchArgb(entry));
 
     // The swatch is a colour, and a colour can land anywhere — including a flat white that is
     // indistinguishable from a picture that failed to load. The chip is what tells those apart: a
@@ -117,7 +197,16 @@ void AddMaterialCard(UIElement& grid, const TerrainMaterialEntry& entry,
     auto chip = std::make_unique<Label>();
     chip->SetId(id + "-tintchip");
     chip->SetText("Tint");
-    chip->AddClass("terrain-role-material-tint-chip");
+    chip->Style()
+        .Set(Style::FontSize, StyleLength::Px(kSwatchChipFontPx))
+        .Set(Style::Color, kSwatchChipTextArgb)
+        .Set(Style::BackgroundColor, kSwatchChipBackgroundArgb)
+        .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{3.0f, 3.0f, 3.0f, 3.0f})
+        .Set(Style::MarginTop, StyleLength::Px(4.0f))
+        .Set(Style::MarginLeft, StyleLength::Px(4.0f))
+        .Set(Style::PaddingLeft, StyleLength::Px(4.0f))
+        .Set(Style::PaddingRight, StyleLength::Px(4.0f))
+        .Set(Style::WhiteSpaceProp, WhiteSpace::NoWrap);
     swatchRaw->AddChild(std::move(chip));
 
     raw->AddChild(std::move(swatch));
@@ -132,14 +221,19 @@ void AddAddTile(UIElement& grid, const std::function<void()>& add)
     auto tile = std::make_unique<UIElement>();
     UIElement* raw = tile.get();
     raw->SetId("terrain-material-add");
-    raw->AddClass("terrain-role-material-card");
+    StyleCardSurface(*raw);
     raw->SetTooltip("Appends a material taking the lowest free slot ID, so it can never inherit a "
                     "retired material's painted ground.");
 
     auto glyph = std::make_unique<Label>();
     glyph->SetId("terrain-material-add-glyph");
     glyph->SetText("+");
-    glyph->AddClass("terrain-role-material-add-glyph");
+    glyph->Style()
+        .Set(Style::Height, StyleLength::Px(kCardSwatchHeightPx))
+        .Set(Style::MinHeight, StyleLength::Px(kCardSwatchHeightPx))
+        .Set(Style::FontSize, StyleLength::Px(kAddTileGlyphFontPx))
+        .Set(Style::Color, kAddTileGlyphArgb)
+        .Set(Style::TextAlignProp, TextAlign::Center);
     raw->AddChild(std::move(glyph));
 
     AddCardName(*raw, "Add", "terrain-material-add-name");
@@ -156,14 +250,6 @@ void AddAddTile(UIElement& grid, const std::function<void()>& add)
                                   add();
                               });
     grid.AddChild(std::move(tile));
-}
-
-void NotifyLibraryReload(const TerrainMaterialLibraryAsset& library)
-{
-    auto& engine = EngineCore::GetInstance();
-    if (engine.IsInitialized())
-        engine.GetAssetManager().DispatchWithRedirectSources(
-            AssetEvents::AssetReloaded(library.GetGUID(), library.GetType(), library.GetPath().string()));
 }
 
 // The whole document, captured before an edit and rewritten on undo.
@@ -195,10 +281,7 @@ UndoRedoService::SnapshotTarget MakeLibrarySnapshotTarget(TerrainMaterialLibrary
             out.write(reinterpret_cast<const char*>(snapshot.data()),
                       static_cast<std::streamsize>(snapshot.size()));
         out.close();
-        if (!out || !library->Load())
-            return false;
-        NotifyLibraryReload(*library);
-        return true;
+        return library->Load();
     };
 
     return target;
@@ -234,8 +317,7 @@ void EditLibraryUndoable(TerrainMaterialLibraryAsset* library, UndoRedoService* 
         edit = undo->BeginInteractiveEdit(label, MakeLibrarySnapshotTarget(library, label));
 
     mutate(library->EditMaterials());
-    if (library->Save())
-        NotifyLibraryReload(*library);
+    (void)library->Save();
 
     if (edit)
         edit.Commit();
@@ -357,7 +439,15 @@ UIElement* AddMaterialGrid(UIElement* parent, const TerrainMaterialLibraryAsset*
     auto grid = std::make_unique<UIElement>();
     UIElement* raw = grid.get();
     raw->SetId("terrain-material-grid");
-    raw->AddClass("terrain-role-material-grid");
+    raw->Style()
+        .Set(Style::FlexDir, FlexDirection::Row)
+        .Set(Style::FlexWrap, true)
+        .Set(Style::Gap, StyleLength::Px(kGridGapPx))
+        .Set(Style::MarginTop, StyleLength::Px(4.0f))
+        .Set(Style::MarginBottom, StyleLength::Px(6.0f))
+        // Stretched, so the grid takes the panel's width in the inspector's column and its cards
+        // have a width to wrap against. Content-sized, they would all sit on one line.
+        .Set(Style::AlignSelf, AlignItems::Stretch);
 
     // The library's own path, resolved once: a card opens the library asset, which is what shows
     // its materials in the Inspector.

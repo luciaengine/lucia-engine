@@ -8,7 +8,7 @@ layout(set = 0, binding = 2) uniform sampler2D uNormal;
 // Mirrors SpriteLight in SpriteRenderFeature.h (std430, 48 bytes).
 struct SpriteLight
 {
-    vec4 PositionType;     // xyz = world position (point), w = Components::LightType
+    vec4 PositionType;     // xyz = point position relative to this view's render origin, w = Components::LightType
     vec4 ColorRange;       // rgb = colour times intensity, w = range (point)
     vec4 DirectionFalloff; // xyz = direction the light shines (directional), w = Components::LightFalloff
 };

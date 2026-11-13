@@ -1,0 +1,12 @@
+<!-- One row of SplineJunctionList: the other spline and where the two meet in the inspector's label
+     column; the junction's state and the action that fixes it in its value column. The control hides
+     the action on a row that has none. The classes are the contract with SplineJunctionList.cpp. -->
+<UIElement class="inspector-row spline-junction-row">
+  <UIElement class="inspector-label-cell spline-junction-name">
+    <Label class="spline-junction-title" />
+  </UIElement>
+  <UIElement class="inspector-field spline-junction-value">
+    <Label class="spline-junction-state" />
+    <Button class="small spline-junction-action" />
+  </UIElement>
+</UIElement>

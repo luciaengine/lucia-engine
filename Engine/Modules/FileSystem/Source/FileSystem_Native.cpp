@@ -10,7 +10,7 @@ std::filesystem::path ProjectLibraryRoot()
 
 bool IsCaseSensitive()
 {
-#if defined(__linux__) || defined(GE_PLATFORM_IOS)
+#if defined(__linux__)
     return true;
 #else
     return false;

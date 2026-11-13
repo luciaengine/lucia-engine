@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Components/Rendering/Camera.h"
+#include "Mathematics/Matrix4x4.h"
 #include "SceneView/SceneViewGizmos.h"
 
 namespace GameEngine::Editor::SceneTools
@@ -16,23 +17,18 @@ class CameraFrameGizmo : public IGizmo
 public:
     CameraFrameGizmo() = default;
 
-    // worldTransform is a column-major 4x4 (translation in columns 12/13/14,
-    // right/up/forward in columns 0/1/2). When hasCamera is false the gizmo
-    // draws nothing.
+    // worldTransform holds right, up and forward in columns 0, 1 and 2 and the
+    // translation in column 3. When hasCamera is false the gizmo draws nothing.
     void SetCamera(bool hasCamera,
                    const GameEngine::Components::Camera& params,
-                   const float worldTransform[16]);
+                   const Mathematics::Matrix4x4& worldTransform);
 
     void Render(GizmoRenderContext& context) override;
 
 private:
     bool                       m_HasCamera{false};
     GameEngine::Components::Camera m_Params{};
-    float                      m_WorldTransform[16] = {
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f};
+    Mathematics::Matrix4x4     m_WorldTransform{};
 };
 
 } // namespace GameEngine::Editor::SceneTools

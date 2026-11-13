@@ -3,7 +3,6 @@
 #include "PlayMode/AnimationPlayModeHelpers.h"
 
 #include "InspectorRegistry.h"
-#include "Editor/Entities/EditorComponentTraits.h"
 
 #include "AssetCore/AssetTypes.h"
 #include "Assets/AssetManager.h"
@@ -19,7 +18,7 @@
 #include "ECS/World.h"
 #include "Types/Types.h"
 
-#include "Inspectors/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
 #include "UI/Controls/TextField.h"
@@ -138,19 +137,6 @@ std::string FormatValue(float v, const char* suffix)
 
 void RegisterAnimatorInspector()
 {
-    constexpr int kAnimatorSortKey = 33;
-
-    {
-        Editor::EditorComponentTraits traits;
-        traits.DisplayName = "Animator";
-        traits.Category = "Animation";
-        traits.SortKey = kAnimatorSortKey;
-        traits.Tooltip = "Controls playback of skeletal animations on a mesh";
-        traits.InspectorIconClass = "inspector-section-icon-animator";
-        Editor::EditorComponentTraitsRegistry::Get().Register(
-            ECS::GetComponentTypeId<Components::Animator>(), std::move(traits));
-    }
-
     InspectorFn fn = [](const InspectorContext& ctx)
     {
         if (!ctx.Parent || !ctx.World || !ctx.Entity.IsValid())
@@ -465,8 +451,8 @@ void RegisterAnimatorInspector()
         float currentSpeed = previewState ? previewState->speed : 1.0f;
 
         auto controlsContainer = std::make_unique<UIElement>();
-        controlsContainer->Overrides().Set(Style::Display, previewActive ? DisplayMode::Flex : DisplayMode::None);
-        controlsContainer->Overrides().Set(Style::FlexDir, FlexDirection::Column);
+        controlsContainer->Style().Set(Style::Display, previewActive ? DisplayMode::Flex : DisplayMode::None);
+        controlsContainer->Style().Set(Style::FlexDir, FlexDirection::Column);
         UIElement* controlsPtr = controlsContainer.get();
 
         Toggle* previewToggle = InspectorDrag::AddToggleRow(
@@ -514,7 +500,7 @@ void RegisterAnimatorInspector()
                 }
 
                 // Show/hide playback controls immediately
-                controlsPtr->Overrides().Set(Style::Display, v ? DisplayMode::Flex : DisplayMode::None);
+                controlsPtr->Style().Set(Style::Display, v ? DisplayMode::Flex : DisplayMode::None);
             }, "Preview animation in edit mode");
 
         // Add controls container after the toggle in DOM order
@@ -543,7 +529,7 @@ void RegisterAnimatorInspector()
 
         auto speedValueLabel = std::make_unique<Label>();
         speedValueLabel->SetText(FormatValue(currentSpeed, "x"));
-        speedValueLabel->Overrides().Set(Style::Width, StyleLength::Px(42.0f));
+        speedValueLabel->Style().Set(Style::Width, StyleLength::Px(42.0f));
         Label* speedValuePtr = speedValueLabel.get();
         speedSlider->GetParent()->AddChild(std::move(speedValueLabel));
 
@@ -571,7 +557,7 @@ void RegisterAnimatorInspector()
 
         auto timeValueLabel = std::make_unique<Label>();
         timeValueLabel->SetText(FormatValue(currentTime, "s"));
-        timeValueLabel->Overrides().Set(Style::Width, StyleLength::Px(42.0f));
+        timeValueLabel->Style().Set(Style::Width, StyleLength::Px(42.0f));
         Label* timeValuePtr = timeValueLabel.get();
         timeSlider->GetParent()->AddChild(std::move(timeValueLabel));
 
@@ -612,7 +598,7 @@ void RegisterAnimatorInspector()
                 }
 
                 bool active = Editor::AnimationPreviewManager::IsPreviewActive(e);
-                controlsPtr->Overrides().Set(Style::Display, active ? DisplayMode::Flex : DisplayMode::None);
+                controlsPtr->Style().Set(Style::Display, active ? DisplayMode::Flex : DisplayMode::None);
                 previewToggle->SetValueWithoutNotify(active);
 
                 if (!active)

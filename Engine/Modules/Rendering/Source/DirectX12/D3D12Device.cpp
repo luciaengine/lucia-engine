@@ -10,6 +10,7 @@
 #define NOMINMAX
 #endif
 #include "D3D12Device.h"
+#include "Mathematics/Interpolation.h"
 #include "Rendering/Core/TextureFormatSupportGate.h"
 #include "D3D12CommandList.h"
 #include "Logger/Logger.h"
@@ -645,18 +646,19 @@ PipelineHandle D3D12Device::CreateConcreteComputePipeline(const ComputePipelineD
 // Resource destruction methods
 void D3D12Device::DestroyBuffer(BufferHandle handle)
 {
-
+    EvictCachedDescriptorSetsUsing(handle);
     m_ResourceContainers->buffers.Destroy(handle);
 }
 
 void D3D12Device::DestroyTexture(TextureHandle handle)
 {
-
+    EvictCachedDescriptorSetsUsing(handle);
     m_ResourceContainers->textures.Destroy(handle);
 }
 
 void D3D12Device::DestroyTextureView(TextureViewHandle handle)
 {
+    EvictCachedDescriptorSetsUsing(handle);
     if (const D3D12TextureView* view = m_ResourceContainers->textureViews.TryGet(handle))
     {
         m_ResourceContainers->srvCpuPool.Free(view->ChunkIndex, view->SlotIndex);
@@ -666,7 +668,7 @@ void D3D12Device::DestroyTextureView(TextureViewHandle handle)
 
 void D3D12Device::DestroySampler(SamplerHandle handle)
 {
-
+    EvictCachedDescriptorSetsUsing(handle);
     m_ResourceContainers->samplers.Destroy(handle);
 }
 
@@ -847,6 +849,7 @@ void D3D12Device::WaitForIdle()
 
 bool D3D12Device::BeginFrame()
 {
+    AgeCachedDescriptorSets();
 
     // D3D12 doesn't need explicit frame begin like Vulkan
     // Swapchain images are acquired during present
@@ -1182,7 +1185,7 @@ bool D3D12Device::CreateSwapchain(void* windowHandle, uint32_t width, uint32_t h
         {
             const HdrStaticMetadata& src = m_HdrState.staticMetadata;
             auto chroma = [](float value) -> UINT16 {
-                return static_cast<UINT16>(std::clamp(value, 0.0f, 1.0f) * 50000.0f + 0.5f);
+                return static_cast<UINT16>(Math::Clamp01(value) * 50000.0f + 0.5f);
             };
             DXGI_HDR_METADATA_HDR10 metadata{};
             metadata.RedPrimary[0] = chroma(src.redPrimary[0]);

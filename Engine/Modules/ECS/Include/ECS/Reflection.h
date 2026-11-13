@@ -74,6 +74,9 @@ enum class FieldTypeId : std::uint16_t
     EntityHandle = 19,
     String       = 20,
     Bytes        = 21,
+    // Rendering::RenderLayerMask: a 32-bit layer word, written in scenes as layer numbers
+    // in brackets or all/none (Components/RenderLayerMaskReflectionTraits.h).
+    RenderLayerMask = 22,
 };
 
 // Per-field editor/runtime policy. Orthogonal to FieldTypeId and defaulted to
@@ -102,10 +105,13 @@ constexpr bool HasAnyFlag(FieldFlags set, FieldFlags mask)
 // before C++26, so the build-time ComponentScanner — which sees the enum declaration — emits a
 // constexpr table of these and binds it to the field via FieldInfo::EnumNames. The scene serializer
 // then writes/reads the enumerator name (with an integer fallback) instead of a bare number.
+// Label is the editor's words for the enumerator ("// @ge-label Text" on its line), empty when
+// the editor shows the identifier as words; a view over a string literal like Name.
 struct EnumNameValue
 {
     std::string_view Name;
     std::int64_t     Value;
+    std::string_view Label = {};
 };
 
 // One reflected field. Size is the total byte span of the member (for an array
@@ -146,6 +152,9 @@ struct FieldInfo
     // Optional editor/UI tooltip text. Non-owning storage; callers should pass
     // string literals or other storage that outlives the registry entry.
     std::string_view Tooltip = {};
+    // Optional editor row label ("// @ge-label Text" on the field), shown instead of the field's
+    // identifier as words. Non-owning, like Tooltip.
+    std::string_view Label = {};
     // For a C array of a struct reflection has no composite for: that struct's
     // component type id, so a consumer can look up the struct's own field table
     // (ComponentFieldRegistry) and default bytes (ComponentFactory). 0 for every
@@ -305,7 +314,8 @@ constexpr std::uint32_t FieldElementSize(FieldTypeId type)
         case FieldTypeId::Int32:
         case FieldTypeId::UInt32:
         case FieldTypeId::Float:
-        case FieldTypeId::EntityHandle:return 4;
+        case FieldTypeId::EntityHandle:
+        case FieldTypeId::RenderLayerMask: return 4;
         case FieldTypeId::Int64:
         case FieldTypeId::UInt64:
         case FieldTypeId::Double:      return 8;
@@ -546,6 +556,19 @@ constexpr std::uint32_t GetReflectionVersion()
         };                                                                      \
         static constexpr ::std::uint32_t FieldCount =                          \
             static_cast<::std::uint32_t>(sizeof(Fields) / sizeof(Fields[0]));   \
+        static constexpr ::std::uint32_t Version =                             \
+            ::GameEngine::ECS::ReflectionVersion<TypeName>::Value;              \
+    }
+
+// GE_REFLECT_TAG(Type) — the empty field table of a component with no fields (a tag), which the
+// BEGIN/FIELD/END form cannot write (an array has at least one element). Caller supplies the ';'.
+#define GE_REFLECT_TAG(TypeName)                                                \
+    template <>                                                                 \
+    struct GameEngine::ECS::Reflection<TypeName>                                \
+    {                                                                           \
+        using ReflectedType = TypeName;                                         \
+        static constexpr const ::GameEngine::ECS::FieldInfo* Fields = nullptr;  \
+        static constexpr ::std::uint32_t FieldCount = 0;                        \
         static constexpr ::std::uint32_t Version =                             \
             ::GameEngine::ECS::ReflectionVersion<TypeName>::Value;              \
     }

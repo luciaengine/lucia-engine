@@ -9,9 +9,12 @@
 #include "Mathematics/Vector3.h"
 #include "Scene/SceneIO.h"
 #include "Scene/SceneIOContext.h"
+#include "Types/FlatMap.h"
 
 #include <cstddef>
 #include <filesystem>
+#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -36,10 +39,11 @@ inline constexpr std::string_view kIdSeparators = "./~";
 
 struct SceneDoc
 {
-    bool isBlueprint = false;
     bool isPrefab = false;
     std::string name;
     int version = 0;
+    // The simulation_tick header attribute: the world's simulation tick when the scene was saved.
+    std::optional<uint64> simulationTick;
 
     struct PropValue
     {
@@ -51,8 +55,11 @@ struct SceneDoc
         std::string originalKey;
     };
 
-    // Insertion-ordered component properties. Parsing appends; loading, saving and validation iterate.
-    // Contiguous records preserve file order without per-component property-map allocations.
+    // Insertion-ordered flat storage of a component's properties. Replaces a nested
+    // unordered_map; the parse path only ever appends and the load/save/validate paths
+    // only ever range-iterate, so a vector keeps file order deterministic and avoids the
+    // per-entity, per-component map allocations.
+    // components: [ { "transform", [ {"position", {"(1, 2, 3)", line}}, ... ] }, ... ]
     struct ComponentProps
     {
         std::string name;
@@ -101,19 +108,6 @@ struct SceneDoc
         int headerLine = 0;
     };
     std::vector<Entity> entities; // in file order
-
-    struct BlueprintInstance
-    {
-        std::string id;
-        std::optional<std::string> parent;
-        std::string sourceResourceId;
-        // Overrides (root only), stored as component properties.
-        ComponentProperties components;
-        // Remove directives (-ComponentName)
-        std::unordered_set<std::string> removedComponents;
-        int headerLine = 0;
-    };
-    std::vector<BlueprintInstance> blueprintInstances;
 
     // One [prefab] section: an instance of the prefab its source names, with its override lines. An
     // override line names an entity of the instance by its address, the local ids from the
@@ -173,6 +167,26 @@ struct SceneDoc
     bool hasEditorCamera = false;
     SceneEditorCamera editorCamera;
 
+    // Each resource's absolute path by resource id, resolved once when ReadSceneDocument read this file.
+    // Empty outside a document: a placement then resolves each path itself.
+    FlatMap<std::string, std::filesystem::path> resolvedResourcePaths;
+};
+
+// The files of one scene read: the scene with its includes expanded, and each prefab and subscene
+// source by absolute, normal path. The instantiate finds each source by that path, and resolves asset
+// references with ReadOptions.
+struct SceneDocumentFiles
+{
+    SceneReadOptions ReadOptions;
+    SceneDoc Scene;
+    FlatMap<std::string, std::shared_ptr<const SceneDoc>> Sources;
+};
+
+// What a placement resolves with: the read's resolver and roots, and the embed materializer.
+struct SceneLoadOptions
+{
+    SceneReadOptions Read;
+    ISceneEmbedMaterializer* EmbedMaterializer = nullptr;
 };
 
 struct Instantiated
@@ -218,9 +232,6 @@ bool ReadTextFile(const std::filesystem::path& p, std::string& out);
 // Writes `text` to a temporary file beside `p`, then puts it in place of `p`.
 bool WriteTextFileAtomic(const std::filesystem::path& p, const std::string& text);
 
-// The last scene IO error, which GetLastSceneIOError returns.
-void SetError(const std::filesystem::path& file, int line, const std::string& msg);
-
 // Scene identities and addresses.
 // The id of a prefab file's root, the entity an instance's root is.
 inline constexpr std::string_view kPrefabRootId = "root";
@@ -244,30 +255,36 @@ bool IsMemberTag(std::string_view tag);
 std::string Addressed(std::string_view address, std::string_view text);
 
 // Loading a document's entities.
-SceneLoadContext MakeDocumentLoadContext(ECS::World& world, const std::filesystem::path& file, const SceneDoc& doc,
-                                         const LoadOptions& options);
-std::filesystem::path ResolveResourcePath(const SceneLoadContext& context, const std::filesystem::path& ownerFile,
+SceneReadContext MakeDocumentLoadContext(ECS::World& world, const std::filesystem::path& file, const SceneDoc& doc,
+                                         const SceneLoadOptions& options);
+std::filesystem::path ResolveResourcePath(const SceneReadContext& ctx, const std::filesystem::path& ownerFile,
                                           const SceneDoc::Resource& r);
 void ReportUnreadableResource(std::string_view kind, const SceneDoc::Resource& r,
                               const std::filesystem::path& resolvedPath, const std::filesystem::path& projectRoot,
                               const std::filesystem::path& ownerFile, int instanceLine, std::string* outError,
                               std::filesystem::path* outErrorFile, int* outErrorLine);
+// The refusal of a [prefab] section whose source is a scene file.
+std::string NotAPrefabMessage(const SceneDoc::PrefabInstanceSection& section);
+// The refusal of a [prefab] section that places `closing`, a file on `chain` (the prefab files being
+// placed, outermost first).
+std::string PrefabCycleMessage(const std::vector<std::filesystem::path>& chain, const std::filesystem::path& closing,
+                               const SceneDoc::PrefabInstanceSection& section);
 void RecordUnreadLines(const SceneDoc::UnreadLines& unreadLines, const std::string& entityId,
                        const std::filesystem::path& ownerFile, ECS::EntityHandle h, std::size_t firstRow,
-                       SceneLoadDegradation* degradation);
+                       SceneDegradation* degradation);
 void PreserveOrDropUnhandledComponent(ECS::World& world, ECS::EntityHandle h, const SceneDoc::ComponentProps& comp,
                                       const std::string& entityId, const std::filesystem::path& ownerFile);
-void ApplyComponentBlock(ECS::World& world, const SceneLoadContext& context, const ISceneComponentSchema& schema,
+void ApplyComponentBlock(ECS::World& world, const SceneReadContext& ctx, const ISceneComponentSchema& schema,
                          ECS::EntityHandle h, const SceneDoc::ComponentProps& authored, const std::string& entityId,
-                         const std::filesystem::path& ownerFile, int headerLine, SceneLoadDegradation* degradation);
-void ApplyFallbackName(ECS::World& world, const SceneLoadContext& context, ECS::EntityHandle h,
+                         const std::filesystem::path& ownerFile, int headerLine, SceneDegradation* degradation);
+void ApplyFallbackName(ECS::World& world, const SceneReadContext& ctx, ECS::EntityHandle h,
                        std::string_view fallbackName, const std::string& entityId);
-void ApplyEntityComponents(ECS::World& world, const SceneLoadContext& context, const std::filesystem::path& ownerFile,
+void ApplyEntityComponents(ECS::World& world, const SceneReadContext& ctx, const std::filesystem::path& ownerFile,
                            ECS::EntityHandle h, const SceneDoc::Entity& e, const std::string& entityId,
-                           std::string_view fallbackName, SceneLoadDegradation* degradation);
+                           std::string_view fallbackName, SceneDegradation* degradation);
 
 // Saving: the authored text of fields the load could not read, and a prefab instance's source path.
 void ApplyPreservedFieldOverrides(ECS::World& world, ECS::EntityHandle entity, std::vector<std::string>& lines);
-bool ResolvePrefabSourceForSave(const SceneSaveContext& context, const GUID& source, std::string& outPath);
+bool ResolvePrefabSourceForSave(const SceneWriteContext& ctx, const GUID& source, std::string& outPath);
 
 } // namespace GameEngine::Scene

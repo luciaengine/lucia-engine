@@ -6,9 +6,8 @@
 // ui_sdf_textures.glsl to be included first.
 //
 // All three are functions of one quantity: the distance from the fragment to
-// the glyph outline as the fill draws it (grown by the dilation), which
-// slugOutlineDistance measures from the same curve and band data the fill's
-// coverage reads.
+// the glyph outline, which slugOutlineDistance measures from the same curve and
+// band data the fill's coverage reads.
 //   outline  a second threshold: covered where the distance is within the width,
 //            with the one-pixel ramp the fill's own edge has.
 //   glow     a wider falloff: exp(-2 (g / R)^2) of the distance g past the
@@ -50,7 +49,7 @@ float textShadowSoftEdge(float inside, float blur)
 {
     float sigma = 0.5 * blur;
     float sigmaEff = sqrt(sigma * sigma + kTextShadowPixelSigma * kTextShadowPixelSigma);
-    return 0.5 + 0.5 * erfApprox(inside / (sigmaEff * 1.4142135));
+    return 0.5 + 0.5 * GE_Erf(inside / (sigmaEff * 1.4142135));
 }
 
 // Alpha of a colour glyph's atlas at uv; zero outside the glyph's own rect,
@@ -78,15 +77,10 @@ float textShadowCoverage(UIPrimitive prim, uint textureSlot, vec2 uv, vec2 dx, v
     if (outlineWidth <= 0.0 && blur <= 0.0)
         return fill;
 
-    float dilation = slugEffectDilationPx(emsPerPixel);
-    float reach = outlineWidth + kTextShadowReachBlurs * blur + 1.0 + dilation;
+    float reach = outlineWidth + kTextShadowReachBlurs * blur + 1.0;
     float distance = GE_UI_SLUG_DISTANCE(prim.packed.y, prim.packed.z, textureSlot,
                                          shadowUV, prim.radii, glyphData, emsPerPixel, reach);
-    // `distance` is to the raw outline, which the fill grows by `dilation`:
-    // a sample inside the raw outline sees fill >= 0.5 + dilation, a sample
-    // in the grown band between the two sees less, so that level, not 0.5,
-    // signs the raw distance.
-    float inside = (fill >= 0.5 + dilation ? distance : -distance) + dilation + outlineWidth;
+    float inside = (fill >= 0.5 ? distance : -distance) + outlineWidth;
     return blur > 0.0 ? textShadowSoftEdge(inside, blur) : clamp(inside + 0.5, 0.0, 1.0);
 }
 
@@ -110,17 +104,14 @@ vec4 textEffectLayer(UIPrimitive prim, uint textureSlot, vec2 uv, vec2 dx, vec2 
     if (glowRadius <= 0.0 && !uiTextOutlinePainted(prim))
         return layer;
 
-    // Outside distance to the grown outline the fill draws: zero inside the
-    // glyph, where the fill covers the layer.
-    float dilation = slugEffectDilationPx(emsPerPixel);
+    // Outside distance: zero inside the glyph, where the fill covers the layer.
     float reach = max(outlineWidth + 1.0, outlineWidth + kTextGlowReachRadii * glowRadius);
     float distance = 0.0;
     if (fillCoverage < 0.5)
     {
         ivec4 glyphData = floatBitsToInt(prim.borderWidths);
-        distance = max(GE_UI_SLUG_DISTANCE(prim.packed.y, prim.packed.z, textureSlot,
-                                           uv, prim.radii, glyphData, emsPerPixel, reach + dilation)
-                       - dilation, 0.0);
+        distance = GE_UI_SLUG_DISTANCE(prim.packed.y, prim.packed.z, textureSlot,
+                                       uv, prim.radii, glyphData, emsPerPixel, reach);
     }
     if (glowRadius > 0.0)
     {

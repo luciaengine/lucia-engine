@@ -16,6 +16,79 @@ void GE_ShadowPcfAxis(float phase, out vec3 offsets, out vec3 weights)
     offsets = vec3(-2.0, 0.0, 2.0) + right / weights;
 }
 
+// Vogel disk: sample positions on a unit disk, spaced by the golden angle with
+// radius sqrt((i + 0.5) / N), so any tap count covers the disk evenly.
+// `sc` is the per-pixel rotation (cos a, sin a) applied on top of the spiral.
+vec2 GE_VogelDisk(int sampleIndex, int totalSamples, vec2 sc)
+{
+    const float goldenAngle = 2.39996323; // 137.5° in radians
+    float r = sqrt((float(sampleIndex) + 0.5) / float(totalSamples));
+    float theta = float(sampleIndex) * goldenAngle;
+    float ct = cos(theta);
+    float st = sin(theta);
+    return r * vec2(ct * sc.x - st * sc.y, ct * sc.y + st * sc.x);
+}
+
+// Poisson PCF sizes its radius in world units, so in texels it shrinks with the
+// cascade texel and, once a fitted range makes a texel project to about a screen
+// pixel, falls below the texel itself: the edge is then the unfiltered texel
+// staircase, which crawls as the receiver or light turns. The floor keeps the
+// kernel at least kShadowFilterFloorPixels of radius at the receiver; a uniform
+// disk's 10-90 % edge is 1.37 radii, so about 2.7 px, which covers the
+// one-to-two-pixel steps a texel near a pixel in size leaves.
+//
+// kShadowFilterFloorMaxTexels bounds it. The floor is set by the longer screen
+// axis, which at a grazing view spans many texels per pixel; unbounded, the disk
+// grows with it and reaches across the receiver's own slope in light space. Eight
+// texels still floors a texel that projects to a quarter of a pixel, past which
+// the edge's steps are sub-pixel already.
+//
+// The floor is the compat (web) profile's: it renders without TAA, so nothing
+// else hides the staircase. The desktop profile keeps its kernels unchanged
+// (#3548 owns whether desktop wants one). A shader that tests the floor defines
+// GE_SHADOW_FILTER_FLOOR itself.
+#if defined(GE_COMPAT_PROFILE) && !defined(GE_SHADOW_FILTER_FLOOR)
+#define GE_SHADOW_FILTER_FLOOR 1
+#endif
+const float kShadowFilterFloorPixels = 2.0;
+const float kShadowFilterFloorMaxTexels = 8.0;
+
+// The floor's radius in shadow texels, 0 without GE_SHADOW_FILTER_FLOOR. uvDx and
+// uvDy are the receiver's shadow-UV change per screen pixel; the longer one sets
+// the floor, as a mip selection does, so the kernel spans the floor in every
+// screen direction up to the bound.
+float GE_ShadowFilterFloorTexels(vec2 uvDx, vec2 uvDy, vec2 size)
+{
+#if defined(GE_SHADOW_FILTER_FLOOR)
+    float texelsPerPixel = max(length(uvDx * size), length(uvDy * size));
+    return min(kShadowFilterFloorPixels * texelsPerPixel, kShadowFilterFloorMaxTexels);
+#else
+    return 0.0;
+#endif
+}
+
+// The floor's radius in world units for the normal-bias footprint, from the
+// receiver's world-position change per screen pixel, bounded as the kernel is.
+// 0 without GE_SHADOW_FILTER_FLOOR.
+float GE_ShadowFilterFloorWorld(vec3 receiverDx, vec3 receiverDy, float texelWorld)
+{
+#if defined(GE_SHADOW_FILTER_FLOOR)
+    float worldPerPixel = max(length(receiverDx), length(receiverDy));
+    return min(kShadowFilterFloorPixels * worldPerPixel, kShadowFilterFloorMaxTexels * max(texelWorld, 0.0));
+#else
+    return 0.0;
+#endif
+}
+
+// The depth a floored disk tap compares at: the receiver's plane carried to the
+// tap's offset, plus the bilinear compare's one-texel reach (as the grids'
+// GE_ShadowReceiverPlaneDepth). A kernel the floor did not widen compares every
+// tap at the centre's depth.
+float GE_FlooredKernelTapDepth(bool floorBinds, float refDepth, vec2 offsetUV, vec2 receiverGradient, float texelSize)
+{
+    return floorBinds ? GE_ShadowReceiverPlaneDepth(refDepth, offsetUV, receiverGradient, texelSize) : refDepth;
+}
+
 float GE_ShadowPcf5x5(sampler2DArrayShadow shadowMap, vec2 uv, float layer, float depth, vec2 receiverGradient)
 {
     vec2 size = vec2(textureSize(shadowMap, 0).xy);
@@ -49,9 +122,11 @@ float GE_ShadowPcf5x5(sampler2DArrayShadow shadowMap, vec2 uv, float layer, floa
 // to the cascade's reconstruction footprint so fine near shadows stay attached
 // to small receivers. Blend texelWorld between cascades BEFORE calling this
 // function so both maps sample the same biased position through the transition.
+// floorWorld is the Poisson kernel's floored radius (GE_ShadowFilterFloorWorld),
+// 0 where no floor applies.
 float GE_ShadowNormalBiasWorld(float authoredWorld, float texelWorld, float referenceTexelWorld,
                                int quality, float poissonSoftness, float cosTheta,
-                               float maxPenumbraWorld, bool receiverPlaneBias)
+                               float maxPenumbraWorld, bool receiverPlaneBias, float floorWorld)
 {
     float cosine = clamp(cosTheta, 0.0, 1.0);
     float authoredOffset = max(authoredWorld, 0.0) * (1.0 - cosine);
@@ -63,7 +138,7 @@ float GE_ShadowNormalBiasWorld(float authoredWorld, float texelWorld, float refe
         footprintWorld = 3.0 * max(texelWorld, 0.0);
     else if (quality == 2)
         footprintWorld = max(footprintWorld,
-            1.5 * max(poissonSoftness, 0.0) * max(referenceTexelWorld, 0.0) + texelWorld);
+            max(1.5 * max(poissonSoftness, 0.0) * max(referenceTexelWorld, 0.0), floorWorld) + texelWorld);
     else if (quality == 5 || (quality == 3 && !receiverPlaneBias))
         footprintWorld = max(footprintWorld, max(maxPenumbraWorld, 0.0) + texelWorld);
     // A plane tilted by theta needs radius*sin(theta) normal displacement to

@@ -231,13 +231,13 @@ void RegisterAudioInspector()
         {
             auto playBtn = std::make_unique<Button>();
             playBtn->SetText("Play");
-            playBtn->SetDisabled(!canPreviewAudio);
+            playBtn->SetEnabled(canPreviewAudio);
             playBtn->RegisterEventHandler(kEventButtonClick, [doPlayPreview](UIEvent&) { doPlayPreview(); });
             root->AddChild(std::move(playBtn));
 
             auto stopBtn = std::make_unique<Button>();
             stopBtn->SetText("Stop");
-            stopBtn->SetDisabled(!canPreviewAudio);
+            stopBtn->SetEnabled(canPreviewAudio);
             stopBtn->RegisterEventHandler(kEventButtonClick, [previewEmitter, setAudioPreviewHandle](UIEvent&)
                                 {
                                     auto* audioSys = EngineCore::GetInstance().GetAudioSystem();

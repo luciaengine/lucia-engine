@@ -8,8 +8,8 @@
 layout(push_constant) uniform PC {
     vec2 targetSize;
     float timeSeconds;
-    float textContrast;      // scale on the colour-keyed contrast term (text_mask_gamma.glsl); 0 = off
-    float textBlendGamma;    // target blend space for coverage; 0 = linear (default), 1 = encoded (editor)
+    float textContrast;      // Skia SK_GAMMA_CONTRAST for the colour-keyed coverage boost; 0 = off
+    float textBlendGamma;    // target blend space for coverage; 0 = linear (identity retarget)
     float edgeSoftness;      // user softness knob; brightness-neutral remap around 0.5
     int outputEncoding;      // 0=SDR linear, 1=SDR encoded bytes, 2=HDR10 PQ, 3=HLG, 4=scRGB
     float paperWhiteNits;    // UI white TARGET (nits) in HDR output modes
@@ -35,11 +35,11 @@ layout(push_constant) uniform PC {
 } pc;
 
 // --- UIPrimitive (144 bytes, 9 x vec4) ---
+// modeParams.y is a uint (the UITransformSlot index): floatBitsToUint.
 // A corner is an ellipse: radii holds the horizontal semi-axes and radiiY the
 // vertical ones. Modes that overload the radii slot for something else (Line/
-// Bezier thickness, Triangle rounding) leave radiiY
-// zero. Slug overloads radii with its band transform and keeps its text outline
-// width in radiiY.x.
+// Bezier thickness, Triangle rounding) leave radiiY zero. Slug overloads radii
+// with its band transform and keeps its text outline width in radiiY.x.
 struct UIPrimitive {
     vec4 rectXYWH;
     vec4 radii;          // Rect: corners; Textured: border-radius background clip corners
@@ -47,7 +47,7 @@ struct UIPrimitive {
     vec4 borderWidths;   // Rect: l/t/r/b; Textured: background clip rect (border box)
     vec4 uvRect;
     vec4 effects;        // shadowOffsetX, shadowOffsetY, shadowSoftness (CSS blur radius), glowRadius
-    vec4 modeParams;     // opacity, pointFilter (Textured: 1=nearest 0=linear), caretTime, saturation (Textured)
+    vec4 modeParams;     // opacity, transformIndex (uint bits), caretTime, saturation (Textured)
     uvec4 packed;        // modeAndFlags, textureIndex, gradColor0, gradColor1
     vec4 radiiY;         // Rect/Textured: vertical corner semi-axes (tl, tr, br, bl); Slug: x = outline width
 };
@@ -58,11 +58,39 @@ struct UIClipRect {
     vec4 rect;       // x, y, w, h
     vec4 radii;      // tl, tr, br, bl horizontal semi-axes
     vec4 radiiY;     // tl, tr, br, bl vertical semi-axes
-    uvec4 params;    // .x = parentIndex (NO_CLIP terminates), .yzw = unused
+    uvec4 params;    // .x = parentIndex (NO_CLIP terminates), .y = transformIndex, .zw = unused
 };
 
+// --- UITransformSlot (32 bytes, 2 x vec4) ---
+// An element's 2D affine map from its own layout space into its parent's:
+// p' = mat2(m) * p + t (m in CSS matrix() order a, b, c, d). parentIndex
+// chains to the nearest transformed ancestor; NO_TRANSFORM (slot 0, the
+// identity) ends it.
+struct UITransformSlot {
+    vec4 m;
+    vec2 t;
+    uint parentIndex;
+    uint pad;
+};
+const uint NO_TRANSFORM = 0u;
+
+// Clip chain levels a primitive is clipped against. The fragment stage walks
+// this many levels of the parent chain (typical depth is 1-3); the vertex
+// stage maps the fragment into the space of each of them, and the four slots
+// of vClipPos01 and vClipPos23 carry exactly this many.
+const int kMaxClipChainDepth = 4;
+
+// Depth of a draw-order position: (position + 1) / 65535, one exact D16 level
+// per position, so a later primitive is always nearer (reverse-Z, clear 0).
+// Positions past the last level share it; UIOpaqueInteriors lists none there.
+float uiDrawOrderDepth(uint position)
+{
+    return float(min(position + 1u, 65535u)) / 65535.0;
+}
+
 // --- Mode/flag bit layout (matches UIPrimitive.h) ---
-const uint MODE_MASK        = 0x000000FFu;
+const uint MODE_MASK        = 0x00000007u;
+const uint POINT_FILTER_BIT = 0x00000008u;
 const uint GRADIENT_SHIFT   = 8u;
 const uint GRADIENT_MASK    = 0x00000700u;
 const uint ENCODED_SRC_BIT  = 0x00000800u;
@@ -88,26 +116,21 @@ const uint GRAD_POLAR_HSV   = 4u;
 const uint GRAD_HUE_VERT    = 5u;
 const uint GRAD_POLAR_HSV_GRADING = 6u;
 
-// --- Slug text outline dilation ---
-// Glyph coverage is the exact pixel-area coverage of the glyph outline grown
-// by kTextDilationPerPpem device px per device pixel of em size, capped at
-// kTextMaxDilationPx: each edge moves that far outward along the sampling ray,
-// and the glyph then moves up by the same amount, so the baseline edge stays
-// where the outline puts it and the top edge carries twice the growth.
-// Measured out of Chrome 155 on macOS 15.7 (headless, DPR 1 and 2, system font
-// smoothing default) with straight Roboto stems from 8 to 140 px: the edge
-// response is a 1 px exact-area ramp, not a blur, offset outward by
-// min(0.0058 ppem, 0.30) px in x on both sides and by twice that upward in y,
-// in device pixels at both DPRs. Shared by the fragment stage (the crossing
-// ramp in slug_functions.glsl) and the vertex stage (the glyph quad must cover
-// the grown outline).
-const float kTextDilationPerPpem = 0.0058;
-const float kTextMaxDilationPx = 0.30;
+// --- Slug text reconstruction filter ---
+// Box kernel convolved onto the exact-area glyph coverage, in DEVICE pixels.
+// Matches the filter measured out of Chrome's rasteriser (edge-profile
+// decomposition over Chrome vs engine specimen crops): best-fit extra box
+// width 0.945 px at BOTH dpr 1 and dpr 2 — fixed in device pixels, not
+// CSS pixels. It is mass-preserving (Chrome mask mass / geometric stem width
+// = 0.9962), widens the 10-90 edge from 0.83 px (bare exact-area) to Chrome's
+// 1.20 px, and damps stem-phase contrast. Shared by the fragment stage (the
+// widened coverage ramp in slug_functions.glsl) and the vertex stage (glyph
+// quad dilation must cover the widened skirt).
+const float kTextFilterWidthPx = 0.945;
 
-// Farthest a sample can be from the undilated outline and still be covered:
-// the exact-area ramp's 0.5 px reach plus the top edge's growth (dilation plus
-// the upward move).
-const float kTextOutlineReachPx = 0.5 + 2.0 * kTextMaxDilationPx;
+// A crossing influences samples up to this far away: the exact-area ramp's
+// 0.5 px reach plus half the filter width.
+const float kTextFilterOuterRadiusPx = 0.5 + 0.5 * kTextFilterWidthPx;
 
 // --- Text effect reach ---
 // How far, in device pixels, a Slug primitive's text effects paint past its

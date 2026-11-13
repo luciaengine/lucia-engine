@@ -1,7 +1,9 @@
 #pragma once
 
-// Computes a planar leaf's LEB merge diamond from corner UVs.
-// A diamond can merge only when all four children of its parent and twin are leaves.
+// The LEB diamond of a planar leaf, from its corners' UVs alone, for the tests of the planar split's
+// merge (cbt_kernels.comp CBT_PlanarClassify): the leaf's parent P, P's twin Q across its hypotenuse,
+// and whether all four children of the diamond are leaves of a tree, the one state in which the
+// diamond can merge.
 
 #include <algorithm>
 #include <array>

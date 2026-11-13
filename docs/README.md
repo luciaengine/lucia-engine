@@ -2,7 +2,22 @@
 
 Welcome to the Game Engine documentation! This directory contains comprehensive guides for developers, users, and contributors.
 
-**Browse as a site:** open [`index.html`](index.html) locally, or enable **GitHub Pages** (Settings → Pages → GitHub Actions) to publish the `docs/` folder—see `.github/workflows/docs-site.yml`.
+- [`getting-started/`](getting-started/): a first project, running the Player headless, the MCP server and CLI
+- [`editor/`](editor/): the editor's panels and tools
+- [`scripting/`](scripting/): C# and native C++ scripting, the ECS from code, paths, settings, and memory
+- [`rendering/`](rendering/): the renderer, its effects, materials, and render pipelines
+- [`terrain/`](terrain/): terrain detail, shadows, heightmaps, and grass
+- [`input/`](input/): the input system
+- [`physics/`](physics/): physics events
+- [`animation/`](animation/): retargeting, clip events, the glTF clip schema, and animation sources
+- [`assets/`](assets/): model extras, Unity import, texture compression, alpha coverage, and smart folders
+- [`navigation/`](navigation/): the navigation surface and the agents that walk it
+- [`ai/`](ai/): AI agents, the AI tick, and the inputs, tasks, sensors, and commands a game registers
+- [`audio/`](audio/): playing sounds, the audio formats a project can import, and the audio mute
+- [`ui/`](ui/): the UI API, game UI scaling, control defaults, text effects, and transforms
+- [`packages/`](packages/): the package data model
+- [`publishing/`](publishing/): game builds, Steam publishing, and the desktop Player's sources
+- [`contributing/`](contributing/): material for engine contributors, from the scripting ABI to editor guidelines
 
 ## Quick Start
 
@@ -31,7 +46,7 @@ Welcome to the Game Engine documentation! This directory contains comprehensive 
 - **[Animation Events](Animation/animation-events.html)** - When a clip's events fire during playback, and reading them from a script with `AnimatorApi.PollEvents` or from engine code
 - **[ECS Parallel Queries](ECS_ParallelQueries.md)** - running a query on the job system, and the rules that come with it
 - **[Editor UI Component Library](Editor/UI_COMPONENT_LIBRARY.html)** - Current editor UI controls, classes, states, sizing, and usage patterns
-- **[Editor UI Guidelines](Editor/UI_GUIDELINES.md)** - Design and implementation rules for authoring consistent editor UI
+- **[Editor UI Guidelines](contributing/editor-ui-guidelines.mdx)** - Design and implementation rules for authoring consistent editor UI
 
 ### AI Integration
 - **[MCP Setup](MCP_SETUP.md)** - Model Context Protocol setup and configuration

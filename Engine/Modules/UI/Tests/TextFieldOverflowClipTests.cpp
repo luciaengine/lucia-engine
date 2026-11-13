@@ -7,7 +7,6 @@
 
 #include "Rendering/Core/Device.h"
 #include "UIRgTestHarness.h"
-#include "TestTempDir.h"
 #include "UI/Controls/FloatField.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/TextField.h"
@@ -67,8 +66,7 @@ struct FieldFixture
         Ui = std::make_unique<UIManager>(Dev);
         Ui->SetRoot(std::move(root));
 
-        const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_textfield_overflow_clip"));
-        const auto css = tempDir.Path() / "ui_textfield_overflow_clip.css";
+        const auto css = std::filesystem::temp_directory_path() / "ui_textfield_overflow_clip.css";
         {
             std::ofstream f(css);
             f << "#root { display: flex; flex-direction: row; width: 300px; height: 60px; }\n"
@@ -303,8 +301,7 @@ TEST(TextFieldOverflowClipTests, DrainInsideClippedContainerKeepsParentIntersect
         auto ui = std::make_unique<UIManager>(dev);
         ui->SetRoot(std::move(root));
 
-        const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_overflow_clip_nested"));
-        const auto css = tempDir.Path() / "ui_overflow_clip_nested.css";
+        const auto css = std::filesystem::temp_directory_path() / "ui_overflow_clip_nested.css";
         {
             std::ofstream f(css);
             f << "#root { display: flex; width: 300px; height: 80px; }\n"

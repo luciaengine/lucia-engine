@@ -70,6 +70,11 @@ PointerLockState GetPointerLockState(InputSystem& input)
     return input.GetPointerLockState();
 }
 
+GamepadRuntimeState GetGamepadRuntimeState(InputSystem& input)
+{
+    return input.GetGamepadRuntimeState();
+}
+
 ActionState GetActionState(InputSystem& input, StringId action)
 {
     return input.GetActionState(action);
@@ -103,8 +108,8 @@ void BindCode(InputSystem& input, StringId context, StringId action, DeviceType 
     binding.device = device;
     binding.code = code;
     binding.scale = scale;
-    binding.requiredMods = static_cast<int>(requiredMods);
-    binding.forbiddenMods = static_cast<int>(forbiddenMods);
+    binding.requiredMods = requiredMods;
+    binding.forbiddenMods = forbiddenMods;
     input.BindKey(context, action, binding);
 }
 

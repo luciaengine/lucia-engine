@@ -16,8 +16,6 @@
 
 #include <gtest/gtest.h>
 
-#include "TestTempDir.h"
-
 #include <filesystem>
 #include <string>
 
@@ -38,8 +36,11 @@ class FileSinkOpenFailureTest : public ::testing::Test
   protected:
     void SetUp() override
     {
-        m_Dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_filesink_open");
+        m_Dir = std::filesystem::temp_directory_path() /
+                ("ge_filesink_open_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()) + "_" +
+                 ::testing::UnitTest::GetInstance()->current_test_info()->name());
         std::error_code ec;
+        std::filesystem::remove_all(m_Dir, ec);
         ASSERT_TRUE(std::filesystem::create_directories(m_Dir, ec)) << ec.message();
         m_LogPath = m_Dir / "Test.log";
     }

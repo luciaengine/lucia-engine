@@ -22,7 +22,7 @@
 // The magic refuses a chunk that is not this encoding; the checksum refuses a
 // damaged one.
 
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 
 #include <cstdint>
 #include <string>

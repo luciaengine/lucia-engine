@@ -4,7 +4,7 @@
 
 #include "Particles/CompiledParticleStack.h"
 #include "Particles/ParticleRuntime.h"
-#include "Particles/ParticleStackDocument.h"
+#include "Particles/ParticleStack/ParticleStackDocument.h"
 #include "Particles/Processors/ParticleAccelerationProcessor.h"
 #include "Particles/Processors/ParticleCollisionProcessor.h"
 #include "Particles/Processors/ParticleDragProcessor.h"

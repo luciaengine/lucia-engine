@@ -1,7 +1,7 @@
 // Selection gizmo and selection tool implementations for Scene View.
 
 #include "SceneView/SelectionTool.h"
-#include "SceneViewController.h"
+#include "SceneView/SceneViewController.h"
 
 #include <cmath>
 #include <vector>
@@ -42,7 +42,7 @@ bool DrawEntityBoundsBox(GizmoRenderContext& context,
     const GameEngine::Mathematics::BoundingBox kDefault{};
     const auto& bb = bounds ? bounds->Box : kDefault;
     const auto aabb = bb.ToAABB();
-    context.DrawTransformedWireBox(aabb.min, aabb.max, Mathematics::Matrix4x4::FromColumnMajor(worldXf->matrix),
+    context.DrawTransformedWireBox(aabb.min, aabb.max, worldXf->ToMatrix4x4(worldXf->GetPosition() - Mathematics::WorldPosition{}),
                                    color, thickness);
     return true;
 }

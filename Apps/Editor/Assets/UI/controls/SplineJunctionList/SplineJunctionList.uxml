@@ -1,0 +1,6 @@
+<!-- SplineJunctionList (Apps/Editor/Source/UI/Controls/SplineJunctionList/SplineJunctionList.h): the
+     text that shows when the list has no rows. The rows follow this element in the control. The
+     classes are the contract with SplineJunctionList.cpp. -->
+<UIElement class="spline-junction-header">
+  <Label class="spline-junction-empty" />
+</UIElement>

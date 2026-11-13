@@ -30,7 +30,7 @@
 #if RENDERING_HAS_METAL
 #include "../Modules/Rendering/Source/Metal/MetalDevice.h"
 #elif RENDERING_HAS_VULKAN
-#include "../Modules/Rendering/Source/Vulkan/VulkanDevice.h"
+#include "../Modules/Rendering/Source/Vulkan/VulkanDevice/VulkanDevice.h"
 #endif
 
 #include <algorithm>

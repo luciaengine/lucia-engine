@@ -1,8 +1,10 @@
 #include "Engine/Rendering/SceneReflectionProbeEnvironmentSource.h"
 
 #include "Engine/Rendering/ImageBasedLightingFeature.h"
-#include "Engine/Rendering/PipelineVariantCache.h"
 #include "Engine/Rendering/IRenderFeature.h"
+#include "Engine/Rendering/IrradianceReadbackFeature.h"
+#include "Engine/Rendering/MaterialSystem.h"
+#include "Engine/Rendering/PipelineVariantCache.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "RenderServicesDetail.h"
@@ -11,22 +13,21 @@
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/MatrixOps.h"
 #include "Mathematics/Vector3.h"
-#include "Rendering/CameraDerivation.h"
+#include "Rendering/Camera/CameraDerivation.h"
 #include "Rendering/Common/Frustum.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUCulling.h"
 #include "Rendering/Core/PassPhase.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
+#include "Rendering/Core/ReverseZ.h"
 #include "Rendering/Core/SpecializationConstants.h"
-#include "Types/Fnv1a.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <chrono>
 #include <cstring>
 #include <memory>
 #include <span>
@@ -50,14 +51,17 @@ constexpr float kCaptureNearPlane = 0.005f;
 constexpr uint32_t kAllFacesMask = (1u << ImageBasedLightingFeature::kNumCaptureFaces) - 1u;
 static_assert(ImageBasedLightingFeature::kNumCaptureFaces == kProbeFaceCount,
               "the probe-face cull index block is sized to the capture cube's face count");
+static_assert(SceneProbeRecaptureSchedule::kPipelineRestFrames ==
+                  ImageBasedLightingFeature::kIblRebakeIntervalFrames,
+              "a Once probe waits one rebake throttle window for the Pipelines epoch to rest");
 
 struct ProbeCubeFaceBasis
 {
-    float up[3];
-    float forward[3];
+    Mathematics::Vector3 up;
+    Mathematics::Vector3 forward;
 };
 
-constexpr ProbeCubeFaceBasis kProbeCaptureFaces[ImageBasedLightingFeature::kNumCaptureFaces] = {
+const ProbeCubeFaceBasis kProbeCaptureFaces[ImageBasedLightingFeature::kNumCaptureFaces] = {
     {{0.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f}},
     {{0.0f, 1.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}},
     {{0.0f, 0.0f, -1.0f}, {0.0f, 1.0f, 0.0f}},
@@ -69,12 +73,17 @@ constexpr ProbeCubeFaceBasis kProbeCaptureFaces[ImageBasedLightingFeature::kNumC
 
 void HashBytes(uint64_t& h, const void* data, size_t bytes)
 {
-    h = Hashing::Fnv1a64(data, bytes, h);
+    const uint8_t* p = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < bytes; ++i)
+    {
+        h ^= p[i];
+        h *= 1099511628211ull;
+    }
 }
 
 uint64_t MixDigest(uint64_t base, uint32_t generation)
 {
-    uint64_t h = base != 0 ? base : Hashing::kFnv1a64OffsetBasis;
+    uint64_t h = base != 0 ? base : 14695981039346656037ull;
     HashBytes(h, &generation, sizeof(generation));
     return h != 0 ? h : 1;
 }
@@ -113,20 +122,17 @@ void SceneReflectionProbeEnvironmentSource::SetProbe(const SceneReflectionProbeE
     // the digest after the first bake and schedule one spurious rebake.
     SkyEnvironmentProbeOverrides skyOverrides{};
     skyOverrides.Intensity = 1.0f;
-    skyOverrides.ExposureEV = CaptureDesc().ExposureEV;
-    skyOverrides.RotationRadians = CaptureDesc().RotationRadians;
-    skyOverrides.LowerHemisphereDarkness = CaptureDesc().LowerHemisphereDarkness;
+    skyOverrides.ExposureEV = m_Desc.ExposureEV;
+    skyOverrides.RotationRadians = m_Desc.RotationRadians;
+    skyOverrides.LowerHemisphereDarkness = m_Desc.LowerHemisphereDarkness;
     m_SkyBackground.SetProbeOverrides(skyOverrides);
     EnsureViews();
 
-    // A world retarget cancels the old cycle. A new arm must precede capture
-    // so extraction and culling are fed by the correct world's entities.
-    if (worldChanged && IsBaking())
-    {
-        m_CaptureState = CaptureState::Idle;
-        m_ArmedFaceMask = 0;
-        m_LastBaseDigest = 0;
-    }
+    // Called every frame by ReflectionProbeSystem. A world retarget mid-cycle
+    // re-arms: the views must wait for the new world's extraction before any
+    // bake.
+    if (worldChanged && m_CaptureState != CaptureState::Idle)
+        ArmViews();
 }
 
 bool SceneReflectionProbeEnvironmentSource::EnsureViews()
@@ -139,12 +145,11 @@ bool SceneReflectionProbeEnvironmentSource::EnsureViews()
     m_CameraId = m_Services->Views().AllocateCamera("Scene Reflection Probe Camera");
     // OnDemand: the view costs nothing until a bake requests it. One view
     // serves all six faces; the camera is re-pointed per face at declaration.
-    m_ViewDebugName = "Probe." + std::to_string(m_Desc.SourceKey);
-    m_ViewId = m_Services->Views().AllocateView(m_ViewDebugName.c_str(), m_CameraId,
+    m_ViewId = m_Services->Views().AllocateView("Scene Reflection Probe", m_CameraId,
                                                 Rendering::ViewPurpose::UtilityCapture,
                                                 Rendering::ViewParticipation::OnDemand);
     m_Services->Views().SetViewActiveRenderPipeline(m_ViewId, false);
-    m_Services->Views().SetViewRenderLayerMask(m_ViewId, m_Desc.CullMask);
+    m_Services->Views().SetViewRenderLayerMask(m_ViewId, m_Desc.CapturedLayers);
     m_Services->Views().SetViewWorldId(m_ViewId, m_Desc.WorldId);
 
     m_ViewsAllocated = true;
@@ -156,11 +161,16 @@ void SceneReflectionProbeEnvironmentSource::ArmFaces(uint32_t faceMask)
     if (!m_Services || !m_ViewsAllocated || m_ViewId == 0)
         return;
     m_Services->Views().RequestViewFrame(m_ViewId);
-    m_Services->Views().SetViewRenderLayerMask(m_ViewId, CaptureDesc().CullMask);
-    m_Services->Views().SetViewWorldId(m_ViewId, CaptureDesc().WorldId);
+    m_Services->Views().SetViewRenderLayerMask(m_ViewId, m_Desc.CapturedLayers);
+    m_Services->Views().SetViewWorldId(m_ViewId, m_Desc.WorldId);
     m_ArmedFaceMask = faceMask & kAllFacesMask;
 }
 
+void SceneReflectionProbeEnvironmentSource::ArmViews()
+{
+    ArmFaces(kAllFacesMask);
+    m_CaptureState = CaptureState::Arming;
+}
 
 void SceneReflectionProbeEnvironmentSource::ScheduleCulling(const FeatureCullingContext& ctx)
 {
@@ -180,20 +190,17 @@ void SceneReflectionProbeEnvironmentSource::ScheduleCulling(const FeatureCulling
             break;
         }
     }
-    if (!view || view->ActiveRenderLayerMask() == 0u)
+    if (!view || view->ActiveRenderLayerMask() == Rendering::RenderLayerMask::None())
         return;
 
     // Every face shares the eye and the projection, so one derived camera
-    // describes the group; only the frustum planes differ per face. The
-    // camera-relative origin is derived from the eye exactly as the spine
-    // does for its per-view dispatch (see ScheduleViewCullingDispatches).
-    const Rendering::CameraDerivedData shared = Rendering::DeriveCameraData(MakeFaceCamera(0));
-    Vector3 origin{};
-    {
-        const auto originSector =
-            ComputeRenderOriginSector(m_Desc.Position[0], m_Desc.Position[1], m_Desc.Position[2]);
-        SectorToWorld(originSector, origin.x, origin.y, origin.z);
-    }
+    // describes the group; only the frustum planes differ per face. The planes
+    // come from each face's rebased view-projection, relative to the eye's
+    // origin sector, as the spine does for its per-view dispatch
+    // (ScheduleViewCullingDispatches).
+    const Rendering::CameraRanges faceRanges = MakeFaceRanges();
+    const Rendering::CameraDerivedData shared = Rendering::DeriveCameraData(MakeFaceCamera(0), faceRanges);
+    const Mathematics::Vector3Int originSector = CameraRenderOriginSector(MakeFaceCamera(0));
 
     // Armed faces pack into runs of consecutive faces, at most
     // kMaxCullingViewsPerDispatch per group: slice c of a run started at face
@@ -210,11 +217,10 @@ void SceneReflectionProbeEnvironmentSource::ScheduleCulling(const FeatureCulling
         group.viewId = m_ViewId;
         group.cascadeIndexBase = ProbeFaceCullingIndex(face);
         group.shadowCasterDispatch = false; // color capture: keep non-casters
-        group.cameraPosition = shared.Position;
         group.cameraForward = shared.Forward;
         group.nearPlane = shared.NearPlane;
         group.farPlane = shared.FarPlane;
-        group.cameraRelativeOrigin = origin;
+        group.originSector = originSector;
         group.firstInstance = 0;
         group.instanceCount = ctx.InstanceCount;
         group.renderLayerMask = view->ActiveRenderLayerMask();
@@ -225,10 +231,9 @@ void SceneReflectionProbeEnvironmentSource::ScheduleCulling(const FeatureCulling
                count < Rendering::kMaxCullingViewsPerDispatch &&
                (m_ArmedFaceMask & (1u << face)) != 0u)
         {
-            const Rendering::CameraDerivedData faceCamera =
-                Rendering::DeriveCameraData(MakeFaceCamera(face));
-            group.lightVP[count] = faceCamera.ViewProjMatrix;
-            Rendering::ExtractFrustumPlanes(faceCamera.ViewProjMatrix, group.frustumPlanes[count]);
+            const Rendering::CameraData faceCamera = MakeFaceCamera(face);
+            group.lightVP[count] = faceCamera.viewProjRel;
+            Rendering::ExtractFrustumPlanes(faceCamera.viewProjRel, group.frustumPlanes[count]);
             ++count;
             ++face;
         }
@@ -242,23 +247,21 @@ uint64_t SceneReflectionProbeEnvironmentSource::BaseDigest() const
     if (!HasActiveContent())
         return 0;
 
-    uint64_t h = Hashing::kFnv1a64OffsetBasis;
+    uint64_t h = 14695981039346656037ull;
     constexpr char kTag[] = "SceneReflectionProbeEnvironmentSource";
     HashBytes(h, kTag, sizeof(kTag) - 1);
     HashBytes(h, &m_Desc.SourceKey, sizeof(m_Desc.SourceKey));
-    HashBytes(h, &m_ManualRevision, sizeof(m_ManualRevision));
-    HashBytes(h, &m_Desc.SceneEditDigest, sizeof(m_Desc.SceneEditDigest));
-    // A Once capture can finish while its materials are still compiling.
-    // Revisit it when pass variants actually publish, including cache hits.
-    HashBytes(h, &m_MaterialReadyGeneration, sizeof(m_MaterialReadyGeneration));
-    const uint64_t materialContent = m_Desc.SceneEditDigest == 0 ? Material::GetGlobalContentEpoch() : 0;
-    HashBytes(h, &materialContent, sizeof(materialContent));
     HashBytes(h, &m_Desc.WorldId, sizeof(m_Desc.WorldId));
-    HashBytes(h, m_Desc.Position, sizeof(m_Desc.Position));
+    HashBytes(h, &m_Desc.Position, sizeof(m_Desc.Position));
     HashBytes(h, &m_Desc.InfluenceRadius, sizeof(m_Desc.InfluenceRadius));
+    HashBytes(h, &m_Desc.BoxProjection, sizeof(m_Desc.BoxProjection));
+    HashBytes(h, &m_Desc.BoxCenter, sizeof(m_Desc.BoxCenter));
+    HashBytes(h, &m_Desc.BoxHalfExtents, sizeof(m_Desc.BoxHalfExtents));
+    HashBytes(h, &m_Desc.BoxAxisX, sizeof(m_Desc.BoxAxisX));
+    HashBytes(h, &m_Desc.BoxAxisY, sizeof(m_Desc.BoxAxisY));
+    HashBytes(h, &m_Desc.BoxAxisZ, sizeof(m_Desc.BoxAxisZ));
     HashBytes(h, &m_Desc.MaxDistance, sizeof(m_Desc.MaxDistance));
-    HashBytes(h, &m_Desc.CullMask, sizeof(m_Desc.CullMask));
-    HashBytes(h, &m_Desc.CaptureEnvironment, sizeof(m_Desc.CaptureEnvironment));
+    HashBytes(h, &m_Desc.CapturedLayers.Bits, sizeof(m_Desc.CapturedLayers.Bits));
     HashBytes(h, &m_Desc.ExposureEV, sizeof(m_Desc.ExposureEV));
     HashBytes(h, &m_Desc.RotationRadians, sizeof(m_Desc.RotationRadians));
     HashBytes(h, &m_Desc.CaptureResolution, sizeof(m_Desc.CaptureResolution));
@@ -278,9 +281,14 @@ uint64_t SceneReflectionProbeEnvironmentSource::BaseDigest() const
     // the corrective rebake fires — convergence instead of a stale capture.
     const uint64_t lutDigest = m_SkyBackground.MaterializedLutDigest();
     HashBytes(h, &lutDigest, sizeof(lutDigest));
-    // ECS-owned probes supply a spatially scoped scene digest. Direct users
-    // without that digest retain the conservative world-membership fallback.
-    const uint64_t contentDigest = m_Services && m_Desc.SceneEditDigest == 0
+    // The capture photographs the world's CONTENT too: fold in the extraction
+    // pass's renderable-membership digest so adding, removing, hiding, or
+    // re-assigning the material of scene geometry recaptures a "Once" probe,
+    // the same way a sky edit does. Membership only — transforms and material
+    // PARAMETER edits are excluded upstream, so moving objects don't thrash
+    // rebakes (and a tweaked albedo doesn't recapture until something else
+    // does).
+    const uint64_t contentDigest = m_Services
         ? m_Services->GetWorldRenderContentDigest(m_Desc.WorldId)
         : 0;
     HashBytes(h, &contentDigest, sizeof(contentDigest));
@@ -301,7 +309,8 @@ SceneProbeWorldEpochs SceneReflectionProbeEnvironmentSource::WorldEpochs() const
 
 void SceneReflectionProbeEnvironmentSource::TickBakeClock(float deltaTimeSeconds)
 {
-    m_SecondsSinceSceneBake += deltaTimeSeconds > 0.0f ? deltaTimeSeconds : kFallbackDeltaTimeSeconds;
+    m_Schedule.Tick(deltaTimeSeconds > 0.0f ? deltaTimeSeconds : kFallbackDeltaTimeSeconds, WorldEpochs(),
+                    m_Services->Materials().Variants().HasAnyPipelineBuildsInFlight());
 }
 
 float SceneReflectionProbeEnvironmentSource::RealtimeInterval() const
@@ -313,17 +322,13 @@ float SceneReflectionProbeEnvironmentSource::RealtimeInterval() const
 
 bool SceneReflectionProbeEnvironmentSource::BakeDue() const
 {
-    const uint64_t base = BaseDigest();
-    if (base == 0)
-        return false;
-    if (base != m_LastBaseDigest)
-        return true;
-    if (m_Desc.UpdateMode == SceneReflectionProbeUpdateMode::Realtime)
-    {
-        const float interval = std::max(0.0f, m_Desc.RealtimeUpdateInterval);
-        return interval <= 0.0f || m_SecondsSinceSceneBake >= interval;
-    }
-    return false;
+    return m_Schedule.Due(BaseDigest(), WorldEpochs(), RealtimeInterval());
+}
+
+bool SceneReflectionProbeEnvironmentSource::CapturesEveryFrame() const
+{
+    return m_Desc.UpdateMode == SceneReflectionProbeUpdateMode::Realtime &&
+           m_Desc.RealtimeUpdateInterval <= 0.0f;
 }
 
 uint64_t SceneReflectionProbeEnvironmentSource::NextBakeDigest()
@@ -334,7 +339,15 @@ uint64_t SceneReflectionProbeEnvironmentSource::NextBakeDigest()
 
     if (BakeDue())
     {
-        m_LastBaseDigest = base;
+        // A capture photographs the SCENE, and the scene is still lit by the
+        // PREVIOUS bake's cubes — one bake after an environment change is one
+        // step of a fixed-point iteration, not the answer (live-observed: a
+        // noon->midnight switch needs ~3 bakes before the water stops carrying
+        // noon ambient). The schedule owes convergence bakes after a change:
+        // Once probes take them spaced by the feature's rebake throttle,
+        // realtime probes by their interval.
+        m_Schedule.ConsumeBake(base, WorldEpochs(),
+                               m_Desc.UpdateMode == SceneReflectionProbeUpdateMode::Realtime);
         ++m_CaptureGeneration;
         if (m_CaptureGeneration == 0)
             m_CaptureGeneration = 1;
@@ -347,19 +360,19 @@ EnvironmentLocalReflectionData SceneReflectionProbeEnvironmentSource::LocalRefle
 {
     EnvironmentLocalReflectionData data{};
     const bool validBox = m_Desc.BoxProjection &&
-                          m_Desc.BoxHalfExtents[0] > 0.0001f &&
-                          m_Desc.BoxHalfExtents[1] > 0.0001f &&
-                          m_Desc.BoxHalfExtents[2] > 0.0001f;
+                          m_Desc.BoxHalfExtents.x > 0.0001f &&
+                          m_Desc.BoxHalfExtents.y > 0.0001f &&
+                          m_Desc.BoxHalfExtents.z > 0.0001f;
     if (!validBox)
         return data;
 
     data.BoxProjection = true;
-    std::memcpy(data.ProbePositionWS, m_Desc.Position, sizeof(data.ProbePositionWS));
-    std::memcpy(data.BoxCenterWS, m_Desc.BoxCenter, sizeof(data.BoxCenterWS));
-    std::memcpy(data.BoxHalfExtentsWS, m_Desc.BoxHalfExtents, sizeof(data.BoxHalfExtentsWS));
-    std::memcpy(data.BoxAxisXWS, m_Desc.BoxAxisX, sizeof(data.BoxAxisXWS));
-    std::memcpy(data.BoxAxisYWS, m_Desc.BoxAxisY, sizeof(data.BoxAxisYWS));
-    std::memcpy(data.BoxAxisZWS, m_Desc.BoxAxisZ, sizeof(data.BoxAxisZWS));
+    data.ProbePositionWS = m_Desc.Position - Mathematics::WorldPosition{};
+    data.BoxCenterWS = m_Desc.BoxCenter - Mathematics::WorldPosition{};
+    data.BoxHalfExtentsWS = m_Desc.BoxHalfExtents;
+    data.BoxAxisXWS = m_Desc.BoxAxisX;
+    data.BoxAxisYWS = m_Desc.BoxAxisY;
+    data.BoxAxisZWS = m_Desc.BoxAxisZ;
     return data;
 }
 
@@ -424,6 +437,24 @@ bool SceneReflectionProbeEnvironmentSource::EnsurePipelines(IDevice& device,
     return m_PipelinesReady;
 }
 
+CameraRanges SceneReflectionProbeEnvironmentSource::MakeFaceRanges() const
+{
+    using GameEngine::Mathematics::Vector3;
+
+    float fallbackFar = m_Desc.InfluenceRadius;
+    if (m_Desc.BoxProjection)
+    {
+        const Vector3 rel = m_Desc.Position - m_Desc.BoxCenter;
+        const Vector3 local(Vector3::Dot(rel, m_Desc.BoxAxisX), Vector3::Dot(rel, m_Desc.BoxAxisY),
+                            Vector3::Dot(rel, m_Desc.BoxAxisZ));
+        const Vector3 reach(m_Desc.BoxHalfExtents.x + std::fabs(local.x), m_Desc.BoxHalfExtents.y + std::fabs(local.y),
+                            m_Desc.BoxHalfExtents.z + std::fabs(local.z));
+        fallbackFar = std::max(fallbackFar, std::sqrt(reach.LengthSquared()));
+    }
+    const float requestedFar = m_Desc.MaxDistance > 0.0f ? m_Desc.MaxDistance : fallbackFar;
+    return {kCaptureNearPlane, std::max(requestedFar, 1.0f)};
+}
+
 CameraData SceneReflectionProbeEnvironmentSource::MakeFaceCamera(uint32_t face) const
 {
     using GameEngine::Mathematics::MakeLookAtLH;
@@ -432,51 +463,29 @@ CameraData SceneReflectionProbeEnvironmentSource::MakeFaceCamera(uint32_t face) 
     using GameEngine::Mathematics::Vector3;
 
     const ProbeCubeFaceBasis& basis = kProbeCaptureFaces[face % ImageBasedLightingFeature::kNumCaptureFaces];
-    const Vector3 eye(CaptureDesc().Position[0], CaptureDesc().Position[1], CaptureDesc().Position[2]);
-    const Vector3 forward(basis.forward[0], basis.forward[1], basis.forward[2]);
-    const Vector3 up(basis.up[0], basis.up[1], basis.up[2]);
-    const Vector3 target(eye.x + forward.x, eye.y + forward.y, eye.z + forward.z);
-    const Matrix4x4 view = MakeLookAtLH(eye, target, up);
-    float fallbackFar = CaptureDesc().InfluenceRadius;
-    if (CaptureDesc().BoxProjection)
-    {
-        const float rel[3] = {
-            CaptureDesc().Position[0] - CaptureDesc().BoxCenter[0],
-            CaptureDesc().Position[1] - CaptureDesc().BoxCenter[1],
-            CaptureDesc().Position[2] - CaptureDesc().BoxCenter[2]};
-        const float local[3] = {
-            rel[0] * CaptureDesc().BoxAxisX[0] + rel[1] * CaptureDesc().BoxAxisX[1] + rel[2] * CaptureDesc().BoxAxisX[2],
-            rel[0] * CaptureDesc().BoxAxisY[0] + rel[1] * CaptureDesc().BoxAxisY[1] + rel[2] * CaptureDesc().BoxAxisY[2],
-            rel[0] * CaptureDesc().BoxAxisZ[0] + rel[1] * CaptureDesc().BoxAxisZ[1] + rel[2] * CaptureDesc().BoxAxisZ[2]};
-        const float dx = CaptureDesc().BoxHalfExtents[0] + std::fabs(local[0]);
-        const float dy = CaptureDesc().BoxHalfExtents[1] + std::fabs(local[1]);
-        const float dz = CaptureDesc().BoxHalfExtents[2] + std::fabs(local[2]);
-        fallbackFar = std::max(fallbackFar, std::sqrt(dx * dx + dy * dy + dz * dz));
-    }
-    const float requestedFar = CaptureDesc().MaxDistance > 0.0f ? CaptureDesc().MaxDistance : fallbackFar;
-    const float farZ = std::max(requestedFar, 1.0f);
-    const Matrix4x4 proj = MakePerspectiveLH_ZO_ReverseZ(kHalfPi, 1.0f, kCaptureNearPlane, farZ);
+    const Vector3 eye = m_Desc.Position - Mathematics::WorldPosition{};
+    const Vector3 target = eye + basis.forward;
+    const Matrix4x4 view = MakeLookAtLH(eye, target, basis.up);
+    const CameraRanges ranges = MakeFaceRanges();
+    const Matrix4x4 proj = MakePerspectiveLH_ZO_ReverseZ(kHalfPi, 1.0f, ranges.Near, ranges.CullingRange);
     const Matrix4x4 viewProj = proj * view;
 
     CameraData out{};
-    std::memcpy(out.view, view.Data(), sizeof(float) * 16u);
-    std::memcpy(out.proj, proj.Data(), sizeof(float) * 16u);
-    std::memcpy(out.viewProj, viewProj.Data(), sizeof(float) * 16u);
-    out.cameraPos[0] = eye.x;
-    out.cameraPos[1] = eye.y;
-    out.cameraPos[2] = eye.z;
-    out.cameraPos[3] = 0.0f;
+    out.view = view;
+    out.proj = proj;
+    out.viewProj = viewProj;
+    SetCameraEye(out, m_Desc.Position);
     return out;
 }
 
-bool SceneReflectionProbeEnvironmentSource::RecordMipDownsample(RenderGraph::RGContext& ctx,
+void SceneReflectionProbeEnvironmentSource::RecordMipDownsample(RenderGraph::RGContext& ctx,
                                                                 ImageBasedLightingFeature& feature,
                                                                 uint32_t dstMip) const
 {
     auto* cl = ctx.Cmd;
     auto* dev = ctx.GetDevice();
     if (!cl || !dev || dstMip == 0)
-        return false;
+        return;
 
     TextureViewHandle store = feature.GetEnvCaptureStoreView(dstMip);
     // Single-mip source view: the sampled descriptor's claim must cover ONLY
@@ -484,11 +493,11 @@ bool SceneReflectionProbeEnvironmentSource::RecordMipDownsample(RenderGraph::RGC
     // ShaderReadOnly for the GENERAL-resident destination mip too (VUID-00344).
     TextureViewHandle source = feature.GetEnvCaptureMipSampleView(dstMip - 1);
     if (!store.IsValid() || !source.IsValid())
-        return false;
+        return;
 
     PipelineHandle pipe = ctx.GetOrCreatePipelineVariant(m_MipDownsamplePipelineId);
     if (!pipe.IsValid())
-        return false;
+        return;
     cl->SetPipeline(pipe);
 
     DescriptorSetDesc dsd{};
@@ -503,20 +512,19 @@ bool SceneReflectionProbeEnvironmentSource::RecordMipDownsample(RenderGraph::RGC
     const uint32_t size = feature.GetEnvCaptureSize() >> dstMip;
     const uint32_t g = ((size > 0 ? size : 1u) + kProbeConvolveGroup - 1) / kProbeConvolveGroup;
     cl->Dispatch(g, g, ImageBasedLightingFeature::kNumCaptureFaces);
-    return true;
 }
 
-bool SceneReflectionProbeEnvironmentSource::RecordDiffuseConvolve(RenderGraph::RGContext& ctx,
+void SceneReflectionProbeEnvironmentSource::RecordDiffuseConvolve(RenderGraph::RGContext& ctx,
                                                                   ImageBasedLightingFeature& feature) const
 {
     auto* cl = ctx.Cmd;
     auto* dev = ctx.GetDevice();
     if (!cl || !dev)
-        return false;
+        return;
 
     PipelineHandle pipe = ctx.GetOrCreatePipelineVariant(m_DiffusePipelineId);
     if (!pipe.IsValid())
-        return false;
+        return;
     cl->SetPipeline(pipe);
 
     DescriptorSetDesc dsd{};
@@ -530,27 +538,27 @@ bool SceneReflectionProbeEnvironmentSource::RecordDiffuseConvolve(RenderGraph::R
 
     const uint32_t g = (ImageBasedLightingFeature::kIrradianceSize + kProbeConvolveGroup - 1) / kProbeConvolveGroup;
     cl->Dispatch(g, g, ImageBasedLightingFeature::kNumCaptureFaces);
-    return true;
 }
 
-bool SceneReflectionProbeEnvironmentSource::RecordSpecularPrefilter(RenderGraph::RGContext& ctx,
+void SceneReflectionProbeEnvironmentSource::RecordSpecularPrefilter(RenderGraph::RGContext& ctx,
                                                                     ImageBasedLightingFeature& feature,
-                                                                    uint32_t mip) const
+                                                                    uint64_t bakedDigest) const
 {
     auto* cl = ctx.Cmd;
     auto* dev = ctx.GetDevice();
     if (!cl || !dev)
-        return false;
+        return;
 
     PipelineHandle pipe = ctx.GetOrCreatePipelineVariant(m_SpecularPipelineId);
     if (!pipe.IsValid())
-        return false;
+        return;
     cl->SetPipeline(pipe);
 
+    for (uint32_t mip = 0; mip < feature.GetPrefilterMipCount(); ++mip)
     {
         TextureViewHandle store = feature.GetPrefilterStoreView(mip);
         if (!store.IsValid())
-            return false;
+            continue;
 
         DescriptorSetDesc dsd{};
         dsd.layout = ImageBasedLightingFeature::ConvolveSet0();
@@ -566,8 +574,8 @@ bool SceneReflectionProbeEnvironmentSource::RecordSpecularPrefilter(RenderGraph:
         cl->Dispatch(g, g, ImageBasedLightingFeature::kNumCaptureFaces);
     }
 
-
-    return true;
+    feature.SetLastBakedDigest(bakedDigest);
+    feature.MarkBaked();
 }
 
 bool SceneReflectionProbeEnvironmentSource::DeclareCaptureFrame(const EnvironmentBakeContext& ctx,
@@ -586,9 +594,9 @@ bool SceneReflectionProbeEnvironmentSource::DeclareCaptureFrame(const Environmen
         return false;
 
     const uint32_t firstFace = static_cast<uint32_t>(sliceIndices[0] - kProbeFaceCullingIndexBase);
-    m_Services->Views().SetCameraData(m_CameraId, MakeFaceCamera(firstFace));
-    m_Services->Views().SetViewRenderLayerMask(m_ViewId, CaptureDesc().CullMask);
-    m_Services->Views().SetViewWorldId(m_ViewId, CaptureDesc().WorldId);
+    m_Services->Views().SetCameraData(m_CameraId, MakeFaceCamera(firstFace), MakeFaceRanges());
+    m_Services->Views().SetViewRenderLayerMask(m_ViewId, m_Desc.CapturedLayers);
+    m_Services->Views().SetViewWorldId(m_ViewId, m_Desc.WorldId);
 
     m_Services->WriteViewLightBuffer(m_ViewId);
     m_Services->BuildWorldBatchKeysForView(m_ViewId);
@@ -602,23 +610,19 @@ bool SceneReflectionProbeEnvironmentSource::DeclareFaceCapture(
     RenderGraph::RGFrame& frame = *ctx.Frame;
     ImageBasedLightingFeature& feature = *ctx.Feature;
 
-    const std::string skyName = "ProbeSky." + std::to_string(CaptureDesc().SourceKey);
     const bool hasSkyFace = m_SkyBackground.ScheduleCaptureFacesOnly(
-        ctx, skyName.c_str(), PassPhase::kEarlySetup, face);
+        ctx, "IBLGen.SceneProbeSky", PassPhase::kEarlySetup, face);
 
     // Per-face registry state, consumed at declaration by this face's forward
     // emit and world pass (camera upload, clear ops), so re-pointing the one
     // view per face is exact.
-    m_Services->Views().SetCameraData(m_CameraId, MakeFaceCamera(face));
+    m_Services->Views().SetCameraData(m_CameraId, MakeFaceCamera(face), MakeFaceRanges());
 
     Rendering::ViewClearConfig clear{};
     clear.clearColor = !hasSkyFace;
-    clear.clearColorValue[0] = 0.0f;
-    clear.clearColorValue[1] = 0.0f;
-    clear.clearColorValue[2] = 0.0f;
-    clear.clearColorValue[3] = 1.0f;
+    clear.clearColorValue = ColorLinear(0.0f, 0.0f, 0.0f, 1.0f);
     clear.clearDepth = true;
-    clear.clearDepthValue = 0.0f;
+    clear.clearDepthValue = Rendering::ReverseZ::kClearFar;
     m_Services->Views().SetViewClearConfig(m_ViewId, clear);
 
     TextureDesc depthDesc{};
@@ -631,7 +635,7 @@ bool SceneReflectionProbeEnvironmentSource::DeclareFaceCapture(
     depthDesc.format = static_cast<uint32_t>(m_Services->GetDepthFormat());
     depthDesc.usage = static_cast<uint32_t>(TextureUsage::DepthStencil | TextureUsage::ShaderResource);
     depthDesc.debugName = "IBL.SceneProbe.Depth";
-    const std::string depthName = "IBL.SceneProbe." + std::to_string(CaptureDesc().SourceKey) + ".Depth.Face" + std::to_string(face);
+    const std::string depthName = "IBL.SceneProbe.Depth.Face" + std::to_string(face);
     const RenderGraph::RGTexture depth = frame.ImportPersistentTexture(depthName.c_str(), depthDesc);
     if (!depth.IsValid())
         return false;
@@ -651,7 +655,9 @@ bool SceneReflectionProbeEnvironmentSource::DeclareFaceCapture(
     // Break the capture->cube->capture feedback: unless the probe opts in, the
     // capture face binds a zero-intensity EnvData so it never samples the cube
     // it is baking. Scoped to exactly this world pass declaration.
-    m_Services->SetWorldPassExcludeEnvironment(!CaptureDesc().CaptureEnvironment);
+    m_Services->SetWorldPassExcludeEnvironment(!m_Desc.CaptureEnvironment);
+    // The capture view runs no render graph, so its pass binds the fallback ExposureHistory, whose
+    // pre-exposure reads as 1: the cube stores absolute radiance (P = 1 by construction).
     const auto world = m_Services->AddWorldPassForView(
         frame, m_ViewId, targets, MaterialKeyword::Instanced,
         RenderServices::WorldPassDrawScope::All, ProbeFaceCullingIndex(face));
@@ -659,168 +665,252 @@ bool SceneReflectionProbeEnvironmentSource::DeclareFaceCapture(
     return world.Pass.IsValid();
 }
 
-void SceneReflectionProbeEnvironmentSource::TickPending(float deltaTimeSeconds)
+void SceneReflectionProbeEnvironmentSource::DeclareFinalizePasses(
+    const EnvironmentBakeContext& ctx, RenderGraph::RGTexture envCube,
+    RenderGraph::RGTexture irrCube, RenderGraph::RGTexture prefCube, uint64_t bakedDigest)
 {
-    TickBakeClock(deltaTimeSeconds);
-    const float dt = std::max(0.0f, deltaTimeSeconds);
-    m_AgeSeconds += dt;
-    if (NeedsBake()) m_WaitSeconds += dt;
-    else m_WaitSeconds = 0;
-}
+    RenderGraph::RGFrame& frame = *ctx.Frame;
+    ImageBasedLightingFeature& feature = *ctx.Feature;
+    const SceneReflectionProbeEnvironmentSource* self = this;
 
-SceneReflectionProbeEnvironmentSource::Diagnostics SceneReflectionProbeEnvironmentSource::GetDiagnostics() const
-{
-    return {m_CaptureState == CaptureState::Idle ? "Idle" :
-            m_CaptureState == CaptureState::Slicing ? "Capturing face" : "Filtering",
-            m_CaptureState == CaptureState::Slicing ? m_SliceFace : m_FilterStep,
-            m_CompletedBakes, m_AgeSeconds, m_WaitSeconds, m_CaptureRecordMs, m_FilterRecordMs,
-            m_LastCaptureGpuSpanMs, m_LastFilterGpuSpanMs, m_GpuSpansShared};
-}
-
-void SceneReflectionProbeEnvironmentSource::ObserveGpuTiming(const char* passName, double gpuSpanMs, bool shared)
-{
-    const std::string name(passName);
-    const std::string key = std::to_string(m_Desc.SourceKey);
-    if (name.starts_with("RenderEntities[Probe." + key + "#"))
-        m_LastCaptureGpuSpanMs = gpuSpanMs;
-    else if (name.starts_with("ReflectionProbe." + key + "."))
-        m_LastFilterGpuSpanMs = gpuSpanMs;
-    else return;
-    m_GpuSpansShared = shared;
-}
-
-double SceneReflectionProbeEnvironmentSource::SchedulingScore() const
-{
-    bool visible = false;
-    if (m_Services)
-        for (const auto& view : m_Services->Views().GetViews())
-        {
-            if (!view.activeRenderPipeline || view.worldId != m_Desc.WorldId) continue;
-            const auto* camera = m_Services->Views().FindCameraData(view.cameraId);
-            if (!camera) continue;
-            Rendering::Vector4 planes[6];
-            Rendering::ExtractFrustumPlanes(Rendering::DeriveCameraData(*camera).ViewProjMatrix, planes);
-            const Rendering::Vector3 position(m_Desc.BoxCenter[0], m_Desc.BoxCenter[1], m_Desc.BoxCenter[2]);
-            if (Rendering::TestSphereFrustum(position, m_Desc.InfluenceRadius, planes)) { visible = true; break; }
-        }
-    const bool changed = BaseDigest() != m_LastBaseDigest;
-    return m_WaitSeconds + (visible ? 0.5 : 0.0) + (changed ? 0.5 : 0.0) +
-           std::min(m_Desc.Priority, 100u) * 0.005 + (m_CompletedBakes == 0 ? 1.0 : 0.0);
-}
-
-void SceneReflectionProbeEnvironmentSource::ResetDevice(IDevice* device)
-{
-    if (m_Staging) m_Staging->OnDeviceRebuilt(device);
-    m_CaptureState = CaptureState::Idle;
-    m_ArmedFaceMask = 0;
-    m_LastBaseDigest = 0;
-    m_PipelinesReady = false;
-}
-
-void SceneReflectionProbeEnvironmentSource::ScheduleBake(const EnvironmentBakeContext& input)
-{
-    if (!input.Frame || !input.Feature || !input.Device || !m_Services || !HasActiveContent()) return;
-    if (!m_VariantSubscribed)
+    for (uint32_t mip = 1; mip < feature.GetEnvCaptureMipCount(); ++mip)
     {
-        m_VariantPublishedSub = m_Services->Materials().Variants().VariantPublished.Subscribe(
-            [this](const GUID& key) {
-                if (m_Desc.SceneEditDigest == 0 || std::find(m_Desc.MaterialKeys.begin(), m_Desc.MaterialKeys.end(), key) != m_Desc.MaterialKeys.end())
-                    ++m_MaterialReadyGeneration;
+        const std::string name = "IBLGen.SceneProbeEnvMipDownsample.Mip" + std::to_string(mip);
+        frame.AddComputePass(
+            name.c_str(), PassPhase::kWorldRender + 1,
+            [envCube, mip](RenderGraph::RGPassBuilder& p) {
+                RenderGraph::RGRange srcRange = RenderGraph::RGRange::All();
+                srcRange.BaseMip = mip - 1;
+                srcRange.MipCount = 1;
+                RenderGraph::RGRange dstRange = RenderGraph::RGRange::All();
+                dstRange.BaseMip = mip;
+                dstRange.MipCount = 1;
+                p.Read(envCube, RenderGraph::RGTextureRead::Sampled, srcRange);
+                p.Write(envCube, RenderGraph::RGTextureWrite::Storage, dstRange);
+                p.PreventCulling();
+            },
+            [self, feature = &feature, mip](RenderGraph::RGContext& c) {
+                self->RecordMipDownsample(c, *feature, mip);
             });
-        m_VariantSubscribed = true;
     }
-    if (!EnsureViews()) return;
-    if (!m_Staging) m_Staging = std::make_unique<ImageBasedLightingFeature>();
-    if (!m_Staging->Initialize(input.Device)) return;
-    if (m_CaptureState == CaptureState::Idle)
-    {
-        if (!BakeDue()) return;
-        if (!m_Staging->EnsureCaptureResolution(m_Desc.CaptureResolution)) return;
-        // Hold capture position, range, masks and background overrides for the
-        // full six-face cycle. Edits arriving mid-cycle remain queued for the
-        // next bake rather than mixing different camera origins in one cube.
-        m_CaptureDesc = m_Desc;
-        m_SliceDigest = NextBakeDigest();
-        m_SliceFace = 0;
-        m_FilterStep = 0;
-        m_CaptureRecordMs = m_FilterRecordMs = 0;
-        m_CaptureState = CaptureState::Slicing;
-        ArmFaces(1u);
-        return;
-    }
-    auto ctx = input;
-    ctx.Feature = m_Staging.get();
-    auto& feature = *ctx.Feature;
-    auto& frame = *ctx.Frame;
-    if (!EnsurePipelines(*ctx.Device, feature))
-    {
-        if (m_CaptureState == CaptureState::Slicing) ArmFaces(1u << m_SliceFace);
-        return;
-    }
-    const uint32_t mipSteps = feature.GetEnvCaptureMipCount() - 1;
-    const uint32_t totalFilterSteps = mipSteps + 1 + feature.GetPrefilterMipCount();
-    if (m_CaptureState == CaptureState::Filtering && m_FilterStep == totalFilterSteps)
-    {
-        input.Feature->PublishCaptureFrom(feature);
-        input.Feature->SetLastBakedDigest(m_SliceDigest);
-        input.Feature->ResetFramesSinceBake();
-        std::copy_n(m_CaptureDesc.Position, 3, m_PublishedPosition);
-        ++m_CompletedBakes;
-        m_AgeSeconds = m_WaitSeconds = 0;
-        m_CaptureState = CaptureState::Idle;
-        return;
-    }
-    const auto envCube = frame.ImportExternalTexture("IBL_ProbeStaging", feature.GetEnvCaptureTex(),
-        ResourceState::ShaderResource, TextureFormat::R16G16B16A16_FLOAT,
-        feature.GetEnvCaptureMipCount(), ImageBasedLightingFeature::kNumCaptureFaces);
-    if (m_CaptureState == CaptureState::Slicing)
-    {
-        const auto begin = std::chrono::steady_clock::now();
-        if (!DeclareCaptureFrame(ctx, 1u << m_SliceFace) || !DeclareFaceCapture(ctx, envCube, m_SliceFace))
-        {
-            frame.MarkOutput(envCube, RenderGraph::RGImageLayout::ShaderReadOnly);
-            ArmFaces(1u << m_SliceFace);
-            return;
-        }
-        m_CaptureRecordMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
-        frame.MarkOutput(envCube, RenderGraph::RGImageLayout::ShaderReadOnly);
-        if (++m_SliceFace < ImageBasedLightingFeature::kNumCaptureFaces) ArmFaces(1u << m_SliceFace);
-        else { m_ArmedFaceMask = 0; m_CaptureState = CaptureState::Filtering; }
-        return;
-    }
-    const uint32_t step = m_FilterStep;
-    const bool downsample = step < mipSteps;
-    const bool diffuse = step == mipSteps;
-    const uint32_t mip = downsample ? step + 1 : (diffuse ? 0 : step - mipSteps - 1);
-    RenderGraph::RGTexture output = envCube;
-    if (!downsample)
-        output = frame.ImportExternalTexture(diffuse ? "IBL_ProbeStagingDiffuse" : "IBL_ProbeStagingSpecular",
-            diffuse ? feature.GetIrradianceCube() : feature.GetPrefilterCube(), ResourceState::ShaderResource,
-            TextureFormat::R16G16B16A16_FLOAT, diffuse ? 1 : feature.GetPrefilterMipCount(),
-            ImageBasedLightingFeature::kNumCaptureFaces);
-    const std::string name = "ReflectionProbe." + std::to_string(m_Desc.SourceKey) +
-        (downsample ? ".Downsample." : diffuse ? ".Diffuse." : ".Specular.") + std::to_string(mip);
-    frame.AddComputePass(name.c_str(), PassPhase::kWorldRender + 1,
-        [=, this](RenderGraph::RGPassBuilder& p) {
-            p.UsePipeline(downsample ? m_MipDownsamplePipelineId :
-                          diffuse ? m_DiffusePipelineId : m_SpecularPipelineId);
-            auto sourceRange = RenderGraph::RGRange::All();
-            if (downsample) { sourceRange.BaseMip = mip - 1; sourceRange.MipCount = 1; }
-            auto targetRange = RenderGraph::RGRange::All();
-            targetRange.BaseMip = mip; targetRange.MipCount = 1;
-            p.Read(envCube, RenderGraph::RGTextureRead::Sampled, sourceRange);
-            p.Write(output, RenderGraph::RGTextureWrite::Storage, targetRange);
+
+    frame.AddComputePass(
+        "IBLGen.SceneProbeDiffuseConvolve", PassPhase::kWorldRender + 1,
+        [envCube, irrCube](RenderGraph::RGPassBuilder& p) {
+            p.Read(envCube, RenderGraph::RGTextureRead::Sampled);
+            p.Write(irrCube, RenderGraph::RGTextureWrite::Storage);
             p.PreventCulling();
         },
-        [this, feature = &feature, downsample, diffuse, mip](RenderGraph::RGContext& c) {
-            const auto begin = std::chrono::steady_clock::now();
-            const bool recorded = downsample ? RecordMipDownsample(c, *feature, mip) :
-                diffuse ? RecordDiffuseConvolve(c, *feature) : RecordSpecularPrefilter(c, *feature, mip);
-            m_FilterRecordMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
-            if (recorded) ++m_FilterStep;
+        [self, feature = &feature](RenderGraph::RGContext& c) {
+            self->RecordDiffuseConvolve(c, *feature);
         });
-    frame.MarkOutput(envCube, RenderGraph::RGImageLayout::ShaderReadOnly);
-    if (!downsample) frame.MarkOutput(output, RenderGraph::RGImageLayout::ShaderReadOnly);
+    // The probe's cube is what lights the scene while it is active, so the readback follows it.
+    if (auto* irradianceReadback = m_Services->GetFeature<IrradianceReadbackFeature>())
+        irradianceReadback->DeclareCopy(*ctx.Device, frame, irrCube, ImageBasedLightingFeature::kIrradianceSize,
+                                        bakedDigest);
+
+    frame.AddComputePass(
+        "IBLGen.SceneProbeSpecularPrefilter", PassPhase::kWorldRender + 1,
+        [envCube, prefCube](RenderGraph::RGPassBuilder& p) {
+            p.Read(envCube, RenderGraph::RGTextureRead::Sampled);
+            p.Write(prefCube, RenderGraph::RGTextureWrite::Storage);
+            p.PreventCulling();
+        },
+        [self, feature = &feature, bakedDigest](RenderGraph::RGContext& c) {
+            self->RecordSpecularPrefilter(c, *feature, bakedDigest);
+        });
+
+    // The convolves leave both cubes GENERAL, and every later import claims ShaderResource, also in a
+    // frame with no world pass to sample them (a paused camera). The export puts them back at frame end.
+    frame.MarkOutput(irrCube, RenderGraph::RGImageLayout::ShaderReadOnly);
+    frame.MarkOutput(prefCube, RenderGraph::RGImageLayout::ShaderReadOnly);
+}
+
+void SceneReflectionProbeEnvironmentSource::ScheduleBake(const EnvironmentBakeContext& ctx)
+{
+    if (!ctx.Frame || !ctx.Feature || !ctx.Device || !m_Services || !HasActiveContent())
+        return;
+    if (!ctx.Feature->EnsureCaptureResolution(m_Desc.CaptureResolution))
+        return;
+    if (!EnsureViews() || !EnsurePipelines(*ctx.Device, *ctx.Feature))
+        return;
+
+    TickBakeClock(ctx.DeltaTimeSeconds);
+
+    RenderGraph::RGFrame& frame = *ctx.Frame;
+    ImageBasedLightingFeature& feature = *ctx.Feature;
+    feature.TickFramesSinceBake();
+
+    // An idle probe declares no bake this frame, so a readback that arrives between bakes copies
+    // the cube as it rests, once.
+    if (m_CaptureState == CaptureState::Idle)
+        if (auto* irradianceReadback = m_Services->GetFeature<IrradianceReadbackFeature>())
+            irradianceReadback->DeclareRestingCopy(*ctx.Device, frame, feature);
+
+    // Realtime REBAKES time-slice (one face per frame); the first-ever bake,
+    // Once probes, and every-frame probes take the single-frame path so the
+    // cube never pops in half-baked.
+    const bool everyFrame = CapturesEveryFrame();
+    const bool sliceRebakes =
+        m_Desc.UpdateMode == SceneReflectionProbeUpdateMode::Realtime &&
+        !everyFrame && feature.GetLastBakedDigest() != 0;
+
+    switch (m_CaptureState)
+    {
+        case CaptureState::Idle:
+            // Idle: the OnDemand capture view has no live request, so
+            // extraction, batch keys, and the GPU culling loop all skip it.
+            // Request one frame ahead of a due bake; requests auto-expire
+            // right after their capture frame. The frame throttle keeps a
+            // continuously-changing sky (animated time-of-day, slider drags)
+            // from re-arming a full bake every frame — same policy as the sky
+            // source's own rebake gate. An every-frame probe asked for exactly
+            // that, so it bypasses the throttle.
+            if (BakeDue() &&
+                (everyFrame ||
+                 feature.GetFramesSinceBake() >= ImageBasedLightingFeature::kIblRebakeIntervalFrames))
+            {
+                if (!everyFrame)
+                    Logger::Log::Debug("SceneProbe: bake armed ({})",
+                                       sliceRebakes ? "sliced" : "single-frame");
+                if (sliceRebakes)
+                {
+                    m_SliceFace = 0;
+                    m_SliceDigest = 0;
+                    ArmFaces(1u << 0);
+                    m_CaptureState = CaptureState::Slicing;
+                }
+                else
+                {
+                    ArmViews();
+                }
+            }
+            return;
+        case CaptureState::Arming:
+        case CaptureState::Slicing:
+            // The request covers exactly THIS frame: extraction and culling
+            // ran with the armed faces fed, and it lapses next frame.
+            break;
+    }
+
+    const RenderGraph::RGTexture envCube = frame.ImportExternalTexture(
+        "IBL_EnvCapture", feature.GetEnvCaptureTex(), ResourceState::ShaderResource,
+        TextureFormat::R16G16B16A16_FLOAT, feature.GetEnvCaptureMipCount(),
+        ImageBasedLightingFeature::kNumCaptureFaces);
+
+    if (m_CaptureState == CaptureState::Slicing)
+    {
+        if (m_SliceFace == 0)
+        {
+            // Consume the digest once per cycle and hold it: the whole cycle
+            // bakes FOR this snapshot; a sun still moving starts the next one.
+            m_SliceDigest = NextBakeDigest();
+            if (m_SliceDigest == 0 || m_SliceDigest == feature.GetLastBakedDigest())
+            {
+                m_CaptureState = CaptureState::Idle; // armed for nothing — request lapses
+                return;
+            }
+        }
+
+        if (!DeclareCaptureFrame(ctx, 1u << m_SliceFace) ||
+            !DeclareFaceCapture(ctx, envCube, m_SliceFace))
+        {
+            Logger::Log::Debug("SceneProbe: sliced face {} declare failed — aborting cycle",
+                               m_SliceFace);
+            // A face abort can leave real writes behind: DeclareFaceCapture
+            // declares the sky-background face pass FIRST (PreventCulling — it
+            // renders even when the world pass never declares), so the face
+            // ends the frame in ColorAttachment. Restore the resting state
+            // here too, or every following frame's ShaderResource import is a
+            // lie and samplers of the cube trip VUID-09600 until the next
+            // successful cycle heals the layout.
+            frame.MarkOutput(envCube, RenderGraph::RGImageLayout::ShaderReadOnly);
+            m_CaptureState = CaptureState::Idle; // abort; the next due bake restarts
+            return;
+        }
+
+        ++m_SliceFace;
+        if (m_SliceFace < ImageBasedLightingFeature::kNumCaptureFaces)
+        {
+            // Mid-cycle the face render is this frame's LAST touch of the env
+            // cube, which would end the frame with that face in ColorAttachment
+            // while every frame's import re-declares ShaderResource. Restore
+            // the resting state explicitly so the cross-frame import contract
+            // stays true (VUID-09600: sampled-while-attached on layers of a
+            // half-baked cycle). The finalize frame needs no export — the
+            // convolve reads already end the frame at ShaderResource (and an
+            // export there would stamp a final layout onto compute-written mips).
+            frame.MarkOutput(envCube, RenderGraph::RGImageLayout::ShaderReadOnly);
+            ArmFaces(1u << m_SliceFace); // feed the next face next frame
+            return;
+        }
+
+        const RenderGraph::RGTexture irrCube = frame.ImportExternalTexture(
+            "IBL_Irradiance", feature.GetIrradianceCube(), ResourceState::ShaderResource,
+            TextureFormat::R16G16B16A16_FLOAT, 1, ImageBasedLightingFeature::kNumCaptureFaces);
+        const RenderGraph::RGTexture prefCube = frame.ImportExternalTexture(
+            "IBL_Prefilter", feature.GetPrefilterCube(), ResourceState::ShaderResource,
+            TextureFormat::R16G16B16A16_FLOAT, feature.GetPrefilterMipCount(),
+            ImageBasedLightingFeature::kNumCaptureFaces);
+        Logger::Log::Debug("SceneProbe: sliced cycle finalized (digest {:x})", m_SliceDigest);
+        DeclareFinalizePasses(ctx, envCube, irrCube, prefCube, m_SliceDigest);
+        m_CaptureState = CaptureState::Idle; // cycle complete — the last request lapses
+        return;
+    }
+
+    // Single-frame full bake (first bake / Once probes / world change re-arm).
+    const uint64_t digest = NextBakeDigest();
+    if (digest == 0 || digest == feature.GetLastBakedDigest())
+    {
+        m_CaptureState = CaptureState::Idle; // armed for nothing — the requests lapse on their own
+        return;
+    }
+
+    const RenderGraph::RGTexture irrCube = frame.ImportExternalTexture(
+        "IBL_Irradiance", feature.GetIrradianceCube(), ResourceState::ShaderResource,
+        TextureFormat::R16G16B16A16_FLOAT, 1, ImageBasedLightingFeature::kNumCaptureFaces);
+    const RenderGraph::RGTexture prefCube = frame.ImportExternalTexture(
+        "IBL_Prefilter", feature.GetPrefilterCube(), ResourceState::ShaderResource,
+        TextureFormat::R16G16B16A16_FLOAT, feature.GetPrefilterMipCount(),
+        ImageBasedLightingFeature::kNumCaptureFaces);
+
+    // Shared prelude once, then one pass per face. A declare failure
+    // (transient bucketer/import pressure) re-arms: bare-returning would retry
+    // NEXT frame while still Arming — against a lapsed view request, whose
+    // empty batch keys "succeed" as clear-only faces and commit a black cube.
+    // Re-arm so the retry runs with a freshly fed view; the digest was already
+    // consumed, so NextBakeDigest() hands the retry the same snapshot. Faces
+    // already declared this frame (sky background included) still render, so
+    // restore the cube's resting layout for the retry frame's import.
+    if (!DeclareCaptureFrame(ctx, kAllFacesMask))
+    {
+        Logger::Log::Debug("SceneProbe: full-bake bucketer declare failed — re-arming");
+        frame.MarkOutput(envCube, RenderGraph::RGImageLayout::ShaderReadOnly);
+        ArmViews();
+        return;
+    }
+    for (uint32_t face = 0; face < ImageBasedLightingFeature::kNumCaptureFaces; ++face)
+    {
+        if (!DeclareFaceCapture(ctx, envCube, face))
+        {
+            Logger::Log::Debug("SceneProbe: full-bake face {} declare failed — re-arming", face);
+            frame.MarkOutput(envCube, RenderGraph::RGImageLayout::ShaderReadOnly);
+            ArmViews();
+            return;
+        }
+    }
+
+    if (!everyFrame)
+        Logger::Log::Debug("SceneProbe: full bake finalized (digest {:x})", digest);
+    DeclareFinalizePasses(ctx, envCube, irrCube, prefCube, digest);
+    if (everyFrame)
+    {
+        // Feed the view again for NEXT frame's extraction and culling so the
+        // following bake declares without an idle arming frame in between.
+        ArmViews();
+        return;
+    }
+    m_CaptureState = CaptureState::Idle; // capture scheduled — the view request lapses on its own
 }
 
 } // namespace Engine::Renderer

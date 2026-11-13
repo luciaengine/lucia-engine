@@ -8,8 +8,8 @@
 
 #include "Rendering/Geometry/VertexAttributeFlags.h"
 #include "Rendering/Materials/MaterialDocument.h"
-#include "Rendering/Materials/ShaderComposer.h"
-#include "Rendering/Materials/ShaderVariantKey.h"
+#include "Rendering/Materials/Shader/ShaderComposer.h"
+#include "Rendering/Materials/Shader/ShaderVariantKey.h"
 #include "TestUtils.h"
 #include "TestTempDir.h"
 

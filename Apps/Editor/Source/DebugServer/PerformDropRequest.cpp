@@ -2,7 +2,7 @@
 
 #include "Assets/AssetPathKey.h"
 #include "Editor/DragDropPayloads.h"
-#include "UI/Interaction/DragDropManager.h"
+#include "UI/Interaction/DragDrop/DragDropManager.h"
 #include "UI/Interaction/Payload.h"
 #include "UI/UIElement.h"
 #include "UI/UIManager.h"

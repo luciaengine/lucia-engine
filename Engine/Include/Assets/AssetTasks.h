@@ -3,11 +3,14 @@
 #include "AssetCore/Asset.h"
 #include "AssetCore/AssetTypes.h"
 #include "AssetCore/GUID.h"
+#include "Assets/AssetDecodeInputFiles.h"
 #include "JobSystem/TaskHandle.h"
+#include "Types/ByteBuffer.h"
 #include "Types/Types.h"
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <unordered_map>
 #include <vector>
 
@@ -100,13 +103,31 @@ class AssetBatchCoordinator
  * changed file's payload, then adopts it into the live asset on the main
  * thread. Returns null on decode failure; never throws.
  *
+ * Takes ownership of `data`: an audio payload keeps the buffer as its encoded data,
+ * so the caller moves the read bytes in rather than copying them.
+ *
  * `cancelRequested` is the reload generation's flag, published for the decode's
  * call tree (see ScopedAssetDecodeCancellation) so long-running work such as the
  * texture cook abandons itself when the reload is superseded or shut down.
  */
 SharedPtr<Asset> DecodeAssetPayload(AssetManager& assetManager, const GUID& assetGuid,
-                                    const AssetMetadata& metadata, const Vector<uint8>& data,
+                                    const AssetMetadata& metadata, ByteBuffer data,
                                     const std::shared_ptr<std::atomic<bool>>& cancelRequested = {});
+
+/**
+ * @brief The AssetIOService::ReadRequest::ResolveDecodeInputs of a load or reload of `metadata`:
+ * the files its parser names for the read bytes, with the plan that names them
+ * (AssetParser::ResolveDecodeInputs).
+ */
+Function<AssetDecodeInputs(std::span<const uint8>)> MakeDecodeInputResolver(AssetManager& assetManager,
+                                                                          const AssetMetadata& metadata);
+
+/**
+ * @brief The AssetIOService::ReadRequest::ResolveDecodeInputsWithoutBytes of a load or reload of `metadata`
+ * (AssetParser::ResolveDecodeInputsWithoutBytes).
+ */
+Function<AssetDecodeInputs()> MakeDecodeInputWithoutBytesResolver(AssetManager& assetManager,
+                                                                  const AssetMetadata& metadata);
 
 /**
  * @brief Asset task performance monitor for optimization and debugging

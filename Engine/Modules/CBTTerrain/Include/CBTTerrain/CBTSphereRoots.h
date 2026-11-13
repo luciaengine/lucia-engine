@@ -20,12 +20,13 @@
 // CBTSphereRootsTests assert reciprocity, twin-across-cube-edge, outward winding, and
 // (via the real-device cross-face conformity oracle) that refinement stays conforming.
 
-#include "CBTTerrain/CBTLayout.h"
-#include "Mathematics/CubeFaces.h"
-
 #include <algorithm>
 #include <array>
 #include <cstdint>
+
+#include "CBTTerrain/CBTLayout.h"
+#include "Mathematics/CubeFaces.h"
+#include "Mathematics/Vector3Int.h"
 
 namespace GameEngine::CBTTerrain
 {
@@ -33,10 +34,12 @@ namespace GameEngine::CBTTerrain
 // 6 faces x 4 pie slices. baseDepth = ceil(log2(24)) = 5 (2^5 = 32 >= 24); roots at
 // heapID 32 + rootIndex, all at depth 5 (uniform). Slots for heapIDs 56..63 stay unused
 // (no root maps there; CBT_RootOf still recovers each root exactly).
-using Mathematics::kCubeFaceCount;
+inline constexpr uint32_t kCubeFaceCount = 6u;
 inline constexpr uint32_t kSlicesPerFace = 4u; // a face quad split into 4 pie slices
 static_assert(kSlicesPerFace == 4u, "the (idx & 3u) edge-wrap below assumes 4 slices per face");
 inline constexpr uint32_t kSphereRootCount = kCubeFaceCount * kSlicesPerFace; // 24
+static_assert(kCubeFaceCount == Mathematics::kCubeFaceCount && kSlicesPerFace == Mathematics::kCubeFaceCornerCount,
+              "the sphere's roots are the slices of Mathematics::kCubeFaces");
 static_assert(kCubeFaceCount == kCubeFaceCount6,
               "CBTLayout kCubeFaceCount6 (sphere sculpt atlas band count) must equal the cube face count");
 inline constexpr uint32_t kSphereBaseDepth = 5u;
@@ -44,8 +47,6 @@ static_assert((1u << kSphereBaseDepth) >= kSphereRootCount,
               "2^kSphereBaseDepth must cover kSphereRootCount so each root sits at a distinct "
               "heapID at uniform depth = kSphereBaseDepth");
 static_assert(kSphereRootCount <= kDefaultBisectorPoolSize, "roots must fit the bisector pool");
-
-using Mathematics::kCubeFaces;
 
 // One root bisector of the cube-sphere base mesh.
 struct CBTSphereRoot
@@ -55,19 +56,13 @@ struct CBTSphereRoot
     // Integer cube corners (components in {-1, 0, +1}; the centroid of an axis-aligned
     // cube face is integer). v1 is the face centroid (apex), v0/v2 the split-edge corners.
     // Exact integers so the cross-face conformity oracle can compare vertices bit-exactly.
-    std::array<int32_t, 3> V0{};
-    std::array<int32_t, 3> V1{};
-    std::array<int32_t, 3> V2{};
+    Mathematics::Vector3Int V0;
+    Mathematics::Vector3Int V1;
+    Mathematics::Vector3Int V2;
 };
 
-inline std::array<int32_t, 3> CBTCubeCorner(int index)
-{
-    const Mathematics::Vector3Int corner = Mathematics::CubeCorner(index);
-    return {corner.X, corner.Y, corner.Z};
-}
-
 // Builds all 24 roots: HeapIDs, neighbor links (n0/n1 within-face legs, twin across the
-// cube edge), and cube corners. Pure function of kCubeFaces — no device, unit-testable.
+// cube edge), and cube corners. Pure function of Mathematics::kCubeFaces — no device, unit-testable.
 inline std::array<CBTSphereRoot, kSphereRootCount> BuildSphereRoots()
 {
     std::array<CBTSphereRoot, kSphereRootCount> roots{};
@@ -75,26 +70,19 @@ inline std::array<CBTSphereRoot, kSphereRootCount> BuildSphereRoots()
 
     for (uint32_t f = 0; f < kCubeFaceCount; ++f)
     {
-        std::array<int32_t, 3> centroid{0, 0, 0};
+        Mathematics::Vector3Int cornerSum;
         for (uint32_t k = 0; k < kSlicesPerFace; ++k)
-        {
-            const std::array<int32_t, 3> c = CBTCubeCorner(kCubeFaces[f * 4u + k]);
-            centroid[0] += c[0];
-            centroid[1] += c[1];
-            centroid[2] += c[2];
-        }
-        centroid[0] /= 4;
-        centroid[1] /= 4;
-        centroid[2] /= 4; // axis-aligned face -> exact integer face centre
+            cornerSum = cornerSum + Mathematics::CubeCorner(Mathematics::kCubeFaces[f * 4u + k]);
+        const Mathematics::Vector3Int centroid = cornerSum / 4; // axis-aligned face -> exact integer face center
 
         for (uint32_t e = 0; e < kSlicesPerFace; ++e)
         {
             const uint32_t r = f * kSlicesPerFace + e;
             CBTSphereRoot& root = roots[r];
             root.HeapID = baseHeapID + r;
-            root.V0 = CBTCubeCorner(kCubeFaces[f * kSlicesPerFace + e]);
+            root.V0 = Mathematics::CubeCorner(Mathematics::kCubeFaces[f * kSlicesPerFace + e]);
             root.V1 = centroid;
-            root.V2 = CBTCubeCorner(kCubeFaces[f * kSlicesPerFace + ((e + 1u) & 3u)]);
+            root.V2 = Mathematics::CubeCorner(Mathematics::kCubeFaces[f * kSlicesPerFace + ((e + 1u) & 3u)]);
             // Within-face legs: n0 across (v1,v2) leg -> the next pie slice; n1 across
             // (v0,v1) leg -> the previous pie slice. Reciprocal (slice e's n0 == e+1, and
             // slice e+1's n1 == e). Twin filled below. This exact n0/n1 DIRECTION (which
@@ -116,8 +104,8 @@ inline std::array<CBTSphereRoot, kSphereRootCount> BuildSphereRoots()
     {
         const uint32_t f = r / kSlicesPerFace;
         const uint32_t e = r % kSlicesPerFace;
-        const int a = kCubeFaces[f * kSlicesPerFace + e];
-        const int b = kCubeFaces[f * kSlicesPerFace + ((e + 1u) & 3u)];
+        const int a = Mathematics::kCubeFaces[f * kSlicesPerFace + e];
+        const int b = Mathematics::kCubeFaces[f * kSlicesPerFace + ((e + 1u) & 3u)];
         const int lo = std::min(a, b);
         const int hi = std::max(a, b);
         for (uint32_t r2 = 0; r2 < kSphereRootCount; ++r2)
@@ -126,8 +114,8 @@ inline std::array<CBTSphereRoot, kSphereRootCount> BuildSphereRoots()
                 continue;
             const uint32_t f2 = r2 / kSlicesPerFace;
             const uint32_t e2 = r2 % kSlicesPerFace;
-            const int a2 = kCubeFaces[f2 * kSlicesPerFace + e2];
-            const int b2 = kCubeFaces[f2 * kSlicesPerFace + ((e2 + 1u) & 3u)];
+            const int a2 = Mathematics::kCubeFaces[f2 * kSlicesPerFace + e2];
+            const int b2 = Mathematics::kCubeFaces[f2 * kSlicesPerFace + ((e2 + 1u) & 3u)];
             if (std::min(a2, b2) == lo && std::max(a2, b2) == hi)
             {
                 roots[r].Neighbors.Twin = r2;

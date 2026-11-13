@@ -21,7 +21,7 @@ PromptFileThumbnail::PromptFileThumbnail(std::filesystem::path image)
 
 void PromptFileThumbnail::RequestPicture()
 {
-    if (Overrides().Get(Style::BackgroundImage).has_value())
+    if (Style().Get(Style::BackgroundImage).has_value())
         return;
     if (const auto& show = Editor::GetEditorAssetActions().ShowThumbnail)
         show(*this, m_Image, 512);
@@ -29,12 +29,12 @@ void PromptFileThumbnail::RequestPicture()
 
 void PromptFileThumbnail::ReleasePicture()
 {
-    const auto source = Overrides().Get(Style::BackgroundImage);
+    const auto source = Style().Get(Style::BackgroundImage);
     if (!source)
         return;
     UIManager* ui = GetOwnerManager();
     if (ui && source->Kind == BackgroundImageSource::SourceKind::Path && !source->Value.empty())
-        ui->EvictBackgroundTexture(source->Value);
+        ui->BackgroundImages().Evict(source->Value);
     UI::Layout::DisableBackgroundOverride(*this);
 }
 

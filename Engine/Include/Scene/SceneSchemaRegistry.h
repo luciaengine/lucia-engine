@@ -28,7 +28,7 @@ namespace GameEngine::Scene
 // A component schema teaches the scene system how to:
 // - serialize a component into "Component.property = value" lines
 // - apply parsed properties to an entity during load
-// - optionally remove the component via "-Component" directives (blueprint overrides)
+// - optionally remove the component for a prefab instance's "-Component" override
 class ISceneComponentSchema
 {
   public:
@@ -47,11 +47,11 @@ class ISceneComponentSchema
 
     // Append 0+ lines (without trailing '\n') for this component if present on entity.
     // The save context exposes asset resolver / asset root state needed by
-    // helpers like FormatAssetReferenceForSave; pass an empty SceneSaveContext
-    // when calling outside SaveSceneToFile (e.g. presence probes).
+    // helpers like FormatAssetReferenceForSave; pass an empty SceneWriteContext
+    // when calling outside WriteSceneFile (e.g. presence probes).
     virtual void Serialize(const ECS::World& world,
                            ECS::EntityHandle entity,
-                           const SceneSaveContext& ctx,
+                           const SceneWriteContext& ctx,
                            std::vector<std::string>& outLines) const = 0;
 
     // Returns whether the component exists on the entity.
@@ -59,7 +59,7 @@ class ISceneComponentSchema
     // Schemas for "tag" components (no properties) should override this to avoid false negatives.
     virtual bool IsPresent(const ECS::World& world, ECS::EntityHandle entity) const
     {
-        SceneSaveContext stubCtx{};
+        SceneWriteContext stubCtx{};
         std::vector<std::string> tmp;
         Serialize(world, entity, stubCtx, tmp);
         return !tmp.empty();
@@ -69,19 +69,21 @@ class ISceneComponentSchema
     // Returns false if the value is invalid.
     // The load context exposes [resource]/[embed] tables and the asset
     // resolver needed by helpers like TryResolveAssetReference; pass an
-    // empty SceneLoadContext when calling outside LoadSceneFromFile (e.g.
+    // empty SceneReadContext when calling outside ReadSceneInto (e.g.
     // tools that clear an asset slot via the integer-zero sentinel).
     virtual bool ApplyProperty(ECS::World& world,
                                ECS::EntityHandle entity,
-                               const SceneLoadContext& ctx,
+                               const SceneReadContext& ctx,
                                std::string_view property,
                                std::string_view value,
                                std::string* outError) const = 0;
 
     // Apply a whole component's property assignments in one call. Lets a schema create the
     // component and capture/apply its bytes once for the group rather than per property.
-    // Semantics match calling ApplyProperty for each pair in order: skips (unknown field,
-    // transient, no serializer) keep going and the call still succeeds; a malformed value
+    // Semantics match calling ApplyProperty for each pair in order: skips (transient, no
+    // serializer) keep going and the call still succeeds. A field name the component does not have
+    // is skipped and put in ctx.UnknownFields (ReportUnknownField; the reflected schema does the
+    // same), the loader records it, and the call still succeeds; a malformed value
     // returns false with the same error string ApplyProperty would set. On failure,
     // `*outFailedIndex` (when non-null) receives the index of the offending pair so the
     // caller can report its source line. The default impl loops ApplyProperty, so schemas
@@ -93,7 +95,7 @@ class ISceneComponentSchema
     // then records the halves as degradation skips instead of installing half a value.
     virtual bool ApplyProperties(ECS::World& world,
                                  ECS::EntityHandle entity,
-                                 const SceneLoadContext& ctx,
+                                 const SceneReadContext& ctx,
                                  std::span<const std::pair<std::string_view, std::string_view>> props,
                                  std::string* outError,
                                  std::size_t* outFailedIndex) const
@@ -111,7 +113,7 @@ class ISceneComponentSchema
     }
 
     // Ensure the component exists on the entity using default values.
-    // Used for blueprint override "ComponentName" / "+ComponentName" additions.
+    // Used for a prefab instance's "+Component" override, which adds a component with no field lines.
     virtual bool AddDefault(ECS::World& world, ECS::EntityHandle entity, std::string* outError) const
     {
         (void)world;
@@ -151,6 +153,18 @@ class ISceneComponentSchema
     }
 };
 
+// The one message for an authored property name a component has no field for, with its fix:
+// "<component> has no field named '<field>': delete the line or correct the spelling". The scene
+// load report, the editor's property apply and every schema refusal give this text.
+std::string UnknownFieldMessage(std::string_view component, std::string_view field);
+
+// What a hand-written schema's ApplyProperty does with a property name its component has no field
+// for. In a scene load (ctx.UnknownFields set) it puts the name in ctx.UnknownFields and returns
+// true, so the loader records the line in the load report and applies the rest of the block.
+// Outside a load it sets *outError to UnknownFieldMessage and returns false.
+bool ReportUnknownField(const SceneReadContext& ctx, std::string_view component, std::string_view field,
+                        std::string* outError);
+
 // Global registry of component schemas (module-extensible).
 class SceneSchemaRegistry
 {
@@ -186,6 +200,9 @@ class SceneSchemaRegistry
     static std::string_view SchemaTokenForComponentType(ECS::ComponentTypeId typeId);
 
     static std::vector<const ISceneComponentSchema*> GetAllSorted();
+
+    // Every registered component type that a scene saves, each once: the types of the hand-written
+    // schemas and every reflected type that saves through its reflection schema, C# components included.
     static std::vector<ECS::ComponentTypeId> GetSavedComponentTypes();
 
     // Save-side reflection fallback: returns a synthesized reflection schema for `typeId` ONLY when

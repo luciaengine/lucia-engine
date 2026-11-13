@@ -50,7 +50,7 @@ std::string_view ModeName(MarkupMemberMode mode)
 }
 
 // `include "<id>"` or `exclude "<id>"`: the mode, then the quoted scene id.
-bool ParseMember(const SceneLoadContext& ctx, std::string_view value, Components::MarkupRegionMember& out,
+bool ParseMember(const SceneReadContext& ctx, std::string_view value, Components::MarkupRegionMember& out,
                  std::string* outError)
 {
     while (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
@@ -78,7 +78,7 @@ class MarkupRegionSceneSchema final : public ISceneComponentSchema
         return world.GetComponent<MarkupRegion>(entity) != nullptr;
     }
 
-    void Serialize(const ECS::World& world, ECS::EntityHandle entity, const SceneSaveContext& ctx,
+    void Serialize(const ECS::World& world, ECS::EntityHandle entity, const SceneWriteContext& ctx,
                    std::vector<std::string>& outLines) const override
     {
         const auto* region = world.GetComponent<MarkupRegion>(entity);
@@ -97,7 +97,7 @@ class MarkupRegionSceneSchema final : public ISceneComponentSchema
         }
     }
 
-    bool ApplyProperty(ECS::World& world, ECS::EntityHandle entity, const SceneLoadContext& ctx,
+    bool ApplyProperty(ECS::World& world, ECS::EntityHandle entity, const SceneReadContext& ctx,
                        std::string_view property, std::string_view value, std::string* outError) const override
     {
         MarkupRegion region{};
@@ -115,7 +115,7 @@ class MarkupRegionSceneSchema final : public ISceneComponentSchema
         {
             uint32 index = 0;
             if (ParseIntegerToken(property.substr(kMemberPrefix.size()), index) != IntegerTokenResult::Ok)
-                return Refuse(outError, "Unknown MarkupRegion property");
+                return ReportUnknownField(ctx, GetComponentName(), property, outError);
             if (index >= Components::kMaxRegionMembers)
                 return Refuse(outError, "A region holds at most 32 members; MarkupRegion." + std::string(property) +
                                             " is past the last");
@@ -133,7 +133,7 @@ class MarkupRegionSceneSchema final : public ISceneComponentSchema
         }
         else
         {
-            return Refuse(outError, "Unknown MarkupRegion property");
+            return ReportUnknownField(ctx, GetComponentName(), property, outError);
         }
         world.AddComponentImmediate(entity, region);
         return true;

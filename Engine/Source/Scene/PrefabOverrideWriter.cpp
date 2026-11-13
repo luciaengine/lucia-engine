@@ -12,12 +12,14 @@
 #include "Scene/AssetManagerSceneResolver.h"
 #include "Scene/PrefabAuthoring.h"
 #include "Scene/PrefabLibrary.h"
+#include "Scene/PrefabOverrideRecords.h"
 #include "Scene/SceneSchemaRegistry.h"
 #include "Types/StringUtils.h"
 #include "Types/FlatMap.h"
-#include "Types/Types.h"
 
 #include <algorithm>
+#include <span>
+#include <string>
 
 namespace GameEngine::Scene
 {
@@ -25,7 +27,7 @@ namespace GameEngine::Scene
 // The lines the scene saver writes for `entity`, grouped by component: the hand-written schemas',
 // the reflected components', the switch lines of components switched off, the components no build
 // registers, and the authored text of fields the load could not read.
-void CollectComponentText(ECS::World& world, ECS::EntityHandle entity, const SceneSaveContext& context,
+void CollectComponentText(ECS::World& world, ECS::EntityHandle entity, const SceneWriteContext& context,
                           const std::vector<const ISceneComponentSchema*>& schemas, std::vector<ComponentText>& out)
 {
     out.clear();
@@ -101,12 +103,13 @@ static bool AddsAComponent(const std::vector<ComponentText>& instance, const std
     });
 }
 
-// Writes field differences and added/removed components at address (empty for the root).
-// Full-field text distinguishes cleared references; added contains plain added-component text.
-// Member HierarchyOrder is inherited and never written as an override.
+// The override lines of the entity at `address` ("" for the root): each line that differs from the template's
+// or whose key `recorded` holds, "+address/Component" with `added`'s lines, and "-address/Component". Both texts
+// hold every field (WriteEveryField), so a cleared field differs; a member's HierarchyOrder is never written.
 static void WriteEntityOverrides(std::string_view address, const std::vector<ComponentText>& instance,
                                  const std::vector<ComponentText>& added,
-                                 const std::vector<ComponentText>& templateText, std::string& out)
+                                 const std::vector<ComponentText>& templateText,
+                                 std::span<const std::string> recorded, std::string& out)
 {
     const bool isRoot = address.empty();
 
@@ -125,12 +128,17 @@ static void WriteEntityOverrides(std::string_view address, const std::vector<Com
         {
             out.append("+").append(Addressed(address, text.token)).append(1, '\n');
             for (const auto& line : FindComponentText(added, text.key)->lines)
-                out.append(Addressed(address, line)).append(1, '\n');
+            {
+                // A component with no fields writes its bare name; on an override the "+" line says it.
+                if (line != text.token)
+                    out.append(Addressed(address, line)).append(1, '\n');
+            }
             continue;
         }
         for (const auto& line : text.lines)
         {
-            if (std::find(templateIt->lines.begin(), templateIt->lines.end(), line) == templateIt->lines.end())
+            if (std::find(templateIt->lines.begin(), templateIt->lines.end(), line) == templateIt->lines.end() ||
+                PrefabOverrideRecords::HoldsLine(recorded, line))
                 out.append(Addressed(address, line)).append(1, '\n');
         }
         // A component the prefab switches off and the instance switches on writes its switch.
@@ -171,14 +179,14 @@ static const PrefabTemplates::Template* GetPrefabTemplate(PrefabTemplates& templ
     SceneDoc::PrefabInstanceSection section{};
     section.id = "template_" + std::to_string(templates.byPath.Size());
     section.sourceResourceId = "prefab";
-    const SceneLoadContext ownerCtx =
+    const SceneReadContext ownerCtx =
         MakeDocumentLoadContext(*templates.world, sceneFilePath, owner, templates.loadOptions);
 
     auto made = std::make_unique<PrefabTemplates::Template>();
     if (!PlaceInstanceSection(*templates.placement, ownerCtx, sceneFilePath, owner, section, section.id, made->placed,
                               LoadFailure{&outError, &outFile, &outLine}))
         return nullptr;
-    for (const auto& [address, h] : made->placed.Members)
+    for (const auto& [address, h] : made->placed.members)
         made->byAddress.InsertOrAssign(address, h);
     return templates.byPath.InsertOrAssign(key, std::move(made)).get();
 }
@@ -201,36 +209,23 @@ void AssignSceneLevelIdIfNeeded(ECS::World& world, ECS::EntityHandle h,
     world.AddComponentImmediate(h, MakeTag(it->second));
 }
 
-// Partitions scene entities into outermost prefab members and scene-owned additions.
-// Unique valid addresses receive member tags; other entities keep scene-level IDs.
-// Instance roots and members enter excluded.
+// Sorts the scene's entities into prefab instances and the rest. An entity is a member of the
+// outermost instance above it when its parent is that instance's root or a member, its tag is a
+// member tag, and the address its parent chain gives it is one the prefab has and no other member
+// took; its tag is then written again from its path. Any other entity is the scene's own (one added
+// on an instance among them) and keeps a scene-level id. Members and roots go to `excluded`.
 bool CollectPrefabInstances(ECS::World& world, const std::vector<ECS::EntityHandle>& entities,
-                            const SaveOptions& options, const SceneSaveContext& saveCtx,
+                            const SceneWriteOptions& options, const SceneWriteContext& saveCtx,
                             const std::filesystem::path& sceneFilePath,
                             std::unordered_map<ECS::EntityId, std::string>& tagByEntity,
                             std::unordered_set<ECS::EntityId>& excluded, PrefabTemplates& templates,
-                            std::vector<SavedPrefabInstance>& instances)
+                            std::vector<SavedPrefabInstance>& instances, SceneIOError& error)
 {
-    if (!options.preservePrefabInstances)
-        return true;
-
-    std::vector<std::string> instancePrefixes;
-    for (const auto entity : entities)
-    {
-        if (excluded.contains(entity.id) || !world.HasComponent<Components::PrefabInstance>(entity))
-            continue;
-        const auto tag = tagByEntity.find(entity.id);
-        const std::string id = tag == tagByEntity.end() ? "e_" + std::to_string(entity.id) : tag->second;
-        instancePrefixes.push_back(id + ".");
-    }
-    if (instancePrefixes.empty())
-        return true;
-
     std::unordered_set<std::string> usedTags;
     usedTags.reserve(tagByEntity.size());
     for (const auto& [id, tag] : tagByEntity)
         usedTags.insert(tag);
-    FastHashMap<ECS::EntityId, std::pair<std::size_t, std::string>> placeById; // instance, address
+    std::unordered_map<ECS::EntityId, std::pair<std::size_t, std::string>> placeById; // instance, address
     FlatMap<std::string, std::string> pathByHashedTag;
 
     for (const ECS::EntityHandle h : entities)
@@ -238,14 +233,10 @@ bool CollectPrefabInstances(ECS::World& world, const std::vector<ECS::EntityHand
         if (excluded.count(h.id) > 0)
             continue;
         const auto* parent = world.GetComponent<Components::Parent>(h);
-        const auto parentPlace = parent && parent->parent.IsValid() ? placeById.find(parent->parent.id) : placeById.end();
+        const auto parentPlace = parent && parent->Entity.IsValid() ? placeById.find(parent->Entity.id) : placeById.end();
         const auto tagIt = tagByEntity.find(h.id);
-        const bool hasMemberTag = tagIt != tagByEntity.end() && IsMemberTag(tagIt->second);
-        const bool isPrefabIdentity = hasMemberTag &&
-            (tagIt->second.find('~') == kHashedSceneTagHeadLength - 1 ||
-             std::any_of(instancePrefixes.begin(), instancePrefixes.end(),
-                         [&tagIt](const std::string& prefix) { return tagIt->second.starts_with(prefix); }));
-        if (parentPlace != placeById.end() && isPrefabIdentity)
+        if (options.preservePrefabInstances && parentPlace != placeById.end() && tagIt != tagByEntity.end() &&
+            IsMemberTag(tagIt->second))
         {
             SavedPrefabInstance& instance = instances[parentPlace->second.first];
             std::string address = JoinPath(parentPlace->second.second, LastIdOf(tagIt->second));
@@ -260,9 +251,10 @@ bool CollectPrefabInstances(ECS::World& world, const std::vector<ECS::EntityHand
                 {
                     if (const std::string* claimed = pathByHashedTag.Find(tag); claimed && *claimed != path)
                     {
-                        SetError(sceneFilePath, 0,
-                                 "Cannot save: two entities get the scene identity \"" + tag + "\": \"" + *claimed +
-                                     "\" and \"" + path + "\". Shorten an id in one of the chains.");
+                        error = SceneIOError{sceneFilePath, 0,
+                                             "Cannot save: two entities get the scene identity \"" + tag + "\": \"" +
+                                                 *claimed + "\" and \"" + path +
+                                                 "\". Shorten an id in one of the chains."};
                         return false;
                     }
                     pathByHashedTag.InsertOrAssign(tag, path);
@@ -279,10 +271,9 @@ bool CollectPrefabInstances(ECS::World& world, const std::vector<ECS::EntityHand
             }
         }
 
+        AssignSceneLevelIdIfNeeded(world, h, tagByEntity, usedTags);
         const auto* marker = world.GetComponent<Components::PrefabInstance>(h);
-        if (marker || isPrefabIdentity)
-            AssignSceneLevelIdIfNeeded(world, h, tagByEntity, usedTags);
-        if (!marker)
+        if (!options.preservePrefabInstances || !marker)
             continue;
 
         SavedPrefabInstance instance{};
@@ -290,29 +281,30 @@ bool CollectPrefabInstances(ECS::World& world, const std::vector<ECS::EntityHand
         instance.id = tagByEntity.count(h.id) ? tagByEntity[h.id] : ("e_" + std::to_string(h.id));
         if (!ResolvePrefabSourceForSave(saveCtx, marker->Source, instance.sourcePath))
         {
-            SetError(sceneFilePath, 0,
-                     "Cannot save prefab instance '" + instance.id +
-                         "': the asset database does not know its source prefab. Save the scene "
-                         "from the project that holds the prefab, reimport the prefab, or delete the instance.");
+            error = SceneIOError{sceneFilePath, 0,
+                                 "Cannot save prefab instance '" + instance.id +
+                                     "': the asset database does not know its source prefab. Save the scene "
+                                     "from the project that holds the prefab, reimport the prefab, or delete the "
+                                     "instance."};
             return false;
         }
         instance.sourceGuid = marker->Source.ToString();
         std::filesystem::path prefabPath;
         AssetType type = AssetType::Unknown;
         saveCtx.Resolver->TryGetPathAndType(saveCtx.Resolver->ResolveGuid(marker->Source), prefabPath, type);
-        std::string error;
+        std::string templateError;
         std::filesystem::path errorFile;
         int errorLine = 0;
-        instance.templ = GetPrefabTemplate(templates, sceneFilePath, prefabPath, error, errorFile, errorLine);
+        instance.templ = GetPrefabTemplate(templates, sceneFilePath, prefabPath, templateError, errorFile, errorLine);
         if (!instance.templ)
         {
-            SetError(errorFile.empty() ? sceneFilePath : errorFile, errorLine,
-                     "Cannot save prefab instance '" + instance.id + "': " + error);
+            error = SceneIOError{errorFile.empty() ? sceneFilePath : errorFile, errorLine,
+                                 "Cannot save prefab instance '" + instance.id + "': " + templateError};
             return false;
         }
-        if (parent && parent->parent.IsValid())
+        if (parent && parent->Entity.IsValid())
         {
-            if (auto it = tagByEntity.find(parent->parent.id); it != tagByEntity.end())
+            if (auto it = tagByEntity.find(parent->Entity.id); it != tagByEntity.end())
                 instance.parentId = it->second;
             if (parentPlace != placeById.end())
                 instance.parentInstance = parentPlace->second.first;
@@ -330,19 +322,19 @@ bool CollectPrefabInstances(ECS::World& world, const std::vector<ECS::EntityHand
 // member's overrides at its address, then "-entity address" for each part of the prefab the
 // instance no longer has.
 void WritePrefabInstanceBody(ECS::World& world, const SavedPrefabInstance& instance,
-                             const PrefabTemplates& templates, const SceneSaveContext& saveCtx,
+                             const PrefabTemplates& templates, const SceneWriteContext& saveCtx,
                              const std::vector<const ISceneComponentSchema*>& schemas, std::string& out)
 {
     // A template's entity references write as the identities the instance's entities have.
     std::unordered_map<ECS::EntityId, std::string> templateTags;
-    templateTags.reserve(instance.templ->placed.Members.size());
-    for (const auto& [address, h] : instance.templ->placed.Members)
+    templateTags.reserve(instance.templ->placed.members.size());
+    for (const auto& [address, h] : instance.templ->placed.members)
         templateTags[h.id] = SceneTagForPath(JoinPath(instance.id, address));
-    SceneSaveContext templateCtx = saveCtx;
+    SceneWriteContext templateCtx = saveCtx;
     templateCtx.EntityTagById = &templateTags;
     templateCtx.Unresolved = templates.world->TryGetUnresolvedComponents();
     templateCtx.WriteEveryField = true;
-    SceneSaveContext instanceCtx = saveCtx;
+    SceneWriteContext instanceCtx = saveCtx;
     instanceCtx.WriteEveryField = true;
 
     std::vector<ComponentText> instanceText;
@@ -356,10 +348,11 @@ void WritePrefabInstanceBody(ECS::World& world, const SavedPrefabInstance& insta
         addedText.clear();
         if (AddsAComponent(instanceText, templateText))
             CollectComponentText(world, h, saveCtx, schemas, addedText);
-        WriteEntityOverrides(address, instanceText, addedText, templateText, out);
+        WriteEntityOverrides(address, instanceText, addedText, templateText,
+                             PrefabOverrideRecords::Get().Find(world, h), out);
     }
 
-    for (const auto& [address, h] : instance.templ->placed.Members)
+    for (const auto& [address, h] : instance.templ->placed.members)
     {
         if (address.empty() || instance.addresses.Contains(address))
             continue;
@@ -379,7 +372,8 @@ static void RemovePlacementText(std::vector<ComponentText>& texts)
 // The overrides of the instance entity at `address` against the template entity, read from the
 // lines the saver writes. Placement components are no override on the root.
 static void CollectEntityOverrides(const std::string& address, std::vector<ComponentText>& instanceText,
-                                   std::vector<ComponentText>& templateText, std::vector<PrefabOverride>& out)
+                                   std::vector<ComponentText>& templateText, std::span<const std::string> recorded,
+                                   std::vector<PrefabOverride>& out)
 {
     if (address.empty())
     {
@@ -387,7 +381,7 @@ static void CollectEntityOverrides(const std::string& address, std::vector<Compo
         RemovePlacementText(templateText);
     }
     std::string text;
-    WriteEntityOverrides(address, instanceText, instanceText, templateText, text);
+    WriteEntityOverrides(address, instanceText, instanceText, templateText, recorded, text);
     const std::string prefix = Addressed(address, {});
     std::string_view addedComponent;
     for (std::string_view line : Split(text, '\n'))
@@ -418,14 +412,14 @@ static void CollectEntityOverrides(const std::string& address, std::vector<Compo
 }
 
 // The children of every entity in `world` that has a parent, keyed by the parent's id.
-static FastHashMap<ECS::EntityId, std::vector<ECS::EntityHandle>> CollectChildren(ECS::World& world)
+static std::unordered_map<ECS::EntityId, std::vector<ECS::EntityHandle>> CollectChildren(ECS::World& world)
 {
-    FastHashMap<ECS::EntityId, std::vector<ECS::EntityHandle>> childrenOf;
+    std::unordered_map<ECS::EntityId, std::vector<ECS::EntityHandle>> childrenOf;
     world.Query<ECS::Read<Components::Parent>>().IncludeDisabled().Each(
         [&childrenOf](ECS::EntityHandle child, const Components::Parent& parent)
         {
-            if (parent.parent.IsValid())
-                childrenOf[parent.parent.id].push_back(child);
+            if (parent.Entity.IsValid())
+                childrenOf[parent.Entity.id].push_back(child);
         });
     return childrenOf;
 }
@@ -508,14 +502,14 @@ void DescribePrefabInstanceAgainst(ECS::World& world, ECS::EntityHandle root, Pr
 
     AssetManagerSceneResolver resolver(engine.GetAssetManager(), engine.GetResolvedAssetRoot(),
                                        AssetManagerSceneResolver::UnknownFile::AssignGuid);
-    SceneSaveContext instanceCtx{};
+    SceneWriteContext instanceCtx{};
     instanceCtx.SceneFile = &prefab->Path;
     instanceCtx.AssetRoot = resolver.GetAssetRoot();
     instanceCtx.Resolver = &resolver;
     instanceCtx.EntityTagById = &instanceTags;
     instanceCtx.Unresolved = world.TryGetUnresolvedComponents();
     instanceCtx.WriteEveryField = true;
-    SceneSaveContext templateCtx = instanceCtx;
+    SceneWriteContext templateCtx = instanceCtx;
     templateCtx.EntityTagById = &templateTags;
     templateCtx.Unresolved = library.GetWorld().TryGetUnresolvedComponents();
 
@@ -532,7 +526,8 @@ void DescribePrefabInstanceAgainst(ECS::World& world, ECS::EntityHandle root, Pr
         CollectComponentText(world, out[index].Entity, instanceCtx, schemas, instanceText);
         CollectComponentText(library.GetWorld(), prefab->Entities[*templateIndexByAddress.Find(address)], templateCtx,
                              schemas, templateText);
-        CollectEntityOverrides(address, instanceText, templateText, out[index].Overrides);
+        CollectEntityOverrides(address, instanceText, templateText,
+                               PrefabOverrideRecords::Get().Find(world, out[index].Entity), out[index].Overrides);
     }
 
     // A removed child is an override of its parent.

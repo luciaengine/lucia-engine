@@ -1,16 +1,17 @@
 #include "Ocean/OceanFlowSim.h"
-#include "Ocean/OceanShaderProgram.h"
-#include "Rendering/Materials/ShaderLayoutShape.h"
-#include "OceanShaderDirectory.h"
+#include "Ocean/OceanShader/OceanShaderProgram.h"
+#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
+#include "OceanShader/OceanShaderDirectory.h"
 
 #include "Logger/Logger.h"
 #include "Mathematics/Geometry.h"
+#include "Mathematics/Interpolation.h"
 #include "Mathematics/Vector2.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
 
 #include <algorithm>
@@ -60,18 +61,12 @@ TextureHandle CreateNeutralFlowMapTexture(IDevice* device)
     return texture;
 }
 
-float SmoothStep(float edge0, float edge1, float x)
-{
-    const float t = std::clamp((x - edge0) / std::max(edge1 - edge0, 1e-6f), 0.0f, 1.0f);
-    return t * t * (3.0f - 2.0f * t);
-}
-
 float SegmentDistance(float px, float pz, float ax, float az, float bx, float bz)
 {
     const float abx = bx - ax;
     const float abz = bz - az;
     const float denom = std::max(abx * abx + abz * abz, 1e-12f);
-    const float t = std::clamp(((px - ax) * abx + (pz - az) * abz) / denom, 0.0f, 1.0f);
+    const float t = Math::Clamp01(((px - ax) * abx + (pz - az) * abz) / denom);
     const float cx = ax + abx * t;
     const float cz = az + abz * t;
     const float dx = px - cx;
@@ -105,7 +100,7 @@ float PolygonWeight(float worldX, float worldZ, const OceanFlowPolygonGPU& poly)
     for (std::size_t i = 0, j = points.size() - 1; i < points.size(); j = i++)
         minEdgeDist = std::min(minEdgeDist,
                                SegmentDistance(worldX, worldZ, points[i].x, points[i].y, points[j].x, points[j].y));
-    return SmoothStep(0.0f, feather, minEdgeDist);
+    return Math::SmoothStep(0.0f, feather, minEdgeDist);
 }
 
 float FlowMapFootprintWeight(float worldX, float worldZ, const OceanFlowMapSourceGPU& source)
@@ -119,7 +114,7 @@ float FlowMapFootprintWeight(float worldX, float worldZ, const OceanFlowMapSourc
     const float feather = std::max(source.StrengthFeather[1], 0.0f);
     if (feather <= 1e-3f)
         return 1.0f;
-    return SmoothStep(0.0f, feather, std::min(halfX - dx, halfZ - dz));
+    return Math::SmoothStep(0.0f, feather, std::min(halfX - dx, halfZ - dz));
 }
 
 } // anonymous namespace
@@ -305,8 +300,8 @@ OceanCurrentSample OceanFlowSim::SampleFlow(float worldX, float worldZ) const
         if (dx > halfX || dz > halfZ)
             continue;
 
-        const float edgeX = 1.0f - SmoothStep(0.7f, 1.0f, dx / halfX);
-        const float edgeZ = 1.0f - SmoothStep(0.7f, 1.0f, dz / halfZ);
+        const float edgeX = 1.0f - Math::SmoothStep(0.7f, 1.0f, dx / halfX);
+        const float edgeZ = 1.0f - Math::SmoothStep(0.7f, 1.0f, dz / halfZ);
         const float weight = std::min(edgeX, edgeZ);
         sample.FlowX += src.FlowVelocity[0] * weight;
         sample.FlowZ += src.FlowVelocity[1] * weight;
@@ -360,31 +355,30 @@ void OceanFlowSim::FillParams(OceanFlowParamsGPU& out)
     out = m_Params;
 }
 
-OceanPreparedDispatch OceanFlowSim::PrepareDispatch(
-    IDevice* device, BufferHandle paramsBuffer, uint64 paramsOffset) const
+void OceanFlowSim::RecordDispatch(IDevice* device, CommandList* cl,
+                                  BufferHandle paramsBuffer, uint64 paramsOffset)
 {
-    if (!m_Ready || !device || !paramsBuffer.IsValid())
-        return {};
+    if (!m_Ready || !cl || !device || !paramsBuffer.IsValid())
+        return;
 
     const TextureHandle flow = m_Flow.GetTexture();
     const uint32 layers = m_LodCount;
 
-    PipelineHandle pipe = device->TryGetWarmComputePipeline(m_Pipe);
+    PipelineHandle pipe = device->GetOrCreateComputePipeline(m_Pipe);
     if (!pipe)
-        return {};
+        return;
 
     // Sync is graph-derived: the pass declares Write(flow) so the render graph
     // emits the ShaderResource->General entry transition, the first declared
     // reader (foam / the surface span) restores ShaderReadOnly, and MarkOutput
     // covers reader-less frames. No manual barriers in here.
+    cl->SetPipeline(pipe);
 
     DescriptorSetDesc dsDesc{};
     dsDesc.layout = m_Layout;
     dsDesc.transient = true;
     dsDesc.debugName = "OceanFlow_DS";
     DescriptorSetHandle ds = device->CreateDescriptorSet(dsDesc);
-    if (!ds.IsValid())
-        return {};
 
     device->UpdateBufferBinding(ds, 0, paramsBuffer, paramsOffset, sizeof(OceanFlowParamsGPU));
     device->UpdateStorageImageBinding(ds, 1, flow);
@@ -396,14 +390,10 @@ OceanPreparedDispatch OceanFlowSim::PrepareDispatch(
         device->UpdateCombinedImageSamplerBinding(ds, 2u + i, mapTexture, m_Sampler);
     }
 
-    const uint32 g8 = (m_Resolution + 7u) / 8u;
-    return {pipe, ds, g8, g8, layers, flow};
-}
+    cl->BindDescriptorSet(0, ds, pipe);
 
-void OceanFlowSim::RecordDispatch(CommandList* cl, const OceanPreparedDispatch& dispatch)
-{
-    if (!RecordOceanPreparedDispatch(cl, dispatch))
-        return;
+    const uint32 g8 = (m_Resolution + 7u) / 8u;
+    cl->Dispatch(g8, g8, layers);
     m_DispatchDirty = false;
 }
 

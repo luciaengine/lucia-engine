@@ -1,7 +1,7 @@
 #pragma once
 
 #include "AssetCore/GUID.h"
-#include "AssetCore/Types.h"
+#include "Types/Types.h"
 #include "Mathematics/Vector2.h"
 #include "UI/UIElement.h"
 

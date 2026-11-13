@@ -28,8 +28,8 @@
 #include <cstdint>
 #include <functional>
 #include <span>
-#include <string_view>
 #include <vector>
+#include <string_view>
 
 namespace GameEngine::ECS
 {
@@ -167,7 +167,7 @@ struct PostProcessEffectDescriptor
     std::string_view DisplayName;
     std::string_view Description{};
     std::string_view IconPath{};
-    std::string_view IconClass{}; // CSS-owned icon for inspector and effect picker
+    std::string_view IconClass{};
     std::string_view RequiredPackage{};
 
     // Scene-IO metadata. Effects that keep a hand-written schema register with
@@ -175,9 +175,6 @@ struct PostProcessEffectDescriptor
     // so a descriptor is scene-IO-inert for them — it exists for the chrome and
     // settings-write consumers above.
     std::span<const EffectFieldIO> FieldIO{};
-    // Retired keys older scenes may still carry: parsed and dropped without a
-    // warning (e.g. ColorGrade brightness/gamma/hue).
-    std::span<const std::string_view> DroppedLegacyKeys{};
 
     std::span<const EffectSettingsField> SettingsFields{};
 
@@ -240,7 +237,6 @@ class PostProcessEffectRegistry
     // The span stays valid for the process lifetime (Register retires, never
     // frees, the cached table).
     static std::span<const EffectSettingsField> AllSettingsFields();
-    // Cached nonempty hooks, with the same registration/retirement lifetime.
     static std::span<const EffectViewPreparation> AllViewPreparations();
 };
 

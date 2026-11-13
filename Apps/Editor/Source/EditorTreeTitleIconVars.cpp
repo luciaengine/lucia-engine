@@ -18,9 +18,10 @@ constexpr float kTreeRowExtraAtMaxIconPx = 4.0f;
 // The UI's wheel scroll is ~30 px per detent, so rounding this rate moves the icon one
 // pixel per detent.
 constexpr float kTreeIconPxPerScrollPx = 1.0f / 40.0f;
+// A badge on a tree icon's corner grows with the icon: 9 px on the 20 px icon, 20 px on the 64 px icon.
 constexpr float kTreeIconBadgeBasePx = 4.0f;
 constexpr float kTreeIconBadgePxPerIconPx = 0.25f;
-// Smaller icons leave too few pixels for a readable badge.
+// Under a 20 px icon a corner badge is too small to read as a shape, so the scope shows no badges.
 constexpr float kTreeIconBadgeMinIconPx = 20.0f;
 constexpr const char* kTreeIconsShowBadgesClass = "tree-icons-show-badges";
 
@@ -41,12 +42,12 @@ void ApplyTreeTitleIconLayoutVars(UIElement* scope, float iconSizePx)
     const float padding = clamped + 12.0f;
     const float paddingRtl = clamped + 4.0f;
     const float foldoutPx = TreeFoldoutGlyphSizePxForTreeIconSize(clamped);
-    scope->Overrides().SetCustom(HashStringId("--ui_tree_icon_size"), FormatTreeIconPx(clamped));
-    scope->Overrides().SetCustom(HashStringId("--ui_tree_foldout_size"), FormatTreeIconPx(foldoutPx));
-    scope->Overrides().SetCustom(HashStringId("--ui_tree_icon_padding"), FormatTreeIconPx(padding));
-    scope->Overrides().SetCustom(HashStringId("--ui_tree_icon_padding_rtl"), FormatTreeIconPx(paddingRtl));
     const float badgePx = kTreeIconBadgeBasePx + clamped * kTreeIconBadgePxPerIconPx;
-    scope->Overrides().SetCustom(HashStringId("--ui_tree_icon_badge_size"), FormatTreeIconPx(badgePx));
+    scope->Style().SetCustom(HashStringId("--ui_tree_icon_size"), FormatTreeIconPx(clamped));
+    scope->Style().SetCustom(HashStringId("--ui_tree_foldout_size"), FormatTreeIconPx(foldoutPx));
+    scope->Style().SetCustom(HashStringId("--ui_tree_icon_padding"), FormatTreeIconPx(padding));
+    scope->Style().SetCustom(HashStringId("--ui_tree_icon_padding_rtl"), FormatTreeIconPx(paddingRtl));
+    scope->Style().SetCustom(HashStringId("--ui_tree_icon_badge_size"), FormatTreeIconPx(badgePx));
     if (clamped >= kTreeIconBadgeMinIconPx)
         scope->AddClass(kTreeIconsShowBadgesClass);
     else

@@ -1,15 +1,13 @@
 #pragma once
 
-#include <filesystem>
-
 #include "ECS/ECS.h"
 #include "ECS/ModuleRegistration.h"
 #include "PluginAPI/EnginePlugin.h"
 #include "Platform/ContextMenu.h"
 #include "Rendering/Core/Handle.h"
 
+#include <filesystem>
 #include <functional>
-#include <nlohmann/json_fwd.hpp>
 #include <map>
 #include <string>
 #include <string_view>
@@ -39,16 +37,20 @@ struct HierarchyCommandContext
     ECS::World* World = nullptr;
     ECS::EntityHandle TargetEntity{};
     bool HasTargetEntity = false;
+    /// The entities the command acts on: the selection when it holds TargetEntity, TargetEntity alone
+    /// otherwise; for a key, the selection.
+    std::vector<ECS::EntityHandle> TargetEntities;
     const EditorContext* EditorCtx = nullptr;
     EditorChangeNotifications* ChangeNotifications = nullptr;
     UndoRedoService* Undo = nullptr;
+    /// An element of the panel that ran the command. A command that opens a dialog attaches it to
+    /// the root of this element's window, so the dialog covers the whole window.
+    UIElement* DialogHost = nullptr;
 
     std::function<void(ECS::EntityHandle)> SelectEntity;
     std::function<void(ECS::EntityHandle)> NotifyEntityCreated;
     std::function<void()> NotifyWorldStructureChanged;
-
-    UIElement* DialogHost = nullptr;
-    std::vector<ECS::EntityHandle> TargetEntities;
+    /// Selects the asset file at the path in the Assets panel and shows it there.
     std::function<void(const std::filesystem::path&)> PingAsset;
 };
 
@@ -70,16 +72,6 @@ struct SelectionMaskPart
     float WindSeed = 0.0f;
 };
 
-// Main-thread host services borrowed until OnEditorShutdown. Packages own their
-// jobs and panels; the host owns scene lifetime and selection semantics.
-struct EditorHostServices
-{
-    EditorChangeNotifications* ChangeNotifications = nullptr;
-    std::function<std::vector<uint32_t>()> SelectedEntityIds;
-    std::function<bool()> CanWriteScene;
-    std::function<bool(std::string_view)> IsModuleAvailable;
-};
-
 class IEditorPlugin
 {
 public:
@@ -88,11 +80,6 @@ public:
     virtual const Plugins::PluginDescriptor& GetDescriptor() const = 0;
 
     virtual void RegisterInspectors() {}
-    virtual void OnEditorAttach(const EditorHostServices&) {}
-    virtual void OnEditorUpdate() {}
-    virtual void OnSceneInvalidated() {}
-    virtual void OnEditorShutdown() {}
-    virtual bool TryInvokeCommand(std::string_view, const nlohmann::json&, nlohmann::json&) { return false; }
     virtual void BuildHierarchyContextMenu(ContextMenuBuilder& /*builder*/,
                                            const HierarchyContextMenuContext& /*context*/) {}
     virtual bool HandleHierarchyCommand(uint32_t /*commandId*/,
@@ -100,7 +87,8 @@ public:
     {
         return false;
     }
-    /// The focused Hierarchy's command for this key; zero when the plugin has no binding.
+    /// The Hierarchy command that the key `key` with `mods` runs while the Hierarchy has focus, as its
+    /// menu entry runs it; 0 for a key the plugin does not bind.
     virtual uint32_t HierarchyCommandForKey(int /*key*/, int /*mods*/) const { return 0; }
     // Selection/hover outline contribution for entities whose rendered meshes
     // are plugin-generated. Append zero or more parts; entities the plugin
@@ -122,12 +110,6 @@ public:
     static EditorPluginRegistry& Get();
 
     void RegisterPlugin(IEditorPlugin& plugin);
-    void AttachHost(EditorHostServices services);
-    void Update();
-    void InvalidateScene();
-    void Shutdown();
-    bool TryInvokeCommand(std::string_view method, const nlohmann::json& parameters,
-                          nlohmann::json& result);
     std::vector<IEditorPlugin*> GetPlugins() const;
     std::vector<IEditorPlugin*> GetEnabledPlugins() const;
 
@@ -147,7 +129,7 @@ public:
                                    const HierarchyContextMenuContext& context);
     bool HandleHierarchyCommand(uint32_t commandId,
                                 const HierarchyCommandContext& context);
-    /// The first enabled plugin's Hierarchy command for this key, or zero.
+    /// The command the first enabled plugin binds to `key` with `mods` in the Hierarchy; 0 when none does.
     uint32_t HierarchyCommandForKey(int key, int mods) const;
     void CollectSelectionMaskParts(ECS::World& world,
                                    ECS::EntityHandle entity,
@@ -167,14 +149,11 @@ private:
     {
         IEditorPlugin* Plugin = nullptr;
         ECS::ModuleRegistrationStamp Module;
-        bool Attached = false;
     };
 
     const std::vector<IEditorPlugin*>& MaskContributors() const;
 
     std::vector<Entry> m_Plugins;
-    EditorHostServices m_HostServices;
-    bool m_HostAttached = false;
     EnabledResolver m_EnabledResolver;
     // Memoized IsEnabled answers keyed by plugin id, plus the derived
     // enabled-and-contributing list the per-entity outline dispatch iterates.

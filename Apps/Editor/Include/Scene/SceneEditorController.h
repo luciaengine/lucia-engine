@@ -1,7 +1,9 @@
 #pragma once
 
+#include "Scene/SceneDocumentManager.h"
 #include "Scene/SceneIO.h"
 #include "Scene/SceneLoadFailure.h"
+#include "Types/ScopedSubscription.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -74,12 +76,20 @@ class SceneEditorController
     // Create a fresh untitled scene (prompts to save if dirty).
     void RequestNewScene();
 
+    // Called once a project has opened, with the workspace root already on it:
+    // opens the project's startup scene (Projects/ProjectStartupScene.h), or a
+    // default scene when it names none. Prompts like any open when the outgoing
+    // scene is dirty, unless `outgoingChangesDiscarded`: the user already chose
+    // Don't Save for the switch (PromptSaveBefore).
+    void OpenProjectStartupScene(const std::filesystem::path& projectRoot, bool outgoingChangesDiscarded);
+
     // Top toolbar save icon / menu: same behavior as Editor.Global.SaveScene (Ctrl+S).
     void RequestSaveScene();
+    void RegisterCommands();
     /// Save As dialog (e.g. toolbar save with Shift held).
     void RequestSaveSceneAs();
     // Discard unsaved edits. Saved documents reload from disk; untitled
-    // documents become a new empty scene. Shows a confirmation first.
+    // documents become a new default scene. Shows a confirmation first.
     // Play mode is a no-op (the simulated world must not replace the document).
     void RequestRevertScene();
 
@@ -101,17 +111,17 @@ class SceneEditorController
     bool SaveActiveSceneAs(const std::filesystem::path& scenePath, std::string* outError,
                            DegradedSavePolicy degradedPolicy = DegradedSavePolicy::Refuse);
 
-    // Registers the scene document's fixed-id commands (UiReplayCommandIds::SaveScene)
-    // with EditorMenuRegistry. The registry keeps `this` for the process lifetime:
-    // call once, on the editor's controller.
-    void RegisterCommands();
-
     // Periodic auto-save to `<name>.backup.scene` (see settings). Call from EditorApplication::Update.
     void TickAutoSave(float deltaSeconds, bool inhibitWhileNotEditing);
 
-    /// If the active scene document is dirty, shows SaveSceneChangesModal; otherwise invokes `proceedQuit` immediately.
-    /// When the user Saves (or chooses Don't Save / completes Save As), `proceedQuit` runs exactly once.
-    void PromptSaveBeforeQuit(std::function<void()> proceedQuit);
+    /// If the active scene document is dirty, asks "Save before <action>?" (action: "quitting",
+    /// "opening another project"); otherwise invokes `proceed` immediately. When the user Saves
+    /// (or chooses Don't Save / completes Save As), `proceed` runs exactly once, told whether the
+    /// changes were discarded (Don't Save). The answer belongs to that action alone: a caller whose
+    /// scene change follows passes it on (OpenProjectStartupScene), and any other scene change
+    /// still asks. Cancel, in the prompt or in Save As, runs `canceled` (optional) instead.
+    void PromptSaveBefore(const std::string& action, std::function<void(bool changesDiscarded)> proceed,
+                          std::function<void()> canceled);
 
     // Clean close of the active document (normal exit, scene switch): delete its
     // autosave staging — the `.backup.scene` and any staged `.tzone.backup`
@@ -124,7 +134,6 @@ class SceneEditorController
     std::vector<std::uint8_t> CaptureWorldSnapshot() const;
     bool ApplyWorldSnapshot(const std::vector<std::uint8_t>& snapshot) const;
 
-    SceneDocumentManager* GetSceneDocument() { return m_Doc.get(); }
     std::optional<std::filesystem::path> GetActiveScenePath() const;
     std::optional<std::string> GetActiveSceneDisplayName() const;
     std::vector<std::filesystem::path> GetRecentScenePaths() const;
@@ -134,8 +143,11 @@ class SceneEditorController
     // a partial load, and this is the only thing that says so.
     const std::optional<SceneLoadFailure>& GetLastSceneLoadFailure() const;
 
-    // The last scene open that loaded without being able to apply everything in the file, exactly
-    // as that load left it: see SceneDocumentManager::GetLastLoadDegraded.
+    // The document of the open scene; null until AttachToRoot.
+    SceneDocumentManager* GetDocument() const { return m_Doc.get(); }
+
+    // The last scene open that loaded without being able to apply everything in the file, less the
+    // skips the user discarded: see SceneDocumentManager::GetLastLoadDegraded.
     const std::optional<SceneLoadDegraded>& GetLastSceneLoadDegraded() const;
 
     // The same record filtered to what is still outstanding, which is what Save is guarded on and
@@ -170,12 +182,12 @@ class SceneEditorController
     bool RespondToActiveModal(const std::string& choice, std::string* outError);
 
     void SetHierarchyUiCaptureForSave(std::function<Scene::SceneHierarchyUi()> capture);
-    std::optional<Scene::SceneHierarchyUiFromFile> ConsumeHierarchyUiFromLastDocumentLoad();
+    std::optional<SceneHierarchyUiFromFile> ConsumeHierarchyUiFromLastDocumentLoad();
 
     void SetEditorCameraCaptureForSave(std::function<Scene::SceneEditorCamera()> capture);
-    std::optional<Scene::SceneEditorCameraFromFile> ConsumeEditorCameraFromLastDocumentLoad();
+    std::optional<SceneEditorCameraFromFile> ConsumeEditorCameraFromLastDocumentLoad();
 
-    // Releases the editor-side spline generators against the outgoing world on
+    // Releases the generated entities of the outgoing world on
     // every scene swap (SceneDocumentManager::SetSceneScopedGeneratorRelease).
     void SetSceneScopedGeneratorRelease(std::function<void()> release);
 
@@ -216,6 +228,8 @@ class SceneEditorController
         Kind kind = Kind::None;
         std::filesystem::path path;
         OpenRestorePolicy restorePolicy = OpenRestorePolicy::Prompt;
+        // The user already chose Don't Save for the action this open completes.
+        bool outgoingChangesDiscarded = false;
     };
 
     void Execute(const PendingAction& a);
@@ -253,6 +267,7 @@ class SceneEditorController
     // crash-recovery staging. The chosen resolution re-queues as a pending
     // action (opens never run inside UI callbacks).
     void BeginRecoveryPrompt(const std::filesystem::path& scenePath);
+    void RequestLoadScene();
     void DoSave();
     // Save that has already cleared (or does not need) the degraded-document guard.
     void DoSaveConfirmed(DegradedSavePolicy degradedPolicy);
@@ -313,7 +328,11 @@ class SceneEditorController
     std::function<void(const std::filesystem::path&)> m_OnAfterSave;
 
     /// When non-empty, invoked after a successful Save As (used for quit flow).
-    std::function<void()> m_DeferredQuitAfterSave;
+    std::function<void()> m_DeferredProceedAfterSave;
+    std::function<void()> m_DeferredCancelAfterSave;
+
+    // The File menu items; they call this controller, so they go when it goes.
+    std::vector<ScopedSubscription> m_MenuItems;
 };
 
 } // namespace Editor

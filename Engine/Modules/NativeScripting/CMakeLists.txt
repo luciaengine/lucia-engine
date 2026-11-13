@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(NativeScripting VERSION 1.0.0 LANGUAGES CXX)
+project(NativeScripting LANGUAGES CXX)
 
 # Native C++ scripting / hot-reload module: the manager, the file watcher, the RAII
 # module handle and the user ABI header.
@@ -28,10 +28,6 @@ endif()
 # DLL by the generated user-project build (UserProjectGenerator adds it as a source).
 
 add_library(NativeScripting OBJECT ${NATIVE_SCRIPTING_SOURCES})
-
-# GE_NATIVE_MODULE_NO_UNLOAD reads through Platform's header-only environment switch.
-set_property(SOURCE Source/NativeScriptManager.cpp APPEND PROPERTY
-    INCLUDE_DIRECTORIES ${CMAKE_SOURCE_DIR}/Engine/Modules/Platform/Include)
 
 target_compile_features(NativeScripting PUBLIC cxx_std_20)
 
@@ -85,9 +81,10 @@ message(STATUS "NativeScripting: Configured as OBJECT library")
 add_executable(GePrebuiltStamp
     Tools/GePrebuiltStampMain.cpp
     Source/BuildCacheRecord.cpp
+    Source/EngineBuildIdentity.cpp
     Source/PrebuiltModuleBinaries.cpp
     Source/SdkManifest.cpp
     Source/ToolchainFingerprint.cpp)
 set_target_properties(GePrebuiltStamp PROPERTIES UNITY_BUILD OFF FOLDER "Tools")
 target_include_directories(GePrebuiltStamp PRIVATE Include Source)
-target_link_libraries(GePrebuiltStamp PRIVATE Types Logger)
+target_link_libraries(GePrebuiltStamp PRIVATE Types Logger ${CMAKE_DL_LIBS})

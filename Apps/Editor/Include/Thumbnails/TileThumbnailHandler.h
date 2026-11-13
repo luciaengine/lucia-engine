@@ -1,6 +1,6 @@
 #pragma once
 
-#include "AssetCore/Types.h"
+#include "Types/Types.h"
 #include "Thumbnails/AssetThumbnailHandler.h"
 
 #include <cstdint>

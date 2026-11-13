@@ -45,16 +45,20 @@ import shadercook  # noqa: E402
 # calls in Engine/Modules/Rendering/CMakeLists.txt for the packages a web
 # Player's frame requests. A package outside this set has no WGSL, and the
 # runtime names it as missing rather than drawing without it.
-kPackages: dict[str, dict[str, str]] = {
-    "planar_reflection_composite": {"cs": "planar_reflection_composite.comp"},
-    "planar_reflection_blur": {"cs": "planar_reflection_blur.comp"},
+kPackages: dict[str, dict[str, str | tuple[str, list[str]]]] = {
     "encode_srgb": {"vs": "fullscreen_noinput.vert", "fs": "encode_srgb.frag"},
     "tonemap": {"vs": "fullscreen_noinput.vert", "fs": "tonemap.frag"},
     "copy": {"vs": "fullscreen_noinput.vert", "fs": "copy.frag"},
+    "msaa_color_resolve": {"vs": "fullscreen_noinput.vert", "fs": "msaa_color_resolve.frag"},
+    "msaa_color_resolve_bloom_delta": {"vs": "fullscreen_noinput.vert", "fs": "msaa_color_resolve_bloom_delta.frag"},
+    "clear_color_backdrop": {"vs": "fullscreen_noinput.vert", "fs": "clear_color_backdrop.frag"},
     "solidcolor": {"vs": "fullscreen_noinput.vert", "fs": "solidcolor.frag"},
-    "forwardplus_lighting": {"vs": "fullscreen_noinput.vert", "fs": "forwardplus_lighting.frag"},
     "clustered_light_cull": {"cs": "clustered_light_cull.comp"},
     "cluster_depth_minmax": {"cs": "cluster_depth_minmax.comp"},
+    # The same kernel at 16 and 8 threads per axis, for devices below 1024 invocations per
+    # workgroup: a phone's WebGPU grants 256 (the DepthMinMax pass picks the largest that fits).
+    "cluster_depth_minmax_t16": {"cs": ("cluster_depth_minmax.comp", ["GE_DEPTH_MINMAX_THREADS=16"])},
+    "cluster_depth_minmax_t8": {"cs": ("cluster_depth_minmax.comp", ["GE_DEPTH_MINMAX_THREADS=8"])},
     "sky_render": {"vs": "fullscreen_noinput.vert", "fs": "sky_render.frag"},
     "sky_stars_billboard": {"vs": "sky_stars_billboard.vert", "fs": "sky_stars_billboard.frag"},
     "sky_transmittance_lut": {"cs": "sky_transmittance_lut.comp"},
@@ -64,6 +68,8 @@ kPackages: dict[str, dict[str, str]] = {
     "depth_copy": {"cs": "depth_copy.comp"},
     # The late transparents' single-sample depth under MSAA (WebGPU runs 4x): sample 0 of the view depth.
     "depth_copy_sample0": {"vs": "fullscreen_noinput.vert", "fs": "depth_copy_sample0.frag"},
+    # DepthUpsamplePass loads this package before depth_copy_sample0 and runs neither without it.
+    "taau_depth_upsample": {"vs": "fullscreen_noinput.vert", "fs": "taau_depth_upsample.frag"},
     "depth_reduce": {"cs": "depth_reduce.comp"},
     "depth_reduce_ms": {"cs": "depth_reduce_ms.comp"},
     # Web.rendergraph's SSSR path (HZBBuild + ScreenSpaceReflections). These
@@ -78,6 +84,10 @@ kPackages: dict[str, dict[str, str]] = {
     "sssr_reproject": {"cs": "ScreenSpaceReflections/sssr_reproject.comp"},
     "sssr_temporal": {"cs": "ScreenSpaceReflections/sssr_temporal.comp"},
     "msm_write": {"vs": "fullscreen_noinput.vert", "fs": "msm_write.frag"},
+    # ShadowMapNode loads the moment blur and cascade passes whenever the graph has a shadow map.
+    "msm_blur_h": {"vs": "fullscreen_noinput.vert", "fs": "msm_blur_h.frag"},
+    "msm_blur_v": {"vs": "fullscreen_noinput.vert", "fs": "msm_blur_v.frag"},
+    "msm_cascade": {"cs": "msm_cascade.comp"},
     # Contact shadows are selected by the view's Shadow Settings at runtime,
     # so both Player and Editor exports need the complete compute chain.
     "screen_space_shadow_prepare": {"cs": "ScreenSpaceShadows/screen_space_shadow_prepare.comp"},
@@ -87,8 +97,6 @@ kPackages: dict[str, dict[str, str]] = {
     "shadow_debug_overlay": {"vs": "fullscreen_noinput.vert", "fs": "shadow_debug_overlay.frag"},
     "world_debug": {"vs": "world_debug.vert", "fs": "world_debug.frag"},
     "world_depthonly": {"vs": "world_debug.vert", "fs": "world_depthonly.frag"},
-    "world_debug_forwardplus": {"vs": "world_debug_forwardplus.vert",
-                                "fs": "world_debug_forwardplus.frag"},
     # Volumetric clouds (Engine/Modules/VolumetricClouds owns these sources):
     # six passes the default ForwardPlus graph carries. Unlike the DOF node
     # below these are graph passes, so a package the runtime cannot load is an
@@ -139,6 +147,9 @@ kEditorPackages: dict[str, dict[str, str]] = {
     # compiles without them and the frame then reports them missing.
     "auto_exposure_histogram": {"cs": "auto_exposure_histogram.comp"},
     "auto_exposure_resolve": {"cs": "auto_exposure_resolve.comp"},
+    # Declared in the graph JSON (ForwardPlus and Web: the PreExposureSnapshot pass) but listed
+    # with the exposure pair it shares the ExposureHistory buffer with.
+    "pre_exposure_snapshot": {"cs": "pre_exposure_snapshot.comp"},
     # DDGI probe update + resolve, software-trace lane only. The hardware
     # classify/trace/refit-HW use ray queries, which WebGPU has no equivalent
     # for — their absence is what routes the feature to this lane.
@@ -166,7 +177,7 @@ kEditorPackages: dict[str, dict[str, str]] = {
     "lens_flare": {"vs": "lens_flare.vert", "fs": "lens_flare.frag"},
     "sun_glare": {"vs": "sun_glare.vert", "fs": "sun_glare.frag"},
     "sun_glare_ms": {"vs": "sun_glare_ms.vert", "fs": "sun_glare.frag"},
-    "msm_blur_h": {"vs": "fullscreen_noinput.vert", "fs": "msm_blur_h.frag"},
+    "sun_glare_casters": {"cs": "sun_glare_casters.comp"},
     "sssr_classify": {"cs": "ScreenSpaceReflections/sssr_classify.comp"},
     "sssr_composite": {"cs": "ScreenSpaceReflections/sssr_composite.comp"},
     "sssr_intersect": {"cs": "ScreenSpaceReflections/sssr_intersect.comp"},
@@ -224,7 +235,6 @@ kEditorPackages: dict[str, dict[str, str]] = {
     # Render scale != 1.0 resolves through the upscale variant; without it web
     # degrades to the warned bilinear passthrough.
     "taa_resolve_upscale": {"cs": "taa_resolve_upscale.comp"},
-    "taau_depth_upsample": {"vs": "fullscreen_noinput.vert", "fs": "taau_depth_upsample.frag"},
     # The ForwardPlus graph's remaining passes. Generated from the
     # _ge_add_shaderpkg_* declarations in Engine/Modules/Rendering/CMakeLists.txt,
     # which is the source of truth for what each package's stages are; a package
@@ -253,7 +263,6 @@ kEditorPackages: dict[str, dict[str, str]] = {
     "fog_glow_prefilter": {"vs": "fullscreen_noinput.vert", "fs": "fog_glow_prefilter.frag"},
     "hdr_color_fx": {"vs": "fullscreen_noinput.vert", "fs": "hdr_color_fx.frag"},
     "heat_distortion": {"vs": "fullscreen_noinput.vert", "fs": "heat_distortion.frag"},
-    "height_fog": {"vs": "fullscreen_noinput.vert", "fs": "height_fog.frag"},
     "post_fx_ldr_stack": {"vs": "fullscreen_noinput.vert", "fs": "post_fx_ldr_stack.frag"},
     "vhs": {"vs": "fullscreen_noinput.vert", "fs": "vhs.frag"},
     "vhs_chroma_bands": {"vs": "fullscreen_noinput.vert", "fs": "vhs_chroma_bands.frag"},
@@ -268,23 +277,22 @@ kEditorPackages: dict[str, dict[str, str]] = {
 
 # Built-in packages the web library's engine pack (engine_pack.py) cooks on top of
 # kPackages: those the library's own pipeline (Apps/WebLibrary/Assets/RenderPipelines/
-# Web.rendergraph) adds to the web export's graph (auto exposure, sun glare and bloom),
-# the shadow map's moment blur and cascade passes, which ShadowMapNode loads by name
-# whenever the graph has a shadow map (its moment write, msm_write, is in kPackages), and
+# Web.rendergraph) adds to the web export's graph (auto exposure, sun glare, bloom and TAA), and
 # the DDGI software lane with its screen-space resolve, which the graph's DDGIGen pass and
 # the compat forward pass (GE_DDGI_RESOLVE_ONLY, Includes/ibl.glsl) run once a page adds a
 # DDGIVolume: without them the volume lights nothing.
 kLibraryPackages: dict[str, dict[str, str]] = {
     name: kEditorPackages[name] for name in (
-        "auto_exposure_histogram", "auto_exposure_resolve", "sun_glare", "sun_glare_ms",
+        "auto_exposure_histogram", "auto_exposure_resolve", "pre_exposure_snapshot", "sun_glare",
+        "sun_glare_ms", "sun_glare_casters",
         "bloom_threshold", "bloom_downsample", "bloom_octave_gather", "bloom_lens_dirt_gather",
-        "bloom_combine", "bloom_lens_dirt", "msm_blur_h",
+        "bloom_combine", "bloom_lens_dirt",
+        "taa_motion_vectors", "taa_motion_vectors_skinned", "taa_resolve", "taa_resolve_upscale",
         *(name for name in kEditorPackages if name.startswith("ddgi_")))
 }
-# The moment rows belong in kPackages, where the web Player needs them too (#3138); these two
-# literals and msm_blur_h above are duplicates to delete once they are there.
-kLibraryPackages["msm_blur_v"] = {"vs": "fullscreen_noinput.vert", "fs": "msm_blur_v.frag"}
-kLibraryPackages["msm_cascade"] = {"cs": "msm_cascade.comp"}
+# The render-scale crossing without TAA (RenderScaleUpscaleNode): the graph's RenderScaleUpscale pass
+# resamples a view whose camera sets a render scale and runs no TAA.
+kLibraryPackages["spatial_upscale"] = {"vs": "fullscreen_noinput.vert", "fs": "spatial_upscale.frag"}
 
 # Stage shaders with no package: name as the runtime asks for it (minus the
 # .spv), then the GLSL source and any defines beyond kWebDefines. Same runtime
@@ -452,7 +460,7 @@ def FindShaderReflect(shaderPkgDir: Path, explicit: Path | None = None) -> Path:
 
 
 # Not every built-in package's source sits in Rendering/Shaders. Modules own
-# their own (HeightFog), and engine packages own theirs under Assets/Shaders
+# their own (VolumetricFog), and engine packages own theirs under Assets/Shaders
 # (film-simulation, chromatic-aberration), so a package name alone does not say
 # where its stages live. The search is ordered: the engine shader dir first, so
 # nothing here can shadow a core shader, then the module and package roots.
@@ -494,7 +502,7 @@ def ResolveShaderSource(sourceName: str, shaderSourceDir: Path) -> Path:
 
 def CookBuiltinPackages(shaderPkgDir: Path, shaderSourceDir: Path, outDir: Path,
                         validate: bool = True,
-                        packages: dict[str, dict[str, str]] | None = None,
+                        packages: dict[str, dict[str, str | tuple[str, list[str]]]] | None = None,
                         shaderReflect: Path | None = None
                         ) -> list[tuple[str, str]]:
     """Write WGSL-carrying copies of every built-in package into `outDir`.
@@ -517,11 +525,14 @@ def CookBuiltinPackages(shaderPkgDir: Path, shaderSourceDir: Path, outDir: Path,
                 scratch = Path(tempDir)
                 wgslChunks = []
                 reflectionArgs = [reflector]
-                for stageKey, sourceName in stages.items():
+                for stageKey, stageSource in stages.items():
+                    # A stage is its GLSL source, or (source, defines) for a package built
+                    # with defines beyond kWebDefines.
+                    sourceName, stageDefines = (stageSource, []) if isinstance(stageSource, str) else stageSource
                     outWgsl = scratch / f"{packageName}.{stageKey}.wgsl"
                     source = ResolveShaderSource(sourceName, shaderSourceDir)
                     shadercook.CookFile(source, kStageNames[stageKey],
-                                        glslc, naga, tint, validate, kWebDefines,
+                                        glslc, naga, tint, validate, kWebDefines + stageDefines,
                                         [shaderSourceDir, source.parent], outWgsl, scratch)
                     wgslChunks.append((f"{stageKey}-wgsl", outWgsl))
                     # Reflect the preprocessed GLSL before the cook lowers push

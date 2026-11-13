@@ -2,7 +2,7 @@
 
 #include "Editor/Settings/EditorSettingsRegistry.h"
 #include "Editor/Settings/SettingsStore.h"
-#include "Thumbnails/ModelThumbnailHandler.h"
+#include "Thumbnails/ModelThumbnail/ModelThumbnailHandler.h"
 
 #include <string>
 

@@ -13,9 +13,15 @@
 #include "Engine/Rendering/ModelMaterialBridge.h"
 #include "Types/Types.h"
 
+#include <memory>
 #include <optional>
 #include <unordered_map>
 #include <vector>
+
+namespace JobSystem
+{
+class TaskHandle;
+}
 
 // Explicit imports from the Rendering module (CodingStyle: no namespace-scope using-directives in headers).
 namespace GameEngine::Engine::Renderer
@@ -36,19 +42,15 @@ struct SkeletonResolveState;
 class RenderServices;
 class SceneResolveService;
 
-// Opt-in for players that explicitly stream inactive destinations. Set before
-// scene loading, not during a frame. Default false preserves editor/prewarm
-// behavior. Enabling a MeshRenderer later still uses normal change-filter binding.
-void SetDeferredDisabledRendererLoading(bool deferred);
-bool GetDeferredDisabledRendererLoading();
-
 // Result of registering a model's render resources (meshes + materials).
 struct ModelRenderResources
 {
     GUID modelGuid;
     const ModelAsset* modelAsset = nullptr;
     std::vector<Rendering::MeshGPUHandle> meshHandles;
-    std::vector<ConvertedModelMaterial> materials;
+    // Read-only and shared: a spawn of a resident model shares the list the mesh
+    // registry keeps for it. Every load sets it; the list is empty for a model with no material.
+    std::shared_ptr<const std::vector<ConvertedModelMaterial>> materials;
 };
 
 // Load a model asset by GUID, register its GPU meshes and converted materials.
@@ -62,6 +64,15 @@ std::optional<ModelRenderResources> RegisterModelRenderResources(
 // ModelAsset. The runtime resolve's form.
 std::optional<ModelRenderResources> RegisterLoadedModelRenderResources(
     RenderServices& rs, const GUID& modelGuid, Asset& loadedAsset);
+
+// Starts a job that parses the surfaces the loaded model's materials compose with, so
+// RegisterLoadedModelRenderResources reads no shader file on this thread. Returns the job's handle:
+// invalid when nothing needs it (MaterialSystem::ParseSurfacesOffThread).
+JobSystem::TaskHandle ParseModelSurfacesOffThread(RenderServices& rs, const Asset& loadedAsset);
+
+// The same job for a loaded standalone material asset, so RegisterLoadedStandaloneMaterial reads no shader
+// file on this thread. Invalid for an asset that is not a MaterialAsset (a model-derived material).
+JobSystem::TaskHandle ParseMaterialSurfacesOffThread(RenderServices& rs, const Asset& loadedAsset);
 
 // Same as `RegisterModelRenderResources` but only registers (and uploads
 // textures for) the material slot that `submeshIndex` references. Use when
@@ -82,6 +93,12 @@ std::optional<ModelRenderResources> RegisterModelRenderResourcesForSubmesh(
 // scene-load case (meshId == 0, MeshNameId == 0) resolves to submesh 0 — never a skip.
 uint32 ResolveSubmeshIndex(const GUID& modelGuid, const ModelAsset& model,
                            const Components::MeshRenderer& mr);
+
+// The registry entry `mr` draws: by its mesh handle, else by the key of its model and `mr.meshId`.
+// Like MeshGPURegistry::Find, the entry is valid only until the next registration: inside an ECS
+// wave, hold a TableScope across the lookup and the use.
+const Rendering::MeshGPUEntry* FindRendererMeshEntry(const Rendering::MeshGPURegistry& registry,
+                                                     const Components::MeshRenderer& mr);
 
 // Policy for how PopulateMeshRenderer sets MeshRenderer.materialAssetGuid.
 enum class MeshMaterialFill

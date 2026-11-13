@@ -28,7 +28,8 @@ enum class DecodeChannels : uint8_t
 // The three decodes below read a compressed image file held in memory (PNG, JPEG, TGA,
 // BMP, PSD, GIF's first frame, HDR and PNM, through stb_image), top row first. Each is
 // thread-safe: the module never flips an image and never changes stb_image's
-// process-wide settings (the vertical flip, the HDR gamma), and the decode functions do not mutate shared decoder settings. The header is read first, and a decode stb_image cannot produce is
+// process-wide settings (the vertical flip, the HDR gamma), and no other code calls
+// stb_image. The header is read first, and a decode stb_image cannot produce is
 // refused before any pixel is allocated, with a warning that names `sourceName` and the
 // limit: input of more than 2^31 - 1 bytes, a PNG past what stb_image's PNG decoder
 // reads (see ImageHeader::WithinDecoderLimits), or a result of more than 2^31 - 1

@@ -6,6 +6,7 @@
 // as additional enum values, so consumers switch on mode instead of growing
 // parallel boolean knobs.
 
+#include "Mathematics/Matrix4x4.h"
 #include "Types/Types.h"
 
 namespace GameEngine::Engine::Renderer
@@ -203,23 +204,15 @@ inline void TemporalFxaaJitterOffset(uint32 phase, float& outX, float& outY)
     outY = odd ? 0.0f : kFxaaEdgeJitterTexels;
 }
 
-// Add a constant NDC-space offset to a column-major clip-space matrix
-// (proj, viewProj, or viewProjRel; float[16], m[c][r] at m[c*4+r]).
-// Row operation row0 += ndcX * row3 / row1 += ndcY * row3 — i.e. clip-space
-// x += ndcX * w, y += ndcY * w. Because the LH reverse-Z projection sets
-// w_clip = z_view exactly (MakePerspectiveLH_ZO_ReverseZ, m[2][3] = 1), this
-// is an EXACT constant NDC translation at every depth: for the bare proj it
-// reduces to writing the free zeros m[2][0]/m[2][1], and being a row (left)
-// operation it distributes over composition, so applying it to viewProj
-// equals composing the jittered proj with view. Depth rows are untouched —
-// reverse-Z precision, depth compares, and depth-derived keys are unaffected
-// by construction.
-inline void ApplyNdcJitter(float m[16], float ndcOffsetX, float ndcOffsetY)
+// Add a constant NDC offset to a clip-space matrix (proj, viewProj or viewProjRel):
+// row 0 += ndcOffsetX * row 3 and row 1 += ndcOffsetY * row 3. The reverse-Z projection
+// sets w_clip = z_view, so the shift is exact at every depth; the depth rows do not change.
+inline void ApplyNdcJitter(Mathematics::Matrix4x4& matrix, float ndcOffsetX, float ndcOffsetY)
 {
-    for (int c = 0; c < 4; ++c)
+    for (int column = 0; column < 4; ++column)
     {
-        m[c * 4 + 0] += ndcOffsetX * m[c * 4 + 3];
-        m[c * 4 + 1] += ndcOffsetY * m[c * 4 + 3];
+        matrix[column][0] += ndcOffsetX * matrix[column][3];
+        matrix[column][1] += ndcOffsetY * matrix[column][3];
     }
 }
 

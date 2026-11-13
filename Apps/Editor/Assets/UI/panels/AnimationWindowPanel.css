@@ -61,7 +61,8 @@
     flex: 0 0 auto;
 }
 
-.animationwindow-view-button.active {
+/* With the base class, this rule ties the Button sheet's .button.secondary.active and wins as a host rule. */
+.button.animationwindow-view-button.active {
     background-color: #3c4d63;
     border-color: #5f7894;
     color: #f0f6ff;
@@ -89,7 +90,7 @@
 
 /* Preview toggle button */
 .anim-preview-toggle-icon {
-    background-image: url("editor:Icons/eye.png");
+    background-image: url("editor:Icons/eye.svg");
     background-size: contain;
     background-repeat: no-repeat;
     background-position: center;
@@ -168,31 +169,21 @@ button.toolbar-gap,
     border-left-style: solid;
 }
 
-.toolbar-gap:hover,
-button.toolbar-gap:hover,
-.button.toolbar-gap:hover {
+.toolbar-gap:hover {
     background-color: transparent;
 }
 
-.toolbar-gap.dragging,
-button.toolbar-gap.dragging {
+.toolbar-gap.dragging {
     opacity: 0.6;
 }
 
 .animationwindow-toolbar .linear-curve-icon.active,
-.animationwindow-toolbar button.linear-curve-icon.active,
 .animationwindow-toolbar .stepped-curve-icon.active,
-.animationwindow-toolbar button.stepped-curve-icon.active,
 .animationwindow-toolbar .spline-curve-icon.active,
-.animationwindow-toolbar button.spline-curve-icon.active,
 .animationwindow-toolbar .retime-icon.active,
-.animationwindow-toolbar button.retime-icon.active,
 .animationwindow-toolbar .draw-curve-icon.active,
-.animationwindow-toolbar button.draw-curve-icon.active,
 .animationwindow-toolbar .fit-height-icon.active,
-.animationwindow-toolbar button.fit-height-icon.active,
-.animationwindow-toolbar .lattice-icon.active,
-.animationwindow-toolbar button.lattice-icon.active {
+.animationwindow-toolbar .lattice-icon.active {
     background-image-tint: var(--ui_icon_tint_active);
 }
 
@@ -226,43 +217,43 @@ button.toolbar-gap.dragging {
 
 /* Keyframe and Marker button icons */
 .select-all-keys-icon {
-    background-image: url("editor:Icons/checkmark-circle.png");
+    background-image: url("editor:Icons/checkmark-circle.svg");
 }
 
 .deselect-keys-icon {
-    background-image: url("editor:Icons/xclose.png");
+    background-image: url("editor:Icons/xclose.svg");
 }
 
 .add-keyframe-icon {
-    background-image: url("editor:Icons/add_key_marker.png");
+    background-image: url("editor:Icons/add_key_marker.svg");
 }
 
 .duplicate-keyframe-icon {
-    background-image: url("editor:Icons/copy.png");
+    background-image: url("editor:Icons/copy.svg");
 }
 
 .delete-keyframe-icon {
-    background-image: url("editor:Icons/trash.png");
+    background-image: url("editor:Icons/trash.svg");
 }
 
 .prev-keyframe-icon {
-    background-image: url("editor:Icons/arrow-left.png");
+    background-image: url("editor:Icons/arrow-left.svg");
 }
 
 .next-keyframe-icon {
-    background-image: url("editor:Icons/arrow-right.png");
+    background-image: url("editor:Icons/arrow-right.svg");
 }
 
 .prev-frame-icon {
-    background-image: url("editor:Icons/fold-left.png");
+    background-image: url("editor:Icons/fold-left.svg");
 }
 
 .next-frame-icon {
-    background-image: url("editor:Icons/fold-right.png");
+    background-image: url("editor:Icons/fold-right.svg");
 }
 
 .add-marker-icon {
-    background-image: url("editor:Icons/marker.png");
+    background-image: url("editor:Icons/marker.svg");
 }
 
 .center-playhead-icon {
@@ -270,24 +261,23 @@ button.toolbar-gap.dragging {
 }
 
 .go-to-start-icon {
-    background-image: url("editor:Icons/left-arrow.png");
+    background-image: url("editor:Icons/left-arrow.svg");
 }
 
 .go-to-end-icon {
-    background-image: url("editor:Icons/right-arrow.png");
+    background-image: url("editor:Icons/right-arrow.svg");
 }
 
 /* Grid icon background */
 .animationwindow-toolbar .icon-button.anim-grid-icon {
-    background-image: url("editor:Icons/grid-icon.png");
+    background-image: url("editor:Icons/grid-icon.svg");
 }
 
 
 /* Unified icon-button state: 35% default (matches top toolbar), 80% active/toggle-on, 100% hover. */
 .animationwindow-toolbar .icon-button,
 .animationwindow-toolbar button.icon-button,
-.animationwindow-timeline-controls .icon-button,
-.animationwindow-timeline-controls button.icon-button {
+.animationwindow-timeline-controls .icon-button {
     opacity: 1.0;
     background-color: transparent;
     border-width: 0;
@@ -296,38 +286,26 @@ button.toolbar-gap.dragging {
 }
 
 .animationwindow-toolbar .icon-button:hover,
-.animationwindow-toolbar button.icon-button:hover,
-.animationwindow-timeline-controls .icon-button:hover,
-.animationwindow-timeline-controls button.icon-button:hover {
+.animationwindow-timeline-controls .icon-button:hover {
     opacity: 1.0;
     background-image-tint: var(--ui_icon_tint_hover);
     background-color: transparent;
 }
 
 .animationwindow-toolbar .icon-button.active,
-.animationwindow-toolbar button.icon-button.active,
 .animationwindow-toolbar .icon-button.pressed,
-.animationwindow-toolbar button.icon-button.pressed,
 .animationwindow-toolbar .icon-button.icon-active,
-.animationwindow-toolbar button.icon-button.icon-active,
 .animationwindow-timeline-controls .icon-button.active,
-.animationwindow-timeline-controls button.icon-button.active,
-.animationwindow-timeline-controls .icon-button.pressed,
-.animationwindow-timeline-controls button.icon-button.pressed {
+.animationwindow-timeline-controls .icon-button.pressed {
     opacity: 1.0;
     background-image-tint: var(--ui_icon_tint_active);
 }
 
 .animationwindow-toolbar .icon-button.active:hover,
-.animationwindow-toolbar button.icon-button.active:hover,
 .animationwindow-toolbar .icon-button.pressed:hover,
-.animationwindow-toolbar button.icon-button.pressed:hover,
 .animationwindow-toolbar .icon-button.icon-active:hover,
-.animationwindow-toolbar button.icon-button.icon-active:hover,
 .animationwindow-timeline-controls .icon-button.active:hover,
-.animationwindow-timeline-controls button.icon-button.active:hover,
-.animationwindow-timeline-controls .icon-button.pressed:hover,
-.animationwindow-timeline-controls button.icon-button.pressed:hover {
+.animationwindow-timeline-controls .icon-button.pressed:hover {
     opacity: 1.0;
     background-image-tint: var(--ui_icon_tint_hover);
 }
@@ -341,8 +319,7 @@ button.toolbar-gap.dragging {
     background-image-tint: unset;
 }
 
-.animationwindow-toolbar .icon-button.plus-icon:hover,
-.animationwindow-toolbar button.icon-button.plus-icon:hover {
+.animationwindow-toolbar .icon-button.plus-icon:hover {
     opacity: 1.0;
     background-image-tint: unset;
 }
@@ -415,7 +392,7 @@ button.toolbar-gap.dragging {
     position: relative;
     flex-shrink: 0;
     width: auto;
-    height: 22px;
+    height: 24px;
     bottom: unset;
     left: unset;
     right: unset;
@@ -441,7 +418,7 @@ button.toolbar-gap.dragging {
     height: 14px;
     min-width: 14px;
     min-height: 14px;
-    background-image: url("editor:Icons/eye.png");
+    background-image: url("editor:Icons/eye.svg");
     background-size: contain;
     background-repeat: no-repeat;
     background-position: center;
@@ -547,7 +524,7 @@ button.toolbar-gap.dragging {
     padding: 0;
     flex-shrink: 0;
     margin-left: 0;
-    background-image: url("editor:Icons/eye.png");
+    background-image: url("editor:Icons/eye.svg");
     background-size: 14px 14px;
     background-repeat: no-repeat;
     background-position: center;
@@ -595,12 +572,6 @@ button.toolbar-gap.dragging {
     padding: 8px;
     border: 1px solid #3f3f3f;
     background-color: #2b2b2b;
-}
-
-/* The track and lane colour chip (.inspector-color-swatch) keeps its size in a
-   crowded sidebar row. */
-.animationwindow-sequencer-color-swatch {
-    flex-shrink: 0;
 }
 
 .animationwindow-sequencer-empty {
@@ -693,7 +664,7 @@ button.toolbar-gap.dragging {
 }
 
 .animationwindow-properties-tree .tree-row-action-lock {
-    background-image: url("editor:Icons/LockOpen.png");
+    background-image: url("editor:Icons/LockOpen.svg");
     background-color: transparent;
     border-width: 0px;
     margin-left: 4px;
@@ -705,26 +676,26 @@ button.toolbar-gap.dragging {
 }
 .animationwindow-properties-tree .tree-row-action-lock.active,
 .animationwindow-properties-tree .tree-row-action-lock.active:hover {
-    background-image: url("editor:Icons/LockClosed.png");
+    background-image: url("editor:Icons/LockClosed.svg");
     background-image-tint: rgba(255, 255, 255, 1.0);
     background-color: transparent;
     border-radius: 0px;
 }
 .animationwindow-properties-tree .tree-row-action-prev-key {
-    background-image: url("editor:Icons/arrow-left.png");
+    background-image: url("editor:Icons/arrow-left.svg");
 }
 .animationwindow-properties-tree .tree-row-action-add-key {
-    background-image: url("editor:Icons/dot.png");
+    background-image: url("editor:Icons/dot.svg");
     width: 7px;
     height: 7px;
     min-width: 7px;
     min-height: 7px;
 }
 .animationwindow-properties-tree .tree-row-action-next-key {
-    background-image: url("editor:Icons/arrow-right.png");
+    background-image: url("editor:Icons/arrow-right.svg");
 }
 .animationwindow-properties-tree .tree-row-action-pin {
-    background-image: url("editor:Icons/pin.png");
+    background-image: url("editor:Icons/pin.svg");
     margin-left: 6px;
 }
 
@@ -932,13 +903,13 @@ button.toolbar-gap.dragging {
     background-color: transparent;
 }
 
-/* Per-marker icon (editor:Icons/marker.png) */
+/* Per-marker icon (editor:Icons/marker.svg) */
 .animationwindow-marker-icon {
     width: 16px;
     height: 16px;
     min-width: 16px;
     min-height: 16px;
-    background-image: url("editor:Icons/marker.png");
+    background-image: url("editor:Icons/marker.svg");
     background-size: contain;
     background-repeat: no-repeat;
     background-position: center;
@@ -1129,7 +1100,7 @@ button.toolbar-gap.dragging {
 .anim-options-title {
     color: #4aa3ff;
     font-size: 12px;
-    font-weight: bold;
+    font-weight: 500;
     margin-right: 8px;
 }
 
@@ -1184,6 +1155,6 @@ button.toolbar-gap.dragging {
 
 /* Bone icon in animation properties tree */
 .animationwindow-properties-tree .tree-item.anim-tree-bone .tree-title {
-    background-image: url("editor:Icons/bone_icon.png");
+    background-image: url("editor:Icons/bone_icon.svg");
     background-image-tint: #808080;
 }

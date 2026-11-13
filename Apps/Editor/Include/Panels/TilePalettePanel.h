@@ -1,7 +1,7 @@
 #pragma once
 
 #include "AssetCore/GUID.h"
-#include "AssetCore/Types.h"
+#include "Types/Types.h"
 #include "TileMap/TileMapEditContext.h"
 #include "TileMap/TileSetAsset.h"
 #include "Platform/ContextMenu.h"

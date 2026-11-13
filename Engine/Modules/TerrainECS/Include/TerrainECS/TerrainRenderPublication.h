@@ -18,6 +18,8 @@
 #include "ECS/World.h"
 #include "Types/Types.h"
 
+#include <limits>
+
 namespace GameEngine::TerrainECS
 {
 
@@ -29,6 +31,13 @@ enum class TerrainPublicationState : uint32
     AllSkipped,       // live terrains exist and NONE reached the renderer
 };
 
+// Whether extraction provisioned the terrain: its single or tiled handle is set (index or generation).
+inline bool HasTerrainHandle(const Components::Terrain& terrain)
+{
+    return terrain.TerrainDataHandle != 0 || terrain.TerrainDataGeneration != 0 || terrain.TiledTerrainHandle != 0 ||
+           terrain.TiledTerrainGeneration != 0;
+}
+
 // Terrains the world considers live, counted with the SAME filter the extraction system applies:
 // the query engine's own exclusion of disabled entities and switched-off terrains. A terrain
 // extraction never visits must not be counted, or one hierarchy disable fabricates a render
@@ -38,13 +47,37 @@ inline uint32 CountLiveTerrains(ECS::World& world)
     uint32 live = 0;
     world.Query<ECS::Read<Components::Terrain>>()
         .Each([&](const Components::Terrain& terrain) {
-            const bool hasHandle =
-                terrain.TerrainDataHandle != 0 || terrain.TerrainDataGeneration != 0 ||
-                terrain.TiledTerrainHandle != 0 || terrain.TiledTerrainGeneration != 0;
-            if (hasHandle)
+            if (HasTerrainHandle(terrain))
                 ++live;
         });
     return live;
+}
+
+// Only one terrain draws in a scene: the live terrain with the smallest key. The key orders by the
+// first extraction frame that visited the terrain (DrawOrderFrame), then by entity index. A terrain
+// that extraction did not visit yet sorts last.
+inline uint64 DrawOrderKey(const Components::Terrain& terrain, ECS::EntityHandle entity)
+{
+    const uint64 frame = terrain.DrawOrderFrame != 0 ? terrain.DrawOrderFrame : std::numeric_limits<uint32>::max();
+    return (frame << 32) | entity.index;
+}
+
+// The drawn terrain among the terrains CountLiveTerrains counts; invalid when there is none. In a
+// frame where extraction skips this terrain, the renderer draws the next published terrain.
+inline ECS::EntityHandle FindDrawnTerrain(ECS::World& world)
+{
+    ECS::EntityHandle drawn{};
+    uint64 drawnKey = 0;
+    world.Query<ECS::Read<Components::Terrain>>()
+        .Each([&](ECS::EntityHandle entity, const Components::Terrain& terrain) {
+            const uint64 key = DrawOrderKey(terrain, entity);
+            if (HasTerrainHandle(terrain) && (!drawn.IsValid() || key < drawnKey))
+            {
+                drawn = entity;
+                drawnKey = key;
+            }
+        });
+    return drawn;
 }
 
 // liveCount counts terrain components carrying a terrain handle; publishedCount counts

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ConversationMessage.h"
+#include "SetupStatus.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -46,12 +47,14 @@ struct AgentTurnRequest
     std::span<const ConversationMessage> History;
     /// The user's new message.
     std::string UserText;
-    /// The images picked with the new message, sent with it as images (its text files are in
-    /// UserText). Only the new message's: earlier messages resend their text alone. Must outlive
-    /// RunTurn().
+    /// Images owned by the in-flight turn; only the new message sends image blocks.
     std::span<const PromptFile> Images;
     /// The model to answer with, as named in settings; empty selects the provider's default.
     std::string Model;
+    /// The reasoning effort to answer with, one of the levels the provider offers
+    /// (ClaudeSessionProvider::kEffortLevels); empty selects the provider's default. Only
+    /// providers with effort levels read it.
+    std::string Effort;
     /// The provider session to continue; empty starts a new one. Only providers that
     /// own their transcript read it.
     std::string SessionId;
@@ -98,6 +101,9 @@ struct TurnResult
     /// On Succeeded: why the reply ended short of a complete answer (the token
     /// limit, a refusal), in one user-facing sentence; empty for a complete reply.
     std::string Note;
+    /// The model that answered, as the provider reported it (a full model id); empty
+    /// when the provider reports none.
+    std::string Model;
     /// The provider's cost estimate for the turn, in US dollars.
     double CostUsd = 0.0;
     /// Model round trips the provider made for the turn (more than one when it calls tools).
@@ -112,6 +118,9 @@ struct TurnResult
     /// named does not exist (any other failure, a refused login check included,
     /// leaves it false), so continuing that session can never succeed.
     bool SessionNotFound = false;
+    /// On Failed: the setup check refused the turn before it started (CheckSetup), so
+    /// Error is the first failed step's finding and fix and no reply was asked for.
+    bool NotReady = false;
 };
 
 /// What a provider can do; the panel adapts its controls to it.
@@ -173,6 +182,17 @@ public:
     virtual std::string_view Id() const = 0;
     /// What this provider can do; constant for the provider's lifetime.
     virtual ProviderCapabilities Capabilities() const = 0;
+
+    /// The checks a turn runs before it starts, in order; a step after a failed one
+    /// stays Waiting. A step can run a program for seconds, at most its time limit, or
+    /// until `cancel` fires: call it off the UI thread. The fixes name the controls of
+    /// `surface`, where the result is shown. `onStep` gets each step when it ends, so a
+    /// surface can show the steps one by one.
+    virtual SetupStatus CheckSetup(const CancelToken& cancel, SetupSurface surface,
+                                   const SetupStepSink& onStep) const = 0;
+    /// The steps CheckSetup() runs, in check order, each Waiting with what it checks as its
+    /// Found: a surface lists every step before the first one ends.
+    virtual std::vector<SetupStep> SetupPlan() const = 0;
 
     /// Runs one turn and blocks until it ends, reporting through `events`; every
     /// outcome, failure included, ends with one OnFinished(). Polls `cancel` and ends

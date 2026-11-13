@@ -26,8 +26,8 @@
 #include "Engine/Rendering/PipelineVariantCache.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineCache.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineCache.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/SpecializationConstants.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
@@ -860,6 +860,60 @@ TEST_F(MaterialPipelineCompilationTest, AsyncPublish_FailedCompileKeepsTheDeclar
     ASSERT_NE(mat->GetDeclaredProperties(), nullptr);
     EXPECT_EQ(mat->GetDeclaredProperties()->Find("extra"), nullptr)
         << "the lane the failed program declared must not appear on the CPU side";
+}
+
+// Registration takes a surface's texture slots from the shader source cache: a rewrite that no
+// announcement reports keeps the held slots, and an announced edit resolves the new ones.
+TEST_F(MaterialPipelineCompilationTest, SurfaceTextureSlotsComeFromTheHeldSurfaceUntilAnEditIsAnnounced)
+{
+    MaterialSystem& materials = m_rs->Materials();
+    const DeclaredSurfaceProject project(materials, m_shaderDir);
+    project.WriteSurface("// @texture flowMask linear\n");
+    MaterialDocument doc{};
+    doc.materialName = "HeldSurfaceSlots";
+    doc.lightingModel = "StandardPBR";
+    doc.surfaceShader = "declared.glsl";
+    const std::vector<std::string> held{"flowMask"};
+    EXPECT_EQ(materials.ResolveSurfaceTextureUse(doc, {}).DeclaredNames, held);
+
+    std::ofstream(project.Root / "declared.glsl", std::ios::binary | std::ios::trunc) << "// @texture auxMask linear\n";
+    EXPECT_EQ(materials.ResolveSurfaceTextureUse(doc, {}).DeclaredNames, held)
+        << "the surface was read again although no edit was announced";
+
+    project.WriteSurface("// @texture auxMask linear\n");
+    EXPECT_EQ(materials.ResolveSurfaceTextureUse(doc, {}).DeclaredNames, std::vector<std::string>{"auxMask"})
+        << "an announced edit kept the old slots";
+}
+
+// The tangent need of a graph surface beside its material comes from the shader source cache: a
+// rewrite that no announcement reports keeps it, and an announced edit is read. A surface the chain
+// finds under another root is not the material's own graph surface.
+TEST_F(MaterialPipelineCompilationTest, TheTangentNeedOfAGraphSurfaceComesFromTheHeldSurfaceUntilAnEditIsAnnounced)
+{
+    constexpr const char* kTangentGraph = "// @sg-graph     Held\n// @sg-stage     surface\n// @sg-variant   HAS_TANGENT\n";
+    constexpr const char* kPlainGraph = "// @sg-graph     Held\n// @sg-stage     surface\n";
+    const DeclaredSurfaceProject project(m_rs->Materials(), m_shaderDir);
+    project.WriteSurface(kTangentGraph);
+    MaterialDocument doc{};
+    doc.surfaceShader = "declared.glsl";
+    const std::filesystem::path materialPath = project.Root / "graph.material";
+    const std::filesystem::path surfacePath = std::filesystem::absolute(project.Root / "declared.glsl");
+    EXPECT_EQ(InferVertexAttributeFlagsFromDocument(doc, materialPath, surfacePath),
+              VertexAttributeFlags::StandardMeshWithTangent);
+
+    std::ofstream(project.Root / "declared.glsl", std::ios::binary | std::ios::trunc) << kPlainGraph;
+    EXPECT_EQ(InferVertexAttributeFlagsFromDocument(doc, materialPath, surfacePath),
+              VertexAttributeFlags::StandardMeshWithTangent)
+        << "the surface was read again although no edit was announced";
+
+    project.WriteSurface(kPlainGraph);
+    EXPECT_EQ(InferVertexAttributeFlagsFromDocument(doc, materialPath, surfacePath), VertexAttributeFlags::StandardMesh)
+        << "an announced edit kept the old tangent need";
+
+    project.WriteSurface(kTangentGraph);
+    EXPECT_EQ(InferVertexAttributeFlagsFromDocument(doc, project.Root / "Other" / "graph.material", surfacePath),
+              VertexAttributeFlags::StandardMesh)
+        << "a surface found under another root counted as the material's own graph surface";
 }
 
 // T6, both halves against one material through the production paths: a
@@ -3778,9 +3832,9 @@ class CannotDrawWarningCounter
     CannotDrawWarningCounter()
     {
         Logger::Log::Initialize({});
-        auto sink = Logger::MakeUnique<Logger::CallbackSink>();
+        auto sink = std::make_unique<Logger::CallbackSink>();
         sink->RegisterCallback([count = m_Count](const Logger::LogMessage& msg) {
-            if (msg.Message.find("can never draw") != Logger::String::npos)
+            if (msg.Message.find("can never draw") != std::string::npos)
                 count->fetch_add(1);
         });
         Logger::Log::AddSink(std::move(sink));
@@ -4072,10 +4126,10 @@ class UnknownKeyWarningCapture
     explicit UnknownKeyWarningCapture(const GUID& materialGuid)
     {
         Logger::Log::Initialize({});
-        auto sink = Logger::MakeUnique<Logger::CallbackSink>();
+        auto sink = std::make_unique<Logger::CallbackSink>();
         sink->RegisterCallback([state = m_State, materialTag = "(" + materialGuid.ToString() + ")"](const Logger::LogMessage& msg) {
-            if (msg.Message.find("unknown texture key") != Logger::String::npos &&
-                msg.Message.find(materialTag) != Logger::String::npos)
+            if (msg.Message.find("unknown texture key") != std::string::npos &&
+                msg.Message.find(materialTag) != std::string::npos)
             {
                 std::lock_guard lock(state->Mutex);
                 state->Messages.push_back(msg.Message);
@@ -4091,18 +4145,18 @@ class UnknownKeyWarningCapture
         return static_cast<int>(m_State->Messages.size());
     }
 
-    Logger::String First() const
+    std::string First() const
     {
         Logger::Log::Flush();
         std::lock_guard lock(m_State->Mutex);
-        return m_State->Messages.empty() ? Logger::String{} : m_State->Messages.front();
+        return m_State->Messages.empty() ? std::string{} : m_State->Messages.front();
     }
 
   private:
     struct State
     {
         std::mutex Mutex;
-        std::vector<Logger::String> Messages;
+        std::vector<std::string> Messages;
     };
     std::shared_ptr<State> m_State = std::make_shared<State>();
 };
@@ -4127,8 +4181,8 @@ TEST_F(MaterialBridgeIntegrationTest, UnknownTextureKey_RegistersSkipsAndWarnsOn
            "rebind would replay the bad name";
     ASSERT_EQ(warnings.Count(), 1);
     // The warning states the fix: it names the key and the valid candidates.
-    EXPECT_NE(warnings.First().find("baseColorMap"), Logger::String::npos);
-    EXPECT_NE(warnings.First().find("albedoMap"), Logger::String::npos);
+    EXPECT_NE(warnings.First().find("baseColorMap"), std::string::npos);
+    EXPECT_NE(warnings.First().find("albedoMap"), std::string::npos);
 
     // Runtime materials (particle emitters) re-register every frame; the
     // report must stay one line per material+key, not one per application.

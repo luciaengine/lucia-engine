@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "EditorChangeNotifications.h"
+#include "Editor/Hierarchy/HierarchyReparent.h"
 #include "UndoRedo/IEditorCommand.h"
 
 #include "Components/Hierarchy.h"
@@ -28,16 +29,8 @@ namespace GameEngine::Editor
 class ReparentReorderEntitiesCommand final : public IEditorCommand
 {
   public:
-    struct EntityState
-    {
-        ECS::EntityHandle entity{};
-        bool hadParent = false;
-        Components::Parent parent{};
-        bool hadOrder = false;
-        Components::HierarchyOrder order{};
-        bool hadTransform = false;
-        Components::Transform transform{};
-    };
+    // The per-entity state a move changes; captured by the hierarchy helpers that perform the move.
+    using EntityState = HierarchyEntityState;
 
     ReparentReorderEntitiesCommand(std::string name,
                                   ECS::World* world,
@@ -71,7 +64,7 @@ class ReparentReorderEntitiesCommand final : public IEditorCommand
             if (!s.entity.IsValid() || !m_World->IsValid(s.entity))
                 continue;
 
-            if (s.hadParent && s.parent.parent.IsValid())
+            if (s.hadParent && s.parent.Entity.IsValid())
             {
                 m_World->AddComponentImmediate(s.entity, s.parent);
             }

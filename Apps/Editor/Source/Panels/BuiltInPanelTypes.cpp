@@ -3,7 +3,7 @@
 #include "Editor/Registries/EditorPanelRegistry.h"
 #include "EditorPanelIds.h"
 #include "Graph/GraphModel.h"
-#include "Panels/AnimationWindowPanel.h"
+#include "Panels/Animation/AnimationWindowPanel.h"
 #include "Panels/AssetViewPanel.h"
 #include "Panels/AssetsPanel.h"
 #include "Panels/BookmarksPanel.h"
@@ -20,13 +20,11 @@
 #include "Panels/MonitorsPanel.h"
 #include "Panels/PackageManagerPanel.h"
 #include "Panels/RenderGraphPanel.h"
-#include "Panels/SceneViewPanel.h"
-#include "Panels/ScriptEditorPanel.h"
-#include "Panels/ScriptErrorsPanel.h"
+#include "SceneView/SceneViewPanel.h"
+#include "Panels/Script/ScriptEditorPanel.h"
+#include "Panels/Script/ScriptErrorsPanel.h"
 #include "Panels/SettingsPanel.h"
-#include "Panels/ShaderErrorsPanel.h"
-#include "Panels/TilePalettePanel.h"
-#include "Panels/TileSetEditorPanel.h"
+#include "Panels/ShaderErrors/ShaderErrorsPanel.h"
 #include "Panels/TodoPanel.h"
 #include "Panels/UIDemoPanel.h"
 #include "Panels/UndoHistory/UndoHistoryPanel.h"
@@ -35,7 +33,6 @@
 #include "Panels/WebPanel.h"
 
 #include <memory>
-#include <utility>
 
 namespace GameEngine::Editor
 {
@@ -48,8 +45,6 @@ struct BuiltInPanelType
 {
     const char* TypeKey;
     PanelFactory Factory;
-    const char* DefaultAnchorPanelId = "";
-    void (*Update)(UIElement&, const PanelUpdateContext&) = nullptr;
 };
 
 template <typename T>
@@ -88,8 +83,7 @@ constexpr BuiltInPanelType kBuiltInPanelTypes[] = {
     {"UIDemoPanel", &MakePanel<UIDemoPanel>},
     {"MissingAssetsPanel", &MakePanel<MissingAssetsPanel>},
     {"PackageManagerPanel", &MakePanel<PackageManagerPanel>},
-    {"LogPanel", &MakePanel<LogPanel>, "",
-     [](UIElement& panel, const PanelUpdateContext&) { static_cast<LogPanel&>(panel).Update(); }},
+    {"LogPanel", &MakePanel<LogPanel>},
     {"ScriptErrorsPanel", &MakePanel<ScriptErrorsPanel>},
     {"ShaderErrorsPanel", &MakePanel<ShaderErrorsPanel>},
     {"MonitorsPanel", &MakePanel<MonitorsPanel>},
@@ -98,7 +92,7 @@ constexpr BuiltInPanelType kBuiltInPanelTypes[] = {
     {"VisualProfilerPanel", &MakePanel<VisualProfilerPanel>},
     {"VramPanel", &MakePanel<VramPanel>},
     {"ScriptEditorPanel", &MakePanel<ScriptEditorPanel>},
-    {"SettingsPanel", &MakePanel<SettingsPanel>, EditorPanelIds::SceneView},
+    {"SettingsPanel", &MakePanel<SettingsPanel>},
     {"DiffPanel", &MakePanel<DiffPanel>},
     {"WebPanel", &MakePanel<WebPanel>},
     {"BuildPanel", &MakePanel<BuildPanel>},
@@ -111,8 +105,6 @@ constexpr BuiltInPanelType kBuiltInPanelTypes[] = {
     {"ShaderGraphPanel", &MakeMaterialGraphPanel},
     {"AnimationGraphPanel", &MakeAnimationGraphPanel},
     {"GameLogicGraphPanel", &MakeGameLogicGraphPanel},
-    {"TilePalettePanel", &MakePanel<TilePalettePanel>},
-    {"TileSetEditorPanel", &MakePanel<TileSetEditorPanel>},
 };
 
 constexpr FallbackDockPanel kFallbackDockPanels[] = {
@@ -128,14 +120,13 @@ constexpr FallbackDockPanel kFallbackDockPanels[] = {
     {EditorPanelIds::Web, "WebPanel"},
     {EditorPanelIds::NodeGraph, "NodeGraphPanel"},
     {EditorPanelIds::Build, "BuildPanel"},
+    {EditorPanelIds::Mixer, "MixerPanel"},
     {EditorPanelIds::Animation, "AnimationWindowPanel"},
     {EditorPanelIds::Timeline, "AnimationTimelinePanel"},
     {EditorPanelIds::ClipEditor, "AnimationClipEditorPanel"},
     {EditorPanelIds::ShaderErrors, "ShaderErrorsPanel"},
     {EditorPanelIds::AnimationGraph, "AnimationGraphPanel"},
     {EditorPanelIds::GameLogicGraph, "GameLogicGraphPanel"},
-    {EditorPanelIds::TilePalette, "TilePalettePanel"},
-    {EditorPanelIds::TileSetEditor, "TileSetEditorPanel"},
 };
 
 } // namespace
@@ -144,12 +135,7 @@ void RegisterBuiltInPanelTypes()
 {
     auto& registry = EditorPanelRegistry::Get();
     for (const BuiltInPanelType& type : kBuiltInPanelTypes)
-    {
-        EditorPanelTypeDescriptor descriptor{type.TypeKey, type.Factory};
-        descriptor.DefaultAnchorPanelId = type.DefaultAnchorPanelId;
-        descriptor.Update = type.Update;
-        registry.RegisterPanelType(std::move(descriptor));
-    }
+        registry.RegisterPanelType({type.TypeKey, type.Factory});
 }
 
 std::span<const FallbackDockPanel> FallbackDockPanels()

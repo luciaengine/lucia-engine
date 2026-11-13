@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Rendering/Materials/ShaderVariantKey.h"
+#include "Rendering/Materials/Shader/ShaderVariantKey.h"
 
 #include <chrono>
 #include <filesystem>

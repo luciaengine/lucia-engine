@@ -4,7 +4,6 @@
 #include "PhysicsECS/PhysicsWorldService.h"
 #include "PhysicsECS/Systems/PhysicsWorldHooks.h"
 
-#include "PhysicsECS/Components/KinematicBody.h"
 #include "PhysicsECS/Components/PhysicsBody.h"
 #include "PhysicsECS/Components/PhysicsCollider.h"
 #include "PhysicsECS/Components/BoxColliderShape.h"
@@ -13,109 +12,43 @@
 #include "PhysicsECS/Components/PlaneColliderShape.h"
 #include "PhysicsECS/Components/SphereColliderShape.h"
 #include "PhysicsECS/Components/HeightFieldColliderShape.h"
-#include "PhysicsECS/HeightFieldDataProvider.h"
-#include "PhysicsECS/MeshColliderData.h"
+#include "PhysicsECS/Components/KinematicBody.h"
 #include "PhysicsECS/Components/MeshColliderShape.h"
-#include <memory>
+#include "PhysicsECS/HeightFieldDataProvider.h"
+#include "ProceduralMeshCollidersInternal.h"
 
 #include "Components/Transform.h"
+#include "ECS/ChangeFilter.h"
 #include "ECS/ECSTemplates.h"
 #include "Physics/PhysicsShapes.h"
 
+#include "JobSystem/WorkStealingThreadPool.h"
 #include "Logger/Logger.h"
 
 #include <algorithm>
+#include <atomic>
 #include <limits>
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace GameEngine::PhysicsECS
 {
 namespace
 {
-std::shared_ptr<const Physics::MeshShapeDef> ReadMeshForRebuild(Physics::PhysicsWorld& physics,
-    ECS::EntityHandle entity, const Components::MeshColliderShape& shape, const Components::PhysicsBody& body)
-{
-    const bool changed = shape.DataIndex != shape.BuiltDataIndex || shape.DataGeneration != shape.BuiltDataGeneration;
-    if (!changed && body.initialized && physics.IsBodyValid(body.body) && physics.IsShapeValid(body.shape))
-        return {};
-    const auto mesh = MeshColliderData::Read({shape.DataIndex, shape.DataGeneration});
-    if (!mesh)
-        return {};
-    if (body.motionType != Physics::MotionType::Static)
-    {
-        Logger::Log::Warning("Mesh collider entity {} requires a Static physics body", entity.id);
-        return {};
-    }
-    return mesh;
-}
-
 static GameEngine::Components::Transform TransformFromWorld(const GameEngine::Components::WorldTransform& wt)
 {
     GameEngine::Components::Transform t;
-    for (int i = 0; i < 16; ++i)
-    {
-        t.matrix[i] = wt.matrix[i];
-    }
+    t.Position = wt.Position;
+    t.Basis = wt.Basis;
     return t;
 }
 
 // A dirty region at most this fraction of the total sample grid takes the
 // cheap in-place update (tier 1); anything larger pays the full rebuild.
 constexpr float64 kInPlaceRegionMaxFraction = 0.25;
-
-// Padding applied to heightfield wake boxes so bodies resting just outside
-// the exact region bounds (or above/below the sampled heights) still wake.
-constexpr float32 kWakeBoxPaddingMeters = 2.0f;
-
-// World-space AABB of a sample-space region of a heightfield collider. The region is a
-// box in the shape's LOCAL frame — [gridX*scaleX, height*heightScale, gridZ*scaleZ] offset
-// by the shape Offset — transformed by the body's full world matrix (rotation + translation
-// + any scale) into a world AABB. Transforming the 8 local corners is essential for rotated
-// bodies (the planet's per-face heightfields are yawed so their local Y is the face normal);
-// for a planar unrotated body the matrix is identity-rotation and this reduces to the old
-// axis-aligned mapping.
-static Physics::AABB HeightFieldRegionWorldBox(const GameEngine::Components::WorldTransform& wt,
-                                               const GameEngine::Components::HeightFieldColliderShape& shape,
-                                               uint32 sampleCount,
-                                               int32 minX, int32 minZ, int32 maxX, int32 maxZ,
-                                               float32 minRawHeight, float32 maxRawHeight)
-{
-    const float32 scaleX = shape.sizeX / static_cast<float32>(sampleCount - 1);
-    const float32 scaleZ = shape.sizeZ / static_cast<float32>(sampleCount - 1);
-
-    // Local-space AABB extents (the shape Offset centres the grid at local origin).
-    const float32 lx[2] = {-shape.sizeX * 0.5f + static_cast<float32>(minX) * scaleX,
-                           -shape.sizeX * 0.5f + static_cast<float32>(maxX) * scaleX};
-    const float32 ly[2] = {minRawHeight * shape.heightScale, maxRawHeight * shape.heightScale};
-    const float32 lz[2] = {-shape.sizeZ * 0.5f + static_cast<float32>(minZ) * scaleZ,
-                           -shape.sizeZ * 0.5f + static_cast<float32>(maxZ) * scaleZ};
-
-    const float32* m = wt.matrix; // column-major: world = M * (local, 1)
-    Physics::Vector3 lo(std::numeric_limits<float32>::max(), std::numeric_limits<float32>::max(),
-                        std::numeric_limits<float32>::max());
-    Physics::Vector3 hi(std::numeric_limits<float32>::lowest(),
-                        std::numeric_limits<float32>::lowest(),
-                        std::numeric_limits<float32>::lowest());
-    for (float32 x : lx)
-        for (float32 y : ly)
-            for (float32 z : lz)
-            {
-                const float32 wx = m[0] * x + m[4] * y + m[8] * z + m[12];
-                const float32 wy = m[1] * x + m[5] * y + m[9] * z + m[13];
-                const float32 wz = m[2] * x + m[6] * y + m[10] * z + m[14];
-                lo.x = std::min(lo.x, wx); lo.y = std::min(lo.y, wy); lo.z = std::min(lo.z, wz);
-                hi.x = std::max(hi.x, wx); hi.y = std::max(hi.y, wy); hi.z = std::max(hi.z, wz);
-            }
-
-    Physics::AABB box;
-    box.min = Physics::Vector3(lo.x - kWakeBoxPaddingMeters, lo.y - kWakeBoxPaddingMeters,
-                               lo.z - kWakeBoxPaddingMeters);
-    box.max = Physics::Vector3(hi.x + kWakeBoxPaddingMeters, hi.y + kWakeBoxPaddingMeters,
-                               hi.z + kWakeBoxPaddingMeters);
-    return box;
-}
 
 // True while the body owns a backend body or shape. Not the same as initialized:
 // an edit that asks for a rebuild clears initialized and leaves the old body
@@ -125,6 +58,109 @@ bool HoldsBackendObjects(const GameEngine::Components::PhysicsBody& body)
 {
     return body.body.IsValid() || body.shape.IsValid() || body.childShapeCount > 0;
 }
+
+// True when the body has a live backend body and shape: the build pass leaves it alone
+// unless a heightfield rebuild asks for it.
+bool IsBodyBuilt(const Physics::PhysicsWorld& pw, const GameEngine::Components::PhysicsBody& body)
+{
+    return body.initialized && pw.IsBodyValid(body.body) && pw.IsShapeValid(body.shape);
+}
+
+struct BuiltCollider
+{
+    ECS::EntityHandle Owner{};              // body entity
+    GameEngine::Components::Transform Local; // local-to-body
+    GameEngine::Components::PhysicsCollider Collider{};
+    Physics::ShapeDefinition ShapeDef{};
+};
+
+// Colliders of the bodies to build, by body entity, each list in gather order.
+using CollidersByBody = std::unordered_map<ECS::EntityHandle, std::vector<BuiltCollider>, ECS::EntityHandleHash>;
+
+// The body a collider belongs to: its owner's body, or the collider entity itself.
+ECS::EntityHandle ResolveBodyEntity(ECS::EntityHandle colliderEntity,
+                                    const GameEngine::Components::PhysicsColliderOwner* owner)
+{
+    ECS::EntityHandle bodyEntity = owner ? owner->body : ECS::EntityHandle{};
+    if (!bodyEntity.IsValid())
+        bodyEntity = colliderEntity;
+    return bodyEntity;
+}
+
+bool EntityIdLess(ECS::EntityHandle a, ECS::EntityHandle b)
+{
+    return a.id < b.id;
+}
+
+using ColliderOwnerQuery = ECS::Query<ECS::Read<GameEngine::Components::PhysicsColliderOwner>>;
+
+// True when a chunk of collider owners had its owner column written after the gate.
+bool ColliderOwnersWrittenSince(ColliderOwnerQuery& owners, const ECS::ChangeGate& gate)
+{
+    bool written = false;
+    owners.Changed<GameEngine::Components::PhysicsColliderOwner>(gate);
+    owners.Each([&written](const GameEngine::Components::PhysicsColliderOwner&) { written = true; });
+    return written;
+}
+
+BuiltCollider MakeBuiltCollider(ECS::EntityHandle colliderEntity,
+                                const GameEngine::Components::PhysicsColliderOwner* owner,
+                                const GameEngine::Components::Transform& local,
+                                const GameEngine::Components::PhysicsCollider& collider,
+                                Physics::ShapeDefinition shapeDef)
+{
+    BuiltCollider bc{};
+    bc.Owner = ResolveBodyEntity(colliderEntity, owner);
+    bc.Local = local;
+    bc.Collider = collider;
+    bc.ShapeDef = std::move(shapeDef);
+    return bc;
+}
+
+// Gathers one simple-shape collider into its body's list.
+void AddCollider(CollidersByBody& byBody, ECS::EntityHandle colliderEntity,
+                 const GameEngine::Components::PhysicsColliderOwner* owner,
+                 const GameEngine::Components::Transform& local,
+                 const GameEngine::Components::PhysicsCollider& collider, Physics::ShapeDefinition shapeDef)
+{
+    BuiltCollider bc = MakeBuiltCollider(colliderEntity, owner, local, collider, std::move(shapeDef));
+    byBody[bc.Owner].push_back(std::move(bc));
+}
+
+// Gathers a triangle mesh collider when its body is not built or its data handle changed. Returns
+// true when a changed handle must rebuild the body. A mesh needs a Static body: other motion types
+// log one warning per handle and get no collider.
+bool GatherMeshCollider(const Physics::PhysicsWorld& pw, ECS::EntityHandle entity,
+                        const GameEngine::Components::Transform& local,
+                        const GameEngine::Components::PhysicsCollider& collider,
+                        ECS::Writable<GameEngine::Components::MeshColliderShape> shapeRow,
+                        const GameEngine::Components::PhysicsBody& body, std::vector<BuiltCollider>& meshColliders)
+{
+    const auto& shape = shapeRow.Get();
+    const bool changed = shape.Mesh != shape.BuiltMesh;
+    if (!changed && IsBodyBuilt(pw, body))
+        return false;
+    if (body.motionType != Physics::MotionType::Static)
+    {
+        if (changed)
+            Logger::Log::Warning("[PhysicsECS] Mesh collider entity {} needs a Static physics body", entity.id);
+        shapeRow.Mutable().BuiltMesh = shape.Mesh;
+        return false;
+    }
+    const std::shared_ptr<const Physics::MeshShapeDef> mesh = ProceduralMeshColliders::Read(shape.Mesh);
+    if (!mesh)
+        return false;
+    meshColliders.push_back(MakeBuiltCollider(entity, nullptr, local, collider, *mesh));
+    shapeRow.Mutable().BuiltMesh = shape.Mesh;
+    return changed;
+}
+
+// A heightfield collider rebuilt this update and the world box over its old and new surfaces.
+struct RebuildWake
+{
+    ECS::EntityHandle Collider{};
+    Physics::AABB Box{};
+};
 
 // A body built this update and whether its backend body is kinematic.
 struct BuiltBody
@@ -150,6 +186,52 @@ void MarkKinematicBodies(ECS::World& world, const std::vector<BuiltBody>& builtB
 
 } // namespace
 
+// The containers a frame fills, the queries and the bodies the last build pass found no
+// collider for, kept for one world so that a frame with nothing to build allocates nothing. Every
+// frame container is empty between frames.
+struct PhysicsInitSystem::WorldScratch
+{
+    explicit WorldScratch(ECS::World& world)
+        : WorldId(world.GetWorldId()), Bodies(&world), ColliderOwners(&world)
+    {
+    }
+
+    // True while no collider can have reached the bodies the last build pass left without one. A
+    // collider reaches a body only through a structural change or a PhysicsColliderOwner write.
+    // The heightfield gather runs first, so an unbuilt heightfield body still makes the frame build.
+    bool CollidersUnchangedForBodiesWithoutCollider(std::size_t structuralVersion)
+    {
+        return !BodiesWithoutCollider.empty() && ECS::ChangeFilter::Enabled() &&
+               structuralVersion == BodiesWithoutColliderStructuralVersion &&
+               !ColliderOwnersWrittenSince(ColliderOwners, BodiesWithoutColliderGate);
+    }
+
+    uint64 WorldId = 0;
+    CollidersByBody ByBody;
+    // Heightfield colliders gathered this frame. They follow the simple shapes in their
+    // body's list, so they wait here until the simple gathers have run.
+    std::vector<BuiltCollider> HeightFieldColliders;
+    // Triangle mesh colliders gathered this frame. Like the heightfields, they follow the simple
+    // shapes in their body's list.
+    std::vector<BuiltCollider> MeshColliders;
+    // Bodies that must be torn down and recreated even though they are still
+    // valid — e.g. a heightfield whose source data version changed mid-sim.
+    std::unordered_set<ECS::EntityHandle, ECS::EntityHandleHash> RebuildBodies;
+    // The heightfields rebuilt this frame with their footprints, settled once the bodies exist again.
+    std::vector<RebuildWake> RebuildWakes;
+    ECS::Query<ECS::Read<GameEngine::Components::WorldTransform>, ECS::Write<GameEngine::Components::PhysicsBody>> Bodies;
+    // Bodies the last build pass found no collider for, sorted by id, with the structural version
+    // and the column write gate at the start of that frame. A body the backend refused is not
+    // here: a WorldTransform or PhysicsBody edit can fix it, so it is retried every frame.
+    std::vector<ECS::EntityHandle> BodiesWithoutCollider;
+    std::size_t BodiesWithoutColliderStructuralVersion = 0;
+    ECS::ChangeGate BodiesWithoutColliderGate;
+    ColliderOwnerQuery ColliderOwners;
+};
+
+PhysicsInitSystem::PhysicsInitSystem() = default;
+PhysicsInitSystem::~PhysicsInitSystem() = default;
+
 void PhysicsInitSystem::ReleaseDisabledBodies(ECS::World& world)
 {
     // A missed window (the system was paused while the engine kept swapping)
@@ -161,11 +243,11 @@ void PhysicsInitSystem::ReleaseDisabledBodies(ECS::World& world)
                              ECS::Optional<ECS::DisabledInHierarchy>,
                              ECS::Optional<ECS::ComponentDisabled<GameEngine::Components::PhysicsBody>>>();
         q.IncludeDisabled();
-        q.Each([](ECS::Writable<GameEngine::Components::PhysicsBody> body, const ECS::Disabled* disabled,
+        q.Each([](ECS::Writable<GameEngine::Components::PhysicsBody> bodyRow, const ECS::Disabled* disabled,
                   const ECS::DisabledInHierarchy* inactive,
                   const ECS::ComponentDisabled<GameEngine::Components::PhysicsBody>* bodyOff) {
-            if (HoldsBackendObjects(body.Get()) && (disabled || inactive || bodyOff))
-                ReleasePhysicsBody(body.Mutable());
+            if (HoldsBackendObjects(bodyRow.Get()) && (disabled || inactive || bodyOff))
+                ReleasePhysicsBody(bodyRow.Mutable());
         });
         return;
     }
@@ -178,6 +260,61 @@ void PhysicsInitSystem::ReleaseDisabledBodies(ECS::World& world)
     }
 }
 
+namespace
+{
+// The shape a heightfield collider's provider samples make: centered on the body, NxN samples over
+// the collider's extent.
+Physics::HeightFieldShapeDef MakeHeightFieldShapeDef(const HeightFieldData& data,
+                                                     const GameEngine::Components::HeightFieldColliderShape& shape)
+{
+    const uint32 n = data.sampleCount;
+    Physics::HeightFieldShapeDef def;
+    def.Samples.assign(data.samples, data.samples + static_cast<size_t>(n) * n);
+    def.SampleCount = n;
+    def.Offset = Physics::Vector3(-shape.sizeX * 0.5f, 0.0f, -shape.sizeZ * 0.5f);
+    def.Scale = Physics::Vector3(shape.sizeX / static_cast<float32>(n - 1), shape.heightScale,
+                                 shape.sizeZ / static_cast<float32>(n - 1));
+    return def;
+}
+} // namespace
+
+struct PhysicsInitSystem::PendingHeightFieldBuild
+{
+    // What the build was started for: a change to any of these restarts it.
+    uint32 DataHandle = 0;
+    uint32 DataGeneration = 0;
+    uint64 Version = 0;
+    uint32 SampleCount = 0;
+    float32 SizeX = 0.0f;
+    float32 SizeZ = 0.0f;
+    float32 HeightScale = 0.0f;
+    bool Visited = false;
+
+    // Written by the job before Done is released.
+    std::shared_ptr<const Physics::PreparedHeightFieldShape> Shape;
+    float32 MinHeight = 0.0f;
+    float32 MaxHeight = 0.0f;
+    std::atomic<bool> Done{false};
+
+    // The job body: builds the shape and the sample range the wake boxes use.
+    void Run(Physics::HeightFieldShapeBuilder builder, const Physics::HeightFieldShapeDef& def)
+    {
+        float32 minHeight = std::numeric_limits<float32>::max();
+        float32 maxHeight = std::numeric_limits<float32>::lowest();
+        for (const float32 s : def.Samples)
+        {
+            if (s == Physics::kHeightFieldNoCollision)
+                continue;
+            minHeight = std::min(minHeight, s);
+            maxHeight = std::max(maxHeight, s);
+        }
+        Shape = builder(def);
+        MinHeight = minHeight;
+        MaxHeight = maxHeight;
+        Done.store(true, std::memory_order_release);
+    }
+};
+
 void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
 {
     auto* pw = PhysicsWorldService::TryGet();
@@ -186,149 +323,19 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
 
     ReleaseDisabledBodies(world);
 
-    struct BuiltCollider
-    {
-        ECS::EntityHandle owner{};              // body entity
-        GameEngine::Components::Transform local; // local-to-body
-        GameEngine::Components::PhysicsCollider collider{};
-        Physics::ShapeDefinition shapeDef{};
-    };
+    if (!m_Scratch || m_Scratch->WorldId != world.GetWorldId())
+        m_Scratch = std::make_unique<WorldScratch>(world);
+    auto& byBody = m_Scratch->ByBody;
+    auto& heightFieldColliders = m_Scratch->HeightFieldColliders;
+    auto& meshColliders = m_Scratch->MeshColliders;
+    auto& rebuildBodies = m_Scratch->RebuildBodies;
+    auto& rebuildWakes = m_Scratch->RebuildWakes;
+    auto& bodiesWithoutCollider = m_Scratch->BodiesWithoutCollider;
 
-    std::unordered_map<ECS::EntityHandle, std::vector<BuiltCollider>, ECS::EntityHandleHash> byBody;
-    byBody.reserve(256);
-
-    // Bodies that must be torn down and recreated even though they are still
-    // valid — e.g. a heightfield whose source data version changed mid-sim.
-    // Empty in steady state.
-    std::unordered_set<ECS::EntityHandle, ECS::EntityHandleHash> rebuildBodies;
-
-    auto resolveBodyEntity = [](ECS::EntityHandle colliderEntity,
-                                const GameEngine::Components::PhysicsColliderOwner* owner) {
-        ECS::EntityHandle bodyEntity = owner ? owner->body : ECS::EntityHandle{};
-        if (!bodyEntity.IsValid())
-            bodyEntity = colliderEntity; // default: self
-        return bodyEntity;
-    };
-
-    auto addCollider = [&](ECS::EntityHandle colliderEntity,
-                           const GameEngine::Components::PhysicsColliderOwner* owner,
-                           const GameEngine::Components::Transform& local,
-                           const GameEngine::Components::PhysicsCollider& collider,
-                           Physics::ShapeDefinition shapeDef) {
-        const ECS::EntityHandle bodyEntity = resolveBodyEntity(colliderEntity, owner);
-
-        BuiltCollider bc{};
-        bc.owner = bodyEntity;
-        bc.local = local;
-        bc.collider = collider;
-        bc.shapeDef = std::move(shapeDef);
-        byBody[bodyEntity].push_back(std::move(bc));
-    };
-
-    // Procedural triangle meshes participate in the same body creation and teardown as other shapes.
-    world.Query<ECS::Read<Components::Transform>, ECS::Read<Components::PhysicsCollider>,
-                ECS::Write<Components::MeshColliderShape>, ECS::Read<Components::PhysicsBody>>()
-        .Each([pw, &addCollider, &rebuildBodies](ECS::EntityHandle entity, const Components::Transform& local,
-                  const Components::PhysicsCollider& collider, ECS::Writable<Components::MeshColliderShape> shapeWrite,
-                  const Components::PhysicsBody& body)
-        {
-            auto& shape = shapeWrite.Mutable();
-            const auto mesh = ReadMeshForRebuild(*pw, entity, shape, body);
-            if (!mesh)
-                return;
-            const bool changed = shape.DataIndex != shape.BuiltDataIndex || shape.DataGeneration != shape.BuiltDataGeneration;
-            addCollider(entity, nullptr, local, collider, *mesh);
-            if (changed)
-                rebuildBodies.insert(entity);
-            shape.BuiltDataIndex = shape.DataIndex;
-            shape.BuiltDataGeneration = shape.DataGeneration;
-        });
-
-    // Gather sphere colliders
-    {
-        auto q = world.Query<ECS::Read<GameEngine::Components::Transform>,
-                             ECS::Read<GameEngine::Components::PhysicsCollider>,
-                             ECS::Read<GameEngine::Components::SphereColliderShape>,
-                             ECS::Optional<GameEngine::Components::PhysicsColliderOwner>>();
-        q.Each([&](ECS::EntityHandle e,
-                   const GameEngine::Components::Transform& local,
-                   const GameEngine::Components::PhysicsCollider& collider,
-                   const GameEngine::Components::SphereColliderShape& shape,
-                   const GameEngine::Components::PhysicsColliderOwner* owner) {
-            addCollider(e, owner, local, collider, Physics::SphereShapeDef{shape.radius});
-        });
-    }
-
-    // Gather box colliders
-    {
-        auto q = world.Query<ECS::Read<GameEngine::Components::Transform>,
-                             ECS::Read<GameEngine::Components::PhysicsCollider>,
-                             ECS::Read<GameEngine::Components::BoxColliderShape>,
-                             ECS::Optional<GameEngine::Components::PhysicsColliderOwner>>();
-        q.Each([&](ECS::EntityHandle e,
-                   const GameEngine::Components::Transform& local,
-                   const GameEngine::Components::PhysicsCollider& collider,
-                   const GameEngine::Components::BoxColliderShape& shape,
-                   const GameEngine::Components::PhysicsColliderOwner* owner) {
-            addCollider(e,
-                       owner,
-                       local,
-                       collider,
-                       Physics::BoxShapeDef{Physics::Vector3(shape.halfExtentsX, shape.halfExtentsY, shape.halfExtentsZ)});
-        });
-    }
-
-    // Gather capsule colliders
-    {
-        auto q = world.Query<ECS::Read<GameEngine::Components::Transform>,
-                             ECS::Read<GameEngine::Components::PhysicsCollider>,
-                             ECS::Read<GameEngine::Components::CapsuleColliderShape>,
-                             ECS::Optional<GameEngine::Components::PhysicsColliderOwner>>();
-        q.Each([&](ECS::EntityHandle e,
-                   const GameEngine::Components::Transform& local,
-                   const GameEngine::Components::PhysicsCollider& collider,
-                   const GameEngine::Components::CapsuleColliderShape& shape,
-                   const GameEngine::Components::PhysicsColliderOwner* owner) {
-            Physics::CapsuleAxis axis = Physics::CapsuleAxis::Y;
-            switch (shape.axis)
-            {
-            case 0:
-                axis = Physics::CapsuleAxis::X;
-                break;
-            case 2:
-                axis = Physics::CapsuleAxis::Z;
-                break;
-            case 1:
-            default:
-                axis = Physics::CapsuleAxis::Y;
-                break;
-            }
-            addCollider(e, owner, local, collider, Physics::CapsuleShapeDef{shape.radius, shape.halfHeight, axis});
-        });
-    }
-
-    // Gather plane colliders
-    {
-        auto q = world.Query<ECS::Read<GameEngine::Components::Transform>,
-                             ECS::Read<GameEngine::Components::PhysicsCollider>,
-                             ECS::Read<GameEngine::Components::PlaneColliderShape>,
-                             ECS::Optional<GameEngine::Components::PhysicsColliderOwner>>();
-        q.Each([&](ECS::EntityHandle e,
-                   const GameEngine::Components::Transform& local,
-                   const GameEngine::Components::PhysicsCollider& collider,
-                   const GameEngine::Components::PlaneColliderShape& shape,
-                   const GameEngine::Components::PhysicsColliderOwner* owner) {
-            addCollider(e,
-                       owner,
-                       local,
-                       collider,
-                       Physics::PlaneShapeDef{
-                           Physics::Vector3(shape.normalX, shape.normalY, shape.normalZ),
-                           shape.d,
-                           shape.halfExtent,
-                       });
-        });
-    }
+    // Entry samples (ChangeGate contract): a write or structural change made while this frame
+    // runs is seen by the next one.
+    const std::size_t structuralVersion = world.GetStructuralChangeVersion();
+    const uint64 columnVersion = world.GetGlobalSystemVersion();
 
     // Gather heightfield colliders (terrain).
     // Unlike simple shapes, heightfields are expensive to gather (~4MB sample
@@ -345,7 +352,6 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
     // Both tiers end with a dynamic-body wake over the changed area: statics
     // are not island members, so sleeping bodies never notice the ground
     // moving on their own.
-    std::vector<Physics::AABB> rebuildWakeBoxes;
     {
         auto provider = GetHeightFieldDataProvider();
         if (provider)
@@ -366,17 +372,16 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
                        ECS::Writable<GameEngine::Components::HeightFieldColliderShape> shapeRow,
                        const GameEngine::Components::PhysicsBody& body,
                        const GameEngine::Components::PhysicsColliderOwner* owner) {
-                HeightFieldData hfData =
-                    provider(shapeRow->dataHandle, shapeRow->dataGeneration, shapeRow->lastBuiltVersion);
+                HeightFieldData hfData = provider(shapeRow->dataHandle, shapeRow->dataGeneration, shapeRow->lastBuiltVersion);
                 if (!hfData.samples || hfData.sampleCount < 4)
                     return;
 
                 // Skip if body is valid and data hasn't changed since last build.
-                const bool bodyBuilt = body.initialized && pw->IsBodyValid(body.body) && pw->IsShapeValid(body.shape);
+                const bool bodyBuilt = IsBodyBuilt(*pw, body);
                 if (bodyBuilt && shapeRow->lastBuiltVersion == hfData.version)
                     return;
 
-                GameEngine::Components::HeightFieldColliderShape& shape = shapeRow.Mutable();
+                auto& shape = shapeRow.Mutable();
                 const uint32 N = hfData.sampleCount;
 
                 if (bodyBuilt)
@@ -456,26 +461,60 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
                         return;
                 }
 
-                const float32 scaleX = shape.sizeX / static_cast<float32>(N - 1);
-                const float32 scaleZ = shape.sizeZ / static_cast<float32>(N - 1);
-
-                Physics::HeightFieldShapeDef hfDef;
-                hfDef.Samples.assign(hfData.samples, hfData.samples + static_cast<size_t>(N) * N);
-                hfDef.SampleCount = N;
-                hfDef.Offset = Physics::Vector3(-shape.sizeX * 0.5f, 0.0f, -shape.sizeZ * 0.5f);
-                hfDef.Scale = Physics::Vector3(scaleX, shape.heightScale, scaleZ);
-
                 float32 fullMin = std::numeric_limits<float32>::max();
                 float32 fullMax = std::numeric_limits<float32>::lowest();
-                for (const float32 s : hfDef.Samples)
+                if (bodyBuilt)
                 {
-                    if (s == Physics::kHeightFieldNoCollision)
-                        continue;
-                    fullMin = std::min(fullMin, s);
-                    fullMax = std::max(fullMax, s);
+                    Physics::HeightFieldShapeDef hfDef = MakeHeightFieldShapeDef(hfData, shape);
+                    for (const float32 s : hfDef.Samples)
+                    {
+                        if (s == Physics::kHeightFieldNoCollision)
+                            continue;
+                        fullMin = std::min(fullMin, s);
+                        fullMax = std::max(fullMax, s);
+                    }
+                    heightFieldColliders.push_back(MakeBuiltCollider(e, owner, local, collider, std::move(hfDef)));
                 }
-
-                addCollider(e, owner, local, collider, std::move(hfDef));
+                else
+                {
+                    // A new body builds its shape on the job pool and is created the update the
+                    // build lands. Without a pool the build runs here, in this update.
+                    std::shared_ptr<PendingHeightFieldBuild>& build = m_PendingHeightFields[e.id];
+                    if (!build || build->DataHandle != shape.dataHandle ||
+                        build->DataGeneration != shape.dataGeneration || build->Version != hfData.version ||
+                        build->SampleCount != N ||
+                        build->SizeX != shape.sizeX || build->SizeZ != shape.sizeZ ||
+                        build->HeightScale != shape.heightScale)
+                    {
+                        build = std::make_shared<PendingHeightFieldBuild>();
+                        build->DataHandle = shape.dataHandle;
+                        build->DataGeneration = shape.dataGeneration;
+                        build->Version = hfData.version;
+                        build->SampleCount = N;
+                        build->SizeX = shape.sizeX;
+                        build->SizeZ = shape.sizeZ;
+                        build->HeightScale = shape.heightScale;
+                        // Never null (PhysicsWorld::GetHeightFieldShapeBuilder); a failed build
+                        // returns a null shape, handled where the build lands.
+                        const Physics::HeightFieldShapeBuilder builder = pw->GetHeightFieldShapeBuilder();
+                        Physics::HeightFieldShapeDef hfDef = MakeHeightFieldShapeDef(hfData, shape);
+                        if (JobSystem::WorkStealingThreadPool* pool = world.GetJobSystem())
+                            pool->Submit([build, builder, def = std::move(hfDef)]() { build->Run(builder, def); });
+                        else
+                            build->Run(builder, hfDef);
+                    }
+                    build->Visited = true;
+                    if (!build->Done.load(std::memory_order_acquire))
+                        return;
+                    const std::shared_ptr<const Physics::PreparedHeightFieldShape> prepared = build->Shape;
+                    fullMin = build->MinHeight;
+                    fullMax = build->MaxHeight;
+                    m_PendingHeightFields.erase(e.id);
+                    if (!prepared)
+                        return; // the build failed and logged why; the next update retries
+                    heightFieldColliders.push_back(MakeBuiltCollider(
+                        e, owner, local, collider, Physics::PreparedHeightFieldShapeDef{prepared}));
+                }
                 shape.lastBuiltVersion = hfData.version;
                 shape.lastSeenVersion = hfData.version;
                 shape.rebuildWaitSeconds = 0.0f;
@@ -489,14 +528,14 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
                 // the normal creation path consumes them this frame.
                 if (bodyBuilt)
                 {
-                    rebuildBodies.insert(resolveBodyEntity(e, owner));
+                    rebuildBodies.insert(ResolveBodyEntity(e, owner));
                     // Wake over the whole footprint spanning old and new
                     // heights — the rebuild replaces all geometry.
-                    rebuildWakeBoxes.push_back(HeightFieldRegionWorldBox(
+                    rebuildWakes.push_back({e, HeightFieldRegionWorldBox(
                         wt, shape, N,
                         0, 0, static_cast<int32>(N - 1), static_cast<int32>(N - 1),
                         std::min(fullMin, shape.builtMinHeight),
-                        std::max(fullMax, shape.builtMaxHeight)));
+                        std::max(fullMax, shape.builtMaxHeight))});
                 }
 
                 shape.builtMinHeight = fullMin;
@@ -505,17 +544,136 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
         }
     }
 
-    std::vector<BuiltBody> builtBodies;
+    // A pending build whose body was not gathered this update lost its entity, its collider
+    // or its need for a new body: its job's result is dropped when the job ends.
+    std::erase_if(m_PendingHeightFields, [](auto& entry) { return !std::exchange(entry.second->Visited, false); });
+
+    // Gather triangle mesh colliders. The mesh collider entity is its own body.
+    world.Query<ECS::Read<GameEngine::Components::Transform>, ECS::Read<GameEngine::Components::PhysicsCollider>,
+                ECS::Write<GameEngine::Components::MeshColliderShape>, ECS::Read<GameEngine::Components::PhysicsBody>>()
+        .Each([pw, &meshColliders, &rebuildBodies](ECS::EntityHandle e, const GameEngine::Components::Transform& local,
+                                                   const GameEngine::Components::PhysicsCollider& collider,
+                                                   ECS::Writable<GameEngine::Components::MeshColliderShape> shape,
+                                                   const GameEngine::Components::PhysicsBody& body) {
+            if (GatherMeshCollider(*pw, e, local, collider, shape, body, meshColliders))
+                rebuildBodies.insert(e);
+        });
+
+    // Only a body that is not built, or one a heightfield or mesh edit rebuilds, takes colliders from
+    // the gathers below; with neither, the frame has nothing to build. A body the last build
+    // pass found no collider for is not counted while no collider can have reached it.
+    bool anyBodyToBuild = !heightFieldColliders.empty() || !meshColliders.empty() || !rebuildBodies.empty();
+    if (!anyBodyToBuild)
+    {
+        const bool skipWithoutCollider = m_Scratch->CollidersUnchangedForBodiesWithoutCollider(structuralVersion);
+        m_Scratch->Bodies.Each([&anyBodyToBuild, pw, skipWithoutCollider, &bodiesWithoutCollider](
+                                   ECS::EntityHandle e, const GameEngine::Components::WorldTransform&,
+                                   ECS::Writable<GameEngine::Components::PhysicsBody> bodyRow) {
+            const auto& body = bodyRow.Get();
+            anyBodyToBuild = anyBodyToBuild ||
+                (!IsBodyBuilt(*pw, body) &&
+                 !(skipWithoutCollider &&
+                   std::binary_search(bodiesWithoutCollider.begin(), bodiesWithoutCollider.end(), e, EntityIdLess)));
+        });
+    }
+    if (!anyBodyToBuild)
+        return;
+
+    // Gather sphere colliders
+    {
+        auto q = world.Query<ECS::Read<GameEngine::Components::Transform>,
+                             ECS::Read<GameEngine::Components::PhysicsCollider>,
+                             ECS::Read<GameEngine::Components::SphereColliderShape>,
+                             ECS::Optional<GameEngine::Components::PhysicsColliderOwner>>();
+        q.Each([&byBody](ECS::EntityHandle e,
+                         const GameEngine::Components::Transform& local,
+                         const GameEngine::Components::PhysicsCollider& collider,
+                         const GameEngine::Components::SphereColliderShape& shape,
+                         const GameEngine::Components::PhysicsColliderOwner* owner) {
+            AddCollider(byBody, e, owner, local, collider, Physics::SphereShapeDef{shape.radius});
+        });
+    }
+
+    // Gather box colliders
+    {
+        auto q = world.Query<ECS::Read<GameEngine::Components::Transform>,
+                             ECS::Read<GameEngine::Components::PhysicsCollider>,
+                             ECS::Read<GameEngine::Components::BoxColliderShape>,
+                             ECS::Optional<GameEngine::Components::PhysicsColliderOwner>>();
+        q.Each([&byBody](ECS::EntityHandle e,
+                         const GameEngine::Components::Transform& local,
+                         const GameEngine::Components::PhysicsCollider& collider,
+                         const GameEngine::Components::BoxColliderShape& shape,
+                         const GameEngine::Components::PhysicsColliderOwner* owner) {
+            const Physics::Vector3 halfExtents(shape.halfExtentsX, shape.halfExtentsY, shape.halfExtentsZ);
+            AddCollider(byBody, e, owner, local, collider, Physics::BoxShapeDef{halfExtents});
+        });
+    }
+
+    // Gather capsule colliders
+    {
+        auto q = world.Query<ECS::Read<GameEngine::Components::Transform>,
+                             ECS::Read<GameEngine::Components::PhysicsCollider>,
+                             ECS::Read<GameEngine::Components::CapsuleColliderShape>,
+                             ECS::Optional<GameEngine::Components::PhysicsColliderOwner>>();
+        q.Each([&byBody](ECS::EntityHandle e,
+                         const GameEngine::Components::Transform& local,
+                         const GameEngine::Components::PhysicsCollider& collider,
+                         const GameEngine::Components::CapsuleColliderShape& shape,
+                         const GameEngine::Components::PhysicsColliderOwner* owner) {
+            Physics::CapsuleAxis axis = Physics::CapsuleAxis::Y;
+            switch (shape.axis)
+            {
+            case 0:
+                axis = Physics::CapsuleAxis::X;
+                break;
+            case 2:
+                axis = Physics::CapsuleAxis::Z;
+                break;
+            case 1:
+            default:
+                axis = Physics::CapsuleAxis::Y;
+                break;
+            }
+            AddCollider(byBody, e, owner, local, collider,
+                        Physics::CapsuleShapeDef{shape.radius, shape.halfHeight, axis});
+        });
+    }
+
+    // Gather plane colliders
+    {
+        auto q = world.Query<ECS::Read<GameEngine::Components::Transform>,
+                             ECS::Read<GameEngine::Components::PhysicsCollider>,
+                             ECS::Read<GameEngine::Components::PlaneColliderShape>,
+                             ECS::Optional<GameEngine::Components::PhysicsColliderOwner>>();
+        q.Each([&byBody](ECS::EntityHandle e,
+                         const GameEngine::Components::Transform& local,
+                         const GameEngine::Components::PhysicsCollider& collider,
+                         const GameEngine::Components::PlaneColliderShape& shape,
+                         const GameEngine::Components::PhysicsColliderOwner* owner) {
+            AddCollider(byBody, e, owner, local, collider,
+                        Physics::PlaneShapeDef{
+                            Physics::Vector3(shape.normalX, shape.normalY, shape.normalZ),
+                            shape.d,
+                            shape.halfExtent,
+                        });
+        });
+    }
+
+    for (BuiltCollider& bc : heightFieldColliders)
+        byBody[bc.Owner].push_back(std::move(bc));
+    for (BuiltCollider& bc : meshColliders)
+        byBody[bc.Owner].push_back(std::move(bc));
 
     // Build bodies from gathered colliders.
     {
         // A disabled body is not visited: ReleaseDisabledBodies tore its backend
         // body down, and re-enabling it brings it back here like any new one.
-        auto q = world.Query<ECS::Read<GameEngine::Components::WorldTransform>, ECS::Write<GameEngine::Components::PhysicsBody>>();
-        q.Each([&](ECS::EntityHandle e,
+        std::vector<BuiltBody> builtBodies;
+        m_Scratch->Bodies.Each([&](ECS::EntityHandle e,
                    const GameEngine::Components::WorldTransform& wt,
                    ECS::Writable<GameEngine::Components::PhysicsBody> bodyRow) {
-            GameEngine::Components::PhysicsBody& body = bodyRow.Mutable();
+            const auto& initialBody = bodyRow.Get();
             auto it = byBody.find(e);
             if (it == byBody.end() || it->second.empty())
                 return;
@@ -525,34 +683,52 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
             //
             // Constraint: a forced rebuild recreates the body from byBody,
             // which only contains colliders gathered THIS frame — and the
-            // heightfield gather skips up-to-date colliders. If a body ever
+            // heightfield and mesh gathers skip up-to-date colliders. If a body ever
             // owned multiple heightfield colliders (today's TerrainPhysics
             // provisioning is strictly 1:1), the unchanged siblings would be
             // missing here and silently dropped from the rebuilt body.
-            const bool haveValidBody = body.initialized && pw->IsBodyValid(body.body);
-            const bool haveValidShape = body.initialized && pw->IsShapeValid(body.shape);
+            const bool haveValidBody = initialBody.initialized && pw->IsBodyValid(initialBody.body);
+            const bool haveValidShape = initialBody.initialized && pw->IsShapeValid(initialBody.shape);
             const bool forceRebuild = !rebuildBodies.empty() && rebuildBodies.contains(e);
             if (haveValidBody && haveValidShape && !forceRebuild)
                 return;
 
-            ReleasePhysicsBody(body);
+            auto& body = bodyRow.Mutable();
+            // Destroy old body + shape(s)
+            if (body.body.IsValid())
+            {
+                pw->DestroyBody(body.body);
+                body.body = {};
+            }
+            if (body.shape.IsValid())
+            {
+                pw->DestroyShape(body.shape);
+                body.shape = {};
+            }
+            for (uint16 i = 0; i < body.childShapeCount; ++i)
+            {
+                if (body.childShapes[i].IsValid())
+                    pw->DestroyShape(body.childShapes[i]);
+                body.childShapes[i] = {};
+            }
+            body.childShapeCount = 0;
 
             // Extract body pose + scale from world transform.
             const auto wtAsTransform = TransformFromWorld(wt);
-            const auto pos = wtAsTransform.GetPosition();
             const auto rot = wtAsTransform.GetRotation();
             const auto scl = wtAsTransform.GetScale();
             const Physics::Vector3 bodyScale{scl.x, scl.y, scl.z};
 
             // Reduce collider state to body-level settings.
             // For now, Jolt applies these at the body level.
-            Physics::CollisionLayer effectiveLayer = it->second[0].collider.layer;
-            Physics::CollisionGroup effectiveGroup = it->second[0].collider.collisionGroup;
+            Physics::CollisionLayer effectiveLayer = it->second[0].Collider.layer;
+            Physics::CollisionGroup effectiveGroup = it->second[0].Collider.collisionGroup;
 
             bool anyTrigger = false;
             bool anySolid = false;
             float32 effectiveFriction = body.material.friction;
             float32 effectiveRestitution = body.material.restitution;
+
             // The contact surface the body is solved against. Jolt is body-level
             // for friction/restitution, so a compound body carries one index;
             // the first collider that names a .physmat wins, as with the layer.
@@ -560,29 +736,29 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
 
             for (const auto& c : it->second)
             {
-                if (c.collider.layer != effectiveLayer)
+                if (c.Collider.layer != effectiveLayer)
                 {
                     Logger::Log::Warning(
                         "[PhysicsECS] Body entity {} has colliders with mismatched layers ({} vs {}); using first",
                         e.id,
                         (int)effectiveLayer,
-                        (int)c.collider.layer);
+                        (int)c.Collider.layer);
                 }
-                if (c.collider.collisionGroup.groupId != effectiveGroup.groupId || c.collider.collisionGroup.subGroupId != effectiveGroup.subGroupId)
+                if (c.Collider.collisionGroup.groupId != effectiveGroup.groupId || c.Collider.collisionGroup.subGroupId != effectiveGroup.subGroupId)
                 {
                     Logger::Log::Warning(
                         "[PhysicsECS] Body entity {} has colliders with mismatched collision groups; using first",
                         e.id);
                 }
 
-                anyTrigger = anyTrigger || c.collider.isTrigger;
-                anySolid = anySolid || !c.collider.isTrigger;
+                anyTrigger = anyTrigger || c.Collider.isTrigger;
+                anySolid = anySolid || !c.Collider.isTrigger;
 
                 // Precedence: an assigned .physmat IS the collider's surface, and
                 // the inline values are the fallback for when none is assigned or
                 // it cannot be resolved yet.
                 const uint32 materialIndex =
-                    ContactSurfaceTable::ResolveMaterial(c.collider.materialAsset.ToGuid());
+                    ContactSurfaceTable::ResolveMaterial(c.Collider.materialAsset.ToGuid());
                 if (materialIndex != ContactSurfaceTable::kNoMaterial)
                 {
                     if (effectiveMaterialIndex == ContactSurfaceTable::kNoMaterial)
@@ -599,7 +775,7 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
                 const Physics::PhysicsMaterial mat =
                     materialIndex != ContactSurfaceTable::kNoMaterial
                         ? ContactSurfaceTable::MaterialAt(materialIndex)
-                        : (c.collider.overrideMaterial ? c.collider.material : body.material);
+                        : (c.Collider.overrideMaterial ? c.Collider.material : body.material);
                 effectiveFriction = std::max(effectiveFriction, mat.friction);
                 effectiveRestitution = std::max(effectiveRestitution, mat.restitution);
             }
@@ -617,7 +793,7 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
             if (it->second.size() == 1)
             {
                 // Single collider: bake body scale into the shape directly.
-                rootShape = pw->CreateShape(it->second[0].shapeDef, bodyScale);
+                rootShape = pw->CreateShape(it->second[0].ShapeDef, bodyScale);
             }
             else
             {
@@ -631,9 +807,9 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
                         break;
 
                     // Child local TRS (relative to body)
-                    const auto childPos = c.local.GetPosition();
-                    const auto childRot = c.local.GetRotation();
-                    const auto childScl = c.local.GetScale();
+                    const auto childPos = c.Local.GetPosition() - GameEngine::Mathematics::WorldPosition{};
+                    const auto childRot = c.Local.GetRotation();
+                    const auto childScl = c.Local.GetScale();
 
                     // Parent (body) scale affects child translation in the transform hierarchy.
                     const Physics::Vector3 childOffset(childPos.x * scl.x, childPos.y * scl.y, childPos.z * scl.z);
@@ -641,7 +817,7 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
                     // Bake both body scale and child local scale into the child shape.
                     const Physics::Vector3 childBakedScale(bodyScale.x * childScl.x, bodyScale.y * childScl.y, bodyScale.z * childScl.z);
 
-                    const Physics::ShapeHandle childShape = pw->CreateShape(c.shapeDef, childBakedScale);
+                    const Physics::ShapeHandle childShape = pw->CreateShape(c.ShapeDef, childBakedScale);
                     if (!childShape.IsValid())
                         continue;
 
@@ -667,7 +843,7 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
             body.shape = rootShape;
 
             Physics::BodySettings bs{};
-            bs.position = Physics::Vector3(pos.x, pos.y, pos.z);
+            bs.position = wt.Position;
             { const auto& q = rot.GetGLM(); bs.rotation = Physics::Quaternion(q.w, q.x, q.y, q.z); }
             bs.shape = body.shape;
 
@@ -682,8 +858,6 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
             bs.centerOfMassOffset = Physics::Vector3(body.centerOfMassOffsetX, body.centerOfMassOffsetY, body.centerOfMassOffsetZ);
             bs.friction = effectiveFriction;
             bs.restitution = effectiveRestitution;
-            // What the engine's default contact predicate resolves this body's
-            // surface from; kNoMaterial keeps the backend's combined values.
             bs.materialIndex = effectiveMaterialIndex;
 
             bs.linearVelocity = Physics::Vector3(body.linearVelocityX, body.linearVelocityY, body.linearVelocityZ);
@@ -705,10 +879,35 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
         MarkKinematicBodies(world, builtBodies);
     }
 
-    // Wake sleeping dynamics over every heightfield footprint that was
-    // rebuilt this frame (the bodies now exist again, so the sweep sticks).
-    for (const auto& box : rebuildWakeBoxes)
-        pw->ActivateBodiesInAABB(box);
+    // Settle the dynamic bodies over every heightfield footprint that was rebuilt this frame (the
+    // bodies now exist again, so the wake sticks): a body the new surface buried moves on top of it.
+    for (const RebuildWake& wake : rebuildWakes)
+    {
+        const auto* wt = world.GetComponent<GameEngine::Components::WorldTransform>(wake.Collider);
+        const auto* shape = world.GetComponent<GameEngine::Components::HeightFieldColliderShape>(wake.Collider);
+        if (wt && shape)
+            SettleBodiesOnHeightField(*pw, *wt, *shape, wake.Box);
+        else
+            pw->ActivateBodiesInAABB(wake.Box);
+    }
+
+    bodiesWithoutCollider.clear();
+    m_Scratch->Bodies.Each([pw, &byBody, &bodiesWithoutCollider](ECS::EntityHandle e,
+                                                             const GameEngine::Components::WorldTransform&,
+                                                             ECS::Writable<GameEngine::Components::PhysicsBody> bodyRow) {
+        const auto& body = bodyRow.Get();
+        if (!IsBodyBuilt(*pw, body) && byBody.find(e) == byBody.end())
+            bodiesWithoutCollider.push_back(e);
+    });
+    std::sort(bodiesWithoutCollider.begin(), bodiesWithoutCollider.end(), EntityIdLess);
+    m_Scratch->BodiesWithoutColliderStructuralVersion = structuralVersion;
+    m_Scratch->BodiesWithoutColliderGate.LastRunVersion = columnVersion;
+
+    byBody.clear();
+    heightFieldColliders.clear();
+    meshColliders.clear();
+    rebuildBodies.clear();
+    rebuildWakes.clear();
 }
 
 } // namespace GameEngine::PhysicsECS

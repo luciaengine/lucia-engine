@@ -28,6 +28,24 @@ MaterialTextureFilter MaterialTextureFilterFromString(const std::string& s)
     return MaterialTextureFilter::Trilinear;
 }
 
+const char* MaterialPatternSymmetryToString(MaterialPatternSymmetry symmetry)
+{
+    switch (symmetry)
+    {
+    case MaterialPatternSymmetry::Rectangular: return "Rectangular";
+    case MaterialPatternSymmetry::Square:      return "Square";
+    case MaterialPatternSymmetry::None:
+    default:                                   return "None";
+    }
+}
+
+MaterialPatternSymmetry MaterialPatternSymmetryFromString(const std::string& s)
+{
+    if (s == "Square")      return MaterialPatternSymmetry::Square;
+    if (s == "Rectangular") return MaterialPatternSymmetry::Rectangular;
+    return MaterialPatternSymmetry::None;
+}
+
 float MaterialDocument::DefaultOpacity() const
 {
     if (auto it = properties.find("baseColor"); it != properties.end())
@@ -88,7 +106,9 @@ MaterialDocument MaterialDocument::CreateDefaultPBR(const std::string& name)
     doc.surfaceShader = "Surfaces/standard_pbr.glsl";
     doc.alphaMode = MaterialAlphaMode::Opaque;
     doc.doubleSided = false;
-    doc.properties["baseColor"] = std::vector<float>{1.0f, 1.0f, 1.0f, 1.0f};
+    // A bright plaster or paper albedo: no real surface reflects all the light it receives, and
+    // 1.0 reads as clipped white under the sun.
+    doc.properties["baseColor"] = std::vector<float>{0.8f, 0.8f, 0.8f, 1.0f};
     doc.properties["roughness"] = 0.5f;
     doc.properties["diffuseRoughness"] = 0.0f; // OpenPBR Oren-Nayar diffuse roughness; 0 = smooth Lambert
     doc.properties["metallic"] = 0.0f;

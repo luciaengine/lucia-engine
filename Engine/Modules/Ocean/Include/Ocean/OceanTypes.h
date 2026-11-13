@@ -1,6 +1,11 @@
 #pragma once
 
+#include "Mathematics/Vector3.h"
+#include "Mathematics/Vector4.h"
+#include "Types/Color.h"
 #include "Types/Types.h"
+
+#include <cstddef>
 
 namespace GameEngine::Ocean
 {
@@ -66,37 +71,28 @@ inline constexpr uint32 kOceanLocalFFTMaskPages =
 // the reference OceanWaveSpectrum octave count (per-octave power curve length).
 inline constexpr uint32 kOceanSpectrumOctaves = 14;
 
-// Surface geometry budget retained for scene compatibility. The renderer maps
-// this value to the per-tile density of its camera-following concentric LOD rings.
-// Runtime authoring can raise it for more near-field geometry or lower it for
-// performance; keep a hard cap because vertex and triangle counts grow with it.
-inline constexpr uint32 kDefaultOceanGridSize = 256;
-inline constexpr uint32 kMinOceanGridSize = 8;
-inline constexpr uint32 kMaxOceanGridSize = 1024;
-inline constexpr uint32 kDefaultOceanGeometryUpSampleFactor = 2;
+// Cells per side of one camera-following ring tile, for each unit of
+// GeometryUpSampleFactor / GeometryDownSampleFactor. The count is kept even so
+// the 2x snap and the morph onto the coarser grid stay exact.
+inline constexpr uint32 kOceanRingCellsPerTileUnit = 8;
+inline constexpr uint32 kMinOceanRingCellsPerTile = 8;
+inline constexpr uint32 kMaxOceanRingCellsPerTile = 64;
+inline constexpr uint32 kDefaultOceanGeometryUpSampleFactor = 3;
 
-inline constexpr uint32 ClampOceanGeometryGridSize(uint32 gridSize)
-{
-    return gridSize < kMinOceanGridSize
-        ? kMinOceanGridSize
-        : (gridSize > kMaxOceanGridSize ? kMaxOceanGridSize : gridSize);
-}
-
-inline constexpr uint32 ResolveOceanGeometryGridSize(uint32 upSample, uint32 downSample)
+/// Cells per ring tile side for the authored density factors (0 selects the default).
+inline constexpr uint32 ResolveOceanRingCellsPerTile(uint32 upSample, uint32 downSample)
 {
     const uint64 up = upSample == 0u
         ? static_cast<uint64>(kDefaultOceanGeometryUpSampleFactor)
         : static_cast<uint64>(upSample);
     const uint64 down = downSample == 0u ? 1u : static_cast<uint64>(downSample);
-    const uint64 desired =
-        (static_cast<uint64>(kDefaultOceanGridSize) * up + down - 1u) / down;
-    return ClampOceanGeometryGridSize(static_cast<uint32>(
-        desired > static_cast<uint64>(kMaxOceanGridSize)
-            ? static_cast<uint64>(kMaxOceanGridSize)
-            : desired));
+    const uint64 desired = (static_cast<uint64>(kOceanRingCellsPerTileUnit) * up) / down;
+    const uint64 clamped = desired < kMinOceanRingCellsPerTile
+        ? kMinOceanRingCellsPerTile
+        : (desired > kMaxOceanRingCellsPerTile ? kMaxOceanRingCellsPerTile : desired);
+    return static_cast<uint32>(clamped) & ~1u;
 }
-inline constexpr uint32 kDefaultOceanGeometryGridSize =
-    ResolveOceanGeometryGridSize(0u, 1u);
+inline constexpr uint32 kDefaultOceanRingCellsPerTile = ResolveOceanRingCellsPerTile(0u, 1u);
 
 // Base world-space extent used to size the concentric ring mesh. The outer
 // horizon skirt extends beyond this reach and the whole layout scales with
@@ -148,16 +144,16 @@ struct OceanParamsGPU
     float32 PatchExtent = kDefaultPatchExtent;
     uint32 GerstnerWaveCount = 0;
 
-    float32 _DeadShallowColor[4] = {0.0f, 0.0f, 0.0f, 0.0f}; // dead: superseded by SubSurfaceShallowCol; kept for std430 layout
-    float32 DeepColor[4] = {0.05f, 0.07f, 0.20f, 1.0f};    // deep-water diffuse base
+    float32 _DeadShallowColor[4] = {0.0f, 0.0f, 0.0f, 0.0f}; // pad: mirrors _uDeadShallowColor in ocean_common.glsl
+    ColorLinear DeepColor = {0.05f, 0.07f, 0.20f, 1.0f};    // deep-water diffuse base
 
     float32 ChoppyScale = 1.0f;
     float32 FresnelPower = 5.0f;
     uint32 WaveMode = 1; // OceanWaveMode::FFT; the extraction overwrites this
     uint32 FFTCascadeCount = 0; // active FFT cascades sampled by the surface (0 = none yet)
 
-    float32 _DeadSkyColor[4] = {0.0f, 0.0f, 0.0f, 0.0f};   // dead: superseded by SkyBase/SkyTowardsSun/SkyAwayFromSun; kept for std430 layout
-    float32 FoamColor[4] = {1.0f, 0.996f, 0.972f, 1.0f};   // whitecap color (the reference _FoamWhiteColor)
+    float32 _DeadSkyColor[4] = {0.0f, 0.0f, 0.0f, 0.0f};   // pad: mirrors _uDeadSkyColor in ocean_common.glsl
+    ColorLinear FoamColor = {1.0f, 0.996f, 0.972f, 1.0f};   // whitecap color (the reference _FoamWhiteColor)
 
     float32 ReflectionStrength = 1.0f;      // sky/planar reflection amount (scales the Fresnel blend)
     float32 SubsurfaceStrength = 1.0f;
@@ -166,10 +162,10 @@ struct OceanParamsGPU
 
     // Main directional light, fed from the scene so the surface can do
     // sun-direction subsurface scattering (forward scatter through wave crests)
-    // and sun glitter — the reference ocean's signature look. xyz of SunDirection
+    // — the reference ocean's signature look. xyz of SunDirection
     // points TOWARD the sun; SunColor is light colour premultiplied by intensity.
-    float32 SunDirection[4] = {0.32f, 0.7f, 0.22f, 0.0f};
-    float32 SunColor[4] = {1.0f, 0.96f, 0.88f, 1.0f};
+    Mathematics::Vector4 SunDirection = {0.32f, 0.7f, 0.22f, 0.0f};
+    ColorLinear SunColor = {1.0f, 0.96f, 0.88f, 1.0f};
 
     // Foam controls (persistent foam simulation). FoamFadeRate is the per-second
     // exponential decay of accumulated foam; WaveFoamStrength scales how much
@@ -195,21 +191,20 @@ struct OceanParamsGPU
 
     // Diffuse scattering: view-weighted blend of two tints (grazing vs. up-look)
     // plus an in-shadow tint. ColorLinear -> vec4. Each on its own 16-byte lane.
-    float32 Diffuse[4] = {0.0f, 0.0028f, 0.0033f, 1.0f};
-    float32 DiffuseGrazing[4] = {0.0014f, 0.0021f, 0.0022f, 1.0f};
-    float32 DiffuseShadow[4] = {0.0f, 0.0006f, 0.0009f, 1.0f};
+    ColorLinear Diffuse = {0.0f, 0.0028f, 0.0033f, 1.0f};
+    ColorLinear DiffuseGrazing = {0.0014f, 0.0021f, 0.0022f, 1.0f};
+    ColorLinear DiffuseShadow = {0.0f, 0.0006f, 0.0009f, 1.0f};
 
     // Subsurface: the shallow-water tint (toward shore) and the scatter colour the
     // sun lobe drives through wave crests. ColorLinear -> vec4.
-    float32 SubSurfaceShallowCol[4] = {0.42f, 0.75f, 0.69f, 1.0f};
-    float32 SubSurfaceColour[4] = {0.08f, 0.46f, 0.40f, 1.0f};
+    ColorLinear SubSurfaceShallowCol = {0.42f, 0.75f, 0.69f, 1.0f};
+    ColorLinear SubSurfaceColour = {0.08f, 0.46f, 0.40f, 1.0f};
 
     // Procedural sky dome: zenith/base, the warmer tint toward the sun, and the
     // tint away from it. Steered by SkyDirectionality below. ColorLinear -> vec4.
-    float32 SkyBase[4] = {0.09f, 0.19f, 0.34f, 1.0f};
-    float32 SkyTowardsSun[4] = {0.27f, 0.39f, 0.49f, 1.0f};
-    float32 SkyAwayFromSun[4] = {0.06f, 0.13f, 0.26f, 1.0f};
-    float32 DirectionalLightColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    ColorLinear SkyBase = {0.09f, 0.19f, 0.34f, 1.0f};
+    ColorLinear SkyTowardsSun = {0.27f, 0.39f, 0.49f, 1.0f};
+    ColorLinear SkyAwayFromSun = {0.06f, 0.13f, 0.26f, 1.0f};
 
     // Scalar lane 1: surface normal map strength + world tiling scale, and the
     // shallow-tint depth shaping (depth = 0 until the Phase 5 depth cascade).
@@ -223,7 +218,7 @@ struct OceanParamsGPU
     float32 SubSurfaceBase = 0.0f;
     float32 SubSurfaceSun = 1.7f;
     float32 SubSurfaceSunFallOff = 5.0f;
-    float32 Specular = 0.7f;
+    float32 Specular = 1.0f;
 
     // Scalar lane 3: microfacet roughness, the two IORs for the Schlick R0, the
     // planar-reflection toggle (0 = off), and planar capture blend strength.
@@ -232,12 +227,12 @@ struct OceanParamsGPU
     float32 IorWater = 1.333f;
     uint32 PlanarReflections = 0;
 
-    // Scalar lane 4: sky directionality exponent, sun glitter boost/falloff, and
-    // how strongly the planar capture replaces the procedural reflected sky.
+    // Scalar lane 4: sky directionality exponent and how strongly the planar
+    // capture replaces the procedural reflected sky, padded to the lane.
     float32 SkyDirectionality = 1.0f;
-    float32 DirectionalLightBoost = 7.0f;
-    float32 DirectionalLightFallOff = 275.0f;
     float32 PlanarReflectionStrength = 1.0f;
+    float32 _SurfacePad0 = 0.0f;
+    float32 _SurfacePad1 = 0.0f;
 
     // --- Refraction / depth-fog transparency (Phase 4) ---
     // Lane A: DepthFogDensity (rgb) is the per-channel extinction of the grabbed
@@ -245,7 +240,7 @@ struct OceanParamsGPU
     // colour absorbed sooner, so deep water reads as DeepColor); the w lane
     // carries RefractionStrength — how far the surface normal bends the
     // screen-space grab UV (0 = no distortion).
-    float32 DepthFogDensity[3] = {0.9f, 0.3f, 0.35f};
+    Mathematics::Vector3 DepthFogDensity = {0.9f, 0.3f, 0.35f};
     float32 RefractionStrength = 0.5f;
 
     // Lane B: RefractionAvailable is 1 when OceanRenderNode scheduled the scene-
@@ -418,7 +413,7 @@ struct OceanParamsGPU
     uint32 PlanarReflectionAvailable = 0;
     float32 ShallowRefractionReflectionSuppression = 1.0f;
 
-    // --- Displacement combine cascade (OceanRenderer.CombineDisplacementCascade) ---
+    // --- Displacement combine cascade (OceanRenderer.CombineCascade) ---
     // CombineWavesAvailable = 1 when the combine cascade was baked + bound this
     // frame (the toggle is on AND the cascade is ready), so OceanSampleDisplacement
     // samples ~2 combined slices instead of summing all 16 FFT cascades. 0 = the
@@ -447,11 +442,10 @@ struct OceanParamsGPU
     float32 RespectShallowAttenuation = 1.0f;
 
     // --- Surface grid geometry controls ---
-    // One std430 16-byte lane. GeometryGridSize is the compatible surface budget
-    // that determines each LOD tile's cell count. The vertex shader uses the
-    // resulting cell width to estimate per-vertex footprint, so raising geometry
-    // density also lets smaller displacement survive the anti-aliasing filter.
-    float32 GeometryGridSize = static_cast<float32>(kDefaultOceanGeometryGridSize);
+    // One std430 16-byte lane. RingCellsPerTile is the cell count per ring tile
+    // side; the vertex shader derives the cell width and the displacement
+    // footprint filter from it (ocean_ring_layout.glsl).
+    float32 RingCellsPerTile = static_cast<float32>(kDefaultOceanRingCellsPerTile);
     // Accumulated floating-origin shift added only for wave phase evaluation.
     float32 WaveOriginOffsetX = 0.0f;
     float32 WaveOriginOffsetZ = 0.0f;
@@ -465,6 +459,10 @@ struct OceanParamsGPU
 
     GerstnerWave Waves[kMaxGerstnerWaves] = {};
 };
+static_assert(sizeof(OceanParamsGPU) == 608 + kMaxGerstnerWaves * sizeof(GerstnerWave),
+              "OceanParamsGPU must match OceanParamsBuffer in ocean_common.glsl");
+static_assert(offsetof(OceanParamsGPU, _DeadShallowColor) == 16 && offsetof(OceanParamsGPU, _DeadSkyColor) == 64,
+              "the raw pads must sit on their ocean_common.glsl lanes");
 
 // Per-frame parameters for the FFT compute chain (std140 UBO). Layout MUST match
 // OceanFFTParams in ocean_fft_common.glsl. the reference OceanWaveSpectrum parity: the
@@ -498,9 +496,9 @@ struct OceanFFTParamsGPU
     //                    wavelength band.
     //   GravityScales  — per-octave dispersion gravity multiplier; speeds up or
     //                    slows the waves in that wavelength band.
-    float32 SpectrumPower[16] = {};
-    float32 ChopScales[16] = {};
-    float32 GravityScales[16] = {};
+    float32 SpectrumPower[16] = {}; // mirrors uSpectrumPower[4] in ocean_fft_common.glsl
+    float32 ChopScales[16] = {};    // mirrors uChopScales[4] in ocean_fft_common.glsl
+    float32 GravityScales[16] = {}; // mirrors uGravityScales[4] in ocean_fft_common.glsl
 
     // Per-octave disable bitmask: bit o set => octave o is muted (its power is
     // forced to 0 in the spectrum init). 14 bits used; the high bits are ignored.
@@ -522,7 +520,7 @@ static_assert(sizeof(OceanFFTParamsGPU) == 256, "OceanFFTParamsGPU must be std14
 // ocean_combine.comp byte-for-byte.
 struct OceanCascadeLayoutGPU
 {
-    float32 CascadeOriginScale[kMaxOceanLodCascades][4] = {};
+    Mathematics::Vector4 CascadeOriginScale[kMaxOceanLodCascades];
     uint32 LodCount = 0;
     // 1 when the coarsest layer is fixed in the world (OceanCascadeArray::
     // AnchorCoarsestLevel) rather than snapped to the camera: a sampler does not
@@ -577,9 +575,9 @@ inline constexpr uint32 kMaxOceanFoamInputs = 8u;
 
 struct OceanFoamInputGPU
 {
-    float32 OriginExtent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 OriginExtent = {0.0f, 0.0f, 0.0f, 0.0f};
     // x = amount, y = inward feather, z = OceanInputBlendMode, w = pad.
-    float32 AmountFeatherBlend[4] = {0.0f, 0.0f, 1.0f, 0.0f};
+    Mathematics::Vector4 AmountFeatherBlend = {0.0f, 0.0f, 1.0f, 0.0f};
 };
 static_assert(sizeof(OceanFoamInputGPU) == 32,
               "OceanFoamInputGPU must be std140 (two vec4 lanes)");
@@ -636,7 +634,7 @@ struct OceanFoamParamsGPU
     // here, so the CPU's closed-form catch-up (OceanFoamSim::FillParams) and the
     // shader's per-step decay share one value.
     float32 ShorelineFadeRateScale = 0.65f;
-    float32 ShorelinePad[3] = {0.0f, 0.0f, 0.0f};
+    float32 ShorelinePad[3] = {0.0f, 0.0f, 0.0f}; // mirrors uShorelinePad0..2 in ocean_foam_sim.comp
 
     OceanCascadeLayoutGPU Cascade;
     OceanCascadeLayoutGPU PrevCascade;
@@ -687,8 +685,8 @@ inline constexpr uint32 kMaxOceanSavedDepthCachePages = 8;
 //   HeightSlope.w   = pad
 struct OceanSeabedGPU
 {
-    float32 OriginExtent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    float32 HeightSlope[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 OriginExtent = {0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 HeightSlope = {0.0f, 0.0f, 0.0f, 0.0f};
 };
 static_assert(sizeof(OceanSeabedGPU) == 32, "OceanSeabedGPU must be std140 (two vec4 lanes)");
 
@@ -721,8 +719,8 @@ inline float32 OceanDepthBandDepth(float32 bandDepth, float32 saturationDepth, f
 
 struct OceanDepthContributorGPU
 {
-    float32 OriginExtent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    float32 DepthShape[4] = {0.0f, 0.0f, 1.0f, 0.0f};
+    Mathematics::Vector4 OriginExtent = {0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 DepthShape = {0.0f, 0.0f, 1.0f, 0.0f};
 };
 static_assert(sizeof(OceanDepthContributorGPU) == 32,
               "OceanDepthContributorGPU must be std140 (two vec4 lanes)");
@@ -733,9 +731,9 @@ static_assert(sizeof(OceanDepthContributorGPU) == 32,
 //   AtlasRect.xy = normalized atlas offset, zw = normalized atlas size
 struct OceanSavedDepthCachePageGPU
 {
-    float32 OriginSize[4] = {0.0f, 0.0f, 1.0f, 1.0f};
-    float32 InvSizeDeep[4] = {1.0f, 1.0f, 60000.0f, 0.0f};
-    float32 AtlasRect[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+    Mathematics::Vector4 OriginSize = {0.0f, 0.0f, 1.0f, 1.0f};
+    Mathematics::Vector4 InvSizeDeep = {1.0f, 1.0f, 60000.0f, 0.0f};
+    Mathematics::Vector4 AtlasRect = {0.0f, 0.0f, 1.0f, 1.0f};
 };
 static_assert(sizeof(OceanSavedDepthCachePageGPU) == 48,
               "OceanSavedDepthCachePageGPU must be std140 (three vec4 lanes)");
@@ -765,16 +763,16 @@ struct OceanSeabedDepthParamsGPU
     uint32 _SavedDepthPad1 = 0;
     uint32 _SavedDepthPad2 = 0;
 
-    float32 SavedDepthCacheOriginSize[4] = {0.0f, 0.0f, 1.0f, 1.0f};
-    float32 SavedDepthCacheInvSizeDeep[4] = {1.0f, 1.0f, 60000.0f, 0.0f};
+    Mathematics::Vector4 SavedDepthCacheOriginSize = {0.0f, 0.0f, 1.0f, 1.0f};
+    Mathematics::Vector4 SavedDepthCacheInvSizeDeep = {1.0f, 1.0f, 60000.0f, 0.0f};
 
     uint32 RasterDepthCaptureAvailable = 0;
     uint32 _RasterDepthPad0 = 0;
     uint32 _RasterDepthPad1 = 0;
     uint32 _RasterDepthPad2 = 0;
 
-    float32 RasterDepthCaptureOriginSize[4] = {0.0f, 0.0f, 1.0f, 1.0f};
-    float32 RasterDepthCaptureInvSizeDeep[4] = {1.0f, 1.0f, 60000.0f, 0.0f};
+    Mathematics::Vector4 RasterDepthCaptureOriginSize = {0.0f, 0.0f, 1.0f, 1.0f};
+    Mathematics::Vector4 RasterDepthCaptureInvSizeDeep = {1.0f, 1.0f, 60000.0f, 0.0f};
 
     OceanCascadeLayoutGPU Cascade;
     OceanSavedDepthCachePageGPU SavedDepthCachePages[kMaxOceanSavedDepthCachePages];
@@ -804,8 +802,8 @@ inline constexpr uint32 kMaxOceanFlowMapSources = 4;
 //   FlowVelocity.zw = pad
 struct OceanFlowSourceGPU
 {
-    float32 OriginExtent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    float32 FlowVelocity[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 OriginExtent = {0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 FlowVelocity = {0.0f, 0.0f, 0.0f, 0.0f};
 };
 static_assert(sizeof(OceanFlowSourceGPU) == 32, "OceanFlowSourceGPU must be std140 (two vec4 lanes)");
 
@@ -816,10 +814,10 @@ static_assert(sizeof(OceanFlowSourceGPU) == 32, "OceanFlowSourceGPU must be std1
 //   FlowVelocity.xy = horizontal current (meters/second) on world X and Z
 struct OceanFlowPolygonGPU
 {
-    float32 Meta[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    float32 Bounds[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    float32 FlowVelocity[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    float32 Points[kMaxOceanFlowPolygonPoints][4] = {};
+    Mathematics::Vector4 Meta = {0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 Bounds = {0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 FlowVelocity = {0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 Points[kMaxOceanFlowPolygonPoints];
 };
 static_assert(sizeof(OceanFlowPolygonGPU) ==
                   (3 + kMaxOceanFlowPolygonPoints) * 16,
@@ -832,8 +830,8 @@ static_assert(sizeof(OceanFlowPolygonGPU) ==
 //   StrengthFeather.zw = additional flow bias on world X/Z (meters/second)
 struct OceanFlowMapSourceGPU
 {
-    float32 OriginExtent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    float32 StrengthFeather[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 OriginExtent = {0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 StrengthFeather = {1.0f, 0.0f, 0.0f, 0.0f};
 };
 static_assert(sizeof(OceanFlowMapSourceGPU) == 32,
               "OceanFlowMapSourceGPU must be std140 (two vec4 lanes)");
@@ -881,15 +879,15 @@ inline constexpr uint32 kMaxOceanWaveMaskTextureSources = 4;
 
 struct OceanWaveMaskSourceGPU
 {
-    float32 OriginExtent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 OriginExtent = {0.0f, 0.0f, 0.0f, 0.0f};
     // x = wave weight, y = chop scale, z = inward feather meters,
     // w = local wave count
-    float32 WaveChopFeather[4] = {1.0f, 1.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 WaveChopFeather = {1.0f, 1.0f, 0.0f, 0.0f};
     // Each lane: x = amplitude, y = wavelength, zw = normalized direction XZ.
-    float32 LocalWaves[kMaxOceanWaveMaskLocalWaves][4] = {};
+    Mathematics::Vector4 LocalWaves[kMaxOceanWaveMaskLocalWaves] = {};
     // x = local FFT blend weight, y = local FFT stream index,
     // z = authored constant height offset, w = OceanInputBlendMode.
-    float32 LocalFFTBlend[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 LocalFFTBlend = {0.0f, 0.0f, 0.0f, 0.0f};
 };
 static_assert(sizeof(OceanWaveMaskSourceGPU) == (3 + kMaxOceanWaveMaskLocalWaves) * 16,
               "OceanWaveMaskSourceGPU must be std140 (vec4 lanes)");
@@ -897,13 +895,13 @@ static_assert(sizeof(OceanWaveMaskSourceGPU) == (3 + kMaxOceanWaveMaskLocalWaves
 struct OceanWaveMaskPolygonGPU
 {
     // x = point count, y = inward feather meters, z = local wave count
-    float32 Meta[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    float32 Bounds[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 Meta = {0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 Bounds = {0.0f, 0.0f, 0.0f, 0.0f};
     // x = wave weight, y = chop scale, z = local FFT blend weight, w = local FFT stream index
-    float32 WaveChop[4] = {1.0f, 1.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 WaveChop = {1.0f, 1.0f, 0.0f, 0.0f};
     // Each lane: x = amplitude, y = wavelength, zw = normalized direction XZ.
-    float32 LocalWaves[kMaxOceanWaveMaskLocalWaves][4] = {};
-    float32 Points[kMaxOceanWaveMaskPolygonPoints][4] = {};
+    Mathematics::Vector4 LocalWaves[kMaxOceanWaveMaskLocalWaves] = {};
+    Mathematics::Vector4 Points[kMaxOceanWaveMaskPolygonPoints];
 };
 static_assert(sizeof(OceanWaveMaskPolygonGPU) ==
                   (3 + kMaxOceanWaveMaskLocalWaves +
@@ -916,11 +914,11 @@ static_assert(sizeof(OceanWaveMaskPolygonGPU) ==
 // feathered inside the rectangular footprint.
 struct OceanWaveMaskTextureSourceGPU
 {
-    float32 OriginExtent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 OriginExtent = {0.0f, 0.0f, 0.0f, 0.0f};
     // x = weight scale, y = chop scale, z = weight bias, w = chop bias
-    float32 ScaleBias[4] = {1.0f, 1.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 ScaleBias = {1.0f, 1.0f, 0.0f, 0.0f};
     // x = inward feather meters, y = coverage, zw = pad
-    float32 FeatherCoverage[4] = {0.0f, 1.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 FeatherCoverage = {0.0f, 1.0f, 0.0f, 0.0f};
 };
 static_assert(sizeof(OceanWaveMaskTextureSourceGPU) == 48,
               "OceanWaveMaskTextureSourceGPU must be std140 (three vec4 lanes)");
@@ -965,7 +963,7 @@ inline constexpr uint32 kMaxOceanWaveImpulses = 16;
 //   w   = amplitude (meters, vertical displacement at center)
 struct OceanWaveImpulseGPU
 {
-    float32 CenterRadiusAmp[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 CenterRadiusAmp = {0.0f, 0.0f, 0.0f, 0.0f};
 };
 static_assert(sizeof(OceanWaveImpulseGPU) == 16, "OceanWaveImpulseGPU must be std140 (one vec4)");
 
@@ -1022,9 +1020,9 @@ inline constexpr uint32 kMaxOceanClipPolygonPoints = 8;
 //   ClipState.zw    = pad
 struct OceanClipSourceGPU
 {
-    float32 OriginExtent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 OriginExtent = {0.0f, 0.0f, 0.0f, 0.0f};
     // z = encoded typed blend mode + 1 (0 keeps legacy clip composition).
-    float32 ClipState[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 ClipState = {1.0f, 0.0f, 0.0f, 0.0f};
 };
 static_assert(sizeof(OceanClipSourceGPU) == 32, "OceanClipSourceGPU must be std140 (two vec4 lanes)");
 
@@ -1034,9 +1032,9 @@ static_assert(sizeof(OceanClipSourceGPU) == 32, "OceanClipSourceGPU must be std1
 // and Meta.z stores optional inward feather distance in meters.
 struct OceanClipPolygonGPU
 {
-    float32 Meta[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    float32 Bounds[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    float32 Points[kMaxOceanClipPolygonPoints][4] = {};
+    Mathematics::Vector4 Meta = {0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 Bounds = {0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 Points[kMaxOceanClipPolygonPoints];
 };
 static_assert(sizeof(OceanClipPolygonGPU) ==
                   (2 + kMaxOceanClipPolygonPoints) * 16,
@@ -1080,8 +1078,8 @@ inline constexpr uint32 kMaxOceanAlbedoSources = 8;
 //                     Overlapping sources composite (over) by their alpha.
 struct OceanAlbedoSourceGPU
 {
-    float32 OriginExtent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    float32 Color[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 OriginExtent = {0.0f, 0.0f, 0.0f, 0.0f};
+    ColorLinear Color = {0.0f, 0.0f, 0.0f, 0.0f};
 };
 static_assert(sizeof(OceanAlbedoSourceGPU) == 32, "OceanAlbedoSourceGPU must be std140 (two vec4 lanes)");
 

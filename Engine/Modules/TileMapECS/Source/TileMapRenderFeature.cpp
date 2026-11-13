@@ -1,4 +1,5 @@
 #include "TileMapECS/TileMapRenderFeature.h"
+#include "Engine/Rendering/RenderOrigin.h"
 
 #include "Assets/AssetManager.h"
 #include "Core/Engine.h"
@@ -7,7 +8,7 @@
 #include "Engine/Rendering/ViewExposureScale.h"
 #include "Logger/Logger.h"
 #include "Mathematics/Matrix4x4.h"
-#include "Rendering/Core/PipelineDescTranslator.h"
+#include "Rendering/Core/Pipeline/PipelineDescTranslator.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "TileMap/TileSetAsset.h"
 #include "TileMapECS/TileMapParallax.h"
@@ -35,6 +36,20 @@ constexpr uint32 kAnimFramesBinding = 3;
 
 /** Smallest instance capacity worth allocating; keeps sparse chunks off the churn path. */
 constexpr uint32 kMinChunkCapacity = 64;
+
+Mathematics::WorldPosition ChunkWorldPosition(const TileMapLayerDraw& draw,
+                                              const Mathematics::WorldPosition& shiftedPosition,
+                                              float64 originX, float64 originY)
+{
+    Components::WorldTransform parent;
+    parent.Position = shiftedPosition;
+    parent.Basis = draw.Basis;
+    Components::Transform local;
+    local.Position = Mathematics::WorldPosition{originX, originY, 0.0};
+    Components::WorldTransform chunk;
+    Components::ComposeWorldPose(parent, local, chunk);
+    return chunk.Position;
+}
 
 /** Why a chunk was skipped, so a whole layer lost to depth can be reported. */
 enum class ChunkClip
@@ -468,16 +483,18 @@ void TileMapRenderFeature::FlushDirtyChunks(const GUID& mapGuid, uint32 layerId)
 }
 
 void TileMapRenderFeature::BuildViewDraws(Engine::Renderer::RenderServices& rs,
-                                          const float32* viewProj, const float32* cameraPosWS, const float32* cameraForward,
-                                          float32 invExposure,
+                                          const Rendering::CameraData& camera, float32 invExposure,
                                           std::vector<TileMapChunkDraw>& outDraws, uint64 viewWorldId)
 {
     outDraws.clear();
     if (!HasLayerDraws(viewWorldId))
         return;
     auto* store = TileMapRuntimeStore::TryGet();
-    if (!store || !m_Initialized || !viewProj || !cameraPosWS || !cameraForward)
+    if (!store || !m_Initialized)
         return;
+
+    const Mathematics::WorldPosition eye = Engine::Renderer::CameraEye(camera);
+    const float32 cameraForward[]{camera.view[0][2], camera.view[1][2], camera.view[2][2]};
 
     // One clock for every draw of the frame: tile animations are globally
     // phase-locked (all instances of a tile show the same frame), and the
@@ -524,11 +541,16 @@ void TileMapRenderFeature::BuildViewDraws(Engine::Renderer::RenderServices& rs,
                 ? data->CellHeight / static_cast<float32>(tileSet->TilePixelHeight)
                 : 0.0f;
         const ParallaxOffset parallax = ComputeParallaxOffset(
-            cameraPosWS[0], cameraPosWS[1], draw.ParallaxX, draw.ParallaxY, texelW, texelH);
-        auto model = Mathematics::Matrix4x4::FromColumnMajor(draw.Model);
-        model[3].x += parallax.X;
-        model[3].y += parallax.Y;
-        const auto mvp = Mathematics::Matrix4x4::FromColumnMajor(viewProj) * model;
+            eye.X, eye.Y, draw.ParallaxX, draw.ParallaxY, texelW, texelH);
+        const Mathematics::WorldPosition shiftedPosition{
+            draw.Position.X + parallax.X, draw.Position.Y + parallax.Y, draw.Position.Z};
+
+        const Mathematics::WorldPosition layerPoint{
+            draw.Position.X + static_cast<float64>(draw.Basis[2].x) * draw.ZOffset,
+            draw.Position.Y + static_cast<float64>(draw.Basis[2].y) * draw.ZOffset,
+            draw.WorldZ};
+        const Mathematics::Vector3 layerOffset = layerPoint - eye;
+        const float32 layerDepth = layerOffset.x * cameraForward[0] + layerOffset.y * cameraForward[1] + layerOffset.z * cameraForward[2];
 
         float32 tint[4];
         UnpackRGBA(draw.TintRGBA, draw.Opacity, tint);
@@ -551,10 +573,13 @@ void TileMapRenderFeature::BuildViewDraws(Engine::Renderer::RenderServices& rs,
             if (chunkBuffer.Count == 0 || !instances.IsValid())
                 continue;
             const TileMap::ChunkCoord coord = TileMap::UnpackChunkCoord(packed);
-            const float32 originX = static_cast<float32>(coord.X) * chunkExtentX;
-            const float32 originY = static_cast<float32>(coord.Y) * chunkExtentY;
-            const ChunkClip clip = ClassifyChunk(mvp.Data(), originX, originY, originX + chunkExtentX,
-                                                 originY + chunkExtentY, draw.ZOffset);
+            const float64 originX = static_cast<float64>(coord.X) * TileMap::kChunkSize * cellW;
+            const float64 originY = static_cast<float64>(coord.Y) * TileMap::kChunkSize * cellH;
+            const auto chunkPosition = ChunkWorldPosition(draw, shiftedPosition, originX, originY);
+            const auto model = Mathematics::Matrix4x4::FromBasis(draw.Basis,
+                Engine::Renderer::ViewRelativePoint(camera, chunkPosition));
+            const auto mvp = camera.viewProjRel * model;
+            const ChunkClip clip = ClassifyChunk(mvp.Data(), 0.0f, 0.0f, chunkExtentX, chunkExtentY, draw.ZOffset);
             if (clip == ChunkClip::OutsideDepthRange)
             {
                 if (m_DepthClipWarned.emplace(draw.Map, draw.LayerId).second)
@@ -573,8 +598,8 @@ void TileMapRenderFeature::BuildViewDraws(Engine::Renderer::RenderServices& rs,
             TileMapChunkDraw chunkDraw{};
             chunkDraw.Entity = draw.Entity;
             std::copy_n(model.Data(), 16, chunkDraw.Push.Model);
-            chunkDraw.Push.ChunkOriginCellSize[0] = originX;
-            chunkDraw.Push.ChunkOriginCellSize[1] = originY;
+            chunkDraw.Push.ChunkOriginCellSize[0] = 0.0f;
+            chunkDraw.Push.ChunkOriginCellSize[1] = 0.0f;
             chunkDraw.Push.ChunkOriginCellSize[2] = cellW;
             chunkDraw.Push.ChunkOriginCellSize[3] = cellH;
             chunkDraw.Push.LayerZ[0] = draw.ZOffset;
@@ -591,11 +616,9 @@ void TileMapRenderFeature::BuildViewDraws(Engine::Renderer::RenderServices& rs,
             // Camera depth orders the layer when ground sorting is off.
             chunkDraw.WorldZ = draw.WorldZ;
             chunkDraw.Sort = Engine::Renderer::MakeRenderSortKey(draw.Sorting,
-                (draw.Model[8] * draw.ZOffset + draw.Model[12] - cameraPosWS[0]) * cameraForward[0] +
-                (draw.Model[9] * draw.ZOffset + draw.Model[13] - cameraPosWS[1]) * cameraForward[1] +
-                (draw.WorldZ - cameraPosWS[2]) * cameraForward[2], cameraPosWS, cameraForward);
+                layerDepth, eye, cameraForward);
             chunkDraw.RenderLayers = draw.RenderLayers;
-            AppendChunkDraws(chunkBuffer, chunkDraw, draw.Sorting, outDraws);
+            AppendChunkDraws(chunkBuffer, chunkDraw, draw.Sorting, chunkPosition.Y - draw.Position.Y, outDraws);
         }
 
         if (!m_PreviewActive || m_Preview.Map != draw.Map || m_Preview.LayerId != draw.LayerId)
@@ -613,9 +636,13 @@ void TileMapRenderFeature::BuildViewDraws(Engine::Renderer::RenderServices& rs,
         // pass writes no depth, so order alone decides what is on top.
         TileMapChunkDraw ghost{};
         ghost.Entity = draw.Entity;
-        std::copy_n(model.Data(), 16, ghost.Push.Model);
-        ghost.Push.ChunkOriginCellSize[0] = static_cast<float32>(m_Preview.OriginX) * cellW;
-        ghost.Push.ChunkOriginCellSize[1] = static_cast<float32>(m_Preview.OriginY) * cellH;
+        const auto previewPosition = ChunkWorldPosition(draw, shiftedPosition,
+            static_cast<float64>(m_Preview.OriginX) * cellW, static_cast<float64>(m_Preview.OriginY) * cellH);
+        const auto previewModel = Mathematics::Matrix4x4::FromBasis(draw.Basis,
+            Engine::Renderer::ViewRelativePoint(camera, previewPosition));
+        std::copy_n(previewModel.Data(), 16, ghost.Push.Model);
+        ghost.Push.ChunkOriginCellSize[0] = 0.0f;
+        ghost.Push.ChunkOriginCellSize[1] = 0.0f;
         ghost.Push.ChunkOriginCellSize[2] = cellW;
         ghost.Push.ChunkOriginCellSize[3] = cellH;
         ghost.Push.LayerZ[0] = draw.ZOffset;
@@ -630,16 +657,15 @@ void TileMapRenderFeature::BuildViewDraws(Engine::Renderer::RenderServices& rs,
         ghost.InstanceCount = m_PreviewBuffer.Count;
         ghost.WorldZ = draw.WorldZ;
         ghost.Sort = Engine::Renderer::MakeRenderSortKey(draw.Sorting,
-            (draw.Model[8] * draw.ZOffset + draw.Model[12] - cameraPosWS[0]) * cameraForward[0] +
-            (draw.Model[9] * draw.ZOffset + draw.Model[13] - cameraPosWS[1]) * cameraForward[1] +
-            (draw.WorldZ - cameraPosWS[2]) * cameraForward[2], cameraPosWS, cameraForward);
+            layerDepth, eye, cameraForward);
         ghost.RenderLayers = draw.RenderLayers;
-        AppendChunkDraws(m_PreviewBuffer, ghost, draw.Sorting, outDraws);
+        AppendChunkDraws(m_PreviewBuffer, ghost, draw.Sorting, previewPosition.Y - draw.Position.Y, outDraws);
     }
 }
 
 void TileMapRenderFeature::AppendChunkDraws(const ChunkBuffer& chunk, const TileMapChunkDraw& draw,
-    const Engine::Renderer::RenderSortingData& sorting, std::vector<TileMapChunkDraw>& outDraws) const
+    const Engine::Renderer::RenderSortingData& sorting, float64 groundOffsetY,
+    std::vector<TileMapChunkDraw>& outDraws) const
 {
     if (!sorting.SortByY)
     {
@@ -647,7 +673,8 @@ void TileMapRenderFeature::AppendChunkDraws(const ChunkBuffer& chunk, const Tile
         return;
     }
     const auto& push = draw.Push;
-    const auto model = Mathematics::Matrix4x4::FromColumnMajor(push.Model);
+    auto model = Mathematics::Matrix4x4::FromColumnMajor(push.Model);
+    model[3][0] = model[3][1] = model[3][2] = 0.0f;
     uint32 first = 0;
     while (first < chunk.Count)
     {
@@ -655,9 +682,9 @@ void TileMapRenderFeature::AppendChunkDraws(const ChunkBuffer& chunk, const Tile
         const float32 localX = push.ChunkOriginCellSize[0] +
             (static_cast<float32>(cell % TileMap::kChunkSize) + 0.5f) * push.ChunkOriginCellSize[2];
         const float32 localY = push.ChunkOriginCellSize[1] +
-            static_cast<float32>(cell / TileMap::kChunkSize) * push.ChunkOriginCellSize[3] + sorting.SortOriginY;
-        const float32 groundY = Engine::Renderer::FiniteRenderDepth(
-            model.TransformPoint({localX, localY, push.LayerZ[0]}).y + sorting.SectorOffsetY);
+            static_cast<float32>(cell / TileMap::kChunkSize) * push.ChunkOriginCellSize[3];
+        const float64 groundY = Engine::Renderer::FiniteRenderDepth(
+            sorting.SortY + groundOffsetY + model.TransformPoint({localX, localY, push.LayerZ[0]}).y);
         uint32 end = first + 1;
         // An untilted row shares one ground height and one contiguous instance range.
         if (push.Model[1] == 0.0f)
@@ -688,16 +715,15 @@ void TileMapRenderFeature::EmitDraws(Engine::Renderer::ForwardEmitContext& conte
     const auto* camera = services.Views().FindCameraData(view->cameraId);
     if (!camera || !HasLayerDraws(view->worldId))
         return;
-    const float32 cameraForward[] = {camera->view[2], camera->view[6], camera->view[10]};
     auto& commands = m_ViewCommands[static_cast<uint32>(context.ViewId)];
-    BuildViewDraws(services, camera->viewProj, camera->cameraPos, cameraForward,
+    BuildViewDraws(services, *camera,
                    1.0f / ResolveViewExposureScale(services, *view), commands.Draws, view->worldId);
     commands.Buffers.resize(commands.Draws.size());
     commands.Textures.resize(commands.Draws.size());
     for (size_t index = 0; index < commands.Draws.size(); ++index)
     {
         const auto& draw = commands.Draws[index];
-        if ((draw.RenderLayers & view->ActiveRenderLayerMask()) == 0u)
+        if ((draw.RenderLayers & view->ActiveRenderLayerMask().Bits) == 0u)
             continue;
         auto& buffers = commands.Buffers[index];
         buffers = {{{HashStringId("Instances"), draw.Instances},

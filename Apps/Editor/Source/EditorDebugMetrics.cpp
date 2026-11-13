@@ -8,7 +8,7 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Core/RenderGraph/RGGraph.h"
-#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
 
 #if defined(__APPLE__) || defined(__linux__)
 #include <sys/resource.h>
@@ -112,9 +112,9 @@ void CollectEditorDebugMetrics(Rendering::IDevice* device,
     {
         metrics.PushSample("Physics/Bodies",       static_cast<float>(pw->GetBodyCount()));
         metrics.PushSample("Physics/ContactPairs", static_cast<float>(pw->GetContactPairCount()));
-        // Per-frame simulation cost measured at the step boundary in
-        // PhysicsStepSystem; 0 on frames where no fixed sub-step ran.
-        metrics.PushSample("Time/Physics", PhysicsECS::PhysicsWorldService::GetLastStepMs());
+        // The cost of the physics steps since the last sample, measured in PhysicsStepSystem;
+        // a frame with no step reports 0.
+        metrics.PushSample("Time/Physics", PhysicsECS::PhysicsWorldService::TakeStepMs());
         // Entities the writebacks composed in their most recent update; skipped (unchanged) ones do not count.
         metrics.PushSample("Physics/BodiesComposed",
                            static_cast<float>(PhysicsECS::PhysicsWorldService::GetLastBodiesComposed()));

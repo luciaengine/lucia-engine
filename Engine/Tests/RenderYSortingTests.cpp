@@ -2,7 +2,6 @@
 
 #include "Components/Hierarchy.h"
 #include "Components/Rendering/RenderSorting.h"
-#include "Components/Rendering/WorldSectorCoord.h"
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
@@ -20,12 +19,12 @@ TEST(RenderYSorting, GroundPointUsesEntityOriginAndTransformedOffset)
     sorting.SortByY = true;
     sorting.SortOriginY = 0.5f;
     Components::WorldTransform transform;
-    transform.matrix[5] = -2.0f;
-    transform.matrix[13] = -3.0f;
+    transform.Basis[1].y = -2.0f;
+    transform.Position.Y = -3.0f;
     auto entity = world.Create(sorting, transform);
     world.ProcessCommands();
     const auto data = ResolveRenderSorting(world, entity.GetHandle(), Rendering::SortingLayers::Defaults());
-    const float32 position[]{0, 100, -10};
+    const Mathematics::WorldPosition position{0, 100, -10};
     const float32 forward[]{0, 0, 1};
     const auto key = MakeRenderSortKey(data, 999, position, forward);
     EXPECT_TRUE(data.Authored);
@@ -37,7 +36,7 @@ TEST(RenderYSorting, ManualLayerAndOrderTakePriorityOverGroundPoint)
     RenderSortingData ground;
     ground.SortByY = true;
     ground.SortY = -5;
-    const float32 position[]{0, 0, 0};
+    const Mathematics::WorldPosition position{};
     const float32 forward[]{0, 0, 1};
     auto front = MakeRenderSortKey(ground, 0, position, forward);
     ground.SortY = 5;
@@ -49,16 +48,17 @@ TEST(RenderYSorting, ManualLayerAndOrderTakePriorityOverGroundPoint)
     EXPECT_TRUE(RenderSortBefore(back, front));
 }
 
-TEST(RenderYSorting, GroundPointCarriesTheSectorOffsetForTileRows)
+TEST(RenderYSorting, GroundPointKeepsSmallHeightAtLargeWorldPosition)
 {
     ECS::World world;
     Components::RenderSorting sorting;
     sorting.SortByY = true;
-    auto entity = world.Create(sorting, Components::WorldTransform{}, Components::WorldSectorCoord{0, 1, 0});
+    Components::WorldTransform transform;
+    transform.Position.Y = 1.0e8 + 0.125;
+    auto entity = world.Create(sorting, transform);
     world.ProcessCommands();
     const auto data = ResolveRenderSorting(world, entity.GetHandle(), Rendering::SortingLayers::Defaults());
-    EXPECT_FLOAT_EQ(data.SectorOffsetY, Components::kWorldSectorSize);
-    EXPECT_FLOAT_EQ(data.SortY, Components::kWorldSectorSize);
+    EXPECT_DOUBLE_EQ(data.SortY, 1.0e8 + 0.125);
 }
 
 TEST(RenderYSorting, OutermostGroupUsesItsGroundPointAndKeepsMembersContiguous)
@@ -68,14 +68,14 @@ TEST(RenderYSorting, OutermostGroupUsesItsGroundPointAndKeepsMembersContiguous)
     sorting.GroupChildren = true;
     sorting.SortByY = true;
     Components::WorldTransform transform;
-    transform.matrix[13] = 7;
+    transform.Position.Y = 7;
     auto parent = world.Create(sorting, transform);
     sorting.GroupChildren = false;
-    transform.matrix[13] = -10;
+    transform.Position.Y = -10;
     auto child = world.Create(sorting, transform, Components::Parent{parent.GetHandle()});
     world.ProcessCommands();
     const auto data = ResolveRenderSorting(world, child.GetHandle(), Rendering::SortingLayers::Defaults());
-    const float32 position[]{0, 0, 0};
+    const Mathematics::WorldPosition position{};
     const float32 forward[]{0, 0, 1};
     const auto key = MakeRenderSortKey(data, 100, position, forward);
     EXPECT_EQ(key.Group, parent.GetHandle());
@@ -113,7 +113,7 @@ TEST(RenderYSorting, NoGroupGuardPreservesOwnGroundSortingAndGroupDiscovery)
     sorting.OrderInLayer = -3;
     sorting.SortByY = true;
     Components::WorldTransform transform;
-    transform.matrix[13] = -7;
+    transform.Position.Y = -7;
     auto child = world.Create(sorting, transform, Components::Parent{parent.GetHandle()});
     world.ProcessCommands();
     const auto layers = Rendering::SortingLayers::Defaults();
@@ -126,11 +126,10 @@ TEST(RenderYSorting, NoGroupGuardPreservesOwnGroundSortingAndGroupDiscovery)
     EXPECT_FLOAT_EQ(guarded.SortOriginY, original.SortOriginY);
     EXPECT_EQ(guarded.Grouped, original.Grouped);
     EXPECT_EQ(guarded.GroupSortByY, original.GroupSortByY);
-    for (int axis = 0; axis < 3; ++axis)
-        EXPECT_FLOAT_EQ(guarded.GroupPosition[axis], original.GroupPosition[axis]);
+    EXPECT_EQ(guarded.GroupPosition, original.GroupPosition);
     EXPECT_EQ(guarded.Authored, original.Authored);
     EXPECT_EQ(guarded.Group, original.Group);
-    EXPECT_FLOAT_EQ(guarded.SortY, original.SortY);
+    EXPECT_DOUBLE_EQ(guarded.SortY, original.SortY);
     sorting.GroupChildren = true;
     parent.Set(sorting);
     world.ProcessCommands();

@@ -1,9 +1,9 @@
 /* InspectorNotice (Apps/Editor/Include/UI/Controls/InspectorNotice.h).
  *
- * The notice is the control's element; the plate, its text and its action come from
+ * The notice is the control's element; the plate, its text, its action and its dismiss come from
  * InspectorNotice.uxml beside this sheet. The control requests this sheet for its own subtree, so
- * nothing loads it unless a notice exists. The action's look is the shared small button
- * (controls/Button.css); this sheet only places it.
+ * nothing loads it unless a notice exists. The buttons' look is the shared small button
+ * (controls/Button.css); this sheet places them and edges them in the kind's color.
  */
 
 /* A notice must never be squeezed by a crowded flex column: a shrunk notice keeps the tops of its
@@ -15,59 +15,92 @@
 	margin: 4px 0;
 }
 
-/* Top-align the action with the first line of the notice text. The action wraps below the text
-   when the row cannot fit both. */
+/* The text and the buttons share a row, the buttons on the text's first line (their baselines
+   aligned). The buttons wrap onto a line of their own under the text only when the row cannot give the
+   text its basis beside them; a wrapped line keeps them at the row's end, the dismiss too when it wraps
+   alone. */
 .inspector-notice-plate {
 	display: flex;
 	flex-direction: row;
 	flex-wrap: wrap;
-	align-items: flex-start;
+	justify-content: flex-end;
+	align-items: baseline;
 	column-gap: 8px;
 	row-gap: 6px;
 	padding: 6px 8px;
 	border-radius: 4px;
 }
 
-/* Reserve a readable text column beside the action. The text can shrink to fit narrow panels
-   and wrap long paths or identifiers. */
+/* Asks for 240 px beside the buttons and wraps inside the width it gets; a row that cannot give that
+   puts the buttons under the text instead, where the text shrinks to the panel however narrow. A path
+   or an identifier with no space in it breaks rather than run past the plate. */
 .inspector-notice-text {
 	flex-grow: 1;
 	flex-shrink: 1;
-	flex-basis: 224px;
+	flex-basis: 240px;
 	overflow-wrap: break-word;
 }
 
-/* Content width, at the end of the row it sits on. */
+/* Content width, at the end of the row it sits on; the dismiss, when given, follows it. */
 .inspector-notice-action {
 	margin-left: auto;
 }
 
-/* The two kinds. The action's edge is drawn in the kind's text colour: the shared button's plate is
-   close to either notice plate, and the border is what keeps the action's boundary readable against
-   it. A kind's rules take two classes, so they outrank the shared button's own border colour
-   (controls/Button.css), which loads after this sheet. */
-.inspector-notice-warning .inspector-notice-plate {
+/* The kinds. The control sets one class per part for its kind (inspector-notice-<part>-<kind>), and
+   each rule below follows its part's base rule. The buttons' edges are drawn in the kind's text color:
+   the shared button's plate is close to every notice plate, and the border is what keeps a button's
+   boundary readable against it. The control attaches this sheet to each button after the shared
+   button's own (controls/Button.css), so these single-class rules outrank the button's border color.
+   A plate's border color shows only where a border is drawn: the opaque variant below. */
+.inspector-notice-plate-warning {
 	background-color: var(--ui_color_warning_background);
-}
-
-.inspector-notice-warning .inspector-notice-text {
-	color: var(--ui_color_warning_text);
-}
-
-.inspector-notice-warning .inspector-notice-action {
 	border-color: var(--ui_color_warning_text);
 }
 
-.inspector-notice-information .inspector-notice-plate {
-	background-color: var(--ui_color_bg_selected);
+.inspector-notice-text-warning {
+	color: var(--ui_color_warning_text);
 }
 
-.inspector-notice-information .inspector-notice-text {
+.inspector-notice-action-warning {
+	border-color: var(--ui_color_warning_text);
+}
+
+.inspector-notice-dismiss-warning {
+	border-color: var(--ui_color_warning_text);
+}
+
+.inspector-notice-plate-information {
+	background-color: var(--ui_color_bg_selected);
+	border-color: var(--ui_color_text_dim);
+}
+
+.inspector-notice-text-information {
 	color: var(--ui_color_text);
 }
 
-.inspector-notice-information .inspector-notice-action {
+.inspector-notice-action-information {
 	border-color: var(--ui_color_text_dim);
+}
+
+.inspector-notice-dismiss-information {
+	border-color: var(--ui_color_text_dim);
+}
+
+.inspector-notice-plate-error {
+	background-color: var(--ui_color_error_background);
+	border-color: var(--ui_color_error_text);
+}
+
+.inspector-notice-text-error {
+	color: var(--ui_color_error_text);
+}
+
+.inspector-notice-action-error {
+	border-color: var(--ui_color_error_text);
+}
+
+.inspector-notice-dismiss-error {
+	border-color: var(--ui_color_error_text);
 }
 
 /* The heading a titled notice opens with: the kind's glyph and a title carrying the first line's
@@ -91,38 +124,47 @@
 }
 
 .inspector-notice-title {
-	font-weight: 600;
+	font-weight: 500;
 }
 
-.inspector-notice-warning .inspector-notice-glyph {
+.inspector-notice-glyph-warning {
 	background-image-tint: var(--ui_color_warning_text);
 }
 
-.inspector-notice-warning .inspector-notice-title {
+.inspector-notice-title-warning {
 	color: var(--ui_color_warning_text);
 }
 
-.inspector-notice-information .inspector-notice-glyph {
+.inspector-notice-glyph-information {
 	background-image: url("editor:Icons/info.svg");
 	background-image-tint: var(--ui_color_text_dim);
 }
 
-.inspector-notice-information .inspector-notice-title {
+.inspector-notice-title-information {
 	color: var(--ui_color_text);
 }
 
+.inspector-notice-glyph-error {
+	background-image-tint: var(--ui_color_error_text);
+}
+
+.inspector-notice-title-error {
+	color: var(--ui_color_error_text);
+}
+
+/* A glyph the notice sets in place of its kind's (InspectorNotice::SetGlyph). These rules follow the
+   kind rules, so their image wins; the tint stays the kind's. */
+.inspector-notice-glyph-clock {
+	background-image: url("editor:Icons/timer.svg");
+}
+
+.inspector-notice-glyph-check {
+	background-image: url("editor:Icons/checked.svg");
+}
+
 /* The opaque variant, for a notice drawn over a view's 3D content rather than a panel: a solid plate
-   that reads over any frame, edged in its kind's color (the edge colors below show only where a
-   border is drawn). */
+   that reads over any frame, edged in its kind's color (the plate rules above). */
 .inspector-notice-opaque .inspector-notice-plate {
 	background-color: var(--ui_color_bg_plate);
 	border-width: 1px;
-}
-
-.inspector-notice-warning .inspector-notice-plate {
-	border-color: var(--ui_color_warning_text);
-}
-
-.inspector-notice-information .inspector-notice-plate {
-	border-color: var(--ui_color_text_dim);
 }

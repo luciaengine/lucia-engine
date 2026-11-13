@@ -124,7 +124,7 @@ struct SweepStationStream
     // what chunks are carved on and what U is measured from.
     std::vector<float32> WorldDistance;
     // What the author should be told about the corners, by authored point:
-    // corners past the mitre limit, built Round, legs too short for their
+    // corners past the miter limit, built Round, legs too short for their
     // corners' reach, and curves that bend tighter than the wall is wide.
     std::vector<SplineGeometry::SplineCornerIssue> CornerIssues;
     // WorldDistance of each of SweepSamples::Points, which the corners keep:

@@ -3,7 +3,7 @@
 
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "DDGIShippedKernel.h"
 #include "TestDeviceHelper.h"
 #include "Engine/Rendering/DDGIProbeWindow.h"

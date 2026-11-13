@@ -2,11 +2,12 @@
 
 #include "Components/Rendering/WindVolume.h"
 #include "Editor/Entities/EditorECSHelpers.h"
-#include "InspectorRegistry.h"
 #include "Editor/Entities/EditorComponentTraits.h"
-#include "Inspectors/InspectorComponentRowHelpers.h"
+#include "InspectorRegistry.h"
+#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
+#include "Mathematics/Interpolation.h"
 #include "SceneView/WindVolumeGizmo.h"
 
 #include <algorithm>
@@ -39,7 +40,7 @@ void RegisterWindVolumeInspector()
     {
         Editor::EditorComponentTraits traits;
         traits.DisplayName = "Wind Volume";
-        traits.Category = "Rendering";
+        traits.InspectorCategory = "Rendering";
         traits.InspectorIconClass = "inspector-section-icon-wind-volume";
         Editor::EditorComponentTraitsRegistry::Get().Register(
             ECS::GetComponentTypeId<Components::WindVolume>(), std::move(traits));
@@ -91,7 +92,7 @@ void RegisterWindVolumeInspector()
 
             AddComponentFloatRowWithDrag<Wind>(ctx.Parent, "Weight", wind->Weight, w, e, n, undo,
                 "Change Wind Volume Weight",
-                [](Wind& u, float v) { u.Weight = std::clamp(v, 0.0f, 1.0f); },
+                [](Wind& u, float v) { u.Weight = Math::Clamp01(v); },
                 1.0f, "Volume influence [0..1].");
 
             AddComponentIntRowWithDrag<Wind>(ctx.Parent, "Layer Mask", static_cast<int>(wind->LayerMask), w, e, n, undo,

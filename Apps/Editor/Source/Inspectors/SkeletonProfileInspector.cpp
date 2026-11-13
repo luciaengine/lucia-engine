@@ -4,7 +4,7 @@
 #include "Inspectors/InspectorUIHelpers.h"
 
 #include "Animation/HumanBone.h"
-#include "Animation/SkeletonProfile.h"
+#include "Animation/Skeleton/SkeletonProfile.h"
 #include "AssetCore/Asset.h"
 
 #include "UI/Controls/Label.h"

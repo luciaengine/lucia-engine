@@ -1,10 +1,12 @@
 #include "Engine/Rendering/Pipeline/Nodes/LightUploadNode.h"
 
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
+#include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Core/Time.h"
 
 #include "Logger/Logger.h"
+#include "Mathematics/Interpolation.h"
 
 #include <algorithm>
 #include <cmath>
@@ -26,7 +28,7 @@ struct GPULightPacked
     uint32_t castsShadows = 0;
     uint32_t areaShape = 0;
     uint32_t castsLight = 1;
-    float positionWS[3] = {};
+    float position[3] = {}; // relative to the view's render origin (ViewRelativePoint)
     float range = 0.0f;
     float directionWS[3] = {};
     float intensity = 0.0f;
@@ -178,9 +180,10 @@ void LightUploadNode::DeclareForView(ViewDeclare& d)
         const float outer = std::clamp(in.outerAngle, 0.0f, 3.1415926f);
         p.spotCosInner = std::cos(std::min(inner, outer));
         p.spotCosOuter = std::cos(std::max(inner, outer));
-        p.positionWS[0] = in.positionWS[0];
-        p.positionWS[1] = in.positionWS[1];
-        p.positionWS[2] = in.positionWS[2];
+        const Mathematics::Vector3 position = ViewRelativePoint(camData, in.positionWS);
+        p.position[0] = position.x;
+        p.position[1] = position.y;
+        p.position[2] = position.z;
         p.range = in.range;
         p.directionWS[0] = in.directionWS[0];
         p.directionWS[1] = in.directionWS[1];
@@ -202,7 +205,7 @@ void LightUploadNode::DeclareForView(ViewDeclare& d)
         p.decay = std::max(in.decay, 0.0f);
         p.fogContribution = std::max(in.fogContribution, 0.0f);
         p.fogDensityBoost = std::max(in.fogDensityBoost, 0.0f);
-        p.fogOriginFade = std::clamp(in.fogOriginFade, 0.0f, 1.0f);
+        p.fogOriginFade = Math::Clamp01(in.fogOriginFade);
         p.fogAnisotropy = std::clamp(in.fogAnisotropy, -0.95f, 0.95f);
         p.shadowSlot = writeIdx < shadowSlotOfCluster.size()
                            ? shadowSlotOfCluster[writeIdx]

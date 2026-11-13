@@ -2,8 +2,9 @@
 
 #include <gtest/gtest.h>
 
-#include "Rendering/Materials/ShaderVariantKey.h"
-#include "Rendering/Materials/ShaderComposer.h"
+#include "Rendering/Materials/Shader/ShaderVariantKey.h"
+#include "Rendering/Materials/Shader/ShaderComposer.h"
+#include "Rendering/Materials/UserKeyword.h"
 #include "Rendering/Materials/MaterialDocument.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
 #include "Rendering/Geometry/VertexLayoutBuilder.h"
@@ -325,6 +326,40 @@ TEST(ShaderVariantKeyTest, InterpolationFunctions_ReachOnlyMarchingDesktopKeys)
     SetInterpolationFunctionsAvailable(previousAvailable);
 }
 
+// The device's clip distances reach only the procedural-vertex programs (the terrain clips at its
+// authored edge), never a mesh program and never the compat arm.
+TEST(ShaderVariantKeyTest, ClipDistance_ReachesOnlyCustomVertexDesktopKeys)
+{
+    const bool previousAvailable = AreClipDistancesAvailable();
+    const bool previousCompat = IsCompatShaderProfile();
+    ShaderVariantKey terrain{};
+    terrain.materialKeywords = MaterialKeyword::ForwardPlus;
+    terrain.lightingModel = LightingModel::kStandardPBR;
+    ApplyCustomVertexShaderClamp(terrain);
+    ShaderVariantKey mesh{};
+    mesh.vertexFlags = VertexAttributeFlags::StandardMesh;
+    mesh.materialKeywords = MaterialKeyword::ForwardPlus;
+    mesh.lightingModel = LightingModel::kStandardPBR;
+    const auto clips = [](const ShaderVariantKey& key)
+    {
+        const std::vector<std::string> defs = GenerateDefines(key, "StandardPBR");
+        return std::find(defs.begin(), defs.end(), "GE_CLIP_DISTANCE") != defs.end();
+    };
+
+    SetCompatShaderProfile(false);
+    SetClipDistancesAvailable(true);
+    EXPECT_TRUE(clips(terrain));
+    EXPECT_FALSE(clips(mesh)) << "a mesh program keeps its defines on every device";
+    SetClipDistancesAvailable(false);
+    EXPECT_FALSE(clips(terrain));
+    SetClipDistancesAvailable(true);
+    SetCompatShaderProfile(true);
+    EXPECT_FALSE(clips(terrain));
+
+    SetCompatShaderProfile(previousCompat);
+    SetClipDistancesAvailable(previousAvailable);
+}
+
 // ---- Forward+ tests ----
 
 TEST(ShaderVariantKeyTest, ForwardPlus_GeneratesDefine)
@@ -358,6 +393,54 @@ TEST(ShaderVariantKeyTest, Transmission_GeneratesDefine)
     // Setting the keyword bit emits the define that gates the in-shader transmission term.
     key.materialKeywords = MaterialKeyword::Transmission;
     EXPECT_TRUE(has(GenerateDefines(key, "StandardPBR"), "GE_TRANSMISSION_ENABLED"));
+}
+
+TEST(ShaderVariantKeyTest, DiffuseTransmission_GeneratesDefineAndReservesIt)
+{
+    ShaderVariantKey key{};
+    key.vertexFlags = VertexAttributeFlags::StandardMesh;
+    key.lightingModel = LightingModel::kStandardPBR;
+
+    auto has = [](const std::vector<std::string>& defs, const std::string& d)
+    { return std::find(defs.begin(), defs.end(), d) != defs.end(); };
+
+    // Off by default: the far-face lobe and its SurfaceOutput fields compile only into a material
+    // that asks for them.
+    EXPECT_FALSE(has(GenerateDefines(key, "StandardPBR"), "GE_DIFFUSE_TRANSMISSION_ENABLED"));
+    key.materialKeywords = MaterialKeyword::DiffuseTransmission;
+    EXPECT_TRUE(has(GenerateDefines(key, "StandardPBR"), "GE_DIFFUSE_TRANSMISSION_ENABLED"));
+    // A user keyword cannot take the engine's name.
+    EXPECT_EQ(ReservedEngineDefines().count("GE_DIFFUSE_TRANSMISSION_ENABLED"), 1u);
+}
+
+TEST(ShaderVariantKeyTest, SurfaceInputsAtPixelCenter_GeneratesDefineAndReservesIt)
+{
+    ShaderVariantKey key{};
+    key.vertexFlags = VertexAttributeFlags::StandardMesh;
+    key.lightingModel = LightingModel::kStandardPBR;
+
+    auto has = [](const std::vector<std::string>& defs, const std::string& d)
+    { return std::find(defs.begin(), defs.end(), d) != defs.end(); };
+
+    // Off by default: every material reads its surface inputs at the centroid on desktop.
+    EXPECT_FALSE(has(GenerateDefines(key, "StandardPBR"), "GE_SURFACE_INPUTS_AT_PIXEL_CENTER"));
+    key.materialKeywords = MaterialKeyword::SurfaceInputsAtPixelCenter;
+    EXPECT_TRUE(has(GenerateDefines(key, "StandardPBR"), "GE_SURFACE_INPUTS_AT_PIXEL_CENTER"));
+    // A user keyword cannot take the engine's name.
+    EXPECT_EQ(ReservedEngineDefines().count("GE_SURFACE_INPUTS_AT_PIXEL_CENTER"), 1u);
+}
+
+TEST(ShaderVariantKeyTest, UV1Crossfade_GeneratesDefineAndReservesIt)
+{
+    ShaderVariantKey key{};
+    key.vertexFlags = VertexAttributeFlags::StandardMesh;
+    key.lightingModel = LightingModel::kStandardPBR;
+    const auto has = [](const std::vector<std::string>& defs) { return std::find(defs.begin(), defs.end(), "GE_UV1_CROSSFADE") != defs.end(); };
+
+    EXPECT_FALSE(has(GenerateDefines(key, "StandardPBR")));
+    key.materialKeywords = MaterialKeyword::UV1Crossfade;
+    EXPECT_TRUE(has(GenerateDefines(key, "StandardPBR")));
+    EXPECT_EQ(ReservedEngineDefines().count("GE_UV1_CROSSFADE"), 1u);
 }
 
 TEST(ShaderComposerTest, Compose_ForwardPlus_InjectsDefine)
@@ -596,4 +679,24 @@ TEST(ShaderVariantKeyTest, ExplicitCompileTargetKeepsReliefDefinesAcrossDefaultC
     const auto compatible = GenerateDefines(relief, "StandardPBR", {SpirvTarget::Spirv_1_3, true, true});
     EXPECT_NE(std::find(compatible.begin(), compatible.end(), "GE_COMPAT_PROFILE"), compatible.end());
     EXPECT_EQ(std::find(compatible.begin(), compatible.end(), "GE_INTERPOLATION_FUNCTIONS"), compatible.end());
+}
+
+TEST(ShaderVariantKeyTest, CapturedClipDistanceCapabilitySurvivesDeviceDefaultChanges)
+{
+    const ShaderCompileTarget captured{SpirvTarget::Spirv_1_3, false, false, true};
+    TestSupport::ScopedShaderCompileTarget changedDefaults({SpirvTarget::Spirv_1_6, false, false, false});
+    ShaderVariantKey procedural{};
+    procedural.materialKeywords = MaterialKeyword::CustomVertexShader;
+    const auto enabled = GenerateDefines(procedural, "StandardPBR", captured);
+    EXPECT_NE(std::find(enabled.begin(), enabled.end(), "GE_CLIP_DISTANCE"), enabled.end());
+
+    ApplyShaderCompileProfile(captured);
+    auto unavailable = captured;
+    unavailable.ClipDistances = false;
+    const auto disabled = GenerateDefines(procedural, "StandardPBR", unavailable);
+    EXPECT_EQ(std::find(disabled.begin(), disabled.end(), "GE_CLIP_DISTANCE"), disabled.end());
+    auto compatibility = captured;
+    compatibility.Compatibility = true;
+    const auto compatible = GenerateDefines(procedural, "StandardPBR", compatibility);
+    EXPECT_EQ(std::find(compatible.begin(), compatible.end(), "GE_CLIP_DISTANCE"), compatible.end());
 }

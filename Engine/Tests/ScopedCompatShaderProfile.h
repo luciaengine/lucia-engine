@@ -4,7 +4,7 @@
 // scope. It saves and restores rather than forcing the flag back off: another test in the process
 // may legitimately have the profile on, and clobbering it would move the bug to that test.
 
-#include "Rendering/Materials/ShaderProfileDefines.h"
+#include "Rendering/Materials/Shader/ShaderProfileDefines.h"
 
 namespace GameEngine::TestSupport
 {

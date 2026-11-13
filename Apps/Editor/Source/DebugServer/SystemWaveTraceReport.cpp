@@ -1,7 +1,7 @@
 #include "DebugServer/SystemWaveTraceReport.h"
 
 #include <algorithm>
-#include "Types/FlatMap.h"
+#include <map>
 #include <vector>
 
 namespace GameEngine::Editor
@@ -160,13 +160,13 @@ struct WaveRow
 
 json DescribeWaves(std::span<const Frame> frames, const SystemWaveTraceContext& context)
 {
-    FlatMap<std::uint32_t, WaveRow> rows;
+    std::map<std::uint32_t, WaveRow> rows;
     for (const Frame& frame : frames)
     {
         for (std::size_t w = 0; w < frame.WaveCount; ++w)
         {
             const WaveSample& wave = frame.Waves[w];
-            WaveRow& row = rows.GetOrInsert(wave.PlanWave);
+            WaveRow& row = rows[wave.PlanWave];
             row.Makespan.push_back(Ms(wave.EndNs - wave.BeginNs));
             row.GapBefore.push_back(Ms(GapBeforeNs(frame, w)));
             row.Forks.push_back(wave.Forks);
@@ -219,13 +219,13 @@ struct SystemRow
 
 json DescribeSystems(std::span<const Frame> frames, const SystemWaveTraceContext& context)
 {
-    FlatMap<std::uint32_t, SystemRow> rows;
+    std::map<std::uint32_t, SystemRow> rows;
     for (const Frame& frame : frames)
     {
         for (std::size_t s = 0; s < frame.SystemCount; ++s)
         {
             const SystemSample& sample = frame.Systems[s];
-            SystemRow& row = rows.GetOrInsert(sample.Slot);
+            SystemRow& row = rows[sample.Slot];
             row.PlanWave = frame.Waves[sample.Wave].PlanWave;
             row.Body.push_back(Ms(BodyNs(sample)));
             (sample.Worker == ECS::SystemWaveTrace::kCallerThread ? row.OnCaller : row.OnWorker) += 1;

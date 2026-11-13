@@ -24,6 +24,9 @@ inline constexpr const char* PlanarReflectionMask = "View.PlanarReflectionMask";
 inline constexpr const char* Color = "View.Color";
 inline constexpr const char* Depth = "View.Depth";
 inline constexpr const char* Resolve = "View.Resolve";
+// The plain sample mean minus the weighted mean, written by the MSAA color resolve. Published only
+// when the view is multisampled and bloom is on; BloomThreshold adds it to the scene color it reads.
+inline constexpr const char* BloomSampleDelta = "View.BloomSampleDelta";
 // Single-sample R32F copy of the view depth: everything the colour pass depth-tests against.
 inline constexpr const char* DepthResolved = "View.DepthResolved";
 // The occluders' depth GTAO and the world pass's contact shadows read: View.DepthResolved without the
@@ -38,11 +41,12 @@ inline constexpr const char* HZB = "View.HZB";
 // Recorded by ViewMotionVectors for whichever of SSR and TAA declares first.
 inline constexpr const char* MotionVectors = "View.MotionVectors";
 // Nearest-surface (MAX-reduced) Hi-Z pyramid for SSR ray traversal — the
-// opposite bound from the MIN/farthest occlusion HZB above. Built by
-// HZBBuildNode only when SSSR is active for the view.
+// opposite bound from the MIN/farthest occlusion HZB above. Built by the
+// reflections node only when SSSR is active for the view, from
+// View.DepthResolvedPostOcean.
 inline constexpr const char* SSRHiZ = "View.SSRHiZ";
 // Forward-pass MRT slice: .rg = octahedral VIEW-space normal, .b = perceptual
-// roughness, .a = planar reflection coverage. Written only under MaterialKeyword::SSSRNormalRoughness.
+// roughness, .a = planar coverage. Written only under MaterialKeyword::SSSRNormalRoughness.
 // A consumer with its own per-view target for the slice (the DDGI glossy
 // resolve's shading-normal history) hands it to ReflectionsProvider instead
 // of resolving this name; the *Written publish below then names that texture.
@@ -75,13 +79,6 @@ inline constexpr const char* DepthResolvedPostOcean = "View.DepthResolvedPostOce
 // RenderScaleUpscale otherwise — writes both at the upscale point (OutputDepth
 // via the depth upsample for the editor's overlay depth test; OutputColor
 // becomes the republished View.Resolve). Absent when scale == 1.
-//
-// The pixel-perfect crossing reuses OutputColor for the same purpose, but the
-// pipeline OWNS that texture there (the caller's targets are the camera's
-// padded reference RT, so it has no display-extent colour to lend) and
-// publishes NO OutputDepth — nothing past that crossing depth-tests at the
-// display extent, and the absence is what keeps RenderScaleUpscale, which
-// requires both, off a pixel-perfect view.
 inline constexpr const char* OutputColor = "View.OutputColor";
 inline constexpr const char* OutputDepth = "View.OutputDepth";
 } // namespace View
@@ -101,6 +98,19 @@ inline constexpr const char* ClusterBuffer = "ClusterBuffer";
 inline constexpr const char* ClusterParams = "ClusterParams";
 inline constexpr const char* LightIndexBuffer = "LightIndexBuffer";
 inline constexpr const char* DepthMinMaxBuffer = "DepthMinMaxBuffer";
+// The texture the sky pass draws its backdrop from (the sky-view LUT or the HDRI), published per
+// view by SkyRender; a black texture when no sky is active.
+inline constexpr const char* SkyBackdrop = "SkyBackdrop";
+// The volumetric fog the VolumetricFog node composites into the scene, published per view for the
+// blended surfaces drawn after the composite, which take it by their own distance
+// (volumetric_fog_forward.glsl): its parameter block, and its in-scattered light and transmittance
+// by froxel. Absent without the fog.
+inline constexpr const char* VolumetricFogParams = "VolumetricFogParams";
+inline constexpr const char* VolumetricFog = "VolumetricFog";
+// The light the star pass added to scene colour, as luminance at the frame's pre-exposure (R16F at the
+// view's render extent), published per view by SkyRender; a black texture when no stars are drawn.
+// The tonemap's night tint reads it to keep the stars' colour.
+inline constexpr const char* SkyStarLight = "SkyStarLight";
 } // namespace Res
 
 // Pipeline output-slot names (RenderPipelineBlueprint::outputs keys).

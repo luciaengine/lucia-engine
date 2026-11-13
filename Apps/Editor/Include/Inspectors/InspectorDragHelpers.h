@@ -64,10 +64,16 @@ inline DragState& GetDragState()
 inline constexpr float kInspectorDragFloatSensitivity = 0.03f;
 inline constexpr float kInspectorDragIntSensitivity = 0.035f;
 inline constexpr float kInspectorDragSliderPixelsPerFullRange = 480.0f;
+// A label drag begins only past this horizontal distance from the press. Below it the press is a
+// click: the value does not move, nothing commits and the cursor stays.
 inline constexpr float kInspectorDragThresholdPx = Vector3Field::kLabelDragThresholdPx;
 // 60px with the field's side padding fits seven glyphs ("12.558"); at 50px a
 // typical value overflowed and edit mode's caret scroll made the text jump.
 inline constexpr float kInspectorSliderValueFieldWidthPx = 60.0f;
+// A percent field holds its widest value, "100 %": the digits, the suffix and the box's padding.
+// InspectorPercentRowLayoutTests measures them in its fixture's font, which is wider than the
+// editor's value font.
+inline constexpr float kInspectorPercentValueFieldWidthPx = 76.0f;
 inline constexpr float kInspectorSliderValueRightInsetPx = 0.0f;
 // A slider that shares its row with a value field may shrink further than a
 // lone slider: inside a group foldout's indent the pair otherwise overflows
@@ -91,7 +97,7 @@ inline void ApplyInspectorSliderStyle(Slider* slider, float minWidthPx = kInspec
 
     slider->AddClass("property-slider");
     ApplyInspectorSliderTrackInset(slider);
-    slider->Overrides()
+    slider->Style()
         .Set(Style::FlexGrow, 1.0f)
         .Set(Style::MinWidth, StyleLength::Px(minWidthPx));
 }
@@ -143,7 +149,14 @@ inline void SetLabelDragHighlight(Label* label, bool on)
     if (!label)
         return;
 
-    constexpr unsigned kFlags = UIElement::StyleDirty | UIElement::VisualDirty;
+    const unsigned flags = UIElement::StyleDirty | UIElement::VisualDirty;
+    std::function<void(UIElement*)> markSubtree = [&markSubtree](UIElement* el) {
+        if (!el)
+            return;
+        el->MarkDirty(flags);
+        for (const auto& ch : el->GetChildren())
+            markSubtree(ch.get());
+    };
 
     if (on)
     {
@@ -153,7 +166,7 @@ inline void SetLabelDragHighlight(Label* label, bool on)
     {
         label->RemoveClass("dragging");
     }
-    label->MarkDirty(kFlags);
+    label->MarkDirty(flags);
 
     if (UIElement* row = FindDragHighlightRow(label))
     {
@@ -165,7 +178,7 @@ inline void SetLabelDragHighlight(Label* label, bool on)
         {
             row->RemoveClass("dragging");
         }
-        row->MarkDirtySubtree(kFlags);
+        markSubtree(row);
     }
 }
 
@@ -985,7 +998,7 @@ inline void ApplySliderWithValueContainerStyle(
         return;
 
     fieldContainer->AddClass("inspector-slider-with-value");
-    fieldContainer->Overrides()
+    fieldContainer->Style()
         .Set(Style::FlexDir, FlexDirection::Row)
         .Set(Style::AlignItems, AlignItems::Center)
         .Set(Style::Gap, StyleLength::Px(4.0f))
@@ -1001,7 +1014,7 @@ inline void ApplySliderFloatValueFieldStyle(
 
     valueField->AddClass("inspector-float-field");
     valueField->AddClass("inspector-slider-value-field");
-    valueField->Overrides()
+    valueField->Style()
         .Set(Style::Width, StyleLength::Px(widthPx))
         .Set(Style::MinWidth, StyleLength::Px(widthPx))
         .Set(Style::MaxWidth, StyleLength::Px(widthPx))
@@ -1017,7 +1030,7 @@ inline void ApplySliderIntValueFieldStyle(
 
     valueField->AddClass("inspector-int-field");
     valueField->AddClass("inspector-slider-value-field");
-    valueField->Overrides()
+    valueField->Style()
         .Set(Style::Width, StyleLength::Px(widthPx))
         .Set(Style::MinWidth, StyleLength::Px(widthPx))
         .Set(Style::MaxWidth, StyleLength::Px(widthPx))

@@ -3,7 +3,7 @@
 #include "MetalAccelerationStructures.h"
 #include "MetalCommandList.h"
 #include "MetalHdrOutput.h"
-#include "MetalIndirectCountResources.h"
+#include "MetalIndirectCount/MetalIndirectCountResources.h"
 #include "MetalLayerBridge.h"
 #include "MetalQueryPool.h"
 #include "MetalSwapchain.h"
@@ -13,15 +13,51 @@
 #include "Logger/Logger.h"
 #include "Platform/Environment.h"
 #include "Rendering/Core/RendererProfile.h"
-#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <objc/runtime.h>
+#include <dlfcn.h>
+#include <execinfo.h>
+#include <format>
 
 namespace GameEngine
 {
 namespace Rendering
 {
+
+namespace
+{
+// GE_FRAME_TRACE: log each frame's waits and each command buffer enqueued between frames.
+bool IsFrameTraceEnabled()
+{
+    static const bool kEnabled = Platform::EnvironmentSwitchEnabled("GE_FRAME_TRACE", false);
+    return kEnabled;
+}
+
+// The callers above TrackFrameCommandBuffer as image+offset (atos resolves it) and the nearest
+// exported symbol, so the trace names the code that enqueued a buffer.
+std::string DescribeEnqueueCallers()
+{
+    void* frames[6] = {};
+    const int count = backtrace(frames, 6);
+    std::string callers;
+    for (int i = 1; i < count; ++i)
+    {
+        Dl_info info{};
+        if (dladdr(frames[i], &info) == 0 || info.dli_fname == nullptr)
+        {
+            continue;
+        }
+        const char* image = std::strrchr(info.dli_fname, '/');
+        callers += std::format("{}{}+{:#x}({})", callers.empty() ? "" : " < ", image != nullptr ? image + 1 : info.dli_fname,
+                               reinterpret_cast<uintptr_t>(frames[i]) - reinterpret_cast<uintptr_t>(info.dli_fbase),
+                               info.dli_sname != nullptr ? info.dli_sname : "?");
+    }
+    return callers;
+}
+} // namespace
 
 MetalDevice::MetalDevice() = default;
 
@@ -114,7 +150,7 @@ bool MetalDevice::Initialize(const DeviceDesc& desc)
 
     }
 
-    m_FrameSemaphore = dispatch_semaphore_create(kFramesInFlight);
+    m_FrameSemaphore = dispatch_semaphore_create(kFramesQueuedOnGpu);
 
     m_QueryPool = std::make_unique<MetalQueryPool>(m_Device);
     if (!m_QueryPool->Initialize())
@@ -158,6 +194,12 @@ bool MetalDevice::Initialize(const DeviceDesc& desc)
     // layer, which picks a block-compressed cook artifact and the BC7 Basis
     // transcode target only when it is true.
     m_Capabilities.supportsTextureCompressionBC = m_Device->supportsBCTextureCompression();
+    // SPIRV-Cross translates interpolateAtOffset and its kin to MSL pull-model interpolation
+    // (MSL 2.3 and later), so the device's own answer for that feature is the gate.
+    m_Capabilities.supportsShaderInterpolationFunctions = m_Device->supportsPullModelInterpolation();
+    // SPIRV-Cross writes gl_ClipDistance as an MSL [[clip_distance]] output, which every Metal device
+    // the engine runs on (MSL 3.0) accepts. The desktop cook keys its programs with clip distances on.
+    m_Capabilities.supportsShaderClipDistance = true;
 
     // The Metal backend consumes SPIR-V via SPIRV-Cross, which accepts up to
     // SPIR-V 1.6, so material shaders can use the full 1.6 target here too.
@@ -194,6 +236,9 @@ bool MetalDevice::Initialize(const DeviceDesc& desc)
     // queried rather than hardcoded.
     m_Capabilities.maxComputeWorkGroupSize =
         static_cast<uint32_t>(m_Device->maxThreadsPerThreadgroup().width);
+    // Threadgroup memory of one compute threadgroup, in bytes (32 KiB on Apple GPUs). The depth
+    // pyramid builds in two dispatches only when its finalize pass fits in this size.
+    m_Capabilities.maxComputeSharedMemorySize = static_cast<uint32_t>(m_Device->maxThreadgroupMemoryLength());
     m_Capabilities.maxMSAASamples = 1;
     for (uint32_t samples : {2u, 4u, 8u})
     {
@@ -249,6 +294,12 @@ void MetalDevice::Shutdown()
         return;
     }
     WaitForIdle();
+    const StageLibraryCounts stageCounts = GetStageLibraryCounts();
+    if (stageCounts.Shipped + stageCounts.Compiled > 0)
+    {
+        Logger::Log::Info("MetalDevice: {} shader stages from shipped libraries, {} compiled at run time",
+                          stageCounts.Shipped, stageCounts.Compiled);
+    }
 
     // Let subsystems drop their per-device caches while the objects those handles
     // name are still alive, before the backend tears down Metal objects.
@@ -706,13 +757,13 @@ void MetalDevice::ScrubResidency(MTL::Resource* resource)
     }
     std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
     m_DescriptorSets.ForEach([resource](Handle, MetalDescriptorSet& set) {
-        for (size_t i = 0; i < set.residentResources.size(); ++i)
+        for (size_t slot = 0; slot < set.residentResources.Size(); ++slot)
         {
-            if (set.residentResources[i] == resource)
+            if (set.residentResources[slot] == resource)
             {
-                set.residentResources[i] = nullptr;
-                set.residentWritable[i] = 0;
-                set.residentIndirectArguments[i] = 0;
+                set.residentResources[slot] = nullptr;
+                set.residentWritable[slot] = 0;
+                set.residentIndirectArguments[slot] = 0;
                 set.residentsDirty = true;
             }
         }
@@ -1104,7 +1155,7 @@ MTL::SamplerState* MetalDevice::GetMipBlitSampler()
 }
 
 void MetalDevice::DeclareDeviceAddressResidency(MTL::RenderCommandEncoder* encoder,
-                                                std::unordered_map<MTL::Resource*, MTL::ResourceUsage>& residentCache)
+                                                FastHashMap<MTL::Resource*, MTL::ResourceUsage>& residentCache)
 {
     // Residency-set path declares residency once per frame on the queue and
     // orders compute->draw with the fence; the per-encoder blanket is skipped.
@@ -1131,7 +1182,7 @@ void MetalDevice::DeclareDeviceAddressResidency(MTL::RenderCommandEncoder* encod
 }
 
 void MetalDevice::DeclareDeviceAddressResidency(MTL::ComputeCommandEncoder* encoder,
-                                                std::unordered_map<MTL::Resource*, MTL::ResourceUsage>& residentCache)
+                                                FastHashMap<MTL::Resource*, MTL::ResourceUsage>& residentCache)
 {
     if (m_UseResidencySet)
     {
@@ -1396,23 +1447,16 @@ bool MetalDevice::BeginFrame()
     {
         return false;
     }
-    dispatch_semaphore_wait(m_FrameSemaphore, DISPATCH_TIME_FOREVER);
     m_FrameSyncIssued = false;
-    m_FrameActive = true;
+    m_FrameActive.store(true, std::memory_order_relaxed);
 
-    // The pacing semaphore covers work enqueued before the present; command
-    // buffers enqueued after it (late views, uploads) are tracked per slot
-    // and must also drain before the slot's resources recycle.
+    // Late submissions tagged with this slot must finish before query samples are reused.
     WaitForSlotCommandBuffers(m_FrameIndex);
     if (GetDeviceHealth() != DeviceHealth::Healthy)
     {
-        dispatch_semaphore_signal(m_FrameSemaphore);
-        m_FrameActive = false;
+        m_FrameActive.store(false, std::memory_order_relaxed);
         return false;
     }
-
-    // The waits above guarantee this slot's prior GPU work completed, so the
-    // slot's counter samples can be resolved without stalling.
     if (m_QueryPool != nullptr)
     {
         m_QueryPool->BeginFrame(m_FrameIndex);
@@ -1426,33 +1470,28 @@ bool MetalDevice::BeginFrame()
     }
     m_FramePool = NS::AutoreleasePool::alloc()->init();
 
-    DrainDeferredReleases(m_FrameIndex);
-
-    // Transient descriptor sets allocated kFramesInFlight frames ago are no
-    // longer referenced by in-flight GPU work; recycle them and their arena now,
-    // under one lock so a set created meanwhile cannot land in the arena after
-    // its list was taken.
-    {
-        std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
-        std::vector<DescriptorSetHandle>& transientSets = m_TransientDescriptorSets[m_FrameIndex];
-        for (DescriptorSetHandle handle : transientSets)
-        {
-            DestroyDescriptorSet(handle);
-        }
-        transientSets.clear();
-        m_TransientDescriptorArenas[m_FrameIndex].Reset();
-    }
-
     MetalSwapchain* swapchain = GetSwapchain(m_ActiveWindowTarget);
+    double acquireMs = 0.0;
     if (swapchain != nullptr && m_Desc.enableSwapchain)
     {
         uint32_t imageIndex = 0;
+        const auto acquireStart = std::chrono::steady_clock::now();
         if (!swapchain->Acquire(*this, imageIndex))
         {
             // Occluded window: the frame still proceeds (offscreen work is
             // legal); Present degrades to FinalizeFrame.
             Logger::Log::Warning("MetalDevice::BeginFrame: drawable acquire failed");
         }
+        acquireMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - acquireStart).count();
+    }
+    // The main thread's wait for the drawable (GetLastFrameSyncTimings). The previous frame's end
+    // published its wait for this frame's slot.
+    std::lock_guard<std::mutex> lock(m_FrameTimingMutex);
+    m_LastFrameSync.acquireMs = acquireMs;
+    if (IsFrameTraceEnabled())
+    {
+        Logger::Log::Debug("[FrameTrace] metal slot={} slotWaitMs={:.3f} slotCbsAtWait={} acquireMs={:.3f}",
+                           m_FrameIndex.load(std::memory_order_relaxed), m_SlotWaitMs, m_SlotCbsAtWait, acquireMs);
     }
     return true;
 }
@@ -1464,12 +1503,44 @@ void MetalDevice::SignalFrameCompletion()
         return;
     }
     m_FrameSyncIssued = true;
-    m_FrameActive = false;
+    m_FrameActive.store(false, std::memory_order_relaxed);
 
     EndGpuCaptureIfActive();
 
-    m_FrameIndex.store((m_FrameIndex.load(std::memory_order_relaxed) + 1) % kFramesInFlight,
-                       std::memory_order_relaxed);
+    // The next slot is recycled before the index moves to it. Work enqueued between this frame
+    // and the next then holds that slot until it completes, and the next BeginFrame does not wait.
+    const uint32_t next = (m_FrameIndex.load(std::memory_order_relaxed) + 1) % kFramesInFlight;
+    RecycleFrameSlot(next);
+    m_FrameIndex.store(next, std::memory_order_relaxed);
+}
+
+void MetalDevice::RecycleFrameSlot(uint32_t slot)
+{
+    const auto waitStart = std::chrono::steady_clock::now();
+    dispatch_semaphore_wait(m_FrameSemaphore, DISPATCH_TIME_FOREVER);
+    m_SlotCbsAtWait = m_SlotInFlightCbs[slot].load(std::memory_order_acquire);
+    WaitForSlotCommandBuffers(slot);
+    m_SlotWaitMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - waitStart).count();
+    {
+        // Published at once, so a reader before the next BeginFrame sees the wait of the frame that ended.
+        std::lock_guard<std::mutex> lock(m_FrameTimingMutex);
+        m_LastFrameSync.beginFrameWaitMs = m_SlotWaitMs;
+    }
+
+    DrainDeferredReleases(slot);
+    // No GPU work uses the slot's transient sets now. One lock covers the list and the arena.
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
+        std::vector<DescriptorSetHandle>& transientSets = m_TransientDescriptorSets[slot];
+        for (DescriptorSetHandle handle : transientSets)
+        {
+            DestroyDescriptorSet(handle);
+        }
+        transientSets.clear();
+        m_TransientDescriptorArenas[slot].Reset();
+    }
+    // A frame ended, so the set cache ages one frame.
+    AgeCachedDescriptorSets();
 }
 
 void MetalDevice::RecordFrameGpuTiming(MTL::CommandBuffer* buffer)

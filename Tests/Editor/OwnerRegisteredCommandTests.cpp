@@ -75,4 +75,26 @@ TEST(OwnerRegisteredCommands, PlayModeManagerRegistersPlayCommandsAndAsserts)
                               UiReplayCommandIds::AssertPlayModeNotRunning});
 }
 
+TEST(OwnerRegisteredCommands, StopCancelsAPlayEntryWaitingForTheScriptBuild)
+{
+    Editor::PlayModeManager playMode([]
+    {
+        Editor::ScriptBuildSnapshot snapshot;
+        snapshot.Building = true;
+        return snapshot;
+    });
+    playMode.RegisterCommands();
+    auto& registry = Editor::EditorMenuRegistry::Get();
+    EXPECT_EQ(registry.InvokeCommand(UiReplayCommandIds::PlayEnter, nullptr),
+              Editor::EditorCommandResult::Succeeded);
+    EXPECT_EQ(playMode.GetEntryGate().GetPhase(), Editor::PlayModeEntryGate::Phase::Waiting);
+    EXPECT_EQ(registry.InvokeCommand(UiReplayCommandIds::PlayStop, nullptr),
+              Editor::EditorCommandResult::Succeeded);
+    EXPECT_EQ(playMode.GetEntryGate().GetPhase(), Editor::PlayModeEntryGate::Phase::Idle);
+    ReplaceWithInertCommands({UiReplayCommandIds::PlayEnter, UiReplayCommandIds::PlayTogglePause,
+                              UiReplayCommandIds::PlayStop, UiReplayCommandIds::AssertPlayModeEdit,
+                              UiReplayCommandIds::AssertPlayModePlay, UiReplayCommandIds::AssertPlayModePaused,
+                              UiReplayCommandIds::AssertPlayModeNotRunning});
+}
+
 } // namespace

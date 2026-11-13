@@ -1,8 +1,8 @@
 #pragma once
 
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineTypes.h"
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 
 #include <functional>
 

@@ -24,7 +24,7 @@
 
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineIdentifiers.h"
+#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
 #include "Rendering/Core/QueryPool.h"
 #include "Rendering/Core/PassPhase.h"
 #include "Rendering/Core/RenderGraph/RGFrameStamp.h"
@@ -33,8 +33,10 @@
 #include "Rendering/Core/RenderGraph/RGStateMap.h"
 #include "Rendering/Core/RenderGraph/RGTransientPool.h"
 #include "Rendering/Core/RenderGraph/RGUploadRing.h"
+#include "Rendering/Core/ReverseZ.h"
 
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -124,7 +126,7 @@ enum class RGStoreOp : uint8_t
 struct RGClearValue
 {
     float Color[4] = {0, 0, 0, 0};
-    float Depth = 0.0f; // reverse-Z: clear to far
+    float Depth = ReverseZ::kClearFar;
     uint32_t Stencil = 0;
 };
 struct RGAttachmentOps
@@ -132,6 +134,9 @@ struct RGAttachmentOps
     RGLoadOp Load = RGLoadOp::Load;
     RGStoreOp Store = RGStoreOp::Store;
     RGClearValue Clear{};
+    // The pass writes every pixel of a one-mip, one-layer color target and loads none. AttachColor
+    // then lets the graph cull an earlier write to the target that no pass reads in between.
+    bool WritesEveryPixel = false;
 };
 
 // Readable at call sites where a bare bool would not be ("what's true?").
@@ -265,9 +270,22 @@ class RGContext
     void SetPipelineAuto(GraphicsPipelineId id) const;
     void SetPipelineAuto(ComputePipelineId id) const;
 
+    // Starts the producer `scope` (a static name with no dot, as DrawProducerRegistry::ScopeNames holds) up to
+    // the next call or the pass end; nullptr ends it. With pipeline statistics on, each scope gets a profiler
+    // row (RGFrame::RGScopeTiming); in every other frame the call is one branch and records no command.
+    void SetProfilerScope(const char* scope)
+    {
+        if (m_ProfilerScopesArmed)
+            SetArmedProfilerScope(scope);
+    }
+
   private:
     friend class RGFrame;
-    const RGFrame* m_Frame = nullptr;
+    void SetArmedProfilerScope(const char* scope);
+
+    RGFrame* m_Frame = nullptr;
+    // True while the pass being recorded inline has a statistics query (RGFrame::ArmProfilerScopes).
+    bool m_ProfilerScopesArmed = false;
     RGPassId m_Pass = kInvalidId;
     uint32_t m_AttFirst = 0; // this pass's range in RGFrame::m_Attachments
     uint32_t m_AttCount = 0;
@@ -638,15 +656,25 @@ class RGFrame
     };
     const FrameStats& Stats() const { return m_Stats; }
 
-    // ── Per-pass GPU profiling (device-owned query pool; results resolve when
-    // the device frame slot returns ⇒ FramesInFlight latency). Contract: call
-    // RGFrame::BeginFrame AFTER IDevice::BeginFrame — the pool caches the
-    // slot's completed timestamps there; a misordering shows up as
-    // ReadFailures, never a stall. ──
+    // Why a pass row has, or has no, pipeline-statistics counters.
+    enum class RGPassStatisticsState : uint8_t
+    {
+        Off,           // the counters were not on when the pass was recorded
+        Measured,      // RGPassTiming::Statistics holds the pass's counters
+        Unsupported,   // the device has no pipeline-statistics queries
+        NotGraphicsQueue, // the pass ran on a queue without graphics
+        QueriesUsedUp, // the frame's pipeline-statistics queries were all taken
+        NotReady       // the query had no result when the frame slot returned
+    };
+
+    // Per-pass GPU profiling. Results resolve when the device frame slot returns, FramesInFlight frames later.
+    // Call RGFrame::BeginFrame after IDevice::BeginFrame: the query pool reads the slot's results there.
+    // A wrong order gives ReadFailures and NotReady counters, never a stall.
     struct RGPassTiming
     {
-        // Copied at write time — graph names are arena-reset every frame while
-        // results resolve FramesInFlight frames later.
+        // Row names are stable identifiers that scripts read: the pass name; a scope row (RGScopeTiming) is
+        // "<pass name>.<scope name>" with a PascalCase scope name and no dot, e.g. "RenderEntities[Scene View#2].Grass".
+        // Copied at write time: graph names reset every frame, and results resolve FramesInFlight frames later.
         char Name[64] = {};
         // The per-frame dense RGPassId — stable ONLY within its frame (joins
         // against same-frame pass data; cross-frame consumers key on Name).
@@ -670,6 +698,10 @@ class RGFrame
         uint32_t EndUnit = IQueryPool::kInvalidTimestampUnit;
         // This span is the same measurement as another pass's this frame.
         bool SpanShared = false;
+        // Pipeline-statistics query of the pass bracket (~0u when none was begun).
+        uint32_t StatisticsQuery = ~0u;
+        RGPassStatisticsState StatisticsState = RGPassStatisticsState::Off;
+        PipelineStatistics Statistics;
         // This pass's span is the one counted in
         // RGProfilingResolveStats::DistinctSpanGpuMs. Summing GpuSpanMs over
         // the passes with this set is the ONLY correct way for a consumer to
@@ -677,6 +709,35 @@ class RGFrame
         // that decision, so a second de-duplication rule cannot disagree with
         // the payload's total.
         bool SpanCounted = false;
+    };
+    // The draws of one producer inside one pass, in a frame with pipeline statistics on. The
+    // pass row's counters include the scope's counters. A scope span is not counted in
+    // RGProfilingResolveStats: its pass span holds it.
+    struct RGScopeTiming
+    {
+        static constexpr uint32_t kNameCapacity = 96;
+        char Name[kNameCapacity] = {}; // "<pass name>.<scope name>"
+        uint32_t PassRow = ~0u;        // index of the pass row in RGProfilingSnapshot::Passes
+        double CpuMs = 0.0;
+        double GpuSpanMs = 0.0; // sum over the scope's command ranges in the pass
+        uint32_t BeginQuery = ~0u;
+        uint32_t EndQuery = ~0u;
+        uint32_t StatisticsQuery = ~0u;
+        RGPassStatisticsState StatisticsState = RGPassStatisticsState::Off;
+        PipelineStatistics Statistics;
+    };
+    // Why a feature did not declare a pass that it declares in other frames.
+    enum class RGSkippedPassState : uint8_t
+    {
+        Cached,      // the pass's target still holds the content from an earlier frame
+        Deferred,    // the frame's budget moved the pass to a later frame
+        MissingInput // an input of the pass (an imported target, the frame's data) was not there this frame
+    };
+    // A pass row with a state and no span or counters (RGFrame::NoteSkippedPass).
+    struct RGSkippedPass
+    {
+        char Name[sizeof(RGPassTiming::Name)] = {};
+        RGSkippedPassState State = RGSkippedPassState::Cached;
     };
     struct RGProfilingResolveStats
     {
@@ -708,13 +769,32 @@ class RGFrame
     // generations) is a 2c-6/2e device-layer item.
     void SetProfilingEnabled(bool enabled); // forced off when GE_ENABLE_GPU_PROFILING=0
     bool ProfilingEnabled() const { return m_ProfilingEnabled; }
+    // Per-pass pipeline-statistics counters on the profiled rows; off by default. A frame
+    // with them on records every pass inline, so it is not a timing frame. They need
+    // profiling on, and disabling profiling turns them off.
+    void SetPipelineStatisticsEnabled(bool enabled); // forced off when GE_ENABLE_GPU_PROFILING=0
+    bool PipelineStatisticsEnabled() const { return m_PipelineStatisticsEnabled; }
+    // False when the device's query pool cannot record pipeline statistics.
+    bool PipelineStatisticsSupported() const;
     // What a GpuSpanMs interval measures on this device. A property of the
     // device's query pool, so it is the same answer before the first resolve
     // and while disarmed.
     TimestampSemantics TimingSemantics() const;
-    // Entries are in scheduled submission order (the order passes ran).
-    std::vector<RGPassTiming> LastFrameTimings() const;   // copies under mutex (MCP reads cross-thread)
+    // The resolve stats alone, for a per-frame reader (dynamic resolution) that needs no rows.
     RGProfilingResolveStats LastResolveStats() const;
+    // The pass rows, the scope rows, the skipped passes and the resolve stats of one resolved
+    // frame, copied in one lock (readers on other threads).
+    struct RGProfilingSnapshot
+    {
+        std::vector<RGPassTiming> Passes; // in scheduled submission order (the order passes ran)
+        std::vector<RGScopeTiming> Scopes; // in record order; each pass's scopes are contiguous
+        std::vector<RGSkippedPass> Skipped; // in declare order
+        RGProfilingResolveStats ResolveStats;
+    };
+    RGProfilingSnapshot LastFrameProfiling() const;
+    // A feature that skips a pass this frame names it, so the profiled frame reports the pass
+    // with its state. Call at declaration. With profiling off the call records nothing.
+    void NoteSkippedPass(const char* name, RGSkippedPassState state);
     // GPU timestamp resolve for one pending slot. `qp` may be null: browser
     // WebGPU has no encoder writeTimestamp, so CPU-only rows keep GpuSpanMs = 0
     // and expected ~0u query indices are not counted as InvalidQueryIndices
@@ -899,6 +979,16 @@ class RGFrame
     CommandList* GetOrCreateCommandList(uint8_t physicalQueue);
     void EnsureTimeline(uint8_t physicalQueue);
     void ResolveProfiling(); // drains the returning slot's pending timings (RGRecord.cpp)
+    // Begins the pass's pipeline-statistics query when the device and the queue allow one.
+    void BeginPassStatistics(IQueryPool& queryPool, CommandList* commandList, uint8_t physicalQueue, RGPassTiming& timing);
+    // Profiler scopes of the pass being recorded inline (RGContext::SetProfilerScope). Vulkan
+    // allows one active pipeline-statistics query, so a scope ends the pass's query and the pass
+    // continues in a new segment query when the scope ends.
+    void ArmProfilerScopes(IQueryPool& queryPool, CommandList* commandList, uint32_t passRow);
+    void SetProfilerScope(const char* scope, const CommandList* commandList);
+    void FinishProfilerScopes();
+    void CloseProfilerScope();
+    void ResolveProfilerScopes(IQueryPool* qp);
 
     // A2.4-P0-R fork helpers (RGRecord.cpp). MarkRecordSecondary is the
     // RGPassBuilder::RecordInSecondary seam; RecordsSecondaryPass is the record
@@ -942,6 +1032,9 @@ class RGFrame
     std::vector<uint8_t> m_HasPhysical;
     RGTexture m_Backbuffer{}; // this frame's ImportBackbuffer result (IsBackbuffer)
 
+    // The value each physical queue's timeline has signaled so far (0 before its first submit).
+    void ReadCompletedTimelineValues(uint64_t (&outValues)[kQueueCount]) const;
+
     // Recording state (persistent CLs per logical queue; Begin() re-acquires a
     // fresh buffer per submission) + per-physical-queue timeline semaphores.
     std::unique_ptr<CommandList> m_CmdLists[kQueueCount];
@@ -960,9 +1053,42 @@ class RGFrame
     // are keyed by the DEVICE frame index (the query pool's latency ring);
     // latest/stats are published under the mutex for cross-thread readers.
     bool m_ProfilingEnabled = false;
+    bool m_PipelineStatisticsEnabled = false;
+    // A pass's pipeline-statistics query that began after one of its scopes ended.
+    struct RGStatisticsSegment
+    {
+        uint32_t PassRow = ~0u;
+        uint32_t Query = ~0u; // ~0u when the frame's queries were used up
+    };
+    struct RGProfilingPending
+    {
+        std::vector<RGPassTiming> Passes;
+        std::vector<RGScopeTiming> Scopes;
+        std::vector<RGStatisticsSegment> Segments;
+        std::vector<RGSkippedPass> Skipped;
+    };
+    void AddProfilerRemainderRows(RGProfilingPending& pending);
+    // The scope state of the pass being recorded. Armed only for an inline pass with a
+    // statistics query, so a worker that records a secondary never writes it.
+    struct RGScopeRecordState
+    {
+        bool Armed = false;
+        IQueryPool* QueryPool = nullptr;
+        CommandList* Commands = nullptr;
+        uint32_t PassRow = ~0u;
+        uint32_t SegmentQuery = ~0u; // the pass's open statistics query
+        const char* OpenScope = nullptr;
+        std::chrono::steady_clock::time_point OpenScopeCpuBegin{};
+    };
     std::vector<RGPassTiming> m_ProfilingCurrent;
-    std::vector<std::vector<RGPassTiming>> m_ProfilingPendingBySlot;
+    std::vector<RGScopeTiming> m_ProfilingScopesCurrent;
+    std::vector<RGStatisticsSegment> m_ProfilingSegmentsCurrent;
+    std::vector<RGSkippedPass> m_ProfilingSkippedCurrent; // written at declaration
+    RGScopeRecordState m_ScopeRecord;
+    std::vector<RGProfilingPending> m_ProfilingPendingBySlot;
     std::vector<RGPassTiming> m_ProfilingLatest;
+    std::vector<RGScopeTiming> m_ProfilingScopesLatest;
+    std::vector<RGSkippedPass> m_ProfilingSkippedLatest;
     RGProfilingResolveStats m_LastResolveStats;
     bool m_LoggedFirstGpuResolve = false;
     // Work-unit ranges already counted this resolve, and the widest-first visit
@@ -973,6 +1099,7 @@ class RGFrame
     // Recording scratch (capacity retained across frames).
     std::vector<ResourceBarrier> m_ScratchHoist;
     std::vector<ResourceBarrier> m_ScratchPassBarriers;
+    std::vector<ResourceBarrier> m_ScratchRelocatedBarriers; // this pass's, placed on another submission
     std::vector<std::pair<uint32_t, uint32_t>> m_ScratchAttRange; // per pass (first,count)
     std::vector<const RGBarrierBatch*> m_ScratchBatchOfSched;
     std::vector<CommandList*> m_ScratchSubmitLists;

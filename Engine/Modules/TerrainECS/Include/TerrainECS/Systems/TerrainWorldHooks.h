@@ -3,8 +3,8 @@
 namespace GameEngine::Components
 {
 struct Terrain;
-struct TerrainTileCollider;
-struct TerrainPlanetFaceCollider;
+struct TerrainPageCollider;
+struct TerrainPlanetPageCollider;
 } // namespace GameEngine::Components
 
 namespace GameEngine::ECS
@@ -25,7 +25,7 @@ namespace GameEngine::TerrainECS
 /// handles alone rather than being dereferenced.
 void ReleaseTerrainOwnedResources(Components::Terrain& terrain);
 
-/// Returns a terrain tile collider's heightfield physics handle to the service.
+/// Returns a terrain page collider's heightfield physics handle to the service.
 /// The release is generation-checked, so a stale index frees nothing.
 ///
 /// The collider components live here rather than in PhysicsECS because that is
@@ -35,10 +35,10 @@ void ReleaseTerrainOwnedResources(Components::Terrain& terrain);
 /// exclusively, so a sibling lookup would self-deadlock. Both components carry
 /// their own handle pair, so none is needed. An entity carrying a collider AND
 /// a PhysicsBody fires both hooks, which is how the pair composes.
-void ReleaseTerrainTileCollider(Components::TerrainTileCollider& collider);
+void ReleaseTerrainPageCollider(Components::TerrainPageCollider& collider);
 
-/// Planet-face counterpart of ReleaseTerrainTileCollider.
-void ReleaseTerrainPlanetFaceCollider(Components::TerrainPlanetFaceCollider& collider);
+/// Planet counterpart of ReleaseTerrainPageCollider.
+void ReleaseTerrainPlanetPageCollider(Components::TerrainPlanetPageCollider& collider);
 
 /// Registers the releases above as the world's OnRemove hooks for the terrain
 /// component types, which is what makes World::Clear, World::DestroyEntity and

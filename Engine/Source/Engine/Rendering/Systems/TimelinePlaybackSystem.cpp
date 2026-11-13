@@ -80,6 +80,7 @@ TimelinePlaybackSystem::TimelinePlaybackSystem(Audio::AudioSystem* audioSystem)
 void TimelinePlaybackSystem::Update(ECS::World& world, float32 deltaTime)
 {
     ProcessClipAnimatorCommands(world);
+    ApplyClipAnimatorSpeeds(world);
 
     AssetManager& assetManager = EngineCore::GetInstance().GetAssetManager();
     Audio::AudioSystem* audio = m_AudioSystem;
@@ -88,10 +89,9 @@ void TimelinePlaybackSystem::Update(ECS::World& world, float32 deltaTime)
 
     world.Query<ECS::Write<Animator>>().Each([&](ECS::EntityHandle rootEntity, ECS::Writable<Animator> animatorRow)
     {
-        if (!animatorRow->active || animatorRow->source != AnimatorPlaybackSource::Timeline ||
-            animatorRow->timelineGuid.IsNull())
+        auto& animator = animatorRow.Mutable();
+        if (!animator.active || animator.source != AnimatorPlaybackSource::Timeline || animator.timelineGuid.IsNull())
             return;
-        Animator& animator = animatorRow.Mutable();
 
         auto* state = world.GetComponentForWrite<TimelinePlaybackState>(rootEntity);
         if (!state)

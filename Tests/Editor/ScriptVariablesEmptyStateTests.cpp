@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "Panels/ScriptVariablesEmptyState.h"
+#include "Panels/Script/ScriptVariablesEmptyState.h"
 
 using GameEngine::Editor::EmptyScriptVariablesText;
 

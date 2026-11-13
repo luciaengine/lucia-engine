@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
-#include "Rendering/Core/PipelineIdentifiers.h" // ComputePipelineId
+#include "Rendering/Core/Pipeline/PipelineIdentifiers.h" // ComputePipelineId
 
 #include <string>
 

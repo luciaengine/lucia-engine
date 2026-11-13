@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Components/Spline/SplineFence.h"
-#include "UndoRedo/SplinePointEdits.h"
+#include "UndoRedo/Spline/SplinePointEdits.h"
 
 #include <span>
 

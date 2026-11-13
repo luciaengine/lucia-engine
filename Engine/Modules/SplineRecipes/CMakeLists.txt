@@ -7,18 +7,21 @@ project(SplineRecipes LANGUAGES CXX)
 # the chunk commit, the rebuild gate, the sweep stations and the surface
 # conform. Linked into Engine, so the editor, the Player and a game run one builder.
 add_library(SplineRecipes OBJECT
+    Source/ConformGroundWatch.cpp
     Source/FenceEmission.cpp
-    Source/FenceMitreVariants.cpp
+    Source/FenceMiterVariants.cpp
     Source/FencePieceReuse.cpp
     Source/FenceRecipeLayout.cpp
     Source/FenceSpanOverrides.cpp
     Source/Paving/PavingApproach.cpp
     Source/Paving/PavingApproachGround.cpp
+    Source/Paving/PavingLidPieces.cpp
     Source/Paving/PavingMesh.cpp
     Source/Paving/PavingPlan.cpp
     Source/Paving/PavingSources.cpp
     Source/Paving/PavingRoadTrim.cpp
     Source/Paving/PavingRoadUV.cpp
+    Source/Paving/PavingSeam.cpp
     Source/Paving/SplinePavingController.cpp
     Source/Paving/SplinePavingSanitize.cpp
     Source/PlacementGroundGap.cpp
@@ -51,6 +54,9 @@ target_compile_features(SplineRecipes PUBLIC cxx_std_20)
 target_include_directories(SplineRecipes
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/Include
+    PRIVATE
+        # Scripting/AbiMainThread.h: the script API's thread predicate.
+        ${CMAKE_SOURCE_DIR}/Engine/Source
 )
 
 target_link_libraries(SplineRecipes
@@ -74,7 +80,6 @@ target_link_libraries(SplineRecipes
 # the controllers. Headers only, no link: Engine is SHARED and links this module
 # privately, so the symbols resolve inside Engine.dll (the CBTTerrainECS pattern).
 target_include_directories(SplineRecipes PRIVATE
-    ${CMAKE_SOURCE_DIR}/Engine/Source
     $<TARGET_PROPERTY:Engine,INTERFACE_INCLUDE_DIRECTORIES>
     $<TARGET_PROPERTY:TerrainECS,INTERFACE_INCLUDE_DIRECTORIES>
 )
@@ -129,7 +134,7 @@ if(BUILD_TESTING)
         # The fence's cut span variants from the layout's plan to the registry: the
         # unit SplineFenceController::Rebuild hands its plan to, on a registry with
         # no device — dedupe, stable keys, release, the byte budget, open meshes.
-        Tests/FenceMitreVariantsTests.cpp
+        Tests/FenceMiterVariantsTests.cpp
         # End-to-end coverage of the extrude's None-conform station path over the
         # RiverVignette water spline: arc sampling (Spline, via Engine.dll), chunk
         # carving and the strip sweep (SplineGeometry, via Engine.dll) together must
@@ -187,8 +192,10 @@ if(BUILD_TESTING)
         # The paving recipe: the sanitizer, and the geometry key a look edit leaves alone.
         Tests/Paving/SplinePavingRecipeTests.cpp
         # The paving's lid: on a sloped rim it follows the ground with no crease; the seed and the
-        # owner's turn move its pattern.
+        # owner's turn move its pattern; a seam's band and course lie on the yielding road's side.
         Tests/Paving/PavingMeshTests.cpp
+        # The seam's validity rule: the move a pattern's symmetry allows between two UV fields.
+        Tests/Paving/PavingSeamTests.cpp
         # A road's strip around the paved regions on it: the skipped arc length, the Open-edge cap,
         # a closed road's seam.
         Tests/Paving/PavingRoadTrimTests.cpp
@@ -200,18 +207,32 @@ if(BUILD_TESTING)
         # The paving through the recipe controllers over a headless device: what it builds and
         # the state it reports.
         Tests/Paving/SplinePavingControllerTests.cpp
-        ${CMAKE_SOURCE_DIR}/Engine/Modules/UI/Tests/SharedHeadlessDevice.cpp
         # Fixtures here initialize the engine; this shuts it down before the process exits.
         ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp
     )
     # TestTempDir.h, shared across the test trees.
     # RoadVergeTests.cpp: the private header beside RoadVerge.cpp.
-    target_include_directories(SplineRecipesTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests ${CMAKE_CURRENT_SOURCE_DIR}/Source
-        ${CMAKE_SOURCE_DIR}/Engine/Modules/UI/Tests)
-    target_link_libraries(SplineRecipesTests PRIVATE Engine RenderGraphTestSupport GTest::gtest GTest::gtest_main)
+    target_include_directories(SplineRecipesTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(SplineRecipesTests PRIVATE Engine SharedHeadlessDeviceTestSupport GTest::gtest GTest::gtest_main)
     set_target_properties(SplineRecipesTests PROPERTIES FOLDER "Engine/Tests")
     ge_set_output_tests(SplineRecipesTests)
     ge_stage_runtime_dependencies(SplineRecipesTests)
     add_test(NAME SplineRecipesTests COMMAND $<TARGET_FILE:SplineRecipesTests>)
 
+    # Opt-in: the water fill's investigation instruments, which run against scenes in other content
+    # repositories (GE_WATER_LIFT_REPRO_SCENE, GE_SCENE_WATER_GATE) and skip without them. Not
+    # registered with CTest and run by no gate: build WaterFillInvestigationTests and run it with the
+    # scene set.
+    add_executable(WaterFillInvestigationTests
+        # The lifted river over an authored island terrain: does the lift enclose dry ground?
+        Tests/WaterFillLiftReproTests.cpp
+        # The fill applied to an authored scene file: load, provision the terrain data the schema
+        # does not carry, bake the modifier stack, and run the fill over every FitToBanks recipe.
+        Tests/SceneWaterFillGateTests.cpp
+        ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownEnvironment.cpp
+    )
+    target_link_libraries(WaterFillInvestigationTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+    set_target_properties(WaterFillInvestigationTests PROPERTIES FOLDER "Engine/Tests")
+    ge_set_output_tests(WaterFillInvestigationTests)
+    ge_stage_runtime_dependencies(WaterFillInvestigationTests)
 endif()

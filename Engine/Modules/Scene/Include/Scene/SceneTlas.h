@@ -8,8 +8,9 @@
 #include "ECSModules/Rendering/Systems/RenderExtractionSystem.h"
 #include "Mathematics/Geometry.h"
 #include "Mathematics/Vector3.h"
-#include "Types/FunctionRef.h"
+#include "Rendering/RenderLayerMask.h"
 #include "Scene/TlasInstance.h"
+#include "Types/FunctionRef.h"
 #include "Types/Types.h"
 
 namespace GameEngine::ECS { class World; }
@@ -42,10 +43,14 @@ enum class RefitExecution : uint8
 // (RequestCurrent / WaitCurrent): the main thread detects what changed and
 // snapshots it, and the refit or reconcile runs on the world's job system
 // from that snapshot, never reading the ECS, so the next frame's systems run
-// beside it. A world that is never queried never pays for it.
+// beside it. That work is a pool task with a handle: later requests poll it
+// across frames, WaitCurrent joins it, and destruction cancels it or waits for
+// it. A world that is never queried never pays for it.
 //
 // Threading: RequestCurrent and WaitCurrent are main-thread only and run
-// between frames. Traversals (TraverseRay/Sphere/Frustum) are valid when the
+// between frames. Destruction (ReleaseSceneTlas) is main-thread only too: it
+// may wait for work in flight, which a worker of the world's job system must
+// never do. Traversals (TraverseRay/Sphere/Frustum) are valid when the
 // tree is ready (no work in flight) and answer for the poses of the last
 // request's snapshot; debug builds assert readiness. Contains and the counts
 // may be read from any thread and may briefly block on in-flight work.
@@ -67,20 +72,20 @@ enum class RefitExecution : uint8
 struct TraverseRayOptions
 {
     float32                                                MaxDistance     = std::numeric_limits<float32>::infinity();
-    uint32                                                 LayerMask       = 0xFFFFFFFFu;
+    Rendering::RenderLayerMask                             LayerMask       = Rendering::RenderLayerMask::All();
     bool                                                   IncludeDisabled = false;  // see header note above
     std::span<const GameEngine::ECS::EntityHandle>         IgnoreEntities{};  // ≤8 typical; filtered at leaf-visit
 };
 
 struct TraverseSphereOptions
 {
-    uint32 LayerMask       = 0xFFFFFFFFu;
+    Rendering::RenderLayerMask LayerMask = Rendering::RenderLayerMask::All();
     bool   IncludeDisabled = false;  // see header note above TraverseRayOptions
 };
 
 struct TraverseFrustumOptions
 {
-    uint32 LayerMask       = 0xFFFFFFFFu;
+    Rendering::RenderLayerMask LayerMask = Rendering::RenderLayerMask::All();
     bool   IncludeDisabled = false;  // see header note above TraverseRayOptions
 };
 
@@ -126,8 +131,8 @@ public:
     uint32 InstanceCount() const;
     uint32 NodeCount() const;
     bool   IsEmpty() const;
-
-    /// Changes when a reconcile, refit, or clear changes the published tree.
+    /// Goes up on every reconcile, on every refit that moves a leaf and on
+    /// Clear. Two equal reads mean the tree did not change between them. Lock-free.
     uint64 Version() const;
 
     // ---- Bringing the tree current (main thread, between frames) --------
@@ -144,11 +149,12 @@ public:
     /// every renderable; otherwise the entities in chunks whose
     /// WorldTransform was written are refit. The changed data is copied into
     /// a snapshot here, and the work runs on the world's job system (inline
-    /// on a world without one), so the main thread pays the detection and the
-    /// copy only. Nothing changed: Ready, no work. Work in flight: joins it
-    /// and reports Updating until it finishes; a refit that moves an entity
-    /// into a sector it has no replica in is followed by a reconcile before
-    /// the tree reports Ready.
+    /// on a world without one, or whose job system has shut down), so the
+    /// main thread pays the detection and the copy only. Nothing changed:
+    /// Ready, no work. Work in flight: starts no more, never waits, and
+    /// reports Updating until it finishes; a refit that moves an entity into
+    /// a sector it has no replica in is followed by a reconcile before the
+    /// tree reports Ready.
     Readiness RequestCurrent(GameEngine::ECS::World& world);
 
     /// Finishes the last request without looking for new changes: Updating
@@ -159,10 +165,11 @@ public:
     /// whenever anything kept moving, and the query would never resolve.
     Readiness CheckRequest(GameEngine::ECS::World& world);
 
-    /// RequestCurrent, then joins the work with a participating wait until
-    /// the tree is ready. For callers that need an answer inside the same call
-    /// (placement and drape tools); blocks only when something changed since
-    /// the last request.
+    /// RequestCurrent, then joins its work until the tree is ready: runs it on
+    /// the calling thread when no worker has started it, else waits for it.
+    /// For callers that need an answer inside the same call (placement and
+    /// drape tools); blocks only when something changed since the last
+    /// request.
     void WaitCurrent(GameEngine::ECS::World& world);
 
     // ---- Building blocks (also the test seams) --------------------------
@@ -177,11 +184,9 @@ public:
     };
 
     // Process-wide default execution policy for SyncEntities: latched once
-    // from GE_TLAS_PARALLEL_REFIT (on unless switched off, like every GE_
-    // kill switch) at first use, so a mid-run env change cannot split behavior.
-    // SceneTlasUpdateSystem reads the same variable at construction and
-    // passes its policy explicitly; the latched default is what reaches
-    // direct-API callers (tests), letting the whole suite run under either
+    // from GE_TLAS_PARALLEL_REFIT (ON unless "0", the house kill-switch
+    // idiom) at first use, so a mid-run env change cannot split behavior.
+    // RequestCurrent's refit uses it, and so do direct-API callers (tests), letting the whole suite run under either
     // state via the env var (review A5).
     static RefitExecution DefaultRefitExecution();
 
@@ -239,13 +244,8 @@ public:
 
     void Clear();
 
-    // Override the per-instance sector size (default Components::kWorldSectorSize
-    // = 1024m, the same scale the camera-relative render path uses). Test
-    // fixtures call this with a smaller value (e.g. 50m or 100m) to exercise
-    // multi-sector replication without spreading test entities thousands of
-    // meters apart. Production code leaves the default. Calling this on a
-    // non-empty TLAS is a logic error (existing replica sets become stale);
-    // call after construction or after Clear().
+    // Sets the sector size (default Mathematics::kWorldSectorSize). Tests set a small size to reach
+    // several sectors with near entities. Call it only on an empty TLAS: after construction or Clear().
     void SetSectorSizeForTesting(float32 sectorSize);
     float32 GetSectorSize() const;
 
@@ -265,6 +265,9 @@ public:
     uint64 GetLeafCountForTesting() const;
     // Test seam: whether RequestCurrent's work is still running.
     bool IsWorkInFlightForTesting() const;
+    // Test seam: RequestCurrent calls since construction, its own retries and WaitCurrent's
+    // included. Main thread only.
+    uint64 GetRequestCountForTesting() const;
 
     // Test/diagnostic: number of SyncEntities calls that actually forked.
     // Lets tests assert the poll lane, overflow frames, and below-threshold
@@ -284,6 +287,16 @@ private:
     SyncResult RefitResolvedCandidates(JobSystem::WorkStealingThreadPool* pool);
     // RequestCurrent's refit job: the refit core over the kick's snapshot.
     void RefitFromSnapshot();
+    // The work RequestCurrent chose: the reconcile from the gathered records,
+    // or the refit from the moved renderables' snapshot.
+    void RunRequestedWork();
+    // Publishes RunRequestedWork as a pool task that later requests poll.
+    // False without a pool, or when the pool is shutting down and refuses
+    // it: the caller runs the work itself.
+    bool PublishRequestedWork(JobSystem::WorkStealingThreadPool* pool);
+    // Joins the published work as a participating wait does: runs it on the
+    // calling thread when no worker has started it, else waits for it.
+    void JoinRequestedWork();
 
     // Defined in Source/TlasInternal.h. Public free functions (Detail::*)
     // operate on it. The unique_ptr is destroyed in SceneTlas.cpp where

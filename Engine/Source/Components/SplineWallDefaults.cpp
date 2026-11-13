@@ -1,7 +1,7 @@
 // A swept wall's defaults derived from the spline it is added to.
 //
 // A corner is something the author already says with the spline's type: a
-// wall on a spline of straight segments starts with mitred corners and one on a
+// wall on a spline of straight segments starts with mitered corners and one on a
 // curved spline with round ones, so a wall drawn the obvious way needs no touch.
 // The component factory applies this whenever it adds a SplineWall; a scene load
 // applies the saved Corner over it. The inspector's Reset restores the values the
@@ -37,7 +37,7 @@ void DeriveWallDefaults(const ECS::World& world, ECS::EntityHandle entity,
 
     SplineWall wall;
     std::memcpy(&wall, bytes.data(), sizeof(SplineWall));
-    wall.Corner = data->Type == Spline::SplineType::Linear ? SplineWallCorner::Mitre
+    wall.Corner = data->Type == Spline::SplineType::Linear ? SplineWallCorner::Miter
                                                            : SplineWallCorner::Round;
     std::memcpy(bytes.data(), &wall, sizeof(SplineWall));
 }

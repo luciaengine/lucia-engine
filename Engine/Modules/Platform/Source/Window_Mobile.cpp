@@ -35,8 +35,11 @@ int KeyCode(SDL_Keycode key)
 Window::~Window() { Destroy(); }
 bool Window::Initialize()
 {
+    constexpr SDL_InitFlags kSubsystems = SDL_INIT_VIDEO | SDL_INIT_GAMEPAD;
+    if ((SDL_WasInit(kSubsystems) & kSubsystems) == kSubsystems)
+        return true;
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD))
+    if (!SDL_Init(kSubsystems))
     {
         Logger::Log::Error("Mobile window initialization failed: {}", SDL_GetError());
         return false;

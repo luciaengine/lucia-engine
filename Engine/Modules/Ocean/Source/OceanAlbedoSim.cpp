@@ -1,14 +1,14 @@
 #include "Ocean/OceanAlbedoSim.h"
-#include "Ocean/OceanShaderProgram.h"
-#include "Rendering/Materials/ShaderLayoutShape.h"
-#include "OceanShaderDirectory.h"
+#include "Ocean/OceanShader/OceanShaderProgram.h"
+#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
+#include "OceanShader/OceanShaderDirectory.h"
 
 #include "Logger/Logger.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
 
 #include <algorithm>
 #include <cstring>
@@ -140,42 +140,39 @@ void OceanAlbedoSim::FillParams(OceanAlbedoParamsGPU& out)
     out = m_Params;
 }
 
-OceanPreparedDispatch OceanAlbedoSim::PrepareDispatch(
-    IDevice* device, BufferHandle paramsBuffer, uint64 paramsOffset) const
+void OceanAlbedoSim::RecordDispatch(IDevice* device, CommandList* cl,
+                                    BufferHandle paramsBuffer, uint64 paramsOffset)
 {
-    if (!m_Ready || !device || !paramsBuffer.IsValid())
-        return {};
+    if (!m_Ready || !cl || !device || !paramsBuffer.IsValid())
+        return;
 
     const TextureHandle albedo = m_Albedo.GetTexture();
     const uint32 layers = m_LodCount;
 
-    PipelineHandle pipe = device->TryGetWarmComputePipeline(m_Pipe);
+    PipelineHandle pipe = device->GetOrCreateComputePipeline(m_Pipe);
     if (!pipe)
-        return {};
+        return;
 
     // Sync is graph-derived: the pass declares Write on the cascade, the first
     // declared reader restores ShaderReadOnly, and MarkOutput covers reader-less
     // frames. No manual barriers in here.
+
+    cl->SetPipeline(pipe);
 
     DescriptorSetDesc dsDesc{};
     dsDesc.layout = m_Layout;
     dsDesc.transient = true;
     dsDesc.debugName = "OceanAlbedo_DS";
     DescriptorSetHandle ds = device->CreateDescriptorSet(dsDesc);
-    if (!ds.IsValid())
-        return {};
 
     device->UpdateBufferBinding(ds, 0, paramsBuffer, paramsOffset, sizeof(OceanAlbedoParamsGPU));
     device->UpdateStorageImageBinding(ds, 1, albedo);
 
-    const uint32 g8 = (m_Resolution + 7u) / 8u;
-    return {pipe, ds, g8, g8, layers, albedo};
-}
+    cl->BindDescriptorSet(0, ds, pipe);
 
-void OceanAlbedoSim::RecordDispatch(CommandList* cl, const OceanPreparedDispatch& dispatch)
-{
-    if (!RecordOceanPreparedDispatch(cl, dispatch))
-        return;
+    const uint32 g8 = (m_Resolution + 7u) / 8u;
+    cl->Dispatch(g8, g8, layers);
+
     m_DispatchDirty = false;
 }
 

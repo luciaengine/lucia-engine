@@ -1,3 +1,4 @@
+#include "Core/ApplicationPaths.h"
 // A macOS export of a project whose package carries native code, through BuildPipeline::Execute:
 // the package's runtime module and the project's own native scripts ship in the bundle's
 // Contents/Frameworks, signed with it, where the packaged Player's loads reach them; the package's
@@ -219,7 +220,7 @@ TEST_F(MacPackageCodeExportTest, PackageRuntimeModuleShipsInFrameworksWhereThePl
     for (const std::string& warning : progress.warnings)
         EXPECT_EQ(warning.find("Package code modules"), std::string::npos) << warning;
 
-    const fs::path contentRoot = PathUtils::InstallContentRootFor(Bundle / "Contents/MacOS");
+    const fs::path contentRoot = ApplicationPaths::InstallContentRootFor(Bundle / "Contents/MacOS");
     const fs::path packageModule = Bundle / "Contents/Frameworks/Packages" / kPackageName / "libProbePack.dylib";
     ASSERT_TRUE(fs::exists(packageModule)) << "the package's runtime module is not in Contents/Frameworks";
     EXPECT_EQ(ModuleMapBegins(contentRoot / "Packages" / kPackageName, std::string(kRuntimeModule)), 1)

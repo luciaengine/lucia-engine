@@ -8,9 +8,9 @@
 #include "Rendering/Core/Device.h"
 #include "Input/KeyCodes.h"
 #include "EditorContextMenu/UIContextMenu.h"
-#include "Panels/SceneViewPanel.h"
+#include "SceneView/SceneViewPanel.h"
 #include "Platform/ContextMenu.h"
-#include "SceneViewController.h"
+#include "SceneView/SceneViewController.h"
 #include "UI/Assets/UIStyleAsset.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/SceneViewToolbar.h"
@@ -61,7 +61,7 @@ bool IsPointInside(const UIElement& el, float x, float y)
 // decoded, or is not `width` x `height`.
 std::vector<uint8_t> ReadPreviewPng(const std::filesystem::path& path, uint32_t width, uint32_t height)
 {
-    Vector<uint8> fileBytes;
+    ByteBuffer fileBytes;
     if (!ReadFileBytesShared(path, fileBytes))
         return {};
     Image::Image8 decoded = Image::Decode8(fileBytes, path.string(), Image::DecodeChannels::Rgba);
@@ -482,7 +482,7 @@ void CameraBookmarksWidget::PositionPreviewPopup(UIElement* popup, const Button&
         y = std::clamp(y, minY, std::max(minY, maxY));
     }
 
-    popup->Overrides()
+    popup->Style()
         .Set(Style::PositionLeft, StyleLength::Px(x))
         .Set(Style::PositionTop, StyleLength::Px(y));
 }
@@ -797,7 +797,7 @@ Button* CameraBookmarksWidget::ResolveActivePreviewButton()
 {
     if (!m_Row || m_ActivePreviewButtonId.empty())
         return nullptr;
-    UIElement* el = m_Row->FindById(m_ActivePreviewButtonId);
+    UIElement* el = m_Row->FindById(HashStringId(m_ActivePreviewButtonId));
     return dynamic_cast<Button*>(el);
 }
 

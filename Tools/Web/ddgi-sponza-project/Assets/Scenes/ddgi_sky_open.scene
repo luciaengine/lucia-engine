@@ -61,7 +61,7 @@ Transform.scale = (1, 1, 1)
 [entity id="e_wall_left"]
 MeshRenderer.meshPrimitive = Cube
 MeshRenderer.material = [path="Materials/CornellWhite.material"]
-MeshRenderer.renderLayerMask = 1
+MeshRenderer.renderLayers = [0]
 MeshRenderer.receiveShadows = true
 Name.value = "WallLeft"
 Transform.position = (-3.1, 2, 0)
@@ -71,7 +71,7 @@ Transform.scale = (0.2, 4.4, 6.4)
 [entity id="e_wall_right"]
 MeshRenderer.meshPrimitive = Cube
 MeshRenderer.material = [path="Materials/CornellWhite.material"]
-MeshRenderer.renderLayerMask = 1
+MeshRenderer.renderLayers = [0]
 MeshRenderer.receiveShadows = true
 Name.value = "WallRight"
 Transform.position = (3.1, 2, 0)
@@ -81,7 +81,7 @@ Transform.scale = (0.2, 4.4, 6.4)
 [entity id="e_wall_floor"]
 MeshRenderer.meshPrimitive = Cube
 MeshRenderer.material = [path="Materials/CornellWhite.material"]
-MeshRenderer.renderLayerMask = 1
+MeshRenderer.renderLayers = [0]
 MeshRenderer.receiveShadows = true
 Name.value = "WallFloor"
 Transform.position = (0, -0.1, 0)
@@ -91,7 +91,7 @@ Transform.scale = (6.4, 0.2, 6.4)
 [entity id="e_wall_back"]
 MeshRenderer.meshPrimitive = Cube
 MeshRenderer.material = [path="Materials/CornellWhite.material"]
-MeshRenderer.renderLayerMask = 1
+MeshRenderer.renderLayers = [0]
 MeshRenderer.receiveShadows = true
 Name.value = "WallBack"
 Transform.position = (0, 2, 3.1)
@@ -101,7 +101,7 @@ Transform.scale = (6.4, 4.4, 0.2)
 [entity id="e_wall_front"]
 MeshRenderer.meshPrimitive = Cube
 MeshRenderer.material = [path="Materials/CornellWhite.material"]
-MeshRenderer.renderLayerMask = 1
+MeshRenderer.renderLayers = [0]
 MeshRenderer.receiveShadows = true
 Name.value = "WallFront"
 Transform.position = (0, 2, -3.1)
@@ -113,7 +113,7 @@ Transform.scale = (6.4, 4.4, 0.2)
 ; exists to find, and the occluder whose shadow boundary DepthSharpness sharpens.
 MeshRenderer.meshPrimitive = Cube
 MeshRenderer.material = [path="Materials/CornellWhite.material"]
-MeshRenderer.renderLayerMask = 1
+MeshRenderer.renderLayers = [0]
 MeshRenderer.receiveShadows = true
 Name.value = "Pillar"
 Transform.position = (0, 1.2, 0.6)
@@ -132,7 +132,7 @@ Transform.scale = (1.6, 2.4, 1.6)
 ; outputs rather than only the flag.
 MeshRenderer.meshPrimitive = Cube
 MeshRenderer.material = [path="Materials/CornellWhite.material"]
-MeshRenderer.renderLayerMask = 1
+MeshRenderer.renderLayers = [0]
 MeshRenderer.receiveShadows = true
 Name.value = "Shelf"
 Transform.position = (-1.6, 0.7, -1.2)
@@ -144,7 +144,7 @@ DDGIVolume.Enabled = true
 ; Adaptive, unlike ddgi_cornell_red.scene's Grid — ClassifyStrength only has
 ; anything to do while the classify pass exists.
 DDGIVolume.ProbePlacement = 1
-DDGIVolume.ProbesLongAxis = 12
+DDGIVolume.Divisions = 12
 DDGIVolume.RaysPerProbe = 128
 DDGIVolume.Intensity = 1.0
 DDGIVolume.BounceIntensity = 1.0

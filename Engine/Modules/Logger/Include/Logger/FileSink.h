@@ -7,6 +7,7 @@
 #include <atomic>
 #include <fstream>
 #include <mutex>
+#include <string_view>
 
 namespace Logger
 {
@@ -21,7 +22,7 @@ struct FileLogLevel
 	// The GE_LOG_FILE_LEVEL value that named no level, empty otherwise. A host
 	// names it when it reports the level, so a typo does not read as "the
 	// variable did nothing".
-	String unrecognizedValue;
+	std::string unrecognizedValue;
 };
 
 /**
@@ -36,12 +37,16 @@ struct FileLogLevel
  * under it records nothing extra. A value that names no level resolves to Info
  * and comes back in unrecognizedValue.
  *
- * The editor is the host that resolves its file sink this way, and it reports
+ * The editor and the Player resolve their file sinks this way, and each reports
  * the level it got in the line announcing the log file, so a typo is visible
  * there. Every other file sink in the tree is built at a level its host names
  * directly.
  */
 FileLogLevel ResolveFileLogLevel();
+
+/// Logs the line that names the log file and the level it records, after a
+/// warning when GE_LOG_FILE_LEVEL names no level. Call it after the sink attaches.
+void AnnounceFileSink(std::string_view announcement, std::string_view filename, const FileLogLevel& level);
 
 /**
  * @brief File output sink - writes log messages to a file with optional rotation.
@@ -51,7 +56,7 @@ class FileSink : public LogSink
 public:
 	struct Config
 	{
-		String filename;                       // Output filename
+		std::string filename;                  // Output filename
 		bool append = true;                    // Append to existing file if true
 		LogLevel minLevel = LogLevel::Debug;   // Minimum level to output
 		bool includeTimestamp = true;          // Include timestamps in output
@@ -67,12 +72,12 @@ public:
 	void Write(const LogMessage& message) override;
 	void Flush() override;
 	bool ShouldLog(LogLevel level) const override;
-	String GetName() const override;
+	std::string GetName() const override;
 	bool IsAvailable() const override;
 
 private:
 	Config m_Config;
-	String m_CurrentFilename;
+	std::string m_CurrentFilename;
 	std::ofstream m_File;
 	size_t m_CurrentSize;
 	mutable std::mutex m_Mutex;

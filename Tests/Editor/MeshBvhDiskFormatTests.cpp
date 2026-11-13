@@ -11,7 +11,7 @@
 #include "Mathematics/Vector3.h"
 #include "MeshPicking/MeshBvh.h"
 
-#include "Picking/MeshBvhDiskFormat.h"
+#include "Scene/MeshBvhDiskFormat.h"
 
 #include "TestTempDir.h"
 
@@ -29,7 +29,7 @@ using GameEngine::Mathematics::Vector3;
 using GameEngine::MeshPicking::MeshBvh;
 using GameEngine::MeshPicking::MeshView;
 using GameEngine::MeshPicking::PickHit;
-using namespace GameEngine::Editor::Picking;
+using namespace GameEngine::Scene;
 
 // Per-test scratch directory, unique to the process and the test. The test
 // fixture create-and-removes it so disk state from one test never bleeds into

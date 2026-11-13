@@ -5,7 +5,7 @@
 
 #include <gtest/gtest.h>
 
-#include "Inspectors/InspectorComponentSection.h"
+#include "Inspectors/InspectorComponent/InspectorComponentSection.h"
 #include "UI/Controls/Foldout.h"
 #include "UI/UIElement.h"
 

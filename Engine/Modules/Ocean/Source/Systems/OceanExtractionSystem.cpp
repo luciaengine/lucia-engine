@@ -1,10 +1,11 @@
 #include "Ocean/Systems/OceanExtractionSystem.h"
 
 #include "AssetCore/SharedFileRead.h"
+#include "Mathematics/Interpolation.h"
 #include "Ocean/OceanCollisionProvider.h"
 #include "Ocean/OceanFFTCollisionAsset.h"
 #include "Ocean/OceanInputDrawSource.h"
-#include "Ocean/OceanPresetAsset.h"
+#include "Ocean/OceanPreset/OceanPresetAsset.h"
 #include "Ocean/OceanRenderFeature.h"
 #include "Ocean/OceanSeaLevel.h"
 #include "Ocean/OceanSettingsAsset.h"
@@ -25,7 +26,6 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "AssetCore/GUID.h"
 #include "Mathematics/HalfFloat.h"
-#include "Types/Fnv1a.h"
 #include "Spline/SplineData.h"
 #include "Spline/SplineEvaluator.h"
 #include "Spline/SplineTypes.h"
@@ -62,7 +62,7 @@ float OceanDepthBandSaturation(const OceanParamsGPU& params)
 
 float SrgbChannelToLinear(float value)
 {
-    value = std::clamp(value, 0.0f, 1.0f);
+    value = Math::Clamp01(value);
     if (value <= 0.04045f)
         return value / 12.92f;
     return std::pow((value + 0.055f) / 1.055f, 2.4f);
@@ -196,8 +196,8 @@ DepthCacheStreamCamera ResolveDepthCacheStreamCamera(Engine::Renderer::RenderSer
         if (!cam)
             return false;
         out.Valid = true;
-        out.X = cam->cameraPos[0];
-        out.Z = cam->cameraPos[2];
+        out.X = cam->cameraPos.x;
+        out.Z = cam->cameraPos.z;
         return true;
     };
 
@@ -206,7 +206,7 @@ DepthCacheStreamCamera ResolveDepthCacheStreamCamera(Engine::Renderer::RenderSer
 
     for (const auto& view : rs->Views().GetViews())
     {
-        if (!view.activeRenderPipeline || view.renderLayerMask == 0u)
+        if (!view.RenderedByPipeline())
             continue;
         if (useCamera(view.cameraId))
             return out;
@@ -237,7 +237,7 @@ float DistanceSqToCenteredRectXZ(float x, float z, float centerX, float centerZ,
 static_assert(Components::OceanWaterBodyLocalWaveCapacity == kMaxOceanWaveMaskLocalWaves,
               "Water-body local wave authoring and wave-mask GPU packet sizes must match");
 
-void WriteLocalWaveSlot(float32 outWave[4], float32 amplitude, float32 wavelength,
+void WriteLocalWaveSlot(Mathematics::Vector4& outWave, float32 amplitude, float32 wavelength,
                         float32 directionDegrees)
 {
     const float32 localWaveRad = directionDegrees * 0.01745329252f;
@@ -252,7 +252,7 @@ uint32 BuildWaterBodyLocalWavePacket(
     const float32 extraAmplitude[Components::OceanWaterBodyExtraLocalWaveCapacity],
     const float32 extraWavelength[Components::OceanWaterBodyExtraLocalWaveCapacity],
     const float32 extraDirectionDegrees[Components::OceanWaterBodyExtraLocalWaveCapacity],
-    float32 outWaves[kMaxOceanWaveMaskLocalWaves][4])
+    Mathematics::Vector4 outWaves[kMaxOceanWaveMaskLocalWaves])
 {
     for (uint32 i = 0u; i < kMaxOceanWaveMaskLocalWaves; ++i)
         WriteLocalWaveSlot(outWaves[i], 0.0f, 12.0f, 0.0f);
@@ -312,7 +312,7 @@ void BuildGerstnerWaves(const Components::OceanWaveSpectrum& spec, OceanParamsGP
 }
 
 uint32 BuildWaterBodySpectrumWavePacket(const Components::OceanWaveSpectrum& spec,
-                                        float32 outWaves[kMaxOceanWaveMaskLocalWaves][4])
+                                        Mathematics::Vector4 outWaves[kMaxOceanWaveMaskLocalWaves])
 {
     for (uint32 i = 0u; i < kMaxOceanWaveMaskLocalWaves; ++i)
         WriteLocalWaveSlot(outWaves[i], 0.0f, 12.0f, 0.0f);
@@ -527,7 +527,7 @@ std::filesystem::path ResolveOceanDepthCacheSourcePath(
 bool TryApplyLocalSpectrumWaveOverride(
     bool useLocalSpectrum, const Components::OceanWaveSpectrum* localSpectrum,
     float32& weight, float32& chop, uint32& localWaveCount,
-    float32 outWaves[kMaxOceanWaveMaskLocalWaves][4])
+    Mathematics::Vector4 outWaves[kMaxOceanWaveMaskLocalWaves])
 {
     if (!useLocalSpectrum || !localSpectrum)
         return false;
@@ -571,16 +571,11 @@ void FillOctaveArray(const float32 src[kOceanSpectrumOctaves], float32 out[16], 
         out[i] = (i < kOceanSpectrumOctaves) ? src[i] : pad;
 }
 
-// A world's content-digest term while it renders an enabled ocean surface.
-// Presence is what a reflection probe capture photographs; wave animation is
-// not a content change.
-constexpr uint64 kOceanSurfaceContentDigest = Hashing::Fnv1a64("OceanSurface");
-
 } // anonymous namespace
 
 void PackShallowClarityWindow(const Components::OceanSurface& surface, OceanParamsGPU& params)
 {
-    // The inspector's lower bound (OceanFieldRanges.cpp): the shortest window the
+    // The inspector's lower bound (the field's @ge-range): the shortest window the
     // shader's smoothstep evaluates.
     constexpr float32 kMinShallowClarityDistance = 0.01f;
     // A non-finite value (a hand-edited scene or preset) falls back to the field's
@@ -594,7 +589,7 @@ void PackShallowClarityWindow(const Components::OceanSurface& surface, OceanPara
                                      ? surface.ShallowClarityFloor
                                      : kDefaultShallowClarityFloor;
     params.ShallowClarityDistance = std::max(distance, kMinShallowClarityDistance);
-    params.ShallowClarityFloor = std::clamp(fogAtSurface, 0.0f, 1.0f);
+    params.ShallowClarityFloor = Math::Clamp01(fogAtSurface);
 }
 
 OceanExtractionSystem::OceanExtractionSystem(Engine::Renderer::RenderServices* renderServices)
@@ -849,7 +844,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
         float LocalFFTBlend = 0.0f;
         uint32 LocalFFTStream = 0u;
         uint32 LocalWaveCount = 0u;
-        float LocalWaves[kMaxOceanWaveMaskLocalWaves][4] = {};
+        Mathematics::Vector4 LocalWaves[kMaxOceanWaveMaskLocalWaves] = {};
         bool LocalSpectrumApplied = false;
         Components::OceanWaveSpectrum LocalSpectrum{};
         bool ConfineSurface = false;
@@ -917,14 +912,8 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
             params.WaveMode = static_cast<uint32>(ocean.WaveMode);
             params.ChoppyScale = ocean.ChoppyScale;
             params.FresnelPower = ocean.FresnelPower;
-            params.DeepColor[0] = ocean.DeepColor.r;
-            params.DeepColor[1] = ocean.DeepColor.g;
-            params.DeepColor[2] = ocean.DeepColor.b;
-            params.DeepColor[3] = ocean.DeepColor.a;
-            params.FoamColor[0] = ocean.FoamColor.r;
-            params.FoamColor[1] = ocean.FoamColor.g;
-            params.FoamColor[2] = ocean.FoamColor.b;
-            params.FoamColor[3] = ocean.FoamColor.a;
+            params.DeepColor = ocean.DeepColor;
+            params.FoamColor = ocean.FoamColor;
             params.ReflectionStrength = ocean.ReflectionStrength;
             params.SubsurfaceStrength = ocean.SubsurfaceStrength;
             params.FoamAmount = ocean.FoamAmount;
@@ -940,26 +929,18 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
             params.ShorelineFoamStrength = ocean.ShorelineFoamStrength;
 
             // Material / shading parity block.
-            auto copyColor = [](float32 (&dst)[4], const ColorLinear& c)
-            {
-                dst[0] = c.r;
-                dst[1] = c.g;
-                dst[2] = c.b;
-                dst[3] = c.a;
-            };
-            copyColor(params.Diffuse, ocean.Diffuse);
-            copyColor(params.DiffuseGrazing, ocean.DiffuseGrazing);
-            copyColor(params.DiffuseShadow, ocean.DiffuseShadow);
-            copyColor(params.SubSurfaceShallowCol, ocean.SubSurfaceShallowCol);
-            copyColor(params.SubSurfaceColour, ocean.SubSurfaceColour);
-            copyColor(params.SkyBase, ocean.SkyBase);
-            copyColor(params.SkyTowardsSun, ocean.SkyTowardsSun);
-            copyColor(params.SkyAwayFromSun, ocean.SkyAwayFromSun);
-            copyColor(params.DirectionalLightColor, ocean.DirectionalLightColor);
+            params.Diffuse = ocean.Diffuse;
+            params.DiffuseGrazing = ocean.DiffuseGrazing;
+            params.DiffuseShadow = ocean.DiffuseShadow;
+            params.SubSurfaceShallowCol = ocean.SubSurfaceShallowCol;
+            params.SubSurfaceColour = ocean.SubSurfaceColour;
+            params.SkyBase = ocean.SkyBase;
+            params.SkyTowardsSun = ocean.SkyTowardsSun;
+            params.SkyAwayFromSun = ocean.SkyAwayFromSun;
             params.NormalsStrength = ocean.NormalsStrength;
             params.NormalsScale = std::max(ocean.NormalsScale, 0.001f);
             params.FoamNormalStrength = std::clamp(ocean.FoamNormalStrength, 0.0f, 2.0f);
-            params.FoamBubbleCoverage = std::clamp(ocean.FoamBubbleCoverage, 0.0f, 1.0f);
+            params.FoamBubbleCoverage = Math::Clamp01(ocean.FoamBubbleCoverage);
             params.FoamBubbleParallax = std::clamp(ocean.FoamBubbleParallax, 0.0f, 0.5f);
             params.FoamRoughness = std::clamp(ocean.FoamRoughness, 0.04f, 1.0f);
             params.SubSurfaceDepthMax = ocean.SubSurfaceDepthMax;
@@ -975,14 +956,10 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
             params.PlanarReflectionStrength = std::clamp(ocean.PlanarReflectionStrength, 0.0f, 3.0f);
             feature.SetPlanarReflectionScale(ocean.PlanarReflectionScale);
             params.SkyDirectionality = ocean.SkyDirectionality;
-            params.DirectionalLightBoost = ocean.DirectionalLightBoost;
-            params.DirectionalLightFallOff = ocean.DirectionalLightFallOff;
 
             // Refraction / depth-fog transparency. The density swatch carries the
             // three per-channel extinctions; alpha is unused.
-            params.DepthFogDensity[0] = ocean.DepthFogDensity.r;
-            params.DepthFogDensity[1] = ocean.DepthFogDensity.g;
-            params.DepthFogDensity[2] = ocean.DepthFogDensity.b;
+            params.DepthFogDensity = Mathematics::Vector3(ocean.DepthFogDensity.r, ocean.DepthFogDensity.g, ocean.DepthFogDensity.b);
             params.DepthFogStartDistance = std::max(ocean.DepthFogStartDistance, 0.0f);
             params.DepthFogEndDistance = std::max(ocean.DepthFogEndDistance, 0.0f);
             params.DepthFogFalloffPower = std::max(ocean.DepthFogFalloffPower, 0.01f);
@@ -990,7 +967,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                 static_cast<float32>(static_cast<uint32>(ocean.DepthFogFalloff));
             params.RefractionStrength = ocean.RefractionStrength;
             params.ShallowRefractionReflectionSuppression =
-                std::clamp(ocean.ShallowRefractionReflectionSuppression, 0.0f, 1.0f);
+                Math::Clamp01(ocean.ShallowReflectionSuppression);
             PackShallowClarityWindow(ocean, params);
 
             // Underwater caustics. CausticsAvailable is stamped by the contributor
@@ -1075,7 +1052,8 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                 }
                 if (wb.ExtentX <= 0.0f || wb.ExtentZ <= 0.0f)
                     return;
-                const float32* m = wt.matrix;
+                const Mathematics::Matrix4x4 worldMatrix = wt.ToMatrix4x4(wt.GetPosition() - Mathematics::WorldPosition{});
+                const float32* m = worldMatrix.Data();
                 WaterBodyEmit e{};
                 e.X = m[12];
                 e.Y = m[13];
@@ -1149,7 +1127,8 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                 if (count < 3u)
                     return;
 
-                const float32* m = wt.matrix;
+                const Mathematics::Matrix4x4 worldMatrix = wt.ToMatrix4x4(wt.GetPosition() - Mathematics::WorldPosition{});
+                const float32* m = worldMatrix.Data();
                 PolygonBodyEmit e{};
                 e.Query.PointCount = count;
                 e.Clip.Meta[0] = static_cast<float32>(count);
@@ -1407,7 +1386,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
     }
 
     // Main directional light → sun direction (toward the sun) + colour, so the
-    // surface shader can do sun-driven subsurface scattering and glitter.
+    // surface shader can do sun-driven subsurface scattering.
     {
         bool foundSun = false;
         world.Query<ECS::Read<Components::Light>, ECS::Read<Components::WorldTransform>>()
@@ -1421,7 +1400,8 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                     foundSun = true;
                     // Shine is +Z (col2). OceanParams wants surface-to-sun,
                     // the opposite of travel direction.
-                    const float32* m = wt.matrix;
+                    const Mathematics::Matrix4x4 worldMatrix = wt.ToMatrix4x4(wt.GetPosition() - Mathematics::WorldPosition{});
+                    const float32* m = worldMatrix.Data();
                     const float32 fx = -m[8], fy = -m[9], fz = -m[10];
                     float32 len = std::sqrt(fx * fx + fy * fy + fz * fz);
                     if (len < 1e-6f)
@@ -1433,9 +1413,9 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                     float sunColor[3];
                     float sunIntensity;
                     Components::ResolveLightColorIntensity(light, sunColor, sunIntensity);
-                    params.SunColor[0] = sunColor[0] * sunIntensity;
-                    params.SunColor[1] = sunColor[1] * sunIntensity;
-                    params.SunColor[2] = sunColor[2] * sunIntensity;
+                    params.SunColor.r = sunColor[0] * sunIntensity;
+                    params.SunColor.g = sunColor[1] * sunIntensity;
+                    params.SunColor.b = sunColor[2] * sunIntensity;
                 });
     }
 
@@ -1518,7 +1498,8 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
             {
                 if (sb.ExtentX <= 0.0f || sb.ExtentZ <= 0.0f)
                     return;
-                const float32* m = wt.matrix;
+                const Mathematics::Matrix4x4 worldMatrix = wt.ToMatrix4x4(wt.GetPosition() - Mathematics::WorldPosition{});
+                const float32* m = worldMatrix.Data();
                 OceanSeabedGPU g{};
                 g.OriginExtent[0] = m[12]; // world X of the entity origin
                 g.OriginExtent[1] = m[14]; // world Z of the entity origin
@@ -1542,7 +1523,8 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
             {
                 if (dc.ExtentX <= 0.0f || dc.ExtentZ <= 0.0f || dc.Depth < 0.0f)
                     return;
-                const float32* m = wt.matrix;
+                const Mathematics::Matrix4x4 worldMatrix = wt.ToMatrix4x4(wt.GetPosition() - Mathematics::WorldPosition{});
+                const float32* m = worldMatrix.Data();
                 OceanDepthContributorGPU g{};
                 g.OriginExtent[0] = m[12];
                 g.OriginExtent[1] = m[14];
@@ -1550,7 +1532,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                 g.OriginExtent[3] = dc.ExtentZ;
                 g.DepthShape[0] = dc.Depth;
                 g.DepthShape[1] = std::max(dc.Feather, 0.0f);
-                g.DepthShape[2] = std::clamp(dc.Roundness, 0.0f, 1.0f);
+                g.DepthShape[2] = Math::Clamp01(dc.Roundness);
                 inputs.AddDepthContributor(g);
             });
 
@@ -1569,10 +1551,11 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
             {
                 if (rendererOff)
                     return;
-                if (renderer && (renderer->renderLayerMask & mc.RenderLayerMask) == 0u)
+                if (renderer && !renderer->RenderLayers.Intersects(mc.ContributorLayers))
                     return;
 
-                const Mathematics::AABB aabb = bounds.Box.TransformToAABB(wt.matrix);
+                const Mathematics::Matrix4x4 worldMatrix = wt.ToMatrix4x4(wt.GetPosition() - Mathematics::WorldPosition{});
+                const Mathematics::AABB aabb = bounds.Box.TransformToAABB(worldMatrix.Data());
                 if (aabb.max.y < aabb.min.y || aabb.max.x < aabb.min.x || aabb.max.z < aabb.min.z)
                     return;
                 if (aabb.min.y > params.SeaLevel)
@@ -1596,7 +1579,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                 g.OriginExtent[3] = extentZ;
                 g.DepthShape[0] = depth;
                 g.DepthShape[1] = std::max(mc.Feather, 0.0f);
-                g.DepthShape[2] = std::clamp(mc.Roundness, 0.0f, 1.0f);
+                g.DepthShape[2] = Math::Clamp01(mc.Roundness);
                 inputs.AddDepthContributor(g);
             });
 
@@ -1639,7 +1622,8 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
             auto *m = materialFor(body.MaterialOverride, body.MaterialPriority, entity.id);
             if (!m)
                 return;
-            const float x = wt.matrix[12], z = wt.matrix[14];
+            const Mathematics::Vector3 position = wt.GetPosition() - Mathematics::WorldPosition{};
+            const float x = position.x, z = position.z;
             m->Bounds[0] = x - body.ExtentX;
             m->Bounds[1] = z - body.ExtentZ;
             m->Bounds[2] = x + body.ExtentX;
@@ -1664,11 +1648,12 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
             m->PointCount = static_cast<float>(count);
             m->Bounds[0] = m->Bounds[1] = std::numeric_limits<float>::max();
             m->Bounds[2] = m->Bounds[3] = -std::numeric_limits<float>::max();
+            const Mathematics::Matrix4x4 worldMatrix = wt.ToMatrix4x4(wt.GetPosition() - Mathematics::WorldPosition{});
+            const float32* wm = worldMatrix.Data();
             for (uint32 i = 0; i < count; ++i)
             {
-                const float x = wt.matrix[0] * body.PointX[i] + wt.matrix[8] * body.PointZ[i] + wt.matrix[12];
-                const float z =
-                    wt.matrix[2] * body.PointX[i] + wt.matrix[10] * body.PointZ[i] + wt.matrix[14];
+                const float x = wm[0] * body.PointX[i] + wm[8] * body.PointZ[i] + wm[12];
+                const float z = wm[2] * body.PointX[i] + wm[10] * body.PointZ[i] + wm[14];
                 m->Points[i][0] = x;
                 m->Points[i][1] = z;
                 m->Bounds[0] = std::min(m->Bounds[0], x);
@@ -1697,8 +1682,9 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
         packet.Geometry = static_cast<OceanInputGeometry>(geometry);
         packet.Priority = priority;
         packet.EntityId = entity.id;
-        packet.CenterX = wt.matrix[12];
-        packet.CenterZ = wt.matrix[14];
+        const Mathematics::Vector3 center = wt.GetPosition() - Mathematics::WorldPosition{};
+        packet.CenterX = center.x;
+        packet.CenterZ = center.z;
         packet.ExtentX = std::max(extentX, 0.0f);
         packet.ExtentZ = std::max(extentZ, 0.0f);
         packet.Feather = std::max(feather, 0.0f);
@@ -1897,7 +1883,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
             source.OriginExtent[3] = packet.ExtentZ;
             source.DepthShape[0] = std::max(packet.Value[0], 0.0f);
             source.DepthShape[1] = packet.Feather;
-            source.DepthShape[2] = std::clamp(packet.Value[1], 0.0f, 1.0f);
+            source.DepthShape[2] = Math::Clamp01(packet.Value[1]);
             inputs.AddDepthContributor(source);
             break;
         }
@@ -1938,7 +1924,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
             source.OriginExtent[1] = packet.CenterZ;
             source.OriginExtent[2] = packet.ExtentX;
             source.OriginExtent[3] = packet.ExtentZ;
-            std::memcpy(source.Color, packet.Value, sizeof(source.Color));
+            source.Color = ColorLinear(packet.Value[0], packet.Value[1], packet.Value[2], packet.Value[3]);
             inputs.AddAlbedoSource(source);
             break;
         }
@@ -1987,7 +1973,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
         float ClipFeather = 0.0f;
         float DepthMeters = 1.5f;
         float DepthFeather = 1.0f;
-        float Color[3] = {0.0f, 0.0f, 0.0f};
+        ColorLinear Color{0.0f, 0.0f, 0.0f, 1.0f};
         bool ConfineSurface = false;
         bool UnderwaterVolume = false;
         bool Flow = false;
@@ -2032,9 +2018,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                     e.ClipFeather = std::max(si.ClipFeather, 0.0f);
                     e.DepthMeters = si.DepthMeters;
                     e.DepthFeather = si.DepthFeather;
-                    e.Color[0] = si.Color.r;
-                    e.Color[1] = si.Color.g;
-                    e.Color[2] = si.Color.b;
+                    e.Color = si.Color;
                     e.ConfineSurface = si.ConfineSurface;
                     e.UnderwaterVolume = si.UnderwaterVolume;
                     e.Flow = si.Flow;
@@ -2042,7 +2026,8 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                     e.Albedo = si.Albedo;
                     e.Depth = si.Depth;
                     e.ReverseFlow = si.ReverseFlow;
-                    const float32* m = wt.matrix; // column-major: local -> world
+                    const Mathematics::Matrix4x4 worldMatrix = wt.ToMatrix4x4(wt.GetPosition() - Mathematics::WorldPosition{});
+                    const float32* m = worldMatrix.Data(); // column-major: local -> world
                     e.Samples.reserve(frames.size());
                     for (const Spline::SplineFrame& fr : frames)
                     {
@@ -2087,8 +2072,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
         style.Feather = e.ClipFeather > 0 ? e.ClipFeather : e.Width * 0.1f;
         style.UnderwaterDepth = e.UnderwaterDepth;
         style.DepthSaturation = OceanDepthBandSaturation(params);
-        std::copy_n(e.Color, 3, style.Color);
-        style.Color[3] = e.AlbedoCoverage;
+        style.Color = ColorLinear(e.Color.r, e.Color.g, e.Color.b, e.AlbedoCoverage);
         style.Flags = (e.Depth ? 1u : 0u) | (e.Flow && oceanFlowEnabled ? 2u : 0u) |
                       ((e.Clip || e.ConfineSurface) && oceanClipEnabled ? 4u : 0u) |
                       (e.Albedo && oceanAlbedoEnabled ? 8u : 0u) | (e.ConfineSurface ? 16u : 0u) |
@@ -2105,7 +2089,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
     feature.GetFlow().SetSplineActive(feature.GetSplineRaster().HasField(1), ribbonsChanged);
     feature.GetClip().SetSplineActive(feature.GetSplineRaster().HasField(2), ribbonsChanged);
     {
-        float clipBounds[4] = {};
+        Mathematics::Vector4 clipBounds;
         const bool hasClipBounds = feature.GetSplineRaster().ClipBoundsXZ(clipBounds[0], clipBounds[1],
                                                                           clipBounds[2], clipBounds[3]);
         feature.GetClip().SetSplineBounds(hasClipBounds, clipBounds[0], clipBounds[1], clipBounds[2],
@@ -2152,7 +2136,8 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                 {
                     if (fs.ExtentX <= 0.0f || fs.ExtentZ <= 0.0f)
                         return;
-                    const float32* m = wt.matrix;
+                    const Mathematics::Matrix4x4 worldMatrix = wt.ToMatrix4x4(wt.GetPosition() - Mathematics::WorldPosition{});
+                    const float32* m = worldMatrix.Data();
                     OceanFlowSourceGPU g{};
                     g.OriginExtent[0] = m[12]; // world X of the entity origin
                     g.OriginExtent[1] = m[14]; // world Z of the entity origin
@@ -2174,7 +2159,8 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                     if (flowMapGuid.IsNull())
                         return;
 
-                    const float32* m = wt.matrix;
+                    const Mathematics::Matrix4x4 worldMatrix = wt.ToMatrix4x4(wt.GetPosition() - Mathematics::WorldPosition{});
+                    const float32* m = worldMatrix.Data();
                     OceanFlowMapSourceGPU g{};
                     g.OriginExtent[0] = m[12]; // world X of the entity origin
                     g.OriginExtent[1] = m[14]; // world Z of the entity origin
@@ -2251,7 +2237,8 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                 if (maskGuid.IsNull())
                     return;
 
-                const float32* m = wt.matrix;
+                const Mathematics::Matrix4x4 worldMatrix = wt.ToMatrix4x4(wt.GetPosition() - Mathematics::WorldPosition{});
+                const float32* m = worldMatrix.Data();
                 OceanWaveMaskTextureSourceGPU g{};
                 g.OriginExtent[0] = m[12]; // world X of the entity origin
                 g.OriginExtent[1] = m[14]; // world Z of the entity origin
@@ -2262,7 +2249,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                 g.ScaleBias[2] = ms.WeightBias;
                 g.ScaleBias[3] = ms.ChopBias;
                 g.FeatherCoverage[0] = std::max(ms.Feather, 0.0f);
-                g.FeatherCoverage[1] = std::clamp(ms.Coverage, 0.0f, 1.0f);
+                g.FeatherCoverage[1] = Math::Clamp01(ms.Coverage);
                 if (!inputs.AddWaveMaskTextureSource(g))
                     return;
 
@@ -2317,7 +2304,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
         box.LocalFFTBlend = wb.LocalFFTBlend;
         box.LocalFFTStream = wb.LocalFFTStream;
         for (uint32 i = 1u; i < std::min(wb.LocalWaveCount, kMaxOceanWaveMaskLocalWaves); ++i)
-            std::memcpy(box.LocalWaveExtra[i - 1u], wb.LocalWaves[i], sizeof(box.LocalWaveExtra[0]));
+            box.LocalWaveExtra[i - 1u] = wb.LocalWaves[i];
         waveWeightBoxes.push_back(box);
     }
     for (const PolygonBodyEmit& wb : polygonWaterBodies)
@@ -2344,8 +2331,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
             std::clamp(wb.WavePolygon.WaveChop[3], 0.0f,
                        static_cast<float32>(kMaxOceanLocalFFTStreams - 1u)));
         for (uint32 i = 1u; i < std::min(poly.LocalWaveCount, kMaxOceanWaveMaskLocalWaves); ++i)
-            std::memcpy(poly.LocalWaveExtra[i - 1u], wb.WavePolygon.LocalWaves[i],
-                        sizeof(poly.LocalWaveExtra[0]));
+            poly.LocalWaveExtra[i - 1u] = wb.WavePolygon.LocalWaves[i];
         const uint32 count = std::min(poly.PointCount, kMaxOceanClipPolygonPoints);
         for (uint32 i = 0; i < count; ++i)
         {
@@ -2411,7 +2397,8 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                 {
                     if (cs.ExtentX <= 0.0f || cs.ExtentZ <= 0.0f)
                         return;
-                    const float32* m = wt.matrix;
+                    const Mathematics::Matrix4x4 worldMatrix = wt.ToMatrix4x4(wt.GetPosition() - Mathematics::WorldPosition{});
+                    const float32* m = worldMatrix.Data();
                     OceanClipSourceGPU g{};
                     g.OriginExtent[0] = m[12]; // world X of the entity origin
                     g.OriginExtent[1] = m[14]; // world Z of the entity origin
@@ -2445,16 +2432,14 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                 {
                     if (as.ExtentX <= 0.0f || as.ExtentZ <= 0.0f)
                         return;
-                    const float32* m = wt.matrix;
+                    const Mathematics::Matrix4x4 worldMatrix = wt.ToMatrix4x4(wt.GetPosition() - Mathematics::WorldPosition{});
+                    const float32* m = worldMatrix.Data();
                     OceanAlbedoSourceGPU g{};
                     g.OriginExtent[0] = m[12]; // world X of the entity origin
                     g.OriginExtent[1] = m[14]; // world Z of the entity origin
                     g.OriginExtent[2] = as.ExtentX;
                     g.OriginExtent[3] = as.ExtentZ;
-                    g.Color[0] = as.Color.r;
-                    g.Color[1] = as.Color.g;
-                    g.Color[2] = as.Color.b;
-                    g.Color[3] = as.Coverage; // alpha = coverage (the colour's own alpha is ignored)
+                    g.Color = ColorLinear(as.Color.r, as.Color.g, as.Color.b, as.Coverage); // alpha = coverage (the colour's own alpha is ignored)
                     inputs.AddAlbedoSource(g);
                 });
 
@@ -2509,7 +2494,8 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
             {
                 if (uv.ExtentX <= 0.0f || uv.ExtentY <= 0.0f || uv.ExtentZ <= 0.0f)
                     return;
-                const float32* m = wt.matrix;
+                const Mathematics::Matrix4x4 worldMatrix = wt.ToMatrix4x4(wt.GetPosition() - Mathematics::WorldPosition{});
+                const float32* m = worldMatrix.Data();
                 OceanRenderFeature::UnderwaterVolumeBox b{};
                 b.CenterX = m[12];
                 b.CenterY = m[13];
@@ -2527,7 +2513,8 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
             {
                 if (uv.ExtentX <= 0.0f || uv.ExtentY <= 0.0f || uv.ExtentZ <= 0.0f)
                     return;
-                const float32* m = wt.matrix;
+                const Mathematics::Matrix4x4 worldMatrix = wt.ToMatrix4x4(wt.GetPosition() - Mathematics::WorldPosition{});
+                const float32* m = worldMatrix.Data();
                 OceanRenderFeature::UnderwaterVolumeBox b{};
                 b.CenterX = m[12];
                 b.CenterY = m[13];
@@ -2545,7 +2532,8 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
             {
                 if (uv.ExtentX <= 0.0f || uv.ExtentY <= 0.0f || uv.ExtentZ <= 0.0f)
                     return;
-                const float32* m = wt.matrix;
+                const Mathematics::Matrix4x4 worldMatrix = wt.ToMatrix4x4(wt.GetPosition() - Mathematics::WorldPosition{});
+                const float32* m = worldMatrix.Data();
                 OceanRenderFeature::UnderwaterVolumeBox b{};
                 b.CenterX = m[12];
                 b.CenterY = m[13];
@@ -2573,7 +2561,8 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                 {
                     if (imp.Radius <= 0.0f)
                         return;
-                    const float32* m = wt.matrix;
+                    const Mathematics::Matrix4x4 worldMatrix = wt.ToMatrix4x4(wt.GetPosition() - Mathematics::WorldPosition{});
+                    const float32* m = worldMatrix.Data();
                     OceanWaveImpulseGPU g{};
                     g.CenterRadiusAmp[0] = m[12]; // world X of the entity origin
                     g.CenterRadiusAmp[1] = m[14]; // world Z of the entity origin
@@ -2596,18 +2585,19 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                     [&](ECS::EntityHandle entity, const Components::OceanWaterInteraction& inter,
                         const Components::WorldTransform& wt)
                     {
-                        const float32* m = wt.matrix;
+                        const Mathematics::Matrix4x4 worldMatrix = wt.ToMatrix4x4(wt.GetPosition() - Mathematics::WorldPosition{});
+                        const float32* m = worldMatrix.Data();
                         const float32 wx = m[12];
                         const float32 wy = m[13];
                         const float32 wz = m[14];
-                        // Read the previous position BEFORE updating the map (the
-                        // update can rehash and invalidate the iterator).
-                        auto prevIt = m_PrevInteractionXYZ.find(entity.id);
-                        const bool havePrev = prevIt != m_PrevInteractionXYZ.end();
-                        const float32 px = havePrev ? prevIt->second[0] : wx;
-                        const float32 py = havePrev ? prevIt->second[1] : wy;
-                        const float32 pz = havePrev ? prevIt->second[2] : wz;
-                        m_PrevInteractionXYZ[entity.id] = {wx, wy, wz};
+                        // Read the previous position BEFORE the update: an insert can
+                        // move the entries and make the pointer invalid.
+                        const Mathematics::Vector3* prev = m_PrevInteractionXYZ.Find(entity.id);
+                        const bool havePrev = prev != nullptr;
+                        const float32 px = havePrev ? prev->x : wx;
+                        const float32 py = havePrev ? prev->y : wy;
+                        const float32 pz = havePrev ? prev->z : wz;
+                        m_PrevInteractionXYZ.InsertOrAssign(entity.id, Mathematics::Vector3(wx, wy, wz));
 
                         if (inter.Radius <= 0.0f || !havePrev)
                             return;
@@ -2635,7 +2625,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                         if (surfaceSample.Valid && inter.WaveMotionCompensation > 0.0f)
                         {
                             const float32 compensation =
-                                std::clamp(inter.WaveMotionCompensation, 0.0f, 1.0f);
+                                Math::Clamp01(inter.WaveMotionCompensation);
                             velocityX -= surfaceSample.VelocityWS[0] * compensation;
                             velocityY -= surfaceSample.VelocityWS[1] * compensation;
                             velocityZ -= surfaceSample.VelocityWS[2] * compensation;
@@ -2672,7 +2662,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                         const uint32 pathSteps = std::clamp(inter.DebugSubsteps, 1u, 4u);
                         const uint32 spheres = std::clamp(inter.NestedSphereCount, 1u, 3u);
                         const float32 radiusScale = std::clamp(inter.NestedRadiusScale, 0.1f, 1.0f);
-                        const float32 weightScale = std::clamp(inter.NestedWeight, 0.0f, 1.0f);
+                        const float32 weightScale = Math::Clamp01(inter.NestedWeight);
                         for (uint32 pathStep = 0u; pathStep < pathSteps; ++pathStep)
                         {
                             const float32 t = static_cast<float32>(pathStep + 1u) /
@@ -2747,17 +2737,17 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
         // Cascade scale (MinScale -> finest cascade extent) + texel resolution
         // (LodDataResolution) + grid density. Applied once per frame by
         // OceanRenderFeature::ApplyCascadeConfig.
-        const uint32 geometryGridSize = ResolveOceanGeometryGridSize(
+        const uint32 ringCellsPerTile = ResolveOceanRingCellsPerTile(
             renderer.GeometryUpSampleFactor, renderer.GeometryDownSampleFactor);
-        params.GeometryGridSize = static_cast<float32>(geometryGridSize);
+        params.RingCellsPerTile = static_cast<float32>(ringCellsPerTile);
         feature.SetCascadeBaseScale(renderer.MinScale);
         feature.SetCascadeResolution(renderer.LodDataResolution);
-        feature.SetGeometryGridSize(geometryGridSize);
-        feature.SetCombineEnabled(renderer.CombineDisplacementCascade);
+        feature.SetRingCellsPerTile(ringCellsPerTile);
+        feature.SetCombineEnabled(renderer.CombineCascade);
         OceanRasterDepthCaptureSettings rasterSettings{};
         rasterSettings.Enabled = renderer.RasterDepthCapture;
-        rasterSettings.Resolution = renderer.RasterDepthCaptureResolution;
-        rasterSettings.RenderLayerMask = renderer.RasterDepthCaptureRenderLayerMask;
+        rasterSettings.Resolution = renderer.RasterDepthResolution;
+        rasterSettings.CaptureLayers = renderer.RasterDepthCaptureLayers;
         rasterSettings.SizeX = renderer.RasterDepthCaptureSizeX;
         rasterSettings.SizeZ = renderer.RasterDepthCaptureSizeZ;
         rasterSettings.TopPadding = renderer.RasterDepthCaptureTopPadding;
@@ -2769,8 +2759,8 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
         feature.SetLodCountLimit(0);
         feature.SetCascadeBaseScale(0.0f);
         feature.SetCascadeResolution(0u);
-        params.GeometryGridSize = static_cast<float32>(kDefaultOceanGeometryGridSize);
-        feature.SetGeometryGridSize(0u);
+        params.RingCellsPerTile = static_cast<float32>(kDefaultOceanRingCellsPerTile);
+        feature.SetRingCellsPerTile(0u);
         feature.SetCombineEnabled(false);
         feature.SetRasterDepthCaptureSettings({});
     }
@@ -3103,17 +3093,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
     }
     feature.SetHasOcean(found);
     feature.PublishDepthClaim();
-    PublishWorldContent(feature, world.GetWorldId(), found);
     feature.ProcessQueuedSurfaceQueries();
-}
-
-void OceanExtractionSystem::PublishWorldContent(OceanRenderFeature& feature, uint64 worldId,
-                                                bool hasSurface)
-{
-    Engine::Renderer::WorldContentDigestTable& content = feature.GetWorldContent();
-    if (!m_WorldContentTracking)
-        m_WorldContentTracking = content.Track(worldId);
-    content.Set(worldId, hasSurface ? kOceanSurfaceContentDigest : 0u);
 }
 
 } // namespace GameEngine::Ocean

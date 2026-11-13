@@ -2,16 +2,15 @@
 
 #include "AssetCore/SharedFileRead.h"
 #include "Logger/Logger.h"
+#include "Rendering/Sky/SkySunState.h"
 #include "Scene/SceneValue.h"
+#include "Serialization/JsonRead.h"
 #include "Types/ParseNumber.h"
-#include "Types/StringUtils.h"
 
 #include <nlohmann/json.hpp>
 
-#include <algorithm>
 #include <cmath>
 #include <numbers>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -49,11 +48,34 @@ constexpr int kInterpolationCount = 3;
 constexpr int kTangentModeCount = 5;
 constexpr std::string_view kKeyFormat = "elevation,value,inTangent,outTangent,interpolation,tangentMode";
 
+std::string_view TrimSpaces(std::string_view text)
+{
+    while (!text.empty() && (text.front() == ' ' || text.front() == '\t'))
+        text.remove_prefix(1);
+    while (!text.empty() && (text.back() == ' ' || text.back() == '\t'))
+        text.remove_suffix(1);
+    return text;
+}
+
+std::vector<std::string_view> SplitOn(std::string_view text, char separator)
+{
+    std::vector<std::string_view> parts;
+    size_t start = 0;
+    while (true)
+    {
+        const size_t stop = text.find(separator, start);
+        parts.push_back(text.substr(start, stop == std::string_view::npos ? text.size() - start : stop - start));
+        if (stop == std::string_view::npos)
+            return parts;
+        start = stop + 1;
+    }
+}
+
 // Reads one key (elevation,value[,inTangent,outTangent,interpolation,tangentMode]); `name` is
 // "<where>: key <n>" for the refusal.
 bool ParseKey(std::string_view text, const std::string& name, Math::CurveKey& out, std::string& outError)
 {
-    const std::vector<std::string_view> fields = Split(text, ',');
+    const std::vector<std::string_view> fields = SplitOn(text, ',');
     if (fields.size() < kRequiredKeyFields || fields.size() > std::size(kKeyFields))
     {
         outError = name + " has " + std::to_string(fields.size()) + " fields; write it as " + std::string(kKeyFormat) +
@@ -61,13 +83,13 @@ bool ParseKey(std::string_view text, const std::string& name, Math::CurveKey& ou
         return false;
     }
     float values[std::size(kKeyFields)] = {};
-    for (size_t index = 0; index < fields.size(); ++index)
+    for (size_t i = 0; i < fields.size(); ++i)
     {
         // A key field is a strict decimal float without the leading '+' ParseStrictDecimal allows.
-        const std::string_view field = TrimWhitespaceView(fields[index]);
-        if (field.starts_with('+') || !ParseStrictDecimalFloat(field, values[index]))
+        const std::string_view field = TrimSpaces(fields[i]);
+        if (field.starts_with('+') || !ParseStrictDecimalFloat(field, values[i]))
         {
-            outError = name + "'s " + std::string(kKeyFields[index]) + " \"" + std::string(field) +
+            outError = name + "'s " + std::string(kKeyFields[i]) + " \"" + std::string(field) +
                        "\" is not a finite number; write a decimal number such as -6 or 1.5";
             return false;
         }
@@ -106,9 +128,9 @@ bool ParseKeyList(std::string_view text, const std::string& where, Math::Curve& 
 {
     Math::Curve curve{};
     size_t count = 0;
-    for (const std::string_view key : Split(text, ';'))
+    for (const std::string_view key : SplitOn(text, ';'))
     {
-        if (TrimWhitespaceView(key).empty())
+        if (TrimSpaces(key).empty())
             continue;
         ++count;
         if (count > Math::Curve::Capacity)
@@ -147,37 +169,6 @@ const DayCycleTrackDesc* FindTrackByFileKey(std::string_view fileKey)
             return &desc;
     }
     return nullptr;
-}
-
-void RecordProfileKey(std::vector<std::vector<std::string>>& objects, std::string& repeated,
-                      nlohmann::json::parse_event_t event, const nlohmann::json& parsed)
-{
-    if (event == nlohmann::json::parse_event_t::object_start)
-        objects.emplace_back();
-    else if (event == nlohmann::json::parse_event_t::object_end && !objects.empty())
-        objects.pop_back();
-    else if (event == nlohmann::json::parse_event_t::key && !objects.empty() && repeated.empty())
-    {
-        const std::string key = parsed.get<std::string>();
-        std::vector<std::string>& seen = objects.back();
-        if (std::find(seen.begin(), seen.end(), key) != seen.end())
-            repeated = key;
-        seen.push_back(key);
-    }
-}
-
-// Returns the first repeated object key, or an empty string when each key is unique.
-std::string FirstRepeatedKey(std::string_view text)
-{
-    std::vector<std::vector<std::string>> objects;
-    std::string repeated;
-    const auto callback = [&objects, &repeated](int, nlohmann::json::parse_event_t event, nlohmann::json& parsed) {
-        RecordProfileKey(objects, repeated, event, parsed);
-        return true;
-    };
-    // Only the callback is wanted. GCC does not let a void cast drop a warn_unused_result value.
-    std::ignore = nlohmann::json::parse(text, callback, false);
-    return repeated;
 }
 
 bool ParseTrack(const DayCycleTrackDesc& desc, const nlohmann::json& value, DayCycleTrackKeys& out,
@@ -273,7 +264,7 @@ bool ParseDayCycleProfile(std::string_view text, DayCycleProfileData& out, std::
         outError = "the file is not a JSON object";
         return false;
     }
-    if (const std::string repeated = FirstRepeatedKey(text); !repeated.empty())
+    if (const std::string repeated = Serialization::FirstRepeatedKey(text); !repeated.empty())
     {
         outError = "'" + repeated + "' is written twice; keep one";
         return false;
@@ -354,6 +345,11 @@ float EvaluateDayCycleTrack(const DayCycleTrackKeys& keys, Mathematics::Radians 
     return curve.Evaluate(elevation * kDegreesPerRadian);
 }
 
+bool IsDuskHalf(const Rendering::SkySunState& sunState)
+{
+    return sunState.SunAzimuth > std::numbers::pi_v<float>;
+}
+
 DayCycleProfile::DayCycleProfile(const GUID& guid, const std::filesystem::path& path)
     : Asset(guid, AssetType::DayCycleProfile, path)
 {
@@ -361,7 +357,7 @@ DayCycleProfile::DayCycleProfile(const GUID& guid, const std::filesystem::path& 
 
 bool DayCycleProfile::Load()
 {
-    Vector<uint8> bytes;
+    ByteBuffer bytes;
     if (!ReadFileBytesShared(GetPath(), bytes))
     {
         Logger::Log::Error("Day Cycle profile '{}' could not be read", GetPath().string());
@@ -371,7 +367,7 @@ bool DayCycleProfile::Load()
     return LoadFromData(bytes);
 }
 
-bool DayCycleProfile::LoadFromData(const Vector<uint8>& data)
+bool DayCycleProfile::LoadFromData(std::span<const uint8> data)
 {
     std::shared_ptr<const DayCycleProfileData> parsed = ParseBytes(data);
     if (!parsed)
@@ -390,7 +386,7 @@ void DayCycleProfile::Unload()
     SetState(AssetState::Unloaded);
 }
 
-bool DayCycleProfile::ReloadFromData(const Vector<uint8>& data)
+bool DayCycleProfile::ReloadFromData(std::span<const uint8> data)
 {
     std::shared_ptr<const DayCycleProfileData> parsed = ParseBytes(data);
     if (!parsed)
@@ -405,7 +401,7 @@ std::shared_ptr<const DayCycleProfileData> DayCycleProfile::GetData() const
     return m_Data;
 }
 
-std::shared_ptr<const DayCycleProfileData> DayCycleProfile::ParseBytes(const Vector<uint8>& data) const
+std::shared_ptr<const DayCycleProfileData> DayCycleProfile::ParseBytes(std::span<const uint8> data) const
 {
     auto parsed = std::make_shared<DayCycleProfileData>();
     std::string error;

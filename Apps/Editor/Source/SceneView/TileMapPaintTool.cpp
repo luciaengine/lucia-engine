@@ -24,8 +24,6 @@
 #include <memory>
 #include <utility>
 
-#include <glm/gtc/type_ptr.hpp>
-
 namespace GameEngine
 {
 namespace Editor::SceneTools
@@ -141,7 +139,9 @@ TileMapPaintTool::PaintTarget TileMapPaintTool::ResolveTarget() const
         return target;
     }
 
-    const Mathematics::Matrix4x4 model(glm::make_mat4(worldXf->matrix));
+    // Paint targets and gizmo rays use absolute float coordinates.
+    const Mathematics::Matrix4x4 model =
+        worldXf->ToMatrix4x4(worldXf->Position - Mathematics::WorldPosition{});
     target.MapGuid = mapGuid;
     target.LayerId = layerRef->LayerId;
     target.WorldToLocal = Mathematics::Inverse(model);

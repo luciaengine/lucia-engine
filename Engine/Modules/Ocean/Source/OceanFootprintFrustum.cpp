@@ -6,22 +6,19 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 #include <limits>
 
 namespace GameEngine::Ocean
 {
 
-OceanFootprintFrustum::OceanFootprintFrustum(const float* viewProj)
+OceanFootprintFrustum::OceanFootprintFrustum(const Mathematics::Matrix4x4& viewProj)
 {
-    Mathematics::Matrix4x4 vp{};
-    std::memcpy(vp.Data(), viewProj, sizeof(float) * 16);
-    Rendering::ExtractFrustumPlanes(vp, m_Planes.data());
+    Rendering::ExtractFrustumPlanes(viewProj, m_Planes.data());
 
     // The corners are the clip-space cube's, depth 0 to 1, mapped back to world
     // space. A corner at infinity (w = 0, an infinite far plane) leaves the
     // frustum's height unbounded.
-    const Mathematics::Matrix4x4 inverse = Mathematics::Inverse(vp);
+    const Mathematics::Matrix4x4 inverse = Mathematics::Inverse(viewProj);
     constexpr float kMinCornerW = 1e-6f;
     m_MinY = std::numeric_limits<float>::max();
     m_MaxY = std::numeric_limits<float>::lowest();

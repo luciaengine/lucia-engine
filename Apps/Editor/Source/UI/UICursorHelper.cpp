@@ -20,7 +20,7 @@ void EndUIPointerLock(UIManager* ui, Platform::Window* window, Editor::WindowCur
 {
     cursorLock->UnlockForUiDrag();
     // The game can still hold the lock; then the cursor stays hidden.
-    if (cursorLock->IsLocked() || ui->IsBeingDestroyed())
+    if (cursorLock->IsLocked())
         return;
     // The cursor shows again where the lock began, which no move reports.
     float clientX = 0.0f;

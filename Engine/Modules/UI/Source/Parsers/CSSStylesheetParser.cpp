@@ -1,5 +1,5 @@
-// CSS stylesheet + inline-style parsing (lexbor-backed). Lexbor selector
-// conversion lives here because it
+// CSS stylesheet + inline-style parsing (lexbor-backed). Split out of
+// CSSParser.cpp (P4f). Lexbor selector conversion is folded in here because it
 // is only ever called from stylesheet parsing and keeps lexbor types out of
 // the shared detail header and the hot cascade TU.
 
@@ -137,7 +137,7 @@ static Specificity ComputeSpecificityFromChain(const SelectorChain& chain)
     return sp;
 }
 
-static void ApplyPropertyToOverrides(StyleOverrides& overrides, const StyleProperty& prop)
+static void ApplyPropertyToOverrides(StyleDeclaration& overrides, const StyleProperty& prop)
 {
     // Canonical classification (GetStylePropertyImpact): an override-local
     // layout list here had drifted both ways — z-index/overflow relayouted
@@ -196,6 +196,8 @@ static void ApplyPropertyToOverrides(StyleOverrides& overrides, const StylePrope
     case StylePropertyId::BorderImageSlice:  overrides.SetById(prop.PropertyId, StyleValue{GetValue<BorderImageSliceValue>(prop)}, impact); break;
     case StylePropertyId::BorderImageRepeat: overrides.SetById(prop.PropertyId, StyleValue{GetValue<BorderImageRepeatValue>(prop)}, impact); break;
     case StylePropertyId::BackgroundPosition: overrides.SetById(prop.PropertyId, StyleValue{GetValue<BackgroundPositionValue>(prop)}, impact); break;
+    case StylePropertyId::Transform:       overrides.SetById(prop.PropertyId, StyleValue{GetValue<TransformValue>(prop)}, impact); break;
+    case StylePropertyId::TransformOrigin: overrides.SetById(prop.PropertyId, StyleValue{GetValue<TransformOriginValue>(prop)}, impact); break;
     case StylePropertyId::BackgroundRepeat: overrides.SetById(prop.PropertyId, StyleValue{GetValue<BackgroundRepeat>(prop)}, impact); break;
     case StylePropertyId::BackgroundTint:  overrides.SetById(prop.PropertyId, StyleValue{GetValue<uint32_t>(prop)}, impact); break;
     case StylePropertyId::BackgroundImageSaturation: overrides.SetById(prop.PropertyId, StyleValue{GetValue<float>(prop)}, impact); break;
@@ -967,7 +969,6 @@ constexpr std::string_view kKnownUnsupportedProperties[] = {
     "isolation",
     "text-decoration",
     "text-transform",
-    "transform",
     "user-select",
     "vertical-align",
 };
@@ -1002,7 +1003,7 @@ size_t WarnUnknownStylesheetProperties(const Stylesheet& sheet)
     return count;
 }
 
-void CSSParser::ParseInlineStyleToOverrides(std::string_view inlineStyle, StyleOverrides& out)
+void CSSParser::ParseInlineStyleToOverrides(std::string_view inlineStyle, StyleDeclaration& out)
 {
     out.Clear();
 

@@ -14,7 +14,7 @@
 #include "Rendering/Materials/MaterialDocument.h"
 #include "Rendering/Materials/LegacyMaterialLanes.h"
 #include "Rendering/Materials/MaterialParamsLayout.h"
-#include "Rendering/Materials/ShaderPropertyTable.h"
+#include "Rendering/Materials/Shader/ShaderPropertyTable.h"
 #include "SceneBvh/UberMaterial.h"
 
 #include <gtest/gtest.h>

@@ -25,7 +25,7 @@
 // this agent, the run reports a loud SKIP rather than passing on assertions
 // that could not discriminate.
 
-#include "Source/Vulkan/VulkanDevice.h"
+#include "Source/Vulkan/VulkanDevice/VulkanDevice.h"
 
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/Device.h"

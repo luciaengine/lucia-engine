@@ -1,4 +1,5 @@
 #include "UI/Controls/Button.h"
+#include "UI/ElementBuilder.h"
 #include "UI/UIManager.h"
 #include "UI/UIHotReload.h"
 #include "UI/ResolvedStyle.h"
@@ -18,8 +19,6 @@
 #include "Assets/AssetManager.h"
 #include "AssetCore/AssetEvents.h"
 
-#include "TestTempDir.h"
-
 #include <gtest/gtest.h>
 #include <chrono>
 #include <filesystem>
@@ -33,17 +32,11 @@ using namespace GameEngine::Rendering;
 namespace
 {
 
-// One directory per process for the loose .css/.uxml files; it lives until exit because asset
-// managers and hot reload read the files after the helpers return.
-static const std::filesystem::path& HotReloadTestDirectory()
-{
-    static const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("ui_hot_reload_tests")};
-    return directory.Path();
-}
-
 static std::filesystem::path MakeTempCss(const char* name, const char* contents)
 {
-    auto path = HotReloadTestDirectory() / name;
+    auto dir = std::filesystem::temp_directory_path() / "ui_hot_reload_tests";
+    std::filesystem::create_directories(dir);
+    auto path = dir / name;
     std::ofstream f(path);
     f << contents;
     return path;
@@ -51,7 +44,9 @@ static std::filesystem::path MakeTempCss(const char* name, const char* contents)
 
 static std::filesystem::path MakeTempUxml(const char* name, const char* contents)
 {
-    auto path = HotReloadTestDirectory() / name;
+    auto dir = std::filesystem::temp_directory_path() / "ui_hot_reload_tests";
+    std::filesystem::create_directories(dir);
+    auto path = dir / name;
     std::ofstream f(path);
     f << contents;
     return path;
@@ -103,8 +98,8 @@ TEST(UIHotReloadTests, ImportGraphTraversal_NoCrash)
 	ui.SetRoot(std::move(root));
 
 	// Set up a small AssetManager rooted at a temp dir so UIStyleAsset can resolve imports.
-	const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets"));
-	auto assetRoot = assetDirectory.Path();
+	auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets";
+	std::filesystem::create_directories(assetRoot);
 
 	JobSystem::WorkStealingThreadPool pool(2);
 	AssetManager assets;
@@ -166,8 +161,8 @@ TEST(UIHotReloadTests, AssetSaveReloadsStyleAndAppliesOnNextUpdate)
     UIRegistration::RegisterBuiltInControls();
 
     // Set up a small AssetManager rooted at a temp dir so UIStyleAsset can resolve.
-    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_modified"));
-    auto assetRoot = assetDirectory.Path();
+    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_modified";
+    std::filesystem::create_directories(assetRoot);
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -242,16 +237,28 @@ TEST_P(SharedStylesheetReloadTests, ManagersObserveOneCommitAndKeepCachedRulesAl
     for (UIManager* ui : {&first, &second})
     {
         std::unique_ptr<UIElement> root;
-        ASSERT_TRUE(UIParsing::XMLParser::ParseLayoutFromString(
-            "<uielement id='root'><uielement id='sample'/></uielement>", root));
+        if (ui == &first)
+        {
+            root = UI::Element<UIElement>().Id("root").Children(
+                UI::Element<UIElement>().Id("sample")).Build();
+            ASSERT_NE(root, nullptr);
+        }
+        else
+        {
+            ASSERT_TRUE(UIParsing::XMLParser::ParseLayoutFromString(
+                "<uielement id='root'><uielement id='sample'/></uielement>", root));
+        }
         ui->SetRoot(std::move(root));
         ui->OnMouseMove(-100.0f, -100.0f);
     }
     ASSERT_TRUE(first.AttachStyleFromAsset(*style));
-    if (GetParam()) ASSERT_TRUE(second.AttachStyleFromAsset(*style));
+    if (GetParam())
+    {
+        ASSERT_TRUE(second.AttachStyleFromAsset(*style));
+    }
     first.Update(0.0f, true);
     second.Update(0.0f, true);
-    auto* sample = first.GetRootElement()->FindById("sample");
+    auto* sample = first.GetRootElement()->FindById("sample"_sid);
     ASSERT_NE(sample, nullptr);
     first.OnMouseMove(10.0f, 10.0f);
     first.Update(0.0f, true);
@@ -326,13 +333,13 @@ TEST_P(StylesheetCascadeReloadTests, SnapshotAdoptionPreservesImportOrderAndDeta
     ASSERT_TRUE(UIParsing::XMLParser::ParseLayoutFromString(
         "<uielement id='root'><uielement id='sample' class='sample'/><uielement id='direct' class='sample'/></uielement>", root));
     ui.SetRoot(std::move(root));
-    auto* sample = ui.GetRootElement()->FindById("sample");
+    auto* sample = ui.GetRootElement()->FindById("sample"_sid);
     ASSERT_NE(sample, nullptr);
     // The manager's own sheets (the module default) lead its global list.
     const size_t leadingSheets = GetParam() ? 0 : ui.GetStylesheets().size();
     if (GetParam()) ASSERT_TRUE(ui.AttachStyleToSubtreeFromAsset(sample, *style));
     else ASSERT_TRUE(ui.AttachStyleFromAsset(*style));
-    auto* direct = ui.GetRootElement()->FindById("direct");
+    auto* direct = ui.GetRootElement()->FindById("direct"_sid);
     ASSERT_NE(direct, nullptr);
     ASSERT_TRUE(ui.AttachStyleToSubtreeFromAsset(direct, *static_cast<UIStyleAsset*>(leaf.get())));
     auto overrideSheet = std::make_shared<Stylesheet>();
@@ -531,8 +538,8 @@ TEST(UIHotReloadTests, AssetReloadedEventAppliesStyleOnNextUpdate)
     UIRegistration::RegisterBuiltInControls();
 
     // Set up a small AssetManager rooted at a temp dir so UIStyleAsset can resolve.
-    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_reloaded"));
-    auto assetRoot = assetDirectory.Path();
+    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_reloaded";
+    std::filesystem::create_directories(assetRoot);
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -589,8 +596,8 @@ TEST(UIHotReloadTests, ImportedLeaf_ModifiedUpdatesMountedSubtreeNextUpdate)
     UIRegistration::RegisterBuiltInControls();
 
     // Set up a small AssetManager rooted at a temp dir so UIStyleAsset can resolve imports.
-    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_import_leaf"));
-    auto assetRoot = assetDirectory.Path();
+    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_import_leaf";
+    std::filesystem::create_directories(assetRoot);
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -622,7 +629,7 @@ TEST(UIHotReloadTests, ImportedLeaf_ModifiedUpdatesMountedSubtreeNextUpdate)
     auto panel = std::make_unique<UIElement>();
     UIElement* panelRaw = panel.get();
     panelRaw->SetId("panel");
-    panelRaw->Overrides()
+    panelRaw->Style()
         .Set(Style::Width, StyleLength::Px(300.0f))
         .Set(Style::Height, StyleLength::Px(200.0f));
 
@@ -671,8 +678,9 @@ TEST(UIHotReloadTests, ImportedLeaf_ModifiedStillPropagatesAfterProjectRebind)
     UIRegistration::RegisterBuiltInControls();
 
     namespace fs = std::filesystem;
-    const fs::path root = TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_import_rebind");
+    const fs::path root = fs::temp_directory_path() / "ui_hot_reload_assets_import_rebind";
     std::error_code ec;
+    fs::remove_all(root, ec);
     fs::create_directories(root / "ProjectA" / "Assets" / "UI" / "theme", ec);
     fs::create_directories(root / "ProjectB" / "Assets", ec);
 
@@ -794,8 +802,8 @@ TEST(UIHotReloadTests, AssetModifiedEventReloadsLayoutAndReconcilesOnNextUpdate)
     UIRegistration::RegisterBuiltInControls();
 
     // Set up a small AssetManager rooted at a temp dir so UILayoutAsset can resolve.
-    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_layout_modified"));
-    auto assetRoot = assetDirectory.Path();
+    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_layout_modified";
+    std::filesystem::create_directories(assetRoot);
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -825,7 +833,7 @@ TEST(UIHotReloadTests, AssetModifiedEventReloadsLayoutAndReconcilesOnNextUpdate)
 
     UIElement* liveRoot = ui.GetRootElement();
     ASSERT_NE(liveRoot, nullptr);
-    auto* lbl0 = dynamic_cast<Label*>(liveRoot->FindById("lbl"));
+    auto* lbl0 = dynamic_cast<Label*>(liveRoot->FindById("lbl"_sid));
     ASSERT_NE(lbl0, nullptr);
     EXPECT_EQ(lbl0->GetText(), "Hello");
 
@@ -862,7 +870,7 @@ TEST(UIHotReloadTests, AssetModifiedEventReloadsLayoutAndReconcilesOnNextUpdate)
 
     UIElement* liveRoot2 = ui.GetRootElement();
     ASSERT_NE(liveRoot2, nullptr);
-    auto* lbl1 = dynamic_cast<Label*>(liveRoot2->FindById("lbl"));
+    auto* lbl1 = dynamic_cast<Label*>(liveRoot2->FindById("lbl"_sid));
     ASSERT_NE(lbl1, nullptr);
     EXPECT_EQ(lbl1->GetText(), "World");
     EXPECT_EQ(firstReconciles, 1);
@@ -882,7 +890,7 @@ TEST(UIHotReloadTests, AssetModifiedEventReloadsLayoutAndReconcilesOnNextUpdate)
 }
 
 // -----------------------------------------------------------------------------
-// C1 + E7: AssetReloaded(Texture) evicts m_BgTextureCache so the next paint
+// C1 + E7: AssetReloaded(Texture) evicts the background-image cache entry so the next paint
 // re-resolves the background-image URL to a fresh GPU handle. Without this
 // listener, panel-background .png edits never propagate without a restart.
 // -----------------------------------------------------------------------------
@@ -896,8 +904,8 @@ TEST(UIHotReloadTests, TextureAssetReloadedEvictsBackgroundCache)
 
     UIRegistration::RegisterBuiltInControls();
 
-    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_texture"));
-    auto assetRoot = assetDirectory.Path();
+    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_texture";
+    std::filesystem::create_directories(assetRoot);
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -923,8 +931,8 @@ TEST(UIHotReloadTests, TextureAssetReloadedEvictsBackgroundCache)
     // skips DestroyTexture for sharedOwned entries.
     Rendering::TextureHandle dummy{};
     dummy.id = 0xDEADBEEFu;
-    ui.SeedBackgroundTextureForTesting(guid, dummy, 64, 64);
-    ASSERT_TRUE(ui.HasBackgroundTextureCachedForTesting(guid));
+    ui.BackgroundImages().SeedRasterForTesting(guid, dummy, 64, 64);
+    ASSERT_TRUE(ui.BackgroundImages().HasRasterForTesting(guid));
 
     // Dispatch AssetReloaded(Texture) and pump Update once.
     assets.GetEventDispatcher().DispatchEvent(
@@ -932,7 +940,7 @@ TEST(UIHotReloadTests, TextureAssetReloadedEvictsBackgroundCache)
 
     ui.Update(0.0f, /*interactive=*/false);
 
-    EXPECT_FALSE(ui.HasBackgroundTextureCachedForTesting(guid))
+    EXPECT_FALSE(ui.BackgroundImages().HasRasterForTesting(guid))
         << "AssetReloaded(Texture) should have evicted the cached background texture";
 }
 
@@ -949,8 +957,8 @@ TEST(UIHotReloadTests, TextureAssetModifiedEvictsBackgroundCache)
 
     UIRegistration::RegisterBuiltInControls();
 
-    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_texture_modified"));
-    auto assetRoot = assetDirectory.Path();
+    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_texture_modified";
+    std::filesystem::create_directories(assetRoot);
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -971,15 +979,15 @@ TEST(UIHotReloadTests, TextureAssetModifiedEvictsBackgroundCache)
 
     Rendering::TextureHandle dummy{};
     dummy.id = 0xCAFEBABEu;
-    ui.SeedBackgroundTextureForTesting(guid, dummy);
-    ASSERT_TRUE(ui.HasBackgroundTextureCachedForTesting(guid));
+    ui.BackgroundImages().SeedRasterForTesting(guid, dummy);
+    ASSERT_TRUE(ui.BackgroundImages().HasRasterForTesting(guid));
 
     assets.GetEventDispatcher().DispatchEvent(
         AssetEvent(AssetEventType::AssetModified, guid, AssetType::Texture, pngPath.string()));
 
     ui.Update(0.0f, /*interactive=*/false);
 
-    EXPECT_FALSE(ui.HasBackgroundTextureCachedForTesting(guid));
+    EXPECT_FALSE(ui.BackgroundImages().HasRasterForTesting(guid));
 }
 
 // -----------------------------------------------------------------------------
@@ -998,8 +1006,8 @@ TEST(UIHotReloadTests, FontAssetReloadedEvictsFontAtlasMapping)
 
     UIRegistration::RegisterBuiltInControls();
 
-    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_font"));
-    auto assetRoot = assetDirectory.Path();
+    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_font";
+    std::filesystem::create_directories(assetRoot);
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -1048,9 +1056,10 @@ TEST(UIHotReloadTests, LateLoadingImportRebuildsImporterCascade)
 
     UIRegistration::RegisterBuiltInControls();
 
-    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_late_import"));
-    auto assetRoot = assetDirectory.Path();
+    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_late_import";
     std::error_code ec;
+    std::filesystem::remove_all(assetRoot, ec);
+    std::filesystem::create_directories(assetRoot);
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -1137,8 +1146,8 @@ TEST(UIHotReloadTests, FoldoutExpandedSurvivesLayoutReload)
 
     UIRegistration::RegisterBuiltInControls();
 
-    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_foldout"));
-    auto assetRoot = assetDirectory.Path();
+    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_foldout";
+    std::filesystem::create_directories(assetRoot);
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -1164,7 +1173,7 @@ TEST(UIHotReloadTests, FoldoutExpandedSurvivesLayoutReload)
     ui.Update(0.0f, /*interactive=*/false);
     DriveUiRender(ui, rg);
 
-    auto* fold0 = dynamic_cast<Foldout*>(ui.GetRootElement()->FindById("fold"));
+    auto* fold0 = dynamic_cast<Foldout*>(ui.GetRootElement()->FindById("fold"_sid));
     ASSERT_NE(fold0, nullptr);
     EXPECT_FALSE(fold0->IsExpanded()); // initial XML state
     fold0->SetExpanded(true);          // simulate user toggle
@@ -1183,7 +1192,7 @@ TEST(UIHotReloadTests, FoldoutExpandedSurvivesLayoutReload)
     ui.Update(0.0f, /*interactive=*/false);
     DriveUiRender(ui, rg);
 
-    auto* fold1 = dynamic_cast<Foldout*>(ui.GetRootElement()->FindById("fold"));
+    auto* fold1 = dynamic_cast<Foldout*>(ui.GetRootElement()->FindById("fold"_sid));
     ASSERT_NE(fold1, nullptr);
     EXPECT_TRUE(fold1->IsExpanded())
         << "Runtime-set expanded=true must survive layout reload "
@@ -1201,8 +1210,8 @@ TEST(UIHotReloadTests, AccordionItemExpandedSurvivesLayoutReload)
 
     UIRegistration::RegisterBuiltInControls();
 
-    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_accord"));
-    auto assetRoot = assetDirectory.Path();
+    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_accord";
+    std::filesystem::create_directories(assetRoot);
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -1228,7 +1237,7 @@ TEST(UIHotReloadTests, AccordionItemExpandedSurvivesLayoutReload)
     ui.Update(0.0f, /*interactive=*/false);
     DriveUiRender(ui, rg);
 
-    auto* item0 = dynamic_cast<AccordionItem*>(ui.GetRootElement()->FindById("item"));
+    auto* item0 = dynamic_cast<AccordionItem*>(ui.GetRootElement()->FindById("item"_sid));
     ASSERT_NE(item0, nullptr);
     EXPECT_FALSE(item0->IsExpanded());
     item0->SetExpanded(true);
@@ -1246,7 +1255,7 @@ TEST(UIHotReloadTests, AccordionItemExpandedSurvivesLayoutReload)
     ui.Update(0.0f, /*interactive=*/false);
     DriveUiRender(ui, rg);
 
-    auto* item1 = dynamic_cast<AccordionItem*>(ui.GetRootElement()->FindById("item"));
+    auto* item1 = dynamic_cast<AccordionItem*>(ui.GetRootElement()->FindById("item"_sid));
     ASSERT_NE(item1, nullptr);
     EXPECT_TRUE(item1->IsExpanded());
 }
@@ -1262,8 +1271,8 @@ TEST(UIHotReloadTests, TextFieldValueSurvivesLayoutReload)
 
     UIRegistration::RegisterBuiltInControls();
 
-    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_textfield"));
-    auto assetRoot = assetDirectory.Path();
+    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_textfield";
+    std::filesystem::create_directories(assetRoot);
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -1288,7 +1297,7 @@ TEST(UIHotReloadTests, TextFieldValueSurvivesLayoutReload)
     ui.Update(0.0f, /*interactive=*/false);
     DriveUiRender(ui, rg);
 
-    auto* tf0 = dynamic_cast<TextField*>(ui.GetRootElement()->FindById("tf"));
+    auto* tf0 = dynamic_cast<TextField*>(ui.GetRootElement()->FindById("tf"_sid));
     ASSERT_NE(tf0, nullptr);
     EXPECT_EQ(tf0->GetValue(), "initial");
     tf0->SetValue("user-typed");
@@ -1307,7 +1316,7 @@ TEST(UIHotReloadTests, TextFieldValueSurvivesLayoutReload)
     ui.Update(0.0f, /*interactive=*/false);
     DriveUiRender(ui, rg);
 
-    auto* tf1 = dynamic_cast<TextField*>(ui.GetRootElement()->FindById("tf"));
+    auto* tf1 = dynamic_cast<TextField*>(ui.GetRootElement()->FindById("tf"_sid));
     ASSERT_NE(tf1, nullptr);
     EXPECT_EQ(tf1->GetValue(), "user-typed")
         << "TextField runtime value must survive layout reload";
@@ -1344,13 +1353,13 @@ void EnsureReconcileProxyTags()
     (void)kTags;
 }
 
-// A per-process temp directory private to these arms, so no other writer of loose test files
-// can race the file rewrite these tests depend on. It lives until exit because the asset
-// managers read the files after this helper returns.
+// A temp root private to these arms, so a parallel run of another suite writing the shared
+// ui_hot_reload_tests directory cannot race the file rewrite these tests depend on.
 std::filesystem::path MakeTagIdentityUxml(const char* name, const char* contents)
 {
-    static const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("ui_tag_identity_tests")};
-    auto path = directory.Path() / name;
+    auto dir = std::filesystem::temp_directory_path() / "ui_tag_identity_tests";
+    std::filesystem::create_directories(dir);
+    auto path = dir / name;
     std::ofstream f(path);
     f << contents;
     return path;
@@ -1368,8 +1377,8 @@ TEST(UIHotReloadTests, ReconcileReplacesWhenOnlyTheTagDiffers)
     UIRegistration::RegisterBuiltInControls();
     EnsureReconcileProxyTags();
 
-    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_tag_identity_replace_assets"));
-    auto assetRoot = assetDirectory.Path();
+    auto assetRoot = std::filesystem::temp_directory_path() / "ui_tag_identity_replace_assets";
+    std::filesystem::create_directories(assetRoot);
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(assetRoot, &pool));
@@ -1393,7 +1402,7 @@ TEST(UIHotReloadTests, ReconcileReplacesWhenOnlyTheTagDiffers)
     ui.Update(0.0f, /*interactive=*/false);
     DriveUiRender(ui, rg);
 
-    UIElement* before = ui.GetRootElement()->FindById("slot");
+    UIElement* before = ui.GetRootElement()->FindById("slot"_sid);
     ASSERT_NE(before, nullptr);
     const uint64_t idBefore = before->GetInstanceId();
     auto& factories = UIRegistration::ElementFactoryRegistry::Instance();
@@ -1410,7 +1419,7 @@ TEST(UIHotReloadTests, ReconcileReplacesWhenOnlyTheTagDiffers)
     ui.Update(0.0f, /*interactive=*/false);
     DriveUiRender(ui, rg);
 
-    UIElement* after = ui.GetRootElement()->FindById("slot");
+    UIElement* after = ui.GetRootElement()->FindById("slot"_sid);
     ASSERT_NE(after, nullptr);
     // Instance ids are never reused, so a different id is proof the element was rebuilt
     // rather than adopted. Under RTTI identity both tags are ReconcileProxy, the reconciler
@@ -1432,8 +1441,8 @@ TEST(UIHotReloadTests, ReconcilePreservesAnElementWhoseTagIsUnchanged)
     UIRegistration::RegisterBuiltInControls();
     EnsureReconcileProxyTags();
 
-    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_tag_identity_preserve_assets"));
-    auto assetRoot = assetDirectory.Path();
+    auto assetRoot = std::filesystem::temp_directory_path() / "ui_tag_identity_preserve_assets";
+    std::filesystem::create_directories(assetRoot);
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(assetRoot, &pool));
@@ -1461,10 +1470,10 @@ TEST(UIHotReloadTests, ReconcilePreservesAnElementWhoseTagIsUnchanged)
     ui.Update(0.0f, /*interactive=*/false);
     DriveUiRender(ui, rg);
 
-    UIElement* before = ui.GetRootElement()->FindById("slot");
+    UIElement* before = ui.GetRootElement()->FindById("slot"_sid);
     ASSERT_NE(before, nullptr);
     const uint64_t idBefore = before->GetInstanceId();
-    UIElement* kidBefore = ui.GetRootElement()->FindById("kid");
+    UIElement* kidBefore = ui.GetRootElement()->FindById("kid"_sid);
     ASSERT_NE(kidBefore, nullptr);
     const uint64_t kidIdBefore = kidBefore->GetInstanceId();
 
@@ -1481,13 +1490,13 @@ TEST(UIHotReloadTests, ReconcilePreservesAnElementWhoseTagIsUnchanged)
     ui.Update(0.0f, /*interactive=*/false);
     DriveUiRender(ui, rg);
 
-    UIElement* after = ui.GetRootElement()->FindById("slot");
+    UIElement* after = ui.GetRootElement()->FindById("slot"_sid);
     ASSERT_NE(after, nullptr);
     // Before the tag became the identity, an unknown tag matched nothing, so every reload
     // rebuilt the element and threw its subtree away.
     EXPECT_EQ(after->GetInstanceId(), idBefore)
         << "an element whose tag did not change must be preserved across a reload";
-    UIElement* kidAfter = ui.GetRootElement()->FindById("kid");
+    UIElement* kidAfter = ui.GetRootElement()->FindById("kid"_sid);
     ASSERT_NE(kidAfter, nullptr);
     EXPECT_EQ(kidAfter->GetInstanceId(), kidIdBefore);
 }
@@ -1562,10 +1571,10 @@ TEST(UIHotReloadTests, ReconcileAnnouncesToTheBoundTargetAfterReplacingElements)
                                 {
                                     EXPECT_EQ(e.Target, panel);
                                     ++reconciles;
-                                    keep = UIElement::MakeWeakRef(dynamic_cast<Button*>(panel->FindById("keep")));
-                                    gone = UIElement::MakeWeakRef(panel->FindById("gone"));
-                                    renamed = UIElement::MakeWeakRef(panel->FindById("renamed"));
-                                    slot = UIElement::MakeWeakRef(panel->FindById("slot"));
+                                    keep = panel->FindById<Button>("keep"_sid);
+                                    gone = panel->FindById<UIElement>("gone"_sid);
+                                    renamed = panel->FindById<UIElement>("renamed"_sid);
+                                    slot = panel->FindById<UIElement>("slot"_sid);
                                     Button* button = keep.Get();
                                     if (!button || button == wiredKeep.Get())
                                         return;
@@ -1618,6 +1627,76 @@ TEST(UIHotReloadTests, ReconcileAnnouncesToTheBoundTargetAfterReplacingElements)
     EXPECT_EQ(clicks, 1) << "a preserved button was wired again and fires once per reconcile";
 }
 
+// A children-only binding gives the target the layout root's id, as it gives it the root's
+// classes. A swap to a layout whose root has no id clears it, but keeps an id that code set.
+TEST(UIHotReloadTests, ChildrenBindingGivesTheTargetTheLayoutRootId)
+{
+    auto dev = MakeHeadlessDevice();
+    if (!dev)
+    {
+        GTEST_SKIP() << "No device";
+    }
+    UIRegistration::RegisterBuiltInControls();
+
+    auto assetRoot = std::filesystem::temp_directory_path() / "ui_children_binding_root_id_assets";
+    std::filesystem::create_directories(assetRoot);
+    JobSystem::WorkStealingThreadPool pool(2);
+    AssetManager assets;
+    ASSERT_TRUE(assets.Initialize(assetRoot, &pool));
+
+    const auto pathWithId = MakeTagIdentityUxml("root_id_with_id.uxml",
+                                                "<UIElement id=\"build-hud\" class=\"build-hud\">\n"
+                                                "  <UIElement id=\"build-panel\"/>\n"
+                                                "</UIElement>\n");
+    const auto pathWithoutId = MakeTagIdentityUxml("root_id_without_id.uxml",
+                                                   "<UIElement>\n"
+                                                   "  <UIElement id=\"other-panel\"/>\n"
+                                                   "</UIElement>\n");
+    auto& reg = assets.GetRegistry();
+    ASSERT_TRUE(reg.RegisterAsset(pathWithId));
+    ASSERT_TRUE(reg.RegisterAsset(pathWithoutId));
+    auto assetWithId = assets.LoadAssetAsync(reg.GetAssetGUID(pathWithId), AssetLoadPriority::Normal).get();
+    auto assetWithoutId = assets.LoadAssetAsync(reg.GetAssetGUID(pathWithoutId), AssetLoadPriority::Normal).get();
+    auto* layoutWithId = dynamic_cast<UILayoutAsset*>(assetWithId.get());
+    auto* layoutWithoutId = dynamic_cast<UILayoutAsset*>(assetWithoutId.get());
+    ASSERT_NE(layoutWithId, nullptr);
+    ASSERT_NE(layoutWithoutId, nullptr);
+
+    UIManager ui(dev.get(), &assets);
+    auto rootEl = std::make_unique<UIElement>();
+    auto containerOwned = std::make_unique<UIElement>();
+    UIElement* container = containerOwned.get();
+    rootEl->AddChild(std::move(containerOwned));
+    ui.SetRoot(std::move(rootEl));
+
+    ASSERT_TRUE(ui.BindLayoutToSubtreeChildrenFromAsset(container, *layoutWithId));
+    UIElement* root = ui.GetRootElement();
+    EXPECT_EQ(root->FindById("build-hud"_sid), container) << "the layout root's id names the container";
+    EXPECT_TRUE(container->HasClass("build-hud"));
+    UIElement* panel = root->FindById("build-panel"_sid);
+    ASSERT_NE(panel, nullptr);
+    EXPECT_EQ(panel->GetParent(), container);
+
+    ASSERT_TRUE(ui.BindLayoutToSubtreeChildrenFromAsset(container, *layoutWithoutId));
+    EXPECT_EQ(root->FindById("build-hud"_sid), nullptr) << "a swapped-out layout's root id must not stay";
+    EXPECT_TRUE(container->GetId().empty());
+    EXPECT_NE(root->FindById("other-panel"_sid), nullptr);
+
+    ASSERT_TRUE(ui.BindLayoutToSubtreeChildrenFromAsset(container, *layoutWithId));
+    container->SetId("hud-from-code");
+    ASSERT_TRUE(ui.BindLayoutToSubtreeChildrenFromAsset(container, *layoutWithoutId));
+    EXPECT_EQ(container->GetId(), "hud-from-code") << "a swap keeps an id that code set";
+
+    // An inactive dock tab is detached from the live root, so the bind seeds it directly.
+    auto detached = std::make_unique<UIElement>();
+    ASSERT_TRUE(ui.BindLayoutToSubtreeChildrenFromAsset(detached.get(), *layoutWithId));
+    EXPECT_EQ(detached->GetId(), "build-hud") << "the seed gives a detached container the root's id";
+    EXPECT_TRUE(detached->HasClass("build-hud"));
+    ASSERT_TRUE(ui.BindLayoutToSubtreeChildrenFromAsset(detached.get(), *layoutWithoutId));
+    EXPECT_TRUE(detached->GetId().empty()) << "a detached swap clears the root id that the seed set";
+    EXPECT_FALSE(detached->HasClass("build-hud"));
+}
+
 // A save that is not atomic — truncate, then write — puts the file through
 // zero length and then through a half-written prefix before it is complete.
 // Neither state is an edit the author made, and applying either one costs the
@@ -1633,8 +1712,8 @@ TEST(UIHotReloadTests, MidWriteSaveNeverCostsTheSubtreeItsStyle)
     UiRgHarness rg(dev.get());
     UIRegistration::RegisterBuiltInControls();
 
-    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_midwrite"));
-    auto assetRoot = assetDirectory.Path();
+    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_midwrite";
+    std::filesystem::create_directories(assetRoot);
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -1759,4 +1838,71 @@ TEST(UIHotReloadTests, ControlOwnedStylesResistProjectShadowing)
     }
     std::error_code ec;
     fs::remove_all(root, ec);
+}
+
+// A UI module control sheet (a UI::kControlAssetPaths path in the editor mount), requested through
+// a live UIManager, loses an equal-specificity tie to a host sheet. A reload of the sheet and a
+// rebuild of its asset object keep that order.
+TEST(UIHotReloadTests, ControlSheetLosesEqualSpecificityTieToHostSheetAcrossReloadAndRebuild)
+{
+    auto dev = MakeHeadlessDevice();
+    if (!dev)
+        GTEST_SKIP() << "No device";
+    UiRgHarness rg(dev.get());
+    UIRegistration::RegisterBuiltInControls();
+    namespace fs = std::filesystem;
+    const TemporaryStyleDirectory root;
+    fs::create_directories(root.Path / "project");
+    fs::create_directories(root.Path / "editor/UI/controls");
+    const fs::path controlPath = root.Path / "editor/UI/controls/Button.css";
+    std::ofstream(controlPath) << ".probe { width: 50px; height: 10px; }\n";
+
+    JobSystem::WorkStealingThreadPool pool(2);
+    AssetManager assets;
+    ASSERT_TRUE(assets.Initialize(root.Path / "project", &pool, root.Path / "state/assets.assetdb",
+                                  root.Path / "state/cache"));
+    AssetSourceDesc editorSource{};
+    editorSource.Alias = std::string(kAssetSourceAliasEditor);
+    editorSource.Root = root.Path / "editor";
+    editorSource.RegisterFileWatcher = false;
+    ASSERT_TRUE(assets.RegisterSource(editorSource));
+    assets.WaitForStartupScan(std::string(kAssetSourceAliasEditor));
+    assets.WaitForStartupScan();
+
+    UIManager ui(dev.get(), &assets);
+    Stylesheet host{};
+    ASSERT_TRUE(UIParsing::CSSParser::ParseStylesFromString(".probe { width: 120px; }\n", host));
+    ui.AddStylesheet(std::make_shared<const Stylesheet>(std::move(host)));
+
+    auto tree = std::make_unique<UIElement>();
+    auto probe = std::make_unique<UIElement>();
+    probe->AddClass("probe");
+    probe->RequestSubtreeStyleAssetPath("UI/controls/Button.css", std::string(kAssetSourceAliasEditor));
+    UIElement* probeRaw = probe.get();
+    UIElement* treeRaw = tree.get();
+    tree->AddChild(std::move(probe));
+    ui.SetRoot(std::move(tree));
+    ui.Update(0.0f, false);
+    DriveUiRender(ui, rg);
+    ASSERT_EQ(probeRaw->GetRequestedSubtreeStyleAssetGuids().size(), 1u) << "the control sheet did not attach";
+    EXPECT_NEAR(probeRaw->GetLayoutHeight(), 10.0f, 1.0f) << "the control sheet does not style the element";
+    EXPECT_NEAR(probeRaw->GetLayoutWidth(), 120.0f, 1.0f) << "the control sheet won a tie against the host sheet";
+
+    const GUID controlGuid = probeRaw->GetRequestedSubtreeStyleAssetGuids().front();
+    std::ofstream(controlPath, std::ios::trunc) << ".probe { width: 60px; height: 30px; }\n";
+    ASSERT_EQ(assets.ReloadAssetNow(controlGuid), ReloadOutcome::Reloaded);
+    assets.GetEventDispatcher().DispatchEvent(
+        AssetEvent(AssetEventType::AssetReloaded, controlGuid, AssetType::UIStyle, controlPath.string()));
+    ui.Update(0.0f, false);
+    DriveUiRender(ui, rg);
+    EXPECT_NEAR(probeRaw->GetLayoutHeight(), 30.0f, 1.0f) << "the reload did not reach the element";
+    EXPECT_NEAR(probeRaw->GetLayoutWidth(), 120.0f, 1.0f) << "the reloaded control sheet won a tie against the host sheet";
+
+    // A new asset object for the sheet, attached again through the element's cached GUID.
+    assets.UnregisterLoadedAsset(controlGuid);
+    treeRaw->AddChild(treeRaw->TakeChild(probeRaw));
+    ui.Update(0.0f, false);
+    DriveUiRender(ui, rg);
+    EXPECT_NEAR(probeRaw->GetLayoutHeight(), 30.0f, 1.0f) << "the rebuilt control sheet does not style the element";
+    EXPECT_NEAR(probeRaw->GetLayoutWidth(), 120.0f, 1.0f) << "the rebuilt control sheet won a tie against the host sheet";
 }

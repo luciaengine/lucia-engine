@@ -1,8 +1,7 @@
-// Stage 1.2 / 2a isolation tests for the per-frame upload ring and the N-buffer
-// rotating import, over the REAL engine IDevice (headless Vulkan). The ring's
-// pointers are real persistently-mapped host-visible memory.
+// Isolation tests for the per-frame upload ring over the REAL engine IDevice
+// (headless Vulkan). The ring's pointers are real persistently-mapped
+// host-visible memory.
 
-#include "Rendering/Core/RenderGraph/RGRotatingImport.h"
 #include "Rendering/Core/RenderGraph/RGUploadRing.h"
 #include "Tests/RenderGraph/RGTestDevice.h"
 
@@ -11,22 +10,9 @@
 #include <cstdint>
 #include <cstring>
 
-using namespace GameEngine::Rendering;     // TextureDesc/handles/enums/IDevice
-using namespace GameEngine::Rendering::RenderGraph; // RenderGraph ring + rotating import
+using namespace GameEngine::Rendering;     // handles/enums/IDevice
+using namespace GameEngine::Rendering::RenderGraph; // RenderGraph upload ring
 using GameEngine::Rendering::RenderGraph::Test::MakeHeadlessDevice;
-
-namespace
-{
-TextureDesc Tex(uint32_t w, uint32_t h)
-{
-    TextureDesc d;
-    d.width = w;
-    d.height = h;
-    d.format = static_cast<uint32_t>(TextureFormat::RGBA8_UNORM);
-    d.usage = static_cast<uint32_t>(TextureUsage::ShaderResource | TextureUsage::RenderTarget);
-    return d;
-}
-} // namespace
 
 #define RG_REQUIRE_DEVICE(dev)                                                                        \
     auto dev = MakeHeadlessDevice();                                                                   \
@@ -49,7 +35,7 @@ TEST(RGUploadRing, RingBuffersCarryVertexUsage)
 TEST(RGUploadRing, SubAllocationsAreAlignedDistinctAndShareSlotBuffer)
 {
     RG_REQUIRE_DEVICE(dev);
-    RGUploadRing ring(dev.get(), /*framesInFlight=*/2, /*cap=*/4096);
+    RGUploadRing ring(dev.get(), /*slotCount=*/2, /*cap=*/4096);
     ring.BeginFrame(0);
     auto a = ring.Allocate(100, 256);
     auto b = ring.Allocate(50, 256);
@@ -67,7 +53,7 @@ TEST(RGUploadRing, SubAllocationsAreAlignedDistinctAndShareSlotBuffer)
 TEST(RGUploadRing, RotationUsesDistinctSlotsAndDoesNotClobberInFlight)
 {
     RG_REQUIRE_DEVICE(dev);
-    RGUploadRing ring(dev.get(), /*framesInFlight=*/2, /*cap=*/1024);
+    RGUploadRing ring(dev.get(), /*slotCount=*/2, /*cap=*/1024);
 
     ring.BeginFrame(0);
     auto a0 = ring.Allocate(64);
@@ -108,7 +94,7 @@ TEST(RGUploadRing, BeginFrameRewindsUsage)
 TEST(RGUploadRing, OverflowChainsAndConvergesToHighWater)
 {
     RG_REQUIRE_DEVICE(dev);
-    RGUploadRing ring(dev.get(), /*framesInFlight=*/2, /*cap=*/256);
+    RGUploadRing ring(dev.get(), /*slotCount=*/2, /*cap=*/256);
     ring.BeginFrame(0);
     auto small = ring.Allocate(64);
     ASSERT_TRUE(small.Valid());
@@ -143,7 +129,7 @@ TEST(RGUploadRing, OverflowChainsAndConvergesToHighWater)
 TEST(RGUploadRing, ReprovisionRecreatesSlotBuffersAndStaysWritable)
 {
     RG_REQUIRE_DEVICE(dev);
-    RGUploadRing ring(dev.get(), /*framesInFlight=*/2, /*cap=*/4096);
+    RGUploadRing ring(dev.get(), /*slotCount=*/2, /*cap=*/4096);
 
     ring.BeginFrame(0);
     auto before = ring.Allocate(64);
@@ -162,43 +148,4 @@ TEST(RGUploadRing, ReprovisionRecreatesSlotBuffersAndStaysWritable)
     EXPECT_NE(after.Ptr, nullptr) << "fresh persistent map, not a dangling pointer";
     std::memset(after.Ptr, 0xEE, 64); // writable through the fresh map — no UAF
     EXPECT_EQ(ring.BytesUsedThisFrame(), 64u);
-}
-
-// ── Rotating import ─────────────────────────────────────────────────────────
-
-TEST(RGRotatingTexture, DoubleBufferAlternatesAndNeverWritesInFlightSlot)
-{
-    RG_REQUIRE_DEVICE(dev);
-    RGRotatingTexture hist;
-    hist.Init(dev.get(), Tex(1920, 1080), /*count=*/2);
-    EXPECT_EQ(hist.Count(), 2u);
-
-    const TextureHandle h0 = hist.Current(0);
-    const TextureHandle h1 = hist.Current(1);
-    EXPECT_NE(h0, h1);
-    EXPECT_EQ(hist.Current(2), h0);
-    EXPECT_EQ(hist.Current(3), h1);
-    EXPECT_EQ(hist.Previous(1), h0);
-    EXPECT_EQ(hist.Previous(2), h1);
-    for (uint64_t f = 1; f < 8; ++f)
-        EXPECT_NE(hist.Current(f), hist.Previous(f));
-
-    hist.Destroy(dev.get());
-}
-
-TEST(RGRotatingTexture, CyclesModuloCount)
-{
-    RG_REQUIRE_DEVICE(dev);
-    RGRotatingTexture ring;
-    ring.Init(dev.get(), Tex(512, 512), /*count=*/3);
-    const TextureHandle a = ring.Current(0);
-    const TextureHandle b = ring.Current(1);
-    const TextureHandle c = ring.Current(2);
-    EXPECT_NE(a, b);
-    EXPECT_NE(b, c);
-    EXPECT_NE(a, c);
-    EXPECT_EQ(ring.Current(3), a);
-    EXPECT_EQ(ring.Current(5), c);
-    EXPECT_EQ(ring.Previous(0), c);
-    ring.Destroy(dev.get());
 }

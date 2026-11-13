@@ -64,8 +64,8 @@ private:
 
     RenderServices* m_RenderServices = nullptr;
     std::vector<SpriteDraw> m_Draws;
-    std::vector<std::pair<uint32, SpriteLight>> m_LightEntries;
-    std::vector<SpriteLight> m_PackedLights;
+    std::vector<std::pair<uint32, SpriteLightDraw>> m_LightEntries;
+    std::vector<SpriteLightDraw> m_PackedLights;
     Rendering::SortingLayers m_SortingLayers;
     uint64 m_SortingLayersRevision = UINT64_MAX;
 };

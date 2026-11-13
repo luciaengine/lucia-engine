@@ -26,7 +26,7 @@ inline constexpr uint32 kSignatureCapBase = 3000u;
 inline constexpr uint32 kSignatureGateBase = 4000u;
 // A piece drawing a cut variant signs with that variant's mesh handle under
 // this flag: a rebuild that moves it onto another variant is a new mesh.
-inline constexpr uint64 kSignatureMitreVariant = 1ull << 63;
+inline constexpr uint64 kSignatureMiterVariant = 1ull << 63;
 
 // One active pool entry resolved to what a piece instances: its mesh and
 // material, and the bounds the layout measured it by.
@@ -34,7 +34,7 @@ struct FencePoolPiece
 {
     Components::LocalBounds Bounds{};
     Components::MeshRenderer Renderer{};
-    // The CPU mesh the renderer draws, which a mitred piece is cut from.
+    // The CPU mesh the renderer draws, which a mitered piece is cut from.
     // Null when the model holds no such submesh.
     const Mesh* SourceMesh = nullptr;
 };
@@ -56,9 +56,9 @@ struct FenceEmissionPools
     // for every member of the post family.
     SplineLayout::PieceAxis PostAxis = SplineLayout::PieceAxis::Z;
     uint32 Seed = 0;
-    // The cut variants mitred spans and registered crests draw (fence design
+    // The cut variants mitered spans and registered crests draw (fence design
     // section 4c), and which one each span and crest of the layout draws: an
-    // index into Variants, or SplineLayout::kNoMitreVariant for its pool
+    // index into Variants, or SplineLayout::kNoMiterVariant for its pool
     // piece. Parallel to the layout's Spans and Crests; empty draws every
     // piece from its pool.
     std::span<const FencePoolPiece> Variants;

@@ -1,7 +1,7 @@
 #pragma once
 
+#include "Events/Event.h"
 #include "Graph/GraphModel.h"
-#include "Graph/GraphSelectionHistory.h"
 #include "Graph/GraphCanvas.h"
 #include "Graph/GraphNest.h"
 #include "Graph/GraphTransitionStore.h"
@@ -9,6 +9,7 @@
 #include "InspectorRegistry.h"
 #include "UI/Controls/DockPanel.h"
 #include "UI/UIElement.h"
+#include "UI/UiCoalescedPost.h"
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -16,6 +17,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -185,6 +187,9 @@ public:
                                     bool commitUndo = true);
 
     void SetContext(const EditorContext* ctx);
+    /** Selects an asset in the Assets panel and keeps the Inspector, for the asset
+        reference fields on the canvas's pins. */
+    void SetPingAsset(std::function<void(const std::filesystem::path&)> ping);
     /** Model of the graph currently in view (the deepest open nest). */
     Graph::Model* ActiveGraphModel();
     const Graph::Model* ActiveGraphModel() const;
@@ -196,9 +201,15 @@ public:
 
 private:
     void RebuildPalette();
+    // Rebuilds the palette on the next deferred drain, at most once however often it is asked.
     void SchedulePaletteRebuild();
+    // The rebuild SchedulePaletteRebuild deferred: releases its latch, then rebuilds a visible palette.
+    void RunScheduledPaletteRebuild();
     void RebuildVariablesPanel();
+    // Rebuilds the variables panel on the next deferred drain, at most once however often it is asked.
     void ScheduleVariablesPanelRebuild();
+    // The rebuild ScheduleVariablesPanelRebuild deferred: releases its latch, then rebuilds the panel.
+    void RunScheduledVariablesPanelRebuild();
     void AddNodeFromPalette(const std::string& typeId);
     void AddNodeFromPaletteAtScreen(const std::string& typeId, float screenX, float screenY,
                                     bool centerOnPointer, bool rejectPaletteArea);
@@ -213,6 +224,7 @@ private:
     std::filesystem::path PromptSaveAsPath();
     void DiscardCurrentGraphChanges();
     void RefreshGraphViewAfterModelChange();
+    std::string SaveChangesPromptPrefix() const;
     void EnsureUnsavedChangesModal();
     void UpdateTitleLabel();
     void SyncViewportFromModel();
@@ -299,13 +311,19 @@ private:
     Editor::UndoRedoService::InteractiveEdit BeginGraphParameterEdit(const char* actionName);
     Editor::UndoRedoService::InteractiveEdit BeginGraphVariableEdit(const char* actionName);
 
+    void SubscribeAssetFiles();
+    void OnAssetFilesChanged(std::span<const GUID> changed);
+
     static bool MatchSearch(const std::string& displayName, const std::string& typeId,
                             const std::string& search);
 
     const EditorContext* m_Context = nullptr;
     Editor::UndoRedoService* m_Undo = nullptr;
-    Editor::GraphSelectionHistory m_SelectionHistory;
     OpenColorPickerWindowFn m_OpenColorPickerWindow;
+    std::function<void(const std::filesystem::path&)> m_PingAsset;
+    // A changed-file batch that names an asset a node references rebinds the bound nodes once.
+    UI::UiCoalescedPost m_AssetFilesRebind;
+    EventSubscription m_AssetFilesSubscription;
     Editor::UndoRedoService::InteractiveEdit m_GraphDragEdit{};
 
     Editor::UndoRedoService::InteractiveEdit m_GraphParameterEdit{};
@@ -420,7 +438,7 @@ private:
     VariablesSortMode m_VariablesSortMode = VariablesSortMode::Name;
     bool m_VariablesSortAscending = true;
 
-    bool m_PaletteRebuildScheduled = false; /* At most one ScheduleNext in flight so typing doesn't hang */
+    bool m_PaletteRebuildScheduled = false; /* At most one palette rebuild waits at a time, so typing does not hang */
     bool m_VariablesRebuildScheduled = false;
     bool m_FrameNodesOnNextLayout = false; /* Frame all nodes to fit view when opening a graph */
     int m_FrameRetries = 0; /* Limit retries so stale flag doesn't fire on later interactions */

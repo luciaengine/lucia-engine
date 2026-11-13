@@ -1,0 +1,9 @@
+<!-- ReferenceField (Apps/Editor/Include/UI/ReferenceFieldBase.h): the parts of an asset or entity reference
+     field. ReferenceFieldBase.cpp and AssetField.cpp find them by class; UI/controls/AssetField.css styles them. -->
+<UIElement>
+  <UIElement class="asset-field-icon hidden" />
+  <UIElement class="asset-field-preview hidden" />
+  <Label class="asset-field-name empty" />
+  <UIElement class="asset-field-clear hidden" />
+  <UIElement class="asset-field-pick" />
+</UIElement>

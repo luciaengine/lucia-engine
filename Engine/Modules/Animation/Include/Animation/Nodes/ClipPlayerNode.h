@@ -10,7 +10,6 @@ namespace GameEngine
 namespace Animation
 {
 class AnimationClip;
-struct PlaybackStep;
 
 // Plays a single animation clip and outputs the sampled pose.
 // This is the leaf node equivalent of the legacy Animator component.
@@ -34,10 +33,6 @@ public:
     void Evaluate(EvaluationContext& ctx, AnimationPose& outPose) override;
 
 private:
-    friend class BlendSpace1DNode;
-    PlaybackStep Advance(float deltaTime) const;
-    void EvaluateStep(EvaluationContext& ctx, AnimationPose& outPose, const PlaybackStep& step);
-
     std::shared_ptr<AnimationClip> m_Clip;
     GUID m_ClipGuid{};
     float m_Time = 0.0f;

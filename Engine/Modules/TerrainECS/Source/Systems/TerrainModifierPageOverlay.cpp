@@ -1,7 +1,12 @@
-// Sparse height deltas applied to a tiled terrain's base pages.
+// TerrainModifierSystem's height page overlay: what the modifiers add to a tiled terrain's base height
+// pages (design page-streaming 3.8), a sparse HeightPageLayer, so a modified terrain renders every
+// modifier from its first paged frame. Also the level-0 rect a bake changed on the surface, for the surface pages.
 
 #include "TerrainECS/TerrainModifierSystem.h"
+#include "TerrainRowBands.h"
+#include "TerrainECS/TerrainSurface/TerrainSurfaceStore.h"
 
+#include "Core/CpuProfiler.h"
 #include "PageStreaming/Height/HeightPageLayer.h"
 #include "PageStreaming/PageSampleRect.h"
 #include "PageStreaming/PageStore/PageStoreFormat.h"
@@ -21,6 +26,16 @@ namespace
 {
 
 using PageStreaming::PageSampleRect;
+
+// Adds `changed` of `planes` to the surface change record of `tiled`, whose reader has taken
+// the record when SurfaceChangedSince equals SurfaceVersion.
+void AddSurfaceChange(TiledTerrainData& tiled, const PageSampleRect& changed, uint8 planes)
+{
+    const bool taken = tiled.SurfaceChangedSince == tiled.SurfaceVersion;
+    tiled.SurfaceChanged = taken ? changed : PageStreaming::Union(tiled.SurfaceChanged, changed);
+    tiled.SurfaceChangedPlanes = taken ? planes : static_cast<uint8>(tiled.SurfaceChangedPlanes | planes);
+    ++tiled.SurfaceVersion;
+}
 
 // The terrain's global tile lattice: level 0 of its height pages.
 struct TileLattice
@@ -107,8 +122,10 @@ PageSampleRect ExtentOf(const PageStreaming::HeightPageLayer& layer)
     return layer.Extent(0).value_or(PageSampleRect{});
 }
 
-// Publishes the layer and its changed level-0 rect. Versions are unique across terrains, so
-// resident pages distinguish an incremental write from rebuilt modifier data after a scene load.
+// Publishes `layer` as the terrain's overlay, `changed` the level-0 rect it changed from the
+// previous one. The version is unique across every terrain's data, so the height pages tell an
+// overlay derived from the one they hold from an overlay of rebuilt modifier data (a scene load
+// replaces the terrain's data while its pages stay resident).
 void PublishPageOverlay(TiledTerrainData& tiled, std::shared_ptr<PageStreaming::HeightPageLayer> layer,
                         const PageSampleRect& changed)
 {
@@ -134,8 +151,10 @@ void ReleaseHeightPageOverlay(TiledTerrainData& tiled)
 void TerrainModifierSystem::BakeHeightPageOverlay(TiledTerrainData& tiled, float32 heightScale,
                                                   float32 terrainOriginY,
                                                   const std::vector<ResolvedModifier>& modifiers, bool fullBake,
-                                                  const DirtyUnion& heightDirty)
+                                                  const DirtyUnion& heightDirty, bool readBakedTiles)
 {
+    GE_CPU_PROFILE_SCOPE("Terrain.PageOverlay");
+    tiled.HeightBakeReport.PageOverlayComposedSamples = 0;
     const std::optional<TileLattice> lattice = MakeTileLattice(tiled);
     if (!lattice || tiled.PageOverlayByteCap == 0)
     {
@@ -190,11 +209,7 @@ void TerrainModifierSystem::BakeHeightPageOverlay(TiledTerrainData& tiled, float
     std::optional<PageSampleRect> dirty;
     if (heightDirty.Any)
         dirty = LatticeRect(*lattice, heightDirty.MinX, heightDirty.MinZ, heightDirty.MaxX, heightDirty.MaxZ);
-    // A dirty union over the layer cap rebuilds from sparse footprints instead of allocating
-    // a dense scratch grid across the empty gap.
-    const bool edit = !fullBake && previous && tiled.PageOverlayCurrent && previous->FitsLevels(levels) &&
-                      (!dirty || PageStreaming::HeightPageLayerBytesOver(levels, std::span(&*dirty, 1)) <=
-                                     tiled.PageOverlayByteCap);
+    const bool edit = !fullBake && previous && tiled.PageOverlayCurrent && previous->FitsLevels(levels);
     if (edit && !dirty)
         return; // nothing under the terrain's height changed
     const std::vector<PageSampleRect> writes = edit ? std::vector<PageSampleRect>{*dirty} : reach;
@@ -208,11 +223,15 @@ void TerrainModifierSystem::BakeHeightPageOverlay(TiledTerrainData& tiled, float
                                          static_cast<int32>(write.MaxX), static_cast<int32>(write.MaxZ)});
         deltas[region].assign(static_cast<std::size_t>(write.Width()) * write.Height(), 0.0f);
     }
-    RunBakeRowBands(regions, [this, &tiled, &modifiers, &writes, &deltas, heightScale, terrainOriginY](
-                                 std::size_t region, int32 firstX, int32 lastX, int32 firstZ, int32 lastZ) {
-        ComposeHeightPageDeltaBand(tiled, heightScale, terrainOriginY, modifiers, writes[region],
-                                   firstX, lastX, firstZ, lastZ, deltas[region]);
+    const LatticeBlockSource source = readBakedTiles ? LatticeBlockSource::BakedTiles : LatticeBlockSource::Compose;
+    std::atomic<uint64> composedSamples{0};
+    RunBakeRowBands(regions, [&composedSamples, &tiled, &modifiers, &writes, &deltas, heightScale, terrainOriginY,
+                              source](std::size_t region, int32 x0, int32 x1, int32 z0, int32 z1) {
+        composedSamples.fetch_add(ComposeLatticeDeltaBand(tiled, heightScale, terrainOriginY, modifiers,
+                                                          writes[region], x0, x1, z0, z1, source, deltas[region]),
+                                  std::memory_order_relaxed);
     });
+    tiled.HeightBakeReport.PageOverlayComposedSamples = composedSamples.load(std::memory_order_relaxed);
 
     if (edit)
     {
@@ -241,30 +260,71 @@ void TerrainModifierSystem::BakeHeightPageOverlay(TiledTerrainData& tiled, float
     tiled.PageOverlayCurrent = true;
 }
 
-void TerrainModifierSystem::ComposeHeightPageDeltaBand(const TiledTerrainData& tiled, float32 heightScale,
-                                                        float32 terrainOriginY,
-                                                        const std::vector<ResolvedModifier>& modifiers,
-                                                        const PageStreaming::PageSampleRect& write,
-                                                        int32 firstX, int32 lastX, int32 firstZ, int32 lastZ,
-                                                        std::span<float32> deltas)
+uint64 TerrainModifierSystem::ComposeLatticeDeltaBand(const TiledTerrainData& tiled, float32 heightScale,
+                                                      float32 terrainOriginY,
+                                                      const std::vector<ResolvedModifier>& modifiers,
+                                                      const PageSampleRect& write, int32 x0, int32 x1, int32 z0,
+                                                      int32 z1, LatticeBlockSource source, std::span<float32> deltas)
 {
     static const std::vector<ResolvedModifier> kNoModifiers;
-    const uint32 countX = static_cast<uint32>(lastX - firstX + 1);
-    const uint32 countZ = static_cast<uint32>(lastZ - firstZ + 1);
+    const uint32 countX = static_cast<uint32>(x1 - x0 + 1);
+    const uint32 countZ = static_cast<uint32>(z1 - z0 + 1);
     std::vector<float32> baked;
     std::vector<float32> base;
-    if (!ComposeLatticeBlock(tiled, heightScale, terrainOriginY, modifiers, firstX, firstZ, countX, countZ, baked) ||
-        !ComposeLatticeBlock(tiled, heightScale, terrainOriginY, kNoModifiers, firstX, firstZ, countX, countZ, base))
-        return;
-    for (uint32 row = 0; row < countZ; ++row)
+    uint64 bakedComposed = 0;
+    uint64 baseComposed = 0;
+    if (!BuildLatticeBlock(tiled, heightScale, terrainOriginY, modifiers, x0, z0, countX, countZ, source, baked,
+                           bakedComposed) ||
+        !BuildLatticeBlock(tiled, heightScale, terrainOriginY, kNoModifiers, x0, z0, countX, countZ,
+                           LatticeBlockSource::Compose, base, baseComposed))
+        return 0;
+    for (uint32 z = 0; z < countZ; ++z)
     {
-        const std::size_t destination =
-            static_cast<std::size_t>(firstZ - static_cast<int32>(write.MinZ) + row) * write.Width() +
-            static_cast<std::size_t>(firstX - static_cast<int32>(write.MinX));
-        for (uint32 column = 0; column < countX; ++column)
-            deltas[destination + column] = baked[static_cast<std::size_t>(row) * countX + column] -
-                                           base[static_cast<std::size_t>(row) * countX + column];
+        float32* out = deltas.data() + static_cast<std::size_t>(z0 - static_cast<int32>(write.MinZ) + z) * write.Width() +
+                       static_cast<std::size_t>(x0 - static_cast<int32>(write.MinX));
+        for (uint32 x = 0; x < countX; ++x)
+            out[x] = baked[static_cast<std::size_t>(z) * countX + x] - base[static_cast<std::size_t>(z) * countX + x];
     }
+    return bakedComposed;
+}
+
+void TerrainModifierSystem::PublishSurfaceChanged(TiledTerrainData& tiled, bool fullBake,
+                                                  const DirtyUnion& heightDirty, const DirtyUnion& splatDirty)
+{
+    const std::optional<TileLattice> lattice = MakeTileLattice(tiled);
+    if (!lattice)
+        return;
+    std::optional<PageSampleRect> changed;
+    if (fullBake)
+        changed = PageSampleRect{0u, 0u, lattice->SamplesX - 1u, lattice->SamplesZ - 1u};
+    for (const DirtyUnion* dirty : {&heightDirty, &splatDirty})
+    {
+        if (fullBake || !dirty->Any)
+            continue;
+        const std::optional<PageSampleRect> reach =
+            LatticeRect(*lattice, dirty->MinX, dirty->MinZ, dirty->MaxX, dirty->MaxZ);
+        if (reach)
+            changed = changed ? PageStreaming::Union(*changed, *reach) : *reach;
+    }
+    if (!changed)
+        return;
+    tiled.SurfaceRefresh = SurfaceRefreshReason::Edit;
+    AddSurfaceChange(tiled, *changed, kEverySurfacePlane);
+}
+
+void TerrainModifierSystem::PublishGrassSurfaceChanged(TiledTerrainData& tiled, bool entire, const DirtyUnion& dirty)
+{
+    const std::optional<TileLattice> lattice = MakeTileLattice(tiled);
+    if (!lattice)
+        return;
+    std::optional<PageSampleRect> changed;
+    if (entire)
+        changed = PageSampleRect{0u, 0u, lattice->SamplesX - 1u, lattice->SamplesZ - 1u};
+    else if (dirty.Any)
+        changed = LatticeRect(*lattice, dirty.MinX, dirty.MinZ, dirty.MaxX, dirty.MaxZ);
+    if (!changed)
+        return;
+    AddSurfaceChange(tiled, *changed, kGrassSurfacePlanes);
 }
 
 } // namespace GameEngine::TerrainECS

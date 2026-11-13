@@ -2,7 +2,6 @@
   "name": "diversion-vcs",
   "version": "1.0.0",
   "displayName": "Diversion Version Control",
-  "icon": "Preview/icon.svg",
   "assets": "Assets/",
   "modules": [
     {

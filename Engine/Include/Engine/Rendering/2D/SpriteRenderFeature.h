@@ -1,13 +1,14 @@
 #pragma once
 #include "Engine/Rendering/DrawCommandProducer.h"
 #include "Engine/Rendering/DrawBindings.h"
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 #include "Types/ScopedSubscription.h"
 #include <array>
 #include "Engine/Rendering/RenderSortKey.h"
 
 #include "AssetCore/GUID.h"
 #include "Mathematics/Vector3.h"
+#include "Mathematics/WorldPosition.h"
 #include "Engine/Rendering/IRenderFeature.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/Handle.h"
@@ -39,6 +40,15 @@ struct SpriteLight
     float32 DirectionFalloff[4]{};
 };
 
+static_assert(sizeof(SpriteLight) == 48, "sprite light storage must match std430");
+
+/** Exact CPU placement, rebased into SpriteLight for each view. */
+struct SpriteLightDraw
+{
+    Mathematics::WorldPosition Position;
+    SpriteLight Gpu;
+};
+
 struct SpriteDraw
 {
     RenderSortingData Sorting;
@@ -48,7 +58,7 @@ struct SpriteDraw
     bool LinearFiltering = false;
     float32 NormalStrength = 1;
     uint32 RenderLayers = 0xFFFFFFFFu;
-    float32 Center[3] = {};
+    Mathematics::WorldPosition Center;
     float32 AxisX[3] = {};
     float32 AxisY[3] = {};
     /** (u0, v0, u1, v1) with FlipX/FlipY already applied. */
@@ -96,7 +106,7 @@ struct SpriteBatch
      * Z-sorted list, so it spans a contiguous Z range and one key orders it
      * against tile layers correctly.
      */
-    float32 WorldZ = 0.0f;
+    float64 WorldZ = 0.0;
 };
 
 // Shared by production batching and regression tests. A batch may never span
@@ -131,7 +141,7 @@ public:
     void OnDeviceRebuilt(::GameEngine::Rendering::IDevice* device) override;
 
     /** Extraction output for this frame; replaces the previous frame's list. */
-    void SetSpriteLights(std::vector<SpriteLight>& lights) { m_Lights.swap(lights); }
+    void SetSpriteLights(std::vector<SpriteLightDraw>& lights) { m_Lights.swap(lights); }
     void SetSpriteDraws(uint64 worldId, std::vector<SpriteDraw>& draws);
     bool HasSpriteDraws(uint64 viewWorldId = 0) const
     {
@@ -169,6 +179,7 @@ private:
         float32 Tint[4];
         float32 Surface[4];
     };
+    static_assert(sizeof(SpriteInstance) == 96, "sprite instance storage must match std430");
 
     /** Ring of per-frame instance buffers for one view. */
     struct ViewRing
@@ -182,7 +193,8 @@ private:
     /** Buffer for this view's current frame slot, grown to fit. Invalid on failure. */
     ::GameEngine::Rendering::BufferHandle AcquireInstanceBuffer(uint32 viewId, uint32 instanceCount);
     void ReleaseGpuState();
-    std::vector<SpriteLight> m_Lights;
+    std::vector<SpriteLightDraw> m_Lights;
+    std::vector<SpriteLight> m_LightScratch;
 
     ::GameEngine::Rendering::IDevice* m_Device = nullptr;
     bool m_Initialized = false;

@@ -4,11 +4,13 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <unordered_map>
 #include <typeindex>
 #include <mutex>
 #include <vector>
 
+#include "AssetCore/GUID.h"
 #include "ECS/ECS.h"
 #include "ECS/ModuleRegistration.h"
 #include "AssetCore/AssetTypes.h"
@@ -46,6 +48,7 @@ struct InspectorContext {
     ECS::World* World = nullptr;      // ECS world (may be null for non-ECS targets)
     ECS::EntityHandle Entity{};       // Primary entity being inspected (invalid for non-entity targets)
     std::vector<ECS::EntityHandle> Entities; // All selected entities (includes Entity; empty = single-edit)
+    std::vector<std::filesystem::path> AssetPaths; // The selected asset files and folders (asset selection rows)
     void* Object = nullptr;           // Pointer to the component/asset being inspected
     Editor::UndoRedoService* Undo = nullptr; // optional editor undo/redo service
     Editor::EditorChangeNotifications* ChangeNotifications = nullptr; // optional editor change notifications
@@ -66,9 +69,10 @@ struct InspectorContext {
     // Optional: inspectors that need per-frame visual refresh push a callback here. Keep these cheap.
     // Owned by InspectorPanel; cleared on each ShowEntity rebuild.
     std::vector<std::function<void()>>* FrameRefreshCallbacks = nullptr;
-
-    // Refreshed in place after an instance edit; owned by the Inspector panel.
+    // Optional: inspectors that mark overridden fields push a callback here that sets the marks again.
+    // Owned by InspectorPanel; cleared with the section's other refresh callbacks.
     std::vector<std::function<void()>>* OverrideMarkRefreshCallbacks = nullptr;
+    // Optional: sets every override mark of the shown entity again, in place, with no rebuild.
     std::function<void()> RefreshOverrideMarks;
 
     // Optional: navigate to and highlight an asset in the asset browser by path.
@@ -134,6 +138,19 @@ struct InspectorContext {
 
 using InspectorFn = std::function<void(const InspectorContext&)>;
 
+// The state a selected asset's inspector header shows after the asset's name while its load has
+// not landed ("preparing…"), or empty for none, which leaves the default "Loading <file>..."
+// line. Main thread, polled a few times a second while the load runs, so it reads state rather
+// than doing work.
+using AssetLoadingSuffixFn = std::function<std::string(const GUID& guid)>;
+
+// Where the Inspector adds an entity banner: under the entity's header, or after its components.
+enum class EntityBannerPlacement
+{
+    BeforeComponents,
+    AfterComponents,
+};
+
 // How one component of an entity differs from the source the entity derives from, as a registered
 // answerer reports it. Empty for an entity that derives from nothing.
 struct ComponentOverrides
@@ -143,7 +160,7 @@ struct ComponentOverrides
     // The header badge for the component ("Added"), and its tooltip; empty for none.
     std::string Badge;
     std::string BadgeTooltip;
-    // The reflected names of the fields that differ from the source.
+    // The fields that differ from the source: each one's reflected name, or its scene key when it has none.
     std::vector<std::string> Fields;
 
     bool IsFieldOverridden(std::string_view fieldName) const
@@ -174,49 +191,20 @@ struct OverrideMenuTarget
     ECS::World* World = nullptr;
     ECS::EntityHandle Entity{};
     ECS::ComponentTypeId Component = 0;
-    // The reflected name of the field; empty for the component's header.
+    // The field's reflected name, or its scene key when it has none; empty for the component's header.
     std::string Field;
     Editor::UndoRedoService* Undo = nullptr;
     Editor::EditorChangeNotifications* Notifications = nullptr;
+    // The row's label, which the undo step names; empty for the header or a row with no label.
+    std::string Label;
 };
 
 using OverrideMenuFn = std::function<std::vector<OverrideMenuEntry>(const OverrideMenuTarget& target)>;
 
 // Simple registry for custom inspectors.
-enum class EntityBannerPlacement
-{
-    BeforeComponents,
-    AfterComponents,
-};
-
 class InspectorRegistry {
 public:
     static InspectorRegistry& Get();
-
-    void RegisterEntityBanner(std::string_view key, EntityBannerPlacement placement, InspectorFn fn)
-    {
-        std::lock_guard<std::mutex> lock(m_Mutex);
-        for (EntityBanner& banner : m_EntityBanners)
-        {
-            if (banner.Key == key)
-            {
-                banner.Placement = placement;
-                banner.Fn = std::move(fn);
-                return;
-            }
-        }
-        m_EntityBanners.push_back({std::string(key), placement, std::move(fn)});
-    }
-    // The registered entity banners at `placement`, in registration order.
-    std::vector<InspectorFn> GetEntityBanners(EntityBannerPlacement placement) const
-    {
-        std::lock_guard<std::mutex> lock(m_Mutex);
-        std::vector<InspectorFn> banners;
-        for (const EntityBanner& banner : m_EntityBanners)
-            if (banner.Placement == placement)
-                banners.push_back(banner.Fn);
-        return banners;
-    }
 
     // Register a custom inspector for a component type T.
     template<typename T>
@@ -271,6 +259,58 @@ public:
         return &it->second;
     }
 
+    // Register the banner `key` that the Inspector adds at `placement` on an entity; a second
+    // registration of `key` replaces the first in its place. The function adds nothing for an entity
+    // it has no banner for. Banners show in registration order.
+    void RegisterEntityBanner(std::string_view key, EntityBannerPlacement placement, InspectorFn fn)
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        for (EntityBanner& banner : m_EntityBanners)
+        {
+            if (banner.Key == key)
+            {
+                banner.Placement = placement;
+                banner.Fn = std::move(fn);
+                return;
+            }
+        }
+        m_EntityBanners.push_back({std::string(key), placement, std::move(fn)});
+    }
+    // The registered entity banners at `placement`, in registration order.
+    std::vector<InspectorFn> GetEntityBanners(EntityBannerPlacement placement) const
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        std::vector<InspectorFn> banners;
+        for (const EntityBanner& banner : m_EntityBanners)
+            if (banner.Placement == placement)
+                banners.push_back(banner.Fn);
+        return banners;
+    }
+    // Register the row `key` that the Inspector adds above the view of every asset selection: one or
+    // many files and folders, loaded or not (InspectorContext::AssetPaths). A second registration of
+    // `key` replaces the first in its place. The function adds nothing for a selection it has no row for.
+    void RegisterAssetSelectionRow(std::string_view key, InspectorFn fn)
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        for (AssetSelectionRow& row : m_AssetSelectionRows)
+        {
+            if (row.Key == key)
+            {
+                row.Fn = std::move(fn);
+                return;
+            }
+        }
+        m_AssetSelectionRows.push_back({std::string(key), std::move(fn)});
+    }
+    // The registered asset selection rows, in registration order.
+    std::vector<InspectorFn> GetAssetSelectionRows() const
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        std::vector<InspectorFn> rows;
+        for (const AssetSelectionRow& row : m_AssetSelectionRows)
+            rows.push_back(row.Fn);
+        return rows;
+    }
     // Set the one answerer the component sections and the default field rows ask how a component
     // differs from its entity's source; a second call replaces the first. The entity header asks for
     // the Name component.
@@ -316,6 +356,29 @@ public:
         m_AssetInspectorOwners[key] = ECS::GetActiveRegistrationModule();
     }
 
+    // Register the pending-load header suffix for an asset type, beside its asset inspector and
+    // from the same module.
+    void RegisterAssetLoadingSuffix(AssetType type, AssetLoadingSuffixFn fn)
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        m_AssetLoadingSuffixes[static_cast<int>(type)] = std::move(fn);
+    }
+
+    // The registered pending-load header suffix for an asset of `type`, or empty when none is
+    // registered or it has nothing to say now.
+    std::string AssetLoadingSuffix(AssetType type, const GUID& guid)
+    {
+        AssetLoadingSuffixFn fn;
+        {
+            std::lock_guard<std::mutex> lock(m_Mutex);
+            auto it = m_AssetLoadingSuffixes.find(static_cast<int>(type));
+            if (it == m_AssetLoadingSuffixes.end())
+                return {};
+            fn = it->second;
+        }
+        return fn(guid);
+    }
+
     // Try to get a registered inspector for an asset type. Returns nullptr if none.
     InspectorFn* TryGetAssetInspector(AssetType type)
     {
@@ -334,10 +397,6 @@ private:
     std::unordered_map<std::type_index, InspectorFn> m_ComponentInspectors;
     std::unordered_map<ECS::ComponentTypeId, InspectorFn> m_ComponentInspectorsById;
     std::unordered_map<int, InspectorFn> m_AssetInspectors;
-    // Module stamp per component-inspector registration (C12 attribution;
-    // registry bookkeeping — see ECS/ModuleRegistration.h).
-    std::unordered_map<ECS::ComponentTypeId, ECS::ModuleRegistrationStamp> m_ModuleOwners;
-    std::unordered_map<int, ECS::ModuleRegistrationStamp> m_AssetInspectorOwners;
     struct EntityBanner
     {
         std::string Key;
@@ -345,9 +404,19 @@ private:
         InspectorFn Fn;
     };
     std::vector<EntityBanner> m_EntityBanners;
+    struct AssetSelectionRow
+    {
+        std::string Key;
+        InspectorFn Fn;
+    };
+    std::vector<AssetSelectionRow> m_AssetSelectionRows;
     ComponentOverridesFn m_ComponentOverrides;
     OverrideMenuFn m_OverrideMenu;
-
+    std::unordered_map<int, AssetLoadingSuffixFn> m_AssetLoadingSuffixes;
+    // Module stamp per component-inspector registration (C12 attribution;
+    // registry bookkeeping — see ECS/ModuleRegistration.h).
+    std::unordered_map<ECS::ComponentTypeId, ECS::ModuleRegistrationStamp> m_ModuleOwners;
+    std::unordered_map<int, ECS::ModuleRegistrationStamp> m_AssetInspectorOwners;
     mutable std::mutex m_Mutex;
 };
 

@@ -10,6 +10,7 @@
 #include "Components/Rendering/Light.h"
 #include "Components/Transform.h"
 #include "Editor/Settings/SceneViewSettings.h"
+#include "Mathematics/Interpolation.h"
 #include "Mathematics/Vector3.h"
 #include "Types/Color.h"
 
@@ -416,9 +417,9 @@ Color IconColorFromLight(const float src[3], float alpha)
     const float maxC = std::max({ src[0], src[1], src[2] });
     const float scale = maxC > kBlackLightThreshold ? 1.0f / maxC : 0.0f;
     // Lift toward white so very dim or pure-black lights still show.
-    return Color(0.4f + 0.6f * std::clamp(src[0] * scale, 0.0f, 1.0f),
-                 0.4f + 0.6f * std::clamp(src[1] * scale, 0.0f, 1.0f),
-                 0.4f + 0.6f * std::clamp(src[2] * scale, 0.0f, 1.0f),
+    return Color(0.4f + 0.6f * Math::Clamp01(src[0] * scale),
+                 0.4f + 0.6f * Math::Clamp01(src[1] * scale),
+                 0.4f + 0.6f * Math::Clamp01(src[2] * scale),
                  alpha);
 }
 
@@ -462,11 +463,10 @@ void LightGizmo::Render(GizmoRenderContext& context)
                                           != m_SelectedEntities.end();
                   const bool emphasize = isSelected || isHovered;
 
-                  const float* m = xf.matrix;
-                  const Vector3 pos(m[12], m[13], m[14]);
+                  const Vector3 pos = xf.GetPosition() - Mathematics::WorldPosition{};
 
                   // Shine along entity forward (+Z column).
-                  const Vector3 dir = Vector3(m[8], m[9], m[10]).NormalizeOrZero();
+                  const Vector3 dir = Vector3(xf.Basis[2]).NormalizeOrZero();
 
                   Vector3 right;
                   Vector3 up;
@@ -533,8 +533,8 @@ void LightGizmo::Render(GizmoRenderContext& context)
                       }
                       case LightType::Area:
                       {
-                          const Vector3 planeRight(m[0], m[1], m[2]);
-                          const Vector3 planeUp(m[4], m[5], m[6]);
+                          const Vector3 planeRight(xf.Basis[0]);
+                          const Vector3 planeUp(xf.Basis[1]);
                           DrawAreaIcon3D(context, pos, dir, planeRight, planeUp,
                                          light.AreaWidth, light.AreaHeight,
                                          iconR, iconColor, iconThick);

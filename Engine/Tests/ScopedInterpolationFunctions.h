@@ -4,7 +4,7 @@
 // restores the previous value, as ScopedCompatShaderProfile does for the compat profile: a device
 // test earlier in the process may have set it from a real device.
 
-#include "Rendering/Materials/ShaderProfileDefines.h"
+#include "Rendering/Materials/Shader/ShaderProfileDefines.h"
 
 namespace GameEngine::TestSupport
 {

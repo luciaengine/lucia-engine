@@ -7,8 +7,7 @@
 #include "Components/Transform.h"
 #include "Engine/Rendering/HlodRuntime.h"
 #include "Engine/Rendering/RenderServices.h"
-#include "Platform/Environment.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/GPUScene.h"
 
 #include "ECS/ECSTemplates.h"
@@ -22,10 +21,15 @@ namespace Engine::Renderer {
 
 namespace {
 
-// GE_HLOD=0 disables the runtime switch entirely (zero overhead); unset keeps
-// it on. Read once.
+// GE_HLOD=0 disables the runtime switch entirely (zero overhead); unset / any
+// other value keeps it on. Read once.
 bool IsHlodRuntimeEnabled() {
-    static bool s_Enabled = Platform::EnvironmentSwitchEnabled("GE_HLOD", true);
+    static bool s_Enabled = []() {
+        const char* env = std::getenv("GE_HLOD");
+        if (!env || !*env)
+            return true;
+        return !(env[0] == '0' && env[1] == '\0');
+    }();
     return s_Enabled;
 }
 
@@ -136,10 +140,10 @@ void HLODSelectSystem::Update(ECS::World& world, float32 /*deltaTime*/) {
     Hlod::ViewLod view;
     const Rendering::CameraId camId = m_RenderServices->Views().GetViewpointCamera();
     if (const Rendering::CameraData* cam = m_RenderServices->Views().FindCameraData(camId)) {
-        view.CameraPos[0] = cam->cameraPos[0];
-        view.CameraPos[1] = cam->cameraPos[1];
-        view.CameraPos[2] = cam->cameraPos[2];
-        view.ProjScaleY = (cam->cameraPos[3] == 1.0f) ? 0.0f : std::abs(cam->proj[5]);
+        view.CameraPos[0] = cam->cameraPos.x;
+        view.CameraPos[1] = cam->cameraPos.y;
+        view.CameraPos[2] = cam->cameraPos.z;
+        view.ProjScaleY = (cam->cameraPos.w == 1.0f) ? 0.0f : std::abs(cam->proj[1][1]);
     }
     view.LodBiasGlobal = m_RenderServices->GetLODGlobalBias();
 
@@ -162,6 +166,9 @@ void HLODSelectSystem::Update(ECS::World& world, float32 /*deltaTime*/) {
     bool anyEdit = false;
     {
         const uint64 probeVersion = world.GetGlobalSystemVersion();
+        const std::size_t structuralVersion = world.GetStructuralChangeVersion();
+        anyEdit = structuralVersion != m_StructuralVersion;
+        m_StructuralVersion = structuralVersion;
         auto probe = [&](auto tag, ECS::ChangeGate& gate) {
             using C = decltype(tag);
             auto q = world.Query<ECS::Read<C>>();

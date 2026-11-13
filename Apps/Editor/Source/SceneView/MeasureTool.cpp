@@ -2,8 +2,8 @@
 
 #include "Mathematics/Ray.h"
 #include "Platform/Window.h"
-#include "SceneViewController.h"
-#include "UI/Controls/Widgets/SceneViewMeasureOverlay.h"
+#include "SceneView/SceneViewController.h"
+#include "UI/Controls/Widgets/SceneView/SceneViewMeasureOverlay.h"
 
 namespace GameEngine::Editor::SceneTools
 {

@@ -18,7 +18,7 @@
 #include <cctype>
 #include <string>
 
-#include "Terrain/TerrainGrassVocabulary.h"
+#include "Terrain/TerrainGrass/TerrainGrassVocabulary.h"
 
 using namespace GameEngine;
 namespace GrassVocab = GameEngine::Editor::TerrainGrassVocabulary;

@@ -1,0 +1,7 @@
+<svg width="72" height="48" viewBox="0 0 72 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M4 20H48V48H4Z" fill="white" fill-opacity="0.16"/>
+<path d="M4 12H56V48H48V20H4Z" fill="white" fill-opacity="0.38"/>
+<path d="M4 12H56V46" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="miter"/>
+<path d="M4 20H48V46" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="miter"/>
+<path d="M48 20L56 12" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+</svg>

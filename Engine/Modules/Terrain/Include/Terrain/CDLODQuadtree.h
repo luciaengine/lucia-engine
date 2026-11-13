@@ -15,7 +15,8 @@ class HeightfieldData;
 // enabling fast frustum culling with tight vertical bounds.
 //
 // The tree is a complete quadtree stored as a flat array (level-order).
-// Level 0 = root (covers entire terrain). Level N = finest subdivision.
+// Level 0 = finest subdivision (2^(numLevels-1) nodes per axis).
+// Level numLevels-1 = root (one node covering the entire terrain).
 class CDLODQuadtree
 {
 public:
@@ -24,25 +25,6 @@ public:
     // Build the quadtree from a heightfield.
     // `numLevels` determines the depth (finest level has 2^(numLevels-1) nodes per axis).
     void Build(const HeightfieldData& heightfield, uint32 numLevels);
-
-    // Allocate the node structure for `numLevels` without filling data.
-    // All nodes are initialized to min=0, max=0. Use SetNodeMinMax() to
-    // populate individual nodes. Intended for patchable global quadtrees
-    // where levels are filled independently (e.g., coarse from noise,
-    // fine from loaded tile heightfields).
-    void AllocateLevels(uint32 numLevels);
-
-    // Set an individual node's min/max height at any level. Can be called
-    // at any time after AllocateLevels() or Build() to patch node data.
-    void SetNodeMinMax(uint32 level, uint32 x, uint32 z,
-                       float32 minHeight, float32 maxHeight);
-
-    // After populating finest-level (level 0) nodes via SetNodeMinMax(),
-    // build all coarser levels by merging 2x2 children:
-    //   parent.MinHeight = min(children), parent.MaxHeight = max(children).
-    // Call this instead of Build() when constructing a global quadtree from
-    // per-tile data without a single contiguous heightfield.
-    void BuildCoarseLevelsFromChildren();
 
     // Re-scan only the finest-level nodes overlapping the sample rect
     // [minSampleX, maxSampleX] x [minSampleZ, maxSampleZ] (inclusive) from the
@@ -86,6 +68,16 @@ public:
     bool IsBuilt() const { return !m_Nodes.empty(); }
 
 private:
+    // Allocate the node structure for `numLevels`, every node at min=0, max=0.
+    void AllocateLevels(uint32 numLevels);
+
+    void SetNodeMinMax(uint32 level, uint32 x, uint32 z,
+                       float32 minHeight, float32 maxHeight);
+
+    // Build every level above the finest one by merging 2x2 children:
+    //   parent.MinHeight = min(children), parent.MaxHeight = max(children).
+    void BuildCoarseLevelsFromChildren();
+
     void BuildLevel(const HeightfieldData& heightfield, uint32 level,
                     uint32 samplesPerNodeX, uint32 samplesPerNodeZ);
 

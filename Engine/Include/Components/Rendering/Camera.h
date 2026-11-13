@@ -1,8 +1,11 @@
 #pragma once
 
 #include "Types/Types.h"
-#include "Engine/Rendering/ExposureScale.h"
+#include "Rendering/RenderLayerMask.h"
+#include "Components/Rendering/ExposureCompensationCurve.h"
 #include "Components/Rendering/PostProcessVolume.h" // ExposureMode (exposure is a camera/sensor property)
+#include "Mathematics/Angle.h"
+#include "Mathematics/Curve.h"
 
 #include <algorithm>
 #include <cmath>
@@ -66,21 +69,18 @@ constexpr float32 CameraSensorPresetHeightMm(CameraSensorPreset preset)
 inline float32 CameraFocalLengthMmFromVerticalFov(float32 fovYDegrees,
                                                    float32 sensorHeightMm)
 {
-    constexpr float32 kDegreesToRadians = 0.01745329251994329577f;
     const float32 safeFov = std::clamp(fovYDegrees, 0.1f, 179.0f);
     const float32 safeSensorHeight = std::max(sensorHeightMm, 1.0f);
     return (0.5f * safeSensorHeight) /
-           std::tan(0.5f * safeFov * kDegreesToRadians);
+           std::tan(0.5f * Mathematics::ToRadians(safeFov));
 }
 
 inline float32 CameraVerticalFovFromFocalLengthMm(float32 focalLengthMm,
                                                   float32 sensorHeightMm)
 {
-    constexpr float32 kRadiansToDegrees = 57.29577951308232088f;
     const float32 safeFocalLength = std::max(focalLengthMm, 1.0f);
     const float32 safeSensorHeight = std::max(sensorHeightMm, 1.0f);
-    return 2.0f * std::atan(0.5f * safeSensorHeight / safeFocalLength) *
-           kRadiansToDegrees;
+    return Mathematics::ToDegrees(2.0f * std::atan(0.5f * safeSensorHeight / safeFocalLength));
 }
 
 struct Camera {
@@ -95,7 +95,8 @@ struct Camera {
     float32 OrthographicSize {10.0f};
     float32 NearZ {0.01f};
     float32 FarZ {1000.0f};
-    uint32 CullingMask {0xFFFFFFFFu};
+    // The render layers this camera draws.
+    Rendering::RenderLayerMask VisibleLayers = Rendering::RenderLayerMask::All();
     uint32 PostProcessProfileId {0};
     // 0 = Default (uses scene view MSAA from RenderServices), 1 = Off, 2/4/8 = explicit.
     uint32 MSAASamples {0};
@@ -112,20 +113,20 @@ struct Camera {
     // controller. Applied as the view's per-view render-scale override.
     float32 RenderScale {0.0f};
 
-    // Bitmask of post-process volume layers this camera samples. ANDed against
-    // PostProcessVolume::PostProcessMask; volume contributes when non-zero.
-    uint32 PostProcessMask {0xFFFFFFFFu};
-    // When true, game UI is composited into this camera's image before fullscreen
-    // post-processing. Disable to keep HUD/UI crisp and unaffected by camera effects.
-    bool IncludeUIInPostProcessing {true};
+    // The volume layers this camera takes: a PostProcessVolume affects it when the
+    // volume's VolumeLayers intersect these.
+    Rendering::RenderLayerMask VolumeLayers = Rendering::RenderLayerMask::All();
+
+    // @ge-tooltip Composite game UI before camera post-processing; disable for an unaffected HUD.
+    bool IncludeUIInPostProcessing = true;
 
     // Exposure (the camera's sensor/eye) — the single source of truth for exposure. When this camera
     // drives a view, its exposure sets that view's exposure (PostProcessVolumes contribute only grading
     // / tonemap / bloom / fog, not exposure). Views without a Camera (e.g. the editor Scene View) expose
-    // from the world default (Fixed). Fields mirror the photographic controls: Fixed linear, Manual EV100,
-    // Physical camera, or Auto (histogram metering + eye adaptation). See Engine/Rendering/Exposure.h.
-    ExposureMode ExposureControl {ExposureMode::Fixed};
-    float32 Exposure {Rendering::EvToLinearExposure(kDefaultManualExposureEv)};              // Fixed multiplier matched to the Scene View's default EV100
+    // from the world default (Auto). Fields mirror the photographic controls: Fixed linear, Manual EV100,
+    // Physical camera, or Auto (a meter + eye adaptation). See Engine/Rendering/Exposure.h.
+    ExposureMode ExposureControl {ExposureMode::Auto};
+    float32 Exposure {1.0f};              // Fixed mode: linear scene multiplier (1 = identity)
     float32 ManualExposureEV {kDefaultManualExposureEv}; // Manual mode: absolute EV100
     float32 ExposureCompensation {0.0f};  // +/- stops, applied in every mode (+ = brighter)
     float32 Aperture {16.0f};             // Lens f-number; clamped to kApertureMin
@@ -155,13 +156,21 @@ struct Camera {
     // it — the inspector flips it to Custom when the height is edited by hand.
     CameraSensorPreset SensorPreset {CameraSensorPreset::FullFrame};
     float32 SensorHeightMm {24.0f};
-    // Auto: the darkest scene EV100 the meter may fully expose (the max-gain clamp). +4 lets a
-    // moonlit night meter near-correct while a starlit scene stays several stops under — night
-    // reads as night. Lower it per-camera for deliberate day-for-night brightening (-4 ≈ 3250x gain).
-    float32 AutoExposureMinEv {4.0f};
+    // Auto: the darkest scene EV100 the meter may fully expose (the max-gain clamp); a scene that reads
+    // below it shows at the floor. The Lights meter reads a full moon at about EV100 -4, a moonless
+    // twilight at about -7 and a moonless night near -12. The Picture meter (the default below) reads
+    // the ground and the sky, never the stars: on the Basic 3D template a full moon at about -4.3 and a
+    // moonless night at about -10.7. The compensation curve below, not the floor, keeps a night dark.
+    float32 AutoExposureMinEv {kDefaultAutoExposureMinEv};
     float32 AutoExposureMaxEv {18.0f};
     float32 AutoExposureSpeedUp {1.0f};
     float32 AutoExposureSpeedDown {3.0f};
+    // Auto: what the camera meters. The clamps, speeds and compensation apply to either meter.
+    ExposureMeter AutoExposureMeter {ExposureMeter::Picture};
+    // Auto: stops added to the exposure at each metered scene EV100 (key Time the EV100, Value the
+    // stops; ExposureCompensationCurve.h). The default is 0 by day and in a lamp-lit room and darkens a
+    // moonlit night by 2.5 stops.
+    Math::Curve AutoExposureCompensationCurve = DefaultExposureCompensationCurve();
 
     // Aspect ratio preset for projection and letterboxing. 0 = match viewport (native).
     uint32 AspectPreset {0};
@@ -175,14 +184,7 @@ struct Camera {
     // yielding integer screen-pixels-per-source-texel for crisp pixel art.
     bool PixelPerfect {false};
     // Reference pixel size: source texels per world unit (Pixels Per Unit).
-    // Ignored while PixelPerfectAutoPixelsPerUnit resolves a density from the
-    // scene; it stays the authored fallback for a scene with no tilemap.
     uint32 PixelPerfectPixelsPerUnit {32};
-    // Derive Pixels Per Unit from the scene's tilemaps (first visible layer's
-    // tile pixel width / cell width) instead of the authored value, so the
-    // camera follows the art rather than a number that goes stale on a tileset
-    // change. Falls back to PixelPerfectPixelsPerUnit when nothing resolves.
-    bool PixelPerfectAutoPixelsPerUnit {true};
     // Reference resolution the integer upscale is computed against.
     uint32 PixelPerfectReferenceWidth {320};
     uint32 PixelPerfectReferenceHeight {180};
@@ -192,6 +194,10 @@ struct Camera {
     // the reference resolution and black-bar the rest. true = expand: reveal a
     // little more world so the image fills the screen (still integer pixels).
     bool PixelPerfectExpand {false};
+
+    // While true, the view this camera drives draws no world: it shows its clear colour with the
+    // UI over it, and culling, extraction and shadows skip it (ViewRegistry::SetViewWorldPaused).
+    bool WorldDrawingPaused {false};
     // Optional jitter/TAA params added by systems, not persisted here
 };
 

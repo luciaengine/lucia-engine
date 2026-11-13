@@ -4,12 +4,21 @@
 #include "ECS/Systems.h"
 #include "Types/Types.h"
 
+#include <memory>
+#include <unordered_map>
+
 namespace GameEngine::PhysicsECS
 {
 // Creates physics bodies/shapes for entities that have PhysicsBody + PhysicsCollider.
 class PhysicsInitSystem : public ECS::ISystem
 {
 public:
+    // The wait before a heightfield collider rebuild is an authoring delay, so it ends while paused.
+    static constexpr ECS::SystemTime Time = ECS::SystemTime::Real;
+
+    PhysicsInitSystem();
+    ~PhysicsInitSystem() override;
+
     const char* GetName() const override { return "PhysicsInitSystem"; }
     void Update(ECS::World& world, float32 deltaTime) override;
 
@@ -27,8 +36,19 @@ private:
     // a window was missed.
     void ReleaseDisabledBodies(ECS::World& world);
 
+    // A new heightfield body's shape, building on the job pool: a 1025^2 build is about 28 ms,
+    // too long for the frame thread at each terrain tile arrival (#3409). The body is created
+    // the first update after the build lands, from the data it was started for.
+    struct PendingHeightFieldBuild;
+
     float32 m_RebuildQuiescenceSeconds = kDefaultRebuildQuiescenceSeconds;
+    std::unordered_map<uint32, std::shared_ptr<PendingHeightFieldBuild>> m_PendingHeightFields; // by EntityHandle::id
     ECS::SwapGenerationGuard m_SwapGuard;
+
+    // The frame containers, the queries and the bodies it found no collider for, for the world
+    // this system last updated (defined in the .cpp).
+    struct WorldScratch;
+    std::unique_ptr<WorldScratch> m_Scratch;
 };
 
 } // namespace GameEngine::PhysicsECS

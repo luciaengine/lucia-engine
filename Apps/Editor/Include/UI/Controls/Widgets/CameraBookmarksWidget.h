@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Engine/Rendering/ViewReadbackUtils.h"
-#include "SceneViewController.h"
+#include "SceneView/SceneViewController.h"
 #include "UI/UIElement.h"
 #include <cstdint>
 #include <filesystem>

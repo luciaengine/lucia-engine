@@ -51,7 +51,7 @@ constexpr float kWhite[3] = {1.0f, 1.0f, 1.0f};
 Rendering::AtmosphereParametersGPU DefaultAtmosphere()
 {
     Rendering::AtmosphereParametersGPU atmo{};
-    Rendering::SkyRenderer::FillDefaultAtmosphere(atmo);
+    Rendering::SkyRenderer::FillDefaultAtmosphere(atmo, Rendering::SkyPlanet{});
     return atmo;
 }
 

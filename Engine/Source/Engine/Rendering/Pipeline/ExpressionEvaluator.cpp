@@ -1,11 +1,11 @@
 #include "Engine/Rendering/Pipeline/ExpressionEvaluator.h"
+#include "Types/InlineVector.h"
 #include "Types/StringUtils.h"
 
 #include <algorithm>
 #include <cmath>
 #include <nlohmann/json.hpp>
 #include <sstream>
-#include <vector>
 
 namespace GameEngine::Engine::Renderer::Pipeline::Expr
 {
@@ -196,7 +196,7 @@ class Parser
     double ParseFunctionCall(const std::string& fn, EvalResult& r)
     {
         // Assumes '(' already matched.
-        std::vector<double> args;
+        InlineVector<double, 4> args;
         SkipWs();
         if (Match(')'))
         {
@@ -209,7 +209,7 @@ class Parser
                 const double a = ParseExpression(r);
                 if (!r.ok)
                     return 0.0;
-                args.push_back(a);
+                args.PushBack(a);
                 SkipWs();
                 if (Match(')'))
                     break;
@@ -225,7 +225,7 @@ class Parser
         const std::string f = ToLowerAscii(fn);
         if (f == "ceil")
         {
-            if (args.size() != 1)
+            if (args.Size() != 1)
             {
                 r.ok = false;
                 r.error = "ceil() expects 1 arg";
@@ -235,7 +235,7 @@ class Parser
         }
         if (f == "floor")
         {
-            if (args.size() != 1)
+            if (args.Size() != 1)
             {
                 r.ok = false;
                 r.error = "floor() expects 1 arg";
@@ -245,27 +245,27 @@ class Parser
         }
         if (f == "min")
         {
-            if (args.empty())
+            if (args.Empty())
             {
                 r.ok = false;
                 r.error = "min() expects >= 1 arg";
                 return 0.0;
             }
             double v = args[0];
-            for (size_t i = 1; i < args.size(); ++i)
+            for (size_t i = 1; i < args.Size(); ++i)
                 v = std::min(v, args[i]);
             return v;
         }
         if (f == "max")
         {
-            if (args.empty())
+            if (args.Empty())
             {
                 r.ok = false;
                 r.error = "max() expects >= 1 arg";
                 return 0.0;
             }
             double v = args[0];
-            for (size_t i = 1; i < args.size(); ++i)
+            for (size_t i = 1; i < args.Size(); ++i)
                 v = std::max(v, args[i]);
             return v;
         }

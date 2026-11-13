@@ -185,23 +185,20 @@ PrefabBar::PrefabBar(ECS::World& world, ECS::EntityHandle entity, EditorChangeNo
     std::unique_ptr<UIElement> layout = ControlLayoutLoader::Load(kLayoutAssetPath, kRequiredIds);
     if (!layout)
         return;
-    m_Glyph = layout->FindById("prefab-bar-glyph");
-    m_TitleLead = dynamic_cast<Label*>(layout->FindById("prefab-bar-title-lead"));
-    m_TitlePrefab = dynamic_cast<Label*>(layout->FindById("prefab-bar-prefab"));
-    m_TitleTail = dynamic_cast<Label*>(layout->FindById("prefab-bar-title-tail"));
-    m_Counts = layout->FindById("prefab-bar-counts");
-    m_CountNone = dynamic_cast<Label*>(layout->FindById("prefab-bar-count-none"));
-    m_Count = dynamic_cast<Button*>(layout->FindById("prefab-bar-count"));
-    m_CountText = dynamic_cast<Label*>(layout->FindById("prefab-bar-count-text"));
-    m_InstanceCount = dynamic_cast<Button*>(layout->FindById("prefab-bar-instance-count"));
-    m_InstanceCountText = dynamic_cast<Label*>(layout->FindById("prefab-bar-instance-count-text"));
-    m_StaleCount = dynamic_cast<Button*>(layout->FindById("prefab-bar-stale-count"));
-    m_StaleCountText = dynamic_cast<Label*>(layout->FindById("prefab-bar-stale-count-text"));
-    m_SelectAssetButton = dynamic_cast<Button*>(layout->FindById("prefab-bar-select-asset"));
+    m_Glyph = layout->FindById("prefab-bar-glyph"_sid);
+    m_TitleLead = dynamic_cast<Label*>(layout->FindById("prefab-bar-title-lead"_sid));
+    m_TitlePrefab = dynamic_cast<Label*>(layout->FindById("prefab-bar-prefab"_sid));
+    m_TitleTail = dynamic_cast<Label*>(layout->FindById("prefab-bar-title-tail"_sid));
+    m_Counts = layout->FindById("prefab-bar-counts"_sid);
+    m_CountNone = dynamic_cast<Label*>(layout->FindById("prefab-bar-count-none"_sid));
+    m_Count = dynamic_cast<Button*>(layout->FindById("prefab-bar-count"_sid));
+    m_CountText = dynamic_cast<Label*>(layout->FindById("prefab-bar-count-text"_sid));
+    m_InstanceCount = dynamic_cast<Button*>(layout->FindById("prefab-bar-instance-count"_sid));
+    m_InstanceCountText = dynamic_cast<Label*>(layout->FindById("prefab-bar-instance-count-text"_sid));
+    m_StaleCount = dynamic_cast<Button*>(layout->FindById("prefab-bar-stale-count"_sid));
+    m_StaleCountText = dynamic_cast<Label*>(layout->FindById("prefab-bar-stale-count-text"_sid));
+    m_SelectAssetButton = dynamic_cast<Button*>(layout->FindById("prefab-bar-select-asset"_sid));
     AddChild(std::move(layout));
-    for (Button* pill : {m_Count, m_InstanceCount, m_StaleCount})
-        if (pill)
-            pill->RequestSubtreeStyleAssetPath(kStyleAssetPath, "editor");
     if (m_SelectAssetButton)
         m_SelectAssetButton->SetOnClick([this](UIEvent&) { SelectAsset(); });
     for (Button* pill : {m_Count, m_InstanceCount})
@@ -268,7 +265,7 @@ void PrefabBar::Refresh()
     }
     // The pills count the rows of the Overrides list: the teal pill its overrides, the amber pill its stale rows.
     SceneDocumentManager* document = m_Document ? m_Document() : nullptr;
-    std::span<const Scene::SceneLoadSkip> skips;
+    std::span<const Scene::SceneDegradation::Skip> skips;
     if (document && document->GetLastLoadDegraded().has_value())
         skips = document->GetLastLoadDegraded()->Census.skips;
     const PrefabOverrideCounts rows = PrefabOverridesListModel::Count(m_World, m_Entity, skips);

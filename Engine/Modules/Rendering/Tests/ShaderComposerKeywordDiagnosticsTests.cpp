@@ -7,7 +7,7 @@
 
 #include <gtest/gtest.h>
 
-#include "Rendering/Materials/ShaderComposer.h"
+#include "Rendering/Materials/Shader/ShaderComposer.h"
 
 #include <string>
 #include <vector>

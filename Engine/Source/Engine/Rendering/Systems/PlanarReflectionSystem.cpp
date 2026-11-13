@@ -14,7 +14,9 @@ std::vector<PlanarReflectionPlane> PlanarReflectionSystem::ResolvePlanes(ECS::Wo
             const Components::PlanarReflection& component, const Components::WorldTransform& transform)
         {
             PlanarReflectionPlane plane;
-            if (ResolvePlanarReflectionPlane(transform.matrix, entity.id, component, plane))
+            // The current plane equation and world-to-local matrix are fp32.
+            const auto matrix = transform.ToMatrix4x4(transform.Position - Mathematics::WorldPosition{});
+            if (ResolvePlanarReflectionPlane(matrix.Data(), entity.id, component, plane))
                 planes.push_back(plane);
         });
     return planes;

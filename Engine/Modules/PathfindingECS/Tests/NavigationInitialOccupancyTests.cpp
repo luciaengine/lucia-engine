@@ -4,8 +4,9 @@
 #include "ECS/World.h"
 #include "Pathfinding/GridMap.h"
 #include "Pathfinding/NavigationWorld.h"
+#include "NavigationTestSurfaces.h"
 #include "Pathfinding/PathBuffer.h"
-#include "PathfindingECS/Components/NavigationAgent.h"
+#include "Components/Navigation/NavigationAgent.h"
 #include "PathfindingECS/Components/NavigationAgentState.h"
 #include "PathfindingECS/NavigationService.h"
 #include "PathfindingECS/Systems/NavigationMovementSystem.h"
@@ -43,8 +44,8 @@ class InitialOccupancy : public ::testing::Test
         NavigationService::Initialize();
         world = std::make_unique<ECS::World>();
         RegisterNavigationWorldHooks(*world);
-        // This test owns one ordinary map independently of a scene component.
-        // Agent removal hooks run before the map is released in TearDown.
+        // This test fills one grid cell by cell and hands it to a surface entity, which agents with
+        // an empty Surface walk. The surface's removal hook releases the map when the world goes.
         Pathfinding::GridSettings settings{};
         settings.Width = kWidth;
         settings.Depth = kDepth;
@@ -59,6 +60,7 @@ class InitialOccupancy : public ::testing::Test
                 map->SetCellHeight(x, z, 0.0f);
                 map->SetCellCost(x, z, 1.0f);
             }
+        Testing::AdoptGridMap(*world, mapHandle);
     }
 
     void TearDown() override
@@ -76,24 +78,21 @@ class InitialOccupancy : public ::testing::Test
     {
         Components::NavigationAgent agent{};
         agent.AgentId = id; // Explicit unique IDs isolate this native issue.
-        agent.NavMapIndex = mapHandle.Index;
-        agent.NavMapGeneration = mapHandle.Generation;
         agent.ReplanInterval = 0.0f;
         agent.SmoothPaths = false; // Observe A* cells, not string-pull policy.
         agent.Radius = radius;
         agent.Speed = 3.5f;
         agent.Acceleration = 100.0f;
         Components::NavigationAgentState state{};
+        state.NavMapIndex = mapHandle.Index;
+        state.NavMapGeneration = mapHandle.Generation;
         state.HasDestination = request;
         state.PathDirty = request;
         state.DestinationX = goalX;
         state.DestinationZ = goalZ;
         Components::Transform local{};
         Components::WorldTransform global{};
-        for (int i : {0, 5, 10, 15})
-            local.matrix[i] = global.matrix[i] = 1.0f;
-        local.matrix[12] = global.matrix[12] = x;
-        local.matrix[14] = global.matrix[14] = z;
+        local.Position = global.Position = Mathematics::WorldPosition{x, 0.0, z};
         // Identical bundles keep both actors in the same archetype. Query order
         // is still measured explicitly instead of assuming creation order.
         return world->Create(agent, state, local, global);
@@ -118,8 +117,7 @@ class InitialOccupancy : public ::testing::Test
         world
             ->Query<ECS::Read<Components::NavigationAgent>, ECS::Write<Components::NavigationAgentState>,
                     ECS::Read<Components::WorldTransform>>()
-            .Each([&](ECS::EntityHandle, const Components::NavigationAgent& agent,
-                      ECS::Writable<Components::NavigationAgentState>,
+            .Each([&](ECS::EntityHandle, const Components::NavigationAgent& agent, Components::NavigationAgentState&,
                       const Components::WorldTransform&) { ids.push_back(agent.AgentId); });
         return ids;
     }
@@ -127,7 +125,7 @@ class InitialOccupancy : public ::testing::Test
     std::vector<Pathfinding::PathPoint> Points(ECS::Entity actor)
     {
         const auto* state = actor.Get<Components::NavigationAgentState>();
-        EXPECT_EQ(static_cast<Pathfinding::PathStatus>(state->Status), Pathfinding::PathStatus::Complete);
+        EXPECT_EQ(state->Status, Pathfinding::PathStatus::Complete);
         EXPECT_NE(state->PathGeneration, 0u);
         const Pathfinding::PathHandle path{state->PathIndex, state->PathGeneration};
         auto& buffer = NavigationService::TryGet()->GetPathBuffer();
@@ -171,7 +169,8 @@ class InitialOccupancy : public ::testing::Test
         const auto* agent = actor.Get<Components::NavigationAgent>();
         const auto* xf = actor.Get<Components::WorldTransform>();
         auto* state = actor.GetForWrite<Components::NavigationAgentState>();
-        StampNavigationAgentOccupancy(*agent, *state, xf->matrix[12], xf->matrix[14], 0.0f);
+        const Mathematics::Vector3 position = xf->GetPosition() - Mathematics::WorldPosition{};
+        StampNavigationAgentOccupancy(*agent, *state, position.x, position.z, 0.0f);
     }
 
     std::unique_ptr<ECS::World> world;
@@ -262,7 +261,7 @@ TEST_F(InitialOccupancy, StaleTrueFlagDoesNotReplaceAMissingIdleBody)
     auto peer = Peer(PeerKind::Idle);
     PreStamp(peer);
     map->ClearExpiredReservations(2.0f);
-    ASSERT_TRUE(peer.Get<Components::NavigationAgentState>()->HasCellReservations);
+    ASSERT_TRUE(peer.Get<Components::NavigationAgentState>()->CellReservationOwner != 0u);
     ASSERT_EQ(map->GetCellReservation(7, 5).AgentId, 0u);
     pathfinding.Update(*world, 2.0f);
     ExpectBody(7, 5, kPeerId, 2.0f);
@@ -272,7 +271,7 @@ TEST_F(InitialOccupancy, StaleTrueFlagDoesNotReplaceAMissingIdleBody)
 TEST_F(InitialOccupancy, NativeMovementProducesIdleBodyAfterTheRequestBoundary)
 {
     auto peer = Peer(PeerKind::Idle);
-    ASSERT_FALSE(peer.Get<Components::NavigationAgentState>()->HasCellReservations);
+    ASSERT_FALSE(peer.Get<Components::NavigationAgentState>()->CellReservationOwner != 0u);
     movement.Update(*world, kDt);
     ExpectBody(7, 5, kPeerId);
 }
@@ -282,7 +281,7 @@ TEST_F(InitialOccupancy, NativeMovingCorridorSurvivesAnotherActorsFirstRequest)
     auto peer = Actor(kPeerId, 2.5f, 2.5f, true, 12.5f, 2.5f);
     pathfinding.Update(*world, kDt);
     movement.Update(*world, kDt);
-    ASSERT_GT(peer.Get<Components::WorldTransform>()->matrix[12], 2.5f);
+    ASSERT_GT(peer.Get<Components::WorldTransform>()->GetPosition().X, 2.5f);
     ASSERT_TRUE(peer.Get<Components::NavigationAgentState>()->HasDestination);
     ASSERT_FALSE(peer.Get<Components::NavigationAgentState>()->PathDirty);
     struct Cell
@@ -316,7 +315,7 @@ TEST_F(InitialOccupancy, StaticZeroIdDoesNotBecomeAReservedBody)
     auto peer = Actor(0, 7.5f, 5.5f, false);
     peer.GetForWrite<Components::NavigationAgent>()->Speed = 0.0f;
     pathfinding.Update(*world, kDt);
-    EXPECT_FALSE(peer.Get<Components::NavigationAgentState>()->HasCellReservations);
+    EXPECT_FALSE(peer.Get<Components::NavigationAgentState>()->CellReservationOwner != 0u);
     EXPECT_EQ(map->GetCellReservation(7, 5).AgentId, 0u);
     EXPECT_EQ(map->GetCellReservation(7, 5).Occupancy, 0u);
     EXPECT_TRUE(Crosses(requester, 7, 5));
@@ -326,48 +325,39 @@ TEST_F(InitialOccupancy, InvalidRequesterMapDoesNotPrepareUnrelatedBodies)
 {
     auto requester = Actor(kRequesterId, 2.5f, 5.5f, true);
     auto peer = Peer(PeerKind::Idle);
-    requester.GetForWrite<Components::NavigationAgent>()->NavMapGeneration = 0;
+    requester.GetForWrite<Components::NavigationAgent>()->Surface = world->Create().GetHandle();
+    world->ProcessCommands();
     pathfinding.Update(*world, kDt);
     EXPECT_EQ(map->GetReservedAgentCount(), 0u);
-    EXPECT_FALSE(peer.Get<Components::NavigationAgentState>()->HasCellReservations);
+    EXPECT_FALSE(peer.Get<Components::NavigationAgentState>()->CellReservationOwner != 0u);
     EXPECT_EQ(requester.Get<Components::NavigationAgentState>()->PathGeneration, 0u);
-}
-
-TEST_F(InitialOccupancy, StaleRequesterMapDoesNotPrepareUnrelatedBodies)
-{
-    auto requester = Actor(kRequesterId, 2.5f, 5.5f, true);
-    Peer(PeerKind::Idle);
-    ++requester.GetForWrite<Components::NavigationAgent>()->NavMapGeneration;
-    pathfinding.Update(*world, kDt);
-    EXPECT_EQ(map->GetReservedAgentCount(), 0u);
-    EXPECT_EQ(static_cast<Pathfinding::PathStatus>(requester.Get<Components::NavigationAgentState>()->Status),
-              Pathfinding::PathStatus::Failed);
 }
 
 TEST_F(InitialOccupancy, RemovedRequesterMapDoesNotPrepareUnrelatedBodies)
 {
     Pathfinding::GridSettings settings{};
     auto removed = NavigationService::TryGet()->AddGridMap(settings);
+    const auto removedSurface = Testing::AdoptGridMap(*world, removed);
     NavigationService::TryGet()->RemoveMap(removed);
     auto requester = Actor(kRequesterId, 2.5f, 5.5f, true);
     Peer(PeerKind::Idle);
-    auto* agent = requester.GetForWrite<Components::NavigationAgent>();
-    agent->NavMapIndex = removed.Index;
-    agent->NavMapGeneration = removed.Generation;
+    requester.GetForWrite<Components::NavigationAgent>()->Surface = removedSurface.GetHandle();
     pathfinding.Update(*world, kDt);
     EXPECT_EQ(map->GetReservedAgentCount(), 0u);
-    EXPECT_EQ(static_cast<Pathfinding::PathStatus>(requester.Get<Components::NavigationAgentState>()->Status),
-              Pathfinding::PathStatus::Failed);
+    const auto* state = requester.Get<Components::NavigationAgentState>();
+    EXPECT_EQ(state->Status, Pathfinding::PathStatus::Pending);
+    EXPECT_EQ(state->Reason, Navigation::StatusReason::SurfaceNotBaked);
 }
 
 TEST_F(InitialOccupancy, InvalidPeerMapDoesNotStampAnotherMap)
 {
     auto requester = Actor(kRequesterId, 2.5f, 5.5f, true);
     auto peer = Peer(PeerKind::Idle);
-    ++peer.GetForWrite<Components::NavigationAgent>()->NavMapGeneration;
+    peer.GetForWrite<Components::NavigationAgent>()->Surface = world->Create().GetHandle();
+    world->ProcessCommands();
     pathfinding.Update(*world, kDt);
     EXPECT_EQ(map->GetCellReservation(7, 5).AgentId, 0u);
-    EXPECT_FALSE(peer.Get<Components::NavigationAgentState>()->HasCellReservations);
+    EXPECT_FALSE(peer.Get<Components::NavigationAgentState>()->CellReservationOwner != 0u);
     EXPECT_TRUE(Crosses(requester, 7, 5));
 }
 
@@ -376,7 +366,7 @@ TEST_F(InitialOccupancy, OutsideRequesterDoesNotInventABodyCell)
     auto requester = Actor(kRequesterId, -1.5f, 5.5f, true);
     pathfinding.Update(*world, kDt);
     EXPECT_EQ(map->GetReservedAgentCount(), 0u);
-    EXPECT_FALSE(requester.Get<Components::NavigationAgentState>()->HasCellReservations);
+    EXPECT_FALSE(requester.Get<Components::NavigationAgentState>()->CellReservationOwner != 0u);
     EXPECT_EQ(static_cast<Pathfinding::PathStatus>(requester.Get<Components::NavigationAgentState>()->Status),
               Pathfinding::PathStatus::Failed);
 }
@@ -387,7 +377,7 @@ TEST_F(InitialOccupancy, OutsidePeerDoesNotOccupyAnEdgeCell)
     auto peer = Actor(kPeerId, -1.5f, 5.5f, false);
     pathfinding.Update(*world, kDt);
     EXPECT_EQ(map->GetCellReservation(0, 5).AgentId, 0u);
-    EXPECT_FALSE(peer.Get<Components::NavigationAgentState>()->HasCellReservations);
+    EXPECT_FALSE(peer.Get<Components::NavigationAgentState>()->CellReservationOwner != 0u);
     EXPECT_TRUE(Crosses(requester, 7, 5));
 }
 
@@ -422,8 +412,8 @@ TEST_F(InitialOccupancy, DirectPeerChangingCellsReplacesItsFormerBody)
     auto requester = Actor(kRequesterId, 2.5f, 5.5f, true);
     auto peer = Peer(PeerKind::Direct);
     PreStamp(peer);
-    peer.GetForWrite<Components::WorldTransform>()->matrix[12] = 9.5f;
-    peer.GetForWrite<Components::Transform>()->matrix[12] = 9.5f;
+    peer.GetForWrite<Components::WorldTransform>()->Position.X = 9.5;
+    peer.GetForWrite<Components::Transform>()->Position.X = 9.5;
     pathfinding.Update(*world, kDt);
     EXPECT_EQ(map->GetCellReservation(7, 5).AgentId, 0u);
     ExpectBody(9, 5, kPeerId);
@@ -436,7 +426,7 @@ TEST_F(InitialOccupancy, MissingLargeFootprintCornerIsRepairedDespiteItsWarmCent
     auto peer = Actor(kPeerId, 7.5f, 5.5f, false, 0.0f, 0.0f, 0.75f);
     PreStamp(peer);
     map->ClearCellReservation(8, 6);
-    ASSERT_TRUE(peer.Get<Components::NavigationAgentState>()->HasCellReservations);
+    ASSERT_TRUE(peer.Get<Components::NavigationAgentState>()->CellReservationOwner != 0u);
     ExpectBody(7, 5, kPeerId);
     pathfinding.Update(*world, kDt);
     for (uint32 z = 4; z <= 6; ++z)
@@ -466,8 +456,8 @@ TEST_F(InitialOccupancy, DirtyReplannerDropsOnlyItsOwnNativeCorridor)
     auto steady = Actor(303, 2.5f, 8.5f, true, 12.5f, 8.5f);
     pathfinding.Update(*world, kDt);
     movement.Update(*world, kDt);
-    ASSERT_GT(dirty.Get<Components::WorldTransform>()->matrix[12], 2.5f);
-    ASSERT_GT(steady.Get<Components::WorldTransform>()->matrix[12], 2.5f);
+    ASSERT_GT(dirty.Get<Components::WorldTransform>()->GetPosition().X, 2.5f);
+    ASSERT_GT(steady.Get<Components::WorldTransform>()->GetPosition().X, 2.5f);
     ASSERT_EQ(map->GetCellReservation(4, 2).AgentId, kPeerId);
     ASSERT_EQ(map->GetCellReservation(4, 2).Occupancy, 0u);
     const auto other = map->GetCellReservation(4, 8);

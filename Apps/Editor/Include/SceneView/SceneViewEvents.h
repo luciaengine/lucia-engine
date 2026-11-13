@@ -39,10 +39,6 @@ struct ScenePointerEvent
     bool alt   = false;
     bool ctrl  = false;
     bool shift = false;
-    // The platform's shortcut modifier: Ctrl on Windows/Linux, Command on macOS.
-    // Tools binding clipboard-style shortcuts must use this rather than `ctrl`,
-    // which is a different physical key on macOS.
-    bool primary = false;
     // Raw key poll (not a modifier bit): true while the ` / Grave key is held.
     bool grave = false;
     // Raw key poll: true while S is held (rotate gizmo: snap to 45° increments).
@@ -61,6 +57,7 @@ struct ScenePointerEvent
     // Orthographic: full vertical extent in world units, tanHalfFovY == 0.
     float tanHalfFovY = 0.0f;
     float orthoHeight = 0.0f;
+    bool IsEditor2D = false;
 };
 
 struct SceneKeyEvent
@@ -71,10 +68,6 @@ struct SceneKeyEvent
     bool alt   = false;
     bool ctrl  = false;
     bool shift = false;
-    // Ctrl on Windows/Linux, Command on macOS — see ScenePointerEvent::primary.
-    bool primary = false;
-    // The raw Input::kMod* mask, for matching against the Shortcuts catalog.
-    std::uint32_t mods = 0;
 };
 
 void PopulateScenePointerMods(ScenePointerEvent& ev, std::uint32_t mods);

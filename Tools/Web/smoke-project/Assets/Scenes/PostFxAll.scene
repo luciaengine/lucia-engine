@@ -40,8 +40,8 @@ Transform.scale = (1, 1, 1)
 [entity id="e_10"]
 MeshRenderer.meshPrimitive = Plane
 MeshRenderer.material = [path="Materials/ReflectivePad.material"]
-MeshRenderer.renderLayerMask = 1
-MeshRenderer.castShadows = false
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = Off
 MeshRenderer.receiveShadows = true
 Name.value = "Reflective Pad"
 Transform.position = (0, 0.25, 0)
@@ -53,8 +53,8 @@ Transform.scale = (14, 1, 14)
 
 [entity id="e_20"]
 MeshRenderer.meshPrimitive = Sphere
-MeshRenderer.renderLayerMask = 1
-MeshRenderer.castShadows = true
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
 MeshRenderer.receiveShadows = true
 Name.value = "Sphere"
 Transform.position = (0, 1.25, 0)
@@ -64,8 +64,8 @@ Transform.scale = (1, 1, 1)
 
 [entity id="e_21"]
 MeshRenderer.meshPrimitive = Cube
-MeshRenderer.renderLayerMask = 1
-MeshRenderer.castShadows = true
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
 MeshRenderer.receiveShadows = true
 Name.value = "Cube Left"
 Transform.position = (-2.5, 0.75, 0)
@@ -75,8 +75,8 @@ Transform.scale = (1, 1, 1)
 
 [entity id="e_22"]
 MeshRenderer.meshPrimitive = Capsule
-MeshRenderer.renderLayerMask = 1
-MeshRenderer.castShadows = true
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
 MeshRenderer.receiveShadows = true
 Name.value = "Capsule Right"
 Transform.position = (2.5, 1.25, 0)
@@ -116,25 +116,20 @@ Terrain.enabled = true
 Terrain.sizeX = 512
 Terrain.sizeZ = 512
 Terrain.heightScale = 100
-Terrain.patchGridSize = 128
 Terrain.samplesPerMeter = 1
-Terrain.lodRangeScale = 1
-Terrain.renderLayerMask = 1
+Terrain.renderLayers = [0]
 Terrain.castShadows = true
 Terrain.receiveShadows = true
 TerrainGrass.enabled = true
-TerrainGrass.density = 0.5
+TerrainGrass.bladesPerSquareMeter = 21
 TerrainGrass.bladeHeight = 2.4
 TerrainGrass.bladeWidth = 0.06
 TerrainGrass.bladeSegments = 5
-TerrainGrass.scale = 1
 TerrainGrass.randomScale = 0.35
-TerrainGrass.curvature = 1
+TerrainGrass.bladeBend = 0.35
 TerrainGrass.layerIndex = 0
 TerrainGrass.maskThreshold = 0.45
-TerrainGrass.fadeStart = 350
-TerrainGrass.fadeEnd = 500
-TerrainGrass.distanceFadeEnabled = true
+TerrainGrass.range = 500
 Transform.position = (0, 0, 0)
 Transform.rotation = (0, 0, 0, 1)
 Transform.scale = (1, 1, 1)
@@ -144,6 +139,14 @@ Transform.scale = (1, 1, 1)
 ; exercises the reflection path on load. The editor's own "Add Post FX" entry
 ; point is unusable on web today (the button deselects the entity instead of
 ; opening its menu), so the effect is authored here rather than driven.
+
+[entity id="terrain_noise"]
+Name.value = "Terrain Noise"
+Transform.position = (0, 0, 0)
+TerrainModifierVolume.shape = 4
+TerrainNoiseEffect.enabled = true
+TerrainNoiseEffect.mode = 1
+TerrainNoiseEffect.preset = 0
 
 [entity id="e_ppv_sssr"]
 Name.value = "Post Process Volume"

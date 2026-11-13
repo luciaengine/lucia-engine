@@ -1,16 +1,16 @@
 #include "Picking/PickRootResolver.h"
 
-#include <algorithm>
-#include <unordered_map>
-#include <vector>
-
 #include "Components/Hierarchy.h"
-#include "Components/RuntimeOnlyEntity.h"
 #include "Components/Rendering/MeshRenderer.h"
+#include "Components/RuntimeOnlyEntity.h"
 #include "ECS/ECS.h"
 #include "ECS/Query.h"
 #include "Editor/Entities/EditorComponentTraits.h"
-#include "Picking/MeshPickingService.h"
+#include "Scene/SceneRaycast.h"
+
+#include <algorithm>
+#include <unordered_map>
+#include <vector>
 
 namespace GameEngine::Editor::Picking
 {
@@ -21,18 +21,15 @@ namespace
 using ChildrenByParent =
     std::unordered_map<ECS::EntityHandle, std::vector<ECS::EntityHandle>, ECS::EntityHandleHash>;
 
-// Snapshot every (parent -> children) edge in one pass. O(parented-entities),
-// so the resolve walk builds it lazily, at most once, and only when it
-// actually reaches a container node. When a model-instance-root marker
-// component exists (planned with the prefab/blueprint system), this scan and
-// the subtree check below disappear in favor of an O(depth) climb.
+// Every (parent -> children) edge, in one O(parented entities) pass. The resolve walk builds it at
+// most once, when it reaches a container node; an entity under a climb root climbs in O(depth).
 void BuildChildrenMap(ECS::World& world, ChildrenByParent& out)
 {
     world.Query<ECS::Read<Components::Parent>>().IncludeDisabled().Each(
         [&out](ECS::EntityHandle e, const Components::Parent& p)
         {
-            if (p.parent.IsValid())
-                out[p.parent].push_back(e);
+            if (p.Entity.IsValid())
+                out[p.Entity].push_back(e);
         });
 }
 
@@ -45,8 +42,6 @@ bool SubtreeRendersSingleModel(ECS::World& world,
                                ECS::EntityHandle root,
                                const GUID& model)
 {
-    const std::vector<ECS::ComponentTypeId> pickRootTypes =
-        EditorComponentTraitsRegistry::Get().PickInstanceRootTypes();
     // Reused across calls so hover/click resolves don't heap-allocate the
     // traversal stack each time (picking runs on the main thread; thread_local
     // keeps any future off-thread use safe).
@@ -60,9 +55,10 @@ bool SubtreeRendersSingleModel(ECS::World& world,
 
         // Components registered as their own pick target (plugin traits) stop
         // the model-instance grouping: their entity never folds into a root.
-        for (const ECS::ComponentTypeId typeId : pickRootTypes)
+        const auto registered = EditorComponentTraitsRegistry::Get().Snapshot();
+        for (const auto& [typeId, traits] : *registered)
         {
-            if (world.HasComponent(current, typeId))
+            if (traits.IsPickInstanceRoot && world.HasComponent(current, typeId))
                 return false;
         }
         const auto* mr = world.GetComponent<Components::MeshRenderer>(current);
@@ -83,7 +79,7 @@ ECS::EntityHandle FindOutermostClimbRoot(ECS::World& world, ECS::EntityHandle en
     thread_local std::vector<ECS::ComponentTypeId> climbTypes;
     climbTypes.clear();
     const auto registered = EditorComponentTraitsRegistry::Get().Snapshot();
-    for (const auto& [typeId, traits] : registered)
+    for (const auto& [typeId, traits] : *registered)
     {
         if (traits.IsPickClimbRoot)
             climbTypes.push_back(typeId);
@@ -103,7 +99,7 @@ ECS::EntityHandle FindOutermostClimbRoot(ECS::World& world, ECS::EntityHandle en
             }
         }
         const auto* parent = world.GetComponent<Components::Parent>(current);
-        current = parent ? parent->parent : ECS::EntityHandle{};
+        current = parent ? parent->Entity : ECS::EntityHandle{};
     }
     return outermost;
 }
@@ -139,10 +135,10 @@ ECS::EntityHandle ResolvePickRoot(ECS::World& world, ECS::EntityHandle entity)
     for (;;)
     {
         const auto* parentComp = world.GetComponent<Components::Parent>(entity);
-        if (!parentComp || !parentComp->parent.IsValid() || !world.IsValid(parentComp->parent))
+        if (!parentComp || !parentComp->Entity.IsValid() || !world.IsValid(parentComp->Entity))
             break;
 
-        const ECS::EntityHandle parent = parentComp->parent;
+        const ECS::EntityHandle parent = parentComp->Entity;
         const auto* parentMr = world.GetComponent<Components::MeshRenderer>(parent);
         bool sameInstance = false;
         if (parentMr)
@@ -167,7 +163,7 @@ ECS::EntityHandle ResolvePickRoot(ECS::World& world, ECS::EntityHandle entity)
 }
 
 void BuildPickCandidates(ECS::World& world,
-                         const std::vector<PickHit>& sortedHits,
+                         const std::vector<Scene::PickHit>& sortedHits,
                          bool exactPick,
                          std::vector<ECS::EntityHandle>& outCandidates)
 {
@@ -182,10 +178,15 @@ void BuildPickCandidates(ECS::World& world,
         if (root.IsValid())
             outCandidates.push_back(root);
     }
-    for (const PickHit& hit : sortedHits)
+    for (const Scene::PickHit& hit : sortedHits)
     {
-        const ECS::EntityHandle candidate = !exactPick && world.HasComponent<Components::RuntimeOnlyEntity>(hit.Entity)
-            ? ResolvePickRoot(world, hit.Entity) : hit.Entity;
+        ECS::EntityHandle candidate = hit.Entity;
+        if (!exactPick && world.HasComponent<Components::RuntimeOnlyEntity>(hit.Entity))
+        {
+            const ECS::EntityHandle climbRoot = FindOutermostClimbRoot(world, hit.Entity);
+            if (climbRoot.IsValid())
+                candidate = climbRoot;
+        }
         if (std::find(outCandidates.begin(), outCandidates.end(), candidate) == outCandidates.end())
             outCandidates.push_back(candidate);
     }

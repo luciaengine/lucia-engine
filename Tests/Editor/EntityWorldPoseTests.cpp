@@ -1,12 +1,10 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
-#include <cstring>
 
 #include "Editor/Entities/EntityWorldPose.h"
 
 #include "Components/Hierarchy.h"
-#include "Components/Rendering/WorldSectorCoord.h"
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
@@ -26,7 +24,6 @@ using GameEngine::Components::PhysicsBody;
 using GameEngine::Components::PhysicsCollider;
 using GameEngine::Components::SphereColliderShape;
 using GameEngine::Components::Transform;
-using GameEngine::Components::WorldSectorCoord;
 using GameEngine::Components::WorldTransform;
 using GameEngine::ECS::Entity;
 using GameEngine::ECS::EntityHandle;
@@ -41,6 +38,7 @@ using GameEngine::Editor::TryComputeHierarchyWorldMatrix;
 using GameEngine::Editor::TrySetPhysicsBodyWorldPose;
 using GameEngine::Mathematics::Matrix4x4;
 using GameEngine::Mathematics::Quaternion;
+using GameEngine::Mathematics::WorldPosition;
 using GameEngine::Mathematics::Vector3;
 using GameEngine::PhysicsECS::PhysicsWorldService;
 
@@ -55,10 +53,22 @@ void ExpectVectorNear(const Vector3& actual, const Vector3& expected)
     EXPECT_NEAR(actual.z, expected.z, kPoseTolerance);
 }
 
+void ExpectVectorNear(const WorldPosition& actual, const WorldPosition& expected)
+{
+    EXPECT_NEAR(actual.X, expected.X, kPoseTolerance);
+    EXPECT_NEAR(actual.Y, expected.Y, kPoseTolerance);
+    EXPECT_NEAR(actual.Z, expected.Z, kPoseTolerance);
+}
+
+void ExpectVectorNear(const Vector3& actual, const WorldPosition& expected)
+{
+    ExpectVectorNear(WorldPosition::FromVector3(actual), expected);
+}
+
 EntityHandle CreateTransformEntity(World& world, const Vector3& position, const Quaternion& rotation, const Vector3& scale)
 {
     Entity entity = world.Create();
-    entity.Set(Transform::FromTRS(position, rotation, scale));
+    entity.Set(Transform::FromTRS(WorldPosition::FromVector3(position), rotation, scale));
     return entity.GetHandle();
 }
 
@@ -77,18 +87,18 @@ TEST(EntityWorldPoseTests, LocalPositionFromWorldInvertsCombineUnderRotatedScale
 
     const EntityTRS childWorld = ComputeWorldTRSForEntity(&world, child);
 
-    Vector3 parentPos;
+    WorldPosition parentPos;
     Quaternion parentRotOut;
     Vector3 parentScale;
     GetParentWorldTRS(&world, child, parentPos, parentRotOut, parentScale);
 
     const EntityTRS recombined = CombineTRS(EntityTRS{parentPos, parentRotOut, parentScale},
-                                            EntityTRS{Vector3(1.0f, 2.0f, -3.0f), Quaternion::Identity(),
+                                            EntityTRS{WorldPosition{1.0, 2.0, -3.0}, Quaternion::Identity(),
                                                       Vector3(1.0f, 1.0f, 1.0f)});
     ExpectVectorNear(recombined.Position, childWorld.Position);
 
-    const Vector3 local = ComputeLocalPositionFromWorld(childWorld.Position, parentPos, parentRotOut, parentScale);
-    ExpectVectorNear(local, Vector3(1.0f, 2.0f, -3.0f));
+    const WorldPosition local = ComputeLocalPositionFromWorld(childWorld.Position, parentPos, parentRotOut, parentScale);
+    ExpectVectorNear(local, WorldPosition{1.0, 2.0, -3.0});
 }
 
 Vector3 TranslationOf(const Matrix4x4& m)
@@ -114,24 +124,33 @@ TEST(EntityWorldPoseTests, HierarchyWorldMatrixMatchesWorldTRS)
     ExpectVectorNear(TranslationOf(matrix), ComputeWorldTRSForEntity(&world, child).Position);
 }
 
-// A sector-tagged entity renders and picks at sector * kWorldSectorSize + its
-// sector-local position; the editor's absolute world matrix lands on the same point.
-TEST(EntityWorldPoseTests, EntityWorldMatrixComposesOwnSector)
+TEST(EntityWorldPoseTests, AbsoluteWorldPositionNeedsNoSectorTag)
 {
     World world;
-    const EntityHandle e =
-        CreateTransformEntity(world, Vector3(1.0f, 2.0f, 3.0f), Quaternion::Identity(), Vector3(1.0f, 1.0f, 1.0f));
+    const EntityHandle entity = CreateTransformEntity(world, Vector3{}, Quaternion::Identity(), Vector3{1.0f, 1.0f, 1.0f});
     world.ProcessCommands();
-    world.AddComponentImmediate(e, WorldSectorCoord{2, 0, -1});
-
+    const WorldPosition position{2049.0, 2.0, -1021.0};
+    world.GetComponentForWrite<Transform>(entity)->Position = position;
     Matrix4x4 hierarchy;
-    ASSERT_TRUE(TryComputeHierarchyWorldMatrix(&world, e, hierarchy));
-    ExpectVectorNear(TranslationOf(hierarchy), Vector3(1.0f, 2.0f, 3.0f));
+    ASSERT_TRUE(TryComputeHierarchyWorldMatrix(&world, entity, hierarchy));
+    ExpectVectorNear(TranslationOf(hierarchy), position);
+    Matrix4x4 absolute;
+    ASSERT_TRUE(TryComputeEntityWorldMatrix(&world, entity, absolute));
+    ExpectVectorNear(TranslationOf(absolute), position);
+}
 
-    Matrix4x4 composed;
-    ASSERT_TRUE(TryComputeEntityWorldMatrix(&world, e, composed));
-    const float sectorSize = GameEngine::Components::kWorldSectorSize;
-    ExpectVectorNear(TranslationOf(composed), Vector3(1.0f + 2.0f * sectorSize, 2.0f, 3.0f - sectorSize));
+TEST(EntityWorldPoseTests, SmallChildOffsetSurvivesLargeParentPositionAndInverse)
+{
+    World world;
+    const auto parent = CreateTransformEntity(world, Vector3{}, Quaternion::Identity(), Vector3{1.0f, 1.0f, 1.0f});
+    const auto child = CreateTransformEntity(world, Vector3{0.125f, -0.25f, 0.5f}, Quaternion::Identity(), Vector3{1.0f, 1.0f, 1.0f});
+    world.ProcessCommands();
+    const WorldPosition parentPosition{1.0e12, -1.0e12, 1.0e12};
+    world.GetComponentForWrite<Transform>(parent)->Position = parentPosition;
+    world.AddComponentImmediate(child, Parent{parent});
+    const auto placed = ComputeWorldTRSForEntity(&world, child);
+    ExpectVectorNear(placed.Position, parentPosition + Vector3{0.125f, -0.25f, 0.5f});
+    ExpectVectorNear(ComputeLocalPositionFromWorld(placed.Position, parentPosition, Quaternion::Identity(), Vector3{1.0f, 1.0f, 1.0f}), WorldPosition{0.125, -0.25, 0.5});
 }
 
 class EntityWorldPosePhysicsTests : public ::testing::Test
@@ -165,8 +184,9 @@ protected:
         m_World.ProcessCommands();
 
         WorldTransform wt{};
-        const Transform local = Transform::FromTRS(position, Quaternion::Identity(), Vector3(1.0f, 1.0f, 1.0f));
-        std::memcpy(wt.matrix, local.matrix, sizeof(wt.matrix));
+        const Transform local = Transform::FromTRS(WorldPosition::FromVector3(position), Quaternion::Identity(), Vector3(1.0f, 1.0f, 1.0f));
+        wt.Position = local.Position;
+        wt.Basis = local.Basis;
         m_World.AddComponentImmediate(e, wt);
         m_World.AddComponentImmediate(e, PhysicsCollider{});
 
@@ -201,7 +221,7 @@ TEST_F(EntityWorldPosePhysicsTests, SettingPoseTeleportsBodyAndZeroesVelocity)
     pw->SetLinearVelocity(body->body, GameEngine::Physics::Vector3(4.0f, -2.0f, 1.0f));
     pw->SetAngularVelocity(body->body, GameEngine::Physics::Vector3(0.0f, 3.0f, 0.0f));
 
-    const Vector3 target(10.0f, 1.0f, -6.0f);
+    const WorldPosition target{10.0, 1.0, -6.0};
     ASSERT_TRUE(TrySetPhysicsBodyWorldPose(&m_World, e, target, Quaternion::Identity()));
 
     ExpectVectorNear(pw->GetBodyTransform(body->body).position, target);
@@ -220,6 +240,6 @@ TEST_F(EntityWorldPosePhysicsTests, EntityWithoutBodyReportsNoPoseSet)
         CreateTransformEntity(m_World, Vector3(0.0f, 0.0f, 0.0f), Quaternion::Identity(), Vector3(1.0f, 1.0f, 1.0f));
     m_World.ProcessCommands();
 
-    EXPECT_FALSE(TrySetPhysicsBodyWorldPose(&m_World, e, Vector3(1.0f, 2.0f, 3.0f), Quaternion::Identity()));
+    EXPECT_FALSE(TrySetPhysicsBodyWorldPose(&m_World, e, WorldPosition{1.0, 2.0, 3.0}, Quaternion::Identity()));
 }
 } // namespace

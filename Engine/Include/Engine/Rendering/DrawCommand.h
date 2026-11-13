@@ -14,10 +14,11 @@
 #include "Engine/Rendering/DrawBindings.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Rendering/Core/CommandList.h"
+#include "Rendering/Core/DrawProducerRegistry.h"
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/PipelineIdentifiers.h"
+#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
-#include "Rendering/Materials/ShaderVariantKey.h"
+#include "Rendering/Materials/Shader/ShaderVariantKey.h"
 
 #include <cstdint>
 #include <span>
@@ -69,10 +70,10 @@ struct DrawCommand
     ::GameEngine::Rendering::GraphicsPipelineId  InternedPipeline{};
     const Material*                              Material = nullptr;
     // Reflection meta for the actual interned pipeline. Two roles:
-    //   1. Material == nullptr: routes through PreparePipelineForDraw, this is
+    //   1. Material == nullptr: routes through BindPipelineForDraw, this is
     //      the materialless path's only descriptor source (terrain depth).
     //   2. Material != nullptr: serves as `metaOverride` to
-    //      PrepareMaterialForDraw, so the binder walks the variant's reflected
+    //      BindMaterialForDraw, so the binder walks the variant's reflected
     //      set layout instead of the material's base ShaderMeta. Required
     //      when InternedPipeline was compiled with keywords beyond the
     //      material's authored set (e.g. a forward contributor that picks
@@ -103,12 +104,15 @@ struct DrawCommand
     uint32_t FirstInstance = 0;
     int32_t  VertexOffset  = 0;
 
-    // Per-draw resource bindings forwarded to MaterialBinder::PrepareMaterialForDraw.
+    // Per-draw resource bindings forwarded to MaterialBinder::BindMaterialForDraw.
     DrawBindings Bindings{};
 
     // Optional GPU-driven draw source. When enabled, IndexCount/InstanceCount
     // are ignored and the pass records DrawIndexedIndirectCount instead.
     bool UseIndirect = false;
+    // The registered producer of this command (Rendering::DrawProducerRegistry); its name is the
+    // command's profiler scope inside a shared pass. It fills padding after UseIndirect.
+    ::GameEngine::Rendering::DrawProducerId Producer = ::GameEngine::Rendering::DrawProducerRegistry::kOther;
     ::GameEngine::Rendering::BufferHandle IndirectCommandBuffer{};
     ::GameEngine::Rendering::BufferHandle IndirectCountBuffer{};
     uint32_t IndirectMaxDrawCount = 0;

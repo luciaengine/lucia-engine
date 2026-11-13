@@ -5,6 +5,7 @@
 #include "Components/Animation/BoneLOD.h"
 #include "ECS/ECS.h"
 #include "Types/Types.h"
+#include "Mathematics/WorldPosition.h"
 
 namespace GameEngine
 {
@@ -68,6 +69,7 @@ private:
     struct FrameView
     {
         Hlod::ViewLod View;
+        Mathematics::WorldPosition Eye;
         uint32 LayerMask = 0u;
         bool Orthographic = false;
         bool Valid = false;

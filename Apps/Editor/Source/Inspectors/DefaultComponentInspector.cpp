@@ -1,33 +1,38 @@
 #include "Inspectors/DefaultComponentInspector.h"
 
-#include "Components/Name.h"
-#include "UI/Controls/Label.h"
-#include "UI/Interaction/ContextMenuManipulator.h"
+#include "Inspectors/InspectorColorSwatchRow.h"
+
 #include "InspectorRegistry.h"           // InspectorContext
 #include "EditorChangeNotifications.h"
-#include "Editor/Entities/EditorComponentTraits.h"   // per-component field labels and presets
+#include "Mathematics/Interpolation.h"
 #include "UndoRedo/UndoRedoService.h"
 #include "Inspectors/InspectorDragHelpers.h"  // AddFloatRowWithDrag / AddIntRowWithDrag / AddToggleRow
 #include "Inspectors/InspectorUIHelpers.h"    // InspectorUI::AddLine
-#include "Inspectors/InspectorComponentRowHelpers.h"  // MakeComponentSnapshotTargetById
+#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"  // MakeComponentSnapshotTargetById
+#include "Inspectors/InspectorOverrideRows.h"  // BindFieldRow: the override marks and menu of a field row
 #include "Inspectors/PreservedFieldNotice.h"          // AddPreservedFieldNotice
-#include "Inspectors/InspectorColorSwatchRow.h"         // AddColorSwatchRow for the Color drawer
-#include "Types/ColorUtils.h"
+#include "Inspectors/RenderLayers/RenderLayerField.h"              // the render layer rows on the project's names
+#include "UI/Controls/MaskField.h"
 #include "UI/Controls/TextField.h"            // editable String / uint rows
 #include "UI/Controls/Dropdown.h"             // enum name dropdown (scanner-detected enum fields)
+#include "UI/Controls/Label.h"                // the entity header's badge text
 #include "UI/Controls/Slider.h"               // compact ocean planar reflection strength slider
-#include "UI/StyleProperties.h"               // Style::* for the toggle-and-strength row layout
+#include "UI/StyleProperties.h"               // Style::* for the Color swatch drawer
 #include "UI/UIManager.h"                      // GetFocusedElementId for the live-refresh focus skip
 
+#include "ECS/ComponentFactory.h"            // GetDefaultBytes (the None value of a float row)
 #include "ECS/ComponentFieldRegistry.h"
+#include "ECS/FieldAccess.h"             // ReadFieldInteger / WriteFieldInteger
 #include "ECS/Reflection.h"               // FieldInfo, FieldTypeId, FieldElementSize
 
 #include <limits>                          // quiet_NaN for the clamped-range float row
 #include "ECS/Entity.h"                   // World (CaptureComponentBytes / ApplyComponentBytesImmediate)
+#include "Components/Name.h"              // the entity name the header marks
 #include "Components/Transform.h"         // Euler <-> Quaternion helpers for the Quat drawer
 #include "Core/Engine.h"                  // EngineCore::GetInstance().GetAssetManager() for the asset picker
 #include "Assets/AssetRegistry.h"         // AssetRegistry for AssetGuid field pickers
 #include "AssetCore/GUID.h"               // GUID (AssetRef field storage)
+#include "Types/ParseNumber.h"            // ParseUnsigned (enum option values)
 #include "Types/StringUtils.h"            // IdentifierToWords (row and option labels)
 
 #include <algorithm>
@@ -76,96 +81,31 @@ bool SpanDiffers(const Snapshot& primary, const std::vector<Snapshot>& extras,
     return false;
 }
 
-// Read any integer field element as a signed int for display. 64-bit values are
-// truncated to int — acceptable for the starter set (no 64-bit fields); revisit
-// when a component reflects an int64/uint64 that needs the full range.
-int ReadIntElement(const Snapshot& bytes, std::size_t offset, ECS::FieldTypeId type)
+// The layers of a render layer field at `offset` that the selection disagrees on.
+uint32 MixedRenderLayerBits(Rendering::RenderLayerMask primary, const std::vector<Snapshot>& extras,
+                            std::size_t offset)
 {
-    using ECS::FieldTypeId;
-    switch (type)
+    uint32 mixed = 0u;
+    for (const Snapshot& other : extras)
     {
-        case FieldTypeId::Int8:   { std::int8_t   v = 0; ReadPod(bytes, offset, v); return static_cast<int>(v); }
-        case FieldTypeId::UInt8:  { std::uint8_t  v = 0; ReadPod(bytes, offset, v); return static_cast<int>(v); }
-        case FieldTypeId::Int16:  { std::int16_t  v = 0; ReadPod(bytes, offset, v); return static_cast<int>(v); }
-        case FieldTypeId::UInt16: { std::uint16_t v = 0; ReadPod(bytes, offset, v); return static_cast<int>(v); }
-        case FieldTypeId::Int32:  { std::int32_t  v = 0; ReadPod(bytes, offset, v); return static_cast<int>(v); }
-        case FieldTypeId::UInt32: { std::uint32_t v = 0; ReadPod(bytes, offset, v); return static_cast<int>(v); }
-        case FieldTypeId::Int64:  { std::int64_t  v = 0; ReadPod(bytes, offset, v); return static_cast<int>(v); }
-        case FieldTypeId::UInt64: { std::uint64_t v = 0; ReadPod(bytes, offset, v); return static_cast<int>(v); }
-        default: return 0;
+        Rendering::RenderLayerMask layers;
+        if (offset + sizeof(layers) > other.size())
+            continue;
+        std::memcpy(&layers, other.data() + offset, sizeof(layers));
+        mixed |= layers.Bits ^ primary.Bits;
     }
+    return mixed;
 }
 
-void WriteIntElement(Snapshot& bytes, std::size_t offset, ECS::FieldTypeId type, int value)
+// The snapshot as the component bytes the ECS field accessor reads and writes.
+std::span<const std::byte> ComponentBytes(const Snapshot& bytes)
 {
-    using ECS::FieldTypeId;
-    switch (type)
-    {
-        case FieldTypeId::Int8:   { auto v = static_cast<std::int8_t>(value);   if (offset + sizeof(v) <= bytes.size()) std::memcpy(bytes.data() + offset, &v, sizeof(v)); break; }
-        case FieldTypeId::UInt8:  { auto v = static_cast<std::uint8_t>(value);  if (offset + sizeof(v) <= bytes.size()) std::memcpy(bytes.data() + offset, &v, sizeof(v)); break; }
-        case FieldTypeId::Int16:  { auto v = static_cast<std::int16_t>(value);  if (offset + sizeof(v) <= bytes.size()) std::memcpy(bytes.data() + offset, &v, sizeof(v)); break; }
-        case FieldTypeId::UInt16: { auto v = static_cast<std::uint16_t>(value); if (offset + sizeof(v) <= bytes.size()) std::memcpy(bytes.data() + offset, &v, sizeof(v)); break; }
-        case FieldTypeId::Int32:  { auto v = static_cast<std::int32_t>(value);  if (offset + sizeof(v) <= bytes.size()) std::memcpy(bytes.data() + offset, &v, sizeof(v)); break; }
-        case FieldTypeId::UInt32: { auto v = static_cast<std::uint32_t>(value); if (offset + sizeof(v) <= bytes.size()) std::memcpy(bytes.data() + offset, &v, sizeof(v)); break; }
-        case FieldTypeId::Int64:  { auto v = static_cast<std::int64_t>(value);  if (offset + sizeof(v) <= bytes.size()) std::memcpy(bytes.data() + offset, &v, sizeof(v)); break; }
-        case FieldTypeId::UInt64: { auto v = static_cast<std::uint64_t>(value); if (offset + sizeof(v) <= bytes.size()) std::memcpy(bytes.data() + offset, &v, sizeof(v)); break; }
-        default: break;
-    }
+    return std::as_bytes(std::span(bytes));
 }
 
-// Write an unsigned integer of the field's width (used by the editable uint row,
-// which parses the full unsigned range a signed int can't hold).
-void WriteUIntElement(Snapshot& bytes, std::size_t offset, ECS::FieldTypeId type, std::uint64_t value)
+std::span<std::byte> WritableComponentBytes(Snapshot& bytes)
 {
-    using ECS::FieldTypeId;
-    switch (type)
-    {
-        case FieldTypeId::UInt8:  { auto v = static_cast<std::uint8_t>(value);  if (offset + sizeof(v) <= bytes.size()) std::memcpy(bytes.data() + offset, &v, sizeof(v)); break; }
-        case FieldTypeId::UInt16: { auto v = static_cast<std::uint16_t>(value); if (offset + sizeof(v) <= bytes.size()) std::memcpy(bytes.data() + offset, &v, sizeof(v)); break; }
-        case FieldTypeId::UInt32: { auto v = static_cast<std::uint32_t>(value); if (offset + sizeof(v) <= bytes.size()) std::memcpy(bytes.data() + offset, &v, sizeof(v)); break; }
-        case FieldTypeId::UInt64: { if (offset + sizeof(value) <= bytes.size()) std::memcpy(bytes.data() + offset, &value, sizeof(value)); break; }
-        default: break;
-    }
-}
-
-// Read an integer field element as a full 64-bit signed value (no truncation),
-// honoring the field's signedness/width. Enum matching compares against the
-// EnumNameValue table's std::int64_t, so the full range must survive.
-std::int64_t ReadIntElement64(const Snapshot& bytes, std::size_t offset, ECS::FieldTypeId type)
-{
-    using ECS::FieldTypeId;
-    switch (type)
-    {
-        case FieldTypeId::Int8:   { std::int8_t   v = 0; ReadPod(bytes, offset, v); return static_cast<std::int64_t>(v); }
-        case FieldTypeId::UInt8:  { std::uint8_t  v = 0; ReadPod(bytes, offset, v); return static_cast<std::int64_t>(v); }
-        case FieldTypeId::Int16:  { std::int16_t  v = 0; ReadPod(bytes, offset, v); return static_cast<std::int64_t>(v); }
-        case FieldTypeId::UInt16: { std::uint16_t v = 0; ReadPod(bytes, offset, v); return static_cast<std::int64_t>(v); }
-        case FieldTypeId::Int32:  { std::int32_t  v = 0; ReadPod(bytes, offset, v); return static_cast<std::int64_t>(v); }
-        case FieldTypeId::UInt32: { std::uint32_t v = 0; ReadPod(bytes, offset, v); return static_cast<std::int64_t>(v); }
-        case FieldTypeId::Int64:  { std::int64_t  v = 0; ReadPod(bytes, offset, v); return v; }
-        case FieldTypeId::UInt64: { std::uint64_t v = 0; ReadPod(bytes, offset, v); return static_cast<std::int64_t>(v); }
-        default: return 0;
-    }
-}
-
-// Write a full 64-bit value into an integer field element of the field's width.
-// Enum values come from the table as std::int64_t; truncating to int would corrupt
-// large UInt32/UInt64 enumerators, so this writes the native width directly.
-void WriteIntElement64(Snapshot& bytes, std::size_t offset, ECS::FieldTypeId type, std::int64_t value)
-{
-    using ECS::FieldTypeId;
-    switch (type)
-    {
-        case FieldTypeId::Int8:   { auto v = static_cast<std::int8_t>(value);   if (offset + sizeof(v) <= bytes.size()) std::memcpy(bytes.data() + offset, &v, sizeof(v)); break; }
-        case FieldTypeId::UInt8:  { auto v = static_cast<std::uint8_t>(value);  if (offset + sizeof(v) <= bytes.size()) std::memcpy(bytes.data() + offset, &v, sizeof(v)); break; }
-        case FieldTypeId::Int16:  { auto v = static_cast<std::int16_t>(value);  if (offset + sizeof(v) <= bytes.size()) std::memcpy(bytes.data() + offset, &v, sizeof(v)); break; }
-        case FieldTypeId::UInt16: { auto v = static_cast<std::uint16_t>(value); if (offset + sizeof(v) <= bytes.size()) std::memcpy(bytes.data() + offset, &v, sizeof(v)); break; }
-        case FieldTypeId::Int32:  { auto v = static_cast<std::int32_t>(value);  if (offset + sizeof(v) <= bytes.size()) std::memcpy(bytes.data() + offset, &v, sizeof(v)); break; }
-        case FieldTypeId::UInt32: { auto v = static_cast<std::uint32_t>(value); if (offset + sizeof(v) <= bytes.size()) std::memcpy(bytes.data() + offset, &v, sizeof(v)); break; }
-        case FieldTypeId::Int64:  { auto v = static_cast<std::int64_t>(value);  if (offset + sizeof(v) <= bytes.size()) std::memcpy(bytes.data() + offset, &v, sizeof(v)); break; }
-        case FieldTypeId::UInt64: { auto v = static_cast<std::uint64_t>(value); if (offset + sizeof(v) <= bytes.size()) std::memcpy(bytes.data() + offset, &v, sizeof(v)); break; }
-        default: break;
-    }
+    return std::as_writable_bytes(std::span(bytes));
 }
 
 // Index of the EnumNames entry whose Value equals `value`, or -1 when the stored
@@ -190,8 +130,6 @@ struct FieldEditContext
     ECS::World* World = nullptr;
     ECS::EntityHandle Entity{};
     ECS::ComponentTypeId TypeId = 0;
-    // The component's registered field labels and presets (static views).
-    Editor::DefaultInspectorPresentation Presentation;
     Editor::EditorChangeNotifications* Notify = nullptr;
     Editor::UndoRedoService* Undo = nullptr;
     std::string Label;
@@ -235,7 +173,7 @@ void WireEdit(const std::shared_ptr<std::optional<Editor::UndoRedoService::Inter
             applyLive(value);
             return;
         }
-        if (!editState->has_value() || !editState->value())
+        if (!editState->has_value())
             editState->emplace(fec.Undo->BeginInteractiveEdit(fec.Label, MakeEditTarget(fec)));
         editState->value().Preview([&]() { applyLive(value); });
     };
@@ -246,10 +184,8 @@ void WireEdit(const std::shared_ptr<std::optional<Editor::UndoRedoService::Inter
             applyLive(value);
             return;
         }
-        if (!editState->has_value() || !editState->value())
+        if (!editState->has_value())
             editState->emplace(fec.Undo->BeginInteractiveEdit(fec.Label, MakeEditTarget(fec)));
-        if (!editState->value())
-            return;
         applyLive(value);
         // Move the edit out and clear the shared state before Commit: Commit fires
         // Notify (which fans out across all edited entities), and were that ever to
@@ -261,27 +197,23 @@ void WireEdit(const std::shared_ptr<std::optional<Editor::UndoRedoService::Inter
     };
 }
 
-std::string_view FieldDisplayName(const Editor::DefaultInspectorPresentation& presentation,
-                                  std::string_view name)
+} // namespace
+
+std::string FieldDisplayName(const ECS::FieldInfo& field)
 {
-    for (const Editor::DefaultInspectorFieldLabel& label : presentation.FieldLabels)
-    {
-        if (label.Field == name)
-            return label.Label;
-    }
-    return name;
+    if (!field.Label.empty())
+        return std::string(field.Label);
+    return IdentifierToWords(field.Name);
 }
 
-std::string EnumDisplayName(const Editor::DefaultInspectorPresentation& presentation,
-                                 std::string_view fieldName, std::string_view name)
+std::string EnumDisplayName(const ECS::EnumNameValue& value)
 {
-    for (const Editor::DefaultInspectorEnumLabel& label : presentation.EnumLabels)
-    {
-        if (label.Field == fieldName && label.Enumerator == name)
-            return std::string(label.Label);
-    }
-    return IdentifierToWords(name);
+    if (!value.Label.empty())
+        return std::string(value.Label);
+    return IdentifierToWords(value.Name);
 }
+
+namespace {
 
 // "Mesh 1" for the first of several elements: counted from one, as the rest of the inspector counts slots.
 std::string ElementLabel(std::string_view name, std::uint32_t index, std::uint32_t count)
@@ -329,11 +261,7 @@ void CommitFieldPatch(const FieldEditContext& fec, const std::function<void(Snap
             applyOne(e);
         return;
     }
-    if (!fec.Undo->CommitPendingEdit())
-        return;
     auto edit = fec.Undo->BeginInteractiveEdit(fec.Label, MakeEditTarget(fec));
-    if (!edit)
-        return;
     applyOne(fec.Entity);
     for (ECS::EntityHandle e : fec.Extras)
         applyOne(e);
@@ -453,48 +381,60 @@ void RecordDoubleFieldRefresh(RefreshPlan* plan, FloatField* field, std::size_t 
     }});
 }
 
-void RecordIntFieldRefresh(RefreshPlan* plan, IntField* field, std::size_t offset, ECS::FieldTypeId type)
+void RecordIntFieldRefresh(RefreshPlan* plan, IntField* field, const ECS::FieldInfo& fieldInfo, std::uint32_t element)
 {
     if (!plan || !field)
         return;
-    plan->push_back({[field, offset, type](const Snapshot& bytes, const std::string& focusId) {
+    plan->push_back({[field, fieldInfo, element](const Snapshot& bytes, const std::string& focusId) {
         if (ShouldSkipFieldRefresh(field, focusId))
             return;
-        if (offset >= bytes.size())
+        std::int64_t value = 0;
+        if (!ECS::ReadFieldInteger(fieldInfo, ComponentBytes(bytes), element, value))
             return;
-        const int cur = ReadIntElement(bytes, offset, type);
+        const int cur = static_cast<int>(value);
         if (field->GetValue() == cur)
             return;
         field->SetValueWithoutNotify(cur);
     }});
 }
 
-void RecordUIntTextFieldRefresh(RefreshPlan* plan, TextField* field, std::size_t offset, ECS::FieldTypeId type)
+void RecordUIntTextFieldRefresh(RefreshPlan* plan, TextField* field, const ECS::FieldInfo& fieldInfo,
+                                std::uint32_t element)
 {
     if (!plan || !field)
         return;
     // Cache the last raw value so an idle tick compares one uint64 instead of
     // formatting a string (TextField reformats past the base equality check).
     auto lastValue = std::make_shared<std::optional<std::uint64_t>>();
-    plan->push_back({[field, offset, type, lastValue](const Snapshot& bytes, const std::string& focusId) {
+    plan->push_back({[field, fieldInfo, element, lastValue](const Snapshot& bytes, const std::string& focusId) {
         if (ShouldSkipFieldRefresh(field, focusId))
             return;
-        std::uint64_t value = 0;
-        if (type == ECS::FieldTypeId::UInt32)
-        {
-            std::uint32_t v = 0;
-            if (!ReadPod(bytes, offset, v))
-                return;
-            value = v;
-        }
-        else if (!ReadPod(bytes, offset, value))
-        {
+        std::int64_t stored = 0;
+        if (!ECS::ReadFieldInteger(fieldInfo, ComponentBytes(bytes), element, stored))
             return;
-        }
+        const auto value = static_cast<std::uint64_t>(stored);
         if (lastValue->has_value() && **lastValue == value)
             return;
         *lastValue = value;
         field->SetValueWithoutNotify(std::to_string(value));
+    }});
+}
+
+void RecordRenderLayerMaskFieldRefresh(RefreshPlan* plan, MaskField* field, std::size_t offset)
+{
+    if (!plan || !field)
+        return;
+    auto lastValue = std::make_shared<std::optional<Rendering::RenderLayerMask>>();
+    plan->push_back({[field, offset, lastValue](const Snapshot& bytes, const std::string& focusId) {
+        if (ShouldSkipFieldRefresh(field, focusId) || field->IsPopupOpen())
+            return;
+        Rendering::RenderLayerMask value;
+        if (!ReadPod(bytes, offset, value))
+            return;
+        if (lastValue->has_value() && **lastValue == value)
+            return;
+        *lastValue = value;
+        field->SetValueWithoutNotify(value.Bits);
     }});
 }
 
@@ -527,7 +467,8 @@ void EmitFloatRow(UIElement* parent, RefreshPlan* plan, const Snapshot& bytes,
                   const FieldEditContext& fecBase,
                   const std::string& label, std::size_t offset, bool mixed, bool& any,
                   bool hasRange = false, float minValue = 0.0f, float maxValue = 0.0f,
-                  bool useSlider = false, const char* tooltip = nullptr)
+                  bool useSlider = false, const char* tooltip = nullptr,
+                  std::optional<float> noneValue = std::nullopt)
 {
     float cur = 0.0f;
     ReadPod(bytes, offset, cur);
@@ -565,11 +506,22 @@ void EmitFloatRow(UIElement* parent, RefreshPlan* plan, const Snapshot& bytes,
             : InspectorDrag::AddFloatRowWithDrag(parent, fec.Label, cur, std::move(onChanging),
                                                  std::move(onChanged),
                                                  std::numeric_limits<float>::quiet_NaN(), tooltip);
+        if (f && noneValue)
+            f->SetNoneValue(*noneValue, FloatField::kNoneText);
         if (mixed && f)
             f->SetMixed();
         RecordFloatFieldRefresh(plan, f, offset);
     }
     any = true;
+}
+
+// The value a float row offers as None: the field's default, when that default is at a float limit.
+std::optional<float> NoneValueOf(const Snapshot& defaults, std::size_t offset)
+{
+    float value = 0.0f;
+    if (!ReadPod(defaults, offset, value) || !FloatField::IsAtFloatLimit(value))
+        return std::nullopt;
+    return value;
 }
 
 const ECS::FieldInfo* FindField(std::span<const ECS::FieldInfo> fields, std::string_view name)
@@ -613,18 +565,18 @@ bool EmitPlanarReflectionControlsRow(UIElement* parent,
     ReadPod(bytes, toggleOffset, toggleValue);
     float strengthValue = 1.0f;
     ReadPod(bytes, strengthOffset, strengthValue);
-    strengthValue = std::clamp(strengthValue, 0.0f, 1.0f);
+    strengthValue = Math::Clamp01(strengthValue);
 
     UIElement* row = InspectorUI::AddRow(parent);
-    Label* label = InspectorUI::AddLabel(row, std::string(FieldDisplayName(fecBase.Presentation, field.Name)), tooltip);
+    Label* label = InspectorUI::AddLabel(row, std::string(FieldDisplayName(field)), tooltip);
     UIElement* fieldContainer = InspectorUI::AddFieldContainer(row);
-    fieldContainer->Overrides()
+    fieldContainer->Style()
         .Set(Style::FlexDir, FlexDirection::Row)
         .Set(Style::AlignItems, AlignItems::Center)
         .Set(Style::Gap, StyleLength::Px(10.0f));
 
     FieldEditContext toggleFec = fecBase;
-    toggleFec.Label = std::string(FieldDisplayName(fecBase.Presentation, field.Name));
+    toggleFec.Label = std::string(FieldDisplayName(field));
     auto toggleEditState = std::make_shared<std::optional<Editor::UndoRedoService::InteractiveEdit>>();
     std::function<void(bool)> onToggleChanging;
     std::function<void(bool)> onToggleChanged;
@@ -650,13 +602,13 @@ bool EmitPlanarReflectionControlsRow(UIElement* parent,
         toggle->SetMixed();
 
     FieldEditContext strengthFec = fecBase;
-    strengthFec.Label = std::string(FieldDisplayName(fecBase.Presentation, strengthField->Name));
+    strengthFec.Label = std::string(FieldDisplayName(*strengthField));
     auto strengthEditState = std::make_shared<std::optional<Editor::UndoRedoService::InteractiveEdit>>();
     std::function<void(float)> onStrengthChanging;
     std::function<void(float)> onStrengthChanged;
     WireEdit<float>(strengthEditState, strengthFec,
         [strengthOffset](Snapshot& b, float v) {
-            const float stored = std::clamp(v, 0.0f, 1.0f);
+            const float stored = Math::Clamp01(v);
             if (strengthOffset + sizeof(float) <= b.size())
                 std::memcpy(b.data() + strengthOffset, &stored, sizeof(float));
         },
@@ -670,7 +622,7 @@ bool EmitPlanarReflectionControlsRow(UIElement* parent,
     slider->SetMax(1.0f);
     slider->SetShowValueBubble(true);
     slider->SetValueWithoutNotify(strengthValue);
-    slider->Overrides()
+    slider->Style()
         .Set(Style::FlexGrow, 1.0f)
         .Set(Style::MinWidth, StyleLength::Px(80.0f));
     if (!strengthField->Tooltip.empty())
@@ -710,6 +662,15 @@ void EmitFloatAxisRows(UIElement* parent, RefreshPlan* plan, const Snapshot& byt
     }
 }
 
+// Convert RGBA [0,1] floats to 0xAARRGGBB and back, for the Color swatch drawer.
+std::uint32_t ColorFloatsToArgb(const float* c)
+{
+    auto q = [](float v) { return static_cast<std::uint8_t>(std::max(0.0f, std::min(1.0f, v)) * 255.0f + 0.5f); };
+    return (0xFFu << 24) | (static_cast<std::uint32_t>(q(c[0])) << 16)
+         | (static_cast<std::uint32_t>(q(c[1])) << 8) | static_cast<std::uint32_t>(q(c[2]));
+}
+
+
 // Emit a Color (RGBA float4 at baseOffset) as a swatch + RGB label. Clicking the
 // swatch opens the shared color picker; dragging previews live and Apply commits
 // one undo entry (multi-entity aware).
@@ -723,17 +684,32 @@ void EmitColorSwatchRow(UIElement* parent, RefreshPlan* plan, const Snapshot& by
     for (int i = 0; i < 4; ++i)
         ReadPod(bytes, baseOffset + static_cast<std::size_t>(i) * sizeof(float), rgba[i]);
 
-    const std::uint32_t argb = ColorUtils::RgbFloatsToArgb(rgba.data());
-    const InspectorUI::ColorSwatchRow colorRow = InspectorUI::AddColorSwatchRow(
-        parent, label, tooltip ? tooltip : "Click the swatch to open the color picker", argb,
-        InspectorUI::FormatColorRgb(rgba[0], rgba[1], rgba[2]));
-    UIElement* swatchRaw = colorRow.Swatch;
-    Label* rgbLabelRaw = colorRow.Value;
+    UIElement* row = InspectorUI::AddRow(parent);
+    InspectorUI::AddLabel(row, label, tooltip ? tooltip : "Click the swatch to open the color picker");
+    UIElement* fc = InspectorUI::AddFieldContainer(row);
+    fc->Style()
+        .Set(Style::FlexDir, FlexDirection::Row)
+        .Set(Style::AlignItems, AlignItems::Center)
+        .Set(Style::Gap, StyleLength::Px(6.0f));
+
+    const std::uint32_t argb = ColorFloatsToArgb(rgba.data());
+    auto swatch = std::make_unique<UIElement>();
+    UIElement* swatchRaw = swatch.get();
+    InspectorUI::StyleColorSwatch(swatchRaw, argb);
     if (tooltip)
-    {
         swatchRaw->SetTooltip(tooltip);
-        rgbLabelRaw->SetTooltip(tooltip);
-    }
+    fc->AddChild(std::move(swatch));
+
+    char buf[48];
+    std::snprintf(buf, sizeof(buf), "(%.2f, %.2f, %.2f)", rgba[0], rgba[1], rgba[2]);
+    auto rgbLabel = std::make_unique<Label>();
+    rgbLabel->AddClass("inspector-text");
+    rgbLabel->SetText(buf);
+    rgbLabel->Style().Set(Style::Cursor, CursorStyle::Pointer);
+    if (tooltip)
+        rgbLabel->SetTooltip(tooltip);
+    Label* rgbLabelRaw = rgbLabel.get();
+    fc->AddChild(std::move(rgbLabel));
 
     FieldEditContext fec = fecBase;
     fec.Label = label;
@@ -773,8 +749,10 @@ void EmitColorSwatchRow(UIElement* parent, RefreshPlan* plan, const Snapshot& by
             Label* rgbLabel = rgbLabelRef.Get();
             if (!swatch || !rgbLabel)
                 return;
-            InspectorUI::SetColorSwatchColor(swatch, newArgb | 0xFF000000u);
-            rgbLabel->SetText(InspectorUI::FormatColorRgb(nc[0], nc[1], nc[2]));
+            InspectorUI::StyleColorSwatch(swatch, newArgb | 0xFF000000u);
+            char b2[48];
+            std::snprintf(b2, sizeof(b2), "(%.2f, %.2f, %.2f)", nc[0], nc[1], nc[2]);
+            rgbLabel->SetText(b2);
         };
         auto argbToColor = [](std::uint32_t newArgb, float intensity) {
             const float scale = std::max(1.0f, intensity);
@@ -793,7 +771,7 @@ void EmitColorSwatchRow(UIElement* parent, RefreshPlan* plan, const Snapshot& by
             }
             else
             {
-                if (!editState->has_value() || !editState->value())
+                if (!editState->has_value())
                     editState->emplace(fec.Undo->BeginInteractiveEdit(fec.Label, MakeEditTarget(fec)));
                 editState->value().Preview([&]() { applyLive(nc); });
             }
@@ -840,7 +818,7 @@ void EmitColorSwatchRow(UIElement* parent, RefreshPlan* plan, const Snapshot& by
     // capture. The swatch/label are not editable widgets (no focus/drag to skip).
     // The cache compares the DISPLAYED form — the quantized 0xAARRGGBB swatch tint
     // plus the %.2f label string — not the raw floats, so a continuously-animated
-    // HDR colour whose display is unchanged skips the SetColorSwatchColor restyle
+    // HDR colour whose display is unchanged skips the StyleColorSwatch restyle
     // (which marks the swatch dirty unconditionally). Known HDR divergence: the
     // picker tints the swatch from raw ARGB while this recomputes a clamped tint
     // from the intensity-scaled floats, so a >1.0 intensity colour can show a
@@ -857,12 +835,14 @@ void EmitColorSwatchRow(UIElement* parent, RefreshPlan* plan, const Snapshot& by
                 if (!ReadPod(b, baseOffset + static_cast<std::size_t>(i) * sizeof(float), nc[i]))
                     return;
             }
-            const std::uint32_t argb = ColorUtils::RgbFloatsToArgb(nc.data());
-            std::string label = InspectorUI::FormatColorRgb(nc[0], nc[1], nc[2]);
+            const std::uint32_t argb = ColorFloatsToArgb(nc.data());
+            char buf[48];
+            std::snprintf(buf, sizeof(buf), "(%.2f, %.2f, %.2f)", nc[0], nc[1], nc[2]);
+            std::string label(buf);
             if (lastShown->has_value() && lastShown->value().first == argb &&
                 lastShown->value().second == label)
                 return;
-            InspectorUI::SetColorSwatchColor(swatchRaw, argb);
+            InspectorUI::StyleColorSwatch(swatchRaw, argb);
             rgbLabelRaw->SetText(label);
             *lastShown = std::make_pair(argb, std::move(label));
         }});
@@ -968,25 +948,124 @@ void EmitQuatEulerRows(UIElement* parent, RefreshPlan* plan, const Snapshot& byt
 constexpr const char* kEnumMixedOptionValue = "__mixed__";
 constexpr const char* kPresetCustomOptionValue = "__custom__";
 
-std::span<const Editor::DefaultInspectorUIntPreset> UIntPresetsForField(
-    const Editor::DefaultInspectorPresentation& presentation, std::string_view fieldName)
+struct UIntPreset
 {
-    for (const Editor::DefaultInspectorUIntPresets& presets : presentation.UIntPresets)
+    std::uint32_t Value = 0;
+    const char* Label = "";
+};
+
+struct FloatPreset
+{
+    float Value = 0.0f;
+    const char* Label = "";
+};
+
+constexpr UIntPreset kOceanCascadeResolutionPresets[] = {
+    {0u, "Default"},
+    {128u, "128"},
+    {256u, "256"},
+    {384u, "384"},
+    {512u, "512"},
+    {1024u, "1024"},
+};
+
+constexpr UIntPreset kOceanRasterDepthResolutionPresets[] = {
+    {256u, "256"},
+    {512u, "512"},
+    {1024u, "1024"},
+    {2048u, "2048"},
+    {4096u, "4096"},
+};
+
+constexpr UIntPreset kReflectionProbeResolutionPresets[] = {
+    {64u, "64"},
+    {128u, "128"},
+    {256u, "256"},
+    {512u, "512"},
+    {1024u, "1024"},
+};
+
+constexpr UIntPreset kOceanFoamDebugModePresets[] = {
+    {0u, "Normal"},
+    {1u, "Combined Foam"},
+    {2u, "Wave Foam"},
+    {3u, "Shoreline / Contact"},
+    {4u, "Freshness / Age"},
+    {5u, "Latest Deposit"},
+    {6u, "Seabed Depth Ramp"},
+    {7u, "Shallow Mask"},
+    {8u, "Invalid / Deep Tiles"},
+};
+
+constexpr FloatPreset kOceanMinScalePresets[] = {
+    {8.0f, "8"},
+    {16.0f, "16"},
+    {32.0f, "32"},
+    {64.0f, "64"},
+    {128.0f, "128"},
+    {256.0f, "256"},
+};
+
+constexpr FloatPreset kOceanMaxScalePresets[] = {
+    {64.0f, "64"},
+    {128.0f, "128"},
+    {256.0f, "256"},
+    {512.0f, "512"},
+    {1024.0f, "1024"},
+    {2048.0f, "2048"},
+    {4096.0f, "4096"},
+};
+
+constexpr FloatPreset kOceanPlanarReflectionScalePresets[] = {
+    {1.0f, "1x"},
+    {0.75f, "0.75x"},
+    {0.5f, "0.5x"},
+    {0.25f, "0.25x"},
+    {0.125f, "0.125x"},
+};
+
+std::span<const UIntPreset> ComponentUIntPresetsForField(ECS::ComponentTypeId componentTypeId,
+                                                         std::string_view fieldName)
+{
+    const ECS::ComponentTypeId reflectionProbeId =
+        ECS::ComponentFieldRegistry::FindByName("ReflectionProbe");
+    if (componentTypeId == reflectionProbeId && fieldName == "CaptureResolution")
+        return kReflectionProbeResolutionPresets;
+
+    const ECS::ComponentTypeId oceanRendererId =
+        ECS::ComponentFieldRegistry::FindByName("OceanRenderer");
+    if (componentTypeId == oceanRendererId)
     {
-        if (presets.Field == fieldName)
-            return presets.Presets;
+        if (fieldName == "LodDataResolution")
+            return kOceanCascadeResolutionPresets;
+        if (fieldName == "RasterDepthResolution")
+            return kOceanRasterDepthResolutionPresets;
     }
+
+    const ECS::ComponentTypeId oceanSurfaceId =
+        ECS::ComponentFieldRegistry::FindByName("OceanSurface");
+    if (componentTypeId == oceanSurfaceId && fieldName == "FoamDebugMode")
+        return kOceanFoamDebugModePresets;
     return {};
 }
 
-std::span<const Editor::DefaultInspectorFloatPreset> FloatPresetsForField(
-    const Editor::DefaultInspectorPresentation& presentation, std::string_view fieldName)
+std::span<const FloatPreset> OceanScalePresetsForField(ECS::ComponentTypeId componentTypeId,
+                                                       std::string_view fieldName)
 {
-    for (const Editor::DefaultInspectorFloatPresets& presets : presentation.FloatPresets)
+    const ECS::ComponentTypeId oceanRendererId =
+        ECS::ComponentFieldRegistry::FindByName("OceanRenderer");
+    if (componentTypeId == oceanRendererId)
     {
-        if (presets.Field == fieldName)
-            return presets.Presets;
+        if (fieldName == "MinScale")
+            return kOceanMinScalePresets;
+        if (fieldName == "MaxScale")
+            return kOceanMaxScalePresets;
     }
+
+    const ECS::ComponentTypeId oceanSurfaceId =
+        ECS::ComponentFieldRegistry::FindByName("OceanSurface");
+    if (componentTypeId == oceanSurfaceId && fieldName == "PlanarReflectionScale")
+        return kOceanPlanarReflectionScalePresets;
     return {};
 }
 
@@ -1014,8 +1093,8 @@ bool EmitEnumDropdownRow(UIElement* parent, RefreshPlan* plan, const Snapshot& b
                          const char* tooltip = nullptr)
 {
     const std::size_t offset = field.Offset;
-    const ECS::FieldTypeId fieldType = field.Type;
-    const std::int64_t current = ReadIntElement64(bytes, offset, fieldType);
+    std::int64_t current = 0;
+    ECS::ReadFieldInteger(field, ComponentBytes(bytes), 0, current);
     const int currentIndex = EnumIndexForValue(field.EnumNames, current);
     const bool mixed = SpanDiffers(bytes, extraBytes, offset, field.Size);
 
@@ -1035,13 +1114,13 @@ bool EmitEnumDropdownRow(UIElement* parent, RefreshPlan* plan, const Snapshot& b
     for (std::size_t i = 0; i < field.EnumNames.size(); ++i)
     {
         options.push_back(
-            {std::to_string(i), std::string(EnumDisplayName(fecBase.Presentation, field.Name, field.EnumNames[i].Name))});
+            {std::to_string(i), std::string(EnumDisplayName(field.EnumNames[i]))});
         if (!mixed && static_cast<int>(i) == currentIndex)
             selectedIndex = static_cast<int>(options.size()) - 1;
     }
 
     FieldEditContext fec = fecBase;
-    fec.Label = std::string(FieldDisplayName(fecBase.Presentation, field.Name));
+    fec.Label = std::string(FieldDisplayName(field));
     Dropdown* dd = InspectorUI::AddDropdownRow(parent, fec.Label, options, selectedIndex, tooltip);
     if (!dd)
         return false;
@@ -1057,7 +1136,7 @@ bool EmitEnumDropdownRow(UIElement* parent, RefreshPlan* plan, const Snapshot& b
     // Wire AFTER SetOptions (done inside AddDropdownRow): SetSelectedIndex fires
     // NotifyValueChanged on the initial selection, and wiring first would commit a
     // spurious no-op edit on every rebuild.
-    dd->SetOnValueChanged([fec, offset, fieldType, values](const std::string& optionValue) {
+    dd->SetOnValueChanged([fec, field, values](const std::string& optionValue) {
         if (optionValue == kEnumMixedOptionValue)
             return;  // selecting the sentinel itself is a no-op
         int idx = -1;
@@ -1065,8 +1144,8 @@ bool EmitEnumDropdownRow(UIElement* parent, RefreshPlan* plan, const Snapshot& b
         if (idx < 0 || idx >= static_cast<int>(values.size()))
             return;
         const std::int64_t newValue = values[static_cast<std::size_t>(idx)];
-        CommitFieldPatch(fec, [offset, fieldType, newValue](Snapshot& b) {
-            WriteIntElement64(b, offset, fieldType, newValue);
+        CommitFieldPatch(fec, [field, newValue](Snapshot& b) {
+            ECS::WriteFieldInteger(field, WritableComponentBytes(b), 0, newValue);
         });
     });
 
@@ -1078,13 +1157,15 @@ bool EmitEnumDropdownRow(UIElement* parent, RefreshPlan* plan, const Snapshot& b
     if (plan && !mixed)
     {
         const std::span<const ECS::EnumNameValue> enumNames = field.EnumNames;  // view over constexpr data; outlives the inspector
-        plan->push_back({[dd, offset, fieldType, enumNames](const Snapshot& b, const std::string& focusId) {
+        plan->push_back({[dd, field, enumNames](const Snapshot& b, const std::string& focusId) {
             // Leave the widget alone while the user is interacting: focused/dragging
             // (ShouldSkipFieldRefresh) or with the popup open (IsMenuOpen) — the same
             // skip philosophy as a focused text field.
             if (ShouldSkipFieldRefresh(dd, focusId) || dd->IsMenuOpen())
                 return;
-            const std::int64_t cur = ReadIntElement64(b, offset, fieldType);
+            std::int64_t cur = 0;
+            if (!ECS::ReadFieldInteger(field, ComponentBytes(b), 0, cur))
+                return;
             const int tableIndex = EnumIndexForValue(enumNames, cur);
             // Fresh value left the enum table: emit would have fallen back to the
             // numeric field, which we cannot switch to post-build, so keep the last
@@ -1101,7 +1182,7 @@ bool EmitUIntPresetDropdownRow(UIElement* parent, RefreshPlan* plan, const Snaps
                                const std::vector<Snapshot>& extraBytes,
                                const FieldEditContext& fecBase,
                                const ECS::FieldInfo& field,
-                               std::span<const Editor::DefaultInspectorUIntPreset> presets,
+                               std::span<const UIntPreset> presets,
                                const char* tooltip = nullptr)
 {
     if (presets.empty() || field.Type != ECS::FieldTypeId::UInt32)
@@ -1123,7 +1204,7 @@ bool EmitUIntPresetDropdownRow(UIElement* parent, RefreshPlan* plan, const Snaps
     }
 
     bool matchedPreset = false;
-    for (const Editor::DefaultInspectorUIntPreset& preset : presets)
+    for (const UIntPreset& preset : presets)
     {
         if (!mixed && preset.Value == current)
             matchedPreset = true;
@@ -1135,29 +1216,28 @@ bool EmitUIntPresetDropdownRow(UIElement* parent, RefreshPlan* plan, const Snaps
         selectedIndex = 0;
     }
 
-    for (const Editor::DefaultInspectorUIntPreset& preset : presets)
+    for (const UIntPreset& preset : presets)
     {
-        options.push_back({std::to_string(preset.Value), std::string(preset.Label)});
+        options.push_back({std::to_string(preset.Value), preset.Label});
         if (!mixed && matchedPreset && preset.Value == current)
             selectedIndex = static_cast<int>(options.size()) - 1;
     }
 
     FieldEditContext fec = fecBase;
-    fec.Label = std::string(FieldDisplayName(fecBase.Presentation, field.Name));
+    fec.Label = std::string(FieldDisplayName(field));
     Dropdown* dd = InspectorUI::AddDropdownRow(parent, fec.Label, options, selectedIndex, tooltip);
     if (!dd)
         return false;
 
-    dd->SetOnValueChanged([fec, offset](const std::string& optionValue) {
+    dd->SetOnValueChanged([fec, field](const std::string& optionValue) {
         if (optionValue == kEnumMixedOptionValue || optionValue == kPresetCustomOptionValue)
             return;
-        std::uint64_t parsed = 0;
-        try { parsed = std::stoull(optionValue, nullptr, 10); } catch (...) { return; }
-        if (parsed > std::numeric_limits<std::uint32_t>::max())
+        const std::optional<std::uint64_t> parsed = ParseUnsigned(optionValue);
+        if (!parsed || *parsed > std::numeric_limits<std::uint32_t>::max())
             return;
-        const std::uint32_t newValue = static_cast<std::uint32_t>(parsed);
-        CommitFieldPatch(fec, [offset, newValue](Snapshot& b) {
-            WriteUIntElement(b, offset, ECS::FieldTypeId::UInt32, newValue);
+        const std::uint32_t newValue = static_cast<std::uint32_t>(*parsed);
+        CommitFieldPatch(fec, [field, newValue](Snapshot& b) {
+            ECS::WriteFieldInteger(field, WritableComponentBytes(b), 0, newValue);
         });
     });
 
@@ -1169,7 +1249,7 @@ bool EmitUIntPresetDropdownRow(UIElement* parent, RefreshPlan* plan, const Snaps
     {
         std::vector<std::uint32_t> presetValues;
         presetValues.reserve(presets.size());
-        for (const Editor::DefaultInspectorUIntPreset& preset : presets)
+        for (const UIntPreset& preset : presets)
             presetValues.push_back(preset.Value);
         const int presetOffset = matchedPreset ? 0 : 1;
         plan->push_back({[dd, offset, presetValues, presetOffset](const Snapshot& b, const std::string& focusId) {
@@ -1200,7 +1280,7 @@ bool EmitFloatPresetDropdownRow(UIElement* parent, RefreshPlan* plan, const Snap
                                 const std::vector<Snapshot>& extraBytes,
                                 const FieldEditContext& fecBase,
                                 const ECS::FieldInfo& field,
-                                std::span<const Editor::DefaultInspectorFloatPreset> presets,
+                                std::span<const FloatPreset> presets,
                                 const char* tooltip = nullptr)
 {
     if (presets.empty() || field.Type != ECS::FieldTypeId::Float)
@@ -1222,7 +1302,7 @@ bool EmitFloatPresetDropdownRow(UIElement* parent, RefreshPlan* plan, const Snap
     }
 
     bool matchedPreset = false;
-    for (const Editor::DefaultInspectorFloatPreset& preset : presets)
+    for (const FloatPreset& preset : presets)
     {
         if (!mixed && preset.Value == current)
             matchedPreset = true;
@@ -1234,15 +1314,15 @@ bool EmitFloatPresetDropdownRow(UIElement* parent, RefreshPlan* plan, const Snap
         selectedIndex = 0;
     }
 
-    for (const Editor::DefaultInspectorFloatPreset& preset : presets)
+    for (const FloatPreset& preset : presets)
     {
-        options.push_back({FormatPresetFloat(preset.Value), std::string(preset.Label)});
+        options.push_back({FormatPresetFloat(preset.Value), preset.Label});
         if (!mixed && matchedPreset && preset.Value == current)
             selectedIndex = static_cast<int>(options.size()) - 1;
     }
 
     FieldEditContext fec = fecBase;
-    fec.Label = std::string(FieldDisplayName(fecBase.Presentation, field.Name));
+    fec.Label = std::string(FieldDisplayName(field));
     Dropdown* dd = InspectorUI::AddDropdownRow(parent, fec.Label, options, selectedIndex, tooltip);
     if (!dd)
         return false;
@@ -1266,7 +1346,7 @@ bool EmitFloatPresetDropdownRow(UIElement* parent, RefreshPlan* plan, const Snap
     {
         std::vector<float> presetValues;
         presetValues.reserve(presets.size());
-        for (const Editor::DefaultInspectorFloatPreset& preset : presets)
+        for (const FloatPreset& preset : presets)
             presetValues.push_back(preset.Value);
         const int presetOffset = matchedPreset ? 0 : 1;
         plan->push_back({[dd, offset, presetValues, presetOffset](const Snapshot& b, const std::string& focusId) {
@@ -1333,7 +1413,12 @@ std::string FormatReadOnlyValue(const Snapshot& bytes, const ECS::FieldInfo& fie
         case FieldTypeId::Int32:
         case FieldTypeId::Int64:
         case FieldTypeId::UInt8:
-        case FieldTypeId::UInt16: return std::to_string(ReadIntElement(bytes, off, field.Type));
+        case FieldTypeId::UInt16:
+        {
+            std::int64_t value = 0;
+            ECS::ReadFieldInteger(field, ComponentBytes(bytes), 0, value);
+            return std::to_string(value);
+        }
         case FieldTypeId::UInt32: { std::uint32_t v = 0; ReadPod(bytes, off, v); return std::to_string(v); }
         case FieldTypeId::UInt64: { std::uint64_t v = 0; ReadPod(bytes, off, v); return std::to_string(v); }
         case FieldTypeId::String:
@@ -1345,7 +1430,6 @@ std::string FormatReadOnlyValue(const Snapshot& bytes, const ECS::FieldInfo& fie
             return std::string(text, len);
         }
         case FieldTypeId::EntityHandle: { std::uint32_t id = 0; ReadPod(bytes, off, id); return "Entity #" + std::to_string(id); }
-        case FieldTypeId::AssetGuid: { GUID::Data data{}; ReadPod(bytes, off, data); return GUID(data).ToString(); }
         default: return "(" + std::to_string(field.Size) + " bytes)";
     }
 }
@@ -1370,38 +1454,10 @@ void CollectRows(UIElement* parent, std::size_t begin, std::vector<UIElement*>& 
         rows.push_back(children[index].get());
 }
 
-// The menu items of the entries the override answerer gives `target`, each followed by `refresh`.
-std::vector<ContextMenuManipulator::Item> OverrideMenuItems(const OverrideMenuTarget& target,
-                                                            const std::function<void()>& refresh)
-{
-    std::vector<ContextMenuManipulator::Item> items;
-    if (!target.World || !target.World->IsValid(target.Entity))
-        return items;
-    for (OverrideMenuEntry& entry : InspectorRegistry::Get().QueryOverrideMenu(target))
-    {
-        items.push_back({.Path = std::move(entry.Label),
-                         .IconPath = std::move(entry.IconPath),
-                         .OnActivate = [run = std::move(entry.Run), refresh]()
-                         {
-                             run();
-                             if (refresh)
-                                 refresh();
-                         }});
-    }
-    return items;
-}
-
-void SetFieldRowMarks(const std::vector<FieldRows>& fields, const ComponentOverrides& overrides)
-{
-    for (const FieldRows& field : fields)
-        for (UIElement* row : field.Rows)
-            InspectorUI::SetRowOverridden(row, overrides.IsFieldOverridden(field.Field));
-}
-
 // The header's declared badge (InspectorPanel::MountHeaderTrailingSlot) shows `text`; an empty `text` hides it.
 void SetEntityHeaderBadge(UIElement& header, const std::string& text, const std::string& tooltip)
 {
-    auto* badge = dynamic_cast<Label*>(header.FindById("inspector-header-badge"));
+    auto* badge = dynamic_cast<Label*>(header.FindById("inspector-header-badge"_sid));
     if (!badge)
         return;
     badge->SetText(text);
@@ -1413,12 +1469,6 @@ void SetEntityHeaderBadge(UIElement& header, const std::string& text, const std:
 }
 
 } // namespace
-
-void AttachOverrideMenu(UIElement& element, const OverrideMenuTarget& target, std::function<void()> refresh)
-{
-    element.AddManipulator(ContextMenuManipulator::Create([target, refresh = std::move(refresh)]()
-                                                          { return OverrideMenuItems(target, refresh); }));
-}
 
 void UpdateEntityNameOverrideMark(UIElement& header, UIElement& nameField, ECS::World& world, ECS::EntityHandle entity)
 {
@@ -1459,8 +1509,6 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
     fecBase.World = ctx.World;
     fecBase.Entity = ctx.Entity;
     fecBase.TypeId = typeId;
-    if (Editor::EditorComponentTraits traits; Editor::EditorComponentTraitsRegistry::Get().TryGet(typeId, traits))
-        fecBase.Presentation = traits.FieldPresentation;
     fecBase.Notify = ctx.ChangeNotifications;
     fecBase.Undo = ctx.Undo;
 
@@ -1495,9 +1543,13 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
     const ECS::ComponentRegistry::ComponentInfo* componentInfo = ECS::ComponentRegistry::GetComponentInfo(typeId);
     const bool keepsEnabledField =
         componentInfo && ECS::HasAnyFlag(componentInfo->Flags, ECS::ComponentFlags::KeepsOwnEnabledField);
+    Snapshot defaults;
+    ECS::ComponentFactory::GetDefaultBytes(typeId, defaults);
 
+    // The marks follow the primary entity only: a multi-selection shows no source.
     const bool marksOverrides = fecBase.Extras.empty();
     std::vector<FieldRows> fieldRows;
+    // The first row of the last field; the rows up to the next field's are its rows.
     std::optional<std::size_t> fieldRowsBegin;
 
     for (const ECS::FieldInfo& field : fields)
@@ -1515,7 +1567,6 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
         // toward the live value.
         Editor::AddPreservedFieldNotice(parent, *ctx.World, ctx.Entity, typeId, field.Name,
                                         ctx.RequestInspectorRefresh);
-
         if (marksOverrides)
         {
             fieldRows.push_back({std::string(field.Name), {}});
@@ -1530,7 +1581,7 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
             continue;
         if (ECS::HasAnyFlag(field.Flags, ECS::FieldFlags::ReadOnly))
         {
-            InspectorUI::AddLine(parent, std::string(FieldDisplayName(fecBase.Presentation, field.Name)) + ": " + FormatReadOnlyValue(bytes, field));
+            InspectorUI::AddLine(parent, std::string(FieldDisplayName(field)) + ": " + FormatReadOnlyValue(bytes, field));
             any = true;
             continue;
         }
@@ -1562,7 +1613,7 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
                     ReadPod(bytes, offset, cur);
 
                     FieldEditContext fec = fecBase;
-                    fec.Label = ElementLabel(FieldDisplayName(fecBase.Presentation, field.Name), i, count);
+                    fec.Label = ElementLabel(FieldDisplayName(field), i, count);
                     auto editState = std::make_shared<std::optional<Editor::UndoRedoService::InteractiveEdit>>();
                     std::function<void(bool)> onChanging, onChanged;
                     WireEdit<bool>(editState, fec,
@@ -1579,9 +1630,9 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
             }
             case FieldTypeId::Float:
             {
-                const std::span<const Editor::DefaultInspectorFloatPreset> floatPresets =
-                    (count == 1) ? FloatPresetsForField(fecBase.Presentation, field.Name)
-                                 : std::span<const Editor::DefaultInspectorFloatPreset>{};
+                const std::span<const FloatPreset> floatPresets =
+                    (count == 1) ? OceanScalePresetsForField(typeId, field.Name)
+                                 : std::span<const FloatPreset>{};
                 // Preset dropdowns live-refresh via SetSelectedIndexWithoutNotify: a
                 // concrete preset value re-selects its option; a value that maps to the
                 // baked "Custom (x)" slot leaves the row until the next rebuild (its label
@@ -1601,10 +1652,10 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
                     // spectrum) render as sliders; scalar ranged fields stay as
                     // clamped drag fields.
                     EmitFloatRow(parent, planPtr, bytes, fecBase,
-                                 ElementLabel(FieldDisplayName(fecBase.Presentation, field.Name), i, count), offset,
+                                 ElementLabel(FieldDisplayName(field), i, count), offset,
                                  SpanDiffers(bytes, extraBytes, offset, sizeof(float)), any,
                                  field.HasRange, field.MinValue, field.MaxValue,
-                                 /*useSlider*/ count > 1, tooltipPtr);
+                                 /*useSlider*/ count > 1, tooltipPtr, NoneValueOf(defaults, offset));
                 }
                 break;
             }
@@ -1617,7 +1668,7 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
                     ReadPod(bytes, offset, cur);
 
                     FieldEditContext fec = fecBase;
-                    fec.Label = ElementLabel(FieldDisplayName(fecBase.Presentation, field.Name), i, count);
+                    fec.Label = ElementLabel(FieldDisplayName(field), i, count);
                     auto editState = std::make_shared<std::optional<Editor::UndoRedoService::InteractiveEdit>>();
                     std::function<void(float)> onChanging, onChanged;
                     WireEdit<float>(editState, fec,
@@ -1643,9 +1694,9 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
             case FieldTypeId::Int64:
             case FieldTypeId::UInt64:
             {
-                const std::span<const Editor::DefaultInspectorUIntPreset> uintPresets =
-                    (count == 1) ? UIntPresetsForField(fecBase.Presentation, field.Name)
-                                 : std::span<const Editor::DefaultInspectorUIntPreset>{};
+                const std::span<const UIntPreset> uintPresets =
+                    (count == 1) ? ComponentUIntPresetsForField(typeId, field.Name)
+                                 : std::span<const UIntPreset>{};
                 if (!uintPresets.empty() &&
                     EmitUIntPresetDropdownRow(parent, planPtr, bytes, extraBytes, fecBase, field,
                                               uintPresets, tooltipPtr))
@@ -1677,45 +1728,74 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
                     // or 0x-hex input).
                     if (field.Type == FieldTypeId::UInt32 || field.Type == FieldTypeId::UInt64)
                     {
-                        std::uint64_t uv = 0;
-                        if (field.Type == FieldTypeId::UInt32) { std::uint32_t v = 0; ReadPod(bytes, offset, v); uv = v; }
-                        else { ReadPod(bytes, offset, uv); }
+                        std::int64_t stored = 0;
+                        ECS::ReadFieldInteger(field, ComponentBytes(bytes), i, stored);
+                        const auto uv = static_cast<std::uint64_t>(stored);
 
                         FieldEditContext fec = fecBase;
-                        fec.Label = ElementLabel(FieldDisplayName(fecBase.Presentation, field.Name), i, count);
-                        const FieldTypeId fieldType = field.Type;
+                        fec.Label = ElementLabel(FieldDisplayName(field), i, count);
                         TextField* tf = AddTextFieldRow(parent, fec.Label, std::to_string(uv),
                                                         tooltipPtr);
-                        WireTextCommit(tf, fec, [offset, fieldType](Snapshot& b, const std::string& s) {
+                        WireTextCommit(tf, fec, [field, i](Snapshot& b, const std::string& s) {
                             std::uint64_t parsed = 0;
                             try { parsed = std::stoull(s, nullptr, 0); } catch (...) { return; }
-                            WriteUIntElement(b, offset, fieldType, parsed);
+                            ECS::WriteFieldInteger(field, WritableComponentBytes(b), i,
+                                                   static_cast<std::int64_t>(parsed));
                         });
                         if (tf && SpanDiffers(bytes, extraBytes, offset, elemSize))
                             tf->SetMixed();
-                        RecordUIntTextFieldRefresh(planPtr, tf, offset, fieldType);
+                        RecordUIntTextFieldRefresh(planPtr, tf, field, i);
                         any = true;
                         continue;
                     }
 
-                    const int cur = ReadIntElement(bytes, offset, field.Type);
+                    std::int64_t stored = 0;
+                    ECS::ReadFieldInteger(field, ComponentBytes(bytes), i, stored);
+                    const int cur = static_cast<int>(stored);
 
                     FieldEditContext fec = fecBase;
-                    fec.Label = ElementLabel(FieldDisplayName(fecBase.Presentation, field.Name), i, count);
-                    const FieldTypeId fieldType = field.Type;
+                    fec.Label = ElementLabel(FieldDisplayName(field), i, count);
                     auto editState = std::make_shared<std::optional<Editor::UndoRedoService::InteractiveEdit>>();
                     std::function<void(int)> onChanging, onChanged;
                     WireEdit<int>(editState, fec,
-                        [offset, fieldType](Snapshot& b, int v) { WriteIntElement(b, offset, fieldType, v); },
+                        [field, i](Snapshot& b, int v) {
+                            ECS::WriteFieldInteger(field, WritableComponentBytes(b), i, v);
+                        },
                         onChanging, onChanged);
                     IntField* intf = AddIntRowWithDrag(parent, fec.Label, cur,
                                                        std::move(onChanging), std::move(onChanged),
                                                        std::numeric_limits<int>::min(), tooltipPtr);
                     if (intf && SpanDiffers(bytes, extraBytes, offset, elemSize))
                         intf->SetMixed();
-                    RecordIntFieldRefresh(planPtr, intf, offset, field.Type);
+                    RecordIntFieldRefresh(planPtr, intf, field, i);
                     any = true;
                 }
+                break;
+            }
+            case FieldTypeId::RenderLayerMask:
+            {
+                // The project's layer names in a MaskField. A click changes one layer (or all of them)
+                // on each selected entity and keeps the entity's other layers.
+                Rendering::RenderLayerMask mask;
+                if (count != 1 || !ReadPod(bytes, field.Offset, mask))
+                    break;
+                FieldEditContext fec = fecBase;
+                fec.Label = std::string(FieldDisplayName(field));
+                const std::size_t offset = field.Offset;
+                MaskField* layers = InspectorUI::AddRenderLayersRow(
+                    parent, fec.Label, mask, MixedRenderLayerBits(mask, extraBytes, offset), tooltipPtr,
+                    Editor::kLayerRowNothingTooltip);
+                layers->SetOnBitsChanged([fec, offset](uint32 bitsChanged, bool on) {
+                    CommitFieldPatch(fec, [&](Snapshot& b) {
+                        Rendering::RenderLayerMask current;
+                        if (!ReadPod(b, offset, current))
+                            return;
+                        current.Bits = on ? (current.Bits | bitsChanged) : (current.Bits & ~bitsChanged);
+                        std::memcpy(b.data() + offset, &current, sizeof(current));
+                    });
+                });
+                RecordRenderLayerMaskFieldRefresh(planPtr, layers, offset);
+                any = true;
                 break;
             }
             case FieldTypeId::String:
@@ -1727,7 +1807,7 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
                     ++len;
 
                 FieldEditContext fec = fecBase;
-                fec.Label = std::string(FieldDisplayName(fecBase.Presentation, field.Name));
+                fec.Label = std::string(FieldDisplayName(field));
                 const std::size_t offset = field.Offset;
                 const std::uint32_t cap = field.Size;  // char[cap] capacity, incl. null terminator
                 TextField* tf = AddTextFieldRow(parent, fec.Label, std::string(text, len),
@@ -1756,7 +1836,7 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
                 {
                     const std::size_t base = field.Offset + static_cast<std::size_t>(i) * elemSize;
                     EmitFloatAxisRows(parent, planPtr, bytes, extraBytes, fecBase,
-                                      ElementLabel(FieldDisplayName(fecBase.Presentation, field.Name), i, count),
+                                      ElementLabel(FieldDisplayName(field), i, count),
                                       base, axisCount, /*isColor*/ false, any, tooltipPtr);
                 }
                 break;
@@ -1767,7 +1847,7 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
                 for (std::uint32_t i = 0; i < count && i < kMaxElementRows; ++i)
                 {
                     const std::size_t base = field.Offset + static_cast<std::size_t>(i) * elemSize;
-                    EmitColorSwatchRow(parent, planPtr, bytes, fecBase, ElementLabel(FieldDisplayName(fecBase.Presentation, field.Name), i, count), base,
+                    EmitColorSwatchRow(parent, planPtr, bytes, fecBase, ElementLabel(FieldDisplayName(field), i, count), base,
                                        ctx.OpenColorPickerWindow, any, tooltipPtr);
                 }
                 break;
@@ -1778,7 +1858,7 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
                 {
                     const std::size_t base = field.Offset + static_cast<std::size_t>(i) * elemSize;
                     EmitQuatEulerRows(parent, planPtr, bytes, extraBytes, fecBase,
-                                      ElementLabel(FieldDisplayName(fecBase.Presentation, field.Name), i, count),
+                                      ElementLabel(FieldDisplayName(field), i, count),
                                       base, any, tooltipPtr);
                 }
                 break;
@@ -1792,9 +1872,10 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
                 ReadPod(bytes, field.Offset, id);
 
                 FieldEditContext fec = fecBase;
-                fec.Label = std::string(FieldDisplayName(fecBase.Presentation, field.Name));
+                fec.Label = std::string(FieldDisplayName(field));
                 const std::size_t offset = field.Offset;
-                InspectorUI::AddEntityFieldRow(parent, fec.Label, ECS::EntityHandle(id), ctx.World,
+                EntityField* entityField = InspectorUI::AddEntityFieldRow(
+                    parent, fec.Label, ECS::EntityHandle(id), ctx.World,
                     [fec, offset](ECS::EntityHandle h) {
                         const std::uint32_t newId = h.id;
                         CommitFieldPatch(fec, [offset, newId](Snapshot& b) {
@@ -1803,6 +1884,7 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
                         });
                     },
                     {}, tooltipPtr);
+                entityField->SetOnReveal(ctx.SelectEntity);
                 any = true;
                 break;
             }
@@ -1826,26 +1908,27 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
                         current = GUID(data);
                     }
 
-                FieldEditContext fec = fecBase;
-                fec.Label = std::string(FieldDisplayName(fecBase.Presentation, field.Name));
-                InspectorUI::AddAssetFieldRow(parent, fec.Label, current,
-                    AcceptedAssetTypesForAssetField(field),
-                    &EngineCore::GetInstance().GetAssetManager().GetRegistry(),
-                    [fec, offset](const GUID& picked) {
-                        const GUID::Data data = picked.GetData();
-                        CommitFieldPatch(fec, [offset, data](Snapshot& b) {
-                            if (offset + GUID::kSize <= b.size())
-                                std::memcpy(b.data() + offset, data.data(), GUID::kSize);
-                        });
-                    },
-                    ctx.Thumbnails, tooltipPtr);
+                    FieldEditContext fec = fecBase;
+                    fec.Label = ElementLabel(FieldDisplayName(field), i, count);
+                    AssetField* assetField = InspectorUI::AddAssetFieldRow(parent, fec.Label, current,
+                        AcceptedAssetTypesForAssetField(field),
+                        &EngineCore::GetInstance().GetAssetManager().GetRegistry(),
+                        [fec, offset](const GUID& picked) {
+                            const GUID::Data data = picked.GetData();
+                            CommitFieldPatch(fec, [offset, data](Snapshot& b) {
+                                if (offset + GUID::kSize <= b.size())
+                                    std::memcpy(b.data() + offset, data.data(), GUID::kSize);
+                            });
+                        },
+                        ctx.Thumbnails, tooltipPtr);
+                    assetField->SetOnReveal(ctx.PingAssetPreserveInspector);
+                    any = true;
                 }
-                any = true;
                 break;
             }
             default:
             {
-                InspectorUI::AddLine(parent, std::string(FieldDisplayName(fecBase.Presentation, field.Name)) + " (" + std::to_string(field.Size) + " bytes)");
+                InspectorUI::AddLine(parent, std::string(FieldDisplayName(field)) + " (" + std::to_string(field.Size) + " bytes)");
                 any = true;
                 break;
             }
@@ -1854,20 +1937,9 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
 
     if (fieldRowsBegin)
         CollectRows(parent, *fieldRowsBegin, fieldRows.back().Rows);
-    if (marksOverrides)
-    {
-        SetFieldRowMarks(fieldRows, InspectorRegistry::Get().QueryComponentOverrides(*ctx.World, ctx.Entity, typeId));
-        for (const FieldRows& field : fieldRows)
-        {
-            const OverrideMenuTarget target{ctx.World, ctx.Entity, typeId, field.Field, ctx.Undo, ctx.ChangeNotifications};
-            for (UIElement* row : field.Rows)
-                AttachOverrideMenu(*row, target, ctx.RequestInspectorRefresh);
-        }
-        if (ctx.OverrideMarkRefreshCallbacks)
-            ctx.OverrideMarkRefreshCallbacks->push_back(
-                [world = ctx.World, entity = ctx.Entity, typeId, fields = std::move(fieldRows)]()
-                { SetFieldRowMarks(fields, InspectorRegistry::Get().QueryComponentOverrides(*world, entity, typeId)); });
-    }
+    for (const FieldRows& field : fieldRows)
+        for (UIElement* row : field.Rows)
+            BindFieldRow(ctx, typeId, row, field.Field);
 
     // One sim-refresh callback for the whole section: re-capture the component bytes
     // once, fetch the focused-element id once, then replay every field's Apply thunk.

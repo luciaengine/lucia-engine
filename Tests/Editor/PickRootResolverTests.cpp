@@ -7,8 +7,8 @@
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
 #include "Editor/Entities/EditorComponentTraits.h"
-#include "Picking/MeshPickingService.h"
-#include "SceneView/SplineToolStripEntry.h"
+#include "Scene/SceneRaycast.h"
+#include "SceneView/SplineTool/SplineToolStripEntry.h"
 
 #include <gtest/gtest.h>
 
@@ -63,7 +63,7 @@ TEST_F(PickRootResolverTest, RepeatClicksNeverDrillIntoGeneratedFillOrEdges)
 {
     const auto fill = CreatePiece(true);
     const auto edge = CreatePiece(true);
-    std::vector<PickHit> hits(2);
+    std::vector<Scene::PickHit> hits(2);
     hits[0].Entity = edge;
     hits[1].Entity = fill;
     std::vector<ECS::EntityHandle> candidates;
@@ -76,7 +76,7 @@ TEST_F(PickRootResolverTest, RepeatClicksNeverDrillIntoGeneratedFillOrEdges)
 TEST_F(PickRootResolverTest, AuthoredChildrenAndUnownedRuntimeMeshesRemainIndependent)
 {
     const auto authored = CreatePiece(false);
-    std::vector<PickHit> hits(1);
+    std::vector<Scene::PickHit> hits(1);
     hits[0].Entity = authored;
     std::vector<ECS::EntityHandle> candidates;
     BuildPickCandidates(World, hits, false, candidates);
@@ -92,8 +92,8 @@ TEST_F(PickRootResolverTest, NestedGeneratedPiecesCollapseToTheOutermostAuthorin
     const auto inner = CreatePiece(true);
     World.AddComponentImmediate(inner, GeneratedShapeRoot{});
     const auto piece = CreatePiece(true);
-    World.GetComponentForWrite<Components::Parent>(piece)->parent = inner;
-    std::vector<PickHit> hits(2);
+    World.GetComponentForWrite<Components::Parent>(piece)->Entity = inner;
+    std::vector<Scene::PickHit> hits(2);
     hits[0].Entity = piece;
     hits[1].Entity = inner;
     std::vector<ECS::EntityHandle> candidates;

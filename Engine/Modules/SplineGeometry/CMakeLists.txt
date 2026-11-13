@@ -2,14 +2,14 @@ cmake_minimum_required(VERSION 3.20)
 
 project(SplineGeometry LANGUAGES CXX)
 
-# Procedural geometry along a spline's station stream: a swept cross-section for
-# authored-width runs, and a flooded region for water. Deliberately depends on
+# Procedural geometry along a spline's station stream, and areas from closed
+# rings: a swept cross-section for authored-width runs, a flooded region for
+# water, the area boolean with an area's ground and lid, and a paving region's
+# footprint and border from its outlines and arms. Deliberately depends on
 # neither Spline nor the asset/rendering headers: it takes stations and a plain
 # ground lattice as input, which is what keeps the terrain and raycast
 # dependencies (the editor-bound pieces of the pipeline) on the caller's side of
 # the seam and keeps the geometry itself unit testable without a device.
-find_package(Clipper2 CONFIG REQUIRED)
-
 add_library(SplineGeometry OBJECT
     Source/AreaBoolean.cpp
     Source/AreaGround.cpp
@@ -39,6 +39,10 @@ target_include_directories(SplineGeometry
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/Source
 )
+
+# clipper2: the polygon booleans behind CombineAreas and CombineTouchingAreas (AreaBoolean.cpp only); the
+# public headers show Mathematics types alone.
+find_package(Clipper2 CONFIG REQUIRED)
 
 target_link_libraries(SplineGeometry
     PUBLIC

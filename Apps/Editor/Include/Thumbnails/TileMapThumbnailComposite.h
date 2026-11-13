@@ -1,6 +1,6 @@
 #pragma once
 
-#include "AssetCore/Types.h"
+#include "Types/Types.h"
 #include "TileMap/TileSetAsset.h"
 #include "Thumbnails/ThumbnailImageOps.h"
 

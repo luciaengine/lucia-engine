@@ -137,7 +137,7 @@ TEST(SplineWallRecipe, SanitizeResolvesPoisonAndReportsWhatItRaised)
 }
 
 // The corner a wall starts with follows the spline it is added to: straight
-// segments give Mitre, a curve gives Round. Adding the component through the
+// segments give Miter, a curve gives Round. Adding the component through the
 // factory (the Add Component menu's path) derives it from the spline's type at
 // that moment, and every other field keeps its default.
 TEST(SplineWallRecipe, AddingAWallTakesTheCornerFromTheSplinesType)
@@ -164,7 +164,7 @@ TEST(SplineWallRecipe, AddingAWallTakesTheCornerFromTheSplinesType)
     const auto [curved, curvedHandle] = addWall(Spline::SplineType::CatmullRom);
     ASSERT_NE(world.GetComponent<SplineWall>(straight), nullptr);
     ASSERT_NE(world.GetComponent<SplineWall>(curved), nullptr);
-    EXPECT_EQ(world.GetComponent<SplineWall>(straight)->Corner, SplineWallCorner::Mitre);
+    EXPECT_EQ(world.GetComponent<SplineWall>(straight)->Corner, SplineWallCorner::Miter);
     EXPECT_EQ(world.GetComponent<SplineWall>(curved)->Corner, SplineWallCorner::Round);
     EXPECT_FLOAT_EQ(world.GetComponent<SplineWall>(curved)->Thickness, SplineWall{}.Thickness)
         << "only the corner is derived";

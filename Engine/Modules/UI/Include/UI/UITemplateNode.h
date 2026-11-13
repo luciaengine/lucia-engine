@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -34,6 +35,14 @@ struct UITemplateNode
 
     // Child template nodes.
     std::vector<std::unique_ptr<UITemplateNode>> Children;
+
+    // The file this node comes from (one string for all nodes of the file) and the line of its
+    // start tag. Load warnings name both.
+    std::shared_ptr<const std::string> SourceFile;
+    int SourceLine = 0;
+
+    // The source file, or empty when the node was not parsed from text.
+    std::string_view SourceFileName() const { return SourceFile ? std::string_view(*SourceFile) : std::string_view(); }
 
     // Convenience: check if a class is present.
     bool HasClass(const std::string& cls) const

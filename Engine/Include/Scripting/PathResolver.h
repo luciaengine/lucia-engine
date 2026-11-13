@@ -35,10 +35,9 @@ inline constexpr std::string_view kScriptBindingsAssemblyFileName = "GameEngine.
 /// included. A list, not a pattern: a file the build no longer stages, left in an existing
 /// output folder, is never referenced or shipped. Compile-server requests carry it
 /// (ScriptSurfaceRequestField), so the server holds no copy.
-inline constexpr std::array<std::string_view, 8> kScriptSurfaceAssemblyFileNames = {
+inline constexpr std::array<std::string_view, 5> kScriptSurfaceAssemblyFileNames = {
     kScriptBindingsAssemblyFileName, "GameEngine.Scripting.ABI.dll", "GameEngine.ECS.ABI.dll",
-    "GameEngine.Platform.ABI.dll", "GameEngine.Editor.Scripting.ABI.dll",
-    "GameEngine.Input.ABI.dll", "GameEngine.Physics.ABI.dll", "GameEngine.TileMap.ABI.dll"};
+    "GameEngine.Platform.ABI.dll", "GameEngine.Editor.Scripting.ABI.dll"};
 
 /// True for an assembly of kScriptSurfaceAssemblyFileNames.
 inline bool IsScriptSurfaceAssembly(std::string_view fileName)
@@ -52,7 +51,7 @@ inline bool IsScriptSurfaceAssembly(std::string_view fileName)
 /**
  * @brief Directory holding the engine's managed assemblies.
  *
- * GameEngine.*.ABI.dll, CoreBridge, HotReload, Scripting.Runtime and SourceGenerators/ —
+ * The script surface (IsScriptSurfaceAssembly), CoreBridge, HotReload, Scripting.Runtime and SourceGenerators/ —
  * the EngineBinDir every generated csproj, compile-server request and dotnet build resolves
  * engine references from. The executable directory, except inside a macOS app bundle, where
  * the assemblies are staged as resources under Contents/Resources/Managed (Contents/MacOS
@@ -89,7 +88,7 @@ std::filesystem::path ResolveScriptsRuntimeConfig();
 /**
  * @brief Directory where script assemblies (e.g. GameEngine.Scripts.dll) are emitted.
  *
- * <exe>/ScriptAssemblies — PathUtils::GetScriptsAssemblyDirectory(), which creates it on demand.
+ * <exe>/ScriptAssemblies — ApplicationPaths::GetScriptsAssemblyDirectory(), which creates it on demand.
  */
 std::filesystem::path ResolveScriptsAssemblyDirectory();
 

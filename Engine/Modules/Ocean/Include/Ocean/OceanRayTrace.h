@@ -10,8 +10,8 @@ namespace GameEngine::Ocean
 struct OceanRayTraceDesc
 {
     OceanCollisionOwnerId Owner = 0u;
-    float32 Origin[3] = {0.0f, 0.0f, 0.0f};
-    float32 Direction[3] = {0.0f, -1.0f, 0.0f};
+    Mathematics::Vector3 Origin{0.0f, 0.0f, 0.0f};
+    Mathematics::Vector3 Direction{0.0f, -1.0f, 0.0f};
     float32 MaximumDistance = 1000.0f;
     float32 MinimumSpatialLength = 0.0f;
     uint32 SampleCount = 32u;
@@ -21,8 +21,8 @@ struct OceanRayTraceResult
 {
     bool Hit = false;
     float32 Distance = 0.0f;
-    float32 PositionWS[3] = {0.0f, 0.0f, 0.0f};
-    float32 NormalWS[3] = {0.0f, 1.0f, 0.0f};
+    Mathematics::Vector3 PositionWS{0.0f, 0.0f, 0.0f};
+    Mathematics::Vector3 NormalWS{0.0f, 1.0f, 0.0f};
     OceanSurfaceSample Surface{};
 };
 

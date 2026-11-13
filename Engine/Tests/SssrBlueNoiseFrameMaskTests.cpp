@@ -102,7 +102,7 @@ TEST(SssrBlueNoiseFrameMask, WrapLivesInTheHelperSoEveryCallSiteInheritsIt)
     EXPECT_NE(intersect.find("GE_BlueNoise(uBlueNoise, uvec2(pixel), sssr.frameIndex)"),
               std::string::npos)
         << "the VNDF sample must come from the shared helper";
-    EXPECT_NE(intersect.find("GE_BlueNoise(uBlueNoise, uvec2(pixel), sssr.frameIndex + 17u)"),
+    EXPECT_NE(intersect.find("GE_SssrStartOffsetFrame(roughness, sssr.frameIndex)).x"),
               std::string::npos)
         << "the march start offset must come from the shared helper (same collapse class: "
            "float(frame + 17u) starves on ULP exactly as float(frame) does)";

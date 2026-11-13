@@ -3,6 +3,7 @@
 #include "Animation/AnimationClip.h"
 #include "Animation/AnimationEvent.h"
 #include "Assets/ModelExtras.h"
+#include "Serialization/JsonRead.h"
 
 #include <algorithm>
 #include <cmath>
@@ -22,14 +23,13 @@ namespace
 {
 
 using json = nlohmann::json;
+using Serialization::Quoted;
 
 // The one version of the clip schema this reader reads.
 constexpr double kClipSchemaVersion = 1.0;
 // The deepest an extras block holding a schema may nest its objects and arrays; the block itself is level 1.
 constexpr int kSchemaDepthLimit = 16;
 constexpr size_t kBytesPerKibibyte = 1024u;
-// The most bytes of file text a refusal quotes; longer text is cut there and its length given.
-constexpr size_t kQuotedTextLimit = 64u;
 // How far past the clip's end an event still counts as on its last frame, in float epsilons of the end frame. The
 // clip's length and rate come from 32-bit float key times, so the end frame, length x rate, carries a relative
 // rounding error of up to about one float epsilon (at most 0.93 of one for clips keyed on every frame at 24 to
@@ -42,21 +42,6 @@ constexpr double kLastFrameToleranceLimit = 0.5;
 // C string boundary, and a line break would split the log line that names it.
 constexpr unsigned char kFirstPrintableCharacter = 0x20u;
 constexpr unsigned char kDeleteCharacter = 0x7Fu;
-
-// `text` as a JSON string literal: quoted and escaped, on one line.
-std::string JsonStringLiteral(std::string_view text)
-{
-    return json(std::string(text)).dump(-1, ' ', false, json::error_handler_t::replace);
-}
-
-// File text as a refusal quotes it: a JSON string literal of at most kQuotedTextLimit bytes of it, followed by
-// its length when it is longer.
-std::string Quoted(std::string_view text)
-{
-    if (text.size() <= kQuotedTextLimit)
-        return JsonStringLiteral(text);
-    return std::format("{}... ({} bytes)", JsonStringLiteral(text.substr(0, kQuotedTextLimit)), text.size());
-}
 
 // A pass over extras text that checks what only a parse sees: objects and arrays nested past the depth limit, and a
 // key an object already holds (a parsed document keeps only the last). It stops at the first of either. The text is
@@ -320,13 +305,14 @@ double FramesPerSecond(const std::vector<Animation::AnimChannel>& channels)
 
 // Reads the events of `value` into `events`, timed at `framesPerSecond` from the clip's time 0, sorted by time
 // with events at one time kept in file order. An event after the clip's end is refused: it could never fire.
-std::string ReadTimedNames(std::string_view fieldName, const json& value, double framesPerSecond, float32 duration,
+std::string ReadEvents(const json& value, double framesPerSecond, float32 duration,
                        Animation::AnimationEventTrack& events)
 {
     if (!value.is_array())
-        return std::format("clip.{} is not a JSON array", fieldName);
+        return "clip.events is not a JSON array";
     if (!value.empty() && framesPerSecond <= 0.0)
-        return std::format("clip.{} need the clip's frame rate, and the clip's channel with the most keys has no two keys apart in time", fieldName);
+        return "clip.events need the clip's frame rate, and the clip's channel with the most keys has no two keys "
+               "apart in time";
     const double lastFrame = static_cast<double>(duration) * framesPerSecond;
     const double lastFrameTolerance =
         std::min(lastFrame * kLastFrameToleranceInFloatEpsilons * std::numeric_limits<float32>::epsilon(),
@@ -338,7 +324,7 @@ std::string ReadTimedNames(std::string_view fieldName, const json& value, double
     {
         const json& entry = value[index];
         if (!entry.is_object())
-            return std::format("clip.{}[{}] is not a JSON object", fieldName, index);
+            return std::format("clip.events[{}] is not a JSON object", index);
         std::optional<double> frame;
         Animation::AnimationEvent event;
         for (const auto& [key, field] : entry.items())
@@ -347,29 +333,29 @@ std::string ReadTimedNames(std::string_view fieldName, const json& value, double
             {
                 frame = WholeNumber(field);
                 if (!frame)
-                    return std::format("clip.{}[{}].frame is not a whole number of 0 or more", fieldName, index);
+                    return std::format("clip.events[{}].frame is not a whole number of 0 or more", index);
             }
             else if (key == "name")
             {
-                if (std::string refusal = CheckName(field, std::format("clip.{}[{}].name", fieldName, index));
+                if (std::string refusal = CheckName(field, std::format("clip.events[{}].name", index));
                     !refusal.empty())
                     return refusal;
                 event.Name = field.get<std::string>();
             }
             else
             {
-                return std::format("clip.{}[{}] has the field {}; its fields are frame and name", fieldName, index,
+                return std::format("clip.events[{}] has the field {}; its fields are frame and name", index,
                                    Quoted(key));
             }
         }
         if (!frame)
-            return std::format("clip.{}[{}] has no frame", fieldName, index);
+            return std::format("clip.events[{}] has no frame", index);
         if (event.Name.empty())
-            return std::format("clip.{}[{}] has no name", fieldName, index);
+            return std::format("clip.events[{}] has no name", index);
         if (*frame > lastFrame + lastFrameTolerance)
-            return std::format("clip.{}[{}] ({}) is at frame {}, after the clip ends at frame {} "
+            return std::format("clip.events[{}] ({}) is at frame {}, after the clip ends at frame {} "
                                "({} frames per second); frame 0 is the clip's start",
-                               fieldName, index, Quoted(event.Name), *frame, PlainNumber(lastFrame),
+                               index, Quoted(event.Name), *frame, PlainNumber(lastFrame),
                                PlainNumber(framesPerSecond));
         event.Time = static_cast<float32>(*frame / framesPerSecond);
         read.push_back(std::move(event));
@@ -421,29 +407,10 @@ std::string ReadClipSchema(std::string_view extrasText, const std::vector<Animat
         else if (key == "translations")
             refusal = ReadTranslations(value, settings);
         else if (key == "events")
-            refusal = ReadTimedNames(key, value, FramesPerSecond(channels), duration, events);
-        else if (key == "syncMarkers")
-        {
-            Animation::AnimationEventTrack markers;
-            refusal = ReadTimedNames(key, value, FramesPerSecond(channels), duration, markers);
-            if (refusal.empty())
-            {
-                for (const auto& marker : markers.GetEvents())
-                {
-                    if (marker.Time >= duration ||
-                        (!settings.SyncMarkers.empty() && marker.Time <= settings.SyncMarkers.back().Time))
-                    {
-                        return "clip.syncMarkers must be on distinct frames before the clip's end";
-                    }
-                    settings.SyncMarkers.push_back({marker.Time, marker.Name});
-                }
-                if (settings.SyncMarkers.size() == 1)
-                    return "clip.syncMarkers needs at least two markers to synchronize a cycle";
-            }
-        }
+            refusal = ReadEvents(value, FramesPerSecond(channels), duration, events);
         else
             refusal = std::format("clip has the field {}; its fields are schemaVersion, loop, speed, rootMotion, "
-                                  "translations, events and syncMarkers",
+                                  "translations and events",
                                   Quoted(key));
         if (!refusal.empty())
             return refusal;

@@ -8,12 +8,15 @@
 #include "Types/Fnv1a.h"
 #include "Platform/Environment.h"
 
+#include <Metal/Metal.hpp>
 #include <spirv_cross/spirv_msl.hpp>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <sstream>
 
@@ -28,18 +31,63 @@ namespace
 // editor); macOS's automatic shader cache only covers the Metal compiler
 // stages after it. Keyed by a content hash of every translation input.
 // GE_METAL_NO_MSL_CACHE=1 disables it when bisecting translator changes.
-constexpr uint32_t kMslCacheVersion = 3; // bump when translator options change
+constexpr uint32_t kMslCacheVersion = 4;
 
 // Seed of the MSL cache key. It is not the FNV-1a offset basis (one digit
 // short), but the key names cache files on disk: changing it orphans every
 // cached translation.
 constexpr uint64_t kMslCacheKeySeed = 1469598103934665603ull;
 
+// Specialization entries by id: the key must not depend on the order of insertion.
+std::vector<std::pair<uint32_t, SpecializationConstants::Entry>> SortedSpecialization(
+    const SpecializationConstants* specialization)
+{
+    std::vector<std::pair<uint32_t, SpecializationConstants::Entry>> sorted;
+    if (specialization == nullptr)
+        return sorted;
+    sorted.assign(specialization->GetEntries().begin(), specialization->GetEntries().end());
+    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    return sorted;
+}
+
+// SPIR-V to MSL options. They are the same for every stage; ComputeMetalLibraryOptionsHash hashes them.
+spirv_cross::CompilerMSL::Options MakeMslOptions(bool tier2ArgumentBuffers = true)
+{
+    spirv_cross::CompilerMSL::Options options{};
+#if defined(GE_PLATFORM_IOS)
+    options.platform = spirv_cross::CompilerMSL::Options::iOS;
+    options.set_msl_version(tier2ArgumentBuffers ? 3 : 2, tier2ArgumentBuffers ? 0 : 3);
+#else
+    options.platform = spirv_cross::CompilerMSL::Options::macOS;
+    options.set_msl_version(3, 0);
+#endif
+    options.argument_buffers = tier2ArgumentBuffers;
+    options.buffer_size_buffer_index = kMetalDirectBufferSizesIndex;
+    options.argument_buffers_tier = tier2ArgumentBuffers
+        ? spirv_cross::CompilerMSL::Options::ArgumentBuffersTier::Tier2
+        : spirv_cross::CompilerMSL::Options::ArgumentBuffersTier::Tier1;
+    options.force_active_argument_buffer_resources = tier2ArgumentBuffers;
+    // Positional padding is load-bearing: the GPU reads the argument
+    // buffer through the generated struct, so member POSITION is the
+    // memory offset. Padding keeps position == [[id(n)]] for bindings a
+    // stage doesn't use, matching the contiguous slot ids assigned in
+    // ComputeMetalArgumentBufferLayout.
+    options.pad_argument_buffer_resources = tier2ArgumentBuffers;
+    options.pad_fragment_output_components = true;
+    options.texture_buffer_native = true;
+    // The swizzle-buffer default (30) collides with the engine's push
+    // constant index; swizzling is unused but keep the index clear.
+    options.swizzle_buffer_index = 26;
+    return options;
+}
+
+} // namespace
+
 uint64_t ComputeTranslationHash(const std::vector<uint8_t>& spirv, MetalShaderStage stage,
                                 const std::vector<const DescriptorSetLayoutDesc*>& setLayouts,
                                 const SpecializationConstants* specialization, bool tier2ArgumentBuffers)
 {
-    uint64_t hash = Hashing::Fnv1a64(&kMslCacheVersion, sizeof(kMslCacheVersion), 1469598103934665603ull);
+    uint64_t hash = Hashing::Fnv1a64(&kMslCacheVersion, sizeof(kMslCacheVersion), Hashing::kFnv1a64OffsetBasis);
     hash = Hashing::Fnv1a64(&tier2ArgumentBuffers, sizeof(tier2ArgumentBuffers), hash);
 #if defined(GE_PLATFORM_IOS)
     constexpr uint32_t platform = 1;
@@ -65,17 +113,68 @@ uint64_t ComputeTranslationHash(const std::vector<uint8_t>& spirv, MetalShaderSt
             hash = Hashing::Fnv1a64(fields, sizeof(fields), hash);
         }
     }
-    if (specialization != nullptr && !specialization->IsEmpty())
+    for (const auto& [id, entry] : SortedSpecialization(specialization))
     {
-        const uint8_t* data = specialization->GetDataPtr();
-        for (const auto& [id, entry] : specialization->GetEntries())
-        {
-            hash = Hashing::Fnv1a64(&id, sizeof(id), hash);
-            hash = Hashing::Fnv1a64(data + entry.Offset, entry.Size, hash);
-        }
+        hash = Hashing::Fnv1a64(&id, sizeof(id), hash);
+        hash = Hashing::Fnv1a64(specialization->GetDataPtr() + entry.Offset, entry.Size, hash);
     }
     return hash;
 }
+
+uint64_t ComputeMetalLibraryOptionsHash(bool fastMath)
+{
+    const spirv_cross::CompilerMSL::Options options = MakeMslOptions();
+    const uint32_t fields[] = {kMslCacheVersion,
+                               static_cast<uint32_t>(options.platform),
+                               options.msl_version,
+                               options.argument_buffers ? 1u : 0u,
+                               static_cast<uint32_t>(options.argument_buffers_tier),
+                               options.force_active_argument_buffer_resources ? 1u : 0u,
+                               options.pad_argument_buffer_resources ? 1u : 0u,
+                               options.pad_fragment_output_components ? 1u : 0u,
+                               options.texture_buffer_native ? 1u : 0u,
+                               options.swizzle_buffer_index};
+    uint64_t hash = Hashing::Fnv1a64(fields, sizeof(fields), Hashing::kFnv1a64OffsetBasis);
+    for (const std::string& flag : MetalLibraryCompileFlags(fastMath))
+        hash = Hashing::Fnv1a64(flag.c_str(), flag.size() + 1, hash);
+    return hash;
+}
+
+std::vector<std::string> MetalLibraryCompileFlags(bool fastMath)
+{
+#if defined(GE_PLATFORM_IOS)
+    constexpr const char* kDeploymentFlag = "-mios-version-min=" GE_METAL_DEPLOYMENT_TARGET;
+#else
+    constexpr const char* kDeploymentFlag = "-mmacosx-version-min=" GE_METAL_DEPLOYMENT_TARGET;
+#endif
+    return {fastMath ? "-ffast-math" : "-fno-fast-math",
+            std::format("-std=metal{}.{}", kMetalLanguageMajor, kMetalLanguageMinor),
+            kDeploymentFlag};
+}
+
+// The depth prepass and the color pass compile one vertex shader into two pipelines. The reverse-Z
+// GreaterOrEqual test needs the same positions from both, so every MSL compile uses these options.
+MTL::CompileOptions* MakeMetalCompileOptions()
+{
+    MTL::CompileOptions* options = MTL::CompileOptions::alloc()->init();
+    // Fast math matches the Vulkan path (MoltenVK compiles its MSL with fast math) and GLSL without precise.
+    options->setFastMathEnabled(MetalFastMathEnabled());
+    options->setLanguageVersion(static_cast<MTL::LanguageVersion>((kMetalLanguageMajor << 16) | kMetalLanguageMinor));
+    return options;
+}
+
+bool MetalFastMathEnabled()
+{
+    // GE_METAL_PRECISE_MATH=1 turns fast math off when bisecting NaN/precision bugs.
+    static const bool kPreciseMath = []() {
+        const char* env = std::getenv("GE_METAL_PRECISE_MATH");
+        return env != nullptr && env[0] != '0';
+    }();
+    return kShippedFastMath && !kPreciseMath;
+}
+
+namespace
+{
 
 bool MslCacheEnabled()
 {
@@ -364,32 +463,7 @@ MetalShaderTranslation TranslateSpirvToMsl(const std::vector<uint8_t>& spirv,
         const std::string spirvEntryName(compiler.get_entry_points_and_stages()[0].name);
         compiler.set_entry_point(spirvEntryName, model);
 
-        spirv_cross::CompilerMSL::Options options{};
-#if defined(GE_PLATFORM_IOS)
-        options.platform = spirv_cross::CompilerMSL::Options::iOS;
-        options.set_msl_version(tier2ArgumentBuffers ? 3 : 2, tier2ArgumentBuffers ? 0 : 3);
-#else
-        options.platform = spirv_cross::CompilerMSL::Options::macOS;
-        options.set_msl_version(3, 0);
-#endif
-        options.argument_buffers = tier2ArgumentBuffers;
-        options.buffer_size_buffer_index = kMetalDirectBufferSizesIndex;
-        options.argument_buffers_tier = tier2ArgumentBuffers
-            ? spirv_cross::CompilerMSL::Options::ArgumentBuffersTier::Tier2
-            : spirv_cross::CompilerMSL::Options::ArgumentBuffersTier::Tier1;
-        options.force_active_argument_buffer_resources = tier2ArgumentBuffers;
-        // Positional padding is load-bearing: the GPU reads the argument
-        // buffer through the generated struct, so member POSITION is the
-        // memory offset. Padding keeps position == [[id(n)]] for bindings a
-        // stage doesn't use, matching the contiguous slot ids assigned in
-        // ComputeMetalArgumentBufferLayout.
-        options.pad_argument_buffer_resources = tier2ArgumentBuffers;
-        options.pad_fragment_output_components = true;
-        options.texture_buffer_native = true;
-        // The swizzle-buffer default (30) collides with the engine's push
-        // constant index; swizzling is unused but keep the index clear.
-        options.swizzle_buffer_index = 26;
-        compiler.set_msl_options(options);
+        compiler.set_msl_options(MakeMslOptions(tier2ArgumentBuffers));
 
         AddLayoutBindings(compiler, model, setLayouts, tier2ArgumentBuffers);
         ApplySpecializationConstants(compiler, specialization);
@@ -453,5 +527,45 @@ MetalShaderTranslation TranslateSpirvToMsl(const std::vector<uint8_t>& spirv,
     }
     return result;
 }
+
+#ifndef NDEBUG
+void AppendWrittenStorageBindings(const std::vector<uint8_t>& spirv, std::vector<MetalWrittenBinding>& written)
+{
+    if (spirv.size() < 4 || spirv.size() % 4 != 0)
+    {
+        return;
+    }
+    std::vector<uint32_t> words(spirv.size() / 4);
+    std::memcpy(words.data(), spirv.data(), spirv.size());
+    try
+    {
+        const spirv_cross::Compiler compiler(std::move(words));
+        const spirv_cross::ShaderResources resources =
+            compiler.get_shader_resources(compiler.get_active_interface_variables());
+        // GLSL `readonly buffer` decorates either the variable or every member of the block.
+        for (const spirv_cross::Resource& buffer : resources.storage_buffers)
+        {
+            if (!compiler.has_decoration(buffer.id, spv::DecorationNonWritable) &&
+                !compiler.get_buffer_block_flags(buffer.id).get(spv::DecorationNonWritable))
+            {
+                written.push_back({compiler.get_decoration(buffer.id, spv::DecorationDescriptorSet),
+                                   compiler.get_decoration(buffer.id, spv::DecorationBinding)});
+            }
+        }
+        for (const spirv_cross::Resource& image : resources.storage_images)
+        {
+            if (!compiler.has_decoration(image.id, spv::DecorationNonWritable))
+            {
+                written.push_back({compiler.get_decoration(image.id, spv::DecorationDescriptorSet),
+                                   compiler.get_decoration(image.id, spv::DecorationBinding)});
+            }
+        }
+    }
+    catch (const std::exception&)
+    {
+        // The translation of the same module reports the parse error.
+    }
+}
+#endif
 
 } // namespace GameEngine::Rendering

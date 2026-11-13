@@ -37,11 +37,9 @@ public:
     MsvcToolchain();
     ~MsvcToolchain();
 
-    // Kick detection as a job of the toolchain's "MSVC detection" channel (cap 1) on the
-    // job system: detection waits on vswhere and vcvars processes, so it holds no compute
-    // worker. No-op without a job system (detection must not run on a caller's thread).
-    // cacheDir is a user-writable directory for the captured env batch; empty → the OS
-    // temp dir. Call once at init.
+    // Start detection as a job of the "MSVC detection" channel, which holds no compute worker. Without a
+    // job system, POSIX detects on this thread and Windows does not detect. cacheDir holds the env batch
+    // (empty: the OS temp dir). Call once at init, and again only after JoinWarm (asserted).
     void WarmAsync(JobSystem::WorkStealingThreadPool* jobSystem, std::filesystem::path cacheDir = {});
 
     // True once detection completed AND a usable Ninja (+ MSVC env on Windows) was found.
@@ -54,22 +52,21 @@ public:
     // default generator for that one build.
     bool WaitUntilReady(std::chrono::milliseconds timeout) const;
 
-    // Join the in-flight detection job, if any, and release the detection channel. MUST be
-    // called before this object (or the job system it was warmed on) is destroyed: Detect()
-    // touches `this` throughout, so tearing the toolchain down mid-detection is a
-    // use-after-free (a fast engine shutdown right after init can otherwise beat the
-    // vswhere/vcvars probes), and a channel must not outlive its job system.
+    // Cancel the running detection (its probe child is terminated), join it and release the channel;
+    // a canceled detection reports NinjaReady() false. Call before this object or its job system is
+    // destroyed: Detect() uses `this`, and a channel must not outlive its job system.
     void JoinWarm();
 
     std::filesystem::path NinjaExe() const;
     std::filesystem::path EnvBatch() const; // empty on non-Windows
 
 private:
-    void Detect(std::filesystem::path cacheDir); // the "MSVC detection" job
+    void Detect(std::filesystem::path cacheDir); // the "MSVC detection" job; on POSIX without a job system, the caller's thread
 
     mutable std::mutex m_Mutex;
     std::atomic<bool> m_WarmStarted{false};      // a detection job was submitted
-    std::atomic<bool> m_DetectionComplete{false}; // Detect() ran to completion (found or not)
+    std::atomic<bool> m_DetectionComplete{false}; // Detect() ran to completion (found, not found or canceled)
+    std::atomic<bool> m_CancelRequested{false};   // set by JoinWarm; terminates the running probe
     std::atomic<bool> m_NinjaReady{false};
     std::filesystem::path m_NinjaExe;  // guarded by m_Mutex
     std::filesystem::path m_EnvBatch;  // guarded by m_Mutex

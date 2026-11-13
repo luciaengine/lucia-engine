@@ -51,6 +51,12 @@ bool IsHeight(const PageStoreHeader& header)
     return header.Format == PageFieldFormat::HeightSteps;
 }
 
+// An authored height layer is versioned by its Key (HeightLayerStore.h), not by kPageStoreFormatVersion.
+bool IsHeightLayer(const PageStoreHeader& header)
+{
+    return IsHeight(header) && header.Units == PageHeightUnits::LayerMeters;
+}
+
 // A format or filter value past the ones this engine knows was written by a newer engine; a known
 // pair that is not `kind`'s is another kind's store or a damaged one.
 std::string ValidateEncoding(const PageStoreHeader& header, PageFieldKind kind)
@@ -67,7 +73,8 @@ std::string ValidateEncoding(const PageStoreHeader& header, PageFieldKind kind)
 
 std::string ValidateHeader(const PageStoreHeader& header, uint32 levelCount)
 {
-    if (IsHeight(header) && header.Units != PageHeightUnits::Normalized && header.Units != PageHeightUnits::Absolute)
+    if (IsHeight(header) && header.Units != PageHeightUnits::Normalized && header.Units != PageHeightUnits::Absolute &&
+        header.Units != PageHeightUnits::LayerMeters)
         return "unknown height units";
     if (!IsHeight(header) && (header.Units != PageHeightUnits{} || header.ReferenceRadius != 0.0))
         return "a store that holds no heights has height units or a reference radius";
@@ -93,14 +100,14 @@ std::string ValidateHeader(const PageStoreHeader& header, uint32 levelCount)
 bool RangesAreValid(const PageStoreLayout& layout)
 {
     uint64 next = 0;
-    for (std::size_t rangeIndex = 0; rangeIndex < layout.Ranges.size(); ++rangeIndex)
+    for (std::size_t r = 0; r < layout.Ranges.size(); ++r)
     {
-        const PageStoreRange& range = layout.Ranges[rangeIndex];
-        const PageStoreLevel& level = layout.Levels[rangeIndex % layout.Levels.size()];
+        const PageStoreRange& range = layout.Ranges[r];
+        const PageStoreLevel& level = layout.Levels[r % layout.Levels.size()];
         if (range.First != next || range.Count > static_cast<uint64>(level.PagesX) * level.PagesZ)
             return false;
-        for (uint64 entryIndex = 1; entryIndex < range.Count; ++entryIndex)
-            if (layout.Entries[range.First + entryIndex - 1u].Morton >= layout.Entries[range.First + entryIndex].Morton)
+        for (uint64 i = 1; i < range.Count; ++i)
+            if (layout.Entries[range.First + i - 1u].Morton >= layout.Entries[range.First + i].Morton)
                 return false;
         next += range.Count;
     }
@@ -203,12 +210,12 @@ std::string ReadPageStoreHead(SharedFileReader& file, PageFieldKind kind, uint64
     std::size_t cursor = 0;
     if (Take<uint32>(fixed, cursor) != kPageStoreMagic)
         return "the file is not a page store";
-    if (const uint32 version = Take<uint32>(fixed, cursor); version != kPageStoreFormatVersion)
-        return VersionRefusal(version);
+    const uint32 version = Take<uint32>(fixed, cursor);
     if (availableBytes < kPageStoreHeaderBytes ||
         !ReadExact(file, baseOffset + kPageStorePrefixBytes, fixed + kPageStorePrefixBytes,
                    kPageStoreHeaderBytes - kPageStorePrefixBytes))
-        return "the file is shorter than a page store header";
+        return version != kPageStoreFormatVersion ? VersionRefusal(version)
+                                                  : "the file is shorter than a page store header";
 
     PageStoreLayout layout;
     PageStoreHeader& header = layout.Header;
@@ -222,6 +229,8 @@ std::string ReadPageStoreHead(SharedFileReader& file, PageFieldKind kind, uint64
     const uint32 levelCount = Take<uint32>(fixed, cursor);
     header.ReferenceRadius = Take<float64>(fixed, cursor);
     header.Key = Take<uint64>(fixed, cursor);
+    if (version != kPageStoreFormatVersion && !IsHeightLayer(header))
+        return VersionRefusal(version);
     if (std::string reason = ValidateEncoding(header, kind); !reason.empty())
         return reason;
     if (std::string reason = ValidateHeader(header, levelCount); !reason.empty())
@@ -260,22 +269,17 @@ std::string ReadPageStoreHead(SharedFileReader& file, PageFieldKind kind, uint64
                    std::to_string(kHeightStepExponentMax);
         header.StepPerLevel[level] = step;
     }
-    const uint64 indexStart = kPageStoreHeaderBytes + directoryBytes;
-    const uint64 availableEntries = (availableBytes - indexStart) / kPageIndexEntryBytes;
     uint64 entryCount = 0;
-    for (std::size_t rangeIndex = 0; rangeIndex < layout.Ranges.size(); ++rangeIndex)
+    for (PageStoreRange& range : layout.Ranges)
     {
-        PageStoreRange& range = layout.Ranges[rangeIndex];
-        const PageStoreLevel& level = layout.Levels[rangeIndex % layout.Levels.size()];
         range.First = Take<uint64>(directory.data(), cursor);
         range.Count = Take<uint64>(directory.data(), cursor);
-        if (range.First != entryCount || range.Count > static_cast<uint64>(level.PagesX) * level.PagesZ)
-            return "the page store's index is corrupt: its ranges are out of order";
-        if (range.Count > availableEntries - entryCount)
-            return "the page store is truncated in its index";
         entryCount += range.Count;
     }
 
+    const uint64 indexStart = kPageStoreHeaderBytes + directoryBytes;
+    if (entryCount > (availableBytes - indexStart) / kPageIndexEntryBytes)
+        return "the page store is truncated in its index";
     const uint64 headBytes = indexStart + entryCount * kPageIndexEntryBytes;
     std::vector<uint8> index(static_cast<std::size_t>(entryCount * kPageIndexEntryBytes));
     if (!ReadExact(file, baseOffset + indexStart, index.data(), index.size()))

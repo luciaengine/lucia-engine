@@ -1,9 +1,9 @@
 #pragma once
 
+#include "Types/FlatMap.h"
 #include "Types/Types.h"
 
 #include <cstdint>
-#include <unordered_map>
 #include <vector>
 
 namespace GameEngine::PageStreaming
@@ -34,7 +34,7 @@ struct ResidentSlotRef
 /// may evict a farther one in Acquire), never as a side effect of a lookup. Acquire places a key
 /// only from the free list, so an over-subscribed pool degrades to "the farthest keys go without"
 /// rather than thrashing a slot between two keys inside one frames-in-flight window.
-template <typename Key, typename KeyHash>
+template <typename Key>
 class ResidentSlotPool
 {
 public:
@@ -73,7 +73,7 @@ public:
     uint32 ResidentCount() const { return m_ResidentCount; }
     uint32 SlotCount() const { return static_cast<uint32>(m_Slots.size()); }
     uint32 FreeCount() const { return static_cast<uint32>(m_FreeList.size()); }
-    uint32 QuarantinedCount() const;
+    uint32 QuarantinedCount() const { return m_QuarantinedCount; }
     uint32 FramesInFlight() const { return m_FramesInFlight; }
 
     /// The slot `key` occupies, or kNoResidentSlot; ignores generations.
@@ -104,11 +104,12 @@ private:
 
     std::vector<Slot> m_Slots;
     std::vector<uint32> m_FreeList;
-    std::unordered_map<Key, uint32, KeyHash> m_KeyToSlot;
+    FlatMap<Key, uint32> m_KeyToSlot; // reserved for every slot by Initialize, so it never allocates after
 
     uint32 m_FramesInFlight = 0;
     uint64 m_CurrentFrame = 0;
     uint32 m_ResidentCount = 0;
+    uint32 m_QuarantinedCount = 0; // BeginFrame walks the slots only while one is quarantined
     uint32 m_AssignsThisFrame = 0;
     uint32 m_EvictionsThisFrame = 0;
 };

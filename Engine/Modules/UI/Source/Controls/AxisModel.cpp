@@ -91,30 +91,30 @@ void ApplyTrackSizes(UIElement* cell, const AxisModel& axis)
 
         if (t.Hidden)
         {
-            child->Overrides().Set(Style::Display, DisplayMode::None);
+            child->Style().Set(Style::Display, DisplayMode::None);
             continue;
         }
-        child->Overrides().Reset(Style::Display);  // fall back to the CSS display value
+        child->Style().Reset(Style::Display);  // fall back to the CSS display value
 
         // A Fill track grows exactly like a Flex track — it is the trailing slack that
         // absorbs resize deltas — so both take the grow branch.
         if (t.Flex || t.Fill)
         {
-            child->Overrides().Set(Style::FlexGrow, 1.0f);
-            child->Overrides().Set(Style::FlexShrink, 1.0f);
-            child->Overrides().Set(Style::FlexBasis, StyleLength::Px(0.0f));
-            child->Overrides().Set(horiz ? Style::MinWidth : Style::MinHeight,
+            child->Style().Set(Style::FlexGrow, 1.0f);
+            child->Style().Set(Style::FlexShrink, 1.0f);
+            child->Style().Set(Style::FlexBasis, StyleLength::Px(0.0f));
+            child->Style().Set(horiz ? Style::MinWidth : Style::MinHeight,
                                    StyleLength::Px(t.MinSize));
-            child->Overrides().Reset(horiz ? Style::MaxWidth : Style::MaxHeight);
+            child->Style().Reset(horiz ? Style::MaxWidth : Style::MaxHeight);
         }
         else
         {
             const StyleLength px = StyleLength::Px(t.Size);
-            child->Overrides().Set(Style::FlexGrow, 0.0f);
-            child->Overrides().Set(Style::FlexShrink, 0.0f);
-            child->Overrides().Set(Style::FlexBasis, px);
-            child->Overrides().Set(horiz ? Style::MinWidth : Style::MinHeight, px);
-            child->Overrides().Set(horiz ? Style::MaxWidth : Style::MaxHeight, px);
+            child->Style().Set(Style::FlexGrow, 0.0f);
+            child->Style().Set(Style::FlexShrink, 0.0f);
+            child->Style().Set(Style::FlexBasis, px);
+            child->Style().Set(horiz ? Style::MinWidth : Style::MinHeight, px);
+            child->Style().Set(horiz ? Style::MaxWidth : Style::MaxHeight, px);
         }
     }
 }

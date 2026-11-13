@@ -197,6 +197,8 @@ namespace Rendering {
 
         void BarrierBatch(const std::vector<ResourceBarrier>& barriers) override;
 
+        void RecordStateAfterBarriers(const std::vector<ResourceBarrier>& barriers) override;
+
         // Debug events
         void BeginEvent(const char* name) override;
         void EndEvent() override;
@@ -245,6 +247,10 @@ namespace Rendering {
 
         // Raster state is consumed by draws. Keeping it pending avoids dirtying
         // graphics state before compute-only work on Adreno Vulkan 1.1 drivers.
+        VkPipelineStageFlags QueueExpressibleStages(VkPipelineStageFlags stages) const;
+        void ApplyQueueFloor(const ResourceBarrier& barrier, VkPipelineStageFlags& stage,
+                             VkAccessFlags& access) const;
+
         void ApplyRasterState();
         VkPipeline m_BoundGraphicsPipeline = VK_NULL_HANDLE;
         VkViewport m_Viewport{};

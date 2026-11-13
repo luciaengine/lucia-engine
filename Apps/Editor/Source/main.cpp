@@ -1,10 +1,10 @@
-#include "Audio/AudioTypes.h"
-#include "EditorApplication.h"
+#include "EditorApplication/EditorApplication.h"
 #include "Diagnostics/MainThreadHangWatchdog.h"
 #include "Logger/Logger.h"
 #include "Logger/FileSink.h"
 #include "Logger/Backtrace.h"
-#include "Core/Application.h" // PathUtils (default log file location)
+#include "Core/Application.h"
+#include "Core/ApplicationPaths.h"
 #include "Core/Engine.h"
 #include "Core/EngineLoggerBridge.h"
 #include "Assets/AssetRegistry.h"
@@ -14,10 +14,11 @@
 #include "Scripting/ECSABI.h"
 #include "ECS/ECS.h"
 #include "ECS/ComponentRegistry.h"
+#include "Audio/AudioTypes.h"
 #include "Core/CommandLine.h"
 #include "Startup/EditorCommandLine.h"
 #include "Startup/EditorStartup.h"
-#include "Platform/Environment.h"
+#include "Platform/DiscreteGpuPreference.h"
 #include "Platform/Thread.h"
 #include <chrono>
 #include <atomic>
@@ -28,6 +29,7 @@
 #include <string>
 #include <string_view>
 #include <filesystem>
+#include <optional>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
@@ -48,20 +50,6 @@
 #endif
 
 namespace {
-
-static GameEngine::Audio::AudioOutput ReadAudioOutputOverride()
-{
-    const char* value = std::getenv("GE_AUDIO_OUTPUT");
-    if (!value || value[0] == '\0')
-        return GameEngine::Audio::AudioOutput::Device;
-    if (const std::optional<GameEngine::Audio::AudioOutput> output = GameEngine::Audio::TryParseAudioOutput(value))
-        return *output;
-    Logger::Log::Warning("Editor: GE_AUDIO_OUTPUT='{}' is not an audio output; ignoring it and playing on the "
-                         "device. Recognized values: silent, device.",
-                         value);
-    return GameEngine::Audio::AudioOutput::Device;
-}
-
 #ifdef _WIN32
     // Crash evidence must exist in EVERY Windows config. The SEH filter below
     // swallows the exception before WER sees it, so there is no event-log entry
@@ -72,7 +60,7 @@ static GameEngine::Audio::AudioOutput ReadAudioOutputOverride()
 
     std::filesystem::path GetCrashDumpDirectory()
     {
-        return (GameEngine::PathUtils::GetUserCacheDirectory() / "GameEngine" / "CrashDumps").lexically_normal();
+        return (GameEngine::ApplicationPaths::GetUserCacheDirectory() / "GameEngine" / "CrashDumps").lexically_normal();
     }
 
     std::filesystem::path BuildCrashDumpPath(std::string_view reason)
@@ -214,36 +202,24 @@ static GameEngine::Audio::AudioOutput ReadAudioOutputOverride()
 #if LOGGER_ENABLE_SOURCE_LOCATION
         fileCfg.includeSource = true;
 #endif
-        Logger::Log::AddSink(Logger::MakeUnique<Logger::FileSink>(fileCfg));
+        Logger::Log::AddSink(std::make_unique<Logger::FileSink>(fileCfg));
         // Reported after the attach so both lines reach the file the run will be
         // read from, not only the console the run may not have.
-        if (!fileLevel.unrecognizedValue.empty())
-        {
-            Logger::Log::Warning("{}='{}' names no log level; the log file falls back to {}",
-                                 Logger::kFileLogLevelEnvVar, fileLevel.unrecognizedValue,
-                                 Logger::LogLevelToString(fileCfg.minLevel));
-        }
-        Logger::Log::Info("Editor logfile: {} (records {} and above; override with {}=<debug|info|warn|error>)",
-                          fileCfg.filename, Logger::LogLevelToString(fileCfg.minLevel),
-                          Logger::kFileLogLevelEnvVar);
+        Logger::AnnounceFileSink("Editor logfile:", fileCfg.filename, fileLevel);
     }
 #endif
 
-    // A crash handler must not be able to block. Log::Flush waits for the drain
-    // thread to acknowledge, and the drain thread cannot acknowledge while
-    // another thread holds the sink mutex — which is exactly the state a thread
-    // that faulted inside a sink leaves behind. Bound the wait well above the
-    // drain's own 200ms flush latency and let the process die either way.
-    constexpr std::chrono::milliseconds kCrashFlushTimeout{2000};
-
+    // A crash handler must not block. Log::Flush waits for the drain thread, which cannot answer
+    // while a thread that faulted inside a sink holds the sink mutex. So the wait is bounded, and
+    // the process dies either way.
     void FlushLogsBeforeDying() noexcept
     {
-        if (!Logger::Log::FlushForCrash(kCrashFlushTimeout))
+        if (!Logger::Log::FlushForCrash(Logger::Log::kCrashFlushTimeout))
         {
             std::fprintf(stderr,
                          "[CRASH] log flush did not complete within %llims; "
                          "the end of the log file may be missing\n",
-                         static_cast<long long>(kCrashFlushTimeout.count()));
+                         static_cast<long long>(Logger::Log::kCrashFlushTimeout.count()));
         }
     }
 
@@ -410,7 +386,7 @@ static GameEngine::Audio::AudioOutput ReadAudioOutputOverride()
         const char* existing = std::getenv("VK_ICD_FILENAMES");
 
         // Look for the staged ICD inside the .app bundle.
-        const std::filesystem::path exeDir = GameEngine::PathUtils::GetExecutableDirectory();
+        const std::filesystem::path exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
         const std::filesystem::path icd =
             (exeDir / ".." / "Resources" / "vulkan" / "icd.d" / "MoltenVK_icd.json").lexically_normal();
 
@@ -449,6 +425,22 @@ static GameEngine::Audio::AudioOutput ReadAudioOutputOverride()
 #endif
 }
 
+// GE_AUDIO_OUTPUT=silent mixes the editor's audio with no output device, for isolated
+// and automated runs. Unset or empty plays on the device; an unrecognized value is
+// logged and ignored.
+static GameEngine::Audio::AudioOutput ReadAudioOutputOverride()
+{
+    const char* value = std::getenv("GE_AUDIO_OUTPUT");
+    if (!value || value[0] == '\0')
+        return GameEngine::Audio::AudioOutput::Device;
+    if (const std::optional<GameEngine::Audio::AudioOutput> output = GameEngine::Audio::TryParseAudioOutput(value))
+        return *output;
+    Logger::Log::Warning("Editor: GE_AUDIO_OUTPUT='{}' is not an audio output; ignoring it and playing on the "
+                         "device. Recognized values: silent, device.",
+                         value);
+    return GameEngine::Audio::AudioOutput::Device;
+}
+
 static int EditorMainImpl(int argc, char** argv) {
     GameEngine::Platform::SetCurrentThreadName("Main Thread");
 
@@ -473,6 +465,10 @@ static int EditorMainImpl(int argc, char** argv) {
     std::signal(SIGABRT, SignalHandler);
 #ifdef SIGSEGV
     std::signal(SIGSEGV, SignalHandler);
+#endif
+#ifdef SIGTRAP
+    // A failed libc++ check in DebugFast traps (SIGTRAP on arm64).
+    std::signal(SIGTRAP, SignalHandler);
 #endif
 
     #if defined(GE_ENABLE_MIMALLOC) && GE_ENABLE_MIMALLOC
@@ -553,7 +549,7 @@ static int EditorMainImpl(int argc, char** argv) {
             namespace fs = std::filesystem;
             std::error_code ec;
 
-            const fs::path logDir = (GameEngine::PathUtils::GetUserCacheDirectory() / "GameEngine" / "Logs").lexically_normal();
+            const fs::path logDir = (GameEngine::ApplicationPaths::GetUserCacheDirectory() / "GameEngine" / "Logs").lexically_normal();
             if (!logDir.empty())
             {
                 fs::create_directories(logDir, ec);
@@ -630,6 +626,16 @@ static int EditorMainImpl(int argc, char** argv) {
     #endif
     }
 
+    // Refused arguments stop the run here, after the file sink is up, so the
+    // message reaches the log of a launch that has no console.
+    if (!editorArgs.refusedArgs.empty())
+    {
+        for (const std::string& refused : editorArgs.refusedArgs)
+            Logger::Log::Error("Editor: {}", refused);
+        Logger::Log::Shutdown();
+        return 1;
+    }
+
     GameEngine::ApplicationConfig config =
         GameEngine::Editor::Startup::BuildEditorApplicationConfig(editorArgs, engineArgs);
     config.AudioOutput = ReadAudioOutputOverride();
@@ -691,7 +697,7 @@ static int EditorMainImpl(int argc, char** argv) {
         }
         if (!app.Initialize()) {
             Logger::Log::Error("Editor failed to initialize");
-            return -1;
+            return GameEngine::Application::kInitializeFailedExitCode;
         }
         {
             auto tTotal = std::chrono::duration<double, std::milli>(
@@ -699,8 +705,9 @@ static int EditorMainImpl(int argc, char** argv) {
             Logger::Log::Info("[Startup] TOTAL main->Initialize: {:.1f}ms", tTotal);
         }
         // Hang watchdog: attributes main-thread stalls (frozen message pump)
-        // to a call stack in the log. Arms on the first frame's heartbeat.
-        GameEngine::Editor::MainThreadHangWatchdog::Start();
+        // to a call stack and the job system's occupancy in the log. Arms on
+        // the first frame's heartbeat.
+        GameEngine::Editor::MainThreadHangWatchdog::Start(&GameEngine::EngineCore::GetInstance().GetJobSystem());
         const int runResult = app.Run();
         // Shut down here rather than leaving it to ~EditorApplication below, so
         // teardown runs inside the watchdog window: a subsystem that wedges on
@@ -719,6 +726,8 @@ static int EditorMainImpl(int argc, char** argv) {
 #endif
         std::fflush(stderr);
         FlushLogsBeforeDying();
+        // ~EditorApplication destroys the job system the watchdog reads.
+        GameEngine::Editor::MainThreadHangWatchdog::Stop();
         return -2;
     } catch (...) {
         Logger::Log::Error("Unhandled non-std exception in main");
@@ -728,6 +737,7 @@ static int EditorMainImpl(int argc, char** argv) {
 #endif
         std::fflush(stderr);
         FlushLogsBeforeDying();
+        GameEngine::Editor::MainThreadHangWatchdog::Stop();
         return -3;
     }
 }

@@ -172,6 +172,14 @@ class UiReplayRunner
         std::uint64_t frameEnd = 0; // inclusive
     };
 
+    struct ElementInstanceAssertConfig
+    {
+        std::string ElementId;
+        std::uint64_t FrameStart = 0;
+        std::uint64_t FrameEnd = 0;
+        std::uint64_t InstanceId = 0;
+    };
+
     struct ElementTextChangesAssertConfig
     {
         bool enabled = false;
@@ -337,6 +345,7 @@ class UiReplayRunner
     };
 
     std::vector<SelectedCountAssertConfig> m_AssertSelectedCounts;
+    std::vector<ElementInstanceAssertConfig> m_AssertElementInstances;
     std::vector<TextContainsAssertConfig> m_AssertTextContains;
     std::vector<TreeViewBoundRowsContainAssertConfig> m_AssertTreeBoundRowsContain;
 

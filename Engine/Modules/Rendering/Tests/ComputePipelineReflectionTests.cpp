@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include "Rendering/Core/Device.h"
-#include "Rendering/Materials/ShaderReflection.h"
+#include "Rendering/Materials/Shader/ShaderReflection.h"
 #include "Rendering/Materials/MaterialBuilder.h"
 #include "Rendering/Common/Utils.h"
 #include <fstream>

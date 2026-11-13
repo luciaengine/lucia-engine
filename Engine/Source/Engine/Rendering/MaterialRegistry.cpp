@@ -130,7 +130,7 @@ Rendering::ShaderVariantKey DeriveBaseVariantKey(const MaterialDocument& doc)
             ids.push_back(static_cast<uint64_t>(HashStringId(kw)));
         key.userKeywordHash = Rendering::CombineUserKeywordHash(std::move(ids));
     }
-    Rendering::ApplyAlphaModeKeyword(key, GetEffectiveMaterialAlphaMode(doc));
+    Rendering::ApplyAlphaModeKeywords(key, GetEffectiveMaterialAlphaMode(doc), doc.blend);
     // No vertex-modifier keyword here: which of the two forms a modifier implements is a
     // property of the resolved FILE, and resolving it needs the material's asset path plus
     // the shader-root chain — neither of which reaches a MaterialRegistry handed a document
@@ -162,6 +162,11 @@ Rendering::ShaderVariantKey DeriveBaseVariantKey(const MaterialDocument& doc)
     if (auto it = doc.properties.find("enableCoatNormal"); it != doc.properties.end())
         if (const bool* on = std::get_if<bool>(&it->second); on && *on)
             key.materialKeywords |= Rendering::MaterialKeyword::CoatNormal;
+    // Second-UV crossfade opt-in: mixes the maps sampled at uv1 by the vertex alpha (the paving's seam
+    // bands). Off by default.
+    if (auto it = doc.properties.find("enableUV1Crossfade"); it != doc.properties.end())
+        if (const bool* on = std::get_if<bool>(&it->second); on && *on)
+            key.materialKeywords |= Rendering::MaterialKeyword::UV1Crossfade;
     // Anisotropy opt-in: an explicit enableAnisotropy bool reshapes the base GGX lobe
     // along the tangent (uParams11.x drives the signed amount). Off by default.
     if (auto it = doc.properties.find("enableAnisotropy"); it != doc.properties.end())
@@ -204,15 +209,13 @@ Rendering::ShaderVariantKey DeriveBaseVariantKey(const MaterialDocument& doc)
 
 MaterialAlphaMode DeriveRenderedAlphaMode(const MaterialDocument& doc)
 {
-    // Refraction replaces the background rather than alpha-blending it again.
-    // Masked transmission still needs its authored discard (rain cards, cutout
-    // glass); only blended transmission must be rendered as opaque.
-    const auto mode = GetEffectiveMaterialAlphaMode(doc);
-    if (mode == MaterialAlphaMode::Blend &&
-        Rendering::HasKeyword(DeriveBaseVariantKey(doc).materialKeywords,
+    // Transmission is a screen-space refraction lobe drawn in the opaque-depth pass:
+    // it must stay Opaque so it writes/tests depth. A Blend transmissive material
+    // would be skipped by the depth prepass, breaking the refraction foreground guard.
+    if (Rendering::HasKeyword(DeriveBaseVariantKey(doc).materialKeywords,
                               Rendering::MaterialKeyword::Transmission))
         return MaterialAlphaMode::Opaque;
-    return mode;
+    return GetEffectiveMaterialAlphaMode(doc);
 }
 
 namespace
@@ -245,7 +248,7 @@ void MaterialRegistry::ApplyDocumentToMaterial(Material& mat, const MaterialDocu
     if (effectiveAlphaMode != GetEffectiveMaterialAlphaMode(doc))
     {
         Logger::Log::Warning(
-            "Material '{}': Blended transmission is rendered as Opaque; use Mask for cutout silhouettes.",
+            "Material '{}': Transmission requires Opaque alpha mode; coercing to Opaque.",
             doc.materialName);
     }
 
@@ -438,6 +441,7 @@ void MaterialRegistry::ApplyPropertyTable(Material& mat, std::shared_ptr<const R
 {
     if (!table || table->Rejected())
         return;
+    mat.SetDeformationEnvelope(table->DeformationEnvelope);
     if (table->HasSurfaceDeclarations)
     {
         if (mat.GetDeclaredProperties() != table.get())

@@ -108,7 +108,7 @@ TEST_F(DayCycleEditorTests, AProjectSwitchClosesTheWorkingCopies)
     DayCycleWorkingCopy::CloseAllOnProjectSwitch(Notifications);
     std::string error;
     ASSERT_NE(DayCycleWorkingCopy::Open(Assets, WriteProjectProfile(kMarshProfile), error), nullptr) << error;
-    Notifications.ProjectSwitched.Invoke();
+    Notifications.NotifyProjectSwitched();
     EXPECT_EQ(DayCycleWorkingCopy::MostRecent(), nullptr);
 }
 
@@ -141,7 +141,7 @@ TEST_F(DayCycleEditorTests, AScrubPreviewsTheHourAndLeavesTheSceneAlone)
     Sky.Update(World, 0.0f);
     const auto* feature = Render.GetFeature<Engine::Renderer::SkyRenderFeature>();
     ASSERT_NE(feature, nullptr);
-    const float elevation = std::asin(std::clamp(feature->GetSystemState().sunDirWS[1], -1.0f, 1.0f));
+    const float elevation = feature->GetSunState().SunElevation;
     EXPECT_NEAR(elevation * kRadiansToDegrees, ElevationDegreesAtHour(DayCyclePathOf(SkyNow()), 18.5f), 0.01f);
     const DayCycleSunNow now = ReadDayCycleSunNow(World, &Render, &Sky);
     EXPECT_NEAR(now.ElevationDegrees, ElevationDegreesAtHour(DayCyclePathOf(SkyNow()), 18.5f), 0.01f);

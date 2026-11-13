@@ -4,7 +4,7 @@
 
 #include <gtest/gtest.h>
 
-#include "ShaderGraph/MaterialGraphDiagnosticsSummary.h"
+#include "ShaderGraph/MaterialGraph/MaterialGraphDiagnosticsSummary.h"
 
 #include <string>
 #include <unordered_set>

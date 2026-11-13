@@ -1,8 +1,15 @@
 #include "TerrainGrass/TerrainGrassRenderFeature.h"
 
+#include "GrassBladeInstanceGPU.h"
+#include "GrassSurfaceParams.h"
+#include "TerrainGrass/GrassBladeRows.h"
+#include "TerrainGrass/GrassComputePrograms.h"
 #include "TerrainGrass/GrassDrawMode.h"
+#include "TerrainGrass/GrassMaterialKeywords.h"
 #include "TerrainGrass/GrassPlacementElisionInputs.h"
+#include "TerrainECS/TerrainPageFeature.h"
 #include "TerrainECS/TerrainRenderFeature.h"
+#include "CBTTerrain/CBTLayout.h"
 #include "Engine/Rendering/CameraUtils.h"
 #include "Engine/Rendering/DepthDrawRecorder.h"
 #include "Engine/Rendering/DrawBindings.h"
@@ -12,29 +19,33 @@
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/MaterialSystem.h"
 #include "Engine/Rendering/PipelineVariantCache.h"
+#include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/SkyRenderFeature.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/BarrierMapping.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Common/Frustum.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
 #include "Rendering/Materials/MaterialDocument.h"
-#include "Rendering/Materials/ShaderCompileService.h"
-#include "Rendering/Materials/ShaderVariantKey.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderVariantKey.h"
 #include "Rendering/Utils/BufferHelpers.h"
 #include "Terrain/TerrainTypes.h"
 #include "AssetCore/GUID.h"
+#include "Assets/ShaderProgramAsset.h"
 #include "AssetCore/SharedFileRead.h"
 #include "Components/Terrain/TerrainGrass.h"
-#include "Core/Application.h"
+#include "Core/ApplicationPaths.h"
 #include "Logger/Logger.h"
-#include "Platform/Environment.h"
+#include "Mathematics/WorldPosition.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <optional>
@@ -71,23 +82,6 @@ struct BladeVertex
 // from set 2.
 constexpr Rendering::VertexAttributeFlags kBladeColourVertexFlags = Rendering::VertexAttributeFlags::None;
 
-struct GrassBladeInstanceGPU
-{
-    float WorldX = 0.0f;
-    float WorldZ = 0.0f;
-    float RootY = 0.0f;
-    float BladeHeight = 0.0f;
-    float BladeWidth = 0.0f;
-    float Yaw = 0.0f;
-    float Rand = 0.0f;
-    float GrassWeight = 0.0f;
-    uint32 TerrainIndex = 0;
-    float NormalX = 0.0f; // baked terrain normal (atlas terrains only; 0 otherwise)
-    float NormalZ = 0.0f;
-    uint32 Flags = 0;     // GrassClumpModel.h owns the bit layout (LOD, clump code, min width)
-};
-static_assert(sizeof(GrassBladeInstanceGPU) == 48);
-
 Rendering::BufferHandle CreateUniformBuffer(Rendering::IDevice& device, uint64 size, const char* name)
 {
     Rendering::BufferDesc desc{};
@@ -110,15 +104,27 @@ Rendering::BufferHandle CreateUniformBuffer(Rendering::IDevice& device, uint64 s
     return device.CreateBuffer(desc);
 }
 
-// First named map binding and the shared sampler, mirroring terrain_grass_place.comp's compat
-// declarations. Buffers occupy 0-6 (PlaceParams is 6), so the twelve maps run 7-18 and the
-// sampler lands at 19.
-constexpr uint32 kGrassCompatMapBinding0 = 7u;
-constexpr uint32 kGrassCompatMapCount = 12u;
+// The compat profile's named maps and their shared sampler, mirroring terrain_grass_place.comp's
+// compat declarations: the unified height, normal, splat and grass control maps.
+struct GrassCompatMapBinding
+{
+    uint32 Binding;
+    const char* Name;
+};
+constexpr std::array<GrassCompatMapBinding, 4> kGrassCompatMaps = {{
+    {13u, "gGrassHeightmap"}, {14u, "gGrassNormalmap"}, {15u, "gGrassSplatmap"}, {18u, "gGrassControlmap"}}};
 constexpr uint32 kGrassCompatMapSamplerBinding = 19u;
+// The wide arm's surface params, page-table words, material table, height cache and plane caches.
+constexpr uint32 kGrassSurfaceParamsBinding = 4u;
+constexpr uint32 kGrassPageTableBinding = 5u;
+constexpr uint32 kGrassMaterialTableBinding = 20u;
+constexpr uint32 kGrassPageCacheBinding = 21u;
+constexpr uint32 kGrassSurfacePlaneBinding0 = 22u;
+constexpr std::array<const char*, 4> kGrassSurfacePlaneNames = {"cbt_SurfaceSplat", "cbt_SurfaceNormal",
+                                                                "cbt_SurfaceGrass", "cbt_SurfaceColor"};
 
 // `namedMaps` is the compat profile: it has no binding arrays, so the maps the placement
-// shader samples are named bindings in this set instead of bindless indices.
+// shader samples are named bindings in this set instead of bindless indices, and it has no pages.
 Rendering::DescriptorSetLayoutDesc MakeGrassPlaceDescriptorSetLayout(bool namedMaps)
 {
     Rendering::DescriptorSetLayoutDesc layout;
@@ -135,31 +141,35 @@ Rendering::DescriptorSetLayoutDesc MakeGrassPlaceDescriptorSetLayout(bool namedM
          "TerrainGrassCellPlanBuffer"},
         {2, Rendering::DescriptorType::StorageBuffer, 1, Rendering::kShaderStageCompute, "TerrainGrassInstances"},
         {3, Rendering::DescriptorType::StorageBuffer, 1, Rendering::kShaderStageCompute, "TerrainGrassIndirectArgs"},
-        {4, Rendering::DescriptorType::UniformBuffer, 1, Rendering::kShaderStageCompute, "GrassAtlasParamsBuffer"},
-        {5, Rendering::DescriptorType::StorageBuffer, 1, Rendering::kShaderStageCompute, "GrassAtlasRowsBuffer",
-         Rendering::kDescriptorBindingReadOnlyStorage},
         {6, Rendering::DescriptorType::UniformBuffer, 1, Rendering::kShaderStageCompute, "GrassPlaceParamsBuffer"},
     };
     if (!namedMaps)
+    {
+        layout.bindings.push_back({kGrassSurfaceParamsBinding, Rendering::DescriptorType::UniformBuffer, 1,
+                                   Rendering::kShaderStageCompute, "GrassSurfaceParamsBuffer"});
+        layout.bindings.push_back({kGrassPageTableBinding, Rendering::DescriptorType::StorageBuffer, 1,
+                                   Rendering::kShaderStageCompute, "GrassPageTableBuffer",
+                                   Rendering::kDescriptorBindingReadOnlyStorage});
+        layout.bindings.push_back({kGrassMaterialTableBinding, Rendering::DescriptorType::StorageBuffer, 1,
+                                   Rendering::kShaderStageCompute, "TerrainMaterialTableBuffer",
+                                   Rendering::kDescriptorBindingReadOnlyStorage});
+        layout.bindings.push_back({kGrassPageCacheBinding, Rendering::DescriptorType::CombinedImageSampler, 1,
+                                   Rendering::kShaderStageCompute, "gPageCache"});
+        for (uint32 plane = 0; plane < kGrassSurfacePlaneNames.size(); ++plane)
+            layout.bindings.push_back({kGrassSurfacePlaneBinding0 + plane,
+                                       Rendering::DescriptorType::CombinedImageSampler, 1,
+                                       Rendering::kShaderStageCompute, kGrassSurfacePlaneNames[plane]});
         return layout;
-    // Order and binding numbers mirror the compat declarations in terrain_grass_place.comp;
-    // one sampler serves all twelve, because every tap is a clamped explicit-LOD lookup.
-    static constexpr const char* kMapBindingNames[] = {
-        "gGrassAtlasHeight", "gGrassAtlasHeightCoarse", "gGrassAtlasNormal",
-        "gGrassAtlasNormalCoarse", "gGrassAtlasSplat", "gGrassAtlasSplatCoarse",
-        "gGrassHeightmap", "gGrassNormalmap", "gGrassSplatmap",
-        "gGrassAtlasControl", "gGrassAtlasControlCoarse", "gGrassControlmap",
-    };
-    static_assert(kGrassCompatMapCount == sizeof(kMapBindingNames) / sizeof(kMapBindingNames[0]),
-                  "map binding names must cover every compat map the shader declares");
-    for (uint32 i = 0; i < kGrassCompatMapCount; ++i)
+    }
+    // One sampler serves every map, because every tap is a clamped explicit-LOD lookup.
+    for (const GrassCompatMapBinding& map : kGrassCompatMaps)
     {
         Rendering::DescriptorBinding b{};
-        b.binding = kGrassCompatMapBinding0 + i;
+        b.binding = map.Binding;
         b.type = Rendering::DescriptorType::Texture;
         b.count = 1;
         b.shaderStages = Rendering::kShaderStageCompute;
-        b.debugName = kMapBindingNames[i];
+        b.debugName = map.Name;
         // Every map is tapped through the filtering sampler below (clamped
         // explicit-LOD lookups): a compute-stage image with no filterable
         // declaration defaults to unfilterable on WebGPU, which then rejects
@@ -171,9 +181,6 @@ Rendering::DescriptorSetLayoutDesc MakeGrassPlaceDescriptorSetLayout(bool namedM
                                Rendering::kShaderStageCompute, "gGrassMapSampler"});
     return layout;
 }
-
-// One indirection row = std430 TileAtlasSlot (mirror TerrainAtlas.h / cbt_atlas.glsl CBTTileAtlasSlot).
-constexpr uint32 kGrassAtlasRowBytes = 16u;
 
 Rendering::ResourceBarrier MakeGrassPlaceReadyBarrier()
 {
@@ -188,6 +195,65 @@ Rendering::ResourceBarrier MakeGrassPlaceReadyBarrier()
             | static_cast<uint64>(Rendering::ResourceAccessMask::ShaderRead));
 }
 
+void BindIblResources(Engine::Renderer::RenderServices& rs,
+                      Rendering::IDevice* device,
+                      std::vector<Engine::Renderer::DrawBindings::BufferEntry>& buffers,
+                      std::vector<Engine::Renderer::DrawBindings::TextureEntry>& textures)
+{
+    if (!device)
+        return;
+
+    auto& ibl = rs.EnsureFeature<Engine::Renderer::ImageBasedLightingFeature>();
+    if (!ibl.IsInitialized())
+        ibl.Initialize(device);
+    if (!ibl.IsInitialized())
+        return;
+
+    if (auto* sky = rs.GetFeature<Engine::Renderer::SkyRenderFeature>();
+        sky && sky->HasActiveSettings())
+    {
+        ibl.SetIblIntensity(sky->GetSettings().iblIntensity);
+    }
+    if (auto* iblSource = ibl.GetEnvironmentSource(); !iblSource || iblSource->InputDigest() == 0)
+        ibl.SetIblIntensity(0.0f);
+    const auto envBuffer = ibl.UploadEnvData(device);
+
+    const auto cubeSampler = ibl.GetCubeSampler();
+    const auto lutSampler = ibl.GetLutSampler();
+    if (cubeSampler.IsValid())
+    {
+        if (const auto irradiance = ibl.GetIrradianceCube(); irradiance.IsValid())
+        {
+            Engine::Renderer::DrawBindings::TextureEntry tex{};
+            tex.Name = HashStringId("ge_irradianceCube");
+            tex.Texture = irradiance;
+            tex.Sampler = cubeSampler;
+            textures.push_back(tex);
+        }
+        if (const auto prefilter = ibl.GetPrefilterCube(); prefilter.IsValid())
+        {
+            Engine::Renderer::DrawBindings::TextureEntry tex{};
+            tex.Name = HashStringId("ge_prefilterCube");
+            tex.Texture = prefilter;
+            tex.Sampler = cubeSampler;
+            textures.push_back(tex);
+        }
+    }
+    if (lutSampler.IsValid())
+    {
+        if (const auto brdfLut = ibl.GetBrdfLut(); brdfLut.IsValid())
+        {
+            Engine::Renderer::DrawBindings::TextureEntry tex{};
+            tex.Name = HashStringId("ge_brdfLUT");
+            tex.Texture = brdfLut;
+            tex.Sampler = lutSampler;
+            textures.push_back(tex);
+        }
+    }
+
+    if (envBuffer.IsValid())
+        buffers.push_back({HashStringId("Env"), envBuffer, 0u, 0u});
+}
 } // namespace
 
 class TerrainGrassForwardContributor final
@@ -243,12 +309,12 @@ public:
         if (md.Keyword)
             doc.keywords = {md.Keyword};
 
-        using Rendering::MaterialKeyword;
+        // Registered like every scene material: the base program resolves and its pipeline builds
+        // on a worker, so a cold first draw costs no main-thread frame. The view draws no grass
+        // until that pipeline publishes (EmitForwardCommands finds no base pipeline before then).
         material = m_RenderServices.Materials().RegisterMaterialFromDocument(
-            *md.Guid, doc,
-            MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows |
-                MaterialKeyword::Instanced | MaterialKeyword::IBL |
-                MaterialKeyword::ProceduralVertexOutput);
+            *md.Guid, doc, kGrassMaterialKeywords,
+            Engine::Renderer::MaterialSystem::BaseCompileMode::Async);
 
         if (!material)
         {
@@ -256,7 +322,7 @@ public:
             return false;
         }
 
-        Logger::Log::Info("TerrainGrass: material '{}' registered and compiled", md.Name);
+        Logger::Log::Info("TerrainGrass: material '{}' registered; its pipeline builds on a worker", md.Name);
         return true;
     }
 
@@ -337,7 +403,7 @@ public:
         // reachability seed in Compile), so the placement pass is never culled for want of a draw
         // consumer: a missing draw still leaves a TerrainGrass.Place line. Silence on THIS trace
         // with the placement still tracing means blades were placed and not drawn. Each site logs once.
-        static const bool kDbg = Platform::EnvironmentSwitchEnabled("GE_TERRAIN_GRASS_DEBUG", false);
+        static const bool kDbg = std::getenv("GE_TERRAIN_GRASS_DEBUG") != nullptr;
         auto once = [](bool& flag) { if (flag) return false; flag = true; return true; };
 
         if (!m_Feature.IsInitialized())
@@ -376,13 +442,14 @@ public:
         }
         Engine::Renderer::Material* material = m_Materials[static_cast<uint32>(mode)];
 
+        const bool compatProfile = m_RenderServices.GetProfile().IsCompat();
         const auto paramsSSBO = m_TerrainFeature.GetTerrainParamsSSBO(paramsSlot);
         // The material table, from the SAME published slot: a params entry names its materials by
-        // absolute table index, so a slot mismatch would resolve a real but wrong material.
+        // absolute table index, so a slot mismatch would resolve a real but wrong material. Only the
+        // compat surface reads it; the full profile's blade carries its ground colour from placement.
         const auto materialsSSBO = m_TerrainFeature.GetTerrainMaterialTableSSBO(paramsSlot);
         const uint32 terrainMaterialCount = m_TerrainFeature.GetTerrainMaterialCount(paramsSlot);
-        if (!paramsSSBO.IsValid() || !materialsSSBO.IsValid() ||
-            terrainMaterialCount == 0 ||
+        if (!paramsSSBO.IsValid() || (compatProfile && (!materialsSSBO.IsValid() || terrainMaterialCount == 0)) ||
             !m_Feature.GetBladeVB().IsValid() || !m_Feature.GetBladeIB().IsValid())
             return;
 
@@ -404,6 +471,15 @@ public:
             pipelineId = device->InternGraphicsPipeline(std::move(gd));
             pipelineVersion = material->GetVersion();
         }
+        // The re-interned pipeline builds on a worker for the formats the view's world pass draws
+        // with, as the prepass head's does, and grass draws once the device holds it: a cold first
+        // draw never builds it on the recording thread. A view that has declared no world pass yet
+        // has no formats to request it for; its draw resolves the pipeline when it records.
+        const Rendering::PipelineFormatKey worldFormats =
+            m_RenderServices.Views().GetViewWorldColorFormatKey(ctx.ViewId);
+        if (worldFormats.ColorCount != 0 &&
+            !m_RenderServices.Materials().Variants().EnsureConcreteWarm(*material, pipelineId, worldFormats))
+            return;
 
         auto& scratch = m_Scratch[ctx.ViewId];
         scratch.Shared.clear();
@@ -415,31 +491,34 @@ public:
                 * sizeof(Rendering::WindVolumeGPU)});
         scratch.Shared.push_back({HashStringId("TerrainParamsBuffer"), paramsSSBO,
             0u, static_cast<uint64>(terrainParamsCount) * sizeof(Terrain::TerrainGPUParams)});
-        // The terrain material table the blade's base colour resolves through — the same buffer the
-        // terrain surface reads, which is what keeps a blade and its ground one decision.
+        // The terrain material table the compat surface resolves the blade's base colour through —
+        // the same buffer the terrain surface reads, which is what keeps a blade and its ground one
+        // decision. The full profile resolves that colour in the placement compute, and no stage of
+        // its draw declares the table.
         //
         // Every set-2 buffer is keyed by the name REFLECTION reports, which is the block's instance
         // name where it has one and the block name where it does not. The three the shaders declare
         // nameless (this one, TerrainParamsBuffer and the per-draw instances buffer) are therefore
-        // given their BLOCK names; the two atlas blocks below carry instance names and are given
-        // those. Getting it the wrong way round leaves the binding unresolvable, and MaterialBinder
+        // given their BLOCK names; a block with an instance name is given that. Getting it the wrong
+        // way round leaves the binding unresolvable, and MaterialBinder
         // then drops the draw with a throttled Error log — the symptom is invisible grass, not a
         // device loss.
-        scratch.Shared.push_back({HashStringId("TerrainMaterialTableBuffer"), materialsSSBO,
-            0u, static_cast<uint64>(terrainMaterialCount) * sizeof(Terrain::TerrainMaterialRecord)});
-        // The eight maps the grass surface and vertex modifier declare by name under the compat
-        // profile (set 2, b20-27). That profile has no binding array, so nothing else fills them —
+        if (compatProfile)
+            scratch.Shared.push_back({HashStringId("TerrainMaterialTableBuffer"), materialsSSBO,
+                0u, static_cast<uint64>(terrainMaterialCount) * sizeof(Terrain::TerrainMaterialRecord)});
+        // The nine maps the grass surface and vertex modifier declare by name under the compat
+        // profile (set 2, b20-27 and b29). That profile has no binding array, so nothing else fills them —
         // a declared-but-unbound texture draws black with no error at all, which is exactly how
         // the terrain surface failed before its own bindings landed.
         //
-        // Terrain 0, matching the single-terrain limit both CBT and the grass atlas already carry.
-        if (m_RenderServices.GetProfile().IsCompat())
+        // The drawn terrain, the one the CBT draws.
+        if (compatProfile)
         {
             auto* terrainFeature = &m_TerrainFeature;
-            const auto terrains = terrainFeature->GetActiveTerrains();
-            if (!terrains.empty())
+            const auto drawnTerrain = terrainFeature->GetDrawnTerrain();
+            if (drawnTerrain)
             {
-                const auto primary = terrains.front().Handle;
+                const auto primary = drawnTerrain->Handle;
                 const auto compat = terrainFeature->GetCompatLayerTextures();
                 const auto sampler = terrainFeature->GetLayerSampler();
                 const auto bindTex = [&](const char* name, Rendering::TextureHandle tex) {
@@ -457,6 +536,10 @@ public:
                 bindTex("gGrassBladeNormal", compat.GrassNormal);
                 bindTex("gGrassVtxHeightmap", terrainFeature->GetHeightmapTexture(primary));
                 bindTex("gGrassVtxNormalmap", terrainFeature->GetNormalmapTexture(primary));
+                // The unified colour map the blade's ground colour mixes toward; the params row's
+                // kTerrainFlagHasColorMap says whether the surface reads it.
+                bindTex("gGrassColormap", terrainFeature->GetFieldTexture(TerrainECS::TerrainField::Color, primary,
+                                                                          TerrainECS::TerrainFieldMap::Unified));
                 {
                     // Shared sampler at its own binding (28), read by both stages.
                     Engine::Renderer::DrawBindings::TextureEntry e{};
@@ -467,27 +550,9 @@ public:
             }
         }
 
-        // The resident-window atlas params + indirection rows, so the blade's ground colour
-        // resolves the splat through grass_atlas_splat.glsl exactly as its placement mask did.
-        // Bound UNCONDITIONALLY: the surface declares both blocks always, and an unbound set-2
-        // buffer makes the binder drop the draw. A non-atlas terrain reads Enabled == 0 and never
-        // touches the rows.
-        const auto atlas = m_Feature.GetAtlasBindingForDraw(ctx.FrameIndex);
-        if (!atlas.ParamsUBO.IsValid() || !atlas.Rows.IsValid())
-        {
-            static bool logged = false;
-            if (kDbg && once(logged))
-                Logger::Log::Info("TerrainGrass.Forward stop=atlasbindings params={} rows={}",
-                                  atlas.ParamsUBO.IsValid(), atlas.Rows.IsValid());
-            return;
-        }
-        scratch.Shared.push_back({HashStringId("Atlas"), atlas.ParamsUBO,
-            0u, sizeof(TerrainGrassRenderFeature::GrassAtlasParamsGPU)});
-        scratch.Shared.push_back({HashStringId("gAtlasRows"), atlas.Rows,
-            0u, atlas.RowsRangeBytes});
         // The budget fit's range scale, so the vertex stage's far-LOD band ends where placement
-        // actually stopped spawning. Keyed by the block's INSTANCE name, like Atlas/gAtlasRows
-        // above and unlike the three nameless blocks.
+        // actually stopped spawning. Keyed by the block's INSTANCE name, unlike the three nameless
+        // blocks.
         const auto drawParams = m_Feature.GetDrawParamsUBO(ctx.ViewId, ctx.FrameIndex);
         if (!drawParams.IsValid())
         {
@@ -513,6 +578,7 @@ public:
                                   instances.IsValid(), instanceCapacity);
             return;
         }
+        BindIblResources(m_RenderServices, device, scratch.Shared, scratch.Textures);
 
         Rendering::MaterialKeyword passKeywords = Rendering::MaterialKeyword::None;
         if (auto kw = m_RenderServices.GetWorldPassKeywords(ctx.ViewId))
@@ -584,6 +650,7 @@ public:
 
             const auto& lodMesh = m_Feature.GetBladeLod(lod);
             Engine::Renderer::DrawCommand cmd{};
+            cmd.Producer = m_DrawProducer;
             cmd.InternedPipeline = pipelineId;
             cmd.Material = material;
             cmd.VertexFlags = kBladeColourVertexFlags;
@@ -646,6 +713,7 @@ private:
     TerrainGrassRenderFeature& m_Feature;
     TerrainECS::TerrainRenderFeature& m_TerrainFeature;
     Engine::Renderer::RenderServices& m_RenderServices;
+    const Rendering::DrawProducerId m_DrawProducer = Rendering::DrawProducerRegistry::Register("Grass");
     // One material + one interned pipeline per GrassDrawMode, resolved lazily the
     // first frame a view draws in that mode.
     Engine::Renderer::Material* m_Materials[kGrassDrawModeCount] = {};
@@ -691,37 +759,31 @@ bool TerrainGrassRenderFeature::Initialize(Rendering::IDevice* device)
     m_Device = device;
     CreateBladeMesh(5u);
 
-    // Zeroed at creation, not merely allocated: the grass DRAW binds whichever slot the frame lands
-    // on, and a frame whose placement never ran would otherwise hand the surface uninitialized
-    // upload memory as atlas params — a garbage Enabled sends it down the atlas path with a garbage
-    // bindless index. Zero reads as Enabled == 0, which is exactly "no atlas, use the unified path".
-    const GrassAtlasParamsGPU zeroedAtlasParams{};
+    // Written at creation, not merely allocated: a slot no placement has ensured yet reads as "no row
+    // draws from pages" rather than as uninitialized upload memory.
+    const GrassSurfaceParamsGPU noPagedTerrain{};
     for (uint32 i = 0; i < kMaxFrames; ++i)
     {
-        m_AtlasParamsUBO[i] = CreateUniformBuffer(*m_Device, sizeof(GrassAtlasParamsGPU),
-                                                  "TerrainGrass_AtlasParams");
-        if (m_AtlasParamsUBO[i].IsValid())
-            m_Device->UpdateBuffer(m_AtlasParamsUBO[i], 0, sizeof(zeroedAtlasParams),
-                                   &zeroedAtlasParams);
+        m_SurfaceParamsUBO[i] = CreateUniformBuffer(*m_Device, sizeof(GrassSurfaceParamsGPU),
+                                                    "TerrainGrass_SurfaceParams");
+        if (m_SurfaceParamsUBO[i].IsValid())
+            m_Device->UpdateBuffer(m_SurfaceParamsUBO[i], 0, sizeof(noPagedTerrain), &noPagedTerrain);
     }
 
-    // A 1-row NO_SLOT indirection buffer, bound at placement binding 5 whenever no atlas terrain is
-    // present so the descriptor is always valid (Atlas.Enabled == 0 keeps the shader off this path).
+    // A one-word table, bound at placement binding 5 while no terrain is paged so the descriptor is
+    // always valid (PagedTerrainRow == kGrassNoPagedTerrain keeps the shader off it).
     {
         Rendering::BufferDesc desc{};
-        desc.size = kGrassAtlasRowBytes;
+        desc.size = sizeof(uint32);
         desc.usage = static_cast<uint32>(Rendering::BufferUsage::Storage);
         desc.memoryUsage = Rendering::BufferMemoryUsage::Upload;
         desc.persistent = true;
-        desc.debugName = "TerrainGrass_DefaultAtlasRows";
-        m_DefaultAtlasRows = m_Device->CreateBuffer(desc);
-        if (m_DefaultAtlasRows.IsValid())
+        desc.debugName = "TerrainGrass_DefaultPageTable";
+        m_DefaultPageTable = m_Device->CreateBuffer(desc);
+        if (m_DefaultPageTable.IsValid())
         {
-            if (void* mapped = m_Device->MapBuffer(m_DefaultAtlasRows))
-            {
-                std::memset(mapped, 0xFF, kGrassAtlasRowBytes); // Slot == kAtlasNoSlot
-                m_Device->UnmapBuffer(m_DefaultAtlasRows);
-            }
+            const uint32 zero = 0;
+            m_Device->UpdateBuffer(m_DefaultPageTable, 0, sizeof(zero), &zero);
         }
     }
 
@@ -795,9 +857,11 @@ namespace
 {
 struct GrassShaderLocation
 {
+    // The directory holding the grass programs: the sources, or the cooked WGSL.
     std::filesystem::path Dir;
-    std::filesystem::path IncludeRoot;
-    std::filesystem::path CbtDir; // holds cbt_atlas.glsl (the resident-window atlas resolve grass shares)
+    // The engine shader tree the sources compile against (MakeGrassComputeCompileRequest); empty
+    // for cooked WGSL.
+    std::filesystem::path EngineShaders;
 };
 
 // The staged grass compute sources under the install assets root's Shaders directory; nullopt
@@ -808,52 +872,52 @@ struct GrassShaderLocation
 std::optional<GrassShaderLocation> FindGrassShaderLocation(bool cookedPrograms)
 {
     namespace fs = std::filesystem;
-    const fs::path shaders = PathUtils::GetInstallAssetsRoot() / "Shaders";
+    const fs::path shaders = ApplicationPaths::GetInstallAssetsRoot() / "Shaders";
     std::error_code ec;
     if (cookedPrograms)
     {
         const fs::path programDir = shaders / "TerrainGrass";
         if (!fs::exists(programDir / "terrain_grass_place.comp.wgsl", ec))
             return std::nullopt;
-        return GrassShaderLocation{programDir, {}, {}};
+        return GrassShaderLocation{programDir, {}};
     }
-    GrassShaderLocation location{shaders / "TerrainGrass", shaders, shaders / "CBT"};
+    GrassShaderLocation location{shaders / "TerrainGrass", shaders};
     if (!fs::exists(location.Dir / "terrain_grass_place.comp", ec))
         return std::nullopt;
     return location;
 }
 
-bool CompileGrassComputePipeline(Rendering::IDevice& device, const GrassShaderLocation& location,
-                                 const char* shaderFile, const char* debugName, bool compat,
-                                 Rendering::ComputePipelineId& outId,
-                                 Rendering::PipelineHandle& outPipeline)
+// Compiles `program` and interns its pipeline. Builds no backend pipeline.
+bool InternGrassComputePipeline(Rendering::IDevice& device, const GrassShaderLocation& location,
+                                const GrassComputeProgram& program, bool compat,
+                                Rendering::ComputePipelineId& outId)
 {
     namespace fs = std::filesystem;
+    const char* shaderFile = program.ShaderFile;
+    const char* debugName = program.DebugName;
     Vector<uint8> computeProgram;
     if (device.PreferredShaderSource() == Rendering::ShaderSourceKind::Wgsl)
     {
         // No shader compiler at runtime: load this stage's ahead-of-time cooked WGSL (staged
         // beside the executable, named "<stage>.wgsl") instead of compiling from source.
         const fs::path cookedProgram = location.Dir / (std::string(shaderFile) + ".wgsl");
-        if (!ReadFileBytesShared(cookedProgram, computeProgram) || computeProgram.empty())
+        ByteBuffer cookedBytes;
+        if (!ReadFileBytesShared(cookedProgram, cookedBytes) || cookedBytes.Size() == 0)
         {
             Logger::Log::Error("TerrainGrass: cooked program not found ({}.wgsl)", shaderFile);
             return false;
         }
+        computeProgram.assign(cookedBytes.begin(), cookedBytes.end());
     }
     else
     {
-        Rendering::ShaderProgramCompileRequest req{};
-        req.debugName = debugName;
-        req.baseDirectory = location.Dir;
-        req.cacheRoot = fs::path(".Cache") / "Shaders";
-        req.includeDirs = {location.IncludeRoot, location.CbtDir, location.Dir};
-        // The compat profile selects the named-binding arm of the source, the same arm the
-        // web cook builds, so a desktop run under GE_FORCE_COMPAT exercises it too.
-        std::vector<std::string> defines;
-        if (compat)
-            defines.push_back("GE_COMPAT_PROFILE");
-        req.stages = {{"cs", shaderFile, "main", std::move(defines)}};
+        Rendering::ShaderProgramCompileRequest req =
+            MakeGrassComputeCompileRequest(location.EngineShaders, program, compat);
+        // A packaged game's cooked cache is probed first (MaterialVariantCook cooks these programs
+        // for a desktop export); a program it lacks compiles into the workspace cache.
+        const ShaderCacheRoots& cacheRoots = ShaderProgramAsset::GetShaderCacheRoots();
+        req.readOnlyCacheRoots = cacheRoots.ReadOnly;
+        req.cacheRoot = cacheRoots.Writable.empty() ? fs::path(".Cache") / "Shaders" : cacheRoots.Writable;
         Rendering::ShaderProgramCompileResult result{};
         std::string compileError;
         if (!Rendering::ShaderCompileService::CompileProgramToCache(
@@ -889,7 +953,14 @@ bool CompileGrassComputePipeline(Rendering::IDevice& device, const GrassShaderLo
     }
     cd.DebugName = debugName;
     outId = device.InternComputePipeline(cd);
-    outPipeline = device.GetOrCreateComputePipeline(outId);
+    return outId.IsValid();
+}
+
+// The backend pipeline of `id`, built on the calling thread when no build is warm.
+bool CreateGrassComputePipeline(Rendering::IDevice& device, Rendering::ComputePipelineId id,
+                                const char* debugName, Rendering::PipelineHandle& outPipeline)
+{
+    outPipeline = device.GetOrCreateComputePipeline(id);
     if (!outPipeline.IsValid())
     {
         Logger::Log::Error("TerrainGrass: {} pipeline creation failed", debugName);
@@ -899,15 +970,13 @@ bool CompileGrassComputePipeline(Rendering::IDevice& device, const GrassShaderLo
 }
 } // namespace
 
-bool TerrainGrassRenderFeature::EnsureComputePipeline(Engine::Renderer::RenderServices& rs)
+bool TerrainGrassRenderFeature::InternComputePipelines(Engine::Renderer::RenderServices& rs)
 {
-    if (m_ComputePipeline.IsValid() && m_PlanPipeline.IsValid() && m_ClassifyPipeline.IsValid())
+    if (m_ClassifyPipelineId.IsValid() && m_PlanPipelineId.IsValid() && m_ComputePipelineId.IsValid())
         return true;
-    if (m_ComputePipelineAttempted)
+    if (m_ComputePipelinesInternAttempted || !m_Device)
         return false;
-    m_ComputePipelineAttempted = true;
-    if (!m_Device)
-        return false;
+    m_ComputePipelinesInternAttempted = true;
     const bool compat = rs.GetProfile().IsCompat();
     const std::optional<GrassShaderLocation> location = FindGrassShaderLocation(
         m_Device->PreferredShaderSource() == Rendering::ShaderSourceKind::Wgsl);
@@ -916,15 +985,32 @@ bool TerrainGrassRenderFeature::EnsureComputePipeline(Engine::Renderer::RenderSe
         Logger::Log::Warning("TerrainGrass: placement compute shader not found");
         return false;
     }
-    if (!CompileGrassComputePipeline(*m_Device, *location, "terrain_grass_classify.comp",
-                                     "TerrainGrassClassify_Pipeline", compat, m_ClassifyPipelineId,
-                                     m_ClassifyPipeline)
-        || !CompileGrassComputePipeline(*m_Device, *location, "terrain_grass_plan.comp",
-                                        "TerrainGrassPlan_Pipeline", compat, m_PlanPipelineId,
-                                        m_PlanPipeline)
-        || !CompileGrassComputePipeline(*m_Device, *location, "terrain_grass_place.comp",
-                                        "TerrainGrassPlace_Pipeline", compat, m_ComputePipelineId,
-                                        m_ComputePipeline))
+    return InternGrassComputePipeline(*m_Device, *location, kGrassClassifyProgram, compat, m_ClassifyPipelineId)
+           && InternGrassComputePipeline(*m_Device, *location, kGrassPlanProgram, compat, m_PlanPipelineId)
+           && InternGrassComputePipeline(*m_Device, *location, kGrassPlaceProgram, compat, m_ComputePipelineId);
+}
+
+void TerrainGrassRenderFeature::RequestPlacementPipelines(Engine::Renderer::RenderServices& rs)
+{
+    if (!InternComputePipelines(rs))
+        return;
+    for (const Rendering::ComputePipelineId id : {m_ClassifyPipelineId, m_PlanPipelineId, m_ComputePipelineId})
+        m_Device->RequestComputePipeline(id);
+}
+
+bool TerrainGrassRenderFeature::EnsureComputePipeline(Engine::Renderer::RenderServices& rs)
+{
+    if (m_ComputePipeline.IsValid() && m_PlanPipeline.IsValid() && m_ClassifyPipeline.IsValid())
+        return true;
+    if (m_ComputePipelineAttempted)
+        return false;
+    m_ComputePipelineAttempted = true;
+    if (!InternComputePipelines(rs)
+        || !CreateGrassComputePipeline(*m_Device, m_ClassifyPipelineId, kGrassClassifyProgram.DebugName,
+                                       m_ClassifyPipeline)
+        || !CreateGrassComputePipeline(*m_Device, m_PlanPipelineId, kGrassPlanProgram.DebugName, m_PlanPipeline)
+        || !CreateGrassComputePipeline(*m_Device, m_ComputePipelineId, kGrassPlaceProgram.DebugName,
+                                       m_ComputePipeline))
         return false;
     Logger::Log::Info("TerrainGrass: placement compute pipeline ready");
     return true;
@@ -1169,8 +1255,7 @@ bool TerrainGrassRenderFeature::ResolvePlaceParams(
     if (!camera)
         return false;
 
-    Rendering::Matrix4x4 viewProj;
-    std::memcpy(viewProj.Data(), camera->viewProj, sizeof(float) * 16);
+    Rendering::Matrix4x4 viewProj = camera->viewProj;
     Rendering::Vector4 planes[6]{};
     Rendering::ExtractFrustumPlanes(viewProj, planes);
     // A view-projection that is not a real projection (a degenerate or unset camera) extracts
@@ -1196,9 +1281,9 @@ bool TerrainGrassRenderFeature::ResolvePlaceParams(
         out.FrustumPlanes[i][3] = planesUsable ? planes[i].w : 1.0f;
     }
 
-    out.CameraPos[0] = camera->cameraPos[0];
-    out.CameraPos[1] = camera->cameraPos[1];
-    out.CameraPos[2] = camera->cameraPos[2];
+    out.CameraPos[0] = camera->cameraPos.x;
+    out.CameraPos[1] = camera->cameraPos.y;
+    out.CameraPos[2] = camera->cameraPos.z;
 
     // Column-major, so columns 0-2 are elements 0-2, 4-6 and 8-10; element 12-14 is the
     // translation and is deliberately left out (the compute works camera-relative). These are
@@ -1207,12 +1292,12 @@ bool TerrainGrassRenderFeature::ResolvePlaceParams(
     // the one the draw would have computed.
     for (uint32 i = 0; i < 3; ++i)
     {
-        out.ViewRotCol0[i] = camera->view[i];
-        out.ViewRotCol1[i] = camera->view[4 + i];
-        out.ViewRotCol2[i] = camera->view[8 + i];
+        out.ViewRotCol0[i] = camera->view[0][i];
+        out.ViewRotCol1[i] = camera->view[1][i];
+        out.ViewRotCol2[i] = camera->view[2][i];
     }
-    // proj[5] is row 1 of column 1 under the same convention.
-    out.ViewRotCol2[3] = camera->proj[5];
+    // proj[1][1] is row 1 of column 1 under the same convention.
+    out.ViewRotCol2[3] = camera->proj[1][1];
     // The other half of the world-width-to-screen-width conversion, and per-view for the same
     // reason the matrix above is: a frame can place for several views at different sizes (a
     // Game View beside a Scene View, six reflection-probe cube faces), and a width sized for
@@ -1230,25 +1315,33 @@ bool TerrainGrassRenderFeature::ResolvePlaceParams(
     // "size unknown" value the compute already handles, which is exactly the pre-floor
     // behaviour: no widening, no ceiling, blades as authored.
     const bool orthographic = Engine::Renderer::IsOrthographicProjectionLH_ZO(camera->proj);
-    out.ViewRotCol0[3] = orthographic
-        ? 0.0f
-        : static_cast<float>(rs.Views().GetViewWorldViewportHeight(viewId));
+    const float viewportHeight = static_cast<float>(rs.Views().GetViewWorldViewportHeight(viewId));
+    out.ViewRotCol0[3] = orthographic ? 0.0f : viewportHeight;
+    // The ground footprint reads both projections: an orthographic view publishes its height negated.
+    out.ViewRotCol1[3] = orthographic ? -viewportHeight : viewportHeight;
     const auto summary = terrainFeature.GetTerrainGrassPlacementSummary(paramsSlot);
     out.CameraPos[3] = summary.MaxRange > 0.0f
         ? plan.Params.FarRadius / summary.MaxRange
         : 0.0f;
 
     out.CellWindow[0] = static_cast<int32>(
-        std::floor(camera->cameraPos[0] / kGrassCellSize));
+        std::floor(camera->cameraPos.x / kGrassCellSize));
     out.CellWindow[1] = static_cast<int32>(
-        std::floor(camera->cameraPos[2] / kGrassCellSize));
+        std::floor(camera->cameraPos.z / kGrassCellSize));
     out.CellWindow[2] = static_cast<int32>(plan.CellSpan);
     out.CellWindow[3] = static_cast<int32>(terrainParamsCount);
 
-    // A conservative vertical extent for the cell AABB: no blade can root outside the terrain's
-    // own height range, and none can reach higher than the tallest authored blade.
+    // The origin ResolveCameraData uses for the draw.
+    const Mathematics::Vector3Int origin = Engine::Renderer::CameraRenderOriginSector(*camera);
+    out.RenderOriginSector[0] = origin.x;
+    out.RenderOriginSector[1] = origin.y;
+    out.RenderOriginSector[2] = origin.z;
+    out.RenderOriginSector[3] = static_cast<int32>(Mathematics::kWorldSectorSize);
+
+    // The height range of every blade root. The classify kernel adds the tallest blade for the range fit's
+    // band box, and the blade reach for a cell's own box.
     out.Bounds[0] = summary.WorldMinY;
-    out.Bounds[1] = summary.WorldMaxY + summary.MaxBladeHeight;
+    out.Bounds[1] = summary.WorldMaxY;
     out.Bounds[2] = plan.Lod1StartDistance;
     // Cells are rejected on centre distance, so allow the half-diagonal before the cell's near
     // corner could still be inside the range.
@@ -1257,18 +1350,31 @@ bool TerrainGrassRenderFeature::ResolvePlaceParams(
     // per-terrain value, or its per-ring total would stop being a bound on the per-cell sum.
     out.Summary[0] = summary.MaxNearDensity;
     out.Summary[1] = summary.MinFalloff;
+    out.Summary[2] = summary.MinBladeWidth;
+    out.Summary[3] = summary.MinBladeHeight;
+    out.FloorThinning.x = summary.MaxBladeWidth;
+    out.FloorThinning.y = summary.MinFarThinning;
+    out.BladeReach = summary.MaxBladeReach;
+    out.MaxBladeHeight = summary.MaxBladeHeight;
     return true;
 }
 
-bool TerrainGrassRenderFeature::ShouldSkipPlacement(
-    TerrainECS::TerrainRenderFeature& terrainFeature, Rendering::ViewId viewId, uint32 frameIndex)
+bool TerrainGrassRenderFeature::ShouldSkipPlacement(TerrainECS::TerrainRenderFeature& terrainFeature,
+                                                    const TerrainECS::TerrainPageFeature* pages,
+                                                    Rendering::ViewId viewId, uint32 frameIndex)
 {
     // Kill switches, read once (the house latch idiom the cull/scatter/cluster/SDSM families use):
     // GE_IDLE_ELISION=0 masters everything off, GE_IDLE_ELISION_GRASS=0 disables this family alone.
     // Both default ON — the gate is exact-input and fails toward recomputing.
-    static const bool kAllowElision =
-        Platform::EnvironmentSwitchEnabled("GE_IDLE_ELISION", true) &&
-        Platform::EnvironmentSwitchEnabled("GE_IDLE_ELISION_GRASS", true);
+    static const bool kAllowElision = []
+    {
+        const auto enabled = [](const char* name)
+        {
+            const char* v = std::getenv(name);
+            return !v || std::strcmp(v, "0") != 0;
+        };
+        return enabled("GE_IDLE_ELISION") && enabled("GE_IDLE_ELISION_GRASS");
+    }();
 
     auto it = m_PlacementScratch.find(viewId);
     if (it == m_PlacementScratch.end())
@@ -1279,27 +1385,28 @@ bool TerrainGrassRenderFeature::ShouldSkipPlacement(
     inputs.PlaceParams = std::span<const uint8>(reinterpret_cast<const uint8*>(&buffers.Place),
                                                 sizeof(buffers.Place));
     inputs.Plan = buffers.Plan;
-    terrainFeature.CopyLastTerrainParamsBytes(buffers.TerrainParamsScratch);
+    terrainFeature.CopyLastTerrainParamsAndMaterialBytes(buffers.TerrainParamsScratch,
+                                                         buffers.TerrainMaterialScratch);
     inputs.TerrainParams = buffers.TerrainParamsScratch;
+    inputs.TerrainMaterials = buffers.TerrainMaterialScratch;
     inputs.TerrainContentEpoch = terrainFeature.GetGrassPlacementContentEpoch();
 
-    TerrainECS::AtlasGrassSource atlasSource{};
-    if (terrainFeature.TryGetAtlasGrassSource(atlasSource))
+    SurfacePageSource surface{};
+    if (pages != nullptr)
+        ReadSurfacePageSource(*pages, terrainFeature, surface, nullptr);
+    inputs.SurfacePageIdentity =
+        surface.HeightWords.empty() ? 0u : (static_cast<uint64>(surface.Terrain) << 32) | surface.Generation;
+    inputs.PageDeviceEpoch = surface.DeviceEpoch;
+    if (!surface.HeightWords.empty())
     {
-        inputs.AtlasIdentity = atlasSource.Identity;
-        inputs.AtlasTableVersion = atlasSource.TableVersion;
-        inputs.AtlasRows = atlasSource.RowBytes;
-        buffers.AtlasBindlessScratch = {atlasSource.HeightBindless, atlasSource.HeightCoarseBindless,
-                                        atlasSource.NormalBindless, atlasSource.NormalCoarseBindless,
-                                        atlasSource.SplatBindless, atlasSource.SplatCoarseBindless,
-                                        atlasSource.GrassBindless, atlasSource.GrassCoarseBindless};
-        inputs.AtlasBindlessIndices = buffers.AtlasBindlessScratch;
+        // Only a change under the cell window re-places: pages stream all over the terrain while
+        // the camera moves, and the bind follows every table version on its own (BindTableRing).
+        const Mathematics::Rect window = PlacementWindowUV(surface, buffers.Place.CellWindow[0],
+                                                           buffers.Place.CellWindow[1], buffers.Place.CellWindow[2],
+                                                           kGrassCellSize);
+        inputs.PageWindowSerial = pages->ChangeSerialOver(surface.Terrain, window);
     }
-    else
-    {
-        buffers.AtlasBindlessScratch = {};
-        inputs.AtlasBindlessIndices = {};
-    }
+    inputs.SurfacePlanes = surface.SurfacePlanes;
 
     // The indirect fields the CPU seeds INSIDE the placement pass; an elided frame does not re-seed
     // them, so a blade-mesh rebuild or a capacity change has to be visible here. Gathered word by
@@ -1375,7 +1482,7 @@ void TerrainGrassRenderFeature::DispatchPlacementBody(
     uint32 frameIndex)
 {
     // GE_TERRAIN_GRASS_DEBUG: trace where the placement dispatch stops. Each logs once.
-    static const bool kDbg = Platform::EnvironmentSwitchEnabled("GE_TERRAIN_GRASS_DEBUG", false);
+    static const bool kDbg = std::getenv("GE_TERRAIN_GRASS_DEBUG") != nullptr;
     auto once = [](bool& flag) { if (flag) return false; flag = true; return true; };
 
     // Every return below leaves this view's grass wrong for the frame, and each one's stop= trace
@@ -1502,8 +1609,11 @@ void TerrainGrassRenderFeature::DispatchPlacementBody(
         return;
     }
 
-    // Atlas resolve inputs (rebuilt once per frame from the single atlas terrain, if any).
-    const AtlasBinding atlas = EnsureAtlasBinding(terrainFeature, frameIndex);
+    // The paged terrain's tables and caches (the wide arm; the narrow arm publishes none).
+    SurfacePageSource surface{};
+    SurfaceBinding surfaceTextures{};
+    if (const auto* pages = rs.GetFeature<TerrainECS::TerrainPageFeature>(); pages != nullptr && !compat)
+        ReadSurfacePageSource(*pages, terrainFeature, surface, &surfaceTextures);
 
     device->UpdateStorageBufferBinding(ds, 0, paramsSSBO, 0,
         static_cast<size_t>(terrainParamsCount) * sizeof(Terrain::TerrainGPUParams));
@@ -1512,41 +1622,45 @@ void TerrainGrassRenderFeature::DispatchPlacementBody(
         static_cast<size_t>(buffers->Capacity) * sizeof(GrassBladeInstanceGPU));
     device->UpdateStorageBufferBinding(ds, 3, buffers->IndirectArgs, 0,
         sizeof(GrassIndirectBlockGPU));
-    if (atlas.ParamsUBO.IsValid())
-        device->UpdateBufferBinding(ds, 4, atlas.ParamsUBO, 0, sizeof(GrassAtlasParamsGPU));
-    if (atlas.Rows.IsValid())
-        device->UpdateStorageBufferBinding(ds, 5, atlas.Rows, 0, atlas.RowsRangeBytes);
     device->UpdateBufferBinding(ds, 6, buffers->PlaceParamsUBO, 0, sizeof(GrassPlaceParamsGPU));
+    if (!compat)
+    {
+        // Every sampler is written every dispatch (the set is not partially bindable): white where no
+        // terrain is paged or the terrain lacks the plane, which the shader then does not read.
+        const SurfaceBinding bound =
+            EnsureSurfaceBinding(rs.GetFeature<TerrainECS::TerrainPageFeature>(), surface, surfaceTextures, frameIndex);
+        device->UpdateBufferBinding(ds, kGrassSurfaceParamsBinding, bound.ParamsUBO, 0, sizeof(GrassSurfaceParamsGPU));
+        device->UpdateStorageBufferBinding(ds, kGrassPageTableBinding, bound.Table, bound.TableOffset,
+                                           bound.TableBytes);
+        const Rendering::TextureHandle white = rs.Textures().GetDefaultWhiteTexture();
+        const Rendering::SamplerHandle clamp = rs.Textures().GetSampler(Rendering::SamplerPreset::LinearClamp);
+        device->UpdateCombinedImageSamplerBinding(ds, kGrassPageCacheBinding,
+                                                  bound.HeightCache.IsValid() ? bound.HeightCache : white, clamp);
+        for (uint32 plane = 0; plane < bound.Planes.size(); ++plane)
+            device->UpdateCombinedImageSamplerBinding(ds, kGrassSurfacePlaneBinding0 + plane,
+                                                      bound.Planes[plane].IsValid() ? bound.Planes[plane] : white,
+                                                      clamp);
+        // From the params' own slot: a params entry names its materials by absolute table index. The
+        // table is created with room for every layer role and zero-filled, so an empty one still
+        // binds a record.
+        const uint32 materialCount = std::max(1u, terrainFeature.GetTerrainMaterialCount(paramsSlot));
+        device->UpdateStorageBufferBinding(ds, kGrassMaterialTableBinding,
+                                           terrainFeature.GetTerrainMaterialTableSSBO(paramsSlot), 0,
+                                           static_cast<size_t>(materialCount) * sizeof(Terrain::TerrainMaterialRecord));
+    }
 
     if (compat)
     {
-    // Named map bindings (the compat profile has no binding arrays). The set is not
-    // partially-bindable, so every one of the twelve is written every dispatch — white where a
-    // map is absent, which is what the shader's own "index == 0" guards already treat as unbound.
-    //
-    const Rendering::TextureHandle white = rs.Textures().GetDefaultWhiteTexture();
-    const auto bindMap = [&](uint32 index, Rendering::TextureHandle tex) {
-        device->UpdateImageBinding(ds, kGrassCompatMapBinding0 + index, tex.IsValid() ? tex : white);
-    };
-    bindMap(0, atlas.HeightTexture);
-    bindMap(1, atlas.HeightCoarseTexture);
-    bindMap(2, atlas.NormalTexture);
-    bindMap(3, atlas.NormalCoarseTexture);
-    bindMap(4, atlas.SplatTexture);
-    bindMap(5, atlas.SplatCoarseTexture);
-    // Unified (non-atlas) maps: route the first non-atlas terrain's source textures to the named
-    // slots the compat taps read. Existence rides the params kTerrainFlagHas* bits, so an invalid
-    // handle here degrades to the white default AND the shader never taps it.
-    Rendering::TextureHandle uniHeight{}, uniNormal{}, uniSplat{}, uniControl{};
-    terrainFeature.TryGetUnifiedGrassMaps(uniHeight, uniNormal, uniSplat, &uniControl);
-    bindMap(6, uniHeight);
-    bindMap(7, uniNormal);
-    bindMap(8, uniSplat);
-    bindMap(9, atlas.GrassTexture);
-    bindMap(10, atlas.GrassCoarseTexture);
-    bindMap(11, uniControl);
-    device->UpdateSamplerBinding(ds, kGrassCompatMapSamplerBinding,
-                                 rs.Textures().GetSampler(Rendering::SamplerPreset::LinearClamp));
+        // Named map bindings (the compat profile has no binding arrays). The set is not
+        // partially-bindable, so every map is written every dispatch: white where a map is absent,
+        // which the shader's existence bits (kTerrainFlagHas*) already treat as unbound.
+        const Rendering::TextureHandle white = rs.Textures().GetDefaultWhiteTexture();
+        Rendering::TextureHandle maps[kGrassCompatMaps.size()] = {};
+        terrainFeature.TryGetUnifiedGrassMaps(maps[0], maps[1], maps[2], &maps[3]);
+        for (uint32 i = 0; i < kGrassCompatMaps.size(); ++i)
+            device->UpdateImageBinding(ds, kGrassCompatMaps[i].Binding, maps[i].IsValid() ? maps[i] : white);
+        device->UpdateSamplerBinding(ds, kGrassCompatMapSamplerBinding,
+                                     rs.Textures().GetSampler(Rendering::SamplerPreset::LinearClamp));
     }
 
     // Compat carries its maps in set 0 (named bindings), so there is no bindless set to bind.
@@ -1603,197 +1717,78 @@ void TerrainGrassRenderFeature::DispatchPlacementBody(
     cmd->Barrier(MakeGrassPlaceReadyBarrier());
 }
 
-TerrainGrassRenderFeature::GrassAtlasParamsGPU
-TerrainGrassRenderFeature::BuildAtlasParams(const TerrainECS::AtlasGrassSource& src, uint32 rowCapacity)
+bool TerrainGrassRenderFeature::ReadSurfacePageSource(const TerrainECS::TerrainPageFeature& pages,
+                                                      const TerrainECS::TerrainRenderFeature& terrainFeature,
+                                                      SurfacePageSource& source, SurfaceBinding* textures)
 {
-    GrassAtlasParamsGPU p{};
-    if (!src.Valid)
-        return p; // Enabled = 0 -> the compute skips the atlas path entirely
-    p.Enabled = 1u;
-    p.AtlasDim = src.AtlasDim;
-    p.SlotStride = src.AtlasSlotStride;
-    p.SlotsPerRow = src.AtlasSlotsPerRow;
-    p.TileRes = src.AtlasTileRes;
-    p.TilesPerAxisX = src.AtlasTilesPerAxisX;
-    p.TilesPerAxisZ = src.AtlasTilesPerAxisZ;
-    p.CoarseDim = src.AtlasCoarseDim;
-    p.HeightBindless = src.HeightBindless;
-    p.HeightCoarseBindless = src.HeightCoarseBindless;
-    p.NormalBindless = src.NormalBindless;
-    p.NormalCoarseBindless = src.NormalCoarseBindless;
-    p.SplatBindless = src.SplatBindless;
-    p.SplatCoarseBindless = src.SplatCoarseBindless;
-    p.GrassEnabled = src.GrassRegionsActive ? 1u : 0u;
-    p.GrassBindless = src.GrassBindless;
-    p.GrassCoarseBindless = src.GrassCoarseBindless;
-    // The shader guards its row read with tileIndex < RowCount, so clamp to what the ring slot holds.
-    p.RowCount = rowCapacity == 0 ? 0u : std::min(src.RowCount, rowCapacity);
-    return p;
+    source = {};
+    const std::optional<TerrainECS::TerrainInstanceInfo> drawn = terrainFeature.GetDrawnTerrain();
+    uint64 heightVersion = 0;
+    if (!drawn || !pages.CacheTexture().IsValid() ||
+        !pages.LatchedTable(drawn->Handle.Index, source.HeightWords, heightVersion))
+        return false;
+    source.Terrain = drawn->Handle.Index;
+    source.Generation = drawn->Handle.Generation;
+    source.DeviceEpoch = pages.DeviceEpoch();
+    source.WorldOriginX = drawn->WorldOriginX;
+    source.WorldOriginZ = drawn->WorldOriginZ;
+    source.WorldSizeX = drawn->SizeX;
+    source.WorldSizeZ = drawn->SizeZ;
+    if (textures != nullptr)
+        textures->HeightCache = pages.CacheTexture();
+    // The planes the terrain fragment reads: none unless the splat and the normal are both there
+    // (CBTRenderFeature::PagedSurfacePlanes).
+    constexpr std::array<uint32, 4> kPlaneBits = {
+        CBTTerrain::kCBTSurfacePlaneSplat, CBTTerrain::kCBTSurfacePlaneNormal, CBTTerrain::kCBTSurfacePlaneGrass,
+        CBTTerrain::kCBTSurfacePlaneColor};
+    constexpr uint32 kRequired = CBTTerrain::kCBTSurfacePlaneSplat | CBTTerrain::kCBTSurfacePlaneNormal;
+    static_assert(kPlaneBits.size() == TerrainECS::kSurfacePlanes.size());
+    std::span<const uint32> surfaceWords;
+    uint64 surfaceVersion = 0;
+    if (!pages.LatchedSurfaceTable(drawn->Handle.Index, surfaceWords, surfaceVersion))
+        return true;
+    uint32 planes = 0;
+    std::array<Rendering::TextureHandle, 4> planeTextures{};
+    for (std::size_t plane = 0; plane < kPlaneBits.size(); ++plane)
+    {
+        planeTextures[plane] = pages.SurfacePlaneTexture(drawn->Handle.Index, TerrainECS::kSurfacePlanes[plane]);
+        if (planeTextures[plane].IsValid())
+            planes |= kPlaneBits[plane];
+    }
+    if ((planes & kRequired) != kRequired)
+        return true;
+    source.SurfaceWords = surfaceWords;
+    source.SurfacePlanes = planes;
+    if (textures != nullptr)
+        textures->Planes = planeTextures;
+    return true;
 }
 
-bool TerrainGrassRenderFeature::AtlasSlotsNeedReset(bool hasAtlas, uint64 currentIdentity,
-                                                    uint64 lastIdentity)
+TerrainGrassRenderFeature::SurfaceBinding
+TerrainGrassRenderFeature::EnsureSurfaceBinding(TerrainECS::TerrainPageFeature* pages, const SurfacePageSource& source,
+                                                const SurfaceBinding& textures, uint32 frameIndex)
 {
-    return !hasAtlas || currentIdentity != lastIdentity;
-}
+    SurfaceBinding out{};
+    out.ParamsUBO = m_SurfaceParamsUBO[frameIndex];
+    out.Table = m_DefaultPageTable;
+    out.TableBytes = sizeof(uint32);
 
-TerrainGrassRenderFeature::AtlasBinding
-TerrainGrassRenderFeature::EnsureAtlasBinding(TerrainECS::TerrainRenderFeature& terrainFeature,
-                                              uint32 frameIndex)
-{
-    const uint32 slot = frameIndex;
-    AtlasBinding out{};
-    out.ParamsUBO = m_AtlasParamsUBO[slot];
-    out.Rows = m_DefaultAtlasRows;
-    out.RowsRangeBytes = kGrassAtlasRowBytes;
-
-    TerrainECS::AtlasGrassSource src{};
-    bool hasAtlas = terrainFeature.TryGetAtlasGrassSource(src) && src.RowCount > 0;
-
-    // D1: invalidate the whole per-slot version cache when the atlas terrain's identity changes (a
-    // destroy+recreate whose new table version could numerically collide with a retained slot
-    // version) or when the atlas goes away — otherwise a stale slot would never re-upload and grass
-    // would resolve through the dead terrain's rows (the #505/#506 stale-cache class at grass level).
-    if (AtlasSlotsNeedReset(hasAtlas, src.Identity, m_AtlasIdentity))
+    const GrassSurfaceParamsGPU params = BuildSurfaceParams(source);
+    TerrainECS::TerrainPageTableRing::Slot ring{};
+    if (pages != nullptr && params.PagedTerrainRow != kGrassNoPagedTerrain)
+        ring = pages->BindTableRing(source.Terrain, source.Generation);
+    const bool paged = ring.Buffer.IsValid();
+    if (paged)
     {
-        for (auto& v : m_AtlasRowsSlotVersion)
-            v = UINT64_MAX;
-        m_AtlasIdentity = hasAtlas ? src.Identity : 0;
+        out.Table = ring.Buffer;
+        out.TableOffset = ring.Offset;
+        out.TableBytes = ring.Bytes;
+        out.HeightCache = textures.HeightCache;
+        out.Planes = textures.Planes;
     }
-
-    // Grow the per-slot rows buffers so each holds this terrain's rows. A grow defer-destroys the
-    // old (still-in-flight) buffers and forces a re-upload into every slot on its next turn.
-    if (hasAtlas && src.RowCount > m_AtlasRowsCapacity)
-    {
-        m_AtlasRowsCapacity = src.RowCount;
-        for (uint32 i = 0; i < kMaxFrames; ++i)
-        {
-            DeferBufferDestroy(m_AtlasRows[i]);
-            m_AtlasRows[i] = {};
-            m_AtlasRowsSlotVersion[i] = UINT64_MAX;
-
-            Rendering::BufferDesc desc{};
-            desc.size = static_cast<size_t>(m_AtlasRowsCapacity) * kGrassAtlasRowBytes;
-            desc.usage = static_cast<uint32>(Rendering::BufferUsage::Storage);
-            desc.memoryUsage = Rendering::BufferMemoryUsage::Upload;
-            desc.persistent = true;
-            desc.flags = Rendering::BufferCreateFlags::FrameSlotted;
-            desc.debugName = "TerrainGrass_AtlasRows";
-            m_AtlasRows[i] = m_Device->CreateBuffer(desc);
-            if (m_AtlasRows[i].IsValid())
-            {
-                if (void* mapped = m_Device->MapBuffer(m_AtlasRows[i]))
-                {
-                    std::memset(mapped, 0xFF, desc.size); // every row -> kAtlasNoSlot until uploaded
-                    m_Device->UnmapBuffer(m_AtlasRows[i]);
-                }
-            }
-        }
-    }
-
-    // D3: the atlas path is only viable when THIS frame's rows buffer actually exists — on a buffer
-    // creation failure, disable it so the shader can't read a resident slot 0 out of a phantom rows
-    // buffer (silent garbage placement, inverting the never-garbage invariant). Disabled params (all
-    // zero) keep the compute off the atlas path; the default 1-row NO_SLOT buffer stays bound.
-    hasAtlas = hasAtlas && m_AtlasRows[slot].IsValid() && m_AtlasRowsCapacity > 0;
-    const GrassAtlasParamsGPU params =
-        hasAtlas ? BuildAtlasParams(src, m_AtlasRowsCapacity) : GrassAtlasParamsGPU{};
-
-    // Carried for the no-binding-array profile, which binds these by name. Gated on hasAtlas for
-    // the same reason params is: a disabled atlas must not leave live maps bound.
-    if (hasAtlas)
-    {
-        out.HeightTexture = src.HeightTexture;
-        out.HeightCoarseTexture = src.HeightCoarseTexture;
-        out.NormalTexture = src.NormalTexture;
-        out.NormalCoarseTexture = src.NormalCoarseTexture;
-        out.SplatTexture = src.SplatTexture;
-        out.SplatCoarseTexture = src.SplatCoarseTexture;
-        out.GrassTexture = src.GrassTexture;
-        out.GrassCoarseTexture = src.GrassCoarseTexture;
-    }
-
-    // Binding 4 must always be a valid descriptor. Prefer this frame's slot UBO; if it failed to
-    // create, fall back to any valid slot UBO so the binding is never left unwritten (validation).
-    if (!out.ParamsUBO.IsValid())
-        for (auto& ubo : m_AtlasParamsUBO)
-            if (ubo.IsValid())
-            {
-                out.ParamsUBO = ubo;
-                break;
-            }
+    const GrassSurfaceParamsGPU written = paged ? params : GrassSurfaceParamsGPU{};
     if (out.ParamsUBO.IsValid())
-        m_Device->UpdateBuffer(out.ParamsUBO, 0, sizeof(params), &params);
-
-    if (hasAtlas && params.RowCount > 0)
-    {
-        out.Rows = m_AtlasRows[slot];
-        out.RowsRangeBytes = static_cast<uint64>(params.RowCount) * kGrassAtlasRowBytes;
-
-        // Version gate: a parked camera keeps the same table version, so this slot already holds the
-        // current rows -> no re-map/upload. Separate per-slot buffers make the write GPU-safe.
-        if (m_AtlasRowsSlotVersion[slot] != src.TableVersion)
-        {
-            if (void* mapped = m_Device->MapBuffer(m_AtlasRows[slot]))
-            {
-                const size_t copyBytes = std::min<size_t>(
-                    src.RowBytes.size(),
-                    static_cast<size_t>(params.RowCount) * kGrassAtlasRowBytes);
-                std::memcpy(mapped, src.RowBytes.data(), copyBytes);
-                m_Device->UnmapBuffer(m_AtlasRows[slot]);
-                m_AtlasRowsSlotVersion[slot] = src.TableVersion;
-            }
-        }
-    }
-
-    // GE_TERRAIN_GRASS_DEBUG: one line of the GRASS FEATURE'S view of the atlas source — the values
-    // the compute actually receives (vs the extraction's, which the same flag logs). If atlasActive
-    // is 0, grassAtlasBacked() is false in the shader and the atlas terrain falls to the unified path
-    // (HeightmapBindless == 0) -> roots at the base plane -> buried; residentRows shows whether the
-    // resolve is resident (full precision) or falls to the coarse field.
-    static const bool kGrassDebug = Platform::EnvironmentSwitchEnabled("GE_TERRAIN_GRASS_DEBUG", false);
-    if (kGrassDebug)
-    {
-        uint32 residentRows = 0;
-        const size_t rows = src.RowBytes.size() / kGrassAtlasRowBytes;
-        for (size_t i = 0; i < rows; ++i)
-        {
-            uint32 rowSlot = 0;
-            std::memcpy(&rowSlot, src.RowBytes.data() + i * kGrassAtlasRowBytes, sizeof(rowSlot));
-            residentRows += (rowSlot != 0xFFFFFFFFu);
-        }
-        static uint32 s_LastEnabled = 0xFFFFFFFFu, s_LastResident = 0xFFFFFFFFu;
-        const uint32 enabled = params.Enabled;
-        if (enabled != s_LastEnabled || residentRows != s_LastResident)
-        {
-            s_LastEnabled = enabled;
-            s_LastResident = residentRows;
-            Logger::Log::Info("TerrainGrass.AtlasBinding atlasActive={} srcValid={} rowCount={} "
-                              "residentRows={} rowsBufValid={} heightBindless={} splatBindless={} "
-                              "coarseDim={}",
-                              enabled, src.Valid ? 1u : 0u, src.RowCount, residentRows,
-                              m_AtlasRows[slot].IsValid() ? 1u : 0u, src.HeightBindless,
-                              src.SplatBindless, src.AtlasCoarseDim);
-        }
-    }
-    m_AtlasBindingBySlot[slot] = out;
-    return out;
-}
-
-TerrainGrassRenderFeature::AtlasBinding
-TerrainGrassRenderFeature::GetAtlasBindingForDraw(uint32 frameIndex) const
-{
-    const uint32 slot = frameIndex;
-    AtlasBinding out = m_AtlasBindingBySlot[slot];
-    // Never-ensured slot (a draw in a frame whose placement did not run): the zeroed params UBO and
-    // the NO_SLOT default row keep both descriptors valid and the surface on the unified path.
-    if (!out.ParamsUBO.IsValid())
-        out.ParamsUBO = m_AtlasParamsUBO[slot];
-    if (!out.Rows.IsValid())
-    {
-        out.Rows = m_DefaultAtlasRows;
-        out.RowsRangeBytes = kGrassAtlasRowBytes;
-    }
+        m_Device->UpdateBuffer(out.ParamsUBO, 0, sizeof(written), &written);
     return out;
 }
 
@@ -1830,8 +1825,6 @@ void TerrainGrassRenderFeature::CreateBladeMesh(uint32 bladeSegments)
     // readable on that reduced geometry; the vertex modifier animates it from the same wind field
     // as LOD 0, so the far field gusts with the near one.
     constexpr uint32 kLod1Segments = 2u;
-    // Row parameter t = u^(2/3) for u evenly spaced over [0,1] — see the row loop below.
-    constexpr float kBladeRowDistributionExponent = 2.0f / 3.0f;
     const uint32 lodSegments[kGrassLodCount] = {
         bladeSegments,
         std::min(bladeSegments, kLod1Segments),
@@ -1847,17 +1840,10 @@ void TerrainGrassRenderFeature::CreateBladeMesh(uint32 bladeSegments)
         mesh.FirstIndex = static_cast<uint32>(indices.size());
         mesh.IndexCount = segments * 6u;
 
-        // Rows are spaced to equalise how far the straight segment between them strays from the
-        // spine the vertex stage actually evaluates. That spine puts row t at radius t*height and
-        // angle bend*t^2 (terrain_grass_vertex_modifier.glsl), which is the cubic y = bend*x^3 to
-        // leading order, so its second derivative grows LINEARLY in t. Chord error goes like
-        // t * dt^2, and holding that constant gives t = u^(2/3). Evenly spaced rows spend their
-        // budget where the blade is straight and kink at the tip; equal-lean-angle rows (t = u^0.5)
-        // overcorrect and move a bigger kink to the root. Mesh-build only — no runtime cost.
+        // Rows crowd toward the tip, where the droop bends the leaf (GrassBladeRowHeight).
         for (uint32 row = 0; row <= segments; ++row)
         {
-            const float u = static_cast<float>(row) / static_cast<float>(segments);
-            const float t = std::pow(u, kBladeRowDistributionExponent);
+            const float t = GrassBladeRowHeight(row, segments);
             vertices.push_back(BladeVertex{-1.0f, t});
             vertices.push_back(BladeVertex{ 1.0f, t});
         }
@@ -1951,22 +1937,15 @@ void TerrainGrassRenderFeature::DestroyGpuResources()
     m_BladeIB = {};
     m_BladeLods = {};
 
-    for (auto& ubo : m_AtlasParamsUBO)
+    for (auto& ubo : m_SurfaceParamsUBO)
     {
         if (ubo.IsValid())
             m_Device->DestroyBuffer(ubo);
         ubo = {};
     }
-    for (auto& rows : m_AtlasRows)
-    {
-        if (rows.IsValid())
-            m_Device->DestroyBuffer(rows);
-        rows = {};
-    }
-    m_AtlasRowsCapacity = 0;
-    if (m_DefaultAtlasRows.IsValid())
-        m_Device->DestroyBuffer(m_DefaultAtlasRows);
-    m_DefaultAtlasRows = {};
+    if (m_DefaultPageTable.IsValid())
+        m_Device->DestroyBuffer(m_DefaultPageTable);
+    m_DefaultPageTable = {};
 
     m_PlacementStats.Destroy(m_Device);
 }
@@ -1986,7 +1965,7 @@ void TerrainGrassRenderFeature::OnFrameStreamRetiredRG(Rendering::RenderGraph::R
 // rebuild frees them and the cached pointers dangle, so reading one afterwards is
 // a use-after-free that generational handles do not catch.
 //
-// This is NOT a device-recovery fix for grass. The blade VB/IB, the atlas-params
+// This is NOT a device-recovery fix for grass. The blade VB/IB, the surface-params
 // and placement-params UBOs and the per-view placement buffers are still dead after a
 // rebuild and have no re-create path here — the gap RenderServices records at its
 // feature fan-out remains open for this feature. Whoever closes it for the placement

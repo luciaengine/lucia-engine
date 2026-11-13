@@ -28,7 +28,7 @@ constexpr float kCellHPx = 50.0f;
 constexpr float kGridPadBottomPx = 6.0f;
 constexpr float kPadBottomPx = 8.0f;
 constexpr int kColumns = 4;
-constexpr const char kEditorPlusIconPath[] = "Icons/plus.png";
+constexpr const char kEditorPlusIconPath[] = "Icons/plus.svg";
 constexpr const char kEditorAssetMountAlias[] = "editor";
 // The curve area inside a cell leaves a strip at the bottom for the name label.
 constexpr float kCellLabelStripPx = 13.0f;
@@ -142,7 +142,7 @@ void CurvePresetPicker::UpdateHeight()
 {
     const int rows = (TotalCount() + kColumns - 1) / kColumns;
     const float h = kGridPadTopPx + static_cast<float>(rows) * kCellHPx + kGridPadBottomPx + kPadBottomPx;
-    Overrides().Set(Style::Height, StyleLength::Px(h)).Set(Style::MinHeight, StyleLength::Px(h));
+    Style().Set(Style::Height, StyleLength::Px(h)).Set(Style::MinHeight, StyleLength::Px(h));
     // Mark layout + visual dirty; the manager's deferred relayout reflows the rows below us on the
     // next frame. (No parent poke / RequestRelayout needed -- the height change marking us
     // LayoutDirty is enough now that the update loop carries the frame's dirty hint into the
@@ -306,7 +306,7 @@ RenameLayoutModal* CurvePresetPicker::EnsureRenameModal()
     if (!root)
         return nullptr;
 
-    if (UIElement* existing = root->FindById("curve-preset-rename-modal"))
+    if (UIElement* existing = root->FindById("curve-preset-rename-modal"_sid))
     {
         m_RenameModal = dynamic_cast<RenameLayoutModal*>(existing);
         if (m_RenameModal)
@@ -414,7 +414,7 @@ void CurvePresetPicker::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx, cons
             {
                 uint32_t plusImgW = 0;
                 uint32_t plusImgH = 0;
-                const uint32_t plusTexSlot = owner->TryRegisterResolvedBackgroundTexture(
+                const uint32_t plusTexSlot = owner->BackgroundImages().TryRegister(
                     kEditorPlusIconPath, kEditorAssetMountAlias, *ctx.Textures, &plusImgW, &plusImgH);
                 if (plusTexSlot != 0 && plusImgW > 0 && plusImgH > 0)
                 {

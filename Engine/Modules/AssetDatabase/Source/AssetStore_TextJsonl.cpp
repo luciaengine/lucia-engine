@@ -1,17 +1,17 @@
 #include "AssetDatabase/AssetStore_TextJsonl.h"
 
-#include "ChunkedParallel.h"
 #include "AssetCore/SharedFileRead.h"
 
 #include "AssetCore/PathNormalization.h"
 #include "FileSystem/FileSystem.h"
 #include "FileSystem/ScopedFileLock.h"
+#include "JobSystem/ParallelAlgorithms.h"
 #include "Logger/Logger.h"
-#include "Platform/Capabilities.h"
 
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <optional>
@@ -101,62 +101,214 @@ static ordered_json MakeFormatHeaderJson()
     return j;
 }
 
-// Returns the format version declared by the json (2+) or 0 if not a header.
-static int TryParseFormatHeader(const ordered_json& j)
+// One top-level key of a store line: the type and value of its last
+// occurrence, as in a DOM parse. An absent key has the kind discarded.
+struct LineField
 {
-    auto fmtIt = j.find("format");
-    auto verIt = j.find("version");
-    if (fmtIt == j.end() || !fmtIt->is_string())
+    ordered_json::value_t kind = ordered_json::value_t::discarded;
+    std::string text;         // string
+    std::int64_t integer = 0; // number_integer and number_unsigned
+    bool boolean = false;     // boolean
+
+    bool Present() const { return kind != ordered_json::value_t::discarded; }
+    bool IsInteger() const
+    {
+        return kind == ordered_json::value_t::number_integer || kind == ordered_json::value_t::number_unsigned;
+    }
+};
+
+// The keys a store line can carry. kvEntries holds the string members of
+// the "kv" object; a member whose last value is not a string is absent.
+// It has the type of AssetRecord::kv, so it moves into the record.
+struct LineFields
+{
+    LineField format, version, redirectFrom, redirectTo, guid, deleted, path, type, missing, kv;
+    decltype(AssetRecord::kv) kvEntries;
+};
+
+// SAX handler that reads one store line into LineFields, without a DOM.
+// The nlohmann SAX interface sets the method names. It skips unknown keys
+// and nested content, and keeps the error text of a syntax error.
+class LineReader
+{
+  public:
+    LineFields fields;
+    std::string parseError;
+
+    bool null() { return Value(ordered_json::value_t::null); }
+    bool boolean(bool value)
+    {
+        if (m_Field != nullptr && m_Depth == 1)
+            m_Field->boolean = value;
+        return Value(ordered_json::value_t::boolean);
+    }
+    bool number_integer(ordered_json::number_integer_t value)
+    {
+        if (m_Field != nullptr && m_Depth == 1)
+            m_Field->integer = value;
+        return Value(ordered_json::value_t::number_integer);
+    }
+    bool number_unsigned(ordered_json::number_unsigned_t value)
+    {
+        if (m_Field != nullptr && m_Depth == 1)
+            m_Field->integer = static_cast<std::int64_t>(value);
+        return Value(ordered_json::value_t::number_unsigned);
+    }
+    bool number_float(ordered_json::number_float_t, const ordered_json::string_t&)
+    {
+        return Value(ordered_json::value_t::number_float);
+    }
+    bool string(ordered_json::string_t& value)
+    {
+        if (m_Field != nullptr && m_Depth == 1)
+            m_Field->text = value;
+        else if (m_InKv && m_Depth == 2 && !m_KvKey.empty())
+            fields.kvEntries[m_KvKey] = value;
+        return Value(ordered_json::value_t::string);
+    }
+    bool binary(ordered_json::binary_t&) { return Value(ordered_json::value_t::binary); }
+    bool start_object(std::size_t)
+    {
+        Value(ordered_json::value_t::object);
+        ++m_Depth;
+        return true;
+    }
+    bool start_array(std::size_t)
+    {
+        Value(ordered_json::value_t::array);
+        ++m_Depth;
+        return true;
+    }
+    bool end_object() { return EndContainer(); }
+    bool end_array() { return EndContainer(); }
+    bool key(ordered_json::string_t& name)
+    {
+        if (m_Depth == 1 && m_RootIsObject)
+            m_Field = FieldFor(name);
+        else if (m_InKv && m_Depth == 2)
+            m_KvKey = name;
+        return true;
+    }
+    bool parse_error(std::size_t, const std::string&, const ordered_json::exception& error)
+    {
+        parseError = error.what();
+        return false;
+    }
+
+  private:
+    LineField* FieldFor(const std::string& name)
+    {
+        static constexpr std::pair<std::string_view, LineField LineFields::*> kKeys[] = {
+            {"format", &LineFields::format}, {"version", &LineFields::version},
+            {"redirect_from", &LineFields::redirectFrom}, {"redirect_to", &LineFields::redirectTo},
+            {"guid", &LineFields::guid}, {"deleted", &LineFields::deleted}, {"path", &LineFields::path},
+            {"type", &LineFields::type}, {"missing", &LineFields::missing}, {"kv", &LineFields::kv},
+        };
+        for (const auto& [keyName, member] : kKeys)
+        {
+            if (name == keyName)
+                return &(fields.*member);
+        }
+        return nullptr;
+    }
+
+    // Records the type of a value. The event of a string or a number stores
+    // its payload first. The last occurrence of a key sets its field, and a
+    // kv member whose last value is not a string is erased.
+    bool Value(ordered_json::value_t kind)
+    {
+        if (m_Depth == 0)
+        {
+            m_RootIsObject = kind == ordered_json::value_t::object;
+        }
+        else if (m_Depth == 1 && m_Field != nullptr)
+        {
+            m_Field->kind = kind;
+            if (kind != ordered_json::value_t::string)
+                m_Field->text.clear();
+            if (m_Field == &fields.kv)
+            {
+                fields.kvEntries.clear();
+                m_InKv = kind == ordered_json::value_t::object;
+            }
+        }
+        else if (m_InKv && m_Depth == 2 && kind != ordered_json::value_t::string)
+        {
+            fields.kvEntries.erase(m_KvKey);
+        }
+        return true;
+    }
+
+    bool EndContainer()
+    {
+        --m_Depth;
+        if (m_Depth == 1)
+            m_InKv = false;
+        return true;
+    }
+
+    LineField* m_Field = nullptr; // the field of the current top-level key
+    std::string m_KvKey;          // the current key inside "kv"
+    int m_Depth = 0;              // containers open
+    bool m_RootIsObject = false;
+    bool m_InKv = false;          // the container open at depth 2 is "kv"
+};
+
+// The field's string. A field of another type throws the type_error that
+// get<std::string>() throws on a DOM value, so the error text is the same.
+static std::string& RequireString(LineField& field)
+{
+    if (field.kind != ordered_json::value_t::string)
+        (void)ordered_json(field.kind).get<std::string>();
+    return field.text;
+}
+
+// Returns the format version declared by the line (2+) or 0 if not a header.
+static int TryParseFormatHeader(const LineFields& fields)
+{
+    if (fields.format.kind != ordered_json::value_t::string)
         return 0;
-    const std::string& fmt = fmtIt->get_ref<const std::string&>();
     // Accept both the project-DB ("assetdb") and Package-mount manifest
     // ("assetmanifest") format strings — they share the same line-format
     // shape (header + asset/redirect records). Phase 6 generators write
     // "assetmanifest"; the project-mount writer in this same TU still
     // emits "assetdb".
-    if (fmt != "assetdb" && fmt != "assetmanifest")
+    if (fields.format.text != "assetdb" && fields.format.text != "assetmanifest")
         return 0;
-    if (verIt == j.end() || !verIt->is_number_integer())
+    if (!fields.version.IsInteger())
         return 0;
-    return verIt->get<int>();
+    return static_cast<int>(fields.version.integer);
 }
 
-static bool ParseBool(const ordered_json& j, const char* key, bool& out)
+static bool ParseBool(const LineField& field, bool& out)
 {
-    auto it = j.find(key);
-    if (it == j.end())
-        return false;
-    if (it->is_boolean())
+    if (field.kind == ordered_json::value_t::boolean)
     {
-        out = it->get<bool>();
+        out = field.boolean;
         return true;
     }
-    if (it->is_number_integer())
+    if (field.IsInteger())
     {
-        out = it->get<int>() != 0;
+        out = static_cast<int>(field.integer) != 0;
         return true;
     }
     return false;
 }
 
-static AssetType ParseAssetType(const ordered_json& j)
+static AssetType ParseAssetType(const LineField& field)
 {
-    auto it = j.find("type");
-    if (it == j.end())
-        return AssetType::Unknown;
-
-    if (it->is_string())
+    if (field.kind == ordered_json::value_t::string)
     {
         // The writer emits AssetTypeToString(); parse with its exact inverse so
         // every type the store can write reads back as itself. A programmable
         // type id that is not a built-in name stays Unknown here — r.typeId
         // preserves the string for the type registry to resolve.
-        return AssetTypeFromString(it->get<std::string>());
+        return AssetTypeFromString(field.text);
     }
 
-    if (it->is_number_integer())
+    if (field.IsInteger())
     {
-        return static_cast<AssetType>(it->get<int>());
+        return static_cast<AssetType>(static_cast<int>(field.integer));
     }
 
     return AssetType::Unknown;
@@ -211,10 +363,16 @@ static ParsedLine ParseJsonlLine(std::string_view rawLine, size_t lineNo)
 
     try
     {
-        ordered_json j = ordered_json::parse(trimmed.begin(), trimmed.end());
+        LineReader reader;
+        if (!ordered_json::sax_parse(trimmed.begin(), trimmed.end(), &reader))
+        {
+            out.parseError = std::move(reader.parseError);
+            return out;
+        }
+        LineFields& fields = reader.fields;
 
         // Format header (v2+).
-        if (int v = TryParseFormatHeader(j); v > 0)
+        if (int v = TryParseFormatHeader(fields); v > 0)
         {
             out.kind = ParsedLine::Kind::FormatHeader;
             out.formatVersion = v;
@@ -222,12 +380,12 @@ static ParsedLine ParseJsonlLine(std::string_view rawLine, size_t lineNo)
         }
 
         // Redirect record (upsert or delete via empty redirect_to).
-        if (j.contains("redirect_from") && j.contains("redirect_to"))
+        if (fields.redirectFrom.Present() && fields.redirectTo.Present())
         {
-            GUID from(j["redirect_from"].get<std::string>());
+            GUID from(RequireString(fields.redirectFrom));
             if (from.IsNull())
                 return out;
-            const std::string toStr = j["redirect_to"].get<std::string>();
+            const std::string& toStr = RequireString(fields.redirectTo);
             out.redirectFrom = from;
             if (toStr.empty())
             {
@@ -244,9 +402,9 @@ static ParsedLine ParseJsonlLine(std::string_view rawLine, size_t lineNo)
 
         // Asset delete record (v2): {"guid": ..., "deleted": true}
         bool deletedFlag = false;
-        if (j.contains("guid") && ParseBool(j, "deleted", deletedFlag) && deletedFlag)
+        if (fields.guid.Present() && ParseBool(fields.deleted, deletedFlag) && deletedFlag)
         {
-            GUID g(j["guid"].get<std::string>());
+            GUID g(RequireString(fields.guid));
             if (g.IsNull())
                 return out;
             out.asset.guid = g;
@@ -255,33 +413,23 @@ static ParsedLine ParseJsonlLine(std::string_view rawLine, size_t lineNo)
         }
 
         // Asset upsert (must have guid + path).
-        if (!j.contains("guid") || !j.contains("path"))
+        if (!fields.guid.Present() || !fields.path.Present())
             return out;
 
-        AssetRecord r{};
-        r.guid = GUID(j["guid"].get<std::string>());
+        AssetRecord& r = out.asset;
+        r.guid = GUID(RequireString(fields.guid));
         if (r.guid.IsNull())
             return out;
-        r.path = AssetStore_TextJsonl::NormalizeCanonicalPath(j["path"].get<std::string>());
-        auto itType = j.find("type");
-        if (itType != j.end() && itType->is_string())
-            r.typeId = itType->get<std::string>();
-        r.type = ParseAssetType(j);
+        r.path = AssetStore_TextJsonl::NormalizeCanonicalPath(std::move(RequireString(fields.path)));
+        r.type = ParseAssetType(fields.type);
+        if (fields.type.kind == ordered_json::value_t::string)
+            r.typeId = std::move(fields.type.text);
         if (r.typeId.empty())
             r.typeId = AssetTypeToString(r.type);
-        (void)ParseBool(j, "missing", r.missing);
+        (void)ParseBool(fields.missing, r.missing);
+        if (fields.kv.kind == ordered_json::value_t::object)
+            r.kv = std::move(fields.kvEntries);
 
-        auto itKv = j.find("kv");
-        if (itKv != j.end() && itKv->is_object())
-        {
-            for (auto it = itKv->begin(); it != itKv->end(); ++it)
-            {
-                if (!it.key().empty() && it.value().is_string())
-                    r.kv[it.key()] = it.value().get<std::string>();
-            }
-        }
-
-        out.asset = std::move(r);
         out.kind = ParsedLine::Kind::AssetUpsert;
         return out;
     }
@@ -296,7 +444,8 @@ static ParsedLine ParseJsonlLine(std::string_view rawLine, size_t lineNo)
 // holds the AssetStore_TextJsonl mutex. detectedVersion is updated when
 // a FormatHeader is seen and gates v1/v2 conflict semantics for
 // subsequent records. Both single- and parallel-load paths use this so
-// merge ordering is identical between them.
+// merge ordering is identical between them. It takes an admitted record
+// out of pl.
 //
 // Absolute-path upserts violate the canonical-relative contract and are
 // quarantined instead of admitted: they never reach the live maps, so
@@ -313,7 +462,7 @@ static ParsedLine ParseJsonlLine(std::string_view rawLine, size_t lineNo)
 // dropped, because content may still reference the evicted GUID and the mount
 // owes it a redirect.
 static void ApplyParsedLine(
-    const ParsedLine& pl,
+    ParsedLine& pl,
     std::unordered_map<GUID, AssetRecord>& assets,
     std::unordered_map<std::string, GUID>& pathToGuid,
     std::unordered_map<GUID, GUID>& redirects,
@@ -384,7 +533,7 @@ static void ApplyParsedLine(
 
     case ParsedLine::Kind::AssetUpsert:
     {
-        const AssetRecord& r = pl.asset;
+        AssetRecord& r = pl.asset;
         if (AssetPaths::IsAbsoluteStorePath(r.path))
         {
             // Contract violation: quarantine, and retire any live row this
@@ -409,7 +558,8 @@ static void ApplyParsedLine(
         // This GUID is being written, so it is not a displaced casualty —
         // whatever evicted it earlier in the journal has been superseded.
         displaced.erase(r.guid);
-        const std::string pathKey = AssetPaths::FoldStorePathKey(r.path);
+        std::string pathKey = AssetPaths::FoldStorePathKey(r.path);
+        const GUID guid = r.guid;
         if (detectedVersion >= 2)
         {
             // Last-write-wins. Drop the old path index entry if the key changed.
@@ -439,9 +589,9 @@ static void ApplyParsedLine(
                     }
                 }
             }
-            assets[r.guid] = r;
+            assets[guid] = std::move(r);
             if (!pathKey.empty())
-                pathToGuid[pathKey] = r.guid;
+                pathToGuid[std::move(pathKey)] = guid;
             return;
         }
 
@@ -482,9 +632,9 @@ static void ApplyParsedLine(
             }
         }
 
-        assets[r.guid] = r;
+        assets[guid] = std::move(r);
         if (!pathKey.empty())
-            pathToGuid[pathKey] = r.guid;
+            pathToGuid[std::move(pathKey)] = guid;
         return;
     }
     }
@@ -498,6 +648,10 @@ std::string AssetStore_TextJsonl::NormalizeCanonicalPath(std::string s)
     // avoid churning every call site (registry, reconciler, internal store
     // ops); new code should call AssetPaths::CanonicalizeStorePath directly.
     return AssetPaths::CanonicalizeStorePath(std::move(s));
+}
+
+AssetStore_TextJsonl::AssetStore_TextJsonl(JobSystem::WorkStealingThreadPool* parsePool) : m_ParsePool(parsePool)
+{
 }
 
 bool AssetStore_TextJsonl::LoadFromFile(const std::filesystem::path& filePath, std::string* outError)
@@ -555,13 +709,11 @@ bool AssetStore_TextJsonl::LoadFromFile(const std::filesystem::path& filePath, s
             lineSpans.emplace_back(lineBegin, buffer.size());
     }
 
-    // F.7: parallelize the JSON-parse stage for large files. ParseJsonlLine
-    // is pure — workers can run concurrently. The merge into m_Assets etc.
-    // stays sequential to preserve last-write-wins ordering. Threshold
-    // chosen so the per-thread overhead doesn't dominate small projects.
-    // The parallel arm runs on transient threads (LaunchChunkedParallel), which
-    // a platform without them cannot host: sequential there.
-    const size_t kParallelLineThreshold = Platform::SupportsTransientThreads() ? 4000 : SIZE_MAX;
+    // F.7: parallelize the JSON-parse stage for large files on the parse pool.
+    // ParseJsonlLine is pure, so lines parse concurrently. The merge into
+    // m_Assets etc. stays sequential to preserve last-write-wins ordering. The
+    // threshold keeps the fork's overhead off small projects.
+    constexpr size_t kParallelLineThreshold = 4000;
     int detectedVersion = 1;
 
     // GUID-keyed during replay so last-write-wins holds across the
@@ -579,14 +731,14 @@ bool AssetStore_TextJsonl::LoadFromFile(const std::filesystem::path& filePath, s
     // reach it — which is how the file grows without bound across sessions.
     size_t journalRecordLines = 0;
 
-    if (lineSpans.size() < kParallelLineThreshold)
+    if (!m_ParsePool || lineSpans.size() < kParallelLineThreshold)
     {
         // Single-threaded path: parse + apply each line in order.
         for (size_t idx = 0; idx < lineSpans.size(); ++idx)
         {
             const auto [b, e] = lineSpans[idx];
             const std::string_view raw(buffer.data() + b, e - b);
-            const ParsedLine pl = ParseJsonlLine(raw, idx + 1);
+            ParsedLine pl = ParseJsonlLine(raw, idx + 1);
             if (pl.kind != ParsedLine::Kind::Skipped && pl.kind != ParsedLine::Kind::FormatHeader)
                 ++journalRecordLines;
             ApplyParsedLine(pl, m_Assets, m_PathToGuid, m_Redirects,
@@ -595,36 +747,25 @@ bool AssetStore_TextJsonl::LoadFromFile(const std::filesystem::path& filePath, s
     }
     else
     {
-        // Parallel path: split lines into N chunks, parse concurrently,
-        // then merge sequentially in chunk-then-line order.
-        auto futures = LaunchChunkedParallel(lineSpans.size(),
-            [&buffer, &lineSpans](size_t chunkBegin, size_t chunkEnd) {
-                std::vector<ParsedLine> out;
-                out.reserve(chunkEnd - chunkBegin);
-                for (size_t idx = chunkBegin; idx < chunkEnd; ++idx)
+        // Parallel path: parse every line into its own slot, then apply the
+        // slots in line order on this thread.
+        std::vector<ParsedLine> parsed(lineSpans.size());
+        JobSystem::ParallelFor(m_ParsePool, lineSpans.size(),
+            [&buffer, &lineSpans, &parsed](size_t begin, size_t end) {
+                for (size_t idx = begin; idx < end; ++idx)
                 {
                     const auto [b, e] = lineSpans[idx];
-                    const std::string_view raw(buffer.data() + b, e - b);
-                    out.push_back(ParseJsonlLine(raw, idx + 1));
+                    parsed[idx] = ParseJsonlLine(std::string_view(buffer.data() + b, e - b), idx + 1);
                 }
-                return out;
-            });
+            },
+            kParallelLineThreshold / 4);
 
-        // Sequential merge. Wait on each future in chunk order, then
-        // apply each parsed line. The map mutations stay single-threaded;
-        // last-write-wins ordering is preserved because chunks were
-        // assigned contiguously and we drain them in order.
-        for (auto& fut : futures)
+        for (ParsedLine& pl : parsed)
         {
-            std::vector<ParsedLine> chunk = fut.get();
-            for (const auto& pl : chunk)
-            {
-                if (pl.kind != ParsedLine::Kind::Skipped
-                    && pl.kind != ParsedLine::Kind::FormatHeader)
-                    ++journalRecordLines;
-                ApplyParsedLine(pl, m_Assets, m_PathToGuid, m_Redirects,
-                                quarantined, displaced, m_LoadConflicts, detectedVersion, filePath);
-            }
+            if (pl.kind != ParsedLine::Kind::Skipped && pl.kind != ParsedLine::Kind::FormatHeader)
+                ++journalRecordLines;
+            ApplyParsedLine(pl, m_Assets, m_PathToGuid, m_Redirects,
+                            quarantined, displaced, m_LoadConflicts, detectedVersion, filePath);
         }
     }
 
@@ -698,8 +839,9 @@ static int ReadOnDiskFormatVersion(const std::filesystem::path& filePath)
         const std::string_view trimmed = TrimLineForParse(line);
         if (trimmed.empty() || trimmed.front() == '#')
             continue;
-        const ordered_json header = ordered_json::parse(trimmed.begin(), trimmed.end(), nullptr, false);
-        return header.is_discarded() ? 0 : TryParseFormatHeader(header);
+        LineReader header;
+        return ordered_json::sax_parse(trimmed.begin(), trimmed.end(), &header) ? TryParseFormatHeader(header.fields)
+                                                                                 : 0;
     }
     return 0;
 }
@@ -796,7 +938,7 @@ bool AssetStore_TextJsonl::SaveToFile(const std::filesystem::path& filePath, std
         std::error_code existsError;
         if (std::filesystem::exists(filePath, existsError))
         {
-            onDisk.emplace();
+            onDisk.emplace(m_ParsePool);
             std::string readError;
             if (!onDisk->LoadFromFile(filePath, &readError))
             {
@@ -1424,6 +1566,21 @@ bool AssetStore_TextJsonl::TryGetKeyValue(const GUID& guid, const std::string& k
     if (it2 == it->second.kv.end())
         return false;
     outValue = it2->second;
+    return true;
+}
+
+bool AssetStore_TextJsonl::RemoveKeyValue(const GUID& guid, const std::string& key, std::string* outError)
+{
+    (void)outError;
+    if (guid.IsNull() || key.empty())
+        return false;
+    std::lock_guard<std::mutex> lk(m_Mutex);
+    auto it = m_Assets.find(guid);
+    if (it == m_Assets.end())
+        return false;
+    // The save journals the whole record again without the key; the loader keeps the last record per GUID.
+    if (it->second.kv.erase(key) != 0)
+        m_DirtyAssets.insert(guid);
     return true;
 }
 

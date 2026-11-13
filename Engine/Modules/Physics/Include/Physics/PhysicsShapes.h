@@ -1,17 +1,15 @@
 #pragma once
 
-#include <limits>
-
 #include "Physics/PhysicsTypes.h"
 
 #include <algorithm>
+#include <limits>
+#include <memory>
 #include <variant>
 #include <vector>
 
 namespace GameEngine::Physics
 {
-
-inline constexpr float32 kHeightFieldNoCollision = std::numeric_limits<float32>::max();
 struct SphereShapeDef
 {
     float32 radius = 0.5f;
@@ -102,13 +100,38 @@ struct CompoundShapeDef
     std::vector<CompoundShapeChild> children;
 };
 
+/// A HeightFieldShapeDef sample of this value has no collision: every cell that touches it is a hole.
+inline constexpr float32 kHeightFieldNoCollision = std::numeric_limits<float32>::max();
+
 struct HeightFieldShapeDef
 {
-    std::vector<float32> Samples;    // row-major height values (NxN)
+    std::vector<float32> Samples;    // row-major height values (NxN); kHeightFieldNoCollision marks a hole
     uint32 SampleCount = 0;         // N for NxN grid
     Vector3 Offset{0.0f, 0.0f, 0.0f};
     Vector3 Scale{1.0f, 1.0f, 1.0f};
 };
+
+/// A heightfield shape the backend built ahead of its registration
+/// (PhysicsWorld::GetHeightFieldShapeBuilder), on any thread. Opaque: only the backend that built
+/// it reads it.
+class PreparedHeightFieldShape
+{
+public:
+    virtual ~PreparedHeightFieldShape() = default;
+};
+
+/// A prepared heightfield shape, registered by CreateShape without building it again. The baked
+/// scale is ignored, as it is for a HeightFieldShapeDef.
+struct PreparedHeightFieldShapeDef
+{
+    std::shared_ptr<const PreparedHeightFieldShape> Shape;
+};
+
+/// Builds a heightfield shape without registering it, on any thread and concurrently with the
+/// simulation; returns null when the build fails. Holds no state of the world that handed it out,
+/// so a job may still run it after that world is gone. PhysicsWorld never hands out a null builder.
+using HeightFieldShapeBuilder =
+    std::shared_ptr<const PreparedHeightFieldShape> (*)(const HeightFieldShapeDef& definition);
 
 using ShapeDefinition = std::variant<
     SphereShapeDef,
@@ -118,7 +141,8 @@ using ShapeDefinition = std::variant<
     ConvexHullShapeDef,
     MeshShapeDef,
     CompoundShapeDef,
-    HeightFieldShapeDef>;
+    HeightFieldShapeDef,
+    PreparedHeightFieldShapeDef>;
 
 } // namespace GameEngine::Physics
 

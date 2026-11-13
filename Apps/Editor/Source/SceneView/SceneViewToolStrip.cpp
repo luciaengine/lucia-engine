@@ -71,10 +71,7 @@ void RegisteredToolStrip::Populate(UIElement& strip, ToolStripPlacement placemen
                                    const RegisteredToolStripActions& actions)
 {
     if (m_Strip.Get() != &strip || m_Registry != &registry)
-    {
         m_Entries.clear();
-        m_ToolInsertionIndex = strip.GetChildren().size();
-    }
     m_Strip = UIElement::MakeWeakRef(&strip);
     m_Registry = &registry;
 
@@ -112,10 +109,7 @@ void RegisteredToolStrip::Populate(UIElement& strip, ToolStripPlacement placemen
         if (entry.ContextMenuItems)
             button->AddManipulator(MakeEntryMenu(registry, entry.Id, actions));
         kept.ButtonRef = UIElement::MakeWeakRef(button.get());
-        if (entry.OnBadgeButton)
-            strip.AddChild(std::move(button));
-        else
-            strip.InsertChild(m_ToolInsertionIndex++, std::move(button));
+        strip.AddChild(std::move(button));
 
         if (!entry.OnBadgeButton)
             continue;

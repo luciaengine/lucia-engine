@@ -1,4 +1,4 @@
-// CSS custom-property var() resolution.
+// CSS custom-property var() resolution. Split out of CSSParser.cpp (P4f).
 
 #include "CSSParserDetail.h"
 #include "UI/UIStyle.h"

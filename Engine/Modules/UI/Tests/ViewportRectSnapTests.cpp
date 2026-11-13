@@ -74,7 +74,7 @@ void Resolve(IsolatedUIFixture& fx, std::initializer_list<const char*> snapIds)
 {
     for (const char* id : snapIds)
         fx.Element(id)->SetSnapRectToDevicePixels(true);
-    fx.Element("row")->Overrides().Set(GameEngine::Style::Width,
+    fx.Element("row")->Style().Set(GameEngine::Style::Width,
                                        GameEngine::StyleLength::Px(kResolvedRowWidthPx));
     fx.Settle();
 }

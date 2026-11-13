@@ -2,6 +2,7 @@
 
 #include "TerrainECS/TerrainService.h"
 #include "Terrain/Heightfield.h"
+#include "Mathematics/Matrix4x4.h"
 #include "Mathematics/Vector3.h"
 #include "JobSystem/TaskHandle.h"
 
@@ -29,14 +30,15 @@ struct StreamingConfig
 // State machine for each tile in the streaming pipeline.
 enum class TileState : uint8
 {
-    Idle,            // Not requested
-    Requested,       // In priority queue, job not yet dispatched
-    LoadingCoarse,   // Job thread: generating coarse heightfield
-    CoarseReady,     // Coarse data complete, awaiting main-thread integration
-    LoadingFull,     // Job thread: generating full heightfield
-    FullReady,       // Full data complete, awaiting main-thread integration
-    Active,          // Fully loaded and integrated
-    Unloading        // Marked for removal
+    Idle,             // Not requested
+    Requested,        // In priority queue, job not yet dispatched
+    UpgradeRequested, // Resident at Coarse LOD, full job not yet dispatched
+    LoadingCoarse,    // Job thread: generating coarse heightfield
+    CoarseReady,      // Coarse data complete, awaiting main-thread integration
+    LoadingFull,      // Job thread: generating full heightfield
+    FullReady,        // Full data complete, awaiting main-thread integration
+    Active,           // Resident and integrated, at Coarse or Full LOD
+    Unloading         // Marked for removal
 };
 
 // Priority for ordering tile load requests.
@@ -44,13 +46,11 @@ struct TileStreamingPriority
 {
     float32 DistanceSq = 0.0f;
     bool InFrustum = false;
-    bool IsUpgrade = false; // true if upgrading from coarse to full
 
     // Lower is higher priority: in-frustum + near beats out-of-frustum + far.
     bool operator<(const TileStreamingPriority& o) const
     {
         if (InFrustum != o.InFrustum) return InFrustum;
-        if (IsUpgrade != o.IsUpgrade) return !IsUpgrade; // New tiles before upgrades
         return DistanceSq < o.DistanceSq;
     }
 };
@@ -58,9 +58,9 @@ struct TileStreamingPriority
 // LH MakeLookAtLH view matrix: row 2 is camera forward (same as
 // SkyRenderNode::ExtractCameraVectors and LensFlareRenderNode). Tile priority
 // uses XZ only. Identity view / look along +Z => (0, 0, 1).
-inline Mathematics::Vector3 TilePriorityViewDirectionXZ(const float view[16])
+inline Mathematics::Vector3 TilePriorityViewDirectionXZ(const Mathematics::Matrix4x4& view)
 {
-    return Mathematics::Vector3{view[2], 0.0f, view[10]};
+    return Mathematics::Vector3{view[0][2], 0.0f, view[2][2]};
 }
 
 // Tile is "in front" when camera-to-tile dots the XZ look. A zero look
@@ -85,6 +85,8 @@ struct TileGenerationResult
 
     // Stage 1 output: coarse heightfield
     Terrain::HeightfieldData CoarseHeightfield;
+
+    // Stage 1 output: the coarse heightfield at the tile's full resolution, and its normal
     std::shared_ptr<CoarseTileStandIn> CoarseStandIn;
 
     // Stage 2 output: full heightfield
@@ -100,11 +102,6 @@ struct TileGenerationResult
 
     float32 MinHeight = 0.0f;
     float32 MaxHeight = 0.0f;
-
-    // Pre-computed per-node min/max for the global quadtree finest level.
-    // Row-major: QuadtreeNodes[nz * tileFinestNodes + nx].
-    std::vector<NodeMinMax> QuadtreeNodes;
-    uint32 QuadtreeNodesPerAxis = 0;
 };
 
 // Manages async tile lifecycle for every tiled terrain. All CPU-intensive work
@@ -130,8 +127,8 @@ public:
     // (budget-limited), detects teleportation, and unloads distant tiles.
     // viewDirection is the primary camera's forward vector (XZ only, for
     // frustum-aware priority — tiles in front of the camera load first).
-    // Returns the tiles this call integrated (for the incremental quadtree update); the
-    // reference stays valid until the next Update or Forget for the same terrain.
+    // Returns the tiles this call integrated; the reference stays valid until the next
+    // Update or Forget for the same terrain.
     const std::vector<TileCoord>& Update(TiledTerrainHandle tiledHandle,
                                          TiledTerrainData& tiled,
                                          TerrainService& service,
@@ -187,7 +184,7 @@ private:
         std::unordered_map<TileCoord, TileTracker, TileCoordHash> Trackers;
         std::shared_ptr<CompletedQueue> Completed = std::make_shared<CompletedQueue>();
 
-        // Tiles integrated by the latest Update (for incremental quadtree updates).
+        // Tiles integrated by the latest Update.
         std::vector<TileCoord> IntegratedThisFrame;
 
         // Teleportation state.

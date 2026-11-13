@@ -14,7 +14,7 @@
 #include "DayCycle/DayCycleWorkingCopy.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
-#include "Inspectors/SkySunReadoutText.h"
+#include "Sky/SkySun/SkySunReadoutText.h"
 #include "Types/StringId.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/CurveField.h"
@@ -90,20 +90,20 @@ void DayCycleWindow::OnLayoutReconciled()
 
 void DayCycleWindow::BindElements()
 {
-    m_ProfileName = MakeWeakRef(dynamic_cast<Label*>(FindById("DayCycleProfileName")));
-    m_VolumeLabel = MakeWeakRef(dynamic_cast<Label*>(FindById("DayCycleVolume")));
-    m_AxisHost = MakeWeakRef(dynamic_cast<UIElement*>(FindById("DayCycleAxisHost")));
-    m_SaveHost = MakeWeakRef(dynamic_cast<UIElement*>(FindById("DayCycleSaveHost")));
-    m_PresetsButton = MakeWeakRef(dynamic_cast<Button*>(FindById("DayCyclePresetsButton")));
-    m_PresetsHost = MakeWeakRef(dynamic_cast<UIElement*>(FindById("DayCyclePresetsHost")));
-    m_ScrubReadout = MakeWeakRef(dynamic_cast<Label*>(FindById("DayCycleScrubReadout")));
-    if (Label* scrubLabel = dynamic_cast<Label*>(FindById("DayCycleScrubLabel")))
+    m_ProfileName = FindById<Label>("DayCycleProfileName"_sid);
+    m_VolumeLabel = FindById<Label>("DayCycleVolume"_sid);
+    m_AxisHost = FindById<UIElement>("DayCycleAxisHost"_sid);
+    m_SaveHost = FindById<UIElement>("DayCycleSaveHost"_sid);
+    m_PresetsButton = FindById<Button>("DayCyclePresetsButton"_sid);
+    m_PresetsHost = FindById<UIElement>("DayCyclePresetsHost"_sid);
+    m_ScrubReadout = FindById<Label>("DayCycleScrubReadout"_sid);
+    if (Label* scrubLabel = dynamic_cast<Label*>(FindById("DayCycleScrubLabel"_sid)))
         scrubLabel->SetTooltip("Drag the playhead on the strip or on a track to preview the hour. While the playhead is "
                                "held, Animate Time of Day pauses. Closing the window returns the scene's own time; "
                                "saving the scene keeps its own time.");
-    m_Notice = MakeWeakRef(dynamic_cast<Label*>(FindById("DayCycleNotice")));
-    m_DuskCaption = MakeWeakRef(dynamic_cast<Label*>(FindById("DayCycleDuskCaption")));
-    m_TracksScroll = MakeWeakRef(dynamic_cast<ScrollView*>(FindById("DayCycleTracksScroll")));
+    m_Notice = FindById<Label>("DayCycleNotice"_sid);
+    m_DuskCaption = FindById<Label>("DayCycleDuskCaption"_sid);
+    m_TracksScroll = FindById<ScrollView>("DayCycleTracksScroll"_sid);
     if (Button* presets = m_PresetsButton.Get())
         presets->SetOnClick([this](UIEvent&) {
             m_ShowPresets = !m_ShowPresets;
@@ -182,14 +182,6 @@ void DayCycleWindow::Refresh()
     if (m_NeedsBuild)
         Build();
 
-    if (Label* name = m_ProfileName.Get())
-    {
-        // The profile's own name: the asset path comes back case-folded from the registry.
-        const std::string profileName = m_Profile ? m_Profile->GetData().Name : std::string();
-        name->SetText(!m_Profile ? std::string("none: select one in the asset browser")
-                                 : profileName.empty() ? m_Profile->GetPath().stem().string() : profileName);
-    }
-
     const ECS::EntityHandle volume = ContextVolume();
     if (Label* label = m_VolumeLabel.Get(); label && volume != m_ShownVolume)
         label->SetText(VolumeName(volume));
@@ -249,6 +241,13 @@ void DayCycleWindow::Build()
     m_ShownVolume = ECS::EntityHandle{};
     const bool elevationView = DayCycleSessionAxisView() == DayCycleAxisView::Elevation;
 
+    if (Label* name = m_ProfileName.Get())
+    {
+        // The profile's own name: the asset path comes back case-folded from the registry.
+        const std::string profileName = m_Profile ? m_Profile->GetData().Name : std::string();
+        name->SetText(!m_Profile ? std::string("none: select one in the asset browser")
+                                 : profileName.empty() ? m_Profile->GetPath().stem().string() : profileName);
+    }
     if (UIElement* host = m_AxisHost.Get())
     {
         host->RemoveAllChildren();

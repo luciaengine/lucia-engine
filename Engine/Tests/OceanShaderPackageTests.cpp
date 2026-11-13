@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Rendering/Core/Device.h"
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include <algorithm>

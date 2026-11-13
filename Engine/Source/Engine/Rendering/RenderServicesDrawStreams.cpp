@@ -20,7 +20,6 @@
 #include "Assets/MaterialAsset.h"
 #include "Assets/ModelAsset.h"
 #include "Assets/TextureAsset.h"
-#include "Engine/Rendering/EmbeddedImageDecoder.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
@@ -35,8 +34,8 @@
 #include "Rendering/Core/BindlessResourceManager.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/DeviceFormatting.h"
-#include "Rendering/Core/PipelineTypes.h"
-#include "Rendering/CameraDerivation.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Camera/CameraDerivation.h"
 #include "Rendering/Core/CullingStrategy.h"
 #include "Rendering/Core/FrustumCullingStrategy.h"
 #include "Rendering/Core/GPUCulling.h"
@@ -44,14 +43,14 @@
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/Materials/MaterialBuilder.h"
-#include "Rendering/Materials/ShaderReflection.h"
+#include "Rendering/Materials/Shader/ShaderReflection.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Passes/SRGBEncodePass.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Rendering/Utils/BufferHelpers.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
-#include "Rendering/Utils/CubeLutFileParser.h"
-#include "Rendering/Utils/CubeLutGpuUpload.h"
+#include "Rendering/Utils/CubeLut/CubeLutFileParser.h"
+#include "Rendering/Utils/CubeLut/CubeLutGpuUpload.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
 #include "Types/StringId.h"
 #include "Mathematics/Matrix4x4.h"
@@ -151,12 +150,6 @@ void RenderServices::EmitForwardCommand(Rendering::ViewId viewId, const DrawComm
         ++pv.ForwardDrawsWritingDepth;
 }
 
-void RenderServices::EmitSortedTransparentCommand(Rendering::ViewId viewId,
-                                                 const SortedTransparentCommand& command)
-{
-    m_ViewRegistry.PerView(viewId).SortedTransparentCommands.push_back(command);
-}
-
 void RenderServices::EmitLateForwardCommand(Rendering::ViewId viewId, const DrawCommand& cmd)
 {
     m_ViewRegistry.PerView(viewId).LateForwardCommands.push_back(cmd);
@@ -234,10 +227,10 @@ void RenderServices::ClearForwardCommands()
             pv.ForwardCommands.clear();
             pv.LateForwardCommands.clear();
             pv.SortedTransparentCommands.clear();
+            pv.FrameForwardEmittedFor = {};
             pv.ForwardSampledRG.clear();
             pv.ForwardSampledBufferRG.clear();
             pv.ForwardSampledFor = {};
-            pv.FrameForwardEmittedFor = {};
             pv.ForwardDrawsWritingDepth = 0;
         });
 }
@@ -284,7 +277,7 @@ void RenderServices::EmitProducerForwardCommands()
         // Mask-0 views render no world content (disarmed probe capture views,
         // parked utility views); special views that do want producer commands
         // (thumbnails, probe bakes) drive their own per-view emit explicitly.
-        if (view.ActiveRenderLayerMask() == 0u)
+        if (view.ActiveRenderLayerMask() == Rendering::RenderLayerMask::None())
             continue;
         EmitProducerForwardCommandsForView(view.id);
     }
@@ -323,25 +316,12 @@ void RenderServices::EmitProducerForwardCommandsForView(Rendering::ViewId viewId
 
     for (const auto& entry : m_DrawProducers->Forward)
         if (!entry.Options.RequiresFrame)
+        {
+            const size_t emittedBefore = pv.ForwardCommands.size();
             entry.Fn(ctx);
-}
-
-void RenderServices::EmitFrameForwardCommandsForView(RenderGraph::RGFrame& frame, ViewId viewId)
-{
-    auto& pv = m_ViewRegistry.PerView(viewId);
-    if (pv.FrameForwardEmittedFor.IsFor(frame))
-        return;
-    pv.FrameForwardEmittedFor.Stamp(frame);
-    ForwardEmitContext context{};
-    context.Device = m_Device;
-    context.Services = this;
-    context.Frame = &frame;
-    context.FrameIndex = m_Device ? m_Device->GetFrameIndex() : 0;
-    context.ViewId = viewId;
-    context.Purpose = ForwardEmitPurpose::World;
-    for (const auto& entry : m_DrawProducers->Forward)
-        if (entry.Options.RequiresFrame)
-            entry.Fn(context);
+            if (entry.Options.WritesDepth && pv.ForwardCommands.size() > emittedBefore)
+                NotifyUnversionedMotion(viewId);
+        }
 }
 
 void RenderServices::EmitProducerDepthCommands()
@@ -381,6 +361,35 @@ void RenderServices::EmitProducerDepthCommandsForView(Rendering::ViewId viewId)
         for (DepthPassType passType : kPassTypes)
             entry.Fn(ctx, passType);
     }
+}
+
+void RenderServices::EmitSortedTransparentCommand(Rendering::ViewId viewId,
+                                                 const SortedTransparentCommand& command)
+{
+    m_ViewRegistry.PerView(viewId).SortedTransparentCommands.push_back(command);
+}
+
+void RenderServices::EmitFrameForwardCommandsForView(RenderGraph::RGFrame& frame, ViewId viewId)
+{
+    auto& pv = m_ViewRegistry.PerView(viewId);
+    if (pv.FrameForwardEmittedFor.IsFor(frame))
+        return;
+    pv.FrameForwardEmittedFor.Stamp(frame);
+    ForwardEmitContext context{};
+    context.Device = m_Device;
+    context.Services = this;
+    context.Frame = &frame;
+    context.FrameIndex = m_Device ? m_Device->GetFrameIndex() : 0;
+    context.ViewId = viewId;
+    context.Purpose = ForwardEmitPurpose::World;
+    for (const auto& entry : m_DrawProducers->Forward)
+        if (entry.Options.RequiresFrame)
+        {
+            const size_t emittedBefore = pv.ForwardCommands.size();
+            entry.Fn(context);
+            if (entry.Options.WritesDepth && pv.ForwardCommands.size() > emittedBefore)
+                NotifyUnversionedMotion(viewId);
+        }
 }
 
 } // namespace Engine::Renderer

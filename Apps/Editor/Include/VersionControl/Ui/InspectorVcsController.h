@@ -2,7 +2,7 @@
 
 #include "UI/UiCoalescedPost.h"
 #include "VersionControl/EditorVersionControlService.h"
-#include "VersionControl/SceneDiff.h"
+#include "VersionControl/SceneDiff/SceneDiff.h"
 
 #include <atomic>
 #include <functional>

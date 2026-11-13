@@ -4,8 +4,8 @@
 #include "Engine/Rendering/Pipeline/PipelineFrameResources.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
-#include <cstdint>
 #include <functional>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <span>
@@ -73,6 +73,8 @@ struct ViewDeclare
     Rendering::RenderGraph::RGTexture ViewColor{};
     Rendering::RenderGraph::RGTexture ViewDepth{};         // EFFECTIVE (prepass override published)
     Rendering::RenderGraph::RGTexture ViewResolve{};
+    // The MSAA resolve's second output for bloom (Names::View::BloomSampleDelta); invalid = none.
+    Rendering::RenderGraph::RGTexture ViewBloomSampleDelta{};
     Rendering::RenderGraph::RGTexture ViewDepthResolved{}; // aliases ViewDepth until DepthResolve publishes
     // Names::View::OccluderDepthResolved, or ViewDepthResolved where nothing published it (no
     // DepthResolve yet, so no non-occluding heads are in the view depth either).
@@ -89,12 +91,11 @@ struct ViewDeclare
     // from Render* to Output*.
     uint32_t OutputWidth = 0;
     uint32_t OutputHeight = 0;
+    bool PixelPerfectCrossing = false;
     // Split-active only: the caller's display-resolution color/depth (invalid
     // at scale 1.0). See Names::View::OutputColor/OutputDepth.
     Rendering::RenderGraph::RGTexture ViewOutputColor{};
     Rendering::RenderGraph::RGTexture ViewOutputDepth{};
-    // Integer pixel-perfect upscale owns the render-to-display crossing for this view.
-    bool PixelPerfectCrossing = false;
     // True if this pipeline contains a TransmissiveRender node. The world pass only peels glass into
     // the dedicated transmissive pass when one exists; otherwise glass renders inline (env-cube
     // fallback) so it never vanishes on pipelines/previews that lack the node.
@@ -108,15 +109,22 @@ struct ViewDeclare
     // Blackboard access. Resolvers return invalid entries for unknown refs;
     // publication overwrites (a node republishing "View.Depth" redirects every
     // LATER node in blueprint order — declaration order is the only ordering).
-    Rendering::RenderGraph::RGTexture ResolveTexture(const std::string& ref) const;
-    /// Explicit versions cannot be exposed under a mutable resource name.
-    bool IsVersionedTexture(const std::string& ref) const;
-    // Lookup only: read another view's published output from THIS pipeline/frame.
-    // Missing output returns an invalid handle; it never allocates a fallback.
-    Rendering::RenderGraph::RGTexture FindPublishedViewTexture(Rendering::ViewId view, const std::string& ref) const;
-    PipelineBufferBindingRG ResolveBuffer(const std::string& ref) const;
-    void PublishTexture(const std::string& name, Rendering::RenderGraph::RGTexture t);
-    void PublishBuffer(const std::string& name, const PipelineBufferBindingRG& b);
+    // Reads another view's publication from this frame without allocating a resource.
+    Rendering::RenderGraph::RGTexture FindPublishedViewTexture(Rendering::ViewId view, std::string_view ref) const;
+    Rendering::RenderGraph::RGTexture ResolveTexture(std::string_view ref) const;
+    bool IsVersionedTexture(std::string_view ref) const;
+    PipelineBufferBindingRG ResolveBuffer(std::string_view ref) const;
+    void PublishTexture(std::string_view name, Rendering::RenderGraph::RGTexture t);
+    void PublishBuffer(std::string_view name, const PipelineBufferBindingRG& b);
+    // Records that `t` holds this view's scene colour stored at its pre-exposure P, for a texture
+    // the node creates itself (a temporal history, a scene grab): readers of absolute values, such
+    // as the editor's resource capture, then divide it by P. Blueprint textures say so in the
+    // render graph ("preExposed").
+    void MarkPreExposed(Rendering::RenderGraph::RGTexture t);
+    // Whether `t` holds this view's scene colour at its pre-exposure P (declared "preExposed" by
+    // the render graph, the view's colour target, or marked by a node), for a node whose own
+    // textures hold what another texture holds.
+    bool IsPreExposed(Rendering::RenderGraph::RGTexture t) const;
 
     // Queue a declaration to run AFTER the node loop (terminal overlays that
     // must attach the chain's FINAL output). Drained by Declare before the
@@ -134,6 +142,44 @@ struct ViewDeclare
     uint32_t m_NodeIdx = 0;
 };
 
+// The scope of IRenderPipelineNode::RequestPausedViewPipelines: one view that draws no world
+// (ViewDesc::worldPaused). Built fresh per view each paused frame.
+struct PausedViewPrewarm
+{
+    Engine::Renderer::RenderServices& Services;
+    const Rendering::ViewDesc& View;
+    // The extent at which the view's live frame draws the world (ViewDeclare::RenderWidth and
+    // ViewDeclare::RenderHeight).
+    uint32_t RenderWidth = 0;
+    uint32_t RenderHeight = 0;
+
+    // True when the view's cull reserves its phase-B occlusion slice once the view draws its world: it
+    // has a camera, layers once unpaused, an occlusion strategy, and the GPU scene has instances.
+    bool ReservesOcclusionSliceOnceUnpaused() const;
+
+    // The format key of a pass whose one attachment is the colour texture `ref`, as the view's live
+    // frame declares it: View.Color, View.Resolve or a blueprint texture. Empty for any other ref and
+    // for a texture with no declared format.
+    std::optional<Rendering::PipelineFormatKey> SingleColorTargetKey(std::string_view ref) const;
+
+    // The format key of a pass that draws into the view's colour and depth targets as the world pass
+    // does, after the MSAA-off collapse into the resolve target. Empty for a formatless target.
+    std::optional<Rendering::PipelineFormatKey> WorldColorTargetsKey() const;
+
+  private:
+    friend class RenderPipelineInstance;
+    PausedViewPrewarm(Engine::Renderer::RenderServices& services, const Rendering::ViewDesc& view, uint32_t renderWidth,
+                      uint32_t renderHeight, const Rendering::RenderGraph::RGFrame& frame, const ViewTargetsRG& targets,
+                      const RenderPipelineInstance& instance)
+        : Services(services), View(view), RenderWidth(renderWidth), RenderHeight(renderHeight), m_Frame(frame),
+          m_Targets(targets), m_Instance(instance)
+    {
+    }
+    const Rendering::RenderGraph::RGFrame& m_Frame;
+    const ViewTargetsRG& m_Targets;
+    const RenderPipelineInstance& m_Instance;
+};
+
 // Base interface for pipeline nodes (pass generators).
 // Nodes should create persistent RenderGraph passes via RenderPipelineInstance helpers
 // and avoid per-frame pass recreation.
@@ -143,6 +189,9 @@ class IRenderPipelineNode
     virtual ~IRenderPipelineNode() = default;
 
     virtual const char* GetTypeName() const = 0;
+
+    // Color filters preserve the incoming view color; replacement nodes leave UI until afterward.
+    virtual bool IsViewColorPostEffect() const { return false; }
 
     // Called once when the node is instantiated from a blueprint.
     // `nodeJson` is the full node JSON object serialized as a compact string.
@@ -156,19 +205,15 @@ class IRenderPipelineNode
     }
     virtual void DeclareForView(ViewDeclare& /*d*/) {}
 
-    // A view-color filter lets the host composite game UI before the effect.
-    // Nodes that replace/discard the incoming view color must return false.
-    virtual bool IsViewColorPostEffect() const { return false; }
+    // True for a node whose DeclareForView does work that must land while the view draws no
+    // world (uploads, deferred destroys) and draws nothing into the view's targets. Such a node
+    // runs for a paused view (ViewDesc::worldPaused) too, and reads only Services, Frame and View.
+    virtual bool DeclaresForPausedView() const { return false; }
 
-    // Return the base PipelineDesc for PSO pre-warming, or nullptr if this node
-    // Returns the interned base pipeline id for nodes that drive a graphics
-    // pipeline (e.g. FullscreenShaderNode). Default: invalid id (no node-owned
-    // pipeline). RenderServices uses this for PSO pre-warming on a worker
-    // thread during startup.
-    virtual Rendering::GraphicsPipelineId GetBaseGraphicsPipelineId(Rendering::IDevice& /*device*/) const
-    {
-        return {};
-    }
+    // Runs for each paused view of a per-view node, every paused frame. The node asks the device
+    // (IDevice::Request*Pipeline) for the pipelines its passes bind in the view's first live frame, so
+    // they build on the prewarm workers during the pause. A warm or building pipeline costs one lookup.
+    virtual void RequestPausedViewPipelines(const PausedViewPrewarm& /*prewarm*/) {}
 
     // Whether this node wants PostProcessVolume settings applied to its push
     // constants via shader reflection. Set by "ppOverrides": true in the node JSON.

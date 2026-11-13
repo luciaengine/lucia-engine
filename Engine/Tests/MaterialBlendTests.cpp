@@ -9,8 +9,8 @@
 #include "Assets/MaterialAsset.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Materials/MaterialAlphaMode.h"
-#include "Rendering/Materials/MaterialBlend.h"
-#include "Rendering/Materials/MaterialBlendDerive.h"
+#include "Rendering/Materials/MaterialBlend/MaterialBlend.h"
+#include "Rendering/Materials/MaterialBlend/MaterialBlendDerive.h"
 #include "Rendering/Materials/MaterialDocument.h"
 
 #include <nlohmann/json.hpp>

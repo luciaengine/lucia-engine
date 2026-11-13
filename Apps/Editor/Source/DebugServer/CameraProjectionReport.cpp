@@ -2,6 +2,7 @@
 
 #include "Engine/Rendering/CameraUtils.h"
 #include "Engine/Rendering/Exposure.h"
+#include "Mathematics/Angle.h"
 #include "Mathematics/MatrixOps.h"
 
 #include <cmath>
@@ -10,12 +11,6 @@ namespace GameEngine::Editor
 {
 namespace
 {
-
-constexpr float kRadToDeg = 57.295779513082320876f;
-
-// Column-major (glm) 4x4: index = column * 4 + row.
-constexpr int kM00 = 0;  // perspective: cot(fovY/2) / aspect   ortho: 2/(right-left)
-constexpr int kM11 = 5;  // perspective: cot(fovY/2)            ortho: 2/(top-bottom)
 
 // Both builders produce strictly positive diagonal scales: cot(fovY/2) for a
 // FOV in (0, pi), and 2/(right-left), 2/(top-bottom) for a non-inverted ortho
@@ -33,23 +28,25 @@ bool UsableScale(float v)
 // recovered quantities and their error.
 float FullAngleDegFromCotHalf(float cotHalfAngle)
 {
-    return 2.0f * std::atan(1.0f / cotHalfAngle) * kRadToDeg;
+    return Mathematics::ToDegrees(2.0f * std::atan(1.0f / cotHalfAngle));
 }
 
 } // namespace
 
-nlohmann::json DescribeCameraProjection(const float proj[16],
+nlohmann::json DescribeCameraProjection(const Mathematics::Matrix4x4& proj,
                                         std::uint32_t viewportWidthPx,
                                         std::uint32_t viewportHeightPx)
 {
     using nlohmann::json;
 
-    if (proj == nullptr || !UsableScale(proj[kM00]) || !UsableScale(proj[kM11]))
+    const float scaleX = proj[0][0]; // perspective: cot(fovY/2) / aspect   ortho: 2/(right-left)
+    const float scaleY = proj[1][1]; // perspective: cot(fovY/2)            ortho: 2/(top-bottom)
+    if (!UsableScale(scaleX) || !UsableScale(scaleY))
         return json(nullptr);
 
     // Both projections scale X by width and Y by height, so the ratio of the
     // two diagonal terms is the aspect in both cases.
-    const float aspect = proj[kM11] / proj[kM00];
+    const float aspect = scaleY / scaleX;
 
     json out{
         {"aspect", aspect},
@@ -60,22 +57,23 @@ nlohmann::json DescribeCameraProjection(const float proj[16],
     if (Engine::Renderer::IsOrthographicProjectionLH_ZO(proj))
     {
         out["type"] = "orthographic";
-        out["orthoHeight"] = 2.0f / proj[kM11];
+        out["orthoHeight"] = 2.0f / scaleY;
         return out;
     }
 
     out["type"] = "perspective";
-    out["fovVerticalDeg"] = FullAngleDegFromCotHalf(proj[kM11]);
-    out["fovHorizontalDeg"] = FullAngleDegFromCotHalf(proj[kM00]);
+    out["fovVerticalDeg"] = FullAngleDegFromCotHalf(scaleY);
+    out["fovHorizontalDeg"] = FullAngleDegFromCotHalf(scaleX);
     return out;
 }
 
 nlohmann::json DescribeGameViewCamera(const Rendering::CameraData& camera,
                                       Components::ExposureMode mode,
+                                      Components::ExposureMeter meter,
                                       std::uint32_t viewportWidthPx,
                                       std::uint32_t viewportHeightPx)
 {
-    const auto world = Mathematics::Inverse(Mathematics::Matrix4x4::FromColumnMajor(camera.view));
+    const auto world = Mathematics::Inverse(camera.view);
     auto transform = nlohmann::json::array();
     for (int index = 0; index < 16; ++index)
         transform.push_back(world.Data()[index]);
@@ -87,10 +85,13 @@ nlohmann::json DescribeGameViewCamera(const Rendering::CameraData& camera,
     case Components::ExposureMode::Physical: modeName = "physical"; break;
     case Components::ExposureMode::Auto: modeName = "auto"; break;
     }
-    return {{"position", {camera.cameraPos[0], camera.cameraPos[1], camera.cameraPos[2]}},
+    nlohmann::json meterName = nullptr;
+    if (mode == Components::ExposureMode::Auto)
+        meterName = meter == Components::ExposureMeter::Lights ? "lights" : "picture";
+    return {{"position", {camera.cameraPos.x, camera.cameraPos.y, camera.cameraPos.z}},
             {"worldTransform", std::move(transform)},
             {"projection", DescribeCameraProjection(camera.proj, viewportWidthPx, viewportHeightPx)},
-            {"exposure", {{"mode", modeName}, {"metered", nullptr}}}};
+            {"exposure", {{"mode", modeName}, {"meter", std::move(meterName)}, {"metered", nullptr}}}};
 }
 
 nlohmann::json DescribeMeteredExposure(float linearScale, std::uint64_t frameIndex)

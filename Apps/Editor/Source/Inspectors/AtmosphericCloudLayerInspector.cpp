@@ -1,13 +1,13 @@
 #include "Inspectors/AtmosphericCloudLayerInspector.h"
 
 #include "InspectorRegistry.h"
-#include "Inspectors/InspectorColorSwatchRow.h"
+#include "Mathematics/Interpolation.h"
 #include "Platform/SystemMetrics.h"
 
 #include "Components/Rendering/PostProcessEffects/AtmosphericCloudLayer.h"
 #include "Editor/Entities/EditorECSHelpers.h"
 
-#include "Inspectors/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
 #include "UndoRedo/UndoRedoService.h"
@@ -25,6 +25,10 @@ namespace GameEngine
 
 namespace
 {
+constexpr float kSwatchSize = 20.0f;
+constexpr float kSwatchBorderRadius = 3.0f;
+constexpr uint32_t kSwatchBorderColor = 0xFF555555u;
+
 static void CloudRgbToPickerState(const float (&c)[3], uint32_t& outArgb, float& outIntensity)
 {
     auto clamp01 = [](float v) { return std::max(0.0f, std::min(1.0f, v)); };
@@ -56,6 +60,27 @@ static uint32_t CloudRgbToArgb(const float (&c)[3])
     return argb;
 }
 
+static std::string FormatRgb(const float (&c)[3])
+{
+    char buf[48];
+    std::snprintf(buf, sizeof(buf), "(%.2f, %.2f, %.2f)", c[0], c[1], c[2]);
+    return buf;
+}
+
+static void StyleSwatch(UIElement* swatch, uint32_t argb)
+{
+    swatch->Style()
+        .Set(Style::Width, StyleLength::Px(kSwatchSize))
+        .Set(Style::Height, StyleLength::Px(kSwatchSize))
+        .Set(Style::MinWidth, StyleLength::Px(kSwatchSize))
+        .Set(Style::MinHeight, StyleLength::Px(kSwatchSize))
+        .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{kSwatchBorderRadius, kSwatchBorderRadius, kSwatchBorderRadius, kSwatchBorderRadius})
+        .Set(Style::BorderWidth, Box4{1.0f, 1.0f, 1.0f, 1.0f})
+        .Set(Style::BorderColor, BorderColorsTRBL{kSwatchBorderColor, kSwatchBorderColor, kSwatchBorderColor, kSwatchBorderColor})
+        .Set(Style::BackgroundColor, argb)
+        .Set(Style::Cursor, CursorStyle::Pointer);
+}
+
 } // namespace
 
 void RegisterAtmosphericCloudLayerInspector()
@@ -83,22 +108,38 @@ void RegisterAtmosphericCloudLayerInspector()
 
         AddComponentFloatRowWithDrag<Layer>(ctx.Parent, "SkyFill", layer->SkyFill, w, e, n,
             undo, "Change Cloud Sky Fill",
-            [](Layer& u, float v) { u.SkyFill = std::clamp(v, 0.0f, 1.0f); },
+            [](Layer& u, float v) { u.SkyFill = Math::Clamp01(v); },
             0.48f, "How much of the open sky can be occupied", {}, 0.0f, 1.0f);
 
         AddComponentFloatRowWithDrag<Layer>(ctx.Parent, "VaporMass", layer->VaporMass, w, e, n,
             undo, "Change Cloud Vapor Mass",
-            [](Layer& u, float v) { u.VaporMass = std::clamp(v, 0.0f, 1.0f); },
+            [](Layer& u, float v) { u.VaporMass = Math::Clamp01(v); },
             0.62f, "Overall visual weight of the layer", {}, 0.0f, 1.0f);
 
         {
-            const InspectorUI::ColorSwatchRow swatchRow = InspectorUI::AddColorSwatchRow(
-                ctx.Parent, "CloudColor", "HDR cloud scattering color (click to open color picker; double-click to reset to white)",
-                CloudRgbToArgb(layer->CloudColor),
-                InspectorUI::FormatColorRgb(layer->CloudColor[0], layer->CloudColor[1], layer->CloudColor[2]));
-            Label* colorLabel = swatchRow.Title;
-            UIElement* swatchRaw = swatchRow.Swatch;
-            Label* rgbLabelRaw = swatchRow.Value;
+            UIElement* row = InspectorUI::AddRow(ctx.Parent);
+            Label* colorLabel = InspectorUI::AddLabel(row, "CloudColor", "HDR cloud scattering color (click to open color picker; double-click to reset to white)");
+            if (colorLabel) colorLabel->AddClass("inspector-label-no-drag");
+            UIElement* fieldContainer = InspectorUI::AddFieldContainer(row);
+            fieldContainer->Style()
+                .Set(Style::FlexDir, FlexDirection::Row)
+                .Set(Style::AlignItems, AlignItems::Center)
+                .Set(Style::Gap, StyleLength::Px(6.0f));
+
+            const uint32_t argb = CloudRgbToArgb(layer->CloudColor);
+
+            auto swatch = std::make_unique<UIElement>();
+            UIElement* swatchRaw = swatch.get();
+            StyleSwatch(swatchRaw, argb);
+            fieldContainer->AddChild(std::move(swatch));
+
+            auto rgbLabel = std::make_unique<Label>();
+            rgbLabel->AddClass("inspector-text");
+            rgbLabel->SetText(FormatRgb(layer->CloudColor));
+            rgbLabel->Style()
+                .Set(Style::Cursor, CursorStyle::Pointer);
+            Label* rgbLabelRaw = rgbLabel.get();
+            fieldContainer->AddChild(std::move(rgbLabel));
 
             // The picker's callbacks outlive an inspector rebuild: resolve the row through
             // weak refs instead of holding the freed widgets.
@@ -108,8 +149,8 @@ void RegisterAtmosphericCloudLayerInspector()
                 UIElement* swatch = swatchRef.Get();
                 Label* rgbLabel = rgbLabelRef.Get();
                 if (!c || !swatch || !rgbLabel) return;
-                InspectorUI::SetColorSwatchColor(swatch, CloudRgbToArgb(c->CloudColor));
-                rgbLabel->SetText(InspectorUI::FormatColorRgb(c->CloudColor[0], c->CloudColor[1], c->CloudColor[2]));
+                StyleSwatch(swatch, CloudRgbToArgb(c->CloudColor));
+                rgbLabel->SetText(FormatRgb(c->CloudColor));
             };
 
             auto clickHandler = [w, e, n, undo, openPicker, updateUI](UIEvent& ev) {
@@ -234,7 +275,7 @@ void RegisterAtmosphericCloudLayerInspector()
 
         AddComponentFloatRowWithDrag<Layer>(ctx.Parent, "EdgeBreakup", layer->EdgeBreakup, w, e, n,
             undo, "Change Cloud Edge Breakup",
-            [](Layer& u, float v) { u.EdgeBreakup = std::clamp(v, 0.0f, 1.0f); },
+            [](Layer& u, float v) { u.EdgeBreakup = Math::Clamp01(v); },
             0.58f, "How strongly small patterns carve the edges", {}, 0.0f, 1.0f);
 
         AddComponentFloatRowWithDrag<Layer>(ctx.Parent, "DriftAngle", layer->DriftAngle, w, e, n,
@@ -249,7 +290,7 @@ void RegisterAtmosphericCloudLayerInspector()
 
         AddComponentFloatRowWithDrag<Layer>(ctx.Parent, "SunFade", layer->SunFade, w, e, n,
             undo, "Change Cloud Sun Fade",
-            [](Layer& u, float v) { u.SunFade = std::clamp(v, 0.0f, 1.0f); },
+            [](Layer& u, float v) { u.SunFade = Math::Clamp01(v); },
             0.55f, "Backlit fade near the upper sky direction", {}, 0.0f, 1.0f);
 
         AddComponentFloatRowWithDrag<Layer>(ctx.Parent, "SkyBounce", layer->SkyBounce, w, e, n,
@@ -264,7 +305,7 @@ void RegisterAtmosphericCloudLayerInspector()
 
         AddComponentFloatRowWithDrag<Layer>(ctx.Parent, "Occlusion", layer->Occlusion, w, e, n,
             undo, "Change Cloud Occlusion",
-            [](Layer& u, float v) { u.Occlusion = std::clamp(v, 0.0f, 1.0f); },
+            [](Layer& u, float v) { u.Occlusion = Math::Clamp01(v); },
             0.55f, "Self-shadowing amount for heavier regions", {}, 0.0f, 1.0f);
 
         AddComponentFloatRowWithDrag<Layer>(ctx.Parent, "HistoryWeight", layer->HistoryWeight, w, e, n,

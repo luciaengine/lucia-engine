@@ -1,14 +1,12 @@
 #include "Inspectors/MeasureInspector.h"
 
 #include "InspectorRegistry.h"
-#include "Editor/Entities/EditorComponentTraits.h"
-#include "Inspectors/InspectorColorSwatchRow.h"
 #include "Platform/SystemMetrics.h"
 
 #include "Components/Measure/MeasureComponent.h"
 #include "Editor/Entities/EditorECSHelpers.h"
 #include "EditorChangeNotifications.h"
-#include "Inspectors/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
 #include "UI/Controls/Label.h"
@@ -22,13 +20,15 @@
 #include <cstdio>
 #include <memory>
 #include <string>
-#include <utility>
 
 namespace GameEngine
 {
 namespace
 {
 
+constexpr float kSwatchSize = 20.0f;
+constexpr float kSwatchBorderRadius = 3.0f;
+constexpr uint32_t kSwatchBorderColor = 0xFF555555u;
 constexpr float kDefaultMeasureColor[4] = {1.0f, 0.78f, 0.22f, 1.0f};
 
 uint32_t MeasureColorToArgb(const float (&c)[4])
@@ -50,18 +50,34 @@ void ArgbToMeasureColor(uint32_t argb, float (&out)[4])
     out[3] = ((argb >> 24) & 0xFF) / 255.0f;
 }
 
+std::string FormatRgb(const float (&c)[4])
+{
+    char buf[48];
+    std::snprintf(buf, sizeof(buf), "(%.2f, %.2f, %.2f)", c[0], c[1], c[2]);
+    return buf;
+}
+
+void StyleSwatch(UIElement* swatch, uint32_t argb)
+{
+    if (!swatch)
+        return;
+
+    swatch->Style()
+        .Set(Style::Width, StyleLength::Px(kSwatchSize))
+        .Set(Style::Height, StyleLength::Px(kSwatchSize))
+        .Set(Style::MinWidth, StyleLength::Px(kSwatchSize))
+        .Set(Style::MinHeight, StyleLength::Px(kSwatchSize))
+        .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{kSwatchBorderRadius, kSwatchBorderRadius, kSwatchBorderRadius, kSwatchBorderRadius})
+        .Set(Style::BorderWidth, Box4{1.0f, 1.0f, 1.0f, 1.0f})
+        .Set(Style::BorderColor, BorderColorsTRBL{kSwatchBorderColor, kSwatchBorderColor, kSwatchBorderColor, kSwatchBorderColor})
+        .Set(Style::BackgroundColor, argb)
+        .Set(Style::Cursor, CursorStyle::Pointer);
+}
+
 } // namespace
 
 void RegisterMeasureInspector()
 {
-    {
-        Editor::EditorComponentTraits traits;
-        traits.Category = "Tools";
-        traits.InspectorIconClass = "inspector-section-icon-measure";
-        Editor::EditorComponentTraitsRegistry::Get().Register(
-            ECS::GetComponentTypeId<Components::MeasureComponent>(), std::move(traits));
-    }
-
     InspectorFn fn = [](const InspectorContext& ctx)
     {
         if (!ctx.Parent || !ctx.World || !ctx.Entity.IsValid())
@@ -81,13 +97,30 @@ void RegisterMeasureInspector()
         OpenColorPickerWindowFn openPicker = ctx.OpenColorPickerWindow;
         using namespace InspectorDrag;
 
-        const InspectorUI::ColorSwatchRow swatchRow = InspectorUI::AddColorSwatchRow(
-            ctx.Parent, "Color", "Measure color (click to open color picker; double-click to reset)",
-            MeasureColorToArgb(measure->Color),
-            InspectorUI::FormatColorRgb(measure->Color[0], measure->Color[1], measure->Color[2]));
-        Label* colorLabel = swatchRow.Title;
-        UIElement* swatchRaw = swatchRow.Swatch;
-        Label* rgbLabelRaw = swatchRow.Value;
+        UIElement* row = InspectorUI::AddRow(ctx.Parent);
+        Label* colorLabel = InspectorUI::AddLabel(row, "Color", "Measure color (click to open color picker; double-click to reset)");
+        if (colorLabel)
+            colorLabel->AddClass("inspector-label-no-drag");
+
+        UIElement* fieldContainer = InspectorUI::AddFieldContainer(row);
+        fieldContainer->Style()
+            .Set(Style::FlexDir, FlexDirection::Row)
+            .Set(Style::AlignItems, AlignItems::Center)
+            .Set(Style::Gap, StyleLength::Px(6.0f));
+
+        const uint32_t argb = MeasureColorToArgb(measure->Color);
+
+        auto swatch = std::make_unique<UIElement>();
+        UIElement* swatchRaw = swatch.get();
+        StyleSwatch(swatchRaw, argb);
+        fieldContainer->AddChild(std::move(swatch));
+
+        auto rgbLabel = std::make_unique<Label>();
+        rgbLabel->AddClass("inspector-text");
+        rgbLabel->SetText(FormatRgb(measure->Color));
+        rgbLabel->Style().Set(Style::Cursor, CursorStyle::Pointer);
+        Label* rgbLabelRaw = rgbLabel.get();
+        fieldContainer->AddChild(std::move(rgbLabel));
 
         // The picker's callbacks outlive an inspector rebuild: resolve the row through weak
         // refs instead of holding the freed widgets.
@@ -99,8 +132,8 @@ void RegisterMeasureInspector()
             Label* rgbLabel = rgbLabelRef.Get();
             if (!c || !swatch || !rgbLabel)
                 return;
-            InspectorUI::SetColorSwatchColor(swatch, MeasureColorToArgb(c->Color));
-            rgbLabel->SetText(InspectorUI::FormatColorRgb(c->Color[0], c->Color[1], c->Color[2]));
+            StyleSwatch(swatch, MeasureColorToArgb(c->Color));
+            rgbLabel->SetText(FormatRgb(c->Color));
         };
 
         auto clickHandler = [w, e, n, undo, openPicker, updateUI](UIEvent& ev)

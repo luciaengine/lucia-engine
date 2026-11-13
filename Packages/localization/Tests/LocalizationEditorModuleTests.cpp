@@ -1,3 +1,4 @@
+#include "Core/ApplicationPaths.h"
 // The localization package's editor module: the Localization panel is registered with an icon
 // class, the sheet the module contributes to the editor's cascade gives that class an image the
 // package ships, and the panel has one entry point, the panel menus (Window and the toolbar's
@@ -46,7 +47,7 @@ namespace
 // The package's assets, staged beside the suite under the package's mount alias.
 std::filesystem::path StagedPackageAssets()
 {
-    return GameEngine::PathUtils::GetExecutableDirectory() / "LocalizationEditorFixtures" /
+    return GameEngine::ApplicationPaths::GetExecutableDirectory() / "LocalizationEditorFixtures" /
            LocalizationPanel::kAssetSourceAlias;
 }
 

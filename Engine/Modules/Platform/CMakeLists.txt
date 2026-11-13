@@ -7,15 +7,14 @@ set(PLATFORM_SOURCES
 	Source/Thread.cpp
 )
 
-# Desktop-only implementations: GLFW clipboard and gamepad mapping, OS shell
+# Desktop-only implementations: GLFW clipboard, OS shell
 # integration, curl HTTP. The wasm list below carries a web-shaped counterpart
 # for each.
 if(NOT EMSCRIPTEN AND NOT GE_MOBILE)
 	list(APPEND PLATFORM_SOURCES
 		Source/Window.cpp
-		Source/Display.cpp
+		Source/Display/Display.cpp
 		Source/Clipboard.cpp
-		Source/Gamepad.cpp
 		Source/ControllerFeedback.cpp
 		Source/Shell.cpp
 		Source/HttpClient.cpp
@@ -23,7 +22,7 @@ if(NOT EMSCRIPTEN AND NOT GE_MOBILE)
 endif()
 
 # Path-to-menu-tree construction: pure string work, every platform.
-list(APPEND PLATFORM_SOURCES Source/ContextMenuBuilder.cpp)
+list(APPEND PLATFORM_SOURCES Source/ContextMenu/ContextMenuBuilder.cpp)
 
 # The request-header rule both HttpClient backends apply.
 list(APPEND PLATFORM_SOURCES Source/HttpHeaderRules.cpp)
@@ -31,10 +30,17 @@ list(APPEND PLATFORM_SOURCES Source/HttpHeaderRules.cpp)
 # A child process's environment, built from this process's: every platform.
 list(APPEND PLATFORM_SOURCES Source/Process.cpp)
 
-# Speech capture is available on the macOS desktop only.
+# The secret store (Platform/SecretStore.h): the name and value rules on every platform; the
+# store itself per platform below. The Linux store is chosen where libsecret is probed.
+list(APPEND PLATFORM_SOURCES Source/SecretStore/SecretStore.cpp)
+
+# Speech input (Platform/SpeechInput.h): the Speech framework on macOS, a stub that reports it
+# unavailable everywhere else.
 if(APPLE AND NOT GE_MOBILE)
-    list(APPEND PLATFORM_SOURCES Source/SpeechInput_mac.mm)
-    set_source_files_properties(Source/SpeechInput_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+	list(APPEND PLATFORM_SOURCES Source/SpeechInput_mac.mm)
+	# The one ARC file in the module: its session object owns AVFoundation and Speech objects
+	# across blocks, which manual retain/release would have to track by hand.
+	set_source_files_properties(Source/SpeechInput_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
 else()
     list(APPEND PLATFORM_SOURCES Source/SpeechInput_Stub.cpp)
 endif()
@@ -50,6 +56,7 @@ endif()
 # Platform-specific sources
 if(GE_MOBILE)
     include(Mobile.cmake)
+    list(APPEND PLATFORM_SOURCES Source/SecretStore/SecretStore_Stub.cpp)
 elseif(EMSCRIPTEN)
 	# SystemMetrics reuses the Linux TU's constant defaults (600 ms caret
 	# half-period, 400 ms double-click) until CSS-driven metrics arrive with
@@ -57,8 +64,7 @@ elseif(EMSCRIPTEN)
 	# Window/Display ride emscripten's JS GLFW (-s USE_GLFW=3): the canvas is
 	# the one "monitor" and the window. APIs its 3.3 header declares but the
 	# JS library does not implement are kept off the link: glfwGetError is
-	# shimmed inside Window.cpp, and the gamepad-mapping API gets its own web
-	# TU (Gamepad_Web.cpp) that reports no mapping.
+	# shimmed inside Window.cpp.
 	# Native toolbar and context menu reuse the Linux no-op TUs, which the
 	# editor already runs against: the engine draws its own menus, so nothing
 	# is lost by having no OS chrome to install them into. Shell, clipboard
@@ -68,59 +74,72 @@ elseif(EMSCRIPTEN)
 	# an executable must link -sWASMFS, or the link fails naming the backend.
 	list(APPEND PLATFORM_SOURCES
 		Source/Window.cpp
-		Source/Display.cpp
+		Source/Display/Display.cpp
 		Source/Theme_Stub.cpp
 		Source/HttpClient_Emscripten.cpp
-		Source/SystemMetrics_Linux.cpp
-		Source/SystemFonts_Web.cpp
-		Source/Toolbar_Stub.cpp
-		Source/ContextMenu_Stub.cpp
+		Source/SystemMetrics/SystemMetrics_Linux.cpp
+		Source/SystemFonts/SystemFonts_Web.cpp
+		Source/Toolbar/Toolbar_Stub.cpp
+		Source/ContextMenu/ContextMenu_Stub.cpp
 		Source/Clipboard_Web.cpp
-		Source/Gamepad_Web.cpp
 		Source/Shell_Web.cpp
 		Source/WebFileDownload.cpp
-		Source/WebView_Web.cpp
+		Source/WebView/WebView_Web.cpp
 		Source/WebEnvironment_Web.cpp
 		Source/WebPersistentStorage.cpp
+		Source/SecretStore/SecretStore_Stub.cpp
 	)
 elseif (WIN32)
 	list(APPEND PLATFORM_SOURCES
 		Source/OverlayWindow_Win32.cpp
-		Source/Toolbar_Win32.cpp
-		Source/ContextMenu_Win32.cpp
+		Source/Toolbar/Toolbar_Win32.cpp
+		Source/Toolbar/WindowFrame_Win32.cpp
+		Source/ContextMenu/ContextMenu_Win32.cpp
 		Source/MenuIconBitmap_Win32.cpp
 		Source/Theme_Win32.cpp
-        Source/SystemFonts_Win32.cpp
-        Source/SystemMetrics_Win32.cpp
-		Source/WebView_Win32.cpp
+        Source/SystemFonts/SystemFonts_Win32.cpp
+        Source/SystemMetrics/SystemMetrics_Win32.cpp
+		Source/WebView/WebView_Win32.cpp
+		Source/Utf8ToWide_Win32.cpp
+		Source/WebView/WebViewState.cpp
+		Source/WebView/WebViewEnvironment_Win32.cpp
+		Source/SecretStore/SecretStore_Win32.cpp
 	)
 elseif(APPLE)
 	list(APPEND PLATFORM_SOURCES
-		Source/Toolbar_mac.mm
-		Source/ContextMenu_mac.mm
+		Source/Toolbar/Toolbar_mac.mm
+		Source/ContextMenu/ContextMenu_mac.mm
 		Source/Theme_Stub.cpp
-        Source/SystemFonts_mac.mm
-        Source/SystemMetrics_mac.mm
+        Source/SystemFonts/SystemFonts_mac.mm
+        Source/SystemMetrics/SystemMetrics_mac.mm
         Source/Shell_mac.mm
         Source/ScreenColor_mac.mm
         Source/WindowInput_mac.mm
-        Source/Display_mac.mm
-		Source/WebView_mac.mm
+        Source/Display/Display_mac.mm
+		Source/WebView/WebView_mac.mm
+		Source/SecretStore/SecretStore_mac.cpp
 	)
 else()
 	list(APPEND PLATFORM_SOURCES
-		Source/Toolbar_Stub.cpp
-		Source/ContextMenu_Stub.cpp
+		Source/Toolbar/Toolbar_Stub.cpp
+		Source/ContextMenu/ContextMenu_Stub.cpp
 		Source/Theme_Stub.cpp
-        Source/SystemFonts_Linux.cpp
-        Source/SystemMetrics_Linux.cpp
-		Source/WebView_Linux.cpp
+        Source/SystemFonts/SystemFonts_Linux.cpp
+        Source/SystemMetrics/SystemMetrics_Linux.cpp
+		Source/WebView/WebView_Linux.cpp
 	)
+endif()
+
+if(NOT GE_MOBILE)
+    list(APPEND PLATFORM_SOURCES Source/Toolbar/ClientToolbar.cpp)
 endif()
 
 add_library(Platform OBJECT ${PLATFORM_SOURCES})
 
 target_compile_features(Platform PUBLIC cxx_std_20)
+if(APPLE AND NOT GE_MOBILE)
+    set_target_properties(Platform PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES)
+endif()
 
 # Public headers live under Engine/Modules/Platform/Include; Engine/Include
 # still holds Platform/Thread.h.
@@ -130,7 +149,8 @@ target_include_directories(Platform
         ${CMAKE_SOURCE_DIR}/Engine/Include
     PRIVATE
         Source
-        # Capabilities.cpp reads the JobSystem's blocking-thread ceiling.
+        # Capabilities.cpp reads the JobSystem's blocking-thread ceiling and available processors.
+        # Its call to JobSystem::AvailableProcessors::Query links through Engine, which links JobSystem.
         ${CMAKE_SOURCE_DIR}/Engine/Modules/JobSystem/Include
 )
 
@@ -140,7 +160,7 @@ if(GE_MOBILE)
     find_package(CURL REQUIRED)
     target_link_libraries(Platform PUBLIC SDL3::SDL3 PRIVATE CURL::libcurl)
 endif()
-target_link_libraries(Platform PUBLIC Logger Types)
+target_link_libraries(Platform PUBLIC Logger Types Mathematics PRIVATE Image)
 if(NOT EMSCRIPTEN AND NOT GE_MOBILE)
     find_package(glfw3 CONFIG REQUIRED)
     find_package(SDL2 2.26 CONFIG REQUIRED)
@@ -152,12 +172,22 @@ endif()
 	    # Required for AssocQueryStringW and related shell helpers used in
 	    # OpenScriptWithProject, and for DwmSetWindowAttribute used by
 	    # the theme helpers. dxgi: per-monitor HDR luminance via IDXGIOutput6::GetDesc1.
-	    target_link_libraries(Platform PRIVATE Shlwapi Dwmapi dwrite ole32 uuid User32 dxgi)
+	    # Advapi32: the Credential Manager calls of the secret store.
+	    target_link_libraries(Platform PRIVATE Shlwapi Dwmapi dwrite ole32 uuid User32 dxgi Advapi32)
+
+	    # WebView2: the loader's import library and <WebView2.h>, from the webview2 port vcpkg.json
+	    # declares for Windows. The Windows web view has no build without them.
+	    find_package(unofficial-webview2 CONFIG)
+	    if (NOT TARGET unofficial::webview2::webview2)
+	        message(FATAL_ERROR "The WebView2 SDK (vcpkg port 'webview2', declared in vcpkg.json) was not found. "
+	                            "Configure with the vcpkg toolchain file (CMAKE_TOOLCHAIN_FILE) so the port installs.")
+	    endif()
+	    target_link_libraries(Platform PRIVATE unofficial::webview2::webview2)
  endif()
 
 if (APPLE AND NOT GE_MOBILE)
     target_link_libraries(Platform PRIVATE "-framework CoreText" "-framework CoreFoundation" "-framework Cocoa" "-framework WebKit"
-        "-framework AVFoundation" "-framework Speech")
+        "-framework AVFoundation" "-framework Speech" "-framework Security")
 endif()
 
 # Emscripten sets UNIX; keep it out of the Linux desktop-integration probes.
@@ -179,24 +209,57 @@ if (UNIX AND NOT APPLE AND NOT EMSCRIPTEN AND NOT GE_MOBILE)
         endif()
     endif()
 
-    # WebKitGTK still needs pkg-config (not affected by vcpkg contamination)
-    find_package(PkgConfig QUIET)
-    if (PkgConfig_FOUND)
-        pkg_check_modules(WEBKIT2GTK QUIET webkit2gtk-4.0)
-        if (WEBKIT2GTK_FOUND)
-            target_compile_definitions(Platform PRIVATE GE_HAVE_WEBKITGTK=1)
-            target_include_directories(Platform PRIVATE ${WEBKIT2GTK_INCLUDE_DIRS})
-            target_link_libraries(Platform PRIVATE ${WEBKIT2GTK_LIBRARIES})
-        else()
-            target_compile_definitions(Platform PRIVATE GE_HAVE_WEBKITGTK=0)
-        endif()
-    else()
-        target_compile_definitions(Platform PRIVATE GE_HAVE_WEBKITGTK=0)
-    endif()
     # X11 is needed for direct Xlib calls in Window.cpp (cursor, always-on-top, screen color)
     find_package(X11 QUIET)
     if (X11_FOUND)
         target_link_libraries(Platform PRIVATE X11::X11)
+    endif()
+
+    # The web view is WebKitGTK 4.1 (GTK 3) in its own module, PlatformWebViewGtk, which
+    # WebView_Linux.cpp loads at run time: libEngine.so, and so the Player, never depends on
+    # WebKitGTK. The module is built when the WebKitGTK development package is installed; without
+    # it, CreateWebView returns nullptr.
+    set(WEBKITGTK_FOUND FALSE)
+    if (NOT CMAKE_CROSSCOMPILING)
+        find_package(PkgConfig QUIET)
+        if (PkgConfig_FOUND)
+            # System packages only: vcpkg's .pc files on CMAKE_PREFIX_PATH (harfbuzz, freetype2,
+            # zlib) fail the exact versions the system's GTK requires.
+            pkg_check_modules(WEBKITGTK QUIET IMPORTED_TARGET NO_CMAKE_PATH NO_CMAKE_ENVIRONMENT_PATH
+                webkit2gtk-4.1 gtk+-x11-3.0)
+            pkg_check_modules(LIBSECRET QUIET IMPORTED_TARGET NO_CMAKE_PATH NO_CMAKE_ENVIRONMENT_PATH libsecret-1)
+        endif()
+    endif()
+
+    # The secret store is libsecret, which needs a running secret service at run time. Without
+    # the development package the store reports NoStore and the editor names the environment
+    # variable instead.
+    if (LIBSECRET_FOUND)
+        target_sources(Platform PRIVATE Source/SecretStore/SecretStore_Linux.cpp)
+        target_link_libraries(Platform PRIVATE PkgConfig::LIBSECRET)
+        message(STATUS "libsecret ${LIBSECRET_VERSION} found: the secret store is built")
+    else()
+        target_sources(Platform PRIVATE Source/SecretStore/SecretStore_Stub.cpp)
+        message(STATUS "libsecret not found: the secret store reports NoStore. Install libsecret-devel "
+                       "(Fedora) or libsecret-1-dev (Debian, Ubuntu) to build it.")
+    endif()
+    if (WEBKITGTK_FOUND AND X11_FOUND)
+        add_library(PlatformWebViewGtk MODULE Source/WebView/WebView_Gtk.cpp Source/WebView/WebViewState.cpp)
+        target_compile_features(PlatformWebViewGtk PRIVATE cxx_std_20)
+        target_include_directories(PlatformWebViewGtk PRIVATE Source)
+        target_link_libraries(PlatformWebViewGtk PRIVATE Engine PkgConfig::WEBKITGTK X11::X11)
+        target_compile_options(PlatformWebViewGtk PRIVATE -Wall -Wextra -Wpedantic)
+        # The module records only the libraries it calls: WebKitGTK, GTK, GLib, Xlib and libEngine.
+        target_link_options(PlatformWebViewGtk PRIVATE -Wl,--as-needed)
+        # Xlib's macros (None, Status) would reach WebViewState.cpp in one unity TU.
+        set_target_properties(PlatformWebViewGtk PROPERTIES UNITY_BUILD OFF FOLDER "Engine/Modules")
+        target_compile_definitions(Platform PRIVATE GE_HAVE_WEBKITGTK=1
+            GE_WEBVIEW_GTK_MODULE="$<TARGET_FILE_NAME:PlatformWebViewGtk>")
+        message(STATUS "WebKitGTK ${WEBKITGTK_webkit2gtk-4.1_VERSION} found: the web view is built")
+    else()
+        target_compile_definitions(Platform PRIVATE GE_HAVE_WEBKITGTK=0)
+        message(STATUS "WebKitGTK 4.1 not found: the web view is not built. Install webkit2gtk4.1-devel "
+                       "(Fedora) or libwebkit2gtk-4.1-dev (Debian, Ubuntu) to build it.")
     endif()
 endif()
 
@@ -269,7 +332,42 @@ if(BUILD_TESTING)
         target_link_libraries(PlatformContextMenuTests PRIVATE "-framework AppKit")
     endif()
 
+    if(NOT GE_MOBILE)
+        add_executable(PlatformClientToolbarTests Tests/ClientToolbarTests.cpp)
+        target_include_directories(PlatformClientToolbarTests PRIVATE Source)
+        target_link_libraries(PlatformClientToolbarTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+        if(APPLE)
+            target_include_directories(PlatformClientToolbarTests PRIVATE $<TARGET_PROPERTY:glfw,INTERFACE_INCLUDE_DIRECTORIES>)
+        elseif(NOT EMSCRIPTEN AND NOT GE_MOBILE)
+            target_link_libraries(PlatformClientToolbarTests PRIVATE glfw)
+        endif()
+        target_compile_features(PlatformClientToolbarTests PRIVATE cxx_std_20)
+        ge_set_output_tests(PlatformClientToolbarTests)
+        ge_stage_runtime_dependencies(PlatformClientToolbarTests)
+        add_test(NAME PlatformClientToolbarTests COMMAND PlatformClientToolbarTests)
+        set_tests_properties(PlatformClientToolbarTests PROPERTIES RUN_SERIAL TRUE)
+
+    endif()
+
+    if(APPLE AND NOT GE_MOBILE)
+        add_executable(PlatformToolbarMacTests Tests/ToolbarMacTests.mm)
+        set_target_properties(PlatformToolbarMacTests PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES)
+        target_link_libraries(PlatformToolbarMacTests PRIVATE Engine GTest::gtest GTest::gtest_main "-framework Cocoa")
+        ge_set_output_tests(PlatformToolbarMacTests)
+        ge_stage_runtime_dependencies(PlatformToolbarMacTests)
+        add_test(NAME PlatformToolbarMacTests COMMAND PlatformToolbarMacTests)
+        set_tests_properties(PlatformToolbarMacTests PROPERTIES RUN_SERIAL TRUE)
+    endif()
+
     if (WIN32)
+        add_executable(PlatformTitleBarTests Tests/TitleBarTests.cpp)
+        target_compile_definitions(PlatformTitleBarTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+        target_link_libraries(PlatformTitleBarTests PRIVATE Engine glfw User32 GTest::gtest GTest::gtest_main)
+        ge_set_output_tests(PlatformTitleBarTests)
+        ge_stage_runtime_dependencies(PlatformTitleBarTests)
+        add_test(NAME PlatformTitleBarTests COMMAND PlatformTitleBarTests)
+        set_tests_properties(PlatformTitleBarTests PROPERTIES RUN_SERIAL TRUE)
+
         target_sources(PlatformContextMenuTests PRIVATE Tests/MenuIconBitmapTests.cpp)
 
         # One PNG and one SVG of the editor's real artwork, staged at the same
@@ -281,6 +379,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Icons/save.png"
                 "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Icons/DockLog.svg"
+                "${CMAKE_CURRENT_SOURCE_DIR}/Tests/Fixtures/menu-icon-partial-alpha.png"
                 "${CMAKE_CURRENT_SOURCE_DIR}/Tests/Fixtures/menu-icon-orientation.png"
                 "$<TARGET_FILE_DIR:PlatformContextMenuTests>/Assets/Icons/"
             COMMENT "Staging menu icon fixtures for PlatformContextMenuTests"
@@ -386,6 +485,64 @@ if(BUILD_TESTING)
     ge_set_output_tests(PlatformEnvironmentTests)
     ge_stage_runtime_dependencies(PlatformEnvironmentTests)
     add_test(NAME PlatformEnvironmentTests COMMAND PlatformEnvironmentTests)
+
+    # The real secret store of this system, under names unique to the run that the tests delete.
+    add_executable(PlatformSecretStoreTests
+        Tests/SecretStoreTests.cpp
+    )
+
+    target_link_libraries(PlatformSecretStoreTests
+        PRIVATE
+            Engine
+            GTest::gtest
+            GTest::gtest_main
+    )
+
+    ge_set_output_tests(PlatformSecretStoreTests)
+    ge_stage_runtime_dependencies(PlatformSecretStoreTests)
+    add_test(NAME PlatformSecretStoreTests COMMAND PlatformSecretStoreTests)
+
+    if(APPLE AND NOT GE_MOBILE)
+        add_executable(PlatformWebViewPageStyleTests Tests/WebViewPageStyleTests_mac.mm)
+        target_compile_features(PlatformWebViewPageStyleTests PRIVATE cxx_std_20)
+        target_compile_options(PlatformWebViewPageStyleTests PRIVATE -fobjc-arc)
+        target_include_directories(PlatformWebViewPageStyleTests PRIVATE Source)
+        target_link_libraries(PlatformWebViewPageStyleTests PRIVATE GTest::gtest_main "-framework Cocoa" "-framework WebKit")
+        ge_set_output_tests(PlatformWebViewPageStyleTests)
+        add_test(NAME PlatformWebViewPageStyleTests COMMAND PlatformWebViewPageStyleTests)
+        set_tests_properties(PlatformWebViewPageStyleTests PROPERTIES TIMEOUT 30)
+    endif()
+
+    # The web view's parts that need no window and no web engine. The helpers under test live
+    # in Source/WebView/ beside the backends.
+    if (WIN32)
+        add_executable(PlatformWebViewTests
+            Tests/Utf8ToWideTests.cpp
+            Tests/WebViewStateTests.cpp
+        )
+        target_link_libraries(PlatformWebViewTests
+            PRIVATE
+                Engine
+                GTest::gtest
+                GTest::gtest_main
+        )
+        target_include_directories(PlatformWebViewTests PRIVATE Source)
+        ge_set_output_tests(PlatformWebViewTests)
+        ge_stage_runtime_dependencies(PlatformWebViewTests)
+        add_test(NAME PlatformWebViewTests COMMAND PlatformWebViewTests)
+    elseif (TARGET PlatformWebViewGtk)
+        # The Linux module drives the same WebViewState; it is compiled into the module, not into
+        # libEngine.so, so the suite compiles it too.
+        add_executable(PlatformWebViewTests
+            Tests/WebViewStateTests.cpp
+            Source/WebView/WebViewState.cpp
+        )
+        target_link_libraries(PlatformWebViewTests PRIVATE GTest::gtest GTest::gtest_main)
+        target_include_directories(PlatformWebViewTests PRIVATE Source)
+        ge_set_output_tests(PlatformWebViewTests)
+        ge_stage_runtime_dependencies(PlatformWebViewTests)
+        add_test(NAME PlatformWebViewTests COMMAND PlatformWebViewTests)
+    endif()
 
     # Dependency regression for the Win32 patch carried by cmake/ports/glfw3
     # (active-window ownership in modifier-release polling). It links the same

@@ -1,7 +1,8 @@
 #include "EditorPanelManager.h"
 
+#include "Assets/AssetManager.h"
+#include "Core/Engine.h"
 #include "Docking/FloatingFrameHost.h"
-#include "Editor/Registries/EditorPanelRegistry.h"
 #include "EditorPanelIds.h"
 #include "Editor/Registries/EditorPanelRegistry.h"
 #include "Graph/GraphPanelFactory.h"
@@ -13,9 +14,10 @@
 #include "UI/UIElement.h"
 #include "UI/UIManager.h"
 #include "UI/UiContext.h"
+#include "Panels/BuildPanel.h"
 #include "Panels/SettingsPanel.h"
 #include "Panels/WebPanel.h"
-#include "SceneViewController.h"
+#include "SceneView/SceneViewController.h"
 #include "Editor/Settings/SceneViewSettings.h"
 
 #include "Core/CpuProfiler.h"
@@ -24,12 +26,36 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
-#include <functional>
+#include <filesystem>
 #include <string>
 #include <typeinfo>
 
 namespace GameEngine
 {
+
+namespace
+{
+// Panel launcher rows belong to platform menus, not the retained UI tree, so no
+// stylesheet can style them. The image each row shows is still authored in CSS
+// (`background-image` on the panel's tab-icon class, else the launcher's own
+// `menulist-icon`) and read back from the loaded cascade, so the URL exists in
+// one place. The platform menus resolve only the editor mount, and a package
+// panel's URL (`ai-assistant:Editor/Icons/...`) names a source only the asset
+// manager knows, so the row carries the resolved file. Empty when CSS declares
+// neither class or the URL names no registered source; the path is not checked
+// for a file, and a platform menu that cannot load it shows the row without an
+// icon, which beats a guessed one.
+std::string ResolvePanelMenuIconFile(const UIManager& ui, const std::string& iconClass)
+{
+    std::string url = UIStyleQuery::ResolveClassBackgroundImageUrl(ui.GetStylesheets(), iconClass);
+    if (url.empty())
+        url = UIStyleQuery::ResolveClassBackgroundImageUrl(ui.GetStylesheets(), "menulist-icon");
+    if (url.empty())
+        return url;
+    const std::filesystem::path file = EngineCore::GetInstance().GetAssetManager().ResolveAssetPath(url);
+    return file.empty() ? std::string{} : file.string();
+}
+} // namespace
 
 std::vector<EditorPanelManager::PanelMenuEntry> EditorPanelManager::GetPanelMenuEntries() const
 {
@@ -50,15 +76,7 @@ std::vector<EditorPanelManager::PanelMenuEntry> EditorPanelManager::GetPanelMenu
         entry.title = (panel && !panel->GetTitle().empty()) ? panel->GetTitle() : panelId;
         entry.iconClass = panel ? std::string(panel->GetTabIcon()) : std::string{};
         if (ui)
-        {
-            entry.iconPath = UIStyleQuery::ResolveClassBackgroundImageUrl(
-                ui->GetStylesheets(), entry.iconClass);
-            if (entry.iconPath.empty())
-            {
-                entry.iconPath = UIStyleQuery::ResolveClassBackgroundImageUrl(
-                    ui->GetStylesheets(), "menulist-icon");
-            }
-        }
+            entry.iconPath = ResolvePanelMenuIconFile(*ui, entry.iconClass);
         entries.push_back(std::move(entry));
     }
 
@@ -73,30 +91,27 @@ std::vector<EditorPanelManager::PanelMenuEntry> EditorPanelManager::GetPanelMenu
 
 // ---- Static helpers ----
 
+using EditorWindowContext = EditorPanelManager::EditorWindowContext;
+
+static DockspaceElement* FindDockspace(const EditorWindowContext& ctx)
+{
+    if (!ctx.ui)
+        return nullptr;
+    UIElement* rootEl = ctx.ui->GetRootElement();
+    return rootEl ? dynamic_cast<DockspaceElement*>(rootEl->FindById("dock"_sid)) : nullptr;
+}
+
 void EditorPanelManager::RebuildDockspace(EditorWindowContext* ctx)
 {
-    if (!ctx || !ctx->ui)
-        return;
-    if (auto* rootEl = ctx->ui->GetRootElement())
-    {
-        if (auto* el = rootEl->FindById("dock"))
-        {
-            if (auto* ds = dynamic_cast<DockspaceElement*>(el))
-            {
-                ds->RequestRebuildFromModel();
-            }
-        }
-    }
+    if (DockspaceElement* dockspace = ctx ? FindDockspace(*ctx) : nullptr)
+        dockspace->RequestRebuildFromModel();
 }
 
 void EditorPanelManager::RebuildDockspaceNow(EditorWindowContext* ctx, DockingManager* model)
 {
-    if (!ctx || !ctx->ui || !model)
+    if (!ctx || !model)
         return;
-    UIElement* rootEl = ctx->ui->GetRootElement();
-    if (!rootEl)
-        return;
-    auto* dockspace = dynamic_cast<DockspaceElement*>(rootEl->FindById("dock"));
+    DockspaceElement* dockspace = FindDockspace(*ctx);
     if (!dockspace)
         return;
 
@@ -171,108 +186,160 @@ static bool FindPathToLeafContainingPanel(DockNode* n, const std::string& panelI
     return FindPathToLeafContainingPanel(n->Second(), panelId, pathSoFar + "1", outPath);
 }
 
-// Docks `panelId` in a new split below the leaf holding anchorPanelId; the anchor
-// keeps anchorRatio of the height.
-static bool DockSplitBelowAnchor(DockingManager& docking, const std::string& panelId,
-                                 const std::string& anchorPanelId, float anchorRatio)
+static size_t CountDockTabs(const DockNode* node)
 {
-    std::string anchorPath;
-    if (!FindPathToLeafContainingPanel(docking.GetRoot(), anchorPanelId, "", anchorPath) ||
-        anchorPath.empty() ||
-        !docking.DockSplitSubtreeByPath(anchorPath, DockPosition::Bottom, panelId))
-        return false;
-    docking.SetSplitRatioByPath(anchorPath, anchorRatio);
-    docking.ActivateTab(panelId);
-    return true;
+    if (!node)
+        return 0;
+    if (node->IsLeaf())
+        return node->GetTabs().size();
+    return CountDockTabs(node->First()) + CountDockTabs(node->Second());
 }
 
-// Docks `panelId`, which is absent from the layout: as a tab in the leaf holding
-// preferredLeafPanelId when that panel is docked, else at the type's default
-// placement, else in the first leaf.
-static bool DockPanelIntoLayout(DockingManager& docking, const std::string& panelId,
-                                const std::string& preferredLeafPanelId,
-                                const Editor::EditorPanelTypeDescriptor& type)
+static bool FindPanelContainingElement(const DockingManager& docking, const DockNode* node, StringId elementId,
+                                       std::string& outPanelId)
 {
-    DockNode* root = docking.GetRoot();
-    if (!root)
+    if (!node)
         return false;
-
-    DockNode* targetLeaf = preferredLeafPanelId.empty()
-                               ? nullptr
-                               : EditorPanelManager::FindLeafContainingPanel(root, preferredLeafPanelId);
-    if (!targetLeaf)
+    if (!node->IsLeaf())
     {
-        // Package panels and panel types without an anchor join the bottom
-        // workspace stack.
-        const std::string anchor =
-            type.DefaultAnchorPanelId.empty() ? EditorPanelIds::Assets : type.DefaultAnchorPanelId;
-        if (type.DefaultSplitBelowAnchorRatio > 0.0f &&
-            DockSplitBelowAnchor(docking, panelId, anchor, type.DefaultSplitBelowAnchorRatio))
-            return true;
-        targetLeaf = EditorPanelManager::FindLeafContainingPanel(root, anchor);
+        return FindPanelContainingElement(docking, node->First(), elementId, outPanelId) ||
+               FindPanelContainingElement(docking, node->Second(), elementId, outPanelId);
     }
-    if (!targetLeaf)
-        targetLeaf = EditorPanelManager::FindFirstLeaf(root);
-    if (!targetLeaf)
-        return false;
-
-    targetLeaf->AddTab(panelId);
-    docking.ActivateTab(panelId);
-    return true;
+    for (const std::string& tabId : node->GetTabs())
+    {
+        UIElement* panel = tabId.empty() ? nullptr : docking.GetPanel(tabId);
+        if (panel && panel->FindById(elementId))
+        {
+            outPanelId = tabId;
+            return true;
+        }
+    }
+    return false;
 }
 
-// ---- Panel types ----
-
-void EditorPanelManager::AdoptPanelOfType(const std::string& panelId, UIElement* panel,
-                                          std::string_view typeKey)
+// The id of the panel in ctx that holds the UI focus: its tab, its mount or an element inside it.
+static std::string FindFocusedPanelId(const EditorWindowContext& ctx)
 {
-    Editor::EditorPanelTypeDescriptor type;
-    if (!panel || !Editor::EditorPanelRegistry::Get().TryGetPanelType(typeKey, type))
-        return;
-    m_PanelTypeKeys[panelId] = std::string(typeKey);
-    if (!type.Update)
-        return;
-    RegisterUpdateCallback(
-        panel,
-        [panel, update = std::move(type.Update)](const Editor::PanelUpdateContext& context) {
-            update(*panel, context);
-        },
-        type.UpdateWhenHidden);
+    if (!ctx.ui || !ctx.docking)
+        return {};
+    const std::string& focusId = ctx.ui->GetFocusedElementId();
+    if (focusId.empty())
+        return {};
+    DockNode* root = ctx.docking->GetRoot();
+    for (std::string_view prefix : {std::string_view("tab:"), std::string_view("mount:")})
+    {
+        if (!std::string_view(focusId).starts_with(prefix))
+            continue;
+        std::string panelId = focusId.substr(prefix.size());
+        if (EditorPanelManager::FindLeafContainingPanel(root, panelId))
+            return panelId;
+    }
+    std::string panelId;
+    (void)FindPanelContainingElement(*ctx.docking, root, HashStringId(focusId), panelId);
+    return panelId;
 }
 
-Editor::EditorPanelTypeDescriptor EditorPanelManager::PanelTypeOf(const std::string& panelId) const
+// Posted, not called: the settings read and the row rebuild must not stall the frame that shows the Build tab.
+static void PostBuildPanelVersionsAndRequirementsRefresh(EditorPanelManager& manager, EditorApplication::EditorWindowContext& ctx)
 {
-    Editor::EditorPanelTypeDescriptor type;
-    if (const auto it = m_PanelTypeKeys.find(panelId); it != m_PanelTypeKeys.end())
-        Editor::EditorPanelRegistry::Get().TryGetPanelType(it->second, type);
-    return type;
+    if (!ctx.ui)
+        return;
+    if (UIElement* root = ctx.ui->GetRootElement())
+        root->PostAction([&manager]() {
+            if (auto* buildPanel = manager.FindFirstPanelOfType<BuildPanel>())
+            {
+                buildPanel->RefreshVersionsFromSettings();
+                buildPanel->RecheckExportRequirements();
+            }
+        });
 }
 
-void EditorPanelManager::QueueShownHook(EditorWindowContext* ctx, const std::string& panelId,
-                                        const Editor::EditorPanelTypeDescriptor& type)
+static const char* DefaultPanelLeafAnchor(const std::string& panelId)
 {
-    if (!type.OnShown || !ctx->ui)
-        return;
-    UIElement* root = ctx->ui->GetRootElement();
-    UIElement* panel = ctx->docking->GetPanel(panelId);
-    if (!root || !panel)
-        return;
-    // Deferred so the hook's work (settings I/O, row rebuilds) never runs in
-    // the call stack that changes the dock.
-    root->PostAction([this, panel, onShown = type.OnShown]() {
-        if (IsStoredPanel(panel))
-            onShown(*panel);
-    });
-}
+    if (panelId == EditorPanelIds::Hierarchy ||
+        panelId == EditorPanelIds::Settings || panelId == EditorPanelIds::Todo ||
+        panelId == EditorPanelIds::Bookmarks)
+        return EditorPanelIds::Hierarchy;
 
-bool EditorPanelManager::IsStoredPanel(const UIElement* panel) const
-{
-    return m_PanelStorage &&
-           std::any_of(m_PanelStorage->begin(), m_PanelStorage->end(),
-                       [panel](const std::unique_ptr<UIElement>& stored) { return stored.get() == panel; });
+    if (panelId == EditorPanelIds::Inspector || panelId == EditorPanelIds::Inspector2 ||
+        panelId == EditorPanelIds::UndoHistory || panelId == EditorPanelIds::Log)
+        return EditorPanelIds::Inspector;
+
+    /* Per-asset graph docks are "{kind tab}:{guid}" (MakeGraphDockIdForAsset).
+       They belong with their kind tab in the centre workspace, not in whatever
+       leaf happens to come first in the tree. */
+    for (const char* graphTab : {EditorPanelIds::NodeGraph, EditorPanelIds::AnimationGraph,
+                                 EditorPanelIds::GameLogicGraph})
+    {
+        const std::size_t len = std::strlen(graphTab);
+        if (panelId.size() > len && panelId.compare(0, len, graphTab) == 0 && panelId[len] == ':')
+            return EditorPanelIds::SceneView;
+    }
+
+    if (panelId == EditorPanelIds::SceneView || panelId == EditorPanelIds::GameView ||
+        panelId == EditorPanelIds::NodeGraph || panelId == EditorPanelIds::AnimationGraph ||
+        panelId == EditorPanelIds::GameLogicGraph || panelId == EditorPanelIds::Web ||
+        panelId == EditorPanelIds::Diff || panelId == EditorPanelIds::UiDemo ||
+        panelId == EditorPanelIds::ScriptEditor || panelId == EditorPanelIds::VisualProfiler ||
+        panelId == EditorPanelIds::RenderGraph || panelId == EditorPanelIds::Vram)
+        return EditorPanelIds::SceneView;
+
+    if (panelId == EditorPanelIds::AssetView)
+        return EditorPanelIds::AssetView;
+
+    // Assets, script/CPU diagnostics, animation tools, project utilities, and
+    // package-contributed panels default to the bottom workspace stack.
+    return panelId == EditorPanelIds::Assets ? EditorPanelIds::ScriptErrors : EditorPanelIds::Assets;
 }
 
 // ---- Generic panel activation ----
+
+void EditorPanelManager::ShowOrActivatePanelAtDefaultPlacement(
+    EditorWindowContext* ctx, const std::string& panelId)
+{
+    // These panels intentionally own a dedicated split below Hierarchy. Their
+    // specialized paths still restore the session's last-closed placement first.
+    if (panelId == EditorPanelIds::Build)
+    {
+        ShowOrActivateBuildPanel(ctx);
+        return;
+    }
+    if (panelId == EditorPanelIds::Mixer)
+    {
+        ShowOrActivateMixerPanel(ctx);
+        return;
+    }
+
+    // Package panels declare their preferred workspace in their descriptor;
+    // keep that registry policy in the panel manager rather than making the
+    // application hub know about package-specific placement metadata.
+    Editor::EditorPanelDescriptor descriptor;
+    if (Editor::EditorPanelRegistry::Get().TryGetPanel(panelId, descriptor) &&
+        !descriptor.DefaultDockAnchorPanelId.empty())
+    {
+        ShowOrActivatePanel(ctx, panelId, descriptor.DefaultDockAnchorPanelId);
+        return;
+    }
+
+    ShowOrActivatePanel(ctx, panelId, DefaultPanelLeafAnchor(panelId));
+}
+
+bool EditorPanelManager::ActivateOpenPanel(EditorWindowContext* ctx, const std::string& panelId)
+{
+    if (!ctx || !ctx->docking)
+        return false;
+    if (m_FloatingFrames && m_FloatingFrames->Raise(panelId))
+        return true;
+    if (!ctx->docking->ActivateTab(panelId))
+        return false;
+
+    // Try localized activation patch; fall back to full rebuild.
+    DockspaceElement* dockspace = FindDockspace(*ctx);
+    const bool patched = dockspace && dockspace->RequestActivationPatch(panelId);
+    if (!patched)
+        RebuildDockspace(ctx);
+    return true;
+}
 
 void EditorPanelManager::ShowOrActivatePanel(EditorWindowContext* ctx, const std::string& panelId,
                                              const std::string& preferredLeafPanelId)
@@ -280,50 +347,56 @@ void EditorPanelManager::ShowOrActivatePanel(EditorWindowContext* ctx, const std
     if (!ctx || !ctx->docking)
         return;
 
-    const Editor::EditorPanelTypeDescriptor type = PanelTypeOf(panelId);
-    if (m_FloatingFrames && m_FloatingFrames->Raise(panelId))
+    if (!ActivateOpenPanel(ctx, panelId))
     {
-        QueueShownHook(ctx, panelId, type);
-        return;
-    }
-
-    if (ctx->docking->ActivateTab(panelId))
-    {
-        // Try localized activation patch; fall back to full rebuild.
-        bool patched = false;
-        if (ctx->ui)
+        if (m_IsLayoutDirty && m_IsLayoutDirty() && ctx->docking->RestoreLastClosedTab(panelId))
         {
-            if (auto* rootEl = ctx->ui->GetRootElement())
+            RebuildDockspace(ctx);
+        }
+        else
+        {
+            if (DockNode* root = ctx->docking->GetRoot())
             {
-                if (auto* el = rootEl->FindById("dock"))
+                DockNode* targetLeaf = nullptr;
+                if (!preferredLeafPanelId.empty())
+                    targetLeaf = FindLeafContainingPanel(root, preferredLeafPanelId);
+                /* The caller's anchor can name a panel that was never docked in
+                   this layout (a graph kind tab nobody opened yet). Fall back to
+                   where this panel belongs by default before settling for the
+                   first leaf in the tree, which is the Hierarchy corner. */
+                if (!targetLeaf)
+                    targetLeaf = FindLeafContainingPanel(root, DefaultPanelLeafAnchor(panelId));
+                if (!targetLeaf)
+                    targetLeaf = FindFirstLeaf(root);
+                if (targetLeaf)
                 {
-                    if (auto* ds = dynamic_cast<DockspaceElement*>(el))
-                        patched = ds->RequestActivationPatch(panelId);
+                    targetLeaf->AddTab(panelId);
+                    ctx->docking->ActivateTab(panelId);
+                    RebuildDockspace(ctx);
                 }
             }
         }
-        if (!patched)
-            RebuildDockspace(ctx);
-    }
-    else if (m_IsLayoutDirty && m_IsLayoutDirty() && ctx->docking->RestoreLastClosedTab(panelId))
-    {
-        RebuildDockspace(ctx);
-    }
-    else if (DockPanelIntoLayout(*ctx->docking, panelId, preferredLeafPanelId, type))
-    {
-        RebuildDockspace(ctx);
     }
 
     RefreshPanelUI(ctx, panelId);
-    QueueShownHook(ctx, panelId, type);
 }
 
-// ---- Panel-specific activations ----
+// ---- Named panel activations (delegate to generic) ----
+
+void EditorPanelManager::ShowOrActivateUIDemoPanel(EditorWindowContext* ctx)
+{
+    ShowOrActivatePanel(ctx, EditorPanelIds::UiDemo, EditorPanelIds::SceneView);
+}
+
+void EditorPanelManager::ShowOrActivateSettingsPanel(EditorWindowContext* ctx)
+{
+    ShowOrActivatePanel(ctx, EditorPanelIds::Settings, EditorPanelIds::Hierarchy);
+}
 
 void EditorPanelManager::ShowOrActivateSettingsPanelToCategory(EditorWindowContext* ctx,
                                                                SettingsCategory category)
 {
-    ShowOrActivatePanel(ctx, EditorPanelIds::Settings);
+    ShowOrActivateSettingsPanel(ctx);
     if (auto* panel = FindFirstPanelOfType<SettingsPanel>())
         panel->RequestShowCategory(category);
 }
@@ -331,9 +404,14 @@ void EditorPanelManager::ShowOrActivateSettingsPanelToCategory(EditorWindowConte
 void EditorPanelManager::ShowOrActivateSettingsPanelToRegistryCategory(EditorWindowContext* ctx,
                                                                        std::string_view categoryId)
 {
-    ShowOrActivatePanel(ctx, EditorPanelIds::Settings);
+    ShowOrActivateSettingsPanel(ctx);
     if (auto* panel = FindFirstPanelOfType<SettingsPanel>())
         panel->RequestShowRegistryCategory(categoryId);
+}
+
+void EditorPanelManager::ShowOrActivateScriptEditorPanel(EditorWindowContext* ctx)
+{
+    ShowOrActivatePanel(ctx, EditorPanelIds::ScriptEditor, EditorPanelIds::SceneView);
 }
 
 void EditorPanelManager::ShowOrActivateGraphPanel(EditorWindowContext* ctx)
@@ -355,15 +433,148 @@ void EditorPanelManager::ShowOrActivateGraphPanel(EditorWindowContext* ctx)
     ShowOrActivatePanel(ctx, EditorPanelIds::NodeGraph, EditorPanelIds::SceneView);
 }
 
-void EditorPanelManager::ShowOrActivateHelpPanel()
+void EditorPanelManager::ShowOrActivateAnimationPanel(EditorWindowContext* ctx)
+{
+    ShowOrActivatePanel(ctx, EditorPanelIds::Animation, EditorPanelIds::Assets);
+}
+
+void EditorPanelManager::ShowOrActivateTodoPanel(EditorWindowContext* ctx)
+{
+    ShowOrActivatePanel(ctx, EditorPanelIds::Todo, EditorPanelIds::Hierarchy);
+}
+
+void EditorPanelManager::ShowOrActivateBookmarksPanel(EditorWindowContext* ctx)
+{
+    ShowOrActivatePanel(ctx, EditorPanelIds::Bookmarks, EditorPanelIds::Hierarchy);
+}
+
+void EditorPanelManager::ShowOrActivateUndoHistoryPanel(EditorWindowContext* ctx)
+{
+    ShowOrActivatePanel(ctx, EditorPanelIds::UndoHistory, EditorPanelIds::Inspector);
+}
+
+void EditorPanelManager::ShowOrActivateBuildPanel(EditorWindowContext* ctx)
+{
+    if (!ctx || !ctx->docking)
+        return;
+
+    if (ActivateOpenPanel(ctx, EditorPanelIds::Build))
+    {
+        RefreshPanelUI(ctx, EditorPanelIds::Build);
+        PostBuildPanelVersionsAndRequirementsRefresh(*this, *ctx);
+        return;
+    }
+
+    if (m_IsLayoutDirty && m_IsLayoutDirty() &&
+        ctx->docking->RestoreLastClosedTab(EditorPanelIds::Build))
+    {
+        RebuildDockspace(ctx);
+        RefreshPanelUI(ctx, EditorPanelIds::Build);
+        return;
+    }
+
+    // When Build is not in the layout, dock it below Hierarchy (~70% / ~30% split).
+    DockNode* root = ctx->docking->GetRoot();
+    if (root)
+    {
+        std::string hierarchyPath;
+        if (FindPathToLeafContainingPanel(root, "Hierarchy", "", hierarchyPath) &&
+            !hierarchyPath.empty() &&
+            ctx->docking->DockSplitSubtreeByPath(hierarchyPath, DockPosition::Bottom, EditorPanelIds::Build))
+        {
+            ctx->docking->SetSplitRatioByPath(hierarchyPath, 0.70f); // ~70% top (Hierarchy), ~30% bottom (Build)
+            ctx->docking->ActivateTab(EditorPanelIds::Build);
+            RebuildDockspace(ctx);
+            RefreshPanelUI(ctx, EditorPanelIds::Build);
+            PostBuildPanelVersionsAndRequirementsRefresh(*this, *ctx);
+            return;
+        }
+        // Fallback: add to first available leaf
+        DockNode* targetLeaf = FindFirstLeaf(root);
+        if (targetLeaf)
+        {
+            targetLeaf->AddTab(EditorPanelIds::Build);
+            ctx->docking->ActivateTab(EditorPanelIds::Build);
+            RebuildDockspace(ctx);
+            RefreshPanelUI(ctx, EditorPanelIds::Build);
+            PostBuildPanelVersionsAndRequirementsRefresh(*this, *ctx);
+            return;
+        }
+    }
+}
+
+void EditorPanelManager::ShowOrActivateMixerPanel(EditorWindowContext* ctx)
+{
+    if (!ctx || !ctx->docking)
+        return;
+
+    if (ActivateOpenPanel(ctx, EditorPanelIds::Mixer))
+    {
+        RefreshPanelUI(ctx, EditorPanelIds::Mixer);
+        return;
+    }
+
+    if (m_IsLayoutDirty && m_IsLayoutDirty() &&
+        ctx->docking->RestoreLastClosedTab(EditorPanelIds::Mixer))
+    {
+        RebuildDockspace(ctx);
+        RefreshPanelUI(ctx, EditorPanelIds::Mixer);
+        return;
+    }
+
+    // When Mixer is not in the layout, open it in the same position as Build (below Hierarchy).
+    DockNode* root = ctx->docking->GetRoot();
+    if (root)
+    {
+        std::string hierarchyPath;
+        if (FindPathToLeafContainingPanel(root, "Hierarchy", "", hierarchyPath) &&
+            !hierarchyPath.empty() &&
+            ctx->docking->DockSplitSubtreeByPath(hierarchyPath, DockPosition::Bottom, EditorPanelIds::Mixer))
+        {
+            // Smaller top ratio so Mixer opens ~30px taller than default (71.25% top / 28.75% bottom)
+            ctx->docking->SetSplitRatioByPath(hierarchyPath, 0.7125f);
+            ctx->docking->ActivateTab(EditorPanelIds::Mixer);
+            RebuildDockspace(ctx);
+            RefreshPanelUI(ctx, EditorPanelIds::Mixer);
+            return;
+        }
+        // Fallback: add to first available leaf
+        DockNode* targetLeaf = FindFirstLeaf(root);
+        if (targetLeaf)
+        {
+            targetLeaf->AddTab(EditorPanelIds::Mixer);
+            ctx->docking->ActivateTab(EditorPanelIds::Mixer);
+            RebuildDockspace(ctx);
+            RefreshPanelUI(ctx, EditorPanelIds::Mixer);
+            return;
+        }
+    }
+}
+
+void EditorPanelManager::ShowOrActivateWebPanel(EditorWindowContext* ctx)
+{
+    if (!ctx || !ctx->docking)
+        return;
+
+    // Open in center (same tab group as Scene/Game/NodeGraph view)
+    ShowOrActivatePanel(ctx, EditorPanelIds::Web, EditorPanelIds::SceneView);
+
+    if (auto* webPanel = FindFirstPanelOfType<WebPanel>())
+    {
+        if (ctx->window)
+            webPanel->SetWindow(ctx->window.get());
+    }
+}
+
+void EditorPanelManager::ShowOrActivateHelpPanel(std::string_view page)
 {
     if (!m_Windows || m_Windows->empty() || !m_Windows->front())
         return;
 
     EditorWindowContext* ctx = m_Windows->front().get();
-    ShowOrActivatePanel(ctx, EditorPanelIds::Web);
+    ShowOrActivateWebPanel(ctx);
     if (auto* webPanel = FindFirstPanelOfType<WebPanel>())
-        webPanel->Navigate(WebPanel::kHelpDocsURL);
+        webPanel->Navigate(std::string(WebPanel::kHelpDocsURL) + std::string(page));
 }
 
 // ---- Panel closing ----
@@ -372,112 +583,59 @@ void EditorPanelManager::CloseActiveTabOrWindow(EditorWindowContext* ctx)
 {
     if (!ctx || !ctx->docking)
         return;
-
-    auto* root = ctx->docking->GetRoot();
+    DockNode* root = ctx->docking->GetRoot();
     if (!root)
         return;
 
-    auto rebuildDockspace = [&]()
+    // Close the tab that holds the focus. With no focus in a panel, close the active tab of the first leaf.
+    std::string panelId = FindFocusedPanelId(*ctx);
+    if (panelId.empty())
     {
-        // Clearing focus is important: UIManager consumes keys whenever focusId is non-empty.
-        // If the focused element lived inside a closed tab, focusId can become stale and "eat" keyboard input.
-        if (ctx->ui)
-        {
-            ctx->ui->ClearFocus();
-        }
+        if (DockNode* leaf = FindFirstLeaf(root))
+            panelId = leaf->GetActivePanelId();
+    }
+    if (!panelId.empty())
+    {
+        ClosePanelTab(ctx, panelId);
+        return;
+    }
+
+    if (!IsMainWindow(ctx) && ctx->window)
+        ctx->window->RequestClose();
+}
+
+void EditorPanelManager::ClosePanelTab(EditorWindowContext* ctx, const std::string& panelId)
+{
+    if (!ctx || !ctx->docking || panelId.empty() || !FindLeafContainingPanel(ctx->docking->GetRoot(), panelId))
+        return;
+
+    // UIManager consumes every key while its focus id is set, so a focus left inside a closed panel eats input.
+    if (ctx->ui && FindFocusedPanelId(*ctx) == panelId)
+        ctx->ui->ClearFocus();
+
+    const bool isFloatingWindow = !IsMainWindow(ctx);
+    if (isFloatingWindow && CountDockTabs(ctx->docking->GetRoot()) <= 1)
+    {
+        if (ctx->window)
+            ctx->window->RequestClose();
+        return;
+    }
+
+    if (DockspaceElement* dockspace = FindDockspace(*ctx))
+        (void)dockspace->RequestTabRemoval(panelId);
+    // The patch can refuse before it changes the model; the model then removes the tab and the view rebuilds.
+    if (FindLeafContainingPanel(ctx->docking->GetRoot(), panelId))
+    {
+        (void)ctx->docking->RemoveTab(panelId);
         RebuildDockspace(ctx);
-    };
-
-    auto closePanelId = [&](const std::string& panelId) -> bool
-    {
-        if (panelId.empty())
-            return false;
-        if (!ctx->docking->RemoveTab(panelId))
-            return false;
-
-        rebuildDockspace();
-
-        // If the docking tree is now empty and this is a floating window, close it.
-        if (m_Windows && ctx->docking->IsEmpty() && !m_Windows->empty() && ctx != (*m_Windows)[0].get())
-        {
-            if (ctx->window)
-                ctx->window->RequestClose();
-        }
-        return true;
-    };
-
-    // Prefer closing the tab that currently owns focus (e.g., focused TextField in Inspector).
-    if (ctx->ui)
-    {
-        const std::string& focusId = ctx->ui->GetFocusedElementId();
-        if (!focusId.empty())
-        {
-            // Fast-path: focus may be on a dock UI element id that encodes the panel id.
-            auto stripPrefix = [&](const std::string& full, const char* prefix) -> std::string
-            {
-                const size_t n = std::strlen(prefix);
-                if (full.size() >= n && full.rfind(prefix, 0) == 0)
-                    return full.substr(n);
-                return {};
-            };
-
-            std::string direct = stripPrefix(focusId, "tab:");
-            if (direct.empty())
-                direct = stripPrefix(focusId, "mount:");
-            if (!direct.empty() && closePanelId(direct))
-            {
-                return;
-            }
-
-            // Otherwise, search the docking tree for a panel subtree containing the focused element id.
-            std::function<bool(DockNode*, std::string&)> findFocusedPanel = [&](DockNode* n, std::string& outPanelId) -> bool
-            {
-                if (!n)
-                    return false;
-                if (n->IsLeaf())
-                {
-                    for (const auto& tabId : n->GetTabs())
-                    {
-                        if (tabId.empty())
-                            continue;
-                        UIElement* panel = ctx->docking->GetPanel(tabId);
-                        if (panel && panel->FindById(focusId))
-                        {
-                            outPanelId = tabId;
-                            return true;
-                        }
-                    }
-                    return false;
-                }
-                return findFocusedPanel(n->First(), outPanelId) || findFocusedPanel(n->Second(), outPanelId);
-            };
-
-            std::string focusedPanelId;
-            if (findFocusedPanel(root, focusedPanelId) && closePanelId(focusedPanelId))
-            {
-                return;
-            }
-        }
     }
+    if (isFloatingWindow && ctx->docking->IsEmpty() && ctx->window)
+        ctx->window->RequestClose();
+}
 
-    // Fallback: close the active tab in the first leaf.
-    DockNode* leaf = FindFirstLeaf(root);
-    if (!leaf)
-        return;
-
-    const std::string& activePanelId = leaf->GetActivePanelId();
-    if (activePanelId.empty())
-    {
-        // No active tab to close; if this is a floating window, close the window itself.
-        if (m_Windows && !m_Windows->empty() && ctx != (*m_Windows)[0].get()) // Don't close main window
-        {
-            if (ctx->window)
-                ctx->window->RequestClose();
-        }
-        return;
-    }
-
-    (void)closePanelId(activePanelId);
+bool EditorPanelManager::IsMainWindow(const EditorWindowContext* ctx) const
+{
+    return m_Windows && !m_Windows->empty() && ctx == m_Windows->front().get();
 }
 
 void EditorPanelManager::RegisterUpdateCallback(UIElement* panel, UpdateCallback callback, bool alwaysUpdate)
@@ -542,7 +700,7 @@ void EditorPanelManager::UpdatePanels(Rendering::IDevice* device,
                                        Rendering::RenderGraph::RGFrame* rg2Frame)
 {
     GE_CPU_PROFILE_SCOPE("EditorPanelManager.UpdatePanels");
-    const Editor::PanelUpdateContext ctx{device, renderDoc, rg2Frame};
+    const PanelUpdateContext ctx{device, renderDoc, rg2Frame};
     m_UpdatingPanels = true;
 
     // Per-panel breakdown: each callback gets its own CpuProfiler scope named by the

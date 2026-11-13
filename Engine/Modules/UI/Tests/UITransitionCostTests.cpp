@@ -20,6 +20,7 @@
 // caches, same content.
 
 #include "IsolatedUIFixture.h"
+#include "UIBenchStats.h"
 
 #include "UI/UIElement.h"
 #include "UI/UIManager.h"
@@ -36,59 +37,19 @@
 using GameEngine::UIElement;
 using GameEngine::UIManager;
 using GameEngine::UITesting::IsolatedUIFixture;
+using GameEngine::UITesting::kBenchConfig;
+using GameEngine::UITesting::PrintBenchHeader;
+using GameEngine::UITesting::PrintBenchRow;
+using GameEngine::UITesting::Summarize;
 
 namespace
 {
-
-#ifdef NDEBUG
-constexpr const char* kConfig = "Release";
-#else
-constexpr const char* kConfig = "Debug";
-#endif
 
 constexpr int kWarmupFrames = 12;
 // 0.15s at the fixture's fixed 16ms step = 9.4 frames; 12 covers the tail.
 constexpr int kTransitionFrames = 12;
 constexpr int kControlFrames = 20;
 
-struct Stats
-{
-    double Median = 0.0;
-    double Min = 0.0;
-    double Max = 0.0;
-    double Mean = 0.0;
-    size_t N = 0;
-};
-
-Stats Summarize(std::vector<double> v)
-{
-    Stats s{};
-    if (v.empty())
-        return s;
-    std::sort(v.begin(), v.end());
-    s.N = v.size();
-    s.Min = v.front();
-    s.Max = v.back();
-    s.Median = v[v.size() / 2];
-    double sum = 0.0;
-    for (double d : v)
-        sum += d;
-    s.Mean = sum / static_cast<double>(v.size());
-    return s;
-}
-
-void PrintRow(const char* label, const Stats& s)
-{
-    std::printf("  %-40s  %8.4f  %8.4f  %8.4f  %8.4f   %zu\n", label, s.Median, s.Mean, s.Min,
-                s.Max, s.N);
-}
-
-void PrintHeader(const char* title)
-{
-    std::printf("\n=== %s | config=%s | machine=win11-x64 ===\n", title, kConfig);
-    std::printf("  %-40s  %8s  %8s  %8s  %8s   %s\n", "metric (ms)", "median", "mean", "min", "max",
-                "n");
-}
 
 std::string BuildPanelXml(int rows)
 {
@@ -189,11 +150,11 @@ double StepAndRecord(IsolatedUIFixture& fx, FrameSample& s)
 
 void PrintSample(const char* name, const FrameSample& s, int frames)
 {
-    PrintRow("  GenAllPrimitivesMs", Summarize(s.Gen));
-    PrintRow("  TotalMs (Update, profiler)", Summarize(s.Total));
-    PrintRow("  TransitionMs (Advance)", Summarize(s.Transition));
-    PrintRow("  CascadeComputeMs", Summarize(s.Cascade));
-    PrintRow("  wall Update+Render (independent clock)", Summarize(s.Wall));
+    PrintBenchRow("  GenAllPrimitivesMs", Summarize(s.Gen));
+    PrintBenchRow("  TotalMs (Update, profiler)", Summarize(s.Total));
+    PrintBenchRow("  TransitionMs (Advance)", Summarize(s.Transition));
+    PrintBenchRow("  CascadeComputeMs", Summarize(s.Cascade));
+    PrintBenchRow("  wall Update+Render (independent clock)", Summarize(s.Wall));
     std::printf("  %s: regen_skipped=%u/%d  drainFrames=%u  regenCause=0x%X  elements=%u\n", name,
                 s.Skipped, frames, s.DrainFrames, s.CauseOr, s.Elements);
     std::printf("  %s: per-frame regenCause (0x1=StyleDirty MarkDirty, 0x40=HasActiveTransitions):",
@@ -298,7 +259,7 @@ void RunHoverTransitionCost(int rows, bool transitionOnAllRows)
     const size_t primitives = CountPrimitives(fx, rows);
 
     std::printf("\n\n########## T1  rows=%d  transition declared on %s  config=%s ##########\n",
-                rows, transitionOnAllRows ? "ALL rows (.row)" : "ONE row (#row5)", kConfig);
+                rows, transitionOnAllRows ? "ALL rows (.row)" : "ONE row (#row5)", kBenchConfig);
     std::printf("  emitted primitives across the tree = %zu  (x %zu B = %.1f KB per full "
                 "upload, per frame-in-flight slice)\n",
                 primitives, sizeof(GameEngine::UI::UIPrimitive),
@@ -308,7 +269,7 @@ void RunHoverTransitionCost(int rows, bool transitionOnAllRows)
     FrameSample idle;
     for (int i = 0; i < kControlFrames; ++i)
         StepAndRecord(fx, idle);
-    PrintHeader("T1a CONTROL: idle frames (nothing dirty)");
+    PrintBenchHeader("T1a CONTROL: idle frames (nothing dirty)");
     PrintSample("idle", idle, kControlFrames);
 
     // --- control: incremental drain ---------------------------------------
@@ -320,7 +281,7 @@ void RunHoverTransitionCost(int rows, bool transitionOnAllRows)
         row->MarkDirty(UIElement::VisualDirty);
         StepAndRecord(fx, drain);
     }
-    PrintHeader("T1b CONTROL: one element VisualDirty per frame (drain path)");
+    PrintBenchHeader("T1b CONTROL: one element VisualDirty per frame (drain path)");
     PrintSample("drain", drain, kControlFrames);
 
     // --- hover in ----------------------------------------------------------
@@ -330,7 +291,7 @@ void RunHoverTransitionCost(int rows, bool transitionOnAllRows)
     FrameSample in;
     for (int i = 0; i < kTransitionFrames; ++i)
         StepAndRecord(fx, in);
-    PrintHeader("T1c HOVER IN: one row transitions background-color 0.15s");
+    PrintBenchHeader("T1c HOVER IN: one row transitions background-color 0.15s");
     PrintSample("hover-in", in, kTransitionFrames);
 
     // Let it settle so hover-out starts from a quiet tree.
@@ -342,7 +303,7 @@ void RunHoverTransitionCost(int rows, bool transitionOnAllRows)
     FrameSample out;
     for (int i = 0; i < kTransitionFrames; ++i)
         StepAndRecord(fx, out);
-    PrintHeader("T1d HOVER OUT: the same row transitions back");
+    PrintBenchHeader("T1d HOVER OUT: the same row transitions back");
     PrintSample("hover-out", out, kTransitionFrames);
 
     const double idleGen = Summarize(idle.Gen).Median;
@@ -355,7 +316,7 @@ void RunHoverTransitionCost(int rows, bool transitionOnAllRows)
     const double drainWall = Summarize(drain.Wall).Median;
     const double inWall = Summarize(in.Wall).Median;
 
-    std::printf("\n  DELTAS (median, ms) — %s\n", kConfig);
+    std::printf("\n  DELTAS (median, ms) — %s\n", kBenchConfig);
     std::printf("    GenAllPrimitives : idle %.4f | drain %.4f | hover %.4f | hover-idle %+.4f | "
                 "hover-drain %+.4f\n",
                 idleGen, drainGen, inGen, inGen - idleGen, inGen - drainGen);
@@ -393,7 +354,7 @@ void RunTransitionScaling(const char* rowOverflow)
 {
     std::printf("\n\n########## T2  transition cost vs panel size  rowOverflow=%s  config=%s "
                 "##########\n",
-                rowOverflow, kConfig);
+                rowOverflow, kBenchConfig);
     std::printf("  visible rows are ~23 in EVERY arm (560px clip / 24px row); only total rows "
                 "change\n");
     std::printf("  %-6s %-9s %-8s %-9s %-9s %-11s %-12s %-12s\n", "rows", "elements", "prims",

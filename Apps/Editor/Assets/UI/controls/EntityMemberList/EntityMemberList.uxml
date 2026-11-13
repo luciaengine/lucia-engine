@@ -1,0 +1,7 @@
+<!-- EntityMemberList (Apps/Editor/Source/UI/Controls/EntityMemberList/EntityMemberList.h): the heading,
+     and the text that shows when the list has no rows. The rows follow this element in the control.
+     The classes are the contract with EntityMemberList.cpp. -->
+<UIElement class="entity-member-header">
+  <Label class="entity-member-heading" />
+  <Label class="entity-member-empty" />
+</UIElement>

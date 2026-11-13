@@ -1,6 +1,6 @@
 #include "SceneView/SceneViewEntityLinks.h"
 
-#include "SceneViewController.h"
+#include "SceneView/SceneViewController.h"
 #include "UI/Controls/EntityLink.h"
 
 #include <utility>

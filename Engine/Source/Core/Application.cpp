@@ -4,9 +4,10 @@
 #include "Memory/FrameMemory.h"
 #include "Logger/Logger.h"
 #include "Logger/FileSink.h"
+#include "Input/Gamepad/GamepadBackend.h"
 #include "Input/GamepadEdgeTracker.h"
 #include "Input/GamepadFrame.h"
-#include "Input/GamepadPolling.h"
+#include "Input/Gamepad/GamepadPoller.h"
 #include "Input/InputSystem.h"
 #include "Platform/Environment.h"
 #include "Platform/ApplicationScriptApi.h"
@@ -16,6 +17,7 @@
 #include "Core/NvtxRange.h"
 #include "Core/Time.h"
 #include <chrono>
+#include <cmath>
 #include <optional>
 #include <thread>
 #include <utility>
@@ -116,7 +118,20 @@ bool Application::Initialize() {
 	    // Create a shared InputSystem instance for the application. Derived
 	    // applications (Editor, games) can configure actions/contexts via
 	    // GetInputSystem(), while the main loop handles per-frame pumping.
+#if defined(GE_PLATFORM_MOBILE)
+    // SDL's mobile subsystems must exist before the backend's discovery job can start.
+    if (!m_Config.Headless && !Platform::Window::Initialize())
+    {
+        EngineCore::GetInstance().Shutdown();
+        return false;
+    }
+#endif
 	    m_InputSystem = std::make_unique<Input::InputSystem>();
+	    // Gamepad discovery starts on a blocking job; frames read no pad until it returns.
+	    // A headless application reads no gamepad, so it starts no backend.
+	    if (!m_Config.Headless)
+	        m_GamepadPoller = std::make_unique<Input::GamepadPoller>(EngineCore::GetInstance().GetJobSystem(),
+	                                                                 Input::CreatePlatformGamepadBackend());
 	    // Expose input to Engine-level services (e.g. ScriptingABI) via a non-owning pointer.
 	    EngineCore::GetInstance().SetInputSystem(m_InputSystem.get());
 
@@ -185,6 +200,9 @@ void Application::Shutdown() {
     Memory::Detail::StopFrameLoop();
 #endif
 
+    // The poller's start channel must go before the engine's job system.
+    m_GamepadPoller.reset();
+
     // Clear the Engine-level non-owning pointer to application-owned input.
     EngineCore::GetInstance().SetInputSystem(nullptr);
     
@@ -207,7 +225,7 @@ void Application::RouteGamepadPoll()
     // the application's own InputSystem sees only what the game left; axes and
     // connection go to every stage, consumable by none.
     Input::GamepadFrame frame;
-    Input::ReadGamepadFrame(frame);
+    m_GamepadPoller->Read(frame);
 
     // Named on the first thing there is to route rather than up front: a poll
     // with no pad in any slot, now or a frame ago, reports nothing, and naming
@@ -286,7 +304,7 @@ bool Application::Tick() {
 	        //    This ensures that input for the current frame is visible to
 	        //    both application logic and engine systems in the same frame.
 	        const auto tPoll0 = std::chrono::high_resolution_clock::now();
-	        if (!m_Config.Headless)
+	        if (m_GamepadPoller)
 	            RouteGamepadPoll();
 	        const auto tPoll1 = std::chrono::high_resolution_clock::now();
 	        phases.PollEventsMs = MsBetween(tPoll0, tPoll1);
@@ -388,7 +406,8 @@ bool Application::Tick() {
 	        // Close the frame's NVTX range before any throttling below.
 	        frameRange.reset();
 
-        // Frame rate limiting, only on request: GE_FRAME_CAP set to a positive
+        // Frame rate limiting, only on request: an application cap takes precedence
+        // over GE_FRAME_CAP. The environment variable set to a positive
         // rate (e.g. 60, 120) holds each frame to it with a CPU wait. Unset,
         // empty, 0 or unparsable means no limiter, in every application: with
         // VSync on, present paces the frame, and an application that turns VSync
@@ -404,6 +423,10 @@ bool Application::Tick() {
         {
             if (m_Config.Headless)
                 targetFps = GetFixedFrameRate();
+        }
+        else if (m_FrameRateCapFps > 0.0)
+        {
+            targetFps = m_FrameRateCapFps;
         }
         else
         {
@@ -559,6 +582,11 @@ void Application::UpdateTiming() {
     auto& metrics = Debug::DebugMetrics::Get();
     metrics.PushSample("Time/FPS", m_CurrentFps);
     metrics.PushSample("Time/FrameMs", frameMs);
+}
+
+void Application::SetFrameRateCap(double fps)
+{
+    m_FrameRateCapFps = std::isfinite(fps) && fps > 0.0 ? fps : 0.0;
 }
 
 void Application::SetFixedFrameRate(double fps)

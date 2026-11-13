@@ -30,11 +30,6 @@ void ModifierKeyState::ApplyKeyEvent(int key, bool released, int mods)
     Derive(mods, ignoreMask);
 }
 
-void ModifierKeyState::ApplyEventMask(int mods)
-{
-    ApplyLiveMask(mods);
-}
-
 void ModifierKeyState::ApplyLiveMask(int mods)
 {
     // The live mask cannot tell the two sides apart: a modifier it reports

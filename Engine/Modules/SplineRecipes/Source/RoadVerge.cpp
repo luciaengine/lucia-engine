@@ -56,7 +56,7 @@ SG::SplineStripStation VergeStation(const Components::SplineExtrude& recipe, con
     }
     verge.HalfWidthLeft = left ? recipe.VergeWidth : SG::kAreaLidInsetMeters;
     verge.HalfWidthRight = left ? SG::kAreaLidInsetMeters : recipe.VergeWidth;
-    verge.MitreSides = 0;
+    verge.MiterSides = 0;
     verge.GroundOffset = groundOffset;
     verge.TopOffset = 0.0f;
     verge.RiseScale = 1.0f;

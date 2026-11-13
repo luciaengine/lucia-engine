@@ -17,6 +17,7 @@
 #include "ECS/World.h"
 #include "ECSModules/Rendering/SkeletonStore.h"
 #include "Engine/Rendering/ViewRegistry.h"
+#include "Engine/Rendering/RenderOrigin.h"
 
 #include <algorithm>
 #include <cmath>
@@ -40,21 +41,21 @@ void BoneLODPolicy::GatherViews(const ViewRegistry& views, uint64 worldId, float
 {
     for (const auto& view : views.GetViews())
     {
-        const uint32 mask = view.ActiveRenderLayerMask();
+        const uint32 mask = view.ActiveRenderLayerMask().Bits;
         if (mask == 0u || (view.worldId != 0u && view.worldId != worldId))
             continue;
         FrameView entry;
         entry.LayerMask = mask;
         if (const auto* camera = views.FindCameraData(view.cameraId))
         {
-            std::copy_n(camera->cameraPos, 3u, entry.View.CameraPos);
-            entry.View.ProjScaleY = std::abs(camera->proj[5]);
+            entry.Eye = CameraEye(*camera);
+            entry.View.ProjScaleY = std::abs(camera->proj[1][1]);
             entry.View.LodBiasGlobal = globalBias;
-            entry.Orthographic = camera->cameraPos[3] == 1.0f;
+            entry.Orthographic = camera->cameraPos.w == 1.0f;
             entry.Valid = entry.View.ProjScaleY > 0.0f && std::isfinite(entry.View.ProjScaleY) &&
-                std::isfinite(globalBias) && std::isfinite(camera->cameraPos[0]) &&
-                std::isfinite(camera->cameraPos[1]) && std::isfinite(camera->cameraPos[2]) &&
-                (camera->cameraPos[3] == 0.0f || camera->cameraPos[3] == 1.0f);
+                std::isfinite(globalBias) && std::isfinite(entry.Eye.X) &&
+                std::isfinite(entry.Eye.Y) && std::isfinite(entry.Eye.Z) &&
+                (camera->cameraPos.w == 0.0f || camera->cameraPos.w == 1.0f);
         }
         m_Views.push_back(entry);
     }
@@ -139,7 +140,8 @@ void BoneLODPolicy::Accumulate(ECS::World& world, const AssetManager& assets, co
         return;
     }
 
-    const auto box = consumer.Bounds->Box.TransformToAABB(consumer.Transform->matrix);
+    const auto basisMatrix = consumer.Transform->ToMatrix4x4(Mathematics::Vector3{});
+    const auto box = consumer.Bounds->Box.TransformToAABB(basisMatrix.Data());
     if (box.IsEmpty())
     {
         m_ForceFull.insert(reference.runtimeId);
@@ -165,9 +167,11 @@ void BoneLODPolicy::Accumulate(ECS::World& world, const AssetManager& assets, co
         auto projection = view.View;
         if (consumer.LOD)
             projection.LodBiasGlobal += consumer.LOD->Bias;
+        const Mathematics::WorldPosition center = consumer.Transform->GetPosition() + sphere.center;
+        const Mathematics::Vector3 relativeCenter = center - view.Eye;
         const float coverage = view.Orthographic
             ? radius * projection.ProjScaleY * std::exp2(projection.LodBiasGlobal)
-            : Hlod::ClusterCoverage(projection, sphere.center.v, radius);
+            : Hlod::ClusterCoverage(projection, relativeCenter.v, radius);
         const float demand = coverage / settings->second.SwitchCoverage;
         if (!std::isfinite(demand))
             m_ForceFull.insert(reference.runtimeId);

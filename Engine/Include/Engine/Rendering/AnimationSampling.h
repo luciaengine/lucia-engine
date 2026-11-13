@@ -36,8 +36,7 @@ void SampleAnimationPose(const SkeletonData& skeleton,
                          float time,
                          std::vector<float>* outNodeWorldMatrices,
                          std::vector<float>* outCompactSkinMatrices,
-                         PoseSampleWorkspace& workspace,
-                         const Animation::BoneEvaluationPlan* plan = nullptr);
+                         PoseSampleWorkspace& workspace);
 
 /// Wrap a time at or beyond lapEnd into the lap in bounded work. Finite times
 /// before lapEnd stay unchanged; non-finite times or invalid laps return lapStart.
@@ -54,6 +53,12 @@ class ClipStore;
 // ref, a speed of 0 and a time set before the call (a seek) cross nothing.
 void TickAnimatorRef(Components::AnimatorRef& anim, ClipStore& clips, float32 deltaTime,
                      Animation::AnimationEventCollector* events);
+
+// Lerp locals in `current` toward `previous` at alpha 0 (previous) .. 1 (current).
+// Marks every bone dirty so the skin walk rebuilds. Capacities unchanged.
+void BlendLocalPoses(PoseSampleWorkspace& current,
+                     const PoseSampleWorkspace& previous,
+                     float32 alpha);
 
 // These entry points do not retarget across rigs: they sample a clip onto its
 // own skeleton. Cross-rig humanoid retargeting is the GPU-resident pipeline in

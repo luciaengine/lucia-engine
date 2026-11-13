@@ -12,7 +12,7 @@
 //
 //  1. GEOMETRY — the station polyline, on its own. A SplinePath volume's geometry
 //     is the arc-length resample, not the curve behind it, and the offline
-//     instrument that audits Hobbiton's ground reproduces THIS object. Its
+//     instrument that audits an island scene's ground reproduces THIS object. Its
 //     resampling rule, its segment-nearest query and its bounds are pinned
 //     directly, because a divergence here reads downstream as a small plausible
 //     offset rather than as a failure.
@@ -33,6 +33,8 @@
 // (-128 + 2*sx, -128 + 2*sz) and world (0, 0) is sample (64, 64).
 
 #include <gtest/gtest.h>
+
+#include "TerrainTestHelpers.h"
 
 #include "Components/Spline/SplineComponent.h"
 #include "Components/Terrain/Terrain.h"
@@ -56,6 +58,7 @@
 #include <chrono>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -122,10 +125,7 @@ TerrainHandle CreateBakedTerrain(TerrainService& svc)
 {
     const TerrainHandle handle = svc.CreateTerrain(MakeTestConfig());
     auto* data = svc.GetTerrainData(handle);
-    FillHeightfieldBaseRegion(data->Heightfield, Components::TerrainBaseSource::ProceduralNoise,
-                              nullptr, 0, 0,
-                              static_cast<int32>(kHeightmapDim) - 1,
-                              static_cast<int32>(kHeightmapDim) - 1);
+    TerrainTests::SeedNoiseBaseHeightmap(svc, data->Heightfield);
     data->MarkFullDirty();
     svc.RebuildQuadtree(handle);
     data->ResetSplatmapAndCommitRange();
@@ -135,9 +135,9 @@ TerrainHandle CreateBakedTerrain(TerrainService& svc)
 Components::WorldTransform IdentityAt(float32 x, float32 y, float32 z)
 {
     Components::WorldTransform xf{};
-    xf.matrix[12] = x;
-    xf.matrix[13] = y;
-    xf.matrix[14] = z;
+    xf.Position.X = x;
+    xf.Position.Y = y;
+    xf.Position.Z = z;
     return xf;
 }
 
@@ -150,7 +150,7 @@ ECS::EntityHandle CreateTerrainEntity(ECS::World& world, TerrainHandle handle)
     terrain.HeightScale = kHeightScale;
     terrain.TerrainDataHandle = handle.Index;
     terrain.TerrainDataGeneration = handle.Generation;
-    terrain.BaseSource = Components::TerrainBaseSource::ProceduralNoise;
+    TerrainTests::UseNoiseBaseHeightmap(terrain);
     world.AddComponentImmediate<Components::Terrain>(e, terrain);
     world.AddComponentImmediate<Components::WorldTransform>(e, IdentityAt(0.0f, 0.0f, 0.0f));
     return e;
@@ -404,7 +404,7 @@ TEST(TerrainRouteGeometry, ResampleDividesTheRouteIntoEqualIntervals)
     svc.RebuildCache(handle);
 
     RoutePolyline polyline;
-    BuildRoutePolyline(*data, 1.0f, polyline);
+    BuildRoutePolyline(*data, 1.0f, 0.0f, polyline);
 
     ASSERT_TRUE(polyline.IsValid());
     // ceil(10 / 1) = 10 intervals, so 11 stations.
@@ -436,7 +436,7 @@ TEST(TerrainRouteGeometry, SpacingIsAnUpperBoundAndIsClampedFromBelow)
 
     // A route that is not a whole number of steps long still ends on its end.
     RoutePolyline uneven;
-    BuildRoutePolyline(*data, 2.0f, uneven);
+    BuildRoutePolyline(*data, 2.0f, 0.0f, uneven);
     ASSERT_TRUE(uneven.IsValid());
     EXPECT_EQ(uneven.Stations.size(), 3u) << "ceil(3 / 2) = 2 intervals";
     EXPECT_NEAR(uneven.Stations.back().X, 3.0f, 1e-3f);
@@ -445,13 +445,13 @@ TEST(TerrainRouteGeometry, SpacingIsAnUpperBoundAndIsClampedFromBelow)
     // Scene text is untrusted: a zero or negative spacing is a station count of
     // infinity, and must clamp rather than hang.
     RoutePolyline degenerate;
-    BuildRoutePolyline(*data, 0.0f, degenerate);
+    BuildRoutePolyline(*data, 0.0f, 0.0f, degenerate);
     ASSERT_TRUE(degenerate.IsValid());
     EXPECT_LE(degenerate.Stations.size(),
               static_cast<std::size_t>(3.0f / kMinRouteStationSpacing) + 2u);
 
     RoutePolyline negative;
-    BuildRoutePolyline(*data, -5.0f, negative);
+    BuildRoutePolyline(*data, -5.0f, 0.0f, negative);
     EXPECT_EQ(negative.Stations.size(), degenerate.Stations.size())
         << "a negative spacing must land on the same floor a zero one does";
 }
@@ -850,7 +850,7 @@ TEST(TerrainFlattenPoolContracts, RegionBakeOfAMovedRouteMatchesAFullBake)
         if (moveAfterAuthoring)
         {
             auto* xf = world.GetComponentForWrite<Components::WorldTransform>(lowRoute);
-            xf->matrix[14] = kMovedZ;
+            xf->Position.Z = kMovedZ;
         }
         return lowRoute;
     };
@@ -872,7 +872,7 @@ TEST(TerrainFlattenPoolContracts, RegionBakeOfAMovedRouteMatchesAFullBake)
 
     auto* xf = worldA.GetComponentForWrite<Components::WorldTransform>(lowRoute);
     ASSERT_NE(xf, nullptr);
-    xf->matrix[14] = kMovedZ;
+    xf->Position.Z = kMovedZ;
 
     systemA.Update(worldA, 1.0f / 60.0f);
 
@@ -916,7 +916,7 @@ TEST(TerrainFlattenPoolContracts, RegionBakeOfAMovedRouteMatchesAFullBake)
 // the spline SDF are both unoptimised, and not by the same factor.
 TEST(TerrainFlattenPoolTiming, DISABLED_PooledVsPlainFlattenFullBake)
 {
-    constexpr int kRoutes = 12;   // Hobbiton's approach count
+    constexpr int kRoutes = 12;   // a large island scene's approach count
     constexpr int kRepeats = 20;
 
     // Three arms. Every pooled flatten pays an accumulator — there is no in-place
@@ -940,7 +940,7 @@ TEST(TerrainFlattenPoolTiming, DISABLED_PooledVsPlainFlattenFullBake)
             for (int r = 0; r < kRoutes; ++r)
             {
                 // Routes fanned across the terrain, each resampled at 0.5 m like
-                // Hobbiton's, so the station count per route is realistic.
+                // an authored scene's, so the station count per route is realistic.
                 const float32 z = -60.0f + static_cast<float32>(r) * 10.0f;
                 const ECS::EntityHandle e = CreateSplineEntity(
                     world, splineSvc,
@@ -998,8 +998,8 @@ TEST(TerrainPoolParity, EmitsTheFixtureTheOfflineTwinIsHeldTo)
     // reading source and transcribing, which is how a 1.1 cm offset survived four
     // of them. This writes what the engine ACTUALLY composed on the synthetic
     // scene: the station polylines its bake evaluated, and the base and baked
-    // height at a line of probes across the crossing. Hobbiton's
-    // Tools/pool_parity.py recomputes the baked column from the stations and the
+    // height at a line of probes across the crossing. The content
+    // project's Tools/pool_parity.py recomputes the baked column from the stations and the
     // base column and must reproduce every row; its committed copy of this file
     // is Tools/fixtures/pool_parity.json.
     //
@@ -1115,7 +1115,7 @@ TEST(TerrainPoolParity, EmitsTheFixtureTheOfflineTwinIsHeldTo)
             // curve-vs-polyline residual that used to land in the mask is zero by
             // construction. Resampling a claim finer than its volume asked for is
             // what left the twin evaluating a curve the engine never did.
-            BuildRoutePolyline(*spline, vol.StationSpacing, entry.Polyline);
+            BuildRoutePolyline(*spline, vol.StationSpacing, vol.Falloff, entry.Polyline);
             if (const auto* claim = world.GetComponent<Components::TerrainGroundClaimEffect>(e))
             {
                 entry.Kind = "claim";
@@ -1522,7 +1522,7 @@ TEST(TerrainFlattenPoolContracts, RegionBakeWithAMemberOutsideTheRegionMatchesFu
         if (moveAfterAuthoring)
         {
             auto* xf = world.GetComponentForWrite<Components::WorldTransform>(nearRoute);
-            xf->matrix[14] = kSlide;
+            xf->Position.Z = kSlide;
         }
         return nearRoute;
     };
@@ -1541,7 +1541,7 @@ TEST(TerrainFlattenPoolContracts, RegionBakeWithAMemberOutsideTheRegionMatchesFu
     const uint64 cursor = dataA->HeightfieldVersion;
     auto* xf = worldA.GetComponentForWrite<Components::WorldTransform>(nearRoute);
     ASSERT_NE(xf, nullptr);
-    xf->matrix[14] = kSlide;
+    xf->Position.Z = kSlide;
     systemA.Update(worldA, 1.0f / 60.0f);
 
     DirtyRegionLog::Region dirty;
@@ -2196,7 +2196,7 @@ TEST(TerrainClaimMask, ASelfClaimBelowAnUnpooledEffectHoldsItBack)
 // -------------------------------------------------------- curvature residual --
 
 // How far the analytic Catmull-Rom parts from the station polyline through it, at
-// Hobbiton's lane geometry.
+// a large island scene's lane geometry.
 //
 // WHAT THIS NUMBER NOW MEANS. It used to be the residual that reached a route's
 // blend: a corridor evaluated the polyline while the ground claim beside it
@@ -2253,7 +2253,7 @@ TEST(TerrainRouteCurvature, DISABLED_CurveVsPolylineAtLaneGeometry)
         svc.RebuildCache(handle);
 
         RoutePolyline polyline;
-        BuildRoutePolyline(*spline, kSpacing, polyline);
+        BuildRoutePolyline(*spline, kSpacing, 0.0f, polyline);
         ASSERT_TRUE(polyline.IsValid()) << arm.Name;
 
         float32 maxDistanceDelta = 0.0f;
@@ -2268,7 +2268,7 @@ TEST(TerrainRouteCurvature, DISABLED_CurveVsPolylineAtLaneGeometry)
                 if (dPoly > kClaimRadius + kClaimFalloff + 1.0f)
                     continue; // outside the shape ramp on both evaluators
                 const float32 dCurve =
-                    Spline::SignedDistanceToSplineBandXZ(*spline, x, z) + kClaimRadius;
+                    Spline::SignedDistanceToSplineBandXZ(*spline, x, z, std::numeric_limits<float32>::infinity()) + kClaimRadius;
                 const float32 weightPoly =
                     ShapeFalloffWeight(kClaimRadius - dPoly, kClaimFalloff, 0.0f);
                 const float32 weightCurve =

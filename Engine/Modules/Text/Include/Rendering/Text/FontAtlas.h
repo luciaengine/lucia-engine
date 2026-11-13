@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <filesystem>
 #include <array>
 #include <memory>
 #include <optional>
@@ -64,7 +63,6 @@ struct AtlasPixels
 
 // Forward declarations — defined in FontAtlas_Internal.h.
 struct ShapingOutput;
-class TextShaper;
 struct ShapedWidthCache;
 
 // Out-of-line deleter so the unique_ptr<ShapedWidthCache> member never requires
@@ -79,7 +77,7 @@ using ShapedWidthCachePtr = std::unique_ptr<ShapedWidthCache, ShapedWidthCacheDe
 class FontAtlas
 {
   public:
-    FontAtlas();
+    FontAtlas() = default;
     // Out-of-line: the ShapedWidthCachePtr member references ShapedWidthCache,
     // which is internal-only.
     ~FontAtlas();
@@ -116,13 +114,6 @@ class FontAtlas
     // Initialize from a memory buffer and set base pixel size used for atlas generation
     bool LoadFontBytes(const unsigned char* bytes, size_t size, unsigned pixelSize);
 
-    // Ordered application-supplied fallback files. Configure before loading the primary face.
-    // No language-to-font policy or font discovery is performed by the atlas.
-    bool SetFallbackFonts(std::vector<std::filesystem::path> fonts);
-    // HarfBuzz language hint; does not select fonts or recreate glyph resources.
-    bool SetTextLanguage(std::string_view language);
-    uint64_t GetLayoutRevision() const { return m_LayoutRevision; }
-
     // Shaping-aware text measurement using HarfBuzz when available.
     //
     // letterSpacingPx (CSS letter-spacing, device px) is added once per
@@ -144,20 +135,9 @@ class FontAtlas
     // Unified measurement API: returns both metrics and caret map so callers can
     // use a single source of truth for layout, caret positioning and selection.
     // Prefer this for new code and for UI components that need caret/selection.
-    struct TextCluster
-    {
-        uint32_t ByteStart = 0;
-        uint32_t ByteEnd = 0;
-        float Left = 0;
-        float Right = 0;
-    };
     struct MeasureResult
     {
         TextMetrics metrics;
-        std::vector<TextCluster> Clusters;
-        std::vector<std::pair<float, float>> SelectionRanges(size_t start, size_t end) const;
-        size_t NextVisualCaret(size_t current, bool right) const;
-        size_t CaretAtX(float x) const;
         std::vector<float> caretXByByte; // UTF-8 byte insertion points [0..size()], in render pixels
     };
 
@@ -188,10 +168,15 @@ class FontAtlas
     // Optional debug info about the loaded FreeType face.
     std::optional<FaceDebugInfo> GetFaceDebugInfo() const;
 
-    // Build a caret map: x positions (in render pixels) at each UTF-8 byte insertion point [0..utf8.size()].
+    // Build a caret map: x positions (in render pixels) at each UTF-8 byte insertion point
+    // [firstByte..utf8.size()], indexed from firstByte and measured from its insertion point.
     // Uses HarfBuzz shaping when available to ensure positions match rendered geometry.
+    // The whole string is the tail's context: it takes the string's direction, script and
+    // language, and shaping starts before an earlier point HarfBuzz marks safe to break
+    // at, not at firstByte (a code point boundary that may sit inside a ligature or before a
+    // combining mark), so a tail maps as it does inside the whole string.
     bool BuildCaretMapUtf8(std::string_view utf8, float pixelSize, std::vector<float>& outXByByte,
-                           float letterSpacingPx = 0.0f, std::vector<TextCluster>* clusters = nullptr);
+                           float letterSpacingPx = 0.0f, size_t firstByte = 0);
 
     // Query: does this font contain a glyph for the given Unicode codepoint?
     bool HasGlyph(uint32_t codepoint) const;
@@ -234,18 +219,9 @@ class FontAtlas
     // (check isColor to distinguish). Caller is responsible for mapping page indices
     // to GPU texture handles via UITextureRegistry.
     // Glyph advances, quad extents and carets retain the fractional pixelSize;
-    // atlas storage uses its fixed raster size. Line-box metrics resolve at
-    // that same requested size using the font's line-metric rounding rules.
+    // atlas storage uses its fixed raster size.
     void ShapeText(std::string_view utf8, float pixelSize, ShapeResult& out,
                    uint32_t color = 0xFF000000u, float letterSpacingPx = 0.0f);
-    // Shape a styled byte range with its complete line as bidi/joining context.
-    // A grapheme belongs to the range containing its first byte.
-    void ShapeTextRange(std::string_view line, size_t begin, size_t end,
-                        float pixelSize, ShapeResult& out, uint32_t color,
-                        float letterSpacingPx);
-
-    /// Whether shaping finds glyphs for every non-control character, including configured fallbacks.
-    bool RendersAllGlyphs(std::string_view utf8);
 
     // Atlas info and pixels for uploading by a renderer
     // Color (RGBA) multi-page helpers (emoji/bitmaps)
@@ -320,12 +296,6 @@ class FontAtlas
     bool MultiPageAddColorGlyphs(const std::vector<uint32_t>& glyphIds, unsigned pixelSize);
 #endif
 
-    void InvalidateShaping();
-#if defined(GE_HAVE_FREETYPE)
-    FT_Face ResolveGlyphFace(uint32_t& glyphId) const;
-#endif
-
-
     // Internal helpers
     uint32_t ComputeAtlasIdFromBytes(const void* data, size_t size, unsigned pixelSize) const;
     std::vector<AtlasPage> m_ColorPages;                       // Color RGBA pages (emoji)
@@ -354,8 +324,7 @@ class FontAtlas
     // No default for the spacing: the bug this argument exists to fix was a
     // call site that silently measured without it.
     float ShapeGlyphs(std::string_view utf8, float pixelSize, bool preferFastAscii,
-                      ShapingOutput& out, float letterSpacingPx,
-                      size_t begin = 0, size_t end = std::string_view::npos);
+                      ShapingOutput& out, float letterSpacingPx);
 
   private:
     unsigned m_BasePixelSize = 0;
@@ -377,9 +346,6 @@ class FontAtlas
 #if defined(GE_HAVE_HARFBUZZ)
     HBFont m_HbFont;
 #endif
-
-    std::unique_ptr<TextShaper> m_TextShaper;
-    uint64_t m_LayoutRevision = 0;
 
     uint32_t m_AtlasId = 0;
     // Color atlas pages must not share the same atlasId as the field atlas.

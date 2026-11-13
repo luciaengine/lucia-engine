@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "Core/Application.h"
+#include "Core/ApplicationPaths.h"
 #include "Core/WindowInputRouter.h"
 #include "Input/InputSystem.h"
 #include "Input/KeyCodes.h"
@@ -9,7 +9,7 @@
 #include "UI/Controls/SearchDialog.h"
 #include "UI/Controls/SearchFieldWithFilter.h"
 #include "UI/Controls/TextField.h"
-#include "UI/Interaction/FocusIsInside.h"
+#include "UI/Interaction/FocusQueries.h"
 #include "UI/StyleProperties.h"
 #include "UI/UIEvents.h"
 #include "UI/UIManager.h"
@@ -289,10 +289,10 @@ TEST_F(SearchDialogFocusTests, KeepOpenResultRetainsQueryFocus)
 
 TEST_P(SearchDialogPointerFocusTests, ResultPointerReleaseDoesNotRefocusHiddenResults)
 {
-    ui->GetRootElement()->Overrides()
+    ui->GetRootElement()->Style()
         .Set(Style::Width, StyleLength::Px(800.0f))
         .Set(Style::Height, StyleLength::Px(600.0f));
-    const auto css = PathUtils::GetExecutableDirectory() / "Assets" / "UI" / "controls" / "SearchDialog.css";
+    const auto css = ApplicationPaths::GetExecutableDirectory() / "Assets" / "UI" / "controls" / "SearchDialog.css";
     ASSERT_TRUE(ui->AttachStyleFromFile(css.string()));
     // The universal search palette reserves the full result viewport. A
     // compact one-row dialog can clip a grid card taller than a list row.

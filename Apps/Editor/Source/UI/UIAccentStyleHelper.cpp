@@ -116,7 +116,6 @@ std::string GenerateAccentColorCSS(uint32_t accentColor)
         "--ui_color_accent: #%02X%02X%02X; "
         "--ui_color_accent_highlight: rgba(%d, %d, %d, 0.3); "
         "--ui_color_accent_translucent: rgba(%d, %d, %d, 0.2); "
-        "--ui_color_accent_glow: rgba(%d, %d, %d, 0.5); "
         "--ui_color_accent_blue: #%02X%02X%02X; "
         "--ui_color_accent_blue_hover: #%02X%02X%02X; "
         "--ui_color_accent_blue_pressed: #%02X%02X%02X; "
@@ -127,7 +126,6 @@ std::string GenerateAccentColorCSS(uint32_t accentColor)
         r, g, b,                                    // --ui_color_accent
         r, g, b,                                    // --ui_color_accent_highlight
         r, g, b,                                    // --ui_color_accent_translucent
-        r, g, b,                                    // --ui_color_accent_glow
         r, g, b,                                    // --ui_color_accent_blue
         rHover, gHover, bHover,                     // --ui_color_accent_blue_hover
         rPressed, gPressed, bPressed,               // --ui_color_accent_blue_pressed

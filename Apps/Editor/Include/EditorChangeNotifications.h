@@ -10,7 +10,6 @@
 
 #include "Core/CpuProfiler.h"
 #include "ECS/ECS.h"
-#include "Events/Event.h"
 #include "UndoRedo/History/EditChangeKind.h"
 
 namespace GameEngine::ECS
@@ -27,9 +26,6 @@ class EditorChangeNotifications
 {
 public:
     using ChangeKind = EditChangeKind;
-    std::uint64_t GetChannelId() const { return m_ChannelId; }
-
-    Event<> ProjectSwitched;
 
     struct ComponentChangedEvent
     {
@@ -50,12 +46,19 @@ public:
     };
 
     using WorldStructureChangedCallback = std::function<void(const WorldStructureChangedEvent&)>;
+    // The editor switched to another project: per-project editor state (open documents, previews)
+    // belongs to the project that is gone.
+    using ProjectSwitchedCallback = std::function<void()>;
 
     struct SubscriptionToken
     {
         std::uint64_t id = 0;
         explicit operator bool() const { return id != 0; }
     };
+
+    // The id of this channel, unique in the process: a channel made at the address of a destroyed one
+    // has another id.
+    std::uint64_t GetChannelId() const { return m_ChannelId; }
 
     SubscriptionToken SubscribeComponentChanged(ComponentChangedCallback cb)
     {
@@ -77,6 +80,15 @@ public:
         return SubscriptionToken{id};
     }
 
+    SubscriptionToken SubscribeProjectSwitched(ProjectSwitchedCallback cb)
+    {
+        if (!cb)
+            return {};
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        const std::uint64_t id = m_NextId++;
+        m_ProjectSwitched.emplace(id, std::make_shared<ProjectSwitchedSlot>(std::move(cb)));
+        return SubscriptionToken{id};
+    }
     // Unsubscribe marks the slot dead before erasing so any in-flight dispatch
     // snapshot that still holds a shared_ptr to the slot will skip the callback
     // rather than call it on a destroyed subscriber.
@@ -96,6 +108,12 @@ public:
             if (it->second)
                 it->second->Alive.store(false, std::memory_order_release);
             m_WorldStructureChanged.erase(it);
+        }
+        if (auto it = m_ProjectSwitched.find(token.id); it != m_ProjectSwitched.end())
+        {
+            if (it->second)
+                it->second->Alive.store(false, std::memory_order_release);
+            m_ProjectSwitched.erase(it);
         }
     }
 
@@ -158,6 +176,26 @@ public:
         }
     }
 
+    void NotifyProjectSwitched()
+    {
+        std::vector<std::shared_ptr<ProjectSwitchedSlot>> snap;
+        {
+            std::lock_guard<std::mutex> lock(m_Mutex);
+            snap.reserve(m_ProjectSwitched.size());
+            for (auto& kv : m_ProjectSwitched)
+            {
+                if (kv.second)
+                    snap.push_back(kv.second);
+            }
+        }
+
+        for (auto& slot : snap)
+        {
+            if (slot && slot->Alive.load(std::memory_order_acquire) && slot->Cb)
+                slot->Cb();
+        }
+    }
+
 private:
     struct ComponentSlot
     {
@@ -171,13 +209,25 @@ private:
         WorldStructureChangedCallback Cb;
         explicit WorldStructureSlot(WorldStructureChangedCallback c) : Cb(std::move(c)) {}
     };
+    struct ProjectSwitchedSlot
+    {
+        std::atomic<bool> Alive{true};
+        ProjectSwitchedCallback Cb;
+        explicit ProjectSwitchedSlot(ProjectSwitchedCallback c) : Cb(std::move(c)) {}
+    };
 
+    static std::uint64_t NextChannelId()
+    {
+        static std::atomic<std::uint64_t> s_NextChannelId{1};
+        return s_NextChannelId.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    const std::uint64_t m_ChannelId = NextChannelId();
     std::mutex m_Mutex;
-    inline static std::atomic<std::uint64_t> s_NextChannelId{1};
-    const std::uint64_t m_ChannelId = s_NextChannelId.fetch_add(1, std::memory_order_relaxed);
     std::uint64_t m_NextId = 1;
     std::unordered_map<std::uint64_t, std::shared_ptr<ComponentSlot>> m_ComponentChanged;
     std::unordered_map<std::uint64_t, std::shared_ptr<WorldStructureSlot>> m_WorldStructureChanged;
+    std::unordered_map<std::uint64_t, std::shared_ptr<ProjectSwitchedSlot>> m_ProjectSwitched;
 };
 
 /** Publish a committed structure change of `world`. A null `notifications` is a no-op. */

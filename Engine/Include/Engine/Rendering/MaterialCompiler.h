@@ -1,7 +1,7 @@
 #pragma once
 
 #include "AssetCore/GUID.h"
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 
 #include <filesystem>
 #include <memory>

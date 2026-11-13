@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "Panels/ScriptSyntax.h"
+#include "Panels/Script/ScriptSyntax.h"
 
 #include <string>
 #include <vector>

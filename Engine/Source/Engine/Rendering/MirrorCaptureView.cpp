@@ -1,6 +1,7 @@
 #include "Engine/Rendering/MirrorCaptureView.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Rendering/Core/ReverseZ.h"
 
 namespace GameEngine::Engine::Renderer
 {
@@ -16,7 +17,8 @@ void UpdateMirrorCaptureView(RenderServices& services, const ViewDesc& mainView,
 {
     // mainView can point into the registry's storage; copy before allocating.
     const auto world = mainView.worldId;
-    const auto layers = mainView.renderLayerMask & mask;
+    const auto ranges = services.Views().FindCameraRanges(mainView.cameraId);
+    const auto layers = Rendering::RenderLayerMask{mainView.renderLayerMask.Bits & mask};
     capture.SourceView = mainView.id;
     if (!capture.View)
     {
@@ -28,7 +30,7 @@ void UpdateMirrorCaptureView(RenderServices& services, const ViewDesc& mainView,
     }
     services.Views().SetViewWorldId(capture.View, world);
     services.Views().SetViewRenderLayerMask(capture.View, layers);
-    services.Views().SetCameraData(capture.Camera, reflected);
+    services.Views().SetCameraData(capture.Camera, reflected, ranges);
 }
 bool PrepareMirrorCaptureView(Pipeline::ViewDeclare& d, const MirrorCaptureView& capture)
 {
@@ -46,9 +48,9 @@ bool DeclareMirrorCaptureWorld(Pipeline::ViewDeclare& d, const MirrorCaptureView
     auto& rs = d.Services;
     ViewClearConfig clear{};
     clear.clearColor = true;
-    clear.clearColorValue[3] = 0.0f;
+    clear.clearColorValue.a = 0.0f;
     clear.clearDepth = true;
-    clear.clearDepthValue = 0.0f; // reverse Z
+    clear.clearDepthValue = ReverseZ::kClearFar;
     rs.Views().SetViewClearConfig(capture.View, clear);
     rs.EmitProducerForwardCommandsForView(capture.View, ForwardEmitPurpose::PlanarReflectionCapture);
     RenderServices::WorldPassTargetsRG targets{};

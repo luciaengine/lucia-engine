@@ -13,8 +13,8 @@
 #include "UI/Controls/Button.h"
 #include "UI/StyleProperties.h"
 #include "UI/UIElement.h"
+#include "Types/PathUtils.h"
 
-#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -31,9 +31,7 @@ namespace
 // Header-vs-source + C-vs-C++ label the central NativeSource type collapses (presentation only).
 const char* NativeSourceTypeLabel(const std::filesystem::path& path)
 {
-    std::string ext = path.extension().string();
-    for (auto& c : ext)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    const std::string ext = LowerCaseExtension(path);
     if (ext == ".h" || ext == ".hpp" || ext == ".hxx" || ext == ".hh")
         return "C++ Header";
     if (ext == ".c")
@@ -54,7 +52,7 @@ static void BuildNativeSourceInspector(UIElement* root, Asset* asset, const Insp
 
     auto buttonRow = std::make_unique<UIElement>();
     buttonRow->AddClass("inspector-asset-actions");
-    buttonRow->Overrides()
+    buttonRow->Style()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Row)
         .Set(Style::Gap, StyleLength::Px(6.0f))
@@ -68,7 +66,7 @@ static void BuildNativeSourceInspector(UIElement* root, Asset* asset, const Insp
         editBtn->SetText("Open In Editor");
         editBtn->AddClass("inspector-text");
         editBtn->AddClass("small");
-        editBtn->Overrides().Set(Style::Width, StyleLength::Px(120.0f));
+        editBtn->Style().Set(Style::Width, StyleLength::Px(120.0f));
         auto openScript = ctx.OpenScript;
         editBtn->RegisterEventHandler(kEventButtonClick, [openScript, path](UIEvent&) { openScript(path); });
         buttonRow->AddChild(std::move(editBtn));
@@ -80,7 +78,7 @@ static void BuildNativeSourceInspector(UIElement* root, Asset* asset, const Insp
         ideBtn->SetText("Open In IDE");
         ideBtn->AddClass("inspector-text");
         ideBtn->AddClass("small");
-        ideBtn->Overrides().Set(Style::Width, StyleLength::Px(100.0f));
+        ideBtn->Style().Set(Style::Width, StyleLength::Px(100.0f));
         ideBtn->RegisterEventHandler(kEventButtonClick, [path](UIEvent&)
                            {
             std::filesystem::path projectDir;

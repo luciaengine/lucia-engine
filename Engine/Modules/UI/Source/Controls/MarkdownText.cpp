@@ -1,12 +1,9 @@
 #include "UI/Controls/MarkdownText.h"
 
-#include "MarkdownCodeScrollView.h"
-#include "MarkdownTextRun.h"
-
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/ScrollView.h"
-#include "../Parsers/MarkdownParser.h"
+#include "../Parsers/Markdown/MarkdownParser.h"
 #include "UI/UIEvents.h"
 #include "UI/UIManager.h"
 #include "UI/UIPlatform.h"
@@ -260,7 +257,7 @@ private:
 
     std::unique_ptr<Label> MakePieceLabel(const WordPiece& piece)
     {
-        auto label = std::make_unique<MarkdownTextRun>();
+        auto label = std::make_unique<Label>();
         label->SetText(piece.Text);
         label->AddClass("markdown-word");
         if (piece.MayWrap)
@@ -325,7 +322,7 @@ const char* HeadingSizeClass(uint8_t level)
 // ring when nested) on a no-break space that gives it the line's box and baseline.
 std::unique_ptr<Label> MakeListMarker(const MarkdownBlock& block)
 {
-    auto marker = std::make_unique<MarkdownTextRun>();
+    auto marker = std::make_unique<Label>();
     marker->AddClass("markdown-list-marker");
     if (block.Ordered)
     {
@@ -390,9 +387,9 @@ std::unique_ptr<UIElement> BuildCodeBlock(const MarkdownBlock& block)
 {
     auto frame = MakeElement("markdown-code-block");
     frame->AddChild(BuildCodeHeader(block));
-    auto scroll = std::make_unique<MarkdownCodeScrollView>();
+    auto scroll = std::make_unique<ScrollView>();
     scroll->AddClass("markdown-code-scroll");
-    auto code = std::make_unique<MarkdownTextRun>();
+    auto code = std::make_unique<Label>();
     code->AddClass("markdown-code-text");
     code->SetText(block.Code);
     scroll->AddContent(std::move(code));
@@ -451,6 +448,13 @@ const char* SpacingClass(const MarkdownBlock* previous, const MarkdownBlock& blo
 
 } // namespace
 
+MarkdownText::MarkdownText()
+{
+    AddClass("markdown-text");
+}
+
+MarkdownText::~MarkdownText() = default;
+
 void MarkdownText::SetMarkdown(std::string_view markdown)
 {
     MarkdownDocument document = UIParsing::MarkdownParser::Parse(markdown);
@@ -475,7 +479,6 @@ void MarkdownText::SetMarkdown(std::string_view markdown)
         AddChild(std::move(element));
     }
     m_Blocks = std::move(document.Blocks);
-    RefreshSelection();
 }
 
 } // namespace GameEngine

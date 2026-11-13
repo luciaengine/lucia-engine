@@ -12,7 +12,7 @@ void ApplyPlayButtonState(Button& playButton, PlayModeState state)
         state == PlayModeState::Edit || state == PlayModeState::Play || state == PlayModeState::Paused;
     const bool playActive = state == PlayModeState::Play || state == PlayModeState::Paused ||
                             state == PlayModeState::EnteringPlay || state == PlayModeState::ExitingPlay;
-    playButton.SetDisabled(!clickable);
+    playButton.SetEnabled(clickable);
     if (playActive)
         playButton.AddClass(kPlayButtonActiveClass);
     else

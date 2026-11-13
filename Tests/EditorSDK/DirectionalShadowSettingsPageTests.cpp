@@ -1,6 +1,6 @@
 #include "Editor/Settings/DirectionalShadowSettingsPage.h"
 
-#include "Editor/Settings/RenderProjectSettings.h"
+#include "Editor/Settings/Render/RenderProjectSettings.h"
 
 #include <gtest/gtest.h>
 

@@ -3,11 +3,12 @@
 #include "Graph/GraphRouteSolver.h"
 #include "InspectorRegistry.h"
 #include "Graph/GraphModel.h"
-#include "Graph/GraphNodeMetrics.h"
+#include "Graph/GraphNode/GraphNodeMetrics.h"
 #include "Mathematics/Vector2.h"
 #include "UI/UIElement.h"
 #include "UI/UIEvents.h"
 #include <chrono>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
@@ -139,6 +140,12 @@ public:
         m_AssetRegistry = registry;
         m_ThumbnailProvider = thumbnails;
     }
+    /** Re-run BindModel on every node that already has a pooled slot, so the
+        per-node style variables and the asset fields on pins show a settings
+        change or a removed asset without reopening the graph. */
+    void RebindVisibleNodes();
+    /** The asset ping that the asset reference fields on pins use; see GraphNodeEditHost::PingAsset. */
+    void SetPingAsset(std::function<void(const std::filesystem::path&)> ping) { m_PingAsset = std::move(ping); }
 
     /** Expanded node view: parameters that get no inline port editor are drawn
         as value rows under the port area, growing the node rect. Ports keep
@@ -265,10 +272,14 @@ public:
     void OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx, const ResolvedStyle& style,
                               float x, float y, float w, float h) override;
 
+    /** Acquire `count` pooled GraphPortedNode slots on a grid. Spike ids use a `spike-` prefix. */
+    void SpikeSpawnDummyNodes(int count);
+
 private:
     void RegisterEventHandlers();
     void UnregisterEventHandlers();
     void EnsureNodeChrome();
+    void MaybeArmSpikeDummyNodes();
     void SyncNodeLayerTransform();
     /* Rounds the pan to the device-pixel grid; see the definition for why.
        Canvas-internal bookkeeping: callers set pan through SetPanZoom. */
@@ -276,6 +287,7 @@ private:
     void ApplyNodeLayerZoomClass();
     /** Put the node-title alignment class on the node layer. */
     void ApplyNodeTitleAlignment();
+    void LayoutSpikeDummyNodes();
 
     /** Re-apply selected/search/runtime classes to bound node widgets without
         rebinding them (selection changes touch chrome only). */
@@ -298,10 +310,6 @@ private:
     void DeferModelMutation(std::function<void()> action);
     void HideAndDeferDeleteLink(const std::string& linkId, const char* undoName);
     void RebindNodes(const std::unordered_set<std::string>& nodeIds);
-    /** Re-run BindModel on every node that already has a pooled slot, so the
-        per-node style variables (node body, value surface, plate) pick up a
-        settings change without reopening the graph. */
-    void RebindVisibleNodes();
     /** Recycle the pooled widgets of the selected nodes without touching the
         model — the visual half of a hide-first delete. */
     void HideSelectedNodeWidgets();
@@ -487,6 +495,8 @@ private:
     /** Click-to-pick services for texture slots; see SetAssetServices. */
     AssetRegistry* m_AssetRegistry = nullptr;
     IThumbnailProvider* m_ThumbnailProvider = nullptr;
+    std::function<void(const std::filesystem::path&)> m_PingAsset;
+    int m_SpikeDummyCount = 0;
     int m_NodeLayerZoomTier = -1;
     /** Index into the node-title alignment classes; -1 = none applied yet. */
     int m_NodeTitleAlignIndex = -1;

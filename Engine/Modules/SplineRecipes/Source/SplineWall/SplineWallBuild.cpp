@@ -25,7 +25,7 @@ SweepShape SweepShapeForWall(const Components::SplineWall& recipe)
 {
     SweepShape shape;
     shape.Corners = recipe.Corner == Components::SplineWallCorner::Round ? SG::SplineCornerStyle::Round
-                                                                         : SG::SplineCornerStyle::Mitre;
+                                                                         : SG::SplineCornerStyle::Miter;
     shape.FollowCurve = true;
     shape.CloseLoop = true;
     shape.GroundBase = true;

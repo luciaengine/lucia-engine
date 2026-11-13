@@ -366,6 +366,7 @@ void SplineGroundAuthorityController::Update(ECS::World& world, RecipeEditJourna
             Components::TerrainGrassEffect grass{};
             grass.HeightScale = 0.0f;
             grass.DensityScale = 0.0f;
+            grass.GroundDarkeningScale = 0.0f;
             world.AddComponentImmediate<Components::TerrainGrassEffect>(p.Entity, grass);
             owned.Grass = true;
         }

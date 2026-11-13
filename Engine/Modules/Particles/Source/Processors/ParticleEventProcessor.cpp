@@ -1,7 +1,7 @@
 #include "Particles/Processors/ParticleEventProcessor.h"
 
 #include "Components/Rendering/Particles.h"
-#include "Particles/ParticleStackDocument.h"
+#include "Particles/ParticleStack/ParticleStackDocument.h"
 #include "Processors/ParticleBuiltInProcessors.h"
 
 #include <array>

@@ -37,13 +37,13 @@ std::string ReadAssetViewPanelSource()
     return ss.str();
 }
 
-// The one statement that configures the preview element: from `image->Overrides()` to the
+// The one statement that configures the preview element: from `image->Style()` to the
 // semicolon that ends the chained call. Scoping to it is the point — the panel sets the same
 // properties on other elements, so searching the whole file would keep passing after the
 // preview element itself lost the override.
 std::string PreviewOverrideStatement(const std::string& source)
 {
-    const size_t start = source.find("image->Overrides()");
+    const size_t start = source.find("image->Style()");
     if (start == std::string::npos)
         return {};
     const size_t end = source.find(';', start);
@@ -93,7 +93,7 @@ TEST(AssetViewPreviewSlice, PreviewElementOverridesTheTextureIntrinsicSliceWithZ
 
     const std::string statement = PreviewOverrideStatement(source);
     ASSERT_FALSE(statement.empty())
-        << "the preview element's `image->Overrides()` chain was not found; rename the probe "
+        << "the preview element's `image->Style()` chain was not found; rename the probe "
            "with the code rather than deleting it";
 
     EXPECT_NE(statement.find("Style::BorderImageSlice"), std::string::npos)
@@ -112,7 +112,7 @@ TEST(AssetViewPreviewSlice, PreviewElementAsksForContainSizing)
     ASSERT_FALSE(source.empty()) << "AssetViewPanel.cpp did not read from GE_EDITOR_SOURCE_DIR";
 
     const std::string statement = PreviewOverrideStatement(source);
-    ASSERT_FALSE(statement.empty()) << "the preview element's `image->Overrides()` chain was not found";
+    ASSERT_FALSE(statement.empty()) << "the preview element's `image->Style()` chain was not found";
 
     EXPECT_NE(statement.find("BackgroundSizeMode::Contain"), std::string::npos)
         << "the zero slice only preserves a fit that the element asks for";
