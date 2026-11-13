@@ -677,7 +677,7 @@ static uint32 FindFullAtlasNeighborSlot(const AtlasIndirectionTable& table, bool
     if (!needsNeighbor || !table.InBounds(x, z))
         return kAtlasNoSlot;
     const auto& row = table.Row(x, z);
-    return row.LodBias == kAtlasLodBiasFull ? row.Slot : kAtlasNoSlot;
+    return row.Slot;
 }
 
 static bool QueueAtlasRegionNormals(TerrainRenderFeature& feature, TerrainHandle handle,

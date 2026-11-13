@@ -1575,7 +1575,8 @@ class RenderServices::WorldPassPreparation
                 float Depth;
             };
             std::vector<OrderedInstance> ordered;
-            const auto camera = Rendering::DeriveCameraData(m_Services.m_ViewRegistry.ResolveCameraData(m_ViewId));
+            const auto camera = Rendering::DeriveCameraData(m_Services.m_ViewRegistry.ResolveCameraData(m_ViewId),
+                                                            m_Services.m_ViewRegistry.ResolveCameraRanges(m_ViewId));
             const auto& instances = m_Scene->GetInstances();
             for (const auto& key : m_EntityKeys)
             {

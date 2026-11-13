@@ -147,6 +147,8 @@ class CBTRenderFeature final : public Engine::Renderer::IRenderFeature
     // CBTRenderNode, at the point an update records: true once per RequestPoolCensus, and the census then
     // belongs to this update (GetPoolCensusRecord).
     bool ConsumePoolCensusRequest();
+    /// The number of updates declared into a render graph.
+    uint64_t GetUpdateRecordCount() const { return m_UpdateRecordCount.load(std::memory_order_relaxed); }
     // The GetUpdateRecordCount value of the newest update that counted the census; 0 = none yet.
     uint64_t GetPoolCensusRecord() const { return m_PoolCensusRecord.load(std::memory_order_relaxed); }
     bool IsActive() const { return m_Active; }
@@ -453,6 +455,7 @@ class CBTRenderFeature final : public Engine::Renderer::IRenderFeature
     uint64_t m_UpdateRgFrame = ~0ull;
     // Render-to-extraction confirmation count of successfully submitted updates.
     std::atomic<uint64_t> m_UpdateSubmissionCount{0};
+    std::atomic<uint64_t> m_UpdateRecordCount{0};
     bool m_Initialized = false;
     bool m_InitAttempted = false; // one bring-up attempt; failures don't retry-spam
     bool m_Active = false;

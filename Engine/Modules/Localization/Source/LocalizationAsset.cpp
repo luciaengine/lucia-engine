@@ -7,7 +7,7 @@ namespace GameEngine::Localization
 {
 bool LocalizationAsset::Load()
 {
-    Vector<uint8> data;
+    ByteBuffer data;
     if (!ReadFileBytesShared(GetPath(), data))
     {
         Logger::Log::Error("Could not read localization asset {}", GetPath().string());
@@ -17,7 +17,7 @@ bool LocalizationAsset::Load()
     return LoadFromData(data);
 }
 
-bool LocalizationAsset::LoadFromData(const Vector<uint8>& data)
+bool LocalizationAsset::LoadFromData(std::span<const uint8> data)
 {
     std::string document(data.begin(), data.end());
     std::istringstream input(document);

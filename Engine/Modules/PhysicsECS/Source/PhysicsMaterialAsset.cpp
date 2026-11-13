@@ -51,7 +51,7 @@ bool PhysicsMaterialAsset::Load()
     return ParseJson(text);
 }
 
-bool PhysicsMaterialAsset::LoadFromData(const Vector<uint8>& data)
+bool PhysicsMaterialAsset::LoadFromData(std::span<const uint8> data)
 {
     SetState(AssetState::Loading);
     const std::string text(reinterpret_cast<const char*>(data.data()), data.size());

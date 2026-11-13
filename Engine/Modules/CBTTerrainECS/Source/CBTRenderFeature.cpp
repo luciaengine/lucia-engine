@@ -803,6 +803,7 @@ bool CBTRenderFeature::ConsumePoolCensusRequest()
 CBTTerrain::CBTActivitySlot CBTRenderFeature::BeginUpdateActivityReadback(
     const Rendering::RenderGraph::RGFrame& frame, bool forced)
 {
+    m_UpdateRecordCount.fetch_add(1u, std::memory_order_relaxed);
     return m_ActivityReadback.Begin(frame, m_RestGate.OnUpdateRecorded(forced));
 }
 
