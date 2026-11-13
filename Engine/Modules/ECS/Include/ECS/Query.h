@@ -890,7 +890,7 @@ void Query<Ts...>::ParallelBatchEach(Func&& func, [[maybe_unused]] std::size_t m
 
             auto task = [chunks, batchStart, batchEnd, colIdx, colOffsets, ehOffset, fnShared,
                          tablePtr, kHasGate, kGateVersion, changedCols, changedColCount,
-                         stampVersion]()
+                         stampVersion = stampVersion]()
             {
                 for (std::size_t ci = batchStart; ci < batchEnd; ++ci)
                 {
