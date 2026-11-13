@@ -248,13 +248,16 @@ def CopyModules(directories: dict[str, Path], out: Path, allowStub: bool) -> Non
 
 
 def BundleFacade(out: Path, version: str) -> None:
-    esbuild = kFacadeDir / "node_modules" / "esbuild" / "bin" / "esbuild"
+    esbuild = kFacadeDir / "node_modules" / "esbuild" / "lib" / "main.js"
     if not esbuild.is_file():
         raise PackageError(f"{esbuild} is missing: run `npm ci` in {kFacadeDir}")
     target = (out / kFacadeName).resolve()
+    options = dict(entryPoints=["src/index.ts"], bundle=True, format="esm", target="es2022",
+                   logLevel="warning", outfile=str(target))
     result = subprocess.run(
-        ["node", str(esbuild), "src/index.ts", "--bundle", "--format=esm", "--target=es2022",
-         "--log-level=warning", f"--outfile={target}"],
+        ["node", "--input-type=commonjs", "-e",
+         "require(process.argv[1]).buildSync(JSON.parse(process.argv[2]));",
+         str(esbuild), json.dumps(options)],
         cwd=kFacadeDir, capture_output=True, text=True)
     if result.returncode != 0:
         raise PackageError(f"bundling the facade failed (exit {result.returncode}):\n"
