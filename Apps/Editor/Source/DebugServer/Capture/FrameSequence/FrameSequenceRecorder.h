@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DebugServer/Capture/FrameSequence/FrameSequenceRecording.h"
+#include "DebugServer/WindowRenderCallbackQueue.h"
 #include "EditorApplication/EditorApplication.h"
 #include "JobSystem/TaskHandle.h"
 
@@ -96,6 +97,8 @@ class FrameSequenceRecorder : public std::enable_shared_from_this<FrameSequenceR
     // The reply of the last recording that finished, until a stop request takes it.
     std::optional<nlohmann::json> m_FinishedReply;
     uint32_t m_RecordingSequence = 0;
+    uint64_t m_WindowId = 0;
+    std::shared_ptr<Editor::WindowRenderCallbackQueue::Callback> m_RenderCallback;
     bool m_RenderPhaseQueued = false;
 };
 

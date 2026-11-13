@@ -143,6 +143,9 @@ json FrameSequenceRecorder::Start(const json& params)
     if (m_Recording)
         return Editor::RefuseRequest("A frame recording is running or still writing its frames. Call stop_frame_recording and wait for its reply.");
 
+    if (m_App.m_Windows.empty() || !m_App.m_Windows.front())
+        return Editor::RefuseRequest("No editor window");
+
     const std::string target = params.value("target", std::string("viewport"));
     if (target != "viewport" && target != "window")
         return Editor::RefuseRequest("Unknown target '" + target + "'. Use 'viewport' or 'window'.");
@@ -186,6 +189,13 @@ json FrameSequenceRecorder::Start(const json& params)
     m_App.SetFrameRateCap(m_Recording->PresentCapFps());
     m_StartTime = std::chrono::steady_clock::now();
     m_FinishedReply.reset();
+    m_WindowId = m_App.m_Windows.front()->windowId;
+    m_RenderCallback = std::make_shared<Editor::WindowRenderCallbackQueue::Callback>(
+        [weakSelf = weak_from_this()](uint64_t declaringWindowId)
+        {
+            if (const auto self = weakSelf.lock(); self && self->m_WindowId == declaringWindowId)
+                self->OnRenderPhase();
+        });
     QueueRenderPhase();
     LOG_INFO("Frame recording: started, target={}, format={}, maxFrames={}, frameRate={}, folder={}", target, format,
              maxFrames, frameRate, m_Directory.string());
@@ -216,7 +226,7 @@ void FrameSequenceRecorder::QueueRenderPhase()
     if (m_RenderPhaseQueued)
         return;
     m_RenderPhaseQueued = true;
-    m_Server.EnqueueRenderCallback([self = shared_from_this()] { self->OnRenderPhase(); });
+    m_Server.EnqueueRenderCallback(m_WindowId, m_RenderCallback);
 }
 
 // Runs once per rendered frame while a recording is on. The server runs a callback queued
@@ -245,9 +255,11 @@ void FrameSequenceRecorder::OnRenderPhase()
 
 void FrameSequenceRecorder::CaptureThisFrame()
 {
-    if (m_App.m_Windows.empty() || !m_App.m_Windows[0] || !m_App.m_Windows[0]->renderCtx)
+    const auto found = std::find_if(m_App.m_Windows.begin(), m_App.m_Windows.end(),
+        [this](const auto& window) { return window && window->windowId == m_WindowId; });
+    if (found == m_App.m_Windows.end() || !(*found)->renderCtx)
         return;
-    auto& window = *m_App.m_Windows[0];
+    auto& window = **found;
     auto* device = window.renderCtx->GetDevice();
     auto* frame = window.rg2Capture.frame;
     if (!device || !frame || window.rg2Capture.frameIndex != frame->FrameIndex())
@@ -397,6 +409,8 @@ void FrameSequenceRecorder::Finish()
     m_Readbacks.clear();
     m_Encodes.clear();
     m_Recording.reset();
+    m_RenderCallback.reset();
+    m_RenderPhaseQueued = false;
     m_FinishedReply = std::move(reply);
 }
 
