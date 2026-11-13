@@ -176,9 +176,9 @@ ShadowReceiverReduce::Setup ShadowReceiverReduce::MakeSetup(const CameraData& ca
     const Matrix4x4& viewProjRel = camera.viewProjRel;
     const Mathematics::Vector3Int originSector = CameraRenderOriginSector(camera);
     const Mathematics::Vector3 origin = SectorToWorld(originSector);
-    measured.RenderOriginSector[0] = originSector.x;
-    measured.RenderOriginSector[1] = originSector.y;
-    measured.RenderOriginSector[2] = originSector.z;
+    measured.RenderOriginSector[0] = originSector.X;
+    measured.RenderOriginSector[1] = originSector.Y;
+    measured.RenderOriginSector[2] = originSector.Z;
 
     ParamsGPU& params = setup.Params;
     const Matrix4x4 invViewProj = Mathematics::Inverse(viewProjRel);

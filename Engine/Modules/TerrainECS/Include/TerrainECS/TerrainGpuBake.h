@@ -3,6 +3,7 @@
 #include "ECS/ECS.h"
 #include "Types/Types.h"
 
+#include <cstddef>
 #include <cstdlib>
 #include <vector>
 
@@ -269,7 +270,7 @@ inline SurfaceRuleBindingSizes ComputeSurfaceRuleBindingSizes(size_t ruleCount,
 }
 
 // Push constants for one tile's bake dispatch (mirror PushConstants in
-// terrain_height_bake.comp). 80 bytes, under the 128-byte guaranteed minimum.
+// terrain_height_bake.comp). 100 bytes, under the 128-byte guaranteed minimum.
 struct TerrainHeightBakePush
 {
     int32  RectMinX;   // tile-local interior sample rect (inclusive origin)
@@ -309,7 +310,8 @@ struct TerrainHeightBakePush
     uint32 NormalNeighborDown = 0xFFFFFFFFu;
     float BaseAmplitude = 0.0f;
 };
-static_assert(sizeof(TerrainHeightBakePush) == 108, "TerrainHeightBakePush must match terrain_height_bake.comp push_constant layout");
+static_assert(offsetof(TerrainHeightBakePush, BaseAmplitude) == 96);
+static_assert(sizeof(TerrainHeightBakePush) == 100, "TerrainHeightBakePush must match terrain_height_bake.comp push_constant layout");
 
 // One tile's GPU height-bake request. The TerrainModifierSystem records these (with the
 // tile-local sample rect it would have CPU-baked) onto the service when the GPU path is

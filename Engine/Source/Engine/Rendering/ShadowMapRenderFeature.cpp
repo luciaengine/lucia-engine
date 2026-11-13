@@ -39,9 +39,9 @@ void RebaseDirectionalShadowData(ShadowDataGPU& data, const CameraData& source, 
     const auto sourceSector = CameraRenderOriginSector(source);
     const double sectorSize = Mathematics::kWorldSectorSize;
     const Mathematics::Vector3 originDelta{
-        static_cast<float>((static_cast<int64_t>(receiverSector.x) - sourceSector.x) * sectorSize),
-        static_cast<float>((static_cast<int64_t>(receiverSector.y) - sourceSector.y) * sectorSize),
-        static_cast<float>((static_cast<int64_t>(receiverSector.z) - sourceSector.z) * sectorSize)};
+        static_cast<float>((static_cast<int64_t>(receiverSector.X) - sourceSector.X) * sectorSize),
+        static_cast<float>((static_cast<int64_t>(receiverSector.Y) - sourceSector.Y) * sectorSize),
+        static_cast<float>((static_cast<int64_t>(receiverSector.Z) - sourceSector.Z) * sectorSize)};
     const auto translation = Mathematics::Matrix4x4::Translation(originDelta);
     // Terrain coordinates carry the same render origin as the cascade matrices.
     data.terrainShadowGrid0[0] -= originDelta.x;
@@ -762,7 +762,7 @@ CascadeFrameData ShadowMapRenderFeature::ComputeCascades(
     // OnScheduleCulling, which tolerates ULP(|eye|) (its slack is in meters).
     const Matrix4x4& viewProjRel = camera.viewProjRel;
     const Mathematics::Vector3Int cameraSector = CameraRenderOriginSector(camera);
-    const int32 originSector[3] = {cameraSector.x, cameraSector.y, cameraSector.z};
+    const int32 originSector[3] = {cameraSector.X, cameraSector.Y, cameraSector.Z};
     result.RenderOriginSector[0] = originSector[0];
     result.RenderOriginSector[1] = originSector[1];
     result.RenderOriginSector[2] = originSector[2];

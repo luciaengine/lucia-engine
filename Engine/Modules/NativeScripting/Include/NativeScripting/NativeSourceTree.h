@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <vector>
 
 namespace GameEngine
 {
@@ -29,6 +30,10 @@ bool IsWatchedNativeSourceExtension(const std::filesystem::path& path);
 // copied in by every packaged build and compiled into the Player EXE, never the
 // user module) are not user code and do not open that gate.
 bool HasWatchedNativeSource(const std::filesystem::path& sourceRoot);
+
+/// Sorted watched sources for a module, excluding ignored paths and Player template sources.
+std::vector<std::filesystem::path> CollectWatchedNativeSources(const std::filesystem::path& sourceRoot,
+                                                              const std::filesystem::path& packageRoot);
 
 // Continues `seed` over the sorted {root-relative path}:{mtime}:{size} of every
 // watched native source under `sourceRoot`, so the result changes on any source

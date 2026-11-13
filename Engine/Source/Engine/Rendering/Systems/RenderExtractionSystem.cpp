@@ -853,9 +853,9 @@ void PrepareRecord(const WorldRenderableRecord& rec,
     const Mathematics::Matrix4x4 prevMatrix =
         hasHistory ? PreviousMatrixInSector(scene.GetInstances()[meshGpu->instanceIndex].transform, *meshGpu, sector)
                    : localMatrix;
-    const int32 secX = sector.x;
-    const int32 secY = sector.y;
-    const int32 secZ = sector.z;
+    const int32 secX = sector.X;
+    const int32 secY = sector.Y;
+    const int32 secZ = sector.Z;
     BuildGpuInstancePayload(out.payload, localMatrix, prevMatrix, rec.hasBounds,
                             boundsCenter, boundsRadius, mshIdx, matIdx, flags,
                             rec.lodBias, skinPaletteOffset, rec.runtimeId, secX, secY, secZ,
@@ -986,7 +986,7 @@ void BuildPatchedInstances(std::span<const RenderExtractionParallelState::DirtyR
                                 meshGpu->LastBoundsRadius,
                                 meshGpu->meshIndex, meshGpu->materialIndex, meshGpu->LastFlags,
                                 meshGpu->LastLodBias, meshGpu->LastSkinPaletteOffset,
-                                meshGpu->LastRuntimeId, sector.x, sector.y, sector.z, mr->RenderLayers);
+                                meshGpu->LastRuntimeId, sector.X, sector.Y, sector.Z, mr->RenderLayers);
         const bool differs = PayloadPrevDiffers(write.Instance);
         isMover[i] = (differs && mr) ? 1u : 0u;
         if (isMover[i] != 0u)
@@ -994,9 +994,9 @@ void BuildPatchedInstances(std::span<const RenderExtractionParallelState::DirtyR
                                write.Instance.skinPaletteOffset,
                                RenderServices::kNoPreviousSkinPalette};
         meshGpu->LastTransformVersion = wt->Version;
-        meshGpu->LastSectorX = sector.x;
-        meshGpu->LastSectorY = sector.y;
-        meshGpu->LastSectorZ = sector.z;
+        meshGpu->LastSectorX = sector.X;
+        meshGpu->LastSectorY = sector.Y;
+        meshGpu->LastSectorZ = sector.Z;
         meshGpu->LastPrevDiffers = differs;
     }
 }
@@ -2260,7 +2260,7 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
         const Mathematics::Matrix4x4 prevMatrix = PreviousMatrixInSector(previousInstance.transform, *meshGpu, sector);
         BuildGpuInstancePayload(payload, localMatrix, prevMatrix, hasBounds, boundsCenter,
                                 boundsRadius, mshIdx, matIdx, flags, lodBias,
-                                skinPaletteOffset, runtimeId, sector.x, sector.y, sector.z, mr->RenderLayers);
+                                skinPaletteOffset, runtimeId, sector.X, sector.Y, sector.Z, mr->RenderLayers);
         const bool prevDiffers = PayloadPrevDiffers(payload);
         // Before UpdateInstance overwrites the mirror `previousInstance` aliases.
         // A refreshed caster counts as changed whatever field moved — a palette
@@ -2282,7 +2282,7 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
                                             paletteOffsets.Current, paletteOffsets.Previous);
         WriteLastCaches(*meshGpu, mshIdx, matIdx, meshEntry->uploadSeq, wt->Version, flags,
                         skinPaletteOffset, lodBias, runtimeId, boundsCenter, boundsRadius,
-                        sector.x, sector.y, sector.z, prevDiffers);
+                        sector.X, sector.Y, sector.Z, prevDiffers);
         ++refreshed;
     }
     return refreshed;

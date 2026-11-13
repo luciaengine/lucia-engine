@@ -13,7 +13,7 @@ void MetalCommandList::BindDirectDescriptorSet(uint32_t setIndex, MetalDescripto
     if (setIndex >= layouts.size()) return;
     for (const auto& binding : layouts[setIndex].Slots)
     {
-        const auto* source = descriptors.layout.FindBinding(binding.Binding);
+        const auto* source = descriptors.layout->FindBinding(binding.Binding);
         if (source == nullptr) continue;
         for (uint32_t element = 0; element < binding.Count; ++element)
         {

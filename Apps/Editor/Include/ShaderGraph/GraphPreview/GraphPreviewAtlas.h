@@ -30,6 +30,7 @@ class UIManager;
 namespace Rendering::RenderGraph
 {
 class RGFrame;
+class RGPrepareContext;
 }
 
 namespace Engine::Renderer
@@ -109,6 +110,9 @@ class GraphPreviewAtlas
     void SetIblEnabled(bool enabled);
 
   private:
+    struct PreparedPass;
+    bool PrepareDraws(Rendering::RenderGraph::RGPrepareContext& context, PreparedPass& pass);
+
     struct CellDraw
     {
         uint32_t Cell = 0;

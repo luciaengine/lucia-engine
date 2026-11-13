@@ -1333,9 +1333,9 @@ bool TerrainGrassRenderFeature::ResolvePlaceParams(
 
     // The origin ResolveCameraData uses for the draw.
     const Mathematics::Vector3Int origin = Engine::Renderer::CameraRenderOriginSector(*camera);
-    out.RenderOriginSector[0] = origin.x;
-    out.RenderOriginSector[1] = origin.y;
-    out.RenderOriginSector[2] = origin.z;
+    out.RenderOriginSector[0] = origin.X;
+    out.RenderOriginSector[1] = origin.Y;
+    out.RenderOriginSector[2] = origin.Z;
     out.RenderOriginSector[3] = static_cast<int32>(Mathematics::kWorldSectorSize);
 
     // The height range of every blade root. The classify kernel adds the tallest blade for the range fit's

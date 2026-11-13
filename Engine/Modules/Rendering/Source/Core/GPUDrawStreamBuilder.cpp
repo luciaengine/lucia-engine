@@ -2664,9 +2664,9 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
             b.Append(s.lod.cameraPos.x);
             b.Append(s.lod.cameraPos.y);
             b.Append(s.lod.cameraPos.z);
-            b.Append(s.lod.originSector.x);
-            b.Append(s.lod.originSector.y);
-            b.Append(s.lod.originSector.z);
+            b.Append(s.lod.originSector.X);
+            b.Append(s.lod.originSector.Y);
+            b.Append(s.lod.originSector.Z);
             b.Append(s.lod.projScaleY);
             b.Append(s.lod.lodBiasGlobal);
             b.Append(s.lod.forceLod);

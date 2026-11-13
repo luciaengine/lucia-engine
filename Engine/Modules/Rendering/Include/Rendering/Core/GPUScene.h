@@ -88,9 +88,9 @@ inline Vector3 SectorLocalPointRelativeTo(const Vector3& local, uint32_t p0, uin
                                           const Mathematics::Vector3Int& originSector)
 {
     Mathematics::Vector3Int sector;
-    UnpackSector(p0, p1, sector.x, sector.y, sector.z);
-    const Mathematics::Vector3Int delta{sector.x - originSector.x, sector.y - originSector.y,
-                                        sector.z - originSector.z};
+    UnpackSector(p0, p1, sector.X, sector.Y, sector.Z);
+    const Mathematics::Vector3Int delta{sector.X - originSector.X, sector.Y - originSector.Y,
+                                        sector.Z - originSector.Z};
     return Mathematics::WorldPosition::FromSector(delta, local) - Mathematics::WorldPosition{};
 }
 

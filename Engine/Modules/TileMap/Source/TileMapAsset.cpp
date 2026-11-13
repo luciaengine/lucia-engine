@@ -492,7 +492,7 @@ bool TileMapAsset::Load()
     return ParseJson(text);
 }
 
-bool TileMapAsset::LoadFromData(const Vector<uint8>& data)
+bool TileMapAsset::LoadFromData(std::span<const uint8> data)
 {
     SetState(AssetState::Loading);
     const std::string text(reinterpret_cast<const char*>(data.data()), data.size());

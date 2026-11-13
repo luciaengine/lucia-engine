@@ -259,9 +259,9 @@ Mathematics::Vector3 CornerFromOrigin(const CBTVertexData& v, uint32_t k, const 
         v.DeepTag[0] == 0u ? Mathematics::Vector3Int()
                            : Mathematics::Vector3Int(UnpackSectorLo(sectorXY), UnpackSectorHi(sectorXY), UnpackSectorLo(sectorZ));
     const float size = static_cast<float>(Mathematics::kWorldSectorSize);
-    const Mathematics::Vector3 sectorOffset(static_cast<float>(sector.x - origin.x) * size,
-                                            static_cast<float>(sector.y - origin.y) * size,
-                                            static_cast<float>(sector.z - origin.z) * size);
+    const Mathematics::Vector3 sectorOffset(static_cast<float>(sector.X - origin.X) * size,
+                                            static_cast<float>(sector.Y - origin.Y) * size,
+                                            static_cast<float>(sector.Z - origin.Z) * size);
     return local + sectorOffset;
 }
 

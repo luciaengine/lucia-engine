@@ -104,7 +104,8 @@ void MovingPlatformSystem::Update(ECS::World& world, float32 deltaTime)
         const float32 localDistance = (scale > 0.0f) ? (platform.distance / scale) : 0.0f;
         const Mathematics::Vector3 localPos = Spline::EvaluateAtDistance(*data, localDistance).Position;
 
-        const Mathematics::WorldPosition worldPos = pathXf->Position + Mathematics::Vector3(pathXf->Basis.GetGLM() * localPos.GetGLM());
+        const Mathematics::WorldPosition worldPos =
+            pathXf->Position + Mathematics::Vector3(pathXf->Basis.GetGLM() * static_cast<glm::vec3>(localPos));
 
         if (!std::isfinite(worldPos.X) || !std::isfinite(worldPos.Y) || !std::isfinite(worldPos.Z))
         {

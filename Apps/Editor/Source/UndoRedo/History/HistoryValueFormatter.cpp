@@ -9,6 +9,7 @@
 #include "ECS/ComponentFieldRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/ReflectionJson.h"
+#include "Scene/SceneValue.h"
 #include "Types/FormatNumber.h"
 #include "Types/StringUtils.h"
 
@@ -193,7 +194,8 @@ std::string HistoryValueFormatter::DescribeComponent(ECS::ComponentTypeId typeId
         Components::Transform newTransform;
         std::memcpy(&oldTransform, before.data(), sizeof(oldTransform));
         std::memcpy(&newTransform, after.data(), sizeof(newTransform));
-        AppendChange(result, "Position", FormatVector(oldTransform.GetPosition(), 0), FormatVector(newTransform.GetPosition(), 0));
+        AppendChange(result, "Position", Scene::FormatWorldPosition(oldTransform.GetPosition()),
+                      Scene::FormatWorldPosition(newTransform.GetPosition()));
         AppendChange(result, "Rotation (degrees)", FormatVector(RotationDegrees(oldTransform)), FormatVector(RotationDegrees(newTransform)));
         AppendChange(result, "Scale", FormatVector(oldTransform.GetScale()), FormatVector(newTransform.GetScale()));
         if (!result.empty())

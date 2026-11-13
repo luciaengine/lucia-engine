@@ -3,6 +3,7 @@
 #include "Engine/Build/PackageBuildStaging.h"
 #include "Engine/Build/StagedAssetCook.h"
 #include "Engine/Build/TexturePackageCook.h"
+#include "Engine/Build/TerrainPageExport.h"
 #include "Core/Engine.h"
 #include "Assets/AssetManager.h"
 #include "Types/PathUtils.h"
@@ -98,8 +99,12 @@ bool BuildPipeline::PrepareMobileContent(const BuildSettings& settings, std::fil
     const auto icons = GenerateApplicationIcons(settings, output / ".mobile-icons");
     if (!icons.error.empty()) { error = icons.error; return false; }
     auto& assets = EngineCore::GetInstance().GetAssetManager();
-    AssetManifest manifest = CollectAssets(settings);
-    if (!m_Progress.errors.empty()) { error = m_Progress.errors.back(); return false; }
+    AssetManifest manifest;
+    AssetCollector collector(assets);
+    if (!collector.CollectGameContent(settings.scenes, settings.renderPipelinePath,
+                                      EngineCore::GetInstance().GetResolvedAssetRoot(), manifest,
+                                      m_Progress.warnings, error))
+        return false;
     BuildContext context{settings, contentRoot, manifest};
     if (!RunPackageAssetStep(context) || !CopyAssets(contentRoot, manifest)
         || !CopyEngineShaders(contentRoot)
@@ -113,7 +118,10 @@ bool BuildPipeline::PrepareMobileContent(const BuildSettings& settings, std::fil
     if (!CookStagedContent(contentRoot, manifest, assets.GetRegistry(), assets.GetParserRegistry(),
         assets.GetTextureCookWorkers(), &EngineCore::GetInstance().GetJobSystem(), [this] { return IsCancelled(); }, stats, error)) return false;
     CookMeshLODs(contentRoot, manifest);
-    StageTerrainBakes(contentRoot, settings, manifest);
+    const TerrainPageExportResult pages = ExportTerrainPages(
+        settings.projectRoot, contentRoot, manifest, assets.GetRegistry(), &EngineCore::GetInstance().GetJobSystem(),
+        &m_CancelRequested);
+    m_Progress.warnings.insert(m_Progress.warnings.end(), pages.Warnings.begin(), pages.Warnings.end());
     CopyThirdPartyNotices(contentRoot, settings);
     return !FailIfCancelled();
 }

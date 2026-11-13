@@ -25,7 +25,7 @@ namespace GameEngine.Scripting
         Override = 1,
     }
 
-    [StructLayout(LayoutKind.Explicit, Size = 52)]
+    [StructLayout(LayoutKind.Explicit, Size = 60)]
     [BuiltInComponent("GameEngine::Components::WindVolume")]
     public partial struct WindVolume : IComponent
     {
@@ -70,24 +70,30 @@ namespace GameEngine.Scripting
         public int Priority;
 
         [FieldOffset(24)]
-        public float DirectionX;
+        public uint LayerMask;
 
         [FieldOffset(28)]
-        public float DirectionY;
+        public float DirectionX;
 
         [FieldOffset(32)]
-        public float DirectionZ;
+        public float DirectionY;
 
         [FieldOffset(36)]
-        public float Speed;
+        public float DirectionZ;
 
         [FieldOffset(40)]
-        public float Turbulence;
+        public float Speed;
 
         [FieldOffset(44)]
-        public float GustFrequency;
+        public float RainAmount;
 
         [FieldOffset(48)]
+        public float Turbulence;
+
+        [FieldOffset(52)]
+        public float GustFrequency;
+
+        [FieldOffset(56)]
         public float GustScale;
     }
 }
