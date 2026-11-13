@@ -22,6 +22,12 @@ target_link_libraries(FontAtlasShapingTests
     GTest::gtest_main
 )
 
+# The suite calls FreeType directly; Engine does not forward its private link libraries.
+find_package(Freetype CONFIG QUIET)
+if(TARGET Freetype::Freetype)
+    target_link_libraries(FontAtlasShapingTests PRIVATE Freetype::Freetype)
+endif()
+
 target_include_directories(FontAtlasShapingTests PRIVATE ${PROJECT_SOURCE_DIR}/Tests)
 
 set_target_properties(FontAtlasShapingTests PROPERTIES
