@@ -7,6 +7,7 @@
 #include "Components/Terrain/TerrainModifiers.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
+#include "ECS/Writable.h"
 #include "FileSystem/FileSystem.h"
 #include "Logger/Logger.h"
 #include "TerrainECS/TerrainModifierComponents.h"
@@ -203,10 +204,10 @@ void AssignSavedSceneToTerrains(ECS::World& world, const std::optional<std::file
     const GUID savedScene = registry.GetOrCreateAssetGUID(scenePath);
     // A null identity is a terrain added since the last save: it belongs to the document.
     world.Query<ECS::Write<Components::Terrain>>().Each(
-        [&previousScene, &savedScene](Components::Terrain& terrain)
+        [&previousScene, &savedScene](ECS::Writable<Components::Terrain> terrainRow)
         {
-            if (terrain.BakeOriginScene.IsNull() || terrain.BakeOriginScene == previousScene)
-                terrain.BakeOriginScene = savedScene;
+            if (terrainRow->BakeOriginScene.IsNull() || terrainRow->BakeOriginScene == previousScene)
+                terrainRow.Mutable().BakeOriginScene = savedScene;
         });
 }
 
