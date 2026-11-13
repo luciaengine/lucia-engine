@@ -6,6 +6,7 @@
 #include "Engine/Build/ExportRequirements.h"
 #include "Engine/Build/LinuxRuntimeTemplate.h"
 #include "Engine/Build/MacBundleAssembler.h"
+#include "Engine/Build/MaterialVariantCookTool.h"
 #include "Engine/Build/NativeAotProject.h"
 #include "Engine/Build/NativeAotPublish.h"
 #include "Engine/Build/NativeScriptStaging.h"
@@ -48,6 +49,7 @@
 #include "AssetDatabase/AssetStore_TextJsonl.h"
 #include "AssetDatabase/AssetRecord.h"
 #include "AssetCore/PathNormalization.h"
+#include "Types/StringUtils.h"
 
 #include <nlohmann/json.hpp>
 #include <cmath>

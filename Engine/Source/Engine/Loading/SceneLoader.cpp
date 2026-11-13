@@ -5,6 +5,7 @@
 #include "Core/Engine.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
+#include "ECS/Writable.h"
 #include "ECSModules/Rendering/RenderingLoop.h"
 #include "Engine/Loading/SceneLoadInstantiated.h"
 #include "Engine/Rendering/SceneResolveService.h"
@@ -355,11 +356,11 @@ void SceneLoader::PauseWorldDrawing()
         return;
     // A camera that is paused already is not recorded, so the loader does not resume it.
     world->Query<ECS::Write<Components::Camera>>().Each(
-        [this](ECS::EntityHandle entity, Components::Camera& camera)
+        [this](ECS::EntityHandle entity, ECS::Writable<Components::Camera> cameraRow)
         {
-            if (camera.WorldDrawingPaused)
+            if (cameraRow->WorldDrawingPaused)
                 return;
-            camera.WorldDrawingPaused = true;
+            cameraRow.Mutable().WorldDrawingPaused = true;
             m_PausedCameras.push_back(entity);
         });
 }

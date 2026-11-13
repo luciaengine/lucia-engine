@@ -603,7 +603,7 @@ void SubmitPart(Engine::Renderer::RenderServices& renderServices,
     Rendering::GPUInstance instance{};
     std::memcpy(instance.transform.Data(), elements, sizeof(float) * 16);
     std::memcpy(instance.prevTransform.Data(), elements, sizeof(float) * 16);
-    GameEngine::Rendering::PackSector(sector.x, sector.y, sector.z, instance.sectorPacked[0], instance.sectorPacked[1]);
+    GameEngine::Rendering::PackSector(sector.X, sector.Y, sector.Z, instance.sectorPacked[0], instance.sectorPacked[1]);
     bool mirrored = false;
     Rendering::Vector4 normalColumn0;
     Rendering::MatrixUtils::ComputeNormalMatrixColumns(

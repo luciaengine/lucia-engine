@@ -111,6 +111,11 @@ std::string FormatVector(const Mathematics::Vector3& value, int significantDigit
         FormatFloat(value.z, significantDigits));
 }
 
+std::string FormatPosition(const Mathematics::WorldPosition& value)
+{
+    return std::format("({}, {}, {})", FormatDouble(value.X), FormatDouble(value.Y), FormatDouble(value.Z));
+}
+
 Mathematics::Vector3 RotationDegrees(const Components::Transform& transform)
 {
     Mathematics::Vector3 degrees;
@@ -193,7 +198,7 @@ std::string HistoryValueFormatter::DescribeComponent(ECS::ComponentTypeId typeId
         Components::Transform newTransform;
         std::memcpy(&oldTransform, before.data(), sizeof(oldTransform));
         std::memcpy(&newTransform, after.data(), sizeof(newTransform));
-        AppendChange(result, "Position", FormatVector(oldTransform.GetPosition(), 0), FormatVector(newTransform.GetPosition(), 0));
+        AppendChange(result, "Position", FormatPosition(oldTransform.GetPosition()), FormatPosition(newTransform.GetPosition()));
         AppendChange(result, "Rotation (degrees)", FormatVector(RotationDegrees(oldTransform)), FormatVector(RotationDegrees(newTransform)));
         AppendChange(result, "Scale", FormatVector(oldTransform.GetScale()), FormatVector(newTransform.GetScale()));
         if (!result.empty())

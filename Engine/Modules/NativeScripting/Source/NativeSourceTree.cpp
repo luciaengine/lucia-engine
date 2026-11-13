@@ -101,6 +101,20 @@ bool HasWatchedNativeSource(const std::filesystem::path& sourceRoot)
     return found;
 }
 
+std::vector<std::filesystem::path> CollectWatchedNativeSources(const std::filesystem::path& sourceRoot,
+                                                              const std::filesystem::path& packageRoot)
+{
+    std::vector<std::filesystem::path> sources;
+    ForEachWatchedNativeSource(
+        sourceRoot, packageRoot, [&sources](const std::filesystem::path& path, const std::filesystem::path& relative) {
+            if (!IsPlayerTemplateSource(relative))
+                sources.push_back(path);
+            return true;
+        });
+    std::sort(sources.begin(), sources.end());
+    return sources;
+}
+
 std::uint64_t HashWatchedNativeSources(const std::filesystem::path& sourceRoot,
                                        const std::filesystem::path& packageRoot, std::uint64_t seed)
 {

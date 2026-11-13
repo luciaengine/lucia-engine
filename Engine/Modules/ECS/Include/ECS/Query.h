@@ -903,7 +903,7 @@ void Query<Ts...>::ParallelBatchEach(Func&& func, [[maybe_unused]] std::size_t m
                                         std::span<const int>(changedCols.data(), changedColCount),
                                         kGateVersion))
                         continue;
-                    if constexpr (kWriteMask != 0u)
+                    if (kWriteMask != 0u)
                         StampWriteColumns(*tablePtr, ci, colIdx, kWriteMask, stampVersion);
 
                     [&]<std::size_t... Is>(std::index_sequence<Is...>)
