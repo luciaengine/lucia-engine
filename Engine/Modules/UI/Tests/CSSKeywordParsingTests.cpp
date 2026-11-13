@@ -23,6 +23,7 @@
 
 #include <string>
 
+#include "Mathematics/Vector2.h"
 #include "UI/Layout/YogaLayout.h"
 #include "UI/Parsers/CSSParser.h"
 #include "UI/UIElement.h"
@@ -33,6 +34,9 @@ using namespace GameEngine::UIParsing;
 
 namespace
 {
+
+// The styles here hold px only, so no length reads the viewport.
+const Mathematics::Vector2 kNoViewportUnits{};
 
 ResolvedStyle ComputeForClass(const std::string& css, const std::string& className)
 {
@@ -76,12 +80,12 @@ RowTops LayOutRow(const std::string& containerAlign, const std::string& childAli
         ".tall { width: 40px; height: 50px; " + childAlign + " }\n";
 
     YGNodeRef root = YogaAdapter::CreateNode();
-    YogaAdapter::ApplyStyle(root, ComputeForClass(css, "row"));
+    YogaAdapter::ApplyStyle(root, ComputeForClass(css, "row"), kNoViewportUnits);
 
     YGNodeRef shortChild = YogaAdapter::CreateNode();
-    YogaAdapter::ApplyStyle(shortChild, ComputeForClass(css, "short"));
+    YogaAdapter::ApplyStyle(shortChild, ComputeForClass(css, "short"), kNoViewportUnits);
     YGNodeRef tallChild = YogaAdapter::CreateNode();
-    YogaAdapter::ApplyStyle(tallChild, ComputeForClass(css, "tall"));
+    YogaAdapter::ApplyStyle(tallChild, ComputeForClass(css, "tall"), kNoViewportUnits);
 
     YGNodeInsertChild(root, shortChild, 0);
     YGNodeInsertChild(root, tallChild, 1);
@@ -326,16 +330,16 @@ RowTops LayOutTightRow(const std::string& containerAlign, bool nestChild)
         ".nested { width: 40px; height: 12px; }\n";
 
     YGNodeRef root = YogaAdapter::CreateNode();
-    YogaAdapter::ApplyStyle(root, ComputeForClass(css, "row"));
+    YogaAdapter::ApplyStyle(root, ComputeForClass(css, "row"), kNoViewportUnits);
     YGNodeRef shortChild = YogaAdapter::CreateNode();
-    YogaAdapter::ApplyStyle(shortChild, ComputeForClass(css, "short"));
+    YogaAdapter::ApplyStyle(shortChild, ComputeForClass(css, "short"), kNoViewportUnits);
     YGNodeRef tallChild = YogaAdapter::CreateNode();
-    YogaAdapter::ApplyStyle(tallChild, ComputeForClass(css, "tall"));
+    YogaAdapter::ApplyStyle(tallChild, ComputeForClass(css, "tall"), kNoViewportUnits);
 
     YGNodeRef nested = nullptr;
     if (nestChild) {
         nested = YogaAdapter::CreateNode();
-        YogaAdapter::ApplyStyle(nested, ComputeForClass(css, "nested"));
+        YogaAdapter::ApplyStyle(nested, ComputeForClass(css, "nested"), kNoViewportUnits);
         YGNodeInsertChild(tallChild, nested, 0);
     }
 

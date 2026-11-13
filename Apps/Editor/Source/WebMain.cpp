@@ -1,5 +1,3 @@
-#include "Audio/AudioTypes.h"
-#include "Platform/Window.h"
 // Web Editor entry (web platform plan, Phase 7): the same EditorApplication as
 // the desktop editor, driven by the browser instead of a blocking main loop.
 //
@@ -13,9 +11,9 @@
 // callback that runs Application::Tick once per frame, then returns with the
 // runtime kept alive.
 
-#include "EditorApplication.h"
-#include "Platform/Environment.h"
+#include "EditorApplication/EditorApplication.h"
 
+#include "Audio/AudioTypes.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
 #include "Engine/Build/GameConfig.h"
@@ -88,8 +86,9 @@ void PlantSeedProject()
         return;
     }
 
+    const char* replantEnv = std::getenv("GE_REPLANT");
     const bool forceReplant =
-        QueryParameter("replant") == "1" || GameEngine::Platform::EnvironmentSwitchEnabled("GE_REPLANT", false);
+        QueryParameter("replant") == "1" || (replantEnv != nullptr && std::string(replantEnv) == "1");
 
     std::error_code walk;
     for (const auto& seed : std::filesystem::directory_iterator(kSeedProjectSource, walk))
@@ -286,7 +285,7 @@ int main()
     // Before a project can be resolved, the projects tree has to be durable.
     //
     // This is the only OPFS mount, and everything that has to survive a reload
-    // lives inside it: PathUtils::GetUserData/CacheDirectory() resolve to
+    // lives inside it: ApplicationPaths::GetUserData/CacheDirectory() resolve to
     // /project/.user-data and /project/.cache, hidden subtrees of this mount,
     // because a second OPFS mount would alias this one instead of sitting
     // beside it. Those roots are created on first use and only once the mount
@@ -307,10 +306,10 @@ int main()
     std::printf("WEBEDITOR: storage ready\n");
 
     GameEngine::ApplicationConfig config;
-    config.Name = "Lucia Engine";
-    config.AudioOutput = GameEngine::Audio::AudioOutput::Device;
+    config.Name = "Open Engine Editor";
     config.EnableEditor = true;
     config.PersistScenesEagerly = true; // browser storage is the only place a scene survives
+    config.AudioOutput = GameEngine::Audio::AudioOutput::Device;
     // A project opened in the first frames deadlocks the wasm main thread in
     // the scene view's boot batch (the frame-3 shadow/fog boundary). Boots land
     // on the picker; a later open wins that race far more often.

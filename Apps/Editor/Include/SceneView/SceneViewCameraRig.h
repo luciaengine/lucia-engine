@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Mathematics/Matrix4x4.h"
+
 #include <cmath>
 
 // Double-precision math for the Scene View camera rig (orbit / pan / dolly /
@@ -113,15 +115,10 @@ inline void PanBasis(double yawDeg, double pitchDeg, Vec3d& outRight, Vec3d& out
     outUp = up;
 }
 
-// Column-major fp32 LH view matrix with the same layout as
-// Mathematics::MakeLookAtLH(eye, eye + look, worldUp), but the look direction
-// is taken exactly from yaw/pitch and every product is accumulated in double.
-// The old form re-derived the direction as normalize((eye + look) - eye) in
-// fp32, which quantizes the ROTATION BASIS to ULP(|eye|) — ~0.22 deg steps at
-// |eye| = 5e4 (~4 px of jitter per mouse-move at 60 deg FOV). The single fp32
-// rounding here happens on store, so basis and translation are smooth
-// functions of the pose at any coordinate magnitude.
-inline void BuildViewMatrixLH(const Vec3d& eye, double yawDeg, double pitchDeg, float out[16])
+// LH view matrix with the layout of Mathematics::MakeLookAtLH(eye, eye + look, worldUp).
+// The look direction comes exactly from yaw and pitch, and all products are in double.
+// Each element is rounded to fp32 once, so the basis does not step with the magnitude of eye.
+inline Mathematics::Matrix4x4 BuildViewMatrixLH(const Vec3d& eye, double yawDeg, double pitchDeg)
 {
     const Vec3d f = LookDirection(yawDeg, pitchDeg);
 
@@ -147,6 +144,8 @@ inline void BuildViewMatrixLH(const Vec3d& eye, double yawDeg, double pitchDeg, 
     const double uY = f.Z * sX - f.X * sZ;
     const double uZ = -f.Y * sX;
 
+    Mathematics::Matrix4x4 view;
+    float* out = view.Data();
     out[0] = static_cast<float>(sX);
     out[1] = static_cast<float>(uX);
     out[2] = static_cast<float>(f.X);
@@ -163,6 +162,7 @@ inline void BuildViewMatrixLH(const Vec3d& eye, double yawDeg, double pitchDeg, 
     out[13] = static_cast<float>(-(uX * eye.X + uY * eye.Y + uZ * eye.Z));
     out[14] = static_cast<float>(-(f.X * eye.X + f.Y * eye.Y + f.Z * eye.Z));
     out[15] = 1.0f;
+    return view;
 }
 
 } // namespace GameEngine::Editor::CameraRig

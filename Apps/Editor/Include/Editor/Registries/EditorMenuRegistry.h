@@ -1,10 +1,12 @@
 #pragma once
 
 #include "ECS/ModuleRegistration.h"
+#include "Types/ScopedSubscription.h"
 
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -22,6 +24,11 @@ struct EditorMenuItemDescriptor
     std::string Path;
     int32_t Priority = 0; // lower sorts first among native items; ties by Path
     std::function<void()> Action;
+    // The Shortcuts catalog entry (group, name) whose binding the item shows; empty for none.
+    std::string ShortcutGroup;
+    std::string ShortcutName;
+    // Draws a separator line above the item in its menu.
+    bool SeparatorBefore = false;
 };
 
 // Snapshot row the toolbar build consumes: the registry owns command-id
@@ -32,6 +39,9 @@ struct EditorMenuItemSnapshot
     uint32_t CommandId = 0;
     std::string Path;
     int32_t Priority = 0;
+    std::string ShortcutGroup;
+    std::string ShortcutName;
+    bool SeparatorBefore = false;
 };
 
 // What a module registers to add an item to the Assets panel's folder context
@@ -48,28 +58,6 @@ struct EditorDirectoryMenuItemDescriptor
 
 // Snapshot row the folder context menu consumes; the registry assigns the ids.
 struct EditorDirectoryMenuItemSnapshot
-{
-    uint32_t CommandId = 0;
-    std::string Path;
-    int32_t Priority = 0;
-    std::string Icon;
-};
-
-// What a module registers to add an item to the Assets panel's context menu
-// for a file. AppliesTo picks the files the item shows on (an extension
-// test, say); Action receives the file the menu was opened on. Icon is an
-// editor icon path (EditorIcons), empty for none.
-struct EditorAssetFileMenuItemDescriptor
-{
-    std::string Path;
-    int32_t Priority = 0; // the file menu sorts by (priority, path); built-in rows sit at 0
-    std::string Icon;
-    std::function<bool(const std::filesystem::path& file)> AppliesTo;
-    std::function<void(const std::filesystem::path& file)> Action;
-};
-
-// Snapshot row the file context menu consumes; the registry assigns the ids.
-struct EditorAssetFileMenuItemSnapshot
 {
     uint32_t CommandId = 0;
     std::string Path;
@@ -98,13 +86,16 @@ enum class EditorCommandResult
 // Registration is main-thread (module loads + editor startup), matching the
 // other editor registries. Module lifetime is loud no-unload: a module
 // rebuild re-registers under the same Path and the NEW descriptor wins
-// (replace-forward, command id kept stable); nothing is ever unregistered.
+// (replace-forward, command id kept stable).
 class EditorMenuRegistry
 {
 public:
     static EditorMenuRegistry& Get();
 
-    void RegisterMenuItem(EditorMenuItemDescriptor descriptor);
+    // The item lives while the returned handle lives. Destroying the handle removes the
+    // item and keeps its command id for a later registration under the same Path. A later
+    // registration under the same Path replaces the item; the old handle then removes nothing.
+    [[nodiscard]] ScopedSubscription RegisterMenuItem(EditorMenuItemDescriptor descriptor);
 
     std::vector<EditorMenuItemSnapshot> Snapshot() const;
 
@@ -119,15 +110,6 @@ public:
     // Runs the folder item registered under commandId on `folder`. Returns
     // false when the id is not a registered folder item.
     bool TryInvokeDirectoryItem(uint32_t commandId, const std::filesystem::path& folder) const;
-
-    // File context-menu items, the same way: a same-Path registration replaces
-    // forward and keeps its command id. The snapshot holds the items whose
-    // AppliesTo accepts `file`.
-    void RegisterAssetFileMenuItem(EditorAssetFileMenuItemDescriptor descriptor);
-    std::vector<EditorAssetFileMenuItemSnapshot> AssetFileMenuSnapshot(const std::filesystem::path& file) const;
-    // Runs the file item registered under commandId on `file`. Returns false
-    // when the id is not a registered file item.
-    bool TryInvokeAssetFileItem(uint32_t commandId, const std::filesystem::path& file) const;
 
     // Fixed-id commands. A same-id registration replaces forward, like a
     // same-Path menu item. Ids inside the native menu range are rejected
@@ -155,12 +137,20 @@ private:
         EditorMenuItemDescriptor Descriptor;
         uint32_t CommandId = 0;
         ECS::ModuleRegistrationStamp Module;
+        // Changes at each registration under this Path, so a stale handle removes nothing.
+        uint32_t Generation = 0;
     };
 
-    // Command ids are kNativeMenuCmdFirst + index: entries are never removed
-    // (loud no-unload; a module rebuild replaces in place and keeps its id),
-    // so the index is a stable, collision-free assignment.
+    // Returns the entry's index, or -1 when the registration is refused.
+    int32_t AddMenuItem(EditorMenuItemDescriptor descriptor);
+    void RemoveMenuItem(size_t index, uint32_t generation);
+
+    // Command ids are kNativeMenuCmdFirst + index: entries are never erased.
+    // A removed item keeps its Path and id with an empty Action, so the index
+    // is a stable, collision-free assignment.
     std::vector<Entry> m_Items;
+    // Handles check this before they remove an item, so a handle that outlives the registry does nothing.
+    std::shared_ptr<int> m_Keepalive = std::make_shared<int>(0);
 
     struct DirectoryEntry
     {
@@ -169,14 +159,6 @@ private:
         ECS::ModuleRegistrationStamp Module;
     };
     std::vector<DirectoryEntry> m_DirectoryItems;
-
-    struct AssetFileEntry
-    {
-        EditorAssetFileMenuItemDescriptor Descriptor;
-        uint32_t CommandId = 0;
-        ECS::ModuleRegistrationStamp Module;
-    };
-    std::vector<AssetFileEntry> m_AssetFileItems;
 
     struct CommandEntry
     {

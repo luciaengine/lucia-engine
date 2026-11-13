@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/CommandList.h"
-#include "Vulkan/VulkanDevice.h"
+#include "Vulkan/VulkanDevice/VulkanDevice.h"
 
 using namespace GameEngine::Rendering;
 

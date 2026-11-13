@@ -1,4 +1,5 @@
 #include "Logger/LogSink.h"
+#include "Logger/Logger.h"
 #include <cstdio>
 #include <cstring>
 #include <iostream>
@@ -20,17 +21,14 @@
 namespace Logger
 {
 
-String LogSink::FormatMessage(const LogMessage& message,
+std::string LogSink::FormatMessage(const LogMessage& message,
                               bool includeTimestamp,
                               bool includeLevel,
                               bool includeSource) const
 {
-#if !LOGGER_ENABLE_SOURCE_LOCATION
-    (void)includeSource;
-#endif
     // Reuse a thread_local buffer to avoid per-call allocation.
     // The drain thread is the primary caller, so this buffer stabilizes quickly.
-    thread_local String result;
+    thread_local std::string result;
     result.clear();
 
 #if LOGGER_ENABLE_TIMESTAMPS
@@ -46,6 +44,13 @@ String LogSink::FormatMessage(const LogMessage& message,
     {
         result += '[';
         result += LogLevelToString(message.Level);
+        result += "] ";
+    }
+
+    if (message.Channel != CoreLog().Index)
+    {
+        result += '[';
+        result += Log::GetChannelName(message.Channel);
         result += "] ";
     }
 
@@ -87,7 +92,7 @@ String LogSink::FormatMessage(const LogMessage& message,
     return result;
 }
 
-String LogSink::FormatTimestamp(const TimePoint& timestamp) const
+std::string FormatTimestamp(const TimePoint& timestamp)
 {
     // Cache the localtime conversion — only recompute when the second changes.
     // This eliminates a syscall per message during sustained logging.
@@ -111,10 +116,10 @@ String LogSink::FormatTimestamp(const TimePoint& timestamp) const
                   timestamp.time_since_epoch()) %
               1000;
 
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%03d",
+    char text[16];
+    std::snprintf(text, sizeof(text), "%02d:%02d:%02d.%03d",
                   cachedTm.tm_hour, cachedTm.tm_min, cachedTm.tm_sec, static_cast<int>(ms.count()));
-    return String(buf);
+    return std::string(text);
 }
 
 // ========================================
@@ -149,7 +154,7 @@ void ConsoleSink::Write(const LogMessage& message)
     if (!ShouldLog(message.Level))
         return;
 
-    String formattedMessage = FormatMessage(message,
+    std::string formattedMessage = FormatMessage(message,
                                             m_Config.IncludeTimestamp,
                                             true,
                                             m_Config.IncludeSource);

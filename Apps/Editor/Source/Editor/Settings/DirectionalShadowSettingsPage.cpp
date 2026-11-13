@@ -1,7 +1,7 @@
 #include "Editor/Settings/DirectionalShadowSettingsPage.h"
 
 #include "Core/Engine.h"
-#include "Editor/Settings/RenderProjectSettings.h"
+#include "Editor/Settings/Render/RenderProjectSettings.h"
 #include "Editor/Settings/SettingsStore.h"
 #include "Logger/Logger.h"
 

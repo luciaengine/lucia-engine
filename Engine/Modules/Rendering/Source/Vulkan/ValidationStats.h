@@ -1,12 +1,14 @@
 #pragma once
 
+#include "Rendering/Core/Device.h"
+
 #include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <string_view>
 #include <vector>
 
-#include "Rendering/Core/Device.h"
+#include <vulkan/vulkan.h>
 
 namespace GameEngine
 {
@@ -45,6 +47,16 @@ inline constexpr uint64_t kValidationLogRepeatStride = 100;
 inline bool ShouldLogValidationOccurrence(const ValidationRecordOutcome& outcome) noexcept
 {
     return outcome.FirstOccurrence || (outcome.Count % kValidationLogRepeatStride == 0);
+}
+
+// The validation assert traps only on an unsuppressed ERROR from the validation layer.
+// Loader and driver messages (GENERAL type) depend on the installed drivers, so they are logged, not trapped.
+inline bool ValidationMessageTraps(VkDebugUtilsMessageSeverityFlagsEXT severity,
+                                   VkDebugUtilsMessageTypeFlagsEXT type,
+                                   bool suppressed) noexcept
+{
+    return (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0 &&
+           (type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT) != 0 && !suppressed;
 }
 
 // Process-wide store behind every VkInstance's debug messenger: exact per-VUID

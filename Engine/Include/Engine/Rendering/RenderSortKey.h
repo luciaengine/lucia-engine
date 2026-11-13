@@ -2,6 +2,7 @@
 
 #include "ECS/ECS.h"
 #include "Mathematics/Vector3.h"
+#include "Mathematics/WorldPosition.h"
 #include "Types/Types.h"
 
 #include <cmath>
@@ -14,46 +15,45 @@ struct RenderSortingData
     int32 Layer = 0;
     int32 Order = 0;
     ECS::EntityHandle Group{};
-    Mathematics::Vector3 GroupPosition;
+    Mathematics::WorldPosition GroupPosition;
     int32 MemberOrder = 0;
     bool Authored = false;
     bool Grouped = false;
     bool SortByY = false;
     float32 SortOriginY = 0.0f;
-    float32 SortY = 0.0f;
+    float64 SortY = 0.0;
     bool GroupSortByY = false;
-    /// World Y offset of the entity's sector, shared by tile and sprite ground keys.
-    float32 SectorOffsetY = 0;
 };
 struct RenderSortKey
 {
     int32 Layer = 0;
     int32 Order = 0;
-    float32 Depth = 0;
+    float64 Depth = 0;
     ECS::EntityHandle Group{};
     int32 MemberOrder = 0;
-    float32 MemberDepth = 0;
+    float64 MemberDepth = 0;
     bool Grouped = false;
     bool operator==(const RenderSortKey&) const = default;
 };
-inline float32 FiniteRenderDepth(float32 depth) { return std::isfinite(depth) ? depth : 0.0f; }
+inline float64 FiniteRenderDepth(float64 depth) { return std::isfinite(depth) ? depth : 0.0; }
 /// The outer group supplies depth. Y sorting uses world ground height, with +Y up.
 inline RenderSortKey MakeRenderSortKey(const RenderSortingData& data, float32 viewDepth,
-                                       const float32* cameraPosition, const float32* cameraForward)
+                                       const Mathematics::WorldPosition& cameraPosition, const float32* cameraForward)
 {
     RenderSortKey key;
     key.Layer = data.Layer;
     key.Order = data.Order;
-    const float32 memberDepth = FiniteRenderDepth(data.SortByY ? data.SortY : viewDepth);
+    const float64 memberDepth = FiniteRenderDepth(data.SortByY ? data.SortY : viewDepth);
     key.Depth = memberDepth;
     key.Group = data.Group;
     key.Grouped = data.Grouped;
     if (data.Grouped)
     {
-        key.Depth = FiniteRenderDepth(data.GroupSortByY ? data.GroupPosition.y :
-                                    (data.GroupPosition[0] - cameraPosition[0]) * cameraForward[0] +
-                                     (data.GroupPosition[1] - cameraPosition[1]) * cameraForward[1] +
-                                     (data.GroupPosition[2] - cameraPosition[2]) * cameraForward[2]);
+        const Mathematics::Vector3 offset = data.GroupPosition - cameraPosition;
+        key.Depth = FiniteRenderDepth(data.GroupSortByY ? data.GroupPosition.Y :
+            static_cast<float64>(offset.x) * cameraForward[0] +
+            static_cast<float64>(offset.y) * cameraForward[1] +
+            static_cast<float64>(offset.z) * cameraForward[2]);
         key.MemberOrder = data.MemberOrder;
         key.MemberDepth = memberDepth;
     }

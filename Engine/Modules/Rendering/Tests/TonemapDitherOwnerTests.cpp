@@ -32,7 +32,7 @@
 // SetPreferTenBitSwapchain(false) (VulkanDevice.cpp), which this suite calls
 // directly, per the discipline WindowTargetPresentedFormatTests established.
 
-#include "Source/Vulkan/VulkanDevice.h"
+#include "Source/Vulkan/VulkanDevice/VulkanDevice.h"
 
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/Device.h"

@@ -7,8 +7,8 @@
 #include "Engine/Build/StagedAssetCook.h"
 #include "Engine/Build/TexturePackageCook.h"
 #include "Particles/Assets/ParticleStackAsset.h"
-#include "Particles/ParticleStackAuthoring.h"
-#include "Particles/ParticleStackBinary.h"
+#include "Particles/ParticleStack/ParticleStackAuthoring.h"
+#include "Particles/ParticleStack/ParticleStackBinary.h"
 
 #include <gtest/gtest.h>
 
@@ -90,7 +90,8 @@ TEST(ParticleStackAsset, ARefusedEditKeepsTheStackAndSaysWhy)
 {
     ParticleStackAsset asset(GUID::Generate(), TempFile("ge_stack_edit.particlestack"));
     const std::string text = kStack;
-    ASSERT_TRUE(asset.LoadFromData({text.begin(), text.end()}));
+    const Vector<uint8> bytes(text.begin(), text.end());
+    ASSERT_TRUE(asset.LoadFromData(bytes));
     const auto running = asset.Compiled();
 
     auto invalid = *asset.Document();
@@ -181,7 +182,7 @@ TEST(StagedAssetCook, TheBuildsContentCookShipsAStackCooked)
     TexturePackageCookStats textureStats;
     std::string error;
     ASSERT_TRUE(CookStagedContent(content.Root, content.Manifest, registry, parsers,
-                                  /*textureWorkers=*/nullptr, NeverCancelled, textureStats, error))
+                                  /*textureWorkers=*/nullptr, /*manifestParsePool=*/nullptr, NeverCancelled, textureStats, error))
         << error;
     EXPECT_TRUE(IsParticleStackBinary(ReadBytes(stack)));
     EXPECT_EQ(textureStats.Textures, 0u);

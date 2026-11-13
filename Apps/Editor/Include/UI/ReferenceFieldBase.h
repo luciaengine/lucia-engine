@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "UI/UIElement.h"
 #include "UI/Interaction/DropTarget.h"
@@ -16,13 +17,9 @@ struct ISearchProvider;
 struct SearchResultItem;
 using SearchItemId = uint64_t;
 
-/// Shared base for inspector "reference picker" fields (AssetField, EntityField):
-/// a bordered name label + clear button that opens a SearchDialog and accepts a
-/// drag-drop payload. Owns the dialog lifetime, the destructor teardown, the
-/// generic drop hit-test / preview classes, the name+clear structure, and the
-/// empty/named display toggle. Subclasses own the value type, the payload decode
-/// + validation, any extra chrome (e.g. an icon/preview), the search provider,
-/// result handling, and dialog placement.
+/// Shared base for the inspector reference fields (AssetField, EntityField), built from
+/// UI/controls/ReferenceField/ReferenceField.uxml. The picker button opens a SearchDialog; a click on
+/// the rest of the field reveals the object when the subclass can, else opens the dialog.
 class ReferenceFieldBase : public UIElement, public UI::Interaction::IDropTarget
 {
 public:
@@ -38,20 +35,23 @@ public:
     /// clear would be an edit that something else silently undoes.
     void SetClearable(bool clearable);
 
+    /// The text the field shows while it holds no reference: "None" unless set, for a field
+    /// whose empty value means something else, such as a default it falls back to.
+    void SetEmptyText(std::string text);
+
 protected:
-    // Create the name label + clear button and wire their handlers (clear button
-    // -> OnClearRequested; field click -> OpenReferenceDialog). Call from the
-    // subclass constructor AFTER adding any leading children (e.g. an icon) so the
-    // child/paint order is preserved.
-    void BuildNameAndClearButton();
+    // The child of the field's layout (UI/controls/ReferenceField/ReferenceField.uxml)
+    // with this class; null when the layout did not load.
+    UIElement* LayoutPart(std::string_view className) const;
 
     // Open the shared search dialog. No-op when one is already open or the subclass
     // is not ready (CreateProvider() returned null).
     void OpenReferenceDialog();
 
-    // Name/clear display toggles for subclass UpdateDisplay().
-    void ShowEmpty();                        // "(None)", empty class, clear hidden
-    void ShowNamed(const std::string& name); // name, remove empty, clear shown
+    // Display states for subclass UpdateDisplay(). The tooltip goes on the name.
+    void ShowEmpty();                                                 // empty text, clear hidden
+    void ShowNamed(const std::string& name, const std::string& tooltip);   // the name, clear shown
+    void ShowMissing(const std::string& text, const std::string& tooltip); // a dangling value, clear shown
 
     // -- Subclass hooks --
     virtual std::unique_ptr<ISearchProvider> CreateProvider() = 0;
@@ -61,12 +61,22 @@ protected:
     // it. 0 when the field is empty.
     virtual SearchItemId CurrentResultId() const = 0;
     virtual void OnClearRequested() = 0;
+    // Whether a click on the field reveals the referenced object instead of opening
+    // the dialog. Call RefreshLinkStyle() when the answer can change.
+    virtual bool CanReveal() const = 0;
+    virtual void Reveal() = 0;
+    void RefreshLinkStyle();
 
     Label* m_NameLabel = nullptr;
     UIElement* m_ClearBtn = nullptr;
+    UIElement* m_PickBtn = nullptr;
     bool m_Clearable = true;
+    std::string m_EmptyText = "None";
 
 private:
+    // Move the layout's parts into the field and wire the clear, picker and field clicks.
+    void BuildFromLayout();
+
     std::unique_ptr<ISearchProvider> m_SearchProvider; // kept alive while the dialog is open
     SearchDialog* m_ActiveDialog = nullptr;
 };

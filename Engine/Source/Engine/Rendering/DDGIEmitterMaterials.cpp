@@ -1,0 +1,58 @@
+#include "Engine/Rendering/DDGIEmitterMaterials.h"
+
+#include "Engine/Rendering/Material.h"
+#include "Engine/Rendering/MaterialRegistry.h"
+#include "Engine/Rendering/MaterialSystem.h"
+#include "Mathematics/Vector3.h"
+#include "Types/Color.h"
+#include "Types/StringId.h"
+
+namespace GameEngine::Engine::Renderer
+{
+
+namespace
+{
+
+constexpr StringId kEmissiveColorName = HashStringId("emissive");
+constexpr StringId kEmissionLuminanceName = HashStringId("emissionLuminance");
+
+}  // namespace
+
+void DDGIEmitterMaterials::Refresh(const MaterialSystem& materials)
+{
+    const MaterialRegistryStamp stamp = materials.GetRegistryStamp();
+    if (m_HaveSweptStamp && stamp == m_SweptStamp)
+        return;
+    m_SweptStamp = stamp;
+    m_HaveSweptStamp = true;
+
+    for (Slot& slot : m_BySlot)
+        slot.Emits = false;
+    materials.Registry().ForEach(
+        [this](const GUID&, const Material& material)
+        {
+            const uint32_t slotIndex = material.GetGpuSceneMaterialIndex();
+            if (slotIndex == Material::kInvalidSSBOIndex)
+                return;
+            // Material::GetVector fills raw lanes; the tint is a scene-linear color.
+            Mathematics::Vector3 tintLanes(0.0f, 0.0f, 0.0f);
+            material.GetVector(kEmissiveColorName, tintLanes.v, 3);
+            const ColorLinear tint(tintLanes.x, tintLanes.y, tintLanes.z);
+            const float nits = material.GetFloat(kEmissionLuminanceName, 0.0f);
+            const DDGIEmissive emissive = ComputeDDGIEmissive(tint, nits);
+            if (!(emissive.Color.r > 0.0f || emissive.Color.g > 0.0f || emissive.Color.b > 0.0f))
+                return;
+            if (slotIndex >= m_BySlot.size())
+                m_BySlot.resize(slotIndex + 1);
+            m_BySlot[slotIndex] = Slot{Emitter{emissive, material.IsDoubleSided()}, true};
+        });
+}
+
+const DDGIEmitterMaterials::Emitter* DDGIEmitterMaterials::Find(uint32_t gpuSceneMaterialIndex) const
+{
+    if (gpuSceneMaterialIndex >= m_BySlot.size() || !m_BySlot[gpuSceneMaterialIndex].Emits)
+        return nullptr;
+    return &m_BySlot[gpuSceneMaterialIndex].Value;
+}
+
+}  // namespace GameEngine::Engine::Renderer

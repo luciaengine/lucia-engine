@@ -3,6 +3,7 @@
 #include "AssetCore/AssetTypes.h"
 #include "AssetCore/GUID.h"
 #include "Events/Event.h"
+#include "Types/FlatSet.h"
 
 #include <functional>
 #include <mutex>
@@ -16,6 +17,7 @@ namespace GameEngine
 {
 namespace ECS { class World; }
 class AssetRegistry;
+class DeferredActionQueue;
 struct EditorContext;
 
 // One scene asset reference whose GUID is unknown to the AssetRegistry.
@@ -54,11 +56,10 @@ class MissingAssetTracker
 
     void Clear();
 
-    // Bind the editor context the tracker should resolve world+registry from
-    // for the parameter-less convenience overloads below. Called once during
-    // EditorApplication initialization. Borrowed; lifetime owned by the
-    // editor application. Pass nullptr to unbind.
-    void Bind(EditorContext* ctx);
+    // Resolve world+registry from `ctx` and listen to its AssetManager's FilesChanged: a batch that
+    // can change the missing set queues one rescan per frame on `preUiActions`. Both are borrowed.
+    // Pass nullptr to unbind.
+    void Bind(EditorContext* ctx, DeferredActionQueue* preUiActions);
 
     // Resolve world+registry through the bound EditorContext, then dispatch
     // to the explicit-arg implementation. UI callers (panels, controllers)
@@ -82,7 +83,14 @@ class MissingAssetTracker
     // Explicit-arg implementations. Private because callers should go
     // through the *Active overloads above, which resolve world+registry
     // from the bound EditorContext — keeps the world lookup in one place.
-    void Rescan(ECS::World& world, AssetRegistry& registry);
+    // Returns true when the set of missing GUIDs changed. Does not notify listeners.
+    bool Rescan(ECS::World& world, AssetRegistry& registry);
+
+    // Queues a rescan when the batch names a GUID that the scene referenced or that was missing at
+    // the previous scan, or a GUID with no registry record (a deleted file).
+    void OnFilesChanged(std::span<const GUID> changed);
+    // The queued rescan: notifies listeners only when the missing set changed.
+    void RescanForChangedFiles();
 
     // Clear every component property in `world` whose AssetReference points
     // to `guid`, by invoking each schema's ApplyProperty with the clear-slot
@@ -98,11 +106,16 @@ class MissingAssetTracker
     mutable std::mutex m_Mutex;
     std::vector<MissingAssetEntry> m_Entries;
     std::unordered_set<GUID> m_MissingGuids;
+    // Every GUID the scene referenced at the last rescan, missing or not.
+    FlatSet<GUID> m_ReferencedGuids;
     uint32_t m_Version = 0;
 
     Event<> m_Changed;
+    // The bound AssetManager's FilesChanged; the handle is inert when the manager dies first.
+    EventSubscription m_FilesChanged;
 
     EditorContext* m_BoundContext = nullptr;
+    DeferredActionQueue* m_PreUiActions = nullptr;
 };
 
 } // namespace GameEngine

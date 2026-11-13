@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/CommandList.h"
-#include "Rendering/Core/PipelineBuilder.h"
+#include "Rendering/Core/Pipeline/PipelineBuilder.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include "ScopedEnvVar.h"

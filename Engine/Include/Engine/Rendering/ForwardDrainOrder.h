@@ -15,6 +15,7 @@
 #include "Engine/Rendering/Material.h"
 #include "Rendering/Materials/MaterialAlphaMode.h"
 
+#include <concepts>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -36,6 +37,7 @@ inline bool IsBlendedContributor(const DrawCommand& cmd)
 // stream independently still lets opaque contributors overwrite blended
 // entities. Both streams must finish their opaque phase before either blends.
 template<class RecordEntities, class RecordContributors>
+    requires std::invocable<RecordEntities&, bool> && std::invocable<RecordContributors&, bool>
 inline void DrainForwardOpaqueFirst(RecordEntities&& entities, RecordContributors&& contributors)
 {
     entities(false);

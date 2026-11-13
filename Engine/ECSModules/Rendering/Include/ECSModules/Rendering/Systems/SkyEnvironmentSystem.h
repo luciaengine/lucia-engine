@@ -3,6 +3,7 @@
 #include "AssetCore/GUID.h"
 #include "ECS/Entity.h"
 #include "ECS/Systems.h"
+#include "Types/Color.h"
 #include "Types/Types.h"
 
 #include <atomic>
@@ -71,14 +72,15 @@ private:
 
     RenderServices* m_RenderServices = nullptr;
     float32 m_AccumulatedSkyTime = 0.0f;
-    // Last skybox HDRI GUID we synced GPU texture eviction for (Polyhaven resolution swaps, etc.).
-    GUID m_LastSkyboxHdriEvictionGuid{};
+    // The skybox HDRI the sky pass samples. A switched-to HDRI loads (and cooks) asynchronously;
+    // this one stays resident and bound until the new one is on the GPU, and is evicted then.
+    GUID m_BoundSkyboxHdriGuid{};
 
     // The light the sky drove last frame, the fields it drove (SkySunIlluminance::kDrives*), and the
     // last colour and Intensity it wrote there.
     ECS::EntityHandle m_DrivenLight{};
     uint8 m_DrivenFields = 0;
-    float32 m_DrivenLightColor[3] = {0.0f, 0.0f, 0.0f};
+    ColorLinear m_DrivenLightColor{0.0f, 0.0f, 0.0f};
     float32 m_DrivenLightIntensity = 0.0f;
     // The sky's noon reference while the curve drove, in lux: the Intensity a light is handed back
     // when no authored value was recorded.

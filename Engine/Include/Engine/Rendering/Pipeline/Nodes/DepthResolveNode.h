@@ -4,8 +4,8 @@
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
 
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineIdentifiers.h"
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 
 #include <memory>
 #include <string>
@@ -60,6 +60,12 @@ class DepthResolveNode final : public IRenderPipelineNode
     bool Initialize(std::string nodeId, std::string nodeJson, std::string* outError) override;
     void Declare(RenderPipelineInstance& instance, const PipelineDeclareContext& ctx) override;
     void DeclareForView(ViewDeclare& d) override;
+    // Asks for the copy or the MSAA resolve that DeclareForView binds for the view's depth.
+    void RequestPausedViewPipelines(const PausedViewPrewarm& prewarm) override;
+
+    // Asks the device for the pipeline that DeclareForView binds for a view depth with
+    // `depthSampleCount` samples. The build runs off the calling thread.
+    void RequestPipeline(IDevice& device, uint32_t depthSampleCount);
 
   private:
     void LoadShaders(IDevice* device);
@@ -92,4 +98,15 @@ class DepthResolveNode final : public IRenderPipelineNode
 
     SamplerHandle m_Sampler{};
 };
+
+// Sets `resolve` up as the copy published as View.DepthResolvedPostOcean: the view depth after
+// every world depth writer (the phase-B recover, forward draws that write their own depth, the
+// water). The ocean surface step declares it after the water; the reflections and the fog declare it
+// through DeclarePostWorldDepth, so a view copies that depth at most once per frame.
+void InitializePostWorldDepthResolve(DepthResolveNode& resolve, std::string nodeId);
+
+// View.DepthResolvedPostOcean for this view: the copy an earlier node published this frame, else
+// the copy `resolve` (set up by InitializePostWorldDepthResolve) declares here. Invalid only when
+// the view has no depth to copy.
+Rendering::RenderGraph::RGTexture DeclarePostWorldDepth(ViewDeclare& d, DepthResolveNode& resolve);
 } // namespace GameEngine::Engine::Renderer::Pipeline::Nodes

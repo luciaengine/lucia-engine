@@ -4,7 +4,7 @@
 
 #include <gtest/gtest.h>
 
-#include "Assets/PolyhavenDownloadManager.h"
+#include "Assets/Polyhaven/PolyhavenDownloadManager.h"
 #include "Core/Engine.h"
 
 // The engine is never initialized in this process, so the engine's job system does not

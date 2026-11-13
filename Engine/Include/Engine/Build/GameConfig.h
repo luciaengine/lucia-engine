@@ -2,6 +2,7 @@
 
 #include "Engine/Rendering/AntiAliasingProjectSettings.h"
 #include "Engine/Rendering/SortingLayers.h"
+#include "Engine/Rendering/RenderLayerNames.h"
 #include "Engine/Rendering/LodProjectSettings.h"
 #include "Rendering/Core/Device.h"
 #include "Types/Types.h"
@@ -62,6 +63,7 @@ struct GameConfig
     // SSAA included. Per-camera Camera overrides still win per view.
     Rendering::AntiAliasingProjectSettings renderQuality;
     Rendering::SortingLayers sortingLayers = Rendering::SortingLayers::Defaults();
+    Rendering::RenderLayerNames renderLayerNames;
 
     // Window: the size and mode the runtime creates its window with at startup.
     uint32_t windowWidth = 1920;

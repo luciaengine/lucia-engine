@@ -8,7 +8,7 @@
 #include <gtest/gtest.h>
 
 #include "Inspectors/UndeclaredKeysNotice.h"
-#include "Rendering/Materials/ShaderPropertyTable.h"
+#include "Rendering/Materials/Shader/ShaderPropertyTable.h"
 
 #include <string>
 #include <vector>

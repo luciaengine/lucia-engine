@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Mathematics/Matrix4x4.h"
+
 #include <cmath>
 
 namespace GameEngine
@@ -7,27 +9,18 @@ namespace GameEngine
 namespace Engine::Renderer
 {
 
-inline bool IsOrthographicProjectionLH_ZO(const float proj[16])
+inline bool IsOrthographicProjectionLH_ZO(const Mathematics::Matrix4x4& proj)
 {
-    return std::abs(proj[15] - 1.0f) < 1e-4f && std::abs(proj[11]) < 1e-4f;
+    return std::abs(proj[3][3] - 1.0f) < 1e-4f && std::abs(proj[2][3]) < 1e-4f;
 }
 
-// Extract near and far planes from a left-handed [1,0] reverse-Z projection
-// matrix. `proj` is column-major 4x4. Supports the engine's finite perspective
-// and orthographic projection builders, and falls back to sensible defaults on
-// degenerate input.
-//
-// Reverse-Z LH ZO finite (MakePerspectiveLH_ZO_ReverseZ):
-//   m22 = -near/(far-near)        → col 2, row 2 → index 10
-//   m32 = (near*far)/(far-near)   → col 3, row 2 → index 14
-// =>
-//   1 - m22 = (far-near)/(far-near) + near/(far-near) = far/(far-near)
-//   m32/(1 - m22) = near
-//   -m32/m22 = far
-inline void ExtractNearFarLH_ZO(const float proj[16], float& outNear, float& outFar)
+// Extract near and far planes from a finite LH reverse-Z [1,0] projection, perspective
+// or orthographic, addressed as proj[column][row]. Perspective: near = proj[3][2] /
+// (1 - proj[2][2]), far = -proj[3][2] / proj[2][2]. Degenerate input gives defaults.
+inline void ExtractNearFarLH_ZO(const Mathematics::Matrix4x4& proj, float& outNear, float& outFar)
 {
-    const float m22 = proj[10];
-    const float m32 = proj[14];
+    const float m22 = proj[2][2];
+    const float m32 = proj[3][2];
 
     float zn = 0.1f;
     float zf = 1000.0f;
@@ -40,10 +33,11 @@ inline void ExtractNearFarLH_ZO(const float proj[16], float& outNear, float& out
         zf = m32 * range;
         zn = zf - range;
     }
-    else if (std::abs(m22) > 1e-6f && std::abs(1.0f - m22) > 1e-6f)
+    else if (m22 < 0.0f)
     {
         // Reverse-Z perspective:
         //   m22 = -near/(far-near), m32 = near*far/(far-near)
+        // m22 < 0 for every finite far plane. m22 = 0 is an infinite far plane and takes the defaults.
         zn = m32 / (1.0f - m22);
         zf = -m32 / m22;
     }
@@ -57,12 +51,26 @@ inline void ExtractNearFarLH_ZO(const float proj[16], float& outNear, float& out
     outFar = zf;
 }
 
-inline float LinearizeReverseZDepthLH_ZO(float ndcDepth, float nearPlane, float farPlane, bool orthographic)
+/// The depth terms of an LH reverse-Z projection: clip z = M22 * z + M32, clip w = M23 * z + M33.
+/// The GPU reads the same four values as ge_depthTerms.
+struct ProjectionDepthTerms
 {
-    if (orthographic)
-        return farPlane - ndcDepth * (farPlane - nearPlane);
+    float M22 = 0.0f;
+    float M32 = 0.0f;
+    float M23 = 0.0f;
+    float M33 = 0.0f;
 
-    return (nearPlane * farPlane) / (ndcDepth * (farPlane - nearPlane) + nearPlane);
+    static ProjectionDepthTerms Of(const Mathematics::Matrix4x4& proj)
+    {
+        return {proj[2][2], proj[3][2], proj[2][3], proj[3][3]};
+    }
+};
+
+/// Raw reverse-Z depth -> positive view-space distance, exact for a perspective (finite or
+/// infinite) and an orthographic projection. A finite perspective gives its far at depth 0.
+inline float LinearizeReverseZDepthLH_ZO(float ndcDepth, const ProjectionDepthTerms& terms)
+{
+    return (terms.M32 - ndcDepth * terms.M33) / (ndcDepth * terms.M23 - terms.M22);
 }
 
 } // namespace Engine::Renderer

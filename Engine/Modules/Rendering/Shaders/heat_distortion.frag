@@ -12,7 +12,7 @@ layout(set = 0, binding = 1) uniform sampler2D uDepth;
 
 layout(set = 0, binding = 2, std140) uniform ViewParamsBlock
 {
-    // 240 B prefix of the shared ViewParams list (through viewProj, no proj).
+    // 256 B prefix of the shared ViewParams list (through viewProj, no proj).
 #define GE_VP_MAT4(name) mat4 name;
 #define GE_VP_VEC4(name) vec4 name;
 #define GE_VIEWPARAMS_OMIT_PROJ 1
@@ -21,6 +21,7 @@ layout(set = 0, binding = 2, std140) uniform ViewParamsBlock
 #undef GE_VP_VEC4
 #undef GE_VP_MAT4
 } ViewParams;
+#include "Includes/reverse_z.glsl"
 
 layout(push_constant) uniform HeatDistortionPC
 {
@@ -74,13 +75,6 @@ float Noise(vec3 p)
     return mix(nxy0, nxy1, f.z);
 }
 
-float LinearizeReverseZ(float depth)
-{
-    float zNear = max(ViewParams.ge_nearFar.x, 1e-5);
-    float zFar = max(ViewParams.ge_nearFar.y, zNear + 1.0);
-    return (zNear * zFar) / max(depth * (zFar - zNear) + zNear, 1e-6);
-}
-
 vec3 ViewRay(vec2 uv, float rawDepth)
 {
     vec4 p = ViewParams.ge_invProj * vec4(ViewportUvToNdc(uv), rawDepth, 1.0);
@@ -90,7 +84,7 @@ vec3 ViewRay(vec2 uv, float rawDepth)
 
 vec2 DistortionVector(vec2 uv)
 {
-    float time = ViewParams.ge_nearFar.w * pc.heatDistortionSpeed;
+    float time = ViewParams.ge_viewRanges.w * pc.heatDistortionSpeed;
     float scale = max(pc.heatDistortionScale, 0.01);
     vec2 scroll = vec2(time * 0.07, -time * 2.65);
     vec2 p = uv * scale + scroll;
@@ -136,13 +130,14 @@ void main()
     }
 
     float rawDepth = GE_TAP_LOD0(uDepth, vUV).r;
-    float linearDepth = rawDepth <= 1e-6 ? ViewParams.ge_nearFar.y : LinearizeReverseZ(rawDepth);
-    float depth01 = Saturate(linearDepth / max(ViewParams.ge_nearFar.y, 1.0));
+    float linearDepth = IsBackgroundDepth(rawDepth) ? ViewParams.ge_viewRanges.y
+                                                    : LinearizeReverseZ(rawDepth, ViewParams.ge_depthTerms);
+    float depth01 = Saturate(linearDepth / max(ViewParams.ge_viewRanges.y, 1.0));
     float depthMask = smoothstep(pc.heatDistortionDistanceStart,
                                  max(pc.heatDistortionDistanceEnd, pc.heatDistortionDistanceStart + 1e-4),
                                  depth01);
 
-    vec3 viewDirVS = ViewRay(vUV, rawDepth <= 1e-6 ? 0.0 : rawDepth);
+    vec3 viewDirVS = ViewRay(vUV, rawDepth);
     vec3 viewDirWS = normalize(transpose(mat3(ViewParams.ge_view)) * viewDirVS);
     float y = pc.heatDistortionUseAbsoluteY != 0 ? abs(viewDirWS.y) : max(viewDirWS.y, 0.0);
     float viewMask = pow(Saturate(1.0 - y), max(pc.heatDistortionDirectionalFalloff, 0.0));

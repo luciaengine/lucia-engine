@@ -35,7 +35,6 @@ constexpr std::array<std::string_view, 11> kRequiredIds = {
     "create-prefab-browse",   "create-prefab-create",    "create-prefab-cancel",
 };
 constexpr const char* kVisibleClass = "visible";
-constexpr const char* kContentShownClass = "create-prefab-content-shown";
 constexpr const char* kHiddenClass = "hidden";
 constexpr std::string_view kForbiddenNameCharacters = "<>:\"/\\|?*";
 // Characters below this are control characters, which no file name may hold.
@@ -82,17 +81,17 @@ CreatePrefabDialog::CreatePrefabDialog()
         return;
     m_Backdrop = backdrop.get();
     m_Backdrop->SetFocusable(true);
-    m_NameRow = m_Backdrop->FindById("create-prefab-name-row");
-    m_FilesRow = m_Backdrop->FindById("create-prefab-files-row");
-    m_FilesLabel = dynamic_cast<Label*>(m_Backdrop->FindById("create-prefab-files"));
-    m_NameField = dynamic_cast<TextField*>(m_Backdrop->FindById("create-prefab-name"));
-    m_FolderLabel = dynamic_cast<Label*>(m_Backdrop->FindById("create-prefab-folder"));
-    m_CountLabel = dynamic_cast<Label*>(m_Backdrop->FindById("create-prefab-count"));
-    m_ReferencesLabel = dynamic_cast<Label*>(m_Backdrop->FindById("create-prefab-references"));
-    m_MessageLabel = dynamic_cast<Label*>(m_Backdrop->FindById("create-prefab-message"));
-    m_BrowseButton = dynamic_cast<Button*>(m_Backdrop->FindById("create-prefab-browse"));
-    m_CreateButton = dynamic_cast<Button*>(m_Backdrop->FindById("create-prefab-create"));
-    auto* cancelButton = dynamic_cast<Button*>(m_Backdrop->FindById("create-prefab-cancel"));
+    m_NameRow = m_Backdrop->FindById("create-prefab-name-row"_sid);
+    m_FilesRow = m_Backdrop->FindById("create-prefab-files-row"_sid);
+    m_FilesLabel = dynamic_cast<Label*>(m_Backdrop->FindById("create-prefab-files"_sid));
+    m_NameField = dynamic_cast<TextField*>(m_Backdrop->FindById("create-prefab-name"_sid));
+    m_FolderLabel = dynamic_cast<Label*>(m_Backdrop->FindById("create-prefab-folder"_sid));
+    m_CountLabel = dynamic_cast<Label*>(m_Backdrop->FindById("create-prefab-count"_sid));
+    m_ReferencesLabel = dynamic_cast<Label*>(m_Backdrop->FindById("create-prefab-references"_sid));
+    m_MessageLabel = dynamic_cast<Label*>(m_Backdrop->FindById("create-prefab-message"_sid));
+    m_BrowseButton = dynamic_cast<Button*>(m_Backdrop->FindById("create-prefab-browse"_sid));
+    m_CreateButton = dynamic_cast<Button*>(m_Backdrop->FindById("create-prefab-create"_sid));
+    auto* cancelButton = dynamic_cast<Button*>(m_Backdrop->FindById("create-prefab-cancel"_sid));
     if (!m_NameRow || !m_FilesRow || !m_FilesLabel || !m_NameField || !m_FolderLabel || !m_CountLabel ||
         !m_ReferencesLabel || !m_MessageLabel || !m_BrowseButton || !m_CreateButton || !cancelButton)
     {
@@ -155,9 +154,9 @@ void CreatePrefabDialog::Open(Request request, CreateHandler onCreate, ReplaceCh
     const std::string references = ListOutgoingReferences(request.OutgoingReferences, prefabCount);
     m_ReferencesLabel->SetText(references);
     if (references.empty())
-        m_ReferencesLabel->RemoveClass(kContentShownClass);
+        m_ReferencesLabel->RemoveClass(kVisibleClass);
     else
-        m_ReferencesLabel->AddClass(kContentShownClass);
+        m_ReferencesLabel->AddClass(kVisibleClass);
     ClearConflict();
     m_Open = true;
     AddClass(kVisibleClass);
@@ -253,7 +252,7 @@ void CreatePrefabDialog::OnBrowseClicked()
 
 void CreatePrefabDialog::OnNameEdited()
 {
-    if (m_MessageLabel->HasClass(kContentShownClass))
+    if (m_MessageLabel->HasClass(kVisibleClass))
         ClearConflict();
 }
 
@@ -309,14 +308,14 @@ void CreatePrefabDialog::ShowFiles()
 void CreatePrefabDialog::ShowError(const std::string& text)
 {
     m_MessageLabel->SetText(text);
-    m_MessageLabel->AddClass(kContentShownClass);
+    m_MessageLabel->AddClass(kVisibleClass);
 }
 
 void CreatePrefabDialog::ClearConflict()
 {
     m_ConflictFile.clear();
     m_MessageLabel->SetText("");
-    m_MessageLabel->RemoveClass(kContentShownClass);
+    m_MessageLabel->RemoveClass(kVisibleClass);
     m_CreateButton->SetText("Create");
     m_CreateButton->SetEnabled(true);
 }

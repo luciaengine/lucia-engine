@@ -1,4 +1,3 @@
-#include "Engine/Rendering/PostProcessEffectRegistry.h"
 // FrameOrchestrator.cpp
 // The frame spine, extracted from RenderServices (A1.4 S1). Owns the per-window
 // RenderGraph stream slots, the app-frame epochs + declare sequence, the
@@ -7,8 +6,9 @@
 // RenderServices-owned subsystems it reaches via m_Services (accessors + the
 // friend grant for the frame-local state that stays RS-resident).
 #include "Engine/Rendering/FrameOrchestrator.h"
-#include "Engine/Rendering/ViewReadbackUtils.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/ViewReadbackUtils.h"
+#include "Engine/Rendering/PostProcessEffectRegistry.h"
 #include "Core/CpuProfiler.h"
 #include "Engine/Rendering/IRenderFeature.h"
 
@@ -28,7 +28,6 @@
 #include "Assets/ModelAsset.h"
 #include "Assets/RenderPipelineAsset.h"
 #include "Assets/TextureAsset.h"
-#include "Engine/Rendering/EmbeddedImageDecoder.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
@@ -45,8 +44,8 @@
 #include "Rendering/Core/BindlessResourceManager.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/DeviceFormatting.h"
-#include "Rendering/Core/PipelineTypes.h"
-#include "Rendering/CameraDerivation.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Camera/CameraDerivation.h"
 #include "Rendering/Core/CullingStrategy.h"
 #include "Rendering/Core/FrustumCullingStrategy.h"
 #include "Rendering/Core/GPUCulling.h"
@@ -54,14 +53,14 @@
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/Materials/MaterialBuilder.h"
-#include "Rendering/Materials/ShaderReflection.h"
+#include "Rendering/Materials/Shader/ShaderReflection.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Passes/SRGBEncodePass.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Rendering/Utils/BufferHelpers.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
-#include "Rendering/Utils/CubeLutFileParser.h"
-#include "Rendering/Utils/CubeLutGpuUpload.h"
+#include "Rendering/Utils/CubeLut/CubeLutFileParser.h"
+#include "Rendering/Utils/CubeLut/CubeLutGpuUpload.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
 #include "Types/StringId.h"
 #include "Mathematics/Matrix4x4.h"
@@ -613,10 +612,6 @@ void PipelineCompileReport::RecordLoadFailure(std::filesystem::path sourcePath, 
 
 void FrameOrchestrator::EnsureActiveRenderPipelineBlueprint(PipelineRefreshMode mode)
 {
-    // A load the previous refresh polled has landed since: a failure is this request's first
-    // outcome, reported as a failed load, not as an earlier load the asset manager suppressed.
-    const bool polledLoadLanded = m_RenderPipelineLoadPending;
-    m_RenderPipelineLoadPending = false;
     // Startup returns its failure to the caller, which reports it once.
     const bool reportFailures = mode == PipelineRefreshMode::Frame;
     // A pinned programmatic blueprint owns the slot — the asset refresh
@@ -716,7 +711,7 @@ void FrameOrchestrator::EnsureActiveRenderPipelineBlueprint(PipelineRefreshMode 
                 // If AssetManager has already suppressed this GUID (unsupported or repeatedly failing),
                 // don't hammer it every frame. Log once when the failure state changes.
                 String suppressedReason;
-                if (!polledLoadLanded && am.IsLoadSuppressed(guid, &suppressedReason))
+                if (am.IsLoadSuppressed(guid, &suppressedReason))
                 {
                     if (m_ActiveRenderPipelineLastFailurePath != path ||
                         m_ActiveRenderPipelineLastFailureReason != suppressedReason)
@@ -743,17 +738,9 @@ void FrameOrchestrator::EnsureActiveRenderPipelineBlueprint(PipelineRefreshMode 
                 else
                 {
                     SharedPtr<Asset> a = am.GetAsset(guid);
-                    bool requestedLoadPending = false;
                     if (!a)
                     {
-                        // A frame refresh polls the load and keeps drawing the current pipeline; the
-                        // startup resolve waits, because it must classify the request once.
-                        auto loading = am.LoadAssetAsync(guid);
-                        requestedLoadPending = mode == PipelineRefreshMode::Frame &&
-                            loading.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready;
-                        m_RenderPipelineLoadPending |= requestedLoadPending;
-                        if (!requestedLoadPending)
-                            a = loading.get();
+                        a = am.LoadAssetAsync(guid).get();
                     }
 
                     auto rp = std::dynamic_pointer_cast<GameEngine::RenderPipelineAsset>(a);
@@ -788,7 +775,8 @@ void FrameOrchestrator::EnsureActiveRenderPipelineBlueprint(PipelineRefreshMode 
                             bp = m_PipelineCompiler->Compile(*rp, *m_PipelineNodeRegistry,
                                 m_Services->GetDevice()->PreferredShaderSource(),
                                 waitForScripts ? Pipeline::UnknownPassTypes::PendingScripts
-                                               : Pipeline::UnknownPassTypes::Refused);
+                                               : Pipeline::UnknownPassTypes::Refused,
+                                std::bind_front(&FrameOrchestrator::CopyPreLoadedShaderMeta, this));
                             ++m_LastCompileReport.Compiles;
 
                             // Record the source hash even on failure so we don't try again every frame.
@@ -829,7 +817,7 @@ void FrameOrchestrator::EnsureActiveRenderPipelineBlueprint(PipelineRefreshMode 
                             }
                         }
                     }
-                    else if (!a && !requestedLoadPending)
+                    else if (!a)
                     {
                         // The cached `path → GUID` mapping can go stale on
                         // project switch: the path string is unchanged
@@ -944,6 +932,10 @@ void FrameOrchestrator::EnsureActiveRenderPipelineBlueprint(PipelineRefreshMode 
         (m_ActiveRenderPipelineHash == 0 || m_ActiveRenderPipelineIsFallback ||
          (m_ActiveBlueprintIsPartial && m_ActiveRenderPipelineLastCompileHadErrors)))
     {
+        // A refused request never takes its preloaded packages, so the store closes and a fix reads the disk.
+        if (!m_RequestedFailureReason.empty() && !m_WaitingForNativeModules &&
+            !m_ShaderPkgCacheClosed.load(std::memory_order_relaxed))
+            ClosePreLoadedShaderPackages();
         std::string standInFailure;
         const StandInCompile standIn = CompileEngineStandIn(bp, standInFailure);
         if (standIn == StandInCompile::AlreadyApplied)
@@ -1011,13 +1003,6 @@ void FrameOrchestrator::EnsureActiveRenderPipelineBlueprint(PipelineRefreshMode 
         m_ActiveRenderPipelineIsFallback = applyingFallback;
         m_ActiveBlueprintIsRequested = applyingRequested;
         m_ActiveBlueprintIsPartial = applyingRequested && m_WaitingForNativeModules;
-
-        // The active blueprint just swapped: drain in-flight PSO prewarm before
-        // the old nodes are destroyed by SetBlueprint/EnsureBuilt (workers hold
-        // PipelineDesc copies whose debugName pointers reference the old nodes'
-        // string storage). A material-cache concern, so it lives behind the
-        // facade (A1.3).
-        m_Services->Materials().OnActiveRenderPipelineChanged();
     }
 
     // A Startup failure publishes no report: nothing stands in, its caller reports the failure, and a
@@ -1095,7 +1080,9 @@ FrameOrchestrator::StandInCompile FrameOrchestrator::CompileEngineStandIn(Pipeli
         m_StandInAsset = pipeline;
         m_StandInSourceHash = pipeline->GetSourceHash();
         out = m_PipelineCompiler->Compile(*pipeline, *m_PipelineNodeRegistry,
-                                          m_Services->GetDevice()->PreferredShaderSource());
+                                          m_Services->GetDevice()->PreferredShaderSource(),
+                                          Pipeline::UnknownPassTypes::Refused,
+                                          std::bind_front(&FrameOrchestrator::CopyPreLoadedShaderMeta, this));
         ++m_LastCompileReport.Compiles;
         if (out.HasErrors())
         {
@@ -1229,8 +1216,9 @@ void FrameOrchestrator::SelectSharedSceneProducer(Rendering::RenderGraph::RGFram
     m_SceneProducerTokens.fill({});
 }
 
+
 bool FrameOrchestrator::BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame,
-                                       const FrameGraphBuildParamsRG& params)
+                                     const FrameGraphBuildParamsRG& params)
 {
     GE_CPU_PROFILE_SCOPE("RenderServices.BuildFrameGraphRG");
 
@@ -1268,11 +1256,13 @@ bool FrameOrchestrator::BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame,
     // stream's feature readback pendings.
     m_RGDeclareSeq = ++m_RGDeclareSeqCounter;
     slot->DeclareSeq = m_RGDeclareSeq;
-
-    std::vector<Pipeline::ViewTargetsRG> targets;
+    std::vector<Pipeline::ViewTargetsRG> effectTargets;
     for (const auto& hooks : Rendering::PostProcessEffectRegistry::AllViewPreparations())
         if (hooks.PrepareFrameTargets)
-            hooks.PrepareFrameTargets(*m_Services, frame, params.ViewTargets, targets);
+            hooks.PrepareFrameTargets(*m_Services, frame, params.ViewTargets, effectTargets);
+    const std::span<const Pipeline::ViewTargetsRG> effectiveTargets =
+        effectTargets.empty() ? params.ViewTargets : std::span<const Pipeline::ViewTargetsRG>(effectTargets);
+
 
     // ── Stage G: app-frame-global GPU-driven work, declared ONCE per app
     // frame into the first frame stream that gets here (the "owner frame").
@@ -1285,15 +1275,12 @@ bool FrameOrchestrator::BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame,
     {
         m_GlobalStagesEpoch = m_WorldFrameEpoch;
         m_GlobalStagesFrame = &frame;
-
-        // A2 STEP-0: zero this app frame's sort bracket up front. BuildWorldBatchKeys
-        // overwrites it when it actually runs, so a frame that skips the build
-        // correctly reports zero sort cost instead of ringing a stale value.
         m_Services->m_RenderTimelineStats.SortMs = 0.0;
         m_Services->m_RenderTimelineStats.SortViewCount = 0;
 
         // 0. CPU draw-list build + GPUScene upload — same guards as the old
         //    spine above, shared semantics.
+        GE_CPU_PROFILE_SCOPE("RenderServices.BuildFrameGraphRG.GlobalStages");
         if (params.BuildWorldDrawListsIfReady)
         {
             const uint64_t frameIdx = m_Services->GetGPUScene() ? static_cast<uint64_t>(m_Services->GetGPUScene()->GetFrameIndex()) : 0ull;
@@ -1312,13 +1299,22 @@ bool FrameOrchestrator::BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame,
         //      order gives edges their direction, and the bucketer must
         //      precede every DrawStreamOrdering reader or the edge derives
         //      WAR (frame N−1 slot buffers).
-        m_Services->ScheduleGpuSkinningAndRetarget(frame);
-        m_Services->ScheduleViewCullingDispatches(frame, params.DeltaTime);
+        {
+            GE_CPU_PROFILE_SCOPE("RenderServices.BuildFrameGraphRG.Skinning");
+            m_Services->ScheduleGpuSkinningAndRetarget(frame);
+        }
+        {
+            GE_CPU_PROFILE_SCOPE("RenderServices.BuildFrameGraphRG.Culling");
+            m_Services->ScheduleViewCullingDispatches(frame, params.DeltaTime);
+        }
         // A2 STEP-0 bucketer bracket: the call-site wrap captures every internal
         // early-return path in one steady_clock pair. Publish the render-timeline
         // window here — stage G is the once-per-app-frame owner boundary.
         const auto bucketerBegin = std::chrono::steady_clock::now();
-        m_Services->ScheduleWorldBucketerDispatches(frame);
+        {
+            GE_CPU_PROFILE_SCOPE("RenderServices.BuildFrameGraphRG.Bucketer");
+            m_Services->ScheduleWorldBucketerDispatches(frame);
+        }
         PublishRenderTimelineStats(
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - bucketerBegin)
                 .count());
@@ -1426,7 +1422,7 @@ bool FrameOrchestrator::BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame,
             m_ActiveRenderPipelineSourceHash = 0;
             m_BlueprintRefreshNeeded = true;
         }
-        if (m_BlueprintRefreshNeeded || m_ActiveRenderPipelineIsFallback || m_RenderPipelineLoadPending)
+        if (m_BlueprintRefreshNeeded || m_ActiveRenderPipelineIsFallback)
         {
             EnsureActiveRenderPipelineBlueprint(PipelineRefreshMode::Frame);
             m_BlueprintRefreshNeeded = false;
@@ -1441,10 +1437,15 @@ bool FrameOrchestrator::BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame,
                 slot->Instance->SetBlueprint(*m_ActiveBlueprint);
                 slot->AppliedBlueprintGen = m_ActiveBlueprintGen;
             }
+            GE_CPU_PROFILE_SCOPE("RenderServices.BuildFrameGraphRG.PipelineDeclare");
             const auto& views = m_Services->Views().GetViews();
-            slot->Instance->Declare(frame, targets.empty() ? params.ViewTargets : std::span<const Pipeline::ViewTargetsRG>(targets),
+            slot->Instance->Declare(frame, effectiveTargets,
                                     std::span<const Rendering::ViewDesc>(views.data(), views.size()),
                                     params.DeltaTime);
+            // Nodes take their preloaded packages at their first declare; the store drops the rest.
+            if (!m_ActiveRenderPipelineIsFallback && !params.ViewTargets.empty() &&
+                !m_ShaderPkgCacheClosed.load(std::memory_order_relaxed))
+                ClosePreLoadedShaderPackages();
         }
     }
 
@@ -1457,6 +1458,7 @@ bool FrameOrchestrator::BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame,
     //      AFTER skinning's declared Read (the WAR pin).
     if (globalStagesThisCall && m_Services->GetGPUCullingPipeline() && m_Services->GetGPUScene())
     {
+        GE_CPU_PROFILE_SCOPE("RenderServices.BuildFrameGraphRG.VisibilityEpilogue");
         m_Services->GetGPUCullingPipeline()->ScheduleVisibilityUnion(frame, m_Services->GetGPUScene());
         m_Services->GetGPUCullingPipeline()->ScheduleRuntimeVisibilityAggregate(frame, m_Services->GetGPUScene());
     }
@@ -1478,10 +1480,12 @@ bool FrameOrchestrator::BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame,
     //    the next materialization, ahead of any capture request.
     if (slot->Instance)
     {
-        for (const auto& vt : params.ViewTargets)
+        for (const auto& vt : effectiveTargets)
         {
             const Rendering::ViewDesc* view = m_Services->Views().FindViewDesc(vt.View);
-            if (!view || view->ActiveRenderLayerMask() == 0)
+            // The pipeline's own rule (it declares every participating view, one on no layer
+            // included), so the output of a view drawing only its clear and sky is kept too.
+            if (!view || !view->RenderedByPipeline())
                 continue;
             if (auto out = slot->Instance->GetOutputRG(vt.View, "FinalColor");
                 out.IsValid() && !frame.IsBackbuffer(out))
@@ -1660,25 +1664,48 @@ std::size_t FrameOrchestrator::CountSupersededModulePipelineNodes(std::string_vi
                : 0;
 }
 
-void FrameOrchestrator::PreLoadShaderPackage(const std::string& name, Rendering::ShaderSourceKind kind)
+void FrameOrchestrator::PreLoadRenderPipelineShaderPackages(const RenderPipelineAsset& pipeline,
+                                                            Rendering::ShaderSourceKind kind)
 {
-    Rendering::ShaderPackage pkg{};
-    std::string err;
-    if (Rendering::LoadShaderPkg(name, kind, pkg, &err))
+    for (const std::string& name : Pipeline::RenderPipelineCompiler::ShaderPackagesOf(pipeline, kind))
     {
+        Rendering::ShaderPackage pkg{};
+        std::string err;
+        if (!Rendering::LoadShaderPkg(name, kind, pkg, &err))
+            continue;
         std::lock_guard<std::mutex> lock(m_ShaderPkgCacheMutex);
-        m_ShaderPkgCache.emplace(name, std::move(pkg));
+        if (m_ShaderPkgCacheClosed.load(std::memory_order_relaxed))
+            return;
+        if (!m_ShaderPkgCache.Contains(name))
+            m_ShaderPkgCache.InsertOrAssign(name, std::move(pkg));
     }
+}
+
+bool FrameOrchestrator::CopyPreLoadedShaderMeta(const std::string& name, Rendering::ShaderMeta& out)
+{
+    std::lock_guard<std::mutex> lock(m_ShaderPkgCacheMutex);
+    const Rendering::ShaderPackage* stored = m_ShaderPkgCache.Find(name);
+    if (!stored)
+        return false;
+    out = stored->meta;
+    return true;
+}
+
+void FrameOrchestrator::ClosePreLoadedShaderPackages()
+{
+    std::lock_guard<std::mutex> lock(m_ShaderPkgCacheMutex);
+    m_ShaderPkgCache.Clear();
+    m_ShaderPkgCacheClosed.store(true, std::memory_order_relaxed);
 }
 
 bool FrameOrchestrator::TryConsumePreLoadedShaderPackage(const std::string& name, Rendering::ShaderPackage& out)
 {
     std::lock_guard<std::mutex> lock(m_ShaderPkgCacheMutex);
-    auto it = m_ShaderPkgCache.find(name);
-    if (it == m_ShaderPkgCache.end())
+    Rendering::ShaderPackage* stored = m_ShaderPkgCache.Find(name);
+    if (!stored)
         return false;
-    out = std::move(it->second);
-    m_ShaderPkgCache.erase(it);
+    out = std::move(*stored);
+    m_ShaderPkgCache.Erase(name);
     return true;
 }
 

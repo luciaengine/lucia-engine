@@ -3,6 +3,7 @@
 #include "UI/UIElement.h"
 #include "UI/UIPrimitive.h"
 #include "UI/ResolvedStyle.h"
+#include <string>
 #include <vector>
 #include <cmath>
 #include <algorithm>
@@ -27,6 +28,9 @@ namespace GameEngine {
 
 class DockTabBar : public UIElement {
 public:
+    // A release within this distance of its press is a click on a tab, not a drag.
+    static constexpr float kClickSlopPx = 4.0f;
+
     DockTabBar();
 
     void OnEvent(UIEvent& e) override;
@@ -66,6 +70,8 @@ public:
 
     float GetAnimatedOffsetForChild(const UIElement* child) const;
 
+    void SetAccentColor(uint32_t argb) { m_AccentColor = argb; }
+
     // Returns the base (non-animated) X position for a child, or its GetLayoutX() if not dragging.
     float GetBaseXForChild(const UIElement* child) const;
 
@@ -96,13 +102,22 @@ private:
     void ApplyScrollOffset();
     void ScrollByPage(int direction);
     bool IsOverflowing() const { return GetMaxScrollOffset() > 0.5f; }
+    UIElement* FindTabAt(float x, float y) const;
+    bool IsPastMiddleClickSlop(float x, float y) const;
+    void EndMiddlePress();
 
     static constexpr float kTabGapPx = 4.0f;
     static constexpr float kScrollButtonWidthPx = 20.0f;
     static constexpr float kOverflowControlsWidthPx = kScrollButtonWidthPx * 2.0f;
     float m_ScrollOffset = 0.0f;
+    // The middle button: a click on a tab closes it, a drag pans an overflowing strip.
+    bool m_MiddlePressed = false;
     bool m_MiddlePanning = false;
-    float m_MiddlePanStartX = 0.0f;
+    // Set when the pointer goes past the slop. The gesture is then a drag until the release.
+    bool m_MiddleDragged = false;
+    uint64_t m_MiddlePressTabInstanceId = 0;
+    float m_MiddlePressX = 0.0f;
+    float m_MiddlePressY = 0.0f;
     float m_MiddlePanStartOffset = 0.0f;
     UIElement* m_ScrollLeftButton = nullptr;
     UIElement* m_ScrollRightButton = nullptr;
@@ -131,6 +146,8 @@ private:
     // Undock behavior config (read by DockTab)
     float m_UndockThresholdPx = 60.0f;
     float m_UndockDominance = 1.25f;
+
+    uint32_t m_AccentColor = 0xFF3A8FFF;
 
     // Live drag state
     UIElement* m_LiveDragTab = nullptr;

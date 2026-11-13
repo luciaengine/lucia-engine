@@ -59,9 +59,10 @@ void PlanarReflectionFeature::SyncWorld(RenderServices& services, uint64_t world
             const auto* camera = services.Views().FindCameraData(mainView->cameraId);
             CameraData reflected{};
             if (camera && p != planes.end() && MakePlanarReflectionCamera(*camera, *p, reflected))
-                services.Views().SetCameraData(it->second.Camera, reflected);
+                services.Views().SetCameraData(it->second.Camera, reflected,
+                    services.Views().FindCameraRanges(mainView->cameraId));
             services.Views().SetViewRenderLayerMask(it->second.View,
-                mainView->renderLayerMask & p->Settings.CullMask);
+                Rendering::RenderLayerMask{mainView->renderLayerMask.Bits & p->Settings.CullMask});
         }
         ++it;
     }
@@ -90,7 +91,7 @@ std::vector<PlanarReflectionPlane> PlanarReflectionFeature::GetPlanes(const View
         // Test the finite unit rectangle in its own space, preserving rotation,
         // scale and shear. The shared frustum test is conservative at corners.
         const Mathematics::Matrix4x4 localToClip(
-            glm::make_mat4(camera->proj) * glm::make_mat4(camera->view) *
+            camera->proj.GetGLM() * camera->view.GetGLM() *
             glm::inverse(plane.WorldToLocal));
         Mathematics::Vector4 frustum[6];
         ExtractFrustumPlanes(localToClip, frustum);

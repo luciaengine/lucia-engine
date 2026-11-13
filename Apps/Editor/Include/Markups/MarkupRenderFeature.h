@@ -159,6 +159,7 @@ class MarkupRenderFeature final : public Engine::Renderer::IRenderFeature
     bool EnsurePipelines(Rendering::IDevice& device);
 
     std::vector<MarkupDrawItem> m_Items; // this frame's mark-ups, kept to reuse the allocation
+    std::vector<uint32> m_ExcludedScratch; // CollectMarkupDrawItems' scratch, kept to reuse the allocation
     std::size_t m_Bodies = 0;            // how many of m_Items draw a body
     std::vector<Draw> m_Draws;
     std::vector<std::pair<float, std::size_t>> m_Order; // BuildDraws' scratch: distance squared, item

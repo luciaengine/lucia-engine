@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "DebugServer/ComponentValueReader.h"
+#include "DebugServer/Components/ComponentValueReader.h"
 
 #include <nlohmann/json.hpp>
 

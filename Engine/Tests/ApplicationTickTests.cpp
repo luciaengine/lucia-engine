@@ -267,7 +267,7 @@ TEST(ApplicationTick, NoFrameWaitsWithoutTheFrameCapSwitch)
         << "a non-editor application with GE_FRAME_CAP unset must not throttle";
 }
 
-// GE_FRAME_CAP is the one way to ask for a limiter, and it still holds the
+// GE_FRAME_CAP asks for a limiter, and it still holds the
 // frame. This is also the live control for the zero above: a frame the limiter
 // held reports its wait in SleepMs.
 TEST(ApplicationTick, FrameCapSwitchHoldsTheFrame)
@@ -315,4 +315,40 @@ TEST(ApplicationTick, GameExitRequestUsesTheHostPolicy)
     EXPECT_EQ(application.RequestedCode, 23);
     EXPECT_FALSE(application.ShouldExit());
     EXPECT_EQ(application.GetExitCode(), 0);
+}
+
+TEST(ApplicationTick, PresentationCapPacesFramesWithoutFixingSimulationAndCanBeCleared)
+{
+    ScopedFrameCapEnv environment(nullptr);
+    const fs::path root = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_present_cap");
+    fs::create_directories(root / "Assets");
+    GameEngine::ScriptsConfig scripts{};
+    scripts.disableClr = true;
+    scripts.enableHotReload = false;
+    scripts.enableAsyncHotReload = false;
+    scripts.enableAutoProjectGeneration = false;
+    GameEngine::EngineCore::GetInstance().SetScriptsConfig(scripts);
+    GameEngine::ApplicationConfig config{};
+    config.Name = "TickContract.PresentationCap";
+    config.WorkspaceDirectory = root.string();
+    config.AssetDirectory = "Assets";
+    {
+        CountingApp app(config);
+        ASSERT_TRUE(app.Initialize());
+        app.SetFrameRateCap(30.0);
+        EXPECT_FALSE(app.IsFixedFrameRateEnabled());
+        int held = 0;
+        for (int i = 0; i < 5; ++i)
+        {
+            app.Tick();
+            held += app.GetLastFramePhaseTimings().SleepMs > 0.0 ? 1 : 0;
+        }
+        EXPECT_GT(held, 0);
+        app.SetFrameRateCap(0.0);
+        app.Tick();
+        EXPECT_DOUBLE_EQ(app.GetLastFramePhaseTimings().SleepMs, 0.0);
+        app.Shutdown();
+    }
+    std::error_code error;
+    fs::remove_all(root, error);
 }

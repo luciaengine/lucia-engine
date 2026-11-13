@@ -5,12 +5,10 @@
 #include "ECS/Entity.h"
 #include "EditorChangeNotifications.h"
 #include "Markups/MarkupPresentation.h"
-#include "Markups/MarkupRegionPort.h"
+#include "Markups/MarkupRegion/MarkupRegionPort.h"
 #include "Mathematics/Matrix4x4.h"
 #include "SplineECS/SplineService.h"
 
-#include <algorithm>
-#include <iterator>
 #include <optional>
 #include <utility>
 
@@ -21,15 +19,12 @@ namespace
 {
 
 // The matrix that places the entity's parent in the world; the identity for a root.
-Components::WorldTransform ParentPlacement(const ECS::World& world, ECS::EntityHandle entity)
+Mathematics::Matrix4x4 ParentPlacement(const ECS::World& world, ECS::EntityHandle entity)
 {
     const auto* parent = world.GetComponent<Components::Parent>(entity);
-    Components::WorldTransform placed{};
-    if (!parent || !world.IsValid(parent->parent))
-        return placed;
-    const Mathematics::Matrix4x4 matrix = MarkupPlacement(world, parent->parent);
-    std::copy_n(matrix.Data(), 16, placed.matrix);
-    return placed;
+    if (!parent || !world.IsValid(parent->Entity))
+        return Mathematics::Matrix4x4::Identity();
+    return MarkupPlacement(world, parent->Entity);
 }
 
 } // namespace
@@ -52,8 +47,10 @@ ConvertMarkupToRegionCommand::ConvertMarkupToRegionCommand(std::string label, EC
     if (const auto* placed = world.GetComponent<Components::WorldTransform>(entity))
         m_WorldBefore = *placed;
     else
-        std::copy(std::begin(m_TransformBefore.matrix), std::end(m_TransformBefore.matrix),
-                  std::begin(m_WorldBefore.matrix));
+    {
+        m_WorldBefore.Position = m_TransformBefore.Position;
+        m_WorldBefore.Basis = m_TransformBefore.Basis;
+    }
     if (const auto* volume = world.GetComponent<Components::MarkupVolume>(entity))
         m_VolumeBefore = *volume;
 }
@@ -74,15 +71,20 @@ void ConvertMarkupToRegionCommand::Do()
     if (!m_Made)
     {
         // The region stands where the volume's base stood.
+        const Mathematics::Matrix4x4 beforeMatrix =
+            m_WorldBefore.ToMatrix4x4(m_WorldBefore.GetPosition() - Mathematics::WorldPosition{});
         const std::optional<MarkupWorldVolume> volume =
-            MarkupWorldVolumeFromMatrix(m_VolumeBefore.Shape, m_WorldBefore.matrix);
-        const float32 baseY = volume ? 2.0f * volume->Center.y - volume->TopY : m_WorldBefore.matrix[13];
+            MarkupWorldVolumeFromMatrix(m_VolumeBefore.Shape, beforeMatrix);
+        const float32 baseY = volume ? 2.0f * volume->Center.y - volume->TopY
+                                    : static_cast<float32>(m_WorldBefore.Position.Y);
         const RegionPlacement placement =
-            NewRegionPlacement(m_Knots, ParentPlacement(m_World, m_Entity).matrix, baseY);
+            NewRegionPlacement(m_Knots, ParentPlacement(m_World, m_Entity), baseY);
         m_TransformAfter = placement.Local;
         m_WorldAfter = placement.World;
         m_World.AddComponentImmediate(m_Entity, m_TransformAfter);
-        AddRegionParts(m_World, m_Entity, m_WorldAfter.matrix, m_Knots, m_Type, m_ExtrudeHeight);
+        AddRegionParts(m_World, m_Entity,
+                       m_WorldAfter.ToMatrix4x4(m_WorldAfter.GetPosition() - Mathematics::WorldPosition{}),
+                       m_Knots, m_Type, m_ExtrudeHeight);
         m_Spline = *m_World.GetComponent<Components::SplineComponent>(m_Entity);
         m_Region = *m_World.GetComponent<Components::MarkupRegion>(m_Entity);
         m_Made = true;

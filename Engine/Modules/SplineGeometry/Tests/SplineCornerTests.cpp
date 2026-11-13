@@ -13,7 +13,7 @@ using namespace GameEngine;
 using namespace GameEngine::SplineGeometry;
 using namespace GameEngine::SplineGeometry::Testing;
 
-// A Mitre's ring stands on the bisector scaled by 1 / cos(θ/2); without the
+// A Miter's ring stands on the bisector scaled by 1 / cos(θ/2); without the
 // scale a 90-degree corner is cos 45° = 0.707 of the wall's thickness. Measured
 // across the wall, perpendicular to each leg, every ring at the corner is the
 // full thickness, and no side face folds, on 0.6, 1 and 2 m walls.
@@ -26,7 +26,7 @@ TEST(SplineCorner, ALinearNinetyDegreeCornerKeepsTheWallsFullThickness)
         const V3 corner = walk.Stations[cornerIndex].Position;
         const float32 cornerDistance = walk.Stations[cornerIndex].Distance;
         const std::vector<SplineCornerIssue> fallbacks =
-            ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Mitre, kUp, false);
+            ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Miter, kUp, false);
         EXPECT_TRUE(fallbacks.empty());
 
         const SplineStripMesh mesh = Sweep(Wall(thickness, 3.0f), walk.Stations);
@@ -45,20 +45,20 @@ TEST(SplineCorner, ALinearNinetyDegreeCornerKeepsTheWallsFullThickness)
             EXPECT_NEAR(std::abs(base.Right.z - base.Left.z), thickness, 1.0e-3f)
                 << "thickness " << thickness << " across leg 2, ring " << r;
         }
-        EXPECT_EQ(cornerRings, 2u) << "a mitre is one ring emitted twice";
+        EXPECT_EQ(cornerRings, 2u) << "a miter is one ring emitted twice";
         EXPECT_EQ(InvertedSideTriangles(mesh), 0u) << "thickness " << thickness;
     }
 }
 
-// Both copies of the mitre ring stand on the same positions, the outer faces of
+// Both copies of the miter ring stand on the same positions, the outer faces of
 // the two legs meet on that one edge, and each copy carries its own leg's
 // normals, so the corner is a sharp crease rather than a smoothed pillow.
-TEST(SplineCorner, AMitreMeetsBothLegsOuterFacesOnOneSharpEdge)
+TEST(SplineCorner, AMiterMeetsBothLegsOuterFacesOnOneSharpEdge)
 {
     const float32 thickness = 1.0f;
     Walk walk = WalkPolyline(Elbow(10.0f, 7.3f, 90.0f), 0.5f, thickness * 0.5f);
     const float32 cornerDistance = walk.Stations[walk.Corners[0].StationIndex].Distance;
-    (void)ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Mitre, kUp, false);
+    (void)ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Miter, kUp, false);
     const SplineStripMesh mesh = Sweep(Wall(thickness, 3.0f), walk.Stations);
     ASSERT_TRUE(mesh.IsValid());
 
@@ -121,7 +121,7 @@ TEST(SplineCorner, AMitreMeetsBothLegsOuterFacesOnOneSharpEdge)
 }
 
 // A Round corner pivots about the corner point: the outside of the turn is an
-// arc of the wall's half-thickness, the inside meets at the inner mitre point,
+// arc of the wall's half-thickness, the inside meets at the inner miter point,
 // and a 90-degree turn takes ceil(90 / 10) = 9 rings that all carry the
 // corner's U.
 TEST(SplineCorner, ARoundNinetyDegreeCornerIsNineRingsOnTheArc)
@@ -147,7 +147,7 @@ TEST(SplineCorner, ARoundNinetyDegreeCornerIsNineRingsOnTheArc)
         // Outside (left of a right turn): on the arc about the corner point.
         const V3 outer{base.Left.x - corner.x, 0.0f, base.Left.z - corner.z};
         EXPECT_NEAR(Length(outer), thickness * 0.5f, 1.0e-4f) << "ring " << r;
-        // Inside: the inner mitre point.
+        // Inside: the inner miter point.
         EXPECT_NEAR(base.Right.x, 0.3f, 1.0e-5f) << "ring " << r;
         EXPECT_NEAR(base.Right.z, 10.0f - 0.3f, 1.0e-5f) << "ring " << r;
         const float32 u = mesh.Vertices[r * mesh.RingVertexCount].UV.x;
@@ -159,20 +159,20 @@ TEST(SplineCorner, ARoundNinetyDegreeCornerIsNineRingsOnTheArc)
     EXPECT_EQ(InvertedSideTriangles(mesh), 0u);
 }
 
-// Past the mitre limit (a scale of 2, a 120-degree turn) a Mitre would place its
+// Past the miter limit (a scale of 2, a 120-degree turn) a Miter would place its
 // ring ever further out: it is built Round and reported by its authored point.
-// Its inside stands at the inner mitre point, 0.3 · tan 75° = 1.12 m back along
+// Its inside stands at the inner miter point, 0.3 · tan 75° = 1.12 m back along
 // each leg, which both legs here are long enough to hold.
-TEST(SplineCorner, AMitreTurningPastTheLimitIsBuiltRoundAndReported)
+TEST(SplineCorner, AMiterTurningPastTheLimitIsBuiltRoundAndReported)
 {
     const float32 thickness = 0.6f;
     Walk walk = WalkPolyline(Elbow(10.0f, 7.3f, 150.0f), 0.5f, thickness * 0.5f);
     const V3 corner = walk.Stations[walk.Corners[0].StationIndex].Position;
     const float32 cornerDistance = walk.Stations[walk.Corners[0].StationIndex].Distance;
     const auto fallbacks =
-        ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Mitre, kUp, false);
+        ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Miter, kUp, false);
     ASSERT_EQ(fallbacks.size(), 1u);
-    EXPECT_EQ(fallbacks[0].Kind, SplineCornerIssueKind::PastMitreLimit);
+    EXPECT_EQ(fallbacks[0].Kind, SplineCornerIssueKind::PastMiterLimit);
     EXPECT_EQ(fallbacks[0].PointIndex, 1u);
     EXPECT_NEAR(fallbacks[0].TurnDegrees, 150.0f, 1.0e-2f);
 
@@ -205,11 +205,12 @@ TEST(SplineCorner, AClosedLoopsSeamCornerSplitsAcrossTheSeam)
     walk.Corners.insert(walk.Corners.begin(), SplineCornerSite{0u, 0u});
     CloseStationLoop(walk.Stations, kUp);
     EXPECT_EQ(std::memcmp(&walk.Stations.front().Position, &walk.Stations.back().Position, sizeof(V3)), 0);
-    EXPECT_TRUE(ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Mitre, kUp, true).empty());
+    EXPECT_TRUE(ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Miter, kUp, true).empty());
 
     SplineStripParams params;
     params.UOriginMetres = 0.0f;
-    params.GenerateCaps = false;
+    params.CapStart = false;
+    params.CapEnd = false;
     const SplineStripMesh mesh = BuildSplineStrip(Wall(1.0f, 3.0f), walk.Stations, params);
     ASSERT_TRUE(mesh.IsValid());
     EXPECT_EQ(mesh.Vertices.size(), static_cast<size_t>(mesh.RingCount) * mesh.RingVertexCount)
@@ -253,16 +254,16 @@ TEST(SplineCorner, ClosingASmoothLoopLooksAcrossTheSeam)
     EXPECT_FLOAT_EQ(stations.back().Distance, 20.0f * kPi);
 }
 
-// The inside faces of the two legs meet at the inner mitre point, halfWidth ·
+// The inside faces of the two legs meet at the inner miter point, halfWidth ·
 // tan(θ/2) before and after the corner. A ring standing exactly that far out puts
-// its inside vertex on that point, so the band from it to the mitre ring has no
+// its inside vertex on that point, so the band from it to the miter ring has no
 // length on the inside face and carries a jump of U instead; one a centimetre
 // further out does the same in all but name. With the corner on a sample and a
 // 1 m wall at 90 degrees that ring is the sample 0.5 m out, and in the second
 // walk the sample 0.51 m out: both are dropped, the inside face reaches the
-// mitre ring in one band at least 5 cm long, and no side face anywhere in the
+// miter ring in one band at least 5 cm long, and no side face anywhere in the
 // run has a zero-area triangle.
-TEST(SplineCorner, ARingAtTheInnerMitrePointIsDroppedSoTheInsideFaceHasNoEmptyBand)
+TEST(SplineCorner, ARingAtTheInnerMiterPointIsDroppedSoTheInsideFaceHasNoEmptyBand)
 {
     for (const float32 offset : {0.0f, 0.011f})
     {
@@ -272,7 +273,7 @@ TEST(SplineCorner, ARingAtTheInnerMitrePointIsDroppedSoTheInsideFaceHasNoEmptyBa
         walk.Stations[nearIndex].Distance -= offset;
         const float32 cornerDistance = walk.Stations[walk.Corners[0].StationIndex].Distance;
         ASSERT_FLOAT_EQ(cornerDistance, 10.0f);
-        (void)ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Mitre, kUp, false);
+        (void)ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Miter, kUp, false);
 
         for (size_t i = 0; i < walk.Stations.size(); ++i)
         {
@@ -311,7 +312,7 @@ TEST(SplineCorner, AnEndLegShorterThanTheCornersReachIsReported)
     {
         Walk walk = WalkPolyline(Elbow(10.0f, endLeg, 90.0f), 0.1f, 0.5f);
         const std::vector<SplineCornerIssue> issues =
-            ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Mitre, kUp, false);
+            ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Miter, kUp, false);
         if (endLeg < 0.5f)
         {
             ASSERT_EQ(issues.size(), 1u);
@@ -340,10 +341,10 @@ TEST(SplineCorner, SameTurnCornersCloserThanTheirReachesAreReported)
                                    V3{middle, 0.0f, 10.0f}, V3{middle, 0.0f, 20.0f}};
         Walk uWalk = WalkPolyline(u, 0.1f, 0.5f);
         const std::vector<SplineCornerIssue> uIssues =
-            ApplyCorners(uWalk.Stations, uWalk.Corners, SplineCornerStyle::Mitre, kUp, false);
+            ApplyCorners(uWalk.Stations, uWalk.Corners, SplineCornerStyle::Miter, kUp, false);
         Walk zWalk = WalkPolyline(z, 0.1f, 0.5f);
         const std::vector<SplineCornerIssue> zIssues =
-            ApplyCorners(zWalk.Stations, zWalk.Corners, SplineCornerStyle::Mitre, kUp, false);
+            ApplyCorners(zWalk.Stations, zWalk.Corners, SplineCornerStyle::Miter, kUp, false);
         EXPECT_TRUE(zIssues.empty()) << "Z, middle leg " << middle;
         if (middle < 1.0f)
         {
@@ -359,13 +360,13 @@ TEST(SplineCorner, SameTurnCornersCloserThanTheirReachesAreReported)
     }
 }
 
-// The mitre limit includes its own boundary: a corner authored at exactly 120
-// degrees is a Mitre, not a fallback reported as past the limit.
-TEST(SplineCorner, ACornerAtExactlyTheMitreLimitIsMitred)
+// The miter limit includes its own boundary: a corner authored at exactly 120
+// degrees is a Miter, not a fallback reported as past the limit.
+TEST(SplineCorner, ACornerAtExactlyTheMiterLimitIsMitered)
 {
     Walk walk = WalkPolyline(Elbow(10.0f, 8.0f, 120.0f), 0.5f, 0.3f);
     const float32 cornerDistance = walk.Stations[walk.Corners[0].StationIndex].Distance;
-    EXPECT_TRUE(ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Mitre, kUp, false).empty());
+    EXPECT_TRUE(ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Miter, kUp, false).empty());
     uint32 cornerRings = 0;
     for (const SplineStripStation& station : walk.Stations)
         cornerRings += std::abs(station.Distance - cornerDistance) <= 1.0e-6f ? 1u : 0u;
@@ -450,13 +451,13 @@ TEST(SplineCorner, AStraightRunGainsNoFaceTurnAndKeepsItsUExactly)
               0);
 }
 
-// A mitre lengthens the outer face by halfWidth · tan(θ/2) on each leg and
+// A miter lengthens the outer face by halfWidth · tan(θ/2) on each leg and
 // shortens the inner face as much. With U along each face, every band of every
 // side face runs its texture at true scale into and out of the corner, on the
 // corner-on-a-sample and corner-between-samples walks and on 1 m and 2 m walls;
-// with the centreline's U the last band before the mitre stretched up to 1.9x on
+// with the centreline's U the last band before the miter stretched up to 1.9x on
 // the outside and down to 0.1x on the inside.
-TEST(SplineCorner, EachSideFaceOfAMitreTakesUAlongItsOwnLength)
+TEST(SplineCorner, EachSideFaceOfAMiterTakesUAlongItsOwnLength)
 {
     for (const float32 thickness : {1.0f, 2.0f})
     {
@@ -464,7 +465,7 @@ TEST(SplineCorner, EachSideFaceOfAMitreTakesUAlongItsOwnLength)
         {
             Walk walk = WalkPolyline(Elbow(10.0f, legB, 90.0f), 0.5f, thickness * 0.5f);
             ASSERT_TRUE(
-                ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Mitre, kUp, false).empty());
+                ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Miter, kUp, false).empty());
             AccumulateFaceTurn(walk.Stations, kUp);
             const SplineStripMesh mesh = Sweep(Wall(thickness, 3.0f), walk.Stations);
             ASSERT_TRUE(mesh.IsValid());
@@ -474,16 +475,16 @@ TEST(SplineCorner, EachSideFaceOfAMitreTakesUAlongItsOwnLength)
     }
 }
 
-// A mitre's top takes the centreline U projected onto each leg: the last top band
-// before the mitre line runs at true scale along both its arrises, the outer one
+// A miter's top takes the centreline U projected onto each leg: the last top band
+// before the miter line runs at true scale along both its arrises, the outer one
 // halfWidth longer than the centreline on a 1 m wall at 90 degrees and the inner
 // one as much shorter. With the station's distance alone they ran 1.5x and 0.5x.
-TEST(SplineCorner, EachTopEdgeOfAMitreTakesUAlongItsOwnLength)
+TEST(SplineCorner, EachTopEdgeOfAMiterTakesUAlongItsOwnLength)
 {
     for (const float32 legB : {10.0f, 7.3f})
     {
         Walk walk = WalkPolyline(Elbow(10.0f, legB, 90.0f), 0.5f, 0.5f);
-        ASSERT_TRUE(ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Mitre, kUp, false).empty());
+        ASSERT_TRUE(ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Miter, kUp, false).empty());
         AccumulateFaceTurn(walk.Stations, kUp);
         const SplineStripMesh mesh = Sweep(Wall(1.0f, 3.0f), walk.Stations);
         ASSERT_TRUE(mesh.IsValid());
@@ -492,14 +493,14 @@ TEST(SplineCorner, EachTopEdgeOfAMitreTakesUAlongItsOwnLength)
 }
 
 // A round corner's outside is an arc of the half-width, whose length its U must
-// cover, and its inside pivots on the inner mitre point, which the legs' inside
-// faces reach short of the corner. Past the mitre limit the same holds for the
+// cover, and its inside pivots on the inner miter point, which the legs' inside
+// faces reach short of the corner. Past the miter limit the same holds for the
 // fallback. The arc is faceted at 10-degree rings, so a band's chord is 0.13 %
 // shorter than the arc its U covers.
 //
 // The top follows the same rule: its outer edge advances by halfWidth times each
 // ring's turn around the fan, the arc it sweeps, while its inside pinches on the
-// inner mitre point; that arc is carried down the run, so the bands into and out
+// inner miter point; that arc is carried down the run, so the bands into and out
 // of the fan run at true scale on both edges.
 TEST(SplineCorner, EachSideFaceOfARoundCornerTakesUAlongItsOwnLength)
 {
@@ -520,7 +521,7 @@ TEST(SplineCorner, EachSideFaceOfARoundCornerTakesUAlongItsOwnLength)
             const SplineStripStation& from = walk.Stations[r];
             const SplineStripStation& to = walk.Stations[r + 1u];
             const bool inFan = to.Join == SplineStationJoin::Pivot;
-            const bool joinsFan = !inFan && (from.MitreSides != 0u || to.MitreSides != 0u);
+            const bool joinsFan = !inFan && (from.MiterSides != 0u || to.MiterSides != 0u);
             if (!inFan && !joinsFan)
                 continue;
             for (uint32 k = 0; k < mesh.RingVertexCount; ++k)
@@ -584,10 +585,10 @@ TEST(SplineCorner, BothFacesOfACurveTileAtTheirOwnLength)
 
 // A welded loop closes each face on itself: the seam corner's outgoing half opens
 // the stream at zero face turn and its incoming half closes it, so a square of
-// four right-turning mitres ends with 8 · tan 45° on the outside and as much off
+// four right-turning miters ends with 8 · tan 45° on the outside and as much off
 // the inside. With the loop's face snap every side face then ends its U on a whole
 // tile where it began at zero, and runs within half a tile of its own length.
-// The top meets itself at the seam's mitre joint, square to each leg, and is not
+// The top meets itself at the seam's miter joint, square to each leg, and is not
 // a face that closes on itself.
 TEST(SplineCorner, EachFaceOfAWeldedLoopClosesOnAWholeTile)
 {
@@ -597,7 +598,7 @@ TEST(SplineCorner, EachFaceOfAWeldedLoopClosesOnAWholeTile)
                              0.5f, 0.5f);
     walk.Corners.insert(walk.Corners.begin(), SplineCornerSite{0u, 0u});
     CloseStationLoop(walk.Stations, kUp);
-    ASSERT_TRUE(ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Mitre, kUp, true).empty());
+    ASSERT_TRUE(ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Miter, kUp, true).empty());
     AccumulateFaceTurn(walk.Stations, kUp);
     const SplineStripStation& first = walk.Stations.front();
     const SplineStripStation& last = walk.Stations.back();
@@ -608,7 +609,8 @@ TEST(SplineCorner, EachFaceOfAWeldedLoopClosesOnAWholeTile)
 
     SplineStripParams params;
     params.UOriginMetres = 0.0f;
-    params.GenerateCaps = false;
+    params.CapStart = false;
+    params.CapEnd = false;
     params.LoopLengthMetres = last.Distance;
     params.LoopFaceTurnLeft = last.FaceTurnLeft;
     params.LoopFaceTurnRight = last.FaceTurnRight;
@@ -648,11 +650,11 @@ float32 PlanDistanceToLine(const V3& p, const V3& origin, const V3& direction)
 
 } // namespace
 
-// A 150-degree hairpin built past the mitre limit. With its inside on the corner
+// A 150-degree hairpin built past the miter limit. With its inside on the corner
 // line, the two legs' inside faces ran diagonally to the corner and their top
 // faces overlapped, coplanar, for about 1.9 m; dropping the stations within the
 // reach without moving the inside cut a slot through the top instead. Here the
-// inside stands on the inner mitre point, which lies on both legs' inside faces
+// inside stands on the inner miter point, which lies on both legs' inside faces
 // (0.3 m from each leg's centreline on a 0.6 m wall): no station survives within
 // the reach, so neither leg's top reaches past that point, and no side face folds.
 TEST(SplineCorner, AHairpinPastTheLimitMeetsBothInsideFacesWithNoSlotOrOverlap)
@@ -662,7 +664,7 @@ TEST(SplineCorner, AHairpinPastTheLimitMeetsBothInsideFacesWithNoSlotOrOverlap)
     Walk walk = WalkPolyline(points, 0.5f, halfWidth);
     const float32 cornerDistance = walk.Stations[walk.Corners[0].StationIndex].Distance;
     const float32 reach = halfWidth * std::tan(75.0f * kPi / 180.0f);
-    (void)ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Mitre, kUp, false);
+    (void)ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Miter, kUp, false);
     const SplineStripMesh mesh = Sweep(Wall(2.0f * halfWidth, 3.0f), walk.Stations);
     ASSERT_TRUE(mesh.IsValid());
 
@@ -693,7 +695,7 @@ TEST(SplineCorner, AHairpinPastTheLimitMeetsBothInsideFacesWithNoSlotOrOverlap)
 // as far back as that leg holds (its length less the 5 cm band), moved in along
 // the bisector, so the inside face narrows toward the corner rather than folding
 // back past the leg's end. It fits by construction, so no fold is reported; the
-// corner is still reported past the mitre limit. Narrowing over the 5 cm band
+// corner is still reported past the miter limit. Narrowing over the 5 cm band
 // leaves a top quad that is not convex, which the builder splits on the diagonal
 // that keeps both triangles facing up.
 TEST(SplineCorner, AHairpinsInsideIsBoundedByAShortLeg)
@@ -704,9 +706,9 @@ TEST(SplineCorner, AHairpinsInsideIsBoundedByAShortLeg)
     Walk walk = WalkPolyline(points, 0.1f, halfWidth);
     const float32 cornerDistance = walk.Stations[walk.Corners[0].StationIndex].Distance;
     const std::vector<SplineCornerIssue> issues =
-        ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Mitre, kUp, false);
+        ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Miter, kUp, false);
     ASSERT_EQ(issues.size(), 1u);
-    EXPECT_EQ(issues[0].Kind, SplineCornerIssueKind::PastMitreLimit);
+    EXPECT_EQ(issues[0].Kind, SplineCornerIssueKind::PastMiterLimit);
 
     const SplineStripMesh mesh = Sweep(Wall(2.0f * halfWidth, 3.0f), walk.Stations);
     ASSERT_TRUE(mesh.IsValid());
@@ -731,7 +733,7 @@ TEST(SplineCorner, AHairpinsInsideIsBoundedByAShortLeg)
 TEST(SplineCorner, AHairpinWithBothLegsShortFoldsNoTopTriangle)
 {
     Walk walk = WalkPolyline(Elbow(0.9f, 0.7f, 150.0f), 0.1f, 0.3f);
-    (void)ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Mitre, kUp, false);
+    (void)ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Miter, kUp, false);
     const SplineStripMesh mesh = Sweep(Wall(0.6f, 3.0f), walk.Stations);
     ASSERT_TRUE(mesh.IsValid());
     EXPECT_EQ(InvertedSideTriangles(mesh), 0u);
@@ -763,7 +765,7 @@ TEST(SplineCorner, AStationOnACurveTighterThanTheWallIsAFold)
 }
 
 // A round corner on a welded loop's seam is split across the seam the way a
-// mitre is: the outgoing half's ring opens the stream and the fan closes it,
+// miter is: the outgoing half's ring opens the stream and the fan closes it,
 // ending on that same ring, so the loop's two end rings still coincide. The fan
 // is whole (nine rings at 90 degrees, all at the loop's length) and no side face
 // folds.
@@ -786,7 +788,8 @@ TEST(SplineCorner, AClosedLoopsRoundSeamCornerSplitsAcrossTheSeam)
 
     SplineStripParams params;
     params.UOriginMetres = 0.0f;
-    params.GenerateCaps = false;
+    params.CapStart = false;
+    params.CapEnd = false;
     const SplineStripMesh mesh = BuildSplineStrip(Wall(1.0f, 3.0f), walk.Stations, params);
     ASSERT_TRUE(mesh.IsValid());
     const uint32 lastRing = (mesh.RingCount - 1u) * mesh.RingVertexCount;
@@ -818,7 +821,8 @@ TEST(SplineCorner, TheTopOfARoundCorneredLoopMeetsItselfAtTheSeam)
 
     SplineStripParams params;
     params.UOriginMetres = 0.0f;
-    params.GenerateCaps = false;
+    params.CapStart = false;
+    params.CapEnd = false;
     params.LoopLengthMetres = last.Distance;
     params.LoopFaceTurnLeft = last.FaceTurnLeft;
     params.LoopFaceTurnRight = last.FaceTurnRight;

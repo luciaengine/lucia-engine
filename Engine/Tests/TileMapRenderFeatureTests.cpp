@@ -11,7 +11,7 @@
 #include "Core/Application.h"
 #include "Core/Engine.h"
 #include "Components/Rendering/RenderSorting.h"
-#include "Components/Rendering/WorldSectorCoord.h"
+#include "Engine/Rendering/RenderOrigin.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
 #include "Engine/Rendering/RenderSorting.h"
@@ -113,6 +113,7 @@ TEST_F(TileWorldDraw, MatchingWorldProducesGpuBatchBeforeForeignWorldIsRejected)
     layer->SetCell(0, 0, TileMap::MakeCell(1));
     layer->SetCell(1, 0, TileMap::MakeCell(1));
     layer->SetCell(0, 2, TileMap::MakeCell(1));
+    layer->SetCell(1000000, -1000000, TileMap::MakeCell(1));
     Vector<uint8> mapBytes;
     ASSERT_TRUE(map.SaveToData(mapBytes));
     std::ofstream(mapPath, std::ios::binary).write(reinterpret_cast<const char*>(mapBytes.data()), mapBytes.size());
@@ -121,22 +122,23 @@ TEST_F(TileWorldDraw, MatchingWorldProducesGpuBatchBeforeForeignWorldIsRejected)
     draw.Map = mapGuid;
     draw.LayerId = layerId;
     Feature->SetLayerDraws(12, {draw});
-    float32 viewProj[16]{};
-    for (int i = 0; i < 16; i += 5) viewProj[i] = 1.0f;
-    const float32 position[] = {0, 0, 0};
+    Rendering::CameraData camera{};
+    camera.view = camera.proj = camera.viewProj = Mathematics::Matrix4x4{};
+    SetCameraEye(camera, Mathematics::WorldPosition{});
+    Mathematics::WorldPosition position{};
     const float32 forward[] = {0, 0, 1};
     std::vector<TileMapChunkDraw> batches;
-    Feature->BuildViewDraws(Services, viewProj, position, forward, 1.0f, batches, 12);
+    Feature->BuildViewDraws(Services, camera, 1.0f, batches, 12);
     ASSERT_EQ(batches.size(), 1u);
     ASSERT_EQ(batches[0].InstanceCount, 3u);
     ASSERT_TRUE(batches[0].Atlas.IsValid());
     ASSERT_TRUE(batches[0].Instances.IsValid());
-    Feature->BuildViewDraws(Services, viewProj, position, forward, 1.0f, batches, 13);
+    Feature->BuildViewDraws(Services, camera, 1.0f, batches, 13);
     EXPECT_TRUE(batches.empty());
 
     draw.Sorting.SortByY = true;
     Feature->SetLayerDraws(12, {draw});
-    Feature->BuildViewDraws(Services, viewProj, position, forward, 1.0f, batches, 12);
+    Feature->BuildViewDraws(Services, camera, 1.0f, batches, 12);
     ASSERT_EQ(batches.size(), 2u) << "Y-sorted cells in one chunk must allow a sprite between rows";
     EXPECT_EQ(batches[0].InstanceCount, 2u);
     EXPECT_EQ(batches[0].FirstInstance, 0u);
@@ -149,19 +151,22 @@ TEST_F(TileWorldDraw, MatchingWorldProducesGpuBatchBeforeForeignWorldIsRejected)
     EXPECT_TRUE(RenderSortBefore(batches[1].Sort, character));
     EXPECT_TRUE(RenderSortBefore(character, batches[0].Sort));
 
-    draw.Model[5] = -2.0f;
-    viewProj[0] = viewProj[5] = 0.01f;
-    draw.Model[13] = -3.0f;
+    draw.Basis[1].y = -2.0f;
+    camera.proj[0][0] = camera.proj[1][1] = 0.01f;
+    camera.viewProj = camera.proj * camera.view;
+    SetCameraEye(camera, Mathematics::WorldPosition{});
+    draw.Position.Y = -3.0f;
     draw.Sorting.SortOriginY = 0.25f;
+    draw.Sorting.SortY = draw.Position.Y + draw.Basis[1].y * draw.Sorting.SortOriginY;
     Feature->SetLayerDraws(12, {draw});
-    Feature->BuildViewDraws(Services, viewProj, position, forward, 1.0f, batches, 12);
+    Feature->BuildViewDraws(Services, camera, 1.0f, batches, 12);
     ASSERT_EQ(batches.size(), 2u);
     EXPECT_FLOAT_EQ(batches[0].Sort.Depth, -3.5f);
     EXPECT_FLOAT_EQ(batches[1].Sort.Depth, -7.5f);
 
-    draw.Model[1] = 1.0f;
+    draw.Basis[0].y = 1.0f;
     Feature->SetLayerDraws(12, {draw});
-    Feature->BuildViewDraws(Services, viewProj, position, forward, 1.0f, batches, 12);
+    Feature->BuildViewDraws(Services, camera, 1.0f, batches, 12);
     ASSERT_EQ(batches.size(), 3u) << "A tilted tile row has distinct world ground points";
     EXPECT_FLOAT_EQ(batches[0].Sort.Depth, -3.0f);
     EXPECT_FLOAT_EQ(batches[1].Sort.Depth, -2.0f);
@@ -170,21 +175,58 @@ TEST_F(TileWorldDraw, MatchingWorldProducesGpuBatchBeforeForeignWorldIsRejected)
     ECS::World world;
     Components::RenderSorting sorting;
     sorting.SortByY = true;
-    auto tileEntity = world.Create(sorting, Components::WorldTransform{}, Components::WorldSectorCoord{0, 1, 0});
+    Components::WorldTransform tileTransform;
+    tileTransform.Position.Y = 1024.0;
+    auto tileEntity = world.Create(sorting, tileTransform);
     Components::WorldTransform actorTransform;
-    actorTransform.matrix[13] = 1;
-    auto actorEntity = world.Create(sorting, actorTransform, Components::WorldSectorCoord{0, 1, 0});
+    actorTransform.Position.Y = 1025.0;
+    auto actorEntity = world.Create(sorting, actorTransform);
     world.ProcessCommands();
     const auto layers = Rendering::SortingLayers::Defaults();
     draw = TileMapLayerDraw{};
     draw.Map = mapGuid;
     draw.LayerId = layerId;
+    draw.Position = tileTransform.Position;
+    position = Mathematics::WorldPosition{0.0, 1024.0, 0.0};
+    camera.view = Mathematics::Matrix4x4::Translation({0.0f, -1024.0f, 0.0f});
+    camera.viewProj = camera.proj * camera.view;
+    SetCameraEye(camera, position);
     draw.Sorting = ResolveRenderSorting(world, tileEntity.GetHandle(), layers);
     Feature->SetLayerDraws(12, {draw});
-    Feature->BuildViewDraws(Services, viewProj, position, forward, 1.0f, batches, 12);
+    Feature->BuildViewDraws(Services, camera, 1.0f, batches, 12);
     ASSERT_EQ(batches.size(), 2u);
     const auto actorKey = MakeRenderSortKey(ResolveRenderSorting(world, actorEntity.GetHandle(), layers),
                                            0, position, forward);
     EXPECT_TRUE(RenderSortBefore(batches[1].Sort, actorKey));
     EXPECT_TRUE(RenderSortBefore(actorKey, batches[0].Sort));
+
+    draw.Position = Mathematics::WorldPosition{-999999.75, -99999999.75, 0.5};
+    draw.Basis[0].y = 0.25f;
+    draw.Basis[1].y = -2.0f;
+    draw.WorldZ = 0.5;
+    draw.ParallaxX = 0.0f;
+    draw.Sorting.SortOriginY = 0.25f;
+    draw.Sorting.SortY = draw.Position.Y - 0.5;
+    position = Mathematics::WorldPosition{100000000.125, -97749999.75, 0.0};
+    camera.view = Mathematics::Matrix4x4::Translation({-static_cast<float32>(position.X), -static_cast<float32>(position.Y), 0.0f});
+    camera.viewProj = camera.proj * camera.view;
+    SetCameraEye(camera, position);
+    TileMapPreview preview;
+    preview.Map = mapGuid;
+    preview.LayerId = layerId;
+    preview.OriginX = 1000001;
+    preview.OriginY = -1000000;
+    preview.Instances = {{0u, TileMap::MakeCell(1)}};
+    Feature->SetPreview(std::move(preview));
+    Feature->SetLayerDraws(12, {draw});
+    Feature->BuildViewDraws(Services, camera, 1.0f, batches, 12);
+    ASSERT_EQ(batches.size(), 2u);
+    const double originX = static_cast<double>(camera.renderOriginSector[0]) * Mathematics::kWorldSectorSize;
+    const double originY = static_cast<double>(camera.renderOriginSector[1]) * Mathematics::kWorldSectorSize;
+    EXPECT_FLOAT_EQ(batches[0].Push.Model[12], static_cast<float32>(100000000.375 - originX));
+    EXPECT_FLOAT_EQ(batches[0].Push.Model[13], static_cast<float32>(-97749999.75 - originY));
+    EXPECT_DOUBLE_EQ(batches[0].Sort.Depth, -97750000.125);
+    EXPECT_FLOAT_EQ(batches[1].Push.Model[12], static_cast<float32>(100000001.375 - originX));
+    EXPECT_FLOAT_EQ(batches[1].Push.Model[13], static_cast<float32>(-97749999.5 - originY));
+    EXPECT_DOUBLE_EQ(batches[1].Sort.Depth, -97749999.875);
 }

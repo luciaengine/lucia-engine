@@ -37,7 +37,7 @@
 #include "Engine/Rendering/WorldDrawTypes.h"
 #include "Platform/Environment.h"
 #include "Mathematics/MatrixOps.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUInstanceDepthClass.h"
@@ -52,6 +52,7 @@
 #include "Rendering/Utils/TextureUploadHelpers.h"
 
 #include "StagedTestPaths.h"
+#include "TestCameraEye.h"
 #include "TestDeviceHelper.h"
 
 #include <algorithm>
@@ -536,15 +537,12 @@ void DrawTheCardOverTheFloor(IDevice* device, const MaterialDocument& cardDocume
 
     const CameraId cameraId = rs.Views().AllocateCamera("MaskVertexAlpha.Camera");
     CameraData camera{};
-    for (int i = 0; i < 16; i += 5)
-    {
-        camera.view[i] = 1.0f;
-        camera.proj[i] = 1.0f;
-        camera.viewProj[i] = 1.0f;
-    }
+    camera.view = Mathematics::Matrix4x4::Identity();
+    camera.proj = Mathematics::Matrix4x4::Identity();
+    camera.viewProj = Mathematics::Matrix4x4::Identity();
     if (shadowScenario)
         camera = MakeShadowTestCamera();
-    rs.Views().SetCameraData(cameraId, camera);
+    rs.Views().SetCameraData(cameraId, ::GameEngine::Tests::TestCameraWithEye(camera), {0.1f, 1000.0f});
     const ViewId viewId = rs.Views().AllocateView("MaskVertexAlpha.View", cameraId);
     rs.Views().SetViewRenderLayerMask(viewId, 1u);
     rs.Views().SetViewWorldId(viewId, kWorldId);

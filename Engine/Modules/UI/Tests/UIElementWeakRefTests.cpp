@@ -85,4 +85,26 @@ TEST(UIElementWeakRef, DefaultAndNullSourceResolveToNull)
     EXPECT_EQ(fromNull.Get(), nullptr);
 }
 
+TEST(UIElementWeakRef, TypedFindByIdResolvesOnlyAnElementOfThatType)
+{
+    auto root = std::make_unique<UIElement>();
+    auto label = std::make_unique<Label>();
+    label->SetId("caption");
+    Label* labelRaw = label.get();
+    root->AddChild(std::move(label));
+    auto plain = std::make_unique<UIElement>();
+    plain->SetId("plain");
+    root->AddChild(std::move(plain));
+
+    const UIElement::WeakRef<Label> ref = root->FindById<Label>("caption"_sid);
+    EXPECT_EQ(ref.Get(), labelRaw);
+    EXPECT_EQ(root->FindById<UIElement>("caption"_sid).Get(), labelRaw);
+    EXPECT_EQ(root->FindById<Label>("plain"_sid).Get(), nullptr);
+    EXPECT_EQ(root->FindById<UIElement>("missing"_sid).Get(), nullptr);
+
+    root->RemoveAllChildren();
+
+    EXPECT_EQ(ref.Get(), nullptr);
+}
+
 } // namespace

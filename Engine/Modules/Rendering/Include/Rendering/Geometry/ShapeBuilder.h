@@ -127,13 +127,6 @@ struct ShapeOptions
     bool antialias = false;
     float antialiasWidthPx = 1.0f;
 
-    // ---------------------------------------------------------------------
-    // UI instancing extension:
-    // When UI geometry is emitted as GPU instances, these
-    // values are forwarded into the instance params. They are ignored by
-    // the CPU mesh builder path.
-    float uiParams[3] = {0.0f, 0.0f, 0.0f};
-
     // Line caps and joins (future extension)
     // Stroke joins
     enum class StrokeJoin

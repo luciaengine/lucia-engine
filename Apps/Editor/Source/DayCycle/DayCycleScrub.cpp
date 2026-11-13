@@ -8,7 +8,7 @@
 #include "ECS/World.h"
 #include "ECSModules/Rendering/Systems/SkyEnvironmentSystem.h"
 #include "DayCycle/DayCycleSunNow.h"
-#include "Sky/SkyEnvironmentEdit.h"
+#include "Sky/SkyEnvironment/SkyEnvironmentEdit.h"
 
 #include <utility>
 

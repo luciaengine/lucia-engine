@@ -1,16 +1,16 @@
 #pragma once
 
 // ShaderCompilationCache: global shader compilation cache. Materials with the
-// same source, variant, captured target and stage format share a program.
+// same shader sources and variant key share compiled SPIR-V. Keyed on
+// (ShaderVariantKey + surface/vertex paths).
 //
 // Owned by RenderServices.
 
 #include "Engine/Rendering/MaterialCompileSpec.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/HashUtils.h"
 #include "Rendering/Materials/MaterialBuildService.h"
-#include "Rendering/Materials/ShaderMeta.h"
-#include "Rendering/Materials/ShaderVariantKey.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderVariantKey.h"
 
 #include <filesystem>
 #include <functional>
@@ -49,50 +49,48 @@ struct SharedShaderVariant
 };
 
 // Identity of the SHADER SOURCE a compile reads: the authored surface and
-// vertex-modifier references, plus the .material file they resolve relative to.
-// The asset path is part of the identity because resolution is directory-local
-// (ShaderComposer::ResolveShaderReference probes the material's own directory
-// first), so the same authored string under two directories names two different
-// files.
+// vertex-modifier references, plus the material directory when the build reads
+// it (ShaderComposer::ShaderLocalDirectory). Resolution probes the material's own
+// directory first, so the same authored string beside two materials can name two
+// files; that is the only way a material's location changes what it composes.
+// Every material whose references resolve through the shader roots instead has an
+// empty MaterialDirectory and shares one identity, and with it one compiled
+// variant per keyword set, wherever its .material file lives.
 //
 // One type, two uses: it is half of ShaderCacheKey, and it is the key of the
 // recorded include closures. That sharing is the point — the invalidation sweep
 // and the affected-material scan must agree on what "the same shader source"
 // means, and one type makes disagreement impossible rather than merely unlikely.
+// Build it with MakeShaderSourceKey, never field by field.
 struct ShaderSourceKey
 {
     std::string SurfaceShaderPath;
     std::string VertexModifierPath;
-    // Empty for materials with no backing asset (graph previews, headless
-    // registration, primitives). Those have no material dir, so they all share
-    // one key — an OVER-match, not an exact one: with the material-dir probe
-    // skipped, an authored reference resolves through context.ProjectRoots first
-    // (ShaderComposer::ResolveShaderReference), so the file behind the shared key
-    // moves when the project does. As a closure row that costs a redundant
-    // recompile; as a cache entry it is why Clear() runs on a project switch.
-    std::filesystem::path MaterialAssetPath;
-
-    // Shader references/includes resolve relative to the material's directory,
-    // not its filename. Preserve the real file above for diagnostics and build
-    // provenance while sharing bytecode for identical sources in that directory.
-    // Keep synthetic (no asset) identities distinct from relative local files.
-    std::filesystem::path ResolutionDirectory() const
-    {
-        if (MaterialAssetPath.empty()) return {};
-        const auto parent = MaterialAssetPath.parent_path();
-        return parent.empty() ? std::filesystem::path(".") : parent;
-    }
+    // Lexically normal; empty for every material whose references resolve
+    // through the shader roots, and for materials with no backing asset. Those
+    // resolve through context.ProjectRoots first, so the file behind an empty
+    // directory moves when the project does: as a closure row that costs a
+    // redundant recompile, as a cache entry it is why Clear() runs on a project
+    // switch.
+    std::filesystem::path MaterialDirectory;
 
     bool operator==(const ShaderSourceKey& other) const
     {
         return SurfaceShaderPath == other.SurfaceShaderPath
             && VertexModifierPath == other.VertexModifierPath
-            && ResolutionDirectory() == other.ResolutionDirectory();
+            && MaterialDirectory == other.MaterialDirectory;
     }
 };
 
-// This in-memory identity retains the variant, source and captured target.
-// The on-disk shaderpkg key (v6, ShaderCompileService) hashes
+// The source identity of a material with these authored references and this
+// .material file (empty when it has none). Probes the material's directory, so
+// a reference that starts or stops resolving there changes the identity.
+ShaderSourceKey MakeShaderSourceKey(const std::string& surfaceShaderPath,
+                                    const std::string& vertexModifierPath,
+                                    const std::filesystem::path& materialAssetPath);
+
+// This key is the IN-MEMORY identity only, and is literally a variant key plus a
+// source identity. The on-disk shaderpkg key (v6, ShaderCompileService) hashes
 // the true compile inputs — composed source, inlined adapters, and the CONTENT
 // of the whole #include closure — so donor-seeding `.Cache/Shaders` between
 // builds is safe and the historical hand-wipe discipline ("adapter cache-key
@@ -105,11 +103,10 @@ struct ShaderCacheKey
 {
     Rendering::ShaderVariantKey VariantKey;
     ShaderSourceKey Source;
-    Rendering::ShaderCompileTarget Target = Rendering::CurrentShaderCompileTarget();
 
     bool operator==(const ShaderCacheKey& other) const
     {
-        return VariantKey == other.VariantKey && Source == other.Source && Target == other.Target;
+        return VariantKey == other.VariantKey && Source == other.Source;
     }
 };
 
@@ -137,13 +134,10 @@ struct std::hash<GameEngine::Engine::Renderer::ShaderSourceKey>
 {
     size_t operator()(const GameEngine::Engine::Renderer::ShaderSourceKey& k) const noexcept
     {
-        using GameEngine::Rendering::HashUtils::HashCombine;
-        uint64_t h = std::hash<std::string>{}(k.SurfaceShaderPath);
-        h = HashCombine(h, std::hash<std::string>{}(k.VertexModifierPath));
-        // Normalized for hashing while operator== compares the raw path: equal
-        // keys still hash equal, and two spellings of one path merely collide.
-        h = HashCombine(h, std::hash<std::string>{}(k.ResolutionDirectory().string()));
-        return static_cast<size_t>(h);
+        size_t h = std::hash<std::string>{}(k.SurfaceShaderPath);
+        h ^= std::hash<std::string>{}(k.VertexModifierPath) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<std::filesystem::path>{}(k.MaterialDirectory) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        return h;
     }
 };
 
@@ -152,9 +146,10 @@ struct std::hash<GameEngine::Engine::Renderer::ShaderCacheKey>
 {
     size_t operator()(const GameEngine::Engine::Renderer::ShaderCacheKey& k) const noexcept
     {
-        const uint64_t h = GameEngine::Rendering::HashUtils::HashCombine(
-            k.VariantKey.Hash(), std::hash<GameEngine::Engine::Renderer::ShaderSourceKey>{}(k.Source));
-        return static_cast<size_t>(GameEngine::Rendering::HashUtils::HashCombine(h, k.Target.Hash()));
+        size_t h = static_cast<size_t>(k.VariantKey.Hash());
+        h ^= std::hash<GameEngine::Engine::Renderer::ShaderSourceKey>{}(k.Source) + 0x9e3779b9
+             + (h << 6) + (h >> 2);
+        return h;
     }
 };
 
@@ -174,15 +169,20 @@ class ShaderCompilationCache
     // `kind` is the shader form the consuming device ingests
     // (IDevice::PreferredShaderSource); it decides what the variant's stage
     // bytes carry, so a cached variant is only valid for that device.
+    // `debugName` and `materialAssetPath` name the material asking: they attribute
+    // a compile failure to it and anchor the build's diagnostics, and are never
+    // part of the identity, so every material sharing the key receives the
+    // compile whichever of them ran it.
     std::shared_ptr<SharedShaderVariant> GetOrCompile(
         const ShaderCacheKey& key,
         const MaterialCompileSpec& spec,
         const Rendering::MaterialBuildContext& buildContext,
         const std::string& debugName,
+        const std::filesystem::path& materialAssetPath,
         Rendering::ShaderSourceKind kind);
 
-    // Drop every target and stage format of this variant/source identity.
-    // Content edits invalidate retained programs even when their target is inactive.
+    // Drop a global dedup entry so the next GetOrCompile re-reads surface sources
+    // from disk. Needed when shader file content changes but paths stay the same.
     void InvalidateGlobalEntry(const ShaderCacheKey& key);
 
     // Drop every global entry that DEPENDS on the given shader file, and name
@@ -236,32 +236,14 @@ class ShaderCompilationCache
         return m_Cache.size();
     }
 
-    // Drop the compiled entries and the in-flight election: shutdown, and
-    // project switch. Entries are keyed by path rather than content, so an
-    // identity with an EMPTY material asset path (primitives, graph previews,
-    // headless registrations) is identical in both projects while the roots its
-    // references resolve against have just moved — a retained entry serves the
-    // old project's SPIR-V for a reference that now names a different file.
-    //
-    // Closure ROWS survive this call. See m_SurfaceClosures.
+    // Drop the compiled entries and the in-flight election (shutdown, project
+    // switch). Entries are keyed by path, so a retained entry can serve the old
+    // project's SPIR-V. The closure rows stay (see m_SurfaceClosures).
     void Clear();
 
   private:
-    struct ProgramKey
-    {
-        ShaderCacheKey Shader;
-        Rendering::ShaderSourceKind Kind;
-        bool operator==(const ProgramKey&) const = default;
-    };
-    struct ProgramKeyHash
-    {
-        size_t operator()(const ProgramKey& key) const noexcept
-        {
-            return static_cast<size_t>(Rendering::HashUtils::HashCombine(
-                std::hash<ShaderCacheKey>{}(key.Shader), static_cast<uint32_t>(key.Kind)));
-        }
-    };
-    std::unordered_map<ProgramKey, std::shared_ptr<SharedShaderVariant>, ProgramKeyHash> m_Cache;
+    // Global dedup cache: ShaderCacheKey -> compiled variant.
+    std::unordered_map<ShaderCacheKey, std::shared_ptr<SharedShaderVariant>> m_Cache;
 
     // Single-flight: per-key in-flight compile future so same-key racers WAIT for
     // the first compiler instead of re-compiling (A2.4-P0-R: the depth prepass, 4
@@ -277,20 +259,19 @@ class ShaderCompilationCache
     // publish-side erase on the epoch would leak the entry instead and pin every
     // later request to that stale future forever.
     using CompileFuture = std::shared_future<std::shared_ptr<SharedShaderVariant>>;
-    std::unordered_map<ProgramKey, CompileFuture, ProgramKeyHash> m_InFlight;
+    std::unordered_map<ShaderCacheKey, CompileFuture> m_InFlight;
 
     // Recorded include closures, one row per ShaderSourceKey. Values are
     // LOWERCASED FILENAMES of every file any build of that identity read:
     // adapters, the surface itself, the vertex modifier, and all transitive
     // includes.
     //
-    // The row key carries the material asset path, so two materials in different
-    // directories authoring the same surface FILENAME get separate rows and an
-    // edit to one's helper cannot drag the other into a recompile. The cost is a
-    // row per material rather than per surface — order 100 materials × 20-30
-    // filenames in a project of that size. Every keyword variant of one identity
-    // still shares a row; they are builds of the same source, and the row is the
-    // union of what any of them read.
+    // The row key carries the material directory whenever the build reads it, so
+    // two materials that each resolve a same-named surface beside themselves get
+    // separate rows and an edit to one's helper cannot drag the other into a
+    // recompile. Materials that share an identity share its row. Every keyword
+    // variant of one identity shares it too; they are builds of the same source,
+    // and the row is the union of what any of them read.
     //
     // Rows are a UNION and are never narrowed by a build. An include removed
     // from a surface therefore keeps triggering until the session ends, costing
@@ -313,12 +294,20 @@ class ShaderCompilationCache
     // construction cannot fire for an adapter, an engine include or a transitive
     // helper: its include-edit trigger is dead for the rest of the session. The
     // retention is safe in both directions — a row keyed on the old project's
-    // material asset path matches nothing the new project can probe with, and a
-    // row keyed on an EMPTY asset path is shared with the new project's own
-    // empty-path identities, whose references CAN resolve to different files
+    // material directory matches nothing the new project can probe with, and a
+    // row keyed on an EMPTY directory is shared with the new project's own
+    // root-resolved identities, whose references CAN resolve to different files
     // (ProjectRoots precede AdapterShaderDir), so it over-matches at worst and
     // costs a redundant recompile.
     std::unordered_map<ShaderSourceKey, std::unordered_set<std::string>> m_SurfaceClosures;
+
+    // The materials each failed key's compiles were reported against, each name
+    // once. A failure is reported by whichever material ran the compile, and
+    // after an edit another material sharing the key may fail it again; the
+    // material that later recompiles the key successfully may be yet another
+    // one, so the success clears every reported row through this map rather
+    // than through its own name. Erased on success; cleared by Clear().
+    std::unordered_map<ShaderCacheKey, std::vector<std::string>> m_FailureReportedAs;
 
     // Reduce a build's dependency record to lowercased filenames. Runs OUTSIDE
     // m_Mutex: path parsing and case folding are the expensive half, and the
@@ -335,21 +324,9 @@ class ShaderCompilationCache
     // covers the cache check + insert.
     mutable std::mutex m_Mutex;
 
-    // Invalidation epoch, bumped by InvalidateEntriesForShaderFile,
-    // InvalidateGlobalEntry and Clear. GetOrCompile snapshots it under its first
-    // lock and publish() skips the m_Cache insert when it has moved. Without it,
-    // a compile already in flight when an edit notification lands republishes
-    // its PRE-EDIT SPIR-V after the invalidation swept the cache, leaving
-    // half-new/half-old variants on screen until the next save —
-    // and rapid save bursts (the core authoring workload) are exactly when
-    // in-flight compiles overlap edits.
-    //
-    // One global counter, not per-file or per-key: any invalidation therefore
-    // also suppresses in-flight compiles of UNRELATED shaders. That costs at most
-    // one redundant recompile of the handful in flight at that instant, and never
-    // a stale pixel. Never RESET — a wrapping-free monotonic counter is what
-    // makes a stale snapshot detectable, and a counter that returned to a
-    // previous value would let a pre-clear snapshot compare equal again.
+    // Bumped by every invalidation and by Clear, never reset. publish() skips the
+    // insert when the epoch moved after its compile started, so an in-flight
+    // compile cannot republish pre-edit SPIR-V. One counter serves all keys.
     uint64_t m_InvalidationEpoch = 0;
 
     // See SetCompileEnteredHookForTesting.

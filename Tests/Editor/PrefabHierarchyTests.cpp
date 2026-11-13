@@ -5,8 +5,7 @@
 #include <gtest/gtest.h>
 
 #include "Editor/EditorTreeTitleIconVars.h"
-#include "Editor/Entities/EditorComponentTraits.h"
-#include "Editor/Hierarchy/HierarchyEntityIcon.h"
+#include "Editor/Hierarchy/HierarchyEntity/HierarchyEntityIcon.h"
 #include "Editor/Registries/EditorPluginRegistry.h"
 #include "Editor/Shortcuts/EditorShortcuts.h"
 #include "RecordingContextMenu.h"
@@ -74,7 +73,6 @@ struct HierarchyRowElements
 {
     GameEngine::UIElement* Icon = nullptr;
     GameEngine::UIElement* Title = nullptr;
-    GameEngine::UIElement* Row = nullptr;
 };
 
 // Adds the editor's theme sheets to `ui` in theme.css import order.
@@ -110,15 +108,13 @@ HierarchyRowElements ShowHierarchyRow(GameEngine::UIManager& ui, std::initialize
     icon->AddClass("hierarchy-preview-icon");
     icon->AddClass("entity-icon");
     icon->AddClass(iconClass);
-    const HierarchyRowElements elements{icon.get(), title.get(), row.get()};
+    const HierarchyRowElements elements{icon.get(), title.get()};
     row->AddChild(std::move(title));
     row->AddChild(std::move(icon));
     tree->AddChild(std::move(row));
     view->AddChild(std::move(tree));
     panel->AddChild(std::move(view));
     ui.SetRoot(std::move(panel));
-    GameEngine::Editor::HierarchyRowParts parts{*elements.Row, elements.Title};
-    GameEngine::Editor::UpdatePrefabRowPresentation(parts);
     ui.Update(1.0f / 60.0f, /*interactive=*/true);
     return elements;
 }
@@ -133,40 +129,17 @@ uint32_t ResolveHierarchyGlyphTint(GameEngine::UIManager& ui, std::initializer_l
 // Sets the Hierarchy icon size on the tree view that ShowHierarchyRow made, as the Hierarchy settings do.
 void SetHierarchyIconSize(GameEngine::UIManager& ui, float iconSizePx)
 {
-    GameEngine::UIElement* scope = ui.GetRootElement()->GetChildren().front().get();
-    GameEngine::ApplyTreeTitleIconLayoutVars(scope, iconSizePx);
-    GameEngine::UIElement* row = scope->GetChildren().front()->GetChildren().front().get();
-    GameEngine::UIElement* title = nullptr;
-    for (const auto& child : row->GetChildren())
-    {
-        if (child->HasClass("tree-title"))
-            title = child.get();
-    }
-    GameEngine::Editor::HierarchyRowParts parts{*row, title};
-    GameEngine::Editor::UpdatePrefabRowPresentation(parts);
+    GameEngine::ApplyTreeTitleIconLayoutVars(ui.GetRootElement()->GetChildren().front().get(), iconSizePx);
     ui.Update(1.0f / 60.0f, /*interactive=*/true);
 }
 
 // The smallest Hierarchy icon size that carries the member badge.
 constexpr float kSmallestBadgedIconPx = 20.0f;
 
-const GameEngine::UIElement* MemberBadge(const GameEngine::UIElement& glyph)
+// True when `title` draws the teal member badge.
+bool ShowsMemberBadge(const GameEngine::UIElement& title)
 {
-    for (const auto& child : glyph.GetChildren())
-    {
-        if (child->HasClass("hierarchy-prefab-member-badge"))
-            return child.get();
-    }
-    return nullptr;
-}
-
-// True when the glyph carries the teal member badge.
-bool ShowsMemberBadge(const GameEngine::UIElement& glyph)
-{
-    const auto* badge = MemberBadge(glyph);
-    if (!badge)
-        return false;
-    const auto& image = badge->GetResolvedStyle().Visual.BackgroundImage;
+    const GameEngine::BackgroundImageStyle& image = title.GetResolvedStyle().Visual.BackgroundImage;
     return image.HasImage && image.Source.Value.ends_with("prefab-member-badge.svg") && image.Tint == kPrefabTeal;
 }
 
@@ -186,7 +159,7 @@ class PrefabHierarchyTests : public ::testing::Test
             ASSERT_TRUE(engine.Initialize(config));
         }
         static GameEngine::Editor::EditorChangeNotifications s_Notifications;
-        GameEngine::Editor::RegisterPrefabEditor(s_Notifications, nullptr, {}, {});
+        GameEngine::Editor::RegisterPrefabEditor(s_Notifications, nullptr, nullptr, {}, {});
     }
 
     // An entity that renders `model`, under `parent` when it is valid.
@@ -281,34 +254,31 @@ TEST(PrefabHierarchyGlyphTint, AMemberRowShowsAFullTealNameAndABadgeOnItsGlyph)
     SetHierarchyIconSize(ui, kSmallestBadgedIconPx);
     EXPECT_EQ(member.Title->GetResolvedStyle().Visual.LocalOpacity, 1.0f);
     EXPECT_EQ(member.Title->GetResolvedStyle().Visual.Color, kPrefabTeal);
-    EXPECT_TRUE(ShowsMemberBadge(*member.Icon));
+    EXPECT_TRUE(ShowsMemberBadge(*member.Title));
     // The badge is the prefab cube in miniature: three face paths and a hexagon outline. It has no
     // round shape, so it does not read as the round override dot in the gutter.
     const std::string badge = ReadEditorFile("Assets/Icons/prefab-member-badge.svg");
-    std::size_t pathCount = 0;
+    EXPECT_EQ(GameEngine::CountOccurrences(badge, "<path"), 4u) << "three cube faces and the outline";
     const std::string_view text = badge;
     for (std::size_t at = text.find("<path"); at != std::string_view::npos; at = text.find("<path", at + 1))
     {
-        ++pathCount;
         const std::size_t data = text.find(" d=\"", at) + 4;
         const std::string_view pathData = text.substr(data, text.find('"', data) - data);
         EXPECT_EQ(pathData.find_first_of("AaCcQqSsTt"), std::string_view::npos) << "a curve in the path: " << pathData;
     }
-    EXPECT_EQ(pathCount, 4u) << "three cube faces and the outline";
     EXPECT_EQ(badge.find("<rect"), std::string::npos);
     EXPECT_EQ(badge.find("<circle"), std::string::npos);
     EXPECT_EQ(badge.find("<ellipse"), std::string::npos);
-    const auto* badgeElement = MemberBadge(*member.Icon);
-    ASSERT_NE(badgeElement, nullptr);
-    EXPECT_GT(badgeElement->GetLayoutX(), member.Icon->GetLayoutX());
-    EXPECT_LT(badgeElement->GetLayoutX(), member.Icon->GetLayoutX() + member.Icon->GetLayoutWidth());
+    // The badge is at the left edge of the title, so that edge must be inside the glyph.
+    EXPECT_GT(member.Title->GetLayoutX(), member.Icon->GetLayoutX());
+    EXPECT_LT(member.Title->GetLayoutX(), member.Icon->GetLayoutX() + member.Icon->GetLayoutWidth());
 
     const HierarchyRowElements selected =
         ShowHierarchyRow(ui, {"hierarchy-prefab-member", "selected"}, "hierarchy-entity-shape-cube");
     SetHierarchyIconSize(ui, kSmallestBadgedIconPx);
     EXPECT_EQ(selected.Title->GetResolvedStyle().Visual.LocalOpacity, 1.0f);
     EXPECT_EQ(selected.Title->GetResolvedStyle().Visual.Color, kPrefabTeal);
-    EXPECT_TRUE(ShowsMemberBadge(*selected.Icon));
+    EXPECT_TRUE(ShowsMemberBadge(*selected.Title));
 
     const HierarchyRowElements root = ShowHierarchyRow(ui, {"hierarchy-prefab-root"}, "hierarchy-entity-prefab");
     EXPECT_FALSE(root.Title->GetResolvedStyle().Visual.BackgroundImage.HasImage);
@@ -336,23 +306,21 @@ TEST(PrefabHierarchyGlyphTint, TheMemberBadgeFollowsTheGlyphAtEveryIconSize)
 
         const HierarchyRowElements member = ShowHierarchyRow(ui, {"hierarchy-prefab-member"}, "hierarchy-entity-shape-cube");
         SetHierarchyIconSize(ui, iconSizePx);
-        ASSERT_TRUE(ShowsMemberBadge(*member.Icon));
-        const auto* badgeElement = MemberBadge(*member.Icon);
-        ASSERT_NE(badgeElement, nullptr);
-        const float badgeSize = badgeElement->GetLayoutWidth();
-        EXPECT_EQ(badgeSize, badgeElement->GetLayoutHeight());
-        EXPECT_GT(badgeSize, smallerBadgePx) << "the badge grows with the glyph";
-        smallerBadgePx = badgeSize;
+        const GameEngine::BackgroundImageStyle& badge = member.Title->GetResolvedStyle().Visual.BackgroundImage;
+        ASSERT_TRUE(ShowsMemberBadge(*member.Title));
+        EXPECT_EQ(badge.SizeX, badge.SizeY);
+        EXPECT_GT(badge.SizeX, smallerBadgePx) << "the badge grows with the glyph";
+        smallerBadgePx = badge.SizeX;
 
         const float glyphRight = member.Icon->GetLayoutX() + member.Icon->GetLayoutWidth();
         const float glyphBottom = member.Icon->GetLayoutY() + member.Icon->GetLayoutHeight();
-        const float badgeLeft = badgeElement->GetLayoutX();
-        const float badgeBottom = badgeElement->GetLayoutY() + badgeElement->GetLayoutHeight();
-        const float nameX = member.Title->GetLayoutX() + member.Title->GetLayoutPadding().Left;
+        const float badgeLeft = member.Title->GetLayoutX();
+        const float badgeBottom = member.Title->GetLayoutY() + member.Title->GetLayoutHeight();
+        const float nameX = badgeLeft + member.Title->GetLayoutPadding().Left;
         EXPECT_EQ(member.Icon->GetLayoutWidth(), iconSizePx);
         EXPECT_LT(badgeLeft, glyphRight) << "the badge starts on the glyph";
-        EXPECT_GT(badgeLeft + badgeSize, glyphRight) << "the badge ends past the glyph's edge";
-        EXPECT_LT(badgeLeft + badgeSize, nameX) << "the badge ends before the name";
+        EXPECT_GT(badgeLeft + badge.SizeX, glyphRight) << "the badge ends past the glyph's edge";
+        EXPECT_LT(badgeLeft + badge.SizeX, nameX) << "the badge ends before the name";
         EXPECT_NEAR(badgeBottom, glyphBottom, 0.5f) << "the badge sits on the glyph's bottom edge";
         EXPECT_NEAR(nameX, plainNameX, 0.5f) << "the name does not move";
     }
@@ -379,14 +347,14 @@ TEST(PrefabHierarchyGlyphTint, UnderTwentyPixelsAMemberRowShowsNoBadge)
 
         const HierarchyRowElements member = ShowHierarchyRow(ui, {"hierarchy-prefab-member"}, "hierarchy-entity-shape-cube");
         SetHierarchyIconSize(ui, iconSizePx);
-        EXPECT_EQ(MemberBadge(*member.Icon), nullptr);
+        EXPECT_FALSE(member.Title->GetResolvedStyle().Visual.BackgroundImage.HasImage);
         EXPECT_EQ(member.Title->GetResolvedStyle().Visual.Color, kPrefabTeal) << "the name still marks the member";
         EXPECT_NEAR(member.Title->GetLayoutX() + member.Title->GetLayoutPadding().Left, plainNameX, 0.5f);
     }
 
     const HierarchyRowElements member = ShowHierarchyRow(ui, {"hierarchy-prefab-member"}, "hierarchy-entity-shape-cube");
     SetHierarchyIconSize(ui, kSmallestBadgedIconPx);
-    EXPECT_TRUE(ShowsMemberBadge(*member.Icon)) << "the badge shows from 20 px up";
+    EXPECT_TRUE(ShowsMemberBadge(*member.Title)) << "the badge shows from 20 px up";
 }
 
 } // namespace

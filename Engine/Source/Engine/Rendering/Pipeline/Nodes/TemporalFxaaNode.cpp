@@ -9,7 +9,7 @@
 #include "Rendering/Common/Math.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
@@ -277,7 +277,6 @@ void TemporalFxaaNode::DeclareForView(ViewDeclare& d)
         d.PassName("FXAA").c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
-            p.UsePipeline(useQualityFxaa ? m_FxaaQualityPipelineId : m_FxaaPipelineId);
             p.Read(input, RenderGraph::RGTextureRead::Sampled);
             p.Write(fxaaTex, RenderGraph::RGTextureWrite::Storage);
         },
@@ -338,12 +337,10 @@ void TemporalFxaaNode::DeclareForView(ViewDeclare& d)
         FxaaResolveParamsCPU params{};
         // UNJITTERED matrices: reprojection must be phase-stable so a static
         // camera maps a pixel to itself exactly (else the image crawls).
-        GameEngine::Rendering::Matrix4x4 vp;
-        std::memcpy(vp.Data(), state->CurrCamera.viewProj, sizeof(float) * 16);
-        const GameEngine::Rendering::Matrix4x4 invVp = GameEngine::Mathematics::Inverse(vp);
+        const GameEngine::Rendering::Matrix4x4 invVp = GameEngine::Mathematics::Inverse(state->CurrCamera.viewProj);
         std::memcpy(params.InvViewProj, invVp.Data(), sizeof(float) * 16);
         std::memcpy(params.PrevViewProj,
-                    state->PrevValid ? state->PrevCamera.viewProj : state->CurrCamera.viewProj,
+                    (state->PrevValid ? state->PrevCamera.viewProj : state->CurrCamera.viewProj).Data(),
                     sizeof(float) * 16);
         params.Extent[0] = static_cast<float>(w);
         params.Extent[1] = static_cast<float>(h);
@@ -371,7 +368,6 @@ void TemporalFxaaNode::DeclareForView(ViewDeclare& d)
         d.PassName("FXAAResolve").c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
-            p.UsePipeline(m_ResolvePipelineId);
             p.Read(fxaaTex, RenderGraph::RGTextureRead::SampledCompute);
             p.Read(depthResolved, RenderGraph::RGTextureRead::SampledCompute);
             p.Read(historyRead, RenderGraph::RGTextureRead::SampledCompute);

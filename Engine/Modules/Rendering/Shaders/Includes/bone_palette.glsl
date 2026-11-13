@@ -49,19 +49,10 @@ void ge_StoreBonePalette(uint atlasBoneSlot, uint localBoneIdx, mat4 m) {
 }
 #endif // GE_BONE_PALETTE_WRITABLE
 
-#if defined(GE_BONE_PALETTE_READABLE) || defined(GE_BONE_PALETTE_PREV_READABLE)
-// Offset zero is the bind-pose fallback, independent of the model's joint
-// count. Every joint reads its first identity matrix, including joints above
-// the reserved block. Write indexing remains unchanged.
-uint ge_BoneReadRowBase(uint atlasBoneSlot, uint localBoneIdx) {
-    return atlasBoneSlot == 0u ? 0u : ge_BoneRowBase(atlasBoneSlot, localBoneIdx);
-}
-#endif
-
 #ifdef GE_BONE_PALETTE_READABLE
 void ge_LoadBoneRows(uint atlasBoneSlot, uint localBoneIdx,
                      out vec4 row0, out vec4 row1, out vec4 row2) {
-    uint base = ge_BoneReadRowBase(atlasBoneSlot, localBoneIdx);
+    uint base = ge_BoneRowBase(atlasBoneSlot, localBoneIdx);
     row0 = BonePaletteAtlas.rows[base + 0u];
     row1 = BonePaletteAtlas.rows[base + 1u];
     row2 = BonePaletteAtlas.rows[base + 2u];
@@ -113,17 +104,17 @@ vec3 ge_ApplyBonePalettePosition(vec3 position, uvec4 joints, vec4 weights,
 // palettes. The TAA skinned motion-vector pass needs both pose endpoints in
 // one draw, and GLSL cannot pass an SSBO as a parameter, so the accessor is
 // duplicated rather than parameterised — the layout itself stays shared via
-// ge_BoneReadRowBase.
+// ge_BoneRowBase.
 //
 // Caller contract: declare a buffer named `PrevBonePaletteAtlas` with a
 // `vec4 rows[]` field (readonly) before including this header, and define
 // GE_BONE_PALETTE_PREV_READABLE.
 vec3 ge_ApplyPrevBonePalettePosition(vec3 position, uvec4 joints, vec4 weights,
                                      uint atlasBoneSlot) {
-    uint b0 = ge_BoneReadRowBase(atlasBoneSlot, joints.x);
-    uint b1 = ge_BoneReadRowBase(atlasBoneSlot, joints.y);
-    uint b2 = ge_BoneReadRowBase(atlasBoneSlot, joints.z);
-    uint b3 = ge_BoneReadRowBase(atlasBoneSlot, joints.w);
+    uint b0 = ge_BoneRowBase(atlasBoneSlot, joints.x);
+    uint b1 = ge_BoneRowBase(atlasBoneSlot, joints.y);
+    uint b2 = ge_BoneRowBase(atlasBoneSlot, joints.z);
+    uint b3 = ge_BoneRowBase(atlasBoneSlot, joints.w);
 
     vec4 r0 = weights.x * PrevBonePaletteAtlas.rows[b0 + 0u]
             + weights.y * PrevBonePaletteAtlas.rows[b1 + 0u]

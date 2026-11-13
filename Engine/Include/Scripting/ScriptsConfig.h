@@ -34,7 +34,9 @@ struct ScriptsConfig
     // fall back to the dev compile pipeline).
     bool packagedMode = false;
 
-    // NativeAOT scripts still need the main-thread queue with the CLR disabled.
+    // The scripts are a NativeAOT image the Player links (no CoreCLR). Scripts
+    // still run, so EngineCore constructs a ScriptManager for its main-thread
+    // queue even with the CLR, hot reload and project generation all off.
     bool nativeAot = false;
 
     bool disableClr = false;                 // Skip CoreCLR initialization entirely

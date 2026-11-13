@@ -1,4 +1,3 @@
-using System;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using GameEngine.ECS;
@@ -7,14 +6,18 @@ using GameEngine.ECS.Internal;
 namespace GameEngine.Scripting
 {
     /// <summary>
-    /// Provides immediate entity creation and resident prefab spawning, with deferred removals and component edits.
-    /// Pass as a parameter to IEntitySystem.Execute. Deferred operations run after all systems complete.
+    /// Buffers structural ECS operations for deferred execution.
+    /// Pass as a parameter to IEntitySystem.Execute.
+    /// Zero managed heap allocations — all data passed via stack pinning.
     /// </summary>
     public unsafe struct EntityCommands
     {
         internal ulong WorldHandle;
 
-        /// <summary>Creates the command context for a generated system's assigned world.</summary>
+        /// <summary>
+        /// Commands on the world <paramref name="worldHandle"/>. The generated code of a C# system passes them to
+        /// Execute, and <see cref="GameSystem"/> gives them as its Commands property; a system does not make its own.
+        /// </summary>
         [EditorBrowsable(EditorBrowsableState.Never)]
         public EntityCommands(ulong worldHandle)
         {
@@ -28,19 +31,29 @@ namespace GameEngine.Scripting
         }
 
         /// <summary>
-        /// Instantiates a loaded prefab immediately and returns its root, or 0 when the prefab is
-        /// unavailable. The transform is relative to the optional parent. Call on the engine main thread.
+        /// Spawns an instance of <paramref name="prefab"/> at once and returns its root: the entities of the prefab in
+        /// the order of the prefab file, the root at <paramref name="at"/>, relative to <paramref name="parent"/>, or to
+        /// the world when <paramref name="parent"/> is 0. The root's children are its children in the prefab. Returns 0
+        /// when the prefab is not loaded; the log then shows the fix once for that prefab. Call it from the main
+        /// thread, where a C# system runs; a call from a job or a thread of your own is refused.
         /// </summary>
+        /// <exception cref="ArgumentException"><paramref name="prefab"/> is <see cref="PrefabRef.None"/>.</exception>
         public uint Spawn(PrefabRef prefab, in Transform at, uint parent = 0)
         {
             if (prefab.IsNone)
-                throw new ArgumentException("Assign a prefab to this field in the Inspector.", nameof(prefab));
-            fixed (Transform* transform = &at)
-                return ChunkQueryNative.SpawnPrefab(WorldHandle, (byte*)&prefab, (float*)transform, parent);
+                throw new ArgumentException("The PrefabRef names no prefab. Assign a prefab to the field in the Inspector.",
+                    nameof(prefab));
+            AssetGuid guid = prefab.Guid;
+            // The ABI takes the column-major 4x4 of the pose, not the Transform's own layout.
+            var matrix = at.ToMatrix4x4();
+            return ChunkQueryNative.SpawnPrefab(WorldHandle, (byte*)&guid, (float*)&matrix, parent);
         }
 
         /// <summary>
-        /// Destroys the root and its descendants after the systems complete. Call on the engine main thread.
+        /// Queues the destruction of <paramref name="root"/> and every entity under it in the hierarchy.
+        /// Any live entity can be the root. The entities go after all systems complete, as with
+        /// <see cref="DestroyEntity"/>. A root that is not alive destroys nothing. Call it from the main
+        /// thread, where a C# system runs; a call from a job or a thread of your own is refused.
         /// </summary>
         public void Despawn(uint root)
         {
@@ -50,23 +63,23 @@ namespace GameEngine.Scripting
         /// <summary>Queues entity destruction. Executes after all systems complete.</summary>
         public void DestroyEntity(uint entityId)
         {
-            ChunkQueryNative.DeferCommand(WorldHandle, 1, entityId, 0, null, 0);
+            ChunkQueryNative.DeferCommand(WorldHandle, kDeferDestroyEntity, entityId, 0, null, 0);
         }
 
-        /// <summary>Queues adding a component. Executes after all systems complete.</summary>
+        /// <summary>
+        /// Queues adding a component. Executes after all systems complete. For an engine component, the engine keeps
+        /// its own value of every field the mirror does not let a script write, and a component the engine owns
+        /// throws <see cref="InvalidOperationException"/> here, as <c>ComponentType&lt;T&gt;.Set</c> does.
+        /// </summary>
         public void AddComponent<T>(uint entityId, in T component) where T : unmanaged, IComponent
         {
-            fixed (T* ptr = &component)
-            {
-                ChunkQueryNative.DeferCommand(WorldHandle, 2, entityId,
-                    ComponentType<T>.CachedId, ptr, (uint)Unsafe.SizeOf<T>());
-            }
+            QueueWrite(kDeferAddComponent, entityId, in component);
         }
 
         /// <summary>Queues removing a component. Executes after all systems complete.</summary>
         public void RemoveComponent<T>(uint entityId) where T : unmanaged, IComponent
         {
-            ChunkQueryNative.DeferCommand(WorldHandle, 3, entityId,
+            ChunkQueryNative.DeferCommand(WorldHandle, kDeferRemoveComponent, entityId,
                 ComponentType<T>.CachedId, null, 0);
         }
 
@@ -102,21 +115,37 @@ namespace GameEngine.Scripting
             if (present)
             {
                 byte tag = 0;
-                ChunkQueryNative.DeferCommand(WorldHandle, 2, entityId, tagTypeId, &tag, 1);
+                ChunkQueryNative.DeferCommand(WorldHandle, kDeferAddComponent, entityId, tagTypeId, &tag, 1);
             }
             else
             {
-                ChunkQueryNative.DeferCommand(WorldHandle, 3, entityId, tagTypeId, null, 0);
+                ChunkQueryNative.DeferCommand(WorldHandle, kDeferRemoveComponent, entityId, tagTypeId, null, 0);
             }
         }
 
-        /// <summary>Queues setting/overwriting a component value. Executes after all systems complete.</summary>
+        /// <summary>
+        /// Queues setting/overwriting a component value. Executes after all systems complete. For an engine component,
+        /// the engine keeps its own value of every field the mirror does not let a script write, merged against the
+        /// value at the flush, and a component the engine owns throws <see cref="InvalidOperationException"/> here.
+        /// </summary>
         public void SetComponent<T>(uint entityId, in T component) where T : unmanaged, IComponent
         {
+            QueueWrite(kDeferSetComponent, entityId, in component);
+        }
+
+        private const uint kDeferDestroyEntity = 1;
+        private const uint kDeferAddComponent = 2;
+        private const uint kDeferRemoveComponent = 3;
+        private const uint kDeferSetComponent = 4;
+
+        // A C# component queues its bytes as they are (kind 2 or 4); a mirror of an engine component queues a script
+        // write, which adds or sets it, keeps the engine's fields and is refused at once for an engine-owned component.
+        private void QueueWrite<T>(uint commandType, uint entityId, in T component) where T : unmanaged, IComponent
+        {
+            uint kind = ComponentType<T>.IsEngineComponent ? ChunkQueryNative.kDeferScriptWrite : commandType;
             fixed (T* ptr = &component)
             {
-                ChunkQueryNative.DeferCommand(WorldHandle, 4, entityId,
-                    ComponentType<T>.CachedId, ptr, (uint)Unsafe.SizeOf<T>());
+                ChunkQueryNative.DeferCommand(WorldHandle, kind, entityId, ComponentType<T>.CachedId, ptr, (uint)Unsafe.SizeOf<T>());
             }
         }
     }

@@ -22,14 +22,17 @@ namespace GameEngine::Editor
 {
 class UndoRedoService;
 
-/// One main-thread editable copy per profile, shared by the window and asset inspector.
-/// Edits share the editor's undo history, unsaved mark and save operation.
-/// Unsaved edits survive closing both surfaces for the editor session.
+/// The one editable copy of a Day Cycle profile that every editing surface shares: the Day Cycle
+/// window and the profile's inspector edit the same object, so they have one undo history (the
+/// editor's), one unsaved mark and one Save. A copy lives for the editor session, so an unsaved
+/// edit survives closing both surfaces. Main thread only.
 class DayCycleWorkingCopy : public std::enable_shared_from_this<DayCycleWorkingCopy>
 {
   public:
-    /// Opens one copy per asset GUID from the loaded asset, or the file when not loaded.
-    /// Returns null with `outError` when parsing fails.
+    /// The working copy of the profile at `profilePath`, opened from the loaded asset (or the file
+    /// when it is not loaded) the first time it is asked for. Copies are one per asset GUID, so two
+    /// spellings of one file's path give one copy. Null, with the reason in `outError`,
+    /// when the file does not parse.
     static std::shared_ptr<DayCycleWorkingCopy> Open(AssetManager& assets, const std::filesystem::path& profilePath,
                                                      std::string& outError);
     /// The copy the last Open or Show named: the profile the Day Cycle window shows. Null before any.
@@ -42,7 +45,7 @@ class DayCycleWorkingCopy : public std::enable_shared_from_this<DayCycleWorkingC
     static void CloseAll();
     /// Closes every copy whenever `notifications` reports a project switch, so no surface shows or
     /// saves the previous project's profile. The subscription lasts as long as `notifications`.
-    static void CloseAllOnProjectSwitch(EditorChangeNotifications& notifications);
+    static EditorChangeNotifications::SubscriptionToken CloseAllOnProjectSwitch(EditorChangeNotifications& notifications);
 
     DayCycleWorkingCopy(AssetManager& assets, const GUID& guid, std::filesystem::path path, DayCycleProfileData data);
 

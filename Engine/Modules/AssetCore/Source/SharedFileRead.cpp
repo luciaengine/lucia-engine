@@ -1,5 +1,7 @@
 #include "AssetCore/SharedFileRead.h"
 
+#include "Platform/Thread.h"
+
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -16,9 +18,18 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 
 namespace GameEngine
 {
+
+#ifdef _WIN32
+namespace
+{
+constexpr int kOpenAttempts = 5;
+constexpr std::chrono::milliseconds kOpenRetryDelay{2};
+} // namespace
+#endif
 
 SharedFileReader::SharedFileReader(const std::filesystem::path& path)
 {
@@ -56,20 +67,40 @@ SharedFileReader& SharedFileReader::operator=(SharedFileReader&& other) noexcept
 bool SharedFileReader::Open(const std::filesystem::path& path)
 {
     Close();
-    HANDLE h = CreateFileW(
-        path.c_str(),
-        GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        nullptr,
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
-        nullptr);
-    if (h == INVALID_HANDLE_VALUE)
+    for (int attempt = 0; attempt < kOpenAttempts; ++attempt)
     {
-        return false;
+        if (attempt > 0)
+        {
+            Platform::SleepPrecise(kOpenRetryDelay);
+        }
+        HANDLE h = CreateFileW(
+            path.c_str(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (h != INVALID_HANDLE_VALUE)
+        {
+            m_Handle = h;
+            return true;
+        }
+        // A replace in progress holds the file without read sharing or leaves it
+        // pending delete for a moment; a missing file cannot clear by waiting.
+        const DWORD error = GetLastError();
+        if (error != ERROR_SHARING_VIOLATION && error != ERROR_ACCESS_DENIED)
+        {
+            return false;
+        }
+        // A directory also reports access denied, and waiting cannot change it.
+        const DWORD attributes = GetFileAttributesW(path.c_str());
+        if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+        {
+            return false;
+        }
     }
-    m_Handle = h;
-    return true;
+    return false;
 }
 
 void SharedFileReader::Close()
@@ -226,55 +257,51 @@ int64 SharedFileReader::Read(void* dst, uint64 bytes)
 
 #endif
 
-namespace
+// Size is a snapshot; the read is authoritative. A file replaced while we
+// hold the handle keeps serving the displaced bytes (see header contract),
+// but an in-place writer can still shrink or grow it under us.
+bool ReadFileBytesShared(const std::filesystem::path& path, ByteBuffer& outBytes)
 {
-template <typename Container>
-bool ReadWholeFileShared(const std::filesystem::path& path, Container& out)
-{
-    out.clear();
+    outBytes = ByteBuffer();
 
     SharedFileReader reader(path);
-    if (!reader.IsOpen())
+    const int64 size = reader.IsOpen() ? reader.Size() : -1;
+    if (size <= 0)
     {
-        return false;
+        return size == 0;
     }
 
-    const int64 size = reader.Size();
-    if (size < 0)
-    {
-        return false;
-    }
-    if (size == 0)
-    {
-        return true;
-    }
-
-    // Size is a snapshot; the read is authoritative. A file replaced while we
-    // hold the handle keeps serving the displaced bytes (see header contract),
-    // but an in-place writer can still shrink or grow it under us.
-    out.resize(static_cast<size_t>(size));
-    const int64 got = reader.Read(out.data(), static_cast<uint64>(size));
+    ByteBuffer bytes(static_cast<size_t>(size));
+    const int64 got = reader.Read(bytes.Data(), static_cast<uint64>(size));
     if (got < 0)
     {
-        out.clear();
         return false;
     }
-    if (got != size)
-    {
-        out.resize(static_cast<size_t>(got));
-    }
+    bytes.Truncate(static_cast<size_t>(got));
+    outBytes = std::move(bytes);
     return true;
-}
-} // namespace
-
-bool ReadFileBytesShared(const std::filesystem::path& path, Vector<uint8>& outBytes)
-{
-    return ReadWholeFileShared(path, outBytes);
 }
 
 bool ReadFileTextShared(const std::filesystem::path& path, String& outText)
 {
-    return ReadWholeFileShared(path, outText);
+    outText.clear();
+
+    SharedFileReader reader(path);
+    const int64 size = reader.IsOpen() ? reader.Size() : -1;
+    if (size <= 0)
+    {
+        return size == 0;
+    }
+
+    outText.resize(static_cast<size_t>(size));
+    const int64 got = reader.Read(outText.data(), static_cast<uint64>(size));
+    if (got < 0)
+    {
+        outText.clear();
+        return false;
+    }
+    outText.resize(static_cast<size_t>(got));
+    return true;
 }
 
 } // namespace GameEngine

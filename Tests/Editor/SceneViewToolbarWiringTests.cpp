@@ -176,7 +176,7 @@ TEST(SceneViewToolbarWiringTests, ReplacedButtonIsRewiredAfterTheSkipGateArms)
 
     // Positive control: the fixture really did wire the original button. Without this a
     // broken pass would make the assertion below pass for the wrong reason.
-    Button* original = dynamic_cast<Button*>(fixture.Toolbar->FindById("PickModeToggle"));
+    Button* original = dynamic_cast<Button*>(fixture.Toolbar->FindById(GameEngine::HashStringId("PickModeToggle")));
     ASSERT_NE(original, nullptr);
     original->TriggerClick();
     ASSERT_NE(SceneViewSettings::Get().GetExactPickMode(), savedExactPickMode)
@@ -208,7 +208,7 @@ TEST(SceneViewToolbarWiringTests, SettledPassesRebindNothing)
     fixture.PopulateAll();
     fixture.RunPassesUntilArmed();
 
-    Button* gizmoToggle = dynamic_cast<Button*>(fixture.Toolbar->FindById("GizmoToggle"));
+    Button* gizmoToggle = dynamic_cast<Button*>(fixture.Toolbar->FindById(GameEngine::HashStringId("GizmoToggle")));
     ASSERT_NE(gizmoToggle, nullptr);
 
     // Positive control: the fixture wired it at all, so "still exactly one" below is a

@@ -2,7 +2,7 @@
 
 #include "Rendering/Materials/MaterialAlphaMode.h"
 #include "Rendering/Materials/MaterialDocument.h"
-#include "Rendering/Materials/ShaderPropertyTable.h"
+#include "Rendering/Materials/Shader/ShaderPropertyTable.h"
 #include "Types/StringUtils.h"
 
 #include <algorithm>

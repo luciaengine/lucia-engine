@@ -69,6 +69,13 @@
 	display: none;
 }
 
+/* The Scene View's layer filter: wide enough for "All but <name>" before it cuts. */
+.sceneview-layers-field {
+	color: var(--ui_color_text_dim);
+	min-width: 120px;
+	max-width: 200px;
+}
+
 /* Draggable spacer used to insert a one-button-wide gap between toolbar
    sections. A faint reorder handle distinguishes it from a disabled button. */
 .button.toolbar-spacer-btn {
@@ -77,7 +84,7 @@
 	min-width: 24px;
 	min-height: 24px;
 	padding: 0;
-	background-image: url("editor:Icons/reorder-two.png");
+	background-image: url("editor:Icons/reorder-two.svg");
 	background-size: 12px 12px;
 	background-position: center;
 	background-repeat: no-repeat;
@@ -180,17 +187,20 @@
 	display: none;
 }
 
-/* Inward nudge for the floating tool overlay when the 2D rulers occupy the
-   left band. Top stays where it is — the overlay normally sits well below the
-   top ruler — only the left inset needs to clear the vertical ruler. */
+/* The floating tool overlay's left inset while the 2D rulers show. SceneViewToolOverlay
+   pins the overlay this same distance below the viewport's top, so the value clears the
+   left ruler and the top ruler. */
 .scene-tool-overlay.rulers-visible {
 	left: 32px;
 }
 
+/* The floating tool overlay sits on the viewport's left edge with the 14 px inset of the
+   other viewport overlays. The viewport is a row flex box, so align-self centers it; when the
+   centered overlay meets the FPS label, SceneViewToolOverlay sets top. A drag sets left and top. */
 .scene-tool-overlay {
 	position: absolute;
-	top: 110px;
 	left: 14px;
+	align-self: center;
 	display: flex;
 	flex-direction: column;
 	align-items: center;
@@ -216,26 +226,6 @@
    and rounded corners. Toggled from the Scene View settings panel. */
 .scene-tool-overlay.borderless {
 	border-width: 0;
-}
-
-/* ─── Scene View ruler overlay (top + left rulers in 2D mode) ─── */
-/* Fills the viewport; no pointer events so pan/orbit input passes through.
-   Z-index sits below the rotation gizmo and tool overlay so those interactive
-   widgets remain on top of the ruler bands. */
-.scene-view-ruler-overlay {
-	position: absolute;
-	top: 0;
-	left: 0;
-	width: 100%;
-	height: 100%;
-	min-width: 0;
-	min-height: 0;
-	pointer-events: none;
-	z-index: 50;
-}
-
-.scene-view-ruler-overlay.hidden {
-	display: none;
 }
 
 /* ─── Viewport rotation gizmo (corner-anchored axis orientation widget) ─── */
@@ -334,30 +324,20 @@ button.scene-tool-btn,
 }
 
 .scene-tool-btn:hover,
-button.scene-tool-btn:hover,
-.button.scene-tool-btn:hover,
-.scene-tool-btn:active,
-button.scene-tool-btn:active,
-.button.scene-tool-btn:active {
+.scene-tool-btn:active {
 	background-color: rgba(255, 255, 255, 0.28);
 	border-color: transparent;
 	opacity: 0.85;
 }
 
-.scene-tool-btn.icon-active,
-button.scene-tool-btn.icon-active,
-.button.scene-tool-btn.icon-active {
+.scene-tool-btn.icon-active {
 	background-color: var(--ui_color_scene_tool_active, var(--ui_color_accent_blue));
 	border-color: transparent;
 	opacity: 0.50;
 }
 
 .scene-tool-btn.icon-active:hover,
-button.scene-tool-btn.icon-active:hover,
-.button.scene-tool-btn.icon-active:hover,
-.scene-tool-btn.icon-active:active,
-button.scene-tool-btn.icon-active:active,
-.button.scene-tool-btn.icon-active:active {
+.scene-tool-btn.icon-active:active {
 	background-color: var(--ui_color_scene_tool_active_hover, var(--ui_color_accent_blue_hover));
 	border-color: transparent;
 	opacity: 1.0;
@@ -365,48 +345,57 @@ button.scene-tool-btn.icon-active:active,
 
 /* Tool icons; each class is self-contained so a button keeps its image
    wherever it is dragged to. */
-.select-tool-icon    { background-image: url("editor:Icons/arrowmouse.png"); background-size: 16px 16px; background-repeat: no-repeat; background-position: center; }
-.translate-tool-icon { background-image: url("editor:Icons/GiszmoTranslate.png"); background-size: 16px 16px; background-repeat: no-repeat; background-position: center; }
-.rotate-tool-icon    { background-image: url("editor:Icons/GizmoRotate.png"); background-size: 16px 16px; background-repeat: no-repeat; background-position: center; }
-.scale-tool-icon     { background-image: url("editor:Icons/Giszmo_scale.png"); background-size: 16px 16px; background-repeat: no-repeat; background-position: center; }
-.ruler-tool-icon     { background-image: url("editor:Icons/Ruler.png"); background-size: 16px 16px; background-repeat: no-repeat; background-position: center; }
-/* The spline tool's registered button (SceneView/SplineToolStripEntry.cpp) keeps its own
-   active color. Every Button carries .button, so the shared active rule's .button variant
-   (0,3,0) is the one to outrank. */
+.select-tool-icon    { background-image: url("editor:Icons/arrowmouse.svg"); background-size: 16px 16px; background-repeat: no-repeat; background-position: center; }
+.translate-tool-icon { background-image: url("editor:Icons/GiszmoTranslate.svg"); background-size: 16px 16px; background-repeat: no-repeat; background-position: center; }
+.rotate-tool-icon    { background-image: url("editor:Icons/GizmoRotate.svg"); background-size: 16px 16px; background-repeat: no-repeat; background-position: center; }
+.scale-tool-icon     { background-image: url("editor:Icons/Giszmo_scale.svg"); background-size: 16px 16px; background-repeat: no-repeat; background-position: center; }
+.ruler-tool-icon     { background-image: url("editor:Icons/Ruler.svg"); background-size: 16px 16px; background-repeat: no-repeat; background-position: center; }
+/* The spline tool's registered button (SceneView/SplineTool/SplineToolStripEntry.cpp) keeps its own
+   active color. It outranks the shared active rule `.scene-tool-btn.icon-active` (0,2,0)
+   by specificity. */
 .button.scene-tool-btn.spline-tool-btn.icon-active {
 	background-color: var(--ui_color_spline_tool_active);
 }
 .button.scene-tool-btn.spline-tool-btn.icon-active:hover {
 	background-color: var(--ui_color_spline_tool_active_hover);
 }
-.scene-tool-btn.ruler-tool-icon.icon-active,
-button.scene-tool-btn.ruler-tool-icon.icon-active,
-.button.scene-tool-btn.ruler-tool-icon.icon-active {
+.scene-tool-btn.ruler-tool-icon.icon-active {
 	background-color: #D9A22A;
 	background-image-tint: rgba(255, 255, 255, 1.0);
 }
-.scene-tool-btn.ruler-tool-icon.icon-active:hover,
-button.scene-tool-btn.ruler-tool-icon.icon-active:hover,
-.button.scene-tool-btn.ruler-tool-icon.icon-active:hover {
+.scene-tool-btn.ruler-tool-icon.icon-active:hover {
 	background-color: #EAB542;
 	background-image-tint: rgba(255, 255, 255, 1.0);
 }
 
 /* A registered tool strip entry's badge button and its unread count. The count sits beside
    the button in the host, so the resting button's opacity does not dim it; it widens with
-   its digits. */
+   its digits, leftward, up to "99+". It sits on the button's top-right corner, lifted 3 px
+   above the button's box so it covers less of the icon. In the vertical strip the button sits
+   below the built-in tools and in the toolbar row the room above the 24 px buttons takes the
+   lift, so the count stays 2 px or more inside either strip. The horizontal strip's buttons
+   sit on its 4 px top padding, where 2 px is the largest lift that keeps the count 2 px clear
+   of the strip's rounded border.
+   The label centres its line box in its content box, which leaves the 9 px tall digits of the
+   12 px font half a pixel low in the 16 px circle: 4 px of red above them, 3 px below at 1x.
+   The 2 px bottom padding lifts the line box one whole pixel, to 3 px above and 4 px below at
+   1x: a digit an odd number of pixels tall cannot centre on the pixel grid, and the high side
+   reads as centred where the low side reads as sinking. A half-pixel lift is not enough: it
+   rounds up or down with the strip's sub-pixel position, so the floating strip kept the low
+   side while the toolbar took the high one. */
 .scene-tool-badge-host {
 	position: relative;
 }
 
 .scene-tool-badge {
 	position: absolute;
-	top: -4px;
-	right: -6px;
+	top: -3px;
+	right: 0;
 	min-width: 16px;
 	height: 16px;
 	padding-left: 4px;
 	padding-right: 4px;
+	padding-bottom: 2px;
 	border-radius: 8px;
 	background-color: var(--ui_color_badge_background);
 	color: var(--ui_color_text_bright);
@@ -416,25 +405,27 @@ button.scene-tool-btn.ruler-tool-icon.icon-active:hover,
 	pointer-events: none;
 }
 
+.scene-tool-overlay.horizontal .scene-tool-badge {
+	top: -2px;
+}
+
 /* Space toggle: global (default) / local (when icon-active) */
-.tool-space-icon { background-image: url("editor:Icons/global.png"); }
-.tool-space-icon.icon-active { background-image: url("editor:Icons/local.png"); }
+.tool-space-icon { background-image: url("editor:Icons/global.svg"); }
+.tool-space-icon.icon-active { background-image: url("editor:Icons/local.svg"); }
 
 /* 2D/3D view toggle button */
 .view2d-icon,
 button.view2d-icon,
 .button.view2d-icon {
-	background-image: url("editor:Icons/3d.png");
+	background-image: url("editor:Icons/3d.svg");
 	background-size: 20px 20px;
 	background-repeat: no-repeat;
 	background-position: center;
 	opacity: 0.5;
 }
 
-.view2d-icon.icon-active,
-button.view2d-icon.icon-active,
-.button.view2d-icon.icon-active {
-	background-image: url("editor:Icons/2d.png");
+.view2d-icon.icon-active {
+	background-image: url("editor:Icons/2d.svg");
 	opacity: 1.0;
 }
 
@@ -442,9 +433,7 @@ button.view2d-icon.icon-active,
 .view2d-icon:hover,
 button.view2d-icon:hover,
 .button.view2d-icon:hover,
-.view2d-icon.icon-active:hover,
-button.view2d-icon.icon-active:hover,
-.button.view2d-icon.icon-active:hover {
+.view2d-icon.icon-active:hover {
 	background-color: rgba(255, 255, 255, 0.28);
 	opacity: 1.0;
 }
@@ -459,19 +448,13 @@ button.pixelperfect-toggle,
 	opacity: 0.85;
 }
 
-.pixelperfect-toggle.icon-active,
-button.pixelperfect-toggle.icon-active,
-.button.pixelperfect-toggle.icon-active {
+.pixelperfect-toggle.icon-active {
 	color: rgba(255, 255, 255, 1.0);
 	opacity: 1.0;
 }
 
 .pixelperfect-toggle:hover,
-button.pixelperfect-toggle:hover,
-.button.pixelperfect-toggle:hover,
-.pixelperfect-toggle.icon-active:hover,
-button.pixelperfect-toggle.icon-active:hover,
-.button.pixelperfect-toggle.icon-active:hover {
+.pixelperfect-toggle.icon-active:hover {
 	background-color: rgba(255, 255, 255, 0.28);
 	color: rgba(255, 255, 255, 1.0);
 	opacity: 1.0;
@@ -481,26 +464,20 @@ button.pixelperfect-toggle.icon-active:hover,
 .transform-space-icon,
 button.transform-space-icon,
 .button.transform-space-icon {
-	background-image: url("editor:Icons/global.png");
+	background-image: url("editor:Icons/global.svg");
 	background-size: 16px 16px;
 	background-repeat: no-repeat;
 	background-position: center;
 	opacity: 0.5;
 }
 
-.transform-space-icon.icon-active,
-button.transform-space-icon.icon-active,
-.button.transform-space-icon.icon-active {
-	background-image: url("editor:Icons/local.png");
+.transform-space-icon.icon-active {
+	background-image: url("editor:Icons/local.svg");
 	opacity: 1.0;
 }
 
 .transform-space-icon:hover,
-button.transform-space-icon:hover,
-.button.transform-space-icon:hover,
-.transform-space-icon.icon-active:hover,
-button.transform-space-icon.icon-active:hover,
-.button.transform-space-icon.icon-active:hover {
+.transform-space-icon.icon-active:hover {
 	background-color: rgba(255, 255, 255, 0.28);
 	opacity: 1.0;
 }
@@ -509,25 +486,19 @@ button.transform-space-icon.icon-active:hover,
 .grid-icon,
 button.grid-icon,
 .button.grid-icon {
-	background-image: url("editor:Icons/grid-icon.png");
+	background-image: url("editor:Icons/grid-icon.svg");
 	background-size: 16px 16px;
 	background-repeat: no-repeat;
 	background-position: center;
 	opacity: 0.5;
 }
 
-.grid-icon.icon-active,
-button.grid-icon.icon-active,
-.button.grid-icon.icon-active {
+.grid-icon.icon-active {
 	opacity: 1.0;
 }
 
 .grid-icon:hover,
-button.grid-icon:hover,
-.button.grid-icon:hover,
-.grid-icon.icon-active:hover,
-button.grid-icon.icon-active:hover,
-.button.grid-icon.icon-active:hover {
+.grid-icon.icon-active:hover {
 	background-color: rgba(255, 255, 255, 0.28);
 	opacity: 1.0;
 }
@@ -536,32 +507,26 @@ button.grid-icon.icon-active:hover,
 .snap-icon,
 button.snap-icon,
 .button.snap-icon {
-	background-image: url("editor:Icons/magnet.png");
+	background-image: url("editor:Icons/magnet.svg");
 	background-size: 16px 16px;
 	background-repeat: no-repeat;
 	background-position: center;
 	opacity: 0.5;
 }
 
-.snap-icon.icon-active,
-button.snap-icon.icon-active,
-.button.snap-icon.icon-active {
+.snap-icon.icon-active {
 	opacity: 1.0;
 }
 
 .snap-icon:hover,
-button.snap-icon:hover,
-.button.snap-icon:hover,
-.snap-icon.icon-active:hover,
-button.snap-icon.icon-active:hover,
-.button.snap-icon.icon-active:hover {
+.snap-icon.icon-active:hover {
 	background-color: rgba(255, 255, 255, 0.28);
 	opacity: 1.0;
 }
 
 /* Pick mode toggle button (exact pick vs model-root pick) */
 .pick-mode-icon {
-	background-image: url("editor:Icons/arrowmouse.png");
+	background-image: url("editor:Icons/arrowmouse.svg");
 	background-size: 16px 16px;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -590,18 +555,12 @@ button.gizmo-icon,
 	opacity: 0.42;
 }
 
-.gizmo-icon.icon-active,
-button.gizmo-icon.icon-active,
-.button.gizmo-icon.icon-active {
+.gizmo-icon.icon-active {
 	opacity: 1.0;
 }
 
 .gizmo-icon:hover,
-button.gizmo-icon:hover,
-.button.gizmo-icon:hover,
-.gizmo-icon.icon-active:hover,
-button.gizmo-icon.icon-active:hover,
-.button.gizmo-icon.icon-active:hover {
+.gizmo-icon.icon-active:hover {
 	background-color: rgba(255, 255, 255, 0.28);
 	opacity: 1.0;
 }
@@ -610,16 +569,14 @@ button.gizmo-icon.icon-active:hover,
 .camera-settings-icon,
 button.camera-settings-icon,
 .button.camera-settings-icon {
-	background-image: url("editor:Icons/videocam.png");
+	background-image: url("editor:Icons/videocam.svg");
 	background-size: 16px 16px;
 	background-repeat: no-repeat;
 	background-position: center;
 	opacity: 0.5;
 }
 
-.camera-settings-icon:hover,
-button.camera-settings-icon:hover,
-.button.camera-settings-icon:hover {
+.camera-settings-icon:hover {
 	background-color: rgba(255, 255, 255, 0.28);
 	opacity: 1.0;
 }
@@ -628,7 +585,7 @@ button.camera-settings-icon:hover,
 .projection-icon,
 button.projection-icon,
 .button.projection-icon {
-	background-image: url("editor:Icons/camera.png");
+	background-image: url("editor:Icons/camera.svg");
 	background-size: 16px 16px;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -648,25 +605,19 @@ button.projection-icon:hover,
 .quad-view-icon,
 button.quad-view-icon,
 .button.quad-view-icon {
-	background-image: url("editor:Icons/layout3split.png");
+	background-image: url("editor:Icons/layout3split.svg");
 	background-size: 16px 16px;
 	background-repeat: no-repeat;
 	background-position: center;
 	opacity: 0.5;
 }
 
-.quad-view-icon.icon-active,
-button.quad-view-icon.icon-active,
-.button.quad-view-icon.icon-active {
+.quad-view-icon.icon-active {
 	opacity: 1.0;
 }
 
 .quad-view-icon:hover,
-button.quad-view-icon:hover,
-.button.quad-view-icon:hover,
-.quad-view-icon.icon-active:hover,
-button.quad-view-icon.icon-active:hover,
-.button.quad-view-icon.icon-active:hover {
+.quad-view-icon.icon-active:hover {
 	background-color: rgba(255, 255, 255, 0.28);
 	opacity: 1.0;
 }
@@ -675,25 +626,21 @@ button.quad-view-icon.icon-active:hover,
 .post-process-icon,
 button.post-process-icon,
 .button.post-process-icon {
-	background-image: url("editor:Icons/post.png");
+	background-image: url("editor:Icons/post.svg");
 	background-size: 16px 16px;
 	background-repeat: no-repeat;
 	background-position: center;
 	opacity: 0.15;
 }
 
+/* The .button form has the specificity of `.sceneview-toolbar .button.icon-button` (0,3,0) and wins because it comes later. */
 .post-process-icon.icon-active,
-button.post-process-icon.icon-active,
 .button.post-process-icon.icon-active {
 	opacity: 0.35;
 }
 
 .post-process-icon:hover,
-button.post-process-icon:hover,
-.button.post-process-icon:hover,
-.post-process-icon.icon-active:hover,
-button.post-process-icon.icon-active:hover,
-.button.post-process-icon.icon-active:hover {
+.post-process-icon.icon-active:hover {
 	background-color: rgba(255, 255, 255, 0.28);
 	opacity: 1.0;
 }
@@ -702,25 +649,21 @@ button.post-process-icon.icon-active:hover,
 .nav-gizmo-icon,
 button.nav-gizmo-icon,
 .button.nav-gizmo-icon {
-	background-image: url("editor:Icons/navgizmo.png");
+	background-image: url("editor:Icons/navgizmo.svg");
 	background-size: 16px 16px;
 	background-repeat: no-repeat;
 	background-position: center;
 	opacity: 0.15;
 }
 
+/* The .button form has the specificity of `.sceneview-toolbar .button.icon-button` (0,3,0) and wins because it comes later. */
 .nav-gizmo-icon.icon-active,
-button.nav-gizmo-icon.icon-active,
 .button.nav-gizmo-icon.icon-active {
 	opacity: 0.35;
 }
 
 .nav-gizmo-icon:hover,
-button.nav-gizmo-icon:hover,
-.button.nav-gizmo-icon:hover,
-.nav-gizmo-icon.icon-active:hover,
-button.nav-gizmo-icon.icon-active:hover,
-.button.nav-gizmo-icon.icon-active:hover {
+.nav-gizmo-icon.icon-active:hover {
 	background-color: rgba(255, 255, 255, 0.28);
 	opacity: 1.0;
 }
@@ -729,24 +672,20 @@ button.nav-gizmo-icon.icon-active:hover,
 .tool-overlay-icon,
 button.tool-overlay-icon,
 .button.tool-overlay-icon {
-	background-image: url("editor:Icons/layout-left.png");
+	background-image: url("editor:Icons/layout-left.svg");
 	background-size: 16px 16px;
 	background-position: center center;
 	opacity: 0.15;
 }
 
+/* The .button form has the specificity of `.sceneview-toolbar .button.icon-button` (0,3,0) and wins because it comes later. */
 .tool-overlay-icon.icon-active,
-button.tool-overlay-icon.icon-active,
 .button.tool-overlay-icon.icon-active {
 	opacity: 0.35;
 }
 
 .tool-overlay-icon:hover,
-button.tool-overlay-icon:hover,
-.button.tool-overlay-icon:hover,
-.tool-overlay-icon.icon-active:hover,
-button.tool-overlay-icon.icon-active:hover,
-.button.tool-overlay-icon.icon-active:hover {
+.tool-overlay-icon.icon-active:hover {
 	background-color: rgba(255, 255, 255, 0.28);
 	opacity: 1.0;
 }

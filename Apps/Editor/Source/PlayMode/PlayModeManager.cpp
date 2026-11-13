@@ -1,11 +1,11 @@
 #include "PlayMode/PlayModeManager.h"
+#include "Editor/Registries/EditorMenuRegistry.h"
+#include "Automation/UiReplayCommandIds.h"
 #include "PlayMode/ModelAnimationPlayMode.h"
+#include "PlayMode/PlayModeEntryGate.h"
 #include "Inspectors/AnimationPreviewManager.h"
 #include "EditorChangeNotifications.h"
 
-#include "Automation/UiReplayCommandIds.h"
-#include "Editor/Registries/EditorMenuRegistry.h"
-#include "Scene/PrefabAuthoring.h"
 #include "Scene/SceneEditorController.h"
 #include "UndoRedo/IEditorCommand.h"
 #include "UndoRedo/UndoRedoService.h"
@@ -23,13 +23,21 @@
 #include "PhysicsECS/PhysicsWorldService.h"
 #include "TerrainECS/TerrainService.h"
 #include "MarkupECS/MarkupService.h"
+#include "Scene/PrefabAuthoring.h"
 #include "Scripting/CoreCLRHost.h"
 #include "Scripting/PathResolver.h"
 #include "Scripting/ScriptManager.h"
 
 namespace GameEngine::Editor
 {
-static void SetRuntimeSimulationSystemsEnabled(bool enabled)
+static void SetRuntimeAudioSystemsEnabled(bool enabled)
+{
+    // Audio ECS systems (names come from Engine::Audio::AddAudioSystemsToSchedule).
+    EngineCore::GetInstance().SetRenderingSystemEnabled("AudioListener", enabled);
+    EngineCore::GetInstance().SetRenderingSystemEnabled("AudioEmitter", enabled);
+}
+
+static void SetRuntimePhysicsSystemsEnabled(bool enabled)
 {
     // PhysicsECS systems (names come from PhysicsECS::AddPhysicsSystemsToSchedule).
     EngineCore::GetInstance().SetRenderingSystemEnabled("PhysicsWorldBootstrap", enabled);
@@ -39,6 +47,11 @@ static void SetRuntimeSimulationSystemsEnabled(bool enabled)
     EngineCore::GetInstance().SetRenderingSystemEnabled("PhysicsStep", enabled);
     EngineCore::GetInstance().SetRenderingSystemEnabled("CharacterControllerWriteback", enabled);
     EngineCore::GetInstance().SetRenderingSystemEnabled("PhysicsWriteback", enabled);
+}
+
+static void SetRuntimeSimulationSystemsEnabled(bool enabled)
+{
+    SetRuntimePhysicsSystemsEnabled(enabled);
 
     // Rendering-loop animation system name is "Animation" (see RegisterRenderingSystems.cpp).
     // Don't unconditionally disable Animation: AnimationPreviewManager may have it
@@ -48,9 +61,7 @@ static void SetRuntimeSimulationSystemsEnabled(bool enabled)
     EngineCore::GetInstance().SetRenderingSystemEnabled(
         "Animation", enabled || keepAnimationForPreview);
 
-    // Audio ECS systems (names come from Engine::Audio::AddAudioSystemsToSchedule).
-    EngineCore::GetInstance().SetRenderingSystemEnabled("AudioListener", enabled);
-    EngineCore::GetInstance().SetRenderingSystemEnabled("AudioEmitter", enabled);
+    SetRuntimeAudioSystemsEnabled(enabled);
 }
 
 static void ResetTransientRenderState(ECS::World& world)
@@ -59,9 +70,10 @@ static void ResetTransientRenderState(ECS::World& world)
     // including the ones belonging to entities that are switched off.
     world.Query<ECS::Write<Components::MeshGPUData>>()
         .IncludeDisabled()
-        .Each([](ECS::Writable<Components::MeshGPUData> meshGpu)
+        .Each([](ECS::Writable<Components::MeshGPUData> meshGpuRow)
               {
-                  meshGpu.Set(Components::MeshGPUData{});
+                  auto& meshGpu = meshGpuRow.Mutable();
+                  meshGpu = Components::MeshGPUData{};
               });
 }
 
@@ -71,7 +83,10 @@ struct PlayModeManager::UndoHistoryStash
     UndoRedoService::History playHistory{};
 };
 
-PlayModeManager::PlayModeManager() = default;
+PlayModeManager::PlayModeManager(PlayModeEntryGate::BuildProbe scriptBuildProbe)
+    : m_EntryGate(std::move(scriptBuildProbe))
+{
+}
 PlayModeManager::~PlayModeManager() = default;
 
 void PlayModeManager::InvalidateManagedPlayModeBindings()
@@ -82,6 +97,8 @@ void PlayModeManager::InvalidateManagedPlayModeBindings()
 
 void PlayModeManager::EnsureManagedPlayModeBindings()
 {
+    // A build without C# scripting has no managed play-mode driver to bind.
+#if GE_ENABLE_SCRIPTING
     if (m_ManagedPlayMode.IsValid())
         return;
     if (m_ManagedPlayMode.triedResolve)
@@ -110,6 +127,7 @@ void PlayModeManager::EnsureManagedPlayModeBindings()
     m_ManagedPlayMode.enter = enterPtr;
     m_ManagedPlayMode.exit = exitPtr;
     m_ManagedPlayMode.tick = tickPtr;
+#endif
 }
 
 bool PlayModeManager::IsRuntimeEntity(std::uint32_t packedEntityId) const
@@ -192,7 +210,9 @@ void PlayModeManager::RegisterCommands()
                               [this](std::string* outError) { return RunPlayTogglePauseCommand(outError); }});
     // Stop leaves Edit alone and discards a pending Change Review.
     registry.RegisterCommand({UiReplayCommandIds::PlayStop, [this](std::string*) {
-                                  if (m_State != PlayModeState::Edit)
+                                  if (m_State == PlayModeState::Edit)
+                                      ExitPlayMode();
+                                  else
                                       TogglePlayStop();
                                   return true;
                               }});
@@ -257,14 +277,19 @@ void PlayModeManager::TogglePause()
 {
     if (m_State == PlayModeState::Play)
     {
-        // Pause runtime simulation systems (rendering continues).
-        SetRuntimeSimulationSystemsEnabled(false);
+        // The stopped clock holds gameplay time. The physics writeback runs every frame and writes
+        // over an edit to a body, so physics stops. The audio engine plays when the clock stops, so audio stops.
+        SetRuntimePhysicsSystemsEnabled(false);
+        SetRuntimeAudioSystemsEnabled(false);
+        PauseSimulationClock();
         SetState(PlayModeState::Paused);
         return;
     }
     if (m_State == PlayModeState::Paused)
     {
-        SetRuntimeSimulationSystemsEnabled(true);
+        ResumeSimulationClock();
+        SetRuntimePhysicsSystemsEnabled(true);
+        SetRuntimeAudioSystemsEnabled(true);
         SetState(PlayModeState::Play);
         return;
     }
@@ -290,9 +315,11 @@ void PlayModeManager::EnterPlayMode()
         return;
     }
 
-    if (m_UndoRedo && !m_UndoRedo->CommitPendingEdit())
+    // Entering now would run the game without the scripts a build is about to load, or without the
+    // current code of a module whose latest build failed.
+    if (m_EntryGate.Hold([this]() { EnterPlayMode(); }))
         return;
-    m_ExitRequested = false;
+
     SetState(PlayModeState::EnteringPlay);
 
     // Isolate undo history for play mode.
@@ -300,7 +327,7 @@ void PlayModeManager::EnterPlayMode()
     {
         m_UndoStash = std::make_unique<UndoHistoryStash>();
         m_UndoStash->editHistory = m_UndoRedo->DetachHistory();
-        // Start with a clean play-mode history (DetachHistory already cleared the graph).
+        // Start with a clean play-mode history (DetachHistory already cleared stacks).
         m_UndoStash->playHistory = {};
     }
 
@@ -312,7 +339,7 @@ void PlayModeManager::EnterPlayMode()
         terrain->SnapshotZonePayloadsForPlay();
 
     // The mark-ups' notes live in MarkupService, not on components, so the ECS snapshot
-    // does not carry them either; the exit restore puts them back.
+    // does not carry them; the exit restore puts them back as they were.
     if (auto* markups = MarkupECS::MarkupService::TryGet(); markups && m_World)
         m_EnteredMarkupNotes = std::make_unique<MarkupECS::MarkupWorldNotes>(markups->CaptureWorld(*m_World));
 
@@ -343,9 +370,6 @@ void PlayModeManager::EnterPlayMode()
             m_PrePlayEntityIds.insert(e.id);
     }
 
-    // Keep file changes out of the running world until the editor snapshot is restored.
-    Scene::SetPrefabPropagationDeferred(*m_World, true);
-
     // Hot-reload is allowed during play mode: the assembly swap executes on the
     // main thread between frames, and PlayModeDriver detects the domain change
     // to rebuild hooks and re-register entity/game systems automatically.
@@ -364,6 +388,9 @@ void PlayModeManager::EnterPlayMode()
     if (auto* nativeScripts = EngineCore::GetInstance().GetNativeScriptManager())
         nativeScripts->SetHotReloadDeferred(true);
 
+    // The play session is the scene as it was at Play: a prefab file change reaches the scene at Stop.
+    Scene::SetPrefabPropagationDeferred(*m_World, true);
+
     // User C++ systems begin: OnStart on every registered system. They tick only during play,
     // after the snapshot — so any entities OnStart spawns are cleaned up by the exit restore.
     GameEngine::NativeScripting::StartUserSystems(*m_World);
@@ -376,6 +403,7 @@ void PlayModeManager::EnterPlayMode()
     if (!m_ManagedPlayMode.IsValid())
         m_ManagedPlayMode.triedResolve = false;
     EnsureManagedPlayModeBindings();
+#if GE_ENABLE_SCRIPTING
     if (!m_ManagedPlayMode.IsValid())
     {
         Logger::Log::Error(
@@ -383,6 +411,7 @@ void PlayModeManager::EnterPlayMode()
             "this Play session (will re-attempt on the next play-enter; check earlier "
             "script-compile/CLR errors)");
     }
+#endif
 
     if (m_ManagedPlayMode.enter)
     {
@@ -410,13 +439,16 @@ void PlayModeManager::EnterPlayMode()
 void PlayModeManager::ExitPlayMode()
 {
     if (m_State == PlayModeState::Edit)
+    {
+        m_EntryGate.Cancel();
         return;
+    }
     if (m_State == PlayModeState::ChangeReview)
         return;
 
-    if (m_UndoRedo && !m_UndoRedo->CommitPendingEdit())
-        m_UndoRedo->DiscardPendingEdit();
     m_ExitRequested = false;
+    if (m_State == PlayModeState::Paused)
+        ResumeSimulationClock();
     SetState(PlayModeState::ExitingPlay);
 
     // Best-effort managed play-mode exit hook (called before tearing down runtime systems).
@@ -457,16 +489,11 @@ void PlayModeManager::ExitPlayMode()
         GameEngine::PhysicsECS::PhysicsWorldService::Shutdown();
     }
 
-    // Release per-tile and per-face terrain-collider slots. The collider entities
-    // are runtime-only and vanish with the snapshot restore below, but that path
-    // never runs the TerrainPhysicsSystem teardown sweep, so their tile-physics /
-    // planet-face slots would otherwise leak across Play sessions.
+    // Release the terrain and planet page-collider slots. Play makes the collider entities after
+    // the snapshot, so the restore below does not bring them back, but that path never runs the
+    // TerrainPhysicsSystem teardown sweep, so their slots would otherwise leak across Play sessions.
     if (auto* terrain = TerrainECS::TerrainService::TryGet())
-    {
-        terrain->ReleaseAllTilePhysicsHandles();
         terrain->ReleaseAllPagePhysicsHandles();
-        terrain->ReleaseAllPlanetFacePhysicsHandles();
-    }
 
     if (auto* audio = EngineCore::GetInstance().GetAudioSystem())
     {
@@ -485,6 +512,7 @@ void PlayModeManager::ExitPlayMode()
     m_EnteredMarkupNotes.reset();
     m_PrePlayEntityIds.clear();
 
+    // The restored scene takes every prefab file change made during Play.
     if (m_World)
         Scene::SetPrefabPropagationDeferred(*m_World, false);
 
@@ -506,7 +534,7 @@ void PlayModeManager::ExitPlayMode()
         m_Notifications->NotifyWorldStructureChanged(e);
     }
 
-    // Capture play-mode history for change review, then restore edit-mode history.
+    // Capture play-mode undo stack for future change review, then restore edit-mode history.
     if (m_UndoRedo && m_UndoStash)
     {
         m_UndoStash->playHistory = m_UndoRedo->DetachHistory();
@@ -612,6 +640,8 @@ void PlayModeManager::RequestExitPlayMode()
 
 void PlayModeManager::Tick(float deltaSeconds)
 {
+    m_EntryGate.Update();
+    // ExitPlayMode clears the request, so a request never outlives the play session it was made in.
     if (m_ExitRequested && IsPlayingOrPaused())
     {
         ExitPlayMode();
@@ -643,6 +673,21 @@ void PlayModeManager::Tick(float deltaSeconds)
     // User C++ systems: OnUpdate(world, dt) on each, every play frame.
     if (m_World)
         GameEngine::NativeScripting::TickUserSystems(*m_World, deltaSeconds);
+}
+
+void PlayModeManager::PauseSimulationClock()
+{
+    if (!m_World)
+        return;
+    ECS::SimulationClock& clock = m_World->GetSimulationClock();
+    m_TimeScaleBeforePause = clock.GetTimeScale();
+    clock.SetTimeScale(0.0);
+}
+
+void PlayModeManager::ResumeSimulationClock()
+{
+    if (m_World)
+        m_World->GetSimulationClock().SetTimeScale(m_TimeScaleBeforePause);
 }
 
 void PlayModeManager::SetState(PlayModeState s)

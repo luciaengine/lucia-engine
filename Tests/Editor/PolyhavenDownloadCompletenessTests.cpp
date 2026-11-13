@@ -1,4 +1,4 @@
-#include "Assets/PolyhavenService.h"
+#include "Assets/Polyhaven/PolyhavenService.h"
 
 #include "TestTempDir.h"
 

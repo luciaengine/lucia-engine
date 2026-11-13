@@ -2,7 +2,7 @@
 // across graph edits, page growth, recycling, and the CSS sprite addressing a
 // node thumb uses to show its cell.
 
-#include "ShaderGraph/GraphPreviewAtlasLayout.h"
+#include "ShaderGraph/GraphPreview/GraphPreviewAtlasLayout.h"
 
 #include <gtest/gtest.h>
 

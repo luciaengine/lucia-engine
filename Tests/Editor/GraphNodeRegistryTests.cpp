@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "Graph/GraphNodeRegistry.h"
+#include "Graph/GraphNode/GraphNodeRegistry.h"
 #include "Graph/GraphTypeRegistry.h"
 #include "Graph/GraphValue.h"
 

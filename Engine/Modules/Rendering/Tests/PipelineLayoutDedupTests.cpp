@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 #include "Rendering/Core/Device.h"
 #include "Rendering/Materials/MaterialBuilder.h"
-#include "Rendering/Materials/ShaderReflection.h"
-#include "../Source/Vulkan/VulkanDevice.h"
+#include "Rendering/Materials/Shader/ShaderReflection.h"
+#include "../Source/Vulkan/VulkanDevice/VulkanDevice.h"
 #include "Rendering/Common/Utils.h"
 #include "TestUtils.h"
 

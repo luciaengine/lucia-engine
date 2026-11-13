@@ -27,6 +27,8 @@
 #include "Components/Rendering/LightPhotometry.h" // kReferenceWhiteNits, LightIntensityToUnitless
 #include "Components/Rendering/SkyEnvironment.h"
 #include "Components/Rendering/SkySunIlluminance.h"
+#include "Components/Terrain/Terrain.h"
+#include "Components/Terrain/TerrainPlanetRelief.h"
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h" // World::AddComponentImmediate / GetComponent definitions
 #include "ECS/World.h"
@@ -72,6 +74,17 @@ float RelTolerance(float expected)
 // string cannot drift apart silently.
 constexpr const char* kNoSunNoticeMarker = "the sky's sun";
 
+// The optical depth of channel `c` from the ground to the top of the shell, straight up, in closed
+// form: each exponential density integrated to the shell's top, the ozone tent's area its half width.
+double ZenithOpticalDepth(const Rendering::AtmosphereParametersGPU& atmo, int c)
+{
+    const double shell = static_cast<double>(atmo.atmosphereRadius) - atmo.planetRadius;
+    return atmo.betaRayleigh[c] * atmo.rayleighScaleHeight * (1.0 - std::exp(-shell / atmo.rayleighScaleHeight)) +
+           (atmo.betaMie[c] + atmo.mieAbsorption[c]) * atmo.mieScaleHeight *
+               (1.0 - std::exp(-shell / atmo.mieScaleHeight)) +
+           atmo.ozoneAbsorption[c] * atmo.ozoneHalfWidth;
+}
+
 } // namespace
 
 // THE DEFECT. A scene with a sun and an out-of-the-box physical sky: no `SunLight`, because that
@@ -91,6 +104,33 @@ TEST(SkySunAnchor, AnUnlinkedSkyTakesItsBrightnessFromTheScenesSun)
     const float expected = ExpectedAnchorForLux(kShippedSunLux);
     EXPECT_NEAR(anchor, expected, RelTolerance(expected))
         << "the sky is " << StopsFromSun(anchor, kShippedSunLux) << " stops off the scene's sun";
+}
+
+// The lift itself. The light's illuminance is the ground value of an overhead sun, so the sky's
+// source above the atmosphere is that value over the zenith transmittance of the atmosphere the
+// LUTs bake: then the sky's own sun delivers the light's illuminance through an overhead sky. The
+// zenith optical depth is evaluated here in closed form (each exponential density integrated to the
+// top of the shell, the ozone tent's area its half width), independently of the engine's
+// quadrature; the two agree to 0.2 %.
+TEST(SkySunAnchor, TheSkysSunDeliversTheLightsIlluminanceThroughAnOverheadSky)
+{
+    Rendering::AtmosphereParametersGPU atmo{};
+    Rendering::SkyRenderer::FillDefaultAtmosphere(atmo, Rendering::SkyPlanet{});
+    double zenithTransmittance[3];
+    for (int c = 0; c < 3; ++c)
+        zenithTransmittance[c] = std::exp(-ZenithOpticalDepth(atmo, c));
+    const double luminance =
+        0.2126 * zenithTransmittance[0] + 0.7152 * zenithTransmittance[1] + 0.0722 * zenithTransmittance[2];
+    const float expected = static_cast<float>(kShippedSunLux / Components::kReferenceWhiteNits / luminance);
+
+    SkySunAnchorHarness harness;
+    harness.AddDirectional(kShippedSunLux, Components::LightUnit::Lux);
+    harness.AddDefaultSky();
+    const float anchor = harness.RunAndReadAnchor();
+    EXPECT_NEAR(anchor, expected, expected * 0.005f)
+        << "the sky's source is " << anchor / (kShippedSunLux / Components::kReferenceWhiteNits)
+        << " x the light; the zenith transmittance's luminance " << luminance << " asks for "
+        << 1.0 / luminance;
 }
 
 // The same statement as a property rather than a number: whatever the arithmetic, the sky may not
@@ -508,11 +548,11 @@ TEST(SkyLinkedSun, ASceneSavedAtNightReloadsWithItsDaySun)
         saved.SetHours(kMidnightHours);
         saved.Tick();
         saved.Tick();
-        ASSERT_TRUE(Scene::SaveSceneToFile(saved.Rig.World, scenePath));
+        ASSERT_TRUE(Scene::WriteSceneFile(saved.Rig.World, scenePath));
     }
 
     LinkedSunHarness reloaded;
-    ASSERT_TRUE(Scene::LoadSceneFromFile(reloaded.Rig.World, scenePath));
+    ASSERT_TRUE(Scene::ReadSceneInto(reloaded.Rig.World, scenePath));
     std::filesystem::remove(scenePath);
     reloaded.AdoptLoadedScene();
     ASSERT_TRUE(reloaded.Rig.World.IsValid(reloaded.Sun)) << "the sky's link to its sun must reload";
@@ -841,4 +881,108 @@ TEST(SkySunAnchor, DayCyclePreviewChangesTheRenderedSunWithoutWritingTheClock)
     harness.System.ClearPreviewHour(worldId);
     harness.System.Update(harness.World, 0.0f);
     EXPECT_FLOAT_EQ(feature->GetSystemState().sunDirWS[1], originalElevation);
+}
+
+// ---- The planet the sky wraps ---------------------------------------------------------------------
+//
+// SkyEnvironmentSystem gives the sky the first spherical terrain's sphere. A planar terrain leaves
+// the flat scene's planet, so a flat scene's sky does not change.
+
+namespace
+{
+
+constexpr float kPlanetRadiusMeters = 600.0e3f;
+
+// A terrain whose atmosphere is set by `atmosphereShare`, or by Auto when the share is 0. A relief
+// amplitude above 0 adds the planet's relief.
+Rendering::SkyPlanet SkyPlanetWithTerrain(Components::TerrainDomain domain, float atmosphereShare,
+                                          float reliefAmplitude = 0.0f)
+{
+    SkySunAnchorHarness harness;
+    harness.AddDirectional(kShippedSunLux, Components::LightUnit::Lux);
+    harness.AddDefaultSky();
+    Components::Terrain terrain{};
+    terrain.Domain = domain;
+    terrain.PlanetRadius = kPlanetRadiusMeters;
+    if (atmosphereShare > 0.0f)
+    {
+        terrain.AtmosphereMode = Components::TerrainAtmosphereMode::ShareOfRadius;
+        terrain.AtmosphereShare = atmosphereShare;
+    }
+    const ECS::EntityHandle entity = harness.World.CreateEntity();
+    harness.World.AddComponentImmediate(entity, terrain);
+    if (reliefAmplitude > 0.0f)
+    {
+        Components::TerrainPlanetRelief relief{};
+        relief.Amplitude = reliefAmplitude;
+        harness.World.AddComponentImmediate(entity, relief);
+    }
+    harness.RunAndReadAnchor();
+    return harness.Services.GetFeature<Engine::Renderer::SkyRenderFeature>()->GetSettings().planet;
+}
+
+} // namespace
+
+TEST(SkyPlanetFromTerrain, ASphericalTerrainGivesItsPlanetWithEarthsAtmosphereShare)
+{
+    const Rendering::SkyPlanet planet =
+        SkyPlanetWithTerrain(Components::TerrainDomain::Spherical, Rendering::SkyPlanet::kEarthAtmosphereShare);
+    EXPECT_TRUE(planet.Spherical);
+    EXPECT_EQ(planet.Center.LengthSquared(), 0.0f);
+    EXPECT_EQ(planet.Radius, kPlanetRadiusMeters);
+    // 100 km over 6360 km of a 600 km planet.
+    EXPECT_NEAR(planet.AtmosphereHeight, 9433.96f, 0.01f);
+}
+
+TEST(SkyPlanetFromTerrain, AnAuthoredShareSetsTheAtmosphereHeight)
+{
+    const Rendering::SkyPlanet planet = SkyPlanetWithTerrain(Components::TerrainDomain::Spherical, 1.0f / 6.0f);
+    EXPECT_TRUE(planet.Spherical);
+    EXPECT_NEAR(planet.AtmosphereHeight, 100.0e3f, 0.01f);
+}
+
+// The sky reads the height through TerrainECS::AtmosphereHeightMeters: under Auto, P-600's 4 km relief
+// sets it (its 6 km crests at Everest's share of the air), and with no relief Earth's share does.
+TEST(SkyPlanetFromTerrain, AutoSetsTheAtmosphereHeightFromTheRelief)
+{
+    const Rendering::SkyPlanet withRelief = SkyPlanetWithTerrain(Components::TerrainDomain::Spherical, 0.0f, 4000.0f);
+    EXPECT_TRUE(withRelief.Spherical);
+    EXPECT_NEAR(withRelief.AtmosphereHeight, 6000.0f / 0.08849f, 5.0f);
+    const Rendering::SkyPlanet noRelief = SkyPlanetWithTerrain(Components::TerrainDomain::Spherical, 0.0f);
+    EXPECT_NEAR(noRelief.AtmosphereHeight, 9433.96f, 0.01f);
+}
+
+TEST(SkyPlanetFromTerrain, APlanarTerrainKeepsTheFlatPlanet)
+{
+    const Rendering::SkyPlanet planet =
+        SkyPlanetWithTerrain(Components::TerrainDomain::Planar, Rendering::SkyPlanet::kEarthAtmosphereShare);
+    const Rendering::SkyPlanet flat{};
+    EXPECT_FALSE(planet.Spherical);
+    EXPECT_EQ(planet.Center.y, flat.Center.y);
+    EXPECT_EQ(planet.Radius, flat.Radius);
+    EXPECT_EQ(planet.AtmosphereHeight, flat.AtmosphereHeight);
+}
+
+// The air scales with the atmosphere's height, so a thin atmosphere is as deep straight up as
+// Earth's and the sky keeps its colors. The flat planet's atmosphere is Earth's to the bit.
+TEST(SkyPlanetFromTerrain, AScaledAtmosphereKeepsEarthsZenithOpticalDepth)
+{
+    Rendering::AtmosphereParametersGPU earth{};
+    Rendering::SkyRenderer::FillDefaultAtmosphere(earth, Rendering::SkyPlanet{});
+    EXPECT_EQ(earth.atmosphereRadius - earth.planetRadius, Rendering::SkyPlanet::kEarthAtmosphereHeightMeters);
+    EXPECT_EQ(earth.rayleighScaleHeight, 8000.0f);
+    EXPECT_EQ(earth.betaRayleigh[2], 33.100e-6f);
+
+    Rendering::SkyPlanet small{};
+    small.Center = Mathematics::Vector3(0.0f, 0.0f, 0.0f);
+    small.Radius = 2000.0f;
+    small.AtmosphereHeight = small.Radius * Rendering::SkyPlanet::kEarthAtmosphereShare;
+    small.Spherical = true;
+    Rendering::AtmosphereParametersGPU scaled{};
+    Rendering::SkyRenderer::FillDefaultAtmosphere(scaled, small);
+    EXPECT_NEAR(scaled.atmosphereRadius - scaled.planetRadius, 31.45f, 0.01f);
+    EXPECT_EQ(scaled.planetCenter.LengthSquared(), 0.0f);
+    for (int c = 0; c < 3; ++c)
+        EXPECT_NEAR(ZenithOpticalDepth(scaled, c), ZenithOpticalDepth(earth, c), ZenithOpticalDepth(earth, c) * 1e-4)
+            << "channel " << c;
 }

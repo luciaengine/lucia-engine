@@ -1,5 +1,6 @@
 #include "Engine/Rendering/2D/SpriteRenderFeature.h"
 #include "Engine/Rendering/SpritePixelGrid.h"
+#include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/ViewExposureScale.h"
 
 #include "Engine/Rendering/RenderServices.h"
@@ -7,7 +8,7 @@
 #include "Assets/TextureCook.h"
 #include "Logger/Logger.h"
 #include "Rendering/Common/Frustum.h"
-#include "Rendering/Core/PipelineDescTranslator.h"
+#include "Rendering/Core/Pipeline/PipelineDescTranslator.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include <algorithm>
@@ -217,26 +218,26 @@ void SpriteRenderFeature::BuildViewDraws(RenderServices& rs, uint32 viewId,
     const auto* camera = view ? rs.Views().FindCameraData(view->cameraId) : nullptr;
     if (!camera || !HasSpriteDraws(view->worldId))
         return;
-    const float32 forward[3] = {camera->view[2], camera->view[6], camera->view[10]};
+    const float32 forward[3] = {camera->view[0][2], camera->view[1][2], camera->view[2][2]};
     Vector4 frustumPlanes[6];
-    ExtractFrustumPlanes(Matrix4x4::FromColumnMajor(camera->viewProj), frustumPlanes);
+    ExtractFrustumPlanes(camera->viewProjRel, frustumPlanes);
     m_ViewDraws.clear();
     for (const auto& draw : m_SpriteDraws)
     {
-        if ((draw.RenderLayers & view->ActiveRenderLayerMask()) == 0u)
+        if ((draw.RenderLayers & view->ActiveRenderLayerMask().Bits) == 0u)
             continue;
-        Vector3 center(draw.Center[0], draw.Center[1], draw.Center[2]);
+        Vector3 center = ViewRelativePoint(*camera, draw.Center);
         if (worldUnitsPerTexel > 0.0f)
-            SnapSpriteToPixelGrid(center.v, draw.AxisX, draw.AxisY, worldUnitsPerTexel, camera->view);
+            SnapSpriteToPixelGrid(center.v, draw.AxisX, draw.AxisY, worldUnitsPerTexel, camera->viewRel.Data(),
+                Mathematics::WorldPosition::FromSector(CameraRenderOriginSector(*camera), Mathematics::Vector3{}));
         const Vector3 halfExtent(std::abs(draw.AxisX[0]) + std::abs(draw.AxisY[0]),
                                  std::abs(draw.AxisX[1]) + std::abs(draw.AxisY[1]),
                                  std::abs(draw.AxisX[2]) + std::abs(draw.AxisY[2]));
         if (!TestAabbFrustum(center - halfExtent, center + halfExtent, frustumPlanes))
             continue;
-        const float32 depth = (draw.Center[0] - camera->cameraPos[0]) * forward[0] +
-                              (draw.Center[1] - camera->cameraPos[1]) * forward[1] +
-                              (draw.Center[2] - camera->cameraPos[2]) * forward[2];
-        m_ViewDraws.push_back({&draw, MakeRenderSortKey(draw.Sorting, depth, camera->cameraPos, forward), center});
+        const Vector3 eyeOffset = draw.Center - CameraEye(*camera);
+        const float32 depth = eyeOffset.x * forward[0] + eyeOffset.y * forward[1] + eyeOffset.z * forward[2];
+        m_ViewDraws.push_back({&draw, MakeRenderSortKey(draw.Sorting, depth, CameraEye(*camera), forward), center});
     }
     std::sort(m_ViewDraws.begin(), m_ViewDraws.end(), [](const ViewDraw& a, const ViewDraw& b)
     {
@@ -266,7 +267,7 @@ void SpriteRenderFeature::BuildViewDraws(RenderServices& rs, uint32 viewId,
             batch.FirstInstance = static_cast<uint32>(m_InstanceScratch.size());
             // The draws arrive Z-sorted, so the run this batch opens is the
             // deepest it will contain — the key that orders it against tiles.
-            batch.WorldZ = draw.Center[2];
+            batch.WorldZ = draw.Center.Z;
             batch.Sort = viewDraw.Sort;
             outBatches.push_back(batch);
         }
@@ -321,7 +322,17 @@ void SpriteRenderFeature::BuildViewDraws(RenderServices& rs, uint32 viewId,
         ring.LightCapacity[slot]=lightCount;
     }
     if(!ring.Lights[slot].IsValid()){outBatches.clear();return;}
-    if(!m_Lights.empty())m_Device->UpdateBuffer(ring.Lights[slot],0,m_Lights.size()*sizeof(SpriteLight),m_Lights.data());
+    m_LightScratch.clear();
+    for (const auto& light : m_Lights)
+    {
+        SpriteLight packed = light.Gpu;
+        const Vector3 relative = ViewRelativePoint(*camera, light.Position);
+        for (int32 axis = 0; axis < 3; ++axis)
+            packed.PositionType[axis] = relative[axis];
+        m_LightScratch.push_back(packed);
+    }
+    if (!m_LightScratch.empty())
+        m_Device->UpdateBuffer(ring.Lights[slot], 0, m_LightScratch.size() * sizeof(SpriteLight), m_LightScratch.data());
     for (SpriteBatch& batch : outBatches) {batch.Instances=buffer;batch.Lights=ring.Lights[slot];}
 }
 

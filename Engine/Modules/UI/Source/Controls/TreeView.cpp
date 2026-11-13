@@ -2,15 +2,13 @@
 #include "Rendering/Text/FontAtlas.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/ScrollView.h"
-#include "DropFeedbackClasses.h"
-#include "UI/OverlayZIndex.h"
 #include "UI/Controls/VirtualWindowCore.h"
 #include "UI/Layout/ElementOverrideHelpers.h"
 #include "UI/ResolvedStyle.h"
 #include "UI/UIManager.h"
 #include "UI/StyleProperties.h"
 #include "UI/VirtualizationCoordinator.h"
-#include "UI/Interaction/DragDropManager.h"
+#include "UI/Interaction/DragDrop/DragDropManager.h"
 #include "UI/Interaction/ItemResizeGesture.h"
 #include "Input/InputSystem.h"
 #include "Input/KeyCodes.h"
@@ -55,8 +53,8 @@ void ApplyTreeFoldoutToggleLayout(Label* toggle, float iconSizePx)
     // Runs on every row rebind. Every write below is a same-value no-op in
     // the override store, and real changes raise layout/visual dirt through
     // the wired dirty callback — pure recycling marks nothing.
-    toggle->Styles().SetBackgroundSizeExplicit(s, false, s, false);
-    toggle->Overrides()
+    toggle->Style().Set(Style::BackgroundSize, BackgroundSizeValue{BackgroundSizeMode::Explicit, s, false, s, false});
+    toggle->Style()
         .Set(Style::Width, StyleLength::Px(s))
         .Set(Style::Height, StyleLength::Px(s))
         .Set(Style::MinWidth, StyleLength::Px(s))
@@ -459,10 +457,11 @@ void TreeView::SetIconSize(float px)
             // (i.e., does NOT have tree-title-no-icon class which uses separate icon element)
             if (!slot.title->HasClass("tree-title-no-icon"))
             {
-                slot.title->Styles().SetBackgroundSizeExplicit(px, false, px, false);
+                slot.title->Style().Set(Style::BackgroundSize,
+                                        BackgroundSizeValue{BackgroundSizeMode::Explicit, px, false, px, false});
                 
                 // Add extra spacing after the icon: icon size + 8px gap
-                slot.title->Overrides().Set(Style::PaddingLeft, StyleLength::Px(px + 8.0f));
+                slot.title->Style().Set(Style::PaddingLeft, StyleLength::Px(px + 8.0f));
             }
         }
     }
@@ -526,7 +525,8 @@ void TreeView::EnsureAttachedRows(int desired)
                     ui->ClearHoverForSubtree(slot.row);
             }
             slot.row->RemoveClass("selected");
-            UI::SetDropFeedbackClasses(*slot.row, false, false);
+            slot.row->RemoveClass("drop-onto-valid");
+            slot.row->RemoveClass("drop-onto-invalid");
             slot.boundId = 0;
             slot.boundIndex = -1;
             UI::Layout::SetElementInvisible(*slot.row, true);
@@ -693,7 +693,8 @@ void TreeView::EnsureRowPoolSize(int desired)
         title->AddClass("tree-title");
         Label* titleRaw = title.get();
         titleRaw->SetDisableClipCulling(true);
-        titleRaw->Styles().SetBackgroundSizeExplicit(m_IconSizePx, false, m_IconSizePx, false);
+        titleRaw->Style().Set(Style::BackgroundSize,
+                              BackgroundSizeValue{BackgroundSizeMode::Explicit, m_IconSizePx, false, m_IconSizePx, false});
         ApplyTreeFoldoutToggleLayout(toggleRaw, m_IconSizePx);
 
         const auto beginIconInteraction = [this, slotIndex](UIEvent& e)
@@ -759,6 +760,7 @@ void TreeView::EnsureRowPoolSize(int desired)
         // Selection + activation
         row->RegisterEventHandler(kEventMouseDown, [this, slotIndex, beginIconInteraction](UIEvent& e)
                                   {
+	        m_PendingRenameRequest = false;
 	        // Callers that render an icon as a separate element mark that element as
 	        // the hit target. Its MouseDown bubbles directly to the row (the title is
 	        // a sibling), so handle it before the normal row-selection gesture.
@@ -775,6 +777,12 @@ void TreeView::EnsureRowPoolSize(int desired)
             const bool isLmb = (e.Button == 0);
             const bool isRmb = (e.Button == 1);
             bool deferSelect = false; // set when a plain LMB click is deferred to mouse-up
+
+            // Read before the press edits the selection: a rename request needs "the row was
+            // already the sole selection". Modified clicks are selection edits and never rename.
+            m_PendingRenameRequest = isLmb && m_Selection && m_Selection->IsSelected(id) &&
+                                     m_Selection->GetSelection().size() == 1 &&
+                                     (e.Mods & Input::kModShortcutMask) == 0;
 
             // Selection gestures (LMB) + "select on right-click" (RMB).
             if (m_Selection)
@@ -964,11 +972,14 @@ void TreeView::EnsureRowPoolSize(int desired)
 
             using clock = std::chrono::steady_clock;
             auto now = clock::now();
-            bool isDouble =
-                (m_LastClickedId == id) &&
-                ((now - m_LastClickTime) < Platform::GetDoubleClickInterval());
+            const bool isRepeat = (m_LastClickedId == id);
+            bool isDouble = isRepeat && ((now - m_LastClickTime) < Platform::GetDoubleClickInterval());
             m_LastClickedId = id;
             m_LastClickTime = now;
+            const bool renameRequested = m_PendingRenameRequest && isRepeat && !isDouble;
+            m_PendingRenameRequest = false;
+            if (renameRequested && m_OnItemRenameRequested)
+                m_OnItemRenameRequested(id);
             if (isDouble) {
                 // Toggle expand/collapse on double-click
                 if (m_Provider && m_Provider->IsExpandable(id))
@@ -1061,7 +1072,8 @@ void TreeView::UnbindRow(int slot)
             ui->ClearHoverForSubtree(s.row);
     }
     s.row->RemoveClass("selected");
-    UI::SetDropFeedbackClasses(*s.row, false, false);
+    s.row->RemoveClass("drop-onto-valid");
+    s.row->RemoveClass("drop-onto-invalid");
     s.boundId = 0;
     s.boundIndex = -1;
     s.boundDepth = 0;
@@ -1150,7 +1162,7 @@ bool TreeView::BindRow(int slotIndex, int itemIndex)
                                         static_cast<float>(std::max(0, heightPx)),
                                     },
                                     /*positionOnlyFastPath=*/true);
-    slot.row->Overrides().Set(Style::PaddingLeft, StyleLength::Px(8.0f + static_cast<float>(indentPx)));
+    slot.row->Style().Set(Style::PaddingLeft, StyleLength::Px(8.0f + static_cast<float>(indentPx)));
 
     // Per-row customization hook for callers (e.g., to add state classes and/or
     // inject icon/dot elements into the row). Rows are virtualized and reused.
@@ -1162,9 +1174,9 @@ bool TreeView::BindRow(int slotIndex, int itemIndex)
     if (slot.title)
     {
         if (slot.title->HasClass("tree-title-no-icon"))
-            slot.title->Overrides().Reset(Style::PaddingLeft);
+            slot.title->Style().Reset(Style::PaddingLeft);
         else
-            slot.title->Overrides().Set(Style::PaddingLeft, StyleLength::Px(m_IconSizePx + 8.0f));
+            slot.title->Style().Set(Style::PaddingLeft, StyleLength::Px(m_IconSizePx + 8.0f));
     }
     if (slot.toggle)
         ApplyTreeFoldoutToggleLayout(slot.toggle, m_IconSizePx);
@@ -1198,11 +1210,15 @@ bool TreeView::BindRow(int slotIndex, int itemIndex)
     else
         slot.row->RemoveClass("selected");
 
-    const bool dropHovered = m_DropPreview.Visible &&
-                             m_DropPreview.Hit.Location == UI::Interaction::DropLocation::OnItem &&
-                             fi.id != 0 &&
-                             fi.id == static_cast<TreeId>(m_DropPreview.Hit.TargetId);
-    UI::SetDropFeedbackClasses(*slot.row, dropHovered, m_DropPreview.Allowed);
+    slot.row->RemoveClass("drop-onto-valid");
+    slot.row->RemoveClass("drop-onto-invalid");
+    if (m_DropPreview.Visible &&
+        m_DropPreview.Hit.Location == UI::Interaction::DropLocation::OnItem &&
+        fi.id != 0 &&
+        fi.id == static_cast<TreeId>(m_DropPreview.Hit.TargetId))
+    {
+        slot.row->AddClass(m_DropPreview.Allowed ? "drop-onto-valid" : "drop-onto-invalid");
+    }
 
     // Update lock icon active state
     if (slot.lock && m_OnLockStateCheck)
@@ -1352,6 +1368,18 @@ UIElement* TreeView::FindBoundRow(TreeId id) const
     return nullptr;
 }
 
+Label* TreeView::FindBoundRowTitle(TreeId id) const
+{
+    if (id == 0)
+        return nullptr;
+    for (const RowSlot& slot : m_RowPool)
+    {
+        if (slot.row && slot.boundId == id)
+            return slot.title;
+    }
+    return nullptr;
+}
+
 TreeId TreeView::BoundIdOf(const UIElement* row) const
 {
     if (!row)
@@ -1488,7 +1516,7 @@ void TreeView::UpdateVirtualization(VirtualizationCoordinator::Reason reason)
     }
     if (changes.Version != m_LastProviderChangeVersion)
         m_LastProviderChangeVersion = changes.Version;
-    // A structural provider mutation (MarkStructureChanged) means the flat
+    // C-7: a structural provider mutation (MarkStructureChanged) means the flat
     // row set is stale (items added/removed/reordered, expandability changed).
     // Setting m_FlatDirty rebuilds it on the next pass; the generation bump below
     // (gated on m_FlatDirty) breaks the guard so this pass can't ring-scroll a
@@ -1502,7 +1530,7 @@ void TreeView::UpdateVirtualization(VirtualizationCoordinator::Reason reason)
 
     // Normalize the typed changeset for the core, which never sees id types:
     // All -> full rebind; Subset -> the flat pool slots currently bound to a
-    // changed id.
+    // changed id (the old Subset fast-path scan, reused).
     m_ChangedSlotScratch.clear();
     UI::VirtualWindowCore::ChangeSetView changesView{};
     if (changes.Kind == ChangeSetKind::All)
@@ -1523,11 +1551,11 @@ void TreeView::UpdateVirtualization(VirtualizationCoordinator::Reason reason)
         changesView.AffectedSlots = m_ChangedSlotScratch;
     }
 
-    // A pending m_FlatDirty that was set WITHOUT a rebuild this pass (the
-    // structure-version check above) must still break the guard so the core doesn't ring-scroll a window
+    // A pending m_FlatDirty that was set WITHOUT a rebuild this pass (the C-7 hook
+    // above) must still break the guard so the core doesn't ring-scroll a window
     // whose flat set is about to change — RebuildFlatList already moved the
     // generation in the rebuilt case, this covers the "set but not yet rebuilt"
-    // one.
+    // one. Mirrors the old `!m_FlatDirty` guard on the early-out and ring paths.
     if (m_FlatDirty)
         ++m_FlatGeneration;
 
@@ -1643,7 +1671,7 @@ void TreeView::RefreshFromProvider()
         m_Provider->ConsumeChanges(m_LastProviderChangeVersion, changes);
         if (changes.Version != m_LastProviderChangeVersion)
             m_LastProviderChangeVersion = changes.Version;
-        // A structural provider mutation (MarkStructureChanged) means the flat
+        // C-7: a structural provider mutation (MarkStructureChanged) means the flat
         // row set is stale even if the reported changeset is a row Subset — force a
         // flat rebuild so the Subset stash below reflects the new item set.
         if (changes.StructureVersion != m_LastProviderStructureVersion)
@@ -2146,6 +2174,7 @@ void TreeView::OnEvent(UIEvent& e)
                 m_DragCandidateId = 0;
                 m_PendingCollapseToSingleId = 0;
                 m_PendingSelectId = 0; // it's a drag, not a click — don't change selection
+                m_PendingRenameRequest = false;
             }
             e.Stop();
             return;
@@ -2153,6 +2182,16 @@ void TreeView::OnEvent(UIEvent& e)
 
         if (e.Id == kEventMouseUp)
         {
+            using clock = std::chrono::steady_clock;
+            const auto now = clock::now();
+            const bool clicked = e.Button == 0 && m_DragCandidateId != 0;
+            const bool isRepeat = clicked && m_LastClickedId == m_DragCandidateId;
+            const bool isDouble = isRepeat && ((now - m_LastClickTime) < Platform::GetDoubleClickInterval());
+            // A slow second click on the sole selection asks for a rename. Its select-on-up commit
+            // below still sends the selection first, so a host showing another item returns to this
+            // one; the rename request comes after it.
+            const bool renameRequested = m_PendingRenameRequest && isRepeat && !isDouble;
+
             // Deferred select-on-up: a plain press recorded a pending selection and we reached
             // mouse-up without a drag starting (drag-start clears m_PendingSelectId), so this was a
             // click — commit the selection now.
@@ -2186,15 +2225,12 @@ void TreeView::OnEvent(UIEvent& e)
 
             // Double-click detection for captured mouse-up: the row's own kEventMouseUp handler
             // is bypassed while capture is active, so we run the same check here.
-            if (e.Button == 0 && m_DragCandidateId != 0)
+            if (clicked)
             {
-                using clock = std::chrono::steady_clock;
-                const auto now = clock::now();
-                const bool isDouble =
-                    (m_LastClickedId == m_DragCandidateId) &&
-                    ((now - m_LastClickTime) < Platform::GetDoubleClickInterval());
                 m_LastClickedId = m_DragCandidateId;
                 m_LastClickTime = now;
+                if (renameRequested && m_OnItemRenameRequested)
+                    m_OnItemRenameRequested(m_DragCandidateId);
                 if (isDouble)
                 {
                     if (m_Provider && m_Provider->IsExpandable(m_DragCandidateId))
@@ -2213,6 +2249,7 @@ void TreeView::OnEvent(UIEvent& e)
             m_DragCandidateId = 0;
             m_PendingCollapseToSingleId = 0;
             m_PendingSelectId = 0;
+            m_PendingRenameRequest = false;
             // Safety: a non-drag release that didn't commit must not leave a press-highlight stuck.
             ClearDragHighlight();
             e.Stop();
@@ -2352,12 +2389,6 @@ void TreeView::OnEvent(UIEvent& e)
     }
 
     UIElement::OnEvent(e);
-}
-
-void TreeView::AutoScrollDuringDrag(float mouseX, float mouseY)
-{
-    if (m_Scroll)
-        m_Scroll->AutoScrollNearEdge(mouseX, mouseY);
 }
 
 bool TreeView::AcceptsPayload(UI::Interaction::PayloadTypeId typeId) const
@@ -2549,7 +2580,7 @@ void TreeView::SetDropPreview(const UI::Interaction::DropPreviewState& state)
             auto ind = std::make_unique<UIElement>();
             ind->SetId("tree-drop-indicator");
             ind->AddClass("tree-drop-indicator");
-            ind->Overrides()
+            ind->Style()
                 .Set(Style::Position, PositionType::Absolute)
                 .Set(Style::PointerEvents, false)
                 .Set(Style::Display, DisplayMode::None);
@@ -2571,24 +2602,23 @@ void TreeView::SetDropPreview(const UI::Interaction::DropPreviewState& state)
             break;
         }
 
-        if (state.Allowed)
-            m_DropIndicator->RemoveClass("denied");
-        else
-            m_DropIndicator->AddClass("denied");
-        m_DropIndicator->Overrides()
+        const uint32_t color = state.Allowed ? 0xE600C8FFu : 0xE6FF5050u; // rgba(0,200,255,0.9) / rgba(255,80,80,0.9)
+        m_DropIndicator->Style()
             .Set(Style::Position, PositionType::Absolute)
             .Set(Style::PointerEvents, false)
-            .Set(Style::ZIndex, OverlayZIndex::kDropIndicator)
+            .Set(Style::ZIndex, 9000)
             .Set(Style::PositionLeft, StyleLength::Px(x0))
             .Set(Style::PositionTop, StyleLength::Px(yLine))
             .Set(Style::Width, StyleLength::Px(w))
+            .Set(Style::Height, StyleLength::Px(2.0f))
+            .Set(Style::BackgroundColor, color)
             .Set(Style::Display, DisplayMode::Block);
     }
     else
     {
         if (m_DropIndicator)
         {
-            m_DropIndicator->Overrides().Set(Style::Display, DisplayMode::None);
+            m_DropIndicator->Style().Set(Style::Display, DisplayMode::None);
         }
     }
 }
@@ -2601,8 +2631,12 @@ void TreeView::UpdateDropPreviewClasses()
     {
         if (!slot.row || slot.boundId == 0)
             continue;
-        const bool hovered = showOnto && slot.boundId == static_cast<TreeId>(m_DropPreview.Hit.TargetId);
-        UI::SetDropFeedbackClasses(*slot.row, hovered, m_DropPreview.Allowed);
+        slot.row->RemoveClass("drop-onto-valid");
+        slot.row->RemoveClass("drop-onto-invalid");
+        if (showOnto && slot.boundId == static_cast<TreeId>(m_DropPreview.Hit.TargetId))
+        {
+            slot.row->AddClass(m_DropPreview.Allowed ? "drop-onto-valid" : "drop-onto-invalid");
+        }
     }
 }
 
@@ -2644,6 +2678,7 @@ void TreeView::ForEachOwnedSlot(Fn&& fn)
     fn(m_OnLockStateSet);
     fn(m_OnCanDrop);
     fn(m_OnPerformDrop);
+    fn(m_OnItemRenameRequested);
 }
 
 template <typename Fn>
@@ -2664,6 +2699,7 @@ void TreeView::ForEachOwnedSlot(Fn&& fn) const
     fn(m_OnLockStateSet);
     fn(m_OnCanDrop);
     fn(m_OnPerformDrop);
+    fn(m_OnItemRenameRequested);
 }
 
 std::size_t TreeView::CountMemberSlotsOwnedByImage(std::uint64_t base, std::uint64_t size) const
@@ -2678,7 +2714,8 @@ std::size_t TreeView::CountMemberSlotsOwnedByImage(std::uint64_t base, std::uint
             kOnSelectionChangedSlot, kOnItemActivatedSlot,    kOnContextMenuSlot,
             kOnRowBoundSlot,         kOnIconClickedSlot,      kOnIconStateCheckSlot,
             kOnIconStateSetSlot,     kOnLockClickedSlot,      kOnLockStateCheckSlot,
-            kOnLockStateSetSlot,     kOnCanDropSlot,          kOnPerformDropSlot};
+            kOnLockStateSetSlot,     kOnCanDropSlot,          kOnPerformDropSlot,
+            kOnItemRenameRequestedSlot};
         std::uint32_t seen = 0;
         for (const std::uint32_t bit : kSlotBits)
         {

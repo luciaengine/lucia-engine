@@ -4,7 +4,7 @@
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
 #include "EditorChangeNotifications.h"
-#include "Inspectors/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
 #include "TerrainGrass/TerrainGrassPresets.h"
 #include "UI/Controls/Dropdown.h"

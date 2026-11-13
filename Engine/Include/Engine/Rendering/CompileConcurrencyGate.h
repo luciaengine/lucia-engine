@@ -10,7 +10,8 @@
 // thread and the extraction/streaming workers starve and the editor stops
 // responding to IPC for tens of seconds.
 //
-// The gate caps the number of in-flight compile tasks at a fixed value. It
+// The gate caps the number of in-flight compile tasks at a value fixed when it is
+// created, which leaves two pool workers to the frame (ComputeShaderCompileConcurrencyCap). It
 // deliberately does NOT block a worker to enforce the cap (that would convert
 // compile oversubscription into worker-pool occupancy by sleepers and starve
 // extraction of worker lanes). Instead it admits up to `cap` tasks to the pool
@@ -39,18 +40,16 @@ namespace GameEngine
 namespace Engine::Renderer
 {
 
-// Physical-core-derived concurrency cap for shader compiles: enough parallelism
-// to keep shaderc busy without pinning every core, leaving headroom for the main
-// thread and extraction/streaming. Honors the GE_SHADER_COMPILE_CAP env override
-// (an explicit positive integer) for A/B tuning without a rebuild.
-uint32_t ComputeShaderCompileConcurrencyCap();
+// Concurrency cap for shader compiles: the physical cores minus two (at least two) or the
+// GE_SHADER_COMPILE_CAP value, then at most workerCount - 2 and at least 1, so two pool workers
+// stay free for the frame's fork-join. A workerCount of 0 (no pool) skips the pool bound.
+uint32_t ComputeShaderCompileConcurrencyCap(size_t workerCount);
 
 class CompileConcurrencyGate
 {
   public:
     // Enqueues `work` onto the pool. `priority` selects the pool lane; the
-    // gate preserves it for queued work so a background variant-miss stays off
-    // the Normal lane when it is finally dispatched.
+    // gate keeps it for queued work, so bulk warm-up stays on the Background lane when it is dispatched.
     using DispatchFn = std::function<void(std::function<void()>, JobSystem::JobPriority)>;
 
     CompileConcurrencyGate(uint32_t cap, DispatchFn dispatch)
@@ -61,11 +60,17 @@ class CompileConcurrencyGate
     // Admit `work` if fewer than `cap` tasks are running, else hold it in the
     // pending queue for its lane. Admitted work is dispatched via the injected
     // executor and, on completion, frees its slot and pumps the next pending
-    // task (Background lane first). Never runs `work` inline on the calling
+    // task (Normal lane first, as the pool). Awaited work has a waiting thread: it takes
+    // no slot and goes to the executor at once. Never runs `work` inline on the calling
     // thread. If the dispatch executor throws while admitting (task-envelope
     // allocation failure), the reserved slot is released, any concurrently
     // stranded pending job is pumped, and the exception propagates.
     void Submit(std::function<void()> work, JobSystem::JobPriority priority);
+
+    // Shutdown: destroys every queued task unrun, outside the lock, so its guards release their
+    // accounting. A later Submit destroys its work unrun. Running tasks finish and admit nothing.
+    // Returns the count of queued tasks destroyed.
+    size_t Close();
 
     uint32_t Cap() const { return m_Cap; }
     uint32_t Running() const
@@ -100,12 +105,13 @@ class CompileConcurrencyGate
     mutable std::mutex m_Mutex;
     uint32_t m_Running = 0;
     uint32_t m_HighWater = 0;
-    // Two lanes mirroring the pool's two-class contract instead of flattening
-    // it: Background holds user-visible draw-time variant misses, Normal holds
-    // bulk prewarm/base compiles. OnJobFinished drains Background first so a
-    // material that a draw is waiting on jumps ahead of the prewarm backlog.
+    // Two lanes in the pool's order: Normal holds the compiles and pipeline builds a load or a
+    // frame waits on, Background holds bulk project warm-up. OnJobFinished drains Normal first,
+    // so a slot does not go to Background work while Normal work waits in the gate.
     std::deque<std::function<void()>> m_PendingBackground;
     std::deque<std::function<void()>> m_PendingNormal;
+    // Set by Close: Submit destroys its work instead of queueing or admitting it.
+    bool m_Closed = false;
 };
 
 } // namespace Engine::Renderer

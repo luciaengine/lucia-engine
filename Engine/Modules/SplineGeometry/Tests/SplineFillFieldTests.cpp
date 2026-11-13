@@ -192,9 +192,13 @@ TEST(SplineFillField, TheRegionBoundaryIsTheMinusEdgeDropIso)
     {
         const float32 x = ground.Grid.WorldX(cx);
         if (x > -6.0f && x < 0.2f)
+        {
             EXPECT_TRUE(At(field, ground.Grid, cx, 10u).Wet) << "x = " << x;
+        }
         if (x > 0.3f)
+        {
             EXPECT_FALSE(At(field, ground.Grid, cx, 10u).Wet) << "x = " << x;
+        }
     }
 }
 
@@ -219,9 +223,11 @@ TEST(SplineFillField, AWaterlineOverGroundThatKeepsFallingStopsShortOfTheCorrido
         {
             const SplineFillCorner& corner = At(field, ground.Grid, cx, cz);
             if (corner.Wet)
+            {
                 EXPECT_LT(corner.Distance, params.MaxHalfWidth - 1.0f)
                     << "water reached the corridor over open falling ground at x = "
                     << ground.Grid.WorldX(cx);
+            }
         }
     EXPECT_GT(field.Diagnostics.OverBankCorners, 0u)
         << "the ramp gave the water nothing to stand behind, yet nothing was refused";
@@ -579,7 +585,7 @@ TEST(SplineFillField, TheWorstRefusalOfEachKindNamesItsOwnCorner)
     EXPECT_NEAR(unseen.Waterline - unseen.Escape, kWaterline - kUnseenLeak, 1.0e-5f);
 }
 
-TEST(SplineFillField, TheSeaLevelFloorLiftsTheWaterlineAndNeverLowersIt)
+TEST(SplineFillField, TheFloorHeightLiftsTheWaterlineAndNeverLowersIt)
 {
     // A run descending below y = 0 into a basin that continues below sea level.
     TestGround ground(41u, 81u, 0.5f, -10.0f, -20.0f, [](float32 x, float32)
@@ -598,7 +604,7 @@ TEST(SplineFillField, TheSeaLevelFloorLiftsTheWaterlineAndNeverLowersIt)
     const SplineFillResult without = BuildSplineFillField(stations, ground.Grid, unclamped);
 
     SplineFillParams clamped = unclamped;
-    clamped.SeaLevelFloor = 0.5f;
+    clamped.FloorHeight = 0.5f;
     const SplineFillResult with = BuildSplineFillField(stations, ground.Grid, clamped);
 
     bool anyLifted = false;
@@ -615,7 +621,7 @@ TEST(SplineFillField, TheSeaLevelFloorLiftsTheWaterlineAndNeverLowersIt)
     EXPECT_TRUE(anyLifted) << "this run drops below the floor, so something must have been lifted";
 }
 
-TEST(SplineFillField, TheDefaultSeaLevelFloorChangesNothing)
+TEST(SplineFillField, TheDefaultFloorHeightChangesNothing)
 {
     TestGround ground(41u, 81u, 0.5f, -10.0f, -20.0f, [](float32 x, float32)
     {
@@ -631,7 +637,7 @@ TEST(SplineFillField, TheDefaultSeaLevelFloorChangesNothing)
     const SplineFillResult defaulted = BuildSplineFillField(stations, ground.Grid, params);
 
     SplineFillParams explicitly = params;
-    explicitly.SeaLevelFloor = kNoSeaLevelFloor;
+    explicitly.FloorHeight = kNoFloorHeight;
     const SplineFillResult same = BuildSplineFillField(stations, ground.Grid, explicitly);
 
     ASSERT_EQ(defaulted.Corners.size(), same.Corners.size());
@@ -896,7 +902,7 @@ TEST(SplineFillField, AnIsletStandingAboveTheWaterlineKeepsItsDryTop)
 
 // Defect: with the floor set to the sea's own altitude the mouth was EXACTLY
 // coplanar with the sea, and the junction read as lattice-aligned stripes.
-TEST(SplineFillField, TheSeaLevelFloorStandsClearOfTheLevelItNames)
+TEST(SplineFillField, TheFloorHeightStandsClearOfTheLevelItNames)
 {
     TestGround ground(41u, 81u, 0.5f, -10.0f, -20.0f, [](float32 x, float32)
     {
@@ -909,7 +915,7 @@ TEST(SplineFillField, TheSeaLevelFloorStandsClearOfTheLevelItNames)
 
     SplineFillParams params;
     params.MaxHalfWidth = 12.0f;
-    params.SeaLevelFloor = 3.0f; // the sea plane's own altitude
+    params.FloorHeight = 3.0f; // the sea plane's own altitude
     const SplineFillResult field = BuildSplineFillField(stations, ground.Grid, params);
 
     bool anyOnTheFloor = false;
@@ -919,17 +925,17 @@ TEST(SplineFillField, TheSeaLevelFloorStandsClearOfTheLevelItNames)
             continue;
         EXPECT_GT(corner.Waterline, 3.0f)
             << "water sitting EXACTLY on the sea plane z-fights with it";
-        if (corner.Waterline < 3.0f + kSeaLevelFloorLiftMetres * 2.0f)
+        if (corner.Waterline < 3.0f + kFloorHeightLiftMetres * 2.0f)
             anyOnTheFloor = true;
     }
     EXPECT_TRUE(anyOnTheFloor) << "this run drops below the floor, so the floor must bind";
-    EXPECT_LT(kSeaLevelFloorLiftMetres, 0.05f) << "a lift big enough to see is too big";
+    EXPECT_LT(kFloorHeightLiftMetres, 0.05f) << "a lift big enough to see is too big";
 }
 
 // The disabled floor must survive the lift with no branch guarding it: at
-// kNoSeaLevelFloor's magnitude the addition is below one ULP.
+// kNoFloorHeight's magnitude the addition is below one ULP.
 TEST(SplineFillField, TheLiftCannotDisturbTheDisabledFloor)
 {
-    EXPECT_EQ(kNoSeaLevelFloor + kSeaLevelFloorLiftMetres, kNoSeaLevelFloor);
+    EXPECT_EQ(kNoFloorHeight + kFloorHeightLiftMetres, kNoFloorHeight);
 }
 

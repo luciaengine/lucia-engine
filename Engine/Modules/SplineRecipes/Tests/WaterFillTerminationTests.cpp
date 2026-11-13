@@ -22,7 +22,7 @@
 
 #include "SplineLayout/CenterlineSampling.h"
 #include "SplineRecipes/SplineFillRebuild.h"
-#include "TerrainECS/PlanarHeightQuery.h"
+#include "TerrainECS/SurfaceHeightQuery.h"
 
 #include "Components/Spline/SplineComponent.h"
 #include "Components/Spline/SplineExtrude.h"
@@ -53,8 +53,8 @@ using GameEngine::Mathematics::Vector3;
 using GameEngine::TerrainECS::TerrainService;
 
 using GameEngine::SplineRecipes::BuildWaterFillRun;
-using GameEngine::TerrainECS::PlanarHeightQuery;
-using GameEngine::TerrainECS::ResolvePlanarHeightQuery;
+using GameEngine::TerrainECS::SurfaceHeightQuery;
+using GameEngine::TerrainECS::ResolveSurfaceHeightQuery;
 using GameEngine::SplineRecipes::WaterFillOutcome;
 using GameEngine::SplineRecipes::WaterFillRun;
 
@@ -67,10 +67,15 @@ namespace
 {
 
 // The finest ground height at world (x, z): a water fill floods the ground as drawn up close.
-bool SampleGround(const GameEngine::TerrainECS::PlanarHeightQuery& query, GameEngine::float32 worldX,
+bool SampleGround(const GameEngine::TerrainECS::SurfaceHeightQuery& query, GameEngine::float32 worldX,
                   GameEngine::float32 worldZ, GameEngine::float32& outY)
 {
-    return query.SampleHeight(worldX, worldZ, outY);
+    GameEngine::TerrainECS::SurfaceHeightSample sample;
+    if (!query.SampleHeight(GameEngine::Mathematics::Vector3{worldX, 0.0f, worldZ},
+                            GameEngine::TerrainECS::SurfaceHeightPolicy::RequireFinest, sample))
+        return false;
+    outY = sample.Height;
+    return true;
 }
 
 // ---- The scene, transcribed -------------------------------------------------
@@ -138,10 +143,7 @@ struct ScopedSplineService
 Components::WorldTransform IdentityAt(float32 x, float32 y, float32 z)
 {
     Components::WorldTransform xf{};
-    xf.matrix[0] = xf.matrix[5] = xf.matrix[10] = xf.matrix[15] = 1.0f;
-    xf.matrix[12] = x;
-    xf.matrix[13] = y;
-    xf.matrix[14] = z;
+    xf.Position = GameEngine::Mathematics::WorldPosition{x, y, z};
     return xf;
 }
 
@@ -392,7 +394,7 @@ class WaterFillTermination : public ::testing::Test
         Repro repro;
         repro.Stations = BuildWaterStations();
 
-        const TerrainECS::PlanarHeightQuery terrain = TerrainECS::ResolvePlanarHeightQuery(m_World);
+        const TerrainECS::SurfaceHeightQuery terrain = TerrainECS::ResolveSurfaceHeightQuery(m_World, Vector3{});
         const float32 spacingX = terrain.LatticeSpacingX();
         const float32 spacingZ = terrain.LatticeSpacingZ();
         EXPECT_TRUE(terrain.IsValid());
@@ -443,7 +445,7 @@ class WaterFillTermination : public ::testing::Test
         SG::SplineFillParams params;
         params.MaxHalfWidth = reach;
         params.EdgeDrop = std::max(0.0f, recipe.EdgeDrop);
-        params.SeaLevelFloor = recipe.SeaLevelFloor;
+        params.FloorHeight = recipe.FloorHeight;
         repro.Field = SG::BuildSplineFillField(repro.Stations, repro.Grid, params);
 
         repro.Run = BuildWaterFillRun(m_World, repro.Stations, recipe, GameEngine::Mathematics::Matrix4x4::Identity(),
@@ -866,11 +868,11 @@ TEST_F(WaterFillTermination, TheFillsGroundIsTheTerrainsOwnSamples)
 {
     BakeIslandTerrain();
 
-    const TerrainECS::PlanarHeightQuery terrain = TerrainECS::ResolvePlanarHeightQuery(m_World);
+    const TerrainECS::SurfaceHeightQuery terrain = TerrainECS::ResolveSurfaceHeightQuery(m_World, Vector3{});
     ASSERT_TRUE(terrain.IsValid());
-    ASSERT_NE(terrain.Single, nullptr);
+    ASSERT_NE(terrain.WholeMap(), nullptr);
 
-    const GameEngine::Terrain::HeightfieldData& field = terrain.Single->Heightfield;
+    const GameEngine::Terrain::HeightfieldData& field = terrain.WholeMap()->Heightfield;
     const uint32 width = field.GetWidth();
     const uint32 height = field.GetHeight();
     const float32 spacingX = terrain.LatticeSpacingX();
@@ -878,7 +880,7 @@ TEST_F(WaterFillTermination, TheFillsGroundIsTheTerrainsOwnSamples)
     std::printf("\n[ground] heightfield %ux%u, spacing %.6f m, origin (%.3f, %.3f), "
                 "originY=%.3f, heightScale=%.3f\n",
                 width, height, spacingX, terrain.FootprintOriginX(), terrain.FootprintOriginZ(),
-                terrain.OriginY, terrain.HeightScale);
+                terrain.OriginY(), terrain.HeightScale());
 
     // Every lattice corner the fill would read, against the array read the
     // design says it is equivalent to.
@@ -893,7 +895,7 @@ TEST_F(WaterFillTermination, TheFillsGroundIsTheTerrainsOwnSamples)
             if (!SampleGround(terrain, worldX, worldZ, sampled))
                 continue;
             const float32 direct =
-                terrain.OriginY + field.GetSample(xi, zi) * terrain.HeightScale;
+                terrain.OriginY() + field.GetSample(xi, zi) * terrain.HeightScale();
             const float32 delta = std::abs(sampled - direct);
             if (delta > worstDelta)
             {

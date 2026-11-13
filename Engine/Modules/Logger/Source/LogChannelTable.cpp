@@ -28,7 +28,7 @@ LogChannelTable::LogChannelTable()
 std::uint16_t LogChannelTable::Register(std::string_view name, LogLevel defaultLevel)
 {
     assert(!name.empty() && "a log channel needs a name");
-    assert(name.size() <= kMaxNameLength && "a log channel name is at most kMaxNameLength UTF-8 bytes");
+    assert(name.size() <= kMaxNameLength && "a log channel name is at most kMaxNameLength characters");
     name = name.substr(0, kMaxNameLength);
 
     std::lock_guard<std::mutex> lock(m_Mutex);
@@ -105,6 +105,12 @@ std::string_view LogChannelTable::GetName(std::uint16_t index) const
 LogLevel LogChannelTable::GetDefaultLevel(std::uint16_t index) const
 {
     return index < GetCount() ? m_Defaults[index] : LogLevel::Off;
+}
+
+LogLevel LogChannelTable::GetEffectiveLevel(std::uint16_t index) const
+{
+    return index < GetCount() ? static_cast<LogLevel>(m_Effective[index].load(std::memory_order_relaxed))
+                              : LogLevel::Off;
 }
 
 LogLevel LogChannelTable::GetLevelWithoutSetting(std::uint16_t index) const

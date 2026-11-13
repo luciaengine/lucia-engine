@@ -17,7 +17,7 @@
 #include "Rendering/Core/BarrierMapping.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include "StorageImageLayoutHelper.h"
@@ -54,6 +54,46 @@ struct HzbBuildPC
     uint32_t mode; // 0 = copy depth into mip 0, 1 = 2x2 MIN reduce
 };
 
+// One reduction: the SPD pair that builds it and the chain mode it must match.
+struct HzbReduction
+{
+    const char* Name;
+    const char* TilePackage;
+    const char* FinalizePackage;
+    uint32_t ChainMode;
+};
+
+constexpr HzbReduction kFarthest{"Farthest", "Shaders/hzb_spd.shaderpkg", "Shaders/hzb_spd_finalize.shaderpkg", 1u};
+constexpr HzbReduction kNearest{"Nearest", "Shaders/hzb_spd_nearest.shaderpkg",
+                                "Shaders/hzb_spd_nearest_finalize.shaderpkg", 2u};
+
+// One reduction on one backend. Metal translates the same SPIR-V to MSL, so its pyramids
+// must equal the chain's as Vulkan's do.
+struct HzbParityCase
+{
+    HzbReduction Reduction;
+    GraphicsAPI Api;
+};
+
+std::unique_ptr<IDevice> CreateParityDevice(GraphicsAPI api)
+{
+    if (api == GraphicsAPI::Vulkan)
+        return CreateVulkanDeviceFast();
+    DeviceDesc desc{};
+    desc.preferredAPI = api;
+    desc.enableSwapchain = false;
+    std::unique_ptr<IDevice> device = DeviceFactory::CreateDevice(desc);
+    if (!device || !device->Initialize(desc) || device->GetAPI() != api)
+        return nullptr;
+    return device;
+}
+
+std::string ParityCaseName(const ::testing::TestParamInfo<HzbParityCase>& info)
+{
+    return info.param.Reduction.Name;
+}
+
+
 // Mirrors HZBBuildNode.cpp's HzbSpdPC (shared by hzb_spd.comp and
 // hzb_spd_finalize.comp).
 struct HzbSpdPC
@@ -89,20 +129,20 @@ std::vector<float> MakeDepthPattern(uint32_t w, uint32_t h)
     return depth;
 }
 
-class HzbSpdParityTest : public ::testing::Test
+class HzbSpdParityTest : public ::testing::TestWithParam<HzbParityCase>
 {
   protected:
     void SetUp() override
     {
-        m_Device = CreateVulkanDeviceFast();
+        m_Device = CreateParityDevice(GetParam().Api);
         if (!m_Device)
-            GTEST_SKIP() << "No Vulkan device available";
+            GTEST_SKIP() << "Requested graphics device unavailable";
 
         // Per-mip chain pipeline (the parity reference).
         {
             ShaderPackage pkg{};
             std::string err;
-            if (!LoadShaderPkg("Shaders/hzb_build.shaderpkg", ShaderSourceKind::SpirV, pkg, &err))
+            if (!LoadShaderPkg("Shaders/hzb_build.shaderpkg", m_Device->PreferredShaderSource(), pkg, &err))
                 FAIL() << "hzb_build.shaderpkg not available: " << err;
             auto itCs = pkg.stageBytes.find("cs");
             ASSERT_NE(itCs, pkg.stageBytes.end());
@@ -132,8 +172,8 @@ class HzbSpdParityTest : public ::testing::Test
         {
             ShaderPackage pkg{};
             std::string err;
-            if (!LoadShaderPkg("Shaders/hzb_spd.shaderpkg", ShaderSourceKind::SpirV, pkg, &err))
-                FAIL() << "hzb_spd.shaderpkg not available: " << err;
+            if (!LoadShaderPkg(GetParam().Reduction.TilePackage, m_Device->PreferredShaderSource(), pkg, &err))
+                FAIL() << GetParam().Reduction.TilePackage << " not available: " << err;
             auto itCs = pkg.stageBytes.find("cs");
             ASSERT_NE(itCs, pkg.stageBytes.end());
 
@@ -164,8 +204,8 @@ class HzbSpdParityTest : public ::testing::Test
         {
             ShaderPackage pkg{};
             std::string err;
-            if (!LoadShaderPkg("Shaders/hzb_spd_finalize.shaderpkg", ShaderSourceKind::SpirV, pkg, &err))
-                FAIL() << "hzb_spd_finalize.shaderpkg not available: " << err;
+            if (!LoadShaderPkg(GetParam().Reduction.FinalizePackage, m_Device->PreferredShaderSource(), pkg, &err))
+                FAIL() << GetParam().Reduction.FinalizePackage << " not available: " << err;
             auto itCs = pkg.stageBytes.find("cs");
             ASSERT_NE(itCs, pkg.stageBytes.end());
 
@@ -328,7 +368,7 @@ class HzbSpdParityTest : public ::testing::Test
             m_Device->UpdateStorageImageBinding(ds, 1, MipView(chainTex, m));
             cl->SetPipeline(m_ChainPipeline);
             cl->BindDescriptorSet(0, ds, m_ChainPipeline);
-            HzbBuildPC pc{dstW, dstH, srcW, srcH, 1u};
+            HzbBuildPC pc{dstW, dstH, srcW, srcH, GetParam().Reduction.ChainMode};
             cl->SetPushConstants(pc);
             cl->Dispatch((dstW + 7u) / 8u, (dstH + 7u) / 8u, 1u);
             cl->Barrier(computeToCompute);
@@ -503,6 +543,18 @@ TEST_F(HzbSpdParityTest, ProductionShape4K) { RunParityCase(3840u, 2160u); }
 // 32x32 tile cap (4223 >> 7 == 32), tail level 12, and the edge-overlay
 // arrays at peak occupancy (mip2 = 1055 wide -> eCol/eRow index 1054, one
 // below the 1056 capacity).
-TEST_F(HzbSpdParityTest, MaxSupportedExtentBoundary) { RunParityCase(4223u, 4223u); }
+TEST_P(HzbSpdParityTest, MaxSupportedExtentBoundary) { RunParityCase(4223u, 4223u); }
+
+INSTANTIATE_TEST_SUITE_P(Reductions, HzbSpdParityTest,
+                         ::testing::Values(HzbParityCase{kFarthest, GraphicsAPI::Vulkan},
+                                           HzbParityCase{kNearest, GraphicsAPI::Vulkan}),
+                         ParityCaseName);
+
+#if defined(__APPLE__)
+INSTANTIATE_TEST_SUITE_P(ReductionsMetal, HzbSpdParityTest,
+                         ::testing::Values(HzbParityCase{kFarthest, GraphicsAPI::Metal},
+                                           HzbParityCase{kNearest, GraphicsAPI::Metal}),
+                         ParityCaseName);
+#endif
 
 } // namespace

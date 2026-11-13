@@ -3,7 +3,7 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/CommandList.h"
 
-#include "Source/Vulkan/VulkanDevice.h"
+#include "Source/Vulkan/VulkanDevice/VulkanDevice.h"
 #include "Source/Vulkan/VulkanCommandList.h"
 
 using namespace GameEngine::Rendering;

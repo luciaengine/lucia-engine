@@ -6,6 +6,7 @@
 #include "Core/CpuProfiler.h"
 #include "Engine/Rendering/AntiAliasingEnvOverrides.h"
 #include "Engine/Rendering/ExposureReadbackFeature.h"
+#include "Engine/Rendering/HeightFogParamsUBO.h"
 #include "Engine/Rendering/IRenderFeature.h"
 #include "Engine/Rendering/RTShadowMaskService.h"
 #include "Engine/Rendering/SceneAccelerationStructureService.h"
@@ -18,6 +19,7 @@
 #include "Engine/Rendering/MaterialCompiler.h"
 #include "Engine/Rendering/ShaderGraphMaterial.h"
 #include "Engine/Rendering/MeshReprovisionSource.h"
+#include "Rendering/Core/ReverseZ.h"
 #include "Rendering/Geometry/VertexLayoutBuilder.h"
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialParamsLayout.h"
@@ -30,7 +32,6 @@
 #include "Assets/Packages/PackageResolver.h"
 #include "Assets/TextureAsset.h"
 #include "Engine/Rendering/DepthDrawRecorder.h"
-#include "Engine/Rendering/EmbeddedImageDecoder.h"
 #include "Engine/Rendering/HlodRuntime.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
@@ -47,9 +48,9 @@
 #include "Rendering/Core/BindlessResourceManager.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/DeviceFormatting.h"
-#include "Rendering/Core/PipelineCache.h"
-#include "Rendering/Core/PipelineTypes.h"
-#include "Rendering/CameraDerivation.h"
+#include "Rendering/Core/Pipeline/PipelineCache.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Camera/CameraDerivation.h"
 #include "Rendering/Core/CullingStrategy.h"
 #include "Rendering/Core/FrustumCullingStrategy.h"
 #include "Rendering/Core/GPUCulling.h"
@@ -57,14 +58,14 @@
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/Materials/MaterialBuilder.h"
-#include "Rendering/Materials/ShaderReflection.h"
+#include "Rendering/Materials/Shader/ShaderReflection.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Passes/SRGBEncodePass.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Rendering/Utils/BufferHelpers.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
-#include "Rendering/Utils/CubeLutFileParser.h"
-#include "Rendering/Utils/CubeLutGpuUpload.h"
+#include "Rendering/Utils/CubeLut/CubeLutFileParser.h"
+#include "Rendering/Utils/CubeLut/CubeLutGpuUpload.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
 #include "Types/StringId.h"
 #include "Mathematics/Matrix4x4.h"
@@ -213,13 +214,15 @@ bool RenderServices::Initialize(Rendering::IDevice* device)
     // frees per-view GPU buffers through a live device.
     m_ViewRegistry.SetDevice(m_Device);
     // The one cross-subsystem lifecycle edge (sec 3.3): ReleaseView clears the
-    // view's draw-builder submissions and temporal history after tearing
-    // down its own state.
+    // view's draw-builder submissions, temporal history and scatter buffers
+    // after tearing down its own state.
     m_ViewRegistry.SetViewReleasedCallback(
         [this](Rendering::ViewId id)
         {
             m_WorldDrawBuilder.ClearView(id);
             m_ViewTemporalHistory.ReleaseView(id);
+            if (m_DrawStreamBuilder)
+                m_DrawStreamBuilder->ReleaseView(static_cast<uint32_t>(id));
         });
     Rendering::IDevice* const dev = m_Device;
 
@@ -255,22 +258,6 @@ bool RenderServices::Initialize(Rendering::IDevice* device)
             Logger::Log::Warning("GE_TAA_RENDER_SCALE '{}' out of range [{}, 1.0]; keeping {}", env,
                                  kMinRenderScale, m_DefaultRenderScale);
     }
-
-    // Which producer arm writes deforming motion vectors. Three independent
-    // switches, every one off by default, so a run that sets none records
-    // nothing and the frame is the frame it was before this work. They select
-    // between the options the producer comparison measures; enabling more than
-    // one is refused (they share one target). The measurement slice replaces
-    // the switches with the winner.
-    SetDeformationMotionArm(ResolveDeformationMotionArm(
-        Platform::EnvironmentSwitchEnabled("GE_DEFORMATION_MOTION_COLOR_PASS_TARGET", false),
-        Platform::EnvironmentSwitchEnabled("GE_DEFORMATION_MOTION_PREPASS_TARGET", false),
-        Platform::EnvironmentSwitchEnabled("GE_DEFORMATION_MOTION_SEPARATE_PASS", false)));
-    // Stated once, so a run that enabled a switch and sees no motion can tell
-    // "the arm is off" from "the arm ran and recorded nothing" without a build.
-    if (m_DeformationMotionArm != DeformationMotionArm::None)
-        Logger::Log::Info("Deformation motion: producing through the {} arm.",
-                          DeformationMotionArmName(m_DeformationMotionArm));
 
     // Texture residency + binding service: bindless array, GPU texture cache,
     // samplers, defaults, LUTs, async upload pump.
@@ -325,7 +312,8 @@ bool RenderServices::Initialize(Rendering::IDevice* device)
                                 [this] { return ResolveWorldPassKeywordsForPrewarm(); });
 
     // Per-frame double-buffered SSBO pools for material params and bone palettes.
-    InitializePerFrameWritePool();
+    if (!InitializePerFrameWritePool())
+        return false;
 
     // Initialize GPU animation data store for Tier 2 compute skinning.
     // The compute pass and shader are loaded lazily in BuildFrameGraph
@@ -501,11 +489,16 @@ void RenderServices::CreateFallbackBuffers()
         std::memcpy(vp.ge_view, kIdentity4x4.Data(), 64);
         std::memcpy(vp.ge_viewProj, kIdentity4x4.Data(), 64);
         std::memcpy(vp.ge_proj, kIdentity4x4.Data(), 64);
+        // The relative frame of an eye at the world origin: sector (0,0,0).
+        std::memcpy(vp.ge_viewRel, kIdentity4x4.Data(), 64);
+        std::memcpy(vp.ge_invViewRel, kIdentity4x4.Data(), 64);
+        vp.ge_renderOrigin[3] = static_cast<float>(Mathematics::kWorldSectorSize);
         std::memcpy(lightUbo.uLightVP, kIdentity4x4.Data(), 64);
-        vp.ge_nearFar[0] = 0.1f;
-        vp.ge_nearFar[1] = 1000.0f;
-        vp.ge_nearFar[2] = 0.0f;
-        vp.ge_nearFar[3] = 0.0f;
+        // The depth terms of the identity projection (m22, m32, m23, m33).
+        vp.ge_depthTerms[0] = 1.0f;
+        vp.ge_depthTerms[3] = 1.0f;
+        vp.ge_viewRanges[0] = 0.1f;
+        vp.ge_viewRanges[1] = 1000.0f;
         vp.ge_cameraPosWS[0] = 0.0f;
         vp.ge_cameraPosWS[1] = 0.0f;
         vp.ge_cameraPosWS[2] = 0.0f;
@@ -553,6 +546,12 @@ void RenderServices::CreateFallbackBuffers()
         const ExposureReadbackFeature::State unmetered{};
         registerFallback("ExposureHistory", Rendering::BufferUsage::Storage, sizeof(unmetered),
                          "RenderServices.Fallback.ExposureHistory", &unmetered);
+        // HeightFogParams: intensity 0, which the fog term reads as no fog, for a draw keyed with the
+        // HeightFog keyword in a pass whose view uploads no parameters (a contributor that chose its
+        // keywords a frame earlier than the pass it draws in).
+        const HeightFogParamsUBO noHeightFog{};
+        registerFallback("HeightFogParams", Rendering::BufferUsage::Uniform, sizeof(noHeightFog),
+                         "RenderServices.Fallback.HeightFogParams", &noHeightFog);
 
         // ShadowData fallback: zero-filled means numCascades=0, so GE_SampleShadow returns 1.0 (no shadow).
         {
@@ -586,7 +585,7 @@ void RenderServices::CreateFallbackBuffers()
         }
 
         // MotionParams fallback: the motion variant's per-view block, zeroed. A
-        // view whose producer arm did not run this frame must bind zeros
+        // view whose producer did not run this frame must bind zeros
         // rather than another view's previous view-projection — a stale matrix
         // would be a wrong motion vector, which is worse than none. Nothing
         // draws with it: a producer that cannot fill the block records no
@@ -676,10 +675,9 @@ void RenderServices::CreateDeviceDefaultBuffers()
 // same rule sets the shadow sampler's border to 0 in Device.cpp with the note
 // "reverse-Z far depth -> OOB considered lit".
 //
-// A depth image cannot be filled through the texture-upload helpers:
-// CopyBufferToTextureSubresource hard-codes VK_IMAGE_ASPECT_COLOR_BIT. Clearing
-// through a depth-only render pass per layer is the portable route, and it runs
-// once per device (creation + rebuild) on a 1x1 image.
+// The fill is a clear through a depth-only render pass per layer, the route
+// every backend supports without a staging buffer, and it runs once per device
+// (creation + rebuild) on a 1x1 image.
 //
 // Assumes dynamic rendering (DeviceDesc::enableDynamicRendering, default true).
 // Without it each BeginRenderPass caches a framebuffer + render pass that
@@ -733,7 +731,7 @@ static void ClearDepthArrayToFar(Rendering::IDevice* dev, Rendering::TextureHand
         rp.colorStoreOp[0] = Rendering::RenderPassDesc::StoreOp::DontCare;
         rp.depthTarget = tex;
         rp.clearDepth = true;
-        rp.clearDepthValue = 0.0f; // reverse-Z far == lit
+        rp.clearDepthValue = Rendering::ReverseZ::kClearFar; // reverse-Z far == lit
         rp.depthLoadOp = Rendering::RenderPassDesc::LoadOp::Clear;
         rp.depthStoreOp = Rendering::RenderPassDesc::StoreOp::Store;
         // Dynamic rendering records one layer per pass, so each layer gets its
@@ -861,7 +859,7 @@ void RenderServices::CreateShadowFallbackResources()
     }
 }
 
-void RenderServices::InitializePerFrameWritePool()
+bool RenderServices::InitializePerFrameWritePool()
 {
     // Idempotent: Shutdown() is a safe no-op on an uninitialized pool, so this
     // both initializes (from Initialize) and re-initializes over dead buffers
@@ -899,7 +897,7 @@ void RenderServices::InitializePerFrameWritePool()
         }
     }
 
-    m_PerFrameWritePool.Initialize(m_Device, poolCfg);
+    return m_PerFrameWritePool.Initialize(m_Device, poolCfg);
 }
 
 void RenderServices::OnDeviceRebuilt()
@@ -1014,8 +1012,16 @@ void RenderServices::OnDeviceRebuilt()
     if (m_DrawStreamBuilder)
         m_DrawStreamBuilder->ReprovisionAfterDeviceRebuild();
 
-    // 8b. The device teardown freed the sorted transparent draw streams.
-    // Drop their handles so the next frame allocates live buffers.
+    // 8b. Sorted transparent drain state: the CPU-drain ring buffers are dead but
+    //     their handles still read IsValid(), so the capacity gate in
+    //     AddSortedTransparentDrainForView would skip recreation and MapBuffer a
+    //     dead handle — the CPU-path view's transparents would vanish silently
+    //     and stickily (S2 review R1-F1). Zero handles + capacities (no
+    //     DestroyBuffer — the rebuild teardown already freed the VkBuffers) so
+    //     the next past-capacity drain recreates lazily. The drain compute
+    //     pipeline's concrete VkPipeline was dropped with the cache in step 1;
+    //     its interned desc survives, and the pool-imported args/counts/
+    //     indirection buffers are pool-owned (reprovisioned with the pool).
     for (auto& [sortedViewId, sortedView] : m_SortedTransparentByView)
     {
         (void)sortedViewId;
@@ -1053,8 +1059,9 @@ void RenderServices::OnDeviceRebuilt()
     //     ImageBasedLightingFeature (env cubes + BRDF LUT, re-armed for re-bake),
     //     SkyRenderFeature (atmosphere LUTs), RetargetRenderFeature (retarget SSBOs),
     //     LensFlareRenderFeature (mapped instance rings + atlas sampler),
-    //     ExposureReadbackFeature (mapped readback rings). Features holding only
-    //     RG-transient resources inherit the default no-op.
+    //     ExposureReadbackFeature and IrradianceReadbackFeature (mapped readback
+    //     rings). Features holding only RG-transient resources inherit the default
+    //     no-op.
     //
     //     Module-owned features: CBTTerrain's CBTRenderFeature now overrides this — it
     //     forgets its dead kernel pipelines + instance buffers and re-arms its lazy
@@ -1558,7 +1565,8 @@ void RenderServices::Shutdown()
             if (buf.IsValid())
                 m_Device->DestroyBuffer(buf);
         }
-        // Per-view sorted transparent draw streams.
+        // Sorted transparent CPU-drain ring buffers (host-visible, lazily
+        // created only for views that exceeded the GPU sort capacity).
         for (auto& [viewId, view] : m_SortedTransparentByView)
         {
             for (auto& buf : view.CpuDrainBuffers)

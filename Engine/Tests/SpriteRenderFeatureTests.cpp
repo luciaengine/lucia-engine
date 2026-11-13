@@ -1,4 +1,6 @@
 #include "Engine/Rendering/2D/SpriteRenderFeature.h"
+#include "Engine/Rendering/RenderOrigin.h"
+#include "Components/Rendering/Light.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/2D/Systems/SpriteAnimationSystem.h"
 #include "Assets/AssetManager.h"
@@ -111,9 +113,10 @@ TEST_F(SpriteWorldDraw, MatchingWorldProducesGpuBatchBeforeForeignWorldIsRejecte
     ASSERT_TRUE(registered.IsOk());
     const auto cameraId = Services.Views().AllocateCamera("SpriteWorldCamera");
     Rendering::CameraData camera{};
-    for (int i = 0; i < 16; i += 5)
-        camera.view[i] = camera.proj[i] = camera.viewProj[i] = 1.0f;
-    Services.Views().SetCameraData(cameraId, camera);
+    camera.view = camera.proj = camera.viewProj = Mathematics::Matrix4x4{};
+    const Rendering::CameraRanges cameraRanges{0.0f, 1.0f};
+    SetCameraEye(camera, Mathematics::WorldPosition{});
+    Services.Views().SetCameraData(cameraId, camera, cameraRanges);
     const auto viewId = Services.Views().AllocateView("SpriteWorldView", cameraId);
     Services.Views().SetViewWorldId(viewId, 12);
     Services.Views().SetViewRenderLayerMask(viewId, 0xFFFFFFFFu);
@@ -135,7 +138,7 @@ TEST_F(SpriteWorldDraw, MatchingWorldProducesGpuBatchBeforeForeignWorldIsRejecte
     Services.Views().SetViewWorldId(viewId, 12);
     SpriteDraw sprite;
     sprite.Texture = registered.Value();
-    sprite.Center[2] = 0.5f;
+    sprite.Center.Z = 0.5f;
     sprite.AxisX[0] = sprite.AxisY[1] = 0.25f;
     const std::vector<Mathematics::Vector3> outside = {
         {-3, 0, 0.5f}, {3, 0, 0.5f}, {0, -3, 0.5f},
@@ -143,7 +146,7 @@ TEST_F(SpriteWorldDraw, MatchingWorldProducesGpuBatchBeforeForeignWorldIsRejecte
     for (const auto& center : outside)
     {
         SCOPED_TRACE(::testing::Message() << center.x << "," << center.y << "," << center.z);
-        std::copy_n(center.v, 3, sprite.Center);
+        sprite.Center = Mathematics::WorldPosition::FromVector3(center);
         draws = {sprite};
         Feature->SetSpriteDraws(12, draws);
         Feature->BuildViewDraws(Services, viewId, batches);
@@ -151,9 +154,9 @@ TEST_F(SpriteWorldDraw, MatchingWorldProducesGpuBatchBeforeForeignWorldIsRejecte
     }
 
     // A mirrored, skewed quad can cross the viewport even with its center outside.
-    sprite.Center[0] = 1.5f;
-    sprite.Center[1] = 0;
-    sprite.Center[2] = 0.5f;
+    sprite.Center.X = 1.5f;
+    sprite.Center.Y = 0;
+    sprite.Center.Z = 0.5f;
     sprite.AxisX[0] = -1.0f;
     sprite.AxisX[1] = 0.3f;
     sprite.AxisY[0] = 0.4f;
@@ -164,22 +167,26 @@ TEST_F(SpriteWorldDraw, MatchingWorldProducesGpuBatchBeforeForeignWorldIsRejecte
     EXPECT_EQ(batches[0].InstanceCount, 1u);
 
     // Visibility is per view: moving the camera can reveal the same snapshot.
-    sprite.Center[0] = 4.0f;
+    sprite.Center.X = 4.0f;
     sprite.AxisX[0] = sprite.AxisY[1] = 0.25f;
     sprite.AxisX[1] = sprite.AxisY[0] = 0;
     draws = {sprite};
     Feature->SetSpriteDraws(12, draws);
     Feature->BuildViewDraws(Services, viewId, batches);
     EXPECT_TRUE(batches.empty());
-    camera.viewProj[12] = -4.0f;
-    Services.Views().SetCameraData(cameraId, camera);
+    camera.view = Mathematics::Matrix4x4::Translation({-4.0f, 0.0f, 0.0f});
+    camera.viewProj = camera.proj * camera.view;
+    SetCameraEye(camera, Mathematics::WorldPosition{4.0, 0.0, 0.0});
+    Services.Views().SetCameraData(cameraId, camera, cameraRanges);
     Feature->BuildViewDraws(Services, viewId, batches);
     ASSERT_EQ(batches.size(), 1u);
     EXPECT_EQ(batches[0].InstanceCount, 1u);
 
-    camera.viewProj[12] = 0;
-    Services.Views().SetCameraData(cameraId, camera);
-    sprite.Center[0] = 1.26f;
+    camera.view = Mathematics::Matrix4x4{};
+    camera.viewProj = camera.proj * camera.view;
+    SetCameraEye(camera, Mathematics::WorldPosition{});
+    Services.Views().SetCameraData(cameraId, camera, cameraRanges);
+    sprite.Center.X = 1.26f;
     draws = {sprite};
     Feature->SetSpriteDraws(12, draws);
     Feature->BuildViewDraws(Services, viewId, batches);
@@ -190,6 +197,61 @@ TEST_F(SpriteWorldDraw, MatchingWorldProducesGpuBatchBeforeForeignWorldIsRejecte
     Services.Views().SetViewPixelPerfect(viewId, pixelPerfect);
     Feature->BuildViewDraws(Services, viewId, batches);
     EXPECT_EQ(batches.size(), 1u) << "Pixel snapping moves the left edge onto the viewport";
+
+    pixelPerfect.Active = false;
+    Services.Views().SetViewPixelPerfect(viewId, pixelPerfect);
+    constexpr double kBoundary = 100000256.0;
+    sprite.Center = Mathematics::WorldPosition{kBoundary + 0.25, 0.0, 0.5};
+    std::vector<SpriteLightDraw> lightDraws(1);
+    lightDraws[0].Position = Mathematics::WorldPosition{kBoundary + 0.5, 0.0, 0.5};
+    lightDraws[0].Gpu.PositionType[3] = static_cast<float32>(Components::LightType::Point);
+    Feature->SetSpriteLights(lightDraws);
+    const auto secondCameraId = Services.Views().AllocateCamera("SpriteOtherOrigin");
+    const auto secondViewId = Services.Views().AllocateView("SpriteOtherOrigin", secondCameraId);
+    Services.Views().SetViewWorldId(secondViewId, 12);
+    Services.Views().SetViewRenderLayerMask(secondViewId, 0xFFFFFFFFu);
+    Rendering::BufferHandle firstViewInstances;
+    Rendering::BufferHandle firstViewLights;
+    for (int viewIndex = 0; viewIndex < 2; ++viewIndex)
+    {
+        const double eyeX = kBoundary + (viewIndex == 0 ? -0.125 : 0.125);
+        const auto targetCamera = viewIndex == 0 ? cameraId : secondCameraId;
+        const auto targetView = viewIndex == 0 ? viewId : secondViewId;
+        camera.view = Mathematics::Matrix4x4::Translation({-static_cast<float32>(eyeX), 0.0f, 0.0f});
+        camera.viewProj = camera.proj * camera.view;
+        SetCameraEye(camera, Mathematics::WorldPosition{eyeX, 0.0, 0.0});
+        Services.Views().SetCameraData(targetCamera, camera, cameraRanges);
+        draws = {sprite};
+        Feature->SetSpriteDraws(12, draws);
+        Feature->BuildViewDraws(Services, targetView, batches);
+        ASSERT_EQ(batches.size(), 1u);
+        const auto* instance = static_cast<const float32*>(Device->MapBuffer(batches[0].Instances));
+        ASSERT_NE(instance, nullptr);
+        EXPECT_FLOAT_EQ(instance[0], viewIndex == 0 ? 512.25f : -511.75f);
+        Device->UnmapBuffer(batches[0].Instances);
+        const auto* light = static_cast<const SpriteLight*>(Device->MapBuffer(batches[0].Lights));
+        ASSERT_NE(light, nullptr);
+        EXPECT_FLOAT_EQ(light[0].PositionType[0], viewIndex == 0 ? 512.5f : -511.5f);
+        Device->UnmapBuffer(batches[0].Lights);
+        if (viewIndex == 0)
+        {
+            firstViewInstances = batches[0].Instances;
+            firstViewLights = batches[0].Lights;
+        }
+        else
+        {
+            EXPECT_NE(firstViewInstances, batches[0].Instances);
+            EXPECT_NE(firstViewLights, batches[0].Lights);
+        }
+    }
+    const auto* firstView = static_cast<const float32*>(Device->MapBuffer(firstViewInstances));
+    ASSERT_NE(firstView, nullptr);
+    EXPECT_FLOAT_EQ(firstView[0], 512.25f);
+    Device->UnmapBuffer(firstViewInstances);
+    const auto* firstLight = static_cast<const SpriteLight*>(Device->MapBuffer(firstViewLights));
+    ASSERT_NE(firstLight, nullptr);
+    EXPECT_FLOAT_EQ(firstLight[0].PositionType[0], 512.5f);
+    Device->UnmapBuffer(firstViewLights);
 
     Services.Views().SetViewRenderLayerMask(viewId, 0u);
     Feature->BuildViewDraws(Services, viewId, batches);

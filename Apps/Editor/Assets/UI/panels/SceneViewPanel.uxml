@@ -3,14 +3,15 @@
     <CameraBookmarksWidget id="CameraBookmarks"/>
     <UIElement class="toolbar-spacer" />
     <!-- Inline tool mode buttons (visible when overlay is hidden) -->
-    <UIElement id="InlineToolButtons" class="sceneview-toolbar-buttons inline-tool-buttons">
-      <Button id="InlineSelectBtn" class="scene-tool-btn select-tool-icon" />
-      <Button id="InlineTranslateBtn" class="scene-tool-btn translate-tool-icon icon-active" />
+    <UIElement id="InlineToolButtons" class="sceneview-toolbar-buttons inline-tool-buttons hidden">
+      <Button id="InlineSelectBtn" class="scene-tool-btn select-tool-icon icon-active" />
+      <Button id="InlineTranslateBtn" class="scene-tool-btn translate-tool-icon" />
       <Button id="InlineRotateBtn" class="scene-tool-btn rotate-tool-icon" />
       <Button id="InlineScaleBtn" class="scene-tool-btn scale-tool-icon" />
       <Button id="InlineMeasureBtn" class="scene-tool-btn ruler-tool-icon" />
     </UIElement>
     <UIElement class="sceneview-toolbar-buttons sceneview-toolbar-right">
+      <SceneViewLayersField id="SceneViewLayersFilter" />
       <Button id="ToolbarSpacer1" class="toolbar-spacer-btn" />
       <Button id="CameraSettingsBtn" class="small secondary icon-button camera-settings-icon" />
       <Button id="GridToggle" class="small secondary icon-button grid-icon" />
@@ -23,57 +24,25 @@
       <Button id="QuadViewToggle" class="small secondary icon-button quad-view-icon" />
       <Button id="PostProcessToggle" class="small secondary icon-button post-process-icon icon-active" />
       <Button id="RotationGizmoToggle" class="small secondary icon-button nav-gizmo-icon icon-active" />
-      <Button id="ToolOverlayToggle" class="small secondary icon-button tool-overlay-icon" />
+      <Button id="ToolOverlayToggle" class="small secondary icon-button tool-overlay-icon icon-active" />
     </UIElement>
   </SceneViewToolbar>
 
   <UIElement id="SceneViewViewportHost" class="scene-viewport-host">
-    <!-- This element is sampled by the renderer via engine("scene_main") in theme/views.css -->
-    <UIElement id="SceneViewViewport" class="scene-viewport scene-viewport-slot scene-viewport-perspective active-viewport">
-      <Label id="SceneViewViewportLabelPerspective" class="scene-viewport-label" text="Persp" />
-      <UIElement class="scene-viewport-active-outline" />
-      <!-- 2D mode rulers + magnification readout (fills viewport, no input) -->
-      <SceneViewRulerOverlay id="SceneViewRulerOverlay" class="scene-view-ruler-overlay" />
-      <SceneViewMeasureOverlay id="SceneViewMeasureOverlay" class="scene-view-measure-overlay" />
-
-      <!-- Floating tool overlay (top-left of viewport) -->
-      <UIElement id="SceneToolOverlay" class="scene-tool-overlay hidden">
+    <!-- The perspective pane shows the main scene image: engine("scene_main") in theme/scene-view.css -->
+    <SceneViewport id="SceneViewViewport" slot="perspective" class="scene-viewport scene-viewport-slot scene-viewport-perspective active-viewport">
+      <!-- Floating tool overlay: left edge of the viewport, centered on its height; slides up to keep one inset above the FPS label, pins at the top inset when it cannot -->
+      <SceneViewToolOverlay id="SceneToolOverlay" class="scene-tool-overlay">
         <Button id="SelectModeBtn" class="scene-tool-btn select-tool-icon" />
         <Button id="TranslateModeBtn" class="scene-tool-btn translate-tool-icon icon-active" />
         <Button id="RotateModeBtn" class="scene-tool-btn rotate-tool-icon" />
         <Button id="ScaleModeBtn" class="scene-tool-btn scale-tool-icon" />
         <Button id="MeasureToolBtn" class="scene-tool-btn ruler-tool-icon" />
-      </UIElement>
-
-      <!-- Axis orientation gizmo (top-right of viewport) -->
-      <ViewportRotationGizmo id="ViewportRotationGizmo" class="viewport-rotation-gizmo" />
-      <UIElement id="SceneViewHdrTestPatternOverlay" class="scene-view-hdr-test-pattern-overlay" />
-    </UIElement>
-
-    <UIElement id="SceneViewViewportTop" class="scene-viewport scene-viewport-slot hidden">
-      <Label id="SceneViewViewportLabelTop" class="scene-viewport-label" text="Top" />
-      <UIElement class="scene-viewport-active-outline" />
-      <SceneViewRulerOverlay id="SceneViewRulerOverlayTop" class="scene-view-ruler-overlay" />
-      <SceneViewMeasureOverlay id="SceneViewMeasureOverlayTop" class="scene-view-measure-overlay" />
-      <ViewportRotationGizmo id="ViewportRotationGizmoTop" class="viewport-rotation-gizmo" />
-      <UIElement id="SceneViewHdrTestPatternOverlayTop" class="scene-view-hdr-test-pattern-overlay" />
-    </UIElement>
-    <UIElement id="SceneViewViewportFront" class="scene-viewport scene-viewport-slot hidden">
-      <Label id="SceneViewViewportLabelFront" class="scene-viewport-label" text="Front" />
-      <UIElement class="scene-viewport-active-outline" />
-      <SceneViewRulerOverlay id="SceneViewRulerOverlayFront" class="scene-view-ruler-overlay" />
-      <SceneViewMeasureOverlay id="SceneViewMeasureOverlayFront" class="scene-view-measure-overlay" />
-      <ViewportRotationGizmo id="ViewportRotationGizmoFront" class="viewport-rotation-gizmo" />
-      <UIElement id="SceneViewHdrTestPatternOverlayFront" class="scene-view-hdr-test-pattern-overlay" />
-    </UIElement>
-    <UIElement id="SceneViewViewportSide" class="scene-viewport scene-viewport-slot hidden">
-      <Label id="SceneViewViewportLabelSide" class="scene-viewport-label" text="Side" />
-      <UIElement class="scene-viewport-active-outline" />
-      <SceneViewRulerOverlay id="SceneViewRulerOverlaySide" class="scene-view-ruler-overlay" />
-      <SceneViewMeasureOverlay id="SceneViewMeasureOverlaySide" class="scene-view-measure-overlay" />
-      <ViewportRotationGizmo id="ViewportRotationGizmoSide" class="viewport-rotation-gizmo" />
-      <UIElement id="SceneViewHdrTestPatternOverlaySide" class="scene-view-hdr-test-pattern-overlay" />
-    </UIElement>
+      </SceneViewToolOverlay>
+    </SceneViewport>
+    <SceneViewport id="SceneViewViewportTop" slot="top" class="scene-viewport scene-viewport-slot hidden" />
+    <SceneViewport id="SceneViewViewportFront" slot="front" class="scene-viewport scene-viewport-slot hidden" />
+    <SceneViewport id="SceneViewViewportSide" slot="side" class="scene-viewport scene-viewport-slot hidden" />
     <UIElement id="SceneViewQuadSplitVerticalTop" class="scene-quad-split-handle scene-quad-split-vertical hidden">
       <UIElement id="SceneViewQuadSplitVerticalTopLine" class="scene-quad-split-line scene-quad-split-line-vertical" />
     </UIElement>

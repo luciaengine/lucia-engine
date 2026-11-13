@@ -1,6 +1,25 @@
-// Chain levels use a clamped [1 2 1]/4 tent around sample 2j; lambda = log2(d*t/(f*s0)).
-// Shared vertices compute identical heights; lambda <= 0.75 keeps cached height bits.
-// The C++ shim supplies CBT_ChainLoad; CBT_CHAIN_LEVEL_RULE_ONLY omits chain taps.
+// cbt_height_chain.glsl: the prefiltered height chain and the terrain draw's level rule.
+//
+// A far facet of the CBT spans many lattice cells, so its corners, which sample the level-0
+// heights, alias a relief finer than the facet into a fan of facets along the horizon. The draw
+// moves each vertex to the chain level its distance asks for instead: the surface prefiltered to
+// the detail the screen can show there. The chain holds levels 1..top of the unified height texture
+// (CBTLayout.h kCBTHeightChain*): level L + 1 has S / 2 + 1 samples along an axis where level L has
+// S, and its sample j is the [1 2 1] / 4 tent of level L around sample 2j, edges clamped. These are
+// the shapes and the filter of a paged terrain's store (PageStoreFormat, PagePyramidBuilder), and
+// the level rule is the page rule's (TerrainECS PageLevelRule): lambda = log2(d x t / (f x s0)).
+//
+// A vertex shared by several facets has the same UV and the same cached position in each of them
+// (the integer barycentric walk), and the eye is one value per frame, so every copy computes the same
+// level and the same height: the draw stays crack-free. Below lambda 0.75 the vertex keeps its cached
+// level-0 height bit for bit, so the near field draws the level-0 surface exactly.
+//
+// The block between the GE_SHARED_HEIGHT_CHAIN markers is compiled as C++ by CBTTerrainTests
+// (GlslShim.h): written component-wise, float literals suffixed `f`, no out parameters. Pure math, no
+// bindings. The consumer defines the tap below after including this file:
+//   float CBT_ChainLoad(uint word); // the chain buffer's word `word`, as a float
+// A consumer that needs only the level rule (the surface) defines CBT_CHAIN_LEVEL_RULE_ONLY first and
+// gets the addressing and the level functions without the tap.
 #ifndef CBT_HEIGHT_CHAIN_GLSL
 #define CBT_HEIGHT_CHAIN_GLSL
 
@@ -56,7 +75,13 @@ uint CBT_ChainLevelWord(uint samplesX, uint samplesZ, uint level)
 // scale = t / (f x s0) (mirror TerrainECS GeometryPageLevel). Negative is finer than level 0.
 float CBT_ChainLevel(float distance, float scale)
 {
+#if defined(GE_STAGE_FRAGMENT)
+    // The fragment stage uses the level only to shade, from its own pixel distance. On Metal a precise
+    // operation becomes a function call, and a fragment with a call costs many times more under MSAA.
+    float edge = max(distance, 1.17549435e-38f) * scale;
+#else
     precise float edge = max(distance, 1.17549435e-38f) * scale;
+#endif
     return log2(edge);
 }
 
@@ -69,8 +94,10 @@ float CBT_ChainParentBlend(float lambda)
     return clamp((inRing - 0.75f) / (1.0f - 0.75f), 0.0f, 1.0f);
 }
 
-// Normal-chain weight is zero through lambda 1.75 and one from lambda 2.
-// The transition blends level 2 against the level-0 normal map; chain mip 0 is not sampled.
+// How a fragment at continuous level `lambda` takes its normal: 0 = the level-0 normal map alone (the
+// near field and level 1's ring); 1 = the normal chain alone at mip lambda - 1, from level 2 on; between,
+// over the last quarter of level 1, the weight of the chain's level-2 mip against the level-0 map. The
+// surface never reads the chain's first mip.
 float CBT_ChainNormalWeight(float lambda)
 {
     if (!(lambda > 1.75f))
@@ -80,8 +107,14 @@ float CBT_ChainNormalWeight(float lambda)
     return (lambda - 1.75f) / (2.0f - 1.75f);
 }
 
-// Grazing spread is 1/cos(view angle). Its shading footprint takes over across lambda 0..1.
-// This distance band avoids a visible ring where the draw first reaches the filtered surface.
+// The level from which a fragment shades the whole of its grazing footprint. A pixel that sees the
+// ground at a grazing angle covers `spread` = 1 / cos more ground along the view than a head-on pixel
+// at its distance. The draw shows the level-0 relief out to lambda 0.75 and reaches its first
+// prefiltered level at lambda 1 (CBT_ChainDrawnHeight): nearer, the drawn relief itself decides what
+// the pixel sees; from lambda 1 on the drawn surface is the mean, and the shading averages the ground
+// the pixel covers. The footprint takes over across the level before that, a factor of two in view
+// distance, so the shading changes over a distance band and never at a ring, which a field of ridges
+// would cut into a staircase.
 const float CBT_GRAZING_FULL_LEVEL = 1.0f;
 
 // The share of the grazing footprint a fragment at continuous level `lambda` shades with: 0 at lambda
@@ -122,8 +155,10 @@ float CBT_ChainSampleLevel(float u, float v, uint level, uint samplesX, uint sam
     return h;
 }
 
-// Vertices keep cached height through lambda 0.75, then blend in each level's last quarter.
-// Chain heights are normalized: world height = sample*heightScale + originY.
+// The height a vertex draws at, world: its cached level-0 height `cachedHeight` while lambda is at
+// most 0.75 (the same bits), else level floor(lambda) blended toward the next over the last quarter
+// of the level, clamped to the top level. Level 0 in a blend is the cached height. The chain is
+// normalized: world = normalized x heightScale + originY, as the update's height sample.
 float CBT_ChainDrawnHeight(float u, float v, float cachedHeight, float lambda, uint samplesX, uint samplesZ,
                            uint top, float heightScale, float originY)
 {
@@ -142,8 +177,10 @@ float CBT_ChainDrawnHeight(float u, float v, float cachedHeight, float lambda, u
     return drawn;
 }
 
-// Chain normals use a central difference across one level-L sample in each direction.
-// cellX/cellZ are level-0 spacing in meters; normalized heights use heightScale.
+// The world normal (x, z; y = sqrt(1 - x^2 - z^2)) of chain level `level` (>= 1) at terrain (u, v): the
+// central difference across one level-L sample each way, at world scale (the unified normal map's
+// derivation, GenerateNormalmapRegionFromHeightfield). `cellX`, `cellZ` are the level-0 sample spacing
+// (m); heights are normalized, scaled by `heightScale`.
 vec2 CBT_ChainNormal(float u, float v, uint level, uint samplesX, uint samplesZ, float cellX, float cellZ,
                      float heightScale)
 {

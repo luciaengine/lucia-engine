@@ -3,7 +3,7 @@
 Author: Augment Agent
 
 ## User guide
-For practical usage and API examples, see [docs/UI_API_GUIDE.md](../../../docs/UI_API_GUIDE.md).
+For practical usage and API examples, see [docs/ui/ui-api-guide.mdx](../../../docs/ui/ui-api-guide.mdx).
 
 ## Goals and scope
 - XML + CSS-driven UI that integrates with the engine’s AssetManager, Rendering (geometry + text), and input systems
@@ -70,23 +70,23 @@ Integration:
 - UIElement (base of all controls)
   - Identity: tagName (e.g., Label, Button), id (from name attribute), classes set
   - Tree: parent, children
-  - Style: resolved style (`ResolvedStyle` composed of `LayoutInputs` + `VisualStyle`), inline overrides, and per-element programmatic overrides (`StyleOverrides`)
+  - Style: resolved style (`ResolvedStyle` composed of `LayoutInputs` + `VisualStyle`), the parsed `style` attribute (`InlineStyle()`), and the element's code-set style (`Style()`); both are a `StyleDeclaration`
   - Layout: Yoga node + computed world rects (layout, margin, padding, content)
   - Rendering: virtual `OnGeneratePrimitives(PrimitiveEmitContext& ctx, ...)`
     - Base draws background, border, clipping (if overflow hidden) as SDF primitives
     - Derived elements emit additional primitives (e.g., Label emits Slug text glyphs)
   - Input: hit-testing helpers and event dispatch entry points
   - Dirty flags: StyleDirty, LayoutDirty, VisualDirty, ChildrenDirty
-  - Programmatic overrides: `Styles()` for background image overrides and `Overrides()` (typed `StyleOverrides`) for full style overrides with automatic dirty flags
+  - Code-set style: `Style()` (typed `StyleDeclaration`) with automatic dirty flags
   - API: AddClass/RemoveClass, SetState, MarkDirty(kind), FindById, QuerySelector
 - Label (example leaf)
   - Emits Slug glyph primitives via `FontAtlas::ShapeText()` / `TextLayout::ShapeMultiline()`
 - Button (example composite)
   - States map to pseudo-classes; raises click/press/release events; focusable
 
-### Programmatic style overrides
-- `UIElement::Overrides()` returns a `StyleOverrides&` with typed `Set<T>`/`Get<T>`/`Reset<T>` methods. Dirty flags (layout vs visual) are tracked automatically via `StyleProp<T, StyleImpact>`.
-- `UIElement::Styles()` is a narrow helper for background-image overrides and live textures.
+### Code-set element style
+- `UIElement::Style()` returns a `StyleDeclaration&` with typed `Set<T>`/`Get<T>`/`Reset<T>` methods. Dirty flags (layout vs visual) are tracked automatically via `StyleProp<T, StyleImpact>`.
+- The parsed `style` attribute is `UIElement::InlineStyle()`, applied before `Style()`, so code wins for a property both declare.
 
 ## CSS model
 - Stylesheet representation
@@ -97,17 +97,17 @@ Integration:
   - Custom pseudo-classes via registry (e.g., :checked, :selected, :hot, engine-defined)
 - Cascade and specificity
   - Compute specificity (ids, classes/attrs, types); stable sort by source order; cache computed style per element
-  - Split static (from CSS) vs dynamic (pseudo-state + inline overrides) to allow fast toggling and hot reload
+  - Split static (from CSS) vs dynamic (pseudo-state, the `style` attribute and `Style()`) to allow fast toggling and hot reload
 - Properties
   - Layout: display, flex-direction, flex-wrap, flex, flex-grow/shrink/basis, align-items, align-self, justify-content, gap, width/height/min/max, margin/padding/border
-  - Visual: background-color/gradient, background-image (later), border-color/width/radius (per-edge/corner), opacity, box-shadow (later), overflow
+  - Visual: background-color/gradient, background-image (later), border-color/width/radius (per-edge/corner), opacity, box-shadow (later), overflow, transform/transform-origin (2D, paint-time; docs/ui/transform.mdx)
   - Text: color, font-family/size/weight/style, line-height, white-space (initially single-line clip), text-align
   - Custom properties: `--vars` are stored by `StringId` keys; use `HashStringId()` or the `_sid` literal for code access
 
 ## XML model
 - Element hierarchy maps directly to UIElement instances
 - Attributes:
-  - id (or name), class (space-separated), inline style (parsed into inline StyleOverrides), element-specific attributes (Label.text, Button.text)
+  - id (or name), class (space-separated), inline style (parsed into the element's `InlineStyle()`), element-specific attributes (Label.text, Button.text)
   - Authored attributes are preserved on UIElement for selector matching and hot reload
 - Namespacing: all within <UIElement> … with tag names for derived types (Label, Button)
 
@@ -248,7 +248,7 @@ Options are typically supplied from code via the field API:
 // After layout has been loaded
 if (UIElement* root = ui->GetRootElement())
 {
-	    if (auto* el = root->FindById("QualityDropdown"))
+	    if (auto* el = root->FindById("QualityDropdown"_sid))
 	    {
 		        if (auto* dd = dynamic_cast<Dropdown*>(el))
 		        {
@@ -369,6 +369,7 @@ Yoga bridge layer when translating `ResolvedStyle` to Yoga node styles.
   - `PrimitiveMode::Textured` for background images
   - `PrimitiveMode::Line` for separators and underlines
 - Clip rects are stored in a separate SSBO; each primitive references its clip by index.
+- CSS transforms are stored in a third SSBO (`UITransformSlot`, one per transformed element, chained to the nearest transformed ancestor). Each primitive and clip names the slot of the space it is in (`UIPrimitive::TransformIndex`, `UIClipRect::TransformIndex`; 0 is the identity). The vertex stage composes the chain and maps each primitive into its clips' spaces, so geometry and SDFs stay in element space and a transform change rewrites one slot.
 - GPU draw: `Draw(6, primitiveCount)` — instanced fullscreen quads, fragment shader evaluates SDF per-pixel.
 - Textures: bindless descriptor array from `UITextureRegistry` holds all font atlas pages and background images.
 
@@ -397,7 +398,7 @@ Yoga bridge layer when translating `ResolvedStyle` to Yoga node styles.
 
 ## File layout
 - Engine/Modules/UI/Include/UI/
-  - UIManager.h, UIElement.h, UIStyle.h, ResolvedStyle.h, StyleOverrides.h, StyleProp.h, StyleProperties.h
+  - UIManager.h, UIElement.h, UIStyle.h, ResolvedStyle.h, StyleDeclaration.h, StyleProp.h, StyleProperties.h
   - UIPrimitive.h, UIFrameBufferRing.h, UITextureRegistry.h
   - Assets/UILayoutAsset.h, Assets/UIStyleAsset.h
 - Engine/Modules/UI/Source/

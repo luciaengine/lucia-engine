@@ -38,7 +38,7 @@ static void BuildScriptInspector(UIElement* root,
 
     auto buttonRow = std::make_unique<UIElement>();
     buttonRow->AddClass("inspector-asset-actions");
-    buttonRow->Overrides()
+    buttonRow->Style()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Row)
         .Set(Style::Gap, StyleLength::Px(6.0f))
@@ -51,7 +51,7 @@ static void BuildScriptInspector(UIElement* root,
         editBtn->SetText("Open In Script Editor");
         editBtn->AddClass("inspector-text");
         editBtn->AddClass("small");
-        editBtn->Overrides().Set(Style::Width, StyleLength::Px(160.0f));
+        editBtn->Style().Set(Style::Width, StyleLength::Px(160.0f));
         editBtn->RegisterEventHandler(kEventButtonClick, [openScript = std::move(openScript), scriptPath](UIEvent&)
                             { openScript(scriptPath); });
         buttonRow->AddChild(std::move(editBtn));
@@ -62,7 +62,7 @@ static void BuildScriptInspector(UIElement* root,
         ideBtn->SetText("Open In IDE");
         ideBtn->AddClass("inspector-text");
         ideBtn->AddClass("small");
-        ideBtn->Overrides().Set(Style::Width, StyleLength::Px(100.0f));
+        ideBtn->Style().Set(Style::Width, StyleLength::Px(100.0f));
         ideBtn->RegisterEventHandler(kEventButtonClick, [scriptPath](UIEvent&)
                            { ExternalScriptEditorLauncher::OpenScript(scriptPath); });
         buttonRow->AddChild(std::move(ideBtn));

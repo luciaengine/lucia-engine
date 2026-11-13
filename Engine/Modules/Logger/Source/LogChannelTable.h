@@ -29,8 +29,7 @@ class LogChannelTable
 
     bool Enabled(std::uint16_t index, LogLevel level) const
     {
-        return index < kMaxLogChannels && Logger::ShouldLog(
-            level, static_cast<LogLevel>(m_Effective[index].load(std::memory_order_relaxed)));
+        return static_cast<std::uint8_t>(level) >= m_Effective[index].load(std::memory_order_relaxed);
     }
 
     void SetGlobalLevel(LogLevel level);
@@ -44,6 +43,7 @@ class LogChannelTable
     /// Empty for an index that is not registered.
     std::string_view GetName(std::uint16_t index) const;
     LogLevel GetDefaultLevel(std::uint16_t index) const;
+    LogLevel GetEffectiveLevel(std::uint16_t index) const;
     /// The effective level the channel has with no setting.
     LogLevel GetLevelWithoutSetting(std::uint16_t index) const;
 
@@ -59,7 +59,7 @@ class LogChannelTable
         std::uint8_t Length = 0;
     };
 
-    /// One byte per channel. Enabled reads only the selected slot.
+    /// The bytes Enabled reads: one byte for each channel, 256 bytes in four cache lines.
     std::array<std::atomic<std::uint8_t>, kMaxLogChannels> m_Effective{};
     std::array<std::atomic<std::uint8_t>, kMaxLogChannels> m_Settings{};
     std::array<LogLevel, kMaxLogChannels> m_Defaults{};

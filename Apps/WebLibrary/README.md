@@ -59,7 +59,29 @@ Create the engine after the canvas is visible and has a nonzero CSS size. A hidd
 
 ## Exposure and emission
 
-The camera meters the whole frame and exposes it like a photograph, so a bright sky in daylight puts a model below it darker than it looks to the eye. `scene.camera.set(Camera, { exposureCompensation: 2 })` brightens the picture by two stops (a negative value darkens it), in any of the camera's exposure modes; the model viewer opens at +2 and offers a slider. A model's emissive materials glow at the brightness the file gives them; `scene.load(url, { emissiveStrength: 8 })` multiplies it (0 or more, default 1). The materials belong to the URL, so every copy of that model shows the strength of its latest load.
+The camera meters the scene's geometry, not the sky, and exposes its average to middle gray, like a photograph. `scene.camera.set(Camera, { exposureCompensation: 2 })` brightens the picture by two stops (a negative value darkens it), in any of the camera's exposure modes; the model viewer opens at 0 and offers a slider. A model's emissive materials glow at the brightness the file gives them; `scene.load(url, { emissiveStrength: 8 })` multiplies it (0 or more, default 1). The materials belong to the URL, so every copy of that model shows the strength of its latest load.
+
+## Resolution and anti-aliasing
+
+By default the camera draws with 4x MSAA at the drawing buffer's full resolution. On a phone, the GPU time of a frame follows the number of pixels that it shades, so a lower render scale is the strongest way to make a frame faster. Two `Camera` fields control this:
+
+- `antiAliasing`: `0` is the engine default (MSAA). Other values are the mode plus one: `1` is off, `2` is MSAA (the sample count comes from `msaaSamples`), and `3` is TAA. The web pipeline has no pass for `4` (FXAA), `5` (SMAA) or `6` (two-frame FXAA), so these give no anti-aliasing on a page.
+- `renderScale`: `0` uses the engine's scale, which is 1. A value below 1 draws the scene at that fraction of the width and height, then scales the result up to the canvas. TAA does the upscale when it runs. The user interface is not scaled.
+
+A render scale works with every anti-aliasing mode. With MSAA the camera draws and resolves its samples at the lower resolution, then scales the resolved image up to the canvas.
+
+```js
+import { Camera, Engine } from '@game-crafters-guild/openengine-web';
+
+const canvas = document.querySelector('canvas');
+if (!canvas) throw new Error('The page needs a <canvas> element.');
+const engine = await Engine.create({ canvas });
+engine.scene.camera.set(Camera, { renderScale: 0.5 });   // the default MSAA at half width and height
+engine.run();
+// engine.scene.camera.set(Camera, { antiAliasing: 0, renderScale: 0 }) restores the defaults.
+```
+
+On a Pixel 6 with a one-megapixel drawing buffer, TAA at a render scale of 0.5 made the frame 3 to 4 times faster than the default. The image is softer. Compare both on your own page before you choose.
 
 ## Many entities at once
 

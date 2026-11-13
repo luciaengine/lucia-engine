@@ -1,41 +1,35 @@
 #pragma once
-#include <array>
 
 #include "AssetCore/GUID.h"
-#include "AssetCore/AssetTypes.h"
-#include "Thumbnails/AssetThumbnailHandler.h"
 #include "Thumbnails/FolderBakeReport.h"
 
 #include <cstddef>
 #include <filesystem>
 #include <functional>
-#include <memory>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 
 namespace GameEngine {
 
+enum class AssetType; // defined in AssetCore/AssetTypes.h
+class AssetThumbnailHandler;
+
 class IThumbnailProvider {
 public:
-    virtual std::string GetOrRequestSpriteFrame(const std::filesystem::path& /*path*/,
-        const std::string& /*animation*/, bool /*flipX*/,
-        std::function<void(const std::string&)> /*ready*/) { return {}; }
-    virtual std::string GetOrRequestAtlasRegion(const std::filesystem::path& /*path*/,
-        const std::array<float, 4>& /*uv*/, std::function<void(const std::string&)> /*ready*/,
-        const std::array<float, 2>& /*magentaKey*/ = {-1.0f, 0.0f}) { return {}; }
     virtual ~IThumbnailProvider() = default;
-
-    /// Registers a feature's thumbnail handler when the provider supports handlers.
-    virtual void RegisterHandler(AssetType, std::unique_ptr<AssetThumbnailHandler>) {}
 
     // Set the runtime Assets/ root so returned paths can be relative to it.
     virtual void SetAssetsRoot(const std::filesystem::path& root) = 0;
 
+    // The handler that makes the thumbnails of `type`; it replaces any earlier one for the type.
+    // A feature registers the handler of the asset kind it owns.
+    virtual void RegisterHandler(AssetType type, std::unique_ptr<AssetThumbnailHandler> handler) = 0;
+
     // Returns a relative path (from Assets/) to a thumbnail or representative image if already cached.
     // If not cached, starts an async request and invokes onReady with the relative path when ready.
-    // ThumbnailService delivers callbacks on its next UI BeginFrame. Other providers may
-    // complete on a worker; callers must follow the concrete provider's threading contract.
+    // Implementations should call onReady on a background thread; the UI side should marshal to UI thread.
     // When \p StaticModelListThumbnail is true (models only), use a separate cached
     // engine texture that does not share the rotating Asset View preview.
     virtual std::string GetOrRequest(const std::filesystem::path& assetPath,
@@ -95,25 +89,6 @@ public:
     // changes, and once more when it finishes. One listener; an empty function
     // removes it.
     virtual void SetFolderBakeListener(std::function<void(const FolderBakeReport&)> /*listener*/) {}
-
-    // Dedicated live material preview surface. Unlike GetOrRequest(), this is
-    // not an asset-browser thumbnail lookup: callers already have a runtime
-    // material GUID and want a UI-sampleable engine resource of the requested
-    // size for a focused preview surface.
-    virtual std::string RequestLiveMaterialPreview(uint64_t /*windowId*/,
-                                                   const GUID& /*materialGuid*/,
-                                                   uint32_t /*widthPx*/,
-                                                   uint32_t /*heightPx*/,
-                                                   bool /*previewIblEnabled*/ = true)
-    {
-        return {};
-    }
-
-    virtual bool IsLiveMaterialPreviewReady(uint64_t windowId,
-                                            const std::string& engineName) const
-    {
-        return IsEngineThumbnailReadyForWindow(windowId, engineName);
-    }
 };
 
 } // namespace GameEngine

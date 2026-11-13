@@ -8,7 +8,7 @@
 #include "Engine/Rendering/ScreenSpaceShadows/ScreenSpaceShadowPasses.h"
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
 #include "Mathematics/MatrixOps.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "TestDeviceHelper.h"
@@ -293,10 +293,12 @@ TEST(ScreenSpaceShadowSettings, CascadeDepthBoundsDoNotJumpAtTheLastReverseZBuck
     // plane. Rounding the lower value to zero used to expand a ~10 m fit to
     // the camera far plane, capped later at the 200 m shadow distance.
     constexpr float boundary = 1.0f / 1024.0f;
+    const auto terms = Engine::Renderer::ProjectionDepthTerms::Of(
+        Mathematics::MakePerspectiveLH_ZO_ReverseZ(1.0471976f, 1.5f, 0.01f, 3000.0f));
     const auto before = ShadowMapRenderFeature::ResolveSDSMBounds(
-        boundary * 1.0001f, 0.003f, 0.01f, 3000.0f, false, true);
+        boundary * 1.0001f, 0.003f, terms, 0.01f, 3000.0f, true);
     const auto after = ShadowMapRenderFeature::ResolveSDSMBounds(
-        boundary * 0.9999f, 0.003f, 0.01f, 3000.0f, false, true);
+        boundary * 0.9999f, 0.003f, terms, 0.01f, 3000.0f, true);
     ASSERT_TRUE(before.valid && after.valid);
     EXPECT_GT(before.farDepth, 10.0f);
     EXPECT_LT(after.farDepth, 11.0f);
@@ -322,10 +324,11 @@ TEST(ScreenSpaceShadowSettings, CascadeDepthRoundingStaysConservativeAndRelative
                 };
                 const float minNdc = project(distance);
                 const float maxNdc = project(std::max(nearPlane, distance * 0.5f));
+                const auto terms = Engine::Renderer::ProjectionDepthTerms::Of(projection);
                 const auto raw = ShadowMapRenderFeature::ResolveSDSMBounds(
-                    minNdc, maxNdc, nearPlane, farPlane, orthographic, false);
+                    minNdc, maxNdc, terms, nearPlane, farPlane, false);
                 const auto rounded = ShadowMapRenderFeature::ResolveSDSMBounds(
-                    minNdc, maxNdc, nearPlane, farPlane, orthographic, true);
+                    minNdc, maxNdc, terms, nearPlane, farPlane, true);
                 ASSERT_TRUE(raw.valid && rounded.valid);
                 EXPECT_LE(rounded.nearDepth, raw.nearDepth);
                 EXPECT_GE(rounded.farDepth, raw.farDepth);
@@ -344,7 +347,8 @@ TEST(ScreenSpaceShadowSettings, CascadeDepthRoundingRejectsJitterWithoutConverge
     const auto resolve = [&](float jitter)
     {
         return ShadowMapRenderFeature::ResolveSDSMBounds(
-            project(10.002f + jitter), project(2.001f + jitter), nearPlane, farPlane, false, true);
+            project(10.002f + jitter), project(2.001f + jitter),
+            Engine::Renderer::ProjectionDepthTerms::Of(projection), nearPlane, farPlane, true);
     };
     const auto target = resolve(0.0f);
     ASSERT_TRUE(target.valid);

@@ -18,21 +18,21 @@ void VcsSettingsApplyMinWidth(UIElement* el, float px)
 {
     if (!el)
         return;
-    el->Overrides().Set(Style::MinWidth, StyleLength::Px(px));
+    el->Style().Set(Style::MinWidth, StyleLength::Px(px));
 }
 
 void VcsSettingsApplyMaxWidth(UIElement* el, float px)
 {
     if (!el)
         return;
-    el->Overrides().Set(Style::MaxWidth, StyleLength::Px(px));
+    el->Style().Set(Style::MaxWidth, StyleLength::Px(px));
 }
 
 void VcsSettingsApplyValueContainerStyle(UIElement* el, float minWidthPx)
 {
     if (!el)
         return;
-    el->Overrides()
+    el->Style()
         .Set(Style::MinWidth, StyleLength::Px(minWidthPx))
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::AlignItems, AlignItems::Center)
@@ -43,7 +43,7 @@ void VcsSettingsApplyStatusDotStyle(UIElement* el, uint32_t argb)
 {
     if (!el)
         return;
-    el->Overrides()
+    el->Style()
         .Set(Style::Width, StyleLength::Px(10.0f))
         .Set(Style::Height, StyleLength::Px(10.0f))
         .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{5.0f, 5.0f, 5.0f, 5.0f})

@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Animation/HumanBone.h"
-#include "Animation/SkeletonProfile.h"
+#include "Animation/Skeleton/SkeletonProfile.h"
 
 #include "AssetCore/GUID.h"
 

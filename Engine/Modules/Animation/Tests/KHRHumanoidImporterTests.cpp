@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
 
-#include "Animation/HumanoidImport.h"
-#include "Animation/HumanoidRig.h"
-#include "Animation/KHRHumanoidImporter.h"
-#include "Animation/SkeletonData.h"
-#include "Animation/SkeletonProfile.h"
+#include "Animation/Humanoid/HumanoidImport.h"
+#include "Animation/Humanoid/HumanoidRig.h"
+#include "Animation/KHRHumanoid/KHRHumanoidImporter.h"
+#include "Animation/Skeleton/SkeletonData.h"
+#include "Animation/Skeleton/SkeletonProfile.h"
 
 #include "AssetCore/GUID.h"
 #include "Mathematics/Quaternion.h"

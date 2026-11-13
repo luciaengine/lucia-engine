@@ -5,10 +5,12 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Core/Time.h"
 #include "Logger/Logger.h"
+#include "Rendering/Core/GPUInstanceDepthClass.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Core/GPUInstanceWorldKey.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
+#include "Rendering/Core/ReverseZ.h"
 #include "Rendering/Geometry/VertexLayoutBuilder.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
@@ -48,6 +50,38 @@ struct MoverDraw
 };
 
 } // namespace
+
+bool ViewMotionVectors::DrawsMover(const Rendering::GPUInstance& instance, uint32_t viewWorldKey,
+                                   bool dropEditorHidden)
+{
+    if (!Rendering::InstanceInColorPass(instance.flags, dropEditorHidden))
+        return false;
+    return viewWorldKey == 0u || ((instance.flags >> 16u) & 0xFFFFu) == viewWorldKey;
+}
+
+bool ViewMotionVectors::ViewHasMovers(const RenderServices& rs, Rendering::ViewId viewId,
+                                      uint64_t worldId)
+{
+    if (rs.HasUnversionedMotion(viewId))
+        return true;
+    const auto movers = rs.GetFrameMovers();
+    if (movers.empty())
+        return false;
+    const auto* scene = rs.GetGPUScene();
+    if (scene == nullptr)
+        return true;
+    const uint32_t viewWorldKey = worldId != 0u ? Rendering::PackWorldKey16(worldId) : 0u;
+    const auto* view = rs.Views().FindViewDesc(viewId);
+    const bool dropEditorHidden = view != nullptr && view->DropsEditorHidden();
+    const auto& instances = scene->GetInstances();
+    for (const auto& mover : movers)
+    {
+        if (mover.InstanceIndex < instances.size() &&
+            DrawsMover(instances[mover.InstanceIndex], viewWorldKey, dropEditorHidden))
+            return true;
+    }
+    return false;
+}
 
 ViewMotionVectors::MoverMotionPath ViewMotionVectors::ClassifyMoverMotionPath(
     VertexAttributeFlags vertexFlags, bool paletteActive, bool hasSkinStreams,
@@ -120,29 +154,27 @@ RenderGraph::RGTexture ViewMotionVectors::Declare(ViewDeclare& d)
     // The deforming-motion producer. It draws the surfaces the mover lane
     // cannot reproduce, and it runs FIRST because whichever producer runs owns
     // the clear: the mover writes that follow load into its image rather than
-    // erasing it. With no arm enabled this records nothing and the frame below
-    // is the frame it has always been.
+    // erasing it. A view it refuses records nothing, and the mover pass below
+    // clears the target itself.
     const bool producedDeformation = DeclareDeformationMotion(d, mvTex, previous, previousValid,
                                                               clock.Origin);
 
     if (letterboxed)
     {
-        // Mover rasterization assumes a full viewport. The clear sentinel
-        // lets temporal consumers use analytic camera reprojection instead.
-        // A producer that ran already cleared and filled the target.
-        if (!producedDeformation)
-        {
-            d.Frame.AddPass(d.PassName("MotionVectors").c_str(), Rendering::PassPhase::kDefault,
-                [&](RenderGraph::RGPassBuilder& p)
-                {
-                    RenderGraph::RGAttachmentOps ops{};
-                    ops.Load = RenderGraph::RGLoadOp::Clear;
-                    ops.Store = RenderGraph::RGStoreOp::Store;
-                    ops.Clear.Color[0] = kMotionVectorSentinelDelta;
-                    ops.Clear.Color[1] = kMotionVectorSentinelDelta;
-                    p.AttachColor(0, mvTex, ops);
-                }, [](RenderGraph::RGContext&) {});
-        }
+        // Mover rasterization assumes a full viewport, and the producer
+        // refuses a letterboxed view for the same reason, so nothing writes
+        // exact motion here. The clear sentinel lets temporal consumers use
+        // analytic camera reprojection instead.
+        d.Frame.AddPass(d.PassName("MotionVectors").c_str(), Rendering::PassPhase::kDefault,
+            [&](RenderGraph::RGPassBuilder& p)
+            {
+                RenderGraph::RGAttachmentOps ops{};
+                ops.Load = RenderGraph::RGLoadOp::Clear;
+                ops.Store = RenderGraph::RGStoreOp::Store;
+                ops.Clear.Color[0] = kMotionVectorSentinelDelta;
+                ops.Clear.Color[1] = kMotionVectorSentinelDelta;
+                p.AttachColor(0, mvTex, ops);
+            }, [](RenderGraph::RGContext&) {});
         d.PublishTexture(Names::View::MotionVectors, mvTex);
         return mvTex;
     }
@@ -169,8 +201,13 @@ RenderGraph::RGTexture ViewMotionVectors::Declare(ViewDeclare& d)
     const size_t prevPaletteBytes =
         prevPaletteValid ? paletteAtlas.GetPreviousCapacityBytes() : paletteBytes;
     uint32_t viewWorldKey = 0u;
-    if (const auto* vd = d.Services.Views().FindViewDesc(d.View.id); vd && vd->worldId != 0)
-        viewWorldKey = Rendering::PackWorldKey16(vd->worldId);
+    bool dropEditorHidden = false;
+    if (const auto* vd = d.Services.Views().FindViewDesc(d.View.id))
+    {
+        if (vd->worldId != 0)
+            viewWorldKey = Rendering::PackWorldKey16(vd->worldId);
+        dropEditorHidden = vd->DropsEditorHidden();
+    }
     if (scene != nullptr && !movers.empty())
     {
         auto* dev = d.Services.GetDevice();
@@ -180,8 +217,7 @@ RenderGraph::RGTexture ViewMotionVectors::Declare(ViewDeclare& d)
         {
             if (mover.InstanceIndex >= instances.size())
                 continue;
-            if (viewWorldKey != 0u &&
-                ((instances[mover.InstanceIndex].flags >> 16u) & 0xFFFFu) != viewWorldKey)
+            if (!DrawsMover(instances[mover.InstanceIndex], viewWorldKey, dropEditorHidden))
                 continue;
             // The two lanes must not both write one pixel. An instance whose
             // material deforms is covered by the producer, which composes its
@@ -246,9 +282,9 @@ RenderGraph::RGTexture ViewMotionVectors::Declare(ViewDeclare& d)
         return {};
     *camAlloc.Ptr =
         d.Services.Views().ResolveJitteredCameraData(d.View.id, frameIndex, w, h);
-    std::memcpy(mvParamsAlloc.Ptr->CurrViewProj, current.Camera.viewProj, sizeof(float) * 16);
+    std::memcpy(mvParamsAlloc.Ptr->CurrViewProj, current.Camera.viewProj.Data(), sizeof(float) * 16);
     std::memcpy(mvParamsAlloc.Ptr->PrevViewProj,
-                previous->Camera.viewProj,
+                previous->Camera.viewProj.Data(),
                 sizeof(float) * 16);
 
     const auto sceneRG = scene != nullptr ? scene->ImportFrameResources(d.Frame)
@@ -468,7 +504,7 @@ GraphicsPipelineId ViewMotionVectors::GetOrCreateMVPipeline(IDevice* device, uin
     gd.Rasterization.cullMode = CullModeFlagBits::None;
     gd.DepthStencil.depthTestEnable = true;
     gd.DepthStencil.depthWriteEnable = false;
-    gd.DepthStencil.depthCompareOp = CompareOp::GreaterOrEqual;
+    gd.DepthStencil.depthCompareOp = ReverseZ::kNearerOrEqual;
     DynamicStateInfo dyn{};
     dyn.states = {DynamicState::Viewport, DynamicState::Scissor};
     gd.DynamicState = dyn;

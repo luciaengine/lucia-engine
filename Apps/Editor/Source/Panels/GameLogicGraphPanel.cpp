@@ -5,7 +5,7 @@
 #include "Core/Engine.h"
 #include "EditorContext.h"
 #include "Graph/GraphModel.h"
-#include "Graph/GraphNodeRegistry.h"
+#include "Graph/GraphNode/GraphNodeRegistry.h"
 #include "Input/InputSystem.h"
 #include "Input/KeyCodes.h"
 #include "PlayMode/PlayModeManager.h"

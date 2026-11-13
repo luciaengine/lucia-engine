@@ -1,7 +1,7 @@
 #include "Panels/SaveSceneChangesModal.h"
-#include "Panels/ScriptEditorPanel.h"
+#include "Panels/Script/ScriptEditorPanel.h"
 #include "Panels/ScriptHistoryDocument.h"
-#include "Panels/ScriptTextArea.h"
+#include "Panels/Script/ScriptTextArea.h"
 #include "Panels/ScriptTextEditCommand.h"
 #include "../../Engine/Modules/Rendering/Tests/ScopedEnvVar.h"
 #include "TestTempDir.h"
@@ -50,7 +50,7 @@ protected:
         m_Panel = std::make_unique<ScriptEditorPanel>();
         m_Panel->SetUndoRedoService(&m_History);
         ASSERT_TRUE(m_Panel->OpenScript(m_Path));
-        m_TextArea = dynamic_cast<ScriptTextArea*>(m_Panel->FindById("ScriptEditorTextArea"));
+        m_TextArea = dynamic_cast<ScriptTextArea*>(m_Panel->FindById("ScriptEditorTextArea"_sid));
         ASSERT_NE(m_TextArea, nullptr);
     }
 
@@ -79,7 +79,7 @@ protected:
 
     SaveSceneChangesModal* ConflictModal() const
     {
-        return dynamic_cast<SaveSceneChangesModal*>(m_Panel->FindById("ScriptDiskConflictModal"));
+        return dynamic_cast<SaveSceneChangesModal*>(m_Panel->FindById("ScriptDiskConflictModal"_sid));
     }
 
     std::filesystem::path m_Root;
@@ -213,7 +213,7 @@ TEST_F(ScriptDocumentDiskTest, ClosingThePanelDetachesItsWindowLevelConflictProm
     manager.SetRoot(std::move(root));
     ASSERT_EQ(panel->GetOwnerManager(), &manager);
     ASSERT_FALSE(panel->SaveScript());
-    auto* modal = dynamic_cast<SaveSceneChangesModal*>(rootElement->FindById("ScriptDiskConflictModal"));
+    auto* modal = dynamic_cast<SaveSceneChangesModal*>(rootElement->FindById("ScriptDiskConflictModal"_sid));
     ASSERT_NE(modal, nullptr);
     const auto weakModal = UIElement::MakeWeakRef(modal);
     rootElement->RemoveChild(panel);

@@ -4,7 +4,7 @@
 // in version control. Animation clips are referenced by GUID string — the
 // timeline / clipset assets do not embed clip data.
 
-#include "Panels/TimeCompositeModel.h"
+#include "Panels/TimeComposite/TimeCompositeModel.h"
 #include "Panels/LaneClipModel.h"
 
 #include <nlohmann/json.hpp>

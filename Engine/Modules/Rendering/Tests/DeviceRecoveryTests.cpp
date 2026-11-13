@@ -7,7 +7,7 @@
 
 #include "Source/Vulkan/DeviceHealthState.h"
 #include "Source/Vulkan/PendingWorkerDeviceLoss.h"
-#include "Source/Vulkan/VulkanDevice.h"
+#include "Source/Vulkan/VulkanDevice/VulkanDevice.h"
 #include "Source/Vulkan/VulkanFaultInjection.h"
 #include "ScopedEnvVar.h"
 #include "TestTempDir.h"
@@ -34,8 +34,8 @@
 
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineCache.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineCache.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 
 using namespace GameEngine::Rendering;
 
@@ -532,6 +532,24 @@ TEST(FaultInjectionParse, ForceBeginFrameTimeout)
     EXPECT_FALSE(cfg.ShouldForceLostAtFrame(9));      // independent hook
 }
 
+TEST(FaultInjectionParse, ForceAcquireSuboptimal)
+{
+    const VulkanFaultInjection both = ParseFaultInjection(nullptr, nullptr, nullptr, "2");
+    EXPECT_TRUE(both.Active());
+    EXPECT_EQ(both.acquireSuboptimalEvery, 2u);
+    EXPECT_TRUE(both.acquireSuboptimalAlsoPresent);
+    EXPECT_TRUE(both.ShouldForceAcquireSuboptimal(2));
+    EXPECT_FALSE(both.ShouldForceAcquireSuboptimal(1));
+
+    const VulkanFaultInjection acquireOnly = ParseFaultInjection(nullptr, nullptr, nullptr, "2:acquire");
+    EXPECT_EQ(acquireOnly.acquireSuboptimalEvery, 2u);
+    EXPECT_FALSE(acquireOnly.acquireSuboptimalAlsoPresent);
+
+    EXPECT_FALSE(ParseFaultInjection(nullptr, nullptr, nullptr, "0").Active());
+    EXPECT_FALSE(ParseFaultInjection(nullptr, nullptr, nullptr, "x").Active());
+    EXPECT_FALSE(ParseFaultInjection(nullptr, nullptr, nullptr, "2:acqire").Active()); // unknown suffix
+}
+
 TEST(FaultInjectionParse, ForceBeginFrameTimeoutSustainedRange)
 {
     // "N:K" sustains the Hung state across K consecutive frames so the >250ms
@@ -684,6 +702,16 @@ TEST(DeviceRecoveryDevice, InjectedLossRebuildsToFunctionalDevice)
     dev->Shutdown();
 }
 
+// GE_DEVICE_RECOVERY_THREAD_SANITIZER is defined when this file is compiled with ThreadSanitizer
+// (clang's __has_feature, or GCC's __SANITIZE_THREAD__).
+#if defined(__SANITIZE_THREAD__)
+#define GE_DEVICE_RECOVERY_THREAD_SANITIZER 1
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define GE_DEVICE_RECOVERY_THREAD_SANITIZER 1
+#endif
+#endif
+
 // The allocator/rebuild exclusion, exercised with GENUINE concurrency. The frame
 // loop in the hosts serializes the synchronous job waves against the recovery
 // tick by structure; this test deliberately breaks that serialization — worker
@@ -696,6 +724,10 @@ TEST(DeviceRecoveryDevice, InjectedLossRebuildsToFunctionalDevice)
 // is destroying, or routes a destroy into the immediate helpers mid-teardown.
 TEST(DeviceRecoveryDevice, ConcurrentAllocatorTrafficSurvivesRebuildCycles)
 {
+#if defined(GE_DEVICE_RECOVERY_THREAD_SANITIZER)
+    GTEST_SKIP() << "issue #5952: the workers create buffers with no bound, and under ThreadSanitizer "
+                    "the deferred destroys fall behind them, so the test does not finish";
+#endif
     // Three injected losses -> three rebuild cycles. Three is the ceiling inside
     // the recover-relose stick window: the cycle counter reads 0, 1, 2 at the
     // three rebuilds and kMaxRecoveryCycles(3) would turn a fourth into Failed.
@@ -1771,7 +1803,7 @@ std::vector<ScannedFile> LoadStrippedSources(const std::filesystem::path& dir)
 {
     namespace fs = std::filesystem;
     std::vector<ScannedFile> files;
-    for (const auto& entry : fs::directory_iterator(dir))
+    for (const auto& entry : fs::recursive_directory_iterator(dir))
     {
         const fs::path& p = entry.path();
         if (!entry.is_regular_file() || (p.extension() != ".cpp" && p.extension() != ".h"))

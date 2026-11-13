@@ -6,8 +6,11 @@ layout(set=0,binding=0) uniform sampler2D uHDR;
 // Auto-exposure scale (last frame's adapted exposure; the "ExposureHistory" blueprint resource,
 // zero-initialized on creation). Read only when useAutoExposure != 0 — matches the Tonemap node's
 // exposure resolution so the bright-pass threshold operates in the same exposed space the
-// tonemap will display, keeping the bloom knee stable as auto-exposure adapts.
-layout(set=0,binding=1,std430) readonly buffer ExposureHistory { float exposureScale; uint valid; } uExposure;
+// tonemap will display, keeping the bloom knee stable as auto-exposure adapts. The input is
+// stored at the frame's pre-exposure P, so stored values reach display units through
+// exposure / P; the output (and the depth veil it injects) stays in stored units.
+#define GE_EXPOSURE_HISTORY_BINDING 1
+#include "Includes/exposure_history.glsl"
 layout(set=0,binding=2) uniform sampler2D uDepth;
 layout(set=0,binding=3,std140) uniform ViewParamsBlock {
 #define GE_VP_MAT4(name) mat4 name;
@@ -18,6 +21,10 @@ layout(set=0,binding=3,std140) uniform ViewParamsBlock {
 #undef GE_VP_VEC4
 #undef GE_VP_MAT4
 } ViewParams;
+#include "Includes/reverse_z.glsl"
+// The MSAA resolve's plain sample mean minus its weighted mean, in stored units (black when the view
+// is not multisampled or the pipeline does not wire it). uHDR plus this is the plain mean.
+layout(set=0,binding=4) uniform sampler2D uSampleDelta;
 // The depth veil follows an MIT-licensed OCASM technique while using the
 // engine's multiscale bloom reconstruction in place of a temporal ghost buffer.
 // See ThirdParty/OCASMDepthVeil/LICENSE and UPSTREAM.md.
@@ -47,13 +54,6 @@ vec3 SafeHDR(vec3 c)
 // BloomEffect field if content needs to tune it.
 const float kBloomClampMax = 100.0;
 
-float LinearizeReverseZ(float depth)
-{
-    float zNear = max(ViewParams.ge_nearFar.x, 1e-5);
-    float zFar = max(ViewParams.ge_nearFar.y, zNear + 1.0);
-    return (zNear * zFar) / max(depth * (zFar - zNear) + zNear, 1e-6);
-}
-
 vec3 BrightPass(vec3 c, float expScale)
 {
     float t = pc.threshold;
@@ -69,9 +69,15 @@ vec3 BrightPass(vec3 c, float expScale)
     return c * (w / max(le, 1e-6)); // scene-linear result from an exposed fraction
 }
 
+// The bloom input at uv: the scene color with the sub-pixel brightness the weighted resolve removed.
+vec3 BloomInput(vec2 uv)
+{
+    return SafeHDR(texture(uHDR, uv).rgb + texture(uSampleDelta, uv).rgb);
+}
+
 vec3 ModernSource(vec2 uv, float expScale)
 {
-    vec3 c = SafeHDR(texture(uHDR, uv).rgb);
+    vec3 c = BloomInput(uv);
     // Threshold each tap before the wide average. Thresholding the diluted
     // result would erase small emitters even when they exceed the threshold.
     if (pc.thresholdFree != 0) return c;
@@ -82,10 +88,10 @@ vec3 ModernSource(vec2 uv, float expScale)
         // keep their brightness. The shoulder preserves small colored lights
         // below sixteen display whites, then softly bounds isolated outliers.
         vec2 d = 1.0 / vec2(textureSize(uHDR, 0));
-        float neighbour = max(min(GE_ExposedMaxChannel(SafeHDR(texture(uHDR, uv + vec2(d.x, 0)).rgb), expScale),
-                                  GE_ExposedMaxChannel(SafeHDR(texture(uHDR, uv - vec2(d.x, 0)).rgb), expScale)),
-                              min(GE_ExposedMaxChannel(SafeHDR(texture(uHDR, uv + vec2(0, d.y)).rgb), expScale),
-                                  GE_ExposedMaxChannel(SafeHDR(texture(uHDR, uv - vec2(0, d.y)).rgb), expScale)));
+        float neighbour = max(min(GE_ExposedMaxChannel(BloomInput(uv + vec2(d.x, 0)), expScale),
+                                  GE_ExposedMaxChannel(BloomInput(uv - vec2(d.x, 0)), expScale)),
+                              min(GE_ExposedMaxChannel(BloomInput(uv + vec2(0, d.y)), expScale),
+                                  GE_ExposedMaxChannel(BloomInput(uv - vec2(0, d.y)), expScale)));
         float brightness = GE_ExposedMaxChannel(c, expScale);
         float shoulder = max(neighbour * 2.0, pc.threshold + 16.0);
         float excess = max(brightness - shoulder, 0.0);
@@ -118,7 +124,8 @@ vec3 WidePrefilter(vec2 d, float expScale)
 }
 
 void main(){
-    float expScale = GE_ResolveExposureScale(pc.exposure, pc.useAutoExposure, uExposure.exposureScale);
+    float expScale = GE_ResolveExposureScale(pc.exposure, pc.useAutoExposure, uExposure.exposureScale) /
+                     GE_PreExposure();
 
     vec2 texel = 1.0 / vec2(textureSize(uHDR, 0));
     vec3 bloomSource = pc.bloomAntiFlicker != 0 ? WidePrefilter(texel, expScale)
@@ -128,7 +135,8 @@ void main(){
         && pc.bloomDepthVeilEnd > pc.bloomDepthVeilStart)
     {
         float rawDepth = texture(uDepth, vUV).r;
-        float linearDepth = rawDepth <= 1e-6 ? ViewParams.ge_nearFar.y : LinearizeReverseZ(rawDepth);
+        float linearDepth = IsBackgroundDepth(rawDepth) ? ViewParams.ge_viewRanges.y
+                                                        : LinearizeReverseZ(rawDepth, ViewParams.ge_depthTerms);
         float startDistance = max(pc.bloomDepthVeilStart, 0.0);
         float endDistance = max(pc.bloomDepthVeilEnd, startDistance + 1e-4);
         float depthMask = smoothstep(startDistance, endDistance, linearDepth);

@@ -2,8 +2,8 @@
 
 #include "DebugServer/DebugServerReply.h"
 #include "DebugServer/EditorDebugServer.h"
-#include "DebugServer/NsightGraphicsCapture.h"
-#include "EditorApplication.h"
+#include "DebugServer/Capture/NsightGraphicsCapture.h"
+#include "EditorApplication/EditorApplication.h"
 
 #include "Core/Engine.h"
 #include "Engine/Rendering/RenderServices.h"

@@ -9,7 +9,6 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/Pipeline/PipelineResourceNames.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
-#include "Editor/Settings/InspectorRowLayoutSettings.h"
 #include "Editor/Settings/SettingsStore.h"
 #include "UI/EditorIcons.h"
 #include "Logger/Logger.h"
@@ -23,11 +22,11 @@
 #include "UI/Controls/IntField.h"
 #include "UI/Controls/TextField.h"
 #include "UI/Controls/Toggle.h"
-#include "UI/Interaction/DragDropManager.h"
+#include "UI/Interaction/DragDrop/DragDropManager.h"
 #include "UI/Interaction/DropTarget.h"
 #include "UI/Interaction/Payload.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Materials/ShaderMetaValidation.h"
+#include "Rendering/Materials/Shader/ShaderMetaValidation.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include "UI/Controls/Label.h"
@@ -36,7 +35,6 @@
 #include "UI/Controls/SearchDialog.h"
 #include "UI/UIManager.h"
 #include "UI/StyleProperties.h"
-#include "Inspectors/InspectorComponentSection.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
 #include "Panels/SettingsPanel.h"
@@ -220,18 +218,6 @@ static std::unique_ptr<Label> MakeDraggableRefLabel(const std::string& text, con
     return lbl;
 }
 
-static std::string Join(const std::vector<std::string>& items, const char* sep)
-{
-    std::string out;
-    for (size_t i = 0; i < items.size(); ++i)
-    {
-        if (i && sep)
-            out += sep;
-        out += items[i];
-    }
-    return out;
-}
-
 static std::string FormatShaderPkgValidation(const std::string& shaderPkgPathOrName,
                                               const std::vector<std::string>& inputBindingNames)
 {
@@ -368,18 +354,12 @@ class PassTypeSearchProvider final : public ISearchProvider
     void BeginSearch(const std::string& query, ResultSink sink) override
     {
         std::vector<SearchResultItem> results;
-        std::string lowerQuery;
-        lowerQuery.reserve(query.size());
-        for (char c : query)
-            lowerQuery += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        const std::string lowerQuery = ToLowerAscii(query);
 
         SearchItemId nextId = 1;
         for (const auto& typeName : m_Types)
         {
-            std::string lowerType;
-            lowerType.reserve(typeName.size());
-            for (char c : typeName)
-                lowerType += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            const std::string lowerType = ToLowerAscii(typeName);
 
             if (!lowerQuery.empty() && lowerType.find(lowerQuery) == std::string::npos)
                 continue;
@@ -444,6 +424,12 @@ static nlohmann::json MakeDefaultPassForType(const std::string& typeName, const 
     p["type"] = typeName;
     p["enabled"] = true;
     return p;
+}
+
+static std::unordered_map<std::string, bool>& GetFoldoutStateMap()
+{
+    static std::unordered_map<std::string, bool> s_State;
+    return s_State;
 }
 
 static void ClearChildren(UIElement* root)
@@ -522,7 +508,6 @@ static Editor::UndoRedoService::SnapshotTarget MakeRenderPipelineSnapshotTarget(
 {
     Editor::UndoRedoService::SnapshotTarget target;
     target.debugLabel = label;
-    target.Identity = {reinterpret_cast<std::uintptr_t>(pipe)};
 
     target.Capture = [pipe](Editor::UndoRedoService::SnapshotTarget::Snapshot& outSnapshot) -> bool
     {
@@ -620,24 +605,11 @@ static void NormalizeRenderPipelineFoldoutContent(Foldout* foldout)
         return;
     if (UIElement* content = foldout->GetContentContainer())
     {
-        content->Overrides()
+        content->Style()
             .Set(Style::Gap, StyleLength::Px(0.0f))
             .Set(Style::PaddingTop, StyleLength::Px(0.0f))
             .Set(Style::PaddingBottom, StyleLength::Px(0.0f));
     }
-}
-
-// A pipeline section's collapse state is scoped to the pipeline file, so two pipelines keep
-// their own open sections.
-static Foldout* AddPipelineSection(UIElement* parent, const RenderPipelineAsset* pipe,
-                                   const std::string& id, const std::string& title,
-                                   bool expandedByDefault)
-{
-    const std::string key = pipe->GetPath().generic_string() + "|" + id;
-    Foldout* section = InspectorUI::AddComponentSection(parent, key, title, expandedByDefault);
-    section->SetId(id);
-    NormalizeRenderPipelineFoldoutContent(section);
-    return section;
 }
 
 static void NormalizeRenderPipelineInspectorRows(UIElement* root)
@@ -645,8 +617,15 @@ static void NormalizeRenderPipelineInspectorRows(UIElement* root)
     if (!root)
         return;
 
-    const float labelWidthPercent =
-        std::clamp(Editor::InspectorRowLayoutSettings::Get().GetLabelWidthPercent(), 20.0f, 60.0f);
+    float labelWidthPercent = 37.0f;
+    {
+        auto prefs = Editor::OpenEditorPreferences();
+        std::string err;
+        prefs.Load(&err);
+        double stored = labelWidthPercent;
+        if (prefs.TryGetDouble("ui.inspectorLabelWidth", stored))
+            labelWidthPercent = static_cast<float>(std::clamp(stored, 20.0, 60.0));
+    }
 
     std::function<void(UIElement*)> visit = [&](UIElement* el)
     {
@@ -655,7 +634,7 @@ static void NormalizeRenderPipelineInspectorRows(UIElement* root)
 
         if (el->HasClass("inspector-row"))
         {
-            el->Overrides()
+            el->Style()
                 .Set(Style::FlexWrap, false)
                 .Set(Style::AlignItems, AlignItems::Center);
 
@@ -667,7 +646,7 @@ static void NormalizeRenderPipelineInspectorRows(UIElement* root)
 
                 if (c->HasClass("inspector-label-cell") || c->HasClass("inspector-label"))
                 {
-                    c->Overrides()
+                    c->Style()
                         .Set(Style::FlexGrow, 0.0f)
                         .Set(Style::FlexShrink, 0.0f)
                         .Set(Style::FlexBasis, StyleLength::Percent(labelWidthPercent))
@@ -677,7 +656,7 @@ static void NormalizeRenderPipelineInspectorRows(UIElement* root)
                 }
                 else if (c->HasClass("inspector-field") || c->HasClass("settings-row-field"))
                 {
-                    c->Overrides()
+                    c->Style()
                         .Set(Style::FlexGrow, 1.0f)
                         .Set(Style::FlexShrink, 1.0f)
                         .Set(Style::FlexBasis, StyleLength::Px(0.0f))
@@ -1200,6 +1179,31 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
     if (!root || !pipe)
         return;
 
+    // Persist foldout expansion state across inspector rebuilds (e.g. pass toggles).
+    struct FoldoutStateCache
+    {
+        static std::string Key(const RenderPipelineAsset* p, const std::string& foldoutId)
+        {
+            const std::string path = p ? p->GetPath().generic_string() : std::string{};
+            return path + "|" + foldoutId;
+        }
+
+        static bool Get(const RenderPipelineAsset* p, const std::string& foldoutId, bool defaultExpanded)
+        {
+            const std::string k = Key(p, foldoutId);
+            auto& state = GetFoldoutStateMap();
+            auto it = state.find(k);
+            if (it == state.end())
+                return defaultExpanded;
+            return it->second;
+        }
+
+        static void Set(const RenderPipelineAsset* p, const std::string& foldoutId, bool expanded)
+        {
+            GetFoldoutStateMap()[Key(p, foldoutId)] = expanded;
+        }
+    };
+
     auto header = std::make_unique<Label>();
     header->AddClass("inspector-header");
     header->AddClass("rp-inspector-header");
@@ -1207,17 +1211,53 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
     root->AddChild(std::move(header));
 
     // Use foldouts to keep large pipelines navigable.
-    Foldout* settingsFoldoutPtr = AddPipelineSection(root, pipe, "rp-foldout-settings", "Settings", true);
-    settingsFoldoutPtr->AddClass("rp-foldout-top");
+    auto settingsFoldout = std::make_unique<Foldout>();
+    settingsFoldout->SetTitle("Settings");
+    settingsFoldout->SetId("rp-foldout-settings");
+    settingsFoldout->AddClass("rp-foldout");
+    settingsFoldout->AddClass("rp-foldout-top");
+    settingsFoldout->SetExpanded(FoldoutStateCache::Get(pipe, "rp-foldout-settings", true));
+    NormalizeRenderPipelineFoldoutContent(settingsFoldout.get());
+    settingsFoldout->SetOnExpandedChanged([pipe](Foldout& f, bool expanded)
+                                          { FoldoutStateCache::Set(pipe, f.GetId(), expanded); });
+    Foldout* settingsFoldoutPtr = settingsFoldout.get();
+    root->AddChild(std::move(settingsFoldout));
 
-    Foldout* resourcesFoldoutPtr = AddPipelineSection(root, pipe, "rp-foldout-resources", "Resources", false);
-    resourcesFoldoutPtr->AddClass("rp-foldout-top");
+    auto resourcesFoldout = std::make_unique<Foldout>();
+    resourcesFoldout->SetTitle("Resources");
+    resourcesFoldout->SetId("rp-foldout-resources");
+    resourcesFoldout->AddClass("rp-foldout");
+    resourcesFoldout->AddClass("rp-foldout-top");
+    resourcesFoldout->SetExpanded(FoldoutStateCache::Get(pipe, "rp-foldout-resources", false));
+    NormalizeRenderPipelineFoldoutContent(resourcesFoldout.get());
+    resourcesFoldout->SetOnExpandedChanged([pipe](Foldout& f, bool expanded)
+                                           { FoldoutStateCache::Set(pipe, f.GetId(), expanded); });
+    Foldout* resourcesFoldoutPtr = resourcesFoldout.get();
+    root->AddChild(std::move(resourcesFoldout));
 
-    Foldout* passesFoldoutPtr = AddPipelineSection(root, pipe, "rp-foldout-passes", "Passes", true);
-    passesFoldoutPtr->AddClass("rp-foldout-top");
+    auto passesFoldout = std::make_unique<Foldout>();
+    passesFoldout->SetTitle("Passes");
+    passesFoldout->SetId("rp-foldout-passes");
+    passesFoldout->AddClass("rp-foldout");
+    passesFoldout->AddClass("rp-foldout-top");
+    passesFoldout->SetExpanded(FoldoutStateCache::Get(pipe, "rp-foldout-passes", true));
+    NormalizeRenderPipelineFoldoutContent(passesFoldout.get());
+    passesFoldout->SetOnExpandedChanged([pipe](Foldout& f, bool expanded)
+                                        { FoldoutStateCache::Set(pipe, f.GetId(), expanded); });
+    Foldout* passesFoldoutPtr = passesFoldout.get();
+    root->AddChild(std::move(passesFoldout));
 
-    Foldout* debugFoldoutPtr = AddPipelineSection(root, pipe, "rp-foldout-debug", "Validation / Debug", false);
-    debugFoldoutPtr->AddClass("rp-foldout-top");
+    auto debugFoldout = std::make_unique<Foldout>();
+    debugFoldout->SetTitle("Validation / Debug");
+    debugFoldout->SetId("rp-foldout-debug");
+    debugFoldout->AddClass("rp-foldout");
+    debugFoldout->AddClass("rp-foldout-top");
+    debugFoldout->SetExpanded(FoldoutStateCache::Get(pipe, "rp-foldout-debug", false));
+    NormalizeRenderPipelineFoldoutContent(debugFoldout.get());
+    debugFoldout->SetOnExpandedChanged([pipe](Foldout& f, bool expanded)
+                                       { FoldoutStateCache::Set(pipe, f.GetId(), expanded); });
+    Foldout* debugFoldoutPtr = debugFoldout.get();
+    root->AddChild(std::move(debugFoldout));
 
     // Active pipeline control (Editor integration)
     {
@@ -1228,12 +1268,9 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
         }
 
         // Compare using resolved absolute paths so both relative ("RenderPipelines/..")
-        // and absolute paths behave consistently across build configs. Without an
-        // asset manager nothing can be active.
-        const AssetManager* assetManager = EngineCore::GetInstance().TryGetAssetManager();
-        const std::string activeAbs =
-            assetManager ? assetManager->ResolveAssetPath(std::filesystem::path(activePath)).generic_string()
-                         : std::string{};
+        // and absolute paths behave consistently across build configs.
+        auto& am = EngineCore::GetInstance().GetAssetManager();
+        const std::string activeAbs = am.ResolveAssetPath(std::filesystem::path(activePath)).generic_string();
         const std::string thisAbs = pipe->GetPath().generic_string();
         const bool isActive = (!activeAbs.empty() && activeAbs == thisAbs);
 
@@ -1386,9 +1423,16 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
             auto& res = doc["resources"][resName];
             const std::string idRes = MakeIdSafe(resName);
 
-            Foldout* resFoldoutPtr = AddPipelineSection(resourcesFoldoutPtr, pipe,
-                                                        "rp-res-" + idRes + "-foldout",
-                                                        resName + " (Resource)", false);
+            auto resFoldout = std::make_unique<Foldout>();
+            resFoldout->SetId("rp-res-" + idRes + "-foldout");
+            resFoldout->SetTitle(resName + " (Resource)");
+            resFoldout->AddClass("rp-foldout");
+            resFoldout->SetExpanded(FoldoutStateCache::Get(pipe, "rp-res-" + idRes + "-foldout", false));
+            NormalizeRenderPipelineFoldoutContent(resFoldout.get());
+            resFoldout->SetOnExpandedChanged([pipe](Foldout& f, bool expanded)
+                                             { FoldoutStateCache::Set(pipe, f.GetId(), expanded); });
+            Foldout* resFoldoutPtr = resFoldout.get();
+            resourcesFoldoutPtr->AddChild(std::move(resFoldout));
 
             // Drag helper: allow dragging resource refs into other fields.
             {
@@ -1977,6 +2021,7 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
         "Sampled",
         "StorageRead",
         "StorageWrite",
+        "StorageReadWrite",
         "DepthRead",
         "DepthWrite",
         "CopySrc",
@@ -2071,10 +2116,15 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
         const std::string foldTitle =
             std::string("Pass ") + std::to_string(i) + ": " + passId + (passType.empty() ? "" : (" (" + passType + ")"));
 
-        Foldout* passFoldout = AddPipelineSection(passContainerPtr, pipe,
-                                                  "rp-pass-" + std::to_string(i) + "-foldout",
-                                                  foldTitle, false);
-        UIElement* passUI = passFoldout;
+        auto passFoldout = std::make_unique<Foldout>();
+        passFoldout->SetTitle(foldTitle);
+        passFoldout->SetId("rp-pass-" + std::to_string(i) + "-foldout");
+        passFoldout->AddClass("rp-foldout");
+        passFoldout->SetExpanded(FoldoutStateCache::Get(pipe, passFoldout->GetId(), false));
+        NormalizeRenderPipelineFoldoutContent(passFoldout.get());
+        passFoldout->SetOnExpandedChanged([pipe](Foldout& f, bool expanded)
+                                          { FoldoutStateCache::Set(pipe, f.GetId(), expanded); });
+        UIElement* passUI = passFoldout.get();
 
         {
         // enabled
@@ -2438,9 +2488,7 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
 
         // The pass's options menu on right-click; the pass list owns the drag to reorder.
         {
-            Foldout* foldoutPtr = passFoldout;
-            auto dragState = std::make_shared<std::array<float, 3>>(); // [startX, startY, active]
-            (*dragState)[2] = 0.0f;
+            Foldout* foldoutPtr = passFoldout.get();
 
             foldoutPtr->RegisterEventHandler(kEventMouseDown,
                 [root, pipe, doc, undo, i, foldoutPtr, knownPassTypes](UIEvent& e) mutable {
@@ -2519,6 +2567,11 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                     }
                 });
         }
+
+        // Commit this pass foldout.
+        Foldout* passFoldoutPtr = passFoldout.get();
+        passContainerPtr->AddChild(std::move(passFoldout));
+        passContainerPtr->AddEntry(i, passFoldoutPtr, "Drag to reorder this pass.");
     }
 
     NormalizeRenderPipelineInspectorRows(root);

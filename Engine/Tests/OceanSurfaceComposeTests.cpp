@@ -13,9 +13,9 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Materials/MaterialBuildContext.h"
 #include "Rendering/Materials/MaterialBuildService.h"
-#include "Rendering/Materials/ShaderCompileService.h"
-#include "Rendering/Materials/ShaderProfileDefines.h"
-#include "Rendering/Materials/ShaderVariantKey.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderProfileDefines.h"
+#include "Rendering/Materials/Shader/ShaderVariantKey.h"
 #include "ScopedCompatShaderProfile.h"
 #include "StagedTestPaths.h"
 

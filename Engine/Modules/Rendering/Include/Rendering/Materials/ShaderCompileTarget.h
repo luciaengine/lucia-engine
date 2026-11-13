@@ -18,6 +18,7 @@ struct ShaderCompileTarget
     SpirvTarget Spirv = SpirvTarget::Spirv_1_5;
     bool Compatibility = false;
     bool InterpolationFunctions = false;
+    bool ClipDistances = false;
 
     bool operator==(const ShaderCompileTarget&) const = default;
 
@@ -25,7 +26,8 @@ struct ShaderCompileTarget
     {
         return static_cast<uint32_t>(Spirv) |
                (static_cast<uint32_t>(Compatibility) << 2u) |
-               (static_cast<uint32_t>(InterpolationFunctions) << 3u);
+               (static_cast<uint32_t>(InterpolationFunctions) << 3u) |
+               (static_cast<uint32_t>(ClipDistances) << 4u);
     }
 };
 

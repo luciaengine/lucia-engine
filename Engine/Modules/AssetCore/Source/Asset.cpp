@@ -22,7 +22,7 @@ Asset::Asset(const GUID& guid, AssetType type, const std::filesystem::path& path
 }
 
 String Asset::GetName() const {
-    return m_Path.stem().string();
+    return m_Name.empty() ? m_Path.stem().string() : m_Name;
 }
 
 String Asset::GetExtension() const {
@@ -58,7 +58,7 @@ ReloadOutcome Asset::Reload() {
     // Read first. Unloading before the read is what lets a deleted file, a
     // half-written save or a sharing violation strip a perfectly good loaded
     // asset; the bytes have to be in hand before the live payload is touched.
-    Vector<uint8> data;
+    ByteBuffer data;
     if (!ReadFileBytesShared(m_Path, data)) {
         return ReloadOutcome::Failed;
     }
@@ -82,7 +82,7 @@ ReloadOutcome Asset::Reload() {
     // raises its own change, so the finished file is offered again on its own;
     // a file that really is empty leaves that timestamp alone and is not
     // re-offered.
-    if (data.empty()) {
+    if (data.Size() == 0) {
         return ReloadOutcome::Deferred;
     }
 
@@ -94,7 +94,7 @@ ReloadOutcome Asset::Reload() {
     return ReloadOutcome::Reloaded;
 }
 
-bool Asset::ReloadFromData(const Vector<uint8>& data) {
+bool Asset::ReloadFromData(std::span<const uint8> data) {
     Unload();
     return LoadFromData(data);
 }
@@ -113,7 +113,7 @@ bool Asset::AdoptReload(Asset& staged) {
 }
 
 bool Asset::NeedsReload() const {
-    if (!Exists() || m_State != AssetState::Loaded) {
+    if (!Exists() || GetState() != AssetState::Loaded) {
         return false;
     }
 

@@ -8,6 +8,7 @@
 #include "Engine/Rendering/ImageBasedLightingFeature.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/RenderOrigin.h"
+#include "TestCameraEye.h"
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
 #include "Engine/Rendering/Pipeline/Nodes/EngineNodeTypes.h"
 #include "Engine/Rendering/Pipeline/Nodes/PlanarReflectionNode.h"
@@ -32,10 +33,11 @@ Rendering::CameraData TestCamera(bool ortho = false)
     const auto p = ortho ? glm::orthoLH_ZO(-4.0f, 4.0f, -3.0f, 3.0f, 100.0f, 0.1f)
                          : glm::perspectiveLH_ZO(glm::radians(60.0f), 1.5f, 100.0f, 0.1f);
     const auto vp = p * v;
-    std::memcpy(camera.view, glm::value_ptr(v), sizeof(camera.view));
-    std::memcpy(camera.proj, glm::value_ptr(p), sizeof(camera.proj));
-    std::memcpy(camera.viewProj, glm::value_ptr(vp), sizeof(camera.viewProj));
-    camera.cameraPos[1] = 2; camera.cameraPos[2] = -6; camera.cameraPos[3] = 1;
+    camera.view = Mathematics::Matrix4x4(v);
+    camera.proj = Mathematics::Matrix4x4(p);
+    camera.viewProj = Mathematics::Matrix4x4(vp);
+    camera.cameraPos.w = ortho ? 1.0f : 0.0f;
+    SetCameraEye(camera, Mathematics::WorldPosition{0.0, 2.0, -6.0});
     return camera;
 }
 PlanarReflectionPlane Plane()
@@ -110,7 +112,7 @@ TEST(PlanarReflectionMath, ReverseZClipsBelowPlaneForPerspectiveAndOrthographicC
         Rendering::CameraData mirror{};
         ASSERT_TRUE(MakePlanarReflectionCamera(main, Plane(), mirror));
         EXPECT_NEAR(mirror.cameraPos[1], -2, 1e-6f);
-        const auto vp = glm::make_mat4(mirror.viewProj);
+        const auto vp = mirror.viewProj.GetGLM();
         const auto above = vp * glm::vec4(0, 1, 0, 1);
         const auto below = vp * glm::vec4(0, -.5f, 0, 1);
         EXPECT_GT(above.w, 0);
@@ -118,7 +120,7 @@ TEST(PlanarReflectionMath, ReverseZClipsBelowPlaneForPerspectiveAndOrthographicC
         EXPECT_LE(above.z, above.w);
         EXPECT_GT(below.z, below.w);
         // Mirror plane positions map to the same screen XY as the main view.
-        const auto mainPoint = glm::make_mat4(main.viewProj) * glm::vec4(1, 0, 0, 1);
+        const auto mainPoint = main.viewProj.GetGLM() * glm::vec4(1, 0, 0, 1);
         const auto mirrorPoint = vp * glm::vec4(1, 0, 0, 1);
         EXPECT_NEAR(mainPoint.x / mainPoint.w, mirrorPoint.x / mirrorPoint.w, 1e-6f);
         EXPECT_NEAR(mainPoint.y / mainPoint.w, mirrorPoint.y / mirrorPoint.w, 1e-6f);
@@ -154,20 +156,51 @@ TEST(PlanarReflectionMath, SharedOceanAndMirrorCameraHaveIdenticalConventions)
     Rendering::CameraData ocean{}, mirror{};
     ASSERT_TRUE(MakeMirrorCaptureCamera(main, Plane().Equation, kPlanarClipBias, false, ocean));
     ASSERT_TRUE(MakePlanarReflectionCamera(main, Plane(), mirror));
-    for (int i = 0; i < 16; ++i) EXPECT_FLOAT_EQ(ocean.viewProj[i], mirror.viewProj[i]);
+    for (int i = 0; i < 16; ++i) EXPECT_FLOAT_EQ(ocean.viewProj.Data()[i], mirror.viewProj.Data()[i]);
     for (int i = 0; i < 4; ++i) EXPECT_FLOAT_EQ(ocean.cameraPos[i], mirror.cameraPos[i]);
 }
+TEST(PlanarReflectionMath, MirroredEyeAndRelativeProjectionKeepSubcentimeterPositionFarFromOrigin)
+{
+    auto main = TestCamera();
+    const Mathematics::WorldPosition eye{125000.003, 2.003, -60000.007};
+    for (int row = 0; row < 3; ++row)
+        main.view[3][row] = static_cast<float>(
+            -(main.view[0][row] * eye.X + main.view[1][row] * eye.Y + main.view[2][row] * eye.Z));
+    main.viewProj = main.proj * main.view;
+    SetCameraEye(main, eye);
+    const auto inputEye = CameraEye(main);
+    Rendering::CameraData reflected{};
+    ASSERT_TRUE(MakeMirrorCaptureCamera(main, glm::vec4(0, 1, 0, 0), kPlanarClipBias, true, reflected));
+    const auto observed = CameraEye(reflected);
+    EXPECT_NEAR(observed.X, inputEye.X, 0.0002);
+    EXPECT_NEAR(observed.Y, -inputEye.Y, 0.0002);
+    EXPECT_NEAR(observed.Z, inputEye.Z, 0.0002);
+    const auto relative = ViewRelativePoint(reflected, observed);
+    const auto atEye = reflected.viewRel.GetGLM() * glm::vec4(relative.x, relative.y, relative.z, 1.0f);
+    EXPECT_LT(glm::length(glm::vec3(atEye)), 0.0002f);
+    const auto expected = reflected.proj * reflected.viewRel;
+    for (int i = 0; i < 16; ++i)
+        EXPECT_NEAR(reflected.viewProjRel.Data()[i], expected.Data()[i], 0.0002f);
+}
+
 TEST(PlanarReflectionMath, SharedShadowsPreserveSourceProjectionAndDepthAcrossOrigins)
 {
     auto source = TestCamera();
     auto receiver = source;
-    source.cameraPos[0] = 100000;
-    receiver.cameraPos[0] = -100000;
+    const auto moveEye = [](Rendering::CameraData& camera, const Mathematics::WorldPosition& eye)
+    {
+        for (int row = 0; row < 3; ++row)
+            camera.view[3][row] = static_cast<float>(
+                -(camera.view[0][row] * eye.X + camera.view[1][row] * eye.Y + camera.view[2][row] * eye.Z));
+        camera.viewProj = camera.proj * camera.view;
+        SetCameraEye(camera, eye);
+    };
+    moveEye(source, Mathematics::WorldPosition{100000.003, 2.001, -60000.007});
+    moveEye(receiver, Mathematics::WorldPosition{-100000.004, 2.009, -60000.001});
     const auto origin = [](const Rendering::CameraData& c)
     {
-        glm::vec3 p;
-        SectorToWorld(ComputeRenderOriginSector(c.cameraPos[0], c.cameraPos[1], c.cameraPos[2]), p.x,p.y,p.z);
-        return p;
+        const auto p = SectorToWorld(CameraRenderOriginSector(c));
+        return glm::vec3(p.x, p.y, p.z);
     };
     ShadowDataGPU data{};
     glm::mat4 light = glm::scale(glm::mat4(1), glm::vec3(.125f,.25f,.5f));
@@ -184,11 +217,11 @@ TEST(PlanarReflectionMath, SharedShadowsPreserveSourceProjectionAndDepthAcrossOr
     EXPECT_FLOAT_EQ(data.terrainShadowGrid0[2], 40.0f - originDelta.x);
     EXPECT_FLOAT_EQ(data.terrainShadowGrid0[3], 50.0f - originDelta.z);
     EXPECT_FLOAT_EQ(data.terrainShadowGrid3[2], 60.0f - originDelta.y);
-    const glm::vec3 world(100020,3,10);
+    const glm::vec3 world(100020,3,-60000);
     const auto expected = light * glm::vec4(world-origin(source),1);
     const auto actual = glm::make_mat4(data.shadowVP[0]) * glm::vec4(world-origin(receiver),1);
     EXPECT_LT(glm::length(actual-expected),1e-5f);
-    const auto depth = (glm::make_mat4(source.view) * glm::vec4(world,1)).z;
+    const auto depth = Tests::ExactViewDepth(source, Mathematics::WorldPosition{world.x, world.y, world.z});
     EXPECT_NEAR(glm::dot(glm::make_vec4(data.ShadowReferenceDepth),glm::vec4(world-origin(receiver),1)),depth,1e-4f);
 }
 TEST(PlanarReflectionSystem, SharedCaptureTracksWorldMaskAndReleasesItsRegistryEntries)
@@ -196,7 +229,9 @@ TEST(PlanarReflectionSystem, SharedCaptureTracksWorldMaskAndReleasesItsRegistryE
     RenderServices services;
     MirrorCaptureView capture;
     Rendering::ViewDesc main{};
-    main.worldId = 12; main.renderLayerMask = 0xFu;
+    main.worldId = 12; main.renderLayerMask = Rendering::RenderLayerMask{0xFu};
+    main.cameraId = services.Views().AllocateCamera("MainMirrorTest");
+    services.Views().SetCameraData(main.cameraId, TestCamera(), {0.25f, 543.0f});
     UpdateMirrorCaptureView(services,main,TestCamera(),0x5u,capture);
     const auto id = capture.View;
     auto* view = services.Views().FindViewDesc(id);
@@ -204,12 +239,15 @@ TEST(PlanarReflectionSystem, SharedCaptureTracksWorldMaskAndReleasesItsRegistryE
     EXPECT_FALSE(view->activeRenderPipeline);
     EXPECT_EQ(view->purpose,Rendering::ViewPurpose::UtilityCapture);
     EXPECT_EQ(view->worldId,12u);
-    EXPECT_EQ(view->renderLayerMask,0x5u);
+    EXPECT_EQ(view->renderLayerMask.Bits,0x5u);
+    const auto ranges = services.Views().FindCameraRanges(capture.Camera);
+    EXPECT_FLOAT_EQ(ranges.Near, 0.25f);
+    EXPECT_FLOAT_EQ(ranges.CullingRange, 543.0f);
     main.worldId = 13;
     UpdateMirrorCaptureView(services,main,TestCamera(),0x2u,capture);
     EXPECT_EQ(capture.View,id);
     EXPECT_EQ(services.Views().FindViewDesc(id)->worldId,13u);
-    EXPECT_EQ(services.Views().FindViewDesc(id)->renderLayerMask,0x2u);
+    EXPECT_EQ(services.Views().FindViewDesc(id)->renderLayerMask.Bits,0x2u);
     ReleaseMirrorCaptureView(services,capture);
     EXPECT_EQ(capture.View,0u);
     EXPECT_EQ(services.Views().FindViewDesc(id),nullptr);
@@ -241,7 +279,7 @@ TEST(PlanarReflectionSystem, CapturesAreWorldScopedAndDoNotCreateProbeEnvironmen
     Rendering::ViewDesc view{};
     view.worldId = a.GetWorldId();
     view.cameraId = services.Views().AllocateCamera("PlanarTestCamera");
-    services.Views().SetCameraData(view.cameraId, TestCamera());
+    services.Views().SetCameraData(view.cameraId, TestCamera(), {0.1f, 100.0f});
     EXPECT_TRUE(feature->HasPlanes(view));
     a.AddComponentImmediate(e, ECS::ComponentDisabled<Components::PlanarReflection>{});
     system.Update(a, 0);
@@ -265,7 +303,7 @@ TEST(PlanarReflectionSystem, PriorityBudgetIsDeterministic)
     feature.SyncWorld(services, 123, planes);
     Rendering::ViewDesc view{}; view.worldId = 123;
     view.cameraId = services.Views().AllocateCamera("PlanarTestCamera");
-    services.Views().SetCameraData(view.cameraId, TestCamera());
+    services.Views().SetCameraData(view.cameraId, TestCamera(), {0.1f, 100.0f});
     const auto selected = feature.GetPlanes(view);
     ASSERT_EQ(selected.size(), 4u);
     EXPECT_EQ(selected[0].EntityId, 6u);
@@ -282,7 +320,7 @@ TEST(PlanarReflectionMath, VerticalMirrorClipsItsBackSide)
     Rendering::CameraData reflected{};
     ASSERT_TRUE(MakePlanarReflectionCamera(TestCamera(), plane, reflected));
     EXPECT_NEAR(reflected.cameraPos[2], 6, 1e-5f);
-    const auto vp = glm::make_mat4(reflected.viewProj);
+    const auto vp = reflected.viewProj.GetGLM();
     const auto front = vp * glm::vec4(0, 1, -1, 1);
     const auto behind = vp * glm::vec4(0, 1, 1, 1);
     EXPECT_GT(front.w, 0);
@@ -451,7 +489,7 @@ TEST(PlanarReflectionSystem, BudgetSelectsVisibleFrontFacingPlanesIndependentlyP
     Rendering::ViewDesc first{};
     first.worldId = 123;
     first.cameraId = services.Views().AllocateCamera("FirstRoom");
-    services.Views().SetCameraData(first.cameraId, TestCamera());
+    services.Views().SetCameraData(first.cameraId, TestCamera(), {0.1f, 100.0f});
     const auto selected = feature.GetPlanes(first);
     ASSERT_EQ(selected.size(), 1u);
     EXPECT_EQ(selected.front().EntityId, 4u);
@@ -460,11 +498,11 @@ TEST(PlanarReflectionSystem, BudgetSelectsVisibleFrontFacingPlanesIndependentlyP
     second.cameraId = services.Views().AllocateCamera("SecondRoom");
     auto camera = TestCamera();
     const auto view = glm::lookAtLH(glm::vec3(1000, 2, -6), glm::vec3(1000, 0, 0), glm::vec3(0, 1, 0));
-    const auto viewProj = glm::make_mat4(camera.proj) * view;
-    std::memcpy(camera.view, glm::value_ptr(view), sizeof(camera.view));
-    std::memcpy(camera.viewProj, glm::value_ptr(viewProj), sizeof(camera.viewProj));
-    camera.cameraPos[0] = 1000;
-    services.Views().SetCameraData(second.cameraId, camera);
+    const auto viewProj = camera.proj.GetGLM() * view;
+    camera.view = Mathematics::Matrix4x4(view);
+    camera.viewProj = Mathematics::Matrix4x4(viewProj);
+    SetCameraEye(camera, Mathematics::WorldPosition{1000.0, 2.0, -6.0});
+    services.Views().SetCameraData(second.cameraId, camera, {0.1f, 100.0f});
     const auto otherRoom = feature.GetPlanes(second);
     ASSERT_EQ(otherRoom.size(), 1u);
     EXPECT_EQ(otherRoom.front().EntityId, 0u);

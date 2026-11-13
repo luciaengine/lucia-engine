@@ -4,6 +4,7 @@
 #include "Logger/Logger.h"
 #include "Panels/LogView.h"
 #include "Types/StringUtils.h"
+#include "UI/ControlLayoutLoader.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Dropdown.h"
 #include "UI/Controls/Label.h"
@@ -28,14 +29,19 @@ namespace GameEngine {
 
 namespace {
 
-constexpr const char* kLayoutAssetPath = "editor:UI/panels/LogPanel/LogChannelPopover.uxml";
-constexpr const char* kRowLayoutAssetPath = "editor:UI/panels/LogPanel/LogChannelRow.uxml";
+constexpr const char* kLayoutAssetPath = "UI/panels/LogPanel/LogChannelPopover.uxml";
+constexpr const char* kRowLayoutAssetPath = "UI/panels/LogPanel/LogChannelRow.uxml";
+constexpr std::array<std::string_view, 6> kRequiredIds = {"LogChannelsScroll",  "LogChannelsSearchHost",
+                                                         "LogChannelsColumns", "LogChannelsShowAll",
+                                                         "LogChannelsHideAll", "LogChannelsCount"};
+constexpr std::array<std::string_view, 3> kRowRequiredIds = {"LogChannelShown", "LogChannelName", "LogChannelLevel"};
 constexpr const char* kStyleAssetPath = "UI/panels/LogPanel/LogChannelPopover.css";
 constexpr const char* kSearchFieldId = "log-channel-search-field";
 constexpr const char* kHiddenClass = "hidden";
-constexpr const char* kMutedNameClass = "log-channel-name-muted";
+/// A hidden channel's row: its name and its level dim.
+constexpr const char* kRowOffClass = "log-channel-row-off";
 /// The search field has the focus but no focus ring until the user types or presses in it.
-constexpr const char* kAwaitingInputClass = "log-channels-awaiting-input";
+constexpr const char* kAwaitingInputClass = "awaiting-input";
 
 /// The levels a row offers after its Default item, in list order: item i + 1 sets kLevels[i].
 constexpr std::array<Logger::LogLevel, 6> kLevels{Logger::LogLevel::Trace, Logger::LogLevel::Debug,
@@ -64,11 +70,11 @@ std::vector<std::string> LevelLabels(uint16_t channel)
     std::vector<std::string> labels;
     labels.reserve(kLevels.size() + 1);
     std::string defaultLabel = "Default (";
-    defaultLabel += Logger::LogLevelToString(Logger::Log::GetChannelLevelWithoutSetting(channel));
+    defaultLabel += Logger::LogLevelDisplayName(Logger::Log::GetChannelLevelWithoutSetting(channel));
     defaultLabel += ')';
     labels.push_back(std::move(defaultLabel));
     for (const Logger::LogLevel level : kLevels)
-        labels.emplace_back(Logger::LogLevelToString(level));
+        labels.emplace_back(Logger::LogLevelDisplayName(level));
     return labels;
 }
 
@@ -104,23 +110,15 @@ LogChannelPopover::LogChannelPopover(LogView& view)
     SetOverlayLayer(OverlayLayer::Dropdown);
     RequestSubtreeStyleAssetPath(kStyleAssetPath, "editor");
 
-}
-
-void LogChannelPopover::BindLayout()
-{
-    m_BindAttempted = true;
-    auto panel = std::make_unique<UIElement>();
-    if (!GetOwnerManager()->InstantiateLayoutChildrenFromAssetPath(panel.get(), kLayoutAssetPath))
-    {
-        Logger::Log::Error("Log panel: cannot load the Channels layout.");
+    std::unique_ptr<UIElement> panel = Editor::ControlLayoutLoader::Load(kLayoutAssetPath, kRequiredIds);
+    if (!panel)
         return;
-    }
-    auto* scroll = dynamic_cast<ScrollView*>(panel->FindById("LogChannelsScroll"));
-    UIElement* searchHost = panel->FindById("LogChannelsSearchHost");
-    m_Columns = panel->FindById("LogChannelsColumns");
-    m_ShowAll = dynamic_cast<Button*>(panel->FindById("LogChannelsShowAll"));
-    m_HideAll = dynamic_cast<Button*>(panel->FindById("LogChannelsHideAll"));
-    m_Count = dynamic_cast<Label*>(panel->FindById("LogChannelsCount"));
+    auto* scroll = dynamic_cast<ScrollView*>(panel->FindById(HashStringId("LogChannelsScroll")));
+    UIElement* searchHost = panel->FindById(HashStringId("LogChannelsSearchHost"));
+    m_Columns = panel->FindById(HashStringId("LogChannelsColumns"));
+    m_ShowAll = dynamic_cast<Button*>(panel->FindById(HashStringId("LogChannelsShowAll")));
+    m_HideAll = dynamic_cast<Button*>(panel->FindById(HashStringId("LogChannelsHideAll")));
+    m_Count = dynamic_cast<Label*>(panel->FindById(HashStringId("LogChannelsCount")));
     if (!scroll || !searchHost || !m_Columns || !m_ShowAll || !m_HideAll || !m_Count)
     {
         Logger::Log::Error("Log panel: {} has an element of the wrong type for the Channels list; check its "
@@ -156,19 +154,15 @@ void LogChannelPopover::BindLayout()
 
 LogChannelPopover::~LogChannelPopover() = default;
 
-void LogChannelPopover::Open(UIElement& anchor)
+void LogChannelPopover::Open(const UIElement& anchor)
 {
-    if (!GetOwnerManager())
-        return;
-    if (!m_BindAttempted)
-        BindLayout();
     if (!m_Panel)
         return;
-    m_Anchor = MakeWeakRef(&anchor);
+    m_Anchor = &anchor;
     m_Open = true;
     m_PlacedX = -1.0f;
     m_PlacedY = -1.0f;
-    m_PlaceAbove.reset();
+    m_Side.reset();
     BuildRows();
     m_Search->SetValue("");
     m_Search->AddClass(kAwaitingInputClass);
@@ -184,18 +178,8 @@ void LogChannelPopover::Close()
     if (!m_Open)
         return;
     m_Open = false;
-    m_Anchor = {};
+    m_Anchor = nullptr;
     AddClass(kHiddenClass);
-}
-
-bool LogChannelPopover::PressWithinPopupGroup(const UIElement* pressTarget) const
-{
-    for (auto* element = pressTarget; element; element = element->GetParent())
-    {
-        if (element == m_Anchor.Get())
-            return true;
-    }
-    return false;
 }
 
 void LogChannelPopover::OnPostLayout()
@@ -222,19 +206,16 @@ void LogChannelPopover::BuildRows()
 
 void LogChannelPopover::AppendRow(uint16_t channel)
 {
-    auto element = std::make_unique<UIElement>();
-    if (!GetOwnerManager()->InstantiateLayoutChildrenFromAssetPath(element.get(), kRowLayoutAssetPath))
-    {
-        Logger::Log::Error("Log panel: cannot load a Channels row.");
+    std::unique_ptr<UIElement> element = Editor::ControlLayoutLoader::Load(kRowLayoutAssetPath, kRowRequiredIds);
+    if (!element)
         return;
-    }
     Row row;
     row.Channel = channel;
     row.Name = Logger::Log::GetChannelName(channel);
     row.Element = element.get();
-    row.Shown = dynamic_cast<Toggle*>(element->FindById("LogChannelShown"));
-    row.NameLabel = dynamic_cast<Label*>(element->FindById("LogChannelName"));
-    row.Level = dynamic_cast<Dropdown*>(element->FindById("LogChannelLevel"));
+    row.Shown = dynamic_cast<Toggle*>(element->FindById(HashStringId("LogChannelShown")));
+    row.NameLabel = dynamic_cast<Label*>(element->FindById(HashStringId("LogChannelName")));
+    row.Level = dynamic_cast<Dropdown*>(element->FindById(HashStringId("LogChannelLevel")));
     if (!row.Shown || !row.NameLabel || !row.Level)
     {
         Logger::Log::Error("Log panel: {} needs the LogChannelShown toggle, the LogChannelName label and the "
@@ -258,10 +239,10 @@ void LogChannelPopover::AppendRow(uint16_t channel)
 
 void LogChannelPopover::SyncRow(const Row& row)
 {
-    const bool shown = m_View.IsChannelShown(row.Channel);
+    const bool shown = m_View.GetModel().IsChannelShown(row.Channel);
     if (row.Shown->GetValue() != shown)
         row.Shown->SetValueWithoutNotify(shown);
-    SetClass(*row.NameLabel, kMutedNameClass, !shown);
+    SetClass(*row.Element, kRowOffClass, !shown);
 }
 
 void LogChannelPopover::OnQueryChanged(const std::string& query)
@@ -330,39 +311,31 @@ void LogChannelPopover::Place()
 {
     UIManager* manager = GetOwnerManager();
     UIElement* root = manager ? manager->GetRootElement() : nullptr;
-    const UIElement* anchorElement = m_Anchor.Get();
-    if (!anchorElement)
-    {
-        Close();
+    if (!m_Anchor || !root)
         return;
-    }
-    if (!root)
-        return;
-    const Mathematics::Rect anchor = anchorElement->GetWindowRect();
+    const Mathematics::Rect anchor = m_Anchor->GetWindowRect();
     const Mathematics::Rect window = root->GetWindowRect();
     const Mathematics::Rect origin = GetWindowRect();
     const float width = m_Panel->GetLayoutWidth();
     const float height = m_Panel->GetLayoutHeight();
 
     // The side is chosen once per Open, so the list does not jump when a search shrinks it.
-    const float below = anchor.Y + anchor.Height + kAnchorGap;
-    const float above = anchor.Y - kAnchorGap - height;
-    if (height > 0.0f && !m_PlaceAbove.has_value())
-        m_PlaceAbove = below + height > window.Y + window.Height - kEdgeMargin &&
-                       anchor.Y - window.Y > window.Y + window.Height - below;
-    const auto placed = UI::Layout::ClampPopupToViewport(
-        {window.X, window.Y, window.Width, window.Height}, anchor.X,
-        m_PlaceAbove.value_or(false) ? above : below, width, height, kEdgeMargin);
-    const float localX = placed.X - origin.X;
-    const float localY = placed.Y - origin.Y;
+    const UI::Layout::AnchoredPopupPosition placed = UI::Layout::PlacePopupBelowOrAbove(
+        {window.X, window.Y, window.Width, window.Height}, {anchor.X, anchor.Y, anchor.Width, anchor.Height}, width,
+        height, kEdgeMargin, kAnchorGap, m_Side);
+    if (height > 0.0f)
+        m_Side = placed.Side;
+
+    const float localX = placed.Position.X - origin.X;
+    const float localY = placed.Position.Y - origin.Y;
     if (std::fabs(localX - m_PlacedX) < kPlacementEpsilon && std::fabs(localY - m_PlacedY) < kPlacementEpsilon)
         return;
     m_PlacedX = localX;
     m_PlacedY = localY;
-    m_Panel->Overrides()
+    m_Panel->Style()
         .Set(Style::PositionLeft, StyleLength::Px(localX))
         .Set(Style::PositionTop, StyleLength::Px(localY));
-    m_Panel->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
+    MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
 }
 
 } // namespace GameEngine

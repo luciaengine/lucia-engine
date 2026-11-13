@@ -5,13 +5,14 @@
 
 #include "Logger/Logger.h"
 #include "Platform/Environment.h"
-#include "Rendering/CameraDerivation.h"
+#include "Rendering/Camera/CameraDerivation.h"
 #include "Rendering/Common/Frustum.h"
 #include "Rendering/Core/BindlessResourceManager.h"
 #include "Rendering/Core/GPUCulling.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Mathematics/MatrixOps.h"
 #include "Mathematics/Vector4.h"
+#include "Mathematics/WorldPosition.h"
 
 #include <algorithm>
 #include <cmath>
@@ -34,16 +35,14 @@ using Mathematics::AABB;
 
 void RebaseDirectionalShadowData(ShadowDataGPU& data, const CameraData& source, const CameraData& receiver)
 {
-    const auto origin = [](const CameraData& c)
-    {
-        glm::vec3 p;
-        SectorToWorld(ComputeRenderOriginSector(c.cameraPos[0], c.cameraPos[1], c.cameraPos[2]),
-                      p.x, p.y, p.z);
-        return p;
-    };
-    const auto receiverOrigin = origin(receiver);
-    const auto originDelta = receiverOrigin - origin(source);
-    const auto translation = glm::translate(glm::mat4(1), originDelta);
+    const auto receiverSector = CameraRenderOriginSector(receiver);
+    const auto sourceSector = CameraRenderOriginSector(source);
+    const double sectorSize = Mathematics::kWorldSectorSize;
+    const Mathematics::Vector3 originDelta{
+        static_cast<float>((static_cast<int64_t>(receiverSector.x) - sourceSector.x) * sectorSize),
+        static_cast<float>((static_cast<int64_t>(receiverSector.y) - sourceSector.y) * sectorSize),
+        static_cast<float>((static_cast<int64_t>(receiverSector.z) - sourceSector.z) * sectorSize)};
+    const auto translation = Mathematics::Matrix4x4::Translation(originDelta);
     // Terrain coordinates carry the same render origin as the cascade matrices.
     data.terrainShadowGrid0[0] -= originDelta.x;
     data.terrainShadowGrid0[1] -= originDelta.z;
@@ -52,18 +51,14 @@ void RebaseDirectionalShadowData(ShadowDataGPU& data, const CameraData& source, 
     data.terrainShadowGrid3[2] -= originDelta.y;
     for (auto& matrix : data.shadowVP)
     {
-        const auto rebased = glm::make_mat4(matrix) * translation;
-        std::memcpy(matrix, glm::value_ptr(rebased), sizeof(matrix));
+        const auto rebased = Mathematics::Matrix4x4::FromColumnMajor(matrix) * translation;
+        std::memcpy(matrix, rebased.Data(), sizeof(matrix));
     }
-    // Source view depth (LH +Z), not the reflected camera's depth. Use double
-    // for cancellation of a large absolute camera translation with its sector.
-    double offset = source.view[14];
+    // Source-camera depth for positions relative to the receiver's render origin.
+    const auto sourceTranslation = ComputeRebasedViewTranslation(source.view, CameraEye(source), receiverSector);
     for (int i = 0; i < 3; ++i)
-    {
-        data.ShadowReferenceDepth[i] = source.view[i * 4 + 2];
-        offset += static_cast<double>(data.ShadowReferenceDepth[i]) * receiverOrigin[i];
-    }
-    data.ShadowReferenceDepth[3] = static_cast<float>(offset);
+        data.ShadowReferenceDepth[i] = source.view.Data()[i * 4 + 2];
+    data.ShadowReferenceDepth[3] = static_cast<float>(sourceTranslation.Z);
 }
 
 using Mathematics::Matrix4x4;
@@ -86,13 +81,17 @@ static constexpr float kCascadeOverlapFraction = 0.2f;
 // the GPU cull moves its planes to the camera-relative origin in fp32 again.
 // The footprint is widened by this many ULPs of the origin's magnitude: zero
 // inside the activation radius, a few metres at Earth radius.
-static constexpr int kCullPrecisionUlps = 4;
 
-// The receivers' cascade blend band, mirrored from shadow_sampling.glsl
-// (kCascadeBlendFraction, kCascadeBlendMinDistance): a fragment this close
-// before a split also samples the next cascade, so that cascade must hold it.
-static constexpr float kCascadeBlendFraction = 0.1f;
-static constexpr float kCascadeBlendMinDistance = 3.0f;
+
+// The receivers' cascade blend band as a fraction of the cascade's own depth
+// range, mirrored from kCascadeBlendFraction in shadow_cascade_blend.glsl: a
+// fragment this close before a split also samples the next cascade, so that
+// cascade must hold it. Bounded by the overlap above, which is a fraction of
+// the NEXT cascade's range: a band reaching past what the next cascade's box
+// holds reads lit there (CascadeReceiverFit.BoxesHoldTheAirInFrontOfTheReceivers
+// fails from 0.2 at the shallow orthographic strategy camera). No world-unit
+// floor: a band longer than the cascade makes the finer cascade never win.
+static constexpr float kCascadeBlendFraction = 0.175f;
 
 // How far a shadow lookup reaches around its receiver, in texels of the
 // cascade, beyond the penumbra ceiling ReceiverMarginWorld already holds in
@@ -461,7 +460,8 @@ const ShadowMapRenderFeature::SDSMBounds& ShadowMapRenderFeature::GetSDSMBounds(
 }
 
 ShadowMapRenderFeature::SDSMBounds ShadowMapRenderFeature::ResolveSDSMBounds(
-    float minNdc, float maxNdc, float nearPlane, float farPlane, bool orthographic, bool stabilize)
+    float minNdc, float maxNdc, const ProjectionDepthTerms& depthTerms, float nearPlane, float farPlane,
+    bool stabilize)
 {
     if (!std::isfinite(minNdc) || !std::isfinite(maxNdc) ||
         !std::isfinite(nearPlane) || !std::isfinite(farPlane) ||
@@ -470,8 +470,8 @@ ShadowMapRenderFeature::SDSMBounds ShadowMapRenderFeature::ResolveSDSMBounds(
         return {};
 
     SDSMBounds bounds;
-    bounds.nearDepth = LinearizeReverseZDepthLH_ZO(maxNdc, nearPlane, farPlane, orthographic);
-    bounds.farDepth = LinearizeReverseZDepthLH_ZO(minNdc, nearPlane, farPlane, orthographic);
+    bounds.nearDepth = LinearizeReverseZDepthLH_ZO(maxNdc, depthTerms);
+    bounds.farDepth = LinearizeReverseZDepthLH_ZO(minNdc, depthTerms);
     if (stabilize)
     {
         // A fixed NDC quantum is unbounded in perspective distance: rounding
@@ -723,8 +723,8 @@ CascadeFrameData ShadowMapRenderFeature::ComputeCascades(
     // Guarded because an orthographic or degenerate projection has no fovY; the
     // fallbacks only ever feed the WorldTexel branch, which such a camera does
     // not meaningfully use.
-    const float projYY = camera.proj[5];
-    const float projXX = camera.proj[0];
+    const float projYY = camera.proj.Data()[5];
+    const float projXX = camera.proj.Data()[0];
     const float tanHalfY = (std::abs(projYY) > 1e-6f) ? (1.0f / std::abs(projYY)) : 1.0f;
     const float aspect = (std::abs(projXX) > 1e-6f) ? std::abs(projYY / projXX) : 1.0f;
 
@@ -742,15 +742,7 @@ CascadeFrameData ShadowMapRenderFeature::ComputeCascades(
                   sdsmBounds);
 
     // Camera-relative rendering: the whole cascade fit runs in the
-    // render-origin-relative frame, against the SAME origin the world pass uses.
-    // Origin and rebased camera VP are derived HERE from the camera position (the
-    // identical pure function ResolveCameraData applies on-read) — NOT read from
-    // camera.renderOriginSector / camera.viewProjRel: callers that fetch the
-    // camera through FindCameraData get the raw store, whose relative fields are
-    // only filled on-read, so trusting them left this path permanently in the
-    // sector-0 branch — LightVPRel stayed world-space while receivers sample
-    // with render-origin-relative positions, and every cascade lookup missed
-    // (shadows silently fully lit) the moment the origin activated.
+    // render-origin-relative frame, against the same origin the world pass uses.
     //
     // Fitting in the relative frame is a precision requirement, not tidiness.
     // The frustum corners come out of an fp32 inverse view-projection, so at
@@ -765,25 +757,17 @@ CascadeFrameData ShadowMapRenderFeature::ComputeCascades(
     // centre texel snap and the shadow-camera eye all stay at local magnitude,
     // where fp32 resolves a shadow texel with room to spare.
     //
-    // Origin (0,0,0) => ComputeRebasedView copies viewProj bit-for-bit, so every
-    // value below — and LightVPRel — is byte-identical to the full-world path.
+    // In sector (0,0,0) viewProjRel is a bit copy of viewProj, so LightVPRel is a bit copy of LightVP.
     // LightVP stays world-space for the world-space caster culling in
-    // OnScheduleCulling, which tolerates ULP(|eye|) (its slack is in metres).
-    // ComputeRebasedView is the one place the engine rebases a camera; only its
-    // view-projection output is wanted here (the fit never needs the view alone).
-    float cameraViewRelUnusedHere[16];
-    float cameraViewProjRel[16];
-    int32 originSector[4];
-    ComputeRebasedView(camera.view, camera.proj, camera.viewProj, camera.cameraPos[0],
-                       camera.cameraPos[1], camera.cameraPos[2], cameraViewRelUnusedHere,
-                       cameraViewProjRel, originSector);
+    // OnScheduleCulling, which tolerates ULP(|eye|) (its slack is in meters).
+    const Matrix4x4& viewProjRel = camera.viewProjRel;
+    const Mathematics::Vector3Int cameraSector = CameraRenderOriginSector(camera);
+    const int32 originSector[3] = {cameraSector.x, cameraSector.y, cameraSector.z};
     result.RenderOriginSector[0] = originSector[0];
     result.RenderOriginSector[1] = originSector[1];
     result.RenderOriginSector[2] = originSector[2];
 
     // Inverse of the origin-relative camera VP, for extracting frustum corners.
-    Matrix4x4 viewProjRel;
-    std::memcpy(viewProjRel.Data(), cameraViewProjRel, 16 * sizeof(float));
     const Matrix4x4 invViewProjRel = Mathematics::Inverse(viewProjRel);
 
     // Full frustum corners, render-origin-relative.
@@ -818,13 +802,8 @@ CascadeFrameData ShadowMapRenderFeature::ComputeCascades(
             ? &measuredToCurrent
             : nullptr;
     // The eye, render-origin-relative: the sun glare looks the cascades up there.
-    const Vector3 eyeRel{
-        static_cast<float>(static_cast<double>(camera.cameraPos[0]) -
-                           static_cast<double>(result.RenderOriginSector[0]) * kSectorSize),
-        static_cast<float>(static_cast<double>(camera.cameraPos[1]) -
-                           static_cast<double>(result.RenderOriginSector[1]) * kSectorSize),
-        static_cast<float>(static_cast<double>(camera.cameraPos[2]) -
-                           static_cast<double>(result.RenderOriginSector[2]) * kSectorSize)};
+    const Vector3 eyeRel = CameraEyeRelativeToOrigin(camera);
+
     for (uint32_t c = 0; c < m_Config.NumCascades; ++c)
     {
         float cascadeNear = ((c == 0 ? cascade0Start : result.SplitDistances[c - 1]) - nearPlane) /
@@ -924,10 +903,9 @@ CascadeFrameData ShadowMapRenderFeature::ComputeCascades(
                 frozen->Fit = fit;
                 frozen->LightDir = ldNorm;
                 frozen->CameraPos = camPos;
-                std::memcpy(frozen->CullCameraViewProj.Data(), camera.viewProj,
-                            16 * sizeof(float));
-                std::memcpy(frozen->LodCameraPos, camera.cameraPos, sizeof(frozen->LodCameraPos));
-                frozen->LodProjScaleY = std::abs(camera.proj[5]);
+                frozen->CullCameraViewProj = camera.viewProj;
+                frozen->LodCameraPos = camera.cameraPos;
+                frozen->LodProjScaleY = std::abs(camera.proj.Data()[5]);
                 frozen->SliceFarDist = sliceFarDist;
                 frozen->Sector[0] = result.RenderOriginSector[0];
                 frozen->Sector[1] = result.RenderOriginSector[1];
@@ -951,17 +929,16 @@ CascadeFrameData ShadowMapRenderFeature::ComputeCascades(
         {
             result.CullCameraViewProj[c] = frozen->CullCameraViewProj;
             std::memcpy(result.CasterFootprint[c], frozen->Footprint, sizeof(frozen->Footprint));
-            std::memcpy(result.LodCameraPos[c], frozen->LodCameraPos,
-                        sizeof(result.LodCameraPos[c]));
+            result.LodCameraPos[c] = frozen->LodCameraPos;
             result.LodProjScaleY[c] = frozen->LodProjScaleY;
         }
         else
         {
-            std::memcpy(result.CullCameraViewProj[c].Data(), camera.viewProj, 16 * sizeof(float));
+            result.CullCameraViewProj[c] = camera.viewProj;
             LightSpaceBoxToNdc(bounds.CasterBox, fit.CenterXLS, fit.CenterYLS, fit.OrthoHalfExtent,
                                result.CasterFootprint[c]);
-            std::memcpy(result.LodCameraPos[c], camera.cameraPos, sizeof(result.LodCameraPos[c]));
-            result.LodProjScaleY[c] = std::abs(camera.proj[5]);
+            result.LodCameraPos[c] = camera.cameraPos;
+            result.LodProjScaleY[c] = std::abs(camera.proj.Data()[5]);
         }
         result.CasterFootprintApplies[c] = footprintApplies;
     }
@@ -1107,6 +1084,7 @@ bool ShadowMapRenderFeature::MeasuredToCurrentLightSpace(const ShadowReceiverMea
     // Measured light space -> positions relative to the measuring origin ->
     // relative to this frame's origin -> this frame's light space. The sector
     // delta is an exact integer count of sectors.
+    constexpr float kSectorSize = static_cast<float>(Mathematics::kWorldSectorSize);
     const Vector3 originShift{
         static_cast<float>(context.RenderOriginSector[0] - originSector[0]) * kSectorSize,
         static_cast<float>(context.RenderOriginSector[1] - originSector[1]) * kSectorSize,
@@ -1135,6 +1113,14 @@ float ShadowMapRenderFeature::ReceiverReachWorld(float halfExtent) const
     return marginWorld + kReceiverFilterReachTexels * texel;
 }
 
+float ShadowMapRenderFeature::CascadeBlendBand(const CascadeFrameData& frame, uint32_t cascadeIndex)
+{
+    if (cascadeIndex + 1 >= frame.NumCascades)
+        return 0.0f;
+    const float start = cascadeIndex == 0 ? 0.0f : frame.SplitDistances[cascadeIndex - 1];
+    return (frame.SplitDistances[cascadeIndex] - start) * kCascadeBlendFraction;
+}
+
 bool ShadowMapRenderFeature::NarrowFitToReceivers(const ShadowReceiverMeasurement& measured,
                                                   const CascadeFrameData& frame,
                                                   uint32_t cascadeIndex,
@@ -1148,13 +1134,7 @@ bool ShadowMapRenderFeature::NarrowFitToReceivers(const ShadowReceiverMeasuremen
     const uint32_t last = frame.NumCascades - 1;
     float depthLo = 0.0f;
     if (cascadeIndex > 0)
-    {
-        const uint32_t prev = cascadeIndex - 1;
-        const float prevStart = prev == 0 ? 0.0f : frame.SplitDistances[prev - 1];
-        const float band = std::max((frame.SplitDistances[prev] - prevStart) * kCascadeBlendFraction,
-                                    kCascadeBlendMinDistance);
-        depthLo = frame.SplitDistances[prev] - band;
-    }
+        depthLo = frame.SplitDistances[cascadeIndex - 1] - CascadeBlendBand(frame, cascadeIndex - 1);
     const float depthHi =
         cascadeIndex == last ? m_Config.MaxShadowDistance : frame.SplitDistances[cascadeIndex];
     // Depths the reduce did not bin (the shadow distance grew since it
@@ -1366,15 +1346,13 @@ ShadowMapRenderFeature::CascadeFit ShadowMapRenderFeature::ComputeCascadeLightVP
         // pass (caster raster) and ge_shadowVP (receiver sampling) consume it —
         // their agreement is exact by construction.
         //
-        // The WORLD one exists for the world-space caster culling in
-        // OnScheduleCulling (cull planes, scene-bounds AABB, the caster
-        // footprint tighten, all of which work on world geometry). Its translation column
-        // inherits ULP(|eye|) — 0.5 m at Earth radius — which the cull widens
-        // its footprint by (kCullPrecisionUlps) and which is far above a shadow
-        // texel, which is exactly why receivers must not use it.
-        const double originX = static_cast<double>(originSector[0]) * kSectorSize;
-        const double originY = static_cast<double>(originSector[1]) * kSectorSize;
-        const double originZ = static_cast<double>(originSector[2]) * kSectorSize;
+        // The WORLD one exists for the coarse cascade-against-scene-bounds test
+        // in OnScheduleCulling, which works on world geometry. Its translation
+        // column inherits ULP(|eye|), 0.5 m at Earth radius, far above a shadow
+        // texel: the caster planes and the receivers use the relative one.
+        const double originX = static_cast<double>(originSector[0]) * Mathematics::kWorldSectorSize;
+        const double originY = static_cast<double>(originSector[1]) * Mathematics::kWorldSectorSize;
+        const double originZ = static_cast<double>(originSector[2]) * Mathematics::kWorldSectorSize;
         lightVPRel = lightProj * MakeLightViewAtEye(lightRot, lightPosRel.x, lightPosRel.y,
                                                    lightPosRel.z);
         lightVP = lightProj * MakeLightViewAtEye(lightRot, lightPosRel.x + originX,
@@ -1385,10 +1363,7 @@ ShadowMapRenderFeature::CascadeFit ShadowMapRenderFeature::ComputeCascadeLightVP
     }
     else
     {
-        // Origin inactive: the relative frame IS world space, so the legacy
-        // construction stands and VPRel is a bit-for-bit copy — the dark-ship
-        // gate. Every scene inside the activation radius renders exactly as it
-        // did before camera-relative rendering existed.
+        // Sector (0,0,0): the relative frame is world space, so LightVPRel is a bit copy of LightVP.
         const Matrix4x4 lightView = Mathematics::MakeLookAtLH(lightPosRel, lightPosRel + ld, up);
         lightVP = lightProj * lightView;
         SnapClipTranslationToTexels(lightVP, resolution);
@@ -1417,7 +1392,7 @@ void ShadowMapRenderFeature::SelectCascadeSamplingFit(const CascadeContentFit* f
     // ge_shadowVP is the CAMERA-RELATIVE cascade VP: the receiver samples it
     // with the fragment's render-origin-relative position (vPosRel), matching
     // the depth pass which rasterized casters through the same relative VP.
-    // Byte-identical to LightVP when the origin is inactive (dark-ship).
+    // In sector (0,0,0) it is a bit copy of LightVP.
     if (cf)
     {
         // The retained layer's own rasterizing matrix, bit-for-bit — never
@@ -1731,35 +1706,43 @@ void ShadowMapRenderFeature::WriteTerrainShadowMap(ViewId viewId, RenderServices
         return;
     const TerrainShadowMap& map = *published;
     // The receivers shade in the render-origin-relative frame (vPosRel), so the grid is rebased the
-    // same way, in double before the narrowing.
+    // same way.
     const Rendering::CameraData cam = rs.Views().ResolveCameraData(viewId);
-    const double originX = static_cast<double>(cam.renderOriginSector[0]) * kSectorSize;
-    const double originY = static_cast<double>(cam.renderOriginSector[1]) * kSectorSize;
-    const double originZ = static_cast<double>(cam.renderOriginSector[2]) * kSectorSize;
-    const double centerX = map.TerrainX + 0.5 * static_cast<double>(map.TerrainSizeX);
-    const double centerZ = map.TerrainZ + 0.5 * static_cast<double>(map.TerrainSizeZ);
-    out.terrainShadowGrid0[0] = static_cast<float>(centerX - originX);
-    out.terrainShadowGrid0[1] = static_cast<float>(centerZ - originZ);
-    out.terrainShadowGrid0[2] = static_cast<float>(map.TerrainX - originX);
-    out.terrainShadowGrid0[3] = static_cast<float>(map.TerrainZ - originZ);
-    out.terrainShadowGrid1[0] = map.TerrainSizeX;
-    out.terrainShadowGrid1[1] = map.TerrainSizeZ;
-    out.terrainShadowGrid1[2] = map.SunX;
-    out.terrainShadowGrid1[3] = map.SunZ;
-    out.terrainShadowGrid2[0] = map.TanElevation;
-    out.terrainShadowGrid2[1] = map.Texel;
-    out.terrainShadowGrid2[2] = map.UMin;
-    out.terrainShadowGrid2[3] = map.VMin;
-    out.terrainShadowGrid3[0] = map.SamplesU;
-    out.terrainShadowGrid3[1] = map.SamplesV;
-    out.terrainShadowGrid3[2] = static_cast<float>(map.BaseY - originY);
-    out.terrainShadowGrid3[3] = map.HeightScale;
+    const Mathematics::WorldPosition origin{
+        static_cast<double>(cam.renderOriginSector[0]) * Mathematics::kWorldSectorSize,
+        static_cast<double>(cam.renderOriginSector[1]) * Mathematics::kWorldSectorSize,
+        static_cast<double>(cam.renderOriginSector[2]) * Mathematics::kWorldSectorSize};
+    const TerrainShadowGrid grid = TerrainShadowGridOf(map, origin);
+    out.terrainShadowGrid0 = grid.Grid0;
+    out.terrainShadowGrid1 = grid.Grid1;
+    out.terrainShadowGrid2 = grid.Grid2;
+    out.terrainShadowGrid3 = grid.Grid3;
+    out.terrainShadowHeightSpan = grid.HeightSpan;
     out.terrainShadowSource[0] = map.MapBindlessIndex;
     out.terrainShadowSource[1] = map.HeightBindlessIndex;
     out.terrainShadowSource[2] = 1u;
     out.terrainShadowSource[3] = map.MapSide;
     out.terrainShadowField[0] = map.FieldLitBindlessIndex;
     out.terrainShadowField[1] = map.FieldLitLevels;
+}
+
+ShadowMapRenderFeature::TerrainShadowGrid ShadowMapRenderFeature::TerrainShadowGridOf(
+    const TerrainShadowMap& map, const Mathematics::WorldPosition& origin)
+{
+    // The positions are rebased in double before the narrowing. The extent bounds "on the terrain";
+    // the height span places the grid and the height lookup.
+    const double centerX = map.TerrainX + 0.5 * static_cast<double>(map.HeightSpanX);
+    const double centerZ = map.TerrainZ + 0.5 * static_cast<double>(map.HeightSpanZ);
+    TerrainShadowGrid grid;
+    grid.Grid0 = Mathematics::Vector4(static_cast<float>(centerX - origin.X), static_cast<float>(centerZ - origin.Z),
+                                      static_cast<float>(map.TerrainX - origin.X),
+                                      static_cast<float>(map.TerrainZ - origin.Z));
+    grid.Grid1 = Mathematics::Vector4(map.ExtentX, map.ExtentZ, map.SunX, map.SunZ);
+    grid.Grid2 = Mathematics::Vector4(map.TanElevation, map.Texel, map.UMin, map.VMin);
+    grid.Grid3 = Mathematics::Vector4(map.SamplesU, map.SamplesV, static_cast<float>(map.BaseY - origin.Y),
+                                      map.HeightScale);
+    grid.HeightSpan = Mathematics::Vector4(map.HeightSpanX, map.HeightSpanZ, 0.0f, 0.0f);
+    return grid;
 }
 
 Rendering::TextureHandle ShadowMapRenderFeature::GetShadowMapTexture(
@@ -1786,11 +1769,9 @@ void ShadowMapRenderFeature::AdoptPooledShadowMap(Rendering::ViewId viewId,
         return;
     }
 
-    // The handle changed: invalidate every cache keyed off the OLD handle,
-    // EXCEPT the texture itself — the pool owns it and defer-destroys the old
-    // physical on its own schedule. A first adopt (no prior entry) has nothing
-    // stale — skipping the erase matters because the CSM node caches frame data
-    // BEFORE the cascade arm imports/adopts.
+    // The handle changed: drop what the old physical held. The pool owns both textures.
+    // Keep this frame's cascade fit: it holds no handle, and the node caches it before
+    // this adopt, so every cascade renders into the new physical on this frame.
     if (it != m_ShadowMapByView.end() && it->second.Physical.IsValid())
     {
         auto pcssIt = m_PcssBindlessByView.find(viewId);
@@ -1805,7 +1786,6 @@ void ShadowMapRenderFeature::AdoptPooledShadowMap(Rendering::ViewId viewId,
             rs.Textures().InvalidateBindless(it->second.Physical);
             m_PcssBindlessByView.erase(pcssIt);
         }
-        m_CachedFrameData.erase(viewId);
         // Retained cascade layers died with the old physical; the static-cache
         // records must not skip against a fresh Undefined image. (The tint
         // array can realloc on the same config-change frames; clearing the
@@ -2362,12 +2342,12 @@ void ShadowMapRenderFeature::OnScheduleCulling(const FeatureCullingContext& ctx)
     // the =0 lane leaves the planes verbatim.
     const bool casterReduction = IsCasterReductionEnabled();
 
-    auto findCamera = [ctx](Rendering::CameraId id) -> const Rendering::CameraData*
+    auto findCamera = [ctx](Rendering::CameraId id) -> const Rendering::CameraInfo*
     {
         for (const Rendering::CameraInfo& cam : *ctx.Cameras)
         {
             if (cam.id == id)
-                return &cam.data;
+                return &cam;
         }
         return nullptr;
     };
@@ -2379,12 +2359,13 @@ void ShadowMapRenderFeature::OnScheduleCulling(const FeatureCullingContext& ctx)
         // cascade culling too — matching the per-view frustum/HZB loop and the
         // area/spot/point shadow gates. Without this a dormant scene view (e.g.
         // a hidden editor quad pane) keeps dispatching fused-cascade culling.
-        if (view.cameraId == 0 || view.ActiveRenderLayerMask() == 0u)
+        if (view.cameraId == 0 || view.ActiveRenderLayerMask() == Rendering::RenderLayerMask::None())
             continue;
 
-        const Rendering::CameraData* camData = findCamera(view.cameraId);
-        if (camData == nullptr)
+        const Rendering::CameraInfo* camInfo = findCamera(view.cameraId);
+        if (camInfo == nullptr)
             continue;
+        const Rendering::CameraData* camData = &camInfo->data;
 
         // This frame's fit, computed here so the casters are culled to the
         // same fit the cascades rasterize with (the ShadowMap node declares
@@ -2395,7 +2376,7 @@ void ShadowMapRenderFeature::OnScheduleCulling(const FeatureCullingContext& ctx)
         if (frameData == nullptr || frameData->NumCascades == 0)
             continue;
 
-        const Rendering::CameraDerivedData camera = Rendering::DeriveCameraData(*camData);
+        const Rendering::CameraDerivedData camera = Rendering::DeriveCameraData(*camData, camInfo->ranges);
 
         // One SubmitCascadeGroup per shadow view: the kViewCount=NumCascades
         // PSO variant fans the candidate range into all cascade slices in
@@ -2404,26 +2385,12 @@ void ShadowMapRenderFeature::OnScheduleCulling(const FeatureCullingContext& ctx)
         group.viewId          = view.id;
         group.cascadeCount    = std::min<uint32_t>(frameData->NumCascades,
                                                    Rendering::kMaxCullingViewsPerDispatch);
-        group.cameraPosition  = camera.Position;
         group.cameraForward   = camera.Forward;
-        // Camera-relative shadow-caster culling (Earth-scale precision): the same
-        // render origin the world pass + cascade VPs use, derived from the camera
-        // position (the stored renderOriginSector is zero here — it is filled only
-        // on-read by ResolveCameraData), so a planetary caster's boundingCenter
-        // differences small against the (world-space) cascade planes. Inactive
-        // (sector 0) => (0,0,0) => byte-identical world cull.
-        float originMagnitude = 0.0f;
-        {
-            const auto originSector = ComputeRenderOriginSector(
-                camData->cameraPos[0], camData->cameraPos[1], camData->cameraPos[2]);
-            float ox, oy, oz;
-            SectorToWorld(originSector, ox, oy, oz);
-            group.cameraRelativeOrigin = Vector3{ox, oy, oz};
-            originMagnitude = std::max({std::abs(ox), std::abs(oy), std::abs(oz)});
-        }
-        // The world-space planes carry ULP(|origin|) (see kCullPrecisionUlps).
-        const float precisionSlack =
-            originMagnitude * static_cast<float>(kCullPrecisionUlps) * std::numeric_limits<float>::epsilon();
+        // The caster planes come from LightVPRel, relative to the origin of the fit's sector; the
+        // kernel composes each caster center against that sector, so both stay small at any distance.
+        group.originSector = Mathematics::Vector3Int{frameData->RenderOriginSector[0],
+                                                     frameData->RenderOriginSector[1],
+                                                     frameData->RenderOriginSector[2]};
         group.nearPlane       = camera.NearPlane;
         group.farPlane        = camera.FarPlane;
         group.firstInstance   = 0;
@@ -2434,7 +2401,7 @@ void ShadowMapRenderFeature::OnScheduleCulling(const FeatureCullingContext& ctx)
 
         // Degenerate plane: any sphere test of the form
         //   dot(center, normal) + w < -radius
-        // is trivially true for w = -1e38f, so TestSphereFrustum returns false
+        // is trivially true for w = -1e38f, so SphereOutsideFrustum returns true
         // on the very first plane and the cascade culls every instance.
         constexpr float kDegenerateW = -1.0e38f;
         const Mathematics::Vector4 kDegeneratePlane{1.0f, 0.0f, 0.0f, kDegenerateW};
@@ -2450,27 +2417,25 @@ void ShadowMapRenderFeature::OnScheduleCulling(const FeatureCullingContext& ctx)
                 cascadeLive = AABBsIntersect(sceneMin, sceneMax, cascadeMin, cascadeMax);
             }
 
-            group.lightVP[c] = frameData->LightVP[c];
+            group.lightVP[c] = frameData->LightVPRel[c];
 
             if (cascadeLive)
             {
                 Mathematics::Vector4 planes[6]{};
-                BuildCascadeCasterCullPlanes(frameData->LightVP[c], planes);
+                BuildCascadeCasterCullPlanes(frameData->LightVPRel[c], planes);
 
                 // Tighten the four side planes to the cascade's caster footprint
                 // (CascadeFrameData::CasterFootprint): the receivers it was fitted
-                // to hold. Far (plane 5) is the fit's own; near (plane 4) was
-                // retired above. The fit is this frame's, so the slack only
-                // covers the footprint drift the fit freeze allows and the
-                // world-space planes' precision.
+                // to hold, in light NDC, so it applies to LightVPRel as it is. Far
+                // (plane 5) is the fit's own; near (plane 4) was retired above. The
+                // slack covers the footprint drift the fit freeze allows.
                 if (casterReduction && frameData->CasterFootprintApplies[c])
                 {
                     const float freezeDrift =
                         m_FitFreezeEnabled ? kFreezeFootprintDriftFraction * frameData->OrthoHalfExtent[c]
                                            : 0.0f;
-                    TightenCascadeSidePlanes(frameData->LightVP[c], frameData->CasterFootprint[c],
-                                             frameData->OrthoHalfExtent[c],
-                                             freezeDrift + precisionSlack, planes);
+                    TightenCascadeSidePlanes(frameData->LightVPRel[c], frameData->CasterFootprint[c],
+                                             frameData->OrthoHalfExtent[c], freezeDrift, planes);
                 }
 
                 for (int p = 0; p < 6; ++p)

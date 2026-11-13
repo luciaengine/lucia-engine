@@ -2,15 +2,17 @@
 #include "Assets/Packages/PackageGitSource.h"
 #include "FileSystem/FileSystem.h"
 #include "FileSystem/ScopedFileLock.h"
+#include "JobSystem/JobChannel.h"
 #include "Logger/Logger.h"
+#include "Types/FlatMap.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <fstream>
-#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace GameEngine
@@ -210,10 +212,29 @@ void PruneOrphanedScopes(const fs::path& root, const fs::path& currentPackageRoo
             PruneOrphanedScope(scope, root / ".locks" / scope.filename());
     }
 }
+
+// Remove the scopes of the entry's native root whose recorded package-cache roots are missing,
+// except the entry's own scope. Skip the pass while another process holds the maintenance lock.
+void PruneOrphanedPackageNativeScopes(const std::filesystem::path& entry)
+{
+#if !defined(__EMSCRIPTEN__)
+    if (!entry.is_absolute() || entry != entry.lexically_normal())
+        return;
+    const auto packageRoot = entry.parent_path();
+    const auto root = packageRoot.parent_path();
+    if (root.filename() != ".native" || !IsPlainDirectory(root) || !IsPlainDirectory(root / ".locks") ||
+        !IsPlainFileOrMissing(root / ".locks" / "maintenance"))
+        return;
+    ScopedFileLock maintenance(root / ".locks" / "maintenance", ScopedFileLock::Mode::Exclusive, false);
+    if (!maintenance.IsLocked())
+        return;
+    PruneOrphanedScopes(root, packageRoot);
+#endif
 }
 
-std::unique_ptr<FileSystem::ScopedFileLock> AcquirePackageNativeCache(
-    const std::filesystem::path& entry, const std::filesystem::path& cacheRoot)
+// Take the shared lease on the entry and record the cache root that owns its scope.
+// Does no maintenance: the caller prunes the scope with PruneInactiveGenerations.
+std::unique_ptr<FileSystem::ScopedFileLock> AcquireLease(const fs::path& entry, const fs::path& cacheRoot)
 {
 #if defined(__EMSCRIPTEN__)
     return {};
@@ -262,41 +283,112 @@ std::unique_ptr<FileSystem::ScopedFileLock> AcquirePackageNativeCache(
         if (error)
             return {};
     }
+    return lease;
+#endif
+}
 
-    // Maintenance coordinates recency and eviction only. Do not block editor
-    // startup behind a paused peer: retain the safe lease and skip this pass.
+// Remove the inactive generations of the entry's scope past the retention budget.
+// The entry must come from a successful AcquireLease.
+void PruneInactiveGenerations(const fs::path& entry)
+{
+#if !defined(__EMSCRIPTEN__)
+    const auto packageRoot = entry.parent_path();
+    const auto root = packageRoot.parent_path();
+    const auto lockRoot = root / ".locks" / packageRoot.filename();
+    // Maintenance coordinates recency and eviction only. Do not wait behind a
+    // paused peer: keep the safe lease and skip this pass.
     ScopedFileLock maintenance(root / ".locks" / "maintenance", ScopedFileLock::Mode::Exclusive, false);
     if (!maintenance.IsLocked())
     {
         Logger::Log::Warning("[Packages] native-cache maintenance is busy; skipping retention for '{}'",
                              packageRoot.filename().string());
-        return lease;
+        return;
     }
     Prune(packageRoot, lockRoot, entry);
-    PruneOrphanedScopes(root, packageRoot);
-    return lease;
 #endif
 }
 
-bool RetainPackageNativeCache(const std::filesystem::path& entry)
+// The leases and the pending maintenance of this process. Process lifetime on purpose:
+// static destruction must not release a lease before another singleton finishes
+// unloading module images. The OS closes the lock handles at exit.
+struct ProcessCache
+{
+    std::mutex LeaseMutex;
+    FlatMap<fs::path, std::unique_ptr<FileSystem::ScopedFileLock>> Leases;
+
+    // One maintenance job runs at a time, so two passes of this process never
+    // contend for a maintenance lock. MaintenanceMutex guards the three fields below.
+    std::mutex MaintenanceMutex;
+    std::vector<fs::path> PendingMaintenance;
+    bool MaintenanceQueued = false;
+    bool OrphansSwept = false;
+};
+
+ProcessCache& GetProcessCache()
+{
+    static auto* const s_Cache = new ProcessCache;
+    return *s_Cache;
+}
+
+// Prune the scope of every retained entry, then (once per process) sweep the orphaned scopes.
+// Exits when no entry waits, so a later retain queues a new job.
+void RunProcessMaintenance()
+{
+    ProcessCache& cache = GetProcessCache();
+    for (;;)
+    {
+        std::vector<fs::path> entries;
+        bool sweep = false;
+        {
+            std::lock_guard guard(cache.MaintenanceMutex);
+            if (cache.PendingMaintenance.empty())
+            {
+                cache.MaintenanceQueued = false;
+                return;
+            }
+            entries.swap(cache.PendingMaintenance);
+            sweep = !std::exchange(cache.OrphansSwept, true);
+        }
+        for (const fs::path& entry : entries)
+            PruneInactiveGenerations(entry);
+        // The orphan sweep reads every scope of the shared root: once per process, not once per package.
+        if (sweep)
+            PruneOrphanedPackageNativeScopes(entries.front());
+    }
+}
+}
+
+std::unique_ptr<FileSystem::ScopedFileLock> AcquirePackageNativeCache(
+    const std::filesystem::path& entry, const std::filesystem::path& cacheRoot)
+{
+    auto lease = AcquireLease(entry, cacheRoot);
+    if (lease)
+        PruneInactiveGenerations(entry);
+    return lease;
+}
+
+bool RetainPackageNativeCache(const std::filesystem::path& entry, JobSystem::JobChannel& maintenance)
 {
     if (entry.empty())
         return false;
-    struct ProcessLeases
+    ProcessCache& cache = GetProcessCache();
     {
-        std::mutex Mutex;
-        std::map<std::filesystem::path, std::unique_ptr<FileSystem::ScopedFileLock>> Entries;
-    };
-    // Intentionally process-lifetime: static destruction must not release a lease before
-    // another singleton finishes unloading module images. The OS closes these handles at exit.
-    static auto* const s_Leases = new ProcessLeases;
-    std::lock_guard guard(s_Leases->Mutex);
-    if (s_Leases->Entries.contains(entry))
-        return true;
-    auto lease = AcquirePackageNativeCache(entry, GlobalPackageCacheRoot());
-    if (!lease)
-        return false;
-    s_Leases->Entries.emplace(entry, std::move(lease));
+        std::lock_guard guard(cache.LeaseMutex);
+        if (cache.Leases.Contains(entry))
+            return true;
+        auto lease = AcquireLease(entry, GlobalPackageCacheRoot());
+        if (!lease)
+            return false;
+        cache.Leases.InsertOrAssign(entry, std::move(lease));
+    }
+    bool queueJob = false;
+    {
+        std::lock_guard guard(cache.MaintenanceMutex);
+        cache.PendingMaintenance.push_back(entry);
+        queueJob = !std::exchange(cache.MaintenanceQueued, true);
+    }
+    if (queueJob)
+        maintenance.Enqueue(RunProcessMaintenance);
     return true;
 }
 }

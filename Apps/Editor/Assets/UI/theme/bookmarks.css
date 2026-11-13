@@ -61,7 +61,7 @@
     cursor: move;
     user-select: none;
     opacity: 0.35;
-    background-image: url("editor:Icons/reorder-two.png");
+    background-image: url("editor:Icons/reorder-two.svg");
     background-size: contain;
     background-repeat: no-repeat;
     background-position: center;
@@ -89,22 +89,22 @@
 }
 
 .bookmark-icon-scene {
-    background-image: url("editor:Icons/scene.png");
+    background-image: url("editor:Icons/scene.svg");
     /* Use contain (same as .bookmark-icon) so scene icon scales like other bookmark icons */
     background-size: contain;
     background-position: center;
 }
 
 .bookmark-icon-entity {
-    background-image: url("editor:Icons/cube.svg");
+    background-image: url("editor:Icons/Cube.svg");
 }
 
 .bookmark-icon-folder {
-    background-image: url("editor:Icons/Folder@32px.png");
+    background-image: url("editor:Icons/Folder@32px.svg");
 }
 
 .bookmark-icon-script {
-    background-image: url("editor:Icons/codeicon.png");
+    background-image: url("editor:Icons/codeicon.svg");
 }
 
 /* Default/unknown type: only .bookmark-icon sets layout; type-specific classes
@@ -161,37 +161,17 @@
     z-index: 1;
 }
 
-/* X button: no background (override global button styles), opacity 0.6, white on hover */
-.bookmark-remove,
-button.bookmark-remove,
-.bookmarks-panel .bookmark-remove {
+/* X button, an icon button: Button.css draws its states; this rule sets only its size.
+   Named with .button.icon-button to outrank the variant's 24 px rule (0,2,0). */
+.button.icon-button.bookmark-remove {
     width: 20px;
     height: 20px;
     min-width: 20px;
     min-height: 20px;
     padding: 0;
-    cursor: pointer;
-    opacity: 0.6;
     font-size: 16px;
     line-height: 20px;
     text-align: center;
-    border: none;
-    border-width: 0;
-    border-style: none;
-    border-color: transparent;
-    background: none !important;
-    background-color: transparent !important;
-    color: var(--text-secondary, rgba(255, 255, 255, 0.84));
-    transition: opacity 0.2s ease, color 0.2s ease;
-}
-
-.bookmark-remove:hover,
-button.bookmark-remove:hover,
-.bookmarks-panel .bookmark-remove:hover {
-    opacity: 1.0;
-    color: #ff5555;
-    background: none !important;
-    background-color: transparent !important;
 }
 
 /* Empty state: info card shown when the list renders no rows */

@@ -84,13 +84,12 @@ void AddBakeAction(const InspectorContext& ctx)
         return;
 
     InspectorUI::AddTextBlock(ctx.Parent, "Bake", "inspector-section-subheader");
-    if (ctx.ShowInfoCards)
-        InspectorUI::AddInfoCard(ctx.Parent,
-                                 "Uses the bake bounds, sea level, resolution, and render layer mask above.");
+    InspectorUI::AddInfoCard(ctx.Parent, "Uses the Bake Origin, Bake Size, Bake Sea Level, Bake Width, Bake Height, "
+                                         "and Source Layers values above.");
 
     auto row = std::make_unique<UIElement>();
     row->AddClass("inspector-asset-actions");
-    row->Overrides()
+    row->Style()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Column)
         .Set(Style::Gap, StyleLength::Px(6.0f))
@@ -113,7 +112,7 @@ void AddBakeAction(const InspectorContext& ctx)
     Button* dirtyButtonPtr = dirtyButton.get();
     rowPtr->AddChild(std::move(dirtyButton));
 
-    // The outcome of the last bake or dirty mark; empty until one runs.
+    // The result of the last bake or dirty mark; empty until one runs.
     auto status = std::make_unique<Label>();
     status->AddClass("inspector-text");
     Label* statusLabel = status.get();
@@ -179,7 +178,7 @@ void AddBakeAction(const InspectorContext& ctx)
         }
 
         Engine::Renderer::OceanSceneDepthBakeOptions options{};
-        options.RenderLayerMask = source->RenderLayerMask;
+        options.Layers = source->SourceLayers;
         options.LoadMissingAssets = source->BakeLoadMissingAssets;
         options.IncludeDisabledRenderers = source->BakeIncludeDisabledRenderers;
         options.IncludeSkinnedMeshes = source->BakeIncludeSkinnedMeshes;

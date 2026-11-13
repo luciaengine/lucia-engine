@@ -1,4 +1,4 @@
-#include "VersionControl/SceneDiff.h"
+#include "VersionControl/SceneDiff/SceneDiff.h"
 
 #include <gtest/gtest.h>
 

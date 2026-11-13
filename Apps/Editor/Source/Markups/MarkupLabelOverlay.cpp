@@ -14,9 +14,10 @@
 #include "Mathematics/Vector3.h"
 #include "SceneView/SceneViewEvents.h"
 #include "SceneView/SceneViewProjection.h"
-#include "SceneViewController.h"
+#include "SceneView/SceneViewController.h"
 #include "UI/Controls/Label.h"
 #include "UI/StyleProperties.h"
+#include "UI/StyleUtil.h"
 
 #include <algorithm>
 #include <cmath>
@@ -28,6 +29,7 @@ namespace GameEngine::Editor
 {
 
 using Components::Markup;
+using Components::MarkupRegion;
 using Components::MarkupVolume;
 using Mathematics::Vector3;
 
@@ -46,11 +48,6 @@ constexpr float kReservedGap = 4.0f;
 bool InView(const Mathematics::Vector2& pixel, const SceneTools::ScenePointerEvent& view)
 {
     return pixel.x >= 0.0f && pixel.y >= 0.0f && pixel.x <= view.viewW && pixel.y <= view.viewH;
-}
-
-void SetShown(UIElement& element, bool shown)
-{
-    element.Overrides().Set(Style::Display, shown ? DisplayMode::Flex : DisplayMode::None);
 }
 
 // What one Collect reads per mark-up.
@@ -112,7 +109,8 @@ void AddVolumePlacement(const PlacementSource& source, ECS::EntityHandle entity,
 {
     if (source.Bridge.IsHidden(source.World, entity))
         return;
-    const std::optional<MarkupWorldVolume> volume = MarkupWorldVolumeFromMatrix(shape.Shape, transform.matrix);
+    const std::optional<MarkupWorldVolume> volume = MarkupWorldVolumeFromMatrix(
+        shape.Shape, transform.ToMatrix4x4(transform.GetPosition() - Mathematics::WorldPosition{}));
     if (!volume)
         return;
     AddPlacement(source, entity,
@@ -152,6 +150,46 @@ Mathematics::Rect AxisWidgetRect(const UIElement& viewport)
     return {};
 }
 
+// Marks the placements of `component`'s members with `region`, unless an earlier region holds them.
+void LinkMembers(ECS::EntityHandle region, const MarkupRegion& component,
+                 std::vector<MarkupLabelOverlay::Placement>& placements)
+{
+    const uint32 count = std::min(component.MemberCount, Components::kMaxRegionMembers);
+    for (MarkupLabelOverlay::Placement& placement : placements)
+    {
+        if (placement.Region.IsValid())
+            continue;
+        for (uint32 i = 0; i < count; ++i)
+        {
+            if (component.Members[i].Entity == placement.Entity)
+            {
+                placement.Region = region;
+                break;
+            }
+        }
+    }
+}
+
+Mathematics::Rect PillRect(const MarkupLabelOverlay::PillBox& box)
+{
+    return Mathematics::Rect{box.CenterX - box.HalfWidth, box.Top, 2.0f * box.HalfWidth,
+                             MarkupLabelOverlay::kPillHeight};
+}
+
+// Whether `boxes[member]` overlaps the shown pill of another member of the same region.
+bool OverlapsASibling(const std::vector<MarkupLabelOverlay::Placement>& placements,
+                      const std::vector<MarkupLabelOverlay::PillBox>& boxes, std::size_t member)
+{
+    const Mathematics::Rect rect = PillRect(boxes[member]);
+    for (std::size_t other = 0; other < placements.size(); ++other)
+    {
+        if (other != member && placements[other].Region == placements[member].Region && !boxes[other].Hidden &&
+            rect.Overlaps(PillRect(boxes[other])))
+            return true;
+    }
+    return false;
+}
+
 bool NotHighlighted(const MarkupLabelOverlay::Placement& placement)
 {
     return !placement.Selected && !placement.Hovered;
@@ -186,6 +224,13 @@ void MarkupLabelOverlay::Collect(ECS::World& world, const MarkupEditorBridge& br
     const std::size_t kept = std::min(out.size(), kLabelCap);
     std::partial_sort(out.begin(), out.begin() + static_cast<std::ptrdiff_t>(kept), out.end(), Nearer);
     out.resize(kept);
+    if (!out.empty())
+    {
+        world.Query<ECS::Read<Markup>, ECS::Read<MarkupRegion>>().Each(
+            [&out](ECS::EntityHandle region, const Markup&, const MarkupRegion& component) {
+                LinkMembers(region, component, out);
+            });
+    }
     // The container draws its pills in order: the highlighted ones last, over the rest.
     std::stable_partition(out.begin(), out.end(), NotHighlighted);
 }
@@ -230,6 +275,7 @@ void MarkupLabelOverlay::UpdateLayer(LabelLayer& layer, ECS::World* world, const
     view.viewW = viewport->GetLayoutWidth();
     view.viewH = viewport->GetLayoutHeight();
     layer.ViewWidth = view.viewW;
+    layer.ViewHeight = view.viewH;
     layer.Reserved = AxisWidgetRect(*viewport);
     pane->PopulatePointerCameraState(view);
     Collect(*world, *bridge, bridge->GetHighlight(), view, m_Placements);
@@ -240,7 +286,7 @@ void MarkupLabelOverlay::UpdateLayer(LabelLayer& layer, ECS::World* world, const
     {
         layer.OffsetX = offsetX;
         layer.OffsetY = offsetY;
-        container->Overrides()
+        container->Style()
             .Set(Style::PositionLeft, StyleLength::Px(offsetX))
             .Set(Style::PositionTop, StyleLength::Px(offsetY));
     }
@@ -259,7 +305,7 @@ void MarkupLabelOverlay::AddPill(LabelLayer& layer, UIElement& container)
     title->AddClass("markup-label-title");
     auto unread = std::make_unique<UIElement>();
     unread->AddClass("markup-label-unread");
-    SetShown(*unread, false);
+    UIUtil::SetShown(*unread, false);
     Pill& entry = layer.Pills.emplace_back();
     entry.Anchor = UIElement::MakeWeakRef(anchor.get());
     entry.Body = UIElement::MakeWeakRef(pill.get());
@@ -270,7 +316,7 @@ void MarkupLabelOverlay::AddPill(LabelLayer& layer, UIElement& container)
     pill->AddChild(std::move(title));
     pill->AddChild(std::move(unread));
     anchor->AddChild(std::move(pill));
-    SetShown(*anchor, false);
+    UIUtil::SetShown(*anchor, false);
     container.AddChild(std::move(anchor));
 }
 
@@ -279,6 +325,7 @@ void MarkupLabelOverlay::Show(LabelLayer& layer, ECS::World& world)
     UIElement* container = layer.Container.Get();
     while (layer.Pills.size() < m_Placements.size())
         AddPill(layer, *container);
+    LayOut(layer);
     for (std::size_t index = 0; index < layer.Pills.size(); ++index)
     {
         Pill& pill = layer.Pills[index];
@@ -287,19 +334,43 @@ void MarkupLabelOverlay::Show(LabelLayer& layer, ECS::World& world)
             continue;
         if (index < m_Placements.size())
         {
-            ShowPill(pill, m_Placements[index], world, layer);
+            ShowPill(pill, m_Placements[index], m_Boxes[index], world);
             continue;
         }
         if (pill.Shown)
-            SetShown(*anchor, pill.Shown = false);
+            UIUtil::SetShown(*anchor, pill.Shown = false);
     }
 }
 
-void MarkupLabelOverlay::ShowPill(Pill& pill, const Placement& placement, ECS::World& world, const LabelLayer& layer)
+void MarkupLabelOverlay::LayOut(LabelLayer& layer)
+{
+    m_Boxes.resize(m_Placements.size());
+    for (std::size_t index = 0; index < m_Placements.size(); ++index)
+    {
+        // The pill's width as last laid out: a pill held at a pane's side stays inside the pane.
+        // A hidden pill keeps the width it had while shown.
+        Pill& pill = layer.Pills[index];
+        if (const UIElement* body = pill.Body.Get(); body && body->GetLayoutWidth() > 0.0f)
+            pill.HalfWidth = body->GetLayoutWidth() * 0.5f;
+        const Placement& placement = m_Placements[index];
+        const float top = placement.Y - kPillHeight - kPillGap;
+        m_Boxes[index] = {PillCenterX(placement.X, top, pill.HalfWidth, layer.ViewWidth, layer.Reserved), top,
+                          pill.HalfWidth, false};
+    }
+    YieldToRegions(m_Placements, m_Boxes, layer.ViewWidth, layer.ViewHeight, layer.Reserved);
+}
+
+void MarkupLabelOverlay::ShowPill(Pill& pill, const Placement& placement, const PillBox& box, ECS::World& world)
 {
     UIElement* anchor = pill.Anchor.Get();
+    if (box.Hidden)
+    {
+        if (pill.Shown)
+            UIUtil::SetShown(*anchor, pill.Shown = false);
+        return;
+    }
     if (!pill.Shown)
-        SetShown(*anchor, pill.Shown = true);
+        UIUtil::SetShown(*anchor, pill.Shown = true);
     // The title is written, and copied, only when it changed.
     const std::string_view text = MarkupTitleView(world, placement.Entity);
     if (text != pill.Text)
@@ -313,7 +384,7 @@ void MarkupLabelOverlay::ShowPill(Pill& pill, const Placement& placement, ECS::W
     if (dotChanged)
     {
         if (UIElement* dot = pill.Dot.Get())
-            dot->Overrides().Set(Style::BackgroundColor, dotArgb);
+            dot->Style().Set(Style::BackgroundColor, dotArgb);
         pill.DotArgb = dotArgb;
     }
     const bool highlightChanged = placement.Selected != pill.Selected || placement.Hovered != pill.Hovered;
@@ -323,28 +394,23 @@ void MarkupLabelOverlay::ShowPill(Pill& pill, const Placement& placement, ECS::W
         SetClass(*body, "markup-label-hovered", placement.Hovered);
         // A hovered pill's rim is its status color; the selection's accent border wins.
         if (placement.Hovered && !placement.Selected)
-            body->Overrides().Set(Style::BorderColor, BorderColorsTRBL{dotArgb, dotArgb, dotArgb, dotArgb});
+            body->Style().Set(Style::BorderColor, BorderColorsTRBL{dotArgb, dotArgb, dotArgb, dotArgb});
         else
-            body->Overrides().Reset(Style::BorderColor);
+            body->Style().Reset(Style::BorderColor);
         pill.Selected = placement.Selected;
         pill.Hovered = placement.Hovered;
     }
     if (placement.Unseen != pill.UnreadShown)
     {
         if (UIElement* unread = pill.UnreadDot.Get())
-            SetShown(*unread, placement.Unseen);
+            UIUtil::SetShown(*unread, placement.Unseen);
         pill.UnreadShown = placement.Unseen;
     }
-    // The pill's width as last laid out: a pill held at a pane's side stays inside the pane.
-    const UIElement* body = pill.Body.Get();
-    const float halfWidth = body ? body->GetLayoutWidth() * 0.5f : 0.0f;
-    const float top = placement.Y - kPillHeight - kPillGap;
-    const float centerX = PillCenterX(placement.X, top, halfWidth, layer.ViewWidth, layer.Reserved);
-    const float x = std::round(centerX - kAnchorWidth * 0.5f);
-    const float y = std::round(top);
+    const float x = std::round(box.CenterX - kAnchorWidth * 0.5f);
+    const float y = std::round(box.Top);
     if (x != pill.X || y != pill.Y)
     {
-        anchor->Overrides()
+        anchor->Style()
             .Set(Style::PositionLeft, StyleLength::Px(x))
             .Set(Style::PositionTop, StyleLength::Px(y));
         pill.X = x;
@@ -365,12 +431,39 @@ float MarkupLabelOverlay::PillCenterX(float anchorX, float top, float halfWidth,
     return reserved.Right() + kReservedGap + halfWidth;
 }
 
+void MarkupLabelOverlay::YieldToRegions(const std::vector<Placement>& placements, std::vector<PillBox>& boxes,
+                                        float viewWidth, float viewHeight, const Mathematics::Rect& reserved)
+{
+    for (std::size_t member = 0; member < placements.size(); ++member)
+    {
+        const ECS::EntityHandle regionEntity = placements[member].Region;
+        if (!regionEntity.IsValid())
+            continue;
+        const auto region = std::find_if(placements.begin(), placements.end(),
+                                         [regionEntity](const Placement& p) { return p.Entity == regionEntity; });
+        if (region == placements.end())
+            continue;
+        const PillBox& regionBox = boxes[static_cast<std::size_t>(region - placements.begin())];
+        PillBox& box = boxes[member];
+        if (regionBox.Hidden || !PillRect(box).Overlaps(PillRect(regionBox)))
+            continue;
+        // The first row under the region's pill clear of every other member's pill of that region.
+        box.Top = regionBox.Top;
+        do
+        {
+            box.Top += kPillHeight + kPillStackGap;
+            box.CenterX = PillCenterX(placements[member].X, box.Top, box.HalfWidth, viewWidth, reserved);
+        } while (OverlapsASibling(placements, boxes, member) && box.Top + kPillHeight <= viewHeight);
+        box.Hidden = box.Top + kPillHeight > viewHeight;
+    }
+}
+
 void MarkupLabelOverlay::Hide(LabelLayer& layer)
 {
     for (Pill& pill : layer.Pills)
     {
         if (UIElement* anchor = pill.Anchor.Get(); anchor && pill.Shown)
-            SetShown(*anchor, pill.Shown = false);
+            UIUtil::SetShown(*anchor, pill.Shown = false);
     }
 }
 

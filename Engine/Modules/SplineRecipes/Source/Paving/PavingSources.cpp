@@ -94,7 +94,7 @@ public:
         const auto* transform = m_World.GetComponent<Components::WorldTransform>(entity);
         if (service && spline && transform && m_World.IsValid(entity))
         {
-            read.WorldMatrix = Matrix4x4::FromColumnMajor(transform->matrix);
+            read.WorldMatrix = transform->ToMatrix4x4(transform->GetPosition() - Mathematics::WorldPosition{});
             read.Observed = ObserveSpline(*service, spline->SplineDataIndex, spline->SplineDataGeneration,
                                           read.WorldMatrix);
             const Spline::SplineData* data =
@@ -197,12 +197,12 @@ std::string SplitLevelNotice(const ECS::World& world, const SplineECS::SplineNod
     const float32 roadMinusBody = RoadAboveMeters(node, road);
     const std::string_view roadName = NameOf(world, road);
     const std::string_view bodyName = NameOf(world, body);
-    return std::format("\"{}\" is not paved into \"{}\". Its end is {} m {} \"{}\", and a road joins only within {} m. "
+    return std::format("\"{}\" is not paved into \"{}\". Its end is {} {} \"{}\", and a road joins only within {}. "
                        "Raise or lower the road's last point, or choose Join at Grade to pave \"{}\" into \"{}\" at "
                        "the height of \"{}\".",
-                       roadName, bodyName, FormatFixed(std::fabs(roadMinusBody), 2),
+                       roadName, bodyName, FormatMeters(std::fabs(roadMinusBody), 2),
                        roadMinusBody < 0.0f ? "below" : "above", bodyName,
-                       FormatFixed(SplineECS::kSplitLevelToleranceMetres, 2), roadName, bodyName, bodyName);
+                       FormatMeters(SplineECS::kSplitLevelToleranceMetres, 2), roadName, bodyName, bodyName);
 }
 
 float32 MemberArcLength(const SplineECS::SplineNode& node, ECS::EntityHandle member)

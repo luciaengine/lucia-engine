@@ -52,11 +52,13 @@ void TileMapExtractionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
                 draw.Entity = entity;
                 draw.Map = layerRef.TileMap.ToGuid();
                 draw.RenderLayers = layerRef.RenderLayers;
-                std::copy_n(worldXf.matrix, 16, draw.Model);
+                // Keep the world position exact until per-view packing.
+                draw.Position = worldXf.GetPosition();
+                draw.Basis = worldXf.Basis;
                 draw.LayerId = layerRef.LayerId;
                 draw.ZOffset = layerRef.ZOffset;
                 // Transform the local layer plane before resolving its depth per view.
-                draw.WorldZ = worldXf.matrix[10] * layerRef.ZOffset + worldXf.matrix[14];
+                draw.WorldZ = worldXf.Position.Z + static_cast<float64>(worldXf.Basis[2].z) * layerRef.ZOffset;
                 draw.Sorting = Engine::Renderer::ResolveRenderSortingForBatch(world, entity, sortingLayers, hasSortingGroups, sortingScanBudget);
                 draw.Opacity = std::clamp(layerRef.Opacity, 0.0f, 1.0f);
                 draw.TintRGBA = layerRef.TintRGBA;

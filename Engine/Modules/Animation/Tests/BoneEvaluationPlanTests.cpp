@@ -1,5 +1,5 @@
 #include "Animation/BoneEvaluationPlan.h"
-#include "Animation/SkeletonData.h"
+#include "Animation/Skeleton/SkeletonData.h"
 #include "Animation/PoseToSkinMatrices.h"
 #include "Mathematics/Vector3.h"
 

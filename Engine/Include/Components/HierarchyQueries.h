@@ -1,15 +1,14 @@
 #pragma once
 
-#include "Components/Transform.h"
-#include "Mathematics/Matrix4x4.h"
-#include "Mathematics/MatrixOps.h"
-#include <cstring>
-
 #include "Components/Hierarchy.h"
+#include "Components/Transform.h"
 #include "ECS/Query.h"
 #include "ECS/RelationIndex.h"
 #include "ECS/World.h"
+#include "Mathematics/Matrix4x4.h"
+#include "Mathematics/MatrixOps.h"
 
+#include <cstring>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -40,7 +39,7 @@ namespace Components {
 // hold one of these as a long-lived member and pass it to the indexed
 // helpers below.
 struct ParentOfTag {};
-using ParentRelationIndex = ECS::RelationIndex<ParentOfTag, Parent, &Parent::parent>;
+using ParentRelationIndex = ECS::RelationIndex<ParentOfTag, Parent, &Parent::Entity>;
 
 inline void ChildrenOf(ECS::World& world, ECS::EntityHandle parent,
                        std::vector<ECS::EntityHandle>& out) {
@@ -50,7 +49,7 @@ inline void ChildrenOf(ECS::World& world, ECS::EntityHandle parent,
     // the editor lists them and scene IO writes them.
     world.Query<ECS::Read<Parent>>().IncludeDisabled().Each(
         [&](ECS::EntityHandle e, const Parent& p) {
-            if (p.parent == parent) out.push_back(e);
+            if (p.Entity == parent) out.push_back(e);
         });
 }
 
@@ -88,7 +87,7 @@ inline void DescendantsOf(ECS::World& world, ECS::EntityHandle ancestor,
         childrenByParent;
     world.Query<ECS::Read<Parent>>().IncludeDisabled().Each(
         [&](ECS::EntityHandle e, const Parent& p) {
-            if (p.parent.IsValid()) childrenByParent[p.parent].push_back(e);
+            if (p.Entity.IsValid()) childrenByParent[p.Entity].push_back(e);
         });
 
     std::unordered_set<ECS::EntityHandle, ECS::EntityHandleHash> visited;
@@ -175,7 +174,7 @@ inline void ReparentKeepingWorldPose(ECS::World& world, ECS::EntityHandle entity
     if (!newParent.IsValid()) {
         if (const auto* entityWorld = world.GetComponent<WorldTransform>(entity)) {
             Transform local{};
-            std::memcpy(local.matrix, entityWorld->matrix, sizeof(local.matrix));
+            std::memcpy(&local, entityWorld, kTransformPoseBytes);
             world.AddComponentImmediate(entity, local);
         }
         world.RemoveComponentImmediate<Parent>(entity);
@@ -186,11 +185,12 @@ inline void ReparentKeepingWorldPose(ECS::World& world, ECS::EntityHandle entity
     const auto* parentWorld = world.GetComponent<WorldTransform>(newParent);
     const auto* entityWorld = world.GetComponent<WorldTransform>(entity);
     if (!parentWorld || !entityWorld) return;
-    const Mathematics::Matrix4x4 local = Mathematics::Inverse(Mathematics::Matrix4x4::FromColumnMajor(parentWorld->matrix)) *
-                                         Mathematics::Matrix4x4::FromColumnMajor(entityWorld->matrix);
-    Transform transform{};
-    std::memcpy(transform.matrix, local.Data(), sizeof(transform.matrix));
-    world.AddComponentImmediate(entity, transform);
+    // The offset from the parent subtracts in double and then rounds to float, so a far parent
+    // gives the local the float precision of the offset, not of the world position.
+    const Vector3 offset = entityWorld->GetPosition() - parentWorld->GetPosition();
+    const Mathematics::Matrix4x4 local = Mathematics::Inverse(parentWorld->ToMatrix4x4(Vector3{})) *
+                                         entityWorld->ToMatrix4x4(offset);
+    world.AddComponentImmediate(entity, Transform::FromMatrix4x4(local));
 }
 
 // Practical cap on hierarchy depth. Any real scene deeper than this is a
@@ -211,9 +211,9 @@ inline bool IsDescendantOf(ECS::World& world, ECS::EntityHandle entity,
     ECS::EntityHandle current = entity;
     for (std::size_t step = 0; step < kMaxHierarchyDepth; ++step) {
         const Parent* p = world.GetComponent<Parent>(current);
-        if (!p || !p->parent.IsValid()) return false;
-        if (p->parent == ancestor) return true;
-        current = p->parent;
+        if (!p || !p->Entity.IsValid()) return false;
+        if (p->Entity == ancestor) return true;
+        current = p->Entity;
     }
     return false;
 }

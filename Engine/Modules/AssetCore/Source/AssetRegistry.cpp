@@ -15,6 +15,9 @@ bool AssetTypeRegistry::Initialize()
         return true;
     }
 
+    // Register built-in asset types
+    RegisterBuiltInAssetTypes();
+
     m_Initialized = true;
     return true;
 }
@@ -168,6 +171,12 @@ void AssetTypeRegistry::Clear()
     m_TypeRegistrations.clear();
     m_ExtensionToType.clear();
     m_EventDispatcher.Clear();
+}
+
+void AssetTypeRegistry::RegisterBuiltInAssetTypes()
+{
+    // Note: Built-in asset types are registered by their respective subsystems
+    // This method is kept for future built-in types that don't belong to specific subsystems
 }
 
 void AssetTypeRegistry::UpdateExtensionMappings()

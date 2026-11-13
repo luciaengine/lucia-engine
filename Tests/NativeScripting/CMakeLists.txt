@@ -18,6 +18,15 @@ ge_set_output_tests(NativePostSimulationTests)
 ge_stage_runtime_dependencies(NativePostSimulationTests)
 add_test(NAME NativePostSimulationTests COMMAND $<TARGET_FILE:NativePostSimulationTests>)
 
+add_executable(UserSystemOrderTests UserSystemOrderTests.cpp)
+target_link_libraries(UserSystemOrderTests PRIVATE Engine Mathematics Types GTest::gtest GTest::gtest_main)
+target_include_directories(UserSystemOrderTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/Engine/Include
+    ${CMAKE_SOURCE_DIR}/Engine/Modules/NativeScripting/GameSDK/Include)
+ge_set_output_tests(UserSystemOrderTests)
+ge_stage_runtime_dependencies(UserSystemOrderTests)
+add_test(NAME UserSystemOrderTests COMMAND $<TARGET_FILE:UserSystemOrderTests>)
+
 # dotnet + the ComponentScanner DLL feed the C10 scan-path test (a macro-free
 # fixture auto-detected by the scanner). DOTNET_EXECUTABLE is already cached by the
 # engine build (the scanner is mandatory there); re-find defensively in case this
@@ -169,6 +178,27 @@ if(WIN32)
             $<TARGET_FILE_DIR:NativeModuleLoggerTests>/$<TARGET_FILE_NAME:NativeLoggerModuleProbe>)
     add_test(NAME NativeModuleLoggerTests COMMAND $<TARGET_FILE:NativeModuleLoggerTests>)
     set_tests_properties(NativeModuleLoggerTests PROPERTIES TIMEOUT 60 LABELS "Logger;NativeScripting;DLL")
+
+    # Values built by a module, through the real loader: the probe DLL returns a
+    # value from a job or cancels a job with continuations, NativeScriptManager
+    # rejects and unmaps it, then the pool is destroyed; once through EngineCore.
+    add_library(JobResultModuleProbe SHARED JobResultModuleProbe.cpp)
+    set_target_properties(JobResultModuleProbe PROPERTIES UNITY_BUILD OFF)
+    target_link_libraries(JobResultModuleProbe PRIVATE Engine)
+
+    add_executable(NativeModuleJobResultTests NativeModuleJobResultTests.cpp)
+    set_target_properties(NativeModuleJobResultTests PROPERTIES UNITY_BUILD OFF)
+    target_link_libraries(NativeModuleJobResultTests PRIVATE Engine Types GTest::gtest_main)
+    target_include_directories(NativeModuleJobResultTests PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Include
+        ${CMAKE_SOURCE_DIR}/Engine/Tests)  # EngineLogCapture.h
+    ge_set_output_tests(NativeModuleJobResultTests)
+    ge_stage_runtime_dependencies(NativeModuleJobResultTests)
+    add_dependencies(NativeModuleJobResultTests JobResultModuleProbe)
+    add_custom_command(TARGET NativeModuleJobResultTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:JobResultModuleProbe>
+            $<TARGET_FILE_DIR:NativeModuleJobResultTests>/$<TARGET_FILE_NAME:JobResultModuleProbe>)
+    add_test(NAME NativeModuleJobResultTests COMMAND $<TARGET_FILE:NativeModuleJobResultTests>)
+    set_tests_properties(NativeModuleJobResultTests PROPERTIES TIMEOUT 60 LABELS "JobSystem;NativeScripting;DLL")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -216,12 +246,59 @@ add_executable(NativeScriptManagerTests
     MobileExportRunnerTests.cpp
     # Linux runtime template checks: the x64 ELF Player and the one list of game files
     # a template export leaves behind.
-    LinuxRuntimeTemplateTests.cpp)
+    LinuxRuntimeTemplateTests.cpp
+    # The desktop export's material cook: its command line, the packages it names and
+    # their copy into the bundle's read-only shader cache.
+    MaterialVariantCookToolTests.cpp
+    # The tools an export needs on the build machine: their check and the warning without them.
+    ExportRequirementsTests.cpp
+    # The Web export's player template: the WebPlayer files and the notices every game ships.
+    WebExportRunnerTests.cpp)
 set_target_properties(NativeScriptManagerTests PROPERTIES UNITY_BUILD OFF)
 # PlayerBuildConfigTests asserts per-configuration truths, so it needs the one
 # source that can name this binary's configuration. Preprocessor state cannot:
 # DebugFast defines neither _DEBUG nor NDEBUG. Same definition the Editor gets.
 target_compile_definitions(NativeScriptManagerTests PRIVATE GE_BUILD_CONFIG="$<CONFIG>")
+# EngineCore's module handlers and the terrain height functions of a user module: a probe that
+# loads and one whose Register_v1 fails, both staged beside the test executable.
+if(WIN32)
+    target_sources(NativeScriptManagerTests PRIVATE TerrainHeightFunctionModuleTests.cpp)
+    # The height function registry and instances, private to TerrainECS.
+    target_include_directories(NativeScriptManagerTests PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainECS/Source)
+    foreach(probe IN ITEMS TerrainHeightFunctionProbe TerrainHeightFunctionRefusedProbe)
+        add_library(${probe} SHARED TerrainHeightFunctionProbe.cpp)
+        set_target_properties(${probe} PROPERTIES UNITY_BUILD OFF)
+        target_link_libraries(${probe} PRIVATE Engine)
+        target_include_directories(${probe} PRIVATE
+            ${CMAKE_SOURCE_DIR}/Engine/Modules/NativeScripting/GameSDK/Include)
+        add_dependencies(NativeScriptManagerTests ${probe})
+        add_custom_command(TARGET NativeScriptManagerTests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${probe}>
+                $<TARGET_FILE_DIR:NativeScriptManagerTests>/$<TARGET_FILE_NAME:${probe}>)
+    endforeach()
+    target_compile_definitions(TerrainHeightFunctionRefusedProbe PRIVATE GE_PROBE_REFUSED)
+    # The AI names a user module registers with the GameSDK macros: a probe and a newer version that drops names.
+    target_sources(NativeScriptManagerTests PRIVATE AiNamesModuleTests.cpp)
+    foreach(probe IN ITEMS AiNamesProbe AiNamesDroppedProbe)
+        add_library(${probe} SHARED AiNamesProbe.cpp)
+        set_target_properties(${probe} PROPERTIES UNITY_BUILD OFF)
+        target_link_libraries(${probe} PRIVATE Engine)
+        target_include_directories(${probe} PRIVATE
+            ${CMAKE_SOURCE_DIR}/Engine/Modules/NativeScripting/GameSDK/Include)
+        add_dependencies(NativeScriptManagerTests ${probe})
+        add_custom_command(TARGET NativeScriptManagerTests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${probe}>
+                $<TARGET_FILE_DIR:NativeScriptManagerTests>/$<TARGET_FILE_NAME:${probe}>)
+    endforeach()
+    target_compile_definitions(AiNamesDroppedProbe PRIVATE GE_PROBE_DROPPED)
+endif()
+# The component scanner CMakeInvoker runs, for the scan of a project under a non-ASCII path.
+if(TARGET ComponentScanner)
+    add_dependencies(NativeScriptManagerTests ComponentScanner)
+    target_compile_definitions(NativeScriptManagerTests PRIVATE GE_COMPONENT_SCANNER_EXE="$<TARGET_FILE:ComponentScanner>")
+else()
+    target_compile_definitions(NativeScriptManagerTests PRIVATE GE_COMPONENT_SCANNER_EXE="${GE_COMPONENT_SCANNER_EXECUTABLE}")
+endif()
 # Mathematics + Types are header-only INTERFACE libs Engine does not re-export; the reflection
 # test needs their headers (Vector3/Quaternion/ColorLinear field types via MathReflectionTraits).
 target_link_libraries(NativeScriptManagerTests PRIVATE
@@ -240,7 +317,8 @@ target_include_directories(NativeScriptManagerTests PRIVATE
 # through the same exports; AnimatorEventsAbiTests the event poll AnimatorApi.PollEvents uses.
 if(TARGET GameEngine.Native)
     target_sources(NativeScriptManagerTests PRIVATE BlobComponentSchemaAbiTests.cpp EnableStateAbiTests.cpp
-        AnimatorEventsAbiTests.cpp AnimatorInputAbiTests.cpp)
+        AnimatorEventsAbiTests.cpp AnimatorInputAbiTests.cpp UiElementTypeThreadRuleAbiTests.cpp
+        ScriptComponentWriteAbiTests.cpp)
     target_link_libraries(NativeScriptManagerTests PRIVATE GameEngine.Native)
 endif()
 

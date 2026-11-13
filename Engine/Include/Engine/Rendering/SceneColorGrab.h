@@ -2,7 +2,7 @@
 
 #include "Rendering/Core/Device.h" // PipelineDesc, DescriptorSetLayoutDesc
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/PipelineIdentifiers.h"     // GraphicsPipelineId
+#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"     // GraphicsPipelineId
 #include "Rendering/Core/RenderGraph/RGFrame.h"     // RGTexture (frame-scoped grab id)
 
 #include <cstdint>

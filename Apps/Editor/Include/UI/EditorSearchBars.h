@@ -46,7 +46,7 @@ private:
     static void SaveToPreferences();
 
     static inline bool s_Visible = false;
-    static inline bool s_AtTop = false;
+    static inline bool s_AtTop = true;
     static inline bool s_AccentFocusOutline = true;
     static inline bool s_Loaded = false;
     static inline std::vector<RegisteredBar> s_Bars;

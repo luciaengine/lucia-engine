@@ -4,7 +4,7 @@
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Mathematics/Geometry.h"
 #include "SplineRecipes/FenceEmission.h"
-#include "SplineLayout/SpanMitre.h"
+#include "SplineLayout/SpanMiter.h"
 #include "Types/Types.h"
 
 #include <span>

@@ -1,14 +1,12 @@
 #include "Editor/Entities/EntityWorldPose.h"
 
 #include "Components/Hierarchy.h"
-#include "Components/Rendering/WorldSectorCoord.h"
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
 #include "PhysicsECS/Components/PhysicsBody.h"
 #include "PhysicsECS/PhysicsWorldService.h"
 
-#include <cstring>
 
 namespace GameEngine::Editor
 {
@@ -20,6 +18,7 @@ using Components::WorldTransform;
 using Mathematics::Matrix4x4;
 using Mathematics::Quaternion;
 using Mathematics::Vector3;
+using Mathematics::WorldPosition;
 
 namespace
 {
@@ -38,46 +37,33 @@ EntityTRS GetLocalTRS(ECS::Entity& e)
     return t;
 }
 
-Matrix4x4 MatrixFromRaw(const float matrix[16])
-{
-    Matrix4x4 out = Matrix4x4::Identity();
-    std::memcpy(out.Data(), matrix, sizeof(float) * 16u);
-    return out;
-}
-
-bool TryComputeHierarchyWorldMatrixAtDepth(ECS::World* world,
-                                           ECS::EntityHandle entity,
-                                           Matrix4x4& outMatrix,
-                                           int depth)
+bool TryComputeHierarchyWorldPoseAtDepth(ECS::World* world, ECS::EntityHandle entity,
+                                        WorldTransform& outPose, int depth)
 {
     if (!world || !entity.IsValid() || !world->IsValid(entity) || depth > kMaxHierarchyDepth)
-    {
         return false;
-    }
-
-    if (const auto* transform = world->GetComponent<Transform>(entity))
+    if (const auto* local = world->GetComponent<Transform>(entity))
     {
-        const Matrix4x4 local = MatrixFromRaw(transform->matrix);
-        if (const auto* parent = world->GetComponent<Parent>(entity); parent && parent->parent.IsValid())
+        if (const auto* parent = world->GetComponent<Parent>(entity);
+            parent && parent->Entity.IsValid() && world->IsValid(parent->Entity))
         {
-            Matrix4x4 parentWorld;
-            if (TryComputeHierarchyWorldMatrixAtDepth(world, parent->parent, parentWorld, depth + 1))
-            {
-                outMatrix = parentWorld * local;
-                return true;
-            }
+            WorldTransform parentPose;
+            if (!TryComputeHierarchyWorldPoseAtDepth(world, parent->Entity, parentPose, depth + 1))
+                return false;
+            Components::ComposeWorldPose(parentPose, *local, outPose);
         }
-
-        outMatrix = local;
+        else
+        {
+            outPose.Position = local->Position;
+            outPose.Basis = local->Basis;
+        }
         return true;
     }
-
-    if (const auto* worldTransform = world->GetComponent<WorldTransform>(entity))
+    if (const auto* placed = world->GetComponent<WorldTransform>(entity))
     {
-        outMatrix = MatrixFromRaw(worldTransform->matrix);
+        outPose = *placed;
         return true;
     }
-
     return false;
 }
 } // namespace
@@ -92,11 +78,14 @@ EntityTRS CombineTRS(const EntityTRS& parent, const EntityTRS& local)
 
     out.Rotation = parent.Rotation * local.Rotation;
 
-    const Vector3 scaledLocal(
-        local.Position.x * parent.Scale.x,
-        local.Position.y * parent.Scale.y,
-        local.Position.z * parent.Scale.z);
-    out.Position = parent.Position + parent.Rotation.Rotate(scaledLocal);
+    const Transform parentLocal = Transform::FromTRS(parent.Position, parent.Rotation, parent.Scale);
+    WorldTransform parentPose;
+    parentPose.Position = parentLocal.Position;
+    parentPose.Basis = parentLocal.Basis;
+    const Transform localPose = Transform::FromTRS(local.Position, local.Rotation, local.Scale);
+    WorldTransform composed;
+    Components::ComposeWorldPose(parentPose, localPose, composed);
+    out.Position = composed.Position;
 
     return out;
 }
@@ -118,10 +107,10 @@ EntityTRS ComputeWorldTRSForEntity(ECS::World* world, ECS::EntityHandle handle)
 
     if (const auto* parentComp = e.Get<Parent>())
     {
-        ECS::Entity parentEntity(world, parentComp->parent);
+        ECS::Entity parentEntity(world, parentComp->Entity);
         if (parentEntity.IsValid())
         {
-            return CombineTRS(ComputeWorldTRSForEntity(world, parentComp->parent), local);
+            return CombineTRS(ComputeWorldTRSForEntity(world, parentComp->Entity), local);
         }
     }
 
@@ -130,7 +119,7 @@ EntityTRS ComputeWorldTRSForEntity(ECS::World* world, ECS::EntityHandle handle)
 
 void GetParentWorldTRS(ECS::World* world,
                        ECS::EntityHandle handle,
-                       Vector3& outPos,
+                       WorldPosition& outPos,
                        Quaternion& outRot,
                        Vector3& outScale)
 {
@@ -156,51 +145,46 @@ void GetParentWorldTRS(ECS::World* world,
         return;
     }
 
-    const EntityTRS parentWorld = ComputeWorldTRSForEntity(world, parentComp->parent);
+    const EntityTRS parentWorld = ComputeWorldTRSForEntity(world, parentComp->Entity);
     outPos = parentWorld.Position;
     outRot = parentWorld.Rotation;
     outScale = parentWorld.Scale;
 }
 
-Vector3 ComputeLocalPositionFromWorld(const Vector3& worldPos,
-                                      const Vector3& parentPos,
-                                      const Quaternion& parentRot,
-                                      const Vector3& parentScale)
+WorldPosition ComputeLocalPositionFromWorld(const WorldPosition& worldPos,
+                                            const WorldPosition& parentPos,
+                                            const Quaternion& parentRot,
+                                            const Vector3& parentScale)
 {
-    // parentScale * localPos = R(parentRot^-1) * (worldPos - parentPos)
-    const Vector3 unrotated = parentRot.Conjugated().Rotate(worldPos - parentPos);
-
-    return Vector3(
-        (parentScale.x != 0.0f) ? (unrotated.x / parentScale.x) : unrotated.x,
-        (parentScale.y != 0.0f) ? (unrotated.y / parentScale.y) : unrotated.y,
-        (parentScale.z != 0.0f) ? (unrotated.z / parentScale.z) : unrotated.z);
+    Transform offset;
+    offset.Position = WorldPosition{worldPos.X - parentPos.X, worldPos.Y - parentPos.Y, worldPos.Z - parentPos.Z};
+    WorldTransform inverseRotation;
+    inverseRotation.Basis = Transform::FromTRS(WorldPosition{}, parentRot.Conjugated(), Vector3{1.0f, 1.0f, 1.0f}).Basis;
+    WorldTransform unrotated;
+    Components::ComposeWorldPose(inverseRotation, offset, unrotated);
+    return WorldPosition{
+        parentScale.x != 0.0f ? unrotated.Position.X / parentScale.x : unrotated.Position.X,
+        parentScale.y != 0.0f ? unrotated.Position.Y / parentScale.y : unrotated.Position.Y,
+        parentScale.z != 0.0f ? unrotated.Position.Z / parentScale.z : unrotated.Position.Z};
 }
 
 bool TryComputeHierarchyWorldMatrix(ECS::World* world, ECS::EntityHandle entity, Matrix4x4& outMatrix)
 {
-    return TryComputeHierarchyWorldMatrixAtDepth(world, entity, outMatrix, 0);
+    WorldTransform pose;
+    if (!TryComputeHierarchyWorldPoseAtDepth(world, entity, pose, 0))
+        return false;
+    outMatrix = pose.ToMatrix4x4(pose.GetPosition() - WorldPosition{});
+    return true;
 }
 
 bool TryComputeEntityWorldMatrix(ECS::World* world, ECS::EntityHandle entity, Matrix4x4& outMatrix)
 {
-    Matrix4x4 hierarchyWorld;
-    if (!TryComputeHierarchyWorldMatrix(world, entity, hierarchyWorld))
-    {
-        return false;
-    }
-
-    WorldTransform sectorLocal{};
-    std::memcpy(sectorLocal.matrix, hierarchyWorld.Data(), sizeof(sectorLocal.matrix));
-    const auto* sector = world->GetComponent<Components::WorldSectorCoord>(entity);
-    const WorldTransform composed =
-        Components::ComposeEffectiveWorldTransform(sectorLocal, sector, Components::kWorldSectorSize);
-    outMatrix = MatrixFromRaw(composed.matrix);
-    return true;
+    return TryComputeHierarchyWorldMatrix(world, entity, outMatrix);
 }
 
 bool TrySetPhysicsBodyWorldPose(ECS::World* world,
                                 ECS::EntityHandle entity,
-                                const Vector3& worldPos,
+                                const WorldPosition& worldPos,
                                 const Quaternion& worldRot)
 {
     if (!world || !entity.IsValid() || !world->IsValid(entity))
@@ -221,7 +205,7 @@ bool TrySetPhysicsBodyWorldPose(ECS::World* world,
     }
 
     Physics::Transform pt{};
-    pt.position = Physics::Vector3(worldPos.x, worldPos.y, worldPos.z);
+    pt.position = worldPos;
     const auto& wq = worldRot.GetGLM();
     pt.rotation = Physics::Quaternion(wq.w, wq.x, wq.y, wq.z);
     pw->SetBodyTransform(body->body, pt, Physics::ActivationMode::Activate);

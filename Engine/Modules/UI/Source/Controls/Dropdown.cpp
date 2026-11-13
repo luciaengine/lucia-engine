@@ -1,27 +1,37 @@
 #include "UI/Controls/Dropdown.h"
 
-#include <algorithm>
-#include <cctype>
-#include <cmath>
-#include <limits>
-#include <cstring>
-#include <sstream>
-
-#include "Input/KeyCodes.h"
-#include "UI/Controls/Label.h"
-#include "UI/Controls/ScrollView.h"
 #include "../Layout/DropdownPopupPlacement.h"
+#include "Input/KeyCodes.h"
+#include "Logger/Logger.h"
+#include "UI/Controls/Label.h"
+#include "UI/Layout/ElementOverrideHelpers.h"
+#include "UI/StyleProperties.h"
 #include "UI/UIElement.h"
 #include "UI/UIManager.h"
-#include "UI/StyleProperties.h"
+
+#include <algorithm>
+#include <cctype>
+#include <cstring>
+#include <sstream>
 
 namespace GameEngine {
 
 namespace {
 
-// Returned for an option that declares no icon class and for an out-of-range
+// Returned for an option that declares no art class and for an out-of-range
 // index, so callers can hold a reference either way.
-const std::string kNoIconClass;
+const std::string kNoArtClass;
+
+// A closed popup has no layout height, so its first placement estimates one from
+// the row metrics in widgets.css (a text or icon row) and controls/Dropdown.css
+// (a picture row: the 48 px picture with its padding and margins).
+constexpr float kEstimatedRowHeight = 24.0f;
+constexpr float kEstimatedPictureRowHeight = 58.0f;
+constexpr float kEstimatedPopupPadding = 4.0f;
+
+// The picture row's layout, pinned to the editor mount like the control's stylesheet so
+// a project file of the same name cannot replace it.
+constexpr const char* kPictureRowLayoutPath = "editor:UI/controls/DropdownPictureRow.uxml";
 
 static std::string TrimCopy(const std::string& s)
 {
@@ -63,36 +73,58 @@ static bool TryParseHexColor(const char* s, uint32_t& outArgb)
     return true;
 }
 
-// A row with an icon keeps its text in a child Label, so the row itself stays a
-// flex container instead of a text-measure leaf. Either way this is the Label
-// the option's color applies to.
+// A row with an icon or a picture keeps its text in a child Label, so the row
+// itself stays a flex container instead of a text-measure leaf; a picture row
+// nests it one level down, in the text column. Either way this is the Label the
+// option's color applies to.
 static Label* ItemTextLabel(Label* row)
 {
     for (const auto& child : row->GetChildren())
     {
         if (auto* text = dynamic_cast<Label*>(child.get()))
             return text;
+        for (const auto& grandchild : child->GetChildren())
+        {
+            if (auto* text = dynamic_cast<Label*>(grandchild.get()))
+                return text;
+        }
     }
     return row;
+}
+
+static UIElement* ChildWithClass(const UIElement& parent, const char* className)
+{
+    for (const auto& child : parent.GetChildren())
+    {
+        if (child->HasClass(className))
+            return child.get();
+    }
+    return nullptr;
+}
+
+static bool AnyOptionDeclares(const std::vector<Dropdown::Option>& options, std::string Dropdown::Option::*field)
+{
+    return std::any_of(options.begin(), options.end(),
+                       [field](const Dropdown::Option& option) { return !(option.*field).empty(); });
 }
 
 static void ApplyOptionColorToItemLabel(Label* raw, const Dropdown::Option& opt, bool isSelected)
 {
     if (isSelected)
     {
-        raw->Overrides().Reset(Style::Color);
+        raw->Style().Reset(Style::Color);
         return;
     }
     if (!opt.color.empty())
     {
         uint32_t argb = 0;
         if (TryParseHexColor(opt.color.c_str(), argb))
-            raw->Overrides().Set(Style::Color, argb);
+            raw->Style().Set(Style::Color, argb);
         else
-            raw->Overrides().Reset(Style::Color);
+            raw->Style().Reset(Style::Color);
     }
     else
-        raw->Overrides().Reset(Style::Color);
+        raw->Style().Reset(Style::Color);
 }
 
 } // namespace
@@ -105,7 +137,7 @@ Dropdown::Dropdown()
     : DismissablePopup(this)
 {
     AddClass("dropdown");
-    // Control styling is an Editor-shipped UIStyle asset.
+    // Control styling is a UI module UIStyle asset.
     RequestSubtreeStyleAssetPath("UI/controls/Dropdown.css", "editor");
     SetFocusable(true);
     EnsureHeader();
@@ -122,13 +154,13 @@ void Dropdown::SetMode(Mode mode)
 void Dropdown::SetOptions(const std::vector<Option>& options, int selectedIndex)
 {
     m_Options = options;
-    m_HasOptionIcons = std::any_of(m_Options.begin(), m_Options.end(),
-                                   [](const Option& o) { return !o.iconClass.empty(); });
+    const OptionArt art = AnyOptionDeclares(m_Options, &Option::pictureClass) ? OptionArt::Picture
+                          : AnyOptionDeclares(m_Options, &Option::iconClass)  ? OptionArt::Icon
+                                                                              : OptionArt::None;
     EnsureHeader();
-    if (m_HasOptionIcons)
-        EnsureHeaderIcon();
-    else
-        RemoveHeaderIcon();
+    if (art != m_OptionArt)
+        RemoveHeaderArt();
+    m_OptionArt = art;
     EnsureItemsContainer();
     UpdatePopupWidthClass();
     RebuildUiItems();
@@ -178,6 +210,14 @@ void Dropdown::SetOptionsFromString(const std::string& csv)
     SetOptionsFromLabels(labels);
 }
 
+void Dropdown::SetNoSelectionText(std::string text)
+{
+    if (m_NoSelectionText == text)
+        return;
+    m_NoSelectionText = std::move(text);
+    UpdateHeaderLabel();
+}
+
 const Dropdown::Option* Dropdown::SelectedOption() const
 {
     if (m_SelectedIndex < 0 || m_SelectedIndex >= static_cast<int>(m_Options.size()))
@@ -199,6 +239,29 @@ const std::string& Dropdown::GetSelectedLabel() const
     static const std::string kEmpty;
     const Option* selected = SelectedOption();
     return selected ? selected->label : kEmpty;
+}
+
+float Dropdown::WidthForLabel(std::string_view label) const
+{
+    UIManager* ui = GetOwnerManager();
+    if (!ui || !m_HeaderContainer || !m_HeaderLabel)
+        return 0.0f;
+    const float text = ui->MeasureTextWidth(*m_HeaderLabel, label);
+    if (text <= 0.0f)
+        return 0.0f;
+    const auto& labelLayout = m_HeaderLabel->GetResolvedStyle().Layout;
+    float width = text + UI::Layout::HorizontalInsetPx(*this) +
+                  UI::Layout::HorizontalInsetPx(*m_HeaderContainer) + UI::Layout::HorizontalInsetPx(*m_HeaderLabel) +
+                  labelLayout.Margin.Left + labelLayout.Margin.Right;
+    const float gap = m_HeaderContainer->GetResolvedStyle().Layout.ColumnGap;
+    for (const UIElement* part : {static_cast<const UIElement*>(m_HeaderArt), static_cast<const UIElement*>(m_Chevron)})
+    {
+        if (!part || part->GetResolvedStyle().Layout.DisplayMode == DisplayMode::None)
+            continue;
+        const auto& layout = part->GetResolvedStyle().Layout;
+        width += part->GetLayoutWidth() + layout.Margin.Left + layout.Margin.Right + gap;
+    }
+    return width;
 }
 
 void Dropdown::SetSelectedValue(const std::string& value)
@@ -273,7 +336,7 @@ void Dropdown::SyncItemSelectionClasses()
 {
     if (!m_ItemsContainer)
         return;
-    const auto& children = (m_ItemsContent ? m_ItemsContent : m_ItemsContainer)->GetChildren();
+    const auto& children = m_ItemsContainer->GetChildren();
     for (size_t i = 0; i < children.size() && i < m_Options.size(); ++i)
     {
         auto* raw = dynamic_cast<Label*>(children[i].get());
@@ -302,15 +365,32 @@ void Dropdown::SetAutoWidthPopup(bool enabled)
     UpdatePopupWidthClass();
 }
 
+// The header sizes the popup, except when the popup needs more: a caller
+// that asked for auto width, or the icon or picture column the control adds,
+// which would otherwise be taken out of the labels and wrap them.
+bool Dropdown::PopupFitsEntries() const
+{
+    return m_AutoWidthPopup || m_OptionArt != OptionArt::None;
+}
+
 void Dropdown::UpdatePopupWidthClass()
 {
-    // The header sizes the popup, except when the popup needs more: a caller
-    // that asked for auto width, or the icon column the control adds, which
-    // would otherwise be taken out of the labels and wrap them.
-    if (m_AutoWidthPopup || m_HasOptionIcons)
+    if (PopupFitsEntries())
         m_ItemsContainer->AddClass("fit-content");
     else
         m_ItemsContainer->RemoveClass("fit-content");
+    for (const auto& row : m_ItemsContainer->GetChildren())
+        UpdateTextRowClass(*row);
+}
+
+// A text row of a popup sized to its entries stays on one line (theme/widgets.css). An icon or
+// picture row keeps its text in a child Label, which has a one-line rule of its own.
+void Dropdown::UpdateTextRowClass(UIElement& row) const
+{
+    if (PopupFitsEntries() && m_OptionArt == OptionArt::None)
+        row.AddClass("dropdown-item-fit-content");
+    else
+        row.RemoveClass("dropdown-item-fit-content");
 }
 
 // An open popup re-places itself after every layout pass: its own width is not
@@ -321,12 +401,9 @@ void Dropdown::OnPostLayout()
         UpdatePopupPlacement();
 }
 
-// Where the popup sits relative to its header. Vertically it opens above when
-// there is not enough room below and the upper side offers more; horizontally it
-// is pulled back inside its panel, and capped, when it would otherwise run past
-// the edge. Both decisions are re-made on every converge pass, so each one is
-// applied only when it changes: a class flipped off and on again costs the whole
-// tree another post-layout dispatch and solve.
+// Where the popup sits against its header (UI::Layout::PlaceDropdownPopup). The placement runs again on
+// every converge pass, so each change is applied only when it differs: a class flipped off and on again
+// costs the whole tree another post-layout dispatch and solve.
 void Dropdown::UpdatePopupPlacement()
 {
     if (!m_ItemsContainer)
@@ -334,32 +411,9 @@ void Dropdown::UpdatePopupPlacement()
         RemoveClass("open-upward");
         return;
     }
-    // A closed popup has no layout height: the standard row height stands in for its first opening.
-    constexpr float kEstimatedRowHeight = 24.0f;
-    constexpr float kEstimatedPopupPadding = 4.0f;
-    const float estimatedHeight = kEstimatedPopupPadding + static_cast<float>(m_Options.size()) * kEstimatedRowHeight;
-    ScrollView* scroll = nullptr;
-    if (m_MaxPopupHeight > 0 && !m_ItemsContainer->GetChildren().empty())
-        scroll = dynamic_cast<ScrollView*>(m_ItemsContainer->GetChildren().front().get());
-    if (!scroll)
-    {
-        UI::Layout::PlaceDropdownPopup(*this, *m_ItemsContainer, estimatedHeight);
-        return;
-    }
-
-    // A bounded list is estimated from its whole content, so a menu grows again when the panel gets taller.
-    float contentHeight = scroll->GetContentHeight();
-    if (contentHeight <= 0.0f)
-        contentHeight = estimatedHeight;
-    const UI::Layout::DropdownPopupRoom room = UI::Layout::PlaceDropdownPopup(
-        *this, *m_ItemsContainer, std::min(m_MaxPopupHeight, std::ceil(contentHeight)) + kEstimatedPopupPadding);
-    const float roomLayout = room.Height / room.WindowPerLayoutY;
-    const float height =
-        std::max(1.0f, std::min({m_MaxPopupHeight, std::ceil(contentHeight), roomLayout - kEstimatedPopupPadding}));
-    scroll->Overrides().Set(Style::Height, StyleLength::Px(height));
-    // Keep the absolute popup in sync with its scroller. Auto-height can
-    // retain the earlier flex measurement after the content height changes.
-    m_ItemsContainer->Overrides().Set(Style::Height, StyleLength::Px(height + kEstimatedPopupPadding));
+    const float rowHeight = m_OptionArt == OptionArt::Picture ? kEstimatedPictureRowHeight : kEstimatedRowHeight;
+    UI::Layout::PlaceDropdownPopup(*this, *m_ItemsContainer,
+                                   kEstimatedPopupPadding + static_cast<float>(m_Options.size()) * rowHeight);
 }
 
 void Dropdown::EnsureHeader()
@@ -414,26 +468,95 @@ void Dropdown::EnsureHeader()
     AddChild(std::move(container));
 }
 
-void Dropdown::EnsureHeaderIcon()
+const std::string& Dropdown::ArtClass(const Option& option) const
 {
-    if (m_HeaderIcon || !m_HeaderContainer)
-        return;
-
-    auto icon = std::make_unique<UIElement>();
-    m_HeaderIcon = icon.get();
-    m_HeaderIcon->AddClass("dropdown-header-icon");
-    m_HeaderIcon->SetFocusProxy(this);
-    // Leading slot: the header reads icon, label, chevron.
-    m_HeaderContainer->InsertChild(0, std::move(icon));
+    switch (m_OptionArt)
+    {
+    case OptionArt::Icon:
+        return option.iconClass;
+    case OptionArt::Picture:
+        return option.pictureClass;
+    case OptionArt::None:
+        break;
+    }
+    return kNoArtClass;
 }
 
-void Dropdown::RemoveHeaderIcon()
+void Dropdown::EnsureHeaderArt()
 {
-    if (!m_HeaderIcon)
+    if (m_HeaderArt || !m_HeaderContainer)
         return;
-    m_HeaderContainer->RemoveChild(m_HeaderIcon);
-    m_HeaderIcon = nullptr;
-    m_HeaderIconClass.clear();
+
+    auto art = std::make_unique<UIElement>();
+    m_HeaderArt = art.get();
+    m_HeaderArt->AddClass(m_OptionArt == OptionArt::Picture ? "dropdown-header-picture" : "dropdown-header-icon");
+    m_HeaderArt->SetFocusProxy(this);
+    // Leading slot: the header reads art, label, chevron.
+    m_HeaderContainer->InsertChild(0, std::move(art));
+}
+
+void Dropdown::RemoveHeaderArt()
+{
+    if (!m_HeaderArt)
+        return;
+    m_HeaderContainer->RemoveChild(m_HeaderArt);
+    m_HeaderArt = nullptr;
+    m_HeaderArtClass.clear();
+}
+
+void Dropdown::BuildIconRow(Label& row, const Option& option)
+{
+    // Every row of an annotated control gets the column, so a row whose
+    // option declares no icon still lines its text up with the rest.
+    auto icon = std::make_unique<UIElement>();
+    icon->AddClass("dropdown-item-icon");
+    if (!option.iconClass.empty())
+        icon->AddClass(option.iconClass);
+    icon->SetFocusProxy(this);
+    row.AddChild(std::move(icon));
+    // A Label with children is no longer a Yoga text-measure leaf. Keep
+    // the option text in its own flow child so both row height and
+    // fit-content popup width still include the glyph metrics.
+    auto text = std::make_unique<Label>();
+    text->AddClass("dropdown-item-label");
+    text->SetText(option.label);
+    text->SetFocusProxy(this);
+    row.AddChild(std::move(text));
+}
+
+void Dropdown::BuildPictureRow(Label& row, const Option& option)
+{
+    // The popup rebuilds its rows each time it opens, and an open dropdown has an
+    // owner, so a row built before then stays empty until it is shown.
+    UIManager* ui = GetOwnerManager();
+    if (!ui)
+        return;
+    if (!ui->InstantiateLayoutChildrenFromAssetPath(&row, kPictureRowLayoutPath))
+    {
+        Logger::Log::Error("Dropdown: {} did not instantiate, so the picture rows are empty. Check that it is "
+                           "staged under the editor asset mount.",
+                           kPictureRowLayoutPath);
+        return;
+    }
+    UIElement* picture = ChildWithClass(row, "dropdown-item-picture-image");
+    UIElement* column = ChildWithClass(row, "dropdown-item-text");
+    auto* name = column ? dynamic_cast<Label*>(ChildWithClass(*column, "dropdown-item-label")) : nullptr;
+    auto* description = column ? dynamic_cast<Label*>(ChildWithClass(*column, "dropdown-item-description")) : nullptr;
+    if (!picture || !name || !description)
+    {
+        Logger::Log::Error("Dropdown: {} is missing a part of the picture row.", kPictureRowLayoutPath);
+        return;
+    }
+    if (!option.pictureClass.empty())
+        picture->AddClass(option.pictureClass);
+    name->SetText(option.label);
+    // Focus stays on the control, and the row stays the one press and hover surface.
+    for (UIElement* part : {picture, column, static_cast<UIElement*>(name), static_cast<UIElement*>(description)})
+        part->SetFocusProxy(this);
+    if (option.description.empty())
+        column->RemoveChild(description);
+    else
+        description->SetText(option.description);
 }
 
 void Dropdown::EnsureItemsContainer()
@@ -466,20 +589,6 @@ void Dropdown::EnsureItemsContainer()
     AddChild(std::move(container));
 }
 
-void Dropdown::FitPopupToAvailableHeight()
-{
-    SetMaxPopupHeight(std::numeric_limits<float>::max());
-}
-
-void Dropdown::SetMaxPopupHeight(float height)
-{
-    height = std::max(0.0f, height);
-    if (m_MaxPopupHeight == height)
-        return;
-    m_MaxPopupHeight = height;
-    RebuildUiItems();
-}
-
 void Dropdown::RebuildUiItems()
 {
     // If this is called from within an event dispatch (e.g. the header's
@@ -498,54 +607,29 @@ void Dropdown::RebuildUiItems()
 
     // Clear any existing items.
     m_ItemsContainer->RemoveAllChildren();
-    m_ItemsContent = m_ItemsContainer;
-    m_ItemsContainer->Overrides().Reset(Style::Height);
-    if (m_MaxPopupHeight > 0)
-    {
-        auto scroll = std::make_unique<ScrollView>();
-        scroll->Overrides().Set(Style::Height,
-            StyleLength::Px(std::min(m_MaxPopupHeight, 4.0f + 29.0f * m_Options.size())))
-            .Set(Style::FlexShrink, 0.0f);
-        // Dropdown rows clip long labels; they never require horizontal panning.
-        scroll->Overrides().Set(Style::OverflowXProp, Overflow::Hidden);
-        scroll->Overrides().SetCustomNumber(HashStringId("--ui_scrollview_measure_horizontal"), 0.0f);
-        scroll->SetFocusProxy(this);
-        m_ItemsContent = scroll->GetViewport();
-        m_ItemsContainer->AddChild(std::move(scroll));
-    }
 
     for (size_t i = 0; i < m_Options.size(); ++i)
     {
         auto  lbl = std::make_unique<Label>();
         Label* raw = lbl.get();
         raw->AddClass("dropdown-item");
+        UpdateTextRowClass(*raw);
         raw->SetFocusProxy(this);
         const int index = static_cast<int>(i);
         const bool isSelected = (m_SelectedIndex == index);
         if (isSelected)
             raw->AddClass("selected");
-        if (m_HasOptionIcons)
+        switch (m_OptionArt)
         {
-            // Every row of an annotated control gets the column, so a row whose
-            // option declares no icon still lines its text up with the rest.
-            auto icon = std::make_unique<UIElement>();
-            icon->AddClass("dropdown-item-icon");
-            if (!m_Options[i].iconClass.empty())
-                icon->AddClass(m_Options[i].iconClass);
-            icon->SetFocusProxy(this);
-            raw->AddChild(std::move(icon));
-            // A Label with children is no longer a Yoga text-measure leaf. Keep
-            // the option text in its own flow child so both row height and
-            // fit-content popup width still include the glyph metrics.
-            auto text = std::make_unique<Label>();
-            text->AddClass("dropdown-item-label");
-            text->SetText(m_Options[i].label);
-            text->SetFocusProxy(this);
-            raw->AddChild(std::move(text));
-        }
-        else
-        {
+        case OptionArt::Icon:
+            BuildIconRow(*raw, m_Options[i]);
+            break;
+        case OptionArt::Picture:
+            BuildPictureRow(*raw, m_Options[i]);
+            break;
+        case OptionArt::None:
             raw->SetText(m_Options[i].label);
+            break;
         }
         ApplyOptionColorToItemLabel(ItemTextLabel(raw), m_Options[i], isSelected);
 
@@ -563,9 +647,7 @@ void Dropdown::RebuildUiItems()
             e.Stop();
         });
 
-        if (m_MaxPopupHeight > 0)
-            raw->Overrides().Set(Style::FlexShrink, 0.0f);
-        m_ItemsContent->AddChild(std::move(lbl));
+        m_ItemsContainer->AddChild(std::move(lbl));
     }
 }
 
@@ -575,7 +657,7 @@ void Dropdown::UpdateHeaderLabel()
     if (!m_HeaderLabel)
         return;
 
-    UpdateHeaderIcon();
+    UpdateHeaderArt();
 
     if (m_SelectedIndex >= 0 && m_SelectedIndex < static_cast<int>(m_Options.size()))
     {
@@ -585,35 +667,39 @@ void Dropdown::UpdateHeaderLabel()
         {
             uint32_t argb = 0;
             if (TryParseHexColor(opt.color.c_str(), argb))
-                m_HeaderLabel->Overrides().Set(Style::Color, argb);
+                m_HeaderLabel->Style().Set(Style::Color, argb);
             else
-                m_HeaderLabel->Overrides().Reset(Style::Color);
+                m_HeaderLabel->Style().Reset(Style::Color);
         }
         else
-            m_HeaderLabel->Overrides().Reset(Style::Color);
+            m_HeaderLabel->Style().Reset(Style::Color);
     }
     else
     {
-        m_HeaderLabel->SetText(std::string());
-        m_HeaderLabel->Overrides().Reset(Style::Color);
+        m_HeaderLabel->SetText(m_NoSelectionText);
+        m_HeaderLabel->Style().Reset(Style::Color);
     }
 }
 
-void Dropdown::UpdateHeaderIcon()
+void Dropdown::UpdateHeaderArt()
 {
-    if (!m_HeaderIcon)
-        return;
-
     const Option* selected = SelectedOption();
-    const std::string& iconClass = selected ? selected->iconClass : kNoIconClass;
-    if (iconClass == m_HeaderIconClass)
+    if (m_OptionArt == OptionArt::None || !selected)
+    {
+        RemoveHeaderArt();
+        return;
+    }
+    EnsureHeaderArt();
+
+    const std::string& artClass = ArtClass(*selected);
+    if (artClass == m_HeaderArtClass)
         return;
 
-    if (!m_HeaderIconClass.empty())
-        m_HeaderIcon->RemoveClass(m_HeaderIconClass);
-    m_HeaderIconClass = iconClass;
-    if (!m_HeaderIconClass.empty())
-        m_HeaderIcon->AddClass(m_HeaderIconClass);
+    if (!m_HeaderArtClass.empty())
+        m_HeaderArt->RemoveClass(m_HeaderArtClass);
+    m_HeaderArtClass = artClass;
+    if (!m_HeaderArtClass.empty())
+        m_HeaderArt->AddClass(m_HeaderArtClass);
 }
 
 void Dropdown::OpenMenuUi()
@@ -641,7 +727,7 @@ void Dropdown::OpenMenuUi()
         if (m_ItemsContainer)
             m_ItemsContainer->AddClass("open");
         if (m_HeaderLabel)
-            m_HeaderLabel->Overrides().Reset(Style::Color);
+            m_HeaderLabel->Style().Reset(Style::Color);
     }
     // Opening/closing the popup changes style/layout (display:none <-> flex). We rely on the
     // dirty marks from AddClass/RemoveClass and UIManager's "late dirty" rebuild to reflect

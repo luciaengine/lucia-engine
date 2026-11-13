@@ -11,12 +11,12 @@
 // same RGBuffers (idempotent per frame) so the forward pass can declare its reads
 // against them — that declared read is what orders the draw after this pass.
 
+#include <cstdint>
+#include <functional>
+
 #include "CBTTerrain/CBTActivityReadback.h" // CBTActivitySlot (a defaulted argument)
 #include "Rendering/Core/Handle.h" // TextureHandle
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-
-#include <cstdint>
-#include <functional>
 
 namespace GameEngine::CBTTerrain
 {
@@ -52,16 +52,24 @@ class CBTUpdateNode
     static CBTUpdateOutputs ImportOutputs(Rendering::RenderGraph::RGFrame& frame,
                                           CBTInstance& instance);
 
-    /// Declares one graph update that samples heightSource and publishes the draw buffers.
-    /// activity receives counters recorded after the kernels. Declare once per owner frame.
-    /// onSubmitted confirms the recorded update after its containing submission succeeds.
+    // Declares the "CBT.Update" pass into `frame` and returns the imported
+    // outputs. No-op (empty return) if the instance is not ready. `params` (camera +
+    // terrain) drives the screen-space Classify metric and the height displacement;
+    // the caller binds the height source on the instance before this. `heightSource`
+    // is the terrain heightmap the VertexEval kernel samples (invalid = the flat
+    // default): when valid it is imported and declared as a graph read (SampledCompute)
+    // so a same-frame region re-upload (E2) is a visible dependency, and the pass is
+    // scheduled just after the kEarlySetup heightmap upload so VertexEval never
+    // samples a half-uploaded region (plan §8 C5). `activity`, when its Buffer is valid
+    // (CBTActivityReadback::Begin), receives this update's work-queue counters, copied
+    // and stamped in the same pass right after the kernels. The caller owns BeginFrame/Execute
+    // on the frame, and should record this ONCE per frame.
     static CBTUpdateOutputs DeclareUpdatePass(Rendering::RenderGraph::RGFrame& frame,
                                               CBTInstance& instance,
                                               const CBTClassifyDesc& classify,
                                               const CBTFrameParams& params, uint32_t frameCounter,
                                               Rendering::TextureHandle heightSource,
-                                              const CBTActivitySlot& activity = {},
-                                              std::function<void()> onSubmitted = {});
+                                              const CBTActivitySlot& activity = {}, std::function<void()> onSubmitted = {});
 };
 
 } // namespace GameEngine::CBTTerrain

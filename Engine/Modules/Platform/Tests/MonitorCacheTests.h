@@ -6,7 +6,6 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -47,8 +46,6 @@ class MonitorCacheTests : public testing::Test
   protected:
     void SetUp() override
     {
-        if (const char* previous = std::getenv(kForceHdrVariable))
-            m_PreviousForceHdr = previous;
         ASSERT_TRUE(Platform::Window::Initialize());
         SetForceHdr("");
         Platform::InvalidateMonitors();
@@ -61,16 +58,7 @@ class MonitorCacheTests : public testing::Test
 
     void TearDown() override
     {
-        if (m_PreviousForceHdr)
-            SetForceHdr(m_PreviousForceHdr->c_str());
-        else
-        {
-#if defined(_WIN32)
-            _putenv_s(kForceHdrVariable, "");
-#else
-            unsetenv(kForceHdrVariable);
-#endif
-        }
+        SetForceHdr("");
         Platform::InvalidateMonitors();
     }
 
@@ -78,7 +66,6 @@ class MonitorCacheTests : public testing::Test
     static void TearDownTestSuite() { Platform::Window::Terminate(); }
 
     std::vector<Platform::MonitorInfo> m_Initial;
-    std::optional<std::string> m_PreviousForceHdr;
 };
 
 } // namespace GameEngine::Tests

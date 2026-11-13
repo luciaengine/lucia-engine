@@ -9,7 +9,7 @@
 // that form emits enumerator names. Header-only and side-effect-free so it is trivially
 // unit-testable.
 
-#include "ECS/Reflection.h"
+#include "ECS/FieldAccess.h"
 
 #include <charconv>
 #include <cmath>
@@ -23,14 +23,6 @@ namespace GameEngine {
 namespace ECS {
 
 namespace Detail {
-
-template <class T>
-T ReadUnaligned(const std::byte* bytes)
-{
-    T value{};
-    std::memcpy(&value, bytes, sizeof(T));
-    return value;
-}
 
 // Locale-independent, round-trip-exact number formatting. std::to_string is
 // avoided: it honours the global C locale (a comma decimal separator would emit

@@ -1,3 +1,4 @@
+#include "Core/ApplicationPaths.h"
 // Cross-DLL registration smoke test — the gtest host.
 //
 // Proves the Phase-2 prerequisite: the engine's component reflection registries
@@ -26,7 +27,7 @@
 //   4. Call the DLL's explicit-register export.
 //   5. The TESTs assert the host now sees what the DLL registered, by id.
 
-#include "Core/Application.h" // PathUtils::GetExecutableDirectory
+#include "Core/Application.h" // ApplicationPaths::GetExecutableDirectory
 #include "ECS/ComponentFieldRegistry.h"
 #include "ECS/ComponentFactory.h"
 
@@ -58,7 +59,7 @@ using IntFn = int (*)();
 // the cwd (ctest sets WORKING_DIRECTORY to the build root, not the exe dir).
 std::filesystem::path ProbeModulePath()
 {
-    const std::filesystem::path exeDir = GameEngine::PathUtils::GetExecutableDirectory();
+    const std::filesystem::path exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
 #if defined(_WIN32)
     return exeDir / "NativeScriptingProbe.dll";
 #elif defined(__APPLE__)

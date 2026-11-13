@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstddef>
 #include <optional>
 
 namespace GameEngine::Editor
@@ -20,12 +21,19 @@ namespace GameEngine::Editor
 // moment the last override was discarded, so an agent read a healthy scene while a human read a
 // partial one.
 //
-// So presence follows `atLoad`, exactly like the title, and `outstandingCount`/`skips` carry the
-// save-facing answer. `skips` lists only outstanding rows: an override the user discarded is never
+// So presence follows `atLoad`, exactly like the title, and `outstandingCount`, `droppedCount` and
+// `skips` carry the save-facing answer. `skips` lists only outstanding rows: an override the user discarded is never
 // reported as text a save will write back.
+//
+// `skips` holds one page: at most kSceneDegradedSkipsPerPage outstanding rows from `skipsOffset`.
+// `outstandingCount` is the total, so a reader pages until offset plus rows reaches it.
 //
 // Returns a null json when `atLoad` is empty — the scene loaded cleanly and there is nothing to say.
 nlohmann::json BuildSceneDegradedReport(const std::optional<SceneLoadDegraded>& atLoad,
-                                        const std::optional<SceneLoadDegraded>& outstanding);
+                                        const std::optional<SceneLoadDegraded>& outstanding,
+                                        std::size_t skipsOffset);
+
+/// The most outstanding rows one get_editor_state reply lists in `sceneDegraded.skips`.
+inline constexpr std::size_t kSceneDegradedSkipsPerPage = 200;
 
 } // namespace GameEngine::Editor

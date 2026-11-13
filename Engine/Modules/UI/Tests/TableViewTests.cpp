@@ -103,16 +103,16 @@ TEST(TableViewTests, ApplyTrackSizes_FixedTrack)
     UIElement* child = cell.GetChildren()[0].get();
     ASSERT_NE(child, nullptr);
 
-    EXPECT_EQ(child->Overrides().Get(Style::FlexGrow), 0.0f);
-    EXPECT_EQ(child->Overrides().Get(Style::FlexShrink), 0.0f);
+    EXPECT_EQ(child->Style().Get(Style::FlexGrow), 0.0f);
+    EXPECT_EQ(child->Style().Get(Style::FlexShrink), 0.0f);
 
     // Fixed track pins basis/min/max to the track width.
-    EXPECT_TRUE(child->Overrides().Has(StylePropertyId::FlexBasis));
-    EXPECT_TRUE(child->Overrides().Has(StylePropertyId::MinWidth));
-    EXPECT_TRUE(child->Overrides().Has(StylePropertyId::MaxWidth));
-    EXPECT_EQ(child->Overrides().Get(Style::FlexBasis), StyleLength::Px(90.0f));
-    EXPECT_EQ(child->Overrides().Get(Style::MinWidth), StyleLength::Px(90.0f));
-    EXPECT_EQ(child->Overrides().Get(Style::MaxWidth), StyleLength::Px(90.0f));
+    EXPECT_TRUE(child->Style().Has(StylePropertyId::FlexBasis));
+    EXPECT_TRUE(child->Style().Has(StylePropertyId::MinWidth));
+    EXPECT_TRUE(child->Style().Has(StylePropertyId::MaxWidth));
+    EXPECT_EQ(child->Style().Get(Style::FlexBasis), StyleLength::Px(90.0f));
+    EXPECT_EQ(child->Style().Get(Style::MinWidth), StyleLength::Px(90.0f));
+    EXPECT_EQ(child->Style().Get(Style::MaxWidth), StyleLength::Px(90.0f));
 }
 
 TEST(TableViewTests, ApplyTrackSizes_FlexTrack)
@@ -128,13 +128,13 @@ TEST(TableViewTests, ApplyTrackSizes_FlexTrack)
     UIElement* child = cell.GetChildren()[0].get();
     ASSERT_NE(child, nullptr);
 
-    EXPECT_EQ(child->Overrides().Get(Style::FlexGrow), 1.0f);
-    EXPECT_TRUE(child->Overrides().Has(StylePropertyId::FlexBasis));
-    EXPECT_EQ(child->Overrides().Get(Style::FlexBasis), StyleLength::Px(0.0f));
+    EXPECT_EQ(child->Style().Get(Style::FlexGrow), 1.0f);
+    EXPECT_TRUE(child->Style().Has(StylePropertyId::FlexBasis));
+    EXPECT_EQ(child->Style().Get(Style::FlexBasis), StyleLength::Px(0.0f));
 
     // A flex track grows freely: the max-width cap is explicitly removed.
-    EXPECT_FALSE(child->Overrides().Has(StylePropertyId::MaxWidth));
-    EXPECT_TRUE(child->Overrides().Has(StylePropertyId::MinWidth));
+    EXPECT_FALSE(child->Style().Has(StylePropertyId::MaxWidth));
+    EXPECT_TRUE(child->Style().Has(StylePropertyId::MinWidth));
 }
 
 TEST(TableViewTests, ApplyTrackSizes_HiddenTrack)
@@ -150,7 +150,7 @@ TEST(TableViewTests, ApplyTrackSizes_HiddenTrack)
     UIElement* child = cell.GetChildren()[0].get();
     ASSERT_NE(child, nullptr);
 
-    EXPECT_EQ(child->Overrides().Get(Style::Display), DisplayMode::None);
+    EXPECT_EQ(child->Style().Get(Style::Display), DisplayMode::None);
 }
 
 // Fill track -----------------------------------------------------------------
@@ -180,10 +180,10 @@ TEST(TableViewTests, ApplyTrackSizes_FillTrackGrows)
     ASSERT_NE(child, nullptr);
 
     // A fill track is sized exactly like a flex track: grow:1, basis:0, no max cap.
-    EXPECT_EQ(child->Overrides().Get(Style::FlexGrow), 1.0f);
-    EXPECT_TRUE(child->Overrides().Has(StylePropertyId::FlexBasis));
-    EXPECT_EQ(child->Overrides().Get(Style::FlexBasis), StyleLength::Px(0.0f));
-    EXPECT_FALSE(child->Overrides().Has(StylePropertyId::MaxWidth));
+    EXPECT_EQ(child->Style().Get(Style::FlexGrow), 1.0f);
+    EXPECT_TRUE(child->Style().Has(StylePropertyId::FlexBasis));
+    EXPECT_EQ(child->Style().Get(Style::FlexBasis), StyleLength::Px(0.0f));
+    EXPECT_FALSE(child->Style().Has(StylePropertyId::MaxWidth));
 }
 
 TEST(TableViewTests, AxisHeaderBar_FillExcludedFromDividerAndContentLogic)

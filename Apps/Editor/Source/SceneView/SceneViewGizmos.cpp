@@ -16,30 +16,58 @@ namespace SceneTools {
 
 namespace
     {
-        using GroupVec = std::vector<GizmoLineGroup>;
-        // NOTE:
-        // Gizmo groups are produced and consumed during SceneViewController::Record(), which
-        // is executed as part of RenderGraph pass execution. RenderGraph may execute passes
-        // on worker threads; using a single global map here can cause data races and heap
-        // corruption (e.g., vector reallocation while another thread is writing).
-        //
-        // Use thread-local storage to keep gizmo accumulation isolated per executing thread.
+        // One view's groups for the current frame, and the cleared vertex streams of the groups
+        // before the last reset. A new group takes a retired stream with its capacity, so a frame
+        // that draws what the frame before drew allocates nothing.
+        template <class Group>
+        struct ViewGroups
+        {
+            std::vector<Group> Groups;
+            std::vector<std::vector<float>> RetiredStreams;
+        };
+        using GroupVec = ViewGroups<GizmoLineGroup>;
+        // The Scene View records and packs a view's groups in SceneViewController::DeclareOverlaysRG
+        // and releases them in ~SceneViewController, both on the editor frame-loop thread. The maps
+        // are thread_local, so each thread that records gizmos has its own groups.
         static thread_local std::unordered_map<Rendering::ViewId, GroupVec> g_LineGroups;
 
-        using TriangleGroupVec = std::vector<GizmoTriangleGroup>;
+        using TriangleGroupVec = ViewGroups<GizmoTriangleGroup>;
         static thread_local std::unordered_map<Rendering::ViewId, TriangleGroupVec> g_TriangleGroups;
 
         static constexpr float kPi              = GameEngine::Mathematics::Pi;
 
         using GameEngine::Mathematics::Vector3;
 
+        // A retired vertex stream for a new group: empty, with the capacity it had.
+        std::vector<float> TakeRetiredStream(std::vector<std::vector<float>>& retired)
+        {
+            if (retired.empty())
+                return {};
+            std::vector<float> stream = std::move(retired.back());
+            retired.pop_back();
+            return stream;
+        }
+
+        // Clears the view's groups and retires their streams in reverse, so the n-th group of
+        // the next frame takes the stream of the n-th group of this frame.
+        template <class Group>
+        void RetireGroups(ViewGroups<Group>& view)
+        {
+            for (auto it = view.Groups.rbegin(); it != view.Groups.rend(); ++it)
+            {
+                it->vertices.clear();
+                view.RetiredStreams.push_back(std::move(it->vertices));
+            }
+            view.Groups.clear();
+        }
+
         static GizmoLineGroup& GetOrCreateGroup(Rendering::ViewId viewId,
                                                 const Color& color,
                                                 float thickness,
                                                 GizmoDepthMode depthMode)
     {
-        GroupVec& groups = g_LineGroups[viewId];
-        for (auto& g : groups)
+        GroupVec& view = g_LineGroups[viewId];
+        for (auto& g : view.Groups)
         {
             if (g.thickness == thickness &&
                 g.depthMode == depthMode &&
@@ -53,8 +81,9 @@ namespace
 	        newGroup.color = color;
 	        newGroup.thickness = thickness;
 	        newGroup.depthMode = depthMode;
-	        groups.push_back(std::move(newGroup));
-	        return groups.back();
+	        newGroup.vertices = TakeRetiredStream(view.RetiredStreams);
+	        view.Groups.push_back(std::move(newGroup));
+	        return view.Groups.back();
     }
 
 		    static GizmoTriangleGroup& GetOrCreateTriangleGroup(Rendering::ViewId viewId,
@@ -62,8 +91,8 @@ namespace
 		                                                       std::int32_t layer,
 		                                                       GizmoDepthMode depthMode)
 		    {
-		        TriangleGroupVec& groups = g_TriangleGroups[viewId];
-		        for (auto& g : groups)
+		        TriangleGroupVec& view = g_TriangleGroups[viewId];
+		        for (auto& g : view.Groups)
 		        {
 		            if (g.layer   == layer &&
 		                g.depthMode == depthMode &&
@@ -77,8 +106,9 @@ namespace
 		        newGroup.color = color;
 		        newGroup.layer = layer;
 		        newGroup.depthMode = depthMode;
-		        groups.push_back(std::move(newGroup));
-		        return groups.back();
+		        newGroup.vertices = TakeRetiredStream(view.RetiredStreams);
+		        view.Groups.push_back(std::move(newGroup));
+		        return view.Groups.back();
 		    }
 
         // Append positions to a group's packed xyz vertex stream. No explicit
@@ -104,28 +134,23 @@ namespace
             verts.push_back(c);
         }
 
-        // Box corners are in Mathematics::AABB::Corners order: bit 0 of the
-        // index selects +X, bit 1 +Y and bit 2 +Z.
-        void AppendBoxTriangles(std::vector<Vector3>& verts, const std::array<Vector3, 8>& v)
+        // The 12 box triangles as corner-index triples, two for each face in the order
+        // +Z, -Z, +X, -X, +Y, -Y. Box corners are in Mathematics::AABB::Corners order:
+        // bit 0 of the index selects +X, bit 1 +Y and bit 2 +Z.
+        constexpr std::array<std::uint8_t, 36> kBoxTriangleCorners = {
+            4, 5, 7, 4, 7, 6,
+            0, 3, 1, 0, 2, 3,
+            1, 3, 7, 1, 7, 5,
+            0, 6, 2, 0, 4, 6,
+            2, 6, 7, 2, 7, 3,
+            0, 5, 4, 0, 1, 5};
+
+        std::array<Vector3, kBoxTriangleCorners.size()> BoxTriangles(const std::array<Vector3, 8>& corners)
         {
-            // +Z face
-            AppendTriangle(verts, v[4], v[5], v[7]);
-            AppendTriangle(verts, v[4], v[7], v[6]);
-            // -Z face
-            AppendTriangle(verts, v[0], v[3], v[1]);
-            AppendTriangle(verts, v[0], v[2], v[3]);
-            // +X face
-            AppendTriangle(verts, v[1], v[3], v[7]);
-            AppendTriangle(verts, v[1], v[7], v[5]);
-            // -X face
-            AppendTriangle(verts, v[0], v[6], v[2]);
-            AppendTriangle(verts, v[0], v[4], v[6]);
-            // +Y face
-            AppendTriangle(verts, v[2], v[6], v[7]);
-            AppendTriangle(verts, v[2], v[7], v[3]);
-            // -Y face
-            AppendTriangle(verts, v[0], v[5], v[4]);
-            AppendTriangle(verts, v[0], v[1], v[5]);
+            std::array<Vector3, kBoxTriangleCorners.size()> triangles;
+            for (std::size_t i = 0; i < triangles.size(); ++i)
+                triangles[i] = corners[kBoxTriangleCorners[i]];
+            return triangles;
         }
 
         // The 12 box edges as corner-index pairs in the same corner order: the
@@ -163,18 +188,18 @@ void ResetGizmoLineGroups(Rendering::ViewId viewId)
     auto it = g_LineGroups.find(viewId);
     if (it != g_LineGroups.end())
     {
-        it->second.clear();
+        RetireGroups(it->second);
     }
 }
 
 const std::vector<GizmoLineGroup>* GetGizmoLineGroups(Rendering::ViewId viewId)
 {
     auto it = g_LineGroups.find(viewId);
-    if (it == g_LineGroups.end() || it->second.empty())
+    if (it == g_LineGroups.end() || it->second.Groups.empty())
     {
         return nullptr;
     }
-    return &it->second;
+    return &it->second.Groups;
 }
 
 		void ResetGizmoTriangleGroups(Rendering::ViewId viewId)
@@ -182,18 +207,24 @@ const std::vector<GizmoLineGroup>* GetGizmoLineGroups(Rendering::ViewId viewId)
 		    auto it = g_TriangleGroups.find(viewId);
 		    if (it != g_TriangleGroups.end())
 		    {
-		        it->second.clear();
+		        RetireGroups(it->second);
 		    }
 		}
-	
+
 		const std::vector<GizmoTriangleGroup>* GetGizmoTriangleGroups(Rendering::ViewId viewId)
 		{
 		    auto it = g_TriangleGroups.find(viewId);
-		    if (it == g_TriangleGroups.end() || it->second.empty())
+		    if (it == g_TriangleGroups.end() || it->second.Groups.empty())
 		    {
 		        return nullptr;
 		    }
-		    return &it->second;
+		    return &it->second.Groups;
+		}
+
+		void ReleaseGizmoGroups(Rendering::ViewId viewId)
+		{
+		    g_LineGroups.erase(viewId);
+		    g_TriangleGroups.erase(viewId);
 		}
 
 		bool ProjectRayOntoLine(const GizmoRay& ray,
@@ -269,10 +300,8 @@ void GizmoRenderContext::DrawSolidBox(const Vector3& center,
                                       const Vector3& halfExtents,
                                       const Color& color)
 {
-    std::vector<Vector3> verts;
-    verts.reserve(36u);
-    AppendBoxTriangles(verts, Mathematics::BoundingBox{center, halfExtents}.ToAABB().Corners());
-    DrawTriangles(verts.data(), verts.size(), color);
+    const auto triangles = BoxTriangles(Mathematics::BoundingBox{center, halfExtents}.ToAABB().Corners());
+    DrawTriangles(triangles.data(), triangles.size(), color);
 }
 
 void GizmoRenderContext::DrawSolidOrientedBox(const Vector3& center,
@@ -297,10 +326,8 @@ void GizmoRenderContext::DrawSolidOrientedBox(const Vector3& center,
         center + ax + ay + az  // 7: +x +y +z
     };
 
-    std::vector<Vector3> verts;
-    verts.reserve(36u);
-    AppendBoxTriangles(verts, v);
-    DrawTriangles(verts.data(), verts.size(), color);
+    const auto triangles = BoxTriangles(v);
+    DrawTriangles(triangles.data(), triangles.size(), color);
 }
 
 void GizmoRenderContext::DrawSolidSphere(const Vector3& center,
@@ -316,8 +343,9 @@ void GizmoRenderContext::DrawSolidSphere(const Vector3& center,
 	    const float cy = center.y;
 	    const float cz = center.z;
 
-	    std::vector<Vector3> verts;
-	    verts.reserve(static_cast<std::size_t>(kLatSegments * kLonSegments * 6u));
+	    // Two triangles for each latitude and longitude cell fill the array.
+	    std::array<Vector3, static_cast<std::size_t>(kLatSegments * kLonSegments * 6)> verts;
+	    std::size_t written = 0;
 
 	    for (int lat = 0; lat < kLatSegments; ++lat)
 	    {
@@ -350,8 +378,8 @@ void GizmoRenderContext::DrawSolidSphere(const Vector3& center,
 	                cy + radius * std::cos(phi0),
 	                cz + radius * std::sin(phi0) * std::sin(theta1));
 
-	            AppendTriangle(verts, p0, p1, p2);
-	            AppendTriangle(verts, p0, p2, p3);
+	            for (const Vector3& corner : {p0, p1, p2, p0, p2, p3})
+	                verts[written++] = corner;
 	        }
 	    }
 

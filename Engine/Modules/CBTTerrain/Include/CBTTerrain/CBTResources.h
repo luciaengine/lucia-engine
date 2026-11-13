@@ -25,6 +25,7 @@ namespace GameEngine::CBTTerrain
 {
 
 class CBTKernelSet;
+struct SphereEditRegions;
 
 class CBTResources
 {
@@ -90,41 +91,48 @@ class CBTResources
     // declaring against one frame selects the same element and agrees with the push constant.
     uint32_t AdvanceFrameCounter(uint32_t deviceFrameIndex)
     {
-        return m_FrameCounter.Tick(deviceFrameIndex);
+        // The push constant is 32-bit; the CPU and the GPU reduce the same low 32 bits.
+        return static_cast<uint32_t>(m_FrameCounter.Tick(deviceFrameIndex));
     }
 
-    /// Records the first submission that can read the source descriptor sets.
     void OnRootInitializationSubmitted() { m_SourceReadersSubmitted = true; }
 
     // C4 per-frame params UBO (binding 14) — camera + terrain params consumed by
     // Classify (screen-space error) and VertexEval (displacement). Host-visible,
     // ring-buffered over kCBTFrameParamsRing frames. Write one slot per frame.
     Rendering::BufferHandle GetFrameParamsBuffer() const { return m_FrameParams; }
-    void UploadFrameParams(uint32_t frameCounter, const CBTFrameParams& params);
+    void UploadFrameParams(uint32_t frameCounter, const CBTFrameParams& params, const SphereEditRegions& sphereDirty);
 
-    // The current frame's ring element selects the height texture (binding 15).
-    // Call source setters before recording. False leaves the requested binding unapplied.
-    // Retires submitted graphics readers before changing the shared descriptor set.
+    // C4 terrain height source (binding 15, a CBTTextureRingFor ring). Rebinds ONE
+    // ring element — this frame's, per CBTFrameRingSlot — to the terrain's heightmap (or
+    // the built-in flat default when invalid). Only that element is touched, and the
+    // frame fence retires the frame that last read it before frame N+ring reuses it, so a
+    // mid-session heightmap handle change (streaming/hot-reload/identity) never rewrites a
+    // descriptor element an in-flight frame is still reading. No-op when that element's
+    // handle is unchanged. The default is a 1x1 zero R32_FLOAT so every element is
+    // always valid before any terrain binds (heightScale = 0 makes its content moot).
     bool SetHeightSource(uint32_t frameCounter, Rendering::TextureHandle texture);
     Rendering::TextureHandle GetDefaultHeightTexture() const { return m_DefaultHeight; }
     // The height texture bound in `frameCounter`'s ring element (the flat default when none).
     Rendering::TextureHandle GetBoundHeightSource(uint32_t frameCounter) const;
     // The height-range pyramid (binding 21); invalid on the narrow-heap arm.
     Rendering::BufferHandle GetHeightRangeBuffer() const { return m_HeightRange; }
-    // Compute binding 24 and graphics gCbtChain always bind a valid buffer.
-    // Its zeroed header names no lattice until the wide heap provisions a chain.
-    // The narrow heap keeps that header, so drawing uses cached corners.
+    // The draw's prefiltered height chain (binding 24 on the compute set, gCbtChain on the graphics
+    // set 2). Valid on both arms so the draw always binds a buffer; it holds only a zeroed header
+    // until ProvisionHeightChainWords grows it, and the narrow arm never does, so a header that names
+    // no lattice makes the draw keep the cached corners.
     Rendering::BufferHandle GetHeightChainBuffer() const { return m_HeightChain; }
     uint32_t GetHeightChainWords() const { return m_HeightChainWords; }
-    // Grow to CBTHeightChainWords for the lattice; never shrink. A new buffer has a zeroed header.
-    // Allocation or completion failure, or an unsupported heap, preserves the old binding.
+    // Grows the chain to hold `words` (CBTHeightChainWords of the bound lattice; the wide arm only),
+    // never shrinking. The new buffer starts with a zeroed header, so whatever the old one held is
+    // rebuilt before the draw reads it. False when the allocation fails or the arm builds no chain:
+    // the previous buffer stays bound and the terrain draws its cached corners.
     bool ProvisionHeightChainWords(uint32_t words);
     // The far-field normal chain (binding 25 on the compute set as one storage view per mip,
     // cbt_NormalChain on the graphics set 2). A 1x1 placeholder until ProvisionNormalChain creates it for
-    // a lattice; storage and sampled descriptors share GENERAL. Wide arm only, like the height chain.
+    // a lattice; the texture rests in ShaderResource between frames. Wide arm only, like the height chain.
     Rendering::TextureHandle GetNormalChainTexture() const { return m_NormalChain; }
     uint32_t GetNormalChainMips() const { return m_NormalChainMips; }
-    /// True when the allocated normal chain matches this source lattice.
     bool HasNormalChainFor(uint32_t samplesX, uint32_t samplesZ) const
     {
         return samplesX >= 2u && samplesZ >= 2u && samplesX <= 0xFFFFu && samplesZ <= 0xFFFFu &&
@@ -132,12 +140,13 @@ class CBTResources
     }
     // Creates the chain for a lattice of `samplesX` x `samplesZ` (CBTNormalChainTexels / Mips), replacing
     // one made for another lattice; true when it matches. False when the arm builds no chain or the
-    // allocation or completion fails: the previous texture stays bound and the surface keeps the level-0 normal map.
+    // allocation fails: the previous texture stays bound and the surface keeps the level-0 normal map.
     bool ProvisionNormalChain(uint32_t samplesX, uint32_t samplesZ);
     Rendering::SamplerHandle GetHeightSampler() const { return m_HeightSampler; }
 
-    /// Restores source rings to their flat defaults before recording.
-    /// Returns success; changed records applied updates even if a later update fails.
+    /// Rebinds every height, atlas, coarse and page-cache slot after its readers retire.
+    /// False keeps unretired bindings available for retry; changed names completed replacements.
+    /// Uses graphics completion without changing the device-wide idle state.
     bool RebindTerrainSourcesToDefault(bool& changed);
 
     // Monotonic version of the terrain-texture ring bindings (height/atlas/coarse). Bumped whenever
@@ -163,7 +172,7 @@ class CBTResources
     // Binding 17: write `rowCount` 16-B indirection rows into the frame's ring slot from
     // the residency controller's table (host-visible; completes before submit, like the
     // params UBO). `rows` points at kAtlasRowBytes-sized TileAtlasSlot entries; the copy is
-    // clamped to kAtlasMaxTiles. Rows past `rowCount` in the slot are zeroed so a shrunk
+    // clamped to kAtlasWindowRows. Rows past `rowCount` in the slot are zeroed so a shrunk
     // table never resolves a stale tile as resident.
     void UploadAtlasRows(uint32_t frameCounter, const void* rows, uint32_t rowCount);
     // ---- The paged height resolve (bindings 22/23, wide arm only; no-ops on the narrow arm) ----
@@ -171,52 +180,16 @@ class CBTResources
     // Binding 23: rebind this frame's ring element to the height page cache texture (or the flat
     // default when invalid). Same per-slot in-flight safety as SetAtlasSource.
     bool SetPageCacheSource(uint32_t frameCounter, Rendering::TextureHandle cacheTexture);
-    // Binding 22: grows the page-table ring so a slot holds `words` (the bound terrain's table), in
-    // steps of kCBTPageTableMinRingWords; the ring never shrinks. False when the allocation fails:
-    // the previous ring stays bound and the terrain must not page this frame.
-    bool ProvisionPageTableWords(uint32_t words);
-    // Binding 22: write the terrain's page-table words (the CBTLayout.h binding-22 layout) into
-    // this frame's ring slot, clamped to the slot. Empty words write an empty field.
-    void UploadPageTable(uint32_t frameCounter, std::span<const uint32_t> words);
-    uint32_t PageTableSlotWords() const { return m_PageTableSlotWords; }
+    // Binding 22: binds TerrainPageFeature's page-table ring, whose slot for this frame starts at word
+    // `firstWord`; an invalid ring binds the zeroed default. A new ring handle rewrites the sets.
+    bool SetPageTable(Rendering::BufferHandle ring, uint32_t firstWord);
+    Rendering::BufferHandle GetPageTableBuffer() const { return m_PageTable; }
     Rendering::TextureHandle GetDefaultAtlasHeightTexture() const { return m_DefaultAtlasHeight; }
     Rendering::TextureHandle GetDefaultAtlasCoarseTexture() const { return m_DefaultAtlasCoarse; }
-    Rendering::TextureHandle GetDefaultPageCacheTexture() const { return m_DefaultPageCache; }
     Rendering::BufferHandle GetAtlasRowsBuffer() const { return m_AtlasRows; }
 
-    // Sphere sculpt physical page POOL (binding 16) + page TABLE (binding 20) — planet editing v2.
-    // Both host-visible SSBO rings: UploadSphereSculptPool / UploadSphereSculptPageTable write the
-    // frame's ring slot from the caller's authoritative page store, so the slot the shader reads this
-    // frame was written before this frame's GPU work (same ring discipline as UploadFrameParams — no
-    // barrier/staging). Created zeroed (pool 0.0, table kSculptNoPage) so the default (no edits) reads
-    // additive 0. The pool holds SculptPagePoolCount() pages; a page id addresses one 128^2 tile.
-    //
-    // Only the spherical domain reads them (every shader read is behind a spherical-domain gate), so
-    // Initialize creates placeholders of kSculptPlaceholderSlotWords per ring slot that only keep
-    // bindings 16 and 20 valid, and ProvisionSculptRings swaps in the full rings (64 MiB host-visible
-    // at the default page budget) for a sphere and back for a planar tree. The uploads are no-ops on
-    // the placeholders.
-    void UploadSphereSculptPool(uint32_t frameCounter, const float* pool, uint32_t texelCount);
-    void UploadSphereSculptPageTable(uint32_t frameCounter, const uint32_t* table, uint32_t entryCount);
-    // Re-creates the two rings for the domain (true = spherical, with `pagePoolCount` physical pages:
-    // ResolveSculptPagePoolCount in production; ignored for the placeholders) and rewrites the
-    // descriptor sets. No-op when they already match. The new rings are created before the old ones
-    // are destroyed: on an allocation failure it returns false with the previous rings, and the sets
-    // that point at them, untouched. The caller guarantees no GPU work references the old rings
-    // (CBTInstance::InitializeRoots first waits for prior graphics submissions).
-    bool ProvisionSculptRings(bool spherical, uint32_t pagePoolCount);
-    bool HasSphericalSculptRings() const { return m_SculptRingsSpherical; }
-    uint32_t GetSculptPagePoolCount() const { return m_SculptPagePoolCount; }
-    // One ring slot of each, in bytes: what the graphics side offset-binds per frame slot.
-    uint64_t GetSculptPoolSlotBytes() const { return static_cast<uint64_t>(m_SculptPoolSlotWords) * sizeof(float); }
-    uint64_t GetSculptTableSlotBytes() const { return static_cast<uint64_t>(m_SculptTableSlotWords) * sizeof(uint32_t); }
-    // Both rings are bound to the GRAPHICS set 2 (by name) so the fragment can sample them for the
-    // per-pixel sphere normal. Whole-buffer handles; the fragment offset-binds one ring slot.
-    Rendering::BufferHandle GetSphereSculptBuffer() const { return m_SphereSculpt; }
-    Rendering::BufferHandle GetSphereSculptPageTableBuffer() const { return m_SphereSculptTable; }
-
     // Planet-shading surface params (plan §planet-shading) — a small host-visible ring the
-    // fragment reads (radius, relief amplitude/frequency/octaves, sculpt-enabled). Written
+    // fragment reads (radius, relief amplitude/frequency/octaves, the planet pages). Written
     // once per frame like the params UBO; offset-bound per slot on the graphics side.
     Rendering::BufferHandle GetSurfaceParamsBuffer() const { return m_SurfaceParams; }
     void UploadSurfaceParams(uint32_t frameCounter, const CBTSurfaceParams& params);
@@ -235,20 +208,6 @@ class CBTResources
     bool CreateNormalChain(uint32_t width, uint32_t height, uint32_t mips);
     void DestroyNormalChain();
     void WriteDescriptorSet();
-    // One pair of sculpt rings and its shape, built before it replaces the bound pair.
-    struct SculptRings
-    {
-        Rendering::BufferHandle Pool{};
-        Rendering::BufferHandle Table{};
-        uint32_t PagePoolCount = 0u;
-        uint32_t PoolSlotWords = 0u;
-        uint32_t TableSlotWords = 0u;
-        uint64_t Bytes = 0;
-        bool Spherical = false;
-    };
-    bool CreateSculptRings(bool spherical, uint32_t pagePoolCount, SculptRings& out);
-    void AdoptSculptRings(const SculptRings& rings);
-    void DestroySculptRings();
 
     Rendering::IDevice* m_Device = nullptr;
     // Unwraps the device's wrapped frame slot so all kCBTFrameParamsRing elements rotate
@@ -259,13 +218,6 @@ class CBTResources
     Rendering::BufferHandle m_IdentityIndexBuffer{};
     Rendering::BufferHandle m_DrawCountBuffer{};
     Rendering::BufferHandle m_FrameParams{};       // UBO ring (binding 14)
-    Rendering::BufferHandle m_SphereSculpt{};      // host-visible SSBO ring: page pool (binding 16)
-    Rendering::BufferHandle m_SphereSculptTable{}; // host-visible SSBO ring: page table (binding 20)
-    uint32_t m_SculptPagePoolCount = 0u;           // physical page count (ResolveSculptPagePoolCount); 0 on the placeholders
-    uint32_t m_SculptPoolSlotWords = 0u;           // floats per pool ring slot
-    uint32_t m_SculptTableSlotWords = 0u;          // entries per page-table ring slot
-    uint64_t m_SculptRingBytes = 0;                // both rings, all slots
-    bool m_SculptRingsSpherical = false;           // false = the placeholders
     Rendering::BufferHandle m_SurfaceParams{};     // host-visible ring, graphics set 2 (plan §planet-shading)
     Rendering::TextureHandle m_DefaultHeight{};    // 1x1 flat fallback heightmap
     std::array<Rendering::TextureHandle, kCBTTextureRingMax> m_BoundHeight{}; // per-ring-slot bound texture (binding 15)
@@ -283,8 +235,9 @@ class CBTResources
     std::array<Rendering::TextureHandle, kCBTTextureRingMax> m_BoundAtlasHeight{}; // per-ring-slot atlas texture (binding 18)
     Rendering::TextureHandle m_DefaultAtlasCoarse{}; // 1x1 flat fallback coarse field
     std::array<Rendering::TextureHandle, kCBTTextureRingMax> m_BoundAtlasCoarse{}; // per-ring-slot coarse field (binding 19)
-    Rendering::BufferHandle m_PageTable{};           // host-visible page-table ring (binding 22), wide arm only
-    uint32_t m_PageTableSlotWords = 0;               // words per ring slot of m_PageTable
+    Rendering::BufferHandle m_DefaultPageTable{};    // a zeroed table header (binding 22), wide arm only
+    Rendering::BufferHandle m_PageTable{};           // what binding 22 holds: the page ring or the default
+    uint32_t m_PageTableBaseWord = 0;                // this frame's first word in m_PageTable
     Rendering::TextureHandle m_DefaultPageCache{};   // 1x1 flat page cache (binding 23), wide arm only
     std::array<Rendering::TextureHandle, kCBTTextureRingMax> m_BoundPageCache{}; // per-ring-slot page cache (binding 23)
     uint32_t m_TextureRing = kCBTTextureRingMax; // elements the loaded kernels declare per texture
@@ -294,8 +247,7 @@ class CBTResources
     Rendering::DescriptorSetHandle m_DescriptorSet{};
     std::vector<Rendering::DescriptorSetHandle> m_KernelSets;
     std::vector<std::vector<uint32_t>> m_KernelSetBindings;
-    static size_t PageTableRingBytes(uint32_t slotWords);
-    Rendering::BufferHandle CreatePageTableRing(uint32_t slotWords);
+    Rendering::BufferHandle CreateDefaultPageTable();
     void WriteOneSet(Rendering::DescriptorSetHandle set, const std::vector<uint32_t>& only);
     // Rewrites one ring element of a terrain-source binding in every set that
     // binds it (the per-kernel sets, or the single shared set).
@@ -305,7 +257,7 @@ class CBTResources
     Rendering::SemaphoreHandle m_GraphicsCompletion{};
     uint64_t m_GraphicsCompletionValue = 0;
     bool RebindSourceRingToDefault(std::array<Rendering::TextureHandle, kCBTTextureRingMax>& ring,
-                                    Rendering::TextureHandle texture, uint32_t binding, bool& changed);
+                                   Rendering::TextureHandle texture, uint32_t binding, bool& changed);
     bool UpdateTerrainSourceBinding(uint32_t binding, Rendering::TextureHandle texture,
                                     uint32_t slot);
     Rendering::BufferHandle m_Readback{};

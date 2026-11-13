@@ -5,6 +5,51 @@
 namespace GameEngine::Rendering::RenderGraph
 {
 
+namespace
+{
+// Makes `consumer` wait for `value` on `producerQueue`, keeping one wait per foreign physical queue.
+void AddWaitValue(RGSubmission& consumer, uint32_t producerQueue, uint64_t value)
+{
+    if (value == 0 || producerQueue == consumer.PhysicalQueue)
+        return; // same physical queue: ordered by submission sequence
+    for (uint32_t i = 0; i < consumer.WaitCount; ++i)
+    {
+        RGSemaphoreWait& w = consumer.Waits[i];
+        if (w.Queue == producerQueue)
+        {
+            if (value > w.Value)
+                w.Value = value; // keep the latest value per producer queue
+            return;
+        }
+    }
+    assert(consumer.WaitCount < kQueueCount && "one deduped wait per foreign physical queue");
+    consumer.Waits[consumer.WaitCount++] = RGSemaphoreWait{producerQueue, value};
+}
+} // namespace
+
+void RGGraph::AddCrossFrameWaits(RGSubmission& consumer, RGResourceId resource, bool writes)
+{
+    uint64_t values[kQueueCount];
+    m_CrossFrameAccesses.CollectWaits({m_ResourceCrossFramePhysical[resource], m_Resources[resource].Kind},
+                                      consumer.PhysicalQueue, writes, values);
+    for (uint32_t q = 0; q < kQueueCount; ++q)
+        AddWaitValue(consumer, q, values[q]);
+}
+
+void RGGraph::RecordCrossFrameAccess(RGResourceId resource, const RGSubmission& submission, bool writes)
+{
+    m_CrossFrameAccesses.Record({m_ResourceCrossFramePhysical[resource], m_Resources[resource].Kind},
+                                submission.PhysicalQueue, writes, submission.SignalValue);
+}
+
+uint32_t RGGraph::WaitedSubmission(const RGSemaphoreWait& wait) const
+{
+    for (uint32_t i = 0; i < m_Submissions.size(); ++i)
+        if (m_Submissions[i].PhysicalQueue == wait.Queue && m_Submissions[i].SignalValue == wait.Value)
+            return i;
+    return kInvalidId;
+}
+
 void RGGraph::BuildSubmissionPlan(const uint8_t physicalQueueOfLogical[3])
 {
     m_Submissions.clear();
@@ -19,11 +64,11 @@ void RGGraph::BuildSubmissionPlan(const uint8_t physicalQueueOfLogical[3])
         return;
 
     auto physOf = [&](RGPassId p)
-    { return physicalQueueOfLogical[static_cast<uint32_t>(m_Passes[p].Desc.Queue)]; };
+    { return physicalQueueOfLogical[static_cast<uint32_t>(m_Passes[p].ExecutionQueue)]; };
 
-    // 1. Partition the scheduled order into maximal same-PHYSICAL-queue runs
-    //    (aliased logical queues — e.g. MoltenVK compute==graphics — collapse
-    //    into one submission). Timeline signal values come from PERSISTENT
+    // 1. Partition the scheduled order into same-PHYSICAL-queue runs, maximal up
+    //    to a pass that ends its submission (aliased logical queues — e.g.
+    //    MoltenVK compute==graphics — collapse into one submission). Timeline signal values come from PERSISTENT
     //    per-queue counters (m_QueueTimelineNext) — frames overlap in flight, so
     //    restarting values per frame would collide with frame N-1's still-pending
     //    signals.
@@ -37,10 +82,13 @@ void RGGraph::BuildSubmissionPlan(const uint8_t physicalQueueOfLogical[3])
         while (i < n && physOf(m_ScheduledOrder[i]) == phys)
         {
             subOfSched[i] = subIdx;
+            m_Passes[m_ScheduledOrder[i]].Submission = subIdx;
             ++i;
+            if (m_Passes[m_ScheduledOrder[i - 1]].EndsSubmission)
+                break; // PlaceQueues ends the submission here, beside a kept compute run
         }
         RGSubmission s;
-        s.Queue = m_Passes[m_ScheduledOrder[first]].Desc.Queue;
+        s.Queue = m_Passes[m_ScheduledOrder[first]].ExecutionQueue;
         s.PhysicalQueue = phys;
         s.ScheduledFirst = first;
         s.ScheduledCount = i - first;
@@ -104,22 +152,7 @@ void RGGraph::BuildSubmissionPlan(const uint8_t physicalQueueOfLogical[3])
         if (producerSub == kInvalidId || producerSub == consumerSub)
             return;
         const RGSubmission& prod = m_Submissions[producerSub];
-        RGSubmission& cons = m_Submissions[consumerSub];
-        if (prod.PhysicalQueue == cons.PhysicalQueue)
-            return; // same physical queue: ordered by submission sequence
-        const uint32_t prodQueue = prod.PhysicalQueue;
-        for (uint32_t i = 0; i < cons.WaitCount; ++i)
-        {
-            RGSemaphoreWait& w = cons.Waits[i];
-            if (w.Queue == prodQueue)
-            {
-                if (prod.SignalValue > w.Value)
-                    w.Value = prod.SignalValue; // keep the latest value per producer queue
-                return;
-            }
-        }
-        assert(cons.WaitCount < kQueueCount && "one deduped wait per foreign physical queue");
-        cons.Waits[cons.WaitCount++] = RGSemaphoreWait{prodQueue, prod.SignalValue};
+        AddWaitValue(m_Submissions[consumerSub], prod.PhysicalQueue, prod.SignalValue);
     };
 
     // Producer-tail placement for a cross-physical layout transition: the LATEST
@@ -201,6 +234,11 @@ void RGGraph::BuildSubmissionPlan(const uint8_t physicalQueueOfLogical[3])
             const RGAccessRecord& a = m_Accesses[m_PassAccIdx[k]];
             if (!IsWrite(a.Access))
             {
+                // An imported physical carries earlier frames' accesses, which still run on other
+                // queues while this frame's work starts. A read that transitions a layout writes
+                // the image.
+                if (m_ResourceCrossFramePhysical[a.Resource] != 0)
+                    AddCrossFrameWaits(m_Submissions[sub], a.Resource, readTransitionsLayout(p, a.Resource));
                 addWait(sub, lastWriterSub[a.Resource]); // RAW
                 // Wait on the most-recent read that TRANSITIONED this resource's
                 // layout: on a different physical queue that transition must
@@ -233,6 +271,8 @@ void RGGraph::BuildSubmissionPlan(const uint8_t physicalQueueOfLogical[3])
             const RGAccessRecord& a = m_Accesses[m_PassAccIdx[k]];
             if (IsWrite(a.Access))
             {
+                if (m_ResourceCrossFramePhysical[a.Resource] != 0)
+                    AddCrossFrameWaits(m_Submissions[sub], a.Resource, /*writes=*/true);
                 for (uint32_t rs : m_SubReadersSince[a.Resource])
                     addWait(sub, rs); // WAR
                 addWait(sub, lastWriterSub[a.Resource]); // WAW
@@ -325,6 +365,30 @@ void RGGraph::BuildSubmissionPlan(const uint8_t physicalQueueOfLogical[3])
             m_BarrierSub[k] = placement;
         }
     }
+
+    // 5. Record this frame's accesses to imported physicals for the next frames' plans, after
+    //    every wait above is derived so none of them reads this frame's own records. An export
+    //    transition writes its image on the submission it is placed on.
+    for (uint32_t si = 0; si < n; ++si)
+    {
+        const RGPassId p = m_ScheduledOrder[si];
+        for (uint32_t k = m_PassAccOff[p]; k < m_PassAccOff[p + 1]; ++k)
+        {
+            const RGAccessRecord& a = m_Accesses[m_PassAccIdx[k]];
+            if (m_ResourceCrossFramePhysical[a.Resource] != 0)
+                RecordCrossFrameAccess(a.Resource, m_Submissions[subOfSched[si]],
+                                       IsWrite(a.Access) || readTransitionsLayout(p, a.Resource));
+        }
+    }
+    if (exportBatch != nullptr)
+    {
+        for (uint32_t k = exportBatch->First; k < exportBatch->First + exportBatch->Count; ++k)
+        {
+            if (m_ResourceCrossFramePhysical[m_Barriers[k].Resource] != 0)
+                RecordCrossFrameAccess(m_Barriers[k].Resource, m_Submissions[m_BarrierSub[k]], /*writes=*/true);
+        }
+    }
+    m_CrossFrameAccesses.EndPlan();
 }
 
 } // namespace GameEngine::Rendering::RenderGraph

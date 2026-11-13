@@ -1,59 +1,7 @@
 #include "Assets/Parsers/AnimationAssetParser.h"
 
-#include "Animation/Compression/AnimationClipArchive.h"
-
-#include <fstream>
-#include <iterator>
-
 namespace GameEngine
 {
-
-bool AnimationAssetParser::CookForPackage(const std::filesystem::path& stagedFile, std::string& error) const
-{
-    std::error_code sizeError;
-    const auto size = std::filesystem::file_size(stagedFile, sizeError);
-    if (sizeError || size > Animation::AnimationClipArchive::MaximumEncodedBytes())
-    {
-        error = "Could not read the animation clip within the 256 MiB source limit.";
-        return false;
-    }
-    std::ifstream input(stagedFile, std::ios::binary);
-    if (!input)
-    {
-        error = "Could not read the staged animation clip.";
-        return false;
-    }
-    Vector<uint8> source((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-    if (input.bad() || source.size() != size)
-    {
-        error = "Could not read the complete staged animation clip.";
-        return false;
-    }
-    input.close();
-    AnimationClip clip(GUID::Generate(), stagedFile);
-    if (!clip.LoadFromData(source))
-    {
-        error = "The staged animation clip is invalid. Repair its source and export again.";
-        return false;
-    }
-    if (Animation::AnimationClipArchive::IsArchive(source))
-        return true;
-    Vector<uint8> encoded;
-    if (!Animation::AnimationClipArchive::Encode(source, encoded))
-    {
-        error = "The animation clip exceeds the 256 MiB source limit or could not be compressed.";
-        return false;
-    }
-    std::ofstream output(stagedFile, std::ios::binary | std::ios::trunc);
-    output.write(reinterpret_cast<const char*>(encoded.data()), static_cast<std::streamsize>(encoded.size()));
-    output.close();
-    if (!output)
-    {
-        error = "Could not write the packaged animation clip.";
-        return false;
-    }
-    return true;
-}
 
 // AnimationClip's serializer (AnimationClip::SaveToData) emits version,
 // duration, selectedAnimationIndex, source { path, animationIndex }, and

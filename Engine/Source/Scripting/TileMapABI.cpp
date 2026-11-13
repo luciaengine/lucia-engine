@@ -10,7 +10,6 @@
 #include "TileMapECS/TileMapRuntimeStore.h"
 
 #include <glm/glm.hpp>
-#include <glm/gtc/type_ptr.hpp>
 
 #include <cmath>
 
@@ -25,7 +24,7 @@ struct ResolvedLayer
     float32 ZOffset = 0.0f;
     float32 CellWidth = 1.0f;
     float32 CellHeight = 1.0f;
-    glm::mat4 LocalToWorld{1.0f};
+    Components::WorldTransform LocalToWorld;
 };
 
 /**
@@ -64,7 +63,7 @@ GE_Result ResolveLayer(GE_ECS_Entity entity, ResolvedLayer& out)
     out.CellWidth = data->CellWidth;
     out.CellHeight = data->CellHeight;
     if (const auto* wt = world->GetComponent<Components::WorldTransform>(handle))
-        out.LocalToWorld = glm::make_mat4(wt->matrix);
+        out.LocalToWorld = *wt;
     return GE_Result_Ok;
 }
 
@@ -126,13 +125,17 @@ GE_API GE_Result GE_CDECL GE_TileMapABI_CellToWorld(GE_ECS_Entity entity, int32_
         const GE_Result rc = ResolveLayer(entity, layer);
         if (rc != GE_Result_Ok)
             return rc;
-        const glm::vec4 local((static_cast<float32>(cellX) + 0.5f) * layer.CellWidth,
-                              (static_cast<float32>(cellY) + 0.5f) * layer.CellHeight,
-                              layer.ZOffset, 1.0f);
-        const glm::vec4 world = layer.LocalToWorld * local;
-        *outWorldX = world.x;
-        *outWorldY = world.y;
-        *outWorldZ = world.z;
+        Components::Transform local;
+        local.Position = Mathematics::WorldPosition{
+            (static_cast<float64>(cellX) + 0.5) * layer.CellWidth,
+            (static_cast<float64>(cellY) + 0.5) * layer.CellHeight, layer.ZOffset};
+        Components::WorldTransform world;
+        Components::ComposeWorldPose(layer.LocalToWorld, local, world);
+        // This ABI returns absolute world coordinates as floats.
+        const Mathematics::Vector3 worldMeters = world.Position - Mathematics::WorldPosition{};
+        *outWorldX = worldMeters.x;
+        *outWorldY = worldMeters.y;
+        *outWorldZ = worldMeters.z;
         return GE_Result_Ok;
     }
     catch (...)
@@ -153,8 +156,10 @@ GE_API GE_Result GE_CDECL GE_TileMapABI_WorldToCell(GE_ECS_Entity entity, float 
         const GE_Result rc = ResolveLayer(entity, layer);
         if (rc != GE_Result_Ok)
             return rc;
-        const glm::vec4 local =
-            glm::inverse(layer.LocalToWorld) * glm::vec4(worldX, worldY, worldZ, 1.0f);
+        const Mathematics::Vector3 relative =
+            Mathematics::WorldPosition{worldX, worldY, worldZ} - layer.LocalToWorld.Position;
+        const glm::vec3 local =
+            glm::inverse(layer.LocalToWorld.Basis.GetGLM()) * static_cast<glm::vec3>(relative);
         *outCellX = static_cast<int32_t>(std::floor(local.x / layer.CellWidth));
         *outCellY = static_cast<int32_t>(std::floor(local.y / layer.CellHeight));
         return GE_Result_Ok;

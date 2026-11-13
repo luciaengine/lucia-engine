@@ -13,7 +13,7 @@
 #include "Panels/TileSetEditorPanel.h"
 #include "SceneView/TileMapPaintTool.h"
 #include "SceneView/TileMapPaintToolStripEntry.h"
-#include "SceneViewController.h"
+#include "SceneView/SceneViewController.h"
 #include "TileMap/TileMapSourceImport.h"
 #include "UI/UIManager.h"
 

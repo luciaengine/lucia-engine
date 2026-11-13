@@ -1,3 +1,19 @@
+#include "Logger/Logger.h"
+#include "PhysicsECS/Components/CapsuleColliderShape.h"
+#include "Memory/AllocationCountScope.h"
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <gtest/gtest.h>
+
+#include "EngineLogCapture.h"
+#include "PagedTiledTerrain.h"
+#include "PageStreaming/GeneratedHeightPageProvider.h"
+#include "PageStreaming/Height/HeightPageLayer.h"
+#include "PageStreaming/PageStore/PageStoreFormat.h"
+#include "JobSystem/WorkStealingThreadPool.h"
+
+#include <future>
 #include <chrono>
 #include <cstdlib>
 #include <thread>
@@ -13,9 +29,9 @@
 #include "PhysicsECS/ContactSurfaceTable.h"
 #include "AssetCore/AssetEvents.h"
 
-#include "PhysicsECS/MeshColliderData.h"
+#include "PhysicsECS/ProceduralMeshColliders.h"
+#include "ProceduralMeshCollidersInternal.h"
 #include "PhysicsECS/Components/MeshColliderShape.h"
-#include <gtest/gtest.h>
 
 #include "Physics/PhysicsWorld.h"
 #include "PhysicsECS/HeightFieldDataProvider.h"
@@ -26,32 +42,37 @@
 #include "PhysicsECS/Components/HeightFieldColliderShape.h"
 #include "PhysicsECS/Components/PhysicsBody.h"
 #include "PhysicsECS/Components/PhysicsCollider.h"
+#include "PhysicsECS/Components/PhysicsColliderOwner.h"
+#include "PhysicsECS/Components/PhysicsWorldSettingsComponent.h"
+#include "PhysicsECS/Components/PlaneColliderShape.h"
 #include "PhysicsECS/Components/SphereColliderShape.h"
 #include "PhysicsECS/Systems/PhysicsInitSystem.h"
+#include "PhysicsECS/Systems/PhysicsStepSystem.h"
+#include "PhysicsECS/Systems/PhysicsWorldBootstrapSystem.h"
 #include "PhysicsECS/Systems/PhysicsWorldHooks.h"
 #include "PhysicsECS/Systems/PhysicsWritebackSystem.h"
-#include "PhysicsECS/Systems/PhysicsStepSystem.h"
 #include "PhysicsECS/Components/KinematicBody.h"
 #include "ECS/ChangeFilter.h"
 #include "PhysicsECS/Systems/RegisterPhysicsSystems.h"
 
 #include "TerrainECS/TerrainService.h"
-#include "TerrainECS/PlanetFaceCollider.h"
 #include "TerrainECS/TerrainModifierSystem.h"
 #include "TerrainECS/Systems/RegisterTerrainSystems.h"
 #include "TerrainECS/Systems/TerrainPhysicsSystem.h"
 #include "TerrainECS/Systems/TerrainWorldHooks.h"
-#include "TerrainECS/Components/TerrainTileCollider.h"
 #include "TerrainECS/Components/TerrainPageCollider.h"
-#include "PagedTiledTerrain.h"
-#include "TerrainECS/Components/TerrainPlanetFaceCollider.h"
-#include "CBTTerrain/SphereSculptPaging.h"      // SphereSculptSampler (empty view = no sculpt)
-#include "CBTTerrain/SphereAnalyticModifiers.h" // SphereAnalyticModifierSet (empty = no modifiers)
+#include "TerrainECS/Components/TerrainPlanetPageCollider.h"
+#include "TerrainECS/Planet/PlanetChart.h"
+#include "TerrainECS/Planet/PlanetPageRequester.h"
+#include "TerrainECS/TerrainHeightFunction/ITerrainHeightFunction.h"
+#include "TerrainECS/TerrainHeightPageDriver.h"
+#include "TerrainECS/TerrainPages.h"
+#include "Rendering/Core/Device.h"
 #include "Components/Terrain/Terrain.h"
-#include "Components/Terrain/TerrainPlanetRelief.h"
 #include "Components/RuntimeOnlyEntity.h"
 
 #include "Components/Transform.h"
+#include "Core/CpuProfiler.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/SystemScheduling.h"
 #include "ECS/Systems.h"
@@ -172,7 +193,7 @@ TEST(Physics, FallingSphereHitsPlane)
     ball.motionType = MotionType::Dynamic;
     ball.layer = Layers::Dynamic;
     ball.mass = 1.0f;
-    ball.position = Vector3(0.0f, 5.0f, 0.0f);
+    ball.position = WorldPosition{0.0, 5.0, 0.0};
     ball.startAwake = true;
     ball.userData = 222;
     const BodyHandle ballBody = world.CreateBody(ball);
@@ -188,9 +209,81 @@ TEST(Physics, FallingSphereHitsPlane)
     EXPECT_GT(contactBeginCount, 0);
 
     const Transform t = world.GetBodyTransform(ballBody);
-    EXPECT_LT(t.position.y, 5.0f);
+    EXPECT_LT(t.position.Y, 5.0f);
     // Should not tunnel through the plane.
-    EXPECT_GT(t.position.y, radius * 0.5f);
+    EXPECT_GT(t.position.Y, radius * 0.5f);
+}
+
+// 300 km from the origin a float holds a position to 31 mm. An impulse 10 mm off the center
+// of a body there spins it: the point is exact.
+TEST(Physics, ImpulseAtAPointFarFromTheOriginSpinsTheBody)
+{
+    using namespace GameEngine::Physics;
+
+    PhysicsWorld world(SmallDeterministicSettings());
+    SphereShapeDef sphere{};
+    sphere.radius = 0.5f;
+    BodySettings ball{};
+    ball.shape = world.CreateShape(sphere);
+    ball.motionType = MotionType::Dynamic;
+    ball.layer = Layers::Dynamic;
+    ball.mass = 1.0f;
+    ball.position = WorldPosition{300000.0, 0.0, 0.0};
+    ball.startAwake = true;
+    const BodyHandle body = world.CreateBody(ball);
+    ASSERT_TRUE(body.IsValid());
+
+    // A unit impulse along +Y at 10 mm along +X: the angular impulse is 0.01 about +Z, and a
+    // solid sphere of 1 kg and radius 0.5 m has an inertia of 0.1.
+    world.AddImpulseAtPosition(body, Vector3(0.0f, 1.0f, 0.0f), WorldPosition{300000.01, 0.0, 0.0});
+    EXPECT_NEAR(world.GetAngularVelocity(body).z, 0.1f, 1e-3f);
+    EXPECT_NEAR(world.GetLinearVelocity(body).y, 1.0f, 1e-4f);
+}
+
+// A ball that lands on a box 300 km from the origin reports the contact point under its center,
+// to the millimeter: a float would put it on the 31 mm grid.
+TEST(Physics, ContactPointFarFromTheOriginIsExact)
+{
+    using namespace GameEngine::Physics;
+
+    PhysicsWorld world(SmallDeterministicSettings());
+    WorldPosition contact{};
+    bool touched = false;
+    world.SetContactCallback([&](const ContactEvent& e)
+                             {
+                                 if (e.state != ContactState::Begin || touched)
+                                     return;
+                                 touched = true;
+                                 contact = e.point;
+                             });
+
+    constexpr double kFar = 300000.0;
+    BoxShapeDef box{};
+    box.halfExtents = Vector3(5.0f, 0.5f, 5.0f);
+    BodySettings ground{};
+    ground.shape = world.CreateShape(box);
+    ground.motionType = MotionType::Static;
+    ground.layer = Layers::Static;
+    ground.position = WorldPosition{kFar, 0.0, 0.0};
+    ASSERT_TRUE(world.CreateBody(ground).IsValid());
+
+    SphereShapeDef sphere{};
+    sphere.radius = 0.5f;
+    BodySettings ball{};
+    ball.shape = world.CreateShape(sphere);
+    ball.motionType = MotionType::Dynamic;
+    ball.layer = Layers::Dynamic;
+    ball.mass = 1.0f;
+    ball.position = WorldPosition{kFar + 0.012, 1.1, 0.0};
+    ball.startAwake = true;
+    ASSERT_TRUE(world.CreateBody(ball).IsValid());
+
+    for (int i = 0; i < 60 && !touched; ++i)
+        world.Step(1.0f / 60.0f, 1);
+
+    ASSERT_TRUE(touched);
+    EXPECT_NEAR(contact.X, kFar + 0.012, 1e-3);
+    EXPECT_NEAR(contact.Z, 0.0, 1e-3);
 }
 
 TEST(Physics, EntityCallbacks_ContactBeginEnd)
@@ -254,7 +347,7 @@ TEST(Physics, EntityCallbacks_ContactBeginEnd)
     ball.motionType = MotionType::Dynamic;
     ball.layer = Layers::Dynamic;
     ball.mass = 1.0f;
-    ball.position = Vector3(0.0f, 5.0f, 0.0f);
+    ball.position = WorldPosition{0.0, 5.0, 0.0};
     ball.startAwake = true;
     ball.restitution = 0.9f;
     ball.userData = ballEid; // PhysicsECS convention: ECS entity id
@@ -332,7 +425,7 @@ TEST(Physics, EntityCallbacks_TriggerEnterExit)
     sensor.motionType = MotionType::Static;
     sensor.layer = Layers::Static;
     sensor.isSensor = true;
-    sensor.position = Vector3(0.0f, -0.5f, 0.0f);
+    sensor.position = WorldPosition{0.0, -0.5, 0.0};
     sensor.userData = triggerEid;
     const BodyHandle sensorBody = world.CreateBody(sensor);
     ASSERT_TRUE(sensorBody.IsValid());
@@ -348,7 +441,7 @@ TEST(Physics, EntityCallbacks_TriggerEnterExit)
     ball.motionType = MotionType::Dynamic;
     ball.layer = Layers::Dynamic;
     ball.mass = 1.0f;
-    ball.position = Vector3(0.0f, 5.0f, 0.0f);
+    ball.position = WorldPosition{0.0, 5.0, 0.0};
     ball.startAwake = true;
     ball.userData = ballEid;
     const BodyHandle ballBody = world.CreateBody(ball);
@@ -413,7 +506,7 @@ TEST(Physics, EntityCallbacks_UnsubscribeStopsCallbacks)
     ball.motionType = MotionType::Dynamic;
     ball.layer = Layers::Dynamic;
     ball.mass = 1.0f;
-    ball.position = Vector3(0.0f, 5.0f, 0.0f);
+    ball.position = WorldPosition{0.0, 5.0, 0.0};
     ball.startAwake = true;
     ball.userData = ballEid;
     const BodyHandle ballBody = world.CreateBody(ball);
@@ -424,6 +517,235 @@ TEST(Physics, EntityCallbacks_UnsubscribeStopsCallbacks)
         world.Step(dt, 1);
 
     EXPECT_EQ(beginCount, 0);
+}
+
+namespace
+{
+// A static plane at y=0 and a bouncing sphere dropped from y=5, with the ECS entity ids as user data.
+void DropBallOnPlane(GameEngine::Physics::PhysicsWorld& world, GameEngine::uint64 groundEid, GameEngine::uint64 ballEid)
+{
+    using namespace GameEngine::Physics;
+    PlaneShapeDef plane{};
+    plane.normal = Vector3(0.0f, 1.0f, 0.0f);
+    plane.halfExtent = 2000.0f;
+    BodySettings ground{};
+    ground.shape = world.CreateShape(plane);
+    ground.motionType = MotionType::Static;
+    ground.layer = Layers::Static;
+    ground.restitution = 0.9f;
+    ground.userData = groundEid;
+    ASSERT_TRUE(world.CreateBody(ground).IsValid());
+
+    SphereShapeDef sphere{};
+    sphere.radius = 0.5f;
+    BodySettings ball{};
+    ball.shape = world.CreateShape(sphere);
+    ball.motionType = MotionType::Dynamic;
+    ball.layer = Layers::Dynamic;
+    ball.position = WorldPosition{0.0, 5.0, 0.0};
+    ball.restitution = 0.9f;
+    ball.userData = ballEid;
+    ASSERT_TRUE(world.CreateBody(ball).IsValid());
+}
+} // namespace
+
+TEST(Physics, EntityCallbacks_HandlerThatUnsubscribesItselfLeavesTheOthersCalled)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::PhysicsECS;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    constexpr uint64 groundEid = 3101;
+    constexpr uint64 ballEid = 3102;
+    const ECS::EntityHandle ballEntity(static_cast<uint32>(ballEid));
+
+    // The first contact reaches both handlers; the first one ends its own subscription while the
+    // delivery runs, and the second must still be called for that contact.
+    int step = 0;
+    int onceCount = 0;
+    int onceStep = -1;
+    bool otherCalledWithOnce = false;
+    PhysicsEntityEventCallbacks::SubscriptionId onceId = 0;
+    onceId = PhysicsEntityEventCallbacks::SubscribeContactBegin(ballEntity, [&](const EntityContactEvent&)
+                                                                {
+                                                                    ++onceCount;
+                                                                    onceStep = step;
+                                                                    PhysicsEntityEventCallbacks::Unsubscribe(onceId);
+                                                                });
+    PhysicsEntityEventCallbacks::SubscribeContactBegin(ballEntity, [&](const EntityContactEvent&)
+                                                       { otherCalledWithOnce = otherCalledWithOnce || step == onceStep; });
+
+    DropBallOnPlane(PhysicsWorldService::Get(), groundEid, ballEid);
+    for (step = 0; step < 600; ++step)
+        PhysicsWorldService::Get().Step(1.0f / 60.0f, 1);
+
+    EXPECT_EQ(onceCount, 1);
+    EXPECT_TRUE(otherCalledWithOnce);
+}
+
+TEST(Physics, EntityCallbacks_EndedRunsOnceWhenTheSubscriptionEnds)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::PhysicsECS;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    const ECS::EntityHandle entity(static_cast<uint32>(3201));
+    int unsubscribedEnded = 0;
+    int clearedEnded = 0;
+    const auto unsubscribed = PhysicsEntityEventCallbacks::SubscribeContactBegin(
+        entity, [](const EntityContactEvent&) {}, [&] { ++unsubscribedEnded; });
+    PhysicsEntityEventCallbacks::SubscribeTriggerEnter(entity, [](const EntityTriggerEvent&) {}, [&] { ++clearedEnded; });
+
+    PhysicsEntityEventCallbacks::Unsubscribe(unsubscribed);
+    PhysicsEntityEventCallbacks::Unsubscribe(unsubscribed);
+    EXPECT_EQ(unsubscribedEnded, 1);
+    EXPECT_EQ(clearedEnded, 0);
+
+    PhysicsEntityEventCallbacks::ClearAll();
+    EXPECT_EQ(unsubscribedEnded, 1);
+    EXPECT_EQ(clearedEnded, 1);
+}
+
+TEST(Physics, EntityCallbacks_WorldShutdownEndsEverySubscription)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::PhysicsECS;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    int ended = 0;
+    PhysicsEntityEventCallbacks::SubscribeContactBegin(ECS::EntityHandle(static_cast<uint32>(3301)),
+                                                       [](const EntityContactEvent&) {}, [&] { ++ended; });
+
+    PhysicsWorldService::Shutdown();
+
+    EXPECT_EQ(ended, 1);
+}
+
+// The last subscription ends inside its own handler while another world contact listener exists:
+// the router's world listeners stay in place for the rest of that delivery, so the other listener
+// still sees the contact.
+TEST(Physics, EntityCallbacks_LastSubscriptionEndingInItsHandlerKeepsLaterWorldListeners)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::PhysicsECS;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    constexpr uint64 groundEid = 3401;
+    constexpr uint64 ballEid = 3402;
+    int step = 0;
+    int oursStep = -1;
+    int ours = 0;
+    bool laterSawIt = false;
+    PhysicsEntityEventCallbacks::SubscriptionId id = 0;
+    id = PhysicsEntityEventCallbacks::SubscribeContactBegin(ECS::EntityHandle(static_cast<uint32>(ballEid)),
+                                                            [&](const EntityContactEvent&)
+                                                            {
+                                                                ++ours;
+                                                                oursStep = step;
+                                                                PhysicsEntityEventCallbacks::Unsubscribe(id);
+                                                            });
+    const auto later = PhysicsWorldService::Get().AddContactListener(
+        [&](const Physics::ContactEvent& e)
+        {
+            if (e.state == Physics::ContactState::Begin && step == oursStep)
+                laterSawIt = true;
+        });
+    DropBallOnPlane(PhysicsWorldService::Get(), groundEid, ballEid);
+    for (step = 0; step < 600; ++step)
+        PhysicsWorldService::Get().Step(1.0f / 60.0f, 1);
+    PhysicsWorldService::Get().RemoveContactListener(later);
+
+    EXPECT_EQ(ours, 1);
+    EXPECT_TRUE(laterSawIt);
+}
+
+namespace
+{
+// A Simulation system with no access that shares the physics step's wave.
+class StepWavePeerSystem : public GameEngine::ECS::ISystem
+{
+  public:
+    static constexpr GameEngine::ECS::SystemCadence Cadence = GameEngine::ECS::SystemCadence::Simulation;
+    const char* GetName() const override { return "StepWavePeer"; }
+    void Update(GameEngine::ECS::World&, GameEngine::float32) override {}
+};
+} // namespace
+
+// Event handlers run inside the physics step and call the script API, whose functions are for the
+// main thread outside a job. Scheduled in one wave with other systems, the step still runs on the
+// thread that updates the systems, outside any job, so a handler that sets a velocity and ends its
+// own subscription runs where those calls are allowed.
+TEST(Physics, PhysicsStepRunsOnTheCallerOutsideAJobInASharedWave)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::PhysicsECS;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    JobSystem::WorkStealingThreadPool pool(2);
+    ECS::SystemManager manager(&pool);
+    ECS::World world;
+    manager.AddSystem<StepWavePeerSystem>();
+    manager.AddSystem<PhysicsStepSystem>();
+    manager.AddSystem<StepWavePeerSystem>();
+    ECS::SystemExecutionPlan plan;
+    plan.Waves.push_back({{0, 1, 2}, ECS::SystemCadence::Simulation});
+    manager.SetExecutionPlan(std::move(plan));
+
+    constexpr uint64 groundEid = 3701;
+    constexpr uint64 ballEid = 3702;
+    const std::thread::id caller = std::this_thread::get_id();
+    int calls = 0;
+    bool onCaller = false;
+    bool inJob = true;
+    PhysicsEntityEventCallbacks::SubscriptionId id = 0;
+    id = PhysicsEntityEventCallbacks::SubscribeContactBegin(
+        ECS::EntityHandle(static_cast<uint32>(ballEid)),
+        [&](const EntityContactEvent&)
+        {
+            ++calls;
+            onCaller = std::this_thread::get_id() == caller;
+            inJob = JobSystem::WorkStealingThreadPool::IsExecutingJob();
+            PhysicsEntityEventCallbacks::Unsubscribe(id);
+        });
+    DropBallOnPlane(PhysicsWorldService::Get(), groundEid, ballEid);
+    const float32 fixed = static_cast<float32>(world.GetSimulationClock().GetFixedDeltaSeconds());
+    for (int frame = 0; frame < 600 && calls == 0; ++frame)
+        manager.Update(world, fixed);
+
+    ASSERT_EQ(calls, 1);
+    EXPECT_TRUE(onCaller);
+    EXPECT_FALSE(inJob);
+}
+
+// The contact normal points from other into self, for each of the two entities.
+TEST(Physics, EntityCallbacks_ContactNormalPointsFromOtherIntoSelf)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::PhysicsECS;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    constexpr uint64 groundEid = 3501;
+    constexpr uint64 ballEid = 3502;
+    float ballNormalY = 0.0f;
+    float groundNormalY = 0.0f;
+    PhysicsEntityEventCallbacks::SubscribeContactBegin(ECS::EntityHandle(static_cast<uint32>(ballEid)),
+                                                       [&](const EntityContactEvent& e)
+                                                       {
+                                                           if (ballNormalY == 0.0f)
+                                                               ballNormalY = e.normal.y;
+                                                       });
+    PhysicsEntityEventCallbacks::SubscribeContactBegin(ECS::EntityHandle(static_cast<uint32>(groundEid)),
+                                                       [&](const EntityContactEvent& e)
+                                                       {
+                                                           if (groundNormalY == 0.0f)
+                                                               groundNormalY = e.normal.y;
+                                                       });
+    DropBallOnPlane(PhysicsWorldService::Get(), groundEid, ballEid);
+    for (int i = 0; i < 600; ++i)
+        PhysicsWorldService::Get().Step(1.0f / 60.0f, 1);
+
+    EXPECT_GT(ballNormalY, 0.5f) << "self is the ball: from the ground up into the ball";
+    EXPECT_LT(groundNormalY, -0.5f) << "self is the ground: from the ball down into the ground";
 }
 
 TEST(Physics, TriggerDoesNotBlockFallingSphere)
@@ -454,7 +776,7 @@ TEST(Physics, TriggerDoesNotBlockFallingSphere)
     sensor.motionType = MotionType::Static;
     sensor.layer = Layers::Static;
     sensor.isSensor = true;
-    sensor.position = Vector3(0.0f, -0.5f, 0.0f);
+    sensor.position = WorldPosition{0.0, -0.5, 0.0};
     sensor.userData = 333;
     const BodyHandle sensorBody = world.CreateBody(sensor);
     ASSERT_TRUE(sensorBody.IsValid());
@@ -470,7 +792,7 @@ TEST(Physics, TriggerDoesNotBlockFallingSphere)
     ball.motionType = MotionType::Dynamic;
     ball.layer = Layers::Dynamic;
     ball.mass = 1.0f;
-    ball.position = Vector3(0.0f, 5.0f, 0.0f);
+    ball.position = WorldPosition{0.0, 5.0, 0.0};
     ball.startAwake = true;
     ball.userData = 444;
     const BodyHandle ballBody = world.CreateBody(ball);
@@ -485,7 +807,7 @@ TEST(Physics, TriggerDoesNotBlockFallingSphere)
 
     const Transform t = world.GetBodyTransform(ballBody);
     // Should have fallen through the sensor box (below y = -0.5).
-    EXPECT_LT(t.position.y, -1.0f);
+    EXPECT_LT(t.position.Y, -1.0f);
 }
 
 TEST(Physics, LayerMatrixCanDisableDynamicVsStatic)
@@ -520,7 +842,7 @@ TEST(Physics, LayerMatrixCanDisableDynamicVsStatic)
     ball.motionType = MotionType::Dynamic;
     ball.layer = Layers::Dynamic;
     ball.mass = 1.0f;
-    ball.position = Vector3(0.0f, 5.0f, 0.0f);
+    ball.position = WorldPosition{0.0, 5.0, 0.0};
     ball.startAwake = true;
     const BodyHandle ballBody = world.CreateBody(ball);
     ASSERT_TRUE(ballBody.IsValid());
@@ -531,7 +853,7 @@ TEST(Physics, LayerMatrixCanDisableDynamicVsStatic)
 
     const Transform t = world.GetBodyTransform(ballBody);
     // With filtering disabled, it should fall through y=0 plane.
-    EXPECT_LT(t.position.y, -1.0f);
+    EXPECT_LT(t.position.Y, -1.0f);
 }
 TEST(Physics, HeightFieldShapeBlocksSphere)
 {
@@ -557,7 +879,7 @@ TEST(Physics, HeightFieldShapeBlocksSphere)
     ground.shape = hfShape;
     ground.motionType = MotionType::Static;
     ground.layer = Layers::Static;
-    ground.position = Vector3(0, 0, 0);
+    ground.position = WorldPosition{};
     const BodyHandle groundBody = world.CreateBody(ground);
     ASSERT_TRUE(groundBody.IsValid());
 
@@ -574,14 +896,15 @@ TEST(Physics, HeightFieldShapeBlocksSphere)
     ball.motionType = MotionType::Dynamic;
     ball.layer = Layers::Dynamic;
     ball.mass = 1.0f;
-    ball.position = Vector3(0.0f, 20.0f, 0.0f); // above surface at Y=10
+    ball.position = WorldPosition{0.0, 20.0, 0.0}; // above surface at Y=10
     ball.startAwake = true;
     const BodyHandle ballBody = world.CreateBody(ball);
     ASSERT_TRUE(ballBody.IsValid());
 
     // Raycast to verify surface position
     RayCastQuery q{};
-    q.ray = Ray3D(Vector3(0, 100, 0), Vector3(0, -1, 0));
+    q.origin = {0, 100, 0};
+    q.direction = Vector3(0, -1, 0);
     q.maxDistance = 200.0f;
     RayCastResult hit{};
     (void)world.RayCast(q, hit);
@@ -594,8 +917,8 @@ TEST(Physics, HeightFieldShapeBlocksSphere)
     const Transform t = world.GetBodyTransform(ballBody);
 
     // The sphere should have landed on the heightfield, NOT fallen through
-    EXPECT_GT(t.position.y, 5.0f)
-        << "Sphere at Y=" << t.position.y << " fell through heightfield (expected Y~10.5)";
+    EXPECT_GT(t.position.Y, 5.0f)
+        << "Sphere at Y=" << t.position.Y << " fell through heightfield (expected Y~10.5)";
 }
 
 TEST(Physics, HeightFieldVaryingHeightsRaycast)
@@ -635,7 +958,7 @@ TEST(Physics, HeightFieldVaryingHeightsRaycast)
     ground.shape = hfShape;
     ground.motionType = MotionType::Static;
     ground.layer = Layers::Static;
-    ground.position = Vector3(0, 0, 0);
+    ground.position = WorldPosition{};
     const BodyHandle groundBody = world.CreateBody(ground);
     ASSERT_TRUE(groundBody.IsValid());
 
@@ -643,17 +966,18 @@ TEST(Physics, HeightFieldVaryingHeightsRaycast)
 
     // Raycast down from well above the terrain
     RayCastQuery q{};
-    q.ray = Ray3D(Vector3(50, 200, 50), Vector3(0, -1, 0));
+    q.origin = {50, 200, 50};
+    q.direction = Vector3(0, -1, 0);
     q.maxDistance = 500.0f;
     RayCastResult hit{};
     bool didHit = world.RayCast(q, hit);
 
     ASSERT_TRUE(didHit) << "Raycast should hit the heightfield";
     // The surface at (50, ?, 50) should be between 9 and 53
-    EXPECT_GT(hit.hitPoint.y, 5.0f)
-        << "Surface hit Y=" << hit.hitPoint.y << " is too low (expected 9-53 range)";
-    EXPECT_LT(hit.hitPoint.y, 60.0f)
-        << "Surface hit Y=" << hit.hitPoint.y << " is too high (expected 9-53 range)";
+    EXPECT_GT(hit.hitPoint.Y, 5.0f)
+        << "Surface hit Y=" << hit.hitPoint.Y << " is too low (expected 9-53 range)";
+    EXPECT_LT(hit.hitPoint.Y, 60.0f)
+        << "Surface hit Y=" << hit.hitPoint.Y << " is too high (expected 9-53 range)";
 
     // Also test sphere collision
     SphereShapeDef sphere{};
@@ -666,7 +990,7 @@ TEST(Physics, HeightFieldVaryingHeightsRaycast)
     ball.motionType = MotionType::Dynamic;
     ball.layer = Layers::Dynamic;
     ball.mass = 1.0f;
-    ball.position = Vector3(0.0f, 80.0f, 0.0f);
+    ball.position = WorldPosition{0.0, 80.0, 0.0};
     ball.startAwake = true;
     const BodyHandle ballBody = world.CreateBody(ball);
     ASSERT_TRUE(ballBody.IsValid());
@@ -676,12 +1000,11 @@ TEST(Physics, HeightFieldVaryingHeightsRaycast)
         world.Step(dt, 1);
 
     const Transform t = world.GetBodyTransform(ballBody);
-    EXPECT_GT(t.position.y, 5.0f)
-        << "Sphere at Y=" << t.position.y << " fell through heightfield";
+    EXPECT_GT(t.position.Y, 5.0f)
+        << "Sphere at Y=" << t.position.Y << " fell through heightfield";
 }
 
 } // namespace
-
 
 
 // ---- M8: PhysicsWriteback memcmp gate (change-signaling §5 P2) -----------
@@ -711,7 +1034,7 @@ TEST(Physics, WritebackMemcmpGateSkipsUnchangedPose)
     bs.motionType = MotionType::Dynamic;
     bs.layer      = Layers::Dynamic;
     bs.mass       = 1.0f;
-    bs.position   = Vector3(0.0f, 5.0f, 0.0f);
+    bs.position   = WorldPosition{0.0, 5.0, 0.0};
     bs.startAwake = true;
     const BodyHandle body = pw.CreateBody(bs);
     ASSERT_TRUE(body.IsValid());
@@ -814,7 +1137,7 @@ TEST(Physics, WritebackLeavesARestingScaledRotatedBodyUnwritten)
         bs.motionType = MotionType::Dynamic;
         bs.layer = Layers::Dynamic;
         bs.mass = 1.0f;
-        bs.position = Vector3(0.0f, 5.0f, 0.0f);
+        bs.position = WorldPosition{0.0, 5.0, 0.0};
         bs.rotation = pose.rotation;
         PhysicsBody pb{};
         pb.body = pw.CreateBody(bs);
@@ -832,13 +1155,11 @@ TEST(Physics, WritebackLeavesARestingScaledRotatedBodyUnwritten)
     GameEngine::PhysicsECS::PhysicsWritebackSystem writeback;
     writeback.Update(world, 1.0f / 60.0f);
 
-    std::vector<std::array<GameEngine::float32, 16>> matrices;
+    std::vector<Transform> matrices;
     std::vector<GameEngine::uint32> versions;
     for (auto e : entities)
     {
-        std::array<GameEngine::float32, 16> m{};
-        std::memcpy(m.data(), world.GetComponent<Transform>(e)->matrix, sizeof(Transform::matrix));
-        matrices.push_back(m);
+        matrices.push_back(*world.GetComponent<Transform>(e));
         versions.push_back(world.GetComponent<WorldTransform>(e)->Version);
     }
 
@@ -849,8 +1170,8 @@ TEST(Physics, WritebackLeavesARestingScaledRotatedBodyUnwritten)
 
     for (size_t i = 0; i < entities.size(); ++i)
     {
-        EXPECT_EQ(std::memcmp(matrices[i].data(), world.GetComponent<Transform>(entities[i])->matrix,
-                              sizeof(Transform::matrix)),
+        EXPECT_EQ(std::memcmp(&matrices[i], world.GetComponent<Transform>(entities[i]),
+                              GameEngine::Components::kTransformPoseBytes),
                   0)
             << "pose " << i << ": the stored Transform was re-written";
         EXPECT_EQ(world.GetComponent<WorldTransform>(entities[i])->Version, versions[i])
@@ -859,9 +1180,12 @@ TEST(Physics, WritebackLeavesARestingScaledRotatedBodyUnwritten)
 }
 
 // A body the writeback tests hold still: no physics step runs, so its backend pose changes only when a
-// test moves it. Kinematic, so nothing else would move it. Scaled and yawed so the Transform is not a
-// plain translation. The caller checks the body handle.
-static GameEngine::ECS::EntityHandle AddStillBody(GameEngine::ECS::World& world, GameEngine::Physics::PhysicsWorld& pw)
+// test moves it. Dynamic by default, because ordinary kinematic bodies keep transform ownership.
+// Scaled and yawed so the Transform is not a plain translation. The caller checks the body handle.
+static GameEngine::ECS::EntityHandle AddStillBody(GameEngine::ECS::World& world,
+                                                  GameEngine::Physics::PhysicsWorld& pw,
+                                                  GameEngine::Physics::MotionType motionType =
+                                                      GameEngine::Physics::MotionType::Dynamic)
 {
     using namespace GameEngine::Physics;
     using GameEngine::Components::PhysicsBody;
@@ -872,11 +1196,13 @@ static GameEngine::ECS::EntityHandle AddStillBody(GameEngine::ECS::World& world,
     sphereDef.radius = 0.5f;
     BodySettings bs{};
     bs.shape = pw.CreateShape(sphereDef);
-    bs.motionType = MotionType::Kinematic;
-    bs.layer = Layers::Kinematic;
-    bs.position = Vector3(1.0f, 5.0f, -2.0f);
+    bs.motionType = motionType;
+    bs.layer = motionType == MotionType::Kinematic ? Layers::Kinematic : Layers::Dynamic;
+    bs.mass = 1.0f;
+    bs.position = WorldPosition{1.0, 5.0, -2.0};
     bs.rotation = Quaternion(0.687741101f, 0.0f, 0.725956082f, 0.0f);
     PhysicsBody pb{};
+    pb.motionType = motionType;
     pb.body = pw.CreateBody(bs);
     pb.initialized = true;
 
@@ -885,6 +1211,8 @@ static GameEngine::ECS::EntityHandle AddStillBody(GameEngine::ECS::World& world,
         e, Transform::FromTRS(bs.position, bs.rotation, GameEngine::Mathematics::Vector3(1.5f, 2.5f, 0.75f)));
     world.AddComponentImmediate<WorldTransform>(e, WorldTransform{});
     world.AddComponentImmediate<PhysicsBody>(e, pb);
+    if (motionType == MotionType::Kinematic)
+        world.AddComponentImmediate(e, GameEngine::Components::KinematicBody{});
     return e;
 }
 
@@ -914,7 +1242,7 @@ TEST(Physics, WritebackDoesNotRecomposeARestingBody)
     }
 
     GameEngine::Physics::Transform moved = pw.GetBodyTransform(body);
-    moved.position.y += 1.0f;
+    moved.position.Y += 1.0;
     pw.SetBodyTransform(body, moved);
     writeback.Update(world, 1.0f / 60.0f);
     EXPECT_EQ(PhysicsWorldService::GetLastBodiesComposed(), 1u) << "the moved body was skipped";
@@ -943,15 +1271,15 @@ TEST(Physics, WritebackSnapsAnEditedTransformBackToTheBody)
     GameEngine::PhysicsECS::PhysicsWritebackSystem writeback;
     writeback.Update(world, 1.0f / 60.0f);
 
-    world.GetComponentForWrite<Transform>(e)->matrix[12] += 3.0f;
+    world.GetComponentForWrite<Transform>(e)->Position.X += 3.0;
     writeback.Update(world, 1.0f / 60.0f);
     EXPECT_EQ(PhysicsWorldService::GetLastBodiesComposed(), 1u);
-    EXPECT_EQ(world.GetComponent<Transform>(e)->matrix[12], pose.position.x) << "the edited Transform kept its edit";
+    EXPECT_EQ(world.GetComponent<Transform>(e)->Position.X, pose.position.X) << "the edited Transform kept its edit";
 
-    world.GetComponentForWrite<WorldTransform>(e)->matrix[13] += 3.0f;
+    world.GetComponentForWrite<WorldTransform>(e)->Position.Y += 3.0;
     writeback.Update(world, 1.0f / 60.0f);
     EXPECT_EQ(PhysicsWorldService::GetLastBodiesComposed(), 1u);
-    EXPECT_EQ(world.GetComponent<WorldTransform>(e)->matrix[13], pose.position.y)
+    EXPECT_EQ(world.GetComponent<WorldTransform>(e)->Position.Y, pose.position.Y)
         << "the edited WorldTransform kept its edit";
 
     writeback.Update(world, 1.0f / 60.0f);
@@ -982,11 +1310,13 @@ TEST(Physics, InterpolatedWritebackSkipsOnlyWhenBothPosesEqualTheLastApplied)
     GameEngine::ECS::World world;
     const auto e = AddStillBody(world, pw);
     ASSERT_TRUE(pw.IsBodyValid(world.GetComponent<PhysicsBody>(e)->body));
-    PhysicsWorldService::SetRenderInterpolationAlpha(0.5f);
+    auto& clock = world.GetSimulationClock();
+    clock.Advance(clock.GetFixedDeltaSeconds() * 0.5);
+    ASSERT_FLOAT_EQ(clock.GetAlpha(), 0.5f);
 
     const GameEngine::Physics::Transform rest = pw.GetBodyTransform(world.GetComponent<PhysicsBody>(e)->body);
     GameEngine::Physics::Transform away = rest;
-    away.position.x += 2.0f;
+    away.position.X += 2.0;
 
     GameEngine::PhysicsECS::PhysicsWritebackSystem writeback;
     SetPreviousPhysicsPose(world, e, rest);
@@ -1000,15 +1330,578 @@ TEST(Physics, InterpolatedWritebackSkipsOnlyWhenBothPosesEqualTheLastApplied)
     writeback.Update(world, 1.0f / 60.0f);
     EXPECT_EQ(PhysicsWorldService::GetLastBodiesComposed(), 1u)
         << "the previous pose moved; the current pose alone is not the key";
-    EXPECT_FLOAT_EQ(world.GetComponent<Transform>(e)->GetPosition().x, rest.position.x + 1.0f);
+    EXPECT_DOUBLE_EQ(world.GetComponent<Transform>(e)->GetPosition().X, rest.position.X + 1.0);
 
     SetPreviousPhysicsPose(world, e, rest);
     writeback.Update(world, 1.0f / 60.0f);
     EXPECT_EQ(PhysicsWorldService::GetLastBodiesComposed(), 1u)
         << "the last write was a blend; it must not count as settled";
-    EXPECT_EQ(world.GetComponent<Transform>(e)->GetPosition().x, rest.position.x);
+    EXPECT_EQ(world.GetComponent<Transform>(e)->GetPosition().X, rest.position.X);
     writeback.Update(world, 1.0f / 60.0f);
     EXPECT_EQ(PhysicsWorldService::GetLastBodiesComposed(), 0u);
+}
+
+// A kinematic body follows its entity: the step moves the body to the WorldTransform and the writeback
+// leaves the Transform where the game put it. A dynamic body keeps the body's pose.
+TEST(Physics, KinematicBodyFollowsItsTransformAndADynamicBodyKeepsTheBodyPose)
+{
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Components::Transform;
+    using GameEngine::Components::WorldTransform;
+    using GameEngine::Physics::MotionType;
+    using GameEngine::PhysicsECS::PhysicsWorldService;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    auto& pw = PhysicsWorldService::Get();
+    GameEngine::ECS::World world;
+    const auto kinematic = AddStillBody(world, pw, MotionType::Kinematic);
+    const auto dynamic = AddStillBody(world, pw, MotionType::Dynamic);
+    ASSERT_TRUE(pw.IsBodyValid(world.GetComponent<PhysicsBody>(kinematic)->body));
+    ASSERT_TRUE(pw.IsBodyValid(world.GetComponent<PhysicsBody>(dynamic)->body));
+    // The kinematic body moves through the start pose they share, so the dynamic body starts away from it.
+    GameEngine::Physics::Transform dynamicStart = pw.GetBodyTransform(world.GetComponent<PhysicsBody>(dynamic)->body);
+    dynamicStart.position.X -= 10.0;
+    pw.SetBodyTransform(world.GetComponent<PhysicsBody>(dynamic)->body, dynamicStart);
+
+    const GameEngine::Mathematics::Vector3 moved{4.0f, 2.0f, 7.0f};
+    for (const auto e : {kinematic, dynamic})
+    {
+        auto* transform = world.GetComponentForWrite<Transform>(e);
+        transform->Position = GameEngine::Mathematics::WorldPosition::FromVector3(moved);
+        std::memcpy(world.GetComponentForWrite<WorldTransform>(e), transform,
+                    GameEngine::Components::kTransformPoseBytes);
+    }
+
+    GameEngine::PhysicsECS::PhysicsStepSystem step;
+    GameEngine::PhysicsECS::PhysicsWritebackSystem writeback;
+    for (int frame = 0; frame < 3; ++frame)
+    {
+        step.Update(world, 1.0f / 60.0f);
+        writeback.Update(world, 1.0f / 60.0f);
+    }
+
+    const GameEngine::Physics::Transform kinematicPose =
+        pw.GetBodyTransform(world.GetComponent<PhysicsBody>(kinematic)->body);
+    const GameEngine::Mathematics::Vector3 kinematicAt = kinematicPose.position - GameEngine::Mathematics::WorldPosition{};
+    EXPECT_FLOAT_EQ(kinematicAt.x, moved.x) << "the kinematic body did not follow its Transform";
+    EXPECT_FLOAT_EQ(kinematicAt.y, moved.y);
+    EXPECT_FLOAT_EQ(kinematicAt.z, moved.z);
+    const auto kinematicPosition = world.GetComponent<Transform>(kinematic)->GetPosition();
+    EXPECT_DOUBLE_EQ(kinematicPosition.X, moved.x) << "the writeback snapped the kinematic Transform back";
+    EXPECT_DOUBLE_EQ(kinematicPosition.Y, moved.y);
+    EXPECT_DOUBLE_EQ(kinematicPosition.Z, moved.z);
+
+    const GameEngine::Physics::Transform dynamicPose =
+        pw.GetBodyTransform(world.GetComponent<PhysicsBody>(dynamic)->body);
+    const auto dynamicPosition = world.GetComponent<Transform>(dynamic)->GetPosition();
+    // The writeback blends the last two steps, so the Transform is near the body pose, not on it.
+    constexpr GameEngine::float32 kInterpolationTolerance = 0.25f;
+    EXPECT_NEAR(dynamicPosition.X, dynamicPose.position.X, kInterpolationTolerance)
+        << "the dynamic Transform left its body";
+    EXPECT_NEAR(dynamicPosition.Y, dynamicPose.position.Y, kInterpolationTolerance);
+    EXPECT_NEAR(dynamicPosition.Z, dynamicPose.position.Z, kInterpolationTolerance);
+    EXPECT_GT(std::abs(dynamicPose.position.Z - moved.z), 1.0) << "the dynamic body followed its Transform";
+}
+
+// A box body with its Transform and WorldTransform at `position`, for the kinematic tests below.
+static GameEngine::ECS::EntityHandle AddBoxBody(GameEngine::ECS::World& world,
+                                                GameEngine::Physics::PhysicsWorld& pw,
+                                                GameEngine::Physics::MotionType motionType,
+                                                const GameEngine::Physics::Vector3& halfExtents,
+                                                const GameEngine::Physics::Vector3& position)
+{
+    using namespace GameEngine::Physics;
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Components::Transform;
+    using GameEngine::Components::WorldTransform;
+
+    BoxShapeDef boxDef{};
+    boxDef.halfExtents = halfExtents;
+    BodySettings bs{};
+    bs.shape = pw.CreateShape(boxDef);
+    bs.motionType = motionType;
+    bs.layer = motionType == MotionType::Kinematic ? Layers::Kinematic : Layers::Dynamic;
+    bs.mass = 1.0f;
+    bs.position = WorldPosition::FromVector3(position);
+    PhysicsBody pb{};
+    pb.motionType = motionType;
+    pb.body = pw.CreateBody(bs);
+    pb.initialized = true;
+
+    const auto e = world.CreateEntity();
+    world.AddComponentImmediate<Transform>(
+        e, Transform::FromTRS(GameEngine::Mathematics::WorldPosition::FromVector3(position), Quaternion::Identity(),
+                              Vector3(1.0f, 1.0f, 1.0f)));
+    WorldTransform wt{};
+    std::memcpy(&wt, world.GetComponent<Transform>(e), GameEngine::Components::kTransformPoseBytes);
+    world.AddComponentImmediate<WorldTransform>(e, wt);
+    world.AddComponentImmediate<PhysicsBody>(e, pb);
+    if (motionType == MotionType::Kinematic)
+        world.AddComponentImmediate(e, GameEngine::Components::KinematicBody{});
+    return e;
+}
+
+static void SetTransformHeight(GameEngine::ECS::World& world, GameEngine::ECS::EntityHandle e, GameEngine::float32 y)
+{
+    auto* transform = world.GetComponentForWrite<GameEngine::Components::Transform>(e);
+    transform->Position.Y = y;
+    std::memcpy(world.GetComponentForWrite<GameEngine::Components::WorldTransform>(e), transform,
+                GameEngine::Components::kTransformPoseBytes);
+}
+
+// A kinematic platform that the game raises through its Transform moves with a velocity, so a dynamic box
+// resting on it is carried at the platform's speed and stays on top. When the Transform stops, the platform
+// stops on it.
+TEST(Physics, KinematicPlatformMovedThroughItsTransformCarriesADynamicBoxAndStops)
+{
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Physics::MotionType;
+    using GameEngine::Physics::Vector3;
+    using GameEngine::PhysicsECS::PhysicsWorldService;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    auto& pw = PhysicsWorldService::Get();
+    GameEngine::ECS::World world;
+    constexpr GameEngine::float32 kPlatformHalfHeight = 0.1f;
+    constexpr GameEngine::float32 kBoxHalfSize = 0.25f;
+    const auto platform =
+        AddBoxBody(world, pw, MotionType::Kinematic, Vector3(1.0f, kPlatformHalfHeight, 1.0f), Vector3(0.0f, 0.0f, 0.0f));
+    const auto box = AddBoxBody(world, pw, MotionType::Dynamic, Vector3(kBoxHalfSize, kBoxHalfSize, kBoxHalfSize),
+                                Vector3(0.0f, kPlatformHalfHeight + kBoxHalfSize, 0.0f));
+    const auto platformBody = world.GetComponent<PhysicsBody>(platform)->body;
+    const auto boxBody = world.GetComponent<PhysicsBody>(box)->body;
+    ASSERT_TRUE(pw.IsBodyValid(platformBody));
+    ASSERT_TRUE(pw.IsBodyValid(boxBody));
+
+    GameEngine::PhysicsECS::PhysicsStepSystem step;
+    GameEngine::PhysicsECS::PhysicsWritebackSystem writeback;
+    constexpr GameEngine::float32 kFrame = 1.0f / 60.0f;
+    for (int frame = 0; frame < 60; ++frame)
+    {
+        step.Update(world, kFrame);
+        writeback.Update(world, kFrame);
+    }
+
+    constexpr GameEngine::float32 kSpeed = 6.0f;
+    GameEngine::float32 height = 0.0f;
+    for (int frame = 0; frame < 60; ++frame)
+    {
+        height += kSpeed * kFrame;
+        SetTransformHeight(world, platform, height);
+        step.Update(world, kFrame);
+        writeback.Update(world, kFrame);
+    }
+
+    const double platformTop = pw.GetBodyTransform(platformBody).position.Y + kPlatformHalfHeight;
+    const double boxBottom = pw.GetBodyTransform(boxBody).position.Y - kBoxHalfSize;
+    constexpr GameEngine::float32 kContactSlop = 0.02f;
+    EXPECT_NEAR(boxBottom, platformTop, kContactSlop) << "the box left the top of the platform";
+    EXPECT_NEAR(pw.GetLinearVelocity(boxBody).y, kSpeed, 0.1f * kSpeed) << "the platform did not carry the box";
+
+    for (int frame = 0; frame < 30; ++frame)
+    {
+        step.Update(world, kFrame);
+        writeback.Update(world, kFrame);
+    }
+    EXPECT_FLOAT_EQ(static_cast<GameEngine::float32>(pw.GetBodyTransform(platformBody).position.Y), height) << "the platform drifted off its Transform";
+    EXPECT_EQ(pw.GetLinearVelocity(platformBody).y, 0.0f) << "the platform kept moving";
+}
+
+// Runs one frame the way SystemManager::Update does: the world's clock runs the step once per fixed step,
+// then the writeback runs once.
+static void RunPhysicsFrame(GameEngine::ECS::World& world,
+                            GameEngine::PhysicsECS::PhysicsStepSystem& step,
+                            GameEngine::PhysicsECS::PhysicsWritebackSystem& writeback,
+                            GameEngine::float32 frameDelta)
+{
+    auto& clock = world.GetSimulationClock();
+    clock.Advance(frameDelta);
+    const auto fixedDelta = static_cast<GameEngine::float32>(clock.GetFixedDeltaSeconds());
+    while (clock.BeginStep())
+        step.Update(world, fixedDelta);
+    writeback.Update(world, frameDelta);
+}
+
+struct FallResult
+{
+    GameEngine::float32 VelocityY = 0.0f;
+    GameEngine::float32 Alpha = 0.0f;
+    GameEngine::uint64 Steps = 0;
+};
+
+// Drops a box through frames of a SystemManager that holds the physics step, with the clock at the
+// scene's float step as the physics bootstrap sets it.
+static FallResult FallThroughFrames(const std::vector<GameEngine::float32>& frameDeltas)
+{
+    using GameEngine::Physics::MotionType;
+    using GameEngine::Physics::Vector3;
+    using GameEngine::PhysicsECS::PhysicsWorldService;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    auto& pw = PhysicsWorldService::Get();
+    GameEngine::ECS::World world;
+    auto& clock = world.GetSimulationClock();
+    clock.SetFixedDeltaSeconds(PhysicsWorldService::GetSettings().fixedTimeStep);
+    const auto e = AddBoxBody(world, pw, MotionType::Dynamic, Vector3(0.5f, 0.5f, 0.5f), Vector3(0.0f, 50.0f, 0.0f));
+    GameEngine::ECS::SystemManager manager;
+    manager.AddSystem<GameEngine::PhysicsECS::PhysicsStepSystem>();
+    for (const GameEngine::float32 frameDelta : frameDeltas)
+        manager.Update(world, frameDelta);
+    const auto body = world.GetComponent<GameEngine::Components::PhysicsBody>(e)->body;
+    return {pw.GetLinearVelocity(body).y, clock.GetAlpha(), clock.GetTick()};
+}
+
+// A frame of three fixed steps runs three steps, also when the float frame delta is a little short of three
+// of the scene's float steps, and leaves no part of a step for the render blend.
+TEST(Physics, FrameOfThreeFixedStepsRunsThreeSteps)
+{
+    const FallResult threeFrames = FallThroughFrames({1.0f / 60.0f, 1.0f / 60.0f, 1.0f / 60.0f});
+    const FallResult oneFrame = FallThroughFrames({3.0f / 60.0f});
+    EXPECT_EQ(oneFrame.Steps, 3u);
+    EXPECT_EQ(oneFrame.Alpha, 0.0f);
+    EXPECT_EQ(oneFrame.VelocityY, threeFrames.VelocityY) << "the frame did not run the same three steps";
+
+    const FallResult halfFrame = FallThroughFrames({1.0f / 120.0f});
+    EXPECT_EQ(halfFrame.Steps, 0u);
+    EXPECT_FLOAT_EQ(halfFrame.Alpha, 0.5f);
+    EXPECT_EQ(halfFrame.VelocityY, 0.0f);
+}
+
+// A scene whose Fixed Time Step is 0 gets an error in the log that names the fix, and the clock keeps
+// its step.
+TEST(Physics, BootstrapLogsAFixedTimeStepOfZero)
+{
+    using namespace GameEngine;
+    using PhysicsECS::PhysicsWorldService;
+
+    if (PhysicsWorldService::IsInitialized())
+        PhysicsWorldService::Shutdown();
+    ECS::World world;
+    Components::PhysicsWorldSettingsComponent settings{};
+    settings.settings.fixedTimeStep = 0.0f;
+    world.AddComponentImmediate(world.CreateEntity(), settings);
+    PhysicsECS::PhysicsWorldBootstrapSystem bootstrap;
+
+    std::vector<std::string> lines;
+    {
+        TestLog::ScopedEngineLogCapture capture(&lines);
+        bootstrap.Update(world, 0.0f);
+        Logger::Log::Flush();
+    }
+    PhysicsWorldService::Shutdown();
+    const bool refused = std::any_of(lines.begin(), lines.end(), [](const std::string& line)
+                                     { return line.find("fixed delta 0 s refused; give a value above 0") != std::string::npos; });
+    EXPECT_TRUE(refused);
+    EXPECT_EQ(world.GetSimulationClock().GetFixedDeltaSeconds(), ECS::SimulationClock::kDefaultFixedDeltaSeconds);
+}
+
+// The Monitors series Time/Physics charts the cost of the physics steps of each frame, so a frame
+// with no step reports 0.
+TEST(Physics, FrameWithNoStepReportsNoStepCost)
+{
+    using namespace GameEngine;
+    using Physics::MotionType;
+    using Physics::Vector3;
+    using PhysicsECS::PhysicsWorldService;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ECS::World world;
+    AddBoxBody(world, PhysicsWorldService::Get(), MotionType::Dynamic, Vector3(0.5f, 0.5f, 0.5f),
+               Vector3(0.0f, 50.0f, 0.0f));
+    ECS::SystemManager manager;
+    manager.AddSystem<PhysicsECS::PhysicsStepSystem>();
+
+    manager.Update(world, 1.0f / 60.0f);
+    ASSERT_EQ(world.GetSimulationClock().GetStepsThisFrame(), 1u);
+    EXPECT_GT(PhysicsWorldService::TakeStepMs(), 0.0f);
+    manager.Update(world, 1.0f / 120.0f);
+    ASSERT_EQ(world.GetSimulationClock().GetStepsThisFrame(), 0u);
+    EXPECT_EQ(PhysicsWorldService::TakeStepMs(), 0.0f);
+}
+
+namespace
+{
+// A Simulation system that records the clock's tick at each step.
+class TickRecordingSystem : public GameEngine::ECS::ISystem
+{
+  public:
+    static constexpr GameEngine::ECS::SystemCadence Cadence = GameEngine::ECS::SystemCadence::Simulation;
+    explicit TickRecordingSystem(std::vector<GameEngine::uint64>* ticks) : m_Ticks(ticks) {}
+    const char* GetName() const override { return "TickRecording"; }
+    void Update(GameEngine::ECS::World& world, GameEngine::float32) override
+    {
+        m_Ticks->push_back(world.GetSimulationClock().GetTick());
+    }
+
+  private:
+    std::vector<GameEngine::uint64>* m_Ticks;
+};
+} // namespace
+
+// The physics bootstrap starts each play session of one world at tick 0 with no stored time, so the
+// time the world spent between two sessions does not move the steps of the second session.
+TEST(Physics, EveryPlaySessionOfOneWorldStepsTheSameTicks)
+{
+    using namespace GameEngine;
+    using PhysicsECS::PhysicsWorldService;
+
+    if (PhysicsWorldService::IsInitialized())
+        PhysicsWorldService::Shutdown();
+    ECS::World world;
+    ECS::SystemManager manager;
+    std::vector<uint64> ticks;
+    ECS::SystemScheduleBuilder builder;
+    builder.Add<PhysicsECS::PhysicsWorldBootstrapSystem>("PhysicsWorldBootstrap", ECS::SystemPhase::Extraction, 1, {});
+    builder.Add<TickRecordingSystem>("TickRecording", ECS::SystemPhase::Extraction, 2, {"PhysicsWorldBootstrap"},
+                                     &ticks);
+    builder.BuildAndRegisterWithWaves(manager);
+    const std::vector<float32> sessionFrames{0.01f, 0.02f, 0.01f, 0.03f, 0.0125f};
+
+    for (const float32 frameDelta : sessionFrames)
+        manager.Update(world, frameDelta);
+    const std::vector<uint64> firstSession = ticks;
+    PhysicsWorldService::Shutdown();
+
+    // Between the sessions the world's frames go on and the clock counts.
+    ECS::SimulationClock& clock = world.GetSimulationClock();
+    for (int frame = 0; frame < 3; ++frame)
+    {
+        clock.Advance(0.007);
+        while (clock.BeginStep())
+        {
+        }
+    }
+
+    ticks.clear();
+    for (const float32 frameDelta : sessionFrames)
+        manager.Update(world, frameDelta);
+    PhysicsWorldService::Shutdown();
+    ASSERT_FALSE(firstSession.empty());
+    EXPECT_EQ(firstSession.front(), 1u);
+    EXPECT_EQ(ticks, firstSession);
+}
+
+// A frame shorter than the fixed step runs no step, and the writeback still blends the last two steps.
+// A kinematic Transform the game moved on that frame stays where the game put it.
+TEST(Physics, KinematicTransformHoldsOnAFrameWithNoStep)
+{
+    using GameEngine::Components::Transform;
+    using GameEngine::Physics::MotionType;
+    using GameEngine::Physics::Vector3;
+    using GameEngine::PhysicsECS::PhysicsWorldService;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    auto& pw = PhysicsWorldService::Get();
+    GameEngine::ECS::World world;
+    const auto e = AddBoxBody(world, pw, MotionType::Kinematic, Vector3(0.5f, 0.5f, 0.5f), Vector3(1.0f, 5.0f, -2.0f));
+    ASSERT_TRUE(pw.IsBodyValid(world.GetComponent<GameEngine::Components::PhysicsBody>(e)->body));
+
+    GameEngine::PhysicsECS::PhysicsStepSystem step;
+    GameEngine::PhysicsECS::PhysicsWritebackSystem writeback;
+    RunPhysicsFrame(world, step, writeback, 1.0f / 60.0f);
+    SetTransformHeight(world, e, 9.0f);
+    RunPhysicsFrame(world, step, writeback, 1.0f / 120.0f);
+    ASSERT_EQ(world.GetSimulationClock().GetStepsThisFrame(), 0u);
+
+    EXPECT_DOUBLE_EQ(world.GetComponent<Transform>(e)->GetPosition().Y, 9.0)
+        << "the writeback moved the kinematic Transform";
+}
+
+// A kinematic body that stops is placed on its exact pose with no velocity. On the frames after that the
+// step does not move it and the writeback does not stamp its chunk, so a resting body costs nothing.
+TEST(Physics, KinematicBodyThatStopsIsPlacedOnItsPoseAndLeftAlone)
+{
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Components::Transform;
+    using GameEngine::Components::WorldTransform;
+    using GameEngine::Physics::MotionType;
+    using GameEngine::Physics::Quaternion;
+    using GameEngine::Physics::Vector3;
+    using GameEngine::PhysicsECS::PhysicsWorldService;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    auto& pw = PhysicsWorldService::Get();
+    GameEngine::ECS::World world;
+    const Vector3 start(1.0f, 5.0f, -2.0f);
+    const auto e = AddBoxBody(world, pw, MotionType::Kinematic, Vector3(0.5f, 0.5f, 0.5f), start);
+    const auto body = world.GetComponent<PhysicsBody>(e)->body;
+    ASSERT_TRUE(pw.IsBodyValid(body));
+
+    GameEngine::PhysicsECS::PhysicsStepSystem step;
+    GameEngine::PhysicsECS::PhysicsWritebackSystem writeback;
+    constexpr GameEngine::float32 kFrame = 1.0f / 60.0f;
+    const auto runFrame = [&]
+    {
+        step.Update(world, kFrame);
+        writeback.Update(world, kFrame);
+    };
+    for (int frame = 1; frame <= 10; ++frame)
+    {
+        auto* transform = world.GetComponentForWrite<Transform>(e);
+        *transform = Transform::FromTRS(
+            GameEngine::Mathematics::WorldPosition::FromVector3(start + Vector3(0.1f * frame, 0.0f, 0.0f)),
+            Quaternion::FromAxisAngle(Vector3(0.0f, 1.0f, 0.0f), 0.05f * frame), Vector3(1.0f, 1.0f, 1.0f));
+        std::memcpy(world.GetComponentForWrite<WorldTransform>(e), transform, GameEngine::Components::kTransformPoseBytes);
+        runFrame();
+    }
+    EXPECT_EQ(PhysicsWorldService::GetLastKinematicBodiesMoving(), 1u);
+    runFrame();
+
+    const Transform* transform = world.GetComponent<Transform>(e);
+    const auto position = transform->GetPosition();
+    const auto rotation = transform->GetRotation().GetGLM();
+    const GameEngine::Physics::Transform pose = pw.GetBodyTransform(body);
+    EXPECT_EQ(pose.position.X, position.X) << "the stopped body is not on its pose";
+    EXPECT_EQ(pose.position.Y, position.Y);
+    EXPECT_EQ(pose.position.Z, position.Z);
+    EXPECT_EQ(pose.rotation.GetGLM().w, rotation.w) << "the stopped body is not on its rotation";
+    EXPECT_EQ(pose.rotation.GetGLM().x, rotation.x);
+    EXPECT_EQ(pose.rotation.GetGLM().y, rotation.y);
+    EXPECT_EQ(pose.rotation.GetGLM().z, rotation.z);
+    const Vector3 linear = pw.GetLinearVelocity(body);
+    const Vector3 angular = pw.GetAngularVelocity(body);
+    EXPECT_EQ(linear.x, 0.0f) << "the stopped body kept a velocity";
+    EXPECT_EQ(linear.y, 0.0f);
+    EXPECT_EQ(linear.z, 0.0f);
+    EXPECT_EQ(angular.x, 0.0f) << "the stopped body kept a spin";
+    EXPECT_EQ(angular.y, 0.0f);
+    EXPECT_EQ(angular.z, 0.0f);
+    EXPECT_EQ(PhysicsWorldService::GetLastKinematicBodiesMoving(), 0u) << "the stopped body is still moving";
+
+    GameEngine::ECS::ChangeGate gate{};
+    gate.LastRunVersion = world.GetGlobalSystemVersion();
+    runFrame();
+    int stampedChunks = 0;
+    auto stamped = world.Query<GameEngine::ECS::Read<WorldTransform>>();
+    stamped.Changed<WorldTransform>(gate);
+    stamped.Each([&](const WorldTransform&) { ++stampedChunks; });
+    EXPECT_EQ(stampedChunks, 0) << "an idle frame stamped the resting kinematic body's WorldTransform";
+    EXPECT_EQ(PhysicsWorldService::GetLastKinematicBodiesMoving(), 0u);
+}
+
+// The step keeps the kinematic bodies it moved on the last step frame. A new physics world reuses body
+// handles, so that list is dropped when the world changes: a dynamic body in the new world that takes an
+// old moving body's handle is not placed on the old body's target.
+TEST(Physics, KinematicMovedListIsDroppedWhenThePhysicsWorldChanges)
+{
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Physics::MotionType;
+    using GameEngine::Physics::Vector3;
+    using GameEngine::PhysicsECS::PhysicsWorldService;
+
+    GameEngine::PhysicsECS::PhysicsStepSystem step;
+    constexpr GameEngine::float32 kFrame = 1.0f / 60.0f;
+    const Vector3 halfExtents(0.5f, 0.5f, 0.5f);
+    GameEngine::Physics::BodyHandle oldBody;
+    {
+        ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+        auto& pw = PhysicsWorldService::Get();
+        GameEngine::ECS::World world;
+        const auto e = AddBoxBody(world, pw, MotionType::Kinematic, halfExtents, Vector3(0.0f, 0.0f, 0.0f));
+        oldBody = world.GetComponent<PhysicsBody>(e)->body;
+        step.Update(world, kFrame);
+        for (int frame = 1; frame <= 3; ++frame)
+        {
+            SetTransformHeight(world, e, 5.0f * static_cast<GameEngine::float32>(frame));
+            step.Update(world, kFrame);
+        }
+        ASSERT_EQ(PhysicsWorldService::GetLastKinematicBodiesMoving(), 1u);
+    }
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    auto& pw = PhysicsWorldService::Get();
+    GameEngine::ECS::World world;
+    const Vector3 start(0.0f, 50.0f, 0.0f);
+    const auto e = AddBoxBody(world, pw, MotionType::Dynamic, halfExtents, start);
+    const auto body = world.GetComponent<PhysicsBody>(e)->body;
+    ASSERT_EQ(body.Value(), oldBody.Value()) << "the new world did not reuse the handle, so the test proves nothing";
+    step.Update(world, kFrame);
+    step.Update(world, kFrame);
+
+    EXPECT_NEAR(pw.GetBodyTransform(body).position.Y, start.y, 0.1f) << "the old world's target moved a body in the new world";
+}
+
+// The lines that warn a script velocity on a kinematic body was ignored.
+static std::ptrdiff_t CountKinematicVelocityWarnings(const std::vector<std::string>& lines)
+{
+    return std::count_if(lines.begin(), lines.end(), [](const std::string& line)
+                         { return line.find("has a kinematic body, which follows its Transform") != std::string::npos; });
+}
+
+// A kinematic body follows its Transform, so the script velocity setters leave it alone and warn once with
+// the fix. The body stays on its Transform.
+TEST(Physics, ScriptVelocityOnAKinematicBodyIsIgnoredWithOneWarning)
+{
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Physics::MotionType;
+    using GameEngine::Physics::Vector3;
+    using GameEngine::PhysicsECS::PhysicsWorldService;
+    namespace Script = GameEngine::PhysicsECS::Script;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    auto& pw = PhysicsWorldService::Get();
+    GameEngine::ECS::World world;
+    const Vector3 start(0.0f, 2.0f, 0.0f);
+    const auto e = AddBoxBody(world, pw, MotionType::Kinematic, Vector3(0.5f, 0.5f, 0.5f), start);
+    const auto body = world.GetComponent<PhysicsBody>(e)->body;
+    ASSERT_TRUE(pw.IsBodyValid(body));
+
+    GameEngine::PhysicsECS::PhysicsStepSystem step;
+    GameEngine::PhysicsECS::PhysicsWritebackSystem writeback;
+    constexpr GameEngine::float32 kFrame = 1.0f / 60.0f;
+    const auto runFrame = [&]
+    {
+        step.Update(world, kFrame);
+        writeback.Update(world, kFrame);
+    };
+    for (int frame = 0; frame < 5; ++frame)
+        runFrame();
+
+    std::vector<std::string> lines;
+    {
+        GameEngine::TestLog::ScopedEngineLogCapture capture(&lines);
+        Script::SetLinearVelocity(world, e, Vector3(1.0f, 0.0f, 0.0f));
+        Script::SetAngularVelocity(world, e, Vector3(0.0f, 2.0f, 0.0f));
+        Script::SetLinearVelocity(world, e, Vector3(1.0f, 0.0f, 0.0f));
+        Logger::Log::Flush();
+    }
+    for (int frame = 0; frame < 30; ++frame)
+        runFrame();
+
+    const GameEngine::Physics::Transform pose = pw.GetBodyTransform(body);
+    EXPECT_EQ(pose.position.X, start.x) << "a script velocity moved the kinematic body off its Transform";
+    EXPECT_EQ(pose.position.Y, start.y);
+    EXPECT_EQ(pose.position.Z, start.z);
+    EXPECT_EQ(pose.rotation.GetGLM().w, 1.0f) << "a script spin turned the kinematic body";
+    EXPECT_EQ(CountKinematicVelocityWarnings(lines), 1) << "the warning is logged once per entity";
+}
+
+// The once-per-entity warning starts over in a new physics world, so a second play session warns again for an
+// entity that reuses the same id.
+TEST(Physics, ScriptVelocityWarningOnAKinematicBodyRepeatsInANewPhysicsWorld)
+{
+    using GameEngine::Physics::MotionType;
+    using GameEngine::Physics::Vector3;
+    using GameEngine::PhysicsECS::PhysicsWorldService;
+
+    std::uint32_t entityIds[2] = {};
+    for (int session = 0; session < 2; ++session)
+    {
+        ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+        GameEngine::ECS::World world;
+        const auto e = AddBoxBody(world, PhysicsWorldService::Get(), MotionType::Kinematic, Vector3(0.5f, 0.5f, 0.5f),
+                                  Vector3(0.0f, 2.0f, 0.0f));
+        entityIds[session] = e.id;
+        std::vector<std::string> lines;
+        {
+            GameEngine::TestLog::ScopedEngineLogCapture capture(&lines);
+            GameEngine::PhysicsECS::Script::SetLinearVelocity(world, e, Vector3(1.0f, 0.0f, 0.0f));
+            GameEngine::PhysicsECS::Script::SetLinearVelocity(world, e, Vector3(1.0f, 0.0f, 0.0f));
+            Logger::Log::Flush();
+        }
+        EXPECT_EQ(CountKinematicVelocityWarnings(lines), 1) << "physics world " << session;
+    }
+    ASSERT_EQ(entityIds[0], entityIds[1]) << "the entity ids differ, so the test proves nothing";
 }
 
 // ---- Heightfield collider version gate (terrain live-edit propagation) ----
@@ -1119,12 +2012,13 @@ TEST(Physics, HeightFieldColliderRebuildsOnProviderVersionBump)
 
     auto surfaceHeightAtOrigin = [&]() -> float32 {
         RayCastQuery q{};
-        q.ray = Ray3D(Vector3(0.0f, 100.0f, 0.0f), Vector3(0.0f, -1.0f, 0.0f));
+        q.origin = {0.0, 100.0, 0.0};
+        q.direction = Vector3(0.0f, -1.0f, 0.0f);
         q.maxDistance = 500.0f;
         RayCastResult hit{};
         if (!pw.RayCast(q, hit))
             return -1.0f;
-        return hit.hitPoint.y;
+        return static_cast<float>(hit.hitPoint.Y);
     };
 
     // Initial build.
@@ -1162,6 +2056,154 @@ TEST(Physics, HeightFieldColliderRebuildsOnProviderVersionBump)
     pb = world.GetComponent<PhysicsBody>(e);
     EXPECT_TRUE(pb->body == rebuiltBody);
 }
+
+// A new heightfield body builds its shape on the job pool, not in the update that finds it: a
+// 1025^2 tile collider is about 28 ms, too long for the frame thread at each terrain tile
+// arrival (#3409). The body is created on a later update from that build. The pool's only
+// worker is held busy until the first update returns, so the build cannot land inside it.
+TEST(Physics, NewHeightFieldBodyBuildsItsShapeOnTheJobPool)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::Physics;
+    using namespace GameEngine::PhysicsECS;
+    using GameEngine::Components::PhysicsBody;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    auto& pw = PhysicsWorldService::Get();
+
+    constexpr uint32 kSampleCount = 8;
+    constexpr float32 kHeight = 12.0f;
+    s_HeightFieldTestSamples.assign(kSampleCount * kSampleCount, kHeight);
+    s_HeightFieldTestSampleCount = kSampleCount;
+    s_HeightFieldTestVersion = 1;
+    ScopedHeightFieldProvider providerGuard(&HeightFieldTestProvider);
+
+    // Declared before the pool: the job can still be inside set_value() after the wait returns.
+    std::promise<void> busy;
+    JobSystem::WorkStealingThreadPool pool(1);
+    std::promise<void> release;
+    std::shared_future<void> released = release.get_future().share();
+    pool.Submit([released, &busy]() {
+        busy.set_value();
+        released.wait();
+    });
+    busy.get_future().wait();
+
+    ECS::World world;
+    world.SetJobSystem(&pool);
+    auto e = CreateHeightFieldTerrainEntity(world, 100.0f, 100.0f);
+    PhysicsInitSystem init;
+    init.Update(world, 1.0f / 60.0f);
+    EXPECT_FALSE(world.GetComponent<PhysicsBody>(e)->initialized)
+        << "the update that found the collider built its shape on the frame thread";
+
+    release.set_value();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!world.GetComponent<PhysicsBody>(e)->initialized && std::chrono::steady_clock::now() < deadline)
+    {
+        init.Update(world, 1.0f / 60.0f);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(world.GetComponent<PhysicsBody>(e)->initialized) << "the pool's build never became a body";
+
+    pw.OptimizeBroadphase();
+    RayCastQuery q{};
+    q.origin = {0.0, 100.0, 0.0};
+    q.direction = Vector3(0.0f, -1.0f, 0.0f);
+    q.maxDistance = 500.0f;
+    RayCastResult hit{};
+    ASSERT_TRUE(pw.RayCast(q, hit));
+    EXPECT_NEAR(hit.hitPoint.Y, kHeight, 0.5f);
+}
+
+namespace
+{
+// Two heightfield sources at the same version: source 1 is flat at 12 m, source 2 at 30 m.
+GameEngine::PhysicsECS::HeightFieldData TwoSourceHeightFieldProvider(GameEngine::uint32 handle,
+                                                                     GameEngine::uint32 /*generation*/,
+                                                                     GameEngine::uint64 /*sinceVersion*/)
+{
+    static std::vector<GameEngine::float32> s_Low(8u * 8u, 12.0f);
+    static std::vector<GameEngine::float32> s_High(8u * 8u, 30.0f);
+    GameEngine::PhysicsECS::HeightFieldData data;
+    data.samples = handle == 2u ? s_High.data() : s_Low.data();
+    data.sampleCount = 8u;
+    data.version = 1u;
+    return data;
+}
+} // namespace
+
+// A collider pointed at other heightfield data while its first shape still builds on the pool gets
+// a body from the new data: the build started for the old data is dropped, even when both report
+// the same version.
+TEST(Physics, APendingHeightFieldBuildRestartsWhenItsColliderChangesData)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::Physics;
+    using namespace GameEngine::PhysicsECS;
+    using GameEngine::Components::HeightFieldColliderShape;
+    using GameEngine::Components::PhysicsBody;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    auto& pw = PhysicsWorldService::Get();
+    ScopedHeightFieldProvider providerGuard(&TwoSourceHeightFieldProvider);
+
+    // Declared before the pool: the job can still be inside set_value() after the wait returns.
+    std::promise<void> busy;
+    JobSystem::WorkStealingThreadPool pool(1);
+    std::promise<void> release;
+    std::shared_future<void> released = release.get_future().share();
+    pool.Submit([released, &busy]() {
+        busy.set_value();
+        released.wait();
+    });
+    busy.get_future().wait();
+
+    ECS::World world;
+    world.SetJobSystem(&pool);
+    auto e = CreateHeightFieldTerrainEntity(world, 100.0f, 100.0f);
+    world.GetComponentForWrite<HeightFieldColliderShape>(e)->dataHandle = 1u;
+    PhysicsInitSystem init;
+    init.Update(world, 1.0f / 60.0f);
+    ASSERT_FALSE(world.GetComponent<PhysicsBody>(e)->initialized) << "the first build did not wait on the pool";
+
+    world.GetComponentForWrite<HeightFieldColliderShape>(e)->dataHandle = 2u;
+    init.Update(world, 1.0f / 60.0f);
+    release.set_value();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!world.GetComponent<PhysicsBody>(e)->initialized && std::chrono::steady_clock::now() < deadline)
+    {
+        init.Update(world, 1.0f / 60.0f);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(world.GetComponent<PhysicsBody>(e)->initialized) << "no build became a body";
+
+    pw.OptimizeBroadphase();
+    RayCastQuery q{};
+    q.origin = {0.0, 100.0, 0.0};
+    q.direction = Vector3(0.0f, -1.0f, 0.0f);
+    q.maxDistance = 500.0f;
+    RayCastResult hit{};
+    ASSERT_TRUE(pw.RayCast(q, hit));
+    EXPECT_NEAR(hit.hitPoint.Y, 30.0f, 0.5f) << "the body was built from the data the collider left";
+}
+
+// A world hands out a heightfield builder a job can call without a check, even a moved-from world,
+// which has no backend: its builder fails every build (returns null) instead of being null itself.
+TEST(Physics, AWorldWithoutABackendHandsOutABuilderThatFailsEveryBuild)
+{
+    using namespace GameEngine::Physics;
+    PhysicsWorld source;
+    const PhysicsWorld moved(std::move(source));
+    const HeightFieldShapeBuilder builder = source.GetHeightFieldShapeBuilder(); // NOLINT(bugprone-use-after-move)
+    ASSERT_NE(builder, nullptr) << "a moved-from world handed out a null builder";
+    HeightFieldShapeDef def;
+    def.SampleCount = 2;
+    def.Samples = {0.0f, 0.0f, 0.0f, 0.0f};
+    EXPECT_EQ(builder(def), nullptr);
+    EXPECT_NE(moved.GetHeightFieldShapeBuilder(), nullptr);
+}
+
 
 // A terrain edit that lands while the collider is disabled must still reach
 // the collider once it is re-enabled. Regression test for the gather
@@ -1301,6 +2343,397 @@ TEST(Physics, BodySwitchedOffDuringAPauseIsReleasedOnResume)
     EXPECT_FALSE(pw.IsBodyValid(built));
 }
 
+// The x offset of the 300 km tests.
+static constexpr double kFarMeters = 300032.0;
+
+// A body 300 km out is built at its entity's exact world position, so a ray cast there hits its collider.
+TEST(Physics, BodyFarFromTheOriginIsBuiltAtItsExactWorldPosition)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::PhysicsECS;
+    using GameEngine::Components::BoxColliderShape;
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Components::PhysicsCollider;
+    using GameEngine::Components::Transform;
+    using GameEngine::Components::WorldTransform;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    auto& pw = PhysicsWorldService::Get();
+
+    ECS::World world;
+    RegisterPhysicsWorldHooks(world);
+    const ECS::EntityHandle e = world.CreateEntity();
+    const Transform pose = Transform::FromTRS(Mathematics::WorldPosition{kFarMeters + 1.25, 0.0, -1026.0},
+                                              Mathematics::Quaternion::Identity(),
+                                              Mathematics::Vector3(1.0f, 1.0f, 1.0f));
+    WorldTransform poseWorld{};
+    poseWorld.Position = pose.Position;
+    poseWorld.Basis = pose.Basis;
+    world.AddComponentImmediate(e, pose);
+    world.AddComponentImmediate(e, poseWorld);
+    PhysicsBody authored{};
+    authored.motionType = Physics::MotionType::Static;
+    world.AddComponentImmediate(e, authored);
+    world.AddComponentImmediate(e, PhysicsCollider{});
+    world.AddComponentImmediate(e, BoxColliderShape{});
+
+    PhysicsInitSystem init;
+    RunPhysicsInitFrame(world, init);
+    const PhysicsBody* built = world.GetComponent<PhysicsBody>(e);
+    ASSERT_TRUE(built->initialized);
+
+    // Straight down onto the top face of the half-meter box, at y = 0.5.
+    Physics::RayCastQuery query{};
+    query.origin = Physics::WorldPosition{kFarMeters + 1.25, 10.0, -1026.0};
+    query.direction = Physics::Vector3(0.0f, -1.0f, 0.0f);
+    query.maxDistance = 20.0f;
+    Physics::RayCastResult hit{};
+    ASSERT_TRUE(pw.RayCast(query, hit)) << "the ray at the entity's world position missed its body";
+    EXPECT_EQ(hit.body.Value(), built->body.Value());
+    EXPECT_EQ(hit.hitPoint.X, query.origin.X);
+    EXPECT_NEAR(hit.hitPoint.Y, 0.5, 1.0e-4);
+    EXPECT_EQ(hit.hitPoint.Z, query.origin.Z);
+}
+
+// The writeback writes the body position in double: 300 km out, a tenth of a millimeter is kept.
+TEST(Physics, WritebackOfABodyFarFromTheOriginWritesTheExactPosition)
+{
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Components::Transform;
+    using GameEngine::PhysicsECS::PhysicsWorldService;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    auto& pw = PhysicsWorldService::Get();
+    GameEngine::ECS::World world;
+    const auto e = AddStillBody(world, pw);
+
+    constexpr double kFarX = kFarMeters + 100.0001;
+    const GameEngine::Physics::BodyHandle body = world.GetComponent<PhysicsBody>(e)->body;
+    GameEngine::Physics::Transform moved = pw.GetBodyTransform(body);
+    moved.position.X = kFarX;
+    pw.SetBodyTransform(body, moved);
+    GameEngine::PhysicsECS::PhysicsWritebackSystem writeback;
+    writeback.Update(world, 1.0f / 60.0f);
+
+    EXPECT_EQ(world.GetComponent<Transform>(e)->Position.X, kFarX);
+}
+
+// A kinematic body follows the double position of its Transform: 300 km out, a tenth of a millimeter is kept.
+TEST(Physics, KinematicBodyFarFromTheOriginFollowsTheExactPosition)
+{
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Components::Transform;
+    using GameEngine::Components::WorldTransform;
+    using GameEngine::PhysicsECS::PhysicsWorldService;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    auto& pw = PhysicsWorldService::Get();
+    GameEngine::ECS::World world;
+    const auto e = AddStillBody(world, pw, GameEngine::Physics::MotionType::Kinematic);
+    const GameEngine::Mathematics::WorldPosition target{kFarMeters + 4.0001, 2.0, 7.0};
+    world.GetComponentForWrite<Transform>(e)->Position = target;
+    world.GetComponentForWrite<WorldTransform>(e)->Position = target;
+
+    GameEngine::PhysicsECS::PhysicsStepSystem step;
+    for (int frame = 0; frame < 3; ++frame)
+        step.Update(world, 1.0f / 60.0f);
+
+    EXPECT_EQ(pw.GetBodyTransform(world.GetComponent<PhysicsBody>(e)->body).position.X, target.X);
+}
+
+// Frames the init-system tests run before they look at a body: enough for every body to build.
+static constexpr int kInitSettleFrames = 3;
+// Frames an init-system allocation test measures once every body has settled.
+static constexpr int kInitMeasuredFrames = 20;
+
+// True where an AllocationCountScope sees Engine's allocations. PhysicsInitSystem runs in
+// Engine, and on Windows each image has its own operator new: a Release Engine.dll carries
+// no allocation hook, so a zero count there would hold whatever the system does.
+#if defined(_WIN32) && !GE_DEBUG_INSTRUMENTATION
+static constexpr bool kEngineAllocationsCounted = false;
+#else
+static constexpr bool kEngineAllocationsCounted = true;
+#endif
+
+// A body with a collider and no shape yet; the caller adds the shape.
+static GameEngine::ECS::EntityHandle CreateBodyWithCollider(GameEngine::ECS::World& world,
+                                                            GameEngine::Physics::MotionType motionType)
+{
+    const GameEngine::ECS::EntityHandle e = world.CreateEntity();
+    world.AddComponentImmediate(e, GameEngine::Components::Transform{});
+    world.AddComponentImmediate(e, GameEngine::Components::WorldTransform{});
+    GameEngine::Components::PhysicsBody body{};
+    body.motionType = motionType;
+    world.AddComponentImmediate(e, body);
+    world.AddComponentImmediate(e, GameEngine::Components::PhysicsCollider{});
+    return e;
+}
+
+// Allocations the init system makes over kInitMeasuredFrames frames on this thread.
+static std::uint64_t CountInitFrameAllocations(GameEngine::ECS::World& world,
+                                               GameEngine::PhysicsECS::PhysicsInitSystem& init)
+{
+    const GameEngine::Memory::AllocationCountScope probe(GameEngine::Memory::CountWindow::ThisThread);
+    for (int frame = 0; frame < kInitMeasuredFrames; ++frame)
+        init.Update(world, 1.0f / 60.0f);
+    return probe.Count();
+}
+
+// One body per collider gather: a body that already exists gives the init system nothing to
+// build, so its frame allocates nothing; a body added later is still built on its first frame.
+TEST(Physics, InitSystemSteadyStateAllocatesNothingAndStillBuildsNewBodies)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::PhysicsECS;
+    using GameEngine::Components::BoxColliderShape;
+    using GameEngine::Components::CapsuleColliderShape;
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Components::PlaneColliderShape;
+    using GameEngine::Components::SphereColliderShape;
+
+    if (!kEngineAllocationsCounted)
+        GTEST_SKIP() << "Engine.dll counts its allocations only in Debug and DebugFast";
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedHeightFieldProvider noTerrain(nullptr);
+    auto& pw = PhysicsWorldService::Get();
+
+    ECS::World world;
+    RegisterPhysicsWorldHooks(world);
+    std::vector<ECS::EntityHandle> bodies;
+    bodies.push_back(CreateBodyWithCollider(world, Physics::MotionType::Dynamic));
+    world.AddComponentImmediate(bodies.back(), SphereColliderShape{});
+    bodies.push_back(CreateBodyWithCollider(world, Physics::MotionType::Dynamic));
+    world.AddComponentImmediate(bodies.back(), BoxColliderShape{});
+    bodies.push_back(CreateBodyWithCollider(world, Physics::MotionType::Dynamic));
+    world.AddComponentImmediate(bodies.back(), CapsuleColliderShape{});
+    bodies.push_back(CreateBodyWithCollider(world, Physics::MotionType::Static));
+    world.AddComponentImmediate(bodies.back(), PlaneColliderShape{});
+
+    PhysicsInitSystem init;
+    for (int frame = 0; frame < kInitSettleFrames; ++frame)
+        RunPhysicsInitFrame(world, init);
+    for (const ECS::EntityHandle e : bodies)
+        ASSERT_TRUE(world.GetComponent<PhysicsBody>(e)->initialized);
+
+    const std::uint64_t allocations = CountInitFrameAllocations(world, init);
+    std::printf("[Alloc] PhysicsInitSystem steady state, %zu bodies, %d frames: %llu allocations\n",
+                bodies.size(), kInitMeasuredFrames, static_cast<unsigned long long>(allocations));
+    EXPECT_EQ(allocations, 0u) << "every body is built, so a frame has nothing to gather";
+
+    const ECS::EntityHandle added = CreateBodyWithCollider(world, Physics::MotionType::Dynamic);
+    world.AddComponentImmediate(added, SphereColliderShape{});
+    std::uint64_t buildAllocations = 0;
+    {
+        const Memory::AllocationCountScope probe(Memory::CountWindow::ThisThread);
+        RunPhysicsInitFrame(world, init);
+        buildAllocations = probe.Count();
+    }
+    EXPECT_GT(buildAllocations, 0u) << "the probe must see the frame that builds a body";
+    EXPECT_TRUE(world.GetComponent<PhysicsBody>(added)->initialized);
+    EXPECT_TRUE(pw.IsBodyValid(world.GetComponent<PhysicsBody>(added)->body));
+}
+
+// A body that still says it is built but whose backend body is gone is built again on the
+// next frame, even when every other body is built and the frame would otherwise do nothing.
+TEST(Physics, InitSystemRebuildsABuiltBodyWhoseBackendBodyIsGone)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::PhysicsECS;
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Components::SphereColliderShape;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedHeightFieldProvider noTerrain(nullptr);
+    auto& pw = PhysicsWorldService::Get();
+
+    ECS::World world;
+    RegisterPhysicsWorldHooks(world);
+    const ECS::EntityHandle a = CreateBodyWithCollider(world, Physics::MotionType::Dynamic);
+    world.AddComponentImmediate(a, SphereColliderShape{});
+    const ECS::EntityHandle b = CreateBodyWithCollider(world, Physics::MotionType::Dynamic);
+    world.AddComponentImmediate(b, SphereColliderShape{});
+
+    PhysicsInitSystem init;
+    for (int frame = 0; frame < kInitSettleFrames; ++frame)
+        RunPhysicsInitFrame(world, init);
+    const Physics::BodyHandle dead = world.GetComponent<PhysicsBody>(a)->body;
+    ASSERT_TRUE(pw.IsBodyValid(dead));
+    pw.DestroyBody(dead);
+    ASSERT_TRUE(world.GetComponent<PhysicsBody>(a)->initialized);
+
+    RunPhysicsInitFrame(world, init);
+    EXPECT_TRUE(pw.IsBodyValid(world.GetComponent<PhysicsBody>(a)->body));
+    EXPECT_EQ(pw.GetBodyCount(), 2u);
+}
+
+// A body with no collider is not work again until a collider is added: the frames beside it allocate nothing, and the frame after the collider
+// arrives builds it.
+TEST(Physics, InitSystemSkipsABodyWithNoColliderUntilOneIsAdded)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::PhysicsECS;
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Components::SphereColliderShape;
+
+    if (!kEngineAllocationsCounted)
+        GTEST_SKIP() << "Engine.dll counts its allocations only in Debug and DebugFast";
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedHeightFieldProvider noTerrain(nullptr);
+    auto& pw = PhysicsWorldService::Get();
+
+    ECS::World world;
+    RegisterPhysicsWorldHooks(world);
+    for (int i = 0; i < 2; ++i)
+        world.AddComponentImmediate(CreateBodyWithCollider(world, Physics::MotionType::Dynamic),
+                                    SphereColliderShape{});
+    const ECS::EntityHandle bare = world.CreateEntity();
+    world.AddComponentImmediate(bare, GameEngine::Components::Transform{});
+    world.AddComponentImmediate(bare, GameEngine::Components::WorldTransform{});
+    world.AddComponentImmediate(bare, PhysicsBody{});
+
+    PhysicsInitSystem init;
+    for (int frame = 0; frame < kInitSettleFrames; ++frame)
+        RunPhysicsInitFrame(world, init);
+    ASSERT_EQ(pw.GetBodyCount(), 2u);
+    ASSERT_FALSE(world.GetComponent<PhysicsBody>(bare)->initialized);
+
+    const std::uint64_t allocations = CountInitFrameAllocations(world, init);
+    std::printf("[Alloc] PhysicsInitSystem beside a body with no collider, %d frames: %llu allocations\n",
+                kInitMeasuredFrames, static_cast<unsigned long long>(allocations));
+    EXPECT_EQ(allocations, 0u) << "a body with no collider gives the frame nothing to build";
+
+    world.AddComponentImmediate(bare, GameEngine::Components::PhysicsCollider{});
+    world.AddComponentImmediate(bare, SphereColliderShape{});
+    std::uint64_t buildAllocations = 0;
+    {
+        const Memory::AllocationCountScope probe(Memory::CountWindow::ThisThread);
+        RunPhysicsInitFrame(world, init);
+        buildAllocations = probe.Count();
+    }
+    EXPECT_GT(buildAllocations, 0u) << "the probe must see the frame that builds a body";
+    EXPECT_TRUE(world.GetComponent<PhysicsBody>(bare)->initialized);
+    EXPECT_TRUE(pw.IsBodyValid(world.GetComponent<PhysicsBody>(bare)->body));
+}
+
+// A body whose shape the backend refuses (a sphere of radius 0) is built on the frame after
+// the shape is edited to a valid one, with no structural change to wake it.
+TEST(Physics, InitSystemBuildsABodyOnTheFrameAfterItsRefusedShapeIsFixed)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::PhysicsECS;
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Components::SphereColliderShape;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedHeightFieldProvider noTerrain(nullptr);
+    auto& pw = PhysicsWorldService::Get();
+
+    ECS::World world;
+    RegisterPhysicsWorldHooks(world);
+    world.AddComponentImmediate(CreateBodyWithCollider(world, Physics::MotionType::Dynamic),
+                                SphereColliderShape{});
+    const ECS::EntityHandle refused = CreateBodyWithCollider(world, Physics::MotionType::Dynamic);
+    world.AddComponentImmediate(refused, SphereColliderShape{0.0f});
+
+    PhysicsInitSystem init;
+    for (int frame = 0; frame < kInitSettleFrames; ++frame)
+        RunPhysicsInitFrame(world, init);
+    ASSERT_EQ(pw.GetBodyCount(), 1u);
+    ASSERT_FALSE(world.GetComponent<PhysicsBody>(refused)->initialized);
+
+    world.GetComponentForWrite<SphereColliderShape>(refused)->radius = 0.5f;
+    RunPhysicsInitFrame(world, init);
+    EXPECT_TRUE(world.GetComponent<PhysicsBody>(refused)->initialized);
+    EXPECT_TRUE(pw.IsBodyValid(world.GetComponent<PhysicsBody>(refused)->body));
+}
+
+// Writes a uniform scale into the body's world matrix, as the transform system would.
+static void SetUniformWorldScale(GameEngine::ECS::World& world, GameEngine::ECS::EntityHandle e, GameEngine::float32 scale)
+{
+    GameEngine::Components::WorldTransform* wt = world.GetComponentForWrite<GameEngine::Components::WorldTransform>(e);
+    wt->Basis[0][0] = scale;
+    wt->Basis[1][1] = scale;
+    wt->Basis[2][2] = scale;
+}
+
+// A body the backend refuses for its scale (0) is built on the frame after the scale is fixed
+// and a rebuild is asked for through PhysicsBody, as the editor's transform and inspector edits
+// do, with no structural change to wake it.
+TEST(Physics, InitSystemBuildsABodyOnTheFrameAfterItsRefusedScaleIsFixed)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::PhysicsECS;
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Components::SphereColliderShape;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedHeightFieldProvider noTerrain(nullptr);
+    auto& pw = PhysicsWorldService::Get();
+
+    ECS::World world;
+    RegisterPhysicsWorldHooks(world);
+    world.AddComponentImmediate(CreateBodyWithCollider(world, Physics::MotionType::Dynamic),
+                                SphereColliderShape{});
+    const ECS::EntityHandle flat = CreateBodyWithCollider(world, Physics::MotionType::Dynamic);
+    world.AddComponentImmediate(flat, SphereColliderShape{});
+    SetUniformWorldScale(world, flat, 0.0f);
+
+    PhysicsInitSystem init;
+    for (int frame = 0; frame < kInitSettleFrames; ++frame)
+        RunPhysicsInitFrame(world, init);
+    ASSERT_EQ(pw.GetBodyCount(), 1u);
+    ASSERT_FALSE(world.GetComponent<PhysicsBody>(flat)->initialized);
+
+    SetUniformWorldScale(world, flat, 1.0f);
+    world.GetComponentForWrite<PhysicsBody>(flat)->initialized = false;
+    RunPhysicsInitFrame(world, init);
+    EXPECT_TRUE(world.GetComponent<PhysicsBody>(flat)->initialized);
+    EXPECT_TRUE(pw.IsBodyValid(world.GetComponent<PhysicsBody>(flat)->body));
+}
+
+// A body with no collider is built on the frame after an existing collider's owner is pointed
+// at it, with no structural change to wake it.
+TEST(Physics, InitSystemBuildsABodyOnTheFrameAfterAColliderIsRetargetedToIt)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::PhysicsECS;
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Components::PhysicsColliderOwner;
+    using GameEngine::Components::SphereColliderShape;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedHeightFieldProvider noTerrain(nullptr);
+    auto& pw = PhysicsWorldService::Get();
+
+    ECS::World world;
+    RegisterPhysicsWorldHooks(world);
+    const ECS::EntityHandle bare = world.CreateEntity();
+    world.AddComponentImmediate(bare, GameEngine::Components::Transform{});
+    world.AddComponentImmediate(bare, GameEngine::Components::WorldTransform{});
+    world.AddComponentImmediate(bare, PhysicsBody{});
+    // Its owner names no body, so it belongs to its own entity, which has no PhysicsBody.
+    const ECS::EntityHandle collider = world.CreateEntity();
+    world.AddComponentImmediate(collider, GameEngine::Components::Transform{});
+    world.AddComponentImmediate(collider, GameEngine::Components::PhysicsCollider{});
+    world.AddComponentImmediate(collider, SphereColliderShape{});
+    world.AddComponentImmediate(collider, PhysicsColliderOwner{});
+
+    PhysicsInitSystem init;
+    for (int frame = 0; frame < kInitSettleFrames; ++frame)
+        RunPhysicsInitFrame(world, init);
+    ASSERT_EQ(pw.GetBodyCount(), 0u);
+    ASSERT_FALSE(world.GetComponent<PhysicsBody>(bare)->initialized);
+
+    world.GetComponentForWrite<PhysicsColliderOwner>(collider)->body = bare;
+    RunPhysicsInitFrame(world, init);
+    EXPECT_TRUE(world.GetComponent<PhysicsBody>(bare)->initialized);
+    EXPECT_TRUE(pw.IsBodyValid(world.GetComponent<PhysicsBody>(bare)->body));
+}
+
+// A terrain edit made while the collider is disabled reaches the body when the collider is enabled
+// again. The gather skips a disabled collider, so its lastBuiltVersion keeps the version before the edit.
 TEST(Physics, HeightFieldColliderDisabledDuringEditRebuildsOnReenable)
 {
     using namespace GameEngine;
@@ -1333,12 +2766,13 @@ TEST(Physics, HeightFieldColliderDisabledDuringEditRebuildsOnReenable)
 
     auto surfaceHeightAtOrigin = [&]() -> float32 {
         RayCastQuery q{};
-        q.ray = Ray3D(Vector3(0.0f, 100.0f, 0.0f), Vector3(0.0f, -1.0f, 0.0f));
+        q.origin = {0.0, 100.0, 0.0};
+        q.direction = Vector3(0.0f, -1.0f, 0.0f);
         q.maxDistance = 500.0f;
         RayCastResult hit{};
         if (!pw.RayCast(q, hit))
             return -1.0f;
-        return hit.hitPoint.y;
+        return static_cast<float>(hit.hitPoint.Y);
     };
 
     // Initial build.
@@ -1448,21 +2882,23 @@ TEST(Physics, HeightFieldBroadphaseRefreshAfterInPlaceRaise)
     // block — only hits if the body's broadphase AABB grew to the new height.
     const float32 wx = SampleToWorld((kR0 + kR1) / 2, kN, kSize);
     RayCastQuery horizontal{};
-    horizontal.ray = Ray3D(Vector3(wx, 43.0f, -60.0f), Vector3(0.0f, 0.0f, 1.0f));
+    horizontal.origin = {wx, 43.0f, -60.0f};
+    horizontal.direction = Vector3(0.0f, 0.0f, 1.0f);
     horizontal.maxDistance = 200.0f;
     RayCastResult hit{};
     ASSERT_TRUE(pw.RayCast(horizontal, hit))
         << "Raised terrain is invisible to collision — broadphase AABB was not refreshed (NotifyShapeChanged missing?)";
     const float32 regionStartZ = SampleToWorld(kR0, kN, kSize);
-    EXPECT_NEAR(hit.hitPoint.z, regionStartZ, 3.0f);
+    EXPECT_NEAR(hit.hitPoint.Z, regionStartZ, 3.0f);
 
     // And the surface itself reads back at the raised height.
     RayCastQuery down{};
-    down.ray = Ray3D(Vector3(wx, 100.0f, wx), Vector3(0.0f, -1.0f, 0.0f));
+    down.origin = {wx, 100.0f, wx};
+    down.direction = Vector3(0.0f, -1.0f, 0.0f);
     down.maxDistance = 500.0f;
     RayCastResult downHit{};
     ASSERT_TRUE(pw.RayCast(down, downHit));
-    EXPECT_NEAR(downHit.hitPoint.y, kRaisedHeight, 0.5f);
+    EXPECT_NEAR(downHit.hitPoint.Y, kRaisedHeight, 0.5f);
 }
 
 // The in-place path must convert raw provider samples into the shape's local
@@ -1513,12 +2949,13 @@ TEST(Physics, HeightFieldInPlaceUpdateRespectsHeightScale)
     const float32 wx = SampleToWorld(48, kN, kSize);
     auto surfaceAt = [&](float32 worldX, float32 worldZ) -> float32 {
         RayCastQuery down{};
-        down.ray = Ray3D(Vector3(worldX, 200.0f, worldZ), Vector3(0.0f, -1.0f, 0.0f));
+        down.origin = {worldX, 200.0f, worldZ};
+        down.direction = Vector3(0.0f, -1.0f, 0.0f);
         down.maxDistance = 500.0f;
         RayCastResult hit{};
         if (!pw.RayCast(down, hit))
             return -1000.0f;
-        return hit.hitPoint.y;
+        return static_cast<float>(hit.hitPoint.Y);
     };
     const float32 rawAt48 = 4.0f + 12.0f * 48.0f / static_cast<float32>(kN - 1);
     ASSERT_NEAR(surfaceAt(wx, wx), rawAt48 * kHeightScale, 1.0f);
@@ -1595,14 +3032,14 @@ TEST(Physics, HeightFieldInPlaceLowerWakesSleepingBody)
     boxSettings.motionType = MotionType::Dynamic;
     boxSettings.layer = Layers::Dynamic;
     boxSettings.mass = 1.0f;
-    boxSettings.position = Vector3(0.0f, kSurface + 0.5f, 0.0f);
+    boxSettings.position = WorldPosition{0.0, kSurface + 0.5f, 0.0};
     boxSettings.startAwake = false;
     const BodyHandle box = pw.CreateBody(boxSettings);
     ASSERT_TRUE(box.IsValid());
 
     for (int i = 0; i < 30; ++i)
         pw.Step(kDt, 1);
-    EXPECT_NEAR(pw.GetBodyTransform(box).position.y, kSurface + 0.5f, 0.01f)
+    EXPECT_NEAR(pw.GetBodyTransform(box).position.Y, kSurface + 0.5f, 0.01f)
         << "Sanity: an asleep body must not move on its own";
 
     // Lower the ground under the box in place (box at origin = sample ~31.5,
@@ -1627,10 +3064,69 @@ TEST(Physics, HeightFieldInPlaceLowerWakesSleepingBody)
     // lowered ground.
     for (int i = 0; i < 180; ++i)
         pw.Step(kDt, 1);
-    const float32 finalY = pw.GetBodyTransform(box).position.y;
+    const double finalY = pw.GetBodyTransform(box).position.Y;
     EXPECT_LT(finalY, kSurface - 5.0f)
         << "Sleeping body never woke after the ground was lowered (ActivateBodiesInAABB missing?)";
     EXPECT_NEAR(finalY, kLowered + 0.5f, 1.0f);
+}
+
+// A rebuild that raises the ground by more than half a resting body's height puts the body's center under
+// the new surface. The body must end on top of the new surface, not under it.
+TEST(Physics, HeightFieldRebuildThatRaisesTheGroundByMoreThanHalfABodyLeavesItOnTop)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::Physics;
+    using namespace GameEngine::PhysicsECS;
+    using GameEngine::Components::PhysicsBody;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    auto& pw = PhysicsWorldService::Get();
+
+    constexpr uint32 kN = 64;
+    constexpr float32 kSize = 100.0f;
+    constexpr float32 kDt = 1.0f / 60.0f;
+    constexpr float32 kHalfExtent = 0.5f;
+    constexpr float32 kSurface = 30.0f;
+    constexpr float32 kRaised = 30.8f;
+
+    s_HeightFieldTestSamples.assign(kN * kN, kSurface);
+    s_HeightFieldTestSampleCount = kN;
+    s_HeightFieldTestVersion = 1;
+    ScopedHeightFieldProvider providerGuard(&HeightFieldTestProvider);
+
+    ECS::World world;
+    auto e = CreateHeightFieldTerrainEntity(world, kSize, kSize);
+    PhysicsInitSystem init;
+    init.SetRebuildQuiescenceSeconds(0.0f);
+    init.Update(world, kDt);
+    pw.OptimizeBroadphase();
+    const auto* pb = world.GetComponent<PhysicsBody>(e);
+    ASSERT_TRUE(pb->initialized);
+    const BodyHandle terrainBody = pb->body;
+
+    BoxShapeDef boxDef{};
+    boxDef.halfExtents = Vector3(kHalfExtent, kHalfExtent, kHalfExtent);
+    BodySettings boxSettings{};
+    boxSettings.shape = pw.CreateShape(boxDef);
+    boxSettings.motionType = MotionType::Dynamic;
+    boxSettings.layer = Layers::Dynamic;
+    boxSettings.mass = 1.0f;
+    boxSettings.position = WorldPosition{0.0, kSurface + kHalfExtent, 0.0};
+    boxSettings.startAwake = false;
+    const BodyHandle box = pw.CreateBody(boxSettings);
+    ASSERT_TRUE(box.IsValid());
+
+    s_HeightFieldTestSamples.assign(kN * kN, kRaised);
+    ++s_HeightFieldTestVersion;
+    init.Update(world, kDt);
+    pb = world.GetComponent<PhysicsBody>(e);
+    ASSERT_TRUE(pb->initialized);
+    EXPECT_FALSE(pb->body == terrainBody) << "Expected the rebuild path, not the in-place one";
+
+    for (int step = 0; step < 120; ++step)
+        pw.Step(kDt, 1);
+    EXPECT_NEAR(pw.GetBodyTransform(box).position.Y, kRaised + kHalfExtent, 0.02f)
+        << "the body did not end on top of the raised ground after the rebuild";
 }
 
 // Raising beyond the padded encode range must reject the in-place path
@@ -1688,12 +3184,13 @@ TEST(Physics, HeightFieldRangeExceededFallsBackToRebuild)
     };
     auto surfaceHeightAt = [&](float32 wx, float32 wz) -> float32 {
         RayCastQuery q{};
-        q.ray = Ray3D(Vector3(wx, 200.0f, wz), Vector3(0.0f, -1.0f, 0.0f));
+        q.origin = {wx, 200.0f, wz};
+        q.direction = Vector3(0.0f, -1.0f, 0.0f);
         q.maxDistance = 500.0f;
         RayCastResult hit{};
         if (!pw.RayCast(q, hit))
             return -1.0f;
-        return hit.hitPoint.y;
+        return static_cast<float>(hit.hitPoint.Y);
     };
     const float32 wc = SampleToWorld((kR0 + kR1) / 2, kN, kSize);
 
@@ -1792,11 +3289,12 @@ TEST(Physics, HeightFieldThrottleCoalescesRebuildStorm)
     // The rebuilt collider reflects the final storm state.
     pw.OptimizeBroadphase();
     RayCastQuery q{};
-    q.ray = Ray3D(Vector3(0.0f, 100.0f, 0.0f), Vector3(0.0f, -1.0f, 0.0f));
+    q.origin = {0.0, 100.0, 0.0};
+    q.direction = Vector3(0.0f, -1.0f, 0.0f);
     q.maxDistance = 500.0f;
     RayCastResult hit{};
     ASSERT_TRUE(pw.RayCast(q, hit));
-    EXPECT_NEAR(hit.hitPoint.y, 25.0f, 0.5f);
+    EXPECT_NEAR(hit.hitPoint.Y, 25.0f, 0.5f);
 }
 
 // ============================================================================
@@ -1852,9 +3350,9 @@ GameEngine::ECS::EntityHandle CreateTileColliderEntity(GameEngine::ECS::World& w
     using namespace GameEngine;
     auto e = world.CreateEntity();
     Components::Transform t{};
-    t.matrix[12] = cx; t.matrix[13] = cy; t.matrix[14] = cz;
+    t.Position = Mathematics::WorldPosition{cx, cy, cz};
     Components::WorldTransform wt{};
-    wt.matrix[12] = cx; wt.matrix[13] = cy; wt.matrix[14] = cz;
+    wt.Position = t.Position;
     world.AddComponentImmediate<Components::Transform>(e, t);
     world.AddComponentImmediate<Components::WorldTransform>(e, wt);
     Components::PhysicsCollider collider{};
@@ -1933,14 +3431,14 @@ TEST(Physics, TiledColliderEditUpdatesAndWakesOnlyEditedTile)
     boxSettings.motionType = MotionType::Dynamic;
     boxSettings.layer = Layers::Dynamic;
     boxSettings.mass = 1.0f;
-    boxSettings.position = Vector3(50.0f, kSurfaceRaw * kScale + 0.5f, 0.0f);
+    boxSettings.position = WorldPosition{50.0, kSurfaceRaw * kScale + 0.5f, 0.0};
     boxSettings.startAwake = false;
     const BodyHandle box = pw.CreateBody(boxSettings);
     ASSERT_TRUE(box.IsValid());
 
     for (int i = 0; i < 30; ++i)
         pw.Step(kDt, 1);
-    ASSERT_NEAR(pw.GetBodyTransform(box).position.y, kSurfaceRaw * kScale + 0.5f, 0.01f)
+    ASSERT_NEAR(pw.GetBodyTransform(box).position.Y, kSurfaceRaw * kScale + 0.5f, 0.01f)
         << "Sanity: the asleep box must not move on its own";
 
     const uint64 tile0VersionBefore =
@@ -1970,427 +3468,12 @@ TEST(Physics, TiledColliderEditUpdatesAndWakesOnlyEditedTile)
     // The sleeping box woke and falls to the lowered ground.
     for (int i = 0; i < 180; ++i)
         pw.Step(kDt, 1);
-    const float32 finalY = pw.GetBodyTransform(box).position.y;
+    const double finalY = pw.GetBodyTransform(box).position.Y;
     EXPECT_LT(finalY, kSurfaceRaw * kScale - 5.0f)
         << "the box never woke after tile 1 was lowered (ActivateBodiesInAABB missing?)";
     EXPECT_NEAR(finalY, kLoweredRaw * kScale + 0.5f, 1.5f);
 }
 
-// Real end-to-end (E6): TerrainPhysicsSystem provisions one collider entity per
-// resident Full tile of a tiled terrain, PhysicsInit builds one body per tile,
-// and an edit to a single tile — routed through the real TerrainService tile
-// provider — advances only that tile's collider version.
-TEST(Physics, TiledTerrainProvisionsPerTileCollidersAndRoutesEditsPerTile)
-{
-    using namespace GameEngine;
-    using namespace GameEngine::Physics;
-    using namespace GameEngine::PhysicsECS;
-    using GameEngine::Components::HeightFieldColliderShape;
-    using GameEngine::Components::PhysicsBody;
-    using GameEngine::Components::TerrainTileCollider;
-    namespace TE = GameEngine::TerrainECS;
-
-    constexpr float32 kDt = 1.0f / 60.0f;
-
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-
-    if (TE::TerrainService::IsInitialized())
-        TE::TerrainService::Shutdown();
-    TE::TerrainService::Initialize(); // registers the real heightfield provider
-    struct TerrainGuard
-    {
-        ~TerrainGuard() { if (TE::TerrainService::IsInitialized()) TE::TerrainService::Shutdown(); }
-    } terrainGuard;
-    auto& terrain = TE::TerrainService::Get();
-
-    // 2-tile tiled terrain (WorldSizeX = 2 * 1024 at 1 sample/m).
-    TE::TiledTerrainConfig cfg{};
-    cfg.WorldSizeX = 2048.0f;
-    cfg.WorldSizeZ = 1024.0f;
-    cfg.HeightScale = 64.0f;
-    cfg.SamplesPerMeter = 1.0f;
-    const auto handle = terrain.CreateTiledTerrain(cfg);
-    auto* tiled = terrain.GetTiledTerrainData(handle);
-    ASSERT_NE(tiled, nullptr);
-    ASSERT_EQ(tiled->Config.TilesPerAxisX, 2u);
-    for (int32 x = 0; x < 2; ++x)
-    {
-        auto* tile = terrain.LoadTile(handle, TE::TileCoord{x, 0});
-        ASSERT_NE(tile, nullptr);
-        tile->LodState = TE::TileLodState::Full;
-        tile->MarkFullDirty();
-    }
-
-    ECS::World world;
-    auto terrainEntity = world.CreateEntity();
-    Components::Terrain tc{};
-    tc.SizeX = 2048.0f;
-    tc.SizeZ = 1024.0f;
-    tc.HeightScale = 64.0f;
-    tc.TiledTerrainHandle = handle.Index;
-    tc.TiledTerrainGeneration = handle.Generation;
-    world.AddComponentImmediate<Components::Terrain>(terrainEntity, tc);
-    world.AddComponentImmediate<Components::WorldTransform>(terrainEntity, Components::WorldTransform{});
-
-    // Provision per-tile colliders (deferred), flush, then build the bodies.
-    TE::TerrainPhysicsSystem terrainPhysics;
-    terrainPhysics.Update(world, kDt);
-    world.ProcessCommands();
-
-    PhysicsInitSystem init;
-    init.SetRebuildQuiescenceSeconds(0.0f);
-    init.Update(world, kDt);
-    world.ProcessCommands();
-
-    int colliderCount = 0;
-    ECS::EntityHandle colliderForTile[2] = {};
-    world.Query<ECS::Read<TerrainTileCollider>, ECS::Read<PhysicsBody>>()
-        .Each([&](ECS::EntityHandle e, const TerrainTileCollider& tag, const PhysicsBody& body)
-        {
-            ++colliderCount;
-            EXPECT_TRUE(body.initialized) << "tile collider body must be built";
-            if (tag.TileX >= 0 && tag.TileX < 2 && tag.TileZ == 0)
-                colliderForTile[tag.TileX] = e;
-        });
-    EXPECT_EQ(colliderCount, 2) << "one collider entity per resident Full tile";
-    ASSERT_TRUE(colliderForTile[0].IsValid());
-    ASSERT_TRUE(colliderForTile[1].IsValid());
-
-    const uint64 built0 = world.GetComponent<HeightFieldColliderShape>(colliderForTile[0])->lastBuiltVersion;
-    const uint64 built1 = world.GetComponent<HeightFieldColliderShape>(colliderForTile[1])->lastBuiltVersion;
-
-    // Edit tile (1,0) only: raise a region + log it.
-    auto* tile1 = tiled->Tiles.at(TE::TileCoord{1, 0}).get();
-    for (uint32 z = 10; z < 30; ++z)
-        for (uint32 x = 10; x < 30; ++x)
-            tile1->Heightfield.SetSample(x, z, tile1->Heightfield.GetSample(x, z) + 0.1f);
-    tile1->MarkRegionDirty(10, 10, 30, 30);
-    const uint64 tile1NewVersion = tile1->HeightfieldVersion;
-
-    init.Update(world, kDt);
-    world.ProcessCommands();
-
-    EXPECT_GT(tile1NewVersion, built1);
-    EXPECT_EQ(world.GetComponent<HeightFieldColliderShape>(colliderForTile[1])->lastBuiltVersion,
-              tile1NewVersion) << "the edited tile's collider must reach the new version";
-    EXPECT_EQ(world.GetComponent<HeightFieldColliderShape>(colliderForTile[0])->lastBuiltVersion,
-              built0) << "an edit to tile 1 must not touch tile 0's collider";
-}
-
-// When a tile unloads (streamed out), TerrainPhysicsSystem must tear down its
-// collider entity and release the tile-physics handle — one collider per
-// resident tile, no leaks.
-TEST(Physics, TiledTerrainTearsDownColliderWhenTileUnloads)
-{
-    using namespace GameEngine;
-    using namespace GameEngine::PhysicsECS;
-    using GameEngine::Components::TerrainTileCollider;
-    namespace TE = GameEngine::TerrainECS;
-
-    constexpr float32 kDt = 1.0f / 60.0f;
-
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    if (TE::TerrainService::IsInitialized())
-        TE::TerrainService::Shutdown();
-    TE::TerrainService::Initialize();
-    struct TerrainGuard
-    {
-        ~TerrainGuard() { if (TE::TerrainService::IsInitialized()) TE::TerrainService::Shutdown(); }
-    } terrainGuard;
-    auto& terrain = TE::TerrainService::Get();
-
-    TE::TiledTerrainConfig cfg{};
-    cfg.WorldSizeX = 2048.0f;
-    cfg.WorldSizeZ = 1024.0f;
-    cfg.HeightScale = 64.0f;
-    cfg.SamplesPerMeter = 1.0f;
-    const auto handle = terrain.CreateTiledTerrain(cfg);
-    auto* tiled = terrain.GetTiledTerrainData(handle);
-    ASSERT_EQ(tiled->Config.TilesPerAxisX, 2u);
-    for (int32 x = 0; x < 2; ++x)
-    {
-        auto* tile = terrain.LoadTile(handle, TE::TileCoord{x, 0});
-        tile->LodState = TE::TileLodState::Full;
-        tile->MarkFullDirty();
-    }
-
-    ECS::World world;
-    auto terrainEntity = world.CreateEntity();
-    Components::Terrain tc{};
-    tc.SizeX = 2048.0f;
-    tc.SizeZ = 1024.0f;
-    tc.HeightScale = 64.0f;
-    tc.TiledTerrainHandle = handle.Index;
-    tc.TiledTerrainGeneration = handle.Generation;
-    world.AddComponentImmediate<Components::Terrain>(terrainEntity, tc);
-    world.AddComponentImmediate<Components::WorldTransform>(terrainEntity, Components::WorldTransform{});
-
-    TE::TerrainPhysicsSystem terrainPhysics;
-    terrainPhysics.Update(world, kDt);
-    world.ProcessCommands();
-
-    PhysicsInitSystem init;
-    init.SetRebuildQuiescenceSeconds(0.0f);
-    init.Update(world, kDt);
-    world.ProcessCommands();
-
-    auto countColliders = [&]() {
-        int n = 0;
-        world.Query<ECS::Read<TerrainTileCollider>>()
-            .Each([&](ECS::EntityHandle, const TerrainTileCollider&) { ++n; });
-        return n;
-    };
-    ASSERT_EQ(countColliders(), 2);
-
-    // Stream tile (1,0) out.
-    terrain.UnloadTile(handle, TE::TileCoord{1, 0});
-
-    terrainPhysics.Update(world, kDt); // detects the orphan → destroy + release
-    world.ProcessCommands();
-
-    EXPECT_EQ(countColliders(), 1) << "the unloaded tile's collider entity must be torn down";
-
-    // The surviving collider is tile (0,0).
-    world.Query<ECS::Read<TerrainTileCollider>>()
-        .Each([&](ECS::EntityHandle, const TerrainTileCollider& tag) {
-            EXPECT_EQ(tag.TileX, 0);
-        });
-}
-
-namespace
-{
-// A minimal 2-tile tiled terrain + terrain entity, ready for TerrainPhysicsSystem
-// provisioning. Returns the terrain entity; the tiled handle is written out.
-GameEngine::ECS::EntityHandle SetUpTiledTerrainForColliders(
-    GameEngine::ECS::World& world, GameEngine::TerrainECS::TiledTerrainHandle& outHandle)
-{
-    using namespace GameEngine;
-    namespace TE = GameEngine::TerrainECS;
-
-    TE::TiledTerrainConfig cfg{};
-    cfg.WorldSizeX = 2048.0f;
-    cfg.WorldSizeZ = 1024.0f;
-    cfg.HeightScale = 64.0f;
-    cfg.SamplesPerMeter = 1.0f;
-    auto& terrain = TE::TerrainService::Get();
-    outHandle = terrain.CreateTiledTerrain(cfg);
-    for (int32 x = 0; x < 2; ++x)
-    {
-        auto* tile = terrain.LoadTile(outHandle, TE::TileCoord{x, 0});
-        tile->LodState = TE::TileLodState::Full;
-        tile->MarkFullDirty();
-    }
-
-    auto terrainEntity = world.CreateEntity();
-    Components::Terrain tc{};
-    tc.SizeX = 2048.0f;
-    tc.SizeZ = 1024.0f;
-    tc.HeightScale = 64.0f;
-    tc.TiledTerrainHandle = outHandle.Index;
-    tc.TiledTerrainGeneration = outHandle.Generation;
-    world.AddComponentImmediate<Components::Terrain>(terrainEntity, tc);
-    world.AddComponentImmediate<Components::WorldTransform>(terrainEntity, Components::WorldTransform{});
-    return terrainEntity;
-}
-} // namespace
-
-// Per-tile collider entities are engine-created runtime state (review Fix 1):
-// they must carry RuntimeOnlyEntity so SaveSceneToFile excludes them. Without
-// the tag, a save-during-Play persists N ghost Transform-only entities per save.
-TEST(Physics, TiledColliderEntitiesAreRuntimeOnlyAndExcludedFromSave)
-{
-    using namespace GameEngine;
-    using namespace GameEngine::PhysicsECS;
-    using GameEngine::Components::RuntimeOnlyEntity;
-    using GameEngine::Components::TerrainTileCollider;
-    namespace TE = GameEngine::TerrainECS;
-
-    constexpr float32 kDt = 1.0f / 60.0f;
-
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    if (TE::TerrainService::IsInitialized())
-        TE::TerrainService::Shutdown();
-    TE::TerrainService::Initialize();
-    struct TerrainGuard
-    {
-        ~TerrainGuard() { if (TE::TerrainService::IsInitialized()) TE::TerrainService::Shutdown(); }
-    } terrainGuard;
-
-    ECS::World world;
-    TE::TiledTerrainHandle handle{};
-    SetUpTiledTerrainForColliders(world, handle);
-
-    TE::TerrainPhysicsSystem terrainPhysics;
-    terrainPhysics.Update(world, kDt);
-    world.ProcessCommands();
-
-    int colliderCount = 0;
-    int taggedCount = 0;
-    world.Query<ECS::Read<TerrainTileCollider>>()
-        .Each([&](ECS::EntityHandle e, const TerrainTileCollider&)
-        {
-            ++colliderCount;
-            if (world.HasComponent<RuntimeOnlyEntity>(e))
-                ++taggedCount;
-        });
-    ASSERT_EQ(colliderCount, 2);
-    EXPECT_EQ(taggedCount, 2) << "every provisioned tile collider must be RuntimeOnlyEntity-tagged";
-
-    // Serialize the world: the runtime-only collider entities must be dropped,
-    // while the authored terrain entity round-trips.
-    const GameEngine::TestUtils::ScopedTempDir sceneDirectory(
-        GameEngine::TestUtils::MakeUniqueTempDirectory("ge_tiled_collider_runtime_only"));
-    const auto scenePath = sceneDirectory.Path() / "ge_tiled_collider_runtime_only.scene";
-    ASSERT_TRUE(Scene::SaveSceneToFile(world, scenePath, Scene::SaveOptions{}));
-
-    ECS::World reloaded;
-    ASSERT_TRUE(Scene::LoadSceneFromFile(reloaded, scenePath,
-                                         Scene::LoadOptions{Scene::LoadMode::Replace}));
-
-    int reloadedColliders = 0;
-    int reloadedTotal = 0;
-    for (auto* arch : reloaded.GetAllArchetypes())
-    {
-        if (!arch)
-            continue;
-        for (const auto& h : arch->CollectEntities())
-        {
-            if (!h.IsValid() || !reloaded.IsValid(h))
-                continue;
-            ++reloadedTotal;
-            if (reloaded.HasComponent<TerrainTileCollider>(h))
-                ++reloadedColliders;
-        }
-    }
-    EXPECT_GE(reloadedTotal, 1) << "the authored terrain entity must survive the round-trip";
-    EXPECT_EQ(reloadedColliders, 0)
-        << "runtime-only tile collider entities must not be written to the scene";
-}
-
-namespace
-{
-// Every tile collider of a SetUpTiledTerrainForColliders terrain stands under its own tile: its
-// WorldTransform is the tile centre, and a downward ray at the centre of tile (1,0), away from the
-// origin, meets the ground the renderer draws there. A collider built at the origin leaves that
-// tile with no ground and stacks every tile's heightfield over the origin.
-void ExpectTileCollidersUnderTheirTiles(GameEngine::ECS::World& world,
-                                        GameEngine::TerrainECS::TiledTerrainHandle handle)
-{
-    using namespace GameEngine;
-    using namespace GameEngine::Physics;
-    using GameEngine::Components::TerrainTileCollider;
-    using GameEngine::Components::WorldTransform;
-    namespace TE = GameEngine::TerrainECS;
-
-    const TE::TiledTerrainData* tiled = TE::TerrainService::Get().GetTiledTerrainData(handle);
-    ASSERT_NE(tiled, nullptr);
-    const float32 tileSize = tiled->Config.TileWorldSize;
-
-    int colliderCount = 0;
-    world.Query<ECS::Read<TerrainTileCollider>, ECS::Read<WorldTransform>>()
-        .Each([&](ECS::EntityHandle, const TerrainTileCollider& tag, const WorldTransform& wt)
-        {
-            ++colliderCount;
-            const TE::TerrainTileData* tile = tiled->Tiles.at(TE::TileCoord{tag.TileX, tag.TileZ}).get();
-            EXPECT_FLOAT_EQ(wt.matrix[12], tile->WorldOriginX + tileSize * 0.5f) << "tile " << tag.TileX;
-            EXPECT_FLOAT_EQ(wt.matrix[14], tile->WorldOriginZ + tileSize * 0.5f) << "tile " << tag.TileX;
-        });
-    EXPECT_EQ(colliderCount, 2);
-
-    const TE::TerrainTileData* far = tiled->Tiles.at(TE::TileCoord{1, 0}).get();
-    const float32 centreX = far->WorldOriginX + tileSize * 0.5f;
-    const float32 centreZ = far->WorldOriginZ + tileSize * 0.5f;
-    const float32 drawn = far->Heightfield.SampleBilinear(0.5f, 0.5f) * tiled->Config.HeightScale;
-
-    RayCastQuery q{};
-    q.ray = Ray3D(Vector3(centreX, 10000.0f, centreZ), Vector3(0.0f, -1.0f, 0.0f));
-    q.maxDistance = 20000.0f;
-    RayCastResult hit{};
-    ASSERT_TRUE(PhysicsECS::PhysicsWorldService::Get().RayCast(q, hit) && hit.HasHit())
-        << "no collider under tile (1,0) at (" << centreX << ", " << centreZ << ")";
-    EXPECT_NEAR(hit.hitPoint.y, drawn, 0.5f) << "the collider under tile (1,0) is not that tile's ground";
-}
-} // namespace
-
-// Isolation guard: provisioning, the deferred flush and PhysicsInit called directly. The flush
-// must land each tile collider with the Transform, WorldTransform and collider layer the
-// provisioning queued, not with the defaults the collider components' requirements queue.
-TEST(Physics, TiledTerrainTileCollidersStandUnderTheirTiles)
-{
-    using namespace GameEngine;
-    using namespace GameEngine::PhysicsECS;
-    using GameEngine::Components::PhysicsCollider;
-    using GameEngine::Components::TerrainTileCollider;
-    using GameEngine::Components::Transform;
-    namespace TE = GameEngine::TerrainECS;
-
-    constexpr float32 kDt = 1.0f / 60.0f;
-
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    ScopedTerrainService terrainService;
-
-    ECS::World world;
-    TE::TiledTerrainHandle handle{};
-    SetUpTiledTerrainForColliders(world, handle);
-
-    TE::TerrainPhysicsSystem terrainPhysics;
-    terrainPhysics.Update(world, kDt);
-    world.ProcessCommands();
-
-    const TE::TiledTerrainData* tiled = TE::TerrainService::Get().GetTiledTerrainData(handle);
-    ASSERT_NE(tiled, nullptr);
-    world.Query<ECS::Read<TerrainTileCollider>, ECS::Read<Transform>, ECS::Read<PhysicsCollider>>()
-        .Each([&](ECS::EntityHandle, const TerrainTileCollider& tag, const Transform& local,
-                  const PhysicsCollider& collider)
-        {
-            const TE::TerrainTileData* tile = tiled->Tiles.at(TE::TileCoord{tag.TileX, tag.TileZ}).get();
-            EXPECT_FLOAT_EQ(local.matrix[12], tile->WorldOriginX + tiled->Config.TileWorldSize * 0.5f)
-                << "tile " << tag.TileX << ": the provisioned Transform was replaced";
-            EXPECT_EQ(collider.layer, Physics::Layers::Static) << "tile " << tag.TileX;
-        });
-
-    PhysicsInitSystem init;
-    init.Update(world, kDt);
-    world.ProcessCommands();
-
-    ExpectTileCollidersUnderTheirTiles(world, handle);
-}
-
-// The editor and the Player run TerrainPhysics, TransformHierarchy and PhysicsInit in one
-// dependency-ordered schedule, with the deferred commands flushed before each frame's systems
-// (Engine.cpp). Driven through the modules' own schedule contributions, the tile colliders a
-// frame provisions are built under their tiles on the next.
-TEST(Physics, TiledTerrainTileCollidersStandUnderTheirTilesThroughTheFrameSchedule)
-{
-    using namespace GameEngine;
-    namespace TE = GameEngine::TerrainECS;
-
-    constexpr float32 kDt = 1.0f / 60.0f;
-
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    ScopedTerrainService terrainService;
-
-    ECS::World world;
-    TE::TiledTerrainHandle handle{};
-    SetUpTiledTerrainForColliders(world, handle);
-
-    ECS::SystemScheduleBuilder builder;
-    builder.Add<Engine::Renderer::TransformHierarchySystem>("TransformHierarchy", ECS::SystemPhase::Extraction, 1);
-    PhysicsECS::AddPhysicsSystemsToSchedule(builder);
-    TE::AddTerrainSystemsToSchedule(builder, nullptr);
-    ECS::SystemManager manager;
-    // Partial: the rendering, spline and CBT systems the terrain systems also name are absent.
-    builder.BuildAndRegisterWithWaves(manager, ECS::ScheduleCompleteness::Partial);
-    ASSERT_TRUE(manager.GetExecutionPlan().IsValid());
-
-    for (int frame = 0; frame < 2; ++frame)
-    {
-        world.ProcessCommands();
-        manager.Update(world, kDt);
-    }
-
-    ExpectTileCollidersUnderTheirTiles(world, handle);
-}
 
 // A single (untiled) terrain's collider is queued with its shape in one flush; the shape's
 // required PhysicsCollider default must not replace the provisioned one.
@@ -2431,228 +3514,23 @@ TEST(Physics, PlanarTerrainColliderKeepsTheStaticLayer)
     EXPECT_EQ(collider->layer, Physics::Layers::Static);
 }
 
-// Safe orphan teardown (review Fix 3b): when a tile unloads, TerrainPhysicsSystem
-// frees the Jolt body immediately but the DestroyEntity is deferred. For the rest
-// of the frame the entity is still live, so its PhysicsBody must be reset (no
-// initialized=true over a freed handle) — nothing may dereference the freed body
-// before the deferred destroy lands.
-TEST(Physics, TiledColliderOrphanTeardownClearsBodyStateBeforeDeferredDestroy)
-{
-    using namespace GameEngine;
-    using namespace GameEngine::PhysicsECS;
-    using GameEngine::Components::PhysicsBody;
-    using GameEngine::Components::TerrainTileCollider;
-    namespace TE = GameEngine::TerrainECS;
-
-    constexpr float32 kDt = 1.0f / 60.0f;
-
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    if (TE::TerrainService::IsInitialized())
-        TE::TerrainService::Shutdown();
-    TE::TerrainService::Initialize();
-    struct TerrainGuard
-    {
-        ~TerrainGuard() { if (TE::TerrainService::IsInitialized()) TE::TerrainService::Shutdown(); }
-    } terrainGuard;
-    auto& terrain = TE::TerrainService::Get();
-
-    ECS::World world;
-    TE::TiledTerrainHandle handle{};
-    SetUpTiledTerrainForColliders(world, handle);
-
-    TE::TerrainPhysicsSystem terrainPhysics;
-    terrainPhysics.Update(world, kDt);
-    world.ProcessCommands();
-
-    PhysicsInitSystem init;
-    init.SetRebuildQuiescenceSeconds(0.0f);
-    init.Update(world, kDt);
-    world.ProcessCommands();
-
-    // Grab the collider entity serving tile (1,0), which we will unload.
-    ECS::EntityHandle orphan{};
-    world.Query<ECS::Read<TerrainTileCollider>>()
-        .Each([&](ECS::EntityHandle e, const TerrainTileCollider& tag)
-        {
-            if (tag.TileX == 1 && tag.TileZ == 0)
-                orphan = e;
-        });
-    ASSERT_TRUE(orphan.IsValid());
-    ASSERT_TRUE(world.GetComponent<PhysicsBody>(orphan)->initialized);
-
-    // Stream tile (1,0) out, then run the teardown sweep — the DestroyEntity is
-    // deferred (NOT flushed here).
-    terrain.UnloadTile(handle, TE::TileCoord{1, 0});
-    terrainPhysics.Update(world, kDt);
-
-    // The entity is still live this frame; its body state must be cleared so a
-    // late consumer can't touch the freed Jolt handle.
-    ASSERT_TRUE(world.IsValid(orphan)) << "DestroyEntity should still be pending (deferred)";
-    const auto* pb = world.GetComponent<PhysicsBody>(orphan);
-    ASSERT_NE(pb, nullptr);
-    EXPECT_FALSE(pb->initialized) << "freed orphan body must be marked uninitialized";
-    EXPECT_FALSE(pb->body.IsValid()) << "freed body handle must be nulled";
-    EXPECT_FALSE(pb->shape.IsValid()) << "freed shape handle must be nulled";
-    EXPECT_EQ(pb->childShapeCount, 0);
-
-    world.ProcessCommands(); // now the entity is actually destroyed
-}
-
-// Intra-frame provisioning dedup (review Fix 6): duplicating a terrain entity
-// copies the runtime TiledTerrainHandle. Both entities enumerate the same tiles,
-// so without dedup each tile gets two collider entities (double bodies forever).
-// First entity wins; the pool stays one collider per tile.
-TEST(Physics, DuplicatedTiledTerrainEntitiesProvisionCollidersOnce)
-{
-    using namespace GameEngine;
-    using namespace GameEngine::PhysicsECS;
-    using GameEngine::Components::TerrainTileCollider;
-    namespace TE = GameEngine::TerrainECS;
-
-    constexpr float32 kDt = 1.0f / 60.0f;
-
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    if (TE::TerrainService::IsInitialized())
-        TE::TerrainService::Shutdown();
-    TE::TerrainService::Initialize();
-    struct TerrainGuard
-    {
-        ~TerrainGuard() { if (TE::TerrainService::IsInitialized()) TE::TerrainService::Shutdown(); }
-    } terrainGuard;
-
-    ECS::World world;
-    TE::TiledTerrainHandle handle{};
-    SetUpTiledTerrainForColliders(world, handle);
-
-    // A duplicate terrain entity referencing the SAME tiled handle (what an
-    // editor "duplicate entity" produces before any re-provisioning).
-    auto dup = world.CreateEntity();
-    Components::Terrain tc{};
-    tc.SizeX = 2048.0f;
-    tc.SizeZ = 1024.0f;
-    tc.HeightScale = 64.0f;
-    tc.TiledTerrainHandle = handle.Index;
-    tc.TiledTerrainGeneration = handle.Generation;
-    world.AddComponentImmediate<Components::Terrain>(dup, tc);
-    world.AddComponentImmediate<Components::WorldTransform>(dup, Components::WorldTransform{});
-
-    TE::TerrainPhysicsSystem terrainPhysics;
-    terrainPhysics.Update(world, kDt);
-    world.ProcessCommands();
-
-    int colliderCount = 0;
-    world.Query<ECS::Read<TerrainTileCollider>>()
-        .Each([&](ECS::EntityHandle, const TerrainTileCollider&) { ++colliderCount; });
-    EXPECT_EQ(colliderCount, 2)
-        << "two entities sharing a tiled handle must provision one collider per tile, not double";
-}
-
-// ---- Planet (spherical terrain) per-face colliders ----
-
-namespace
-{
-using GameEngine::Components::TerrainPlanetFaceCollider;
-
-// A spherical terrain entity at the world origin (the planet is centred there).
-GameEngine::ECS::EntityHandle CreatePlanetEntity(GameEngine::ECS::World& world, float radius,
-                                                 float reliefAmp)
-{
-    using namespace GameEngine;
-    auto e = world.CreateEntity();
-    Components::Terrain t{};
-    t.Domain = Components::TerrainDomain::Spherical;
-    t.PlanetRadius = radius;
-    world.AddComponentImmediate<Components::Terrain>(e, t);
-    // Base relief is the companion component the planet-collider provisioner reads —
-    // the collider height field must match what the renderer draws (height-match).
-    Components::TerrainPlanetRelief relief{};
-    relief.Amplitude = reliefAmp;
-    relief.Frequency = 6.0f;
-    relief.Octaves = 3u;
-    world.AddComponentImmediate<Components::TerrainPlanetRelief>(e, relief);
-    world.AddComponentImmediate<Components::WorldTransform>(e, Components::WorldTransform{});
-    return e;
-}
-
-int CountPlanetFaceColliders(GameEngine::ECS::World& world)
-{
-    using namespace GameEngine;
-    int n = 0;
-    world.Query<ECS::Read<TerrainPlanetFaceCollider>>()
-        .Each([&](ECS::EntityHandle, const TerrainPlanetFaceCollider&) { ++n; });
-    return n;
-}
-
-// World surface point of the collider at grid cell (i,j) of `face` (planet at origin) —
-// reconstructed from the SAME frame + sample the provisioner bakes, so tests can place a
-// body exactly on an off-centre patch cell.
-GameEngine::Vector3 FaceSurfaceWorld(GameEngine::uint32 face, GameEngine::uint32 i,
-                                     GameEngine::uint32 j, float radius, float reliefAmp)
-{
-    using namespace GameEngine;
-    TerrainECS::PlanetColliderParams p{};
-    p.Radius = radius;
-    p.ReliefAmplitude = reliefAmp;
-    p.ReliefFrequency = 6.0f;
-    p.ReliefOctaves = 3u;
-    const uint32 dim = TerrainECS::kPlanetFaceColliderDim;
-    std::vector<float> patch(static_cast<size_t>(dim) * dim, 0.0f);
-    float lo = 0.0f, hi = 0.0f;
-    TerrainECS::GeneratePlanetFacePatch(face, p, dim, CBTTerrain::SphereSculptSampler{},
-                                        CBTTerrain::SphereAnalyticModifierSet{}, 0, 0,
-                                        static_cast<int32_t>(dim) - 1,
-                                        static_cast<int32_t>(dim) - 1, patch, lo, hi);
-    const float sample = patch[static_cast<size_t>(j) * dim + i];
-    std::array<float, 3> ta, n, tb;
-    TerrainECS::ComputePlanetFaceFrame(face, ta, n, tb);
-    const float R = radius;
-    const float scale = 2.0f * R / static_cast<float>(dim - 1);
-    const float lx = -R + static_cast<float>(i) * scale;
-    const float lz = -R + static_cast<float>(j) * scale;
-    const float ly = sample;
-    return Vector3(ta[0] * lx + n[0] * ly + tb[0] * lz, ta[1] * lx + n[1] * ly + tb[1] * lz,
-                   ta[2] * lx + n[2] * ly + tb[2] * lz);
-}
-
-// The +Y face patch centre sample (the pole surface height), regenerated from the same
-// params + no sculpt the provisioner uses — the render/collider height a body must rest on.
-float PoleSurfaceHeight(float radius, float reliefAmp)
-{
-    using namespace GameEngine;
-    TerrainECS::PlanetColliderParams p{};
-    p.Radius = radius;
-    p.ReliefAmplitude = reliefAmp;
-    p.ReliefFrequency = 6.0f;
-    p.ReliefOctaves = 3u;
-    const uint32 dim = TerrainECS::kPlanetFaceColliderDim;
-    std::vector<float> patch(static_cast<size_t>(dim) * dim, 0.0f);
-    float lo = 0.0f, hi = 0.0f;
-    TerrainECS::GeneratePlanetFacePatch(2 /*+Y*/, p, dim, CBTTerrain::SphereSculptSampler{},
-                                        CBTTerrain::SphereAnalyticModifierSet{}, 0, 0,
-                                        static_cast<int32_t>(dim) - 1,
-                                        static_cast<int32_t>(dim) - 1, patch, lo, hi);
-    return patch[(dim / 2) * dim + (dim / 2)];
-}
-} // namespace
-
-// Play-enter provisions exactly six per-face colliders (one Jolt body each); a domain
-// switch back to Planar releases them; a double cycle holds 6 -> 0 -> 6 -> 0 without
-// leaking planet-face slots (the E6 4->0->4->0 proof, generalized to the sphere).
 // ---- Paged terrain colliders: one body per finest page inside a CPU window (design page-streaming D3) ----
 
 namespace
 {
 namespace PagedTE = GameEngine::TerrainECS;
 
-// A 2048 x 1024 m paged terrain (16 x 8 level-0 pages at 1 m) on an entity, its two tiles loaded at
-// Full as well: the oracle's heights, which the page bodies do not read. Frame drives the
-// terrain's height pages as the extraction does (the dynamic bodies' windows, the request, the
-// update), then TerrainPhysicsSystem and the flush.
+// A paged terrain at 1 m on an entity, by default 2048 x 1024 m (16 x 8 level-0 pages, more than one
+// tile's pages: colliders only in the windows), its two tiles loaded at Full as well: the oracle's
+// heights, which the page bodies do not read. Frame drives the terrain's height pages as the
+// extraction does (the dynamic bodies' windows, the request, the update), then TerrainPhysicsSystem
+// and the flush.
 class PagedColliderTerrain
 {
 public:
-    explicit PagedColliderTerrain(GameEngine::ECS::World& world)
-        : Paged(PagedTE::Test::CreatePagedTiledTerrain(PagedTE::TerrainService::Get(), 2048.0f, 1024.0f, 64.0f))
+    explicit PagedColliderTerrain(GameEngine::ECS::World& world, GameEngine::float32 sizeX = 2048.0f,
+                                  GameEngine::float32 sizeZ = 1024.0f)
+        : Paged(PagedTE::Test::CreatePagedTiledTerrain(PagedTE::TerrainService::Get(), sizeX, sizeZ, 64.0f))
     {
         using namespace GameEngine;
         PagedTE::TerrainService& service = PagedTE::TerrainService::Get();
@@ -2699,7 +3577,7 @@ public:
     // One frame of the height pages alone: the windows the next TerrainPhysicsSystem update reads.
     void StreamPages(GameEngine::ECS::World& world, const GameEngine::Mathematics::Vector3& camera)
     {
-        PagedTE::TerrainHeightPages& pages = PagedTE::TerrainService::Get().GetHeightPages();
+        PagedTE::TerrainPages& pages = PagedTE::TerrainService::Get().GetTerrainPages();
         pages.GatherBodyWindows(world);
         pages.Request(Paged.Request, {&camera, 1}, View());
         pages.Update(m_Frame++, 1.0f / 60.0f, false, 2);
@@ -2737,22 +3615,67 @@ private:
     GameEngine::uint64 m_Frame = 1;
 };
 
+// A dynamic body entity at world (x, 0, z): it opens a CPU window (GatherBodyWindows).
+void AddDynamicBody(GameEngine::ECS::World& world, const GameEngine::Mathematics::Vector3& at)
+{
+    using namespace GameEngine;
+    Components::PhysicsBody body{};
+    body.motionType = Physics::MotionType::Dynamic;
+    Components::WorldTransform transform{};
+    transform.Position.X = at.x;
+    transform.Position.Z = at.z;
+    const ECS::EntityHandle entity = world.CreateEntity();
+    world.AddComponentImmediate(entity, body);
+    world.AddComponentImmediate(entity, transform);
+}
+
 // A downward ray at world (x, z): the height it meets, or false.
 bool GroundUnder(GameEngine::float32 x, GameEngine::float32 z, GameEngine::float32& outY)
 {
     using namespace GameEngine::Physics;
     RayCastQuery q{};
-    q.ray = Ray3D(Vector3(x, 10000.0f, z), Vector3(0.0f, -1.0f, 0.0f));
+    q.origin = {x, 10000.0f, z};
+    q.direction = Vector3(0.0f, -1.0f, 0.0f);
     q.maxDistance = 20000.0f;
     RayCastResult hit{};
     if (!GameEngine::PhysicsECS::PhysicsWorldService::Get().RayCast(q, hit) || !hit.HasHit())
         return false;
-    outY = hit.hitPoint.y;
+    outY = static_cast<GameEngine::float32>(hit.hitPoint.Y);
     return true;
 }
 
+// Every page collider stands at its page's centre, and a downward ray inside a window page meets the
+// height the terrain's query answers there (the ground the renderer draws from the same pages).
+void ExpectPageCollidersUnderTheirPages(GameEngine::ECS::World& world, const PagedColliderTerrain& terrain)
+{
+    using namespace GameEngine;
+    using GameEngine::Components::TerrainPageCollider;
+    using GameEngine::Components::WorldTransform;
+
+    int colliders = 0;
+    world.Query<ECS::Read<TerrainPageCollider>, ECS::Read<WorldTransform>>().Each(
+        [&](const TerrainPageCollider& tag, const WorldTransform& transform) {
+            ++colliders;
+            const Mathematics::Vector3 centre = terrain.At((static_cast<float32>(tag.PageX) + 0.5f) * 128.0f,
+                                                           (static_cast<float32>(tag.PageZ) + 0.5f) * 128.0f);
+            EXPECT_DOUBLE_EQ(transform.Position.X, centre.x) << "page " << tag.PageX;
+            EXPECT_DOUBLE_EQ(transform.Position.Z, centre.z) << "page " << tag.PageZ;
+        });
+    EXPECT_EQ(colliders, 4);
+
+    const Mathematics::Vector3 point = terrain.At(330.5f, 270.25f);
+    PagedTE::SurfaceHeightSample drawn;
+    ASSERT_TRUE(PagedTE::TerrainService::Get()
+                    .SurfaceQuery(terrain.Paged.Component, Components::WorldTransform{})
+                    .SampleHeight(point, PagedTE::SurfaceHeightPolicy::RequireFinest, drawn));
+    float32 y = 0.0f;
+    ASSERT_TRUE(GroundUnder(point.x, point.z, y)) << "no collider under (" << point.x << ", " << point.z << ")";
+    EXPECT_NEAR(y, drawn.Height, 0.5f) << "the collider there is not the page's ground";
+}
 } // namespace
 
+// The camera at local (300, 300) keeps pages 1..2 x 1..2 on the CPU (its window): each gets one
+// built body and no other page does.
 TEST(Physics, PagedTerrainGetsABodyPerWindowPageAndNoneOutside)
 {
     using namespace GameEngine;
@@ -2784,32 +3707,437 @@ TEST(Physics, PagedTerrainGetsABodyPerWindowPageAndNoneOutside)
     EXPECT_FALSE(GroundUnder(outside.x, outside.z, y)) << "a page outside every window has a body";
 }
 
-TEST(Physics, APageColliderFollowsTerrainElevationAndHeightScaleEdits)
+// The oracle: a page body and the tile over the same ground, both filled from the same source in the
+// test, hold the same samples. Page (7, 3) spans lattice 896..1024 x 384..512 of tile (0, 0); its
+// far column, the page's apron, is the tile's last (the seam with tile (1, 0)).
+TEST(Physics, APageBodyHoldsTheTileSamplesInsideAndOnTheApron)
 {
     using namespace GameEngine;
+    using GameEngine::Components::HeightFieldColliderShape;
+
     ScopedPhysicsWorldService svc(SmallDeterministicSettings());
     ScopedTerrainService terrainService;
     ECS::World world;
     PagedColliderTerrain terrain(world);
     PagedTE::TerrainPhysicsSystem terrainPhysics;
-    const auto camera = terrain.At(300.0f, 300.0f);
-    ASSERT_TRUE(terrain.ProvisionUntil(world, terrainPhysics, camera, 4));
+    ASSERT_TRUE(terrain.ProvisionUntil(world, terrainPhysics, terrain.At(1000.0f, 500.0f), 4));
 
-    terrain.Paged.Request.OriginY = 24.0f;
-    terrain.Paged.Request.HeightScale = 96.0f;
-    terrain.Frame(world, terrainPhysics, camera);
-
-    const auto entity = PagedColliderTerrain::FindPageCollider(world, 1, 1);
-    ASSERT_TRUE(world.IsValid(entity));
-    const auto* transform = world.GetComponent<Components::WorldTransform>(entity);
-    const auto* shape = world.GetComponent<Components::HeightFieldColliderShape>(entity);
-    ASSERT_NE(transform, nullptr);
+    const ECS::EntityHandle page = PagedColliderTerrain::FindPageCollider(world, 7, 3);
+    ASSERT_TRUE(page.IsValid());
+    const auto* shape = world.GetComponent<HeightFieldColliderShape>(page);
     ASSERT_NE(shape, nullptr);
-    EXPECT_FLOAT_EQ(transform->matrix[13], 24.0f);
-    EXPECT_FLOAT_EQ(shape->heightScale, 96.0f);
-    EXPECT_EQ(PagedColliderTerrain::CountPageColliders(world), 4);
+    EXPECT_FLOAT_EQ(shape->sizeX, 128.0f);
+    EXPECT_FLOAT_EQ(shape->heightScale, 64.0f);
+    const PhysicsECS::HeightFieldData pageData =
+        PhysicsECS::GetHeightFieldDataProvider()(shape->dataHandle, shape->dataGeneration, 0);
+    ASSERT_EQ(pageData.sampleCount, PagedTE::kFinestPageGridSamples);
+
+    // What tile (0, 0) holds there: the same source, read through no page.
+    const PagedTE::TiledTerrainData* tiled = PagedTE::TerrainService::Get().GetTiledTerrainData(terrain.Paged.Tiled);
+    const Terrain::HeightfieldData& tile = tiled->Tiles.at(PagedTE::TileCoord{0, 0})->Heightfield;
+    constexpr uint32 kFirstX = 7u * 128u;
+    constexpr uint32 kFirstZ = 3u * 128u;
+    const auto pageSample = [&pageData](uint32 x, uint32 z) {
+        return pageData.samples[static_cast<std::size_t>(z) * PagedTE::kFinestPageGridSamples + x];
+    };
+    EXPECT_EQ(pageSample(64, 64), tile.GetSample(kFirstX + 64, kFirstZ + 64)) << "an interior sample";
+    EXPECT_EQ(pageSample(128, 64), tile.GetSample(kFirstX + 128, kFirstZ + 64)) << "an apron sample on the seam";
+    EXPECT_EQ(pageSample(128, 128), tile.GetSample(kFirstX + 128, kFirstZ + 128)) << "the apron corner";
+    uint32 different = 0;
+    for (uint32 z = 0; z < PagedTE::kFinestPageGridSamples; ++z)
+        for (uint32 x = 0; x < PagedTE::kFinestPageGridSamples; ++x)
+            different += pageSample(x, z) == tile.GetSample(kFirstX + x, kFirstZ + z) ? 0u : 1u;
+    EXPECT_EQ(different, 0u) << "samples differ of " << PagedTE::kFinestPageGridSamples * PagedTE::kFinestPageGridSamples;
 }
 
+// A modifier edit over four by four samples of page (1, 1) reaches its body as a region of a new
+// version: the body is updated in place (the same body, rebuilt from no whole grid) and a ray there
+// meets the raised ground the terrain's query answers.
+TEST(Physics, APageEditUpdatesItsBodyInPlace)
+{
+    using namespace GameEngine;
+    using GameEngine::Components::HeightFieldColliderShape;
+    using GameEngine::Components::PhysicsBody;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedTerrainService terrainService;
+    ECS::World world;
+    PagedColliderTerrain terrain(world);
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    PhysicsECS::PhysicsInitSystem init;
+    const Mathematics::Vector3 camera = terrain.At(300.0f, 300.0f);
+    ASSERT_TRUE(terrain.ProvisionUntil(world, terrainPhysics, camera, 4));
+    init.Update(world, 1.0f / 60.0f);
+    world.ProcessCommands();
+    const ECS::EntityHandle page = PagedColliderTerrain::FindPageCollider(world, 1, 1);
+    ASSERT_TRUE(page.IsValid());
+    ASSERT_TRUE(world.GetComponent<PhysicsBody>(page)->initialized);
+    const Physics::BodyHandle bodyBefore = world.GetComponent<PhysicsBody>(page)->body;
+    const Mathematics::Vector3 point = terrain.At(201.0f, 201.0f);
+    float32 groundBefore = 0.0f;
+    ASSERT_TRUE(GroundUnder(point.x, point.z, groundBefore));
+
+    // Lattice samples 200..203 on both axes: page (1, 1)'s grid samples 72..75.
+    const PageStreaming::PageSampleRect rect{200, 200, 203, 203};
+    constexpr float32 kRaise = 0.25f; // normalized: 16 m at a height scale of 64
+    PagedTE::PagedTerrainRequest& request = terrain.Paged.Request;
+    auto layer = std::make_shared<PageStreaming::HeightPageLayer>(
+        1u, PageStreaming::BuildPageStoreLevels(request.Shape.SamplesX, request.Shape.SamplesZ));
+    layer->WriteLevel0(0, rect, std::vector<float32>(static_cast<std::size_t>(rect.Width()) * rect.Height(), kRaise));
+    request.Overlay = layer;
+    request.OverlayVersion = 1;
+    request.OverlayChanged = rect;
+    request.OverlayChangedSince = 0;
+    terrain.Frame(world, terrainPhysics, camera);
+
+    const auto* shape = world.GetComponent<HeightFieldColliderShape>(page);
+    ASSERT_NE(shape, nullptr);
+    const PhysicsECS::HeightFieldData data =
+        PhysicsECS::GetHeightFieldDataProvider()(shape->dataHandle, shape->dataGeneration, shape->lastBuiltVersion);
+    EXPECT_EQ(data.version, shape->lastBuiltVersion + 1u) << "the edit made no new version of the body";
+    ASSERT_TRUE(data.hasRegion);
+    EXPECT_EQ(data.regionMinX, 72);
+    EXPECT_EQ(data.regionMinZ, 72);
+    EXPECT_EQ(data.regionMaxX, 76);
+    EXPECT_EQ(data.regionMaxZ, 76);
+
+    init.Update(world, 1.0f / 60.0f);
+    world.ProcessCommands();
+    EXPECT_EQ(world.GetComponent<HeightFieldColliderShape>(page)->lastBuiltVersion, data.version);
+    EXPECT_EQ(world.GetComponent<PhysicsBody>(page)->body, bodyBefore) << "the body was rebuilt, not updated";
+    PagedTE::SurfaceHeightSample drawn;
+    ASSERT_TRUE(PagedTE::TerrainService::Get()
+                    .SurfaceQuery(terrain.Paged.Component, Components::WorldTransform{})
+                    .SampleHeight(point, PagedTE::SurfaceHeightPolicy::RequireFinest, drawn));
+    float32 groundAfter = 0.0f;
+    ASSERT_TRUE(GroundUnder(point.x, point.z, groundAfter));
+    EXPECT_NEAR(groundAfter, drawn.Height, 0.5f) << "the body is not the edited ground";
+    EXPECT_NEAR(groundAfter - groundBefore, kRaise * 64.0f, 0.5f);
+}
+
+// A dynamic body far from the camera keeps the finest body under it (design D3: the body windows are
+// independent of the view; "physics might need some accuracy even if not in the field of view").
+TEST(Physics, ADynamicBodyFarFromTheCameraKeepsTheFinestPageBodyUnderIt)
+{
+    using namespace GameEngine;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedTerrainService terrainService;
+    ECS::World world;
+    PagedColliderTerrain terrain(world);
+    // Local (1800, 700): page (14, 5), its window 13..14 x 4..5.
+    AddDynamicBody(world, terrain.At(1800.0f, 700.0f));
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    ASSERT_TRUE(terrain.ProvisionUntil(world, terrainPhysics, terrain.At(300.0f, 300.0f), 8));
+    EXPECT_TRUE(PagedColliderTerrain::FindPageCollider(world, 14, 5).IsValid()) << "no body under the far body";
+    EXPECT_TRUE(PagedColliderTerrain::FindPageCollider(world, 13, 4).IsValid());
+    EXPECT_TRUE(PagedColliderTerrain::FindPageCollider(world, 2, 2).IsValid()) << "and the camera keeps its own";
+}
+
+// A terrain with at most one tile's level-0 pages (1024 x 512 m: 9 x 5 pages) has a body on every
+// page that owns a cell wherever the camera is, so a ray at the corner farthest from the camera
+// meets the ground. The last page column and row own only the shared edge sample: 8 x 4 bodies.
+TEST(Physics, ATerrainOfOneTileOrLessHasABodyOnEveryPageWhereverTheCameraIs)
+{
+    using namespace GameEngine;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedTerrainService terrainService;
+    ECS::World world;
+    PagedColliderTerrain terrain(world, 1024.0f, 512.0f);
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    ASSERT_TRUE(terrain.ProvisionUntil(world, terrainPhysics, terrain.At(10.0f, 10.0f), 8 * 4))
+        << PagedColliderTerrain::CountPageColliders(world) << " page colliders";
+    PhysicsECS::PhysicsInitSystem init;
+    init.Update(world, 1.0f / 60.0f);
+    world.ProcessCommands();
+
+    const Mathematics::Vector3 farCorner = terrain.At(1020.0f, 508.0f);
+    PagedTE::SurfaceHeightSample drawn;
+    ASSERT_TRUE(PagedTE::TerrainService::Get()
+                    .SurfaceQuery(terrain.Paged.Component, Components::WorldTransform{})
+                    .SampleHeight(farCorner, PagedTE::SurfaceHeightPolicy::RequireFinest, drawn));
+    float32 y = 0.0f;
+    ASSERT_TRUE(GroundUnder(farCorner.x, farCorner.z, y)) << "no ground at the far corner";
+    EXPECT_NEAR(y, drawn.Height, 0.5f) << "the collider there is not the page's ground";
+}
+
+// A 512 m terrain at 2 samples a meter on a decoded heightmap base with no cooked store, paged by the
+// extraction's driver (RequestTiledTerrainPages): its query answers the heightmap's height, its whole
+// level 0 (9 x 9 pages) stays in the CPU window, and a body stands on each of the 8 x 8 pages that own a cell.
+TEST(Physics, AHeightmapTerrainWithoutACookedStoreSamplesItsHeightmapAndHasABodyOnEveryPage)
+{
+    using namespace GameEngine;
+
+    Rendering::DeviceDesc desc{};
+    desc.preferredAPI = Rendering::GraphicsAPI::Vulkan;
+    desc.enableDynamicRendering = true;
+    std::unique_ptr<Rendering::IDevice> device = Rendering::DeviceFactory::CreateDevice(desc);
+    if (!device || !device->Initialize(desc))
+        GTEST_SKIP() << "no Vulkan device: the driver reads the CBT arm from it";
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedTerrainService terrainService;
+    PagedTE::TerrainService& service = PagedTE::TerrainService::Get();
+
+    // A ramp: normalized height 0.5 u + 0.25 v over the footprint, which a bilinear sample keeps exact.
+    constexpr uint32 kRampSamples = 65;
+    constexpr float32 kHeightScale = 64.0f;
+    constexpr float32 kSize = 512.0f;
+    Terrain::HeightfieldData ramp(kRampSamples, kRampSamples);
+    for (uint32 z = 0; z < kRampSamples; ++z)
+        for (uint32 x = 0; x < kRampSamples; ++x)
+            ramp.SetSample(x, z, (0.5f * static_cast<float32>(x) + 0.25f * static_cast<float32>(z)) /
+                                     static_cast<float32>(kRampSamples - 1));
+    const GUID heightmap = GUID::Generate();
+    service.SeedDecodedHeightmapForTests(heightmap, ramp);
+
+    Components::Terrain component;
+    component.SizeX = kSize;
+    component.SizeZ = kSize;
+    component.HeightScale = kHeightScale;
+    component.SamplesPerMeter = 2.0f;
+    component.Domain = Components::TerrainDomain::Planar;
+    component.BaseSource = Components::TerrainBaseSource::HeightmapAsset;
+    component.TerrainAssetGuid.Set(heightmap);
+    const PagedTE::TiledTerrainHandle tiledHandle = service.CreateTiledTerrain(service.BuildTiledTerrainConfig(component, "", std::nullopt));
+    PagedTE::TiledTerrainData* tiled = service.GetTiledTerrainData(tiledHandle);
+    ASSERT_NE(tiled, nullptr);
+    Terrain::TerrainConfig renderConfig{};
+    renderConfig.HeightmapWidth = 3;
+    renderConfig.HeightmapHeight = 3;
+    renderConfig.WorldSizeX = kSize;
+    renderConfig.WorldSizeZ = kSize;
+    const PagedTE::TerrainHandle render = service.CreateTerrain(renderConfig);
+    tiled->GlobalGpuHandleIndex = render.Index;
+    tiled->GlobalGpuHandleGeneration = render.Generation;
+    component.TiledTerrainHandle = tiledHandle.Index;
+    component.TiledTerrainGeneration = tiledHandle.Generation;
+    ECS::World world;
+    const ECS::EntityHandle entity = world.CreateEntity();
+    world.AddComponentImmediate<Components::Terrain>(entity, component);
+    world.AddComponentImmediate<Components::WorldTransform>(entity, Components::WorldTransform{});
+
+    const float32 originX = tiled->WorldOriginX;
+    const float32 originZ = tiled->WorldOriginZ;
+    const PagedTE::TiledRenderExtent extent = PagedTE::ComputeTiledRenderExtent(tiled->Config);
+    const Mathematics::Vector3 camera{originX + 10.0f, 10.0f, originZ + 10.0f};
+    const Mathematics::Vector3 farPoint{originX + 500.0f, 10.0f, originZ + 380.0f};
+    PagedTE::TerrainPages& pages = service.GetTerrainPages();
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    for (uint64 frame = 1; frame < 2000 && PagedColliderTerrain::CountPageColliders(world) != 8 * 8; ++frame)
+    {
+        pages.GatherBodyWindows(world);
+        PagedTE::RequestTiledTerrainPages(service, *device, *tiled, extent, render, "Heightmap512", 0.0f, kHeightScale,
+                                          component.TargetPixelError, {&camera, 1}, {}, 0.0f);
+        pages.Update(frame, 1.0f / 60.0f, false, 2);
+        terrainPhysics.Update(world, 1.0f / 60.0f);
+        world.ProcessCommands();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    const PagedTE::SurfaceHeightQuery query = service.SurfaceQuery(component, Components::WorldTransform{});
+    EXPECT_NE(query.Edits().Source, 0u) << "the heightmap terrain's pages have no source";
+    for (const Mathematics::Vector3& point : {camera, farPoint})
+    {
+        const float32 u = (point.x - originX) / kSize;
+        const float32 v = (point.z - originZ) / kSize;
+        PagedTE::SurfaceHeightSample sample;
+        ASSERT_TRUE(query.SampleHeight(point, PagedTE::SurfaceHeightPolicy::RequireFinest, sample))
+            << "no finest height at (" << point.x << ", " << point.z << ")";
+        EXPECT_NEAR(sample.Height, kHeightScale * (0.5f * u + 0.25f * v), 0.01f);
+    }
+
+    ASSERT_EQ(PagedColliderTerrain::CountPageColliders(world), 8 * 8);
+    PhysicsECS::PhysicsInitSystem init;
+    init.Update(world, 1.0f / 60.0f);
+    world.ProcessCommands();
+    float32 y = 0.0f;
+    ASSERT_TRUE(GroundUnder(farPoint.x, farPoint.z, y)) << "no ground away from the camera";
+    EXPECT_NEAR(y, kHeightScale * (0.5f * 500.0f / kSize + 0.25f * 380.0f / kSize), 0.5f);
+}
+
+namespace
+{
+// A tilted plane plus a paraboloid in terrain-local meters whose lowest point, (250, 250), lies
+// inside a 512 m footprint: a capsule stands there without a slope to roll on.
+class BowlOnAPlane final : public GameEngine::TerrainECS::ITerrainHeightFunction
+{
+public:
+    explicit BowlOnAPlane(const GameEngine::TerrainECS::TerrainHeightFunctionContext&) {}
+
+    static GameEngine::float32 Height(GameEngine::float32 x, GameEngine::float32 z)
+    {
+        const GameEngine::float32 dx = x - 500.0f;
+        const GameEngine::float32 dz = z - 400.0f;
+        return 20.0f + 0.05f * x + 0.03f * z + 1.0e-4f * (dx * dx + dz * dz);
+    }
+
+    void HeightRow(GameEngine::float32 z, std::span<const GameEngine::float32> x, GameEngine::float32,
+                   std::span<GameEngine::float32> outMeters) const override
+    {
+        for (std::size_t i = 0; i < x.size(); ++i)
+            outMeters[i] = Height(x[i], z);
+    }
+
+    GameEngine::TerrainECS::TerrainHeightRange HeightRange(GameEngine::float32, GameEngine::float32,
+                                                           GameEngine::float32, GameEngine::float32,
+                                                           GameEngine::float32) const override
+    {
+        return {0.0f, 128.0f};
+    }
+};
+} // namespace
+
+// A terrain whose base is a registered height function: the CPU query answers the function's height
+// in meters, and a capsule dropped on its page colliders comes to rest on that height.
+TEST(Physics, ACapsuleOnAFunctionTerrainStandsOnTheFunctionsHeight)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::Physics;
+
+    Rendering::DeviceDesc desc{};
+    desc.preferredAPI = Rendering::GraphicsAPI::Vulkan;
+    desc.enableDynamicRendering = true;
+    std::unique_ptr<Rendering::IDevice> device = Rendering::DeviceFactory::CreateDevice(desc);
+    if (!device || !device->Initialize(desc))
+        GTEST_SKIP() << "no Vulkan device: the driver reads the CBT arm from it";
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedTerrainService terrainService;
+    PagedTE::TerrainService& service = PagedTE::TerrainService::Get();
+    constexpr const char* kFunctionName = "PhysicsSmokeTests.BowlOnAPlane";
+    ASSERT_TRUE(PagedTE::RegisterTerrainHeightFunction(
+        kFunctionName, &PagedTE::MakeTerrainHeightFunction<BowlOnAPlane>));
+
+    constexpr float32 kHeightScale = 128.0f;
+    constexpr float32 kSize = 512.0f;
+    Components::Terrain component;
+    component.SizeX = kSize;
+    component.SizeZ = kSize;
+    component.HeightScale = kHeightScale;
+    component.SamplesPerMeter = 2.0f;
+    component.Domain = Components::TerrainDomain::Planar;
+    component.BaseSource = Components::TerrainBaseSource::Function;
+    std::strncpy(component.HeightFunction, kFunctionName, sizeof(component.HeightFunction) - 1u);
+    component.BaseSeed = 3u;
+    ASSERT_TRUE(service.IsTiledTerrainBaseReady(component));
+    const PagedTE::TiledTerrainConfig config = service.BuildTiledTerrainConfig(component, "", std::nullopt);
+    ASSERT_NE(config.Base.HeightFunction, nullptr) << "the registered function was not built";
+    const PagedTE::TiledTerrainHandle tiledHandle = service.CreateTiledTerrain(config);
+    PagedTE::TiledTerrainData* tiled = service.GetTiledTerrainData(tiledHandle);
+    ASSERT_NE(tiled, nullptr);
+    Terrain::TerrainConfig renderConfig{};
+    renderConfig.HeightmapWidth = 3;
+    renderConfig.HeightmapHeight = 3;
+    renderConfig.WorldSizeX = kSize;
+    renderConfig.WorldSizeZ = kSize;
+    const PagedTE::TerrainHandle render = service.CreateTerrain(renderConfig);
+    tiled->GlobalGpuHandleIndex = render.Index;
+    tiled->GlobalGpuHandleGeneration = render.Generation;
+    component.TiledTerrainHandle = tiledHandle.Index;
+    component.TiledTerrainGeneration = tiledHandle.Generation;
+    ECS::World world;
+    const ECS::EntityHandle entity = world.CreateEntity();
+    world.AddComponentImmediate<Components::Terrain>(entity, component);
+    world.AddComponentImmediate<Components::WorldTransform>(entity, Components::WorldTransform{});
+
+    const float32 originX = tiled->WorldOriginX;
+    const float32 originZ = tiled->WorldOriginZ;
+    const PagedTE::TiledRenderExtent extent = PagedTE::ComputeTiledRenderExtent(tiled->Config);
+    const Mathematics::Vector3 camera{originX + 10.0f, 10.0f, originZ + 10.0f};
+    PagedTE::TerrainPages& pages = service.GetTerrainPages();
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    for (uint64 frame = 1; frame < 2000 && PagedColliderTerrain::CountPageColliders(world) != 8 * 8; ++frame)
+    {
+        pages.GatherBodyWindows(world);
+        PagedTE::RequestTiledTerrainPages(service, *device, *tiled, extent, render, "Function512", 0.0f, kHeightScale,
+                                          component.TargetPixelError, {&camera, 1}, {}, 0.0f);
+        pages.Update(frame, 1.0f / 60.0f, false, 2);
+        terrainPhysics.Update(world, 1.0f / 60.0f);
+        world.ProcessCommands();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    const PagedTE::SurfaceHeightQuery query = service.SurfaceQuery(component, Components::WorldTransform{});
+    const Mathematics::Vector3 points[] = {camera, {originX + 470.3f, 10.0f, originZ + 81.7f}};
+    for (const Mathematics::Vector3& point : points)
+    {
+        PagedTE::SurfaceHeightSample sample;
+        ASSERT_TRUE(query.SampleHeight(point, PagedTE::SurfaceHeightPolicy::RequireFinest, sample))
+            << "no finest height at (" << point.x << ", " << point.z << ")";
+        EXPECT_NEAR(sample.Height, BowlOnAPlane::Height(point.x - originX, point.z - originZ), 1.0e-3f);
+    }
+
+    ASSERT_EQ(PagedColliderTerrain::CountPageColliders(world), 8 * 8);
+    PhysicsECS::PhysicsInitSystem init;
+    init.Update(world, 1.0f / 60.0f);
+    world.ProcessCommands();
+
+    constexpr float32 kLowestX = 250.0f;
+    constexpr float32 kLowestZ = 250.0f;
+    const float32 ground = BowlOnAPlane::Height(kLowestX, kLowestZ);
+    PhysicsWorld& pw = PhysicsECS::PhysicsWorldService::Get();
+    CapsuleShapeDef capsuleDef{};
+    BodySettings capsuleSettings{};
+    capsuleSettings.shape = pw.CreateShape(capsuleDef);
+    capsuleSettings.motionType = MotionType::Dynamic;
+    capsuleSettings.layer = Layers::Dynamic;
+    capsuleSettings.mass = 1.0f;
+    const float32 standing = capsuleDef.halfHeight + capsuleDef.radius;
+    capsuleSettings.position = WorldPosition{originX + kLowestX, ground + standing + 0.25f, originZ + kLowestZ};
+    const BodyHandle capsule = pw.CreateBody(capsuleSettings);
+    ASSERT_TRUE(capsule.IsValid());
+    for (int step = 0; step < 120; ++step)
+        pw.Step(1.0f / 60.0f, 1);
+    EXPECT_NEAR(pw.GetBodyTransform(capsule).position.Y, ground + standing, 0.02)
+        << "the capsule did not come to rest on the function's height";
+}
+
+// A 576 x 300 m terrain paged on its tile lattice, which reaches past x = 576 m: the page that
+// crosses the authored edge has ground up to the edge and none past it.
+TEST(Physics, ThePageColliderOverTheAuthoredEdgeHasNoGroundPastIt)
+{
+    using namespace GameEngine;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedTerrainService terrainService;
+    ECS::World world;
+    PagedColliderTerrain terrain(world, 576.0f, 300.0f);
+    const PagedTE::TiledTerrainData* tiled = PagedTE::TerrainService::Get().GetTiledTerrainData(terrain.Paged.Tiled);
+    ASSERT_NE(tiled, nullptr);
+    const PagedTE::TiledRenderExtent extent = PagedTE::ComputeTiledRenderExtent(tiled->Config);
+    ASSERT_GE(extent.WorldSizeX, 588.0f) << "the premise: the tile lattice reaches past the authored edge";
+    PagedTE::PageRequestTerrain& shape = terrain.Paged.Request.Shape;
+    shape.SamplesX = extent.UnifiedWidth;
+    shape.SamplesZ = extent.UnifiedHeight;
+    shape.Level0TexelX = extent.WorldSizeX / static_cast<float32>(extent.UnifiedWidth - 1u);
+    shape.Level0TexelZ = extent.WorldSizeZ / static_cast<float32>(extent.UnifiedHeight - 1u);
+
+    // Page 4 on X (lattice samples 512 to 640) crosses the edge at 576.
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    const Mathematics::Vector3 camera = terrain.At(560.0f, 150.0f);
+    for (int attempt = 0; attempt < 2000 && !PagedColliderTerrain::FindPageCollider(world, 4, 1).IsValid(); ++attempt)
+    {
+        terrain.Frame(world, terrainPhysics, camera);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(PagedColliderTerrain::FindPageCollider(world, 4, 1).IsValid()) << "page (4, 1) never got a collider";
+    PhysicsECS::PhysicsInitSystem init;
+    init.Update(world, 1.0f / 60.0f);
+    world.ProcessCommands();
+
+    float32 y = 0.0f;
+    const Mathematics::Vector3 inside = terrain.At(575.5f, 150.0f);
+    const Mathematics::Vector3 nextCell = terrain.At(576.5f, 150.0f);
+    const Mathematics::Vector3 past = terrain.At(588.0f, 150.0f);
+    EXPECT_TRUE(GroundUnder(inside.x, inside.z, y)) << "no ground inside the authored edge";
+    EXPECT_FALSE(GroundUnder(nextCell.x, nextCell.z, y)) << "ground in the cell past the authored edge, at y = " << y;
+    EXPECT_FALSE(GroundUnder(past.x, past.z, y)) << "ground 12 m past the authored edge, at y = " << y;
+}
+
+// When the camera moves on, the pages it left lose their colliders and their page slots, and the
+// pages it reached get theirs.
 TEST(Physics, APageColliderIsTornDownWhenItsPageLeavesEveryWindow)
 {
     using namespace GameEngine;
@@ -2836,6 +4164,8 @@ TEST(Physics, APageColliderIsTornDownWhenItsPageLeavesEveryWindow)
     EXPECT_TRUE(PagedColliderTerrain::FindPageCollider(world, 11, 5).IsValid());
 }
 
+// A page slot release checks the generation: a handle kept past its release frees nothing, even
+// when a new slot took its index. ReleaseAllPagePhysicsHandles (Play exit) frees every slot.
 TEST(Physics, AStalePageSlotReleaseFreesNothingAndReleaseAllFreesEverySlot)
 {
     using namespace GameEngine;
@@ -2875,1151 +4205,848 @@ TEST(Physics, AStalePageSlotReleaseFreesNothingAndReleaseAllFreesEverySlot)
     EXPECT_EQ(service.ResolvePageCollider(other.Index, other.Generation), nullptr);
 }
 
-TEST(Physics, PlanetTerrainProvisionsSixFaceCollidersLifecycle)
+// Page collider entities are engine-created runtime state: they carry RuntimeOnlyEntity, and a saved
+// scene holds the terrain and none of them.
+TEST(Physics, PageColliderEntitiesAreRuntimeOnlyAndExcludedFromSave)
 {
     using namespace GameEngine;
-    using namespace GameEngine::PhysicsECS;
-    using GameEngine::Components::PhysicsBody;
-    namespace TE = GameEngine::TerrainECS;
-    constexpr float32 kDt = 1.0f / 60.0f;
+    using GameEngine::Components::RuntimeOnlyEntity;
+    using GameEngine::Components::TerrainPageCollider;
 
     ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    if (TE::TerrainService::IsInitialized())
-        TE::TerrainService::Shutdown();
-    TE::TerrainService::Initialize();
-    struct G
-    {
-        ~G() { if (TE::TerrainService::IsInitialized()) TE::TerrainService::Shutdown(); }
-    } g;
-
+    ScopedTerrainService terrainService;
     ECS::World world;
-    auto planet = CreatePlanetEntity(world, 2000.0f, 60.0f);
+    PagedColliderTerrain terrain(world);
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    ASSERT_TRUE(terrain.ProvisionUntil(world, terrainPhysics, terrain.At(300.0f, 300.0f), 4));
 
-    TE::TerrainPhysicsSystem physics;
-    PhysicsInitSystem init;
-    init.SetRebuildQuiescenceSeconds(0.0f);
+    int tagged = 0;
+    world.Query<ECS::Read<TerrainPageCollider>>().Each([&](ECS::EntityHandle entity, const TerrainPageCollider&) {
+        tagged += world.HasComponent<RuntimeOnlyEntity>(entity) ? 1 : 0;
+    });
+    EXPECT_EQ(tagged, 4);
 
-    // Enter: six face collider entities, each building a Jolt body.
-    physics.Update(world, kDt);
-    world.ProcessCommands();
-    EXPECT_EQ(CountPlanetFaceColliders(world), 6) << "one collider entity per cube face";
-    init.Update(world, kDt);
-    world.ProcessCommands();
-    int built = 0;
-    world.Query<ECS::Read<TerrainPlanetFaceCollider>, ECS::Read<PhysicsBody>>()
-        .Each([&](ECS::EntityHandle, const TerrainPlanetFaceCollider&, const PhysicsBody& b)
-              { if (b.initialized) ++built; });
-    EXPECT_EQ(built, 6) << "each face collider must build a Jolt body";
-    EXPECT_EQ(TE::TerrainService::Get().GetPlanetFacePhysicsSlotCountForTests(), 6u);
-
-    // Domain switch Spherical -> Planar: the six sphere faces are torn down.
-    world.GetComponentForWrite<Components::Terrain>(planet)->Domain =
-        Components::TerrainDomain::Planar;
-    physics.Update(world, kDt);
-    world.ProcessCommands();
-    EXPECT_EQ(CountPlanetFaceColliders(world), 0) << "faces released on Spherical->Planar";
-
-    // Back to Spherical: re-provision six.
-    world.GetComponentForWrite<Components::Terrain>(planet)->Domain =
-        Components::TerrainDomain::Spherical;
-    physics.Update(world, kDt);
-    world.ProcessCommands();
-    EXPECT_EQ(CountPlanetFaceColliders(world), 6);
-    init.Update(world, kDt);
-    world.ProcessCommands();
-
-    // Second teardown (the double cycle) — 0 again, pool never grew past six.
-    world.GetComponentForWrite<Components::Terrain>(planet)->Domain =
-        Components::TerrainDomain::Planar;
-    physics.Update(world, kDt);
-    world.ProcessCommands();
-    EXPECT_EQ(CountPlanetFaceColliders(world), 0);
-    EXPECT_LE(TE::TerrainService::Get().GetPlanetFacePhysicsSlotCountForTests(), 6u)
-        << "the double domain cycle must not leak planet-face slots";
+    const auto scenePath = std::filesystem::temp_directory_path() / "ge_page_collider_runtime_only.scene";
+    ASSERT_TRUE(Scene::WriteSceneFile(world, scenePath, Scene::SceneWriteOptions{}));
+    ECS::World reloaded;
+    ASSERT_TRUE(Scene::ReadSceneInto(reloaded, scenePath, Scene::SceneReadOptions{}));
+    int reloadedTotal = 0;
+    int reloadedColliders = 0;
+    for (auto* arch : reloaded.GetAllArchetypes())
+    {
+        if (!arch)
+            continue;
+        for (const auto& h : arch->CollectEntities())
+        {
+            if (!h.IsValid() || !reloaded.IsValid(h))
+                continue;
+            ++reloadedTotal;
+            reloadedColliders += reloaded.HasComponent<TerrainPageCollider>(h) ? 1 : 0;
+        }
+    }
+    EXPECT_GE(reloadedTotal, 1) << "the authored terrain entity must survive the round-trip";
+    EXPECT_EQ(reloadedColliders, 0);
+    std::error_code ec;
+    std::filesystem::remove(scenePath, ec);
 }
 
-// A terrain that switches Planar -> Spherical must shed the planar heightfield collider the
-// single-terrain branch put on the entity, then provision the six faces — no stray planar
-// body left under the planet.
-TEST(Physics, PlanetProvisioningShedsStalePlanarColliderOnDomainSwitch)
+// Provisioning, the deferred flush and PhysicsInit called directly: each page collider lands with
+// the transform and the static layer the provisioning queued, under its page.
+TEST(Physics, PageCollidersStandUnderTheirPages)
 {
     using namespace GameEngine;
-    using namespace GameEngine::PhysicsECS;
-    using GameEngine::Components::HeightFieldColliderShape;
-    using GameEngine::Components::PhysicsBody;
     using GameEngine::Components::PhysicsCollider;
-    namespace TE = GameEngine::TerrainECS;
-    constexpr float32 kDt = 1.0f / 60.0f;
+    using GameEngine::Components::TerrainPageCollider;
 
     ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    if (TE::TerrainService::IsInitialized())
-        TE::TerrainService::Shutdown();
-    TE::TerrainService::Initialize();
-    struct G
-    {
-        ~G() { if (TE::TerrainService::IsInitialized()) TE::TerrainService::Shutdown(); }
-    } g;
-
+    ScopedTerrainService terrainService;
     ECS::World world;
-    auto planet = CreatePlanetEntity(world, 2000.0f, 60.0f);
-    // Simulate the leftover planar collider a Planar->Spherical switch would strand.
-    HeightFieldColliderShape stale{};
-    stale.sizeX = 512.0f;
-    stale.sizeZ = 512.0f;
-    stale.heightScale = 1.0f;
-    world.AddComponentImmediate<HeightFieldColliderShape>(planet, stale);
-    world.AddComponentImmediate<PhysicsBody>(planet, PhysicsBody{});
-    world.AddComponentImmediate<PhysicsCollider>(planet, PhysicsCollider{});
-    ASSERT_TRUE(world.HasComponent<HeightFieldColliderShape>(planet));
-
-    TE::TerrainPhysicsSystem physics;
-    physics.Update(world, kDt);
+    PagedColliderTerrain terrain(world);
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    ASSERT_TRUE(terrain.ProvisionUntil(world, terrainPhysics, terrain.At(300.0f, 300.0f), 4));
+    world.Query<ECS::Read<TerrainPageCollider>, ECS::Read<PhysicsCollider>>().Each(
+        [](const TerrainPageCollider& tag, const PhysicsCollider& collider) {
+            EXPECT_EQ(collider.layer, Physics::Layers::Static) << "page " << tag.PageX << ", " << tag.PageZ;
+        });
+    PhysicsECS::PhysicsInitSystem init;
+    init.Update(world, 1.0f / 60.0f);
     world.ProcessCommands();
-
-    EXPECT_FALSE(world.HasComponent<HeightFieldColliderShape>(planet))
-        << "the stale planar heightfield collider must be shed on a planet";
-    EXPECT_EQ(CountPlanetFaceColliders(world), 6) << "the six face colliders still provision";
+    ExpectPageCollidersUnderTheirPages(world, terrain);
 }
 
-// A dynamic box dropped onto the pole of a small planet rests on the RENDERED surface
-// (base radius + relief), not a diverged approximation — the physics HEIGHT-MATCH oracle.
-TEST(Physics, PlanetColliderDroppedBoxLandsOnRenderedPoleSurface)
+// Through the modules' own schedule (TerrainPhysics, TransformHierarchy, PhysicsInit, the flush
+// before each frame), with the height pages streamed first as the extraction streams them: the page
+// colliders a frame provisions are built under their pages on the next.
+TEST(Physics, PageCollidersStandUnderTheirPagesThroughTheFrameSchedule)
 {
     using namespace GameEngine;
-    using namespace GameEngine::Physics;
-    using namespace GameEngine::PhysicsECS;
-    namespace TE = GameEngine::TerrainECS;
-    constexpr float32 kDt = 1.0f / 60.0f;
-    constexpr float32 kRadius = 2000.0f;
-    constexpr float32 kRelief = 60.0f;
 
     ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    auto& pw = PhysicsWorldService::Get();
-    if (TE::TerrainService::IsInitialized())
-        TE::TerrainService::Shutdown();
-    TE::TerrainService::Initialize();
-    struct G
-    {
-        ~G() { if (TE::TerrainService::IsInitialized()) TE::TerrainService::Shutdown(); }
-    } g;
-
+    ScopedTerrainService terrainService;
     ECS::World world;
-    CreatePlanetEntity(world, kRadius, kRelief);
+    PagedColliderTerrain terrain(world);
+    ASSERT_TRUE(PagedTE::Test::StreamPagesUntilTheCameraPageLands(PagedTE::TerrainService::Get(), terrain.Paged,
+                                                                  terrain.At(300.0f, 300.0f)));
 
-    TE::TerrainPhysicsSystem physics;
-    PhysicsInitSystem init;
-    init.SetRebuildQuiescenceSeconds(0.0f);
-    physics.Update(world, kDt);
-    world.ProcessCommands();
-    init.Update(world, kDt);
-    world.ProcessCommands();
-
-    const float poleH = PoleSurfaceHeight(kRadius, kRelief);
-
-    BoxShapeDef boxDef{};
-    boxDef.halfExtents = Vector3(0.5f, 0.5f, 0.5f);
-    const ShapeHandle boxShape = pw.CreateShape(boxDef);
-    BodySettings bs{};
-    bs.shape = boxShape;
-    bs.motionType = MotionType::Dynamic;
-    bs.layer = Layers::Dynamic;
-    bs.mass = 1.0f;
-    bs.position = Vector3(0.0f, poleH + 3.0f, 0.0f); // just above the +Y pole
-    bs.startAwake = true;
-    const BodyHandle box = pw.CreateBody(bs);
-    ASSERT_TRUE(box.IsValid());
-    pw.OptimizeBroadphase();
-
-    for (int i = 0; i < 400; ++i)
-        pw.Step(kDt, 1);
-
-    const float y = pw.GetBodyTransform(box).position.y;
-    EXPECT_NEAR(y, poleH + 0.5f, 0.5f)
-        << "box rest height must match the rendered pole surface (didn't tunnel / float)";
-}
-
-// A sculpt raise on ONE face refreshes only that face's collider (count oracle), and a box
-// asleep on the raised region wakes and settles on the new, higher surface (the E1 in-place
-// SetHeights + ActivateBodiesInAABB seam, driven by the sphere sculpt mirror).
-TEST(Physics, PlanetColliderSculptRefreshUpdatesOnlyDirtyFaceAndWakesBox)
-{
-    using namespace GameEngine;
-    using namespace GameEngine::Physics;
-    using namespace GameEngine::PhysicsECS;
-    using GameEngine::Components::HeightFieldColliderShape;
-    namespace TE = GameEngine::TerrainECS;
-    constexpr float32 kDt = 1.0f / 60.0f;
-    constexpr float32 kRadius = 2000.0f;
-    constexpr float32 kRelief = 60.0f;
-    constexpr uint32 kPlusY = 2u;
-
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    auto& pw = PhysicsWorldService::Get();
-    if (TE::TerrainService::IsInitialized())
-        TE::TerrainService::Shutdown();
-    TE::TerrainService::Initialize();
-    struct G
+    ECS::SystemScheduleBuilder builder;
+    builder.Add<Engine::Renderer::TransformHierarchySystem>("TransformHierarchy", ECS::SystemPhase::Extraction, 1);
+    PhysicsECS::AddPhysicsSystemsToSchedule(builder);
+    PagedTE::AddTerrainSystemsToSchedule(builder, nullptr);
+    ECS::SystemManager manager;
+    // Partial: the rendering, spline and CBT systems the terrain systems also name are absent.
+    builder.BuildAndRegisterWithWaves(manager, ECS::ScheduleCompleteness::Partial);
+    ASSERT_TRUE(manager.GetExecutionPlan().IsValid());
+    for (int frame = 0; frame < 2; ++frame)
     {
-        ~G() { if (TE::TerrainService::IsInitialized()) TE::TerrainService::Shutdown(); }
-    } g;
-    auto& terrain = TE::TerrainService::Get();
-
-    ECS::World world;
-    CreatePlanetEntity(world, kRadius, kRelief);
-
-    TE::TerrainPhysicsSystem physics;
-    PhysicsInitSystem init;
-    init.SetRebuildQuiescenceSeconds(0.0f);
-    physics.Update(world, kDt);
-    world.ProcessCommands();
-    init.Update(world, kDt);
-    world.ProcessCommands();
-
-    // Sleep a box on the pole. A tall box (half-extent 2 m) so the modest sculpt raise
-    // (< half-extent) lifts it without the one-sided heightfield surface passing over its
-    // centre — a single-frame raise larger than the box would drop it through.
-    const float poleH = PoleSurfaceHeight(kRadius, kRelief);
-    constexpr float kHalf = 2.0f;
-    BoxShapeDef boxDef{};
-    boxDef.halfExtents = Vector3(kHalf, kHalf, kHalf);
-    const ShapeHandle boxShape = pw.CreateShape(boxDef);
-    BodySettings bs{};
-    bs.shape = boxShape;
-    bs.motionType = MotionType::Dynamic;
-    bs.layer = Layers::Dynamic;
-    bs.mass = 1.0f;
-    bs.position = Vector3(0.0f, poleH + kHalf, 0.0f);
-    bs.startAwake = false;
-    const BodyHandle box = pw.CreateBody(bs);
-    ASSERT_TRUE(box.IsValid());
-    pw.OptimizeBroadphase();
-    for (int i = 0; i < 60; ++i)
-        pw.Step(kDt, 1);
-    const float ySlept = pw.GetBodyTransform(box).position.y;
-    ASSERT_NEAR(ySlept, poleH + kHalf, 0.2f) << "box must be asleep on the pole before the edit";
-
-    // Record each face collider's built version, keyed by face.
-    uint64 builtBefore[TE::kPlanetFaceCount] = {};
-    world.Query<ECS::Read<TerrainPlanetFaceCollider>, ECS::Read<HeightFieldColliderShape>>()
-        .Each([&](ECS::EntityHandle, const TerrainPlanetFaceCollider& tag,
-                  const HeightFieldColliderShape& s)
-              { if (tag.Face < TE::kPlanetFaceCount) builtBefore[tag.Face] = s.lastBuiltVersion; });
-
-    // Raise the +Y face centre with a broad sculpt dab: strength kRaise peaks at the pole, and
-    // angularRadius 0.4 rad stays well inside the +Y cube face (edge is ~0.785 rad away) so only
-    // that face's collider updates, while being >> the 2 m box footprint so the raise under the
-    // box is ~uniform kRaise. The raise is under the box half-extent so the box is lifted rather
-    // than passed through.
-    constexpr float kRaise = 1.0f;
-    terrain.SeedPlanetSculptMirrorForTests(/*dir*/ 0.0f, 1.0f, 0.0f, /*angularRadius*/ 0.4f, kRaise,
-                                           /*lower*/ false);
-
-    physics.Update(world, kDt);      // regenerates the +Y face region -> bumps its slot version
-    world.ProcessCommands();
-    init.Update(world, kDt);         // provider reports the region -> in-place SetHeights + wake
-    world.ProcessCommands();
-
-    // Only the +Y face's collider advanced; the other five are untouched.
-    uint64 builtAfter[TE::kPlanetFaceCount] = {};
-    world.Query<ECS::Read<TerrainPlanetFaceCollider>, ECS::Read<HeightFieldColliderShape>>()
-        .Each([&](ECS::EntityHandle, const TerrainPlanetFaceCollider& tag,
-                  const HeightFieldColliderShape& s)
-              { if (tag.Face < TE::kPlanetFaceCount) builtAfter[tag.Face] = s.lastBuiltVersion; });
-    for (uint32 f = 0; f < TE::kPlanetFaceCount; ++f)
-    {
-        if (f == kPlusY)
-            EXPECT_GT(builtAfter[f], builtBefore[f]) << "the edited +Y face collider must update";
-        else
-            EXPECT_EQ(builtAfter[f], builtBefore[f]) << "face " << f << " must be untouched";
+        world.ProcessCommands();
+        manager.Update(world, 1.0f / 60.0f);
     }
-
-    // The box wakes and is lifted onto the raised surface. Its PEAK height in the frames
-    // right after the edit is the wake + in-place-raise signal; long-term it slides down the
-    // sphere curvature under plain -Y gravity (radial gravity is out of scope — a body only
-    // rests indefinitely at the exact pole), so the enduring rest height is not asserted.
-    float peakY = ySlept;
-    for (int i = 0; i < 60; ++i)
-    {
-        pw.Step(kDt, 1);
-        peakY = std::max(peakY, pw.GetBodyTransform(box).position.y);
-    }
-    EXPECT_GT(peakY, ySlept + 0.4f)
-        << "the box never woke / rose after the sculpt raise (ActivateBodiesInAABB missing?)";
-    EXPECT_NEAR(peakY, poleH + kRaise + kHalf, 0.6f)
-        << "the box must be lifted onto the new raised pole surface";
+    ExpectPageCollidersUnderTheirPages(world, terrain);
 }
 
-// The planet-face provider composes with a non-unit heightScale: a synthetic face buffer at
-// heightScale=2 rests a box at raw*2, and an in-place region LOWER (routed through the
-// kPlanetFacePhysicsHandleBit discriminator) wakes the box, which falls to the new scaled
-// height. A lower (not a raise) keeps the one-sided heightfield below the box throughout.
-TEST(Physics, PlanetFaceProviderRespectsHeightScaleAndWakes)
+// When a page leaves every window its body is freed at once and its entity destroyed at the next
+// flush; until then the entity's body state is cleared, so nothing touches the freed Jolt handle.
+TEST(Physics, APageColliderLeftByItsWindowClearsItsBodyStateBeforeTheDeferredDestroy)
 {
     using namespace GameEngine;
-    using namespace GameEngine::Physics;
-    using namespace GameEngine::PhysicsECS;
-    using GameEngine::Components::HeightFieldColliderShape;
     using GameEngine::Components::PhysicsBody;
-    using GameEngine::Components::PhysicsCollider;
-    namespace TE = GameEngine::TerrainECS;
-    constexpr float32 kDt = 1.0f / 60.0f;
-    constexpr uint32 kDim = 16;
-    constexpr float32 kSize = 100.0f;
-    constexpr float32 kScale = 2.0f;    // heightScale != 1 (world = raw * 2)
-    constexpr float32 kFlatRaw = 10.0f;
-    constexpr float32 kLoweredRaw = 4.0f;
 
-    ScopedPhysicsWorldService svcp(SmallDeterministicSettings());
-    auto& pw = PhysicsWorldService::Get();
-    if (TE::TerrainService::IsInitialized())
-        TE::TerrainService::Shutdown();
-    TE::TerrainService::Initialize();
-    struct G
-    {
-        ~G() { if (TE::TerrainService::IsInitialized()) TE::TerrainService::Shutdown(); }
-    } g;
-    auto& terrain = TE::TerrainService::Get();
-
-    // A synthetic near-flat planet-face slot (one low edge row gives the encode range a real
-    // span so the in-place SetHeights path has headroom).
-    const auto handle = terrain.AcquirePlanetFacePhysicsHandle();
-    if (auto* data = terrain.ResolvePlanetFaceColliderForWrite(handle.Index, handle.Generation, kDim))
-    {
-        std::fill(data->Samples.begin(), data->Samples.end(), kFlatRaw);
-        for (uint32 x = 0; x < kDim; ++x)
-            data->Samples[x] = kLoweredRaw; // low row 0 -> range [4,10]
-        terrain.CommitPlanetFaceFull(handle.Index, handle.Generation);
-    }
-
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedTerrainService terrainService;
     ECS::World world;
-    auto e = world.CreateEntity();
-    world.AddComponentImmediate<Components::Transform>(e, Components::Transform{}); // identity
-    world.AddComponentImmediate<Components::WorldTransform>(e, Components::WorldTransform{});
-    PhysicsBody body{};
-    body.motionType = MotionType::Static;
-    body.gravityScale = 0.0f;
-    world.AddComponentImmediate<PhysicsBody>(e, body);
-    PhysicsCollider collider{};
-    collider.layer = Layers::Static;
-    world.AddComponentImmediate<PhysicsCollider>(e, collider);
-    HeightFieldColliderShape shape{};
-    shape.dataHandle = handle.Index; // includes kPlanetFacePhysicsHandleBit
-    shape.dataGeneration = handle.Generation;
-    shape.sizeX = kSize;
-    shape.sizeZ = kSize;
-    shape.heightScale = kScale;
-    world.AddComponentImmediate<HeightFieldColliderShape>(e, shape);
+    PagedColliderTerrain terrain(world);
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    ASSERT_TRUE(terrain.ProvisionUntil(world, terrainPhysics, terrain.At(300.0f, 300.0f), 4));
+    PhysicsECS::PhysicsInitSystem init;
+    init.Update(world, 1.0f / 60.0f);
+    world.ProcessCommands();
+    const ECS::EntityHandle orphan = PagedColliderTerrain::FindPageCollider(world, 2, 2);
+    ASSERT_TRUE(orphan.IsValid());
+    ASSERT_TRUE(world.GetComponent<PhysicsBody>(orphan)->initialized);
 
-    PhysicsInitSystem init;
-    init.SetRebuildQuiescenceSeconds(0.0f);
-    init.Update(world, kDt);
-    ASSERT_TRUE(world.GetComponent<PhysicsBody>(e)->initialized);
-    pw.OptimizeBroadphase();
+    // The window moves away; the sweep runs, the flush does not.
+    terrain.StreamPages(world, terrain.At(1500.0f, 700.0f));
+    terrainPhysics.Update(world, 1.0f / 60.0f);
 
-    // Box asleep on the flat surface at raw * scale (centre of the grid, well inside the
-    // flat region so it rests at kFlatRaw*kScale).
-    BoxShapeDef boxDef{};
-    boxDef.halfExtents = Vector3(0.5f, 0.5f, 0.5f);
-    const ShapeHandle boxShape = pw.CreateShape(boxDef);
-    BodySettings bs{};
-    bs.shape = boxShape;
-    bs.motionType = MotionType::Dynamic;
-    bs.layer = Layers::Dynamic;
-    bs.mass = 1.0f;
-    bs.position = Vector3(0.0f, kFlatRaw * kScale + 0.5f, 0.0f);
-    bs.startAwake = false;
-    const BodyHandle box = pw.CreateBody(bs);
-    for (int i = 0; i < 30; ++i)
-        pw.Step(kDt, 1);
-    ASSERT_NEAR(pw.GetBodyTransform(box).position.y, kFlatRaw * kScale + 0.5f, 0.1f)
-        << "box must rest at raw*heightScale on the flat planet-face collider";
+    ASSERT_TRUE(world.IsValid(orphan)) << "DestroyEntity should still be pending (deferred)";
+    const auto* body = world.GetComponent<PhysicsBody>(orphan);
+    ASSERT_NE(body, nullptr);
+    EXPECT_FALSE(body->initialized);
+    EXPECT_FALSE(body->body.IsValid());
+    EXPECT_FALSE(body->shape.IsValid());
+    world.ProcessCommands();
+    EXPECT_FALSE(world.IsValid(orphan));
+}
 
-    // Lower a central region in place (through the planet-face discriminator) and wake.
-    if (auto* data = terrain.ResolvePlanetFaceColliderForWrite(handle.Index, handle.Generation, kDim))
+// Two terrain entities sharing one tiled handle (an editor duplicate before re-provisioning) get one
+// collider per window page, not two.
+TEST(Physics, DuplicatedPagedTerrainEntitiesProvisionPageCollidersOnce)
+{
+    using namespace GameEngine;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedTerrainService terrainService;
+    ECS::World world;
+    PagedColliderTerrain terrain(world);
+    const ECS::EntityHandle duplicate = world.CreateEntity();
+    world.AddComponentImmediate<Components::Terrain>(duplicate, terrain.Paged.Component);
+    world.AddComponentImmediate<Components::WorldTransform>(duplicate, Components::WorldTransform{});
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    ASSERT_TRUE(terrain.ProvisionUntil(world, terrainPhysics, terrain.At(300.0f, 300.0f), 4));
+    terrain.Frame(world, terrainPhysics, terrain.At(300.0f, 300.0f));
+    EXPECT_EQ(PagedColliderTerrain::CountPageColliders(world), 4);
+}
+
+
+TEST(Physics, APageColliderFollowsTerrainElevationAndHeightScaleEdits)
+{
+    using namespace GameEngine;
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedTerrainService terrainService;
+    ECS::World world;
+    PagedColliderTerrain terrain(world);
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    const auto camera = terrain.At(300.0f, 300.0f);
+    ASSERT_TRUE(terrain.ProvisionUntil(world, terrainPhysics, camera, 4));
+
+    terrain.Paged.Request.OriginY = 24.0f;
+    terrain.Paged.Request.HeightScale = 96.0f;
+    terrain.Frame(world, terrainPhysics, camera);
+
+    const auto entity = PagedColliderTerrain::FindPageCollider(world, 1, 1);
+    ASSERT_TRUE(world.IsValid(entity));
+    const auto* transform = world.GetComponent<Components::WorldTransform>(entity);
+    const auto* shape = world.GetComponent<Components::HeightFieldColliderShape>(entity);
+    ASSERT_NE(transform, nullptr);
+    ASSERT_NE(shape, nullptr);
+    EXPECT_FLOAT_EQ(transform->Position.Y, 24.0f);
+    EXPECT_FLOAT_EQ(shape->heightScale, 96.0f);
+    EXPECT_EQ(PagedColliderTerrain::CountPageColliders(world), 4);
+}
+
+
+// ---- Streamed planet page bodies (design page-streaming-planets-r4-colliders 5) ----
+
+namespace
+{
+using GameEngine::Components::TerrainPlanetPageCollider;
+
+// A streamed 2 km planet centered on `center`, its pages generated at a constant height with
+// `level0Texel` meters between level-0 samples. The test streams its pages each frame as the
+// extraction does, with one camera relative to the center.
+class StreamedColliderPlanet
+{
+public:
+    static constexpr GameEngine::float64 kRadius = 2000.0;
+
+    StreamedColliderPlanet(GameEngine::ECS::World& world, GameEngine::float32 height,
+                           const GameEngine::Mathematics::Vector3& center = {},
+                           GameEngine::float32 level0Texel = 2.0f)
     {
-        for (uint32 z = 5; z < 11; ++z)
-            for (uint32 x = 5; x < 11; ++x)
-                data->Samples[z * kDim + x] = kLoweredRaw;
-        terrain.CommitPlanetFaceRegion(handle.Index, handle.Generation, 5, 5, 11, 11);
+        using namespace GameEngine;
+        Entity = world.CreateEntity();
+        Components::Terrain terrain{};
+        terrain.Domain = Components::TerrainDomain::Spherical;
+        terrain.PlanetRadius = static_cast<float32>(kRadius);
+        world.AddComponentImmediate<Components::Terrain>(Entity, terrain);
+        Components::WorldTransform transform{};
+        transform.Position = Mathematics::WorldPosition::FromVector3(center);
+        world.AddComponentImmediate<Components::WorldTransform>(Entity, transform);
+        Request.Center = center;
+        Request.Planet = static_cast<uint32>(Entity.id);
+        Request.GpuPages = false;
+        Request.Name = "planet";
+        Request.Shape.ReferenceRadius = kRadius;
+        Request.Shape.FaceSamples = PagedTE::PlanetFaceSamples(kRadius, level0Texel);
+        SetHeight(height, 1);
     }
-    init.Update(world, kDt);
 
-    for (int i = 0; i < 240; ++i)
+    // Generates the pages at `height` meters above the reference radius; a new `identity` restarts the
+    // stream, as a relief or radius edit does.
+    void SetHeight(GameEngine::float32 height, GameEngine::uint64 identity)
+    {
+        using namespace GameEngine;
+        PageStreaming::GeneratedPlanetLattice lattice;
+        lattice.ReferenceRadius = kRadius;
+        lattice.FaceSamples = Request.Shape.FaceSamples;
+        lattice.HeightRow = [height](std::span<const Mathematics::Vector3>, float32, std::span<float32> outHeights) {
+            std::fill(outHeights.begin(), outHeights.end(), height);
+        };
+        lattice.HeightRange = [height](const Mathematics::Vector3&, float32, float32) {
+            return PageStreaming::PageHeightRange{height, height};
+        };
+        Request.SourceIdentity = identity;
+        Request.Source.Generated = std::make_shared<const PageStreaming::GeneratedHeightPageProvider>(lattice);
+    }
+
+    void Frame(GameEngine::ECS::World& world, PagedTE::TerrainPhysicsSystem& system,
+               const GameEngine::Mathematics::Vector3& camera)
+    {
+        StreamPages(world, camera);
+        system.Update(world, 1.0f / 60.0f);
+        world.ProcessCommands();
+    }
+
+    void StreamPages(GameEngine::ECS::World& world, const GameEngine::Mathematics::Vector3& camera)
+    {
+        PagedTE::TerrainPages& pages = PagedTE::TerrainService::Get().GetTerrainPages();
+        pages.GatherBodyWindows(world);
+        pages.RequestPlanet(Request, {&camera, 1}, PagedColliderTerrain::View());
+        pages.Update(m_Frame++, 1.0f / 60.0f, false, 2);
+    }
+
+    // The pages that get a body in the planet's CPU windows now.
+    size_t BodyPageCount() const
+    {
+        PagedTE::PlanetCpuView view;
+        const PagedTE::TerrainPages* pages = PagedTE::TerrainService::Get().FindTerrainPages();
+        return pages && pages->FindPlanetCpuView(Request.Planet, view) ? view.BodyPages.size() : 0;
+    }
+
+    // Frames until every body page has a body on the current stream. False when that never happens.
+    bool ProvisionUntil(GameEngine::ECS::World& world, PagedTE::TerrainPhysicsSystem& system,
+                        const GameEngine::Mathematics::Vector3& camera)
+    {
+        for (int attempt = 0; attempt < 2000; ++attempt)
+        {
+            Frame(world, system, camera);
+            const size_t wanted = BodyPageCount();
+            if (wanted != 0 && CountBodies(world, Request.SourceIdentity) == static_cast<int>(wanted))
+                return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return false;
+    }
+
+    // The planet page bodies whose samples came from stream `identity`; 0 counts every body.
+    static int CountBodies(GameEngine::ECS::World& world, GameEngine::uint64 identity = 0)
+    {
+        int count = 0;
+        world.Query<GameEngine::ECS::Read<TerrainPlanetPageCollider>>().Each(
+            [&count, identity](const TerrainPlanetPageCollider& tag) {
+                if (identity == 0 || tag.Epoch == identity)
+                    ++count;
+            });
+        return count;
+    }
+
+    static std::vector<TerrainPlanetPageCollider> Bodies(GameEngine::ECS::World& world)
+    {
+        std::vector<TerrainPlanetPageCollider> tags;
+        world.Query<GameEngine::ECS::Read<TerrainPlanetPageCollider>>().Each(
+            [&tags](const TerrainPlanetPageCollider& tag) { tags.push_back(tag); });
+        return tags;
+    }
+
+    GameEngine::ECS::EntityHandle Entity{};
+    PagedTE::PlanetPagedRequest Request;
+
+private:
+    GameEngine::uint64 m_Frame = 1;
+};
+
+// A camera 5 m above the +Y pole of the planet.
+const GameEngine::Mathematics::Vector3 kPoleCamera{0.0f, 2015.0f, 0.0f};
+
+// The center of a planet whose +Y pole stands about 300 km from the origin.
+constexpr GameEngine::float64 kFarPlanetCenterY = 297990.0;
+const GameEngine::Mathematics::Vector3 kFarPlanetCenter{0.0f, static_cast<GameEngine::float32>(kFarPlanetCenterY), 0.0f};
+
+// Builds the backend bodies of the collider entities and flushes their components.
+void BuildBodies(GameEngine::ECS::World& world)
+{
+    GameEngine::PhysicsECS::PhysicsInitSystem init;
+    init.Update(world, 1.0f / 60.0f);
+    world.ProcessCommands();
+}
+} // namespace
+
+// The camera above the pole brings its window pages to the CPU: each gets one body, placed in its
+// chart frame, and a ray down near the pole meets the drawn surface.
+TEST(Physics, APlanetWindowPageGetsABodyAndARayDownMeetsTheDrawnSurface)
+{
+    using namespace GameEngine;
+    constexpr float32 kHeight = 10.0f;
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedTerrainService terrainService;
+    ECS::World world;
+    StreamedColliderPlanet planet(world, kHeight);
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    ASSERT_TRUE(planet.ProvisionUntil(world, terrainPhysics, kPoleCamera));
+    BuildBodies(world);
+
+    for (const TerrainPlanetPageCollider& tag : StreamedColliderPlanet::Bodies(world))
+        EXPECT_EQ(tag.Face, 2u) << "a window page near the +Y pole lies on another face";
+    for (const float32 offset : {0.0f, 3.25f, -11.5f})
+    {
+        float32 y = 0.0f;
+        ASSERT_TRUE(GroundUnder(offset, -offset * 0.5f, y)) << "no planet body under offset " << offset;
+        const float64 expected =
+            std::sqrt(std::pow(StreamedColliderPlanet::kRadius + kHeight, 2.0) - 1.25 * offset * offset);
+        EXPECT_NEAR(y, expected, 0.02) << "the planet body at offset " << offset << " is not the drawn surface";
+    }
+}
+
+// The pole's page bodies of a planet 300 km from the origin are built at their exact positions: a ray
+// down meets the drawn surface there within a millimeter.
+TEST(Physics, APlanetPageBodyFarFromTheOriginMeetsTheDrawnSurfaceWithinAMillimeter)
+{
+    using namespace GameEngine;
+    constexpr float32 kHeight = 10.0f;
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedTerrainService terrainService;
+    ECS::World world;
+    StreamedColliderPlanet planet(world, kHeight, kFarPlanetCenter);
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    ASSERT_TRUE(planet.ProvisionUntil(world, terrainPhysics, kPoleCamera));
+    BuildBodies(world);
+
+    for (const float64 offset : {0.0, 3.25, -11.5, 7.125, 19.75})
+    {
+        Physics::RayCastQuery query{};
+        query.origin = Physics::WorldPosition{offset, kFarPlanetCenterY + 2100.0, -offset * 0.5};
+        query.direction = Physics::Vector3(0.0f, -1.0f, 0.0f);
+        query.maxDistance = 200.0f;
+        Physics::RayCastResult hit{};
+        ASSERT_TRUE(PhysicsECS::PhysicsWorldService::Get().RayCast(query, hit) && hit.HasHit())
+            << "no planet body under offset " << offset;
+        const float64 expected = kFarPlanetCenterY +
+            std::sqrt(std::pow(StreamedColliderPlanet::kRadius + kHeight, 2.0) - 1.25 * offset * offset);
+        EXPECT_NEAR(hit.hitPoint.Y, expected, 0.001) << "the planet body at offset " << offset << " is not the drawn surface";
+    }
+}
+
+// A camera that leaves the pole for the other side of the planet takes the pole's pages out of every
+// window: their bodies are torn down and their slots released.
+TEST(Physics, APlanetPageBodyIsReleasedWhenItsPageLeavesEveryWindow)
+{
+    using namespace GameEngine;
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedTerrainService terrainService;
+    ECS::World world;
+    StreamedColliderPlanet planet(world, 10.0f);
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    ASSERT_TRUE(planet.ProvisionUntil(world, terrainPhysics, kPoleCamera));
+    const std::vector<TerrainPlanetPageCollider> poleBodies = StreamedColliderPlanet::Bodies(world);
+    ASSERT_FALSE(poleBodies.empty());
+
+    const Mathematics::Vector3 southCamera{0.0f, -2015.0f, 0.0f};
+    ASSERT_TRUE(planet.ProvisionUntil(world, terrainPhysics, southCamera));
+    planet.Frame(world, terrainPhysics, southCamera);
+    for (const TerrainPlanetPageCollider& tag : StreamedColliderPlanet::Bodies(world))
+        EXPECT_EQ(tag.Face, 3u) << "a body of a page outside every window is still alive";
+    const PagedTE::TerrainService& service = PagedTE::TerrainService::Get();
+    for (const TerrainPlanetPageCollider& tag : poleBodies)
+        EXPECT_EQ(service.ResolvePageCollider(tag.PhysicsHandleIndex, tag.PhysicsHandleGeneration), nullptr)
+            << "the slot of pole page (" << tag.PageX << ", " << tag.PageZ << ") was not released";
+}
+
+// A stream restart (a new relief) keeps a body under a probe at every frame: the old body stays until
+// the new stream's body for its page is built, then the probe meets the new surface.
+TEST(Physics, APlanetStreamRestartKeepsABodyUnderAProbeAtEveryFrame)
+{
+    using namespace GameEngine;
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedTerrainService terrainService;
+    ECS::World world;
+    StreamedColliderPlanet planet(world, 10.0f);
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    ASSERT_TRUE(planet.ProvisionUntil(world, terrainPhysics, kPoleCamera));
+    BuildBodies(world);
+
+    planet.SetHeight(20.0f, 2);
+    bool onNewSurface = false;
+    for (int frame = 0; frame < 2000 && !onNewSurface; ++frame)
+    {
+        planet.Frame(world, terrainPhysics, kPoleCamera);
+        BuildBodies(world);
+        float32 y = 0.0f;
+        ASSERT_TRUE(GroundUnder(0.5f, 0.25f, y)) << "no body under the probe at frame " << frame << " of the restart";
+        onNewSurface = std::abs(y - 2020.0f) < 0.05f;
+        if (!onNewSurface)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_TRUE(onNewSurface) << "the probe never met the restarted stream's surface";
+    planet.Frame(world, terrainPhysics, kPoleCamera);
+    BuildBodies(world);
+    planet.Frame(world, terrainPhysics, kPoleCamera);
+    EXPECT_EQ(StreamedColliderPlanet::CountBodies(world, 1), 0) << "a body of the old stream outlived its hand-over";
+}
+
+// A body asleep on the old surface wakes when the hand-over tears the old body down, and comes to rest
+// on the restarted stream's lower surface.
+TEST(Physics, APlanetHandOverWakesABodyAsleepOnTheOldSurface)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::Physics;
+    constexpr float32 kDt = 1.0f / 60.0f;
+    constexpr float32 kHalfExtent = 0.5f;
+    constexpr float32 kOldSurface = 2010.0f;
+    constexpr float32 kNewSurface = 2009.7f;
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedTerrainService terrainService;
+    ECS::World world;
+    StreamedColliderPlanet planet(world, kOldSurface - 2000.0f);
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    ASSERT_TRUE(planet.ProvisionUntil(world, terrainPhysics, kPoleCamera));
+    BuildBodies(world);
+
+    PhysicsWorld& pw = PhysicsECS::PhysicsWorldService::Get();
+    BoxShapeDef boxDef{};
+    boxDef.halfExtents = Vector3(kHalfExtent, kHalfExtent, kHalfExtent);
+    BodySettings boxSettings{};
+    boxSettings.shape = pw.CreateShape(boxDef);
+    boxSettings.motionType = MotionType::Dynamic;
+    boxSettings.layer = Layers::Dynamic;
+    boxSettings.mass = 1.0f;
+    boxSettings.position = WorldPosition{0.0, kOldSurface + kHalfExtent, 0.0};
+    boxSettings.startAwake = false;
+    const BodyHandle box = pw.CreateBody(boxSettings);
+    ASSERT_TRUE(box.IsValid());
+
+    planet.SetHeight(kNewSurface - 2000.0f, 2);
+    for (int frame = 0; frame < 2000 && StreamedColliderPlanet::CountBodies(world, 1) > 0; ++frame)
+    {
+        planet.Frame(world, terrainPhysics, kPoleCamera);
+        BuildBodies(world);
         pw.Step(kDt, 1);
-    const float yFinal = pw.GetBodyTransform(box).position.y;
-    EXPECT_LT(yFinal, kFlatRaw * kScale - 3.0f)
-        << "the box never woke after the in-place lower (ActivateBodiesInAABB missing?)";
-    EXPECT_NEAR(yFinal, kLoweredRaw * kScale + 0.5f, 1.0f)
-        << "box must settle on the lowered region at raw*heightScale";
+        if (StreamedColliderPlanet::CountBodies(world, 1) > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(StreamedColliderPlanet::CountBodies(world, 1), 0) << "the old stream's bodies were never handed over";
+    for (int step = 0; step < 60; ++step)
+        pw.Step(kDt, 1);
+    EXPECT_NEAR(pw.GetBodyTransform(box).position.Y, kNewSurface + kHalfExtent, 0.02f)
+        << "the body stayed asleep above the new surface after the hand-over";
 }
 
 namespace
 {
-// Provision a planet + build its face bodies; returns the world for further edits.
-void ProvisionPlanet(GameEngine::ECS::World& world, GameEngine::TerrainECS::TerrainPhysicsSystem& physics,
-                     GameEngine::PhysicsECS::PhysicsInitSystem& init, float radius, float relief)
+// A hand-over raises the surface under a body asleep on the pole of a planet centered on `center`, by
+// more than half the body's height. The body must end on top of the new surface.
+void ExpectARaisingHandOverLeavesTheBodyOnTop(const GameEngine::Mathematics::Vector3& center)
 {
     using namespace GameEngine;
+    using namespace GameEngine::Physics;
     constexpr float32 kDt = 1.0f / 60.0f;
-    CreatePlanetEntity(world, radius, relief);
-    init.SetRebuildQuiescenceSeconds(0.0f);
-    physics.Update(world, kDt);
-    world.ProcessCommands();
-    init.Update(world, kDt);
-    world.ProcessCommands();
-}
+    constexpr float32 kHalfExtent = 0.5f;
+    constexpr float32 kOldSurface = 2010.0f;
+    constexpr float32 kNewSurface = 2010.8f;
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedTerrainService terrainService;
+    ECS::World world;
+    StreamedColliderPlanet planet(world, kOldSurface - 2000.0f, center);
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    ASSERT_TRUE(planet.ProvisionUntil(world, terrainPhysics, kPoleCamera));
+    BuildBodies(world);
 
-// Displacement magnitude of a body from `start` after stepping.
-float Displacement(GameEngine::Physics::PhysicsWorld& pw, GameEngine::Physics::BodyHandle b,
-                   const GameEngine::Vector3& start)
-{
-    const auto p = pw.GetBodyTransform(b).position;
-    const float dx = p.x - start.x, dy = p.y - start.y, dz = p.z - start.z;
-    return std::sqrt(dx * dx + dy * dy + dz * dz);
+    PhysicsWorld& pw = PhysicsECS::PhysicsWorldService::Get();
+    BoxShapeDef boxDef{};
+    boxDef.halfExtents = Vector3(kHalfExtent, kHalfExtent, kHalfExtent);
+    BodySettings boxSettings{};
+    boxSettings.shape = pw.CreateShape(boxDef);
+    boxSettings.motionType = MotionType::Dynamic;
+    boxSettings.layer = Layers::Dynamic;
+    boxSettings.mass = 1.0f;
+    const WorldPosition planetCenter = WorldPosition::FromVector3(center);
+    boxSettings.position = planetCenter + Vector3(0.0f, kOldSurface + kHalfExtent, 0.0f);
+    boxSettings.startAwake = false;
+    const BodyHandle box = pw.CreateBody(boxSettings);
+    ASSERT_TRUE(box.IsValid());
+
+    planet.SetHeight(kNewSurface - 2000.0f, 2);
+    for (int frame = 0; frame < 2000 && StreamedColliderPlanet::CountBodies(world, 1) > 0; ++frame)
+    {
+        planet.Frame(world, terrainPhysics, kPoleCamera);
+        BuildBodies(world);
+        pw.Step(kDt, 1);
+        if (StreamedColliderPlanet::CountBodies(world, 1) > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(StreamedColliderPlanet::CountBodies(world, 1), 0) << "the old stream's bodies were never handed over";
+    for (int step = 0; step < 120; ++step)
+        pw.Step(kDt, 1);
+    EXPECT_NEAR(pw.GetBodyTransform(box).position.Y - planetCenter.Y, kNewSurface + kHalfExtent, 0.02)
+        << "the body did not end on top of the raised surface after the hand-over";
 }
 } // namespace
 
-// The wake AABB must follow the collider body's rotation. A sculpt raise at an OFF-CENTRE
-// spot on the yawed +Y face wakes a body sitting there in WORLD space — pre-fix the wake box
-// mapped grid X/Z straight to world X/Z (a 90 deg yaw on +Y), so the box (at world +Z) never
-// woke while the AABB sat at world +X. Gravity is disabled so a woken body's motion is purely
-// the in-place depenetration (no sphere-curvature slide confound).
-TEST(Physics, PlanetColliderOffCentreSculptWakeFollowsBodyRotation)
+TEST(Physics, APlanetHandOverThatRaisesTheSurfaceByMoreThanHalfABodyLeavesItOnTop)
+{
+    ExpectARaisingHandOverLeavesTheBodyOnTop({});
+}
+
+// The settle reads the page bodies' sectors: the same hand-over on a planet 300 km from the origin.
+TEST(Physics, APlanetHandOverFarFromTheOriginLeavesTheBodyOnTop)
+{
+    ExpectARaisingHandOverLeavesTheBodyOnTop(kFarPlanetCenter);
+}
+
+namespace
+{
+// A level-0 texel that gives the 2 km planet charts two pages wide, so a page seam inside a chart exists.
+constexpr GameEngine::float32 kTwoPageChartTexel = 1.0f;
+
+// The seams on the +Y face past the pole along the face's X axis, in level-0 samples: the first page
+// seam that is not a chart seam, and the first chart seam.
+struct PoleFaceSeams
+{
+    GameEngine::uint8 Face = 0;
+    GameEngine::uint32 PoleZ = 0;
+    GameEngine::uint32 PageSeam = 0;
+    GameEngine::uint32 ChartSeam = 0;
+};
+
+PoleFaceSeams FindPoleFaceSeams(const StreamedColliderPlanet& planet)
+{
+    using namespace GameEngine;
+    const uint32 faceSamples = planet.Request.Shape.FaceSamples;
+    const PageStreaming::PageFacePoint pole =
+        PageStreaming::EqualAngleFacePointOf(Mathematics::Vector3(0.0f, 1.0f, 0.0f), faceSamples);
+    const PagedTE::PlanetChartLayout layout =
+        PagedTE::ComputePlanetChartLayout(StreamedColliderPlanet::kRadius, faceSamples);
+    const uint32 chartSamples = (1u << layout.Shift) * PageStreaming::kPageOwnedSamples;
+    const uint32 poleX = static_cast<uint32>(pole.X);
+    PoleFaceSeams seams;
+    seams.Face = pole.Face;
+    seams.PoleZ = static_cast<uint32>(pole.Z);
+    seams.PageSeam = (poleX / PageStreaming::kPageOwnedSamples + 1u) * PageStreaming::kPageOwnedSamples;
+    if (seams.PageSeam % chartSamples == 0u)
+        seams.PageSeam += PageStreaming::kPageOwnedSamples;
+    seams.ChartSeam = (poleX / chartSamples + 1u) * chartSamples;
+    return seams;
+}
+
+// The world point `height` meters above the planet's center at level-0 sample (x, z) of `face`.
+GameEngine::Mathematics::Vector3 PlanetSamplePoint(const StreamedColliderPlanet& planet, GameEngine::uint8 face,
+                                                   GameEngine::uint32 x, GameEngine::uint32 z,
+                                                   GameEngine::float32 height)
+{
+    return GameEngine::PageStreaming::EqualAngleSampleDirection(face, x, z, planet.Request.Shape.FaceSamples) * height;
+}
+
+// The level-0 sample coordinate along the face's X axis of the direction of `point`.
+GameEngine::float64 FaceXOf(const StreamedColliderPlanet& planet, const GameEngine::Mathematics::Vector3& point)
+{
+    return GameEngine::PageStreaming::EqualAngleFacePointOf(point.Normalize(), planet.Request.Shape.FaceSamples).X;
+}
+
+// The offset of the body position `position` from the planet's center.
+GameEngine::Mathematics::Vector3 FromPlanetCenter(const StreamedColliderPlanet& planet,
+                                                  const GameEngine::Mathematics::WorldPosition& position)
+{
+    return position - GameEngine::Mathematics::WorldPosition::FromVector3(planet.Request.Center);
+}
+} // namespace
+
+// A capsule walks across a chart seam near the +Y pole: the two pages' bodies stand in different chart
+// frames, and the capsule stays grounded on the drawn surface with no step at the seam.
+TEST(Physics, ACapsuleWalksAcrossAChartSeamNearThePoleWithoutAStep)
 {
     using namespace GameEngine;
     using namespace GameEngine::Physics;
-    using namespace GameEngine::PhysicsECS;
-    namespace TE = GameEngine::TerrainECS;
     constexpr float32 kDt = 1.0f / 60.0f;
-    constexpr float32 kRadius = 2000.0f;
-    constexpr float32 kRelief = 60.0f;
-    constexpr uint32 kFace = 2u; // +Y
-
+    constexpr float32 kSurface = 2010.0f;
+    constexpr uint32 kReach = 16; // level-0 samples on each side of the seam, about 16 m
     ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    auto& pw = PhysicsWorldService::Get();
-    if (TE::TerrainService::IsInitialized())
-        TE::TerrainService::Shutdown();
-    TE::TerrainService::Initialize();
-    struct G { ~G() { if (TE::TerrainService::IsInitialized()) TE::TerrainService::Shutdown(); } } g;
-    auto& terrain = TE::TerrainService::Get();
-
+    ScopedTerrainService terrainService;
     ECS::World world;
-    TE::TerrainPhysicsSystem physics;
-    PhysicsInitSystem init;
-    ProvisionPlanet(world, physics, init, kRadius, kRelief);
-    pw.OptimizeBroadphase();
+    StreamedColliderPlanet planet(world, kSurface - 2000.0f, {}, kTwoPageChartTexel);
+    const PoleFaceSeams seams = FindPoleFaceSeams(planet);
+    const Mathematics::Vector3 start = PlanetSamplePoint(planet, seams.Face, seams.ChartSeam - kReach, seams.PoleZ, kSurface);
+    const Mathematics::Vector3 target =
+        PlanetSamplePoint(planet, seams.Face, seams.ChartSeam + kReach, seams.PoleZ, kSurface);
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    ASSERT_TRUE(planet.ProvisionUntil(world, terrainPhysics, start.Normalize() * (kSurface + 5.0f)));
+    BuildBodies(world);
 
-    // An off-centre +Y grid cell (biased in U -> world +Z; the axis the yaw error swaps).
-    const uint32 ci = 93u, cj = 64u;
-    const Vector3 surf = FaceSurfaceWorld(kFace, ci, cj, kRadius, kRelief);
-    std::array<float, 3> ta, n, tb;
-    TE::ComputePlanetFaceFrame(kFace, ta, n, tb);
-    constexpr float kHalf = 2.0f;
-    BoxShapeDef boxDef{};
-    boxDef.halfExtents = Vector3(kHalf, kHalf, kHalf);
-    const ShapeHandle boxShape = pw.CreateShape(boxDef);
-    BodySettings bs{};
-    bs.shape = boxShape;
-    bs.motionType = MotionType::Dynamic;
-    bs.layer = Layers::Dynamic;
-    bs.mass = 1.0f;
-    bs.gravityScale = 0.0f; // isolate the wake/depenetration from -Y gravity slide
-    bs.position = Vector3(surf.x + n[0] * kHalf, surf.y + n[1] * kHalf, surf.z + n[2] * kHalf);
-    bs.startAwake = false;
-    const BodyHandle box = pw.CreateBody(bs);
-    ASSERT_TRUE(box.IsValid());
-    for (int i = 0; i < 60; ++i)
+    PhysicsWorld& pw = PhysicsECS::PhysicsWorldService::Get();
+    CharacterSettings capsule{};
+    capsule.motor = CharacterMotor::Kinematic;
+    capsule.position = WorldPosition::FromVector3(start.Normalize() * (kSurface + 0.2f));
+    capsule.radius = 0.4f;
+    capsule.height = 1.8f;
+    capsule.maxSlopeAngleDegrees = 45.0f;
+    capsule.maxStepHeight = 0.4f;
+    capsule.layer = Layers::Kinematic;
+    const CharacterHandle character = pw.CreateCharacter(capsule);
+    ASSERT_TRUE(character.IsValid());
+    for (int step = 0; step < 60; ++step)
         pw.Step(kDt, 1);
-    const Vector3 startPos = pw.GetBodyTransform(box).position;
+    ASSERT_TRUE(pw.IsCharacterGrounded(character)) << "the capsule never landed on the planet";
 
-    // Raise the band under the off-centre box with a sculpt dab at its surface direction
-    // (in-place tier-1). The wake AABB must follow the +Y face yaw to reach the off-centre cell.
-    terrain.SeedPlanetSculptMirrorForTests(surf.x, surf.y, surf.z, /*angularRadius*/ 0.15f,
-                                           /*strength*/ 1.5f, /*lower*/ false);
-
-    physics.Update(world, kDt);
-    world.ProcessCommands();
-    init.Update(world, kDt);
-    world.ProcessCommands();
-    for (int i = 0; i < 60; ++i)
+    float32 previous = FromPlanetCenter(planet, pw.GetCharacterTransform(character).position).Length();
+    for (int frame = 0;
+         frame < 1200 && FaceXOf(planet, FromPlanetCenter(planet, pw.GetCharacterTransform(character).position)) <
+                             static_cast<float64>(seams.ChartSeam + kReach / 2u);
+         ++frame)
+    {
+        const Mathematics::Vector3 position = FromPlanetCenter(planet, pw.GetCharacterTransform(character).position);
+        planet.Frame(world, terrainPhysics, position.Normalize() * (kSurface + 5.0f));
+        BuildBodies(world);
+        const Mathematics::Vector3 toTarget = target - position;
+        Mathematics::Vector3 velocity = pw.GetCharacterLinearVelocity(character);
+        const float32 across = std::sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
+        velocity.x = 2.0f * toTarget.x / across;
+        velocity.z = 2.0f * toTarget.z / across;
+        pw.SetCharacterLinearVelocity(character, velocity);
         pw.Step(kDt, 1);
 
-    EXPECT_GT(Displacement(pw, box, startPos), 0.15f)
-        << "the off-centre body never woke — the wake AABB did not follow the +Y face yaw";
+        const Mathematics::Vector3 moved = FromPlanetCenter(planet, pw.GetCharacterTransform(character).position);
+        const float32 radial = moved.Length();
+        const float64 faceX = FaceXOf(planet, moved);
+        ASSERT_TRUE(pw.IsCharacterGrounded(character)) << "the capsule left the ground at face X " << faceX;
+        ASSERT_NEAR(radial, kSurface, 0.05f) << "the capsule is off the surface at face X " << faceX;
+        ASSERT_NEAR(radial, previous, 0.02f) << "the capsule stepped at face X " << faceX << ", the seam at "
+                                             << seams.ChartSeam;
+        previous = radial;
+    }
+    EXPECT_GE(FaceXOf(planet, FromPlanetCenter(planet, pw.GetCharacterTransform(character).position)),
+              static_cast<float64>(seams.ChartSeam + kReach / 2u))
+        << "the capsule did not cross the chart seam";
 }
 
-// Same wake correctness on a SIDE face (+X): pre-fix the wake box also mis-mapped the height
-// axis (raw local heights ~1155-2060 used as world Y while the face lives at world +X), so a
-// body resting on a side face never woke on any edit.
-TEST(Physics, PlanetColliderSideFaceSculptWakes)
+// A sphere rolls across a page seam and a chart seam near the +Y pole: near each seam its step is no
+// worse than elsewhere. The chart seam is the worst point on the step and the radius, so this finds
+// only a seam step above the path's own 0.023 m bounce; #6342 fixes the bounce and restores both bounds.
+TEST(Physics, ASphereRollsAcrossAPageSeamAndAChartSeamWithoutAHop)
 {
     using namespace GameEngine;
     using namespace GameEngine::Physics;
-    using namespace GameEngine::PhysicsECS;
-    namespace TE = GameEngine::TerrainECS;
     constexpr float32 kDt = 1.0f / 60.0f;
-    constexpr float32 kRadius = 2000.0f;
-    constexpr float32 kRelief = 60.0f;
-    constexpr uint32 kFace = 0u; // +X
-
+    constexpr float32 kSurface = 2010.0f;
+    constexpr float32 kBallRadius = 0.5f;
+    constexpr float64 kSeamReach = 8.0;
+    // A float32 coordinate near 2010 m rounds to steps of 1/8192 m. A second difference of three
+    // rounded points moves by up to two steps on each axis, so four steps cover its length.
+    constexpr float32 kTraceQuantum = 4.0f / 8192.0f;
     ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    auto& pw = PhysicsWorldService::Get();
-    if (TE::TerrainService::IsInitialized())
-        TE::TerrainService::Shutdown();
-    TE::TerrainService::Initialize();
-    struct G { ~G() { if (TE::TerrainService::IsInitialized()) TE::TerrainService::Shutdown(); } } g;
-    auto& terrain = TE::TerrainService::Get();
-
+    ScopedTerrainService terrainService;
     ECS::World world;
-    TE::TerrainPhysicsSystem physics;
-    PhysicsInitSystem init;
-    ProvisionPlanet(world, physics, init, kRadius, kRelief);
-    pw.OptimizeBroadphase();
+    StreamedColliderPlanet planet(world, kSurface - 2000.0f, {}, kTwoPageChartTexel);
+    const PoleFaceSeams seams = FindPoleFaceSeams(planet);
+    const Mathematics::Vector3 start = PlanetSamplePoint(planet, seams.Face, seams.PageSeam - 16u, seams.PoleZ, kSurface);
+    const Mathematics::Vector3 target =
+        PlanetSamplePoint(planet, seams.Face, seams.ChartSeam + 16u, seams.PoleZ, kSurface);
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    ASSERT_TRUE(planet.ProvisionUntil(world, terrainPhysics, start.Normalize() * (kSurface + 5.0f)));
+    BuildBodies(world);
 
-    const uint32 dim = TE::kPlanetFaceColliderDim;
-    const uint32 mid = (dim - 1) / 2;
-    const Vector3 surf = FaceSurfaceWorld(kFace, mid, mid, kRadius, kRelief);
-    std::array<float, 3> ta, n, tb;
-    TE::ComputePlanetFaceFrame(kFace, ta, n, tb);
-    constexpr float kHalf = 2.0f;
-    BoxShapeDef boxDef{};
-    boxDef.halfExtents = Vector3(kHalf, kHalf, kHalf);
-    const ShapeHandle boxShape = pw.CreateShape(boxDef);
-    BodySettings bs{};
-    bs.shape = boxShape;
-    bs.motionType = MotionType::Dynamic;
-    bs.layer = Layers::Dynamic;
-    bs.mass = 1.0f;
-    bs.gravityScale = 0.0f;
-    bs.position = Vector3(surf.x + n[0] * kHalf, surf.y + n[1] * kHalf, surf.z + n[2] * kHalf);
-    bs.startAwake = false;
-    const BodyHandle box = pw.CreateBody(bs);
-    ASSERT_TRUE(box.IsValid());
-    for (int i = 0; i < 60; ++i)
+    PhysicsWorld& pw = PhysicsECS::PhysicsWorldService::Get();
+    BodySettings ball{};
+    ball.shape = pw.CreateShape(SphereShapeDef{kBallRadius});
+    ball.motionType = MotionType::Dynamic;
+    ball.layer = Layers::Dynamic;
+    ball.position = WorldPosition::FromVector3(start.Normalize() * (kSurface + kBallRadius));
+    ball.allowSleep = false;
+    const Mathematics::Vector3 toTarget = target - start;
+    const float32 across = std::sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
+    ball.linearVelocity = Vector3(6.0f * toTarget.x / across, 0.0f, 6.0f * toTarget.z / across);
+    const BodyHandle body = pw.CreateBody(ball);
+    ASSERT_TRUE(body.IsValid());
+
+    std::vector<Mathematics::Vector3> trace;
+    for (int frame = 0; frame < 3600 && FaceXOf(planet, FromPlanetCenter(planet, pw.GetBodyTransform(body).position)) <
+                                            static_cast<float64>(seams.ChartSeam + 8u);
+         ++frame)
+    {
+        const Mathematics::Vector3 position = FromPlanetCenter(planet, pw.GetBodyTransform(body).position);
+        planet.Frame(world, terrainPhysics, position.Normalize() * (kSurface + 5.0f));
+        BuildBodies(world);
         pw.Step(kDt, 1);
-    const Vector3 startPos = pw.GetBodyTransform(box).position;
+        trace.push_back(FromPlanetCenter(planet, pw.GetBodyTransform(body).position));
+    }
+    ASSERT_GE(FaceXOf(planet, FromPlanetCenter(planet, pw.GetBodyTransform(body).position)),
+              static_cast<float64>(seams.ChartSeam + 8u))
+        << "the sphere did not roll across both seams";
 
-    // Raise the +X face centre under the box with a sculpt dab at its surface direction.
-    terrain.SeedPlanetSculptMirrorForTests(surf.x, surf.y, surf.z, /*angularRadius*/ 0.15f,
-                                           /*strength*/ 1.5f, /*lower*/ false);
-
-    physics.Update(world, kDt);
-    world.ProcessCommands();
-    init.Update(world, kDt);
-    world.ProcessCommands();
-    for (int i = 0; i < 60; ++i)
-        pw.Step(kDt, 1);
-
-    EXPECT_GT(Displacement(pw, box, startPos), 0.15f)
-        << "a body on the +X face never woke — the wake AABB ignored the face's height axis";
-}
-
-// An edge-straddling dab writes BOTH adjacent faces' atlas bands; both colliders must refresh
-// (the #488 crack-free contract). Pre-fix only the primary face's collider advanced.
-TEST(Physics, PlanetColliderEdgeStraddleRefreshesBothFaces)
-{
-    using namespace GameEngine;
-    using namespace GameEngine::PhysicsECS;
-    using GameEngine::Components::HeightFieldColliderShape;
-    namespace TE = GameEngine::TerrainECS;
-    constexpr float32 kDt = 1.0f / 60.0f;
-
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    if (TE::TerrainService::IsInitialized())
-        TE::TerrainService::Shutdown();
-    TE::TerrainService::Initialize();
-    struct G { ~G() { if (TE::TerrainService::IsInitialized()) TE::TerrainService::Shutdown(); } } g;
-    auto& terrain = TE::TerrainService::Get();
-
-    ECS::World world;
-    TE::TerrainPhysicsSystem physics;
-    PhysicsInitSystem init;
-    ProvisionPlanet(world, physics, init, 2000.0f, 60.0f);
-
-    uint64 builtBefore[TE::kPlanetFaceCount] = {};
-    world.Query<ECS::Read<GameEngine::Components::TerrainPlanetFaceCollider>,
-                ECS::Read<HeightFieldColliderShape>>()
-        .Each([&](ECS::EntityHandle, const GameEngine::Components::TerrainPlanetFaceCollider& tag,
-                  const HeightFieldColliderShape& s)
-              { if (tag.Face < TE::kPlanetFaceCount) builtBefore[tag.Face] = s.lastBuiltVersion; });
-
-    // A dab centred exactly on the +Y (2) / +Z (4) cube edge (direction (0,1,1)): both bands are
-    // written near the shared edge, so both faces' colliders must refresh (#488 crack-free).
-    terrain.SeedPlanetSculptMirrorForTests(0.0f, 1.0f, 1.0f, /*angularRadius*/ 0.12f,
-                                           /*strength*/ 1.5f, /*lower*/ false);
-
-    physics.Update(world, kDt);
-    world.ProcessCommands();
-    init.Update(world, kDt);
-    world.ProcessCommands();
-
-    uint64 builtAfter[TE::kPlanetFaceCount] = {};
-    world.Query<ECS::Read<GameEngine::Components::TerrainPlanetFaceCollider>,
-                ECS::Read<HeightFieldColliderShape>>()
-        .Each([&](ECS::EntityHandle, const GameEngine::Components::TerrainPlanetFaceCollider& tag,
-                  const HeightFieldColliderShape& s)
-              { if (tag.Face < TE::kPlanetFaceCount) builtAfter[tag.Face] = s.lastBuiltVersion; });
-
-    for (uint32 f = 0; f < TE::kPlanetFaceCount; ++f)
+    // Index 0 is within kSeamReach of the page seam, 1 of the chart seam, 2 is the rest of the path.
+    std::array<float32, 3> worstSecond{};
+    for (std::size_t index = 0; index < trace.size(); ++index)
     {
-        if (f == 2u || f == 4u)
-            EXPECT_GT(builtAfter[f], builtBefore[f])
-                << "both straddled faces must refresh, face " << f;
-        else
-            EXPECT_EQ(builtAfter[f], builtBefore[f]) << "untouched face " << f << " must not refresh";
+        EXPECT_GT(trace[index].Length(), kSurface) << "the sphere fell through the surface at frame " << index;
+        const float64 faceX = FaceXOf(planet, trace[index]);
+        std::size_t region = 2;
+        if (std::abs(faceX - static_cast<float64>(seams.PageSeam)) <= kSeamReach)
+            region = 0;
+        else if (std::abs(faceX - static_cast<float64>(seams.ChartSeam)) <= kSeamReach)
+            region = 1;
+        if (index < 1 || index + 1 >= trace.size())
+            continue;
+        const Mathematics::Vector3 second = trace[index + 1] - trace[index] * 2.0f + trace[index - 1];
+        worstSecond[region] = std::max(worstSecond[region], second.Length());
+    }
+    ASSERT_GT(worstSecond[0], 0.0f) << "no trace sample lies within " << kSeamReach << " samples of the page seam";
+    ASSERT_GT(worstSecond[1], 0.0f) << "no trace sample lies within " << kSeamReach << " samples of the chart seam";
+    for (std::size_t seam = 0; seam < 2; ++seam)
+    {
+        EXPECT_LE(worstSecond[seam], worstSecond[2] + kTraceQuantum)
+            << "the sphere hops at the " << (seam == 0 ? "page" : "chart") << " seam: second difference "
+            << worstSecond[seam] << " m, elsewhere " << worstSecond[2] << " m";
     }
 }
 
-// World-space yaw pin: each face collider entity's WorldTransform columns must equal
-// ComputePlanetFaceFrame (Ta, N, Tb). A transposed FillFaceMatrix packing would swap rows and
-// columns yet still pass the frame/height oracles (which never look at the entity transform).
-TEST(Physics, PlanetColliderFaceEntityTransformMatchesFrame)
+namespace
 {
+// The calls of profiler scope `name` in the last whole frame.
+GameEngine::uint32 ScopeCalls(std::string_view name)
+{
+    std::vector<std::pair<std::string_view, GameEngine::Profiling::CpuProfiler::Sample>> samples;
+    GameEngine::Profiling::CpuProfiler::Get().CopyFrameSamples(samples);
+    for (const auto& [scope, sample] : samples)
+        if (scope == name)
+            return sample.count;
+    return 0;
+}
+} // namespace
+
+// A resting body over a settled stream asks for no window page: the CPU windows pass only hands the
+// residency its window again. A body or the camera moving one meter builds the window once.
+TEST(Physics, ARestingBodyOverASettledPlanetStreamBuildsNoWindowPages)
+{
+#if !GE_ENABLE_CPU_PROFILING
+    GTEST_SKIP() << "the test reads the CPU profiler's scope counts; ENABLE_CPU_PROFILING is OFF";
+#else
     using namespace GameEngine;
-    using namespace GameEngine::PhysicsECS;
-    namespace TE = GameEngine::TerrainECS;
-    constexpr float32 kDt = 1.0f / 60.0f;
-
     ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    if (TE::TerrainService::IsInitialized())
-        TE::TerrainService::Shutdown();
-    TE::TerrainService::Initialize();
-    struct G { ~G() { if (TE::TerrainService::IsInitialized()) TE::TerrainService::Shutdown(); } } g;
-
+    ScopedTerrainService terrainService;
     ECS::World world;
-    TE::TerrainPhysicsSystem physics;
-    PhysicsInitSystem init;
-    CreatePlanetEntity(world, 2000.0f, 60.0f);
-    physics.Update(world, kDt);
-    world.ProcessCommands();
+    StreamedColliderPlanet planet(world, 10.0f);
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    const ECS::EntityHandle body = world.CreateEntity();
+    Components::PhysicsBody physicsBody{};
+    physicsBody.motionType = Physics::MotionType::Dynamic;
+    world.AddComponentImmediate<Components::PhysicsBody>(body, physicsBody);
+    Components::WorldTransform resting{};
+    resting.Position.X = 3.0;
+    resting.Position.Y = 2010.5;
+    world.AddComponentImmediate<Components::WorldTransform>(body, resting);
+    ASSERT_TRUE(planet.ProvisionUntil(world, terrainPhysics, kPoleCamera));
 
-    bool sawFace[TE::kPlanetFaceCount] = {};
-    world.Query<ECS::Read<GameEngine::Components::TerrainPlanetFaceCollider>,
-                ECS::Read<Components::WorldTransform>>()
-        .Each([&](ECS::EntityHandle, const GameEngine::Components::TerrainPlanetFaceCollider& tag,
-                  const Components::WorldTransform& wt)
-        {
-            ASSERT_LT(tag.Face, TE::kPlanetFaceCount);
-            sawFace[tag.Face] = true;
-            std::array<float, 3> ta, n, tb;
-            TE::ComputePlanetFaceFrame(tag.Face, ta, n, tb);
-            // Column-major: col0 = Ta, col1 = N, col2 = Tb.
-            for (int k = 0; k < 3; ++k)
-            {
-                EXPECT_NEAR(wt.matrix[0 + k], ta[k], 1e-5f) << "face " << tag.Face << " Ta " << k;
-                EXPECT_NEAR(wt.matrix[4 + k], n[k], 1e-5f) << "face " << tag.Face << " N " << k;
-                EXPECT_NEAR(wt.matrix[8 + k], tb[k], 1e-5f) << "face " << tag.Face << " Tb " << k;
-            }
-        });
-    for (uint32 f = 0; f < TE::kPlanetFaceCount; ++f)
-        EXPECT_TRUE(sawFace[f]) << "missing face collider " << f;
+    Profiling::CpuProfiler& profiler = Profiling::CpuProfiler::Get();
+    const bool wasEnabled = profiler.IsEnabled();
+    profiler.SetEnabled(true);
+    constexpr int kRestingFrames = 30;
+    uint32 windowPasses = 0;
+    uint32 windowBuilds = 0;
+    profiler.BeginFrame();
+    for (int frame = 0; frame < kRestingFrames; ++frame)
+    {
+        planet.Frame(world, terrainPhysics, kPoleCamera);
+        profiler.BeginFrame();
+        windowPasses += ScopeCalls("Terrain.PlanetCpuWindows");
+        windowBuilds += ScopeCalls("Terrain.PlanetCpuWindowPages");
+    }
+    Components::WorldTransform moved = resting;
+    moved.Position.X = 4.0;
+    world.AddComponentImmediate<Components::WorldTransform>(body, moved);
+    planet.Frame(world, terrainPhysics, kPoleCamera);
+    profiler.BeginFrame();
+    const uint32 movedBuilds = ScopeCalls("Terrain.PlanetCpuWindowPages");
+    planet.Frame(world, terrainPhysics, kPoleCamera + Mathematics::Vector3(1.0f, 0.0f, 0.0f));
+    profiler.BeginFrame();
+    const uint32 cameraBuilds = ScopeCalls("Terrain.PlanetCpuWindowPages");
+    profiler.SetEnabled(wasEnabled);
+
+    EXPECT_EQ(windowPasses, static_cast<uint32>(kRestingFrames)) << "the CPU windows pass did not run every frame";
+    EXPECT_EQ(windowBuilds, 0u) << "the CPU windows pass built window pages while nothing moved";
+    EXPECT_EQ(movedBuilds, 1u) << "the body moved one meter and its window was not built again";
+    EXPECT_EQ(cameraBuilds, 1u) << "the camera moved one meter and its window was not built again";
+#endif
 }
 
-// DERIVED-WHEN-CHANGED oracle for the planet's base relief. The Inspector's "Planet Relief"
-// Amplitude dial moves the rendered surface immediately; the six face colliders are derived
-// data and must follow in the same tick. The pre-existing height-match oracle
-// (PlanetColliderTests HeightMatchesRenderFunctionAtGridPoints) compares a FRESHLY generated
-// patch against the render function, so it proves agreement-at-generation-time and cannot fail
-// on staleness — this one mutates relief on a settled planet, runs one whole tick in schedule
-// order (TerrainModifiers then TerrainPhysics), and requires the STORED collider to have moved.
-//
-// Failure mode it pins: collision keeps the OLD relief across the entire planet, so a character
-// walks on invisible ground where the new relief is lower and falls through where it is higher.
-TEST(Physics, PlanetReliefEditReCooksEveryFaceCollider)
+// Play exit releases every planet page slot (ReleaseAllPagePhysicsHandles), as it does the planar ones.
+TEST(Physics, ReleasingEveryPageSlotReleasesThePlanetPageSlots)
 {
     using namespace GameEngine;
-    using namespace GameEngine::PhysicsECS;
-    using GameEngine::Components::TerrainPlanetFaceCollider;
-    namespace TE = GameEngine::TerrainECS;
-    constexpr float32 kDt = 1.0f / 60.0f;
-
-    constexpr float32 kRadius = 2000.0f;
-    constexpr float32 kReliefBefore = 60.0f;
-    constexpr float32 kReliefAfter = 300.0f;
-
     ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    if (TE::TerrainService::IsInitialized())
-        TE::TerrainService::Shutdown();
-    TE::TerrainService::Initialize();
-    struct G { ~G() { if (TE::TerrainService::IsInitialized()) TE::TerrainService::Shutdown(); } } g;
-    auto& terrain = TE::TerrainService::Get();
-
+    ScopedTerrainService terrainService;
     ECS::World world;
-    const ECS::EntityHandle planet = CreatePlanetEntity(world, kRadius, kReliefBefore);
-
-    // A whole engine tick in schedule order: TerrainModifiers, then TerrainPhysics
-    // (RegisterTerrainSystems declares TerrainPhysics after TerrainModifiers).
-    TE::TerrainModifierSystem modifiers;
-    TE::TerrainPhysicsSystem physics;
-    auto tick = [&]() {
-        modifiers.Update(world, kDt);
-        physics.Update(world, kDt);
-        world.ProcessCommands();
-    };
-
-    tick();                                            // provisions the six faces
-    ASSERT_EQ(CountPlanetFaceColliders(world), 6);
-    tick();                                            // settle: reach quiescence
-
-    struct FaceRef { uint32 Face, HandleIndex, HandleGen; };
-    std::vector<FaceRef> faces;
-    world.Query<ECS::Read<TerrainPlanetFaceCollider>>()
-        .Each([&](ECS::EntityHandle, const TerrainPlanetFaceCollider& tag) {
-            faces.push_back(FaceRef{tag.Face, tag.PhysicsHandleIndex, tag.PhysicsHandleGeneration});
-        });
-    ASSERT_EQ(faces.size(), size_t{TE::kPlanetFaceCount});
-
-    std::vector<uint64> versionBefore(faces.size(), 0);
-    for (size_t f = 0; f < faces.size(); ++f)
-    {
-        const auto* data = terrain.ResolvePlanetFaceCollider(faces[f].HandleIndex, faces[f].HandleGen);
-        ASSERT_NE(data, nullptr) << "face " << faces[f].Face << " has no baked collider data";
-        versionBefore[f] = data->Version;
-    }
-
-    // A quiescent planet must stay quiescent: an idle tick may not churn the colliders,
-    // otherwise "the version moved" below would be satisfied by noise rather than by the edit.
-    tick();
-    for (size_t f = 0; f < faces.size(); ++f)
-    {
-        const auto* data = terrain.ResolvePlanetFaceCollider(faces[f].HandleIndex, faces[f].HandleGen);
-        ASSERT_NE(data, nullptr);
-        ASSERT_EQ(data->Version, versionBefore[f])
-            << "face " << faces[f].Face << " re-cooked on an idle tick — the oracle below is not discriminating";
-    }
-
-    // The edit: drag Amplitude in the Planet Relief inspector section.
-    {
-        auto* relief = world.GetComponentForWrite<Components::TerrainPlanetRelief>(planet);
-        ASSERT_NE(relief, nullptr);
-        relief->Amplitude = kReliefAfter;
-    }
-
-    tick(); // ONE whole engine tick
-
-    // The reference patch the collider must now hold: the same generator, at the NEW relief.
-    TE::PlanetColliderParams expected{};
-    expected.Radius = kRadius;
-    expected.ReliefAmplitude = kReliefAfter;
-    expected.ReliefFrequency = 6.0f;
-    expected.ReliefOctaves = 3u; // CreatePlanetEntity's relief octaves
-    const uint32 dim = TE::kPlanetFaceColliderDim;
-    const int32 last = static_cast<int32>(dim) - 1;
-
-    float32 largestMove = 0.0f;
-    for (size_t f = 0; f < faces.size(); ++f)
-    {
-        const uint32 face = faces[f].Face;
-        const auto* data = terrain.ResolvePlanetFaceCollider(faces[f].HandleIndex, faces[f].HandleGen);
-        ASSERT_NE(data, nullptr) << "face " << face;
-        EXPECT_GT(data->Version, versionBefore[f])
-            << "face " << face << " collider was never re-cooked after the relief edit — "
-               "physics is still colliding against the old relief";
-
-        std::vector<float32> reference(static_cast<size_t>(dim) * dim, 0.0f);
-        float32 lo = 0.0f, hi = 0.0f;
-        TE::GeneratePlanetFacePatch(face, expected, dim, CBTTerrain::SphereSculptSampler{},
-                                    CBTTerrain::SphereAnalyticModifierSet{}, 0, 0, last, last,
-                                    reference, lo, hi);
-
-        // Probe the patch centre and four off-centre cells; the face-axis direction can sit on a
-        // node of the separable noise, so an off-centre probe is what carries the discrimination.
-        const int32 mid = last / 2, q = last / 4;
-        const std::array<std::array<int32, 2>, 5> probes = {{
-            {mid, mid}, {q, mid}, {mid, q}, {last - q, mid}, {mid, last - q}}};
-        for (const auto& probe : probes)
-        {
-            const size_t idx = static_cast<size_t>(probe[1]) * dim + probe[0];
-            ASSERT_LT(idx, data->Samples.size());
-            EXPECT_NEAR(data->Samples[idx], reference[idx], 0.05f)
-                << "face " << face << " cell (" << probe[0] << "," << probe[1]
-                << ") does not match the new relief — the collider height field is stale";
-            largestMove = std::max(largestMove, std::abs(reference[idx] - data->Samples[idx]));
-        }
-    }
-
-    // Discrimination: amplitude 60 -> 300 must genuinely move the surface, otherwise the
-    // equality assertions above would pass against an unchanged patch.
-    TE::PlanetColliderParams before = expected;
-    before.ReliefAmplitude = kReliefBefore;
-    float32 reliefDelta = 0.0f;
-    for (uint32 face = 0; face < TE::kPlanetFaceCount; ++face)
-    {
-        std::vector<float32> a(static_cast<size_t>(dim) * dim, 0.0f), b = a;
-        float32 lo = 0.0f, hi = 0.0f;
-        TE::GeneratePlanetFacePatch(face, before, dim, CBTTerrain::SphereSculptSampler{},
-                                    CBTTerrain::SphereAnalyticModifierSet{}, 0, 0, last, last, a, lo, hi);
-        TE::GeneratePlanetFacePatch(face, expected, dim, CBTTerrain::SphereSculptSampler{},
-                                    CBTTerrain::SphereAnalyticModifierSet{}, 0, 0, last, last, b, lo, hi);
-        for (size_t i = 0; i < a.size(); ++i)
-            reliefDelta = std::max(reliefDelta, std::abs(a[i] - b[i]));
-    }
-    ASSERT_GT(reliefDelta, 10.0f)
-        << "test not discriminating: the relief change barely moves the surface";
+    StreamedColliderPlanet planet(world, 10.0f);
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    ASSERT_TRUE(planet.ProvisionUntil(world, terrainPhysics, kPoleCamera));
+    PagedTE::TerrainService& service = PagedTE::TerrainService::Get();
+    service.ReleaseAllPagePhysicsHandles();
+    for (const TerrainPlanetPageCollider& tag : StreamedColliderPlanet::Bodies(world))
+        EXPECT_EQ(service.ResolvePageCollider(tag.PhysicsHandleIndex, tag.PhysicsHandleGeneration), nullptr);
 }
 
-// The user-visible half of the same defect, at the Jolt seam: a body resting on the planet must
-// not be left standing on ground that no longer exists. Raising Amplitude LOWERS the +Y pole (the
-// base noise is negative along that axis and relief is linear in amplitude), so a box asleep on
-// the pole is suddenly unsupported. With a stale collider it keeps floating at the old height —
-// "walks on invisible ground". This asserts the whole chain fired: every face's Jolt shape was
-// rebuilt (HeightFieldColliderShape::lastBuiltVersion) and the box fell to the NEW surface.
-TEST(Physics, PlanetReliefEditDropsBodyLeftOnVanishedGround)
+// A terrain switched from Planar to Spherical sheds the planar collider it kept on itself.
+TEST(Physics, APlanetShedsThePlanarColliderOfItsPlanarPast)
 {
     using namespace GameEngine;
-    using namespace GameEngine::Physics;
-    using namespace GameEngine::PhysicsECS;
-    using GameEngine::Components::HeightFieldColliderShape;
-    using GameEngine::Components::TerrainPlanetFaceCollider;
-    namespace TE = GameEngine::TerrainECS;
-    constexpr float32 kDt = 1.0f / 60.0f;
-
-    constexpr float32 kRadius = 2000.0f;
-    constexpr float32 kReliefBefore = 60.0f;
-    constexpr float32 kReliefAfter = 200.0f; // raises amplitude => LOWERS the +Y pole
-
     ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    auto& pw = PhysicsWorldService::Get();
-    if (TE::TerrainService::IsInitialized())
-        TE::TerrainService::Shutdown();
-    TE::TerrainService::Initialize();
-    struct G { ~G() { if (TE::TerrainService::IsInitialized()) TE::TerrainService::Shutdown(); } } g;
-
+    ScopedTerrainService terrainService;
     ECS::World world;
-    const ECS::EntityHandle planet = CreatePlanetEntity(world, kRadius, kReliefBefore);
-
-    TE::TerrainModifierSystem modifiers;
-    TE::TerrainPhysicsSystem physics;
-    PhysicsInitSystem init;
-    init.SetRebuildQuiescenceSeconds(0.0f);
-    auto tick = [&]() {
-        modifiers.Update(world, kDt);
-        physics.Update(world, kDt);
-        world.ProcessCommands();
-        init.Update(world, kDt);
-        world.ProcessCommands();
-    };
-    tick(); // provision the six faces and build their Jolt shapes
-    ASSERT_EQ(CountPlanetFaceColliders(world), 6);
-
-    const float poleBefore = PoleSurfaceHeight(kRadius, kReliefBefore);
-    const float poleAfter = PoleSurfaceHeight(kRadius, kReliefAfter);
-    // Precondition on the chosen amplitudes: the pole must genuinely drop, and by more than the
-    // box, so "still floating" and "fell to the new surface" cannot be confused.
-    constexpr float kHalf = 2.0f;
-    ASSERT_LT(poleAfter, poleBefore - 10.0f)
-        << "amplitude choice does not lower the pole (before " << poleBefore << " after "
-        << poleAfter << ") — flip kReliefAfter";
-
-    // Sleep a box on the OLD pole surface.
-    BoxShapeDef boxDef{};
-    boxDef.halfExtents = Vector3(kHalf, kHalf, kHalf);
-    BodySettings bs{};
-    bs.shape = pw.CreateShape(boxDef);
-    bs.motionType = MotionType::Dynamic;
-    bs.layer = Layers::Dynamic;
-    bs.mass = 1.0f;
-    bs.position = Vector3(0.0f, poleBefore + kHalf, 0.0f);
-    bs.startAwake = false;
-    const BodyHandle box = pw.CreateBody(bs);
-    ASSERT_TRUE(box.IsValid());
-    pw.OptimizeBroadphase();
-    for (int i = 0; i < 60; ++i)
-        pw.Step(kDt, 1);
-    const float ySlept = pw.GetBodyTransform(box).position.y;
-    ASSERT_NEAR(ySlept, poleBefore + kHalf, 0.2f) << "box must be asleep on the pole before the edit";
-
-    uint64 builtBefore[TE::kPlanetFaceCount] = {};
-    world.Query<ECS::Read<TerrainPlanetFaceCollider>, ECS::Read<HeightFieldColliderShape>>()
-        .Each([&](ECS::EntityHandle, const TerrainPlanetFaceCollider& tag,
-                  const HeightFieldColliderShape& s)
-              { if (tag.Face < TE::kPlanetFaceCount) builtBefore[tag.Face] = s.lastBuiltVersion; });
-
-    // The edit: drag Amplitude in the Planet Relief inspector section.
-    {
-        auto* relief = world.GetComponentForWrite<Components::TerrainPlanetRelief>(planet);
-        ASSERT_NE(relief, nullptr);
-        relief->Amplitude = kReliefAfter;
-    }
-
-    tick(); // ONE whole engine tick: re-cook the patches, then rebuild the Jolt shapes
-
-    // Every face's Jolt shape was rebuilt — a relief change is global, so no face is exempt.
-    uint64 builtAfter[TE::kPlanetFaceCount] = {};
-    world.Query<ECS::Read<TerrainPlanetFaceCollider>, ECS::Read<HeightFieldColliderShape>>()
-        .Each([&](ECS::EntityHandle, const TerrainPlanetFaceCollider& tag,
-                  const HeightFieldColliderShape& s)
-              { if (tag.Face < TE::kPlanetFaceCount) builtAfter[tag.Face] = s.lastBuiltVersion; });
-    for (uint32 f = 0; f < TE::kPlanetFaceCount; ++f)
-        EXPECT_GT(builtAfter[f], builtBefore[f])
-            << "face " << f << " Jolt shape was never rebuilt after the relief edit";
-
-    // The box wakes and falls: the ground it was resting on is gone. The drop is ~25 m, which
-    // takes ~2.2 s, so sample just after touchdown — under plain -Y gravity a body only rests
-    // indefinitely at the exact pole, and from there it slides down the curvature, so the
-    // ENDURING height is not the signal. Landing is.
-    constexpr int kStepsToLanding = 170; // ~2.8 s: touchdown plus a moment to settle
-    float lowestY = ySlept;
-    for (int i = 0; i < kStepsToLanding; ++i)
-    {
-        pw.Step(kDt, 1);
-        lowestY = std::min(lowestY, pw.GetBodyTransform(box).position.y);
-    }
-    const auto landed = pw.GetBodyTransform(box).position;
-
-    EXPECT_LT(landed.y, ySlept - 10.0f)
-        << "the box never fell: it is still standing on the old relief (invisible ground)";
-    EXPECT_GT(lowestY, poleAfter - 2.0f)
-        << "the box fell through the new surface instead of landing on it";
-    // Still essentially over the pole at this point, so the pole sample is the right reference.
-    ASSERT_LT(std::abs(landed.x), 8.0f) << "slid too far to compare against the pole height";
-    EXPECT_NEAR(landed.y, poleAfter + kHalf, 1.5f)
-        << "the box did not land on the NEW pole surface";
-}
-
-// A planet radius edit re-cooks every face patch AT the new radius, and the radius is what
-// parametrizes the grid: PhysicsInitSystem places sample (i, j) at local
-// (-sizeX/2 + i*sizeX/(dim-1), height, -sizeZ/2 + j*sizeZ/(dim-1)), and the generator bakes the
-// height for the direction that same radius puts that cell at. Extent and samples are therefore
-// ONE derivation — moving the heights while sizeX/sizeZ still describe the old radius stretches
-// the new surface over the old grid, and every off-centre cell resolves to the wrong world point.
-// This asserts the declared extent tracks the radius, and that the world surface the
-// shape+samples pair describes is the surface the new radius actually has.
-TEST(Physics, PlanetRadiusEditUpdatesFaceColliderExtent)
-{
-    using namespace GameEngine;
-    using namespace GameEngine::PhysicsECS;
-    using GameEngine::Components::HeightFieldColliderShape;
-    using GameEngine::Components::TerrainPlanetFaceCollider;
-    namespace TE = GameEngine::TerrainECS;
-    constexpr float32 kDt = 1.0f / 60.0f;
-
-    constexpr float32 kRadiusBefore = 2000.0f;
-    constexpr float32 kRadiusAfter = 2600.0f;
-    constexpr float32 kRelief = 60.0f;
-
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    if (TE::TerrainService::IsInitialized())
-        TE::TerrainService::Shutdown();
-    TE::TerrainService::Initialize();
-    struct G { ~G() { if (TE::TerrainService::IsInitialized()) TE::TerrainService::Shutdown(); } } g;
-    auto& terrain = TE::TerrainService::Get();
-
-    ECS::World world;
-    const ECS::EntityHandle planet = CreatePlanetEntity(world, kRadiusBefore, kRelief);
-
-    // A whole engine tick in schedule order: TerrainModifiers, then TerrainPhysics.
-    TE::TerrainModifierSystem modifiers;
-    TE::TerrainPhysicsSystem physics;
-    auto tick = [&]() {
-        modifiers.Update(world, kDt);
-        physics.Update(world, kDt);
-        world.ProcessCommands();
-    };
-
-    tick();                                            // provisions the six faces
-    ASSERT_EQ(CountPlanetFaceColliders(world), 6);
-    tick();                                            // settle: the shape baseline is seeded
-
-    struct FaceRef { ECS::EntityHandle Entity; uint32 Face, HandleIndex, HandleGen; };
-    std::vector<FaceRef> faces;
-    world.Query<ECS::Read<TerrainPlanetFaceCollider>, ECS::Read<HeightFieldColliderShape>>()
-        .Each([&](ECS::EntityHandle e, const TerrainPlanetFaceCollider& tag,
-                  const HeightFieldColliderShape& shape) {
-            faces.push_back(FaceRef{e, tag.Face, tag.PhysicsHandleIndex, tag.PhysicsHandleGeneration});
-            EXPECT_FLOAT_EQ(shape.sizeX, kRadiusBefore * 2.0f)
-                << "face " << tag.Face << " was not provisioned at the starting radius";
-        });
-    ASSERT_EQ(faces.size(), size_t{TE::kPlanetFaceCount});
-
-    // The edit: drag Planet Radius in the terrain inspector.
-    {
-        auto* t = world.GetComponentForWrite<Components::Terrain>(planet);
-        ASSERT_NE(t, nullptr);
-        t->PlanetRadius = kRadiusAfter;
-    }
-
-    tick(); // ONE whole engine tick
-
-    const uint32 dim = TE::kPlanetFaceColliderDim;
-
-    // The local->world mapping PhysicsInitSystem hands Jolt: Offset = -size/2, Scale = size/(N-1).
-    auto surfaceWorldFromShape = [&](uint32 face, const std::vector<float32>& samples,
-                                     float32 sizeX, float32 sizeZ, uint32 i, uint32 j) {
-        std::array<float32, 3> ta, n, tb;
-        TE::ComputePlanetFaceFrame(face, ta, n, tb);
-        const float32 lx = -sizeX * 0.5f +
-                           static_cast<float32>(i) * (sizeX / static_cast<float32>(dim - 1));
-        const float32 lz = -sizeZ * 0.5f +
-                           static_cast<float32>(j) * (sizeZ / static_cast<float32>(dim - 1));
-        const float32 ly = samples[static_cast<size_t>(j) * dim + i];
-        return Vector3(ta[0] * lx + n[0] * ly + tb[0] * lz, ta[1] * lx + n[1] * ly + tb[1] * lz,
-                       ta[2] * lx + n[2] * ly + tb[2] * lz);
-    };
-
-    // Off-centre: the extent only moves cells away from the patch centre, so a centre probe
-    // cannot see this defect at all.
-    const uint32 probeI = dim / 4, probeJ = dim / 2;
-
-    for (const FaceRef& ref : faces)
-    {
-        const auto* shape = world.GetComponent<HeightFieldColliderShape>(ref.Entity);
-        ASSERT_NE(shape, nullptr) << "face " << ref.Face;
-        EXPECT_FLOAT_EQ(shape->sizeX, kRadiusAfter * 2.0f)
-            << "face " << ref.Face << " still declares the OLD grid extent after a radius edit — "
-               "its re-cooked heights describe a surface the shape does not span";
-        EXPECT_FLOAT_EQ(shape->sizeZ, kRadiusAfter * 2.0f) << "face " << ref.Face;
-
-        const auto* data = terrain.ResolvePlanetFaceCollider(ref.HandleIndex, ref.HandleGen);
-        ASSERT_NE(data, nullptr) << "face " << ref.Face;
-        const Vector3 actual = surfaceWorldFromShape(ref.Face, data->Samples, shape->sizeX,
-                                                     shape->sizeZ, probeI, probeJ);
-        const Vector3 expected = FaceSurfaceWorld(ref.Face, probeI, probeJ, kRadiusAfter, kRelief);
-        const float32 err = std::sqrt((actual.x - expected.x) * (actual.x - expected.x) +
-                                      (actual.y - expected.y) * (actual.y - expected.y) +
-                                      (actual.z - expected.z) * (actual.z - expected.z));
-        EXPECT_LT(err, 0.5f)
-            << "face " << ref.Face << " collider surface at cell (" << probeI << "," << probeJ
-            << ") is " << err << " m from the surface the new radius has";
-    }
-
-    // Discrimination: with the OLD extent the same samples resolve somewhere materially different,
-    // so the comparison above could have failed.
-    {
-        const auto* data = terrain.ResolvePlanetFaceCollider(faces[0].HandleIndex, faces[0].HandleGen);
-        ASSERT_NE(data, nullptr);
-        const Vector3 stale = surfaceWorldFromShape(faces[0].Face, data->Samples,
-                                                    kRadiusBefore * 2.0f, kRadiusBefore * 2.0f,
-                                                    probeI, probeJ);
-        const Vector3 expected = FaceSurfaceWorld(faces[0].Face, probeI, probeJ, kRadiusAfter, kRelief);
-        const float32 staleErr = std::sqrt((stale.x - expected.x) * (stale.x - expected.x) +
-                                           (stale.y - expected.y) * (stale.y - expected.y) +
-                                           (stale.z - expected.z) * (stale.z - expected.z));
-        ASSERT_GT(staleErr, 100.0f)
-            << "test not discriminating: the old extent puts this cell in nearly the same place";
-    }
-}
-
-// The Jolt-seam half of the radius edit: the declared extent only matters because
-// PhysicsInitSystem bakes it into the built shape's Offset/Scale, so the collision surface a
-// ray hits must move with the radius AWAY from the patch centre, not just at the pole. The
-// probe column is chosen to land exactly on grid node (i=64, j=48) of the +Y face under the
-// NEW extent; under the stale extent the same world column falls at j=43.2 of the same
-// samples, ~50 m lower.
-TEST(Physics, PlanetRadiusEditMovesJoltSurfaceOffCentre)
-{
-    using namespace GameEngine;
-    using namespace GameEngine::Physics;
-    using namespace GameEngine::PhysicsECS;
-    using GameEngine::Components::HeightFieldColliderShape;
-    using GameEngine::Components::TerrainPlanetFaceCollider;
-    namespace TE = GameEngine::TerrainECS;
-    constexpr float32 kDt = 1.0f / 60.0f;
-
-    constexpr float32 kRadiusBefore = 2000.0f;
-    constexpr float32 kRadiusAfter = 2600.0f;
-    constexpr float32 kProbeX = 650.0f; // world +X offset; +Y face local z = -kProbeX
-
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    auto& pw = PhysicsWorldService::Get();
-    if (TE::TerrainService::IsInitialized())
-        TE::TerrainService::Shutdown();
-    TE::TerrainService::Initialize();
-    struct G { ~G() { if (TE::TerrainService::IsInitialized()) TE::TerrainService::Shutdown(); } } g;
-
-    ECS::World world;
-    const ECS::EntityHandle planet = CreatePlanetEntity(world, kRadiusBefore, 0.0f);
-
-    TE::TerrainModifierSystem modifiers;
-    TE::TerrainPhysicsSystem physics;
-    PhysicsInitSystem init;
-    init.SetRebuildQuiescenceSeconds(0.0f);
-    auto tick = [&]() {
-        modifiers.Update(world, kDt);
-        physics.Update(world, kDt);
-        world.ProcessCommands();
-        init.Update(world, kDt);
-        world.ProcessCommands();
-    };
-
-    tick();
-    ASSERT_EQ(CountPlanetFaceColliders(world), 6);
-    tick();
-    pw.OptimizeBroadphase();
-
-    auto probe = [&]() -> float32 {
-        RayCastQuery q{};
-        q.ray = Ray3D(Vector3(kProbeX, 5000.0f, 0.0f), Vector3(0.0f, -1.0f, 0.0f));
-        q.maxDistance = 4000.0f;
-        RayCastResult hit{};
-        if (!pw.RayCast(q, hit))
-            return -1.0f;
-        return hit.hitPoint.y;
-    };
-
-    const float32 yBefore = probe();
-    ASSERT_GT(yBefore, 0.0f) << "probe ray never hit the planet before the edit";
-
-    uint64 builtBefore[TE::kPlanetFaceCount] = {};
-    world.Query<ECS::Read<TerrainPlanetFaceCollider>, ECS::Read<HeightFieldColliderShape>>()
-        .Each([&](ECS::EntityHandle, const TerrainPlanetFaceCollider& tag,
-                  const HeightFieldColliderShape& s)
-              { if (tag.Face < TE::kPlanetFaceCount) builtBefore[tag.Face] = s.lastBuiltVersion; });
-
-    {
-        auto* t = world.GetComponentForWrite<Components::Terrain>(planet);
-        ASSERT_NE(t, nullptr);
-        t->PlanetRadius = kRadiusAfter;
-    }
-
-    tick();
-    pw.OptimizeBroadphase();
-
-    uint64 builtAfter[TE::kPlanetFaceCount] = {};
-    world.Query<ECS::Read<TerrainPlanetFaceCollider>, ECS::Read<HeightFieldColliderShape>>()
-        .Each([&](ECS::EntityHandle, const TerrainPlanetFaceCollider& tag,
-                  const HeightFieldColliderShape& s)
-              { if (tag.Face < TE::kPlanetFaceCount) builtAfter[tag.Face] = s.lastBuiltVersion; });
-    for (uint32 f = 0; f < TE::kPlanetFaceCount; ++f)
-        EXPECT_GT(builtAfter[f], builtBefore[f]) << "face " << f << " Jolt shape never rebuilt";
-
-    // Both predictions come from the SAME stored samples; only the declared extent differs.
-    const uint32 dim = TE::kPlanetFaceColliderDim;
-    std::vector<float32> patch(static_cast<size_t>(dim) * dim, 0.0f);
-    {
-        TE::PlanetColliderParams p{};
-        p.Radius = kRadiusAfter;
-        p.ReliefAmplitude = 0.0f; // matches CreatePlanetEntity(..., 0.0f)
-        p.ReliefFrequency = 6.0f;
-        p.ReliefOctaves = 3u;
-        float32 lo = 0.0f, hi = 0.0f;
-        TE::GeneratePlanetFacePatch(2 /*+Y*/, p, dim, CBTTerrain::SphereSculptSampler{},
-                                    CBTTerrain::SphereAnalyticModifierSet{}, 0, 0,
-                                    static_cast<int32>(dim) - 1, static_cast<int32>(dim) - 1, patch,
-                                    lo, hi);
-    }
-    auto sampleAtColumn = [&](float32 sizeMeters) {
-        const float32 scale = sizeMeters / static_cast<float32>(dim - 1);
-        const float32 fi = (0.0f + sizeMeters * 0.5f) / scale;       // local x = world z = 0
-        const float32 fj = (-kProbeX + sizeMeters * 0.5f) / scale;   // local z = -world x
-        const uint32 i = static_cast<uint32>(fi);
-        const uint32 j0 = static_cast<uint32>(std::floor(fj));
-        const uint32 j1 = std::min(j0 + 1u, dim - 1u);
-        const float32 t = fj - static_cast<float32>(j0);
-        const float32 a = patch[static_cast<size_t>(j0) * dim + i];
-        const float32 b = patch[static_cast<size_t>(j1) * dim + i];
-        return a + (b - a) * t;
-    };
-    const float32 yExpected = sampleAtColumn(kRadiusAfter * 2.0f);
-    const float32 yStaleExtent = sampleAtColumn(kRadiusBefore * 2.0f);
-    ASSERT_GT(std::abs(yExpected - yStaleExtent), 20.0f)
-        << "probe column not discriminating between the two extents";
-
-    const float32 yAfter = probe();
-    ASSERT_GT(yAfter, 0.0f) << "probe ray never hit the planet after the edit";
-    EXPECT_NEAR(yAfter, yExpected, 1.0f)
-        << "the Jolt surface off-centre is not where the new radius puts it (stale-extent "
-           "prediction is " << yStaleExtent << ", got " << yAfter << ")";
+    StreamedColliderPlanet planet(world, 10.0f);
+    world.AddComponentImmediate(planet.Entity, Components::HeightFieldColliderShape{});
+    world.AddComponentImmediate(planet.Entity, Components::PhysicsBody{});
+    world.AddComponentImmediate(planet.Entity, Components::PhysicsCollider{});
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    planet.Frame(world, terrainPhysics, kPoleCamera);
+    EXPECT_FALSE(world.HasComponent<Components::HeightFieldColliderShape>(planet.Entity));
+    EXPECT_FALSE(world.HasComponent<Components::PhysicsBody>(planet.Entity));
+    EXPECT_FALSE(world.HasComponent<Components::PhysicsCollider>(planet.Entity));
 }
 
 // ---------------------------------------------------------------------------
@@ -4059,7 +5086,7 @@ PhysicsBody MakeLiveBody(GameEngine::Physics::PhysicsWorld& pw)
     settings.motionType = MotionType::Dynamic;
     settings.layer = Layers::Dynamic;
     settings.mass = 1.0f;
-    settings.position = Vector3(0.0f, 5.0f, 0.0f);
+    settings.position = WorldPosition{0.0, 5.0, 0.0};
     body.body = pw.CreateBody(settings);
     body.initialized = true;
     return body;
@@ -4175,7 +5202,7 @@ TEST(PhysicsWorldHooks, ColliderAndBodyHooksBothFireForOneEntity)
     TerrainECS::RegisterTerrainWorldHooks(world);
 
     const PhysicsBody body = MakeLiveBody(pw);
-    Components::TerrainTileCollider collider{};
+    Components::TerrainPageCollider collider{};
     collider.PhysicsHandleIndex = 7;
     collider.PhysicsHandleGeneration = 1;
 
@@ -4252,18 +5279,29 @@ TEST(Physics, ProceduralMeshReaderSurvivesReleaseAndRejectsStaleHandle)
     GameEngine::Physics::MeshShapeDef mesh;
     mesh.vertices = {{-1, 0, -1}, {1, 0, -1}, {0, 0, 1}};
     mesh.indices = {0, 2, 1};
-    const auto handle = GameEngine::PhysicsECS::MeshColliderData::Register(mesh);
-    const auto reader = GameEngine::PhysicsECS::MeshColliderData::Read(handle);
+    const auto handle = GameEngine::PhysicsECS::ProceduralMeshColliders::Register(mesh);
+    const auto reader = GameEngine::PhysicsECS::ProceduralMeshColliders::Read(handle);
     ASSERT_NE(reader, nullptr);
-    GameEngine::PhysicsECS::MeshColliderData::Release(handle);
+    GameEngine::PhysicsECS::ProceduralMeshColliders::Release(handle);
     EXPECT_EQ(reader->indices.size(), 3u);
-    EXPECT_EQ(GameEngine::PhysicsECS::MeshColliderData::Read(handle), nullptr);
-    const auto replacement = GameEngine::PhysicsECS::MeshColliderData::Register(mesh);
+    EXPECT_EQ(GameEngine::PhysicsECS::ProceduralMeshColliders::Read(handle), nullptr);
+    const auto replacement = GameEngine::PhysicsECS::ProceduralMeshColliders::Register(mesh);
     EXPECT_NE(replacement, handle);
-    EXPECT_EQ(GameEngine::PhysicsECS::MeshColliderData::Read(handle), nullptr);
-    GameEngine::PhysicsECS::MeshColliderData::Release(replacement);
+    EXPECT_EQ(GameEngine::PhysicsECS::ProceduralMeshColliders::Read(handle), nullptr);
+    GameEngine::PhysicsECS::ProceduralMeshColliders::Release(replacement);
     mesh.indices = {0, 2, 99};
-    EXPECT_FALSE(GameEngine::PhysicsECS::MeshColliderData::Register(mesh).IsValid());
+    EXPECT_FALSE(GameEngine::PhysicsECS::ProceduralMeshColliders::Register(mesh).IsValid());
+}
+
+// The height where a ray straight down at (x, z) hits the physics world; -100 for a miss.
+static float MeshSurfaceHeightAt(float x, float z)
+{
+    GameEngine::Physics::RayCastQuery query{};
+    query.origin = {x, 10.0f, z};
+    query.direction = GameEngine::Mathematics::Vector3(0.0f, -1.0f, 0.0f);
+    GameEngine::Physics::RayCastResult hit{};
+    return GameEngine::PhysicsECS::PhysicsWorldService::Get().RayCast(query, hit) ? static_cast<float>(hit.hitPoint.Y)
+                                                                                   : -100.0f;
 }
 
 TEST(Physics, ProceduralMeshColliderBuildsAndRebuildsWithoutARenderer)
@@ -4280,28 +5318,30 @@ TEST(Physics, ProceduralMeshColliderBuildsAndRebuildsWithoutARenderer)
     GameEngine::Physics::MeshShapeDef mesh;
     mesh.vertices = {{-1, 0, -1}, {1, 0, -1}, {0, 0, 1}};
     mesh.indices = {0, 2, 1};
-    const auto first = GameEngine::PhysicsECS::MeshColliderData::Register(mesh);
+    const auto first = GameEngine::PhysicsECS::ProceduralMeshColliders::Register(mesh);
     GameEngine::Components::MeshColliderShape collider;
-    collider.DataIndex = first.Index();
-    collider.DataGeneration = first.Generation();
+    collider.Mesh = first;
     world.AddComponentImmediate(entity, collider);
     GameEngine::PhysicsECS::PhysicsInitSystem init;
     RunPhysicsInitFrame(world, init);
     ASSERT_TRUE(world.GetComponent<GameEngine::Components::PhysicsBody>(entity)->initialized);
-    EXPECT_EQ(world.GetComponent<GameEngine::Components::MeshColliderShape>(entity)->BuiltDataGeneration,
-              first.Generation());
+    EXPECT_EQ(world.GetComponent<GameEngine::Components::MeshColliderShape>(entity)->BuiltMesh, first);
+    EXPECT_NEAR(MeshSurfaceHeightAt(-0.5f, -0.9f), 0.0f, 1e-3f);
+    // The new mesh takes the released slot, so only the handle generation tells the two apart.
+    auto* written = world.GetComponentForWrite<GameEngine::Components::MeshColliderShape>(entity);
+    written->Mesh = {};
+    GameEngine::PhysicsECS::ProceduralMeshColliders::Release(first);
     mesh.vertices[0].y = 1;
-    const auto replacement = GameEngine::PhysicsECS::MeshColliderData::Register(mesh);
-    collider.DataIndex = replacement.Index();
-    collider.DataGeneration = replacement.Generation();
-    world.AddComponentImmediate(entity, collider);
+    const auto replacement = GameEngine::PhysicsECS::ProceduralMeshColliders::Register(mesh);
+    ASSERT_EQ(replacement.Index(), first.Index());
+    written->Mesh = replacement;
     RunPhysicsInitFrame(world, init);
     EXPECT_TRUE(world.GetComponent<GameEngine::Components::PhysicsBody>(entity)->initialized);
-    EXPECT_EQ(world.GetComponent<GameEngine::Components::MeshColliderShape>(entity)->BuiltDataIndex,
-              replacement.Index());
+    EXPECT_EQ(world.GetComponent<GameEngine::Components::MeshColliderShape>(entity)->BuiltMesh, replacement);
+    // The rebuilt body has the raised triangle: its plane is at height 0.725 above that point.
+    EXPECT_NEAR(MeshSurfaceHeightAt(-0.5f, -0.9f), 0.725f, 1e-3f);
     world.DestroyEntityImmediate(entity);
-    GameEngine::PhysicsECS::MeshColliderData::Release(first);
-    GameEngine::PhysicsECS::MeshColliderData::Release(replacement);
+    GameEngine::PhysicsECS::ProceduralMeshColliders::Release(replacement);
 }
 
 // ---------------------------------------------------------------------------
@@ -4371,7 +5411,7 @@ BodyHandle MakeOneWayPlatform(PhysicsWorld& world, float32 topY)
     settings.shape = shape;
     settings.motionType = MotionType::Static;
     settings.layer = Layers::Static;
-    settings.position = Vector3(0.0f, topY - 0.25f, 0.0f);
+    settings.position = GameEngine::Mathematics::WorldPosition{0.0f, topY - 0.25f, 0.0f};
     settings.contactFlags = kOneWayFlag;
     settings.userData = 900;
     return world.CreateBody(settings);
@@ -4387,7 +5427,7 @@ BodyHandle MakeBall(PhysicsWorld& world, const Vector3& position, const Vector3&
     settings.motionType = MotionType::Dynamic;
     settings.layer = Layers::Dynamic;
     settings.mass = 1.0f;
-    settings.position = position;
+    settings.position = GameEngine::Mathematics::WorldPosition::FromVector3(position);
     settings.linearVelocity = velocity;
     settings.startAwake = true;
     settings.userData = 901;
@@ -4417,7 +5457,7 @@ TEST(PhysicsOneWay, BodyFallingOntoPlatformComesToRestOnIt)
 
     // Resting on top: centre sits about one radius above the platform surface.
     const Transform t = world.GetBodyTransform(ball);
-    EXPECT_NEAR(t.position.y, 0.5f, 0.1f);
+    EXPECT_NEAR(t.position.Y, 0.5f, 0.1f);
     EXPECT_GT(ctx.Invocations, 0);
 }
 
@@ -4434,7 +5474,7 @@ TEST(PhysicsOneWay, BodyMovingUpwardPassesThrough)
 
     StepFor(world, 30);
 
-    EXPECT_GT(world.GetBodyTransform(ball).position.y, 0.75f);
+    EXPECT_GT(world.GetBodyTransform(ball).position.Y, 0.75f);
 }
 
 TEST(PhysicsOneWay, DropThroughReleasesABodyAlreadyResting)
@@ -4452,7 +5492,7 @@ TEST(PhysicsOneWay, DropThroughReleasesABodyAlreadyResting)
     ASSERT_TRUE(ball.IsValid());
 
     StepFor(world, 180);
-    ASSERT_NEAR(world.GetBodyTransform(ball).position.y, 0.5f, 0.1f);
+    ASSERT_NEAR(world.GetBodyTransform(ball).position.Y, 0.5f, 0.1f);
 
     // A body resting on a platform falls asleep, and sleeping bodies generate
     // no contacts — so the predicate would never be consulted again. Flipping
@@ -4466,7 +5506,7 @@ TEST(PhysicsOneWay, DropThroughReleasesABodyAlreadyResting)
 
     StepFor(world, 120);
 
-    EXPECT_LT(world.GetBodyTransform(ball).position.y, -1.0f);
+    EXPECT_LT(world.GetBodyTransform(ball).position.Y, -1.0f);
 }
 
 TEST(PhysicsOneWay, DropThroughReleasesAnAwakeBodyWithoutANewContactPair)
@@ -4498,7 +5538,7 @@ TEST(PhysicsOneWay, DropThroughReleasesAnAwakeBodyWithoutANewContactPair)
     settings.motionType = MotionType::Dynamic;
     settings.layer = Layers::Dynamic;
     settings.mass = 1.0f;
-    settings.position = Vector3(0.0f, 2.0f, 0.0f);
+    settings.position = GameEngine::Mathematics::WorldPosition{0.0f, 2.0f, 0.0f};
     settings.startAwake = true;
     settings.allowSleep = false; // never sleeps, so no wake-up re-validation
     settings.userData = 902;
@@ -4506,14 +5546,14 @@ TEST(PhysicsOneWay, DropThroughReleasesAnAwakeBodyWithoutANewContactPair)
     ASSERT_TRUE(ball.IsValid());
 
     StepFor(world, 180);
-    ASSERT_NEAR(world.GetBodyTransform(ball).position.y, 0.5f, 0.1f);
+    ASSERT_NEAR(world.GetBodyTransform(ball).position.Y, 0.5f, 0.1f);
 
     ASSERT_EQ(begins, 1);
     ASSERT_EQ(ends, 0);
     ctx.DropThrough = true;
     StepFor(world, 120);
 
-    EXPECT_LT(world.GetBodyTransform(ball).position.y, -1.0f);
+    EXPECT_LT(world.GetBodyTransform(ball).position.Y, -1.0f);
     EXPECT_EQ(ends, 1);
     EXPECT_EQ(triggers, 0);
 }
@@ -4550,7 +5590,7 @@ TEST(PhysicsOneWay, ClearingTheCallbackRestoresPlainCollision)
 
     StepFor(world, 30);
 
-    EXPECT_LT(world.GetBodyTransform(ball).position.y, -0.75f);
+    EXPECT_LT(world.GetBodyTransform(ball).position.Y, -0.75f);
 }
 
 TEST(PhysicsOneWay, RisingThroughAPlatformRaisesNoEntityContactBegin)
@@ -4575,7 +5615,7 @@ TEST(PhysicsOneWay, RisingThroughAPlatformRaisesNoEntityContactBegin)
 
     StepFor(world, 30);
 
-    EXPECT_GT(world.GetBodyTransform(ball).position.y, 0.75f);
+    EXPECT_GT(world.GetBodyTransform(ball).position.Y, 0.75f);
     EXPECT_EQ(begins, 0);
     EXPECT_EQ(ends, 0);
 }
@@ -4596,7 +5636,7 @@ TEST(PhysicsOneWay, DropThroughFromRestRaisesExactlyOneEntityContactEnd)
     settings.motionType = MotionType::Dynamic;
     settings.layer = Layers::Dynamic;
     settings.mass = 1.0f;
-    settings.position = Vector3(0.0f, 2.0f, 0.0f);
+    settings.position = GameEngine::Mathematics::WorldPosition{0.0f, 2.0f, 0.0f};
     settings.startAwake = true;
     settings.allowSleep = false; // the flag change below then needs no wake
     settings.userData = 903;
@@ -4610,7 +5650,7 @@ TEST(PhysicsOneWay, DropThroughFromRestRaisesExactlyOneEntityContactEnd)
     PhysicsEntityEventCallbacks::SubscribeContactEnd(ballEntity, [&](const EntityContactEvent&) { ++ends; });
 
     StepFor(world, 180);
-    ASSERT_NEAR(world.GetBodyTransform(ball).position.y, 0.5f, 0.1f);
+    ASSERT_NEAR(world.GetBodyTransform(ball).position.Y, 0.5f, 0.1f);
     // The landing may bounce (the default restitution is not zero), so count from rest.
     ASSERT_GE(begins, 1);
     ASSERT_EQ(begins, ends + 1) << "the ball must rest on the platform";
@@ -4620,7 +5660,7 @@ TEST(PhysicsOneWay, DropThroughFromRestRaisesExactlyOneEntityContactEnd)
     world.SetBodyContactFlags(ball, kContactFlagIgnoreOneWay);
     StepFor(world, 120);
 
-    EXPECT_LT(world.GetBodyTransform(ball).position.y, -1.0f);
+    EXPECT_LT(world.GetBodyTransform(ball).position.Y, -1.0f);
     EXPECT_EQ(begins, 0);
     EXPECT_EQ(ends, 1);
 }
@@ -4713,7 +5753,7 @@ float32 MeasureBounceHeight(const GameEngine::Physics::PhysicsMaterial& floorMat
     floor.shape = world.CreateShape(floorBox);
     floor.motionType = MotionType::Static;
     floor.layer = Layers::Static;
-    floor.position = Vector3(0.0f, -0.5f, 0.0f);
+    floor.position = GameEngine::Mathematics::WorldPosition{0.0f, -0.5f, 0.0f};
     floor.materialIndex = 1;
     world.CreateBody(floor);
 
@@ -4724,7 +5764,7 @@ float32 MeasureBounceHeight(const GameEngine::Physics::PhysicsMaterial& floorMat
     ball.motionType = MotionType::Dynamic;
     ball.layer = Layers::Dynamic;
     ball.mass = 1.0f;
-    ball.position = Vector3(0.0f, 4.0f, 0.0f);
+    ball.position = GameEngine::Mathematics::WorldPosition{0.0f, 4.0f, 0.0f};
     ball.startAwake = true;
     ball.allowSleep = false;
     ball.materialIndex = 2;
@@ -4733,11 +5773,11 @@ float32 MeasureBounceHeight(const GameEngine::Physics::PhysicsMaterial& floorMat
     constexpr float32 dt = 1.0f / 60.0f;
     bool hasBounced = false;
     float32 peak = 0.0f;
-    float32 previousY = ball.position.y;
+    float32 previousY = ball.position.Y;
     for (int32 i = 0; i < 400; ++i)
     {
         world.Step(dt, 1);
-        const float32 y = world.GetBodyTransform(handle).position.y;
+        const float32 y = world.GetBodyTransform(handle).position.Y;
         if (!hasBounced && y > previousY)
             hasBounced = true; // started rising again => the impact is behind us
         if (hasBounced)
@@ -4787,7 +5827,7 @@ TEST(PhysicsMaterialCombine, FrictionChangesMeasuredSlideDistance)
         floor.shape = world.CreateShape(floorBox);
         floor.motionType = MotionType::Static;
         floor.layer = Layers::Static;
-        floor.position = Vector3(0.0f, -0.5f, 0.0f);
+        floor.position = GameEngine::Mathematics::WorldPosition{0.0f, -0.5f, 0.0f};
         floor.materialIndex = 1;
         world.CreateBody(floor);
 
@@ -4798,7 +5838,7 @@ TEST(PhysicsMaterialCombine, FrictionChangesMeasuredSlideDistance)
         crate.motionType = MotionType::Dynamic;
         crate.layer = Layers::Dynamic;
         crate.mass = 1.0f;
-        crate.position = Vector3(0.0f, 0.5f, 0.0f);
+        crate.position = GameEngine::Mathematics::WorldPosition{0.0f, 0.5f, 0.0f};
         crate.linearVelocity = Vector3(10.0f, 0.0f, 0.0f);
         crate.startAwake = true;
         crate.materialIndex = 2;
@@ -4807,7 +5847,7 @@ TEST(PhysicsMaterialCombine, FrictionChangesMeasuredSlideDistance)
         constexpr float32 dt = 1.0f / 60.0f;
         for (int32 i = 0; i < 300; ++i)
             world.Step(dt, 1);
-        return world.GetBodyTransform(handle).position.x;
+        return world.GetBodyTransform(handle).position.X;
     };
 
     const float32 icy = slideDistance(0.0f);
@@ -5138,7 +6178,7 @@ TEST(ContactSurfaceTable, SetBodyContactFlagsChangesWhatThePredicateSees)
     ASSERT_TRUE(ball.IsValid());
 
     StepFor(world, 180);
-    ASSERT_NEAR(world.GetBodyTransform(ball).position.y, 0.5f, 0.1f);
+    ASSERT_NEAR(world.GetBodyTransform(ball).position.Y, 0.5f, 0.1f);
 
     world.SetBodyContactFlags(ball, kContactFlagIgnoreOneWay);
     AABB wake;
@@ -5147,7 +6187,7 @@ TEST(ContactSurfaceTable, SetBodyContactFlagsChangesWhatThePredicateSees)
     world.ActivateBodiesInAABB(wake);
 
     StepFor(world, 180);
-    EXPECT_LT(world.GetBodyTransform(ball).position.y, -2.0f);
+    EXPECT_LT(world.GetBodyTransform(ball).position.Y, -2.0f);
 }
 
 namespace
@@ -5167,7 +6207,7 @@ float32 MeasureUnmaterialedSlide(bool installPredicate)
     floor.shape = world.CreateShape(floorBox);
     floor.motionType = MotionType::Static;
     floor.layer = Layers::Static;
-    floor.position = Vector3(0.0f, -0.5f, 0.0f);
+    floor.position = GameEngine::Mathematics::WorldPosition{0.0f, -0.5f, 0.0f};
     floor.friction = 0.02f; // deliberately far from ContactModification's 0.5 default
     world.CreateBody(floor);
 
@@ -5178,14 +6218,14 @@ float32 MeasureUnmaterialedSlide(bool installPredicate)
     crate.motionType = MotionType::Dynamic;
     crate.layer = Layers::Dynamic;
     crate.mass = 1.0f;
-    crate.position = Vector3(0.0f, 0.5f, 0.0f);
+    crate.position = GameEngine::Mathematics::WorldPosition{0.0f, 0.5f, 0.0f};
     crate.linearVelocity = Vector3(10.0f, 0.0f, 0.0f);
     crate.friction = 0.02f;
     crate.startAwake = true;
     const BodyHandle body = world.CreateBody(crate);
 
     StepFor(world, 240);
-    return world.GetBodyTransform(body).position.x;
+    return world.GetBodyTransform(body).position.X;
 }
 } // namespace
 
@@ -5222,9 +6262,9 @@ GameEngine::ECS::EntityHandle CreateBoxBodyEntity(GameEngine::ECS::World& world,
     using namespace GameEngine;
     auto e = world.CreateEntity();
     Components::Transform t{};
-    t.matrix[13] = y;
+    t.Position.Y = y;
     Components::WorldTransform wt{};
-    wt.matrix[13] = y;
+    wt.Position.Y = y;
     world.AddComponentImmediate<Components::Transform>(e, t);
     world.AddComponentImmediate<Components::WorldTransform>(e, wt);
 
@@ -5251,9 +6291,9 @@ GameEngine::ECS::EntityHandle CreateBallEntity(GameEngine::ECS::World& world, Ga
     using namespace GameEngine;
     auto e = world.CreateEntity();
     Components::Transform t{};
-    t.matrix[13] = y;
+    t.Position.Y = y;
     Components::WorldTransform wt{};
-    wt.matrix[13] = y;
+    wt.Position.Y = y;
     world.AddComponentImmediate<Components::Transform>(e, t);
     world.AddComponentImmediate<Components::WorldTransform>(e, wt);
 
@@ -5351,7 +6391,7 @@ GameEngine::float32 MeasureEcsColliderBounceHeight(
     for (int32 i = 0; i < 400; ++i)
     {
         pw.Step(dt, 1);
-        const float32 y = pw.GetBodyTransform(handle).position.y;
+        const float32 y = pw.GetBodyTransform(handle).position.Y;
         if (!hasBounced && y > previousY)
             hasBounced = true;
         if (hasBounced)
@@ -5721,7 +6761,7 @@ BodyHandle MakeKinematicDeck(PhysicsWorld& world, float32 topY, uint32 contactFl
     settings.shape = world.CreateShape(box);
     settings.motionType = MotionType::Kinematic;
     settings.layer = Layers::Kinematic;
-    settings.position = Vector3(0.0f, topY - 0.25f, 0.0f);
+    settings.position = GameEngine::Mathematics::WorldPosition{0.0f, topY - 0.25f, 0.0f};
     settings.contactFlags = contactFlags;
     settings.userData = 910;
     return world.CreateBody(settings);
@@ -5738,7 +6778,7 @@ BodyHandle MakeRider(PhysicsWorld& world, const Vector3& position)
     settings.motionType = MotionType::Dynamic;
     settings.layer = Layers::Dynamic;
     settings.mass = 1.0f;
-    settings.position = position;
+    settings.position = GameEngine::Mathematics::WorldPosition::FromVector3(position);
     settings.startAwake = true;
     settings.userData = 911;
     return world.CreateBody(settings);
@@ -5750,9 +6790,9 @@ void DriveDeck(PhysicsWorld& world, BodyHandle deck, const Vector3& velocity, in
     for (int32 i = 0; i < steps; ++i)
     {
         Transform target = world.GetBodyTransform(deck);
-        target.position.x += velocity.x * kTick;
-        target.position.y += velocity.y * kTick;
-        target.position.z += velocity.z * kTick;
+        target.position.X += velocity.x * kTick;
+        target.position.Y += velocity.y * kTick;
+        target.position.Z += velocity.z * kTick;
         world.MoveKinematic(deck, target, kTick);
         world.Step(kTick, 1);
     }
@@ -5764,9 +6804,9 @@ void TeleportDeck(PhysicsWorld& world, BodyHandle deck, const Vector3& velocity,
     for (int32 i = 0; i < steps; ++i)
     {
         Transform target = world.GetBodyTransform(deck);
-        target.position.x += velocity.x * kTick;
-        target.position.y += velocity.y * kTick;
-        target.position.z += velocity.z * kTick;
+        target.position.X += velocity.x * kTick;
+        target.position.Y += velocity.y * kTick;
+        target.position.Z += velocity.z * kTick;
         world.SetBodyTransform(deck, target, ActivationMode::Activate);
         world.Step(kTick, 1);
     }
@@ -5780,14 +6820,14 @@ TEST(PhysicsMovingPlatform, MoveKinematicArrivesAtTheTargetPose)
     ASSERT_TRUE(deck.IsValid());
 
     Transform target = world.GetBodyTransform(deck);
-    target.position.x += 0.5f;
+    target.position.X += 0.5f;
     world.MoveKinematic(deck, target, kTick);
 
     // The velocity it picked must be exactly the one that covers the gap in a tick.
     EXPECT_NEAR(world.GetLinearVelocity(deck).x, 0.5f / kTick, 0.01f);
 
     world.Step(kTick, 1);
-    EXPECT_NEAR(world.GetBodyTransform(deck).position.x, target.position.x, 1e-3f);
+    EXPECT_NEAR(world.GetBodyTransform(deck).position.X, target.position.X, 1e-3f);
 }
 
 TEST(PhysicsMovingPlatform, AMovedPlatformCarriesADynamicRider)
@@ -5803,22 +6843,22 @@ TEST(PhysicsMovingPlatform, AMovedPlatformCarriesADynamicRider)
 
     // Settle first, so what follows measures carrying and not landing.
     StepFor(world, 60);
-    const float32 riderStartX = world.GetBodyTransform(rider).position.x;
-    const float32 deckStartX = world.GetBodyTransform(deck).position.x;
-    ASSERT_NEAR(world.GetBodyTransform(rider).position.y, 0.25f, 0.05f);
+    const float32 riderStartX = world.GetBodyTransform(rider).position.X;
+    const float32 deckStartX = world.GetBodyTransform(deck).position.X;
+    ASSERT_NEAR(world.GetBodyTransform(rider).position.Y, 0.25f, 0.05f);
 
     constexpr float32 kSpeed = 1.0f;
     DriveDeck(world, deck, Vector3(kSpeed, 0.0f, 0.0f), 180); // 3 s
 
-    const float32 deckMoved = world.GetBodyTransform(deck).position.x - deckStartX;
-    const float32 riderMoved = world.GetBodyTransform(rider).position.x - riderStartX;
+    const float32 deckMoved = world.GetBodyTransform(deck).position.X - deckStartX;
+    const float32 riderMoved = world.GetBodyTransform(rider).position.X - riderStartX;
 
     ASSERT_NEAR(deckMoved, kSpeed * 3.0f, 0.05f);
     // The rider spends the first fraction of a second being accelerated up to
     // deck speed, so it ends slightly behind; it must not end up merely nudged.
     EXPECT_GT(riderMoved, 0.9f * deckMoved);
     // And it is still on the deck, not scraped off the back.
-    EXPECT_NEAR(world.GetBodyTransform(rider).position.y, 0.25f, 0.05f);
+    EXPECT_NEAR(world.GetBodyTransform(rider).position.Y, 0.25f, 0.05f);
     // Once up to speed it travels WITH the deck, not behind it.
     EXPECT_NEAR(world.GetLinearVelocity(rider).x, kSpeed, 0.05f);
 }
@@ -5833,14 +6873,14 @@ TEST(PhysicsMovingPlatform, ATeleportedPlatformDoesNotCarryItsRider)
     const BodyHandle rider = MakeRider(world, Vector3(0.0f, 0.30f, 0.0f));
 
     StepFor(world, 60);
-    const float32 riderStartX = world.GetBodyTransform(rider).position.x;
-    const float32 deckStartX = world.GetBodyTransform(deck).position.x;
+    const float32 riderStartX = world.GetBodyTransform(rider).position.X;
+    const float32 deckStartX = world.GetBodyTransform(deck).position.X;
 
     constexpr float32 kSpeed = 1.0f;
     TeleportDeck(world, deck, Vector3(kSpeed, 0.0f, 0.0f), 180);
 
-    const float32 deckMoved = world.GetBodyTransform(deck).position.x - deckStartX;
-    const float32 riderMoved = world.GetBodyTransform(rider).position.x - riderStartX;
+    const float32 deckMoved = world.GetBodyTransform(deck).position.X - deckStartX;
+    const float32 riderMoved = world.GetBodyTransform(rider).position.X - riderStartX;
 
     ASSERT_NEAR(deckMoved, kSpeed * 3.0f, 0.05f);
     EXPECT_LT(riderMoved, 0.25f * deckMoved);
@@ -5856,8 +6896,8 @@ TEST(PhysicsMovingPlatform, PointVelocityOnTheDeckIsWhatARiderMustAdd)
     DriveDeck(world, deck, Vector3(2.0f, 0.0f, 0.0f), 10);
 
     // Purely translating: every point on the deck reports the same velocity.
-    const Vector3 atCentre = world.GetPointVelocity(deck, Vector3(0.0f, 0.0f, 0.0f));
-    const Vector3 atCorner = world.GetPointVelocity(deck, Vector3(3.5f, 0.0f, 3.5f));
+    const Vector3 atCentre = world.GetPointVelocity(deck, GameEngine::Mathematics::WorldPosition{0.0f, 0.0f, 0.0f});
+    const Vector3 atCorner = world.GetPointVelocity(deck, GameEngine::Mathematics::WorldPosition{3.5f, 0.0f, 3.5f});
     EXPECT_NEAR(atCentre.x, 2.0f, 0.01f);
     EXPECT_NEAR(atCorner.x, 2.0f, 0.01f);
     EXPECT_NEAR(atCorner.z, 0.0f, 0.01f);
@@ -5883,15 +6923,15 @@ TEST(PhysicsMovingPlatform, PointVelocityIncludesTheAngularTerm)
     // without appealing to it.
     constexpr float32 kLever = 3.0f;
     const Vector3 localOffset(kLever, 0.0f, 0.0f);
-    const Vector3 probeBefore = before.position + before.rotation.Rotate(localOffset);
+    const GameEngine::Mathematics::WorldPosition probeBefore = before.position + before.rotation.Rotate(localOffset);
     const Vector3 v = world.GetPointVelocity(deck, probeBefore);
 
     world.Step(kTick, 1);
     const Transform after = world.GetBodyTransform(deck);
-    const Vector3 probeAfter = after.position + after.rotation.Rotate(localOffset);
-    const Vector3 measured((probeAfter.x - probeBefore.x) / kTick,
-                           (probeAfter.y - probeBefore.y) / kTick,
-                           (probeAfter.z - probeBefore.z) / kTick);
+    const GameEngine::Mathematics::WorldPosition probeAfter = after.position + after.rotation.Rotate(localOffset);
+    const Vector3 measured(static_cast<float>(probeAfter.X - probeBefore.X) / kTick,
+                           static_cast<float>(probeAfter.Y - probeBefore.Y) / kTick,
+                           static_cast<float>(probeAfter.Z - probeBefore.Z) / kTick);
 
     // The query is instantaneous, the measurement is a chord average over one
     // tick, so the tangential component agrees closely and the radial one picks
@@ -5903,9 +6943,7 @@ TEST(PhysicsMovingPlatform, PointVelocityIncludesTheAngularTerm)
     // its distance from the axis, perpendicular to the arm. Stated this way
     // rather than as fixed components, because the deck has already turned by
     // the step above and its probe is no longer on the axis it started on.
-    const Vector3 arm(probeBefore.x - before.position.x,
-                      probeBefore.y - before.position.y,
-                      probeBefore.z - before.position.z);
+    const Vector3 arm = probeBefore - before.position;
     const float32 speed = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
     EXPECT_NEAR(speed, kOmega * kLever, 0.05f);
     EXPECT_NEAR(v.x * arm.x + v.y * arm.y + v.z * arm.z, 0.0f, 0.05f);
@@ -5922,12 +6960,12 @@ TEST(PhysicsMovingPlatform, PointVelocityOfAStaticOrInvalidBodyIsZero)
 {
     PhysicsWorld world(SmallDeterministicSettings());
     const BodyHandle platform = MakeOneWayPlatform(world, 0.0f); // static
-    const Vector3 v = world.GetPointVelocity(platform, Vector3(1.0f, 0.0f, 1.0f));
+    const Vector3 v = world.GetPointVelocity(platform, GameEngine::Mathematics::WorldPosition{1.0f, 0.0f, 1.0f});
     EXPECT_NEAR(v.x, 0.0f, 1e-6f);
     EXPECT_NEAR(v.y, 0.0f, 1e-6f);
     EXPECT_NEAR(v.z, 0.0f, 1e-6f);
 
-    const Vector3 none = world.GetPointVelocity(BodyHandle{}, Vector3(1.0f, 0.0f, 1.0f));
+    const Vector3 none = world.GetPointVelocity(BodyHandle{}, GameEngine::Mathematics::WorldPosition{1.0f, 0.0f, 1.0f});
     EXPECT_NEAR(none.x, 0.0f, 1e-6f);
 }
 
@@ -5997,11 +7035,11 @@ TEST(PhysicsMovingPlatform, AOneWayPlatformStillCarriesItsRiderWhileMoving)
 
     // Fall onto the one-way deck and settle.
     StepFor(world, 120);
-    ASSERT_NEAR(world.GetBodyTransform(rider).position.y, 0.25f, 0.05f);
+    ASSERT_NEAR(world.GetBodyTransform(rider).position.Y, 0.25f, 0.05f);
     ASSERT_GT(ctx.Invocations, 0);
 
-    const float32 riderStartX = world.GetBodyTransform(rider).position.x;
-    const float32 deckStartX = world.GetBodyTransform(deck).position.x;
+    const float32 riderStartX = world.GetBodyTransform(rider).position.X;
+    const float32 deckStartX = world.GetBodyTransform(deck).position.X;
 
     constexpr float32 kSpeed = 1.0f;
     // Sample only once the rider is up to deck speed. Over the first second it
@@ -6012,12 +7050,12 @@ TEST(PhysicsMovingPlatform, AOneWayPlatformStillCarriesItsRiderWhileMoving)
     ctx.Sampling = true;
     DriveDeck(world, deck, Vector3(kSpeed, 0.0f, 0.0f), 120);
 
-    const float32 deckMoved = world.GetBodyTransform(deck).position.x - deckStartX;
-    const float32 riderMoved = world.GetBodyTransform(rider).position.x - riderStartX;
+    const float32 deckMoved = world.GetBodyTransform(deck).position.X - deckStartX;
+    const float32 riderMoved = world.GetBodyTransform(rider).position.X - riderStartX;
 
     ASSERT_NEAR(deckMoved, kSpeed * 3.0f, 0.05f);
     EXPECT_GT(riderMoved, 0.9f * deckMoved);
-    EXPECT_NEAR(world.GetBodyTransform(rider).position.y, 0.25f, 0.05f);
+    EXPECT_NEAR(world.GetBodyTransform(rider).position.Y, 0.25f, 0.05f);
 
     // The load-bearing claim: the seam reports velocity RELATIVE to the surface.
     // A rider carried at the deck's own speed must look nearly stationary to the
@@ -6043,7 +7081,7 @@ TEST(PhysicsMovingPlatform, AMovingOneWayPlatformIsStillOpenFromBelow)
 
     DriveDeck(world, deck, Vector3(1.0f, 0.0f, 0.0f), 30);
 
-    EXPECT_GT(world.GetBodyTransform(ball).position.y, 0.75f);
+    EXPECT_GT(world.GetBodyTransform(ball).position.Y, 0.75f);
 }
 
 TEST(PhysicsMovingPlatform, ARiderParkedThroughAnEndpointPauseIsPickedUpAgain)
@@ -6057,16 +7095,16 @@ TEST(PhysicsMovingPlatform, ARiderParkedThroughAnEndpointPauseIsPickedUpAgain)
 
     // Long enough at rest for the sleep threshold to take the rider.
     StepFor(world, 300);
-    ASSERT_NEAR(world.GetBodyTransform(rider).position.y, 0.25f, 0.05f);
+    ASSERT_NEAR(world.GetBodyTransform(rider).position.Y, 0.25f, 0.05f);
 
-    const float32 riderStartX = world.GetBodyTransform(rider).position.x;
-    const float32 deckStartX = world.GetBodyTransform(deck).position.x;
+    const float32 riderStartX = world.GetBodyTransform(rider).position.X;
+    const float32 deckStartX = world.GetBodyTransform(deck).position.X;
 
     constexpr float32 kSpeed = 1.0f;
     DriveDeck(world, deck, Vector3(kSpeed, 0.0f, 0.0f), 180);
 
-    const float32 deckMoved = world.GetBodyTransform(deck).position.x - deckStartX;
-    const float32 riderMoved = world.GetBodyTransform(rider).position.x - riderStartX;
+    const float32 deckMoved = world.GetBodyTransform(deck).position.X - deckStartX;
+    const float32 riderMoved = world.GetBodyTransform(rider).position.X - riderStartX;
 
     ASSERT_NEAR(deckMoved, kSpeed * 3.0f, 0.05f);
     EXPECT_GT(riderMoved, 0.9f * deckMoved);
@@ -6100,9 +7138,7 @@ struct ScopedSplineServiceForPlatforms
 GameEngine::Components::WorldTransform IdentityTranslatedTo(float32 x, float32 y, float32 z)
 {
     GameEngine::Components::WorldTransform xf{};
-    xf.matrix[12] = x;
-    xf.matrix[13] = y;
-    xf.matrix[14] = z;
+    xf.Position = GameEngine::Mathematics::WorldPosition{x, y, z};
     return xf;
 }
 
@@ -6141,7 +7177,7 @@ GameEngine::ECS::EntityHandle CreatePlatformEntity(GameEngine::ECS::World& world
     bs.shape = pw.CreateShape(box);
     bs.motionType = motionType;
     bs.layer = motionType == MotionType::Dynamic ? Layers::Dynamic : Layers::Kinematic;
-    bs.position = Vector3(0.0f, 0.0f, 0.0f);
+    bs.position = GameEngine::Mathematics::WorldPosition{0.0f, 0.0f, 0.0f};
     const BodyHandle body = pw.CreateBody(bs);
 
     auto e = world.CreateEntity();
@@ -6184,7 +7220,7 @@ TEST(MovingPlatformSystem, DrivesTheBodyAlongTheSplineAtTheAuthoredSpeed)
 
     const auto* pb = world.GetComponent<GameEngine::Components::PhysicsBody>(platform);
     ASSERT_NE(pb, nullptr);
-    EXPECT_NEAR(pw.GetBodyTransform(pb->body).position.x, 2.0f, 0.05f);
+    EXPECT_NEAR(pw.GetBodyTransform(pb->body).position.X, 2.0f, 0.05f);
 
     // Driven, not teleported: the body carries the velocity that got it there,
     // which is the whole reason a rider on it moves.
@@ -6220,9 +7256,9 @@ TEST(MovingPlatformSystem, PlacesTheLocallyAuthoredPathByItsOwnerTransform)
     const auto* pb = world.GetComponent<GameEngine::Components::PhysicsBody>(platform);
     ASSERT_NE(pb, nullptr);
     const Transform pose = pw.GetBodyTransform(pb->body);
-    EXPECT_NEAR(pose.position.x, 102.0f, 0.05f);
-    EXPECT_NEAR(pose.position.y, 5.0f, 0.05f);
-    EXPECT_NEAR(pose.position.z, -3.0f, 0.05f);
+    EXPECT_NEAR(pose.position.X, 102.0f, 0.05f);
+    EXPECT_NEAR(pose.position.Y, 5.0f, 0.05f);
+    EXPECT_NEAR(pose.position.Z, -3.0f, 0.05f);
 }
 
 TEST(MovingPlatformSystem, PingPongTurnsAroundAtTheEndOfTheSpline)
@@ -6238,19 +7274,19 @@ TEST(MovingPlatformSystem, PingPongTurnsAroundAtTheEndOfTheSpline)
                                                GameEngine::Components::PlatformPathMode::PingPong, 5.0f);
 
     GameEngine::PhysicsECS::MovingPlatformSystem system;
-    float32 furthestX = 0.0f;
+    double furthestX = 0.0f;
     for (int32 i = 0; i < 180; ++i) // 3 s at 5 m/s on a 10 m path: out and back
     {
         system.Update(world, kTick);
         pw.Step(kTick, 1);
         const auto* pb = world.GetComponent<GameEngine::Components::PhysicsBody>(platform);
-        furthestX = std::max(furthestX, pw.GetBodyTransform(pb->body).position.x);
+        furthestX = std::max(furthestX, pw.GetBodyTransform(pb->body).position.X);
     }
 
     // It reached the far end and is on its way back, never beyond the path.
     EXPECT_NEAR(furthestX, 10.0f, 0.15f);
     const auto* pb = world.GetComponent<GameEngine::Components::PhysicsBody>(platform);
-    EXPECT_NEAR(pw.GetBodyTransform(pb->body).position.x, 5.0f, 0.2f);
+    EXPECT_NEAR(pw.GetBodyTransform(pb->body).position.X, 5.0f, 0.2f);
     EXPECT_LT(pw.GetLinearVelocity(pb->body).x, 0.0f);
 }
 
@@ -6267,9 +7303,9 @@ TEST(MovingPlatformSystem, AScaledPathEntityStretchesTheArcLengthItTravels)
 
     GameEngine::ECS::World world;
     GameEngine::Components::WorldTransform doubled{};
-    doubled.matrix[0] = 2.0f;
-    doubled.matrix[5] = 2.0f;
-    doubled.matrix[10] = 2.0f;
+    doubled.Basis[0].x = 2.0f;
+    doubled.Basis[1].y = 2.0f;
+    doubled.Basis[2].z = 2.0f;
 
     const auto path = CreateStraightPath(world, splines, doubled);
     const auto platform = CreatePlatformEntity(world, pw, path,
@@ -6284,7 +7320,7 @@ TEST(MovingPlatformSystem, AScaledPathEntityStretchesTheArcLengthItTravels)
 
     // Two world metres in one second on a path that is now 20 world metres long.
     const auto* pb = world.GetComponent<GameEngine::Components::PhysicsBody>(platform);
-    EXPECT_NEAR(pw.GetBodyTransform(pb->body).position.x, 2.0f, 0.05f);
+    EXPECT_NEAR(pw.GetBodyTransform(pb->body).position.X, 2.0f, 0.05f);
 }
 
 TEST(MovingPlatformSystem, AnUnresolvablePathLeavesThePlatformWhereItIs)
@@ -6302,7 +7338,7 @@ TEST(MovingPlatformSystem, AnUnresolvablePathLeavesThePlatformWhereItIs)
 
     const auto* pb = world.GetComponent<GameEngine::Components::PhysicsBody>(platform);
     ASSERT_NE(pb, nullptr);
-    pw.SetBodyTransform(pb->body, Transform{Vector3(7.0f, 1.0f, 2.0f), Quaternion::Identity()});
+    pw.SetBodyTransform(pb->body, Transform{WorldPosition{7.0, 1.0, 2.0}, Quaternion::Identity()});
 
     GameEngine::PhysicsECS::MovingPlatformSystem system;
     for (int32 i = 0; i < 60; ++i)
@@ -6312,8 +7348,8 @@ TEST(MovingPlatformSystem, AnUnresolvablePathLeavesThePlatformWhereItIs)
     }
 
     const Transform pose = pw.GetBodyTransform(pb->body);
-    EXPECT_NEAR(pose.position.x, 7.0f, 1e-3f);
-    EXPECT_NEAR(pose.position.y, 1.0f, 1e-3f);
+    EXPECT_NEAR(pose.position.X, 7.0f, 1e-3f);
+    EXPECT_NEAR(pose.position.Y, 1.0f, 1e-3f);
 
     const auto* mp = world.GetComponent<GameEngine::Components::MovingPlatform>(platform);
     EXPECT_FLOAT_EQ(mp->distance, 0.0f);
@@ -6341,7 +7377,7 @@ TEST(MovingPlatformSystem, ASwitchedOffPlatformDoesNotMove)
         system.Update(world, kTick);
         pw.Step(kTick, 1);
     }
-    EXPECT_NEAR(pw.GetBodyTransform(body).position.x, 0.0f, 1e-3f);
+    EXPECT_NEAR(pw.GetBodyTransform(body).position.X, 0.0f, 1e-3f);
     EXPECT_FLOAT_EQ(world.GetComponent<GameEngine::Components::MovingPlatform>(platform)->distance, 0.0f);
 
     GameEngine::ECS::Entity(&world, platform).SetEnabled<GameEngine::Components::MovingPlatform>(true);
@@ -6350,7 +7386,7 @@ TEST(MovingPlatformSystem, ASwitchedOffPlatformDoesNotMove)
         system.Update(world, kTick);
         pw.Step(kTick, 1);
     }
-    EXPECT_NEAR(pw.GetBodyTransform(body).position.x, 2.0f, 0.05f);
+    EXPECT_NEAR(pw.GetBodyTransform(body).position.X, 2.0f, 0.05f);
 }
 
 TEST(MovingPlatformSystem, DisablingAMovingPlatformStopsItsBody)
@@ -6372,8 +7408,8 @@ TEST(MovingPlatformSystem, DisablingAMovingPlatformStopsItsBody)
         system.Update(world, kTick);
         pw.Step(kTick, 1);
     }
-    EXPECT_NEAR(pw.GetBodyTransform(body).position.x, 2.0f, 0.05f);
-    const float stoppedAt = pw.GetBodyTransform(body).position.x;
+    EXPECT_NEAR(pw.GetBodyTransform(body).position.X, 2.0f, 0.05f);
+    const float stoppedAt = pw.GetBodyTransform(body).position.X;
 
     GameEngine::ECS::Entity(&world, platform).SetEnabled<GameEngine::Components::MovingPlatform>(false);
     for (int32 i = 0; i < 60; ++i)
@@ -6381,7 +7417,7 @@ TEST(MovingPlatformSystem, DisablingAMovingPlatformStopsItsBody)
         system.Update(world, kTick);
         pw.Step(kTick, 1);
     }
-    EXPECT_NEAR(pw.GetBodyTransform(body).position.x, stoppedAt, 0.01f);
+    EXPECT_NEAR(pw.GetBodyTransform(body).position.X, stoppedAt, 0.01f);
 }
 
 TEST(MovingPlatformSystem, DynamicBodiesKeepTheirVelocityWhetherThePlatformIsEnabledOrDisabled)
@@ -6428,7 +7464,7 @@ TEST(MovingPlatformSystem, LosingAUsablePathStopsAnAlreadyMovingBody)
         system.Update(world, kTick);
         physics.Step(kTick, 1);
         ASSERT_GT(physics.GetLinearVelocity(body).x, 0.0f);
-        const float stoppedAt = physics.GetBodyTransform(body).position.x;
+        const float stoppedAt = physics.GetBodyTransform(body).position.X;
         switch (unavailable)
         {
         case UnavailablePath::RemovedComponent:
@@ -6453,7 +7489,7 @@ TEST(MovingPlatformSystem, LosingAUsablePathStopsAnAlreadyMovingBody)
         system.Update(world, kTick);
         physics.Step(kTick, 1);
         EXPECT_FLOAT_EQ(physics.GetLinearVelocity(body).x, 0.0f);
-        EXPECT_NEAR(physics.GetBodyTransform(body).position.x, stoppedAt, 1e-4f);
+        EXPECT_NEAR(physics.GetBodyTransform(body).position.X, stoppedAt, 1e-4f);
     }
 }
 
@@ -6505,247 +7541,24 @@ TEST(MovingPlatformSchedule, PlatformMotionIsScheduledBetweenProvisioningAndTheS
 }
 
 // A box body with its Transform and WorldTransform at `position`, for the kinematic tests below.
-static GameEngine::ECS::EntityHandle AddBoxBody(GameEngine::ECS::World& world,
-                                                GameEngine::Physics::PhysicsWorld& pw,
-                                                GameEngine::Physics::MotionType motionType,
-                                                const GameEngine::Physics::Vector3& halfExtents,
-                                                const GameEngine::Physics::Vector3& position)
-{
-    using namespace GameEngine::Physics;
-    using GameEngine::Components::PhysicsBody;
-    using GameEngine::Components::Transform;
-    using GameEngine::Components::WorldTransform;
 
-    BoxShapeDef boxDef{};
-    boxDef.halfExtents = halfExtents;
-    BodySettings bs{};
-    bs.shape = pw.CreateShape(boxDef);
-    bs.motionType = motionType;
-    bs.layer = motionType == MotionType::Kinematic ? Layers::Kinematic : Layers::Dynamic;
-    bs.mass = 1.0f;
-    bs.position = position;
-    PhysicsBody pb{};
-    pb.motionType = motionType;
-    pb.body = pw.CreateBody(bs);
-    pb.initialized = true;
-
-    const auto e = world.CreateEntity();
-    world.AddComponentImmediate<Transform>(e, Transform::FromTRS(position, Quaternion::Identity(), Vector3(1.0f, 1.0f, 1.0f)));
-    WorldTransform wt{};
-    std::memcpy(wt.matrix, world.GetComponent<Transform>(e)->matrix, sizeof(wt.matrix));
-    world.AddComponentImmediate<WorldTransform>(e, wt);
-    world.AddComponentImmediate<PhysicsBody>(e, pb);
-    if (motionType == MotionType::Kinematic)
-        world.AddComponentImmediate(e, GameEngine::Components::KinematicBody{});
-    return e;
-}
-
-static void SetTransformHeight(GameEngine::ECS::World& world, GameEngine::ECS::EntityHandle e, GameEngine::float32 y)
-{
-    auto* transform = world.GetComponentForWrite<GameEngine::Components::Transform>(e);
-    transform->matrix[13] = y;
-    std::memcpy(world.GetComponentForWrite<GameEngine::Components::WorldTransform>(e)->matrix, transform->matrix,
-                sizeof(transform->matrix));
-}
 
 // A kinematic platform that the game raises through its Transform moves with a velocity, so a dynamic box
 // resting on it is carried at the platform's speed and stays on top. When the Transform stops, the platform
 // stops on it.
-TEST(Physics, KinematicPlatformMovedThroughItsTransformCarriesADynamicBoxAndStops)
-{
-    using GameEngine::Components::PhysicsBody;
-    using GameEngine::Physics::MotionType;
-    using GameEngine::Physics::Vector3;
-    using GameEngine::PhysicsECS::PhysicsWorldService;
 
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    auto& pw = PhysicsWorldService::Get();
-    GameEngine::ECS::World world;
-    constexpr GameEngine::float32 kPlatformHalfHeight = 0.1f;
-    constexpr GameEngine::float32 kBoxHalfSize = 0.25f;
-    const auto platform =
-        AddBoxBody(world, pw, MotionType::Kinematic, Vector3(1.0f, kPlatformHalfHeight, 1.0f), Vector3(0.0f, 0.0f, 0.0f));
-    const auto box = AddBoxBody(world, pw, MotionType::Dynamic, Vector3(kBoxHalfSize, kBoxHalfSize, kBoxHalfSize),
-                                Vector3(0.0f, kPlatformHalfHeight + kBoxHalfSize, 0.0f));
-    const auto platformBody = world.GetComponent<PhysicsBody>(platform)->body;
-    const auto boxBody = world.GetComponent<PhysicsBody>(box)->body;
-    ASSERT_TRUE(pw.IsBodyValid(platformBody));
-    ASSERT_TRUE(pw.IsBodyValid(boxBody));
-
-    GameEngine::PhysicsECS::PhysicsStepSystem step;
-    GameEngine::PhysicsECS::PhysicsWritebackSystem writeback;
-    constexpr GameEngine::float32 kFrame = 1.0f / 60.0f;
-    for (int frame = 0; frame < 60; ++frame)
-    {
-        step.Update(world, kFrame);
-        writeback.Update(world, kFrame);
-    }
-
-    constexpr GameEngine::float32 kSpeed = 6.0f;
-    GameEngine::float32 height = 0.0f;
-    for (int frame = 0; frame < 60; ++frame)
-    {
-        height += kSpeed * kFrame;
-        SetTransformHeight(world, platform, height);
-        step.Update(world, kFrame);
-        writeback.Update(world, kFrame);
-    }
-
-    const GameEngine::float32 platformTop = pw.GetBodyTransform(platformBody).position.y + kPlatformHalfHeight;
-    const GameEngine::float32 boxBottom = pw.GetBodyTransform(boxBody).position.y - kBoxHalfSize;
-    constexpr GameEngine::float32 kContactSlop = 0.02f;
-    EXPECT_NEAR(boxBottom, platformTop, kContactSlop) << "the box left the top of the platform";
-    EXPECT_NEAR(pw.GetLinearVelocity(boxBody).y, kSpeed, 0.1f * kSpeed) << "the platform did not carry the box";
-
-    for (int frame = 0; frame < 30; ++frame)
-    {
-        step.Update(world, kFrame);
-        writeback.Update(world, kFrame);
-    }
-    EXPECT_FLOAT_EQ(pw.GetBodyTransform(platformBody).position.y, height) << "the platform drifted off its Transform";
-    EXPECT_EQ(pw.GetLinearVelocity(platformBody).y, 0.0f) << "the platform kept moving";
-}
 
 // A frame shorter than the fixed step runs no step, and the writeback still blends the last two steps.
 // A kinematic Transform the game moved on that frame stays where the game put it.
-TEST(Physics, KinematicTransformHoldsOnAFrameWithNoStep)
-{
-    using GameEngine::Components::Transform;
-    using GameEngine::Physics::MotionType;
-    using GameEngine::Physics::Vector3;
-    using GameEngine::PhysicsECS::PhysicsWorldService;
 
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    auto& pw = PhysicsWorldService::Get();
-    GameEngine::ECS::World world;
-    const auto e = AddBoxBody(world, pw, MotionType::Kinematic, Vector3(0.5f, 0.5f, 0.5f), Vector3(1.0f, 5.0f, -2.0f));
-    ASSERT_TRUE(pw.IsBodyValid(world.GetComponent<GameEngine::Components::PhysicsBody>(e)->body));
-
-    GameEngine::PhysicsECS::PhysicsStepSystem step;
-    GameEngine::PhysicsECS::PhysicsWritebackSystem writeback;
-    step.Update(world, 1.0f / 60.0f);
-    writeback.Update(world, 1.0f / 60.0f);
-    SetTransformHeight(world, e, 9.0f);
-    step.Update(world, 1.0f / 120.0f);
-    writeback.Update(world, 1.0f / 120.0f);
-
-    EXPECT_FLOAT_EQ(world.GetComponent<Transform>(e)->GetPosition().y, 9.0f)
-        << "the writeback moved the kinematic Transform";
-}
 
 // A kinematic body that stops is placed on its exact pose with no velocity. On the frames after that the
 // step does not move it and the writeback does not stamp its chunk, so a resting body costs nothing.
-TEST(Physics, KinematicBodyThatStopsIsPlacedOnItsPoseAndLeftAlone)
-{
-    using GameEngine::Components::PhysicsBody;
-    using GameEngine::Components::Transform;
-    using GameEngine::Components::WorldTransform;
-    using GameEngine::Physics::MotionType;
-    using GameEngine::Physics::Quaternion;
-    using GameEngine::Physics::Vector3;
-    using GameEngine::PhysicsECS::PhysicsWorldService;
 
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    auto& pw = PhysicsWorldService::Get();
-    GameEngine::ECS::World world;
-    const Vector3 start(1.0f, 5.0f, -2.0f);
-    const auto e = AddBoxBody(world, pw, MotionType::Kinematic, Vector3(0.5f, 0.5f, 0.5f), start);
-    const auto body = world.GetComponent<PhysicsBody>(e)->body;
-    ASSERT_TRUE(pw.IsBodyValid(body));
-
-    GameEngine::PhysicsECS::PhysicsStepSystem step;
-    GameEngine::PhysicsECS::PhysicsWritebackSystem writeback;
-    constexpr GameEngine::float32 kFrame = 1.0f / 60.0f;
-    const auto runFrame = [&]
-    {
-        step.Update(world, kFrame);
-        writeback.Update(world, kFrame);
-    };
-    for (int frame = 1; frame <= 10; ++frame)
-    {
-        auto* transform = world.GetComponentForWrite<Transform>(e);
-        *transform = Transform::FromTRS(start + Vector3(0.1f * frame, 0.0f, 0.0f),
-                                        Quaternion::FromAxisAngle(Vector3(0.0f, 1.0f, 0.0f), 0.05f * frame),
-                                        Vector3(1.0f, 1.0f, 1.0f));
-        std::memcpy(world.GetComponentForWrite<WorldTransform>(e)->matrix, transform->matrix, sizeof(transform->matrix));
-        runFrame();
-    }
-    EXPECT_EQ(PhysicsWorldService::GetLastKinematicBodiesMoving(), 1u);
-    runFrame();
-
-    const Transform* transform = world.GetComponent<Transform>(e);
-    const auto position = transform->GetPosition();
-    const auto rotation = transform->GetRotation().GetGLM();
-    const GameEngine::Physics::Transform pose = pw.GetBodyTransform(body);
-    EXPECT_EQ(pose.position.x, position.x) << "the stopped body is not on its pose";
-    EXPECT_EQ(pose.position.y, position.y);
-    EXPECT_EQ(pose.position.z, position.z);
-    EXPECT_EQ(pose.rotation.GetGLM().w, rotation.w) << "the stopped body is not on its rotation";
-    EXPECT_EQ(pose.rotation.GetGLM().x, rotation.x);
-    EXPECT_EQ(pose.rotation.GetGLM().y, rotation.y);
-    EXPECT_EQ(pose.rotation.GetGLM().z, rotation.z);
-    const Vector3 linear = pw.GetLinearVelocity(body);
-    const Vector3 angular = pw.GetAngularVelocity(body);
-    EXPECT_EQ(linear.x, 0.0f) << "the stopped body kept a velocity";
-    EXPECT_EQ(linear.y, 0.0f);
-    EXPECT_EQ(linear.z, 0.0f);
-    EXPECT_EQ(angular.x, 0.0f) << "the stopped body kept a spin";
-    EXPECT_EQ(angular.y, 0.0f);
-    EXPECT_EQ(angular.z, 0.0f);
-    EXPECT_EQ(PhysicsWorldService::GetLastKinematicBodiesMoving(), 0u) << "the stopped body is still moving";
-
-    GameEngine::ECS::ChangeGate gate{};
-    gate.LastRunVersion = world.GetGlobalSystemVersion();
-    runFrame();
-    int stampedChunks = 0;
-    auto stamped = world.Query<GameEngine::ECS::Read<WorldTransform>>();
-    stamped.Changed<WorldTransform>(gate);
-    stamped.Each([&](const WorldTransform&) { ++stampedChunks; });
-    EXPECT_EQ(stampedChunks, 0) << "an idle frame stamped the resting kinematic body's WorldTransform";
-    EXPECT_EQ(PhysicsWorldService::GetLastKinematicBodiesMoving(), 0u);
-}
 
 // The step keeps the kinematic bodies it moved on the last step frame. A new physics world reuses body
 // handles, so that list is dropped when the world changes: a dynamic body in the new world that takes an
 // old moving body's handle is not placed on the old body's target.
-TEST(Physics, KinematicMovedListIsDroppedWhenThePhysicsWorldChanges)
-{
-    using GameEngine::Components::PhysicsBody;
-    using GameEngine::Physics::MotionType;
-    using GameEngine::Physics::Vector3;
-    using GameEngine::PhysicsECS::PhysicsWorldService;
-
-    GameEngine::PhysicsECS::PhysicsStepSystem step;
-    constexpr GameEngine::float32 kFrame = 1.0f / 60.0f;
-    const Vector3 halfExtents(0.5f, 0.5f, 0.5f);
-    GameEngine::Physics::BodyHandle oldBody;
-    {
-        ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-        auto& pw = PhysicsWorldService::Get();
-        GameEngine::ECS::World world;
-        const auto e = AddBoxBody(world, pw, MotionType::Kinematic, halfExtents, Vector3(0.0f, 0.0f, 0.0f));
-        oldBody = world.GetComponent<PhysicsBody>(e)->body;
-        step.Update(world, kFrame);
-        for (int frame = 1; frame <= 3; ++frame)
-        {
-            SetTransformHeight(world, e, 5.0f * static_cast<GameEngine::float32>(frame));
-            step.Update(world, kFrame);
-        }
-        ASSERT_EQ(PhysicsWorldService::GetLastKinematicBodiesMoving(), 1u);
-    }
-
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    auto& pw = PhysicsWorldService::Get();
-    GameEngine::ECS::World world;
-    const Vector3 start(0.0f, 50.0f, 0.0f);
-    const auto e = AddBoxBody(world, pw, MotionType::Dynamic, halfExtents, start);
-    const auto body = world.GetComponent<PhysicsBody>(e)->body;
-    ASSERT_EQ(body.Value(), oldBody.Value()) << "the new world did not reuse the handle, so the test proves nothing";
-    step.Update(world, kFrame);
-    step.Update(world, kFrame);
-
-    EXPECT_NEAR(pw.GetBodyTransform(body).position.y, start.y, 0.1f) << "the old world's target moved a body in the new world";
-}
 
 
 TEST(Physics, PhysicsInitTagsAKinematicBodyAndUntagsItWhenItsMotionTypeChanges)
@@ -6804,244 +7617,31 @@ TEST(Physics, TransformDrivenKinematicsPreserveMovingPlatformBackendMotion)
     world.AddComponentImmediate(entity, Components::MovingPlatform{});
     physics.SetLinearVelocity(body, Physics::Vector3(3.0f, 0.0f, 0.0f));
     step.Update(world, 1.0f / 60.0f);
+    PhysicsWorldService::SetRenderInterpolationAlpha(1.0f);
     PhysicsWritebackSystem writeback;
     writeback.Update(world, 1.0f / 60.0f);
 
     EXPECT_FLOAT_EQ(physics.GetLinearVelocity(body).x, 3.0f);
-    EXPECT_GT(physics.GetBodyTransform(body).position.x, 0.0f);
-    EXPECT_GT(world.GetComponent<Components::Transform>(entity)->GetPosition().x, 0.0f);
+    EXPECT_GT(physics.GetBodyTransform(body).position.X, 0.0f);
+    EXPECT_DOUBLE_EQ(world.GetComponent<Components::Transform>(entity)->GetPosition().X,
+                    physics.GetBodyTransform(body).position.X);
     EXPECT_EQ(PhysicsWorldService::GetLastKinematicBodiesMoving(), 0u);
 }
 
-namespace
-{
-// A static plane at y=0 and a bouncing sphere dropped from y=5, with the ECS entity ids as user data.
-void DropBallOnPlane(GameEngine::Physics::PhysicsWorld& world, GameEngine::uint64 groundEid, GameEngine::uint64 ballEid)
-{
-    using namespace GameEngine::Physics;
-    PlaneShapeDef plane{};
-    plane.normal = Vector3(0.0f, 1.0f, 0.0f);
-    plane.halfExtent = 2000.0f;
-    BodySettings ground{};
-    ground.shape = world.CreateShape(plane);
-    ground.motionType = MotionType::Static;
-    ground.layer = Layers::Static;
-    ground.restitution = 0.9f;
-    ground.userData = groundEid;
-    ASSERT_TRUE(world.CreateBody(ground).IsValid());
-
-    SphereShapeDef sphere{};
-    sphere.radius = 0.5f;
-    BodySettings ball{};
-    ball.shape = world.CreateShape(sphere);
-    ball.motionType = MotionType::Dynamic;
-    ball.layer = Layers::Dynamic;
-    ball.position = Vector3(0.0f, 5.0f, 0.0f);
-    ball.restitution = 0.9f;
-    ball.userData = ballEid;
-    ASSERT_TRUE(world.CreateBody(ball).IsValid());
-}
-} // namespace
-
-TEST(Physics, EntityCallbacks_HandlerThatUnsubscribesItselfLeavesTheOthersCalled)
-{
-    using namespace GameEngine;
-    using namespace GameEngine::PhysicsECS;
-
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    constexpr uint64 groundEid = 3101;
-    constexpr uint64 ballEid = 3102;
-    const ECS::EntityHandle ballEntity(static_cast<uint32>(ballEid));
-
-    // The first contact reaches both handlers; the first one ends its own subscription while the
-    // delivery runs, and the second must still be called for that contact.
-    int step = 0;
-    int onceCount = 0;
-    int onceStep = -1;
-    bool otherCalledWithOnce = false;
-    PhysicsEntityEventCallbacks::SubscriptionId onceId = 0;
-    onceId = PhysicsEntityEventCallbacks::SubscribeContactBegin(ballEntity, [&](const EntityContactEvent&)
-                                                                {
-                                                                    ++onceCount;
-                                                                    onceStep = step;
-                                                                    PhysicsEntityEventCallbacks::Unsubscribe(onceId);
-                                                                });
-    PhysicsEntityEventCallbacks::SubscribeContactBegin(ballEntity, [&](const EntityContactEvent&)
-                                                       { otherCalledWithOnce = otherCalledWithOnce || step == onceStep; });
-
-    DropBallOnPlane(PhysicsWorldService::Get(), groundEid, ballEid);
-    for (step = 0; step < 600; ++step)
-        PhysicsWorldService::Get().Step(1.0f / 60.0f, 1);
-
-    EXPECT_EQ(onceCount, 1);
-    EXPECT_TRUE(otherCalledWithOnce);
-}
-
-TEST(Physics, EntityCallbacks_EndedRunsOnceWhenTheSubscriptionEnds)
-{
-    using namespace GameEngine;
-    using namespace GameEngine::PhysicsECS;
-
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    const ECS::EntityHandle entity(static_cast<uint32>(3201));
-    int unsubscribedEnded = 0;
-    int clearedEnded = 0;
-    const auto unsubscribed = PhysicsEntityEventCallbacks::SubscribeContactBegin(
-        entity, [](const EntityContactEvent&) {}, [&] { ++unsubscribedEnded; });
-    PhysicsEntityEventCallbacks::SubscribeTriggerEnter(entity, [](const EntityTriggerEvent&) {}, [&] { ++clearedEnded; });
-
-    PhysicsEntityEventCallbacks::Unsubscribe(unsubscribed);
-    PhysicsEntityEventCallbacks::Unsubscribe(unsubscribed);
-    EXPECT_EQ(unsubscribedEnded, 1);
-    EXPECT_EQ(clearedEnded, 0);
-
-    PhysicsEntityEventCallbacks::ClearAll();
-    EXPECT_EQ(unsubscribedEnded, 1);
-    EXPECT_EQ(clearedEnded, 1);
-}
-
-TEST(Physics, EntityCallbacks_WorldShutdownEndsEverySubscription)
-{
-    using namespace GameEngine;
-    using namespace GameEngine::PhysicsECS;
-
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    int ended = 0;
-    PhysicsEntityEventCallbacks::SubscribeContactBegin(ECS::EntityHandle(static_cast<uint32>(3301)),
-                                                       [](const EntityContactEvent&) {}, [&] { ++ended; });
-
-    PhysicsWorldService::Shutdown();
-
-    EXPECT_EQ(ended, 1);
-}
 
 // The last subscription ends inside its own handler while another world contact listener exists:
 // the router's world listeners stay in place for the rest of that delivery, so the other listener
 // still sees the contact.
-TEST(Physics, EntityCallbacks_LastSubscriptionEndingInItsHandlerKeepsLaterWorldListeners)
-{
-    using namespace GameEngine;
-    using namespace GameEngine::PhysicsECS;
 
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    constexpr uint64 groundEid = 3401;
-    constexpr uint64 ballEid = 3402;
-    int step = 0;
-    int oursStep = -1;
-    int ours = 0;
-    bool laterSawIt = false;
-    PhysicsEntityEventCallbacks::SubscriptionId id = 0;
-    id = PhysicsEntityEventCallbacks::SubscribeContactBegin(ECS::EntityHandle(static_cast<uint32>(ballEid)),
-                                                            [&](const EntityContactEvent&)
-                                                            {
-                                                                ++ours;
-                                                                oursStep = step;
-                                                                PhysicsEntityEventCallbacks::Unsubscribe(id);
-                                                            });
-    const auto later = PhysicsWorldService::Get().AddContactListener(
-        [&](const Physics::ContactEvent& e)
-        {
-            if (e.state == Physics::ContactState::Begin && step == oursStep)
-                laterSawIt = true;
-        });
-    DropBallOnPlane(PhysicsWorldService::Get(), groundEid, ballEid);
-    for (step = 0; step < 600; ++step)
-        PhysicsWorldService::Get().Step(1.0f / 60.0f, 1);
-    PhysicsWorldService::Get().RemoveContactListener(later);
-
-    EXPECT_EQ(ours, 1);
-    EXPECT_TRUE(laterSawIt);
-}
-
-namespace
-{
-// A system with no access that shares the physics step's wave.
-class StepWavePeerSystem : public GameEngine::ECS::ISystem
-{
-  public:
-    const char* GetName() const override { return "StepWavePeer"; }
-    void Update(GameEngine::ECS::World&, GameEngine::float32) override {}
-};
-} // namespace
 
 // Event handlers run inside the physics step and call the script API, whose functions are for the
 // main thread outside a job. Scheduled in one wave with other systems, the step still runs on the
 // thread that updates the systems, outside any job, so a handler that sets a velocity and ends its
 // own subscription runs where those calls are allowed.
-TEST(Physics, PhysicsStepRunsOnTheCallerOutsideAJobInASharedWave)
-{
-    using namespace GameEngine;
-    using namespace GameEngine::PhysicsECS;
 
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    JobSystem::WorkStealingThreadPool pool(2);
-    ECS::SystemManager manager(&pool);
-    ECS::World world;
-    manager.AddSystem<StepWavePeerSystem>();
-    manager.AddSystem<PhysicsStepSystem>();
-    manager.AddSystem<StepWavePeerSystem>();
-    ECS::SystemExecutionPlan plan;
-    plan.Waves.push_back({{0, 1, 2}});
-    manager.SetExecutionPlan(std::move(plan));
-
-    constexpr uint64 groundEid = 3701;
-    constexpr uint64 ballEid = 3702;
-    const std::thread::id caller = std::this_thread::get_id();
-    int calls = 0;
-    bool onCaller = false;
-    bool inJob = true;
-    PhysicsEntityEventCallbacks::SubscriptionId id = 0;
-    id = PhysicsEntityEventCallbacks::SubscribeContactBegin(
-        ECS::EntityHandle(static_cast<uint32>(ballEid)),
-        [&](const EntityContactEvent&)
-        {
-            ++calls;
-            onCaller = std::this_thread::get_id() == caller;
-            inJob = JobSystem::WorkStealingThreadPool::IsExecutingJob();
-            PhysicsEntityEventCallbacks::Unsubscribe(id);
-        });
-    DropBallOnPlane(PhysicsWorldService::Get(), groundEid, ballEid);
-    const float32 fixed = PhysicsWorldService::GetSettings().fixedTimeStep > 0.0f
-                              ? PhysicsWorldService::GetSettings().fixedTimeStep
-                              : 1.0f / 60.0f;
-    for (int frame = 0; frame < 600 && calls == 0; ++frame)
-        manager.Update(world, fixed);
-
-    ASSERT_EQ(calls, 1);
-    EXPECT_TRUE(onCaller);
-    EXPECT_FALSE(inJob);
-}
 
 // The contact normal points from other into self, for each of the two entities.
-TEST(Physics, EntityCallbacks_ContactNormalPointsFromOtherIntoSelf)
-{
-    using namespace GameEngine;
-    using namespace GameEngine::PhysicsECS;
 
-    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
-    constexpr uint64 groundEid = 3501;
-    constexpr uint64 ballEid = 3502;
-    float ballNormalY = 0.0f;
-    float groundNormalY = 0.0f;
-    PhysicsEntityEventCallbacks::SubscribeContactBegin(ECS::EntityHandle(static_cast<uint32>(ballEid)),
-                                                       [&](const EntityContactEvent& e)
-                                                       {
-                                                           if (ballNormalY == 0.0f)
-                                                               ballNormalY = e.normal.y;
-                                                       });
-    PhysicsEntityEventCallbacks::SubscribeContactBegin(ECS::EntityHandle(static_cast<uint32>(groundEid)),
-                                                       [&](const EntityContactEvent& e)
-                                                       {
-                                                           if (groundNormalY == 0.0f)
-                                                               groundNormalY = e.normal.y;
-                                                       });
-    DropBallOnPlane(PhysicsWorldService::Get(), groundEid, ballEid);
-    for (int i = 0; i < 600; ++i)
-        PhysicsWorldService::Get().Step(1.0f / 60.0f, 1);
-
-    EXPECT_GT(ballNormalY, 0.5f) << "self is the ball: from the ground up into the ball";
-    EXPECT_LT(groundNormalY, -0.5f) << "self is the ground: from the ball down into the ground";
-}
 
 TEST(Physics, NativeScriptVelocityQueriesRespectKinematicTransformOwnership)
 {
@@ -7131,11 +7731,11 @@ TEST(Physics, NativeScriptQueriesReportTotalCountAndWriteOnlyTheAvailableSpan)
         body.shape = shape;
         body.motionType = Physics::MotionType::Static;
         body.layer = Physics::Layers::Static;
-        body.position = Physics::Vector3(0.0f, 0.0f, 3.0f * id);
+        body.position = GameEngine::Mathematics::WorldPosition{0.0f, 0.0f, 3.0f * id};
         body.userData = id;
         ASSERT_TRUE(physics.CreateBody(body).IsValid());
     }
-    const Mathematics::Vector3 origin(0.0f, 0.0f, 0.0f);
+    const Mathematics::WorldPosition origin{0.0, 0.0, 0.0};
     const Mathematics::Vector3 direction(0.0f, 0.0f, 2.0f);
     EXPECT_EQ(Script::RayCastAll(physics, origin, direction, {}), 2);
     std::array<Script::RayHit, 1> hits{};
@@ -7145,10 +7745,10 @@ TEST(Physics, NativeScriptQueriesReportTotalCountAndWriteOnlyTheAvailableSpan)
     Script::RayHit nearest{};
     ASSERT_TRUE(Script::RayCast(physics, origin, direction, nearest));
     EXPECT_EQ(nearest.entity.id, 1u);
-    EXPECT_EQ(Script::RayCastAll(physics, origin, origin, hits), 0);
+    EXPECT_EQ(Script::RayCastAll(physics, origin, Mathematics::Vector3{}, hits), 0);
     EXPECT_EQ(Script::RayCastAll(physics, origin, direction, hits, -1.0f), 0);
     std::array<ECS::EntityHandle, 1> bodies{};
-    EXPECT_EQ(Script::BoxOverlap(physics, Mathematics::Vector3(0.0f, 0.0f, 4.5f),
+    EXPECT_EQ(Script::BoxOverlap(physics, Mathematics::WorldPosition{0.0, 0.0, 4.5},
                                 Mathematics::Vector3(1.0f, 1.0f, 4.0f), Mathematics::Quaternion::Identity(), bodies), 2);
 }
 

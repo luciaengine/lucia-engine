@@ -8,10 +8,10 @@
 #include "ECS/World.h"
 #include "InspectorRegistry.h"
 #include "Inspectors/DefaultComponentInspector.h"
-#include "Inspectors/InspectorComponentSection.h"
+#include "Inspectors/InspectorComponent/InspectorComponentSection.h"
 #include "Inspectors/InspectorUIHelpers.h"
 #include "Particles/Assets/ParticleStackAsset.h"
-#include "Particles/ParticleStackDocument.h"
+#include "Particles/ParticleStack/ParticleStackDocument.h"
 #include "Particles/Processors/ParticleTrailProcessor.h"
 #include "UI/Controls/Foldout.h"
 
@@ -57,7 +57,7 @@ constexpr std::array<std::string_view, 10> kTrailFields = {
     "TrailTextureScaleV",
 };
 constexpr std::array<std::string_view, 3> kVisibilityFields = {
-    "RenderLayerMask",
+    "RenderLayers",
     "ThinningStart",
     "ThinningEnd",
 };

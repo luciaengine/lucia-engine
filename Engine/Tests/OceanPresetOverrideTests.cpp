@@ -2,8 +2,8 @@
 
 #include "EngineLogCapture.h"
 
-#include "Ocean/OceanPresetAsset.h"
-#include "Ocean/OceanPresetOverrideValidator.h"
+#include "Ocean/OceanPreset/OceanPresetAsset.h"
+#include "Ocean/OceanPreset/OceanPresetOverrideValidator.h"
 #include "Components/Rendering/Ocean.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"

@@ -13,8 +13,7 @@
 //
 // A model that is not resident yet (a cold import, a first decode) is never
 // waited for by a step. Only DrainNow, which must leave the world resolved,
-// waits for a load. Standalone shader sources are prefetched on tracked workers
-// across budgeted steps; DrainNow bypasses these advisory reads.
+// waits for a load.
 
 #include "Engine/Rendering/SceneResolveService.h"
 
@@ -41,6 +40,10 @@ class SceneBuildPump
     /// Safe on a world with nothing to resolve (complete at once). Resets any
     /// prior state, so it also restarts the build for a new scene.
     void Begin(ECS::World& world, RenderServices& renderServices);
+
+    /// Report the build's pending resolves to `tracker`, so a scene opened in the
+    /// editor holds the ready-to-show query as the engine's resolve does.
+    void ReportLoadingWork(SceneLoadTracker& tracker) { m_Resolves.ReportLoadingWork(tracker); }
 
     /// Resolve what has landed until `budget` wall-clock elapses; always takes
     /// one ready item, even under a zero budget. Never waits for a load. The
@@ -69,7 +72,7 @@ class SceneBuildPump
   private:
     void ReleaseActiveCountWhenComplete();
 
-    SceneResolveService m_Resolves{true};
+    SceneResolveService m_Resolves;
     SceneResolveBatch m_Batch = SceneResolveBatch::None;
     bool m_Begun = false;
     bool m_CountedAsActive = false;

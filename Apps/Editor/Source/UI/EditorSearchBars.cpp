@@ -193,7 +193,7 @@ void EditorSearchBars::LoadFromPreferences()
     auto prefs = Editor::OpenEditorPreferences();
     std::string err;
     prefs.Load(&err);
-    
+
     prefs.TryGetBool("ui.searchBarsVisible", s_Visible);
     prefs.TryGetBool("ui.searchBarsAtTop", s_AtTop);
     prefs.TryGetBool("ui.searchBarsAccentFocusOutline", s_AccentFocusOutline);
@@ -205,7 +205,7 @@ void EditorSearchBars::SaveToPreferences()
     auto prefs = Editor::OpenEditorPreferences();
     std::string err;
     prefs.Load(&err); // Load existing to preserve other settings
-    
+
     prefs.SetBool("ui.searchBarsVisible", s_Visible);
     prefs.SetBool("ui.searchBarsAtTop", s_AtTop);
     prefs.SetBool("ui.searchBarsAccentFocusOutline", s_AccentFocusOutline);

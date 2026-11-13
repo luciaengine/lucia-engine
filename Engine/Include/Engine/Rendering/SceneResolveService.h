@@ -19,7 +19,8 @@
 //   registered): that first pass runs at enqueue, outside the frame slice, so
 //   a burst of ordinary spawns (projectiles, debris, a wave of units) binds in
 //   its spawn frame. Every other entity is held: its model's load starts at
-//   once, and the entity binds on a later Step once the model has landed. The
+//   once, and the entity binds on a later Step once the model has landed and a
+//   job has parsed the surfaces its materials compose with. The
 //   slice bounds only models that had to land, and scene batches (EnqueueWorld).
 // - Held work never outlives its world or its entity. A held entity that is
 //   destroyed or loses its MeshRenderer is dropped by a bounded sweep that runs
@@ -62,6 +63,7 @@
 namespace GameEngine
 {
 class Asset;
+class SceneLoadTracker;
 namespace ECS { class World; }
 
 namespace Engine::Renderer
@@ -104,9 +106,7 @@ struct SceneResolveCounts
 class SceneResolveService
 {
   public:
-    // SceneBuildPump opts into advisory source reads before registration;
-    // ordinary runtime resolving keeps its existing registration behavior.
-    explicit SceneResolveService(bool prefetchMaterialSources = false);
+    SceneResolveService();
     ~SceneResolveService();
     SceneResolveService(const SceneResolveService&) = delete;
     SceneResolveService& operator=(const SceneResolveService&) = delete;
@@ -149,6 +149,10 @@ class SceneResolveService
     SceneResolveBatchProgress BatchProgress(SceneResolveBatch batch) const;
     SceneResolveCounts Counts() const;
 
+    /// Report the held entities and the pending materials as the scene.resolve gate.
+    /// Every instance reports, the editor's scene-open build included.
+    void ReportLoadingWork(SceneLoadTracker& tracker);
+
     /// Bumped each time the service lets go of a held entity that carries a
     /// SkeletonRef or SkinnedMeshRenderer without writing its MeshRenderer (its
     /// model missed, or another owner resolved it first), so a binder that
@@ -185,26 +189,29 @@ class SceneResolveService
     void ObserveWorld(const ECS::World& world);
     void DropHeldWork();
     void SweepGoneEntities(const ECS::World& world);
-    void Hold(ECS::EntityHandle entity, const GUID& modelGuid, SceneResolveBatch batch);
-    void AddModelRecord(ECS::EntityHandle entity, const GUID& modelGuid);
+    void Hold(RenderServices& renderServices, ECS::EntityHandle entity, const GUID& modelGuid,
+              SceneResolveBatch batch);
+    void AddModelRecord(RenderServices& renderServices, ECS::EntityHandle entity, const GUID& modelGuid);
+    // Starts the surface job of a landed model (or material) and queues it as preparing, or as ready when
+    // no job runs.
+    void PrepareLandedModel(RenderServices& renderServices, const GUID& modelGuid, ModelWork& work);
+    void PrepareLandedMaterial(RenderServices& renderServices, const GUID& materialGuid, MaterialWork& work);
     bool BindAtEnqueue(ECS::World& world, RenderServices& renderServices, ECS::EntityHandle entity,
                        const GUID& modelGuid);
     KeptBinding FindKept(RenderServices& renderServices, const GUID& modelGuid);
     KeptBinding Keep(RenderServices& renderServices, const GUID& modelGuid, const SharedPtr<Asset>& asset);
     void BindEntity(ECS::World& world, RenderServices& renderServices, ECS::EntityHandle entity,
                     const ModelRenderResources& resources, SceneResolveBatch batch);
-    void RequestEntityMaterial(ECS::World& world, RenderServices& renderServices, ECS::EntityHandle entity,
-                               const GUID& materialGuid, SceneResolveBatch batch);
     void RequestMaterial(RenderServices& renderServices, const GUID& materialGuid, SceneResolveBatch batch);
-    void PollModelLoads();
-    void PollMaterialLoads();
-    enum class MaterialProgress { None, Prefetched, Registered };
+    void PollModelLoads(RenderServices& renderServices);
+    void PollMaterialLoads(RenderServices& renderServices);
+    void PollPreparedWork();
     std::size_t Run(ECS::World& world, RenderServices& renderServices,
-                    std::chrono::steady_clock::time_point deadline, bool waitForSources = true);
+                    std::chrono::steady_clock::time_point deadline);
     bool ResolveNextEntity(ECS::World& world, RenderServices& renderServices);
     void ResolveHeldEntity(ECS::World& world, RenderServices& renderServices, const GUID& modelGuid,
                            ModelWork& work, ECS::EntityHandle entity, SceneResolveBatch batch);
-    MaterialProgress RegisterNextMaterial(RenderServices& renderServices, bool waitForSources);
+    bool RegisterNextMaterial(RenderServices& renderServices);
     void ReleaseEntity(const ECS::World& world, ECS::EntityHandle entity, SceneResolveBatch batch,
                        bool wroteMeshRenderer);
     void ReportMiss(const char* kind, const GUID& assetGuid);
@@ -214,6 +221,8 @@ class SceneResolveService
 
     std::unordered_map<GUID, std::unique_ptr<ModelWork>> m_Models;
     std::vector<GUID> m_LoadingModels;
+    // Landed models whose surfaces a job parses (ModelWork::SurfaceParse).
+    std::vector<GUID> m_PreparingModels;
     std::deque<GUID> m_ReadyModels;
     // Each held entity, the model it waits for and its batch.
     std::unordered_map<ECS::EntityHandle, HeldEntity, ECS::EntityHandleHash> m_Held;
@@ -222,9 +231,15 @@ class SceneResolveService
 
     std::unordered_map<GUID, std::unique_ptr<MaterialWork>> m_Materials;
     std::vector<GUID> m_LoadingMaterials;
+    // Landed materials whose surfaces a job parses (MaterialWork::SurfaceParse).
+    std::vector<GUID> m_PreparingMaterials;
     std::deque<GUID> m_ReadyMaterials;
 
     std::unordered_map<uint32, BatchState> m_Batches;
+
+    // The scene.resolve gate; null until ReportLoadingWork.
+    struct LoadReport;
+    std::shared_ptr<LoadReport> m_LoadReport;
     uint32 m_NextBatch = 1;
 
     // The world the held handles belong to; another world, or this one after a
@@ -254,7 +269,6 @@ class SceneResolveService
     uint64 m_Steps = 0;
     // Re-entrancy guard: registration mutates the world and must not re-enter.
     bool m_InStep = false;
-    bool m_PrefetchMaterialSources = false;
 };
 
 } // namespace Engine::Renderer

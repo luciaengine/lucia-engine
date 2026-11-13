@@ -3,12 +3,14 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Materials/MaterialHelper.h"
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Rendering/Utils/BufferHelpers.h"
+#include "Rendering/Utils/CubeLut/CubeLutGpuUpload.h"
+#include "Rendering/Utils/TextureUploadHelpers.h"
 #include "Logger/Logger.h"
 #include "TonemapAces2Tables.h"
 
@@ -60,10 +62,20 @@ int SelectTonemapOutEncoding(IDevice* device, FinalizeInputSpace inputSpace)
 struct TonemapDeviceResources
 {
 	SamplerHandle sampler{INVALID_SAMPLER_HANDLE};
+	// Identity LUT tables, bound when the caller supplies no LUT (tonemap.frag declares the
+	// bindings whether or not it samples them).
+	CubeLutGpuTextures identityLut{};
+	bool identityLutCreated = false; // created once per device; a failed creation is logged, not retried
+	// 1x1 zero texture bound as the night tint's star light and depth (tonemap.frag declares them); this
+	// path pushes tint strength 0, so neither is sampled.
+	TextureHandle noNightTintInput{INVALID_TEXTURE_HANDLE};
 	// Default exposure-history buffer. tonemap.frag statically reads uExposure even when
 	// useAutoExposure==0, so the binding must point at a live buffer; the contents are never
 	// consumed on this path (the ternary selects the static push-constant exposure).
 	BufferHandle exposureBuffer{INVALID_BUFFER_HANDLE};
+	// Zero-filled exposure compensation state (Includes/exposure_compensation.glsl), bound as
+	// uCompensation: its valid word is 0, so the night tint's gate reads it as not written.
+	BufferHandle noCompensationBuffer{INVALID_BUFFER_HANDLE};
 	// ACES 2 tier tables (generated TonemapAces2Tables.h payload), uploaded once.
 	// Lives in a device buffer, never in shader constants: glslang materializes
 	// dynamically indexed const arrays into per-invocation scratch memory, which
@@ -92,6 +104,7 @@ static std::unordered_map<DeviceKey, TonemapDeviceResources> g_TonemapPerDevice;
 
 // Matches AutoExposureNode's exposure-state buffer ({float scale; uint valid; float pad0,pad1}).
 static constexpr uint32_t kTonemapExposureStateBytes = 16u;
+static constexpr uint32_t kTonemapCompensationStateBytes = 16u; // Pipeline::kViewExposureCompensationBytes
 
 static TonemapShaderBytes& GetTonemapShaderBytes(const IDevice& device)
 {
@@ -165,6 +178,47 @@ static TonemapDeviceResources* GetOrCreateTonemapResources(IDevice* device)
 		expDesc.debugName = "Tonemap.DefaultExposure";
 		res.exposureBuffer = device->CreateBuffer(expDesc);
 	}
+	if (!res.noCompensationBuffer.IsValid())
+	{
+		BufferDesc compDesc{};
+		compDesc.size = kTonemapCompensationStateBytes;
+		compDesc.usage = static_cast<uint32_t>(BufferUsage::Storage | BufferUsage::TransferDst);
+		compDesc.memoryUsage = BufferMemoryUsage::DeviceLocal;
+		compDesc.debugName = "Tonemap.NoCompensation";
+		const uint32_t zeros[kTonemapCompensationStateBytes / sizeof(uint32_t)] = {};
+		res.noCompensationBuffer = CreateBufferInitialized(device, compDesc, zeros, kTonemapCompensationStateBytes);
+	}
+	if (!res.identityLutCreated)
+	{
+		res.identityLutCreated = true;
+		res.identityLut = CreateIdentityCubeLutTextures(device);
+		if (!res.identityLut.Lut3D.IsValid() || !res.identityLut.Lut1DStrip.IsValid())
+			Logger::Log::Error("Passes::Tonemap: the identity Cube LUT tables could not be created; a pass with "
+							   "no LUT binds an invalid texture");
+	}
+	if (!res.noNightTintInput.IsValid())
+	{
+		TextureDesc td{};
+		td.width = 1;
+		td.height = 1;
+		td.depth = 1;
+		td.mipLevels = 1;
+		td.arrayLayers = 1;
+		td.format = static_cast<uint32_t>(TextureFormat::R16_FLOAT);
+		td.usage = static_cast<uint32_t>(TextureUsage::ShaderResource) | static_cast<uint32_t>(TextureUsage::TransferDst);
+		td.persistent = true;
+		td.debugName = "Tonemap.NoNightTintInput";
+		res.noNightTintInput = device->CreateTexture(td);
+		if (res.noNightTintInput.IsValid())
+		{
+			const uint16_t zero = 0;
+			UploadTexture2D(device, res.noNightTintInput, &zero, 1, 1, sizeof(zero), "Tonemap.NoNightTintInputStaging");
+		}
+		else
+		{
+			Logger::Log::Error("Passes::Tonemap: the night tint's placeholder texture could not be created");
+		}
+	}
 	if (!res.aces2TablesBuffer.IsValid())
 	{
 		BufferDesc tablesDesc{};
@@ -209,11 +263,24 @@ void CleanupTonemapPassForDevice(IDevice* device)
 		device->DestroyBuffer(res.exposureBuffer);
 		res.exposureBuffer = BufferHandle{};
 	}
+	if (res.noCompensationBuffer.IsValid())
+	{
+		device->DestroyBuffer(res.noCompensationBuffer);
+		res.noCompensationBuffer = BufferHandle{};
+	}
 	if (res.aces2TablesBuffer.IsValid())
 	{
 		device->DestroyBuffer(res.aces2TablesBuffer);
 		res.aces2TablesBuffer = BufferHandle{};
 	}
+	if (res.noNightTintInput.IsValid())
+		device->DestroyTexture(res.noNightTintInput);
+	if (res.identityLut.Lut3D.IsValid())
+		device->DestroyTexture(res.identityLut.Lut3D);
+	if (res.identityLut.Lut1DStrip.IsValid())
+		device->DestroyTexture(res.identityLut.Lut1DStrip);
+	res.identityLut = {};
+	res.identityLutCreated = false;
 	g_TonemapPerDevice.erase(it);
 }
 
@@ -221,7 +288,7 @@ static bool PrepareTonemapDescriptors(RenderGraph::RGPrepareContext& context,
                                       RenderGraph::RGTexture source,
                                       const DescriptorSetLayoutDesc& layout,
                                       const ShaderMeta& meta,
-                                      DescriptorSetHandle& descriptors)
+                                      DescriptorSetHandle& descriptors, CubeLutGpuBindingState lut)
 {
     IDevice* device = context.GetDevice();
     if (device == nullptr)
@@ -231,7 +298,9 @@ static bool PrepareTonemapDescriptors(RenderGraph::RGPrepareContext& context,
         return false;
     TonemapDeviceResources* resources = GetOrCreateTonemapResources(device);
     if (!resources || !resources->sampler.IsValid() || !resources->exposureBuffer.IsValid() ||
-        !resources->aces2TablesBuffer.IsValid())
+        !resources->aces2TablesBuffer.IsValid() || !resources->noCompensationBuffer.IsValid() ||
+        !resources->noNightTintInput.IsValid() || !resources->identityLut.Lut3D.IsValid() ||
+        !resources->identityLut.Lut1DStrip.IsValid())
         return false;
     DescriptorSetDesc descriptorDesc{};
     descriptorDesc.layout = layout;
@@ -244,13 +313,20 @@ static bool PrepareTonemapDescriptors(RenderGraph::RGPrepareContext& context,
     writer.AddCombinedImageSampler("uHDRColor", texture, resources->sampler);
     writer.AddStorageBuffer("uExposure", resources->exposureBuffer, 0, kTonemapExposureStateBytes);
     writer.AddStorageBuffer("Aces2Tables", resources->aces2TablesBuffer, 0, kAces2TablesBytes);
+    writer.AddStorageBuffer("uCompensation", resources->noCompensationBuffer, 0, kTonemapCompensationStateBytes);
+    writer.AddCombinedImageSampler("uLut3d", lut.Lut3D.IsValid() ? lut.Lut3D : resources->identityLut.Lut3D,
+                                   resources->sampler);
+    writer.AddCombinedImageSampler("uLut1d", lut.Lut1DStrip.IsValid() ? lut.Lut1DStrip : resources->identityLut.Lut1DStrip,
+                                   resources->sampler);
+    writer.AddCombinedImageSampler("uStarLight", resources->noNightTintInput, resources->sampler);
+    writer.AddCombinedImageSampler("uDepth", resources->noNightTintInput, resources->sampler);
     writer.Flush();
     return true;
 }
 
 static void RecordTonemapPass(RenderGraph::RGContext& context, GraphicsPipelineId pipelineId,
                               DescriptorSetHandle descriptors, const NamedPushConstantWriter& pushConstants,
-                              uint32_t width, uint32_t height)
+                              uint32_t width, uint32_t rowBegin, uint32_t rowCount)
 {
     auto* commands = context.Cmd;
     auto* device = context.GetDevice();
@@ -263,8 +339,8 @@ static void RecordTonemapPass(RenderGraph::RGContext& context, GraphicsPipelineI
     commands->SetPipeline(pipeline);
     if (pushConstants.IsValid())
         pushConstants.Flush(commands);
-    commands->SetViewport(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height));
-    commands->SetScissor(0, 0, static_cast<int>(width), static_cast<int>(height));
+    commands->SetViewport(0.0f, static_cast<float>(rowBegin), static_cast<float>(width), static_cast<float>(rowCount));
+    commands->SetScissor(0, static_cast<int>(rowBegin), static_cast<int>(width), static_cast<int>(rowCount));
 
     commands->BindDescriptorSet(0, descriptors, pipeline);
     commands->Draw(3, 1);
@@ -273,16 +349,16 @@ static void RecordTonemapPass(RenderGraph::RGContext& context, GraphicsPipelineI
 static void DeclareTonemapPass(RenderGraph::RGPassBuilder& pass, GraphicsPipelineId pipelineId,
                                DescriptorSetHandle* descriptors, RenderGraph::RGTexture source,
                                RenderGraph::RGTexture destination, const DescriptorSetLayoutDesc& set0,
-                               const ShaderMeta& meta)
+                               const ShaderMeta& meta, CubeLutGpuBindingState lut, bool partialRows)
 {
     pass.UsePipeline(pipelineId);
-    pass.Prepare([descriptors, source, set0, meta = &meta](RenderGraph::RGPrepareContext& context) {
-        return PrepareTonemapDescriptors(context, source, set0, *meta, *descriptors);
+    pass.Prepare([descriptors, source, set0, meta = &meta, lut](RenderGraph::RGPrepareContext& context) {
+        return PrepareTonemapDescriptors(context, source, set0, *meta, *descriptors, lut);
     });
     pass.Read(source, RenderGraph::RGTextureRead::Sampled);
     RenderGraph::RGAttachmentOps ops{};
     // Full-screen triangle overwrites every pixel.
-    ops.Load = RenderGraph::RGLoadOp::DontCare;
+    ops.Load = partialRows ? RenderGraph::RGLoadOp::Load : RenderGraph::RGLoadOp::DontCare;
     ops.Store = RenderGraph::RGStoreOp::Store;
     pass.AttachColor(0, destination, ops);
 }
@@ -350,28 +426,40 @@ RenderGraph::RGPass AddTonemapPassRG(RenderGraph::RGFrame& frame, RenderGraph::R
 	if (pushConstants.IsValid())
 	{
 		pushConstants.Add("exposure", params.exposure);
-		pushConstants.Add("tonemapMode", params.tonemapMode);
+		pushConstants.Add("look", params.look);
 		pushConstants.Add("outEncoding", params.outEncoding);
 		pushConstants.Add("paperWhiteNits", params.paperWhiteNits);
 		pushConstants.Add("maxOutputNits", params.maxOutputNits);
-		pushConstants.Add("ictcpChromaCompression", std::clamp(params.ictcpChromaCompression, 0.0f, 1.0f));
 		pushConstants.Add("preserveAlpha", params.preserveAlpha);
+        pushConstants.Add("lutIntensity", std::clamp(params.lutIntensity, 0.0f, 1.0f));
+        pushConstants.Add("lutInputEncoding", params.lut.InputEncoding);
+        pushConstants.Add("lutSize3d", params.lut.Size3D);
+        pushConstants.Add("lutSize1d", params.lut.Size1D);
+        pushConstants.Add("lutFlags", params.lut.Flags);
+        pushConstants.Add("lut1dInMin", params.lut.In1DMin);
+        pushConstants.Add("lut1dInMax", params.lut.In1DMax);
+        pushConstants.Add("lut3dInMin", params.lut.In3DMin);
+        pushConstants.Add("lut3dInMax", params.lut.In3DMax);
 	}
 
 	const RenderGraph::RGResourceDesc destinationDesc = frame.Graph().ResourceDesc(destination.Id);
 	const uint32_t width = destinationDesc.Width > 0 ? destinationDesc.Width : 1u;
 	const uint32_t height = destinationDesc.Height > 0 ? destinationDesc.Height : 1u;
+    const bool partialRows = params.targetRowEnd > params.targetRowBegin && params.targetRowEnd <= height &&
+                             (params.targetRowBegin > 0 || params.targetRowEnd < height);
+    const uint32_t rowBegin = partialRows ? params.targetRowBegin : 0u;
+    const uint32_t rowCount = partialRows ? params.targetRowEnd - params.targetRowBegin : height;
 
 	auto* descriptors = frame.AllocatePassData<DescriptorSetHandle>();
 	return frame.AddPass(
 		passName ? passName : "Tonemap", PassPhase::kFinalize,
-		[pipelineId, descriptors, source, destination, &set0, &shaders](RenderGraph::RGPassBuilder& pass)
+		[pipelineId, descriptors, source, destination, &set0, &shaders, lut = params.lut, partialRows](RenderGraph::RGPassBuilder& pass)
 		{
-		    DeclareTonemapPass(pass, pipelineId, descriptors, source, destination, set0, shaders.meta);
+		    DeclareTonemapPass(pass, pipelineId, descriptors, source, destination, set0, shaders.meta, lut, partialRows);
 		},
-		[pipelineId, descriptors, pushConstants, width, height](RenderGraph::RGContext& context)
+		[pipelineId, descriptors, pushConstants, width, rowBegin, rowCount](RenderGraph::RGContext& context)
 		{
-		    RecordTonemapPass(context, pipelineId, *descriptors, pushConstants, width, height);
+		    RecordTonemapPass(context, pipelineId, *descriptors, pushConstants, width, rowBegin, rowCount);
 		});
 }
 

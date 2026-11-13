@@ -1,7 +1,7 @@
 #include "SplineRecipes/FenceEmission.h"
 
 #include "Components/Spline/SplinePoolSelection.h"
-#include "SplineLayout/SpanMitre.h"
+#include "SplineLayout/SpanMiter.h"
 
 namespace GameEngine::SplineRecipes
 {
@@ -12,14 +12,14 @@ namespace
 const FencePoolPiece* VariantOf(const FenceEmissionPools& pools, std::span<const uint32> drawn,
                                 size_t ordinal)
 {
-    if (ordinal >= drawn.size() || drawn[ordinal] == SplineLayout::kNoMitreVariant)
+    if (ordinal >= drawn.size() || drawn[ordinal] == SplineLayout::kNoMiterVariant)
         return nullptr;
     return &pools.Variants[drawn[ordinal]];
 }
 
 uint64 VariantSignature(const FencePoolPiece& variant)
 {
-    return kSignatureMitreVariant | variant.Renderer.meshGpuHandleId;
+    return kSignatureMiterVariant | variant.Renderer.meshGpuHandleId;
 }
 
 } // namespace

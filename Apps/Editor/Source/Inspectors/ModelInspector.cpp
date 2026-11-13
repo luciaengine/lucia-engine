@@ -16,15 +16,14 @@
 #include "Engine/Rendering/MeshLODThresholds.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "InspectorRegistry.h"
-#include "Inspectors/BoneLOD/ModelBoneLODSection.h"
-#include "Inspectors/InspectorComponentRowHelpers.h"
-#include "Inspectors/InspectorComponentSection.h"
+#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
 #include "Inspectors/ModelSettingsReload.h"
 #include "Inspectors/SubmeshLodProvenance.h"
+#include "Mathematics/Interpolation.h"
 #include "Thumbnails/IThumbnailProvider.h"
-#include "Thumbnails/ModelThumbnailHandler.h"
+#include "Thumbnails/ModelThumbnail/ModelThumbnailHandler.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/CollapsibleInfoCard.h"
 #include "UI/InfoCard.h"
@@ -397,12 +396,10 @@ void BuildLodResultsPerSubmesh(UIElement* root, const ModelAsset* model, bool ha
         const Mesh& mesh = model->GetMesh(i);
         const SubmeshLodProvenance provenance = ClassifySubmeshLod(mesh);
 
-        // Many submeshes start collapsed and build their detail on first expand.
-        Foldout* foldout = InspectorUI::AddComponentSection(
-            root, "ModelLod/Submesh" + std::to_string(i),
-            mesh.Name.empty() ? ("Submesh " + std::to_string(i)) : std::string(mesh.Name),
-            meshCount <= 1u);
+        auto foldoutOwned = std::make_unique<Foldout>();
+        Foldout* foldout = foldoutOwned.get();
         foldout->AddClass("lod-submesh-foldout");
+        foldout->SetTitle(mesh.Name.empty() ? ("Submesh " + std::to_string(i)) : std::string(mesh.Name));
 
         UIElement* header = foldout->GetHeader();
         if (header)
@@ -422,21 +419,26 @@ void BuildLodResultsPerSubmesh(UIElement* root, const ModelAsset* model, bool ha
             AddProvenanceBadge(header, provenance, hasSlots);
         }
 
-        // The lazy builder fires only on a collapse->expand transition, so a
-        // section that opens expanded builds its detail eagerly. Re-fetch by index
-        // inside the builder so a later vector reallocation can not dangle a
-        // captured Mesh reference; the model outlives the inspector.
-        if (foldout->IsExpanded())
+        // Many submeshes: collapse and defer detail construction to first expand.
+        // Re-fetch by index inside the builder so a later vector reallocation can
+        // not dangle a captured Mesh reference; the model outlives the inspector.
+        // A single submesh stays open, but the foldout starts expanded and the lazy
+        // builder only fires on a collapse->expand transition, so that path would
+        // never build — construct its detail eagerly into the content container.
+        if (meshCount > 1u)
         {
-            BuildSubmeshLodDetail(foldout->GetContentContainer(), mesh);
-        }
-        else
-        {
+            foldout->Collapse();
             foldout->SetLazyContentBuilder(
                 [model, i](UIElement* contentContainer) {
                     BuildSubmeshLodDetail(contentContainer, model->GetMesh(i));
                 });
         }
+        else
+        {
+            BuildSubmeshLodDetail(foldout->GetContentContainer(), mesh);
+        }
+
+        root->AddChild(std::move(foldoutOwned));
     }
 }
 
@@ -575,8 +577,7 @@ void BuildExplicitLodSlotSection(UIElement* root, const std::filesystem::path& a
     }
 }
 
-void BuildLodSection(UIElement* root, ModelAsset* model, Editor::UndoRedoService* undo,
-    std::function<void()> requestInspectorRefresh)
+void BuildLodSection(UIElement* root, ModelAsset* model, std::function<void()> requestInspectorRefresh)
 {
     const std::filesystem::path assetPath = model->GetPath();
     auto& assets = EngineCore::GetInstance().GetAssetManager();
@@ -623,7 +624,7 @@ void BuildLodSection(UIElement* root, ModelAsset* model, Editor::UndoRedoService
         {
             InspectorDrag::AddFloatRowWithDrag(root, "LOD" + std::to_string(lod) + " target %",
                 settings.TargetRatios[lod], [](float) {},
-                [persist, lod](float v) { persist([v, lod](LodAssetSettings& s) { s.TargetRatios[lod] = std::clamp(v, 0.0f, 1.0f); }); },
+                [persist, lod](float v) { persist([v, lod](LodAssetSettings& s) { s.TargetRatios[lod] = Math::Clamp01(v); }); },
                 settings.TargetRatios[lod], "Target fraction of LOD0 triangles", 0.0f, 1.0f);
             InspectorDrag::AddFloatRowWithDrag(root, "LOD" + std::to_string(lod) + " max error",
                 settings.TargetError[lod], [](float) {},
@@ -640,8 +641,9 @@ void BuildLodSection(UIElement* root, ModelAsset* model, Editor::UndoRedoService
             Dropdown* borderDropdown = InspectorUI::AddDropdownRow(
                 root, "Border rule", kBorderOptions,
                 static_cast<int>(settings.BorderRule),
-                "Open-border handling during simplification: Seam planes locks only "
-                "kit tiling seams (borders on the bounding-box faces), Lock all pins "
+                "Open-border handling during simplification: Seam planes locks kit "
+                "tiling seams (borders on the bounding-box faces) and the rims of parts "
+                "that close an opening in another part (a lid in its rim), Lock all pins "
                 "every open border, Free lets all borders drift within the error budget");
             borderDropdown->SetOnValueChanged([persist](const std::string& value) {
                 const uint32 rule = value == "1" ? 1u : (value == "2" ? 2u : 0u);
@@ -696,8 +698,6 @@ void BuildLodSection(UIElement* root, ModelAsset* model, Editor::UndoRedoService
     auto previewTargets = std::make_shared<std::vector<SubmeshPreviewTarget>>();
     BuildLodResultsPerSubmesh(root, model, hasSlots, previewTargets);
     BuildLodPreviewSlider(root, model, previewTargets);
-    if (ModelHasSkinnedMesh(model))
-        root->AddChild(std::make_unique<Editor::ModelBoneLODSection>(*model, undo, requestInspectorRefresh));
 }
 
 void ReloadModel(const std::filesystem::path& path)
@@ -791,9 +791,9 @@ void AddSubtabBar(UIElement* root,
         auto button = std::make_unique<Button>();
         button->SetText(spec.Label);
         button->SetId(std::string("model-inspector-tab-") + spec.Label);
-        button->AddClass("inspector-subtab");
+        button->AddClass("segmented-button");
         if (spec.Tab == current)
-            button->AddClass("active");
+            button->AddClass("segmented-button-selected");
         const ModelInspectorTab tab = spec.Tab;
         button->RegisterEventHandler(kEventButtonClick,
             [assetPath, tab, requestInspectorRefresh](UIEvent&) {
@@ -1114,7 +1114,6 @@ void BuildRigTab(UIElement* root,
 
 void BuildModelInspector(UIElement* root,
                          ModelAsset* model,
-                         Editor::UndoRedoService* undo,
                          std::function<void()> requestInspectorRefresh,
                          IThumbnailProvider* thumbs)
 {
@@ -1128,7 +1127,7 @@ void BuildModelInspector(UIElement* root,
     switch (tab)
     {
     case ModelInspectorTab::Lod:
-        BuildLodSection(root, model, undo, requestInspectorRefresh);
+        BuildLodSection(root, model, requestInspectorRefresh);
         break;
     case ModelInspectorTab::Rig:
         BuildRigTab(root, model, assetPath, requestInspectorRefresh);
@@ -1154,7 +1153,7 @@ void RegisterModelInspector()
             auto* model = dynamic_cast<ModelAsset*>(asset);
             if (!model)
                 return;
-            BuildModelInspector(ctx.Parent, model, ctx.Undo, ctx.RequestInspectorRefresh, ctx.Thumbnails);
+            BuildModelInspector(ctx.Parent, model, ctx.RequestInspectorRefresh, ctx.Thumbnails);
         });
 }
 

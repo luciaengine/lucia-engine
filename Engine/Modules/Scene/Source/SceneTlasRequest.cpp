@@ -1,9 +1,6 @@
-// SceneTlas::RequestCurrent and WaitCurrent: bringing the tree current on
-// demand. The main thread detects what changed (the ECS change filter and the
-// world's structural version) and copies it into a snapshot the TLAS owns;
-// the refit or the reconcile then runs as one job on the world's job system,
-// reading only that snapshot and the tree, so it never races the next
-// frame's systems. Nothing here runs unless a consumer asks.
+// SceneTlas::RequestCurrent and WaitCurrent. The main thread copies what changed
+// into a snapshot. One Submit task, which later requests poll, refits or
+// reconciles from that snapshot and the tree only, so it never races the ECS.
 
 #include "Scene/SceneTlas.h"
 
@@ -14,7 +11,6 @@
 
 #include "Components/Rendering/LocalBounds.h"
 #include "Components/Rendering/MeshRenderer.h"
-#include "Components/Rendering/WorldSectorCoord.h"
 #include "Components/Transform.h"
 #include "Core/CpuProfiler.h"
 #include "ECS/ChangeFilter.h"
@@ -39,10 +35,9 @@ void GatherRecords(ECS::World& world,
     using namespace GameEngine::ECS;
     records.clear();
     world.Query<Read<Components::WorldTransform>, Read<Components::MeshRenderer>,
-                Optional<Components::LocalBounds>, Optional<Components::WorldSectorCoord>>()
+                Optional<Components::LocalBounds>>()
         .Each([&records](EntityHandle entity, const Components::WorldTransform& transform,
-                         const Components::MeshRenderer& mesh, const Components::LocalBounds* bounds,
-                         const Components::WorldSectorCoord* sector)
+                         const Components::MeshRenderer& mesh, const Components::LocalBounds* bounds)
         {
             RenderExtractionSystem::WorldRenderableRecord record{};
             record.entity         = entity;
@@ -51,16 +46,13 @@ void GatherRecords(ECS::World& world,
             record.hasBounds      = bounds != nullptr;
             if (bounds)
                 record.bounds = *bounds;
-            record.hasSectorCoord = sector != nullptr;
-            if (sector)
-                record.sectorCoord = *sector;
             records.push_back(record);
         });
 }
 
 using MovedChunk = Internal::SceneTlasImpl::MovedChunk;
 
-void SnapshotMovedChunks(std::span<const MovedChunk> chunks, float32 sectorSize,
+void SnapshotMovedChunks(std::span<const MovedChunk> chunks,
                          std::vector<Internal::SceneTlasImpl::RefitInput>& snapshot)
 {
     for (const MovedChunk& chunk : chunks)
@@ -71,8 +63,7 @@ void SnapshotMovedChunks(std::span<const MovedChunk> chunks, float32 sectorSize,
             input.Entity      = chunk.Entities[row];
             input.Version     = chunk.Transforms[row].Version;
             input.WorldBounds = Internal::DeriveCandidateBounds(
-                chunk.Transforms[row], chunk.Bounds ? &chunk.Bounds[row] : nullptr,
-                chunk.Sectors ? &chunk.Sectors[row] : nullptr, sectorSize);
+                chunk.Transforms[row], chunk.Bounds ? &chunk.Bounds[row] : nullptr);
         }
     }
 }
@@ -85,42 +76,41 @@ void SnapshotMovedChunks(std::span<const MovedChunk> chunks, float32 sectorSize,
 // participating. The leaf's cached transform version decides later whether
 // each one actually moved. Runs between frames, so no structural change can
 // move the chunks it read.
-void SnapshotMovedRenderables(ECS::World& world, ECS::ChangeGate& gate, float32 sectorSize,
+void SnapshotMovedRenderables(ECS::World& world, ECS::ChangeGate& gate,
                               JobSystem::WorkStealingThreadPool* pool, std::vector<MovedChunk>& chunks,
                               std::vector<Internal::SceneTlasImpl::RefitInput>& snapshot)
 {
     using namespace GameEngine::ECS;
     chunks.clear();
     std::size_t total = 0;
-    auto query = world.Query<Read<Components::WorldTransform>, Optional<Components::LocalBounds>,
-                             Optional<Components::WorldSectorCoord>>();
+    auto query = world.Query<Read<Components::WorldTransform>, Optional<Components::LocalBounds>>();
     query.With<Components::MeshRenderer>();
     query.Changed<Components::WorldTransform>(gate);
     query.BatchEach([&chunks, &total](const EntityHandle* entities, const Components::WorldTransform* transforms,
-                                      const Components::LocalBounds* bounds,
-                                      const Components::WorldSectorCoord* sectors, std::size_t count)
+                                      const Components::LocalBounds* bounds, std::size_t count)
     {
-        chunks.push_back({entities, transforms, bounds, sectors, count, total});
+        chunks.push_back({entities, transforms, bounds, count, total});
         total += count;
     });
     snapshot.resize(total);
     constexpr std::size_t kMinChunksPerTask = 4;
     if (!pool || chunks.size() < 2 * kMinChunksPerTask)
     {
-        SnapshotMovedChunks(chunks, sectorSize, snapshot);
+        SnapshotMovedChunks(chunks, snapshot);
         return;
     }
     const std::size_t tasks =
         std::min((chunks.size() + kMinChunksPerTask - 1) / kMinChunksPerTask,
                  std::max<std::size_t>(1, pool->GetWorkerCount()) * 4u);
     const std::size_t perTask = (chunks.size() + tasks - 1) / tasks;
-    JobSystem::JobCounter counter;
-    for (std::size_t begin = 0; begin < chunks.size(); begin += perTask)
+    const std::size_t taskCount = (chunks.size() + perTask - 1) / perTask;
+    const auto snapshotTask = [&chunks, perTask, &snapshot](std::size_t task)
     {
-        const std::span<const MovedChunk> range(chunks.data() + begin, std::min(perTask, chunks.size() - begin));
-        pool->Run([range, sectorSize, &snapshot] { SnapshotMovedChunks(range, sectorSize, snapshot); }, counter);
-    }
-    pool->Wait(counter);
+        const std::size_t begin = task * perTask;
+        SnapshotMovedChunks(std::span<const MovedChunk>(chunks.data() + begin, std::min(perTask, chunks.size() - begin)),
+                            snapshot);
+    };
+    JobSystem::ParallelFor(pool, taskCount, snapshotTask);
 }
 
 // True when any renderable's LocalBounds column was written since `gate` (a
@@ -143,15 +133,16 @@ SceneTlas::Readiness SceneTlas::RequestCurrent(GameEngine::ECS::World& world)
 {
     GE_CPU_PROFILE_SCOPE("SceneTlas.RequestCurrent");
     Internal::SceneTlasImpl& impl = *m_Impl;
-    if (!impl.InFlight.IsZero())
+    ++impl.RequestCount;
+    if (impl.IsWorkInFlight())
         return Readiness::Updating;
 
     // The work that just finished may have found a sector crossing (or
     // failed): only a reconcile restores coverage, so the tree is not ready
     // until one has run.
     bool reconcile = impl.InFlightNeedsReconcile.exchange(false, std::memory_order_acq_rel) ||
-                     impl.InFlight.HasAnyFailed();
-    impl.InFlight.Reset();
+                     impl.HasInFlightFailed();
+    impl.InFlight = {};
 
     // Entry-sampled, as ECS/ChangeFilter.h requires: a write after this
     // sample is seen by the next request.
@@ -174,17 +165,14 @@ SceneTlas::Readiness SceneTlas::RequestCurrent(GameEngine::ECS::World& world)
         impl.StructuralVersion = structuralVersion;
         impl.TransformGate.LastRunVersion = entryVersion; // the records carry every transform
         impl.Reconciled = true;
-        if (pool)
-        {
-            pool->Run([this] { SyncFromRecords(m_Impl->RecordSnapshot); }, impl.InFlight);
+        impl.InFlightReconciles = true;
+        if (PublishRequestedWork(pool))
             return Readiness::Updating;
-        }
         SyncFromRecords(impl.RecordSnapshot);
         return Readiness::Ready;
     }
 
-    SnapshotMovedRenderables(world, impl.TransformGate, impl.SectorSize.load(std::memory_order_relaxed), pool,
-                             impl.MovedChunks, impl.RefitSnapshot);
+    SnapshotMovedRenderables(world, impl.TransformGate, pool, impl.MovedChunks, impl.RefitSnapshot);
     impl.TransformGate.LastRunVersion = entryVersion;
     if (impl.RefitSnapshot.empty())
     {
@@ -213,11 +201,9 @@ SceneTlas::Readiness SceneTlas::RequestCurrent(GameEngine::ECS::World& world)
         return Readiness::Ready;
     }
 
-    if (pool)
-    {
-        pool->Run([this] { RefitFromSnapshot(); }, impl.InFlight);
+    impl.InFlightReconciles = false;
+    if (PublishRequestedWork(pool))
         return Readiness::Updating;
-    }
     RefitFromSnapshot();
     return RequestCurrent(world); // a crossing found inline reconciles now
 }
@@ -225,9 +211,9 @@ SceneTlas::Readiness SceneTlas::RequestCurrent(GameEngine::ECS::World& world)
 SceneTlas::Readiness SceneTlas::CheckRequest(GameEngine::ECS::World& world)
 {
     Internal::SceneTlasImpl& impl = *m_Impl;
-    if (!impl.InFlight.IsZero())
+    if (impl.IsWorkInFlight())
         return Readiness::Updating;
-    const bool followUp = impl.InFlightNeedsReconcile.load(std::memory_order_acquire) || impl.InFlight.HasAnyFailed();
+    const bool followUp = impl.InFlightNeedsReconcile.load(std::memory_order_acquire) || impl.HasInFlightFailed();
     return followUp ? RequestCurrent(world) : Readiness::Ready;
 }
 
@@ -235,7 +221,38 @@ void SceneTlas::WaitCurrent(GameEngine::ECS::World& world)
 {
     GE_CPU_PROFILE_SCOPE("SceneTlas.WaitCurrent");
     while (RequestCurrent(world) == Readiness::Updating)
-        m_Impl->InFlightPool->Wait(m_Impl->InFlight);
+        JoinRequestedWork();
+}
+
+void SceneTlas::RunRequestedWork()
+{
+    Internal::SceneTlasImpl& impl = *m_Impl;
+    if (impl.InFlightReconciles)
+        SyncFromRecords(impl.RecordSnapshot);
+    else
+        RefitFromSnapshot();
+}
+
+bool SceneTlas::PublishRequestedWork(JobSystem::WorkStealingThreadPool* pool)
+{
+    if (!pool)
+        return false;
+    m_Impl->InFlight = pool->Submit([this] { RunRequestedWork(); });
+    return m_Impl->InFlight.IsValid();
+}
+
+void SceneTlas::JoinRequestedWork()
+{
+    JobSystem::TaskHandle& work = m_Impl->InFlight;
+    if (!work.Cancel())
+    {
+        work.Wait();
+        return;
+    }
+    // No worker had started it: it runs here. The cancelled handle reads as
+    // failed, which would make the next request reconcile, so it is dropped.
+    RunRequestedWork();
+    work = {};
 }
 
 void SceneTlas::RefitFromSnapshot()

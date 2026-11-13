@@ -7,9 +7,10 @@
 #include "MarkupECS/MarkupRegionMesh.h"
 #include "Markups/MarkupInspectorRows.h"
 #include "Markups/MarkupKind.h"
-#include "Markups/MarkupRegionDisplay.h"
+#include "Markups/MarkupRegion/MarkupRegionDisplay.h"
 #include "Spline/SplineData.h"
 #include "SplineECS/SplineService.h"
+#include "Types/FormatNumber.h"
 #include "UI/Controls/Label.h"
 
 #include <memory>
@@ -21,6 +22,9 @@ namespace GameEngine::Editor
 namespace
 {
 
+// A path's length reads to a tenth of a meter.
+constexpr int kLengthDecimals = 1;
+
 // A path's knot count and its length along the ground.
 void AddPathRows(const InspectorContext& ctx, const MarkupEditorBridge& bridge)
 {
@@ -31,9 +35,9 @@ void AddPathRows(const InspectorContext& ctx, const MarkupEditorBridge& bridge)
             ? splines->GetSplineData(SplineECS::SplineHandle(spline->SplineDataIndex, spline->SplineDataGeneration))
             : nullptr;
     AddValueRow(ctx.Parent, "Points", std::to_string(data ? data->Points.size() : 0u),
-                "The path's knots; Edit path moves, adds and deletes them");
+                "The path's knots; Edit Path moves, adds and deletes them");
     const MarkupECS::MarkupRegionDisplayCache::Entry* display = ResolveMarkupDisplayNow(*ctx.World, bridge, ctx.Entity);
-    AddValueRow(ctx.Parent, "Length", FormatMeters(display ? MarkupECS::PolylineLength(display->Ground.Outline) : 0.0f),
+    AddValueRow(ctx.Parent, "Length", FormatMeters(display ? MarkupECS::PolylineLength(display->Ground.Outline) : 0.0f, kLengthDecimals),
                 "The path's length along the ground, as the Scene View draws it");
 }
 
@@ -48,7 +52,7 @@ void AddMarkupPathBlock(const InspectorContext& ctx, MarkupEditorBridge& bridge)
     heading->SetText("Path");
     ctx.Parent->AddChild(std::move(heading));
     AddPathRows(ctx, bridge);
-    AddEditKnotsRow(ctx, bridge, "Edit path", "markup-path-edit",
+    AddEditKnotsRow(ctx, bridge, "Edit Path", "markup-path-edit",
                     "Drag, add and delete the path's points in the Scene View");
     FollowMarkupShapeChanges(ctx, {});
 }

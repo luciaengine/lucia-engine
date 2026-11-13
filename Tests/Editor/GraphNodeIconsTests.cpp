@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 
 #include "Graph/GraphModel.h"
-#include "Graph/GraphNodeIcons.h"
-#include "Graph/GraphNodeRegistry.h"
+#include "Graph/GraphNode/GraphNodeIcons.h"
+#include "Graph/GraphNode/GraphNodeRegistry.h"
 #include "StagedTestPaths.h"
 #include "UI/UIElement.h"
 

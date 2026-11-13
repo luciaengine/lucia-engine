@@ -22,25 +22,31 @@ struct TerrainShadowMap
     Rendering::TextureHandle MapTexture{};
     uint32_t MapBindlessIndex = 0;
     uint32_t MapSide = 0;
-    // RG16F mip 0 stores sun-center visibility and mean occluder octave over each 2x2 map block.
-    // Later mips average 2x2 children; receivers select a mip from the pixel footprint.
-    // An unpublished field has an invalid texture and zero index/levels; receivers then sample only the map.
+    // The map's lit field (RG16F, half the map's side, a full mip chain): level 0 holds, over each 2 x 2
+    // map samples, the share that sees the sun's center and the mean of their occluder octaves
+    // (terrain_shadow_field_lit.comp); each next level averages 2 x 2 of the one below. A terrain pixel
+    // that covers many samples reads it at its footprint's level, in both directional-shadow modes.
+    // Invalid, 0 and 0 when not published: the receivers then read the map alone.
     Rendering::RenderGraph::RGTexture FieldLit{};
     uint32_t FieldLitBindlessIndex = 0;
     uint32_t FieldLitLevels = 0;
     // The terrain's height texture (one texel per lattice sample) and its bindless index.
     Rendering::TextureHandle HeightTexture{};
     uint32_t HeightBindlessIndex = 0;
-    // The terrain's corner (world X, Z), the world height of normalized 0, its extent, and meters
-    // per normalized height unit.
+    // The terrain's corner (world X, Z), the world height of normalized 0 and meters per normalized
+    // height unit.
     double TerrainX = 0.0;
     double TerrainZ = 0.0;
     double BaseY = 0.0;
-    float TerrainSizeX = 0.0f;
-    float TerrainSizeZ = 0.0f;
     float HeightScale = 0.0f;
-    // The grid (GE_TerrainShadowGrid): its center is the terrain's center; u runs along the sun's
-    // horizontal direction (SunX, SunZ), v across it.
+    // The extent (meters) a receiver must be inside to be on the terrain: the authored size.
+    float ExtentX = 0.0f;
+    float ExtentZ = 0.0f;
+    // The extent (meters) the height texture spans: a tiled terrain's whole tiles, at least the extent.
+    float HeightSpanX = 0.0f;
+    float HeightSpanZ = 0.0f;
+    // The grid (GE_TerrainShadowGrid): its center is the center of the height span; u runs along the
+    // sun's horizontal direction (SunX, SunZ), v across it.
     float SunX = 0.0f;
     float SunZ = 0.0f;
     float TanElevation = 0.0f;

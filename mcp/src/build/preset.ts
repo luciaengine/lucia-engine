@@ -151,6 +151,21 @@ export function ctestArgs(preset: string, config: string, testFilter?: string): 
   return args;
 }
 
+// The directory a preset or custom build configures into, relative to the repository root.
+export function buildDirectory(preset: string): string {
+  if (preset === "__macos_ninja__") return "build-macos";
+  if (preset === "__macos_xcode__") return "build-xcode";
+  if (preset === "__linux_ninja__") return "build-linux";
+  return path.join("build", preset);
+}
+
+// Where a build's executables land: bin/<config> (cmake/OutputLayout.cmake), or bin
+// for a single-config build configured without a build type.
+export function binaryDirectory(preset: string, config: string): string {
+  const bin = path.join(repoRoot(), buildDirectory(preset), "bin");
+  return fs.existsSync(path.join(bin, config)) ? path.join(bin, config) : bin;
+}
+
 // Detect the editor executable path for a given preset/config.
 export function editorExePath(preset: string, config: string): string {
   const cwd = repoRoot();

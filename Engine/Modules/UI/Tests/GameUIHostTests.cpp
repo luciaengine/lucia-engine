@@ -47,8 +47,6 @@
 #include "AssetCore/AssetEvents.h" // AssetEvent/AssetEventType for the hot-reload drive
 #include "AssetCore/GUID.h"
 
-#include "TestTempDir.h"
-
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
 using namespace GameEngine::UIParsing;
@@ -73,8 +71,7 @@ TEST(GameUIHostTests, SetPointerDrivesInteractiveHoverAndClick)
         R"(<uielement id='root'><uielement id='btn' /></uielement>)", root));
     ui->SetRoot(std::move(root));
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_interactive"));
-    const auto css = tempDir.Path() / "gameui_host_interactive.css";
+    const auto css = std::filesystem::temp_directory_path() / "gameui_host_interactive.css";
     {
         std::ofstream f(css);
         f << "#root { position: relative; width: 200px; height: 200px; }\n"
@@ -90,7 +87,7 @@ TEST(GameUIHostTests, SetPointerDrivesInteractiveHoverAndClick)
     GameUIHostTestAccess::Update(host, 0.0f, 200, 200);
     DriveUiRender(*ui, rg);
 
-    UIElement* btn = ui->GetRootElement()->FindById("btn");
+    UIElement* btn = ui->GetRootElement()->FindById("btn"_sid);
     ASSERT_NE(btn, nullptr);
     int enter = 0, leave = 0, down = 0, up = 0;
     btn->RegisterEventHandler(kEventMouseEnter, [&](UIEvent&) { ++enter; });
@@ -153,8 +150,7 @@ TEST(GameUIHostTests, CursorLeavingSurfaceWhileArmedDoesNotClick)
         R"(<uielement id='root'><button id='btn' /></uielement>)", root));
     ui->SetRoot(std::move(root));
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_leave_armed"));
-    const auto css = tempDir.Path() / "gameui_host_leave_armed.css";
+    const auto css = std::filesystem::temp_directory_path() / "gameui_host_leave_armed.css";
     {
         std::ofstream f(css);
         f << "#root { position: relative; width: 200px; height: 200px; }\n"
@@ -165,7 +161,7 @@ TEST(GameUIHostTests, CursorLeavingSurfaceWhileArmedDoesNotClick)
     GameUIHostTestAccess::Update(host, 0.0f, 200, 200);
     DriveUiRender(*ui, rg);
 
-    auto* btn = dynamic_cast<Button*>(ui->GetRootElement()->FindById("btn"));
+    auto* btn = dynamic_cast<Button*>(ui->GetRootElement()->FindById("btn"_sid));
     ASSERT_NE(btn, nullptr) << "fixture must mount a real Button — the armed model under test";
     ASSERT_GT(btn->GetLayoutWidth(), 0.0f) << "button has no layout — the pointer could never hit it";
 
@@ -247,8 +243,7 @@ TEST(GameUIHostTests, LeavingMidPressDoesNotStealLaterClicksFromOtherControls)
         R"(<uielement id='root'><button id='a' /><button id='b' /></uielement>)", root));
     ui->SetRoot(std::move(root));
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_leave_steal"));
-    const auto css = tempDir.Path() / "gameui_host_leave_steal.css";
+    const auto css = std::filesystem::temp_directory_path() / "gameui_host_leave_steal.css";
     {
         std::ofstream f(css);
         f << "#root { position: relative; width: 200px; height: 200px; }\n"
@@ -260,8 +255,8 @@ TEST(GameUIHostTests, LeavingMidPressDoesNotStealLaterClicksFromOtherControls)
     GameUIHostTestAccess::Update(host, 0.0f, 200, 200);
     DriveUiRender(*ui, rg);
 
-    auto* a = dynamic_cast<Button*>(ui->GetRootElement()->FindById("a"));
-    auto* b = dynamic_cast<Button*>(ui->GetRootElement()->FindById("b"));
+    auto* a = dynamic_cast<Button*>(ui->GetRootElement()->FindById("a"_sid));
+    auto* b = dynamic_cast<Button*>(ui->GetRootElement()->FindById("b"_sid));
     ASSERT_NE(a, nullptr);
     ASSERT_NE(b, nullptr);
     ASSERT_GT(b->GetLayoutWidth(), 0.0f);
@@ -312,8 +307,7 @@ TEST(GameUIHostTests, ReturningOverTheButtonAfterLeavingMidPressDoesNotClick)
         R"(<uielement id='root'><button id='btn' /></uielement>)", root));
     ui->SetRoot(std::move(root));
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_leave_return"));
-    const auto css = tempDir.Path() / "gameui_host_leave_return.css";
+    const auto css = std::filesystem::temp_directory_path() / "gameui_host_leave_return.css";
     {
         std::ofstream f(css);
         f << "#root { position: relative; width: 200px; height: 200px; }\n"
@@ -324,7 +318,7 @@ TEST(GameUIHostTests, ReturningOverTheButtonAfterLeavingMidPressDoesNotClick)
     GameUIHostTestAccess::Update(host, 0.0f, 200, 200);
     DriveUiRender(*ui, rg);
 
-    auto* btn = dynamic_cast<Button*>(ui->GetRootElement()->FindById("btn"));
+    auto* btn = dynamic_cast<Button*>(ui->GetRootElement()->FindById("btn"_sid));
     ASSERT_NE(btn, nullptr);
     ASSERT_GT(btn->GetLayoutWidth(), 0.0f);
 
@@ -381,8 +375,7 @@ TEST(GameUIHostTests, APressAHudControlActsOnAnswersConsumed)
         R"(<uielement id='root'><button id='btn' /></uielement>)", root));
     ui->SetRoot(std::move(root));
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_press_answer"));
-    const auto css = tempDir.Path() / "gameui_host_press_answer.css";
+    const auto css = std::filesystem::temp_directory_path() / "gameui_host_press_answer.css";
     {
         std::ofstream f(css);
         f << "#root { position: relative; width: 200px; height: 200px; }\n"
@@ -393,7 +386,7 @@ TEST(GameUIHostTests, APressAHudControlActsOnAnswersConsumed)
     GameUIHostTestAccess::Update(host, 0.0f, 200, 200);
     DriveUiRender(*ui, rg);
 
-    auto* btn = dynamic_cast<Button*>(ui->GetRootElement()->FindById("btn"));
+    auto* btn = dynamic_cast<Button*>(ui->GetRootElement()->FindById("btn"_sid));
     ASSERT_NE(btn, nullptr);
     int clicks = 0;
     btn->RegisterEventHandler(kEventButtonClick, [&](UIEvent&) { ++clicks; });
@@ -434,8 +427,7 @@ TEST(GameUIHostTests, EveryButtonReachesTheSurfaceNotOnlyThePrimary)
         R"(<uielement id='root'><uielement id='slot' /></uielement>)", root));
     ui->SetRoot(std::move(root));
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_every_button"));
-    const auto css = tempDir.Path() / "gameui_host_every_button.css";
+    const auto css = std::filesystem::temp_directory_path() / "gameui_host_every_button.css";
     {
         std::ofstream f(css);
         f << "#root { position: relative; width: 200px; height: 200px; }\n"
@@ -446,7 +438,7 @@ TEST(GameUIHostTests, EveryButtonReachesTheSurfaceNotOnlyThePrimary)
     GameUIHostTestAccess::Update(host, 0.0f, 200, 200);
     DriveUiRender(*ui, rg);
 
-    UIElement* slot = ui->GetRootElement()->FindById("slot");
+    UIElement* slot = ui->GetRootElement()->FindById("slot"_sid);
     ASSERT_NE(slot, nullptr);
     int down = 0, up = 0;
     slot->RegisterEventHandler(kEventMouseDown, [&](UIEvent&) { ++down; });
@@ -499,8 +491,7 @@ TEST(GameUIHostTests, AWheelIsAnsweredByTheHudScrollableThatMoved)
     root->AddChild(std::move(scrollOwned));
     ui->SetRoot(std::move(root));
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_wheel"));
-    const auto css = tempDir.Path() / "gameui_host_wheel.css";
+    const auto css = std::filesystem::temp_directory_path() / "gameui_host_wheel.css";
     {
         std::ofstream f(css);
         // Content taller than the viewport: an unscrollable list declines the
@@ -539,8 +530,7 @@ TEST(GameUIHostTests, ACancelledGestureSwallowsTheReleaseThatEndsIt)
         R"(<uielement id='root'><button id='btn' /></uielement>)", root));
     ui->SetRoot(std::move(root));
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_cancel_event"));
-    const auto css = tempDir.Path() / "gameui_host_cancel_event.css";
+    const auto css = std::filesystem::temp_directory_path() / "gameui_host_cancel_event.css";
     {
         std::ofstream f(css);
         f << "#root { position: relative; width: 200px; height: 200px; }\n"
@@ -551,7 +541,7 @@ TEST(GameUIHostTests, ACancelledGestureSwallowsTheReleaseThatEndsIt)
     GameUIHostTestAccess::Update(host, 0.0f, 200, 200);
     DriveUiRender(*ui, rg);
 
-    auto* btn = dynamic_cast<Button*>(ui->GetRootElement()->FindById("btn"));
+    auto* btn = dynamic_cast<Button*>(ui->GetRootElement()->FindById("btn"_sid));
     ASSERT_NE(btn, nullptr);
     int clicks = 0, downs = 0;
     btn->RegisterEventHandler(kEventButtonClick, [&](UIEvent&) { ++clicks; });
@@ -632,7 +622,7 @@ TEST(GameUIHostTests, SubtreeHoverStyleApplies)
     GameUIHostTestAccess::Update(host, 0.0f, 200, 200);
     DriveUiRender(*ui, rg);
 
-    UIElement* slot = ui->GetRootElement()->FindById("slot");
+    UIElement* slot = ui->GetRootElement()->FindById("slot"_sid);
     ASSERT_NE(slot, nullptr);
     EXPECT_GT(slot->GetLayoutWidth(), 0.0f) << "slot has zero layout — subtree not laid out";
 
@@ -685,7 +675,7 @@ TEST(GameUIHostTests, SubtreeActiveStyleApplies)
     GameUIHostTestAccess::Update(host, 0.0f, 200, 200);
     DriveUiRender(*ui, rg);
 
-    UIElement* slot = ui->GetRootElement()->FindById("slot");
+    UIElement* slot = ui->GetRootElement()->FindById("slot"_sid);
     ASSERT_NE(slot, nullptr);
 
     // 1) Hover the slot (no button) — establishes :hover, like the user did first.
@@ -723,8 +713,7 @@ TEST(GameUIHostTests, LayoutSizeOverrideDrivesLayoutExtent)
         R"(<uielement id='root'><uielement id='fill' /></uielement>)", root));
     ui->SetRoot(std::move(root));
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_override"));
-    const auto css = tempDir.Path() / "gameui_host_override.css";
+    const auto css = std::filesystem::temp_directory_path() / "gameui_host_override.css";
     {
         std::ofstream f(css);
         f << "#root { width: 100%; height: 100%; }\n#fill { width: 100%; height: 100%; }\n";
@@ -781,9 +770,8 @@ TEST(GameUIHostTests, LayoutSwapReplacesSubtree)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_layoutswap"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = tempDir.Path();
+    const auto root = std::filesystem::temp_directory_path() / "gameui_host_layoutswap";
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
     GUID guidA, guidB;
@@ -802,7 +790,7 @@ TEST(GameUIHostTests, LayoutSwapReplacesSubtree)
     GameUIHostTestAccess::SyncFromWorld(host, world);
     UIElement* uiRoot = host.GetUIManager()->GetRootElement();
     ASSERT_NE(uiRoot, nullptr);
-    ASSERT_NE(uiRoot->FindById("leafA"), nullptr) << "layout A did not bind on first assign";
+    ASSERT_NE(uiRoot->FindById("leafA"_sid), nullptr) << "layout A did not bind on first assign";
     ASSERT_FALSE(uiRoot->GetChildren().empty());
     UIElement* container = uiRoot->GetChildren().front().get(); // the per-entity subtree root
     EXPECT_TRUE(container->HasClass("layout-a")) << "layout A root class not applied";
@@ -813,8 +801,8 @@ TEST(GameUIHostTests, LayoutSwapReplacesSubtree)
     live->Layout.Set(guidB);
 
     GameUIHostTestAccess::SyncFromWorld(host, world);
-    EXPECT_EQ(uiRoot->FindById("leafA"), nullptr) << "stale layout A content survived the swap";
-    EXPECT_NE(uiRoot->FindById("leafB"), nullptr) << "layout B did not bind after the swap";
+    EXPECT_EQ(uiRoot->FindById("leafA"_sid), nullptr) << "stale layout A content survived the swap";
+    EXPECT_NE(uiRoot->FindById("leafB"_sid), nullptr) << "layout B did not bind after the swap";
     // The previous layout's root class must not linger (else stale CSS still matches).
     EXPECT_FALSE(container->HasClass("layout-a")) << "stale layout A root class survived the swap";
     EXPECT_TRUE(container->HasClass("layout-b")) << "layout B root class not applied after the swap";
@@ -829,9 +817,8 @@ TEST(GameUIHostTests, MultipleDocumentsCompose)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_multidoc"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = tempDir.Path();
+    const auto root = std::filesystem::temp_directory_path() / "gameui_host_multidoc";
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
     GUID guidA, guidB;
@@ -854,15 +841,15 @@ TEST(GameUIHostTests, MultipleDocumentsCompose)
     UIElement* uiRoot = host.GetUIManager()->GetRootElement();
     ASSERT_NE(uiRoot, nullptr);
     EXPECT_EQ(uiRoot->GetChildren().size(), 2u) << "expected one subtree per UIDocument";
-    EXPECT_NE(uiRoot->FindById("leafA"), nullptr) << "document 1 did not bind";
-    EXPECT_NE(uiRoot->FindById("leafB"), nullptr) << "document 2 did not bind";
+    EXPECT_NE(uiRoot->FindById("leafA"_sid), nullptr) << "document 1 did not bind";
+    EXPECT_NE(uiRoot->FindById("leafB"_sid), nullptr) << "document 2 did not bind";
 
     // Disable document 2 -> its subtree is swept on the next sync.
     e2.SetEnabled<Components::UIDocument>(false);
     GameUIHostTestAccess::SyncFromWorld(host, world);
     EXPECT_EQ(uiRoot->GetChildren().size(), 1u) << "disabled document's subtree was not removed";
-    EXPECT_NE(uiRoot->FindById("leafA"), nullptr);
-    EXPECT_EQ(uiRoot->FindById("leafB"), nullptr);
+    EXPECT_NE(uiRoot->FindById("leafA"_sid), nullptr);
+    EXPECT_EQ(uiRoot->FindById("leafB"_sid), nullptr);
 }
 
 // RenderRG hands the composite a Clear when a Fullscreen document owns the target. That
@@ -878,9 +865,8 @@ TEST(GameUIHostTests, FullscreenCoversTargetOnlyOnceItsLayoutIsBound)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_fs_readiness"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = tempDir.Path();
+    const auto root = std::filesystem::temp_directory_path() / "gameui_host_fs_readiness";
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
     GUID guidA, guidB;
@@ -932,9 +918,8 @@ TEST(GameUIHostTests, ReadyFullscreenSuppressesOverlayDocuments)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_overlay_suppress"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = tempDir.Path();
+    const auto root = std::filesystem::temp_directory_path() / "gameui_host_overlay_suppress";
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
     GUID guidA, guidB;
@@ -962,9 +947,9 @@ TEST(GameUIHostTests, ReadyFullscreenSuppressesOverlayDocuments)
     ASSERT_NE(menuRoot, nullptr);
     ASSERT_TRUE(GameUIHostTestAccess::AnyReadyFullscreenSubtree(host))
         << "fixture precondition: the menu's layout must have bound";
-    EXPECT_EQ(hudRoot->Overrides().Get(Style::Display), std::optional<DisplayMode>(DisplayMode::None))
+    EXPECT_EQ(hudRoot->Style().Get(Style::Display), std::optional<DisplayMode>(DisplayMode::None))
         << "an Overlay HUD must be hidden while a ready Fullscreen menu owns the screen";
-    EXPECT_FALSE(menuRoot->Overrides().Get(Style::Display).has_value())
+    EXPECT_FALSE(menuRoot->Style().Get(Style::Display).has_value())
         << "the Fullscreen document itself must never be suppressed";
 
     // The menu goes away (disable -> its subtree is removed): the HUD comes back.
@@ -972,7 +957,7 @@ TEST(GameUIHostTests, ReadyFullscreenSuppressesOverlayDocuments)
     GameUIHostTestAccess::SyncFromWorld(host, world);
     EXPECT_EQ(host.FindDocumentRoot(menuE.GetHandle().id), nullptr)
         << "fixture precondition: the disabled menu's subtree must be gone";
-    EXPECT_FALSE(hudRoot->Overrides().Get(Style::Display).has_value())
+    EXPECT_FALSE(hudRoot->Style().Get(Style::Display).has_value())
         << "the Overlay HUD must be restored once no Fullscreen document is ready";
 }
 
@@ -989,9 +974,8 @@ TEST(GameUIHostTests, CoversTargetOpaqueArms)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_covers_target"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = tempDir.Path();
+    const auto root = std::filesystem::temp_directory_path() / "gameui_host_covers_target";
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
     GUID guidA, guidB;
@@ -1053,9 +1037,8 @@ TEST(GameUIHostTests, NotReadyFullscreenDoesNotSuppressOverlay)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_overlay_notready"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = tempDir.Path();
+    const auto root = std::filesystem::temp_directory_path() / "gameui_host_overlay_notready";
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
     GUID guidA, guidB;
@@ -1089,14 +1072,14 @@ TEST(GameUIHostTests, NotReadyFullscreenDoesNotSuppressOverlay)
     GameUIHostTestAccess::SyncFromWorld(host, world);
     UIElement* hudRoot = host.FindDocumentRoot(hudE.GetHandle().id);
     ASSERT_NE(hudRoot, nullptr);
-    EXPECT_FALSE(hudRoot->Overrides().Get(Style::Display).has_value())
+    EXPECT_FALSE(hudRoot->Style().Get(Style::Display).has_value())
         << "an Overlay HUD must stay visible while the Fullscreen menu cannot draw";
 
     // Positive control: the same menu with a layout that binds does suppress, so a
     // predicate that simply never fires cannot pass this test.
     menuE.GetForWrite<Components::UIDocument>()->Layout.Set(guidB);
     GameUIHostTestAccess::SyncFromWorld(host, world);
-    EXPECT_EQ(hudRoot->Overrides().Get(Style::Display), std::optional<DisplayMode>(DisplayMode::None))
+    EXPECT_EQ(hudRoot->Style().Get(Style::Display), std::optional<DisplayMode>(DisplayMode::None))
         << "the HUD must be suppressed once the menu's layout binds";
 }
 
@@ -1151,8 +1134,8 @@ void RunAbsoluteAutoSizeHiddenChildCase(bool horizontal)
     GameUIHostTestAccess::Update(host, 0.0f, 400, 400);
     DriveUiRender(*ui, rg);
 
-    UIElement* overlay = ui->GetRootElement()->FindById("overlay");
-    UIElement* last = ui->GetRootElement()->FindById("last");
+    UIElement* overlay = ui->GetRootElement()->FindById("overlay"_sid);
+    UIElement* last = ui->GetRootElement()->FindById("last"_sid);
     ASSERT_NE(overlay, nullptr);
     ASSERT_NE(last, nullptr);
 
@@ -1258,9 +1241,8 @@ TEST(GameUIHostTests, BindGenerationBumpsOnLayoutBindAndReset)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_bindgen"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = tempDir.Path();
+    const auto root = std::filesystem::temp_directory_path() / "gameui_bindgen";
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
     GUID guidA, guidB;
@@ -1280,15 +1262,15 @@ TEST(GameUIHostTests, BindGenerationBumpsOnLayoutBindAndReset)
     const uint64_t afterBind = GameUI::GetBindGeneration();
     EXPECT_GT(afterBind, 0u);
     EXPECT_NE(GameUI::FindDocumentRoot(entity.GetHandle().id), nullptr);
-    EXPECT_NE(host.GetUIManager()->GetRootElement()->FindById("leafA"), nullptr);
+    EXPECT_NE(host.GetUIManager()->GetRootElement()->FindById("leafA"_sid), nullptr);
 
     host.ResetBoundDocuments();
     EXPECT_GT(GameUI::GetBindGeneration(), afterBind);
     EXPECT_EQ(GameUI::FindDocumentRoot(entity.GetHandle().id), nullptr);
-    EXPECT_EQ(host.GetUIManager()->GetRootElement()->FindById("leafA"), nullptr);
+    EXPECT_EQ(host.GetUIManager()->GetRootElement()->FindById("leafA"_sid), nullptr);
 
     GameUIHostTestAccess::SyncFromWorld(host, world);
-    EXPECT_NE(host.GetUIManager()->GetRootElement()->FindById("leafA"), nullptr);
+    EXPECT_NE(host.GetUIManager()->GetRootElement()->FindById("leafA"_sid), nullptr);
 }
 
 TEST(GameUIHostTests, DocumentRootScopesLookupToItsDocument)
@@ -1298,9 +1280,8 @@ TEST(GameUIHostTests, DocumentRootScopesLookupToItsDocument)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_findelement"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = tempDir.Path();
+    const auto root = std::filesystem::temp_directory_path() / "gameui_findelement";
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
     GUID guidA, guidB;
@@ -1323,11 +1304,11 @@ TEST(GameUIHostTests, DocumentRootScopesLookupToItsDocument)
     UIElement* docRootB = GameUI::FindDocumentRoot(entityB.GetHandle().id);
     ASSERT_NE(docRootA, nullptr);
     ASSERT_NE(docRootB, nullptr);
-    EXPECT_NE(docRootA->FindById("leafA"), nullptr);
-    EXPECT_EQ(docRootA->FindById("leafB"), nullptr);
-    EXPECT_NE(docRootB->FindById("leafB"), nullptr);
-    EXPECT_NE(GameUI::FindElementById("leafA"), nullptr);
-    EXPECT_NE(GameUI::FindElementById("leafB"), nullptr);
+    EXPECT_NE(docRootA->FindById("leafA"_sid), nullptr);
+    EXPECT_EQ(docRootA->FindById("leafB"_sid), nullptr);
+    EXPECT_NE(docRootB->FindById("leafB"_sid), nullptr);
+    EXPECT_NE(GameUI::FindElementById("leafA"_sid), nullptr);
+    EXPECT_NE(GameUI::FindElementById("leafB"_sid), nullptr);
 }
 
 // A .uxml edit reconciles the bound subtree through UIHotReload, NOT through
@@ -1342,9 +1323,8 @@ TEST(GameUIHostTests, BindGenerationBumpsOnLayoutHotReload)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_bindgen_hotreload"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = tempDir.Path();
+    const auto root = std::filesystem::temp_directory_path() / "gameui_bindgen_hotreload";
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
 
@@ -1368,7 +1348,7 @@ TEST(GameUIHostTests, BindGenerationBumpsOnLayoutHotReload)
     GameUIHostTestAccess::SyncFromWorld(host, world);
     UIManager* ui = host.GetUIManager();
     ASSERT_NE(ui, nullptr);
-    ASSERT_NE(ui->GetRootElement()->FindById("take-damage"), nullptr) << "HUD did not bind";
+    ASSERT_NE(ui->GetRootElement()->FindById("take-damage"_sid), nullptr) << "HUD did not bind";
     const uint64_t afterBind = GameUI::GetBindGeneration();
 
     // Rename the button in the .uxml: the reconcile destroys the old element
@@ -1384,9 +1364,9 @@ TEST(GameUIHostTests, BindGenerationBumpsOnLayoutHotReload)
     GameUIHostTestAccess::Update(host, 0.0f, 200, 200);
 
     // Positive control: the reconcile really replaced the subtree contents.
-    ASSERT_EQ(ui->GetRootElement()->FindById("take-damage"), nullptr)
+    ASSERT_EQ(ui->GetRootElement()->FindById("take-damage"_sid), nullptr)
         << "hot reload did not reconcile the bound subtree — the generation assert below would be vacuous";
-    ASSERT_NE(ui->GetRootElement()->FindById("heal"), nullptr);
+    ASSERT_NE(ui->GetRootElement()->FindById("heal"_sid), nullptr);
 
     EXPECT_GT(GameUI::GetBindGeneration(), afterBind)
         << "hot-reload reconcile invalidated cached elements without bumping the bind generation";
@@ -1399,9 +1379,8 @@ TEST(GameUIHostTests, NotifyGameplayStoppedDiscardsBoundDocumentsAndBumpsSession
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_playstop"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = tempDir.Path();
+    const auto root = std::filesystem::temp_directory_path() / "gameui_playstop";
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
 
@@ -1423,18 +1402,18 @@ TEST(GameUIHostTests, NotifyGameplayStoppedDiscardsBoundDocumentsAndBumpsSession
     world.ProcessCommands();
 
     GameUIHostTestAccess::SyncFromWorld(host, world);
-    ASSERT_NE(GameUI::FindElementById("take-damage"), nullptr);
+    ASSERT_NE(GameUI::FindElementById("take-damage"_sid), nullptr);
 
     const uint64_t session = GameUI::GetGameplaySession();
     const uint64_t gen = GameUI::GetBindGeneration();
     GameUI::NotifyGameplayStopped();
     EXPECT_GT(GameUI::GetGameplaySession(), session);
     EXPECT_GT(GameUI::GetBindGeneration(), gen);
-    EXPECT_EQ(GameUI::FindElementById("take-damage"), nullptr)
+    EXPECT_EQ(GameUI::FindElementById("take-damage"_sid), nullptr)
         << "play-stop discards bound documents; the next SyncFromWorld rebuilds them";
 
     GameUIHostTestAccess::SyncFromWorld(host, world);
-    EXPECT_NE(GameUI::FindElementById("take-damage"), nullptr);
+    EXPECT_NE(GameUI::FindElementById("take-damage"_sid), nullptr);
 }
 
 TEST(GameUIHostTests, NotifyGameplayStoppedRebuildDropsPlayHandlers)
@@ -1444,9 +1423,8 @@ TEST(GameUIHostTests, NotifyGameplayStoppedRebuildDropsPlayHandlers)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_playstop_click"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = tempDir.Path();
+    const auto root = std::filesystem::temp_directory_path() / "gameui_playstop_click";
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
 
@@ -1468,7 +1446,7 @@ TEST(GameUIHostTests, NotifyGameplayStoppedRebuildDropsPlayHandlers)
     world.ProcessCommands();
 
     GameUIHostTestAccess::SyncFromWorld(host, world);
-    auto* btn = dynamic_cast<Button*>(GameUI::FindElementById("take-damage"));
+    auto* btn = dynamic_cast<Button*>(GameUI::FindElementById("take-damage"_sid));
     ASSERT_NE(btn, nullptr);
 
     int clicks = 0;
@@ -1478,7 +1456,7 @@ TEST(GameUIHostTests, NotifyGameplayStoppedRebuildDropsPlayHandlers)
 
     GameUI::NotifyGameplayStopped();
     GameUIHostTestAccess::SyncFromWorld(host, world);
-    auto* rebuilt = dynamic_cast<Button*>(GameUI::FindElementById("take-damage"));
+    auto* rebuilt = dynamic_cast<Button*>(GameUI::FindElementById("take-damage"_sid));
     ASSERT_NE(rebuilt, nullptr);
     rebuilt->TriggerClick();
     EXPECT_EQ(clicks, 1) << "rebuilt HUD must not keep the play-session click subscription";
@@ -1498,9 +1476,8 @@ TEST(GameUIHostTests, FindElementByIdResolvesSharedIdDeterministically)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_findany"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = tempDir.Path();
+    const auto root = std::filesystem::temp_directory_path() / "gameui_findany";
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
 
@@ -1549,25 +1526,25 @@ TEST(GameUIHostTests, FindElementByIdResolvesSharedIdDeterministically)
 
     // Unique id -> its owning document, reported through the out-param.
     uint64_t owner = 0;
-    UIElement* onlyA = GameUI::FindElementById("only-a", &owner);
+    UIElement* onlyA = GameUI::FindElementById("only-a"_sid, &owner);
     ASSERT_NE(onlyA, nullptr) << "unique id only-a not found across documents";
     EXPECT_EQ(owner, idA);
-    EXPECT_EQ(onlyA, GameUI::FindDocumentRoot(idA)->FindById("only-a"))
+    EXPECT_EQ(onlyA, GameUI::FindDocumentRoot(idA)->FindById("only-a"_sid))
         << "the search across documents and the owner's document disagree";
 
     // Absent id -> null, out-param untouched.
     owner = 0xABCDEF01ull;
-    EXPECT_EQ(GameUI::FindElementById("no-such-id", &owner), nullptr);
+    EXPECT_EQ(GameUI::FindElementById("no-such-id"_sid, &owner), nullptr);
     EXPECT_EQ(owner, 0xABCDEF01ull) << "outOwnerEntityId must not be written when nothing matches";
 
     // Shared id -> deterministic lowest-entity winner, and the reported owner must
     // resolve the identical element through its document root.
     const uint64_t expectedOwner = std::min({idA, idB, idC});
     owner = 0;
-    UIElement* shared = GameUI::FindElementById("bar", &owner);
+    UIElement* shared = GameUI::FindElementById("bar"_sid, &owner);
     ASSERT_NE(shared, nullptr);
     EXPECT_EQ(owner, expectedOwner) << "shared id must resolve to the lowest owning entity id";
-    EXPECT_EQ(shared, GameUI::FindDocumentRoot(expectedOwner)->FindById("bar"))
+    EXPECT_EQ(shared, GameUI::FindDocumentRoot(expectedOwner)->FindById("bar"_sid))
         << "the winner must be the element in the reported owner's document";
 }
 
@@ -1587,9 +1564,8 @@ TEST(GameUIHostTests, SessionEventGoesInertAfterPlayStops)
     UIRegistration::RegisterBuiltInControls();
 
     UiRgHarness rg(dev.get());
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_sessionclick"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = tempDir.Path();
+    const auto root = std::filesystem::temp_directory_path() / "gameui_sessionclick";
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
 
@@ -1628,7 +1604,7 @@ TEST(GameUIHostTests, SessionEventGoesInertAfterPlayStops)
     DriveUiRender(*host.GetUIManager(), rg);
 
     uint64_t owner = 0;
-    UIElement* btn = GameUI::FindElementById("take-damage", &owner);
+    UIElement* btn = GameUI::FindElementById("take-damage"_sid, &owner);
     ASSERT_NE(btn, nullptr);
     ASSERT_GT(btn->GetLayoutWidth(), 0.0f) << "button has no layout — the pointer could never hit it";
     EXPECT_EQ(owner, entity.GetHandle().id) << "owner out-param must name the document that matched";
@@ -1674,9 +1650,8 @@ TEST(GameUIHostTests, SessionEventDoesNotFireWhenTheCursorLeavesMidPress)
     UIRegistration::RegisterBuiltInControls();
 
     UiRgHarness rg(dev.get());
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_sessionclick_leave"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = tempDir.Path();
+    const auto root = std::filesystem::temp_directory_path() / "gameui_sessionclick_leave";
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
 
@@ -1712,7 +1687,7 @@ TEST(GameUIHostTests, SessionEventDoesNotFireWhenTheCursorLeavesMidPress)
     GameUIHostTestAccess::Update(host, 0.0f, 200, 200);
     DriveUiRender(*host.GetUIManager(), rg);
 
-    auto* btn = dynamic_cast<Button*>(GameUI::FindElementById("take-damage"));
+    auto* btn = dynamic_cast<Button*>(GameUI::FindElementById("take-damage"_sid));
     ASSERT_NE(btn, nullptr);
     ASSERT_GT(btn->GetLayoutWidth(), 0.0f) << "button has no layout — the pointer could never hit it";
 
@@ -1757,15 +1732,14 @@ TEST(GameUIHostTests, ReferenceModesKeepLayoutAndPointerAlignedAcrossResize)
     ASSERT_TRUE(XMLParser::ParseLayoutFromString(
         R"(<uielement id='root'><button id='scaled-button' /></uielement>)", root));
     ui->SetRoot(std::move(root));
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_reference_height"));
-    const auto css = tempDir.Path() / "gameui_reference_height.css";
+    const auto css = std::filesystem::temp_directory_path() / "gameui_reference_height.css";
     {
         std::ofstream f(css);
         f << "#root { width: 100%; height: 100%; }\n"
              "#scaled-button { position: absolute; left: 100px; top: 200px; width: 200px; height: 48px; }\n";
     }
     ASSERT_TRUE(ui->AttachStyleFromFile(css.string()));
-    auto* button = dynamic_cast<Button*>(ui->GetRootElement()->FindById("scaled-button"));
+    auto* button = dynamic_cast<Button*>(ui->GetRootElement()->FindById("scaled-button"_sid));
     ASSERT_NE(button, nullptr);
     int clicks = 0;
     button->SetOnClick([&](UIEvent&) { ++clicks; });
@@ -1795,6 +1769,7 @@ TEST(GameUIHostTests, ReferenceModesKeepLayoutAndPointerAlignedAcrossResize)
     ui->SetScaleSettings({});
     GameUIHostTestAccess::Update(host, 0.0f, 1600, 1600);
     EXPECT_FLOAT_EQ(ui->GetContentScale(), 1.0f);
+    std::filesystem::remove(css);
 }
 
 // The wheel carries no position of its own: it lands on whatever the last move
@@ -1823,8 +1798,7 @@ TEST(GameUIHostTests, AWheelUnderAScaledPointerScrollsInLogicalPixels)
     root->AddChild(std::move(scrollOwned));
     ui->SetRoot(std::move(root));
 
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_scaled_wheel"));
-    const auto css = tempDir.Path() / "gameui_host_scaled_wheel.css";
+    const auto css = std::filesystem::temp_directory_path() / "gameui_host_scaled_wheel.css";
     {
         std::ofstream f(css);
         f << "#root { display: flex; width: 200px; height: 100px; }\n"
@@ -1864,6 +1838,8 @@ TEST(GameUIHostTests, AWheelUnderAScaledPointerScrollsInLogicalPixels)
     EXPECT_TRUE(host.OnScroll({0.0f, -1.0f}));
     EXPECT_FLOAT_EQ(scroll->GetScrollY() - scaledStep, scaledStep)
         << "a wheel step is a logical distance, independent of the content scale";
+
+    std::filesystem::remove(css);
 }
 
 TEST(GameUIHostTests, ReferenceModesRespondToAspectRatioChanges)

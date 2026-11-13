@@ -321,7 +321,7 @@ void WindowInputRouter::RouteMouseButton(const WindowInputRouterConfig& config, 
     {
         // The click's mask is live platform state, and it is the only report of
         // a modifier that was already held when this window took focus.
-        ui->SyncModifierKeys(mods);
+        ui->ReconcileModifierKeys(mods);
         consumed = ui->OnMouseButton(button, pressed) && pressed;
     }
 

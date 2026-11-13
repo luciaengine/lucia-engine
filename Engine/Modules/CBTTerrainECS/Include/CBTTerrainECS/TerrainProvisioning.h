@@ -20,14 +20,12 @@ struct EntityHandle;
 namespace GameEngine::CBTTerrainECS
 {
 
-// The active terrain's entity — the first enabled, live terrain in chunk order (liveness =
-// single OR tiled handle set), or an invalid handle when none is live. THE liveness resolver
-// FindActiveTerrain / ResolveActivePlanetRelief share. The CBT update system keys the service-
-// global sculpt layer's reset on this so a deleted/recreated planet re-derives fresh geometry.
+// The active terrain's entity: the drawn terrain (TerrainECS::FindDrawnTerrain), or an invalid
+// handle when no terrain is live. FindActiveTerrain and ResolveActivePlanetRelief share it. The
+// CBT update system keys the sculpt layer's reset on it, so a recreated planet gets fresh geometry.
 ECS::EntityHandle FindActiveTerrainEntity(ECS::World& world);
 
-// Copies the single active terrain — the first enabled, live terrain in chunk
-// order (liveness = single OR tiled handle set) — into `out` and returns true.
+// Copies the active terrain (FindActiveTerrainEntity) into `out` and returns true.
 // Returns false (leaving `out` untouched) when none is live. This is THE terrain
 // resolver: the renderer's tuning read and the editor's brush domain check both
 // use it, so they never disagree about which terrain is active. Documented
@@ -41,37 +39,14 @@ bool FindActiveTerrain(ECS::World& world, Components::Terrain& out);
 // framing all read one relief source. Meaningful only for a spherical terrain.
 Components::TerrainPlanetRelief ResolveActivePlanetRelief(ECS::World& world);
 
-// The refinement subdivision ceiling (numSubdiv = depth - baseDepth) in force for a terrain.
-// It is a REPRESENTATION limit, so it follows the gVertex storage mode (decode-precision arc
-// S2b):
-//   * fp32 WORLD corners (the shipped default): kMaxDecodeSubdiv (40). The store quantizes
-//     ~0.25 m/corner at Earth magnitude regardless of depth, so past numSubdiv ~46 the noise
-//     exceeds the facet (measured 69% at 46, 275% at 50) — 40 stays ~2x short of that
-//     degeneracy. Mirrors the shader guard CBT_MAX_NUM_SUBDIV (locked by
-//     CBTLayout.GlslMaxDecodeSubdivMatchesCpp). Deeper bisectors are skipped as corrupt.
-//   * deep (sector, local) df64 store (GE_CBT_DEEP_DECODE, spherical only):
-//     kDeepDecodeSubdiv (50). Decode error <= 2e-5 m at Earth radius, facet floor 0.298 m
-//     (under the 0.5 m walking bar), 2 subdivisions below the int64 walk-exactness ceiling
-//     (~52). Mirrors CBT_DEEP_NUM_SUBDIV (locked by GlslDeepDecodeMirrorsCpp).
-//   * narrow-heap (u32) kernels, which a device without shaderInt64 runs:
-//     kHeap32DecodeSubdiv (25) — the heap ID's own range, not a precision preference.
-// The flag->cap coupling is LOAD-BEARING: lifting the cap without the deep store ships the
-// measured degeneracy above, so the caller must pass the SAME deepDecode bit that drives
-// CBTClassifyDesc::DeepDecode (CBTUpdateSystem reads it once per frame for both).
-// Locked by TerrainMaxDepth.DecodeCapMatchesWhatTheRepresentationCanCarry.
-uint32 SubdivCapFor(Components::TerrainDomain domain, bool deepDecode, bool narrowHeap);
+// The refinement subdivision ceiling (numSubdiv = depth - baseDepth): the depth the corner store
+// of the domain carries on this arm. Wide arm: planar kMaxDecodeSubdiv (40, fp32 world corners),
+// sphere kDeepDecodeSubdiv (50, (sector, local) corners). Narrow arm: kHeap32DecodeSubdiv (25).
+uint32 SubdivCapFor(Components::TerrainDomain domain, bool narrowHeap);
 
 // Auto-derives the CBT refinement depth cap (LEB heap depth) from the domain and
-// size / radius, clamped to the decode ceiling the ACTIVE gVertex representation can
-// carry (beyond it the decode loses precision and a deeper bisector is skipped as
-// corrupt). `deepDecode` MUST be the same bit that drives CBTClassifyDesc::DeepDecode —
-// the ceiling is baseDepth + kMaxDecodeSubdiv (40) under the shipped fp32 world store,
-// and baseDepth + DeepDecode::kDeepDecodeSubdiv (50) only when the spherical (sector,
-// local) df64 store is live (GE_CBT_DEEP_DECODE; planar ignores the flag). Lifting the
-// cap without the deep store ships the measured Earth-magnitude storage degeneracy
-// (decode-precision arc S2b, design §4) — the coupling is locked by
-// TerrainMaxDepth.DecodeCapMatchesWhatTheRepresentationCanCarry. The cap is chosen so
-// the finest facet lands near the useful detail floor: for planar, the lattice spacing the
+// size / radius, clamped to SubdivCapFor (a deeper bisector is skipped as corrupt). The cap
+// is chosen so the finest facet lands near the useful detail floor: for planar, the lattice spacing the
 // heightfield is provisioned at (TerrainECS::DeriveTerrainSizingPlan's MetresPerTexelNear,
 // which can be finer than 1/samplesPerMeter because the sample count rounds up to 64 x 2^k
 // intervals), counted along the longer of sizeX and sizeZ. On a single heightfield the
@@ -81,13 +56,12 @@ uint32 SubdivCapFor(Components::TerrainDomain domain, bool deepDecode, bool narr
 // ~0.25 m (walking-eye detail under the <=0.5 m product bar). Planets ignore sizeX, sizeZ and
 // samplesPerMeter.
 // Measured: a too-LOW cap costs fps (the classifier thrashes against the clamp), so the
-// derivation errs deep and pins at the ceiling for very large planets (deep OFF: Earth
-// clamps at 45 -> 9.5 m facet floor; deep ON: Earth clamps at 55 -> 0.298 m floor).
+// derivation errs deep and pins at the ceiling for very large planets (Earth clamps at 55 ->
+// 0.298 m facet floor on the wide arm).
 // `narrowHeap` names the kernels' heap width (CBTRenderFeature::UsesNarrowHeap): a u32
 // heap caps the depth at its own range, whatever the decode store could carry.
 uint32 DeriveTerrainMaxDepth(Components::TerrainDomain domain, float32 sizeX, float32 sizeZ,
-                             float32 samplesPerMeter, float32 planetRadius, bool deepDecode,
-                             bool narrowHeap);
+                             float32 samplesPerMeter, float32 planetRadius, bool narrowHeap);
 
 // The sample grid of the imported heightmap that drives a terrain's heights (BaseSource ==
 // HeightmapAsset, decoded), or {0, 0} when the terrain's source is its own lattice (procedural
@@ -110,10 +84,9 @@ struct ImportedHeightSource
 // import is measured on (#2609), so the import's cap can stop above the import's spacing there
 // (576 m at 2 samples per metre is a 1024 m grid: a 577 x 577 import would cap at depth 20, whose
 // 1.41 m legs skip its 1 m samples). This is the single source of truth CBTUpdateSystem
-// consumes; it reads `deepDecode` once per frame and feeds the SAME value here and into
-// CBTClassifyDesc::DeepDecode, so cap and storage mode cannot desync.
+// consumes.
 uint32 ResolveTerrainMaxDepth(const Components::Terrain& terrain, ImportedHeightSource imported,
-                              bool deepDecode, bool narrowHeap);
+                              bool narrowHeap);
 
 // Editor creation presets — coherent starting bundles so users pick a known-good
 // scale instead of eleven fields. Planets set Domain = Spherical + radius and leave
@@ -128,6 +101,7 @@ enum class TerrainPreset : uint8
 
 // Builds the Terrain field bundle for a preset. Runtime handles stay zero — the
 // caller provisions the TerrainService data and (for planar terrains) physics.
+// A planar preset is flat at its transform's height; noise is an authoring choice.
 Components::Terrain MakeTerrainPreset(TerrainPreset preset);
 
 // Builds the base relief the planet presets ship with (amplitude ~= R/40, 3 octaves).

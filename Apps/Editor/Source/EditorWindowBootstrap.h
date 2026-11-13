@@ -6,7 +6,7 @@
 // definition in one translation unit.
 
 #include "Core/WindowUiBootstrap.h"
-#include "EditorApplication.h"
+#include "EditorApplication/EditorApplication.h"
 
 #include <filesystem>
 #include <string>
@@ -24,13 +24,13 @@ Rendering::GraphicsAPI LoadPreferredGraphicsApi();
 // wiring + HDR UI paper-white/black-lift derivation + fast-path policy).
 void ApplyUiRuntimeConfig(GameEngine::UIManager* ui);
 
-// True if the current UI focus is in a TextField/TextArea (hotkey routing).
-bool IsFocusInTextField(UIManager* ui);
-
 // Apply a WindowDescriptor's role/capabilities/title to a window context.
 void ApplyWindowDescriptor(EditorApplication::EditorWindowContext& ctx,
                            const EditorApplication::WindowDescriptor& desc,
                            uint64_t windowId);
+
+// Re-apply the persisted accent color to a freshly created UIManager.
+void ApplySavedAccentStyle(UIManager* ui);
 
 // Editor font registration + defaults for a freshly created UIManager.
 void ConfigureEditorUiFonts(UIManager* ui, AssetManager* assetManager,

@@ -1,7 +1,6 @@
 #include "Prefabs/CreatePrefab/CreatePrefabCommand.h"
 
 #include "EditorChangeNotifications.h"
-#include "Prefabs/PrefabInstanceDescriptions.h"
 #include "SceneView/SceneViewNoticeOverlay.h"
 
 #include "Assets/AssetManager.h"
@@ -117,7 +116,7 @@ std::unique_ptr<CreatePrefabCommand> CreatePrefabCommand::Create(ECS::World& wor
     command->m_Prefab = created.Prefab;
     command->m_MembersBefore = std::move(created.Members);
     command->m_WrittenAt = std::filesystem::last_write_time(prefabFile, ec);
-    NotifyPrefabIdentityChanges(notifications, world, command->m_MembersBefore);
+    NotifyWorldStructure(notifications, &world);
     return command;
 }
 
@@ -181,17 +180,11 @@ void CreatePrefabCommand::Undo()
     }
     else
         RemoveFileUnlessASceneUsesIt();
-    NotifyPrefabIdentityChanges(m_Notifications, m_World, m_MembersBefore);
+    NotifyWorldStructure(m_Notifications, &m_World);
 }
 
 void CreatePrefabCommand::Redo()
 {
-    if (!m_World.IsValid(m_Root))
-    {
-        Logger::Log::Error("Prefabs: cannot redo {} because its source entity no longer exists. "
-                           "Restore the source entity and try again; the prefab file is unchanged.", m_Name);
-        return;
-    }
     std::error_code ec;
     if (m_ReplacedBytes || m_FileKept)
         std::filesystem::remove(m_PrefabFile, ec);
@@ -204,7 +197,7 @@ void CreatePrefabCommand::Redo()
     }
     else
         m_WrittenAt = std::filesystem::last_write_time(m_PrefabFile, ec);
-    NotifyPrefabIdentityChanges(m_Notifications, m_World, m_MembersBefore);
+    NotifyWorldStructure(m_Notifications, &m_World);
 }
 
 } // namespace GameEngine::Editor

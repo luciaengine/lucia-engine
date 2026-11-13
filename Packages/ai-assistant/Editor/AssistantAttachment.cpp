@@ -1,8 +1,9 @@
 #include "AssistantAttachment.h"
 
 #include "AssistantTools.h"
+#include "Providers/CliSessionProvider.h"
 
-#include "Core/Application.h"
+#include "Core/ApplicationPaths.h"
 #include "Editor/Registries/DebugRequestGateRegistry.h"
 #include "Platform/Process.h"
 
@@ -24,7 +25,7 @@ std::filesystem::path ConfigFile(uint64_t conversation)
     std::error_code error;
     std::filesystem::path base = std::filesystem::temp_directory_path(error);
     if (error || base.empty())
-        base = PathUtils::GetExecutableDirectory();
+        base = ApplicationPaths::GetExecutableDirectory();
     return base / "gameengine_mcp" / ("pid-" + std::to_string(Platform::GetCurrentProcessId())) /
            ("assistant-" + std::to_string(conversation) + ".json");
 }
@@ -40,7 +41,7 @@ std::string JoinNames(const std::vector<std::string>& names)
 
 std::filesystem::path AssistantAttachment::StagedServerScript()
 {
-    return PathUtils::InstallContentRootFor(PathUtils::GetExecutableDirectory()) / "mcp" / "dist" / "index.js";
+    return ApplicationPaths::GetExecutableDirectory() / "mcp" / "dist" / "index.js";
 }
 
 std::string AssistantAttachment::Unavailable()
@@ -50,8 +51,17 @@ std::string AssistantAttachment::Unavailable()
                "editor, or start it with a free --debug-port.";
     std::error_code error;
     if (!std::filesystem::exists(StagedServerScript(), error))
-        return "The editor's MCP server is not staged: build the McpServer target.";
+        return "The editor's MCP server is not staged beside the editor: build the McpServer target.";
     return {};
+}
+
+std::string AssistantAttachment::ActingRefusal(CliSessionProvider& provider, const std::string& node, uint16_t port,
+                                               SetupSurface surface, const CancelToken& cancel)
+{
+    std::string unavailable = Unavailable();
+    if (!unavailable.empty())
+        return unavailable;
+    return provider.ToolsRefusal(node, port, surface, cancel);
 }
 
 std::optional<AgentToolAttachment> AssistantAttachment::Write(std::string node, uint16_t port, std::string_view token,

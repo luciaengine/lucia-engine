@@ -1,6 +1,6 @@
 #include "Inspectors/Particles/ParticleProcessorSearchProvider.h"
 
-#include "Particles/ParticleProcessorRegistry.h"
+#include "Particles/ParticleProcessor/ParticleProcessorRegistry.h"
 #include "UI/PickerQueryFilter.h"
 
 #include <utility>

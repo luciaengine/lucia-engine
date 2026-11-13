@@ -3,6 +3,7 @@
 #include "PromptFileThumbnail.h"
 
 #include "Logger/Logger.h"
+#include "Types/StringId.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Label.h"
 #include "UI/UIEvents.h"
@@ -22,7 +23,7 @@ constexpr const char* kLayoutAssetPath = "ai-assistant:Editor/UI/controls/Prompt
 template <typename T>
 T* TakeElement(UIElement& item, const char* id, size_t index)
 {
-    T* element = dynamic_cast<T*>(item.FindById(id));
+    T* element = dynamic_cast<T*>(item.FindById(HashStringId(id)));
     if (element)
         element->SetId(std::string(id) + ":" + std::to_string(index));
     return element;

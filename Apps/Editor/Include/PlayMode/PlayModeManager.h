@@ -1,5 +1,9 @@
 #pragma once
 
+#include "PlayMode/PlayModeEntryGate.h"
+
+#include "Types/Types.h"
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -51,7 +55,8 @@ class PlayModeManager
         bool selected = true;
     };
 
-    PlayModeManager();
+    // `scriptBuildProbe` is what the entry gate reads the script build from; tests pass their own.
+    explicit PlayModeManager(PlayModeEntryGate::BuildProbe scriptBuildProbe = &ReadScriptBuildSnapshot);
     ~PlayModeManager();
 
     PlayModeManager(const PlayModeManager&) = delete;
@@ -61,6 +66,10 @@ class PlayModeManager
     void SetSceneEditor(SceneEditorController* sceneEditor);
     void SetUndoRedo(UndoRedoService* undoRedo);
     void SetChangeNotifications(EditorChangeNotifications* notifications);
+    // Holds EnterPlayMode while scripts build and refuses it after a failed build; Tick advances
+    // it. The "Entering Play Mode" dialog presents it.
+    PlayModeEntryGate& GetEntryGate() { return m_EntryGate; }
+    const PlayModeEntryGate& GetEntryGate() const { return m_EntryGate; }
 
     PlayModeState GetState() const { return m_State; }
     bool IsPlayingOrPaused() const { return m_State == PlayModeState::Play || m_State == PlayModeState::Paused; }
@@ -73,8 +82,11 @@ class PlayModeManager
 
     // Explicit entrypoints
     void EnterPlayMode();
+    // In edit mode, drops an entry the gate holds for the script build.
     void ExitPlayMode();
-    // Stop after running script callbacks return, at the next Tick.
+    // Stops play at the start of the next Tick, after the running script callbacks return. Any
+    // number of requests before then, and a stop made by other means, stop play once. Does
+    // nothing outside play.
     void RequestExitPlayMode();
 
     // Change review (valid when state == ChangeReview)
@@ -87,7 +99,8 @@ class PlayModeManager
     // (i.e., not present in the pre-play snapshot). Only meaningful while playing/paused.
     bool IsRuntimeEntity(std::uint32_t packedEntityId) const;
 
-    // Per-frame tick while playing (best-effort; no-op while paused/editing).
+    // Per frame: advances the entry gate, and ticks the game while playing (best-effort; the game
+    // does not tick while paused or editing).
     void Tick(float deltaSeconds);
 
     void SetOnStateChanged(std::function<void(PlayModeState)> cb) { m_OnStateChanged = std::move(cb); }
@@ -100,9 +113,6 @@ class PlayModeManager
     // Intended to be called after the engine rendering loop is enabled.
     void ApplyEditModeSystemGating();
 
-    // Registers the play-mode fixed-id commands (UiReplayCommandIds::Play* and
-    // AssertPlayMode*) with EditorMenuRegistry. The registry keeps `this` for the
-    // process lifetime: call once, on the editor's manager.
     void RegisterCommands();
 
   private:
@@ -125,11 +135,12 @@ class PlayModeManager
     struct UndoHistoryStash;
 
     void SetState(PlayModeState s);
-
-    // The fixed-id commands: refuse (filling outError) a transition the state
-    // does not allow instead of doing nothing.
     bool RunPlayEnterCommand(std::string* outError);
     bool RunPlayTogglePauseCommand(std::string* outError);
+    // Sets the world clock's time scale to 0, which stops gameplay time.
+    void PauseSimulationClock();
+    // Restores the time scale that PauseSimulationClock found.
+    void ResumeSimulationClock();
 
     Snapshot CaptureSnapshot() const;
     bool ApplySnapshot(const Snapshot& snapshot) const;
@@ -141,16 +152,21 @@ class PlayModeManager
   private:
     PlayModeState m_State = PlayModeState::Edit;
     bool m_ExitRequested = false;
+    float64 m_TimeScaleBeforePause = 1.0;
     ECS::World* m_World = nullptr; // not owned
     SceneEditorController* m_SceneEditor = nullptr; // not owned
     UndoRedoService* m_UndoRedo = nullptr; // not owned
     EditorChangeNotifications* m_Notifications = nullptr; // not owned
+    PlayModeEntryGate m_EntryGate;
 
     std::optional<Snapshot> m_EnteredSnapshot;
     std::unordered_set<std::uint32_t> m_PrePlayEntityIds; // packed entity ids present before play
     std::unique_ptr<UndoHistoryStash> m_UndoStash;
-    // The mark-ups' notes as play began: the snapshot restore resets the world, which drops
-    // them from MarkupService, and brings the same entities back under their handles.
+    // The mark-ups' notes as play began. The exit restore keeps the run of handles they
+    // belong to when the world is still in it, but what play wrote to them would stay; after
+    // a scene opened during play the restore starts a new run, which reads as having no
+    // notes. Restoring them ends the session with the notes as it began, like the rest of
+    // the world.
     std::unique_ptr<MarkupECS::MarkupWorldNotes> m_EnteredMarkupNotes;
     std::vector<PendingChange> m_PendingChanges;
     ManagedPlayModeCallbacks m_ManagedPlayMode;

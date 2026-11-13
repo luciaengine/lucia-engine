@@ -12,7 +12,6 @@
 #include "UI/StyleProperties.h"
 #include "UI/UIManager.h"
 #include "UIRgTestHarness.h"
-#include "TestTempDir.h"
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -20,10 +19,10 @@ using namespace GameEngine::UIParsing;
 
 static std::filesystem::path MakeTempCssPath(const char* prefix)
 {
-    static const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_pseudo_invalidation"));
+    const auto tmpDir = std::filesystem::temp_directory_path();
     const uint64_t t = (uint64_t)std::chrono::high_resolution_clock::now().time_since_epoch().count();
     const uint64_t tid = (uint64_t)std::hash<std::thread::id>{}(std::this_thread::get_id());
-    return tempDir.Path() / (std::string(prefix) + "_" + std::to_string(t) + "_" + std::to_string(tid) + ".css");
+    return tmpDir / (std::string(prefix) + "_" + std::to_string(t) + "_" + std::to_string(tid) + ".css");
 }
 
 TEST(UIManagerPseudoInvalidationTests, HoverPaintOnlyDoesNotTriggerYogaSolve)
@@ -72,7 +71,7 @@ TEST(UIManagerPseudoInvalidationTests, HoverPaintOnlyDoesNotTriggerYogaSolve)
 
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
-    UIElement* b = r->FindById("b");
+    UIElement* b = r->FindById("b"_sid);
     ASSERT_NE(b, nullptr);
 
     // Layout should remain unchanged.
@@ -128,7 +127,7 @@ TEST(UIManagerPseudoInvalidationTests, HoverLayoutTriggersYogaSolveNextFrame)
 
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
-    UIElement* b = r->FindById("b");
+    UIElement* b = r->FindById("b"_sid);
     ASSERT_NE(b, nullptr);
 
     EXPECT_NEAR(b->GetLayoutX(), 200.0f, 0.5f);
@@ -172,7 +171,7 @@ TEST(UIManagerPseudoInvalidationTests, HoverChangesResolvedBackgroundColor)
 
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
-    UIElement* btn = r->FindById("btn");
+    UIElement* btn = r->FindById("btn"_sid);
     ASSERT_NE(btn, nullptr);
 
     const uint32_t baseColor = btn->GetResolvedStyle().Visual.BackgroundColor;
@@ -236,7 +235,7 @@ TEST(UIManagerPseudoInvalidationTests, HoverAppliesBorderImageSlice)
 
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
-    UIElement* btn = r->FindById("btn");
+    UIElement* btn = r->FindById("btn"_sid);
     ASSERT_NE(btn, nullptr);
     EXPECT_FALSE(btn->GetResolvedStyle().Visual.BackgroundImage.HasBorderImage);
 
@@ -281,11 +280,11 @@ TEST(UIManagerPseudoInvalidationTests, HoverWithOverridesDoesNotStompBackground)
 
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
-    UIElement* btn = r->FindById("btn");
+    UIElement* btn = r->FindById("btn"_sid);
     ASSERT_NE(btn, nullptr);
 
     btn->AddClass("btn");
-    btn->Overrides()
+    btn->Style()
         .Set(Style::PaddingTop, StyleLength::Px(8.0f))
         .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{4.0f, 4.0f, 4.0f, 4.0f})
         .Set(Style::Cursor, CursorStyle::Pointer)
@@ -342,7 +341,7 @@ TEST(UIManagerPseudoInvalidationTests, HoverWithCssVariablesAndMultipleClasses)
 
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
-    UIElement* btn = r->FindById("btn");
+    UIElement* btn = r->FindById("btn"_sid);
     ASSERT_NE(btn, nullptr);
 
     btn->AddClass("button");
@@ -450,9 +449,9 @@ TEST(UIManagerPseudoInvalidationTests, ProgrammaticFocusChainElementLayoutRelays
 
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
-    UIElement* child = r->FindById("child");
+    UIElement* child = r->FindById("child"_sid);
     ASSERT_NE(child, nullptr);
-    r->FindById("container")->SetFocusable(true);
+    r->FindById("container"_sid)->SetFocusable(true);
 
     ui.Update(0.0f, /*interactive=*/true);
     EXPECT_NEAR(child->GetLayoutX(), 0.0f, 0.5f);
@@ -498,9 +497,9 @@ TEST(UIManagerPseudoInvalidationTests, ProgrammaticFocusChainElementLayoutRevert
 
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
-    UIElement* child = r->FindById("child");
+    UIElement* child = r->FindById("child"_sid);
     ASSERT_NE(child, nullptr);
-    r->FindById("container")->SetFocusable(true);
+    r->FindById("container"_sid)->SetFocusable(true);
 
     ui.Update(0.0f, /*interactive=*/true);
     ui.SetFocusById("container");
@@ -872,7 +871,7 @@ std::unique_ptr<UIElement> MakePseudoCard(const char* id)
     card->AddClass("card");
     auto overlay = std::make_unique<UIElement>();
     overlay->AddClass("overlay");
-    overlay->Overrides().Set(Style::PointerEvents, false);
+    overlay->Style().Set(Style::PointerEvents, false);
     card->AddChild(std::move(overlay));
     return card;
 }
@@ -882,7 +881,7 @@ constexpr uint32_t kOverlayHoverColor = 0xFFFF0000u;
 void ExpectCardHoverWorks(UIManager& ui, const char* cardId, float cardCenterX,
                           const char* what)
 {
-    UIElement* card = ui.GetRootElement()->FindById(cardId);
+    UIElement* card = ui.GetRootElement()->FindById(HashStringId(cardId));
     ASSERT_NE(card, nullptr) << what;
     ASSERT_FALSE(card->GetChildren().empty()) << what;
     UIElement* overlay = card->GetChildren().front().get();
@@ -953,10 +952,10 @@ TEST(UIManagerPseudoInvalidationTests, HoverDescendantRuleAppliesToRuntimeAddedS
     // Runtime add while the grid is display:none, flipped visible the same
     // frame (community-grid shape: cards rebuilt when the fetch lands, the
     // status view swap happens right after, both before the next Update).
-    gridPtr->Overrides().Set(Style::Display, DisplayMode::None);
+    gridPtr->Style().Set(Style::Display, DisplayMode::None);
     ui.Update(0.0f, /*interactive=*/true);
     gridPtr->AddChild(MakePseudoCard("card-hidden-add"));
-    gridPtr->Overrides().Set(Style::Display, DisplayMode::Flex);
+    gridPtr->Style().Set(Style::Display, DisplayMode::Flex);
     ui.Update(0.0f, /*interactive=*/true);
     ExpectCardHoverWorks(ui, "card-hidden-add", 250.0f, "hidden-then-shown card");
 }
@@ -1003,7 +1002,7 @@ TEST(UIManagerPseudoInvalidationTests, HoverDescendantTransitionAppliesToRuntime
     // per-frame logo hue rotation.
     uint32_t hue = 0;
     auto tick = [&]() {
-        churnPtr->Overrides().Set(Style::BackgroundColor, 0xFF000000u | hue++);
+        churnPtr->Style().Set(Style::BackgroundColor, 0xFF000000u | hue++);
         churnPtr->MarkDirty(UIElement::StyleDirty | UIElement::VisualDirty);
         ui.Update(0.016f, /*interactive=*/true);
     };
@@ -1012,7 +1011,7 @@ TEST(UIManagerPseudoInvalidationTests, HoverDescendantTransitionAppliesToRuntime
         tick();
 
     auto expectHoverTintWorks = [&](const char* cardId, float centerX, const char* what) {
-        UIElement* card = ui.GetRootElement()->FindById(cardId);
+        UIElement* card = ui.GetRootElement()->FindById(HashStringId(cardId));
         ASSERT_NE(card, nullptr) << what;
         UIElement* overlay = card->GetChildren().front().get();
 
@@ -1032,10 +1031,75 @@ TEST(UIManagerPseudoInvalidationTests, HoverDescendantTransitionAppliesToRuntime
 
     expectHoverTintWorks("card-static", 50.0f, "ctor-built card under churn");
 
-    gridPtr->Overrides().Set(Style::Display, DisplayMode::None);
+    gridPtr->Style().Set(Style::Display, DisplayMode::None);
     tick();
     gridPtr->AddChild(MakePseudoCard("card-hidden-add"));
-    gridPtr->Overrides().Set(Style::Display, DisplayMode::Flex);
+    gridPtr->Style().Set(Style::Display, DisplayMode::Flex);
     tick();
     expectHoverTintWorks("card-hidden-add", 150.0f, "hidden-then-shown card under churn");
+}
+
+// The :focus-within chain holds the focused element between frames. Once that element is
+// destroyed, a later frame finds the element that now has the focus id.
+TEST(UIManagerPseudoInvalidationTests, FocusChainFindsReplacementOfDestroyedFocusedElement)
+{
+    auto* dev = SharedHeadlessDevice();
+    if (!dev)
+        GTEST_SKIP() << "Device init failed";
+
+    UIRegistration::RegisterBuiltInControls();
+
+    const std::string xml = R"(<uielement id='root'>
+        <uielement id='container'>
+            <uielement id='box' />
+        </uielement>
+        <uielement id='other' />
+    </uielement>)";
+    std::unique_ptr<UIElement> root;
+    ASSERT_TRUE(XMLParser::ParseLayoutFromString(xml, root));
+
+    // Only the chain sets :focus-within on an ancestor of the focused element.
+    const auto cssPath = MakeTempCssPath("ui_focus_replacement");
+    {
+        std::ofstream f(cssPath);
+        f << R"(
+#root { display: flex; width: 600px; height: 80px; }
+#container { display: flex; width: 100px; height: 80px; }
+#box { width: 40px; height: 40px; }
+#container:focus-within { width: 250px; }
+#other { display: flex; width: 100px; height: 80px; flex-shrink: 0; }
+#other:focus-within { width: 250px; }
+)";
+    }
+
+    UIManager ui(dev);
+    ui.SetRoot(std::move(root));
+    ASSERT_TRUE(ui.AttachStyleFromFile(cssPath.string()));
+
+    UIElement* container = ui.GetRootElement()->FindById("container"_sid);
+    ASSERT_NE(container, nullptr);
+    UIElement* box = container->FindById("box"_sid);
+    ASSERT_NE(box, nullptr);
+    box->SetFocusable(true);
+    ui.SetFocusById("box");
+    ui.Update(0.0f, /*interactive=*/true);
+    ui.Update(0.0f, /*interactive=*/true);
+    ASSERT_NEAR(container->GetLayoutWidth(), 250.0f, 0.5f);
+
+    // The replacement exists before the box is destroyed, so it cannot take its address.
+    auto replacement = std::make_unique<UIElement>();
+    replacement->SetId("box");
+    replacement->SetFocusable(true);
+    container->RemoveChild(box);
+    UIElement* other = ui.GetRootElement()->FindById("other"_sid);
+    ASSERT_NE(other, nullptr);
+    other->AddChild(std::move(replacement));
+    ui.SetFocusById("box");
+    ui.Update(0.0f, /*interactive=*/true);
+    ui.Update(0.0f, /*interactive=*/true);
+
+    EXPECT_NEAR(other->GetLayoutWidth(), 250.0f, 0.5f)
+        << "The parent of the element that has the focus id after the focused one is destroyed must match :focus-within";
+    EXPECT_NEAR(container->GetLayoutWidth(), 100.0f, 0.5f)
+        << "The parent of the destroyed element must not match :focus-within";
 }

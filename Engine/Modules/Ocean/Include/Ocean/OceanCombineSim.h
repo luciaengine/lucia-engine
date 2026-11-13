@@ -1,13 +1,11 @@
 #pragma once
 
-#include "Ocean/OceanPreparedDispatch.h"
-
 #include "Ocean/OceanCascadeArray.h"
 #include "Ocean/OceanTypes.h"
 
 #include "Rendering/Core/Device.h" // DescriptorSetLayoutDesc
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/PipelineIdentifiers.h"
+#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
 
 #include <cstdint>
 
@@ -20,7 +18,7 @@ class CommandList;
 namespace GameEngine::Ocean
 {
 
-// Displacement-combine cascade (optional, OceanRenderer.CombineDisplacementCascade).
+// Displacement-combine cascade (optional, OceanRenderer.CombineCascade).
 // Each frame it sums the tileable FFT displacement cascades into a single
 // camera-snapped, viewer-centered Texture2DArray (one slice per LOD), per LOD only
 // summing the cascades resolvable at that layer's texel (an anti-aliased LOD
@@ -32,6 +30,8 @@ class OceanCombineSim
 {
 public:
     bool Initialize(::GameEngine::Rendering::IDevice* device);
+    // The dispatch's pipeline, interned by Initialize.
+    ::GameEngine::Rendering::ComputePipelineId GetPipelineId() const { return m_Pipe; }
     bool IsReady() const { return m_Ready; }
 
     uint32 GetResolution() const { return m_Resolution; }
@@ -72,20 +72,16 @@ public:
 
     // Finalize this frame's GPU params (the cascade layout BeginFrame snapped).
     // Called at DECLARE time; the caller writes the result into a render-graph
-    // upload-ring allocation and hands the {buffer, offset} to PrepareDispatch.
+    // upload-ring allocation and hands the {buffer, offset} to RecordDispatch.
     void FillParams(OceanCombineParamsGPU& out);
 
-    /// Declare this ID with RGPassBuilder::UsePipeline before preparation.
-    ::GameEngine::Rendering::ComputePipelineId GetPipelineId() const { return m_Pipe; }
-
-    /// Render-thread preparation; the frame retains descriptors and the parameter upload.
-    /// The caller keeps input textures alive and unchanged until this graph records.
-    OceanPreparedDispatch PrepareDispatch(::GameEngine::Rendering::IDevice* device,
-                                           ::GameEngine::Rendering::BufferHandle paramsBuffer,
-                                           uint64 paramsOffset) const;
-    /// Record on the render thread using this frame's prepared bindings.
-    void RecordDispatch(::GameEngine::Rendering::CommandList* commands,
-                        const OceanPreparedDispatch& dispatch);
+    // Records the combine dispatch with barriers, leaving the cascade sampleable by
+    // the world pass. Params come from the frame's upload ring (FillParams above) —
+    // no per-class buffer ring.
+    void RecordDispatch(::GameEngine::Rendering::IDevice* device,
+                        ::GameEngine::Rendering::CommandList* cl,
+                        ::GameEngine::Rendering::BufferHandle paramsBuffer,
+                        uint64 paramsOffset);
 
 private:
     // RGBA16F displacement cascade; LOD 0 covers this many meters (each higher LOD

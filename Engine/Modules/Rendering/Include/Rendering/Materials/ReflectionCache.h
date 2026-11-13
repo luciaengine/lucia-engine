@@ -2,7 +2,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 
 namespace GameEngine { namespace Rendering {
 

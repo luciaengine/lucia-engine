@@ -288,18 +288,13 @@ MaterialCompiler::Result MaterialCompiler::BuildResultFromSnapshot(
     e.materialPath = materialPath;
 
     Rendering::MaterialBuildContext ctx;
-    ctx.AdapterShaderDir = ResolveAdapterShaderDir(assets);
-    // The bundle cache root wins when one is set: a compiler-less runtime (web)
-    // ships its cooked variants beside the binary, not under the workspace.
-    const std::filesystem::path& shaderCacheRoot = ShaderProgramAsset::GetShaderCacheRoot();
-    ctx.CacheRoot = shaderCacheRoot.empty()
+    FillMaterialSourceRoots(assets, ctx);
+    // A packaged runtime's cooked cache is probed first; a miss compiles into the workspace's.
+    const ShaderCacheRoots& shaderCacheRoots = ShaderProgramAsset::GetShaderCacheRoots();
+    ctx.ReadOnlyCacheRoots = shaderCacheRoots.ReadOnly;
+    ctx.CacheRoot = shaderCacheRoots.Writable.empty()
         ? EngineCore::GetInstance().GetWorkspaceRoot() / ".Cache" / "Shaders"
-        : shaderCacheRoot;
-    ctx.IncludeDirs = {assets.GetAssetRoot()};
-    ctx.ProjectRoots = CollectProjectRoots(assets);
-    ctx.AssetSourceRoots = CollectAssetSourceRoots(assets);
-    ctx.PackageShaderDirs = CollectPackageShaderDirs(assets);
-    AppendStagedModuleShaderDirs(ctx.AdapterShaderDir, ctx.PackageShaderDirs);
+        : shaderCacheRoots.Writable;
 
     MaterialShaderPackageBuilder builder(doc, materialPath, debugName, ctx);
     e.surfaceGraphPath = builder.GetGraphSourcePath();

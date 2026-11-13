@@ -7,7 +7,7 @@
 
 #include "Logger/Logger.h"
 #include "VulkanCommandList.h"
-#include "VulkanDevice.h"
+#include "VulkanDevice/VulkanDevice.h"
 
 namespace GameEngine
 {

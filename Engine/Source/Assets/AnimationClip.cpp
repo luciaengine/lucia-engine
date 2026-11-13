@@ -1,20 +1,20 @@
 #include "Assets/AnimationClip.h"
-#include "Animation/Compression/AnimationClipArchive.h"
-#include "Animation/Compression/AnimationClipData.h"
 
 #include "AnimationClipSchema.h"
 #include "AssetCore/SharedFileRead.h"
+#include "Assets/AssetDecodeInputFiles.h"
 #include "Logger/Logger.h"
+#include "Mathematics/Interpolation.h"
+#include "Serialization/JsonRead.h"
+#include "Types/PathUtils.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cmath>
-#include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <format>
 #include <fstream>
 #include <iterator>
-#include <limits>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -89,14 +89,6 @@ using json = nlohmann::json;
 
 constexpr float kKeyTimeEpsilon = 1e-5f;
 constexpr float kDefaultTangentWeight = 1.0f / 3.0f;
-
-std::string NormalizeExtension(std::string extension)
-{
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char c)
-                   { return static_cast<char>(std::tolower(c)); });
-    return extension;
-}
 
 const char* ToString(AnimPath path)
 {
@@ -200,7 +192,7 @@ AnimInterp ParseAnimInterp(const std::string& value)
 
 void InitializeDefaultKeyframe(AnimKeyframe& keyframe)
 {
-    std::memset(&keyframe, 0, sizeof(keyframe));
+    keyframe = AnimKeyframe{};
     keyframe.rotation[3] = 1.0f;
     keyframe.scale[0] = 1.0f;
     keyframe.scale[1] = 1.0f;
@@ -297,7 +289,7 @@ AnimKeyframe MakeInterpolatedKeyframe(const AnimChannel& channel, float time)
             continue;
 
         const float span = std::max(kKeyTimeEpsilon, second.time - first.time);
-        const float alpha = std::clamp((keyframe.time - first.time) / span, 0.0f, 1.0f);
+        const float alpha = Math::Clamp01((keyframe.time - first.time) / span);
 
         keyframe = first;
         keyframe.time = std::max(0.0f, time);
@@ -351,7 +343,8 @@ json SerializeKeyframe(const AnimKeyframe& keyframe)
     return j;
 }
 
-void DeserializeFloatArray(const json& node, const char* key, float* outValues, size_t valueCount)
+void DeserializeFloatArray(const json& node, const char* key, float* outValues, size_t valueCount,
+                           Serialization::JsonFieldReader& reader)
 {
     if (!node.contains(key) || !node[key].is_array())
         return;
@@ -360,7 +353,24 @@ void DeserializeFloatArray(const json& node, const char* key, float* outValues, 
     const size_t count = std::min(valueCount, values.size());
     for (size_t index = 0; index < count; ++index)
     {
-        outValues[index] = values[index].get<float>();
+        reader.ReadValue(values[index], std::format("{}[{}]", key, index), outValues[index]);
+    }
+}
+
+// The tangent types of array `key` of `node`, up to four; an element that is not a string is refused.
+void DeserializeTangentTypes(const json& node, const char* key, AnimTangentType* outTypes,
+                             Serialization::JsonFieldReader& reader)
+{
+    if (!node.contains(key) || !node[key].is_array())
+        return;
+
+    const json& types = node[key];
+    for (size_t index = 0; index < 4u && index < types.size(); ++index)
+    {
+        std::string name;
+        reader.ReadValue(types[index], std::format("{}[{}]", key, index), name);
+        if (types[index].is_string())
+            outTypes[index] = ParseAnimTangentType(name);
     }
 }
 
@@ -390,9 +400,13 @@ bool AnimationClip::Load()
     if (GetState() == AssetState::Loaded)
         return true;
 
+    // A synchronous load reads its own inputs; one nested in a decode must not take the
+    // decode's (ScopedAssetDecodeInputFiles).
+    const ScopedAssetDecodeInputFiles readsTheDisk(nullptr);
+
     // Reuse cached file data when switching animation indices to avoid
     // re-reading the (potentially large) model file from disk.
-    if (m_CachedFileData.empty())
+    if (m_CachedFileData.Size() == 0)
     {
         SetState(AssetState::Loading);
 
@@ -407,29 +421,7 @@ bool AnimationClip::Load()
     return LoadFromData(m_CachedFileData);
 }
 
-bool AnimationClip::LoadFromData(const Vector<uint8>& data)
-{
-    AnimationClip loaded(GetGUID(), GetPath());
-    loaded.m_SelectedAnimation = m_SelectedAnimation;
-    loaded.SetSourceInfo(m_SourcePath, m_SourceAnimationIndex);
-    if (!loaded.LoadSourceData(data))
-    {
-        if (GetState() != AssetState::Loaded)
-            SetState(AssetState::Failed);
-        return false;
-    }
-    auto runtime = AnimationClipData::Build(loaded.m_Channels);
-    if (!runtime)
-    {
-        if (GetState() != AssetState::Loaded)
-            SetState(AssetState::Failed);
-        return false;
-    }
-    AdoptLoadedData(loaded, std::move(runtime));
-    return true;
-}
-
-bool AnimationClip::LoadSourceData(const Vector<uint8>& input)
+bool AnimationClip::LoadFromData(std::span<const uint8> data)
 {
     if (GetState() == AssetState::Loaded)
         return true;
@@ -440,15 +432,10 @@ bool AnimationClip::LoadSourceData(const Vector<uint8>& input)
     m_Settings = {};
     m_EventTrack = {};
 
-    Vector<uint8> decoded;
-    const bool cooked = AnimationClipArchive::IsArchive(input);
-    if (cooked && !AnimationClipArchive::Decode(input, decoded))
-        return false;
-    const Vector<uint8>& data = cooked ? decoded : input;
-    const std::string extension = NormalizeExtension(GetExtension());
+    const std::string extension = LowerCaseExtension(GetPath());
     bool success = false;
 
-    if (cooked || extension == ".anim" || extension == ".animation")
+    if (extension == ".anim" || extension == ".animation")
     {
         success = LoadEditableData(data);
     }
@@ -779,63 +766,63 @@ bool AnimationClip::LoadSourceData(const Vector<uint8>& input)
 
                     const StringId nameId = targetName.empty() ? 0u : HashStringId(targetName);
 
-                    AnimChannel translationChannel{}, rotationChannel{}, scaleChannel{};
-                    translationChannel.boneIndex = rotationChannel.boneIndex = scaleChannel.boneIndex = boneIndex;
-                    translationChannel.targetName = rotationChannel.targetName = scaleChannel.targetName = targetName;
-                    translationChannel.targetNameId = rotationChannel.targetNameId = scaleChannel.targetNameId = nameId;
-                    translationChannel.path = AnimPath::Translation;
-                    rotationChannel.path   = AnimPath::Rotation;
-                    scaleChannel.path = AnimPath::Scale;
-                    translationChannel.interp = rotationChannel.interp = scaleChannel.interp = AnimInterp::Linear;
+                    AnimChannel transChan{}, rotChan{}, scaleChan{};
+                    transChan.boneIndex = rotChan.boneIndex = scaleChan.boneIndex = boneIndex;
+                    transChan.targetName = rotChan.targetName = scaleChan.targetName = targetName;
+                    transChan.targetNameId = rotChan.targetNameId = scaleChan.targetNameId = nameId;
+                    transChan.path = AnimPath::Translation;
+                    rotChan.path   = AnimPath::Rotation;
+                    scaleChan.path = AnimPath::Scale;
+                    transChan.interp = rotChan.interp = scaleChan.interp = AnimInterp::Linear;
 
-                    translationChannel.keys.reserve(bakedNode.translation_keys.count);
-                    rotationChannel.keys.reserve(bakedNode.rotation_keys.count);
-                    scaleChannel.keys.reserve(bakedNode.scale_keys.count);
+                    transChan.keys.reserve(bakedNode.translation_keys.count);
+                    rotChan.keys.reserve(bakedNode.rotation_keys.count);
+                    scaleChan.keys.reserve(bakedNode.scale_keys.count);
 
-                    for (const ufbx_baked_vec3& translationKey : bakedNode.translation_keys)
+                    for (const ufbx_baked_vec3& tk : bakedNode.translation_keys)
                     {
-                        AnimKeyframe keyframe{};
-                        InitializeDefaultKeyframe(keyframe);
-                        keyframe.time = static_cast<float32>(translationKey.time);
-                        const ufbx_vec3 convertedTranslation =
-                            FbxImport::ConvertVec3(translationKey.value, axisConversion, unitScale);
-                        keyframe.translation[0] = static_cast<float32>(convertedTranslation.x);
-                        keyframe.translation[1] = static_cast<float32>(convertedTranslation.y);
-                        keyframe.translation[2] = static_cast<float32>(convertedTranslation.z);
-                        translationChannel.keys.push_back(keyframe);
+                        AnimKeyframe k{};
+                        InitializeDefaultKeyframe(k);
+                        k.time = static_cast<float32>(tk.time);
+                        const ufbx_vec3 convertedT =
+                            FbxImport::ConvertVec3(tk.value, axisConversion, unitScale);
+                        k.translation[0] = static_cast<float32>(convertedT.x);
+                        k.translation[1] = static_cast<float32>(convertedT.y);
+                        k.translation[2] = static_cast<float32>(convertedT.z);
+                        transChan.keys.push_back(k);
                     }
-                    for (const ufbx_baked_quat& rotationKey : bakedNode.rotation_keys)
+                    for (const ufbx_baked_quat& rk : bakedNode.rotation_keys)
                     {
-                        AnimKeyframe keyframe{};
-                        InitializeDefaultKeyframe(keyframe);
-                        keyframe.time = static_cast<float32>(rotationKey.time);
-                        const ufbx_quat convertedRotation =
-                            FbxImport::ConvertQuat(rotationKey.value, axisConversion);
-                        keyframe.rotation[0] = static_cast<float32>(convertedRotation.x);
-                        keyframe.rotation[1] = static_cast<float32>(convertedRotation.y);
-                        keyframe.rotation[2] = static_cast<float32>(convertedRotation.z);
-                        keyframe.rotation[3] = static_cast<float32>(convertedRotation.w);
-                        UfbxAnim::NormalizeQuaternionInPlace(keyframe.rotation);
-                        if (!rotationChannel.keys.empty())
-                            UfbxAnim::MakeQuaternionSignContinuous(rotationChannel.keys.back(), keyframe);
-                        rotationChannel.keys.push_back(keyframe);
+                        AnimKeyframe k{};
+                        InitializeDefaultKeyframe(k);
+                        k.time = static_cast<float32>(rk.time);
+                        const ufbx_quat convertedR =
+                            FbxImport::ConvertQuat(rk.value, axisConversion);
+                        k.rotation[0] = static_cast<float32>(convertedR.x);
+                        k.rotation[1] = static_cast<float32>(convertedR.y);
+                        k.rotation[2] = static_cast<float32>(convertedR.z);
+                        k.rotation[3] = static_cast<float32>(convertedR.w);
+                        UfbxAnim::NormalizeQuaternionInPlace(k.rotation);
+                        if (!rotChan.keys.empty())
+                            UfbxAnim::MakeQuaternionSignContinuous(rotChan.keys.back(), k);
+                        rotChan.keys.push_back(k);
                     }
-                    for (const ufbx_baked_vec3& scaleKey : bakedNode.scale_keys)
+                    for (const ufbx_baked_vec3& sk : bakedNode.scale_keys)
                     {
-                        AnimKeyframe keyframe{};
-                        InitializeDefaultKeyframe(keyframe);
-                        keyframe.time = static_cast<float32>(scaleKey.time);
-                        const ufbx_vec3 convertedScale =
-                            FbxImport::ConvertScale(scaleKey.value, axisConversion);
-                        keyframe.scale[0] = static_cast<float32>(convertedScale.x);
-                        keyframe.scale[1] = static_cast<float32>(convertedScale.y);
-                        keyframe.scale[2] = static_cast<float32>(convertedScale.z);
-                        scaleChannel.keys.push_back(keyframe);
+                        AnimKeyframe k{};
+                        InitializeDefaultKeyframe(k);
+                        k.time = static_cast<float32>(sk.time);
+                        const ufbx_vec3 convertedS =
+                            FbxImport::ConvertScale(sk.value, axisConversion);
+                        k.scale[0] = static_cast<float32>(convertedS.x);
+                        k.scale[1] = static_cast<float32>(convertedS.y);
+                        k.scale[2] = static_cast<float32>(convertedS.z);
+                        scaleChan.keys.push_back(k);
                     }
 
-                    if (!translationChannel.keys.empty()) m_Channels.push_back(std::move(translationChannel));
-                    if (!rotationChannel.keys.empty())   m_Channels.push_back(std::move(rotationChannel));
-                    if (!scaleChannel.keys.empty()) m_Channels.push_back(std::move(scaleChannel));
+                    if (!transChan.keys.empty()) m_Channels.push_back(std::move(transChan));
+                    if (!rotChan.keys.empty())   m_Channels.push_back(std::move(rotChan));
+                    if (!scaleChan.keys.empty()) m_Channels.push_back(std::move(scaleChan));
                 }
                 for (const ufbx_baked_element& bakedElement : baked->elements)
                 {
@@ -857,23 +844,23 @@ bool AnimationClip::LoadSourceData(const Vector<uint8>& input)
                         if (propName != UFBX_DeformPercent || bakedProp.keys.count == 0)
                             continue;
 
-                        AnimChannel morphChannel{};
-                        morphChannel.boneIndex = bindingIt->second.nodeIndex;
-                        morphChannel.targetName = bindingIt->second.name;
-                        morphChannel.targetNameId = morphChannel.targetName.empty() ? 0u : HashStringId(morphChannel.targetName);
-                        morphChannel.path = AnimPath::MorphWeight;
-                        morphChannel.interp = AnimInterp::Linear;
-                        morphChannel.keys.reserve(bakedProp.keys.count);
+                        AnimChannel morphChan{};
+                        morphChan.boneIndex = bindingIt->second.nodeIndex;
+                        morphChan.targetName = bindingIt->second.name;
+                        morphChan.targetNameId = morphChan.targetName.empty() ? 0u : HashStringId(morphChan.targetName);
+                        morphChan.path = AnimPath::MorphWeight;
+                        morphChan.interp = AnimInterp::Linear;
+                        morphChan.keys.reserve(bakedProp.keys.count);
                         for (const ufbx_baked_vec3& key : bakedProp.keys)
                         {
                             AnimKeyframe outKey{};
                             InitializeDefaultKeyframe(outKey);
                             outKey.time = static_cast<float32>(key.time);
                             outKey.translation[0] = static_cast<float32>(key.value.x / 100.0);
-                            morphChannel.keys.push_back(outKey);
+                            morphChan.keys.push_back(outKey);
                         }
-                        if (!morphChannel.keys.empty())
-                            m_Channels.push_back(std::move(morphChannel));
+                        if (!morphChan.keys.empty())
+                            m_Channels.push_back(std::move(morphChan));
                     }
                 }
                 ufbx_free_baked_anim(baked);
@@ -887,31 +874,31 @@ bool AnimationClip::LoadSourceData(const Vector<uint8>& input)
             // arc, collapsing apparent motion at sample time.
             uint32 totalNegPairs = 0;
             uint32 channelsWithNegPairs = 0;
-            for (const AnimChannel& channel : m_Channels)
+            for (const AnimChannel& ch : m_Channels)
             {
-                if (channel.path != AnimPath::Rotation || channel.keys.size() < 2) continue;
+                if (ch.path != AnimPath::Rotation || ch.keys.size() < 2) continue;
                 float maxAngle = 0.0f;
-                const auto& k0 = channel.keys.front();
+                const auto& k0 = ch.keys.front();
                 const float w0_ = k0.rotation[3];
                 const float x0_ = k0.rotation[0];
                 const float y0_ = k0.rotation[1];
                 const float z0_ = k0.rotation[2];
                 float minConsecDot = 1.0f;
                 uint32 negPairs = 0;
-                for (size_t keyIndex = 0; keyIndex < channel.keys.size(); ++keyIndex)
+                for (size_t i = 0; i < ch.keys.size(); ++i)
                 {
-                    const auto& keyframe = channel.keys[keyIndex];
+                    const auto& k = ch.keys[i];
                     // q = inv(k0) * k. Quaternion conjugate inv: (-x,-y,-z,w)
-                    const float w_ = w0_*keyframe.rotation[3] + x0_*keyframe.rotation[0] + y0_*keyframe.rotation[1] + z0_*keyframe.rotation[2];
-                    const float w_clamped = std::min(std::max(std::abs(w_), 0.0f), 1.0f);
+                    const float w_ = w0_*k.rotation[3] + x0_*k.rotation[0] + y0_*k.rotation[1] + z0_*k.rotation[2];
+                    const float w_clamped = Math::Clamp01(std::abs(w_));
                     const float ang = 2.0f * std::acos(w_clamped) * 57.29577951f;
                     if (ang > maxAngle) maxAngle = ang;
 
-                    if (keyIndex > 0)
+                    if (i > 0)
                     {
-                        const auto& kp = channel.keys[keyIndex - 1];
-                        const float d = kp.rotation[0]*keyframe.rotation[0] + kp.rotation[1]*keyframe.rotation[1]
-                                      + kp.rotation[2]*keyframe.rotation[2] + kp.rotation[3]*keyframe.rotation[3];
+                        const auto& kp = ch.keys[i - 1];
+                        const float d = kp.rotation[0]*k.rotation[0] + kp.rotation[1]*k.rotation[1]
+                                      + kp.rotation[2]*k.rotation[2] + kp.rotation[3]*k.rotation[3];
                         if (d < minConsecDot) minConsecDot = d;
                         if (d < 0.0f) ++negPairs;
                     }
@@ -920,7 +907,7 @@ bool AnimationClip::LoadSourceData(const Vector<uint8>& input)
                 {
                     Logger::Log::Info("  ImportRange '{}' rot maxAngle={:.1f}deg over {} keys | "
                                       "minConsecDot={:.4f} negPairs={}{}",
-                                      channel.targetName, maxAngle, channel.keys.size(),
+                                      ch.targetName, maxAngle, ch.keys.size(),
                                       minConsecDot, negPairs,
                                       negPairs > 0 ? "  <<< SIGN DISCONTINUITY >>>" : "");
                 }
@@ -974,107 +961,127 @@ bool AnimationClip::LoadSourceData(const Vector<uint8>& input)
     return success;
 }
 
-bool AnimationClip::LoadEditableData(const Vector<uint8>& data)
+bool AnimationClip::LoadEditableData(std::span<const uint8> data)
 {
-    try
+    const std::string text(reinterpret_cast<const char*>(data.data()), data.size());
+    json document;
+    std::string parseError;
+    if (!Serialization::ParseJson(text, document, parseError))
+        return RefuseEditableData(std::format("it is not JSON ({}); fix the text at that place", parseError));
+    if (!document.is_object())
+        return RefuseEditableData("its JSON is not an object; an .anim file is a JSON object");
+
+    m_Channels.clear();
+    m_Settings = {};
+    m_EventTrack = {};
+    Serialization::JsonFieldReader reader;
+    m_Duration = 0.0f;
+    reader.Read(document, "duration", m_Duration);
+    m_SelectedAnimation = 0u;
+    reader.Read(document, "selectedAnimationIndex", m_SelectedAnimation);
+
+    m_SourcePath.clear();
+    m_SourceAnimationIndex = 0u;
+    if (document.contains("source") && document["source"].is_object())
     {
-        const std::string text(reinterpret_cast<const char*>(data.data()), data.size());
-        const json document = json::parse(text);
-        m_Channels.clear();
-        m_Settings = {};
-        m_EventTrack = {};
-        m_Duration = document.value("duration", 0.0f);
-        m_SelectedAnimation = document.value("selectedAnimationIndex", 0u);
+        const json& source = document["source"];
+        reader.SetContext("source.");
+        std::string sourcePath;
+        reader.Read(source, "path", sourcePath);
+        m_SourcePath = sourcePath;
+        reader.Read(source, "animationIndex", m_SourceAnimationIndex);
+    }
 
-        if (document.contains("source") && document["source"].is_object())
+    if (document.contains("channels") && document["channels"].is_array())
+    {
+        const json& channels = document["channels"];
+        for (size_t channelIndex = 0; channelIndex < channels.size(); ++channelIndex)
         {
-            const json& source = document["source"];
-            m_SourcePath = source.value("path", std::string{});
-            m_SourceAnimationIndex = source.value("animationIndex", 0u);
-        }
-        else
-        {
-            m_SourcePath.clear();
-            m_SourceAnimationIndex = 0u;
-        }
+            const json& channelJson = channels[channelIndex];
+            const std::string channelContext = std::format("channels[{}].", channelIndex);
+            reader.SetContext(channelContext);
+            AnimChannel channel{};
+            channel.boneIndex = 0u;
+            reader.Read(channelJson, "boneIndex", channel.boneIndex);
+            reader.Read(channelJson, "targetName", channel.targetName);
+            channel.targetNameId = channel.targetName.empty() ? 0u : HashStringId(channel.targetName);
+            std::string path = "Translation";
+            std::string interpolation = "Linear";
+            std::string preInfinity = "Constant";
+            std::string postInfinity = "Constant";
+            reader.Read(channelJson, "path", path);
+            reader.Read(channelJson, "interpolation", interpolation);
+            reader.Read(channelJson, "preInfinity", preInfinity);
+            reader.Read(channelJson, "postInfinity", postInfinity);
+            channel.path = ParseAnimPath(path);
+            channel.interp = ParseAnimInterp(interpolation);
+            channel.preInfinity = ParseAnimExtrapolation(preInfinity);
+            channel.postInfinity = ParseAnimExtrapolation(postInfinity);
 
-        if (document.contains("channels") && document["channels"].is_array())
-        {
-            for (const json& channelJson : document["channels"])
+            if (channelJson.is_object() && channelJson.contains("keys") && channelJson["keys"].is_array())
             {
-                AnimChannel channel{};
-                channel.boneIndex = channelJson.value("boneIndex", 0u);
-                channel.targetName = channelJson.value("targetName", String{});
-                channel.targetNameId = channel.targetName.empty() ? 0u : HashStringId(channel.targetName);
-                channel.path = ParseAnimPath(channelJson.value("path", std::string{"Translation"}));
-                channel.interp = ParseAnimInterp(channelJson.value("interpolation", std::string{"Linear"}));
-                channel.preInfinity  = ParseAnimExtrapolation(channelJson.value("preInfinity",  std::string{"Constant"}));
-                channel.postInfinity = ParseAnimExtrapolation(channelJson.value("postInfinity", std::string{"Constant"}));
-
-                if (channelJson.contains("keys") && channelJson["keys"].is_array())
+                const json& keys = channelJson["keys"];
+                for (size_t keyIndex = 0; keyIndex < keys.size(); ++keyIndex)
                 {
-                    for (const json& keyJson : channelJson["keys"])
+                    const json& keyJson = keys[keyIndex];
+                    reader.SetContext(std::format("{}keys[{}].", channelContext, keyIndex));
+                    AnimKeyframe keyframe{};
+                    InitializeDefaultKeyframe(keyframe);
+                    keyframe.time = 0.0f;
+                    reader.Read(keyJson, "time", keyframe.time);
+                    if (!keyJson.is_object())
+                        continue;
+                    DeserializeFloatArray(keyJson, "translation", keyframe.translation, 3u, reader);
+                    DeserializeFloatArray(keyJson, "rotation", keyframe.rotation, 4u, reader);
+                    DeserializeFloatArray(keyJson, "scale", keyframe.scale, 3u, reader);
+                    DeserializeFloatArray(keyJson, "inTangent", keyframe.inTangent, 4u, reader);
+                    DeserializeFloatArray(keyJson, "outTangent", keyframe.outTangent, 4u, reader);
+                    DeserializeFloatArray(keyJson, "inWeight", keyframe.inWeight, 4u, reader);
+                    DeserializeFloatArray(keyJson, "outWeight", keyframe.outWeight, 4u, reader);
+                    for (uint32 componentIndex = 0; componentIndex < 4u; ++componentIndex)
                     {
-                        AnimKeyframe keyframe{};
-                        InitializeDefaultKeyframe(keyframe);
-                        keyframe.time = keyJson.value("time", 0.0f);
-                        DeserializeFloatArray(keyJson, "translation", keyframe.translation, 3u);
-                        DeserializeFloatArray(keyJson, "rotation", keyframe.rotation, 4u);
-                        DeserializeFloatArray(keyJson, "scale", keyframe.scale, 3u);
-                        DeserializeFloatArray(keyJson, "inTangent", keyframe.inTangent, 4u);
-                        DeserializeFloatArray(keyJson, "outTangent", keyframe.outTangent, 4u);
-                        DeserializeFloatArray(keyJson, "inWeight", keyframe.inWeight, 4u);
-                        DeserializeFloatArray(keyJson, "outWeight", keyframe.outWeight, 4u);
-                        for (uint32 componentIndex = 0; componentIndex < 4u; ++componentIndex)
-                        {
-                            keyframe.inWeight[componentIndex] = ClampTangentWeight(keyframe.inWeight[componentIndex]);
-                            keyframe.outWeight[componentIndex] = ClampTangentWeight(keyframe.outWeight[componentIndex]);
-                        }
-                        if (keyJson.contains("inTangentType") && keyJson["inTangentType"].is_array())
-                        {
-                            const auto& arr = keyJson["inTangentType"];
-                            for (size_t ci = 0; ci < 4u && ci < arr.size(); ++ci)
-                                keyframe.inTangentType[ci] = ParseAnimTangentType(arr[ci].get<std::string>());
-                        }
-                        if (keyJson.contains("outTangentType") && keyJson["outTangentType"].is_array())
-                        {
-                            const auto& arr = keyJson["outTangentType"];
-                            for (size_t ci = 0; ci < 4u && ci < arr.size(); ++ci)
-                                keyframe.outTangentType[ci] = ParseAnimTangentType(arr[ci].get<std::string>());
-                        }
-                        if (keyJson.contains("tangentBroken") && keyJson["tangentBroken"].is_number_unsigned())
-                            keyframe.tangentBroken = keyJson["tangentBroken"].get<uint8>();
-                        if (keyJson.contains("segmentInterp") && keyJson["segmentInterp"].is_string())
-                        {
-                            keyframe.segmentInterp = ParseAnimInterp(keyJson["segmentInterp"].get<std::string>());
-                            keyframe.hasSegmentInterpOverride = true;
-                        }
-                        channel.keys.push_back(keyframe);
+                        keyframe.inWeight[componentIndex] = ClampTangentWeight(keyframe.inWeight[componentIndex]);
+                        keyframe.outWeight[componentIndex] = ClampTangentWeight(keyframe.outWeight[componentIndex]);
                     }
+                    DeserializeTangentTypes(keyJson, "inTangentType", keyframe.inTangentType, reader);
+                    DeserializeTangentTypes(keyJson, "outTangentType", keyframe.outTangentType, reader);
+                    if (keyJson.contains("tangentBroken") && keyJson["tangentBroken"].is_number_unsigned())
+                        keyframe.tangentBroken = keyJson["tangentBroken"].get<uint8>();
+                    if (keyJson.contains("segmentInterp") && keyJson["segmentInterp"].is_string())
+                    {
+                        keyframe.segmentInterp = ParseAnimInterp(keyJson["segmentInterp"].get<std::string>());
+                        keyframe.hasSegmentInterpOverride = true;
+                    }
+                    channel.keys.push_back(keyframe);
                 }
-
-                std::sort(channel.keys.begin(), channel.keys.end(),
-                          [](const AnimKeyframe& left, const AnimKeyframe& right)
-                          {
-                              return left.time < right.time;
-                          });
-                m_Channels.push_back(std::move(channel));
             }
-        }
 
-        RecomputeDuration();
-        return true;
+            std::sort(channel.keys.begin(), channel.keys.end(),
+                      [](const AnimKeyframe& left, const AnimKeyframe& right)
+                      {
+                          return left.time < right.time;
+                      });
+            m_Channels.push_back(std::move(channel));
+        }
     }
-    catch (const std::exception& e)
-    {
-        Logger::Log::Error("AnimationClip: failed to parse .anim '{}': {}", GetPath().string(), e.what());
-        return false;
-    }
+
+    if (reader.Refused())
+        return RefuseEditableData(reader.Refusal());
+    RecomputeDuration();
+    return true;
+}
+
+bool AnimationClip::RefuseEditableData(std::string_view reason)
+{
+    Logger::Log::Error("AnimationClip: '{}' is not loaded: {}", GetPath().generic_string(), reason);
+    m_Channels.clear();
+    m_Duration = 0.0f;
+    return false;
 }
 
 bool AnimationClip::IsEditable() const
 {
-    const std::string extension = NormalizeExtension(GetExtension());
+    const std::string extension = LowerCaseExtension(GetPath());
     return extension == ".anim" || extension == ".animation" || GetPath().empty();
 }
 
@@ -1086,16 +1093,11 @@ void AnimationClip::SetSourceInfo(const std::filesystem::path& sourcePath, uint3
 
 void AnimationClip::CopyFrom(const AnimationClip& other)
 {
-    if (this == &other)
-        return;
-    std::scoped_lock lock(m_AuthoringMutex, other.m_AuthoringMutex);
     m_SelectedAnimation = other.m_SelectedAnimation;
     m_SourcePath = other.m_SourcePath;
     m_SourceAnimationIndex = other.m_SourceAnimationIndex;
     m_Duration = other.m_Duration;
-    std::vector<AnimChannel>().swap(m_Channels);
-    std::atomic_store_explicit(&m_RuntimeData, other.GetRuntimeData(), std::memory_order_release);
-    m_PublishedDuration = m_Duration;
+    m_Channels = other.m_Channels;
     m_Settings = {};
     m_EventTrack = {};
     SetState(other.GetState());
@@ -1103,20 +1105,13 @@ void AnimationClip::CopyFrom(const AnimationClip& other)
 
 void AnimationClip::SetChannelsAndDurationForTest(const std::vector<AnimChannel>& channels, float32 duration)
 {
-    auto runtime = AnimationClipData::Build(channels);
-    if (!runtime)
-        return;
-    std::lock_guard lock(m_AuthoringMutex);
-    std::vector<AnimChannel>().swap(m_Channels);
-    std::atomic_store_explicit(&m_RuntimeData, std::move(runtime), std::memory_order_release);
+    m_Channels = channels;
     m_Duration = duration;
-    m_PublishedDuration = duration;
     SetState(AssetState::Loaded);
 }
 
 bool AnimationClip::SetKeyframeTime(size_t channelIndex, float currentTime, float newTime)
 {
-    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1132,12 +1127,11 @@ bool AnimationClip::SetKeyframeTime(size_t channelIndex, float currentTime, floa
                   return left.time < right.time;
               });
     RecomputeDuration();
-    return RebuildRuntimeData();
+    return true;
 }
 
 bool AnimationClip::SetKeyframeComponentValue(size_t channelIndex, float currentTime, uint32 componentIndex, float value)
 {
-    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1168,12 +1162,11 @@ bool AnimationClip::SetKeyframeComponentValue(size_t channelIndex, float current
         }
     }
 
-    return RebuildRuntimeData();
+    return true;
 }
 
 bool AnimationClip::SetKeyframeTangent(size_t channelIndex, float currentTime, uint32 componentIndex, bool incoming, float tangent, float weight)
 {
-    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1196,12 +1189,11 @@ bool AnimationClip::SetKeyframeTangent(size_t channelIndex, float currentTime, u
         channel.keys[keyIndex].outWeight[componentIndex] = ClampTangentWeight(weight);
     }
 
-    return RebuildRuntimeData();
+    return true;
 }
 
 bool AnimationClip::AddKeyframe(size_t channelIndex, float time)
 {
-    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1255,12 +1247,11 @@ bool AnimationClip::AddKeyframe(size_t channelIndex, float time)
     }
 
     RecomputeDuration();
-    return RebuildRuntimeData();
+    return true;
 }
 
 bool AnimationClip::AddKeyframeWithData(size_t channelIndex, const AnimKeyframe& keyframe)
 {
-    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1275,12 +1266,11 @@ bool AnimationClip::AddKeyframeWithData(size_t channelIndex, const AnimKeyframe&
                   return left.time < right.time;
               });
     RecomputeDuration();
-    return RebuildRuntimeData();
+    return true;
 }
 
 bool AnimationClip::DuplicateKeyframe(size_t channelIndex, float currentTime, float newTime)
 {
-    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1298,12 +1288,11 @@ bool AnimationClip::DuplicateKeyframe(size_t channelIndex, float currentTime, fl
                   return left.time < right.time;
               });
     RecomputeDuration();
-    return RebuildRuntimeData();
+    return true;
 }
 
 bool AnimationClip::RemoveKeyframe(size_t channelIndex, float currentTime)
 {
-    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1314,33 +1303,30 @@ bool AnimationClip::RemoveKeyframe(size_t channelIndex, float currentTime)
 
     channel.keys.erase(channel.keys.begin() + static_cast<std::ptrdiff_t>(keyIndex));
     RecomputeDuration();
-    return RebuildRuntimeData();
+    return true;
 }
 
 bool AnimationClip::SetChannelInterpolation(size_t channelIndex, AnimInterp interpolation)
 {
-    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
     m_Channels[channelIndex].interp = interpolation;
-    return RebuildRuntimeData();
+    return true;
 }
 
 bool AnimationClip::SetChannelExtrapolation(size_t channelIndex, AnimExtrapolation pre, AnimExtrapolation post)
 {
-    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
     m_Channels[channelIndex].preInfinity  = pre;
     m_Channels[channelIndex].postInfinity = post;
-    return RebuildRuntimeData();
+    return true;
 }
 
 bool AnimationClip::SetKeyframeTangentType(size_t channelIndex, float keyTime, uint32 componentIndex, bool incoming, AnimTangentType type)
 {
-    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1356,12 +1342,11 @@ bool AnimationClip::SetKeyframeTangentType(size_t channelIndex, float keyTime, u
         channel.keys[keyIndex].inTangentType[componentIndex] = type;
     else
         channel.keys[keyIndex].outTangentType[componentIndex] = type;
-    return RebuildRuntimeData();
+    return true;
 }
 
 bool AnimationClip::SetKeyframeTangentBroken(size_t channelIndex, float keyTime, uint32 componentIndex, bool broken)
 {
-    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1378,12 +1363,11 @@ bool AnimationClip::SetKeyframeTangentBroken(size_t channelIndex, float keyTime,
         channel.keys[keyIndex].tangentBroken |= bit;
     else
         channel.keys[keyIndex].tangentBroken &= static_cast<uint8>(~bit);
-    return RebuildRuntimeData();
+    return true;
 }
 
 bool AnimationClip::SetKeyframeSegmentInterp(size_t channelIndex, float keyTime, AnimInterp interp)
 {
-    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
     AnimChannel& channel = m_Channels[channelIndex];
@@ -1392,12 +1376,11 @@ bool AnimationClip::SetKeyframeSegmentInterp(size_t channelIndex, float keyTime,
         return false;
     channel.keys[keyIndex].segmentInterp = interp;
     channel.keys[keyIndex].hasSegmentInterpOverride = true;
-    return RebuildRuntimeData();
+    return true;
 }
 
 bool AnimationClip::ResampleBakedChannelToCurve(size_t channelIndex)
 {
-    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1415,7 +1398,7 @@ bool AnimationClip::ResampleBakedChannelToCurve(size_t channelIndex)
 
         channel.interp = AnimInterp::Linear;
         RecomputeDuration();
-        return RebuildRuntimeData();
+        return true;
     }
 
     if (channel.interp != AnimInterp::Step && channel.interp != AnimInterp::Linear)
@@ -1464,12 +1447,11 @@ bool AnimationClip::ResampleBakedChannelToCurve(size_t channelIndex)
     }
 
     RecomputeDuration();
-    return RebuildRuntimeData();
+    return true;
 }
 
 size_t AnimationClip::FindOrAddChannel(uint32 boneIndex, const String& targetName, AnimPath path)
 {
-    GetChannels();
     for (size_t index = 0; index < m_Channels.size(); ++index)
     {
         if (m_Channels[index].boneIndex == boneIndex && m_Channels[index].path == path)
@@ -1478,8 +1460,6 @@ size_t AnimationClip::FindOrAddChannel(uint32 boneIndex, const String& targetNam
             {
                 m_Channels[index].targetName = targetName;
                 m_Channels[index].targetNameId = HashStringId(targetName);
-                if (!RebuildRuntimeData())
-                    return std::numeric_limits<size_t>::max();
             }
             return index;
         }
@@ -1492,7 +1472,7 @@ size_t AnimationClip::FindOrAddChannel(uint32 boneIndex, const String& targetNam
     channel.path = path;
     channel.interp = AnimInterp::Linear;
     m_Channels.push_back(std::move(channel));
-    return RebuildRuntimeData() ? m_Channels.size() - 1u : std::numeric_limits<size_t>::max();
+    return m_Channels.size() - 1u;
 }
 
 bool AnimationClip::SaveToPath(const std::filesystem::path& path) const
@@ -1534,7 +1514,7 @@ bool AnimationClip::SaveToData(Vector<uint8>& outData) const
         }
 
         json channels = json::array();
-        for (const AnimChannel& channel : GetChannels())
+        for (const AnimChannel& channel : m_Channels)
         {
             json keys = json::array();
             for (const AnimKeyframe& keyframe : channel.keys)
@@ -1568,13 +1548,15 @@ bool AnimationClip::SaveToData(Vector<uint8>& outData) const
 
 bool AnimationClip::RestoreFromData(const Vector<uint8>& data)
 {
-    AnimationClip loaded(GetGUID(), GetPath());
-    if (!loaded.LoadEditableData(data))
+    const AssetState previousState = GetState();
+    SetState(AssetState::Loading);
+    if (!LoadEditableData(data))
+    {
+        SetState(previousState);
         return false;
-    auto runtime = AnimationClipData::Build(loaded.m_Channels);
-    if (!runtime)
-        return false;
-    AdoptLoadedData(loaded, std::move(runtime));
+    }
+
+    SetState(AssetState::Loaded);
     return true;
 }
 
@@ -1593,11 +1575,8 @@ void AnimationClip::RecomputeDuration()
 
 void AnimationClip::Unload()
 {
-    std::lock_guard lock(m_AuthoringMutex);
-    std::vector<AnimChannel>().swap(m_Channels);
-    std::atomic_store_explicit(&m_RuntimeData, SharedPtr<const AnimationClipData>{}, std::memory_order_release);
+    m_Channels.clear();
     m_Duration = 0.0f;
-    m_PublishedDuration = 0.0f;
     m_Settings = {};
     m_EventTrack = {};
     SetState(AssetState::Unloaded);
@@ -1608,7 +1587,7 @@ std::vector<std::string> AnimationClip::EnumerateAnimationNames() const
     if (GetPath().empty())
         return {};
 
-    const std::string extension = NormalizeExtension(GetPath().extension().string());
+    const std::string extension = LowerCaseExtension(GetPath());
     if (extension == ".anim" || extension == ".animation")
     {
         const std::string stem = GetPath().stem().string();
@@ -1616,11 +1595,11 @@ std::vector<std::string> AnimationClip::EnumerateAnimationNames() const
     }
 
 #if defined(GE_HAVE_CGLTF)
-    if ((extension == ".gltf" || extension == ".glb") && !m_CachedFileData.empty())
+    if ((extension == ".gltf" || extension == ".glb") && m_CachedFileData.Size() != 0)
     {
         cgltf_options options{};
         cgltf_data* gltf = nullptr;
-        if (cgltf_parse(&options, m_CachedFileData.data(), m_CachedFileData.size(), &gltf) == cgltf_result_success && gltf)
+        if (cgltf_parse(&options, m_CachedFileData.Data(), m_CachedFileData.Size(), &gltf) == cgltf_result_success && gltf)
         {
             std::vector<std::string> names;
             names.reserve(gltf->animations_count);

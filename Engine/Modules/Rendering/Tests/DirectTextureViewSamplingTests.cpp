@@ -5,7 +5,7 @@
 #include "TestUtils.h"
 
 #include "RenderDocShim.h"
-#include "../Source/Vulkan/VulkanDevice.h"
+#include "../Source/Vulkan/VulkanDevice/VulkanDevice.h"
 #include <cstdlib>
 #ifdef _WIN32
 #include <windows.h>

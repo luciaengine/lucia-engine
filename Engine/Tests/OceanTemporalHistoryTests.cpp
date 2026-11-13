@@ -8,11 +8,13 @@
 #include "Ocean/OceanFrameStamp.h"
 #include "Ocean/OceanShadowSim.h"
 #include "Ocean/OceanTypes.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "TestTempDir.h"
+#include "TestCameraEye.h"
+#include "TestDeviceHelper.h"
 
 #include <cmath>
 #include <cstring>
@@ -141,7 +143,7 @@ struct ShadowViewDeclaration
     {
         target.BeginFrame(index);
         Data.cameraPos[0] = cameraX;
-        Services.Views().SetCameraData(Camera, Data);
+        Services.Views().SetCameraData(Camera, ::GameEngine::Tests::TestCameraWithEye(Data), {0.1f, 1000.0f});
         const auto color = target.ImportPersistentTexture("OceanShadow.Color",
             TargetDesc(TextureFormat::RGBA8_UNORM, static_cast<uint32_t>(TextureUsage::RenderTarget)));
         const auto depth = target.ImportPersistentTexture("OceanShadow.Depth",
@@ -218,19 +220,16 @@ void CheckShadowHistory(GraphicsAPI api, bool checkRecovery)
         ASSERT_TRUE(rs.Initialize(device.get()));
         const CameraId cameraId = rs.Views().AllocateCamera("OceanShadowCamera");
         CameraData camera{};
-        camera.proj[0] = 1.0f;
-        camera.proj[5] = 1.0f;
-        camera.proj[10] = 0.001f;
-        camera.proj[11] = 1.0f;
-        camera.proj[14] = 0.1f;
-        for (int i = 0; i < 16; i += 5)
-        {
-            camera.view[i] = 1.0f;
-            camera.viewProj[i] = 1.0f;
-        }
-        rs.Views().SetCameraData(cameraId, camera);
+        camera.proj[0][0] = 1.0f;
+        camera.proj[1][1] = 1.0f;
+        camera.proj[2][2] = 0.001f;
+        camera.proj[2][3] = 1.0f;
+        camera.proj[3][2] = 0.1f;
+        camera.view = Mathematics::Matrix4x4::Identity();
+        camera.viewProj = Mathematics::Matrix4x4::Identity();
+        rs.Views().SetCameraData(cameraId, ::GameEngine::Tests::TestCameraWithEye(camera), {0.1f, 1000.0f});
         const ViewId viewId = rs.Views().AllocateView("OceanShadowView", cameraId);
-        rs.Views().SetViewRenderLayerMask(viewId, 1u);
+        rs.Views().SetViewRenderLayerMask(viewId, Rendering::RenderLayerMask::Default());
         ViewClearConfig clear{};
         clear.clearColor = true;
         clear.clearDepth = true;
@@ -424,7 +423,7 @@ void CheckShadowHistory(GraphicsAPI api, bool checkRecovery)
             late.Value[0] = late.Value[1] = 1.0f;
             sim.SetInputs({late});
             camera.cameraPos[0] = 2048.0f;
-            rs.Views().SetCameraData(cameraId, camera);
+            rs.Views().SetCameraData(cameraId, ::GameEngine::Tests::TestCameraWithEye(camera), {0.1f, 1000.0f});
             ASSERT_TRUE(sim.FillSampling(viewId, frame, sampling));
             EXPECT_FLOAT_EQ(sampling.Layout.CascadeOriginScale[0][0], -32.0f);
             frame.Execute();

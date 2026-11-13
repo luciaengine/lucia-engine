@@ -18,7 +18,7 @@ struct OceanRibbonStyle
     float Width = 1, FlowSpeed = 0, Depth = 0, Feather = 0, UnderwaterDepth = 0, DepthFeather = 0;
     // Depth at which every shallow term saturates; the depth band ramps from it.
     float DepthSaturation = 0;
-    float Color[4]{};
+    ColorLinear Color{0.0f, 0.0f, 0.0f, 0.0f};
     uint32 Flags = 0; // depth=1, flow=2, clip=4, albedo=8, confine=16, underwater=32
     uint32 Id = 0;
 };
@@ -27,10 +27,10 @@ struct OceanRibbonStyle
 // (1 - |cross|) * width is the signed distance inside the true edge.
 struct alignas(16) OceanRibbonTriangleGPU
 {
-    float A[4]{}, B[4]{}, C[4]{};             // x,z,signed cross-ribbon coordinate,y
-    float FlowA[4]{}, FlowB[4]{}, FlowC[4]{}; // FlowA.z depth feather, FlowA.w depth saturation, FlowB.z apron
-    float Color[4]{};
-    float Values[4]{}; // width, depth, feather, underwater depth
+    Mathematics::Vector4 A, B, C;             // x,z,signed cross-ribbon coordinate,y
+    Mathematics::Vector4 FlowA, FlowB, FlowC; // FlowA.z depth feather, FlowA.w depth saturation, FlowB.z apron
+    ColorLinear Color{0.0f, 0.0f, 0.0f, 0.0f};
+    Mathematics::Vector4 Values; // width, depth, feather, underwater depth
     uint32 Meta[4]{};  // flags, ribbon id, pad
 };
 static_assert(sizeof(OceanRibbonTriangleGPU) == 144);
@@ -41,10 +41,10 @@ static_assert(sizeof(OceanRibbonTriangleGPU) == 144);
 std::vector<OceanRibbonTriangleGPU> BuildOceanRibbon(const std::vector<OceanRibbonPoint> &points,
                                                      const OceanRibbonStyle &style);
 // Barycentrics of (x, z) in the triangle, apron included; false outside it.
-bool SampleOceanRibbonTriangle(const OceanRibbonTriangleGPU &triangle, float x, float z, float bary[3]);
+bool SampleOceanRibbonTriangle(const OceanRibbonTriangleGPU &triangle, float x, float z, Mathematics::Vector3 &bary);
 // Signed distance (meters) inside the ribbon's true edge at barycentrics `bary`;
 // negative in the apron.
-float OceanRibbonEdgeDistance(const OceanRibbonTriangleGPU &triangle, const float bary[3]);
+float OceanRibbonEdgeDistance(const OceanRibbonTriangleGPU &triangle, const Mathematics::Vector3 &bary);
 class OceanSplineRaster
 {
   public:
@@ -120,10 +120,10 @@ class OceanSplineRaster
     std::vector<OceanRibbonTriangleGPU> m_UnderwaterTree;
     // XZ bounds (min x, min z, max x, max z) of the surface-carrying ribbons
     // (flag 16), kept by SetTriangles and RebaseOrigin.
-    float m_SurfaceBounds[4] = {};
+    Mathematics::Vector4 m_SurfaceBounds;
     bool m_HasSurfaceBounds = false;
     // Same for the clip-field ribbons (flag 4), kept by SetTriangles and RebaseOrigin.
-    float m_ClipBounds[4] = {};
+    Mathematics::Vector4 m_ClipBounds;
     bool m_HasClipBounds = false;
     std::array<Rendering::ComputePipelineId, 4> m_Pipelines{};
     std::array<bool, 4> m_LoadFailed{};

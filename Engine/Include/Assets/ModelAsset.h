@@ -4,21 +4,24 @@
 #include "AssetCore/GUID.h"
 #include "Assets/FbxLoaderOptions.h"
 #include "Assets/ModelExtras.h"
+#include "Types/ByteBuffer.h"
 #include "Types/Types.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <filesystem>
 #include <memory>
+#include <mutex>
+#include <span>
 #include <string_view>
 #include <utility>
 
 namespace GameEngine {
 
 class AssetManager;
-class ModelBoneLOD;
 struct ModelAssetFbxTestAccess;
 namespace Animation { struct SkeletonData; class AnimationClip; }
+struct AssetDecodeInput;
 
 /**
  * @brief Model format types
@@ -232,13 +235,11 @@ struct Mesh {
     }
 };
 
-// Writes sourceMesh's vertices with the first weightCount morph targets applied into outVertices,
-// which ends at the source vertex count; reusing one outVertices across calls keeps its storage.
-// Normals are renormalized when a target moves them, and tangents are regenerated over the whole
-// mesh when the source carries them. The mesh's other streams do not change under a morph.
-void ApplyMorphTargets(const Mesh& sourceMesh, const float* weights, size_t weightCount,
-                       Vector<Vertex>& outVertices);
+Mesh CreateMorphedMesh(const Mesh& sourceMesh, const float* weights, size_t weightCount);
 void GenerateMeshTangents(Mesh& mesh, bool forceRegenerate = false);
+// FNV-1a over every stream a GPU upload of `mesh` reads, its LODs included. MeshGPURegistry compares it to
+// find a submesh whose content changed under the same key. A hash collision keeps the old upload.
+uint64 ComputeMeshContentHash(const Mesh& mesh);
 
 /**
  * @brief glTF-compatible alpha modes
@@ -254,16 +255,19 @@ enum class AlphaMode : uint32 {
  */
 struct EmbeddedImage {
     std::string MimeType;   // "image/png", "image/jpeg", etc.
-    Vector<uint8> Data;     // Raw compressed bytes (PNG/JPEG)
+    ByteBuffer Data;        // Raw compressed bytes (PNG/JPEG)
     // Set when the image is an external file the AssetDatabase already knows:
     // materials then reference that asset by GUID (its import settings — mips,
     // compression, filtering — apply) and Data stays empty.
     GUID AssetGuid;
+    // FNV-1a 64 of Data: the key that shares one texture between models that embed the same
+    // bytes. The model load sets it on its worker, so binding a material never hashes.
+    uint64 ContentHash = 0;
 
     // True once the image can become a texture: it holds its bytes, or it names
     // the asset that holds them. A reader that waits for textures waits on this,
     // not on Data alone, which an asset-backed image never fills.
-    bool HasContent() const { return !Data.empty() || !AssetGuid.IsNull(); }
+    bool HasContent() const { return Data.Size() != 0 || !AssetGuid.IsNull(); }
 };
 
 // Prefix used in texture reference strings to indicate an embedded image index.
@@ -414,7 +418,6 @@ public:
     virtual ~ModelAsset();
 
     uint32 GetSkeletonId() const { return m_SkeletonId; }
-    const SharedPtr<const ModelBoneLOD>& GetBoneLOD() const { return m_BoneLOD; }
 
     /**
      * @brief Load model from file
@@ -424,7 +427,7 @@ public:
     /**
      * @brief Load model from memory data (for async loading)
      */
-    bool LoadFromData(const Vector<uint8>& data) override;
+    bool LoadFromData(std::span<const uint8> data) override;
 
     /**
      * @brief Unload model from memory
@@ -458,6 +461,11 @@ public:
     /** DetermineFormat on `path`'s extension (case-insensitive). */
     static ModelFormat FormatFromPath(const std::filesystem::path& path);
 
+    /** The files a decode of `bytes`, the model at `path`, reads besides them: a glTF's external buffers, each up to
+     * its largest declared byteLength, and the external images it copies (the AssetDatabase's own are referenced
+     * instead). Empty otherwise. Runs on an asset reader thread; the AssetIOService reads the files next to the model. */
+    static Vector<AssetDecodeInput> ResolveDecodeInputs(std::span<const uint8> bytes, const std::filesystem::path& path);
+
     /** FBX / glTF / GLB / Blend consume bake + engine-axis mirrors. */
     static bool UsesAxisImportOptions(ModelFormat format);
 
@@ -477,6 +485,12 @@ public:
     const Vector<Mesh>& GetMeshes() const { return m_Meshes; }
 
     /**
+     * @brief ComputeMeshContentHash of each mesh, made by the load on its worker so a GPU registration does
+     * not hash. Empty when the meshes changed after the load (GenerateLODs) or did not come from a load.
+     */
+    std::span<const uint64> GetMeshContentHashes() const { return m_MeshContentHashes; }
+
+    /**
      * @brief Test hook: install synthesized meshes without a file load and
      * mark the asset Loaded. Enables in-memory fixtures for systems that
      * resolve meshes through a ModelAsset (the morph deep-path harness) —
@@ -485,6 +499,7 @@ public:
     void SetMeshesForTest(Vector<Mesh> meshes)
     {
         m_Meshes = std::move(meshes);
+        m_MeshContentHashes.clear();
         SetState(AssetState::Loaded);
     }
 
@@ -573,9 +588,11 @@ public:
      * @brief The raw extras JSON text the import kept for the source file's scenes, nodes, meshes,
      * materials and animations, by object kind and name (glTF and GLB; empty for other formats).
      *
-     * The engine reads none of it; ModelApi.GetExtras hands it to scripts.
+     * The engine reads none of it; ModelApi.GetExtras hands it to scripts, from any thread. The
+     * snapshot is immutable and never null (an unloaded model's is empty): a reload that replaces the
+     * extras meanwhile never frees what a reader holds.
      */
-    const ModelExtras& GetExtras() const { return m_Extras; }
+    std::shared_ptr<const ModelExtras> GetExtras() const;
 
     /**
      * @brief Get total vertex count across all meshes
@@ -643,14 +660,12 @@ protected:
     bool AdoptReloadedPayload(Asset& staged) override;
 
 private:
-    void BuildBoneLOD();
-
     friend struct ModelAssetFbxTestAccess;
 
     /**
      * @brief Load OBJ model file
      */
-    bool LoadOBJ(const Vector<uint8>& data);
+    bool LoadOBJ(std::span<const uint8> data);
 
     /**
      * @brief Parse FBX bytes with explicit loader options.
@@ -658,7 +673,7 @@ private:
      * @param modelPathForExternalTextures When non-empty, used to resolve non-embedded texture paths
      *        (e.g. diffuse maps referenced by file name) relative to the FBX directory.
      */
-    bool LoadFBX(const Vector<uint8>& data,
+    bool LoadFBX(std::span<const uint8> data,
                  const std::filesystem::path& modelPathForExternalTextures,
                  const FbxLoaderOptions& loaderOptions);
 
@@ -668,7 +683,7 @@ private:
      * Bake / mirrors share ModelImport::MakeEngineConversion with LoadFBX
      * (GltfImport::SourceConversion is identity; default Mirror X is the RH→LH bake).
      */
-    bool LoadGLTF(const Vector<uint8>& data, const FbxLoaderOptions& loaderOptions);
+    bool LoadGLTF(std::span<const uint8> data, const FbxLoaderOptions& loaderOptions);
 
     /**
      * @brief Load Blender (.blend) model file via vendored fbtBlend.
@@ -682,7 +697,7 @@ private:
      *        with LoadFBX / LoadGLTF (BlendImport::SourceConversion + default
      *        Mirror X is the B_to_E map (x,y,z)->(-x,z,y)).
      */
-    bool LoadFromBlendData(const Vector<uint8>& data,
+    bool LoadFromBlendData(std::span<const uint8> data,
                            const std::filesystem::path& modelPathForExternalTextures,
                            const FbxLoaderOptions& loaderOptions);
 
@@ -757,15 +772,19 @@ private:
 private:
     ModelFormat m_Format;
     Vector<Mesh> m_Meshes;
+    Vector<uint64> m_MeshContentHashes; // one per mesh, or empty
     Vector<ImportedMaterialData> m_Materials;
     Vector<EmbeddedImage> m_EmbeddedImages;
     Vector<ImportedCameraData> m_Cameras;
     Vector<ImportedLightData> m_Lights;
     Vector<ImportedSceneNodeData> m_SceneNodes;
-    ModelExtras m_Extras;
+    // Replaced whole, never edited in place: by the load, the reload adoption and the unload,
+    // each under m_ExtrasMutex, which a reader holds only to copy the pointer.
+    std::shared_ptr<const ModelExtras> m_Extras = std::make_shared<const ModelExtras>();
+    mutable std::mutex m_ExtrasMutex;
+    void SetExtras(std::shared_ptr<const ModelExtras> extras);
     uint32 m_TotalVertexCount;
     uint32 m_TotalIndexCount;
-    SharedPtr<const ModelBoneLOD> m_BoneLOD;
     uint32 m_SkeletonId = 0;
     uint64 m_SourceContentHash = 0;
     // Hash of the resolved format-specific parse options that shaped the parsed

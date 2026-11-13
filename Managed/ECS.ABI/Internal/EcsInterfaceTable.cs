@@ -70,7 +70,13 @@ namespace GameEngine.ECS.Internal
         // v2.3 fields (1 function pointer): the entity switch (World::SetEntityEnabledImmediate)
         public nint SetEntityEnabled;
 
-        // v2.4: prefab operations
+        // v2.4 fields (2 function pointers): a script's write of an engine component, and the
+        // engine's component defaults
+        public nint SetComponentBytesFromScript;
+        public nint GetComponentDefaults;
+
+        // v2.5 fields (2 function pointers): an instance of a resident prefab (Scene::SpawnPrefab), and its
+        // removal (Scene::DespawnPrefab)
         public nint SpawnPrefab;
         public nint DespawnPrefab;
     }
@@ -82,7 +88,7 @@ namespace GameEngine.ECS.Internal
     internal static class EcsInterfaceTable
     {
         private const uint kAbiMajor = 2;
-        private const uint kAbiMinor = 4;
+        private const uint kAbiMinor = 5;
         private static readonly uint kAbi = (kAbiMajor << 16) | kAbiMinor;
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -104,13 +110,14 @@ namespace GameEngine.ECS.Internal
             if (rc != 0 || tablePtr == 0 || sizeBytes == 0)
                 throw new InvalidOperationException($"GE_ECS_GetInterface failed rc={rc}");
 
+            var iface = Marshal.PtrToStructure<GE_ECS_Interface_v2>(tablePtr);
             int csSize = Marshal.SizeOf<GE_ECS_Interface_v2>();
             // A larger native table is fine: fields are only ever appended.
-            if (sizeBytes < (uint)csSize)
+            if (iface.sizeBytes < (uint)csSize)
                 throw new InvalidOperationException(
-                    $"ECS ABI struct size mismatch (native={sizeBytes}, managed={csSize}). " +
+                    $"ECS ABI struct size mismatch (native={iface.sizeBytes}, managed={csSize}). " +
                     "Native engine is older than the managed ECS.ABI assembly.");
-            return Marshal.PtrToStructure<GE_ECS_Interface_v2>(tablePtr);
+            return iface;
         }
     }
 }

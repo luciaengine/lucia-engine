@@ -3,11 +3,12 @@
 #include "Components/AssetRef.h"
 #include "Components/Terrain/TerrainModifierBlend.h"
 #include "Components/Terrain/TerrainSurfaceRules.h"
+#include "Mathematics/Interpolation.h"
+#include "Types/Color.h"
 #include "Types/StringUtils.h"
 #include "Types/Types.h"
 
 #include <cstddef>
-#include <algorithm>
 #include <cmath>
 #include <string_view>
 #include <type_traits>
@@ -114,9 +115,11 @@ struct TerrainFlattenEffect
     // On a PLANAR terrain: the TRUE world-space Y to flatten to. The terrain entity's own
     // translation is measured off during the bake, so the same value means the same altitude
     // wherever the terrain sits. When UseVolumeHeight is true this is instead an OFFSET from
-    // the volume's reference height — the spline's own Y at the closest point for spline
-    // volumes, so a sloped road flattens to its own profile, and the entity's Y for every
-    // other shape, global included. That reference is a world Y too, so the sum is one as well.
+    // the volume's reference height: the spline's own Y at the closest point for a path, so a
+    // sloped road flattens to its own profile; for a closed area, a smooth surface through the
+    // rim's heights that meets each road crossing the rim at the road's own grade; and the
+    // entity's Y for every other shape, global included. That reference is a world Y too, so
+    // the sum is one as well.
     //
     // On a SPHERICAL terrain there is no "up" to be a Y, and the same field reads RADIALLY:
     // a signed offset from the nominal planet surface, or from the volume's own distance from
@@ -188,14 +191,34 @@ static_assert(std::is_standard_layout_v<TerrainHeightOffsetEffect>);
 // path's kMaxReliefOctaves.
 inline constexpr uint32 kMaxNoiseOctaves = 8u;
 
-// Adds procedural fBM noise displacement.
-// Common use: terrain detail, roughness, erosion-like effects.
+// What a TerrainNoiseEffect evaluates. Values are serialized: append, never reorder.
+enum class TerrainNoiseMode : uint8
+{
+    Displace = 0,  // the fBM rows below, added through the modifier stack inside the volume
+    Generated = 1, // the base noise of Terrain/TerrainNoiseStack.h at Preset, evaluated per page
+};
+
+// The octave stack of a Generated noise (Terrain/TerrainNoiseStack.h). The largest features grow
+// with the terrain's size; the preset sets how fast the height falls from 250 m to the finest octave.
+// Values are serialized: append, never reorder.
+enum class TerrainNoisePreset : uint8
+{
+    Rolling = 0, // gain 0.574 (H 0.8): hills at every scale
+    Smooth = 1,  // gain 0.5 (H 1.0): soft ground with little fine relief
+    Rugged = 2,  // gain 0.660 (H 0.6): broken ground: the fine octaves keep more of their height
+};
+
+// Adds procedural noise. Displace mode: fBM displacement inside the volume (terrain detail,
+// roughness, erosion-like effects). Generated mode: the base relief of a Flat terrain, read only
+// on a Global volume (TerrainECS::ResolveGeneratedNoiseRelief); the fBM rows are not read.
 struct TerrainNoiseEffect
 {
     GE_TERRAIN_EFFECT_COMMON_FIELDS
 
     TerrainModifierBlend Blend = TerrainModifierBlend::Add;
-    uint8 _BlendPad[3] = {};
+    TerrainNoiseMode Mode = TerrainNoiseMode::Displace;
+    TerrainNoisePreset Preset = TerrainNoisePreset::Rolling; // Generated only
+    uint8 _BlendPad[1] = {};
     float32 Frequency = 8.0f;       // Noise frequency (higher = more detail)
     float32 Amplitude = 5.0f;       // Height displacement in world units
     uint32 Octaves = 4;             // fBM octave count, clamped to kMaxNoiseOctaves
@@ -321,6 +344,12 @@ struct TerrainSurfaceRulesEffect
     // one arm and stopping at it on the other.
     GE_TERRAIN_EFFECT_CLAIM_FIELDS
 
+    // True while the rows are the untouched set terrain creation provisioned. While it is
+    // true, the rows are placed again from the terrains' height range when that range
+    // changes (a new heightmap or source). Any edit of a row sets it to false.
+    bool ProvisionedDefaults = false;
+    uint8 _ProvisionedPad[3] = {};
+
     TerrainSurfaceRule Rules[kMaxTerrainSurfaceRules] = {};
 };
 
@@ -362,7 +391,7 @@ static_assert(std::is_standard_layout_v<TerrainGroundClaimEffect>);
 // Regional grass targets relative to the terrain's global grass profile. Author
 // that profile as the wild maximum; regions can shorten or thin it without
 // increasing the placement budget. The volume owns shape, falloff and priority.
-// Targets compose as lerp(current, target, weight), starting at (1,1), so a later
+// Targets compose as lerp(current, target, weight), starting at (1,1,1), so a later
 // region with scale 1 can restore the global profile over an earlier reduction.
 // This affects planar grass only; it writes neither terrain height nor materials.
 struct TerrainGrassEffect
@@ -371,12 +400,16 @@ struct TerrainGrassEffect
 
     float32 HeightScale = 1.0f;   // [0,1], applied to final ribbon/card height
     float32 DensityScale = 1.0f;  // [0,1], stable thinning of existing candidates
+    // [0,1], scales the terrain's TerrainGrass::GroundDarkening inside the region: 0 keeps the
+    // field's soil out of the colour map there (a path). Composed on the CPU for the bake's
+    // ground write; never uploaded.
+    float32 GroundDarkeningScale = 1.0f;
 };
 
 // Script writes also pass through this finite, bounded admission at gather.
 inline float32 ClampTerrainGrassEffectScale(float32 value)
 {
-    return std::isfinite(value) ? std::clamp(value, 0.0f, 1.0f) : 1.0f;
+    return std::isfinite(value) ? Math::Clamp01(value) : 1.0f;
 }
 
 // The height multiplier below which a region stops reading as short grass and starts reading as
@@ -391,6 +424,33 @@ inline float32 ClampTerrainGrassEffectScale(float32 value)
 inline constexpr float32 kTerrainGrassHeightReadableFloor = 0.5f;
 static_assert(std::is_trivially_copyable_v<TerrainGrassEffect>);
 static_assert(std::is_standard_layout_v<TerrainGrassEffect>);
+
+// Colors the ground inside the volume, and the base of the grass that grows there: the effect
+// writes Color into the terrain's color map at Strength times the volume's own weight, over the
+// grass's Darken Ground soil and under any later color writer. The ground and the blade root read
+// the map as ground x (1 - weight) + Color x weight.
+// Common use: a worn path, a lush patch or a dry yard, on the same entity as a Grass effect.
+// Planar terrains only; it writes neither height nor materials.
+struct TerrainColorEffect
+{
+    GE_TERRAIN_EFFECT_COMMON_FIELDS
+
+    // Linear, each channel [0,1]. The default is the grass's default Soil Color.
+    ColorLinear Color{0.10f, 0.075f, 0.045f};
+    // [0,1]: how far the ground moves toward Color. At 1 the ground is Color alone and loses its
+    // material's pattern, so the default keeps half of it.
+    float32 Strength = 0.5f;
+};
+
+// The admission every write of a colour channel or the strength passes, at load, in the inspector
+// and at gather: clamped to [0,1], and 0 when nonfinite, so a bad value writes nothing.
+inline float32 ClampTerrainColorEffectValue(float32 value)
+{
+    return std::isfinite(value) ? Math::Clamp01(value) : 0.0f;
+}
+
+static_assert(std::is_trivially_copyable_v<TerrainColorEffect>);
+static_assert(std::is_standard_layout_v<TerrainColorEffect>);
 
 #undef GE_TERRAIN_EFFECT_COMMON_FIELDS
 #undef GE_TERRAIN_EFFECT_POOL_FIELDS

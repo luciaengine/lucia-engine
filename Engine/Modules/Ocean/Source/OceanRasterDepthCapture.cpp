@@ -1,20 +1,19 @@
 #include "Ocean/OceanRasterDepthCapture.h"
-#include "Ocean/OceanShaderProgram.h"
-#include "Ocean/OceanPreparedDispatch.h"
-#include "Rendering/Materials/ShaderLayoutShape.h"
-#include "OceanShaderDirectory.h"
+#include "Ocean/OceanShader/OceanShaderProgram.h"
+#include "Rendering/Core/ReverseZ.h"
+#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
+#include "OceanShader/OceanShaderDirectory.h"
 
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
+#include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
-#include "Engine/Rendering/FrameOrchestrator.h"
 #include "Logger/Logger.h"
 #include "Mathematics/MatrixOps.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Core/RenderGraph/RGRotatingImport.h"
-#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
 
 #include <algorithm>
 #include <cmath>
@@ -34,7 +33,7 @@ namespace
 {
 struct alignas(16) OceanRasterDepthParamsGPU
 {
-    float NearFarDeepResolution[4]{}; // x near/top padding, y far, z deep, w resolution
+    Mathematics::Vector4 NearFarDeepResolution; // x near/top padding, y far, z deep, w resolution
 };
 static_assert(sizeof(OceanRasterDepthParamsGPU) == 16);
 
@@ -52,54 +51,12 @@ float32 SnapToTexel(float32 value, float32 texelSize)
 
 } // namespace
 
-struct OceanRasterDepthCapture::OutputGeneration
-{
-    IDevice* Device = nullptr;
-    RG::RGRotatingTexture Textures;
-    uint32 Resolution = 0;
-    ~OutputGeneration() { if (Device) Textures.Destroy(Device); }
-};
-
-struct OceanRasterDepthCapture::Snapshot
-{
-    std::shared_ptr<OutputGeneration> Generation;
-    uint64 Serial = 0, AvailableEpoch = 0, World = 0;
-    uint32 Resolution = 0, Mask = 0;
-    float32 OriginX = 0, OriginZ = 0, SizeX = 1, SizeZ = 1, Deep = 60000, SeaLevel = 0, TopPadding = 0;
-
-    TextureHandle Texture() const { return Generation ? Generation->Textures.Current(Serial) : TextureHandle{}; }
-    bool Matches(const Snapshot& other) const
-    {
-        return Generation && Resolution == other.Resolution && Mask == other.Mask && World == other.World &&
-               NearlyEqual(OriginX, other.OriginX) && NearlyEqual(OriginZ, other.OriginZ) &&
-               NearlyEqual(SizeX, other.SizeX) && NearlyEqual(SizeZ, other.SizeZ) &&
-               NearlyEqual(Deep, other.Deep) && NearlyEqual(SeaLevel, other.SeaLevel) &&
-               NearlyEqual(TopPadding, other.TopPadding);
-    }
-};
-
-struct OceanRasterDepthCapture::FramePlan
-{
-    Snapshot Proposed;
-    // Do not destroy the previous generation while publishing the new snapshot in Record.
-    std::shared_ptr<OutputGeneration> RetiredGeneration;
-    RG::RGFrameStamp Owner;
-    uint64 Epoch = 0;
-    bool Convert = false, Recorded = false;
-    RG::RGTexture Depth, Output;
-    BufferHandle Params;
-    uint64 ParamsOffset = 0;
-    OceanPreparedDispatch Commands;
-    BufferHandle ReadbackOutput;
-    uint64 Reservation = 0;
-};
-
-OceanRasterDepthCapture::OceanRasterDepthCapture() : m_Committed(std::make_unique<Snapshot>()) {}
-
 OceanRasterDepthCapture::~OceanRasterDepthCapture()
 {
     if (m_Device)
     {
+        if (m_OutputTexture.IsValid())
+            m_Device->DestroyTexture(m_OutputTexture);
         if (m_Sampler.IsValid())
             m_Device->DestroySampler(m_Sampler);
         m_Readback.Destroy(m_Device);
@@ -176,27 +133,44 @@ bool OceanRasterDepthCapture::EnsurePipeline(IDevice& device)
 
 bool OceanRasterDepthCapture::EnsureOutput(IDevice& device, uint32 resolution)
 {
-    if (!m_Sampler.IsValid())
-        m_Sampler = device.CreateSampler(SamplerDesc::MaterialLinearClamp("Ocean_RasterWaterDepth_Sampler"));
-    if (!m_Sampler.IsValid())
-        return false;
-    if (m_OutputGeneration && m_OutputGeneration->Resolution == resolution)
+    resolution = std::clamp(resolution, 16u, 4096u);
+    if (m_OutputTexture.IsValid() && m_Resolution == resolution)
         return true;
-    auto generation = std::make_shared<OutputGeneration>();
-    generation->Device = &device;
-    generation->Resolution = resolution;
+
+    if (m_OutputTexture.IsValid())
+        device.DestroyTexture(m_OutputTexture);
+
     TextureDesc td{};
-    td.width = td.height = resolution;
-    td.depth = td.mipLevels = td.arrayLayers = td.sampleCount = 1;
+    td.width = resolution;
+    td.height = resolution;
+    td.depth = 1;
+    td.mipLevels = 1;
+    td.arrayLayers = 1;
+    td.sampleCount = 1;
     td.format = static_cast<uint32>(TextureFormat::R32_FLOAT);
-    td.usage = static_cast<uint32>(TextureUsage::ShaderResource | TextureUsage::UnorderedAccess | TextureUsage::TransferSrc);
+    td.usage = static_cast<uint32>(TextureUsage::ShaderResource |
+                                   TextureUsage::UnorderedAccess |
+                                   TextureUsage::TransferSrc);
     td.initialState = ResourceState::ShaderResource;
     td.debugName = "Ocean_RasterWaterDepth";
-    generation->Textures.Init(&device, td, 2u);
-    if (!generation->Textures.Current(0).IsValid() || !generation->Textures.Current(1).IsValid())
+    m_OutputTexture = device.CreateTexture(td);
+    if (!m_OutputTexture.IsValid())
         return false;
-    m_OutputGeneration = std::move(generation);
-    return true;
+
+    if (!m_Sampler.IsValid())
+        m_Sampler =
+            device.CreateSampler(SamplerDesc::MaterialLinearClamp("Ocean_RasterWaterDepth_Sampler"));
+
+    m_Resolution = resolution;
+    m_HasSampleableTexture = false;
+    m_FramesUntilSampleable = 0u;
+    m_HasCaptureFootprint = false;
+    m_HaveLastCaptureFrame = false;
+    {
+        std::lock_guard<std::mutex> lock(m_ReadbackMutex);
+        m_HasReadbackData = false;
+    }
+    return m_Sampler.IsValid();
 }
 
 bool OceanRasterDepthCapture::EnsureReadbackRing(IDevice& device, uint32 resolution)
@@ -218,6 +192,11 @@ bool OceanRasterDepthCapture::EnsureReadbackRing(IDevice& device, uint32 resolut
         return false;
 
     m_ReadbackResolution = resolution;
+    {
+        std::lock_guard<std::mutex> lock(m_ReadbackMutex);
+        m_CPUWaterDepth.assign(size_t(resolution) * size_t(resolution), 60000.0f);
+        m_HasReadbackData = false;
+    }
     return true;
 }
 
@@ -227,12 +206,11 @@ void OceanRasterDepthCapture::InvalidateReadback()
     // fresh after a settings toggle / capture retarget, or pre-invalidation
     // depth resurrects into SampleDepth on the re-enable frames.
     m_Readback.DropPendings();
-    *m_Committed = {};
-    m_Plan = nullptr;
-    m_PlannedFrame = {};
-    m_ClaimedEpoch = ~0ull;
-    m_CaptureArmed = false;
-    m_ReadbackPending = false;
+    m_HasSampleableTexture = false;
+    m_FramesUntilSampleable = 0u;
+    m_HasCaptureFootprint = false;
+    m_HaveLastCaptureFrame = false;
+    m_HaveLastSampleableTickFrame = false;
     std::lock_guard<std::mutex> lock(m_ReadbackMutex);
     m_HasReadbackData = false;
 }
@@ -243,11 +221,10 @@ void OceanRasterDepthCapture::ResolveReadyReadback()
     if (const void* mapped = m_Readback.MapNewestReady(m_Device, &meta))
     {
         std::lock_guard<std::mutex> lock(m_ReadbackMutex);
-        const size_t count = size_t(meta.Resolution) * size_t(meta.Resolution);
+        const size_t count = size_t(m_ReadbackResolution) * size_t(m_ReadbackResolution);
         if (m_CPUWaterDepth.size() != count)
             m_CPUWaterDepth.resize(count, 60000.0f);
         std::memcpy(m_CPUWaterDepth.data(), mapped, sizeof(float32) * count);
-        m_CPUReadbackResolution = meta.Resolution;
         m_ReadOriginX = meta.OriginX;
         m_ReadOriginZ = meta.OriginZ;
         m_ReadSizeX = meta.SizeX;
@@ -258,116 +235,55 @@ void OceanRasterDepthCapture::ResolveReadyReadback()
     }
 }
 
-bool OceanRasterDepthCapture::GetSampling(RG::RGFrame& frame, OceanRasterDepthSampling& out) const
+RG::RGTexture OceanRasterDepthCapture::ImportRG(RG::RGFrame& frame) const
 {
-    out = {};
-    const auto* snapshot = m_PlannedFrame.IsFor(frame) && m_Plan ? &m_Plan->Proposed : m_Committed.get();
-    if (!m_RenderServices || !snapshot->Generation || !m_Sampler.IsValid() ||
-        snapshot->AvailableEpoch > m_RenderServices->Spine().WorldFrameEpoch())
-        return false;
-    frame.AllocatePassData<std::shared_ptr<OutputGeneration>>(snapshot->Generation);
-    out.Texture = snapshot->Texture();
-    out.Sampler = m_Sampler;
-    out.Graph = frame.ImportExternalTexture("Ocean.RasterDepth.WaterDepth", out.Texture,
-                                           ResourceState::ShaderResource, TextureFormat::R32_FLOAT);
-    out.OriginX = snapshot->OriginX;
-    out.OriginZ = snapshot->OriginZ;
-    out.SizeX = snapshot->SizeX;
-    out.SizeZ = snapshot->SizeZ;
-    out.Deep = snapshot->Deep;
-    return out.Graph.IsValid();
+    if (!m_OutputTexture.IsValid())
+        return {};
+    return frame.ImportExternalTexture("Ocean.RasterDepth.WaterDepth", m_OutputTexture,
+                                       ResourceState::ShaderResource, TextureFormat::R32_FLOAT);
 }
 
-OceanRasterDepthCapture::FramePlan* OceanRasterDepthCapture::PlanSnapshot(
-    RG::RGFrame& frame, const Snapshot& snapshot, uint64 epoch, bool convert)
+void OceanRasterDepthCapture::ScheduleReadback(RG::RGFrame& frame, RG::RGTexture output,
+                                               uint32 resolution)
 {
-    auto* plan = frame.AllocatePassData<FramePlan>();
-    plan->Proposed = snapshot;
-    plan->RetiredGeneration = m_Committed->Generation;
-    plan->Owner.Stamp(frame);
-    plan->Epoch = epoch;
-    plan->Convert = convert;
-    plan->Recorded = !convert;
-    plan->Output = frame.ImportExternalTexture("Ocean.RasterDepth.WaterDepth", snapshot.Texture(),
-                                              ResourceState::ShaderResource, TextureFormat::R32_FLOAT);
-    m_Plan = plan;
-    m_PlannedFrame.Stamp(frame);
-    return plan;
-}
+    if (!m_Device || !output.IsValid() || !EnsureReadbackRing(*m_Device, resolution))
+        return;
 
-bool OceanRasterDepthCapture::IsCurrentPlan(const FramePlan& plan) const
-{
-    return m_Plan == &plan && m_PlannedFrame.Frame == plan.Owner.Frame &&
-           m_PlannedFrame.FrameIndex == plan.Owner.FrameIndex && m_ClaimedEpoch == plan.Epoch &&
-           (plan.Convert ? m_OutputGeneration == plan.Proposed.Generation :
-                           m_Committed->Generation == plan.Proposed.Generation &&
-                           m_Committed->Serial == plan.Proposed.Serial);
-}
-
-void OceanRasterDepthCapture::ScheduleReadback(RG::RGFrame& frame, FramePlan& plan)
-{
-    frame.AddPass("Ocean.RasterDepth.Readback", PassPhase::kWorldRender,
-        [this, packet = &plan](RG::RGPassBuilder& p)
-        {
-            p.Read(packet->Output, RG::RGTextureRead::CopySrc);
-            p.PreventCulling();
-            p.Prepare([this, packet](RG::RGPrepareContext& ctx) { return PrepareReadback(*packet, ctx); });
-        },
-        [this, packet = &plan](RG::RGContext& ctx) { RecordReadback(*packet, ctx); });
-    frame.MarkOutput(plan.Output, RG::RGImageLayout::ShaderReadOnly);
-}
-
-bool OceanRasterDepthCapture::PrepareReadback(FramePlan& plan, RG::RGPrepareContext& ctx)
-{
-    if (!IsCurrentPlan(plan) || (plan.Recorded && !m_ReadbackPending))
-    {
-        plan.ReadbackOutput = {};
-        plan.Reservation = 0;
-        return true;
-    }
+    ReadbackMeta meta{};
+    meta.OriginX = m_OriginX;
+    meta.OriginZ = m_OriginZ;
+    meta.SizeX = m_SizeX;
+    meta.SizeZ = m_SizeZ;
+    meta.Deep = m_DeepWaterDepth;
+    const BufferHandle readbackBuffer = m_Readback.BeginWrite(frame, meta);
     ResolveReadyReadback();
-    if (!ctx.GetDevice() || !EnsureReadbackRing(*ctx.GetDevice(), plan.Proposed.Resolution))
-        return false;
-    if (!m_Readback.HasPendingWrite(*plan.Owner.Frame, plan.ReadbackOutput, plan.Reservation))
-    {
-        const auto& s = plan.Proposed;
-        plan.ReadbackOutput = m_Readback.ReserveWrite(*plan.Owner.Frame,
-            {s.OriginX, s.OriginZ, s.SizeX, s.SizeZ, s.Deep, s.Resolution}, plan.Reservation);
-    }
-    return true; // A busy slot is an optional copy, not a failed capture.
-}
-
-void OceanRasterDepthCapture::RecordReadback(const FramePlan& plan, RG::RGContext& ctx)
-{
-    if (!ctx.Cmd || !IsCurrentPlan(plan) ||
-        !m_Readback.HasPendingWrite(*plan.Owner.Frame, plan.ReadbackOutput, plan.Reservation))
+    if (!readbackBuffer.IsValid())
         return;
-    const auto texture = ctx.GetTexture(plan.Output);
-    if (texture != plan.Proposed.Texture())
-        return;
-    const uint32 resolution = plan.Proposed.Resolution;
-    ctx.Cmd->CopyTextureToBuffer(texture, plan.ReadbackOutput, resolution, resolution, 0, 0, 0,
-                                 sizeof(float32) * size_t(resolution));
-    if (m_Readback.MarkRecorded(plan.ReadbackOutput, plan.Reservation) &&
-        m_Committed->Generation == plan.Proposed.Generation && m_Committed->Serial == plan.Proposed.Serial)
-        m_ReadbackPending = false;
-}
-
-void OceanRasterDepthCapture::OnFrameStreamRetired(const RG::RGFrame& frame)
-{
-    m_Readback.OnFrameStreamRetired(frame);
-    if (m_PlannedFrame.Frame == &frame)
-    {
-        m_PlannedFrame = {};
-        m_Plan = nullptr;
-    }
+    const uint32 copyResolution = resolution;
+    const size_t rowPitch = sizeof(float32) * size_t(copyResolution);
+    frame.AddPass(
+        "Ocean.RasterDepth.Readback", PassPhase::kWorldRender,
+        [&](RG::RGPassBuilder& p)
+        {
+            p.Read(output, RG::RGTextureRead::CopySrc);
+            p.PreventCulling();
+        },
+        [output, readbackBuffer, copyResolution, rowPitch](RG::RGContext& ctx)
+        {
+            const TextureHandle tex = ctx.GetTexture(output);
+            if (tex.IsValid() && readbackBuffer.IsValid() && ctx.Cmd)
+            {
+                ctx.Cmd->CopyTextureToBuffer(tex, readbackBuffer, copyResolution,
+                                             copyResolution, 0, 0, 0, rowPitch);
+            }
+        });
 }
 
 bool OceanRasterDepthCapture::SampleDepth(float32 worldX, float32 worldZ,
                                           float32& outDepth) const
 {
     std::lock_guard<std::mutex> lock(m_ReadbackMutex);
-    if (!m_HasReadbackData || m_CPUReadbackResolution < 2u || m_CPUWaterDepth.empty())
+    if (!m_HasReadbackData || m_ReadbackResolution < 2u || m_CPUWaterDepth.empty())
         return false;
 
     const float32 sizeX = std::max(m_ReadSizeX, 1e-3f);
@@ -377,18 +293,18 @@ bool OceanRasterDepthCapture::SampleDepth(float32 worldX, float32 worldZ,
     if (u < 0.0f || v < 0.0f || u > 1.0f || v > 1.0f)
         return false;
 
-    const float32 halfTexel = 0.5f / float32(m_CPUReadbackResolution);
+    const float32 halfTexel = 0.5f / float32(m_ReadbackResolution);
     const float32 sampleU = std::clamp(u, halfTexel, 1.0f - halfTexel);
     const float32 sampleV = std::clamp(v, halfTexel, 1.0f - halfTexel);
-    const float32 gx = sampleU * float32(m_CPUReadbackResolution) - 0.5f;
-    const float32 gz = sampleV * float32(m_CPUReadbackResolution) - 0.5f;
+    const float32 gx = sampleU * float32(m_ReadbackResolution) - 0.5f;
+    const float32 gz = sampleV * float32(m_ReadbackResolution) - 0.5f;
     const int x0 = std::clamp(static_cast<int>(std::floor(gx)), 0,
-                              static_cast<int>(m_CPUReadbackResolution) - 2);
+                              static_cast<int>(m_ReadbackResolution) - 2);
     const int z0 = std::clamp(static_cast<int>(std::floor(gz)), 0,
-                              static_cast<int>(m_CPUReadbackResolution) - 2);
+                              static_cast<int>(m_ReadbackResolution) - 2);
     const float32 tx = gx - float32(x0);
     const float32 tz = gz - float32(z0);
-    const uint32 n = m_CPUReadbackResolution;
+    const uint32 n = m_ReadbackResolution;
     const float32 d00 = m_CPUWaterDepth[size_t(z0) * n + uint32(x0)];
     const float32 d10 = m_CPUWaterDepth[size_t(z0) * n + uint32(x0 + 1)];
     const float32 d01 = m_CPUWaterDepth[size_t(z0 + 1) * n + uint32(x0)];
@@ -442,12 +358,10 @@ CameraData OceanRasterDepthCapture::MakeTopDownCamera(
     const Matrix4x4 viewProj = proj * view;
 
     CameraData out{};
-    std::memcpy(out.view, view.Data(), sizeof(float) * 16u);
-    std::memcpy(out.proj, proj.Data(), sizeof(float) * 16u);
-    std::memcpy(out.viewProj, viewProj.Data(), sizeof(float) * 16u);
-    out.cameraPos[0] = eye.x;
-    out.cameraPos[1] = eye.y;
-    out.cameraPos[2] = eye.z;
+    out.view = view;
+    out.proj = proj;
+    out.viewProj = viewProj;
+    Engine::Renderer::SetCameraEye(out, Mathematics::WorldPosition::FromVector3(eye));
     return out;
 }
 
@@ -464,60 +378,99 @@ bool OceanRasterDepthCapture::DeclareForView(Engine::Renderer::Pipeline::ViewDec
         return false;
     m_Device = device;
 
-    const uint64 epoch = d.Services.Spine().WorldFrameEpoch();
-    ResolveReadyReadback();
-    if (m_PlannedFrame.IsFor(d.Frame) || m_ClaimedEpoch == epoch)
-        return true;
-    if (!EnsurePipeline(*device))
-        return false;
-    Snapshot proposed{};
-    proposed.Resolution = std::clamp(settings.Resolution == 0u ? 512u : settings.Resolution, 16u, 4096u);
-    proposed.Mask = settings.RenderLayerMask & d.View.renderLayerMask;
-    if (proposed.Mask == 0u)
-        return false;
-    proposed.SizeX = std::max(settings.SizeX, 1.0f);
-    proposed.SizeZ = std::max(settings.SizeZ, 1.0f);
-    const float32 snappedCenterX = SnapToTexel(centerX, proposed.SizeX / proposed.Resolution);
-    const float32 snappedCenterZ = SnapToTexel(centerZ, proposed.SizeZ / proposed.Resolution);
-    proposed.OriginX = snappedCenterX - proposed.SizeX * 0.5f;
-    proposed.OriginZ = snappedCenterZ - proposed.SizeZ * 0.5f;
-    proposed.Deep = std::max(settings.DeepWaterDepth, 1.0f);
-    proposed.TopPadding = std::max(settings.TopPadding, 0.01f);
-    proposed.SeaLevel = seaLevel;
-    proposed.World = d.View.worldId;
-    m_ClaimedEpoch = epoch;
-    const bool dirty = !m_Committed->Matches(proposed);
-    if (!dirty)
+    const uint64 graphFrameIndex = d.Frame.FrameIndex();
+    if (!m_HaveLastSampleableTickFrame || m_LastSampleableTickFrame != graphFrameIndex)
     {
-        if (m_ReadbackPending)
-            ScheduleReadback(d.Frame, *PlanSnapshot(d.Frame, *m_Committed, epoch, false));
+        m_HaveLastSampleableTickFrame = true;
+        m_LastSampleableTickFrame = graphFrameIndex;
+        if (m_FramesUntilSampleable > 0u)
+        {
+            --m_FramesUntilSampleable;
+            if (m_FramesUntilSampleable == 0u)
+                m_HasSampleableTexture = true;
+        }
+    }
+
+    const uint32 resolution =
+        std::clamp(settings.Resolution == 0u ? 512u : settings.Resolution, 16u, 4096u);
+    if (!EnsurePipeline(*device) || !EnsureOutput(*device, resolution))
+        return false;
+
+    const Rendering::RenderLayerMask captureMask{settings.CaptureLayers.Bits & d.View.renderLayerMask.Bits};
+    if (captureMask == Rendering::RenderLayerMask::None())
+        return false;
+
+    const float32 sizeX = std::max(settings.SizeX, 1.0f);
+    const float32 sizeZ = std::max(settings.SizeZ, 1.0f);
+    const float32 texelX = sizeX / static_cast<float32>(resolution);
+    const float32 texelZ = sizeZ / static_cast<float32>(resolution);
+    const float32 snappedCenterX = SnapToTexel(centerX, texelX);
+    const float32 snappedCenterZ = SnapToTexel(centerZ, texelZ);
+    const float32 originX = snappedCenterX - sizeX * 0.5f;
+    const float32 originZ = snappedCenterZ - sizeZ * 0.5f;
+    const float32 deep = std::max(settings.DeepWaterDepth, 1.0f);
+    const float32 topPadding = std::max(settings.TopPadding, 0.01f);
+
+    const bool alreadyCapturedThisFrame =
+        m_HaveLastCaptureFrame && m_LastCaptureFrame == graphFrameIndex;
+    const bool footprintDirty =
+        !m_HasCaptureFootprint ||
+        !NearlyEqual(m_OriginX, originX) ||
+        !NearlyEqual(m_OriginZ, originZ) ||
+        !NearlyEqual(m_SizeX, sizeX) ||
+        !NearlyEqual(m_SizeZ, sizeZ) ||
+        !NearlyEqual(m_DeepWaterDepth, deep) ||
+        !NearlyEqual(m_CaptureSeaLevel, seaLevel) ||
+        !NearlyEqual(m_CaptureTopPadding, topPadding) ||
+        m_CaptureMask != captureMask ||
+        m_CaptureWorldId != d.View.worldId;
+
+    if (alreadyCapturedThisFrame || !footprintDirty)
+    {
+        // Steady state: no new copy to schedule — just poll the pending
+        // readback (token-signaled slots resolve into the CPU tile).
+        ResolveReadyReadback();
         return true;
     }
+
     EnsureView(d.Services, d.View);
     if (m_ViewId == 0 || m_CameraId == 0)
         return false;
-    d.Services.Views().SetCameraData(m_CameraId,
-        MakeTopDownCamera(snappedCenterX, snappedCenterZ, seaLevel, settings));
-    d.Services.Views().SetViewRenderLayerMask(m_ViewId, proposed.Mask);
-    d.Services.Views().SetViewWorldId(m_ViewId, proposed.World);
-    // OnDemand extraction and requests advance on the global world clock.
-    if (!m_CaptureArmed || epoch != m_ArmedEpoch + 1u)
+
+    // OnDemand arm/capture split (mirrors the reflection probe's cycle): this
+    // frame's extraction ran before this declare, so a request made now feeds
+    // the view NEXT frame — capturing immediately would bake an empty depth
+    // strip. Arm (request + wait one frame), then capture on the armed frame.
+    // The +1 check re-arms after any gap (settings toggled off, dropped frame),
+    // where the old request has lapsed and extraction skipped the view again.
+    if (!m_CaptureArmed || graphFrameIndex != m_ArmedAtFrame + 1)
     {
         d.Services.Views().RequestViewFrame(m_ViewId);
         m_CaptureArmed = true;
-        m_ArmedEpoch = epoch;
-        if (m_ReadbackPending)
-            ScheduleReadback(d.Frame, *PlanSnapshot(d.Frame, *m_Committed, epoch, false));
+        m_ArmedAtFrame = graphFrameIndex;
+        ResolveReadyReadback();
         return true;
     }
     m_CaptureArmed = false;
-    const uint32 resolution = proposed.Resolution;
-    if (!EnsureOutput(*device, resolution))
-        return false;
-    proposed.Generation = m_OutputGeneration;
-    proposed.Serial = m_CaptureSerial;
-    proposed.AvailableEpoch = m_Committed->Generation == proposed.Generation &&
-                              m_Committed->AvailableEpoch <= epoch ? epoch : epoch + 1u;
+
+    m_OriginX = originX;
+    m_OriginZ = originZ;
+    m_SizeX = sizeX;
+    m_SizeZ = sizeZ;
+    m_DeepWaterDepth = deep;
+    m_CaptureSeaLevel = seaLevel;
+    m_CaptureTopPadding = topPadding;
+    m_CaptureMask = captureMask;
+    m_CaptureWorldId = d.View.worldId;
+    m_HasCaptureFootprint = true;
+
+    d.Services.Views().SetCameraData(m_CameraId,
+                             MakeTopDownCamera(snappedCenterX, snappedCenterZ,
+                                               seaLevel, settings),
+                             {topPadding, topPadding + deep});
+    d.Services.Views().SetViewRenderLayerMask(m_ViewId, captureMask);
+    d.Services.Views().SetViewWorldId(m_ViewId, d.View.worldId);
+
     d.Services.WriteViewLightBuffer(m_ViewId);
     d.Services.BuildWorldBatchKeysForView(m_ViewId);
     if (!d.Services.ScheduleBucketerDispatchesForView(d.Frame, m_ViewId))
@@ -526,7 +479,7 @@ bool OceanRasterDepthCapture::DeclareForView(Engine::Renderer::Pipeline::ViewDec
     Rendering::ViewClearConfig clear{};
     clear.clearColor = true;
     clear.clearDepth = true;
-    clear.clearDepthValue = 0.0f;
+    clear.clearDepthValue = Rendering::ReverseZ::kClearFar;
     d.Services.Views().SetViewClearConfig(m_ViewId, clear);
 
     TextureDesc colorDesc{};
@@ -559,7 +512,7 @@ bool OceanRasterDepthCapture::DeclareForView(Engine::Renderer::Pipeline::ViewDec
     const RG::RGTexture depth =
         d.Frame.ImportPersistentTexture("Ocean.RasterDepth.Depth", depthDesc);
     const RG::RGTexture output = d.Frame.ImportExternalTexture(
-        "Ocean.RasterDepth.WaterDepth", proposed.Texture(), ResourceState::ShaderResource,
+        "Ocean.RasterDepth.WaterDepth", m_OutputTexture, ResourceState::ShaderResource,
         TextureFormat::R32_FLOAT);
     if (!color.IsValid() || !depth.IsValid() || !output.IsValid())
         return false;
@@ -579,66 +532,65 @@ bool OceanRasterDepthCapture::DeclareForView(Engine::Renderer::Pipeline::ViewDec
     if (!paramsAlloc.Valid())
         return false;
     OceanRasterDepthParamsGPU params{};
-    params.NearFarDeepResolution[0] = proposed.TopPadding;
-    params.NearFarDeepResolution[1] = proposed.TopPadding + proposed.Deep;
-    params.NearFarDeepResolution[2] = proposed.Deep;
-    params.NearFarDeepResolution[3] = static_cast<float32>(resolution);
+    params.NearFarDeepResolution[0] = topPadding;
+    params.NearFarDeepResolution[1] = topPadding + deep;
+    params.NearFarDeepResolution[2] = deep;
+    params.NearFarDeepResolution[3] = static_cast<float32>(m_Resolution);
     *paramsAlloc.Ptr = params;
 
-    auto* plan = PlanSnapshot(d.Frame, proposed, epoch, true);
-    plan->Depth = depth;
-    plan->Params = paramsAlloc.Buffer;
-    plan->ParamsOffset = paramsAlloc.Offset;
-    d.Frame.AddPass("Ocean.RasterDepth.Convert", PassPhase::kWorldRender,
-        [this, plan](RG::RGPassBuilder& p)
+    const auto layout = m_Layout;
+    const ComputePipelineId pipeId = m_PipelineId;
+    const SamplerHandle sampler = m_Sampler;
+    const uint32 dispatchGroups = (resolution + 7u) / 8u;
+    d.Frame.AddPass(
+        "Ocean.RasterDepth.Convert", PassPhase::kWorldRender,
+        [&](RG::RGPassBuilder& p)
         {
-            p.UsePipeline(m_PipelineId);
-            p.Read(plan->Depth, RG::RGTextureRead::SampledCompute);
-            p.Write(plan->Output, RG::RGTextureWrite::Storage);
-            p.Prepare([this, plan](RG::RGPrepareContext& ctx) { return PrepareConverter(*plan, ctx); });
+            p.Read(depth, RG::RGTextureRead::SampledCompute);
+            p.Write(output, RG::RGTextureWrite::Storage);
         },
-        [this, plan](RG::RGContext& ctx) { RecordConverter(*plan, ctx); });
-    ScheduleReadback(d.Frame, *plan);
-    return true;
-}
+        [depth, output, layout, pipeId, sampler, paramsBuffer = paramsAlloc.Buffer,
+         paramsOffset = paramsAlloc.Offset, dispatchGroups](RG::RGContext& ctx)
+        {
+            auto* dev = ctx.GetDevice();
+            auto* cl = ctx.Cmd;
+            if (!dev || !cl)
+                return;
+            const TextureHandle depthTex = ctx.GetTexture(depth);
+            const TextureHandle outTex = ctx.GetTexture(output);
+            if (!depthTex.IsValid() || !outTex.IsValid())
+                return;
+            const PipelineHandle pipe = dev->GetOrCreateComputePipeline(pipeId);
+            if (!pipe)
+                return;
 
-bool OceanRasterDepthCapture::PrepareConverter(FramePlan& plan, RG::RGPrepareContext& ctx) const
-{
-    plan.Commands = {};
-    auto* device = ctx.GetDevice();
-    if (!device || plan.Recorded || !IsCurrentPlan(plan) || plan.Proposed.Serial != m_CaptureSerial)
-        return false;
-    const auto pipeline = ctx.PreparePipeline(m_PipelineId);
-    const auto depth = ctx.GetTexture(plan.Depth);
-    const auto output = ctx.GetTexture(plan.Output);
-    if (!pipeline || !depth.IsValid() || output != plan.Proposed.Texture())
-        return false;
-    DescriptorSetDesc desc{};
-    desc.layout = m_Layout;
-    desc.debugName = "Ocean.RasterDepth.Convert.DS";
-    desc.transient = true;
-    const auto set = device->CreateDescriptorSet(desc);
-    if (!set.IsValid())
-        return false;
-    device->UpdateCombinedImageSamplerBinding(set, 0, depth, m_Sampler);
-    device->UpdateStorageImageBinding(set, 1, output);
-    device->UpdateBufferBinding(set, 2, plan.Params, plan.ParamsOffset, sizeof(OceanRasterDepthParamsGPU));
-    const uint32 groups = (plan.Proposed.Resolution + 7u) / 8u;
-    plan.Commands = {pipeline, set, groups, groups, 1u, output};
-    return true;
-}
+            DescriptorSetDesc dsDesc{};
+            dsDesc.layout = layout;
+            dsDesc.debugName = "Ocean.RasterDepth.Convert.DS";
+            dsDesc.transient = true;
+            const DescriptorSetHandle ds = dev->CreateDescriptorSet(dsDesc);
+            dev->UpdateCombinedImageSamplerBinding(ds, 0, depthTex, sampler);
+            dev->UpdateStorageImageBinding(ds, 1, outTex);
+            dev->UpdateBufferBinding(ds, 2, paramsBuffer, paramsOffset,
+                                     sizeof(OceanRasterDepthParamsGPU));
 
-void OceanRasterDepthCapture::RecordConverter(FramePlan& plan, RG::RGContext& ctx)
-{
-    if (plan.Recorded || !IsCurrentPlan(plan) || plan.Proposed.Serial != m_CaptureSerial ||
-        plan.Commands.Target != plan.Proposed.Texture())
-        return;
-    if (!RecordOceanPreparedDispatch(ctx.Cmd, plan.Commands))
-        return;
-    *m_Committed = plan.Proposed;
-    ++m_CaptureSerial;
-    plan.Recorded = true;
-    m_ReadbackPending = true;
+            cl->SetPipeline(pipe);
+            cl->BindDescriptorSet(0, ds, pipe);
+            cl->Dispatch(dispatchGroups, dispatchGroups, 1);
+        });
+
+    ScheduleReadback(d.Frame, output, resolution);
+
+    // The readback copy leaves the texture in TransferSrc; consumers sample
+    // only after m_FramesUntilSampleable, so the end-of-frame export
+    // transition restores ShaderReadOnly for next frame's import claim.
+    d.Frame.MarkOutput(output, RG::RGImageLayout::ShaderReadOnly);
+
+    m_HaveLastCaptureFrame = true;
+    m_LastCaptureFrame = graphFrameIndex;
+    if (!m_HasSampleableTexture)
+        m_FramesUntilSampleable = std::max(m_FramesUntilSampleable, 1u);
+    return true;
 }
 
 } // namespace GameEngine::Ocean

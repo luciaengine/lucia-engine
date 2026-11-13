@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 project(SceneLoadTracker LANGUAGES CXX)
 
 add_library(SceneLoadTracker OBJECT
+    Source/SceneLoadProgress.cpp
     Source/SceneLoadTracker.cpp
 )
 
@@ -23,14 +24,13 @@ target_link_libraries(SceneLoadTracker
 if(BUILD_TESTING)
     find_package(GTest REQUIRED)
     add_executable(SceneLoadTrackerTests
+        Tests/SceneLoadProgressTests.cpp
         Tests/SceneLoadTrackerTests.cpp
-        ${CMAKE_SOURCE_DIR}/Engine/Modules/Memory/Source/AllocationHook.cpp
     )
     target_link_libraries(SceneLoadTrackerTests
         PRIVATE
             SceneLoadTracker
             Logger
-            Memory
             GTest::gtest
             GTest::gtest_main
     )

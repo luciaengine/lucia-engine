@@ -1,15 +1,13 @@
-// A search field's placeholder as the editor ships it: a hint that cannot be mistaken for
-// typed text. SearchFieldWithFilter (and every panel search bar built on it) draws its
-// placeholder as a label with the shared .search-field-with-filter-placeholder class, so the
-// rule in theme/widgets.css is the default every search field takes. Read from the staged
-// sheets, so a panel sheet cannot be what makes the case pass.
+// A text field's hint as the editor ships it, read from the staged sheets: every hint is a
+// .field-placeholder label styled by controls/FieldPlaceholder/FieldPlaceholder.css, so a
+// panel sheet cannot be what makes the case pass.
 
 #include "IsolatedUIFixture.h"
 
 #include "UI/ResolvedStyle.h"
 #include "UI/UIStyle.h"
 
-#include "Core/Application.h"
+#include "Core/ApplicationPaths.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -19,7 +17,7 @@
 #include <string>
 
 using GameEngine::FontStyle;
-using GameEngine::PathUtils;
+using GameEngine::ApplicationPaths;
 using GameEngine::UITesting::IsolatedUIFixture;
 
 namespace
@@ -29,7 +27,7 @@ namespace
 // reads them from under its own exe.
 std::string ReadShippedCss(const std::string& relative)
 {
-    std::ifstream in(PathUtils::GetExecutableDirectory() / "Assets" / "UI" / relative, std::ios::binary);
+    std::ifstream in(ApplicationPaths::GetExecutableDirectory() / "Assets" / "UI" / relative, std::ios::binary);
     if (!in)
         return {};
     std::ostringstream ss;
@@ -38,7 +36,7 @@ std::string ReadShippedCss(const std::string& relative)
 }
 
 constexpr char kXml[] = R"(<uielement id="root">
-  <label id="placeholder" class="search-field-with-filter-placeholder">Search</label>
+  <label id="placeholder" class="field-placeholder">Search</label>
   <label id="typed">Search</label>
 </uielement>)";
 
@@ -59,7 +57,7 @@ std::uint32_t Channel(std::uint32_t argb, int shift)
 TEST(ShippedSearchPlaceholderTests, ThePlaceholderIsDimmerThanTypedTextAndItalic)
 {
     std::string css;
-    for (const char* sheet : {"theme/tokens.css", "theme/widgets.css"})
+    for (const char* sheet : {"theme/tokens.css", "controls/FieldPlaceholder/FieldPlaceholder.css"})
     {
         const std::string text = ReadShippedCss(sheet);
         ASSERT_FALSE(text.empty()) << "shipped stylesheet not staged next to the test exe: " << sheet;

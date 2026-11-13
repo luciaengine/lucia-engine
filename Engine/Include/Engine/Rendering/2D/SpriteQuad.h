@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Types/Types.h"
+#include "Components/Transform.h"
 
 namespace GameEngine::Engine::Renderer
 {
@@ -11,7 +12,7 @@ namespace GameEngine::Engine::Renderer
  */
 struct SpriteQuadPlacement
 {
-    float32 Center[3] = {};
+    Mathematics::WorldPosition Center;
     float32 AxisX[3] = {};
     float32 AxisY[3] = {};
 };
@@ -31,10 +32,9 @@ struct SpriteQuadPlacement
  * character sideways by twice its pivot offset every time it turned around.
  * The caller still swaps the UV rect's edges so the image itself mirrors.
  *
- * `worldMatrix` is column-major: columns 0/1 are the entity's local X/Y axes
- * (rotation and scale included) and column 3 its world position.
+ * The transform carries its exact world position and the rotated, scaled local X/Y axes.
  */
-inline SpriteQuadPlacement BuildSpriteQuad(const float32* worldMatrix, float32 frameWidthUnits,
+inline SpriteQuadPlacement BuildSpriteQuad(const Components::WorldTransform& transform, float32 frameWidthUnits,
                                            float32 frameHeightUnits, float32 pivotX, float32 pivotY,
                                            bool flipX, bool flipY)
 {
@@ -52,11 +52,14 @@ inline SpriteQuadPlacement BuildSpriteQuad(const float32* worldMatrix, float32 f
     SpriteQuadPlacement placement{};
     for (int32 i = 0; i < 3; ++i)
     {
-        placement.AxisX[i] = worldMatrix[0 + i] * halfW;
-        placement.AxisY[i] = worldMatrix[4 + i] * halfH;
-        placement.Center[i] = worldMatrix[12 + i] + placement.AxisX[i] * centreOffsetX +
-                              placement.AxisY[i] * centreOffsetY;
+        placement.AxisX[i] = transform.Basis[0][i] * halfW;
+        placement.AxisY[i] = transform.Basis[1][i] * halfH;
+
     }
+    placement.Center = transform.GetPosition() + Mathematics::Vector3{
+        placement.AxisX[0] * centreOffsetX + placement.AxisY[0] * centreOffsetY,
+        placement.AxisX[1] * centreOffsetX + placement.AxisY[1] * centreOffsetY,
+        placement.AxisX[2] * centreOffsetX + placement.AxisY[2] * centreOffsetY};
     return placement;
 }
 

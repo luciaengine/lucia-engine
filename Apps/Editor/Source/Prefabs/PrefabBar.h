@@ -29,18 +29,20 @@ struct PrefabOverridesListReopen;
 class SceneDocumentManager;
 class UndoRedoService;
 
-/// Instance Inspector bar with source selection, counts and an Overrides list.
-/// Commits refresh it in place; membership or removed-component changes request a rebuild.
-/// An instance rebuild can reopen its Overrides list.
+/// The Inspector's bar on an entity of a prefab instance: the glyph, the prefab and the instance on line 1;
+/// the select button and the counts on line 2. A count pill opens the Overrides list, and a new bar on the instance
+/// opens the list again when a rebuild closed it. A commit in the instance refreshes the bar in place; an exit from
+/// the instance or a change to the removed components asks for a rebuild.
 class PrefabBar final : public UIElement
 {
   public:
     /// Shows the prefab file at `prefabFile` in the Assets panel.
     using SelectAssetHandler = std::function<void(const std::filesystem::path& prefabFile)>;
 
-    /// Builds a bar for an instance entity; null notifications leave a construction-time snapshot.
-    /// undo and overridesContext serve the Overrides list. refreshMarks updates marks in place;
-    /// requestRebuild defers an Inspector rebuild.
+    /// A bar for `entity`, which is in a prefab instance of `world`. `notifications` may be null: the
+    /// bar then shows the state at construction. `undo` takes the steps of the Overrides list, which reads
+    /// `overridesContext`. `refreshMarks` sets the Inspector's override marks again in place; `requestRebuild`
+    /// rebuilds the Inspector later.
     PrefabBar(ECS::World& world, ECS::EntityHandle entity, EditorChangeNotifications* notifications,
               UndoRedoService* undo, const PrefabOverridesListContext& overridesContext,
               SelectAssetHandler selectAsset, std::function<void()> refreshMarks,

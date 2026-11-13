@@ -509,9 +509,7 @@ bool FontAtlas::EnsureSlugGlyphData(const std::vector<uint32_t>& glyphIds)
         if (!inserted)
             continue;
 
-        uint32_t faceGlyph = gid;
-        FT_Face glyphFace = ResolveGlyphFace(faceGlyph);
-        if (!glyphFace || !BuildSlugGlyphData(glyphFace, faceGlyph, build))
+        if (!BuildSlugGlyphData(face, gid, build))
             continue; // whitespace/empty — already inserted as default SlugGlyphInfo
 
         // Find a page that fits. Pages are append-only; new glyphs always go

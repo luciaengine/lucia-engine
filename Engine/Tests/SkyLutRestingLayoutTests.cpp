@@ -1,3 +1,4 @@
+#include "TestCameraEye.h"
 #include <gtest/gtest.h>
 
 #include "Engine/Rendering/Pipeline/Nodes/SkyRenderNode.h"
@@ -97,13 +98,13 @@ class SkyLutRestingLayoutTest : public ::testing::Test
             Mathematics::Vector3(0, 1, 0), Mathematics::Vector3(0, 1, 1), Mathematics::Vector3(0, 1, 0));
         const auto projection = Mathematics::Matrix4x4::PerspectiveReverseZ(1.0471976f, 1.0f, 0.1f, 100.0f);
         const auto viewProjection = projection * view;
-        std::memcpy(camera.view, view.Data(), sizeof(camera.view));
-        std::memcpy(camera.proj, projection.Data(), sizeof(camera.proj));
-        std::memcpy(camera.viewProj, viewProjection.Data(), sizeof(camera.viewProj));
+        camera.view = view;
+        camera.proj = projection;
+        camera.viewProj = viewProjection;
         camera.cameraPos[1] = 1.0f;
-        m_Services->Views().SetCameraData(cameraId, camera);
+        m_Services->Views().SetCameraData(cameraId, ::GameEngine::Tests::TestCameraWithEye(camera), {0.1f, 100.0f});
         m_View = m_Services->Views().AllocateView("SkyResting.View", cameraId);
-        m_Services->Views().SetViewRenderLayerMask(m_View, 1);
+        m_Services->Views().SetViewRenderLayerMask(m_View, Rendering::RenderLayerMask::Default());
         m_Services->Views().SetViewTargets(m_View, 0, 0, 0, ViewClearConfig{});
         ASSERT_TRUE(m_Registry.Register("SkyRender", [] { return std::make_unique<Nodes::SkyRenderNode>(); }, true));
         RenderPipelineBlueprint blueprint;

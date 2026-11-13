@@ -1,4 +1,5 @@
 #include "Panels/RenderGraphPanel.h"
+#include "Types/StringUtils.h"
 
 #include <algorithm>
 #include <chrono>
@@ -15,7 +16,7 @@
 #include "Assets/AssetManager.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
-#include "DebugServer/RenderDocCapture.h"
+#include "DebugServer/Capture/RenderDocCapture.h"
 #include "Engine/Rendering/FrameOrchestrator.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/RenderServices.h"
@@ -608,7 +609,7 @@ void RenderGraphPanel::RefreshTimings()
     m_TimingByName.clear();
     if (!m_LastFrame)
         return;
-    for (const auto& t : m_LastFrame->LastFrameTimings())
+    for (const auto& t : m_LastFrame->LastFrameProfiling().Passes)
         m_TimingByName[t.Name] = {t.CpuMs, t.GpuSpanMs};
 }
 
@@ -1112,9 +1113,7 @@ void RenderGraphPanel::RebuildPassList()
 void RenderGraphPanel::ApplySearchFilter()
 {
     // Case-insensitive substring filter on pass names. Empty query shows all.
-    std::string needle = m_SearchText;
-    std::transform(needle.begin(), needle.end(), needle.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const std::string needle = ToLowerAscii(m_SearchText);
 
     for (auto& r : m_Rows)
     {
@@ -1123,9 +1122,7 @@ void RenderGraphPanel::ApplySearchFilter()
         bool visible = true;
         if (!needle.empty())
         {
-            std::string hay = r.Name;
-            std::transform(hay.begin(), hay.end(), hay.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            const std::string hay = ToLowerAscii(r.Name);
             visible = hay.find(needle) != std::string::npos;
         }
         if (visible)

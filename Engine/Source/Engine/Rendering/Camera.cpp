@@ -1,22 +1,34 @@
 #include "Engine/Rendering/Camera.h"
 
 #include "Components/Transform.h"
+#include "Engine/Rendering/RenderOrigin.h"
+#include "Engine/Rendering/ViewRegistry.h"
 #include "ECS/ECSTemplates.h"
-#include "Engine/Rendering/TileMapCameraPixelGrid.h"
+#include "Mathematics/Angle.h"
 #include "Mathematics/MatrixOps.h"
+#include "Logger/Logger.h"
 #include "Rendering/Common/Math.h"
 
 #include <algorithm>
-#include <glm/gtc/type_ptr.hpp>
+#include <atomic>
 
 namespace GameEngine::Engine::Renderer { using namespace ::GameEngine::Rendering; }
 
 namespace GameEngine::Engine::Renderer {
 using namespace ::GameEngine::Rendering;
 
+void Camera::SetPose(const Mathematics::Matrix4x4& basis, const Mathematics::WorldPosition& eye)
+{
+    m_WorldTransform = basis;
+    m_WorldTransform[3][0] = static_cast<float>(eye.X);
+    m_WorldTransform[3][1] = static_cast<float>(eye.Y);
+    m_WorldTransform[3][2] = static_cast<float>(eye.Z);
+    m_Eye = eye;
+}
+
 Mathematics::Matrix4x4 Camera::ComputeViewMatrix() const
 {
-    return Mathematics::Inverse(worldTransform);
+    return Mathematics::Inverse(m_WorldTransform);
 }
 
 Mathematics::Matrix4x4 Camera::ComputeProjectionMatrix(float aspectRatio,
@@ -25,7 +37,7 @@ Mathematics::Matrix4x4 Camera::ComputeProjectionMatrix(float aspectRatio,
     const float safeAspect = std::max(aspectRatio, 0.0001f);
     if (params.Perspective)
     {
-        const float fovRad = Rendering::Math::ToRadians(params.FovY);
+        const float fovRad = Mathematics::ToRadians(params.FovY);
         const float squeeze = std::clamp(params.AnamorphicSqueeze, 1.0f, 4.0f);
         return Mathematics::MakePerspectiveLH_ZO_ReverseZ(fovRad, safeAspect * squeeze, params.NearZ, params.FarZ);
     }
@@ -51,24 +63,31 @@ Rendering::CameraData Camera::ToCameraData(float aspectRatio,
     const Mathematics::Matrix4x4 viewProjM = projM * viewM;
 
     Rendering::CameraData data{};
-    const float* viewSrc = viewM.Data();
-    const float* projSrc = projM.Data();
-    const float* viewProjSrc = viewProjM.Data();
-    for (int i = 0; i < 16; ++i)
-    {
-        data.view[i] = viewSrc[i];
-        data.proj[i] = projSrc[i];
-        data.viewProj[i] = viewProjSrc[i];
-    }
+    data.view = viewM;
+    data.proj = projM;
+    data.viewProj = viewProjM;
 
-    // Extract camera world position from the worldTransform translation column.
-    const float* wt = worldTransform.Data();
-    data.cameraPos[0] = wt[12];
-    data.cameraPos[1] = wt[13];
-    data.cameraPos[2] = wt[14];
-    data.cameraPos[3] = 0.0f;
+    data.cameraPos.w = 0.0f;
+    Engine::Renderer::SetCameraEye(data, m_Eye);
 
     return data;
+}
+
+Rendering::CameraRanges Camera::ToCameraRanges() const
+{
+    if (params.NearZ > 0.0f && params.FarZ > params.NearZ)
+        return {params.NearZ, params.FarZ};
+
+    // The game camera calls this every frame: report each entity once, not once per frame.
+    static std::atomic<uint32> s_LastReportedEntity{ECS::kInvalidEntity};
+    const Components::Camera defaults{};
+    if (s_LastReportedEntity.exchange(entity.id) != entity.id)
+    {
+        Logger::Log::Error("Camera on entity={} has NearZ {} and FarZ {}: NearZ must be above 0 and FarZ above "
+                           "NearZ. Set them in the Camera component; until then it draws with NearZ {} and FarZ {}.",
+                           entity.id, params.NearZ, params.FarZ, defaults.NearZ, defaults.FarZ);
+    }
+    return {defaults.NearZ, defaults.FarZ};
 }
 
 std::optional<Camera> FindActiveCamera(ECS::World& world)
@@ -83,27 +102,21 @@ std::optional<Camera> FindActiveCamera(ECS::World& world)
             return;
 
         // Extract world transform (prefer WorldTransform, fallback to Transform).
-        float matrix[16] = {
-            1, 0, 0, 0,
-            0, 1, 0, 0,
-            0, 0, 1, 0,
-            0, 0, 0, 1
-        };
-
-        if (world.HasComponent<Components::WorldTransform>(e))
+        // A WorldTransform the hierarchy has not resolved yet (Version 0 beside
+        // a Transform) holds no pose; the camera's own Transform does.
+        const auto* worldXf = world.GetComponent<Components::WorldTransform>(e);
+        const bool hasLocal = world.HasComponent<Components::Transform>(e);
+        if (worldXf && (worldXf->Version != 0u || !hasLocal))
         {
-            if (auto* xf = world.GetComponent<Components::WorldTransform>(e))
-                for (int i = 0; i < 16; ++i)
-                    matrix[i] = xf->matrix[i];
+            result.SetPose(worldXf->ToMatrix4x4(Mathematics::Vector3{}), worldXf->GetPosition());
         }
-        else if (world.HasComponent<Components::Transform>(e))
+        else if (hasLocal)
         {
             if (auto* xf = world.GetComponent<Components::Transform>(e))
-                for (int i = 0; i < 16; ++i)
-                    matrix[i] = xf->matrix[i];
+            {
+                result.SetPose(xf->ToMatrix4x4(Mathematics::Vector3{}), xf->GetPosition());
+            }
         }
-
-        result.worldTransform = Mathematics::Matrix4x4(glm::make_mat4(matrix));
         result.params = cam;
         result.entity = e;
         found = true;
@@ -111,17 +124,23 @@ std::optional<Camera> FindActiveCamera(ECS::World& world)
 
     if (!found)
         return std::nullopt;
-
-    // Resolve the pixel grid against the scene the camera is about to render, the
-    // same way the far clip is resolved against an enabled planet: the authored
-    // component holds intent, the snapshot holds what this frame actually renders
-    // at. Gated on PixelPerfect so a normal camera never pays for the tilemap query.
-    if (result.params.PixelPerfect && !result.params.Perspective)
-    {
-        result.params.PixelPerfectPixelsPerUnit =
-            static_cast<uint32>(ResolvePixelPerfectPixelsPerUnit(world, result.params));
-    }
     return result;
+}
+
+void DeclareGameCameraView(ViewRegistry& views, Rendering::ViewId view, const Camera* activeCamera)
+{
+    if (!activeCamera)
+        return;
+    views.RequestViewFrame(view);
+    views.SetViewRenderLayerMask(view, activeCamera->params.VisibleLayers);
+    views.SetViewWorldPaused(view, activeCamera->params.WorldDrawingPaused);
+    views.SetViewWorldPauseFollowsActiveCamera(view);
+}
+
+void ApplyActiveCameraWorldPause(ViewRegistry& views, ECS::World& world)
+{
+    if (const std::optional<Camera> activeCamera = FindActiveCamera(world))
+        views.SetActiveCameraViewsWorldPaused(world.GetWorldId(), activeCamera->params.WorldDrawingPaused);
 }
 
 } // namespace GameEngine::Engine::Renderer

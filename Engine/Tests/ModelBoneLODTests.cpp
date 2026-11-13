@@ -1,6 +1,6 @@
 #include "Assets/BoneLOD/ModelBoneLOD.h"
 #include "Animation/BoneEvaluationPlan.h"
-#include "Animation/SkeletonData.h"
+#include "Animation/Skeleton/SkeletonData.h"
 #include "Assets/BoneLOD/BoneLODAssetSettings.h"
 #include "Assets/ModelAsset.h"
 #include "Assets/AssetManager.h"

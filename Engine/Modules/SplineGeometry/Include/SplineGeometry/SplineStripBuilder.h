@@ -1,9 +1,9 @@
 #pragma once
 
+#include "Mathematics/Vector2.h"
 #include "Mathematics/Vector3.h"
 #include "SplineGeometry/SplineProfile.h"
 #include "SplineGeometry/SplineStation.h"
-#include "Mathematics/Vector2.h"
 #include "SplineGeometry/SplineVertex.h"
 #include "Types/Types.h"
 
@@ -71,9 +71,9 @@ struct SplineStripParams
     // |x| wherever U reads a face turn: a sweep built in a placer's local space
     // and measured in world metres passes the placer's scale.
     float32 LateralMetresPerUnit = 1.0f;
-    // Honoured only for a closed profile. An open strip has no polygon to
-    // triangulate and capping it would emit a degenerate sliver.
-    bool GenerateCaps = true;
+    // Whether the first and the last ring get an end cap. Honoured only for a
+    // closed profile. An open strip has no polygon to triangulate and capping
+    // it would emit a degenerate sliver.
     bool CapStart = true;
     bool CapEnd = true;
     // Finite: the side faces (those whose edge normal is more lateral than

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Mathematics/Interpolation.h"
 #include "TerrainGrass/GrassPlacementModel.h" // GrassHashSite / GrassHashNext / GrassHashToUnit
 
 #include <algorithm>
@@ -12,7 +13,8 @@
 // field read as mown rather than grown. Clumping restores grouping WITHOUT touching that lattice:
 // a second, coarser, world-anchored lattice assigns each blade to the nearest of nine jittered
 // sites, and the winning site's hash drives the attributes that make a tuft read as one plant —
-// common height, common facing, a shared colour, and a pull toward its centre.
+// common height, common facing, a shared colour, and a height that tapers from its centre. It never
+// moves a blade, so the field keeps the lattice's even coverage.
 //
 // MIRROR OBLIGATION: byte-for-byte counterpart of
 // Shaders/TerrainGrass/grass_clump.glsl. Every function below has a GLSL twin with the same name
@@ -52,20 +54,14 @@ inline constexpr float32 kGrassMaxHueShiftRadians = 0.5235988f; // 30 degrees
 //   bits 0-1  LOD index (written per cell by the placement compute)
 //   bits 2-9  clump colour code (8 bits, this file)
 //   bits 10-25 minimum projected width, as a multiple of the blade's authored width (16 bits)
-//   bits 26-31 unused
+//   bit  26    the root height and normal come from the terrain's surface pages
+//   bits 27-31 unused
 inline constexpr uint32 kGrassFlagLodMask = 3u;
+inline constexpr uint32 kGrassFlagGroundFromPages = 1u << 26u;
 inline constexpr uint32 kGrassClumpCodeShift = 2u;
 inline constexpr uint32 kGrassClumpCodeMask = 255u;
 inline constexpr uint32 kGrassMinWidthScaleShift = 10u;
 inline constexpr uint32 kGrassMinWidthScaleMask = 65535u;
-
-// Ceiling on how far the minimum-projected-width floor may widen a blade — and, necessarily the
-// same number, the top of the range that floor is quantized over. A blade turned exactly edge-on
-// projects to zero width and would ask for an unbounded one; past this it is a sliver among slivers
-// and further widening only smears it. The two uses are one constant on purpose: encoding past the
-// ceiling would spend range the clamp discards, and encoding short of it would cap blades the clamp
-// was still meant to widen.
-inline constexpr float32 kGrassMaxWidthExpansion = 6.0f;
 
 // The clump attributes a blade inherits from the site it belongs to. Randoms rather than finished
 // values: the consumer scales each one by its own authored variance, so a variance of zero is
@@ -77,6 +73,7 @@ struct GrassClumpSample
     float32 ColorRand = 0.0f;  // [0,1) — clump tint / hue offset
     float32 HeightRand = 0.0f; // [0,1) — clump height multiplier
     float32 FacingRand = 0.0f; // [0,1) — clump common facing, as a fraction of a turn
+    float32 DistanceCells = 0.0f; // from the blade to the winning site, in clump cells
     int32 CellX = 0;           // winning lattice cell, for tests and debugging
     int32 CellZ = 0;
 };
@@ -138,6 +135,7 @@ inline GrassClumpSample GrassSampleClump(float32 worldX, float32 worldZ, float32
                 best.ColorRand = GrassHashToUnit(h2);
                 best.HeightRand = GrassHashToUnit(h3);
                 best.FacingRand = GrassHashToUnit(h4);
+                best.DistanceCells = std::sqrt(distanceSq);
                 best.CellX = cellX;
                 best.CellZ = cellZ;
             }
@@ -251,9 +249,9 @@ inline constexpr uint32 kGrassGustShift = 12u;
 inline uint32 GrassPackFarLodAndGustBits(float32 farLodTerm, float32 gust)
 {
     const uint32 lod = static_cast<uint32>(
-        std::floor(std::clamp(farLodTerm, 0.0f, 1.0f) * static_cast<float32>(kGrassFarLodLevels) + 0.5f));
+        std::floor(Math::Clamp01(farLodTerm) * static_cast<float32>(kGrassFarLodLevels) + 0.5f));
     const uint32 wind = static_cast<uint32>(
-        std::floor(std::clamp(gust, 0.0f, 1.0f) * static_cast<float32>(kGrassGustLevels) + 0.5f));
+        std::floor(Math::Clamp01(gust) * static_cast<float32>(kGrassGustLevels) + 0.5f));
     return kGrassCustomPackBias | lod | (wind << kGrassGustShift);
 }
 
@@ -303,8 +301,21 @@ inline float32 GrassUnpackTerrainNormalZBits(uint32 packed)
 // bit-identical to one with the height multiplier applied rather than merely indistinguishable.
 inline float32 GrassClumpHeightMultiplier(float32 heightRand, float32 variance)
 {
-    const float32 v = std::clamp(variance, 0.0f, 1.0f);
+    const float32 v = Math::Clamp01(variance);
     return 1.0f + (heightRand * 2.0f - 1.0f) * v;
+}
+
+// Distance from a tuft's site, in clump cells, at which its taper is complete. About the edge of a
+// tuft: half of all blades stand within 0.42 cells of their site and nine in ten within 0.68.
+inline constexpr float32 kGrassClumpTaperEdge = 0.75f;
+
+// The tuft's shape: 1 at the site, falling to 1 - taper at kGrassClumpTaperEdge and beyond. A taper
+// of 0 returns exactly 1.0, so an untapered field is bit-identical to one without the term.
+inline float32 GrassClumpTaperMultiplier(float32 distanceCells, float32 taper)
+{
+    const float32 x = Math::Clamp01(distanceCells / kGrassClumpTaperEdge);
+    const float32 edge = x * x * (3.0f - 2.0f * x);
+    return 1.0f - Math::Clamp01(taper) * edge;
 }
 
 } // namespace GameEngine::TerrainGrass

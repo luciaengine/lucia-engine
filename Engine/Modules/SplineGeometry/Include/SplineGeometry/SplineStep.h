@@ -20,7 +20,7 @@ namespace GameEngine::SplineGeometry
 // `pointDistances` are the Distances of the stations standing on the run's
 // interior authored points, ascending; on a welded loop the seam point is the
 // stream's two ends and is not listed. A corner's rings all stand at its point's
-// Distance: a Mitre's first ring takes the run before it and its Crease ring the
+// Distance: a Miter's first ring takes the run before it and its Crease ring the
 // run after. Any other station on a point — a round corner's fan, or the single
 // station of a smooth point — takes the higher of the two levels, and gains a
 // Crease copy on the side of the lower one, so every step is a Crease ring whose

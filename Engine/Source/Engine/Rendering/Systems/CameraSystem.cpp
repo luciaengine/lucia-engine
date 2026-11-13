@@ -7,7 +7,6 @@
 #include "Engine/Rendering/CameraAspectRatio.h"
 #include "Engine/Rendering/PlanetCameraFraming.h"
 #include "Engine/Rendering/RenderServices.h"
-#include "Engine/Rendering/TileMapCameraPixelGrid.h"
 
 namespace GameEngine { namespace Engine::Renderer {
 using namespace ::GameEngine::Rendering;
@@ -52,15 +51,6 @@ void CameraSystem::Update(ECS::World& world, float32 /*deltaTime*/) {
     // Transient: reverts once the planet is disabled or deleted.
     cameraComp.FarZ = ExpandFarClipForSphericalTerrain(world, cameraComp.FarZ);
 
-    // Same shape as the far clip above: an authored value resolved against the
-    // scene each frame. Auto pixel-perfect cameras take their texel density from
-    // the tilemap art rather than a hand-typed number. Transient, never persisted.
-    if (cameraComp.PixelPerfect && !cameraComp.Perspective)
-    {
-        cameraComp.PixelPerfectPixelsPerUnit =
-            static_cast<uint32>(ResolvePixelPerfectPixelsPerUnit(world, cameraComp));
-    }
-
     uint32 viewportW = 0;
     uint32 viewportH = 0;
     if (auto* device = rs->GetDevice())
@@ -68,15 +58,8 @@ void CameraSystem::Update(ECS::World& world, float32 /*deltaTime*/) {
         device->GetSwapchainSize(viewportW, viewportH);
     }
 
-    Matrix4x4 worldM;
-    float* worldData = worldM.Data();
-    for (int i = 0; i < 16; ++i)
-    {
-        worldData[i] = worldTransform.matrix[i];
-    }
-
     Camera activeCamera{};
-    activeCamera.worldTransform = worldM;
+    activeCamera.SetPose(worldTransform.ToMatrix4x4(Mathematics::Vector3{}), worldTransform.GetPosition());
     activeCamera.params = cameraComp;
 
     if (m_CameraId == 0) {
@@ -87,17 +70,17 @@ void CameraSystem::Update(ECS::World& world, float32 /*deltaTime*/) {
         // View targets (color/depth/resolve) are intentionally left for the
         // application/render-setup layer to configure via SetViewTargets or
         // SetViewTargetsFromRefs, since they depend on RenderGraph surfaces.
-        m_ViewId = rs->Views().AllocateView("Game View", m_CameraId);
-        // IMPORTANT: a view with no targets should not participate in pipeline validation
-        // or scheduling. Leave it disabled until a render-setup layer binds targets.
-        rs->Views().SetViewRenderLayerMask(m_ViewId, 0u);
+        // OnDemand and never armed: a view with no targets sleeps, so no extraction, culling or
+        // pass reads it.
+        m_ViewId = rs->Views().AllocateView("Game View", m_CameraId, Rendering::ViewPurpose::Game,
+                                            Rendering::ViewParticipation::OnDemand);
         rs->Views().SetViewWorldId(m_ViewId, world.GetWorldId());
     } else {
         rs->Views().SetViewCamera(m_ViewId, m_CameraId);
     }
 
     ApplyActiveCameraAspect(*rs, m_ViewId, m_CameraId, activeCamera, viewportW, viewportH);
-    rs->Views().SetCameraPostProcessMask(m_CameraId, cameraComp.PostProcessMask);
+    rs->Views().SetCameraVolumeLayers(m_CameraId, cameraComp.VolumeLayers);
 }
 
 } } // namespace GameEngine::Engine::Renderer

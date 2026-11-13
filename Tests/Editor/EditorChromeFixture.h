@@ -2,6 +2,7 @@
 
 #include "Panels/LogPanel.h"
 #include "Panels/LogView.h"
+#include "Core/ApplicationPaths.h"
 #include "Assets/AssetManager.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Platform/Shell.h"
@@ -61,7 +62,7 @@ struct EditorChromeHost
     {
         if (!Device) return;
         UIRegistration::RegisterBuiltInControls();
-        const auto staged = Platform::GetExecutablePath().parent_path() / "LogPanelFixtures" / "Editor";
+        const auto staged = ApplicationPaths::GetInstallAssetsRoot();
         for (const char* icon : {"copy.svg", "trash.svg", "checked.svg", "Log/pause.svg", "Log/resume.svg"})
             if (!std::filesystem::exists(staged / "Icons" / icon)) return;
         AssetSourceDesc source;
@@ -74,7 +75,7 @@ struct EditorChromeHost
         Ui->SetPlatform(&Platform);
         Ui->SetLayoutSizeOverride(800, 600);
         Ui->SetTextBlendGamma(1.0f);
-        for (const char* name : {"theme/tokens.css", "theme/core.css", "controls/Button.css", "theme/widgets.css"})
+        for (const char* name : {"theme/tokens.css", "theme/core.css", "controls/Button.css", "theme/widgets.css", "theme/views.css"})
         {
             std::ifstream input(staged / "UI" / name);
             if (!input) return;
@@ -119,7 +120,8 @@ struct EditorChromeHost
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
     }
-    Button* Action(const char* name) { return dynamic_cast<Button*>(ClassIn(Panel, name)); }
+    Button* Action(const char* id) { return dynamic_cast<Button*>(Panel->FindById(HashStringId(id))); }
+    LogView* View() { return dynamic_cast<LogView*>(Panel->FindById("LogView"_sid)); }
 };
 }
 

@@ -5,7 +5,7 @@
 #include "UI/SmartFolder/SmartFolderManager.h"
 #include "Editor/Vcs/EditorVcsProviderRegistry.h"
 #include "VCSIntegration/IVCSIntegration.h"
-#include "Types/Fnv1a.h"
+#include "Types/PathUtils.h"
 #include "Types/StringUtils.h"
 #include "VCSIntegration/VCSFileStatus.h"
 #include <algorithm>
@@ -16,12 +16,8 @@
 #include <sstream>
 #include <unordered_map>
 #include <cstring>
+#include "Image/ImageHeader.h"
 #include "Logger/Logger.h"
-#include <cctype>
-
-#ifdef GE_HAVE_STB
-#include <stb_image.h>
-#endif
 
 
 
@@ -52,31 +48,21 @@ static int GetStatusPriority(VCSFileStatus status)
 // Helper: Check if file is an image and get its dimensions
 static bool GetImageDimensions(const std::filesystem::path& path, int& outWidth, int& outHeight)
 {
-#ifdef GE_HAVE_STB
     if (!path.has_extension())
         return false;
     
-    std::string ext = path.extension().string();
-    for (auto& ch : ext)
-        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    const std::string ext = LowerCaseExtension(path);
     
     if (ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".bmp" && 
         ext != ".tga" && ext != ".gif" && ext != ".hdr" && ext != ".psd")
         return false;
     
-    int w = 0, h = 0, comp = 0;
-    if (stbi_info(path.string().c_str(), &w, &h, &comp))
-    {
-        outWidth = w;
-        outHeight = h;
-        return true;
-    }
-#else
-    (void)path;
-    (void)outWidth;
-    (void)outHeight;
-#endif
-    return false;
+    const Image::ImageHeader header = Image::ReadImageHeader(path);
+    if (!header.Valid)
+        return false;
+    outWidth = static_cast<int>(header.Width);
+    outHeight = static_cast<int>(header.Height);
+    return true;
 }
 
 static std::string FormatByteSize(uintmax_t bytes)
@@ -88,15 +74,15 @@ static std::string FormatByteSize(uintmax_t bytes)
     oss.setf(std::ios::fixed);
     if (bytes >= (uintmax_t)gb)
     {
-        oss << std::setprecision(1) << (bytes / gb) << " Gb";
+        oss << std::setprecision(1) << (bytes / gb) << " GB";
     }
     else if (bytes >= (uintmax_t)mb)
     {
-        oss << std::setprecision(1) << (bytes / mb) << " Mb";
+        oss << std::setprecision(1) << (bytes / mb) << " MB";
     }
     else if (bytes >= (uintmax_t)kb)
     {
-        oss << std::setprecision(0) << (bytes / kb) << " Kb";
+        oss << std::setprecision(0) << (bytes / kb) << " KB";
     }
     else
     {
@@ -126,20 +112,6 @@ static std::string FormatTime(const std::filesystem::file_time_type& ft)
     return oss.str();
 }
 
-static bool EqualsAsciiCaseInsensitive(const std::string& a, const std::string& b)
-{
-    if (a.size() != b.size())
-        return false;
-    for (size_t i = 0; i < a.size(); ++i)
-    {
-        const auto ac = static_cast<unsigned char>(a[i]);
-        const auto bc = static_cast<unsigned char>(b[i]);
-        if (std::tolower(ac) != std::tolower(bc))
-            return false;
-    }
-    return true;
-}
-
 static std::string DisplayNameForRootDirectory(const std::filesystem::path& dir)
 {
     const std::string fallback = dir.filename().string().empty() ? dir.string() : dir.filename().string();
@@ -158,7 +130,7 @@ static std::string DisplayNameForRootDirectory(const std::filesystem::path& dir)
     for (auto it = std::filesystem::directory_iterator(parent, ec); !ec && it != std::filesystem::end(it); ++it)
     {
         const std::string actualName = it->path().filename().string();
-        if (EqualsAsciiCaseInsensitive(actualName, requestedName))
+        if (EqualsIgnoreCase(actualName, requestedName))
             return actualName;
     }
     return fallback;
@@ -874,6 +846,18 @@ AssetsGridDataProvider::AssetsGridDataProvider() {
 
 namespace
 {
+static uint64_t Fnv1a64(const char* data, size_t len)
+{
+    // 64-bit FNV-1a
+    uint64_t hash = 1469598103934665603ull;
+    for (size_t i = 0; i < len; ++i)
+    {
+        hash ^= (uint64_t)(unsigned char)data[i];
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
 static uint64_t StableHashPath(const std::filesystem::path& p)
 {
     std::error_code ecAbs;
@@ -883,7 +867,7 @@ static uint64_t StableHashPath(const std::filesystem::path& p)
         abs = p;
     }
     const std::string key = abs.lexically_normal().generic_string();
-    return Hashing::Fnv1a64(key);
+    return Fnv1a64(key.data(), key.size());
 }
 } // namespace
 
@@ -1165,10 +1149,10 @@ void AssetsGridDataProvider::IndexItemForSearch(Item& item, const TagSortKeyReso
     item.searchType = ToLowerAscii(item.type);
     item.searchPath = ToLowerAscii(item.path.generic_string());
 
-    std::string extension = item.path.extension().string();
-    if (!extension.empty() && extension.front() == '.')
+    std::string extension = LowerCaseExtension(item.path);
+    if (!extension.empty())
         extension += " " + extension.substr(1);
-    item.searchExtension = ToLowerAscii(extension);
+    item.searchExtension = extension;
 
     item.searchTag.clear();
     if (!item.isDir && tags)
@@ -1382,8 +1366,7 @@ void AssetsGridDataProvider::LoadSearchFilesystemSupplement(
             if (registeredPaths.contains(AssetPathKey(p)))
                 continue;
 
-            std::string ext = p.has_extension() ? p.extension().string() : std::string();
-            for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
+            const std::string ext = LowerCaseExtension(p);
             item.type = !ext.empty() ? ext : std::string("File");
 
             // Preserve complete metadata for the small supplement set (and
@@ -1469,8 +1452,7 @@ AssetsGridDataProvider::DirectoryScan AssetsGridDataProvider::ScanDirectory(cons
             IndexItemForSearch(item, tags);
             scan.Dirs.emplace_back(std::move(item));
         } else {
-            std::string ext = p.has_extension() ? p.extension().string() : std::string();
-            for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
+            const std::string ext = LowerCaseExtension(p);
             item.type = !ext.empty() ? ext : std::string("File");
 
             // Cache file metadata once per directory snapshot (avoid per-sort/per-bind disk queries).
@@ -1615,8 +1597,7 @@ void AssetsGridDataProvider::LoadFiles(const std::vector<std::filesystem::path>&
         item.isDir = false;
         item.path = p;
 
-        std::string ext = p.has_extension() ? p.extension().string() : std::string();
-        for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
+        const std::string ext = LowerCaseExtension(p);
         item.type = !ext.empty() ? ext : std::string("File");
 
         // Cache file metadata (same as LoadDirectory) so list view shows size, dimensions, modified
@@ -1690,8 +1671,6 @@ void AssetsGridDataProvider::LoadRemoteItems(const std::vector<std::pair<std::fi
     {
         const std::filesystem::path& p = pair.first;
         const std::string& label = pair.second;
-        const std::string pathStr = p.generic_string();
-        const bool isVirtualPath = pathStr.rfind("polyhaven://", 0) == 0;
 
         Item item{};
         uint64_t h = StableHashPath(p) & 0x7FFFFFFFFFFFFFFFull;
@@ -1709,25 +1688,8 @@ void AssetsGridDataProvider::LoadRemoteItems(const std::vector<std::pair<std::fi
         item.label = label.empty() ? p.filename().string() : label;
         item.isDir = false;
         item.path = p;
+        // The file of a remote item is its thumbnail, so the item has no size and no dimensions.
         item.type = typeKey;
-
-        if (!isVirtualPath)
-        {
-            std::error_code ecSize;
-            const auto sz = std::filesystem::file_size(p, ecSize);
-            if (!ecSize)
-            {
-                item.sizeBytes = sz;
-                item.hasSizeBytes = true;
-            }
-            int imgW = 0, imgH = 0;
-            if (GetImageDimensions(p, imgW, imgH))
-            {
-                item.imgWidth = imgW;
-                item.imgHeight = imgH;
-                item.hasImageDimensions = true;
-            }
-        }
         IndexItemForSearch(item, m_TagSortKeyResolver);
         m_AllItems.emplace_back(std::move(item));
     }
@@ -1759,8 +1721,6 @@ void AssetsGridDataProvider::AppendRemoteItems(
     {
         const std::filesystem::path& p = pair.first;
         const std::string& label = pair.second;
-        const std::string pathStr = p.generic_string();
-        const bool isVirtualPath = pathStr.rfind("polyhaven://", 0) == 0;
 
         Item item{};
         uint64_t h = StableHashPath(p) & 0x7FFFFFFFFFFFFFFFull;
@@ -1778,25 +1738,8 @@ void AssetsGridDataProvider::AppendRemoteItems(
         item.label = label.empty() ? p.filename().string() : label;
         item.isDir = false;
         item.path = p;
+        // The file of a remote item is its thumbnail, so the item has no size and no dimensions.
         item.type = typeKey;
-
-        if (!isVirtualPath)
-        {
-            std::error_code ecSize;
-            const auto sz = std::filesystem::file_size(p, ecSize);
-            if (!ecSize)
-            {
-                item.sizeBytes = sz;
-                item.hasSizeBytes = true;
-            }
-            int imgW = 0, imgH = 0;
-            if (GetImageDimensions(p, imgW, imgH))
-            {
-                item.imgWidth = imgW;
-                item.imgHeight = imgH;
-                item.hasImageDimensions = true;
-            }
-        }
         IndexItemForSearch(item, m_TagSortKeyResolver);
         m_AllItems.emplace_back(std::move(item));
     }
@@ -1942,8 +1885,7 @@ void AssetsGridDataProvider::InjectPhantomsForCurrentDir(std::unordered_set<Grid
         Item item{};
         item.id = pid;
         item.label = abs.filename().string();
-        std::string ext = abs.has_extension() ? abs.extension().string() : std::string();
-        for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
+        const std::string ext = LowerCaseExtension(abs);
         item.type = !ext.empty() ? ext : std::string("MissingAsset");
         item.isDir = false;
         item.isUp = false;

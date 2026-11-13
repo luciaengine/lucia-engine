@@ -146,11 +146,10 @@ class SplineSceneSerialization : public testing::Test
 
     bool Load(ECS::World& world, const std::filesystem::path& path)
     {
-        Scene::SceneLoadDegradation degradation;
-        Scene::LoadOptions options;
-        options.outDegradation = &degradation;
-        const bool loaded = Scene::LoadSceneFromFile(world, path, options);
-        EXPECT_TRUE(loaded) << Scene::GetLastSceneIOError().message;
+        Scene::SceneReadOptions options;
+        const Scene::SceneInstantiateResult loaded = Scene::ReadSceneInto(world, path, options);
+        const Scene::SceneDegradation& degradation = loaded.Degradation;
+        EXPECT_TRUE(loaded) << loaded.Error->message;
         EXPECT_FALSE(degradation.IsDegraded());
         SplineECS::SplineExtractionSystem{}.Update(world, 0);
         return loaded && !degradation.IsDegraded();
@@ -164,7 +163,7 @@ TEST_F(SplineSceneSerialization, SaveIsPortableAndReloadOwnsIndependentGeometry)
     const auto originalEntity = Attach(original, originalHandle);
     const auto expected = Portable(original, originalEntity);
     const auto path = directory / "saved.scene";
-    ASSERT_TRUE(Scene::SaveSceneToFile(original, path));
+    ASSERT_TRUE(Scene::WriteSceneFile(original, path));
     const auto saved = Read(path);
     EXPECT_EQ(saved.find("SplineComponent."), std::string::npos) << saved;
     EXPECT_NE(saved.find("Spline.point1.position"), std::string::npos);
@@ -214,7 +213,7 @@ TEST_F(SplineSceneSerialization, AWallsSavedCornerWinsOverTheOneItsSplineWouldGi
     wall.Corner = Components::SplineWallCorner::Round;
     original.AddComponentImmediate(entity, wall);
     const auto path = directory / "wall.scene";
-    ASSERT_TRUE(Scene::SaveSceneToFile(original, path));
+    ASSERT_TRUE(Scene::WriteSceneFile(original, path));
 
     ECS::World loaded;
     ASSERT_TRUE(Load(loaded, path));
@@ -245,7 +244,7 @@ TEST_F(SplineSceneSerialization, AWallSavedWithoutACornerTakesTheOneItsSplineGiv
     const auto entity = Attach(original, handle);
     original.AddComponentImmediate(entity, Components::SplineWall{});
     const auto path = directory / "wall-no-corner.scene";
-    ASSERT_TRUE(Scene::SaveSceneToFile(original, path));
+    ASSERT_TRUE(Scene::WriteSceneFile(original, path));
     std::string text = Read(path);
     const size_t line = text.find("SplineWall.Corner = ");
     ASSERT_NE(line, std::string::npos) << text;
@@ -291,7 +290,7 @@ TEST_F(SplineSceneSerialization, StaleReflectedBlockIsDroppedWithAWarningInEithe
         ASSERT_FALSE(Stored(loaded, entity) == originalHandle);
         EXPECT_EQ(Portable(loaded, entity), portable);
         const auto resaved = directory / "canonical.scene";
-        ASSERT_TRUE(Scene::SaveSceneToFile(loaded, resaved));
+        ASSERT_TRUE(Scene::WriteSceneFile(loaded, resaved));
         EXPECT_EQ(Read(resaved).find("SplineComponent."), std::string::npos);
         EXPECT_EQ(Portable(original, originalEntity), portable);
     }
@@ -343,5 +342,167 @@ TEST_F(SplineSceneSerialization, ServiceHandleWordsAreTransientInReflection)
     EXPECT_TRUE(reflected.ApplyProperty(world, entity, {}, "splinedatageneration",
                                         std::to_string(other.Generation()), &error)) << error;
     EXPECT_TRUE(Stored(world, entity) == handle);
+}
+// The network's saved state is the member kind and the override records; a record's Other is
+// saved as the partner's scene id and names the partner again after the load, whichever
+// handle the load gives it. A slot whose Rule is None stays empty.
+TEST_F(SplineSceneSerialization, NetworkMemberAndOverridesRoundTripWithTheirPartner)
+{
+    ECS::World original;
+    const auto square = original.Create(Components::SceneEntityTag{"square"},
+        Components::SplineNetworkMember{Components::SplineNetworkMemberKind::Area}).GetHandle();
+    Components::SplineNetworkOverrides overrides;
+    overrides.Records[0] = {square, 12.5f, 40.25f, Components::SplineNodeRule::AtGrade};
+    overrides.Records[3] = {square, 0.0f, 7.75f, Components::SplineNodeRule::Attach};
+    original.Create(Components::SceneEntityTag{"lane"},
+        Components::SplineNetworkMember{Components::SplineNetworkMemberKind::Road}, overrides);
+    const auto path = directory / "network.scene";
+    ASSERT_TRUE(Scene::WriteSceneFile(original, path));
+    const auto saved = Read(path);
+    EXPECT_NE(saved.find("SplineNetworkMember."), std::string::npos) << saved;
+    EXPECT_NE(saved.find("SplineNetworkOverrides."), std::string::npos) << saved;
+
+    ECS::World loaded;
+    loaded.Create(Components::SceneEntityTag{"padding"});
+    ASSERT_TRUE(Load(loaded, path));
+    const auto loadedSquare = Find(loaded, "square");
+    const auto loadedLane = Find(loaded, "lane");
+    ASSERT_TRUE(loadedSquare.IsValid());
+    ASSERT_TRUE(loadedLane.IsValid());
+    ASSERT_NE(loaded.GetComponent<Components::SplineNetworkMember>(loadedSquare), nullptr);
+    EXPECT_EQ(loaded.GetComponent<Components::SplineNetworkMember>(loadedSquare)->Kind,
+              Components::SplineNetworkMemberKind::Area);
+    ASSERT_NE(loaded.GetComponent<Components::SplineNetworkMember>(loadedLane), nullptr);
+    EXPECT_EQ(loaded.GetComponent<Components::SplineNetworkMember>(loadedLane)->Kind,
+              Components::SplineNetworkMemberKind::Road);
+    const auto* records = loaded.GetComponent<Components::SplineNetworkOverrides>(loadedLane);
+    ASSERT_NE(records, nullptr);
+    for (uint32 slot = 0; slot < Components::kMaxSplineNetworkOverrides; ++slot)
+    {
+        const Components::SplineNetworkOverride& record = records->Records[slot];
+        if (slot != 0 && slot != 3)
+        {
+            EXPECT_EQ(record.Rule, Components::SplineNodeRule::None) << slot;
+            continue;
+        }
+        EXPECT_EQ(record.Other, loadedSquare) << slot;
+        EXPECT_EQ(record.ArcLengthMetres, overrides.Records[slot].ArcLengthMetres) << slot;
+        EXPECT_EQ(record.OtherArcLengthMetres, overrides.Records[slot].OtherArcLengthMetres) << slot;
+        EXPECT_EQ(record.Rule, overrides.Records[slot].Rule) << slot;
+    }
+}
+
+// A paving saves its fields and its members; a member's Entity is saved as the member's scene
+// id and names the member again after the load, whichever handle the load gives it.
+TEST_F(SplineSceneSerialization, PavingRoundTripsItsFieldsAndMembers)
+{
+    ECS::World original;
+    const auto bed = original.Create(Components::SceneEntityTag{"bed"}).GetHandle();
+    const auto lane = original.Create(Components::SceneEntityTag{"lane"},
+        Components::SplineNetworkMember{Components::SplineNetworkMemberKind::Road}).GetHandle();
+    Components::SplinePaving paved;
+    paved.MemberCount = 2;
+    paved.Members[0] = {bed, Components::SplinePavingMemberMode::Exclude};
+    paved.Members[1] = {lane, Components::SplinePavingMemberMode::Ignore};
+    paved.Seed = 7;
+    paved.BorderWidth = 0.45f;
+    paved.BorderHeight = 0.2f;
+    paved.BorderCorner = Components::SplineWallCorner::Round;
+    paved.Mouth = Components::SplinePavingMouth::Straight;
+    paved.MouthRadius = 2.5f;
+    paved.Seam = Components::SplinePavingSeam::StoneCourse;
+    paved.SeamBandTiles = 3.5f;
+    paved.SeamCourseWidth = 0.4f;
+    paved.SeamCourseMaterial.Set(GUID::Derive(GUID::Null(), "test/seam-course"));
+    paved.ConformTarget = Components::SplineConformTarget::Scene;
+    paved.GroundAuthority = Components::SplineGroundAuthority::None;
+    paved.CastShadows = false;
+    original.Create(Components::SceneEntityTag{"square"},
+        Components::SplineNetworkMember{Components::SplineNetworkMemberKind::Area}, paved);
+    const auto path = directory / "paved.scene";
+    ASSERT_TRUE(Scene::WriteSceneFile(original, path));
+    const std::string saved = Read(path);
+    EXPECT_NE(saved.find("SplinePaving."), std::string::npos) << saved;
+
+    ECS::World loaded;
+    loaded.Create(Components::SceneEntityTag{"padding"});
+    ASSERT_TRUE(Load(loaded, path));
+    const auto loadedSquare = Find(loaded, "square");
+    ASSERT_TRUE(loadedSquare.IsValid());
+    const auto* reloaded = loaded.GetComponent<Components::SplinePaving>(loadedSquare);
+    ASSERT_NE(reloaded, nullptr);
+    Components::SplinePaving expected = paved;
+    expected.Members[0].Entity = Find(loaded, "bed");
+    expected.Members[1].Entity = Find(loaded, "lane");
+    EXPECT_TRUE(expected.Members[0].Entity.IsValid());
+    EXPECT_TRUE(expected.Members[1].Entity.IsValid());
+    EXPECT_EQ(reloaded->MemberCount, expected.MemberCount);
+    for (uint32 i = 0; i < Components::kMaxPavingMembers; ++i)
+        EXPECT_EQ(reloaded->Members[i], expected.Members[i]) << i;
+    EXPECT_EQ(reloaded->Seed, expected.Seed);
+    EXPECT_EQ(reloaded->BorderWidth, expected.BorderWidth);
+    EXPECT_EQ(reloaded->BorderHeight, expected.BorderHeight);
+    EXPECT_EQ(reloaded->BorderCorner, expected.BorderCorner);
+    EXPECT_EQ(reloaded->Mouth, expected.Mouth);
+    EXPECT_EQ(reloaded->MouthRadius, expected.MouthRadius);
+    EXPECT_EQ(reloaded->Seam, expected.Seam);
+    EXPECT_EQ(reloaded->SeamBandTiles, expected.SeamBandTiles);
+    EXPECT_EQ(reloaded->SeamCourseWidth, expected.SeamCourseWidth);
+    EXPECT_EQ(reloaded->SeamCourseMaterial, expected.SeamCourseMaterial);
+    EXPECT_EQ(reloaded->ConformTarget, expected.ConformTarget);
+    EXPECT_EQ(reloaded->GroundAuthority, expected.GroundAuthority);
+    EXPECT_EQ(reloaded->CastShadows, expected.CastShadows);
+    EXPECT_EQ(reloaded->ReceiveShadows, expected.ReceiveShadows);
+    EXPECT_TRUE(*reloaded == expected);
+}
+
+// A road saves its verge and loads it back; a scene saved with no verge lines loads with the verge off
+// at its default size.
+TEST_F(SplineSceneSerialization, ARoadsVergeRoundTripsAndASceneWithoutItLoadsWithItOff)
+{
+    ECS::World original;
+    const auto entity = Attach(original, Create());
+    Components::SplineExtrude road{};
+    road.Verge = true;
+    road.VergeWidth = 0.45f;
+    road.VergeHeight = 0.2f;
+    road.VergeMaterial.Set(GUID::Derive(GUID::Null(), "verge-test-material"));
+    original.AddComponentImmediate(entity, road);
+    const auto path = directory / "verge.scene";
+    ASSERT_TRUE(Scene::WriteSceneFile(original, path));
+
+    ECS::World loaded;
+    ASSERT_TRUE(Load(loaded, path));
+    const auto reloaded = Find(loaded);
+    ASSERT_TRUE(reloaded.IsValid());
+    Stored(loaded, reloaded);
+    const auto* loadedRoad = loaded.GetComponent<Components::SplineExtrude>(reloaded);
+    ASSERT_NE(loadedRoad, nullptr);
+    EXPECT_TRUE(*loadedRoad == road);
+
+    std::string text = Read(path);
+    for (const std::string_view field : {"Verge = ", "VergeWidth = ", "VergeHeight = ", "VergeMaterial = "})
+    {
+        const size_t line = text.find("SplineExtrude." + std::string(field));
+        ASSERT_NE(line, std::string::npos) << field << "\n" << text;
+        text.erase(line, text.find('\n', line) + 1u - line);
+    }
+    const auto barePath = directory / "verge-bare.scene";
+    {
+        std::ofstream file(barePath, std::ios::trunc);
+        file << text;
+    }
+    ECS::World bare;
+    ASSERT_TRUE(Load(bare, barePath));
+    const auto bareEntity = Find(bare);
+    ASSERT_TRUE(bareEntity.IsValid());
+    Stored(bare, bareEntity);
+    const auto* bareRoad = bare.GetComponent<Components::SplineExtrude>(bareEntity);
+    ASSERT_NE(bareRoad, nullptr);
+    const Components::SplineExtrude defaults{};
+    EXPECT_FALSE(bareRoad->Verge);
+    EXPECT_EQ(bareRoad->VergeWidth, defaults.VergeWidth);
+    EXPECT_EQ(bareRoad->VergeHeight, defaults.VergeHeight);
+    EXPECT_TRUE(bareRoad->VergeMaterial.IsNull());
 }
 } // namespace

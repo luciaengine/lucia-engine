@@ -9,7 +9,7 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/QueryPool.h"
 #include "Rendering/Materials/MaterialBuilder.h"
-#include "Rendering/Materials/ShaderReflection.h"
+#include "Rendering/Materials/Shader/ShaderReflection.h"
 
 #include <algorithm>
 #include <array>
@@ -37,6 +37,27 @@ using Params = std::map<std::string, Value>;
 void Require(bool condition, const std::string& why)
 {
     if (!condition) throw std::runtime_error(why);
+}
+
+// The inputs the shipped pipeline binds to black when they do not resolve or their gate is off:
+// the optional and gated inputs of each ForwardPlus.rendergraph pass that runs the shader.
+std::vector<std::string> InputsBoundBlack(const std::string& shader)
+{
+    std::ifstream file(std::filesystem::path(GE_RENDERER_REPO_ROOT) / "Engine/Assets/RenderPipelines/ForwardPlus.rendergraph");
+    Require(file.is_open(), "missing ForwardPlus.rendergraph");
+    const auto graph = nlohmann::json::parse(file);
+    const std::string package = "Shaders/" + shader + ".shaderpkg";
+    std::vector<std::string> names;
+    for (const auto& pass : graph.at("passes"))
+    {
+        if (pass.value("shaderPkg", std::string()) != package) continue;
+        for (const auto& name : pass.value("optionalInputs", nlohmann::json::array()))
+            names.push_back(name.get<std::string>());
+        const nlohmann::json gates = pass.value("inputGates", nlohmann::json::object());
+        for (const auto& gate : gates.items())
+            names.push_back(gate.key());
+    }
+    return names;
 }
 
 struct Image

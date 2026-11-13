@@ -1,4 +1,5 @@
 #include "Engine/GameUI/GameUIHost.h"
+#include "Types/StringId.h"
 
 #include "Engine/GameUI/GameplayUI.h"
 #include "AssetCore/Asset.h"
@@ -74,6 +75,9 @@ GameUIHost::GameUIHost(Rendering::IDevice* device, AssetManager* assetManager,
     // scopes them to the editor's own chrome, so a developer who turns them on
     // does not take the game's function keys with them.
     m_UI->SetDebugKeysEnabled(false);
+    // The game UI draws in painter's order: the opaque pre-pass is proven
+    // pixel-identical on the editor overlay only.
+    m_UI->SetOpaquePrePassEnabled(false);
     // Keys follow focus on a game surface, never the cursor. The chrome fallback
     // — a key with nothing focused goes to the hovered element — would hand the
     // game's Space to whatever HUD button the pointer was left resting on.
@@ -129,7 +133,8 @@ void GameUIHost::ConfigureFonts(const std::filesystem::path& assetsDir)
     if (!reg.IsAssetRegistered(fontPath))
         reg.RegisterAsset(fontPath);
     const GUID fontGuid = reg.GetAssetGUID(fontPath);
-    const std::vector<uint8_t>& bytes = ReadDefaultFontBytesCached(fontPath.string());
+    const std::string fontPathText = fontPath.string();
+    const std::vector<uint8_t>& bytes = ReadDefaultFontBytesCached(fontPathText);
     if (!m_UI->SetDefaultFontBytes(bytes, fontGuid))
         Logger::Log::Warning("Game UI: failed to install default font '{}'", fontPath.string());
 
@@ -193,7 +198,7 @@ void GameUIHost::SyncFromWorld(ECS::World& world)
             if (st.SortOrder != doc.SortOrder)
             {
                 st.SortOrder = doc.SortOrder;
-                st.Root->Overrides().Set(Style::ZIndex, static_cast<int>(doc.SortOrder));
+                st.Root->Style().Set(Style::ZIndex, static_cast<int>(doc.SortOrder));
             }
 
             // Layout (.uxml): kick an async load on change, poll GetAsset, bind on the UI thread.
@@ -354,9 +359,9 @@ void GameUIHost::ApplyFullscreenOverlaySuppression()
         if (hide == st.OverlayHidden)
             continue;
         if (hide)
-            st.Root->Overrides().Set(Style::Display, DisplayMode::None);
+            st.Root->Style().Set(Style::Display, DisplayMode::None);
         else
-            st.Root->Overrides().Reset(Style::Display);
+            st.Root->Style().Reset(Style::Display);
         st.OverlayHidden = hide;
     }
 }
@@ -369,7 +374,7 @@ void GameUIHost::DropFocusInside(const UIElement& subtreeRoot)
     // Resolve the id the way the manager's own dispatch does, so this asks
     // exactly "is the element that would receive the next key inside the subtree
     // leaving the tree".
-    UIElement* focused = root ? root->FindById(m_UI->GetFocusedElementId()) : nullptr;
+    UIElement* focused = root ? root->FindById(HashStringId(m_UI->GetFocusedElementId())) : nullptr;
     for (UIElement* p = focused; p; p = p->GetParent())
     {
         if (p == &subtreeRoot)
@@ -417,13 +422,14 @@ UIElement* GameUIHost::FindElementById(std::string_view id, uint64_t* outOwnerEn
     // GE_GameUI_FindElement mints a DURABLE handle from a single lookup, so an
     // unstable winner would hand two callers handles into different documents and
     // every later write would follow the one that happened to win.
+    const StringId key = HashStringId(id);
     UIElement* found = nullptr;
     uint64_t bestId = ~uint64_t{0};
     for (const auto& [entityId, st] : m_Subtrees)
     {
         if (!st.Root)
             continue;
-        UIElement* el = st.Root->FindById(id);
+        UIElement* el = st.Root->FindById(key);
         if (!el)
             continue;
         if (entityId < bestId)
@@ -511,7 +517,7 @@ bool GameUIHost::OnMouseButton(int button, bool pressed, int mods)
         return false;
     // The click's mask is live platform state, and it is the only report of a
     // modifier that was already held when the window took focus.
-    m_UI->SyncModifierKeys(mods);
+    m_UI->ReconcileModifierKeys(mods);
     return DispatchMouseButton(button, pressed);
 }
 
@@ -634,7 +640,7 @@ void GameUIHost::Update(float deltaTime, uint32_t extentW, uint32_t extentH)
     if (GameUiDiagEnabled() && (m_FrameCounter <= 10 || (m_FrameCounter % 180) == 0))
     {
         UIElement* root = m_UI->GetRootElement();
-        UIElement* panel = root ? root->FindById("hud-panel") : nullptr;
+        UIElement* panel = root ? root->FindById(HashStringId("hud-panel")) : nullptr;
         if (root)
             Logger::Log::Info("[GameUI] Update override={}x{} rootRect=({},{},{},{}) panel={}", extentW, extentH,
                               root->GetLayoutX(), root->GetLayoutY(), root->GetLayoutWidth(),

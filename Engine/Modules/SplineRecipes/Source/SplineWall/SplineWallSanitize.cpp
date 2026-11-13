@@ -41,7 +41,7 @@ SplineWall SanitizeWallRecipe(const SplineWall& authored)
     if (authored.Grade != Components::SplineWallGrade::Racked &&
         authored.Grade != Components::SplineWallGrade::Stepped)
         clean.Grade = defaults.Grade;
-    if (authored.Corner != Components::SplineWallCorner::Mitre &&
+    if (authored.Corner != Components::SplineWallCorner::Miter &&
         authored.Corner != Components::SplineWallCorner::Round)
         clean.Corner = defaults.Corner;
     return clean;

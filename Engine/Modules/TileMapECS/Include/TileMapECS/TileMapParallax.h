@@ -1,6 +1,6 @@
 #pragma once
 
-#include "AssetCore/Types.h"
+#include "Types/Types.h"
 
 #include <cmath>
 
@@ -12,8 +12,8 @@ namespace TileMapECS
 /** World-space XY translation added to a layer's transform for parallax. */
 struct ParallaxOffset
 {
-    float32 X = 0.0f;
-    float32 Y = 0.0f;
+    float64 X = 0.0;
+    float64 Y = 0.0;
 
     bool operator==(const ParallaxOffset&) const = default;
 };
@@ -37,10 +37,8 @@ struct ParallaxOffset
  * -d*factor relative to the camera. A background at 0.5 slides half as far on
  * screen as a world-locked foreground at 1.0 — the parallax depth cue.
  *
- * Camera XY is the camera's FULL-WORLD position, matching the full-world
- * view-projection the tilemap vertex stage uses. The tilemap path never takes
- * the camera-relative (rebased) route, so the two cannot disagree about which
- * origin they are measured from.
+ * Camera XY and the slide stay in double world meters. The renderer subtracts
+ * the view's render origin after adding the slide, then rounds once for the GPU.
  *
  * The offset is a world-axis slide applied to the layer's world translation,
  * after any rotation, so it never tilts the layer out of its own plane.
@@ -53,17 +51,17 @@ struct ParallaxOffset
  * flickers back and forth by a texel. Pass 0 to leave the slide continuous.
  * Factor 1 stays exactly (0, 0) either way.
  */
-inline ParallaxOffset ComputeParallaxOffset(float32 cameraWorldX, float32 cameraWorldY,
+inline ParallaxOffset ComputeParallaxOffset(float64 cameraWorldX, float64 cameraWorldY,
                                             float32 parallaxX, float32 parallaxY,
                                             float32 worldUnitsPerTexelX,
                                             float32 worldUnitsPerTexelY)
 {
-    const auto slide = [](float32 camera, float32 factor, float32 texel)
+    const auto slide = [](float64 camera, float32 factor, float32 texel)
     {
         if (factor == 1.0f)
-            return 0.0f;
-        const float32 screenShift = camera * factor;
-        const float32 quantized =
+            return 0.0;
+        const float64 screenShift = camera * factor;
+        const float64 quantized =
             (texel > 0.0f) ? std::round(screenShift / texel) * texel : screenShift;
         return camera - quantized;
     };

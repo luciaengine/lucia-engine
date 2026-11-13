@@ -4,9 +4,10 @@
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
 #include "Editor/Entities/EditorComponentTraits.h"
+#include "Editor/Registries/MarkupActionRegistry.h"
 #include "EditorChangeNotifications.h"
 #include "InspectorRegistry.h"
-#include "Inspectors/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
 #include "Inspectors/InspectorColorSwatchRow.h"
 #include "Inspectors/InspectorUIHelpers.h"
 #include "UI/ContextMenuLabels.h"
@@ -16,11 +17,13 @@
 #include "Markups/MarkupNotesEditCommand.h"
 #include "Markups/MarkupPathInspector.h"
 #include "Markups/MarkupPresentation.h"
-#include "Markups/MarkupRegionInspector.h"
+#include "Markups/MarkupRegion/MarkupRegionInspector.h"
+#include "Types/StringUtils.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Dropdown.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/TextArea.h"
+#include "UI/Controls/InspectorActionButton.h"
 #include "UI/Controls/InspectorNotice.h"
 #include "UI/Controls/TextField.h"
 #include "UI/StyleProperties.h"
@@ -30,8 +33,8 @@
 #include <functional>
 #include <initializer_list>
 #include <memory>
-#include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -78,14 +81,11 @@ std::string JoinTags(const MarkupECS::MarkupNotes* notes)
 std::vector<std::string> SplitTags(const std::string& text)
 {
     std::vector<std::string> names;
-    std::stringstream stream(text);
-    std::string name;
-    while (std::getline(stream, name, ','))
+    for (const std::string_view field : Split(text, ','))
     {
-        const size_t first = name.find_first_not_of(" \t");
-        const size_t last = name.find_last_not_of(" \t");
-        if (first != std::string::npos)
-            names.push_back(name.substr(first, last - first + 1));
+        const std::string_view name = TrimWhitespaceView(field);
+        if (!name.empty())
+            names.emplace_back(name);
     }
     return names;
 }
@@ -258,7 +258,7 @@ TextArea* AddDescriptionRow(const InspectorContext& ctx, MarkupEditorBridge& bri
 }
 
 // One thread entry: a comment as a header (author, time) over its text; an action as one
-// muted line ("Agent set it to In progress · 5 min ago"). The kind classes are the ones the
+// muted line ("Agent set it to In Progress · 5 min ago"). The kind classes are the ones the
 // Activity tab's rows carry (MarkupEntryKindClass), styled alike in MarkupsPanel.css.
 std::unique_ptr<UIElement> BuildThreadEntry(const MarkupECS::MarkupEntry& entry, int64 now, MarkupEditorBridge& bridge,
                                             ECS::World& world)
@@ -306,7 +306,7 @@ std::unique_ptr<UIElement> BuildThreadEntry(const MarkupECS::MarkupEntry& entry,
     return item;
 }
 
-// The thread, boxed under its title, then the comment field and its Add comment button;
+// The thread, boxed under its title, then the comment field and its Add Comment button;
 // returns the two.
 std::pair<TextArea*, Button*> AddThread(const InspectorContext& ctx, MarkupEditorBridge& bridge, const MarkupECS::MarkupNotes* notes)
 {
@@ -367,7 +367,7 @@ std::pair<TextArea*, Button*> AddThread(const InspectorContext& ctx, MarkupEdito
     auto row = std::make_unique<UIElement>();
     row->AddClass("markup-inspector-comment-actions");
     auto add = std::make_unique<Button>();
-    add->SetText("Add comment");
+    add->SetText("Add Comment");
     add->AddClass("small");
     add->AddClass("secondary");
     add->RegisterEventHandler(kEventButtonClick, [addComment](UIEvent&) { addComment(); });
@@ -383,6 +383,65 @@ std::string CreatedChangedText(const Markup& markup, int64 now)
     const auto who = [](MarkupAuthor author) { return author == MarkupAuthor::Agent ? "the agent" : "you"; };
     return "Created " + RelativeTimeText(markup.CreatedUnix, now) + " by " + who(markup.Author) + " · changed " +
            RelativeTimeText(markup.UpdatedUnix, now) + " by " + who(markup.UpdatedBy);
+}
+
+// An action button off with `reason` as its tooltip, or on with none when `reason` is empty.
+void ShowActionReason(Button& button, const std::string& reason)
+{
+    if (button.IsEnabled() == reason.empty() && button.GetTooltip() == reason)
+        return;
+    button.SetEnabled(reason.empty());
+    button.SetTooltip(reason);
+}
+
+// The section's action strip, at its end: one inspector action button per action modules register
+// on mark-ups (MarkupActionRegistry), in their order, with its icon; no strip when none is
+// registered. One whose DisabledReason gives a reason is disabled with it as its tooltip. An
+// action runs in play mode too: it decides what it can do.
+void AddActionsRow(const InspectorContext& ctx)
+{
+    const std::vector<const MarkupAction*> actions = MarkupActionRegistry::Get().GetActions();
+    if (actions.empty())
+        return;
+    UIElement* cell = InspectorUI::AddActionRow(ctx.Parent, "markup-actions");
+    for (const MarkupAction* action : actions)
+    {
+        auto button = std::make_unique<EditorUI::InspectorActionButton>(action->Label, "");
+        button->SetId("MarkupAction:" + action->Id);
+        button->AddClass("markup-action");
+        // The registered icon, drawn in the button's icon slot.
+        for (const auto& child : button->GetChildren())
+        {
+            if (child->HasClass("inspector-action-icon") && !action->Icon.empty())
+                child->Style().Set(Style::BackgroundImage,
+                                       BackgroundImageSource{BackgroundImageSource::SourceKind::Path, GUID::Null(),
+                                                             action->Icon});
+        }
+        if (action->DisabledReason)
+        {
+            ShowActionReason(*button, action->DisabledReason(*ctx.World, ctx.Entity));
+            // The reason follows edits the section is not rebuilt for (a title typed in the
+            // inspector's header): one check a frame while the section is open.
+            if (ctx.FrameRefreshCallbacks)
+                ctx.FrameRefreshCallbacks->push_back([ctx, id = action->Id, raw = button.get()]() {
+                    for (const MarkupAction* current : MarkupActionRegistry::Get().GetActions())
+                    {
+                        if (current->Id == id && current->DisabledReason)
+                            ShowActionReason(*raw, current->DisabledReason(*ctx.World, ctx.Entity));
+                    }
+                });
+        }
+        button->RegisterEventHandler(kEventButtonClick, [ctx, id = action->Id](UIEvent&) {
+            for (const MarkupAction* current : MarkupActionRegistry::Get().GetActions())
+            {
+                if (current->Id != id)
+                    continue;
+                current->Action(*ctx.World, ctx.Entity);
+                return;
+            }
+        });
+        cell->AddChild(std::move(button));
+    }
 }
 
 // In play mode the section shows the notes read-only, under the notice the Mark-up tool
@@ -439,11 +498,20 @@ void BuildMarkupVolumeSection(const InspectorContext& ctx, MarkupEditorBridge& b
     RebuildOnPlayModeChange(ctx, bridge);
 }
 
-void RegisterSectionTitle(ECS::ComponentTypeId type, const char* title)
+// The mark-up glyph the Scene View tool strip's Mark-up entry shows (markup.svg): one class for the
+// inspector section header and the Add Component picker, one for the Hierarchy row.
+constexpr const char* kMarkupIconClass = "inspector-section-icon-markup";
+constexpr const char* kMarkupHierarchyRowClass = "hierarchy-entity-markup";
+
+void RegisterSectionTraits(ECS::ComponentTypeId type, const char* title, const char* hierarchyRowClass,
+                           std::string_view untitledName)
 {
     EditorComponentTraits traits;
     EditorComponentTraitsRegistry::Get().TryGet(type, traits);
     traits.DisplayName = title;
+    traits.UntitledName = untitledName;
+    traits.InspectorIconClass = kMarkupIconClass;
+    traits.HierarchyRowClass = hierarchyRowClass;
     EditorComponentTraitsRegistry::Get().Register(type, std::move(traits));
 }
 
@@ -451,8 +519,8 @@ void RegisterSectionTitle(ECS::ComponentTypeId type, const char* title)
 
 void RegisterMarkupInspector(MarkupEditorBridge& bridge)
 {
-    RegisterSectionTitle(ECS::GetComponentTypeId<Markup>(), "Mark-up");
-    RegisterSectionTitle(ECS::GetComponentTypeId<MarkupVolume>(), "Mark-up Volume");
+    RegisterSectionTraits(ECS::GetComponentTypeId<Markup>(), "Mark-up", kMarkupHierarchyRowClass, kUntitledMarkupName);
+    RegisterSectionTraits(ECS::GetComponentTypeId<MarkupVolume>(), "Mark-up Volume", "", {});
     InspectorRegistry::Get().RegisterComponentInspector<MarkupVolume>(
         [&bridge](const InspectorContext& ctx) { BuildMarkupVolumeSection(ctx, bridge); });
     RegisterMarkupRegionTraits();
@@ -469,11 +537,12 @@ void RegisterMarkupInspector(MarkupEditorBridge& bridge)
         Dropdown* status = AddStatusRow(ctx, bridge, *markup);
         AddColorRow(ctx, bridge, *markup);
         TextField* tags = AddTagsRow(ctx, bridge, notes);
-        InspectorUI::AddTextBlock(ctx.Parent, CreatedChangedText(*markup, bridge.Now()), "markup-inspector-history");
+        InspectorUI::AddInfoCard(ctx.Parent, CreatedChangedText(*markup, bridge.Now()));
         TextArea* description = AddDescriptionRow(ctx, bridge, notes);
         AddMarkupRegionBlock(ctx, bridge);
         AddMarkupPathBlock(ctx, bridge);
         const auto [comment, addComment] = AddThread(ctx, bridge, notes);
+        AddActionsRow(ctx);
         if (bridge.IsInPlayMode())
             ShowReadOnlyInPlay(ctx, firstChild, {status, tags, description, comment, addComment});
         RebuildOnPlayModeChange(ctx, bridge);

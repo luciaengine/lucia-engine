@@ -1,5 +1,6 @@
 #include "SplineGeometry/MeshPlaneCut.h"
 
+#include "Mathematics/Geometry.h"
 #include "Mathematics/Triangulation.h"
 #include "Mathematics/Vector2.h"
 #include "Types/FlatMap.h"
@@ -70,13 +71,13 @@ std::vector<CutVertex> ToCutVertices(const PieceMesh& mesh)
 CutVertex LerpVertex(const CutVertex& a, const CutVertex& b, float32 t)
 {
     CutVertex out;
-    out.Position = a.Position + (b.Position - a.Position) * t;
-    out.Normal = NormalizedOr(a.Normal + (b.Normal - a.Normal) * t, a.Normal);
-    out.UV = a.UV + (b.UV - a.UV) * t;
+    out.Position = Mathematics::Lerp(a.Position, b.Position, t);
+    out.Normal = NormalizedOr(Mathematics::Lerp(a.Normal, b.Normal, t), a.Normal);
+    out.UV = Mathematics::Lerp(a.UV, b.UV, t);
     const V3 tangentA(a.Tangent.x, a.Tangent.y, a.Tangent.z);
     const V3 tangentB(b.Tangent.x, b.Tangent.y, b.Tangent.z);
-    out.Tangent = V4(NormalizedOr(tangentA + (tangentB - tangentA) * t, tangentA), a.Tangent.w);
-    out.Color = a.Color + (b.Color - a.Color) * t;
+    out.Tangent = V4(NormalizedOr(Mathematics::Lerp(tangentA, tangentB, t), tangentA), a.Tangent.w);
+    out.Color = Mathematics::Lerp(a.Color, b.Color, t);
     return out;
 }
 
@@ -145,85 +146,6 @@ bool InsidePolygon(const std::vector<V2>& points, const std::vector<uint32>& loo
             inside = !inside;
     }
     return inside;
-}
-
-// Strictly inside a counter-clockwise triangle: a point on an edge is not.
-bool StrictlyInsideTriangle(const V2& a, const V2& b, const V2& c, const V2& p)
-{
-    return Mathematics::EarClipDetail::StrictlyInsideTriangle(a, b, c, p, kMinDoubledArea);
-}
-
-// Splices a clockwise hole into a counter-clockwise outline through the
-// outline vertex the hole's rightmost vertex can see (Eberly's bridge).
-void BridgeHole(const std::vector<V2>& points, std::vector<uint32>& outline,
-                const std::vector<uint32>& hole)
-{
-    size_t holeStart = 0;
-    for (size_t i = 1; i < hole.size(); ++i)
-    {
-        if (points[hole[i]].x > points[hole[holeStart]].x)
-            holeStart = i;
-    }
-    const V2 m = points[hole[holeStart]];
-
-    // The nearest outline edge the ray from M towards +x crosses.
-    float32 nearestX = std::numeric_limits<float32>::max();
-    size_t hitEdge = outline.size();
-    for (size_t i = 0; i < outline.size(); ++i)
-    {
-        const V2& a = points[outline[i]];
-        const V2& b = points[outline[(i + 1u) % outline.size()]];
-        const bool crosses = (a.y <= m.y && b.y >= m.y) || (a.y >= m.y && b.y <= m.y);
-        if (!crosses || a.y == b.y)
-            continue;
-        const float32 x = a.x + (m.y - a.y) * (b.x - a.x) / (b.y - a.y);
-        if (x >= m.x && x < nearestX)
-        {
-            nearestX = x;
-            hitEdge = i;
-        }
-    }
-    if (hitEdge == outline.size())
-        return;
-
-    const size_t edgeA = hitEdge;
-    const size_t edgeB = (hitEdge + 1u) % outline.size();
-    size_t visible = points[outline[edgeA]].x > points[outline[edgeB]].x ? edgeA : edgeB;
-    const V2 hit(nearestX, m.y);
-    // A reflex outline vertex inside the triangle M, hit, candidate blocks the
-    // view; the one nearest the ray's direction is then the visible one.
-    const V2 candidate = points[outline[visible]];
-    float32 bestAngle = std::numeric_limits<float32>::max();
-    for (size_t i = 0; i < outline.size(); ++i)
-    {
-        if (i == visible)
-            continue;
-        const V2& p = points[outline[i]];
-        const V2& previous = points[outline[(i + outline.size() - 1u) % outline.size()]];
-        const V2& next = points[outline[(i + 1u) % outline.size()]];
-        const bool reflex = Cross2(p - previous, next - p) <= 0.0f;
-        if (!reflex)
-            continue;
-        if (!StrictlyInsideTriangle(m, hit, candidate, p) &&
-            !StrictlyInsideTriangle(m, candidate, hit, p))
-            continue;
-        const V2 toP = p - m;
-        const float32 angle = std::abs(std::atan2(toP.y, toP.x));
-        if (angle < bestAngle)
-        {
-            bestAngle = angle;
-            visible = i;
-        }
-    }
-
-    std::vector<uint32> spliced;
-    spliced.reserve(outline.size() + hole.size() + 2u);
-    spliced.insert(spliced.end(), outline.begin(), outline.begin() + static_cast<ptrdiff_t>(visible) + 1);
-    for (size_t k = 0; k <= hole.size(); ++k)
-        spliced.push_back(hole[(holeStart + k) % hole.size()]);
-    spliced.push_back(outline[visible]);
-    spliced.insert(spliced.end(), outline.begin() + static_cast<ptrdiff_t>(visible) + 1, outline.end());
-    outline = std::move(spliced);
 }
 
 // How a cap is unwrapped: the unwrap of one face the plane cuts, continued
@@ -639,7 +561,7 @@ std::vector<uint32> TriangulateCap(CapOutlines& outlines)
         std::sort(inner.begin(), inner.end(), [&outlines](size_t a, size_t b)
                   { return LargestPointX(outlines, a) > LargestPointX(outlines, b); });
         for (const size_t hole : inner)
-            BridgeHole(outlines.Points, polygon, outlines.Loops[hole]);
+            Mathematics::BridgeHole(outlines.Points, polygon, outlines.Loops[hole], kEarClipTolerances);
         Mathematics::EarClip(outlines.Points, std::move(polygon), triangles, kEarClipTolerances);
     }
     return triangles;

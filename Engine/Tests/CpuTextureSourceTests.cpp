@@ -14,17 +14,16 @@
 #include "Engine/Rendering/TextureMipUpload.h"
 #include "Engine/Rendering/TextureService.h"
 #include "NativeScripting/UserSystemRegistry.h"
-#include "PathfindingECS/Components/NavigationAgent.h"
+#include "Components/Navigation/NavigationAgent.h"
 #include "PathfindingECS/Components/NavigationAgentState.h"
-#include "PathfindingECS/Components/NavigationGrid.h"
+#include "NavigationTestSurfaces.h"
 #include "PathfindingECS/NavigationService.h"
-#include "PathfindingECS/Systems/NavigationBuildSystem.h"
 #include "PathfindingECS/Systems/NavigationMovementSystem.h"
 #include "PathfindingECS/Systems/NavigationPathfindingSystem.h"
 #include "PathfindingECS/Systems/NavigationWorldHooks.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
 #include "Scripting/NativePostSimulationSystem.h"
-#include "Source/Vulkan/VulkanDevice.h"
+#include "Source/Vulkan/VulkanDevice/VulkanDevice.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -652,31 +651,23 @@ TEST_F(CpuTextureTest, ActualNavigationThenLateHookUploadsItsFirstRevisionInTheS
     PathfindingECS::RegisterNavigationWorldHooks(world);
     RenderServices services;
     ASSERT_TRUE(services.Initialize(&Device));
-    auto grid = world.Create();
-    Components::NavigationGrid desc;
-    desc.Width = 16;
-    desc.Depth = 16;
-    desc.CellSize = 1;
-    grid.Set(desc);
-    world.ProcessCommands();
-    PathfindingECS::NavigationBuildSystem{}.Update(world, .1f);
-    world.ProcessCommands();
-    const auto sourceGrid = *grid.Get<Components::NavigationGrid>();
-    ASSERT_TRUE(sourceGrid.Initialized);
+    auto grid = PathfindingECS::Testing::CreateFlatGridSurface(world, 16, 16, 1.0f);
+    const auto sourceGrid = *grid.Get<Components::NavigationSurface>();
+    ASSERT_EQ(sourceGrid.BakePhase, Components::NavigationBakePhase::Baked);
+    ASSERT_TRUE(PathfindingECS::ResolveNavigationSurfaceMap(world, sourceGrid).IsValid());
     auto actor = world.Create();
     Components::Transform transform;
-    transform.matrix[12] = 2.5f;
-    transform.matrix[14] = 2.5f;
+    transform.Position = Mathematics::WorldPosition{2.5, 0.0, 2.5};
     Components::WorldTransform worldTransform;
-    std::memcpy(worldTransform.matrix, transform.matrix, sizeof(transform.matrix));
+    worldTransform.Position = transform.Position;
+    worldTransform.Basis = transform.Basis;
     Components::NavigationAgent agent;
     agent.Speed = 3.5f;
     agent.Acceleration = 100.f;
     agent.StoppingDistance = .3f;
     agent.Radius = .25f;
     agent.AgentId = actor.GetHandle().id;
-    agent.NavMapIndex = sourceGrid.NavMapIndex;
-    agent.NavMapGeneration = sourceGrid.NavMapGeneration;
+    agent.Surface = grid.GetHandle();
     Components::NavigationAgentState nav;
     nav.HasDestination = true;
     nav.PathDirty = true;
@@ -705,13 +696,13 @@ TEST_F(CpuTextureTest, ActualNavigationThenLateHookUploadsItsFirstRevisionInTheS
         void OnDestroy(ECS::World&) override {}
         void OnUpdate(ECS::World& world, float) override
         {
-            InputX = world.GetComponent<Components::WorldTransform>(Actor)->matrix[12];
+            InputX = (world.GetComponent<Components::WorldTransform>(Actor)->GetPosition() - Mathematics::WorldPosition{}).x;
         }
         void OnPostSimulation(ECS::World& world, float) override
         {
             ++Posts;
-            PresentedX = world.GetComponent<Components::WorldTransform>(Actor)->matrix[12];
-            world.GetComponentForWrite<Components::MeshRenderer>(Actor)->renderLayerMask = 2;
+            PresentedX = (world.GetComponent<Components::WorldTransform>(Actor)->GetPosition() - Mathematics::WorldPosition{}).x;
+            world.GetComponentForWrite<Components::MeshRenderer>(Actor)->RenderLayers = GameEngine::Rendering::RenderLayerMask::FromLayer(1);
             CpuTextureSourceDesc desc{{world.GetWorldId(), world.GetLifecycleResetGeneration()},
                                       HashStringId("LateSight"),
                                       TextureFormat::R8G8_UNORM,
@@ -728,11 +719,11 @@ TEST_F(CpuTextureTest, ActualNavigationThenLateHookUploadsItsFirstRevisionInTheS
     services.Textures().ObserveCpuTextureWorld({world.GetWorldId(), world.GetLifecycleResetGeneration()});
     services.Textures().FlushPendingUploads();
     PathfindingECS::NavigationMovementSystem{}.Update(world, .1f);
-    ASSERT_GT(actor.Get<Components::WorldTransform>()->matrix[12], publisher.InputX);
+    ASSERT_GT(actor.Get<Components::WorldTransform>()->Position.X, publisher.InputX);
     NativePostSimulationSystem bridge(&services);
     bridge.Update(world, .1f);
     EXPECT_GT(publisher.PresentedX, publisher.InputX);
-    EXPECT_EQ(actor.Get<Components::MeshRenderer>()->renderLayerMask, 2u);
+    EXPECT_EQ(actor.Get<Components::MeshRenderer>()->RenderLayers.Bits, 2u);
     const auto binding = services.Textures().GetCpuTextureForView(world.GetWorldId(), HashStringId("LateSight"));
     ASSERT_TRUE(binding.Texture.IsValid());
     EXPECT_EQ(Read(binding), (std::vector{std::byte{17}, std::byte{255}}));

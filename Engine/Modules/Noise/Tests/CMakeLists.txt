@@ -5,6 +5,7 @@ if(NOT GTest_FOUND)
 endif()
 
 add_executable(NoiseTests
+    FractalNoise3DTests.cpp
     GradientCurl3DTests.cpp
     NoiseGoldenTests.cpp
 )
@@ -15,12 +16,6 @@ target_link_libraries(NoiseTests
         GTest::gtest
         GTest::gtest_main
 )
-
-# The byte-exact goldens were captured with separate multiply/add rounding.
-# Keep that instrument stable without changing production noise consumers.
-if(CMAKE_CXX_COMPILER_ID MATCHES "^(AppleClang|Clang|GNU)$")
-    target_compile_options(NoiseTests PRIVATE -ffp-contract=off)
-endif()
 
 set_target_properties(NoiseTests PROPERTIES
     CXX_STANDARD 20

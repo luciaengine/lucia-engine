@@ -18,6 +18,7 @@ export interface IpcConfig {
   assistantToken: string | null;
 }
 
+export const kDefaultIpcHost = "127.0.0.1";
 export const kDefaultIpcPort = 9999;
 
 function readPortEnv(): number {
@@ -38,7 +39,7 @@ function readTimeoutEnv(): number {
 }
 
 const config: IpcConfig = {
-  host: process.env.GE_EDITOR_DEBUG_HOST ?? "127.0.0.1",
+  host: process.env.GE_EDITOR_DEBUG_HOST ?? kDefaultIpcHost,
   port: readPortEnv(),
   timeoutMs: readTimeoutEnv(),
   assistantToken: process.env.GE_ASSISTANT_TOKEN || null,

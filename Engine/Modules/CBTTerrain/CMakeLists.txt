@@ -14,8 +14,7 @@ add_library(CBTTerrain OBJECT
     Source/CBTActivityReadback.cpp
     Source/CBTTreeAudit.cpp
     Source/TerrainShadowGrid.cpp
-    Source/SphereSculptLayer.cpp
-    Source/SphereSculptSerialization.cpp
+    Source/CBTPlanetRelief.cpp
 )
 
 target_compile_features(CBTTerrain PUBLIC cxx_std_20)
@@ -42,16 +41,8 @@ target_link_libraries(CBTTerrain
 # ---------------------------------------------------------------------------
 # int64 storage + spec constants target Vulkan 1.3 / SPIR-V 1.6 (matches the
 # engine's device). spirv-val runs explicitly to catch the findMSB(u64) trap
-# (plan §9) before the SPIR-V ever reaches a pipeline.
-find_package(Vulkan QUIET)
-set(_CBT_GLSLC_HINTS "${Vulkan_INCLUDE_DIRS}/../bin")
-if(VCPKG_DIR AND VCPKG_ARCH)
-    list(APPEND _CBT_GLSLC_HINTS
-        "${VCPKG_DIR}/installed/${VCPKG_ARCH}/tools"
-        "${VCPKG_DIR}/installed/${VCPKG_ARCH}/tools/shaderc")
-endif()
-find_program(CBT_GLSLC_EXECUTABLE glslc HINTS ${_CBT_GLSLC_HINTS})
-find_program(CBT_SPIRV_VAL_EXECUTABLE spirv-val HINTS ${_CBT_GLSLC_HINTS})
+# (plan §9) before the SPIR-V ever reaches a pipeline. GLSLC_EXECUTABLE and
+# SPIRV_VAL_EXECUTABLE come from the top level (cmake/GlslcCompiler.cmake).
 
 # The sources sit under Shaders/CBT so the repo layout MIRRORS the staged layout
 # (Assets/Shaders/CBT): material documents name their surface as 'CBT/cbt_surface.glsl',
@@ -61,22 +52,22 @@ set(CBT_SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/CBT)
 set(CBT_SHADER_OUTPUT_DIR ${CMAKE_BINARY_DIR}/Shaders)
 file(MAKE_DIRECTORY ${CBT_SHADER_OUTPUT_DIR})
 
-if(CBT_GLSLC_EXECUTABLE)
+if(GLSLC_EXECUTABLE)
     set(CBT_KERNELS_SRC ${CBT_SHADER_DIR}/cbt_kernels.comp)
     set(CBT_KERNELS_SPV ${CBT_SHADER_OUTPUT_DIR}/cbt_kernels.comp.spv)
-    set(_CBT_SHADER_TOOLS ${CBT_GLSLC_EXECUTABLE})
-    if(CBT_SPIRV_VAL_EXECUTABLE)
-        list(APPEND _CBT_SHADER_TOOLS ${CBT_SPIRV_VAL_EXECUTABLE})
+    set(_CBT_SHADER_TOOLS ${GLSLC_EXECUTABLE})
+    if(SPIRV_VAL_EXECUTABLE)
+        list(APPEND _CBT_SHADER_TOOLS ${SPIRV_VAL_EXECUTABLE})
     endif()
 
     set(_CBT_COMPILE_COMMANDS
-        COMMAND ${CBT_GLSLC_EXECUTABLE} --target-env=vulkan1.3 --target-spv=spv1.6
+        COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.3 --target-spv=spv1.6
                 -I ${CBT_SHADER_DIR} ${CBT_KERNELS_SRC} -o ${CBT_KERNELS_SPV}
                 -MD -MF ${CBT_KERNELS_SPV}.d)
-    if(CBT_SPIRV_VAL_EXECUTABLE)
+    if(SPIRV_VAL_EXECUTABLE)
         list(APPEND _CBT_COMPILE_COMMANDS
-            COMMAND ${CBT_SPIRV_VAL_EXECUTABLE} --target-env vulkan1.3 ${CBT_KERNELS_SPV})
-        message(STATUS "CBTTerrain: spirv-val enabled (${CBT_SPIRV_VAL_EXECUTABLE})")
+            COMMAND ${SPIRV_VAL_EXECUTABLE} --target-env vulkan1.3 ${CBT_KERNELS_SPV})
+        message(STATUS "CBTTerrain: spirv-val enabled (${SPIRV_VAL_EXECUTABLE})")
     else()
         message(STATUS "CBTTerrain: spirv-val not found; relying on glslc validation")
     endif()
@@ -95,12 +86,12 @@ if(CBT_GLSLC_EXECUTABLE)
     # run it as the SAME arm the web cook compiles to WGSL.
     set(CBT_KERNELS_HEAP32_SPV ${CBT_SHADER_OUTPUT_DIR}/cbt_kernels_heap32.comp.spv)
     set(_CBT_COMPILE_HEAP32_COMMANDS
-        COMMAND ${CBT_GLSLC_EXECUTABLE} --target-env=vulkan1.3 --target-spv=spv1.6
+        COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.3 --target-spv=spv1.6
                 -DGE_CBT_HEAP32 -I ${CBT_SHADER_DIR} ${CBT_KERNELS_SRC}
                 -o ${CBT_KERNELS_HEAP32_SPV} -MD -MF ${CBT_KERNELS_HEAP32_SPV}.d)
-    if(CBT_SPIRV_VAL_EXECUTABLE)
+    if(SPIRV_VAL_EXECUTABLE)
         list(APPEND _CBT_COMPILE_HEAP32_COMMANDS
-            COMMAND ${CBT_SPIRV_VAL_EXECUTABLE} --target-env vulkan1.3 ${CBT_KERNELS_HEAP32_SPV})
+            COMMAND ${SPIRV_VAL_EXECUTABLE} --target-env vulkan1.3 ${CBT_KERNELS_HEAP32_SPV})
     endif()
     add_custom_command(
         OUTPUT ${CBT_KERNELS_HEAP32_SPV}
@@ -206,6 +197,20 @@ if(BUILD_TESTING)
             COMMENT "Extracting the projection normal decode from cbt_surface.glsl"
             VERBATIM)
 
+        # The instance flags the terrain draw hands the fragment's receive-shadows gate.
+        set(CBT_INSTANCE_FLAGS_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/CBTInstanceFlagsExtracted.h)
+        add_custom_command(
+            OUTPUT ${CBT_INSTANCE_FLAGS_HEADER}
+            COMMAND ${CMAKE_COMMAND} -DSRC=${CBT_SHADER_DIR}/cbt_vertex_modifier.glsl
+                                     -DOUT=${CBT_INSTANCE_FLAGS_HEADER}
+                                     "-DBEGIN_MARKER=// GE_SHARED_CBT_INSTANCE_FLAGS_BEGIN"
+                                     "-DEND_MARKER=// GE_SHARED_CBT_INSTANCE_FLAGS_END"
+                                     -P ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ExtractShaderBlock.cmake
+            DEPENDS ${CBT_SHADER_DIR}/cbt_vertex_modifier.glsl
+                    ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ExtractShaderBlock.cmake
+            COMMENT "Extracting the instance flags from cbt_vertex_modifier.glsl"
+            VERBATIM)
+
         # The terrain's sun-space clearance map: the shared block the bake kernel and both shading
         # callers compile (the scan step, the per-sample caster, the receiver's lookup).
         set(TERRAIN_SHADOW_GLSL
@@ -261,13 +266,16 @@ if(BUILD_TESTING)
             ${CBT_BLEND_SELECTION_HEADER}
             ${CBT_TANGENT_DECODE_HEADER}
             ${CBT_PROJ_NORMAL_HEADER}
+            ${CBT_INSTANCE_FLAGS_HEADER}
             Tests/CBTMaterialBlendTests.cpp
             Tests/CBTProjNormalSignTests.cpp
+            Tests/CBTInstanceFlagsTests.cpp
             Tests/CBTLayoutTests.cpp
             Tests/CBTNearBiasTests.cpp
             Tests/CBTScreenTargetTests.cpp
             Tests/CBTResourceTests.cpp
             Tests/CBTKernelSetTests.cpp
+            Tests/CBTTestLogEnvironment.cpp
             Tests/CBTKernelWideVectorTests.cpp
             Tests/CBTInstanceTests.cpp
             Tests/CBTUpdateNodeTests.cpp
@@ -282,23 +290,17 @@ if(BUILD_TESTING)
             Tests/CBTScaleAuditTests.cpp
             Tests/CBTDemandAuditTests.cpp
             Tests/CBTSphereFaceMapTests.cpp
-            Tests/SphereSculptLayerTests.cpp
-            Tests/SphereSculptSerializationTests.cpp
-            Tests/SphereSculptShapeAccuracyTests.cpp
-            Tests/SphereSculptEscalationTests.cpp
-            Tests/SphereSculptUndoTests.cpp
             Tests/CBTPlanetShadingTests.cpp
-            Tests/CBTSphereSculptReEvalTests.cpp
-            Tests/CBTEditDrivenRetessTests.cpp
             Tests/CBTFarFieldDrainProbeTests.cpp
             Tests/CBTFarFieldReseedTests.cpp
-            Tests/CBTLookBackPriorityTests.cpp
             Tests/CBTPlanarDemandGateTests.cpp
             Tests/CBTBringUpDrainTests.cpp
+            Tests/CBTRestartRefineTests.cpp
             Tests/CBTPoolHealthTests.cpp
             Tests/CBTPlanarScaleAuditTests.cpp
             Tests/CBTNearFieldMergeTests.cpp
             Tests/CBTParentMergeMetricTests.cpp
+            Tests/CBTEditDrivenRetessTests.cpp
             Tests/CBTWatertightnessTests.cpp
             Tests/CBTContentAwareSplitTests.cpp
             Tests/CBTHeightChainTests.cpp
@@ -323,15 +325,10 @@ if(BUILD_TESTING)
             GTest::gtest_main
         )
         # OBJECT->OBJECT object files are not spliced transitively on the VS
-        # generator: splice Logger in directly (the Rendering tests do the same)
-        # and provide the stb_image impl that SkyRenderer pulls into
-        # GameEngineRendering but does not export.
-        target_sources(CBTTerrainTests PRIVATE $<TARGET_OBJECTS:Logger>)
-        target_link_libraries(CBTTerrainTests PRIVATE Image)
-        target_compile_definitions(CBTTerrainTests PRIVATE GE_HAVE_STB)
-        if(TARGET stb::stb)
-            target_link_libraries(CBTTerrainTests PRIVATE stb::stb)
-        endif()
+        # generator: splice Logger, Memory and Image (whose decode SkyRenderer calls)
+        # in directly, as the Rendering tests do.
+        target_sources(CBTTerrainTests PRIVATE $<TARGET_OBJECTS:Logger> $<TARGET_OBJECTS:Memory>
+            $<TARGET_OBJECTS:Image>)
         target_compile_definitions(CBTTerrainTests PRIVATE
             CBT_SHADER_OUTPUT_DIR="${CBT_SHADER_OUTPUT_DIR}"
             CBT_SHADER_SOURCE_DIR="${CBT_SHADER_DIR}"

@@ -66,7 +66,7 @@ TEST(ElementFactoryOwnershipTests, SweepTakesTheFactoryItsAliasesAndItsAttribute
     {
         std::unique_ptr<UIElement> el = reg.Create("ownedalpha");
         ASSERT_NE(el, nullptr);
-        reg.ApplyAttributes(*el, {{"ownedprobe", "applied"}}, std::string{});
+        reg.ApplyAttributes(*el, {{"ownedprobe", "applied"}}, std::string{}, {}, 0);
         EXPECT_EQ(static_cast<OwnedProxy&>(*el).Probe, "applied");
     }
 
@@ -84,7 +84,7 @@ TEST(ElementFactoryOwnershipTests, SweepTakesTheFactoryItsAliasesAndItsAttribute
     // any element that happens to carry the attribute name.
     {
         UIElement stranger;
-        reg.ApplyAttributes(stranger, {{"ownedprobe", "leaked"}}, std::string{});
+        reg.ApplyAttributes(stranger, {{"ownedprobe", "leaked"}}, std::string{}, {}, 0);
         // Nothing to assert on the stranger itself — the handler dynamic_casts and no-ops —
         // so assert on the channel, which is where the leak would live.
         EXPECT_EQ(reg.CountAttrHandlersOwnedBy(kOwnerA), 0u);

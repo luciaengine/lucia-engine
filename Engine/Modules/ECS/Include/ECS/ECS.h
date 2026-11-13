@@ -116,16 +116,16 @@ struct EntityHandle
         uint32 id;
     };
 
-    EntityHandle() : id(kInvalidEntity) {}
+    constexpr EntityHandle() : id(kInvalidEntity) {}
     EntityHandle(EntityIndex idx, EntityVersion ver) : index(idx), version(ver) {}
 
     static EntityHandle Invalid()
     {
         return EntityHandle();
     }
-    explicit EntityHandle(uint32 entityId) : id(entityId) {}
+    constexpr explicit EntityHandle(uint32 entityId) : id(entityId) {}
 
-    bool IsValid() const
+    constexpr bool IsValid() const
     {
         return id != kInvalidEntity;
     }
@@ -253,7 +253,8 @@ struct Command
         // World::SetEntityEnabledImmediate at flush: the same single move as an
         // immediate switch, so a queued switch keeps the derived tag exactly
         // where an immediate one would (see SetEntityEnabledImmediate).
-        SET_ENTITY_ENABLED
+        SET_ENTITY_ENABLED,
+        SET_COMPONENT_FROM_SCRIPT
     };
 
     Type type;

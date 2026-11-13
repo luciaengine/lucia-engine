@@ -21,7 +21,7 @@ std::unique_ptr<Label> MakeSpan(const std::string& text, const char* colorClass,
     if (colorClass)
         lbl->AddClass(colorClass);
     lbl->SetText(text);
-    lbl->Overrides().Set(Style::Color, argb);
+    lbl->Style().Set(Style::Color, argb);
     return lbl;
 }
 

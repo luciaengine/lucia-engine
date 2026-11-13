@@ -1,7 +1,7 @@
 #include "Rendering/Materials/MaterialValidation.h"
 
 #include "Rendering/Materials/MaterialDocument.h"
-#include "Rendering/Materials/ShaderPropertyTable.h"
+#include "Rendering/Materials/Shader/ShaderPropertyTable.h"
 #include "Types/NearestName.h"
 
 #include <unordered_map>

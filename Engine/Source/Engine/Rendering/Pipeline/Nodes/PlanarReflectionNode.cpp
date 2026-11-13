@@ -187,7 +187,7 @@ void PlanarReflectionNode::DeclareForView(ViewDeclare& d)
         const auto captureColor = BlurCapture(d, capture.Color, blurSigma, index);
         auto params = d.Frame.AllocUpload<Params>();
         if (!params.Valid()) continue;
-        std::memcpy(params.Ptr->ReflectionViewProj, capture.Camera.viewProj, sizeof(float) * 16);
+        std::memcpy(params.Ptr->ReflectionViewProj, capture.Camera.viewProj.Data(), sizeof(float) * 16);
         std::memcpy(params.Ptr->WorldToLocal, glm::value_ptr(plane.WorldToLocal), sizeof(float) * 16);
         std::memcpy(params.Ptr->Plane, glm::value_ptr(plane.Equation), sizeof(float) * 4);
         params.Ptr->Settings[0] = 1.0f;

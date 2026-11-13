@@ -1,5 +1,4 @@
 #pragma once
-#include <utility>
 
 #include "ConversationMessage.h"
 
@@ -34,15 +33,11 @@ public:
     /// (AgentConversationController::Send).
     static constexpr size_t kMaxMessageBytes = 64 * 1024;
 
-    /// Appends the user's message, with the `markups` its tokens named and the `files` picked with
-    /// it, and a Queued reply to be answered by `providerId` with `model` and `effort` (empty: the
-    /// provider's default).
-    TurnId AddTurn(std::string userText, std::vector<PromptFile> files,
-                   std::string providerId, std::string model,
-                   std::chrono::system_clock::time_point now);
-    TurnId AddTurn(std::string userText, std::string providerId, std::string model,
-                   std::chrono::system_clock::time_point now)
-    { return AddTurn(std::move(userText), {}, std::move(providerId), std::move(model), now); }
+    /// Appends the user's message, with the `markups` its tokens named, and a Queued reply
+    /// to be answered by `providerId` with `model` and `effort` (empty: the provider's default).
+    TurnId AddTurn(std::string userText, SentMarkups markups, std::string providerId, std::string model,
+                   std::string effort, std::chrono::system_clock::time_point now,
+                   std::vector<PromptFile> files = {});
     /// The reply of `turn` is being written: Queued becomes InProgress.
     void Start(TurnId turn);
     /// Appends streamed text and tool calls to the reply of `turn`, and marks the reply's

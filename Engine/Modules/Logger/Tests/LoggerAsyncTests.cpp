@@ -4,15 +4,24 @@
 #include "Logger/CallbackSink.h"
 #include "Logger/FileSink.h"
 #include "Logger/RingBufferSink.h"
-#include "TestTempDir.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
+#include <format>
 #include <fstream>
+#include <iostream>
 #include <iterator>
+#include <memory>
+#include <mutex>
+#include <sstream>
+#include <streambuf>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 namespace
@@ -51,29 +60,6 @@ class LoggerAsyncTest : public ::testing::Test
 // A) CORRECTNESS
 // ==========================================================================
 
-TEST_F(LoggerAsyncTest, OwnedSourceIsCopiedBeforeItsOwnerDies)
-{
-    auto captured = std::make_shared<std::vector<LogMessage>>();
-    auto sink = std::make_unique<CallbackSink>();
-    sink->RegisterCallback([captured](const LogMessage& message) { captured->push_back(message); });
-    Log::AddSink(std::move(sink));
-    {
-        OwnedSourceLocation source("owned.cpp", "ScopedFunction");
-        Log::LogWithSource(LogLevel::Info, source, 42, "owned {}", 7);
-        Log::LogWithSource(LogLevel::Info, source, 43, std::string_view("plain"));
-        Log::LogWithSource(LogLevel::Critical, source, 44, std::string_view("critical"));
-    }
-    Log::Flush();
-    const auto& messages = *captured;
-    ASSERT_EQ(messages.size(), 3u);
-    for (const auto& message : messages)
-    {
-        EXPECT_EQ(message.SourceFile, "owned.cpp");
-        EXPECT_EQ(message.Function, "ScopedFunction");
-    }
-}
-
-#if LOGGER_ENABLE_SOURCE_LOCATION && defined(_DEBUG)
 TEST_F(LoggerAsyncTest, SourceMacrosKeepCallerFunctionAndLine)
 {
     auto captured = std::make_shared<std::vector<LogMessage>>();
@@ -82,12 +68,18 @@ TEST_F(LoggerAsyncTest, SourceMacrosKeepCallerFunctionAndLine)
     Log::AddSink(std::move(sink));
     const int expectedLine = __LINE__ + 1;
     LOG_INFO("macro {}", 3);
+    LOG_CRITICAL("critical {}", 4);
     Log::Flush();
     const auto& messages = *captured;
-    ASSERT_EQ(messages.size(), 1u);
-    EXPECT_EQ(messages[0].SourceFile, __FILE__);
-    EXPECT_EQ(messages[0].Function, __FUNCTION__);
+    ASSERT_EQ(messages.size(), 2u);
+    for (const LogMessage& message : messages)
+    {
+        EXPECT_EQ(message.Channel, CoreLog().Index);
+        EXPECT_EQ(message.SourceFile, __FILE__);
+        EXPECT_TRUE(message.Function.ends_with("TestBody")) << message.Function;
+    }
     EXPECT_EQ(messages[0].SourceLine, expectedLine);
+    EXPECT_EQ(messages[1].SourceLine, expectedLine + 1);
 }
 
 TEST_F(LoggerAsyncTest, FilteredSourceMacroDoesNotEvaluateArguments)
@@ -97,7 +89,6 @@ TEST_F(LoggerAsyncTest, FilteredSourceMacroDoesNotEvaluateArguments)
     LOG_INFO("filtered {}", ++evaluations);
     EXPECT_EQ(evaluations, 0);
 }
-#endif
 
 TEST_F(LoggerAsyncTest, BasicMessageDelivery)
 {
@@ -117,7 +108,7 @@ TEST_F(LoggerAsyncTest, MessageOrdering_SingleThread)
     Log::Info("charlie");
     Log::Flush();
 
-    auto msgs = m_Spy->GetMessages();
+    auto msgs = m_Spy->GetMessages({}).Messages;
     ASSERT_EQ(msgs.size(), 3u);
     EXPECT_NE(msgs[0].Message.find("alpha"), std::string::npos);
     EXPECT_NE(msgs[1].Message.find("bravo"), std::string::npos);
@@ -171,8 +162,9 @@ TEST_F(LoggerAsyncTest, ShutdownDrainsRemaining)
 TEST_F(LoggerAsyncTest, BurstTrailingLinesFlushWithoutExplicitFlush)
 {
     namespace fs = std::filesystem;
-    const GameEngine::TestUtils::ScopedTempDir tempDir(GameEngine::TestUtils::MakeUniqueTempDirectory("ge_logger_burst_flush"));
-    const fs::path path = tempDir.Path() / "ge_logger_burst_flush.txt";
+    const fs::path path = fs::temp_directory_path() / "ge_logger_burst_flush.txt";
+    std::error_code ec;
+    fs::remove(path, ec);
 
     FileSink::Config cfg;
     cfg.filename = path.string().c_str();
@@ -209,6 +201,7 @@ TEST_F(LoggerAsyncTest, BurstTrailingLinesFlushWithoutExplicitFlush)
 
     // Release the file handle before removing the temp file.
     Log::ClearSinks();
+    fs::remove(path, ec);
 }
 
 // Log::Flush() must be a barrier all the way to the file, not just to the sink:
@@ -217,8 +210,9 @@ TEST_F(LoggerAsyncTest, BurstTrailingLinesFlushWithoutExplicitFlush)
 TEST_F(LoggerAsyncTest, ExplicitFlushReachesTheFileImmediately)
 {
     namespace fs = std::filesystem;
-    const GameEngine::TestUtils::ScopedTempDir tempDir(GameEngine::TestUtils::MakeUniqueTempDirectory("ge_logger_explicit_flush"));
-    const fs::path path = tempDir.Path() / "ge_logger_explicit_flush.txt";
+    const fs::path path = fs::temp_directory_path() / "ge_logger_explicit_flush.txt";
+    std::error_code ec;
+    fs::remove(path, ec);
 
     FileSink::Config cfg;
     cfg.filename = path.string().c_str();
@@ -243,14 +237,176 @@ TEST_F(LoggerAsyncTest, ExplicitFlushReachesTheFileImmediately)
     EXPECT_NE(content.find("pre-flush line 0"), std::string::npos);
 
     Log::ClearSinks();
+    fs::remove(path, ec);
 }
 #endif // LOGGER_ENABLE_FILE_LOGGING
 
-TEST(LoggerAsyncPreInitTest, LogBeforeInitialize_NoCrash)
+// With a level set and no Initialize, each line goes to std::cout as "[LEVEL] message".
+TEST(LoggerAsyncPreInitTest, LineBeforeInitializeGoesToStdout)
 {
-    // Logger is not initialized. Should not crash; output goes to stdout.
+    const LogLevel previousLevel = Log::GetLogLevel();
+    Log::SetLogLevel(LogLevel::Info);
+    std::stringbuf capture;
+    std::streambuf* const previousBuffer = std::cout.rdbuf(&capture);
+
     Log::Info("pre-init message");
     Log::Warning("another pre-init message");
+
+    std::cout.rdbuf(previousBuffer);
+    Log::SetLogLevel(previousLevel);
+    EXPECT_EQ(capture.str(), "[INFO] pre-init message\n[WARN] another pre-init message\n");
+}
+
+// Records the text std::cout receives. The first write of each thread waits, for at most kFirstWriteWait,
+// until a second thread writes: without a lock, the second write then starts while the first is in progress.
+class InterleaveProbeBuffer : public std::streambuf
+{
+  public:
+    std::string GetText() const
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        return m_Text;
+    }
+
+    bool SawOverlappingWrites() const
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        return m_SawOverlap;
+    }
+
+    // Returns false when no thread writes within kFirstWriteArrivalWait.
+    bool WaitForFirstWrite()
+    {
+        std::unique_lock<std::mutex> lock(m_Mutex);
+        return m_WriteArrived.wait_for(lock, kFirstWriteArrivalWait, [this] { return !m_Text.empty(); });
+    }
+
+  protected:
+    std::streamsize xsputn(const char* data, std::streamsize count) override
+    {
+        Record(std::string_view(data, static_cast<std::size_t>(count)));
+        return count;
+    }
+
+    int_type overflow(int_type ch) override
+    {
+        if (!traits_type::eq_int_type(ch, traits_type::eof()))
+        {
+            const char c = traits_type::to_char_type(ch);
+            Record(std::string_view(&c, 1));
+        }
+        return traits_type::not_eof(ch);
+    }
+
+  private:
+    static constexpr std::chrono::seconds kFirstWriteWait{1};
+    static constexpr std::chrono::seconds kFirstWriteArrivalWait{5};
+
+    void Record(std::string_view piece)
+    {
+        std::unique_lock<std::mutex> lock(m_Mutex);
+        m_SawOverlap = m_SawOverlap || m_WritesInProgress > 0;
+        ++m_WritesInProgress;
+        m_Text.append(piece);
+        const bool firstWrite = m_Writers.insert(std::this_thread::get_id()).second;
+        m_WriteArrived.notify_all();
+        if (firstWrite)
+            m_WriteArrived.wait_for(lock, kFirstWriteWait, [this] { return m_Writers.size() >= 2; });
+        --m_WritesInProgress;
+    }
+
+    mutable std::mutex m_Mutex;
+    std::condition_variable m_WriteArrived;
+    std::unordered_set<std::thread::id> m_Writers;
+    std::string m_Text;
+    int m_WritesInProgress = 0;
+    bool m_SawOverlap = false;
+};
+
+void LogLinesBeforeStart(int thread, int lineCount)
+{
+    for (int line = 0; line < lineCount; ++line)
+    {
+        // Each thread starts on a different fallback site: PushEntry, CriticalImpl or DispatchCritical.
+        const int site = (thread + line) % 3;
+        if (site == 0)
+            Log::Info("thread {} line {}", thread, line);
+        else if (site == 1)
+            Log::Critical("thread {} line {}", thread, line);
+        else
+            LOG_CRITICAL("thread {} line {}", thread, line);
+    }
+}
+
+TEST(LoggerAsyncPreInitTest, LinesFromSeveralThreadsArriveWhole)
+{
+    constexpr int kThreads = 4;
+    constexpr int kLinesPerThread = 20;
+    const LogLevel previousLevel = Log::GetLogLevel();
+    Log::SetLogLevel(LogLevel::Info);
+    InterleaveProbeBuffer probe;
+    std::streambuf* const previousBuffer = std::cout.rdbuf(&probe);
+
+    std::vector<std::thread> threads;
+    for (int thread = 0; thread < kThreads; ++thread)
+        threads.emplace_back(LogLinesBeforeStart, thread, kLinesPerThread);
+    for (auto& thread : threads)
+        thread.join();
+
+    std::cout.rdbuf(previousBuffer);
+    Log::SetLogLevel(previousLevel);
+
+    std::vector<std::string> expected;
+    for (int thread = 0; thread < kThreads; ++thread)
+    {
+        for (int line = 0; line < kLinesPerThread; ++line)
+            expected.push_back(std::format("[{}] thread {} line {}", (thread + line) % 3 == 0 ? "INFO" : "CRITICAL", thread, line));
+    }
+    std::vector<std::string> received;
+    std::istringstream text(probe.GetText());
+    for (std::string line; std::getline(text, line);)
+        received.push_back(line);
+    std::sort(expected.begin(), expected.end());
+    std::sort(received.begin(), received.end());
+    EXPECT_EQ(received, expected);
+    EXPECT_FALSE(probe.SawOverlappingWrites());
+}
+
+void LogOneLineBeforeStart()
+{
+    Log::Info("line before Initialize");
+}
+
+// The probe holds a fallback line while this thread starts the logger and logs. Initialize waits until the line
+// ends, so the line does not overlap the console sink's line.
+TEST(LoggerAsyncPreInitTest, InitializeWaitsForTheFallbackLineInProgress)
+{
+    const LogLevel previousLevel = Log::GetLogLevel();
+    Log::SetLogLevel(LogLevel::Info);
+    InterleaveProbeBuffer probe;
+    std::streambuf* const previousBuffer = std::cout.rdbuf(&probe);
+
+    std::thread writer(LogOneLineBeforeStart);
+    const bool fallbackLineArrived = probe.WaitForFirstWrite();
+    if (fallbackLineArrived)
+    {
+        Log::Config config;
+        config.GlobalMinLevel = LogLevel::Info;
+        config.EnableSourceLocation = false;
+        Log::Initialize(config);
+        Log::Info("line after Initialize");
+    }
+    writer.join();
+    Log::Shutdown();
+
+    std::cout.rdbuf(previousBuffer);
+    Log::SetLogLevel(previousLevel);
+
+    ASSERT_TRUE(fallbackLineArrived) << "the logger was initialized when the test started";
+    const std::string text = probe.GetText();
+    EXPECT_FALSE(probe.SawOverlappingWrites());
+    EXPECT_TRUE(text.starts_with("[INFO] line before Initialize\n")) << text;
+    EXPECT_NE(text.find("line after Initialize"), std::string::npos) << text;
 }
 
 TEST_F(LoggerAsyncTest, ReinitAfterShutdown)
@@ -271,21 +427,17 @@ TEST_F(LoggerAsyncTest, ReinitAfterShutdown)
     Log::Flush();
 
     EXPECT_GE(spy2->GetCount(), 1u);
-    auto msgs = spy2->GetMessages(LogLevel::Trace, 0, "after re-init");
-    EXPECT_EQ(msgs.size(), 1u);
+    const auto msgs = spy2->GetMessages({}).Messages;
+    EXPECT_EQ(std::count_if(msgs.begin(), msgs.end(), [](const auto& m) { return m.Message.find("after re-init") != std::string::npos; }), 1);
 }
 
-// A record logged right before ClearSinks or Initialize is usually still queued
-// when that call runs, but not always: the drain thread can win the race. The
-// tests below repeat the pair so that, in practice, some rounds hit a queued
-// record.
+// The drain thread can dispatch a record before ClearSinks or Initialize runs.
+// The tests repeat each pair so that some rounds meet a queued record.
 constexpr int kQueuedRecordRounds = 1000;
 
-// A capture removed right after the code under test logs must still receive
-// what that code logged.
 TEST_F(LoggerAsyncTest, ClearSinksDeliversQueuedRecordsToTheRemovedSinks)
 {
-    // Heap-owned: ClearSinks destroys the sinks, the count must outlive them.
+    // ClearSinks destroys the sinks, so the count lives on the heap.
     auto delivered = std::make_shared<std::atomic<int>>(0);
     for (int round = 0; round < kQueuedRecordRounds; ++round)
     {
@@ -304,8 +456,6 @@ TEST_F(LoggerAsyncTest, ClearSinksDeliversQueuedRecordsToTheRemovedSinks)
     EXPECT_EQ(delivered->load(), kQueuedRecordRounds);
 }
 
-// Initialize on a running logger reconfigures it; records still in the queue
-// belong to the installed sinks and must not be discarded.
 TEST_F(LoggerAsyncTest, InitializeOnARunningLoggerKeepsQueuedRecords)
 {
     for (int round = 0; round < kQueuedRecordRounds; ++round)
@@ -318,14 +468,42 @@ TEST_F(LoggerAsyncTest, InitializeOnARunningLoggerKeepsQueuedRecords)
     EXPECT_EQ(m_Spy->GetCount(), static_cast<size_t>(kQueuedRecordRounds));
 }
 
+// Initialize runs in a loop on a second thread, so some rounds call Flush while Initialize runs.
+TEST_F(LoggerAsyncTest, FlushRacingInitializeWaitsForItsRecord)
+{
+    std::atomic<bool> stop{false};
+    std::thread initializer([&stop]
+    {
+        while (!stop.load())
+        {
+            Log::Initialize({});
+        }
+    });
+    int returnedEarly = 0;
+    for (int round = 0; round < kQueuedRecordRounds; ++round)
+    {
+        const size_t countBefore = m_Spy->GetCount();
+        Log::Info("logged before Flush {}", round);
+        Log::Flush();
+        if (m_Spy->GetCount() <= countBefore)
+        {
+            ++returnedEarly;
+        }
+    }
+    stop = true;
+    initializer.join();
+
+    EXPECT_EQ(returnedEarly, 0);
+}
+
 TEST_F(LoggerAsyncTest, CriticalBypassesQueue)
 {
     // Critical is dispatched synchronously -- visible without Flush.
     Log::Critical("immediate");
 
     EXPECT_GE(m_Spy->GetCount(), 1u);
-    auto msgs = m_Spy->GetMessages(LogLevel::Critical, 0, "immediate");
-    EXPECT_EQ(msgs.size(), 1u);
+    const auto msgs = m_Spy->GetMessages({.MinLevel = LogLevel::Critical}).Messages;
+    EXPECT_EQ(std::count_if(msgs.begin(), msgs.end(), [](const auto& m) { return m.Message.find("immediate") != std::string::npos; }), 1);
 }
 
 TEST_F(LoggerAsyncTest, LevelFiltering)
@@ -341,7 +519,7 @@ TEST_F(LoggerAsyncTest, LevelFiltering)
     Log::Flush();
 
     EXPECT_EQ(m_Spy->GetCount(), 3u);
-    auto msgs = m_Spy->GetMessages();
+    auto msgs = m_Spy->GetMessages({}).Messages;
     for (const auto& m : msgs)
     {
         EXPECT_GE(m.Level, LogLevel::Warning);
@@ -354,7 +532,7 @@ TEST_F(LoggerAsyncTest, FormatStringWithMultipleArgs)
     Log::Flush();
 
     ASSERT_EQ(m_Spy->GetCount(), 1u);
-    auto msgs = m_Spy->GetMessages();
+    auto msgs = m_Spy->GetMessages({}).Messages;
     EXPECT_NE(msgs[0].Message.find("values:"), std::string::npos);
     EXPECT_NE(msgs[0].Message.find("hello"), std::string::npos);
 }
@@ -612,29 +790,3 @@ TEST_F(LoggerAsyncTest, MultiThreadThroughputRegression)
 }
 
 } // anonymous namespace
-
-namespace
-{
-GE_LOG_CHANNEL(AsyncTestChannel, "Tests.AsyncChannel", Warning)
-}
-
-TEST_F(LoggerAsyncTest, NamedChannelLevelOnlyChangesThatChannel)
-{
-    const auto& channel = AsyncTestChannel();
-    Log::SetChannelLevel(channel.Index, std::nullopt);
-    int evaluations = 0;
-    GE_LOG(AsyncTestChannel, Info, "channel info {}", ++evaluations);
-    EXPECT_EQ(evaluations, 0);
-    EXPECT_EQ(Log::GetChannelName(channel.Index), "Tests.AsyncChannel");
-
-    Log::SetChannelLevel(channel.Index, LogLevel::Info);
-    GE_LOG(AsyncTestChannel, Info, "channel info {}", ++evaluations);
-    Log::SetChannelLevel(channel.Index, LogLevel::Off);
-    GE_LOG(AsyncTestChannel, Error, "channel error {}", ++evaluations);
-    Log::Info("core info");
-    Log::Flush();
-    EXPECT_EQ(evaluations, 1);
-    EXPECT_EQ(m_Spy->GetMessages(LogLevel::Info, 0, "channel info").size(), 1u);
-    EXPECT_EQ(m_Spy->GetMessages(LogLevel::Info, 0, "core info").size(), 1u);
-    Log::SetChannelLevel(channel.Index, std::nullopt);
-}

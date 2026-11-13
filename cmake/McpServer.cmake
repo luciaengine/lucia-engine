@@ -36,50 +36,22 @@ function(ge_add_mcp_server_target)
     add_custom_target(McpServer DEPENDS "${server_entry}")
 endfunction()
 
-# The assistant resolves the server through the same content-root rule as other
-# staged data: Resources inside a macOS bundle, beside the executable elsewhere.
-# A stamp avoids reinstalling dependencies on every incremental Editor build.
+# The editor's AI Assistant runs the server from beside the editor executable
+# (<editor dir>/mcp/): the built dist/ and its production dependencies only. Staged
+# whenever the McpServer target builds; without that target the assistant's acting
+# modes say to build it. Call it from the directory that created McpServer.
 function(ge_stage_mcp_server_beside target)
     if(NOT TARGET McpServer)
         return()
     endif()
     find_program(mcp_npm NAMES npm.cmd npm PATHS ENV PATH NO_DEFAULT_PATH NO_CACHE)
     set(mcp_directory "${CMAKE_SOURCE_DIR}/mcp")
-    ge_get_staged_content_dir(${target} content_directory)
-    set(staged_directory "${content_directory}/mcp")
-    set(stage_stamp "${CMAKE_CURRENT_BINARY_DIR}/stage-stamps/mcp-${target}-$<CONFIG>.stamp")
-    set(stage_target "Stage${target}McpServer")
-    set(sign_commands "")
-    if(APPLE AND GE_CODESIGN_MAC_BUNDLE_POST_BUILD)
-        list(APPEND sign_commands
-            COMMAND ${CMAKE_COMMAND}
-                "-DGE_APP_BUNDLE=$<TARGET_BUNDLE_DIR:${target}>"
-                "-DGE_APP_EXECUTABLE=$<TARGET_FILE_DIR:${target}>/$<TARGET_FILE_NAME:${target}>"
-                "-DGE_CODESIGN_IDENTITY=${GE_MAC_CODESIGN_IDENTITY}"
-                -P "${CMAKE_SOURCE_DIR}/cmake/CodesignMacAppBundle.cmake")
-    endif()
-    add_custom_command(OUTPUT "${stage_stamp}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/stage-stamps"
+    set(staged_directory "$<TARGET_FILE_DIR:${target}>/mcp")
+    add_custom_command(TARGET McpServer POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${mcp_directory}/dist" "${staged_directory}/dist"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${mcp_directory}/package.json" "${mcp_directory}/package-lock.json" "${staged_directory}"
         COMMAND "${mcp_npm}" ci --prefix "${staged_directory}" --omit=dev --ignore-scripts --no-audit --no-fund
-        ${sign_commands}
-        COMMAND ${CMAKE_COMMAND} -E touch "${stage_stamp}"
-        DEPENDS "${mcp_directory}/dist/index.js" "${mcp_directory}/package.json"
-            "${mcp_directory}/package-lock.json" "${CMAKE_CURRENT_FUNCTION_LIST_FILE}"
-            "${CMAKE_SOURCE_DIR}/cmake/CodesignMacAppBundle.cmake"
-        COMMENT "Staging the MCP server for ${target}"
+        COMMENT "Staging the MCP server beside ${target}"
         VERBATIM)
-    add_custom_target(${stage_target} DEPENDS "${stage_stamp}")
-    add_dependencies(McpServer ${stage_target})
-    if(APPLE AND TARGET StageEditorBundleResources)
-        # All resource writers finish before this recipe signs an existing app.
-        # The Editor then finishes its own SDK staging and final signature.
-        add_dependencies(${stage_target} StageEditorManaged StageEditorAssets StageEditorShaders)
-        if(TARGET StageSteamDeckTools)
-            add_dependencies(${stage_target} StageSteamDeckTools)
-        endif()
-        add_dependencies(StageEditorBundleResources ${stage_target})
-    endif()
 endfunction()

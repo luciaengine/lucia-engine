@@ -49,7 +49,7 @@ struct FencePieceBounds
 };
 
 // A station is a post position whether or not a post mesh covers it: the
-// measured fence kits ship no standalone post, so an empty PostPool still
+// measured fence kits ship no standalone post, so an empty Post pool still
 // articulates its spans here.
 struct FenceStation
 {
@@ -67,7 +67,7 @@ struct FenceStation
 
 // Where one end of a span — or of a crest registered to it — is cut: on the
 // vertical plane through its station's base, perpendicular to the ground
-// bisector of the two spans that meet there (SpanMitre.h, MeasureSpanJoin).
+// bisector of the two spans that meet there (SpanMiter.h, MeasureSpanJoin).
 // Two equally thick pieces laid on the chords of a turn meet on it on both
 // faces; a thinner piece meets a thicker one with the step their thicknesses
 // make (fence design section 4c). Described in the piece's own frame, because
@@ -76,9 +76,9 @@ struct FenceStation
 struct FenceEndPlane
 {
     // False keeps the end square as modelled: no span beyond it, a post over
-    // the join, a notch under a millimetre, a turn past the mitre limit, or a
+    // the join, a notch under a millimetre, a turn past the miter limit, or a
     // span that borrowed its roll.
-    bool Mitred = false;
+    bool Mitered = false;
     // The plane's yaw away from square in the piece's frame, in radians: on
     // level ground the signed turn at the station, positive where the fence
     // turns right (SignedGroundYaw).
@@ -109,12 +109,12 @@ struct FenceSpan
     // picked and FencePieceBounds::Length() measured, which the emission lays
     // on the pose's Forward. 1 = the piece's authored length.
     float32 LengthScale = 1.0f;
-    // Active pool slot this span draws: a SpanPool slot, or a GatePool slot
+    // Active pool slot this span draws: a Span pool slot, or a Gate pool slot
     // when IsGate.
     uint32 PoolSlot = 0;
     // An override made this span a gate, drawn from GatePieces. A gate is laid
     // between its two stations exactly as a wall is, reserves its span of the
-    // crest row, and is mitred where it meets a span no post covers.
+    // crest row, and is mitered where it meets a span no post covers.
     bool IsGate = false;
     // Global span ordinal. An opening — a gate with no gate piece to draw —
     // places no span but keeps its ordinal, so the ordinals after it do not
@@ -123,7 +123,7 @@ struct FenceSpan
     uint32 Run = 0;          // authored point opening the run
     uint32 OrdinalInRun = 0; // position within the run's fill sequence
     // The planes the span's two ends are cut on where it meets a neighbour no
-    // post covers. A mitred end was laid longer by its overhang, which
+    // post covers. A mitered end was laid longer by its overhang, which
     // LengthScale already counts; square ends leave the span exactly as it
     // was laid between its stations.
     FenceEndPlane Start;
@@ -224,10 +224,10 @@ struct FenceLayoutParams
     FencePieceBounds PostPiece{};
     bool HasPostMesh = false;
 
-    // One entry per ACTIVE SpanPool slot, in slot order. Empty = no spans; the
+    // One entry per ACTIVE Span pool slot, in slot order. Empty = no spans; the
     // stations are then walked at the pitch and nothing is stretched.
     std::span<const FencePieceBounds> SpanPieces;
-    // One entry per ACTIVE GatePool slot, in slot order: what a gate override
+    // One entry per ACTIVE Gate pool slot, in slot order: what a gate override
     // draws. Empty leaves every gate an opening — the room of the wall it
     // replaced, with nothing in it.
     std::span<const FencePieceBounds> GatePieces;
@@ -239,10 +239,10 @@ struct FenceLayoutParams
     // With no override the result is byte-identical to one built without this.
     std::span<const Components::SplineSpanOverride> SpanOverrides;
 
-    // One entry per ACTIVE CrestPool slot, in slot order. Empty = no crest row,
+    // One entry per ACTIVE Crest pool slot, in slot order. Empty = no crest row,
     // and the result is then byte-identical to one built with none of it.
     std::span<const FencePieceBounds> CrestPieces;
-    // One entry per ACTIVE CapPool slot. End pieces offered to the remainder
+    // One entry per ACTIVE Cap pool slot. End pieces offered to the remainder
     // each run leaves beside a post, a tower or a gate; the longest that fits
     // closes it. Empty leaves the remainder bare, which the post covers.
     std::span<const FencePieceBounds> CapPieces;

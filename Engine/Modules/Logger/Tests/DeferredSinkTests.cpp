@@ -1,6 +1,7 @@
 // What a DeferredSink hands to the sink it attaches: every record it held, in
 // the order it was logged, ahead of anything logged after the attach.
 
+#include "DeathTestChild.h"
 #include "Logger/DeferredSink.h"
 
 #include <gtest/gtest.h>
@@ -34,22 +35,12 @@ class RecordingSink final : public LogSink
     void Write(const LogMessage& message) override { m_Received->push_back({message.Level, message.Message}); }
     void Flush() override {}
     bool ShouldLog(LogLevel level) const override { return level >= m_MinLevel; }
-    String GetName() const override { return "Recording"; }
+    std::string GetName() const override { return "Recording"; }
 
   private:
     std::vector<ReceivedRecord>* m_Received;
     LogLevel m_MinLevel;
 };
-
-// The child of a death test dies on a CRT assert; on Windows that assert would
-// otherwise raise a modal dialog and hang the child instead of ending it.
-void SuppressCrtDialogsInDeathTestChild()
-{
-#if defined(_WIN32)
-    _set_error_mode(_OUT_TO_STDERR);
-    _set_abort_behavior(0, _WRITE_ABORT_MSG);
-#endif
-}
 
 std::vector<std::string> Texts(const std::vector<ReceivedRecord>& records)
 {
@@ -134,7 +125,7 @@ TEST(DeferredSink, ASecondAttachAssertsInDevelopmentBuilds)
     GTEST_FLAG_SET(death_test_style, "threadsafe");
     EXPECT_DEATH(
         {
-            SuppressCrtDialogsInDeathTestChild();
+            GameEngine::TestUtils::SuppressCrtDialogsInDeathTestChild();
             std::vector<ReceivedRecord> received;
             DeferredSink deferred;
             deferred.Attach(std::make_unique<RecordingSink>(&received, LogLevel::Trace));
@@ -148,7 +139,7 @@ TEST(DeferredSink, AttachingNoSinkAssertsInDevelopmentBuilds)
     GTEST_FLAG_SET(death_test_style, "threadsafe");
     EXPECT_DEATH(
         {
-            SuppressCrtDialogsInDeathTestChild();
+            GameEngine::TestUtils::SuppressCrtDialogsInDeathTestChild();
             DeferredSink deferred;
             deferred.Attach(nullptr);
         },

@@ -23,13 +23,14 @@
 #include "Engine/Rendering/RenderWorldHooks.h"
 #include "Engine/Rendering/SceneResolveService.h"
 #include "Engine/Rendering/SkeletonResolveState.h"
+#include "JobSystem/TaskHandle.h"
 #include "Logger/Logger.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <optional>
+#include <span>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -38,18 +39,6 @@ namespace GameEngine
 {
 namespace Engine::Renderer
 {
-
-namespace { std::atomic_bool g_DeferredDisabledRendererLoading{false}; }
-
-void SetDeferredDisabledRendererLoading(bool deferred)
-{
-    g_DeferredDisabledRendererLoading.store(deferred, std::memory_order_relaxed);
-}
-
-bool GetDeferredDisabledRendererLoading()
-{
-    return g_DeferredDisabledRendererLoading.load(std::memory_order_relaxed);
-}
 
 namespace
 {
@@ -81,7 +70,8 @@ ModelAsset* ConvertLoadedModel(RenderServices& rs, const GUID& modelGuid, Asset*
     out.modelGuid = modelGuid;
     out.modelAsset = modelAsset;
     out.meshHandles = rs.GetMeshGPURegistry().RegisterModelMeshes(modelGuid, *modelAsset);
-    out.materials = ModelMaterialBridge::ConvertAll(modelGuid, modelAsset->GetMaterials());
+    out.materials = std::make_shared<const std::vector<ConvertedModelMaterial>>(
+        ModelMaterialBridge::ConvertAll(modelGuid, modelAsset->GetMaterials()));
     return modelAsset;
 }
 
@@ -103,7 +93,7 @@ ModelAsset* LoadAndConvertResources(RenderServices& rs, const GUID& modelGuid,
 void RegisterModelMaterials(RenderServices& rs, const ModelAsset& modelAsset, const ModelRenderResources& resources)
 {
     const auto& embeddedImages = modelAsset.GetEmbeddedImages();
-    for (const auto& cm : resources.materials)
+    for (const auto& cm : *resources.materials)
     {
         Material* mat = rs.RegisterAndPrewarmMaterial(cm.derivedGuid, cm.document);
         rs.Textures().ResolveEmbeddedTextures(mat, cm.document, resources.modelGuid, embeddedImages);
@@ -224,6 +214,17 @@ uint32 ResolveSubmeshIndex(const GUID& modelGuid, const ModelAsset& model,
     return 0;
 }
 
+const Rendering::MeshGPUEntry* FindRendererMeshEntry(const Rendering::MeshGPURegistry& registry,
+                                                     const Components::MeshRenderer& mr)
+{
+    const Rendering::MeshGPUEntry* entry = nullptr;
+    if (mr.meshGpuHandleId != 0u)
+        entry = registry.Find(Rendering::MeshGPUHandle(mr.meshGpuHandleId));
+    if (!entry && !mr.modelAssetGuid.IsNull())
+        entry = registry.FindByKey(Rendering::MeshGPUKey{mr.modelAssetGuid.ToGuid(), mr.meshId});
+    return entry;
+}
+
 std::optional<ModelRenderResources> RegisterModelRenderResources(
     RenderServices& rs, const GUID& modelGuid)
 {
@@ -246,6 +247,32 @@ std::optional<ModelRenderResources> RegisterLoadedModelRenderResources(
     return result;
 }
 
+JobSystem::TaskHandle ParseModelSurfacesOffThread(RenderServices& rs, const Asset& loadedAsset)
+{
+    const auto* modelAsset = dynamic_cast<const ModelAsset*>(&loadedAsset);
+    if (!modelAsset || !modelAsset->IsLoaded())
+        return {};
+    // A model names at most two surfaces, so list each name once: the material system resolves the path of each.
+    // The bridge sets no vertex modifier and no asset path, so the surface is all a document carries here.
+    std::vector<MaterialDocument> surfaces;
+    for (const ImportedMaterialData& material : modelAsset->GetMaterials())
+    {
+        const std::string_view surfaceShader = ModelMaterialBridge::SurfaceShaderOf(material);
+        const auto named = [surfaceShader](const MaterialDocument& surface) { return surface.surfaceShader == surfaceShader; };
+        if (std::none_of(surfaces.begin(), surfaces.end(), named))
+            surfaces.emplace_back().surfaceShader = surfaceShader;
+    }
+    return rs.Materials().ParseSurfacesOffThread(surfaces, {});
+}
+
+JobSystem::TaskHandle ParseMaterialSurfacesOffThread(RenderServices& rs, const Asset& loadedAsset)
+{
+    const auto* materialAsset = dynamic_cast<const MaterialAsset*>(&loadedAsset);
+    if (!materialAsset)
+        return {};
+    return rs.Materials().ParseSurfacesOffThread(std::span(&materialAsset->GetDocument(), 1), materialAsset->GetPath());
+}
+
 std::optional<ModelRenderResources> RegisterModelRenderResourcesForSubmesh(
     RenderServices& rs, const GUID& modelGuid, uint32 submeshIndex)
 {
@@ -258,10 +285,10 @@ std::optional<ModelRenderResources> RegisterModelRenderResourcesForSubmesh(
         return result;
 
     const uint32 matIdx = modelAsset->GetMesh(submeshIndex).MaterialIndex;
-    if (matIdx >= result.materials.size())
+    if (matIdx >= result.materials->size())
         return result;
 
-    const auto& cm = result.materials[matIdx];
+    const auto& cm = (*result.materials)[matIdx];
     const auto& embeddedImages = modelAsset->GetEmbeddedImages();
     Material* mat = rs.RegisterAndPrewarmMaterial(cm.derivedGuid, cm.document);
     rs.Textures().ResolveEmbeddedTextures(mat, cm.document, modelGuid, embeddedImages);
@@ -300,9 +327,9 @@ void PopulateMeshRenderer(Components::MeshRenderer& mr,
         if (submeshIndex < resources.modelAsset->GetMeshCount())
             materialIndex = resources.modelAsset->GetMesh(submeshIndex).MaterialIndex;
 
-        if (materialIndex < resources.materials.size())
+        if (resources.materials && materialIndex < resources.materials->size())
         {
-            const GUID& matGuid = resources.materials[materialIndex].derivedGuid;
+            const GUID& matGuid = (*resources.materials)[materialIndex].derivedGuid;
             mr.materialAssetGuid.Set(matGuid);
         }
     }
@@ -328,18 +355,15 @@ Components::LocalBounds ComputeModelBounds(const ModelAsset& modelAsset)
 std::vector<GUID> CollectStandaloneMaterialGuids(ECS::World& world, RenderServices& rs)
 {
     auto& matReg = rs.Materials().Registry();
-    const bool deferDisabled = GetDeferredDisabledRendererLoading();
 
     // Dedupe: many entities can share the same material; only register each once.
     std::unordered_set<GUID> seen;
     std::vector<GUID> needed;
     // Asset resolution binds handles for the scene as authored: an entity that
     // is switched off still needs its material and mesh when it comes back.
-    auto q = world.Query<ECS::Read<Components::MeshRenderer>>();
-    q.IncludeDisabled();
-    if (deferDisabled)
-        q.Without<ECS::ComponentDisabled<Components::MeshRenderer>>();
-    q.Each([&](const Components::MeshRenderer& mr)
+    world.Query<ECS::Read<Components::MeshRenderer>>()
+        .IncludeDisabled()
+        .Each([&](const Components::MeshRenderer& mr)
         {
             const GUID matGuid = mr.materialAssetGuid.ToGuid();
             if (matGuid.IsNull())
@@ -430,12 +454,9 @@ void ResolveStandaloneMaterials(ECS::World& world, RenderServices& rs)
 std::vector<UnresolvedModelEntity> CollectUnresolvedModelEntities(ECS::World& world)
 {
     std::vector<UnresolvedModelEntity> pending;
-    const bool deferDisabled = GetDeferredDisabledRendererLoading();
-    auto q = world.Query<ECS::Read<Components::MeshRenderer>>();
-    q.IncludeDisabled();
-    if (deferDisabled)
-        q.Without<ECS::ComponentDisabled<Components::MeshRenderer>>();
-    q.Each([&](ECS::EntityHandle e, const Components::MeshRenderer& mr)
+    world.Query<ECS::Read<Components::MeshRenderer>>()
+        .IncludeDisabled()
+        .Each([&](ECS::EntityHandle e, const Components::MeshRenderer& mr)
         {
             if (mr.meshGpuHandleId != 0)
                 return;
@@ -484,8 +505,7 @@ void ApplyModelRenderResources(ECS::World& world, RenderServices& rs, ECS::Entit
         Components::SkinnedMeshRenderer smr{};
         smr.meshId = 0;
         smr.skeletonId = resources.modelAsset->GetSkeletonId();
-        smr.renderLayerMask = updated.renderLayerMask;
-        smr.castShadows = updated.castShadows;
+        smr.castShadows = updated.shadowCasting != Components::ShadowCasting::Off;
         smr.receiveShadows = updated.receiveShadows;
         world.AddComponentImmediate(entity, smr);
     }
@@ -573,10 +593,6 @@ void BindChangedMeshRenderers(ECS::World& world, RenderServices& rs, ECS::Change
     q.IncludeDisabled();
     if (ECS::ChangeFilter::Enabled())
         q.Changed<Components::MeshRenderer>(gate);
-    // A renderer switched off binds nothing while loading is deferred. Switching it on moves the
-    // entity to an untagged chunk, which is stamped past the gate, so the next pass binds it.
-    if (GetDeferredDisabledRendererLoading())
-        q.Without<ECS::ComponentDisabled<Components::MeshRenderer>>();
     q.Each([&](ECS::EntityHandle entity, const Components::MeshRenderer& mr)
     {
         if (NeedsResolve(rs, mr))

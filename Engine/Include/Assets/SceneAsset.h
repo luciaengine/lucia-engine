@@ -6,8 +6,10 @@
 namespace GameEngine
 {
 
-/// Scene and prefab text share one authoring grammar.
-/// Scene::LoadSceneFromFile instantiates that text into an ECS World.
+// Human-readable scene text: a scene (.scene, AssetType::Scene) or a prefab (.prefab,
+// AssetType::Prefab), which share one grammar. This is primarily an editor-authoring format.
+// Runtime loading is performed by Scene::ReadSceneInto which consumes the file
+// and instantiates entities into an ECS World.
 class SceneAsset final : public Asset
 {
   public:
@@ -17,7 +19,7 @@ class SceneAsset final : public Asset
     }
 
     bool Load() override;
-    bool LoadFromData(const Vector<uint8>& data) override;
+    bool LoadFromData(std::span<const uint8> data) override;
     void Unload() override;
 
     const std::string& GetText() const { return m_Text; }

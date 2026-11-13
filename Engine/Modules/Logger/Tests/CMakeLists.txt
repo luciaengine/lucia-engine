@@ -15,13 +15,17 @@ endif()
 add_executable(LoggerAsyncTests
     LoggerAsyncTests.cpp
     LoggerOwnershipTests.cpp
+    LogChannelTests.cpp
+    LogChannelSecondUnit.cpp
+    FunctionNameTests.cpp
     DeferredSinkTests.cpp
     FileLogLevelTests.cpp
     FileSinkFormatTests.cpp
     FileSinkRotationTests.cpp
     FileSinkOpenFailureTests.cpp
     LoggerCrashFlushTests.cpp
-    SourceCStringTests.cpp
+    RingBufferSinkQueryTests.cpp
+    StdLibraryHardeningTests.cpp
 )
 
 target_link_libraries(LoggerAsyncTests
@@ -30,11 +34,12 @@ target_link_libraries(LoggerAsyncTests
         GTest::gtest
         GTest::gtest_main
 )
-target_include_directories(LoggerAsyncTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 
 target_include_directories(LoggerAsyncTests
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../Source
+        ${CMAKE_SOURCE_DIR}/Tests  # DeathTestChild.h
 )
 
 ge_set_output_tests(LoggerAsyncTests)
@@ -56,7 +61,7 @@ if(WIN32)
     get_target_property(_logger_test_host_sources Logger SOURCES)
     list(TRANSFORM _logger_test_host_sources PREPEND "${_logger_source_dir}/")
     add_library(LoggerModuleTestHost SHARED ${_logger_test_host_sources})
-    set_target_properties(LoggerModuleTestHost PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+    ge_windows_export_all_symbols(LoggerModuleTestHost)
     target_include_directories(LoggerModuleTestHost PUBLIC ../Include)
     target_include_directories(LoggerModuleTestHost PRIVATE $<TARGET_PROPERTY:Logger,INCLUDE_DIRECTORIES>)
     target_compile_definitions(LoggerModuleTestHost PRIVATE $<TARGET_PROPERTY:Logger,COMPILE_DEFINITIONS>)
@@ -72,15 +77,22 @@ if(WIN32)
     add_executable(LoggerModuleLifetimeTests LoggerModuleLifetimeTests.cpp)
     target_compile_definitions(LoggerModuleLifetimeTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
     target_link_libraries(LoggerModuleLifetimeTests PRIVATE LoggerModuleTestHost GTest::gtest_main)
+    target_include_directories(LoggerModuleLifetimeTests PRIVATE ../Source)
     add_dependencies(LoggerModuleLifetimeTests LoggerModuleProbe)
     ge_set_output_tests(LoggerModuleLifetimeTests)
     ge_stage_runtime_dependencies(LoggerModuleLifetimeTests)
     add_test(NAME LoggerModuleLifetimeTests COMMAND LoggerModuleLifetimeTests)
     set_tests_properties(LoggerModuleLifetimeTests PROPERTIES TIMEOUT 60 LABELS "Logger;Unit;DLL")
+
+    # A module in a folder that no loaded module shares, so its PDB is not in the search path.
+    add_library(DbgHelpSearchPathProbe SHARED DbgHelpSearchPathProbe.cpp)
+    ge_set_target_runtime_output_dir(DbgHelpSearchPathProbe "Tests/DbgHelpSearchPathProbe")
+    target_sources(LoggerAsyncTests PRIVATE DbgHelpSearchPathTests.cpp)
+    add_dependencies(LoggerAsyncTests DbgHelpSearchPathProbe)
 endif()
 
-add_executable(LoggerSourceLocationBenchmark SourceLocationBenchmark.cpp)
-target_link_libraries(LoggerSourceLocationBenchmark PRIVATE Logger)
-target_compile_features(LoggerSourceLocationBenchmark PRIVATE cxx_std_20)
-ge_set_output_tests(LoggerSourceLocationBenchmark)
-ge_stage_runtime_dependencies(LoggerSourceLocationBenchmark)
+add_executable(LoggerChannelBenchmark LogChannelBenchmark.cpp)
+target_link_libraries(LoggerChannelBenchmark PRIVATE Logger)
+target_compile_features(LoggerChannelBenchmark PRIVATE cxx_std_20)
+ge_set_output_tests(LoggerChannelBenchmark)
+ge_stage_runtime_dependencies(LoggerChannelBenchmark)

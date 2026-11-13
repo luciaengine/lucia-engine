@@ -1,10 +1,10 @@
 #include "AStarSolver.h"
 #include "HexGridHelpers.h"
-#include "Pathfinding/GridMap.h"
+#include "Mathematics/Angle.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
-#include <cstring>
 #include <limits>
 #include <vector>
 
@@ -12,8 +12,6 @@ namespace GameEngine::Pathfinding
 {
 
 static constexpr float32 kSqrt2 = 1.41421356f;
-static constexpr float32 kPi = 3.14159265358979323846f;
-static constexpr float32 kRadToDeg = 180.0f / kPi;
 static constexpr float32 kReservationPenalty = 3.0f;
 static constexpr float32 kInfinity = std::numeric_limits<float32>::max();
 
@@ -28,50 +26,149 @@ struct NodeCompare
     bool operator()(const AStarNode& a, const AStarNode& b) const { return a.FCost > b.FCost; }
 };
 
-bool AStarSolver::Solve(const GridMap& grid, uint32 startIndex, uint32 endIndex,
-                         uint32 excludeAgentId, float32 currentTime,
-                         uint32 agentCellRadius,
-                         std::vector<uint32>& outPathCellIndices)
+namespace
+{
+
+template <class T>
+uint64 CapacityBytes(const std::vector<T>& buffer)
+{
+    return static_cast<uint64>(buffer.capacity()) * sizeof(T);
+}
+
+template <class T>
+void FreeBuffer(std::vector<T>& buffer)
+{
+    std::vector<T>().swap(buffer);
+}
+
+// True when an agent of `agentCellRadius` cells fits on the cell: the square of cells around it is on the
+// grid and open. A zero radius tests the cell only.
+bool IsFootprintClear(const GridMap::ReadView& grid, uint32 cellX, uint32 cellZ, uint32 agentCellRadius)
+{
+    if (agentCellRadius == 0)
+        return !grid.IsCellBlocked(cellX, cellZ);
+    const auto& settings = grid.GetSettings();
+    const int32 radius = static_cast<int32>(agentCellRadius);
+    for (int32 offsetZ = -radius; offsetZ <= radius; ++offsetZ)
+    {
+        for (int32 offsetX = -radius; offsetX <= radius; ++offsetX)
+        {
+            const int32 footprintX = static_cast<int32>(cellX) + offsetX;
+            const int32 footprintZ = static_cast<int32>(cellZ) + offsetZ;
+            if (footprintX < 0 || footprintX >= static_cast<int32>(settings.Width) || footprintZ < 0 ||
+                footprintZ >= static_cast<int32>(settings.Depth))
+                return false;
+            if (grid.IsCellBlocked(static_cast<uint32>(footprintX), static_cast<uint32>(footprintZ)))
+                return false;
+        }
+    }
+    return true;
+}
+
+// True when the step from a cell at `fromHeight` onto (cellX, cellZ), `baseCost` cells across, is within the
+// grid's step height and slope. It reads the same in both directions.
+bool IsStepWithinLimits(const GridMap::ReadView& grid, float32 fromHeight, uint32 cellX, uint32 cellZ, float32 baseCost)
+{
+    const auto& settings = grid.GetSettings();
+    const float32 heightDiff = std::abs(grid.GetCellHeight(cellX, cellZ) - fromHeight);
+    if (heightDiff > settings.MaxStepHeight)
+        return false;
+    const float32 horizontalDist = baseCost * settings.CellSize;
+    return horizontalDist <= 0.0f || Mathematics::ToDegrees(std::atan2(heightDiff, horizontalDist)) <= settings.MaxSlope;
+}
+
+} // namespace
+
+uint64 AStarSolver::HeldBytes() const
+{
+    return CapacityBytes(m_GScore) + CapacityBytes(m_Parent) + CapacityBytes(m_CellFlags) + CapacityBytes(m_VisitStamp);
+}
+
+void AStarSolver::ReleaseScratchAbove(uint32 maxCells)
+{
+    if (m_GScore.capacity() <= maxCells)
+        return;
+    // A solve resizes the buffers before it stamps a cell, and a resize stamps the cells it adds 0,
+    // which is never the current generation: emptied buffers need no other reset.
+    FreeBuffer(m_GScore);
+    FreeBuffer(m_Parent);
+    FreeBuffer(m_CellFlags);
+    FreeBuffer(m_VisitStamp);
+}
+
+GridSolveEnd AStarSolver::Solve(const GridMap::ReadView& grid, uint32 startIndex, uint32 endIndex,
+                                 uint32 excludeAgentId, float32 currentTime,
+                                 uint32 agentCellRadius,
+                                 std::vector<uint32>& outPathCellIndices, uint32& outExpansions)
 {
     outPathCellIndices.clear();
+    outExpansions = 0;
 
     if (startIndex == endIndex)
     {
         outPathCellIndices.push_back(startIndex);
-        return true;
+        return GridSolveEnd::Reached;
     }
 
     const uint32 cellCount = grid.GetCellCount();
     if (startIndex >= cellCount || endIndex >= cellCount)
-        return false;
+        return GridSolveEnd::Refused;
 
     uint32 startX = 0, startZ = 0, endX = 0, endZ = 0;
     grid.CellFromIndex(startIndex, startX, startZ);
     grid.CellFromIndex(endIndex, endX, endZ);
     if (grid.IsCellBlocked(startX, startZ) || grid.IsCellBlocked(endX, endZ))
-        return false;
+        return GridSolveEnd::Refused;
+    // A goal outside the start's region cannot be reached: fail here, before the scratch is sized,
+    // instead of expanding every cell the start reaches.
+    if (!grid.InSameRegion(startIndex, endIndex))
+        return GridSolveEnd::OtherRegion;
 
-    const uint32 maxIterations = std::min(cellCount * 2, static_cast<uint32>(65536));
+    // The regions see only static blocking and heights, so dynamic obstacles, slopes or the agent's width
+    // can still shut in a goal they join to the start. A footprint that does not fit on the goal cell
+    // never reaches it.
+    if (!IsFootprintClear(grid, endX, endZ, agentCellRadius))
+        return GridSolveEnd::Unreachable;
 
+    // Every cell is expanded at most once (the closed set), so a path that exists is found however
+    // far it detours. The flood from the goal (ExpandGoalSide) ends a solve to a shut-in goal after
+    // about twice the cells the goal's enclosure holds.
+    const uint32 maxExpansions = cellCount;
+
+    // Growth reserves exactly cellCount, so capacity is the largest grid solved on: ReleaseScratchAbove
+    // compares it with a grid's cell count, and geometric growth would leave more than any grid needs.
+    if (cellCount > m_GScore.capacity())
+    {
+        m_GScore.reserve(cellCount);
+        m_Parent.reserve(cellCount);
+        m_CellFlags.reserve(cellCount);
+        m_VisitStamp.reserve(cellCount);
+    }
     m_GScore.resize(cellCount);
     m_Parent.resize(cellCount);
-    m_Closed.resize(cellCount);
-
-    std::fill_n(m_GScore.data(), cellCount, kInfinity);
-    std::fill_n(m_Parent.data(), cellCount, UINT32_MAX);
-    std::memset(m_Closed.data(), 0, cellCount);
+    m_CellFlags.resize(cellCount);
+    m_VisitStamp.resize(cellCount);
+    BeginGeneration();
 
     std::vector<AStarNode> openList;
     openList.reserve(256);
 
+    Visit(startIndex);
     m_GScore[startIndex] = 0.0f;
     openList.push_back({startIndex, Heuristic(grid, startIndex, endIndex)});
 
-    uint32 iterations = 0;
-    while (!openList.empty() && iterations < maxIterations)
-    {
-        ++iterations;
+    // The flood from the goal: the cells it reached in order, the next one to expand, and whether it
+    // still runs. It starts at the first expansion past kStartSideOnlyExpansions, so a short solve
+    // does not allocate it.
+    std::vector<uint32> goalSideCells;
+    size_t goalSideNext = 0;
+    bool goalSideRuns = true;
 
+    // Local counters: m_CellFlags is a uint8 buffer, so its stores may alias a counter behind a reference.
+    uint32 expansions = 0;
+    uint32 goalSideExpansions = 0;
+    while (!openList.empty() && expansions < maxExpansions)
+    {
         std::pop_heap(openList.begin(), openList.end(), NodeCompare{});
         AStarNode current = openList.back();
         openList.pop_back();
@@ -82,15 +179,37 @@ bool AStarSolver::Solve(const GridMap& grid, uint32 startIndex, uint32 endIndex,
             while (idx != UINT32_MAX)
             {
                 outPathCellIndices.push_back(idx);
+                assert(outPathCellIndices.size() <= cellCount &&
+                       "AStarSolver: the parent chain loops; a cell on it was not visited in this generation");
                 idx = m_Parent[idx];
             }
             std::reverse(outPathCellIndices.begin(), outPathCellIndices.end());
-            return true;
+            outExpansions = expansions + goalSideExpansions;
+            return GridSolveEnd::Reached;
         }
 
-        if (m_Closed[current.CellIndex])
+        if (m_CellFlags[current.CellIndex] & kClosedFlag)
             continue;
-        m_Closed[current.CellIndex] = 1;
+        m_CellFlags[current.CellIndex] |= kClosedFlag;
+        ++expansions;
+
+        if (goalSideRuns && expansions > kStartSideOnlyExpansions)
+        {
+            if (goalSideCells.empty())
+            {
+                Visit(endIndex);
+                m_CellFlags[endIndex] |= kGoalSideFlag;
+                goalSideCells.push_back(endIndex);
+            }
+            ++goalSideExpansions;
+            const GoalSideStep step = ExpandGoalSide(grid, agentCellRadius, goalSideCells, goalSideNext);
+            if (step == GoalSideStep::Exhausted)
+            {
+                outExpansions = expansions + goalSideExpansions;
+                return GridSolveEnd::Unreachable;
+            }
+            goalSideRuns = step == GoalSideStep::Continue;
+        }
 
         uint32 neighbors[8];
         float32 baseCosts[8];
@@ -101,64 +220,22 @@ bool AStarSolver::Solve(const GridMap& grid, uint32 startIndex, uint32 endIndex,
         grid.CellFromIndex(current.CellIndex, cx, cz);
         const float32 currentHeight = grid.GetCellHeight(cx, cz);
 
-        for (uint32 i = 0; i < neighborCount; ++i)
+        for (uint32 slot = 0; slot < neighborCount; ++slot)
         {
-            const uint32 neighbor = neighbors[i];
-            if (m_Closed[neighbor])
+            const uint32 neighbor = neighbors[slot];
+            if (IsClosed(neighbor))
                 continue;
 
             uint32 nx = 0, nz = 0;
             grid.CellFromIndex(neighbor, nx, nz);
 
-            // Check if the agent footprint at this cell is fully walkable
-            bool footprintClear = true;
-            if (agentCellRadius > 0)
-            {
-                const auto& settings = grid.GetSettings();
-                const int32 r = static_cast<int32>(agentCellRadius);
-                for (int32 fdz = -r; fdz <= r && footprintClear; ++fdz)
-                {
-                    for (int32 fdx = -r; fdx <= r && footprintClear; ++fdx)
-                    {
-                        const int32 fx = static_cast<int32>(nx) + fdx;
-                        const int32 fz = static_cast<int32>(nz) + fdz;
-                        if (fx < 0 || fx >= static_cast<int32>(settings.Width) ||
-                            fz < 0 || fz >= static_cast<int32>(settings.Depth))
-                        {
-                            footprintClear = false;
-                            continue;
-                        }
-                        if (grid.IsCellBlocked(static_cast<uint32>(fx), static_cast<uint32>(fz)))
-                        {
-                            footprintClear = false;
-                        }
-                    }
-                }
-            }
-            else
-            {
-                footprintClear = !grid.IsCellBlocked(nx, nz);
-            }
-
-            if (!footprintClear)
+            if (!IsFootprintClear(grid, nx, nz, agentCellRadius) ||
+                !IsStepWithinLimits(grid, currentHeight, nx, nz, baseCosts[slot]))
                 continue;
 
-            const float32 heightDiff = std::abs(grid.GetCellHeight(nx, nz) - currentHeight);
-            const float32 horizontalDist = baseCosts[i] * grid.GetSettings().CellSize;
+            float32 moveCost = baseCosts[slot] * grid.GetCellCost(nx, nz);
 
-            if (heightDiff > grid.GetSettings().MaxStepHeight)
-                continue;
-
-            if (horizontalDist > 0.0f)
-            {
-                const float32 slopeDeg = std::atan2(heightDiff, horizontalDist) * kRadToDeg;
-                if (slopeDeg > grid.GetSettings().MaxSlope)
-                    continue;
-            }
-
-            float32 moveCost = baseCosts[i] * grid.GetCellCost(nx, nz);
-
-            const CellReservation& reservation = grid.GetCellReservation(nx, nz);
+            const CellReservation reservation = grid.Reservation(nx, nz);
             if (reservation.IsActive(currentTime) && reservation.AgentId != excludeAgentId)
             {
                 // Occupancy is a tax, not a wall. Movement still refuses
@@ -168,8 +245,11 @@ bool AStarSolver::Solve(const GridMap& grid, uint32 startIndex, uint32 endIndex,
             }
 
             const float32 tentativeG = m_GScore[current.CellIndex] + moveCost;
-            if (tentativeG < m_GScore[neighbor])
+            if (tentativeG < GScore(neighbor))
             {
+                if (IsGoalSide(neighbor))
+                    goalSideRuns = false;
+                Visit(neighbor);
                 m_GScore[neighbor] = tentativeG;
                 m_Parent[neighbor] = current.CellIndex;
                 const float32 fCost = tentativeG + Heuristic(grid, neighbor, endIndex);
@@ -179,10 +259,86 @@ bool AStarSolver::Solve(const GridMap& grid, uint32 startIndex, uint32 endIndex,
         }
     }
 
-    return false;
+    outExpansions = expansions + goalSideExpansions;
+    return GridSolveEnd::Unreachable;
 }
 
-void AStarSolver::GetNeighbors(const GridMap& grid, uint32 cellIndex,
+// Expands the oldest cell of the flood from the goal. A cell joins the flood by a step the search from the
+// start can take the other way: the same diagonal rule, step limits and footprint test. A cell with a finite
+// GScore is on the start's side and ends the flood before the footprint test: the start cell has no such test.
+AStarSolver::GoalSideStep AStarSolver::ExpandGoalSide(const GridMap::ReadView& grid, uint32 agentCellRadius,
+                                                      std::vector<uint32>& goalSideCells, size_t& goalSideNext)
+{
+    if (goalSideNext == goalSideCells.size())
+        return GoalSideStep::Exhausted;
+    const uint32 cell = goalSideCells[goalSideNext++];
+
+    uint32 neighbors[8];
+    float32 baseCosts[8];
+    uint32 neighborCount = 0;
+    GetNeighbors(grid, cell, neighbors, baseCosts, neighborCount);
+
+    uint32 cx = 0, cz = 0;
+    grid.CellFromIndex(cell, cx, cz);
+    const float32 cellHeight = grid.GetCellHeight(cx, cz);
+
+    for (uint32 slot = 0; slot < neighborCount; ++slot)
+    {
+        const uint32 neighbor = neighbors[slot];
+        if (IsGoalSide(neighbor))
+            continue;
+        uint32 nx = 0, nz = 0;
+        grid.CellFromIndex(neighbor, nx, nz);
+        if (!IsStepWithinLimits(grid, cellHeight, nx, nz, baseCosts[slot]))
+            continue;
+        if (GScore(neighbor) < kInfinity)
+            return GoalSideStep::MetStart;
+        if (!IsFootprintClear(grid, nx, nz, agentCellRadius))
+            continue;
+        Visit(neighbor);
+        m_CellFlags[neighbor] |= kGoalSideFlag;
+        goalSideCells.push_back(neighbor);
+    }
+    return goalSideNext == goalSideCells.size() ? GoalSideStep::Exhausted : GoalSideStep::Continue;
+}
+
+void AStarSolver::BeginGeneration()
+{
+    ++m_Generation;
+    if (m_Generation == 0)
+    {
+        // The stamps wrapped: a stamp left from 65,535 solves ago would read as current.
+        std::fill(m_VisitStamp.begin(), m_VisitStamp.end(), uint16{0});
+        m_Generation = 1;
+    }
+}
+
+void AStarSolver::Visit(uint32 cellIndex)
+{
+    if (m_VisitStamp[cellIndex] == m_Generation)
+        return;
+    m_VisitStamp[cellIndex] = m_Generation;
+    m_GScore[cellIndex] = kInfinity;
+    m_Parent[cellIndex] = UINT32_MAX;
+    m_CellFlags[cellIndex] = 0;
+}
+
+bool AStarSolver::IsClosed(uint32 cellIndex) const
+{
+    return m_VisitStamp[cellIndex] == m_Generation && (m_CellFlags[cellIndex] & kClosedFlag) != 0;
+}
+
+bool AStarSolver::IsGoalSide(uint32 cellIndex) const
+{
+    return m_VisitStamp[cellIndex] == m_Generation && (m_CellFlags[cellIndex] & kGoalSideFlag) != 0;
+}
+
+float32 AStarSolver::GScore(uint32 cellIndex) const
+{
+    return m_VisitStamp[cellIndex] == m_Generation ? m_GScore[cellIndex] : kInfinity;
+}
+
+void AStarSolver::GetNeighbors(const GridMap::ReadView& grid, uint32 cellIndex,
                                 uint32* outNeighbors, float32* outBaseCosts, uint32& outCount) const
 {
     outCount = 0;
@@ -262,7 +418,7 @@ void AStarSolver::GetNeighbors(const GridMap& grid, uint32 cellIndex,
     }
 }
 
-float32 AStarSolver::Heuristic(const GridMap& grid, uint32 from, uint32 to) const
+float32 AStarSolver::Heuristic(const GridMap::ReadView& grid, uint32 from, uint32 to) const
 {
     uint32 fx = 0, fz = 0, tx = 0, tz = 0;
     grid.CellFromIndex(from, fx, fz);

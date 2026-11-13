@@ -21,7 +21,7 @@ class MarkupEditorBridge;
 // Draws every mark-up in the Scene View through the gizmo overlay pass: a translucent fill in its
 // color (its own, else its status tag's) and a wire outline, both against scene depth, so the
 // pass dims the part behind terrain. A region's fill is its display's walls and lid
-// (MarkupRegionDisplayCache) and its outline the ring at the base and along the top edge. A path
+// (MarkupRegionDisplayCache) and its outline the rings at the base and along the top edge. A path
 // draws its draped line and a translucent band either side of it, whether or not the glow draws
 // the bodies (a path has no glow body). A selected mark-up (MarkupHighlightState)
 // draws a stronger fill and a doubled outline in its color; one whose panel or Hierarchy row is
@@ -66,6 +66,7 @@ class MarkupGizmo final : public SceneTools::IGizmo
     static Color OutlineColor(const MarkupDrawItem& item);
 
     std::vector<MarkupDrawItem> m_Items; // this frame's mark-ups, kept to reuse the allocation
+    std::vector<uint32> m_ExcludedScratch; // CollectMarkupDrawItems' scratch, kept to reuse the allocation
     const std::vector<MarkupDrawItem>* m_Collected = nullptr; // the glow's, when set
     std::size_t m_CollectedBodies = 0;
     std::vector<Mathematics::Vector3> m_Scratch; // a region's fill or outline lines, reused

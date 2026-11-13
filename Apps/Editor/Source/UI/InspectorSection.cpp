@@ -16,7 +16,7 @@ class CollapseArrowElement : public UIElement {
 public:
     CollapseArrowElement()
     {
-        Overrides()
+        Style()
             .Set(Style::Position, PositionType::Absolute)
             .Set(Style::PositionRight, StyleLength::Px(8.0f))
             .Set(Style::PositionBottom, StyleLength::Px(-6.0f))
@@ -74,9 +74,9 @@ void InspectorSection::SetHeaderIconTint(uint32_t argb)
     if (!m_Icon)
         return;
     if (argb == 0)
-        m_Icon->Overrides().Reset(Style::BackgroundTint);
+        m_Icon->Style().Reset(Style::BackgroundTint);
     else
-        m_Icon->Overrides().Set(Style::BackgroundTint, argb);
+        m_Icon->Style().Set(Style::BackgroundTint, argb);
     m_Icon->MarkDirty(StyleDirty | VisualDirty);
 }
 
@@ -112,8 +112,7 @@ void InspectorSection::SetHeaderBadge(const std::string& text, const std::string
         badge->AddClass("inspector-section-header-badge");
         m_HeaderBadge = badge.get();
 
-        // Insert just before the options affordance so the badge sits on the
-        // right of the title (the title flex-grows and pushes it over).
+        // Insert just before the options affordance so the badge follows the title.
         const auto& children = m_HeaderRow->GetChildren();
         size_t insertIndex = children.size();
         for (size_t i = 0; i < children.size(); ++i)
@@ -129,19 +128,29 @@ void InspectorSection::SetHeaderBadge(const std::string& text, const std::string
 
     m_HeaderBadge->SetText(text);
     m_HeaderBadge->SetTooltip(tooltip);
-    if (kind == BadgeKind::Override)
+    m_HeaderBadge->RemoveClass("inspector-section-header-badge-error");
+    m_HeaderBadge->RemoveClass("inspector-section-header-badge-success");
+    m_HeaderBadge->RemoveClass("inspector-section-header-badge-neutral");
+    m_HeaderBadge->RemoveClass("inspector-section-header-badge-override");
+    if (kind == BadgeKind::Error)
+        m_HeaderBadge->AddClass("inspector-section-header-badge-error");
+    else if (kind == BadgeKind::Success)
+        m_HeaderBadge->AddClass("inspector-section-header-badge-success");
+    else if (kind == BadgeKind::Neutral)
+        m_HeaderBadge->AddClass("inspector-section-header-badge-neutral");
+    else if (kind == BadgeKind::Override)
         m_HeaderBadge->AddClass("inspector-section-header-badge-override");
-    else
-        m_HeaderBadge->RemoveClass("inspector-section-header-badge-override");
     if (text.empty())
     {
         m_HeaderBadge->AddClass("hidden");
-        m_HeaderRow->RemoveClass("has-header-badge");
+        if (m_TitleLabel)
+            m_TitleLabel->RemoveClass("inspector-section-header-badged");
     }
     else
     {
         m_HeaderBadge->RemoveClass("hidden");
-        m_HeaderRow->AddClass("has-header-badge");
+        if (m_TitleLabel)
+            m_TitleLabel->AddClass("inspector-section-header-badged");
     }
 }
 
@@ -433,7 +442,9 @@ void InspectorSection::BuildUI()
         // Header options icon (right side) used to open the component options popup.
         auto options = std::make_unique<UIElement>();
         m_Options = options.get();
+        // A Button's look without a Button's input handling: the element requests the Button sheet.
         options->AddClass("button");
+        options->RequestSubtreeStyleAssetPath("UI/controls/Button.css", "editor");
         options->AddClass("icon-button");
         options->AddClass("inspector-section-header-options");
         headerRow->AddChild(std::move(options));

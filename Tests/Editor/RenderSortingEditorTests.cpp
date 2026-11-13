@@ -273,7 +273,7 @@ TEST_F(RenderSortingEditorTests, DiagnosticOnlyShowsAnEnabledAncestorGroup)
     auto* card = content.GetChildren().front().get();
     const auto isHidden = [card]()
     {
-        return card->Overrides().Get(Style::Display) == DisplayMode::None;
+        return card->Style().Get(Style::Display) == DisplayMode::None;
     };
     EXPECT_TRUE(isHidden());
     Sorting group{};

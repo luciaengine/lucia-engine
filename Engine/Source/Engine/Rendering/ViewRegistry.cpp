@@ -8,7 +8,9 @@
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Logger/Logger.h"
 #include "Mathematics/Matrix4x4.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/Device.h"
+#include "Rendering/Core/ReverseZ.h"
 
 #include <algorithm>
 #include <cassert>
@@ -20,10 +22,18 @@ namespace Engine::Renderer
 {
 using namespace ::GameEngine::Rendering;
 
+// The view clear defaults in CameraTypes.h are the reverse-Z far plane.
+static_assert(ViewTargets{}.clearDepthValue == ReverseZ::kClearFar,
+              "ViewTargets must default its depth clear to the far plane (ReverseZ::kClearFar)");
+static_assert(ViewClearConfig{}.clearDepthValue == ReverseZ::kClearFar,
+              "ViewClearConfig must default its depth clear to the far plane (ReverseZ::kClearFar)");
+
 CameraId ViewRegistry::AllocateCamera(const char* debugName)
 {
     CameraInfo info{};
     info.id = m_NextCameraId++;
+    // Zero matrices mark the camera as unset for its readers; the eye at the origin keeps its sector valid.
+    SetCameraEye(info.data, Mathematics::WorldPosition{});
     info.debugName = debugName;
     m_Cameras.push_back(info);
     return info.id;
@@ -48,22 +58,51 @@ bool ViewRegistry::ReleaseCamera(CameraId id)
         return false;
     m_Cameras.erase(it);
     // Drop the per-camera side tables so a recycled CameraId can't inherit a
-    // previous camera's exposure or post-process mask.
+    // previous camera's exposure or volume layers.
     m_CameraExposures.erase(id);
-    m_CameraPostProcessMasks.erase(id);
+    m_CameraVolumeLayers.erase(id);
     return true;
 }
 
-void ViewRegistry::SetCameraData(CameraId id, const CameraData& data)
+void ViewRegistry::SetCameraData(CameraId id, const CameraData& data, const CameraRanges& ranges)
 {
     for (auto& cam : m_Cameras)
     {
         if (cam.id == id)
         {
+            // Without an eye the rebased matrices are zero and the view draws nothing.
+            if (data.renderOriginSector[3] == 0 && !cam.missingEyeLogged)
+            {
+                LOG_ERROR("Camera {} ('{}'): the camera has no eye: call SetCameraEye after the matrices are set",
+                          cam.id, cam.debugName ? cam.debugName : "");
+                cam.missingEyeLogged = true;
+            }
+            assert(data.renderOriginSector[3] != 0 && "the camera has no eye: call SetCameraEye after the matrices are set");
             cam.data = data;
+            cam.ranges = ranges;
             return;
         }
     }
+}
+
+CameraRanges ViewRegistry::FindCameraRanges(CameraId id) const
+{
+    for (const auto& cam : m_Cameras)
+    {
+        if (cam.id == id)
+            return cam.ranges;
+    }
+    return {};
+}
+
+CameraRanges ViewRegistry::ResolveCameraRanges(ViewId viewId) const
+{
+    for (const auto& view : m_Views)
+    {
+        if (view.id == viewId)
+            return FindCameraRanges(view.cameraId);
+    }
+    return {};
 }
 
 const CameraData* ViewRegistry::FindCameraData(CameraId id) const
@@ -78,22 +117,44 @@ const CameraData* ViewRegistry::FindCameraData(CameraId id) const
     return nullptr;
 }
 
-void ViewRegistry::SetCameraPostProcessMask(CameraId id, uint32 mask)
+const CameraData* ViewRegistry::FindMainCameraData(uint64 worldId) const
 {
-    m_CameraPostProcessMasks[id] = mask;
+    const CameraData* sceneCamera = nullptr;
+    for (const auto& view : m_Views)
+    {
+        if (worldId != 0 && view.worldId != 0 && view.worldId != worldId)
+            continue;
+        if (!view.RenderedByPipeline())
+            continue;
+        if (view.purpose != ViewPurpose::Game && view.purpose != ViewPurpose::EditorScene)
+            continue;
+        const CameraData* cam = FindCameraData(view.cameraId);
+        if (!cam)
+            continue;
+        if (view.purpose == ViewPurpose::Game)
+            return cam;
+        if (!sceneCamera)
+            sceneCamera = cam;
+    }
+    return sceneCamera;
 }
 
-uint32 ViewRegistry::GetCameraPostProcessMask(CameraId id) const
+void ViewRegistry::SetCameraVolumeLayers(CameraId id, RenderLayerMask volumeLayers)
 {
-    const auto it = m_CameraPostProcessMasks.find(id);
-    if (it == m_CameraPostProcessMasks.end())
-        return 0xFFFFFFFFu;
+    m_CameraVolumeLayers[id] = volumeLayers;
+}
+
+RenderLayerMask ViewRegistry::GetCameraVolumeLayers(CameraId id) const
+{
+    const auto it = m_CameraVolumeLayers.find(id);
+    if (it == m_CameraVolumeLayers.end())
+        return RenderLayerMask::All();
     return it->second;
 }
 
-bool ViewRegistry::HasCameraPostProcessMask(CameraId id) const
+bool ViewRegistry::HasCameraVolumeLayers(CameraId id) const
 {
-    return m_CameraPostProcessMasks.find(id) != m_CameraPostProcessMasks.end();
+    return m_CameraVolumeLayers.find(id) != m_CameraVolumeLayers.end();
 }
 
 void ViewRegistry::SetCameraExposure(CameraId id, const CameraExposure& exposure)
@@ -111,9 +172,10 @@ CameraData ViewRegistry::ResolveCameraData(ViewId viewId) const
 {
     const Mathematics::Matrix4x4 identity = Mathematics::Matrix4x4::Identity();
     CameraData cam{};
-    std::memcpy(cam.view, identity.Data(), 64);
-    std::memcpy(cam.proj, identity.Data(), 64);
-    std::memcpy(cam.viewProj, identity.Data(), 64);
+    cam.view = identity;
+    cam.proj = identity;
+    cam.viewProj = identity;
+    SetCameraEye(cam, Mathematics::WorldPosition{});
 
     CameraId cameraId = 0;
     for (const auto& v : m_Views)
@@ -136,14 +198,6 @@ CameraData ViewRegistry::ResolveCameraData(ViewId viewId) const
         }
     }
 
-    // Camera-relative rendering: derive the render origin from the (full-world)
-    // camera position and fill the rebased view/viewProj the vertex stage uses
-    // for a precise clip position. view/proj/viewProj/cameraPos stay full-world,
-    // so culling, ViewParams (FindCameraData path), and every fragment consumer
-    // are unaffected. Inside the activation radius the sector is (0,0,0) and the
-    // rebased matrices equal the full-world ones bit-for-bit.
-    ComputeRebasedView(cam.view, cam.proj, cam.viewProj, cam.cameraPos[0], cam.cameraPos[1],
-                       cam.cameraPos[2], cam.viewRel, cam.viewProjRel, cam.renderOriginSector);
     return cam;
 }
 
@@ -192,8 +246,9 @@ const ViewRegistry::ViewAntiAliasing* ViewRegistry::AdvanceViewAntiAliasing(View
     {
         // First raster-domain resolve of this frame rotates; SceneViewController
         // produces CameraData twice per frame (Update + Declare), so keying on
-        // the frame index keeps one jitter sample per view declaration.
-        // The previous snapshot can belong to a frame that did not submit.
+        // the frame index — never call count — is what keeps one jitter sample
+        // per rendered frame.
+        // A declared frame can be discarded; the resolve matches this stamp to its submitted history.
         taa.PrevFrameStamp = taa.FrameStamp;
         taa.PrevValid = (taa.PrevFrameStamp != ~0ull);
         taa.PrevCamera = taa.CurrCamera;
@@ -354,19 +409,37 @@ void ViewRegistry::SetViewCamera(ViewId id, CameraId cameraId)
     }
 }
 
-void ViewRegistry::SetViewBackgroundOnly(ViewId id, bool enabled)
-{
-    for (auto& view : m_Views)
-        if (view.id == id) { view.backgroundOnly = enabled; return; }
-}
-
-void ViewRegistry::SetViewRenderLayerMask(ViewId id, uint32 mask)
+void ViewRegistry::SetViewDropsEditorHidden(ViewId id, bool enabled)
 {
     for (auto& view : m_Views)
     {
         if (view.id == id)
         {
-            view.renderLayerMask = mask;
+            view.DropEditorHidden = enabled;
+            return;
+        }
+    }
+}
+
+void ViewRegistry::SetViewBackgroundOnly(ViewId id, bool enabled)
+{
+    for (auto& view : m_Views)
+    {
+        if (view.id == id)
+        {
+            view.backgroundOnly = enabled;
+            return;
+        }
+    }
+}
+
+void ViewRegistry::SetViewRenderLayerMask(ViewId id, RenderLayerMask layers)
+{
+    for (auto& view : m_Views)
+    {
+        if (view.id == id)
+        {
+            view.renderLayerMask = layers;
             return;
         }
     }
@@ -381,6 +454,39 @@ void ViewRegistry::SetViewActiveRenderPipeline(ViewId id, bool enabled)
             view.activeRenderPipeline = enabled;
             return;
         }
+    }
+}
+
+void ViewRegistry::SetViewWorldPaused(ViewId id, bool paused)
+{
+    for (auto& view : m_Views)
+    {
+        if (view.id == id)
+        {
+            view.worldPaused = paused;
+            return;
+        }
+    }
+}
+
+void ViewRegistry::SetViewWorldPauseFollowsActiveCamera(ViewId id)
+{
+    for (auto& view : m_Views)
+    {
+        if (view.id == id)
+        {
+            view.worldPauseFollowsActiveCamera = true;
+            return;
+        }
+    }
+}
+
+void ViewRegistry::SetActiveCameraViewsWorldPaused(uint64 worldId, bool paused)
+{
+    for (auto& view : m_Views)
+    {
+        if (view.worldPauseFollowsActiveCamera && view.worldId == worldId)
+            view.worldPaused = paused;
     }
 }
 
@@ -472,6 +578,24 @@ Rendering::PipelineFormatKey ViewRegistry::GetViewPrepassFormatKey(ViewId id) co
     return pv ? pv->PrepassFormatKey : Rendering::PipelineFormatKey{};
 }
 
+Rendering::PipelineFormatKey ViewRegistry::GetViewWorldColorFormatKey(ViewId id) const
+{
+    const auto* pv = FindPerView(id);
+    return pv ? pv->WorldColorFormatKey : Rendering::PipelineFormatKey{};
+}
+
+ReliefDepthSource ViewRegistry::GetViewWorldReliefDepthSource(ViewId id) const
+{
+    const auto* pv = FindPerView(id);
+    return pv ? pv->WorldReliefDepthSource : ReliefDepthSource::NoPrepass;
+}
+
+std::optional<Rendering::MaterialKeyword> ViewRegistry::GetViewDeclaredWorldPassKeywords(ViewId id) const
+{
+    const auto* pv = FindPerView(id);
+    return pv ? pv->DeclaredWorldPassKeywords : std::nullopt;
+}
+
 uint32 ViewRegistry::GetViewWorldViewportHeight(ViewId id) const
 {
     const auto* pv = FindPerView(id);
@@ -556,10 +680,7 @@ void ViewRegistry::SetViewTargets(ViewId id,
             view.targets.clearColor = clear.clearColor;
             view.targets.clearDepth = clear.clearDepth;
             view.targets.clearStencil = clear.clearStencil;
-            view.targets.clearColorValue[0] = clear.clearColorValue[0];
-            view.targets.clearColorValue[1] = clear.clearColorValue[1];
-            view.targets.clearColorValue[2] = clear.clearColorValue[2];
-            view.targets.clearColorValue[3] = clear.clearColorValue[3];
+            view.targets.clearColorValue = clear.clearColorValue;
             view.targets.clearDepthValue = clear.clearDepthValue;
             view.targets.clearStencilValue = clear.clearStencilValue;
 
@@ -605,20 +726,14 @@ void ViewRegistry::SetViewClearConfig(ViewId id, ViewClearConfig clear)
             (view.targets.clearStencil != clear.clearStencil) ||
             (view.targets.clearDepthValue != clear.clearDepthValue) ||
             (view.targets.clearStencilValue != clear.clearStencilValue) ||
-            (view.targets.clearColorValue[0] != clear.clearColorValue[0]) ||
-            (view.targets.clearColorValue[1] != clear.clearColorValue[1]) ||
-            (view.targets.clearColorValue[2] != clear.clearColorValue[2]) ||
-            (view.targets.clearColorValue[3] != clear.clearColorValue[3]);
+            (view.targets.clearColorValue != clear.clearColorValue);
         if (!changed)
             return;
 
         view.targets.clearColor = clear.clearColor;
         view.targets.clearDepth = clear.clearDepth;
         view.targets.clearStencil = clear.clearStencil;
-        view.targets.clearColorValue[0] = clear.clearColorValue[0];
-        view.targets.clearColorValue[1] = clear.clearColorValue[1];
-        view.targets.clearColorValue[2] = clear.clearColorValue[2];
-        view.targets.clearColorValue[3] = clear.clearColorValue[3];
+        view.targets.clearColorValue = clear.clearColorValue;
         view.targets.clearDepthValue = clear.clearDepthValue;
         view.targets.clearStencilValue = clear.clearStencilValue;
         return;
@@ -652,20 +767,16 @@ void ViewRegistry::ClearViewTargets(ViewId id)
 
 void ViewRegistry::DestroyPerViewGpuResources(PerViewResources& pv)
 {
-    for (auto& buf : pv.LightBuffers)
+    // A2: a valid GPU handle with a null device is a teardown-ordering
+    // bug — the device is nulled only WITH RenderServices::m_Device, so
+    // any release before that point still has a live device to free it.
+    assert((m_Device || !pv.HasLiveLightBuffer()) &&
+           "DestroyPerViewGpuResources: live light buffer but null device");
+    for (auto& buf : pv.TakeLightBuffers())
     {
-        if (buf.IsValid())
-        {
-            // A2: a valid GPU handle with a null device is a teardown-ordering
-            // bug — the device is nulled only WITH RenderServices::m_Device, so
-            // any release before that point still has a live device to free it.
-            assert(m_Device &&
-                   "DestroyPerViewGpuResources: valid LightBuffers handle but null device");
-            if (m_Device)
-                m_Device->DestroyBuffer(buf);
-        }
+        if (buf.IsValid() && m_Device)
+            m_Device->DestroyBuffer(buf);
     }
-    pv.LightBuffers = {};
 }
 
 void ViewRegistry::DestroyAllPerViewGpuResources()
@@ -685,7 +796,7 @@ void ViewRegistry::ForgetPerViewGpuResourcesAfterDeviceRebuild()
     for (auto& [viewId, pv] : m_PerView)
     {
         (void)viewId;
-        pv.LightBuffers = {};
+        pv.TakeLightBuffers();
         // The recorded draws name buffers and descriptor sets of the dead device; the producers
         // emit them again from live handles.
         pv.ForwardCommands.clear();

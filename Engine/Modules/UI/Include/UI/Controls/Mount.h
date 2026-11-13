@@ -7,9 +7,13 @@ namespace GameEngine {
 class Mount;
 
 // Process-wide registry of live Mount instances keyed by their current target.
-// Lets UIElement destruction notify any Mount across any UIManager that its
-// target is going away, so the Mount can clear its raw target pointer before
-// it dangles.
+// Step 0c of the primary-flip-redesign migration. Lets UIElement destruction
+// notify any Mount across any UIManager that its target is going away, so
+// the Mount can clear its raw target pointer before it dangles.
+//
+// Today only Mount writes to it (Register / Unregister) — consumption
+// (OnElementDestroyed clearing matched Mounts) wires in step 2 when
+// UIElement destruction routes through it.
 //
 // Thread-safety: UI update is single-threaded; no synchronization needed.
 class MountRegistry {
@@ -23,8 +27,8 @@ public:
     // Called when a UIElement is about to be destroyed. Walks matched
     // Mounts and clears their m_Target to nullptr. Does NOT fire
     // OnMountVisibilityChanged(false) — the target is mid-destruction
-    // and downstream listeners have no safe way to deref it. Called from
-    // ~UIElement.
+    // and downstream listeners have no safe way to deref it. Wired in
+    // Step 2a (called from ~UIElement); no other callers today.
     void OnElementDestroyed(UIElement* element);
 
     // Called by `target` when its overlay-in-subtree bit changes.
@@ -54,6 +58,8 @@ class Mount : public UIElement {
 public:
     Mount() = default;
 
+    UIElementKind Kind() const override { return UIElementKind::Mount; }
+
     ~Mount() override
     {
         if (m_Target)
@@ -80,7 +86,7 @@ public:
         UIElement* oldTarget = m_Target;
         if (oldTarget)
         {
-            // Drop the cascade DFS-parent edge from
+            // Stage 7 step 6.3b: drop the cascade DFS-parent edge from
             // the prior target first; the new target adopts it below.
             oldTarget->SetMountHostAsDfsParent(nullptr);
             oldTarget->OnMountVisibilityChanged(false);
@@ -109,7 +115,7 @@ public:
 
         MarkDirty(ChildrenDirty | LayoutDirty | VisualDirty);
 
-        // The new target's ancestor chain
+        // Cascade-memoization Phase 2: the new target's ancestor chain now
         // routes through this Mount, so descendant selectors anchored on
         // the Mount's ancestors may match (or stop matching). Invalidate
         // the new target subtree's rule cache. The old target's cache
@@ -176,7 +182,7 @@ public:
         if (m_Target)
         {
             m_Target->OnMountVisibilityChanged(true);
-            // Same as SetTarget — Mount-target
+            // Cascade-memoization Phase 2: same as SetTarget — Mount-target
             // ancestor context changed; invalidate the new target's cache.
             m_Target->InvalidateRuleCacheSubtree();
             m_Target->MarkDirtySubtree(UIElement::StyleDirty | UIElement::LayoutDirty | UIElement::VisualDirty);
@@ -187,7 +193,7 @@ public:
     }
 
     UIElement* GetTarget() const { return m_Target; }
-    UIElement* GetMountTarget() const override { return m_Target; }
+    UIElement* GetMountTarget() override { return m_Target; }
 
     void OnPostLayout() override
     {

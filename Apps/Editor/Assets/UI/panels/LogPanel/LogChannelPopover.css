@@ -9,7 +9,7 @@
 	height: 0px;
 }
 
-/* --log-channels-row-width: the 344 px inside the border and the padding less the 18 px of the vertical scrollbar
+/* --log-channels-row-width: the 362 px inside the border and the padding less the 18 px of the vertical scrollbar
    and its margin (Scrollbar::kDefaultThicknessPx, theme/core.css .scrollbar.vertical). The column names and the
    rows take this width whether the list scrolls or not, so the columns stay in place and line up. */
 .log-channels {
@@ -24,12 +24,6 @@
 	flex-direction: row;
 	align-items: center;
 	column-gap: var(--ui_spacing_xs);
-}
-
-.log-channels-bulk-action {
-	white-space: nowrap;
-	flex-shrink: 0;
-	min-width: 72px;
 }
 
 .log-channels-title {
@@ -49,7 +43,7 @@
 }
 
 /* The field has the focus on open but shows no focus ring until the user types or presses in it. */
-.log-channels-awaiting-input:focus-within {
+.log-channels-search.awaiting-input:focus-within {
 	border-color: transparent;
 }
 
@@ -65,20 +59,20 @@
 
 .log-channels-column-show {
 	width: 36px;
-	font-size: 12px;
+	font-size: var(--ui_font_size_small);
 	color: var(--ui_color_text_dim);
 }
 
 .log-channels-column-name {
 	flex-grow: 1;
-	font-size: 12px;
+	font-size: var(--ui_font_size_small);
 	color: var(--ui_color_text_dim);
 }
 
 /* The level list is as wide as its column: 144 px keeps "Default (Debug)" on one line beside the check mark. */
 .log-channels-column-level {
 	width: 144px;
-	font-size: 12px;
+	font-size: var(--ui_font_size_small);
 	color: var(--ui_color_text_dim);
 }
 
@@ -120,8 +114,14 @@
 	text-overflow: ellipsis;
 }
 
-.log-channel-name-muted {
-    color: var(--ui_color_text_disabled);
+/* A hidden channel's name and level dim, so the rows read as shown or hidden at a glance. The level still works,
+   and an open level list shows at full contrast (theme/widgets.css, .dropdown.open .dropdown-header). */
+.log-channel-row-off .log-channel-name {
+	color: var(--ui_color_text_disabled);
+}
+
+.log-channel-row-off .dropdown-header {
+	color: var(--ui_color_text_disabled);
 }
 
 .log-channel-level {
@@ -130,6 +130,6 @@
 }
 
 .log-channels-count {
-	font-size: 12px;
+	font-size: var(--ui_font_size_small);
 	color: var(--ui_color_text_dim);
 }

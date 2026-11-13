@@ -25,6 +25,8 @@ namespace
 // streaming workers so a compile burst can never pin every core.
 constexpr uint32_t kReservedCoresForFrame = 2;
 constexpr uint32_t kMinCompileCap = 2;
+// Pool workers the gate never fills, so the frame's fork-join jobs run while compiles hold the rest.
+constexpr size_t kReservedWorkersForFrame = 2;
 
 uint32_t QueryPhysicalCoreCount()
 {
@@ -58,9 +60,9 @@ uint32_t QueryPhysicalCoreCount()
     return logical > 1 ? logical / 2 : logical;
 #endif
 }
-} // namespace
 
-uint32_t ComputeShaderCompileConcurrencyCap()
+// The cap from the cores: the env override, else the physical cores minus the frame's reserve.
+uint32_t ComputeCoreBoundCompileCap()
 {
     if (const char* env = std::getenv("GE_SHADER_COMPILE_CAP"))
     {
@@ -81,26 +83,48 @@ uint32_t ComputeShaderCompileConcurrencyCap()
                     physical > kReservedCoresForFrame ? physical - kReservedCoresForFrame
                                                       : kMinCompileCap);
 }
+} // namespace
+
+uint32_t ComputeShaderCompileConcurrencyCap(size_t workerCount)
+{
+    const uint32_t coreCap = ComputeCoreBoundCompileCap();
+    if (workerCount == 0)
+        return coreCap;
+    const size_t poolCap = workerCount > kReservedWorkersForFrame ? workerCount - kReservedWorkersForFrame : 1;
+    return static_cast<uint32_t>(std::min<size_t>(coreCap, poolCap));
+}
 
 void CompileConcurrencyGate::Submit(std::function<void()> work, JobSystem::JobPriority priority)
 {
     {
         std::lock_guard lock(m_Mutex);
-        // A slot is free only when running < cap; the pump keeps running == cap
-        // while either lane is non-empty, so a free slot here implies both lanes
-        // empty and admitting directly cannot reorder ahead of queued work.
-        if (m_Running >= m_Cap)
-        {
-            if (priority == JobSystem::JobPriority::Background)
-                m_PendingBackground.push_back(std::move(work));
-            else
-                m_PendingNormal.push_back(std::move(work));
+        // Closed: `work` is destroyed unrun when this function returns, after the unlock.
+        if (m_Closed)
             return;
+        if (priority != JobSystem::JobPriority::Awaited)
+        {
+            // A slot is free only when running < cap; the pump keeps running == cap
+            // while a pending lane is not empty, so a free slot here implies empty
+            // lanes and admitting directly cannot reorder ahead of queued work.
+            if (m_Running >= m_Cap)
+            {
+                if (priority == JobSystem::JobPriority::Background)
+                    m_PendingBackground.push_back(std::move(work));
+                else
+                    m_PendingNormal.push_back(std::move(work));
+                return;
+            }
+            ++m_Running;
+            m_HighWater = std::max(m_HighWater, m_Running);
         }
-        ++m_Running;
-        m_HighWater = std::max(m_HighWater, m_Running);
     }
 
+    // A thread waits for Awaited work: it takes no slot and is not queued behind the gate.
+    if (priority == JobSystem::JobPriority::Awaited)
+    {
+        m_Dispatch(std::move(work), priority);
+        return;
+    }
     try
     {
         DispatchTracked(std::move(work), priority);
@@ -116,6 +140,20 @@ void CompileConcurrencyGate::Submit(std::function<void()> work, JobSystem::JobPr
         OnJobFinished();
         throw;
     }
+}
+
+size_t CompileConcurrencyGate::Close()
+{
+    std::deque<std::function<void()>> canceledBackground;
+    std::deque<std::function<void()>> canceledNormal;
+    {
+        std::lock_guard lock(m_Mutex);
+        m_Closed = true;
+        canceledBackground.swap(m_PendingBackground);
+        canceledNormal.swap(m_PendingNormal);
+    }
+    // The closures are destroyed here, outside the lock: their guards can take other locks.
+    return canceledBackground.size() + canceledNormal.size();
 }
 
 void CompileConcurrencyGate::DispatchTracked(std::function<void()> work,
@@ -136,10 +174,9 @@ void CompileConcurrencyGate::DispatchTracked(std::function<void()> work,
 
 void CompileConcurrencyGate::OnJobFinished() noexcept
 {
-    // Release the finished job's slot and promote the next pending job, draining
-    // the Background lane (user-visible variant misses) before Normal (bulk
-    // prewarm). Loop only to skip a job whose dispatch fails: drop it and try the
-    // next so the slot is never leaked.
+    // Release the finished job's slot and promote the next pending job. Normal goes
+    // before Background, as in the pool.
+    // Loop only to skip a job whose dispatch fails: drop it and try the next so the slot is never leaked.
     for (;;)
     {
         std::function<void()> next;
@@ -147,17 +184,17 @@ void CompileConcurrencyGate::OnJobFinished() noexcept
         {
             std::lock_guard lock(m_Mutex);
             --m_Running;
-            if (!m_PendingBackground.empty())
-            {
-                next = std::move(m_PendingBackground.front());
-                m_PendingBackground.pop_front();
-                priority = JobSystem::JobPriority::Background;
-            }
-            else if (!m_PendingNormal.empty())
+            if (!m_PendingNormal.empty())
             {
                 next = std::move(m_PendingNormal.front());
                 m_PendingNormal.pop_front();
                 priority = JobSystem::JobPriority::Normal;
+            }
+            else if (!m_PendingBackground.empty())
+            {
+                next = std::move(m_PendingBackground.front());
+                m_PendingBackground.pop_front();
+                priority = JobSystem::JobPriority::Background;
             }
             else
             {

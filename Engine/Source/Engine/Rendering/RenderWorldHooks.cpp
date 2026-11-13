@@ -1,7 +1,7 @@
 #include "Engine/Rendering/RenderWorldHooks.h"
 
 #include "Animation/AnimationEventCollectorStore.h"
-#include "Animation/AnimationGraphStore.h"
+#include "Animation/AnimationGraph/AnimationGraphStore.h"
 #include "Components/Animation/Animator.h"
 #include "Components/Animation/SkeletonRef.h"
 #include "Components/Rendering/MeshGPUData.h"

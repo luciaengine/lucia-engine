@@ -1,8 +1,7 @@
 #pragma once
 
-#include "Types/Fnv1a.h"
-
 #include <cstdint>
+#include <cstring>
 
 // The fixed sample sweep behind the golden test.
 //
@@ -22,18 +21,20 @@ class BitHasher
 public:
     void Feed(float value)
     {
-        static_assert(sizeof(value) == sizeof(uint32_t), "float must be 32 bits");
-        m_Hash = Hashing::Fnv1a64Value(m_Hash, value);
+        uint32_t bits = 0;
+        static_assert(sizeof(bits) == sizeof(value), "float must be 32 bits");
+        std::memcpy(&bits, &value, sizeof(bits));
+        for (int byte = 0; byte < 4; ++byte)
+        {
+            m_Hash ^= static_cast<uint64_t>((bits >> (byte * 8)) & 0xFFu);
+            m_Hash *= 1099511628211ull;
+        }
     }
 
     uint64_t Value() const { return m_Hash; }
 
 private:
-    // Seed the golden values were captured with. It is not the FNV-1a offset
-    // basis (one digit short); keep it, or every golden must be recaptured.
-    static constexpr uint64_t kGoldenSeed = 1469598103934665603ull;
-
-    uint64_t m_Hash = kGoldenSeed;
+    uint64_t m_Hash = 1469598103934665603ull;
 };
 
 // Coordinates deliberately straddle zero and land off the lattice, so the sweep

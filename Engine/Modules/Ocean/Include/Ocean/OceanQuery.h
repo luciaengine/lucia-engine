@@ -23,12 +23,12 @@ struct OceanSurfaceSample
     bool Valid = false;
     OceanQuerySource Source = OceanQuerySource::None;
 
-    float32 PositionWS[3] = {0.0f, 0.0f, 0.0f};
-    float32 NormalWS[3] = {0.0f, 1.0f, 0.0f};
-    float32 DisplacementWS[3] = {0.0f, 0.0f, 0.0f};
+    Mathematics::Vector3 PositionWS{0.0f, 0.0f, 0.0f};
+    Mathematics::Vector3 NormalWS{0.0f, 1.0f, 0.0f};
+    Mathematics::Vector3 DisplacementWS{0.0f, 0.0f, 0.0f};
     // Surface point velocity returned by provider-backed queries. Legacy direct
     // samples leave this at zero when no temporal history is available.
-    float32 VelocityWS[3] = {0.0f, 0.0f, 0.0f};
+    Mathematics::Vector3 VelocityWS{0.0f, 0.0f, 0.0f};
 
     float32 Height = 0.0f;
     float32 SeaLevel = 0.0f;

@@ -132,14 +132,14 @@ void FrameStations(std::vector<SplineStripStation>& stations, float32 width)
 }
 
 // Sinks each station's grounded base by the ground's fall from the station to the border's outer
-// base edge (along MitreRight on a mitered side) and kPavedBorderFootingMeters more, so neither a
+// base edge (along MiterRight on a mitered side) and kPavedBorderFootingMeters more, so neither a
 // cross slope nor a lifted station floats it.
 void SinkGroundedBase(std::vector<SplineStripStation>& stations, const GroundSampler& groundAt)
 {
     for (SplineStripStation& station : stations)
     {
         const Vector3 axis =
-            (station.MitreSides & kSplineMitreRightSide) != 0u ? station.MitreRight : station.Right;
+            (station.MiterSides & kSplineMiterRightSide) != 0u ? station.MiterRight : station.Right;
         const Vector3 edge = station.Position + axis * station.HalfWidthRight;
         const float32 fall = station.Position.y - groundAt(Vector2(edge.x, edge.z));
         station.GroundOffset = -(std::max(0.0f, fall) + kPavedBorderFootingMeters);

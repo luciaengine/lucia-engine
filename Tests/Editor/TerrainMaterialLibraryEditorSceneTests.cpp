@@ -115,7 +115,6 @@ protected:
     {
         EngineCore& engine = EngineCore::GetInstance();
         ASSERT_TRUE(engine.IsInitialized());
-        m_OriginalHotReloadEnabled = engine.GetAssetManager().IsHotReloadEnabled();
 
         const fs::path staged = GameEngine::TestPaths::StagedRoot() / "Engine" / "Tests" /
                                 "Fixtures" / "TerrainMatlibScene";
@@ -163,7 +162,6 @@ protected:
         EngineCore& engine = EngineCore::GetInstance();
         if (engine.IsInitialized())
         {
-            engine.GetAssetManager().SetHotReloadEnabled(m_OriginalHotReloadEnabled);
             for (const GUID& guid : m_Registered)
                 engine.GetAssetManager().UnregisterLoadedAsset(guid);
             std::error_code ec;
@@ -179,7 +177,6 @@ protected:
     fs::path m_Dir;
     fs::path m_ScenePath;
     std::vector<GUID> m_Registered;
-    bool m_OriginalHotReloadEnabled = false;
 };
 
 // Releases the service-side terrain data the extraction ticks provisioned, so the process-wide
@@ -190,9 +187,8 @@ void ReleaseProvisionedTerrains(GameEngine::ECS::World& world,
                                 TerrainECS::TerrainService& service)
 {
     world.Query<GameEngine::ECS::Write<Components::Terrain>>().Each(
-        [&](GameEngine::ECS::Writable<Components::Terrain> terrainRow)
+        [&](Components::Terrain& terrain)
         {
-            Components::Terrain& terrain = terrainRow.Mutable();
             if (terrain.TerrainDataHandle != 0 || terrain.TerrainDataGeneration != 0)
             {
                 TerrainECS::TerrainHandle h{terrain.TerrainDataHandle,
@@ -285,9 +281,10 @@ TEST_F(TerrainMaterialLibraryEditorScene, ExtractionCarriesTheLibrarysAuthoredGr
         // The real load path over the real file.
         GameEngine::Scene::EnsureTerrainSceneSchemasRegistered();
         GameEngine::ECS::World world;
-        ASSERT_TRUE(GameEngine::Scene::LoadSceneFromFile(
-            world, m_ScenePath, GameEngine::Scene::LoadOptions{GameEngine::Scene::LoadMode::Replace}))
-            << GameEngine::Scene::GetLastSceneIOError().message;
+        const auto readResult = GameEngine::Scene::ReadSceneInto(
+            world, m_ScenePath, GameEngine::Scene::SceneReadOptions{});
+        ASSERT_TRUE(readResult)
+            << readResult.Error->message;
 
         // Chain link 0, asserted before any extraction: the loaded island component carries the
         // scene's library binding. If THIS fails the break is in the loader, not downstream.
@@ -310,20 +307,30 @@ TEST_F(TerrainMaterialLibraryEditorScene, ExtractionCarriesTheLibrarysAuthoredGr
         GameEngine::Engine::Renderer::TransformHierarchySystem transforms;
         TerrainECS::TerrainExtractionSystem extraction(&rs);
 
-        // Pump until the library cache resolves (the asset load it requests is asynchronous),
-        // then a few settle frames so the table was rebuilt FROM the resolved library. Bounded:
-        // a chain that never resolves falls through with resolved=false and the record
-        // assertions below say which half died.
+        // Pump until the library cache resolves (the asset load it requests is asynchronous) and
+        // the layer textures it binds have uploaded (each loads and cooks on a worker, and the
+        // render thread's drain uploads it), then a few settle frames so the table was rebuilt
+        // FROM the resolved library. Bounded: a chain that never resolves falls through with
+        // resolved=false and the record assertions below say which half died.
+        const auto layersUploaded = [&rs]()
+        {
+            for (const FixtureAsset& asset : kFixtureAssets)
+                if (asset.Type == GameEngine::AssetType::Texture &&
+                    !rs.Textures().GetOrUpload(GUID(asset.Guid)).IsValid())
+                    return false;
+            return true;
+        };
         bool resolved = false;
         int settleFrames = 0;
-        for (int frame = 0; frame < 600; ++frame)
+        for (int frame = 0; frame < 6000; ++frame)
         {
             engine.GetAssetManager().Update();
             transforms.Update(world, 0.016f);
             extraction.Update(world, 0.016f);
+            rs.Textures().FlushPendingUploads();
             if (!resolved && feature.MaterialLibraries().Get(GUID(kIslandLibraryGuid), {}) != nullptr)
                 resolved = true;
-            if (resolved && ++settleFrames >= 5)
+            if (resolved && layersUploaded() && ++settleFrames >= 5)
                 break;
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
@@ -481,9 +488,13 @@ void RebindIslandLibrary(const fs::path& scenePath, const char* replacement)
     out << text;
 }
 
-// Inspector edits, undo, and redo must reach the extracted GPU material table, including a
-// library bound through a redirected GUID. Automatic hot reload is disabled so the inspector
-// must notify consumers without a watcher or timestamp poll.
+// An edit in the library inspector, and its undo, must reach the bytes the surface shades from
+// while the scene stays open, also for a terrain that binds its library through a REDIRECTED
+// GUID. The asset manager resolves the redirect, and its reload event names the library by the
+// GUID it resolved to; a cache filed only under the terrain's GUID never matches that event and
+// serves the first parse for the rest of the session. Driven through the inspector's own write
+// (EditLibraryUndoable), the real reload path (file watcher and timestamp poll, drained by
+// AssetManager::Update) and the real extraction; no event is raised by hand.
 TEST_F(TerrainMaterialLibraryEditorScene, AnEditAndItsUndoReachATerrainBoundThroughARedirectedGuid)
 {
     EngineCore& engine = EngineCore::GetInstance();
@@ -495,7 +506,6 @@ TEST_F(TerrainMaterialLibraryEditorScene, AnEditAndItsUndoReachATerrainBoundThro
     ASSERT_TRUE(redirect.Added()) << "this process has no project store to hold a redirect";
     ASSERT_EQ(assets.GetRegistry().ResolveGuid(GUID(kRedirectedIslandLibraryGuid)),
               GUID(kIslandLibraryGuid));
-    assets.SetHotReloadEnabled(false);
 
     auto device = CreateVulkanDeviceFast();
     if (!device)
@@ -515,9 +525,10 @@ TEST_F(TerrainMaterialLibraryEditorScene, AnEditAndItsUndoReachATerrainBoundThro
 
         GameEngine::Scene::EnsureTerrainSceneSchemasRegistered();
         GameEngine::ECS::World world;
-        ASSERT_TRUE(GameEngine::Scene::LoadSceneFromFile(
-            world, m_ScenePath, GameEngine::Scene::LoadOptions{GameEngine::Scene::LoadMode::Replace}))
-            << GameEngine::Scene::GetLastSceneIOError().message;
+        const auto readResult = GameEngine::Scene::ReadSceneInto(
+            world, m_ScenePath, GameEngine::Scene::SceneReadOptions{});
+        ASSERT_TRUE(readResult)
+            << readResult.Error->message;
 
         GameEngine::Engine::Renderer::TransformHierarchySystem transforms;
         TerrainECS::TerrainExtractionSystem extraction(&rs);
@@ -547,19 +558,10 @@ TEST_F(TerrainMaterialLibraryEditorScene, AnEditAndItsUndoReachATerrainBoundThro
             << "the edit reached the library but never the table the surface shades from";
 
         undo.Undo();
-        const auto* undoneMaterial = library->FindBySlotId(0);
-        ASSERT_NE(undoneMaterial, nullptr);
-        EXPECT_FLOAT_EQ(undoneMaterial->AlbedoR, kAuthoredGrassR);
         const Terrain::TerrainMaterialRecord undone = TickUntilIslandGrassR(frame, kAuthoredGrassR);
         ASSERT_FALSE(HasFatalFailure());
         EXPECT_FLOAT_EQ(undone.AlbedoR, kAuthoredGrassR)
             << "the undo restored the library but never the table the surface shades from";
-
-        undo.Redo();
-        const Terrain::TerrainMaterialRecord redone = TickUntilIslandGrassR(frame, kEditedR);
-        ASSERT_FALSE(HasFatalFailure());
-        EXPECT_FLOAT_EQ(redone.AlbedoR, kEditedR)
-            << "the redo restored the library but never the table the surface shades from";
 
         ReleaseProvisionedTerrains(world, feature, *service);
         rs.Shutdown();

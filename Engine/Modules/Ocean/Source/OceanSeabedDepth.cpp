@@ -1,14 +1,15 @@
 #include "Ocean/OceanSeabedDepth.h"
-#include "Ocean/OceanShaderProgram.h"
-#include "Rendering/Materials/ShaderLayoutShape.h"
-#include "OceanShaderDirectory.h"
+#include "Mathematics/Interpolation.h"
+#include "Ocean/OceanShader/OceanShaderProgram.h"
+#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
+#include "OceanShader/OceanShaderDirectory.h"
 
 #include "Logger/Logger.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
 
 #include <algorithm>
@@ -830,7 +831,7 @@ bool OceanSeabedDepth::SampleDepth(float worldX, float worldZ, float& outDepth) 
             (1.0f - std::sqrt((relX / extentX) * (relX / extentX) +
                               (relZ / extentZ) * (relZ / extentZ))) *
             std::min(extentX, extentZ);
-        const float32 roundness = std::clamp(dc.DepthShape[2], 0.0f, 1.0f);
+        const float32 roundness = Math::Clamp01(dc.DepthShape[2]);
         const float32 edge = rectEdge * (1.0f - roundness) + ellipseEdge * roundness;
         const float32 feather = std::max(dc.DepthShape[1], 0.0f);
         depth = std::min(depth, OceanDepthBandDepth(std::max(dc.DepthShape[0], 0.0f), params.DepthBandSaturation,
@@ -854,31 +855,30 @@ void OceanSeabedDepth::FillParams(OceanSeabedDepthParamsGPU& out)
     out = m_Params;
 }
 
-OceanPreparedDispatch OceanSeabedDepth::PrepareDispatch(
-    IDevice* device, BufferHandle paramsBuffer, uint64 paramsOffset,
-    TextureHandle rasterTexture, SamplerHandle rasterSampler) const
+void OceanSeabedDepth::RecordDispatch(IDevice* device, CommandList* cl,
+                                      BufferHandle paramsBuffer, uint64 paramsOffset)
 {
-    if (!m_Ready || !device || !paramsBuffer.IsValid())
-        return {};
+    if (!m_Ready || !cl || !device || !paramsBuffer.IsValid())
+        return;
 
     const TextureHandle depth = m_Depth.GetTexture();
     const uint32 layers = m_LodCount;
 
-    PipelineHandle pipe = device->TryGetWarmComputePipeline(m_Pipe);
+    PipelineHandle pipe = device->GetOrCreateComputePipeline(m_Pipe);
     if (!pipe)
-        return {};
+        return;
 
     // Sync is graph-derived: the pass declares Write on the cascade, the first
     // declared reader restores ShaderReadOnly, and MarkOutput covers reader-less
     // frames. No manual barriers in here.
+
+    cl->SetPipeline(pipe);
 
     DescriptorSetDesc dsDesc{};
     dsDesc.layout = m_Layout;
     dsDesc.transient = true;
     dsDesc.debugName = "OceanSeabedDepth_DS";
     DescriptorSetHandle ds = device->CreateDescriptorSet(dsDesc);
-    if (!ds.IsValid())
-        return {};
 
     device->UpdateBufferBinding(ds, 0, paramsBuffer, paramsOffset, sizeof(OceanSeabedDepthParamsGPU));
     device->UpdateStorageImageBinding(ds, 1, depth);
@@ -890,29 +890,28 @@ OceanPreparedDispatch OceanSeabedDepth::PrepareDispatch(
         std::lock_guard<std::mutex> lock(m_ParamsMutex);
         if (m_HasSavedDepthCache && m_SavedDepthTexture.IsValid())
             savedCacheTexture = m_SavedDepthTexture;
-    }
-    if (rasterTexture.IsValid())
-    {
-        rasterDepthTexture = rasterTexture;
-        if (rasterSampler.IsValid())
-            rasterDepthSampler = rasterSampler;
+        if (m_HasRasterDepthCapture && m_RasterDepthCaptureTexture.IsValid())
+        {
+            rasterDepthTexture = m_RasterDepthCaptureTexture;
+            if (m_RasterDepthCaptureSampler.IsValid())
+                rasterDepthSampler = m_RasterDepthCaptureSampler;
+        }
     }
     if (!savedCacheTexture.IsValid() || !savedCacheSampler.IsValid() ||
         !rasterDepthTexture.IsValid() || !rasterDepthSampler.IsValid())
-        return {};
+        return;
     device->UpdateCombinedImageSamplerBinding(ds, 2, savedCacheTexture, savedCacheSampler);
     device->UpdateCombinedImageSamplerBinding(ds, 3, rasterDepthTexture, rasterDepthSampler);
 
-    const uint32 g8 = (m_Resolution + 7u) / 8u;
-    return {pipe, ds, g8, g8, layers, depth};
-}
+    cl->BindDescriptorSet(0, ds, pipe);
 
-void OceanSeabedDepth::RecordDispatch(CommandList* cl, const OceanPreparedDispatch& dispatch)
-{
-    if (!RecordOceanPreparedDispatch(cl, dispatch))
-        return;
-    std::lock_guard<std::mutex> lock(m_ParamsMutex);
-    m_DispatchDirty = false;
+    const uint32 g8 = (m_Resolution + 7u) / 8u;
+    cl->Dispatch(g8, g8, layers);
+
+    {
+        std::lock_guard<std::mutex> lock(m_ParamsMutex);
+        m_DispatchDirty = false;
+    }
 }
 
 RenderGraph::RGTexture OceanSeabedDepth::ImportRG(RenderGraph::RGFrame& frame) const

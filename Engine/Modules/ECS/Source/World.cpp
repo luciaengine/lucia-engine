@@ -3,6 +3,7 @@
 #include "ECS/ClonePlan.h"
 #include "ECS/EntityRemap.h"
 #include "ECS/ComponentFieldRegistry.h"
+#include "ECS/ComponentFactory.h"
 #include "ECS/ComponentRegistry.h"
 #include "ECS/ComponentMigration.h"
 #include "ECS/Components.h"
@@ -10,6 +11,7 @@
 #include "ECS/Query.h"
 #include "ECS/UnresolvedComponentStore.h"
 #include "Logger/Logger.h"
+#include "Types/FlatMap.h"
 #include "Types/GeometricReserve.h"
 #include <algorithm>
 #include <atomic>
@@ -151,14 +153,14 @@ EntityHandle Archetype::RemoveEntityUnsafe(EntityLocation loc)
         return EntityHandle::Invalid();
 
     EntityHandle moved = m_Table->RemoveEntity(loc);
-    // Change signaling: swap-and-pop rewrote the vacated slot with the
-    // chunk's last row — every column of this chunk changed for gated
-    // consumers (covers all destroy paths, remove-component moves, and the
-    // MoveEntity source side).
-    if (world)
+    // Change signaling: the removal wrote the table's last row into the vacated
+    // slot, so every column of loc's chunk changed for gated consumers (all
+    // destroy paths, remove-component moves, the MoveEntity source side).
+    // A chunk that the removal emptied has left the table and gets no stamp.
+    if (world && loc.ChunkIndex < m_Table->GetChunkCount())
         m_Table->StampAllColumnVersions(loc.ChunkIndex, world->NextGlobalSystemVersion());
 
-    // The last entity in the chunk was swapped into loc's position.
+    // The table's last row now sits at loc.
     if (moved.IsValid() && world)
     {
         world->UpdateEntityLocationUnsafe(moved, this, loc);
@@ -445,7 +447,7 @@ void World::InvokeRemoveHooksForEntity(Archetype* archetype, EntityLocation loc,
         {
             try
             {
-                hookIt->second.Invoke(entity, ptr, hookIt->second.UserData);
+                hookIt->second.Invoke(*this, entity, ptr, hookIt->second.UserData);
             }
             catch (const std::exception& e)
             {
@@ -496,7 +498,7 @@ void World::InvokeAllRemoveHooks()
                 {
                     try
                     {
-                        hookIt->second.Invoke(handles[i], bytePtr + i * hookIt->second.ComponentSize,
+                        hookIt->second.Invoke(*this, handles[i], bytePtr + i * hookIt->second.ComponentSize,
                                               hookIt->second.UserData);
                     }
                     catch (const std::exception& e)
@@ -1097,7 +1099,7 @@ void World::InvokeActivityRemoveHooks(EntityHandle entity, Archetype* archetype,
         return;
     void* ptr = archetype->GetComponentRawAt(metadata.chunkIndex, metadata.indexInChunk, typeId);
     if (ptr)
-        hookIt->second.Invoke(entity, ptr, hookIt->second.UserData);
+        hookIt->second.Invoke(*this, entity, ptr, hookIt->second.UserData);
 }
 
 const std::vector<Archetype::CopyStep>& Archetype::GetOrBakeMovePlan(Archetype* target)
@@ -1170,7 +1172,7 @@ void World::MoveEntity(EntityHandle entity, Archetype* from, Archetype* to)
         }
     }
 
-    // Remove from old archetype (swap-and-pop within chunk).
+    // Remove from the old archetype; its table's last row moves into fromLoc.
     from->RemoveEntityUnsafe(fromLoc);
 
     // Update metadata to new location.
@@ -1287,6 +1289,12 @@ void World::ProcessCommands()
                 }
                 break;
             }
+
+            case Command::SET_COMPONENT_FROM_SCRIPT:
+                SetComponentBytesFromScriptImmediate(cmd.entity, cmd.componentType, cmd.componentData.Data(),
+                                                     cmd.componentData.Size(),
+                                                     ComponentFieldRegistry::GetScriptWriteRule(cmd.componentType).Ranges);
+                break;
 
             case Command::SET_ENTITY_ENABLED:
                 SetEntityEnabledImmediate(cmd.entity, cmd.entityEnabled);
@@ -1563,6 +1571,66 @@ bool World::SetComponentBytesImmediate(EntityHandle entity,
     return AddOrSetComponentBytesInternal(entity, typeId, data, sizeBytes);
 }
 
+bool World::SetComponentBytesFromScriptImmediate(EntityHandle entity,
+                                                 ComponentTypeId typeId,
+                                                 const void* data,
+                                                 std::size_t sizeBytes,
+                                                 std::span<const ScriptWritableRange> writable)
+{
+    if (!data && sizeBytes != 0)
+        return false;
+
+    auto* handler = ComponentRegistry::GetHandler(typeId);
+    if (!handler || handler->GetComponentSize() != sizeBytes)
+        return false;
+
+    CheckRemovalReentry();
+    std::unique_lock lock(worldMutex);
+    if (!IsValid(entity))
+        return false;
+
+    // Every byte writable (one run over the whole component, as Transform's): the script's bytes are the value.
+    if (writable.size() == 1 && writable.front().Begin == 0 && writable.front().End == sizeBytes)
+        return AddOrSetComponentBytesInternal(entity, typeId, data, sizeBytes);
+
+    // The merge target: the current value, or the defaults on an add. A component up to
+    // kStackMergeBytes merges on the stack; a larger one allocates.
+    constexpr std::size_t kStackMergeBytes = 512;
+    std::array<std::uint8_t, kStackMergeBytes> stackTarget;
+    std::vector<std::uint8_t> heapTarget;
+    std::uint8_t* merged = stackTarget.data();
+    if (sizeBytes > kStackMergeBytes)
+    {
+        heapTarget.resize(sizeBytes);
+        merged = heapTarget.data();
+    }
+    const EntityMetadata& metadata = entityMetadata[entity.index];
+    const Archetype* archetype = metadata.archetype;
+    const void* current = archetype && archetype->GetSignature().Contains(typeId)
+                              ? archetype->GetComponentRawAt(metadata.chunkIndex, metadata.indexInChunk, typeId)
+                              : nullptr;
+    if (current)
+    {
+        std::memcpy(merged, current, sizeBytes);
+    }
+    else
+    {
+        std::vector<std::uint8_t> defaults;
+        if (!ComponentFactory::GetDefaultBytes(typeId, defaults) || defaults.size() != sizeBytes)
+            return false; // an add with no registered defaults has no engine bytes to keep: refused, not filled from the script
+        std::memcpy(merged, defaults.data(), sizeBytes);
+    }
+
+    const auto* script = static_cast<const std::uint8_t*>(data);
+    for (const ScriptWritableRange& range : writable)
+    {
+        if (range.End > sizeBytes)
+            break;
+        std::memcpy(merged + range.Begin, script + range.Begin, range.End - range.Begin);
+    }
+    return AddOrSetComponentBytesInternal(entity, typeId, merged, sizeBytes);
+}
+
 World::RemoveComponentResult World::RemoveComponentInternal(EntityHandle entity, ComponentTypeId typeId)
 {
     // Caller must hold worldMutex exclusively. Single body behind typed
@@ -1586,7 +1654,7 @@ World::RemoveComponentResult World::RemoveComponentInternal(EntityHandle entity,
         void* ptr = current->GetComponentRawAt(metadata.chunkIndex, metadata.indexInChunk, typeId);
         if (ptr)
         {
-            hookIt->second.Invoke(entity, ptr, hookIt->second.UserData);
+            hookIt->second.Invoke(*this, entity, ptr, hookIt->second.UserData);
         }
     }
 
@@ -2383,7 +2451,21 @@ EntityHandle World::DeserializeEntity(std::span<const uint8_t> data, EntityHandl
 namespace
 {
 constexpr uint32_t kWorldSnapshotMagic = 0x57435345; // ECSW
-constexpr uint32_t kWorldSnapshotVersion = 1;
+constexpr uint32_t kWorldSnapshotVersion = 2;
+
+// True when `archetype` holds a type that declares NotInWorldSnapshot (ComponentFlags.h).
+bool HoldsNotInWorldSnapshotType(const Archetype* archetype)
+{
+    if (!archetype)
+        return false;
+    for (const ComponentTypeId typeId : archetype->GetSignature().GetComponents())
+    {
+        const ComponentRegistry::ComponentInfo* info = ComponentRegistry::GetComponentInfo(typeId);
+        if (info && HasAnyFlag(info->Flags, ComponentFlags::NotInWorldSnapshot))
+            return true;
+    }
+    return false;
+}
 }
 
 std::vector<uint8_t> World::SerializeWorld()
@@ -2403,13 +2485,31 @@ std::vector<uint8_t> World::SerializeWorld()
     append(kWorldSnapshotMagic);
     append(kWorldSnapshotVersion);
     append(static_cast<uint32_t>(entityMetadata.size()));
+    const std::size_t freeCountOffset = result.size();
     append(static_cast<uint32_t>(freeIndices.size()));
 
+    FlatMap<const Archetype*, bool> skippedArchetypes;
+    std::vector<EntityIndex> skippedIndices;
     for (EntityIndex i = 0; i < entityMetadata.size(); ++i)
     {
         const auto& metadata = entityMetadata[i];
         append(metadata.version);
+        bool skipped = false;
         if (metadata.alive)
+        {
+            const bool* known = skippedArchetypes.Find(metadata.archetype);
+            skipped = known ? *known
+                            : skippedArchetypes.InsertOrAssign(metadata.archetype,
+                                                               HoldsNotInWorldSnapshotType(metadata.archetype));
+        }
+        // An entity of a NotInWorldSnapshot type is a free slot, lowest index popped first.
+        // Its version stays, so the next create in the slot issues a new handle.
+        if (skipped)
+        {
+            skippedIndices.push_back(i);
+            append(uint32_t{0});
+        }
+        else if (metadata.alive)
         {
             EntityHandle entity(i, metadata.version);
             auto entityData = SerializeEntityUnsafe(entity);
@@ -2423,6 +2523,10 @@ std::vector<uint8_t> World::SerializeWorld()
     }
     for (const auto index : freeIndices)
         append(index);
+    for (auto it = skippedIndices.rbegin(); it != skippedIndices.rend(); ++it)
+        append(*it);
+    const auto freeCount = static_cast<uint32_t>(freeIndices.size() + skippedIndices.size());
+    std::memcpy(result.data() + freeCountOffset, &freeCount, sizeof(freeCount));
 
     return result;
 }
@@ -2980,33 +3084,12 @@ std::vector<EntityHandle> World::CreateBatchFromBundle(size_t count, const Compo
 }
 
 // ============================================================================
-// CHUNK COMPACTION
+// SPARE CHUNKS
 // ============================================================================
 
-uint32_t Archetype::CompactChunks()
+uint32_t Archetype::FreeSpareChunks()
 {
-    if (!m_Table || !world)
-        return 0;
-
-    return m_Table->CompactChunks(
-        [this](uint32_t oldChunkIdx, uint32_t newChunkIdx, ArchetypeChunk& chunk)
-        {
-            // Update all entities in the relocated chunk to their new chunk index.
-            const EntityHandle* handles = chunk.GetEntityHandles();
-            uint32_t count = chunk.GetCount();
-            for (uint32_t i = 0; i < count; ++i)
-            {
-                EntityHandle eh = handles[i];
-                if (eh.index < world->entityMetadata.size())
-                {
-                    auto& md = world->entityMetadata[eh.index];
-                    if (md.archetype == this && md.chunkIndex == static_cast<uint16_t>(oldChunkIdx))
-                    {
-                        md.chunkIndex = static_cast<uint16_t>(newChunkIdx);
-                    }
-                }
-            }
-        });
+    return m_Table ? m_Table->FreeSpareChunks() : 0;
 }
 
 // ============================================================================
@@ -3089,12 +3172,11 @@ size_t World::CompactAllChunks()
     size_t totalFreed = 0;
     for (auto& [sig, archetype] : archetypes)
     {
-        totalFreed += archetype->CompactChunks();
+        totalFreed += archetype->FreeSpareChunks();
     }
 
-    // Chunk layout changed (empty chunks freed, others may have been swapped).
-    // Bump structural version so caches relying on "data location may have moved"
-    // signals (e.g. user-side change tracking) can detect the invalidation.
+    // Chunk memory was freed (no row moved). Bump the structural version so that
+    // caches keyed on it drop any chunk address they hold.
     if (totalFreed > 0)
         structuralChangeVersion.fetch_add(1, std::memory_order_relaxed);
 

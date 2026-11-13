@@ -1,4 +1,5 @@
 #include "Panels/UndoHistory/UndoHistoryPanel.h"
+#include "Types/StringId.h"
 #include "UndoRedo/UndoRedoService.h"
 #include "Types/FlatMap.h"
 #include "UI/UIElement.h"
@@ -29,7 +30,7 @@ std::unique_ptr<UIElement> ParseHistoryLayout(const char* path, const std::strin
         return nullptr;
     for (const auto id : requiredIds)
     {
-        if (root->FindById(id))
+        if (root->FindById(HashStringId(id)))
             continue;
         Logger::Log::Error("Undo History: {} requires the element {}", path, id);
         return nullptr;
@@ -58,7 +59,7 @@ using HistoryLaneParts = std::bitset<kLanePartCount>;
 
 void KeepHistoryLanePart(UIElement& lane, const char* id, bool keep)
 {
-    auto* part = lane.FindById(id);
+    auto* part = lane.FindById(HashStringId(id));
     if (keep)
         part->SetId("");
     else
@@ -74,7 +75,7 @@ std::unique_ptr<UIElement> BuildHistoryLane(const HistoryLaneParts& parts)
     if (!lane)
         return nullptr;
     if (parts.test(kLaneCurrent))
-        lane->FindById("HistoryMark")->AddClass("history-node-current");
+        lane->FindById("HistoryMark"_sid)->AddClass("history-node-current");
     KeepHistoryLanePart(*lane, "HistoryLineUp", parts.test(kLaneUp));
     KeepHistoryLanePart(*lane, "HistoryLineDown", parts.test(kLaneDown));
     KeepHistoryLanePart(*lane, "HistoryLineLeft", parts.test(kLaneLeft));
@@ -129,7 +130,7 @@ void UndoHistoryPanel::BuildUI()
     if (!root)
         return;
     root->RequestSubtreeStyleAssetPath("UI/controls/UndoHistory/UndoHistory.css", "editor");
-    if (auto* scrollView = dynamic_cast<ScrollView*>(root->FindById("HistoryScroll")))
+    if (auto* scrollView = dynamic_cast<ScrollView*>(root->FindById("HistoryScroll"_sid)))
     {
         auto list = std::make_unique<UIElement>();
         list->SetId("HistoryList");
@@ -137,10 +138,10 @@ void UndoHistoryPanel::BuildUI()
         m_List = list.get();
         scrollView->AddContent(std::move(list));
     }
-    m_CountLabel = dynamic_cast<Label*>(root->FindById("HistoryCount"));
-    m_BackBtn = dynamic_cast<Button*>(root->FindById("HistoryUndo"));
-    m_ForwardBtn = dynamic_cast<Button*>(root->FindById("HistoryRedo"));
-    auto* clear = dynamic_cast<Button*>(root->FindById("HistoryClear"));
+    m_CountLabel = dynamic_cast<Label*>(root->FindById("HistoryCount"_sid));
+    m_BackBtn = dynamic_cast<Button*>(root->FindById("HistoryUndo"_sid));
+    m_ForwardBtn = dynamic_cast<Button*>(root->FindById("HistoryRedo"_sid));
+    auto* clear = dynamic_cast<Button*>(root->FindById("HistoryClear"_sid));
     if (m_BackBtn)
         m_BackBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { if (m_Undo) m_Undo->Undo(); });
     if (m_ForwardBtn)
@@ -165,13 +166,13 @@ void UndoHistoryPanel::AddRevision(std::uint64_t id, const std::string& label, c
     row->SetId("HistoryNode" + std::to_string(id));
     row->SetText(label);
     row->SetTooltip(description.empty() ? tooltip : tooltip + "\n" + description);
-    auto* gutter = row->FindById("HistoryBranches");
+    auto* gutter = row->FindById("HistoryBranches"_sid);
     gutter->SetId("");
     row->GetChildren().front()->AddClass("history-button-label");
-    auto* title = dynamic_cast<Label*>(row->FindById("HistoryTitle"));
+    auto* title = dynamic_cast<Label*>(row->FindById("HistoryTitle"_sid));
     title->SetText(label);
-    auto* content = row->FindById("HistoryContent");
-    auto* details = dynamic_cast<Label*>(row->FindById("HistoryDetails"));
+    auto* content = row->FindById("HistoryContent"_sid);
+    auto* details = dynamic_cast<Label*>(row->FindById("HistoryDetails"_sid));
     if (description.empty())
         content->RemoveChild(details);
     else
@@ -199,7 +200,7 @@ void UndoHistoryPanel::AddRevision(std::uint64_t id, const std::string& label, c
     if (current)
         row->AddClass("history-current");
     else
-        row->RemoveChild(row->FindById("HistoryCurrent"));
+        row->RemoveChild(row->FindById("HistoryCurrent"_sid));
     row->RegisterEventHandler(kEventButtonClick, [this, id](UIEvent& event)
     {
         if (m_Undo)

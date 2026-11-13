@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Animation/AnimationGraphPlayer.h"
+#include "Animation/AnimationGraph/AnimationGraphPlayer.h"
 #include "Animation/Nodes/StateMachineNode.h"
 #include "Graph/GraphModel.h"
 

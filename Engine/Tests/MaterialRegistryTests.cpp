@@ -22,8 +22,8 @@
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialDocument.h"
 #include "Rendering/Materials/MaterialParamsLayout.h"
-#include "Rendering/Materials/ShaderCompileService.h"
-#include "Rendering/Materials/ShaderPropertyTable.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderPropertyTable.h"
 #include "Types/StringId.h"
 
 #include "ScopedCompatShaderProfile.h"
@@ -1397,6 +1397,7 @@ TEST(MaterialVariantKeyDerivation, LobeEnableBoolCompilesItsDefine)
         {"enableSubsurface",   MaterialKeyword::Subsurface,   "GE_SUBSURFACE_ENABLED"},
         {"enableTransmission", MaterialKeyword::Transmission, "GE_TRANSMISSION_ENABLED"},
         {"enableIridescence",  MaterialKeyword::Iridescence,  "GE_IRIDESCENCE_ENABLED"},
+        {"enableUV1Crossfade", MaterialKeyword::UV1Crossfade, "GE_UV1_CROSSFADE"},
     };
     for (const auto& lobe : kLobes)
     {

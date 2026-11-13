@@ -16,6 +16,7 @@
 // exactly what a microbenchmark manufactures away.
 
 #include "IsolatedUIFixture.h"
+#include "UIBenchStats.h"
 
 #include "UI/UIElement.h"
 #include "UI/UIManager.h"
@@ -31,15 +32,13 @@
 using GameEngine::UIElement;
 using GameEngine::UIManager;
 using GameEngine::UITesting::IsolatedUIFixture;
+using GameEngine::UITesting::kBenchConfig;
+using GameEngine::UITesting::PrintBenchHeader;
+using GameEngine::UITesting::PrintBenchRow;
+using GameEngine::UITesting::Summarize;
 
 namespace
 {
-
-#ifdef NDEBUG
-constexpr const char* kConfig = "Release";
-#else
-constexpr const char* kConfig = "Debug";
-#endif
 
 // Enough rows that the tree is the same order as the editor's recorded ~1,037
 // elements: 200 * (row + icon + 2 labels) + panel + root.
@@ -47,44 +46,12 @@ constexpr int kRows = 200;
 constexpr int kWarmupFrames = 12;
 constexpr int kSampleFrames = 60;
 
-struct Stats
+// The header detail each scenario prints: the content scale it ran at.
+std::string ScaleDetails(float scale)
 {
-    double Median = 0.0;
-    double Min = 0.0;
-    double Max = 0.0;
-    double Mean = 0.0;
-    size_t N = 0;
-};
-
-Stats Summarize(std::vector<double> v)
-{
-    Stats s{};
-    if (v.empty())
-        return s;
-    std::sort(v.begin(), v.end());
-    s.N = v.size();
-    s.Min = v.front();
-    s.Max = v.back();
-    s.Median = v[v.size() / 2];
-    double sum = 0.0;
-    for (double d : v)
-        sum += d;
-    s.Mean = sum / static_cast<double>(v.size());
-    return s;
-}
-
-void PrintRow(const char* label, const Stats& s)
-{
-    std::printf("  %-34s  %8.4f  %8.4f  %8.4f  %8.4f   %zu\n", label, s.Median, s.Mean, s.Min,
-                s.Max, s.N);
-}
-
-void PrintHeader(const char* title, float scale)
-{
-    std::printf("\n=== %s | config=%s | contentScale=%.2f | machine=win11-x64 ===\n", title,
-                kConfig, static_cast<double>(scale));
-    std::printf("  %-34s  %8s  %8s  %8s  %8s   %s\n", "metric (ms unless noted)", "median", "mean",
-                "min", "max", "n");
+    char details[32];
+    std::snprintf(details, sizeof(details), " | contentScale=%.2f", static_cast<double>(scale));
+    return details;
 }
 
 // An editor-shaped panel: a scrolling column of property rows.
@@ -196,15 +163,15 @@ void RunFullRegenProfile(float scale)
         skippedCount += f.GenAllPrimitivesSkipped;
     }
 
-    PrintHeader("FULL REGEN (MarkStyleDirtyAll every frame)", scale);
-    PrintRow("GenAllPrimitivesMs", Summarize(genMs));
-    PrintRow("BuildYogaMs", Summarize(buildYogaMs));
-    PrintRow("  of which CascadeComputeMs", Summarize(cascadeMs));
-    PrintRow("YogaMs", Summarize(yogaMs));
-    PrintRow("GeometryMs", Summarize(geometryMs));
-    PrintRow("HitTestMs", Summarize(hitTestMs));
-    PrintRow("TotalMs (profiler)", Summarize(totalMs));
-    PrintRow("wall Update+Render (independent)", Summarize(wallMs));
+    PrintBenchHeader("FULL REGEN (MarkStyleDirtyAll every frame)", ScaleDetails(scale));
+    PrintBenchRow("GenAllPrimitivesMs", Summarize(genMs));
+    PrintBenchRow("BuildYogaMs", Summarize(buildYogaMs));
+    PrintBenchRow("  of which CascadeComputeMs", Summarize(cascadeMs));
+    PrintBenchRow("YogaMs", Summarize(yogaMs));
+    PrintBenchRow("GeometryMs", Summarize(geometryMs));
+    PrintBenchRow("HitTestMs", Summarize(hitTestMs));
+    PrintBenchRow("TotalMs (profiler)", Summarize(totalMs));
+    PrintBenchRow("wall Update+Render (independent)", Summarize(wallMs));
     std::printf("  elements=%u  regens_skipped=%u/%d\n", elementCount, skippedCount, kSampleFrames);
 
     // CONTROL: nothing dirty. If this is not ~0 and skipped, the workload is
@@ -219,9 +186,9 @@ void RunFullRegenProfile(float scale)
         idleTotal.push_back(f.TotalMs);
         idleSkipped += f.GenAllPrimitivesSkipped;
     }
-    PrintHeader("CONTROL: idle frames (nothing dirty)", scale);
-    PrintRow("GenAllPrimitivesMs", Summarize(idleGen));
-    PrintRow("TotalMs (profiler)", Summarize(idleTotal));
+    PrintBenchHeader("CONTROL: idle frames (nothing dirty)", ScaleDetails(scale));
+    PrintBenchRow("GenAllPrimitivesMs", Summarize(idleGen));
+    PrintBenchRow("TotalMs (profiler)", Summarize(idleTotal));
     std::printf("  regens_skipped=%u/%d  <-- expect %d\n", idleSkipped, kSampleFrames,
                 kSampleFrames);
 }
@@ -280,9 +247,9 @@ TEST(UIEmitPerf, DISABLED_TransitionRegenBehaviour)
             ++drainFrames;
     }
 
-    PrintHeader("H1: one row transitions background-color", 1.0f);
-    PrintRow("GenAllPrimitivesMs (steady state)", Summarize(baseGen));
-    PrintRow("GenAllPrimitivesMs (transitioning)", Summarize(transGen));
+    PrintBenchHeader("H1: one row transitions background-color", ScaleDetails(1.0f));
+    PrintBenchRow("GenAllPrimitivesMs (steady state)", Summarize(baseGen));
+    PrintBenchRow("GenAllPrimitivesMs (transitioning)", Summarize(transGen));
     std::printf("  steady: skipped=%u/20   transition: skipped=%u/12  drainFrames=%u\n",
                 baseSkipped, transSkipped, drainFrames);
     std::printf("  regenCause bitmask over transition frames = 0x%X"
@@ -308,7 +275,7 @@ void RunCullExperiment(float scale)
     const Arm arms[] = {{"rows overflow:visible (default)", "visible"},
                         {"rows overflow:hidden", "hidden"}};
 
-    PrintHeader("H2: identical trees, 77% of rows outside the parent clip", scale);
+    PrintBenchHeader("H2: identical trees, 77% of rows outside the parent clip", ScaleDetails(scale));
     for (const Arm& arm : arms)
     {
         IsolatedUIFixture fx;
@@ -332,7 +299,7 @@ void RunCullExperiment(float scale)
             fx.StepFrame();
             gen.push_back(LastFrame(ui).GenAllPrimitivesMs);
         }
-        PrintRow(arm.Name, Summarize(gen));
+        PrintBenchRow(arm.Name, Summarize(gen));
     }
 }
 
@@ -397,10 +364,10 @@ void RunTextAreaThrash(float scale)
         wall.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
     }
 
-    PrintHeader("H4: wrapping TextArea in a ScrollView (emit + OnPostLayout)", scale);
-    PrintRow("GenAllPrimitivesMs", Summarize(gen));
-    PrintRow("TotalMs (profiler)", Summarize(total));
-    PrintRow("wall Update+Render (independent)", Summarize(wall));
+    PrintBenchHeader("H4: wrapping TextArea in a ScrollView (emit + OnPostLayout)", ScaleDetails(scale));
+    PrintBenchRow("GenAllPrimitivesMs", Summarize(gen));
+    PrintBenchRow("TotalMs (profiler)", Summarize(total));
+    PrintBenchRow("wall Update+Render (independent)", Summarize(wall));
     std::printf("  document bytes=%zu\n", doc.size());
 }
 
@@ -442,7 +409,7 @@ TEST(UIEmitPerf, DISABLED_TextAreaWrapDiagnostic)
 )";
 
     std::printf("\n=== H4 INSTRUMENT CHECK: does the specimen reach the mixed-space path? ===\n");
-    std::printf("  config=%s\n", kConfig);
+    std::printf("  config=%s\n", kBenchConfig);
     for (float scale : {1.0f, 1.5f})
     {
         IsolatedUIFixture fx;

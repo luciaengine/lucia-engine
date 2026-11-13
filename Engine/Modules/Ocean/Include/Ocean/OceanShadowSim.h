@@ -1,23 +1,17 @@
 #pragma once
 
 #include "Ocean/OceanCascadeArray.h"
+#include "Ocean/OceanFrameStamp.h"
 #include "Ocean/OceanInputDrawSource.h"
 #include "Ocean/OceanSettingsAsset.h"
-#include "Rendering/CameraTypes.h"
-#include "Rendering/Core/RenderGraph/RGFrameStamp.h"
-#include "Types/FlatMap.h"
-
+#include "Rendering/Camera/CameraTypes.h"
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 namespace GameEngine::Engine::Renderer::Pipeline
 {
 struct ViewDeclare;
-}
-namespace GameEngine::Rendering::RenderGraph
-{
-class RGPrepareContext;
-class RGContext;
 }
 namespace GameEngine::Ocean
 {
@@ -25,7 +19,7 @@ namespace GameEngine::Ocean
 struct alignas(16) OceanShadowSamplingGPU
 {
     OceanCascadeLayoutGPU Layout{};
-    float Channels[4]{}; // hard scale, soft scale, available, pad
+    Mathematics::Vector4 Channels; // hard scale, soft scale, available, pad
 };
 
 class OceanShadowSim
@@ -42,17 +36,10 @@ class OceanShadowSim
         m_Inputs = std::move(inputs);
     }
     void RebaseOrigin(float x, float z);
-    /// Render-thread declaration retains a frame-owned history lease until graph retirement.
     bool DeclareForView(Engine::Renderer::Pipeline::ViewDeclare &d, const OceanParamsGPU &params);
-    // Sampling is available only to the graph that declared this view.
-    bool FillSampling(Rendering::ViewId view, const Rendering::RenderGraph::RGFrame& frame,
-                      OceanShadowSamplingGPU &out) const;
-    // The no-frame accessor exposes recorded history; the owner sees its planned output.
+    // `frame` is the render graph's RGFrame::FrameIndex(), the one DeclareForView stamped.
+    bool FillSampling(Rendering::ViewId view, uint64 frame, OceanShadowSamplingGPU &out) const;
     Rendering::TextureHandle GetTexture(Rendering::ViewId view) const;
-    Rendering::TextureHandle GetTexture(Rendering::ViewId view,
-                                        const Rendering::RenderGraph::RGFrame& frame) const;
-    /// Render-thread retirement clears borrowed plans while retaining submitted history.
-    void ForgetFrame(const Rendering::RenderGraph::RGFrame& frame);
     Rendering::SamplerHandle GetSampler() const
     {
         return m_Sampler;
@@ -62,11 +49,6 @@ class OceanShadowSim
 
   private:
     struct History;
-    struct FramePlan;
-    const FramePlan* FindPlan(Rendering::ViewId view, const Rendering::RenderGraph::RGFrame& frame) const;
-    bool IsCurrentPlan(Rendering::ViewId view, const FramePlan& plan) const;
-    bool Prepare(Rendering::ViewId view, FramePlan& plan, Rendering::RenderGraph::RGPrepareContext& ctx) const;
-    void Record(Rendering::ViewId view, FramePlan& plan, Rendering::RenderGraph::RGContext& ctx);
     bool Initialize(Rendering::IDevice *device);
     Rendering::IDevice *m_Device = nullptr;
     Rendering::ComputePipelineId m_Pipeline{};
@@ -75,6 +57,6 @@ class OceanShadowSim
     bool m_LoadFailed = false;
     OceanShadowSettings m_Settings{};
     std::vector<OceanInputDrawPacket> m_Inputs;
-    FlatMap<Rendering::ViewId, std::shared_ptr<History>> m_Histories;
+    std::unordered_map<Rendering::ViewId, std::unique_ptr<History>> m_Histories;
 };
 } // namespace GameEngine::Ocean

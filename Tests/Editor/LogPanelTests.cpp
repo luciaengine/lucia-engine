@@ -1,5 +1,6 @@
 #include "EditorChromeFixture.h"
 #include "Panels/LogPanel/LogChannelPopover.h"
+#include "UI/Controls/TextField.h"
 
 using namespace GameEngine;
 using namespace EditorChromeTesting;
@@ -9,31 +10,29 @@ TEST(LogPanelActions, AuthoredButtonsTogglePauseCopyAndClear)
     EditorChromeHost host;
     if (!host.Device) GTEST_SKIP() << "No Vulkan device available";
     ASSERT_TRUE(host.Ready);
-    auto* pause = host.Action("log-pause-button");
-    auto* copy = host.Action("log-copy-button");
-    auto* clear = host.Action("log-clear-button");
+    ASSERT_NE(host.View(), nullptr);
+    auto* pause = host.Action("LogPause");
+    auto* copy = host.Action("LogCopyAll");
+    auto* clear = host.Action("LogClear");
     ASSERT_NE(pause, nullptr); ASSERT_NE(copy, nullptr); ASSERT_NE(clear, nullptr);
-    EXPECT_NE(ClassIn(pause, "log-action-pause-icon"), nullptr);
     EXPECT_LT(pause->GetLayoutX(), copy->GetLayoutX());
-    EXPECT_LT(copy->GetLayoutX(), clear->GetLayoutX());
+    EXPECT_LT(clear->GetLayoutX(), pause->GetLayoutX());
     Click(pause);
-    EXPECT_TRUE(host.Panel->GetLogView()->IsPaused());
+    EXPECT_TRUE(host.View()->IsPaused());
     EXPECT_EQ(pause->GetText(), "Resume");
-    EXPECT_NE(ClassIn(pause, "log-action-resume-icon"), nullptr);
     Click(pause);
-    EXPECT_FALSE(host.Panel->GetLogView()->IsPaused());
+    EXPECT_FALSE(host.View()->IsPaused());
     EXPECT_EQ(pause->GetText(), "Pause");
-    EXPECT_NE(ClassIn(pause, "log-action-pause-icon"), nullptr);
     Logger::LogMessage message{};
     message.Level = Logger::LogLevel::Info;
     message.Message = "Log toolbar regression fixture";
-    host.Panel->GetLogView()->AddMessage(message);
+    host.View()->AddMessage(message);
     host.Panel->Update();
     Click(pause);
     Click(copy);
     EXPECT_NE(host.Platform.GetClipboardText().find(message.Message), std::string::npos);
     Click(clear);
-    EXPECT_EQ(host.Panel->GetLogView()->GetMessageCount(), 0u);
+    EXPECT_EQ(host.View()->GetModel().GetVisibleCount(), 0u);
     host.Settle();
     if (const char* directory = std::getenv("GE_LOG_TOOLBAR_CAPTURE_DIR"))
     {
@@ -67,36 +66,38 @@ TEST(LogPanelActions, AuthoredButtonsTogglePauseCopyAndClear)
     }
 }
 
-TEST(LogPanelActions, ResponsiveReparentingRestoresSearchAndActionsTogether)
+TEST(LogPanelActions, ResponsiveWrappingKeepsSearchSeverityChannelsAndActionsReachable)
 {
     EditorChromeHost host;
     if (!host.Device) GTEST_SKIP() << "No Vulkan device available";
     ASSERT_TRUE(host.Ready);
-    auto* center = ClassIn(host.Panel, "log-toolbar-center-slot");
-    auto* search = ClassIn(host.Panel, "log-toolbar-search");
-    auto* primary = ClassIn(host.Panel, "log-toolbar-primary");
-    auto* secondary = ClassIn(host.Panel, "log-toolbar-secondary");
-    ASSERT_NE(center, nullptr); ASSERT_NE(search, nullptr);
-    ASSERT_NE(primary, nullptr); ASSERT_NE(secondary, nullptr);
-    EXPECT_GE(search->GetLayoutWidth(), 88.0f);
-    EXPECT_LE(search->GetWindowRect().Right(), host.Panel->GetWindowRect().Right());
+    host.Ui->SetLayoutSizeOverride(1400, 600);
+    host.Ui->GetRootElement()->Style().Set(Style::Width, StyleLength::Px(1400));
+    auto* search = ClassIn(host.Panel, "log-search-bar");
+    ASSERT_NE(search, nullptr);
     auto* searchIcon = ClassIn(search, "panel-search-icon");
     ASSERT_NE(searchIcon, nullptr);
-    EXPECT_GT(searchIcon->GetLayoutWidth(), 0.0f);
-    EXPECT_LE(searchIcon->GetWindowRect().Right(), search->GetWindowRect().Right());
-    EXPECT_EQ(center->GetParent(), secondary); EXPECT_EQ(search->GetParent(), secondary);
-    EXPECT_TRUE(search->HasClass("log-toolbar-search-compact"));
-    host.Panel->Overrides().Set(Style::Width, StyleLength::Px(1200)); host.Settle();
-    EXPECT_EQ(center->GetParent(), primary); EXPECT_EQ(search->GetParent(), primary);
-    EXPECT_TRUE(secondary->HasClass("log-toolbar-secondary-hidden"));
-    EXPECT_FALSE(search->HasClass("log-toolbar-search-compact"));
-    host.Panel->Overrides().Set(Style::Width, StyleLength::Px(600)); host.Settle();
-    EXPECT_EQ(center->GetParent(), secondary); EXPECT_EQ(search->GetParent(), secondary);
-    // Reproduce the half-applied transition the private repair phase owns.
-    auto moved = secondary->TakeChild(search); ASSERT_NE(moved, nullptr);
-    primary->AddChild(std::move(moved)); host.Settle();
-    EXPECT_EQ(center->GetParent(), search->GetParent());
-    EXPECT_EQ(search->HasClass("log-toolbar-search-compact"), search->GetParent() == secondary);
+    for (const float width : {600.0f, 1200.0f, 600.0f})
+    {
+        host.Panel->Style().Set(Style::Width, StyleLength::Px(width));
+        host.Settle();
+        const auto panelRect = host.Panel->GetWindowRect();
+        for (const char* id : {"LogFilterError", "LogFilterWarning", "LogFilterInfo", "LogFilterDebug",
+                               "LogChannels", "LogPause", "LogCopyAll", "LogClear", "log-search-field"})
+        {
+            const auto* control = host.Panel->FindById(HashStringId(id));
+            ASSERT_NE(control, nullptr) << id;
+            const auto rect = control->GetWindowRect();
+            EXPECT_GT(rect.Width, 0.0f) << id;
+            EXPECT_GT(rect.Height, 0.0f) << id;
+            EXPECT_GE(rect.X, panelRect.X) << id;
+            EXPECT_LE(rect.Right(), panelRect.Right() + 0.5f) << id;
+            EXPECT_LE(rect.Bottom(), panelRect.Bottom() + 0.5f) << id;
+        }
+        EXPECT_GE(search->GetLayoutWidth(), 160.0f);
+        EXPECT_GT(searchIcon->GetLayoutWidth(), 0.0f);
+        EXPECT_LE(searchIcon->GetWindowRect().Right(), search->GetWindowRect().Right());
+    }
 }
 
 TEST(LogPanelActions, ChannelPickerHidesAndRestoresRows)
@@ -107,24 +108,77 @@ TEST(LogPanelActions, ChannelPickerHidesAndRestoresRows)
 
     Logger::LogMessage message(Logger::LogLevel::Info, "Channel picker regression fixture");
     message.Channel = Logger::RegisterChannel("Editor.ChannelPickerRegression", Logger::LogLevel::Trace).Index;
-    auto* view = host.Panel->GetLogView();
+    auto* view = host.View();
+    ASSERT_NE(view, nullptr);
+    view->Clear();
     view->AddMessage(message);
     host.Panel->Update();
+    view->SetSearch(message.Message);
+    ASSERT_EQ(view->GetModel().GetVisibleCount(), 1u);
+    const uint64_t sequence = view->GetModel().GetVisibleEntry(0)->Sequence;
 
-    auto* channels = dynamic_cast<Button*>(host.Panel->FindById("LogChannels"));
+    auto* channels = dynamic_cast<Button*>(host.Panel->FindById("LogChannels"_sid));
     ASSERT_NE(channels, nullptr);
     Click(channels);
     host.Settle();
-    auto* hideAll = dynamic_cast<Button*>(host.Panel->FindById("LogChannelsHideAll"));
-    auto* showAll = dynamic_cast<Button*>(host.Panel->FindById("LogChannelsShowAll"));
+    auto* hideAll = dynamic_cast<Button*>(host.Panel->FindById("LogChannelsHideAll"_sid));
+    auto* showAll = dynamic_cast<Button*>(host.Panel->FindById("LogChannelsShowAll"_sid));
     ASSERT_NE(hideAll, nullptr);
     ASSERT_NE(showAll, nullptr);
 
     Click(hideAll);
-    EXPECT_EQ(view->GetAllMessagesAsText(true).find(message.Message), std::string::npos);
-    EXPECT_NE(view->GetAllMessagesAsText(false).find(message.Message), std::string::npos);
+    EXPECT_EQ(view->GetModel().FormatVisibleLines().find(message.Message), std::string::npos);
+    ASSERT_NE(view->GetModel().FindEntry(sequence), nullptr);
+    EXPECT_EQ(view->GetModel().FindEntry(sequence)->Text, message.Message);
     Click(showAll);
-    EXPECT_NE(view->GetAllMessagesAsText(true).find(message.Message), std::string::npos);
+    EXPECT_NE(view->GetModel().FormatVisibleLines().find(message.Message), std::string::npos);
+}
+
+TEST(LogPanelActions, ChannelPickerPreservesSearchAndSeverityFilters)
+{
+    EditorChromeHost host;
+    if (!host.Device) GTEST_SKIP() << "No Vulkan device available";
+    ASSERT_TRUE(host.Ready);
+    auto* view = host.View();
+    ASSERT_NE(view, nullptr);
+    view->Clear();
+    const auto channel = Logger::RegisterChannel("Editor.CombinedFilters", Logger::LogLevel::Trace).Index;
+    for (const auto level : {Logger::LogLevel::Info, Logger::LogLevel::Error})
+    {
+        Logger::LogMessage message(level, "Combined filter witness");
+        message.Channel = channel;
+        view->AddMessage(message);
+    }
+    Logger::LogMessage unrelated(Logger::LogLevel::Error, "Unrelated witness");
+    unrelated.Channel = channel;
+    view->AddMessage(unrelated);
+    host.Panel->Update();
+    auto* search = dynamic_cast<TextField*>(host.Panel->FindById("log-search-field"_sid));
+    ASSERT_NE(search, nullptr);
+    search->SetValue("Combined filter");
+    EXPECT_EQ(view->GetModel().GetVisibleCount(), 2u);
+    auto* info = host.Action("LogFilterInfo");
+    ASSERT_NE(info, nullptr);
+    Click(info);
+    EXPECT_EQ(view->GetModel().GetVisibleCount(), 1u);
+    auto* channels = host.Action("LogChannels");
+    ASSERT_NE(channels, nullptr);
+    Click(channels);
+    host.Settle();
+    auto* hideAll = host.Action("LogChannelsHideAll");
+    auto* showAll = host.Action("LogChannelsShowAll");
+    ASSERT_NE(hideAll, nullptr);
+    ASSERT_NE(showAll, nullptr);
+    Click(hideAll);
+    EXPECT_EQ(view->GetModel().GetVisibleCount(), 0u);
+    Click(showAll);
+    ASSERT_EQ(view->GetModel().GetVisibleCount(), 1u);
+    EXPECT_EQ(view->GetModel().GetVisibleEntry(0)->Level, Logger::LogLevel::Error);
+    EXPECT_EQ(search->GetValue(), "Combined filter");
+    Click(info);
+    EXPECT_EQ(view->GetModel().GetVisibleCount(), 2u);
+    search->SetValue("witness");
+    EXPECT_EQ(view->GetModel().GetVisibleCount(), 3u);
 }
 
 TEST(LogPanelActions, ChannelPickerClosesWhenItsAnchorIsRemoved)

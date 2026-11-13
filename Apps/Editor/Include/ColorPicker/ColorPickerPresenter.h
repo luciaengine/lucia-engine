@@ -1,6 +1,6 @@
 #pragma once
 
-#include "EditorApplication.h" // EditorApplication::EditorWindowContext
+#include "EditorApplication/EditorApplication.h" // EditorApplication::EditorWindowContext
 #include "InspectorRegistry.h" // ColorPickerCallbacks, OpenColorPickerWindowFn
 #include "UI/UIElement.h"      // UIElement::WeakRef
 

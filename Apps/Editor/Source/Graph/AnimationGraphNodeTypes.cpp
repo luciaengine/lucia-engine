@@ -1,7 +1,7 @@
-#include "Graph/GraphNodeRegistry.h"
+#include "Graph/GraphNode/GraphNodeRegistry.h"
 #include "Graph/GraphTypeRegistry.h"
 #include "Graph/GraphValue.h"
-#include "Graph/GraphNodeIconStems.h"
+#include "Graph/GraphNode/GraphNodeIconStems.h"
 
 namespace GameEngine {
 

@@ -290,16 +290,3 @@ TEST(PointerLockTests, EscapeCancelsAVector3FieldLabelDragAndRestoresTheComponen
     EXPECT_EQ(changed, 1);
     EXPECT_EQ(fx.LockEvents, (std::vector<bool>{true, false}));
 }
-
-TEST(PointerLockTests, DestroyingTheManagerEndsItsPointerLock)
-{
-    PointerLockFixture fx;
-    const bool inited = fx.Init();
-    REQUIRE_POINTER_LOCK_FIXTURE(fx, inited);
-    fx.PressAtCentre();
-    fx.MoveTo(fx.CentreX() + 10.0f);
-    ASSERT_EQ(fx.LockEvents, (std::vector<bool>{true}));
-    fx.Rg.reset();
-    fx.Ui.reset();
-    EXPECT_EQ(fx.LockEvents, (std::vector<bool>{true, false}));
-}

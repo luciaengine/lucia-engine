@@ -1,16 +1,18 @@
 // WorldDrawBuilder.cpp
 #include "Engine/Rendering/WorldDrawBuilder.h"
 
+#include "Core/CpuProfiler.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialDeformationClassify.h"
 #include "Engine/Rendering/MaterialVertexAnimation.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "JobSystem/WorkStealingThreadPool.h"
-#include "Rendering/Core/HashUtils.h"
 #include "Rendering/Core/ThreadingUtils.h"
-#include "Types/FlatMap.h"
+#include "Rendering/Core/HashUtils.h"
 
 #include <algorithm>
+#include <cassert>
+#include <thread>
 
 namespace GameEngine
 {
@@ -28,86 +30,229 @@ void AddShadowMembership(WorldDrawBuilder::ShadowSubmissionState& state,
     ++state.MembershipCount;
     state.Complete = state.Complete && drawable;
 }
+
+// The material facts the key derivation reads, one bit each.
+constexpr uint32_t kPipelineValid = 1u << 0;
+constexpr uint32_t kTransmission = 1u << 1;
+constexpr uint32_t kDeformsVertices = 1u << 2;
+constexpr uint32_t kSupportsDeformationMotion = 1u << 3;
+
+uint32_t MaterialKeyPredicates(const Material& material)
+{
+    uint32_t predicates = 0;
+    if (material.GetGraphicsPipelineId().IsValid())
+        predicates |= kPipelineValid;
+    if (HasKeyword(material.GetVariantKey().materialKeywords, MaterialKeyword::Transmission))
+        predicates |= kTransmission;
+    if (MaterialDeformsVertices(material))
+        predicates |= kDeformsVertices;
+    if (SupportsDeformationMotion(material))
+        predicates |= kSupportsDeformationMotion;
+    return predicates;
+}
+
+// colorClassId == materialIndex when the merge is off (empty map) or the
+// material is not merge-eligible (identity entry).
+uint32_t ColorClassOf(uint32_t materialIndex, std::span<const uint32_t> materialColorClass)
+{
+    return materialIndex < materialColorClass.size() ? materialColorClass[materialIndex] : materialIndex;
+}
 } // namespace
+
+void WorldDrawBuilder::ViewBatchState::Reset()
+{
+    Submissions.clear();
+    Keys.clear();
+    DeformingKeys.clear();
+    ShadowSubmissions = {};
+    ShadowCaster = false;
+    TransmissiveCaster = false;
+    AnimatedVertexModifier = false;
+    AnimatedVertexModifierCaster = false;
+}
+
+bool WorldDrawBuilder::BuildInputs::SameInputs(const BuildInputs& other) const
+{
+    return Certified && other.Certified && MeshContentRevision == other.MeshContentRevision &&
+           MaterialIndexGeneration == other.MaterialIndexGeneration &&
+           SubmissionRevisions == other.SubmissionRevisions;
+}
 
 WorldDrawBuilder::WorldDrawBuilder(const JobSystem::WorkStealingThreadPool* jobSystem)
     : m_JobSystem(jobSystem),
       m_OffPoolBufferIndex(jobSystem ? jobSystem->GetWorkerCount() : 0),
-      m_ThreadBuffers(m_OffPoolBufferIndex + 1)
+      m_ThreadBuffers(m_OffPoolBufferIndex + 1),
+      m_OwnerThreadId(std::this_thread::get_id())
 {
 }
 
 void WorldDrawBuilder::BeginFrame()
 {
-    for (auto& [viewId, submissions] : m_ShadowSubmissionsByView)
-        submissions = {};
-    // Each submitting thread owns one buffer; buffers on separate lines keep
-    // the threads from invalidating each other's records.
+    // Each submitting thread owns one buffer; buffers on separate lines keep the
+    // threads from invalidating each other's records.
     static_assert(alignof(decltype(m_ThreadBuffers)::value_type) == kFalseSharingSeparation);
 
-    for (FalseSharingPadded<ThreadSubmissionBuffer>& slot : m_ThreadBuffers)
+    for (auto& entry : m_ThreadBuffers)
     {
-        slot.Value.records.clear();
-        slot.Value.drained = 0;
+        ThreadSubmissionBuffer& buffer = entry.Value;
+        buffer.records.clear();
+        buffer.setRevisions.clear();
+        buffer.drained = 0;
     }
 
-    // Clear merged data
-    for (auto& [viewId, submissions] : m_SubmissionsByView)
-        submissions.clear();
-    for (auto& [viewId, keys] : m_BatchKeysByView)
-        keys.clear();
-    for (auto& [viewId, keys] : m_DeformingKeysByView)
-        keys.clear();
-    for (auto& [viewId, hasCaster] : m_ShadowCasterByView)
-        hasCaster = false;
-    for (auto& [viewId, hasCaster] : m_TransmissiveCasterByView)
-        hasCaster = false;
-    for (auto& [viewId, hasDeformer] : m_AnimatedVertexModifierByView)
-        hasDeformer = false;
-    for (auto& [viewId, hasDeformingCaster] : m_AnimatedVertexModifierCasterByView)
-        hasDeformingCaster = false;
+    // A frame with no build leaves reset views, so the next build must derive.
+    if (!m_BuiltThisFrame)
+        m_LastBuildInputs.Certified = false;
+    m_BuiltThisFrame = false;
+
+    // The last frame's views move aside intact: a kept build swaps them back.
+    std::swap(m_Views, m_PreviousViews);
+    for (auto& [viewId, view] : m_Views)
+        view.Reset();
+    m_MergedThisFrame = false;
 }
 
-void WorldDrawBuilder::Submit(std::span<const WorldSubmissionRecord> records)
+void WorldDrawBuilder::Submit(std::span<const WorldSubmissionRecord> records, uint64_t setRevision)
 {
     if (records.empty())
         return;
 
-    // A worker owns the buffer at its id. Off the pool the id is invalid
-    // (SIZE_MAX), which clamps to the off-pool buffer.
-    const size_t workerId = m_JobSystem ? m_JobSystem->GetCurrentWorkerId() : SIZE_MAX;
-    auto& buf = m_ThreadBuffers[std::min(workerId, m_OffPoolBufferIndex)].Value.records;
-    buf.insert(buf.end(), records.begin(), records.end());
+    // A worker of the construction pool owns the buffer at its id. Every other
+    // thread, a worker of another pool included, uses the off-pool buffer.
+    const size_t index = JobSystem::WorkStealingThreadPool::IsComputeWorkerOf(m_JobSystem)
+                             ? m_JobSystem->GetCurrentWorkerId()
+                             : m_OffPoolBufferIndex;
+    assert(index < m_ThreadBuffers.size() && "Submit worker id is outside the construction pool");
+    assert((index != m_OffPoolBufferIndex || std::this_thread::get_id() == m_OwnerThreadId)
+           && "Submit off the pool must come from the thread that constructed the builder");
+    ThreadSubmissionBuffer& buffer = m_ThreadBuffers[index].Value;
+    buffer.records.insert(buffer.records.end(), records.begin(), records.end());
+    buffer.setRevisions.push_back(setRevision);
 }
 
 void WorldDrawBuilder::MergeSubmissions()
 {
-    // Idempotent incremental drain: each buffer tracks how many records it has
-    // already been drained for this frame, so late submissions (e.g. thumbnail
-    // views submitted after the main scene pipeline has already built keys)
-    // still land in m_SubmissionsByView on the next MergeSubmissions() call.
-    for (FalseSharingPadded<ThreadSubmissionBuffer>& slot : m_ThreadBuffers)
+    // Drain only the records added since the last call, so a late submit (a
+    // thumbnail view after the main scene built its keys) lands on the next call.
+    for (auto& entry : m_ThreadBuffers)
     {
-        ThreadSubmissionBuffer& buf = slot.Value;
-        const uint32 total = static_cast<uint32>(buf.records.size());
-        for (uint32 r = buf.drained; r < total; ++r)
+        ThreadSubmissionBuffer& buffer = entry.Value;
+        const uint32 total = static_cast<uint32>(buffer.records.size());
+        if (buffer.drained == total)
+            continue;
+        m_MergedThisFrame = true;
+        // Records of one view arrive in runs: one view lookup per run.
+        ViewBatchState* view = nullptr;
+        ViewId viewId = 0;
+        for (uint32 recordIndex = buffer.drained; recordIndex < total; ++recordIndex)
         {
-            const auto& rec = buf.records[r];
-            m_SubmissionsByView[rec.viewId].push_back(rec);
+            const WorldSubmissionRecord& record = buffer.records[recordIndex];
+            if (!view || record.viewId != viewId)
+            {
+                viewId = record.viewId;
+                view = &m_Views.GetOrInsert(viewId);
+            }
+            view->Submissions.push_back(record);
         }
-        buf.drained = total;
+        buffer.drained = total;
     }
 }
 
-uint32_t WorldDrawBuilder::BuildBatchKeys(const Rendering::MeshGPURegistry& meshRegistry,
-                                          std::span<const uint32_t> materialColorClass)
+void WorldDrawBuilder::DropUnmergedSubmissions()
 {
-    MergeSubmissions();
+    for (auto& entry : m_ThreadBuffers)
+        entry.Value.drained = static_cast<uint32>(entry.Value.records.size());
+}
 
-    for (auto& [viewId, submissions] : m_SubmissionsByView)
-        DeriveBatchKeysForView(viewId, submissions, meshRegistry, materialColorClass);
+void WorldDrawBuilder::CaptureInputs(const Rendering::MeshGPURegistry& meshRegistry,
+                                     uint64_t materialIndexGeneration)
+{
+    BuildInputs& inputs = m_FrameInputs;
+    inputs.SubmissionRevisions.clear();
+    inputs.Certified = true;
+    for (const auto& entry : m_ThreadBuffers)
+    {
+        for (const uint64_t revision : entry.Value.setRevisions)
+        {
+            inputs.Certified = inputs.Certified && revision != kNoRecordSet;
+            inputs.SubmissionRevisions.push_back(revision);
+        }
+    }
+    // The worker that submits a set changes from frame to frame; the sets do not.
+    std::sort(inputs.SubmissionRevisions.begin(), inputs.SubmissionRevisions.end());
+    inputs.MeshContentRevision = meshRegistry.GetContentRevision();
+    inputs.MaterialIndexGeneration = materialIndexGeneration;
+}
 
-    return static_cast<uint32_t>(m_SubmissionsByView.size());
+bool WorldDrawBuilder::MaterialsGiveSameKeyInputs(std::span<const uint32_t> materialColorClass) const
+{
+    // Called only after the material index generation compared equal, so every
+    // pointer here still names a live material.
+    for (const MaterialKeyState& state : m_LastBuildMaterials)
+    {
+        const Material& material = *state.Source;
+        const uint32_t materialIndex = material.GetGpuSceneMaterialIndex();
+        if (materialIndex != state.MaterialIndex ||
+            ColorClassOf(materialIndex, materialColorClass) != state.ColorClassId ||
+            MaterialKeyPredicates(material) != state.Predicates ||
+            material.GetContentRevision() != state.ContentRevision ||
+            material.GetVersion() != state.ProgramVersion)
+            return false;
+    }
+    return true;
+}
+
+void WorldDrawBuilder::CaptureMaterialKeyStates(std::span<const uint32_t> materialColorClass)
+{
+    m_LastBuildMaterials.clear();
+    m_LastBuildMaterials.reserve(m_MaterialsRead.size());
+    for (const Material* material : m_MaterialsRead)
+    {
+        const uint32_t materialIndex = material->GetGpuSceneMaterialIndex();
+        m_MaterialReadByIndex[materialIndex] = nullptr;
+        m_LastBuildMaterials.push_back(MaterialKeyState{material, materialIndex,
+                                                        ColorClassOf(materialIndex, materialColorClass),
+                                                        MaterialKeyPredicates(*material),
+                                                        material->GetContentRevision(), material->GetVersion()});
+    }
+    m_MaterialsRead.clear();
+}
+
+uint32_t WorldDrawBuilder::BuildBatchKeys(const Rendering::MeshGPURegistry& meshRegistry,
+                                          std::span<const uint32_t> materialColorClass,
+                                          uint64_t materialIndexGeneration)
+{
+    CaptureInputs(meshRegistry, materialIndexGeneration);
+    if (m_FrameInputs.SameInputs(m_LastBuildInputs) && MaterialsGiveSameKeyInputs(materialColorClass))
+    {
+        // A repeat build in the same frame already holds the views of this frame.
+        if (m_BuiltThisFrame)
+            return 0;
+        GE_CPU_PROFILE_SCOPE("WorldDrawBuilder.KeepLastBuild");
+        std::swap(m_Views, m_PreviousViews);
+        DropUnmergedSubmissions();
+        m_BuiltThisFrame = true;
+        return 0;
+    }
+
+    {
+        GE_CPU_PROFILE_SCOPE("WorldDrawBuilder.MergeSubmissions");
+        MergeSubmissions();
+    }
+
+    GE_CPU_PROFILE_SCOPE("WorldDrawBuilder.DeriveBatchKeys");
+    m_ReadUnindexedMaterial = false;
+    for (auto& [viewId, view] : m_Views)
+        DeriveBatchKeysForView(view, meshRegistry, materialColorClass, &m_MaterialsRead);
+    CaptureMaterialKeyStates(materialColorClass);
+
+    m_FrameInputs.Certified = m_FrameInputs.Certified && !m_ReadUnindexedMaterial;
+    // Swapped, not copied: the next capture reuses the old vector's capacity.
+    std::swap(m_LastBuildInputs, m_FrameInputs);
+    // The merge above ran inside the build; a later merge this frame ends the keep.
+    m_MergedThisFrame = false;
+    m_BuiltThisFrame = true;
+    return static_cast<uint32_t>(m_Views.Size());
 }
 
 void WorldDrawBuilder::BuildBatchKeysForView(Rendering::ViewId viewId,
@@ -115,83 +260,79 @@ void WorldDrawBuilder::BuildBatchKeysForView(Rendering::ViewId viewId,
                                              std::span<const uint32_t> materialColorClass)
 {
     MergeSubmissions();
-    auto itSub = m_SubmissionsByView.find(viewId);
-    if (itSub == m_SubmissionsByView.end())
-    {
-        m_ShadowSubmissionsByView.Erase(viewId);
-        m_BatchKeysByView.erase(viewId);
-        m_ShadowCasterByView.erase(viewId);
-        m_TransmissiveCasterByView.erase(viewId);
-        m_AnimatedVertexModifierByView.erase(viewId);
-        m_AnimatedVertexModifierCasterByView.erase(viewId);
+    // A late merge adds records the kept build would not hold next frame.
+    if (m_MergedThisFrame)
+        m_LastBuildInputs.Certified = false;
+    ViewBatchState* view = m_Views.Find(viewId);
+    if (!view)
         return;
-    }
-    DeriveBatchKeysForView(viewId, itSub->second, meshRegistry, materialColorClass);
+    DeriveBatchKeysForView(*view, meshRegistry, materialColorClass, nullptr);
 }
 
 std::span<const WorldDrawBuilder::BatchKey> WorldDrawBuilder::GetBatchKeys(Rendering::ViewId viewId) const
 {
-    auto it = m_BatchKeysByView.find(viewId);
-    if (it == m_BatchKeysByView.end() || it->second.empty())
-    {
+    const ViewBatchState* view = m_Views.Find(viewId);
+    if (!view)
         return {};
-    }
-    const auto& vec = it->second;
-    return std::span<const BatchKey>(vec.data(), vec.size());
+    return view->Keys;
 }
 
 std::span<const WorldSubmissionRecord> WorldDrawBuilder::GetSubmissions(Rendering::ViewId viewId) const
 {
-    auto it = m_SubmissionsByView.find(viewId);
-    if (it == m_SubmissionsByView.end() || it->second.empty())
+    const ViewBatchState* view = m_Views.Find(viewId);
+    if (!view)
         return {};
-    const auto& vec = it->second;
-    return std::span<const WorldSubmissionRecord>(vec.data(), vec.size());
+    return view->Submissions;
 }
 
 std::span<const WorldDrawBuilder::BatchKey> WorldDrawBuilder::GetDeformingBatchKeys(
     Rendering::ViewId viewId) const
 {
-    auto it = m_DeformingKeysByView.find(viewId);
-    if (it == m_DeformingKeysByView.end() || it->second.empty())
+    const ViewBatchState* view = m_Views.Find(viewId);
+    if (!view)
         return {};
-    const auto& vec = it->second;
-    return std::span<const BatchKey>(vec.data(), vec.size());
+    return view->DeformingKeys;
 }
 
 bool WorldDrawBuilder::HasShadowCastingSubmissions(Rendering::ViewId viewId) const
 {
-    const auto it = m_ShadowCasterByView.find(viewId);
-    return it != m_ShadowCasterByView.end() && it->second;
+    const ViewBatchState* view = m_Views.Find(viewId);
+    return view && view->ShadowCaster;
 }
 
 bool WorldDrawBuilder::HasTransmissiveCasterSubmissions(Rendering::ViewId viewId) const
 {
-    const auto it = m_TransmissiveCasterByView.find(viewId);
-    return it != m_TransmissiveCasterByView.end() && it->second;
+    const ViewBatchState* view = m_Views.Find(viewId);
+    return view && view->TransmissiveCaster;
 }
 
 bool WorldDrawBuilder::HasAnimatedVertexModifierSubmissions(Rendering::ViewId viewId) const
 {
-    const auto it = m_AnimatedVertexModifierByView.find(viewId);
-    return it != m_AnimatedVertexModifierByView.end() && it->second;
+    const ViewBatchState* view = m_Views.Find(viewId);
+    return view && view->AnimatedVertexModifier;
 }
 
 bool WorldDrawBuilder::HasAnimatedVertexModifierCasterSubmissions(Rendering::ViewId viewId) const
 {
-    const auto it = m_AnimatedVertexModifierCasterByView.find(viewId);
-    return it != m_AnimatedVertexModifierCasterByView.end() && it->second;
+    const ViewBatchState* view = m_Views.Find(viewId);
+    return view && view->AnimatedVertexModifierCaster;
 }
 
-void WorldDrawBuilder::DeriveBatchKeysForView(
-    Rendering::ViewId viewId,
-    const std::vector<WorldSubmissionRecord>& submissions,
-    const Rendering::MeshGPURegistry& meshRegistry,
-    std::span<const uint32_t> materialColorClass)
+WorldDrawBuilder::ShadowSubmissionStates WorldDrawBuilder::GetShadowSubmissionStates(
+    Rendering::ViewId viewId) const
 {
-    auto& keys = m_BatchKeysByView[viewId];
+    const auto* view = m_Views.Find(viewId);
+    return view ? view->ShadowSubmissions : ShadowSubmissionStates{};
+}
+
+void WorldDrawBuilder::DeriveBatchKeysForView(ViewBatchState& view,
+                                              const Rendering::MeshGPURegistry& meshRegistry,
+                                              std::span<const uint32_t> materialColorClass,
+                                              std::vector<const Material*>* materialsRead)
+{
+    auto& keys = view.Keys;
     keys.clear();
-    keys.reserve(submissions.size());
+    keys.reserve(view.Submissions.size());
     bool shadowCaster = false;
     bool transmissiveCaster = false;
     bool animatedVertexModifier = false;
@@ -201,7 +342,7 @@ void WorldDrawBuilder::DeriveBatchKeysForView(
     shadowSubmissions.Rigid.Complete = true;
     FlatMap<const Material*, bool> shadowMaterialKinds;
 
-    for (const auto& rec : submissions)
+    for (const auto& rec : view.Submissions)
     {
         const auto* entry = meshRegistry.Find(rec.meshHandle);
         const bool drawable = rec.material && rec.material->GetGraphicsPipelineId().IsValid() &&
@@ -227,8 +368,35 @@ void WorldDrawBuilder::DeriveBatchKeysForView(
         }
         if (!rec.material)
             continue;
-        // Deformation is a property of submitted content, including pending draws.
-        // The prepared depth producer separately proves that every caster drew.
+        const uint32_t materialIndex = rec.material->GetGpuSceneMaterialIndex();
+        // Every material read below, once per build: the kept build re-checks them.
+        if (materialsRead)
+        {
+            if (materialIndex == Material::kInvalidSSBOIndex)
+                m_ReadUnindexedMaterial = true;
+            else
+            {
+                if (materialIndex >= m_MaterialReadByIndex.size())
+                    m_MaterialReadByIndex.resize(static_cast<size_t>(materialIndex) + 1u, nullptr);
+                if (m_MaterialReadByIndex[materialIndex] != rec.material)
+                {
+                    // Two materials on one index cannot be told apart by index.
+                    if (m_MaterialReadByIndex[materialIndex] != nullptr)
+                        m_ReadUnindexedMaterial = true;
+                    else
+                        materialsRead->push_back(rec.material);
+                    m_MaterialReadByIndex[materialIndex] = rec.material;
+                }
+            }
+        }
+        // Ahead of the pipeline and mesh-residency filters on purpose: this is a
+        // census of what was submitted, not of what is drawable this frame. A
+        // deforming caster whose mesh or pipeline is still pending invalidates
+        // the caches from its first submitted frame, a re-render on frames that
+        // already pay for the upload, rather than from the frame it first draws.
+        // Either way the caches never hold a layer rasterized without a drawn
+        // caster, because this derivation precedes every reader in the frame.
+        // A caster implies a renderable, so the first one found ends the search.
         if (!animatedVertexModifierCaster && MaterialDeformsVertices(*rec.material))
         {
             animatedVertexModifier = true;
@@ -244,19 +412,12 @@ void WorldDrawBuilder::DeriveBatchKeysForView(
             Rendering::HasKeyword(rec.material->GetVariantKey().materialKeywords,
                                   Rendering::MaterialKeyword::Transmission))
             transmissiveCaster = true;
-        const uint32_t materialIndex = rec.material->GetGpuSceneMaterialIndex();
-        // colorClassId == materialIndex when the merge is off (empty map) or the
-        // material is not merge-eligible (identity entry) -- so the OFF path is
-        // exactly the old (materialIndex, meshIndex) key.
-        const uint32_t colorClassId = materialIndex < materialColorClass.size()
-                                          ? materialColorClass[materialIndex]
-                                          : materialIndex;
         keys.push_back(BatchKey{
             rec.material,
             rec.meshHandle,
             materialIndex,
             entry->gpuMeshIndex,
-            colorClassId});
+            ColorClassOf(materialIndex, materialColorClass)});
     }
 
     for (const auto& [material, rigid] : shadowMaterialKinds)
@@ -271,7 +432,7 @@ void WorldDrawBuilder::DeriveBatchKeysForView(
             shadowSubmissions.Rigid.MaterialContentKey =
                 HashUtils::HashCombine(shadowSubmissions.Rigid.MaterialContentKey, stamp);
     }
-    m_ShadowSubmissionsByView.GetOrInsert(viewId) = shadowSubmissions;
+    view.ShadowSubmissions = shadowSubmissions;
 
     // Sort by (colorClassId, meshIndex, materialIndex): grouping by
     // (colorClassId, meshIndex) makes the merge members contiguous for the
@@ -322,10 +483,10 @@ void WorldDrawBuilder::DeriveBatchKeysForView(
                            }),
                keys.end());
 
-    m_ShadowCasterByView[viewId] = shadowCaster;
-    m_TransmissiveCasterByView[viewId] = transmissiveCaster;
-    m_AnimatedVertexModifierByView[viewId] = animatedVertexModifier;
-    m_AnimatedVertexModifierCasterByView[viewId] = animatedVertexModifierCaster;
+    view.ShadowCaster = shadowCaster;
+    view.TransmissiveCaster = transmissiveCaster;
+    view.AnimatedVertexModifier = animatedVertexModifier;
+    view.AnimatedVertexModifierCaster = animatedVertexModifierCaster;
 
     // The deforming subset, taken after the dedup so it names the keys the
     // producer will actually record. A deforming material is never
@@ -333,7 +494,7 @@ void WorldDrawBuilder::DeriveBatchKeysForView(
     // colorClassId equals its materialIndex and its row survives the dedup as
     // itself — the representative here is always the deforming material, never
     // a merge partner standing in for it.
-    auto& deforming = m_DeformingKeysByView[viewId];
+    auto& deforming = view.DeformingKeys;
     deforming.clear();
     for (const auto& key : keys)
     {
@@ -344,33 +505,16 @@ void WorldDrawBuilder::DeriveBatchKeysForView(
 
 void WorldDrawBuilder::ClearView(Rendering::ViewId viewId)
 {
-    m_ShadowSubmissionsByView.Erase(viewId);
-    m_SubmissionsByView.erase(viewId);
-    m_BatchKeysByView.erase(viewId);
-    m_DeformingKeysByView.erase(viewId);
-    m_ShadowCasterByView.erase(viewId);
-    m_TransmissiveCasterByView.erase(viewId);
-    m_AnimatedVertexModifierByView.erase(viewId);
-    m_AnimatedVertexModifierCasterByView.erase(viewId);
+    m_Views.Erase(viewId);
+    m_PreviousViews.Erase(viewId);
+    m_LastBuildInputs.Certified = false;
 }
 
 void WorldDrawBuilder::Clear()
 {
-    m_ShadowSubmissionsByView.Clear();
-    m_SubmissionsByView.clear();
-    m_BatchKeysByView.clear();
-    m_DeformingKeysByView.clear();
-    m_ShadowCasterByView.clear();
-    m_TransmissiveCasterByView.clear();
-    m_AnimatedVertexModifierByView.clear();
-    m_AnimatedVertexModifierCasterByView.clear();
-}
-
-WorldDrawBuilder::ShadowSubmissionStates WorldDrawBuilder::GetShadowSubmissionStates(
-    Rendering::ViewId viewId) const
-{
-    const auto* found = m_ShadowSubmissionsByView.Find(viewId);
-    return found ? *found : ShadowSubmissionStates{};
+    m_Views.Clear();
+    m_PreviousViews.Clear();
+    m_LastBuildInputs.Certified = false;
 }
 
 } // namespace Engine::Renderer

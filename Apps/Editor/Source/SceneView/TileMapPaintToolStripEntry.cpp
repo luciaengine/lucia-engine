@@ -1,7 +1,7 @@
 #include "SceneView/TileMapPaintToolStripEntry.h"
 
 #include "SceneView/TileMapPaintTool.h"
-#include "SceneViewController.h"
+#include "SceneView/SceneViewController.h"
 #include "TileMap/TileMapEditContext.h"
 #include "UI/EditorIcons.h"
 

@@ -6,6 +6,7 @@
 #include "Core/Engine.h"
 #include "Editor/Settings/SettingsStore.h"
 #include "Audio/AudioSystem.h"
+#include "Mathematics/Interpolation.h"
 #include "UI/Assets/UIStyleAsset.h"
 #include "UI/UIElement.h"
 #include "UI/Controls/Label.h"
@@ -136,8 +137,8 @@ void MixerPanel::SyncFadersFromAudio()
     for (size_t i = 0; i < m_VuMeterFills.size() && i < m_FaderBusIds.size(); ++i)
     {
         const Audio::AudioBusId bus = m_FaderBusIds[i];
-        const float meter = std::clamp(audio->GetBusMeterLevel(bus), 0.0f, 1.0f);
-        const float volume = std::clamp(audio->GetBusVolume(bus), 0.0f, 1.0f);
+        const float meter = Math::Clamp01(audio->GetBusMeterLevel(bus));
+        const float volume = Math::Clamp01(audio->GetBusVolume(bus));
 
         // Use actual track height so VU and thumb scale when panel is resized vertically
         UIElement* fill = m_VuMeterFills[i];
@@ -150,25 +151,25 @@ void MixerPanel::SyncFadersFromAudio()
         if (fill)
         {
             const float fillPct = meter * 100.0f;  // fill height as % of track (track is parent)
-            fill->Overrides().Set(Style::Height, StyleLength::Percent(fillPct));
+            fill->Style().Set(Style::Height, StyleLength::Percent(fillPct));
             fill->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
         }
         if (i < m_VuMeterStrips.size() && m_VuMeterStrips[i])
         {
             const float stripPct = (meter > 0.001f) ? (100.0f / meter) : 1000.0f;
-            m_VuMeterStrips[i]->Overrides().Set(Style::Height, StyleLength::Percent(stripPct));
+            m_VuMeterStrips[i]->Style().Set(Style::Height, StyleLength::Percent(stripPct));
             m_VuMeterStrips[i]->MarkDirty(UIElement::VisualDirty);
         }
         if (i < m_VuMeterThumbs.size() && m_VuMeterThumbs[i])
         {
             UIElement* thumb = m_VuMeterThumbs[i];
-            thumb->Overrides().Set(Style::MarginTop, StyleLength::Px((1.0f - volume) * thumbRange));
+            thumb->Style().Set(Style::MarginTop, StyleLength::Px((1.0f - volume) * thumbRange));
             thumb->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
             // Thumb overlay layer must match track height so it overlaps correctly when resized
             UIElement* thumbLayer = thumb->GetParent();
             if (thumbLayer)
             {
-                thumbLayer->Overrides().Set(Style::Height, StyleLength::Px(trackH)).Set(Style::MarginTop, StyleLength::Px(-trackH));
+                thumbLayer->Style().Set(Style::Height, StyleLength::Px(trackH)).Set(Style::MarginTop, StyleLength::Px(-trackH));
                 thumbLayer->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
             }
         }
@@ -183,7 +184,7 @@ void MixerPanel::BuildUI()
 
     auto row = std::make_unique<UIElement>();
     row->AddClass("mixer-strips-row");
-    row->Overrides()
+    row->Style()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Row)
         .Set(Style::AlignItems, AlignItems::Stretch)
@@ -211,7 +212,7 @@ void MixerPanel::BuildUI()
 
         // Strip fills row height (flex grow); min height so faders stay usable.
         constexpr float kStripMinHeightPx = 220.0f;
-        strip->Overrides()
+        strip->Style()
             .Set(Style::Display, DisplayMode::Flex)
             .Set(Style::FlexDir, FlexDirection::Column)
             .Set(Style::AlignItems, AlignItems::Center)
@@ -227,7 +228,7 @@ void MixerPanel::BuildUI()
         // Row: dB scale + VU meter + fader; fills strip height (flex grow).
         auto scaleAndFaderRow = std::make_unique<UIElement>();
         scaleAndFaderRow->AddClass("mixer-scale-fader-row");
-        scaleAndFaderRow->Overrides()
+        scaleAndFaderRow->Style()
             .Set(Style::Display, DisplayMode::Flex)
             .Set(Style::FlexDir, FlexDirection::Row)
             .Set(Style::AlignItems, AlignItems::Stretch)
@@ -239,7 +240,7 @@ void MixerPanel::BuildUI()
         // dB scale column: 0, -5, ... -50. Fixed width so labels don't shift; stretches to same height as VU and fader.
         auto scaleCol = std::make_unique<UIElement>();
         scaleCol->AddClass("mixer-db-scale");
-        scaleCol->Overrides()
+        scaleCol->Style()
             .Set(Style::Display, DisplayMode::Flex)
             .Set(Style::FlexDir, FlexDirection::Column)
             .Set(Style::JustifyContent, JustifyContent::SpaceBetween)
@@ -274,7 +275,7 @@ void MixerPanel::BuildUI()
         // Fill anchored at bottom (FlexEnd); track height is flexible, initial values use default
         constexpr float kVuThumbPx = 8.0f;
         constexpr float kVuThumbWidthPx = 16.0f;
-        vuContainer->Overrides()
+        vuContainer->Style()
             .Set(Style::Display, DisplayMode::Flex)
             .Set(Style::FlexDir, FlexDirection::Column)
             .Set(Style::JustifyContent, JustifyContent::FlexEnd)
@@ -299,7 +300,7 @@ void MixerPanel::BuildUI()
 
         // Layer 1: track (meter bar only) – fills container height so it resizes with panel
         auto vuTrack = std::make_unique<UIElement>();
-        vuTrack->Overrides()
+        vuTrack->Style()
             .Set(Style::Display, DisplayMode::Flex)
             .Set(Style::FlexDir, FlexDirection::Column)
             .Set(Style::JustifyContent, JustifyContent::FlexEnd)
@@ -312,7 +313,7 @@ void MixerPanel::BuildUI()
         auto vuClip = std::make_unique<UIElement>();
         vuClip->AddClass("mixer-vu-clip");
         const float fillHeightPct = initialMeter * 100.0f;  // % of track (track fills container)
-        vuClip->Overrides()
+        vuClip->Style()
             .Set(Style::Display, DisplayMode::Flex)
             .Set(Style::FlexDir, FlexDirection::Column)
             .Set(Style::JustifyContent, JustifyContent::FlexEnd)
@@ -324,7 +325,7 @@ void MixerPanel::BuildUI()
         const float initialStripPct = (initialMeter > 0.001f) ? (100.0f / initialMeter) : 1000.0f;
         auto gradientStrip = std::make_unique<UIElement>();
         gradientStrip->AddClass("mixer-vu-strip");
-        gradientStrip->Overrides()
+        gradientStrip->Style()
             .Set(Style::Display, DisplayMode::Flex)
             .Set(Style::FlexDir, FlexDirection::Column)
             .Set(Style::JustifyContent, JustifyContent::FlexEnd)
@@ -334,13 +335,13 @@ void MixerPanel::BuildUI()
             .Set(Style::FlexGrow, 0.0f);
         auto segRed = std::make_unique<UIElement>();
         segRed->AddClass("mixer-vu-segment");
-        segRed->Overrides().Set(Style::Height, StyleLength::Percent(6.0f)).Set(Style::FlexGrow, 0.0f).Set(Style::BackgroundColor, (uint32_t)0xFFef4444u);
+        segRed->Style().Set(Style::Height, StyleLength::Percent(6.0f)).Set(Style::FlexGrow, 0.0f).Set(Style::BackgroundColor, (uint32_t)0xFFef4444u);
         auto segYellow = std::make_unique<UIElement>();
         segYellow->AddClass("mixer-vu-segment");
-        segYellow->Overrides().Set(Style::Height, StyleLength::Percent(24.0f)).Set(Style::FlexGrow, 0.0f).Set(Style::BackgroundColor, (uint32_t)0xFFeab308u);
+        segYellow->Style().Set(Style::Height, StyleLength::Percent(24.0f)).Set(Style::FlexGrow, 0.0f).Set(Style::BackgroundColor, (uint32_t)0xFFeab308u);
         auto segGreen = std::make_unique<UIElement>();
         segGreen->AddClass("mixer-vu-segment");
-        segGreen->Overrides().Set(Style::Height, StyleLength::Percent(70.0f)).Set(Style::FlexGrow, 0.0f).Set(Style::BackgroundColor, (uint32_t)0xFF22c55eu);
+        segGreen->Style().Set(Style::Height, StyleLength::Percent(70.0f)).Set(Style::FlexGrow, 0.0f).Set(Style::BackgroundColor, (uint32_t)0xFF22c55eu);
         gradientStrip->AddChild(std::move(segRed));
         gradientStrip->AddChild(std::move(segYellow));
         gradientStrip->AddChild(std::move(segGreen));
@@ -352,7 +353,7 @@ void MixerPanel::BuildUI()
 
         // Layer 2: thumb overlay – height/margin set in SyncFadersFromAudio from track height for responsiveness
         auto vuThumbLayer = std::make_unique<UIElement>();
-        vuThumbLayer->Overrides()
+        vuThumbLayer->Style()
             .Set(Style::Display, DisplayMode::Flex)
             .Set(Style::FlexDir, FlexDirection::Column)
             .Set(Style::JustifyContent, JustifyContent::FlexStart)
@@ -366,7 +367,7 @@ void MixerPanel::BuildUI()
         auto vuThumb = std::make_unique<UIElement>();
         UIElement* vuThumbPtr = vuThumb.get();
         vuThumb->AddClass("mixer-vu-thumb");
-        vuThumb->Overrides()
+        vuThumb->Style()
             .Set(Style::Height, StyleLength::Px(kVuThumbPx))
             .Set(Style::MinHeight, StyleLength::Px(kVuThumbPx))
             .Set(Style::FlexGrow, 0.0f)
@@ -374,11 +375,11 @@ void MixerPanel::BuildUI()
             .Set(Style::MinWidth, StyleLength::Px(kVuThumbWidthPx))
             .Set(Style::MarginTop, StyleLength::Px((1.0f - initialLevel) * initialThumbRange))
             .Set(Style::BackgroundColor, (uint32_t)0xFFE6E6E6u)
-            .Set(Style::BackgroundImage, BackgroundImageSource{BackgroundImageSource::SourceKind::Path, GUID::Null(), "Icons/horizontalthumb.png"})
+            .Set(Style::BackgroundImage, BackgroundImageSource{BackgroundImageSource::SourceKind::Path, GUID::Null(), "Icons/horizontalthumb.svg"})
             .Set(Style::BackgroundTint, (uint32_t)0xFFE6E6E6u)
             .Set(Style::BackgroundSize, BackgroundSizeValue{BackgroundSizeMode::Explicit, kVuThumbWidthPx, false, kVuThumbPx, false})
             .Set(Style::BackgroundRepeatProp, BackgroundRepeat::NoRepeat)
-            .Set(Style::BackgroundPosition, BackgroundPositionValue{50.0f, true, 50.0f, true});
+            .Set(Style::BackgroundPosition, BackgroundPositionValue::Percent(50.0f, 50.0f));
         vuThumbLayer->AddChild(std::move(vuThumb));
         vuContainer->AddChild(std::move(vuThumbLayer));
 
@@ -387,7 +388,7 @@ void MixerPanel::BuildUI()
         const int capturedStripIndex = i;
         auto applyLevel = [capturedBus, capturedStripIndex, vuThumbPtr, vuContainerRaw](UIElement*, float level)
         {
-            float clamped = std::clamp(level, 0.0f, 1.0f);
+            float clamped = Math::Clamp01(level);
             Audio::AudioSystem* sys = EngineCore::GetInstance().GetAudioSystem();
             if (sys && sys->IsInitialized())
                 sys->SetBusVolume(capturedBus, clamped);
@@ -401,7 +402,7 @@ void MixerPanel::BuildUI()
                 UIElement* layer = vuThumbPtr->GetParent();
                 float trackH = (layer && layer->GetLayoutHeight() > 0.0f) ? layer->GetLayoutHeight() : kVuDefaultTrackHeightPx;
                 float range = std::max(0.0f, trackH - kVuThumbPx);
-                vuThumbPtr->Overrides().Set(Style::MarginTop, StyleLength::Px((1.0f - clamped) * range));
+                vuThumbPtr->Style().Set(Style::MarginTop, StyleLength::Px((1.0f - clamped) * range));
                 vuThumbPtr->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
             }
             if (vuContainerRaw)
@@ -414,7 +415,7 @@ void MixerPanel::BuildUI()
             float H = vuContainerRaw->GetLayoutHeight();
             if (H <= 0.0f) return;
             float localY = e.Y - y;
-            float level = 1.0f - std::clamp(localY / H, 0.0f, 1.0f);
+            float level = 1.0f - Math::Clamp01(localY / H);
             applyLevel(vuContainerRaw, level);
             e.Capture(vuContainerRaw);
             e.Stop();
@@ -427,7 +428,7 @@ void MixerPanel::BuildUI()
             float H = vuContainerRaw->GetLayoutHeight();
             if (H <= 0.0f) return;
             float localY = e.Y - y;
-            float level = 1.0f - std::clamp(localY / H, 0.0f, 1.0f);
+            float level = 1.0f - Math::Clamp01(localY / H);
             applyLevel(vuContainerRaw, level);
             e.Stop();
         });
@@ -440,7 +441,7 @@ void MixerPanel::BuildUI()
             float current = sys->GetBusVolume(capturedBus);
             // scrollY is negative when scrolling up (content direction), so negate for volume
             float delta = (e.ScrollY < 0.0f) ? kScrollStep : -kScrollStep;
-            float level = std::clamp(current + delta, 0.0f, 1.0f);
+            float level = Math::Clamp01(current + delta);
             applyLevel(vuContainerRaw, level);
             e.Stop();
         });

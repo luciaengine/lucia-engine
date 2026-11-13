@@ -1,5 +1,5 @@
 #pragma once
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
 namespace GameEngine::Engine::Renderer

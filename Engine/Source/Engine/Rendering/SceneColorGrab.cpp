@@ -5,7 +5,7 @@
 
 #include "Logger/Logger.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineDescTranslator.h"
+#include "Rendering/Core/Pipeline/PipelineDescTranslator.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Core/RenderGraph/RGFullscreen.h"
 
@@ -103,6 +103,8 @@ bool SceneColorGrab::DeclareForView(Pipeline::ViewDeclare& d, uint32_t frameInde
     const RenderGraph::RGTexture grab = d.Frame.ImportPersistentTexture(grabName.c_str(), desc);
     if (!grab.IsValid())
         return false;
+
+    d.MarkPreExposed(grab);
 
     // Copy: sample the lit-opaque scene into the grab (read source, write grab → the RG
     // inserts the RenderTarget->Sampled edge). MSAA sources declined above, so the

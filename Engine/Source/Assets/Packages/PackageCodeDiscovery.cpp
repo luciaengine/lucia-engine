@@ -135,7 +135,8 @@ std::vector<DiscoveredPackageModule> DiscoverPackageCodeModules(const std::files
         if (!TryClassifySource(path, lang, isTranslationUnit))
             continue;
 
-        const std::filesystem::path relative = std::filesystem::relative(path, packageRoot, entryEc);
+        // Every walk entry starts with packageRoot as given, so the relative path is lexical.
+        const std::filesystem::path relative = path.lexically_relative(packageRoot);
         const ModuleKind kind =
             IsEditorOnlyAssetPath(relative) ? ModuleKind::Editor : ModuleKind::Runtime;
 

@@ -28,8 +28,6 @@
 #include "UI/UIManager.h"
 #include "UI/UIPrimitive.h"
 
-#include "TestTempDir.h"
-
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
@@ -95,7 +93,7 @@ constexpr char kLeafCss[] = R"(
 const UI::UIClipRect* ClipSlotOf(const IsolatedUIFixture& fx, const std::string& id)
 {
     UIElement* root = fx.Manager().GetRootElement();
-    UIElement* el = root ? root->FindById(id) : nullptr;
+    UIElement* el = root ? root->FindById(HashStringId(id)) : nullptr;
     if (!el || el->m_ClipSlotIdx == UI::kNoClip)
         return nullptr;
     return fx.Manager().PeekClipRectForTesting(el->m_ClipSlotIdx);
@@ -165,8 +163,7 @@ struct ScaledDrainFixture
         Ui->SetPlatform(Platform.get());
         Ui->SetRoot(std::move(root));
 
-        const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_clip_radii_physical"));
-        const auto css = tempDir.Path() / "ui_clip_radii_physical.css";
+        const auto css = std::filesystem::temp_directory_path() / "ui_clip_radii_physical.css";
         {
             std::ofstream f(css);
             f << "#root { display: flex; flex-direction: column; width: 220px; height: 220px; }\n"

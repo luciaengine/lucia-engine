@@ -17,13 +17,10 @@ class MarkupEditorBridge;
 
 // The rows the Mark-up section's shape blocks share (the Region block, the Path block).
 
-// Meters to a tenth: "12.5 m".
-std::string FormatMeters(float32 meters);
-
 // A read-only row: its label and a value text.
 void AddValueRow(UIElement* parent, const char* labelText, const std::string& value, const char* tooltip);
 
-// Edit outline (a region's) or Edit path: a button that selects the mark-up and puts the main
+// Edit Outline (a region's) or Edit Path: a button that selects the mark-up and puts the main
 // Scene View's spline tool on its knots. Disabled in play mode.
 void AddEditKnotsRow(const InspectorContext& ctx, MarkupEditorBridge& bridge, const char* text, const char* cssClass,
                      const char* tooltip);

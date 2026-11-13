@@ -3,7 +3,7 @@
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "StagedTestPaths.h"
 #include "TestDeviceHelper.h"
 

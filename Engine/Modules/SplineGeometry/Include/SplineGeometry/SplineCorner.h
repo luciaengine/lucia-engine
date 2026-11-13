@@ -20,22 +20,22 @@ enum class SplineCornerStyle : uint8
     // One ring in the bisector plane, its lateral axis scaled by 1 / cos(θ/2) so
     // the faces of both legs meet on one edge, emitted twice (a crease) so each
     // leg keeps its own normals up to that edge.
-    Mitre,
+    Miter,
     // A fan of rings pivoting about the corner point from the incoming frame to
     // the outgoing one, ceil(θ / kRoundCornerStepDegrees) rings counting both
     // ends: the outside of the turn becomes an arc, the inside meets at the
-    // inner mitre point. Past kMitreLimit that point runs away toward a
+    // inner miter point. Past kMiterLimit that point runs away toward a
     // hairpin, so its reach back along each leg is bounded by what the legs
     // hold, and the inside face narrows toward the corner where they are short.
     Round,
 };
 
-// A mitre ring's lateral scale, 1 / cos(θ/2), at which a Mitre corner is built
-// Round instead: 2.0 is a 120° turn. Past it the mitre point runs away toward
+// A miter ring's lateral scale, 1 / cos(θ/2), at which a Miter corner is built
+// Round instead: 2.0 is a 120° turn. Past it the miter point runs away toward
 // infinity as the turn approaches a hairpin.
-inline constexpr float32 kMitreLimit = 2.0f;
-// The same limit as a turn: 2 · acos(1 / kMitreLimit).
-inline constexpr float32 kMitreLimitTurnDegrees = 120.0f;
+inline constexpr float32 kMiterLimit = 2.0f;
+// The same limit as a turn: 2 · acos(1 / kMiterLimit).
+inline constexpr float32 kMiterLimitTurnDegrees = 120.0f;
 
 // A Round corner's ring count is ceil(θ / kRoundCornerStepDegrees), both ends
 // included, so a 90° corner is 9 rings: on a 0.6 m wall that leaves about a
@@ -55,8 +55,8 @@ struct SplineCornerSite
 // What an author is told about a corner the sweep could not build as asked.
 enum class SplineCornerIssueKind : uint8
 {
-    // Asked to be a Mitre but turning past kMitreLimit: built Round.
-    PastMitreLimit = 0,
+    // Asked to be a Miter but turning past kMiterLimit: built Round.
+    PastMiterLimit = 0,
     // The leg between the corner and an open end of the run is shorter than
     // the corner's reach, so the inside face folds back past the end.
     LegShorterThanReach,
@@ -71,7 +71,7 @@ enum class SplineCornerIssueKind : uint8
 
 struct SplineCornerIssue
 {
-    SplineCornerIssueKind Kind = SplineCornerIssueKind::PastMitreLimit;
+    SplineCornerIssueKind Kind = SplineCornerIssueKind::PastMiterLimit;
     uint32 PointIndex = 0;
     uint32 OtherPointIndex = 0;
     float32 TurnDegrees = 0.0f;
@@ -80,9 +80,9 @@ struct SplineCornerIssue
 // Give the stream's corners the shape `style` asks for, in place.
 //
 // Each site's station is replaced by the rings of its corner (a crease pair for a
-// Mitre, a fan for a Round), and the stations within the corner's reach on
+// Miter, a fan for a Round), and the stations within the corner's reach on
 // either leg are removed: the inside faces of the two legs meet at the inner
-// mitre point, halfWidth · tan(θ/2) before the corner along each leg, and a ring
+// miter point, halfWidth · tan(θ/2) before the corner along each leg, and a ring
 // sampled between that point and the corner would push the inside face past it
 // and fold it back through itself. A ring sampled on the point itself, or
 // within a few centimetres beyond it, is removed too: its band to the corner
@@ -98,7 +98,7 @@ struct SplineCornerIssue
 // last rings still coincide.
 //
 // Sites must be in ascending station order. Returns what the author should be
-// told: corners built Round because they turned past the mitre limit, and
+// told: corners built Round because they turned past the miter limit, and
 // corners whose inside face still folds because a leg is shorter than their
 // reach (the stream ends, or the next corner turns the same way, inside it).
 [[nodiscard]] std::vector<SplineCornerIssue> ApplyCorners(

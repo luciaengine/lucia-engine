@@ -2,7 +2,7 @@
 
 #include "Rendering/Core/DescriptorWriter.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 #include <string>
 #include <unordered_map>
 

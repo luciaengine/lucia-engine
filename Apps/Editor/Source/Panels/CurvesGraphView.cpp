@@ -1,5 +1,6 @@
 #include "Panels/CurvesGraphView.h"
 
+#include "Mathematics/Interpolation.h"
 #include "Panels/Animation/KeyTimeMatch.h"
 
 #include "Assets/AnimationClip.h"
@@ -1100,54 +1101,7 @@ float CurvesGraphView::GetSelectedKeyframeTime() const
     return m_SelectedKeyTime;
 }
 
-struct CurvesGraphView::PointerEventState
-{
-    float Width = 0.0f;
-    float Height = 0.0f;
-    float LocalX = 0.0f;
-    float ClampedLocalX = 0.0f;
-    float LocalY = 0.0f;
-    float RangeDuration = 0.0f;
-    float ValueRange = 0.0f;
-    bool ShiftHeld = false;
-    bool ControlHeld = false;
-    SelectionBounds Bounds;
-};
-
 void CurvesGraphView::OnEvent(UIEvent& e)
-{
-    const PointerEventState pointer = CapturePointerEventState(e);
-    if (HandleGestureMouseUp(e))
-        return;
-    if (HandleTangentHandleDrag(e, pointer))
-        return;
-    if (HandleBoxSelectDrag(e, pointer))
-        return;
-    if (HandleKeyDrag(e, pointer))
-        return;
-    if (HandleSelectionScaleDrag(e, pointer))
-        return;
-    if (HandlePanAndSeek(e, pointer))
-        return;
-    if (HandleLatticeControlPointDrag(e, pointer))
-        return;
-    if (HandleRetimeTool(e, pointer))
-        return;
-    if (HandleDrawCurveTool(e, pointer))
-        return;
-    if (HandleLatticeTool(e, pointer))
-        return;
-    if (HandleLeftMouseDownOnCurves(e, pointer))
-        return;
-    if (HandleLeftMouseDownOnBackground(e, pointer))
-        return;
-    if (HandleRightMouseButton(e, pointer))
-        return;
-    UpdateHover(e, pointer);
-    ClearHoverOnMouseLeave(e);
-}
-
-CurvesGraphView::PointerEventState CurvesGraphView::CapturePointerEventState(const UIEvent& e) const
 {
     // e.x/y and GetLayout*() are in logical (CSS) pixels; m_ContentX/W are
     // physical. Always derive local coords from the logical layout values so
@@ -1178,25 +1132,12 @@ CurvesGraphView::PointerEventState CurvesGraphView::CapturePointerEventState(con
                                m_ValueMin,
                                m_ValueMax,
                                m_ShowAllComponents || m_VisibleChannels.size() > 1u);
-    return {.Width = W,
-            .Height = H,
-            .LocalX = localX,
-            .ClampedLocalX = clampedLocalX,
-            .LocalY = localY,
-            .RangeDuration = rangeDuration,
-            .ValueRange = valueRange,
-            .ShiftHeld = shiftHeld,
-            .ControlHeld = controlHeld,
-            .Bounds = selectionBounds};
-}
 
-bool CurvesGraphView::HandleGestureMouseUp(UIEvent& e)
-{
     if (e.Id == kEventMouseUp && e.Button == 2 && m_Panning)
     {
         m_Panning = false;
         e.Stop();
-        return true;
+        return;
     }
     // Retime, DrawCurve, and Lattice each own their own MouseUp dispatch
     // (commit batch, sample simplification, reset state). Skip the catch-all
@@ -1214,7 +1155,7 @@ bool CurvesGraphView::HandleGestureMouseUp(UIEvent& e)
         {
             m_Panning = false;
             e.Stop();
-            return true;
+            return;
         }
         EditGesture endedGesture = EditGesture::Keyframe;
         bool hadEditGesture = false;
@@ -1270,20 +1211,8 @@ bool CurvesGraphView::HandleGestureMouseUp(UIEvent& e)
         m_BoxSelectModifierDown = false;
         m_DragKeys.clear();
         if (m_OnSelectionChanged) m_OnSelectionChanged();
-        return true;
+        return;
     }
-    return false;
-}
-
-bool CurvesGraphView::HandleTangentHandleDrag(UIEvent& e, const PointerEventState& pointer)
-{
-    const float W = pointer.Width;
-    const float H = pointer.Height;
-    const float localX = pointer.LocalX;
-    const float clampedLocalX = pointer.ClampedLocalX;
-    const float localY = pointer.LocalY;
-    const float rangeDuration = pointer.RangeDuration;
-    const float valueRange = pointer.ValueRange;
     if ((m_DraggingInHandle || m_DraggingOutHandle) && m_OnTangentEdited && m_Clip && m_SelectedChannel >= 0 &&
         static_cast<size_t>(m_SelectedChannel) < m_Clip->GetChannels().size() &&
         W > 0.0f && H > 0.0f)
@@ -1296,7 +1225,7 @@ bool CurvesGraphView::HandleTangentHandleDrag(UIEvent& e, const PointerEventStat
             if (dx * dx + dy * dy < kHandleDragThresholdPx * kHandleDragThresholdPx)
             {
                 e.Stop();
-                return true;
+                return;
             }
             m_HandleDragThresholdMet = true;
             if (m_OnEditStarted)
@@ -1308,7 +1237,7 @@ bool CurvesGraphView::HandleTangentHandleDrag(UIEvent& e, const PointerEventStat
         {
             const size_t keyIndex = static_cast<size_t>(selectedKeyIndex);
             const float pointerTime = m_RangeStart + (clampedLocalX / W) * rangeDuration;
-            const float pointerValue = m_ValueMin + (1.0f - std::clamp(localY / H, 0.0f, 1.0f)) * valueRange;
+            const float pointerValue = m_ValueMin + (1.0f - Math::Clamp01(localY / H)) * valueRange;
             bool editedHandle = false;
 
             {
@@ -1354,20 +1283,10 @@ bool CurvesGraphView::HandleTangentHandleDrag(UIEvent& e, const PointerEventStat
             {
                 MarkDirty(VisualDirty);
                 e.Stop();
-                return true;
+                return;
             }
         }
     }
-    return false;
-}
-
-bool CurvesGraphView::HandleBoxSelectDrag(UIEvent& e, const PointerEventState& pointer)
-{
-    const float W = pointer.Width;
-    const float H = pointer.Height;
-    const float localX = pointer.LocalX;
-    const float localY = pointer.LocalY;
-    const bool shiftHeld = pointer.ShiftHeld;
     if (e.Id == kEventMouseMove && (m_BoxSelecting || (m_PendingEmptyAction && !m_Seeking)) && m_Clip && !m_VisibleChannels.empty() && W > 0.0f && H > 0.0f)
     {
         const float dx = localX - m_EmptyActionStartX;
@@ -1409,21 +1328,9 @@ bool CurvesGraphView::HandleBoxSelectDrag(UIEvent& e, const PointerEventState& p
             if (m_OnSelectionChanged) m_OnSelectionChanged();
             MarkDirty(VisualDirty);
             e.Stop();
-            return true;
+            return;
         }
     }
-    return false;
-}
-
-bool CurvesGraphView::HandleKeyDrag(UIEvent& e, const PointerEventState& pointer)
-{
-    const float W = pointer.Width;
-    const float H = pointer.Height;
-    const float localX = pointer.LocalX;
-    const float clampedLocalX = pointer.ClampedLocalX;
-    const float localY = pointer.LocalY;
-    const float rangeDuration = pointer.RangeDuration;
-    const float valueRange = pointer.ValueRange;
     if (e.Id == kEventMouseMove && m_DraggingKey && m_OnKeyframeEdited && W > 0.0f && H > 0.0f)
     {
         if (!m_DragThresholdMet)
@@ -1435,7 +1342,7 @@ bool CurvesGraphView::HandleKeyDrag(UIEvent& e, const PointerEventState& pointer
             {
                 MarkDirty(VisualDirty);
                 e.Stop();
-                return true;
+                return;
             }
             m_DragThresholdMet = true;
             // Determine constraint direction based on initial movement when shift is held
@@ -1448,7 +1355,7 @@ bool CurvesGraphView::HandleKeyDrag(UIEvent& e, const PointerEventState& pointer
         }
         float newTime = m_RangeStart + (clampedLocalX / W) * rangeDuration;
         newTime = std::clamp(newTime, m_RangeStart, m_RangeEnd);
-        float valueAlpha = 1.0f - std::clamp(localY / H, 0.0f, 1.0f);
+        float valueAlpha = 1.0f - Math::Clamp01(localY / H);
         float newValue = m_ValueMin + valueAlpha * valueRange;
         // Apply constraint: hold shift to constrain to time (horizontal) or value (vertical)
         if (m_DragConstrained)
@@ -1518,19 +1425,8 @@ bool CurvesGraphView::HandleKeyDrag(UIEvent& e, const PointerEventState& pointer
         }
         MarkDirty(VisualDirty);
         e.Stop();
-        return true;
+        return;
     }
-    return false;
-}
-
-bool CurvesGraphView::HandleSelectionScaleDrag(UIEvent& e, const PointerEventState& pointer)
-{
-    const float W = pointer.Width;
-    const float H = pointer.Height;
-    const float clampedLocalX = pointer.ClampedLocalX;
-    const float localY = pointer.LocalY;
-    const float rangeDuration = pointer.RangeDuration;
-    const float valueRange = pointer.ValueRange;
     if (e.Id == kEventMouseMove && m_ScalingSelectionTime && m_OnKeyframeEdited && W > 0.0f && H > 0.0f && m_ScaleInitialDuration > 0.0f)
     {
         const float pointerTime = m_RangeStart + (clampedLocalX / W) * rangeDuration;
@@ -1572,11 +1468,11 @@ bool CurvesGraphView::HandleSelectionScaleDrag(UIEvent& e, const PointerEventSta
         }
         MarkDirty(VisualDirty);
         e.Stop();
-        return true;
+        return;
     }
     if (e.Id == kEventMouseMove && m_ScalingSelectionValue && m_OnKeyframeEdited && W > 0.0f && H > 0.0f && m_ScaleInitialValueExtent > 0.0f)
     {
-        const float pointerValue = m_ValueMin + (1.0f - std::clamp(localY / H, 0.0f, 1.0f)) * valueRange;
+        const float pointerValue = m_ValueMin + (1.0f - Math::Clamp01(localY / H)) * valueRange;
         const float rawScale = m_ScaleValueFromBottom
             ? (m_ScaleAnchorValue - pointerValue) / m_ScaleInitialValueExtent
             : (pointerValue - m_ScaleAnchorValue) / m_ScaleInitialValueExtent;
@@ -1593,19 +1489,8 @@ bool CurvesGraphView::HandleSelectionScaleDrag(UIEvent& e, const PointerEventSta
         }
         MarkDirty(VisualDirty);
         e.Stop();
-        return true;
+        return;
     }
-    return false;
-}
-
-bool CurvesGraphView::HandlePanAndSeek(UIEvent& e, const PointerEventState& pointer)
-{
-    const float W = pointer.Width;
-    const float H = pointer.Height;
-    const float localX = pointer.LocalX;
-    const float clampedLocalX = pointer.ClampedLocalX;
-    const float localY = pointer.LocalY;
-    const float rangeDuration = pointer.RangeDuration;
     if (e.Id == kEventMouseMove && m_Panning && m_OnPan && W > 0.0f && H > 0.0f)
     {
         const float deltaPx = e.X - m_PanLastGlobalX;
@@ -1623,7 +1508,7 @@ bool CurvesGraphView::HandlePanAndSeek(UIEvent& e, const PointerEventState& poin
         }
         m_PanLastGlobalY = e.Y;
         e.Stop();
-        return true;
+        return;
     }
     if (e.Id == kEventMouseMove && m_Seeking && m_OnSeekToTime && W > 0.0f)
     {
@@ -1631,7 +1516,7 @@ bool CurvesGraphView::HandlePanAndSeek(UIEvent& e, const PointerEventState& poin
         t = std::clamp(t, m_RangeStart, m_RangeEnd);
         m_OnSeekToTime(t);
         e.Stop();
-        return true;
+        return;
     }
     if (e.Id == kEventMouseDown && m_OnPan && W > 0.0f && H > 0.0f &&
         localX >= 0.0f && localX <= W && localY >= 0.0f && localY <= H &&
@@ -1643,19 +1528,11 @@ bool CurvesGraphView::HandlePanAndSeek(UIEvent& e, const PointerEventState& poin
         m_PanLastGlobalY = e.Y;
         e.Capture(this);
         e.Stop();
-        return true;
+        return;
     }
-    return false;
-}
-
-// Lattice tool: handle in-progress drag independent of selection state.
-// Runs before the init block so that EnsureEditableClip() in OnEditStarted
-// (which replaces m_Clip and clears m_SelectedKeys) cannot break a captured drag.
-bool CurvesGraphView::HandleLatticeControlPointDrag(UIEvent& e, const PointerEventState& pointer)
-{
-    const float W = pointer.Width;
-    const float H = pointer.Height;
-    const float localY = pointer.LocalY;
+    // Lattice tool: handle in-progress drag independent of selection state.
+    // Runs before the init block so that EnsureEditableClip() in OnEditStarted
+    // (which replaces m_Clip and clears m_SelectedKeys) cannot break a captured drag.
     if (m_ActiveTool == CurveTool::Lattice && m_LatticeDragIndex >= 0 &&
         !m_LatticePoints.empty() && m_Clip && W > 0.0f && H > 0.0f)
     {
@@ -1694,7 +1571,7 @@ bool CurvesGraphView::HandleLatticeControlPointDrag(UIEvent& e, const PointerEve
                     float d;
                     if (useBezier)
                     {
-                        const float u = std::clamp((entry.Time - tFirst) / span, 0.0f, 1.0f);
+                        const float u = Math::Clamp01((entry.Time - tFirst) / span);
                         d = EvaluateBezierBasis(deltas.data(), n, u);
                     }
                     else
@@ -1706,7 +1583,7 @@ bool CurvesGraphView::HandleLatticeControlPointDrag(UIEvent& e, const PointerEve
             }
             MarkDirty(VisualDirty);
             e.Stop();
-            return true;
+            return;
         }
         if (e.Id == kEventMouseUp)
         {
@@ -1714,28 +1591,22 @@ bool CurvesGraphView::HandleLatticeControlPointDrag(UIEvent& e, const PointerEve
             if (m_OnEditFinished) m_OnEditFinished(EditGesture::Lattice);
             MarkDirty(VisualDirty);
             e.Stop();
-            return true;
+            return;
         }
     }
-    return false;
-}
 
-// ---- Retime tool ------------------------------------------------------
-// Single pivot:
-//   plain drag  → scale keys past pivot (proportional)
-//   Shift+drag  → translate keys past pivot
-// Two-handle (Maya-style) region:
-//   Alt+drag    → draw a region rubber-band (no keys move during draw)
-//   while a region is active:
-//     drag near regionLeft edge  → scale keys in region around regionRight
-//     drag near regionRight edge → scale keys in region around regionLeft
-//     drag inside region middle  → translate region + keys
-//     click outside region       → clear the region (no other action)
-// Modifiers: Ctrl forces frame snap during the drag.
-bool CurvesGraphView::HandleRetimeTool(UIEvent& e, const PointerEventState& pointer)
-{
-    const float W = pointer.Width;
-    const float localX = pointer.LocalX;
+    // ---- Retime tool ------------------------------------------------------
+    // Single pivot:
+    //   plain drag  → scale keys past pivot (proportional)
+    //   Shift+drag  → translate keys past pivot
+    // Two-handle (Maya-style) region:
+    //   Alt+drag    → draw a region rubber-band (no keys move during draw)
+    //   while a region is active:
+    //     drag near regionLeft edge  → scale keys in region around regionRight
+    //     drag near regionRight edge → scale keys in region around regionLeft
+    //     drag inside region middle  → translate region + keys
+    //     click outside region       → clear the region (no other action)
+    // Modifiers: Ctrl forces frame snap during the drag.
     // Skip the entire retime block when other gestures own the pointer —
     // panning and right-click scrubbing must keep working with the retime
     // tool active. Mouse-down for non-left buttons is also gated so right-
@@ -1744,484 +1615,436 @@ bool CurvesGraphView::HandleRetimeTool(UIEvent& e, const PointerEventState& poin
         (e.Id != kEventMouseDown || e.Button == 0) && !m_Panning && !m_RightClickScrubbing;
     if (m_ActiveTool == CurveTool::Retime && m_Clip && W > 0.0f && retimeMouseEligible)
     {
+        // Convert pixel x to time and back. These are reused below.
+        auto pxToTime = [&](float px) {
+            return m_RangeStart + (std::clamp(px, 0.0f, W) / W) * (m_RangeEnd - m_RangeStart);
+        };
+        auto timeToPx = [&](float t) {
+            return Math::Clamp01((t - m_RangeStart) / std::max(1e-6f, m_RangeEnd - m_RangeStart)) * W;
+        };
+        constexpr float kHandleHitPx = 6.0f; // pixel distance for region edge grab
+
         if (e.Id == kEventMouseDown && e.Button == 0 && localX >= 0.0f && localX <= W)
         {
-            BeginRetimeGesture(e, pointer);
-            return true;
+            const float clickTime = pxToTime(localX);
+
+            // Decide which gesture to start. Note: when a pending in-point is
+            // set we still start a tentative DefineRegion drag here — the
+            // mouse-up handler decides whether to pair (no drag) or to use
+            // this gesture's own bounds as a fresh region (real drag).
+            //
+            // Region-aware dispatch (when a region is visible):
+            //   - hit a left/right handle  → scale that side
+            //   - press inside the body    → tentative translate; if the
+            //     cursor moves past the click-vs-drag threshold the body
+            //     drags with the cursor, otherwise the release dismisses the
+            //     region (the "click again to clear" UX)
+            //   - press anywhere else      → clear region and start a fresh
+            //     in/out drag at the click point
+            RetimeMode chosen;
+            if (m_RetimeRegionActive)
+            {
+                const float leftPx  = timeToPx(m_RetimeRegionLeft);
+                const float rightPx = timeToPx(m_RetimeRegionRight);
+                if (std::abs(localX - leftPx) <= kHandleHitPx)
+                    chosen = RetimeMode::RegionScaleLeft;
+                else if (std::abs(localX - rightPx) <= kHandleHitPx)
+                    chosen = RetimeMode::RegionScaleRight;
+                else if (clickTime >= m_RetimeRegionLeft && clickTime <= m_RetimeRegionRight)
+                    chosen = RetimeMode::RegionTranslate;
+                else
+                {
+                    m_RetimeRegionActive = false;
+                    m_RetimePendingIn = false;
+                    chosen = RetimeMode::DefineRegion;
+                }
+            }
+            else
+            {
+                // No region yet: drag defines the in/out points; a click-only
+                // (no movement) becomes the pending in-point (or pairs with
+                // an existing one) on mouse-up.
+                chosen = RetimeMode::DefineRegion;
+            }
+            m_RetimeDragConfirmed = false;
+
+            m_RetimeMode         = chosen;
+            m_RetimeDragging     = true;
+            m_RetimeAnchorX      = localX;
+            m_RetimeDeltaSeconds = 0.0f;
+            m_RetimeScaleFactor  = 1.0f;
+            m_RetimePreview.clear();
+
+            // Save region's pre-drag state so Escape can revert it.
+            m_RetimeRegionLeftOrig  = m_RetimeRegionLeft;
+            m_RetimeRegionRightOrig = m_RetimeRegionRight;
+            m_RetimeRegionWasActive = m_RetimeRegionActive;
+
+            if (chosen == RetimeMode::DefineRegion)
+            {
+                // Replace any existing region; finalize on mouse-up.
+                m_RetimeRegionLeft   = clickTime;
+                m_RetimeRegionRight  = clickTime;
+                m_RetimeRegionActive = false; // becomes true on mouse-up
+                if (m_OnEditStarted) m_OnEditStarted(EditGesture::Retime);
+                e.Capture(this);
+                e.Stop();
+                MarkDirty(VisualDirty);
+                return;
+            }
+
+            // Single-pivot path: pivot = click time.
+            // Region path: pivot is the *anchor* edge (the opposite of the
+            // handle being dragged); for Translate we set pivot = regionLeft
+            // for HUD bookkeeping only.
+            switch (chosen)
+            {
+                case RetimeMode::Scale:
+                case RetimeMode::Translate:
+                    m_RetimePivotTime = clickTime;
+                    break;
+                case RetimeMode::RegionScaleRight:
+                case RetimeMode::RegionTranslate:
+                    m_RetimePivotTime = m_RetimeRegionLeft;
+                    break;
+                case RetimeMode::RegionScaleLeft:
+                    m_RetimePivotTime = m_RetimeRegionRight;
+                    break;
+                default:
+                    break;
+            }
+
+            // Snapshot eligible keys.
+            std::vector<int> chans;
+            if (!m_VisibleChannels.empty())
+                chans = m_VisibleChannels;
+            else
+            {
+                chans.reserve(m_Clip->GetChannels().size());
+                for (size_t i = 0; i < m_Clip->GetChannels().size(); ++i)
+                    chans.push_back(static_cast<int>(i));
+            }
+            const bool restrictToSelection =
+                (chosen == RetimeMode::Scale || chosen == RetimeMode::Translate)
+                && !m_SelectedKeys.empty();
+            auto isKeySelected = [this](int ci, float t)
+            {
+                for (const SelectedKey& sk : m_SelectedKeys)
+                    if (sk.Channel == ci && std::abs(sk.KeyTime - t) < 1e-5f)
+                        return true;
+                return false;
+            };
+            float farthest = 0.0f;
+            for (int ci : chans)
+            {
+                if (ci < 0 || static_cast<size_t>(ci) >= m_Clip->GetChannels().size())
+                    continue;
+                if (m_IsChannelLocked && m_IsChannelLocked(ci))
+                    continue;
+                const AnimChannel& ch = m_Clip->GetChannels()[static_cast<size_t>(ci)];
+                for (const AnimKeyframe& kf : ch.keys)
+                {
+                    bool eligible = false;
+                    switch (chosen)
+                    {
+                        case RetimeMode::Scale:
+                        case RetimeMode::Translate:
+                            eligible = (kf.time > m_RetimePivotTime);
+                            break;
+                        case RetimeMode::RegionScaleRight:
+                        case RetimeMode::RegionScaleLeft:
+                        case RetimeMode::RegionTranslate:
+                            eligible = (kf.time >= m_RetimeRegionLeft && kf.time <= m_RetimeRegionRight);
+                            break;
+                        default:
+                            break;
+                    }
+                    if (!eligible) continue;
+                    if (restrictToSelection && !isKeySelected(ci, kf.time))
+                        continue;
+                    m_RetimePreview.push_back(RetimePreviewEntry{ci, kf.time, kf.time, kf.time});
+                    farthest = std::max(farthest, kf.time - m_RetimePivotTime);
+                }
+            }
+            m_RetimeReferenceDist = (chosen == RetimeMode::Scale) ? farthest
+                : (chosen == RetimeMode::RegionScaleRight ? (m_RetimeRegionRight - m_RetimeRegionLeft)
+                : (chosen == RetimeMode::RegionScaleLeft  ? (m_RetimeRegionRight - m_RetimeRegionLeft) : 0.0f));
+
+            if (m_OnEditStarted) m_OnEditStarted(EditGesture::Retime);
+            e.Capture(this);
+            e.Stop();
+            MarkDirty(VisualDirty);
+            return;
         }
 
         // Hover-update for the active region's handles/body when no drag is
         // in progress. Updates m_RetimeHover so the visual layer can brighten
         // the part the cursor is over.
         if (e.Id == kEventMouseMove && !m_RetimeDragging && m_RetimeRegionActive)
-            UpdateRetimeHover(pointer);
+        {
+            const float lpx = timeToPx(m_RetimeRegionLeft);
+            const float rpx = timeToPx(m_RetimeRegionRight);
+            RetimeHover h = RetimeHover::None;
+            if (localY >= 0.0f && localY <= H)
+            {
+                if (std::abs(localX - lpx) <= kHandleHitPx)
+                    h = RetimeHover::LeftHandle;
+                else if (std::abs(localX - rpx) <= kHandleHitPx)
+                    h = RetimeHover::RightHandle;
+                else if (localX >= lpx && localX <= rpx)
+                    h = RetimeHover::Body;
+            }
+            if (h != m_RetimeHover)
+            {
+                m_RetimeHover = h;
+                MarkDirty(VisualDirty);
+            }
+            // Don't e.Stop() — let other hover-tracking code see the move too.
+        }
         if (e.Id == kEventMouseMove && m_RetimeDragging)
         {
-            UpdateRetimeDrag(e, pointer);
-            return true;
+            const float newPx = std::clamp(localX, 0.0f, W);
+            const float dragDelta = (newPx - m_RetimeAnchorX) / W * (m_RangeEnd - m_RangeStart);
+            m_RetimeDeltaSeconds = dragDelta;
+            const bool snapToFrame = m_SnapTime || controlHeld;
+            // RegionTranslate is initiated by clicking inside the body — the
+            // user might just want to dismiss. Hold off on touching keys
+            // until the cursor actually leaves the click position.
+            constexpr float kClickVsDragPx = 3.0f;
+            if (m_RetimeMode == RetimeMode::RegionTranslate && !m_RetimeDragConfirmed)
+            {
+                if (std::abs(newPx - m_RetimeAnchorX) <= kClickVsDragPx)
+                {
+                    e.Stop();
+                    return;
+                }
+                m_RetimeDragConfirmed = true;
+            }
+
+            if (m_RetimeMode == RetimeMode::DefineRegion)
+            {
+                // Live-extend the rubber band. Sorted bounds are computed from
+                // anchorX/cursorX so the user can drag in either direction.
+                const float anchorTime = pxToTime(m_RetimeAnchorX);
+                const float cursorTime = pxToTime(newPx);
+                m_RetimeRegionLeft  = std::min(anchorTime, cursorTime);
+                m_RetimeRegionRight = std::max(anchorTime, cursorTime);
+                MarkDirty(VisualDirty);
+                e.Stop();
+                return;
+            }
+
+            // For region-scale modes the reference is the original region
+            // width; clamp the floor on the resulting scale so the timeline
+            // doesn't invert (and so very narrow regions don't go to NaN).
+            float scale = 1.0f;
+            switch (m_RetimeMode)
+            {
+                case RetimeMode::Scale:
+                    if (m_RetimeReferenceDist > 1e-4f)
+                        scale = std::max(0.05f, 1.0f + dragDelta / m_RetimeReferenceDist);
+                    break;
+                case RetimeMode::RegionScaleRight:
+                    if (m_RetimeReferenceDist > 1e-4f)
+                        scale = std::max(0.05f, 1.0f + dragDelta / m_RetimeReferenceDist);
+                    break;
+                case RetimeMode::RegionScaleLeft:
+                    if (m_RetimeReferenceDist > 1e-4f)
+                        scale = std::max(0.05f, 1.0f - dragDelta / m_RetimeReferenceDist);
+                    break;
+                default:
+                    break;
+            }
+            m_RetimeScaleFactor = scale;
+
+            for (RetimePreviewEntry& rc : m_RetimePreview)
+            {
+                float nt = rc.originalTime;
+                switch (m_RetimeMode)
+                {
+                    case RetimeMode::Scale:
+                        nt = m_RetimePivotTime + (rc.originalTime - m_RetimePivotTime) * scale;
+                        if (nt <= m_RetimePivotTime) nt = m_RetimePivotTime + 1e-4f;
+                        break;
+                    case RetimeMode::Translate:
+                        nt = rc.originalTime + dragDelta;
+                        if (nt <= m_RetimePivotTime) nt = m_RetimePivotTime + 1e-4f;
+                        break;
+                    case RetimeMode::RegionScaleRight:
+                        nt = m_RetimeRegionLeftOrig + (rc.originalTime - m_RetimeRegionLeftOrig) * scale;
+                        break;
+                    case RetimeMode::RegionScaleLeft:
+                        nt = m_RetimeRegionRightOrig - (m_RetimeRegionRightOrig - rc.originalTime) * scale;
+                        break;
+                    case RetimeMode::RegionTranslate:
+                        nt = rc.originalTime + dragDelta;
+                        break;
+                    default:
+                        break;
+                }
+                if (snapToFrame) nt = ComputeTimeSnap(nt);
+                rc.newTime = nt;
+            }
+
+            // Update region bounds in real time so handles render where the
+            // user is dragging, not where they started.
+            switch (m_RetimeMode)
+            {
+                case RetimeMode::RegionScaleRight:
+                    m_RetimeRegionRight = std::max(m_RetimeRegionLeftOrig + 1e-4f,
+                                                   m_RetimeRegionRightOrig + dragDelta);
+                    break;
+                case RetimeMode::RegionScaleLeft:
+                    m_RetimeRegionLeft  = std::min(m_RetimeRegionRightOrig - 1e-4f,
+                                                   m_RetimeRegionLeftOrig + dragDelta);
+                    break;
+                case RetimeMode::RegionTranslate:
+                    m_RetimeRegionLeft  = m_RetimeRegionLeftOrig  + dragDelta;
+                    m_RetimeRegionRight = m_RetimeRegionRightOrig + dragDelta;
+                    break;
+                default:
+                    break;
+            }
+
+            // Live commit: push the keys that actually changed since the
+            // previous MouseMove out to the asset so the graph re-paints
+            // with the new positions. Skipped for DefineRegion (no keys move
+            // during draw) and when nothing actually changed this frame.
+            if (m_OnRetimeApplied && m_RetimeMode != RetimeMode::DefineRegion)
+            {
+                std::vector<RetimeChange> live;
+                live.reserve(m_RetimePreview.size());
+                for (const RetimePreviewEntry& rc : m_RetimePreview)
+                {
+                    if (std::abs(rc.newTime - rc.liveTime) > 1e-5f)
+                        live.push_back(RetimeChange{rc.channel, rc.liveTime, rc.newTime});
+                }
+                if (!live.empty())
+                {
+                    const bool shiftRight = (dragDelta >= 0.0f);
+                    std::sort(live.begin(), live.end(),
+                              [shiftRight](const RetimeChange& a, const RetimeChange& b) {
+                                  if (a.channel != b.channel) return a.channel < b.channel;
+                                  return shiftRight ? (a.originalTime > b.originalTime)
+                                                    : (a.originalTime < b.originalTime);
+                              });
+                    m_OnRetimeApplied(live);
+                    // Advance liveTime so the next frame's diff is against
+                    // the keyframes' actual current positions.
+                    for (RetimePreviewEntry& rc : m_RetimePreview)
+                        rc.liveTime = rc.newTime;
+                }
+            }
+
+            MarkDirty(VisualDirty);
+            e.Stop();
+            return;
         }
 
         if (e.Id == kEventMouseUp && m_RetimeDragging)
         {
-            EndRetimeGesture(e, pointer);
-            return true;
+            m_RetimeDragging = false;
+
+            if (m_RetimeMode == RetimeMode::DefineRegion)
+            {
+                // Click vs. drag is decided by *pixel* distance, not time —
+                // a time-based threshold breaks on wide timelines where a
+                // 1-pixel jitter crosses any small ε.
+                constexpr float kClickVsDragPx = 3.0f;
+                const float pxDelta = std::abs(localX - m_RetimeAnchorX);
+                if (pxDelta > kClickVsDragPx)
+                {
+                    // Real click-and-drag → use this gesture's own bounds and
+                    // discard any pending in-point.
+                    m_RetimeRegionActive = true;
+                    m_RetimePendingIn    = false;
+                }
+                else if (m_RetimePendingIn)
+                {
+                    // Click without drag while a pending in-point exists →
+                    // pair them to form the region (click→click in/out).
+                    const float t1 = m_RetimePendingInTime;
+                    const float t2 = pxToTime(m_RetimeAnchorX);
+                    m_RetimeRegionLeft   = std::min(t1, t2);
+                    m_RetimeRegionRight  = std::max(t1, t2);
+                    m_RetimeRegionActive = (m_RetimeRegionRight - m_RetimeRegionLeft) > 1e-4f;
+                    m_RetimePendingIn    = false;
+                }
+                else
+                {
+                    // First click of a click→click sequence: drop the pending
+                    // in-point marker and wait for the second click.
+                    m_RetimeRegionLeft   = m_RetimeRegionLeftOrig;
+                    m_RetimeRegionRight  = m_RetimeRegionRightOrig;
+                    m_RetimeRegionActive = m_RetimeRegionWasActive;
+                    m_RetimePendingIn    = true;
+                    m_RetimePendingInTime = pxToTime(m_RetimeAnchorX);
+                }
+                if (m_OnEditFinished) m_OnEditFinished(EditGesture::Retime);
+                MarkDirty(VisualDirty);
+                e.Stop();
+                return;
+            }
+
+            // RegionTranslate that never crossed the drag threshold = a
+            // "click on body" → dismiss the region (the alternate gesture
+            // for the same input is body-drag-to-translate, handled live
+            // during MouseMove).
+            if (m_RetimeMode == RetimeMode::RegionTranslate && !m_RetimeDragConfirmed)
+            {
+                m_RetimeRegionActive = false;
+                m_RetimePendingIn    = false;
+            }
+
+            // Per-MouseMove already streamed every change to the asset, so
+            // there's nothing left to commit here. Just clean up state.
+            m_RetimePreview.clear();
+            m_RetimeReferenceDist = 0.0f;
+            m_RetimeDeltaSeconds = 0.0f;
+            m_RetimeScaleFactor = 1.0f;
+            m_RetimeDragConfirmed = false;
+
+            if (m_OnEditFinished) m_OnEditFinished(EditGesture::Retime);
+            MarkDirty(VisualDirty);
+            e.Stop();
+            return;
         }
 
         // Escape: cancel the active drag (no commit) or, if a region is
         // active and we're idle, clear the region.
         if (e.Id == kEventKeyDown && e.Key == Input::kKeyCode_Escape)
-            return CancelRetimeGesture(e);
-    }
-    return false;
-}
-
-namespace
-{
-constexpr float kRetimeHandleHitPx = 6.0f; // pixel distance for region edge grab
-} // namespace
-
-// Convert pixel x to time and back.
-float CurvesGraphView::RetimePixelToTime(float px, float width) const
-{
-    return m_RangeStart + (std::clamp(px, 0.0f, width) / width) * (m_RangeEnd - m_RangeStart);
-}
-
-float CurvesGraphView::RetimeTimeToPixel(float t, float width) const
-{
-    return std::clamp((t - m_RangeStart) / std::max(1e-6f, m_RangeEnd - m_RangeStart), 0.0f, 1.0f) * width;
-}
-
-void CurvesGraphView::BeginRetimeGesture(UIEvent& e, const PointerEventState& pointer)
-{
-    const float W = pointer.Width;
-    const float localX = pointer.LocalX;
-    const float clickTime = RetimePixelToTime(localX, W);
-
-    // Decide which gesture to start. Note: when a pending in-point is
-    // set we still start a tentative DefineRegion drag here — the
-    // mouse-up handler decides whether to pair (no drag) or to use
-    // this gesture's own bounds as a fresh region (real drag).
-    //
-    // Region-aware dispatch (when a region is visible):
-    //   - hit a left/right handle  → scale that side
-    //   - press inside the body    → tentative translate; if the
-    //     cursor moves past the click-vs-drag threshold the body
-    //     drags with the cursor, otherwise the release dismisses the
-    //     region (the "click again to clear" UX)
-    //   - press anywhere else      → clear region and start a fresh
-    //     in/out drag at the click point
-    RetimeMode chosen;
-    if (m_RetimeRegionActive)
-    {
-        const float leftPx  = RetimeTimeToPixel(m_RetimeRegionLeft, W);
-        const float rightPx = RetimeTimeToPixel(m_RetimeRegionRight, W);
-        if (std::abs(localX - leftPx) <= kRetimeHandleHitPx)
-            chosen = RetimeMode::RegionScaleLeft;
-        else if (std::abs(localX - rightPx) <= kRetimeHandleHitPx)
-            chosen = RetimeMode::RegionScaleRight;
-        else if (clickTime >= m_RetimeRegionLeft && clickTime <= m_RetimeRegionRight)
-            chosen = RetimeMode::RegionTranslate;
-        else
         {
-            m_RetimeRegionActive = false;
-            m_RetimePendingIn = false;
-            chosen = RetimeMode::DefineRegion;
-        }
-    }
-    else
-    {
-        // No region yet: drag defines the in/out points; a click-only
-        // (no movement) becomes the pending in-point (or pairs with
-        // an existing one) on mouse-up.
-        chosen = RetimeMode::DefineRegion;
-    }
-    m_RetimeDragConfirmed = false;
-
-    m_RetimeMode         = chosen;
-    m_RetimeDragging     = true;
-    m_RetimeAnchorX      = localX;
-    m_RetimeDeltaSeconds = 0.0f;
-    m_RetimeScaleFactor  = 1.0f;
-    m_RetimePreview.clear();
-
-    // Save region's pre-drag state so Escape can revert it.
-    m_RetimeRegionLeftOrig  = m_RetimeRegionLeft;
-    m_RetimeRegionRightOrig = m_RetimeRegionRight;
-    m_RetimeRegionWasActive = m_RetimeRegionActive;
-
-    if (chosen == RetimeMode::DefineRegion)
-    {
-        // Replace any existing region; finalize on mouse-up.
-        m_RetimeRegionLeft   = clickTime;
-        m_RetimeRegionRight  = clickTime;
-        m_RetimeRegionActive = false; // becomes true on mouse-up
-        if (m_OnEditStarted) m_OnEditStarted(EditGesture::Retime);
-        e.Capture(this);
-        e.Stop();
-        MarkDirty(VisualDirty);
-        return;
-    }
-
-    // Single-pivot path: pivot = click time.
-    // Region path: pivot is the *anchor* edge (the opposite of the
-    // handle being dragged); for Translate we set pivot = regionLeft
-    // for HUD bookkeeping only.
-    switch (chosen)
-    {
-        case RetimeMode::Scale:
-        case RetimeMode::Translate:
-            m_RetimePivotTime = clickTime;
-            break;
-        case RetimeMode::RegionScaleRight:
-        case RetimeMode::RegionTranslate:
-            m_RetimePivotTime = m_RetimeRegionLeft;
-            break;
-        case RetimeMode::RegionScaleLeft:
-            m_RetimePivotTime = m_RetimeRegionRight;
-            break;
-        default:
-            break;
-    }
-
-    // Snapshot eligible keys.
-    std::vector<int> chans;
-    if (!m_VisibleChannels.empty())
-        chans = m_VisibleChannels;
-    else
-    {
-        chans.reserve(m_Clip->GetChannels().size());
-        for (size_t i = 0; i < m_Clip->GetChannels().size(); ++i)
-            chans.push_back(static_cast<int>(i));
-    }
-    const bool restrictToSelection =
-        (chosen == RetimeMode::Scale || chosen == RetimeMode::Translate)
-        && !m_SelectedKeys.empty();
-    auto isKeySelected = [this](int ci, float t)
-    {
-        for (const SelectedKey& sk : m_SelectedKeys)
-            if (sk.Channel == ci && std::abs(sk.KeyTime - t) < 1e-5f)
-                return true;
-        return false;
-    };
-    float farthest = 0.0f;
-    for (int ci : chans)
-    {
-        if (ci < 0 || static_cast<size_t>(ci) >= m_Clip->GetChannels().size())
-            continue;
-        if (m_IsChannelLocked && m_IsChannelLocked(ci))
-            continue;
-        const AnimChannel& ch = m_Clip->GetChannels()[static_cast<size_t>(ci)];
-        for (const AnimKeyframe& kf : ch.keys)
-        {
-            bool eligible = false;
-            switch (chosen)
+            if (m_RetimeDragging)
             {
-                case RetimeMode::Scale:
-                case RetimeMode::Translate:
-                    eligible = (kf.time > m_RetimePivotTime);
-                    break;
-                case RetimeMode::RegionScaleRight:
-                case RetimeMode::RegionScaleLeft:
-                case RetimeMode::RegionTranslate:
-                    eligible = (kf.time >= m_RetimeRegionLeft && kf.time <= m_RetimeRegionRight);
-                    break;
-                default:
-                    break;
+                m_RetimeDragging = false;
+                m_RetimePreview.clear();
+                // Restore region to whatever it was before the gesture started.
+                m_RetimeRegionLeft  = m_RetimeRegionLeftOrig;
+                m_RetimeRegionRight = m_RetimeRegionRightOrig;
+                m_RetimeRegionActive = m_RetimeRegionWasActive;
+                if (m_OnEditFinished) m_OnEditFinished(EditGesture::Retime);
+                MarkDirty(VisualDirty);
+                e.Stop();
+                return;
             }
-            if (!eligible) continue;
-            if (restrictToSelection && !isKeySelected(ci, kf.time))
-                continue;
-            m_RetimePreview.push_back(RetimePreviewEntry{ci, kf.time, kf.time, kf.time});
-            farthest = std::max(farthest, kf.time - m_RetimePivotTime);
-        }
-    }
-    m_RetimeReferenceDist = (chosen == RetimeMode::Scale) ? farthest
-        : (chosen == RetimeMode::RegionScaleRight ? (m_RetimeRegionRight - m_RetimeRegionLeft)
-        : (chosen == RetimeMode::RegionScaleLeft  ? (m_RetimeRegionRight - m_RetimeRegionLeft) : 0.0f));
-
-    if (m_OnEditStarted) m_OnEditStarted(EditGesture::Retime);
-    e.Capture(this);
-    e.Stop();
-    MarkDirty(VisualDirty);
-}
-
-void CurvesGraphView::UpdateRetimeHover(const PointerEventState& pointer)
-{
-    const float W = pointer.Width;
-    const float H = pointer.Height;
-    const float localX = pointer.LocalX;
-    const float localY = pointer.LocalY;
-    const float lpx = RetimeTimeToPixel(m_RetimeRegionLeft, W);
-    const float rpx = RetimeTimeToPixel(m_RetimeRegionRight, W);
-    RetimeHover h = RetimeHover::None;
-    if (localY >= 0.0f && localY <= H)
-    {
-        if (std::abs(localX - lpx) <= kRetimeHandleHitPx)
-            h = RetimeHover::LeftHandle;
-        else if (std::abs(localX - rpx) <= kRetimeHandleHitPx)
-            h = RetimeHover::RightHandle;
-        else if (localX >= lpx && localX <= rpx)
-            h = RetimeHover::Body;
-    }
-    if (h != m_RetimeHover)
-    {
-        m_RetimeHover = h;
-        MarkDirty(VisualDirty);
-    }
-    // Don't e.Stop() — let other hover-tracking code see the move too.
-}
-
-void CurvesGraphView::UpdateRetimeDrag(UIEvent& e, const PointerEventState& pointer)
-{
-    const float W = pointer.Width;
-    const float localX = pointer.LocalX;
-    const bool controlHeld = pointer.ControlHeld;
-    const float newPx = std::clamp(localX, 0.0f, W);
-    const float dragDelta = (newPx - m_RetimeAnchorX) / W * (m_RangeEnd - m_RangeStart);
-    m_RetimeDeltaSeconds = dragDelta;
-    const bool snapToFrame = m_SnapTime || controlHeld;
-    // RegionTranslate is initiated by clicking inside the body — the
-    // user might just want to dismiss. Hold off on touching keys
-    // until the cursor actually leaves the click position.
-    constexpr float kClickVsDragPx = 3.0f;
-    if (m_RetimeMode == RetimeMode::RegionTranslate && !m_RetimeDragConfirmed)
-    {
-        if (std::abs(newPx - m_RetimeAnchorX) <= kClickVsDragPx)
-        {
-            e.Stop();
-            return;
-        }
-        m_RetimeDragConfirmed = true;
-    }
-
-    if (m_RetimeMode == RetimeMode::DefineRegion)
-    {
-        // Live-extend the rubber band. Sorted bounds are computed from
-        // anchorX/cursorX so the user can drag in either direction.
-        const float anchorTime = RetimePixelToTime(m_RetimeAnchorX, W);
-        const float cursorTime = RetimePixelToTime(newPx, W);
-        m_RetimeRegionLeft  = std::min(anchorTime, cursorTime);
-        m_RetimeRegionRight = std::max(anchorTime, cursorTime);
-        MarkDirty(VisualDirty);
-        e.Stop();
-        return;
-    }
-
-    // For region-scale modes the reference is the original region
-    // width; clamp the floor on the resulting scale so the timeline
-    // doesn't invert (and so very narrow regions don't go to NaN).
-    float scale = 1.0f;
-    switch (m_RetimeMode)
-    {
-        case RetimeMode::Scale:
-            if (m_RetimeReferenceDist > 1e-4f)
-                scale = std::max(0.05f, 1.0f + dragDelta / m_RetimeReferenceDist);
-            break;
-        case RetimeMode::RegionScaleRight:
-            if (m_RetimeReferenceDist > 1e-4f)
-                scale = std::max(0.05f, 1.0f + dragDelta / m_RetimeReferenceDist);
-            break;
-        case RetimeMode::RegionScaleLeft:
-            if (m_RetimeReferenceDist > 1e-4f)
-                scale = std::max(0.05f, 1.0f - dragDelta / m_RetimeReferenceDist);
-            break;
-        default:
-            break;
-    }
-    m_RetimeScaleFactor = scale;
-
-    for (RetimePreviewEntry& rc : m_RetimePreview)
-    {
-        float nt = rc.originalTime;
-        switch (m_RetimeMode)
-        {
-            case RetimeMode::Scale:
-                nt = m_RetimePivotTime + (rc.originalTime - m_RetimePivotTime) * scale;
-                if (nt <= m_RetimePivotTime) nt = m_RetimePivotTime + 1e-4f;
-                break;
-            case RetimeMode::Translate:
-                nt = rc.originalTime + dragDelta;
-                if (nt <= m_RetimePivotTime) nt = m_RetimePivotTime + 1e-4f;
-                break;
-            case RetimeMode::RegionScaleRight:
-                nt = m_RetimeRegionLeftOrig + (rc.originalTime - m_RetimeRegionLeftOrig) * scale;
-                break;
-            case RetimeMode::RegionScaleLeft:
-                nt = m_RetimeRegionRightOrig - (m_RetimeRegionRightOrig - rc.originalTime) * scale;
-                break;
-            case RetimeMode::RegionTranslate:
-                nt = rc.originalTime + dragDelta;
-                break;
-            default:
-                break;
-        }
-        if (snapToFrame) nt = ComputeTimeSnap(nt);
-        rc.newTime = nt;
-    }
-
-    // Update region bounds in real time so handles render where the
-    // user is dragging, not where they started.
-    switch (m_RetimeMode)
-    {
-        case RetimeMode::RegionScaleRight:
-            m_RetimeRegionRight = std::max(m_RetimeRegionLeftOrig + 1e-4f,
-                                           m_RetimeRegionRightOrig + dragDelta);
-            break;
-        case RetimeMode::RegionScaleLeft:
-            m_RetimeRegionLeft  = std::min(m_RetimeRegionRightOrig - 1e-4f,
-                                           m_RetimeRegionLeftOrig + dragDelta);
-            break;
-        case RetimeMode::RegionTranslate:
-            m_RetimeRegionLeft  = m_RetimeRegionLeftOrig  + dragDelta;
-            m_RetimeRegionRight = m_RetimeRegionRightOrig + dragDelta;
-            break;
-        default:
-            break;
-    }
-
-    // Live commit: push the keys that actually changed since the
-    // previous MouseMove out to the asset so the graph re-paints
-    // with the new positions. Skipped for DefineRegion (no keys move
-    // during draw) and when nothing actually changed this frame.
-    if (m_OnRetimeApplied && m_RetimeMode != RetimeMode::DefineRegion)
-    {
-        std::vector<RetimeChange> live;
-        live.reserve(m_RetimePreview.size());
-        for (const RetimePreviewEntry& rc : m_RetimePreview)
-        {
-            if (std::abs(rc.newTime - rc.liveTime) > 1e-5f)
-                live.push_back(RetimeChange{rc.channel, rc.liveTime, rc.newTime});
-        }
-        if (!live.empty())
-        {
-            const bool shiftRight = (dragDelta >= 0.0f);
-            std::sort(live.begin(), live.end(),
-                      [shiftRight](const RetimeChange& a, const RetimeChange& b) {
-                          if (a.channel != b.channel) return a.channel < b.channel;
-                          return shiftRight ? (a.originalTime > b.originalTime)
-                                            : (a.originalTime < b.originalTime);
-                      });
-            m_OnRetimeApplied(live);
-            // Advance liveTime so the next frame's diff is against
-            // the keyframes' actual current positions.
-            for (RetimePreviewEntry& rc : m_RetimePreview)
-                rc.liveTime = rc.newTime;
+            if (m_RetimeRegionActive || m_RetimePendingIn)
+            {
+                m_RetimeRegionActive = false;
+                m_RetimePendingIn = false;
+                MarkDirty(VisualDirty);
+                e.Stop();
+                return;
+            }
         }
     }
 
-    MarkDirty(VisualDirty);
-    e.Stop();
-}
-
-void CurvesGraphView::EndRetimeGesture(UIEvent& e, const PointerEventState& pointer)
-{
-    const float W = pointer.Width;
-    const float localX = pointer.LocalX;
-    m_RetimeDragging = false;
-
-    if (m_RetimeMode == RetimeMode::DefineRegion)
-    {
-        // Click vs. drag is decided by *pixel* distance, not time —
-        // a time-based threshold breaks on wide timelines where a
-        // 1-pixel jitter crosses any small ε.
-        constexpr float kClickVsDragPx = 3.0f;
-        const float pxDelta = std::abs(localX - m_RetimeAnchorX);
-        if (pxDelta > kClickVsDragPx)
-        {
-            // Real click-and-drag → use this gesture's own bounds and
-            // discard any pending in-point.
-            m_RetimeRegionActive = true;
-            m_RetimePendingIn    = false;
-        }
-        else if (m_RetimePendingIn)
-        {
-            // Click without drag while a pending in-point exists →
-            // pair them to form the region (click→click in/out).
-            const float t1 = m_RetimePendingInTime;
-            const float t2 = RetimePixelToTime(m_RetimeAnchorX, W);
-            m_RetimeRegionLeft   = std::min(t1, t2);
-            m_RetimeRegionRight  = std::max(t1, t2);
-            m_RetimeRegionActive = (m_RetimeRegionRight - m_RetimeRegionLeft) > 1e-4f;
-            m_RetimePendingIn    = false;
-        }
-        else
-        {
-            // First click of a click→click sequence: drop the pending
-            // in-point marker and wait for the second click.
-            m_RetimeRegionLeft   = m_RetimeRegionLeftOrig;
-            m_RetimeRegionRight  = m_RetimeRegionRightOrig;
-            m_RetimeRegionActive = m_RetimeRegionWasActive;
-            m_RetimePendingIn    = true;
-            m_RetimePendingInTime = RetimePixelToTime(m_RetimeAnchorX, W);
-        }
-        if (m_OnEditFinished) m_OnEditFinished(EditGesture::Retime);
-        MarkDirty(VisualDirty);
-        e.Stop();
-        return;
-    }
-
-    // RegionTranslate that never crossed the drag threshold = a
-    // "click on body" → dismiss the region (the alternate gesture
-    // for the same input is body-drag-to-translate, handled live
-    // during MouseMove).
-    if (m_RetimeMode == RetimeMode::RegionTranslate && !m_RetimeDragConfirmed)
-    {
-        m_RetimeRegionActive = false;
-        m_RetimePendingIn    = false;
-    }
-
-    // Per-MouseMove already streamed every change to the asset, so
-    // there's nothing left to commit here. Just clean up state.
-    m_RetimePreview.clear();
-    m_RetimeReferenceDist = 0.0f;
-    m_RetimeDeltaSeconds = 0.0f;
-    m_RetimeScaleFactor = 1.0f;
-    m_RetimeDragConfirmed = false;
-
-    if (m_OnEditFinished) m_OnEditFinished(EditGesture::Retime);
-    MarkDirty(VisualDirty);
-    e.Stop();
-}
-
-bool CurvesGraphView::CancelRetimeGesture(UIEvent& e)
-{
-    if (m_RetimeDragging)
-    {
-        m_RetimeDragging = false;
-        m_RetimePreview.clear();
-        // Restore region to whatever it was before the gesture started.
-        m_RetimeRegionLeft  = m_RetimeRegionLeftOrig;
-        m_RetimeRegionRight = m_RetimeRegionRightOrig;
-        m_RetimeRegionActive = m_RetimeRegionWasActive;
-        if (m_OnEditFinished) m_OnEditFinished(EditGesture::Retime);
-        MarkDirty(VisualDirty);
-        e.Stop();
-        return true;
-    }
-    if (m_RetimeRegionActive || m_RetimePendingIn)
-    {
-        m_RetimeRegionActive = false;
-        m_RetimePendingIn = false;
-        MarkDirty(VisualDirty);
-        e.Stop();
-        return true;
-    }
-    return false;
-}
-
-// ---- DrawCurve tool ---------------------------------------------------
-// Press-drag-release to paint a freehand curve onto the selected
-// channel/component. Each MouseMove records a (time, value) sample;
-// MouseUp commits the stroke as a sorted, deduped batch via
-// m_OnDrawCurveCommitted (the panel does the actual key replacement +
-// undo registration). Requires a selected channel — there's no obvious
-// target otherwise.
-bool CurvesGraphView::HandleDrawCurveTool(UIEvent& e, const PointerEventState& pointer)
-{
-    const float W = pointer.Width;
-    const float H = pointer.Height;
-    const float localX = pointer.LocalX;
-    const float localY = pointer.LocalY;
+    // ---- DrawCurve tool ---------------------------------------------------
+    // Press-drag-release to paint a freehand curve onto the selected
+    // channel/component. Each MouseMove records a (time, value) sample;
+    // MouseUp commits the stroke as a sorted, deduped batch via
+    // m_OnDrawCurveCommitted (the panel does the actual key replacement +
+    // undo registration). Requires a selected channel — there's no obvious
+    // target otherwise.
     if (m_ActiveTool == CurveTool::DrawCurve && m_Clip && W > 0.0f && H > 0.0f &&
         (e.Id != kEventMouseDown || e.Button == 0) && !m_Panning && !m_RightClickScrubbing)
     {
@@ -2229,7 +2052,7 @@ bool CurvesGraphView::HandleDrawCurveTool(UIEvent& e, const PointerEventState& p
             return m_RangeStart + (std::clamp(px, 0.0f, W) / W) * (m_RangeEnd - m_RangeStart);
         };
         auto pyToValue = [&](float py) {
-            const float t = std::clamp(py / std::max(1.0f, H), 0.0f, 1.0f);
+            const float t = Math::Clamp01(py / std::max(1.0f, H));
             return m_ValueMax - t * (m_ValueMax - m_ValueMin);
         };
 
@@ -2240,7 +2063,7 @@ bool CurvesGraphView::HandleDrawCurveTool(UIEvent& e, const PointerEventState& p
             {
                 // No target — bail without consuming the click so the user's
                 // intent (probably "select something first") isn't masked.
-                return true;
+                return;
             }
             m_DrawingCurve = true;
             m_DrawCurveChannel = m_SelectedChannel;
@@ -2251,7 +2074,7 @@ bool CurvesGraphView::HandleDrawCurveTool(UIEvent& e, const PointerEventState& p
             e.Capture(this);
             e.Stop();
             MarkDirty(VisualDirty);
-            return true;
+            return;
         }
         if (e.Id == kEventMouseMove && m_DrawingCurve)
         {
@@ -2264,7 +2087,7 @@ bool CurvesGraphView::HandleDrawCurveTool(UIEvent& e, const PointerEventState& p
             m_DrawCurveSamples.push_back({t, v});
             MarkDirty(VisualDirty);
             e.Stop();
-            return true;
+            return;
         }
         if (e.Id == kEventMouseUp && m_DrawingCurve)
         {
@@ -2331,7 +2154,7 @@ bool CurvesGraphView::HandleDrawCurveTool(UIEvent& e, const PointerEventState& p
                             d2 = pt * pt + pv * pv;
                         else
                         {
-                            const float t = std::clamp((pt * ndt + pv * ndv) / lenSq, 0.0f, 1.0f);
+                            const float t = Math::Clamp01((pt * ndt + pv * ndv) / lenSq);
                             const float qx = t * ndt - pt;
                             const float qy = t * ndv - pv;
                             d2 = qx * qx + qy * qy;
@@ -2358,24 +2181,17 @@ bool CurvesGraphView::HandleDrawCurveTool(UIEvent& e, const PointerEventState& p
             if (m_OnEditFinished) m_OnEditFinished(EditGesture::Keyframe);
             MarkDirty(VisualDirty);
             e.Stop();
-            return true;
+            return;
         }
     }
-    return false;
-}
 
-// Lattice deform: activate or rebuild the lattice when the user makes a
-// non-empty selection that differs from the currently captured baseline.
-// After activation the lattice persists across selection clears (the
-// baseline owns its own copy of channel + key time + value, so dragging
-// works even after the user clicks empty space and the marquee box is
-// gone). The only ways out are toggling the tool off or re-selecting a
-// different non-empty key set.
-bool CurvesGraphView::HandleLatticeTool(UIEvent& e, const PointerEventState& pointer)
-{
-    const float W = pointer.Width;
-    const float H = pointer.Height;
-    const float localY = pointer.LocalY;
+    // Lattice deform: activate or rebuild the lattice when the user makes a
+    // non-empty selection that differs from the currently captured baseline.
+    // After activation the lattice persists across selection clears (the
+    // baseline owns its own copy of channel + key time + value, so dragging
+    // works even after the user clicks empty space and the marquee box is
+    // gone). The only ways out are toggling the tool off or re-selecting a
+    // different non-empty key set.
     if (m_ActiveTool == CurveTool::Lattice && m_Clip && W > 0.0f && H > 0.0f)
     {
         if (!m_SelectedKeys.empty())
@@ -2402,9 +2218,28 @@ bool CurvesGraphView::HandleLatticeTool(UIEvent& e, const PointerEventState& poi
                 RebuildLatticeFromSelection();
         }
 
+        // Square half-extent for both hover detection and mouse-down picking.
+        // Wider than the 6-7px keyframe pick radius so the lattice always
+        // claims clicks near its CPs even when a keyframe sits underneath.
+        constexpr float kLatticeCPHit = 14.0f;
+
+        auto pickCP = [&](float lx, float ly) -> int
+        {
+            for (size_t ci = 0; ci < m_LatticePoints.size(); ++ci)
+            {
+                const float valRange = std::max(0.001f, m_ValueMax - m_ValueMin);
+                const float cpLocalX = (m_LatticePoints[ci].Time - m_RangeStart) / rangeDuration * W;
+                const float cpNy     = (m_LatticePoints[ci].Value - m_ValueMin) / valRange;
+                const float cpLocalY = H - cpNy * H;
+                if (std::abs(lx - cpLocalX) < kLatticeCPHit && std::abs(ly - cpLocalY) < kLatticeCPHit)
+                    return static_cast<int>(ci);
+            }
+            return -1;
+        };
+
         if (m_LatticeActive && e.Id == kEventMouseMove && m_LatticeDragIndex < 0)
         {
-            const int newHover = PickLatticeControlPoint(pointer);
+            const int newHover = pickCP(localX, localY);
             if (newHover != m_LatticeHoverIndex)
             {
                 m_LatticeHoverIndex = newHover;
@@ -2414,7 +2249,7 @@ bool CurvesGraphView::HandleLatticeTool(UIEvent& e, const PointerEventState& poi
 
         if (m_LatticeActive && e.Id == kEventMouseDown && e.Button == 0)
         {
-            const int hit = PickLatticeControlPoint(pointer);
+            const int hit = pickCP(localX, localY);
             if (hit >= 0)
             {
                 m_LatticeDragIndex = hit;
@@ -2430,7 +2265,7 @@ bool CurvesGraphView::HandleLatticeTool(UIEvent& e, const PointerEventState& poi
                 if (m_OnEditStarted) m_OnEditStarted(EditGesture::Lattice);
                 e.Capture(this);
                 e.Stop();
-                return true;
+                return;
             }
         }
     }
@@ -2441,147 +2276,98 @@ bool CurvesGraphView::HandleLatticeTool(UIEvent& e, const PointerEventState& poi
         m_LatticeHoverIndex = -1;
         m_LatticePoints.clear();
     }
-    return false;
-}
 
-int CurvesGraphView::PickLatticeControlPoint(const PointerEventState& pointer) const
-{
-    const float W = pointer.Width;
-    const float H = pointer.Height;
-    const float rangeDuration = pointer.RangeDuration;
-    const float lx = pointer.LocalX;
-    const float ly = pointer.LocalY;
-
-    // Square half-extent for both hover detection and mouse-down picking.
-    // Wider than the 6-7px keyframe pick radius so the lattice always
-    // claims clicks near its CPs even when a keyframe sits underneath.
-    constexpr float kLatticeCPHit = 14.0f;
-
-    for (size_t ci = 0; ci < m_LatticePoints.size(); ++ci)
-    {
-        const float valRange = std::max(0.001f, m_ValueMax - m_ValueMin);
-        const float cpLocalX = (m_LatticePoints[ci].Time - m_RangeStart) / rangeDuration * W;
-        const float cpNy     = (m_LatticePoints[ci].Value - m_ValueMin) / valRange;
-        const float cpLocalY = H - cpNy * H;
-        if (std::abs(lx - cpLocalX) < kLatticeCPHit && std::abs(ly - cpLocalY) < kLatticeCPHit)
-            return static_cast<int>(ci);
-    }
-    return -1;
-}
-
-// Build m_DragKeys from each selected key's own channel (supports multi-curve selection).
-void CurvesGraphView::BuildDragKeysFromSelection()
-{
-    m_DragKeys.clear();
-    m_DragKeys.reserve(m_SelectedKeys.size());
-    for (const SelectedKey& selectedKey : m_SelectedKeys)
-    {
-        if (selectedKey.Channel < 0 || static_cast<size_t>(selectedKey.Channel) >= m_Clip->GetChannels().size())
-            continue;
-        const AnimChannel& dragCh = m_Clip->GetChannels()[static_cast<size_t>(selectedKey.Channel)];
-        const int selectedIndex = FindKeyIndexForTime(dragCh, selectedKey.KeyTime);
-        if (selectedIndex < 0)
-            continue;
-        const float t = dragCh.keys[static_cast<size_t>(selectedIndex)].time;
-        const float v = GetChannelComponentValue(dragCh, dragCh.keys[static_cast<size_t>(selectedIndex)], m_SelectedComponent);
-        m_DragKeys.push_back({selectedKey.Channel, t, v, t, v});
-    }
-}
-
-bool CurvesGraphView::BeginSelectionScaleFromHandle(UIEvent& e, const PointerEventState& pointer)
-{
-    const float localX = pointer.LocalX;
-    const float localY = pointer.LocalY;
-    const SelectionBounds& selectionBounds = pointer.Bounds;
-    if (selectionBounds.Valid &&
-        localX >= selectionBounds.TimeHandleLeft && localX <= selectionBounds.TimeHandleRight &&
-        localY >= selectionBounds.TimeHandleTop && localY <= selectionBounds.TimeHandleBottom &&
-        m_OnKeyframeEdited && m_SelectedKeys.size() >= 2u)
-    {
-        m_ScalingSelectionTime = true;
-        m_ScalingSelectionValue = false;
-        m_ScaleAnchorTime = selectionBounds.MinTime;
-        m_ScaleInitialDuration = std::max(0.001f, selectionBounds.MaxTime - selectionBounds.MinTime);
-        BuildDragKeysFromSelection();
-        if (m_OnEditStarted)
-            m_OnEditStarted(EditGesture::Keyframe);
-        e.Capture(this);
-        e.Stop();
-        return true;
-    }
-    if (selectionBounds.Valid &&
-        localX >= selectionBounds.ValueHandleLeft && localX <= selectionBounds.ValueHandleRight &&
-        localY >= selectionBounds.ValueHandleTop && localY <= selectionBounds.ValueHandleBottom &&
-        m_OnKeyframeEdited && m_SelectedKeys.size() >= 2u)
-    {
-        m_ScalingSelectionTime = false;
-        m_ScalingSelectionValue = true;
-        m_ScaleValueFromBottom = false;
-        m_ScaleAnchorValue = 0.5f * (selectionBounds.MinValue + selectionBounds.MaxValue);
-        m_ScaleInitialValueExtent = std::max(0.001f, selectionBounds.MaxValue - m_ScaleAnchorValue);
-        BuildDragKeysFromSelection();
-        if (m_OnEditStarted)
-            m_OnEditStarted(EditGesture::Keyframe);
-        e.Capture(this);
-        e.Stop();
-        return true;
-    }
-    if (selectionBounds.Valid &&
-        localX >= selectionBounds.LeftTimeHandleLeft && localX <= selectionBounds.LeftTimeHandleRight &&
-        localY >= selectionBounds.LeftTimeHandleTop && localY <= selectionBounds.LeftTimeHandleBottom &&
-        m_OnKeyframeEdited && m_SelectedKeys.size() >= 2u)
-    {
-        m_ScalingSelectionTime = true;
-        m_ScalingSelectionValue = false;
-        m_ScaleTimeFromRight = true;
-        m_ScaleAnchorTime = selectionBounds.MaxTime;
-        m_ScaleInitialDuration = std::max(0.001f, selectionBounds.MaxTime - selectionBounds.MinTime);
-        BuildDragKeysFromSelection();
-        if (m_OnEditStarted)
-            m_OnEditStarted(EditGesture::Keyframe);
-        e.Capture(this);
-        e.Stop();
-        return true;
-    }
-    if (selectionBounds.Valid &&
-        localX >= selectionBounds.BottomValueHandleLeft && localX <= selectionBounds.BottomValueHandleRight &&
-        localY >= selectionBounds.BottomValueHandleTop && localY <= selectionBounds.BottomValueHandleBottom &&
-        m_OnKeyframeEdited && m_SelectedKeys.size() >= 2u)
-    {
-        m_ScalingSelectionTime = false;
-        m_ScalingSelectionValue = true;
-        m_ScaleValueFromBottom = true;
-        m_ScaleAnchorValue = selectionBounds.MaxValue;
-        m_ScaleInitialValueExtent = std::max(0.001f, selectionBounds.MaxValue - selectionBounds.MinValue);
-        BuildDragKeysFromSelection();
-        if (m_OnEditStarted)
-            m_OnEditStarted(EditGesture::Keyframe);
-        e.Capture(this);
-        e.Stop();
-        return true;
-    }
-    return false;
-}
-
-bool CurvesGraphView::HandleLeftMouseDownOnCurves(UIEvent& e, const PointerEventState& pointer)
-{
-    const float W = pointer.Width;
-    const float H = pointer.Height;
-    const float localX = pointer.LocalX;
-    const float clampedLocalX = pointer.ClampedLocalX;
-    const float localY = pointer.LocalY;
-    const float rangeDuration = pointer.RangeDuration;
-    const float valueRange = pointer.ValueRange;
-    const bool shiftHeld = pointer.ShiftHeld;
-    const bool controlHeld = pointer.ControlHeld;
-    const SelectionBounds& selectionBounds = pointer.Bounds;
     if (e.Id == kEventMouseDown && e.Button == 0 && m_Clip && m_SelectedChannel >= 0 &&
         static_cast<size_t>(m_SelectedChannel) < m_Clip->GetChannels().size() && W > 0.0f && H > 0.0f)
     {
         const AnimChannel& channel = m_Clip->GetChannels()[static_cast<size_t>(m_SelectedChannel)];
 
-        if (BeginSelectionScaleFromHandle(e, pointer))
-            return true;
+        // Build m_DragKeys from each selected key's own channel (supports multi-curve selection).
+        auto buildScaleDragKeys = [&]()
+        {
+            m_DragKeys.clear();
+            m_DragKeys.reserve(m_SelectedKeys.size());
+            for (const SelectedKey& selectedKey : m_SelectedKeys)
+            {
+                if (selectedKey.Channel < 0 || static_cast<size_t>(selectedKey.Channel) >= m_Clip->GetChannels().size())
+                    continue;
+                const AnimChannel& dragCh = m_Clip->GetChannels()[static_cast<size_t>(selectedKey.Channel)];
+                const int selectedIndex = FindKeyIndexForTime(dragCh, selectedKey.KeyTime);
+                if (selectedIndex < 0)
+                    continue;
+                const float t = dragCh.keys[static_cast<size_t>(selectedIndex)].time;
+                const float v = GetChannelComponentValue(dragCh, dragCh.keys[static_cast<size_t>(selectedIndex)], m_SelectedComponent);
+                m_DragKeys.push_back({selectedKey.Channel, t, v, t, v});
+            }
+        };
+
+        if (selectionBounds.Valid &&
+            localX >= selectionBounds.TimeHandleLeft && localX <= selectionBounds.TimeHandleRight &&
+            localY >= selectionBounds.TimeHandleTop && localY <= selectionBounds.TimeHandleBottom &&
+            m_OnKeyframeEdited && m_SelectedKeys.size() >= 2u)
+        {
+            m_ScalingSelectionTime = true;
+            m_ScalingSelectionValue = false;
+            m_ScaleAnchorTime = selectionBounds.MinTime;
+            m_ScaleInitialDuration = std::max(0.001f, selectionBounds.MaxTime - selectionBounds.MinTime);
+            buildScaleDragKeys();
+            if (m_OnEditStarted)
+                m_OnEditStarted(EditGesture::Keyframe);
+            e.Capture(this);
+            e.Stop();
+            return;
+        }
+        if (selectionBounds.Valid &&
+            localX >= selectionBounds.ValueHandleLeft && localX <= selectionBounds.ValueHandleRight &&
+            localY >= selectionBounds.ValueHandleTop && localY <= selectionBounds.ValueHandleBottom &&
+            m_OnKeyframeEdited && m_SelectedKeys.size() >= 2u)
+        {
+            m_ScalingSelectionTime = false;
+            m_ScalingSelectionValue = true;
+            m_ScaleValueFromBottom = false;
+            m_ScaleAnchorValue = 0.5f * (selectionBounds.MinValue + selectionBounds.MaxValue);
+            m_ScaleInitialValueExtent = std::max(0.001f, selectionBounds.MaxValue - m_ScaleAnchorValue);
+            buildScaleDragKeys();
+            if (m_OnEditStarted)
+                m_OnEditStarted(EditGesture::Keyframe);
+            e.Capture(this);
+            e.Stop();
+            return;
+        }
+        if (selectionBounds.Valid &&
+            localX >= selectionBounds.LeftTimeHandleLeft && localX <= selectionBounds.LeftTimeHandleRight &&
+            localY >= selectionBounds.LeftTimeHandleTop && localY <= selectionBounds.LeftTimeHandleBottom &&
+            m_OnKeyframeEdited && m_SelectedKeys.size() >= 2u)
+        {
+            m_ScalingSelectionTime = true;
+            m_ScalingSelectionValue = false;
+            m_ScaleTimeFromRight = true;
+            m_ScaleAnchorTime = selectionBounds.MaxTime;
+            m_ScaleInitialDuration = std::max(0.001f, selectionBounds.MaxTime - selectionBounds.MinTime);
+            buildScaleDragKeys();
+            if (m_OnEditStarted)
+                m_OnEditStarted(EditGesture::Keyframe);
+            e.Capture(this);
+            e.Stop();
+            return;
+        }
+        if (selectionBounds.Valid &&
+            localX >= selectionBounds.BottomValueHandleLeft && localX <= selectionBounds.BottomValueHandleRight &&
+            localY >= selectionBounds.BottomValueHandleTop && localY <= selectionBounds.BottomValueHandleBottom &&
+            m_OnKeyframeEdited && m_SelectedKeys.size() >= 2u)
+        {
+            m_ScalingSelectionTime = false;
+            m_ScalingSelectionValue = true;
+            m_ScaleValueFromBottom = true;
+            m_ScaleAnchorValue = selectionBounds.MaxValue;
+            m_ScaleInitialValueExtent = std::max(0.001f, selectionBounds.MaxValue - selectionBounds.MinValue);
+            buildScaleDragKeys();
+            if (m_OnEditStarted)
+                m_OnEditStarted(EditGesture::Keyframe);
+            e.Capture(this);
+            e.Stop();
+            return;
+        }
 
         // Hit-test keys on all visible channels and all drawn components first.
         // Keyframes take precedence over handles (tested below) when both are near.
@@ -2672,7 +2458,7 @@ bool CurvesGraphView::HandleLeftMouseDownOnCurves(UIEvent& e, const PointerEvent
                 m_HandleDragStartY = localY;
                 e.Capture(this);
                 e.Stop();
-                return true;
+                return;
             }
         }
 
@@ -2685,6 +2471,24 @@ bool CurvesGraphView::HandleLeftMouseDownOnCurves(UIEvent& e, const PointerEvent
             localX >= selectionBounds.ValueHandleLeft && localX <= selectionBounds.ValueHandleRight &&
             localY >= selectionBounds.ValueHandleTop && localY <= selectionBounds.ValueHandleBottom;
 
+        auto buildDragKeysFromSelection = [&]()
+        {
+            m_DragKeys.clear();
+            m_DragKeys.reserve(m_SelectedKeys.size());
+            for (const SelectedKey& selectedKey : m_SelectedKeys)
+            {
+                if (selectedKey.Channel < 0 || static_cast<size_t>(selectedKey.Channel) >= m_Clip->GetChannels().size())
+                    continue;
+                const AnimChannel& dragCh = m_Clip->GetChannels()[static_cast<size_t>(selectedKey.Channel)];
+                const int selectedIndex = FindKeyIndexForTime(dragCh, selectedKey.KeyTime);
+                if (selectedIndex < 0)
+                    continue;
+                const float t = dragCh.keys[static_cast<size_t>(selectedIndex)].time;
+                const float v = GetChannelComponentValue(dragCh, dragCh.keys[static_cast<size_t>(selectedIndex)], m_SelectedComponent);
+                m_DragKeys.push_back({selectedKey.Channel, t, v, t, v});
+            }
+        };
+
         if (hitKeyIndex < 0 && selectionBounds.Valid && m_OnKeyframeEdited && !m_SelectedKeys.empty() &&
             !inTimeScaleZoneCurves && !inValueScaleZoneCurves &&
             localX >= selectionBounds.Left && localX <= selectionBounds.Right &&
@@ -2692,7 +2496,7 @@ bool CurvesGraphView::HandleLeftMouseDownOnCurves(UIEvent& e, const PointerEvent
         {
             const float pointerTime =
                 std::clamp(m_RangeStart + (clampedLocalX / W) * rangeDuration, m_RangeStart, m_RangeEnd);
-            const float valueAlpha = 1.0f - std::clamp(localY / H, 0.0f, 1.0f);
+            const float valueAlpha = 1.0f - Math::Clamp01(localY / H);
             const float pointerValue = m_ValueMin + valueAlpha * valueRange;
             m_SelectedKeyTime = m_SelectedKeys.front().KeyTime;
             m_SelectedKeyIndex = -1;
@@ -2703,11 +2507,11 @@ bool CurvesGraphView::HandleLeftMouseDownOnCurves(UIEvent& e, const PointerEvent
             m_DragStartLocalX = localX;
             m_DragStartLocalY = localY;
             m_DragConstrained = (e.Mods & Input::kModShift) != 0;
-            BuildDragKeysFromSelection();
+            buildDragKeysFromSelection();
             e.Capture(this);
             MarkDirty(VisualDirty);
             e.Stop();
-            return true;
+            return;
         }
 
         if (hitKeyIndex >= 0 && m_OnKeyframeEdited)
@@ -2730,7 +2534,7 @@ bool CurvesGraphView::HandleLeftMouseDownOnCurves(UIEvent& e, const PointerEvent
                 if (m_OnSelectionChanged) m_OnSelectionChanged();
                 MarkDirty(VisualDirty);
                 e.Stop();
-                return true;
+                return;
             }
             if (!shiftHeld)
             {
@@ -2752,7 +2556,7 @@ bool CurvesGraphView::HandleLeftMouseDownOnCurves(UIEvent& e, const PointerEvent
             m_DragStartLocalX = localX;
             m_DragStartLocalY = localY;
             m_DragConstrained = (e.Mods & Input::kModShift) != 0;
-            BuildDragKeysFromSelection();
+            buildDragKeysFromSelection();
             e.Capture(this);
             if (m_OnKeyframeSelected)
             {
@@ -2763,20 +2567,9 @@ bool CurvesGraphView::HandleLeftMouseDownOnCurves(UIEvent& e, const PointerEvent
             }
             MarkDirty(VisualDirty);
             e.Stop();
-            return true;
+            return;
         }
     }
-    return false;
-}
-
-bool CurvesGraphView::HandleLeftMouseDownOnBackground(UIEvent& e, const PointerEventState& pointer)
-{
-    const float W = pointer.Width;
-    const float localX = pointer.LocalX;
-    const float localY = pointer.LocalY;
-    const float rangeDuration = pointer.RangeDuration;
-    const bool shiftHeld = pointer.ShiftHeld;
-    const bool controlHeld = pointer.ControlHeld;
     if (e.Id == kEventMouseDown && e.Button == 0 && W > 0.0f)
     {
         const float clickTime = m_RangeStart + (localX / W) * rangeDuration;
@@ -2825,10 +2618,10 @@ bool CurvesGraphView::HandleLeftMouseDownOnBackground(UIEvent& e, const PointerE
                 e.Capture(this);
                 MarkDirty(VisualDirty);
                 e.Stop();
-                return true;
+                return;
             }
             e.Stop();
-            return true;
+            return;
         }
 
         if (!shiftHeld && !controlHeld)
@@ -2850,17 +2643,7 @@ bool CurvesGraphView::HandleLeftMouseDownOnBackground(UIEvent& e, const PointerE
         e.Capture(this);
         e.Stop();
     }
-    return false;
-}
 
-bool CurvesGraphView::HandleRightMouseButton(UIEvent& e, const PointerEventState& pointer)
-{
-    const float W = pointer.Width;
-    const float H = pointer.Height;
-    const float localX = pointer.LocalX;
-    const float clampedLocalX = pointer.ClampedLocalX;
-    const float localY = pointer.LocalY;
-    const float rangeDuration = pointer.RangeDuration;
     // Right-click on background: start scrubbing. Right-click on keyframe: context menu on release.
     if (e.Id == kEventMouseDown && e.Button == 1 && W > 0.0f && H > 0.0f)
     {
@@ -2905,7 +2688,7 @@ bool CurvesGraphView::HandleRightMouseButton(UIEvent& e, const PointerEventState
         t = std::clamp(t, m_RangeStart, m_RangeEnd);
         m_OnSeekToTime(t);
         e.Stop();
-        return true;
+        return;
     }
 
     // Right-click on keyframe: context menu on mouse-up (only when not scrubbing).
@@ -2917,7 +2700,7 @@ bool CurvesGraphView::HandleRightMouseButton(UIEvent& e, const PointerEventState
         if (wasScrubbing)
         {
             e.Stop();
-            return true;
+            return;
         }
         int hitChannel = -1;
         float hitKeyTime = -1.0f;
@@ -2955,19 +2738,8 @@ bool CurvesGraphView::HandleRightMouseButton(UIEvent& e, const PointerEventState
             e.Stop();
         }
     }
-    return false;
-}
 
-// Hover detection — runs on any mouse move when no drag/pan/seek is active.
-void CurvesGraphView::UpdateHover(const UIEvent& e, const PointerEventState& pointer)
-{
-    const float W = pointer.Width;
-    const float H = pointer.Height;
-    const float localX = pointer.LocalX;
-    const float localY = pointer.LocalY;
-    const float rangeDuration = pointer.RangeDuration;
-    const float valueRange = pointer.ValueRange;
-    const SelectionBounds& selectionBounds = pointer.Bounds;
+    // Hover detection — runs on any mouse move when no drag/pan/seek is active.
     if (e.Id == kEventMouseMove &&
         !m_DraggingKey && !m_DraggingInHandle && !m_DraggingOutHandle &&
         !m_ScalingSelectionTime && !m_ScalingSelectionValue &&
@@ -3065,10 +2837,7 @@ void CurvesGraphView::UpdateHover(const UIEvent& e, const PointerEventState& poi
             MarkDirty(VisualDirty);
         }
     }
-}
 
-void CurvesGraphView::ClearHoverOnMouseLeave(const UIEvent& e)
-{
     if (e.Id == kEventMouseLeave)
     {
         if (m_HoverKeyChannel >= 0 || m_HoverInHandle || m_HoverOutHandle ||
@@ -4002,10 +3771,10 @@ void CurvesGraphView::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx,
     {
         const float vRange = std::max(1e-6f, m_ValueMax - m_ValueMin);
         auto sampleX = [&](float t) {
-            return x + std::clamp((t - m_RangeStart) / std::max(1e-6f, m_RangeEnd - m_RangeStart), 0.0f, 1.0f) * W;
+            return x + Math::Clamp01((t - m_RangeStart) / std::max(1e-6f, m_RangeEnd - m_RangeStart)) * W;
         };
         auto sampleY = [&](float v) {
-            return y + (1.0f - std::clamp((v - m_ValueMin) / vRange, 0.0f, 1.0f)) * H;
+            return y + (1.0f - Math::Clamp01((v - m_ValueMin) / vRange)) * H;
         };
         const uint32_t strokeCol = PackColor(1.0f, 0.85f, 0.30f, 0.95f);
         const float thickness = 2.0f * cs;

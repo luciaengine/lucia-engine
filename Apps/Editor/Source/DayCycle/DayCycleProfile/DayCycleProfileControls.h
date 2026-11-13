@@ -24,13 +24,15 @@ class UndoRedoService;
 /// active. `onChoose` is called with the view clicked.
 void AddDayCycleAxisToggle(UIElement& parent, DayCycleAxisView view, std::function<void(DayCycleAxisView)> onChoose);
 
-/// Adds Save, or Save a copy to the project for shipped assets, with status text.
-/// A saved copy becomes the window's working copy and calls `onCopied` with its path.
-/// Returns the group containing the status and button.
+/// Save for a project profile, Save a copy to the project for one the editor or a package ships,
+/// with the unsaved mark and the outcome in a caption beside it. A copy's working copy becomes the
+/// one the Day Cycle window shows, and `onCopied` is called with its path. Returns the group that
+/// holds the caption and Save.
 UIElement& AddDayCycleSaveButton(UIElement& parent, const std::shared_ptr<DayCycleWorkingCopy>& profile,
                            std::function<void(const std::filesystem::path&)> onCopied);
 
-/// A dropdown of shipped presets. Loading tracks is one undo step; the profile keeps its name and description.
+/// The presets: one button per shipped profile, which loads that profile's tracks into this one as
+/// one undo step. The name and the description stay this profile's.
 void AddDayCyclePresets(UIElement& parent, AssetManager& assets, const std::shared_ptr<DayCycleWorkingCopy>& profile,
                         UndoRedoService* undo);
 

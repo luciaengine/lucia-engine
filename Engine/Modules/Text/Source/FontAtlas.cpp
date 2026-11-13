@@ -45,43 +45,7 @@ namespace Text
 // Out-of-line so the ShapedWidthCachePtr member destroys where ShapedWidthCache
 // is a complete type (defined in FontAtlas_Internal.h; the public header only
 // forward-declares it).
-FontAtlas::FontAtlas() : m_TextShaper(std::make_unique<TextShaper>()) {}
 FontAtlas::~FontAtlas() = default;
-
-void FontAtlas::InvalidateShaping()
-{
-    ++m_LayoutRevision;
-    if (m_ShapedWidthCache)
-    {
-        std::lock_guard lock(m_ShapedWidthCache->Mutex);
-        m_ShapedWidthCache->Map.clear();
-    }
-}
-
-bool FontAtlas::SetFallbackFonts(std::vector<std::filesystem::path> fonts)
-{
-#if defined(GE_HAVE_FREETYPE)
-    if (m_FtFace.IsValid()) return false;
-#endif
-    if (!m_TextShaper->SetFallbackFonts(std::move(fonts))) return false;
-    InvalidateShaping();
-    return true;
-}
-
-bool FontAtlas::SetTextLanguage(std::string_view language)
-{
-    const auto revision = m_TextShaper->GetRevision();
-    if (!m_TextShaper->SetLanguage(language)) return false;
-    if (revision != m_TextShaper->GetRevision()) InvalidateShaping();
-    return true;
-}
-
-#if defined(GE_HAVE_FREETYPE)
-FT_Face FontAtlas::ResolveGlyphFace(uint32_t& glyphId) const
-{
-    return m_TextShaper->ResolveGlyphFace(m_FtFace.Face(), glyphId);
-}
-#endif
 
 void ShapedWidthCacheDeleter::operator()(ShapedWidthCache* cache) const
 {
@@ -103,9 +67,6 @@ static uint32_t fnv1a_32(const void* data, size_t len)
 uint32_t FontAtlas::ComputeAtlasIdFromBytes(const void* data, size_t size, unsigned pixelSize) const
 {
     uint32_t h = fnv1a_32(data, size);
-    const uint64_t fallbackIdentity = m_TextShaper->GetFallbackIdentity();
-    if (fallbackIdentity != 0)
-        h ^= fnv1a_32(&fallbackIdentity, sizeof(fallbackIdentity));
     h ^= pixelSize + 0x9e3779b9 + (h << 6) + (h >> 2);
     return h;
 }
@@ -119,7 +80,6 @@ bool FontAtlas::LoadFontBytes(const unsigned char* bytes, size_t size, unsigned 
     return false;
 #else
     m_AtlasPixelSize = pixelSize;
-    InvalidateShaping();
 
     // Cached widths were shaped with the old bytes/pixel size.
     if (!m_ShapedWidthCache)
@@ -181,7 +141,7 @@ bool FontAtlas::LoadFontBytes(const unsigned char* bytes, size_t size, unsigned 
 // untracked glyph runs are not the same run.
 // Returns the geometry scale factor (pixelSize / atlasPixelSize).
 float FontAtlas::ShapeGlyphs(std::string_view utf8, float pixelSize, bool preferFastAscii,
-                             ShapingOutput& out, float letterSpacingPx, size_t begin, size_t end)
+                             ShapingOutput& out, float letterSpacingPx)
 {
     out.Clear();
 
@@ -228,10 +188,42 @@ float FontAtlas::ShapeGlyphs(std::string_view utf8, float pixelSize, bool prefer
     const bool allowFastAscii = preferFastAscii && isSimpleAscii(utf8);
     if (m_HbFont.Get() && !allowFastAscii)
     {
-        m_TextShaper->Shape(m_FtLib, m_FtFace, m_HbFont, utf8, atlasSize, out, lsAtlas, begin, end);
-        // An empty styled range may contain only the continuation of a
-        // grapheme owned by another span. Do not emit byte-fallback glyphs.
-        return geometryScale;
+        hb_buffer_t* s_HbBuf = Detail::GetThreadLocalHBBuffer();
+        hb_buffer_add_utf8(s_HbBuf, utf8.data(), (int)utf8.size(), 0, (int)utf8.size());
+        Detail::HBDirScript r = Detail::DetectDirScriptUtf8(utf8);
+        if (r.script != HB_SCRIPT_INVALID)
+        {
+            hb_buffer_set_direction(s_HbBuf, r.dir);
+            hb_buffer_set_script(s_HbBuf, r.script);
+            if (r.lang)
+                hb_buffer_set_language(s_HbBuf, hb_language_from_string(r.lang, -1));
+            out.isRTL = (r.dir == HB_DIRECTION_RTL);
+        }
+        else
+        {
+            hb_buffer_guess_segment_properties(s_HbBuf);
+            out.isRTL = (hb_buffer_get_direction(s_HbBuf) == HB_DIRECTION_RTL);
+        }
+        hb_feature_t features[2];
+        const unsigned featureCount = Detail::LetterSpacingFeatures(letterSpacingPx, features);
+        hb_shape(m_HbFont.Get(), s_HbBuf, featureCount ? features : nullptr, featureCount);
+        unsigned count = 0;
+        const hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(s_HbBuf, &count);
+        const hb_glyph_info_t* infos = hb_buffer_get_glyph_infos(s_HbBuf, &count);
+        out.Reserve(count);
+        for (unsigned i = 0; i < count; ++i)
+        {
+            out.glyphIds.push_back(infos[i].codepoint);
+            float adv = pos[i].x_advance / 64.0f;
+            // Tracking on the last glyph of each cluster, the run's final
+            // cluster included: the advance the caller lays out with must be
+            // the same advance the measure path reports.
+            if (i + 1 == count || infos[i + 1].cluster != infos[i].cluster)
+                adv += lsAtlas;
+            out.xAdv.push_back(adv);
+            out.xOff.push_back(pos[i].x_offset / 64.0f);
+            out.yOff.push_back(pos[i].y_offset / 64.0f);
+        }
     }
 #endif
     // ASCII fast path
@@ -333,13 +325,6 @@ float FontAtlas::ShapeGlyphs(std::string_view utf8, float pixelSize, bool prefer
 void FontAtlas::ShapeText(std::string_view utf8, float pixelSize, ShapeResult& out,
                           uint32_t color, float letterSpacingPx)
 {
-    ShapeTextRange(utf8, 0, utf8.size(), pixelSize, out, color, letterSpacingPx);
-}
-
-void FontAtlas::ShapeTextRange(std::string_view utf8, size_t begin, size_t end,
-                               float pixelSize, ShapeResult& out, uint32_t color,
-                               float letterSpacingPx)
-{
     out.Clear();
 #if !defined(GE_HAVE_FREETYPE)
     (void)utf8;
@@ -353,7 +338,7 @@ void FontAtlas::ShapeTextRange(std::string_view utf8, size_t begin, size_t end,
 
     const unsigned rasterPx = RasterPixelSize(pixelSize);
     static thread_local ShapingOutput shaped;
-    const float geometryScale = ShapeGlyphs(utf8, pixelSize, false, shaped, letterSpacingPx, begin, end);
+    const float geometryScale = ShapeGlyphs(utf8, pixelSize, false, shaped, letterSpacingPx);
     const unsigned atlasSize = (m_AtlasPixelSize > 0) ? m_AtlasPixelSize : rasterPx;
 
     // Line metrics (in render pixels) — the exact design-unit metrics, not
@@ -372,6 +357,7 @@ void FontAtlas::ShapeTextRange(std::string_view utf8, size_t begin, size_t end,
     const auto& xAdv = shaped.xAdv;
     const auto& xOff = shaped.xOff;
     const auto& yOff = shaped.yOff;
+    const bool isRTL = shaped.isRTL;
 
     // Partition glyphs into field vs color and ensure atlas contains them.
     // Thread-local vectors avoid per-call heap allocation.
@@ -380,18 +366,15 @@ void FontAtlas::ShapeTextRange(std::string_view utf8, size_t begin, size_t end,
     fieldIds.clear();
     colorIds.clear();
     bool faceHasColor = FT_HAS_COLOR(m_FtFace.Face());
-    faceHasColor |= m_TextShaper->HasColorFallback();
     if (faceHasColor)
     {
         fieldIds.reserve(glyphIds.size());
         for (uint32_t gid : glyphIds)
         {
             if (gid == 0) { fieldIds.push_back(gid); continue; }
-            uint32_t faceGlyph = gid;
-            FT_Face glyphFace = ResolveGlyphFace(faceGlyph);
-            if (glyphFace && FT_Load_Glyph(glyphFace, faceGlyph, FT_LOAD_COLOR | FT_LOAD_RENDER) == 0)
+            if (FT_Load_Glyph(m_FtFace.Face(), gid, FT_LOAD_COLOR | FT_LOAD_RENDER) == 0)
             {
-                FT_GlyphSlot g = glyphFace->glyph;
+                FT_GlyphSlot g = m_FtFace.Face()->glyph;
                 if (g->bitmap.pixel_mode == FT_PIXEL_MODE_BGRA && g->bitmap.width > 0 && g->bitmap.rows > 0)
                 { colorIds.push_back(gid); continue; }
             }
@@ -415,6 +398,39 @@ void FontAtlas::ShapeTextRange(std::string_view utf8, size_t begin, size_t end,
 
     // Em-to-screen conversion uses the requested fractional render size.
     const float emScale = std::max(1.0f, pixelSize);
+
+    // Compute RTL shift (only needed for RTL text)
+    float runMinX = 1e30f, runMaxX = -1e30f;
+    if (isRTL)
+    {
+        float pen = 0.0f;
+        for (size_t i = 0; i < glyphIds.size(); ++i)
+        {
+            uint32_t gid = glyphIds[i];
+            const SlugGlyphInfo* slugInfo = nullptr;
+            { auto it = m_SlugGlyphs.find(gid); if (it != m_SlugGlyphs.end()) slugInfo = &it->second; }
+            const GlyphInfo* colorInfo = nullptr;
+            { auto it = m_ColorGlyphsById.find(gid); if (it != m_ColorGlyphsById.end()) colorInfo = &it->second; }
+            if (slugInfo && slugInfo->HBandCount > 0)
+            {
+                float gx0Local = pen + xOff[i] + slugInfo->EmXMin * emScale / geometryScale;
+                float gx1Local = pen + xOff[i] + slugInfo->EmXMax * emScale / geometryScale;
+                runMinX = std::min(runMinX, gx0Local);
+                runMaxX = std::max(runMaxX, gx1Local);
+            }
+            else if (colorInfo)
+            {
+                float gx0Local = pen + xOff[i] + colorInfo->bearingX;
+                float gx1Local = gx0Local + colorInfo->width;
+                runMinX = std::min(runMinX, gx0Local);
+                runMaxX = std::max(runMaxX, gx1Local);
+            }
+            pen += xAdv[i];
+        }
+        if (!(runMinX < runMaxX)) { runMinX = 0.0f; runMaxX = 0.0f; }
+    }
+    // RTL extent is in atlas-size pixels; scale to render pixels.
+    const float rtlShift = isRTL ? (-runMaxX * geometryScale) : 0.0f;
 
     // Y-down: baselineY is ascender below the top-left origin
     const float baselineY = out.metrics.ascender;
@@ -440,8 +456,8 @@ void FontAtlas::ShapeTextRange(std::string_view utf8, size_t begin, size_t end,
             continue;
         }
 
-        float baseX = penX + xOff[i] * geometryScale;
-        float baseY_glyph = baselineY - yOff[i] * geometryScale;
+        float baseX = rtlShift + penX + xOff[i] * geometryScale;
+        float baseY_glyph = baselineY + yOff[i] * geometryScale;
 
         GlyphPlacement gp{};
         gp.color = color;
@@ -508,20 +524,6 @@ void FontAtlas::ShapeTextRange(std::string_view utf8, size_t begin, size_t end,
     }
 
     out.metrics.width = penX;
-    if (shaped.baseXAdv.size() == glyphIds.size())
-    {
-        float advance = 0.0f;
-        size_t clusters = 0;
-        for (size_t i = 0; i < glyphIds.size(); ++i)
-        {
-            advance += shaped.baseXAdv[i];
-            if (i + 1 == glyphIds.size() || shaped.clusterStart[i + 1] != shaped.clusterStart[i])
-                ++clusters;
-        }
-        // Add tracking once in render space; atlas-space add/subtract roundoff
-        // must not cross a layout engine's subpixel rounding boundary.
-        out.metrics.width = advance * geometryScale + clusters * letterSpacingPx;
-    }
 #endif
 }
 
@@ -557,10 +559,6 @@ bool FontAtlas::MultiPageAddColorGlyphs(const std::vector<uint32_t>& glyphIds, u
             continue;
         if (m_ColorGlyphsById.find(gid) != m_ColorGlyphsById.end())
             continue;
-        uint32_t faceGlyph = gid;
-        FT_Face glyphFace = ResolveGlyphFace(faceGlyph);
-        if (!glyphFace || FT_Set_Pixel_Sizes(glyphFace, 0, pixelSize) != 0)
-            continue;
         // Prefer COLR/CPAL vector color if available; otherwise fall back to bitmap BGRA
         // COLR/CPAL path: composite layers into a single RGBA tile at the requested pixel size
         {
@@ -568,22 +566,22 @@ bool FontAtlas::MultiPageAddColorGlyphs(const std::vector<uint32_t>& glyphIds, u
             std::memset(&it, 0, sizeof(it));
             FT_UInt layerGlyph = 0;
             FT_UInt colorIndex = 0;
-            bool hasLayers = FT_Get_Color_Glyph_Layer(glyphFace, faceGlyph, &layerGlyph, &colorIndex, &it) != 0;
+            bool hasLayers = FT_Get_Color_Glyph_Layer(m_FtFace.Face(), gid, &layerGlyph, &colorIndex, &it) != 0;
             if (hasLayers)
             {
                 // Select default palette (0); ignore index out parameter
                 FT_Color* palette = nullptr;
-                (void)FT_Palette_Select(glyphFace, 0, &palette);
+                (void)FT_Palette_Select(m_FtFace.Face(), 0, &palette);
                 // First pass: extents
                 int minX = INT_MAX, maxX = INT_MIN, maxTop = 0, maxBottom = 0;
                 std::memset(&it, 0, sizeof(it));
-                while (FT_Get_Color_Glyph_Layer(glyphFace, faceGlyph, &layerGlyph, &colorIndex, &it))
+                while (FT_Get_Color_Glyph_Layer(m_FtFace.Face(), gid, &layerGlyph, &colorIndex, &it))
                 {
-                    if (FT_Load_Glyph(glyphFace, layerGlyph, FT_LOAD_DEFAULT) != 0)
+                    if (FT_Load_Glyph(m_FtFace.Face(), layerGlyph, FT_LOAD_DEFAULT) != 0)
                         continue;
-                    if (FT_Render_Glyph(glyphFace->glyph, FT_RENDER_MODE_NORMAL) != 0)
+                    if (FT_Render_Glyph(m_FtFace.Face()->glyph, FT_RENDER_MODE_NORMAL) != 0)
                         continue;
-                    FT_GlyphSlot lg = glyphFace->glyph;
+                    FT_GlyphSlot lg = m_FtFace.Face()->glyph;
                     int left = (int)lg->bitmap_left;
                     int top = (int)lg->bitmap_top;
                     int w = (int)lg->bitmap.width;
@@ -604,13 +602,13 @@ bool FontAtlas::MultiPageAddColorGlyphs(const std::vector<uint32_t>& glyphIds, u
                 std::vector<uint8_t> rgba((size_t)gw * (size_t)gh * 4, 0);
                 // Second pass: composite
                 std::memset(&it, 0, sizeof(it));
-                while (FT_Get_Color_Glyph_Layer(glyphFace, faceGlyph, &layerGlyph, &colorIndex, &it))
+                while (FT_Get_Color_Glyph_Layer(m_FtFace.Face(), gid, &layerGlyph, &colorIndex, &it))
                 {
-                    if (FT_Load_Glyph(glyphFace, layerGlyph, FT_LOAD_DEFAULT) != 0)
+                    if (FT_Load_Glyph(m_FtFace.Face(), layerGlyph, FT_LOAD_DEFAULT) != 0)
                         continue;
-                    if (FT_Render_Glyph(glyphFace->glyph, FT_RENDER_MODE_NORMAL) != 0)
+                    if (FT_Render_Glyph(m_FtFace.Face()->glyph, FT_RENDER_MODE_NORMAL) != 0)
                         continue;
-                    FT_GlyphSlot lg = glyphFace->glyph;
+                    FT_GlyphSlot lg = m_FtFace.Face()->glyph;
                     int left = (int)lg->bitmap_left;
                     int top = (int)lg->bitmap_top;
                     int w = (int)lg->bitmap.width;
@@ -696,8 +694,8 @@ bool FontAtlas::MultiPageAddColorGlyphs(const std::vector<uint32_t>& glyphIds, u
                 }
                 anyPixelsChanged = true;
                 // Base glyph advance and bearings
-                (void)FT_Load_Glyph(glyphFace, faceGlyph, FT_LOAD_DEFAULT);
-                FT_GlyphSlot gbase = glyphFace->glyph;
+                (void)FT_Load_Glyph(m_FtFace.Face(), gid, FT_LOAD_DEFAULT);
+                FT_GlyphSlot gbase = m_FtFace.Face()->glyph;
                 GlyphInfo gi{};
                 gi.width = (float)gw;
                 gi.height = (float)gh;
@@ -718,9 +716,9 @@ bool FontAtlas::MultiPageAddColorGlyphs(const std::vector<uint32_t>& glyphIds, u
             }
         }
     BITMAP_FALLBACK:
-        if (FT_Load_Glyph(glyphFace, faceGlyph, FT_LOAD_COLOR | FT_LOAD_RENDER) != 0)
+        if (FT_Load_Glyph(m_FtFace.Face(), gid, FT_LOAD_COLOR | FT_LOAD_RENDER) != 0)
             continue;
-        FT_GlyphSlot g = glyphFace->glyph;
+        FT_GlyphSlot g = m_FtFace.Face()->glyph;
         if (g->bitmap.pixel_mode != FT_PIXEL_MODE_BGRA || g->bitmap.width == 0 || g->bitmap.rows == 0)
             continue;
         {

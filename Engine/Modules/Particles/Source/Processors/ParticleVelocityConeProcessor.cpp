@@ -1,6 +1,6 @@
 #include "Particles/Processors/ParticleVelocityConeProcessor.h"
 
-#include "Particles/ParticleStackDocument.h"
+#include "Particles/ParticleStack/ParticleStackDocument.h"
 #include "Processors/ParticleBuiltInProcessors.h"
 #include "Processors/ParticleProcessorOptions.h"
 #include "Processors/ParticleValueSamples.h"

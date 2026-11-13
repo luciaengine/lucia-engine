@@ -1,5 +1,5 @@
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineDescTranslator.h"
+#include "Rendering/Core/Pipeline/PipelineDescTranslator.h"
 #include "Rendering/Core/RenderGraph/RGFullscreen.h"
 #include "Tests/TestUtils.h"
 #include "TestTempDir.h"

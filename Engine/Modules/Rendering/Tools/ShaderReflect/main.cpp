@@ -10,9 +10,9 @@
 #include <span>
 #include <string_view>
 
-#include "Rendering/Materials/ShaderReflection.h"
-#include "Rendering/Materials/ShaderMetaJson.h"
-#include "Rendering/Materials/ShaderMetaValidation.h"
+#include "Rendering/Materials/Shader/ShaderReflection.h"
+#include "Rendering/Materials/Shader/ShaderMetaJson.h"
+#include "Rendering/Materials/Shader/ShaderMetaValidation.h"
 #include "Rendering/ShaderCache/ShaderMetaBinary.h"
 #include "Rendering/ShaderCache/ShaderPackageContainer.h"
 #include <nlohmann/json.hpp>

@@ -7,10 +7,42 @@
 #include <span>
 #include <vector>
 
-// Maps resident height pages to cache slots. Small fields use dense words; larger fields allocate
-// bounded blocks below a dense floor. The CPU mirror and cbt_page.glsl walk the same packed words.
+// The page table of one field (design page-streaming-planets 3.4): the cache slot of every resident
+// page of every level, in the words the GPU reads at binding 22 (CBTLayout.h) and the CPU mirror
+// walks (PagedHeightSampler).
+//
+// A field has one face (a planar terrain) or six (a planet, PageStoreFormat.h's face order). A field
+// whose dense table fits the budget keeps one tier: an entry for every page of every level and face,
+// level-major, then face-major, then row-major. A larger field keeps that dense tier only from its top level
+// down to the floor level whose cumulative entries over every face fit a quarter of the budget. Below the
+// floor, blocks hold one page's descendants for up to six levels, from a mid pool and a leaf pool,
+// and exist only while a page under them is resident. A lookup reads the floor's directory, then
+// each tier's block (its entries, or its directory of the next tier's blocks): at most three
+// dependent reads to 12 levels below the floor. cbt_page.glsl's CBT_PageTableEntry is the same walk.
+//
+// The words: one descriptor of four words per tier (the root level, the block's levels, the block's
+// words, the pool's first word), the dense levels, the floor directory (one block index per floor
+// page of each face, face-major, kNoPageBlock in PageTable.cpp when none), then the pools. A block holds
+// its levels' entries, level k below its root at ((4^k - 4) / 3) on a 2^k x 2^k grid, then, when a tier follows, a
+// directory of 4^levels block indices, one per page of its deepest level. A dense table has no
+// descriptor, directory or pool: its words are the entries alone.
 namespace GameEngine::TerrainECS
 {
+
+/// A run of words: [First, First + Count).
+struct PageWordRange
+{
+    uint32 First = 0;
+    uint32 Count = 0;
+};
+
+/// What changed in a page table since its last ClearChanges.
+struct PageTableChanges
+{
+    bool All = false;                 ///< a reset, or more writes than the table records: every word changed
+    bool Fades = false;               ///< a slot fade changed
+    std::vector<PageWordRange> Words; ///< the written runs of Words(), in write order; runs may overlap
+};
 
 /// What one field's page table may spend.
 struct PageTableBudget
@@ -32,7 +64,15 @@ public:
     /// Sets the entry of a page. A resident page below the floor whose pool is full waits, reading
     /// kNoPage (its first resident ancestor answers), until a block frees.
     void SetEntry(const PageStreaming::PageAddress& page, uint32 entry);
-    void SetSlotFade(uint32 slot, float32 fade) { m_SlotFade[slot] = fade; }
+    void SetSlotFade(uint32 slot, float32 fade)
+    {
+        m_SlotFade[slot] = fade;
+        m_Changes.Fades = true;
+    }
+
+    /// The words and fades written since the last ClearChanges (PackedPageTable patches them).
+    const PageTableChanges& Changes() const { return m_Changes; }
+    void ClearChanges();
 
     /// Appends every page with an entry.
     void AppendResident(std::vector<PageStreaming::PageAddress>& out) const;
@@ -40,6 +80,7 @@ public:
     void TakeLateEntries(std::vector<PageStreaming::PageAddress>& out);
 
     std::span<const PageStreaming::PageStoreLevel> Levels() const { return m_Levels; }
+    uint32 Faces() const { return m_Faces; }
     /// Each level's first word: its dense entries, or its offset inside a block.
     std::span<const uint32> LevelOffsets() const { return m_LevelOffsets; }
     std::span<const uint32> Words() const { return m_Words; }
@@ -89,6 +130,8 @@ private:
     void Remove(const PageStreaming::PageAddress& page);
     void Release(uint32 tier, uint32 block);
     void RetryWaiting();
+    /// Records a write of `count` words from `first`.
+    void MarkChanged(uint32 first, uint32 count);
 
     std::vector<PageStreaming::PageStoreLevel> m_Levels;
     uint32 m_Faces = 1;
@@ -101,6 +144,7 @@ private:
     std::vector<Pool> m_Pools;
     std::vector<Waiting> m_Waiting;
     std::vector<PageStreaming::PageAddress> m_LateEntries;
+    PageTableChanges m_Changes;
 };
 
 } // namespace GameEngine::TerrainECS

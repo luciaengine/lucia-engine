@@ -16,9 +16,13 @@ void CommitGenericEdit(ECS::World& world, UndoRedoService& undo, const std::stri
     if (!undo.CommitPendingEdit())
         return;
     std::vector<GenericEditUndoRecorder> recorders;
-    for (const auto& beforeGenericEdit : EditorComponentTraitsRegistry::Get().BeforeGenericEditHooks())
+    const auto registered = EditorComponentTraitsRegistry::Get().Snapshot();
+    for (const auto& [typeId, traits] : *registered)
     {
-        if (GenericEditUndoRecorder recorder = beforeGenericEdit(world))
+        (void)typeId;
+        if (!traits.BeforeGenericEdit)
+            continue;
+        if (GenericEditUndoRecorder recorder = traits.BeforeGenericEdit(world))
             recorders.push_back(std::move(recorder));
     }
 

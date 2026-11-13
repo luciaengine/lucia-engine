@@ -35,8 +35,8 @@ constexpr EventId HashEvent(std::string_view sv)
 //    ancestors receive their own events via the precomputed hover sets.
 inline constexpr EventId kEventMouseDown = HashEvent("UI.MouseDown");
 inline constexpr EventId kEventMouseUp = HashEvent("UI.MouseUp");
-// The in-flight press ended without a release, because the pointer stream itself ended
-// (UIManager::CancelPress — the Game View viewport the host reads pointer from was left).
+// The in-flight press ended without a release (UIManager::CancelPress): the pointer stream ended
+// (the Game View viewport was left), or Escape or another button cancelled a locked drag.
 // Bubbles like MouseUp and carries the unknown-position sentinel in X/Y, because no
 // release position exists. A control that arms on MouseDown must disarm here and must
 // NOT activate. Deliberately NOT delivered as a MouseUp: subscribers reasonably read a
@@ -242,8 +242,23 @@ static_assert(NamedEventIdsAreDistinct(), "Named event ids must be distinct — 
 struct UIEvent
 {
     EventId Id{0};
+    // The pointer in the CurrentTarget's layout space, in CSS logical px: the
+    // space its layout rect is in. Outside any CSS transform that is the
+    // window point; under one, the window point carried through the inverse
+    // of every transform that applies to the current target, re-expressed at
+    // each bubble step. A handler placing a window-level popup anchors it with
+    // UIElement::GetWindowRect instead. UIManager::kMousePositionUnknown in
+    // both when there is no position (a cancel, or a transform that draws
+    // nothing).
     float X{0.0f};
     float Y{0.0f};
+    // The same pointer in window space, CSS logical px: one value for the whole
+    // dispatch, never re-expressed (the browser's clientX beside offsetX). A
+    // handler that measures across elements (a drag onto another panel, a
+    // ghost, a spawn point) reads these. UIManager::kMousePositionUnknown when
+    // there is no position.
+    float WindowX{0.0f};
+    float WindowY{0.0f};
     int Button{0};
     bool ButtonDown{false};
     int Key{0};

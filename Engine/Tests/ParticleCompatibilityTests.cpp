@@ -6,7 +6,7 @@
 #include "Engine/Rendering/Pipeline/Nodes/TransmissivePassNode.h"
 #include "Engine/Rendering/PrimitiveGenerator.h"
 #include "GPUFogParticles/GPUFogParticlesMaterial.h"
-#include "Particles/ParticleStackDocument.h"
+#include "Particles/ParticleStack/ParticleStackDocument.h"
 #include "Particles/Processors/ParticleEmitRateProcessor.h"
 #include "Particles/Processors/ParticlePropertyProcessor.h"
 #include "Particles/Rendering/ParticleDrawSort.h"

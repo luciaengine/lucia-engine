@@ -18,7 +18,8 @@ namespace GizmoSettingsWiring
     // Wire all gizmo-related callbacks from SettingsPanel to the TransformTool
     // owned by the given SceneViewController.
     // Both parameters must be non-null.
-    void WireGizmoSettings(SceneViewController* sceneController);
+    void WireGizmoSettings(SettingsPanel* settingsPanel,
+                           SceneViewController* sceneController);
 
 } // namespace GizmoSettingsWiring
 

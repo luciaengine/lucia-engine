@@ -149,7 +149,7 @@ void SpriteAnimationSystem::AdvanceAndExtractSprite(ECS::World& world, AssetMana
     const float32 pivotY = frame.HasPivot ? frame.PivotY : sprite.PivotY;
 
     const SpriteQuadPlacement placement =
-        BuildSpriteQuad(worldTransform.matrix, framePixelW / sprite.PixelsPerUnit,
+        BuildSpriteQuad(worldTransform, framePixelW / sprite.PixelsPerUnit,
                         framePixelH / sprite.PixelsPerUnit, pivotX, pivotY,
                         sprite.FlipX, sprite.FlipY);
 
@@ -158,9 +158,9 @@ void SpriteAnimationSystem::AdvanceAndExtractSprite(ECS::World& world, AssetMana
     draw.RenderLayers = sprite.RenderLayers;
     draw.Entity = entity;
     draw.Sorting = ResolveRenderSortingForBatch(world, entity, m_SortingLayers, hasSortingGroups, sortingScanBudget);
+    draw.Center = placement.Center;
     for (int32 i = 0; i < 3; ++i)
     {
-        draw.Center[i] = placement.Center[i];
         draw.AxisX[i] = placement.AxisX[i];
         draw.AxisY[i] = placement.AxisY[i];
     }
@@ -245,9 +245,10 @@ void SpriteAnimationSystem::Update(ECS::World& world, float32 deltaTime)
         const float w=std::abs(u1-u0)*sheet->Width/sprite.PixelsPerUnit;
         const float h=std::abs(v1-v0)*sheet->Height/sprite.PixelsPerUnit;
         if(!std::isfinite(w)||!std::isfinite(h)||w<=0||h<=0)return;
-        const auto placement=BuildSpriteQuad(xf.matrix,w,h,sprite.PivotX,sprite.PivotY,sprite.FlipX,sprite.FlipY);
+        const auto placement=BuildSpriteQuad(xf,w,h,sprite.PivotX,sprite.PivotY,sprite.FlipX,sprite.FlipY);
         draw.Entity=entity;draw.Sorting=ResolveRenderSortingForBatch(world,entity,layers,hasSortingGroups,sortingScanBudget);
-        for(int j=0;j<3;++j){draw.Center[j]=placement.Center[j];draw.AxisX[j]=placement.AxisX[j];draw.AxisY[j]=placement.AxisY[j];}
+        draw.Center=placement.Center;
+        for(int j=0;j<3;++j){draw.AxisX[j]=placement.AxisX[j];draw.AxisY[j]=placement.AxisY[j];}
         draw.UVRect[0]=sprite.FlipX?u1:u0;draw.UVRect[2]=sprite.FlipX?u0:u1;
         draw.UVRect[1]=sprite.FlipY?v1:v0;draw.UVRect[3]=sprite.FlipY?v0:v1;
         draws.push_back(draw);
@@ -270,11 +271,12 @@ void SpriteAnimationSystem::Update(ECS::World& world, float32 deltaTime)
       .Without<ECS::Disabled>().Each([&](ECS::EntityHandle entity,const Components::Light& light,const Components::WorldTransform& xf){
         if(!light.CastsLight||light.Intensity<=0)return;
         if(light.Type!=Components::LightType::Directional && light.Type!=Components::LightType::Point && light.Type!=Components::LightType::Ambient)return;
-        SpriteLight out{};float color[3],intensity;
+        SpriteLightDraw out{};float color[3],intensity;
+        out.Position = xf.GetPosition();
         Components::ResolveLightColorIntensity(light,color,intensity);
-        for(int i=0;i<3;++i){out.PositionType[i]=xf.matrix[12+i];out.DirectionFalloff[i]=xf.matrix[8+i];out.ColorRange[i]=color[i]*intensity;}
-        out.PositionType[3]=float(light.Type);out.ColorRange[3]=std::max(.001f,light.Range);
-        out.DirectionFalloff[3]=float(light.Falloff);
+        for(int i=0;i<3;++i){out.Gpu.DirectionFalloff[i]=xf.Basis[2][i];out.Gpu.ColorRange[i]=color[i]*intensity;}
+        out.Gpu.PositionType[3]=float(light.Type);out.Gpu.ColorRange[3]=std::max(.001f,light.Range);
+        out.Gpu.DirectionFalloff[3]=float(light.Falloff);
         lights.emplace_back(entity.id,out);
       });
     std::sort(lights.begin(),lights.end(),[](const auto& a,const auto& b){return a.first<b.first;});

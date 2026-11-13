@@ -1,7 +1,7 @@
 #include "Inspectors/BoneLOD/BoneLODTreeProvider.h"
 
 #include "Animation/BoneEvaluationPlan.h"
-#include "Animation/SkeletonData.h"
+#include "Animation/Skeleton/SkeletonData.h"
 #include "Types/StringUtils.h"
 
 namespace GameEngine::Editor

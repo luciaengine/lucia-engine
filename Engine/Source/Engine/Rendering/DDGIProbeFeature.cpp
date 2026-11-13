@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <iterator>
 #include <string>
@@ -16,9 +17,12 @@
 #include "Engine/Rendering/IEnvironmentSource.h"  // complete type for GetFeature<ImageBasedLightingFeature>
 #include "Engine/Rendering/ImageBasedLightingFeature.h"
 #include "Engine/Rendering/Pipeline/Nodes/PipelineNodeUtils.h"  // Pipeline::Nodes::Detail::BindStorageImageByName
+#include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Logger/Logger.h"
-#include "Platform/Environment.h"
+#include "Mathematics/Interpolation.h"
+#include "Mathematics/Matrix4x4.h"
+#include "Mathematics/Vector4.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
@@ -26,6 +30,7 @@
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
+#include "Types/Color.h"
 
 namespace GameEngine::Engine::Renderer
 {
@@ -284,15 +289,15 @@ void DDGIProbeFeature::SetActiveVolume(const DDGIVolumeDesc& desc)
     clamped.ChangeThreshold = std::clamp(clamped.ChangeThreshold, 0.5f, 8.0f);
     clamped.SnapAmount = std::clamp(clamped.SnapAmount, 0.0f, 0.9f);
     clamped.NormalBiasScale = std::clamp(clamped.NormalBiasScale, 0.0f, 8.0f);
-    clamped.ChebyshevStrength = std::clamp(clamped.ChebyshevStrength, 0.0f, 1.0f);
-    clamped.ClassifyStrength = std::clamp(clamped.ClassifyStrength, 0.0f, 1.0f);
+    clamped.ChebyshevStrength = Math::Clamp01(clamped.ChebyshevStrength);
+    clamped.ClassifyStrength = Math::Clamp01(clamped.ClassifyStrength);
     clamped.SkyIntensity = std::max(clamped.SkyIntensity, 0.0f);
     // Floored above 0 on purpose: the blend kernel raises each ray's cosine
     // weight to this power, and pow(0, 0) is 1 — a zero exponent would give
     // every backfacing ray full authority over the depth moments.
     clamped.DepthSharpness = std::clamp(clamped.DepthSharpness, 0.01f, 200.0f);
-    clamped.FilterStrength = std::clamp(clamped.FilterStrength, 0.0f, 1.0f);
-    clamped.FilterSmoothness = std::clamp(clamped.FilterSmoothness, 0.0f, 1.0f);
+    clamped.FilterStrength = Math::Clamp01(clamped.FilterStrength);
+    clamped.FilterSmoothness = Math::Clamp01(clamped.FilterSmoothness);
     // Serialized as a raw int32; an out-of-table value degrades to the
     // nearest valid scale rather than an undefined resolve extent.
     clamped.GlossyResolveScale =
@@ -312,9 +317,9 @@ void DDGIProbeFeature::SetActiveVolume(const DDGIVolumeDesc& desc)
     const bool placementChanged = clamped.ProbePlacement != m_Volume.ProbePlacement;
     const bool shapeChanged =
         !m_Volume.Enabled != !clamped.Enabled || clamped.ProbesLongAxis != m_Volume.ProbesLongAxis ||
-        std::memcmp(clamped.GridSizeWS, m_Volume.GridSizeWS, sizeof(clamped.GridSizeWS)) != 0;
+        std::memcmp(clamped.GridSizeWS.v, m_Volume.GridSizeWS.v, sizeof(clamped.GridSizeWS.v)) != 0;
     const bool movedAtAll =
-        std::memcmp(clamped.GridMinWS, m_Volume.GridMinWS, sizeof(clamped.GridMinWS)) != 0;
+        std::memcmp(clamped.GridMinWS.v, m_Volume.GridMinWS.v, sizeof(clamped.GridMinWS.v)) != 0;
 
     // A pure TRANSLATION does not invalidate the field. Probe storage slots are
     // keyed on absolute world cell modulo resolution (Includes/ddgi_common.glsl),
@@ -419,27 +424,29 @@ void DDGIProbeFeature::LoadKernelsIfNeeded()
     LoadKernel("Shaders/ddgi_map_atlas_blit.shaderpkg", m_MapBlit, "DDGI.MapBlit");
 }
 
-void DDGIProbeFeature::ComputeVolumeHalfExtents(const float worldMatrix[16], float outHalfExtents[3])
+Mathematics::Vector3 DDGIProbeFeature::ComputeVolumeHalfExtents(const Mathematics::Matrix4x4& worldMatrix)
 {
     // Column-major: columns 0/1/2 are the transform's basis vectors, whose
     // lengths are the per-axis scale (rotation is a unit-length rotation of
     // each column, so taking the length drops it — which is what v1's
     // world-axis-aligned grid wants). Unit cube => half-extent 0.5 * scale.
+    Mathematics::Vector3 halfExtents;
     for (int axis = 0; axis < 3; ++axis)
     {
-        const float x = worldMatrix[axis * 4 + 0];
-        const float y = worldMatrix[axis * 4 + 1];
-        const float z = worldMatrix[axis * 4 + 2];
+        const float x = worldMatrix[axis][0];
+        const float y = worldMatrix[axis][1];
+        const float z = worldMatrix[axis][2];
         const float scale = std::sqrt(x * x + y * y + z * z);
         // A collapsed or mirrored transform would otherwise give an empty or
         // inverted grid; clamp to something small but positive so the volume
         // stays well-formed and visibly tiny rather than silently absent.
-        outHalfExtents[axis] = std::max(scale * 0.5f, 1.0e-3f);
+        halfExtents[axis] = std::max(scale * 0.5f, 1.0e-3f);
     }
+    return halfExtents;
 }
 
 Mathematics::Vector3 DDGIProbeFeature::SnapCentreToProbeGrid(const Mathematics::Vector3& cameraWS,
-                                                             const float gridSizeWS[3],
+                                                             const Mathematics::Vector3& gridSizeWS,
                                                              int32_t probesLongAxis)
 {
     int32_t probeCount[3];
@@ -457,7 +464,7 @@ Mathematics::Vector3 DDGIProbeFeature::SnapCentreToProbeGrid(const Mathematics::
     return snapped;
 }
 
-void DDGIProbeFeature::ComputeProbeGridLayout(const float gridSizeWS[3], int32_t probesLongAxis,
+void DDGIProbeFeature::ComputeProbeGridLayout(const Mathematics::Vector3& gridSizeWS, int32_t probesLongAxis,
                                               int32_t outCounts[3])
 {
     // Longest-axis-gets-probesLongAxis, others scaled by aspect (matches the
@@ -482,7 +489,8 @@ namespace
 // sharing C0's center. Pure function of the volume desc; called from both
 // DeclareProbePasses (to size/place C1's dispatch) and UploadVolumeDataFine
 // (to fill the consumer's DDGIVolumeData UBO) so the two never drift apart.
-void ComputeFineCascadeBounds(const DDGIVolumeDesc& volume, float outMinWS[3], float outSizeWS[3])
+void ComputeFineCascadeBounds(const DDGIVolumeDesc& volume, Mathematics::Vector3& outMinWS,
+                              Mathematics::Vector3& outSizeWS)
 {
     for (int i = 0; i < 3; ++i)
     {
@@ -495,7 +503,7 @@ void ComputeFineCascadeBounds(const DDGIVolumeDesc& volume, float outMinWS[3], f
 
 }  // namespace
 
-bool DDGIProbeFeature::EnsureCascadeGpuResources(CascadeGrid& grid, const float gridSizeWS[3],
+bool DDGIProbeFeature::EnsureCascadeGpuResources(CascadeGrid& grid, const Mathematics::Vector3& gridSizeWS,
                                                  int32_t probesLongAxis, int32_t rawRaysPerProbe,
                                                  int32_t depthTile, float deltaTimeSeconds,
                                                  const CascadeDebugNames& names)
@@ -692,7 +700,8 @@ void DDGIProbeFeature::ReleaseCascadeGpuResources(CascadeGrid& grid)
 }
 
 void DDGIProbeFeature::DispatchClear(Rendering::RenderGraph::RGFrame& frame, Rendering::BufferHandle target,
-                                     uint32_t elementCount, const float fillValue[4], const char* passName)
+                                     uint32_t elementCount, const Mathematics::Vector4& fillValue,
+                                     const char* passName)
 {
     namespace RG = Rendering::RenderGraph;
     // A clear is a WRITER of the buffer its consumers read this frame. Phase is
@@ -734,9 +743,8 @@ void DDGIProbeFeature::DispatchClear(Rendering::RenderGraph::RGFrame& frame, Ren
     const std::string debugNameOwned = passName;
     frame.AddComputePass(
         passName, Rendering::PassPhase::kEarlySetup,
-        [targetRG, &clearPipe](RG::RGPassBuilder& p)
+        [targetRG](RG::RGPassBuilder& p)
         {
-            p.UsePipeline(clearPipe);
             p.PreventCulling();
             p.Write(targetRG, RG::RGBufferWrite::Storage);
         },
@@ -793,8 +801,9 @@ size_t DDGIProbeFeature::GetVolumeDataSize()
     return sizeof(VolumeDataUBO);
 }
 
-Rendering::BufferHandle DDGIProbeFeature::UploadCascadeVolumeData(CascadeGrid& grid, const float gridMinWS[3],
-                                                                   const float gridSizeWS[3],
+Rendering::BufferHandle DDGIProbeFeature::UploadCascadeVolumeData(CascadeGrid& grid,
+                                                                   const Mathematics::Vector3& gridMinWS,
+                                                                   const Mathematics::Vector3& gridSizeWS,
                                                                    float normalBiasScale, float intensity,
                                                                    bool convergedEnabled, bool glossyEnabled,
                                                                    float reflectionIntensity,
@@ -936,8 +945,8 @@ DDGIProbeFeature::GatherReadsRG DDGIProbeFeature::ImportGatherReads(Rendering::R
 
 Rendering::BufferHandle DDGIProbeFeature::UploadVolumeDataFine(Rendering::IDevice* /*device*/)
 {
-    float fineMinWS[3];
-    float fineSizeWS[3];
+    Mathematics::Vector3 fineMinWS;
+    Mathematics::Vector3 fineSizeWS;
     ComputeFineCascadeBounds(m_Volume, fineMinWS, fineSizeWS);
     return UploadCascadeVolumeData(m_C1, fineMinWS, fineSizeWS, m_Volume.NormalBiasScale, m_Volume.Intensity,
                                    HasConvergedFineCascade(), m_Volume.EnableGlossy && m_C1Refl.GpuValid,
@@ -945,7 +954,8 @@ Rendering::BufferHandle DDGIProbeFeature::UploadVolumeDataFine(Rendering::IDevic
 }
 
 void DDGIProbeFeature::DeclareCascadeGridPasses(Rendering::RenderGraph::RGFrame& frame, CascadeGrid& grid,
-                                                const float gridMinWS[3], const float gridSizeWS[3],
+                                                const Mathematics::Vector3& gridMinWS,
+                                                const Mathematics::Vector3& gridSizeWS,
                                                 const SharedTickInputs& shared, const CascadeDebugNames& names,
                                                 uint32_t* outProbeBaseThisTick, uint32_t* outProbesThisTick)
 {
@@ -1010,20 +1020,20 @@ void DDGIProbeFeature::DeclareCascadeGridPasses(Rendering::RenderGraph::RGFrame&
     if (grid.NeedsClear)
     {
         const uint32_t stateElementCount = static_cast<uint32_t>(grid.ProbeTotal) * uint32_t(kTile * kTile);
-        const float zeroFill[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        const Mathematics::Vector4 zeroFill(0.0f, 0.0f, 0.0f, 0.0f);
         DispatchClear(frame, grid.IrradianceState, stateElementCount, zeroFill, names.ClearIrradiance);
         DispatchClear(frame, grid.DepthState,
                       static_cast<uint32_t>(grid.ProbeTotal) * uint32_t(grid.DepthTile * grid.DepthTile),
                       zeroFill, names.ClearDepth);
         // One float per irradiance texel, cleared as vec4 elements.
         DispatchClear(frame, grid.TemporalState, stateElementCount / 4u, zeroFill, names.ClearTemporal);
-        const float probeStateFill[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        const Mathematics::Vector4 probeStateFill(0.0f, 0.0f, 0.0f, 1.0f);
         DispatchClear(frame, grid.ProbeStateBuffer, static_cast<uint32_t>(grid.ProbeTotal), probeStateFill,
                      names.ClearProbeState);
         // Unstamped: every slot reads as "changed cell" on its first blend,
         // which is the same seeding path a fresh allocation already takes
         // (GE_DDGI_PROBE_CELL_UNSTAMPED, Includes/ddgi_common.glsl).
-        const float probeCellFill[4] = {-1.0e30f, -1.0e30f, -1.0e30f, 0.0f};
+        const Mathematics::Vector4 probeCellFill(-1.0e30f, -1.0e30f, -1.0e30f, 0.0f);
         DispatchClear(frame, grid.ProbeCellBuffer, static_cast<uint32_t>(grid.ProbeTotal), probeCellFill,
                      names.ClearProbeCell);
         // Initialize every ray as a black miss so a declared trace pass that
@@ -1034,7 +1044,7 @@ void DDGIProbeFeature::DeclareCascadeGridPasses(Rendering::RenderGraph::RGFrame&
         // discard poisoned history before arithmetic. A bad later trace can
         // darken one visit but cannot permanently contaminate the state.
         // The -1 hit distance uses the same miss encoding as traced rays.
-        const float rayMissFill[4] = {0.0f, 0.0f, 0.0f, -1.0f};
+        const Mathematics::Vector4 rayMissFill(0.0f, 0.0f, 0.0f, -1.0f);
         const uint32_t rayElementCount =
             static_cast<uint32_t>(grid.ProbeTotal) * static_cast<uint32_t>(grid.AllocatedRaysPerProbe);
         DispatchClear(frame, grid.RayBuffer, rayElementCount, rayMissFill, names.ClearRayBuffer);
@@ -1132,9 +1142,8 @@ void DDGIProbeFeature::DeclareCascadeGridPasses(Rendering::RenderGraph::RGFrame&
                 frame.AddComputePass(
                     names.ClassifySW, Rendering::PassPhase::kEarlySetup,
                     [swNodesRG = shared.SwNodesRG, swVertexDataRG = shared.SwVertexDataRG,
-                     swPackedSceneRG = shared.SwPackedSceneRG, probeCellRG, probeStateRG, &classifyPipe](RG::RGPassBuilder& p)
+                     swPackedSceneRG = shared.SwPackedSceneRG, probeCellRG, probeStateRG](RG::RGPassBuilder& p)
                     {
-                        p.UsePipeline(classifyPipe);
                         p.PreventCulling();
                         p.Read(swPackedSceneRG, RG::RGBufferRead::Storage);
                         // Order after the skinned BVH refit's writes — the
@@ -1199,9 +1208,8 @@ void DDGIProbeFeature::DeclareCascadeGridPasses(Rendering::RenderGraph::RGFrame&
                 const RG::RGAccelerationStructure tlasRG = frame.ImportAccelerationStructure("DDGI.TLAS", tlasSlot);
                 frame.AddComputePass(
                     names.Classify, Rendering::PassPhase::kEarlySetup,
-                    [probeCellRG, probeStateRG, tlasRG, &classifyPipe](RG::RGPassBuilder& p)
+                    [probeCellRG, probeStateRG, tlasRG](RG::RGPassBuilder& p)
                     {
-                        p.UsePipeline(classifyPipe);
                         p.PreventCulling();
                         p.Read(tlasRG);
                         p.Write(probeCellRG, RG::RGBufferWrite::Storage);
@@ -1406,9 +1414,8 @@ void DDGIProbeFeature::DeclareCascadeGridPasses(Rendering::RenderGraph::RGFrame&
         frame.AddComputePass(
             names.TraceHW, Rendering::PassPhase::kDefault,
             [mapAtlasRG, mapAtlasTracked, skyIrradianceRG, rayRG, irradianceRG, depthAtlasRG,
-             probeStateRG, tlasRG, &tracePipe](RG::RGPassBuilder& p)
+             probeStateRG, tlasRG](RG::RGPassBuilder& p)
             {
-                p.UsePipeline(tracePipe);
                 p.PreventCulling();
                 p.Read(tlasRG);
                 if (mapAtlasTracked)
@@ -1519,9 +1526,8 @@ void DDGIProbeFeature::DeclareCascadeGridPasses(Rendering::RenderGraph::RGFrame&
             names.TraceSW, Rendering::PassPhase::kDefault,
             [mapAtlasRG, mapAtlasTracked, rayRG, irradianceRG, depthAtlasRG, probeStateRG,
              swNodesRG = shared.SwNodesRG, swVertexDataRG = shared.SwVertexDataRG,
-             swPackedSceneRG = shared.SwPackedSceneRG, skyIrradianceRG, &tracePipe](RG::RGPassBuilder& p)
+             swPackedSceneRG = shared.SwPackedSceneRG, skyIrradianceRG](RG::RGPassBuilder& p)
             {
-                p.UsePipeline(tracePipe);
                 p.PreventCulling();
                 if (mapAtlasTracked)
                     p.Read(mapAtlasRG, RG::RGTextureRead::Sampled);
@@ -1663,9 +1669,8 @@ void DDGIProbeFeature::DeclareCascadeGridPasses(Rendering::RenderGraph::RGFrame&
         const Rendering::ShaderMeta* depthBlendMeta = m_DepthBlend.Meta.get();
         frame.AddComputePass(
             names.DepthBlend, Rendering::PassPhase::kDefault,
-            [rayRG, depthStateRG, probeCellRG, &depthBlendPipe](RG::RGPassBuilder& p)
+            [rayRG, depthStateRG, probeCellRG](RG::RGPassBuilder& p)
             {
-                p.UsePipeline(depthBlendPipe);
                 p.PreventCulling();
                 p.Read(rayRG, RG::RGBufferRead::Storage);
                 p.Read(probeCellRG, RG::RGBufferRead::Storage);
@@ -1704,9 +1709,8 @@ void DDGIProbeFeature::DeclareCascadeGridPasses(Rendering::RenderGraph::RGFrame&
     const Rendering::ShaderMeta* blendMeta = m_Blend.Meta.get();
     frame.AddComputePass(
         names.Blend, Rendering::PassPhase::kDefault,
-        [rayRG, temporalStateRG, probeCellRG, irradianceStateRG, depthStateRG, fineDepth, &blendPipe](RG::RGPassBuilder& p)
+        [rayRG, temporalStateRG, probeCellRG, irradianceStateRG, depthStateRG, fineDepth](RG::RGPassBuilder& p)
         {
-            p.UsePipeline(blendPipe);
             p.PreventCulling();
             p.Read(rayRG, RG::RGBufferRead::Storage);
             p.Write(irradianceStateRG, RG::RGBufferWrite::Storage);
@@ -1800,9 +1804,8 @@ void DDGIProbeFeature::DeclareCascadeGridPasses(Rendering::RenderGraph::RGFrame&
     const uint32_t probeTotalForUpload = uploadCount;
     frame.AddComputePass(
         names.Upload, Rendering::PassPhase::kDefault,
-        [irradianceRG, depthAtlasRG, probeCellRG, irradianceStateRG, depthStateRG, fineDepth, &uploadPipe](RG::RGPassBuilder& p)
+        [irradianceRG, depthAtlasRG, probeCellRG, irradianceStateRG, depthStateRG, fineDepth](RG::RGPassBuilder& p)
         {
-            p.UsePipeline(uploadPipe);
             p.PreventCulling();
             p.Read(probeCellRG, RG::RGBufferRead::Storage);
             p.Read(irradianceStateRG, RG::RGBufferRead::Storage);
@@ -1872,9 +1875,8 @@ void DDGIProbeFeature::DeclareCascadeGridPasses(Rendering::RenderGraph::RGFrame&
         const Rendering::ShaderMeta* depthUploadMeta = m_DepthUpload.Meta.get();
         frame.AddComputePass(
             names.DepthUpload, Rendering::PassPhase::kDefault,
-            [depthStateRG, depthAtlasRG, probeCellRG, &depthUploadPipe](RG::RGPassBuilder& p)
+            [depthStateRG, depthAtlasRG, probeCellRG](RG::RGPassBuilder& p)
             {
-                p.UsePipeline(depthUploadPipe);
                 p.PreventCulling();
                 p.Read(depthStateRG, RG::RGBufferRead::Storage);
                 p.Read(probeCellRG, RG::RGBufferRead::Storage);
@@ -1936,7 +1938,7 @@ bool DDGIProbeFeature::EnsureReflectionResources(float /*deltaTimeSeconds*/)
     {
         Logger::Log::Warning(
             "DDGIProbeFeature: glossy reflection lobe disabled at {} probes — history would need {} MB "
-            "({}x{} atlas). Reduce ProbesLongAxis or turn EnableGlossy off.",
+            "({}x{} atlas). Reduce Divisions or turn EnableGlossy off.",
             m_C0.ProbeTotal, c0GlossyBytes / (1024ull * 1024ull), c0Layout.WidthTexels,
             c0Layout.HeightTexels);
         ReleaseReflectionResources();
@@ -2117,8 +2119,8 @@ bool DDGIProbeFeature::AllocateReflectionCascade(const CascadeGrid& grid, Reflec
 }
 
 void DDGIProbeFeature::DeclareReflectionPasses(Rendering::RenderGraph::RGFrame& frame, CascadeGrid& grid,
-                                               ReflectionCascade& refl, const float gridMinWS[3],
-                                               const float gridSizeWS[3], uint32_t probeBaseThisTick,
+                                               ReflectionCascade& refl, const Mathematics::Vector3& gridMinWS,
+                                               const Mathematics::Vector3& gridSizeWS, uint32_t probeBaseThisTick,
                                                uint32_t probesThisTick, const SharedTickInputs& shared,
                                                const CascadeDebugNames& names)
 {
@@ -2139,7 +2141,7 @@ void DDGIProbeFeature::DeclareReflectionPasses(Rendering::RenderGraph::RGFrame& 
     const uint32_t glossyTexelsPerProbe = static_cast<uint32_t>(kDDGIGlossyTile * kDDGIGlossyTile);
     if (refl.NeedsClear)
     {
-        const float zeroFill[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        const Mathematics::Vector4 zeroFill(0.0f, 0.0f, 0.0f, 0.0f);
         const uint32_t roughElementCount = static_cast<uint32_t>(grid.ProbeTotal) * uint32_t(kTile * kTile);
         DispatchClear(frame, refl.RoughState, roughElementCount, zeroFill, names.ClearRough);
 
@@ -2182,6 +2184,7 @@ void DDGIProbeFeature::DeclareReflectionPasses(Rendering::RenderGraph::RGFrame& 
         uint32_t Dispatch0[4];
         float Timing[4];
     };
+    static_assert(sizeof(RoughBlendParamsUBO) == 96, "must match ddgi_rough_blend.comp's DDGIRoughBlendParams");
     auto roughUb = frame.AllocUpload<RoughBlendParamsUBO>();
     if (!roughUb.Valid())
         return;
@@ -2216,9 +2219,8 @@ void DDGIProbeFeature::DeclareReflectionPasses(Rendering::RenderGraph::RGFrame& 
     const Rendering::ShaderMeta* roughBlendMeta = m_RoughBlend.Meta.get();
     frame.AddComputePass(
         names.RoughBlend, Rendering::PassPhase::kDefault,
-        [rayRG, probeCellRG, roughStateRG, &roughBlendPipe](RG::RGPassBuilder& p)
+        [rayRG, probeCellRG, roughStateRG](RG::RGPassBuilder& p)
         {
-            p.UsePipeline(roughBlendPipe);
             p.PreventCulling();
             p.Read(rayRG, RG::RGBufferRead::Storage);
             p.Write(roughStateRG, RG::RGBufferWrite::Storage);
@@ -2277,9 +2279,8 @@ void DDGIProbeFeature::DeclareReflectionPasses(Rendering::RenderGraph::RGFrame& 
     const Rendering::ShaderMeta* roughUploadMeta = m_RoughUpload.Meta.get();
     frame.AddComputePass(
         names.RoughUpload, Rendering::PassPhase::kDefault,
-        [roughStateRG, roughAtlasRG, &roughUploadPipe](RG::RGPassBuilder& p)
+        [roughStateRG, roughAtlasRG](RG::RGPassBuilder& p)
         {
-            p.UsePipeline(roughUploadPipe);
             p.PreventCulling();
             p.Read(roughStateRG, RG::RGBufferRead::Storage);
             p.Write(roughAtlasRG, RG::RGTextureWrite::Storage);
@@ -2323,6 +2324,7 @@ void DDGIProbeFeature::DeclareReflectionPasses(Rendering::RenderGraph::RGFrame& 
         uint32_t Dispatch0[4];
         float Timing[4];
     };
+    static_assert(sizeof(GlossyBlendParamsUBO) == 64, "must match ddgi_glossy_blend.comp's DDGIGlossyBlendParams");
     auto glossyUb = frame.AllocUpload<GlossyBlendParamsUBO>();
     if (!glossyUb.Valid())
         return;
@@ -2354,9 +2356,8 @@ void DDGIProbeFeature::DeclareReflectionPasses(Rendering::RenderGraph::RGFrame& 
     const Rendering::ShaderMeta* glossyBlendMeta = m_GlossyBlend.Meta.get();
     frame.AddComputePass(
         names.GlossyBlend, Rendering::PassPhase::kDefault,
-        [rayRG, probeCellRG, glossyNumRG, glossyWeightRG, &glossyBlendPipe](RG::RGPassBuilder& p)
+        [rayRG, probeCellRG, glossyNumRG, glossyWeightRG](RG::RGPassBuilder& p)
         {
-            p.UsePipeline(glossyBlendPipe);
             p.PreventCulling();
             p.Read(rayRG, RG::RGBufferRead::Storage);
             p.Write(glossyNumRG, RG::RGBufferWrite::Storage);
@@ -2420,9 +2421,8 @@ void DDGIProbeFeature::DeclareReflectionPasses(Rendering::RenderGraph::RGFrame& 
     const Rendering::ShaderMeta* glossyUploadMeta = m_GlossyUpload.Meta.get();
     frame.AddComputePass(
         names.GlossyUpload, Rendering::PassPhase::kDefault,
-        [glossyNumRG, glossyWeightRG, glossyAtlasRG, &glossyUploadPipe](RG::RGPassBuilder& p)
+        [glossyNumRG, glossyWeightRG, glossyAtlasRG](RG::RGPassBuilder& p)
         {
-            p.UsePipeline(glossyUploadPipe);
             p.PreventCulling();
             p.Read(glossyNumRG, RG::RGBufferRead::Storage);
             p.Read(glossyWeightRG, RG::RGBufferRead::Storage);
@@ -2465,7 +2465,11 @@ namespace
 // a different defect from one that records and still samples black.
 bool DDGIAtlasTraceEnabled()
 {
-    static const bool kOn = Platform::EnvironmentSwitchEnabled("GE_DDGI_ATLAS_TRACE", false);
+    static const bool kOn = []
+    {
+        const char* v = std::getenv("GE_DDGI_ATLAS_TRACE");
+        return v && v[0] != '\0' && v[0] != '0';
+    }();
     return kOn;
 }
 }  // namespace
@@ -2537,9 +2541,8 @@ void DDGIProbeFeature::DeclareMapAtlasPasses(Rendering::RenderGraph::RGFrame& fr
         // has to be recorded ahead of them.
         frame.AddComputePass(
             "DDGI.MapBlit", Rendering::PassPhase::kEarlySetup,
-            [atlasRG, sourceRG, layer = blit.Layer, &blitPipe](RG::RGPassBuilder& p)
+            [atlasRG, sourceRG, layer = blit.Layer](RG::RGPassBuilder& p)
             {
-                p.UsePipeline(blitPipe);
                 p.PreventCulling();
                 p.Read(sourceRG, RG::RGTextureRead::Sampled);
                 RG::RGRange range = RG::RGRange::All();
@@ -2672,9 +2675,8 @@ void DDGIProbeFeature::DeclareSwSkinnedRefit(Rendering::RenderGraph::RGFrame& fr
     const uint64_t vertsBytes = sw.VertexDataBytes;
     frame.AddComputePass(
         "DDGI.SwSkinnedRefit", Rendering::PassPhase::kEarlySetup,
-        [nodesRG, vertsRG, posedHandles, &refitPipe](RG::RGPassBuilder& p)
+        [nodesRG, vertsRG, posedHandles](RG::RGPassBuilder& p)
         {
-            p.UsePipeline(refitPipe);
             p.PreventCulling();
             p.Write(nodesRG, RG::RGBufferWrite::Storage);
             p.Write(vertsRG, RG::RGBufferWrite::Storage);
@@ -2845,21 +2847,23 @@ bool DDGIProbeFeature::TickHardwareLane(Rendering::RenderGraph::RGFrame& frame, 
             const Rendering::GPUInstance& inst = instances[i];
             if (inst.skinPaletteOffset != 0u)
                 continue;
-            if ((inst.sectorPacked[0] | inst.sectorPacked[1]) != 0u)
+            if (!DDGITracesInstance(inst))
                 continue;
             if (!m_SceneAS->IsBlasReady(inst.meshIndex))
                 continue;
-            const float* m = inst.transform.Data();
+            const Mathematics::Matrix4x4 worldMatrix =
+                ComposeWorldModelMatrix(inst.transform, inst.sectorPacked[0], inst.sectorPacked[1]);
+            const float* elements = worldMatrix.Data();
             bool sane = std::isfinite(inst.boundingRadius) && inst.boundingRadius < kMaxSaneWorldUnits;
             for (int f = 0; f < 16 && sane; ++f)
-                sane = std::isfinite(m[f]) && std::fabs(m[f]) < kMaxSaneWorldUnits;
+                sane = std::isfinite(elements[f]) && std::fabs(elements[f]) < kMaxSaneWorldUnits;
             if (!sane)
                 continue;
 
             Rendering::TlasInstanceData dst{};
             for (uint32_t r = 0; r < 3; ++r)
                 for (uint32_t c = 0; c < 4; ++c)
-                    dst.Transform[r * 4 + c] = m[c * 4 + r];
+                    dst.Transform[r * 4 + c] = elements[c * 4 + r];
             dst.CustomIndexAndMask = (i & 0x00FFFFFFu) | (0xFFu << 24);
             dst.SbtOffsetAndFlags = Rendering::kTlasInstanceFlagTriangleFacingCullDisable << 24;
             dst.BlasAddress = m_SceneAS->GetBlasAddress(inst.meshIndex);
@@ -2868,16 +2872,20 @@ bool DDGIProbeFeature::TickHardwareLane(Rendering::RenderGraph::RGFrame& frame, 
         for (const DDGISkinnedGeometry::SkinnedTlasRow& row : skinned.TlasRows)
         {
             const Rendering::GPUInstance& inst = instances[row.InstanceIndex];
-            const float* m = inst.transform.Data();
+            if (!DDGITracesInstance(inst))
+                continue;
+            const Mathematics::Matrix4x4 worldMatrix =
+                ComposeWorldModelMatrix(inst.transform, inst.sectorPacked[0], inst.sectorPacked[1]);
+            const float* elements = worldMatrix.Data();
             bool sane = std::isfinite(inst.boundingRadius) && inst.boundingRadius < kMaxSaneWorldUnits;
             for (int f = 0; f < 16 && sane; ++f)
-                sane = std::isfinite(m[f]) && std::fabs(m[f]) < kMaxSaneWorldUnits;
+                sane = std::isfinite(elements[f]) && std::fabs(elements[f]) < kMaxSaneWorldUnits;
             if (!sane)
                 continue;
             Rendering::TlasInstanceData dst{};
             for (uint32_t r = 0; r < 3; ++r)
                 for (uint32_t c = 0; c < 4; ++c)
-                    dst.Transform[r * 4 + c] = m[c * 4 + r];
+                    dst.Transform[r * 4 + c] = elements[c * 4 + r];
             dst.CustomIndexAndMask = (row.InstanceIndex & 0x00FFFFFFu) | (0xFFu << 24);
             dst.SbtOffsetAndFlags = Rendering::kTlasInstanceFlagTriangleFacingCullDisable << 24;
             dst.BlasAddress = row.BlasAddress;
@@ -2885,11 +2893,14 @@ bool DDGIProbeFeature::TickHardwareLane(Rendering::RenderGraph::RGFrame& frame, 
         }
         instanceCount = static_cast<uint32_t>(instanceScratch.size());
 
-        // Count-seeded, so N zeroed records never alias N-1 of them.
-        const uint64_t refreshHash =
-            Hashing::Fnv1a64(instanceScratch.data(),
-                             static_cast<size_t>(instanceCount) * sizeof(Rendering::TlasInstanceData),
-                             Hashing::kFnv1a64OffsetBasis ^ instanceCount);
+        uint64_t refreshHash = 1469598103934665603ull ^ instanceCount;  // FNV-1a, count-seeded
+        const auto* bytes = reinterpret_cast<const uint8_t*>(instanceScratch.data());
+        const size_t byteCount = static_cast<size_t>(instanceCount) * sizeof(Rendering::TlasInstanceData);
+        for (size_t b = 0; b < byteCount; ++b)
+        {
+            refreshHash ^= bytes[b];
+            refreshHash *= 1099511628211ull;
+        }
         doTlasBuild = !m_TlasContentValid || refreshHash != m_BuiltInstanceHash || !skinned.Builds.empty();
 
         if (doTlasBuild && refreshHash != m_BuiltInstanceHash)
@@ -2975,17 +2986,6 @@ bool DDGIProbeFeature::TickHardwareLane(Rendering::RenderGraph::RGFrame& frame, 
             std::move(builds));
         auto skinnedBuilds = std::make_shared<std::vector<DDGISkinnedGeometry::PendingSkinnedBuild>>(
             std::move(skinned.Builds));
-        static const bool batchSkinned = Platform::EnvironmentSwitchEnabled(
-            "GE_DDGI_BATCH_SKINNED_BLAS", true);
-        const bool recordSkinnedBatch = batchSkinned && skinnedBuilds->size() > 1;
-        if (recordSkinnedBatch)
-        {
-            static const bool logged = [] {
-                Logger::Log::Info("DDGI skinned BLAS submission: batched");
-                return true;
-            }();
-            (void)logged;
-        }
         auto skinnedConfirm = skinned.ConfirmToken;
         const Rendering::TlasSlotHandle tlasSlot = m_TlasSlot;
         const RG::RGAccelerationStructure tlasRG =
@@ -3003,30 +3003,15 @@ bool DDGIProbeFeature::TickHardwareLane(Rendering::RenderGraph::RGFrame& frame, 
                         p.Read(b.SkinnedRG, RG::RGBufferRead::Storage);
             },
             [backend, blasBuilds, skinnedBuilds, skinnedConfirm, blasConfirmToken, tlasSlot,
-             instanceBuffer, instanceCount, recordTlas, tlasExecuted, recordSkinnedBatch](RG::RGContext& ctx)
+             instanceBuffer, instanceCount, recordTlas, tlasExecuted](RG::RGContext& ctx)
             {
                 if (!ctx.Cmd)
                     return;
                 backend->RecordPreBuildBarrier(*ctx.Cmd);
                 for (const auto& b : *blasBuilds)
                     backend->RecordBlasBuild(*ctx.Cmd, b.Handle, b.Geometry);
-                if (recordSkinnedBatch)
-                {
-                    // Tick emits one build per unique posed BLAS.
-                    std::vector<Rendering::BlasBuildRequest> requests;
-                    requests.reserve(skinnedBuilds->size());
-                    for (const auto& b : *skinnedBuilds)
-                        requests.push_back({b.Handle, b.Geometry, b.PreferUpdate});
-                    backend->RecordBlasBuildBatch(*ctx.Cmd, requests);
-                }
-                else
-                {
-                    for (const auto& b : *skinnedBuilds)
-                    {
-                        const Rendering::BlasBuildRequest request{b.Handle, b.Geometry, b.PreferUpdate};
-                        backend->RecordBlasBuildBatch(*ctx.Cmd, std::span(&request, 1));
-                    }
-                }
+                for (const auto& b : *skinnedBuilds)
+                    backend->RecordBlasBuild(*ctx.Cmd, b.Handle, b.Geometry);
                 if (recordTlas)
                     backend->RecordTlasBuild(*ctx.Cmd, tlasSlot, instanceBuffer, 0, instanceCount);
                 if (blasConfirmToken)
@@ -3062,7 +3047,11 @@ void DDGIProbeFeature::DeclareProbePasses(Rendering::RenderGraph::RGFrame& frame
     // page for what is fundamentally a developer/QA switch, not an end-user
     // setting). Decided ONCE per tick so C0/C1 and glossy never disagree
     // about which lane is active within the same frame.
-    const bool forceSoftware = Platform::EnvironmentSwitchEnabled("GE_DDGI_FORCE_SOFTWARE", false);
+    const bool forceSoftware = []
+    {
+        const char* v = std::getenv("GE_DDGI_FORCE_SOFTWARE");
+        return v && v[0] != '\0' && v[0] != '0';
+    }();
     // m_HardwareLaneFailed stays in the gate as permanent defence in depth:
     // a pipeline variant's compile is only provable at execution time, and a
     // backend that cannot build one must degrade to the software lane rather
@@ -3108,8 +3097,8 @@ void DDGIProbeFeature::DeclareProbePasses(Rendering::RenderGraph::RGFrame& frame
                                                                                                  : kTile;
     EnsureCascadeGpuResources(m_C0, m_Volume.GridSizeWS, m_Volume.ProbesLongAxis, m_Volume.RaysPerProbe,
                               depthTile, deltaTimeSeconds, kC0DebugNames);
-    float fineMinWS[3] = {0.0f, 0.0f, 0.0f};
-    float fineSizeWS[3] = {1.0f, 1.0f, 1.0f};
+    Mathematics::Vector3 fineMinWS(0.0f, 0.0f, 0.0f);
+    Mathematics::Vector3 fineSizeWS(1.0f, 1.0f, 1.0f);
     if (m_Volume.EnableFineCascade)
     {
         ComputeFineCascadeBounds(m_Volume, fineMinWS, fineSizeWS);
@@ -3239,36 +3228,17 @@ void DDGIProbeFeature::DeclareProbePasses(Rendering::RenderGraph::RGFrame& frame
     // one buffer and the same kDDGIMaxLights ceiling the NEE loop costs against.
     struct EmitterProxy
     {
-        float CenterWS[3];
-        float Radius;
-        float Radiance[3];
+        Mathematics::Vector3 CenterWS;
+        float Radius = 0.0f;
+        ColorLinear Radiance;  // rgb; alpha is unused
     };
     std::vector<EmitterProxy> emitters;
     if (lightCount < kDDGIMaxLights)
     {
         m_EmitterAreas.Update(*m_MeshRegistry, instances);
-        // materialIndex -> scene-linear emissive, built once per tick. Only
-        // materials that actually emit are kept, so a scene with no emitters
-        // pays one registry walk and nothing else.
-        struct EmitterMaterial
-        {
-            DDGIEmissive Emissive;
-            bool DoubleSided = false;
-        };
-        std::unordered_map<uint32_t, EmitterMaterial> emissiveByMaterial;
-        m_Materials->Registry().ForEach(
-            [&](const GameEngine::GUID&, const Material& material)
-            {
-                const uint32_t slot = material.GetGpuSceneMaterialIndex();
-                if (slot == ~0u)
-                    return;
-                float tint[3] = {0.0f, 0.0f, 0.0f};
-                material.GetVector(HashStringId("emissive"), tint, 3);
-                const float nits = material.GetFloat(HashStringId("emissionLuminance"), 0.0f);
-                const DDGIEmissive e = ComputeDDGIEmissive(tint[0], tint[1], tint[2], nits);
-                if (e.Color[0] > 0.0f || e.Color[1] > 0.0f || e.Color[2] > 0.0f)
-                    emissiveByMaterial.emplace(slot, EmitterMaterial{e, material.IsDoubleSided()});
-            });
+        // materialIndex -> scene-linear emissive; re-derived only when the
+        // material registry changed.
+        m_EmitterMaterials.Refresh(*m_Materials);
 
         for (size_t instanceIndex = 0; instanceIndex < instances.size(); ++instanceIndex)
         {
@@ -3277,15 +3247,15 @@ void DDGIProbeFeature::DeclareProbePasses(Rendering::RenderGraph::RGFrame& frame
                 break;
             if ((inst.flags & Rendering::kInstanceFlagGIEmitter) == 0u)
                 continue;
-            const auto it = emissiveByMaterial.find(inst.materialIndex);
-            if (it == emissiveByMaterial.end())
+            const DDGIEmitterMaterials::Emitter* emitter = m_EmitterMaterials.Find(inst.materialIndex);
+            if (!emitter)
                 continue;  // flagged but not actually emissive — nothing to publish
             if (!(inst.boundingRadius > 0.0f))
                 continue;
             EmitterProxy proxy{};
-            proxy.CenterWS[0] = inst.boundingCenter.x;
-            proxy.CenterWS[1] = inst.boundingCenter.y;
-            proxy.CenterWS[2] = inst.boundingCenter.z;
+            // The DDGI lights are world space: the sector-local center is composed against sector (0,0,0).
+            proxy.CenterWS = Rendering::SectorLocalPointRelativeTo(inst.boundingCenter, inst.sectorPacked[0],
+                                                                   inst.sectorPacked[1], Mathematics::Vector3Int{});
             proxy.Radius = inst.boundingRadius;
             // Weight the proxy by the mesh's mean projected area (A/4, or A/2
             // when both faces emit), not the bounding sphere's area: thin
@@ -3294,19 +3264,18 @@ void DDGIProbeFeature::DeclareProbePasses(Rendering::RenderGraph::RGFrame& frame
             // meshes without CPU geometry.
             const std::optional<float> surfaceArea = m_EmitterAreas.GetSurfaceArea(instanceIndex);
             const float projectedArea = surfaceArea
-                ? ComputeDDGIEmitterProjectedArea(*surfaceArea, it->second.DoubleSided)
+                ? ComputeDDGIEmitterProjectedArea(*surfaceArea, emitter->DoubleSided)
                 : GE_PI_F * proxy.Radius * proxy.Radius;
             if (!(projectedArea > 0.0f))
                 continue;
-            const DDGIEmissive& emissive = it->second.Emissive;
-            proxy.Radiance[0] = emissive.Color[0] * projectedArea;
-            proxy.Radiance[1] = emissive.Color[1] * projectedArea;
-            proxy.Radiance[2] = emissive.Color[2] * projectedArea;
+            const DDGIEmissive& emissive = emitter->Emissive;
+            proxy.Radiance = ColorLinear(emissive.Color.r * projectedArea, emissive.Color.g * projectedArea,
+                                         emissive.Color.b * projectedArea);
             emitters.push_back(proxy);
         }
     }
 
-    if (Platform::EnvironmentSwitchEnabled("GE_DDGI_EMITTER_TRACE", false))
+    if (const char* v = std::getenv("GE_DDGI_EMITTER_TRACE"); v && v[0] != '\0' && v[0] != '0')
     {
         uint32_t flagged = 0;
         for (const Rendering::GPUInstance& inst : instances)
@@ -3339,9 +3308,10 @@ void DDGIProbeFeature::DeclareProbePasses(Rendering::RenderGraph::RGFrame& frame
         const float outer = std::clamp(in.outerAngle, 0.0f, 3.1415926f);
         p.spotCosInner = std::cos(std::min(inner, outer));
         p.spotCosOuter = std::cos(std::max(inner, outer));
-        p.positionWS[0] = in.positionWS[0];
-        p.positionWS[1] = in.positionWS[1];
-        p.positionWS[2] = in.positionWS[2];
+        const Mathematics::Vector3 position = in.positionWS - Mathematics::WorldPosition{};
+        p.positionWS[0] = position.x;
+        p.positionWS[1] = position.y;
+        p.positionWS[2] = position.z;
         p.range = in.range;
         p.directionWS[0] = in.directionWS[0];
         p.directionWS[1] = in.directionWS[1];
@@ -3363,7 +3333,7 @@ void DDGIProbeFeature::DeclareProbePasses(Rendering::RenderGraph::RGFrame& frame
         p.decay = std::max(in.decay, 0.0f);
         p.fogContribution = std::max(in.fogContribution, 0.0f);
         p.fogDensityBoost = std::max(in.fogDensityBoost, 0.0f);
-        p.fogOriginFade = std::clamp(in.fogOriginFade, 0.0f, 1.0f);
+        p.fogOriginFade = Math::Clamp01(in.fogOriginFade);
         p.fogAnisotropy = std::clamp(in.fogAnisotropy, -0.95f, 0.95f);
         outLights[li] = p;
     }
@@ -3385,9 +3355,9 @@ void DDGIProbeFeature::DeclareProbePasses(Rendering::RenderGraph::RGFrame& frame
         // against it regardless of distance.
         p.range = std::max(e.Radius * kDDGIEmitterRangeScale, kDDGIEmitterMinRange);
         p.intensity = 1.0f;  // radiance rides in color; the proxy carries no separate scale
-        p.color[0] = e.Radiance[0];
-        p.color[1] = e.Radiance[1];
-        p.color[2] = e.Radiance[2];
+        p.color[0] = e.Radiance.r;
+        p.color[1] = e.Radiance.g;
+        p.color[2] = e.Radiance.b;
         p.areaRadius = e.Radius;  // source radius: the solid-angle term
         p.decay = 2.0f;
         outLights[lightCount + ei] = p;
@@ -3572,9 +3542,8 @@ void DDGIProbeFeature::DeclareVariabilityPass(Rendering::RenderGraph::RGFrame& f
     const Rendering::ShaderMeta* meta = m_Variability.Meta.get();
     frame.AddComputePass(
         names.Variability, Rendering::PassPhase::kDefault,
-        [temporalRG, &pipeId](RG::RGPassBuilder& p)
+        [temporalRG](RG::RGPassBuilder& p)
         {
-            p.UsePipeline(pipeId);
             p.PreventCulling();
             p.Read(temporalRG, RG::RGBufferRead::Storage);
         },

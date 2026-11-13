@@ -41,7 +41,16 @@ namespace GameEngine.Scripting
 
         // Element layer — instance id and nothing else.
         [DllImport(kLib, CallingConvention = CallingConvention.Cdecl)]
-        private static extern int GE_UIElement_SetWidthPercent(ulong instanceId, float pct);
+        private static extern int GE_UIElement_SetWidthPercent(ulong instanceId, float percent);
+
+        [DllImport(kLib, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int GE_UIElement_SetOffset(ulong instanceId, float x, float y);
+
+        [DllImport(kLib, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int GE_UIElement_CapturePointer(ulong instanceId);
+
+        [DllImport(kLib, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int GE_UIElement_ReleasePointer(ulong instanceId);
 
         [DllImport(kLib, CallingConvention = CallingConvention.Cdecl)]
         private static extern int GE_UIElement_SetLabelText(ulong instanceId,
@@ -102,6 +111,13 @@ namespace GameEngine.Scripting
             [MarshalAs(UnmanagedType.LPUTF8Str)] string text, int notify);
 
         [DllImport(kLib, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int GE_UIElement_SetZIndex(ulong instanceId, int zIndex);
+
+        [DllImport(kLib, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int GE_UIElement_GetRect(ulong instanceId, out float x, out float y,
+            out float width, out float height);
+
+        [DllImport(kLib, CallingConvention = CallingConvention.Cdecl)]
         private static extern int GE_UIElement_GetScrollOffset(ulong instanceId, out float outX,
             out float outY);
 
@@ -110,6 +126,18 @@ namespace GameEngine.Scripting
 
         [DllImport(kLib, CallingConvention = CallingConvention.Cdecl)]
         private static extern int GE_UIElement_SetScrollY(ulong instanceId, float y);
+
+        [DllImport(kLib, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int GE_UIElement_GetProgressMax(ulong instanceId, out float outMax);
+
+        [DllImport(kLib, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int GE_UIElement_SetProgressMax(ulong instanceId, float max);
+
+        [DllImport(kLib, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int GE_UIElement_GetProgressIndeterminate(ulong instanceId, out int outIndeterminate);
+
+        [DllImport(kLib, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int GE_UIElement_SetProgressIndeterminate(ulong instanceId, int indeterminate);
 
         [DllImport(kLib, CallingConvention = CallingConvention.Cdecl)]
         private static extern int GE_UIElement_GetDropdownSelectedIndex(ulong instanceId, out int outIndex);
@@ -204,6 +232,9 @@ namespace GameEngine.Scripting
             internal const string ButtonClick = "UI.ButtonClick";
             internal const string MouseEnter = "UI.MouseEnter";
             internal const string MouseMove = "UI.MouseMove";
+            internal const string MouseDown = "UI.MouseDown";
+            internal const string MouseUp = "UI.MouseUp";
+            internal const string MouseCancel = "UI.MouseCancel";
             internal const string FocusIn = "UI.FocusIn";
             internal const string ValueChanging = "UI.ValueChanging";
             internal const string ValueChanged = "UI.ValueChanged";
@@ -245,24 +276,68 @@ namespace GameEngine.Scripting
             return ElementRegistry.Resolve(instanceId);
         }
 
-        /// <summary>What a pointer event carries. Positions are in the host's UI space.</summary>
+        /// <summary>
+        /// What a pointer event carries. Positions are in the subscribed element's layout space, in
+        /// the host's UI pixels: the space its layout rect is in. Outside any CSS transform that is
+        /// the host's UI space; under one, the pointer carried back through every transform that
+        /// applies to the element, so it compares with the element's own box as it would anywhere
+        /// else.
+        /// </summary>
         public readonly struct PointerArgs
         {
-            internal PointerArgs(float x, float y, int mods)
+            internal PointerArgs(float x, float y, ModifierFlags mods)
             {
                 X = x;
                 Y = y;
                 Mods = mods;
             }
 
-            /// <summary>Pointer X in the host's UI space.</summary>
+            /// <summary>Pointer X in the element's layout space.</summary>
             public readonly float X;
 
-            /// <summary>Pointer Y in the host's UI space.</summary>
+            /// <summary>Pointer Y in the element's layout space.</summary>
             public readonly float Y;
 
-            /// <summary>Modifier-key bitmask as the engine reports it.</summary>
-            public readonly int Mods;
+            /// <summary>The modifier keys held.</summary>
+            public readonly ModifierFlags Mods;
+        }
+
+        /// <summary>
+        /// What a pointer button press, release or cancel carries: which button, where, and the
+        /// modifier keys.
+        /// </summary>
+        /// <remarks>
+        /// A press is not a click. <see cref="ClickArgs"/> comes from a Button's own activation:
+        /// the left button or Space/Enter, on release, on that control only. A press, a release
+        /// and a cancel arrive for any button on whatever element the pointer is over, and bubble
+        /// to its ancestors.
+        ///
+        /// <c>X</c> and <c>Y</c> are in the same space as <see cref="PointerArgs"/>: the
+        /// subscribed element's layout space. A cancel has no position: both read -1.
+        /// </remarks>
+        public readonly struct PointerButtonArgs
+        {
+            internal PointerButtonArgs(float x, float y, MouseButton button, ModifierFlags mods)
+            {
+                X = x;
+                Y = y;
+                Button = button;
+                Mods = mods;
+            }
+
+            /// <summary>Pointer X in the element's layout space; -1 for a cancel.</summary>
+            public readonly float X;
+
+            /// <summary>Pointer Y in the element's layout space; -1 for a cancel.</summary>
+            public readonly float Y;
+
+            /// <summary>
+            /// The button that began the press, as <see cref="Input.IsMouseButtonDown"/> names it.
+            /// </summary>
+            public readonly MouseButton Button;
+
+            /// <summary>The modifier keys held.</summary>
+            public readonly ModifierFlags Mods;
         }
 
         /// <summary>
@@ -272,10 +347,10 @@ namespace GameEngine.Scripting
         /// </summary>
         public readonly struct ClickArgs
         {
-            internal ClickArgs(int mods) => Mods = mods;
+            internal ClickArgs(ModifierFlags mods) => Mods = mods;
 
-            /// <summary>Modifier-key bitmask as the engine reports it.</summary>
-            public readonly int Mods;
+            /// <summary>The modifier keys held.</summary>
+            public readonly ModifierFlags Mods;
         }
 
         /// <summary>

@@ -1,14 +1,14 @@
 #include "Ocean/OceanCombineSim.h"
-#include "Ocean/OceanShaderProgram.h"
-#include "Rendering/Materials/ShaderLayoutShape.h"
-#include "OceanShaderDirectory.h"
+#include "Ocean/OceanShader/OceanShaderProgram.h"
+#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
+#include "OceanShader/OceanShaderDirectory.h"
 
 #include "Logger/Logger.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
 
 #include <filesystem>
 #include <memory>
@@ -132,52 +132,46 @@ void OceanCombineSim::FillParams(OceanCombineParamsGPU& out)
     out = m_Params;
 }
 
-OceanPreparedDispatch OceanCombineSim::PrepareDispatch(
-    IDevice* device, BufferHandle paramsBuffer, uint64 paramsOffset) const
+void OceanCombineSim::RecordDispatch(IDevice* device, CommandList* cl,
+                                     BufferHandle paramsBuffer, uint64 paramsOffset)
 {
-    if (!m_Ready || !device || !paramsBuffer.IsValid())
-        return {};
+    if (!m_Ready || !cl || !device || !paramsBuffer.IsValid())
+        return;
     if (!m_FFTDisplacement.IsValid() || !m_FFTSampler.IsValid())
-        return {};
+        return;
 
     const TextureHandle combineTex = m_Combine.GetTexture();
     const uint32 layers = m_LodCount;
 
-    PipelineHandle pipe = device->TryGetWarmComputePipeline(m_Pipe);
+    PipelineHandle pipe = device->GetOrCreateComputePipeline(m_Pipe);
     if (!pipe)
-        return {};
+        return;
 
     // The combine target moves ShaderResource -> UnorderedAccess for the write,
     // then back to ShaderResource for the world pass. Every texel is overwritten,
     // so there is no read of the previous contents (no clear needed).
+    cl->Barrier(ResourceBarrier::CreateTextureBarrier(
+        combineTex, ResourceState::ShaderResource, ResourceState::UnorderedAccess, 0, 1, 0, layers));
+
+    cl->SetPipeline(pipe);
 
     DescriptorSetDesc dsDesc{};
     dsDesc.layout = m_Layout;
     dsDesc.transient = true;
     dsDesc.debugName = "OceanCombine_DS";
     DescriptorSetHandle ds = device->CreateDescriptorSet(dsDesc);
-    if (!ds.IsValid())
-        return {};
 
     device->UpdateBufferBinding(ds, 0, paramsBuffer, paramsOffset, sizeof(OceanCombineParamsGPU));
     device->UpdateCombinedImageSamplerBinding(ds, 1, m_FFTDisplacement, m_FFTSampler);
     device->UpdateStorageImageBinding(ds, 2, combineTex);
 
-    const uint32 g8 = (m_Resolution + 7u) / 8u;
-    return {pipe, ds, g8, g8, layers, combineTex};
-}
+    cl->BindDescriptorSet(0, ds, pipe);
 
-void OceanCombineSim::RecordDispatch(CommandList* cl, const OceanPreparedDispatch& dispatch)
-{
-    if (!cl || !dispatch.IsValid())
-        return;
+    const uint32 g8 = (m_Resolution + 7u) / 8u;
+    cl->Dispatch(g8, g8, layers);
+
     cl->Barrier(ResourceBarrier::CreateTextureBarrier(
-        dispatch.Target, ResourceState::ShaderResource, ResourceState::UnorderedAccess,
-        0, 1, 0, dispatch.GroupsZ));
-    RecordOceanPreparedDispatch(cl, dispatch);
-    cl->Barrier(ResourceBarrier::CreateTextureBarrier(
-        dispatch.Target, ResourceState::UnorderedAccess, ResourceState::ShaderResource,
-        0, 1, 0, dispatch.GroupsZ));
+        combineTex, ResourceState::UnorderedAccess, ResourceState::ShaderResource, 0, 1, 0, layers));
 }
 
 RenderGraph::RGTexture OceanCombineSim::ImportRG(RenderGraph::RGFrame& frame) const

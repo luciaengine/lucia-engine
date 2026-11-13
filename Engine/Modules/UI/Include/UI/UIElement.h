@@ -1,8 +1,6 @@
 #pragma once
-#include "Mathematics/Rect.h"
 #include "UI/UiDispatcher.h"
 #include "UI/ITextMeasurable.h"
-#include "Scheduler/Scheduler.h"
 #include "UI/UiContext.h"
 #include "UI/UiPostHandle.h"
 #include "UI/UiPostTarget.h"
@@ -25,11 +23,15 @@
 #include <type_traits>
 #include <typeinfo>
 
+#include "Types/Fnv1a.h"
 #include "Types/StringId.h"
+#include "Types/StringUtils.h"
 #include "UI/UIEvents.h"
 #include "UI/UIStyle.h"
-#include "UI/StyleOverrides.h"
+#include "UI/StyleDeclaration.h"
 #include "UI/ResolvedStyle.h"
+#include "Mathematics/Rect.h"
+#include "Mathematics/Vector2.h"
 
 
 
@@ -62,7 +64,7 @@ void UIManagerNotifyElementOwnerChanged(UIManager* owner, UIElement* el);
 void UIManagerRegisterLocalSheetElement(UIManager* owner, UIElement* el);
 void UIManagerUnregisterLocalSheetElement(UIManager* owner, UIElement* el);
 void UIManagerUnregisterTransitioningElement(UIManager* owner, UIElement* el);
-void UIManagerUnregisterElementInstanceId(UIManager* owner, UIElement* el);
+void UIManagerUnregisterElementLookups(UIManager* owner, UIElement* el);
 void UIManagerNotifyElementContentDirty(UIManager* owner, UIElement* el);
 // NOT PUBLIC API. The one piece of the attach/detach machinery that header-inline code
 // reaches (SetOwnerManager below, and Mount's portal edits), which is why it is declared
@@ -176,10 +178,9 @@ enum class OverlayLayer : uint8_t
     HoverTooltip
 };
 
-// Type tag for fast UIElement kind dispatch without dynamic_cast. Debug builds
-// pay a non-trivial RTTI string-compare per dynamic_cast; BuildYogaRecursive
-// checks for a Mount on every traversed element, so a virtual
-// one-byte-returning Kind() shaves measurable time off the slow path.
+// Type tag for UIElement kind dispatch without dynamic_cast. BuildYogaRecursive
+// checks for a Mount on every element it visits, and in Debug each dynamic_cast
+// costs an RTTI string compare.
 enum class UIElementKind : uint8_t
 {
     Default = 0,
@@ -213,8 +214,8 @@ public:
     explicit UIElement(const std::string& id);
     virtual ~UIElement();
 
-    // UIElement is not copyable or movable. The StyleOverrides dirty callback
-    // captures `this` as its context pointer (see WireOverridesDirtyCallback),
+    // UIElement is not copyable or movable. The StyleDeclaration dirty callback
+    // captures `this` as its context pointer (see WireStyleDirtyCallback),
     // so a copy would cross-point and a move would dangle. UI trees are
     // always owned through std::unique_ptr<UIElement>, so this restriction
     // is consistent with how every caller uses the class.
@@ -272,24 +273,7 @@ public:
 
     const std::string& GetId() const { return m_Id; }
     StringId GetIdHash() const { return m_IdHash; }
-    void SetId(const std::string& id)
-    {
-        // Recycled cells reapply stable IDs; unchanged IDs cannot affect selectors.
-        if (m_Id == id)
-            return;
-        m_Id = id;
-        m_IdHash = id.empty() ? StringId{0} : HashStringId(id);
-        // Cascade-memoization Phase 2: id is part of the structural match
-        // key (`#foo` selectors). Self + descendants need cache rebuild —
-        // descendants because `#foo .child` selectors target descendants
-        // through the parent's id.
-        InvalidateRuleCacheSubtree();
-        // Cascade-memoization Phase 6: if the stylesheet set uses sibling
-        // combinators (`#foo + .bar`, `#foo ~ .baz`), following siblings
-        // also need their caches rebuilt.
-        if (UIManagerUsesSiblingCombinators(m_OwnerManager))
-            InvalidateRuleCacheFollowingSiblings();
-    }
+    void SetId(const std::string& id);
     uint64_t GetInstanceId() const { return m_InstanceId; }
 
     // The canonical tag this element was created as, or 0 when it was constructed directly
@@ -343,16 +327,17 @@ public:
     // values are not part of the share key).
     bool HasSelectorAttributes() const { return !m_Attributes.empty(); }
 
-    // Custom pseudo-state API. Selectors of the form
+    // Stage 5 Block C: custom pseudo-state API. Selectors of the form
     // `:my-state` match elements whose custom-state set contains "my-state".
     // Custom names are stored by hashed StringId (case-insensitive: hashed
     // from lowercased string at the convenience overloads).
     //
-    // Add/Remove (bodies in UIElement.cpp) route the dirty mark through
-    // UIManagerMarkCustomStateScope, which narrows it with the per-element
-    // CustomStateRules bit when the rule cache is enabled — adding or
+    // Cascade-memoization Phase 5: bodies live in UIElement.cpp so they
+    // can consult CSSParser::IsRuleCacheEnabled() and the per-element
+    // CustomStateRules predicate to narrow the dirty mark — adding or
     // removing a custom state can only flip a selector match if the
-    // element's rule cache references at least one custom-state selector.
+    // element's rule cache references at least one `:foo-state(...)`
+    // selector.
     void AddCustomState(StringId stateId);
     void RemoveCustomState(StringId stateId);
     bool HasCustomState(StringId stateId) const
@@ -371,6 +356,9 @@ public:
     // Tree structure
     UIElement* GetParent() const { return m_Parent; }
     const std::vector<std::unique_ptr<UIElement>>& GetChildren() const { return m_Children; }
+    // Reorders only: the vector must hold the same children afterwards. Adding or removing
+    // a child goes through AddChild / InsertChild / RemoveChild / TakeChild, which keep the
+    // parent, the owner and the attached root (UIAttachedRootAccess) in step.
     std::vector<std::unique_ptr<UIElement>>& GetMutableChildren() { return m_Children; }
 
     // DFS-parent for cascade purposes — same edge BuildYogaRecursive
@@ -379,7 +367,7 @@ public:
     // UIElement parent (m_Parent). For everything else it falls back to
     // m_Parent. Set/cleared by Mount::SetTarget; otherwise nullptr.
     UIElement* GetDfsParent() const { return m_DfsParent ? m_DfsParent : m_Parent; }
-    void SetMountHostAsDfsParent(UIElement* host) { m_DfsParent = host; }
+    void SetMountHostAsDfsParent(UIElement* host);
     // Owning UIManager (set by UIManager when attached as root, and propagated on AddChild)
     void SetOwnerManager(UIManager* owner)
     {
@@ -410,7 +398,7 @@ public:
             // in the old buffer.
             if (m_OwnerManager &&
                 (m_PrimitiveRangeCap > 0 || m_ClipSlotIdx != 0xFFFFu ||
-                 m_DrawOrderIdx != 0xFFFFFFFFu))
+                 m_TransformSlotIdx != 0 || m_DrawOrderIdx != 0xFFFFFFFFu))
             {
                 UIManagerFreeRenderSlots(m_OwnerManager, this);
             }
@@ -442,10 +430,10 @@ public:
             if (m_OwnerManager && !m_ResolvedStyle.Transitions.IsEmpty())
                 UIManagerUnregisterTransitioningElement(m_OwnerManager, this);
 
-            // instanceId map: drop the OLD manager's mapping; the new
-            // owner's NotifyElementOwnerChanged inserts into its own map.
+            // Drop the old manager's authored-id and instance-id mappings; the
+            // new owner's NotifyElementOwnerChanged inserts its own mappings.
             if (m_OwnerManager)
-                UIManagerUnregisterElementInstanceId(m_OwnerManager, this);
+                UIManagerUnregisterElementLookups(m_OwnerManager, this);
 
             // Cascade-memoization Phase 7: cross-manager owner change
             // invalidates the structural rule cache. The new manager's
@@ -462,9 +450,9 @@ public:
             // UIManager's FontAtlas pages which may differ from the new one.
             if (m_TextMeasurable)
                 m_TextMeasurable->ResetTextShapeCache();
-            // Reset the PrimitiveGen frame stamp to 0, which no live frame
-            // uses, so a stale stamp from the previous owner can't match the
-            // new owner's counter.
+            // Stage 2: same wraparound concern for the PrimitiveGen frame
+            // counter — reset to 0 so a stale value from a previous owner
+            // can't accidentally match the new owner's counter.
             m_LastPrimitiveGenFrame = 0;
             UIManagerNotifyElementOwnerChanged(owner, this);
             // ...and register with the NEW manager so this element's local sheets
@@ -476,6 +464,10 @@ public:
         for (auto& ch : m_Children)
             if (ch)
                 ch->ApplyOwnerManager(owner);
+        // Adopt an ownerless portal target before indexed lookup can reach it.
+        // An already owned target keeps Mount's existing transfer/settle ordering.
+        if (UIElement* target = GetMountTarget(); owner && target && !target->GetOwnerManager())
+            target->ApplyOwnerManager(owner);
     }
 
     // Points m_PostTarget, and m_PostLink's route when a handle exists, at `owner`'s dispatcher,
@@ -516,17 +508,58 @@ public:
     // intentional there and the Mount owns the re-attach timing.
     virtual std::unique_ptr<UIElement> TakeChild(UIElement* child);
 
-    UIElement* FindById(std::string_view id);
+    /// Search this subtree, including Mount targets, for an id given as its StringId
+    /// ("panel-root"_sid, or HashStringId where the id is built at runtime). Manager-owned
+    /// trees use the manager's index; trees without a manager use depth-first traversal.
+    /// Duplicates select the first match in depth-first order: each element precedes its
+    /// children, followed by its Mount target. An empty id is never registered;
+    /// FindById(0) returns nullptr.
+    UIElement* FindById(StringId id);
+
+    /// FindById that returns a weak handle of type T. The handle is empty when no element has
+    /// the id or when the element is not a T.
+    template <typename T>
+    WeakRef<T> FindById(StringId id)
+    {
+        return MakeWeakRef(dynamic_cast<T*>(FindById(id)));
+    }
 
     // Tooltip text shown on hover. Empty string means no tooltip.
-    void SetTooltip(std::string text) { m_TooltipText = std::move(text); }
-    const std::string& GetTooltip() const { return m_TooltipText; }
+    void SetTooltip(std::string text);
+    const std::string& GetTooltip() const;
 
-    // Preferred tooltip placement direction relative to the source element.
-    // Auto picks above/below the cursor (existing behaviour).
+    // The side of its anchor the tooltip sits on. Auto: below, else above. A side with no room
+    // flips to the opposite side when that one has room.
     enum class TooltipPlacement : uint8_t { Auto = 0, Right, Left, Above, Below };
     void SetTooltipPlacement(TooltipPlacement p) { m_TooltipPlacement = p; }
     TooltipPlacement GetTooltipPlacement() const { return m_TooltipPlacement; }
+
+    // The element the tooltip sits against, such as the panel that holds a grid of tiles. The
+    // bubble stays clear of `anchor` and inside its span; its arrow lines up with this element's
+    // center along the anchor's edge. A null, destroyed or hidden anchor places the tooltip against this element.
+    void SetTooltipAnchor(UIElement* anchor);
+    // Null when the tooltip sits against this element.
+    UIElement* GetTooltipAnchor() const;
+
+    // Fills a mounted tooltip template: sets the text of its labels and shows or hides its
+    // parts. `tooltip` holds the layout's children.
+    using TooltipBinder = std::function<void(UIElement& tooltip)>;
+    struct TooltipTemplate
+    {
+        std::string LayoutPath;
+        TooltipBinder Binder;
+    };
+    // A tooltip built from a layout instead of a text. Each time the tooltip shows for this
+    // element, the overlay mounts the layout at `layoutPath` (an asset path, as
+    // UIManager::InstantiateLayoutChildrenFromAssetPath takes) in the bubble and calls
+    // `binder` with it, then measures and places the bubble. The template wins over the
+    // text tooltip. An empty path removes the template.
+    void SetTooltipTemplate(std::string layoutPath, TooltipBinder binder);
+    // Null when the element has no template.
+    const TooltipTemplate* GetTooltipTemplate() const;
+
+    // Inline style text (original string, kept for inspection/serialization).
+    const std::string& GetInlineStyleText() const { return m_InlineStyleText; }
 
     // Pseudo-class hook for CSS :checked.
     virtual bool IsPseudoChecked() const { return false; }
@@ -583,6 +616,10 @@ public:
     {
     }
 
+    // True when OnAuthoredAttributesApplied takes this lower-case name. The registry reports an
+    // authored name as unknown only when no handler and no override takes it.
+    virtual bool BindsAuthoredAttribute(std::string_view /*nameLower*/) const { return false; }
+
     // Called when this element's mount visibility changes (attached to or detached
     // from a visible Mount). Fired exactly once per transition:
     //   - isVisible=false on the old target BEFORE the swap
@@ -594,22 +631,7 @@ public:
 
     // Type-dispatch hooks for primitive generation, avoiding dynamic_cast in the hot path.
     virtual TextInput* GetAsTextInput() { return nullptr; }
-    // The non-owned element a Mount displays; nullptr on every other element.
-    virtual UIElement* GetMountTarget() const { return nullptr; }
-
-    // Visits every element the logical tree places directly under this one:
-    // each non-null child in order, then the Mount target. The Mount target is
-    // not owned, so it is not in GetChildren(); every tree walk that must reach
-    // mounted panels (cascade, layout, hit-testing, lookup) goes through here.
-    template <typename Fn>
-    void ForEachLogicalChild(Fn&& fn) const
-    {
-        for (const auto& child : m_Children)
-            if (child)
-                fn(child.get());
-        if (UIElement* target = GetMountTarget())
-            fn(target);
-    }
+    virtual UIElement* GetMountTarget() { return nullptr; }
 
     // Cached interface pointer set by text-bearing subclasses (Label, TextInput, TextArea)
     // during construction. Non-text elements leave this null for zero overhead at lookup time.
@@ -625,6 +647,11 @@ public:
     // dispatched-state bit disagrees with what its subscribers were actually told is how
     // this mechanism silently drops events.
     friend struct UIAttachStateAccess;
+    // The authored-id index's window onto the attached-root members below
+    // (m_AttachedRoot, m_IsManagerRoot): the index reads them and UIManager::AdoptRoot
+    // marks its root through it. Off the public API because a value that disagrees with
+    // the tree makes a root lookup return the wrong element.
+    friend struct UIAttachedRootAccess;
     // Grants UITests the handler-vector census DispatchToHandlers' compaction is defined
     // in terms of. The public API reports only whether a handler fires, so a dead
     // entry that is never swept is invisible from outside; this friend keeps that
@@ -663,66 +690,14 @@ public:
     // Internal: record a resolved style GUID (deduped).
     void AddRequestedSubtreeStyleGuid(const GUID& guid);
 
-    // Live background image override (programmatic, fast-path).
-    // Applied by UIManager after CSS resolution
-    // so it behaves like a highest-priority inline override without string parsing.
-    struct LiveTextureRef
-    {
-        uint32_t Handle = 0; // Rendering::RGTextureHandle (kept as uint32_t to avoid heavyweight includes)
-        std::function<uint32_t()> Getter{};
-        bool IsValid() const { return Handle != 0 || (bool)Getter; }
-    };
-
-    struct StyleWriter
-    {
-        UIElement* el = nullptr;
-        explicit StyleWriter(UIElement* e) : el(e) {}
-
-        // Example:
-        //   el->Styles()
-        //     .SetBackgroundResourceName("scene_main")
-        //     .SetBackgroundSizeContain()
-        //     .SetBackgroundTint(0xFFFFFFFF);
-        //
-        // Notes:
-        // - Live textures are routed through UIManager's external texture registry using a stable internal key.
-        // - CSS `background-image` still works; these overrides behave like a high-priority inline style.
-
-        // Background image sources
-        StyleWriter& SetBackgroundResourceName(const std::string& name);
-        StyleWriter& SetBackgroundImageNone();    // override to none
-        StyleWriter& ResetBackgroundImage();      // remove override; fallback to CSS
-
-        // Background image parameters
-        StyleWriter& SetBackgroundTint(uint32_t argb);
-        StyleWriter& ResetBackgroundTint();
-
-        StyleWriter& SetBackgroundRepeat(BackgroundRepeat repeat);
-        StyleWriter& ResetBackgroundRepeat();
-
-        StyleWriter& SetBackgroundSizeAuto();
-        StyleWriter& SetBackgroundSizeCover();
-        StyleWriter& SetBackgroundSizeContain();
-        StyleWriter& SetBackgroundSizeExplicit(float x, bool xIsPercent, float y, bool yIsPercent);
-        StyleWriter& ResetBackgroundSize();
-
-        StyleWriter& SetBackgroundPosition(float x, bool xIsPercent, float y, bool yIsPercent);
-        StyleWriter& SetBackgroundPositionPercent(float xPercent, float yPercent);
-        StyleWriter& ResetBackgroundPosition();
-    };
-
-    StyleWriter Styles() { return StyleWriter(this); }
-    const LiveTextureRef* GetBackgroundImageTextureOverride() const
-    {
-        return m_BackgroundImageTextureRef.IsValid() ? &m_BackgroundImageTextureRef : nullptr;
-    }
-    bool HasBackgroundImageTextureOverride() const { return m_BackgroundImageTextureRef.IsValid(); }
-
-    // Typed style overrides (sparse property bag).
-    StyleOverrides& Overrides() { return m_Overrides; }
-    const StyleOverrides& Overrides() const { return m_Overrides; }
-    StyleOverrides& InlineOverrides() { return m_InlineOverrides; }
-    const StyleOverrides& InlineOverrides() const { return m_InlineOverrides; }
+    // This element's own style, set by code: el.Style().Set(Style::Opacity, 0.5f). It wins over the
+    // stylesheets and the `style` attribute (InlineStyle()). A write marks the element dirty for what
+    // the property affects; a write of the value already set does nothing.
+    StyleDeclaration& Style() { return m_CodeStyle; }
+    const StyleDeclaration& Style() const { return m_CodeStyle; }
+    // The parsed `style="..."` attribute. Owned by the markup: a re-parse replaces it.
+    StyleDeclaration& InlineStyle() { return m_InlineStyle; }
+    const StyleDeclaration& InlineStyle() const { return m_InlineStyle; }
 
     const ResolvedStyle& GetResolvedStyle() const { return m_ResolvedStyle; }
     ResolvedStyle& GetMutableResolvedStyle() { return m_ResolvedStyle; }
@@ -1142,12 +1117,6 @@ public:
     // contract as PostAction.
     bool PostSafeAction(std::function<void()> action);
 
-    // The scheduler of the UIManager whose update is running on this thread; null outside one.
-    GameEngine::Scheduler::IScheduler* GetScheduler() const {
-        if (auto* ctx = UI::GetTlsUiContext()) return ctx->Scheduler;
-        return nullptr;
-    }
-
     // Event-dispatch state (set by UIManager during event routing).
     // The public API stays bool-based for call sites, but internally we track depth
     // so nested dispatch scopes do not accidentally clear the state too early.
@@ -1163,14 +1132,25 @@ public:
     static bool IsInEventDispatch();
 
 	    // Last computed layout rectangle (absolute coordinates). Read-only
-	    // outside the layout solver — mutate via Overrides() /
+	    // outside the layout solver — mutate via Style() /
 	    // UI::Layout::SetAbsolutePosition, not by writing this cache.
-	    /// Committed bounds in window CSS pixels.
-        Mathematics::Rect GetWindowRect() const { return {m_LastX, m_LastY, m_LastW, m_LastH}; }
-        float GetLayoutX() const { return m_LastX; }
+	    float GetLayoutX() const { return m_LastX; }
 	    float GetLayoutY() const { return m_LastY; }
 	    float GetLayoutWidth() const { return m_LastW; }
 	    float GetLayoutHeight() const { return m_LastH; }
+
+	    // The layout rect in window space, in CSS logical px: carried through this
+	    // element's own CSS transform and every transformed ancestor's, as the
+	    // axis-aligned bounds of the drawn box (a browser's getBoundingClientRect).
+	    // The layout rect itself when no transform applies. A popup, tooltip or
+	    // menu that opens at the window level anchors to this. An overlay
+	    // (GetOverlayLayer) escapes its ancestors' clips but keeps their transforms.
+	    Mathematics::Rect GetWindowRect() const;
+	    // A window point (CSS logical px) in this element's layout space: through
+	    // the inverse of every transform GetWindowRect applies. False, with `out`
+	    // untouched, when one of them is singular: scale(0) draws nothing, so no
+	    // window point lies on the element.
+	    bool WindowToLayout(const Mathematics::Vector2& window, Mathematics::Vector2& out) const;
 
 	    // Opt-in: quantise this element's committed rect onto whole DEVICE pixels.
 	    // Yoga's grid is 1/64 of a device pixel, which is what lets a length Chrome
@@ -1234,7 +1214,6 @@ public:
         m_Enabled = enabled;
         MarkDirtySubtree(StyleDirty | LayoutDirty | VisualDirty);
     }
-    void SetDisabled(bool disabled) { SetEnabled(!disabled); }
     bool IsEnabled() const { return m_Enabled; }
     // False when this element or any ancestor is disabled. Disabling a container
     // disables what it contains, the rule HTML gives the contents of a disabled
@@ -1285,6 +1264,7 @@ public:
 	    // Focus proxy: optional indirection for internal editors (e.g. TextInput)
 	    // that want focus/tab/keyboard routing to go through an owning control.
 	    void SetFocusProxy(UIElement* el) { m_FocusProxy = el; }
+	    UIElement* GetFocusProxy() const { return m_FocusProxy; }
 	
 	    UIElement* ResolveFocusTarget()
 	    {
@@ -1333,11 +1313,11 @@ public:
 	    {
 	        if ((m_DirtyFlags & flags) != 0)
 	            return true;
-	        if ((flags & LayoutDirty) != 0 && m_Overrides.IsLayoutDirty())
+	        if ((flags & LayoutDirty) != 0 && m_CodeStyle.IsLayoutDirty())
 	            return true;
-	        if ((flags & VisualDirty) != 0 && m_Overrides.IsVisualDirty())
+	        if ((flags & VisualDirty) != 0 && m_CodeStyle.IsVisualDirty())
 	            return true;
-	        if ((flags & StyleDirty) != 0 && m_Overrides.NeedsCascadeRerun())
+	        if ((flags & StyleDirty) != 0 && m_CodeStyle.NeedsCascadeRerun())
 	            return true;
 	        return false;
 	    }
@@ -1345,7 +1325,7 @@ public:
 	    {
 	        m_DirtyFlags &= ~flags;
 	        if ((flags & (LayoutDirty | VisualDirty | StyleDirty)) != 0)
-	            m_Overrides.ClearDirty();
+	            m_CodeStyle.ClearDirty();
 	    }
 
     // Content-only mutation: this element's primitive BYTES changed (text
@@ -1370,7 +1350,7 @@ public:
         // Set flags on self + all descendants in one pass, then propagate the
         // summary bit up the ancestor chain exactly once.
         //
-        // Each descendant must also land in the
+        // Stage 5 Block A part 3f.2: each descendant must also land in the
         // dirty queues — drain processes only queued elements, so without
         // per-descendant notification a MarkDirtySubtree call would only
         // queue the root and drain would miss the descendants entirely.
@@ -1427,10 +1407,10 @@ public:
         // virtualized cells) can stay on the cheap patch paths. If a class change *does*
         // affect layout, the UIManager's signature checks will request a relayout.
         MarkDirtySubtree(StyleDirty | VisualDirty);
-        // Class is the most common structural
+        // Cascade-memoization Phase 2: class is the most common structural
         // match key (`.foo` selectors). Self + descendants invalidate.
         InvalidateRuleCacheSubtree();
-        // When the stylesheet set uses
+        // Cascade-memoization Phase 6: when the stylesheet set uses
         // `+`/`~` combinators, an element's class flip changes the match
         // for following siblings (`.foo + .bar`, `.foo ~ .baz`).
         if (UIManagerUsesSiblingCombinators(m_OwnerManager))
@@ -1445,7 +1425,7 @@ public:
                 m_ClassIds.erase(m_ClassIds.begin() + (ptrdiff_t)i);
                 m_ClassNames.erase(m_ClassNames.begin() + (ptrdiff_t)i);
                 MarkDirtySubtree(StyleDirty | VisualDirty);
-                // See AddClassInternal note.
+                // Cascade-memoization Phase 2: see AddClassInternal note.
                 InvalidateRuleCacheSubtree();
                 if (UIManagerUsesSiblingCombinators(m_OwnerManager))
                     InvalidateRuleCacheFollowingSiblings();
@@ -1506,26 +1486,30 @@ public:
     bool IsClipCullingDisabled() const { return m_DisableClipCulling; }
 
 private:
-    // Wire the StyleOverrides dirty callback on construction so any mutation
-    // to this element's overrides (Set/Reset/Clear, SetCustom, etc.) routes
-    // through MarkDirty — which propagates SubtreeDirty up the ancestor chain.
-    // Without it the override dirty bits would stay internal to
-    // StyleOverrides and the subtree-skip gate could not trust SubtreeDirty
-    // for a subtree holding a descendant with override-dirty.
-    void WireOverridesDirtyCallback()
+    // Routes every write to Style() through MarkDirty, which sets SubtreeDirty on the ancestors.
+    // Without it the dirty bits stay in the StyleDeclaration, and the layout fast path must skip
+    // every subtree that holds a style-dirty descendant.
+    void WireStyleDirtyCallback()
     {
-        m_Overrides.SetDirtyCallback(
+        m_CodeStyle.SetDirtyCallback(
             +[](void* ctx, uint32_t f) {
                 auto* self = static_cast<UIElement*>(ctx);
                 unsigned mark = 0;
-                if (f & StyleOverrides::Layout)  mark |= LayoutDirty;
-                if (f & StyleOverrides::Visual)  mark |= VisualDirty;
-                if (f & StyleOverrides::Cascade) mark |= StyleDirty;
+                if (f & StyleDeclaration::Layout)  mark |= LayoutDirty;
+                if (f & StyleDeclaration::Visual)  mark |= VisualDirty;
+                if (f & StyleDeclaration::Cascade) mark |= StyleDirty;
                 if (mark)
                     self->MarkDirty(mark);
+                if (f & StyleDeclaration::CustomScope)
+                    self->MarkCustomPropertyReadersDirty();
             },
             this);
     }
+
+    // StyleDirty on every element that inherits this element's custom
+    // properties: its children, recursively, and a Mount's portal target, whose
+    // cascade parent is the Mount.
+    void MarkCustomPropertyReadersDirty();
 
     inline static std::atomic<uint64_t> s_NextInstanceId{1};
     uint64_t m_InstanceId = 0;
@@ -1548,16 +1532,16 @@ protected:
 
         size_t operator()(std::string_view value) const noexcept
         {
-            // Case-insensitive ASCII hash (matches attribute name normalization).
-            size_t h = 1469598103934665603ull;
-            for (char c : value)
+            // Case-insensitive ASCII FNV-1a (matches attribute name normalization).
+            uint64_t hash = Hashing::kFnv1a64OffsetBasis;
+            for (char character : value)
             {
-                if (c >= 'A' && c <= 'Z')
-                    c = static_cast<char>(c - 'A' + 'a');
-                h ^= static_cast<unsigned char>(c);
-                h *= 1099511628211ull;
+                if (character >= 'A' && character <= 'Z')
+                    character = static_cast<char>(character - 'A' + 'a');
+                hash ^= static_cast<unsigned char>(character);
+                hash *= Hashing::kFnv1a64Prime;
             }
-            return h;
+            return static_cast<size_t>(hash);
         }
 
         size_t operator()(const std::string& value) const noexcept { return operator()(std::string_view(value)); }
@@ -1567,23 +1551,7 @@ protected:
     {
         using is_transparent = void;
 
-        bool operator()(std::string_view a, std::string_view b) const noexcept
-        {
-            if (a.size() != b.size())
-                return false;
-            for (size_t i = 0; i < a.size(); ++i)
-            {
-                char ca = a[i];
-                char cb = b[i];
-                if (ca >= 'A' && ca <= 'Z')
-                    ca = static_cast<char>(ca - 'A' + 'a');
-                if (cb >= 'A' && cb <= 'Z')
-                    cb = static_cast<char>(cb - 'A' + 'a');
-                if (ca != cb)
-                    return false;
-            }
-            return true;
-        }
+        bool operator()(std::string_view a, std::string_view b) const noexcept { return EqualsIgnoreCase(a, b); }
 
         bool operator()(const std::string& a, const std::string& b) const noexcept
         {
@@ -1593,7 +1561,7 @@ protected:
 
     using AttributeMap = std::unordered_map<std::string, std::string, AttributeKeyHash, AttributeKeyEqual>;
 
-	    // Last layout rect storage
+	    // The rectangle of the last layout.
 	    float m_LastX = 0.0f;
 	    float m_LastY = 0.0f;
 	    float m_LastW = 0.0f;
@@ -1628,6 +1596,23 @@ protected:
     // is what makes a detach-and-reattach inside one frame dispatch nothing.
     bool m_AttachStateDispatched = false;
 
+  private:
+    // Set while a UIManager holds this element as its root (UIManager::AdoptRoot).
+    bool m_IsManagerRoot = false;
+    // The manager root this element's DFS-parent chain (GetDfsParent) ends at, or nullptr
+    // when the chain ends at an element no UIManager holds as its root. Every element of a
+    // DFS subtree carries the same value, so a change at one DFS edge rewrites the subtree
+    // below that edge and nothing else. Rewritten at every DFS edge write (AddChild,
+    // InsertChild, RemoveChild, TakeChild, SetMountHostAsDfsParent) and at AdoptRoot, by
+    // NoteDfsParentChanged; read by UI::ElementIdIndex to answer a root lookup without
+    // walking the parent chain.
+    const UIElement* m_AttachedRoot = nullptr;
+    // Recomputes m_AttachedRoot from the DFS parent (or from m_IsManagerRoot when there is
+    // none) and, when it changed, writes the new value through the DFS subtree.
+    void NoteDfsParentChanged();
+    void AssignAttachedRootInSubtree(const UIElement* root);
+
+  protected:
     ITextMeasurable* m_TextMeasurable = nullptr;
 
     std::string m_Id;
@@ -1652,11 +1637,20 @@ protected:
     // of them). Both stamp it at creation. Empty means "ask the registry", which is right for
     // every ordinary control, where the C++ type does identify the tag.
     std::string m_TagName;
-    std::string m_TooltipText;
+    // The tooltip's text, template and anchor, allocated only for an element that has one of them.
+    struct TooltipData
+    {
+        std::string Text;
+        TooltipTemplate Template;
+        WeakRef<> Anchor;
+    };
+    // Frees m_TooltipData when it holds no text, no template and no anchor.
+    void ReleaseEmptyTooltipData();
+    std::unique_ptr<TooltipData> m_TooltipData;
     TooltipPlacement m_TooltipPlacement = TooltipPlacement::Auto;
     std::vector<std::string> m_ClassNames;
     std::vector<StringId> m_ClassIds;
-    // Custom pseudo-state ids. Small set in practice
+    // Stage 5 Block C: custom pseudo-state ids. Small set in practice
     // (most elements have 0 custom states; controls with explicit states
     // typically carry 1-3). Stored as a vector for cache locality on the
     // MatchesSelectorChain hot path. No string copy kept — all matching
@@ -1665,13 +1659,13 @@ protected:
     AttributeMap m_Attributes;
     UIElement* m_Parent = nullptr;
     // Mount portal host: when this element is a Mount target, points to
-    // the Mount UIElement that displays it: the parent edge that depth-first
-    // tree walks follow through the portal. Maintained synchronously by
-    // Mount::SetTarget / SwapTargetForActivation / dtor.
+    // the Mount UIElement that displays it. Provides the DFS-parent edge
+    // that NodeRec.parentIndex tracked before Stage 7 step 6.3b. Maintained
+    // synchronously by Mount::SetTarget / SwapTargetForActivation / dtor.
     // nullptr for non-Mount-targets — GetDfsParent() falls back to m_Parent.
     UIElement* m_DfsParent = nullptr;
 public:
-    // Owned per-element retained Yoga state. Allocated on
+    // Owned per-element retained Yoga state (Stage 7 step 8). Allocated on
     // first BuildYogaRecursive visit; destroyed in ~UIElement when the
     // owning element dies. Declared BEFORE m_Children so that children
     // destruct first and detach their YGNodes from this element's YGNode
@@ -1695,14 +1689,17 @@ protected:
     std::vector<SubtreeStyleAssetRequest> m_RequestedSubtreeStyleAssetPaths;
     std::vector<GUID> m_RequestedSubtreeStyleAssetGuids;
 
-    // Programmatic style overrides (allocated only when needed to keep UIElement lean).
-    LiveTextureRef m_BackgroundImageTextureRef{};
-    // Inline style overrides (parsed from "style" attribute).
+    // The authored `style` attribute text, as last parsed into m_InlineStyle.
     std::string m_InlineStyleText;
 
-    // Typed style overrides (sparse property bag).
-    StyleOverrides m_Overrides;
-    StyleOverrides m_InlineOverrides;
+  private:
+    // Style(): what code declares. InlineStyle(): the parsed `style` attribute. Subclasses
+    // reach them through those accessors. Declared here, between the protected members, so
+    // the element's layout is the one its size pin states.
+    StyleDeclaration m_CodeStyle;
+    StyleDeclaration m_InlineStyle;
+
+  protected:
     ResolvedStyle m_ResolvedStyle;
     OverlayLayer m_OverlayLayer = OverlayLayer::None;
 
@@ -2085,10 +2082,9 @@ protected:
 	    UIElement* m_FocusProxy = nullptr;
 
   public:
-    // Per-element render handles into the owning UIManager's persistent
-    // primitive, clip and draw-order arrays. The manager's primitive pass
-    // allocates, resizes and releases them; UIManager::FreeRenderSlots
-    // releases all of them at once.
+    // Event-driven UI rewrite, Stage 1 (additive, currently unused at
+    // runtime): per-element render handle into the manager's persistent
+    // SSBO mirrors. Stage 2+ wires actual allocations through these.
     //
     // m_PrimitiveRangeStart : start in m_PersistentPrimitives (kInvalidSlot
     //                         when no primitives are owned — pure-layout
@@ -2106,6 +2102,13 @@ protected:
     //                         from baked primitives or a parent walk.
     // m_DrawOrderIdx        : start in m_DrawOrder for this element's
     //                         slice (size mirrors m_PrimitiveRangeCount).
+    // m_TransformSlotIdx    : index in m_PersistentTransforms while the
+    //                         element has a CSS transform (0 = none; slot 0
+    //                         is the shared identity, never owned).
+    // m_AmbientTransformIdx : the transform slot in effect at this element's
+    //                         last full-DFS visit (its nearest transformed
+    //                         ancestor's), recorded for the same reason as
+    //                         m_AmbientClipIdx.
     //
     // Sentinels match SlotAllocator::kInvalidSlot and UI::kNoClip; not
     // typed as those constants here to keep the headers light.
@@ -2115,6 +2118,8 @@ protected:
     uint16_t m_ClipSlotIdx         = 0xFFFFu;
     uint16_t m_AmbientClipIdx      = 0xFFFFu;
     uint32_t m_DrawOrderIdx        = 0xFFFFFFFFu;
+    uint32_t m_TransformSlotIdx    = 0;
+    uint32_t m_AmbientTransformIdx = 0;
 
     // Ancestor-chain opacity product at the last primitive emit, EXCLUDING
     // this element's own opacity. The drain seeds emission from this instead
@@ -2124,7 +2129,7 @@ protected:
     // reset the accumulator and Mount hops route through the host.
     float m_PrimitiveAncestorOpacity = 1.0f;
 
-    // Re-entrancy detector for the per-element finalize path in
+    // Stage 2: re-entrancy detector for the per-element finalize path in
     // PrimitiveGen. Each PrimitiveGen frame bumps UIManager::m_PrimitiveGenFrame
     // and writes that value here when the element is visited. If the visit
     // enters with this already equal to the current frame counter, an event
@@ -2139,8 +2144,7 @@ protected:
 
     // PrimitiveGen frame counter of the last FULL DFS that actually processed
     // this element (stamped after the viewport/clip cull, full mode only).
-    // The primitive-data drain (CollectDrainItems) compares this against the
-    // manager's last-full-DFS counter:
+    // The E1 drain compares this against the manager's last-full-DFS counter:
     // a mismatch means the element was clip-culled out of (or created after)
     // the last full walk, so its slot range / DrawOrder bookkeeping is stale
     // and must not be used for in-place slice surgery.
@@ -2177,7 +2181,7 @@ protected:
     };
     uint8_t m_InQueueFlags = 0;
 
-    // Per-element predicate for "do any matched style
+    // Stage 5 Block B: per-element predicate for "do any matched style
     // rules reference this pseudo-state?" Computed as a side output of
     // ComputeStyleInto each time the cascade resolves this element.
     // Mark-dirty sites consult this bitmask to skip pushing elements
@@ -2199,8 +2203,11 @@ protected:
     };
     uint16_t m_MatchedPseudoStates = 0;
 
+    // Cascade-matcher memoization (Phase 1, additive — readers wired in
+    // Phases 3+).
+    //
     // Per-element cache of structurally-matching rules. Populated by
-    // CSSParser::BuildRuleCache by walking the candidate rules
+    // BuildRuleCache (forthcoming Phase 3) by walking the candidate rules
     // in the element's effective stylesheet set and applying a STRUCTURAL
     // match — same as MatchesSelectorChain but treating dynamic pseudo
     // classes (:hover/:focus/:active/:disabled/:enabled/:checked/
@@ -2248,10 +2255,11 @@ protected:
     }
 
     // Marks this element + every descendant's rule cache stale. Cheap when
-    // already invalid (early-out on the recursion). Called by mutation sites.
+    // already invalid (early-out on the recursion). Called by mutation sites
+    // in Phase 2.
     //
-    // Also resets m_MatchedPseudoStates to all-bits-set. The narrowing
-    // predicate `(bits & flag) != 0`
+    // Cascade-memoization Phase 7: also resets m_MatchedPseudoStates to
+    // all-bits-set. The Phase 5 narrowing predicate `(bits & flag) != 0`
     // then defaults to "true" (mark dirty) until the next cascade
     // rebuilds with real bits — conservative against the case where a
     // stylesheet hot-reload added a rule referencing a pseudo we hadn't
@@ -2264,22 +2272,28 @@ protected:
             // Children may still be valid (we lazy-invalidate). Recurse so
             // subtree-mutation semantics are deterministic regardless of
             // entry state.
+            for (auto& ch : m_Children)
+                if (ch && ch->m_RuleCacheValid)
+                    ch->InvalidateRuleCacheSubtree();
             // Mount portal targets are not part of m_Children but participate
             // in cascade. Their cached rule pointers reference the same
             // stylesheets as the visible tree, so they must be invalidated
             // alongside m_Children — otherwise a stylesheet-set change leaves
             // dangling rule pointers in mounted subtrees and the next cascade
             // dereferences them.
-            ForEachLogicalChild([](UIElement* child) {
-                if (child->m_RuleCacheValid)
-                    child->InvalidateRuleCacheSubtree();
-            });
+            if (UIElement* tgt = GetMountTarget())
+                if (tgt->m_RuleCacheValid)
+                    tgt->InvalidateRuleCacheSubtree();
             return;
         }
         m_RuleCacheValid = false;
         m_CachedMatchedRules.clear();  // free the vector storage proactively
         m_MatchedPseudoStates = 0xFFFFu;  // conservative: mark-dirty default until rebuilt
-        ForEachLogicalChild([](UIElement* child) { child->InvalidateRuleCacheSubtree(); });
+        for (auto& ch : m_Children)
+            if (ch)
+                ch->InvalidateRuleCacheSubtree();
+        if (UIElement* tgt = GetMountTarget())
+            tgt->InvalidateRuleCacheSubtree();
     }
 
     // Cascade-memoization Phase 6: invalidate the rule cache subtree of

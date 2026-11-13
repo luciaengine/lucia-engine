@@ -2,10 +2,11 @@
 
 #include "AssetCore/Asset.h"
 #include "AssetCore/GUID.h"
-#include "AssetCore/Types.h"
+#include "Types/Types.h"
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace GameEngine
@@ -105,7 +106,7 @@ public:
         : ::GameEngine::Asset(guid, ::GameEngine::AssetType::AnimationController, path) {}
 
     bool Load() override;
-    bool LoadFromData(const Vector<uint8>& data) override;
+    bool LoadFromData(std::span<const uint8> data) override;
     void Unload() override;
 
     bool SaveToData(Vector<uint8>& outData) const;
@@ -123,6 +124,8 @@ public:
 
 private:
     bool ParseJson(const std::string& text);
+    // Logs that the file is not loaded and why, clears the controller and fails the asset; returns false.
+    bool Refuse(std::string_view reason);
     std::string SerializeJson() const;
 
     std::vector<AnimationParameter> m_Parameters;

@@ -1,5 +1,3 @@
-#include "UI/Controls/ScrollView.h"
-#include "UI/Controls/Scrollbar.h"
 
 #include <gtest/gtest.h>
 
@@ -18,15 +16,18 @@
 #include "UIRgTestHarness.h"
 
 #include "Assets/AssetManager.h"
+#include "Mathematics/Rect.h"
+#include "UI/ITextMeasurable.h"
 #include "UI/Parsers/CSSParser.h"
 #include "UI/Registration/ElementRegistration.h"
 #include "UI/UIPrimitive.h"
 
-#include "TestTempDir.h"
-
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <string>
+#include <vector>
 
 using namespace GameEngine;
 
@@ -43,6 +44,16 @@ static void SendMouse(UIElement& el, EventId id, float x, float y, int button = 
     e.Target = &el;
     e.CurrentTarget = &el;
     el.DispatchEvent(e);
+}
+
+// Hovers (x, y) past the hover delay; true when the tooltip bubble is placed in the window.
+bool HoverShowsTooltip(UITesting::IsolatedUIFixture& fixture, float x, float y)
+{
+    fixture.Manager().OnMouseMove(x, y);
+    for (int frame = 0; frame < 4; ++frame)
+        fixture.PumpSeconds(0.3f);
+    const UIElement* bubble = fixture.Element("ui-tooltip-wrapper");
+    return bubble && bubble->GetLayoutWidth() > 0.0f && bubble->GetLayoutX() >= 0.0f && bubble->GetLayoutY() >= 0.0f;
 }
 
 } // namespace
@@ -313,7 +324,7 @@ UIElement* ChildWithClass(const UIElement& parent, const char* className)
 }
 } // namespace
 
-static void CheckHeaderIconPaintWithoutInteraction(bool solidSvg)
+TEST(DropdownTests, HeaderIconPaintsItsImageWithNoInteraction)
 {
     // The closed header is the first thing the user sees. Its slot is created,
     // classed and laid out in one go, so it generates primitives exactly once —
@@ -330,19 +341,15 @@ static void CheckHeaderIconPaintWithoutInteraction(bool solidSvg)
     // An asset root of this test's own, so the icon is genuinely first used
     // here: a texture another test already cached would hide the defect.
     namespace fs = std::filesystem;
-    const fs::path assetRoot = TestUtils::MakeUniqueTempDirectory(solidSvg ? "dropdown_header_icon_solid_svg" : "dropdown_header_icon_gradient_svg");
+    const fs::path assetRoot = fs::temp_directory_path() / "dropdown_header_icon_paint";
     std::error_code ec;
+    fs::remove_all(assetRoot, ec);
     fs::create_directories(assetRoot, ec);
     const fs::path iconPath = assetRoot / "probe-icon.svg";
     {
         std::ofstream out(iconPath, std::ios::binary);
-        out << R"(<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">)";
-        if (solidSvg)
-            out << R"(<rect x="2" y="2" width="12" height="12" fill="#FFFFFF"/>)";
-        else
-            // Gradient paint exercises async texture arrival.
-            out << R"svg(<defs><linearGradient id="g"><stop stop-color="red"/><stop offset="1" stop-color="blue"/></linearGradient></defs><rect x="2" y="2" width="12" height="12" fill="url(#g)"/>)svg";
-        out << "</svg>";
+        out << R"(<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" )"
+            << R"(viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" fill="#FFFFFF"/></svg>)";
     }
 
     JobSystem::WorkStealingThreadPool pool(2);
@@ -381,8 +388,7 @@ static void CheckHeaderIconPaintWithoutInteraction(bool solidSvg)
             const UI::UIPrimitive* primitive = ui.PeekPrimitiveForTesting(*icon, i);
             if (!primitive)
                 return false;
-            if (UI::GetMode(primitive->ModeAndFlags) ==
-                UI::PrimitiveMode::Textured)
+            if (UI::GetMode(primitive->ModeAndFlags) == UI::PrimitiveMode::Textured)
                 return true;
         }
     };
@@ -395,8 +401,7 @@ static void CheckHeaderIconPaintWithoutInteraction(bool solidSvg)
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
     int frames = 0;
     bool painted = false;
-    while (!assets.GetAsset(iconGuid) &&
-           std::chrono::steady_clock::now() < deadline)
+    while (!assets.GetAsset(iconGuid) && std::chrono::steady_clock::now() < deadline)
     {
         ui.Update(0.001f, /*interactive=*/true);
         DriveUiRender(ui, rg);
@@ -412,71 +417,164 @@ static void CheckHeaderIconPaintWithoutInteraction(bool solidSvg)
         painted = drawsItsImage();
     }
     EXPECT_TRUE(painted) << "the header icon never drew its image (" << frames << " frames)";
-    EXPECT_EQ(ui.PendingBackgroundImageCount(), 0u) << "a background image is still in flight";
+    EXPECT_EQ(ui.BackgroundImages().PendingCount(), 0u) << "a background image is still in flight";
 
     fs::remove_all(assetRoot, ec);
 }
 
-TEST(DropdownTests, HeaderIconPaintsItsImageWithNoInteraction)
+namespace
 {
-    CheckHeaderIconPaintWithoutInteraction(false);
-}
-
-TEST(DropdownTests, SolidSvgHeaderIconPaintsItsTextureWithNoInteraction)
-{
-    CheckHeaderIconPaintWithoutInteraction(true);
-}
-
-TEST(DropdownTests, ANarrowPanelPullsThePopupBackInside)
-{
-    // A fit-content popup is anchored to the header's left edge, so in a panel
-    // narrower than the popup its right edge leaves the panel and the rows are
-    // clipped at the boundary instead of being readable.
-    UITesting::IsolatedUIFixture fixture;
-    const bool built = fixture.Build(
-        1.0f,
-        R"(<uielement id="root"><uielement id="pane" class="panel"><uielement id="label"/><uielement id="host"/></uielement></uielement>)",
-        R"(
+// An inspector row in a 150 px panel at the left of a 400 px window: the field sits in the right-hand
+// column, 90 px from the window's left edge. `#tail` sets the room after the panel, so a test can put the
+// field near the window's right edge. The list rules are the editor's (theme/widgets.css).
+constexpr const char* kPlacementXml =
+    R"(<uielement id="root"><uielement id="pane" class="panel"><uielement id="label"/><uielement id="host"/></uielement><uielement id="tail"/></uielement>)";
+constexpr const char* kPlacementCss = R"(
 #root { width: 400px; height: 300px; flex-direction: row; }
-/* An inspector row: the field sits in the right-hand column, so its popup
-   starts most of the way across an already narrow panel. */
 #pane { width: 150px; height: 300px; flex-direction: row; }
 #label { width: 90px; }
 #host { width: 60px; }
 .dropdown { min-width: 60px; }
 .dropdown-items { position: absolute; top: 100%; left: 0px; width: 100%; }
 .dropdown-items.fit-content { width: auto; min-width: 100%; }
-.dropdown-item { padding: 2px 10px 2px 24px; }
-)");
+.dropdown-item-fit-content { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dropdown-item { margin: 1px 4px; padding: 2px 10px 2px 24px; }
+)";
+constexpr float kWindowWidth = 400.0f;
+constexpr float kPlacementTolerance = 0.5f;
+// The list's room ends this far inside the window's edge (DropdownPopupPlacement.cpp).
+constexpr float kWindowClearance = 2.0f;
+
+// An auto-width dropdown in #host, opened and laid out.
+Dropdown* OpenAutoWidthDropdown(UITesting::IsolatedUIFixture& fixture, const std::vector<std::string>& labels)
+{
+    auto owned = std::make_unique<Dropdown>();
+    Dropdown* dropdown = owned.get();
+    fixture.Element("host")->AddChild(std::move(owned));
+    dropdown->SetAutoWidthPopup(true);
+    dropdown->SetOptionsFromLabels(labels, 0);
+    fixture.Settle();
+    dropdown->OpenMenuUi();
+    fixture.Settle();
+    return dropdown;
+}
+
+// The width of a list whose rows each show their whole text: the widest text with the row's padding and margin.
+float WidthOfWidestEntry(UITesting::IsolatedUIFixture& fixture, const UIElement& list)
+{
+    float widest = 0.0f;
+    for (const auto& child : list.GetChildren())
+    {
+        const auto* row = dynamic_cast<const Label*>(child.get());
+        if (!row)
+            continue;
+        const auto& layout = row->GetResolvedStyle().Layout;
+        const float chrome = layout.Padding.Left + layout.Padding.Right + layout.Margin.Left + layout.Margin.Right;
+        widest = std::max(widest, fixture.Manager().MeasureTextWidth(*row, row->GetText()) + chrome);
+    }
+    return widest;
+}
+} // namespace
+
+// The list is as wide as its widest entry and hangs from its header's left edge, also when that takes it
+// past the panel: a list draws over the next panel.
+TEST(DropdownTests, AListHangsFromItsHeaderAtTheWidthOfItsWidestEntry)
+{
+    UITesting::IsolatedUIFixture fixture;
+    const bool built = fixture.Build(1.0f, kPlacementXml, kPlacementCss);
     if (!fixture.DeviceAvailable())
         GTEST_SKIP() << "No Vulkan device available";
     ASSERT_TRUE(built) << fixture.Diagnostic();
 
-    UIElement* host = fixture.Element("host");
-    UIElement* pane = fixture.Element("pane");
-    ASSERT_NE(host, nullptr);
-    ASSERT_NE(pane, nullptr);
+    Dropdown* dropdown = OpenAutoWidthDropdown(fixture, {"Claude (Subscription)", "Claude (API key)", "Codex"});
+    const UIElement* list = dropdown->GetItemsContainer();
+    const Mathematics::Rect header = dropdown->GetWindowRect();
+    const Mathematics::Rect box = list->GetWindowRect();
+    const float widest = WidthOfWidestEntry(fixture, *list);
+    ASSERT_GT(widest, header.Width) << "the entries need more than the header";
+    EXPECT_NEAR(box.X, header.X, kPlacementTolerance) << "the list hangs from the header's left edge";
+    EXPECT_NEAR(box.Width, widest, kPlacementTolerance) << "the list is as wide as its widest entry";
+}
 
-    auto owned = std::make_unique<Dropdown>();
-    Dropdown* dropdown = owned.get();
-    host->AddChild(std::move(owned));
-    dropdown->SetOptions({{"a", "Physical (camera)", {}, "probe-icon"},
-                          {"b", "Manual (EV100)", {}, "probe-icon"},
-                          {"c", "Auto (metered)", {}, "probe-icon"}});
-    fixture.Settle();
-    dropdown->OpenMenuUi();
-    fixture.Settle();
+// A list that would leave the window from the header's left edge hangs from the header's right edge.
+TEST(DropdownTests, AListThatWouldLeaveTheWindowHangsFromTheHeadersRightEdge)
+{
+    UITesting::IsolatedUIFixture fixture;
+    const bool built = fixture.Build(1.0f, kPlacementXml,
+                                     std::string(kPlacementCss) +
+                                         "#root { justify-content: flex-end; }\n#tail { width: 20px; }\n");
+    if (!fixture.DeviceAvailable())
+        GTEST_SKIP() << "No Vulkan device available";
+    ASSERT_TRUE(built) << fixture.Diagnostic();
 
-    UIElement* items = dropdown->GetItemsContainer();
-    ASSERT_NE(items, nullptr);
-    const float paneLeft = pane->GetLayoutX();
-    const float paneRight = paneLeft + pane->GetLayoutWidth();
-    const float popupLeft = items->GetLayoutX();
-    const float popupRight = popupLeft + items->GetLayoutWidth();
-    EXPECT_LE(popupRight, paneRight + 0.5f)
-        << "popup right " << popupRight << " leaves the panel at " << paneRight;
-    EXPECT_GE(popupLeft, paneLeft - 0.5f)
-        << "popup left " << popupLeft << " starts before the panel at " << paneLeft;
+    Dropdown* dropdown = OpenAutoWidthDropdown(fixture, {"Claude (Subscription)", "Claude (API key)", "Codex"});
+    const UIElement* list = dropdown->GetItemsContainer();
+    const Mathematics::Rect header = dropdown->GetWindowRect();
+    const Mathematics::Rect box = list->GetWindowRect();
+    const float widest = WidthOfWidestEntry(fixture, *list);
+    ASSERT_GT(header.X + widest, kWindowWidth - kWindowClearance) << "the list does not fit right of the header";
+    EXPECT_NEAR(box.Right(), header.Right(), kPlacementTolerance) << "the list hangs from the header's right edge";
+    EXPECT_NEAR(box.Width, widest, kPlacementTolerance) << "the list is as wide as its widest entry";
+}
+
+// An entry wider than the room on both sides of the header: the list takes the larger room and the entry
+// ends in an ellipsis, with the whole text in the row's tooltip.
+TEST(DropdownTests, AnEntryWiderThanTheRoomEndsInAnEllipsisWithTheWholeTextInItsTooltip)
+{
+    UITesting::IsolatedUIFixture fixture;
+    const bool built = fixture.Build(1.0f, kPlacementXml, kPlacementCss);
+    if (!fixture.DeviceAvailable())
+        GTEST_SKIP() << "No Vulkan device available";
+    ASSERT_TRUE(built) << fixture.Diagnostic();
+
+    Dropdown* dropdown = OpenAutoWidthDropdown(fixture, {"Short", std::string(120, 'W')});
+    const UIElement* list = dropdown->GetItemsContainer();
+    const Mathematics::Rect header = dropdown->GetWindowRect();
+    const Mathematics::Rect box = list->GetWindowRect();
+    ASSERT_GT(WidthOfWidestEntry(fixture, *list), kWindowWidth) << "the entry is wider than the window";
+    EXPECT_NEAR(box.X, header.X, kPlacementTolerance) << "the room right of the header is the larger";
+    EXPECT_NEAR(box.Right(), kWindowWidth - kWindowClearance, kPlacementTolerance) << "the list takes that room";
+
+    ASSERT_EQ(list->GetChildren().size(), 2u);
+    const auto* row = dynamic_cast<const Label*>(list->GetChildren()[1].get());
+    ASSERT_NE(row, nullptr);
+    ASSERT_NE(row->GetTextMeasurable(), nullptr);
+    EXPECT_TRUE(row->GetTextMeasurable()->WasLastRunEllipsized()) << "the long entry ends in an ellipsis";
+    const Mathematics::Rect rowBox = row->GetWindowRect();
+    EXPECT_TRUE(HoverShowsTooltip(fixture, rowBox.X + 40.0f, rowBox.Y + rowBox.Height * 0.5f))
+        << "the cut entry shows its whole text in a tooltip";
+}
+
+// An open list is placed when it opens: while it stays open and nothing changes, a frame lays out nothing.
+TEST(DropdownTests, AnOpenListThatStaysOpenLaysOutNothing)
+{
+    UITesting::IsolatedUIFixture fixture;
+    const bool built = fixture.Build(1.0f, kPlacementXml, kPlacementCss);
+    if (!fixture.DeviceAvailable())
+        GTEST_SKIP() << "No Vulkan device available";
+    ASSERT_TRUE(built) << fixture.Diagnostic();
+
+    // A list that fits, and a list that takes the room and cuts an entry.
+    const std::vector<std::vector<std::string>> lists = {{"Claude (Subscription)", "Codex"},
+                                                         {"Short", std::string(120, 'W')}};
+    for (const std::vector<std::string>& labels : lists)
+    {
+        Dropdown* dropdown = OpenAutoWidthDropdown(fixture, labels);
+        ASSERT_TRUE(dropdown->IsMenuOpen());
+        fixture.Manager().SetUpdateProfilingEnabled(true);
+        for (int frame = 0; frame < 5; ++frame)
+        {
+            fixture.StepFrame();
+            UIManager::UpdateProfileFrame profile;
+            ASSERT_TRUE(fixture.Manager().GetLastUpdateProfileFrame(profile));
+            EXPECT_NE(profile.IdleFrame, 0u) << labels[0] << ": frame " << frame << " was not idle (decline "
+                                             << profile.IdleDecline << ")";
+        }
+        fixture.Manager().SetUpdateProfilingEnabled(false);
+        dropdown->CloseMenuUi();
+        fixture.Element("host")->RemoveChild(dropdown);
+        fixture.Settle();
+    }
 }
 
 TEST(DropdownTests, HeaderIconResolvesItsImageWithNoInteraction)
@@ -521,7 +619,7 @@ TEST(DropdownTests, OptionIconClassReachesHeaderAndRows)
     EXPECT_TRUE(headerIcon->HasClass("test-icon-first"));
     // The control names a class and nothing else: no image, tint or visibility
     // is decided here, so the stylesheet stays the only authority on appearance.
-    EXPECT_FALSE(headerIcon->Overrides().Get(Style::BackgroundImage).has_value());
+    EXPECT_FALSE(headerIcon->Style().Get(Style::BackgroundImage).has_value());
 
     int changes = 0;
     dropdown.SetOnValueChanged([&](const std::string& value) { ++changes; EXPECT_EQ(value, "b"); });
@@ -556,10 +654,12 @@ TEST(DropdownTests, UnannotatedOptionsCarryNoIconSlot)
     dropdown.SetOptionsFromString("One,Two");
 
     EXPECT_EQ(ChildWithClass(*dropdown.GetHeaderContainer(), "dropdown-header-icon"), nullptr);
+    EXPECT_EQ(ChildWithClass(*dropdown.GetHeaderContainer(), "dropdown-header-picture"), nullptr);
     dropdown.OpenMenuUi();
     for (const auto& row : dropdown.GetItemsContainer()->GetChildren())
     {
         EXPECT_EQ(ChildWithClass(*row, "dropdown-item-icon"), nullptr);
+        EXPECT_FALSE(row->HasClass("dropdown-item-picture"));
         // Without an icon the row keeps its own text, so it stays the Yoga
         // text-measure leaf it has always been.
         EXPECT_FALSE(dynamic_cast<Label*>(row.get())->GetText().empty());
@@ -583,6 +683,44 @@ TEST(DropdownTests, AnIconBearingPopupFitsItsContent)
 
     dropdown.SetOptions({{"a", "First"}});
     EXPECT_FALSE(dropdown.GetItemsContainer()->HasClass("fit-content"));
+}
+
+namespace
+{
+// The rows of a list that have the one-line class of a list sized to its entries (theme/widgets.css).
+size_t CountOneLineRows(const UIElement& list)
+{
+    size_t count = 0;
+    for (const auto& row : list.GetChildren())
+    {
+        if (row->HasClass("dropdown-item-fit-content"))
+            ++count;
+    }
+    return count;
+}
+} // namespace
+
+TEST(DropdownTests, ATextRowHasTheOneLineClassOnlyWhileTheListFitsItsEntries)
+{
+    Dropdown dropdown;
+    const UIElement& list = *dropdown.GetItemsContainer();
+    dropdown.SetOptionsFromLabels({"One", "Two"});
+    EXPECT_EQ(CountOneLineRows(list), 0u);
+
+    dropdown.SetAutoWidthPopup(true);
+    EXPECT_EQ(CountOneLineRows(list), 2u);
+
+    // Rows built after the list is sized to its entries have the class too.
+    dropdown.SetOptionsFromLabels({"One", "Two", "Three"});
+    EXPECT_EQ(CountOneLineRows(list), 3u);
+
+    dropdown.SetAutoWidthPopup(false);
+    EXPECT_EQ(CountOneLineRows(list), 0u);
+
+    // An icon row keeps its text in a child that has a one-line rule of its own.
+    dropdown.SetOptions({{"a", "First", {}, "test-icon-first"}});
+    ASSERT_TRUE(list.HasClass("fit-content"));
+    EXPECT_EQ(CountOneLineRows(list), 0u);
 }
 
 TEST(DropdownTests, ClearingTheIconsRemovesTheHeaderSlot)
@@ -630,10 +768,10 @@ TEST(DropdownTests, OptionColorLandsOnTheTextOfAnIconRow)
     // the option — and with an icon the text is a child, not the row itself.
     auto* selectedLabel = dynamic_cast<Label*>(ChildWithClass(*rows[0], "dropdown-item-label"));
     ASSERT_NE(selectedLabel, nullptr);
-    EXPECT_FALSE(selectedLabel->Overrides().Get(Style::Color).has_value());
+    EXPECT_FALSE(selectedLabel->Style().Get(Style::Color).has_value());
     auto* restingLabel = dynamic_cast<Label*>(ChildWithClass(*rows[1], "dropdown-item-label"));
     ASSERT_NE(restingLabel, nullptr);
-    EXPECT_EQ(restingLabel->Overrides().Get(Style::Color), 0xff00ff00u);
+    EXPECT_EQ(restingLabel->Style().Get(Style::Color), 0xff00ff00u);
 }
 
 TEST(DropdownTests, EnumEntryIconClassReachesTheDropdown)
@@ -658,6 +796,77 @@ TEST(DropdownTests, EnumEntryIconClassReachesTheDropdown)
     EXPECT_EQ(selected, Mode::Two);
     EXPECT_EQ(dropdown->GetHeaderLabel()->GetText(), "Two");
     EXPECT_TRUE(headerIcon->HasClass("test-icon-second"));
+}
+
+TEST(DropdownTests, PictureOptionsShowTheSelectedPictureInTheHeader)
+{
+    Dropdown dropdown;
+    dropdown.SetOptions({{"a", "Vivid", {}, {}, "test-picture-vivid", "Bright stars glow."},
+                         {"b", "Plain", {}, {}, "test-picture-plain", {}}});
+
+    // The closed header shows the selected picture in a slot of its own kind,
+    // never the icon slot, and names a class and nothing else. The popup rows
+    // come from the row layout asset (ShippedDropdownPictureRowTests).
+    UIElement* headerPicture = ChildWithClass(*dropdown.GetHeaderContainer(), "dropdown-header-picture");
+    ASSERT_NE(headerPicture, nullptr);
+    EXPECT_EQ(ChildWithClass(*dropdown.GetHeaderContainer(), "dropdown-header-icon"), nullptr);
+    EXPECT_TRUE(headerPicture->HasClass("test-picture-vivid"));
+    EXPECT_FALSE(headerPicture->Style().Get(Style::BackgroundImage).has_value());
+    EXPECT_TRUE(dropdown.GetItemsContainer()->HasClass("fit-content"));
+
+    dropdown.SetSelectedIndex(1);
+    EXPECT_FALSE(headerPicture->HasClass("test-picture-vivid"));
+    EXPECT_TRUE(headerPicture->HasClass("test-picture-plain"));
+    EXPECT_EQ(dropdown.GetHeaderLabel()->GetText(), "Plain");
+}
+
+TEST(DropdownTests, ChangingFromIconsToPicturesReplacesTheHeaderSlot)
+{
+    Dropdown dropdown;
+    dropdown.SetOptions({{"a", "First", {}, "test-icon-first"}});
+    ASSERT_NE(ChildWithClass(*dropdown.GetHeaderContainer(), "dropdown-header-icon"), nullptr);
+
+    // Pictures take the leading slot when both are declared: one slot per row.
+    dropdown.SetOptions({{"a", "First", {}, "test-icon-first", "test-picture-first"}});
+    EXPECT_EQ(ChildWithClass(*dropdown.GetHeaderContainer(), "dropdown-header-icon"), nullptr);
+    UIElement* headerPicture = ChildWithClass(*dropdown.GetHeaderContainer(), "dropdown-header-picture");
+    ASSERT_NE(headerPicture, nullptr);
+    EXPECT_TRUE(headerPicture->HasClass("test-picture-first"));
+    EXPECT_FALSE(headerPicture->HasClass("test-icon-first"));
+
+    dropdown.SetOptions({{"a", "First"}});
+    EXPECT_EQ(ChildWithClass(*dropdown.GetHeaderContainer(), "dropdown-header-picture"), nullptr);
+    EXPECT_EQ(dropdown.GetHeaderContainer()->GetChildren().size(), 2u) << "a text list keeps its label and chevron only";
+}
+
+TEST(DropdownTests, NoSelectionTextNamesTheStateWithoutAnEntry)
+{
+    // A preset list whose values match no preset reads "Custom" in its field, and
+    // the list still offers only the presets: the state is not an entry.
+    Dropdown dropdown;
+    dropdown.SetOptions({{"vivid", "Vivid", {}, {}, "test-picture-vivid"},
+                         {"physical", "Physical", {}, {}, "test-picture-physical"}});
+    dropdown.SetNoSelectionText("Custom");
+    int changes = 0;
+    dropdown.SetOnValueChanged([&changes](const std::string&) { ++changes; });
+
+    dropdown.SetSelectedIndexWithoutNotify(-1);
+    EXPECT_EQ(dropdown.GetHeaderLabel()->GetText(), "Custom");
+    EXPECT_EQ(ChildWithClass(*dropdown.GetHeaderContainer(), "dropdown-header-picture"), nullptr)
+        << "no option is selected, so there is no picture to show";
+    dropdown.OpenMenuUi();
+    const auto& rows = dropdown.GetItemsContainer()->GetChildren();
+    ASSERT_EQ(rows.size(), 2u);
+    for (const auto& row : rows)
+        EXPECT_FALSE(row->HasClass("selected"));
+
+    // Picking a preset from the Custom state is a change, and shows its picture.
+    dropdown.SetSelectedIndex(0);
+    EXPECT_EQ(changes, 1);
+    EXPECT_EQ(dropdown.GetHeaderLabel()->GetText(), "Vivid");
+    UIElement* headerPicture = ChildWithClass(*dropdown.GetHeaderContainer(), "dropdown-header-picture");
+    ASSERT_NE(headerPicture, nullptr);
+    EXPECT_TRUE(headerPicture->HasClass("test-picture-vivid"));
 }
 
 // An inspector row that re-labels its options when the asset it shows changes
@@ -727,143 +936,96 @@ TEST(DropdownTests, SetEntriesWithTheValueAlreadySelectedNotifiesNobody)
     EXPECT_EQ(lastSeen, Usage::Packed);
 }
 
-
-TEST(DropdownTests, BoundedMenuKeepsAllOptionsSelectableAndCanReturnToOrdinaryMenu)
-{
-    Dropdown dropdown;
-    std::vector<Dropdown::Option> options;
-    for (int i = 0; i < 35; ++i)
-        options.push_back({std::to_string(i), "Layer " + std::to_string(i)});
-    dropdown.SetOptions(options);
-    dropdown.SetMaxPopupHeight(240);
-    auto* popup = dropdown.GetItemsContainer();
-    ASSERT_EQ(popup->GetChildren().size(), 1u);
-    auto* scroll = dynamic_cast<ScrollView*>(popup->GetChildren()[0].get());
-    ASSERT_NE(scroll, nullptr);
-    ASSERT_EQ(scroll->GetViewport()->GetChildren().size(), 35u);
-    EXPECT_EQ(scroll->Overrides().Get(Style::Height)->Value, 240);
-    int changes = 0;
-    dropdown.SetOnValueChanged([&](const std::string& value) { ++changes; EXPECT_EQ(value, "34"); });
-    dropdown.SetSelectedIndex(34);
-    EXPECT_TRUE(scroll->GetViewport()->GetChildren()[34]->HasClass("selected"));
-    EXPECT_EQ(changes, 1);
-    dropdown.SetMaxPopupHeight(0);
-    EXPECT_EQ(popup->GetChildren().size(), 35u);
-    EXPECT_EQ(dropdown.GetSelectedValue(), "34");
-    EXPECT_EQ(changes, 1);
-}
-
-
-TEST(DropdownTests, BoundedPopupOnlyScrollsWhenMeasuredRowsOverflow)
+// A dropdown inside a popover that sets a z-index above its list's: the open list paints
+// over the popover (a nested overlay paints after the overlay that holds it), so a press on
+// an item must reach the item, not the popover under it.
+TEST(DropdownTests, AnItemOfAListOpenInsideAPopoverTakesThePress)
 {
     UITesting::IsolatedUIFixture fixture;
-    const bool built = fixture.Build(1.0f,
-        R"(<uielement id="root"><uielement id="host"/></uielement>)",
+    const bool built = fixture.Build(
+        1.0f,
+        R"(<uielement id="root"><uielement id="popover"><uielement id="host"/></uielement></uielement>)",
         R"(
-#root { width: 400px; height: 500px; }
-#host { width: 160px; }
-.dropdown-items { position: absolute; top: 100%; width: 160px; }
-.dropdown-item { height: 24px; min-height: 24px; padding: 0; }
+#root { width: 400px; height: 300px; }
+#popover { position: absolute; left: 20px; top: 20px; width: 300px; height: 250px; z-index: 10000; }
+#host { width: 120px; }
+.dropdown-items { position: absolute; top: 100%; left: 0px; width: 100%; z-index: 1000; }
+.dropdown-item { height: 20px; }
 )");
-    if (!fixture.DeviceAvailable()) GTEST_SKIP() << "No Vulkan device available";
+    if (!fixture.DeviceAvailable())
+        GTEST_SKIP() << "No Vulkan device available";
     ASSERT_TRUE(built) << fixture.Diagnostic();
+
+    UIElement* popover = fixture.Element("popover");
+    ASSERT_NE(popover, nullptr);
+    popover->SetOverlayLayer(OverlayLayer::Dropdown);
     auto owned = std::make_unique<Dropdown>();
-    auto* dropdown = owned.get();
+    Dropdown* dropdown = owned.get();
     fixture.Element("host")->AddChild(std::move(owned));
-    dropdown->SetMaxPopupHeight(288);
-    dropdown->SetOptionsFromString("Background,Distant,Scenery,Default,Gameplay,Effects,Foreground,Overlay");
+    dropdown->SetOptionsFromString("One,Two,Three");
+    fixture.Settle();
     dropdown->OpenMenuUi();
     fixture.Settle();
-    auto* scroll = dynamic_cast<ScrollView*>(dropdown->GetItemsContainer()->GetChildren().front().get());
-    ASSERT_NE(scroll, nullptr);
-    EXPECT_TRUE(static_cast<Scrollbar*>(scroll->GetVerticalScrollbar())->IsHidden());
-    EXPECT_TRUE(static_cast<Scrollbar*>(scroll->GetHorizontalScrollbar())->IsHidden());
-    EXPECT_LT(dropdown->GetItemsContainer()->GetLayoutHeight(), 288);
-    std::vector<Dropdown::Option> options;
-    for (int i = 0; i < 32; ++i)
-        options.push_back({std::to_string(i), "Layer " + std::to_string(i)});
-    dropdown->SetOptions(options);
-    fixture.Settle();
-    scroll = dynamic_cast<ScrollView*>(dropdown->GetItemsContainer()->GetChildren().front().get());
-    ASSERT_NE(scroll, nullptr);
-    EXPECT_FALSE(static_cast<Scrollbar*>(scroll->GetVerticalScrollbar())->IsHidden());
-    EXPECT_TRUE(static_cast<Scrollbar*>(scroll->GetHorizontalScrollbar())->IsHidden());
+
+    UIElement* items = dropdown->GetItemsContainer();
+    ASSERT_NE(items, nullptr);
+    ASSERT_EQ(items->GetChildren().size(), 3u);
+    const UIElement* second = items->GetChildren()[1].get();
+    const float x = second->GetLayoutX() + second->GetLayoutWidth() * 0.5f;
+    const float y = second->GetLayoutY() + second->GetLayoutHeight() * 0.5f;
+    ASSERT_GT(second->GetLayoutHeight(), 0.0f);
+    ASSERT_TRUE(x > popover->GetLayoutX() && y < popover->GetLayoutY() + popover->GetLayoutHeight())
+        << "the item lies over the popover";
+
+    fixture.Manager().OnMouseMove(x, y);
+    fixture.StepFrame();
+    fixture.Manager().OnMouseButton(0, true);
+    fixture.StepFrame();
+    fixture.Manager().OnMouseButton(0, false);
+    fixture.StepFrame();
+    EXPECT_EQ(dropdown->GetSelectedValue(), std::string("Two"));
 }
 
-
-TEST(DropdownTests, AvailableHeightMenuExpandsAndOnlyScrollsInShortPanels)
+// An open list covers the space under its dropdown, so neither the dropdown nor an item of its list
+// brings up the dropdown's tooltip over it; the closed dropdown shows it again.
+TEST(DropdownTests, AnOpenListShowsNoTooltipOverIt)
 {
     UITesting::IsolatedUIFixture fixture;
-    const bool built = fixture.Build(1.0f,
-        R"(<uielement id="root"><uielement id="host"/></uielement>)",
-        R"(
-#root { width: 400px; height: 1000px; }
-#host { width: 144px; }
-.dropdown-items { position: absolute; top: 100%; width: 144px; }
-.dropdown-item { height: 24px; min-height: 24px; padding: 0; }
-)");
-    if (!fixture.DeviceAvailable()) GTEST_SKIP() << "No Vulkan device available";
-    ASSERT_TRUE(built) << fixture.Diagnostic();
-    auto owned = std::make_unique<Dropdown>();
-    auto* dropdown = owned.get();
-    fixture.Element("host")->AddChild(std::move(owned));
-    dropdown->FitPopupToAvailableHeight();
-    std::vector<Dropdown::Option> options;
-    for (int i = 0; i < 34; ++i)
-        options.push_back({std::to_string(i), "Layer " + std::to_string(i)});
-    dropdown->SetOptions(options);
-    dropdown->OpenMenuUi();
-    fixture.Settle();
-    auto* scroll = dynamic_cast<ScrollView*>(dropdown->GetItemsContainer()->GetChildren().front().get());
-    ASSERT_NE(scroll, nullptr);
-    EXPECT_GE(dropdown->GetItemsContainer()->GetLayoutHeight(), scroll->GetLayoutHeight());
-    EXPECT_GT(scroll->GetLayoutHeight(), 700);
-    EXPECT_TRUE(static_cast<Scrollbar*>(scroll->GetVerticalScrollbar())->IsHidden());
-    EXPECT_LE(dropdown->GetItemsContainer()->GetLayoutWidth(), 144);
-    fixture.Element("root")->Overrides().Set(Style::Height, StyleLength::Px(300));
-    fixture.Settle();
-    EXPECT_LT(scroll->GetLayoutHeight(), 300);
-    EXPECT_FALSE(static_cast<Scrollbar*>(scroll->GetVerticalScrollbar())->IsHidden());
-    fixture.Element("root")->Overrides().Set(Style::Height, StyleLength::Px(1000));
-    fixture.Settle();
-    EXPECT_GE(dropdown->GetItemsContainer()->GetLayoutHeight(), scroll->GetLayoutHeight());
-    EXPECT_GT(scroll->GetLayoutHeight(), 700);
-    EXPECT_TRUE(static_cast<Scrollbar*>(scroll->GetVerticalScrollbar())->IsHidden());
-}
-
-
-TEST(DropdownTests, AvailableHeightIsConvertedFromWindowToScaledLayout)
-{
-    UITesting::IsolatedUIFixture fixture;
-    const bool built = fixture.Build(1.0f,
+    const bool built = fixture.Build(
+        1.0f,
         R"(<uielement id="root"><uielement id="host"/></uielement>)",
         R"(
 #root { width: 400px; height: 300px; }
-#host { width: 144px; transform: scale(1, 2); transform-origin: 0px 0px; }
-.dropdown-items { position: absolute; top: 100%; width: 144px; }
-.dropdown-item { height: 24px; min-height: 24px; padding: 0; }
+#host { position: absolute; left: 20px; top: 20px; width: 120px; }
+.dropdown-items { display: none; position: absolute; top: 100%; left: 0px; width: 100%; }
+.dropdown-items.open { display: flex; flex-direction: column; }
+.dropdown-item { height: 20px; }
 )");
-    if (!fixture.DeviceAvailable()) GTEST_SKIP() << "No Vulkan device available";
+    if (!fixture.DeviceAvailable())
+        GTEST_SKIP() << "No Vulkan device available";
     ASSERT_TRUE(built) << fixture.Diagnostic();
+
     auto owned = std::make_unique<Dropdown>();
-    auto* dropdown = owned.get();
+    Dropdown* dropdown = owned.get();
     fixture.Element("host")->AddChild(std::move(owned));
-    dropdown->FitPopupToAvailableHeight();
-    std::vector<Dropdown::Option> options;
-    for (int i = 0; i < 34; ++i)
-        options.push_back({std::to_string(i), "Layer " + std::to_string(i)});
-    dropdown->SetOptions(options);
+    dropdown->SetOptionsFromString("One,Two,Three");
+    dropdown->SetTooltip("The value this dropdown sets.");
+    fixture.Settle();
+
+    const float headerX = dropdown->GetLayoutX() + 5.0f;
+    const float headerY = dropdown->GetLayoutY() + 5.0f;
+    EXPECT_TRUE(HoverShowsTooltip(fixture, headerX, headerY)) << "the closed dropdown shows its tooltip";
+
+    fixture.Manager().OnMouseMove(300.0f, 250.0f);
+    fixture.PumpSeconds(0.3f);
     dropdown->OpenMenuUi();
     fixture.Settle();
-    auto* popup = dropdown->GetItemsContainer();
-    auto* scroll = dynamic_cast<ScrollView*>(popup->GetChildren().front().get());
-    ASSERT_NE(scroll, nullptr);
-    EXPECT_GT(scroll->GetContentHeight(), scroll->GetViewportHeight());
-    EXPECT_LE(popup->GetWindowRect().Bottom(), fixture.Element("root")->GetWindowRect().Bottom());
-    EXPECT_FALSE(static_cast<Scrollbar*>(scroll->GetVerticalScrollbar())->IsHidden());
-    scroll->SetScrollY(scroll->GetContentHeight());
-    fixture.Settle();
-    EXPECT_GT(scroll->GetScrollY(), 0);
-    dropdown->SetSelectedIndex(33);
-    EXPECT_EQ(dropdown->GetSelectedValue(), "33");
+    UIElement* items = dropdown->GetItemsContainer();
+    ASSERT_NE(items, nullptr);
+    ASSERT_EQ(items->GetChildren().size(), 3u);
+    const UIElement* second = items->GetChildren()[1].get();
+    ASSERT_GT(second->GetLayoutHeight(), 0.0f);
+    EXPECT_FALSE(HoverShowsTooltip(fixture, headerX, headerY)) << "the open dropdown shows its tooltip over its list";
+    EXPECT_FALSE(HoverShowsTooltip(fixture, second->GetLayoutX() + 5.0f, second->GetLayoutY() + 5.0f))
+        << "an item of the open list shows the dropdown's tooltip";
 }

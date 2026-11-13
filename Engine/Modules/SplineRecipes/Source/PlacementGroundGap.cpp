@@ -5,7 +5,7 @@
 #include "Components/Transform.h"
 #include "ECS/World.h"
 #include "Mathematics/Matrix4x4.h"
-#include "TerrainECS/PlanarHeightQuery.h"
+#include "TerrainECS/SurfaceHeightQuery.h"
 
 #include <algorithm>
 #include <limits>
@@ -34,7 +34,7 @@ Vector3 HalfAxis(const Mathematics::Matrix4x4& worldMatrix, int32 column, float3
 
 } // namespace
 
-void MeasurePieceGroundGap(const TerrainECS::PlanarHeightQuery& ground,
+void MeasurePieceGroundGap(const TerrainECS::SurfaceHeightQuery& ground,
                            const Mathematics::BoundingBox& localBox,
                            const Mathematics::Matrix4x4& worldMatrix, PieceGroundGap& out)
 {
@@ -100,12 +100,13 @@ void MeasurePieceGroundGap(const TerrainECS::PlanarHeightQuery& ground,
 
         // A gap is a precision reading: a coarse level's height would report a gap the drawn ground
         // does not have, so a probe without the finest height there is left unsampled.
-        float32 sample = 0.0f;
-        if (!ground.SampleHeight(probe.X, probe.Z, sample))
+        TerrainECS::SurfaceHeightSample sample;
+        if (!ground.SampleHeight(Mathematics::Vector3(probe.X, 0.0f, probe.Z),
+                                 TerrainECS::SurfaceHeightPolicy::RequireFinest, sample))
             continue;
 
-        probe.GroundY = sample;
-        probe.Gap = probe.UndersideY - sample;
+        probe.GroundY = sample.Height;
+        probe.Gap = probe.UndersideY - sample.Height;
         probe.Sampled = true;
         minGap = std::min(minGap, probe.Gap);
         maxGap = std::max(maxGap, probe.Gap);
@@ -123,7 +124,7 @@ void MeasurePieceGroundGap(const TerrainECS::PlanarHeightQuery& ground,
 }
 
 void MeasureRouteGroundGaps(ECS::World& world, ECS::EntityHandle route,
-                            const TerrainECS::PlanarHeightQuery& ground,
+                            const TerrainECS::SurfaceHeightQuery& ground,
                             std::vector<PieceGroundGap>& out)
 {
     out.clear();
@@ -140,7 +141,9 @@ void MeasureRouteGroundGaps(ECS::World& world, ECS::EntityHandle route,
 
         PieceGroundGap gap{};
         gap.Piece = child;
-        MeasurePieceGroundGap(ground, bounds->Box, Mathematics::Matrix4x4::FromColumnMajor(worldTransform->matrix), gap);
+        MeasurePieceGroundGap(ground, bounds->Box,
+                              worldTransform->ToMatrix4x4(worldTransform->GetPosition() - Mathematics::WorldPosition{}),
+                              gap);
         out.push_back(gap);
     }
 }

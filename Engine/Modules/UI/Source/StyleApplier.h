@@ -1,13 +1,13 @@
 #pragma once
 
 #include "UI/ResolvedStyle.h"
-#include "UI/StyleOverrides.h"
+#include "UI/StyleDeclaration.h"
 #include "UI/UIStyle.h"
 
 namespace GameEngine
 {
 
-void ApplyOverridesToResolvedStyle(ResolvedStyle& rs, const StyleOverrides& overrides);
+void ApplyOverridesToResolvedStyle(ResolvedStyle& rs, const StyleDeclaration& overrides);
 
 // Collapses `border-width` to zero on an element whose `border-style` is
 // `none`, which is what CSS means by it: the computed value of border-width is

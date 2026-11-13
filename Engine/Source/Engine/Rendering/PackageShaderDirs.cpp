@@ -2,8 +2,6 @@
 
 #include "Assets/AssetManager.h"
 #include "Assets/AssetRegistry.h"
-#include "AssetCore/PathNormalization.h"
-#include "FileSystem/FileSystem.h"
 
 namespace GameEngine
 {
@@ -38,18 +36,7 @@ std::vector<Rendering::MaterialBuildContext::AssetSourceRoot> CollectAssetSource
 {
     std::vector<Rendering::MaterialBuildContext::AssetSourceRoot> roots;
     for (const AssetSourceDesc& source : assetManager.GetRegisteredSources())
-    {
-        Rendering::MaterialBuildContext::AssetSourceRoot root;
-        root.Alias = source.Alias;
-        root.Root = source.Root;
-        if (!FileSystem::IsCaseSensitive())
-        {
-            const auto key = AssetPaths::NormalizeForRegistryKey(source.Root);
-            const auto* bytes = reinterpret_cast<const char8_t*>(key.data());
-            root.RegistryRoot = std::filesystem::path(bytes, bytes + key.size());
-        }
-        roots.push_back(std::move(root));
-    }
+        roots.push_back({source.Alias, source.Root});
     return roots;
 }
 
@@ -94,6 +81,17 @@ std::filesystem::path ResolveAdapterShaderDir(const AssetManager& assetManager)
     // handed to the composer.
     return assetManager.ResolveAssetPathPreferringSource("Shaders", kAssetSourceAliasEditor,
                                                          AssetPathKind::Directory);
+}
+
+void FillMaterialSourceRoots(const AssetManager& assetManager, Rendering::MaterialBuildContext& context)
+{
+    context.AdapterShaderDir = ResolveAdapterShaderDir(assetManager);
+    context.IncludeDirs = {assetManager.GetAssetRoot()};
+    context.ProjectRoots = CollectProjectRoots(assetManager);
+    context.AssetSourceRoots = CollectAssetSourceRoots(assetManager);
+    context.PackageShaderDirs = CollectPackageShaderDirs(assetManager);
+    // After AdapterShaderDir: the staged module folders lie under it.
+    AppendStagedModuleShaderDirs(context.AdapterShaderDir, context.PackageShaderDirs);
 }
 
 } // namespace GameEngine

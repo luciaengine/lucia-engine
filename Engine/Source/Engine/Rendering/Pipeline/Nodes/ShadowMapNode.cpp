@@ -10,10 +10,10 @@
 #include "Components/Rendering/Light.h"
 #include "Logger/Logger.h"
 #include "Mathematics/Vector3.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
@@ -433,7 +433,7 @@ void ShadowMapNode::DeclareForView(ViewDeclare& d)
         return;
     // Thumbnail cameras before their first update: inverting a zero viewProj
     // produces NaN that propagates everywhere.
-    if (camData->proj[0] == 0.0f && camData->proj[5] == 0.0f)
+    if (camData->proj[0][0] == 0.0f && camData->proj[1][1] == 0.0f)
         return;
 
     // This frame's fit: computed when the caster cull was scheduled, ahead of
@@ -473,8 +473,8 @@ void ShadowMapNode::DeclareForView(ViewDeclare& d)
     // punctual light infos) and Declare runs the cascade loop, the tint loop, then
     // the area/spot/point families in the SAME order, through the SAME
     // ViewDeclare::PassName forwarder — so pass names, recording order, and the
-    // read/write sets are unchanged. The FIRST cascade's pooled adopt may still
-    // invalidate the cache on a physical-change frame (intended one-frame skip);
+    // read/write sets are unchanged. On a physical-change frame the pooled adopt
+    // keeps the fit cached above, so every cascade renders into the new physical;
     // nothing caches after Declare.
     FeatureDeclareContext fctx = rs->MakeFeatureDeclareContext(
         d.Frame, viewId, m_NumCascades, PunctualResolution(), shadowLight->directionWS,
@@ -557,7 +557,6 @@ void ShadowMapNode::DeclareForView(ViewDeclare& d)
                         d.PassName(suffix).c_str(), Rendering::PassPhase::kDefault,
                         [&](RenderGraph::RGPassBuilder& p)
                         {
-                            p.UsePipeline(m_MsmCascadeComputePipelineId);
                             // This frame's cascade depth writes feed the
                             // moments resolve (RAW through the shared id).
                             p.Read(depthArr, RenderGraph::RGTextureRead::SampledCompute);
@@ -666,7 +665,6 @@ void ShadowMapNode::DeclareForView(ViewDeclare& d)
                         overlayPassName.c_str(), Rendering::PassPhase::kOverlay,
                         [&](RenderGraph::RGPassBuilder& p)
                         {
-                            p.UsePipeline(m_OverlayPipelineId);
                             RenderGraph::RGAttachmentOps ops{};
                             ops.Load = RenderGraph::RGLoadOp::Load; // composite over the final image
                             ops.Store = RenderGraph::RGStoreOp::Store;

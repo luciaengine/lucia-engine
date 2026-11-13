@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../../Rendering/Source/Vulkan/VulkanDevice.h"
+#include "../../Rendering/Source/Vulkan/VulkanDevice/VulkanDevice.h"
 
 #include <limits>
 

@@ -1,9 +1,10 @@
 #include "Editor/Entities/ComponentRemoval.h"
 
-#include "ECS/ECSTemplates.h"
+#include "Components/Rendering/PostProcessVolume.h"
+#include "ECS/Entity.h"
 #include "ECS/World.h"
-#include "Editor/Entities/EditorComponentTraits.h"
 #include "EditorChangeNotifications.h"
+#include "Engine/Rendering/PostProcessEffectRegistry.h"
 #include "UndoRedo/GenericEditUndo.h"
 #include "UndoRedo/IEditorCommand.h"
 #include "UndoRedo/UndoRedoService.h"
@@ -37,25 +38,20 @@ class RemoveComponentCommand final : public IEditorCommand
     {
         if (m_World && m_Entity.IsValid() && m_World->IsValid(m_Entity))
         {
-            EditorComponentTraits traits;
-            m_RemoveStackBundle = EditorComponentTraitsRegistry::Get().TryGet(m_TypeId, traits) &&
-                                  traits.RemovingRemovesStackEffects && traits.HostsInspectorSection;
+            const ECS::ComponentTypeId postProcessVolumeId =
+                ECS::GetComponentTypeId<Components::PostProcessVolume>();
+            m_RemovePostFxBundle = (m_TypeId == postProcessVolumeId);
 
-            if (m_RemoveStackBundle)
+            if (m_RemovePostFxBundle)
             {
                 // Volume snapshot FIRST — Redo() removes effects before the
                 // Volume via m_Snapshots.front(), Undo() restores in capture
-                // order. The effects are every component on the entity whose
-                // section the volume hosts.
-                CaptureSnapshot(m_TypeId);
-                if (ECS::Archetype* archetype = m_World->GetEntityArchetype(m_Entity))
-                {
-                    for (ECS::ComponentTypeId componentTypeId : archetype->GetSignature().GetComponents())
-                    {
-                        if (traits.HostsInspectorSection(componentTypeId))
-                            CaptureSnapshot(componentTypeId);
-                    }
-                }
+                // order. The effect set is the registry: every registered
+                // descriptor is a Volume-owned effect (doc §4 cascade policy).
+                CaptureSnapshot(postProcessVolumeId);
+                Rendering::PostProcessEffectRegistry::ForEach(
+                    [this](const Rendering::PostProcessEffectDescriptor& d)
+                    { CaptureSnapshot(d.Type); });
 
                 for (const auto& snap : m_Snapshots)
                 {
@@ -83,7 +79,7 @@ class RemoveComponentCommand final : public IEditorCommand
         if (!m_HadComponent)
             return;
 
-        if (m_RemoveStackBundle)
+        if (m_RemovePostFxBundle)
         {
             for (const auto& snap : m_Snapshots)
             {
@@ -108,7 +104,7 @@ class RemoveComponentCommand final : public IEditorCommand
         if (!m_HadComponent)
             return;
 
-        if (m_RemoveStackBundle)
+        if (m_RemovePostFxBundle)
         {
             for (size_t i = 1; i < m_Snapshots.size(); ++i)
             {
@@ -155,8 +151,7 @@ class RemoveComponentCommand final : public IEditorCommand
     ECS::EntityHandle m_Entity{};
     ECS::ComponentTypeId m_TypeId{};
     bool m_HadComponent = false;
-    // Removing a volume that takes its stack effects with it.
-    bool m_RemoveStackBundle = false;
+    bool m_RemovePostFxBundle = false;
     std::vector<uint8_t> m_SnapshotBytes;
     std::vector<ComponentSnapshot> m_Snapshots;
 };

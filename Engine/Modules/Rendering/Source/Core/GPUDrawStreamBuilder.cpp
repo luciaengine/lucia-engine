@@ -1,6 +1,7 @@
 #include "Rendering/Core/GPUDrawStreamBuilder.h"
 
 #include "Logger/Logger.h"
+#include "Memory/ScratchScope.h"
 #include "Platform/Environment.h"
 
 #include "Rendering/Core/BarrierMapping.h"
@@ -8,15 +9,18 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUInstanceDepthClass.h"
 #include "Rendering/Core/GPUScene.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include <algorithm>
 #include <array>
 #include <bit>
 #include <cassert>
+#include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <iterator>
 
 namespace GameEngine
 {
@@ -54,6 +58,30 @@ constexpr uint32_t kDrawCommandStride = 5 * sizeof(uint32_t);
 // bound where a slice carries neither. Keeps tiny scenes off a zero-sized
 // allocation.
 constexpr uint32_t kPerInstanceHistoryMinBytes = 4096;
+
+// The storage-buffer bindings of the scatter set: draw_command_scatter.comp set 0.
+constexpr uint32_t kScatterBindingCount = 14;
+
+// The storage-buffer bindings of the group-compact set: draw_stream_group_compact.comp set 0.
+constexpr uint32_t kGroupCompactBindingCount = 5;
+
+// The (view, cascade, phase) part of the stream keys of `slice`: MakeStreamKey with zero material and mesh.
+uint64_t SliceStreamKey(const GPUDrawStreamBuilder::SliceRegistration& slice)
+{
+    return GPUDrawStreamBuilder::MakeStreamKey(slice.viewId, slice.cascadeIndex, 0u, 0u, slice.phase);
+}
+
+// A storage-buffer write of `bytes` from `offset`. A size of 0 binds the rest of the buffer.
+DescriptorWrite StorageBufferWrite(uint32_t binding, BufferHandle buffer, size_t offset, size_t bytes)
+{
+    DescriptorWrite write{};
+    write.Binding = binding;
+    write.Type    = DescriptorType::StorageBuffer;
+    write.Buffer  = buffer;
+    write.Offset  = offset;
+    write.Range   = bytes;
+    return write;
+}
 
 // GE_LOD_HYSTERESIS: "0" forces every slice's dwell band to 0, restoring
 // stateless per-frame LOD selection. Default on, meaning "honour whatever band
@@ -99,7 +127,7 @@ const char* ScatterPkgPath(bool compact, bool stats)
 
 // std430 stride of the coalesced scatter-hot mirror (GPUInstanceScatterHot).
 // The scatter binds binding 1 at this stride in the compact variant.
-constexpr size_t kScatterHotStride = 32;
+constexpr size_t kScatterHotStride = sizeof(GPUInstanceScatterHot);
 
 // Winding parity rides bit 24 of the BatchTableEntry meshIndex FIELD (real
 // mesh indices are 24-bit — BatchRegistry::MakeKey masks them). A parity-1
@@ -285,7 +313,9 @@ void GPUDrawStreamBuilder::ResetTrackingState()
     m_RenderedHistoryResetScratch.clear();
     m_RenderedHistoryResetRuns.clear();
     m_FrameSlices.clear();
-    m_RangeMap.clear();
+    m_RangeMap.Clear();
+    m_PublishedSliceKeys.Clear();
+    m_RangeInsertsBeforeEnd        = 0;
     m_SentinelBuffer               = BufferHandle{};
     m_ScatterPipeline              = PipelineHandle{};
     m_InstanceCompactPipeline      = PipelineHandle{};
@@ -335,18 +365,30 @@ void GPUDrawStreamBuilder::ReprovisionAfterDeviceRebuild()
     // then recreate the up-front sentinel. The arenas, table ring, and scatter
     // pipeline rebuild lazily on the next schedule via EnsureSharedBuffers.
     ResetTrackingState();
+    {
+        std::lock_guard<std::mutex> lock(m_ScatterInitMutex);
+        m_ScatterPipelineId = {};
+        m_GroupCompactPipelineId = {};
+    }
     Initialize();
 }
 
 // ---- R1.3/R1.4 scatter path ------------------------------------------------
 
-std::vector<GPUDrawStreamBuilder::BatchTableEntry>
+size_t GPUDrawStreamBuilder::BatchTableCapacity(const BatchRegistry& registry)
+{
+    return 2u * registry.BatchCount();
+}
+
+std::span<GPUDrawStreamBuilder::BatchTableEntry>
 GPUDrawStreamBuilder::BuildBatchTable(const BatchRegistry& registry,
                                       std::span<const uint32_t> meshPoolGroup,
+                                      std::span<BatchTableEntry> table,
+                                      std::pmr::memory_resource& scratch,
                                       uint32_t* outTotalRecords)
 {
-    std::vector<BatchTableEntry> table;
-    table.reserve(registry.BatchCount());
+    assert(table.size() >= BatchTableCapacity(registry) && "size the table with BatchTableCapacity");
+    size_t rows = 0;
     if (meshPoolGroup.empty())
     {
         for (const auto& [key, count] : registry.Counts())
@@ -359,9 +401,15 @@ GPUDrawStreamBuilder::BuildBatchTable(const BatchRegistry& registry,
             // nuance applies to double-sided too). Emit only the non-empty lanes so
             // a mirror-free scene produces exactly today's one-row-per-batch table.
             if (count.Even > 0u)
-                table.push_back({materialIndex, meshIndex, 0u, count.Even});
+            {
+                assert(rows < table.size() && "BatchTableCapacity undercounts the table");
+                table[rows++] = {materialIndex, meshIndex, 0u, count.Even};
+            }
             if (count.Odd > 0u)
-                table.push_back({materialIndex, meshIndex | kMeshParityBit, 0u, count.Odd});
+            {
+                assert(rows < table.size() && "BatchTableCapacity undercounts the table");
+                table[rows++] = {materialIndex, meshIndex | kMeshParityBit, 0u, count.Odd};
+            }
         }
     }
     else
@@ -370,7 +418,7 @@ GPUDrawStreamBuilder::BuildBatchTable(const BatchRegistry& registry,
         // rows that collapse — one region per (materialIndex, group, parity).
         // Registry keys are unique per (mat, mesh), so merging only happens
         // across meshes of one group; Σ capacities is invariant.
-        std::unordered_map<uint64_t, uint32_t> merged;
+        std::pmr::unordered_map<uint64_t, uint32_t> merged{&scratch};
         merged.reserve(registry.BatchCount());
         for (const auto& [key, count] : registry.Counts())
         {
@@ -390,9 +438,11 @@ GPUDrawStreamBuilder::BuildBatchTable(const BatchRegistry& registry,
             e.materialIndex = ParityMergeClass(mergedKey);
             e.meshIndex     = ParityMergeMesh(mergedKey); // group | parity bit 24
             e.capacity      = count;
-            table.push_back(e);
+            assert(rows < table.size() && "BatchTableCapacity undercounts the table");
+            table[rows++] = e;
         }
     }
+    table = table.first(rows);
     std::sort(table.begin(), table.end(),
               [](const BatchTableEntry& a, const BatchTableEntry& b)
               {
@@ -412,10 +462,12 @@ GPUDrawStreamBuilder::BuildBatchTable(const BatchRegistry& registry,
     return table;
 }
 
-std::vector<GPUDrawStreamBuilder::BatchTableEntry>
+std::span<GPUDrawStreamBuilder::BatchTableEntry>
 GPUDrawStreamBuilder::BuildShadowBatchTable(const BatchRegistry& registry,
                                             std::span<const uint8_t> materialDepthClass,
                                             std::span<const uint32_t> meshPoolGroup,
+                                            std::span<BatchTableEntry> table,
+                                            std::pmr::memory_resource& scratch,
                                             uint32_t* outTotalRecords)
 {
     // Map each (materialIndex, meshIndex) batch to a class key: eligible
@@ -428,7 +480,8 @@ GPUDrawStreamBuilder::BuildShadowBatchTable(const BatchRegistry& registry,
     // (its casters are cull-None — winding is irrelevant depth-only — and the
     // scatter forces their parity to 0, so a parity-1 row would be dead and a
     // mirrored DS caster searching it would have its shadow silently dropped).
-    std::unordered_map<uint64_t, uint32_t> merged;
+    assert(table.size() >= BatchTableCapacity(registry) && "size the table with BatchTableCapacity");
+    std::pmr::unordered_map<uint64_t, uint32_t> merged{&scratch};
     merged.reserve(registry.BatchCount());
     for (const auto& [key, count] : registry.Counts())
     {
@@ -469,16 +522,17 @@ GPUDrawStreamBuilder::BuildShadowBatchTable(const BatchRegistry& registry,
         }
     }
 
-    std::vector<BatchTableEntry> table;
-    table.reserve(merged.size());
+    size_t rows = 0;
     for (const auto& [mergedKey, count] : merged)
     {
         BatchTableEntry e{};
         e.materialIndex = ParityMergeClass(mergedKey); // classKey lives in the material field
         e.meshIndex     = ParityMergeMesh(mergedKey);  // real mesh | parity bit 24
         e.capacity      = count;
-        table.push_back(e);
+        assert(rows < table.size() && "BatchTableCapacity undercounts the table");
+        table[rows++] = e;
     }
+    table = table.first(rows);
     std::sort(table.begin(), table.end(),
               [](const BatchTableEntry& a, const BatchTableEntry& b)
               {
@@ -498,10 +552,12 @@ GPUDrawStreamBuilder::BuildShadowBatchTable(const BatchRegistry& registry,
     return table;
 }
 
-std::vector<GPUDrawStreamBuilder::BatchTableEntry>
+std::span<GPUDrawStreamBuilder::BatchTableEntry>
 GPUDrawStreamBuilder::BuildColorBatchTable(const BatchRegistry& registry,
                                            std::span<const uint32_t> materialColorClass,
                                            std::span<const uint32_t> meshPoolGroup,
+                                           std::span<BatchTableEntry> table,
+                                           std::pmr::memory_resource& scratch,
                                            uint32_t* outTotalRecords)
 {
     // Remap each (materialIndex, meshIndex) batch to a color-class key through
@@ -510,7 +566,8 @@ GPUDrawStreamBuilder::BuildColorBatchTable(const BatchRegistry& registry,
     // transmissive / material-dependent rows map to themselves (identity) and
     // keep their (materialIndex, mesh) region. Counts merge per (classKey,
     // meshIndex) so a mesh's shared-PSO opaque draws issue once.
-    std::unordered_map<uint64_t, uint32_t> merged;
+    assert(table.size() >= BatchTableCapacity(registry) && "size the table with BatchTableCapacity");
+    std::pmr::unordered_map<uint64_t, uint32_t> merged{&scratch};
     merged.reserve(registry.BatchCount());
     // Track the two domains for the disjointness invariant (P2-a): a class id
     // that aliases a real materialIndex present in the same table would fold
@@ -552,16 +609,17 @@ GPUDrawStreamBuilder::BuildColorBatchTable(const BatchRegistry& registry,
            && "color class-id domain aliases a real materialIndex in the same table "
               "(raise kColorClassBase headroom / see P2-a)");
 
-    std::vector<BatchTableEntry> table;
-    table.reserve(merged.size());
+    size_t rows = 0;
     for (const auto& [mergedKey, count] : merged)
     {
         BatchTableEntry e{};
         e.materialIndex = ParityMergeClass(mergedKey); // classKey in the material field
         e.meshIndex     = ParityMergeMesh(mergedKey);  // real mesh | parity bit 24
         e.capacity      = count;
-        table.push_back(e);
+        assert(rows < table.size() && "BatchTableCapacity undercounts the table");
+        table[rows++] = e;
     }
+    table = table.first(rows);
     std::sort(table.begin(), table.end(),
               [](const BatchTableEntry& a, const BatchTableEntry& b)
               {
@@ -653,15 +711,19 @@ DescriptorSetLayoutDesc GPUDrawStreamBuilder::MakeScatterDescriptorSetLayout()
     //   4: DrawCommandsBuffer (write)      11: LodFadeBuffer        (read-write, crossfade)
     //   5: BatchCursorsBuffer (read-write) 12: PrevRenderedHistory  (read, rendered level/phase)
     //   6: IndirectionBuffer  (write)      13: CurrentRenderedHistory (write, same)
+    // The shader declares the read bindings `readonly`, so the layout marks them read-only too.
+    constexpr uint32_t kReadOnlyBindings = (1u << 0) | (1u << 1) | (1u << 2) | (1u << 3) | (1u << 8) |
+                                           (1u << 9) | (1u << 12);
     DescriptorSetLayoutDesc layout{};
     layout.debugName = "GPUDrawScatter_SetLayout";
-    for (uint32_t i = 0; i < 14; ++i)
+    for (uint32_t i = 0; i < kScatterBindingCount; ++i)
     {
         DescriptorBinding b{};
         b.binding      = i;
         b.type         = DescriptorType::StorageBuffer;
         b.count        = 1;
         b.shaderStages = kShaderStageCompute;
+        b.flags        = (kReadOnlyBindings & (1u << i)) != 0 ? kDescriptorBindingReadOnlyStorage : 0u;
         layout.bindings.push_back(b);
     }
     return layout;
@@ -831,6 +893,21 @@ void GPUDrawStreamBuilder::ReleaseRenderedHistory(uint32_t viewId)
                                      std::memory_order_relaxed);
 }
 
+void GPUDrawStreamBuilder::ReleaseView(uint32_t viewId)
+{
+    ReleaseRenderedHistory(viewId);
+    if (const auto it = m_PrevLod.find(viewId); it != m_PrevLod.end())
+    {
+        RetireBuffer(it->second.buffer);
+        m_PrevLod.erase(it);
+    }
+    if (const auto it = m_LodFade.find(viewId); it != m_LodFade.end())
+    {
+        RetireBuffer(it->second.buffer);
+        m_LodFade.erase(it);
+    }
+}
+
 GPUDrawStreamBuilder::ScatterIntrospection GPUDrawStreamBuilder::IntrospectScatter() const
 {
     // Same lock GetOrCreateScatterPipeline writes these members under, so a
@@ -856,6 +933,51 @@ PipelineHandle GPUDrawStreamBuilder::GetOrCreateScatterPipeline()
     std::lock_guard<std::mutex> lock(m_ScatterInitMutex);
     if (m_ScatterPipeline.IsValid())
         return m_ScatterPipeline;
+    const ComputePipelineId id = InternScatterPipeline();
+    if (!id.IsValid())
+        return {};
+
+    try
+    {
+        m_ScatterPipeline = m_Device->GetOrCreateComputePipeline(id);
+    }
+    catch (const std::exception& e)
+    {
+        if (!m_ScatterPipelineFailureLogged)
+        {
+            Logger::Log::Error("[GPUDrawStream] failed to create scatter pipeline: {}", e.what());
+            m_ScatterPipelineFailureLogged = true;
+        }
+        m_ScatterPipeline = PipelineHandle{};
+        return {};
+    }
+    if (m_ScatterPipeline.IsValid())
+    {
+        m_ScatterPipelineFailureLogged = false;
+        Logger::Log::Info("[GPUDrawStream] scatter pipeline ready: {} fetch, stats {}",
+                          m_ScatterCompactActive ? "coalesced 32B (compact)" : "full-fat 240B",
+                          m_ScatterStatsActive ? "ON" : "off");
+    }
+    return m_ScatterPipeline;
+}
+
+void GPUDrawStreamBuilder::RequestScatterPipelines(bool groupCompact)
+{
+    if (!m_Device)
+        return;
+    std::lock_guard<std::mutex> lock(m_ScatterInitMutex);
+    if (const ComputePipelineId id = InternScatterPipeline(); id.IsValid())
+        m_Device->RequestComputePipeline(id);
+    if (!groupCompact)
+        return;
+    if (const ComputePipelineId id = InternGroupCompactPipeline(); id.IsValid())
+        m_Device->RequestComputePipeline(id);
+}
+
+ComputePipelineId GPUDrawStreamBuilder::InternScatterPipeline()
+{
+    if (m_ScatterPipelineId.IsValid())
+        return m_ScatterPipelineId;
 
     if (!m_ScatterVariantInit)
     {
@@ -902,44 +1024,24 @@ PipelineHandle GPUDrawStreamBuilder::GetOrCreateScatterPipeline()
     }
     m_ScatterCompactActive = compactLoaded;
     m_ScatterStatsActive   = m_ScatterStatsRequested;
-
-    try
-    {
-        m_ScatterPipeline = BuildScatterPipeline(std::move(shaderBytes));
-    }
-    catch (const std::exception& e)
-    {
-        if (!m_ScatterPipelineFailureLogged)
-        {
-            Logger::Log::Error("[GPUDrawStream] failed to create scatter pipeline: {}", e.what());
-            m_ScatterPipelineFailureLogged = true;
-        }
-        m_ScatterPipeline = PipelineHandle{};
-        return {};
-    }
-    if (m_ScatterPipeline.IsValid())
-    {
-        m_ScatterPipelineFailureLogged = false;
-        Logger::Log::Info("[GPUDrawStream] scatter pipeline ready: {} fetch, stats {}",
-                          m_ScatterCompactActive ? "coalesced 32B (compact)" : "full-fat 240B",
-                          m_ScatterStatsActive ? "ON" : "off");
-    }
-    return m_ScatterPipeline;
+    m_ScatterPipelineId    = InternScatterPipelineFromBytes(std::move(shaderBytes));
+    return m_ScatterPipelineId;
 }
 
-PipelineHandle GPUDrawStreamBuilder::BuildScatterPipeline(std::vector<uint8_t> shaderBytes)
+ComputePipelineId GPUDrawStreamBuilder::InternScatterPipelineFromBytes(std::vector<uint8_t> shaderBytes)
 {
     ComputePipelineDesc cd{};
     cd.ComputeShader = std::make_shared<const std::vector<uint8_t>>(std::move(shaderBytes));
     cd.DescriptorSetLayouts.push_back(
         m_Device->InternDescriptorSetLayout(MakeScatterDescriptorSetLayout()));
-    static_assert(sizeof(ScatterPushConstants) == 100,
+    static_assert(sizeof(ScatterPushConstants) == 112,
                   "ScatterPushConstants must match draw_command_scatter.comp's block");
+    static_assert(offsetof(ScatterPushConstants, originSectorX) == 100,
+                  "ScatterPushConstants.originSectorX must match the originSectorX offset of the shader's block");
     cd.PushConstants.Size      = sizeof(ScatterPushConstants);
     cd.PushConstants.StageMask = kShaderStageCompute;
     cd.DebugName               = "GPUDrawStreamScatter";
-    const auto id = m_Device->InternComputePipeline(cd);
-    return m_Device->GetOrCreateComputePipeline(id);
+    return m_Device->InternComputePipeline(cd);
 }
 
 DescriptorSetLayoutDesc GPUDrawStreamBuilder::MakeGroupCompactDescriptorSetLayout()
@@ -950,7 +1052,7 @@ DescriptorSetLayoutDesc GPUDrawStreamBuilder::MakeGroupCompactDescriptorSetLayou
     //   2: BatchCursorsBuffer (read-write)
     DescriptorSetLayoutDesc layout{};
     layout.debugName = "GPUDrawGroupCompact_SetLayout";
-    for (uint32_t i = 0; i < 5; ++i)
+    for (uint32_t i = 0; i < kGroupCompactBindingCount; ++i)
     {
         DescriptorBinding b{};
         b.binding      = i;
@@ -969,9 +1071,26 @@ PipelineHandle GPUDrawStreamBuilder::GetOrCreateGroupCompactPipeline()
     std::lock_guard<std::mutex> lock(m_ScatterInitMutex);
     if (m_GroupCompactPipeline.IsValid())
         return m_GroupCompactPipeline;
-
-    m_GroupCompactPipeline = CreateCompactionPipeline(
-        "Shaders/draw_stream_group_compact.shaderpkg", "GPUDrawStreamGroupCompact");
+    const ComputePipelineId id = InternGroupCompactPipeline();
+    if (!id.IsValid())
+        return {};
+    try
+    {
+        m_GroupCompactPipeline = m_Device->GetOrCreateComputePipeline(id);
+    }
+    catch (const std::exception& e)
+    {
+        if (!m_GroupCompactFailureLogged)
+        {
+            Logger::Log::Error("[GPUDrawStream] failed to create group-compact pipeline: {}",
+                               e.what());
+            m_GroupCompactFailureLogged = true;
+        }
+        m_GroupCompactPipeline = PipelineHandle{};
+        return {};
+    }
+    if (m_GroupCompactPipeline.IsValid())
+        m_GroupCompactFailureLogged = false;
     return m_GroupCompactPipeline;
 }
 
@@ -1022,6 +1141,36 @@ PipelineHandle GPUDrawStreamBuilder::CreateCompactionPipeline(const char* packag
     }
 }
 
+ComputePipelineId GPUDrawStreamBuilder::InternGroupCompactPipeline()
+{
+    if (m_GroupCompactPipelineId.IsValid())
+        return m_GroupCompactPipelineId;
+    std::string loadErr;
+    std::vector<uint8_t> shaderBytes =
+        LoadComputeStageBytes("Shaders/draw_stream_group_compact.shaderpkg",
+                              m_Device->PreferredShaderSource(), s_ShaderLoader, &loadErr);
+    if (shaderBytes.empty())
+    {
+        if (!m_GroupCompactFailureLogged)
+        {
+            Logger::Log::Error("[GPUDrawStream] draw_stream_group_compact.shaderpkg unavailable "
+                               "({}); consolidated scatter dropped until retry", loadErr);
+            m_GroupCompactFailureLogged = true;
+        }
+        return {};
+    }
+    ComputePipelineDesc cd{};
+    cd.ComputeShader = std::make_shared<const std::vector<uint8_t>>(std::move(shaderBytes));
+    cd.DescriptorSetLayouts.push_back(m_Device->InternDescriptorSetLayout(MakeGroupCompactDescriptorSetLayout()));
+    static_assert(sizeof(GroupCompactPushConstants) == 32,
+                  "GroupCompactPushConstants must match draw_stream_group_compact.comp");
+    cd.PushConstants.Size      = sizeof(GroupCompactPushConstants);
+    cd.PushConstants.StageMask = kShaderStageCompute;
+    cd.DebugName               = "GPUDrawStreamGroupCompact";
+    m_GroupCompactPipelineId   = m_Device->InternComputePipeline(cd);
+    return m_GroupCompactPipelineId;
+}
+
 PipelineHandle GPUDrawStreamBuilder::CreateScatterPipelineForVariant(bool compact, bool stats)
 {
     if (!m_Device)
@@ -1033,7 +1182,7 @@ PipelineHandle GPUDrawStreamBuilder::CreateScatterPipelineForVariant(bool compac
         return {};
     try
     {
-        return BuildScatterPipeline(std::move(shaderBytes));
+        return m_Device->GetOrCreateComputePipeline(InternScatterPipelineFromBytes(std::move(shaderBytes)));
     }
     catch (const std::exception&)
     {
@@ -1354,7 +1503,9 @@ void GPUDrawStreamBuilder::BeginArenaFrame()
     m_ClassMapRingOffset   = 0;
     m_ClassMapBytes        = 0;
     m_FrameSlices.clear();
-    m_RangeMap.clear();
+    m_RangeMap.Clear();
+    m_PublishedSliceKeys.Clear();
+    m_RangeInsertsBeforeEnd = 0;
     m_SliceStatsBindings.clear();
     m_UnobservableTailSlices = 0;
 }
@@ -1370,8 +1521,15 @@ GPUDrawStreamBuilder::FindBatchDrawRange(uint32_t viewId, uint8_t cascadeIndex,
                                          SlicePhase phase) const
 {
     const uint64_t key = MakeStreamKey(viewId, cascadeIndex, materialIndex, meshIndex, phase);
-    const auto it = m_RangeMap.find(key);
-    return (it == m_RangeMap.end()) ? BatchDrawRange{} : it->second;
+    const BatchDrawRange* range = m_RangeMap.Find(key);
+    return range ? *range : BatchDrawRange{};
+}
+
+GPUDrawStreamBuilder::BatchDrawRange& GPUDrawStreamBuilder::GetOrInsertRange(uint64_t key)
+{
+    if (!m_RangeMap.Empty() && key < std::prev(m_RangeMap.end())->first && !m_RangeMap.Contains(key))
+        ++m_RangeInsertsBeforeEnd;
+    return m_RangeMap.GetOrInsert(key);
 }
 
 GPUDrawStreamBuilder::RenderedHistoryRead
@@ -1387,16 +1545,7 @@ GPUDrawStreamBuilder::GetRenderedHistoryForRead(uint32_t viewId) const
 bool GPUDrawStreamBuilder::HasPublishedRangesForPhase(uint32_t viewId, uint8_t cascadeIndex,
                                                       SlicePhase phase) const
 {
-    // The key packs the three axes above the material and mesh fields, so one
-    // masked comparison answers for every batch of the slice.
-    constexpr uint64_t kBatchAxesMask = (1ull << 48) - 1ull;
-    const uint64_t wanted = MakeStreamKey(viewId, cascadeIndex, 0u, 0u, phase);
-    for (const auto& [key, range] : m_RangeMap)
-    {
-        if ((key & ~kBatchAxesMask) == wanted && range.IsValid())
-            return true;
-    }
-    return false;
+    return m_PublishedSliceKeys.Contains(MakeStreamKey(viewId, cascadeIndex, 0u, 0u, phase));
 }
 
 GPUDrawStreamBuilder::ScatterStats GPUDrawStreamBuilder::ReadScatterStats() const
@@ -2158,7 +2307,7 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     if (!visibility.IsValid() || !instances.IsValid() || !meshes.IsValid())
         return {};
 
-    // Lever 1: bind GPUScene's 32 B coalesced mirror at binding 1 when the
+    // Lever 1: bind GPUScene's 40 B coalesced mirror at binding 1 when the
     // compact pipeline variant is active. If it is active but the caller passed
     // no mirror, the env-flag/wiring disagreed — binding the 240 B instance
     // buffer to the compact-struct shader would read garbage, so drop the
@@ -2223,20 +2372,29 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     const bool callCrossfadeActive =
         std::any_of(slices.begin(), slices.end(), sliceCrossfades);
 
+    // Both tables live in this scope: they are read only while this call
+    // declares its passes (the ring upload and the elision digest copy them).
+    Memory::ScratchScope scratch;
+    const size_t tableCapacity = BatchTableCapacity(registry);
     uint32_t colorRecords = 0u;
-    std::vector<BatchTableEntry> colorTable =
-        colorMergeActive
-            ? BuildColorBatchTable(registry, materialColorClass, meshPoolOrdered, &colorRecords)
-            : BuildBatchTable(registry, meshPoolOrdered, &colorRecords);
+    const std::span<BatchTableEntry> colorRows =
+        scratch.AllocateArrayForOverwrite<BatchTableEntry>(tableCapacity);
+    const std::span<const BatchTableEntry> colorTable =
+        colorMergeActive ? BuildColorBatchTable(registry, materialColorClass, meshPoolOrdered,
+                                                colorRows, scratch.Resource(), &colorRecords)
+                         : BuildBatchTable(registry, meshPoolOrdered, colorRows, scratch.Resource(),
+                                           &colorRecords);
     if (colorTable.empty() || colorRecords == 0u)
         return {};
 
     uint32_t shadowRecords = 0u;
-    std::vector<BatchTableEntry> shadowTable;
+    std::span<const BatchTableEntry> shadowTable;
     if (anyShadowSlice)
     {
-        shadowTable = BuildShadowBatchTable(registry, materialDepthClass, meshPoolOrdered,
-                                            &shadowRecords);
+        shadowTable = BuildShadowBatchTable(
+            registry, materialDepthClass, meshPoolOrdered,
+            scratch.AllocateArrayForOverwrite<BatchTableEntry>(tableCapacity), scratch.Resource(),
+            &shadowRecords);
         assert(shadowRecords == colorRecords
                && "shadow table Σ capacities must equal color table's (merging only reduces rows)");
     }
@@ -2265,7 +2423,7 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
         std::vector<TableRun>              runs;
         std::vector<std::array<uint32_t, 2>> rowRun; // per row: {runStart, runIndex}
     };
-    auto computeRuns = [&](const std::vector<BatchTableEntry>& table) -> TableRunLayout
+    auto computeRuns = [&](std::span<const BatchTableEntry> table) -> TableRunLayout
     {
         TableRunLayout out;
         if (!groupActive || table.empty())
@@ -2503,9 +2661,12 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
             b.Append(s.visibilityOffsetBytes);
             b.Append(s.disableVisibilityCheck);
             b.Append(s.viewWorldKey);
-            b.Append(s.lod.cameraPos[0]);
-            b.Append(s.lod.cameraPos[1]);
-            b.Append(s.lod.cameraPos[2]);
+            b.Append(s.lod.cameraPos.x);
+            b.Append(s.lod.cameraPos.y);
+            b.Append(s.lod.cameraPos.z);
+            b.Append(s.lod.originSector.x);
+            b.Append(s.lod.originSector.y);
+            b.Append(s.lod.originSector.z);
             b.Append(s.lod.projScaleY);
             b.Append(s.lod.lodBiasGlobal);
             b.Append(s.lod.forceLod);
@@ -2637,7 +2798,7 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
         }
         return offset;
     };
-    auto uploadTable = [&](const std::vector<BatchTableEntry>& t) -> uint32_t
+    auto uploadTable = [&](std::span<const BatchTableEntry> t) -> uint32_t
     { return uploadBytes(t.data(), t.size() * sizeof(BatchTableEntry)); };
     // Upload THIS call's materialColorClass map into the ring, just ahead of
     // this call's tables (so no within-frame wrap clobbers it). BuildColorBatchTable
@@ -2702,14 +2863,17 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     const uint32_t groupBindBytes =
         groupActive ? groupMapBytes : static_cast<uint32_t>(colorTableBytes);
 
-    // Publish each slice's table keys. Consolidation publishes one range per
-    // class, pool group, and parity run, using command counts and the final
-    // command block selected by the compaction mode.
+    // Publish ranges by stream key; GPU blocks retain their original slice order.
+    m_SlicePublishOrder.resize(sliceCount);
     for (uint32_t s = 0; s < sliceCount; ++s)
+        m_SlicePublishOrder[s] = s;
+    std::sort(m_SlicePublishOrder.begin(), m_SlicePublishOrder.end(), [&slices](uint32_t a, uint32_t b)
+              { return std::pair(SliceStreamKey(slices[a]), a) < std::pair(SliceStreamKey(slices[b]), b); });
+    for (const uint32_t s : m_SlicePublishOrder)
     {
         const SliceRegistration& slice = slices[s];
         const bool sliceIsShadow = slice.table == SliceTable::Shadow;
-        const std::vector<BatchTableEntry>& sliceTable = sliceIsShadow ? shadowTable : colorTable;
+        const std::span<const BatchTableEntry> sliceTable = sliceIsShadow ? shadowTable : colorTable;
         const TableRunLayout& sliceRuns = sliceIsShadow ? shadowRuns : colorRuns;
         const uint32_t sliceRecordBase =
             callRecordBase + ((instanceCompactionActive ? 0u : headDrawBlockOffset) + s) * snapshotRecords;
@@ -2758,6 +2922,8 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
             ++m_UnobservableTailSlices;
         }
 
+        const uint64_t sliceKey = SliceStreamKey(slice);
+        bool slicePublished = false;
         if (groupActive)
         {
             // One range per run, keyed by POOL GROUP (the consumers' axis).
@@ -2775,9 +2941,9 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
                 const uint32_t groupKey    = ordered < orderedToGroup.size()
                                                  ? orderedToGroup[ordered]
                                                  : kAbsentPoolGroup;
-                BatchDrawRange& range = m_RangeMap[MakeStreamKey(
+                BatchDrawRange& range = GetOrInsertRange(MakeStreamKey(
                     slice.viewId, slice.cascadeIndex, first.materialIndex, groupKey,
-                    slice.phase)];
+                    slice.phase));
                 range.recordBuffer = m_SharedRecords;
                 range.countBuffer  = m_SharedCursors;
                 BatchDrawSegment head{};
@@ -2811,55 +2977,61 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
                     range.even     = head;
                     range.evenTail = tail;
                 }
+                slicePublished |= range.IsValid();
             }
-            continue;
         }
-
-        for (uint32_t b = 0; b < static_cast<uint32_t>(sliceTable.size()); ++b)
+        else
         {
-            const BatchTableEntry& e = sliceTable[b];
-            // MakeStreamKey masks the mesh field to 24 bits, so a parity-0 row
-            // and its parity-1 sibling collapse to the SAME range-map key — they
-            // MUST merge into one BatchDrawRange (two segments), not overwrite
-            // each other. Detect parity from bit 24 and fill the matching
-            // segment, preserving the other (rows arrive in sort order, so the
-            // parity-0 block precedes the parity-1 block for a material).
-            const bool     mirroredRow = (e.meshIndex & kMeshParityBit) != 0u;
-            const uint32_t realMesh    = e.meshIndex & ~kMeshParityBit;
-            BatchDrawRange& range = m_RangeMap[MakeStreamKey(
-                slice.viewId, slice.cascadeIndex, e.materialIndex, realMesh, slice.phase)];
-            range.recordBuffer = m_SharedRecords;
-            range.countBuffer  = m_SharedCursors;
-            BatchDrawSegment head{};
-            head.cmdByteOffset = static_cast<size_t>(sliceRecordBase + e.recordOffset)
-                                 * kDrawCommandStride;
-            head.countByteOffset = static_cast<size_t>(sliceCursorBase + b) * sizeof(uint32_t);
-            head.maxDrawCount    = e.capacity;
-            // The tail reuses the row's own recordOffset against the tail block
-            // base. There is no compact pass here, so the count slot IS the raw
-            // cursor and maxDrawCount is the only clamp — it must be the PAIRED
-            // bound, or an odd-capacity row whose tail filled would draw one
-            // slot the scatter refused to write.
-            BatchDrawSegment tail{};
-            if (sliceHasTail)
+            for (uint32_t b = 0; b < static_cast<uint32_t>(sliceTable.size()); ++b)
             {
-                tail.cmdByteOffset = static_cast<size_t>(tailRecordBase + e.recordOffset)
+                const BatchTableEntry& e = sliceTable[b];
+                // MakeStreamKey masks the mesh field to 24 bits, so a parity-0 row
+                // and its parity-1 sibling collapse to the SAME range-map key — they
+                // MUST merge into one BatchDrawRange (two segments), not overwrite
+                // each other. Detect parity from bit 24 and fill the matching
+                // segment, preserving the other (rows arrive in sort order, so the
+                // parity-0 block precedes the parity-1 block for a material).
+                const bool     mirroredRow = (e.meshIndex & kMeshParityBit) != 0u;
+                const uint32_t realMesh    = e.meshIndex & ~kMeshParityBit;
+                BatchDrawRange& range = GetOrInsertRange(MakeStreamKey(
+                    slice.viewId, slice.cascadeIndex, e.materialIndex, realMesh, slice.phase));
+                range.recordBuffer = m_SharedRecords;
+                range.countBuffer  = m_SharedCursors;
+                BatchDrawSegment head{};
+                head.cmdByteOffset = static_cast<size_t>(sliceRecordBase + e.recordOffset)
                                      * kDrawCommandStride;
-                tail.countByteOffset =
-                    static_cast<size_t>(tailCursorBase + b) * sizeof(uint32_t);
-                tail.maxDrawCount = TailDrawBound(e.capacity);
-            }
-            if (mirroredRow)
-            {
-                range.mirrored     = head;
-                range.mirroredTail = tail;
-            }
-            else
-            {
-                range.even     = head;
-                range.evenTail = tail;
+                head.countByteOffset = static_cast<size_t>(sliceCursorBase + b) * sizeof(uint32_t);
+                head.maxDrawCount    = e.capacity;
+                // The tail reuses the row's own recordOffset against the tail block
+                // base. There is no compact pass here, so the count slot IS the raw
+                // cursor and maxDrawCount is the only clamp — it must be the PAIRED
+                // bound, or an odd-capacity row whose tail filled would draw one
+                // slot the scatter refused to write.
+                BatchDrawSegment tail{};
+                if (sliceHasTail)
+                {
+                    tail.cmdByteOffset = static_cast<size_t>(tailRecordBase + e.recordOffset)
+                                         * kDrawCommandStride;
+                    tail.countByteOffset =
+                        static_cast<size_t>(tailCursorBase + b) * sizeof(uint32_t);
+                    tail.maxDrawCount = TailDrawBound(e.capacity);
+                }
+                if (mirroredRow)
+                {
+                    range.mirrored     = head;
+                    range.mirroredTail = tail;
+                }
+                else
+                {
+                    range.even     = head;
+                    range.evenTail = tail;
+                }
+                slicePublished |= range.IsValid();
             }
         }
+        // The pool-group runs and the per-batch rows publish the slice here.
+        if (slicePublished)
+            m_PublishedSliceKeys.Insert(sliceKey);
     }
 
     const RenderGraph::RGBuffer ordering =

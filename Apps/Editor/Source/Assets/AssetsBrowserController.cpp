@@ -1,18 +1,17 @@
 #include "Assets/AssetsBrowserController.h"
 #include "Assets/AssetsFolderDropRegistry.h"
 #include "Assets/AssetDeletePathGuard.h"
-#include "Assets/AssetGridDragState.h"
 #include "Assets/AssetPathKey.h"
 #include "Assets/AssetsDataProviders.h"
-#include "Assets/PolyhavenDownloadManager.h"
-#include "Assets/PolyhavenService.h"
+#include "Assets/Polyhaven/PolyhavenDownloadManager.h"
+#include "Assets/Polyhaven/PolyhavenService.h"
 #include "UI/Controls/GridView.h"
 #include "UI/Controls/ListView.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/TreeView.h"
 #include "UI/UIElement.h"
 #include "UI/UIManager.h"
-#include "UI/Interaction/DragDropManager.h"
+#include "UI/Interaction/DragDrop/DragDropManager.h"
 #include "UI/StyleProperties.h"
 #include "UI/Layout/ElementOverrideHelpers.h"
 
@@ -45,9 +44,10 @@
 #include "Platform/ContextMenu.h"
 
 #include "Thumbnails/IThumbnailProvider.h"
-#include "Thumbnails/ModelThumbnailHandler.h"
+#include "Thumbnails/ModelThumbnail/ModelThumbnailHandler.h"
 #include "Thumbnails/ThumbnailService.h"
 
+#include "Types/PathUtils.h"
 #include "Types/StringUtils.h"
 #include "UI/SmartFolder/SmartFolder.h"
 #include "UI/SmartFolder/SmartFolderController.h"
@@ -85,10 +85,15 @@
 
 namespace GameEngine
 {
-DragState g_DragState;
 
-
-
+// Forward declaration of drag state (defined in BookmarksPanel.cpp)
+struct DragState {
+    bool active;
+    std::filesystem::path assetPath;
+    std::string scenePath;
+    std::string entityId;
+};
+extern DragState g_DragState;
 
 void SchedulePolyhavenCategoriesLoad(const EditorContext* context, AssetsTreeDataProvider* treeProvider, TreeView* tree,
                                      std::shared_ptr<std::atomic<bool>> alive);
@@ -189,7 +194,7 @@ namespace
 
     static bool IsBrowserThumbnailVisible(UIElement* view, const std::string& id)
     {
-        UIElement* element = view ? view->FindById(id) : nullptr;
+        UIElement* element = view ? view->FindById(HashStringId(id)) : nullptr;
         if (!element)
             return false;
         // Parked pooled cells and the inactive grid/list retain their IDs and
@@ -204,16 +209,13 @@ namespace
         return true;
     }
 
+    // The destination of `srcPath` in `destDir`, numbered as a paste names a copy when the name is taken.
     static std::filesystem::path MakeUniqueDestinationPath(const std::filesystem::path& destDir, const std::filesystem::path& srcPath)
     {
-        if (destDir.empty())
-            return {};
-
         const std::filesystem::path fileName = srcPath.filename();
-        if (fileName.empty())
+        if (destDir.empty() || fileName.empty())
             return {};
-
-        const auto numbered = Editor::MakeNumberedFilePath(destDir, fileName);
+        const std::filesystem::path numbered = Editor::MakeNumberedFilePath(destDir, fileName);
         return numbered.empty() ? destDir / fileName : numbered;
     }
 
@@ -279,10 +281,7 @@ namespace
 
         // A move keeps the asset's identity, and the code that performed the move is what
         // says so — the watcher's report of the same rename is this operation arriving and
-        // is consumed. A directory is not a registered asset, so nothing moves for it: the
-        // files under it are reported below and register at their new paths, and their old
-        // registrations go when a rescan or their deletions are seen. Same outcome as the
-        // watcher's own report of a directory rename, which never moved them either.
+        // is consumed. A moved folder keeps the identity of every asset under it.
         if (assets)
             (void)assets->RenameAssetPath(src, dst);
         if (write)
@@ -471,15 +470,15 @@ static std::string FormatByteSize(uintmax_t bytes)
     oss.setf(std::ios::fixed);
     if (bytes >= (uintmax_t)gb)
     {
-        oss << std::setprecision(1) << (bytes / gb) << " Gb";
+        oss << std::setprecision(1) << (bytes / gb) << " GB";
     }
     else if (bytes >= (uintmax_t)mb)
     {
-        oss << std::setprecision(1) << (bytes / mb) << " Mb";
+        oss << std::setprecision(1) << (bytes / mb) << " MB";
     }
     else if (bytes >= (uintmax_t)kb)
     {
-        oss << std::setprecision(0) << (bytes / kb) << " Kb";
+        oss << std::setprecision(0) << (bytes / kb) << " KB";
     }
     else
     {
@@ -710,14 +709,14 @@ void AssetsBrowserController::InvalidateThumbnailForPath(const std::filesystem::
             post.Post([this, alive, thumbId, rel]()
             {
                 if (!alive->load(std::memory_order_acquire)) return;
-                if (auto* el = m_Grid->FindById(thumbId))
+                if (auto* el = m_Grid->FindById(HashStringId(thumbId)))
                     UI::Layout::SetBackgroundPath(*el, rel);
             });
         });
 
     if (!immediate.empty())
     {
-        if (auto* el = m_Grid->FindById(thumbId))
+        if (auto* el = m_Grid->FindById(HashStringId(thumbId)))
             UI::Layout::SetBackgroundPath(*el, immediate);
     }
 }
@@ -1170,7 +1169,7 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
                     {
                         const std::string ext = pp->paths[0].extension().string();
                         if (ext == ".scene")
-                            out.GhostThumbnailEngineName = "Icons/sceneicon.png";
+                            out.GhostThumbnailEngineName = "Icons/sceneicon.svg";
                         else if (m_Context && m_Context->Thumbnails)
                         {
                             const std::string thumb = m_Context->Thumbnails->GetOrRequest(pp->paths[0], 128, [](const std::string&) {});
@@ -1183,13 +1182,13 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
             return out;
         });
 
-        // Accept asset drags onto folders.
+        // Asset files and registered drags dropped on folders.
         m_Tree->SetAcceptsPayload(&AcceptsFolderDropPayload);
-        m_Tree->SetOnCanDrop([this](const UI::Interaction::DropRequest& request) {
-            return CanDropOnFolder(request, ResolveTreeDropFolder(request));
+        m_Tree->SetOnCanDrop([this](const UI::Interaction::DropRequest& req) -> UI::Interaction::DropFeedback {
+            return CanDropOnFolder(req, ResolveTreeDropFolder(req));
         });
-        m_Tree->SetOnPerformDrop([this](const UI::Interaction::DropRequest& request) {
-            PerformDropOnFolder(request, ResolveTreeDropFolder(request));
+        m_Tree->SetOnPerformDrop([this](const UI::Interaction::DropRequest& req) {
+            PerformDropOnFolder(req, ResolveTreeDropFolder(req));
         });
         // Selecting a folder in the tree drives the grid's directory
         m_Tree->SetShowRoot(false);
@@ -1304,6 +1303,8 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
                 // and worked. Same-dir skip + per-frame coalescing live inside.
                 NavigateToDirectory(path);
             } });
+        // A slow second click on the selected folder renames it, as F2 does.
+        m_Tree->SetOnItemRenameRequested([this](TreeId id) { BeginRenameOfTreeFolder(id); });
         // Double-click in tree: navigate grid to that folder
         m_Tree->SetOnItemActivated([this](TreeId id)
                                    {
@@ -1374,13 +1375,14 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
                 [this](const std::filesystem::path& directory,
                        EditorContextMenu::DirectoryAction action)
                 { HandleDirectoryAction(directory, action); },
-                /*includeDelete=*/id != 0);
+                /*includeEdits=*/id != 0);
         });
         
         // Custom row binding to add VCS status dot to folder names
         m_Tree->SetOnRowBound([this](TreeId id, UIElement* row) {
             if (!row || !m_TreeProvider)
                 return;
+            m_Rename.OnRowBound(*row, m_TreeProvider->GetPath(id));
 
             // Smart folder row styling
             if (m_TreeProvider->IsSmartFolder(id))
@@ -1448,14 +1450,14 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
             for (auto* extra : extraDots)
             {
                 if (extra)
-                    extra->Overrides().Set(Style::Display, DisplayMode::None);
+                    extra->Style().Set(Style::Display, DisplayMode::None);
             }
 
             // Hide any extra folder icons (avoid structural removal in pooled rows).
             for (auto* extra : extraFolderIcons)
             {
                 if (extra)
-                    extra->Overrides().Set(Style::Display, DisplayMode::None);
+                    extra->Style().Set(Style::Display, DisplayMode::None);
             }
 
             if (!titleLabel)
@@ -1485,7 +1487,7 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
             if (folderIconElement && m_Tree)
             {
                 float iconSize = m_Tree->GetIconSize();
-                folderIconElement->Overrides()
+                folderIconElement->Style()
                     .Set(Style::Width, StyleLength::Px(iconSize))
                     .Set(Style::Height, StyleLength::Px(iconSize))
                     .Set(Style::MinWidth, StyleLength::Px(iconSize))
@@ -1507,9 +1509,9 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
             if (path.empty())
             {
                 if (dotElement)
-                    dotElement->Overrides().Set(Style::Display, DisplayMode::None);
+                    dotElement->Style().Set(Style::Display, DisplayMode::None);
                 titleLabel->SetText(displayName);
-                titleLabel->Overrides().Reset(Style::Color);
+                titleLabel->Style().Reset(Style::Color);
                 return;
             }
             
@@ -1519,9 +1521,9 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
             {
                 // No VCS repo - hide dot if exists, show plain name
                 if (dotElement)
-                    dotElement->Overrides().Set(Style::Display, DisplayMode::None);
+                    dotElement->Style().Set(Style::Display, DisplayMode::None);
                 titleLabel->SetText(displayName);
-                titleLabel->Overrides().Reset(Style::Color);
+                titleLabel->Style().Reset(Style::Color);
                 return;
             }
             
@@ -1554,31 +1556,31 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
                 // Show the dot with colored tint
                 if (colorDotOnly || colorWholeText)
                 {
-                    dotElement->Overrides()
+                    dotElement->Style()
                         .Set(Style::BackgroundTint, statusArgb)
                         .Set(Style::Display, DisplayMode::Flex);
                 }
                 else
                 {
-                    dotElement->Overrides().Reset(Style::BackgroundTint);
-                    dotElement->Overrides().Set(Style::Display, DisplayMode::Flex);
+                    dotElement->Style().Reset(Style::BackgroundTint);
+                    dotElement->Style().Set(Style::Display, DisplayMode::Flex);
                 }
 
                 // Set title text (without dot) and optionally color it
                 // Never color text when status is Clean or NotConfigured
                 titleLabel->SetText(displayName);
                 if (colorWholeText && status != VCSFileStatus::Clean && status != VCSFileStatus::NotConfigured)
-                    titleLabel->Overrides().Set(Style::Color, (uint32_t)statusArgb);
+                    titleLabel->Style().Set(Style::Color, (uint32_t)statusArgb);
                 else
-                    titleLabel->Overrides().Reset(Style::Color);
+                    titleLabel->Style().Reset(Style::Color);
             }
             else
             {
                 // No status - hide dot, show plain name
                 if (dotElement)
-                    dotElement->Overrides().Set(Style::Display, DisplayMode::None);
+                    dotElement->Style().Set(Style::Display, DisplayMode::None);
                 titleLabel->SetText(displayName);
-                titleLabel->Overrides().Reset(Style::Color);
+                titleLabel->Style().Reset(Style::Color);
             }
             
             // TreeView handles positioning of known extra elements (dot/icon) during bind.
@@ -1723,7 +1725,7 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
                     {
                         const std::string ext = pp->paths[0].extension().string();
                         if (ext == ".scene")
-                            out.GhostThumbnailEngineName = "Icons/sceneicon.png";
+                            out.GhostThumbnailEngineName = "Icons/sceneicon.svg";
                         else if (m_Context && m_Context->Thumbnails)
                         {
                             const std::string thumb = m_Context->Thumbnails->GetOrRequest(pp->paths[0], 128, [](const std::string&) {});
@@ -1736,13 +1738,13 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
             return out;
         });
 
-        // Accept asset drops onto folders in the grid (and onto grid empty space for current dir).
+        // Drops on a folder in the grid, or on empty space for the current folder.
         m_Grid->SetAcceptsPayload(&AcceptsFolderDropPayload);
-        m_Grid->SetOnCanDrop([this](const UI::Interaction::DropRequest& request) {
-            return CanDropOnFolder(request, ResolveGridDropFolder(request));
+        m_Grid->SetOnCanDrop([this](const UI::Interaction::DropRequest& req) -> UI::Interaction::DropFeedback {
+            return CanDropOnFolder(req, ResolveGridDropFolder(req));
         });
-        m_Grid->SetOnPerformDrop([this](const UI::Interaction::DropRequest& request) {
-            PerformDropOnFolder(request, ResolveGridDropFolder(request));
+        m_Grid->SetOnPerformDrop([this](const UI::Interaction::DropRequest& req) {
+            PerformDropOnFolder(req, ResolveGridDropFolder(req));
         });
 
         // Virtualized binding for pooled cells: update folder style + thumbnail + label.
@@ -1757,14 +1759,14 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
             
             // Check for scene/script files to apply CSS icon
             auto filePath = m_GridProvider->GetPath(id);
+            m_Rename.OnRowBound(*cell, filePath);
             StartPendingRenameIfBound(filePath);
             bool isScene = false;
             bool isScript = false;
             bool isVideo = false;
             if (!isDir && filePath.has_extension())
             {
-                auto ext = filePath.extension().string();
-                for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
+                const std::string ext = LowerCaseExtension(filePath);
                 isScene = (ext == ".scene");
                 isScript = (ext == ".cs" || GetAssetTypeFromExtension(ext) == AssetType::NativeSource);
                 isVideo = (ext == ".mp4" || ext == ".mov" || ext == ".avi" ||
@@ -1802,8 +1804,8 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
                             s_MouseDown = true;
                             s_DragPath = cellPath;
                             // Clear any previous drag state
-                            g_DragState.Active = false;
-                            g_DragState.AssetPath.clear();
+                            g_DragState.active = false;
+                            g_DragState.assetPath.clear();
                         }
                     });
 
@@ -1821,9 +1823,11 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
                                 // DragDropManager::BeginDrag from running so inspector/material drops never see
                                 // an in-engine drag. GridView/ListView own AssetPathsDragPayload drags.
 
-                                // Set the global drag state for the plain asset-drop targets
-                                g_DragState.Active = true;
-                                g_DragState.AssetPath = cellPath;
+                                // Set global drag state for BookmarksPanel
+                                g_DragState.active = true;
+                                g_DragState.assetPath = cellPath;
+                                g_DragState.scenePath.clear();
+                                g_DragState.entityId.clear();
                             }
                         }
                     });
@@ -1835,7 +1839,7 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
                         {
                             s_MouseDown = false;
                             s_DragPath.clear();
-                            // Don't clear g_DragState here - the drop target clears it after the drop
+                            // Don't clear g_DragState here - let BookmarksPanel handle it after drop
                         }
                     });
                 }
@@ -1892,39 +1896,39 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
                     // Show and color the dot
                     if (colorDotOnly || colorWholeText)
                     {
-                        gitDotEl->Overrides()
+                        gitDotEl->Style()
                             .Set(Style::BackgroundTint, statusArgb)
                             .Set(Style::Display, DisplayMode::Flex);
                     }
                     else
                     {
-                        gitDotEl->Overrides().Reset(Style::BackgroundTint);
-                        gitDotEl->Overrides().Set(Style::Display, DisplayMode::Flex);
+                        gitDotEl->Style().Reset(Style::BackgroundTint);
+                        gitDotEl->Style().Set(Style::Display, DisplayMode::Flex);
                     }
 
                     // Color title if colorWholeText is enabled
                     // Never color text when status is Clean or NotConfigured
                     if (titleEl && colorWholeText && status != VCSFileStatus::Clean && status != VCSFileStatus::NotConfigured)
-                        titleEl->Overrides().Set(Style::Color, (uint32_t)statusArgb);
+                        titleEl->Style().Set(Style::Color, (uint32_t)statusArgb);
                     else if (titleEl)
-                        titleEl->Overrides().Reset(Style::Color);
+                        titleEl->Style().Reset(Style::Color);
                 }
                 else
                 {
                     // No status - hide dot
                     if (gitDotEl)
-                        gitDotEl->Overrides().Set(Style::Display, DisplayMode::None);
+                        gitDotEl->Style().Set(Style::Display, DisplayMode::None);
                     if (titleEl)
-                        titleEl->Overrides().Reset(Style::Color);
+                        titleEl->Style().Reset(Style::Color);
                 }
             }
             else
             {
                 // Not a file or no VCS or status icons disabled - hide dot
                 if (gitDotEl)
-                    gitDotEl->Overrides().Set(Style::Display, DisplayMode::None);
+                    gitDotEl->Style().Set(Style::Display, DisplayMode::None);
                 if (titleEl)
-                    titleEl->Overrides().Reset(Style::Color);
+                    titleEl->Style().Reset(Style::Color);
             }
 
             // Check if this Polyhaven item has been fully downloaded (model + textures)
@@ -1938,7 +1942,7 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
                 if (polyhavenDownloaded && titleEl)
                 {
                     constexpr uint32_t kDownloadedBlue = 0xFF4499FF;
-                    titleEl->Overrides().Set(Style::Color, kDownloadedBlue);
+                    titleEl->Style().Set(Style::Color, kDownloadedBlue);
                 }
             }
 
@@ -1966,13 +1970,13 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
                     float cellWidth = iconSize + 16.0f - 4.0f;
                     size_t maxChars = std::max(10, (int)(cellWidth / 7.0f));
                     titleEl->SetText(MiddleTruncate(displayName, maxChars));
-                    titleEl->Overrides().Set(Style::MaxWidth, StyleLength::Px(textMaxWidth));
+                    titleEl->Style().Set(Style::MaxWidth, StyleLength::Px(textMaxWidth));
                 }
                 else
                 {
                     // No truncation - show full name with word wrap
                     titleEl->SetText(displayName);
-                    titleEl->Overrides().Set(Style::MaxWidth, StyleLength::Px(textMaxWidth));
+                    titleEl->Style().Set(Style::MaxWidth, StyleLength::Px(textMaxWidth));
                 }
             }
 
@@ -2028,9 +2032,9 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
                         post.Post([this, alive, thumbId, cellId, rel]()
                         {
                             if (!alive->load(std::memory_order_acquire)) return;
-                            if (auto* el = m_Grid->FindById(thumbId))
+                            if (auto* el = m_Grid->FindById(HashStringId(thumbId)))
                                 ApplyThumbToElement(el, rel);
-                            if (auto* c = m_Grid->FindById(cellId))
+                            if (auto* c = m_Grid->FindById(HashStringId(cellId)))
                                 c->AddClass("has-thumbnail");
                         });
                     });
@@ -2102,7 +2106,8 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
         // Double-click to activate (enter folder or open asset)
         m_Grid->SetOnItemRenameRequested([this](GridId id)
                                          {
-            if (m_GridProvider)
+            // The ".." row stands for the parent folder; it is navigation, not a name.
+            if (m_GridProvider && !AssetsGridDataProvider::IsUpEntry(id))
                 BeginRename(m_GridProvider->GetPath(id));
         });
         m_Grid->SetOnItemActivated([this](GridId id)
@@ -2332,9 +2337,7 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
 	                {
 	                    DeleteAssetPaths(paths);
 	                },
-	                isDir ? std::function<void(const std::filesystem::path&)>{}
-	                      : std::function<void(const std::filesystem::path&)>(
-	                            [this](const std::filesystem::path& path) { BeginRename(path); }));
+	                [this](const std::filesystem::path& path) { BeginRename(path); });
 	        });
 
         SortDescriptor sort;
@@ -2472,7 +2475,7 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
                     {
                         const std::string ext = pp->paths[0].extension().string();
                         if (ext == ".scene")
-                            out.GhostThumbnailEngineName = "Icons/sceneicon.png";
+                            out.GhostThumbnailEngineName = "Icons/sceneicon.svg";
                         else if (m_Context && m_Context->Thumbnails)
                         {
                             const std::string thumb = m_Context->Thumbnails->GetOrRequest(pp->paths[0], 128, [](const std::string&) {});
@@ -2485,13 +2488,13 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
             return out;
         });
 
-        // Accept asset drops onto folders in the list (and onto list empty space for current dir).
+        // Drops on a folder in the list, or on empty space for the current folder.
         m_List->SetAcceptsPayload(&AcceptsFolderDropPayload);
-        m_List->SetOnCanDrop([this](const UI::Interaction::DropRequest& request) {
-            return CanDropOnFolder(request, ResolveListDropFolder(request));
+        m_List->SetOnCanDrop([this](const UI::Interaction::DropRequest& req) -> UI::Interaction::DropFeedback {
+            return CanDropOnFolder(req, ResolveListDropFolder(req));
         });
-        m_List->SetOnPerformDrop([this](const UI::Interaction::DropRequest& request) {
-            PerformDropOnFolder(request, ResolveListDropFolder(request));
+        m_List->SetOnPerformDrop([this](const UI::Interaction::DropRequest& req) {
+            PerformDropOnFolder(req, ResolveListDropFolder(req));
         });
     }
 
@@ -2513,7 +2516,7 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
         // Double-click to activate
         m_List->SetOnItemRenameRequested([this](ListId id)
                                          {
-            if (m_ListProvider)
+            if (m_ListProvider && !AssetsListDataProvider::IsUpEntry(id))
                 BeginRename(m_ListProvider->GetPath(id));
         });
         m_List->SetOnItemActivated([this](ListId id)
@@ -2656,9 +2659,7 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
                 {
                     DeleteAssetPaths(paths);
                 },
-                isDir ? std::function<void(const std::filesystem::path&)>{}
-                      : std::function<void(const std::filesystem::path&)>(
-                            [this](const std::filesystem::path& path) { BeginRename(path); }));
+                [this](const std::filesystem::path& path) { BeginRename(path); });
         });
 
         // The item resize gesture adjusts row height.
@@ -2896,8 +2897,7 @@ AssetExtensionKind ClassifyAssetExtension(const std::filesystem::path& path)
     AssetExtensionKind kind;
     if (!path.has_extension())
         return kind;
-    std::string ext = path.extension().string();
-    for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
+    const std::string ext = LowerCaseExtension(path);
     kind.IsScene  = (ext == ".scene");
     kind.IsScript = (ext == ".cs" || GetAssetTypeFromExtension(ext) == AssetType::NativeSource);
     kind.IsVideo  = (ext == ".mp4" || ext == ".mov" || ext == ".avi" ||
@@ -2910,7 +2910,9 @@ void AssetsBrowserController::BindListRow(UIElement* row, ListId id, int /*rowIn
 {
     if (!row || !m_ListProvider || !m_GridProvider)
         return;
-    StartPendingRenameIfBound(m_ListProvider->GetPath(id));
+    const std::filesystem::path path = m_ListProvider->GetPath(id);
+    m_Rename.OnRowBound(*row, path);
+    StartPendingRenameIfBound(path);
 
     // Inherit the legacy list-item / assets-list-row styling (colours, hover, selected, icons).
     // The TableView's own .table-view-row class drives layout; the override CSS reconciles the two.
@@ -2934,9 +2936,9 @@ void AssetsBrowserController::BindListRow(UIElement* row, ListId id, int /*rowIn
     // Store the row's path so the per-row bookmark micro-drag (below) can recover it.
     m_ListRowPathMap[row] = filePath.string();
 
-    // One-time per-row plain asset-drag gesture. This is distinct from the ListView's asset
-    // DnD (SetDragPayloadBuilder): it drives the global g_DragState that the Bookmarks panel,
-    // the web panel and the Build settings slots read on drop. The handlers are registered once per pooled row and recover the current path
+    // One-time per-row drag-to-bookmarks gesture. This is distinct from the ListView's asset
+    // DnD (SetDragPayloadBuilder): it drives the global g_DragState that BookmarksPanel reads
+    // on drop. The handlers are registered once per pooled row and recover the current path
     // from m_ListRowPathMap (re-keyed every bind), so reuse across items stays correct.
     if (!row->HasClass("asset-list-drag-initialized"))
     {
@@ -2959,8 +2961,8 @@ void AssetsBrowserController::BindListRow(UIElement* row, ListId id, int /*rowIn
             s_DragStartY = e.Y;
             s_MouseDown  = true;
             s_DragPath   = std::filesystem::path(it->second);
-            g_DragState.Active = false;
-            g_DragState.AssetPath.clear();
+            g_DragState.active = false;
+            g_DragState.assetPath.clear();
         });
         row->RegisterEventHandler(kEventMouseMove, [](UIEvent& e)
         {
@@ -2970,8 +2972,10 @@ void AssetsBrowserController::BindListRow(UIElement* row, ListId id, int /*rowIn
             const float dy = std::abs(e.Y - s_DragStartY);
             if (dx > kAssetDragStartThresholdPx || dy > kAssetDragStartThresholdPx)
             {
-                g_DragState.Active = true;
-                g_DragState.AssetPath = s_DragPath;
+                g_DragState.active = true;
+                g_DragState.assetPath = s_DragPath;
+                g_DragState.scenePath.clear();
+                g_DragState.entityId.clear();
             }
         });
         row->RegisterEventHandler(kEventMouseUp, [](UIEvent& e)
@@ -3006,7 +3010,7 @@ void AssetsBrowserController::BindListCell(UIElement* cell, StringId colKey, Lis
             lbl = dynamic_cast<Label*>(cell->GetChildren()[0].get());
         }
         if (lbl)
-            lbl->Overrides().Set(Style::FontSize, StyleLength::Px(fontSize));
+            lbl->Style().Set(Style::FontSize, StyleLength::Px(fontSize));
         return lbl;
     };
 
@@ -3051,7 +3055,7 @@ void AssetsBrowserController::BindListCell(UIElement* cell, StringId colKey, Lis
 
         if (nameLabel)
         {
-            nameLabel->Overrides().Set(Style::FontSize, StyleLength::Px(fontSize));
+            nameLabel->Style().Set(Style::FontSize, StyleLength::Px(fontSize));
             const char* nm = m_ListProvider->GetLabel(id);
             std::string displayName = nm ? std::string(nm) : std::string();
             if (!isDir)
@@ -3066,7 +3070,7 @@ void AssetsBrowserController::BindListCell(UIElement* cell, StringId colKey, Lis
             // Name colour: dim by default; colorWholeText paints it with the VCS status colour
             // (this column owns that, since the Git cell can no longer reach the name label);
             // a downloaded Polyhaven asset wins with blue.
-            nameLabel->Overrides().Reset(Style::Color);
+            nameLabel->Style().Reset(Style::Color);
             RefreshCachedVcsUiSettings();
             // Gate on showStatusIcons too: the old binder only tinted the name when status icons
             // were enabled (the colour came from inside the icon block), and the grid view still
@@ -3082,12 +3086,12 @@ void AssetsBrowserController::BindListCell(UIElement* cell, StringId colKey, Lis
                     {
                         const char* statusColor = Editor::VcsStatusToColor(status);
                         if (statusColor)
-                            nameLabel->Overrides().Set(Style::Color, (uint32_t)StatusColorToArgb(statusColor));
+                            nameLabel->Style().Set(Style::Color, (uint32_t)StatusColorToArgb(statusColor));
                     }
                 }
             }
             if (downloaded)
-                nameLabel->Overrides().Set(Style::Color, 0xFF4499FFu);
+                nameLabel->Style().Set(Style::Color, 0xFF4499FFu);
         }
 
         if (icon)
@@ -3101,7 +3105,7 @@ void AssetsBrowserController::BindListCell(UIElement* cell, StringId colKey, Lis
             const int   gapPerSide = std::max(1, std::min(2, (int)(rowHeight / 24.0f)));
             const int   totalGap   = gapPerSide * 2;
             const int   iconSize   = std::max(16, (int)(rowHeight - totalGap));
-            icon->Overrides()
+            icon->Style()
                 .Set(Style::Width, StyleLength::Px((float)iconSize))
                 .Set(Style::Height, StyleLength::Px((float)iconSize))
                 .Set(Style::MinWidth, StyleLength::Px((float)iconSize))
@@ -3138,7 +3142,7 @@ void AssetsBrowserController::BindListCell(UIElement* cell, StringId colKey, Lis
                             post.Post([this, alive, iconIdCopy, rel]()
                             {
                                 if (!alive->load(std::memory_order_acquire)) return;
-                                if (auto* el = m_List->FindById(iconIdCopy))
+                                if (auto* el = m_List->FindById(HashStringId(iconIdCopy)))
                                 {
                                     ApplyThumbToElement(el, rel);
                                     el->AddClass("has-thumbnail");
@@ -3267,7 +3271,7 @@ void AssetsBrowserController::BindListCell(UIElement* cell, StringId colKey, Lis
             }
         }
         if (text)
-            text->Overrides().Set(Style::FontSize, StyleLength::Px(fontSize));
+            text->Style().Set(Style::FontSize, StyleLength::Px(fontSize));
 
         if (container && dot && text)
         {
@@ -3289,26 +3293,26 @@ void AssetsBrowserController::BindListCell(UIElement* cell, StringId colKey, Lis
                 if (statusColor && statusStr && statusStr[0] != '\0')
                 {
                     if (shouldHideDot)
-                        dot->Overrides().Set(Style::Display, DisplayMode::None);
+                        dot->Style().Set(Style::Display, DisplayMode::None);
                     else
-                        dot->Overrides().Set(Style::BackgroundTint, statusArgb).Set(Style::Display, DisplayMode::Flex);
+                        dot->Style().Set(Style::BackgroundTint, statusArgb).Set(Style::Display, DisplayMode::Flex);
                     text->SetText(statusStr);
                     if (status == VCSFileStatus::Clean || status == VCSFileStatus::NotConfigured || colorDotOnly)
-                        text->Overrides().Reset(Style::Color);
+                        text->Style().Reset(Style::Color);
                     else
-                        text->Overrides().Set(Style::Color, (uint32_t)statusArgb);
+                        text->Style().Set(Style::Color, (uint32_t)statusArgb);
                 }
                 else if (statusStr && statusStr[0] != '\0')
                 {
-                    dot->Overrides().Set(Style::Display, DisplayMode::None);
+                    dot->Style().Set(Style::Display, DisplayMode::None);
                     text->SetText(statusStr);
-                    text->Overrides().Reset(Style::Color);
+                    text->Style().Reset(Style::Color);
                 }
                 else
                 {
-                    dot->Overrides().Set(Style::Display, DisplayMode::None);
+                    dot->Style().Set(Style::Display, DisplayMode::None);
                     text->SetText("");
-                    text->Overrides().Reset(Style::Color);
+                    text->Style().Reset(Style::Color);
                 }
 
                 container->RemoveClass("git-modified");
@@ -3328,12 +3332,12 @@ void AssetsBrowserController::BindListCell(UIElement* cell, StringId colKey, Lis
             }
             else
             {
-                dot->Overrides().Set(Style::Display, DisplayMode::None);
+                dot->Style().Set(Style::Display, DisplayMode::None);
                 if (!vcs || !vcs->IsRepository())
                     text->SetText("not active");
                 else
                     text->SetText("-");
-                text->Overrides().Reset(Style::Color);
+                text->Style().Reset(Style::Color);
             }
         }
         return;
@@ -3373,7 +3377,7 @@ void AssetsBrowserController::BindListCell(UIElement* cell, StringId colKey, Lis
             }
         }
         if (text)
-            text->Overrides().Set(Style::FontSize, StyleLength::Px(fontSize));
+            text->Style().Set(Style::FontSize, StyleLength::Px(fontSize));
 
         if (dots && text)
         {
@@ -3439,7 +3443,7 @@ void AssetsBrowserController::BindListCell(UIElement* cell, StringId colKey, Lis
                         }
                         auto d = std::make_unique<UIElement>("div");
                         d->AddClass("tag-dot");
-                        d->Overrides()
+                        d->Style()
                             .Set(Style::Width, StyleLength::Px(8.0f))
                             .Set(Style::Height, StyleLength::Px(8.0f))
                             .Set(Style::MinWidth, StyleLength::Px(8.0f))
@@ -3449,13 +3453,13 @@ void AssetsBrowserController::BindListCell(UIElement* cell, StringId colKey, Lis
                             .Set(Style::MarginRight, StyleLength::Px(2.0f));
                         if (color.empty())
                         {
-                            d->Overrides()
+                            d->Style()
                                 .Set(Style::BorderWidth, Box4{1.0f, 1.0f, 1.0f, 1.0f})
                                 .Set(Style::BorderColor, BorderColorsTRBL{0xFF666666u, 0xFF666666u, 0xFF666666u, 0xFF666666u});
                         }
                         else
                         {
-                            d->Overrides().Set(Style::BackgroundColor, (uint32_t)StatusColorToArgb(color.c_str(), 0xFF888888u));
+                            d->Style().Set(Style::BackgroundColor, (uint32_t)StatusColorToArgb(color.c_str(), 0xFF888888u));
                         }
                         dots->AddChild(std::move(d));
                     }
@@ -4450,7 +4454,7 @@ static std::string MakeCppEntitySystemBody(const std::string& name)
            "{\n"
            "    void ForEach(GameEngine::Components::Transform& /*transform*/, float /*dt*/)\n"
            "    {\n"
-           "        // Runs per entity with a Transform. e.g. transform.matrix[13] += dt; (Y)\n"
+           "        // Runs per entity with a Transform. e.g. transform.Position.Y += dt;\n"
            "    }\n"
            "};\n";
 }
@@ -4522,9 +4526,6 @@ void AssetsBrowserController::HandleDirectoryAction(const std::filesystem::path&
     case EditorContextMenu::DirectoryAction::CreateNavGrid:
         CreateNewNavGridInDirectory(directory);
         break;
-    case EditorContextMenu::DirectoryAction::CreateNavMesh:
-        CreateNewNavMeshInDirectory(directory);
-        break;
     case EditorContextMenu::DirectoryAction::CreateGameSystem:
     case EditorContextMenu::DirectoryAction::CreateEntitySystem:
     case EditorContextMenu::DirectoryAction::CreateComponent:
@@ -4546,6 +4547,10 @@ void AssetsBrowserController::HandleDirectoryAction(const std::filesystem::path&
     }
     case EditorContextMenu::DirectoryAction::Import:
         ImportFilesIntoDirectory(directory);
+        break;
+    case EditorContextMenu::DirectoryAction::Rename:
+        if (m_TreeProvider)
+            BeginRenameOfTreeFolder(m_TreeProvider->FindIdForPath(directory));
         break;
     case EditorContextMenu::DirectoryAction::Delete:
         DeleteAssetPaths({directory});
@@ -4747,14 +4752,6 @@ void AssetsBrowserController::CreateNewNavGridInDirectory(const std::filesystem:
     RevealCreatedAsset(result.path);
 }
 
-void AssetsBrowserController::CreateNewNavMeshInDirectory(const std::filesystem::path& dir)
-{
-    if (!m_Context) return;
-    auto result = Editor::CreateDefaultNavMeshFile(dir, "NewNavMesh",
-                                                    m_Context->UndoRedo, m_Context->Assets);
-    RevealCreatedAsset(result.path);
-}
-
 void AssetsBrowserController::CreateCodeAssetInDirectory(const std::filesystem::path& dir,
                                                           const Editor::CodeAssetDescriptor& descriptor)
 {
@@ -4781,24 +4778,67 @@ void AssetsBrowserController::RevealCreatedAsset(const std::filesystem::path& cr
 
 void AssetsBrowserController::BeginRenameOfSelection()
 {
-    BeginRename(GetPrimarySelectedAssetPath());
+    if (!m_ItemSelection || !m_GridProvider)
+        return;
+    const std::vector<UI::Interaction::ItemId> ids = m_ItemSelection->GetSelection();
+    if (ids.size() != 1 || AssetsGridDataProvider::IsUpEntry(static_cast<GridId>(ids.front())))
+        return;
+    BeginRename(m_GridProvider->GetPath(static_cast<GridId>(ids.front())));
+}
+
+void AssetsBrowserController::BeginRenameOfTreeSelection()
+{
+    if (!m_TreeSelection)
+        return;
+    const std::vector<UI::Interaction::ItemId> ids = m_TreeSelection->GetSelection();
+    if (ids.size() == 1)
+        BeginRenameOfTreeFolder(static_cast<TreeId>(ids.front()));
+}
+
+void AssetsBrowserController::BeginRenameOfTreeFolder(TreeId id)
+{
+    if (!m_Context || !m_Tree || !m_TreeProvider || id == 0)
+        return;
+    if (m_TreeProvider->IsSmartFolder(id) || m_TreeProvider->IsSmartFoldersSection(id) ||
+        m_TreeProvider->IsOnlineAssetsSection(id) || m_TreeProvider->IsPolyhaven(id) ||
+        m_TreeProvider->IsPolyhavenCategory(id) || m_TreeProvider->IsPolyhavenCategoryChild(id))
+        return;
+    const std::filesystem::path folder = m_TreeProvider->GetPath(id);
+    if (!IsRenameableAssetPath(folder))
+        return;
+    Label* title = m_Tree->FindBoundRowTitle(id);
+    if (!title)
+        return;
+    // A tree row orders its children: the modifier gives the field the title's place.
+    m_Rename.Begin(title, m_Tree, folder, "tree-rename-field", m_Context->UndoRedo,
+                   m_Context->Assets, [this](const std::filesystem::path& renamedTo) { OnAssetRenamed(renamedTo); });
+}
+
+bool AssetsBrowserController::IsRenameableAssetPath(const std::filesystem::path& path) const
+{
+    if (path.empty() || IsAssetBrowserVirtualPath(path))
+        return false;
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec))
+        return false;
+    // The Assets root is the project's asset mount, not an item in it.
+    return m_AssetsRoot.empty() || !std::filesystem::equivalent(path, m_AssetsRoot, ec);
 }
 
 void AssetsBrowserController::BeginRename(const std::filesystem::path& assetPath)
 {
-    if (!m_Context || assetPath.empty() || IsAssetBrowserVirtualPath(assetPath))
-        return;
-    std::error_code ec;
-    if (!std::filesystem::is_regular_file(assetPath, ec))
+    if (!m_Context || !IsRenameableAssetPath(assetPath))
         return;
 
     Label* nameLabel = FindNameLabelForPath(assetPath);
     if (nameLabel)
     {
         m_PendingRenamePath.clear();
-        UIElement* view = IsGridViewShowing() ? static_cast<UIElement*>(m_Grid) : static_cast<UIElement*>(m_List);
-        m_Rename.Begin(nameLabel, view, assetPath, m_Context->UndoRedo, m_Context->Assets,
-                       [this](const std::filesystem::path& renamedTo) { OnAssetRenamed(renamedTo); });
+        const bool grid = IsGridViewShowing();
+        UIElement* view = grid ? static_cast<UIElement*>(m_Grid) : static_cast<UIElement*>(m_List);
+        // A grid cell is a column; the modifier sizes the field under the thumbnail.
+        m_Rename.Begin(nameLabel, view, assetPath, grid ? "grid-rename-field" : nullptr, m_Context->UndoRedo,
+                       m_Context->Assets, [this](const std::filesystem::path& renamedTo) { OnAssetRenamed(renamedTo); });
         return;
     }
     // Not bound yet: the view binds it on its next virtualization pass.
@@ -4828,7 +4868,7 @@ bool AssetsBrowserController::IsGridViewShowing() const
     if (!m_List)
         return true;
     // AssetsPanel toggles the views through their Display override.
-    const std::optional<DisplayMode> display = m_Grid->Overrides().Get(Style::Display);
+    const std::optional<DisplayMode> display = m_Grid->Style().Get(Style::Display);
     return !display.has_value() || *display != DisplayMode::None;
 }
 

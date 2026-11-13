@@ -14,6 +14,10 @@ namespace GameEngine::Image
 /// zero or the encoder fails.
 std::vector<uint8_t> EncodePng(std::span<const uint8_t> rgba, uint32_t width, uint32_t height);
 
+/// Encodes RGBA8 as JPEG, discarding alpha. Quality is clamped to 1..100.
+/// Returns empty for an invalid extent or when encoding fails.
+std::vector<uint8_t> EncodeJpeg(std::span<const uint8_t> rgba, uint32_t width, uint32_t height, int quality);
+
 /// Encodes as EncodePng and writes the PNG to `path`, replacing any file there. The
 /// write is not atomic: a caller whose readers may open the file mid-write writes a
 /// temporary sibling and publishes it.

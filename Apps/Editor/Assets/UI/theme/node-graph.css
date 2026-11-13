@@ -86,7 +86,7 @@
 }
 
 .node-graph-toolbar #NodeGraphAutoCompileToggle.node-graph-auto-compile-toggle.icon-active {
-	background-image: url("editor:Icons/checked.png");
+	background-image: url("editor:Icons/checked.svg");
 	background-image-tint: var(--ui_icon_tint_active);
 	color: #d8d8d8;
 }
@@ -196,12 +196,12 @@
 	background-size: 10px 10px;
 	background-repeat: no-repeat;
 	background-position: center;
-	background-image: url("editor:Icons/arrow-right.png");
+	background-image: url("editor:Icons/arrow-right.svg");
 	background-image-tint: var(--graph-diagnostic-text);
 }
 
 .node-graph-diagnostic-chevron.expanded {
-	background-image: url("editor:Icons/arrow-down.png");
+	background-image: url("editor:Icons/arrow-down.svg");
 }
 
 .node-graph-diagnostic-chevron.no-toggle {
@@ -332,7 +332,7 @@
 }
 
 .node-graph-toolbar-preview-ibl-toggle {
-	background-image: url("editor:Icons/skyenvironment.png");
+	background-image: url("editor:Icons/skyenvironment.svg");
 }
 
 .node-graph-toolbar-expand-toggle {
@@ -416,7 +416,7 @@
 .node-graph-toolbar .node-graph-toolbar-right #NodeGraphGridToggle,
 .node-graph-toolbar .node-graph-toolbar-right .node-graph-toolbar-grid.grid-icon,
 .node-graph-toolbar .node-graph-toolbar-right .node-graph-toolbar-grid.button.grid-icon {
-	background-image: url("editor:Icons/grid-icon.png");
+	background-image: url("editor:Icons/grid-icon.svg");
 }
 
 .node-graph-toolbar .node-graph-toolbar-right #NodeGraphNodesPanelToggle:hover,
@@ -496,7 +496,8 @@
 	position: relative;
 }
 
-/* Search bar in toolbar: same size and layout as Log panel (320px × 22px) */
+/* The panel search in the toolbar: 320px wide, centered in the row, at the 24px every panel
+   search shares (theme/views.css, .panel-search-bar). */
 .node-graph-toolbar .panel-search-bar {
 	position: relative;
 	left: unset;
@@ -506,7 +507,7 @@
 	flex-grow: 0;
 	flex-shrink: 1;
 	align-self: center;
-	height: 22px;
+	height: 24px;
 	width: 320px;
 	min-width: 120px;
 	max-width: 320px;
@@ -580,7 +581,7 @@
 	width: 100%;
 	min-height: 28px;
 	font-size: 11px;
-	font-weight: 600;
+	font-weight: 500;
 	letter-spacing: 0.5px;
 	color: #d8d8d8;
 	text-transform: uppercase;
@@ -649,7 +650,7 @@
 	margin-top: -6px;
 	width: 12px;
 	height: 12px;
-	background-image: url("editor:Icons/search.png");
+	background-image: url("editor:Icons/search.svg");
 	background-size: 12px 12px;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -657,9 +658,7 @@
 	pointer-events: none;
 }
 
-.node-graph-inline-search-clear,
-button.node-graph-inline-search-clear,
-.button.node-graph-inline-search-clear {
+.node-graph-inline-search-clear {
 	position: absolute;
 	right: 6px;
 	top: 50%;
@@ -694,9 +693,7 @@ button.node-graph-inline-search-clear,
 	opacity: 1.0;
 }
 
-.node-graph-inline-search-clear:hover,
-button.node-graph-inline-search-clear:hover,
-.button.node-graph-inline-search-clear:hover {
+.node-graph-inline-search-clear:hover {
 	background-color: rgba(255, 255, 255, 0.192);
 	opacity: 1.0;
 }
@@ -733,8 +730,8 @@ button.node-graph-inline-search-clear:hover,
 	display: flex;
 	align-items: center;
 	font-size: 13px;
-	font-weight: 600;
-	color: #9d9d9d;
+	font-weight: 500;
+	color: var(--ui_color_text);
 	text-transform: uppercase;
 	letter-spacing: 0.3px;
 	height: 20px;
@@ -745,8 +742,6 @@ button.node-graph-inline-search-clear:hover,
 	line-height: 16px;
 }
 
-.node-graph-palette button.node-graph-palette-node-button,
-.node-graph-palette .button.node-graph-palette-node-button,
 .node-graph-palette .node-graph-palette-node-button {
 	display: flex;
 	align-items: center;
@@ -770,15 +765,11 @@ button.node-graph-inline-search-clear:hover,
 	cursor: pointer;
 }
 
-.node-graph-palette button.node-graph-palette-node-button:hover,
-.node-graph-palette .button.node-graph-palette-node-button:hover,
 .node-graph-palette .node-graph-palette-node-button:hover {
 	background-color: #505050;
 	color: #ffffff;
 }
 
-.node-graph-palette button.node-graph-palette-node-button:active,
-.node-graph-palette .button.node-graph-palette-node-button:active,
 .node-graph-palette .node-graph-palette-node-button:active {
 	background-color: #2d2d30;
 }
@@ -792,16 +783,20 @@ button.node-graph-inline-search-clear:hover,
 	background-repeat: no-repeat;
 	background-size: contain;
 	background-position: center;
+	/* The artwork is white: rest at the editor's standard icon gray, like every toolbar icon. */
+	background-image-tint: var(--ui_icon_tint_standard);
 }
 
-.node-graph-palette .node-graph-palette-node-button-colored,
-.node-graph-palette .button.node-graph-palette-node-button-colored {
+.node-graph-palette-node-button:hover .graph-node-palette-icon {
+	background-image-tint: var(--ui_icon_tint_hover);
+}
+
+.node-graph-palette .node-graph-palette-node-button-colored {
 	color: #ffffff;
 }
 
 .node-graph-palette-node-drag-ghost {
 	pointer-events: none;
-	border-color: var(--ui_color_accent);
 	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
 	gap: 2px;
 }
@@ -848,7 +843,7 @@ button.node-graph-inline-search-clear:hover,
 	min-width: 0;
 	min-height: 28px;
 	font-size: 11px;
-	font-weight: 600;
+	font-weight: 500;
 	letter-spacing: 0.5px;
 	color: #d8d8d8;
 	text-transform: uppercase;
@@ -891,9 +886,7 @@ button.node-graph-inline-search-clear:hover,
 	border-color: var(--ui_color_accent);
 }
 
-.node-graph-variables-add,
-button.node-graph-variables-add,
-.button.node-graph-variables-add {
+.node-graph-variables-add {
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -918,17 +911,13 @@ button.node-graph-variables-add,
 	cursor: pointer;
 }
 
-.node-graph-variables-add:hover,
-button.node-graph-variables-add:hover,
-.button.node-graph-variables-add:hover {
+.node-graph-variables-add:hover {
 	background-color: transparent;
 	color: #ffffff;
 	opacity: 1.0;
 }
 
-.node-graph-variables-add:active,
-button.node-graph-variables-add:active,
-.button.node-graph-variables-add:active {
+.node-graph-variables-add:active {
 	background-color: transparent;
 	color: #b9d7ff;
 	opacity: 1.0;
@@ -1221,7 +1210,7 @@ button.node-graph-variables-add:active,
 	align-self: stretch;
 }
 
-/* Material preview sphere — top-right overlay (Godot-style). */
+/* Material preview sphere — top-right overlay. */
 .node-graph-preview {
 	display: none;
 	flex-direction: column;
@@ -1245,7 +1234,7 @@ button.node-graph-variables-add:active,
 	top: 16px;
 	z-index: 11;
 	font-size: 12px;
-	font-weight: 600;
+	font-weight: 500;
 	letter-spacing: 0.5px;
 	color: #9d9d9d;
 	text-transform: uppercase;
@@ -1447,7 +1436,7 @@ button.node-graph-variables-add:active,
    specificity — so the :hover variants this used to spell out are unnecessary
    rather than merely collapsed. */
 .graph-node.ring-accent > .graph-node-ring {
-	border-color: var(--ui_color_accent);
+	border-color: #3A8FFF;
 }
 
 .graph-node.runtime-active {
@@ -1455,8 +1444,8 @@ button.node-graph-variables-add:active,
 }
 
 .graph-node.drop-target {
-	border-color: var(--ui_color_accent);
-	box-shadow: 0 0 8px var(--ui_color_accent_glow);
+	border-color: #3A8FFF;
+	box-shadow: 0 0 8px rgba(58, 143, 255, 0.5);
 }
 
 /* The node the last compile blamed: red border plus glow. */
@@ -1465,11 +1454,12 @@ button.node-graph-variables-add:active,
 	box-shadow: 0 0 8px rgba(240, 74, 74, 0.5);
 }
 
-/* Both states at once: selection (and search) keeps the accent border, the red
+/* Both states at once: selection (and search) keeps the blue border, the red
    glow keeps saying "error". Without this, has-error wins the border at equal
    specificity and selecting a broken node looks like nothing happened. */
-.graph-node.has-error.ring-accent {
-	border-color: var(--ui_color_accent);
+.graph-node.has-error.selected,
+.graph-node.has-error.search-match {
+	border-color: #3A8FFF;
 }
 
 .graph-node-body {
@@ -1512,6 +1502,12 @@ button.node-graph-variables-add:active,
 	background-repeat: no-repeat;
 	background-size: contain;
 	background-position: center;
+	/* The artwork is white: the header rests brighter than the palette, at the active icon tint. */
+	background-image-tint: var(--ui_icon_tint_active);
+}
+
+.graph-node:hover .graph-node-icon {
+	background-image-tint: var(--ui_icon_tint_hover);
 }
 
 .graph-node-title {
@@ -1659,6 +1655,49 @@ button.node-graph-variables-add:active,
 .graph-inline-field.text-field {
 	width: 100%;
 	flex: 1 1 auto;
+}
+
+/* An asset reference on a pin: the Inspector's asset field at the node's
+   scale, in the value-box tone. */
+.graph-node-layer .asset-field {
+	min-height: 0;
+	height: 100%;
+	padding-left: calc(6px * var(--length-scale, 1));
+	padding-right: calc(2px * var(--length-scale, 1));
+	border-radius: calc(4px * var(--length-scale, 1));
+	border-color: transparent;
+	background-color: var(--graph-value-bg, #202020);
+	font-size: inherit;
+	/* The node text em: 13px at zoom 1 (.graph-z3), scaled with the zoom. */
+	--asset-field-em: calc(13px * var(--length-scale, 1));
+}
+
+.graph-node-layer .asset-field:hover {
+	border-color: var(--ui_color_dropdown_outline_hover);
+}
+
+.graph-node-layer .asset-field-name {
+	font-size: inherit;
+}
+
+.graph-node-layer .asset-field-preview {
+	width: calc(12px * var(--length-scale, 1));
+	height: calc(12px * var(--length-scale, 1));
+	min-width: calc(12px * var(--length-scale, 1));
+	min-height: calc(12px * var(--length-scale, 1));
+}
+
+.graph-node-layer .asset-field-clear,
+.graph-node-layer .asset-field-pick {
+	width: calc(14px * var(--length-scale, 1));
+	height: calc(14px * var(--length-scale, 1));
+	min-width: calc(14px * var(--length-scale, 1));
+	min-height: calc(14px * var(--length-scale, 1));
+}
+
+/* The chevron at the size the clear cross draws: both marks read as one pair. */
+.graph-node-layer .asset-field-pick {
+	background-size: 7px 7px;
 }
 
 /* ---- Shared value-box surface --------------------------------------------
@@ -2000,7 +2039,7 @@ button.node-graph-variables-add:active,
 	background-color: #ffffff;
 	outline-width: 2px;
 	outline-style: solid;
-	outline-color: var(--ui_color_accent);
+	outline-color: #3A8FFF;
 	box-shadow: 0 0 6px rgba(58, 143, 255, 0.65);
 }
 

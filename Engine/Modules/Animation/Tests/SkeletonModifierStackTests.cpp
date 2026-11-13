@@ -1,4 +1,4 @@
-#include "Animation/SkeletonModifierStack.h"
+#include "Animation/Skeleton/SkeletonModifierStack.h"
 
 #include <gtest/gtest.h>
 

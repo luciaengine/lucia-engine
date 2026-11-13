@@ -1,13 +1,11 @@
 #pragma once
 
-#include "Ocean/OceanPreparedDispatch.h"
-
 #include "Ocean/OceanCascadeArray.h"
 #include "Ocean/OceanTypes.h"
 
 #include "Rendering/Core/Device.h" // DescriptorSetLayoutDesc
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/PipelineIdentifiers.h"
+#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
 
 #include <cstdint>
 
@@ -25,7 +23,8 @@ namespace GameEngine::Ocean
 // composited from tagged rectangular and polygon clip sources over a default
 // clip state. Like the flow bake this is a stateless closed-form evaluation (no
 // ping-pong, no temporal accumulation): a pure function of the snapped layout +
-// the clip-source list. RecordDispatch() emits prepared compute commands; the graph owns the transitions. A failed init leaves the surface unclipped (ClipAvailable
+// the clip-source list. RecordDispatch() records the compute with manual barriers,
+// mirroring OceanFlowSim. A failed init leaves the surface unclipped (ClipAvailable
 // stays 0).
 //
 // The cascade has the foam cascade's resolution and base scale and one more
@@ -66,6 +65,8 @@ public:
         m_Clip.RebaseOrigin(shiftX, shiftZ);
     }
     bool Initialize(::GameEngine::Rendering::IDevice* device);
+    // The dispatch's pipeline, interned by Initialize.
+    ::GameEngine::Rendering::ComputePipelineId GetPipelineId() const { return m_Pipe; }
     bool IsReady() const { return m_Ready; }
 
     uint32 GetResolution() const { return m_Resolution; }
@@ -125,20 +126,16 @@ public:
 
     // Finalize this frame's GPU params (the layout BeginFrame snapped). Called at
     // DECLARE time; the caller writes the result into a render-graph upload-ring
-    // allocation and hands the {buffer, offset} to PrepareDispatch.
+    // allocation and hands the {buffer, offset} to RecordDispatch.
     void FillParams(OceanClipParamsGPU& out);
 
-    /// Declare this ID with RGPassBuilder::UsePipeline before preparation.
-    ::GameEngine::Rendering::ComputePipelineId GetPipelineId() const { return m_Pipe; }
-
-    /// Render-thread preparation; the frame retains descriptors and the parameter upload.
-    /// The caller keeps input textures alive and unchanged until this graph records.
-    OceanPreparedDispatch PrepareDispatch(::GameEngine::Rendering::IDevice* device,
-                                           ::GameEngine::Rendering::BufferHandle paramsBuffer,
-                                           uint64 paramsOffset) const;
-    /// Record on the render thread using this frame's prepared bindings.
-    void RecordDispatch(::GameEngine::Rendering::CommandList* commands,
-                        const OceanPreparedDispatch& dispatch);
+    // Records the clip bake dispatch with barriers, leaving the cascade sampleable
+    // by the world pass. Params come from the frame's upload ring (FillParams
+    // above) — no per-class buffer ring.
+    void RecordDispatch(::GameEngine::Rendering::IDevice* device,
+                        ::GameEngine::Rendering::CommandList* cl,
+                        ::GameEngine::Rendering::BufferHandle paramsBuffer,
+                        uint64 paramsOffset);
 
 private:
     // The foam cascade's resolution, base scale and four camera layers (see
@@ -161,7 +158,7 @@ private:
     OceanClipParamsGPU m_Params;
     bool m_HasSpline = false;
     bool m_HasSplineBounds = false;
-    float m_SplineBounds[4] = {};
+    Mathematics::Vector4 m_SplineBounds;
     bool m_DispatchDirty = true;
 };
 

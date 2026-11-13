@@ -30,6 +30,8 @@ struct AssistantModeChoice
     /// Stored in settings (`aiAssistant.lastMode`) and in a session's record.
     std::string_view Id;
     std::string_view Label;
+    /// One word for the control on a line too narrow for Label (ModeControlLayoutFor).
+    std::string_view CompactLabel;
     /// One line under the label in the control's list.
     std::string_view Description;
 };

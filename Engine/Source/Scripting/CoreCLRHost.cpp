@@ -1,6 +1,5 @@
 #include "Scripting/CoreCLRHost.h"
 #include "Logger/Logger.h"
-#include "Platform/Environment.h"
 #include <algorithm>
 #include <chrono>
 #include <mutex>
@@ -14,9 +13,10 @@
 #include <atomic>
 #include <cstdint>
 
+#include <cstdlib> // getenv/atoi for configurable async delay
 #include <cstring> // strlen for UCO name lengths
 
-#include "Core/Application.h" // PathUtils
+#include "Core/ApplicationPaths.h"
 #include "Scripting/PathResolver.h"
 
 #include "Scripting/ScriptingABI.h"
@@ -32,7 +32,7 @@
 #endif
 #endif
 
-#ifdef PLATFORM_WINDOWS
+#if defined(PLATFORM_WINDOWS) && defined(NETHOST_AVAILABLE)
 static std::string Utf8FromWide(const std::wstring& w)
 {
     if (w.empty())
@@ -51,9 +51,9 @@ static void Host_DebugWrite(const char* msg)
 {
     try
     {
-        auto p = GameEngine::PathUtils::GetExecutableDirectory() / "coreclrhost-debug.txt";
-        std::ofstream ofs(p, std::ios::app | std::ios::out);
-        ofs << msg << "\n";
+        const std::filesystem::path tracePath = GameEngine::ApplicationPaths::GetExecutableDirectory() / "coreclrhost-debug.txt";
+        std::ofstream traceFile(tracePath, std::ios::app | std::ios::out);
+        traceFile << msg << "\n";
     }
     catch (...)
     {
@@ -73,15 +73,11 @@ static std::atomic<int32_t> g_dbgUnloadDomainCount{0};
 #if defined(NETHOST_AVAILABLE)
 static std::filesystem::path ResolveCoreBridgePath(const std::filesystem::path& preferred)
 {
-    // Hardened resolver: try preferred via centralized resolver, then default resolver.
-    // Both anchor to the engine managed directory; the working directory is never probed.
-    namespace SP = GameEngine::ScriptingPaths;
-    std::filesystem::path p = SP::ResolveCoreBridgeDll(preferred);
-    if (!p.empty() && std::filesystem::exists(p))
-        return p;
-
-    // Fallback: try without preferred (default probes); empty when nothing is found.
-    return SP::ResolveCoreBridgeDll();
+    // The engine managed directory first, then the host's preferred path. Empty when neither exists.
+    const std::filesystem::path bridgePath = GameEngine::ScriptingPaths::ResolveCoreBridgeDll(preferred);
+    if (bridgePath.empty() || !std::filesystem::exists(bridgePath))
+        return {};
+    return bridgePath;
 }
 
 namespace
@@ -231,16 +227,16 @@ bool CoreCLRHost::Initialize(const std::filesystem::path& runtimeConfigPath)
             ++g_runtimeRefCount;
         }
     }
-#else
-    Logger::Log::Warning("CoreCLR hosting not available (NETHOST_AVAILABLE not defined)");
-    return false;
-#endif
 
     m_Initialized = true;
     Logger::Log::Info("CoreCLR Host initialized successfully");
     if (m_HostSwitches != 0 && !PushHostSwitches())
         Logger::Log::Error("CoreCLRHost: host switches 0x{:X} set before startup did not reach CoreBridge", m_HostSwitches);
     return true;
+#else
+    Logger::Log::Warning("CoreCLR hosting not available (NETHOST_AVAILABLE not defined)");
+    return false;
+#endif
 }
 
 void CoreCLRHost::SetNativeLibraryOverride(const std::string& nativeLibraryPathUtf8)
@@ -1019,7 +1015,7 @@ int32 CoreCLRHost::InvokeInDomain(uint64 domain, const char* methodNameUtf8, uin
     using invoke_fn = int32 (CORECLR_DELEGATE_CALLTYPE*)(uint64, void*, uint32, int32*);
 
     // Optional diagnostics: dump HRM state only if GE_DUMP_HRM=1
-    if (Platform::EnvironmentSwitchEnabled("GE_DUMP_HRM", false))
+    if (std::getenv("GE_DUMP_HRM") && std::strcmp(std::getenv("GE_DUMP_HRM"), "0") != 0)
     {
         using dump_fn = int32 (CORECLR_DELEGATE_CALLTYPE*)();
         if (void* tmpDump = GetCoreBridgeExport(GE_HOST_STR("DebugDumpHotReloadState")))
@@ -1185,7 +1181,6 @@ int32 CoreCLRHost::AcceptPackage(const GE_PackageEntry* entries,
     if (!entries || entryCount == 0 || !outDomain)
         return -2;
     using accept_pkg_fn = int32 (CORECLR_DELEGATE_CALLTYPE*)(const GE_PackageEntry*, uint32, uint32, uint64*);
-    using accept_pkg_packed_fn = long long (CORECLR_DELEGATE_CALLTYPE*)(const GE_PackageEntry*, uint32, uint32);
 
     // In Debug, prefer the packed variant to avoid out-params across UCO.
 #ifdef _DEBUG
@@ -1205,6 +1200,7 @@ int32 CoreCLRHost::AcceptPackage(const GE_PackageEntry* entries,
     // 2) Fallback: AcceptPackage_Packed with struct pointer
     if (void* tmpPacked = GetCoreBridgeExport(GE_HOST_STR("AcceptPackage_Packed")))
     {
+        using accept_pkg_packed_fn = long long (CORECLR_DELEGATE_CALLTYPE*)(const GE_PackageEntry*, uint32, uint32);
         auto fnPacked = reinterpret_cast<accept_pkg_packed_fn>(tmpPacked);
         long long packed = fnPacked(entries, entryCount, flags);
         int16 rc16 = (int16)((packed >> 48) & 0xFFFF);
@@ -1262,6 +1258,25 @@ uint64 CoreCLRHost::GetCurrentRuntimeDomainId()
 #endif
 }
 
+uint32 CoreCLRHost::GetCurrentScriptTypeCount()
+{
+#if defined(NETHOST_AVAILABLE)
+    if (!m_Initialized || !m_LoadAssemblyAndGetFunctionPointer)
+        return 0;
+    using get_type_count_fn = int32 (CORECLR_DELEGATE_CALLTYPE*)();
+    void* function = GetCoreBridgeExport(GE_HOST_STR("GetCurrentScriptTypeCount"));
+    if (function == nullptr)
+    {
+        Logger::Log::Error("CoreBridge.GetCurrentScriptTypeCount function pointer resolve failed");
+        return 0;
+    }
+    const int32 count = reinterpret_cast<get_type_count_fn>(function)();
+    return count > 0 ? static_cast<uint32>(count) : 0;
+#else
+    return 0;
+#endif
+}
+
 void* CoreCLRHost::GetManagedFunction(const String& assemblyName,
                                       const String& typeName,
                                       const String& methodName)
@@ -1308,6 +1323,12 @@ void* CoreCLRHost::GetManagedFunction(const String& assemblyName,
         return nullptr;
     return fn;
 #endif
+}
+
+String CoreCLRHost::GetRuntimeVersion() const
+{
+    // TODO: Implement runtime version retrieval
+    return "Unknown";
 }
 
 bool CoreCLRHost::LoadHostfxr()
@@ -1384,7 +1405,7 @@ bool CoreCLRHost::LoadHostfxr()
 #endif
 }
 
-bool CoreCLRHost::InitializeHostfxr(const std::filesystem::path& runtimeConfigPath)
+bool CoreCLRHost::InitializeHostfxr([[maybe_unused]] const std::filesystem::path& runtimeConfigPath)
 {
 #if !defined(NETHOST_AVAILABLE)
     return false;

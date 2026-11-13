@@ -6,8 +6,8 @@
 #include "Markups/MarkupGizmo.h"
 #include "Markups/MarkupPathPort.h"
 #include "Markups/MarkupPicking.h"
-#include "Markups/MarkupRegionDisplay.h"
-#include "Markups/MarkupRegionPort.h"
+#include "Markups/MarkupRegion/MarkupRegionDisplay.h"
+#include "Markups/MarkupRegion/MarkupRegionPort.h"
 #include "Markups/MarkupRenderFeature.h"
 #include "Markups/MarkupRequests.h"
 
@@ -25,7 +25,7 @@
 #include "ECS/World.h"
 #include "EditorChangeNotifications.h"
 #include "MarkupECS/MarkupService.h"
-#include "Picking/MeshBvhCache.h"
+#include "Scene/MeshBvhCache.h"
 #include "Mathematics/Geometry.h"
 #include "Scene/SceneTlas.h"
 #include "SceneView/SceneOverlayPick.h"
@@ -33,7 +33,7 @@
 #include "SceneView/SceneViewGizmos.h"
 #include "SceneView/SceneViewProjection.h"
 #include "Scripting/ScriptsConfig.h"
-#include "SceneView/SplineDrapePolylines.h"
+#include "SceneView/SplineTool/SplineDrapePolylines.h"
 #include "SplineECS/SplineService.h"
 #include "Terrain/TerrainTypes.h"
 #include "TerrainECS/TerrainService.h"
@@ -100,7 +100,7 @@ class MarkupRegionSceneViewTest : public ::testing::Test
         Editor::SceneTools::SetSceneOverlayPicker({});
         Scene::ReleaseSceneTlas(m_World);
         for (const GUID& guid : m_MeshGuids)
-            Editor::Picking::MeshBvhCache::Instance().InvalidateAsset(guid);
+            Scene::MeshBvhCache::Instance().InvalidateAsset(guid);
         TearDownTerrain();
         m_Bridge.reset();
         if (m_OwnsSplines)
@@ -114,10 +114,12 @@ class MarkupRegionSceneViewTest : public ::testing::Test
     {
         const ECS::EntityHandle entity = m_World.CreateEntity();
         const Editor::RegionPlacement placement =
-            Editor::NewRegionPlacement(knots, Components::WorldTransform{}.matrix, 0.0f);
+            Editor::NewRegionPlacement(knots, Mathematics::Matrix4x4::Identity(), 0.0f);
         m_World.AddComponentImmediate(entity, placement.Local);
         m_World.AddComponentImmediate(entity, Components::Markup{});
-        Editor::AddRegionParts(m_World, entity, placement.World.matrix, knots, Spline::SplineType::Linear, kHeight);
+        Editor::AddRegionParts(m_World, entity,
+                               placement.World.ToMatrix4x4(placement.World.GetPosition() - Mathematics::WorldPosition{}),
+                               knots, Spline::SplineType::Linear, kHeight);
         (void)MarkupECS::MarkupService::Get().BeginMarkup(m_World, entity, Components::MarkupAuthor::User, 1000);
         return entity;
     }
@@ -126,14 +128,13 @@ class MarkupRegionSceneViewTest : public ::testing::Test
     {
         const ECS::EntityHandle entity = m_World.CreateEntity();
         Components::Transform local{};
-        local.matrix[0] = size.x;
-        local.matrix[5] = size.y;
-        local.matrix[10] = size.z;
-        local.matrix[12] = center.x;
-        local.matrix[13] = center.y;
-        local.matrix[14] = center.z;
+        local.Basis[0].x = size.x;
+        local.Basis[1].y = size.y;
+        local.Basis[2].z = size.z;
+        local.Position = Mathematics::WorldPosition::FromVector3(center);
         Components::WorldTransform placed{};
-        std::copy(std::begin(local.matrix), std::end(local.matrix), placed.matrix);
+        placed.Position = local.Position;
+        placed.Basis = local.Basis;
         m_World.AddComponentImmediate(entity, local);
         m_World.AddComponentImmediate(entity, placed);
         m_World.AddComponentImmediate(entity, Components::Markup{});
@@ -185,7 +186,8 @@ class MarkupRegionSceneViewTest : public ::testing::Test
         const Components::Transform placed = Editor::NewPathPlacement(points);
         m_World.AddComponentImmediate(path, placed);
         m_World.AddComponentImmediate(path, Components::Markup{});
-        Editor::AddPathParts(m_World, path, placed.matrix, points, Spline::SplineType::Linear);
+        Editor::AddPathParts(m_World, path, placed.ToMatrix4x4(placed.GetPosition() - Mathematics::WorldPosition{}),
+                             points, Spline::SplineType::Linear);
         (void)MarkupECS::MarkupService::Get().BeginMarkup(m_World, path, Components::MarkupAuthor::User, 1000);
         return path;
     }
@@ -302,7 +304,7 @@ class MarkupRegionSceneViewTest : public ::testing::Test
         model->SetMeshesForTest({std::move(mesh)});
         EngineCore::GetInstance().GetAssetManager().RegisterLoadedAsset(guid, model);
         m_MeshGuids.push_back(guid);
-        (void)Editor::Picking::MeshBvhCache::Instance().GetOrBuild(guid, 0, model->GetMesh(0));
+        (void)Scene::MeshBvhCache::Instance().GetOrBuild(guid, 0, model->GetMesh(0));
 
         const ECS::EntityHandle entity = m_World.CreateEntity();
         Components::MeshRenderer renderer{};
@@ -393,8 +395,9 @@ TEST_F(MarkupRegionSceneViewTest, TheGlowDrawsARegionFromItsMesh)
 {
     CreateRegion(kSquare);
     std::vector<Editor::MarkupDrawItem> items;
+    std::vector<uint32> excludedScratch;
     const std::size_t bodies =
-        Editor::CollectMarkupDrawItems(m_World, *m_Bridge, {}, Vector3(0.0f, 80.0f, -150.0f), nullptr, 1, items);
+        Editor::CollectMarkupDrawItems(m_World, *m_Bridge, {}, Vector3(0.0f, 80.0f, -150.0f), nullptr, 1, items, excludedScratch);
     ASSERT_EQ(items.size(), 1u);
     ASSERT_NE(items[0].Region, nullptr);
     Editor::MarkupRenderFeature glow;
@@ -422,8 +425,9 @@ TEST_F(MarkupRegionSceneViewTest, APathDrawsItsDrapedLineAndBandWithoutAGlowBody
     EXPECT_EQ(LineCount(), samples - 1);
 
     std::vector<Editor::MarkupDrawItem> items;
+    std::vector<uint32> excludedScratch;
     const std::size_t bodies =
-        Editor::CollectMarkupDrawItems(m_World, *m_Bridge, {}, Vector3(0.0f, 80.0f, -150.0f), nullptr, 2, items);
+        Editor::CollectMarkupDrawItems(m_World, *m_Bridge, {}, Vector3(0.0f, 80.0f, -150.0f), nullptr, 2, items, excludedScratch);
     ASSERT_EQ(items.size(), 1u);
     EXPECT_TRUE(items[0].Path);
     Editor::MarkupRenderFeature glow;
@@ -438,7 +442,7 @@ TEST_F(MarkupRegionSceneViewTest, ARegionStandsOnTheSeaWhereTheGroundIsBelowIt)
 {
     const ECS::EntityHandle ocean = m_World.CreateEntity();
     Components::WorldTransform placed{};
-    placed.matrix[13] = 5.0f;
+    placed.Position.Y = 5.0;
     m_World.AddComponentImmediate(ocean, placed);
     m_World.AddComponentImmediate(ocean, Components::OceanSurface{});
     EXPECT_FLOAT_EQ(Editor::ResolveMarkupSeaLevel(m_World), 5.0f);

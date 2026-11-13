@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include "Rendering/Materials/MaterialBuilder.h"
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 #include <string>
 
 using namespace GameEngine::Rendering;

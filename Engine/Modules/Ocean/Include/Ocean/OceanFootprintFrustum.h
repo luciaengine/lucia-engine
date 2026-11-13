@@ -8,14 +8,14 @@
 namespace GameEngine::Ocean
 {
 
-/// A view frustum built once from a CameraData view-projection (16 floats), for
+/// A view frustum built once from a view-projection matrix, for
 /// testing water footprints against it: the passes that light only near water
 /// (the underwater portal composite, reflected caustics) declare themselves only
 /// when some footprint can be on screen.
 class OceanFootprintFrustum
 {
 public:
-    explicit OceanFootprintFrustum(const float* viewProj);
+    explicit OceanFootprintFrustum(const Mathematics::Matrix4x4& viewProj);
 
     /// False only when the box lies entirely outside one frustum plane.
     bool Intersects(float minX, float minY, float minZ, float maxX, float maxY, float maxZ) const;

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "EditorApplication.h" // EditorApplication::EditorWindowContext
+#include "EditorApplication/EditorApplication.h" // EditorApplication::EditorWindowContext
 
 #include <chrono>
 #include <filesystem>

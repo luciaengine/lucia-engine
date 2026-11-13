@@ -1,0 +1,54 @@
+/* SplineJunctionList (Apps/Editor/Source/UI/Controls/SplineJunctionList/SplineJunctionList.h).
+ * The control requests this sheet for its own subtree. The list is the whole of a section, so it
+ * has no plate and its rows use the section's columns (inspector.css sets the two widths). */
+
+.spline-junction-group {
+	flex-direction: column;
+}
+
+.spline-junction-header {
+	flex-direction: column;
+}
+
+.spline-junction-empty {
+	padding: 4px 0px;
+	color: var(--ui_color_text_dim);
+	font-size: 12px;
+	overflow-wrap: break-word;
+}
+
+/* One junction: the title in the label column; the state, then the action, in the value column. */
+.spline-junction-row {
+	padding: 3px 0px;
+	min-height: 24px;
+}
+
+.spline-junction-title {
+	flex-shrink: 1;
+	overflow-wrap: break-word;
+}
+
+/* A state that does not fit beside the action takes its own line and wraps there; nothing is cut. */
+.spline-junction-value {
+	flex-direction: row;
+	flex-wrap: wrap;
+	align-items: center;
+	column-gap: 6px;
+}
+
+.spline-junction-state {
+	flex-shrink: 1;
+	color: var(--ui_color_text_dim);
+	font-size: 12px;
+	overflow-wrap: break-word;
+}
+
+/* A state that leaves the junction unpaved. */
+.spline-junction-state-warning {
+	color: var(--ui_color_warning_text);
+}
+
+.spline-junction-action {
+	flex-shrink: 0;
+	margin-left: auto;
+}

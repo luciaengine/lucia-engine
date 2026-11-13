@@ -16,11 +16,12 @@ namespace GameEngine::Components
 //
 // @ge-no-add  Written by the fence controller on the pieces it places.
 // [DoNotSerialize] — generated output, rebuilt with the piece.
+// @ge-engine-internal the fence controller
 struct SplineFenceSpanPiece
 {
     uint32 Run = 0;
     uint32 OrdinalInRun = 0;
-    // The active pool slot the piece draws: a SpanPool slot, or a GatePool slot
+    // The active pool slot the piece draws: a Span pool slot, or a Gate pool slot
     // when IsGate.
     uint32 PoolSlot = 0;
     bool IsGate = false;

@@ -16,7 +16,7 @@
 #include "UI/Controls/Slider.h"
 #include "UI/Controls/TextField.h"
 #include "UI/Controls/Toggle.h"
-#include "UI/Interaction/FocusIsInside.h"
+#include "UI/Interaction/FocusQueries.h"
 #include "UI/UIEvents.h"
 #include "UI/UIManager.h"
 #include "TestTempDir.h"
@@ -501,15 +501,15 @@ constexpr Input::ActionId kFrameAllLikeAction = Input::HashInput("Test.EditorGlo
 void RegisterEditorChords(Input::InputSystem& input)
 {
     Input::ActionBinding save{Input::DeviceType::Keyboard, Input::kKeyCode_S, 1.0f};
-    save.requiredMods = Input::kModControl;
+    save.requiredMods = static_cast<Input::ModifierFlags>(Input::kModControl);
     input.BindKey(kEditorLikeContext, kSaveSceneLikeAction, save);
 
     Input::ActionBinding copy{Input::DeviceType::Keyboard, Input::kKeyCode_C, 1.0f};
-    copy.requiredMods = Input::kModControl;
+    copy.requiredMods = static_cast<Input::ModifierFlags>(Input::kModControl);
     input.BindKey(kEditorLikeContext, kCopyLikeAction, copy);
 
     Input::ActionBinding frameAll{Input::DeviceType::Keyboard, Input::kKeyCode_F, 1.0f};
-    frameAll.requiredMods = Input::kModAlt;
+    frameAll.requiredMods = static_cast<Input::ModifierFlags>(Input::kModAlt);
     input.BindKey(kEditorLikeContext, kFrameAllLikeAction, frameAll);
 
     input.PushContext(kEditorLikeContext);
@@ -1141,7 +1141,7 @@ constexpr Input::ActionId kHostShortcut = Input::HashInput("Test.Host.Shortcut")
 void ReserveForHost(Input::InputSystem& host, Input::KeyCode key, int mods)
 {
     Input::ActionBinding binding{Input::DeviceType::Keyboard, key, 1.0f};
-    binding.requiredMods = mods;
+    binding.requiredMods = static_cast<Input::ModifierFlags>(mods);
     host.RegisterAction(kHostContext, {kHostShortcut, {binding}, false, /*hostReserved=*/true});
 }
 
@@ -1182,7 +1182,7 @@ TEST(WindowInputRoutingTests, UnreservedChordsReachTheGameplaySink)
             else
             {
                 Input::ActionBinding binding{Input::DeviceType::Keyboard, Input::kKeyCode_A, 1.0f};
-                binding.requiredMods = mods;
+                binding.requiredMods = static_cast<Input::ModifierFlags>(mods);
                 runtime.BindKey(kGameplayContext, kGameplayAction, binding);
             }
             WindowInputRouterConfig config;
@@ -1951,7 +1951,7 @@ TEST(WindowInputRoutingTests, ChordedMousePressIsClaimedFromTheEventMods)
     f.UseGameplaySink(gameplay);
 
     Input::ActionBinding ctrlClick{Input::DeviceType::Mouse, /*code=*/0, 1.0f};
-    ctrlClick.requiredMods = Input::kModControl;
+    ctrlClick.requiredMods = static_cast<Input::ModifierFlags>(Input::kModControl);
     gameplay.BindKey(kGameplayContext, kGameplayAction, ctrlClick);
     gameplay.PushContext(kGameplayContext);
 
@@ -2020,7 +2020,7 @@ TEST(WindowInputRoutingTests, ChordedScrollIsClaimedFromTheEventMods)
     zoom.id = kGameplayAction;
     zoom.isAxis = true;
     Input::ActionBinding ctrlWheel{Input::DeviceType::Mouse, Input::kMouseScrollAxisY, 1.0f};
-    ctrlWheel.requiredMods = Input::kModControl;
+    ctrlWheel.requiredMods = static_cast<Input::ModifierFlags>(Input::kModControl);
     zoom.bindings.push_back(ctrlWheel);
     gameplay.RegisterAction(kGameplayContext, zoom);
     gameplay.PushContext(kGameplayContext);

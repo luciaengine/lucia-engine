@@ -4,10 +4,10 @@
 #include "Engine/Rendering/AmbientOcclusion/GtaoQuality.h"
 #include "Engine/Rendering/Pipeline/PipelineResourceNames.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineIdentifiers.h"
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 
 #include <array>
 #include <memory>

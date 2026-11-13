@@ -5,7 +5,7 @@ project(Image LANGUAGES CXX)
 # Image module: the engine's one CPU image decode (8-bit, 16-bit and float, with a
 # size budget), header read, resample (RGBA8, plus the float RGBA resample of the HDR
 # mip chain) and PNG encode. It compiles the stb_image, stb_image_resize2 and
-# stb_image_write implementations once.
+# stb_image_write implementations once; nothing else in the tree calls them.
 add_library(Image OBJECT
     Source/Decode.cpp
     Source/Encode.cpp

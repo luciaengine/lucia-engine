@@ -57,3 +57,26 @@ TEST(ImageEncode, PngFileHoldsTheEncodedBytes)
     std::filesystem::remove(path, ec);
     EXPECT_EQ(bytes, Image::EncodePng(rgba, 9, 5));
 }
+
+TEST(ImageEncode, JpegRoundTripKeepsExtentAndColorWithoutAlpha)
+{
+    std::vector<uint8_t> rgba(16u * 8u * 4u, 255);
+    for (size_t i = 0; i < rgba.size(); i += 4)
+    {
+        rgba[i] = 30;
+        rgba[i + 1] = 120;
+        rgba[i + 2] = 210;
+        rgba[i + 3] = 0;
+    }
+    const auto jpeg = Image::EncodeJpeg(rgba, 16, 8, 95);
+    ASSERT_FALSE(jpeg.empty());
+    const auto decoded = Image::Decode8(jpeg, "round-trip.jpg", Image::DecodeChannels::Rgba);
+    ASSERT_TRUE(decoded.Valid);
+    EXPECT_EQ(decoded.Width, 16u);
+    EXPECT_EQ(decoded.Height, 8u);
+    EXPECT_NEAR(decoded.Pixels[0], 30, 3);
+    EXPECT_NEAR(decoded.Pixels[1], 120, 3);
+    EXPECT_NEAR(decoded.Pixels[2], 210, 3);
+    EXPECT_EQ(decoded.Pixels[3], 255);
+    EXPECT_TRUE(Image::EncodeJpeg({}, 16, 8, 95).empty());
+}

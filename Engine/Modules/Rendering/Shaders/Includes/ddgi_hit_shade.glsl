@@ -100,6 +100,7 @@ struct GE_DDGIMaterialData
     vec4 TextureST[8];
     vec4 TextureST2[8];
     uint SamplerIndices;
+    uint NormalVarianceIndex; // bindless index of the normal map's BC4 variance companion (black when none)
 };
 layout(std430, set = 0, binding = 1) readonly buffer DDGIMaterialBuffer
 {
@@ -125,11 +126,9 @@ vec4 GE_DDGIMatEmission(GE_DDGIMaterialData m) { return m.uParams[19]; }   // rg
 
 #endif // !GE_DDGI_SOFTWARE_TRACE
 
-// Light array — same field list as clustered_lighting.glsl's GE_LightPacked
-// (light_packed_fields.glsl), binding the identical per-frame LightBuffer
-// LightUploadNode already populates. Declared standalone (not via
-// clustered_lighting.glsl) because that file also declares the cluster/
-// shadow bindings this compute ray-hit context has no use for.
+// The field list of GE_LightPacked (light_packed_fields.glsl) over DDGI's own light buffer of world positions
+// (DDGIProbeFeature.cpp), not the forward LightBuffer. Declared here: clustered_lighting.glsl also declares
+// cluster and shadow bindings this ray-hit context does not use.
 struct GE_DDGILightPacked
 {
 #include "light_packed_fields.glsl"

@@ -31,9 +31,9 @@
 #include <string>
 #include <vector>
 
-#include "Placement/CenterlineSampling.h"
-#include "Placement/SplineFillRebuild.h"
-#include "TerrainECS/PlanarHeightQuery.h"
+#include "SplineLayout/CenterlineSampling.h"
+#include "SplineRecipes/SplineFillRebuild.h"
+#include "TerrainECS/SurfaceHeightQuery.h"
 
 #include "Components/Name.h"
 #include "Components/Spline/SplineComponent.h"
@@ -69,10 +69,10 @@ using GameEngine::Mathematics::Matrix4x4;
 using GameEngine::Mathematics::Vector3;
 using GameEngine::TerrainECS::TerrainService;
 
-using GameEngine::Editor::CenterlineSampleCount;
-using GameEngine::TerrainECS::PlanarHeightQuery;
-using GameEngine::TerrainECS::ResolvePlanarHeightQuery;
-using GameEngine::Editor::WorldCenterlineLength;
+using GameEngine::SplineLayout::CenterlineSampleCount;
+using GameEngine::TerrainECS::SurfaceHeightQuery;
+using GameEngine::TerrainECS::ResolveSurfaceHeightQuery;
+using GameEngine::SplineLayout::WorldCenterlineLength;
 
 namespace Components = GameEngine::Components;
 namespace TerrainECS = GameEngine::TerrainECS;
@@ -81,6 +81,19 @@ namespace SplineECS = GameEngine::SplineECS;
 
 namespace
 {
+
+// The finest ground height at world (x, z): a water fill floods the ground as drawn up close.
+bool SampleGround(const GameEngine::TerrainECS::SurfaceHeightQuery& query, GameEngine::float32 worldX,
+                  GameEngine::float32 worldZ, GameEngine::float32& outY)
+{
+    GameEngine::TerrainECS::SurfaceHeightSample sample;
+    if (!query.SampleHeight(GameEngine::Mathematics::Vector3{worldX, 0.0f, worldZ},
+                            GameEngine::TerrainECS::SurfaceHeightPolicy::RequireFinest, sample))
+        return false;
+    outY = sample.Height;
+    return true;
+}
+
 
 // Her repro, to the float: the y she typed into Longwater Water's transform.
 constexpr float32 kLiftMetres = 2.8104186058044434f;
@@ -168,7 +181,7 @@ struct ReproField
 bool BuildReproField(World& world, const std::vector<SG::SplineStripStation>& stations,
                      const Components::SplineExtrude& recipe, ReproField& out)
 {
-    const TerrainECS::PlanarHeightQuery terrain = TerrainECS::ResolvePlanarHeightQuery(world);
+    const TerrainECS::SurfaceHeightQuery terrain = TerrainECS::ResolveSurfaceHeightQuery(world, Vector3{});
     const float32 spacingX = terrain.LatticeSpacingX();
     const float32 spacingZ = terrain.LatticeSpacingZ();
     if (!terrain.IsValid() || !(spacingX > 0.0f) || !(spacingZ > 0.0f))
@@ -187,8 +200,8 @@ bool BuildReproField(World& world, const std::vector<SG::SplineStripStation>& st
         maxZ = std::max(maxZ, s.Position.z);
     }
     const float32 margin = reach + std::max(spacingX, spacingZ) * 2.0f;
-    const float32 originX = terrain.LatticeOriginX();
-    const float32 originZ = terrain.LatticeOriginZ();
+    const float32 originX = terrain.FootprintOriginX();
+    const float32 originZ = terrain.FootprintOriginZ();
     const int32 firstX = static_cast<int32>(std::floor((minX - margin - originX) / spacingX));
     const int32 lastX = static_cast<int32>(std::ceil((maxX + margin - originX) / spacingX));
     const int32 firstZ = static_cast<int32>(std::floor((minZ - margin - originZ) / spacingZ));
@@ -212,7 +225,7 @@ bool BuildReproField(World& world, const std::vector<SG::SplineStripStation>& st
             const float32 worldX = out.Grid.WorldX(cx);
             const uint32 index = out.Grid.Index(cx, cz);
             if (!terrain.ContainsXZ(worldX, worldZ) ||
-                !terrain.SampleHeight(worldX, worldZ, out.Heights[index]))
+                !SampleGround(terrain, worldX, worldZ, out.Heights[index]))
                 out.Heights[index] = 1.0e9f;
         }
     }
@@ -221,7 +234,7 @@ bool BuildReproField(World& world, const std::vector<SG::SplineStripStation>& st
     SG::SplineFillParams params;
     params.MaxHalfWidth = reach;
     params.EdgeDrop = std::max(0.0f, recipe.EdgeDrop);
-    params.SeaLevelFloor = recipe.SeaLevelFloor;
+    params.FloorHeight = recipe.FloorHeight;
     out.Field = SG::BuildSplineFillField(stations, out.Grid, params);
     return true;
 }
@@ -347,11 +360,10 @@ class WaterFillLiftRepro : public ::testing::Test
         if (!std::filesystem::exists(path))
             return false;
 
-        GameEngine::Scene::LoadOptions options;
-        options.mode = GameEngine::Scene::LoadMode::Replace;
-        if (!GameEngine::Scene::LoadSceneFromFile(m_World, path, options))
+        const auto loaded = GameEngine::Scene::ReadSceneInto(m_World, path);
+        if (!loaded)
         {
-            const auto& err = GameEngine::Scene::GetLastSceneIOError();
+            const auto& err = *loaded.Error;
             ADD_FAILURE() << "scene load failed: " << scenePath << " line " << err.line << ": "
                           << err.message;
             return false;
@@ -383,8 +395,8 @@ class WaterFillLiftRepro : public ::testing::Test
             EXPECT_NE(transform, nullptr);
             if (transform == nullptr)
                 return false;
-            // Transform is a column-major matrix; column 3 is the translation.
-            transform->matrix[13] += liftMetres;
+            // Raise the local position before the hierarchy resolves the world pose.
+            transform->Position.Y += liftMetres;
         }
         hierarchy.Update(m_World, 0.0f);
         return true;
@@ -466,7 +478,7 @@ class WaterFillLiftRepro : public ::testing::Test
         worldMatrix.Data()[0] = worldMatrix.Data()[5] = worldMatrix.Data()[10] =
             worldMatrix.Data()[15] = 1.0f;
         if (const auto* wt = m_World.GetComponent<Components::WorldTransform>(m_River))
-            worldMatrix = Matrix4x4::FromColumnMajor(wt->matrix);
+            worldMatrix = wt->ToMatrix4x4(wt->Position - GameEngine::Mathematics::WorldPosition{});
 
         m_Recipe = *recipe;
         m_Stations = BuildWorldStations(*data, *recipe, worldMatrix);
@@ -476,9 +488,9 @@ class WaterFillLiftRepro : public ::testing::Test
         // The mirrored ROI above can drift from the production construction
         // silently; the production run is the tripwire. If these disagree, the
         // census below describes a field the editor does not build.
-        const GameEngine::Editor::WaterFillRun run = GameEngine::Editor::BuildWaterFillRun(
-            m_World, m_Stations, *recipe, worldMatrix.Data(), /*single terrain*/ nullptr);
-        EXPECT_EQ(run.Outcome, GameEngine::Editor::WaterFillOutcome::Built);
+        const GameEngine::SplineRecipes::WaterFillRun run = GameEngine::SplineRecipes::BuildWaterFillRun(
+            m_World, m_Stations, *recipe, worldMatrix, /*single terrain*/ nullptr);
+        EXPECT_EQ(run.Outcome, GameEngine::SplineRecipes::WaterFillOutcome::Built);
         EXPECT_EQ(out.Field.Diagnostics.WetCorners, run.Diagnostics.WetCorners)
             << "mirrored field diverged from BuildWaterFillRun";
         EXPECT_EQ(out.Field.Diagnostics.OverBankCorners, run.Diagnostics.OverBankCorners)

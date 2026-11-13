@@ -1,17 +1,13 @@
 #include "UI/Controls/InspectorNotice.h"
 
-#include "Editor/EditorPaths.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Logger/Logger.h"
+#include "UI/ControlLayoutLoader.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Label.h"
-#include "UI/Parsers/XMLParser.h"
 #include "UI/UIEvents.h"
 
-#include <filesystem>
-#include <fstream>
 #include <memory>
-#include <sstream>
 #include <utility>
 
 namespace GameEngine::EditorUI
@@ -21,75 +17,102 @@ namespace
 
 constexpr const char* kLayoutAssetPath = "UI/controls/InspectorNotice/InspectorNotice.uxml";
 constexpr const char* kStyleAssetPath = "UI/controls/InspectorNotice/InspectorNotice.css";
+constexpr const char* kPlateClass = "inspector-notice-plate";
 constexpr const char* kTextClass = "inspector-notice-text";
 constexpr const char* kActionClass = "inspector-notice-action";
+constexpr const char* kDismissClass = "inspector-notice-dismiss";
+constexpr const char* kDismissLabel = "Dismiss";
 constexpr const char* kHeadingClass = "inspector-notice-heading";
 constexpr const char* kTitleClass = "inspector-notice-title";
+constexpr const char* kGlyphClass = "inspector-notice-glyph";
 constexpr const char* kHiddenClass = "hidden";
 
-std::string ReadLayoutText()
+// The kind's suffix: the control carries inspector-notice-<kind>, and each part
+// inspector-notice-<part>-<kind>, which InspectorNotice.css styles.
+const char* KindSuffix(InspectorNotice::Kind kind)
 {
-    const std::filesystem::path path = Editor::GetEditorGlobalPaths().installAssetsRoot / kLayoutAssetPath;
-    std::ifstream in(path, std::ios::binary);
-    if (!in)
+    switch (kind)
     {
-        Logger::Log::Error("InspectorNotice: {} did not read, so every notice is an empty plate. Check that "
-                           "it is staged under the editor asset mount.",
-                           path.generic_string());
-        return {};
+    case InspectorNotice::Kind::Information:
+        return "information";
+    case InspectorNotice::Kind::Error:
+        return "error";
+    case InspectorNotice::Kind::Warning:
+        break;
     }
-    std::ostringstream text;
-    text << in.rdbuf();
-    return text.str();
+    return "warning";
 }
 
-// Read once per process: a notice is built on every inspector rebuild that shows one, and parsing
-// the few nodes of the layout is cheap where a disk read each time is not.
-const std::string& LayoutText()
+// The class of a glyph that replaces the kind's own (InspectorNotice.css), or null for the kind's.
+const char* GlyphClass(InspectorNotice::Glyph glyph)
 {
-    static const std::string s_LayoutText = ReadLayoutText();
-    return s_LayoutText;
+    switch (glyph)
+    {
+    case InspectorNotice::Glyph::Clock:
+        return "inspector-notice-glyph-clock";
+    case InspectorNotice::Glyph::Check:
+        return "inspector-notice-glyph-check";
+    case InspectorNotice::Glyph::OfKind:
+        break;
+    }
+    return nullptr;
+}
+
+void AddKindClass(UIElement* part, const char* partClass, const char* kindSuffix)
+{
+    if (part)
+        part->AddClass(std::string(partClass) + "-" + kindSuffix);
 }
 
 } // namespace
 
 InspectorNotice::InspectorNotice(const std::string& text, Kind kind)
 {
+    const char* kindSuffix = KindSuffix(kind);
     AddClass("inspector-notice");
-    AddClass(kind == Kind::Information ? "inspector-notice-information" : "inspector-notice-warning");
+    AddClass(std::string("inspector-notice-") + kindSuffix);
     RequestSubtreeStyleAssetPath(kStyleAssetPath, "editor");
-
-    const std::string& layoutText = LayoutText();
-    if (layoutText.empty())
-        return;
 
     // The parsed plate is added whole rather than having its children moved onto this element:
     // construction has to work inside an event dispatch too, where TakeChild refuses to move
     // anything.
-    std::unique_ptr<UIElement> plate;
-    if (!UIParsing::XMLParser::ParseLayoutFromString(layoutText, plate, kLayoutAssetPath) || !plate)
-    {
-        Logger::Log::Error("InspectorNotice: {} did not parse, so the notice is an empty plate.", kLayoutAssetPath);
+    std::unique_ptr<UIElement> plate = Editor::ControlLayoutLoader::Load(kLayoutAssetPath, {});
+    if (!plate)
         return;
-    }
     UIElement* plateRaw = plate.get();
     AddChild(std::move(plate));
 
     m_Text = dynamic_cast<Label*>(InspectorDrag::FindChildByClass(plateRaw, kTextClass));
     m_Action = dynamic_cast<Button*>(InspectorDrag::FindChildByClass(plateRaw, kActionClass));
-    if (!m_Text || !m_Action)
+    m_Dismiss = dynamic_cast<Button*>(InspectorDrag::FindChildByClass(plateRaw, kDismissClass));
+    if (!m_Text || !m_Action || !m_Dismiss)
     {
-        Logger::Log::Error("InspectorNotice: {} needs a Label '{}' and a Button '{}' in its plate.", kLayoutAssetPath,
-                           kTextClass, kActionClass);
+        Logger::Log::Error("InspectorNotice: {} needs a Label '{}' and Buttons '{}' and '{}' in its plate.",
+                           kLayoutAssetPath, kTextClass, kActionClass, kDismissClass);
         m_Text = nullptr;
         m_Action = nullptr;
+        m_Dismiss = nullptr;
         return;
     }
 
     m_Heading = InspectorDrag::FindChildByClass(plateRaw, kHeadingClass);
     m_Title = m_Heading ? dynamic_cast<Label*>(InspectorDrag::FindChildByClass(m_Heading, kTitleClass)) : nullptr;
+    m_Glyph = m_Heading ? InspectorDrag::FindChildByClass(m_Heading, kGlyphClass) : nullptr;
+    // Each part carries one class for the kind (InspectorNotice.css).
+    AddKindClass(plateRaw, kPlateClass, kindSuffix);
+    AddKindClass(m_Text, kTextClass, kindSuffix);
+    AddKindClass(m_Action, kActionClass, kindSuffix);
+    AddKindClass(m_Dismiss, kDismissClass, kindSuffix);
+    AddKindClass(m_Title, kTitleClass, kindSuffix);
+    AddKindClass(m_Glyph, kGlyphClass, kindSuffix);
+    // A button attaches the shared button sheet to itself, which puts it after this notice's sheet
+    // in the button's cascade. Attaching the notice's sheet to each button as well, after the
+    // button's, lets the kind's single-class edge rule outrank the button's border color.
+    m_Action->RequestSubtreeStyleAssetPath(kStyleAssetPath, "editor");
+    m_Dismiss->RequestSubtreeStyleAssetPath(kStyleAssetPath, "editor");
     m_Text->SetText(text);
     m_Action->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { InvokeAction(); });
+    m_Dismiss->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { InvokeDismiss(); });
 }
 
 void InspectorNotice::SetAction(const std::string& label, const std::string& tooltip, std::function<void()> onInvoke)
@@ -102,12 +125,32 @@ void InspectorNotice::SetAction(const std::string& label, const std::string& too
     m_Action->RemoveClass(kHiddenClass);
 }
 
+void InspectorNotice::SetDismiss(const std::string& tooltip, std::function<void()> onDismiss)
+{
+    m_OnDismiss = std::move(onDismiss);
+    if (!m_Dismiss)
+        return;
+    m_Dismiss->SetText(kDismissLabel);
+    m_Dismiss->SetTooltip(tooltip);
+    m_Dismiss->RemoveClass(kHiddenClass);
+}
+
 void InspectorNotice::SetTitle(const std::string& title)
 {
     if (!m_Heading || !m_Title)
         return;
     m_Title->SetText(title);
     m_Heading->RemoveClass(kHiddenClass);
+}
+
+void InspectorNotice::SetGlyph(Glyph glyph)
+{
+    if (!m_Glyph)
+        return;
+    for (const Glyph replaced : {Glyph::Clock, Glyph::Check})
+        m_Glyph->RemoveClass(GlyphClass(replaced));
+    if (const char* glyphClass = GlyphClass(glyph))
+        m_Glyph->AddClass(glyphClass);
 }
 
 void InspectorNotice::SetText(const std::string& text)
@@ -120,6 +163,12 @@ void InspectorNotice::InvokeAction()
 {
     if (m_OnInvoke)
         m_OnInvoke();
+}
+
+void InspectorNotice::InvokeDismiss()
+{
+    if (m_OnDismiss)
+        m_OnDismiss();
 }
 
 } // namespace GameEngine::EditorUI

@@ -2,7 +2,9 @@
 
 #include "AssetCore/SharedFileRead.h"
 #include "Types/Fnv1a.h"
+#include "Types/FormatNumber.h"
 
+#include <array>
 #include <cstdint>
 #include <fstream>
 #include <sstream>
@@ -150,11 +152,12 @@ bool UpsertPackagesLockEntry(const std::filesystem::path& lockFile,
 
 std::string HashPackageManifestIntegrity(std::string_view manifestText)
 {
-    constexpr char kHexDigits[] = "0123456789abcdef";
     const std::uint64_t hash = Hashing::Fnv1a64(manifestText);
+    std::array<std::uint8_t, sizeof(hash)> bigEndian{};
+    for (std::size_t i = 0; i < bigEndian.size(); ++i)
+        bigEndian[i] = static_cast<std::uint8_t>(hash >> (8 * (bigEndian.size() - 1 - i)));
     std::string text = "fnv1a64-";
-    for (int shift = 60; shift >= 0; shift -= 4)
-        text += kHexDigits[(hash >> shift) & 0xF];
+    AppendHexBytes(text, bigEndian);
     return text;
 }
 

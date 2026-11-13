@@ -9,7 +9,7 @@
 //   binding 1: ClusterBuffer (SSBO, uvec4[])
 //   binding 2: ClusterParams (UBO, uvec4 params0)
 //   binding 4: LightBuffer (SSBO, header + LightPacked[])
-//   binding 7: ViewParams (UBO, mat4 invProj, mat4 view, vec4 nearFar, vec4 cameraPosWS)
+//   binding 7: ViewParams (UBO, view_params.glsl)
 //
 // Binding 5 is reserved for the vertex shader CameraUBO (uV, uP, uVP, uCameraPos).
 // ViewParams is at binding 7 to avoid the conflict.
@@ -27,8 +27,6 @@
 
 #ifndef GE_CLUSTERED_LIGHTING_GLSL
 #define GE_CLUSTERED_LIGHTING_GLSL
-
-#include "forward_shader_specialization.glsl"
 
 #include "compat_profile.glsl"
 
@@ -62,8 +60,8 @@ layout(set = 0, binding = 23, std140) uniform SpotShadowData
 layout(set = 0, binding = 24) uniform sampler2DShadow ge_spotShadowMap;
 #endif
 
-// Light data matching the CPU-side ExtractedLight / LightUploadNode layout.
-// Shares the field list with the standalone Forward+ shaders' LightPacked.
+// Light data matching the CPU-side LightUploadNode layout. posRange.xyz is relative to the view's
+// render origin, the frame of posRel (view_origin.glsl).
 struct GE_LightPacked
 {
 #include "light_packed_fields.glsl"
@@ -158,7 +156,7 @@ vec3 GE_SafeAreaRight(vec3 normal, vec3 authoredRight)
 }
 
 vec3 GE_EvaluateAreaLightSample(
-    vec3 samplePosWS,
+    vec3 samplePosRel,
     vec3 emitterNormalWS,
     bool oneSided,
     float sourceArea,
@@ -167,9 +165,9 @@ vec3 GE_EvaluateAreaLightSample(
     vec3 lightColor,
     SurfaceOutput so,
     vec3 V,
-    vec3 posWS)
+    vec3 posRel)
 {
-    vec3 lightToFrag = posWS - samplePosWS;
+    vec3 lightToFrag = posRel - samplePosRel;
     float dist = length(lightToFrag);
     float range = max(lp.posRange.w + GE_AreaLightExtent(lp), 0.001);
     if (dist > range)
@@ -195,7 +193,7 @@ vec3 GE_EvaluateAreaLightFinite(
     vec3 lightColor,
     SurfaceOutput so,
     vec3 V,
-    vec3 posWS)
+    vec3 posRel)
 {
     vec3 center = lp.posRange.xyz;
     vec3 normal = normalize(lp.dirIntensity.xyz);
@@ -214,20 +212,20 @@ vec3 GE_EvaluateAreaLightFinite(
         float hy = 0.5 * height;
         float q = 0.57735026919;
         float area = width * height;
-        total += GE_EvaluateAreaLightSample(center + right * (-hx * q) + up * (-hy * q), normal, true, area, 0.25, lp, lightColor, so, V, posWS);
-        total += GE_EvaluateAreaLightSample(center + right * ( hx * q) + up * (-hy * q), normal, true, area, 0.25, lp, lightColor, so, V, posWS);
-        total += GE_EvaluateAreaLightSample(center + right * (-hx * q) + up * ( hy * q), normal, true, area, 0.25, lp, lightColor, so, V, posWS);
-        total += GE_EvaluateAreaLightSample(center + right * ( hx * q) + up * ( hy * q), normal, true, area, 0.25, lp, lightColor, so, V, posWS);
+        total += GE_EvaluateAreaLightSample(center + right * (-hx * q) + up * (-hy * q), normal, true, area, 0.25, lp, lightColor, so, V, posRel);
+        total += GE_EvaluateAreaLightSample(center + right * ( hx * q) + up * (-hy * q), normal, true, area, 0.25, lp, lightColor, so, V, posRel);
+        total += GE_EvaluateAreaLightSample(center + right * (-hx * q) + up * ( hy * q), normal, true, area, 0.25, lp, lightColor, so, V, posRel);
+        total += GE_EvaluateAreaLightSample(center + right * ( hx * q) + up * ( hy * q), normal, true, area, 0.25, lp, lightColor, so, V, posRel);
     }
     else if (shape == 1u)
     {
         float r = radius * 0.70710678118;
         float area = GE_PI * radius * radius;
-        total += GE_EvaluateAreaLightSample(center, normal, true, area, 0.20, lp, lightColor, so, V, posWS);
-        total += GE_EvaluateAreaLightSample(center + right * r, normal, true, area, 0.20, lp, lightColor, so, V, posWS);
-        total += GE_EvaluateAreaLightSample(center - right * r, normal, true, area, 0.20, lp, lightColor, so, V, posWS);
-        total += GE_EvaluateAreaLightSample(center + up * r, normal, true, area, 0.20, lp, lightColor, so, V, posWS);
-        total += GE_EvaluateAreaLightSample(center - up * r, normal, true, area, 0.20, lp, lightColor, so, V, posWS);
+        total += GE_EvaluateAreaLightSample(center, normal, true, area, 0.20, lp, lightColor, so, V, posRel);
+        total += GE_EvaluateAreaLightSample(center + right * r, normal, true, area, 0.20, lp, lightColor, so, V, posRel);
+        total += GE_EvaluateAreaLightSample(center - right * r, normal, true, area, 0.20, lp, lightColor, so, V, posRel);
+        total += GE_EvaluateAreaLightSample(center + up * r, normal, true, area, 0.20, lp, lightColor, so, V, posRel);
+        total += GE_EvaluateAreaLightSample(center - up * r, normal, true, area, 0.20, lp, lightColor, so, V, posRel);
     }
     else if (shape == 2u)
     {
@@ -235,21 +233,21 @@ vec3 GE_EvaluateAreaLightFinite(
         vec3 sideA = right * radius;
         vec3 sideB = up * radius;
         vec3 sideC = normal * radius;
-        total += GE_EvaluateAreaLightSample(center + sideA, normal, false, area, 1.0 / 6.0, lp, lightColor, so, V, posWS);
-        total += GE_EvaluateAreaLightSample(center - sideA, normal, false, area, 1.0 / 6.0, lp, lightColor, so, V, posWS);
-        total += GE_EvaluateAreaLightSample(center + sideB, normal, false, area, 1.0 / 6.0, lp, lightColor, so, V, posWS);
-        total += GE_EvaluateAreaLightSample(center - sideB, normal, false, area, 1.0 / 6.0, lp, lightColor, so, V, posWS);
-        total += GE_EvaluateAreaLightSample(center + sideC, normal, false, area, 1.0 / 6.0, lp, lightColor, so, V, posWS);
-        total += GE_EvaluateAreaLightSample(center - sideC, normal, false, area, 1.0 / 6.0, lp, lightColor, so, V, posWS);
+        total += GE_EvaluateAreaLightSample(center + sideA, normal, false, area, 1.0 / 6.0, lp, lightColor, so, V, posRel);
+        total += GE_EvaluateAreaLightSample(center - sideA, normal, false, area, 1.0 / 6.0, lp, lightColor, so, V, posRel);
+        total += GE_EvaluateAreaLightSample(center + sideB, normal, false, area, 1.0 / 6.0, lp, lightColor, so, V, posRel);
+        total += GE_EvaluateAreaLightSample(center - sideB, normal, false, area, 1.0 / 6.0, lp, lightColor, so, V, posRel);
+        total += GE_EvaluateAreaLightSample(center + sideC, normal, false, area, 1.0 / 6.0, lp, lightColor, so, V, posRel);
+        total += GE_EvaluateAreaLightSample(center - sideC, normal, false, area, 1.0 / 6.0, lp, lightColor, so, V, posRel);
     }
     else
     {
         float halfH = 0.5 * height;
         float area = 2.0 * GE_PI * radius * max(height, 0.001);
-        total += GE_EvaluateAreaLightSample(center + right * radius + up * (-halfH), normal, false, area, 0.25, lp, lightColor, so, V, posWS);
-        total += GE_EvaluateAreaLightSample(center - right * radius + up * (-halfH), normal, false, area, 0.25, lp, lightColor, so, V, posWS);
-        total += GE_EvaluateAreaLightSample(center + right * radius + up * ( halfH), normal, false, area, 0.25, lp, lightColor, so, V, posWS);
-        total += GE_EvaluateAreaLightSample(center - right * radius + up * ( halfH), normal, false, area, 0.25, lp, lightColor, so, V, posWS);
+        total += GE_EvaluateAreaLightSample(center + right * radius + up * (-halfH), normal, false, area, 0.25, lp, lightColor, so, V, posRel);
+        total += GE_EvaluateAreaLightSample(center - right * radius + up * (-halfH), normal, false, area, 0.25, lp, lightColor, so, V, posRel);
+        total += GE_EvaluateAreaLightSample(center + right * radius + up * ( halfH), normal, false, area, 0.25, lp, lightColor, so, V, posRel);
+        total += GE_EvaluateAreaLightSample(center - right * radius + up * ( halfH), normal, false, area, 0.25, lp, lightColor, so, V, posRel);
     }
     return total;
 }
@@ -297,7 +295,7 @@ vec2 GE_AreaShadowRotation(vec2 shadowUV)
     return vec2(cos(angle), sin(angle));
 }
 
-float GE_SampleAreaShadow(GE_LightPacked lp, uint lightIndex, vec3 posWS, vec3 normalWS)
+float GE_SampleAreaShadow(GE_LightPacked lp, uint lightIndex, vec3 posRel, vec3 normalWS)
 {
     if (ge_areaShadowParams.x < 0.5 || lp.meta.y == 0u)
         return 1.0;
@@ -305,7 +303,7 @@ float GE_SampleAreaShadow(GE_LightPacked lp, uint lightIndex, vec3 posWS, vec3 n
         return 1.0;
 
     float farPlane = max(ge_areaShadowParams2.y, 0.001);
-    vec3 localPos = (ge_areaShadowVP * vec4(posWS, 1.0)).xyz;
+    vec3 localPos = (ge_areaShadowVP * vec4(posRel, 1.0)).xyz;
     float centerDist = length(localPos);
     if (centerDist <= 1e-6 || centerDist > farPlane)
         return 1.0;
@@ -384,14 +382,14 @@ vec2 GE_SpotShadowRotation(vec2 shadowUV)
     return vec2(cos(angle), sin(angle));
 }
 
-float GE_SampleSpotShadow(GE_LightPacked lp, uint lightIndex, vec3 posWS, vec3 normalWS)
+float GE_SampleSpotShadow(GE_LightPacked lp, uint lightIndex, vec3 posRel, vec3 normalWS)
 {
     if (ge_spotShadowParams.x < 0.5 || lp.meta.y == 0u)
         return 1.0;
     if (abs(float(lightIndex) - ge_spotShadowParams.y) > 0.5)
         return 1.0;
 
-    vec3 lightToFrag = posWS - lp.posRange.xyz;
+    vec3 lightToFrag = posRel - lp.posRange.xyz;
     float dist = length(lightToFrag);
     if (dist <= 1e-6 || dist > ge_spotShadowParams2.z)
         return 1.0;
@@ -399,7 +397,7 @@ float GE_SampleSpotShadow(GE_LightPacked lp, uint lightIndex, vec3 posWS, vec3 n
     vec3 lightToFragN = lightToFrag / dist;
     vec3 n = normalize(normalWS);
     float normalBias = ge_spotShadowParams.w * (1.0 - abs(dot(n, lightToFragN)));
-    vec3 biasedPos = posWS + n * normalBias;
+    vec3 biasedPos = posRel + n * normalBias;
 
     vec4 shadowClip = ge_spotShadowVP * vec4(biasedPos, 1.0);
     if (shadowClip.w <= 1e-6)
@@ -428,24 +426,24 @@ float GE_SampleSpotShadow(GE_LightPacked lp, uint lightIndex, vec3 posWS, vec3 n
     return shadow / float(taps);
 }
 
-float GE_SamplePointShadow(GE_LightPacked lp, uint lightIndex, vec3 posWS, vec3 normalWS)
+float GE_SamplePointShadow(GE_LightPacked lp, uint lightIndex, vec3 posRel, vec3 normalWS)
 {
     if (lp.meta.y == 0u)
         return 1.0;
-    return GE_SamplePointShadowSlot(lp.shadowSlots.x, lp.posRange.xyz, posWS, normalWS, kLocalFilterRadiusUV);
+    return GE_SamplePointShadowSlot(lp.shadowSlots.x, lp.posRange.xyz, posRel, normalWS, kLocalFilterRadiusUV);
 }
 #else
-float GE_SampleAreaShadow(GE_LightPacked lp, uint lightIndex, vec3 posWS, vec3 normalWS)
+float GE_SampleAreaShadow(GE_LightPacked lp, uint lightIndex, vec3 posRel, vec3 normalWS)
 {
     return 1.0;
 }
 
-float GE_SampleSpotShadow(GE_LightPacked lp, uint lightIndex, vec3 posWS, vec3 normalWS)
+float GE_SampleSpotShadow(GE_LightPacked lp, uint lightIndex, vec3 posRel, vec3 normalWS)
 {
     return 1.0;
 }
 
-float GE_SamplePointShadow(GE_LightPacked lp, uint lightIndex, vec3 posWS, vec3 normalWS)
+float GE_SamplePointShadow(GE_LightPacked lp, uint lightIndex, vec3 posRel, vec3 normalWS)
 {
     return 1.0;
 }
@@ -469,9 +467,8 @@ uvec3 GE_GetClusterIndex(vec2 screenPos, float linearDepth)
     cy = min(cy, clustersY - 1u);
 
     // Logarithmic depth slice (matches the cull shader).
-    float zNear = max(ge_nearFar.x, 1e-4);
-    float zFar = max(ge_nearFar.y, zNear + 1.0);
-    float invLogRatio = ge_nearFar.z; // precomputed 1/log(far/near)
+    float zNear = max(ge_viewRanges.x, 1e-4);
+    float invLogRatio = ge_viewRanges.z; // precomputed 1/log(range/near)
     uint slice = uint(max(log(linearDepth / zNear) * invLogRatio * float(depthSlices), 0.0));
     slice = min(slice, depthSlices - 1u);
 
@@ -490,8 +487,8 @@ uvec3 GE_GetClusterIndex(vec2 screenPos, float linearDepth)
 vec3 GE_AccumulateClusteredLighting(
     SurfaceOutput so, // surface props (baseColor / metallic / roughness / normalWS)
     vec3 V,           // world-space view direction (surface -> camera)
-    vec3 posWS,       // world-space position (local-light distance / attenuation)
-    vec3 posRel,      // render-origin-relative position (directional cascade shadow, Earth-scale)
+    vec3 posWS,       // world-space position (glass caustic phase only)
+    vec3 posRel,      // render-origin-relative position: local lights, their shadows, the cascades
     vec2 screenPos,   // gl_FragCoord.xy
     float linearDepth)
 {
@@ -523,9 +520,9 @@ vec3 GE_AccumulateClusteredLighting(
         }
 #endif
 #ifdef GE_PARALLAX_MARCH
+        // The surface's own relief shadows the primary light as its cascade shadow does.
         dirAtten *= so.primaryLightOcclusion;
 #endif
-        dirAtten = GE_SurfaceDirectionalVisibility(dirAtten, linearDepth, dirL);
         // Gate on the light the sun delivers, not its intensity alone: a sky that hides the moon
         // turns the sun off through its colour.
         if (dirI * max(dirCol.r, max(dirCol.g, dirCol.b)) > 0.0)
@@ -551,9 +548,10 @@ vec3 GE_AccumulateClusteredLighting(
     // -- Secondary directional lights (same BRDF, additive, UNSHADOWED) ----------------------
     // v1 semantic: cascades exist for the primary only, so a secondary can brighten but never
     // darken — no shadow term, no glass tint/caustic (both are shadow-map products). Colors
-    // arrive premultiplied (color * intensity). A zero count contributes no light.
+    // arrive premultiplied (color * intensity); count is 0 in single-directional scenes, so
+    // this uniform branch costs nothing there.
     {
-        int secondaryCount = GE_FORWARD_SECONDARY_LIGHTS ? int(Light.uSecondaryCount.x) : 0;
+        int secondaryCount = int(Light.uSecondaryCount.x);
         for (int i = 0; i < secondaryCount; ++i)
         {
             vec3 secL = normalize(-Light.uSecondaryDirs[i].xyz);
@@ -565,7 +563,7 @@ vec3 GE_AccumulateClusteredLighting(
 
     // -- Point + spot + area lights from the cluster list ------------------------------------
     uint lightCount = ge_lightHeader.x;
-    if (!GE_FORWARD_LOCAL_LIGHTS || lightCount == 0u)
+    if (lightCount == 0u)
         return totalLight;
 
     uint depthSlices = max(ge_clusterParams0.z, 1u);
@@ -599,8 +597,8 @@ vec3 GE_AccumulateClusteredLighting(
         {
             // Subsurface transmission is deferred for area lights (would need per-sample eval);
             // the directional + point/spot paths add it outside the shadow multiply.
-            float areaShadow = GE_SampleAreaShadow(lp, lightIdx, posWS, so.normalWS);
-            totalLight += areaShadow * GE_EvaluateAreaLightFinite(lp, lightColor, so, V, posWS);
+            float areaShadow = GE_SampleAreaShadow(lp, lightIdx, posRel, so.normalWS);
+            totalLight += areaShadow * GE_EvaluateAreaLightFinite(lp, lightColor, so, V, posRel);
             continue;
         }
 
@@ -614,7 +612,7 @@ vec3 GE_AccumulateClusteredLighting(
         vec3 lightPos = lp.posRange.xyz;
 
         // Point, spot, or approximated area light.
-        vec3 lightToFrag = posWS - lightPos;
+        vec3 lightToFrag = posRel - lightPos;
         float dist = length(lightToFrag);
         float range = max(lp.posRange.w, 0.001);
 
@@ -646,9 +644,9 @@ vec3 GE_AccumulateClusteredLighting(
         float localShadow = 1.0;
 #ifdef HAS_SHADOWS
         if (lightType == 1u)
-            localShadow = GE_SamplePointShadow(lp, lightIdx, posWS, so.normalWS);
+            localShadow = GE_SamplePointShadow(lp, lightIdx, posRel, so.normalWS);
         else if (lightType == 2u)
-            localShadow = GE_SampleSpotShadow(lp, lightIdx, posWS, so.normalWS);
+            localShadow = GE_SampleSpotShadow(lp, lightIdx, posRel, so.normalWS);
 #endif
 
         // Point and spot lights shadow the front-lit response while transmission

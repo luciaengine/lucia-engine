@@ -1,5 +1,8 @@
 #include "Types/ByteBuffer.h"
 
+#include <gtest/gtest.h>
+
+#include <algorithm>
 #include <cstdint>
 #include <span>
 #include <type_traits>
@@ -52,6 +55,37 @@ TEST(ByteBuffer, MovingHandsTheBytesOverAndLeavesTheSourceEmpty)
     EXPECT_EQ(assigned.Size(), 3u);
     EXPECT_EQ(assigned.Data()[0], 7);
     EXPECT_EQ(constructed.Size(), 0u);
+}
+
+TEST(ByteBuffer, TruncateLowersTheSizeKeepsTheBytesAndNeverGrows)
+{
+    ByteBuffer buffer(6);
+    for (std::size_t i = 0; i < buffer.Size(); ++i)
+        buffer.Data()[i] = static_cast<std::uint8_t>(20 + i);
+    const std::uint8_t* bytes = buffer.Data();
+
+    buffer.Truncate(4);
+    ASSERT_EQ(buffer.Size(), 4u);
+    EXPECT_EQ(buffer.Data(), bytes);
+    EXPECT_EQ(buffer.Data()[3], 23);
+
+    buffer.Truncate(9);
+    EXPECT_EQ(buffer.Size(), 4u);
+
+    buffer.Truncate(0);
+    EXPECT_EQ(buffer.Size(), 0u);
+    EXPECT_EQ(buffer.begin(), buffer.end());
+}
+
+TEST(ByteBuffer, CopyOfHoldsItsOwnCopyOfTheBytes)
+{
+    const std::uint8_t source[] = {3, 1, 4, 1, 5};
+    const ByteBuffer copy = ByteBuffer::CopyOf(source);
+    ASSERT_EQ(copy.Size(), 5u);
+    EXPECT_NE(copy.Data(), source);
+    EXPECT_TRUE(std::ranges::equal(copy, source));
+
+    EXPECT_EQ(ByteBuffer::CopyOf({}).Size(), 0u);
 }
 
 } // namespace

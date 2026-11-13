@@ -142,9 +142,11 @@ class MarkupRegionTest : public ::testing::Test
     {
         const ECS::EntityHandle entity = World.CreateEntity();
         const Components::Transform transform =
-            Components::Transform::FromTRS(position, Mathematics::Quaternion::Identity(), scale);
+            Components::Transform::FromTRS(Mathematics::WorldPosition::FromVector3(position),
+                                           Mathematics::Quaternion::Identity(), scale);
         Components::WorldTransform world{};
-        std::copy(std::begin(transform.matrix), std::end(transform.matrix), std::begin(world.matrix));
+        world.Position = transform.Position;
+        world.Basis = transform.Basis;
         World.AddComponentImmediate(entity, transform);
         World.AddComponentImmediate(entity, world);
         World.AddComponentImmediate(entity, Components::Markup{});
@@ -244,6 +246,33 @@ TEST_F(MarkupRegionTest, TheDecimatedRingOfASmoothRegionStaysWithinATenthOfAMete
         EXPECT_LE(DistanceToRing(point, tested), 0.1f + 1e-3f);
 }
 
+// The AI Assistant's block caps a ring at 64 points by Douglas-Peucker: a 1,000-point circle keeps
+// at most 64 of its own points, and a square sampled at 1,000 points keeps exactly its corners.
+TEST(MarkupRegionDecimation, AThousandPointRingKeepsAtMostSixtyFourOfItsPointsAndItsCorners)
+{
+    const std::vector<Vector2> circle = Circle(100.0f, 1000);
+    const std::vector<Vector2> kept = MarkupECS::DecimateRegionRing(circle, 64);
+    EXPECT_LE(kept.size(), 64u);
+    EXPECT_GE(kept.size(), 16u);
+    for (const Vector2& point : kept)
+        EXPECT_NE(std::find(circle.begin(), circle.end(), point), circle.end());
+
+    std::vector<Vector2> square;
+    const Vector2 corners[] = {{0.0f, 0.0f}, {200.0f, 0.0f}, {200.0f, 200.0f}, {0.0f, 200.0f}};
+    for (int side = 0; side < 4; ++side)
+    {
+        for (int step = 0; step < 250; ++step)
+        {
+            const float32 t = static_cast<float32>(step) / 250.0f;
+            const Vector2& from = corners[side];
+            const Vector2& to = corners[(side + 1) % 4];
+            square.emplace_back(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
+        }
+    }
+    const std::vector<Vector2> squareKept = MarkupECS::DecimateRegionRing(square, 64);
+    EXPECT_EQ(squareKept, std::vector<Vector2>(std::begin(corners), std::end(corners)));
+}
+
 // A linear outline is tested as its knots: one edge per knot, not the spline's 16 samples per
 // segment, which kept the worst point test 16 times over its bound.
 TEST_F(MarkupRegionTest, ALinearRegionsFootprintIsItsKnots)
@@ -317,11 +346,10 @@ TEST_F(MarkupRegionTest, ABoxFootprintIsItsRotatedOutlineFromAbove)
 {
     const ECS::EntityHandle box =
         AddVolume(Components::MarkupVolumeShape::Box, Vector3(0.0f, 0.0f, 0.0f), Vector3(20.0f, 4.0f, 20.0f));
-    Components::Transform turned = Components::Transform::FromTRS(
-        Vector3(0.0f, 0.0f, 0.0f), Mathematics::Quaternion::FromAxisAngle(Vector3(0.0f, 1.0f, 0.0f), 0.78539816f),
+    const Components::Transform turned = Components::Transform::FromTRS(
+        Mathematics::WorldPosition(), Mathematics::Quaternion::FromAxisAngle(Vector3(0.0f, 1.0f, 0.0f), 0.78539816f),
         Vector3(20.0f, 4.0f, 20.0f));
-    std::copy(std::begin(turned.matrix), std::end(turned.matrix),
-              std::begin(World.GetComponentForWrite<Components::WorldTransform>(box)->matrix));
+    World.GetComponentForWrite<Components::WorldTransform>(box)->Basis = turned.Basis;
     const std::optional<MarkupECS::MarkupFootprint> footprint = MarkupECS::ReadMarkupFootprint(World, box);
     ASSERT_TRUE(footprint.has_value());
     EXPECT_EQ(footprint->Ring.size(), 4u);
@@ -331,11 +359,10 @@ TEST_F(MarkupRegionTest, ABoxFootprintIsItsRotatedOutlineFromAbove)
 
     // Tipped 90 degrees about x, a 20 x 4 x 2 box lies 4 m deep on the ground: its outline from
     // above takes the top corners as well as the bottom ones.
-    Components::Transform tipped = Components::Transform::FromTRS(
-        Vector3(0.0f, 0.0f, 0.0f), Mathematics::Quaternion::FromAxisAngle(Vector3(1.0f, 0.0f, 0.0f), 1.5707963f),
+    const Components::Transform tipped = Components::Transform::FromTRS(
+        Mathematics::WorldPosition(), Mathematics::Quaternion::FromAxisAngle(Vector3(1.0f, 0.0f, 0.0f), 1.5707963f),
         Vector3(20.0f, 4.0f, 2.0f));
-    std::copy(std::begin(tipped.matrix), std::end(tipped.matrix),
-              std::begin(World.GetComponentForWrite<Components::WorldTransform>(box)->matrix));
+    World.GetComponentForWrite<Components::WorldTransform>(box)->Basis = tipped.Basis;
     const std::optional<MarkupECS::MarkupFootprint> lying = MarkupECS::ReadMarkupFootprint(World, box);
     ASSERT_TRUE(lying.has_value());
     EXPECT_TRUE(lying->Contains(Vector2(0.0f, 1.5f)));

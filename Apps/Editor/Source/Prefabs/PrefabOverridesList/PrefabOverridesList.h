@@ -28,6 +28,11 @@ namespace GameEngine::Scene
 struct PrefabOverrideTarget;
 }
 
+namespace GameEngine::UI::Layout
+{
+enum class PopupSide : uint8_t;
+}
+
 namespace GameEngine::Editor
 {
 class EditorChangeNotifications;
@@ -53,8 +58,10 @@ struct PrefabOverridesListContext
     PrefabOverridesListReopen* Reopen = nullptr;
 };
 
-/// Instance overrides grouped by entity, with per-row and bulk Apply/Revert actions.
-/// Stale addresses from the scene load report offer Discard. Main thread only.
+/// The prefab bar's Overrides list: every override of the instance, grouped by entity, with the prefab's value
+/// beside a changed field, Apply and Revert on each row, and Revert all and Apply all at the foot. A stale group
+/// comes from the scene's load report: its rows are override lines whose address the prefab does not have, and
+/// each offers Discard. Main thread only.
 /// Layout and style: UI/controls/PrefabOverridesList/.
 class PrefabOverridesList final : public UIElement, public DismissablePopup
 {
@@ -86,6 +93,7 @@ class PrefabOverridesList final : public UIElement, public DismissablePopup
     void ApplyTargets(std::span<const Scene::PrefabOverrideTarget> targets, const std::string& undoName);
     void RevertTargets(std::span<const Scene::PrefabOverrideTarget> targets, const std::string& undoName);
     void Discard(std::size_t skipIndex);
+    void FitWidthToBar();
     void Place();
 
     ECS::World& m_World;
@@ -98,7 +106,7 @@ class PrefabOverridesList final : public UIElement, public DismissablePopup
     const UIElement* m_Anchor = nullptr;
     UIElement* m_Panel = nullptr;
     Label* m_Title = nullptr;
-    Label* m_Against = nullptr;
+    Label* m_PrefabLabel = nullptr;
     ScrollView* m_Scroll = nullptr;
     Label* m_Empty = nullptr;
     Label* m_Note = nullptr;
@@ -108,7 +116,8 @@ class PrefabOverridesList final : public UIElement, public DismissablePopup
     std::vector<Scene::PrefabOverrideTarget> m_Targets;
     float m_PlacedX = -1.0f;
     float m_PlacedY = -1.0f;
-    std::optional<bool> m_AboveAnchor;
+    float m_MaxWidth = -1.0f;
+    std::optional<UI::Layout::PopupSide> m_Side;
 };
 
 } // namespace GameEngine::Editor

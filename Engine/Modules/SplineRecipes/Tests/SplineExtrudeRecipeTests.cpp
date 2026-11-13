@@ -79,7 +79,7 @@ TEST(SplineExtrudeRecipe, EveryFieldParticipatesInEquality)
         {"WidthMode",
          [](SplineExtrude& e) { e.WidthMode = SplineExtrudeWidthMode::FitToBanks; }},
         {"MaxHalfWidth", [](SplineExtrude& e) { e.MaxHalfWidth = 21.5f; }},
-        {"SeaLevelFloor", [](SplineExtrude& e) { e.SeaLevelFloor = 2.0f; }},
+        {"FloorHeight", [](SplineExtrude& e) { e.FloorHeight = 2.0f; }},
         {"EndTaperMetres", [](SplineExtrude& e) { e.EndTaperMetres = 6.25f; }},
         {"ConformMode",
          [](SplineExtrude& e) { e.ConformMode = Components::SplinePlacementConform::None; }},
@@ -135,11 +135,11 @@ TEST(SplineExtrudeRecipe, DefaultsDescribeAUsablePathOnTheFirstTry)
     // The floor height is OFF by default, and "off" is the arithmetic
     // identity of the clamp that applies it rather than a magic value compared
     // for equality -- so it survives a scene round-trip without special casing.
-    EXPECT_EQ(recipe.SeaLevelFloor, Components::kNoSeaLevelFloor);
-    EXPECT_TRUE(std::isfinite(recipe.SeaLevelFloor))
+    EXPECT_EQ(recipe.FloorHeight, Components::kNoFloorHeight);
+    EXPECT_TRUE(std::isfinite(recipe.FloorHeight))
         << "a non-finite default would make the recipe unequal to itself and re-arm the "
            "settle rebuild forever";
-    EXPECT_EQ(std::max(-12.5f, recipe.SeaLevelFloor), -12.5f)
+    EXPECT_EQ(std::max(-12.5f, recipe.FloorHeight), -12.5f)
         << "the disabled floor must leave any waterline untouched";
 }
 
@@ -331,7 +331,7 @@ TEST(SplineExtrudeRecipe, ChoosingAProfileRevivesARunSavedWithTheRetiredWall)
                "SplineExtrude.Width = 0.8\n";
     }
     ECS::World world;
-    ASSERT_TRUE(Scene::LoadSceneFromFile(world, scenePath, Scene::LoadOptions{}));
+    ASSERT_TRUE(Scene::ReadSceneInto(world, scenePath, Scene::SceneReadOptions{}));
     std::filesystem::remove(scenePath);
 
     ECS::EntityHandle run{};

@@ -1,7 +1,7 @@
 #include "Animation/VRM1Importer.h"
 
-#include "Animation/KHRHumanoidImporter.h"
-#include "KHRHumanoidShared.h"
+#include "Animation/KHRHumanoid/KHRHumanoidImporter.h"
+#include "KHRHumanoid/KHRHumanoidShared.h"
 #include "Logger/Logger.h"
 
 #include <cgltf.h>

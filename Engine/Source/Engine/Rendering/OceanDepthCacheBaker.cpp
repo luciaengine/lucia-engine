@@ -9,9 +9,13 @@
 #include "Components/Transform.h"
 #include "Core/Engine.h"
 #include "ECS/ECSTemplates.h"
+#include "Mathematics/Matrix4x4.h"
+#include "TerrainECS/SurfaceHeightQuery.h"
 #include "TerrainECS/TerrainService.h"
 
-#include <cstring>
+#include <algorithm>
+#include <format>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -26,32 +30,13 @@ void SetError(std::string* error, const char* message)
         *error = message;
 }
 
-void MultiplyMatrices(const float32 a[16], const float32 b[16], float32 out[16])
-{
-    for (int col = 0; col < 4; ++col)
-    {
-        for (int row = 0; row < 4; ++row)
-        {
-            out[col * 4 + row] =
-                a[0 * 4 + row] * b[col * 4 + 0] +
-                a[1 * 4 + row] * b[col * 4 + 1] +
-                a[2 * 4 + row] * b[col * 4 + 2] +
-                a[3 * 4 + row] * b[col * 4 + 3];
-        }
-    }
-}
-
 struct SceneMeshCandidate
 {
     GUID ModelGuid;
     uint32 MeshId = 0;
-    uint32 RenderLayerMask = 1u;
+    Rendering::RenderLayerMask RenderLayers;
     bool IsSkinnedRenderer = false;
-    float32 WorldTransform[16] = {
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f};
+    Mathematics::Matrix4x4 WorldTransform = Mathematics::Matrix4x4::Identity();
 };
 
 void CollectSceneMeshCandidates(ECS::World& world,
@@ -81,13 +66,13 @@ void CollectSceneMeshCandidates(ECS::World& world,
                     ++stats.SkippedUntagged;
                     return;
                 }
-                if ((renderer.renderLayerMask & depthContributor->RenderLayerMask) == 0u)
+                if (!renderer.RenderLayers.Intersects(depthContributor->ContributorLayers))
                 {
                     ++stats.SkippedLayer;
                     return;
                 }
             }
-            if ((renderer.renderLayerMask & options.RenderLayerMask) == 0u)
+            if (!renderer.RenderLayers.Intersects(options.Layers))
             {
                 ++stats.SkippedLayer;
                 return;
@@ -108,52 +93,38 @@ void CollectSceneMeshCandidates(ECS::World& world,
             SceneMeshCandidate candidate{};
             candidate.ModelGuid = renderer.modelAssetGuid.ToGuid();
             candidate.MeshId = renderer.meshId;
-            candidate.RenderLayerMask = renderer.renderLayerMask;
+            candidate.RenderLayers = renderer.RenderLayers;
             candidate.IsSkinnedRenderer = isSkinned;
-            std::memcpy(candidate.WorldTransform, worldTransform.matrix, sizeof(candidate.WorldTransform));
+            candidate.WorldTransform = worldTransform.ToMatrix4x4(worldTransform.GetPosition() - Mathematics::WorldPosition{});
             outCandidates.push_back(candidate);
             ++stats.CandidateRenderers;
         });
 }
 
-void AppendTerrainHeightfieldSource(
-    const Terrain::HeightfieldData& heightfield,
-    float32 originX, float32 originY, float32 originZ,
-    float32 sizeX, float32 sizeZ, float32 heightScale, uint32 layerMask,
-    std::vector<Ocean::OceanDepthCacheHeightfieldSource>& outSources,
-    OceanSceneDepthBakeStats& stats)
+// A planar terrain the bake reads through its height query.
+struct TerrainBakeSource
 {
-    if (heightfield.IsEmpty() || heightfield.GetWidth() == 0u || heightfield.GetHeight() == 0u ||
-        sizeX <= 0.0f || sizeZ <= 0.0f)
-    {
-        ++stats.SkippedTerrain;
-        return;
-    }
+    Components::Terrain Terrain;
+    TerrainECS::SurfaceHeightQuery Query;
+};
 
-    Ocean::OceanDepthCacheHeightfieldSource source{};
-    source.Samples = heightfield.GetRawSamples();
-    source.Width = heightfield.GetWidth();
-    source.Height = heightfield.GetHeight();
-    source.OriginX = originX;
-    source.OriginZ = originZ;
-    source.SizeX = sizeX;
-    source.SizeZ = sizeZ;
-    source.HeightScale = heightScale;
-    source.WorldOriginY = originY;
-    source.LayerMask = layerMask;
-    outSources.push_back(source);
-    ++stats.TerrainSources;
-}
+// The terrains of one bake and the texels they cover but cannot answer.
+struct TerrainBakeContext
+{
+    TerrainECS::TerrainService* Service = nullptr;
+    std::vector<TerrainBakeSource> Terrains;
+    uint32 UnsampledTexels = 0;
+};
 
 void CollectSceneTerrainSources(ECS::World& world,
                                 const OceanSceneDepthBakeOptions& options,
-                                std::vector<Ocean::OceanDepthCacheHeightfieldSource>& outSources,
+                                TerrainBakeContext& outContext,
                                 OceanSceneDepthBakeStats& stats)
 {
     if (!options.IncludeTerrainHeightfields)
         return;
 
-    auto* terrainService = TerrainECS::TerrainService::TryGet();
+    outContext.Service = TerrainECS::TerrainService::TryGet();
 
     auto query = world.Query<ECS::Read<Components::Terrain>,
                              ECS::Read<Components::WorldTransform>>();
@@ -163,80 +134,60 @@ void CollectSceneTerrainSources(ECS::World& world,
                    const Components::Terrain& terrain,
                    const Components::WorldTransform& worldTransform)
         {
-            if (!terrainService)
+            if (!outContext.Service || terrain.Domain == Components::TerrainDomain::Spherical)
             {
                 ++stats.SkippedTerrain;
                 return;
             }
-            if ((terrain.RenderLayerMask & options.RenderLayerMask) == 0u)
+            if (!terrain.RenderLayers.Intersects(options.Layers))
             {
                 ++stats.SkippedLayer;
                 return;
             }
-
-            const float32 originX = worldTransform.matrix[12];
-            const float32 originY = worldTransform.matrix[13];
-            const float32 originZ = worldTransform.matrix[14];
-            const uint32 layerMask = terrain.RenderLayerMask;
-
-            if (terrain.TiledTerrainHandle != 0u || terrain.TiledTerrainGeneration != 0u)
-            {
-                TerrainECS::TiledTerrainHandle handle{
-                    terrain.TiledTerrainHandle, terrain.TiledTerrainGeneration};
-                const auto* tiled = terrainService->GetTiledTerrainData(handle);
-                if (!tiled)
-                {
-                    ++stats.SkippedTerrain;
-                    return;
-                }
-
-                const float32 tileSize = tiled->Config.TileWorldSize;
-                for (const auto& [coord, tilePtr] : tiled->Tiles)
-                {
-                    (void)coord;
-                    if (!tilePtr)
-                    {
-                        ++stats.SkippedTerrain;
-                        continue;
-                    }
-                    AppendTerrainHeightfieldSource(
-                        tilePtr->Heightfield,
-                        tilePtr->WorldOriginX,
-                        originY,
-                        tilePtr->WorldOriginZ,
-                        tileSize,
-                        tileSize,
-                        terrain.HeightScale,
-                        layerMask,
-                        outSources,
-                        stats);
-                }
-                return;
-            }
-
-            TerrainECS::TerrainHandle handle{
-                terrain.TerrainDataHandle, terrain.TerrainDataGeneration};
-            const auto* data = terrainService->GetTerrainData(handle);
-            if (!data)
+            TerrainECS::SurfaceHeightQuery surface = outContext.Service->SurfaceQuery(terrain, worldTransform);
+            if (!surface.IsValid())
             {
                 ++stats.SkippedTerrain;
                 return;
             }
-
-            // A single planar terrain is centred on WorldTransform; heightfield
-            // samples start at its minimum corner. Sizes are already world units.
-            AppendTerrainHeightfieldSource(
-                data->Heightfield,
-                originX - terrain.SizeX * 0.5f,
-                originY,
-                originZ - terrain.SizeZ * 0.5f,
-                terrain.SizeX,
-                terrain.SizeZ,
-                terrain.HeightScale,
-                layerMask,
-                outSources,
-                stats);
+            outContext.Terrains.push_back(TerrainBakeSource{terrain, surface});
+            ++stats.TerrainSources;
         });
+}
+
+// The highest finest terrain floor at world (x, z). A terrain whose finest page there is not on the
+// CPU fetches it now: the bake is one call, so no height-page update trims the pages it fetched
+// until it returns, and the pages under its area are its reader window. A texel a terrain covers
+// but cannot answer (no page source: its height store is still cooking) is counted unsampled.
+bool SampleTerrainFloors(float32 worldX, float32 worldZ, float32& outFloorY, void* userData)
+{
+    auto* context = static_cast<TerrainBakeContext*>(userData);
+    const Mathematics::Vector3 point(worldX, 0.0f, worldZ);
+    bool found = false;
+    bool unsampled = false;
+    float32 highestFloor = std::numeric_limits<float32>::lowest();
+    for (TerrainBakeSource& source : context->Terrains)
+    {
+        if (!source.Query.ContainsXZ(worldX, worldZ))
+            continue;
+        TerrainECS::SurfaceHeightSample sample;
+        constexpr TerrainECS::SurfaceHeightPolicy kFinest = TerrainECS::SurfaceHeightPolicy::RequireFinest;
+        const bool sampled = source.Query.SampleHeight(point, kFinest, sample) ||
+                             (context->Service->FetchFinestHeightPage(source.Terrain, point) &&
+                              source.Query.SampleHeight(point, kFinest, sample));
+        if (!sampled)
+        {
+            unsampled = true;
+            continue;
+        }
+        highestFloor = found ? std::max(highestFloor, sample.Height) : sample.Height;
+        found = true;
+    }
+    context->UnsampledTexels += unsampled ? 1u : 0u;
+    if (!found)
+        return false;
+    outFloorY = highestFloor;
+    return true;
 }
 
 SharedPtr<Asset> GetOrLoadAsset(AssetManager& assetManager,
@@ -261,8 +212,8 @@ bool BakeOceanDepthCacheFromSceneMeshes(ECS::World& world,
     OceanSceneDepthBakeStats stats{};
     std::vector<SceneMeshCandidate> candidates;
     CollectSceneMeshCandidates(world, options, candidates, stats);
-    std::vector<Ocean::OceanDepthCacheHeightfieldSource> heightfieldSources;
-    CollectSceneTerrainSources(world, options, heightfieldSources, stats);
+    TerrainBakeContext terrains;
+    CollectSceneTerrainSources(world, options, terrains, stats);
 
     std::vector<Ocean::OceanDepthCacheMeshSource> sources;
     sources.reserve(candidates.size());
@@ -307,8 +258,9 @@ bool BakeOceanDepthCacheFromSceneMeshes(ECS::World& world,
         source.Indices = mesh.Indices.data();
         source.IndexCount = static_cast<uint32>(mesh.Indices.size());
         source.UseLocalToWorld = true;
-        source.LayerMask = candidate.RenderLayerMask;
-        MultiplyMatrices(candidate.WorldTransform, mesh.SourceNodeTransform, source.LocalToWorld);
+        source.Layers = candidate.RenderLayers;
+        source.LocalToWorld =
+            candidate.WorldTransform * Mathematics::Matrix4x4::FromColumnMajor(mesh.SourceNodeTransform);
 
         sources.push_back(source);
         heldAssets.push_back(std::move(asset));
@@ -325,7 +277,7 @@ bool BakeOceanDepthCacheFromSceneMeshes(ECS::World& world,
         if (!Ocean::BakeOceanDepthCacheFromMeshes(desc,
                                                   sources.data(),
                                                   static_cast<uint32>(sources.size()),
-                                                  options.RenderLayerMask,
+                                                  options.Layers,
                                                   meshCache,
                                                   error))
         {
@@ -336,16 +288,16 @@ bool BakeOceanDepthCacheFromSceneMeshes(ECS::World& world,
         partialCaches.push_back(std::move(meshCache));
     }
 
-    if (!heightfieldSources.empty())
+    if (!terrains.Terrains.empty())
     {
         Ocean::OceanDepthCacheAsset terrainCache;
-        if (!Ocean::BakeOceanDepthCacheFromHeightfields(
-                desc,
-                heightfieldSources.data(),
-                static_cast<uint32>(heightfieldSources.size()),
-                options.RenderLayerMask,
-                terrainCache,
-                error))
+        const bool baked = Ocean::BakeOceanDepthCache(desc, &SampleTerrainFloors, &terrains, terrainCache, error);
+        stats.UnsampledTerrainTexels = terrains.UnsampledTexels;
+        if (baked && terrains.UnsampledTexels != 0u && error)
+            *error = std::format("{} texels lie on a terrain with no height yet (its height store is still cooking). "
+                                 "Bake again when the terrain has finished loading.",
+                                 terrains.UnsampledTexels);
+        if (!baked || terrains.UnsampledTexels != 0u)
         {
             if (outStats)
                 *outStats = stats;

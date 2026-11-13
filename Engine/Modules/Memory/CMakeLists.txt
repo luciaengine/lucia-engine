@@ -16,6 +16,8 @@ set(MEMORY_SOURCES
 )
 
 add_library(Memory OBJECT ${MEMORY_SOURCES})
+set_target_properties(Memory PROPERTIES INTERFACE_GE_ALLOCATION_COUNTER_LINKED ON)
+set_property(TARGET Memory APPEND PROPERTY COMPATIBLE_INTERFACE_BOOL GE_ALLOCATION_COUNTER_LINKED)
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS" AND CMAKE_OSX_DEPLOYMENT_TARGET VERSION_LESS 17.0)
     target_sources(Memory PRIVATE Source/MemoryResource_iOS.cpp)
 endif()
@@ -46,25 +48,9 @@ message(STATUS "Memory: Configured as static library")
 
 
 if(BUILD_TESTING AND NOT EMSCRIPTEN)
-    find_package(GTest REQUIRED)
-    add_executable(MemoryAllocatorTests
-        Tests/ArenaImagePinTests.cpp
-        Tests/FrameJoinedScopeTests.cpp
-        Tests/FrameMemoryTests.cpp
-        Tests/ScratchScopeTests.cpp
-        Tests/ArenaTests.cpp
-        Tests/ArenaUseTests.cpp
-        Tests/ObjectPoolTests.cpp
-        Tests/ObjectPoolUseTests.cpp
-        Tests/RangeAllocatorTests.cpp
-        Tests/TrackedBytesTests.cpp
-        Source/AllocationHook.cpp
-    )
-    target_compile_features(MemoryAllocatorTests PRIVATE cxx_std_20)
-    target_link_libraries(MemoryAllocatorTests PRIVATE Memory JobSystem Logger GTest::gtest GTest::gtest_main)
-    target_include_directories(MemoryAllocatorTests PRIVATE Testing)
-    set_source_files_properties(Source/AllocationHook.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
-    ge_set_output_tests(MemoryAllocatorTests)
-    ge_stage_runtime_dependencies(MemoryAllocatorTests)
-    add_test(NAME MemoryAllocatorTests COMMAND $<TARGET_FILE:MemoryAllocatorTests>)
+    add_subdirectory(Tests)
+endif()
+
+if(NOT EMSCRIPTEN)
+    add_subdirectory(Bench)
 endif()

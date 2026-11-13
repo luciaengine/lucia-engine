@@ -2,6 +2,7 @@
 
 #include "UI/Parsers/CSSParser.h"
 #include "CSSParserDetail.h"
+#include "Mathematics/Interpolation.h"
 #include "UI/ResolvedStyle.h"
 #include "UI/StyleProperties.h"
 #include "UI/UIElement.h"
@@ -9,7 +10,6 @@
 #include "UI/Registration/ElementRegistration.h"
 
 #include "Logger/Logger.h"
-#include "Platform/Environment.h"
 #include "Types/StringUtils.h"
 #include <atomic>
 #include <bitset>
@@ -17,6 +17,7 @@
 #include <cerrno>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <sstream>
@@ -278,12 +279,18 @@ static void ApplyProperty(ResolvedStyle& rs,
         rs.Visual.BackgroundImage.PosYIsPercent = pos.YIsPercent;
     }
         break;
+    case StylePropertyId::Transform:
+        rs.Visual.Transform = GetValue<TransformValue>(p);
+        break;
+    case StylePropertyId::TransformOrigin:
+        rs.Visual.TransformOrigin = GetValue<TransformOriginValue>(p);
+        break;
     case StylePropertyId::BackgroundTint:
         rs.Visual.BackgroundImage.Tint = GetValue<uint32_t>(p);
         rs.Visual.BackgroundImage.HasTint = true;
         break;
     case StylePropertyId::BackgroundImageSaturation:
-        rs.Visual.BackgroundImage.Saturation = std::clamp(GetValue<float>(p), 0.0f, 1.0f);
+        rs.Visual.BackgroundImage.Saturation = Math::Clamp01(GetValue<float>(p));
         break;
     case StylePropertyId::BorderColor:
     {
@@ -760,6 +767,12 @@ static void CopyPropertyFromStyle(ResolvedStyle& dst,
         dst.Visual.BackgroundImage.PosY = src.Visual.BackgroundImage.PosY;
         dst.Visual.BackgroundImage.PosYIsPercent = src.Visual.BackgroundImage.PosYIsPercent;
         break;
+    case StylePropertyId::Transform:
+        dst.Visual.Transform = src.Visual.Transform;
+        break;
+    case StylePropertyId::TransformOrigin:
+        dst.Visual.TransformOrigin = src.Visual.TransformOrigin;
+        break;
     case StylePropertyId::BackgroundTint:
         dst.Visual.BackgroundImage.Tint = src.Visual.BackgroundImage.Tint;
         dst.Visual.BackgroundImage.HasTint = src.Visual.BackgroundImage.HasTint;
@@ -1082,7 +1095,8 @@ static int CountSiblingsOfType(const UIElement& el, bool ofType)
     const std::type_info& elType = typeid(el);
     for (const auto& child : children)
     {
-        if (typeid(*child) == elType)
+        const UIElement* childElement = child.get();
+        if (typeid(*childElement) == elType)
             ++count;
     }
     return count;
@@ -1338,7 +1352,7 @@ static bool MatchesSelectorChain(const UIElement& el,
 }
 
 // ---------------------------------------------------------------------------
-// Cascade-matcher memoization: structural matcher + cache builder.
+// Cascade-matcher memoization Phase 3: structural matcher + cache builder.
 //
 // Structural variant of the matcher above. Treats dynamic pseudo classes
 // (hover/active/focus/focus-visible/focus-within/disabled/enabled/checked/
@@ -1346,9 +1360,9 @@ static bool MatchesSelectorChain(const UIElement& el,
 // first/last/only-*) plus the recursive ones (:is/:where/:not, which
 // recurse with the same dynamic-pseudo skip semantics).
 //
-// The cache stores the result so apply-time applies purely structural rules
-// without a selector walk and re-runs the live matcher only for rules that
-// reference dynamic pseudos. Cache invalidation handles structural mutations.
+// The cache stores the result so apply-time can re-check only the dynamic
+// pseudos against current ElementState — bit comparisons, no class/id/parent
+// walks. Cache invalidation (Phase 2) handles structural mutations.
 // ---------------------------------------------------------------------------
 
 static bool MatchesSelectorChainStructural(const UIElement& el,
@@ -1596,7 +1610,7 @@ ResolvedStyle CSSParser::ComputeStyleFor(const UIElement& el,
     return ComputeStyleFor(el, sheets, kNoIndices, state, parentStyle, hoverTarget);
 }
 
-// Cascade match record. Hoisted to namespace scope so
+// Cascade-memoization Phase 4 row record. Hoisted to namespace scope so
 // the GE_UI_RULE_CACHE_VALIDATE validator can take a span of these
 // records without depending on a function-local type.
 namespace
@@ -1612,6 +1626,23 @@ struct MatchRec
 MatchRec MakeMatch(const CSSRule& rule, const Stylesheet& sheet, uint32_t sheetIndex)
 {
     return MatchRec{&rule, sheet.Origin, rule.Selector.Spec, sheetIndex};
+}
+
+// Cascade order, lowest first: user-agent under everything else, then specificity, then a
+// control's own sheet under an author sheet, then sheet order, then source order within a sheet.
+bool CascadeOrderLess(const MatchRec& a, const MatchRec& b)
+{
+    const bool aUserAgent = a.Origin == StyleOrigin::UserAgent;
+    const bool bUserAgent = b.Origin == StyleOrigin::UserAgent;
+    if (aUserAgent != bUserAgent)
+        return aUserAgent;
+    if (auto c = a.Spec <=> b.Spec; c != 0)
+        return c < 0;
+    if (a.Origin != b.Origin)
+        return a.Origin < b.Origin;
+    if (a.SheetIndex != b.SheetIndex)
+        return a.SheetIndex < b.SheetIndex;
+    return a.Rule->Order < b.Rule->Order;
 }
 
 #if GE_DEBUG_INSTRUMENTATION
@@ -1783,7 +1814,7 @@ void CSSParser::ComputeStyleInto(ResolvedStyle& out,
                                  const UIElement* hoverTarget,
                                  uint16_t* outMatchedPseudoStates)
 {
-    // Pseudo-state predicate accumulator. Walked alongside
+    // Stage 5 Block B: pseudo-state predicate accumulator. Walked alongside
     // the matched-rule application loop below so we observe every pseudo
     // referenced by every matched rule's selector chain. Reset at function
     // entry so callers always get a fresh result; bits are only set when
@@ -1913,9 +1944,15 @@ void CSSParser::ComputeStyleInto(ResolvedStyle& out,
         std::vector<StyleProperty> Props;
     };
 
-    // Deferred-decl resolution memo: an LRU, so hot entries survive churn
-    // instead of the whole cache being dropped at the cap. A std::list
-    // orders buckets by use (front = most
+    // Deferred-decl resolution memo.
+    //
+    // Previously: a plain unordered_map<key, bucket> with a "clear everything
+    // when entry count >= 4096" policy. That meant every ~4096 cache misses
+    // would throw away the whole cache and rebuild from scratch — a heap-churn
+    // pattern that showed up in VS Diagnostic Tools as ~100 KB of allocations
+    // per snapshot. Worse, it lost ALL hot entries on each clear.
+    //
+    // Now: a proper LRU. A std::list orders buckets by use (front = most
     // recently used). The map indexes by key into a list iterator. On
     // overflow we evict the LRU bucket (back of list), one bucket at a time,
     // until total entry count is under the cap. Hot entries survive churn.
@@ -1945,6 +1982,16 @@ void CSSParser::ComputeStyleInto(ResolvedStyle& out,
     {
         h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
     };
+    auto hashString64 = [](std::string_view s) -> uint64_t
+    {
+        uint64_t h = 1469598103934665603ULL;
+        for (unsigned char c : s)
+        {
+            h ^= (uint64_t)c;
+            h *= 1099511628211ULL;
+        }
+        return h;
+    };
     auto deferredMemoKey = [&](const CustomPropertyScope* scope,
                                const std::string& propName,
                                const std::string& rawValue) -> uint64_t
@@ -1952,8 +1999,8 @@ void CSSParser::ComputeStyleInto(ResolvedStyle& out,
         uint64_t h = 0;
         const uint64_t scopeId = scope ? scope->UniqueId : 0;
         hashCombine64(h, scopeId);
-        hashCombine64(h, Hashing::Fnv1a64(propName));
-        hashCombine64(h, Hashing::Fnv1a64(rawValue));
+        hashCombine64(h, hashString64(propName));
+        hashCombine64(h, hashString64(rawValue));
         return h;
     };
 
@@ -2087,8 +2134,8 @@ void CSSParser::ComputeStyleInto(ResolvedStyle& out,
     }
     matches.reserve(totalRuleCount);
 
-    // Rule-cache path, gated by IsRuleCacheEnabled (default on;
-    // GE_UI_RULE_CACHE=0 disables it; read once at process start). When enabled,
+    // Cascade-memoization Phase 4: gated on GE_UI_RULE_CACHE env var
+    // (read once at process start via IsRuleCacheEnabled). When enabled,
     // populate the per-element structural rule cache on demand, then
     // iterate cached rules instead of walking every stylesheet's
     // candidates. For rules that contain no dynamic pseudos (purely
@@ -2100,16 +2147,16 @@ void CSSParser::ComputeStyleInto(ResolvedStyle& out,
     // because the cache has already filtered down to structural-match
     // candidates.
     //
-    // Cache invalidation handles every mutation that affects the
-    // structural match: class/id changes, tree mutations, stylesheet
-    // attach/detach, Mount target swaps. A cache miss runs the full
-    // structural walk and builds the cache as a side effect.
+    // Cache invalidation (Phase 2) handles every mutation that affects
+    // the structural match: class/id changes, tree mutations, stylesheet
+    // attach/detach, Mount target swaps. Cache miss falls back to the
+    // legacy walk + builds the cache as a side effect.
     if (CSSParser::IsRuleCacheEnabled())
     {
         if (!el.IsRuleCacheValid())
             BuildRuleCache(el, sheets, sheetIndices);
 
-        // Accumulate the dynamic-pseudo
+        // Cascade-memoization Phase 5: accumulate the dynamic-pseudo
         // predicate from EVERY cached rule (not just filtered matches).
         // The cache is structural — rules with `:hover` are present
         // whether or not the element is currently hovered. This makes
@@ -2248,17 +2295,7 @@ void CSSParser::ComputeStyleInto(ResolvedStyle& out,
         }
     }
 
-    // Cascade order, lowest first: origin (user-agent under author), then specificity, then sheet
-    // order, then source order within a sheet.
-    std::stable_sort(matches.begin(), matches.end(), [](const MatchRec& a, const MatchRec& b)
-                     {
-	        if (a.Origin != b.Origin)
-	            return a.Origin < b.Origin;
-	        if (auto c = a.Spec <=> b.Spec; c != 0)
-	            return c < 0;
-	        if (a.SheetIndex != b.SheetIndex)
-	            return a.SheetIndex < b.SheetIndex;
-	        return a.Rule->Order < b.Rule->Order; });
+    std::stable_sort(matches.begin(), matches.end(), CascadeOrderLess);
 
     for (const MatchRec& m : matches)
     {
@@ -2270,7 +2307,7 @@ void CSSParser::ComputeStyleInto(ResolvedStyle& out,
                 phase2Refs.push_back(&prop);
         }
 
-        // Accumulate pseudo-state predicate bits. Every
+        // Stage 5 Block B: accumulate pseudo-state predicate bits. Every
         // pseudo-class referenced anywhere in this matched rule's selector
         // chain contributes a bit. The whole walk is bounded by the rule's
         // complexity (typically 1-3 terms × 0-2 pseudos) and skipped if
@@ -2299,7 +2336,7 @@ void CSSParser::ComputeStyleInto(ResolvedStyle& out,
         }
     }
 
-    el.InlineOverrides().ForEachCustom([&](StringId varId, const std::string& value)
+    el.InlineStyle().ForEachCustom([&](StringId varId, const std::string& value)
     {
         ensureLocalScope();
         auto& slot = localScope->Local.GetOrInsert(varId);
@@ -2308,7 +2345,7 @@ void CSSParser::ComputeStyleInto(ResolvedStyle& out,
         customVars[varId] = value;
     });
 
-    el.Overrides().ForEachCustom([&](StringId varId, const std::string& value)
+    el.Style().ForEachCustom([&](StringId varId, const std::string& value)
     {
         ensureLocalScope();
         auto& slot = localScope->Local.GetOrInsert(varId);
@@ -2324,12 +2361,13 @@ void CSSParser::ComputeStyleInto(ResolvedStyle& out,
 
     // !important cascade tier: normal-priority declarations run first, then
     // important-priority declarations run last so they overwrite. Within each
-    // tier, the walk order is already (origin, specificity, sheetIndex, source order)
+    // tier, the walk order is already the CascadeOrderLess order
     // ascending from the stable_sort on `matches` above, so last-wins
     // semantics within a tier are preserved. stable_partition keeps that
     // intra-tier order while moving !important refs to the tail. CSS reverses
     // origin order for important declarations; nothing here needs to, because
-    // the only user-agent sheet has none (UI/Source/DefaultStylesheet.cpp).
+    // the only user-agent sheet has none (UI/Source/DefaultStylesheet.cpp), and
+    // Control against Author is a tie rule like source order, which CSS keeps.
     //
     // Fast path: most elements match only normal-priority declarations.
     // Scan once to detect any !important ref; if there are none, skip the
@@ -2372,7 +2410,7 @@ void CSSParser::ComputeStyleInto(ResolvedStyle& out,
 
     out.Visual.Opacity = out.Visual.LocalOpacity;
 
-    // Emit the accumulated pseudo-state predicate. The
+    // Stage 5 Block B: emit the accumulated pseudo-state predicate. The
     // caller (ResolveCascadeForElement) writes this onto the element so
     // mark-dirty sites can skip pushes for elements unaffected by a given
     // pseudo-state flip.
@@ -2394,17 +2432,26 @@ ResolvedStyle CSSParser::ComputeStyleFor(const UIElement& el,
 
 bool CSSParser::IsRuleCacheEnabled()
 {
-    // The rule cache and the m_MatchedPseudoStates narrowing are the
-    // production cascade path. Default ON; emergency kill-switch via
+    // Cascade-memoization Phase 7 finale: cache + Phase 5 narrowing are
+    // the production cascade path. Default ON; emergency kill-switch via
     // GE_UI_RULE_CACHE=0 (or "false"/"off"). Read once at process start
-    // because the gate threads through ComputeStyleInto, the narrowing in
-    // MarkHoverTransitionDirty and MarkPseudoStateScope (focus, active,
-    // :focus-within, :checked and custom-state marks), and the
-    // cache-validity invariant holds
+    // because the gate threads through ComputeStyleInto, the narrowing
+    // call sites in DispatchEvents/RebuildFocusWithinChain/AddCustomState/
+    // MarkHoverTransitionDirty, and the cache-validity invariant holds
     // for the lifetime of the process. Toggling mid-run would leave
     // m_MatchedPseudoStates populated from one path while the other
     // expects the other path's semantics — not worth supporting.
-    static const bool s_Enabled = Platform::EnvironmentSwitchEnabled("GE_UI_RULE_CACHE", true);
+    static const bool s_Enabled = []() {
+        if (const char* e = std::getenv("GE_UI_RULE_CACHE"))
+        {
+            std::string v(e);
+            std::transform(v.begin(), v.end(), v.begin(),
+                           [](unsigned char c) { return (char)std::tolower(c); });
+            if (v == "0" || v == "false" || v == "off")
+                return false;
+        }
+        return true;
+    }();
     return s_Enabled;
 }
 
@@ -2414,7 +2461,18 @@ bool CSSParser::IsRuleCacheValidationEnabled()
     const int forced = s_RuleCacheValidationOverride.load(std::memory_order_relaxed);
     if (forced >= 0)
         return forced != 0;
-    static const bool s_FromEnv = Platform::EnvironmentSwitchEnabled("GE_UI_RULE_CACHE_VALIDATE", false);
+    static const bool s_FromEnv = []() {
+        if (const char* e = std::getenv("GE_UI_RULE_CACHE_VALIDATE"))
+        {
+            std::string v(e);
+            std::transform(v.begin(), v.end(), v.begin(),
+                           [](unsigned char c) { return (char)std::tolower(c); });
+            if (v.empty() || v == "0" || v == "false" || v == "off")
+                return false;
+            return true;
+        }
+        return false;
+    }();
     return s_FromEnv;
 }
 

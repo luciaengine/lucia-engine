@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Animation/AnimationGraphPlayer.h"
+#include "Animation/AnimationGraph/AnimationGraphPlayer.h"
 
 #include <memory>
 #include <nlohmann/json.hpp>

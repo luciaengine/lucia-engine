@@ -1,11 +1,11 @@
 #include "SplineRecipes/SplineChunkCommit.h"
 
 #include "Assets/ModelAsset.h"
+#include "Components/GeneratedEntity.h"
 #include "Components/Hierarchy.h"
 #include "Components/Rendering/LocalBounds.h"
 #include "Components/Rendering/MeshGPUData.h"
 #include "Components/Rendering/MeshRenderer.h"
-#include "Components/RuntimeOnlyEntity.h"
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
@@ -124,18 +124,17 @@ bool SplineChunkCommit::CommitSlots(ECS::World& world, Rendering::MeshGPURegistr
         // The hierarchy runs before the recipes in a frame, and extraction skips an unresolved chunk.
         // A chunk starts at its owner's resolved pose, so it draws in the frame its neighbours change.
         // A new entity needs no dirty-feed entry: extraction finds it through its structural change.
-        Components::WorldTransform chunkWorld{};
         if (const auto* ownerWorld = world.GetComponent<Components::WorldTransform>(owner);
             ownerWorld && ownerWorld->Version != 0u)
         {
-            chunkWorld = *ownerWorld;
+            Components::WorldTransform chunkWorld = *ownerWorld;
             chunkWorld.Version = 1u;
+            chunk.Set(chunkWorld);
         }
-        chunk.Set(chunkWorld);
         chunk.Set(chunkRenderer);
         chunk.Set(bounds);
         chunk.Set(Components::MeshGPUData{});
-        chunk.Set(Components::RuntimeOnlyEntity{});
+        chunk.Set(Components::GeneratedEntity{});
         chunk.Set(Components::Parent{owner});
         chunk.Set(SplineLayout::MakePieceLabel("Section", c));
         m_Chunks[c] = chunk.GetHandle();

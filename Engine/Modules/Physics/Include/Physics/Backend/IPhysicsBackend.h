@@ -24,6 +24,7 @@ public:
 
     // Shapes
     virtual ShapeHandle CreateShape(const ShapeDefinition& definition, const Vector3& bakedScale) = 0;
+    virtual HeightFieldShapeBuilder GetHeightFieldShapeBuilder() const = 0;
     virtual void DestroyShape(ShapeHandle shape) = 0;
     virtual bool IsShapeValid(ShapeHandle shape) const = 0;
 
@@ -46,12 +47,22 @@ public:
     // members, so sleeping bodies never notice the ground moving.
     virtual void ActivateBodiesInAABB(const AABB& worldBox) = 0;
 
+    // The dynamic bodies, asleep or awake, whose broadphase box meets the box (the bodies
+    // ActivateBodiesInAABB wakes, without the kinematic ones), each with its world-space bounds.
+    // Clears outBodies first.
+    virtual void GetDynamicBodiesInAABB(const AABB& worldBox, std::vector<BodyBounds>& outBodies) const = 0;
+
+    // The distance in meters at which two bodies start a contact. A body placed this far
+    // above a surface comes to rest on it.
+    virtual float32 GetContactDistance() const = 0;
+
     // Bodies
     virtual BodyHandle CreateBody(const BodySettings& settings) = 0;
     virtual void DestroyBody(BodyHandle body) = 0;
     virtual bool IsBodyValid(BodyHandle body) const = 0;
 
     virtual Transform GetBodyTransform(BodyHandle body) const = 0;
+    virtual WorldPosition GetCenterOfMassPosition(BodyHandle body) const = 0;
     virtual void SetBodyTransform(BodyHandle body, const Transform& transform, ActivationMode activation) = 0;
 
     // Move a kinematic body by setting the velocity that reaches `target` in
@@ -65,17 +76,14 @@ public:
     virtual Vector3 GetAngularVelocity(BodyHandle body) const = 0;
     virtual void SetAngularVelocity(BodyHandle body, const Vector3& velocity) = 0;
 
-    // Center of mass in world space (reference point for buoyancy torque).
-    virtual Vector3 GetCenterOfMassPosition(BodyHandle body) const = 0;
-
     // Continuous forces/torques accumulate and apply during the next Step;
     // impulses change velocity immediately. The "AtPosition" variants apply at
     // a world-space point, producing torque (used for buoyancy at probe points).
     virtual void AddForce(BodyHandle body, const Vector3& force) = 0;
-    virtual void AddForceAtPosition(BodyHandle body, const Vector3& force, const Vector3& worldPosition) = 0;
+    virtual void AddForceAtPosition(BodyHandle body, const Vector3& force, const WorldPosition& worldPosition) = 0;
     virtual void AddTorque(BodyHandle body, const Vector3& torque) = 0;
     virtual void AddImpulse(BodyHandle body, const Vector3& impulse) = 0;
-    virtual void AddImpulseAtPosition(BodyHandle body, const Vector3& impulse, const Vector3& worldPosition) = 0;
+    virtual void AddImpulseAtPosition(BodyHandle body, const Vector3& impulse, const WorldPosition& worldPosition) = 0;
 
     // Characters. Capsule is created by the backend from CharacterSettings;
     // there is no separate shape handle. Motor selects kinematic vs dynamic.
@@ -84,7 +92,7 @@ public:
     virtual bool IsCharacterValid(CharacterHandle character) const = 0;
 
     virtual Transform GetCharacterTransform(CharacterHandle character) const = 0;
-    virtual void SetCharacterPosition(CharacterHandle character, const Vector3& position) = 0;
+    virtual void SetCharacterPosition(CharacterHandle character, const WorldPosition& position) = 0;
 
     virtual Vector3 GetCharacterLinearVelocity(CharacterHandle character) const = 0;
     virtual void SetCharacterLinearVelocity(CharacterHandle character, const Vector3& velocity) = 0;

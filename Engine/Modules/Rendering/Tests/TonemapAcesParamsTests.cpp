@@ -9,7 +9,7 @@
 #include <Rendering/Core/CommandList.h>
 #include <Rendering/Core/Device.h>
 #include <Rendering/Materials/MaterialBuilder.h>
-#include <Rendering/Materials/ShaderReflection.h>
+#include <Rendering/Materials/Shader/ShaderReflection.h>
 
 using namespace GameEngine::Rendering;
 
@@ -163,7 +163,7 @@ static void FillAcesUboDefaultsByName(const ShaderMeta& meta, uint32_t setIdx, u
 }
 } // namespace
 
-TEST(TonemapACES, Params_Defaults_Draw_1x1_NonZero)
+TEST(TonemapDefaults, Params_Defaults_Draw_1x1_NonZero)
 {
 #ifdef _WIN32
     _putenv_s("GE_HEADLESS_TEST", "1");
@@ -432,6 +432,6 @@ TEST(TonemapACES, Params_Defaults_Draw_1x1_NonZero)
     }
     uint8_t* p = reinterpret_cast<uint8_t*>(dev->MapBuffer(readback));
     ASSERT_NE(p, nullptr);
-    EXPECT_TRUE(p[0] > 0 || p[1] > 0 || p[2] > 0) << "Expected non-zero RGB output after ACES tonemap";
+    EXPECT_TRUE(p[0] > 0 || p[1] > 0 || p[2] > 0) << "Expected non-zero RGB output after the tonemap";
     dev->UnmapBuffer(readback);
 }

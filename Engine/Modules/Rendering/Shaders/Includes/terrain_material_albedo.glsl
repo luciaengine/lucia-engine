@@ -146,7 +146,7 @@ const float CBT_TRIPLANAR_WEIGHT_FLOOR = 0.05;
 //     fp32-precise at planetary magnitude — where a raw world coordinate quantizes (ULP(50 km)
 //     = 4 mm, ULP(Earth R) = 0.5 m) and shreds both the UVs and the screen-space derivatives
 //     that drive mip selection.
-//   * LEGACY slots (deepTag == 0): the vertex position IS an fp32 world coordinate and the
+//   * WORLD slots (deepTag == 0): the vertex position IS an fp32 world coordinate and the
 //     adapter only subtracts the origin (GE_ClipFromWorld). That makes it smaller in magnitude,
 //     NOT more precise — the quantization already happened upstream and no bits come back.
 // The per-layer UVPhase (computed CPU-side in double) offsets each projection's UV by a whole

@@ -69,10 +69,10 @@ class BenchSpinSystem : public ECS::ISystem
             [t](ECS::EntityHandle, ECS::Writable<Components::Transform> xf, const BenchSpin& spin)
             {
                 const float a = spin.Phase + t * spin.Speed;
-                const Mathematics::Vector3 pos{spin.BaseX + std::cos(a) * spin.Radius, spin.BaseY,
-                                               spin.BaseZ + std::sin(a) * spin.Radius};
+                const Mathematics::WorldPosition pos{spin.BaseX + std::cos(a) * spin.Radius, spin.BaseY,
+                                                      spin.BaseZ + std::sin(a) * spin.Radius};
                 xf.Set(Components::Transform::FromTRS(pos, Mathematics::Quaternion{},
-                                                      Mathematics::Vector3{1.0f, 1.0f, 1.0f}));
+                                                    Mathematics::Vector3{1.0f, 1.0f, 1.0f}));
             });
     }
 
@@ -372,7 +372,8 @@ void RegisterBenchSceneHandlers(EditorDebugServer& server)
                     const float z = (static_cast<float>(i / glassSide) - glassHalf) * kGlassSpacing;
                     Components::MeshRenderer mr = meshProto[1]; // sphere
                     mr.materialAssetGuid.Set(transmissiveMaterial);
-                    mr.castShadows = transmissiveCastShadows;
+                    mr.shadowCasting = transmissiveCastShadows ? Components::ShadowCasting::On
+                                                              : Components::ShadowCasting::Off;
                     Components::LocalBounds lb = boundsProto[1];
                     lb.DynamicObject = false;
                     world->Create(

@@ -20,12 +20,12 @@
 #include "Engine/Rendering/PipelineVariantCache.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Materials/MaterialBuildContext.h"
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialDocument.h"
-#include "Rendering/Materials/ShaderCompileService.h"
-#include "Rendering/Materials/ShaderVariantKey.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderVariantKey.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Types/StringId.h"
 
@@ -485,6 +485,28 @@ void CheckParallaxPipelineCapabilities(bool forceCentroidFootprint)
         GTEST_SKIP() << "Vulkan validation layer not active: the capability VUID cannot be observed";
     }
 
+    device->ResetValidationStats();
+    BuildTheParallaxColourPipeline(*device, shaderDir);
+    std::string message;
+    EXPECT_EQ(VuidCount(*device, "VUID-VkShaderModuleCreateInfo-pCode-08740", &message), 0u) << message;
+    device->Shutdown();
+}
+
+// Metal takes the interpolation functions as the pull-model interpolation SPIRV-Cross translates
+// them to, so the parallax colour pipeline builds with the pixel-centre footprint.
+TEST(ParallaxPipelineOnAMetalDevice, TheCentroidParallaxColourPipelineBuildsWithThePixelCentreFootprint)
+{
+    const std::filesystem::path shaderDir = TestPaths::StagedRenderingShadersDir();
+    ASSERT_TRUE(std::filesystem::exists(shaderDir)) << "Staged engine shader tree not found: " << shaderDir.string();
+    const RestoredShaderCompileProfile restoredProfile;
+
+    DeviceDesc desc{};
+    desc.preferredAPI = GraphicsAPI::Metal;
+    desc.enableSwapchain = false;
+    std::unique_ptr<IDevice> device = DeviceFactory::CreateDevice(desc);
+    if (!device || !device->Initialize(desc) || device->GetAPI() != GraphicsAPI::Metal)
+        GTEST_SKIP() << "No Metal device available";
+    if (!device->GetCapabilities().supportsShaderInterpolationFunctions)
     {
         RenderServices services;
         ASSERT_TRUE(services.Initialize(device.get()));
@@ -536,6 +558,8 @@ void CheckParallaxPipelineCapabilities(bool forceCentroidFootprint)
         std::error_code ec;
         std::filesystem::remove_all(context.CacheRoot, ec);
     }
+
+    BuildTheParallaxColourPipeline(*device, shaderDir);
     device->Shutdown();
     ExpectNoNewValidationErrors(*device, baseline);
 }

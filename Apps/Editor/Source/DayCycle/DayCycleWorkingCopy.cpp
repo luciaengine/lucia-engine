@@ -13,7 +13,6 @@ namespace
 {
 struct WorkingCopies
 {
-    EventSubscription ProjectSwitch;
     std::vector<std::shared_ptr<DayCycleWorkingCopy>> Open;
     std::weak_ptr<DayCycleWorkingCopy> MostRecent;
     std::uint64_t MostRecentGeneration = 0;
@@ -127,9 +126,10 @@ void DayCycleWorkingCopy::CloseAll()
     ++copies.MostRecentGeneration;
 }
 
-void DayCycleWorkingCopy::CloseAllOnProjectSwitch(EditorChangeNotifications& notifications)
+EditorChangeNotifications::SubscriptionToken
+DayCycleWorkingCopy::CloseAllOnProjectSwitch(EditorChangeNotifications& notifications)
 {
-    Copies().ProjectSwitch = notifications.ProjectSwitched.Subscribe([]() { CloseAll(); });
+    return notifications.SubscribeProjectSwitched([]() { CloseAll(); });
 }
 
 DayCycleWorkingCopy::DayCycleWorkingCopy(AssetManager& assets, const GUID& guid, std::filesystem::path path,

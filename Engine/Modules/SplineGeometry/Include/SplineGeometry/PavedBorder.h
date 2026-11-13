@@ -26,7 +26,7 @@ struct PavedBorderSettings
     float32 Width = 0.3f;
     float32 Height = 0.12f;
     // The turn at every point the boolean made and every corner of the boundary.
-    SplineCornerStyle Corner = SplineCornerStyle::Mitre;
+    SplineCornerStyle Corner = SplineCornerStyle::Miter;
     // Stations along a run at most this far apart, so the border follows the ground: the drape's
     // step.
     float32 StationSpacingMeters = 0.5f;

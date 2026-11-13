@@ -9,18 +9,19 @@
 
 #include "Engine/Rendering/Pipeline/Nodes/PipelineNodeUtils.h"
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
+#include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/TerrainShadowMap.h"
 #include "Logger/Logger.h"
-#include "Platform/Environment.h"
 #include "Mathematics/MatrixOps.h"
 #include "Mathematics/Vector4.h"
-#include "Rendering/CameraTypes.h"
+#include "Mathematics/WorldPosition.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
 #include "Rendering/Core/PassPhase.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
@@ -194,8 +195,6 @@ void RTShadowMaskService::ReleaseAccelerationStructures()
     m_LastCasterEpoch = 0;
     // New episode for the tripwire and the steady-state summary: the rebuild
     // re-warns and re-summarizes instead of inheriting stale counts.
-    m_SkippedSector = 0;
-    m_WarnedSector  = false;
     m_LoggedSummary = false;
     m_InstanceScratch.clear();
     m_InstanceScratch.shrink_to_fit();
@@ -274,7 +273,6 @@ void RTShadowMaskService::Schedule(Rendering::RenderGraph::RGFrame& frame, uint6
         const std::vector<Rendering::GPUInstance>& instances = m_GpuScene->GetInstances();
         m_InstanceScratch.clear();
         m_InstanceScratch.reserve(instances.size());
-        uint64_t skippedSector     = 0;
         uint64_t skippedDegenerate = 0;
         for (uint32_t i = 0; i < instances.size(); ++i)
         {
@@ -289,23 +287,20 @@ void RTShadowMaskService::Schedule(Rendering::RenderGraph::RGFrame& frame, uint6
             const uint64_t blasAddress = m_SceneAS->GetBlasAddress(inst.meshIndex);
             if (blasAddress == 0)
                 continue;
-            if ((inst.sectorPacked[0] | inst.sectorPacked[1]) != 0u)
-            {
-                ++skippedSector;
-                continue;
-            }
 
             // Degenerate-transform tripwire: non-finite or astronomically
             // scaled instances (sky-dome/fx quads at 1e5+ world scale) are
             // exactly the inputs that can wedge a driver-side BVH builder — a
             // hung build is a 2-second TDR, not a wrong shadow. Skip and
             // count, never ingest.
-            const float* m = inst.transform.Data();
+            const Mathematics::Matrix4x4 worldMatrix =
+                ComposeWorldModelMatrix(inst.transform, inst.sectorPacked[0], inst.sectorPacked[1]);
+            const float* elements = worldMatrix.Data();
             bool sane = std::isfinite(inst.boundingRadius)
                         && inst.boundingRadius < kMaxSaneWorldUnits;
             for (int f = 0; f < 16 && sane; ++f)
             {
-                sane = std::isfinite(m[f]) && std::fabs(m[f]) < kMaxSaneWorldUnits;
+                sane = std::isfinite(elements[f]) && std::fabs(elements[f]) < kMaxSaneWorldUnits;
             }
             if (!sane)
             {
@@ -317,7 +312,7 @@ void RTShadowMaskService::Schedule(Rendering::RenderGraph::RGFrame& frame, uint6
             // Column-major mat4 -> VkTransformMatrixKHR row-major 3x4.
             for (uint32_t r = 0; r < 3; ++r)
                 for (uint32_t c = 0; c < 4; ++c)
-                    dst.Transform[r * 4 + c] = m[c * 4 + r];
+                    dst.Transform[r * 4 + c] = elements[c * 4 + r];
             dst.CustomIndexAndMask = (i & 0x00FFFFFFu) | (0xFFu << 24);
             // Facing cull disabled: a caster occludes regardless of winding,
             // which also makes the mirrored-winding bit (flags bit 4)
@@ -329,17 +324,7 @@ void RTShadowMaskService::Schedule(Rendering::RenderGraph::RGFrame& frame, uint6
         }
         count               = static_cast<uint32_t>(m_InstanceScratch.size());
         m_LastInstanceCount = count;
-        m_SkippedSector += skippedSector;
         m_SkippedDegenerate += skippedDegenerate;
-        if (skippedSector > 0 && !m_WarnedSector)
-        {
-            m_WarnedSector = true;
-            Logger::Log::Warning(
-                "RTShadowMask: {} instance(s) in nonzero render-origin sectors skipped "
-                "(prototype builds the TLAS in world space; Earth-scale content joins "
-                "when the mask pass picks its working space)",
-                skippedSector);
-        }
         if (skippedDegenerate > 0 && !m_WarnedDegenerate)
         {
             m_WarnedDegenerate = true;
@@ -352,8 +337,14 @@ void RTShadowMaskService::Schedule(Rendering::RenderGraph::RGFrame& frame, uint6
 
         // FNV-1a over the record bytes, seeded with the count so N zeroed
         // records can never alias N-1 of them.
-        refreshHash = Hashing::Fnv1a64(m_InstanceScratch.data(), count * sizeof(Rendering::TlasInstanceData),
-                                       Hashing::kFnv1a64OffsetBasis ^ count);
+        refreshHash = 1469598103934665603ull ^ count;
+        const auto* bytes = reinterpret_cast<const uint8_t*>(m_InstanceScratch.data());
+        const size_t byteCount = count * sizeof(Rendering::TlasInstanceData);
+        for (size_t b = 0; b < byteCount; ++b)
+        {
+            refreshHash ^= bytes[b];
+            refreshHash *= 1099511628211ull;
+        }
         doTlasBuild = !m_TlasContentValid || refreshHash != m_BuiltInstanceHash;
     }
 
@@ -404,19 +395,21 @@ void RTShadowMaskService::Schedule(Rendering::RenderGraph::RGFrame& frame, uint6
         m_LoggedSummary = true;
         Logger::Log::Info(
             "RTShadowMask: steady state — {} BLAS ({:.1f} MiB) in the shared scene AS pool, "
-            "TLAS {} instance(s) of {} scene instances (skipped so far: {} nonzero-sector, "
-            "{} degenerate transform)",
+            "TLAS {} instance(s) of {} scene instances (skipped so far: {} degenerate transform)",
             m_SceneAS->GetBlasCount(),
             static_cast<double>(m_SceneAS->GetLiveBlasMemoryBytes()) / (1024.0 * 1024.0),
-            m_LastInstanceCount, m_GpuScene->GetInstances().size(), m_SkippedSector,
-            m_SkippedDegenerate);
+            m_LastInstanceCount, m_GpuScene->GetInstances().size(), m_SkippedDegenerate);
     }
 
     // Fault-bisection lane: GE_RT_SHADOW_MASK_BLAS_ONLY records BLAS builds
     // but skips the TLAS build entirely, splitting the two halves of the
     // pipeline for device-loss triage. (TLAS content never confirms in that
     // lane, so the mask pass gate stays closed — by design.)
-    static const bool s_BlasOnly = Platform::EnvironmentSwitchEnabled("GE_RT_SHADOW_MASK_BLAS_ONLY", false);
+    static const bool s_BlasOnly = []
+    {
+        const char* v = std::getenv("GE_RT_SHADOW_MASK_BLAS_ONLY");
+        return v && std::strcmp(v, "0") != 0;
+    }();
 
     // 6. The build pass, on the graphics queue: build-order hazards (scratch
     //    reuse, BLAS->TLAS, prior frames) are handled with AS-stage barriers on
@@ -642,7 +635,7 @@ Rendering::RenderGraph::RGTexture RTShadowMaskService::DeclareMaskPass(
         return {};
     // Thumbnail cameras before their first update: inverting a zero proj
     // produces NaN that propagates into every ray.
-    if (cam.proj[0] == 0.0f && cam.proj[5] == 0.0f)
+    if (cam.proj[0][0] == 0.0f && cam.proj[1][1] == 0.0f)
         return {};
 
     LoadMaskShader();
@@ -694,23 +687,22 @@ Rendering::RenderGraph::RGTexture RTShadowMaskService::DeclareMaskPass(
                               // y = rays per pixel, z = distance fade fraction
         // The terrain's clearance map (TerrainShadowMap) in the full world frame, the frame the
         // mask reconstructs positions in (uInvView); ShadowDataGPU's terrainShadowGrid* layout.
-        float TerrainGrid0[4];
-        float TerrainGrid1[4];
-        float TerrainGrid2[4];
-        float TerrainGrid3[4];
+        Mathematics::Vector4 TerrainGrid0;
+        Mathematics::Vector4 TerrainGrid1;
+        Mathematics::Vector4 TerrainGrid2;
+        Mathematics::Vector4 TerrainGrid3;
         uint32_t TerrainSource[4]; // x = 1 when present; y = map side (texels); z = lit field levels (0: none)
         Mathematics::Vector4 TerrainView; // x = the terrain draw's level scale (TerrainShadowMap::DrawLevelScale)
+        Mathematics::Vector4 TerrainHeightSpan; // xy = the extent the height texture spans; zw = 0
     };
-    static_assert(sizeof(MaskParamsUBO) == 272, "must match rt_shadow_mask.comp's RTShadowMaskParams");
+    static_assert(sizeof(MaskParamsUBO) == 288, "must match rt_shadow_mask.comp's RTShadowMaskParams");
     auto ub = frame.AllocUpload<MaskParamsUBO>();
     if (!ub.Valid())
         return {};
 
-    GameEngine::Mathematics::Matrix4x4 projM;
-    std::memcpy(projM.Data(), cam.proj, sizeof(cam.proj));
+    GameEngine::Mathematics::Matrix4x4 projM = cam.proj;
     const GameEngine::Mathematics::Matrix4x4 invProjM = GameEngine::Mathematics::Inverse(projM);
-    GameEngine::Mathematics::Matrix4x4 viewM;
-    std::memcpy(viewM.Data(), cam.view, sizeof(cam.view));
+    GameEngine::Mathematics::Matrix4x4 viewM = cam.view;
     const GameEngine::Mathematics::Matrix4x4 invViewM = GameEngine::Mathematics::Inverse(viewM);
 
     MaskParamsUBO ubo{};
@@ -742,22 +734,13 @@ Rendering::RenderGraph::RGTexture RTShadowMaskService::DeclareMaskPass(
         terrainMap = terrainShadow->Map;
         terrainHeight = frame.ImportExternalTexture("CBT.HeightSource", terrainShadow->HeightTexture,
                                                     Rendering::ResourceState::ShaderResource);
-        ubo.TerrainGrid0[0] = static_cast<float>(terrainShadow->TerrainX + 0.5 * terrainShadow->TerrainSizeX);
-        ubo.TerrainGrid0[1] = static_cast<float>(terrainShadow->TerrainZ + 0.5 * terrainShadow->TerrainSizeZ);
-        ubo.TerrainGrid0[2] = static_cast<float>(terrainShadow->TerrainX);
-        ubo.TerrainGrid0[3] = static_cast<float>(terrainShadow->TerrainZ);
-        ubo.TerrainGrid1[0] = terrainShadow->TerrainSizeX;
-        ubo.TerrainGrid1[1] = terrainShadow->TerrainSizeZ;
-        ubo.TerrainGrid1[2] = terrainShadow->SunX;
-        ubo.TerrainGrid1[3] = terrainShadow->SunZ;
-        ubo.TerrainGrid2[0] = terrainShadow->TanElevation;
-        ubo.TerrainGrid2[1] = terrainShadow->Texel;
-        ubo.TerrainGrid2[2] = terrainShadow->UMin;
-        ubo.TerrainGrid2[3] = terrainShadow->VMin;
-        ubo.TerrainGrid3[0] = terrainShadow->SamplesU;
-        ubo.TerrainGrid3[1] = terrainShadow->SamplesV;
-        ubo.TerrainGrid3[2] = static_cast<float>(terrainShadow->BaseY);
-        ubo.TerrainGrid3[3] = terrainShadow->HeightScale;
+        const ShadowMapRenderFeature::TerrainShadowGrid grid =
+            ShadowMapRenderFeature::TerrainShadowGridOf(*terrainShadow, Mathematics::WorldPosition{});
+        ubo.TerrainGrid0 = grid.Grid0;
+        ubo.TerrainGrid1 = grid.Grid1;
+        ubo.TerrainGrid2 = grid.Grid2;
+        ubo.TerrainGrid3 = grid.Grid3;
+        ubo.TerrainHeightSpan = grid.HeightSpan;
         ubo.TerrainSource[0] = terrainHeight.IsValid() ? 1u : 0u;
         ubo.TerrainSource[1] = terrainShadow->MapSide;
         if (terrainHeight.IsValid() && terrainShadow->FieldLit.IsValid())
@@ -779,7 +762,6 @@ Rendering::RenderGraph::RGTexture RTShadowMaskService::DeclareMaskPass(
         passName, Rendering::PassPhase::kDefault,
         [&](RG::RGPassBuilder& p)
         {
-            p.UsePipeline(m_MaskPipelineId);
             p.Read(depth, RG::RGTextureRead::Sampled);
             p.Read(tlasRG);
             p.Write(mask, RG::RGTextureWrite::Storage);
@@ -861,7 +843,11 @@ Rendering::RenderGraph::RGTexture RTShadowMaskService::DeclareMaskPass(
     // entirely and hand back the raw mask.
     // A/B + debugging kill switch: GE_RT_SHADOW_DENOISE=0 returns the raw
     // (grainy) mask so the denoise can be compared against it from one binary.
-    static const bool s_DenoiseEnabled = Platform::EnvironmentSwitchEnabled("GE_RT_SHADOW_DENOISE", true);
+    static const bool s_DenoiseEnabled = []
+    {
+        const char* v = std::getenv("GE_RT_SHADOW_DENOISE");
+        return !(v && std::strcmp(v, "0") == 0);
+    }();
 
     if (s_DenoiseEnabled && tanHalfAngle > 0.0f)
     {
@@ -931,8 +917,7 @@ Rendering::RenderGraph::RGTexture RTShadowMaskService::DeclareDenoisePass(
     if (!ub.Valid())
         return {};
 
-    GameEngine::Mathematics::Matrix4x4 projM;
-    std::memcpy(projM.Data(), cam.proj, sizeof(cam.proj));
+    GameEngine::Mathematics::Matrix4x4 projM = cam.proj;
     const GameEngine::Mathematics::Matrix4x4 invProjM = GameEngine::Mathematics::Inverse(projM);
 
     DenoiseParamsUBO ubo{};
@@ -952,7 +937,6 @@ Rendering::RenderGraph::RGTexture RTShadowMaskService::DeclareDenoisePass(
         passName, Rendering::PassPhase::kDefault,
         [&](RG::RGPassBuilder& p)
         {
-            p.UsePipeline(m_DenoisePipelineId);
             p.Read(rawMask, RG::RGTextureRead::Sampled);
             p.Read(depth, RG::RGTextureRead::Sampled);
             p.Write(denoised, RG::RGTextureWrite::Storage);

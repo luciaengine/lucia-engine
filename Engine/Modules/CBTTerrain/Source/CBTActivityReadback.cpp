@@ -84,7 +84,9 @@ bool CBTActivityReadback::TryRead(uint64_t& outSequence, CBTUpdateActivity& outA
     outActivity.MergeServed = counters[kWQSimplifyCounter];
     outActivity.PressureStep = counters[kWQPressureStep];
     outActivity.OffFrustumKeepStep = counters[kWQOffFrustumKeepStep];
+    outActivity.OffFrustumKeepFloor = counters[kWQOffFrustumKeepFloor];
     outActivity.VertexEvalCount = counters[kWQVertexEvalCounter];
+    outActivity.UnresolvedPageSamples = counters[kWQUnresolvedPageSamples];
     return true;
 }
 

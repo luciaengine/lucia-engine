@@ -6,7 +6,7 @@
 #include "TileMap/TileLayerCommands.h"
 #include "TileMap/TileMapEditContext.h"
 #include "UI/EditorIcons.h"
-#include "UI/Interaction/DragDropManager.h"
+#include "UI/Interaction/DragDrop/DragDropManager.h"
 
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Checkbox.h"

@@ -2,7 +2,6 @@
   "name": "svn-vcs",
   "version": "1.0.0",
   "displayName": "SVN Version Control",
-  "icon": "Preview/icon.svg",
   "assets": "Assets/",
   "modules": [
     {

@@ -5,7 +5,6 @@
 #include "Assets/ModelAsset.h"
 #include "Components/Rendering/LocalBounds.h"
 #include "Components/Rendering/MeshRenderer.h"
-#include "Components/Rendering/WorldSectorCoord.h"
 #include "Components/Transform.h"
 #include "Core/CpuProfiler.h"
 #include "Core/Engine.h"
@@ -33,7 +32,6 @@
 #include <cmath>
 #include <limits>
 #include <mutex>
-#include <unordered_map>
 
 namespace GameEngine::Scene
 {
@@ -54,28 +52,14 @@ bool ExtractGuid(const Components::MeshRenderer& mr, GUID& outGuid)
 }
 
 // Resolve the CPU mesh data for a renderer. For built-in primitives the
-// geometry comes from the primitive cache; for asset-backed
+// geometry comes from PrimitiveGenerator::CachedMeshByGuid; for asset-backed
 // renderers we fetch the ModelAsset out of AssetManager (no force-load:
 // silently skip if not yet resident). Returns nullptr on miss.
-const Mesh* ResolvePrimitiveMesh(const GUID& guid)
-{
-    using Generator = Engine::Renderer::PrimitiveGenerator;
-    if (!Generator::IsPrimitive(guid))
-        return nullptr;
-    static std::mutex mutex;
-    static std::unordered_map<GUID, Mesh, std::hash<GUID>> meshes;
-    std::lock_guard lock(mutex);
-    auto it = meshes.find(guid);
-    if (it == meshes.end())
-        it = meshes.emplace(guid, Generator::GenerateByGuid(guid)).first;
-    return &it->second;
-}
-
 const Mesh* ResolveCpuMesh(const GUID& guid,
                            uint32 submesh,
                            PickableKind& outKind)
 {
-    if (const Mesh* prim = ResolvePrimitiveMesh(guid))
+    if (const Mesh* prim = Engine::Renderer::PrimitiveGenerator::CachedMeshByGuid(guid))
     {
         outKind = PickableKind::Primitive;
         return prim;
@@ -101,10 +85,8 @@ const Mesh* ResolveRegisteredCpuMesh(const Components::MeshRenderer& mr, Pickabl
     if (!renderServices)
         return nullptr;
 
-    const auto& registry = renderServices->GetMeshGPURegistry();
-    const auto* entry = registry.Find(Rendering::MeshGPUHandle(mr.meshGpuHandleId));
-    if (!entry && !mr.modelAssetGuid.IsNull())
-        entry = registry.FindByKey({mr.modelAssetGuid.ToGuid(), mr.meshId});
+    const Rendering::MeshGPUEntry* entry =
+        Engine::Renderer::FindRendererMeshEntry(renderServices->GetMeshGPURegistry(), mr);
     if (!entry || !entry->cpuMesh)
         return nullptr;
 
@@ -192,7 +174,7 @@ bool FillBoundsFallbackHit(const Mathematics::Ray3D& ray,
     outHit.SubmeshIndex  = 0u;
     outHit.TriangleIndex = ~0u;
     outHit.Barycentrics  = Vector3{};
-    outHit.WorldPosition = worldHit;
+    outHit.Point = worldHit;
     outHit.WorldNormal   = ComputeAabbHitNormal(box, worldHit);
     outHit.Distance      = boxEntry;
     return true;
@@ -210,10 +192,16 @@ bool TestEntityHit(const Mathematics::Ray3D& ray,
                    float32 maxT,
                    PickHit& outHit)
 {
-    if ((mr.renderLayerMask & options.LayerMask) == 0u)
+    if (!mr.RenderLayers.Intersects(options.LayerMask))
         return false;
+    // A shadows-only mesh draws in no color pass: a ray passes through it, and the user selects it
+    // in the Hierarchy.
+    if (mr.shadowCasting == Components::ShadowCasting::ShadowsOnly)
+        return false;
+
     const Mathematics::BoundingBox kDefault{};
-    const auto box = (bounds ? bounds->Box : kDefault).TransformToAABB(worldXf.matrix);
+    const Mathematics::Matrix4x4 worldM = worldXf.ToMatrix4x4(worldXf.GetPosition() - Mathematics::WorldPosition{});
+    const auto box = (bounds ? bounds->Box : kDefault).TransformToAABB(worldM.Data());
     float32 boxTMin = 0.0f, boxTMax = 0.0f;
     if (!Mathematics::IntersectRayAABB(ray, box, boxTMin, boxTMax))
         return false;
@@ -239,7 +227,6 @@ bool TestEntityHit(const Mathematics::Ray3D& ray,
     if (kind == PickableKind::Mesh && !options.IncludeMeshes)
         return false;
 
-    const Mathematics::Matrix4x4 worldM = Mathematics::Matrix4x4::FromColumnMajor(worldXf.matrix);
     const Mathematics::Matrix4x4 invM = Mathematics::Inverse(worldM);
 
     const Vector3 worldOrigin(ray.origin.x, ray.origin.y, ray.origin.z);
@@ -299,7 +286,7 @@ bool TestEntityHit(const Mathematics::Ray3D& ray,
     outHit.SubmeshIndex  = mr.meshId;
     outHit.TriangleIndex = raw.TriangleIndex;
     outHit.Barycentrics  = raw.Barycentrics;
-    outHit.WorldPosition = worldHit;
+    outHit.Point = worldHit;
     outHit.WorldNormal   = ComputeWorldNormal(*meshPtr, raw.TriangleIndex, invM);
     outHit.Distance      = raw.Distance;
     return true;
@@ -324,13 +311,9 @@ bool RaycastSingleEntity(const Mathematics::Ray3D& ray,
     const auto* worldXf = world.GetComponent<Components::WorldTransform>(entity);
     const auto* mr      = world.GetComponent<Components::MeshRenderer>(entity);
     const auto* bounds  = world.GetComponent<Components::LocalBounds>(entity);
-    const auto* sector  = world.GetComponent<Components::WorldSectorCoord>(entity);
     if (!worldXf || !mr || IsSkipped(world, entity, host))
         return false;
-    const float32 sectorSize = GetSceneTlas(world).GetSectorSize();
-    const Components::WorldTransform effectiveXf =
-        Components::ComposeEffectiveWorldTransform(*worldXf, sector, sectorSize);
-    return TestEntityHit(ray, entity, effectiveXf, *mr, bounds, options, maxT, outHit);
+    return TestEntityHit(ray, entity, *worldXf, *mr, bounds, options, maxT, outHit);
 }
 
 bool IsIgnored(ECS::EntityHandle entity, const PickOptions& options)
@@ -344,7 +327,7 @@ bool IsIgnored(ECS::EntityHandle entity, const PickOptions& options)
 }
 
 // Raycast one entity through a mesh handed over as data (HostRaycastInputs::ExtraMeshes): the same
-// narrow phase as a renderer's, with the sector compose and the layer and ignore rules.
+// narrow phase as a renderer's, with the layer and ignore rules.
 bool RaycastExtraMesh(const Mathematics::Ray3D& ray,
                       ECS::World& world,
                       float32 maxT,
@@ -352,24 +335,20 @@ bool RaycastExtraMesh(const Mathematics::Ray3D& ray,
                       const RaycastMesh& mesh,
                       PickHit& outHit)
 {
-    if (!world.IsValid(mesh.Entity) || (options.LayerMask & mesh.RenderLayers) == 0u ||
+    if (!world.IsValid(mesh.Entity) || !options.LayerMask.Intersects(mesh.RenderLayers) ||
         !mesh.Mesh.IsValid() || IsIgnored(mesh.Entity, options))
         return false;
     const auto* worldXf = world.GetComponent<Components::WorldTransform>(mesh.Entity);
     if (!worldXf)
         return false;
     const auto* bounds = world.GetComponent<Components::LocalBounds>(mesh.Entity);
-    const auto* sector = world.GetComponent<Components::WorldSectorCoord>(mesh.Entity);
 
     Components::MeshRenderer synthetic{};
     synthetic.meshGpuHandleId = mesh.Mesh.id;
-    synthetic.renderLayerMask = mesh.RenderLayers;
+    synthetic.RenderLayers = mesh.RenderLayers;
     synthetic.modelAssetGuid.Set(mesh.ModelAsset);
 
-    const float32 sectorSize = GetSceneTlas(world).GetSectorSize();
-    const Components::WorldTransform effectiveXf =
-        Components::ComposeEffectiveWorldTransform(*worldXf, sector, sectorSize);
-    return TestEntityHit(ray, mesh.Entity, effectiveXf, synthetic, bounds, options, maxT, outHit);
+    return TestEntityHit(ray, mesh.Entity, *worldXf, synthetic, bounds, options, maxT, outHit);
 }
 
 // Restricted-entity variant over the extra meshes: the first entry for the entity that hits.
@@ -449,9 +428,10 @@ PickHit MakeTerrainPick(const TerrainPickHit& terrainHit)
     hit.SubmeshIndex  = 0u;
     hit.TriangleIndex = ~0u;
     hit.Barycentrics  = Vector3{};
-    hit.WorldPosition = terrainHit.WorldPosition;
+    hit.Point = terrainHit.Point;
     hit.WorldNormal   = terrainHit.WorldNormal;
     hit.Distance      = terrainHit.Distance;
+    hit.CoarseHeight  = terrainHit.CoarseHeight;
     return hit;
 }
 
@@ -467,11 +447,10 @@ TraverseRayOptions MakeTraverseOptions(const PickOptions& options, float32 maxDi
 }
 
 // Tests the renderer of one TLAS leaf. False for an entity with no world transform or renderer and
-// for one the options skip; else TestEntityHit at the leaf's sector-composed world transform.
+// for one the options skip; else TestEntityHit at the leaf's world transform.
 bool TestTlasLeaf(const Mathematics::Ray3D& ray,
                   GameEngine::ECS::World& world,
                   const TlasInstance& instance,
-                  float32 sectorSize,
                   const PickOptions& options,
                   const HostRaycastInputs& host,
                   float32 maxT,
@@ -482,11 +461,7 @@ bool TestTlasLeaf(const Mathematics::Ray3D& ray,
     if (!worldTransform || !renderer || IsSkipped(world, instance.Entity, host))
         return false;
     const auto* bounds = world.GetComponent<Components::LocalBounds>(instance.Entity);
-    const auto* sector = world.GetComponent<Components::WorldSectorCoord>(instance.Entity);
-    const Components::WorldTransform effectiveTransform =
-        Components::ComposeEffectiveWorldTransform(*worldTransform, sector, sectorSize);
-    return TestEntityHit(ray, instance.Entity, effectiveTransform, *renderer, bounds, options, maxT,
-                         outHit);
+    return TestEntityHit(ray, instance.Entity, *worldTransform, *renderer, bounds, options, maxT, outHit);
 }
 
 // Relative tolerance under which a mesh hit and a terrain hit count as one distance: 1 mm at
@@ -563,16 +538,14 @@ PickResult RaycastSceneForHost(const Mathematics::Ray3D& ray,
         if (options.WaitForSceneTlas)
             tlas.WaitCurrent(world); // blocks only when something changed since the last request
 
-        const float32 sectorSize = tlas.GetSectorSize();
         // Leaves come in entry-t order. Once the next leaf's entry t exceeds the best
         // confirmed hit, no further leaf can yield a closer hit.
-        auto considerLeaf = [&ray, &world, &options, &host, &nearest, sectorSize](
+        auto considerLeaf = [&ray, &world, &options, &host, &nearest](
                                 const TlasInstance& instance, float32 tEnter, float32 /*tExit*/) -> bool {
             if (tEnter >= nearest.BestT)
                 return false;
             PickHit hit;
-            const bool hitLeaf =
-                TestTlasLeaf(ray, world, instance, sectorSize, options, host, nearest.BestT, hit);
+            const bool hitLeaf = TestTlasLeaf(ray, world, instance, options, host, nearest.BestT, hit);
             nearest.Consider(hitLeaf, hit);
             return true;
         };
@@ -624,12 +597,11 @@ bool RaycastSceneAllForHost(const Mathematics::Ray3D& ray,
         if (options.WaitForSceneTlas)
             tlas.WaitCurrent(world);
 
-        const float32 sectorSize = tlas.GetSectorSize();
         // Every leaf is visited: the walk collects all hits along the ray.
-        auto collectLeaf = [&ray, &world, &options, &host, &outHits, &meshPending, sectorSize, maxT](
+        auto collectLeaf = [&ray, &world, &options, &host, &outHits, &meshPending, maxT](
                                const TlasInstance& instance, float32 /*tEnter*/, float32 /*tExit*/) -> bool {
             PickHit hit;
-            if (TestTlasLeaf(ray, world, instance, sectorSize, options, host, maxT, hit))
+            if (TestTlasLeaf(ray, world, instance, options, host, maxT, hit))
                 outHits.push_back(hit);
             else
                 meshPending |= hit.MeshBvhPending;

@@ -96,11 +96,14 @@ struct SplinePlacement
     // Metres between tile centers along the conformed (draped) centerline —
     // true 3D distance over the ground, not authored-curve arc length.
     float32 Spacing = 2.0f;
+    // @ge-tooltip Fit To Length rounds the number of tiles so that they fill the spline exactly. Fixed Pitch steps exactly Spacing meters and cuts the last partial step.
     SplinePlacementFit Fit = SplinePlacementFit::FitToLength;
+    // @ge-tooltip How the tiles meet the surface under the spline. None keeps the frame of the spline. Height puts each tile on the surface and keeps it upright. Height And Slope also tilts it with the surface.
     SplinePlacementConform ConformMode = SplinePlacementConform::HeightAndSlope;
     // What the conform ray may land on. Scene (the default) is every pickable
     // surface; TerrainOnly makes scenery transparent so pieces do not ride the
     // roofs of the props they pass under.
+    // @ge-tooltip What the tiles stand on. Scene takes the nearest surface of any kind, so a tile under a cart or a canopy sits on top of it. Terrain Only ignores scenery, so the tiles follow the ground under it. With Terrain Only the drawn line of the spline can still ride over scenery that the tiles pass under.
     SplineConformTarget ConformTarget = SplineConformTarget::Scene;
     // Which plane of the tile lands on the conform hit. BoundsMin lifts the
     // lowest vertex onto the surface; PivotPlane lands local y=0 and lets what
@@ -122,27 +125,23 @@ struct SplinePlacement
     // every jitter draw below (SplineStationJitter.h); same Seed + same station
     // index = same pick, same wobble, same survivors on every rebuild.
     uint32 Seed = 0;
-    // Per-station variation. A kit laid at an exact pitch reads as railway
-    // sleepers — the eye finds the period immediately — and these break that up
-    // without moving the path itself. All four are deterministic in Seed, and
-    // all four are keyed on a station's ORDINAL, so raising Dropout does not
-    // reshuffle the wobble or the mesh picks of the stations that survive.
-    //
-    // Metres a station may slide ALONG the centerline, either way. The layout
-    // clamps it to half the spacing, so stations never reorder.
+    // Per-station variation, so a kit at an exact pitch does not show its period. All four are
+    // deterministic in Seed and keyed on the station's ordinal: a Dropout change keeps the
+    // wobble and the picks of the stations that stay.
+
+    // Meters a station may slide along the centerline, either way, at most half the spacing.
+    // @ge-label Spacing Jitter Meters
     float32 SpacingJitterMetres = 0.0f;
     // Degrees a station may turn about its own up, either way.
     float32 YawJitterDegrees = 0.0f;
     // Metres a station may slide ACROSS travel, either way.
+    // @ge-label Lateral Jitter Meters
     float32 LateralJitterMetres = 0.0f;
     // Fraction of stations left empty: 0 places every station, 1 places none.
     // Gaps are what stop a run reading as a manufactured strip.
     float32 DropoutChance = 0.0f;
-    // Metres at EACH end of the spline over which stations thin to nothing, so
-    // a run peters out instead of stopping square. Mirrors the name
-    // SplineExtrude::EndTaperMetres carries for the same idea; that one narrows
-    // a swept ribbon, and a kit piece cannot narrow, so the placement analogue
-    // is density. 0 disables.
+    // Meters at each end of the spline over which stations thin to nothing. 0 turns it off.
+    // @ge-label End Taper Meters
     float32 EndTaperMetres = 0.0f;
     // Cap, in degrees, on the per-tile skew used to soften rigid seams: each
     // joint shears both neighbouring tiles by tan(yaw/2) toward its bisector,

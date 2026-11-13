@@ -1,7 +1,10 @@
 #pragma once
+#include "ECS/ECS.h"
+#include "Mathematics/Rect.h"
 #include "Pathfinding/NavigationWorld.h"
 #include <memory>
 #include <mutex>
+#include <utility>
 #include <vector>
 
 namespace GameEngine::PathfindingECS
@@ -12,7 +15,7 @@ struct NavDebugData
     struct Line { float32 X1, Y1, Z1, X2, Y2, Z2; float32 R, G, B, A; };
     struct Triangle { float32 X1, Y1, Z1, X2, Y2, Z2, X3, Y3, Z3; float32 R, G, B, A; };
 
-    // Cached: regenerated only when grid topology changes
+    // Cache grid lines until topology changes. Replace mesh triangles each debug update.
     std::vector<Line> CachedLines;
     std::vector<Triangle> CachedTriangles;
 
@@ -75,6 +78,13 @@ public:
     static bool IsInitialized();
     static uint64 GetGeneration();
     static NavDebugData& GetDebugData();
+
+    // The boxes Navigation::MarkDirty queued, in world metres (X along world X, Y along world Z), by
+    // the world and the surface entity they name, until NavigationSurfaceSystem takes its world's.
+    // Main thread only. Does nothing before Initialize.
+    static void QueueDirtyBox(uint64 worldId, ECS::EntityHandle surface, const Mathematics::Rect& box);
+    // Moves every box queued for `worldId` into `out`.
+    static void TakeDirtyBoxes(uint64 worldId, std::vector<std::pair<ECS::EntityHandle, Mathematics::Rect>>& out);
 
 private:
     static std::unique_ptr<NavigationServiceInstance> s_Instance;

@@ -9,7 +9,7 @@
 #include "Logger/Logger.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
@@ -174,6 +174,11 @@ void FidelityFXDofNode::DeclareForView(ViewDeclare& d)
         "FidelityFXDoF.FarField",
         MakeTransientDesc(halfW, halfH, TextureFormat::R16G16B16A16_FLOAT,
                           "FidelityFXDoF.FarField"));
+    // Scene colour at the frame's pre-exposure (rgb; the half-resolution alpha is the CoC). The
+    // CoC tiles are not colour.
+    d.MarkPreExposed(half);
+    d.MarkPreExposed(nearField);
+    d.MarkPreExposed(farField);
     if (!half.IsValid() || !tile.IsValid() || !dilated.IsValid() ||
         !nearField.IsValid() || !farField.IsValid())
     {
@@ -193,7 +198,6 @@ void FidelityFXDofNode::DeclareForView(ViewDeclare& d)
         d.PassName(".Prepare").c_str(), PassPhase::kPostProcess,
         [&](RenderGraph::RGPassBuilder& p)
         {
-            p.UsePipeline(m_Stages[0].Pipeline);
             p.Read(source, RenderGraph::RGTextureRead::Sampled);
             p.Read(depth, RenderGraph::RGTextureRead::Sampled);
             p.Write(half, RenderGraph::RGTextureWrite::Storage);
@@ -222,11 +226,7 @@ void FidelityFXDofNode::DeclareForView(ViewDeclare& d)
     d.Frame.AddComputePass(
         d.PassName(".Tile").c_str(), PassPhase::kPostProcess,
         [&](RenderGraph::RGPassBuilder& p)
-        {
-            p.UsePipeline(m_Stages[1].Pipeline);
-                p.Read(half, RenderGraph::RGTextureRead::Sampled);
-                p.Write(tile, RenderGraph::RGTextureWrite::Storage);
-            },
+        { p.Read(half, RenderGraph::RGTextureRead::Sampled); p.Write(tile, RenderGraph::RGTextureWrite::Storage); },
         [this, half, tile, tileW, tileH](RenderGraph::RGContext& ctx)
         {
             auto* dev = ctx.GetDevice(); auto* cl = ctx.Cmd; if (!dev || !cl) return;
@@ -243,11 +243,7 @@ void FidelityFXDofNode::DeclareForView(ViewDeclare& d)
     d.Frame.AddComputePass(
         d.PassName(".Dilate").c_str(), PassPhase::kPostProcess,
         [&](RenderGraph::RGPassBuilder& p)
-        {
-            p.UsePipeline(m_Stages[2].Pipeline);
-                p.Read(tile, RenderGraph::RGTextureRead::Sampled);
-                p.Write(dilated, RenderGraph::RGTextureWrite::Storage);
-            },
+        { p.Read(tile, RenderGraph::RGTextureRead::Sampled); p.Write(dilated, RenderGraph::RGTextureWrite::Storage); },
         [this, tile, dilated, settings, tileGX, tileGY](RenderGraph::RGContext& ctx)
         {
             auto* dev = ctx.GetDevice(); auto* cl = ctx.Cmd; if (!dev || !cl) return;
@@ -266,11 +262,11 @@ void FidelityFXDofNode::DeclareForView(ViewDeclare& d)
         d.PassName(".Blur").c_str(), PassPhase::kPostProcess,
         [&](RenderGraph::RGPassBuilder& p)
         {
-            p.UsePipeline(m_Stages[3].Pipeline);
             p.Read(half, RenderGraph::RGTextureRead::Sampled); p.Read(dilated, RenderGraph::RGTextureRead::Sampled);
+            if (exposure.Graph.IsValid()) p.Read(exposure.Graph, RenderGraph::RGBufferRead::Storage);
             p.Write(nearField, RenderGraph::RGTextureWrite::Storage); p.Write(farField, RenderGraph::RGTextureWrite::Storage);
         },
-        [this, half, dilated, nearField, farField, settings, halfGX, halfGY](RenderGraph::RGContext& ctx)
+        [this, half, dilated, nearField, farField, exposure, settings, halfGX, halfGY](RenderGraph::RGContext& ctx)
         {
             auto* dev = ctx.GetDevice(); auto* cl = ctx.Cmd; if (!dev || !cl) return;
             const auto src = ctx.GetTexture(half), tiles = ctx.GetTexture(dilated), nearTex = ctx.GetTexture(nearField), farTex = ctx.GetTexture(farField);
@@ -278,7 +274,8 @@ void FidelityFXDofNode::DeclareForView(ViewDeclare& d)
             const auto& stage = m_Stages[3]; DescriptorSetDesc dd{}; dd.layout = stage.Set0; dd.transient = true; dd.debugName = "FidelityFXDoF.Blur.Set0";
             auto ds = dev->CreateDescriptorSet(dd); NamedDescriptorWriter wd(dev, ds, *stage.Meta, 0);
             wd.AddCombinedImageSampler("uHalfColorCoc", src, m_LinearSampler)
-              .AddCombinedImageSampler("uDilatedCoc", tiles, m_LinearSampler); wd.Flush();
+              .AddCombinedImageSampler("uDilatedCoc", tiles, m_LinearSampler)
+              .AddStorageBuffer("uExposure", exposure.Buffer, exposure.Offset, exposure.Size); wd.Flush();
             Detail::BindStorageImageByName(dev, ds, *stage.Meta, "uNearField", nearTex);
             Detail::BindStorageImageByName(dev, ds, *stage.Meta, "uFarField", farTex);
             auto pipe = ctx.GetOrCreatePipelineVariant(stage.Pipeline); if (!pipe.IsValid()) return;
@@ -291,7 +288,6 @@ void FidelityFXDofNode::DeclareForView(ViewDeclare& d)
         d.PassName(".Composite").c_str(), PassPhase::kPostProcess,
         [&](RenderGraph::RGPassBuilder& p)
         {
-            p.UsePipeline(m_Stages[4].Pipeline);
             p.Read(source, RenderGraph::RGTextureRead::Sampled); p.Read(depth, RenderGraph::RGTextureRead::Sampled);
             p.Read(nearField, RenderGraph::RGTextureRead::Sampled); p.Read(farField, RenderGraph::RGTextureRead::Sampled);
             if (exposure.Graph.IsValid()) p.Read(exposure.Graph, RenderGraph::RGBufferRead::Storage);

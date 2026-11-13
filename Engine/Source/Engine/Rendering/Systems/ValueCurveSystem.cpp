@@ -34,10 +34,10 @@ void ApplyCurveTargetValue(Components::ValueCurve& curve,
     {
         if (!transform)
             return;
-        Mathematics::Vector3 position = transform->GetPosition();
-        if (curve.Target == Components::ValueCurveTarget::TransformPositionX) position.x = value;
-        if (curve.Target == Components::ValueCurveTarget::TransformPositionY) position.y = value;
-        if (curve.Target == Components::ValueCurveTarget::TransformPositionZ) position.z = value;
+        Mathematics::WorldPosition position = transform->GetPosition();
+        if (curve.Target == Components::ValueCurveTarget::TransformPositionX) position.X = value;
+        if (curve.Target == Components::ValueCurveTarget::TransformPositionY) position.Y = value;
+        if (curve.Target == Components::ValueCurveTarget::TransformPositionZ) position.Z = value;
         *transform = Components::Transform::FromTRS(position, transform->GetRotation(), transform->GetScale());
         return;
     }
@@ -85,7 +85,7 @@ void ValueCurveSystem::Update(ECS::World& world, float32 deltaTime)
                        Components::Light* light,
                        Components::PostProcessVolume* postProcess)
     {
-        Components::ValueCurve& curve = curveRow.Mutable();
+        auto& curve = curveRow.Mutable();
         if (curve.Enabled && curve.Playing)
         {
             curve.ElapsedSeconds += deltaTime;

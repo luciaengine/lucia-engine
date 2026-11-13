@@ -56,8 +56,8 @@ TEST(TopToolbarIcons, OutlineArtworkUses24PixelsWithoutChangingHitAreas)
     {
         auto* button = toolbar->FindById(id);
         ASSERT_NE(button, nullptr);
-        button->Overrides().Set(Style::Width, StyleLength::Px(32));
-        button->Overrides().Set(Style::Height, StyleLength::Px(32));
+        button->Style().Set(Style::Width, StyleLength::Px(32));
+        button->Style().Set(Style::Height, StyleLength::Px(32));
     }
     host.Settle();
     for (const char* id : outlineIds)
@@ -128,7 +128,7 @@ TEST(TopToolbarIcons, PlayingTintSurvivesAClickAndClearsWhenPlayStops)
         "#PlayToolbarUnderTest { width: 1440px; height: 40px; }", *pose));
     host.Ui->AddStylesheet(pose);
     host.Settle();
-    auto* play = dynamic_cast<Button*>(toolbar->FindById("TopToolbarCenter4"));
+    auto* play = dynamic_cast<Button*>(toolbar->FindById("TopToolbarCenter4"_sid));
     ASSERT_NE(play, nullptr);
     ASSERT_TRUE(play->GetResolvedStyle().Visual.BackgroundImage.HasTint);
     const auto restingTint = play->GetResolvedStyle().Visual.BackgroundImage.Tint;

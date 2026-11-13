@@ -1,27 +1,27 @@
 #include "Engine/Rendering/RetargetGPUDataStore.h"
 
 #include "Animation/AnimationClip.h"
-#include "Animation/Compression/AnimationClipData.h"
-#include "Animation/HumanoidRig.h"
+#include "Animation/Humanoid/HumanoidRig.h"
 #include "Animation/Nodes/RetargetNode.h"
-#include "Animation/SkeletonData.h"
+#include "Animation/Skeleton/SkeletonData.h"
 #include "AssetCore/AssetEvents.h"
 #include "AssetCore/AssetTypes.h"
 #include "AssetCore/GUID.h"
 #include "Logger/Logger.h"
-#include "Memory/AllocationCategory.h"
+#include "Mathematics/Interpolation.h"
+#include "Memory/TrackedBytes.h"
 #include "Rendering/Core/Device.h"
 
 #include <algorithm>
-#include <bit>
-#include <array>
-#include <cmath>
 #include <cstring>
 
 namespace GameEngine { namespace Engine { namespace Renderer {
 
 namespace
 {
+
+// The resident bytes of every live store, summed: each store reports its own changes.
+Memory::TrackedBytes s_ResidentBytes{"Animation.RetargetGPUData", Memory::Residency::Gpu};
 
 // GUID -> 64-bit hash key for the per-asset upload tables. GUID is 128 bits;
 // folding to 64 with a multiplicative mix is collision-safe for our cardinality
@@ -78,20 +78,87 @@ inline uint32_t PushU32Packed(std::vector<uint32_t>& buf, Iter begin, Iter end)
     return firstVec4;
 }
 
-Mathematics::Quaternion SampleRotation(const Animation::AnimationClipData& data,
-    const Animation::AnimationClipData::Track& track, float time)
+// Slerp shortcut for pre-baking: pick the shorter great-circle path and
+// renormalize. Matches Animation::ShortLerpQuat used by CPU sampling.
+inline Mathematics::Quaternion ShortLerp(const Mathematics::Quaternion& a,
+                                          const Mathematics::Quaternion& b,
+                                          float t)
 {
-    Mathematics::Vector4 value;
-    return data.Sample(track, time, value)
-        ? Mathematics::Quaternion(value.w, value.x, value.y, value.z) : Mathematics::Quaternion::Identity();
+    const auto& ga = a.GetGLM();
+    auto gb = b.GetGLM();
+    if (glm::dot(ga, gb) < 0.0f) gb = -gb;
+    const glm::quat lerped(
+        ga.w + (gb.w - ga.w) * t,
+        ga.x + (gb.x - ga.x) * t,
+        ga.y + (gb.y - ga.y) * t,
+        ga.z + (gb.z - ga.z) * t);
+    return Mathematics::Quaternion(glm::normalize(lerped));
 }
 
-Mathematics::Vector3 SampleTranslation(const Animation::AnimationClipData& data,
-    const Animation::AnimationClipData::Track& track, float time)
+inline Mathematics::Vector3 LerpVec3(const Mathematics::Vector3& a,
+                                      const Mathematics::Vector3& b,
+                                      float t)
 {
-    Mathematics::Vector4 value;
-    return data.Sample(track, time, value) ? Mathematics::Vector3(value.x, value.y, value.z)
-        : Mathematics::Vector3();
+    return Mathematics::Vector3(
+        a.x + (b.x - a.x) * t,
+        a.y + (b.y - a.y) * t,
+        a.z + (b.z - a.z) * t);
+}
+
+// Sample a rotation channel at an arbitrary time. Mirrors the CPU clip
+// sampler's behavior: clamp at endpoints, linear-search lower-bound, slerp.
+Mathematics::Quaternion SampleRotation(const Animation::AnimChannel& ch, float time)
+{
+    if (ch.keys.empty()) return Mathematics::Quaternion::Identity();
+    if (ch.keys.size() == 1)
+    {
+        const auto& k = ch.keys.front();
+        return Mathematics::Quaternion(glm::quat(k.rotation[3], k.rotation[0], k.rotation[1], k.rotation[2]));
+    }
+    if (time <= ch.keys.front().time)
+    {
+        const auto& k = ch.keys.front();
+        return Mathematics::Quaternion(glm::quat(k.rotation[3], k.rotation[0], k.rotation[1], k.rotation[2]));
+    }
+    if (time >= ch.keys.back().time)
+    {
+        const auto& k = ch.keys.back();
+        return Mathematics::Quaternion(glm::quat(k.rotation[3], k.rotation[0], k.rotation[1], k.rotation[2]));
+    }
+    auto it = std::upper_bound(ch.keys.begin(), ch.keys.end(), time,
+        [](float t, const Animation::AnimKeyframe& k) { return t < k.time; });
+    const auto& hi = *it;
+    const auto& lo = *(it - 1);
+    const float dt = std::max(1e-6f, hi.time - lo.time);
+    const float a = Math::Clamp01((time - lo.time) / dt);
+    const Mathematics::Quaternion qLo(glm::quat(lo.rotation[3], lo.rotation[0], lo.rotation[1], lo.rotation[2]));
+    const Mathematics::Quaternion qHi(glm::quat(hi.rotation[3], hi.rotation[0], hi.rotation[1], hi.rotation[2]));
+    return ShortLerp(qLo, qHi, a);
+}
+
+Mathematics::Vector3 SampleTranslation(const Animation::AnimChannel& ch, float time)
+{
+    if (ch.keys.empty()) return Mathematics::Vector3(0,0,0);
+    if (ch.keys.size() == 1 || time <= ch.keys.front().time)
+    {
+        const auto& k = ch.keys.front();
+        return Mathematics::Vector3(k.translation[0], k.translation[1], k.translation[2]);
+    }
+    if (time >= ch.keys.back().time)
+    {
+        const auto& k = ch.keys.back();
+        return Mathematics::Vector3(k.translation[0], k.translation[1], k.translation[2]);
+    }
+    auto it = std::upper_bound(ch.keys.begin(), ch.keys.end(), time,
+        [](float t, const Animation::AnimKeyframe& k) { return t < k.time; });
+    const auto& hi = *it;
+    const auto& lo = *(it - 1);
+    const float dt = std::max(1e-6f, hi.time - lo.time);
+    const float a = Math::Clamp01((time - lo.time) / dt);
+    return LerpVec3(
+        Mathematics::Vector3(lo.translation[0], lo.translation[1], lo.translation[2]),
+        Mathematics::Vector3(hi.translation[0], hi.translation[1], hi.translation[2]),
+        a);
 }
 
 } // namespace
@@ -111,7 +178,7 @@ bool RetargetGPUDataStore::Initialize(GameEngine::Rendering::IDevice* device)
     m_RigBufCapacity = 0;
     m_CharsBufCapacity = 0;
 
-    UpdateCategoryBytes();
+    UpdateResidentBytes();
     return true;
 }
 
@@ -136,6 +203,11 @@ void RetargetGPUDataStore::ReprovisionAfterDeviceRebuild()
     FlushIfDirty();
 }
 
+RetargetGPUDataStore::~RetargetGPUDataStore()
+{
+    s_ResidentBytes.Subtract(m_ResidentBytes);
+}
+
 void RetargetGPUDataStore::Shutdown()
 {
     // Detach asset-event subscriptions before tearing buffers / tables down so
@@ -156,8 +228,7 @@ void RetargetGPUDataStore::Shutdown()
     m_ClipData.clear();
     m_RigData.clear();
     m_Chars.clear();
-    m_Clips.Clear();
-    m_NextClipSlot = 0u;
+    m_ClipGuidToHeaderIdx.clear();
     m_RigGuidToHeaderIdx.clear();
     m_ClipBufCapacity = 0;
     m_RigBufCapacity = 0;
@@ -166,7 +237,7 @@ void RetargetGPUDataStore::Shutdown()
     m_ActiveCharCount = 0;
     m_DispatchScheduledThisFrame = false;
     m_Device = nullptr;
-    UpdateCategoryBytes();
+    UpdateResidentBytes();
 }
 
 void RetargetGPUDataStore::BeginFrame(uint32_t /*frameIndex*/)
@@ -199,155 +270,152 @@ void RetargetGPUDataStore::BeginFrame(uint32_t /*frameIndex*/)
     m_Chars.clear();
     m_ActiveCharCount = 0;
     m_CharsDirty = true;
-    if (m_Clips.Empty())
-    {
-        std::vector<uint32_t>().swap(m_ClipData);
-        m_NextClipSlot = 0u;
-        if (m_Device && m_ClipBuf.IsValid())
-            m_Device->DestroyBuffer(m_ClipBuf);
-        m_ClipBuf = {};
-        m_ClipBufCapacity = 0u;
-        m_ClipDirty = false;
-        UpdateCategoryBytes();
-    }
-}
-
-bool RetargetGPUDataStore::PackClip(const UploadedClip& clip, std::vector<uint32_t>& words) const
-{
-    struct BoneTracks
-    {
-        const Animation::AnimationClipData::Track* Rotation = nullptr;
-        const Animation::AnimationClipData::Track* Translation = nullptr;
-    };
-    FlatMap<uint32, BoneTracks> bones;
-    for (const auto& track : clip.Data->Tracks())
-    {
-        if (track.Path != Animation::AnimPath::Rotation && track.Path != Animation::AnimPath::Translation)
-            continue;
-        constexpr uint32 kMaximumClipNodes = 1u << 20u;
-        if (track.BoneIndex >= kMaximumClipNodes)
-            return false;
-        auto& bone = bones.GetOrInsert(track.BoneIndex);
-        if (track.Path == Animation::AnimPath::Rotation && !bone.Rotation)
-            bone.Rotation = &track;
-        if (track.Path == Animation::AnimPath::Translation && !bone.Translation)
-            bone.Translation = &track;
-    }
-    if (bones.Empty() || !std::isfinite(clip.Duration) || clip.Duration < 0.0f)
-        return false;
-    const float duration = std::max(1.0f / kRetargetClipSampleRate, clip.Duration);
-    const double samples = std::max(2.0, std::ceil(static_cast<double>(duration) * kRetargetClipSampleRate) + 1.0);
-    uint32 translationCount = 0u;
-    for (const auto& entry : bones)
-        translationCount += entry.second.Translation ? 1u : 0u;
-    const size_t bindingLimit = m_Device->GetCapabilities().maxStorageBufferBindingSize;
-    const size_t maximumBytes = bindingLimit != 0u ? bindingLimit : 256u * 1024u * 1024u;
-    const size_t sampleStride = bones.Size() + translationCount;
-    const double requiredBytes = static_cast<double>(words.size() * sizeof(uint32_t)) +
-        bones.Size() * sizeof(GPURetargetClipBoneRec) + samples * sampleStride * 16u;
-    if (requiredBytes > maximumBytes || samples > UINT32_MAX)
-        return false;
-    const uint32 sampleCount = static_cast<uint32>(samples);
-    GPURetargetClipHeader header{};
-    header.firstBoneVec4 = static_cast<uint32>(words.size() / 4u);
-    header.firstSampleVec4 = header.firstBoneVec4 + static_cast<uint32>(bones.Size());
-    header.boneCount = static_cast<uint32>(bones.Size());
-    header.transCount = translationCount;
-    header.sampleCount = sampleCount;
-    header.duration = duration;
-    uint32 boneSlot = 0u;
-    uint32 translationSlot = 0u;
-    for (const auto& [boneIndex, tracks] : bones)
-    {
-        const GPURetargetClipBoneRec record{boneIndex, boneSlot++,
-            tracks.Translation ? translationSlot++ : kRetargetInvalidIndex, 0u};
-        const auto packed = std::bit_cast<std::array<uint32, 4u>>(record);
-        words.insert(words.end(), packed.begin(), packed.end());
-    }
-    for (uint32 sample = 0u; sample < sampleCount; ++sample)
-    {
-        const float time = static_cast<float>(sample) / kRetargetClipSampleRate;
-        for (const auto& entry : bones)
-        {
-            const auto* track = entry.second.Rotation;
-            PushQuat(words, track ? SampleRotation(*clip.Data, *track, time) : Mathematics::Quaternion::Identity());
-        }
-        for (const auto& entry : bones)
-        {
-            if (const auto* track = entry.second.Translation)
-                PushVec3AsVec4(words, SampleTranslation(*clip.Data, *track, time));
-        }
-    }
-    const auto packed = std::bit_cast<std::array<uint32, 8u>>(header);
-    std::copy(packed.begin(), packed.end(), words.begin() + static_cast<size_t>(clip.Slot) * packed.size());
-    return true;
-}
-
-bool RetargetGPUDataStore::UploadClipData(const std::vector<uint32_t>& words)
-{
-    GameEngine::Rendering::BufferDesc description{};
-    description.size = std::max<size_t>(words.size() * sizeof(uint32_t), 16u);
-    description.usage = static_cast<uint32_t>(GameEngine::Rendering::BufferUsage::Storage |
-        GameEngine::Rendering::BufferUsage::TransferDst);
-    description.memoryUsage = GameEngine::Rendering::BufferMemoryUsage::Upload;
-    description.flags = GameEngine::Rendering::BufferCreateFlags::PersistentlyMapped;
-    description.persistent = true;
-    description.debugName = "RetargetClipBuf";
-    const auto buffer = m_Device->CreateBuffer(description);
-    if (!buffer.IsValid())
-        return false;
-    void* mapped = m_Device->MapBuffer(buffer);
-    if (!mapped)
-    {
-        m_Device->DestroyBuffer(buffer);
-        return false;
-    }
-    m_Device->UnmapBuffer(buffer);
-    if (!words.empty())
-        m_Device->UpdateBuffer(buffer, 0u, words.size() * sizeof(uint32_t), words.data());
-    const auto previous = m_ClipBuf;
-    m_ClipBuf = buffer;
-    m_ClipBufCapacity = description.size;
-    if (previous.IsValid())
-        m_Device->DestroyBuffer(previous);
-    return true;
 }
 
 uint32_t RetargetGPUDataStore::EnsureClipUploaded(const GUID& guid, const Animation::AnimationClip& clip)
 {
-    if (!m_Device)
-        return kRetargetInvalidIndex;
-    const auto data = clip.GetRuntimeData();
-    if (!data)
-        return kRetargetInvalidIndex;
-    const uint64 key = PackGuid(guid);
-    const auto* previous = m_Clips.Find(key);
-    if (previous && previous->Data == data && previous->Duration == clip.GetDuration() && m_ClipBuf.IsValid())
-        return previous->Slot;
-    const uint32 slot = previous ? previous->Slot : m_NextClipSlot;
-    constexpr size_t kHeaderWords = sizeof(GPURetargetClipHeader) / sizeof(uint32_t);
-    const size_t slotCount = std::max<size_t>(m_NextClipSlot, static_cast<size_t>(slot) + 1u);
-    const size_t bindingLimit = m_Device->GetCapabilities().maxStorageBufferBindingSize;
-    if (slotCount > UINT32_MAX / kHeaderWords ||
-        (bindingLimit != 0u && slotCount * sizeof(GPURetargetClipHeader) > bindingLimit))
-        return kRetargetInvalidIndex;
-    auto candidates = m_Clips;
-    candidates.InsertOrAssign(key, UploadedClip{slot, clip.GetDuration(), data});
-    // Logical header slots stay fixed while every payload offset is rebuilt.
-    std::vector<uint32_t> words(slotCount * kHeaderWords, 0u);
-    for (const auto& entry : candidates)
+    const uint64_t key = PackGuid(guid);
+    if (auto it = m_ClipGuidToHeaderIdx.find(key); it != m_ClipGuidToHeaderIdx.end())
+        return it->second;
+
+    const auto& channels = clip.GetChannels();
+    if (channels.empty()) return kRetargetInvalidIndex;
+
+    // Group channels by source-skeleton bone index; stash the rotation +
+    // translation channels each bone has. The clip's `boneIndex` is the
+    // source-skeleton index the channel targets.
+    struct BoneChannels {
+        const Animation::AnimChannel* rot = nullptr;
+        const Animation::AnimChannel* trans = nullptr;
+    };
+    std::unordered_map<uint32_t, BoneChannels> byBone;
+    for (const auto& ch : channels)
     {
-        if (!PackClip(entry.second, words))
-            return kRetargetInvalidIndex;
+        auto& slot = byBone[ch.boneIndex];
+        if (ch.path == Animation::AnimPath::Rotation && !slot.rot) slot.rot = &ch;
+        else if (ch.path == Animation::AnimPath::Translation && !slot.trans) slot.trans = &ch;
+        // Scale channels are ignored for retarget — humanoid animation never
+        // uses them at runtime; the rest scale carries through unchanged.
     }
-    if (!UploadClipData(words))
-        return kRetargetInvalidIndex;
-    m_Clips = std::move(candidates);
-    m_NextClipSlot = static_cast<uint32>(slotCount);
-    m_ClipData = std::move(words);
-    m_ClipDirty = false;
-    UpdateCategoryBytes();
-    return slot;
+    if (byBone.empty()) return kRetargetInvalidIndex;
+
+    const float duration = std::max(1.0f / kRetargetClipSampleRate, clip.GetDuration());
+    const uint32_t sampleCount = std::max<uint32_t>(2u,
+        static_cast<uint32_t>(std::ceil(duration * kRetargetClipSampleRate)) + 1u);
+
+    // Layout: [GPURetargetClipHeader (8 uints)] [GPURetargetClipBoneRec[N] (4 uints each)]
+    //         [vec4 sample stream: rot+trans interleaved per sample, all bones contiguous]
+    //
+    // The shader treats the ENTIRE clip buffer as a vec4[] flat array;
+    // offsets stored in headers/records are vec4 indices.
+
+    // Reserve header.
+    constexpr uint32_t kHeaderVec4Size = sizeof(GPURetargetClipHeader) / 16; // 32B = 2 vec4
+    constexpr uint32_t kBoneRecVec4Size = sizeof(GPURetargetClipBoneRec) / 16; // 16B = 1 vec4
+    static_assert(sizeof(GPURetargetClipHeader) == 32 && sizeof(GPURetargetClipBoneRec) == 16);
+
+    const uint32_t headerVec4Off = static_cast<uint32_t>(m_ClipData.size() / 4);
+    const uint32_t boneCount = static_cast<uint32_t>(byBone.size());
+
+    // SAMPLE-MAJOR layout: all rotations for sample 0 across bones,
+    // then all translations for sample 0 (hip-only — see channelMask), then
+    // sample 1, ..., for cache-friendly parallel sampling. The shader's
+    // Phase 1b loop has each thread handle a different bone at the same
+    // clipTime; sample-major puts those reads on adjacent vec4 slots so
+    // a single warp's reads coalesce into one cache line.
+    //
+    // Layout per sample stride:
+    //   [bone0.rot, bone1.rot, ..., boneN-1.rot]                   (N vec4)
+    //   [hipBone.trans] only if any bone has translation channel    (0 or 1 vec4)
+    // Total per sample = N + transBoneCount vec4. Since only the hip
+    // typically has translation, transBoneCount is 0 or 1 in practice.
+    //
+    // bone-rec carries (boneIndex, slotIndexWithinSampleStride) where the
+    // slot index is the bone's position in the per-sample rotation block,
+    // and channelMask carries whether that bone also writes a translation
+    // slot in this clip's translation block.
+
+    // Sort bones for deterministic ordering.
+    std::vector<uint32_t> boneIndices;
+    boneIndices.reserve(boneCount);
+    for (const auto& kv : byBone) boneIndices.push_back(kv.first);
+    std::sort(boneIndices.begin(), boneIndices.end());
+
+    // Identify translation bones (subset of boneIndices). Per the v3 plan
+    // (§5 retarget_full.comp Phase 3) only the hip's translation is
+    // consumed, but we keep the layout flexible: any bone whose channel
+    // pair has a translation channel gets a slot.
+    std::vector<uint32_t> transBoneIndices; // boneIdx values that have trans channel
+    transBoneIndices.reserve(boneCount);
+    for (uint32_t bi : boneIndices)
+        if (byBone[bi].trans) transBoneIndices.push_back(bi);
+    const uint32_t transCount = static_cast<uint32_t>(transBoneIndices.size());
+
+    const uint32_t sampleStrideVec4 = boneCount + transCount;
+    const uint32_t firstSampleVec4Block = headerVec4Off + kHeaderVec4Size + boneCount * kBoneRecVec4Size;
+
+    m_ClipData.reserve(m_ClipData.size() + (kHeaderVec4Size + boneCount * kBoneRecVec4Size + sampleStrideVec4 * sampleCount) * 4);
+
+    // Header. Backfilled after — for now reserve the slot.
+    GPURetargetClipHeader hdr{};
+    hdr.firstSampleVec4 = firstSampleVec4Block;
+    hdr.sampleCount     = sampleCount;
+    hdr.boneCount       = boneCount;
+    hdr.duration        = duration;
+    hdr.firstBoneVec4   = headerVec4Off + kHeaderVec4Size;
+    hdr.transCount      = transCount;
+    for (uint32_t i = 0; i < kHeaderVec4Size * 4; ++i) m_ClipData.push_back(0);
+
+    // Bone records. boneSlot identifies the bone's position in the
+    // per-sample rotation block; transSlot points into the translation
+    // block (kRetargetInvalidIndex if no translation channel for this bone).
+    std::unordered_map<uint32_t, uint32_t> transSlotByBone;
+    for (uint32_t i = 0; i < transCount; ++i)
+        transSlotByBone[transBoneIndices[i]] = i;
+    for (uint32_t bi = 0; bi < boneCount; ++bi)
+    {
+        const uint32_t boneIdx = boneIndices[bi];
+        GPURetargetClipBoneRec rec{};
+        rec.boneIndex   = boneIdx;
+        rec.boneSlot    = bi;
+        auto it = transSlotByBone.find(boneIdx);
+        rec.transSlot   = (it != transSlotByBone.end()) ? it->second : kRetargetInvalidIndex;
+        for (uint32_t i = 0; i < kBoneRecVec4Size * 4; ++i)
+            m_ClipData.push_back(reinterpret_cast<const uint32_t*>(&rec)[i]);
+    }
+
+    // Sample stream — sample-major. For each uniform-time sample s:
+    //   write boneCount rotation vec4s in boneIndices[] order,
+    //   followed by transCount translation vec4s in transBoneIndices[] order.
+    for (uint32_t s = 0; s < sampleCount; ++s)
+    {
+        const float t = static_cast<float>(s) / kRetargetClipSampleRate;
+        for (uint32_t bi = 0; bi < boneCount; ++bi)
+        {
+            const auto& chans = byBone[boneIndices[bi]];
+            const Mathematics::Quaternion rot =
+                chans.rot ? SampleRotation(*chans.rot, t) : Mathematics::Quaternion::Identity();
+            PushQuat(m_ClipData, rot);
+        }
+        for (uint32_t ti = 0; ti < transCount; ++ti)
+        {
+            const auto& chans = byBone[transBoneIndices[ti]];
+            const Mathematics::Vector3 trans =
+                chans.trans ? SampleTranslation(*chans.trans, t) : Mathematics::Vector3(0,0,0);
+            PushVec3AsVec4(m_ClipData, trans);
+        }
+    }
+
+    // Backfill the header into the reserved slot.
+    std::memcpy(m_ClipData.data() + headerVec4Off * 4, &hdr, sizeof(hdr));
+
+    // Index returned to the caller is the vec4 offset of the header in
+    // clipBuf — the shader fetches the header struct via two vec4 loads at
+    // [clipHeaderIdx + 0] and [clipHeaderIdx + 1].
+    m_ClipGuidToHeaderIdx[key] = headerVec4Off;
+    m_ClipDirty = true;
+    UpdateResidentBytes();
+    return headerVec4Off;
 }
 
 uint32_t RetargetGPUDataStore::EnsureRigPairUploaded(const GUID& mapGuid,
@@ -364,11 +432,11 @@ uint32_t RetargetGPUDataStore::EnsureRigPairUploaded(const GUID& mapGuid,
     built.ExportForGPU(ex);
     if (ex.SourceBoneCount == 0 || ex.TargetBoneCount == 0) return kRetargetInvalidIndex;
 
-    // Header reservation. GPURigPairHeader is 80 bytes = 5 vec4. We push it
+    // Header reservation. GPURigPairHeader is 96 bytes = 6 vec4. We push it
     // last (after data is written and we know all the offsets), so reserve
     // the slot first by inserting placeholder zeros.
     constexpr uint32_t kHeaderVec4Size = sizeof(GPURigPairHeader) / 16;
-    static_assert(sizeof(GPURigPairHeader) == 80);
+    static_assert(sizeof(GPURigPairHeader) == 96);
     const uint32_t headerVec4Off = static_cast<uint32_t>(m_RigData.size() / 4);
     for (uint32_t i = 0; i < kHeaderVec4Size * 4; ++i) m_RigData.push_back(0);
 
@@ -410,6 +478,10 @@ uint32_t RetargetGPUDataStore::EnsureRigPairUploaded(const GUID& mapGuid,
         const uint32_t restPosOff = static_cast<uint32_t>(m_RigData.size() / 4);
         for (const auto& v : ex.TargetRestPos) PushVec3AsVec4(m_RigData, v);
         hdr.tgtRestPos = restPosOff;
+
+        const uint32_t restScaleOff = static_cast<uint32_t>(m_RigData.size() / 4);
+        for (const auto& v : ex.TargetRestScale) PushVec3AsVec4(m_RigData, v);
+        hdr.tgtRestScale = restScaleOff;
     }
 
     // Per-target-bone canonical routing.
@@ -509,14 +581,14 @@ uint32_t RetargetGPUDataStore::EnsureRigPairUploaded(const GUID& mapGuid,
 
     m_RigGuidToHeaderIdx[key] = headerVec4Off;
     m_RigDirty = true;
-    UpdateCategoryBytes();
+    UpdateResidentBytes();
     return headerVec4Off;
 }
 
 uint32_t RetargetGPUDataStore::ResolveClipIdx(const GUID& guid) const
 {
-    const auto* clip = m_Clips.Find(PackGuid(guid));
-    return clip ? clip->Slot : kRetargetInvalidIndex;
+    auto it = m_ClipGuidToHeaderIdx.find(PackGuid(guid));
+    return (it != m_ClipGuidToHeaderIdx.end()) ? it->second : kRetargetInvalidIndex;
 }
 
 uint32_t RetargetGPUDataStore::ResolveRigPairIdx(const GUID& mapGuid) const
@@ -527,9 +599,10 @@ uint32_t RetargetGPUDataStore::ResolveRigPairIdx(const GUID& mapGuid) const
 
 void RetargetGPUDataStore::ReleaseClip(const GUID& guid)
 {
-    m_Clips.Erase(PackGuid(guid));
-    // A later upload rebuilds the live payloads. Keep logical slots fixed for
-    // character parameters already assembled in this frame.
+    m_ClipGuidToHeaderIdx.erase(PackGuid(guid));
+    // The clip's bytes stay in m_ClipData until reuploaded — a future free-
+    // list could reclaim them. Phase 1 accepts the small leak; clip uploads
+    // happen at asset-load time, not per frame.
 }
 
 void RetargetGPUDataStore::ReleaseRigPair(const GUID& mapGuid)
@@ -571,7 +644,7 @@ void RetargetGPUDataStore::AppendCharacterParams(std::span<const GPURetargetChar
     m_Chars.insert(m_Chars.end(), params.begin(), params.end());
     m_ActiveCharCount = static_cast<uint32_t>(m_Chars.size());
     m_CharsDirty = true;
-    UpdateCategoryBytes();
+    UpdateResidentBytes();
 }
 
 GameEngine::Rendering::BufferHandle RetargetGPUDataStore::CreateOrGrowBuffer(
@@ -621,8 +694,14 @@ void RetargetGPUDataStore::FlushIfDirty()
 {
     if (!m_Device) return;
 
-    if (m_ClipDirty && UploadClipData(m_ClipData))
+    if (m_ClipDirty)
+    {
+        const size_t bytes = m_ClipData.size() * sizeof(uint32_t);
+        m_ClipBuf = CreateOrGrowBuffer(m_ClipBuf, m_ClipBufCapacity, bytes, "RetargetClipBuf");
+        if (m_ClipBuf.IsValid() && bytes > 0)
+            m_Device->UpdateBuffer(m_ClipBuf, 0, bytes, m_ClipData.data());
         m_ClipDirty = false;
+    }
 
     if (m_RigDirty)
     {
@@ -642,15 +721,11 @@ void RetargetGPUDataStore::FlushIfDirty()
         m_CharsDirty = false;
     }
 
-    UpdateCategoryBytes();
+    UpdateResidentBytes();
 }
 
-void RetargetGPUDataStore::UpdateCategoryBytes()
+void RetargetGPUDataStore::UpdateResidentBytes()
 {
-    using ::GameEngine::Memory::AllocationCategory;
-    using ::GameEngine::Memory::TrackAllocation;
-    using ::GameEngine::Memory::TrackDeallocation;
-
     const uint64_t cpuBytes =
         m_ClipData.size() * sizeof(uint32_t)
       + m_RigData.size() * sizeof(uint32_t)
@@ -662,9 +737,9 @@ void RetargetGPUDataStore::UpdateCategoryBytes()
     const uint64_t newBytes = std::max(cpuBytes, devBytes);
 
     if (newBytes > m_ResidentBytes)
-        TrackAllocation(AllocationCategory::Animation, newBytes - m_ResidentBytes);
+        s_ResidentBytes.Add(newBytes - m_ResidentBytes);
     else if (newBytes < m_ResidentBytes)
-        TrackDeallocation(AllocationCategory::Animation, m_ResidentBytes - newBytes);
+        s_ResidentBytes.Subtract(m_ResidentBytes - newBytes);
     m_ResidentBytes = newBytes;
 }
 

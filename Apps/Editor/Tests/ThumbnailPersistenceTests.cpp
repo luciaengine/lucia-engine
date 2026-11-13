@@ -3,7 +3,7 @@
 // registry and job host are deterministic substitutes; no copy of the slot loop
 // or persistence implementation lives here. Reintroducing its whole-sweep return
 // must fail this test. This is not a live GPU/orbit integration test.
-#include "Thumbnails/ModelThumbnailCachePolicy.h"
+#include "Thumbnails/ModelThumbnail/ModelThumbnailCachePolicy.h"
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <chrono>

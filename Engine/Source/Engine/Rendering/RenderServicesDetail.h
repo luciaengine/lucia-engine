@@ -10,8 +10,10 @@
 #include "Engine/Rendering/ShadowFrameInfo.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/Vector3.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/CommandList.h"
+#include "Rendering/Common/Frustum.h"
+#include "Rendering/Core/CullingStrategy.h"
 
 #include <array>
 #include <optional>
@@ -63,6 +65,46 @@ class DrawGeometryBindings
 
 // 4x4 identity matrix for fallback transforms and camera UBOs.
 static const Mathematics::Matrix4x4 kIdentity4x4 = Mathematics::Matrix4x4::Identity();
+
+// One light's shadow slice of a view: the light's frustum and the slice's cull key.
+struct ShadowSliceFrustum
+{
+    uint8_t CascadeIndex = Rendering::kCullingCascadeIndexNone;
+    Mathematics::Matrix4x4 ViewMatrix;
+    Mathematics::Matrix4x4 ProjMatrix;
+    Mathematics::Matrix4x4 ViewProjMatrix;
+    Mathematics::Vector3 Position;
+    Mathematics::Vector3 Forward;
+    float NearPlane = 0.1f;
+    float FarPlane = 1000.0f;
+};
+
+// The culling context of a light's shadow slice (area, spot, a point-light face): the light's
+// frustum, and from the view's own context its id, candidate count, layers, Scene View eye bit,
+// frame, pipeline and scene. The slice culls in world space, from instance 0.
+inline Rendering::ViewCullingContext MakeShadowSliceCullingContext(const Rendering::ViewCullingContext& view,
+                                                                   const ShadowSliceFrustum& slice)
+{
+    Rendering::ViewCullingContext ctx{};
+    ctx.Id = view.Id;
+    ctx.CascadeIndex = slice.CascadeIndex;
+    ctx.ViewMatrix = slice.ViewMatrix;
+    ctx.ProjMatrix = slice.ProjMatrix;
+    ctx.ViewProjMatrix = slice.ViewProjMatrix;
+    Rendering::ExtractFrustumPlanes(slice.ViewProjMatrix, ctx.FrustumPlanes);
+    ctx.CameraForward = slice.Forward;
+    ctx.NearPlane = slice.NearPlane;
+    ctx.FarPlane = slice.FarPlane;
+    ctx.FirstInstance = 0;
+    ctx.InstanceCount = view.InstanceCount;
+    ctx.Layers = view.Layers;
+    ctx.DropEditorHidden = view.DropEditorHidden;
+    ctx.FrameIndex = view.FrameIndex;
+    ctx.DeltaTime = view.DeltaTime;
+    ctx.CullingPipeline = view.CullingPipeline;
+    ctx.Scene = view.Scene;
+    return ctx;
+}
 
 inline constexpr uint8_t kAreaShadowCullingIndex = 0xFEu;
 inline constexpr uint8_t kSpotShadowCullingIndex = 0xFDu;
@@ -153,7 +195,7 @@ SpotShadowFrameInfo BuildSpotShadowFrameInfo(std::span<const ExtractedLight> lig
 // (the atlas planner owns those). When `cull` is non-null the light is rejected
 // if its range sphere is off-screen; null keeps every face. Called per candidate
 // by RenderServices::EnsurePointShadowAssignment.
-void PopulatePointShadowGeometry(PointShadowFrameInfo& out, const Mathematics::Vector3& positionWS,
+void PopulatePointShadowGeometry(PointShadowFrameInfo& out, const Mathematics::WorldPosition& positionWS,
                                  float range, uint32_t tier, uint32_t packedLightIndex,
                                  const PointShadowCameraCull* cull);
 
@@ -168,7 +210,7 @@ float PointShadowScreenCoverageRadiusPx(const ::GameEngine::Rendering::CameraDat
 // scheduler feed PopulatePointShadowGeometry identical data (design A10, no drift).
 // Returns nullopt for a degenerate camera (thumbnail before its first update).
 std::optional<PointShadowCameraCull> MakePointShadowCullInputs(
-    const ::GameEngine::Rendering::CameraData& camData);
+    const ::GameEngine::Rendering::CameraData& camData, const ::GameEngine::Rendering::CameraRanges& ranges);
 
 // Mesh-draw skip/issue diagnostics: append to the shared recent-diagnostics ring
 // (surfaced by RenderServices::GetRecentMeshDrawDiagnostics and DebugMetrics).

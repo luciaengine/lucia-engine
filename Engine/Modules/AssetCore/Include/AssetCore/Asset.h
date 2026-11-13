@@ -1,10 +1,12 @@
 #pragma once
 
-#include "AssetCore/Types.h"
 #include "AssetCore/GUID.h"
 #include "AssetCore/AssetTypes.h"
 #include "AssetCore/AssetTypeId.h"
+#include "Types/Types.h"
+#include <atomic>
 #include <filesystem>
+#include <span>
 #include <utility>
 
 namespace GameEngine {
@@ -71,7 +73,8 @@ public:
 
     /**
      * @brief Get asset file path
-     * @return The file path to this asset
+     * @return The file path to this asset, in the registry's normalized form: case-folded on
+     * case-insensitive volumes, so it is a lookup key, not text to show. Show GetName().
      */
     const std::filesystem::path& GetPath() const { return m_Path; }
 
@@ -79,17 +82,19 @@ public:
      * @brief Get asset loading state
      * @return The current loading state of this asset
      */
-    AssetState GetState() const { return m_State; }
+    AssetState GetState() const { return m_State.load(std::memory_order_relaxed); }
 
     /**
      * @brief Get asset name (filename without extension)
-     * @return The name of the asset derived from its file path
+     * @return The file's name as it is spelled on disk (the registry's AssetMetadata::Name) for an
+     * asset the AssetManager created; the stem of GetPath() for one built without it.
      */
     String GetName() const;
 
     /**
      * @brief Get file extension
-     * @return The file extension of the asset
+     * @return The file extension of the asset, read from GetPath(), so case-folded like it on
+     * case-insensitive volumes (Warm.CUBE gives ".cube")
      */
     String GetExtension() const;
 
@@ -116,7 +121,7 @@ public:
      * @param data The raw data to load from
      * @return true if loading was successful, false otherwise
      */
-    virtual bool LoadFromData(const Vector<uint8>& data) = 0;
+    virtual bool LoadFromData(std::span<const uint8> data) = 0;
 
     /**
      * @brief Unload asset from memory
@@ -201,19 +206,19 @@ public:
      * @brief Check if asset is loaded
      * @return true if the asset is in the Loaded state
      */
-    bool IsLoaded() const { return m_State == AssetState::Loaded; }
+    bool IsLoaded() const { return GetState() == AssetState::Loaded; }
 
     /**
      * @brief Check if asset is loading
      * @return true if the asset is in the Loading state
      */
-    bool IsLoading() const { return m_State == AssetState::Loading; }
+    bool IsLoading() const { return GetState() == AssetState::Loading; }
 
     /**
      * @brief Check if asset failed to load
      * @return true if the asset is in the Failed state
      */
-    bool HasFailed() const { return m_State == AssetState::Failed; }
+    bool HasFailed() const { return GetState() == AssetState::Failed; }
 
 protected:
     /**
@@ -229,7 +234,7 @@ protected:
      *
      * @return true when the asset now holds the payload of `data`.
      */
-    virtual bool ReloadFromData(const Vector<uint8>& data);
+    virtual bool ReloadFromData(std::span<const uint8> data);
 
     /**
      * @brief Type-specific payload adoption for AdoptReload: swap the decoded
@@ -244,7 +249,7 @@ protected:
      * @brief Set the loading state of the asset
      * @param state The new state to set
      */
-    void SetState(AssetState state) { m_State = state; }
+    void SetState(AssetState state) { m_State.store(state, std::memory_order_relaxed); }
 
     /**
      * @brief Update the last modified time cache
@@ -258,13 +263,18 @@ private:
      */
     friend class AssetManager;
     void SetPath(std::filesystem::path path) { m_Path = std::move(path); }
+    /** The file's spelling, from the registry. Set where the path is set, by the AssetManager. */
+    void SetName(String name) { m_Name = std::move(name); }
 
     GUID m_Guid;                                                    ///< Unique identifier
     AssetType m_Type;                                              ///< Asset type
     AssetTypeId m_TypeId = 0;                                      ///< Programmable type id hash
     String m_TypeIdString;                                         ///< Programmable type id string
     std::filesystem::path m_Path;                                  ///< File path
-    AssetState m_State;                                            ///< Loading state
+    String m_Name;                                                 ///< File name as spelled; empty = the path's stem
+    // Relaxed atomic: a script reads IsLoaded from any thread while a loader thread sets it.
+    // It orders nothing; what a loaded asset holds is published by its own synchronization.
+    std::atomic<AssetState> m_State;                               ///< Loading state
     mutable std::filesystem::file_time_type m_LastChecked;        ///< Last time we checked for modifications
     mutable std::filesystem::file_time_type m_LastModified;       ///< Last modification time of the file
 

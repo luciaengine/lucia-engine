@@ -5,7 +5,7 @@
 
 #include "Assets/AssetManager.h"
 #include "Assets/AssetRegistry.h"
-#include "Core/Application.h"
+#include "Core/ApplicationPaths.h"
 #include "Input/InputSystem.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "UI/Controls/Button.h"
@@ -21,8 +21,6 @@
 #include "UI/UIEvents.h"
 #include "UI/UIManager.h"
 
-#include "TestTempDir.h"
-
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -37,7 +35,7 @@ namespace
 
 std::string ReadStagedSheet(const char* relative)
 {
-    std::ifstream in(PathUtils::GetExecutableDirectory() / "Assets" / "UI" / relative, std::ios::binary);
+    std::ifstream in(ApplicationPaths::GetExecutableDirectory() / "Assets" / "UI" / relative, std::ios::binary);
     if (!in)
         return {};
     std::ostringstream ss;
@@ -64,8 +62,11 @@ public:
         UIRegistration::RegisterBuiltInControls();
 
         namespace fs = std::filesystem;
-        const fs::path assetRoot = PathUtils::GetExecutableDirectory() / "Assets";
-        const fs::path& scratch = m_ScratchDirectory.Path();
+        const fs::path assetRoot = ApplicationPaths::GetExecutableDirectory() / "Assets";
+        const fs::path scratch = fs::temp_directory_path() / "ui_floating_panel_tests";
+        std::error_code ec;
+        fs::remove_all(scratch, ec);
+        fs::create_directories(scratch, ec);
 
         m_Pool = std::make_unique<JobSystem::WorkStealingThreadPool>(2);
         if (!m_Assets.Initialize(assetRoot, m_Pool.get(), scratch / "AssetDatabase.assetdb",
@@ -134,10 +135,9 @@ public:
     }
 
 private:
+    // First member: destroyed last, after this fixture's UIManager released its buffers.
+    SharedDeviceReleaseRetirement m_ReleaseRetirement;
     Rendering::IDevice* m_Device = nullptr;
-    // Holds the asset database and its cache; declared before the pool and the asset manager so
-    // it outlives both.
-    TestUtils::ScopedTempDir m_ScratchDirectory{TestUtils::MakeUniqueTempDirectory("ui_floating_panel_tests")};
     std::unique_ptr<JobSystem::WorkStealingThreadPool> m_Pool;
     AssetManager m_Assets;
     std::unique_ptr<UiRgHarness> m_Rg;
@@ -188,17 +188,17 @@ TEST(FloatingPanelTests, ShowUsesDockMountIdBeforeAndAfterChrome)
     FloatingPanel bare;
     UIElement panel;
     bare.Show("SceneView", &panel, "Scene View", 0.0f, 0.0f, 400.0f, 300.0f);
-    ASSERT_NE(bare.FindById("mount:SceneView"), nullptr);
+    ASSERT_NE(bare.FindById("mount:SceneView"_sid), nullptr);
     bare.Hide();
-    EXPECT_EQ(bare.FindById("mount:SceneView"), nullptr);
+    EXPECT_EQ(bare.FindById("mount:SceneView"_sid), nullptr);
 
     FLOATING_PANEL_CHROME_FIXTURE(fx);
     FloatingPanel* frame = fx.AddFrame();
     frame->Show("SceneView", &panel, "Scene View", 0.0f, 0.0f, 400.0f, 300.0f);
     fx.Settle();
-    UIElement* mount = frame->FindById("mount:SceneView");
+    UIElement* mount = frame->FindById("mount:SceneView"_sid);
     ASSERT_NE(mount, nullptr);
-    UIElement* body = frame->FindById("floating-panel-body");
+    UIElement* body = frame->FindById("floating-panel-body"_sid);
     ASSERT_NE(body, nullptr);
     EXPECT_EQ(mount->GetParent(), body);
     EXPECT_EQ(frame->GetMountedPanel(), &panel);
@@ -209,16 +209,16 @@ TEST(FloatingPanelTests, ChromeComesFromTheLayoutAsset)
     UIElement panel;
     FLOATING_PANEL_CHROME_FIXTURE(fx);
     FloatingPanel* frame = fx.AddFrame();
-    EXPECT_EQ(frame->FindById("floating-panel-titlebar"), nullptr);
+    EXPECT_EQ(frame->FindById("floating-panel-titlebar"_sid), nullptr);
     fx.Settle();
 
-    UIElement* titleBar = frame->FindById("floating-panel-titlebar");
+    UIElement* titleBar = frame->FindById("floating-panel-titlebar"_sid);
     ASSERT_NE(titleBar, nullptr);
     EXPECT_TRUE(titleBar->HasClass("floating-panel-titlebar"));
-    ASSERT_NE(dynamic_cast<Label*>(frame->FindById("floating-panel-title")), nullptr);
-    ASSERT_NE(dynamic_cast<Button*>(frame->FindById("floating-panel-close")), nullptr);
-    ASSERT_NE(frame->FindById("floating-panel-body"), nullptr);
-    ASSERT_NE(frame->FindById("floating-panel-resize"), nullptr);
+    ASSERT_NE(dynamic_cast<Label*>(frame->FindById("floating-panel-title"_sid)), nullptr);
+    ASSERT_NE(dynamic_cast<Button*>(frame->FindById("floating-panel-close"_sid)), nullptr);
+    ASSERT_NE(frame->FindById("floating-panel-body"_sid), nullptr);
+    ASSERT_NE(frame->FindById("floating-panel-resize"_sid), nullptr);
 
     // A frame is display:none until Show(); only a shown frame gets a layout.
     // The frame's own sheet reached the subtree: the title bar has its height.
@@ -242,12 +242,12 @@ TEST(FloatingPanelTests, ShowCopiesDockPanelTabIcon)
     frame->Show("Inspector", &panel, "Inspector", 0.0f, 0.0f, 400.0f, 300.0f);
     fx.Settle();
 
-    UIElement* icon = frame->FindById("floating-panel-icon");
+    UIElement* icon = frame->FindById("floating-panel-icon"_sid);
     ASSERT_NE(icon, nullptr);
     EXPECT_TRUE(icon->HasClass("dock-tab-icon"));
     EXPECT_TRUE(icon->HasClass("dock-inspector-icon"));
     EXPECT_FALSE(icon->HasClass("floating-panel-icon-hidden"));
-    auto* title = dynamic_cast<Label*>(frame->FindById("floating-panel-title"));
+    auto* title = dynamic_cast<Label*>(frame->FindById("floating-panel-title"_sid));
     ASSERT_NE(title, nullptr);
     EXPECT_EQ(title->GetText(), "Inspector");
 
@@ -266,7 +266,7 @@ TEST(FloatingPanelTests, CloseButtonInvokesCallback)
     frame->Show("Inspector", &panel, "Inspector", 0.0f, 0.0f, 400.0f, 300.0f);
     fx.Settle();
 
-    auto* close = dynamic_cast<Button*>(frame->FindById("floating-panel-close:Inspector"));
+    auto* close = dynamic_cast<Button*>(frame->FindById("floating-panel-close:Inspector"_sid));
     ASSERT_NE(close, nullptr);
     close->TriggerClick();
     EXPECT_EQ(closes, 1);
@@ -280,7 +280,7 @@ TEST(FloatingPanelTests, CloseWithoutCallbackHides)
     FloatingPanel* frame = fx.AddFrame();
     frame->Show("Log", &panel, "Log", 0.0f, 0.0f, 400.0f, 300.0f);
     fx.Settle();
-    auto* close = dynamic_cast<Button*>(frame->FindById("floating-panel-close:Log"));
+    auto* close = dynamic_cast<Button*>(frame->FindById("floating-panel-close:Log"_sid));
     ASSERT_NE(close, nullptr);
     close->TriggerClick();
     EXPECT_FALSE(frame->IsOpen());
@@ -298,10 +298,10 @@ TEST(FloatingPanelTests, ShowClampsInitialPositionInsideParent)
     host.AddChild(std::move(frame));
     raw->Show("Inspector", &panel, "Inspector", 2400.0f, 1800.0f, 400.0f, 300.0f);
 
-    const auto left = raw->Overrides().Get(Style::PositionLeft);
-    const auto top = raw->Overrides().Get(Style::PositionTop);
-    const auto width = raw->Overrides().Get(Style::Width);
-    const auto height = raw->Overrides().Get(Style::Height);
+    const auto left = raw->Style().Get(Style::PositionLeft);
+    const auto top = raw->Style().Get(Style::PositionTop);
+    const auto width = raw->Style().Get(Style::Width);
+    const auto height = raw->Style().Get(Style::Height);
     ASSERT_TRUE(left.has_value() && left->IsPx());
     ASSERT_TRUE(top.has_value() && top->IsPx());
     ASSERT_TRUE(width.has_value() && width->IsPx());
@@ -321,12 +321,12 @@ TEST(FloatingPanelTests, DragAllowsHangingOffLeftEdge)
     fx.Settle();
     ASSERT_FLOAT_EQ(raw->GetLayoutWidth(), 400.0f);
 
-    UIElement* titleBar = raw->FindById("floating-panel-titlebar:Inspector");
+    UIElement* titleBar = raw->FindById("floating-panel-titlebar:Inspector"_sid);
     ASSERT_NE(titleBar, nullptr);
     SendTo(titleBar, kEventMouseDown, 180.0f, 90.0f);
     SendTo(titleBar, kEventMouseMove, -400.0f, 90.0f);
 
-    const auto left = raw->Overrides().Get(Style::PositionLeft);
+    const auto left = raw->Style().Get(Style::PositionLeft);
     ASSERT_TRUE(left.has_value() && left->IsPx());
     EXPECT_FLOAT_EQ(left->Value, -328.0f);
 }
@@ -438,7 +438,7 @@ TEST(FloatingPanelTests, OverlayMountedPanelMatchesDockspaceFontSize)
     EXPECT_FLOAT_EQ(mountedRaw->GetResolvedStyle().Visual.FontSize, docked.Visual.FontSize);
     EXPECT_EQ(frame->GetOverlayLayer(), OverlayLayer::Modal);
 
-    UIElement* title = frame->FindById("floating-panel-title");
+    UIElement* title = frame->FindById("floating-panel-title"_sid);
     ASSERT_NE(title, nullptr);
     EXPECT_FLOAT_EQ(title->GetResolvedStyle().Visual.FontSize, docked.Visual.FontSize);
 }
@@ -463,11 +463,11 @@ TEST(FloatingPanelTests, ChromeIdsAreUniquePerOpenFrame)
     fx.Settle();
 
     UIElement& host = fx.Root();
-    EXPECT_EQ(host.FindById("floating-panel-titlebar"), nullptr);
-    ASSERT_NE(host.FindById("floating-panel-titlebar:Hierarchy"), nullptr);
-    ASSERT_NE(host.FindById("floating-panel-titlebar:Inspector"), nullptr);
-    EXPECT_NE(host.FindById("floating-panel-titlebar:Hierarchy"),
-              host.FindById("floating-panel-titlebar:Inspector"));
+    EXPECT_EQ(host.FindById("floating-panel-titlebar"_sid), nullptr);
+    ASSERT_NE(host.FindById("floating-panel-titlebar:Hierarchy"_sid), nullptr);
+    ASSERT_NE(host.FindById("floating-panel-titlebar:Inspector"_sid), nullptr);
+    EXPECT_NE(host.FindById("floating-panel-titlebar:Hierarchy"_sid),
+              host.FindById("floating-panel-titlebar:Inspector"_sid));
     EXPECT_EQ(frameA->GetId(), "floating:Hierarchy");
     EXPECT_EQ(frameB->GetId(), "floating:Inspector");
 }
@@ -496,7 +496,7 @@ TEST(FloatingPanelTests, AltDragMoveReportsModifierThenEnd)
                                lastCancelled = cancelled;
                            });
 
-    UIElement* titleBar = raw->FindById("floating-panel-titlebar:Inspector");
+    UIElement* titleBar = raw->FindById("floating-panel-titlebar:Inspector"_sid);
     ASSERT_NE(titleBar, nullptr);
     SendTo(titleBar, kEventMouseDown, 180.0f, 90.0f, Input::kModAlt);
     SendTo(titleBar, kEventMouseMove, 200.0f, 90.0f, Input::kModAlt);
@@ -521,7 +521,7 @@ TEST(FloatingPanelTests, MouseCancelEndsTitleDragWithoutCommit)
     bool cancelled = false;
     raw->SetOnTitleDragEnd([&](float, float, bool, bool wasCancelled) { cancelled = wasCancelled; });
 
-    UIElement* titleBar = raw->FindById("floating-panel-titlebar:Inspector");
+    UIElement* titleBar = raw->FindById("floating-panel-titlebar:Inspector"_sid);
     ASSERT_NE(titleBar, nullptr);
     SendTo(titleBar, kEventMouseDown, 180.0f, 90.0f);
     EXPECT_TRUE(raw->IsTitleDragging());
@@ -564,13 +564,13 @@ TEST(FloatingPanelTests, MouseUpOverSecondFrameReleasesTitleDrag)
     EXPECT_FALSE(frameB->IsTitleDragging());
     EXPECT_TRUE(ui.GetCaptureId().empty());
 
-    const auto leftAfterUp = frameA->Overrides().Get(Style::PositionLeft);
+    const auto leftAfterUp = frameA->Style().Get(Style::PositionLeft);
     ASSERT_TRUE(leftAfterUp.has_value() && leftAfterUp->IsPx());
     const float leftAtRelease = leftAfterUp->Value;
 
     ui.OnMouseMove(500.0f, 80.0f);
     ui.Update(0.016f, /*interactive=*/true);
-    const auto leftAfterMove = frameA->Overrides().Get(Style::PositionLeft);
+    const auto leftAfterMove = frameA->Style().Get(Style::PositionLeft);
     ASSERT_TRUE(leftAfterMove.has_value() && leftAfterMove->IsPx());
     EXPECT_FLOAT_EQ(leftAfterMove->Value, leftAtRelease);
 }

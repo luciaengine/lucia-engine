@@ -21,7 +21,7 @@ CompletionPopup::CompletionPopup()
     UI::Layout::SetElementHidden(*this, true);
 
     auto scroll = std::make_unique<ScrollView>();
-    scroll->Overrides()
+    scroll->Style()
         .Set(Style::Width, StyleLength::Percent(100.0f))
         .Set(Style::FlexGrow, 1.0f)
         .Set(Style::FlexShrink, 1.0f);
@@ -96,7 +96,7 @@ void CompletionPopup::RebuildItems(const std::vector<std::string>& items, float 
         label->SetText(items[i]);
         label->SetFocusable(false);
         // Match the editor font 1:1 and pin a uniform row height so scroll math is exact.
-        label->Overrides()
+        label->Style()
             .Set(Style::FontSize, StyleLength::Px(fontPx))
             .Set(Style::Height, StyleLength::Px(rowHeight))
             .Set(Style::FlexShrink, 0.0f);

@@ -16,6 +16,7 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Logger/Logger.h"
 #include "Mathematics/Matrix4x4.h"
+#include "Scene/SceneTlas.h"
 #include "SplineLayout/CenterlineSampling.h"
 #include "SplineRecipes/FenceEmission.h"
 #include "SplineLayout/FenceLayout.h"
@@ -29,7 +30,8 @@
 #include "Spline/SplineData.h"
 #include "Spline/SplineEvaluator.h"
 #include "SplineECS/SplineService.h"
-#include "SplineLayout/SpanMitre.h"
+#include "SplineLayout/SpanMiter.h"
+#include "Types/Fnv1a.h"
 
 #include <algorithm>
 #include <cmath>
@@ -55,12 +57,12 @@ Rendering::MeshGPURegistry* MeshRegistryOf(Engine::Renderer::RenderServices* ren
 }
 
 // What one pool offers the variant cutter, slot for slot.
-std::vector<FenceMitreSource> MitreSources(const Rendering::MeshGPURegistry& registry,
+std::vector<FenceMiterSource> MiterSources(const Rendering::MeshGPURegistry& registry,
                                            const Components::ModelRef* pool,
                                            const std::vector<FencePoolPiece>& pieces,
                                            const std::vector<SplineLayout::FencePieceBounds>& bounds)
 {
-    std::vector<FenceMitreSource> sources(pieces.size());
+    std::vector<FenceMiterSource> sources(pieces.size());
     const Rendering::MeshGPURegistry::TableScope scope(registry);
     for (size_t i = 0; i < pieces.size(); ++i)
     {
@@ -85,51 +87,54 @@ bool AnyGateOverride(const Components::SplineFence& recipe)
                        { return entry.Kind == Components::SplineSpanOverrideKind::Gate; });
 }
 
+void AppendPoolModels(std::vector<GUID>& models, const Components::SplineFence& recipe,
+                      Components::SplineFencePartKind kind)
+{
+    const FencePool pool = FencePoolOf(recipe, kind);
+    for (uint32 i = 0; i < pool.Count; ++i)
+        models.push_back(pool.Meshes[i].ToGuid());
+}
+
 // FencePoolContentDigest of the pools a recipe cuts variants from. The gate
 // pool counts only while some span is a gate, as it is resolved only then.
 uint64 PoolContentOf(const Rendering::MeshGPURegistry& registry,
                      const Components::SplineFence& recipe)
 {
     std::vector<GUID> models;
-    for (uint32 i = 0; i < Components::ActivePoolCount(recipe.SpanPool); ++i)
-        models.push_back(recipe.SpanPool[i].ToGuid());
-    for (uint32 i = 0; i < Components::ActivePoolCount(recipe.CrestPool); ++i)
-        models.push_back(recipe.CrestPool[i].ToGuid());
+    AppendPoolModels(models, recipe, Components::SplineFencePartKind::Span);
+    AppendPoolModels(models, recipe, Components::SplineFencePartKind::Crest);
     if (AnyGateOverride(recipe))
-    {
-        for (uint32 i = 0; i < Components::ActivePoolCount(recipe.GatePool); ++i)
-            models.push_back(recipe.GatePool[i].ToGuid());
-    }
+        AppendPoolModels(models, recipe, Components::SplineFencePartKind::Gate);
     return FencePoolContentDigest(registry, models);
 }
 
 // Which variant each piece draws, with the ones that could not be cut (no
 // mesh to cut) handed back to their pool piece.
 std::vector<uint32> DrawnVariants(const std::vector<uint32>& planned,
-                                  const FenceMitreVariants& variants)
+                                  const FenceMiterVariants& variants)
 {
     std::vector<uint32> drawn(planned);
     for (uint32& variant : drawn)
     {
-        if (variant != SplineLayout::kNoMitreVariant && !variants.Meshes[variant].Handle.IsValid())
-            variant = SplineLayout::kNoMitreVariant;
+        if (variant != SplineLayout::kNoMiterVariant && !variants.Meshes[variant].Handle.IsValid())
+            variant = SplineLayout::kNoMiterVariant;
     }
     return drawn;
 }
 
 // The pool piece a cut variant was made from: the one its role and slot name.
-const FencePoolPiece& PoolPieceOfVariant(const SplineLayout::MitreVariantKey& key,
+const FencePoolPiece& PoolPieceOfVariant(const SplineLayout::MiterVariantKey& key,
                                          const std::vector<FencePoolPiece>& spans,
                                          const std::vector<FencePoolPiece>& crests,
                                          const std::vector<FencePoolPiece>& gates)
 {
     switch (key.Role)
     {
-    case SplineLayout::MitrePieceRole::Crest:
+    case SplineLayout::MiterPieceRole::Crest:
         return crests[key.PoolSlot];
-    case SplineLayout::MitrePieceRole::Gate:
+    case SplineLayout::MiterPieceRole::Gate:
         return gates[key.PoolSlot];
-    case SplineLayout::MitrePieceRole::Span:
+    case SplineLayout::MiterPieceRole::Span:
     default:
         return spans[key.PoolSlot];
     }
@@ -183,7 +188,7 @@ bool ResolvePool(Engine::Renderer::RenderServices& renderServices,
         else
             piece.Bounds = Engine::Renderer::ComputeModelBounds(*resources->modelAsset);
         BindPieceMaterial(piece.Renderer, *resources, kSubmeshIndex, overrideMaterial);
-        piece.Renderer.castShadows = true;
+        piece.Renderer.shadowCasting = Components::ShadowCasting::On;
         piece.Renderer.receiveShadows = true;
         piece.Renderer.motionVectors = false; // pieces only move on re-place
     }
@@ -205,7 +210,27 @@ std::vector<SplineLayout::FencePieceBounds> PoolBounds(const std::vector<FencePo
     return bounds;
 }
 
+// Adds the bounds of each mesh of one pool that `out` does not list yet.
+void AppendMeshBounds(std::vector<FenceMeshBounds>& out, const FencePool& pool,
+                      std::span<const SplineLayout::FencePieceBounds> bounds)
+{
+    for (size_t slot = 0; slot < bounds.size(); ++slot)
+    {
+        const Components::ModelRef& mesh = pool.Meshes[slot];
+        const bool listed = std::any_of(out.begin(), out.end(),
+                                        [&mesh](const FenceMeshBounds& entry) { return entry.Mesh == mesh; });
+        if (!listed)
+            out.push_back({mesh, bounds[slot]});
+    }
+}
+
 } // namespace
+
+std::span<const FenceMeshBounds> SplineFenceController::PartBounds(ECS::EntityHandle entity) const
+{
+    const FenceState* state = m_States.Find(entity.id);
+    return state ? std::span<const FenceMeshBounds>(state->PartBounds) : std::span<const FenceMeshBounds>();
+}
 
 std::span<const uint32> SplineFenceController::RunSpanCounts(ECS::EntityHandle entity) const
 {
@@ -224,7 +249,7 @@ SplineFenceController::Candidate SplineFenceController::MakeCandidate(ECS::Entit
     candidate.Recipe = SplineLayout::SanitizeFenceRecipe(fence);
     candidate.SplineDataIndex = spline.SplineDataIndex;
     candidate.SplineDataGeneration = spline.SplineDataGeneration;
-    candidate.WorldMatrix = Mathematics::Matrix4x4::FromColumnMajor(transform.matrix);
+    candidate.WorldMatrix = transform.ToMatrix4x4(transform.GetPosition() - Mathematics::WorldPosition{});
     return candidate;
 }
 
@@ -237,21 +262,15 @@ void SplineFenceController::Update(ECS::World& world,
     if (!splineService)
         return;
 
-    // A world reset destroys every generated piece with no per-entity Removed
-    // event and restarts entity versions, so the cached handles now alias
-    // unrelated entities — the retire sweep below would destroy those. The
-    // scene-swap sites release this controller beforehand, but World::Clear is
-    // also reached through World::DeserializeWorld (play-mode exit, undo
-    // snapshot restore), which no swap-site hook can cover. Forgetting the
-    // state is the release for the pieces, which instance already-registered
-    // model meshes. The cut span variants are this controller's own
-    // registrations and not handle-based, so those are released here.
+    // A world reset removes every generated piece and sends no Removed event: no snapshot or scene file
+    // holds a GeneratedEntity, so each cached handle names an entity that does not exist. Drop the
+    // state here and build again; release the cut span variants, which this controller registered.
     const uint64 resetGeneration = world.GetLifecycleResetGeneration();
     if (resetGeneration != m_LastWorldResetGeneration)
     {
         m_LastWorldResetGeneration = resetGeneration;
         for (auto& [entityId, state] : m_States)
-            state.MitreVariants.DropAfterWorldReset(&renderServices.GetMeshGPURegistry());
+            state.MiterVariants.DropAfterWorldReset(&renderServices.GetMeshGPURegistry());
         m_States.Clear();
     }
 
@@ -284,7 +303,16 @@ void SplineFenceController::Update(ECS::World& world,
     const bool anyConforms = std::any_of(
         candidates.begin(), candidates.end(), [](const Candidate& c)
         { return c.Recipe.ConformMode != Components::SplinePlacementConform::None; });
-    const uint64 surfaceRevision = anyConforms ? ConformSurfaceRevision(world, /*conforms by raycast*/ nullptr) : 0u;
+    const uint64 surfaceRevision =
+        anyConforms ? ConformSurfaceRevision(world, /*conforms by raycast*/ nullptr, UnboundedConformRun()) : 0u;
+    // One request of the scene TLAS per frame, shared by every candidate that conforms to the scene.
+    const bool anyConformsToScene = std::any_of(
+        candidates.begin(), candidates.end(), [](const Candidate& c)
+        { return c.Recipe.ConformMode != Components::SplinePlacementConform::None &&
+                 c.Recipe.ConformTarget == Components::SplineConformTarget::Scene; });
+    Scene::SceneTlas* sceneTlas = anyConformsToScene ? &Scene::GetSceneTlas(world) : nullptr;
+    if (sceneTlas)
+        sceneTlas->RequestCurrent(world);
 
     for (const Candidate& candidate : candidates)
     {
@@ -308,26 +336,36 @@ void SplineFenceController::Update(ECS::World& world,
 
         // A fence with no post mesh is first-class (the measured kits build the
         // post into each panel's ends), so the idle gate is "no pieces at all".
-        const uint32 activePosts = Components::ActivePoolCount(current.Recipe.PostPool);
-        const uint32 activeSpans = Components::ActivePoolCount(current.Recipe.SpanPool);
+        const uint32 activePosts = FencePoolOf(current.Recipe, Components::SplineFencePartKind::Post).Count;
+        const uint32 activeSpans = FencePoolOf(current.Recipe, Components::SplineFencePartKind::Span).Count;
         if (!current.Spline.Valid || (activePosts == 0u && activeSpans == 0u))
         {
             worldDirty |= RetireAll(world, &renderServices, state);
             state.Gate.MarkUnbuilt();
             states.Set(candidate.Entity, BuildState::Failed,
-                       current.Spline.Valid ? kNoFencePieceReason : kSplineTooShortReason);
+                       current.Spline.Valid ? FenceNothingToPlaceReason(current.Recipe) : kSplineTooShortReason);
             continue;
         }
 
         const bool piecesAlive =
             std::all_of(state.Pieces.begin(), state.Pieces.end(),
                         [&world](const FencePieceEntity& p) { return world.IsValid(p.Entity); });
-        // Only the terrains near this run can hold its first build.
+        if (conforms && state.RunSpline != current.Spline)
+        {
+            state.RunBounds = RunWorldBounds(*splineService, candidate.SplineDataIndex, candidate.SplineDataGeneration,
+                                             candidate.WorldMatrix);
+            state.RunSpline = current.Spline;
+        }
+        // Only the terrains near this run can hold its first build. A Scene conform also reads
+        // the meshes under the run, so they join its surface term.
         const ConformSurfaceReadiness surfaceReadiness =
-            conforms ? ConformSurfaceState(world, RunWorldBounds(*splineService, candidate.SplineDataIndex,
-                                                               candidate.SplineDataGeneration,
-                                                               candidate.WorldMatrix))
-                   : ConformSurfaceReadiness::NoSurface;
+            conforms ? ConformSurfaceState(world, state.RunBounds) : ConformSurfaceReadiness::NoSurface;
+        if (conforms && candidate.Recipe.ConformTarget == Components::SplineConformTarget::Scene)
+        {
+            RefreshSceneConformDigest(world, *sceneTlas, state.RunBounds, state.SceneDigest);
+            current.SurfaceRevision = Hashing::Fnv1a64(&state.SceneDigest.Value, sizeof(state.SceneDigest.Value),
+                                                       current.SurfaceRevision);
+        }
         if (!state.Gate.ShouldRebuild(current, piecesAlive, surfaceReadiness, conforms, deltaSeconds,
                                       candidate.Entity.id))
         {
@@ -398,8 +436,8 @@ bool SplineFenceController::RetireAll(ECS::World& world,
                                       FenceState& state)
 {
     const bool destroyedAny = RetirePieces(world, state);
-    state.MitreVariants.Retire(world, MeshRegistryOf(renderServices));
-    state.MitreCuts.clear();
+    state.MiterVariants.Retire(world, MeshRegistryOf(renderServices));
+    state.MiterCuts.clear();
     return destroyedAny;
 }
 
@@ -420,18 +458,21 @@ bool SplineFenceController::Rebuild(ECS::World& world,
         return RetireAll(world, &renderServices, state);
 
     const Components::SplineFence& recipe = candidate.Recipe;
-    const uint32 activePosts = Components::ActivePoolCount(recipe.PostPool);
-    const uint32 activeSpans = Components::ActivePoolCount(recipe.SpanPool);
+    const FencePool postPool = FencePoolOf(recipe, Components::SplineFencePartKind::Post);
+    const FencePool spanPool = FencePoolOf(recipe, Components::SplineFencePartKind::Span);
+    const FencePool crestPool = FencePoolOf(recipe, Components::SplineFencePartKind::Crest);
+    const FencePool capPool = FencePoolOf(recipe, Components::SplineFencePartKind::Cap);
+    const FencePool gatePool = FencePoolOf(recipe, Components::SplineFencePartKind::Gate);
+    const uint32 activePosts = postPool.Count;
+    const uint32 activeSpans = spanPool.Count;
     if (activePosts == 0u && activeSpans == 0u)
         return RetireAll(world, &renderServices, state); // Update() gates on this; keep Rebuild safe alone
     // Resolved even when the span pool is empty: the layout owns the report
     // that a crest row has no span tops to stand on, and it only speaks when
     // it is handed the crest pieces.
-    const uint32 activeCrests = Components::ActivePoolCount(recipe.CrestPool);
-    const uint32 activeCaps =
-        activeCrests > 0u ? Components::ActivePoolCount(recipe.CapPool) : 0u;
-    const uint32 activeGates =
-        AnyGateOverride(recipe) ? Components::ActivePoolCount(recipe.GatePool) : 0u;
+    const uint32 activeCrests = crestPool.Count;
+    const uint32 activeCaps = activeCrests > 0u ? capPool.Count : 0u;
+    const uint32 activeGates = AnyGateOverride(recipe) ? gatePool.Count : 0u;
 
     std::vector<FencePoolPiece> postPieces;
     std::vector<FencePoolPiece> spanPieces;
@@ -442,19 +483,19 @@ bool SplineFenceController::Rebuild(ECS::World& world,
         EnsureOverrideMaterialRegistered(renderServices, recipe.OverrideMaterial, m_OverrideMaterials);
     const Components::MaterialRef boundOverride =
         overrideRenderable ? recipe.OverrideMaterial : Components::MaterialRef{};
-    if (!ResolvePool(renderServices, m_ModelCache, recipe.PostPool, activePosts, "post",
+    if (!ResolvePool(renderServices, m_ModelCache, postPool.Meshes, activePosts, "post",
                      candidate.Entity.id, boundOverride, state.LoadFailureLogged,
                      postPieces) ||
-        !ResolvePool(renderServices, m_ModelCache, recipe.SpanPool, activeSpans, "span",
+        !ResolvePool(renderServices, m_ModelCache, spanPool.Meshes, activeSpans, "span",
                      candidate.Entity.id, boundOverride, state.LoadFailureLogged,
                      spanPieces) ||
-        !ResolvePool(renderServices, m_ModelCache, recipe.CrestPool, activeCrests, "crest",
+        !ResolvePool(renderServices, m_ModelCache, crestPool.Meshes, activeCrests, "crest",
                      candidate.Entity.id, boundOverride, state.LoadFailureLogged,
                      crestPieces) ||
-        !ResolvePool(renderServices, m_ModelCache, recipe.CapPool, activeCaps, "cap",
+        !ResolvePool(renderServices, m_ModelCache, capPool.Meshes, activeCaps, "cap",
                      candidate.Entity.id, boundOverride, state.LoadFailureLogged,
                      capPieces) ||
-        !ResolvePool(renderServices, m_ModelCache, recipe.GatePool, activeGates, "gate",
+        !ResolvePool(renderServices, m_ModelCache, gatePool.Meshes, activeGates, "gate",
                      candidate.Entity.id, boundOverride, state.LoadFailureLogged,
                      gatePieces))
     {
@@ -550,6 +591,12 @@ bool SplineFenceController::Rebuild(ECS::World& world,
     const std::vector<SplineLayout::FencePieceBounds> crestBounds = PoolBounds(crestPieces);
     const std::vector<SplineLayout::FencePieceBounds> capBounds = PoolBounds(capPieces);
     const std::vector<SplineLayout::FencePieceBounds> gateBounds = PoolBounds(gatePieces);
+    state.PartBounds.clear();
+    AppendMeshBounds(state.PartBounds, postPool, postBounds);
+    AppendMeshBounds(state.PartBounds, spanPool, spanBounds);
+    AppendMeshBounds(state.PartBounds, crestPool, crestBounds);
+    AppendMeshBounds(state.PartBounds, capPool, capBounds);
+    AppendMeshBounds(state.PartBounds, gatePool, gateBounds);
     FenceRecipePieces recipePieces;
     recipePieces.PostFootprint = postBounds.empty() ? nullptr : &postBounds.front();
     recipePieces.Spans = spanBounds;
@@ -594,7 +641,7 @@ bool SplineFenceController::Rebuild(ECS::World& world,
     ReportSpanRollBorrowed(built.RollBorrowedSpans, candidate.Entity.id,
                            state.LoggedRollBorrowedSpans);
     // One report per rebuild, so the latch compares like with like: the layout's
-    // lines, and on a fence that builds, the mitre variants' lines after them.
+    // lines, and on a fence that builds, the miter variants' lines after them.
     const auto* entityName = world.GetComponent<Components::Name>(candidate.Entity);
     const std::string_view name =
         entityName ? entityName->View() : std::string_view();
@@ -605,20 +652,20 @@ bool SplineFenceController::Rebuild(ECS::World& world,
     }
 
     // ---- Cut variants at the bare joins (fence design section 4c) ----
-    const SplineLayout::MitreVariantPlan plan = SplineLayout::PlanMitreVariants(built);
+    const SplineLayout::MiterVariantPlan plan = SplineLayout::PlanMiterVariants(built);
     const Rendering::MeshGPURegistry& meshRegistry = renderServices.GetMeshGPURegistry();
-    const std::vector<FenceMitreSource> spanSources =
-        MitreSources(meshRegistry, recipe.SpanPool, spanPieces, spanBounds);
-    const std::vector<FenceMitreSource> crestSources =
-        MitreSources(meshRegistry, recipe.CrestPool, crestPieces, crestBounds);
-    const std::vector<FenceMitreSource> gateSources =
-        MitreSources(meshRegistry, recipe.GatePool, gatePieces, gateBounds);
-    const FenceMitreVariants variants = CommitFenceMitreVariants(
-        renderServices.GetMeshGPURegistry(), state.MitreVariants, state.MitreCuts,
+    const std::vector<FenceMiterSource> spanSources =
+        MiterSources(meshRegistry, spanPool.Meshes, spanPieces, spanBounds);
+    const std::vector<FenceMiterSource> crestSources =
+        MiterSources(meshRegistry, crestPool.Meshes, crestPieces, crestBounds);
+    const std::vector<FenceMiterSource> gateSources =
+        MiterSources(meshRegistry, gatePool.Meshes, gatePieces, gateBounds);
+    const FenceMiterVariants variants = CommitFenceMiterVariants(
+        renderServices.GetMeshGPURegistry(), state.MiterVariants, state.MiterCuts,
         candidate.Entity.id, plan, {spanSources, crestSources, gateSources});
     std::vector<FencePoolPiece> variantPieces(variants.Meshes.size());
     for (size_t v = 0; v < variants.Meshes.size(); ++v)
-        variantPieces[v] = MitreVariantPiece(
+        variantPieces[v] = MiterVariantPiece(
             PoolPieceOfVariant(plan.Variants[v], spanPieces, crestPieces, gatePieces),
             variants.Meshes[v]);
     const std::vector<uint32> spanVariants = DrawnVariants(plan.SpanVariants, variants);

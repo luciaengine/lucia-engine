@@ -132,7 +132,7 @@ std::unique_ptr<UIElement> ControlLayoutLoader::Load(const char* layoutAssetPath
     }
     for (const std::string_view id : requiredIds)
     {
-        if (!root->FindById(id))
+        if (!root->FindById(HashStringId(id)))
         {
             Logger::Log::Error("{} has no element with the id '{}', so the control it lays out cannot open. "
                                "Restore the id.",

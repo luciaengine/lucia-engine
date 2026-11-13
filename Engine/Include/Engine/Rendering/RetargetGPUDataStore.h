@@ -4,7 +4,6 @@
 #include "AssetCore/GUID.h"
 #include "Rendering/Core/Handle.h"
 #include "Types/Types.h"
-#include "Types/FlatMap.h"
 
 #include <cstdint>
 #include <mutex>
@@ -17,7 +16,6 @@ namespace GameEngine { namespace Rendering { class IDevice; } }
 namespace GameEngine { class AssetEventDispatcher; }
 namespace GameEngine { namespace Animation {
     class AnimationClip;
-    class AnimationClipData;
     class HumanoidRig;
     class RetargetMap;
     class RetargetNode;
@@ -27,7 +25,7 @@ namespace GameEngine { namespace Animation {
 namespace GameEngine { namespace Engine { namespace Renderer {
 
 // Hard cap on bones per skeleton. Sized to fit the LDS budget of the fused
-// retarget_full.comp (~16 KB / workgroup at 256 bones × 4 vec4 arrays).
+// retarget_full.comp (about 24 KB / workgroup: six 256-bone vec4 arrays).
 // MetaHuman ~150 bones; humanoid rigs all fit comfortably.
 constexpr uint32_t kRetargetMaxBones = 256;
 
@@ -78,7 +76,7 @@ struct GPURetargetClipBoneRec {
 };
 static_assert(sizeof(GPURetargetClipBoneRec) == 16, "GPURetargetClipBoneRec must be 16 bytes");
 
-// Per-rig-pair header in rigBuf. Packed std430. 80 bytes. Offsets are in
+// Per-rig-pair header in rigBuf. Packed std430. 96 bytes. Offsets are in
 // vec4 units into rigBuf's flat data section. The shader fetches via
 // `rigData[offset + idx]` patterns.
 struct GPURigPairHeader {
@@ -112,8 +110,13 @@ struct GPURigPairHeader {
     uint32_t tgtInverseBind;            // 4 vec4 per tgt bone (mat4 column-major)
     uint32_t tgtJointNodes;             // 1 packed uint32 per skin joint (joint -> tgt bone)
     uint32_t tgtMeshRootInverse;        // 4 vec4 (single mat4)
+
+    // vec4 (xyz, 1) per tgt bone (rest local scale). An FBX centimeter rig keeps
+    // scale 100 on its root, and the inverse binds include that scale.
+    uint32_t tgtRestScale;
+    uint32_t _pad[3];
 };
-static_assert(sizeof(GPURigPairHeader) == 80, "GPURigPairHeader must be 80 bytes");
+static_assert(sizeof(GPURigPairHeader) == 96, "GPURigPairHeader must be 96 bytes");
 
 // Per-character per-frame parameter block. Written by the CPU side once per
 // frame for every active retargeted character; uploaded as a single contiguous
@@ -136,14 +139,14 @@ static_assert(sizeof(GPURetargetCharacterParams) == 32, "GPURetargetCharacterPar
 
 // Owns the persistent GPU SSBOs that feed retarget_full.comp:
 //   - clipBuf : [GPURetargetClipHeader[N_clips]] [GPURetargetClipBoneRec[N_bones]] [vec4 samples[]]
-//                Replaced when a clip snapshot or its duration changes.
+//                Immutable per AnimationClip asset; uploaded at clip post-load.
 //   - rigBuf  : [GPURigPairHeader[N_rigs]] [vec4 data[]]
 //                Immutable per (srcRig, tgtRig, retargetMap) triple; uploaded
 //                at retarget map post-load.
 //   - charsBuf: GPURetargetCharacterParams[active_chars]
 //                Mutable per frame; one CPU memcpy populates the whole array.
 //
-// All three buffers are storage buffers uploaded as needed. The atlas (where
+// All three buffers are device-local SSBOs grown as needed. The atlas (where
 // the fused shader writes its mat4s) is the global SkinPaletteAtlas owned by
 // PerFrameWritePool; this store does not allocate it.
 //
@@ -158,6 +161,10 @@ static_assert(sizeof(GPURetargetCharacterParams) == 32, "GPURetargetCharacterPar
 //   Shutdown()                       teardown
 class RetargetGPUDataStore {
 public:
+    // Takes this store's bytes out of the process-wide stats record, so a store
+    // destroyed without Shutdown leaves no count behind.
+    ~RetargetGPUDataStore();
+
     bool Initialize(GameEngine::Rendering::IDevice* device);
     void Shutdown();
 
@@ -177,9 +184,12 @@ public:
 
     // -- Asset-load uploads ----------------------------------------------
 
-    /// Bake immutable clip snapshots at 30 Hz. A revision replaces the live
-    /// buffer generation and preserves logical header slots for current characters.
-    /// Return kRetargetInvalidIndex on refusal; retain the prior upload.
+    // Pre-bakes the clip's per-bone channels into uniform 30 Hz samples and
+    // appends them to clipBuf. Idempotent: returns the existing index if the
+    // GUID has already been uploaded.
+    //
+    // Returns the clip header index, or kRetargetInvalidIndex on failure
+    // (null clip, no animated bones, etc.).
     uint32_t EnsureClipUploaded(const GUID& guid, const Animation::AnimationClip& clip);
 
     // Serializes the rig pair (canonical Q values, BindCorrection, parent
@@ -199,8 +209,9 @@ public:
     uint32_t ResolveClipIdx(const GUID& guid) const;
     uint32_t ResolveRigPairIdx(const GUID& mapGuid) const;
 
-    // Drop an unloaded asset's cached snapshot. The next upload repacks live
-    // clips; BeginFrame releases an empty clip store after clearing characters.
+    // Drop a previously-uploaded rig pair / clip. Frees the slot but doesn't
+    // shrink the buffer (next upload may reuse the bytes via a free list).
+    // Called when an asset is unloaded; idempotent if already absent.
     void ReleaseClip(const GUID& guid);
     void ReleaseRigPair(const GUID& mapGuid);
 
@@ -279,25 +290,18 @@ private:
         size_t requiredSize,
         const char* debugName);
 
-    void UpdateCategoryBytes();
+    // Recomputes m_ResidentBytes and reports the change to the process-wide
+    // "Animation.RetargetGPUData" stats record (Memory::TrackedBytes).
+    void UpdateResidentBytes();
 
     GameEngine::Rendering::IDevice* m_Device = nullptr;
 
-    // Current clip snapshots and their committed GPU generation.
+    // Clip data (immutable per asset).
     GameEngine::Rendering::BufferHandle m_ClipBuf;
     std::vector<uint32_t> m_ClipData;       // flat: [GPURetargetClipHeader[]][GPURetargetClipBoneRec[]][vec4 samples[]]
     size_t m_ClipBufCapacity = 0;
     bool m_ClipDirty = false;
-    struct UploadedClip
-    {
-        uint32 Slot;
-        float Duration;
-        SharedPtr<const Animation::AnimationClipData> Data;
-    };
-    bool PackClip(const UploadedClip& clip, std::vector<uint32_t>& words) const;
-    bool UploadClipData(const std::vector<uint32_t>& words);
-    FlatMap<uint64_t, UploadedClip> m_Clips;
-    uint32 m_NextClipSlot = 0u;
+    std::unordered_map<uint64_t, uint32_t> m_ClipGuidToHeaderIdx;  // packed-GUID -> idx into clip-header section
 
     // Rig data (immutable per rig-pair).
     GameEngine::Rendering::BufferHandle m_RigBuf;

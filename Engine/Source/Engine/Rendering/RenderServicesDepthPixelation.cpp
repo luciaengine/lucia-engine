@@ -1,6 +1,7 @@
 #include "Engine/Rendering/RenderServices.h"
 
 #include "Mathematics/Matrix4x4.h"
+#include "Engine/Rendering/RenderOrigin.h"
 
 #include <algorithm>
 #include <cmath>
@@ -41,14 +42,17 @@ Rendering::CameraData RenderServices::StabilizeDepthPixelationCamera(
     const float sx = float(width) / (width + 2 * guardPixels);
     const float sy = float(height) / (height + 2 * guardPixels);
     float shiftX = 0, shiftY = 0;
-    if (focusDistance > 0 && std::abs(camera.proj[0]) > 1e-6f && std::abs(camera.proj[5]) > 1e-6f)
+    if (focusDistance > 0 && std::abs(camera.proj.Data()[0]) > 1e-6f && std::abs(camera.proj.Data()[5]) > 1e-6f)
     {
-        const bool perspective = std::abs(camera.proj[15]) < 1e-6f;
+        const bool perspective = std::abs(camera.proj.Data()[15]) < 1e-6f;
         const double focus = perspective ? std::max(0.01f, focusDistance) : 1.0;
-        const double pixelX = 2.0 * focus / (std::abs(camera.proj[0]) * width);
-        const double pixelY = 2.0 * focus / (std::abs(camera.proj[5]) * height);
-        const double x = camera.view[12] / pixelX;
-        const double y = camera.view[13] / pixelY;
+        const double pixelX = 2.0 * focus / (std::abs(camera.proj.Data()[0]) * width);
+        const double pixelY = 2.0 * focus / (std::abs(camera.proj.Data()[5]) * height);
+        const Mathematics::Vector3F64 translation = camera.renderOriginSector[3] != 0
+            ? ComputeRebasedViewTranslation(camera.view, CameraEye(camera), {})
+            : Mathematics::Vector3F64{camera.view[3][0], camera.view[3][1], camera.view[3][2]};
+        const double x = translation.X / pixelX;
+        const double y = translation.Y / pixelY;
         shiftX = static_cast<float>(2.0 * (std::round(x) - x) / width);
         shiftY = static_cast<float>(2.0 * (std::round(y) - y) / height);
     }
@@ -57,12 +61,11 @@ Rendering::CameraData RenderServices::StabilizeDepthPixelationCamera(
     // samples when the final image compensates the subpixel snap.
     for (int column = 0; column < 4; ++column)
     {
-        result.proj[column * 4] = sx * (camera.proj[column * 4] + shiftX * camera.proj[column * 4 + 3]);
-        result.proj[column * 4 + 1] = sy * (camera.proj[column * 4 + 1] + shiftY * camera.proj[column * 4 + 3]);
+        result.proj.Data()[column * 4] = sx * (camera.proj.Data()[column * 4] + shiftX * camera.proj.Data()[column * 4 + 3]);
+        result.proj.Data()[column * 4 + 1] = sy * (camera.proj.Data()[column * 4 + 1] + shiftY * camera.proj.Data()[column * 4 + 3]);
     }
-    const Mathematics::Matrix4x4 viewProj =
-        Mathematics::Matrix4x4::FromColumnMajor(result.proj) * Mathematics::Matrix4x4::FromColumnMajor(result.view);
-    std::memcpy(result.viewProj, viewProj.Data(), sizeof(result.viewProj));
+    result.viewProj = result.proj * result.view;
+    result.viewProjRel = result.proj * result.viewRel;
     uvTransform = {sx, sy, 0.5f * shiftX * sx, -0.5f * shiftY * sy};
     return result;
 }
@@ -129,7 +132,7 @@ void RenderServices::SyncDepthPixelationViews(uint64 worldId, bool allowAllocati
     {
         const auto& views = Views().GetViews();
         const bool enabled = std::any_of(views.begin(), views.end(), [&](const auto& view) {
-            if (!view.activeRenderPipeline || view.ActiveRenderLayerMask() == 0 ||
+            if (!view.activeRenderPipeline || view.ActiveRenderLayerMask().Bits == 0 ||
                 (view.worldId != 0 && view.worldId != worldId))
                 return false;
             const auto& pp = GetEffectivePostProcessSettings(view.id, worldId);
@@ -148,7 +151,7 @@ void RenderServices::SyncDepthPixelationViews(uint64 worldId, bool allowAllocati
             if (parent && (parent->worldId == worldId || parent->worldId == 0))
             {
                 const auto& pp = GetEffectivePostProcessSettings(parent->id, worldId);
-                remove = !parent->activeRenderPipeline || parent->ActiveRenderLayerMask() == 0 ||
+                remove = !parent->activeRenderPipeline || parent->ActiveRenderLayerMask().Bits == 0 ||
                          (pp.DepthPixelationIntensity <= 0 && pp.DepthPixelationDebugRanges == 0) ||
                          it->second.SimpleScreenSpace != (pp.DepthPixelationSimpleScreenSpace != 0) ||
                          it->second.BandCount != (pp.DepthPixelationSimpleScreenSpace != 0 ? 1 :
@@ -167,7 +170,7 @@ void RenderServices::SyncDepthPixelationViews(uint64 worldId, bool allowAllocati
     for (const auto& parent : parents)
     {
         if (IsDepthPixelationView(parent.id) || !Views().FindViewDesc(parent.id) ||
-            !parent.activeRenderPipeline || parent.ActiveRenderLayerMask() == 0 ||
+            !parent.activeRenderPipeline || parent.ActiveRenderLayerMask().Bits == 0 ||
             (parent.worldId != 0 && parent.worldId != worldId)) continue;
         auto pp = GetEffectivePostProcessSettings(parent.id, worldId);
         if (pp.DepthPixelationIntensity <= 0 && pp.DepthPixelationDebugRanges == 0) continue;
@@ -215,12 +218,13 @@ void RenderServices::SyncDepthPixelationViews(uint64 worldId, bool allowAllocati
             const auto stabilized = StabilizeDepthPixelationCamera(camera, extent[0], extent[1],
                 BandFocusDistance(pp, i, it->second.BandCount), pp.DepthPixelationStabilizationMode != 0,
                 it->second.UVTransforms[i], it->second.GuardPixels);
-            Views().SetCameraData(it->second.Cameras[i], stabilized);
+            Views().SetCameraData(it->second.Cameras[i], stabilized, Views().FindCameraRanges(parent.cameraId));
             Views().SetViewWorldId(child, worldId);
+            Views().SetViewDropsEditorHidden(child, parent.DropsEditorHidden());
             Views().SetViewWorldPassFlipY(child, Views().GetViewWorldPassFlipY(parent.id));
             Views().SetViewRenderLayerMask(child, parent.renderLayerMask);
             Views().SetViewBackgroundOnly(child, !it->second.SimpleScreenSpace && (i == DepthPixelationViews::kSkyIndex || empty));
-            Views().SetViewClearConfig(child, Rendering::ViewClearConfig(true, 0, 0, 0, 0, true, 0));
+            Views().SetViewClearConfig(child, Rendering::ViewClearConfig(true, ColorLinear(0, 0, 0, 0), true, 0));
             Views().SetViewRenderScale(child, 1.0f);
             Views().SetViewAntiAliasing(child, false, AntiAliasingMode::Off, 1);
             Views().SetViewPostProcessOverride(child, pp);
@@ -271,7 +275,8 @@ void RenderServices::AppendDepthPixelationTargets(Rendering::RenderGraph::RGFram
             if (camera)
                 Views().SetCameraData(bands->Cameras[i], StabilizeDepthPixelationCamera(*camera,
                     extent[0], extent[1], BandFocusDistance(pp, i, bands->BandCount),
-                    pp.DepthPixelationStabilizationMode != 0, bands->UVTransforms[i], bands->GuardPixels));
+                    pp.DepthPixelationStabilizationMode != 0, bands->UVTransforms[i], bands->GuardPixels),
+                    Views().FindCameraRanges(parent->cameraId));
             WriteViewLightBuffer(bands->Views[i]);
             Rendering::TextureDesc td{};
             const uint32_t guard = pp.DepthPixelationStabilizationMode != 0 ? 2u * bands->GuardPixels : 0u;

@@ -2,11 +2,12 @@
 #include "Engine/Rendering/RenderSortKey.h"
 #include "Engine/Rendering/DrawCommandProducer.h"
 #include "Engine/Rendering/DrawBindings.h"
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 #include "Types/ScopedSubscription.h"
 #include <array>
 
 #include "AssetCore/GUID.h"
+#include "Mathematics/Matrix3x3.h"
 #include "Engine/Rendering/IRenderFeature.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/Handle.h"
@@ -19,6 +20,8 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+namespace GameEngine::Rendering { struct CameraData; }
 
 namespace GameEngine::Engine::Renderer
 {
@@ -33,19 +36,18 @@ namespace TileMapECS
 /**
  * @brief One rendered tilemap layer, extracted from the ECS each frame.
  *
- * `Model` is the owning entity's world matrix (column-major), so the renderer
- * needs no ECS access of its own.
+ * Basis carries rotation and scale; Position carries exact world meters.
  */
 struct TileMapLayerDraw
 {
     ECS::EntityHandle Entity{};
     GUID Map;
-    float32 Model[16] = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
-                         0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+    Mathematics::WorldPosition Position;
+    Mathematics::Matrix3x3 Basis;
     uint32 LayerId = 0;
     float32 ZOffset = 0.0f;
     /** World Z of the layer plane, used with its world X/Y to resolve view depth. */
-    float32 WorldZ = 0.0f;
+    float64 WorldZ = 0.0;
     Engine::Renderer::RenderSortingData Sorting;
     uint32 RenderLayers = 0xFFFFFFFFu;
     float32 Opacity = 1.0f;
@@ -77,6 +79,7 @@ struct TileMapPreview
 struct TileMapPushConstants
 {
     float32 Model[16] = {};
+    // xy are zero: the exact chunk origin is folded into the relative Model.
     float32 ChunkOriginCellSize[4] = {};
     float32 LayerZ[4] = {};
     float32 Tint[4] = {};
@@ -97,7 +100,7 @@ struct TileMapChunkDraw
     uint32 InstanceCount = 0;
     uint32 FirstInstance = 0;
     /** World Z of the owning layer's plane; Sort holds the resolved view ordering. */
-    float32 WorldZ = 0.0f;
+    float64 WorldZ = 0.0;
     Engine::Renderer::RenderSortKey Sort;
     uint32 RenderLayers = 0xFFFFFFFFu;
 };
@@ -142,8 +145,8 @@ public:
      * `invExposure` pre-divides tile color by the exposure the tonemap will
      * apply, so authored 2D art keeps its authored brightness in the HDR chain.
      */
-    void BuildViewDraws(Engine::Renderer::RenderServices& rs, const float32* viewProj,
-                        const float32* cameraPosWS, const float32* cameraForward, float32 invExposure,
+    void BuildViewDraws(Engine::Renderer::RenderServices& rs, const Rendering::CameraData& camera,
+                        float32 invExposure,
                         std::vector<TileMapChunkDraw>& outDraws, uint64 viewWorldId = 0);
 
 
@@ -220,7 +223,7 @@ private:
 
     void UploadChunk(ChunkBuffer& chunk, const std::vector<TileInstance>& instances);
     void AppendChunkDraws(const ChunkBuffer& chunk, const TileMapChunkDraw& draw,
-                         const Engine::Renderer::RenderSortingData& sorting,
+                         const Engine::Renderer::RenderSortingData& sorting, float64 groundOffsetY,
                          std::vector<TileMapChunkDraw>& outDraws) const;
     void DestroyChunk(ChunkBuffer& chunk);
     void ReleaseGpuState();

@@ -1,9 +1,9 @@
 #include "Animation/Ops/AttachmentPassthroughOp.h"
 
 #include "Animation/AnimationPose.h"
-#include "Animation/HumanoidRig.h"
+#include "Animation/Humanoid/HumanoidRig.h"
 #include "Animation/RetargetMap.h"
-#include "Animation/SkeletonData.h"
+#include "Animation/Skeleton/SkeletonData.h"
 
 namespace GameEngine
 {

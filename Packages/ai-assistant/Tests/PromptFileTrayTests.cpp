@@ -8,7 +8,7 @@
 #include "UIPixelReadback.h"
 #include "UI/Parsers/CSSParser.h"
 #include "UI/Registration/ElementRegistration.h"
-#include "Engine/Rendering/RgbaImageOps.h"
+#include "Image/Encode.h"
 
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "UI/Controls/Label.h"
@@ -142,8 +142,7 @@ void CaptureSettledTray(TrayHost& host)
     ASSERT_EQ(pixels.size(), size_t{800 * 600 * 4});
     const auto lit = std::count_if(pixels.begin(), pixels.end(), [](uint8_t value) { return value != 0; });
     ASSERT_GT(lit, 800 * 600) << "the tray capture must contain rendered color, not only opaque black";
-    DecodedImage image{pixels, 800, 600, true};
-    const auto png = EncodeRgbaPng(image);
+    const auto png = Image::EncodePng(pixels, 800, 600);
     ASSERT_FALSE(png.empty());
     std::filesystem::create_directories(directory);
     std::ofstream capture(std::filesystem::path(directory) / "settled-text-tray.png", std::ios::binary);

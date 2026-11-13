@@ -9,6 +9,8 @@
 #include "ECS/World.h"
 #include "Logger/Logger.h"
 #include "Scene/PrefabLibrary.h"
+#include "Scene/PrefabOverrideRecords.h"
+#include "Scene/PrefabOverrideWriter.h"
 #include "Scene/SceneAssetResolver.h"
 #include "Scene/SceneSchemaRegistry.h"
 #include "Types/FlatSet.h"
@@ -26,9 +28,9 @@
 namespace GameEngine::Scene
 {
 
-PrefabPlacement::PrefabPlacement(ECS::World& targetWorld, const LoadOptions& loadOptions,
-                                 SceneLoadDegradation* loadDegradation)
-    : World(targetWorld), Options(loadOptions), Degradation(loadDegradation)
+PrefabPlacement::PrefabPlacement(ECS::World& targetWorld, const SceneLoadOptions& loadOptions,
+                                 SceneDegradation* loadDegradation)
+    : world(targetWorld), options(loadOptions), degradation(loadDegradation)
 {
 }
 
@@ -36,7 +38,7 @@ PrefabPlacement::~PrefabPlacement() = default;
 
 static ECS::EntityHandle FindMember(const PlacedPrefab& placed, std::string_view address)
 {
-    for (const auto& [memberAddress, h] : placed.Members)
+    for (const auto& [memberAddress, h] : placed.members)
     {
         if (memberAddress == address)
             return h;
@@ -51,10 +53,10 @@ static bool ClaimHashedTag(PrefabPlacement& placement, const std::string& tag, c
 {
     if (tag == path)
         return true;
-    const std::string* claimed = placement.PathByHashedTag.Find(tag);
+    const std::string* claimed = placement.pathByHashedTag.Find(tag);
     if (!claimed)
     {
-        placement.PathByHashedTag.InsertOrAssign(tag, path);
+        placement.pathByHashedTag.InsertOrAssign(tag, path);
         return true;
     }
     if (*claimed == path)
@@ -67,50 +69,78 @@ static bool ClaimHashedTag(PrefabPlacement& placement, const std::string& tag, c
 static bool PlacePrefab(PrefabPlacement& placement, ParsedPrefab& prefab, const std::string& instancePath,
                         PlacedPrefab& out, const LoadFailure& failure);
 
-// The prefab the [prefab] section `section` of `ownerFile` places, read and checked once per load.
-// Null, with the failure recorded, when the file cannot be read, does not parse, or is not a prefab.
-static ParsedPrefab* ReadPrefab(PrefabPlacement& placement, const SceneLoadContext& ownerCtx,
-                                const std::filesystem::path& ownerFile, const SceneDoc& ownerDoc,
-                                const SceneDoc::PrefabInstanceSection& section, const LoadFailure& failure)
+// The prefab file at `path`, read and checked. Null, with the failure recorded, when it does not parse
+// or is not valid.
+static std::shared_ptr<const SceneDoc> ReadPrefabFile(const std::filesystem::path& path, const std::string& text,
+                                                      const LoadFailure& failure)
 {
-    const SceneDoc::Resource& resource = ownerDoc.resources.at(section.sourceResourceId);
-    const std::filesystem::path path = ResolveResourcePath(ownerCtx, ownerFile, resource).lexically_normal();
-    const std::string key = path.generic_string();
-    if (auto* found = placement.ParsedByPath.Find(key))
-        return found->get();
-
-    std::string text;
-    if (path.empty() || !ReadTextFile(path, text))
-    {
-        ReportUnreadableResource("Prefab", resource, path, placement.Options.projectRoot, ownerFile,
-                                 section.headerLine, failure.message, failure.file, failure.line);
-        return nullptr;
-    }
-    auto parsed = std::make_unique<ParsedPrefab>();
-    parsed->Path = path;
+    auto doc = std::make_shared<SceneDoc>();
     int errorLine = 0;
     std::string error;
-    if (!ParseDocument(path, text, parsed->Document, &error, &errorLine) ||
-        !ValidateDocument(parsed->Document, &error, &errorLine))
+    if (!ParseDocument(path, text, *doc, &error, &errorLine) || !ValidateDocument(*doc, &error, &errorLine))
     {
         failure.Fail(path, errorLine, std::move(error));
         return nullptr;
     }
-    if (!parsed->Document.isPrefab)
+    return doc;
+}
+
+// The path of the prefab that `section` places. In a load, the path that the read resolved: a second
+// resolve can name another file.
+static std::filesystem::path PrefabPathOf(const PrefabPlacement& placement, const SceneReadContext& ownerCtx,
+                                          const std::filesystem::path& ownerFile, const SceneDoc& ownerDoc,
+                                          const SceneDoc::PrefabInstanceSection& section)
+{
+    if (placement.files)
+        return ownerDoc.resolvedResourcePaths.Find(section.sourceResourceId)->lexically_normal();
+    return ResolveResourcePath(ownerCtx, ownerFile, ownerDoc.resources.at(section.sourceResourceId)).lexically_normal();
+}
+
+// The prefab the [prefab] section `section` of `ownerFile` places, once per load: from the load's
+// document, or read from its file when the placement has no document. Null, with the failure recorded,
+// when the file cannot be read, does not parse, or is not a prefab.
+static ParsedPrefab* ReadPrefab(PrefabPlacement& placement, const SceneReadContext& ownerCtx,
+                                const std::filesystem::path& ownerFile, const SceneDoc& ownerDoc,
+                                const SceneDoc::PrefabInstanceSection& section, const LoadFailure& failure)
+{
+    const SceneDoc::Resource& resource = ownerDoc.resources.at(section.sourceResourceId);
+    const std::filesystem::path path = PrefabPathOf(placement, ownerCtx, ownerFile, ownerDoc, section);
+    const std::string key = path.generic_string();
+    if (auto* found = placement.parsedByPath.Find(key))
+        return found->get();
+
+    auto parsed = std::make_unique<ParsedPrefab>();
+    parsed->path = path;
+    std::string text;
+    if (placement.files)
     {
-        failure.Fail(ownerFile, section.headerLine,
-                     "The prefab instance \"" + section.id + "\" on line " + std::to_string(section.headerLine) +
-                         " uses resource \"" + section.sourceResourceId + "\", which is a scene, not a prefab. Point "
-                         "the resource at a .prefab file, or place the scene with [subscene].");
+        if (const auto* source = placement.files->Sources.Find(key))
+            parsed->doc = *source;
+    }
+    else if (!path.empty() && ReadTextFile(path, text))
+    {
+        parsed->doc = ReadPrefabFile(path, text, failure);
+        if (!parsed->doc)
+            return nullptr;
+    }
+    if (!parsed->doc)
+    {
+        ReportUnreadableResource("Prefab", resource, path, placement.options.Read.ProjectRoot, ownerFile,
+                                 section.headerLine, failure.message, failure.file, failure.line);
         return nullptr;
     }
-    parsed->Context = MakeDocumentLoadContext(placement.World, parsed->Path, parsed->Document, placement.Options);
-    return placement.ParsedByPath.InsertOrAssign(key, std::move(parsed)).get();
+    if (!parsed->doc->isPrefab)
+    {
+        failure.Fail(ownerFile, section.headerLine, NotAPrefabMessage(section));
+        return nullptr;
+    }
+    parsed->ctx = MakeDocumentLoadContext(placement.world, parsed->path, *parsed->doc, placement.options);
+    return placement.parsedByPath.InsertOrAssign(key, std::move(parsed)).get();
 }
 
 // Places the prefab the section names at `instancePath` from its file's text and marks its root
 // with the source.
-static bool PlaceInstanceFromText(PrefabPlacement& placement, const SceneLoadContext& ownerCtx,
+static bool PlaceInstanceFromText(PrefabPlacement& placement, const SceneReadContext& ownerCtx,
                                   const std::filesystem::path& ownerFile, const SceneDoc& ownerDoc,
                                   const SceneDoc::PrefabInstanceSection& section, const std::string& instancePath,
                                   PlacedPrefab& out, const LoadFailure& failure)
@@ -119,26 +149,18 @@ static bool PlaceInstanceFromText(PrefabPlacement& placement, const SceneLoadCon
     if (!prefab)
         return false;
 
-    if (std::find(placement.Chain.begin(), placement.Chain.end(), prefab->Path) != placement.Chain.end())
-    {
-        std::string loop;
-        for (const auto& file : placement.Chain)
-            loop += file.filename().string() + " places ";
-        loop += prefab->Path.filename().string();
-        return failure.Fail(ownerFile, section.headerLine,
-                            "Prefab cycle: " + loop + ". Remove the prefab instance on line " +
-                                std::to_string(section.headerLine) + ", which closes the loop.");
-    }
+    if (std::find(placement.chain.begin(), placement.chain.end(), prefab->path) != placement.chain.end())
+        return failure.Fail(ownerFile, section.headerLine, PrefabCycleMessage(placement.chain, prefab->path, section));
 
-    if (placement.BuildLog)
+    if (placement.buildLog)
     {
-        std::vector<std::filesystem::path>& files = placement.BuildLog->Files;
-        if (std::find(files.begin(), files.end(), prefab->Path) == files.end())
-            files.push_back(prefab->Path);
+        std::vector<std::filesystem::path>& files = placement.buildLog->files;
+        if (std::find(files.begin(), files.end(), prefab->path) == files.end())
+            files.push_back(prefab->path);
     }
-    placement.Chain.push_back(prefab->Path);
+    placement.chain.push_back(prefab->path);
     const bool placed = PlacePrefab(placement, *prefab, instancePath, out, failure);
-    placement.Chain.pop_back();
+    placement.chain.pop_back();
     if (!placed)
         return false;
 
@@ -146,51 +168,52 @@ static bool PlaceInstanceFromText(PrefabPlacement& placement, const SceneLoadCon
     AssetReference source;
     if (TryResolveResourceIdToAssetReference(ownerCtx, section.sourceResourceId, source, nullptr))
         marker.Source = source.guid;
-    placement.World.AddComponentImmediate(out.Root, marker);
+    placement.world.AddComponentImmediate(out.root, marker);
     return true;
 }
 
 static PrefabLibrary& LibraryOf(PrefabPlacement& placement)
 {
-    if (!placement.Library)
+    if (!placement.library)
     {
-        placement.OwnedLibrary = std::make_unique<PrefabLibrary>();
-        placement.Library = placement.OwnedLibrary.get();
+        placement.ownedLibrary = std::make_unique<PrefabLibrary>();
+        placement.library = placement.ownedLibrary.get();
     }
-    return *placement.Library;
+    return *placement.library;
 }
 
 // Builds the template of the prefab at `path` (which `section` names) into the library: a new
 // generation when the prefab is resident. `knownSource` is the prefab's asset GUID, or null. On
 // failure: records the failure, leaves nothing of the build in the library world, returns null.
-static const PrefabTemplate* BuildTemplate(PrefabPlacement& placement, const SceneLoadContext& ownerCtx,
+static const PrefabTemplate* BuildTemplate(PrefabPlacement& placement, const SceneReadContext& ownerCtx,
                                            const std::filesystem::path& ownerFile, const SceneDoc& ownerDoc,
                                            const SceneDoc::PrefabInstanceSection& section,
                                            const std::filesystem::path& path, const GUID& knownSource,
                                            const LoadFailure& failure)
 {
     PrefabLibrary& library = LibraryOf(placement);
-    if (!placement.TemplateBuild)
+    if (!placement.templateBuild)
     {
-        placement.TemplateBuild =
-            std::make_unique<PrefabPlacement>(library.GetWorld(), placement.Options, nullptr);
-        placement.TemplateBuild->WritesSceneTags = false;
+        placement.templateBuild =
+            std::make_unique<PrefabPlacement>(library.GetWorld(), placement.options, nullptr);
+        placement.templateBuild->writesSceneTags = false;
+        placement.templateBuild->files = placement.files;
     }
-    PrefabPlacement& build = *placement.TemplateBuild;
-    SceneLoadDegradation rows;
+    PrefabPlacement& build = *placement.templateBuild;
+    SceneDegradation rows;
     TemplateBuildLog log;
-    build.Degradation = &rows;
-    build.BuildLog = &log;
+    build.degradation = &rows;
+    build.buildLog = &log;
     PlacedPrefab placed;
     const bool built = PlaceInstanceFromText(build, ownerCtx, ownerFile, ownerDoc, section, std::string(), placed,
                                              failure);
-    build.Degradation = nullptr;
-    build.BuildLog = nullptr;
+    build.degradation = nullptr;
+    build.buildLog = nullptr;
 
     ECS::World& libraryWorld = library.GetWorld();
     if (!built)
     {
-        for (const ECS::EntityHandle h : log.Entities)
+        for (const ECS::EntityHandle h : log.entities)
         {
             if (libraryWorld.IsValid(h))
                 libraryWorld.DestroyEntityImmediate(h);
@@ -200,46 +223,45 @@ static const PrefabTemplate* BuildTemplate(PrefabPlacement& placement, const Sce
 
     PrefabTemplate prefab;
     prefab.Path = path;
-    if (const auto* marker = libraryWorld.GetComponent<Components::PrefabInstance>(placed.Root))
+    if (const auto* marker = libraryWorld.GetComponent<Components::PrefabInstance>(placed.root))
     {
         prefab.Source = knownSource.IsNull() ? marker->Source : knownSource;
         Components::PrefabInstance known = *marker;
         known.Source = prefab.Source;
-        libraryWorld.AddComponentImmediate(placed.Root, known);
+        libraryWorld.AddComponentImmediate(placed.root, known);
     }
-    prefab.Entities.reserve(placed.Members.size());
-    prefab.Addresses.reserve(placed.Members.size());
-    prefab.Origins.reserve(placed.Members.size());
-    for (auto& [address, h] : placed.Members)
+    prefab.Entities.reserve(placed.members.size());
+    prefab.Addresses.reserve(placed.members.size());
+    prefab.Origins.reserve(placed.members.size());
+    for (auto& [address, h] : placed.members)
     {
-        const auto created = std::find(log.Entities.begin(), log.Entities.end(), h);
-        assert(created != log.Entities.end() && "Every template entity is created by its build");
+        const auto created = std::find(log.entities.begin(), log.entities.end(), h);
+        assert(created != log.entities.end() && "Every template entity is created by its build");
         prefab.Addresses.push_back(std::move(address));
         prefab.Entities.push_back(h);
-        prefab.Origins.push_back(log.Origins[static_cast<std::size_t>(created - log.Entities.begin())]);
+        prefab.Origins.push_back(log.origins[static_cast<std::size_t>(created - log.entities.begin())]);
     }
-    for (SceneLoadSkip& skip : rows.skips)
+    for (SceneDegradation::Skip& skip : rows.skips)
     {
         const auto it = std::find(prefab.Entities.begin(), prefab.Entities.end(), skip.entityHandle);
         const std::int32_t index =
             it == prefab.Entities.end() ? -1 : static_cast<std::int32_t>(it - prefab.Entities.begin());
         prefab.Rows.push_back(PrefabTemplate::Row{std::move(skip), index});
     }
-    prefab.Files = std::move(log.Files);
+    prefab.Files = std::move(log.files);
     const auto* nameSchema = SceneSchemaRegistry::Find("Name");
-    prefab.RootTakesFallbackName = nameSchema && !nameSchema->IsPresent(libraryWorld, placed.Root);
+    prefab.RootTakesFallbackName = nameSchema && !nameSchema->IsPresent(libraryWorld, placed.root);
     return &library.Insert(std::move(prefab));
 }
 
 // The template of the prefab `section` places: the resident one, or one built from the prefab's
 // text the first time the library meets it.
-static const PrefabTemplate* ResolveTemplate(PrefabPlacement& placement, const SceneLoadContext& ownerCtx,
+static const PrefabTemplate* ResolveTemplate(PrefabPlacement& placement, const SceneReadContext& ownerCtx,
                                              const std::filesystem::path& ownerFile, const SceneDoc& ownerDoc,
                                              const SceneDoc::PrefabInstanceSection& section,
                                              const LoadFailure& failure)
 {
-    const SceneDoc::Resource& resource = ownerDoc.resources.at(section.sourceResourceId);
-    const std::filesystem::path path = ResolveResourcePath(ownerCtx, ownerFile, resource).lexically_normal();
+    const std::filesystem::path path = PrefabPathOf(placement, ownerCtx, ownerFile, ownerDoc, section);
     if (const PrefabTemplate* resident = LibraryOf(placement).FindByPath(path))
         return resident;
     return BuildTemplate(placement, ownerCtx, ownerFile, ownerDoc, section, path, GUID::Null(), failure);
@@ -256,7 +278,7 @@ std::string PathAsSpelledOnDisk(const std::filesystem::path& file, const std::fi
 }
 
 const PrefabTemplate* BuildTemplateFromFile(PrefabLibrary& library, const std::filesystem::path& path,
-                                            const GUID& source, const LoadOptions& options, std::string& error)
+                                            const GUID& source, const SceneLoadOptions& options, std::string& error)
 {
     SceneDoc ownerDoc;
     SceneDoc::Resource resource;
@@ -268,9 +290,9 @@ const PrefabTemplate* BuildTemplateFromFile(PrefabLibrary& library, const std::f
     section.sourceResourceId = resource.id;
 
     PrefabPlacement placement{library.GetWorld(), options, nullptr};
-    placement.UsesLibrary = true;
-    placement.Library = &library;
-    const SceneLoadContext ownerCtx = MakeDocumentLoadContext(library.GetWorld(), path, ownerDoc, options);
+    placement.usesLibrary = true;
+    placement.library = &library;
+    const SceneReadContext ownerCtx = MakeDocumentLoadContext(library.GetWorld(), path, ownerDoc, options);
     std::string message;
     std::filesystem::path file;
     int line = 0;
@@ -279,8 +301,8 @@ const PrefabTemplate* BuildTemplateFromFile(PrefabLibrary& library, const std::f
     if (!built)
     {
         const std::filesystem::path assetRoot =
-            options.assetRootOverride.empty() && options.assetResolver ? options.assetResolver->GetAssetRoot()
-                                                                       : options.assetRootOverride;
+            options.Read.AssetRootOverride.empty() && options.Read.AssetResolver ? options.Read.AssetResolver->GetAssetRoot()
+                                                                       : options.Read.AssetRootOverride;
         error = PathAsSpelledOnDisk(file.empty() ? path : file, assetRoot) + ":" + std::to_string(line) + ": " + message;
     }
     return built;
@@ -344,7 +366,7 @@ std::unordered_set<std::string> CollectSceneIdentities(ECS::World& world)
     return used;
 }
 
-void HoldReferencedPrefabs(PrefabLibrary& library, ECS::World& world, const LoadOptions& options,
+void HoldReferencedPrefabs(PrefabLibrary& library, ECS::World& world, const SceneLoadOptions& options,
                            std::span<const ECS::EntityHandle> entities)
 {
     const auto fields = CollectPrefabRefFields();
@@ -361,7 +383,7 @@ void HoldReferencedPrefabs(PrefabLibrary& library, ECS::World& world, const Load
         {
             std::filesystem::path path;
             AssetType type = AssetType::Unknown;
-            ISceneAssetResolver* resolver = options.assetResolver;
+            ISceneAssetResolver* resolver = options.Read.AssetResolver;
             if (!resolver || !resolver->TryGetPathAndType(resolver->ResolveGuid(source), path, type))
             {
                 Logger::Log::Error("Scene: a PrefabRef names the asset {}, which the project does not have. Assign "
@@ -385,7 +407,7 @@ void HoldReferencedPrefabs(PrefabLibrary& library, ECS::World& world, const Load
 // Places the instance `section` at `instancePath` as a batch clone of its prefab's template, with
 // scene identities from the addresses and the root marked with its source (and named after the
 // instance when the prefab gives no name). Records the template's load-report rows again.
-static bool PlaceInstanceFromLibrary(PrefabPlacement& placement, const SceneLoadContext& ownerCtx,
+static bool PlaceInstanceFromLibrary(PrefabPlacement& placement, const SceneReadContext& ownerCtx,
                                      const std::filesystem::path& ownerFile, const SceneDoc& ownerDoc,
                                      const SceneDoc::PrefabInstanceSection& section, const std::string& instancePath,
                                      PlacedPrefab& out, const LoadFailure& failure)
@@ -394,45 +416,45 @@ static bool PlaceInstanceFromLibrary(PrefabPlacement& placement, const SceneLoad
     if (!prefab)
         return false;
 
-    ECS::World& world = placement.World;
-    placement.Library->Hold(world, *prefab);
-    if (!world.CreateBatchFromWorld(placement.Library->GetWorld(), prefab->Plan, placement.Remap))
+    ECS::World& world = placement.world;
+    placement.library->Hold(world, *prefab);
+    if (!world.CreateBatchFromWorld(placement.library->GetWorld(), prefab->Plan, placement.remap))
         return failure.Fail(ownerFile, section.headerLine,
                             "The prefab instance \"" + section.id + "\" could not be copied from its prefab. Reload "
                             "the scene; if it persists, re-save the prefab.");
-    const std::span<const ECS::EntityHandle> targets = placement.Remap.GetTargets();
-    out.Root = targets.front();
-    out.Members.clear();
-    out.Members.reserve(targets.size());
-    for (std::size_t index = 0; index < targets.size(); ++index)
+    const std::span<const ECS::EntityHandle> targets = placement.remap.GetTargets();
+    out.root = targets.front();
+    out.members.clear();
+    out.members.reserve(targets.size());
+    for (std::size_t i = 0; i < targets.size(); ++i)
     {
-        const std::string& address = prefab->Addresses[index];
+        const std::string& address = prefab->Addresses[i];
         const std::string path = JoinPath(instancePath, address);
         const std::string tag = SceneTagForPath(path);
-        const PrefabTemplate::Origin& origin = prefab->Origins[index];
+        const PrefabTemplate::Origin& origin = prefab->Origins[i];
         if (!ClaimHashedTag(placement, tag, path, prefab->Files[origin.File], origin.Line, failure))
             return false;
-        world.AddComponentImmediate(targets[index], MakeTag(tag));
-        out.Members.emplace_back(address, targets[index]);
+        world.AddComponentImmediate(targets[i], MakeTag(tag));
+        out.members.emplace_back(address, targets[i]);
     }
     if (prefab->RootTakesFallbackName)
-        ApplyFallbackName(world, ownerCtx, out.Root, LastIdOf(instancePath), instancePath);
+        ApplyFallbackName(world, ownerCtx, out.root, LastIdOf(instancePath), instancePath);
 
     Components::PrefabInstance marker{};
     AssetReference source;
     if (TryResolveResourceIdToAssetReference(ownerCtx, section.sourceResourceId, source, nullptr))
         marker.Source = source.guid;
-    world.AddComponentImmediate(out.Root, marker);
+    world.AddComponentImmediate(out.root, marker);
 
-    if (placement.Degradation)
+    if (placement.degradation)
     {
         for (const PrefabTemplate::Row& row : prefab->Rows)
         {
-            SceneLoadSkip skip = row.Skip;
+            SceneDegradation::Skip skip = row.Skip;
             skip.entityId = JoinPath(instancePath, skip.entityId);
             skip.entityHandle = row.EntityIndex >= 0 ? targets[static_cast<std::size_t>(row.EntityIndex)]
                                                      : ECS::EntityHandle{};
-            placement.Degradation->skips.push_back(std::move(skip));
+            placement.degradation->skips.push_back(std::move(skip));
         }
     }
     return true;
@@ -440,12 +462,12 @@ static bool PlaceInstanceFromLibrary(PrefabPlacement& placement, const SceneLoad
 
 // Places the prefab the section names at `instancePath` and marks its root with the source. The
 // section's own override lines are the caller's to apply, against the caller's entity ids.
-bool PlaceInstanceSection(PrefabPlacement& placement, const SceneLoadContext& ownerCtx,
+bool PlaceInstanceSection(PrefabPlacement& placement, const SceneReadContext& ownerCtx,
                           const std::filesystem::path& ownerFile, const SceneDoc& ownerDoc,
                           const SceneDoc::PrefabInstanceSection& section, const std::string& instancePath,
                           PlacedPrefab& out, const LoadFailure& failure)
 {
-    if (placement.UsesLibrary)
+    if (placement.usesLibrary)
         return PlaceInstanceFromLibrary(placement, ownerCtx, ownerFile, ownerDoc, section, instancePath, out, failure);
     return PlaceInstanceFromText(placement, ownerCtx, ownerFile, ownerDoc, section, instancePath, out, failure);
 }
@@ -460,7 +482,7 @@ static bool IsAtOrUnder(std::string_view memberAddress, std::string_view address
 // The load-report row for an override line whose address names no entity of the instance: an
 // orphaned override, or a line under a child that the section removes (`removedAddresses`). The load
 // goes on; the line is not kept by a save.
-static void RecordOrphanedOverride(SceneLoadDegradation* degradation, const std::string& instancePath,
+static void RecordOrphanedOverride(SceneDegradation* degradation, const std::string& instancePath,
                                    std::string_view address, std::string component, std::string field,
                                    std::string_view line, const std::filesystem::path& ownerFile, int lineNo,
                                    ECS::EntityHandle root, std::span<const std::string> removedAddresses)
@@ -470,13 +492,13 @@ static void RecordOrphanedOverride(SceneLoadDegradation* degradation, const std:
     const bool underRemoved = std::ranges::any_of(
         removedAddresses, [address](const std::string& removed) { return IsAtOrUnder(address, removed); });
     const std::string quoted = "'" + std::string(line) + "' names \"" + std::string(address) + "\"";
-    degradation->skips.push_back(SceneLoadSkip{
+    degradation->skips.push_back(SceneDegradation::Skip{
         JoinPath(instancePath, address), std::move(component), std::move(field),
         underRemoved ? quoted + ", a child that this instance removes. A save does not keep the line."
                      : quoted + ", which the prefab does not have. Delete the line, or put the entity back in the "
                                 "prefab.",
         ownerFile, lineNo, /*preserved=*/false, root, /*componentType=*/0,
-        underRemoved ? SceneLoadSkip::SkipKind::UnderRemovedEntity : SceneLoadSkip::SkipKind::OrphanedOverride,
+        underRemoved ? SceneDegradation::SkipKind::UnderRemovedEntity : SceneDegradation::SkipKind::OrphanedOverride,
         std::string(address)});
 }
 
@@ -503,24 +525,27 @@ static void RemoveMemberAndItsChildren(ECS::World& world, PlacedPrefab& placed, 
                                        std::vector<std::pair<std::string, ECS::EntityHandle>>& removed)
 {
     const auto first =
-        std::stable_partition(placed.Members.begin(), placed.Members.end(),
+        std::stable_partition(placed.members.begin(), placed.members.end(),
                               [address](const auto& member) { return !IsAtOrUnder(member.first, address); });
-    for (auto it = first; it != placed.Members.end(); ++it)
+    for (auto it = first; it != placed.members.end(); ++it)
     {
         world.DestroyEntityImmediate(it->second);
         removed.push_back(*it);
     }
-    placed.Members.erase(first, placed.Members.end());
+    placed.members.erase(first, placed.members.end());
 }
 
-// Applies removed entities, removed components, added components, then changed fields.
-// Missing addresses or components produce load-report rows. Removed entities enter removed.
-static bool ApplyInstanceOverrides(ECS::World& world, const SceneLoadContext& context,
+// Applies one [prefab] section's override lines to the instance `placed`, whose root is at
+// `instancePath`: removed entities, removed components, added components, then changed fields. A
+// line whose address names no entity, a removal of a component no build registers and a removal of a
+// component the entity does not have are load-report rows, never a failure. The entities a "-entity"
+// line removes go to `removed`.
+static bool ApplyInstanceOverrides(ECS::World& world, const SceneReadContext& ctx,
                                    const std::filesystem::path& ownerFile,
                                    const SceneDoc::PrefabInstanceSection& section, const std::string& instancePath,
                                    PlacedPrefab& placed,
                                    std::vector<std::pair<std::string, ECS::EntityHandle>>& removed,
-                                   SceneLoadDegradation* degradation, const LoadFailure& failure)
+                                   SceneDegradation* degradation, const LoadFailure& failure)
 {
     const std::size_t firstRow = degradation ? degradation->skips.size() : 0;
 
@@ -531,7 +556,7 @@ static bool ApplyInstanceOverrides(ECS::World& world, const SceneLoadContext& co
         if (!FindMember(placed, removedEntity.address).IsValid())
         {
             RecordOrphanedOverride(degradation, instancePath, removedEntity.address, {}, {},
-                                   "-entity " + removedEntity.address, ownerFile, removedEntity.line, placed.Root,
+                                   "-entity " + removedEntity.address, ownerFile, removedEntity.line, placed.root,
                                    removedHere);
             continue;
         }
@@ -546,14 +571,14 @@ static bool ApplyInstanceOverrides(ECS::World& world, const SceneLoadContext& co
         if (!h.IsValid())
         {
             RecordOrphanedOverride(degradation, instancePath, component.address, component.authoredName, {}, text,
-                                   ownerFile, component.line, placed.Root, removedHere);
+                                   ownerFile, component.line, placed.root, removedHere);
             continue;
         }
         const auto* schema = SceneSchemaRegistry::Find(component.name);
         if (!schema)
         {
             if (degradation)
-                degradation->skips.push_back(SceneLoadSkip{
+                degradation->skips.push_back(SceneDegradation::Skip{
                     JoinPath(instancePath, component.address), component.authoredName, {},
                     "'" + text + "' removes a component no loaded module registers. Delete the line, or load the "
                                  "module that registers " + component.authoredName + ".",
@@ -563,7 +588,7 @@ static bool ApplyInstanceOverrides(ECS::World& world, const SceneLoadContext& co
         if (!schema->IsPresent(world, h))
         {
             if (degradation)
-                degradation->skips.push_back(SceneLoadSkip{
+                degradation->skips.push_back(SceneDegradation::Skip{
                     JoinPath(instancePath, component.address), component.authoredName, {},
                     "'" + text + "' removes a component the entity does not have. Delete the line.", ownerFile,
                     component.line, /*preserved=*/false, h});
@@ -581,7 +606,7 @@ static bool ApplyInstanceOverrides(ECS::World& world, const SceneLoadContext& co
         {
             RecordOrphanedOverride(degradation, instancePath, component.address, component.authoredName, {},
                                    "+" + Addressed(component.address, component.authoredName),
-                                   ownerFile, component.line, placed.Root, removedHere);
+                                   ownerFile, component.line, placed.root, removedHere);
             continue;
         }
         // The component's field lines add it with their values below.
@@ -590,7 +615,7 @@ static bool ApplyInstanceOverrides(ECS::World& world, const SceneLoadContext& co
         const SceneDoc::ComponentProps block{component.name, component.authoredName, {}};
         const std::string rowId = JoinPath(instancePath, component.address);
         if (const auto* schema = SceneSchemaRegistry::Find(component.name))
-            ApplyComponentBlock(world, context, *schema, h, block, rowId, ownerFile, component.line, degradation);
+            ApplyComponentBlock(world, ctx, *schema, h, block, rowId, ownerFile, component.line, degradation);
         else
             PreserveOrDropUnhandledComponent(world, h, block, rowId, ownerFile);
     }
@@ -609,17 +634,17 @@ static bool ApplyInstanceOverrides(ECS::World& world, const SceneLoadContext& co
                                        Addressed(fields.address, comp.originalName + "." +
                                                                      (comp.props.empty() ? std::string()
                                                                                          : comp.props.front().first)),
-                                       ownerFile, line, placed.Root, removedHere);
+                                       ownerFile, line, placed.root, removedHere);
                 continue;
             }
             if (const auto* schema = SceneSchemaRegistry::Find(comp.name))
-                ApplyComponentBlock(world, context, *schema, h, comp, rowId, ownerFile, line, degradation);
+                ApplyComponentBlock(world, ctx, *schema, h, comp, rowId, ownerFile, line, degradation);
             else
                 PreserveOrDropUnhandledComponent(world, h, comp, rowId, ownerFile);
         }
     }
 
-    RecordUnreadLines(section.unreadLines, instancePath, ownerFile, placed.Root, firstRow, degradation);
+    RecordUnreadLines(section.unreadLines, instancePath, ownerFile, placed.root, firstRow, degradation);
     return true;
 }
 
@@ -683,8 +708,8 @@ static bool AddressOfIdentity(const SceneDoc& doc, std::string_view identity,
 static bool PlacePrefab(PrefabPlacement& placement, ParsedPrefab& prefab, const std::string& instancePath,
                         PlacedPrefab& out, const LoadFailure& failure)
 {
-    ECS::World& world = placement.World;
-    const SceneDoc& doc = prefab.Document;
+    ECS::World& world = placement.world;
+    const SceneDoc& doc = *prefab.doc;
 
     // The file's own names for its entities: entity ids, instance ids, and "instance.address".
     std::unordered_map<std::string, ECS::EntityHandle> entityByIdentity;
@@ -705,21 +730,21 @@ static bool PlacePrefab(PrefabPlacement& placement, ParsedPrefab& prefab, const 
     {
         std::string address;
         if (!AddressOfIdentity(doc, section.id, addressByIdentity, resolving, address))
-            return failure.Fail(prefab.Path, section.headerLine,
+            return failure.Fail(prefab.path, section.headerLine,
                                 "Missing parent '" + section.parent.value_or("") + "' for prefab instance '" +
                                     section.id + "'");
         NestedInstance instance{&section, JoinPath(instancePath, address), {}};
-        if (!PlaceInstanceSection(placement, prefab.Context, prefab.Path, doc, section, instance.path, instance.placed,
+        if (!PlaceInstanceSection(placement, prefab.ctx, prefab.path, doc, section, instance.path, instance.placed,
                                   failure))
             return false;
         if (!section.parent)
         {
             variantRoot = &section;
-            out.Root = instance.placed.Root;
+            out.root = instance.placed.root;
         }
-        for (const auto& [memberAddress, h] : instance.placed.Members)
+        for (const auto& [memberAddress, h] : instance.placed.members)
         {
-            out.Members.emplace_back(JoinPath(address, memberAddress), h);
+            out.members.emplace_back(JoinPath(address, memberAddress), h);
             entityByIdentity[JoinPath(section.id, memberAddress)] = h;
         }
         nested.push_back(std::move(instance));
@@ -733,33 +758,33 @@ static bool PlacePrefab(PrefabPlacement& placement, ParsedPrefab& prefab, const 
     {
         std::string address;
         if (!AddressOfIdentity(doc, e.id, addressByIdentity, resolving, address))
-            return failure.Fail(prefab.Path, e.headerLine,
+            return failure.Fail(prefab.path, e.headerLine,
                                 "Missing parent '" + e.parent.value_or("") + "' for entity '" + e.id + "'");
         const ECS::EntityHandle h = world.CreateEntity();
         if (!h.IsValid())
-            return failure.Fail(prefab.Path, e.headerLine, "Failed to create entity");
-        if (TemplateBuildLog* log = placement.BuildLog)
+            return failure.Fail(prefab.path, e.headerLine, "Failed to create entity");
+        if (TemplateBuildLog* log = placement.buildLog)
         {
-            const auto file = std::find(log->Files.begin(), log->Files.end(), prefab.Path);
-            log->Entities.push_back(h);
-            log->Origins.push_back({static_cast<std::uint32_t>(file - log->Files.begin()), e.headerLine});
+            const auto file = std::find(log->files.begin(), log->files.end(), prefab.path);
+            log->entities.push_back(h);
+            log->origins.push_back({static_cast<std::uint32_t>(file - log->files.begin()), e.headerLine});
         }
         std::string path = JoinPath(instancePath, address);
         const std::string tag = SceneTagForPath(path);
-        if (placement.WritesSceneTags)
+        if (placement.writesSceneTags)
         {
-            if (!ClaimHashedTag(placement, tag, path, prefab.Path, e.headerLine, failure))
+            if (!ClaimHashedTag(placement, tag, path, prefab.path, e.headerLine, failure))
                 return false;
             world.AddComponentImmediate(h, MakeTag(tag));
         }
         if (address.empty())
-            out.Root = h;
-        out.Members.emplace_back(std::move(address), h);
+            out.root = h;
+        out.members.emplace_back(std::move(address), h);
         entityByIdentity[e.id] = h;
         created.push_back(h);
         paths.push_back(std::move(path));
     }
-    std::stable_partition(out.Members.begin(), out.Members.end(),
+    std::stable_partition(out.members.begin(), out.members.end(),
                           [](const auto& member) { return member.first.empty(); });
 
     // Parent links, now that every entity of the file and of its nested instances exists.
@@ -770,7 +795,7 @@ static bool PlacePrefab(PrefabPlacement& placement, ParsedPrefab& prefab, const 
             continue;
         auto it = entityByIdentity.find(*parent);
         if (it == entityByIdentity.end())
-            return failure.Fail(prefab.Path, doc.entities[entityIndex].headerLine,
+            return failure.Fail(prefab.path, doc.entities[entityIndex].headerLine,
                                 "Missing parent '" + *parent + "' for entity '" + doc.entities[entityIndex].id + "'");
         world.AddComponentImmediate(created[entityIndex], Components::Parent{it->second});
     }
@@ -780,22 +805,22 @@ static bool PlacePrefab(PrefabPlacement& placement, ParsedPrefab& prefab, const 
             continue;
         auto it = entityByIdentity.find(*instance.section->parent);
         if (it == entityByIdentity.end())
-            return failure.Fail(prefab.Path, instance.section->headerLine,
+            return failure.Fail(prefab.path, instance.section->headerLine,
                                 "Missing parent '" + *instance.section->parent + "' for prefab instance '" +
                                     instance.section->id + "'");
-        world.AddComponentImmediate(instance.placed.Root, Components::Parent{it->second});
+        world.AddComponentImmediate(instance.placed.root, Components::Parent{it->second});
     }
 
     // The file's lines resolve entity references against the file's own names.
-    prefab.Context.EntityIdMap = &entityByIdentity;
-    prefab.Context.EntityIdPrefix.clear();
+    prefab.ctx.EntityIdMap = &entityByIdentity;
+    prefab.ctx.EntityIdPrefix.clear();
     for (std::size_t entityIndex = 0; entityIndex < doc.entities.size(); ++entityIndex)
     {
         const SceneDoc::Entity& e = doc.entities[entityIndex];
         // A member's fallback name is its id; the root's is the instance's own id.
         const std::string_view fallbackName = e.parent ? std::string_view(e.id) : LastIdOf(instancePath);
-        ApplyEntityComponents(world, prefab.Context, prefab.Path, created[entityIndex], e, paths[entityIndex], fallbackName,
-                              placement.Degradation);
+        ApplyEntityComponents(world, prefab.ctx, prefab.path, created[entityIndex], e, paths[entityIndex], fallbackName,
+                              placement.degradation);
     }
 
     std::vector<std::pair<std::string, ECS::EntityHandle>> removed;
@@ -804,30 +829,51 @@ static bool PlacePrefab(PrefabPlacement& placement, ParsedPrefab& prefab, const 
     {
         if (instance.section == variantRoot)
             continue;
-        applied = ApplyInstanceOverrides(world, prefab.Context, prefab.Path, *instance.section, instance.path,
-                                         instance.placed, removed, placement.Degradation, failure);
+        applied = ApplyInstanceOverrides(world, prefab.ctx, prefab.path, *instance.section, instance.path,
+                                         instance.placed, removed, placement.degradation, failure);
         if (!applied)
             break;
     }
     if (applied && variantRoot)
-        applied = ApplyInstanceOverrides(world, prefab.Context, prefab.Path, *variantRoot, instancePath, out, removed,
-                                         placement.Degradation, failure);
-    prefab.Context.EntityIdMap = nullptr;
+        applied = ApplyInstanceOverrides(world, prefab.ctx, prefab.path, *variantRoot, instancePath, out, removed,
+                                         placement.degradation, failure);
+    prefab.ctx.EntityIdMap = nullptr;
     if (!applied)
         return false;
 
-    std::erase_if(out.Members, [&world](const auto& member) { return !world.IsValid(member.second); });
+    std::erase_if(out.members, [&world](const auto& member) { return !world.IsValid(member.second); });
     return true;
+}
+
+// Records each field line of `section` on the member of `placed` it addresses, so the field stays an
+// override when its value equals the prefab's. The root's placement is no override.
+static void RecordSectionFields(const ECS::World& world, const SceneDoc::PrefabInstanceSection& section,
+                                const PlacedPrefab& placed)
+{
+    PrefabOverrideRecords& records = PrefabOverrideRecords::Get();
+    for (const auto& fields : section.changedFields)
+    {
+        const ECS::EntityHandle member = FindMember(placed, fields.address);
+        if (!member.IsValid())
+            continue;
+        for (const auto& component : fields.components)
+        {
+            if (fields.address.empty() && IsPlacementComponent(component.name))
+                continue;
+            for (const auto& property : component.props)
+                records.Record(world, member, component.name, property.first);
+        }
+    }
 }
 
 // Places every [prefab] section of a scene (or of a prefab file loaded on its own) under the ids
 // the scene's own lines use, applies each section's override lines, and links each instance root
 // and each entity that waits on a member to its parent.
-bool PlaceSceneInstances(PrefabPlacement& placement, SceneLoadContext& sceneCtx,
+bool PlaceSceneInstances(PrefabPlacement& placement, SceneReadContext& sceneCtx,
                          const std::filesystem::path& sceneFilePath, const SceneDoc& doc,
                          const std::string& idPrefix, Instantiated& out, const LoadFailure& failure)
 {
-    ECS::World& world = placement.World;
+    ECS::World& world = placement.world;
     sceneCtx.EntityIdMap = &out.idToEntity;
     sceneCtx.EntityIdPrefix = idPrefix;
 
@@ -839,7 +885,7 @@ bool PlaceSceneInstances(PrefabPlacement& placement, SceneLoadContext& sceneCtx,
         PlacedPrefab placed;
         if (!PlaceInstanceSection(placement, sceneCtx, sceneFilePath, doc, section, instancePath, placed, failure))
             return false;
-        for (const auto& [address, h] : placed.Members)
+        for (const auto& [address, h] : placed.members)
         {
             const std::string path = JoinPath(instancePath, address);
             const std::string tag = SceneTagForPath(path);
@@ -850,17 +896,18 @@ bool PlaceSceneInstances(PrefabPlacement& placement, SceneLoadContext& sceneCtx,
 
         std::vector<std::pair<std::string, ECS::EntityHandle>> removed;
         if (!ApplyInstanceOverrides(world, sceneCtx, sceneFilePath, section, instancePath, placed, removed,
-                                    placement.Degradation, failure))
+                                    placement.degradation, failure))
             return false;
+        RecordSectionFields(world, section, placed);
         for (const auto& [address, h] : removed)
         {
             const std::string path = JoinPath(instancePath, address);
             out.idToEntity.erase(SceneTagForPath(path));
             out.idToEntity.erase(path);
         }
-        for (const auto& member : placed.Members)
+        for (const auto& member : placed.members)
             out.created.push_back(member.second);
-        roots.emplace_back(placed.Root, &section);
+        roots.emplace_back(placed.root, &section);
     }
 
     for (const auto& [root, section] : roots)

@@ -8,11 +8,11 @@
 #include "Editor/Settings/InfoCardAppearanceSettings.h"
 #include "InspectorLayoutFixture.h"
 #include "Inspectors/LuxText.h"
-#include "Inspectors/SkySunPathCaptions.h"
-#include "Inspectors/SkySunReadoutCard.h"
-#include "Inspectors/SkySunReadoutText.h"
+#include "Sky/SkySun/SkySunPathCaptions.h"
+#include "Sky/SkySun/SkySunReadoutCard.h"
+#include "Sky/SkySun/SkySunReadoutText.h"
 #include "Rendering/Sky/SolarPath.h"
-#include "Sky/SkySunDayKind.h"
+#include "Sky/SkySun/SkySunDayKind.h"
 #include "UI/Controls/Label.h"
 #include "UI/InfoCard.h"
 #include "UI/UIElement.h"
@@ -675,11 +675,11 @@ TEST(SkySunReadout, RestingThePointerOnALineOfTheCardShowsTheCardsTooltip)
     EXPECT_TRUE(hovered == noonLine || hovered == element) << "the pointer rests on the card";
 
     UIElement* uiRoot = fixture.Ui->GetRootElement();
-    const auto* bubbleText = dynamic_cast<const Label*>(uiRoot->FindById("ui-tooltip-text"));
+    const auto* bubbleText = dynamic_cast<const Label*>(uiRoot->FindById("ui-tooltip-text"_sid));
     ASSERT_NE(bubbleText, nullptr) << "no tooltip was brought up";
     EXPECT_EQ(bubbleText->GetText(), element->GetTooltip());
     EXPECT_NE(bubbleText->GetText().find("solar time"), std::string::npos);
-    const UIElement* bubble = uiRoot->FindById("ui-tooltip");
+    const UIElement* bubble = uiRoot->FindById("ui-tooltip"_sid);
     ASSERT_NE(bubble, nullptr);
     EXPECT_GE(bubble->GetLayoutX(), 0.0f) << "the bubble is on screen, not parked";
     EXPECT_GT(bubble->GetLayoutWidth(), 0.0f);

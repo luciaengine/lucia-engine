@@ -17,8 +17,8 @@
 #include <array>
 #include <chrono>
 #include <fstream>
-#include "Types/FlatMap.h"
-#include "Types/FlatSet.h"
+#include <map>
+#include <set>
 #include <sstream>
 
 #include <nlohmann/json.hpp>
@@ -65,7 +65,7 @@ std::string ProcessErrors(const std::string& output)
 {
     std::istringstream stream(output);
     std::string line;
-    FlatSet<std::string> seen;
+    std::set<std::string> seen;
     std::string errors;
     while (std::getline(stream, line))
     {
@@ -78,7 +78,7 @@ std::string ProcessErrors(const std::string& output)
         // MSBuild repeats the project path in brackets at the end of the line.
         if (const std::size_t bracket = message.rfind(" ["); bracket != std::string::npos && message.back() == ']')
             message.erase(bracket);
-        if (seen.Insert(message))
+        if (seen.insert(message).second)
             errors += "  " + message + "\n";
     }
     return errors;
@@ -228,15 +228,15 @@ std::string SourceStamp(const std::filesystem::path& source)
 }
 
 // The staged manifest: file name to SourceStamp, one "name<TAB>stamp" line each.
-FlatMap<std::string, std::string> ReadStagedManifest(const std::filesystem::path& manifestPath)
+std::map<std::string, std::string> ReadStagedManifest(const std::filesystem::path& manifestPath)
 {
-    FlatMap<std::string, std::string> manifest;
+    std::map<std::string, std::string> manifest;
     std::istringstream stream(ReadText(manifestPath));
     std::string line;
     while (std::getline(stream, line))
     {
         if (const std::size_t tab = line.find('\t'); tab != std::string::npos)
-            manifest.InsertOrAssign(line.substr(0, tab), line.substr(tab + 1));
+            manifest[line.substr(0, tab)] = line.substr(tab + 1);
     }
     return manifest;
 }
@@ -252,16 +252,16 @@ bool StageAssemblies(const std::vector<std::filesystem::path>& assemblies,
     std::error_code ec;
     std::filesystem::create_directories(dependenciesDir, ec);
     const std::filesystem::path manifestPath = dependenciesDir / kStagedManifestFileName;
-    const FlatMap<std::string, std::string> previous = ReadStagedManifest(manifestPath);
-    FlatMap<std::string, std::string> manifest;
+    const std::map<std::string, std::string> previous = ReadStagedManifest(manifestPath);
+    std::map<std::string, std::string> manifest;
     for (const std::filesystem::path& source : assemblies)
     {
         const std::filesystem::path target = dependenciesDir / source.filename();
         const std::string name = source.filename().string();
         const std::string stamp = SourceStamp(source);
-        manifest.InsertOrAssign(name, stamp);
-        const std::string* recorded = previous.Find(name);
-        const bool current = std::filesystem::exists(target, ec) && recorded != nullptr && *recorded == stamp;
+        manifest[name] = stamp;
+        const auto recorded = previous.find(name);
+        const bool current = std::filesystem::exists(target, ec) && recorded != previous.end() && recorded->second == stamp;
         if (!current)
         {
             std::filesystem::copy_file(source, target, std::filesystem::copy_options::overwrite_existing, ec);
@@ -279,7 +279,7 @@ bool StageAssemblies(const std::vector<std::filesystem::path>& assemblies,
     for (const auto& entry : std::filesystem::directory_iterator(dependenciesDir, ec))
     {
         if (entry.is_regular_file() && entry.path().extension() == ".dll" &&
-            !manifest.Contains(entry.path().filename().string()))
+            manifest.find(entry.path().filename().string()) == manifest.end())
             std::filesystem::remove(entry.path(), ec);
     }
     std::string manifestText;

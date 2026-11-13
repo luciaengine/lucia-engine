@@ -57,6 +57,12 @@ endif()
 # call below resolves `CMAKE_TOOLCHAIN_FILE`).
 set(VCPKG_APPLOCAL_DEPS OFF CACHE BOOL "vcpkg redundant — we stage runtime DLLs ourselves via ge_stage_runtime_dependencies" FORCE)
 
+# Keep the native macOS deployment floor equal to the dependency triplets.
+# An explicit deployment target takes precedence over this default.
+if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS version the binaries run on" FORCE)
+endif()
+
 # Include automated dependency management
 include(cmake/Dependencies.cmake)
 
@@ -159,7 +165,26 @@ if(NOT _ge_is_multi_config AND NOT CMAKE_BUILD_TYPE)
         "Build configuration: DebugFast, Debug, RelWithDebInfo, Release or MinSizeRel" FORCE)
 endif()
 
-project(GameEngine VERSION 1.0.0 LANGUAGES C CXX)
+# The engine version comes from the root VERSION file (cmake/EngineVersion.cmake):
+# GE_ENGINE_VERSION is the full string, prerelease suffix included, and
+# GE_ENGINE_VERSION_NUMERIC its <year>.<month>.<patch> part, which project() and
+# the macOS bundle keys take.
+include(cmake/EngineVersion.cmake)
+ge_read_engine_version("${CMAKE_CURRENT_SOURCE_DIR}/VERSION" GE_ENGINE_VERSION GE_ENGINE_VERSION_NUMERIC)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
+
+project(GameEngine VERSION ${GE_ENGINE_VERSION_NUMERIC} LANGUAGES C CXX)
+message(STATUS "Engine version: ${GE_ENGINE_VERSION}")
+
+# The version as C++ constants, for the few sources that show or encode it. A
+# generated header rather than a compile definition: a version bump recompiles
+# only the files that include it, not every target that links Engine.
+string(REPLACE "." ";" _ge_version_parts "${GE_ENGINE_VERSION_NUMERIC}")
+list(GET _ge_version_parts 0 GE_ENGINE_VERSION_YEAR)
+list(GET _ge_version_parts 1 GE_ENGINE_VERSION_MONTH)
+list(GET _ge_version_parts 2 GE_ENGINE_VERSION_PATCH)
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/Engine/Include/Core/EngineVersion.h.in"
+               "${CMAKE_BINARY_DIR}/generated/Core/EngineVersion.h" @ONLY)
 
 # Our patched overlay ports (cmake/ports, and cmake/macos-ports on macOS, which
 # Dependencies.cmake passes to vcpkg) must be configure dependencies, or
@@ -198,6 +223,22 @@ include(cmake/OutputLayout.cmake)
 include(cmake/StageManagedAssemblies.cmake)
 include(cmake/McpServer.cmake)
 ge_add_mcp_server_target()
+
+# BuildInfo/BuildCommit.h: the short commit id of the checkout, "-dirty" when tracked files have
+# uncommitted changes (cmake/WriteBuildCommit.cmake). BuildCommit runs on every build and rewrites
+# the header only when the id changes. A consumer depends on BuildCommit, adds
+# GE_BUILD_COMMIT_INCLUDE_DIR to its include path, and includes the header in one source file.
+find_package(Git QUIET)
+set(GE_BUILD_COMMIT_INCLUDE_DIR "${CMAKE_BINARY_DIR}/generated/build-commit")
+add_custom_target(BuildCommit
+	COMMAND ${CMAKE_COMMAND}
+		"-DGIT=${GIT_EXECUTABLE}"
+		"-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
+		"-DOUTPUT=${GE_BUILD_COMMIT_INCLUDE_DIR}/BuildInfo/BuildCommit.h"
+		-P "${CMAKE_SOURCE_DIR}/cmake/WriteBuildCommit.cmake"
+	BYPRODUCTS "${GE_BUILD_COMMIT_INCLUDE_DIR}/BuildInfo/BuildCommit.h"
+	COMMENT "Recording the build commit"
+	VERBATIM)
 
 # Enable position-independent code on non-Windows so that static libraries
 # (Engine, ECS, AssetRuntime, etc.) can be safely linked into shared objects
@@ -542,9 +583,20 @@ add_compile_definitions($<$<CONFIG:DebugFast>:GE_DEBUGFAST=1>)
 # Testing toggle
 option(BUILD_TESTING "Enable building tests" OFF)
 include(CTest)
+include(cmake/AllocationHook.cmake)
 if(BUILD_TESTING)
   enable_testing()
 endif()
+
+# The allocation counter's hook: every test executable, and the engine's images under
+# GE_DEBUG_INSTRUMENTATION. Also refuses ENABLE_MIMALLOC where the hook is compiled.
+include(cmake/AllocationHook.cmake)
+
+# ge_windows_export_all_symbols: the export step of the shared libraries that export every symbol.
+include(cmake/WindowsExportAllSymbols.cmake)
+
+# Refuses a target that links Engine and also a module Engine already contains.
+include(cmake/EngineModuleDuplicationCheck.cmake)
 
 # Verify dependencies are working
 verify_dependencies()
@@ -920,8 +972,19 @@ if(MSVC)
 		$<$<CONFIG:Debug>:/analyze:external->
 	)
 	add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+	# /fp:precise, the default, never fuses a * b + c. /fp:fast and /fp:contract do, and then results
+	# differ between platforms: Math::MulAdd is the only fused multiply-add.
+	get_cmake_property(_ge_variables VARIABLES)
+	foreach(_ge_variable IN LISTS _ge_variables)
+		if(_ge_variable MATCHES "^CMAKE_(C|CXX)_FLAGS" AND "${${_ge_variable}}" MATCHES "[/-]fp:(fast|contract)")
+			message(FATAL_ERROR "${_ge_variable} contains /fp:fast or /fp:contract. Remove it: the engine needs /fp:precise, so that a * b + c gives the same bits on every platform.")
+		endif()
+	endforeach()
 else()
-	# GCC/Clang: strong warnings everywhere; -Werror only when explicitly requested.
+	# GCC/Clang: strong warnings everywhere; dev configs default to errors.
+	# No compiler fuses a * b + c on its own (GCC fuses by default, Clang within one expression),
+	# so results are the same on every platform; Math::MulAdd is the only fused multiply-add.
+	add_compile_options($<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:-ffp-contract=off>)
 	add_compile_options(
 		-Wall
 		-Wextra
@@ -941,6 +1004,26 @@ else()
 			$<$<CONFIG:RelWithDebInfo>:-Werror>
 		)
 	endif()
+endif()
+
+# Every x64 target compiles for AVX2 with FMA, so Math::MulAdd is one instruction there. Every CPU
+# with AVX2 also has FMA. Arm64 has a fused multiply-add in its base set; wasm has none.
+if(MSVC)
+	if(NOT CMAKE_GENERATOR_PLATFORM MATCHES "ARM64|arm64"
+	   AND NOT (NOT CMAKE_GENERATOR_PLATFORM AND CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64"))
+		add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/arch:AVX2>)
+	endif()
+elseif(NOT EMSCRIPTEN AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+	add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:-mavx2;-mfma>")
+endif()
+
+# Release binaries hold __FILE__ relative to the source root, so no build-machine path ships.
+# Test executables keep full paths (ge_set_output_tests). Other configurations keep full paths.
+if(MSVC)
+	file(TO_NATIVE_PATH "${CMAKE_SOURCE_DIR}/" _ge_native_source_root)
+	add_compile_options("$<$<CONFIG:Release>:/d1trimfile:${_ge_native_source_root}>")
+else()
+	add_compile_options("$<$<CONFIG:Release>:-fmacro-prefix-map=${CMAKE_SOURCE_DIR}/=>")
 endif()
 
 # AddressSanitizer toggle (Debug config by default)
@@ -972,6 +1055,22 @@ if(ENABLE_ASAN)
 
 	# Expose a compile-time define so code/tests can relax perf thresholds under ASan.
 	add_compile_definitions($<$<CONFIG:Debug>:GE_ENABLE_ASAN=1>)
+endif()
+
+# ThreadSanitizer toggle (Debug config, clang and gcc only)
+option(ENABLE_TSAN "Enable ThreadSanitizer (applies to Debug config)" OFF)
+if(ENABLE_TSAN)
+	if(ENABLE_ASAN)
+		message(FATAL_ERROR "ENABLE_TSAN and ENABLE_ASAN cannot both be ON: the two sanitizers do not link together. Configure a separate tree for each (macos-arm64-local-asan, macos-arm64-local-tsan), or turn one off in this tree with -DENABLE_ASAN=OFF or -DENABLE_TSAN=OFF (or reconfigure with cmake --fresh).")
+	endif()
+	if(MSVC)
+		message(FATAL_ERROR "ENABLE_TSAN needs clang or gcc: MSVC has no ThreadSanitizer. Use a macOS or Linux tree.")
+	endif()
+	message(STATUS "ThreadSanitizer: ENABLED")
+	add_compile_options("$<$<CONFIG:Debug>:-fsanitize=thread;-fno-omit-frame-pointer>")
+	add_link_options("$<$<CONFIG:Debug>:-fsanitize=thread>")
+	# Every test executable starts with the runtime options in Tests/ThreadSanitizerOptions.cpp.
+	include(cmake/ThreadSanitizerOptions.cmake)
 endif()
 
 # Clang-Tidy integration (runs during CMake builds if available)
@@ -1022,6 +1121,10 @@ endif()
 # half (CoreCLR hosting; Phase 5 owns the wasm story). The headless smoke
 # executables in Tests/Wasm gate the set under node. Desktop GE_WASM=ON without
 # the Emscripten toolchain still dry-runs the full static link graph below.
+# Find the shared shader compiler before configuring targets that compile test or runtime shaders.
+include(cmake/GlslcCompiler.cmake)
+ge_find_glslc()
+
 if(EMSCRIPTEN)
     add_subdirectory(Engine/Modules/Logger)
     add_subdirectory(Engine/Modules/Events)
@@ -1086,6 +1189,11 @@ if(EMSCRIPTEN)
     add_subdirectory(Engine/Modules/TileMap)
     add_subdirectory(Engine/Modules/MarkupECS)
     add_subdirectory(Engine/Modules/PathfindingECS)
+    add_subdirectory(Engine/Modules/AI)
+    add_subdirectory(Engine/Modules/AIECS)
+    add_subdirectory(Engine/Modules/SpatialGrid)
+    add_subdirectory(Engine/Modules/SpatialGridECS)
+    add_subdirectory(Engine/Modules/MeshPicking)
     # This list must cover every entry of Engine/CMakeLists.txt's
     # GE_ENGINE_MODULES: Engine splices each one's objects in, so a module
     # added there but not added here fails at generate time with only
@@ -1166,8 +1274,16 @@ add_subdirectory(Engine/Modules/PhysicsECS)
 add_subdirectory(Engine/Modules/Pathfinding)
 add_subdirectory(Engine/Modules/PathfindingECS)
 
-# CPU mesh picking primitives (BVH, ray-triangle). Editor-side glue (asset
-# lookup, terrain raymarch, scene walk) lives in Apps/Editor/Source/Picking.
+# AI modules
+add_subdirectory(Engine/Modules/AI)
+add_subdirectory(Engine/Modules/AIECS)
+
+# The gameplay spatial grid of moving entities
+add_subdirectory(Engine/Modules/SpatialGrid)
+add_subdirectory(Engine/Modules/SpatialGridECS)
+
+# CPU mesh picking primitives (BVH, ray-triangle). The scene raycast over them
+# (asset lookup, terrain raymarch, scene walk) is Engine/Source/Scene/SceneRaycast.cpp.
 add_subdirectory(Engine/Modules/MeshPicking)
 
 # Scene-level CPU spatial index (TLAS over per-entity AABBs). Shared by
@@ -1429,6 +1545,36 @@ if(BUILD_TESTING)
         set_tests_properties(McpToolGate PROPERTIES TIMEOUT 600 LABELS "Editor")
     else()
         message(STATUS "node not found - McpToolGate test not registered")
+    endif()
+endif()
+
+# send_key digits: `ge send_key --key 8` sends the digit key, and a raw key code
+# from 32 up stays raw. Drives the CLI against a fake editor; the first run may
+# build mcp/dist, so the budget matches McpEditorEndpointReport.
+if(BUILD_TESTING)
+    find_program(GE_NODE_EXECUTABLE NAMES node node.exe)
+    if(GE_NODE_EXECUTABLE)
+        add_test(NAME McpSendKeyDigits
+            COMMAND ${GE_NODE_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/Tests/Mcp/send-key-digits-check.mjs)
+        set_tests_properties(McpSendKeyDigits PROPERTIES TIMEOUT 600 LABELS "Editor")
+    else()
+        message(STATUS "node not found - McpSendKeyDigits test not registered")
+    endif()
+endif()
+
+# `ge batch` ends with its own exit code for a file or a held pipe, and `--help` and
+# `--dry-run` do not connect. Fake editor; the first run may build mcp/dist, so the
+# budget matches McpEditorEndpointReport.
+if(BUILD_TESTING)
+    find_program(GE_NODE_EXECUTABLE NAMES node node.exe)
+    if(GE_NODE_EXECUTABLE)
+        add_test(NAME McpBatchStdin
+            COMMAND ${GE_NODE_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/Tests/Mcp/batch-stdin-check.mjs)
+        set_tests_properties(McpBatchStdin PROPERTIES TIMEOUT 600 LABELS "Editor")
+    else()
+        message(STATUS "node not found - McpBatchStdin test not registered")
     endif()
 endif()
 

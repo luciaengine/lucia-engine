@@ -35,6 +35,11 @@ void SaveGlobalBuildScenes(const std::vector<std::string>& scenes);
 bool LoadBuildPlatformUseGlobalScenes(const std::string& platformName);
 bool LoadBuildPlatformUseGlobalIcon(const std::string& platformName);
 
+// The scenes a build for `platformName` ships, asset-relative, in build order: the
+// global list when the platform uses it and it holds a scene, else the platform's own
+// list, else the project's startup scene when that scene file exists. Empty when none applies.
+std::vector<std::string> LoadEffectiveBuildScenes(const std::string& platformName);
+
 std::string LoadBuildGlobalIcon();
 std::string LoadBuildPlatformIcon(const std::string& platformName);
 

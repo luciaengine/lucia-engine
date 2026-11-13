@@ -14,9 +14,10 @@
 #include <vector>
 
 #include "Assets/MaterialAsset.h"
+#include "Engine/Rendering/CameraUtils.h"
 #include "Engine/Rendering/MaterialSsboLayout.h"
 #include "Engine/Rendering/RenderServices.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/ViewParamsLayout.h"
 #include "Rendering/Common/Math.h"
 #include "Rendering/Common/Utils.h"
@@ -293,9 +294,14 @@ TEST(MaterialShaders, MaterialV2_RendersLitCube)
     std::memcpy(viewParams.ge_proj, P.Data(), sizeof(viewParams.ge_proj));
     std::memcpy(viewParams.ge_viewProj, VP.Data(), sizeof(viewParams.ge_viewProj));
     std::memcpy(viewParams.ge_prevViewProj, VP.Data(), sizeof(viewParams.ge_prevViewProj));
-    viewParams.ge_nearFar[0] = kNear;
-    viewParams.ge_nearFar[1] = kFar;
-    viewParams.ge_nearFar[2] = 1.0f / std::log(kFar / kNear);
+    const auto depthTerms = GameEngine::Engine::Renderer::ProjectionDepthTerms::Of(P);
+    viewParams.ge_depthTerms[0] = depthTerms.M22;
+    viewParams.ge_depthTerms[1] = depthTerms.M32;
+    viewParams.ge_depthTerms[2] = depthTerms.M23;
+    viewParams.ge_depthTerms[3] = depthTerms.M33;
+    viewParams.ge_viewRanges[0] = kNear;
+    viewParams.ge_viewRanges[1] = kFar;
+    viewParams.ge_viewRanges[2] = 1.0f / std::log(kFar / kNear);
     viewParams.ge_cameraPosWS[0] = eye.x;
     viewParams.ge_cameraPosWS[1] = eye.y;
     viewParams.ge_cameraPosWS[2] = eye.z;

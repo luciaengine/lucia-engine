@@ -1,6 +1,7 @@
 #include "Input/InputSystem.h"
 #include "Input/KeyCodes.h"
 #include "Input/GamepadCodes.h"
+#include "Input/Gamepad/GamepadPoller.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -74,9 +75,10 @@ inline bool IsSuperKey(KeyCode key)
 // claims a combination its action would then ignore.
 inline bool MatchesMods(int mods, const ActionBinding& b)
 {
-    if ((mods & b.requiredMods) != b.requiredMods)
+    const int required = static_cast<int>(b.requiredMods);
+    if ((mods & required) != required)
         return false;
-    if ((mods & b.forbiddenMods) != 0)
+    if ((mods & static_cast<int>(b.forbiddenMods)) != 0)
         return false;
     return true;
 }
@@ -118,7 +120,12 @@ public:
     // Accumulates only between two positions inside the window: a pointer
     // arriving from outside has not travelled from anywhere this sink saw.
     Mathematics::Vector2 m_MouseDelta;
+    // Frame snapshot of m_MouseDelta, taken by Update() before it clears the
+    // accumulator, so GetMouseDelta() reads the same value all frame.
     Mathematics::Vector2 m_FrameMouseDelta;
+    // The next position starts a new count: the pointer lock changed, and the
+    // platform moves the cursor when it does (to the window's centre on lock,
+    // back to where the lock began on unlock).
     bool m_MouseDeltaRestarts = false;
     bool m_PointerLockRequested = false;
     bool m_PointerLocked = false;
@@ -363,6 +370,8 @@ void InputSystem::ClearRegistrations()
     std::memset(m_Impl->m_KeyPollClaim, 0, sizeof(m_Impl->m_KeyPollClaim));
     std::memset(m_Impl->m_MousePollClaim, 0, sizeof(m_Impl->m_MousePollClaim));
     std::memset(m_Impl->m_GamepadPollClaim, 0, sizeof(m_Impl->m_GamepadPollClaim));
+
+    // So does a pointer lock request: the next session asks for its own.
     m_Impl->m_PointerLockRequested = false;
 }
 
@@ -403,13 +412,12 @@ bool InputSystem::IsPointerInWindow() const {
     return m_Impl->m_PointerInWindow;
 }
 
-Mathematics::Vector2 InputSystem::GetMouseDelta() const
-{
-    return m_Impl->m_FrameMouseDelta;
-}
-
 bool InputSystem::IsWindowFocused() const {
     return m_Impl->m_WindowFocused;
+}
+
+Mathematics::Vector2 InputSystem::GetMouseDelta() const {
+    return m_Impl->m_FrameMouseDelta;
 }
 
 void InputSystem::LockPointer() {
@@ -502,6 +510,11 @@ bool InputSystem::OnGamepadButton(int gamepadIndex, int button, bool down)
 
     pad.buttons[button] = true;
     return true;
+}
+
+GamepadRuntimeState InputSystem::GetGamepadRuntimeState() const
+{
+    return GamepadPoller::GetRuntimeState();
 }
 
 bool InputSystem::IsGamepadConnected(int gamepadIndex) const

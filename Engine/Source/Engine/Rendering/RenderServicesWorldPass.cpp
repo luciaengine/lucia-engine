@@ -14,6 +14,7 @@
 #include "Engine/Rendering/MaterialBinder.h"
 #include "Engine/Rendering/MaterialCompiler.h"
 #include "Engine/Rendering/PropCoverageFloor.h"
+#include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/ShaderGraphMaterial.h"
 #include "Rendering/Geometry/VertexLayoutBuilder.h"
 #include "Rendering/Materials/MaterialBuildService.h"
@@ -24,7 +25,6 @@
 #include "Assets/MaterialAsset.h"
 #include "Assets/ModelAsset.h"
 #include "Assets/TextureAsset.h"
-#include "Engine/Rendering/EmbeddedImageDecoder.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
 #include "Engine/Rendering/RTShadowMaskService.h"
@@ -36,15 +36,18 @@
 #include "Engine/Rendering/SkyRenderFeature.h"
 #include "Engine/Rendering/RetargetRenderFeature.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
+#include "Engine/Rendering/Pipeline/PipelineResourceNames.h"
+#include "Engine/Rendering/Pipeline/ViewExposureHistory.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
 #include "Logger/Logger.h"
 #include "Platform/Environment.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/BindlessResourceManager.h"
 #include "Rendering/Core/Device.h"
+#include "Rendering/Core/DrawProducerRegistry.h"
 #include "Rendering/Core/DeviceFormatting.h"
-#include "Rendering/Core/PipelineTypes.h"
-#include "Rendering/CameraDerivation.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Camera/CameraDerivation.h"
 #include "Rendering/Core/CullingStrategy.h"
 #include "Rendering/Core/FrustumCullingStrategy.h"
 #include "Rendering/Core/GPUCulling.h"
@@ -52,14 +55,15 @@
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/Materials/MaterialBuilder.h"
-#include "Rendering/Materials/ShaderReflection.h"
+#include "Rendering/Materials/Shader/ShaderReflection.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Passes/SRGBEncodePass.h"
+#include "Rendering/Passes/MsaaColorResolvePass.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Rendering/Utils/BufferHelpers.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
-#include "Rendering/Utils/CubeLutFileParser.h"
-#include "Rendering/Utils/CubeLutGpuUpload.h"
+#include "Rendering/Utils/CubeLut/CubeLutFileParser.h"
+#include "Rendering/Utils/CubeLut/CubeLutGpuUpload.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
 #include "Types/StringId.h"
 #include "Mathematics/Matrix4x4.h"
@@ -93,6 +97,46 @@ using namespace ::GameEngine::Rendering;
 
 namespace
 {
+void AttachExtraColors(RenderGraph::RGPassBuilder& builder,
+                       const RenderServices::WorldPassTargetsRG& targets)
+{
+    for (uint32_t index = 0; index < targets.ExtraColorCount; ++index)
+    {
+        const auto& extra = targets.ExtraColor[index];
+        if (!extra.Texture.IsValid())
+            continue;
+        if (extra.Resolve.IsValid())
+            builder.AttachColorResolve(extra.Location, extra.Texture, extra.Resolve, extra.Ops);
+        else
+            builder.AttachColor(extra.Location, extra.Texture, extra.Ops);
+    }
+}
+
+// The reads the forward fog's textures need (forward_fog.glsl): the sky backdrop, bound on every pass
+// (BuildPassResourcesRG), and the froxel volume on VolumetricFog-keyword passes.
+void DeclareForwardFogReads(RenderGraph::RGPassBuilder& p, const RenderServices::WorldPassTargetsRG& targets,
+                            Rendering::MaterialKeyword passKeywords)
+{
+    if (targets.SkyBackdrop.IsValid())
+        p.Read(targets.SkyBackdrop, RenderGraph::RGTextureRead::Sampled);
+    if (targets.VolumetricFog.IsValid() && HasKeyword(passKeywords, Rendering::MaterialKeyword::VolumetricFog))
+        p.Read(targets.VolumetricFog, RenderGraph::RGTextureRead::Sampled);
+    if (targets.VolumetricClouds.IsValid() && HasKeyword(passKeywords, Rendering::MaterialKeyword::VolumetricClouds))
+        p.Read(targets.VolumetricClouds, RenderGraph::RGTextureRead::Sampled);
+}
+
+// The froxel volume a VolumetricFog-keyword pass samples (ge_volumetricFog): a transient of the frame
+// (the integrated grid, or the temporal history the composite reads), so its physical texture exists
+// only during preparation.
+void BindVolumetricFogVolume(RenderGraph::RGPrepareContext& ctx, RenderGraph::RGTexture volume, SamplerHandle sampler,
+                             ResolvedPassResources& res)
+{
+    if (!volume.IsValid())
+        return;
+    if (const TextureHandle texture = ctx.GetTexture(volume); texture.IsValid())
+        res.Textures.push_back({HashStringId("ge_volumetricFog"), texture, sampler});
+}
+
 // Topology for a contributor's colour variant. Mesh-backed contributors carry
 // theirs on the registry entry; the procedural ones (terrain, grass, ocean)
 // have no mesh and expand an index range into triangles, which is also the
@@ -351,14 +395,16 @@ void LogPropCoverageCensus(const Rendering::GPUScene& gpuScene,
                            const Rendering::CameraData& cam, uint32_t viewId,
                            uint32_t viewportW, uint32_t viewportH, uint32_t worldKey)
 {
-    const float projScaleY = (cam.cameraPos[3] == 1.0f) ? 0.0f : std::abs(cam.proj[5]);
+    const float projScaleY = (cam.cameraPos[3] == 1.0f) ? 0.0f : std::abs(cam.proj.Data()[5]);
     if (projScaleY <= 0.0f || viewportH == 0u)
         return;
 
-    Rendering::Matrix4x4 viewProj;
-    std::memcpy(viewProj.Data(), cam.viewProj, sizeof(cam.viewProj));
+    // The census runs in the frame of the camera's render origin sector: viewProjRel planes,
+    // each sector-local center composed against the sector.
+    const Mathematics::Vector3Int originSector = CameraRenderOriginSector(cam);
+    const Mathematics::Vector3 eye = CameraEyeRelativeToOrigin(cam);
     Rendering::Vector4 planes[6];
-    Rendering::ExtractFrustumPlanes(viewProj, planes);
+    Rendering::ExtractFrustumPlanes(cam.viewProjRel, planes);
 
     uint32_t visible = 0, subFloor = 0, subAdmit = 0, sub1 = 0, sub2 = 0, sub4 = 0, sub8 = 0;
     const float floorNdc = Rendering::CoverageFloorNdc(
@@ -371,12 +417,14 @@ void LogPropCoverageCensus(const Rendering::GPUScene& gpuScene,
             continue; // tombstone
         if (worldKey != 0u && ((inst.flags >> 16u) & 0xFFFFu) != worldKey)
             continue;
-        if (!Rendering::TestSphereFrustum(inst.boundingCenter, inst.boundingRadius, planes))
+        const Rendering::Vector3 center = Rendering::SectorLocalPointRelativeTo(
+            inst.boundingCenter, inst.sectorPacked[0], inst.sectorPacked[1], originSector);
+        if (!Rendering::TestSphereFrustum(center, inst.boundingRadius, planes))
             continue;
         ++visible;
-        const float dx   = cam.cameraPos[0] - inst.boundingCenter.x;
-        const float dy   = cam.cameraPos[1] - inst.boundingCenter.y;
-        const float dz   = cam.cameraPos[2] - inst.boundingCenter.z;
+        const float dx   = eye.x - center.x;
+        const float dy   = eye.y - center.y;
+        const float dz   = eye.z - center.z;
         const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
         const float covNdc = Rendering::CoverageNdc(inst.boundingRadius, projScaleY, dist);
         // The recommended floor's candidate set (base threshold + the band top).
@@ -424,6 +472,8 @@ struct WorldPassData
     std::vector<PreparedWorldDraw> Draws;
     std::vector<std::byte> PushConstants;
     size_t BaseTextureCount = 0;
+    RenderGraph::RGTexture VolumetricFog{};
+    SamplerHandle FogSampler{};
     bool HasAnyDraws = false;
     size_t EntityBatchCount = 0;
     bool Consolidated = false;
@@ -441,6 +491,30 @@ struct WorldBatchPreparation
     DrawBindings Bindings;
     uint64_t IndirectionAddress;
 };
+
+// The view's ViewParams and ExposureHistory that the pipeline publishes this frame, as the MSAA color
+// resolve's inputs (Pipeline::MsaaResolveViewBuffersFor).
+Passes::MsaaResolveViewBuffers PipelineMsaaResolveViewBuffers(const Pipeline::RenderPipelineInstance* instance,
+                                                              const RenderGraph::RGFrame& frame, ViewId viewId,
+                                                              BufferHandle placeholder)
+{
+    Pipeline::PipelineBufferBindingRG viewParams{};
+    Pipeline::PipelineBufferBindingRG exposureHistory{};
+    if (const Pipeline::PipelineFrameResources* resources = instance ? instance->FrameResourcesFor(&frame) : nullptr)
+        resources->ForEachBufferBinding(
+            viewId,
+            [&viewParams, &exposureHistory](StringId nameId, const Pipeline::PipelineBufferBindingRG& binding)
+            {
+                constexpr StringId kViewParams = HashStringId(Pipeline::Names::Res::ViewParams);
+                constexpr StringId kExposureHistory = HashStringId(Pipeline::Names::Res::ExposureHistory);
+                if (nameId == kViewParams)
+                    viewParams = binding;
+                else if (nameId == kExposureHistory)
+                    exposureHistory = binding;
+            });
+    return Pipeline::MsaaResolveViewBuffersFor(viewParams, exposureHistory, placeholder);
+}
+
 
 } // namespace
 
@@ -497,8 +571,7 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
 
     if (const auto* pv = m_ViewRegistry.FindPerView(viewId))
     {
-        const uint32_t frameSlot = m_Device->GetFrameIndex();
-        const auto lightBuffer = pv->LightBuffers[frameSlot];
+        const auto lightBuffer = pv->CurrentLightBuffer();
         if (lightBuffer.IsValid())
         {
             add(HashStringId("LightUBO"), lightBuffer);
@@ -563,8 +636,8 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
         if (const auto* fr = instance->FrameResourcesFor(&frame))
         {
             fr->ForEachBufferBinding(
-                viewId, [&](const std::string& name, const Pipeline::PipelineBufferBindingRG& b)
-                { add(HashStringId(name), b.Buffer, b.Offset, b.Size); });
+                viewId, [&](StringId nameId, const Pipeline::PipelineBufferBindingRG& b)
+                { add(nameId, b.Buffer, b.Offset, b.Size); });
         }
     }
 
@@ -646,6 +719,47 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
                 gtao = viewGtao;
         }
         addTexture(HashStringId("ge_gtao"), gtao,
+                   m_Textures->GetSampler(Rendering::SamplerPreset::LinearClamp));
+    }
+
+    // ge_skyBackdrop: what the sky pass draws its backdrop from, for the height fog's colour taken
+    // from the sky (forward_fog.glsl). Bound whatever the keywords: the terrain and the grass draw in
+    // this pass with the keywords their nodes chose, and every set this pass hands out must carry it.
+    // Black without a sky; the fog reads it only when its colour source names the sky.
+    if (targets)
+    {
+        TextureHandle backdrop = m_Textures->GetDefaultBlackTexture();
+        if (targets->SkyBackdrop.IsValid())
+        {
+            const TextureHandle viewBackdrop = frame.PhysicalTexture(targets->SkyBackdrop);
+            if (viewBackdrop.IsValid())
+                backdrop = viewBackdrop;
+        }
+        addTexture(HashStringId("ge_skyBackdrop"), backdrop,
+                   m_Textures->GetSampler(Rendering::SamplerPreset::LinearRepeat));
+    }
+
+    // ge_volumetricFogIrradiance: the IBL irradiance cube the volumetric fog lights its continuation
+    // past the volume with (volumetric_fog_forward.glsl), as its composite does. The volume itself
+    // is a transient of the frame, bound during preparation (BindVolumetricFogVolume).
+    if (HasKeyword(passKeywords, MaterialKeyword::VolumetricFog))
+    {
+        TextureHandle irradiance = m_Textures->GetDefaultBlackCubeTexture();
+        SamplerHandle cubeSampler = m_Textures->GetSampler(Rendering::SamplerPreset::LinearClamp);
+        if (auto* ibl = GetFeature<ImageBasedLightingFeature>(); ibl && ibl->IsInitialized())
+        {
+            irradiance = ibl->GetIrradianceCube();
+            cubeSampler = ibl->GetCubeSampler();
+        }
+        addTexture(HashStringId("ge_volumetricFogIrradiance"), irradiance, cubeSampler);
+    }
+
+    // ge_volumetricClouds: the view's resolved clouds (a pool texture of the graph), for the blended
+    // surfaces drawn after the clouds composite that stand beyond them (forward_fog.glsl).
+    if (HasKeyword(passKeywords, MaterialKeyword::VolumetricClouds) && targets && targets->VolumetricClouds.IsValid())
+    {
+        const TextureHandle clouds = frame.PhysicalTexture(targets->VolumetricClouds);
+        addTexture(HashStringId("ge_volumetricClouds"), clouds.IsValid() ? clouds : m_Textures->GetDefaultWhiteTexture(),
                    m_Textures->GetSampler(Rendering::SamplerPreset::LinearClamp));
     }
 
@@ -769,6 +883,8 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
         if (shadowTex.IsValid() && shadowSampler.IsValid())
         {
             addTexture(kShadowMapName, shadowTex, shadowSampler);
+            if (GetProfile().IsCompat())
+                addTexture(HashStringId("ge_shadowMapRaw"), shadowTex, shadowSampler);
         }
         else
         {
@@ -863,22 +979,13 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
             // be a SEPARATE buffer, not a re-upload — the last upload would win
             // for all passes. The cubes still bind to satisfy the descriptor
             // layout; iblIntensity 0 zeroes their contribution.
-            const auto* iblView = m_ViewRegistry.FindViewDesc(viewId);
-            const uint64_t probeWorld = iblView && !ibl->IsLocalProbeCaptureView(viewId) ? iblView->worldId : 0;
             const BufferHandle envData = m_WorldPassExcludeEnvironment
                                              ? m_FallbackBuffers[HashStringId("Env")]
-                                             : ibl->UploadEnvData(m_Device, probeWorld);
+                                             : ibl->UploadEnvData(m_Device);
 
             addTexture(HashStringId("ge_irradianceCube"), ibl->GetIrradianceCube(), ibl->GetCubeSampler());
             addTexture(HashStringId("ge_prefilterCube"), ibl->GetPrefilterCube(), ibl->GetCubeSampler());
             addTexture(HashStringId("ge_brdfLUT"), ibl->GetBrdfLut(), ibl->GetLutSampler());
-            for (uint32_t i = 0; i < ImageBasedLightingFeature::kMaxLocalProbes; ++i)
-            {
-                addTexture(HashStringId(ImageBasedLightingFeature::kLocalIrradianceNames[i]),
-                           ibl->GetLocalIrradiance(probeWorld, i), ibl->GetCubeSampler());
-                addTexture(HashStringId(ImageBasedLightingFeature::kLocalPrefilterNames[i]),
-                           ibl->GetLocalPrefilter(probeWorld, i), ibl->GetCubeSampler());
-            }
             // Bindings and graph dependencies share this path for entity draws
             // and custom contributors, including views containing only contributors.
             auto& vfr = ViewFrameRGFor(frame, viewId);
@@ -895,20 +1002,6 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
                 vfr.IblBrdfLut = frame.ImportExternalTexture(
                     "IBL_BrdfLut", ibl->GetBrdfLut(), Rendering::ResourceState::ShaderResource,
                     Rendering::TextureFormat{}, 1, 1);
-                for (uint32_t i = 0; i < ImageBasedLightingFeature::kMaxLocalProbes; ++i)
-                {
-                    const auto* capture = ibl->GetLocalProbeCapture(probeWorld, i);
-                    if (!capture || !capture->IsInitialized())
-                        continue;
-                    vfr.IblLocalIrradiance[i] = frame.ImportExternalTexture(
-                        ImageBasedLightingFeature::kLocalIrradianceNames[i], capture->GetIrradianceCube(),
-                        Rendering::ResourceState::ShaderResource, Rendering::TextureFormat::R16G16B16A16_FLOAT,
-                        1, ImageBasedLightingFeature::kNumCaptureFaces);
-                    vfr.IblLocalPrefilter[i] = frame.ImportExternalTexture(
-                        ImageBasedLightingFeature::kLocalPrefilterNames[i], capture->GetPrefilterCube(),
-                        Rendering::ResourceState::ShaderResource, Rendering::TextureFormat::R16G16B16A16_FLOAT,
-                        capture->GetPrefilterMipCount(), ImageBasedLightingFeature::kNumCaptureFaces);
-                }
             }
             // Compat-profile spellings: ibl.glsl's compat arm declares the trio
             // as separate images over one standalone sampler (WebGPU's
@@ -1132,6 +1225,8 @@ class RenderServices::WorldPassPreparation
         m_Data->Draws.clear();
         m_Data->PushConstants.clear();
         m_Data->Inputs.PassResources.Textures.resize(m_Data->BaseTextureCount);
+        BindVolumetricFogVolume(m_Context, m_Data->VolumetricFog, m_Data->FogSampler,
+                                 m_Data->Inputs.PassResources);
         m_Data->HasAnyDraws = false;
         m_Data->EntityBatchCount = 0;
         m_Data->Consolidated = false;
@@ -1623,7 +1718,6 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
     if (GetDepthPixelationBandRange(viewId, bandStart, bandEnd, distanceMode))
         passKeywords |= Rendering::MaterialKeyword::DepthPixelationBand;
 
-
     WorldPassRG result{};
 
     const ViewDesc* view = nullptr;
@@ -1937,6 +2031,9 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
     data->Inputs.PassResources = std::move(resources);
     data->Commands = forwardSnapshot;
     data->BaseTextureCount = data->Inputs.PassResources.Textures.size();
+    data->VolumetricFog = HasKeyword(passKeywords, MaterialKeyword::VolumetricFog)
+                              ? targets.VolumetricFog : RenderGraph::RGTexture{};
+    data->FogSampler = m_Textures->GetSampler(Rendering::SamplerPreset::LinearClamp);
 
     result.Pass = frame.AddPass(
         passName.c_str(), Rendering::PassPhase::kWorldRender,
@@ -2009,11 +2106,6 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                 p.Read(vfr.IblPrefilter, RenderGraph::RGTextureRead::Sampled);
             if (vfr.IblBrdfLut.IsValid())
                 p.Read(vfr.IblBrdfLut, RenderGraph::RGTextureRead::Sampled);
-            for (uint32_t i = 0; i < ImageBasedLightingFeature::kMaxLocalProbes; ++i)
-            {
-                if (vfr.IblLocalIrradiance[i].IsValid()) p.Read(vfr.IblLocalIrradiance[i], RenderGraph::RGTextureRead::Sampled);
-                if (vfr.IblLocalPrefilter[i].IsValid()) p.Read(vfr.IblLocalPrefilter[i], RenderGraph::RGTextureRead::Sampled);
-            }
             // ge_gtao samples the AO node's storage-written output: this read is
             // the compute->fragment RAW edge AND the General->ShaderReadOnly
             // transition that matches the descriptor's SHADER_READ_ONLY claim
@@ -2094,7 +2186,7 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                 {
                     fr->ForEachBufferBinding(
                         viewId,
-                        [&](const std::string&, const Pipeline::PipelineBufferBindingRG& b)
+                        [&](StringId, const Pipeline::PipelineBufferBindingRG& b)
                         {
                             if (b.Graph.IsValid())
                                 p.Read(b.Graph, RenderGraph::RGBufferRead::Storage);
@@ -2111,10 +2203,10 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                     scope != WorldPassDrawScope::TransmissiveOnly)
                 {
                     col.Load = RenderGraph::RGLoadOp::Clear;
-                    col.Clear.Color[0] = view->targets.clearColorValue[0];
-                    col.Clear.Color[1] = view->targets.clearColorValue[1];
-                    col.Clear.Color[2] = view->targets.clearColorValue[2];
-                    col.Clear.Color[3] = view->targets.clearColorValue[3];
+                    col.Clear.Color[0] = view->targets.clearColorValue.r;
+                    col.Clear.Color[1] = view->targets.clearColorValue.g;
+                    col.Clear.Color[2] = view->targets.clearColorValue.b;
+                    col.Clear.Color[3] = view->targets.clearColorValue.a;
                 }
                 else
                 {
@@ -2122,25 +2214,15 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                 }
                 col.Store = RenderGraph::RGStoreOp::Store;
 
-                if (canResolveColor)
-                    p.AttachColorResolve(0, targets.Color, targets.Resolve, col);
-                else if (collapseToResolve)
+                if (collapseToResolve)
                     p.AttachColor(0, targets.Resolve, col, targets.ColorRange);
                 else
                     p.AttachColor(0, targets.Color, col, targets.ColorRange);
             }
             // Feature-owned MRT slices, attached verbatim: formats, clears and
             // locations belong to the contributing provider.
-            for (uint32_t i = 0; i < targets.ExtraColorCount; ++i)
-            {
-                const auto& extra = targets.ExtraColor[i];
-                if (!extra.Texture.IsValid())
-                    continue;
-                if (extra.Resolve.IsValid())
-                    p.AttachColorResolve(extra.Location, extra.Texture, extra.Resolve, extra.Ops);
-                else
-                    p.AttachColor(extra.Location, extra.Texture, extra.Ops);
-            }
+            AttachExtraColors(p, targets);
+            DeclareForwardFogReads(p, targets, passKeywords);
             if (targets.Depth.IsValid())
             {
                 RenderGraph::RGAttachmentOps dops{};
@@ -2208,8 +2290,11 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
             uint32_t attribDrawsIssued = 0;
             DrawGeometryBindings geometryBindings(*cl);
 
+            const auto& producerNames = Rendering::DrawProducerRegistry::ScopeNames();
             for (const auto& draw : data->Draws)
             {
+                const auto producer = draw.Entity ? Rendering::DrawProducerRegistry::kInstances : draw.Command.Producer;
+                ctx.SetProfilerScope(producerNames[producer].data());
                 RecordForwardDrawCommand(draw.Prepared, *this, pass, geometryBindings);
                 if (draw.Entity)
                 {
@@ -2218,6 +2303,7 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                                                  draw.MeshIndex, draw.MaxDrawCount, draw.RangeCount);
                 }
             }
+            ctx.SetProfilerScope(nullptr);
             if (DrawAttributionEnabled())
                 LogDrawAttribution("color", viewId, data->EntityBatchCount, attribDrawsIssued,
                                    pass.PipelineBinds, pass.DescriptorBinds,
@@ -2225,6 +2311,13 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
             binder.EndPass(pass);
         });
 
+    if (canResolveColor && result.Pass.IsValid())
+    {
+        const Rendering::Passes::MsaaResolveViewBuffers resolveView = PipelineMsaaResolveViewBuffers(
+            m_FrameOrchestrator.PipelineInstanceForFrame(frame), frame, viewId, m_DefaultPlaceholderBuffer);
+        Rendering::Passes::AddMsaaColorResolvePassRG(frame, targets.Color, targets.Resolve, targets.BloomSampleDelta,
+                                                     resolveView, (passName + ".ColorResolve").c_str());
+    }
     return result;
 }
 
@@ -2308,11 +2401,18 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
         PassBindingContext Inputs;
         std::span<const DrawCommand> Commands;
         std::vector<PreparedForwardDraw> Prepared;
+        size_t BaseTextureCount = 0;
+        RenderGraph::RGTexture VolumetricFog{};
+        SamplerHandle FogSampler{};
     };
     auto* data = frame.AllocatePassData<ForwardPassData>();
     data->Inputs.View = viewId;
     data->Inputs.PassKeywords = passKeywords;
     data->Inputs.PassResources = std::move(resources);
+    data->BaseTextureCount = data->Inputs.PassResources.Textures.size();
+    data->VolumetricFog = HasKeyword(passKeywords, MaterialKeyword::VolumetricFog)
+                              ? targets.VolumetricFog : RenderGraph::RGTexture{};
+    data->FogSampler = m_Textures->GetSampler(Rendering::SamplerPreset::LinearClamp);
     data->Commands = CaptureForwardCommands(frame, commands);
     std::string debugName = passName && passName[0] != '\0' ? passName : "ForwardCommands";
     debugName += "[";
@@ -2321,7 +2421,7 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
     debugName += std::to_string(static_cast<uint32_t>(viewId));
     debugName += "]";
 
-    return frame.AddPass(
+    const RenderGraph::RGPass drawPass = frame.AddPass(
         debugName.c_str(), Rendering::PassPhase::kWorldRender,
         [&](RenderGraph::RGPassBuilder& p)
         {
@@ -2357,11 +2457,6 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
                 p.Read(vfr.IblPrefilter, RenderGraph::RGTextureRead::Sampled);
             if (vfr.IblBrdfLut.IsValid())
                 p.Read(vfr.IblBrdfLut, RenderGraph::RGTextureRead::Sampled);
-            for (uint32_t i = 0; i < ImageBasedLightingFeature::kMaxLocalProbes; ++i)
-            {
-                if (vfr.IblLocalIrradiance[i].IsValid()) p.Read(vfr.IblLocalIrradiance[i], RenderGraph::RGTextureRead::Sampled);
-                if (vfr.IblLocalPrefilter[i].IsValid()) p.Read(vfr.IblLocalPrefilter[i], RenderGraph::RGTextureRead::Sampled);
-            }
             // ge_gtao: same compute->fragment edge + General->ShaderReadOnly
             // transition as the entity world pass (the by-name binding alone
             // forms no edge; VUID-vkCmdDraw-None-09600 otherwise). Gated
@@ -2424,7 +2519,7 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
                 {
                     fr->ForEachBufferBinding(
                         viewId,
-                        [&](const std::string&, const Pipeline::PipelineBufferBindingRG& b)
+                        [&](StringId, const Pipeline::PipelineBufferBindingRG& b)
                         {
                             if (b.Graph.IsValid())
                                 p.Read(b.Graph, RenderGraph::RGBufferRead::Storage);
@@ -2437,13 +2532,13 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
                 RenderGraph::RGAttachmentOps col{};
                 col.Load = RenderGraph::RGLoadOp::Load;
                 col.Store = RenderGraph::RGStoreOp::Store;
-                if (canResolveColor)
-                    p.AttachColorResolve(0, targets.Color, targets.Resolve, col);
-                else if (collapseToResolve)
+                if (collapseToResolve)
                     p.AttachColor(0, targets.Resolve, col, targets.ColorRange);
                 else
                     p.AttachColor(0, targets.Color, col, targets.ColorRange);
             }
+            AttachExtraColors(p, targets);
+            DeclareForwardFogReads(p, targets, passKeywords);
             if (targets.Depth.IsValid())
             {
                 RenderGraph::RGAttachmentOps dops{};
@@ -2458,6 +2553,8 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
             p.Prepare([this, data](RenderGraph::RGPrepareContext& ctx)
             {
                 data->Prepared.clear();
+                data->Inputs.PassResources.Textures.resize(data->BaseTextureCount);
+                BindVolumetricFogVolume(ctx, data->VolumetricFog, data->FogSampler, data->Inputs.PassResources);
                 data->Prepared.reserve(data->Commands.size());
                 for (const auto& command : data->Commands)
                 {
@@ -2510,6 +2607,23 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
 
             binder.EndPass(pass);
         });
+    if (canResolveColor && drawPass.IsValid())
+    {
+        const Rendering::Passes::MsaaResolveViewBuffers resolveView = PipelineMsaaResolveViewBuffers(
+            m_FrameOrchestrator.PipelineInstanceForFrame(frame), frame, viewId, m_DefaultPlaceholderBuffer);
+        Rendering::Passes::AddMsaaColorResolvePassRG(frame, targets.Color, targets.Resolve, targets.BloomSampleDelta,
+                                                     resolveView, (debugName + ".ColorResolve").c_str());
+    }
+    return drawPass;
+}
+
+void RenderServices::RequestScreenSpaceShadowPipelines()
+{
+    if (!GetDevice())
+        return;
+    if (!m_ScreenSpaceShadows)
+        m_ScreenSpaceShadows = std::make_unique<ScreenSpaceShadowPasses>(GetDevice());
+    m_ScreenSpaceShadows->RequestPipelines();
 }
 
 } // namespace Engine::Renderer

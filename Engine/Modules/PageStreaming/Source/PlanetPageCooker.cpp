@@ -10,6 +10,7 @@
 #include "PageStreaming/PageStore/PageStoreWriter.h"
 
 #include "FileSystem/FileSystem.h"
+#include "JobSystem/WorkStealingThreadPool.h"
 #include "Mathematics/Vector3.h"
 
 #include <algorithm>
@@ -37,8 +38,8 @@ public:
         : m_Request(request)
     {
         m_Gnomonic.resize(request.FaceSamples);
-        for (uint32 sampleIndex = 0; sampleIndex < request.FaceSamples; ++sampleIndex)
-            m_Gnomonic[sampleIndex] = GnomonicFaceCoordinate(EqualAngleSampleCoordinate(sampleIndex, request.FaceSamples));
+        for (uint32 i = 0; i < request.FaceSamples; ++i)
+            m_Gnomonic[i] = GnomonicFaceCoordinate(EqualAngleSampleCoordinate(i, request.FaceSamples));
     }
 
     // Rows [firstRow, firstRow + count) of `face`, row-major; false at a height that is not a number.
@@ -47,26 +48,20 @@ public:
         const uint32 samples = m_Request.FaceSamples;
         out.resize(static_cast<std::size_t>(samples) * count);
         std::atomic<bool> finite{true};
-        RunPageWork(m_Request.Pool, count, [this, face, firstRow, samples, &out, &finite](std::size_t bandRow) {
-            if (!FillRow(face, firstRow + static_cast<uint32>(bandRow), out.data() + bandRow * samples))
-                finite.store(false);
+        JobSystem::ParallelFor(m_Request.Pool, count, [&](size_t bandRow) {
+            float32* row = out.data() + bandRow * samples;
+            const uint32 z = firstRow + static_cast<uint32>(bandRow);
+            for (uint32 x = 0; x < samples; ++x)
+            {
+                row[x] = m_Request.Height(face, x, z, GnomonicFaceDirection(face, m_Gnomonic[x], m_Gnomonic[z]));
+                if (!std::isfinite(row[x]))
+                    finite.store(false);
+            }
         });
         return finite.load();
     }
 
 private:
-    bool FillRow(uint8 face, uint32 rowIndex, float32* row) const
-    {
-        bool finite = true;
-        for (uint32 column = 0; column < m_Request.FaceSamples; ++column)
-        {
-            row[column] = m_Request.Height(face, column, rowIndex,
-                                          GnomonicFaceDirection(face, m_Gnomonic[column], m_Gnomonic[rowIndex]));
-            finite = std::isfinite(row[column]) && finite;
-        }
-        return finite;
-    }
-
     const PlanetCookRequest& m_Request;
     std::vector<float64> m_Gnomonic;
 };

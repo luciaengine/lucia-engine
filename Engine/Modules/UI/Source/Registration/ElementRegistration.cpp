@@ -1,9 +1,11 @@
 #include "UI/Registration/ElementRegistration.h"
 #include "../UIAttributeAccess.h"
 #include "Logger/Logger.h"
+#include "Types/FlatSet.h"
 #include "Types/StringUtils.h"
 #include <algorithm>
 #include <iterator>
+#include <mutex>
 #include <vector>
 
 namespace GameEngine { namespace UIRegistration {
@@ -386,27 +388,83 @@ static inline std::string Trim(const std::string& s) {
     return s.substr(a, b - a);
 }
 
+// The element builders take these names themselves (the id, the classes, the inline style).
+constexpr std::string_view kBuilderAttributes[] = {"id", "name", "class", "style"};
+
+static bool IsBuilderAttribute(std::string_view nameLower)
+{
+    return std::find(std::begin(kBuilderAttributes), std::end(kBuilderAttributes), nameLower)
+        != std::end(kBuilderAttributes);
+}
+
+// A stylesheet reads these names through attribute selectors, so they need no handler.
+static bool IsSelectorAttribute(std::string_view nameLower)
+{
+    return nameLower == "dir" || nameLower.starts_with("data-");
+}
+
+// Logs each name once per process for one file, line and element.
+static void ReportUnknownAttributes(std::string_view tag, const std::vector<std::string_view>& namesLower,
+                                    std::string_view sourceFile, int sourceLine)
+{
+    static std::mutex s_ReportedMutex;
+    static FlatSet<std::string> s_Reported;
+    const std::lock_guard<std::mutex> lock(s_ReportedMutex);
+    for (std::string_view name : namesLower)
+    {
+        std::string key = std::string(sourceFile) + ":" + std::to_string(sourceLine) + ":" + std::string(tag) + ":"
+            + std::string(name);
+        if (!s_Reported.Insert(key))
+            continue;
+        if (sourceLine > 0)
+            Logger::Log::Warning("UI XML: Unknown attribute '{}' on <{}> in '{}' at line {}", name, tag, sourceFile,
+                                 sourceLine);
+        else
+            Logger::Log::Warning("UI XML: Unknown attribute '{}' on <{}> in '{}'", name, tag, sourceFile);
+    }
+}
+
 void ElementFactoryRegistry::ApplyAttributes(UIElement& el,
                          const std::unordered_map<std::string, std::string>& attrsLower,
-                         const std::string& innerText) const {
+                         const std::string& innerText,
+                         std::string_view sourceFile,
+                         int sourceLine) const {
     // 1) Apply explicit attributes by name
+    std::vector<std::string_view> unknownNames;
     for (const auto& kv : attrsLower) {
+        bool applied = false;
         auto it = m_HandlersByName.find(kv.first);
         if (it != m_HandlersByName.end()) {
             for (const auto& h : it->second) {
-                if (!h->IsText && h->Apply) h->Apply(el, kv.second);
+                if (!h->IsText && h->Apply && h->Apply(el, kv.second))
+                    applied = true;
             }
         }
+        if (!applied && !IsBuilderAttribute(kv.first) && !IsSelectorAttribute(kv.first)
+            && !el.BindsAuthoredAttribute(kv.first))
+            unknownNames.push_back(kv.first);
     }
 
     // 2) Apply inner text if bound
+    bool textApplied = false;
     if (!innerText.empty()) {
         const std::string trimmed = Trim(innerText);
         if (!trimmed.empty()) {
             for (const auto& h : m_AllHandlers) {
-                if (h->IsText && h->Apply) h->Apply(el, trimmed);
+                if (h->IsText && h->Apply && h->Apply(el, trimmed))
+                    textApplied = true;
             }
         }
+    }
+    // A template stores inner text as the "text" attribute, so a text binding takes that name.
+    if (textApplied)
+        std::erase(unknownNames, std::string_view("text"));
+    if (!unknownNames.empty())
+    {
+        // An unknown tag has its own warning; its attributes add nothing to it.
+        const std::string tag = UIAttributeAccess::GetDebugTypeName(el);
+        if (HasFactory(ToLowerAscii(tag)))
+            ReportUnknownAttributes(tag, unknownNames, sourceFile, sourceLine);
     }
 
     // 3) Apply defaults for handlers whose names/aliases are absent

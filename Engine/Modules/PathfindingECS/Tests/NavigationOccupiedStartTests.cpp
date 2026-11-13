@@ -1,8 +1,9 @@
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h"
 #include "Pathfinding/GridMap.h"
+#include "NavigationTestSurfaces.h"
 #include "Pathfinding/PathBuffer.h"
-#include "PathfindingECS/Components/NavigationAgent.h"
+#include "Components/Navigation/NavigationAgent.h"
 #include "PathfindingECS/Components/NavigationAgentState.h"
 #include "PathfindingECS/NavigationService.h"
 #include "PathfindingECS/Systems/NavigationMovementSystem.h"
@@ -40,6 +41,7 @@ protected:
         grid.Width = grid.Depth = 32;
         grid.CellSize = 1.0f;
         Map = NavigationService::Get().AddGridMap(grid);
+        Testing::AdoptGridMap(World, Map);
     }
     void TearDown() override
     {
@@ -55,7 +57,7 @@ protected:
     Pathfinding::GridMap& Grid() { return *NavigationService::Get().GetGridMap(Map); }
     ECS::Entity Unit() { return {&World, Actor}; }
     const NavigationAgentState& State() { return *Unit().Get<NavigationAgentState>(); }
-    Mathematics::Vector3 Position() { return Unit().Get<Transform>()->GetPosition(); }
+    Mathematics::Vector3 Position() { return Unit().Get<Transform>()->GetPosition() - Mathematics::WorldPosition{}; }
     void Create(float32 x = 4.25f, float32 z = 4.25f, float32 radius = 0.45f,
                 float32 endX = 12.5f, float32 endZ = 4.5f)
     {
@@ -66,21 +68,20 @@ protected:
         agent.StoppingDistance = 0.3f;
         agent.SmoothPaths = false;
         agent.ReplanInterval = 0.0f;
-        agent.NavMapIndex = Map.Index;
-        agent.NavMapGeneration = Map.Generation;
         NavigationAgentState state{};
+        state.NavMapIndex = Map.Index;
+        state.NavMapGeneration = Map.Generation;
         state.DestinationX = endX;
         state.DestinationZ = endZ;
         state.HasDestination = state.PathDirty = true;
         Transform xf{};
-        xf.matrix[12] = x;
-        xf.matrix[14] = z;
+        xf.Position = Mathematics::WorldPosition{x, 0.0, z};
         WorldTransform wt{};
-        std::copy(std::begin(xf.matrix), std::end(xf.matrix), std::begin(wt.matrix));
+        wt.Position = xf.Position;
         Actor = World.Create(agent, state, xf, wt).GetHandle();
         World.ProcessCommands();
         Paths.Update(World, kDt);
-        ASSERT_EQ(static_cast<Pathfinding::PathStatus>(State().Status), Pathfinding::PathStatus::Complete);
+        ASSERT_EQ(State().Status, Pathfinding::PathStatus::Complete);
     }
     void Occupy(uint32 x, uint32 z)
     {

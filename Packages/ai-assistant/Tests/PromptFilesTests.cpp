@@ -1,6 +1,7 @@
 #include "PromptFiles.h"
 
-#include "Engine/Rendering/RgbaImageOps.h"
+#include "Image/Decode.h"
+#include "Image/Encode.h"
 
 #include <gtest/gtest.h>
 
@@ -140,26 +141,28 @@ TEST_F(PromptFilesTests, FilesPastTheTurnCapAreNamedNotShown)
 TEST_F(PromptFilesTests, ALargeImageIsScaledDownToTheLongEdge)
 {
     // Noise does not compress, so its PNG is over the cap.
-    DecodedImage noise;
-    noise.width = 2400;
-    noise.height = 1200;
-    noise.valid = true;
-    noise.pixels.resize(static_cast<size_t>(noise.width) * noise.height * 4);
+    Image::Image8 noise;
+    noise.Channels = 4;
+    noise.Width = 2400;
+    noise.Height = 1200;
+    noise.Valid = true;
+    noise.Pixels.resize(static_cast<size_t>(noise.Width) * noise.Height * 4);
     std::mt19937 random(7);
-    for (uint8_t& value : noise.pixels)
+    for (uint8_t& value : noise.Pixels)
         value = static_cast<uint8_t>(random());
-    const std::vector<uint8_t> png = EncodeRgbaPng(noise);
+    const std::vector<uint8_t> png = Image::EncodePng(noise.Pixels, noise.Width, noise.Height);
     ASSERT_GT(png.size(), PromptFiles::kMaxImageBytes);
 
     const PromptFileLoad load = PromptFiles::Load(Write("photo.png", std::string(png.begin(), png.end())));
     ASSERT_TRUE(load.File) << load.Refusal;
     EXPECT_EQ(load.File->Kind, PromptFileKind::Image);
     EXPECT_LE(load.File->Bytes.size(), PromptFiles::kMaxImageBytes);
-    const DecodedImage sent =
-        DecodeImageToRGBA(reinterpret_cast<const uint8_t*>(load.File->Bytes.data()), load.File->Bytes.size());
-    ASSERT_TRUE(sent.valid);
-    EXPECT_EQ(sent.width, PromptFiles::kMaxImageLongEdge);
-    EXPECT_EQ(sent.height, PromptFiles::kMaxImageLongEdge / 2);
+    const Image::Image8 sent =
+        Image::Decode8({reinterpret_cast<const uint8_t*>(load.File->Bytes.data()), load.File->Bytes.size()},
+                       "sent image", Image::DecodeChannels::Rgba);
+    ASSERT_TRUE(sent.Valid);
+    EXPECT_EQ(sent.Width, PromptFiles::kMaxImageLongEdge);
+    EXPECT_EQ(sent.Height, PromptFiles::kMaxImageLongEdge / 2);
     EXPECT_EQ(PromptFiles::ImageMediaType(load.File->Bytes), load.File->MediaType);
 }
 

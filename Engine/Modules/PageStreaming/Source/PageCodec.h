@@ -27,9 +27,10 @@ struct PageFootprint
     float32 Max = 0.0f;
 };
 
-/// Encodes and decodes a store's pages: row-major height floats or channel bytes, with aprons.
-/// A page has PageStrideTexels(format)^2 samples of PageTexelBytes(format) bytes.
-/// Encode and Decode support concurrent calls.
+/// Turns a page's samples into its stored bytes and back, for one store's format. A page's samples
+/// are PageStrideTexels(format)^2 samples of PageTexelBytes(format) bytes each, row-major, apron
+/// included: a height's float32 values as bytes, or the format's channels. Encode and Decode may
+/// run on any number of threads at once.
 class PageCodec
 {
 public:

@@ -47,7 +47,7 @@ typedef enum GE_Result {
     GE_Result_NotInitialized = -4,
     GE_Result_AlreadyInitialized = -5,
     GE_Result_BufferFull = -6,
-    GE_Result_Busy = -7 // The same operation is already running; retry later
+    GE_Result_Busy = -7            // The same operation is already running; retry later
 } GE_Result;
 
 typedef enum GE_LogLevel {
@@ -200,8 +200,10 @@ GE_API uint32_t GE_CDECL GE_ScriptingGetAbiVersion(void);
 // library its one engine instance binds. A changed layout is breaking, so the major moves.
 // 3.1 adds GE_Model_GetExtras (ModelABI.h) — additive, minor bump.
 // 3.2 adds GE_Animator_PollEventsOnEntity and GE_AnimationEventRecord (AnimatorABI.h) — additive, minor bump.
-// 3.3 adds GE_Result_Busy for an already-running preloaded-context swap.
-static const uint32_t GE_ABI_VERSION_CURRENT = GE_ABI_VERSION_ENCODE(3u, 3u);
+// 4.0 removes the GE_Input_* exports and GE_InputActionState: scripts reach Input through its generated
+// table (GE_Input_GetInterface). It adds GE_GetLastScriptError.
+// 4.1 adds GE_Result_Busy, which GE_SwapPreloadedContext returns while another swap runs — additive, minor bump.
+static const uint32_t GE_ABI_VERSION_CURRENT = GE_ABI_VERSION_ENCODE(4u, 1u);
 
 // Forward declarations for function pointer types used in the interface
 typedef GE_Result (GE_CDECL *GE_Log_Fn)(GE_LogLevel level, const char* msg, uint32_t msgLen);
@@ -302,55 +304,14 @@ GE_API GE_Result GE_CDECL GE_SetHostLoggerState(void* loggerState);
 typedef void(GE_CDECL* GE_DomainWillUnloadFn)(GE_DomainHandle domain, void* user);
 GE_API GE_Result GE_CDECL GE_SetOnDomainWillUnload(GE_DomainWillUnloadFn callback, void* user);
 
-// -------- Input (optional; returns NotInitialized if host has no InputSystem) --------
-typedef struct GE_InputActionState
-{
-    uint8_t pressed;
-    uint8_t justPressed;
-    uint8_t justReleased;
-    uint8_t _pad0;
-    float value;
-} GE_InputActionState;
-
-GE_API GE_Result GE_CDECL GE_Input_GetActionState(uint64_t actionId, GE_InputActionState* outState);
-GE_API GE_Result GE_CDECL GE_Input_IsKeyDown(int32_t key, int32_t* outDown);
-GE_API GE_Result GE_CDECL GE_Input_WasKeyPressed(int32_t key, int32_t* outPressed);
-GE_API GE_Result GE_CDECL GE_Input_WasKeyReleased(int32_t key, int32_t* outReleased);
-// Where the last move placed the pointer, in play-surface pixels; (0,0) before
-// any move, and standing after the pointer leaves the window or the window
-// loses focus. A reader gates on the two states below rather than on the
-// position: hover-style reads want the pointer in the window, and gestures that
-// act on the world (edge scrolling, drags, wheel zoom) want the window focused
-// as well.
-GE_API GE_Result GE_CDECL GE_Input_GetMousePosition(float* outX, float* outY);
-GE_API GE_Result GE_CDECL GE_Input_IsPointerInWindow(int32_t* outInWindow);
-GE_API GE_Result GE_CDECL GE_Input_IsWindowFocused(int32_t* outFocused);
-GE_API GE_Result GE_CDECL GE_Input_IsMouseButtonDown(int32_t button, int32_t* outDown);
-// Frame-snapshot edge queries (mouse mirror of WasKeyPressed/WasKeyReleased).
-// Both report true for a press+release pair completing inside one frame — the
-// case an IsMouseButtonDown poll silently loses.
-GE_API GE_Result GE_CDECL GE_Input_WasMouseButtonPressed(int32_t button, int32_t* outPressed);
-GE_API GE_Result GE_CDECL GE_Input_WasMouseButtonReleased(int32_t button, int32_t* outReleased);
-
-// User-defined action/context authoring from managed code (optional).
-// These operate on the runtime input sink (Engine::GetRuntimeInput) — in the
-// editor the game's own InputSystem, elsewhere the application's — and are
-// intended for gameplay scripts. An action registered in an enabled context is
-// readable through GE_Input_GetActionState without pushing anything; pushing
-// only orders priority between contexts.
-GE_API GE_Result GE_CDECL GE_Input_RegisterAction(uint64_t contextId, uint64_t actionId, int32_t isAxis);
-GE_API GE_Result GE_CDECL GE_Input_RemoveAction(uint64_t contextId, uint64_t actionId);
-GE_API GE_Result GE_CDECL GE_Input_ClearBindings(uint64_t contextId, uint64_t actionId);
-GE_API GE_Result GE_CDECL GE_Input_Bind(uint64_t contextId,
-                                        uint64_t actionId,
-                                        int32_t deviceType,
-                                        int32_t code,
-                                        float scale,
-                                        int32_t requiredMods,
-                                        int32_t forbiddenMods);
-GE_API GE_Result GE_CDECL GE_Input_PushContext(uint64_t contextId);
-GE_API GE_Result GE_CDECL GE_Input_PopContext(uint64_t contextId);
-GE_API GE_Result GE_CDECL GE_Input_SetContextEnabled(uint64_t contextId, int32_t enabled);
+// -------- The generated script API --------
+// Each module's script API is a function table served by GE_<Module>_GetInterface (generated:
+// <build>/generated/scripting/<Module>.script.gen.h). A call that a table function refuses or
+// that fails sets the calling thread's last error; this copies that text out under the
+// AbiTextOut contract (copy what fits, no NUL, always report the full byte length). The text
+// is the last refused or failed call's, on this thread; a call that succeeds, or that answers
+// GE_Result_NotInitialized (no engine or no system for the call), leaves it.
+GE_API GE_Result GE_CDECL GE_GetLastScriptError(char* buffer, int32_t bufferLen, int32_t* outLen);
 
 // -------- Game UI --------
 // Element access for gameplay scripts, split by layer.
@@ -453,8 +414,23 @@ typedef void(GE_CDECL* GE_UIEventCallback)(const GE_UIEventData* ev, void* user)
 GE_API GE_Result GE_CDECL GE_GameUI_FindElement(uint64_t entityId, const char* id, uint64_t* outInstanceId);
 
 GE_API GE_Result GE_CDECL GE_UIElement_SetWidthPercent(uint64_t instanceId, float pct);
+
+// Sets the element's left/top in the parent's UI pixels, before any transform on the parent. An
+// absolutely positioned element is placed from the inside of its parent's border; any other element
+// moves from where layout places it. The value replaces the stylesheet's left/top and the element's
+// own style attribute, and survives a .uxml reload. GE_Result_NotFound if the handle no longer
+// resolves.
+GE_API GE_Result GE_CDECL GE_UIElement_SetOffset(uint64_t instanceId, float x, float y);
+
+// Take the pointer for this element, so every move, release and cancel is routed to it, also after the pointer
+// has left it. The capture ends at ReleasePointer or at the button's release, whichever comes first, and a
+// capture by another element replaces it. A removed element's capture ends on the next update.
+GE_API GE_Result GE_CDECL GE_UIElement_CapturePointer(uint64_t instanceId);
+// Releases the pointer only when this element holds it; from any other element GE_Result_NotFound, and
+// the capture stays where it is.
+GE_API GE_Result GE_CDECL GE_UIElement_ReleasePointer(uint64_t instanceId);
 GE_API GE_Result GE_CDECL GE_UIElement_SetLabelText(uint64_t instanceId, const char* text);
-/// Sets Markdown text on the main thread. A null or empty string clears the control.
+/// Sets the control's Markdown text. A null or empty string clears it.
 GE_API GE_Result GE_CDECL GE_UIElement_SetMarkdownText(uint64_t instanceId, const char* text);
 GE_API GE_Result GE_CDECL GE_UIElement_SetClass(uint64_t instanceId, const char* className, int32_t on);
 // Liveness as a QUERY, not as a failure: Ok with *outAlive 0 or 1. A caller asking
@@ -501,6 +477,24 @@ GE_API GE_Result GE_CDECL GE_UIElement_SetDropdownSelectedIndex(uint64_t instanc
 // the option's VALUE is the field value, read through GE_UIElement_GetValueText.
 GE_API GE_Result GE_CDECL GE_UIElement_GetDropdownSelectedLabel(uint64_t instanceId, char* buffer,
                                                                 int32_t bufferLen, int32_t* outLen);
+// A progress bar's range end and its indeterminate state. A max of 0 or less, or one that is not
+// finite, is GE_Result_InvalidArg; a new max clamps the bar's value again. The bar's value goes
+// through GE_UIElement_GetValueFloat and GE_UIElement_SetValueFloat.
+GE_API GE_Result GE_CDECL GE_UIElement_GetProgressMax(uint64_t instanceId, float* outMax);
+GE_API GE_Result GE_CDECL GE_UIElement_SetProgressMax(uint64_t instanceId, float max);
+GE_API GE_Result GE_CDECL GE_UIElement_GetProgressIndeterminate(uint64_t instanceId, int32_t* outIndeterminate);
+GE_API GE_Result GE_CDECL GE_UIElement_SetProgressIndeterminate(uint64_t instanceId, int32_t indeterminate);
+
+// Orders the element among its siblings, as CSS z-index does: a higher value is drawn in front of the siblings and
+// found first by the pointer; equal values keep document order. The value replaces the stylesheet's z-index for this
+// element. GE_Result_NotFound if the handle no longer resolves.
+GE_API GE_Result GE_CDECL GE_UIElement_SetZIndex(uint64_t instanceId, int32_t zIndex);
+
+// The element's box in window space, in UI pixels: the box from the last layout, carried through its own transform
+// and every transformed ancestor's as the bounds of the transformed box (UIElement::GetWindowRect). A parent that
+// clips its children does not shrink it. A tooltip, a menu or a drag anchors to this.
+// A null out-parameter is InvalidArg; a handle that no longer resolves is NotFound.
+GE_API GE_Result GE_CDECL GE_UIElement_GetRect(uint64_t instanceId, float* x, float* y, float* width, float* height);
 
 // -------- Element TYPES defined outside C++ --------
 // The lifecycle layer: who may define element types, which tags they own, and what happens
@@ -537,8 +531,8 @@ GE_API GE_Result GE_CDECL GE_UI_RequestTypeRegistrationWindow(void);
 // the engine or to another context — and that is GE_Result_Ok, not an error: one bad tag
 // among many must not fail the whole registration pass.
 //
-// MAIN THREAD ONLY: call it from inside the performRegistrations callback. Off-main the whole
-// batch is refused (every *outTagId 0) and the refusal is logged.
+// REGISTRATION WINDOW ONLY: call it from inside the performRegistrations callback. Anywhere
+// else, on any thread, the whole batch is refused (every *outTagId 0) and the refusal is logged.
 GE_API GE_Result GE_CDECL GE_UI_RegisterElementType(uint64_t owner, const char* tagName, uint64_t* outTagId);
 // The owner's context is unloading. Releases its instances, marks its elements Pending and
 // unregisters its tags. *outOrphaned receives how many elements went Pending.
@@ -546,8 +540,11 @@ GE_API GE_Result GE_CDECL GE_UI_OrphanElementTypes(uint64_t owner, uint64_t* out
 // A reload finished: whatever of this owner's elements did not come back is now Faulted
 // rather than merely waiting. Call it while the owner is STILL LIVE, then release the id.
 //
-// MAIN THREAD ONLY, and after the batch — same window, same call, registrations first.
+// REGISTRATION WINDOW ONLY, and after the batch — same window, same call, registrations first.
 GE_API GE_Result GE_CDECL GE_UI_NotifyReloadCompleted(uint64_t owner);
+
+// -------- The main thread, from a script's own thread (MainThread.Post) --------
+// The managed MainThread.Post queue lives in Scripting.ABI; these two exports are its native half.
 
 // What GE_MainThread_RequestPump answered.
 typedef enum GE_MainThreadPost {
@@ -641,21 +638,9 @@ GE_API GE_Result GE_CDECL GE_CleanupOldContext(const char* assemblyPathUtf8, uin
 GE_API GE_Result GE_CDECL GE_ClearCompilerCache(void);
 GE_API GE_Result GE_CDECL GE_GetCompilerStats(void);
 
-// HotReload callback registration
-//
-// Engine.dll exports the five GE_PreloadAssemblyContext / GE_SwapPreloadedContext /
-// GE_CleanupOldContext / GE_ClearCompilerCache / GE_GetCompilerStats entry points
-// above. By default these dispatch to no-op stubs (used by Player builds and
-// tests with the CLR disabled). GameEngine.Native.dll holds the real CoreCLR-
-// backed implementations and, at module load, calls GE_RegisterHotReloadCallbacks
-// to wire its function pointers into Engine.dll's dispatcher table so editor /
-// player hot-reload flows through the actual CLR domain swap.
-//
-// This indirection exists because Engine.dll's HotReloadTasks / IncrementalCompilation
-// Task call these entry points internally — if Engine.dll PRIVATE-linked them from
-// GameEngine.Native (the pre-Phase-1 arrangement), the two SHARED libraries form a
-// link cycle. With the dispatcher pattern, GameEngine.Native depends on Engine.dll
-// but Engine.dll does not depend on GameEngine.Native, and the link graph is acyclic.
+// Engine.dll exports the five entry points above. Each one calls the function that GameEngine.Native.dll
+// registers at load with GE_RegisterHotReloadCallbacks, or returns GE_Result_Ok if none is registered.
+// This table keeps Engine.dll free of a link to GameEngine.Native.dll.
 typedef struct GE_HotReloadCallbacks {
     GE_PreloadAssemblyContext_Fn PreloadAssemblyContext;
     GE_SwapPreloadedContext_Fn   SwapPreloadedContext;

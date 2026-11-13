@@ -1,16 +1,11 @@
 #include "Scripting/ScriptManager.h"
-#include <utility>
+#include "Core/Engine.h"
 #include "JobSystem/JobChannel.h"
 #include "Scripting/ScriptTargetFramework.h"
-#include "Scripting/ScriptPackageRestore.h"
-#include "Scripting/ScriptsProjectFile.h"
-#include "ScriptPackageRestoreInternal.h"
-#include "ScriptsProjectFileInternal.h"
-#include "Types/FlatSet.h"
 #include "Assets/Packages/PackageNativeCache.h"
 #include "AssetCore/SharedFileRead.h"
 #include "Assets/FileWatchingService.h"
-#include "Core/Application.h"
+#include "Core/ApplicationPaths.h"
 #include "Engine/Build/CancellableShellProcess.h"
 #include "Engine/Build/DotnetHost.h"
 #include "Editor/EditorIPCClient.h"
@@ -20,8 +15,12 @@
 #include "Jobs/IncrementalCompileHints.h"
 #include "Jobs/WorkspaceId.h"
 #include "Logger/Logger.h"
-#include "Platform/Environment.h"
 #include "Scripting/PathResolver.h"
+#include "Scripting/ScriptPackageRestore.h"
+#include "Scripting/ScriptsProjectFile.h"
+#include "ScriptPackageRestoreInternal.h"
+#include "ScriptsProjectFileInternal.h"
+#include "Scene/KeptComponentResolver.h"
 #include <algorithm>
 #include <cassert>
 #include <cctype>
@@ -31,8 +30,11 @@
 #include <sstream>
 #include <span>
 #include <unordered_set>
+#include <utility>
 
 #include "Scripting/ScriptingABI.h"
+
+#include <cstdlib>
 
 #ifdef _WIN32
 #include <libloaderapi.h>
@@ -50,7 +52,10 @@ namespace GameEngine
 
 namespace
 {
+// The managed MainThread.Post drain, installed once by Scripting.ABI (which lives in the
+// default context and never unloads) and shared by every ScriptManager of the process.
 std::atomic<ScriptManager::ManagedPostDrain> s_ManagedPostDrain{nullptr};
+
 // A compile that lost to a newer file change reports failure with a
 // "superseded" message (see HotReloadTasks / CompileProject); it is the
 // debounce working as designed and must not log as an error.
@@ -71,7 +76,7 @@ std::future<HotReloadPipeline::PipelineStats> MakeFinishedReload(HotReloadResult
     return promise.get_future();
 }
 
-uint32 ReadLittleEndian(const Vector<uint8>& bytes, size_t offset, size_t width)
+uint32 ReadLittleEndian(std::span<const uint8> bytes, size_t offset, size_t width)
 {
     uint32 value = 0;
     for (size_t i = 0; i < width; ++i)
@@ -81,7 +86,7 @@ uint32 ReadLittleEndian(const Vector<uint8>& bytes, size_t offset, size_t width)
 
 // True when bytes are a PE image whose CLI header data directory is present:
 // a .NET assembly, as opposed to a native DLL or any other file.
-bool IsDotNetAssemblyImage(const Vector<uint8>& bytes)
+bool IsDotNetAssemblyImage(std::span<const uint8> bytes)
 {
     constexpr size_t kPeOffsetField = 0x3C;
     constexpr size_t kCoffHeaderSize = 20;
@@ -114,11 +119,11 @@ bool IsDotNetAssemblyImage(const Vector<uint8>& bytes)
 
 // Writes sourceBytes to destination unless it already holds the same bytes, so
 // an unchanged prebuilt assembly is not rewritten on every mount.
-bool WriteIfContentDiffers(const Vector<uint8>& sourceBytes, const std::filesystem::path& destination,
+bool WriteIfContentDiffers(std::span<const uint8> sourceBytes, const std::filesystem::path& destination,
                            std::string& outError)
 {
-    Vector<uint8> destinationBytes;
-    if (ReadFileBytesShared(destination, destinationBytes) && destinationBytes == sourceBytes)
+    ByteBuffer destinationBytes;
+    if (ReadFileBytesShared(destination, destinationBytes) && std::ranges::equal(destinationBytes, sourceBytes))
         return true;
     std::error_code ec;
     std::filesystem::create_directories(destination.parent_path(), ec);
@@ -209,11 +214,10 @@ bool ScriptManager::Initialize(const ScriptsConfig& config, JobSystem::WorkSteal
     // assemblies — except inside a macOS app bundle, which is never written to (a write
     // invalidates its code signature), so they go to the user-writable scripts assemblies
     // directory instead.
-    const std::filesystem::path exeDir = PathUtils::GetExecutableDirectory();
-    const std::filesystem::path engineManagedDir = ScriptingPaths::ResolveEngineManagedDirectory();
-    m_EditorScriptsDirectory = PathUtils::GetInstallAssetsRoot();
+    const std::filesystem::path exeDir = ApplicationPaths::GetExecutableDirectory();
+    m_EditorScriptsDirectory = ApplicationPaths::GetInstallAssetsRoot();
     m_EditorAssembliesDirectory = exeDir;
-    if (!PathUtils::GetBundleResourcesDirectory(exeDir).empty() && !m_AssembliesDirectory.empty())
+    if (!ApplicationPaths::GetBundleResourcesDirectory(exeDir).empty() && !m_AssembliesDirectory.empty())
     {
         m_EditorAssembliesDirectory = m_AssembliesDirectory;
     }
@@ -272,7 +276,7 @@ bool ScriptManager::Initialize(const ScriptsConfig& config, JobSystem::WorkSteal
         RemoveStaleGeneratedProject();
 
     // Log resolved critical paths (exe-relative)
-    Logger::Log::Info("Executable dir: {}", PathUtils::GetExecutableDirectory().string());
+    Logger::Log::Info("Executable dir: {}", ApplicationPaths::GetExecutableDirectory().string());
     Logger::Log::Info("Assemblies dir: {}", GetAssembliesDirectory().string());
     Logger::Log::Info("Scripts root: {}", m_ScriptsDirectory.string());
 
@@ -286,15 +290,10 @@ bool ScriptManager::Initialize(const ScriptsConfig& config, JobSystem::WorkSteal
         }
     }
 
+    // No .NET SDK probe here (`dotnet --version` is a child process, about 100 ms): each compile
+    // calls IsDotnetSdkAvailable() first, and that first call reports a missing SDK with its fix.
     if (!config.disableClr)
     {
-        // Check if .NET CLI is available. Skipped in packaged mode: a shipped
-        // game never compiles, and user machines have no SDK to probe.
-        if (!m_PackagedMode && !IsDotnetSdkAvailable())
-        {
-            Logger::Log::Warning(".NET CLI not found - C# compilation will not be available");
-        }
-
         // Initialize CoreCLR host
         std::filesystem::path runtimeConfig = ScriptingPaths::ResolveScriptsRuntimeConfig();
         if (!m_ClrHost.Initialize(runtimeConfig))
@@ -357,7 +356,7 @@ bool ScriptManager::Initialize(const ScriptsConfig& config, JobSystem::WorkSteal
     });
 
     m_HotReloadPipeline->SetRunCompletedCallback([this](const HotReloadPipeline::PipelineStats& stats)
-    { OnHotReloadRunCompleted(stats); });
+                                                 { OnHotReloadRunCompleted(stats); });
 
     Logger::Log::Info("Async hot-reload infrastructure initialized");
 
@@ -392,15 +391,36 @@ bool ScriptManager::Initialize(const ScriptsConfig& config, JobSystem::WorkSteal
         }
     }
 
-    if (!config.disableClr && m_PackagedMode && m_PrebuiltAssemblyPath.empty())
+    m_ClrDisabled = config.disableClr;
+    LoadInitialScriptAssembly();
+
+    // Drain managed main-thread work queued by the initial load NOW, while we
+    // are still on the main thread. The per-frame pump (EngineCore::Update)
+    // does not run until the whole app finishes initializing, so without this
+    // the managed watchdog fires after 3s and steals the first
+    // [InitializeOnLoad] batch onto a thread-pool thread (logged as a pump
+    // fallback that reads like an error).
+    (void)ProcessMainThreadTasks();
+
+    m_Initialized = true;
+    Logger::Log::Info("Script Manager initialized successfully");
+    return true;
+}
+
+void ScriptManager::LoadInitialScriptAssembly()
+{
+    const std::filesystem::path engineManagedDir = ScriptingPaths::ResolveEngineManagedDirectory();
+    std::error_code ec;
+    if (!m_ClrDisabled && m_PackagedMode && m_PrebuiltAssemblyPath.empty())
     {
         // Positive packaged signal but nothing staged to load: an incomplete
         // package. Never fall through to the dev compile pipeline.
         Logger::Log::Error(
             "Packaged mode with no staged script assembly configured — the game's C# scripts "
             "will not run (repackage the game or fix game.config scriptAssemblyPath)");
+        m_ScriptAssemblyState.store(ScriptAssemblyState::Failed);
     }
-    else if (!config.disableClr && !m_PrebuiltAssemblyPath.empty())
+    else if (!m_ClrDisabled && !m_PrebuiltAssemblyPath.empty())
     {
         // Packaged game: the staged assembly is the ONLY script source. No
         // editor-project generation (which used to write GameEngine.Editor.csproj
@@ -413,14 +433,16 @@ bool ScriptManager::Initialize(const ScriptsConfig& config, JobSystem::WorkSteal
                 "Packaged script assembly missing: '{}' — the game's C# scripts will not run "
                 "(the package is incomplete; repackage the game)",
                 m_PrebuiltAssemblyPath.string());
+            m_ScriptAssemblyState.store(ScriptAssemblyState::Failed);
         }
         else if (!LoadScriptAssembly(m_PrebuiltAssemblyPath))
         {
             Logger::Log::Error("Failed to load packaged script assembly '{}'",
                                m_PrebuiltAssemblyPath.string());
+            m_ScriptAssemblyState.store(ScriptAssemblyState::Failed);
         }
     }
-    else if (!config.disableClr)
+    else if (!m_ClrDisabled)
     {
         // Ensure the Editor scripts assembly exists (best-effort) so project scripts can reference it.
         try
@@ -476,10 +498,10 @@ bool ScriptManager::Initialize(const ScriptsConfig& config, JobSystem::WorkSteal
             // Robust stub detection: scan for ReferenceAssembly attribute marker instead of size heuristics
             bool isReferenceStub = false;
             {
-                Vector<uint8> data;
+                ByteBuffer data;
                 if (ReadFileBytesShared(assemblyPath, data))
                 {
-                    const std::string_view view(reinterpret_cast<const char*>(data.data()), data.size());
+                    const std::string_view view(reinterpret_cast<const char*>(data.Data()), data.Size());
                     if (view.find("ReferenceAssembly") != std::string_view::npos)
                     {
                         isReferenceStub = true;
@@ -560,11 +582,13 @@ bool ScriptManager::Initialize(const ScriptsConfig& config, JobSystem::WorkSteal
                     else
                     {
                         Logger::Log::Warning("⚠️ Failed to load Scripts assembly after initial build");
+                        m_ScriptAssemblyState.store(ScriptAssemblyState::Failed);
                     }
                 }
                 else
                 {
                     Logger::Log::Debug("ℹ️ Initial build failed or skipped - assembly will be built on first hot-reload");
+                    m_ScriptAssemblyState.store(ScriptAssemblyState::Failed);
                 }
             }
         }
@@ -573,18 +597,37 @@ bool ScriptManager::Initialize(const ScriptsConfig& config, JobSystem::WorkSteal
     {
         Logger::Log::Info("ScriptManager: CLR disabled by config; skipping initial scripts load/build");
     }
+}
 
-    // Drain managed main-thread work queued by the initial load NOW, while we
-    // are still on the main thread. The per-frame pump (EngineCore::Update)
-    // does not run until the whole app finishes initializing, so without this
-    // the managed watchdog fires after 3s and steals the first
-    // [InitializeOnLoad] batch onto a thread-pool thread (logged as a pump
-    // fallback that reads like an error).
-    (void)ProcessMainThreadTasks();
+ScriptAssemblyStatus ScriptManager::GetScriptAssemblyStatus() const
+{
+#if GE_ENABLE_SCRIPTING
+    return {m_ScriptAssemblyState.load(), m_ScriptTypeCount.load()};
+#else
+    return {ScriptAssemblyState::Disabled, 0};
+#endif
+}
 
-    m_Initialized = true;
-    Logger::Log::Info("Script Manager initialized successfully");
-    return true;
+void ScriptManager::NotifyScriptAssemblyArrived()
+{
+    QueueMainThreadTask([this]() { ApplyArrivedScriptAssembly(); });
+}
+
+void ScriptManager::ApplyArrivedScriptAssembly()
+{
+    m_ScriptTypeCount.store(m_ClrHost.GetCurrentScriptTypeCount());
+    m_ScriptAssemblyState.store(ScriptAssemblyState::Loaded);
+    // A scene that loaded before these types registered kept their components aside.
+    if (ECS::World* world = EngineCore::GetInstance().GetPrimaryWorld())
+        (void)Scene::ResolveKeptComponents(*world);
+}
+
+void ScriptManager::OnHotReloadRunCompleted(const HotReloadPipeline::PipelineStats& stats)
+{
+    if (stats.success)
+        NotifyScriptAssemblyArrived();
+    else if (!IsCancellation(stats.result))
+        m_ScriptAssemblyState.store(ScriptAssemblyState::Failed);
 }
 
 void ScriptManager::SetNativeLibraryPath(const std::filesystem::path& nativeLibraryPath)
@@ -602,7 +645,7 @@ bool ScriptManager::RebindProjectScripts(const ScriptsConfig& newConfig)
 
     Logger::Log::Info("ScriptManager: rebinding project scripts to '{}'", newConfig.scriptsRoot.string());
 
-    // 1. Stop watching the old project scripts directory.
+    // 1. Stop watching the old project scripts directory and project file.
     m_ScriptsWatchSubscription.reset();
     m_ScriptsProjectWatchSubscriptions.clear();
 
@@ -612,7 +655,11 @@ bool ScriptManager::RebindProjectScripts(const ScriptsConfig& newConfig)
         CancelAsyncHotReload();
     }
 
-    // 3. Update project-specific paths.
+    // 3. Update project-specific paths. No assembly of the new project is loaded yet.
+    m_ProjectBindGeneration.fetch_add(1);
+    m_InitialLoadAfterRunningBuild.store(false);
+    m_ScriptAssemblyState.store(ScriptAssemblyState::NotLoaded);
+    m_ScriptTypeCount.store(0);
     m_WorkspaceRoot = newConfig.workspaceRoot;
     m_ScriptsDirectory = newConfig.scriptsRoot;
     {
@@ -657,6 +704,9 @@ bool ScriptManager::RebindProjectScripts(const ScriptsConfig& newConfig)
         Logger::Log::Info("ScriptManager: project script watcher restarted for '{}'", m_ScriptsDirectory.string());
     }
 
+    // 8. Load the new project's scripts the way Initialize loads the startup project's.
+    LoadInitialScriptAssembly();
+
     Logger::Log::Info("ScriptManager: project scripts rebound successfully");
     return true;
 }
@@ -674,7 +724,6 @@ void ScriptManager::Shutdown()
         drain(0);
     }
 
-
     if (!m_Initialized)
     {
         return;
@@ -691,12 +740,9 @@ void ScriptManager::Shutdown()
     m_EditorScriptsWatchSubscription.reset();
     m_PackageModuleWatchSubscriptions.clear();
 
-    // Unsubscribing waits for this manager's OnFileChanged calls already
-    // running, so none runs from here on; other threads can still start a reload
-    // through RecompileAndReloadAsync or ReloadScriptAssemblies. Once this lock
-    // is held, every reload start either published its future and task handle
-    // (joined below) or will see m_ShuttingDown and refuse, so none reaches
-    // m_HotReloadPipeline after it is reset.
+    // The unsubscribes above waited for running OnFileChanged calls, but other threads can
+    // still start a reload. Under this lock, each reload start has published its task
+    // handle (joined below) or sees m_ShuttingDown and refuses.
     std::vector<JobSystem::TaskHandle> trackedCompileTasks;
     {
         std::lock_guard<std::mutex> lock(m_HotReloadStartMutex);
@@ -769,6 +815,9 @@ void ScriptManager::Shutdown()
     // RunCompile jobs, the package-module retry, the pipeline's stages) has been waited
     // on above; the channel goes before the pool it is registered with.
     m_CompileChannel.reset();
+
+    // No compile can start any more: stop the compile servers this process launched.
+    CompileServerClient::StopStartedServers();
 
     // Shutdown CoreCLR
     m_ClrHost.Shutdown();
@@ -909,7 +958,8 @@ ScriptCompilationResult ScriptManager::CompileScripts(const std::atomic<bool>* c
 // Default to CompileServer; allow opt-out via GE_DISABLE_COMPILE_SERVER=1
 static bool DisableCompileServer()
 {
-    return Platform::EnvironmentSwitchEnabled("GE_DISABLE_COMPILE_SERVER", false);
+    const char* env = std::getenv("GE_DISABLE_COMPILE_SERVER");
+    return env && std::string(env) == "1";
 }
 
 ScriptCompilationResult ScriptManager::CompileProject(const std::filesystem::path& projectPath, const std::atomic<bool>* cancelRequested)
@@ -1072,7 +1122,8 @@ ScriptCompilationResult ScriptManager::CompileCsUnit(const std::filesystem::path
     {
         EditorIPC::NotifyCompileServerFallbackOnce();
     }
-    if (Platform::EnvironmentSwitchEnabled("GE_ALLOW_CLI_FALLBACK", false))
+    const char* allowEnv = std::getenv("GE_ALLOW_CLI_FALLBACK");
+    if (allowEnv && std::string(allowEnv) == "1")
     {
         // dotnet writes the output DLL itself and cannot be gated
         // mid-build, so a supersede that landed during the failed server
@@ -1156,7 +1207,7 @@ bool ScriptManager::ResolvePrebuiltPackageAssembly(const PackageCodeModule& modu
 
     const std::filesystem::path outDir = PackageAssembliesDirectory(editorKind);
     std::string error;
-    Vector<uint8> dllBytes;
+    ByteBuffer dllBytes;
     if (!ReadFileBytesShared(declaredDll, dllBytes))
     {
         Logger::Log::Error("[Packages] cannot read prebuilt assembly '{}' of package '{}'; check that the file is "
@@ -1180,7 +1231,7 @@ bool ScriptManager::ResolvePrebuiltPackageAssembly(const PackageCodeModule& modu
 
     const std::filesystem::path declaredPdb = std::filesystem::path(declaredDll).replace_extension(".pdb");
     const std::filesystem::path stagedPdb = outDir / declaredPdb.filename();
-    Vector<uint8> pdbBytes;
+    ByteBuffer pdbBytes;
     const bool shipsPdb = std::filesystem::is_regular_file(declaredPdb, ec);
     if (shipsPdb && !ReadFileBytesShared(declaredPdb, pdbBytes))
         error = "cannot read '" + declaredPdb.string() + "'";
@@ -1341,7 +1392,9 @@ bool ScriptManager::EnsurePackageModuleProject(const PackageCodeModule& module,
 {
     try
     {
-        if (module.UsesManagedNativeCache && !RetainPackageNativeCache(module.CacheDir))
+        // The compile channel: Initialize can reach this line before EngineCore creates the startup
+        // channel. The job never delays the compile that queues it.
+        if (module.UsesManagedNativeCache && !RetainPackageNativeCache(module.CacheDir, *m_CompileChannel))
         {
             Logger::Log::Error("[Packages] cannot lease managed native cache '{}' for C# module '{}'",
                                module.CacheDir.string(), module.AssemblyName);
@@ -1559,6 +1612,7 @@ bool ScriptManager::LoadScriptAssembly(const std::filesystem::path& assemblyPath
 
     m_LoadedAssemblies.push_back(assemblyPath);
     Logger::Log::Info("✅ Successfully loaded script assembly: {}", assemblyPath.filename().string());
+    NotifyScriptAssemblyArrived();
     return true;
 }
 
@@ -1647,7 +1701,10 @@ bool ScriptManager::RecompileAndReload()
         if (IsSupersededCompileResult(compilationResult))
             Logger::Log::Info("Script compilation superseded by a newer change: {}", compilationResult.errorMessage);
         else
+        {
             Logger::Log::Error("Script compilation failed: {}", compilationResult.errorMessage);
+            m_ScriptAssemblyState.store(ScriptAssemblyState::Failed);
+        }
         return false;
     }
     Logger::Log::Info("✅ Compilation completed in {}ms", compilationTime.count());
@@ -1656,6 +1713,7 @@ bool ScriptManager::RecompileAndReload()
     if (!std::filesystem::exists(assemblyPath))
     {
         Logger::Log::Error("Compiled assembly not found: {}", assemblyPath.string());
+        m_ScriptAssemblyState.store(ScriptAssemblyState::Failed);
         return false;
     }
 
@@ -1687,6 +1745,7 @@ bool ScriptManager::RecompileAndReload()
     if (!loadSuccess)
     {
         Logger::Log::Error("Failed to load recompiled assembly");
+        m_ScriptAssemblyState.store(ScriptAssemblyState::Failed);
         return false;
     }
 
@@ -1716,6 +1775,7 @@ bool ScriptManager::LoadScriptAssemblyFromPath(const std::filesystem::path& asse
 
         // Track the loaded assembly
         m_LoadedAssemblies.push_back(assemblyPath);
+        NotifyScriptAssemblyArrived();
 
         // PERFORMANCE: Check if loading time meets target
         if (loadTime.count() < 25)
@@ -1828,15 +1888,19 @@ void ScriptManager::QueueDeferredInitialBuildIfNeeded()
         return;
     }
 
+    // One build at a time; a request refused while one runs is picked up by its completion below.
+    m_ScriptAssemblyState.store(ScriptAssemblyState::Building);
     bool expected = false;
     if (!m_DeferredInitialBuildQueued.compare_exchange_strong(expected, true))
     {
-        return; // already queued
+        m_InitialLoadAfterRunningBuild.store(true);
+        return;
     }
+    const uint64 bindGeneration = m_ProjectBindGeneration.load();
 
     // Fire-and-forget: compile on the compile channel, then queue the load on the
     // main thread. This keeps the Editor responsive even on first run / clean builds.
-    m_DeferredInitialBuildTask = m_CompileChannel->Submit([this]()
+    m_DeferredInitialBuildTask = m_CompileChannel->Submit([this, bindGeneration]()
                         {
         try
         {
@@ -1863,19 +1927,32 @@ void ScriptManager::QueueDeferredInitialBuildIfNeeded()
             (void)TriggerInitialBuild();
 
             // Load the newly built Scripts assembly on the main thread.
-            QueueMainThreadTask([this]()
+            QueueMainThreadTask([this, bindGeneration]()
                                 {
+                m_DeferredInitialBuildQueued.store(false);
+                const bool loadRefusedMeanwhile = m_InitialLoadAfterRunningBuild.exchange(false);
+                if (bindGeneration != m_ProjectBindGeneration.load())
+                {
+                    // The project changed while this built. Its rebind loaded the bound project's
+                    // assembly itself unless it needed a build this one's run refused: only then
+                    // load or build the bound project now.
+                    if (loadRefusedMeanwhile)
+                        LoadInitialScriptAssembly();
+                    return;
+                }
                 const std::filesystem::path assemblyPath = GetScriptsAssemblyPath();
                 std::error_code ec;
                 if (!std::filesystem::exists(assemblyPath, ec))
                 {
                     Logger::Log::Warning("Deferred initial scripts build finished but assembly was not found at {}", assemblyPath.string());
+                    m_ScriptAssemblyState.store(ScriptAssemblyState::Failed);
                     return;
                 }
 
                 if (!LoadScriptAssembly(assemblyPath))
                 {
                     Logger::Log::Warning("Deferred initial scripts load failed for {}", assemblyPath.string());
+                    m_ScriptAssemblyState.store(ScriptAssemblyState::Failed);
                 } });
         }
         catch (const std::exception& e)
@@ -1914,6 +1991,7 @@ std::future<HotReloadPipeline::PipelineStats> ScriptManager::StartHotReload(cons
     if (m_ShuttingDown.load(std::memory_order_relaxed))
         return MakeFinishedReload(HotReloadResult::Cancelled, "ScriptManager is shutting down");
 
+    m_ScriptAssemblyState.store(ScriptAssemblyState::Building);
     if (!m_AsyncHotReloadEnabled)
     {
         Logger::Log::Info("Async hot-reload disabled, running synchronous hot-reload on the job system");
@@ -1999,7 +2077,29 @@ bool ScriptManager::IsAsyncHotReloadInProgress() const
 
     try
     {
-        (void)completedFuture.get();
+        auto stats = completedFuture.get();
+        const bool cancelled = IsCancellation(stats.result);
+        if (!cancelled)
+        {
+            std::lock_guard<std::mutex> lock(m_CurrentAsyncFutureMutex);
+            m_LastAsyncHotReloadError =
+                stats.success ? String{} : (stats.errorMessage.empty() ? String("the C# compile failed") : stats.errorMessage);
+        }
+        Logger::Log::Info("🎯 Async hot-reload completed: {}",
+                          stats.success ? "SUCCESS" : (cancelled ? "CANCELLED" : "FAILED"));
+        if (!stats.success)
+        {
+            // A run superseded by a newer edit reports failure by design; during a
+            // rapid-edit storm every keystroke would otherwise log an error.
+            if (cancelled)
+            {
+                Logger::Log::Debug("Async hot-reload cancelled: {}", stats.errorMessage);
+            }
+            else
+            {
+                Logger::Log::Error("Hot-reload error: {}", stats.errorMessage);
+            }
+        }
     }
     catch (const std::exception& e)
     {
@@ -2009,31 +2109,17 @@ bool ScriptManager::IsAsyncHotReloadInProgress() const
     return false;
 }
 
-void ScriptManager::OnHotReloadRunCompleted(const HotReloadPipeline::PipelineStats& stats)
-{
-    const bool cancelled = IsCancellation(stats.result);
-    Logger::Log::Info("🎯 Async hot-reload completed: {}",
-                      stats.success ? "SUCCESS" : (cancelled ? "CANCELLED" : "FAILED"));
-    if (!stats.success)
-    {
-        // A run superseded by a newer edit reports failure by design; during a
-        // rapid-edit storm every keystroke would otherwise log an error.
-        if (cancelled)
-        {
-            Logger::Log::Debug("Async hot-reload cancelled: {}", stats.errorMessage);
-        }
-        else
-        {
-            Logger::Log::Error("Hot-reload error: {}", stats.errorMessage);
-        }
-    }
-}
-
 void ScriptManager::SetCurrentAsyncFuture(std::future<HotReloadPipeline::PipelineStats> future)
 {
     // The replaced future is destroyed after the lock is released.
     std::lock_guard<std::mutex> lock(m_CurrentAsyncFutureMutex);
     std::swap(m_CurrentAsyncFuture, future);
+}
+
+String ScriptManager::GetLastAsyncHotReloadError() const
+{
+    std::lock_guard<std::mutex> lock(m_CurrentAsyncFutureMutex);
+    return m_LastAsyncHotReloadError;
 }
 
 float ScriptManager::GetAsyncHotReloadProgress() const
@@ -2060,23 +2146,23 @@ String ScriptManager::GetAsyncHotReloadStatus() const
     float progress = m_HotReloadPipeline->GetProgress();
     if (progress < 0.25f)
     {
-        return "🔧 Compiling scripts... (" + std::to_string(int(progress * 100)) + "%)";
+        return "Compiling scripts... (" + std::to_string(int(progress * 100)) + "%)";
     }
     else if (progress < 0.50f)
     {
-        return "📁 Loading assembly files... (" + std::to_string(int(progress * 100)) + "%)";
+        return "Loading assembly files... (" + std::to_string(int(progress * 100)) + "%)";
     }
     else if (progress < 0.75f)
     {
-        return "🔄 Preparing assembly context... (" + std::to_string(int(progress * 100)) + "%)";
+        return "Preparing assembly context... (" + std::to_string(int(progress * 100)) + "%)";
     }
     else if (progress < 1.0f)
     {
-        return "⚡ Swapping assemblies... (" + std::to_string(int(progress * 100)) + "%)";
+        return "Swapping assemblies... (" + std::to_string(int(progress * 100)) + "%)";
     }
     else
     {
-        return "✅ Hot-reload completed successfully";
+        return "Hot-reload completed successfully";
     }
 }
 
@@ -2150,20 +2236,9 @@ UniquePtr<FileWatchSubscription> ScriptManager::WatchScriptDirectory(const std::
     if (directory.empty())
         return nullptr;
 
-    // OnFileChanged runs on a FileWatchingService watcher thread. The host app
-    // arms and stops the service (the editor does both); this only subscribes.
-    //
-    // Releasing the returned handle waits for this subscription's running
-    // OnFileChanged, never for another subscriber's callback, and the main
-    // thread releases it (Shutdown, RebindProjectScripts, SetHotReloadEnabled).
-    // So OnFileChanged must never wait for the main thread. It takes
-    // m_HotReloadStartMutex and short leaf locks, none held by those callers
-    // while they unsubscribe. Its one wait on another thread is
-    // HotReloadPipeline::ExecuteAsync waiting for the run it just cancelled to
-    // clear its executing flag; that run does so at its next token check in
-    // MonitorExecution, before it waits for its stages (the main-thread swap
-    // among them). The future it replaces in m_CurrentAsyncFuture is
-    // promise-backed and does not block when destroyed.
+    // OnFileChanged runs on a watcher thread; the host app arms and stops the service.
+    // The main thread releases the returned handle, which waits for this subscription's
+    // running OnFileChanged, so OnFileChanged must never wait for the main thread.
     FilePattern pattern(directory, ".*", {".cs", ".csproj"}, /*recursive*/ true);
     return MakeUnique<FileWatchSubscription>(FileWatchingService::GetInstance().Subscribe(
         pattern, [this](const FileChangeEvent& event) { OnFileChanged(event); }));
@@ -2179,10 +2254,9 @@ Vector<FileWatchSubscription> ScriptManager::WatchScriptsProjectFiles()
         return subscriptions;
     // The folders of the inputs that exist now; a new file in a folder above the csproj's is
     // seen at the next compile, whose restore key covers it.
-    FlatSet<std::filesystem::path> folders;
-    folders.Insert(projectPath.parent_path());
+    std::set<std::filesystem::path> folders{projectPath.parent_path()};
     for (const std::filesystem::path& input : ScriptRestoreInputFiles(projectPath))
-        folders.Insert(input.parent_path());
+        folders.insert(input.parent_path());
     // The watcher folds file names to lower case on Windows, so OnScriptsProjectFileChanged
     // matches the names rather than a pattern here.
     for (const std::filesystem::path& folder : folders)
@@ -2468,7 +2542,7 @@ void EmitEngineBinDirValidationTarget(std::ostringstream& xml, const char* requi
 {
     xml << "  <Target Name=\"ValidateEngineBinDir\" BeforeTargets=\"ResolveAssemblyReferences\">\n";
     xml << "    <Error Condition=\"!Exists('$(EngineBinDir)')\" Text=\"GameEngine: EngineBinDir "
-           "'$(EngineBinDir)' does not exist. The GameEngine Editor moved since this project was generated. "
+           "'$(EngineBinDir)' does not exist. The Open Engine Editor moved since this project was generated. "
            "Re-open the project in the Editor to regenerate this file, or build with "
            "-p:EngineBinDir=&lt;Editor directory&gt;.\" />\n";
     xml << "    <Warning Condition=\"Exists('$(EngineBinDir)') And !Exists('$(EngineBinDir)" << requiredDllName
@@ -2477,9 +2551,9 @@ void EmitEngineBinDirValidationTarget(std::ostringstream& xml, const char* requi
     xml << "  </Target>\n";
 }
 
-// Every generated scripts project carries this diagnostics target; a
-// hand-written GameEngine.Scripts.csproj does not, so the stale-project
-// cleanup never deletes the user's own file.
+// The engine targets file carries this diagnostics target. A csproj under the scripts root
+// that carries it too is a generated copy and safe to delete; the user's csproj imports the
+// targets file and never carries it, so the stale-project cleanup never deletes the user's file.
 constexpr std::string_view kGeneratedScriptsProjectSignature = "<Target Name=\"DumpCompileItems\"";
 
 // Writes `content` unless the file already holds exactly that; false when the write fails.
@@ -2846,7 +2920,7 @@ bool ScriptManager::EnsureEditorAutoProject(std::filesystem::path& outProjectPat
             (void)ReadFileTextShared(projectPath, existingContent);
         }
 
-        const std::filesystem::path exeDir = PathUtils::GetExecutableDirectory();
+        const std::filesystem::path exeDir = ApplicationPaths::GetExecutableDirectory();
         const std::filesystem::path engineBinDir = ScriptingPaths::ResolveEngineManagedDirectory();
         std::string engineBinDirAbs = engineBinDir.generic_string();
         if (!engineBinDirAbs.empty() && engineBinDirAbs.back() != '/' && engineBinDirAbs.back() != '\\')
@@ -2969,8 +3043,7 @@ void ScriptManager::OnFileChanged(const FileChangeEvent& event)
 
     Logger::Log::Debug("Script file changed: {} ({})", event.Path.string(), static_cast<int>(event.Type));
 
-    // Recompile after a source, project, or restore input changes.
-
+    // Trigger recompile and reload for any C# file, project file or restore input change
     {
         // RACE CONDITION FIX: Improved multiple hot-reload prevention with timeout
         static std::atomic<bool> hotReloadInProgress{false};

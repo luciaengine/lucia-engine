@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace JobSystem {
@@ -21,6 +22,7 @@ class JobChannel;
 namespace GameEngine {
 
 class UIElement;
+class ExportRequirementsSection;
 class ScrollView;
 class Label;
 class Button;
@@ -47,8 +49,15 @@ public:
     /** Reload version from settings and refresh the version column. Call when Build tab is shown or periodically so the panel never shows stale values. */
     void RefreshVersionsFromSettings();
 
+    /// Checks again whether the tools that the enabled platforms' exports need are installed.
+    void RecheckExportRequirements();
+
     /** Set callback for the Settings button (opens Settings and shows Build section). Called by the host when wiring panels. */
     void SetOnOpenBuildSettings(std::function<void()> cb) { m_OnOpenBuildSettings = std::move(cb); }
+
+    /// Sets what the Requirements section's Docs button calls with a page path under WebPanel::kHelpDocsURL.
+    /// Called by the host when wiring panels; without it, the page opens in the system browser.
+    void SetOnOpenDocsPage(std::function<void(std::string_view page)> onOpenDocsPage);
 
     /** Programmatically trigger a build (used by UI button). Posts to UI thread. */
     void TriggerBuild();
@@ -88,12 +97,16 @@ private:
     BuildSettings GatherBuildSettings();
     void OnBuildProgress(const BuildProgress& progress);
     void ScheduleBuildTimerTick();
+    // One timer tick: refresh the running durations and rows, then re-arm while a build runs.
+    void RunBuildTimerTick();
     void UpdateRunningBuildDurations();
     void UpdateBuildButtonState();
     void SaveOutputDirectoryForAllPlatforms(const std::string& value);
     void BrowseOutputDirectory();
+    void ShowEnabledPlatformRequirements();
 
     UIElement* m_MainContainer = nullptr;
+    ExportRequirementsSection* m_RequirementsSection = nullptr;
     UIElement* m_RowsContainer = nullptr;
     UIElement* m_Header = nullptr;
     ScrollView* m_ScrollView = nullptr;

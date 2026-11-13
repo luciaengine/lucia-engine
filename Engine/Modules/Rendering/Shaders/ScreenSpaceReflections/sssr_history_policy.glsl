@@ -3,6 +3,31 @@
 
 // Scalar policy shared by the shader and CPU regression tests. Positive tests
 // also reject NaN inputs, without treating a missing ray as a traced miss.
+
+// Bound on the rounding error of m2 - m1 * m1 from RGBA16F moments, as a fraction of m2:
+// m2 rounds by at most 2^-11 of itself, m1 * m1 by at most twice that, and m2 >= m1 * m1.
+const float kSssrMomentRoundoff = 3.0f / 2048.0f;
+
+// The temporal luminance variance of stored moments (x = mean, y = mean square). A variance
+// inside the storage rounding error is zero, so a converged pixel reads a steady variance.
+float GE_SssrTemporalVariance(vec2 moments)
+{
+    return max(moments.y - moments.x * moments.x - kSssrMomentRoundoff * moments.y, 0.0f);
+}
+
+// A lobe this smooth traces one fixed ray: no VNDF sample and no frame term.
+bool GE_SssrIsMirrorLobe(float roughness)
+{
+    return roughness < 0.06f;
+}
+
+// The frame the march start offset reads its blue noise at. A mirror lobe gets
+// spatial noise only, so a still view gives the same hits every frame.
+uint GE_SssrStartOffsetFrame(float roughness, uint frameIndex)
+{
+    return GE_SssrIsMirrorLobe(roughness) ? 0u : frameIndex + 17u;
+}
+
 bool GE_SssrDepthHistoryValid(float storedZ, float expectedZ)
 {
     return storedZ > 0.0f && expectedZ > 0.0f &&

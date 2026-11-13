@@ -1,3 +1,4 @@
+#include "Core/ApplicationPaths.h"
 // C10 end-to-end integration test: generate → compile → load → register.
 //
 // Drives NativeScriptManager::BuildAndLoad on a freshly-written fixture component:
@@ -11,7 +12,7 @@
 // import lib, include dirs, compile defs, SDK paths, config) is supplied by CMake
 // via a generated `c10_config.txt` placed next to this test exe — see CMakeLists.
 
-#include "Core/Application.h" // PathUtils::GetExecutableDirectory
+#include "Core/Application.h" // ApplicationPaths::GetExecutableDirectory
 #include "ECS/ComponentFactory.h"
 #include "ECS/ComponentFieldRegistry.h"
 #include "JobSystem/WorkStealingThreadPool.h" // drives the async build path (B9 deferral test)
@@ -25,6 +26,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -98,7 +100,7 @@ ns::NativeBuildConfig MakeBaseConfig(const std::map<std::string, std::string>& k
 
 std::map<std::string, std::string> LoadConfigOrFail()
 {
-    const fs::path exeDir = GameEngine::PathUtils::GetExecutableDirectory();
+    const fs::path exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
     std::string cfgErr;
     auto kv = ReadConfigFile(exeDir / "c10_config.txt", cfgErr);
     EXPECT_TRUE(cfgErr.empty()) << cfgErr;
@@ -154,6 +156,38 @@ void ExpectPdbBesideBuiltDll(const ns::NativeBuildConfig& config)
     (void)config;
 #endif
 }
+
+// Outside MSVC every compile command of the user build turns off contraction, as the engine's do.
+// The test sets CMAKE_EXPORT_COMPILE_COMMANDS before the first configure, so CMake writes
+// compile_commands.json (Makefile and Ninja generators).
+void ExpectUserBuildTurnsOffContraction(const ns::NativeBuildConfig& config, const std::string& userSource)
+{
+#if !defined(_WIN32)
+    std::vector<std::string> commands;
+    std::error_code ec;
+    for (auto it = fs::recursive_directory_iterator(config.BuildDir, ec);
+         !ec && it != fs::recursive_directory_iterator(); ++it)
+    {
+        if (it->path().filename() != "compile_commands.json")
+            continue;
+        std::ifstream in(it->path());
+        for (std::string line; std::getline(in, line);)
+            if (line.find("\"command\":") != std::string::npos)
+                commands.push_back(line);
+    }
+    EXPECT_FALSE(commands.empty()) << "no compile command under " << config.BuildDir.string();
+    bool userSourceSeen = false;
+    for (const std::string& command : commands)
+    {
+        userSourceSeen = userSourceSeen || command.find(userSource) != std::string::npos;
+        EXPECT_NE(command.find("-ffp-contract=off"), std::string::npos) << command;
+    }
+    EXPECT_TRUE(userSourceSeen) << "no compile command for " << userSource;
+#else
+    (void)config;
+    (void)userSource;
+#endif
+}
 } // namespace
 
 // Explicit-macro path: a .cpp with GE_REGISTER_COMPONENT compiles + loads + registers.
@@ -188,7 +222,14 @@ TEST(NativeUserModuleBuildLoad, CompilesAndRegistersAComponentViaMacro)
     ns::NativeScriptManager mgr;
     ASSERT_TRUE(mgr.Initialize(nullptr));
     ns::NativeBuildResult buildResult;
+#if !defined(_WIN32)
+    setenv("CMAKE_EXPORT_COMPILE_COMMANDS", "ON", 1);
+#endif
     RunAndExpectSuccess(mgr, config, &buildResult);
+#if !defined(_WIN32)
+    unsetenv("CMAKE_EXPORT_COMPILE_COMMANDS");
+#endif
+    ExpectUserBuildTurnsOffContraction(config, "SampleHealth.cpp");
     EXPECT_EQ(buildResult.ModuleId, config.ModuleName);
     EXPECT_TRUE(buildResult.RegistrationsChanged);
 

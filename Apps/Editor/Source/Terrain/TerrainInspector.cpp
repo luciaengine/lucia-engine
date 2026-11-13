@@ -1,39 +1,52 @@
 #include "Terrain/TerrainInspector.h"
 
+#include "Inspectors/InspectorColorSwatchRow.h"
+
 #include "InspectorRegistry.h"
-#include "Editor/Entities/EditorComponentTraits.h"
 
 #include "AssetCore/AssetTypes.h"
 #include "AssetCore/GUID.h"
 #include "Assets/AssetManager.h"
 #include "Assets/TerrainMaterialLibraryAsset.h"
+#include "Components/TemplateGroundPlaceholder.h"
 #include "Components/Terrain/Terrain.h"
 #include "Components/Terrain/TerrainGrass.h"
 #include "Components/Terrain/TerrainPlanetRelief.h"
 #include "Core/Engine.h"
 #include "Editor/Entities/EditorComponentTraits.h"
 #include "Editor/Entities/EditorECSHelpers.h"
-#include "SceneView/TerrainBrushTool.h"
+#include "Mathematics/Angle.h"
+#include "Mathematics/Interpolation.h"
+#include "PageStreaming/PageStore/PageStoreFormat.h" // kPageStoreMaxSamplesPerAxis
+#include "Terrain/TerrainBrushTool.h"
 #include "Terrain/TerrainBaseSourceSection.h"
-#include "Terrain/TerrainGrassPresetRow.h"
-#include "Terrain/TerrainGrassVocabulary.h"
+#include "Terrain/Planet/PlanetEditsNotice.h"
+#include "Terrain/TerrainDrawnNotice.h"
+#include "Terrain/TerrainGrass/TerrainGrassPresetRow.h"
+#include "Terrain/TerrainGrass/TerrainGrassVocabulary.h"
+#include "Terrain/TerrainInteractiveModifierEdit.h"
 #include "Terrain/TerrainLayers.h"
 #include "Terrain/TerrainMaterialLibraryMint.h"
 #include "Terrain/TerrainMaterialRecord.h" // kMaxTerrainMaterials — the slot ID domain
 #include "Terrain/TerrainRoleMaterials.h"
-#include "TerrainECS/TerrainGrassAlpha.h"
-#include "TerrainGrass/GrassPlacementModel.h"       // the fit the Range row reports
+#include "Terrain/TerrainRule/TerrainRuleConditionVocabulary.h"
+#include "TerrainECS/Planet/PlanetPageRequester.h"
+#include "TerrainECS/TerrainGrass/TerrainGrassAlpha.h"
+#include "TerrainGrass/GrassPlacementModel.h"      // the fit the Range row reports
 #include "TerrainGrass/TerrainGrassRenderFeature.h" // kMaxInstancesPerView
+#include "TerrainGrass/TerrainGrassClamps.h"
+#include "TerrainGrass/TerrainGrassPresets.h"
+#include "TerrainECS/TerrainModifierComponents.h"
 #include "TerrainECS/TerrainService.h"
 #include "TerrainECS/TerrainSizingPlan.h"
 #include "UndoRedo/UndoRedoService.h"
 
-#include "Inspectors/InspectorColorSwatchRow.h"
-#include "Inspectors/InspectorComponentRowHelpers.h"
-#include "Inspectors/InspectorComponentSection.h"
+#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponent/InspectorComponentSection.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
-#include "Inspectors/TerrainSizingNotice.h"
+#include "Inspectors/RenderLayers/RenderLayersRow.h"
+#include "Terrain/TerrainSizingNotice.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Foldout.h"
 #include "UI/Controls/Label.h"
@@ -45,7 +58,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <iterator>
 #include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -56,24 +71,55 @@ namespace GameEngine
 namespace
 {
 
-// TerrainGrass::WindDirection is stored in radians, which is what the shader wants and what nobody
-// authors: the panel drags it in degrees.
-constexpr float kGrassRadToDeg = 57.2957795f;
-constexpr float kGrassDegToRad = 0.0174532925f;
+constexpr EnumEntry<Components::TerrainBehindCameraDetail> kBehindCameraDetails[] = {
+    {Components::TerrainBehindCameraDetail::AlwaysKeep, "Always Keep"},
+    {Components::TerrainBehindCameraDetail::ReleaseWhenNeeded, "Release When Needed"},
+    {Components::TerrainBehindCameraDetail::AlwaysRelease, "Always Release"},
+};
 
-// A planar terrain's side, in metres: at least 1, and at most the extent its sample density can
-// tile (TerrainECS::MaxTerrainExtentMetres), past which tiles never become resident.
+// The row shows only where the setting acts (TerrainECS::BehindCameraDetailApplies); on a smaller plane the
+// ground behind the camera already goes coarse when the pool fills, and a planet keeps none.
+void AddBehindCameraDetailRow(UIElement* parent, const InspectorContext& ctx, const Components::Terrain& terrain)
+{
+    const auto* terrainService = TerrainECS::TerrainService::TryGet();
+    if (!terrainService || !TerrainECS::BehindCameraDetailApplies(terrain, *terrainService))
+        return;
+    EnumField<Components::TerrainBehindCameraDetail>* field = InspectorUI::AddEnumRow(parent, "Detail Behind Camera",
+        kBehindCameraDetails, terrain.BehindCameraDetail,
+        "Always Keep: a turn shows no change, but after a camera cut the new view refines slowest.\n"
+        "Release When Needed: after a fast turn, the far skyline can change for a few frames.\n"
+        "Always Release: after a fast turn, the near and the far ground are coarser for the first frames.");
+    field->SetOnValueChanged([ctx](Components::TerrainBehindCameraDetail chosen) {
+        InspectorDrag::CommitComponentWithUndo<Components::Terrain>(ctx.World, ctx.Entity, ctx.ChangeNotifications,
+            ctx.Undo, "Change Terrain Detail Behind Camera",
+            [chosen](Components::Terrain& t) { t.BehindCameraDetail = chosen; });
+    });
+}
+
+constexpr float kColorSwatchSize = 20.0f;
+constexpr uint32_t kColorSwatchBorder = 0xFF555555u;
+
+// A planar terrain's side, in metres: at least 1, and at most the extent at its sample density
+// (TerrainECS::MaxTerrainExtentMetres), past which the CBT cannot resolve one sample.
 float ClampTerrainSide(float metres, float samplesPerMeter)
 {
     return std::clamp(metres, 1.0f, TerrainECS::MaxTerrainExtentMetres(samplesPerMeter));
 }
 
 // A planar terrain's density, in samples per metre: at least 0.01, and at most what its longer
-// side can tile (TerrainECS::MaxTerrainSamplesPerMeter), the same limit seen from the other input.
+// side allows (TerrainECS::MaxTerrainSamplesPerMeter), the same limit seen from the other input.
 float ClampTerrainDensity(float samplesPerMeter, const Components::Terrain& terrain)
 {
     const float densest = TerrainECS::MaxTerrainSamplesPerMeter(terrain.SizeX, terrain.SizeZ);
     return std::clamp(samplesPerMeter, 0.01f, std::max(0.01f, densest));
+}
+
+// A scene file can hold a planar size the rows below never set. The notice says that the terrain
+// is not created and gives the limit and the fix.
+void AddPlanarSizeRefusalNotice(UIElement* parent, const std::string& sizeError)
+{
+    if (!sizeError.empty())
+        InspectorUI::AddNotice(parent, "This terrain is not created. " + sizeError, EditorUI::InspectorNotice::Kind::Error);
 }
 
 // One of this component's sections. Titles repeat across the two terrain inspectors and across
@@ -148,9 +194,10 @@ static uint32_t GetGrassColor(const Components::TerrainGrass& grass, int slot)
 {
     switch (slot)
     {
-    case 0: return grass.RootColor;
+    case 0: return Components::TerrainGrassResolvedRootColor(grass);
     case 1: return grass.TipColor;
     case 2: return grass.BacklightColor;
+    case 3: return grass.SoilColor;
     default: return 0xFF000000u;
     }
 }
@@ -163,8 +210,10 @@ static void SetGrassColor(Components::TerrainGrass& grass, int slot, uint32_t ar
     case 0: grass.RootColor = color; break;
     case 1: grass.TipColor = color; break;
     case 2: grass.BacklightColor = color; break;
+    case 3: grass.SoilColor = color; break;
     default: break;
     }
+    TerrainGrass::ReconcileTerrainGrassPreset(grass);
 }
 
 // One colour chip plus its caption, appended to an existing field container. Factored out because
@@ -177,34 +226,38 @@ static void AddGrassColorSwatch(UIElement* field,
                                 ECS::World* w,
                                 ECS::EntityHandle e,
                                 Editor::EditorChangeNotifications* n,
-                                OpenColorPickerWindowFn openPicker)
+                                OpenColorPickerWindowFn openPicker,
+                                std::function<void()> onCommitted = {})
 {
     auto* comp = w ? w->GetComponent<Components::TerrainGrass>(e) : nullptr;
     if (!field || !comp)
         return;
 
     auto group = std::make_unique<UIElement>();
-    group->Overrides()
+    group->Style()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Row)
         .Set(Style::AlignItems, AlignItems::Center)
         .Set(Style::Gap, StyleLength::Px(4.0f));
     UIElement* groupRaw = group.get();
 
-    const uint32_t initialArgb = GetGrassColor(*comp, slot);
-    auto swatch = InspectorUI::MakeColorSwatch(OpaqueArgb(initialArgb));
+    auto swatch = std::make_unique<UIElement>();
     UIElement* swatchRaw = swatch.get();
+    const uint32_t initialArgb = GetGrassColor(*comp, slot);
+    InspectorUI::StyleColorSwatch(swatchRaw, OpaqueArgb(initialArgb));
+    swatchRaw->Style().Set(Style::Cursor, CursorStyle::Pointer);
     swatchRaw->SetTooltip(std::string(name) + " " + FormatGrassColor(initialArgb));
     groupRaw->AddChild(std::move(swatch));
 
     auto label = std::make_unique<Label>();
     label->AddClass("inspector-text");
-    label->AddClass("inspector-color-swatch-value");
     label->SetText(name);
+    label->Style().Set(Style::Cursor, CursorStyle::Pointer);
     Label* labelRaw = label.get();
     groupRaw->AddChild(std::move(label));
 
-    auto clickHandler = [w, e, n, openPicker, swatchRaw, slot, label = std::string(name)](UIEvent& ev)
+    auto clickHandler = [w, e, n, openPicker, swatchRaw, slot, label = std::string(name),
+                         onCommitted](UIEvent& ev)
     {
         if (ev.Button != 0)
             return;
@@ -215,8 +268,11 @@ static void AddGrassColorSwatch(UIElement* field,
         if (!current)
             return;
         const uint32_t originalArgb = GetGrassColor(*current, slot);
+        // Cancel restores the component as it was, not the colour it displayed: an Auto root
+        // displays its derived colour, and writing that back would turn Auto into an explicit one.
+        const Components::TerrainGrass original = *current;
 
-        auto apply = [w, e, n, swatchRaw, slot, label](uint32_t argb, bool commit)
+        auto apply = [w, e, n, swatchRaw, slot, label, onCommitted](uint32_t argb, bool commit)
         {
             auto* c = w->GetComponent<Components::TerrainGrass>(e);
             if (!c)
@@ -228,13 +284,20 @@ static void AddGrassColorSwatch(UIElement* field,
             else
                 Editor::PreviewComponentUpdate(w, e, n, updated);
             const uint32_t newColor = GetGrassColor(updated, slot);
-            InspectorUI::SetColorSwatchColor(swatchRaw, OpaqueArgb(newColor));
+            InspectorUI::StyleColorSwatch(swatchRaw, OpaqueArgb(newColor));
             swatchRaw->SetTooltip(label + " " + FormatGrassColor(newColor));
+            if (commit && onCommitted)
+                onCommitted();
         };
 
         ColorPickerCallbacks cbs;
         cbs.onApply = [apply](uint32_t argb, float) { apply(argb, true); };
-        cbs.onCancel = [apply, originalArgb]() { apply(originalArgb, true); };
+        cbs.onCancel = [w, e, n, original, onCommitted]()
+        {
+            Editor::CommitComponentUpdate(w, e, n, original);
+            if (onCommitted)
+                onCommitted();
+        };
         cbs.onValueChanging = [apply](uint32_t argb, float) { apply(argb, false); };
         openPicker(originalArgb, 1.0f, std::move(cbs));
     };
@@ -253,7 +316,8 @@ static void AddGrassColorRow(UIElement* parent,
                              ECS::World* w,
                              ECS::EntityHandle e,
                              Editor::EditorChangeNotifications* n,
-                             OpenColorPickerWindowFn openPicker)
+                             OpenColorPickerWindowFn openPicker,
+                             std::function<void()> onCommitted)
 {
     using namespace InspectorDrag;
     if (!parent || !w || !w->GetComponent<Components::TerrainGrass>(e))
@@ -262,11 +326,143 @@ static void AddGrassColorRow(UIElement* parent,
     UIElement* row = InspectorUI::AddRow(parent);
     InspectorUI::AddLabel(row, rowLabel, tooltip);
     UIElement* field = InspectorUI::AddFieldContainer(row);
-    field->Overrides()
+    field->Style()
         .Set(Style::FlexDir, FlexDirection::Row)
         .Set(Style::AlignItems, AlignItems::Center)
         .Set(Style::Gap, StyleLength::Px(8.0f));
-    AddGrassColorSwatch(field, slot, swatchName, w, e, n, openPicker);
+    AddGrassColorSwatch(field, slot, swatchName, w, e, n, openPicker, std::move(onCommitted));
+}
+
+// Darken Ground, shown as a percentage. The colour map recomposes the whole terrain when the value
+// changes, so a drag previews the value in the field and the map follows once the drag ends: the
+// gesture holds the terrain's interactive-edit signal, which the colour map waits out.
+static void AddGrassDarkenGroundRow(UIElement* parent, const Components::TerrainGrass& grass, ECS::World* w,
+                                    ECS::EntityHandle e, Editor::EditorChangeNotifications* n)
+{
+    using namespace InspectorDrag;
+    auto arm = std::make_shared<Editor::TerrainInteractiveModifierEditArm>();
+    const auto apply = [](Components::TerrainGrass& u, float percent) {
+        u.GroundDarkening = std::isfinite(percent) ? Math::Clamp01(percent / 100.0f) : 0.0f;
+    };
+    FloatField* field = AddFloatRowWithDrag(
+        parent, "Darken Ground", grass.GroundDarkening * 100.0f,
+        [w, e, n, arm, apply](float v)
+        {
+            auto* comp = w->GetComponent<Components::TerrainGrass>(e);
+            if (!comp)
+                return;
+            arm->Arm();
+            Components::TerrainGrass updated = *comp;
+            apply(updated, v);
+            Editor::PreviewComponentUpdate(w, e, n, updated);
+        },
+        [w, e, n, arm, apply](float v)
+        {
+            if (auto* comp = w->GetComponent<Components::TerrainGrass>(e))
+            {
+                Components::TerrainGrass updated = *comp;
+                apply(updated, v);
+                Editor::CommitComponentUpdate(w, e, n, updated);
+            }
+            arm->Release();
+        },
+        0.0f,
+        "Mixes the ground under the blades toward Soil Color by this amount times how much grass "
+        "stands there. At 0% the ground keeps its own color. A Grass Area region lowers it inside its shape with its own "
+        "Darken Ground row. Applies when you release the value.",
+        0.0f, 100.0f);
+    if (field)
+        field->SetSuffix("%");
+}
+
+// Root Color: Auto (derived from Tip Color, the default) or an authored colour. The swatch always
+// shows the colour the blades use; picking a colour authors it, and the Auto button clears it.
+static void AddGrassRootColorRow(UIElement* parent,
+                                 ECS::World* w,
+                                 ECS::EntityHandle e,
+                                 Editor::EditorChangeNotifications* n,
+                                 OpenColorPickerWindowFn openPicker,
+                                 std::function<void()> requestRefresh)
+{
+    const auto* grass = w ? w->GetComponent<Components::TerrainGrass>(e) : nullptr;
+    if (!parent || !grass)
+        return;
+    const bool automatic = grass->RootColor == Components::kTerrainGrassAutoRootColor;
+
+    UIElement* row = InspectorUI::AddRow(parent);
+    InspectorUI::AddLabel(row, "Root Color",
+        "The color at the root of each blade's own gradient. Auto starts it from the color of the "
+        "ground under the blade, so the blade goes from its ground into the leaf; with Splat Root "
+        "Color off, Auto uses Tip Color at 40% of its brightness. Pick a color to set it yourself; "
+        "Auto clears it again. Over the Root Fade span the base of the blade also takes the color "
+        "of the ground under it.");
+    UIElement* field = InspectorUI::AddFieldContainer(row);
+    field->Style()
+        .Set(Style::FlexDir, FlexDirection::Row)
+        .Set(Style::AlignItems, AlignItems::Center)
+        .Set(Style::Gap, StyleLength::Px(8.0f));
+    const char* autoName = grass->UseSplatRootColor ? "Auto (from ground)" : "Auto (from tip color)";
+    AddGrassColorSwatch(field, 0, automatic ? autoName : "Root", w, e, n, openPicker,
+                        requestRefresh);
+    if (automatic)
+        return;
+
+    auto button = std::make_unique<Button>();
+    button->SetId("terrain-grass-root-color-auto");
+    button->AddClass("small");
+    button->SetText("Auto");
+    button->SetTooltip("Set Root Color to Auto");
+    button->RegisterEventHandler(kEventButtonClick, [w, e, n, requestRefresh](UIEvent&)
+        {
+            auto* c = w->GetComponent<Components::TerrainGrass>(e);
+            if (!c)
+                return;
+            Components::TerrainGrass updated = *c;
+            updated.RootColor = Components::kTerrainGrassAutoRootColor;
+            TerrainGrass::ReconcileTerrainGrassPreset(updated);
+            Editor::CommitComponentUpdate(w, e, n, updated);
+            if (requestRefresh)
+                requestRefresh();
+        });
+    field->AddChild(std::move(button));
+}
+
+// Sets the Height Range text when the terrain's range differs from `shown`. The format runs only on a change.
+static void RefreshHeightRange(Label& text, const TerrainECS::TerrainService& terrainService, ECS::World& world,
+                               ECS::EntityHandle entity, TerrainECS::TerrainHeightRangeMeters& shown)
+{
+    const Components::Terrain* terrain = world.GetComponent<Components::Terrain>(entity);
+    if (!terrain)
+        return;
+    const TerrainECS::TerrainHeightRangeMeters range =
+        terrainService.GetHeightRangeMeters(*terrain, TerrainECS::ResolveGeneratedNoiseRelief(world));
+    if (range.Min == shown.Min && range.Max == shown.Max)
+        return;
+    shown = range;
+    text.SetText(Editor::TerrainRuleVocabulary::FormatHeightRange({range.Min, range.Max}));
+}
+
+// The read-only height range of a planar terrain, in meters above its base: the unit and the
+// domain of its height rules. Read again each frame: the range changes when the terrain is provisioned again.
+static void AddHeightRangeRow(UIElement* parent, const InspectorContext& ctx, const Components::Terrain& terrain)
+{
+    auto* terrainService = TerrainECS::TerrainService::TryGet();
+    if (!parent || !terrainService || !ctx.World)
+        return;
+    const TerrainECS::TerrainHeightRangeMeters range =
+        terrainService->GetHeightRangeMeters(terrain, TerrainECS::ResolveGeneratedNoiseRelief(*ctx.World));
+
+    UIElement* row = InspectorUI::AddRow(parent);
+    InspectorUI::AddLabel(row, "Height Range",
+                          "The heights this terrain spans, in meters above its base, from its source and "
+                          "the heights loaded so far. Height rules are authored in this unit.");
+    UIElement* field = InspectorUI::AddFieldContainer(row);
+    field->AddClass("inspector-field-readout");
+    Label* shown = InspectorUI::AddTextBlock(field, Editor::TerrainRuleVocabulary::FormatHeightRange({range.Min, range.Max}));
+    if (shown && ctx.FrameRefreshCallbacks)
+        ctx.FrameRefreshCallbacks->push_back(
+            [shown, terrainService, world = ctx.World, entity = ctx.Entity, shownRange = range]() mutable
+            { RefreshHeightRange(*shown, *terrainService, *world, entity, shownRange); });
 }
 
 // What an unbound layer actually looks like on the surface, said out loud rather than left as an
@@ -285,13 +481,13 @@ static void AddFallbackTintRow(UIElement* parent, uint32_t layer, const std::str
              "No texture bound: the surface shades this layer with a built-in colour plus "
              "procedural variation.");
     UIElement* field = InspectorUI::AddFieldContainer(row);
-    field->Overrides()
+    field->Style()
         .Set(Style::FlexDir, FlexDirection::Row)
         .Set(Style::AlignItems, AlignItems::Center)
         .Set(Style::Gap, StyleLength::Px(8.0f));
 
-    // Read-only: the fallback tint is built in, so the chip keeps the default arrow.
-    auto swatch = InspectorUI::MakeColorSwatch(OpaqueArgb(TerrainLayers::FallbackTintSwatchArgb(layer)));
+    auto swatch = std::make_unique<UIElement>();
+    InspectorUI::StyleColorSwatch(swatch.get(), OpaqueArgb(TerrainLayers::FallbackTintSwatchArgb(layer)));
     swatch->AddClass("inspector-color-swatch-readonly");
     field->AddChild(std::move(swatch));
 
@@ -515,7 +711,7 @@ static void AddCreateLibraryRow(UIElement* content, const InspectorContext& ctx)
 // Which channel the terrain brush paints into, named by the material bound to it rather than by a
 // bare index. This is the only writer of the brush's paint channel: without it the brush painted
 // channel 2 forever, whatever the picker showed.
-static void AddPaintChannelRow(UIElement* content, const InspectorContext& ctx,
+static void AddPaintChannelRow(UIElement* content,
                                const Components::Terrain& terrain,
                                const TerrainMaterialLibraryAsset* library)
 {
@@ -598,7 +794,7 @@ static void AddMaterialLayersSection(const InspectorContext& ctx, const Componen
     if (terrain.MaterialLibraryGuid.IsNull())
         AddCreateLibraryRow(content, ctx);
     Editor::TerrainRoleMaterials::AddOpenLibraryRow(content, library, ctx.PingAsset);
-    AddPaintChannelRow(content, ctx, terrain, library);
+    AddPaintChannelRow(content, terrain, library);
 
     // One statement for the whole section, not one per channel: every channel says the same thing
     // about the same library, and the button above is the action it names.
@@ -657,37 +853,6 @@ static void AddMaterialLayersSection(const InspectorContext& ctx, const Componen
 
 void RegisterTerrainInspector()
 {
-    constexpr int kTerrainSortKey = 37;
-    constexpr int kPlanetReliefSortKey = 38;
-    constexpr int kTerrainGrassSortKey = 39;
-
-    {
-        Editor::EditorComponentTraits traits;
-        traits.DisplayName = "Terrain";
-        traits.Category = "Terrain";
-        traits.SortKey = kTerrainSortKey;
-        traits.InspectorIconClass = "inspector-section-icon-terrain";
-        Editor::EditorComponentTraitsRegistry::Get().Register(
-            ECS::GetComponentTypeId<Components::Terrain>(), std::move(traits));
-    }
-    {
-        Editor::EditorComponentTraits traits;
-        traits.DisplayName = "Planet Relief";
-        traits.SortKey = kPlanetReliefSortKey;
-        Editor::EditorComponentTraitsRegistry::Get().Register(
-            ECS::GetComponentTypeId<Components::TerrainPlanetRelief>(), std::move(traits));
-    }
-    {
-        Editor::EditorComponentTraits traits;
-        traits.DisplayName = "Terrain Grass";
-        traits.Category = "Terrain";
-        traits.SortKey = kTerrainGrassSortKey;
-        traits.InspectorIconClass = "inspector-section-icon-grass";
-        traits.EnableToggleTooltip = "Off places no grass on this terrain, so it costs no placement and no draw.";
-        Editor::EditorComponentTraitsRegistry::Get().Register(
-            ECS::GetComponentTypeId<Components::TerrainGrass>(), std::move(traits));
-    }
-
     InspectorFn fn = [](const InspectorContext& ctx)
     {
         if (!ctx.Parent || !ctx.World || !ctx.Entity.IsValid())
@@ -717,6 +882,8 @@ void RegisterTerrainInspector()
                     data->MorphRangesComputed = false;
             }
         };
+
+        Editor::AddTerrainDrawnNotice(ctx.Parent, *w, e);
 
         // ---- Terrain Type ----
         // What kind of terrain this is, and so which of the sections below even apply. It heads the
@@ -771,6 +938,12 @@ void RegisterTerrainInspector()
         UIElement* settings = AddSection(ctx.Parent, "Terrain", "Terrain Settings");
         if (terrain->Domain == Components::TerrainDomain::Planar)
         {
+            const std::string sizeError =
+                TerrainECS::PlanarTerrainSizeError(terrain->SizeX, terrain->SizeZ, terrain->SamplesPerMeter);
+            AddPlanarSizeRefusalNotice(settings, sizeError);
+            // A commit can make a refused size valid: the panel then rebuilds without the notice.
+            const std::function<void()> refreshIfRefused =
+                sizeError.empty() ? std::function<void()>{} : ctx.RequestInspectorRefresh;
             AddFloatRowWithDrag(settings, "Size X", terrain->SizeX,
                 [w, e, n](float v) {
                     auto* comp = w->GetComponent<Components::Terrain>(e);
@@ -779,13 +952,15 @@ void RegisterTerrainInspector()
                     updated.SizeX = ClampTerrainSide(v, updated.SamplesPerMeter);
                     Editor::PreviewComponentUpdate(w, e, n, updated);
                 },
-                [w, e, n, invalidateMorphRanges](float v) {
+                [w, e, n, invalidateMorphRanges, refreshIfRefused](float v) {
                     auto* comp = w->GetComponent<Components::Terrain>(e);
                     if (!comp) return;
                     Components::Terrain updated = *comp;
                     updated.SizeX = ClampTerrainSide(v, updated.SamplesPerMeter);
                     Editor::CommitComponentUpdate(w, e, n, updated);
                     invalidateMorphRanges(updated);
+                    if (refreshIfRefused)
+                        refreshIfRefused();
                 },
                 kNoDefault, "World-space width of the heightmap terrain (metres). Planar only.");
 
@@ -797,13 +972,15 @@ void RegisterTerrainInspector()
                     updated.SizeZ = ClampTerrainSide(v, updated.SamplesPerMeter);
                     Editor::PreviewComponentUpdate(w, e, n, updated);
                 },
-                [w, e, n, invalidateMorphRanges](float v) {
+                [w, e, n, invalidateMorphRanges, refreshIfRefused](float v) {
                     auto* comp = w->GetComponent<Components::Terrain>(e);
                     if (!comp) return;
                     Components::Terrain updated = *comp;
                     updated.SizeZ = ClampTerrainSide(v, updated.SamplesPerMeter);
                     Editor::CommitComponentUpdate(w, e, n, updated);
                     invalidateMorphRanges(updated);
+                    if (refreshIfRefused)
+                        refreshIfRefused();
                 },
                 kNoDefault, "World-space depth of the heightmap terrain (metres). Planar only.");
 
@@ -827,6 +1004,10 @@ void RegisterTerrainInspector()
                 "Vertical scale of the heightmap (metres). Planar only — a planet's relief comes "
                 "from the Planet fields.");
 
+            // A flat Function base has no heights to span: the service reports its nominal band.
+            if (!IsFlatFunctionBase(*terrain))
+                AddHeightRangeRow(settings, ctx, *terrain);
+
             AddFloatRowWithDrag(settings, "Samples Per Meter", terrain->SamplesPerMeter,
                 [w, e, n](float v) {
                     auto* comp = w->GetComponent<Components::Terrain>(e);
@@ -835,13 +1016,15 @@ void RegisterTerrainInspector()
                     updated.SamplesPerMeter = ClampTerrainDensity(v, updated);
                     Editor::PreviewComponentUpdate(w, e, n, updated);
                 },
-                [w, e, n, invalidateMorphRanges](float v) {
+                [w, e, n, invalidateMorphRanges, refreshIfRefused](float v) {
                     auto* comp = w->GetComponent<Components::Terrain>(e);
                     if (!comp) return;
                     Components::Terrain updated = *comp;
                     updated.SamplesPerMeter = ClampTerrainDensity(v, updated);
                     Editor::CommitComponentUpdate(w, e, n, updated);
                     invalidateMorphRanges(updated);
+                    if (refreshIfRefused)
+                        refreshIfRefused();
                 },
                 kNoDefault,
                 "Heightmap resolution (samples per metre). Planar only — a planet refines "
@@ -866,10 +1049,7 @@ void RegisterTerrainInspector()
 
             // What the three rows above actually bought. Rendered here, at the rows that decide
             // it, because a summary elsewhere in the panel is hundreds of pixels from the drag.
-            Editor::AddTerrainSizingNotice(settings,
-                                           TerrainECS::DeriveTerrainSizingPlan(
-                                               terrain->SizeX, terrain->SizeZ,
-                                               terrain->SamplesPerMeter));
+            Editor::AddTerrainSizingNotice(settings, terrain->SizeX, terrain->SizeZ, terrain->SamplesPerMeter);
 
             // Water the terrain sits under (Terrain::SeaLevel): one toggle, and the height only
             // while it is set, so an unset level never shows the sentinel as a number.
@@ -911,12 +1091,52 @@ void RegisterTerrainInspector()
         }
         else
         {
-            AddComponentFloatRowWithDrag<Components::Terrain>(
-                settings, "Planet Radius", terrain->PlanetRadius, w, e, n,
-                [](Components::Terrain& u, float v) { u.PlanetRadius = std::max(1.0f, v); },
-                "Sphere radius in metres, centered at the entity origin. MaxDepth auto-scales with "
-                "it. A planet has no Size or Samples Per Meter — it refines procedurally.",
-                {}, 1.0f, 100000.0f);
+            const float32 texel = terrain->SamplesPerMeter > 0.0f ? 1.0f / terrain->SamplesPerMeter : 0.0f;
+            // The largest planet the page store holds at this texel, rounded down to a float32. A texel
+            // of 0 holds no page, so it sets no maximum.
+            const uint64 largestRadius =
+                TerrainECS::LargestPlanetRadius(PageStreaming::kPageStoreMaxSamplesPerAxis, texel);
+            float32 maxRadius = std::numeric_limits<float32>::infinity();
+            if (largestRadius != 0u)
+                maxRadius = static_cast<float32>(largestRadius);
+            if (largestRadius != 0u && static_cast<uint64>(maxRadius) > largestRadius)
+                maxRadius = std::nextafter(maxRadius, 0.0f);
+            // The commit rebuilds the inspector: the sculpt refusal notice below reads the radius.
+            AddFloatRowWithDrag(settings, "Planet Radius", terrain->PlanetRadius,
+                [w, e, n](float v) {
+                    auto* comp = w->GetComponent<Components::Terrain>(e);
+                    if (!comp) return;
+                    Components::Terrain updated = *comp;
+                    updated.PlanetRadius = std::max(1.0f, v);
+                    Editor::PreviewComponentUpdate(w, e, n, updated);
+                },
+                [w, e, n, requestRefresh = ctx.RequestInspectorRefresh](float v) {
+                    auto* comp = w->GetComponent<Components::Terrain>(e);
+                    if (!comp) return;
+                    Components::Terrain updated = *comp;
+                    updated.PlanetRadius = std::max(1.0f, v);
+                    Editor::CommitComponentUpdate(w, e, n, updated);
+                    if (requestRefresh)
+                        requestRefresh();
+                },
+                kNoDefault,
+                "Sphere radius in meters, centered at the entity origin. A saved sculpt fits a range of "
+                "radii: outside that range the sculpt does not show until the radius is back inside it, "
+                "and a warning below states the range.",
+                1.0f, std::max(1.0f, maxRadius));
+            AddPlanetAtmosphereRows(settings, ctx);
+            AssetField* heightLayer = InspectorUI::AddAssetFieldRow(
+                settings, "Height Layer", terrain->HeightLayerGuid.ToGuid(), {AssetType::TerrainHeightLayer},
+                &EngineCore::GetInstance().GetAssetManager().GetRegistry(), {}, ctx.Thumbnails,
+                "The planet's sculpt: the file that holds the height the brush adds, in the scene's Zones "
+                "folder. Save writes it and sets this row; you cannot change or clear it here.");
+            // Only a save sets the reference, so the field is read-only and has no clear button.
+            heightLayer->SetId("terrain-height-layer");
+            heightLayer->SetClearable(false);
+            heightLayer->SetEnabled(false);
+            Editor::AddPlanetSculptRefusalNotice(settings, e.id,
+                                                 TerrainECS::PlanetFaceSamples(terrain->PlanetRadius, texel), texel);
+            Editor::AddPlanetSurfaceFitNotice(settings, e.id, ctx.FrameRefreshCallbacks);
         }
 
         // ---- Material Layers ----
@@ -940,6 +1160,7 @@ void RegisterTerrainInspector()
             "Lower = finer distant ground, at about 1/value^2 triangles. Default 11. On a "
             "heightfield terrain, near the camera the triangles stop at the height data's own "
             "spacing; a planet refines procedurally.");
+        AddBehindCameraDetailRow(advanced, ctx, *terrain);
 
         // CBT debug visualization: tints each bisector triangle so the live LEB bisection
         // structure is visible (planar + planet). Not serialized — a transient authoring aid.
@@ -974,6 +1195,12 @@ void RegisterTerrainInspector()
 
         // ---- Rendering ----
         UIElement* rendering = AddSection(ctx.Parent, "Terrain", "Terrain Rendering");
+
+        InspectorDrag::AddComponentRenderLayersRow<Components::Terrain>(
+            rendering, "Render Layers", &Components::Terrain::RenderLayers, w, e, n, undo,
+            "Change Terrain Render Layers",
+            "The render layers this terrain is on. A view draws it when they share a layer.",
+            Editor::kRenderLayersNothingTooltip);
 
         AddToggleRow(rendering, "Cast Shadows", terrain->CastShadows,
             [w, e, n](bool v) {
@@ -1013,6 +1240,7 @@ void RegisterTerrainInspector()
             InspectorUI::AddLine(ctx.Parent, "(TerrainPlanetRelief missing)");
             return;
         }
+        Editor::AddPlanetEditsNotice(ctx.Parent, ctx.Entity.id);
 
         ECS::World* w = ctx.World;
         ECS::EntityHandle e = ctx.Entity;
@@ -1116,15 +1344,24 @@ void RegisterTerrainInspector()
         // turns. Everything below the fold is either expert or a stylisation escape hatch, and
         // nothing up here can make the field objectively wrong.
         UIElement* grassSection = AddSection(ctx.Parent, "TerrainGrass", "Grass");
+
+        // The kind of field: picking one writes its whole look, which stays editable below; editing
+        // a look dial away from it shows Custom.
         AddTerrainGrassPresetRow(grassSection, w, e, n, ctx.Undo, ctx.RequestInspectorRefresh);
 
+        static const std::string kDensityTooltip =
+            "Blade count per square meter at the camera, independent of terrain size. Up to " +
+            std::to_string(static_cast<int>(TerrainGrass::kGrassMaxBladesPerSquareMeter)) +
+            ". A denser field costs no extra memory: the grass instance pool is a fixed per-view "
+            "budget, so the range shortens to pay for the density (the note below says when)";
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             grassSection, "blades / m² (at camera)", grass->BladesPerSquareMeter, w, e, n,
             [](Components::TerrainGrass& u, float v) {
-                u.BladesPerSquareMeter = std::clamp(v, 0.0f, TerrainGrass::kGrassMaxBladesPerSquareMeter);
+                u.BladesPerSquareMeter =
+                    std::clamp(v, 0.0f, TerrainGrass::kGrassMaxBladesPerSquareMeter);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
             },
-            "Blade count per square meter at the camera. Higher density reduces the fitted range.",
-            {}, 0.0f, TerrainGrass::kGrassMaxBladesPerSquareMeter);
+            kDensityTooltip.c_str(), {}, 0.0f, TerrainGrass::kGrassMaxBladesPerSquareMeter);
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             grassSection, "Range (m)", grass->Range, w, e, n,
@@ -1154,46 +1391,111 @@ void RegisterTerrainInspector()
         }
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
-            grassSection, "Blade Height", grass->BladeHeight, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.BladeHeight = std::max(0.0f, v); },
+            grassSection, "Blade Height (m)", grass->BladeHeight, w, e, n,
+            [](Components::TerrainGrass& u, float v) {
+                u.BladeHeight = std::max(0.0f, v);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
             "Average blade height in world units", {}, 0.0f, 20.0f);
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
-            grassSection, "Blade Width", grass->BladeWidth, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.BladeWidth = std::max(0.0f, v); },
-            "Average blade width in world units", {}, 0.0f, 1.0f);
+            grassSection, "Blade Width (m)", grass->BladeWidth, w, e, n,
+            [](Components::TerrainGrass& u, float v) {
+                u.BladeWidth = std::max(0.0f, v);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
+            "The whole leaf's width at its base. A meadow leaf is 3 to 8 mm wide; the default is wider so "
+            "the default density still covers the ground from eye height and farther out. Use a narrower "
+            "width for denser grass or close-up views. The sides stay parallel up to Blade Taper Start, and "
+            "a blade is never wider than a fifth of its height", {}, 0.0f, 0.4f);
+
+        // The blade's shape: five physical dials. Angles are stored in radians, as Wind Direction is,
+        // and shown in degrees, because nobody pictures a tilt in radians.
+        AddComponentFloatRowWithDrag<Components::TerrainGrass>(
+            grassSection, "Blade Tilt (deg)", Mathematics::ToDegrees(grass->BladeTilt), w, e, n,
+            [](Components::TerrainGrass& u, float v) {
+                u.BladeTilt = std::clamp(Mathematics::ToRadians(v), 0.0f, Components::kMaxTerrainGrassBladeTilt);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
+            "How far a blade leans from vertical where it leaves the ground. The default 14 suits a "
+            "meadow of upright leaves; a lawn is near 6, a loose meadow 17 to 29. Each blade takes "
+            "this plus or minus 40%, and tilt and bend together never take the tip past 80 degrees "
+            "from vertical, so no tip goes into the ground",
+            {}, 0.0f, Mathematics::ToDegrees(Components::kMaxTerrainGrassBladeTilt));
+
+        AddComponentFloatRowWithDrag<Components::TerrainGrass>(
+            grassSection, "Blade Bend (deg)", Mathematics::ToDegrees(grass->BladeBend), w, e, n,
+            [](Components::TerrainGrass& u, float v) {
+                u.BladeBend = std::clamp(Mathematics::ToRadians(v), 0.0f, Components::kMaxTerrainGrassBladeBend);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
+            "How far a blade curves over its length under its own weight; the tip droops by 0.6 of "
+            "this again. The wind bends it further. Each blade takes this plus or minus 40%",
+            {}, 0.0f, Mathematics::ToDegrees(Components::kMaxTerrainGrassBladeBend));
+
+        AddComponentFloatRowWithDrag<Components::TerrainGrass>(
+            grassSection, "Blade Twist (turns)", grass->BladeTwist, w, e, n,
+            [](Components::TerrainGrass& u, float v) {
+                u.BladeTwist = std::clamp(v, 0.0f, Components::kMaxTerrainGrassBladeTwist);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
+            "How far a leaf turns about its length from root to tip: 0.25 turns its face through 90 "
+            "degrees, so its width changes along its length. 0 is a flat ribbon. Each blade twists "
+            "one way or the other, by this plus or minus 50%",
+            {}, 0.0f, Components::kMaxTerrainGrassBladeTwist);
+
+        AddComponentFloatRowWithDrag<Components::TerrainGrass>(
+            grassSection, "Blade Taper Start", grass->BladeTaperStart, w, e, n,
+            [](Components::TerrainGrass& u, float v) {
+                u.BladeTaperStart = std::clamp(v, 0.0f, Components::kMaxTerrainGrassBladeTaperStart);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
+            "The height fraction where the leaf stops being parallel-sided and narrows to its "
+            "point. 0 tapers from the root",
+            {}, 0.0f, Components::kMaxTerrainGrassBladeTaperStart);
+
+        AddComponentFloatRowWithDrag<Components::TerrainGrass>(
+            grassSection, "Tuft Fan (deg per Clump Size)", Mathematics::ToDegrees(grass->TuftFan), w, e, n,
+            [](Components::TerrainGrass& u, float v) {
+                u.TuftFan = std::clamp(Mathematics::ToRadians(v), 0.0f, Components::kMaxTerrainGrassTuftFan);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
+            "How far a blade leans away from the center of its tuft, in degrees for each Clump Size "
+            "of distance from it, so a tuft opens like a fan with its outer blades lowest. 0 leaves "
+            "no fan. Needs Clump Size above 0",
+            {}, 0.0f, Mathematics::ToDegrees(Components::kMaxTerrainGrassTuftFan));
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             grassSection, "Clump Size", grass->ClumpSize, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.ClumpSize = std::max(0.0f, v); },
-            "Edge of a tuft in metres, on a coarse lattice whose blades share a height, a facing "
-            "and a colour. 0 or less turns clumping off and restores the plain field", {}, 0.0f, 8.0f);
+            [](Components::TerrainGrass& u, float v) {
+                u.ClumpSize = std::max(0.0f, v);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
+            "Edge of a tuft in meters, on a coarse lattice whose blades share a height, a facing "
+            "and a color. 0 or less turns clumping off and restores the plain field", {}, 0.0f, 8.0f);
 
         AddGrassColorRow(grassSection, "Tip Color",
-            "The canopy colour, and so THE colour of the field: a blade is one gradient from the "
-            "ground it stands in at the root to this at the tip",
-            1, "Tip", w, e, n, ctx.OpenColorPickerWindow);
+            "The color at the tip of each blade, and so the main color of the field. A blade's own "
+            "color is a gradient from Root Color at the root to this at the tip, over the full blade",
+            1, "Tip", w, e, n, ctx.OpenColorPickerWindow,
+            // An Auto root follows the tip, so its swatch is redrawn with it.
+            ctx.RequestInspectorRefresh);
+
+        AddGrassRootColorRow(grassSection, w, e, n, ctx.OpenColorPickerWindow,
+                             ctx.RequestInspectorRefresh);
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             grassSection, "Hue Variation", grass->HueVariation, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.HueVariation = std::clamp(v, 0.0f, 1.0f); },
+            [](Components::TerrainGrass& u, float v) {
+                u.HueVariation = Math::Clamp01(v);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
             "How many different greens the field is: hue spread between whole tufts, where 1 is a "
             "30-degree swing either way, with blades inside a tuft breaking up against each other "
             "at a fixed share of the same amount. Reach for it when a field reads as one colour "
             "lit unevenly rather than as many plants. It costs almost no brightness, so its only "
             "ceiling is how much spread still reads as ONE plant: far enough up, neighbouring "
             "blades read as two species mixed rather than one sward", {}, 0.0f, 1.0f);
-
-        AddComponentFloatRowWithDrag<Components::TerrainGrass>(
-            grassSection, "Root Shade", grass->RootShade, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.RootShade = std::clamp(v, 0.0f, 1.0f); },
-            "How far the shade ramp dips low on the blade, and it cannot move the contact itself. "
-            "At the shipped Root Fade span it changes NOTHING: the ramp acts over the lowest 22% "
-            "of the blade, which is where the blade's colour schedule weights the canopy to a few "
-            "percent, so every value of this dial renders the same field. It shapes a blade only "
-            "once Root Fade End is pulled down far enough to give that range some weight — and a "
-            "Root Fade Start at or above 0.22 strands it the other way, by discarding the canopy "
-            "colour below the fade start", {}, 0.0f, 1.0f);
 
         // One two-thumb slider for the fade: the low thumb is Root Fade Start, the high thumb is
         // Root Fade End, and each end's value sits on its side of the track. Both thumbs report
@@ -1202,12 +1504,12 @@ void RegisterTerrainInspector()
         {
             UIElement* row = InspectorUI::AddRow(grassSection);
             InspectorUI::AddLabel(row, "Root Fade",
-                     "Material look, not lighting: where a blade's COLOUR leaves the ground it grows "
-                     "out of. The lighting handover always runs the whole blade. Below the low "
-                     "thumb the blade is the ground colour; above the high thumb it is entirely the "
-                     "tip colour. A low thumb below 0 starts the blend under the root, so the root "
-                     "already carries some tip colour. A short span steepens the colour ramp, up "
-                     "to 1/span, rather than adding a band");
+                     "Material look, not lighting: where the base of a blade changes from the color "
+                     "of its ground to the blade's own color. The ground color is one color per "
+                     "blade, the ground's average around its root. Below the low thumb the blade "
+                     "has the ground color; above the high thumb it has its own Root Color to Tip "
+                     "Color gradient, which always runs the full blade. A low thumb below 0 starts "
+                     "the change under the root. The lighting handover always runs the full blade");
             UIElement* fieldContainer = InspectorUI::AddFieldContainer(row);
             fieldContainer->AddClass("inspector-slider-with-value");
 
@@ -1246,6 +1548,7 @@ void RegisterTerrainInspector()
                 updated.RootFadeEnd = std::clamp(
                     fade->GetValue(), updated.RootFadeStart + Components::kMinTerrainGrassRootFadeSpan,
                     1.0f);
+                TerrainGrass::ReconcileTerrainGrassPreset(updated);
                 startLabel->SetText(formatFade(updated.RootFadeStart));
                 endLabel->SetText(formatFade(updated.RootFadeEnd));
                 if (commit)
@@ -1266,28 +1569,52 @@ void RegisterTerrainInspector()
         // Authored in RADIANS on the component; degrees in the panel, because a heading is a
         // compass reading and nobody drags one in radians.
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
-            grassSection, "Wind Direction (deg)", grass->WindDirection * kGrassRadToDeg, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.WindDirection = v * kGrassDegToRad; },
+            grassSection, "Wind Direction (deg)", Mathematics::ToDegrees(grass->WindDirection), w, e, n,
+            [](Components::TerrainGrass& u, float v) { u.WindDirection = Mathematics::ToRadians(v); },
             "Wind heading in degrees", {}, -360.0f, 360.0f);
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             grassSection, "Wind Strength", grass->WindStrength, w, e, n,
             [](Components::TerrainGrass& u, float v) { u.WindStrength = std::max(0.0f, v); },
-            "How hard the wind pushes: the gust lean amplitude, and the gate on the flutter and "
-            "the gust shading with it. 0 is a bit-still meadow", {}, 0.0f, 5.0f);
+            "How hard the wind pushes the blades: how far gusts lean them, how much they flutter, "
+            "and the light and dark waves gusts send across the field. 0 is a still meadow",
+            {}, 0.0f, 5.0f);
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             grassSection, "Gust Speed", grass->WindGustSpeed, w, e, n,
             [](Components::TerrainGrass& u, float v) { u.WindGustSpeed = std::max(0.0f, v); },
             "Speed of the broad wind noise flow", {}, 0.0f, 8.0f);
 
+        AddComponentFloatRowWithDrag<Components::TerrainGrass>(
+            grassSection, "Canopy Shade", grass->CanopyShade, w, e, n,
+            [](Components::TerrainGrass& u, float v) {
+                u.CanopyShade = std::clamp(v, 0.0f, TerrainGrass::kMaxGrassCanopyShade);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
+            "How much light the grass keeps from its own lower blades and the ground under it, sun and "
+            "sky alike. 1 is the physical amount for this density, width and height: the ground under "
+            "the grass is darker than open ground and the lit tips are the brightest part of the field. "
+            "0 lights the ground under the grass as open ground, for a bright lawn",
+            {}, 0.0f, TerrainGrass::kMaxGrassCanopyShade);
+
+        AddGrassDarkenGroundRow(grassSection, *grass, w, e, n);
+        AddGrassColorRow(grassSection, "Soil Color",
+            "The color Darken Ground mixes the ground under the field toward",
+            3, "Soil", w, e, n, ctx.OpenColorPickerWindow, {});
+
         // Strength and colour in ONE row: the tint is meaningless without the term it tints, and
         // two rows for one effect is exactly the surface this pass exists to shrink.
         if (FloatField* backlight = AddComponentFloatRowWithDrag<Components::TerrainGrass>(
                 grassSection, "Backlight", grass->Translucency, w, e, n,
-                [](Components::TerrainGrass& u, float v) { u.Translucency = std::max(0.0f, v); },
-                "Sunlight through the blade, on the face turned away from the sun, and the colour it carries",
-                {}, 0.0f, 2.0f))
+                [](Components::TerrainGrass& u, float v) {
+                    u.Translucency = std::clamp(v, 0.0f, Components::kMaxTerrainGrassTranslucency);
+                    TerrainGrass::ReconcileTerrainGrassPreset(u);
+                },
+                "Light through the leaf, and its color. A blade turned away from the sun is lit "
+                "through the leaf, and under the sky this light also brightens the tips: at 1 a tip "
+                "is twice as bright as its color and can look pale. The thick root lets no light "
+                "through. 0 is an opaque blade.",
+                {}, 0.0f, Components::kMaxTerrainGrassTranslucency))
         {
             // The class is what makes it one row: a field container lays its float field out
             // full-width, so a swatch appended after it wraps onto a second line and the "one row"
@@ -1340,34 +1667,46 @@ void RegisterTerrainInspector()
             {}, 0.0f, 6.0f);
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
+            advanced, "Far Thinning", grass->FarThinning, w, e, n,
+            [](Components::TerrainGrass& u, float v) { u.FarThinning = Math::Clamp01(v); },
+            "Where far blades are thinner than a pixel, the grass draws fewer, wider blades. 1 saves "
+            "the most frame time; 0 draws every blade. Lower it if the far grass looks thin or washed "
+            "out. With several grass terrains in the scene, the lowest value applies to all.",
+            {}, 0.0f, 1.0f);
+
+        AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             advanced, "Placement Seed", grass->PlacementSeed, w, e, n,
             [](Components::TerrainGrass& u, float v) { u.PlacementSeed = v; },
             "Hashed per cell and slot, so the same seed reproduces the same blades");
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             advanced, "Clump Height Variance", grass->ClumpHeightVariance, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.ClumpHeightVariance = std::clamp(v, 0.0f, 1.0f); },
+            [](Components::TerrainGrass& u, float v) {
+                u.ClumpHeightVariance = Math::Clamp01(v);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
             "How far a clump's height departs from Blade Height, plus or minus this fraction. "
             "0 makes every clump the same height as every other", {}, 0.0f, 1.0f);
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             advanced, "Clump Alignment", grass->ClumpAlignment, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.ClumpAlignment = std::clamp(v, 0.0f, 1.0f); },
+            [](Components::TerrainGrass& u, float v) {
+                u.ClumpAlignment = Math::Clamp01(v);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
             "How far each blade's yaw is pulled toward its clump's common facing: 0 leaves every "
             "blade independent, 1 makes a whole tuft face one way", {}, 0.0f, 1.0f);
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
-            advanced, "Clump Gather", grass->ClumpGather, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.ClumpGather = std::clamp(v, 0.0f, 1.0f); },
-            "How far each blade is pulled toward its clump's centre. Tightens tufts without "
-            "thinning the field — blades per square metre is unchanged, only where they stand",
+            advanced, "Clump Taper", grass->ClumpTaper, w, e, n,
+            [](Components::TerrainGrass& u, float v) {
+                u.ClumpTaper = Math::Clamp01(v);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
+            "How much shorter a tuft's outer blades are than its center blades: 0 keeps every "
+            "blade of a tuft at the tuft's height, 1 shrinks the edge blades to nothing. Blades "
+            "never move, so the ground is covered at the full density whatever this is",
             {}, 0.0f, 1.0f);
-
-        AddComponentFloatRowWithDrag<Components::TerrainGrass>(
-            advanced, "Max Width Ratio", grass->MaxWidthRatio, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.MaxWidthRatio = std::max(0.0f, v); },
-            "Aspect ceiling: width never exceeds Blade Height times this, so short blades cannot "
-            "become squares. Raise it if Blade Width has stopped having an effect", {}, 0.0f, 0.5f);
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             advanced, "Blade Segments", static_cast<float>(grass->BladeSegments), w, e, n,
@@ -1384,7 +1723,10 @@ void RegisterTerrainInspector()
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             advanced, "Random Scale", grass->RandomScale, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.RandomScale = std::max(0.0f, v); },
+            [](Components::TerrainGrass& u, float v) {
+                u.RandomScale = std::max(0.0f, v);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
             "Per-blade random scale amount", {}, 0.0f, 2.0f);
 
         {
@@ -1415,7 +1757,7 @@ void RegisterTerrainInspector()
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             advanced, "Mask Threshold", grass->MaskThreshold, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.MaskThreshold = std::clamp(v, 0.0f, 1.0f); },
+            [](Components::TerrainGrass& u, float v) { u.MaskThreshold = Math::Clamp01(v); },
             "Minimum grass texture mask weight", {}, 0.0f, 1.0f);
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
@@ -1425,17 +1767,26 @@ void RegisterTerrainInspector()
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             advanced, "Resting Lean", grass->WindRestingLean, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.WindRestingLean = v; },
+            [](Components::TerrainGrass& u, float v) {
+                u.WindRestingLean = v;
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
             "Baseline lean before gusts are applied", {}, -1.0f, 1.0f);
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             advanced, "Flutter Amount", grass->WindFlutterAmount, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.WindFlutterAmount = std::max(0.0f, v); },
+            [](Components::TerrainGrass& u, float v) {
+                u.WindFlutterAmount = std::max(0.0f, v);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
             "Small high-frequency blade flutter amount", {}, 0.0f, 2.0f);
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             advanced, "Flutter Speed", grass->WindFlutterSpeed, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.WindFlutterSpeed = std::max(0.0f, v); },
+            [](Components::TerrainGrass& u, float v) {
+                u.WindFlutterSpeed = std::max(0.0f, v);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
             "Small high-frequency blade flutter speed", {}, 0.0f, 12.0f);
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
@@ -1445,46 +1796,52 @@ void RegisterTerrainInspector()
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             advanced, "Brightness", grass->Brightness, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.Brightness = std::max(0.0f, v); },
+            [](Components::TerrainGrass& u, float v) {
+                u.Brightness = std::max(0.0f, v);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
             "Flat trim on the canopy albedo. The front door for a field that reads too dark is Tip "
             "Color; this is for matching a ground palette, and above 1 it pushes albedo out of the "
             "physical range the contact is calibrated in", {}, 0.0f, 3.0f);
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             advanced, "Random Brightness", grass->RandomBrightness, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.RandomBrightness = std::max(0.0f, v); },
+            [](Components::TerrainGrass& u, float v) {
+                u.RandomBrightness = std::max(0.0f, v);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
             "Per-blade random brightness amount", {}, 0.0f, 1.0f);
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
-            advanced, "Blade Normal Form", grass->BladeNormalForm, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.BladeNormalForm = std::clamp(v, 0.0f, 1.0f); },
-            "How much of a blade's own near-horizontal normal is used to shade it across its width. "
-            "1 gives the strongest lit and shaded sides and costs about a fifth of the field's "
-            "brightness, because a horizontal normal catches far less of a high sun; 0 shades every "
-            "blade on the up-dominant canopy normal, so the field is as bright as flat ground and "
-            "has no per-blade form",
-            {}, 0.0f, 1.0f);
-
-        AddComponentFloatRowWithDrag<Components::TerrainGrass>(
-            advanced, "Blade Scatter Gain", grass->BladeScatterGain, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.BladeScatterGain = std::max(0.0f, v); },
-            "Hands back the brightness the form above gives up, standing in for the light that "
-            "reaches a blade off its neighbours. Exactly zero at the blade base and in the far "
-            "field, where nothing has been given up. It lifts the darkest parts of a blade hardest, "
-            "so it trades the field's mean brightness against its blade-scale contrast. Lower it if "
-            "a distant vista reads too bright; 0 disables it. Raising it past the default to cure a "
-            "dark-looking field brings back a bright band across the mid distance",
-            {}, 0.0f, 2.0f);
-
-        AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             advanced, "Grounding Strength", grass->GroundingStrength, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.GroundingStrength = std::clamp(v, 0.0f, 1.0f); },
-            "Master gate over how far the blade reads as growing out of its ground: the gust "
-            "shading, the root-shade ramp and the base's blend into the terrain colour. Nothing "
-            "to do with cast shadows. At 0 a blade never adopts its ground's colour at all, so "
-            "this is a stylisation escape hatch rather than a look dial",
+            [](Components::TerrainGrass& u, float v) {
+                u.GroundingStrength = Math::Clamp01(v);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
+            "How much the blade reads as growing out of its ground: the blend of its base into the "
+            "ground color, and the light and dark waves that gusts send across the field. It does "
+            "not change cast shadows. Below 1, with Root Color on Auto, the lower blade shows less "
+            "of the ground's color and more of a darker shade of the leaf; both end at Ground Tint "
+            "Height, and above it the blade is the leaf color at any strength. At 0 a blade takes none of its "
+            "ground's color; use 0 for a stylized field",
             {}, 0.0f, 1.0f);
 
+        AddComponentFloatRowWithDrag<Components::TerrainGrass>(
+            advanced, "Ground Tint Height", grass->GroundTintHeight, w, e, n,
+            [](Components::TerrainGrass& u, float v) {
+                u.GroundTintHeight = std::clamp(v, Components::kMinTerrainGrassGroundTintHeight, 1.0f);
+                TerrainGrass::ReconcileTerrainGrassPreset(u);
+            },
+            ReflectedTooltip(ECS::GetComponentTypeId<Components::TerrainGrass>(), "GroundTintHeight"), {},
+            Components::kMinTerrainGrassGroundTintHeight, 1.0f);
+        // The Root Color row and the Splat Root Color toggle rebuild the inspector, so the note
+        // follows them.
+        if (const std::string inactive = Editor::TerrainGrassVocabulary::GroundTintHeightInactiveNote(
+                grass->RootColor == Components::kTerrainGrassAutoRootColor, grass->UseSplatRootColor);
+            !inactive.empty())
+            InspectorUI::AddInfoCard(advanced, inactive);
+
+        // The Root Color row names where an automatic root comes from, so the inspector rebuilds.
         AddToggleRow(advanced, "Splat Root Color", grass->UseSplatRootColor,
             [w, e, n, requestRefresh = ctx.RequestInspectorRefresh](bool v)
             {
@@ -1494,16 +1851,8 @@ void RegisterTerrainInspector()
                 if (requestRefresh)
                     requestRefresh();
             },
-            "Use the terrain material color under the blade for the grass root color");
-
-        // Only reachable while the toggle above is off: with it on the root takes the ground's own
-        // resolved albedo and this field is not read at all.
-        if (!grass->UseSplatRootColor)
-        {
-            AddGrassColorRow(advanced, "Root Color",
-                "The flat colour a blade's base takes when it is NOT reading the ground under it",
-                0, "Root", w, e, n, ctx.OpenColorPickerWindow);
-        }
+            "On: the base of each blade takes the color of the ground under it. Off: the base takes "
+            "Root Color, for a field that does not take its ground's color");
 
         UIElement* texture = AddSection(ctx.Parent, "TerrainGrass", "Texture");
 
@@ -1523,9 +1872,10 @@ void RegisterTerrainInspector()
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             texture, "cards / m² (at camera)", grass->TextureCardsPerSquareMeter, w, e, n,
             [](Components::TerrainGrass& u, float v) {
-                u.TextureCardsPerSquareMeter = std::clamp(v, 0.0f, TerrainGrass::kGrassMaxBladesPerSquareMeter);
+                u.TextureCardsPerSquareMeter =
+                    std::clamp(v, 0.0f, TerrainGrass::kGrassMaxBladesPerSquareMeter);
             },
-            "Texture card count per square metre at the camera", {}, 0.0f, 16.0f);
+            "Texture card count per square meter at the camera", {}, 0.0f, 16.0f);
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             texture, "Texture Size", grass->TextureSize, w, e, n,
@@ -1595,7 +1945,7 @@ void RegisterTerrainInspector()
         {
             AddComponentFloatRowWithDrag<Components::TerrainGrass>(
                 texture, "Alpha Cutoff", grass->AlphaCutoff, w, e, n,
-                [](Components::TerrainGrass& u, float v) { u.AlphaCutoff = std::clamp(v, 0.0f, 1.0f); },
+                [](Components::TerrainGrass& u, float v) { u.AlphaCutoff = Math::Clamp01(v); },
                 "Cutout threshold for albedo alpha or separate alpha texture. Shown only while a "
                 "bound texture has alpha that could not be proven uniformly opaque — a bound "
                 "alpha map always counts, and an albedo is judged by content only for some KTX2 "
@@ -1611,6 +1961,18 @@ void RegisterTerrainInspector()
     };
 
     InspectorRegistry::Get().RegisterComponentInspector<Components::TerrainGrass>(std::move(grassFn));
+
+    Editor::EditorComponentTraits traits;
+    traits.EnableToggleTooltip = "Switch this component on or off. Off places no grass on this terrain, so it "
+                                 "costs no placement and no draw.";
+    Editor::EditorComponentTraitsRegistry::Get().Register(
+        ECS::GetComponentTypeId<Components::TerrainGrass>(), std::move(traits));
+
+    // The marker has no setting. The notice that a new terrain shows tells the user what it does.
+    Editor::EditorComponentTraits placeholderTraits;
+    placeholderTraits.HideInInspector = true;
+    Editor::EditorComponentTraitsRegistry::Get().Register(
+        ECS::GetComponentTypeId<Components::TemplateGroundPlaceholder>(), std::move(placeholderTraits));
 }
 
 } // namespace GameEngine

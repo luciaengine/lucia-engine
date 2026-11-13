@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "TestDeviceHelper.h"
 #include "StorageImageLayoutHelper.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include <array>
 #include <algorithm>

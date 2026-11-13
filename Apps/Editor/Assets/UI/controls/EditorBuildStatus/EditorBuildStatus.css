@@ -1,0 +1,17 @@
+/* The status bar's left corner: the build configuration, a divider, then the editor version. */
+.editor-build-status {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    min-width: 0;
+}
+
+/* A 1 px vertical rule at the status text height keeps the two labels apart as two items. */
+.editor-build-status-divider {
+    width: 1px;
+    height: 12px;
+    flex-shrink: 0;
+    margin-left: 8px;
+    margin-right: 8px;
+    background-color: var(--ui_color_border_subtle);
+}

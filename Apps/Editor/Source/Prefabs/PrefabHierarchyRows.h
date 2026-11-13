@@ -22,6 +22,7 @@ namespace GameEngine::Editor
 
 class EditorChangeNotifications;
 class SceneDocumentManager;
+class UndoRedoService;
 struct HierarchyRowParts;
 
 /// What a Hierarchy row shows for prefabs: the root of an instance, an entity inside one, or
@@ -62,15 +63,16 @@ PrefabRowState ClassifyPrefabRow(ECS::World& world, ECS::EntityHandle entity, co
 /// The rows read the instance descriptions of PrefabInstanceDescriptions.
 void DecoratePrefabRow(ECS::World& world, ECS::EntityHandle entity, HierarchyRowParts& parts);
 
-/// Presents existing prefab row roles on its glyph and badge after the row is composed.
-void UpdatePrefabRowPresentation(HierarchyRowParts& parts);
-
 /// Shows `text` on `label`; an empty `text` hides the label, so it takes no space.
 void SetShownText(Label& label, const std::string& text);
 
-/// Registers prefab hierarchy, picking, Inspector, folder-drop and thumbnail behavior at startup.
-/// Override menus are empty in Play mode. document may return null for the Overrides load report.
-void RegisterPrefabEditor(EditorChangeNotifications& notifications, IThumbnailProvider* thumbnails,
-                          std::function<bool()> isInPlayMode, std::function<SceneDocumentManager*()> document);
+/// Registers the prefab editor: the Scene View pick climb, the Hierarchy glyph, rows and menu, the Inspector's prefab
+/// bar, override marks and override menus (empty while `isInPlayMode` returns true), the drop on an Assets folder and
+/// the `.prefab` tile in `thumbnails` when there is one. The Overrides list reads the load report of the document that
+/// `document` returns, which may be null. The records an Inspector commit writes join its step in `undo`, which may be
+/// null. Call once at startup.
+void RegisterPrefabEditor(EditorChangeNotifications& notifications, UndoRedoService* undo,
+                          IThumbnailProvider* thumbnails, std::function<bool()> isInPlayMode,
+                          std::function<SceneDocumentManager*()> document);
 
 } // namespace GameEngine::Editor

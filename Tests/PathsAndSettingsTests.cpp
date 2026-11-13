@@ -1,9 +1,11 @@
+#include "Core/ApplicationPaths.h"
 #include <gtest/gtest.h>
 
 #include "Core/Application.h"
 #include "Core/StandardPaths.h"
 #include "Scripting/PathResolver.h"
 #include "Rendering/Sky/SkyRenderer.h"
+#include "ScopedCurrentPath.h"
 #include "TestTempDir.h"
 
 #include <algorithm>
@@ -13,33 +15,7 @@
 
 namespace
 {
-// Save/chdir/restore, so a test can prove a path is independent of the process working
-// directory. Same shape as Tests/Editor/OpenSceneResolutionTests.cpp's guard.
-class ScopedCurrentPath
-{
-  public:
-    explicit ScopedCurrentPath(const std::filesystem::path& newCurrentPath)
-    {
-        std::error_code ec;
-        m_PreviousPath = std::filesystem::current_path(ec);
-        if (ec)
-            return;
-        std::filesystem::current_path(newCurrentPath, ec);
-        m_Active = !ec;
-    }
-    ~ScopedCurrentPath()
-    {
-        if (!m_Active)
-            return;
-        std::error_code ec;
-        std::filesystem::current_path(m_PreviousPath, ec);
-    }
-    bool IsActive() const { return m_Active; }
-
-  private:
-    std::filesystem::path m_PreviousPath;
-    bool m_Active{false};
-};
+using GameEngine::TestUtils::ScopedCurrentPath;
 
 static bool ContainsForbiddenChars(const std::string& s)
 {
@@ -68,7 +44,7 @@ static bool ContainsForbiddenChars(const std::string& s)
 TEST(Paths, SanitizeForFolderName_RemovesForbiddenChars)
 {
     const std::string in = " My:Game*Name?  ";
-    const std::string out = GameEngine::PathUtils::SanitizeForFolderName(in);
+    const std::string out = GameEngine::ApplicationPaths::SanitizeForFolderName(in);
     EXPECT_FALSE(out.empty());
     EXPECT_FALSE(ContainsForbiddenChars(out));
 }
@@ -76,7 +52,7 @@ TEST(Paths, SanitizeForFolderName_RemovesForbiddenChars)
 TEST(Paths, StandardPaths_GameSavesRoot_IsStableAndSanitized)
 {
     const std::string appName = "My:Game*Name?";
-    const std::string safe = GameEngine::PathUtils::SanitizeForFolderName(appName);
+    const std::string safe = GameEngine::ApplicationPaths::SanitizeForFolderName(appName);
 
     const auto p = GameEngine::StandardPaths::GameSavesRoot(appName);
     EXPECT_FALSE(p.empty());
@@ -102,10 +78,10 @@ TEST(Paths, StandardPaths_GameSavesRoot_IsStableAndSanitized)
 // relocated, or simply launched from elsewhere.
 TEST(Paths, InstallAssetsRoot_IsAnchoredToTheExecutable)
 {
-    const auto exeDir = GameEngine::PathUtils::GetExecutableDirectory();
+    const auto exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
     ASSERT_FALSE(exeDir.empty());
 
-    const auto root = GameEngine::PathUtils::GetInstallAssetsRoot();
+    const auto root = GameEngine::ApplicationPaths::GetInstallAssetsRoot();
     ASSERT_FALSE(root.empty());
     EXPECT_TRUE(root.is_absolute()) << root.string();
 
@@ -126,14 +102,14 @@ TEST(Paths, InstallAssetsRootFor_FlatLayoutIgnoresAResourcesSibling)
     ASSERT_TRUE(std::filesystem::create_directories(exeDir));
     ASSERT_TRUE(std::filesystem::create_directories(tree.Path() / "Resources" / "Assets"));
 
-    EXPECT_EQ(GameEngine::PathUtils::InstallAssetsRootFor(exeDir), exeDir / "Assets");
+    EXPECT_EQ(GameEngine::ApplicationPaths::InstallAssetsRootFor(exeDir), exeDir / "Assets");
 }
 
 // Callers spell a directory with or without a trailing separator; the rule reads the same
 // shape either way, and an empty directory yields an empty root like the primitive does.
 TEST(Paths, InstallAssetsRootFor_IgnoresATrailingSeparatorAndAnEmptyDirectoryYieldsEmpty)
 {
-    EXPECT_TRUE(GameEngine::PathUtils::InstallAssetsRootFor({}).empty());
+    EXPECT_TRUE(GameEngine::ApplicationPaths::InstallAssetsRootFor({}).empty());
 #if defined(__APPLE__)
     const GameEngine::TestUtils::ScopedTempDir tree(
         GameEngine::TestUtils::MakeUniqueTempDirectory("gameengine-install-root-trailing"));
@@ -142,8 +118,8 @@ TEST(Paths, InstallAssetsRootFor_IgnoresATrailingSeparatorAndAnEmptyDirectoryYie
     ASSERT_TRUE(std::filesystem::create_directories(contentsDir / "Resources" / "Assets"));
     const std::filesystem::path exeDirWithSlash((contentsDir / "MacOS").string() + "/");
 
-    EXPECT_EQ(GameEngine::PathUtils::GetBundleResourcesDirectory(exeDirWithSlash), contentsDir / "Resources");
-    EXPECT_EQ(GameEngine::PathUtils::InstallAssetsRootFor(exeDirWithSlash),
+    EXPECT_EQ(GameEngine::ApplicationPaths::GetBundleResourcesDirectory(exeDirWithSlash), contentsDir / "Resources");
+    EXPECT_EQ(GameEngine::ApplicationPaths::InstallAssetsRootFor(exeDirWithSlash),
               contentsDir / "Resources" / "Assets");
 #endif
 }
@@ -157,7 +133,7 @@ TEST(Paths, InstallAssetsRootFor_BundleUsesStagedResourcesAssets)
     ASSERT_TRUE(std::filesystem::create_directories(contentsDir / "MacOS"));
     ASSERT_TRUE(std::filesystem::create_directories(contentsDir / "Resources" / "Assets"));
 
-    EXPECT_EQ(GameEngine::PathUtils::InstallAssetsRootFor(contentsDir / "MacOS"),
+    EXPECT_EQ(GameEngine::ApplicationPaths::InstallAssetsRootFor(contentsDir / "MacOS"),
               contentsDir / "Resources" / "Assets");
 }
 
@@ -173,7 +149,7 @@ TEST(Paths, InstallAssetsRootFor_BundleIsResourcesAssetsWhateverSitsBesideTheExe
     const auto contentsDir = tree.Path() / "Player.app" / "Contents";
     ASSERT_TRUE(std::filesystem::create_directories(contentsDir / "MacOS" / "Assets"));
 
-    EXPECT_EQ(GameEngine::PathUtils::InstallAssetsRootFor(contentsDir / "MacOS"),
+    EXPECT_EQ(GameEngine::ApplicationPaths::InstallAssetsRootFor(contentsDir / "MacOS"),
               contentsDir / "Resources" / "Assets");
 }
 #endif
@@ -188,11 +164,11 @@ TEST(Paths, InstallContentRootFor_FlatLayoutIsTheExecutableDirectory)
     ASSERT_TRUE(std::filesystem::create_directories(exeDir));
     ASSERT_TRUE(std::filesystem::create_directories(tree.Path() / "Resources"));
 
-    EXPECT_EQ(GameEngine::PathUtils::InstallContentRootFor(exeDir), exeDir);
-    EXPECT_EQ(GameEngine::PathUtils::InstallContentRootFor(exeDir.string() + "/"), exeDir);
-    EXPECT_EQ(GameEngine::PathUtils::InstallAssetsRootFor(exeDir),
-              GameEngine::PathUtils::InstallContentRootFor(exeDir) / "Assets");
-    EXPECT_TRUE(GameEngine::PathUtils::InstallContentRootFor({}).empty());
+    EXPECT_EQ(GameEngine::ApplicationPaths::InstallContentRootFor(exeDir), exeDir);
+    EXPECT_EQ(GameEngine::ApplicationPaths::InstallContentRootFor(exeDir.string() + "/"), exeDir);
+    EXPECT_EQ(GameEngine::ApplicationPaths::InstallAssetsRootFor(exeDir),
+              GameEngine::ApplicationPaths::InstallContentRootFor(exeDir) / "Assets");
+    EXPECT_TRUE(GameEngine::ApplicationPaths::InstallContentRootFor({}).empty());
 }
 
 // Inside a macOS bundle the content root is Contents/Resources by shape alone: an exported
@@ -206,27 +182,27 @@ TEST(Paths, InstallContentRootFor_BundleIsContentsResources)
     ASSERT_TRUE(std::filesystem::create_directories(contentsDir / "MacOS"));
 
 #if defined(__APPLE__)
-    EXPECT_EQ(GameEngine::PathUtils::InstallContentRootFor(contentsDir / "MacOS"), contentsDir / "Resources");
-    EXPECT_EQ(GameEngine::PathUtils::InstallContentRootFor((contentsDir / "MacOS").string() + "/"),
+    EXPECT_EQ(GameEngine::ApplicationPaths::InstallContentRootFor(contentsDir / "MacOS"), contentsDir / "Resources");
+    EXPECT_EQ(GameEngine::ApplicationPaths::InstallContentRootFor((contentsDir / "MacOS").string() + "/"),
               contentsDir / "Resources");
 #else
-    EXPECT_EQ(GameEngine::PathUtils::InstallContentRootFor(contentsDir / "MacOS"), contentsDir / "MacOS");
+    EXPECT_EQ(GameEngine::ApplicationPaths::InstallContentRootFor(contentsDir / "MacOS"), contentsDir / "MacOS");
 #endif
 }
 
 TEST(Paths, InstallAssetsRoot_DoesNotDependOnWorkingDirectory)
 {
-    const auto before = GameEngine::PathUtils::GetInstallAssetsRoot();
+    const auto before = GameEngine::ApplicationPaths::GetInstallAssetsRoot();
     ASSERT_FALSE(before.empty());
 
     {
         ScopedCurrentPath cwdGuard(std::filesystem::temp_directory_path());
         ASSERT_TRUE(cwdGuard.IsActive());
-        EXPECT_EQ(GameEngine::PathUtils::GetInstallAssetsRoot(), before)
+        EXPECT_EQ(GameEngine::ApplicationPaths::GetInstallAssetsRoot(), before)
             << "install assets root moved with the working directory";
     }
 
-    EXPECT_EQ(GameEngine::PathUtils::GetInstallAssetsRoot(), before);
+    EXPECT_EQ(GameEngine::ApplicationPaths::GetInstallAssetsRoot(), before);
 }
 
 // The sky's moon art is loaded natively (outside the AssetDatabase), so it is the one place
@@ -242,7 +218,7 @@ TEST(Paths, SkyMoonTexture_ResolvesUnderInstallAssetsRootNotWorkingDirectory)
                              { return part.string() == "Assets"; }))
         << "the install assets root already ends in Assets: " << relative.string();
 
-    const auto root = GameEngine::PathUtils::GetInstallAssetsRoot();
+    const auto root = GameEngine::ApplicationPaths::GetInstallAssetsRoot();
     ASSERT_FALSE(root.empty());
     // make_preferred on BOTH sides of every comparison below: the root is spelled with the
     // native separator and the relative constant with '/', so an un-normalized join and a
@@ -259,7 +235,7 @@ TEST(Paths, SkyMoonTexture_ResolvesUnderInstallAssetsRootNotWorkingDirectory)
 
     ScopedCurrentPath cwdGuard(std::filesystem::temp_directory_path());
     ASSERT_TRUE(cwdGuard.IsActive());
-    EXPECT_EQ((GameEngine::PathUtils::GetInstallAssetsRoot() / relative).make_preferred(), resolved)
+    EXPECT_EQ((GameEngine::ApplicationPaths::GetInstallAssetsRoot() / relative).make_preferred(), resolved)
         << "moon texture path followed the working directory";
 }
 
@@ -269,15 +245,15 @@ TEST(Paths, BundleResourcesDirectory_ResolvesOnlyFromABundleExecutableDirectory)
 {
     namespace fs = std::filesystem;
     const fs::path app = fs::temp_directory_path() / "GE_PathsBundleProbe" / "Probe.app";
-    const fs::path bundleResources = GameEngine::PathUtils::GetBundleResourcesDirectory(app / "Contents" / "MacOS");
+    const fs::path bundleResources = GameEngine::ApplicationPaths::GetBundleResourcesDirectory(app / "Contents" / "MacOS");
 #if defined(__APPLE__)
     EXPECT_EQ(bundleResources, app / "Contents" / "Resources");
 #else
     EXPECT_TRUE(bundleResources.empty()) << bundleResources;
 #endif
-    EXPECT_TRUE(GameEngine::PathUtils::GetBundleResourcesDirectory(fs::temp_directory_path() / "bin").empty());
-    EXPECT_TRUE(GameEngine::PathUtils::GetBundleResourcesDirectory(app / "Contents").empty());
-    EXPECT_TRUE(GameEngine::PathUtils::GetBundleResourcesDirectory({}).empty());
+    EXPECT_TRUE(GameEngine::ApplicationPaths::GetBundleResourcesDirectory(fs::temp_directory_path() / "bin").empty());
+    EXPECT_TRUE(GameEngine::ApplicationPaths::GetBundleResourcesDirectory(app / "Contents").empty());
+    EXPECT_TRUE(GameEngine::ApplicationPaths::GetBundleResourcesDirectory({}).empty());
 }
 
 // The engine managed directory (the csproj EngineBinDir) is Contents/Resources/Managed
@@ -316,11 +292,11 @@ TEST(Paths, NativeLibrary_IgnoresALibraryInTheWorkingDirectory)
 {
     namespace fs = std::filesystem;
 #if defined(_WIN32)
-    const char* libraryName = "GameEngine.Native.dll";
+    constexpr const char* kLibraryName = "GameEngine.Native.dll";
 #elif defined(__APPLE__)
-    const char* libraryName = "libGameEngine.Native.dylib";
+    constexpr const char* kLibraryName = "libGameEngine.Native.dylib";
 #else
-    const char* libraryName = "libGameEngine.Native.so";
+    constexpr const char* kLibraryName = "libGameEngine.Native.so";
 #endif
     const GameEngine::TestUtils::ScopedTempDir tree(
         GameEngine::TestUtils::MakeUniqueTempDirectory("gameengine-native-library-cwd"));
@@ -328,7 +304,7 @@ TEST(Paths, NativeLibrary_IgnoresALibraryInTheWorkingDirectory)
     const fs::path workingDir = tree.Path() / "work";
     ASSERT_TRUE(fs::create_directories(exeDir));
     ASSERT_TRUE(fs::create_directories(workingDir));
-    ASSERT_TRUE(std::ofstream(workingDir / libraryName).good());
+    ASSERT_TRUE(std::ofstream(workingDir / kLibraryName).good());
 
     {
         ScopedCurrentPath cwdGuard(workingDir);
@@ -339,8 +315,8 @@ TEST(Paths, NativeLibrary_IgnoresALibraryInTheWorkingDirectory)
 
     // Positive control: the same file name next to the executable is found, so the
     // assertions above are not passing on a name the resolver never probes.
-    ASSERT_TRUE(std::ofstream(exeDir / libraryName).good());
-    EXPECT_EQ(GameEngine::ScriptingPaths::ResolveNativeLibraryPathFrom(exeDir), exeDir / libraryName);
+    ASSERT_TRUE(std::ofstream(exeDir / kLibraryName).good());
+    EXPECT_EQ(GameEngine::ScriptingPaths::ResolveNativeLibraryPathFrom(exeDir), exeDir / kLibraryName);
 }
 
 #if defined(_WIN32)

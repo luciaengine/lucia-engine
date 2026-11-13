@@ -1,9 +1,10 @@
 #include "Animation/Ops/FootLockOp.h"
 
 #include "Animation/AnimationPose.h"
-#include "Animation/HumanoidRig.h"
+#include "Animation/Humanoid/HumanoidRig.h"
 #include "Animation/QuaternionMath.h"
-#include "Animation/SkeletonData.h"
+#include "Animation/Skeleton/SkeletonData.h"
+#include "Mathematics/Interpolation.h"
 
 #include <algorithm>
 #include <cmath>
@@ -187,7 +188,7 @@ FootLockOp::FootLockOp(const nlohmann::json& params)
         }
     }
     m_LockThreshold = std::max(0.0f, m_LockThreshold);
-    m_Blend = std::clamp(m_Blend, 0.0f, 1.0f);
+    m_Blend = Math::Clamp01(m_Blend);
 }
 
 void FootLockOp::Reset()

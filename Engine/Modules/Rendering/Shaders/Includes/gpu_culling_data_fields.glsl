@@ -1,6 +1,6 @@
 // GPUCullingData std430 fields, shared by frustum and both HZB phases.
 // Included inside a struct body. Keep GPUScene.h offsets and reflection tests
-// synchronized: 656 bytes, with renderLayerMask in the former final padding word.
+// synchronized: 656 bytes, with renderLayerMask in the final word.
     mat4 viewMatrix;
     mat4 projMatrix;
     mat4 viewProjMatrix;
@@ -9,7 +9,8 @@
     // multi-cascade dispatches, fill [c] for c in [0..kViewCount) with that
     // cascade's planes (or degenerate planes for empty cascades).
     vec4 frustumPlanes[4][6];
-    vec3 cameraPosition;
+    // The view matrix and the planes take points relative to the origin of this sector.
+    ivec3 originSector;
     float nearPlane;
     vec3 cameraForward;
     float farPlane;
@@ -20,7 +21,7 @@
     uint instanceCount;
     uint frameIndex;
     float deltaTime;
-    uint cullShadowCasters; // 1 = shadow dispatch: cull instances w/o cast bit
+    uint passFlags; // kCullPass* bits (cull_pass_membership.glsl)
     // Per-frustum radius inflation (std430 float-array stride 4, matches C++).
     float cullMargins[4];
     uint hzbMode;

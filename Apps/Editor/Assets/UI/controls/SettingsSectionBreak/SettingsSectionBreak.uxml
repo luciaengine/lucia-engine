@@ -1,0 +1,7 @@
+<!-- SettingsSectionBreak (Apps/Editor/Source/Editor/Settings/SettingsSectionBreak.h): the header of a named
+     settings group and the group's description card under it. The classes are the contract with
+     SettingsSectionBreak.cpp, which sets both texts and hides a part whose text is empty. -->
+<UIElement class="settings-section-break-body">
+  <Label class="settings-subsection-header settings-section-break-header" />
+  <CollapsibleInfoCard class="settings-section-break-description" />
+</UIElement>

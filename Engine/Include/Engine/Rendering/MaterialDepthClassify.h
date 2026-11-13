@@ -23,7 +23,7 @@
 #include "Engine/Rendering/MaterialVertexAnimation.h"
 
 #include "Rendering/Core/GPUInstanceDepthClass.h"
-#include "Rendering/Materials/ShaderVariantKey.h"
+#include "Rendering/Materials/Shader/ShaderVariantKey.h"
 
 namespace GameEngine::Engine::Renderer
 {

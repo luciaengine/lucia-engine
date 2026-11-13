@@ -250,6 +250,7 @@ std::string AssetSearchProvider::GetIconClassForType(AssetType type)
     case AssetType::Scene:          return "icon-scene";
     case AssetType::Animation:      return "icon-animation";
     case AssetType::Font:           return "icon-font";
+    case AssetType::Prefab:         return "icon-prefab";
     case AssetType::OceanDepthCache:
     case AssetType::OceanWaveSpectrum:
     case AssetType::OceanFFTCollision:

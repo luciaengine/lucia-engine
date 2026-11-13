@@ -1,8 +1,7 @@
 #include "Components/Transform.h"
 #include "SplineLayout/FenceLayout.h"
 #include "SplineLayout/PieceEntity.h"
-#include "SplineLayout/SpanMitre.h"
-#include "Types/Fnv1a.h"
+#include "SplineLayout/SpanMiter.h"
 
 #include "FenceLayoutCrestGoldens.h"
 #include "GoldenUlps.h"
@@ -176,15 +175,15 @@ const Mathematics::Matrix4x4& IdentityPlacer()
 
 float32 BasisDeterminant(const Components::Transform& t)
 {
-    const V3 c0(t.matrix[0], t.matrix[1], t.matrix[2]);
-    const V3 c1(t.matrix[4], t.matrix[5], t.matrix[6]);
-    const V3 c2(t.matrix[8], t.matrix[9], t.matrix[10]);
+    const V3 c0(t.Basis[0].x, t.Basis[0].y, t.Basis[0].z);
+    const V3 c1(t.Basis[1].x, t.Basis[1].y, t.Basis[1].z);
+    const V3 c2(t.Basis[2].x, t.Basis[2].y, t.Basis[2].z);
     return V3::Dot(c0, V3::Cross(c1, c2));
 }
 
 V3 Column(const Components::Transform& t, int index)
 {
-    return V3(t.matrix[index * 4], t.matrix[index * 4 + 1], t.matrix[index * 4 + 2]);
+    return V3(t.Basis[index].x, t.Basis[index].y, t.Basis[index].z);
 }
 
 bool AnyValidationContains(const FenceLayoutResult& result, const char* needle)
@@ -921,9 +920,9 @@ TEST(FenceLayout, NearSquarePostKeepsTheZConventionAndItsPlacement)
         EXPECT_NEAR(V3::Dot(Column(t, 0), station.Pose.Right), 1.0f, 1.0e-4f);
         EXPECT_NEAR(V3::Dot(Column(t, 1), station.Pose.Up), 1.0f, 1.0e-4f);
         EXPECT_NEAR(V3::Dot(Column(t, 2), station.Pose.Forward), 1.0f, 1.0e-4f);
-        EXPECT_NEAR(t.matrix[12], station.Pose.Position.x, 1.0e-4f);
-        EXPECT_NEAR(t.matrix[13], station.Pose.Position.y, 1.0e-4f);
-        EXPECT_NEAR(t.matrix[14], station.Pose.Position.z, 1.0e-4f);
+        EXPECT_NEAR(t.GetPosition().X, station.Pose.Position.x, 1.0e-4f);
+        EXPECT_NEAR(t.GetPosition().Y, station.Pose.Position.y, 1.0e-4f);
+        EXPECT_NEAR(t.GetPosition().Z, station.Pose.Position.z, 1.0e-4f);
     }
 }
 
@@ -1172,7 +1171,7 @@ namespace
 
 // The measured fence kit's panel: the pivot IS the plant line, with 0.5216 m of
 // panel modelled below it and 1.1171 m above. Both figures are read off one
-// SplineFence pool in the Hobbiton scene, whose 107 placed pieces carry two
+// SplineFence pool in a large island scene, whose 107 placed pieces carry two
 // skirts (0.5216 m on 65, 0.5239 m on 42) — which is why the layout reads the
 // skirt per piece and never as a constant.
 FencePieceBounds SkirtedPanelPiece()
@@ -1270,18 +1269,18 @@ BuryReport ParseBuryReport(const FenceLayoutResult& result)
     {
         if (message.find("ground rises through the spans") == std::string::npos)
             continue;
-        const size_t runAt = message.find("run ");
+        const size_t runAt = message.find("segment from point ");
         const size_t worstAt = message.find("worst at span ");
         if (runAt == std::string::npos || worstAt == std::string::npos)
             continue;
         uint32 from = 0;
         uint32 to = 0;
-        if (std::sscanf(message.c_str() + runAt, "run %u->%u at %u sample(s)", &from, &to,
+        if (std::sscanf(message.c_str() + runAt, "segment from point %u to point %u at %u sample(s)", &from, &to,
                         &report.Samples) != 3)
             continue;
         if (std::sscanf(message.c_str() + worstAt,
-                        "worst at span %u, %f m deeper than the piece is planted for, %f m along "
-                        "the run at (%f, %f)",
+                        "worst at span %u: %f m deeper than the part is planted for, %f m along "
+                        "the segment at (%f, %f)",
                         &report.Span, &report.Depth, &report.ArcMetres, &report.X, &report.Z) != 5)
             continue;
         report.Found = true;
@@ -1890,9 +1889,16 @@ namespace
 // about the layouts that came before it.
 struct Fingerprint
 {
-    uint64 Value = Hashing::kFnv1a64OffsetBasis;
+    uint64 Value = 0xCBF29CE484222325ull;
 
-    void MixBits(uint64 v) { Value = Hashing::Fnv1a64Value(Value, v); }
+    void MixBits(uint64 v)
+    {
+        for (int shift = 0; shift < 64; shift += 8)
+        {
+            Value ^= (v >> shift) & 0xFFull;
+            Value *= 0x100000001B3ull;
+        }
+    }
     void MixFloat(float32 v)
     {
         uint32 bits = 0;
@@ -2350,7 +2356,7 @@ size_t EmptyCrestRowReports(const FenceLayoutResult& result)
 {
     size_t count = 0;
     for (const std::string& message : result.Validation)
-        count += message.find("crest row placed no crest pieces") != std::string::npos ? 1u : 0u;
+        count += message.find("crest row placed no crest parts") != std::string::npos ? 1u : 0u;
     return count;
 }
 
@@ -2705,10 +2711,10 @@ TEST(FenceLayout, ACrestRowThatPlacesNothingSaysWhyOnce)
     ASSERT_TRUE(CellOrdinals(tooLong).empty()) << "fixture no longer reproduces an empty row";
     EXPECT_EQ(EmptyCrestRowReports(tooLong), 1u)
         << "one dead row is one message, however many runs it spans";
-    EXPECT_TRUE(AnyValidationContains(tooLong, "the longest clear stretch is 3.00 m."));
+    EXPECT_TRUE(AnyValidationContains(tooLong, "The longest clear stretch is 3.00 m."));
     EXPECT_TRUE(AnyValidationContains(
-        tooLong, "A crest piece no longer than half of it, 1.50 m, always fits; use one, or "
-                 "clear the Post pool."));
+        tooLong, "A crest part no longer than half of it, 1.50 m, always fits; use one, or "
+                 "remove the Post parts."));
     EXPECT_FALSE(AnyValidationContains(tooLong, "plant towers"))
         << "a hand-placed tower reserves nothing, so the row would run through it";
 
@@ -2760,7 +2766,7 @@ TEST(FenceLayout, TheEmptyCrestRowReportNamesAPitchThatBinds)
     const FenceLayoutResult slack = CrestRowBetweenTowers(2.0f, 2.6f, true);
     ASSERT_TRUE(CellOrdinals(slack).empty()) << "fixture no longer reproduces an empty row";
     EXPECT_TRUE(AnyValidationContains(
-        slack, "At a Crest Pitch of 2.60 m, a crest piece no longer than 0.40 m (the stretch "
+        slack, "At a Crest Pitch of 2.60 m, a crest part no longer than 0.40 m (the stretch "
                "less the pitch) always fits"));
     EXPECT_FALSE(CellOrdinals(CrestRowBetweenTowers(0.4f, 2.6f, true)).empty())
         << "the bound the report names must place a cell";
@@ -2768,8 +2774,8 @@ TEST(FenceLayout, TheEmptyCrestRowReportNamesAPitchThatBinds)
     const FenceLayoutResult noRoom = CrestRowBetweenTowers(3.0f, 6.0f, true);
     ASSERT_TRUE(CellOrdinals(noRoom).empty()) << "fixture no longer reproduces an empty row";
     EXPECT_TRUE(AnyValidationContains(
-        noRoom, "Crest Pitch 6.00 m leaves no room for a piece in it; lower the pitch, or clear "
-                "the Post pool."));
+        noRoom, "Crest Pitch 6.00 m leaves no room for a part in it; lower the pitch, or remove "
+                "the Post parts."));
 }
 
 // A pitch typed below the longest piece in the pool would overlap the pieces.
@@ -2793,7 +2799,7 @@ TEST(FenceLayout, PitchBelowTheLongestPieceIsClampedAndReportedOnce)
         reports += message.find("Crest Pitch") != std::string::npos ? 1u : 0u;
     EXPECT_EQ(reports, 1u);
     EXPECT_TRUE(AnyValidationContains(
-        result, "Crest Pitch 0.50 m is below the longest crest piece, 0.78 m"));
+        result, "Crest Pitch 0.50 m is below the longest crest part, 0.78 m"));
     // Raised to the piece's own length: the first cell stands at half of it.
     ASSERT_FALSE(result.Crests.empty());
     EXPECT_NEAR(result.Crests.front().Pose.Position.z, 0.39f, 1.0e-4f);
@@ -3191,7 +3197,7 @@ TEST(FenceLayout, GlobalIndexCountsEveryCellOfTheRunBefore)
     EXPECT_EQ(result.Crests[1].OrdinalInRun, 0u);
     EXPECT_EQ(result.Crests[1].Index, 20u);
     EXPECT_EQ(result.Crests[2].Index, 21u);
-    EXPECT_TRUE(AnyValidationContains(result, "the rest of the crest row is not built"));
+    EXPECT_TRUE(AnyValidationContains(result, "The rest of the crest row is not built"));
 }
 
 // The row is emitted after every station and span of the whole spline, so one
@@ -3206,7 +3212,7 @@ TEST(FenceLayout, CrestsAreEmittedAfterSpansUnderOneBudget)
     EXPECT_EQ(result.Stations.size(), 3u);
     EXPECT_EQ(result.Spans.size(), 2u);
     EXPECT_TRUE(result.Crests.empty());
-    EXPECT_TRUE(AnyValidationContains(result, "the rest of the crest row is not built"));
+    EXPECT_TRUE(AnyValidationContains(result, "The rest of the crest row is not built"));
 
     // Room for two cells: what fits is built and the cut is still reported,
     // rather than the whole row being voided over it.
@@ -3215,7 +3221,7 @@ TEST(FenceLayout, CrestsAreEmittedAfterSpansUnderOneBudget)
     EXPECT_EQ(partial.Stations.size(), 3u);
     EXPECT_EQ(partial.Spans.size(), 2u);
     EXPECT_EQ(CellOrdinals(partial), (std::vector<uint32>{0u, 1u}));
-    EXPECT_TRUE(AnyValidationContains(partial, "the rest of the crest row is not built"));
+    EXPECT_TRUE(AnyValidationContains(partial, "The rest of the crest row is not built"));
 
     // A budget that structure itself cannot meet reports the cut once, as the
     // cut it is: the row never gets to speak over it.
@@ -3224,7 +3230,7 @@ TEST(FenceLayout, CrestsAreEmittedAfterSpansUnderOneBudget)
     EXPECT_EQ(starved.Stations.size() + starved.Spans.size(), 3u);
     EXPECT_TRUE(starved.Crests.empty());
     EXPECT_FALSE(AnyValidationContains(starved, "crest row"));
-    EXPECT_TRUE(AnyValidationContains(starved, "the rest of the spline is not built"));
+    EXPECT_TRUE(AnyValidationContains(starved, "The rest of the spline is not built"));
 }
 
 // The row stands on the tops of the spans, so a recipe that asks for one
@@ -3240,7 +3246,7 @@ TEST(FenceLayout, CrestRowWithoutSpansIsReported)
 
     const FenceLayoutResult result = BuildFenceLayout(center, params);
     EXPECT_TRUE(result.Crests.empty());
-    EXPECT_TRUE(AnyValidationContains(result, "the span pool is empty"));
+    EXPECT_TRUE(AnyValidationContains(result, "has no Span part with a mesh"));
 }
 
 // ---- Crest row: frames -----------------------------------------------------
@@ -3341,7 +3347,9 @@ TEST(FenceLayout, CrestPiecesStayRigidOnEveryGrade)
             // exactly as it does on a racked one. Where the span's own basis
             // is orthonormal, the row simply keeps it.
             if (grade != Components::SplineSpanGrade::Sheared)
+            {
                 EXPECT_NEAR(V3::Dot(pose.Up, span.Pose.Up), 1.0f, 1.0e-4f);
+            }
         }
     }
 }
@@ -3471,7 +3479,7 @@ TEST(FenceLayout, CrestRegisteredToItsSpanClosesTheRowAsTheWallsDo)
         EXPECT_EQ(result.Crests.size(), result.Spans.size()) << arm.Name;
         if (result.Crests.size() != result.Spans.size())
             continue;
-        size_t mitredJoints = 0;
+        size_t miteredJoints = 0;
         for (size_t k = 0; k < result.Crests.size(); ++k)
         {
             const FenceCrest& crest = result.Crests[k];
@@ -3495,7 +3503,7 @@ TEST(FenceLayout, CrestRegisteredToItsSpanClosesTheRowAsTheWallsDo)
 
             // The joint closes: no bare wall top between neighbours and no
             // overlap past the touching millimetre, across authored points too.
-            // A square join closes end to end. A mitred one (section 4c) closes
+            // A square join closes end to end. A mitered one (section 4c) closes
             // where both crests' cut faces lie on the one join plane through
             // the shared station.
             if (k + 1u < result.Crests.size())
@@ -3505,13 +3513,13 @@ TEST(FenceLayout, CrestRegisteredToItsSpanClosesTheRowAsTheWallsDo)
                 V3 nextHead;
                 PieceEnds(next.Pose, 0.0f, CastleBattlement().Length(), next.LengthScale, nextTail,
                           nextHead);
-                if (!crest.End.Mitred)
+                if (!crest.End.Mitered)
                 {
                     EXPECT_LE(VectorLength(nextTail - crestHead), kTouching) << arm.Name << " " << k;
                     continue;
                 }
-                ASSERT_TRUE(next.Start.Mitred) << arm.Name << " " << k;
-                ++mitredJoints;
+                ASSERT_TRUE(next.Start.Mitered) << arm.Name << " " << k;
+                ++miteredJoints;
                 const V3 station = result.Stations[k + 1u].Pose.Base;
                 const V3 bisector =
                     GroundBisector(span.Pose.Forward, result.Spans[k + 1u].Pose.Forward);
@@ -3522,9 +3530,11 @@ TEST(FenceLayout, CrestRegisteredToItsSpanClosesTheRowAsTheWallsDo)
                                      next.End, true, station, bisector, kTouching, arm.Name);
             }
         }
-        // The curve's bare authored points are mitred joints; the ramp has none.
+        // The curve's bare authored points are mitered joints; the ramp has none.
         if (arm.Grade == Components::SplineSpanGrade::Racked)
-            EXPECT_GT(mitredJoints, 0u) << arm.Name;
+        {
+            EXPECT_GT(miteredJoints, 0u) << arm.Name;
+        }
     }
 }
 
@@ -3792,11 +3802,11 @@ TEST(FenceLayout, AnEmptyRegisteredCrestRowNamesOnlyTheReservation)
         ASSERT_TRUE(CellOrdinals(result).empty()) << posts;
         EXPECT_EQ(EmptyCrestRowReports(result), 1u) << posts;
         EXPECT_TRUE(AnyValidationContains(
-            result, "a reserved stretch reaches every wall they stand on; move what reserves "
-                    "the run."))
+            result, "A reserved stretch reaches every span they stand on; move what reserves "
+                    "the segment."))
             << posts;
         EXPECT_FALSE(AnyValidationContains(result, "always fits")) << posts;
-        EXPECT_FALSE(AnyValidationContains(result, "clear the Post pool")) << posts;
+        EXPECT_FALSE(AnyValidationContains(result, "remove the Post parts")) << posts;
     }
 }
 
@@ -3830,19 +3840,19 @@ TEST(FenceLayout, SharedFacingAtAnAuthoredPointOverridesTheBisector)
     EXPECT_NEAR(forced.Stations.front().Pose.Forward.z, 1.0f, 1.0e-4f);
 }
 
-// ---- Span joins: the mitre at bare joins (design section 4c) ---------------
+// ---- Span joins: the miter at bare joins (design section 4c) ---------------
 
 namespace
 {
 
 using SplineGeometry::CutPlane;
 using SplineLayout::FenceEndPlane;
-using SplineLayout::kMitreLimitDegrees;
-using SplineLayout::MitreEndCutPlane;
-using SplineLayout::MitreShape;
-using SplineLayout::MitreVariantPlan;
-using SplineLayout::PlanMitreVariants;
-using SplineLayout::QuantizeMitreShape;
+using SplineLayout::kMiterLimitDegrees;
+using SplineLayout::MiterEndCutPlane;
+using SplineLayout::MiterShape;
+using SplineLayout::MiterVariantPlan;
+using SplineLayout::PlanMiterVariants;
+using SplineLayout::QuantizeMiterShape;
 
 // A mesh-local point through the transform the controller emits.
 V3 LocalToWorld(const TilePose& pose, PieceAxis axis, float32 lengthScale, const V3& local)
@@ -3850,7 +3860,7 @@ V3 LocalToWorld(const TilePose& pose, PieceAxis axis, float32 lengthScale, const
     Components::Transform t{};
     WriteParentLocalPose(t, IdentityPlacer(), pose, axis, lengthScale);
     return Column(t, 0) * local.x + Column(t, 1) * local.y + Column(t, 2) * local.z +
-           V3(t.matrix[12], t.matrix[13], t.matrix[14]);
+           (t.GetPosition() - Mathematics::WorldPosition{});
 }
 
 V3 GroundBisector(const V3& a, const V3& b)
@@ -3869,8 +3879,8 @@ void ExpectEndOnJoinPlane(const TilePose& pose, float32 lengthScale,
                           const FenceEndPlane& end, bool atStart, const V3& station,
                           const V3& bisector, float32 tolerance, const char* what)
 {
-    const MitreShape shape = QuantizeMitreShape(lengthScale, start, end);
-    const CutPlane plane = MitreEndCutPlane(piece, shape, atStart);
+    const MiterShape shape = QuantizeMiterShape(lengthScale, start, end);
+    const CutPlane plane = MiterEndCutPlane(piece, shape, atStart);
     const int along = piece.Axis() == PieceAxis::X ? 0 : 2;
     const int across = 2 - along;
     const float32 foot = piece.Center.y - piece.HalfExtents.y;
@@ -3892,16 +3902,16 @@ void ExpectEndOnJoinPlane(const TilePose& pose, float32 lengthScale,
 }
 
 // Every span of a result ends square.
-bool NoSpanIsMitred(const FenceLayoutResult& result)
+bool NoSpanIsMitered(const FenceLayoutResult& result)
 {
     return std::none_of(result.Spans.begin(), result.Spans.end(), [](const FenceSpan& span)
-                        { return span.Start.Mitred || span.End.Mitred; });
+                        { return span.Start.Mitered || span.End.Mitered; });
 }
 
-size_t MitredJoinCount(const FenceLayoutResult& result)
+size_t MiteredJoinCount(const FenceLayoutResult& result)
 {
     return static_cast<size_t>(std::count_if(result.Spans.begin(), result.Spans.end(),
-                                             [](const FenceSpan& span) { return span.End.Mitred; }));
+                                             [](const FenceSpan& span) { return span.End.Mitered; }));
 }
 
 // The castle wall laid on a level arc of `radius` metres with no posts, one
@@ -3949,10 +3959,10 @@ FenceLayoutResult BareTurnedCorner(float32 degrees, const FencePieceBounds& piec
 
 } // namespace
 
-// A post covers its join, so the mitre inside it would be a mesh for nothing:
-// the same corner mitres with the post pool empty and stays square with it
+// A post covers its join, so the miter inside it would be a mesh for nothing:
+// the same corner miters with the post pool empty and stays square with it
 // filled.
-TEST(FenceLayout, CoveredJoinCarriesNoMitre)
+TEST(FenceLayout, CoveredJoinCarriesNoMiter)
 {
     const auto center = CorneredL(6.0f, 6.0f, 0.5f);
     const float32 boundaries[3] = {0.0f, 12.0f, 24.0f};
@@ -3961,17 +3971,17 @@ TEST(FenceLayout, CoveredJoinCarriesNoMitre)
     params.RunBoundaries = boundaries;
     params.SpanPieces = spans;
     const FenceLayoutResult bare = BuildFenceLayout(center, params);
-    EXPECT_EQ(MitredJoinCount(bare), 1u) << "the control: the bare corner mitres";
+    EXPECT_EQ(MiteredJoinCount(bare), 1u) << "the control: the bare corner miters";
 
     params.PostPiece = MeasuredKitPost();
     params.HasPostMesh = true;
     const FenceLayoutResult posted = BuildFenceLayout(center, params);
-    EXPECT_TRUE(NoSpanIsMitred(posted));
+    EXPECT_TRUE(NoSpanIsMitered(posted));
 }
 
 // On a curve no post covers, each interior join is cut on one vertical plane
 // through the station, perpendicular to the bisector of the two chords; each
-// span is laid longer by (t/2) tan(|turn|/2) at every mitred end and its
+// span is laid longer by (t/2) tan(|turn|/2) at every mitered end and its
 // LengthScale counts both; and the outer faces of the two spans meet on the
 // plane, so the notch is closed.
 TEST(FenceLayout, UncoveredArcJoinMeetsOnTheBisector)
@@ -3981,15 +3991,15 @@ TEST(FenceLayout, UncoveredArcJoinMeetsOnTheBisector)
     const float32 half = wall.HalfThickness();
     ASSERT_GE(result.Spans.size(), 4u);
     ASSERT_EQ(result.Stations.size(), result.Spans.size() + 1u);
-    EXPECT_FALSE(result.Spans.front().Start.Mitred);
-    EXPECT_FALSE(result.Spans.back().End.Mitred);
+    EXPECT_FALSE(result.Spans.front().Start.Mitered);
+    EXPECT_FALSE(result.Spans.back().End.Mitered);
 
     for (size_t k = 0; k + 1u < result.Spans.size(); ++k)
     {
         const FenceSpan& before = result.Spans[k];
         const FenceSpan& after = result.Spans[k + 1u];
-        ASSERT_TRUE(before.End.Mitred) << k;
-        ASSERT_TRUE(after.Start.Mitred) << k;
+        ASSERT_TRUE(before.End.Mitered) << k;
+        ASSERT_TRUE(after.Start.Mitered) << k;
         const V3 station = result.Stations[k + 1u].Pose.Base;
         const V3 bisector = GroundBisector(before.Pose.Forward, after.Pose.Forward);
         ExpectEndOnJoinPlane(before.Pose, before.LengthScale, wall, before.Start, before.End, false,
@@ -4006,7 +4016,7 @@ TEST(FenceLayout, UncoveredArcJoinMeetsOnTheBisector)
         float32 overhangs = 0.0f;
         for (const FenceEndPlane* end : {&span.Start, &span.End})
         {
-            if (end->Mitred)
+            if (end->Mitered)
                 overhangs += half * std::tan(0.5f * std::abs(end->TurnRadians));
         }
         EXPECT_NEAR(span.LengthScale * wall.Length(), chord + overhangs, 1e-4f) << "span " << k;
@@ -4030,7 +4040,7 @@ TEST(FenceLayout, UncoveredArcJoinMeetsOnTheBisector)
 
 // Which way a join turns decides which face is outside: the planes' turns take
 // the sign of the fence's own turn, positive to the right, on both ends.
-TEST(FenceLayout, MitreSignFollowsTheTurn)
+TEST(FenceLayout, MiterSignFollowsTheTurn)
 {
     const FenceLayoutResult right = BareCastleArc(30.0f, 60.0f);
     auto left = LevelArc(30.0f, 60.0f, 0.05f);
@@ -4065,11 +4075,11 @@ TEST(FenceLayout, ABareRightAngleIsCutOnItsBisector)
     params.SpanPieces = spans;
     const FenceLayoutResult result = BuildFenceLayout(center, params);
     ASSERT_EQ(result.Spans.size(), 4u);
-    EXPECT_EQ(MitredJoinCount(result), 1u) << "the straight joins stay square";
+    EXPECT_EQ(MiteredJoinCount(result), 1u) << "the straight joins stay square";
     const FenceSpan& before = result.Spans[1];
     const FenceSpan& after = result.Spans[2];
-    ASSERT_TRUE(before.End.Mitred);
-    ASSERT_TRUE(after.Start.Mitred);
+    ASSERT_TRUE(before.End.Mitered);
+    ASSERT_TRUE(after.Start.Mitered);
     EXPECT_NEAR(before.End.TurnRadians, Mathematics::Pi * 0.5f, 1e-4f);
     EXPECT_NEAR(before.LengthScale * 5.0f, 5.0f + 0.25f, 1e-4f);
     EXPECT_NEAR(after.LengthScale * 5.0f, 5.0f + 0.25f, 1e-4f);
@@ -4080,18 +4090,18 @@ TEST(FenceLayout, ABareRightAngleIsCutOnItsBisector)
                          V3(0.0f, 0.0f, 10.0f), bisector, 5e-4f, "opening end");
 }
 
-// Past the mitre limit a join keeps square ends and says where to plant a
-// post; at the limit's edge the mitre still applies.
-TEST(FenceLayout, ATurnPastTheMitreLimitStaysSquareAndIsReported)
+// Past the miter limit a join keeps square ends and says where to plant a
+// post; at the limit's edge the miter still applies.
+TEST(FenceLayout, ATurnPastTheMiterLimitStaysSquareAndIsReported)
 {
     const FenceLayoutResult sharp = BareTurnedCorner(150.0f, CastleWall());
     ASSERT_EQ(sharp.Spans.size(), 2u);
-    EXPECT_TRUE(NoSpanIsMitred(sharp));
+    EXPECT_TRUE(NoSpanIsMitered(sharp));
     EXPECT_NEAR(sharp.Spans[0].LengthScale, 1.0f, 1e-5f) << "a square end is not laid longer";
     size_t reports = 0;
     for (const std::string& message : sharp.Validation)
     {
-        if (message.find("mitre limit") == std::string::npos)
+        if (message.find("miter limit") == std::string::npos)
             continue;
         ++reports;
         EXPECT_NE(message.find("point 1 turns 150 degrees"), std::string::npos) << message;
@@ -4099,47 +4109,49 @@ TEST(FenceLayout, ATurnPastTheMitreLimitStaysSquareAndIsReported)
     }
     EXPECT_EQ(reports, 1u);
 
-    const FenceLayoutResult within = BareTurnedCorner(kMitreLimitDegrees - 1.0f, CastleWall());
-    EXPECT_EQ(MitredJoinCount(within), 1u);
-    EXPECT_FALSE(AnyValidationContains(within, "mitre limit"));
-    const FenceLayoutResult past = BareTurnedCorner(kMitreLimitDegrees + 1.0f, CastleWall());
-    EXPECT_TRUE(NoSpanIsMitred(past));
-    EXPECT_TRUE(AnyValidationContains(past, "mitre limit"));
+    const FenceLayoutResult within = BareTurnedCorner(kMiterLimitDegrees - 1.0f, CastleWall());
+    EXPECT_EQ(MiteredJoinCount(within), 1u);
+    EXPECT_FALSE(AnyValidationContains(within, "miter limit"));
+    const FenceLayoutResult past = BareTurnedCorner(kMiterLimitDegrees + 1.0f, CastleWall());
+    EXPECT_TRUE(NoSpanIsMitered(past));
+    EXPECT_TRUE(AnyValidationContains(past, "miter limit"));
 }
 
 // The notch floor: a turn whose square ends would leave under a millimetre
 // between the outer faces is chord noise and stays square; one just over it
-// is mitred.
+// is mitered.
 TEST(FenceLayout, ANotchUnderAMillimetreStaysSquare)
 {
     // Piece(): 0.1 m thick, so the notch is 0.1 * tan(turn / 2), and 1 mm of
     // it is a turn of 2 * atan(0.01) = 1.146 degrees.
-    EXPECT_TRUE(NoSpanIsMitred(BareTurnedCorner(1.0f, Piece(5.0f))));
-    EXPECT_EQ(MitredJoinCount(BareTurnedCorner(1.3f, Piece(5.0f))), 1u);
+    EXPECT_TRUE(NoSpanIsMitered(BareTurnedCorner(1.0f, Piece(5.0f))));
+    EXPECT_EQ(MiteredJoinCount(BareTurnedCorner(1.3f, Piece(5.0f))), 1u);
 }
 
-// A closed square with no posts mitres all four corners, the loop's shared
+// A closed square with no posts miters all four corners, the loop's shared
 // station included, each on the same 90 degree turn.
-TEST(FenceLayout, TheClosedSquareMitresItsFourCorners)
+TEST(FenceLayout, TheClosedSquareMitersItsFourCorners)
 {
     const FenceLayoutResult result = FixtureClosedSquare(kArmNothing);
     ASSERT_EQ(result.Spans.size(), 8u);
-    EXPECT_EQ(MitredJoinCount(result), 4u);
+    EXPECT_EQ(MiteredJoinCount(result), 4u);
     for (const FenceSpan& span : result.Spans)
     {
-        EXPECT_EQ(span.Start.Mitred, span.OrdinalInRun == 0u);
-        EXPECT_EQ(span.End.Mitred, span.OrdinalInRun == 1u);
-        if (span.End.Mitred)
+        EXPECT_EQ(span.Start.Mitered, span.OrdinalInRun == 0u);
+        EXPECT_EQ(span.End.Mitered, span.OrdinalInRun == 1u);
+        if (span.End.Mitered)
+        {
             EXPECT_NEAR(std::abs(span.End.TurnRadians), Mathematics::Pi * 0.5f, 1e-4f);
+        }
     }
 }
 
 // A closed square of 4 m walls, two to a side, stopped by the piece budget
 // after its first two sides (two stations and two spans each): the second
-// side's closing wall and the first side's opening wall were mitred against
+// side's closing wall and the first side's opening wall were mitered against
 // walls that are never emitted, so both end square at their stations, laid at
 // the plain fill's 1.0 like the square joins between them, while the corner
-// the two emitted sides share stays mitred.
+// the two emitted sides share stays mitered.
 TEST(FenceLayout, AWallThePieceBudgetLeavesWithoutItsNeighbourEndsSquare)
 {
     const auto center = ClosedSquare(8.0f, 0.5f);
@@ -4152,12 +4164,12 @@ TEST(FenceLayout, AWallThePieceBudgetLeavesWithoutItsNeighbourEndsSquare)
     params.MaxPieces = 8u;
     const FenceLayoutResult result = BuildFenceLayout(center, params);
     ASSERT_EQ(result.Spans.size(), 4u);
-    EXPECT_FALSE(result.Spans.front().Start.Mitred);
-    EXPECT_FALSE(result.Spans.back().End.Mitred);
+    EXPECT_FALSE(result.Spans.front().Start.Mitered);
+    EXPECT_FALSE(result.Spans.back().End.Mitered);
     EXPECT_NEAR(result.Spans.front().LengthScale, 1.0f, 1e-4f);
     EXPECT_NEAR(result.Spans.back().LengthScale, 1.0f, 1e-4f);
-    EXPECT_TRUE(result.Spans[1].End.Mitred);
-    EXPECT_TRUE(result.Spans[2].Start.Mitred);
+    EXPECT_TRUE(result.Spans[1].End.Mitered);
+    EXPECT_TRUE(result.Spans[2].Start.Mitered);
 }
 
 // A crest registered to its span takes the span's two planes in its own frame,
@@ -4173,10 +4185,10 @@ TEST(FenceLayout, ARegisteredCrestCarriesItsSpansPlanes)
     {
         const FenceCrest& crest = result.Crests[k];
         const FenceSpan& span = result.Spans[k];
-        EXPECT_EQ(crest.Start.Mitred, span.Start.Mitred);
-        EXPECT_EQ(crest.End.Mitred, span.End.Mitred);
+        EXPECT_EQ(crest.Start.Mitered, span.Start.Mitered);
+        EXPECT_EQ(crest.End.Mitered, span.End.Mitered);
         EXPECT_EQ(crest.LengthScale, span.LengthScale);
-        if (!crest.End.Mitred)
+        if (!crest.End.Mitered)
             continue;
         EXPECT_NEAR(crest.End.StationLocalY, -kCastleWallTop, 1e-5f);
         const V3 station = result.Stations[k + 1u].Pose.Base;
@@ -4197,7 +4209,7 @@ TEST(FenceLayout, ARegisteredCrestCarriesItsSpansPlanes)
     ASSERT_FALSE(grid.Crests.empty());
     for (const FenceCrest& crest : grid.Crests)
     {
-        EXPECT_FALSE(crest.Start.Mitred || crest.End.Mitred);
+        EXPECT_FALSE(crest.Start.Mitered || crest.End.Mitered);
         EXPECT_EQ(crest.LengthScale, 1.0f);
     }
 }
@@ -4206,7 +4218,7 @@ TEST(FenceLayout, ARegisteredCrestCarriesItsSpansPlanes)
 // ends everywhere — which is what keeps their stations, spans and crest rows
 // exactly as they were (the emitted span of a square-ended join is its chord
 // pose, untouched). The bare closed square and the bare curved castle are the
-// two that mitre. A bare straight run through an authored point needs no mitre
+// two that miter. A bare straight run through an authored point needs no miter
 // either: its joins turn by nothing, and the notch the polyline's rounding
 // leaves is far under the millimetre floor, so its walls stay at the fill's 1.0.
 TEST(FenceLayout, FixturesWithPostsOrStraightRunsKeepSquareEnds)
@@ -4219,9 +4231,9 @@ TEST(FenceLayout, FixturesWithPostsOrStraightRunsKeepSquareEnds)
         for (const uint32 arms : {kArmNothing, kArmCrestRow})
         {
             const FenceLayoutResult result = fixture.Build(arms);
-            EXPECT_EQ(NoSpanIsMitred(result), !bareTurns) << fixture.Name;
+            EXPECT_EQ(NoSpanIsMitered(result), !bareTurns) << fixture.Name;
             for (const FenceCrest& crest : result.Crests)
-                EXPECT_FALSE(crest.Start.Mitred || crest.End.Mitred) << fixture.Name;
+                EXPECT_FALSE(crest.Start.Mitered || crest.End.Mitered) << fixture.Name;
         }
     }
 
@@ -4233,7 +4245,7 @@ TEST(FenceLayout, FixturesWithPostsOrStraightRunsKeepSquareEnds)
     params.SpanPieces = spans;
     const FenceLayoutResult straight = BuildFenceLayout(center, params);
     ASSERT_EQ(straight.Spans.size(), 4u);
-    EXPECT_TRUE(NoSpanIsMitred(straight));
+    EXPECT_TRUE(NoSpanIsMitered(straight));
     for (const FenceSpan& span : straight.Spans)
         EXPECT_NEAR(span.LengthScale, 1.0f, 1e-5f);
 }
@@ -4449,7 +4461,7 @@ TEST(FenceLayout, AGateOnEveryRegisteredWallNamesTheReservation)
     ASSERT_EQ(gated.Spans.size(), 1u);
     ASSERT_TRUE(gated.Spans[0].IsGate);
     EXPECT_TRUE(gated.Crests.empty());
-    EXPECT_TRUE(AnyValidationContains(gated, "a reserved stretch reaches every wall"));
+    EXPECT_TRUE(AnyValidationContains(gated, "A reserved stretch reaches every span"));
 
     // The control: the same run without the gate lays its crest and says nothing.
     const FenceLayoutResult walled = StraightCastleRun(5.0f, {}, gates, battlements);
@@ -4474,7 +4486,7 @@ TEST(FenceLayout, PinnedSpanDrawsItsSlotAndLeavesEveryOtherPickUnchanged)
     const uint32 pinnedSlot = (seeded.Spans[5].PoolSlot + 1u) % 3u;
 
     const SplineSpanOverride overrides[1] = {
-        {0u, 5u, SplineSpanOverrideKind::ExplicitPiece, static_cast<uint8>(pinnedSlot)}};
+        {0u, 5u, SplineSpanOverrideKind::ExplicitPart, static_cast<uint8>(pinnedSlot)}};
     params.SpanOverrides = overrides;
     const FenceLayoutResult pinned = BuildFenceLayout(center, params);
     ASSERT_EQ(pinned.Spans.size(), seeded.Spans.size());
@@ -4496,24 +4508,24 @@ TEST(FenceLayout, OverridesTheLayoutCannotApplyAreReportedNeverDropped)
         {0u, 9u, SplineSpanOverrideKind::Gate, 0u},
         {4u, 0u, SplineSpanOverrideKind::Gate, 0u},
         {0u, 1u, SplineSpanOverrideKind::Gate, 3u},
-        {0u, 2u, SplineSpanOverrideKind::ExplicitPiece, 5u},
+        {0u, 2u, SplineSpanOverrideKind::ExplicitPart, 5u},
         {0u, 2u, SplineSpanOverrideKind::Gate, 0u},
     };
     const FenceLayoutResult result = StraightCastleRun(20.0f, overrides, gates);
 
     EXPECT_TRUE(AnyValidationContains(
-        result, "a span override names span 9 of run 0->1, which has 4 span(s) — it places "
-                "nothing; move it or remove it"));
+        result, "a span override names span 9 of the segment from point 0 to point 1, which has 4 "
+                "span(s). It places nothing; change its point or span, or remove it."));
     EXPECT_TRUE(AnyValidationContains(
-        result, "a span override names point 4, which opens no run — it places nothing"));
+        result, "a span override names point 4, which opens no segment. It places nothing"));
     EXPECT_TRUE(AnyValidationContains(
-        result, "the gate on span 1 of run 0->1 names Gate 4, but the Gate pool holds 1 — "
-                "the span is left open"));
+        result, "the gate on span 1 of the segment from point 0 to point 1 names Gate part 4, but the "
+                "fence has 1 Gate part(s) with a mesh. The span is left open."));
     EXPECT_TRUE(AnyValidationContains(
-        result, "the explicit piece on span 2 of run 0->1 names Span 6, but the Span pool holds 1 — "
-                "it keeps the fence's own pick"));
+        result, "the explicit part on span 2 of the segment from point 0 to point 1 names Span part 6, "
+                "but the fence has 1 Span part(s) with a mesh. The fence picks a Span part by Seed there."));
     EXPECT_TRUE(AnyValidationContains(
-        result, "two span overrides name span 2 of run 0->1 — the first is used"));
+        result, "two span overrides name span 2 of the segment from point 0 to point 1. The first is used."));
     EXPECT_EQ(result.Validation.size(), 5u);
 
     // What each did: the missing gate piece left an opening, and the first of
@@ -4545,7 +4557,7 @@ TEST(FenceLayout, GateLongerThanItsRunIsBuiltAtTheRequiredStretchAndReported)
 // A gate is a span at a join no post covers: its end is cut on the join's
 // bisector plane like any wall's, and the wall it meets is cut to match. An
 // opening has nothing to meet, so the wall beside it keeps a square end.
-TEST(FenceLayout, AGateIsMitredAtABareBendAndAnOpeningLeavesItsNeighbourSquare)
+TEST(FenceLayout, AGateIsMiteredAtABareBendAndAnOpeningLeavesItsNeighbourSquare)
 {
     const auto center = TurnedCorner(5.0f, 60.0f, 0.05f);
     const float32 last = static_cast<float32>(center.size() - 1u);
@@ -4561,14 +4573,14 @@ TEST(FenceLayout, AGateIsMitredAtABareBendAndAnOpeningLeavesItsNeighbourSquare)
     const FenceLayoutResult gated = BuildFenceLayout(center, params);
     ASSERT_EQ(gated.Spans.size(), 2u);
     ASSERT_TRUE(gated.Spans[0].IsGate);
-    EXPECT_TRUE(gated.Spans[0].End.Mitred);
-    EXPECT_TRUE(gated.Spans[1].Start.Mitred);
+    EXPECT_TRUE(gated.Spans[0].End.Mitered);
+    EXPECT_TRUE(gated.Spans[1].Start.Mitered);
 
     params.GatePieces = {};
     const FenceLayoutResult open = BuildFenceLayout(center, params);
     ASSERT_EQ(open.Spans.size(), 1u);
-    EXPECT_FALSE(open.Spans[0].Start.Mitred);
-    EXPECT_FALSE(open.Spans[0].End.Mitred);
+    EXPECT_FALSE(open.Spans[0].Start.Mitered);
+    EXPECT_FALSE(open.Spans[0].End.Mitered);
 }
 
 // Each run reports how many spans its fill holds, an opening included, by the
@@ -4605,8 +4617,8 @@ TEST(FenceLayout, OverridesOnACoincidentRunAreReported)
     const FenceLayoutResult result = BuildFenceLayout(center, params);
     EXPECT_TRUE(AnyValidationContains(result, "are coincident"));
     EXPECT_TRUE(AnyValidationContains(
-        result, "1 span override(s) on run 0->1 place nothing — the run has no length; move point 1 or "
-                "remove them"));
+        result, "1 span override(s) on the segment from point 0 to point 1 place nothing. The segment has "
+                "no length; move point 1 or remove them"));
 }
 
 // Only walls decide whether a run registers to its spans, and only a wall's slot
@@ -4630,10 +4642,10 @@ TEST(FenceLayout, RegistrationReadsNoGateSlotFromTheSpanPool)
     const FencePieceBounds gates[2] = {CastleGate(), shortGate};
     const FencePieceBounds battlements[1] = {CastleBattlement()};
     const SplineSpanOverride overrides[4] = {
-        {0u, 0u, SplineSpanOverrideKind::ExplicitPiece, 0u},
+        {0u, 0u, SplineSpanOverrideKind::ExplicitPart, 0u},
         {0u, 1u, SplineSpanOverrideKind::Gate, 1u},
-        {0u, 2u, SplineSpanOverrideKind::ExplicitPiece, 0u},
-        {0u, 3u, SplineSpanOverrideKind::ExplicitPiece, 0u},
+        {0u, 2u, SplineSpanOverrideKind::ExplicitPart, 0u},
+        {0u, 3u, SplineSpanOverrideKind::ExplicitPart, 0u},
     };
     FenceLayoutParams params;
     params.RunBoundaries = boundaries;
@@ -4684,7 +4696,7 @@ TEST(FenceLayout, AGateSideOfABareJoinTakesNoCrestReach)
     ASSERT_EQ(bare.Spans.size(), 2u);
     ASSERT_EQ(crested.Spans.size(), 2u);
     ASSERT_TRUE(crested.Spans[1].IsGate);
-    ASSERT_TRUE(crested.Spans[1].Start.Mitred);
+    ASSERT_TRUE(crested.Spans[1].Start.Mitered);
     EXPECT_EQ(crested.Spans[1].LengthScale, bare.Spans[1].LengthScale)
         << "the gate took a crest's reach it has no crest for";
     // The control: the wall on the other side does carry its crest's reach.

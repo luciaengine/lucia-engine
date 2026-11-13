@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PageStreaming/PageAddress.h"
+#include "PageStreaming/PageSampleRect.h"
 #include "PageStreaming/ResidentSlotPool.h"
 
 #include <cstddef>
@@ -31,12 +32,15 @@ struct CachedPage
     CachedPage Parent() const { return CachedPage{Stream, Address.Parent()}; }
 
     bool operator==(const CachedPage&) const = default;
+    /// Stream, then address: the order of the cache's slot map.
+    auto operator<=>(const CachedPage&) const = default;
 };
 
-/// Hash of a cached page for the cache's maps.
-struct CachedPageHash
+/// A resident page whose content changed in place (PageCache::Rewrite), and where it changed.
+struct PageRewrite
 {
-    std::size_t operator()(const CachedPage& page) const noexcept;
+    CachedPage Page;
+    PageSampleRect Level0Rect; ///< the level-0 samples whose change rewrote the page
 };
 
 /// A page the residency wants this frame: the level rule's request, the residency manager's load
@@ -96,6 +100,11 @@ public:
     /// within a level, each only when its parent is resident (or it is its pyramid's top level).
     void Update(uint64 frameIndex, float32 deltaSeconds, std::span<const PageWant> wanted, uint32 maxAssigns);
 
+    /// One frame with the wanted pages of the last Update, every one of them resident
+    /// (DeferredThisFrame() was 0): releases the pages unwanted past the hysteresis and advances the
+    /// fades, and walks no page when neither is pending.
+    void Tick(uint64 frameIndex, float32 deltaSeconds);
+
     /// Releases every resident page of `stream` at once (a stream restarted or forgotten): its
     /// slots are quarantined. No transitions are reported: the stream's owner drops its whole page
     /// table with it.
@@ -107,15 +116,17 @@ public:
     float32 FadeOf(const CachedPage& page) const;
     uint32 SlotCount() const { return m_Pool.SlotCount(); }
 
-    /// Writes resident page `page`'s slot again this frame because its content changed (a modifier
-    /// edit under it): it is listed in Uploads() and Rewrites() after this frame's Update, its slot,
-    /// fade and children unchanged. Returns false when the page is not resident.
-    bool Rewrite(const CachedPage& page);
+    /// Writes resident page `page`'s slot again this frame because its content changed over
+    /// level-0 samples `level0Rect` (a modifier edit under it): it is listed in Uploads() and
+    /// Rewrites() after this frame's Update, its slot, fade and children unchanged. Returns false
+    /// when the page is not resident.
+    bool Rewrite(const CachedPage& page, const PageSampleRect& level0Rect);
 
     /// Pages assigned or rewritten this frame, whose slot texels must be written.
     const std::vector<PageUploadRequest>& Uploads() const { return m_Uploads; }
-    /// Resident pages rewritten this frame (Rewrite): the height under them changed in place.
-    const std::vector<CachedPage>& Rewrites() const { return m_Rewrites; }
+    /// Resident pages rewritten this frame (Rewrite): the height under them changed in place, over
+    /// each one's level-0 rect.
+    const std::vector<PageRewrite>& Rewrites() const { return m_Rewrites; }
     /// Pages whose residency changed this frame (assigned or released): the height under them
     /// changed source, so the CBT re-evaluates their footprint.
     const std::vector<CachedPage>& Transitions() const { return m_Transitions; }
@@ -131,9 +142,11 @@ public:
     uint32 ActiveFadesThisFrame() const { return m_ActiveFades; }
     /// Wanted, loaded pages left without a slot this frame (the cache full or the cap reached).
     uint32 DeferredThisFrame() const { return m_Deferred; }
+    /// Pages this frame's Update or Tick walked; zero on a frame with nothing to release, fade or assign.
+    uint32 PageVisitsThisFrame() const { return m_Visits; }
 
 private:
-    using Pool = ResidentSlotPool<CachedPage, CachedPageHash>;
+    using Pool = ResidentSlotPool<CachedPage>;
 
     // What the cache knows of the page in a slot.
     struct SlotPage
@@ -142,13 +155,17 @@ private:
         float32 Distance = 0.0f;
         float32 Fade = 1.0f;
         uint32 ResidentChildren = 0;
+        bool Wanted = false; // in the last Update's wanted pages
     };
 
+    void BeginFrame(uint64 frameIndex);
+    // Marks the resident pages of `wanted` wanted and the others not, from the last frame on.
+    void MarkWanted(uint64 frameIndex, std::span<const PageWant> wanted);
     void ReleaseStale(uint64 frameIndex);
     void Release(const CachedPage& page);
     void TickFades(float32 deltaSeconds);
     void SortCandidates(std::span<const PageWant> wanted);
-    bool EvictFor(const PageWant& want, uint64 frameIndex);
+    bool EvictFor(const PageWant& want);
     void Assign(const PageWant& want, uint32 slot, uint64 frameIndex);
 
     Pool m_Pool;
@@ -158,9 +175,13 @@ private:
     std::vector<uint32> m_Order;        // indices of the want set, coarsest level then nearest first
     std::vector<PageUploadRequest> m_Uploads;
     std::vector<CachedPage> m_Transitions;
-    std::vector<CachedPage> m_Rewrites;
+    std::vector<PageRewrite> m_Rewrites;
     std::vector<CachedPage> m_FadeChanges;
     float32 m_FadeSeconds = 0.0f;
+    uint64 m_LastFrame = 0;        // the last Update's or Tick's frame
+    uint32 m_UnwantedResident = 0; // resident pages not wanted: the releases pending
+    bool m_FadesPending = false;   // a fade below 1 to advance
+    uint32 m_Visits = 0;
     uint32 m_Releases = 0;
     uint32 m_ActiveFades = 0;
     uint32 m_Deferred = 0;

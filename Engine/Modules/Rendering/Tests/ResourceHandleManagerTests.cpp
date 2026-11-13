@@ -23,7 +23,7 @@
 
 #include "Rendering/Core/BufferManager.h"
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/PipelineManager.h"
+#include "Rendering/Core/Pipeline/PipelineManager.h"
 #include "Rendering/Core/SamplerManager.h"
 #include "Rendering/Core/TextureManager.h"
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Mathematics/Curve.h" // Math::Curve, Math::CurveKey
+#include "Types/Color.h"
 
 #include <vector>
 
@@ -47,9 +48,9 @@ std::vector<Math::CurveKey> PhysicalCurveSamples(const SkyEnvironment& sky, floa
 // whose sun never rises or never sets. Linear segments below 5 degrees, smooth ones above.
 Math::Curve PhysicalSeedCurve(const SkyEnvironment& sky, float sunLux);
 
-// The curve a sky holds until an author edits it: the physical curve of the default sky (the equator
-// on the March equinox) for a 100 000 lx sun, stored as literal keys so that constructing a sky never
-// runs the model.
+// The curve a sky holds until an author edits it: the physical curve of the default sky (40 degrees
+// north on the March equinox) for a 100 000 lx sun, stored as literal keys so that constructing a sky
+// never runs the model.
 Math::Curve DefaultSunIlluminanceCurve();
 
 // True when `curve` is, key for key and bit for bit, DefaultSunIlluminanceCurve: a curve no one has
@@ -75,14 +76,16 @@ float NoonReferenceLux(const SkyEnvironment& sky);
 float SkySourceLux(const SkyEnvironment& sky, float hours);
 
 // The illuminance the moon delivers to a surface facing it, in lux (M(t)), when its direction has
-// `moonUpDot` as its up component: the sky's Moonlight, extinguished by the air at the moon's
-// elevation. 0 while the moon is hidden.
+// `moonUpDot` as its up component: the sky's Moonlight times the phase (MoonArcPosition, Krisciunas
+// and Schaefer's phase law), extinguished by the air at the moon's elevation. 0 while the moon is
+// hidden.
 float MoonlightLux(const SkyEnvironment& sky, float moonUpDot);
 
-// The same from the moon's ground colour already evaluated for the frame (Rendering::SkyBodyGroundColors::Moon,
-// SkySystemConfig::moonColor extinguished at the moon's elevation), so the frame runs the moon's
-// extinction once.
-float MoonlightLuxFromGround(const SkyEnvironment& sky, const float moonGround[3]);
+// The same from the moon's phase fraction and ground colour already evaluated for the frame
+// (Rendering::SkySunState::MoonPhaseFraction; Rendering::SkyBodyGroundColors::Moon,
+// SkySystemConfig::moonColor extinguished at the moon's elevation), so the frame runs the phase law
+// and the moon's extinction once.
+float MoonlightLuxFromGround(const SkyEnvironment& sky, float moonPhaseFraction, const ColorLinear& moonGround);
 
 // The sky's Moonlight as a multiple of the default moonlight: exactly 1 at the default.
 float MoonlightRatio(const SkyEnvironment& sky);

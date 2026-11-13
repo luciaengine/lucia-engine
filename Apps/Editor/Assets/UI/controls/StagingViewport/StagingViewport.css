@@ -1,0 +1,12 @@
+/* StagingViewport: the staging view's output fills the control. StagingViewport.cpp binds the image. */
+.staging-viewport {
+    display: flex;
+    flex-grow: 1;
+    min-width: 0;
+    min-height: 0;
+}
+
+.staging-viewport-fill {
+    display: flex;
+    flex-grow: 1;
+}

@@ -10,7 +10,7 @@
 #include "Editor/Entities/EditorECSHelpers.h"
 #include "EditorChangeNotifications.h"
 #include "EditorContext.h"
-#include "Inspectors/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
 #include "TileMap/TileMapData.h"

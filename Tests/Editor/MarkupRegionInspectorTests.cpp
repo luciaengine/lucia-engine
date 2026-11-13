@@ -1,5 +1,5 @@
 // A region mark-up's authoring surfaces: the inspector's Region block (the height's commit rule,
-// the member list), Convert to region on a box, the panel row's kind and outline badge, and the
+// the member list), Convert to Region on a box, the panel row's kind and outline badge, and the
 // Mark-up tool's lasso.
 
 #include "Markups/MarkupEditorBridge.h"
@@ -7,16 +7,19 @@
 #include "Markups/MarkupKind.h"
 #include "Markups/MarkupPathPort.h"
 #include "Markups/MarkupPresentation.h"
-#include "Markups/MarkupRegionInspector.h"
-#include "Markups/MarkupRegionPort.h"
+#include "Markups/MarkupRegion/MarkupRegionInspector.h"
+#include "Markups/MarkupRegion/MarkupRegionPort.h"
 #include "Markups/MarkupTool.h"
 #include "Markups/MarkupsPanelRows.h"
+#include "Markups/MarkupActionMenuItems.h"
 
 #include "Components/Markup/Markup.h"
+#include "Components/Name.h"
 #include "Components/Spline/SplineComponent.h"
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
+#include "Editor/Registries/MarkupActionRegistry.h"
 #include "EditorChangeNotifications.h"
 #include "InspectorRegistry.h"
 #include "MarkupECS/MarkupRegionOutline.h"
@@ -38,12 +41,15 @@
 #include "UndoRedo/UndoRedoService.h"
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 using namespace GameEngine;
@@ -70,6 +76,17 @@ std::vector<T*> FindAll(UIElement& root)
     std::vector<T*> found;
     CollectAll(root, found);
     return found;
+}
+
+// The member list's mode segment that shows `label`.
+Button* FindSegment(UIElement& section, const char* label)
+{
+    for (Button* button : FindAll<Button>(section))
+    {
+        if (button->HasClass("entity-member-segment") && button->GetText() == label)
+            return button;
+    }
+    return nullptr;
 }
 
 bool HasClassBelow(UIElement& root, const char* className)
@@ -113,27 +130,44 @@ class MarkupRegionInspectorTest : public ::testing::Test
         const ECS::EntityHandle entity = World.CreateEntity();
         World.AddComponentImmediate(entity, transform);
         Components::WorldTransform placed{};
-        std::copy(std::begin(transform.matrix), std::end(transform.matrix), std::begin(placed.matrix));
+        placed.Position = transform.Position;
+        placed.Basis = transform.Basis;
         World.AddComponentImmediate(entity, placed);
         World.AddComponentImmediate(entity, Components::Markup{});
         (void)MarkupECS::MarkupService::Get().BeginMarkup(World, entity, Components::MarkupAuthor::User, 1000);
         return entity;
     }
 
+    // The entity's local matrix, with its position as the translation.
+    Mathematics::Matrix4x4 LocalMatrix(ECS::EntityHandle entity)
+    {
+        const auto* transform = World.GetComponent<Components::Transform>(entity);
+        return transform->ToMatrix4x4(transform->GetPosition() - Mathematics::WorldPosition{});
+    }
+
     ECS::EntityHandle CreateRegion(const std::vector<Vector2>& knots)
     {
         const Editor::RegionPlacement placement =
-            Editor::NewRegionPlacement(knots, Components::WorldTransform{}.matrix, 0.0f);
+            Editor::NewRegionPlacement(knots, Mathematics::Matrix4x4::Identity(), 0.0f);
         const ECS::EntityHandle entity = BeginMarkup(placement.Local);
-        Editor::AddRegionParts(World, entity, placement.World.matrix, knots, Spline::SplineType::Linear, 8.0f);
+        Editor::AddRegionParts(World, entity,
+                               placement.World.ToMatrix4x4(placement.World.GetPosition() - Mathematics::WorldPosition{}),
+                               knots, Spline::SplineType::Linear, 8.0f);
         return entity;
+    }
+
+    // The title of a region the Mark-up tool draws over `knots`, or the refusal it answers.
+    std::string DrawRegion(const std::vector<Vector2>& knots)
+    {
+        const nlohmann::json result = Editor::PlaceRegion(*m_Bridge, World, nullptr, &Notifications, knots);
+        return result.contains("markup") ? result["markup"].value("title", std::string()) : result.dump();
     }
 
     // A box `size` meters across standing at `center`.
     ECS::EntityHandle CreateBox(const Vector3& center, const Vector3& size)
     {
         const ECS::EntityHandle entity = BeginMarkup(Components::Transform::FromTRS(
-            center, Mathematics::Quaternion::Identity(), size));
+            Mathematics::WorldPosition::FromVector3(center), Mathematics::Quaternion::Identity(), size));
         World.AddComponentImmediate(entity, Components::MarkupVolume{});
         return entity;
     }
@@ -284,7 +318,9 @@ TEST_F(MarkupRegionInspectorTest, AnOutlineChangedUnderTheOpenBlockRebuildsItOnc
     for (Slider* slider : FindAll<Slider>(*section))
     {
         if (slider->HasClass("markup-region-height"))
+        {
             EXPECT_FLOAT_EQ(slider->GetValue(), 30.0f) << "the slider did not follow the height";
+        }
     }
 
     Editor::RewriteRegionOutline(World, forest, std::vector<Vector2>{{0, 0}, {80, 0}, {40, 60}}, std::nullopt);
@@ -314,7 +350,7 @@ TEST_F(MarkupRegionInspectorTest, TheMemberCheckboxesAndSwitchWriteTheListOneUnd
         std::vector<Toggle*> toggles;
         for (Toggle* toggle : FindAll<Toggle>(*section))
         {
-            if (toggle->HasClass("markup-member-toggle"))
+            if (toggle->HasClass("entity-member-toggle"))
                 toggles.push_back(toggle);
         }
         ASSERT_EQ(toggles.size(), 1u) << "the list offers the overlapping box only";
@@ -324,22 +360,14 @@ TEST_F(MarkupRegionInspectorTest, TheMemberCheckboxesAndSwitchWriteTheListOneUnd
     EXPECT_EQ(RegionOf(forest).Members[0].Entity, lake);
     EXPECT_EQ(RegionOf(forest).Members[0].Mode, MarkupMemberMode::Include);
 
-    const auto findSegment = [](UIElement& section, const char* segmentClass) -> Button* {
-        for (Button* button : FindAll<Button>(section))
-        {
-            if (button->HasClass(segmentClass))
-                return button;
-        }
-        return nullptr;
-    };
     {
         const std::unique_ptr<UIElement> section = BuildSection<Components::Markup>(forest);
-        Button* include = findSegment(*section, "markup-member-mode-include");
-        Button* exclude = findSegment(*section, "markup-member-mode-exclude");
+        Button* include = FindSegment(*section, "Include");
+        Button* exclude = FindSegment(*section, "Exclude");
         ASSERT_NE(include, nullptr);
         ASSERT_NE(exclude, nullptr);
-        EXPECT_TRUE(include->HasClass("active"));
-        EXPECT_FALSE(exclude->HasClass("active"));
+        EXPECT_TRUE(include->HasClass("segmented-button-selected"));
+        EXPECT_FALSE(exclude->HasClass("segmented-button-selected"));
         include->TriggerClick();
         EXPECT_EQ(RegionOf(forest).Members[0].Mode, MarkupMemberMode::Include) << "the filled segment switched";
         exclude->TriggerClick();
@@ -347,30 +375,32 @@ TEST_F(MarkupRegionInspectorTest, TheMemberCheckboxesAndSwitchWriteTheListOneUnd
     EXPECT_EQ(RegionOf(forest).Members[0].Mode, MarkupMemberMode::Exclude);
     {
         const std::unique_ptr<UIElement> section = BuildSection<Components::Markup>(forest);
-        Button* include = findSegment(*section, "markup-member-mode-include");
-        Button* exclude = findSegment(*section, "markup-member-mode-exclude");
+        Button* include = FindSegment(*section, "Include");
+        Button* exclude = FindSegment(*section, "Exclude");
         ASSERT_NE(include, nullptr);
         ASSERT_NE(exclude, nullptr);
-        EXPECT_TRUE(exclude->HasClass("active"));
-        EXPECT_FALSE(include->HasClass("active"));
+        EXPECT_TRUE(exclude->HasClass("segmented-button-selected"));
+        EXPECT_FALSE(include->HasClass("segmented-button-selected"));
+        EXPECT_TRUE(exclude->HasClass("entity-member-segment-warning")) << "a filled Exclude is not in the warning color";
     }
 
     {
         const std::unique_ptr<UIElement> section = BuildSection<Components::Markup>(forest);
         for (Toggle* toggle : FindAll<Toggle>(*section))
         {
-            if (toggle->HasClass("markup-member-toggle"))
+            if (toggle->HasClass("entity-member-toggle"))
                 toggle->SetValue(false);
         }
     }
     EXPECT_EQ(RegionOf(forest).MemberCount, 0u);
     {
         const std::unique_ptr<UIElement> section = BuildSection<Components::Markup>(forest);
-        Button* include = findSegment(*section, "markup-member-mode-include");
-        Button* exclude = findSegment(*section, "markup-member-mode-exclude");
+        Button* include = FindSegment(*section, "Include");
+        Button* exclude = FindSegment(*section, "Exclude");
         ASSERT_NE(include, nullptr);
         ASSERT_NE(exclude, nullptr);
-        EXPECT_FALSE(include->HasClass("active") || exclude->HasClass("active")) << "a candidate shows a mode";
+        EXPECT_FALSE(include->HasClass("segmented-button-selected") || exclude->HasClass("segmented-button-selected"))
+            << "a candidate shows a mode";
         EXPECT_FALSE(include->IsEnabled() || exclude->IsEnabled()) << "a candidate's mode can be set";
     }
 
@@ -384,7 +414,7 @@ TEST_F(MarkupRegionInspectorTest, TheMemberCheckboxesAndSwitchWriteTheListOneUnd
     EXPECT_FALSE(Undo.CanUndo());
 }
 
-// Convert to region on a box is one undo step: the box becomes a region over its footprint at its
+// Convert to Region on a box is one undo step: the box becomes a region over its footprint at its
 // height, its thread says it was converted (not moved and resized), and undo gives the box back.
 TEST_F(MarkupRegionInspectorTest, ConvertToRegionIsOneUndoStepAndUndoGivesTheBoxBack)
 {
@@ -397,11 +427,12 @@ TEST_F(MarkupRegionInspectorTest, ConvertToRegionIsOneUndoStepAndUndoGivesTheBox
         {
             if (button->HasClass("markup-convert-to-region"))
             {
+                EXPECT_EQ(button->GetText(), "Convert to Region");
                 button->TriggerClick();
                 clicked = true;
             }
         }
-        ASSERT_TRUE(clicked) << "a box's volume section offers no Convert to region";
+        ASSERT_TRUE(clicked) << "a box's volume section offers no Convert to Region";
     }
     const MarkupECS::MarkupNotes* notes = MarkupECS::MarkupService::Get().FindNotes(World, box);
     ASSERT_NE(notes, nullptr);
@@ -416,7 +447,7 @@ TEST_F(MarkupRegionInspectorTest, ConvertToRegionIsOneUndoStepAndUndoGivesTheBox
         SplineECS::SplineHandle(spline->SplineDataIndex, spline->SplineDataGeneration));
     ASSERT_NE(data, nullptr);
     EXPECT_EQ(data->Points.size(), 4u) << "the box's footprint is four knots";
-    EXPECT_FLOAT_EQ(World.GetComponent<Components::WorldTransform>(box)->matrix[13], 0.0f)
+    EXPECT_DOUBLE_EQ(World.GetComponent<Components::WorldTransform>(box)->Position.Y, 0.0)
         << "the region stands where the box's base stood";
 
     Undo.Undo();
@@ -452,14 +483,13 @@ TEST_F(MarkupRegionInspectorTest, ARegionRowShowsItsKindAndAnOutlineThatNeedsAPo
     EXPECT_TRUE(badge);
 }
 
-// A path's Mark-up section carries its Path block (its points and Edit path) and its panel row the
+// A path's Mark-up section carries its Path block (its points and Edit Path) and its panel row the
 // path glyph; a region's carries neither.
 TEST_F(MarkupRegionInspectorTest, APathShowsItsBlockAndItsKind)
 {
     const std::vector<Vector3> points{{0.0f, 0.0f, 0.0f}, {30.0f, 0.0f, 5.0f}, {60.0f, 0.0f, -5.0f}};
     const ECS::EntityHandle road = BeginMarkup(Editor::NewPathPlacement(points));
-    Editor::AddPathParts(World, road, World.GetComponent<Components::Transform>(road)->matrix, points,
-                         Spline::SplineType::Linear);
+    Editor::AddPathParts(World, road, LocalMatrix(road), points, Spline::SplineType::Linear);
     const std::unique_ptr<UIElement> section = BuildSection<Components::Markup>(road);
     EXPECT_TRUE(HasClassBelow(*section, "markup-path-edit"));
     bool points3 = false;
@@ -472,6 +502,26 @@ TEST_F(MarkupRegionInspectorTest, APathShowsItsBlockAndItsKind)
     EXPECT_FALSE(HasClassBelow(*BuildSection<Components::Markup>(forest), "markup-path-edit"));
 }
 
+// Edit Outline on a region and Edit Path on a path are buttons, so they read in title case.
+TEST_F(MarkupRegionInspectorTest, TheEditKnotsButtonsReadInTitleCase)
+{
+    const std::vector<Vector3> points{{0.0f, 0.0f, 0.0f}, {30.0f, 0.0f, 5.0f}};
+    const ECS::EntityHandle road = BeginMarkup(Editor::NewPathPlacement(points));
+    Editor::AddPathParts(World, road, LocalMatrix(road), points, Spline::SplineType::Linear);
+    const ECS::EntityHandle forest = CreateRegion(kForest);
+    std::vector<std::string> texts;
+    for (const ECS::EntityHandle entity : {forest, road})
+    {
+        const std::unique_ptr<UIElement> section = BuildSection<Components::Markup>(entity);
+        for (Button* button : FindAll<Button>(*section))
+        {
+            if (button->HasClass("markup-region-edit-outline") || button->HasClass("markup-path-edit"))
+                texts.push_back(button->GetText());
+        }
+    }
+    EXPECT_EQ(texts, (std::vector<std::string>{"Edit Outline", "Edit Path"}));
+}
+
 // The spline inspector's Closed row says why it cannot change in its owner's words: a region's
 // outline is always closed, a path stays open.
 TEST_F(MarkupRegionInspectorTest, TheClosedRowSaysWhyInTheOwnersWords)
@@ -479,8 +529,7 @@ TEST_F(MarkupRegionInspectorTest, TheClosedRowSaysWhyInTheOwnersWords)
     const ECS::EntityHandle forest = CreateRegion(kForest);
     const std::vector<Vector3> points{{0.0f, 0.0f, 0.0f}, {30.0f, 0.0f, 5.0f}};
     const ECS::EntityHandle road = BeginMarkup(Editor::NewPathPlacement(points));
-    Editor::AddPathParts(World, road, World.GetComponent<Components::Transform>(road)->matrix, points,
-                         Spline::SplineType::Linear);
+    Editor::AddPathParts(World, road, LocalMatrix(road), points, Spline::SplineType::Linear);
     const Editor::SplineOwnerClaim region = Editor::QueryMarkupSpline(World, forest);
     const Editor::SplineOwnerClaim path = Editor::QueryMarkupSpline(World, road);
     ASSERT_TRUE(region.Claimed && path.Claimed);
@@ -501,10 +550,10 @@ TEST_F(MarkupRegionInspectorTest, TheMoveGizmoOnARegionStandsAtItsOrigin)
     ASSERT_EQ(collector.GetGizmos().size(), 1u);
     const auto* translate = dynamic_cast<Editor::SceneTools::TransformTranslateGizmo*>(collector.GetGizmos()[0]);
     ASSERT_NE(translate, nullptr);
-    const float* origin = World.GetComponent<Components::WorldTransform>(forest)->matrix;
-    EXPECT_NEAR(translate->GetPivot().x, origin[12], 1.0e-3f);
-    EXPECT_NEAR(translate->GetPivot().y, origin[13], 1.0e-3f);
-    EXPECT_NEAR(translate->GetPivot().z, origin[14], 1.0e-3f);
+    const Mathematics::WorldPosition origin = World.GetComponent<Components::WorldTransform>(forest)->GetPosition();
+    EXPECT_NEAR(translate->GetPivot().x, origin.X, 1.0e-3);
+    EXPECT_NEAR(translate->GetPivot().y, origin.Y, 1.0e-3);
+    EXPECT_NEAR(translate->GetPivot().z, origin.Z, 1.0e-3);
 }
 
 // A region is always closed: one whose outline arrives open, from a scene file or a component
@@ -524,6 +573,26 @@ TEST_F(MarkupRegionInspectorTest, ARegionWhoseOutlineArrivesOpenIsClosedAgain)
     written.kind = Editor::EditorChangeNotifications::ChangeKind::Commit;
     Notifications.NotifyComponentChanged(written);
     EXPECT_TRUE(OutlineOf(forest).Closed) << "a region written open stayed open";
+}
+
+// Each region the Mark-up tool draws is titled "Region <n>" with the first number no mark-up's title
+// has, so a deleted region's number is the next one drawn.
+TEST_F(MarkupRegionInspectorTest, EachDrawnRegionTakesTheFirstFreeRegionNumber)
+{
+    EXPECT_EQ(DrawRegion(kForest), "Region 1");
+    EXPECT_EQ(DrawRegion(kForest), "Region 2");
+    EXPECT_EQ(DrawRegion(kForest), "Region 3");
+
+    ECS::EntityHandle second{};
+    World.Query<ECS::Read<Components::Markup>, ECS::Read<Components::Name>>().Each(
+        [&second](ECS::EntityHandle entity, const Components::Markup&, const Components::Name& name) {
+            if (name.View() == "Region 2")
+                second = entity;
+        });
+    ASSERT_TRUE(second.IsValid()) << "no mark-up is titled Region 2";
+    World.DestroyEntityImmediate(second);
+    EXPECT_EQ(DrawRegion(kForest), "Region 2") << "the deleted region's number was not taken again";
+    EXPECT_EQ(DrawRegion(kForest), "Region 4");
 }
 
 // A recorded lasso, a 200 m circle drawn at the spline brush's 1 m spacing with a hand's wobble,
@@ -564,4 +633,83 @@ TEST(MarkupLasso, AFigureEightLassoIsRefused)
     const std::vector<Vector2> knots = Editor::SimplifyLassoStroke(stroke);
     ASSERT_GE(knots.size(), 4u);
     EXPECT_TRUE(MarkupECS::CheckRegionOutline(knots).has_value()) << "a crossing lasso made a region";
+}
+
+// With no action registered on mark-ups the Mark-up section has no actions row and the panel row no
+// menu; an action a module registers is then a button in the section and a row of the menu, each
+// running it on that mark-up, and one that says why it cannot run is shown disabled. This is the
+// only EditorTests test that registers actions, and the registry has no unregister, so "test.ask",
+// "test.off" and "test.follow" stay registered for the rest of the process: later sections show
+// their buttons.
+TEST_F(MarkupRegionInspectorTest, AnActionShowsInTheSectionAndTheRowMenuOnceRegistered)
+{
+    const ECS::EntityHandle forest = CreateRegion(kForest);
+    ASSERT_TRUE(Editor::MarkupActionRegistry::Get().GetActions().empty());
+    EXPECT_FALSE(HasClassBelow(*BuildSection<Components::Markup>(forest), "markup-actions"));
+    EXPECT_TRUE(Editor::BuildMarkupActionMenuItems(World, forest).empty());
+
+    static std::vector<ECS::EntityHandle> s_Asked;
+    s_Asked.clear();
+    Editor::MarkupActionRegistry::Get().Register(
+        {"test.ask", "Ask about it", "", [](const ECS::World&, ECS::EntityHandle entity) { s_Asked.push_back(entity); }});
+
+    const std::unique_ptr<UIElement> section = BuildSection<Components::Markup>(forest);
+    Button* ask = nullptr;
+    for (Button* button : FindAll<Button>(*section))
+    {
+        if (button->HasClass("markup-action") && button->GetText() == "Ask about it")
+            ask = button;
+    }
+    ASSERT_NE(ask, nullptr);
+    ask->TriggerClick();
+
+    const std::vector<ContextMenuManipulator::Item> menu = Editor::BuildMarkupActionMenuItems(World, forest);
+    const auto row = std::find_if(menu.begin(), menu.end(),
+                                  [](const ContextMenuManipulator::Item& item) { return item.Path == "Ask about it"; });
+    ASSERT_NE(row, menu.end());
+    row->OnActivate();
+    EXPECT_EQ(s_Asked, (std::vector<ECS::EntityHandle>{forest, forest}));
+
+    // An action that says why it cannot run is a disabled button with the reason as its tooltip and a
+    // disabled menu row. "test.off" stays registered too.
+    Editor::MarkupActionRegistry::Get().Register(
+        {"test.off", "Not now", "", [](const ECS::World&, ECS::EntityHandle) {},
+         [](const ECS::World&, ECS::EntityHandle) { return std::string("Give it a title, then ask"); }});
+    const std::unique_ptr<UIElement> offSection = BuildSection<Components::Markup>(forest);
+    Button* off = nullptr;
+    for (Button* button : FindAll<Button>(*offSection))
+    {
+        if (button->GetText() == "Not now")
+            off = button;
+    }
+    ASSERT_NE(off, nullptr);
+    EXPECT_FALSE(off->IsEnabled());
+    EXPECT_EQ(off->GetTooltip(), "Give it a title, then ask");
+    const std::vector<ContextMenuManipulator::Item> offMenu = Editor::BuildMarkupActionMenuItems(World, forest);
+    const auto offRow = std::find_if(offMenu.begin(), offMenu.end(),
+                                     [](const ContextMenuManipulator::Item& item) { return item.Path == "Not now"; });
+    ASSERT_NE(offRow, offMenu.end());
+    EXPECT_EQ(offRow->Flags & MenuItemFlag_Disabled, MenuItemFlag_Disabled);
+
+    // The reason is checked again each frame, so an edit the section is not rebuilt for (a title
+    // typed in the header) turns the button on. "test.follow" stays registered too.
+    static bool s_Named = false;
+    Editor::MarkupActionRegistry::Get().Register(
+        {"test.follow", "Follow", "", [](const ECS::World&, ECS::EntityHandle) {},
+         [](const ECS::World&, ECS::EntityHandle) { return s_Named ? std::string() : std::string("Name it first"); }});
+    std::vector<std::function<void()>> frameCallbacks;
+    const std::unique_ptr<UIElement> followSection = BuildSection<Components::Markup>(forest, &frameCallbacks);
+    Button* follow = nullptr;
+    for (Button* button : FindAll<Button>(*followSection))
+    {
+        if (button->GetText() == "Follow")
+            follow = button;
+    }
+    ASSERT_NE(follow, nullptr);
+    EXPECT_FALSE(follow->IsEnabled());
+    s_Named = true;
+    for (const std::function<void()>& callback : frameCallbacks)
+        callback();
+    EXPECT_TRUE(follow->IsEnabled());
+    EXPECT_EQ(follow->GetTooltip(), "");
 }

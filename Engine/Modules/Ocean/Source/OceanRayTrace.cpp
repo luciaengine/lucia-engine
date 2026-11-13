@@ -1,5 +1,7 @@
 #include "Ocean/OceanRayTrace.h"
 
+#include "Mathematics/Interpolation.h"
+
 #include <algorithm>
 #include <cmath>
 #include <mutex>
@@ -43,7 +45,7 @@ OceanCollisionQueryHandle OceanRayTracer::Submit(const OceanRayTraceDesc& ray)
 
     Impl::PendingRay pending{};
     pending.Desc = ray;
-    for (float32& component : pending.Desc.Direction)
+    for (float32& component : pending.Desc.Direction.v)
         component /= length;
     pending.Desc.SampleCount = std::clamp(ray.SampleCount, 2u, 4096u);
     pending.Points.resize(pending.Desc.SampleCount);
@@ -113,7 +115,7 @@ bool OceanRayTracer::TryResolve(OceanCollisionQueryHandle handle,
             continue;
         const float32 denom = d0 - d1;
         const float32 blend = std::abs(denom) > 1e-6f
-                                  ? std::clamp(d0 / denom, 0.0f, 1.0f)
+                                  ? Math::Clamp01(d0 / denom)
                                   : 0.0f;
         const float32 indexT = (static_cast<float32>(i - 1u) + blend) /
                                static_cast<float32>(count - 1u);

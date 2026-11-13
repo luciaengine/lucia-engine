@@ -1,5 +1,6 @@
 #include "Panels/MonitorsPanel.h"
 
+#include "Mathematics/Interpolation.h"
 #include "Platform/SystemMetrics.h"
 
 #include <algorithm>
@@ -29,7 +30,6 @@
 #include "UI/Controls/Label.h"
 #include "UI/Controls/ScrollView.h"
 #include "UI/StyleProperties.h"
-#include "UI/ThemeAccent.h"
 #include "UI/UIElement.h"
 #include "UI/UIEvents.h"
 #include "UI/UIManager.h"
@@ -655,7 +655,7 @@ void MonitorsPanel::OnChartClicked(ChartView* chart, float localX, float chartWi
     if (it == m_FrozenSeries.end() || it->second.empty())
         return;
     const std::size_t n = it->second.size();
-    const float t = std::clamp(localX / chartWidth, 0.0f, 1.0f);
+    const float t = Math::Clamp01(localX / chartWidth);
     const int frame = static_cast<int>(t * static_cast<float>(n - 1) + 0.5f);
     m_CursorFrame = frame;
     ApplyCursorToCharts();
@@ -864,8 +864,11 @@ void MonitorsPanel::AttachChartDragHandlers(UIElement* strip, UIElement* header,
 
         ClearChartDragState();
         m_DragChartName = name;
-        m_DragStartX = e.X;
-        m_DragStartY = e.Y;
+        // Window space throughout the drag: it measures, ghosts and drops across
+        // strips, so it reads the window point, which a transform on a strip or
+        // on the panel does not move away from the window.
+        m_DragStartX = e.WindowX;
+        m_DragStartY = e.WindowY;
         m_ChartDragActive = false;
         strip->AddClass("drag-source");
         e.Capture(e.CurrentTarget ? e.CurrentTarget : strip);
@@ -876,8 +879,8 @@ void MonitorsPanel::AttachChartDragHandlers(UIElement* strip, UIElement* header,
         if (m_DragChartName != name)
             return;
 
-        const float dx = e.X - m_DragStartX;
-        const float dy = e.Y - m_DragStartY;
+        const float dx = e.WindowX - m_DragStartX;
+        const float dy = e.WindowY - m_DragStartY;
         if (!m_ChartDragActive && (std::abs(dx) > 4.0f || std::abs(dy) > 4.0f))
         {
             m_ChartDragActive = true;
@@ -886,8 +889,8 @@ void MonitorsPanel::AttachChartDragHandlers(UIElement* strip, UIElement* header,
 
         if (m_ChartDragActive)
         {
-            ShowChartDragGhost(name, e.X, e.Y);
-            SetChartDropTarget(HitTestChartDropTarget(e.X, e.Y, name));
+            ShowChartDragGhost(name, e.WindowX, e.WindowY);
+            SetChartDropTarget(HitTestChartDropTarget(e.WindowX, e.WindowY, name));
         }
         e.Stop();
     });
@@ -1343,7 +1346,7 @@ void MonitorsPanel::ShowChartDragGhost(const std::string& name, float x, float y
         auto ghost = std::make_unique<Label>();
         ghost->AddClass("monitors-chart-drag-ghost");
         ghost->SetOverlayLayer(OverlayLayer::DragPreview);
-        ghost->Overrides()
+        ghost->Style()
             .Set(Style::Position, PositionType::Absolute)
             .Set(Style::PointerEvents, false)
             .Set(Style::ZIndex, 9400)
@@ -1366,7 +1369,7 @@ void MonitorsPanel::ShowChartDragGhost(const std::string& name, float x, float y
         return;
 
     m_ChartDragGhost->SetText(MonitorDisplayName(name));
-    m_ChartDragGhost->Overrides()
+    m_ChartDragGhost->Style()
         .Set(Style::Display, DisplayMode::Block)
         .Set(Style::PositionLeft, StyleLength::Px(std::max(0.0f, x + 18.0f)))
         .Set(Style::PositionTop, StyleLength::Px(std::max(0.0f, y - 14.0f)));
@@ -1401,29 +1404,21 @@ void MonitorsPanel::ShowChartDropIndicator(const ChartDropTarget& target)
         auto indicator = std::make_unique<UIElement>();
         indicator->AddClass("monitors-chart-drop-indicator");
         indicator->SetOverlayLayer(OverlayLayer::DragPreview);
-        indicator->Overrides()
+        indicator->Style()
             .Set(Style::Position, PositionType::Absolute)
             .Set(Style::PointerEvents, false)
             .Set(Style::ZIndex, 9390)
             .Set(Style::Display, DisplayMode::None)
+            .Set(Style::BackgroundColor, static_cast<uint32_t>(0x2E3A8FFFu))
             .Set(Style::BorderWidth, Box4{1.0f, 1.0f, 1.0f, 1.0f})
+            .Set(Style::BorderTopColor, static_cast<uint32_t>(0xCC3A8FFFu))
+            .Set(Style::BorderRightColor, static_cast<uint32_t>(0xCC3A8FFFu))
+            .Set(Style::BorderBottomColor, static_cast<uint32_t>(0xCC3A8FFFu))
+            .Set(Style::BorderLeftColor, static_cast<uint32_t>(0xCC3A8FFFu))
             .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{4.0f, 4.0f, 4.0f, 4.0f});
         m_ChartDropIndicator = indicator.get();
         root->AddChild(std::move(indicator));
     }
-
-    // Tinted from the live accent on every show, so an accent change made
-    // while the panel is open reaches the indicator.
-    constexpr uint32_t kDropIndicatorFillAlpha = 0x2E000000u;
-    constexpr uint32_t kDropIndicatorBorderAlpha = 0xCC000000u;
-    const uint32_t accentRgb = UI::ResolveAccentArgb(root->GetResolvedStyle()) & 0x00FFFFFFu;
-    const uint32_t borderColor = kDropIndicatorBorderAlpha | accentRgb;
-    m_ChartDropIndicator->Overrides()
-        .Set(Style::BackgroundColor, kDropIndicatorFillAlpha | accentRgb)
-        .Set(Style::BorderTopColor, borderColor)
-        .Set(Style::BorderRightColor, borderColor)
-        .Set(Style::BorderBottomColor, borderColor)
-        .Set(Style::BorderLeftColor, borderColor);
 
     float left = 0.0f;
     float top = 0.0f;
@@ -1514,7 +1509,7 @@ void MonitorsPanel::ShowChartDropIndicator(const ChartDropTarget& target)
         return;
     }
 
-    m_ChartDropIndicator->Overrides()
+    m_ChartDropIndicator->Style()
         .Set(Style::PositionLeft, StyleLength::Px(std::max(0.0f, left)))
         .Set(Style::PositionTop, StyleLength::Px(std::max(0.0f, top)))
         .Set(Style::Width, StyleLength::Px(std::max(32.0f, width)))

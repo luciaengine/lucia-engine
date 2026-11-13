@@ -20,7 +20,8 @@ Logger::DeferredSink& StartPlayerLog();
 
 /// Opens this process's log file in logsDirectory, writes the held records into
 /// it and sends every later record there. The file name carries the process id,
-/// so two running copies of a game each keep their own log. A file that cannot be
+/// so two running copies of a game each keep their own log. The file records Info
+/// and above, or the level GE_LOG_FILE_LEVEL names. A file that cannot be
 /// opened is logged as an error, and the held records go to no file.
 void OpenPlayerLogFile(Logger::DeferredSink& heldRecords, const std::filesystem::path& logsDirectory);
 

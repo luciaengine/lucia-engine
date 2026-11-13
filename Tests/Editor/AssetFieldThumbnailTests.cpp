@@ -2,6 +2,7 @@
 
 #include "Assets/AssetRegistry.h"
 #include "Thumbnails/IThumbnailProvider.h"
+#include "Thumbnails/AssetThumbnailHandler.h"
 #include "UI/UIElement.h"
 
 #include <gtest/gtest.h>
@@ -18,6 +19,7 @@ class DeferredThumbnailProvider final : public IThumbnailProvider
   public:
     std::function<void(const std::string&)> Ready;
     void SetAssetsRoot(const std::filesystem::path&) override {}
+    void RegisterHandler(AssetType, std::unique_ptr<AssetThumbnailHandler>) override {}
     std::string GetOrRequest(const std::filesystem::path&, int,
                              std::function<void(const std::string&)> onReady, bool) override
     {

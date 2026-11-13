@@ -1,6 +1,8 @@
 #include "TerrainECS/PagedHeightSampler.h"
 
+#include "Mathematics/Interpolation.h"
 #include "TerrainECS/PageLevelRule.h"
+#include "TerrainECS/PageTable.h"
 #include "TerrainECS/TerrainAtlas.h"
 
 #include "PageStreaming/PageCache.h"
@@ -25,6 +27,15 @@ PageCacheGeometry MakePageCacheGeometry(uint32 slotCount)
     return geometry;
 }
 
+void PageAxisUV(uint32 page, uint32 level, uint32 samples, float32& outMin, float32& outMax)
+{
+    const float32 span = static_cast<float32>(kPageOwnedSamples << level);
+    const float32 margin = static_cast<float32>(1u << level);
+    const float32 inv = samples > 1u ? 1.0f / static_cast<float32>(samples - 1u) : 0.0f;
+    outMin = std::max(0.0f, (static_cast<float32>(page) * span - margin) * inv);
+    outMax = std::min(1.0f, (static_cast<float32>(page + 1u) * span + margin) * inv);
+}
+
 uint32 UpdatePageTable(const PageStreaming::PageCache& cache, uint32 stream, PageTable& table)
 {
     uint32 writes = 0;
@@ -35,8 +46,7 @@ uint32 UpdatePageTable(const PageStreaming::PageCache& cache, uint32 stream, Pag
         const uint32 slot = cache.SlotOf(page);
         const bool resident = slot != PageStreaming::kNoResidentSlot;
         const PageStreaming::PageAddress& address = page.Address;
-        table.SetEntry(address,
-                       resident ? PageStreaming::PackPageEntry(slot, address.Level) : kNoPage);
+        table.SetEntry(address, resident ? PageStreaming::PackPageEntry(slot, address.Level) : kNoPage);
         if (resident)
             table.SetSlotFade(slot, cache.FadeOf(page));
         ++writes;
@@ -55,11 +65,51 @@ uint32 UpdatePageTable(const PageStreaming::PageCache& cache, uint32 stream, Pag
 namespace
 {
 
+void AppendFootprint(uint32 terrain, const PageStreaming::PageStoreLevel& level0, const PageStreaming::PageAddress& page,
+                     std::vector<PageChangeRect>& out)
+{
+    float32 minU = 0.0f;
+    float32 maxU = 0.0f;
+    float32 minV = 0.0f;
+    float32 maxV = 0.0f;
+    PageAxisUV(page.X, page.Level, level0.SamplesX, minU, maxU);
+    PageAxisUV(page.Z, page.Level, level0.SamplesZ, minV, maxV);
+    out.push_back(PageChangeRect{terrain, Mathematics::Rect::FromEdges(minU, minV, maxU, maxV)});
+}
+
+} // namespace
+
+void AppendPageChangeRects(uint32 terrain, uint32 stream, std::span<const PageStreaming::PageStoreLevel> levels,
+                           const PageStreaming::PageCache& cache,
+                           std::span<const PageStreaming::PageAddress> lateEntries, std::vector<PageChangeRect>& out)
+{
+    if (levels.empty())
+        return;
+    const PageStreaming::PageStoreLevel& level0 = levels.front();
+    for (const PageStreaming::CachedPage& page : cache.Transitions())
+        if (page.Stream == stream)
+            AppendFootprint(terrain, level0, page.Address, out);
+    for (const PageStreaming::CachedPage& page : cache.FadeChanges())
+        if (page.Stream == stream)
+            AppendFootprint(terrain, level0, page.Address, out);
+    for (const PageStreaming::PageRewrite& rewrite : cache.Rewrites())
+        if (rewrite.Page.Stream == stream)
+            AppendFootprint(terrain, level0, rewrite.Page.Address, out);
+    for (const PageStreaming::PageUploadRequest& upload : cache.Uploads())
+        if (upload.Page.Stream == stream)
+            AppendFootprint(terrain, level0, upload.Page.Address, out);
+    for (const PageStreaming::PageAddress& page : lateEntries)
+        AppendFootprint(terrain, level0, page, out);
+}
+
+namespace
+{
+
 // The continuous level-`level` lattice coordinate of terrain coordinate t in [0, 1] along an axis of
 // `level0Samples`: level-0 sample i sits at i / (samples - 1), level-L sample j at level-0 j * 2^L.
 float32 LatticeCoordinate(float32 t, uint32 level0Samples, uint32 level)
 {
-    return std::clamp(t, 0.0f, 1.0f) * static_cast<float32>(level0Samples - 1u) / static_cast<float32>(1u << level);
+    return Math::Clamp01(t) * static_cast<float32>(level0Samples - 1u) / static_cast<float32>(1u << level);
 }
 
 // The page along an axis holding lattice coordinate c, and c's position inside the page's stride.
@@ -100,7 +150,8 @@ float32 PagedHeightSampler::SampleLevel(float32 u, float32 v, uint32 level, uint
     for (uint32 walk = level; walk < levels; ++walk)
     {
         const PageTexel texel = LocatePageTexel(Table->Levels(), walk, u, v);
-        const uint32 entry = Table->Entry(PageStreaming::PageAddress{0, static_cast<uint8>(walk), texel.PageX, texel.PageZ});
+        const PageStreaming::PageAddress page{0, static_cast<uint8>(walk), texel.PageX, texel.PageZ};
+        const uint32 entry = Table->Entry(page);
         if (entry == kNoPage)
             continue; // the fallback walk: the first resident ancestor answers
         const uint32 slot = PageStreaming::PageEntrySlot(entry);

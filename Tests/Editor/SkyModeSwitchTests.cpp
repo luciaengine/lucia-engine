@@ -5,7 +5,7 @@
 #include "Components/Rendering/SkyEnvironment.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
-#include "Sky/SkyEnvironmentEdit.h"
+#include "Sky/SkyEnvironment/SkyEnvironmentEdit.h"
 #include "UndoRedo/UndoRedoService.h"
 
 using namespace GameEngine;

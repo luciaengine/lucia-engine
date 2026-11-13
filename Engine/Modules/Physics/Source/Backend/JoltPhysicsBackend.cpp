@@ -1,5 +1,6 @@
 #include "Physics/Backend/JoltPhysicsBackend.h"
 
+#include "JobSystem/AvailableProcessors.h"
 #include "Logger/Logger.h"
 #include "Platform/Capabilities.h"
 
@@ -10,7 +11,6 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
-#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -51,6 +51,9 @@
 #include <Jolt/Physics/Character/CharacterVirtual.h>
 #include <Jolt/Physics/Body/BodyFilter.h>
 #include <Jolt/Physics/Collision/ShapeFilter.h>
+#include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
+#include <Jolt/Physics/Collision/BroadPhase/BroadPhaseQuery.h>
+#include <Jolt/Physics/Body/BodyLock.h>
 
 #include <concurrentqueue/moodycamel/concurrentqueue.h>
 
@@ -68,6 +71,10 @@ namespace
 // keep it modest. A flat terrain has zero span and therefore zero headroom —
 // its first sculpt always takes the rebuild path, which re-pads.
 constexpr float32 kHeightFieldRangeHeadroom = 0.25f;
+
+// A grounded character that moves up from the ground faster than this, in m/s, keeps its
+// vertical velocity (a jump). A slower one takes the ground's vertical velocity.
+constexpr float32 kJumpSpeedThreshold = 0.1f;
 
 // Broadphase layers (keep minimal for initial integration).
 namespace BroadPhaseLayers
@@ -161,6 +168,88 @@ private:
     const uint32* m_Masks = nullptr;
 };
 
+// Builds a Jolt heightfield from samples, with the encode range padded so in-place edits
+// (UpdateHeightFieldRegion) can raise or lower past the initial min/max without a full rebuild.
+// Touches no world state, so any thread may call it.
+static_assert(kHeightFieldNoCollision == JPH::HeightFieldShapeConstants::cNoCollisionValue,
+              "a hole sample of a HeightFieldShapeDef is Jolt's no-collision value");
+
+JPH::ShapeRefC BuildHeightFieldShape(const HeightFieldShapeDef& d)
+{
+    if (d.Samples.empty() || d.SampleCount == 0)
+        return {};
+
+    // Jolt HeightFieldShapeSettings expects a flat float array of NxN samples.
+    // The offset and scale map from sample-space to world-space.
+    JPH::HeightFieldShapeSettings settings(
+        d.Samples.data(),
+        JPH::Vec3(d.Offset.x, d.Offset.y, d.Offset.z),
+        JPH::Vec3(d.Scale.x, d.Scale.y, d.Scale.z),
+        d.SampleCount);
+
+    float32 rawMin = std::numeric_limits<float32>::max();
+    float32 rawMax = std::numeric_limits<float32>::lowest();
+    for (const float32 s : d.Samples)
+    {
+        if (s == JPH::HeightFieldShapeConstants::cNoCollisionValue)
+            continue;
+        rawMin = std::min(rawMin, s);
+        rawMax = std::max(rawMax, s);
+    }
+    if (rawMin <= rawMax)
+    {
+        const float32 pad = (rawMax - rawMin) * kHeightFieldRangeHeadroom;
+        settings.mMinHeightValue = rawMin - pad;
+        settings.mMaxHeightValue = rawMax + pad;
+    }
+
+    JPH::ShapeSettings::ShapeResult res = settings.Create();
+    if (res.HasError())
+    {
+        Logger::Log::Error("[Physics] Failed to create heightfield shape: {}", res.GetError().c_str());
+        return {};
+    }
+    JPH::ShapeRefC shape = res.Get();
+    const JPH::AABox bounds = shape->GetLocalBounds();
+    Logger::Log::Info("[Physics] Heightfield shape created: bounds min=[{:.1f},{:.1f},{:.1f}] max=[{:.1f},{:.1f},{:.1f}]",
+        bounds.mMin.GetX(), bounds.mMin.GetY(), bounds.mMin.GetZ(),
+        bounds.mMax.GetX(), bounds.mMax.GetY(), bounds.mMax.GetZ());
+    return shape;
+}
+
+// A heightfield built by PrepareJoltHeightFieldShape, with the mapping UpdateHeightFieldRegion needs.
+class JoltPreparedHeightFieldShape final : public PreparedHeightFieldShape
+{
+public:
+    JPH::ShapeRefC Shape;
+    float32 OffsetY = 0.0f;
+    float32 ScaleY = 1.0f;
+};
+
+// The backend's HeightFieldShapeBuilder: Jolt's factory and allocators are process-wide and
+// outlive every backend, so a job may run this after its world shut down.
+std::shared_ptr<const PreparedHeightFieldShape> PrepareJoltHeightFieldShape(const HeightFieldShapeDef& definition)
+{
+    JPH::ShapeRefC shape = BuildHeightFieldShape(definition);
+    if (!shape)
+        return nullptr;
+    auto prepared = std::make_shared<JoltPreparedHeightFieldShape>();
+    prepared->Shape = std::move(shape);
+    prepared->OffsetY = definition.Offset.y;
+    prepared->ScaleY = definition.Scale.y;
+    return prepared;
+}
+
+JPH::RVec3 ToJoltPos(const WorldPosition& p)
+{
+    return JPH::RVec3(p.X, p.Y, p.Z);
+}
+
+WorldPosition FromJoltPos(JPH::RVec3Arg p)
+{
+    return WorldPosition{p.GetX(), p.GetY(), p.GetZ()};
+}
+
 } // namespace
 
 struct JoltPhysicsBackend::Impl
@@ -183,7 +272,7 @@ struct JoltPhysicsBackend::Impl
         bool isSensor = false;
         bool body1IsSensor = false;
         bool body2IsSensor = false;
-        Vector3 point{0.0f, 0.0f, 0.0f};
+        WorldPosition point{};
         Vector3 normal{0.0f, 1.0f, 0.0f};
     };
 
@@ -198,7 +287,7 @@ struct JoltPhysicsBackend::Impl
         bool isSensor = false;
         bool body1IsSensor = false;
         bool body2IsSensor = false;
-        Vector3 lastPoint{0.0f, 0.0f, 0.0f};
+        WorldPosition lastPoint{};
         Vector3 lastNormal{0.0f, 1.0f, 0.0f};
     };
 
@@ -462,7 +551,7 @@ struct JoltPhysicsBackend::Impl
         if (inManifold.mRelativeContactPointsOn1.size() > 0)
         {
             const JPH::RVec3 p = inManifold.GetWorldSpaceContactPointOn1(0);
-            e.point = Vector3(static_cast<float32>(p.GetX()), static_cast<float32>(p.GetY()), static_cast<float32>(p.GetZ()));
+            e.point = FromJoltPos(p);
         }
         const JPH::Vec3 n = inManifold.mWorldSpaceNormal;
         e.normal = Vector3(static_cast<float32>(n.GetX()), static_cast<float32>(n.GetY()), static_cast<float32>(n.GetZ()));
@@ -532,16 +621,16 @@ bool JoltPhysicsBackend::Initialize(const PhysicsWorldSettings& settings)
     m_Impl->tempAllocator = std::make_unique<JPH::TempAllocatorImpl>(tempBytes);
 
     const int32 wantedThreads = settings.numThreads;
-    const uint32 hw = std::max(1u, std::thread::hardware_concurrency());
+    const uint32 processors = JobSystem::AvailableProcessors::Query().Count;
 
     // Threading policy:
-    // - numThreads < 0: auto => use "hw - 1" worker threads (leave one for the main thread)
+    // - numThreads < 0: auto => one worker per processor the process may run on, minus one for the main thread
     // - numThreads == 0: force single-threaded
     // - numThreads > 0: explicit worker thread count
     uint32 numThreads = 1;
     if (wantedThreads < 0)
     {
-        numThreads = (hw > 1u) ? (hw - 1u) : 1u;
+        numThreads = (processors > 1u) ? (processors - 1u) : 1u;
     }
     else if (wantedThreads == 0)
     {
@@ -644,11 +733,6 @@ JPH::Quat ToJoltQuat(const Quaternion& rotation)
                      static_cast<float>(qglm.w));
 }
 
-JPH::RVec3 ToJoltPos(const Vector3& p)
-{
-    return JPH::RVec3(static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z));
-}
-
 Vector3 FromJoltVec3(JPH::Vec3Arg v)
 {
     return Vector3(static_cast<float32>(v.GetX()),
@@ -685,8 +769,25 @@ void JoltPhysicsBackend::Step(float32 deltaTime, int32 collisionSteps)
 
                                    if (slot.kinematic)
                                    {
+                                       // On walkable ground the vertical velocity is the ground's and gravity acts
+                                       // only along the ground normal, so the character does not slide down the slope.
+                                       // An upward velocity (a jump) stays and takes the full gravity.
                                        JPH::Vec3 vel = slot.kinematic->GetLinearVelocity();
-                                       vel += scaledGravity * static_cast<float>(deltaTime);
+                                       JPH::Vec3 gravityStep = scaledGravity * static_cast<float>(deltaTime);
+                                       if (slot.kinematic->GetGroundState() == JPH::CharacterBase::EGroundState::OnGround)
+                                       {
+                                           slot.kinematic->UpdateGroundVelocity();
+                                           const JPH::Vec3 up = slot.kinematic->GetUp();
+                                           const float groundVertical = slot.kinematic->GetGroundVelocity().Dot(up);
+                                           const float vertical = vel.Dot(up);
+                                           if (vertical - groundVertical < kJumpSpeedThreshold)
+                                           {
+                                               vel += (groundVertical - vertical) * up;
+                                               const JPH::Vec3 normal = slot.kinematic->GetGroundNormal();
+                                               gravityStep = gravityStep.Dot(normal) * normal;
+                                           }
+                                       }
+                                       vel += gravityStep;
                                        slot.kinematic->SetLinearVelocity(vel);
 
                                        JPH::CharacterVirtual::ExtendedUpdateSettings updateSettings;
@@ -704,8 +805,18 @@ void JoltPhysicsBackend::Step(float32 deltaTime, int32 collisionSteps)
                                        }
                                        else
                                        {
+                                           // The step-down is the drop of one step at the current horizontal
+                                           // speed on the steepest walkable slope, so a walk down a slope stays grounded.
+                                           const JPH::Vec3 up = slot.kinematic->GetUp();
+                                           const float horizontalSpeed = (vel - vel.Dot(up) * up).Length();
+                                           const float cosMaxSlope = slot.kinematic->GetCosMaxSlopeAngle();
+                                           const float tanMaxSlope =
+                                               cosMaxSlope > 0.0f
+                                                   ? std::sqrt(std::max(0.0f, 1.0f - cosMaxSlope * cosMaxSlope)) / cosMaxSlope
+                                                   : 0.0f;
+                                           const float stepDown = horizontalSpeed * static_cast<float>(deltaTime) * tanMaxSlope;
                                            updateSettings.mWalkStairsStepUp = JPH::Vec3::sZero();
-                                           updateSettings.mStickToFloorStepDown = JPH::Vec3::sZero();
+                                           updateSettings.mStickToFloorStepDown = -stepDown * up;
                                        }
 
                                        slot.kinematic->ExtendedUpdate(static_cast<float>(deltaTime),
@@ -908,50 +1019,17 @@ ShapeHandle JoltPhysicsBackend::CreateShape(const ShapeDefinition& definition, c
                 }
                 else if constexpr (std::is_same_v<T, HeightFieldShapeDef>)
                 {
-                    if (d.Samples.empty() || d.SampleCount == 0)
+                    JPH::ShapeRefC shape = BuildHeightFieldShape(d);
+                    if (!shape)
                         return std::nullopt;
-
-                    // Jolt HeightFieldShapeSettings expects a flat float array of NxN samples.
-                    // The offset and scale map from sample-space to world-space.
-                    JPH::HeightFieldShapeSettings settings(
-                        d.Samples.data(),
-                        JPH::Vec3(d.Offset.x, d.Offset.y, d.Offset.z),
-                        JPH::Vec3(d.Scale.x, d.Scale.y, d.Scale.z),
-                        d.SampleCount);
-
-                    // Pad the fixed 16-bit encode range so in-place edits
-                    // (UpdateHeightFieldRegion) can raise/lower past the
-                    // initial min/max without forcing a full rebuild.
-                    {
-                        float32 rawMin = std::numeric_limits<float32>::max();
-                        float32 rawMax = std::numeric_limits<float32>::lowest();
-                        for (const float32 s : d.Samples)
-                        {
-                            if (s == JPH::HeightFieldShapeConstants::cNoCollisionValue)
-                                continue;
-                            rawMin = std::min(rawMin, s);
-                            rawMax = std::max(rawMax, s);
-                        }
-                        if (rawMin <= rawMax)
-                        {
-                            const float32 pad = (rawMax - rawMin) * kHeightFieldRangeHeadroom;
-                            settings.mMinHeightValue = rawMin - pad;
-                            settings.mMaxHeightValue = rawMax + pad;
-                        }
-                    }
-
-                    JPH::ShapeSettings::ShapeResult res = settings.Create();
-                    if (res.HasError())
-                    {
-                        Logger::Log::Error("[Physics] Failed to create heightfield shape: {}", res.GetError().c_str());
-                        return std::nullopt;
-                    }
-                    auto shape = res.Get();
-                    auto bounds = shape->GetLocalBounds();
-                    Logger::Log::Info("[Physics] Heightfield shape created: bounds min=[{:.1f},{:.1f},{:.1f}] max=[{:.1f},{:.1f},{:.1f}]",
-                        bounds.mMin.GetX(), bounds.mMin.GetY(), bounds.mMin.GetZ(),
-                        bounds.mMax.GetX(), bounds.mMax.GetY(), bounds.mMax.GetZ());
                     return shape;
+                }
+                else if constexpr (std::is_same_v<T, PreparedHeightFieldShapeDef>)
+                {
+                    const auto* prepared = dynamic_cast<const JoltPreparedHeightFieldShape*>(d.Shape.get());
+                    if (!prepared || !prepared->Shape)
+                        return std::nullopt;
+                    return prepared->Shape;
                 }
                 else
                 {
@@ -971,8 +1049,18 @@ ShapeHandle JoltPhysicsBackend::CreateShape(const ShapeDefinition& definition, c
     // can convert raw provider samples into the shape's local height space.
     if (const auto* hfDef = std::get_if<HeightFieldShapeDef>(&definition))
         m_Impl->heightFieldInfoByShapeHandle[h.Value()] = Impl::HeightFieldCreationInfo{hfDef->Offset.y, hfDef->Scale.y};
+    else if (const auto* preparedDef = std::get_if<PreparedHeightFieldShapeDef>(&definition))
+    {
+        const auto* prepared = static_cast<const JoltPreparedHeightFieldShape*>(preparedDef->Shape.get());
+        m_Impl->heightFieldInfoByShapeHandle[h.Value()] = Impl::HeightFieldCreationInfo{prepared->OffsetY, prepared->ScaleY};
+    }
 
     return ShapeHandle(h.Value());
+}
+
+HeightFieldShapeBuilder JoltPhysicsBackend::GetHeightFieldShapeBuilder() const
+{
+    return &PrepareJoltHeightFieldShape;
 }
 
 void JoltPhysicsBackend::DestroyShape(ShapeHandle shape)
@@ -1122,6 +1210,41 @@ void JoltPhysicsBackend::ActivateBodiesInAABB(const AABB& worldBox)
         JPH::ObjectLayerFilter{});
 }
 
+void JoltPhysicsBackend::GetDynamicBodiesInAABB(const AABB& worldBox, std::vector<BodyBounds>& outBodies) const
+{
+    outBodies.clear();
+    if (!m_Impl || !m_Impl->initialized)
+        return;
+
+    const JPH::AABox box(JPH::Vec3(worldBox.min.x, worldBox.min.y, worldBox.min.z),
+                         JPH::Vec3(worldBox.max.x, worldBox.max.y, worldBox.max.z));
+    JPH::AllHitCollisionCollector<JPH::CollideShapeBodyCollector> collector;
+    m_Impl->physicsSystem.GetBroadPhaseQuery().CollideAABox(
+        box, collector, JPH::SpecifiedBroadPhaseLayerFilter(BroadPhaseLayers::Dynamic), JPH::ObjectLayerFilter{});
+    for (const JPH::BodyID id : collector.mHits)
+    {
+        BodyHandle handle;
+        if (!m_Impl->TryMapBodyIdToHandle_MainThread(id, handle))
+            continue;
+        const JPH::BodyLockRead lock(m_Impl->physicsSystem.GetBodyLockInterface(), id);
+        if (!lock.Succeeded() || !lock.GetBody().IsDynamic())
+            continue;
+        const JPH::AABox& bounds = lock.GetBody().GetWorldSpaceBounds();
+        BodyBounds entry;
+        entry.body = handle;
+        entry.bounds.min = Vector3(bounds.mMin.GetX(), bounds.mMin.GetY(), bounds.mMin.GetZ());
+        entry.bounds.max = Vector3(bounds.mMax.GetX(), bounds.mMax.GetY(), bounds.mMax.GetZ());
+        outBodies.push_back(entry);
+    }
+}
+
+float32 JoltPhysicsBackend::GetContactDistance() const
+{
+    if (!m_Impl || !m_Impl->initialized)
+        return 0.0f;
+    return m_Impl->physicsSystem.GetPhysicsSettings().mSpeculativeContactDistance;
+}
+
 BodyHandle JoltPhysicsBackend::CreateBody(const BodySettings& settings)
 {
     if (!m_Impl || !m_Impl->initialized)
@@ -1151,7 +1274,7 @@ BodyHandle JoltPhysicsBackend::CreateBody(const BodySettings& settings)
     // Quaternion is stored as (w,x,y,z) in GLM; Jolt is (x,y,z,w)
     const auto& qglm = settings.rotation.GetGLM();
     const JPH::Quat rot(static_cast<float>(qglm.x), static_cast<float>(qglm.y), static_cast<float>(qglm.z), static_cast<float>(qglm.w));
-    const JPH::RVec3 pos(static_cast<float>(settings.position.x), static_cast<float>(settings.position.y), static_cast<float>(settings.position.z));
+    const JPH::RVec3 pos = ToJoltPos(settings.position);
 
     const JPH::ObjectLayer layer = static_cast<JPH::ObjectLayer>(settings.layer);
 
@@ -1267,9 +1390,19 @@ Transform JoltPhysicsBackend::GetBodyTransform(BodyHandle body) const
     const JPH::RVec3 p = bi.GetPosition(*id);
     const JPH::Quat q = bi.GetRotation(*id);
 
-    out.position = Vector3(static_cast<float32>(p.GetX()), static_cast<float32>(p.GetY()), static_cast<float32>(p.GetZ()));
+    out.position = FromJoltPos(p);
     out.rotation = Quaternion(static_cast<float32>(q.GetW()), static_cast<float32>(q.GetX()), static_cast<float32>(q.GetY()), static_cast<float32>(q.GetZ()));
     return out;
+}
+
+WorldPosition JoltPhysicsBackend::GetCenterOfMassPosition(BodyHandle body) const
+{
+    if (!m_Impl || !m_Impl->initialized)
+        return {};
+    const JPH::BodyID* id = m_Impl->bodies.Get(GenerationalVector::Handle(static_cast<uint64_t>(body.Value())));
+    if (!id)
+        return {};
+    return FromJoltPos(m_Impl->physicsSystem.GetBodyInterface().GetCenterOfMassPosition(*id));
 }
 
 void JoltPhysicsBackend::SetBodyTransform(BodyHandle body, const Transform& transform, ActivationMode activation)
@@ -1284,7 +1417,7 @@ void JoltPhysicsBackend::SetBodyTransform(BodyHandle body, const Transform& tran
 
     const auto& qglm = transform.rotation.GetGLM();
     const JPH::Quat rot(static_cast<float>(qglm.x), static_cast<float>(qglm.y), static_cast<float>(qglm.z), static_cast<float>(qglm.w));
-    const JPH::RVec3 pos(static_cast<float>(transform.position.x), static_cast<float>(transform.position.y), static_cast<float>(transform.position.z));
+    const JPH::RVec3 pos = ToJoltPos(transform.position);
 
     auto& bi = m_Impl->physicsSystem.GetBodyInterface();
     const JPH::EActivation act = (activation == ActivationMode::Activate) ? JPH::EActivation::Activate : JPH::EActivation::DontActivate;
@@ -1303,7 +1436,7 @@ void JoltPhysicsBackend::MoveKinematic(BodyHandle body, const Transform& target,
 
     const auto& qglm = target.rotation.GetGLM();
     const JPH::Quat rot(static_cast<float>(qglm.x), static_cast<float>(qglm.y), static_cast<float>(qglm.z), static_cast<float>(qglm.w));
-    const JPH::RVec3 pos(static_cast<float>(target.position.x), static_cast<float>(target.position.y), static_cast<float>(target.position.z));
+    const JPH::RVec3 pos = ToJoltPos(target.position);
 
     // BodyInterface (not Body) so a sleeping platform is woken; Body::MoveKinematic
     // documents that setting a pose on a sleeping body without waking it is illegal.
@@ -1363,19 +1496,6 @@ void JoltPhysicsBackend::SetAngularVelocity(BodyHandle body, const Vector3& velo
     bi.SetAngularVelocity(*id, JPH::Vec3(velocity.x, velocity.y, velocity.z));
 }
 
-Vector3 JoltPhysicsBackend::GetCenterOfMassPosition(BodyHandle body) const
-{
-    if (!m_Impl || !m_Impl->initialized)
-        return {};
-    const auto h = GenerationalVector::Handle(static_cast<uint64_t>(body.Value()));
-    const JPH::BodyID* id = m_Impl->bodies.Get(h);
-    if (!id)
-        return {};
-    const auto& bi = m_Impl->physicsSystem.GetBodyInterface();
-    const JPH::RVec3 p = bi.GetCenterOfMassPosition(*id);
-    return Vector3(static_cast<float32>(p.GetX()), static_cast<float32>(p.GetY()), static_cast<float32>(p.GetZ()));
-}
-
 void JoltPhysicsBackend::AddForce(BodyHandle body, const Vector3& force)
 {
     if (!m_Impl || !m_Impl->initialized)
@@ -1388,7 +1508,7 @@ void JoltPhysicsBackend::AddForce(BodyHandle body, const Vector3& force)
     bi.AddForce(*id, JPH::Vec3(force.x, force.y, force.z), JPH::EActivation::Activate);
 }
 
-void JoltPhysicsBackend::AddForceAtPosition(BodyHandle body, const Vector3& force, const Vector3& worldPosition)
+void JoltPhysicsBackend::AddForceAtPosition(BodyHandle body, const Vector3& force, const WorldPosition& worldPosition)
 {
     if (!m_Impl || !m_Impl->initialized)
         return;
@@ -1397,9 +1517,7 @@ void JoltPhysicsBackend::AddForceAtPosition(BodyHandle body, const Vector3& forc
     if (!id)
         return;
     auto& bi = m_Impl->physicsSystem.GetBodyInterface();
-    bi.AddForce(*id, JPH::Vec3(force.x, force.y, force.z),
-                JPH::RVec3(worldPosition.x, worldPosition.y, worldPosition.z),
-                JPH::EActivation::Activate);
+    bi.AddForce(*id, JPH::Vec3(force.x, force.y, force.z), ToJoltPos(worldPosition), JPH::EActivation::Activate);
 }
 
 void JoltPhysicsBackend::AddTorque(BodyHandle body, const Vector3& torque)
@@ -1426,7 +1544,7 @@ void JoltPhysicsBackend::AddImpulse(BodyHandle body, const Vector3& impulse)
     bi.AddImpulse(*id, JPH::Vec3(impulse.x, impulse.y, impulse.z));
 }
 
-void JoltPhysicsBackend::AddImpulseAtPosition(BodyHandle body, const Vector3& impulse, const Vector3& worldPosition)
+void JoltPhysicsBackend::AddImpulseAtPosition(BodyHandle body, const Vector3& impulse, const WorldPosition& worldPosition)
 {
     if (!m_Impl || !m_Impl->initialized)
         return;
@@ -1435,8 +1553,7 @@ void JoltPhysicsBackend::AddImpulseAtPosition(BodyHandle body, const Vector3& im
     if (!id)
         return;
     auto& bi = m_Impl->physicsSystem.GetBodyInterface();
-    bi.AddImpulse(*id, JPH::Vec3(impulse.x, impulse.y, impulse.z),
-                  JPH::RVec3(worldPosition.x, worldPosition.y, worldPosition.z));
+    bi.AddImpulse(*id, JPH::Vec3(impulse.x, impulse.y, impulse.z), ToJoltPos(worldPosition));
 }
 
 namespace
@@ -1523,14 +1640,13 @@ bool IsNearerHit(const JPH::RayCastResult& a, const JPH::RayCastResult& b)
 // times maxDistance is its distance. False for a zero direction.
 bool MakeQueryRay(const RayCastQuery& query, JPH::RRayCast& outRay)
 {
-    const Vector3 dir = query.ray.direction;
+    const Vector3 dir = query.direction;
     const float32 lenSq = dir.x * dir.x + dir.y * dir.y + dir.z * dir.z;
     if (lenSq <= 0.0f)
         return false;
 
     const float32 scale = query.maxDistance / std::sqrt(lenSq);
-    outRay.mOrigin = JPH::RVec3(static_cast<float>(query.ray.origin.x), static_cast<float>(query.ray.origin.y),
-                                static_cast<float>(query.ray.origin.z));
+    outRay.mOrigin = ToJoltPos(query.origin);
     outRay.mDirection = JPH::Vec3(dir.x * scale, dir.y * scale, dir.z * scale);
     return true;
 }
@@ -1545,7 +1661,7 @@ RayCastResult JoltPhysicsBackend::Impl::RayHit(const JPH::RRayCast& ray, float32
         result.body = BodyHandle(it->second);
 
     const JPH::RVec3 p = ray.GetPointOnRay(hit.mFraction);
-    result.hitPoint = Vector3(static_cast<float32>(p.GetX()), static_cast<float32>(p.GetY()), static_cast<float32>(p.GetZ()));
+    result.hitPoint = FromJoltPos(p);
     result.distance = maxDistance * static_cast<float32>(hit.mFraction);
 
     JPH::BodyLockRead lock(physicsSystem.GetBodyLockInterface(), hit.mBodyID);
@@ -1620,7 +1736,8 @@ bool JoltPhysicsBackend::BoxOverlap(const BoxOverlapQuery& query, std::vector<Ov
     };
     const auto& q = query.rotation.GetGLM();
     const double lengthSq = double(q.x) * q.x + double(q.y) * q.y + double(q.z) * q.z + double(q.w) * q.w;
-    if (!finite(query.center) || !finite(query.halfExtents) ||
+    const WorldPosition& c = query.center;
+    if (!std::isfinite(c.X) || !std::isfinite(c.Y) || !std::isfinite(c.Z) || !finite(query.halfExtents) ||
         query.halfExtents.x <= 0.0f || query.halfExtents.y <= 0.0f || query.halfExtents.z <= 0.0f ||
         !std::isfinite(lengthSq) || lengthSq <= 0.0f)
         return false;
@@ -1683,7 +1800,7 @@ bool JoltPhysicsBackend::BoxOverlap(const BoxOverlapQuery& query, std::vector<Ov
     const double inverseLength = 1.0 / std::sqrt(lengthSq);
     const JPH::Quat rotation(static_cast<float>(q.x * inverseLength), static_cast<float>(q.y * inverseLength),
                              static_cast<float>(q.z * inverseLength), static_cast<float>(q.w * inverseLength));
-    const JPH::RVec3 center(query.center.x, query.center.y, query.center.z);
+    const JPH::RVec3 center = ToJoltPos(c);
     JPH::CollideShapeSettings settings;
     // Overlap has no travel direction; both sides of a mesh can obstruct it.
     settings.mBackFaceMode = JPH::EBackFaceMode::CollideWithBackFaces;
@@ -1958,9 +2075,7 @@ Transform JoltPhysicsBackend::GetCharacterTransform(CharacterHandle character) c
     else
         return out;
 
-    out.position = Vector3(static_cast<float32>(p.GetX()),
-                           static_cast<float32>(p.GetY()),
-                           static_cast<float32>(p.GetZ()));
+    out.position = FromJoltPos(p);
     out.rotation = Quaternion(static_cast<float32>(q.GetW()),
                               static_cast<float32>(q.GetX()),
                               static_cast<float32>(q.GetY()),
@@ -1968,7 +2083,7 @@ Transform JoltPhysicsBackend::GetCharacterTransform(CharacterHandle character) c
     return out;
 }
 
-void JoltPhysicsBackend::SetCharacterPosition(CharacterHandle character, const Vector3& position)
+void JoltPhysicsBackend::SetCharacterPosition(CharacterHandle character, const WorldPosition& position)
 {
     if (!m_Impl || !m_Impl->initialized)
         return;

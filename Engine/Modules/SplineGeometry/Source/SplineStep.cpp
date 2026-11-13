@@ -110,7 +110,7 @@ void StepTopsAtPoints(std::vector<SplineStripStation>& stations,
         const float32 before = level[k];
         const float32 after = level[k + 1u];
 
-        // A Mitre already splits into the run before and the run after at its
+        // A Miter already splits into the run before and the run after at its
         // Crease ring.
         const bool splits = run[last] != run[first];
         if (splits)

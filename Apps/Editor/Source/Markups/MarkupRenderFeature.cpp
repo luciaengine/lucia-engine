@@ -7,14 +7,15 @@
 #include "MarkupECS/MarkupRegionMesh.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/Vector4.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Common/Frustum.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/PassPhase.h"
-#include "Rendering/Core/PipelineDescTranslator.h"
+#include "Rendering/Core/Pipeline/PipelineDescTranslator.h"
 #include "Rendering/Core/RenderGraph/RGFullscreen.h"
-#include "Rendering/Materials/ShaderProfileDefines.h"
+#include "Rendering/Core/ReverseZ.h"
+#include "Rendering/Materials/Shader/ShaderProfileDefines.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "SceneView/SceneViewGizmos.h"
 
@@ -325,10 +326,10 @@ bool MarkupRenderFeature::EnsurePipelines(IDevice& device)
                                         const char* visibleName, const char* occludedName, bool meshInput) {
         return GlowPipelines{
             PipelineDescTranslator::InternGraphics(device, BuildGlowPipelineDesc(stageVs, stageFs, m_GlowLayout,
-                                                                                 CompareOp::GreaterOrEqual, visibleName,
+                                                                                 ReverseZ::kNearerOrEqual, visibleName,
                                                                                  meshInput)),
             PipelineDescTranslator::InternGraphics(device, BuildGlowPipelineDesc(stageVs, stageFs, m_GlowLayout,
-                                                                                 CompareOp::Less, occludedName,
+                                                                                 ReverseZ::kFarther, occludedName,
                                                                                  meshInput))};
     };
     const GlowPipelines single = intern(vs, fs, "SV_MarkupGlow", "SV_MarkupGlow_Occluded", false);
@@ -362,11 +363,11 @@ bool MarkupRenderFeature::DeclareView(RenderGraph::RGFrame& frame, RenderGraph::
     if (device)
         m_RegionBuffers.Collect(*device, frameNumber,
                                 (world.GetWorldId() << 32) ^ world.GetLifecycleResetGeneration());
-    const Mathematics::Vector3 cameraPos(camera.cameraPos[0], camera.cameraPos[1], camera.cameraPos[2]);
+    const Mathematics::Vector3 cameraPos(camera.cameraPos.x, camera.cameraPos.y, camera.cameraPos.z);
     Mathematics::Vector4 frustumPlanes[6];
-    ExtractFrustumPlanes(Mathematics::Matrix4x4::FromColumnMajor(camera.viewProj), frustumPlanes);
-    m_Bodies =
-        CollectMarkupDrawItems(world, bridge, bridge.GetHighlight(), cameraPos, frustumPlanes, frameNumber, m_Items);
+    ExtractFrustumPlanes(camera.viewProj, frustumPlanes);
+    m_Bodies = CollectMarkupDrawItems(world, bridge, bridge.GetHighlight(), cameraPos, frustumPlanes, frameNumber,
+                                      m_Items, m_ExcludedScratch);
     BuildDraws(m_Items, m_Bodies, m_Draws);
     // The hand gate: no body in view, no pass.
     if (m_Draws.empty())
@@ -426,10 +427,6 @@ bool MarkupRenderFeature::DeclareView(RenderGraph::RGFrame& frame, RenderGraph::
         "SV.MarkupGlow", kOverlayPhase,
         [&](RenderGraph::RGPassBuilder& pass)
         {
-            pass.UsePipeline(record.Visible);
-            pass.UsePipeline(record.Occluded);
-            pass.UsePipeline(record.VisibleMesh);
-            pass.UsePipeline(record.OccludedMesh);
             RenderGraph::RGAttachmentOps colorOps{};
             colorOps.Load = RenderGraph::RGLoadOp::Clear;
             colorOps.Store = RenderGraph::RGStoreOp::Store;

@@ -9,3 +9,6 @@ PlayerLog.h
 
 PlayerStartupReadiness.cpp
 PlayerStartupReadiness.h
+
+PlayerRunOptions.cpp
+PlayerRunOptions.h

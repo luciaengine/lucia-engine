@@ -11,13 +11,14 @@
 #include <gtest/gtest.h>
 
 #include "Rendering/Core/Device.h"
+#include "Rendering/Core/HotReloadIntegration.h"
 #include "Rendering/Materials/MaterialDocument.h"
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialShaderIncludeRoots.h"
-#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
-#include "Rendering/Materials/ShaderComposer.h"
-#include "Rendering/Materials/ShaderVariantKey.h"
+#include "Rendering/Materials/Shader/ShaderComposer.h"
+#include "Rendering/Materials/Shader/ShaderVariantKey.h"
 #include "TestUtils.h"
 #include "TestTempDir.h"
 
@@ -89,23 +90,129 @@ TEST(ShaderComposerPackageRoots, ResolutionOrder_MaterialDirThenPackagesThenEngi
 
     // Highest-priority package wins once the materialDir copy is gone.
     fs::remove(materialDir / rel);
+    NotifyShaderSourcesChanged();
     EXPECT_EQ(Norm(ShaderComposer::ResolveShaderReference(rel, materialDir, ctx)),
               Norm(pkgA / rel));
 
     // Package order is the context order (mount priority), not alphabetical luck.
     fs::remove(pkgA / rel);
+    NotifyShaderSourcesChanged();
     EXPECT_EQ(Norm(ShaderComposer::ResolveShaderReference(rel, materialDir, ctx)),
               Norm(pkgB / rel));
 
     // Engine tree is the final fallback.
     fs::remove(pkgB / rel);
+    NotifyShaderSourcesChanged();
     EXPECT_EQ(Norm(ShaderComposer::ResolveShaderReference(rel, materialDir, ctx)),
               Norm(engine / rel));
 
     // Nowhere found: the materialDir candidate names the concrete miss.
     fs::remove(engine / rel);
+    NotifyShaderSourcesChanged();
     EXPECT_EQ(Norm(ShaderComposer::ResolveShaderReference(rel, materialDir, ctx)),
               Norm(materialDir / rel));
+}
+
+// A material registration resolves its surface several times per frame: the answer is held, so a
+// repeat touches no file, and a file that appears or disappears is seen after the next announcement.
+TEST(ShaderComposerPackageRoots, AResolvedReferenceIsHeldUntilAnEditIsAnnounced)
+{
+    TempTree tree("ge_shader_reference_held");
+    const fs::path materialDir = tree.Root / "Materials";
+    const fs::path package = tree.Root / "Pkg" / "Shaders";
+    const char* reference = "Surfaces/held_surface.glsl";
+    WriteTextFile(package / reference, "// package copy\n");
+
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = tree.Root / "Engine" / "Shaders";
+    context.PackageShaderDirs = {package};
+    ASSERT_EQ(Norm(ShaderComposer::ResolveShaderReference(reference, materialDir, context)), Norm(package / reference));
+
+    fs::remove(package / reference);
+    EXPECT_EQ(Norm(ShaderComposer::ResolveShaderReference(reference, materialDir, context)), Norm(package / reference))
+        << "a repeat resolution must answer from memory, not from the disk";
+
+    NotifyShaderSourcesChanged();
+    EXPECT_EQ(Norm(ShaderComposer::ResolveShaderReference(reference, materialDir, context)), Norm(materialDir / reference))
+        << "after an announcement the removed file is seen";
+}
+
+// The material directory takes part in a build exactly when something the build
+// reads lives there; otherwise materials with the same references share a compile.
+TEST(ShaderComposerPackageRoots, ShaderLocalDirectory_OnlyWhenAReferenceResolvesThere)
+{
+    TempTree tree("ge_shader_local_dir");
+    const fs::path materialDir = tree.Root / "Materials";
+    WriteTextFile(materialDir / "local_surface.glsl", "// beside the material\n");
+    WriteTextFile(materialDir / "local_wind.glsl", "// beside the material\n");
+
+    EXPECT_EQ(ShaderComposer::ShaderLocalDirectory("local_surface.glsl", "", materialDir), materialDir);
+    EXPECT_EQ(ShaderComposer::ShaderLocalDirectory("Surfaces/standard_pbr.glsl", "local_wind.glsl", materialDir),
+              materialDir)
+        << "a material-local vertex modifier makes the directory part of the build";
+    EXPECT_TRUE(ShaderComposer::ShaderLocalDirectory("Surfaces/standard_pbr.glsl", "", materialDir).empty())
+        << "a surface found through the shader roots reads nothing from the material directory";
+    EXPECT_TRUE(ShaderComposer::ShaderLocalDirectory("", "", materialDir).empty())
+        << "the implicit default surface resolves through the roots too";
+    EXPECT_TRUE(
+        ShaderComposer::ShaderLocalDirectory((materialDir / "local_surface.glsl").string(), "", materialDir).empty())
+        << "an absolute reference names its file wherever the material lives";
+    EXPECT_TRUE(ShaderComposer::ShaderLocalDirectory("local_surface.glsl", "", fs::path{}).empty());
+
+    const fs::path previewDir = tree.Root / "GraphPreview";
+    fs::create_directories(previewDir);
+    EXPECT_EQ(ShaderComposer::ShaderLocalDirectory("Surfaces/standard_pbr.glsl", "", previewDir), previewDir)
+        << "a live preview directory changes the variant's defines (HAS_TANGENT)";
+}
+
+// What lets two materials share one compiled variant: a surface that does not
+// resolve beside either material composes the same source and searches the same
+// include roots wherever the materials live. Absolute references (how GUID-
+// reconciled references arrive) are spelled against the include roots, so a
+// material-local root would respell the surface for the material that sits next
+// to it; a material-local include root would let a shared surface's #include find
+// a file beside one material and not beside the other.
+TEST(ShaderComposerProjectRoots, RootResolvedSurface_SameSourceAndRootsFromEveryMaterialDir)
+{
+    TempTree tree("ge_shared_surface_compose");
+    const fs::path project = tree.Root / "Assets";
+    const fs::path surface = project / "Props" / "props_surface.glsl";
+    WriteTextFile(surface, "SurfaceOutput EvaluateSurface(SurfaceInput sIn) { return DefaultSurfaceOutput(); }\n");
+    WriteTextFile(project / "Props" / "beside_props.glsl", "// only beside the Props materials\n");
+
+    MaterialBuildContext ctx{};
+    ctx.AdapterShaderDir = GameEngine::Rendering::Tests::GetAdapterShaderDir();
+    ctx.ProjectRoots = {project};
+    ctx.CacheRoot = tree.Root / ".Cache" / "Shaders";
+
+    MaterialDocument doc{};
+    doc.materialName = "Shared";
+    doc.lightingModel = "StandardPBR";
+    doc.surfaceShader = surface.string();
+    ShaderVariantKey key{};
+    key.vertexFlags = VertexAttributeFlags::StandardMesh;
+    key.lightingModel = LightingModel::kStandardPBR;
+
+    std::vector<std::string> errors;
+    const auto inside = ShaderComposer::Compose(doc, key, project / "Props", ctx, &errors);
+    const auto elsewhere = ShaderComposer::Compose(doc, key, project / "Vehicles", ctx, &errors);
+    for (const auto& e : errors)
+        ADD_FAILURE() << e;
+    ASSERT_TRUE(inside.IsValid());
+    ASSERT_TRUE(elsewhere.IsValid());
+    EXPECT_EQ(inside.fragmentSource, elsewhere.fragmentSource)
+        << "the surface's #include must be spelled against the shader roots, not against the directory of "
+           "whichever material composed it first";
+    EXPECT_NE(inside.fragmentSource.find("#include \"Props/props_surface.glsl\""), std::string::npos);
+
+    const auto built = BuildMaterialToShaderPackage(doc, project / "Props" / "crate.material", "crate", ctx,
+                                                    ShaderSourceKind::SpirV, MaterialKeyword::None);
+    ASSERT_FALSE(built.composedIncludeRoots.empty());
+    for (const fs::path& root : built.composedIncludeRoots)
+    {
+        EXPECT_NE(Norm(root), Norm(project / "Props"))
+            << "a surface found through the project root must not search the material's directory for includes";
+    }
 }
 
 // The spelling a derived artifact records for a resolved file: by the first
@@ -319,14 +426,17 @@ TEST(ShaderComposerProjectRoots, ResolutionOrder_ProjectRootBetweenMaterialDirAn
 
     // The live project root wins over packages once the materialDir copy is gone.
     fs::remove(materialDir / rel);
+    NotifyShaderSourcesChanged();
     EXPECT_EQ(Norm(ShaderComposer::ResolveShaderReference(rel, materialDir, ctx)),
               Norm(projectRoot / rel));
 
     fs::remove(projectRoot / rel);
+    NotifyShaderSourcesChanged();
     EXPECT_EQ(Norm(ShaderComposer::ResolveShaderReference(rel, materialDir, ctx)),
               Norm(pkg / rel));
 
     fs::remove(pkg / rel);
+    NotifyShaderSourcesChanged();
     EXPECT_EQ(Norm(ShaderComposer::ResolveShaderReference(rel, materialDir, ctx)),
               Norm(engine / rel));
 }

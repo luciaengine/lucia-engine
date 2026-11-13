@@ -15,10 +15,15 @@ namespace GameEngine
 {
 class Button;
 class Label;
-class TextArea;
 class MarkdownText;
+class TextArea;
 class UIManager;
 struct AgentReplyAction;
+
+namespace EditorUI
+{
+class InspectorNotice;
+}
 
 /// Sets `element`'s height override to `heightPx`. Returns true when the override
 /// moved by more than half a pixel, so a caller can tell whether layout has settled.
@@ -27,20 +32,24 @@ bool PinHeightPx(UIElement& element, float heightPx);
 /// One message of the AI Assistant panel: the layout comes from the package's
 /// `Editor/UI/controls/AgentConversationRow.uxml` (header, streamed text, the calls'
 /// rows, status, Stop, Retry on a failed reply, the registered reply actions); the row
-/// only fills it from an AgentConversationRowModel.
+/// only fills it from an AgentConversationRowModel. The user's prompt is shown as typed;
+/// a reply is drawn from its Markdown (MarkdownText).
 class AgentConversationRow final : public UIElement
 {
 public:
-    /// Called with the action a reply-action button runs.
-    using ReplyActionHandler = std::function<void(const AgentReplyAction&)>;
+    /// Called with the action a reply-action button runs; returns whether it acted
+    /// (AgentReplyOutcome::Acted), which a Once action's button needs before it turns off.
+    using ReplyActionHandler = std::function<bool(const AgentReplyAction&)>;
+    /// Called with the token of the mark-up chip clicked (MarkupChip::Token).
+    using MarkupChipHandler = std::function<void(const std::string& token)>;
 
     /// `index` is the message's position in the conversation; it keys the row's
     /// element ids so every row's are unique. `onStop` runs when Stop is clicked,
     /// `onRetry` when Retry is, `onAnswer` when a waiting call is answered and
-    /// `onUndoTurn` when Undo this turn is.
+    /// `onUndoTurn` when Undo this turn is and `onFrameMarkup` when a mark-up chip is.
     AgentConversationRow(size_t index, std::function<void()> onStop, std::function<void()> onRetry,
                          ReplyActionHandler onReplyAction, AgentCallRow::AnswerHandler onAnswer,
-                         std::function<void()> onUndoTurn);
+                         std::function<void()> onUndoTurn, MarkupChipHandler onFrameMarkup);
 
     /// Instantiates the row layout through `ui`. False (and logged) when the layout
     /// is not staged or is missing an element.
@@ -48,10 +57,10 @@ public:
     /// Shows `model`, touching only what changed since the last call. `time` is the
     /// message's local time of day.
     void Show(const AgentConversationRowModel& model, const std::string& time);
-    /// Pins the text to the height its wrapped lines need, sizes the calls' inline images to
-    /// the row's width, and pins the row to its content (a TextArea grows its own height and
-    /// never shrinks it). Returns true while a
-    /// height still moved, so the caller can wait for the rows to settle.
+    /// Pins a prompt's text to the height its wrapped lines need, sizes the calls' inline
+    /// images to the row's width, and pins the row to its content (a TextArea grows its own
+    /// height and never shrinks it). Returns true while a height still moved, so the caller
+    /// can wait for the rows to settle.
     bool FitHeight();
     /// Redraws the text; the text area culls lines to the scroll view's viewport, so
     /// the panel calls this when the history scrolls.
@@ -63,8 +72,9 @@ public:
     void SetCallsStacked(bool stacked);
 
 private:
-    void BuildReplyActions();
-    void BuildChips(const std::vector<std::string>& files);
+    void BuildReplyActions(const std::vector<std::string>& actionIds);
+    void BuildFileChips(const std::vector<std::string>& files);
+    void BuildMarkupChips(const std::vector<MarkupChip>& chips);
     void ShowStatus(const AgentConversationRowModel& model);
     void ShowCalls(const std::vector<AgentCallRowModel>& calls);
 
@@ -74,15 +84,17 @@ private:
     ReplyActionHandler m_OnReplyAction;
     AgentCallRow::AnswerHandler m_OnAnswer;
     std::function<void()> m_OnUndoTurn;
+    MarkupChipHandler m_OnFrameMarkup;
     Label* m_Header = nullptr;
     Label* m_Time = nullptr;
     Button* m_Stop = nullptr;
     Button* m_Retry = nullptr;
     Button* m_UndoTurn = nullptr;
     Label* m_Retried = nullptr;
+    /// The user's prompt, as typed.
     TextArea* m_Text = nullptr;
+    /// A reply, drawn from its Markdown.
     MarkdownText* m_Reply = nullptr;
-    UIElement* m_FileChips = nullptr;
     UIElement* m_Calls = nullptr;
     /// One per shown call row, in order.
     std::vector<AgentCallRow*> m_CallRows;
@@ -90,9 +102,15 @@ private:
     /// One label per part of the status ("5 undo steps", "1 failed"), so the footer wraps
     /// between parts and never inside one.
     UIElement* m_Status = nullptr;
-    TextArea* m_StatusText = nullptr;
     UIElement* m_Actions = nullptr;
     bool m_ReplyActionsBuilt = false;
+    /// The names of the files attached to a user message; hidden without any.
+    UIElement* m_FileChips = nullptr;
+    /// The chips of the mark-ups a user message names; hidden without any.
+    UIElement* m_MarkupChips = nullptr;
+    /// Holds m_SetupRefusal; hidden unless the setup check refused the reply.
+    UIElement* m_SetupRefusalHost = nullptr;
+    EditorUI::InspectorNotice* m_SetupRefusal = nullptr;
     /// What the elements show now; nullopt before the first Show().
     std::optional<AgentConversationRowModel> m_Shown;
 };

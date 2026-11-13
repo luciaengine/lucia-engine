@@ -41,7 +41,7 @@ layout(std430, set = 0, binding = 3) readonly buffer AnimFrames
 layout(push_constant) uniform TileMapPush
 {
     mat4 Model;
-    vec4 ChunkOriginCellSize; // xy = chunk origin in tilemap space, zw = cell size
+    vec4 ChunkOriginCellSize; // xy = zero (chunk origin is in Model), zw = cell size
     vec4 LayerZ;              // x = layer Z in tilemap space, y = animation clock (seconds),
                               // z = tile count as a bit pattern (floatBitsToUint)
     vec4 Tint;                // rgba, opacity already folded into a
@@ -86,7 +86,7 @@ void main()
     const vec2 localXY =
         pc.ChunkOriginCellSize.xy + (localCell + corner) * pc.ChunkOriginCellSize.zw;
 
-    gl_Position = Cam.uVP * pc.Model * vec4(localXY, pc.LayerZ.x, 1.0);
+    gl_Position = Cam.uVPRel * pc.Model * vec4(localXY, pc.LayerZ.x, 1.0);
 
     // tileId is 1-based and bounds-checked above.
     TileDesc desc = uTiles[tileId - 1u];

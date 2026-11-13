@@ -28,7 +28,6 @@
 #include "Assets/MaterialAsset.h"
 #include "Assets/ModelAsset.h"
 #include "Assets/TextureAsset.h"
-#include "Engine/Rendering/EmbeddedImageDecoder.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
@@ -43,8 +42,8 @@
 #include "Rendering/Core/BindlessResourceManager.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/DeviceFormatting.h"
-#include "Rendering/Core/PipelineTypes.h"
-#include "Rendering/CameraDerivation.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Camera/CameraDerivation.h"
 #include "Rendering/Core/CullingStrategy.h"
 #include "Rendering/Core/FrustumCullingStrategy.h"
 #include "Rendering/Core/GPUCulling.h"
@@ -52,14 +51,14 @@
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/Materials/MaterialBuilder.h"
-#include "Rendering/Materials/ShaderReflection.h"
+#include "Rendering/Materials/Shader/ShaderReflection.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Passes/SRGBEncodePass.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Rendering/Utils/BufferHelpers.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
-#include "Rendering/Utils/CubeLutFileParser.h"
-#include "Rendering/Utils/CubeLutGpuUpload.h"
+#include "Rendering/Utils/CubeLut/CubeLutFileParser.h"
+#include "Rendering/Utils/CubeLut/CubeLutGpuUpload.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
 #include "Types/StringId.h"
 #include "Mathematics/Matrix4x4.h"
@@ -102,7 +101,7 @@ void RenderServices::SubmitLight(uint64 worldId, const ExtractedLight& light)
 
 float DeliveredLuminance(const ExtractedLight& l)
 {
-    const float luma = ColorUtils::LinearRec709Luminance(l.color);
+    const float luma = ColorUtils::LinearRec709Luminance({l.color[0], l.color[1], l.color[2]});
     return std::max(luma, 0.0f) * std::max(l.intensity, 0.0f);
 }
 
@@ -168,10 +167,8 @@ void RenderServices::FinalizeWorldLights(uint64 worldId)
 
     if (count >= 2)
     {
-        // Sort compact keys (contribution precomputed once, id tie-break) instead
-        // of the ~130-byte ExtractedLight structs, then apply the permutation in
-        // one pass. Keeps the per-frame cost low even at the 1024+ light cap: the
-        // O(N log N) swaps move 12-byte keys, not whole light records.
+        // Sort 12-byte keys (contribution, then id) instead of whole light records, then apply
+        // the permutation in one pass. The O(N log N) swaps stay cheap at the 1024-light cap.
         struct SortKey
         {
             float Contribution;
@@ -197,12 +194,10 @@ void RenderServices::FinalizeWorldLights(uint64 worldId)
         lights = std::move(sorted);
     }
 
-    // Light-list version (idle recompute elision): exact bytes of the FINAL
-    // (sorted, consumer-visible) list against last frame's snapshot — runs for
-    // 0/1-light worlds too so an emptied list still bumps. All members are
-    // 4-byte scalars; the static_assert pins the padding-free layout the
-    // memcmp exactness depends on (a new member updates both together).
-    static_assert(sizeof(ExtractedLight) == 144,
+    // Light-list version: compares the bytes of the final sorted list with last frame's list, also
+    // for 0 or 1 light, so an emptied list bumps it. The memcmp needs a record with no padding:
+    // the static_assert pins the size, and a new member updates both.
+    static_assert(sizeof(ExtractedLight) == 160,
                   "ExtractedLight layout changed — re-verify it stays padding-free "
                   "(the light-list version memcmp requires it) and update this size");
     std::vector<ExtractedLight>& snapshot = m_WorldLightSnapshots[worldId];
@@ -270,14 +265,37 @@ const ExtractedLight* SelectLitPrimaryDirectional(std::span<const ExtractedLight
     return primary;
 }
 
+uint32 SelectShadedDirectionals(std::span<const ExtractedLight> sortedLights,
+                                std::array<const ExtractedLight*, kMaxDirectionalLights>& out)
+{
+    const ExtractedLight* primary = SelectPrimaryDirectional(sortedLights);
+    if (!primary)
+        return 0;
+    out[0] = primary;
+    uint32 count = 1;
+    for (const auto& l : sortedLights)
+    {
+        if (count >= kMaxDirectionalLights)
+            break;
+        if (l.type != GameEngine::Components::LightType::Directional || &l == primary)
+            continue;
+        if (l.castsLight == 0u || DeliveredLuminance(l) <= 0.0f)
+            continue; // contributes nothing — don't spend a per-pixel BRDF on it
+        out[count++] = &l;
+    }
+    return count;
+}
+
 void PackForwardLightDirectionals(std::span<const ExtractedLight> sortedLights, ForwardLightUBO& ubo)
 {
     // Primary: THE directional every shadow/fog/sky consumer agrees on — its
     // direction, color, intensity AND castsShadows gate all come from the one
     // light SelectPrimaryDirectional picks (never a weaker fill's flags).
-    const ExtractedLight* sun = SelectPrimaryDirectional(sortedLights);
-    if (!sun)
+    std::array<const ExtractedLight*, kMaxDirectionalLights> shaded{};
+    const uint32 shadedCount = SelectShadedDirectionals(sortedLights, shaded);
+    if (shadedCount == 0)
         return; // no directional: leave the zeroed lanes (count 0, dark sun)
+    const ExtractedLight* sun = shaded[0];
     ubo.uLightDirWorld[0] = sun->directionWS[0];
     ubo.uLightDirWorld[1] = sun->directionWS[1];
     ubo.uLightDirWorld[2] = sun->directionWS[2];
@@ -292,14 +310,9 @@ void PackForwardLightDirectionals(std::span<const ExtractedLight> sortedLights, 
     // secondary can brighten but never darken). Premultiplying color*intensity
     // here keeps the shader loop to one MAD per channel.
     uint32 packed = 0;
-    for (const auto& l : sortedLights)
+    for (uint32 i = 1; i < shadedCount; ++i)
     {
-        if (packed >= kMaxSecondaryDirectionals)
-            break;
-        if (l.type != GameEngine::Components::LightType::Directional || &l == sun)
-            continue;
-        if (l.castsLight == 0u || DeliveredLuminance(l) <= 0.0f)
-            continue; // contributes nothing — don't spend a per-pixel BRDF on it
+        const ExtractedLight& l = *shaded[i];
         ubo.uSecondaryDirs[packed][0] = l.directionWS[0];
         ubo.uSecondaryDirs[packed][1] = l.directionWS[1];
         ubo.uSecondaryDirs[packed][2] = l.directionWS[2];
@@ -342,11 +355,8 @@ const ResolvedShadowSettings& RenderServices::GetWorldShadowSettings(uint64 worl
     return it->second;
 }
 
-void RenderServices::SetWorldRenderContentDigest(uint64 worldId, uint64 extractedDigest)
+void RenderServices::SetWorldRenderContentDigest(uint64 worldId, uint64 digest)
 {
-    // Wrapping sum, like the extracted terms: feature order cannot move it.
-    uint64 digest = extractedDigest;
-    ForEachFeature([&](const IRenderFeature& feature) { digest += feature.ContentDigest(worldId); });
     m_WorldRenderContentDigests[worldId] = digest;
 }
 
@@ -390,8 +400,8 @@ std::span<const VolumetricFogLocalVolume> RenderServices::GetEffectiveVolumetric
 void RenderServices::PackViewWeather(ViewId viewId, uint64 worldId, ForwardLightUBO& ubo) const
 {
     const auto& settings = GetEffectivePostProcessSettings(viewId, worldId);
-    const auto wind = m_WorldWeatherWind.find(worldId);
-    ubo.WeatherWind = wind != m_WorldWeatherWind.end() ? wind->second : WeatherWindGPU{};
+    const WeatherWindGPU* wind = m_WorldWeatherWind.Find(worldId);
+    ubo.WeatherWind = wind ? *wind : WeatherWindGPU{};
     ubo.WeatherWind.Count[1] = std::clamp(settings.WaterDropSize, 0.25f, 2.0f);
     ubo.WeatherWind.Count[2] = std::clamp(settings.WaterRippleSpeed, 0.0f, 4.0f);
 }
@@ -402,9 +412,10 @@ void RenderServices::WriteViewLightBuffer(ViewId viewId)
     if (!view || !m_Device)
         return;
 
-    auto& lightBuffers = m_ViewRegistry.PerView(viewId).LightBuffers;
-    const uint32_t frameSlot = m_Device->GetFrameIndex();
-    auto& buf = lightBuffers[frameSlot];
+    // The unwrapped counter rotates the whole ring; GetFrameIndex() names only the pacing's slots.
+    auto& perView = m_ViewRegistry.PerView(viewId);
+    auto& buf = perView.SelectLightBuffer(static_cast<uint32_t>(
+        m_LightRingFrameCounter.Tick(m_Device->GetFrameIndex()) % m_Device->GetFrameRingDepth()));
     if (!buf.IsValid())
     {
         Rendering::BufferDesc bd{};

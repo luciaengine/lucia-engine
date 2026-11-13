@@ -7,8 +7,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <span>
-#include <unordered_map>
 
 namespace GameEngine
 {
@@ -21,9 +19,6 @@ namespace Engine::Renderer
 {
 
 class IEnvironmentSource;
-class RenderServices;
-struct SceneReflectionProbeEnvironmentDesc;
-struct EnvironmentBakeContext;
 
 // Owns the GPU resources for image-based lighting: a diffuse irradiance cube, a
 // prefiltered specular cube, a shared split-sum BRDF LUT, their samplers, and the
@@ -75,7 +70,7 @@ class ImageBasedLightingFeature final : public IRenderFeature
 
     // Square edge length defaults and limits for the env-capture / prefilter GPU
     // targets. Reflection probes may request another resolution; the feature
-    // resizes its own bake resources before the probe bake imports them.
+    // resizes the shared bake resources before the probe bake imports them.
     static constexpr uint32_t kDefaultEnvCaptureSize = 256;
     static constexpr uint32_t kMinEnvCaptureSize = 32;
     static constexpr uint32_t kMaxEnvCaptureSize = 1024;
@@ -86,7 +81,7 @@ class ImageBasedLightingFeature final : public IRenderFeature
     // static_asserted against this). The zero-filled pre-init fallback buffer in
     // RenderServices must be exactly this size — a shorter buffer leaves shader
     // reads of the tail fields (the ambient-floor block) out of bounds.
-    static constexpr uint32_t kEnvDataBytes = 224 + 2 * 160;
+    static constexpr uint32_t kEnvDataBytes = 224;
 
     // Full mip chain for the env capture cube. The
     // capture pass renders mip 0; a box-downsample compute fills mips 1..N-1 BEFORE
@@ -124,37 +119,14 @@ class ImageBasedLightingFeature final : public IRenderFeature
     // (iblIntensity, the prefilter mip cap, the ambient floor, the source's tint and
     // local box projection) and return the buffer to bind. Those scalars are dynamic —
     // the SkyEnvironment slider and the AmbientLight component drive them — so the UBO
-    // is a kCaptureFrameSlots-deep ring and the GPU never reads the element the CPU is
+    // is an IDevice::GetFrameRingDepth()-deep ring and the GPU never reads the element the CPU is
     // overwriting; the ordering that rests on is stated at the selection site.
     //
     // The element is not nameable from outside: every consumer binds the handle this
     // returns, so a frame's writer and all its readers agree by construction. Idempotent
     // within a device frame — the IBL gen node, each view's world pass, the ocean and the
     // grass contributor all refresh and bind the same element. Invalid before Initialize.
-    GameEngine::Rendering::BufferHandle UploadEnvData(GameEngine::Rendering::IDevice* device, uint64_t worldId = 0);
-
-    // Two persistent local captures per world for the first multi-probe tier. The
-    // sky remains the global source. Selection is stable (priority, entity key),
-    // never camera containment; fragment positions determine their influence.
-    static constexpr uint32_t kMaxLocalProbes = 2;
-    static constexpr const char* kLocalIrradianceNames[kMaxLocalProbes] = {
-        "ge_localIrradiance0", "ge_localIrradiance1"};
-    static constexpr const char* kLocalPrefilterNames[kMaxLocalProbes] = {
-        "ge_localPrefilter0", "ge_localPrefilter1"};
-    void UpdateLocalProbes(RenderServices& services, uint64_t worldId,
-                          std::span<const SceneReflectionProbeEnvironmentDesc> probes);
-    void ScheduleLocalProbeBakes(const EnvironmentBakeContext& ctx);
-    // Exchanges only capture textures/views. BRDF LUT, source and UBO ownership stay put.
-    void PublishCaptureFrom(ImageBasedLightingFeature& staging);
-    void RequestLocalProbeRebake(uint64_t worldId, uint64_t sourceKey = 0);
-    uint32_t GetLocalProbeCount(uint64_t worldId) const;
-    const SceneReflectionProbeEnvironmentDesc* GetLocalProbeDesc(uint64_t worldId, uint32_t index) const;
-    const ImageBasedLightingFeature* GetLocalProbeCapture(uint64_t worldId, uint32_t index) const;
-    GameEngine::Rendering::TextureHandle GetLocalIrradiance(uint64_t worldId, uint32_t index) const;
-    GameEngine::Rendering::TextureHandle GetLocalPrefilter(uint64_t worldId, uint32_t index) const;
-    // Capture views bind only the sky, including when CaptureEnvironment is on.
-    // This prevents self-feedback and capture-to-capture render-graph cycles.
-    bool IsLocalProbeCaptureView(uint32_t viewId) const;
+    GameEngine::Rendering::BufferHandle UploadEnvData(GameEngine::Rendering::IDevice* device);
 
     // The active environment source (Stage 2: SkyEnvironmentSource). Owned here
     // (engine-shared lifetime) so the bake passes' activation predicates, which
@@ -195,17 +167,6 @@ class ImageBasedLightingFeature final : public IRenderFeature
     }
 
     static constexpr uint32_t kNumCaptureFaces = 6;
-    // EnvData ring depth. Sized to IDevice::kMaxSupportedFramesInFlight, the
-    // backend-independent upper bound on frames in flight, so the ring is valid for the
-    // deepest-pacing backend. On a backend that paces fewer frames than that (Vulkan: 3)
-    // the surplus element is the write-after-fence margin stated in UploadEnvData.
-    static constexpr uint32_t kCaptureFrameSlots =
-        GameEngine::Rendering::IDevice::kMaxSupportedFramesInFlight;
-    // A power-of-two ring divides 2^32 evenly, so the frame counter's own wrap keeps the
-    // rotation seamless rather than replaying an element early.
-    static_assert((kCaptureFrameSlots & (kCaptureFrameSlots - 1u)) == 0u,
-                  "kCaptureFrameSlots must be a power of two for the EnvData ring to "
-                  "survive the frame counter's 2^32 wrap");
     // Digest of the source inputs the irradiance/prefilter cubes were last baked
     // from. The IBL gen node skips the rebake while this matches the source's
     // current InputDigest() (static sky in an idle editor bakes once).
@@ -221,7 +182,14 @@ class ImageBasedLightingFeature final : public IRenderFeature
     static constexpr uint32_t kIblRebakeIntervalFrames = 8;
     uint32_t GetFramesSinceBake() const { return m_FramesSinceBake; }
     void TickFramesSinceBake() { if (m_FramesSinceBake < 0xFFFFFFFFu) ++m_FramesSinceBake; }
-    void ResetFramesSinceBake() { m_FramesSinceBake = 0; }
+    // Called by an environment source on each bake: restarts the throttle and counts the bake.
+    void MarkBaked()
+    {
+        m_FramesSinceBake = 0;
+        ++m_BakeCount;
+    }
+    // Bakes since the feature was created (any source): a capture is settled once it stops rising.
+    uint64_t GetBakeCount() const { return m_BakeCount; }
 
     // The split-sum BRDF LUT is environment-independent, so it bakes exactly once.
     bool IsBrdfLutBaked() const { return m_BrdfLutBaked; }
@@ -238,8 +206,9 @@ class ImageBasedLightingFeature final : public IRenderFeature
     GameEngine::Rendering::SamplerHandle m_CubeSampler{};  // trilinear, clamp (cube)
     GameEngine::Rendering::SamplerHandle m_LutSampler{};   // bilinear, clamp, no mips (BRDF LUT)
     // EnvData UBO ring, one element per device frame (the scalars in it are dynamic).
-    GameEngine::Rendering::BufferHandle m_EnvDataBuffer[kCaptureFrameSlots]{};
-    // Unwraps the device's frame index so all kCaptureFrameSlots elements rotate. Lives
+    // The first IDevice::GetFrameRingDepth() elements are in use.
+    GameEngine::Rendering::BufferHandle m_EnvDataBuffer[GameEngine::Rendering::IDevice::kMaxFrameRingDepth]{};
+    // Unwraps the device's frame index so every element of the ring rotates. Lives
     // with the ring it indexes; UploadEnvData is its only ticker.
     GameEngine::Rendering::DeviceFrameCounter m_EnvDataFrameCounter;
 
@@ -262,12 +231,10 @@ class ImageBasedLightingFeature final : public IRenderFeature
 
     uint64_t m_LastBakedDigest = 0; // 0 == never baked (sentinel; sources avoid 0)
     uint32_t m_FramesSinceBake = 0xFFFFFFFFu; // saturated so the first bake is never throttled
+    uint64_t m_BakeCount = 0;
     bool m_BrdfLutBaked = false;
 
     std::unique_ptr<IEnvironmentSource> m_Source;
-    bool m_LocalProbeWorkScheduled = false;
-    struct LocalProbeWorld;
-    std::unordered_map<uint64_t, std::unique_ptr<LocalProbeWorld>> m_LocalProbeWorlds;
 };
 
 } // namespace Engine::Renderer

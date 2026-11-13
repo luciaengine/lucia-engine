@@ -1,7 +1,8 @@
 # Samples 5x5-uniform patches from a screenshot at the #805 probe points.
 # Fails loudly (NONUNIFORM) if any patch straddles an edge, so a layout drift
 # between the HTML mirror and the engine fixture cannot silently shift a mean.
-param([string]$Png = "C:\Dev\wt-bgclip-805\Tools\ai\bgclip\chrome.png")
+# -Png defaults to chrome.png beside this script: a Chrome screenshot of chrome_fixture.html.
+param([string]$Png = (Join-Path $PSScriptRoot "chrome.png"))
 Add-Type -AssemblyName System.Drawing
 $bmp = [System.Drawing.Bitmap]::FromFile($Png)
 

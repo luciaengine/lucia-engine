@@ -15,7 +15,7 @@
 #include "InspectorRegistry.h"
 #include "Inspectors/InspectorEntityActivity.h"
 #include "Types/Types.h"
-#include "VersionControl/SceneDiff.h"
+#include "VersionControl/SceneDiff/SceneDiff.h"
 
 #include "UI/Controls/DockPanel.h"
 #include "Audio/AudioHandles.h"
@@ -24,11 +24,10 @@
 #include <chrono>
 
 namespace GameEngine {
-class ContextMenuBuilder;
-
 
 struct EditorContext;
 class INativeContextMenu;
+class ContextMenuBuilder;
 namespace Platform { class Window; }
 
 class Asset;
@@ -37,6 +36,7 @@ class UIElement;
 class Label;
 class ScrollView;
 class TextField;
+struct UIEvent;
 class Dropdown;
 class Button;
 class InspectorSection;
@@ -165,6 +165,7 @@ public:
     void HighlightVariableField(const std::string& varName);
 
     /// Highlight the matching variable field and move keyboard focus to it (script caret/selection in value).
+    void FocusScriptVariableField(const std::string& varName);
     
     // Clear variable field highlighting
     void ClearVariableFieldHighlight();
@@ -261,35 +262,12 @@ public:
 private:
     friend class Editor::InspectorVcsController;
     void ClearContent();
-    // ShowEntity phases, in call order.
-    void CoalesceShowEntityRequest(ECS::World* world, ECS::EntityHandle entity, bool force, bool keepMultiSelection);
-    void SetInspectedEntity(ECS::World* world, ECS::EntityHandle entity, bool keepMultiSelection);
-    void SubscribeToEntityChanges(ECS::EntityHandle entity);
-    void SaveSectionCollapseStates(uint64_t previousWorldId, uint32_t previousEntityId);
-    void ShowInvalidEntityNotice();
-    bool BuildEntityHeader(ECS::EntityHandle entity);
-    void AddEntityHeaderIcon(UIElement* headerContainer, ECS::EntityHandle entity);
-    void AddEntityHeaderName(UIElement* headerContainer, ECS::EntityHandle entity, bool isMultiEdit);
-    void AddEntityEnableToggle(UIElement* headerContainer, ECS::EntityHandle entity);
-    bool CollectDisplayComponentIds(ECS::EntityHandle entity, bool isMultiEdit,
-                                    std::vector<ECS::ComponentTypeId>& displayComponentIds);
-    int BuildComponentSections(ECS::EntityHandle entity, const std::vector<ECS::ComponentTypeId>& displayComponentIds);
-    void ShowComponentSectionContextMenu(ECS::ComponentTypeId typeId, const std::string& title,
-                                         ECS::ComponentTypeId pseudoMaterialSectionId, float x, float y);
-    void HandleComponentContextMenuCommand(uint32_t cmd);
-    int BuildPreservedComponentSections(ECS::EntityHandle entity, bool isMultiEdit);
-    void AddComponentButton(ECS::EntityHandle entity);
-    void FinalizeComponentSections(int shown);
-
     // Snapshots the inspected entity's sorted, inspector-visible component signature into
     // m_LastComponentSignature. Hidden components (ECS::Disabled, Name, WorldTransform, …)
     // are excluded: they render no section, so their add/remove must not trip a rebuild —
     // the entity enable toggle and the lazy Name-add on first rename keystroke both depend
     // on that.
     void RefreshTrackedComponentSignature();
-    void RefreshOverrideMarks();
-    void AddOverrideMenuEntries(ContextMenuBuilder& builder, ECS::ComponentTypeId typeId);
-    bool RunOverrideMenuCommand(uint32_t commandId);
     // Shows the selected entity's activity once it changes: while the entity is off, itself or
     // through an ancestor, every section's dot is muted, and while an ancestor is the reason the
     // header says so (m_EntityActivity). Keyed on the entity's own state and its derived state
@@ -308,6 +286,16 @@ private:
     // often it is asked. A section's refresh callback asks for it while the panel runs
     // the callbacks the rebuild destroys, so the rebuild never runs inside that call.
     void RequestEntityRefresh();
+    // Asks for RequestEntityRefresh once no text field of the panel has the focus, so the rebuild
+    // never ends an edit.
+    void RequestEntityRefreshAfterTextEdit();
+    bool HasTextEditFocus() const;
+    // Sets the override marks of the entity header, the component headers and the field rows again.
+    void RefreshOverrideMarks();
+    // Adds to a component header's menu the override entries for `typeId` and keeps them for the command.
+    void AddOverrideMenuEntries(ContextMenuBuilder& builder, ECS::ComponentTypeId typeId);
+    // Runs the kept override entry of `commandId` and shows the entity again; false for another command.
+    bool RunOverrideMenuCommand(uint32_t commandId);
     // Re-present the shown asset now that its reload has landed: the inspector's own
     // in-place update where it registered one, the full rebuild otherwise. A rebuild
     // is the blunt answer — it drops keyboard focus, closes an open popup and resets
@@ -326,12 +314,11 @@ private:
     void ReleaseShownAssetReloadSubscription();
     void CommitGraphTransition(bool commitUndo);
     void AdjustValueByDrag(const std::string& varName, TextField* field, float deltaX);
+    // Escape or another button during a script variable drag: the start value comes back and is applied.
+    void CancelScriptVariableDrag(UIEvent& e, const std::string& varName, TextField* field, UIElement* label);
     void WireSoloHandlersForSections();
-    // Removes the component, first asking when it is a volume whose removal
-    // takes its stack effects with it.
-    void RequestRemoveComponent(ECS::ComponentTypeId typeId);
     void ExecuteRemoveComponent(ECS::ComponentTypeId typeId);
-    void EnsureStackVolumeRemoveModal();
+    void EnsurePostProcessVolumeRemoveModal();
     void CaptureLoadedComponentValues(ECS::World* world,
                                       ECS::EntityHandle entity,
                                       const std::vector<ECS::ComponentTypeId>& componentTypeIds);
@@ -369,10 +356,13 @@ private:
 
     // Inspector selection history — every state change (entity, asset, script, smart folder, empty)
     // is recorded; back/forward navigate through all of them.
+    void ClearInspectorHistory();
     void RecordInspectorHistory(InspectorSelectionHistoryEntry entry);
     void NavigateInspectorHistoryAt(size_t index);
     void SyncInspectorHistoryButtonState();
-    void MountHistoryButtons(UIElement& headerContainer);
+    // Appends the header row's end from its layout: the override badge, hidden, and the history arrows.
+    // On the entity-name header it then sets the name's override mark, so the badge exists before any mark.
+    void MountHeaderTrailingSlot(UIElement& headerContainer);
     /// Minimal top header (title + arrows) mounted on m_TopRoot for non-entity / empty states
     /// so the inspector header strip is always present.
     void BuildSimpleTopHeader(const std::string& titleText,
@@ -395,7 +385,7 @@ private:
     UIElement* m_BottomRoot = nullptr;  // fixed bottom area (outside scroll viewport)
     SearchDialog* m_AddComponentDialog = nullptr; // non-owning; lives in root overlay
     std::shared_ptr<ComponentPresetSearchProvider> m_AddComponentProvider;
-    ConfirmActionModal* m_RemoveStackVolumeConfirmModal = nullptr; // non-owning; child of UI root/panel
+    ConfirmActionModal* m_RemovePostProcessConfirmModal = nullptr; // non-owning; child of UI root/panel
     ECS::ComponentTypeId m_PendingRemoveComponentTypeId{};
     UIElement* m_SearchBar = nullptr; // owned by UI tree
     TextField* m_SearchField = nullptr; // owned by UI tree
@@ -405,6 +395,15 @@ private:
     // Shows the selected asset once its pending load has landed; drops the load when the
     // inspector has moved on to something else.
     void PollPendingAssetLoad();
+    // Shows the pending load's state: the asset type's header suffix
+    // (InspectorRegistry::AssetLoadingSuffix) after the name, or the "Loading <file>..." line
+    // when the type has none to show now.
+    void RefreshPendingAssetLoadState();
+    // Replaces the header's name field with the pending asset's name and state labels
+    // (MakePendingAssetHeaderLabels).
+    void ShowPendingAssetHeaderTitle(const std::string& name);
+    // Adds the registered asset selection rows (InspectorRegistry) for `paths` above the selection's view.
+    void AddAssetSelectionRows(const std::vector<std::filesystem::path>& paths);
 
     SharedPtr<Asset> m_SelectedAsset;
     // The load of a selected asset that was not loaded when it was selected: the inspector
@@ -412,6 +411,9 @@ private:
     // never waiting for a cook or an import on the main thread.
     std::unique_ptr<AssetFuture> m_PendingAssetLoad;
     std::filesystem::path m_PendingAssetPath;
+    GUID m_PendingAssetGuid = GUID::Null();
+    AssetType m_PendingAssetType = AssetType::Unknown;
+    std::chrono::steady_clock::time_point m_PendingAssetLineRefreshedAt{};
     // The asset whose load came back empty, so the next presentation reports the failure
     // rather than starting the load again.
     GUID m_FailedAssetLoad = GUID::Null();
@@ -486,6 +488,9 @@ private:
     bool m_ModuleInspectorRefreshPending = false;
     bool m_EntityRefreshPosted = false;
     bool m_EntityRefreshAfterTextEdit = false;
+    // The entity header and its name field of a single selection, for the in-place name mark (not owned).
+    UIElement* m_EntityNameHeader = nullptr;
+    UIElement* m_EntityNameField = nullptr;
     std::function<void(ECS::World*, ECS::EntityHandle)> m_OnHistoryEntityNavigate;
     std::function<void(ECS::World*, const std::vector<ECS::EntityHandle>&)> m_OnHistoryEntitiesNavigate;
     std::function<void(const std::vector<std::filesystem::path>&)> m_OnHistoryAssetNavigate;
@@ -517,16 +522,14 @@ private:
     float m_DragStartX = 0.0f;
     std::string m_DragStartValue;
     std::string m_DragVariableName;
+    // The press passed InspectorDrag::kInspectorDragThresholdPx: below it the press is a click.
+    bool m_DragBegun = false;
     
     // Smart folder inspector widget (owned by UI tree when added)
     SmartFolderInspector* m_SmartFolderInspector = nullptr;
     
     // Search state
     std::string m_CurrentSearchText;
-    UIElement* m_EntityNameHeader = nullptr;
-    UIElement* m_EntityNameField = nullptr;
-    std::vector<OverrideMenuEntry> m_ContextOverrideMenuEntries;
-
     std::vector<UIElement*> m_SearchHighlightedElements;
     std::vector<UIElement*> m_SearchFilteredElements;
 
@@ -578,6 +581,8 @@ private:
     std::unordered_map<ECS::ComponentTypeId, std::vector<SavedComponentSettings>> m_SavedComponentSettingsByType;
     // Maps dynamic context menu command offsets to saved setting slot indices.
     std::vector<size_t> m_ContextSavedSettingsMenuIndices;
+    // The override entries of the open component header menu, by command offset.
+    std::vector<OverrideMenuEntry> m_ContextOverrideMenuEntries;
     bool m_ComponentSettingsLoaded = false;
     std::filesystem::path m_ComponentSettingsWorkspaceRoot;
 

@@ -1,9 +1,11 @@
 #pragma once
 
 #include "ECS/Entity.h"
-#include "SceneView/SplineOwnerQuery.h"
+#include "SceneView/SplineTool/SplineOwnerQuery.h"
 
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace GameEngine
 {
@@ -31,6 +33,8 @@ enum class MarkupKind
 MarkupKind ReadMarkupKind(const ECS::World& world, ECS::EntityHandle entity);
 // "Box", "Sphere", "Region", "Path"; empty for None.
 const char* MarkupKindName(MarkupKind kind);
+// The classes that draw the kind's glyph: "markup-kind-glyph", then the kind's class (none for None).
+std::vector<std::string> MarkupKindGlyphClasses(MarkupKind kind);
 // The kind's glyph: a 14 px square with the kind's class and its name as the tooltip.
 std::unique_ptr<UIElement> BuildMarkupKindGlyph(MarkupKind kind);
 

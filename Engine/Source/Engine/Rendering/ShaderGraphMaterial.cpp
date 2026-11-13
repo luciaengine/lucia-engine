@@ -2,6 +2,7 @@
 
 #include "Graph/SgGraphModelBridge.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
+#include "Rendering/Materials/Shader/ShaderComposer.h"
 #include "Rendering/ShaderGraph/SgGraphCompiler.h"
 #include "Rendering/ShaderGraph/SgGraphFileIO.h"
 #include "Rendering/ShaderGraph/SgPropertyBinding.h"
@@ -11,9 +12,9 @@
 #include "Rendering/ShaderGraph/SgTagParser.h"
 #include "Types/Fnv1a.h"
 #include "Types/PathUtils.h"
+#include "Types/StringUtils.h"
 
 #include <algorithm>
-#include <cctype>
 #include <iomanip>
 #include <sstream>
 #include <system_error>
@@ -98,13 +99,6 @@ std::string IncludeLineForSourceFile(const std::string& sourceFile)
     return "#include \"" + sourcePath.generic_string() + "\"\n";
 }
 
-std::string LowerAscii(std::string value)
-{
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return value;
-}
-
 std::string BuildMaterializedBody(const ShaderGraph::SgGraphDocument& doc,
                                   const ShaderGraph::SgNodeLibraryIndex& library,
                                   const std::string& compiledBody,
@@ -126,44 +120,21 @@ std::string BuildMaterializedBody(const ShaderGraph::SgGraphDocument& doc,
 // surface. Derived data, never project content.
 constexpr const char* kGeneratedSurfaceDirName = "Generated";
 
-// Generated surfaces are derived data outside watched project content. The
-// name reaches the composed include and so the shader-package key, so it hashes
-// the material's identity in the asset system's derived-identity spelling,
-// "<alias>/<path under the root>", taken from the deepest mounted source that
-// holds the material. Sources sharing one root spelling tie; the one listed
-// first wins, and AssetSourceRoots lists sources in mount priority order, so a
-// Player development run that mounts the project and the editor at one folder
-// names it "project", as the cook does. Moving the project and its cache, or
-// mounting a package or the editor assets from another directory, keeps every
-// name; a project material and a package material with the same relative path
-// get two.
+// A generated surface's name comes from the material's identity key
+// (MaterialSourceIdentityKey). Every spelling of the path gives one name, and the
+// name does not change when the project or its cache moves.
 std::filesystem::path MaterializedSurfacePath(
     const std::filesystem::path& materialPath,
     const ::GameEngine::Rendering::MaterialBuildContext& context)
 {
-    namespace fs = std::filesystem;
-    const fs::path material = fs::absolute(materialPath).lexically_normal();
-    fs::path sourceIdentity;
-    size_t matchedRootLength = 0;
-    for (const auto& source : context.AssetSourceRoots)
-    {
-        const fs::path root = fs::absolute(source.Root).lexically_normal();
-        fs::path relative = RelativePathUnderRoot(material, root);
-        if (relative.empty() && !source.RegistryRoot.empty())
-            relative = RelativePathUnderRoot(material, source.RegistryRoot);
-        const size_t rootLength = root.native().size();
-        if (relative.empty() || rootLength <= matchedRootLength)
-            continue;
-        sourceIdentity = fs::path(source.Alias) / relative;
-        matchedRootLength = rootLength;
-    }
-    if (sourceIdentity.empty())
+    const std::string identityKey = ::GameEngine::Rendering::MaterialSourceIdentityKey(materialPath, context);
+    if (identityKey.empty())
         return {};
 
     std::ostringstream name;
-    name << materialPath.stem().string() << '_' << std::hex << std::setw(16) << std::setfill('0')
-         << Hashing::Fnv1a64(sourceIdentity.generic_string()) << "_built.glsl";
-    return context.CacheRoot / kGeneratedSurfaceDirName / name.str();
+    name << PathToUtf8(PathFromUtf8(identityKey).stem()) << '_' << std::hex << std::setw(16) << std::setfill('0')
+         << Hashing::Fnv1a64(identityKey) << "_built.glsl";
+    return context.CacheRoot / kGeneratedSurfaceDirName / PathFromUtf8(name.str());
 }
 
 bool MaterializeShaderGraphSurface(const ShaderGraph::SgGraphDocument& doc,
@@ -230,7 +201,7 @@ bool WriteMaterializedShaderGraphSurface(const ShaderGraph::SgGraphDocument& doc
     if (!ShaderGraph::WriteGraphFileTextIfChanged(outputGlslPath, source))
     {
         outErrors.push_back("ShaderGraphMaterial: failed to write materialized surface to '" +
-                            outputGlslPath.string() + "'.");
+                            PathToUtf8(outputGlslPath) + "'.");
         return false;
     }
     return true;
@@ -246,7 +217,7 @@ bool IsGraphLivePreviewMaterialPath(const std::filesystem::path& materialAssetPa
     bool sawGenerated = false;
     for (const auto& part : materialAssetPath)
     {
-        const std::string lower = LowerAscii(part.string());
+        const std::string lower = ToLowerAscii(part.string());
         if (lower == "generated")
         {
             sawGenerated = true;
@@ -257,13 +228,14 @@ bool IsGraphLivePreviewMaterialPath(const std::filesystem::path& materialAssetPa
         sawGenerated = false;
     }
 
-    const std::string stem = LowerAscii(materialAssetPath.stem().string());
+    const std::string stem = ToLowerAscii(materialAssetPath.stem().string());
     return stem.rfind("live_preview", 0) == 0;
 }
 
 GameEngine::Rendering::VertexAttributeFlags InferVertexAttributeFlagsFromDocument(
     const MaterialDocument& doc,
-    const std::filesystem::path& materialAssetPath)
+    const std::filesystem::path& materialAssetPath,
+    const std::filesystem::path& resolvedSurfacePath)
 {
     using GameEngine::Rendering::VertexAttributeFlags;
     if (materialAssetPath.empty())
@@ -275,14 +247,16 @@ GameEngine::Rendering::VertexAttributeFlags InferVertexAttributeFlagsFromDocumen
     if (doc.surfaceShader.empty())
         return VertexAttributeFlags::StandardMesh;
 
+    // The chain searches the material's directory first, so a surface beside the material is the one it
+    // resolved. A surface it found under another root is not a graph surface of this material.
     const std::filesystem::path surfacePath =
         (materialAssetPath.parent_path() / doc.surfaceShader).lexically_normal();
     std::error_code ec;
-    if (!std::filesystem::exists(surfacePath, ec))
+    if (std::filesystem::absolute(surfacePath, ec).lexically_normal() != resolvedSurfacePath.lexically_normal())
         return VertexAttributeFlags::StandardMesh;
 
     std::string content;
-    if (!ReadFileTextShared(surfacePath, content))
+    if (!Rendering::ShaderComposer::ReadSourceFileText(surfacePath, content))
         return VertexAttributeFlags::StandardMesh;
 
     if (!ShaderGraph::IsShaderGraphSource(content))
@@ -342,12 +316,6 @@ bool ResolveSurfaceShaderFromGraph(MaterialDocument& doc,
         if (!graphPath.is_absolute())
             graphPath = (materialPath.parent_path() / graphPath).lexically_normal();
 
-        if (!IsShaderGraphSurfacePath(graphPath))
-        {
-            outErrors.push_back("ShaderGraphMaterial: surfaceGraph must reference a GLSL shader graph with @sg tags: '" +
-                                graphPath.generic_string() + "'.");
-            return false;
-        }
         outGraphPath = graphPath;
 
         doc.surfaceShader = std::filesystem::relative(graphPath, materialPath.parent_path()).generic_string();
@@ -423,7 +391,7 @@ bool PrepareMaterialDocumentForShaderPackage(
     {
         outErrors.push_back(
             "ShaderGraphMaterial: no shader cache root — the generated surface for '" +
-            materialPath.generic_string() + "' has nowhere to go.");
+            PathToUtf8(materialPath) + "' has nowhere to go.");
         return false;
     }
 
@@ -431,7 +399,7 @@ bool PrepareMaterialDocumentForShaderPackage(
         MaterializedSurfacePath(materialPath, context);
     if (materializedPath.empty())
     {
-        outErrors.push_back("ShaderGraphMaterial: graph material '" + materialPath.generic_string() +
+        outErrors.push_back("ShaderGraphMaterial: graph material '" + PathToUtf8(materialPath) +
                             "' is outside every mounted asset source, so its generated surface "
                             "has no stable name. Move it into the project's assets or a package; "
                             "an offline cook names extra roots with --scan.");
@@ -442,7 +410,7 @@ bool PrepareMaterialDocumentForShaderPackage(
     if (ec)
     {
         outErrors.push_back("ShaderGraphMaterial: could not create generated-surface directory '" +
-                            materializedPath.parent_path().generic_string() + "': " + ec.message());
+                            PathToUtf8(materializedPath.parent_path()) + "': " + ec.message());
         return false;
     }
 
@@ -487,8 +455,8 @@ bool MaterializeShaderGraphSurfaceFromModel(const Graph::Model& model,
     outErrors.clear();
     outSource.clear();
     const auto doc = GraphModelToSgDocument(model, graphName);
-    const auto& library =
-        ShaderGraph::GetSharedNodeLibraryIndex(FindProjectNodesRoot(outputGlslPath));
+    const auto nodesRoot = FindProjectNodesRoot(outputGlslPath);
+    const auto& library = ShaderGraph::GetSharedNodeLibraryIndex(nodesRoot);
     return MaterializeShaderGraphSurface(doc, graphName, library, outSource, outErrors);
 }
 
@@ -504,7 +472,7 @@ bool WriteMaterializedShaderGraphSurfaceFromModel(const Graph::Model& model,
     if (!ShaderGraph::WriteGraphFileTextIfChanged(outputGlslPath, source))
     {
         outErrors.push_back("ShaderGraphMaterial: failed to write materialized surface to '" +
-                            outputGlslPath.string() + "'.");
+                            PathToUtf8(outputGlslPath) + "'.");
         return false;
     }
     return true;
@@ -522,8 +490,8 @@ bool WriteMaterializedShaderGraphSurfaceFromFile(const std::filesystem::path& gr
     }
 
     const auto file = ShaderGraph::LoadGraphFile(graphGlslPath);
-    const auto& library =
-        ShaderGraph::GetSharedNodeLibraryIndex(FindProjectNodesRoot(graphGlslPath));
+    const auto nodesRoot = FindProjectNodesRoot(graphGlslPath);
+    const auto& library = ShaderGraph::GetSharedNodeLibraryIndex(nodesRoot);
     const std::string graphName = file.Document.GraphName.empty()
                                       ? graphGlslPath.stem().string()
                                       : file.Document.GraphName;

@@ -4,11 +4,13 @@
 #include "ECS/ECS.h"
 #include "Engine/Rendering/ModelRenderSetup.h"
 #include "Mathematics/Matrix4x4.h"
-#include "SplineRecipes/FenceMitreVariants.h"
+#include "SplineRecipes/FenceMiterVariants.h"
 #include "SplineRecipes/FencePieceReuse.h"
+#include "SplineRecipes/FenceRecipeLayout.h"
 #include "SplineRecipes/SplineChunkCommit.h"
 #include "SplineRecipes/SplinePieceMaterial.h"
 #include "SplineRecipes/SplineRebuildGate.h"
+#include "SplineRecipes/SplineSurfaceConform.h"
 #include "Types/FlatMap.h"
 #include "Types/ScopedSubscription.h"
 #include "Types/Types.h"
@@ -41,6 +43,10 @@ public:
     // entity with no layout. The editor's span override remap reads it. Valid until the next Update.
     std::span<const uint32> RunSpanCounts(ECS::EntityHandle entity) const;
 
+    // The bounds of each part's mesh as the last rebuild resolved them, one entry per mesh; empty
+    // before the first rebuild. A mesh not listed is not resolved yet. Valid until the next Update.
+    std::span<const FenceMeshBounds> PartBounds(ECS::EntityHandle entity) const;
+
     // Rebuilds every fence whose spline, transform, recipe or conformed ground changed, once the edit is stable
     // for the settle window. A conforming recipe's first build also waits for its ground (DeferFirstBuild).
     // Retires the pieces of a recipe entity that is gone.
@@ -65,7 +71,7 @@ private:
         uint64 SurfaceRevision = 0;
         // FencePoolContentDigest of the span and crest pools: a reimported
         // piece keeps its handle and bounds, so without this nothing here
-        // changes and its mitred pieces keep drawing the old cut.
+        // changes and its mitered pieces keep drawing the old cut.
         uint64 PoolContent = 0;
 
         bool operator==(const ObservedState&) const = default;
@@ -91,15 +97,22 @@ private:
         // The last layout's span count per run, by the authored point opening
         // it: what a point edit re-addresses this recipe's overrides by.
         std::vector<uint32> RunSpanCounts;
-        // The cut variants mitred spans and registered crests draw (fence
+        // The bounds of every mesh the last rebuild resolved, in pool order.
+        std::vector<FenceMeshBounds> PartBounds;
+        // The cut variants mitered spans and registered crests draw (fence
         // design section 4c), registered through the chunk commit and released
         // when no piece draws them any more.
-        SplineChunkCommit MitreVariants;
-        FenceMitreCuts MitreCuts;
+        SplineChunkCommit MiterVariants;
+        FenceMiterCuts MiterCuts;
         // The pool content digest and the mesh reload count it was taken at,
         // so it is re-read only after the registry reports a reload.
         uint64 PoolContent = 0;
         uint64 PoolContentReloads = ~0ull;
+        // The run's world bounds at RunSpline, read again only when the spline changes.
+        SplineObservedInputs RunSpline{};
+        Mathematics::AABB RunBounds = Mathematics::AABB::Empty();
+        // The meshes under a Scene-conform run, read again only when the scene TLAS or the run changes.
+        SceneConformDigest SceneDigest;
         std::vector<std::string> LoggedValidation;
         uint64 VisitStamp = 0;
     };

@@ -13,8 +13,8 @@
 #include "Engine/Rendering/DepthProducerState.h"
 #include "Engine/Rendering/DrawCommand.h"
 #include "Rendering/Materials/MaterialAlphaMode.h"
-#include "Rendering/Materials/ShaderMeta.h"
-#include "Rendering/Materials/ShaderProfileDefines.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderProfileDefines.h"
 
 #include <cstdint>
 #include <mutex>

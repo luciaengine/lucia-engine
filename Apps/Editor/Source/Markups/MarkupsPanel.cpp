@@ -6,6 +6,7 @@
 #include "ECS/Entity.h"
 #include "MarkupECS/MarkupService.h"
 #include "Markups/MarkupEditorBridge.h"
+#include "Markups/MarkupEditorSurfaces.h"
 #include "Markups/MarkupHighlightState.h"
 #include "Markups/MarkupPresentation.h"
 #include "Markups/MarkupsPanelRows.h"
@@ -43,7 +44,7 @@ constexpr const char* kNoMatchText = "No mark-ups match the search or the status
 std::vector<Dropdown::Option> StatusFilterOptions()
 {
     std::vector<Dropdown::Option> options;
-    options.push_back(Dropdown::Option{"", "All statuses"});
+    options.push_back(Dropdown::Option{"", "All Statuses"});
     if (const MarkupService* service = MarkupService::TryGet())
     {
         for (uint32 id = 0; id < service->GetTagCount(); ++id)
@@ -111,24 +112,24 @@ void MarkupsPanel::OnLayoutReconciled()
 
 void MarkupsPanel::BindFrame()
 {
-    if (auto* tab = dynamic_cast<Button*>(FindById("MarkupsTabMarkups")); tab && tab != m_MarkupsTabButton.Get())
+    if (auto* tab = dynamic_cast<Button*>(FindById("MarkupsTabMarkups"_sid)); tab && tab != m_MarkupsTabButton.Get())
     {
         tab->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { ShowTab(Tab::Markups); });
         m_MarkupsTabButton = MakeWeakRef(tab);
     }
-    if (auto* tab = dynamic_cast<Button*>(FindById("MarkupsTabActivity")); tab && tab != m_ActivityTabButton.Get())
+    if (auto* tab = dynamic_cast<Button*>(FindById("MarkupsTabActivity"_sid)); tab && tab != m_ActivityTabButton.Get())
     {
         tab->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { ShowTab(Tab::Activity); });
         m_ActivityTabButton = MakeWeakRef(tab);
     }
-    if (auto* showAll = dynamic_cast<Button*>(FindById("MarkupsShowAll"));
+    if (auto* showAll = dynamic_cast<Button*>(FindById("MarkupsShowAll"_sid));
         showAll && showAll != m_ShowAllButton.Get())
     {
         showAll->SetTooltip("Show every mark-up in the Scene View (a view setting, not a scene edit)");
         showAll->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { SetAllHidden(false); });
         m_ShowAllButton = MakeWeakRef(showAll);
     }
-    if (auto* hideAll = dynamic_cast<Button*>(FindById("MarkupsHideAll"));
+    if (auto* hideAll = dynamic_cast<Button*>(FindById("MarkupsHideAll"_sid));
         hideAll && hideAll != m_HideAllButton.Get())
     {
         hideAll->SetTooltip("Hide every mark-up in the Scene View (a view setting, not a scene edit)");
@@ -136,10 +137,10 @@ void MarkupsPanel::BindFrame()
         m_HideAllButton = MakeWeakRef(hideAll);
     }
     // The search bar is the shared editor control, built into the frame's host.
-    if (UIElement* host = FindById("MarkupsSearchHost"); host && host != m_SearchHost.Get())
+    if (UIElement* host = FindById("MarkupsSearchHost"_sid); host && host != m_SearchHost.Get())
     {
         PanelSearchBarBuilt search =
-            BuildPanelSearchBar("markups-search-field", {}, [this](const std::string&) { RequestRebuild(); });
+            BuildPanelSearchBar("markups-search-field", [this](const std::string&) { RequestRebuild(); });
         search.RootPtr->SetPlaceholder("Search mark-ups");
         search.RootPtr->AddClass("markups-search");
         m_Search = MakeWeakRef(search.FieldPtr);
@@ -147,7 +148,7 @@ void MarkupsPanel::BindFrame()
         m_SearchHost = MakeWeakRef(host);
     }
     // The status filter stands beside the field, labelled with what it lists.
-    if (auto* filter = dynamic_cast<Dropdown*>(FindById("MarkupsStatusFilter"));
+    if (auto* filter = dynamic_cast<Dropdown*>(FindById("MarkupsStatusFilter"_sid));
         filter && filter != m_StatusFilterDropdown.Get())
     {
         filter->SetOptions(StatusFilterOptions(), 0);
@@ -159,7 +160,7 @@ void MarkupsPanel::BindFrame()
         m_StatusFilterDropdown = MakeWeakRef(filter);
     }
     // The rows are generated into a list the scroll view holds.
-    if (auto* scroll = dynamic_cast<ScrollView*>(FindById("MarkupsScroll")); scroll && scroll != m_Scroll.Get())
+    if (auto* scroll = dynamic_cast<ScrollView*>(FindById("MarkupsScroll"_sid)); scroll && scroll != m_Scroll.Get())
     {
         auto list = std::make_unique<UIElement>();
         list->AddClass("markups-list");
@@ -167,7 +168,7 @@ void MarkupsPanel::BindFrame()
         scroll->AddContent(std::move(list));
         m_Scroll = MakeWeakRef(scroll);
     }
-    m_Empty = MakeWeakRef(dynamic_cast<Label*>(FindById("MarkupsEmpty")));
+    m_Empty = FindById<Label>("MarkupsEmpty"_sid);
 }
 
 void MarkupsPanel::RefreshTimesIfShown()
@@ -184,9 +185,9 @@ void MarkupsPanel::ShowTab(Tab tab)
 {
     m_Tab = tab;
     if (Button* button = m_MarkupsTabButton.Get())
-        tab == Tab::Markups ? button->AddClass("markups-tab-chosen") : button->RemoveClass("markups-tab-chosen");
+        tab == Tab::Markups ? button->AddClass("active") : button->RemoveClass("active");
     if (Button* button = m_ActivityTabButton.Get())
-        tab == Tab::Activity ? button->AddClass("markups-tab-chosen") : button->RemoveClass("markups-tab-chosen");
+        tab == Tab::Activity ? button->AddClass("active") : button->RemoveClass("active");
     Rebuild();
 }
 
@@ -321,14 +322,16 @@ void MarkupsPanel::OnRowClicked(ECS::EntityHandle entity)
     const bool doubleClick = entity == m_LastClicked && now - m_LastClickTime <= Platform::GetDoubleClickInterval();
     m_LastClicked = entity;
     m_LastClickTime = now;
-    m_Bridge.SelectMarkup(*world, entity, doubleClick);
+    if (doubleClick)
+        (void)FrameMarkupInSceneView(entity);
+    else
+        m_Bridge.SelectMarkup(*world, entity);
     RequestRebuild();
 }
 
 void MarkupsPanel::OnActivityRowClicked(ECS::EntityHandle entity)
 {
-    if (ECS::World* world = EngineCore::GetInstance().GetPrimaryWorld())
-        m_Bridge.SelectMarkup(*world, entity, true);
+    (void)FrameMarkupInSceneView(entity);
     RequestRebuild();
 }
 

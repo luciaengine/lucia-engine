@@ -24,11 +24,6 @@ struct Vector3;
 namespace GameEngine::PageStreaming
 {
 
-/// Runs page units through the job system and joins them before propagating the first error.
-/// The callback storage stays alive until every in-flight unit completes, including on failure.
-void RunPageWork(JobSystem::WorkStealingThreadPool* pool, std::size_t count,
-                 const std::function<void(std::size_t)>& body);
-
 class PageCodec;
 class PageStoreWriter;
 struct EncodedPage;
@@ -65,9 +60,17 @@ float32 CubeFaceTent(const Mathematics::Matrix3x3& taps);
 /// ascending order, so all three faces give one value, bit for bit.
 float32 CubeCornerTent(float32 corner, const Mathematics::Vector3& edges, const Mathematics::Vector3& diagonals);
 
-/// Builds a filtered pyramid from ordered rows, keeping only rows future pages still read.
-/// BC5 levels filter the original channel samples. Heights quantize before filtering.
-/// Height bounds include the level-0 footprint and all stored samples.
+/// Builds a store's pyramid from its level-0 rows, pushed in order, with memory bounded by a few
+/// page rows per level, for any of the store's formats: the store's codec encodes each page and its
+/// filter makes each coarser level. Each level keeps only the rows its next page row and the next
+/// level's next rows still read: a page row is written as soon as its rows and apron are in, and a
+/// coarser row is made with the filter as soon as its three source rows are. A coarser level is the
+/// filter of the samples of the level below, so a recook of unchanged input reproduces every page.
+/// On a Bc5 store those samples are the rows before their BC5 encode, not what the level below
+/// stores: a coarser level is refiltered from the baker's rows, never from decoded pages.
+/// A height store quantizes every value to its level's step before anything reads it, so its
+/// coarser level is the filter of what the level below stores, and bounds each page by the level-0
+/// values under its footprint.
 class PagePyramidBuilder
 {
 public:

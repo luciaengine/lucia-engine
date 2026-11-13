@@ -14,8 +14,9 @@ namespace GameEngine
 /// The user's own Claude Code login, run as `claude -p` with the stream-json output:
 /// no built-in tools and no permission prompts; the only MCP server is the editor's,
 /// when the turn attaches it (AgentTurnRequest::Tools), so a turn is a conversation
-/// plus, at most, the editor's own tools. `system/init` reports the session id, `stream_event` text deltas
-/// stream the reply, `result` ends the turn with Claude Code's accounting.
+/// plus, at most, the editor's own tools. `system/init` reports the session id and the
+/// model that answers, `stream_event` text deltas stream the reply, `result` ends the turn
+/// with Claude Code's accounting.
 class ClaudeSessionProvider final : public CliSessionProvider
 {
 public:
@@ -26,27 +27,26 @@ public:
     /// The oldest Claude Code that has every flag a turn passes (`--permission-prompts`).
     static constexpr uint32_t kMinimumVersion[3] = {2, 1, 259};
 
+    /// The levels `--effort` accepts (claude 2.1.296), lowest first. Claude Code warns
+    /// about any other value and ignores it.
+    static constexpr std::string_view kEffortLevels[] = {"low", "medium", "high", "xhigh", "max"};
+
     using CliSessionProvider::CliSessionProvider;
 
     std::string_view Id() const override { return kId; }
 
-    /// `claude auth status`: the reported authMethod, never the account's email or
-    /// organization.
-    LoginStatus CheckLogin(const CancelToken& cancel) const override;
     /// The sessions under `<CLAUDE_CONFIG_DIR or ~/.claude>/projects/` for the
     /// working directory (CliSessionFiles::ReadClaudeSessions).
     CliSessionList ListSessions(const CancelToken& cancel) const override;
 
-    /// The arguments of one turn: the fixed flags, `--input-format stream-json` when the
-    /// request has images (TurnInput), `--resume <SessionId>` when the
+    /// The arguments of one turn: the fixed flags, `--resume <SessionId>` when the
     /// request continues a session, `--mcp-config <file>` and `--allowedTools` naming
     /// each `mcp__<server>__<tool>` when it attaches the editor's tools, `--model
-    /// <Model>` when it names one and `--append-system-prompt <SystemPrompt>` when it
-    /// has one.
-    std::vector<std::string> TurnArguments(const AgentTurnRequest& request) const override;
-    /// The prompt's text; with images, one stream-json user message holding an image block each
-    /// and then the text (TurnArguments then adds --input-format stream-json).
+    /// <Model>` and `--effort <Effort>` when it names them and `--append-system-prompt
+    /// <SystemPrompt>` when it has one. A resumed session takes them too: each turn is a
+    /// process of its own, so a change applies from the next turn.
     std::string TurnInput(const AgentTurnRequest& request) const override;
+    std::vector<std::string> TurnArguments(const AgentTurnRequest& request) const override;
 
 private:
     std::string_view DisplayName() const override { return "Claude Code"; }
@@ -60,7 +60,14 @@ private:
     static std::string FirstErrorLine(const nlohmann::json& toolResult);
     /// The `result` record: the outcome and the accounting.
     static void ReadResult(const nlohmann::json& record, TurnState& turn);
-    /// `claude --version` at or above kMinimumVersion, then a logged-in CheckLogin().
-    std::string CheckReadiness(const CancelToken& cancel) const override;
+    /// `claude --version` printed a version at or above kMinimumVersion.
+    SetupStep CheckProgram(const CancelToken& cancel, SetupSurface surface) const override;
+    /// `claude auth status`: the reported authMethod, never the account's email or
+    /// organization.
+    SetupStep CheckLogin(const CancelToken& cancel, SetupSurface surface) const override;
+    std::string ProgramToPick() const override;
+    std::string InstallSource() const override;
+    /// The desktop app, for a silent program or one under the app's install folders.
+    std::string DesktopAppHint(bool printedNothing) const override;
 };
 } // namespace GameEngine

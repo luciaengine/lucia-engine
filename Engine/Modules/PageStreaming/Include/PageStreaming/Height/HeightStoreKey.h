@@ -51,9 +51,10 @@ uint64 ComputeHeightStoreKey(const HeightStoreCookInputs& inputs);
 /// The store of `asset` cooked under `key`: <directory>/<asset GUID>-<key, 16 hex digits>.gepage.
 std::filesystem::path HeightStoreFile(const std::filesystem::path& directory, const GUID& asset, uint64 key);
 
-/// Returns the cached identity only when the file identity, size and modification time match.
-/// The caller also checks the import grid, which determines the height steps.
-/// A cache miss requires ScanHeightSource.
+/// The identity remembered for `source`'s file at its current modification time, size and file
+/// identity, or none when there is no memo for `asset` in `directory` or the file has changed since
+/// (then a full read gives the identity: ScanHeightSource). The caller compares the memo's grid
+/// with its own: a memo of another grid chose its steps for that grid.
 std::optional<HeightSourceIdentity> ReadHeightSourceMemo(const std::filesystem::path& directory, const GUID& asset,
                                                          const std::filesystem::path& source);
 

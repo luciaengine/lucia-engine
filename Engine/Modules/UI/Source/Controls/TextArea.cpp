@@ -1,7 +1,5 @@
 #include "UI/Controls/TextArea.h"
-#include "../TextEditOverlayStyle.h"
 #include "UI/TextSegmentation.h"
-#include "../TextSegmentation_Unicode.h"
 #include "UI/Utf8Helpers.h"
 #include "UI/UIStyle.h"
 #include "UI/StyleProperties.h"
@@ -57,7 +55,8 @@ static void GetVisualLines(const std::string& text,
                            float lineBoxPx,
                            float letterSpacingPx,
                            TextLayout::WordBreak wordBreak,
-                           std::vector<LineBreakInfo>& outLines)
+                           std::vector<LineBreakInfo>& outLines,
+                           size_t firstByte)
 {
     outLines.clear();
 
@@ -73,12 +72,12 @@ static void GetVisualLines(const std::string& text,
     run.Text = text;
 
     auto result = TextLayout::ShapeMultiline(
-        std::span<const StyledRun>(&run, 1), wrapWidth, lineBoxPx, wordBreak);
+        std::span<const StyledRun>(&run, 1), wrapWidth, lineBoxPx, wordBreak, firstByte);
 
     outLines = std::move(result.LineBreaks);
 
     if (outLines.empty())
-        outLines.push_back({0, text.size()});
+        outLines.push_back({firstByte, text.size()});
 
     if (!text.empty() && text.back() == '\n')
         outLines.push_back({text.size(), text.size()});
@@ -135,14 +134,12 @@ static uint64_t HashMix(uint64_t h, uint64_t v)
     return h;
 }
 
-static uint64_t LineBreakCacheKey(const std::string& text, FontAtlas* font,
+static uint64_t LineBreakStyleKey(FontAtlas* font,
                                   float pixelSize, float wrapWidth,
                                   float lineBoxPx, float letterSpacingPx,
                                   TextLayout::WordBreak wb)
 {
-    uint64_t h = std::hash<std::string_view>{}(std::string_view(text));
-    h = HashMix(h, reinterpret_cast<uintptr_t>(font));
-    h = HashMix(h, font ? font->GetLayoutRevision() : 0);
+    uint64_t h = font ? font->GetAtlasId() : 0;
     uint32_t bits;
     std::memcpy(&bits, &pixelSize, sizeof(float));
     h = HashMix(h, static_cast<uint64_t>(bits));
@@ -157,13 +154,14 @@ static uint64_t LineBreakCacheKey(const std::string& text, FontAtlas* font,
 }
 
 struct TextArea::TextRenderCache {
-    uint64_t BreakKey = 0;
+    uint64_t StyleKey = 0;
+    uint64_t ShapingKey = 0;
+    std::string CachedText;
     std::vector<LineBreakInfo> Breaks;
 
     struct LineShape {
         uint64_t TextHash = 0;
         uintptr_t FontId = 0;
-        uint64_t LayoutRevision = 0;
         float PixelSize = 0.0f;
         float LetterSpacing = 0.0f;
         uint32_t Color = 0;  // cache invalidates if textColor changes (hover/focus/selection)
@@ -176,14 +174,30 @@ struct TextArea::TextRenderCache {
                           float lineBoxPx, float letterSpacingPx,
                           TextLayout::WordBreak wb)
     {
-        uint64_t key =
-            LineBreakCacheKey(text, font, pixelSize, wrapWidth, lineBoxPx, letterSpacingPx, wb);
-        if (key == BreakKey && !Breaks.empty())
+        const uint64_t key =
+            LineBreakStyleKey(font, pixelSize, wrapWidth, lineBoxPx, letterSpacingPx, wb);
+        if (key == StyleKey && CachedText == text && !Breaks.empty())
             return;
 
-        BreakKey = key;
-        Breaks.clear();
-        Shapes.clear();
+        const uint64_t shapingKey = TextLayout::ShapingContextKey(text);
+        size_t keptLines = 0;
+        if (key == StyleKey && shapingKey == ShapingKey && !Breaks.empty()) {
+            const auto difference = std::mismatch(CachedText.begin(), CachedText.end(), text.begin(), text.end());
+            const size_t changedByte = static_cast<size_t>(difference.first - CachedText.begin());
+            const auto affected = std::lower_bound(Breaks.begin(), Breaks.end(), changedByte,
+                [](const LineBreakInfo& line, size_t byte) { return line.ByteEnd < byte; });
+            keptLines = static_cast<size_t>(affected - Breaks.begin());
+            // Include the preceding line: deleting a separator can pull a word
+            // back across a soft wrap, and shaping can change beside the edit.
+            if (keptLines > 0)
+                --keptLines;
+        }
+        const size_t firstByte = keptLines < Breaks.size() ? Breaks[keptLines].ByteStart : 0;
+        Breaks.resize(keptLines);
+        Shapes.resize(std::min(Shapes.size(), keptLines));
+        StyleKey = key;
+        ShapingKey = shapingKey;
+        CachedText = text;
 
         if (text.empty()) {
             Breaks.push_back({0, 0});
@@ -191,8 +205,8 @@ struct TextArea::TextRenderCache {
         }
 
         if (wrapWidth <= 0.0f) {
-            size_t lineStart = 0;
-            for (size_t i = 0; i < text.size(); ++i) {
+            size_t lineStart = firstByte;
+            for (size_t i = firstByte; i < text.size(); ++i) {
                 if (text[i] == '\n') {
                     Breaks.push_back({lineStart, i});
                     lineStart = i + 1;
@@ -204,7 +218,9 @@ struct TextArea::TextRenderCache {
             return;
         }
 
-        GetVisualLines(text, font, pixelSize, wrapWidth, lineBoxPx, letterSpacingPx, wb, Breaks);
+        std::vector<LineBreakInfo> tail;
+        GetVisualLines(text, font, pixelSize, wrapWidth, lineBoxPx, letterSpacingPx, wb, tail, firstByte);
+        Breaks.insert(Breaks.end(), tail.begin(), tail.end());
     }
 };
 
@@ -625,10 +641,10 @@ void TextArea::OnPostLayout() {
     float contentH = (int)vLines.size() * m.LineAdvance + padT + padB + borderT + borderB;
     if (contentH > curH)
     {
-        const auto existing = Overrides().Get(Style::Height);
+        const auto existing = Style().Get(Style::Height);
         if (!existing.has_value() || !existing->IsPx() || std::fabs(existing->Value - contentH) > 0.5f)
         {
-            Overrides().Set(Style::Height, StyleLength::Px(contentH));
+            Style().Set(Style::Height, StyleLength::Px(contentH));
             MarkDirty(StyleDirty | LayoutDirty);
         }
     }
@@ -679,8 +695,8 @@ void MoveHorizontal(TextArea::Cursor& c, const std::string& s,
 {
     size_t pos = (size_t)std::clamp(c.caret, 0, (int)s.size());
     int newCaret = goingRight
-        ? (int)(wordStep ? TextSegmentation::NextBoundary(s, pos) : TextSegmentation::NextGrapheme(s, pos))
-        : (int)(wordStep ? TextSegmentation::PrevBoundary(s, pos) : TextSegmentation::PrevGrapheme(s, pos));
+        ? (int)(wordStep ? TextSegmentation::NextBoundary(s, pos) : Utf8::Next(s, pos))
+        : (int)(wordStep ? TextSegmentation::PrevBoundary(s, pos) : Utf8::Prev(s, pos));
 
     if (shift) {
         if (c.anchor < 0) c.anchor = c.caret;
@@ -721,8 +737,12 @@ int CaretFromPreferredX(const std::vector<LineBreakInfo>& lines, int lineIdx,
 {
     const auto& tl = lines[lineIdx];
     std::string lineText(s.data() + tl.ByteStart, tl.ByteEnd - tl.ByteStart);
-    const auto measured = font->MeasureText(lineText, px, letterSpacingPx);
-    return static_cast<int>(tl.ByteStart + measured.CaretAtX(targetX));
+    std::vector<float> xByByte;
+    font->BuildCaretMapUtf8(lineText, px, xByByte, letterSpacingPx);
+    size_t rel = 0;
+    while (rel < xByByte.size() && xByByte[rel] < targetX) rel++;
+    rel = std::min(rel, (size_t)(tl.ByteEnd - tl.ByteStart));
+    return (int)(tl.ByteStart + rel);
 }
 
 } // namespace
@@ -944,7 +964,7 @@ bool TextArea::OnKey(int key, int mods, UI::IPlatformApi* platform) {
             [](const std::string& buf, Cursor& c) {
                 size_t pos = (size_t)std::clamp(c.caret, 0, (int)buf.size());
                 if (pos > 0) {
-                    size_t prev = TextSegmentation::PrevGrapheme(buf, pos);
+                    size_t prev = Utf8::Prev(buf, pos);
                     c.anchor = (int)prev;
                 }
             });
@@ -962,7 +982,7 @@ bool TextArea::OnKey(int key, int mods, UI::IPlatformApi* platform) {
             [](const std::string& buf, Cursor& c) {
                 size_t pos = (size_t)std::clamp(c.caret, 0, (int)buf.size());
                 if (pos < buf.size()) {
-                    size_t next = TextSegmentation::NextGrapheme(buf, pos);
+                    size_t next = Utf8::Next(buf, pos);
                     c.anchor = (int)next;
                 }
             });
@@ -972,48 +992,18 @@ bool TextArea::OnKey(int key, int mods, UI::IPlatformApi* platform) {
     }
 
     case Input::kKeyCode_Left:
+    {
+        moveAllCursors([&](Cursor& c) {
+            MoveHorizontal(c, s, /*goingRight*/false, /*wordStep*/primaryMod, shift);
+        });
+        m_NavPreferredX = -1.0f;
+        break;
+    }
+
     case Input::kKeyCode_Right:
     {
-        const bool right = key == Input::kKeyCode_Right;
-        TextAreaMetrics met{};
-        const bool visual = ComputeMetrics(met);
-        if (visual)
-            EnsureTextRenderCache().EnsureLineBreaks(s, met.Font, met.Px, met.WrapWidth,
-                met.LineBox, met.LetterSpacing, MapWordBreak(GetResolvedStyle()));
         moveAllCursors([&](Cursor& c) {
-            if (!visual || EnsureTextRenderCache().Breaks.empty())
-            {
-                MoveHorizontal(c, s, right, primaryMod, shift);
-                return;
-            }
-            const auto& lines = EnsureTextRenderCache().Breaks;
-            const size_t caret = static_cast<size_t>(std::clamp(c.caret, 0, static_cast<int>(s.size())));
-            const int lineIndex = FindLineContaining(lines, caret);
-            const auto& line = lines[lineIndex];
-            const auto measured = met.Font->MeasureText(
-                std::string_view(s).substr(line.ByteStart, line.ByteEnd-line.ByteStart), met.Px, met.LetterSpacing);
-            const size_t relative = caret-line.ByteStart;
-            size_t destination = line.ByteStart + (primaryMod
-                ? TextSegmentation::Detail::VisualWordBoundary(
-                    std::string_view(s).substr(line.ByteStart, line.ByteEnd-line.ByteStart),
-                    relative, right, measured.caretXByByte)
-                : measured.NextVisualCaret(relative, right));
-            if (destination == caret && !measured.caretXByByte.empty())
-            {
-                const bool rtl = measured.caretXByByte.front() > measured.caretXByByte.back();
-                const int adjacent = lineIndex + ((right != rtl) ? 1 : -1);
-                if (adjacent >= 0 && adjacent < static_cast<int>(lines.size()))
-                {
-                    const auto& next = lines[adjacent];
-                    const auto target = met.Font->MeasureText(
-                        std::string_view(s).substr(next.ByteStart, next.ByteEnd-next.ByteStart), met.Px, met.LetterSpacing);
-                    destination = next.ByteStart+target.CaretAtX(right ? 0.0f : target.metrics.width);
-                }
-            }
-            if (shift && c.anchor < 0) c.anchor = c.caret;
-            if (!shift) c.anchor = -1;
-            c.caret = static_cast<int>(destination);
-            c.preferredX = -1.0f;
+            MoveHorizontal(c, s, /*goingRight*/true, /*wordStep*/primaryMod, shift);
         });
         m_NavPreferredX = -1.0f;
         break;
@@ -1308,7 +1298,6 @@ void TextArea::EmitTextGlyphs(UI::PrimitiveEmitContext& ctx, const ResolvedStyle
         // selection styling) invalidates stale per-glyph colors.
         if (ls.TextHash != lineTextHash ||
             ls.FontId != reinterpret_cast<uintptr_t>(met.Font) ||
-            ls.LayoutRevision != met.Font->GetLayoutRevision() ||
             ls.PixelSize != met.Px ||
             ls.LetterSpacing != met.LetterSpacing ||
             ls.Color != textColor)
@@ -1317,7 +1306,6 @@ void TextArea::EmitTextGlyphs(UI::PrimitiveEmitContext& ctx, const ResolvedStyle
             met.Font->ShapeText(lineView, met.Px, scratchResult, textColor, met.LetterSpacing);
             ls.TextHash = lineTextHash;
             ls.FontId = reinterpret_cast<uintptr_t>(met.Font);
-            ls.LayoutRevision = met.Font->GetLayoutRevision();
             ls.PixelSize = met.Px;
             ls.LetterSpacing = met.LetterSpacing;
             ls.Color = textColor;
@@ -1455,18 +1443,18 @@ void TextArea::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx,
         int lineB = visualLineOfByte((size_t)b);
 
         for (int line = lineA; line <= lineB; ++line) {
-            const auto& visualLine = vLines[line];
-            const auto lineText = std::string_view(text).substr(visualLine.ByteStart, visualLine.ByteEnd - visualLine.ByteStart);
-            const auto measured = m.Font->MeasureText(lineText, m.Px, m.LetterSpacing);
-            const size_t localStart = line == lineA ? static_cast<size_t>(a) - visualLine.ByteStart : 0;
-            const size_t localEnd = line == lineB ? static_cast<size_t>(b) - visualLine.ByteStart : lineText.size();
-            auto ranges = measured.SelectionRanges(localStart, localEnd);
-            if (ranges.empty() && line != lineB)
-                ranges.emplace_back(0.0f, fontSize * 0.5f);
-            for (const auto& [left, right] : ranges)
-            {
-                const float top = originY + static_cast<float>(line) * m.LineAdvance;
-                ctx.Emit(MakeRect(originX + left, top, right - left, m.LineAdvance, packedSelColor));
+            float startX = (line == lineA) ? xForByte((size_t)a, line) : 0.0f;
+            float endX   = (line == lineB) ? xForByte((size_t)b, line)
+                                           : xForByte(vLines[line].ByteEnd, line);
+
+            float selW = std::max(0.0f, endX - startX);
+            if (selW <= 0.0f && line != lineB)
+                selW = fontSize * 0.5f;
+
+            if (selW > 0.0f) {
+                float ry = originY + (float)line * m.LineAdvance;
+                UIPrimitive prim = MakeRect(originX + startX, ry, selW, m.LineAdvance, packedSelColor);
+                ctx.Emit(prim);
             }
         }
     }
@@ -1476,7 +1464,7 @@ void TextArea::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx,
 
     // Emit carets for every cursor when focused (and not read-only).
     if (isFocused && !m_ReadOnly) {
-        const float caretWidth = kCaretThicknessLogicalPx * cs;
+        constexpr float kCaretWidth = 1.5f;
         uint32_t caretColor = PackFromARGB(style.Visual.Color);
 
         for (const auto& c : allCursors) {
@@ -1488,7 +1476,7 @@ void TextArea::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx,
             UIPrimitive prim{};
             prim.X = caretX;
             prim.Y = caretY;
-            prim.W = caretWidth;
+            prim.W = kCaretWidth;
             prim.H = m.LineAdvance;
             prim.FillColor = caretColor;
             prim.Opacity = style.Visual.Opacity;

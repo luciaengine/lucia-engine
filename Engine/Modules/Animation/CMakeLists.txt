@@ -7,29 +7,24 @@ file(GLOB_RECURSE ANIMATION_PUBLIC_HEADERS
 )
 
 set(ANIMATION_SOURCES
-    Source/AllocationGuard.cpp
     Source/AnimationEvent.cpp
     Source/AnimationEventCollectorStore.cpp
     Source/AnimationController.cpp
-    Source/AnimationGraphSerializer.cpp
-    Source/AnimationGraphStore.cpp
+    Source/AnimationGraph/AnimationGraphSerializer.cpp
+    Source/AnimationGraph/AnimationGraphStore.cpp
     Source/AnimationLibrary.cpp
     Source/AnimationMontage.cpp
     Source/AnimationPlayer.cpp
     Source/AnimationPose.cpp
     Source/AnimationTimeline.cpp
-    Source/BoneEvaluationPlan.cpp
     Source/BoneMask.cpp
-    Source/Compression/AnimationClipArchive.cpp
-    Source/Compression/AnimationClipData.cpp
-    Source/Compression/AnimationClipStorage.cpp
     Source/HumanBone.cpp
-    Source/HumanoidImport.cpp
-    Source/HumanoidNameMatcher.cpp
-    Source/HumanoidRig.cpp
-    Source/HumanoidRigEdit.cpp
-    Source/KHRHumanoidImporter.cpp
-    Source/KHRHumanoidShared.cpp
+    Source/Humanoid/HumanoidImport.cpp
+    Source/Humanoid/HumanoidNameMatcher.cpp
+    Source/Humanoid/HumanoidRig.cpp
+    Source/Humanoid/HumanoidRigEdit.cpp
+    Source/KHRHumanoid/KHRHumanoidImporter.cpp
+    Source/KHRHumanoid/KHRHumanoidShared.cpp
     Source/MontageInstance.cpp
     Source/OpStackNode.cpp
     Source/OpStackRegistration.cpp
@@ -39,9 +34,9 @@ set(ANIMATION_SOURCES
     Source/RetargetMap.cpp
     Source/RootMotion.cpp
     Source/RootMotionExtractor.cpp
-    Source/SkeletonData.cpp
-    Source/SkeletonModifierStack.cpp
-    Source/SkeletonProfile.cpp
+    Source/Skeleton/SkeletonData.cpp
+    Source/Skeleton/SkeletonModifierStack.cpp
+    Source/Skeleton/SkeletonProfile.cpp
     Source/TweenService.cpp
     Source/VRM1Importer.cpp
     Source/Nodes/AdditiveBlendNode.cpp
@@ -74,11 +69,11 @@ target_include_directories(Animation
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/Include
     PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/Source
         ${CMAKE_SOURCE_DIR}/Engine/Include
 )
 
 find_package(nlohmann_json CONFIG REQUIRED)
-find_package(ZLIB REQUIRED)
 
 target_link_libraries(Animation
     PUBLIC
@@ -88,8 +83,8 @@ target_link_libraries(Animation
         GenerationalVector
         nlohmann_json::nlohmann_json
     PRIVATE
-        ZLIB::ZLIB
         Logger
+        Serialization
 )
 
 # cgltf is header-only via vcpkg. Animation only INCLUDES cgltf.h (no

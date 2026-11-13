@@ -5,7 +5,7 @@
 #include "Rendering/Core/GPUDrawStreamBuilder.h"
 #include "Rendering/Core/GPUInstanceDepthClass.h"
 #include "Rendering/Core/GPUScene.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "TestDeviceHelper.h"

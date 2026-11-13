@@ -16,7 +16,7 @@
 // the regression test for that; it fails if the normalize-to-Off step is
 // removed from ApplyProjectRenderSettings.
 
-#include "Editor/Settings/RenderProjectSettings.h"
+#include "Editor/Settings/Render/RenderProjectSettings.h"
 
 #include "Editor/Settings/DynamicResolutionProjectSettings.h"
 #include "Editor/Settings/SettingsStore.h"

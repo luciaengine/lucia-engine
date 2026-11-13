@@ -21,16 +21,13 @@ FileLogLevel ResolveFileLogLevel()
 	const char* configured = std::getenv(kFileLogLevelEnvVar);
 	if (configured != nullptr && configured[0] != '\0')
 	{
-		String spelling(configured);
+		std::string spelling(configured);
 		std::transform(spelling.begin(), spelling.end(), spelling.begin(),
 					   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
-		// StringToLogLevel answers Info for a spelling it does not know, so "info"
-		// is the one value that has to be excluded to tell a request from a typo.
-		const LogLevel named = StringToLogLevel(spelling);
-		if (named != LogLevel::Info || spelling == "info")
+		if (const std::optional<LogLevel> named = ParseLogLevel(spelling))
 		{
-			resolved.level = named;
+			resolved.level = *named;
 		}
 		else
 		{
@@ -49,6 +46,17 @@ FileLogLevel ResolveFileLogLevel()
 		resolved.level = std::max(resolved.level, globalLevel);
 	}
 	return resolved;
+}
+
+void AnnounceFileSink(std::string_view announcement, std::string_view filename, const FileLogLevel& level)
+{
+	if (!level.unrecognizedValue.empty())
+	{
+		Log::Warning("{}='{}' names no log level; the log file falls back to {}", kFileLogLevelEnvVar,
+					 level.unrecognizedValue, LogLevelToString(level.level));
+	}
+	Log::Info("{} '{}' (records {} and above; override with {}=<debug|info|warn|error>)", announcement, filename,
+			  LogLevelToString(level.level), kFileLogLevelEnvVar);
 }
 
 FileSink::FileSink(const Config& config)
@@ -80,7 +88,7 @@ void FileSink::Write(const LogMessage& message)
 
 	// The level is always written: a log file whose lines carry no severity cannot
 	// be triaged, and FileSink::Config deliberately has no switch for it.
-	String formatted =
+	std::string formatted =
 	    FormatMessage(message, m_Config.includeTimestamp, /*includeLevel=*/true, m_Config.includeSource);
 	m_File << formatted << '\n';
 	m_CurrentSize += formatted.size() + 1; // account for newline
@@ -105,7 +113,7 @@ bool FileSink::ShouldLog(LogLevel level) const
 	return level >= m_Config.minLevel;
 }
 
-String FileSink::GetName() const
+std::string FileSink::GetName() const
 {
 	return "FileSink";
 }

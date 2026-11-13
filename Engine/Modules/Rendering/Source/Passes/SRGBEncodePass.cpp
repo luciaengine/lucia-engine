@@ -3,11 +3,11 @@
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/DeviceFormatting.h"
-#include "Rendering/Core/NamedDescriptorWriter.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/NamedDescriptorWriter.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Materials/MaterialHelper.h"
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Logger/Logger.h"
 #include "Platform/Environment.h"
@@ -41,6 +41,8 @@ struct SRGBEncodeShaderBytes
 	// layout and push-constant block (never hand-mirrored from encode_srgb.frag;
 	// see TonemapPass for the drift-class rationale).
 	ShaderMeta meta;
+	// Set 0 binding of uLinearColor in meta. Empty when the shader does not declare it.
+	std::optional<uint32_t> linearColorBinding;
 	bool loaded = false;
 	bool warned = false;
 };
@@ -293,6 +295,10 @@ static SRGBEncodeShaderBytes& GetSRGBEncodeShaderBytes(const IDevice& device)
 			if (itFs != pkg.stageBytes.end())
 				s.fs = std::move(itFs->second);
 			s.meta = std::move(pkg.meta);
+			uint32_t linearColorBinding = 0;
+			DescriptorType linearColorType{};
+			if (TryGetSet0BindingByName(s.meta, "uLinearColor", linearColorBinding, linearColorType))
+				s.linearColorBinding = linearColorBinding;
 		}
 		// Latch only on success: this is the TERMINAL encode — a one-shot
 		// failure latch here is a permanently black swapchain with no log.

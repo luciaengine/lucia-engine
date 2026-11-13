@@ -5,9 +5,13 @@
 #include "AssistantTurnUndo.h"
 #include "Conversation.h"
 #include "ConversationMessage.h"
+#include "MarkupContext.h"
+#include "ModelDisplayName.h"
 
 #include <algorithm>
 #include <cstdio>
+#include <span>
+#include <string_view>
 
 namespace GameEngine
 {
@@ -27,6 +31,7 @@ std::string ProviderLabel(const std::string& providerId)
     return providerId;
 }
 
+
 // "$0.0123 · 1200 tokens in, 340 out"; the parts the provider reported, empty if none.
 std::string Accounting(const ConversationMessage& message)
 {
@@ -41,7 +46,8 @@ std::string Accounting(const ConversationMessage& message)
     {
         if (!text.empty())
             text += " · ";
-        text += std::to_string(message.InputTokens) + " tokens in, " + std::to_string(message.OutputTokens) + " out";
+        text += std::to_string(message.InputTokens) + (message.InputTokens == 1 ? " token in, " : " tokens in, ") +
+                std::to_string(message.OutputTokens) + " out";
     }
     return text;
 }
@@ -74,7 +80,35 @@ std::string ReplyStatus(const ConversationMessage& message)
     }
     return {};
 }
+
+// A chip's text: the title of the mark-up `token` named when its message was sent, else what the
+// token names it by.
+std::string ChipLabel(const MarkupToken& token, std::span<const MarkupMention> mentions)
+{
+    for (const MarkupMention& mention : mentions)
+    {
+        if (mention.Token == token.Text && !mention.Title.empty())
+            return mention.Title;
+    }
+    return token.Title.empty() ? token.Tag : token.Title;
+}
 } // namespace
+
+std::string AgentConversationRowModel::ReplyHeader(const ConversationMessage& message)
+{
+    std::string model;
+    if (!message.AnsweredModel.empty())
+        model = ModelDisplayName(message.AnsweredModel);
+    else if (!message.Model.empty())
+        model = AiAssistantSettings::ModelLabel(message.ProviderId, message.Model);
+    else
+        model = "default model";
+    std::string header = ProviderLabel(message.ProviderId) + " · " + model;
+    for (const AiAssistantSettings::Choice& choice : AiAssistantSettings::EffortChoices(message.ProviderId))
+        if (!message.Effort.empty() && choice.Id == message.Effort)
+            header += " · " + std::string(choice.Label);
+    return header;
+}
 
 AgentConversationRowModel AgentConversationRowModel::From(const ConversationMessage& message,
                                                           std::span<const AssistantAction> actions, uint64_t turn,
@@ -88,13 +122,18 @@ AgentConversationRowModel AgentConversationRowModel::From(const ConversationMess
         row.FromUser = true;
         for (const PromptFile& file : message.Files)
             row.FileChips.push_back(file.Name);
+        for (const MarkupToken& token : MarkupContext::FindTokens(message.Text))
+            row.MarkupChips.push_back({token.Text, ChipLabel(token, message.Markups.Mentions)});
         return row;
     }
 
-    row.Header = ProviderLabel(message.ProviderId) + " · " + (message.Model.empty() ? "default model" : message.Model);
+    row.Header = ReplyHeader(message);
     row.Calls = AgentCallRowModel::For(message.ToolCalls, actions, turn, history);
     row.Asks = std::any_of(row.Calls.begin(), row.Calls.end(), [](const AgentCallRowModel& call) { return call.Asks; });
-    row.Status = JoinSentences(ReplyStatus(message), AgentCallRowModel::Counts(message.ToolCalls, actions, turn));
+    if (message.NotReady)
+        row.SetupRefusal = message.Notice;
+    row.Status = JoinSentences(message.NotReady ? std::string() : ReplyStatus(message),
+                               AgentCallRowModel::Counts(message.ToolCalls, actions, turn));
     if (message.Truncated)
         row.Status = JoinSentences(kTruncatedStatus, row.Status);
     row.CanStop = message.Status == MessageStatus::InProgress;

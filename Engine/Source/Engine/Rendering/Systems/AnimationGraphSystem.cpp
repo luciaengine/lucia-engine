@@ -2,9 +2,9 @@
 #include "ECSModules/Rendering/Systems/AnimationGraphCompileFromModel.h"
 
 #include "Animation/AnimationEventCollectorStore.h"
-#include "Animation/AnimationGraphPlayer.h"
-#include "Animation/AnimationGraphSerializer.h"
-#include "Animation/AnimationGraphStore.h"
+#include "Animation/AnimationGraph/AnimationGraphPlayer.h"
+#include "Animation/AnimationGraph/AnimationGraphSerializer.h"
+#include "Animation/AnimationGraph/AnimationGraphStore.h"
 #include "Animation/EvaluationContext.h"
 #include "Animation/Nodes/AdditiveBlendNode.h"
 #include "Animation/Nodes/Blend2Node.h"
@@ -311,22 +311,14 @@ void AnimationGraphSystem::Update(ECS::World& world, float32 deltaTime)
     m_FramePaletteInputs.clear();
     m_FramePoseCount = 0;
 
-    for (const PaletteInputs& previous : m_LastPaletteInputs)
-    {
-        if (skStore.GetRuntimeGeneration(previous.RuntimeId) != previous.RuntimeGeneration)
-            continue;
-        if (auto* runtime = skStore.GetRuntime(previous.RuntimeId))
-            runtime->GraphPoseActive = false;
-    }
-
     world.Query<ECS::Write<Animator>>().Each([&](ECS::EntityHandle rootEntity, ECS::Writable<Animator> animatorRow) {
-        if (!animatorRow->active || animatorRow->source != AnimatorPlaybackSource::Graph)
+        auto& animator = animatorRow.Mutable();
+        if (!animator.active || animator.source != AnimatorPlaybackSource::Graph)
         {
-            if (animatorRow->graphRuntimeId != 0)
-                ReleaseGraph(animatorRow.Mutable());
+            if (animator.graphRuntimeId != 0)
+                ReleaseGraph(animator);
             return;
         }
-        Animator& animator = animatorRow.Mutable();
 
         ConsumeGraphCommand(animator);
 
@@ -413,9 +405,7 @@ void AnimationGraphSystem::Update(ECS::World& world, float32 deltaTime)
                 continue;
 
             Animation::EmitSkinMatricesFromAnimationPose(*skel, m_Pose, runtime->CompactSkinMatrices, m_Workspace);
-            runtime->GraphPoseActive = true;
-            m_FramePaletteInputs.push_back(PaletteInputs{sref->runtimeId, sref->skeletonId, m_FramePoseCount,
-                                                        skStore.GetRuntimeGeneration(sref->runtimeId)});
+            m_FramePaletteInputs.push_back(PaletteInputs{sref->runtimeId, sref->skeletonId, m_FramePoseCount});
         }
         if (m_FramePaletteInputs.size() != recordsBefore)
         {

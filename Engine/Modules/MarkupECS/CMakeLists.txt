@@ -4,11 +4,14 @@ project(MarkupECS LANGUAGES CXX)
 
 # World mark-ups: the notes store, the tag vocabulary and the revision beside the
 # Markup components, and a region's outline rules and area (MarkupRegionOutline,
-# MarkupRegionArea). Editor-authored data; a game export strips the components
+# MarkupRegionArea, and the footprints as rings for the area boolean its display draws,
+# MarkupRegionBoolean, over SplineGeometry's CombineAreas and BuildAreaGround).
+# Editor-authored data; a game export strips the components
 # (Engine/Build/SceneExportStrip.h).
 add_library(MarkupECS OBJECT
     Source/MarkupComponentInstantiations.cpp
     Source/MarkupRegionArea.cpp
+    Source/MarkupRegionBoolean.cpp
     Source/MarkupRegionDisplayCache.cpp
     Source/MarkupRegionMesh.cpp
     Source/MarkupRegionOutline.cpp
@@ -33,6 +36,7 @@ target_link_libraries(MarkupECS
         Mathematics
         Spline
         SplineECS
+        SplineGeometry
         Types
     PRIVATE
         # MarkupSceneSchema.cpp includes Scene/SceneSchemaRegistry.h, which
@@ -43,6 +47,7 @@ target_link_libraries(MarkupECS
 if(BUILD_TESTING)
     find_package(GTest REQUIRED)
     add_executable(MarkupTests
+        Tests/MarkupRegionBooleanTests.cpp
         Tests/MarkupRegionMeshTests.cpp
         Tests/MarkupRegionTests.cpp
         Tests/MarkupServiceTests.cpp

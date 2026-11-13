@@ -1,8 +1,6 @@
 #include "Inspectors/SkinnedMeshRendererInspector.h"
 
 #include "InspectorRegistry.h"
-#include "Rendering/Sorting/RenderSortingEditor.h"
-#include "Editor/Entities/EditorComponentTraits.h"
 
 #include "Assets/AssetManager.h"
 #include "Components/Animation/SkeletonRef.h"
@@ -13,14 +11,11 @@
 
 #include "Inspectors/InspectorUIHelpers.h"
 
-#include <utility>
-
 namespace GameEngine
 {
 
 using InspectorUI::AddLine;
 using InspectorUI::BoolToString;
-using InspectorUI::ToHex;
 
 namespace
 {
@@ -52,19 +47,6 @@ std::string RigOwnerLabel(const ECS::World& world, ECS::EntityHandle entity, con
 
 void RegisterSkinnedMeshRendererInspector()
 {
-    constexpr int kSkinnedMeshRendererSortKey = 32;
-
-    {
-        Editor::EditorComponentTraits traits;
-        traits.DisplayName = "Skinned Mesh Renderer";
-        traits.Category = "Rendering";
-        traits.SortKey = kSkinnedMeshRendererSortKey;
-        traits.Tooltip = "Renders a mesh deformed by a skeleton for animation";
-        traits.InspectorIconClass = "inspector-section-icon-skinned-mesh";
-        Editor::EditorComponentTraitsRegistry::Get().Register(
-            ECS::GetComponentTypeId<Components::SkinnedMeshRenderer>(), std::move(traits));
-    }
-
     InspectorFn fn = [](const InspectorContext& ctx)
     {
         if (!ctx.Parent || !ctx.World || !ctx.Entity.IsValid())
@@ -79,7 +61,6 @@ void RegisterSkinnedMeshRendererInspector()
             return;
         }
 
-        Editor::AddRenderSortingFields(ctx);
         AddLine(ctx.Parent, std::string("MeshId: ") + std::to_string(smr->meshId));
         // The rig is authored on the entity's SkeletonRef: the model it comes
         // from and the entity whose instance shares its pose. The numeric
@@ -94,7 +75,6 @@ void RegisterSkinnedMeshRendererInspector()
         {
             AddLine(ctx.Parent, "Rig source: (no SkeletonRef)");
         }
-        AddLine(ctx.Parent, std::string("RenderLayerMask: ") + ToHex(smr->renderLayerMask));
         AddLine(ctx.Parent, std::string("CastShadows: ") + BoolToString(smr->castShadows));
         AddLine(ctx.Parent, std::string("ReceiveShadows: ") + BoolToString(smr->receiveShadows));
     };

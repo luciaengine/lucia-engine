@@ -1,5 +1,5 @@
 // GPU-resource-lifetime policy oracles for the CBT bring-up path
-// (Tools/ai/rendering/gpu-resource-lifetime-policy.html, slice a).
+// (design gpu-resource-lifetime-policy, slice a).
 //
 // Two independent things are pinned here:
 //
@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
@@ -29,10 +30,11 @@
 #include "CBTTerrain/CBTLayout.h"
 #include "CBTTerrain/CBTSphereRoots.h"
 #include "Rendering/Core/CommandList.h"
+#include "CBTReliefHeightSource.h"
 #include "CBTTestHarness.h"
 #include "SourceCompletionProbeDevice.h"
 #include "../../Rendering/Source/Vulkan/VulkanCommandList.h"
-#include "../../Rendering/Source/Vulkan/VulkanDevice.h"
+#include "../../Rendering/Source/Vulkan/VulkanDevice/VulkanDevice.h"
 
 using namespace GameEngine::CBTTerrain;
 using namespace GameEngine::CBTTerrain::Test;
@@ -61,9 +63,8 @@ void RunUpdate(IDevice& device, CBTInstance& instance, uint32_t frameIndex)
     device.WaitForIdle();
 }
 
-// A host-signaled timeline keeps a real update pending independently of GPU speed.
-// The bounded host release also makes a mistakenly restored device drain fail its
-// counter assertion instead of hanging the suite.
+// A host-signaled timeline keeps the update pending independently of GPU speed.
+// A following tracked submission gives the device a completion token for both batches.
 class PendingUpdate
 {
   public:
@@ -78,71 +79,63 @@ class PendingUpdate
         }
         if (m_Gate != VK_NULL_HANDLE)
         {
-            Release();
             if (m_Submitted)
             {
-                EXPECT_EQ(vkWaitForFences(NativeDevice(), 1u, &m_Fence, VK_TRUE, ~0ull), VK_SUCCESS);
+                Release();
+                if (!m_Token.IsValid() || !m_Device.WaitGpuSyncToken(m_Token))
+                {
+                    EXPECT_EQ(vkQueueWaitIdle(NativeBackend().GetGraphicsQueue()), VK_SUCCESS);
+                }
             }
-            if (m_Token.IsValid())
-            {
-                EXPECT_TRUE(m_Device.WaitGpuSyncToken(m_Token));
-            }
-            if (m_Fence != VK_NULL_HANDLE)
-                vkDestroyFence(NativeDevice(), m_Fence, nullptr);
-            vkDestroySemaphore(NativeDevice(), m_Gate, nullptr);
+            vkDestroySemaphore(NativeBackend().GetVkDevice(), m_Gate, nullptr);
         }
     }
 
     bool Submit(CBTInstance& instance, uint32_t frameIndex)
     {
-        VkSemaphoreTypeCreateInfo type{};
-        type.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
-        type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+        VkSemaphoreTypeCreateInfo timeline{};
+        timeline.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+        timeline.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
         VkSemaphoreCreateInfo info{};
         info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        info.pNext = &type;
-        if (vkCreateSemaphore(NativeDevice(), &info, nullptr, &m_Gate) != VK_SUCCESS)
-            return false;
-        VkFenceCreateInfo fence{};
-        fence.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        if (vkCreateFence(NativeDevice(), &fence, nullptr, &m_Fence) != VK_SUCCESS)
+        info.pNext = &timeline;
+        if (vkCreateSemaphore(NativeBackend().GetVkDevice(), &info, nullptr, &m_Gate) != VK_SUCCESS)
             return false;
         m_Commands = m_Device.CreateCommandList(IDevice::QueueType::Graphics);
-        if (!m_Commands)
+        m_CompletionCommands = m_Device.CreateCommandList(IDevice::QueueType::Graphics);
+        if (!m_Commands || !m_CompletionCommands)
             return false;
         m_Commands->Begin();
-        const auto native = static_cast<VulkanCommandList&>(*m_Commands).GetVkCommandBuffer();
         instance.RecordUpdate(*m_Commands, CBTInertClassify(), CBTIdentityFrameParams(), frameIndex);
         instance.RecordReadback(*m_Commands);
         m_Commands->End();
-        constexpr uint64_t kReleasedValue = 1u;
+
+        const uint64_t releaseValue = 1u;
+        VkTimelineSemaphoreSubmitInfo wait{};
+        wait.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+        wait.waitSemaphoreValueCount = 1;
+        wait.pWaitSemaphoreValues = &releaseValue;
         const VkPipelineStageFlags stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-        VkTimelineSemaphoreSubmitInfo timeline{};
-        timeline.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
-        timeline.waitSemaphoreValueCount = 1u;
-        timeline.pWaitSemaphoreValues = &kReleasedValue;
+        const VkCommandBuffer commands = static_cast<VulkanCommandList&>(*m_Commands).GetVkCommandBuffer();
         VkSubmitInfo submit{};
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit.pNext = &timeline;
-        submit.waitSemaphoreCount = 1u;
+        submit.pNext = &wait;
+        submit.waitSemaphoreCount = 1;
         submit.pWaitSemaphores = &m_Gate;
         submit.pWaitDstStageMask = &stage;
-        submit.commandBufferCount = 1u;
-        submit.pCommandBuffers = &native;
-        // This single-host-submitter fixture retains the raw list and its fence until completion.
-        if (vkQueueSubmit(static_cast<VulkanDevice&>(m_Device).GetGraphicsQueue(), 1u, &submit, m_Fence) != VK_SUCCESS)
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &commands;
+        // This fixture owns every submission on its isolated device; the release thread only signals the gate.
+        if (vkQueueSubmit(NativeBackend().GetGraphicsQueue(), 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS)
             return false;
         m_Submitted = true;
+
         const auto before = m_Device.LastGraphicsSubmissionToken();
-        m_Marker = m_Device.CreateCommandList(IDevice::QueueType::Graphics);
-        if (!m_Marker)
-            return false;
-        m_Marker->Begin();
-        m_Marker->End();
-        m_Device.ExecuteCommandLists({m_Marker.get()});
+        m_CompletionCommands->Begin();
+        m_CompletionCommands->End();
+        m_Device.ExecuteCommandLists({m_CompletionCommands.get()});
         m_Token = m_Device.LastGraphicsSubmissionToken();
-        return m_Token.IsValid() && (!before.IsValid() ||
-               (m_Token.sem == before.sem && m_Token.value > before.value));
+        return m_Token.IsValid() && (m_Token.sem != before.sem || m_Token.value > before.value);
     }
 
     IDevice::GpuSyncStatus Status() const { return m_Device.QueryGpuSyncToken(m_Token); }
@@ -153,24 +146,22 @@ class PendingUpdate
     }
 
   private:
-    VkDevice NativeDevice() const { return static_cast<VulkanDevice&>(m_Device).GetVkDevice(); }
+    VulkanDevice& NativeBackend() const { return static_cast<VulkanDevice&>(m_Device); }
 
     void Release()
     {
-        if (m_Released)
+        if (m_Released.exchange(true))
             return;
         VkSemaphoreSignalInfo signal{};
         signal.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
         signal.semaphore = m_Gate;
         signal.value = 1u;
-        EXPECT_EQ(vkSignalSemaphore(NativeDevice(), &signal), VK_SUCCESS);
-        m_Released = true;
+        EXPECT_EQ(vkSignalSemaphore(NativeBackend().GetVkDevice(), &signal), VK_SUCCESS);
     }
 
     void ReleaseWhenDue(std::stop_token stop)
     {
-        // A liveness bound, not a frame-time or throughput assertion. The pending
-        // token is checked before this timer starts and again at the transition.
+        // A liveness bound, not a frame-time assertion. Each test checks Pending before starting the timer.
         constexpr auto kHostReleaseDelay = std::chrono::milliseconds(100);
         std::mutex mutex;
         std::condition_variable_any condition;
@@ -181,11 +172,10 @@ class PendingUpdate
 
     IDevice& m_Device;
     VkSemaphore m_Gate = VK_NULL_HANDLE;
-    VkFence m_Fence = VK_NULL_HANDLE;
     bool m_Submitted = false;
-    bool m_Released = false;
+    std::atomic<bool> m_Released{false};
     std::unique_ptr<CommandList> m_Commands;
-    std::unique_ptr<CommandList> m_Marker;
+    std::unique_ptr<CommandList> m_CompletionCommands;
     IDevice::GpuSyncToken m_Token;
     std::jthread m_ReleaseThread;
 };
@@ -342,14 +332,7 @@ TEST_F(CBTBringUpTest, RefreshTerrainSourcesPerformsNoDeviceDrain)
     ASSERT_TRUE(instance.Initialize(*m_Device, m_KernelSet));
     ASSERT_TRUE(instance.InitializeRoots());
 
-    TextureDesc td{};
-    td.width = 4;
-    td.height = 4;
-    td.format = static_cast<uint32_t>(TextureFormat::R32_FLOAT);
-    td.usage = static_cast<uint32_t>(TextureUsage::ShaderResource) |
-               static_cast<uint32_t>(TextureUsage::TransferDst);
-    td.debugName = "DrainOracleHeightmap";
-    const TextureHandle retired = m_Device->CreateTexture(td);
+    const TextureHandle retired = MakeR32Texture(*m_Device, 4, 4, {}, "DrainOracleHeightmap");
     ASSERT_TRUE(retired.IsValid());
     for (uint32_t slot = 0; slot < kCBTFrameParamsRing; ++slot)
         instance.SetHeightSource(slot, retired);
@@ -378,152 +361,7 @@ TEST_F(CBTBringUpTest, RefreshTerrainSourcesPerformsNoDeviceDrain)
     m_Device->DestroyTexture(retired);
 }
 
-TEST(CBTSourceRebind, UnknownCompletionLeavesBindingsUnchangedAndRetries)
-{
-    SetHeadlessEnv();
-    DeviceDesc description{};
-    description.preferredAPI = GraphicsAPI::Vulkan;
-    description.enableDebugLayer = true;
-    description.enableDynamicRendering = true;
-    SourceCompletionProbeDevice device;
-    if (!device.Initialize(description))
-        GTEST_SKIP() << "no headless Vulkan device";
-    if (!device.GetValidationStats().Enabled)
-        GTEST_SKIP() << "Vulkan validation layer unavailable";
-    CBTKernelSet kernels;
-    if (!kernels.Initialize(device, ShaderOutputDir()))
-        GTEST_SKIP() << "CBT kernels unavailable";
-    CBTInstance instance;
-    ASSERT_TRUE(instance.Initialize(device, kernels));
-    ASSERT_TRUE(instance.InitializeRoots());
-    const auto source = instance.GetResources().GetDefaultAtlasHeightTexture();
-    ASSERT_TRUE(source.IsValid());
-    const uint32_t originalSlots = instance.CountTerrainSourceSlots(source);
-    ASSERT_TRUE(instance.SetHeightSource(0u, source));
-    const uint64_t generation = instance.GetTerrainSourceGeneration();
-    device.HideGraphicsToken = true;
-    const uint32_t originalTableWords = instance.GetResources().PageTableSlotWords();
-    EXPECT_FALSE(instance.ProvisionPageTableWords(originalTableWords + 1u));
-    EXPECT_EQ(instance.GetResources().PageTableSlotWords(), originalTableWords);
-    const auto originalHeightChain = instance.GetResources().GetHeightChainBuffer();
-    const uint32_t originalHeightWords = instance.GetResources().GetHeightChainWords();
-    EXPECT_FALSE(instance.ProvisionHeightChainWords(originalHeightWords + 1u));
-    EXPECT_EQ(instance.GetResources().GetHeightChainBuffer(), originalHeightChain);
-    EXPECT_EQ(instance.GetResources().GetHeightChainWords(), originalHeightWords);
-    const auto originalNormalChain = instance.GetResources().GetNormalChainTexture();
-    const uint32_t originalNormalMips = instance.GetResources().GetNormalChainMips();
-    EXPECT_FALSE(instance.ProvisionNormalChain(513u, 513u));
-    EXPECT_EQ(instance.GetResources().GetNormalChainTexture(), originalNormalChain);
-    EXPECT_EQ(instance.GetResources().GetNormalChainMips(), originalNormalMips);
-    EXPECT_FALSE(instance.SetHeightSource(1u, source));
-    EXPECT_EQ(instance.GetResources().GetBoundHeightSource(1u),
-              instance.GetResources().GetDefaultHeightTexture());
-    EXPECT_EQ(instance.GetTerrainSourceGeneration(), generation);
-    bool changed = false;
-    EXPECT_FALSE(instance.RefreshTerrainSources(changed));
-    EXPECT_FALSE(changed);
-    EXPECT_EQ(instance.CountTerrainSourceSlots(source), originalSlots + 1u);
-    EXPECT_EQ(instance.GetTerrainSourceGeneration(), generation);
-    device.HideGraphicsToken = false;
-    EXPECT_TRUE(instance.ProvisionPageTableWords(originalTableWords + 1u));
-    EXPECT_GT(instance.GetResources().PageTableSlotWords(), originalTableWords);
-    EXPECT_TRUE(instance.ProvisionHeightChainWords(originalHeightWords + 1u));
-    EXPECT_GT(instance.GetResources().GetHeightChainWords(), originalHeightWords);
-    EXPECT_TRUE(instance.ProvisionNormalChain(513u, 513u));
-    EXPECT_EQ(instance.GetResources().GetNormalChainMips(), CBTNormalChainMips(513u, 513u));
-    EXPECT_TRUE(instance.RefreshTerrainSources(changed));
-    EXPECT_TRUE(changed);
-    EXPECT_EQ(instance.CountTerrainSourceSlots(source), originalSlots);
-    // The real Vulkan queue exercises the scoped-fence path without a global token.
-    PendingUpdate pending(device);
-    ASSERT_TRUE(pending.Submit(instance, 0u));
-    ASSERT_EQ(pending.Status(), IDevice::GpuSyncStatus::Pending);
-    pending.ReleaseSoon();
-    device.UseScopedGraphicsFence = true;
-    const uint64_t drains = device.GetIdleDrainCount();
-    EXPECT_TRUE(instance.SetHeightSource(2u, source));
-    EXPECT_EQ(pending.Status(), IDevice::GpuSyncStatus::Complete);
-    EXPECT_EQ(device.GetIdleDrainCount(), drains);
-    device.UseScopedGraphicsFence = false;
-    EXPECT_EQ(device.GetValidationStats().ErrorCount, 0u);
-    for (const auto& entry : device.GetValidationStats().Vuids)
-        EXPECT_FALSE(entry.IsError) << entry.Vuid << ": " << entry.FirstMessage;
-}
-
-#if defined(__APPLE__)
-TEST(CBTSourceRebind, NativeMetalBindsAndResizesWithoutADeviceDrain)
-{
-    SetHeadlessEnv();
-    DeviceDesc description{};
-    description.preferredAPI = GraphicsAPI::Metal;
-    description.enableDebugLayer = true;
-    auto device = DeviceFactory::CreateDevice(description);
-    if (!device || !device->Initialize(description))
-        GTEST_SKIP() << "native Metal device unavailable";
-    ASSERT_EQ(device->GetAPI(), GraphicsAPI::Metal);
-    ASSERT_FALSE(device->LastGraphicsSubmissionToken().IsValid());
-    CBTKernelSet kernels;
-    ASSERT_TRUE(kernels.Initialize(*device, ShaderOutputDir()));
-    CBTInstance instance;
-    ASSERT_TRUE(instance.Initialize(*device, kernels));
-    ASSERT_TRUE(instance.InitializeRoots());
-    const auto source = instance.GetResources().GetDefaultAtlasHeightTexture();
-    ASSERT_TRUE(source.IsValid());
-    const uint64_t drains = device->GetIdleDrainCount();
-    ASSERT_TRUE(instance.SetHeightSource(0u, source));
-    EXPECT_EQ(instance.GetResources().GetBoundHeightSource(0u), source);
-    bool changed = false;
-    ASSERT_TRUE(instance.RefreshTerrainSources(changed));
-    EXPECT_TRUE(changed);
-    RecordProperty("normal_chain_supported", kernels.IsNarrowHeap() ? 0 : 1);
-    if (!kernels.IsNarrowHeap())
-    {
-        ASSERT_TRUE(instance.ProvisionHeightChainWords(CBTHeightChainWords(513u, 513u)));
-        ASSERT_TRUE(instance.ProvisionNormalChain(513u, 513u));
-        EXPECT_TRUE(instance.GetResources().HasNormalChainFor(513u, 513u));
-        ASSERT_TRUE(instance.ProvisionHeightChainWords(CBTHeightChainWords(769u, 769u)));
-        ASSERT_TRUE(instance.ProvisionNormalChain(769u, 769u));
-        EXPECT_TRUE(instance.GetResources().HasNormalChainFor(769u, 769u));
-    }
-    EXPECT_EQ(device->GetIdleDrainCount(), drains);
-    EXPECT_EQ(device->GetDeviceHealth(), DeviceHealth::Healthy);
-}
-#endif
-
-TEST_F(CBTBringUpTest, SourceRebindRetiresPendingSetsWithoutADeviceDrain)
-{
-    CBTInstance instance;
-    ASSERT_TRUE(instance.Initialize(*m_Device, m_KernelSet));
-    ASSERT_TRUE(instance.InitializeRoots());
-    const TextureHandle height = instance.GetResources().GetDefaultHeightTexture();
-    const TextureHandle atlas = instance.GetResources().GetDefaultAtlasHeightTexture();
-    ASSERT_TRUE(height.IsValid());
-    ASSERT_TRUE(atlas.IsValid());
-    for (const uint32_t binding : {kCBTHeightTextureBinding, kCBTAtlasHeightBinding,
-                                   kCBTAtlasCoarseBinding, kCBTPageCacheBinding})
-    {
-        PendingUpdate pending(*m_Device);
-        ASSERT_TRUE(pending.Submit(instance, 0u));
-        ASSERT_EQ(pending.Status(), IDevice::GpuSyncStatus::Pending);
-        pending.ReleaseSoon();
-        const uint64_t drains = m_Device->GetIdleDrainCount();
-        bool applied = false;
-        switch (binding)
-        {
-        case kCBTHeightTextureBinding: applied = instance.SetHeightSource(1u, atlas); break;
-        case kCBTAtlasHeightBinding: applied = instance.SetAtlasSource(1u, height); break;
-        case kCBTAtlasCoarseBinding: applied = instance.SetCoarseSource(1u, height); break;
-        case kCBTPageCacheBinding: applied = instance.SetPageCacheSource(1u, height); break;
-        }
-        EXPECT_TRUE(applied);
-        EXPECT_EQ(pending.Status(), IDevice::GpuSyncStatus::Complete) << "binding " << binding;
-        EXPECT_EQ(m_Device->GetIdleDrainCount(), drains);
-        RunUpdate(*m_Device, instance, 1u);
-        EXPECT_EQ(instance.ReadValidationCounter(kValidationErrorCounter), 0u);
-    }
-}
-
-TEST_F(CBTBringUpTest, PageTableGrowthWaitsForPendingGraphicsWithoutDeviceDrain)
+TEST_F(CBTBringUpTest, PageTableRebindWaitsForPendingGraphicsWithoutDeviceDrain)
 {
     CBTInstance instance;
     ASSERT_TRUE(instance.Initialize(*m_Device, m_KernelSet));
@@ -535,11 +373,20 @@ TEST_F(CBTBringUpTest, PageTableGrowthWaitsForPendingGraphicsWithoutDeviceDrain)
 
     const uint64_t before = m_Device->GetIdleDrainCount();
     ASSERT_EQ(pending.Status(), IDevice::GpuSyncStatus::Pending);
-    ASSERT_TRUE(instance.GetResources().ProvisionPageTableWords(kCBTPageTableMinRingWords + 1u));
+    BufferDesc desc{};
+    desc.size = kCBTPageHeaderWords * sizeof(uint32_t);
+    desc.usage = static_cast<uint32_t>(BufferUsage::Storage);
+    desc.memoryUsage = BufferMemoryUsage::Upload;
+    desc.debugName = "CBTBringUpTest.PageRing";
+    const BufferHandle ring = m_Device->CreateBuffer(desc);
+    ASSERT_TRUE(ring.IsValid());
+    ASSERT_TRUE(instance.SetPageTable(ring, 0u));
     EXPECT_EQ(pending.Status(), IDevice::GpuSyncStatus::Complete)
-        << "page-table growth returned while its prior graphics user was pending";
+        << "a new page-table ring was bound while its prior graphics user was pending";
     EXPECT_EQ(m_Device->GetIdleDrainCount(), before)
-        << "page-table growth drained the device; wait the graphics timeline instead";
+        << "a page-table rebind drained the device; wait the graphics timeline instead";
+    ASSERT_TRUE(instance.SetPageTable({}, 0u));
+    m_Device->DestroyBuffer(ring);
 }
 
 // Far-field bulk free. No production caller today (FarFieldReseedDetector is unwired), but it is a
@@ -710,3 +557,162 @@ TEST_F(CBTBringUpTest, IdentityIndexBufferIsSeededBeforeTheFirstUpdate)
     for (uint32_t i = 0; i < 4u; ++i)
         EXPECT_EQ(tail[i], total - 4u + i) << "the staged identity copy is short";
 }
+
+
+TEST_F(CBTBringUpTest, SourceRebindRetiresPendingSetsWithoutADeviceDrain)
+{
+    CBTInstance instance;
+    ASSERT_TRUE(instance.Initialize(*m_Device, m_KernelSet));
+    ASSERT_TRUE(instance.InitializeRoots());
+    const TextureHandle height = instance.GetResources().GetDefaultHeightTexture();
+    const TextureHandle atlas = instance.GetResources().GetDefaultAtlasHeightTexture();
+    ASSERT_TRUE(height.IsValid());
+    ASSERT_TRUE(atlas.IsValid());
+    for (const uint32_t binding : {kCBTHeightTextureBinding, kCBTAtlasHeightBinding,
+                                   kCBTAtlasCoarseBinding, kCBTPageCacheBinding})
+    {
+        PendingUpdate pending(*m_Device);
+        ASSERT_TRUE(pending.Submit(instance, 0u));
+        ASSERT_EQ(pending.Status(), IDevice::GpuSyncStatus::Pending);
+        pending.ReleaseSoon();
+        const uint64_t drains = m_Device->GetIdleDrainCount();
+        bool applied = false;
+        switch (binding)
+        {
+        case kCBTHeightTextureBinding: applied = instance.SetHeightSource(1u, atlas); break;
+        case kCBTAtlasHeightBinding: applied = instance.SetAtlasSource(1u, height); break;
+        case kCBTAtlasCoarseBinding: applied = instance.SetCoarseSource(1u, height); break;
+        case kCBTPageCacheBinding: applied = instance.SetPageCacheSource(1u, height); break;
+        }
+        EXPECT_TRUE(applied);
+        EXPECT_EQ(pending.Status(), IDevice::GpuSyncStatus::Complete) << "binding " << binding;
+        EXPECT_EQ(m_Device->GetIdleDrainCount(), drains);
+        RunUpdate(*m_Device, instance, 1u);
+        EXPECT_EQ(instance.ReadValidationCounter(kValidationErrorCounter), 0u);
+    }
+}
+
+
+TEST(CBTSourceRebind, UnknownCompletionLeavesBindingsUnchangedAndRetries)
+{
+    SetHeadlessEnv();
+    DeviceDesc description{};
+    description.preferredAPI = GraphicsAPI::Vulkan;
+    description.enableDebugLayer = true;
+    description.enableDynamicRendering = true;
+    SourceCompletionProbeDevice device;
+    if (!device.Initialize(description))
+        GTEST_SKIP() << "no headless Vulkan device";
+    if (!device.GetValidationStats().Enabled)
+        GTEST_SKIP() << "Vulkan validation layer unavailable";
+    CBTKernelSet kernels;
+    if (!kernels.Initialize(device, ShaderOutputDir()))
+        GTEST_SKIP() << "CBT kernels unavailable";
+    CBTInstance instance;
+    ASSERT_TRUE(instance.Initialize(device, kernels));
+    ASSERT_TRUE(instance.InitializeRoots());
+    const auto source = instance.GetResources().GetDefaultAtlasHeightTexture();
+    ASSERT_TRUE(source.IsValid());
+    const uint32_t originalSlots = instance.CountTerrainSourceSlots(source);
+    ASSERT_TRUE(instance.SetHeightSource(0u, source));
+    const uint64_t generation = instance.GetTerrainSourceGeneration();
+    device.HideGraphicsToken = true;
+    const BufferHandle originalTable = instance.GetResources().GetPageTableBuffer();
+    BufferDesc tableDescription{};
+    tableDescription.size = kCBTPageHeaderWords * sizeof(uint32_t);
+    tableDescription.usage = static_cast<uint32_t>(BufferUsage::Storage);
+    tableDescription.memoryUsage = BufferMemoryUsage::Upload;
+    const BufferHandle replacementTable = device.CreateBuffer(tableDescription);
+    ASSERT_TRUE(replacementTable.IsValid());
+    const std::array<uint32_t, kCBTPageHeaderWords> emptyTable{};
+    device.UpdateBuffer(replacementTable, 0, sizeof(emptyTable), emptyTable.data());
+    EXPECT_FALSE(instance.SetPageTable(replacementTable, 0u));
+    EXPECT_EQ(instance.GetResources().GetPageTableBuffer(), originalTable);
+    const auto originalHeightChain = instance.GetResources().GetHeightChainBuffer();
+    const uint32_t originalHeightWords = instance.GetResources().GetHeightChainWords();
+    EXPECT_FALSE(instance.ProvisionHeightChainWords(originalHeightWords + 1u));
+    EXPECT_EQ(instance.GetResources().GetHeightChainBuffer(), originalHeightChain);
+    EXPECT_EQ(instance.GetResources().GetHeightChainWords(), originalHeightWords);
+    const auto originalNormalChain = instance.GetResources().GetNormalChainTexture();
+    const uint32_t originalNormalMips = instance.GetResources().GetNormalChainMips();
+    EXPECT_FALSE(instance.ProvisionNormalChain(513u, 513u));
+    EXPECT_EQ(instance.GetResources().GetNormalChainTexture(), originalNormalChain);
+    EXPECT_EQ(instance.GetResources().GetNormalChainMips(), originalNormalMips);
+    EXPECT_FALSE(instance.SetHeightSource(1u, source));
+    EXPECT_EQ(instance.GetResources().GetBoundHeightSource(1u),
+              instance.GetResources().GetDefaultHeightTexture());
+    EXPECT_EQ(instance.GetTerrainSourceGeneration(), generation);
+    bool changed = false;
+    EXPECT_FALSE(instance.RefreshTerrainSources(changed));
+    EXPECT_FALSE(changed);
+    EXPECT_EQ(instance.CountTerrainSourceSlots(source), originalSlots + 1u);
+    EXPECT_EQ(instance.GetTerrainSourceGeneration(), generation);
+    device.HideGraphicsToken = false;
+    EXPECT_TRUE(instance.SetPageTable(replacementTable, 0u));
+    EXPECT_EQ(instance.GetResources().GetPageTableBuffer(), replacementTable);
+    EXPECT_TRUE(instance.ProvisionHeightChainWords(originalHeightWords + 1u));
+    EXPECT_GT(instance.GetResources().GetHeightChainWords(), originalHeightWords);
+    EXPECT_TRUE(instance.ProvisionNormalChain(513u, 513u));
+    EXPECT_EQ(instance.GetResources().GetNormalChainMips(), CBTNormalChainMips(513u, 513u));
+    EXPECT_TRUE(instance.RefreshTerrainSources(changed));
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(instance.CountTerrainSourceSlots(source), originalSlots);
+    // The real Vulkan queue exercises the scoped-fence path without a global token.
+    PendingUpdate pending(device);
+    ASSERT_TRUE(pending.Submit(instance, 0u));
+    ASSERT_EQ(pending.Status(), IDevice::GpuSyncStatus::Pending);
+    pending.ReleaseSoon();
+    device.UseScopedGraphicsFence = true;
+    const uint64_t drains = device.GetIdleDrainCount();
+    EXPECT_TRUE(instance.SetHeightSource(2u, source));
+    EXPECT_EQ(pending.Status(), IDevice::GpuSyncStatus::Complete);
+    EXPECT_EQ(device.GetIdleDrainCount(), drains);
+    device.UseScopedGraphicsFence = false;
+    EXPECT_TRUE(instance.SetPageTable({}, 0u));
+    device.DestroyBuffer(replacementTable);
+    EXPECT_EQ(device.GetValidationStats().ErrorCount, 0u);
+    for (const auto& entry : device.GetValidationStats().Vuids)
+        EXPECT_FALSE(entry.IsError) << entry.Vuid << ": " << entry.FirstMessage;
+}
+
+
+#if defined(__APPLE__)
+TEST(CBTSourceRebind, NativeMetalBindsAndResizesWithoutADeviceDrain)
+{
+    SetHeadlessEnv();
+    DeviceDesc description{};
+    description.preferredAPI = GraphicsAPI::Metal;
+    description.enableDebugLayer = true;
+    auto device = DeviceFactory::CreateDevice(description);
+    if (!device || !device->Initialize(description))
+        GTEST_SKIP() << "native Metal device unavailable";
+    ASSERT_EQ(device->GetAPI(), GraphicsAPI::Metal);
+    ASSERT_FALSE(device->LastGraphicsSubmissionToken().IsValid());
+    CBTKernelSet kernels;
+    ASSERT_TRUE(kernels.Initialize(*device, ShaderOutputDir()));
+    CBTInstance instance;
+    ASSERT_TRUE(instance.Initialize(*device, kernels));
+    ASSERT_TRUE(instance.InitializeRoots());
+    const auto source = instance.GetResources().GetDefaultAtlasHeightTexture();
+    ASSERT_TRUE(source.IsValid());
+    const uint64_t drains = device->GetIdleDrainCount();
+    ASSERT_TRUE(instance.SetHeightSource(0u, source));
+    EXPECT_EQ(instance.GetResources().GetBoundHeightSource(0u), source);
+    bool changed = false;
+    ASSERT_TRUE(instance.RefreshTerrainSources(changed));
+    EXPECT_TRUE(changed);
+    RecordProperty("normal_chain_supported", kernels.IsNarrowHeap() ? 0 : 1);
+    if (!kernels.IsNarrowHeap())
+    {
+        ASSERT_TRUE(instance.ProvisionHeightChainWords(CBTHeightChainWords(513u, 513u)));
+        ASSERT_TRUE(instance.ProvisionNormalChain(513u, 513u));
+        EXPECT_TRUE(instance.GetResources().HasNormalChainFor(513u, 513u));
+        ASSERT_TRUE(instance.ProvisionHeightChainWords(CBTHeightChainWords(769u, 769u)));
+        ASSERT_TRUE(instance.ProvisionNormalChain(769u, 769u));
+        EXPECT_TRUE(instance.GetResources().HasNormalChainFor(769u, 769u));
+    }
+    EXPECT_EQ(device->GetIdleDrainCount(), drains);
+    EXPECT_EQ(device->GetDeviceHealth(), DeviceHealth::Healthy);
+}
+
+#endif

@@ -15,6 +15,7 @@
 #include "Logger/Logger.h"
 #include "Scene/AssetManagerSceneResolver.h"
 #include "Scene/PrefabLibrary.h"
+#include "Scene/PrefabOverrideRecords.h"
 #include "Scene/PrefabOverrideWriter.h"
 #include "Scene/SceneDoc.h"
 #include "Scene/SceneSchemaRegistry.h"
@@ -68,7 +69,7 @@ ECS::EntityHandle FindOutermostRoot(const ECS::World& world, ECS::EntityHandle e
         if (world.GetComponent<Components::PrefabInstance>(at))
             root = at;
         const auto* parent = world.GetComponent<Components::Parent>(at);
-        at = parent ? parent->parent : ECS::EntityHandle{};
+        at = parent ? parent->Entity : ECS::EntityHandle{};
     }
     return root;
 }
@@ -137,19 +138,11 @@ const ComponentText* FindText(const std::vector<ComponentText>& texts, std::stri
     return it == texts.end() ? nullptr : &*it;
 }
 
-// The key of a "Component.field = value" line: the text before the first '=', without the spaces
-// around it. A key has no '=', so a value with one keeps its key.
-std::string_view LineKey(std::string_view line)
-{
-    const std::vector<std::string_view> fields = Split(line, '=');
-    return fields.empty() ? std::string_view() : TrimWhitespaceView(fields.front());
-}
-
 // The line of `text` whose key is `key`, case-insensitively; null when it has none.
 const std::string* FindLine(const std::vector<std::string>& lines, std::string_view key)
 {
-    const auto it = std::find_if(lines.begin(), lines.end(),
-                                 [key](const std::string& line) { return EqualsIgnoreCase(LineKey(line), key); });
+    const auto it = std::find_if(lines.begin(), lines.end(), [key](const std::string& line)
+                                 { return EqualsIgnoreCase(PrefabOverrideRecords::LineKey(line), key); });
     return it == lines.end() ? nullptr : &*it;
 }
 
@@ -184,23 +177,22 @@ struct LineContexts
         Save.Resolver = &Resolver;
         Save.Unresolved = world.TryGetUnresolvedComponents();
         Save.WriteEveryField = true;
-        Options.mode = LoadMode::Additive;
-        Options.assetResolver = &Resolver;
-        Options.assetRootOverride = Resolver.GetAssetRoot();
+        Options.Read.AssetResolver = &Resolver;
+        Options.Read.AssetRootOverride = Resolver.GetAssetRoot();
         Load = MakeDocumentLoadContext(world, File, SceneDoc{}, Options);
     }
 
     EngineCore& Engine;
     AssetManagerSceneResolver Resolver;
     std::filesystem::path File;
-    SceneSaveContext Save;
-    LoadOptions Options;
-    SceneLoadContext Load;
+    SceneWriteContext Save;
+    SceneLoadOptions Options;
+    SceneReadContext Load;
 };
 
 // Sets the fields `lines` name on `entity` through the component's schema, as a load reads them; adds
 // the component when the entity does not have it.
-void ApplyLines(ECS::World& world, const SceneLoadContext& context, ECS::EntityHandle entity, std::string_view token,
+void ApplyLines(ECS::World& world, const SceneReadContext& context, ECS::EntityHandle entity, std::string_view token,
                 std::span<const std::string> lines)
 {
     std::string text = "[prefab version=1]\n[entity id=\"edit\"]\n";
@@ -228,13 +220,15 @@ void RemoveComponent(ECS::World& world, ECS::EntityHandle entity, std::string_vi
         schema->Remove(world, entity);
 }
 
-// Gives the instance entity the new prefab values it does not override: a field changed in the
-// prefab where the instance keeps the old value, a component the prefab added, and a component the
-// prefab removed. A component the instance removed stays removed. Returns true when it changed the entity.
-bool PropagateToMember(ECS::World& world, const SceneLoadContext& context, ECS::EntityHandle entity, bool isRoot,
+// Gives the instance entity the prefab's new fields and components that it does not override. A field
+// kept because it differs from the old prefab gets a record, so it stays an override when the new value
+// equals it. Returns true when it changed the entity.
+bool PropagateToMember(ECS::World& world, const SceneReadContext& context, ECS::EntityHandle entity, bool isRoot,
                        const std::vector<ComponentText>& instance, const std::vector<ComponentText>& before,
                        const std::vector<ComponentText>& after)
 {
+    PrefabOverrideRecords& records = PrefabOverrideRecords::Get();
+    const std::vector<std::string> recorded = records.Find(world, entity);
     bool changedEntity = false;
     for (const ComponentText& next : after)
     {
@@ -258,11 +252,15 @@ bool PropagateToMember(ECS::World& world, const SceneLoadContext& context, ECS::
         {
             if (std::find(previous->lines.begin(), previous->lines.end(), line) != previous->lines.end())
                 continue;
-            const std::string_view key = LineKey(line);
+            const std::string_view key = PrefabOverrideRecords::LineKey(line);
             const std::string* previousLine = FindLine(previous->lines, key);
             const std::string* currentLine = FindLine(current->lines, key);
+            if (currentLine && PrefabOverrideRecords::HoldsLine(recorded, *currentLine))
+                continue;
             if (!currentLine || (previousLine && *currentLine == *previousLine))
                 changed.push_back(line);
+            else if (previousLine)
+                records.Record(world, entity, next.token, key.substr(next.token.size() + 1)); // the key is "token.field"
         }
         if (!changed.empty())
         {
@@ -283,7 +281,7 @@ bool PropagateToMember(ECS::World& world, const SceneLoadContext& context, ECS::
 
 // Applies to `clone` each line of `after` that the text of the clone does not have. A clone holds the
 // values of its prefab entity, so only its entity fields differ: they name the copy it came from.
-void ApplyClonedEntityFields(ECS::World& world, const SceneLoadContext& context, ECS::EntityHandle clone,
+void ApplyClonedEntityFields(ECS::World& world, const SceneReadContext& context, ECS::EntityHandle clone,
                              const std::vector<ComponentText>& current, const std::vector<ComponentText>& after)
 {
     for (const ComponentText& next : after)
@@ -302,8 +300,10 @@ void ApplyClonedEntityFields(ECS::World& world, const SceneLoadContext& context,
     }
 }
 
-// Clones newly added template addresses under their instance parents and records their identities.
-// A removed instance parent excludes its new children. Returns the retained clones.
+// Clones into the instance at `instanceId` every entity `after` has at an address `before` does not
+// have, under the instance entity at its parent's address and with the identity of its address. A clone
+// whose parent the instance removed is not kept. Records the identity of each clone in `entityByTag`.
+// Returns each kept clone.
 std::vector<GainedMember> AddGainedMembers(ECS::World& world, PrefabLibrary& library, std::string_view instanceId,
                                            const PrefabTemplate& before, const PrefabTemplate& after,
                                            const std::vector<PrefabInstanceEntity>& described,
@@ -340,13 +340,13 @@ std::vector<GainedMember> AddGainedMembers(ECS::World& world, PrefabLibrary& lib
         if (!gained[index])
             continue;
         const auto* parent = world.GetComponent<Components::Parent>(copy[index]);
-        const auto parentAt = parent ? std::find(copy.begin(), copy.end(), parent->parent) : copy.end();
+        const auto parentAt = parent ? std::find(copy.begin(), copy.end(), parent->Entity) : copy.end();
         if (parentAt == copy.end() || gained[static_cast<std::size_t>(parentAt - copy.begin())])
             continue;
         const ECS::EntityHandle* member =
             memberByAddress.Find(after.Addresses[static_cast<std::size_t>(parentAt - copy.begin())]);
         if (member)
-            world.GetComponentForWrite<Components::Parent>(copy[index])->parent = *member;
+            world.GetComponentForWrite<Components::Parent>(copy[index])->Entity = *member;
     }
     Components::DestroySubtreeImmediate(world, copy.front());
     std::vector<GainedMember> kept;
@@ -379,17 +379,17 @@ bool RemoveLostMembers(ECS::World& world, const PrefabTemplate& after,
     for (const PrefabInstanceEntity& entry : described)
     {
         const auto* parent = entry.AddedOnInstance ? world.GetComponent<Components::Parent>(entry.Entity) : nullptr;
-        if (!parent || !lost.Contains(parent->parent))
+        if (!parent || !lost.Contains(parent->Entity))
             continue;
-        ECS::EntityHandle keeper = parent->parent;
+        ECS::EntityHandle keeper = parent->Entity;
         while (lost.Contains(keeper))
-            keeper = world.GetComponent<Components::Parent>(keeper)->parent;
+            keeper = world.GetComponent<Components::Parent>(keeper)->Entity;
         Components::ReparentKeepingWorldPose(world, entry.Entity, keeper);
     }
     for (const ECS::EntityHandle member : lost)
     {
         const auto* parent = world.GetComponent<Components::Parent>(member);
-        if (!parent || !lost.Contains(parent->parent))
+        if (!parent || !lost.Contains(parent->Entity))
             Components::DestroySubtreeImmediate(world, member);
     }
     return true;
@@ -414,12 +414,12 @@ bool PropagateToInstance(ECS::World& world, PrefabLibrary& library, ECS::EntityH
 
     LineContexts contexts(world, before.Path);
     contexts.Load.EntityIdMap = &entityByTag;
-    SceneSaveContext instanceCtx = contexts.Save;
+    SceneWriteContext instanceCtx = contexts.Save;
     instanceCtx.EntityTagById = &instanceTags;
-    SceneSaveContext beforeCtx = contexts.Save;
+    SceneWriteContext beforeCtx = contexts.Save;
     beforeCtx.EntityTagById = &beforeTags;
     beforeCtx.Unresolved = library.GetWorld().TryGetUnresolvedComponents();
-    SceneSaveContext afterCtx = beforeCtx;
+    SceneWriteContext afterCtx = beforeCtx;
     afterCtx.EntityTagById = &afterTags;
 
     const auto schemas = SceneSchemaRegistry::GetAllSorted();
@@ -498,10 +498,10 @@ struct SectionLines
     // Puts `line` in place of the body line with its key, or after the last body line.
     void Set(const std::string& line)
     {
-        const std::string_view key = LineKey(line);
+        const std::string_view key = PrefabOverrideRecords::LineKey(line);
         for (std::size_t index = Header + 1; index < End; ++index)
         {
-            if (EqualsIgnoreCase(LineKey(Lines[index]), key))
+            if (EqualsIgnoreCase(PrefabOverrideRecords::LineKey(Lines[index]), key))
             {
                 Lines[index] = line;
                 return;
@@ -599,6 +599,7 @@ bool RevertPrefabOverride(ECS::World& world, ECS::EntityHandle entity, const Pre
     if (prefabOverride.Kind == PrefabOverrideKind::AddedComponent)
     {
         RemoveComponent(world, entity, prefabOverride.Component);
+        PrefabOverrideRecords::Get().Forget(world, entity, prefabOverride.Component, {});
         return true;
     }
     if (prefabOverride.Kind != PrefabOverrideKind::Field && prefabOverride.Kind != PrefabOverrideKind::RemovedComponent)
@@ -609,7 +610,7 @@ bool RevertPrefabOverride(ECS::World& world, ECS::EntityHandle entity, const Pre
 
     LineContexts contexts(world, prefab->Path);
     contexts.Load.EntityIdMap = &member.EntityByTag;
-    SceneSaveContext templateCtx = contexts.Save;
+    SceneWriteContext templateCtx = contexts.Save;
     templateCtx.EntityTagById = &member.TemplateTags;
     templateCtx.Unresolved = library->GetWorld().TryGetUnresolvedComponents();
     std::vector<ComponentText> templateText;
@@ -634,7 +635,32 @@ bool RevertPrefabOverride(ECS::World& world, ECS::EntityHandle entity, const Pre
         return false;
     }
     ApplyLines(world, contexts.Load, entity, component->token, std::span(line, 1));
+    PrefabOverrideRecords::Get().Forget(world, entity, component->token, prefabOverride.Field);
     return true;
+}
+
+std::vector<PrefabOverrideTarget> RecordPrefabOverrides(const ECS::World& world,
+                                                        std::span<const PrefabOverrideTarget> targets)
+{
+    PrefabOverrideRecords& records = PrefabOverrideRecords::Get();
+    std::vector<PrefabOverrideTarget> recorded;
+    for (const PrefabOverrideTarget& target : targets)
+        if (target.Override.Kind == PrefabOverrideKind::Field &&
+            records.Record(world, target.Entity, target.Override.Component, target.Override.Field))
+            recorded.push_back(target);
+    return recorded;
+}
+
+std::vector<PrefabOverrideTarget> ForgetPrefabOverrides(const ECS::World& world,
+                                                        std::span<const PrefabOverrideTarget> targets)
+{
+    PrefabOverrideRecords& records = PrefabOverrideRecords::Get();
+    std::vector<PrefabOverrideTarget> forgotten;
+    for (const PrefabOverrideTarget& target : targets)
+        if (target.Override.Kind == PrefabOverrideKind::Field &&
+            records.Forget(world, target.Entity, target.Override.Component, target.Override.Field))
+            forgotten.push_back(target);
+    return forgotten;
 }
 
 PrefabTemplateEntity FindPrefabTemplateEntity(ECS::World& world, ECS::EntityHandle entity)
@@ -708,9 +734,9 @@ bool PutOverrideInText(ECS::World& world, PrefabLibrary& library, const PlannedA
     const std::unordered_map<ECS::EntityId, std::string> fileIds = CollectFileIds(
         world, member.Root, library, prefab, prefab.Origins[member.TemplateIndex].File, section.Lines);
     LineContexts contexts(world, planned.File);
-    SceneSaveContext instanceCtx = contexts.Save;
+    SceneWriteContext instanceCtx = contexts.Save;
     instanceCtx.EntityTagById = &fileIds;
-    SceneSaveContext templateCtx = contexts.Save;
+    SceneWriteContext templateCtx = contexts.Save;
     templateCtx.EntityTagById = &member.TemplateTags;
     templateCtx.Unresolved = library.GetWorld().TryGetUnresolvedComponents();
     const auto schemas = SceneSchemaRegistry::GetAllSorted();
@@ -843,6 +869,8 @@ bool ApplyPrefabOverrides(ECS::World& world, std::span<const PrefabOverrideTarge
     }
     // One rebuild for all written files, so each instance takes the new prefab values once.
     library->RebuildFiles(written);
+    // The prefab holds each applied value now, so the applying entity keeps no record of it.
+    ForgetPrefabOverrides(world, targets);
     return wroteAll;
 }
 

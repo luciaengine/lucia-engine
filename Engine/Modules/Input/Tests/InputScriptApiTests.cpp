@@ -6,6 +6,7 @@
 #include "Mathematics/VectorPrinting.h"
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <cstddef>
 #include <fstream>
@@ -22,6 +23,25 @@ constexpr std::int32_t kKeyA = kKeyCode_A;
 constexpr std::int32_t kMouseLeft = kMouseButton_Left;
 constexpr ContextId kContext = HashInput("ScriptApi.Context");
 constexpr ActionId kJump = HashInput("ScriptApi.Jump");
+
+// The record's entry in the module's committed description, by its id ("Input.ActionState").
+nlohmann::json DescribedRecord(std::string_view id)
+{
+    std::ifstream file(GE_ENGINE_API_DESCRIPTION);
+    const nlohmann::json module = nlohmann::json::parse(file);
+    for (const nlohmann::json& record : module.at("records"))
+        if (record.at("id").get<std::string>() == id)
+            return record;
+    return {};
+}
+
+std::size_t DescribedOffset(const nlohmann::json& record, std::string_view field)
+{
+    for (const nlohmann::json& entry : record.at("fields"))
+        if (entry.at("name").get<std::string>() == field)
+            return entry.at("offset").get<std::size_t>();
+    return static_cast<std::size_t>(-1);
+}
 
 } // namespace
 
@@ -64,7 +84,18 @@ TEST(InputScriptApiTests, PointerQueriesAnswerFromTheSystem)
     EXPECT_TRUE(Script::IsWindowFocused(input));
 }
 
+TEST(InputScriptApiTests, PointerLockFollowsTheRequestAndTheHostsGrant)
+{
+    InputSystem input{SinkRole::Gameplay};
+    IRawInputSink& host = input;
 
+    Script::LockPointer(input);
+    EXPECT_EQ(Script::GetPointerLockState(input), PointerLockState::Pending);
+    host.OnPointerLock(true);
+    EXPECT_EQ(Script::GetPointerLockState(input), PointerLockState::Locked);
+    Script::UnlockPointer(input);
+    EXPECT_EQ(Script::GetPointerLockState(input), PointerLockState::Unlocked);
+}
 
 TEST(InputScriptApiTests, ActionAuthoringDrivesTheActionState)
 {
@@ -139,15 +170,14 @@ TEST(InputScriptApiTests, KeysWithOppositeScalesMakeOneAxis)
     EXPECT_FLOAT_EQ(Script::GetActionState(input, move).value, 1.0f);
 }
 
-TEST(InputScriptApiTests, PointerLockFollowsTheRequestAndTheHostsGrant)
+TEST(InputScriptApiTests, DescribedRecordLayoutsAreTheCompilers)
 {
-    InputSystem input{SinkRole::Gameplay};
-    IRawInputSink& host = input;
-
-    Script::LockPointer(input);
-    EXPECT_EQ(Script::GetPointerLockState(input), PointerLockState::Pending);
-    host.OnPointerLock(true);
-    EXPECT_EQ(Script::GetPointerLockState(input), PointerLockState::Locked);
-    Script::UnlockPointer(input);
-    EXPECT_EQ(Script::GetPointerLockState(input), PointerLockState::Unlocked);
+    const nlohmann::json state = DescribedRecord("Input.ActionState");
+    ASSERT_FALSE(state.is_null());
+    EXPECT_EQ(state.at("size").get<std::size_t>(), sizeof(ActionState));
+    EXPECT_EQ(state.at("align").get<std::size_t>(), alignof(ActionState));
+    EXPECT_EQ(DescribedOffset(state, "pressed"), offsetof(ActionState, pressed));
+    EXPECT_EQ(DescribedOffset(state, "justPressed"), offsetof(ActionState, justPressed));
+    EXPECT_EQ(DescribedOffset(state, "justReleased"), offsetof(ActionState, justReleased));
+    EXPECT_EQ(DescribedOffset(state, "value"), offsetof(ActionState, value));
 }

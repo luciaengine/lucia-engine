@@ -3,11 +3,9 @@
 #include "Components/Hierarchy.h"
 #include "Components/Rendering/RenderSorting.h"
 #include "Components/Transform.h"
-#include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/SortingLayers.h"
 #include "ECS/World.h"
 #include "ECS/ECSTemplates.h"
-#include "Mathematics/Matrix4x4.h"
 
 namespace GameEngine::Engine::Renderer
 {
@@ -15,8 +13,7 @@ namespace
 {
 struct GroundSortPoint
 {
-    Mathematics::Vector3 Position;
-    float32 SectorOffsetY = 0;
+    Mathematics::WorldPosition Position;
 };
 
 GroundSortPoint ResolveGroundPoint(ECS::World& world, ECS::EntityHandle entity, float32 originY)
@@ -24,14 +21,8 @@ GroundSortPoint ResolveGroundPoint(ECS::World& world, ECS::EntityHandle entity, 
     GroundSortPoint point;
     if (const auto* transform = world.GetComponent<Components::WorldTransform>(entity))
     {
-        point.Position = Mathematics::Matrix4x4::FromColumnMajor(transform->matrix).TransformPoint({0, originY, 0});
-        if (const auto* sector = world.GetComponent<Components::WorldSectorCoord>(entity))
-        {
-            Mathematics::Vector3 offset;
-            SectorToWorld(*sector, offset.x, offset.y, offset.z);
-            point.Position = point.Position + offset;
-            point.SectorOffsetY = offset.y;
-        }
+        point.Position = transform->GetPosition() + Mathematics::Vector3{
+            transform->Basis[1].x * originY, transform->Basis[1].y * originY, transform->Basis[1].z * originY};
     }
     return point;
 }
@@ -81,8 +72,7 @@ RenderSortingData ResolveRenderSorting(ECS::World& world, ECS::EntityHandle enti
                 if (result.SortByY)
                 {
                     const auto point = ResolveGroundPoint(world, entity, sorting->SortOriginY);
-                    result.SortY = point.Position.y;
-                    result.SectorOffsetY = point.SectorOffsetY;
+                    result.SortY = point.Position.Y;
                 }
                 result.Authored = sorting->Layer != 0 || sorting->OrderInLayer != 0 ||
                                   sorting->GroupChildren || sorting->SortByY;
@@ -102,9 +92,9 @@ RenderSortingData ResolveRenderSorting(ECS::World& world, ECS::EntityHandle enti
         if (!hasGroups)
             break;
         const auto* parent = world.GetComponent<Components::Parent>(current);
-        if (!parent || parent->parent == current)
+        if (!parent || parent->Entity == current)
             break;
-        current = parent->parent;
+        current = parent->Entity;
     }
     return result;
 }

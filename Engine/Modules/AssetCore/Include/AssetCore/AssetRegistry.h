@@ -4,7 +4,7 @@
 #include "AssetCore/AssetEvents.h"
 #include "AssetCore/AssetTypes.h"
 #include "AssetCore/GUID.h"
-#include "AssetCore/Types.h"
+#include "Types/Types.h"
 #include <filesystem>
 #include <functional>
 #include <shared_mutex>
@@ -155,6 +155,11 @@ class AssetTypeRegistry
 
     // Event dispatcher for asset type events
     AssetEventDispatcher m_EventDispatcher;
+
+    /**
+     * @brief Register built-in asset types
+     */
+    void RegisterBuiltInAssetTypes();
 
     /**
      * @brief Update extension mappings after registration changes

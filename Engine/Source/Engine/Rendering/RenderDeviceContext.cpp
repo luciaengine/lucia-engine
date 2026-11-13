@@ -1,7 +1,9 @@
 #include "Engine/Rendering/RenderDeviceContext.h"
 
 #include "Engine/Rendering/RenderServices.h"
+#include "JobSystem/JobChannel.h"
 #include "Logger/Logger.h"
+#include "Platform/Capabilities.h"
 #include "Rendering/Core/Device.h"
 
 #include <chrono>
@@ -19,6 +21,48 @@ RenderDeviceContext::~RenderDeviceContext()
     Shutdown();
 }
 
+void RenderDeviceContext::BeginDeviceCreation(JobSystem::JobChannel& channel, const DeviceDesc& desc)
+{
+    assert(!m_Initialized && !m_Device && !m_CreationDesc.has_value() &&
+           "RenderDeviceContext::BeginDeviceCreation needs a context without a device");
+    m_OwnsDevice = true;
+    m_CreationDesc = desc;
+    if (Platform::SupportsTransientThreads())
+        m_DeviceCreation = channel.Submit([this]() { return CreateOwnedDevice(*m_CreationDesc); });
+}
+
+RenderDeviceContext::OwnedDeviceResult RenderDeviceContext::CreateOwnedDevice(const DeviceDesc& desc)
+{
+    const auto tDev = std::chrono::high_resolution_clock::now();
+    // The factory returns null only for a backend this build does not include.
+    m_Device = GameEngine::Rendering::DeviceFactory::CreateDevice(desc);
+    if (!m_Device)
+    {
+        Logger::Log::Error("RenderDeviceContext::Initialize: DeviceFactory::CreateDevice failed");
+        return OwnedDeviceResult::BackendNotInBuild;
+    }
+    if (!m_Device->Initialize(desc))
+    {
+        Logger::Log::Error("RenderDeviceContext::Initialize: device Initialize failed");
+        m_Device.reset();
+        return OwnedDeviceResult::DeviceFailed;
+    }
+    Logger::Log::Info("[Startup]   Device create+init: {:.1f}ms",
+                      std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - tDev).count());
+    return OwnedDeviceResult::Created;
+}
+
+RenderDeviceContext::OwnedDeviceResult RenderDeviceContext::WaitForDeviceCreation()
+{
+    m_DeviceCreation.Wait();
+    OwnedDeviceResult result = OwnedDeviceResult::DeviceFailed;
+    const bool completed = m_DeviceCreation.TryGetResult(result);
+    m_DeviceCreation = JobSystem::TaskHandle();
+    if (m_Device)
+        m_Device->BindOwnerThread();
+    return completed ? result : OwnedDeviceResult::DeviceFailed;
+}
+
 bool RenderDeviceContext::Initialize(const InitParams& params)
 {
     if (m_Initialized)
@@ -31,34 +75,46 @@ bool RenderDeviceContext::Initialize(const InitParams& params)
     };
     const auto tCtxStart = std::chrono::high_resolution_clock::now();
 
-    m_OwnsDevice = (params.sharedDevice == nullptr);
-    if (m_OwnsDevice)
+    const bool creationBegun = m_CreationDesc.has_value();
+    const DeviceDesc& deviceDesc = creationBegun ? *m_CreationDesc : params.deviceDesc;
+    if (creationBegun)
     {
-        // Create and own device (legacy mode).
-        auto tDev = std::chrono::high_resolution_clock::now();
-        m_Device = GameEngine::Rendering::DeviceFactory::CreateDevice(params.deviceDesc);
-        if (!m_Device)
+        OwnedDeviceResult result = OwnedDeviceResult::DeviceFailed;
+        if (m_DeviceCreation.IsValid())
         {
-            Logger::Log::Error("RenderDeviceContext::Initialize: DeviceFactory::CreateDevice failed");
+            result = WaitForDeviceCreation();
+            Logger::Log::Info("[Startup]   Device join wait: {:.1f}ms", MsSince(tCtxStart));
+        }
+        else
+        {
+            result = CreateOwnedDevice(deviceDesc);
+        }
+        if (result == OwnedDeviceResult::BackendNotInBuild)
+        {
+            Logger::Log::Error("RenderDeviceContext::Initialize: the render device was not created. "
+                               "Request a graphics API that this build includes; the error above names the missing backend.");
+            Shutdown();
             return false;
         }
-        if (!m_Device->Initialize(params.deviceDesc))
+        if (result != OwnedDeviceResult::Created)
         {
-            Logger::Log::Error("RenderDeviceContext::Initialize: device Initialize failed");
-            m_Device.reset();
+            Logger::Log::Error("RenderDeviceContext::Initialize: the render device was not created. "
+                               "Install or update the GPU driver; the errors above name the step that failed.");
+            Shutdown();
             return false;
         }
-        Logger::Log::Info("[Startup]   Device create+init: {:.1f}ms", MsSince(tDev));
+    }
+    else if (params.sharedDevice == nullptr)
+    {
+        m_OwnsDevice = true;
+        if (CreateOwnedDevice(deviceDesc) != OwnedDeviceResult::Created)
+            return false;
     }
     else
     {
         // Attach mode: device is owned by another context.
+        m_OwnsDevice = false;
         m_AttachedDevice = params.sharedDevice;
-        if (!m_AttachedDevice)
-        {
-            Logger::Log::Error("RenderDeviceContext::Initialize: sharedDevice is null");
-            return false;
-        }
     }
 
     Rendering::IDevice* device = GetDevice();
@@ -69,7 +125,7 @@ bool RenderDeviceContext::Initialize(const InitParams& params)
     }
 
     // Swapchain/WSI setup (if requested)
-    if (params.deviceDesc.enableSwapchain)
+    if (deviceDesc.enableSwapchain)
     {
         auto tSwap = std::chrono::high_resolution_clock::now();
         if (!params.windowHandle)
@@ -84,16 +140,12 @@ bool RenderDeviceContext::Initialize(const InitParams& params)
             Shutdown();
             return false;
         }
-        m_WindowTarget = device->CreateWindowTarget(params.windowHandle, params.width, params.height);
-        if (!m_WindowTarget.IsValid())
+        IDevice::WindowTargetJobDispatch dispatch;
+        if (params.windowTargetChannel)
+            dispatch = [channel = params.windowTargetChannel](std::function<void()> job) { channel->Enqueue(std::move(job)); };
+        if (!device->CreateAndActivateWindowTarget(params.windowHandle, params.width, params.height, &m_WindowTarget, dispatch))
         {
-            Logger::Log::Error("RenderDeviceContext::Initialize: CreateWindowTarget failed");
-            Shutdown();
-            return false;
-        }
-        if (!device->SetActiveWindowTarget(m_WindowTarget))
-        {
-            Logger::Log::Error("RenderDeviceContext::Initialize: SetActiveWindowTarget failed");
+            Logger::Log::Error("RenderDeviceContext::Initialize: CreateAndActivateWindowTarget failed");
             Shutdown();
             return false;
         }
@@ -128,6 +180,11 @@ bool RenderDeviceContext::Initialize(const InitParams& params)
 
 void RenderDeviceContext::Shutdown()
 {
+    if (m_DeviceCreation.IsValid())
+        (void)WaitForDeviceCreation();
+    // The next Initialize reads its own params, not this creation's description.
+    m_CreationDesc.reset();
+
     if (!GetDevice() && !m_RenderServices)
     {
         m_Initialized = false;
@@ -206,15 +263,6 @@ bool RenderDeviceContext::RecreateWindowTargetSwapchain(uint32 width, uint32 hei
         return false;
     }
     return device->RecreateWindowTargetSwapchain(m_WindowTarget, width, height);
-}
-
-RenderDeviceContext::CompileAndExecuteResult RenderDeviceContext::CompileAndExecuteRenderGraph()
-{
-    // Old-arm graph compile/execute is gone under RenderGraph — the host drives
-    // BuildFrameGraph(RGFrame&) directly and timings come from caller chrono.
-    // Empty shim until the Stage-6 editor cutover removes the last caller
-    // (EditorApplication RGCsvSidecar emit).
-    return CompileAndExecuteResult{};
 }
 
 } // namespace GameEngine::Engine::Renderer

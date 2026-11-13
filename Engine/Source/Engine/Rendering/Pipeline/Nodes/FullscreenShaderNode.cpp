@@ -3,24 +3,25 @@
 #include "Core/Engine.h"
 #include "Engine/Rendering/Pipeline/PipelineResourceNames.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
+#include "Engine/Rendering/Pipeline/ViewExposureCompensation.h"
+#include "Engine/Rendering/Pipeline/ViewExposureHistory.h"
 #include "Engine/Rendering/RenderServices.h"
-#include "Engine/Rendering/ImageBasedLightingFeature.h"
-#include "Engine/Rendering/IEnvironmentSource.h"
+#include "Mathematics/MatrixOps.h"
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
 #include "Engine/Rendering/Pipeline/Nodes/PipelineNodeUtils.h"
 #include "Types/StringUtils.h"
 
 #include "Logger/Logger.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Common/Math.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/Passes/FinalizeContract.h"
+#include "Rendering/Passes/MsaaColorResolvePass.h"
 #include "Rendering/Passes/TonemapPass.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
-#include "Rendering/Materials/ShaderMetaValidation.h"
+#include "Rendering/Materials/Shader/ShaderMetaValidation.h"
 #include "Types/StringId.h"
 
 #include <algorithm>
@@ -30,9 +31,8 @@
 #include <cmath>
 #include <cstring>
 #include <functional>
-#include <unordered_set>
-
 #include <nlohmann/json.hpp>
+#include <unordered_set>
 
 namespace GameEngine::Engine::Renderer { using namespace ::GameEngine::Rendering; }
 
@@ -49,6 +49,8 @@ class FullscreenShaderNodeRenderer
     struct PassCustomization
     {
         RenderGraph::RGTexture Output{};
+        // Textures the pass samples besides its declared inputs: its own output from an earlier
+        // frame (a temporal history), so they hold what the output holds.
         std::vector<std::pair<std::string, RenderGraph::RGTexture>> SampledTextures;
         std::vector<std::pair<std::string, float>> FloatPushConstants;
     };
@@ -61,6 +63,12 @@ class FullscreenShaderNodeRenderer
         const PassCustomizer& customizePass = {});
     static bool HasShaderTextureBinding(
         const FullscreenShaderNode& node, std::string_view binding);
+    static std::string MissingServiceTextures(const FullscreenShaderNode& node);
+    static bool IsSkippedBy(const FullscreenShaderNode& node, const PostProcessSettings& settings);
+    // The settings the node's pass reads for one view: the effective settings with the fields derived
+    // from the view's render height. A diagnostic view's Tonemap reads them unexposed and untonemapped.
+    static PostProcessSettings ViewSettings(const FullscreenShaderNode& node, RenderServices& services,
+                                            GameEngine::Rendering::ViewId viewId, uint64 worldId, uint32 renderHeight);
     static const std::string& NodeId(const FullscreenShaderNode& node)
     {
         return node.m_Id;
@@ -71,6 +79,37 @@ class FullscreenShaderNodeRenderer
 
 namespace
 {
+// The textures only RenderServices can provide, by the shader binding name a node lists in
+// "serviceTextures". The bind and the refusal of an unlisted one both read this table.
+enum class ServiceTexture : uint8_t
+{
+    CubeLut3D,
+    CubeLut1DStrip,
+    BloomLensDirt,
+};
+
+struct ServiceTextureName
+{
+    std::string_view Name;
+    ServiceTexture Texture;
+};
+
+constexpr ServiceTextureName kServiceTextures[] = {
+    {"uLut3d", ServiceTexture::CubeLut3D},
+    {"uLut1d", ServiceTexture::CubeLut1DStrip},
+    {"uLensDirt", ServiceTexture::BloomLensDirt},
+};
+
+const ServiceTextureName* FindServiceTexture(std::string_view name)
+{
+    for (const ServiceTextureName& entry : kServiceTextures)
+    {
+        if (entry.Name == name)
+            return &entry;
+    }
+    return nullptr;
+}
+
 // ~6e-4 tolerance: below any user-visible PP slider step, above
 // PostProcessVolume float-blend noise.
 constexpr float kSkipEpsilon = 1.0f / 1024.0f;
@@ -116,6 +155,7 @@ bool FullscreenShaderNode::Initialize(std::string nodeId, std::string nodeJson, 
     m_Json = std::move(nodeJson);
     m_Inputs.clear();
     m_InputGates.clear();
+    m_OptionalInputs.clear();
     m_AssetTextures.clear();
     m_InputUsages.clear();
     m_Buffers.clear();
@@ -244,6 +284,30 @@ bool FullscreenShaderNode::Initialize(std::string nodeId, std::string nodeJson, 
         if (j.contains("shaderPkg") && j["shaderPkg"].is_string())
             m_ShaderPkg = j["shaderPkg"].get<std::string>();
 
+        if (j.contains("proceduralDraw"))
+        {
+            const auto& draw = j["proceduralDraw"];
+            if (!draw.is_object() || !draw.contains("vertexCount") ||
+                !draw.contains("instanceCount") || !draw["vertexCount"].is_number_integer() ||
+                !draw["instanceCount"].is_number_integer())
+            {
+                if (outError)
+                    *outError = "proceduralDraw requires integer vertexCount and instanceCount";
+                return false;
+            }
+            const auto vertices = draw["vertexCount"].get<int64_t>();
+            const auto instances = draw["instanceCount"].get<int64_t>();
+            if (vertices < 3 || vertices > 65535 || vertices % 3 != 0 ||
+                instances < 1 || instances > 1048576)
+            {
+                if (outError)
+                    *outError = "proceduralDraw requires 3..65535 vertices in triangles and 1..1048576 instances";
+                return false;
+            }
+            m_VertexCount = static_cast<uint32_t>(vertices);
+            m_InstanceCount = static_cast<uint32_t>(instances);
+        }
+
         if (j.contains("requiresPackage"))
         {
             if (!j["requiresPackage"].is_string() || j["requiresPackage"].get<std::string>().empty())
@@ -255,7 +319,7 @@ bool FullscreenShaderNode::Initialize(std::string nodeId, std::string nodeJson, 
             m_RequiredPackage = j["requiresPackage"].get<std::string>();
         }
 
-        // Parse push constant defaults: "pushConstants": { "exposure": 1.0, "tonemapMode": 5 }
+        // Parse push constant defaults: "pushConstants": { "exposure": 1.0, "ditherMode": 0 }
         if (j.contains("pushConstants") && j["pushConstants"].is_object())
         {
             for (auto it = j["pushConstants"].begin(); it != j["pushConstants"].end(); ++it)
@@ -282,28 +346,6 @@ bool FullscreenShaderNode::Initialize(std::string nodeId, std::string nodeJson, 
 
         if (j.contains("ppOverrides") && j["ppOverrides"].is_boolean())
             m_PPOverrides = j["ppOverrides"].get<bool>();
-
-        if (j.contains("proceduralDraw"))
-        {
-            const auto& draw = j["proceduralDraw"];
-            if (!draw.is_object() || !draw.contains("vertexCount") ||
-                !draw.contains("instanceCount") || !draw["vertexCount"].is_number_integer() ||
-                !draw["instanceCount"].is_number_integer())
-            {
-                if (outError) *outError = "proceduralDraw requires integer vertexCount and instanceCount";
-                return false;
-            }
-            const auto vertices = draw["vertexCount"].get<int64_t>();
-            const auto instances = draw["instanceCount"].get<int64_t>();
-            if (vertices < 3 || vertices > 65535 || vertices % 3 != 0 ||
-                instances < 1 || instances > 1048576)
-            {
-                if (outError) *outError = "proceduralDraw requires 3..65535 vertices in triangles and 1..1048576 instances";
-                return false;
-            }
-            m_VertexCount = static_cast<uint32_t>(vertices);
-            m_InstanceCount = static_cast<uint32_t>(instances);
-        }
 
         // Ping-pong chain: "pingPongChain": true, or an object naming the
         // scene-color binding the chain rethreads between segments.
@@ -346,6 +388,15 @@ bool FullscreenShaderNode::Initialize(std::string nodeId, std::string nodeJson, 
             {
                 if (it.value().is_string())
                     m_InputGates.emplace(it.key(), it.value().get<std::string>());
+            }
+        }
+
+        if (j.contains("optionalInputs") && j["optionalInputs"].is_array())
+        {
+            for (const auto& name : j["optionalInputs"])
+            {
+                if (name.is_string())
+                    m_OptionalInputs.push_back(name.get<std::string>());
             }
         }
 
@@ -643,7 +694,7 @@ void FullscreenShaderNode::EnsureCachedResources(GameEngine::Rendering::IDevice*
         gd.PixelShader  = std::make_shared<const std::vector<uint8_t>>(m_FsBytes);
         gd.DebugName = m_PipelineDebugName;
 
-        // Fullscreen post defaults: no culling, no depth, dynamic viewport/scissor.
+        // A compositor with a depth output writes the depth matching its selected color.
         gd.Rasterization.cullMode = GameEngine::Rendering::CullModeFlagBits::None;
         gd.DepthStencil.depthTestEnable = !m_DepthOutputRef.empty();
         gd.DepthStencil.depthWriteEnable = !m_DepthOutputRef.empty();
@@ -825,14 +876,36 @@ FullscreenShaderNode::SamplerForPreset(const std::string& preset) const
 }
 
 void FullscreenShaderNode::Declare(RenderPipelineInstance& instance,
-                                   const PipelineDeclareContext& ctx)
+                                   const PipelineDeclareContext& /*ctx*/)
 {
     m_RenderServices = &instance.GetRenderServices();
-    m_FrameDeltaTime = std::isfinite(ctx.DeltaTimeSeconds) ? std::max(ctx.DeltaTimeSeconds, 0.0f) : 0.0f;
     if (!m_RequiredPackage.empty() &&
         !m_RenderServices->IsPackageAvailable(m_RequiredPackage))
         return;
     EnsureCachedResources(m_RenderServices->GetDevice());
+}
+
+void FullscreenShaderNode::RequestPausedViewPipelines(const PausedViewPrewarm& prewarm)
+{
+    // The gates of the live declare (Detail::FullscreenShaderNodeRenderer::Declare): with a missing
+    // package, shader or service texture, or skipWhen fields that all hold, the node draws nothing.
+    if (!m_RequiredPackage.empty() && !prewarm.Services.IsPackageAvailable(m_RequiredPackage))
+        return;
+    EnsureCachedResources(prewarm.Services.GetDevice());
+    if (!m_Device || !m_BasePipelineId.IsValid() ||
+        !Detail::FullscreenShaderNodeRenderer::MissingServiceTextures(*this).empty())
+        return;
+    if (Detail::FullscreenShaderNodeRenderer::IsSkippedBy(
+            *this, Detail::FullscreenShaderNodeRenderer::ViewSettings(*this, prewarm.Services, prewarm.View.id,
+                                                                      prewarm.View.worldId, prewarm.RenderHeight)))
+        return;
+    if (const std::optional<GameEngine::Rendering::PipelineFormatKey> key = prewarm.SingleColorTargetKey(m_OutputRef))
+        m_Device->RequestGraphicsPipeline(m_BasePipelineId, *key);
+}
+
+bool FullscreenShaderNode::HasPassthroughSource() const
+{
+    return !m_PassthroughInputName.empty() || m_Inputs.size() == 1;
 }
 
 void FullscreenShaderNode::StitchThrough(ViewDeclare& d)
@@ -904,11 +977,6 @@ void FullscreenShaderNode::WriteReflectedPPFields(Rendering::NamedPushConstantWr
             writer.Add(member.Name, shaderAnimationTime);
             continue;
         }
-        if (member.Name == "frameDeltaTime")
-        {
-            writer.Add(member.Name, m_FrameDeltaTime);
-            continue;
-        }
         if (settings.TryWriteField(member.Name, writer))
             continue;
         (void)TextureService::TryWriteCubeLutPushMember(member.Name, cubeLut, writer);
@@ -940,6 +1008,68 @@ bool Detail::FullscreenShaderNodeRenderer::HasShaderTextureBinding(
     return false;
 }
 
+// A node with skipWhen fields is skipped when every field reads its skip value. A field that the
+// settings do not know runs the node.
+bool Detail::FullscreenShaderNodeRenderer::IsSkippedBy(const FullscreenShaderNode& node,
+                                                       const PostProcessSettings& settings)
+{
+    if (node.m_SkipWhenFields.empty())
+        return false;
+    for (const auto& f : node.m_SkipWhenFields)
+    {
+        float v = 0.0f;
+        if (!settings.TryReadField(f.Name, v) || std::abs(v - f.Value) > kSkipEpsilon)
+            return false;
+    }
+    return true;
+}
+
+PostProcessSettings Detail::FullscreenShaderNodeRenderer::ViewSettings(const FullscreenShaderNode& node,
+                                                                      RenderServices& services,
+                                                                      GameEngine::Rendering::ViewId viewId,
+                                                                      uint64 worldId, uint32 renderHeight)
+{
+    PostProcessSettings settings = services.GetEffectivePostProcessSettings(viewId, worldId);
+    // A diagnostic view writes display-range values, not scene radiance, so it
+    // reaches the display unexposed and untonemapped.
+    if (node.m_Id == "Tonemap" && worldId != 0)
+    {
+        auto* shadows = services.GetFeature<ShadowMapRenderFeature>();
+        if (shadows != nullptr && shadows->ShowsDiagnosticValues())
+        {
+            settings.Exposure = 1.0f;
+            settings.AutoExposureActive = false;
+            settings.ViewOutput = PostProcessViewOutput::NoLook; // preserve the diagnostic values
+        }
+    }
+    // The same volume stack can feed views with different render heights, so the
+    // per-view derived push fields (bloom + fog-glow pyramid scales) resolve here.
+    settings.ResolveDerivedForRenderHeight(renderHeight);
+    return settings;
+}
+
+// A shader binding a service texture (kServiceTextures) that its node does not list would get a
+// placeholder of the wrong kind (a 2D texture for the Cube LUT's sampler3D), so the node refuses.
+std::string Detail::FullscreenShaderNodeRenderer::MissingServiceTextures(const FullscreenShaderNode& node)
+{
+    std::string missing;
+    for (const ServiceTextureName& entry : kServiceTextures)
+    {
+        const std::string_view name = entry.Name;
+        if (!HasShaderTextureBinding(node, name))
+            continue;
+        if (std::find(node.m_ServiceTextureBindings.begin(), node.m_ServiceTextureBindings.end(), name) !=
+            node.m_ServiceTextureBindings.end())
+            continue;
+        if (!missing.empty())
+            missing += ", ";
+        missing += "\"";
+        missing += name;
+        missing += "\"";
+    }
+    return missing;
+}
+
 void Detail::FullscreenShaderNodeRenderer::Declare(
     FullscreenShaderNode& node, ViewDeclare& d,
     const PassCustomizer& customizePass)
@@ -961,75 +1091,36 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
         return;
     }
 
+    if (const std::string missing = MissingServiceTextures(node); !missing.empty())
+    {
+        if (!node.m_LoggedMissingServiceTextures)
+        {
+            node.m_LoggedMissingServiceTextures = true;
+            Logger::Log::Error(
+                "RenderPipeline FullscreenShader '{}': shaderpkg '{}' samples {} but the node does not list "
+                "it; the node does not run. Add the names to the \"serviceTextures\" array of node '{}' (for "
+                "the Cube LUT's tables, sampled by the Tonemap and HDRColorFx nodes: \"serviceTextures\": "
+                "[\"uLut3d\", \"uLut1d\"], with a LinearClamp sampler for each).",
+                node.m_Id, node.m_ShaderPkg, missing, node.m_Id);
+        }
+        node.StitchThrough(d);
+        return;
+    }
+
     const auto viewId = d.View.id;
     const uint64 worldId = d.View.worldId;
 
     // PP settings evaluated ONCE at declaration — the skip gate and the
     // exec-time push constants must agree (captured by value below).
-    PostProcessSettings settings =
-        services->GetEffectivePostProcessSettings(viewId, worldId);
-    // A diagnostic view writes display-range values, not scene radiance, so it
-    // reaches the display unexposed and untonemapped.
-    if (node.m_Id == "Tonemap" && worldId != 0)
-    {
-        auto* shadows = services->GetFeature<ShadowMapRenderFeature>();
-        if (shadows != nullptr && shadows->ShowsDiagnosticValues())
-        {
-            settings.Exposure = 1.0f;
-            settings.AutoExposureActive = false;
-            settings.TonemapMode = 5; // Linear: preserve the diagnostic values.
-            settings.IctcpChromaCompression = 0.0f;
-        }
-    }
-    // The same volume stack can feed views with different render heights, so the
-    // per-view derived push fields (bloom + fog-glow pyramid scales) resolve here.
-    settings.ResolveDerivedForRenderHeight(d.RenderHeight);
-    // Pixel-perfect: the LDR chain runs at the display extent over an image
-    // that is one art texel per Zoom screen pixels, so the emulated CRT
-    // resolution is exactly framebuffer/Zoom — one emulated scanline per art
-    // texel row, spanning Zoom screen pixels, which is what gives the scanline
-    // its smooth intra-row profile instead of a per-texel screen door. Only
-    // crt.frag reads this field.
-    if (d.PixelPerfectCrossing)
-    {
-        const Engine::Renderer::PixelPerfectViewState pp =
-            services->Views().GetViewPixelPerfect(viewId);
-        if (pp.Active && pp.Zoom > 0)
-            settings.CrtEmulatedResolutionDiv = static_cast<float32>(pp.Zoom);
-    }
+    const PostProcessSettings settings = ViewSettings(node, *services, viewId, worldId, d.RenderHeight);
 
     // The old SetActivationPredicate, evaluated at declaration: skipped =
     // not declared (+ the chain variable threads through).
-    if (!node.m_SkipWhenFields.empty())
+    if (IsSkippedBy(node, settings))
     {
-        bool skip = true;
-        if (node.m_Id == "Tonemap")
-        {
-            // HDR display headroom is applied inside the pass body — in an
-            // HDR output mode Tonemap must run even when its skipWhen fields
-            // match (e.g. an explicit Linear volume), or the headroom is lost.
-            if (auto* dev = services->GetDevice();
-                dev && Rendering::IsHdrOutputModeActive(dev->GetActiveHdrOutputMode()))
-                skip = false;
-        }
-        if (skip)
-        {
-            for (const auto& f : node.m_SkipWhenFields)
-            {
-                float v = 0.0f;
-                if (!settings.TryReadField(f.Name, v) || std::abs(v - f.Value) > kSkipEpsilon)
-                {
-                    skip = false; // unknown field or live effect: run
-                    break;
-                }
-            }
-        }
-        if (skip)
-        {
-            if (node.m_StitchWhenSkipped)
-                node.StitchThrough(d);
-            return;
-        }
+        if (node.m_StitchWhenSkipped && node.HasPassthroughSource())
+            node.StitchThrough(d);
+        return;
     }
 
     // Identity elision (FinalCopy): a pure single-input copy whose input is
@@ -1070,14 +1161,12 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
         }
     }
 
-    // Inputs/buffers resolved AT DECLARATION; an unresolved ref declines the
-    // stage (stitch keeps the chain alive). Physicals captured by value —
-    // chain textures are pool imports, so they exist at declaration.
+    // Resolve graph identities at declaration; transient physicals exist only when recording.
     struct TexBind
     {
         std::string Name;
-        Rendering::TextureHandle External;
-        RenderGraph::RGTexture Graph;
+        Rendering::TextureHandle External{};
+        RenderGraph::RGTexture Graph{};
         bool StorageWrite = false;
     };
     struct BufBind
@@ -1094,10 +1183,16 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
         if (auto gate = node.m_InputGates.find(name);
             gate != node.m_InputGates.end() && IsGateInactive(settings, gate->second))
         {
-            texBinds.push_back({name, services->Textures().GetDefaultBlackTexture(), {}});
+            texBinds.push_back({name, services->Textures().GetDefaultBlackTexture()});
             continue;
         }
         const RenderGraph::RGTexture t = d.ResolveTexture(node.m_Inputs[name]);
+        if (!t.IsValid() &&
+            std::find(node.m_OptionalInputs.begin(), node.m_OptionalInputs.end(), name) != node.m_OptionalInputs.end())
+        {
+            texBinds.push_back({name, services->Textures().GetDefaultBlackTexture()});
+            continue;
+        }
         if (!t.IsValid())
         {
             if (!node.m_LoggedUnresolvedInput)
@@ -1145,7 +1240,7 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
             const GUID guid = assets->ResolveAssetGuid(path);
             const Rendering::TextureHandle texture = services->Textures().GetOrUpload(guid);
             if (texture.IsValid())
-                texBinds.push_back({name, texture, {}});
+                texBinds.push_back({name, texture});
         }
     }
 
@@ -1177,27 +1272,25 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
         }
         bufBinds.push_back({name, b.Buffer, b.Offset, b.Size});
     }
-
-    // Procedural translucent effects can use the same environment as the
-    // world materials. Import the cube to retain its bake-to-sample dependency;
-    // binding a service texture without this edge can read an unfinished bake.
-    if (std::find(node.m_ServiceTextureBindings.begin(), node.m_ServiceTextureBindings.end(),
-                  "ge_irradianceCube") != node.m_ServiceTextureBindings.end())
+    // The view's exposure compensation state is a per-view input the engine provides, like the view's
+    // exposure: a shader that declares uCompensation (Includes/exposure_compensation.glsl) reads it
+    // without a pipeline entry, while the view's Auto exposure resolves it. Otherwise the binding takes
+    // the placeholder, which reads as not written.
+    if (settings.IsAutoExposureActive())
     {
-        auto* ibl = services->GetFeature<ImageBasedLightingFeature>();
-        if (!ibl || !ibl->IsInitialized())
+        constexpr const char* kCompensationBinding = "uCompensation";
+        uint32_t binding = 0;
+        Rendering::DescriptorType dtype{};
+        if (node.m_ShaderMeta && node.m_Buffers.find(kCompensationBinding) == node.m_Buffers.end() &&
+            Rendering::TryGetSet0BindingByName(*node.m_ShaderMeta, kCompensationBinding, binding, dtype))
         {
-            node.StitchThrough(d);
-            return;
+            const PipelineBufferBindingRG compensation = ResolveViewExposureCompensation(d);
+            if (compensation.IsValid())
+            {
+                bufEdges.push_back({compensation.Graph, false});
+                bufBinds.push_back({kCompensationBinding, compensation.Buffer, compensation.Offset, compensation.Size});
+            }
         }
-        const auto irradiance = d.Frame.ImportExternalTexture(
-            "IBL_Irradiance", ibl->GetIrradianceCube(), ResourceState::ShaderResource,
-            TextureFormat{}, 1, 6);
-        texBinds.push_back({"ge_irradianceCube", {}, irradiance});
-        // Env owns an intensity of zero when the source is disabled, so a
-        // retained last-baked cube cannot leave the rain lit by a stale sky.
-        bufBinds.push_back({"Env", ibl->UploadEnvData(services->GetDevice()), 0,
-                           ImageBasedLightingFeature::kEnvDataBytes});
     }
 
     // Output resolved LAST: a declined stage never materializes a pool
@@ -1223,7 +1316,7 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
     // Decline + stitch; only Sampled (non-write) inputs participate.
     for (const auto& binding : texBinds)
     {
-        if (binding.StorageWrite || binding.Graph.Id != out.Id)
+        if (binding.StorageWrite || !binding.Graph.IsValid() || binding.Graph.Id != out.Id)
             continue;
         if (!node.m_LoggedSelfReferentialOutput)
         {
@@ -1244,9 +1337,11 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
     if (!node.m_DepthOutputRef.empty())
     {
         depthOutput = d.ResolveTexture(node.m_DepthOutputRef);
-        if (!depthOutput.IsValid()) return;
-        const auto dd = d.Frame.Graph().ResourceDesc(depthOutput.Id);
-        if (dd.Width != od.Width || dd.Height != od.Height || dd.SampleCount != od.SampleCount)
+        if (!depthOutput.IsValid())
+            return;
+        const auto depthDescription = d.Frame.Graph().ResourceDesc(depthOutput.Id);
+        if (depthDescription.Width != od.Width || depthDescription.Height != od.Height ||
+            depthDescription.SampleCount != od.SampleCount)
             return;
     }
 
@@ -1266,7 +1361,8 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
         customization.Output.IsValid() ? customization.Output : out;
 
     // MSAA resolve pair: only when targeting the multisampled View.Color
-    // with a single-sample, format-matched, distinct resolve (VUID-06865).
+    // with a single-sample, format-matched, distinct resolve. The resolve pass
+    // is declared after the chain's final segment.
     RenderGraph::RGTexture resolvePair{};
     if (out.Id == d.ViewColor.Id && d.ViewResolve.IsValid() && d.ViewResolve.Id != out.Id &&
         od.SampleCount > 1)
@@ -1320,7 +1416,7 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
     {
         for (size_t i = 0; i < node.m_InputNames.size(); ++i)
         {
-            if (texBinds[i].Name == node.m_PingPongSceneColorBinding && !texBinds[i].StorageWrite)
+            if (node.m_InputNames[i] == node.m_PingPongSceneColorBinding)
             {
                 sceneColorIdx = i;
                 break;
@@ -1372,11 +1468,23 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
                                             Rendering::TextureUsage::ShaderResource);
         const std::string pingAName = d.PassName(".PingA");
         const std::string pingBName = d.PassName(".PingB");
-        pdesc.debugName = "Fullscreen.PingPong";
+        pdesc.debugName = pingAName.c_str();
         ping[0] = d.Frame.CreateTexture(pingAName.c_str(), pdesc);
+        pdesc.debugName = pingBName.c_str();
         ping[1] = d.Frame.CreateTexture(pingBName.c_str(), pdesc);
         if (!ping[0].IsValid() || !ping[1].IsValid())
             chainCount = 1;
+    }
+
+    // The textures standing in for the output (a temporal history written and read back, the
+    // ping-pong chain) hold scene colour at the frame's pre-exposure when the output does.
+    if (d.IsPreExposed(out))
+    {
+        d.MarkPreExposed(passOutput);
+        for (const auto& [binding, texture] : customization.SampledTextures)
+            d.MarkPreExposed(texture);
+        d.MarkPreExposed(ping[0]);
+        d.MarkPreExposed(ping[1]);
     }
 
     static const char* const kSegSuffix[FullscreenShaderNode::kMaxPingPongChainSegments] = {"", ".Pp1", ".Pp2", ".Pp3"};
@@ -1424,12 +1532,10 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
                 if (versionedOutput)
                     ops.Load = RenderGraph::RGLoadOp::Clear;
                 else
-                    ops.Load = (blendEnabled && finalSeg) ? RenderGraph::RGLoadOp::Load : RenderGraph::RGLoadOp::DontCare;
+                    ops.Load = (blendEnabled && finalSeg) ? RenderGraph::RGLoadOp::Load
+                                                          : RenderGraph::RGLoadOp::DontCare;
                 ops.Store = RenderGraph::RGStoreOp::Store;
-                if (finalSeg && resolvePair.IsValid())
-                    p.AttachColorResolve(0, segOut, resolvePair, ops);
-                else
-                    p.AttachColor(0, segOut, ops);
+                p.AttachColor(0, segOut, ops);
                 if (depthOutput.IsValid())
                 {
                     RenderGraph::RGAttachmentOps depthOps{};
@@ -1491,13 +1597,10 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
                                                cubeLut, shaderAnimationTime);
                         if (node.m_Id == "Tonemap")
                         {
-                            const HdrOutputMode mode = device->GetActiveHdrOutputMode();
-                            const bool ictcpOutput = mode == HdrOutputMode::HDR10_PQ ||
-                                                     mode == HdrOutputMode::HDR10Plus;
-                            pcw.Add("ictcpChromaCompression",
-                                    ictcpOutput
-                                        ? std::clamp(settings.IctcpChromaCompression, 0.0f, 1.0f)
-                                        : 0.0f);
+                            // The view's output overrides the blended look after
+                            // the reflected write; no volume authors it.
+                            if (settings.ViewOutput == PostProcessViewOutput::NoLook)
+                                pcw.Add("look", Passes::kTonemapNoLookArm);
                         }
                         for (const auto& [name, value] : floatPushConstants)
                         {
@@ -1531,7 +1634,7 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
                     {
                         if (!bb.Buf.IsValid())
                             continue;
-                        if (Detail::TryGetSet0BindingByName(*node.m_ShaderMeta, bb.Name, binding, dtype))
+                        if (Rendering::TryGetSet0BindingByName(*node.m_ShaderMeta, bb.Name, binding, dtype))
                         {
                             if (dtype == Rendering::DescriptorType::StorageBuffer ||
                                 dtype == Rendering::DescriptorType::UniformBuffer)
@@ -1557,66 +1660,66 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
                     Rendering::NamedDescriptorWriter wdesc(device, set0, *node.m_ShaderMeta, 0);
                     for (const auto& tb : *segTexBinds)
                     {
-                        if (!wdesc.Has(tb.Name))
-                            continue;
                         const auto texture = tb.Graph.IsValid() ? ctx.GetTexture(tb.Graph) : tb.External;
-                        if (!texture.IsValid())
+                        if (!texture.IsValid() || !wdesc.Has(tb.Name))
                             continue;
                         std::string samplerPreset;
                         if (auto it = node.m_Samplers.find(tb.Name); it != node.m_Samplers.end())
                             samplerPreset = it->second;
+                        if (!Rendering::TryGetSet0BindingByName(*node.m_ShaderMeta, tb.Name, binding, dtype))
+                            continue;
+                        const auto layoutBinding = std::find_if(node.m_Set0Layout.bindings.begin(),
+                            node.m_Set0Layout.bindings.end(),
+                            [binding](const auto& entry) { return entry.binding == binding; });
+                        if (layoutBinding == node.m_Set0Layout.bindings.end())
+                            continue;
                         const auto sampler = Detail::RequiresPointSampling(
                             device->GetTextureFormat(texture), device->GetCapabilities())
                             ? node.m_PointClampSampler : node.SamplerForPreset(samplerPreset);
-                        if (sampler.IsValid() && Detail::TryGetSet0BindingByName(*node.m_ShaderMeta, tb.Name, binding, dtype))
-                        {
-                            // ShaderMeta and DescriptorType use different enum
-                            // values for images/samplers. The pipeline layout
-                            // already contains the canonical converted type.
-                            const auto layoutBinding = std::find_if(node.m_Set0Layout.bindings.begin(),
-                                node.m_Set0Layout.bindings.end(),
-                                [binding](const auto& lb) { return lb.binding == binding; });
-                            if (layoutBinding == node.m_Set0Layout.bindings.end())
-                                continue;
-                            dtype = layoutBinding->type;
-                            if (dtype == Rendering::DescriptorType::Texture)
-                                wdesc.AddTexture(tb.Name, texture);
-                            else if (dtype == Rendering::DescriptorType::CombinedImageSampler && sampler.IsValid())
-                                wdesc.AddCombinedImageSampler(tb.Name, texture, sampler);
-                            else
-                                continue;
-                            writtenBindings.insert(binding);
-                        }
-                    }
-                    // Separate images can share one sampler, keeping multi-band
-                    // effects within the per-stage sampler limit. Use the same
-                    // default as the existing unwired-sampler fallback.
-                    for (const auto& lb : node.m_Set0Layout.bindings)
-                    {
-                        if (lb.type != Rendering::DescriptorType::Sampler)
+                        if (layoutBinding->type == Rendering::DescriptorType::Texture)
+                            wdesc.AddTexture(tb.Name, texture);
+                        else if (layoutBinding->type == Rendering::DescriptorType::CombinedImageSampler &&
+                                 sampler.IsValid())
+                            wdesc.AddCombinedImageSampler(tb.Name, texture, sampler);
+                        else
                             continue;
-                        Rendering::DescriptorSetUpdate u{};
-                        u.binding = lb.binding;
-                        u.type = Rendering::DescriptorType::Sampler;
-                        u.samplers = {node.m_LinearClampSampler};
-                        device->UpdateDescriptorSet(set0, u);
-                        writtenBindings.insert(lb.binding);
+                        writtenBindings.insert(binding);
+                    }
+                    for (const auto& layoutBinding : node.m_Set0Layout.bindings)
+                    {
+                        if (layoutBinding.type != Rendering::DescriptorType::Sampler)
+                            continue;
+                        Rendering::DescriptorSetUpdate update{};
+                        update.binding = layoutBinding.binding;
+                        update.type = Rendering::DescriptorType::Sampler;
+                        update.samplers = {node.m_LinearClampSampler};
+                        device->UpdateDescriptorSet(set0, update);
+                        writtenBindings.insert(layoutBinding.binding);
                     }
                     for (const auto& svc : node.m_ServiceTextureBindings)
                     {
                         if (!wdesc.Has(svc))
                             continue;
                         Rendering::TextureHandle svcTex{};
-                        if (svc == "uLut3d")
-                            svcTex = cubeLut.Lut3D;
-                        else if (svc == "uLut1d")
-                            svcTex = cubeLut.Lut1DStrip;
-                        else if (svc == "uLensDirt")
-                            svcTex = bloomLensDirt;
+                        if (const ServiceTextureName* service = FindServiceTexture(svc))
+                        {
+                            switch (service->Texture)
+                            {
+                            case ServiceTexture::CubeLut3D:
+                                svcTex = cubeLut.Lut3D;
+                                break;
+                            case ServiceTexture::CubeLut1DStrip:
+                                svcTex = cubeLut.Lut1DStrip;
+                                break;
+                            case ServiceTexture::BloomLensDirt:
+                                svcTex = bloomLensDirt;
+                                break;
+                            }
+                        }
                         if (svcTex.IsValid())
                         {
                             wdesc.AddCombinedImageSampler(svc, svcTex, node.m_LinearClampSampler);
-                            if (Detail::TryGetSet0BindingByName(*node.m_ShaderMeta, svc, binding, dtype))
+                            if (Rendering::TryGetSet0BindingByName(*node.m_ShaderMeta, svc, binding, dtype))
                                 writtenBindings.insert(binding);
                         }
                     }
@@ -1632,7 +1735,7 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
                         {
                             wdesc.AddStorageBuffer("Aces2Tables", aces2Tables, 0,
                                                    Rendering::Passes::GetAces2TablesBufferBytes());
-                            if (Detail::TryGetSet0BindingByName(*node.m_ShaderMeta, "Aces2Tables", binding, dtype))
+                            if (Rendering::TryGetSet0BindingByName(*node.m_ShaderMeta, "Aces2Tables", binding, dtype))
                                 writtenBindings.insert(binding);
                         }
                     }
@@ -1649,8 +1752,7 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
                         node.m_RenderServices ? node.m_RenderServices->Textures().GetDefaultBlackTexture()
                                          : Rendering::TextureHandle{};
                     Detail::DefaultFillUnwrittenSet0Bindings(
-                        device, set0, node.m_Set0Layout, *node.m_ShaderMeta,
-                        [&writtenBindings](uint32_t index) { return writtenBindings.contains(index); }, defaultBuffer,
+                        device, set0, node.m_Set0Layout, *node.m_ShaderMeta, writtenBindings, defaultBuffer,
                         defaultTexture, node.m_LinearClampSampler, node.m_Id, node.m_LoggedDefaultedBindings);
 
                     cl->BindDescriptorSet(0, set0, pipe);
@@ -1659,16 +1761,20 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
                 cl->Draw(node.m_VertexCount, node.m_InstanceCount);
             });
     }
+    if (resolvePair.IsValid())
+    {
+        const Rendering::Passes::MsaaResolveViewBuffers resolveView =
+            MsaaResolveViewBuffersFor(d.ResolveBuffer(Names::Res::ViewParams), ResolveViewExposureHistory(d),
+                                      d.Services.GetDefaultPlaceholderBuffer());
+        Rendering::Passes::AddMsaaColorResolvePassRG(d.Frame, passOutput, resolvePair, d.ViewBloomSampleDelta,
+                                                     resolveView, d.PassName("ColorResolve").c_str());
+    }
 
     // The chain variable: downstream resolvers of the output ref see THIS
     // stage's output from here on.
     d.PublishTexture(node.m_OutputRef, passOutput);
 }
 
-} // namespace GameEngine::Engine::Renderer::Pipeline::Nodes
-
-namespace GameEngine::Engine::Renderer::Pipeline::Nodes
-{
 bool DepthPixelationNode::Initialize(std::string nodeId, std::string nodeJson, std::string* outError)
 {
     auto j = nlohmann::json::parse(nodeJson);
@@ -1733,9 +1839,7 @@ void DepthPixelationNode::DeclareForView(ViewDeclare& d)
         // Reconstruct against the full-resolution source camera, including
         // its stabilization and guard pixels.
         const auto& rasterCamera = *d.Services.Views().FindCameraData(bands->Cameras[0]);
-        Matrix4x4 projection;
-        std::memcpy(projection.Data(), rasterCamera.proj, sizeof(rasterCamera.proj));
-        const auto inverse = GameEngine::Mathematics::Inverse(projection);
+        const auto inverse = GameEngine::Mathematics::Inverse(rasterCamera.proj);
         std::memcpy(params.Ptr->InvProjection.data(), inverse.Data(), sizeof(rasterCamera.proj));
     }
     params.Ptr->DisplayMode = {0, simple ? 1.0f : 0.0f, 0, 0};
@@ -1808,4 +1912,5 @@ void DepthPixelationNode::DeclareForView(ViewDeclare& d)
         m_DepthCopy.Declare(d.Frame, compositeDepth, d.ViewDepth, d.OutputWidth, d.OutputHeight,
                            d.PassName("CopyDisplayDepth"));
 }
-}
+
+} // namespace GameEngine::Engine::Renderer::Pipeline::Nodes

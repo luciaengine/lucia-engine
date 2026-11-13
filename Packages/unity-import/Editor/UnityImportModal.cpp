@@ -13,6 +13,7 @@
 #include "UI/UIManager.h"
 #include "Input/KeyCodes.h"
 #include "Logger/Logger.h"
+#include "Types/PathUtils.h"
 
 #include <nlohmann/json.hpp>
 
@@ -39,11 +40,11 @@ constexpr uint32_t kColAccent = 0xFF4C9AFF;
 constexpr float kWindowWidthPx = 620.0f;
 
 void StyleLabel(Label* label, uint32_t color, float fontSize) {
-    label->Overrides().Set(Style::Color, color).Set(Style::FontSize, StyleLength::Px(fontSize));
+    label->Style().Set(Style::Color, color).Set(Style::FontSize, StyleLength::Px(fontSize));
 }
 
 void StyleField(TextField* field) {
-    field->Overrides()
+    field->Style()
         .Set(Style::Width, StyleLength::Percent(100.0f))
         .Set(Style::BackgroundColor, kColField)
         .Set(Style::BorderWidth, Box4{1, 1, 1, 1})
@@ -106,7 +107,7 @@ void UnityImportModal::SetProjectContext(std::filesystem::path defaultDestinatio
 
 void UnityImportModal::BuildUI() {
     SetOverlayLayer(OverlayLayer::BlockingDialog);
-    Overrides()
+    Style()
         .Set(Style::Position, PositionType::Absolute)
         .Set(Style::PositionLeft, StyleLength::Px(0.0f)).Set(Style::PositionTop, StyleLength::Px(0.0f))
         .Set(Style::Width, StyleLength::Percent(100.0f)).Set(Style::Height, StyleLength::Percent(100.0f))
@@ -115,7 +116,7 @@ void UnityImportModal::BuildUI() {
         .Set(Style::PointerEvents, false);
 
     auto backdrop = std::make_unique<UIElement>();
-    backdrop->Overrides()
+    backdrop->Style()
         .Set(Style::Position, PositionType::Absolute)
         .Set(Style::PositionLeft, StyleLength::Px(0.0f)).Set(Style::PositionTop, StyleLength::Px(0.0f))
         .Set(Style::Width, StyleLength::Percent(100.0f)).Set(Style::Height, StyleLength::Percent(100.0f))
@@ -126,7 +127,7 @@ void UnityImportModal::BuildUI() {
         .Set(Style::PointerEvents, true);
 
     auto window = std::make_unique<UIElement>();
-    window->Overrides()
+    window->Style()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Column)
         .Set(Style::Position, PositionType::Relative)
@@ -142,20 +143,20 @@ void UnityImportModal::BuildUI() {
     // Header.
     {
         auto header = std::make_unique<UIElement>();
-        header->Overrides()
+        header->Style()
             .Set(Style::PaddingTop, StyleLength::Px(14.0f)).Set(Style::PaddingRight, StyleLength::Px(18.0f))
             .Set(Style::PaddingBottom, StyleLength::Px(14.0f)).Set(Style::PaddingLeft, StyleLength::Px(18.0f))
             .Set(Style::BackgroundColor, kColBar)
             .Set(Style::BorderBottomWidth, 1.0f).Set(Style::BorderBottomColor, (uint32_t)0xFF333333);
         auto title = std::make_unique<Label>();
         title->SetText("Import Unity Package");
-        title->Overrides().Set(Style::Color, kColText).Set(Style::FontSize, StyleLength::Px(17.0f)).Set(Style::FontWeight, 600);
+        title->Style().Set(Style::Color, kColText).Set(Style::FontSize, StyleLength::Px(17.0f)).Set(Style::FontWeight, 600);
         header->AddChild(std::move(title));
         window->AddChild(std::move(header));
     }
 
     auto content = std::make_unique<UIElement>();
-    content->Overrides()
+    content->Style()
         .Set(Style::Display, DisplayMode::Flex).Set(Style::FlexDir, FlexDirection::Column)
         .Set(Style::PaddingTop, StyleLength::Px(16.0f)).Set(Style::PaddingRight, StyleLength::Px(18.0f))
         .Set(Style::PaddingBottom, StyleLength::Px(16.0f)).Set(Style::PaddingLeft, StyleLength::Px(18.0f))
@@ -163,12 +164,12 @@ void UnityImportModal::BuildUI() {
 
     auto column = [](float gap) {
         auto e = std::make_unique<UIElement>();
-        e->Overrides().Set(Style::Display, DisplayMode::Flex).Set(Style::FlexDir, FlexDirection::Column).Set(Style::Gap, StyleLength::Px(gap));
+        e->Style().Set(Style::Display, DisplayMode::Flex).Set(Style::FlexDir, FlexDirection::Column).Set(Style::Gap, StyleLength::Px(gap));
         return e;
     };
     auto row = [](float gap) {
         auto e = std::make_unique<UIElement>();
-        e->Overrides().Set(Style::Display, DisplayMode::Flex).Set(Style::FlexDir, FlexDirection::Row)
+        e->Style().Set(Style::Display, DisplayMode::Flex).Set(Style::FlexDir, FlexDirection::Row)
             .Set(Style::Gap, StyleLength::Px(gap)).Set(Style::AlignItems, AlignItems::Center);
         return e;
     };
@@ -192,7 +193,7 @@ void UnityImportModal::BuildUI() {
             auto field = std::make_unique<TextField>();
             m_BundleField = field.get();
             StyleField(field.get());
-            field->Overrides().Set(Style::FlexGrow, 1.0f).Set(Style::FlexShrink, 1.0f);
+            field->Style().Set(Style::FlexGrow, 1.0f).Set(Style::FlexShrink, 1.0f);
             // Typing or pasting a path + Enter loads it — the "extracted bundle
             // folder" affordance the native file dialog can't offer directly.
             field->SetOnCommit([this]() {
@@ -219,14 +220,14 @@ void UnityImportModal::BuildUI() {
             m_SceneHeaderLabel = head.get();
             head->SetText("Scenes in bundle");
             StyleLabel(head.get(), kColText, 13.5f);
-            head->Overrides().Set(Style::FontWeight, 600);
+            head->Style().Set(Style::FontWeight, 600);
             group->AddChild(std::move(head));
 
             // Scene rows live inside a real ScrollView so big packs (dozens of
             // scenes) scroll instead of clipping at the old MaxHeight cutoff.
             auto scroll = std::make_unique<ScrollView>();
             m_SceneListScroll = scroll.get();
-            scroll->Overrides()
+            scroll->Style()
                 .Set(Style::FlexGrow, 0.0f).Set(Style::FlexShrink, 0.0f)
                 .Set(Style::MaxHeight, StyleLength::Px(180.0f))
                 .Set(Style::BackgroundColor, (uint32_t)0xFF232323)
@@ -234,7 +235,7 @@ void UnityImportModal::BuildUI() {
                 .Set(Style::OverflowProp, Overflow::Hidden);
             auto list = std::make_unique<UIElement>();
             m_SceneListContainer = list.get();
-            list->Overrides()
+            list->Style()
                 .Set(Style::Display, DisplayMode::Flex).Set(Style::FlexDir, FlexDirection::Column).Set(Style::Gap, StyleLength::Px(2.0f))
                 .Set(Style::PaddingTop, StyleLength::Px(6.0f)).Set(Style::PaddingRight, StyleLength::Px(8.0f))
                 .Set(Style::PaddingBottom, StyleLength::Px(6.0f)).Set(Style::PaddingLeft, StyleLength::Px(8.0f));
@@ -257,7 +258,7 @@ void UnityImportModal::BuildUI() {
             auto field = std::make_unique<TextField>();
             m_DestField = field.get();
             StyleField(field.get());
-            field->Overrides().Set(Style::FlexGrow, 1.0f).Set(Style::FlexShrink, 1.0f);
+            field->Style().Set(Style::FlexGrow, 1.0f).Set(Style::FlexShrink, 1.0f);
             r->AddChild(std::move(field));
             auto browse = std::make_unique<Button>();
             browse->SetText("Browse…");
@@ -283,14 +284,14 @@ void UnityImportModal::BuildUI() {
             m_ConfigWarningLabel = l.get();
             l->SetText("");
             StyleLabel(l.get(), kColWarn, 12.5f);
-            l->Overrides().Set(Style::Display, DisplayMode::None);
+            l->Style().Set(Style::Display, DisplayMode::None);
             section->AddChild(std::move(l));
         }
 
         // Footer buttons.
         {
             auto footer = row(8.0f);
-            footer->Overrides().Set(Style::JustifyContent, JustifyContent::FlexEnd).Set(Style::PaddingTop, StyleLength::Px(6.0f));
+            footer->Style().Set(Style::JustifyContent, JustifyContent::FlexEnd).Set(Style::PaddingTop, StyleLength::Px(6.0f));
             auto cancel = std::make_unique<Button>();
             cancel->SetText("Cancel");
             cancel->AddClass("secondary");
@@ -311,7 +312,7 @@ void UnityImportModal::BuildUI() {
     {
         auto section = column(10.0f);
         m_BusySection = section.get();
-        section->Overrides().Set(Style::Display, DisplayMode::None);
+        section->Style().Set(Style::Display, DisplayMode::None);
 
         auto phase = std::make_unique<Label>();
         m_PhaseLabel = phase.get();
@@ -320,14 +321,14 @@ void UnityImportModal::BuildUI() {
         section->AddChild(std::move(phase));
 
         auto track = std::make_unique<UIElement>();
-        track->Overrides()
+        track->Style()
             .Set(Style::Width, StyleLength::Percent(100.0f)).Set(Style::Height, StyleLength::Px(14.0f))
             .Set(Style::BackgroundColor, kColField)
             .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{7, 7, 7, 7})
             .Set(Style::OverflowProp, Overflow::Hidden);
         auto fill = std::make_unique<UIElement>();
         m_ProgressFill = fill.get();
-        fill->Overrides()
+        fill->Style()
             .Set(Style::Width, StyleLength::Percent(0.0f)).Set(Style::Height, StyleLength::Percent(100.0f))
             .Set(Style::BackgroundColor, kColAccent);
         track->AddChild(std::move(fill));
@@ -337,7 +338,7 @@ void UnityImportModal::BuildUI() {
         m_TextureSubLabel = sub.get();
         sub->SetText("");
         StyleLabel(sub.get(), kColMuted, 12.0f);
-        sub->Overrides().Set(Style::Display, DisplayMode::None);
+        sub->Style().Set(Style::Display, DisplayMode::None);
         section->AddChild(std::move(sub));
 
         content->AddChild(std::move(section));
@@ -347,7 +348,7 @@ void UnityImportModal::BuildUI() {
     {
         auto section = column(12.0f);
         m_CompleteSection = section.get();
-        section->Overrides().Set(Style::Display, DisplayMode::None);
+        section->Style().Set(Style::Display, DisplayMode::None);
 
         auto summary = std::make_unique<Label>();
         m_SummaryLabel = summary.get();
@@ -357,12 +358,12 @@ void UnityImportModal::BuildUI() {
 
         auto openRow = std::make_unique<UIElement>();
         m_OpenSceneRow = openRow.get();
-        openRow->Overrides().Set(Style::Display, DisplayMode::Flex).Set(Style::FlexDir, FlexDirection::Row)
+        openRow->Style().Set(Style::Display, DisplayMode::Flex).Set(Style::FlexDir, FlexDirection::Row)
             .Set(Style::FlexWrap, true).Set(Style::Gap, StyleLength::Px(8.0f));
         section->AddChild(std::move(openRow));
 
         auto footer = row(8.0f);
-        footer->Overrides().Set(Style::JustifyContent, JustifyContent::FlexEnd).Set(Style::PaddingTop, StyleLength::Px(6.0f));
+        footer->Style().Set(Style::JustifyContent, JustifyContent::FlexEnd).Set(Style::PaddingTop, StyleLength::Px(6.0f));
         auto dismiss = std::make_unique<Button>();
         dismiss->SetText("Dismiss");
         dismiss->AddClass("primary");
@@ -377,7 +378,7 @@ void UnityImportModal::BuildUI() {
     {
         auto section = column(12.0f);
         m_ErrorSection = section.get();
-        section->Overrides().Set(Style::Display, DisplayMode::None);
+        section->Style().Set(Style::Display, DisplayMode::None);
 
         auto err = std::make_unique<Label>();
         m_ErrorLabel = err.get();
@@ -386,7 +387,7 @@ void UnityImportModal::BuildUI() {
         section->AddChild(std::move(err));
 
         auto footer = row(8.0f);
-        footer->Overrides().Set(Style::JustifyContent, JustifyContent::FlexEnd).Set(Style::PaddingTop, StyleLength::Px(6.0f));
+        footer->Style().Set(Style::JustifyContent, JustifyContent::FlexEnd).Set(Style::PaddingTop, StyleLength::Px(6.0f));
         auto dismiss = std::make_unique<Button>();
         dismiss->SetText("Dismiss");
         dismiss->AddClass("secondary");
@@ -414,7 +415,7 @@ void UnityImportModal::BuildUI() {
 void UnityImportModal::ShowSection(State state) {
     m_State = state;
     auto set = [](UIElement* e, bool visible) {
-        if (e) e->Overrides().Set(Style::Display, visible ? DisplayMode::Flex : DisplayMode::None);
+        if (e) e->Style().Set(Style::Display, visible ? DisplayMode::Flex : DisplayMode::None);
     };
     set(m_ConfigSection, state == State::Config);
     set(m_BusySection, state == State::Busy);
@@ -424,7 +425,7 @@ void UnityImportModal::ShowSection(State state) {
 
 void UnityImportModal::Show() {
     m_Visible = true;
-    Overrides().Set(Style::Display, DisplayMode::Block).Set(Style::PointerEvents, false);
+    Style().Set(Style::Display, DisplayMode::Block).Set(Style::PointerEvents, false);
 
     m_BundlePath.clear();
     if (m_BundleField) m_BundleField->SetValue("");
@@ -436,14 +437,14 @@ void UnityImportModal::Show() {
     if (m_SceneListScroll) m_SceneListScroll->SetScrollY(0.0f);
     m_SceneRows.clear();
     m_RegistrationPending = false;
-    if (m_ConfigWarningLabel) m_ConfigWarningLabel->Overrides().Set(Style::Display, DisplayMode::None);
+    if (m_ConfigWarningLabel) m_ConfigWarningLabel->Style().Set(Style::Display, DisplayMode::None);
 
     const bool converterReady = !m_ConverterDll.empty() && std::filesystem::exists(m_ConverterDll);
     if (!converterReady && m_ConfigWarningLabel) {
         m_ConfigWarningLabel->SetText(
             "Converter assembly is missing from the unity-import package "
                 "(Tools/UnityConverter.dll). Rebuild the Editor to restage its packages.");
-        m_ConfigWarningLabel->Overrides().Set(Style::Display, DisplayMode::Block);
+        m_ConfigWarningLabel->Style().Set(Style::Display, DisplayMode::Block);
     }
 
     ShowSection(State::Config);
@@ -451,7 +452,7 @@ void UnityImportModal::Show() {
 
 void UnityImportModal::Hide() {
     m_Visible = false;
-    Overrides().Set(Style::Display, DisplayMode::None).Set(Style::PointerEvents, false);
+    Style().Set(Style::Display, DisplayMode::None).Set(Style::PointerEvents, false);
 }
 
 void UnityImportModal::OnCancel() {
@@ -500,7 +501,7 @@ void UnityImportModal::StartListScenes(const std::filesystem::path& bundle) {
     m_Worker = std::thread([this, dll, bundle]() {
         std::string stdoutAll;
         ConverterRunResult res = RunConverterHosted(
-            dll, {"--list-scenes", PathArgUtf8(bundle)},
+            dll, {"--list-scenes", PathToUtf8(bundle)},
             [&stdoutAll](const std::string& line) { stdoutAll += line; },
             m_CancelRequested);
         std::string tail = res.StderrTail;
@@ -534,11 +535,11 @@ void UnityImportModal::PopulateSceneList(const std::string& inventoryJson) {
         if (m_SceneHeaderLabel) m_SceneHeaderLabel->SetText("Scenes in bundle");
         if (m_ConfigWarningLabel) {
             m_ConfigWarningLabel->SetText("No .unity scenes were found in this bundle.");
-            m_ConfigWarningLabel->Overrides().Set(Style::Display, DisplayMode::Block);
+            m_ConfigWarningLabel->Style().Set(Style::Display, DisplayMode::Block);
         }
         return;
     }
-    if (m_ConfigWarningLabel) m_ConfigWarningLabel->Overrides().Set(Style::Display, DisplayMode::None);
+    if (m_ConfigWarningLabel) m_ConfigWarningLabel->Style().Set(Style::Display, DisplayMode::None);
 
     for (const auto& s : *scenesIt) {
         SceneRow rowData;
@@ -549,7 +550,7 @@ void UnityImportModal::PopulateSceneList(const std::string& inventoryJson) {
         auto box = std::make_unique<Checkbox>();
         box->SetText(rowData.Name.empty() ? rowData.Path : (rowData.Name + "   " + rowData.Path));
         box->SetChecked(true);
-        box->Overrides().Set(Style::Color, kColText).Set(Style::FontSize, StyleLength::Px(12.5f));
+        box->Style().Set(Style::Color, kColText).Set(Style::FontSize, StyleLength::Px(12.5f));
         box->SetOnValueChanged([this](const bool&) { UpdateSelectedCount(); });
         rowData.Box = box.get();
         if (m_SceneListContainer) m_SceneListContainer->AddChild(std::move(box));
@@ -586,14 +587,14 @@ void UnityImportModal::OnImport() {
             m_ConfigWarningLabel->SetText(
                 "Converter assembly is missing from the unity-import package "
                 "(Tools/UnityConverter.dll). Rebuild the Editor to restage its packages.");
-            m_ConfigWarningLabel->Overrides().Set(Style::Display, DisplayMode::Block);
+            m_ConfigWarningLabel->Style().Set(Style::Display, DisplayMode::Block);
         }
         return;
     }
     if (m_BundlePath.empty()) {
         if (m_ConfigWarningLabel) {
             m_ConfigWarningLabel->SetText("Pick a Unity package or bundle folder first.");
-            m_ConfigWarningLabel->Overrides().Set(Style::Display, DisplayMode::Block);
+            m_ConfigWarningLabel->Style().Set(Style::Display, DisplayMode::Block);
         }
         return;
     }
@@ -608,11 +609,11 @@ void UnityImportModal::OnImport() {
     if (sceneArgs.empty()) {
         if (m_ConfigWarningLabel) {
             m_ConfigWarningLabel->SetText("Select at least one scene to import.");
-            m_ConfigWarningLabel->Overrides().Set(Style::Display, DisplayMode::Block);
+            m_ConfigWarningLabel->Style().Set(Style::Display, DisplayMode::Block);
         }
         return;
     }
-    if (m_ConfigWarningLabel) m_ConfigWarningLabel->Overrides().Set(Style::Display, DisplayMode::None);
+    if (m_ConfigWarningLabel) m_ConfigWarningLabel->Style().Set(Style::Display, DisplayMode::None);
 
     StartConversion(sceneArgs);
 }
@@ -632,13 +633,13 @@ void UnityImportModal::StartConversion(const std::vector<std::string>& sceneArgs
 
     std::vector<std::string> args;
     args.push_back("--pkg");
-    args.push_back(PathArgUtf8(m_BundlePath));
+    args.push_back(PathToUtf8(m_BundlePath));
     for (const auto& a : sceneArgs) args.push_back(a);
     args.push_back("--project");
-    args.push_back(PathArgUtf8(m_StageDir));
+    args.push_back(PathToUtf8(m_StageDir));
     if (!m_AssetDbPath.empty() && std::filesystem::exists(m_AssetDbPath)) {
         args.push_back("--assetdb");
-        args.push_back(PathArgUtf8(m_AssetDbPath));
+        args.push_back(PathToUtf8(m_AssetDbPath));
     }
     // Source textures stage as-is (--png); the engine's native import cooks
     // them (BC7/BC5 + mips, derived cache) once they land in Assets. The
@@ -666,9 +667,9 @@ void UnityImportModal::StartConversion(const std::vector<std::string>& sceneArgs
         m_MatGenerated = m_TexEncoded = m_TexCopied = m_TexUnresolved = 0;
         m_ModelsSeeded = 0;
     }
-    if (m_ProgressFill) m_ProgressFill->Overrides().Set(Style::Width, StyleLength::Percent(0.0f));
+    if (m_ProgressFill) m_ProgressFill->Style().Set(Style::Width, StyleLength::Percent(0.0f));
     if (m_PhaseLabel) m_PhaseLabel->SetText("Starting conversion…");
-    if (m_TextureSubLabel) m_TextureSubLabel->Overrides().Set(Style::Display, DisplayMode::None);
+    if (m_TextureSubLabel) m_TextureSubLabel->Style().Set(Style::Display, DisplayMode::None);
     ShowSection(State::Busy);
 
     if (m_Busy.exchange(true)) return;
@@ -766,7 +767,7 @@ void UnityImportModal::ApplyProgressToUI() {
 
     if (total > 0) {
         const float pct = std::clamp(static_cast<float>(step) / static_cast<float>(total) * 100.0f, 0.0f, 100.0f);
-        if (m_ProgressFill) m_ProgressFill->Overrides().Set(Style::Width, StyleLength::Percent(pct));
+        if (m_ProgressFill) m_ProgressFill->Style().Set(Style::Width, StyleLength::Percent(pct));
         if (m_PhaseLabel) {
             std::string text = phase;
             if (!detail.empty()) text += " · " + detail;
@@ -780,7 +781,7 @@ void UnityImportModal::ApplyProgressToUI() {
         if (modelCount > 0)
             text += " · models: " + std::to_string(modelCount) + " extracted from pack";
         m_TextureSubLabel->SetText(text + "…");
-        m_TextureSubLabel->Overrides().Set(Style::Display, DisplayMode::Block);
+        m_TextureSubLabel->Style().Set(Style::Display, DisplayMode::Block);
     }
 }
 

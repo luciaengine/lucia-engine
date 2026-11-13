@@ -4,12 +4,14 @@
 #include "AssetCore/Asset.h"
 #include "AssetCore/GUID.h"
 #include "AssetCore/DepEdge.h"
+#include "Assets/AssetDecodeInputFiles.h"
 #include <filesystem>
 #include <functional>
 #include <memory>
 #include <unordered_map>
 #include <vector>
 #include <string>
+#include <span>
 
 namespace GameEngine {
 
@@ -89,6 +91,27 @@ namespace GameEngine {
                                                       [[maybe_unused]] const AssetManager& assetManager) const
         {
             return metadata.Path;
+        }
+
+        /// The files a decode of `bytes` (the read path's contents) reads besides them, and what
+        /// the parser resolved to name them. The AssetIOService reads the files on its reader
+        /// thread before the decode, and the decode takes them through ReadAssetDecodeInputFile
+        /// and the plan through CurrentAssetDecodePlan (Assets/AssetDecodeInputFiles.h): a path
+        /// not named here reads as absent inside the decode. Runs on a reader thread.
+        virtual AssetDecodeInputs ResolveDecodeInputs(
+            [[maybe_unused]] const AssetMetadata& metadata, [[maybe_unused]] std::span<const uint8> bytes,
+            [[maybe_unused]] AssetManager& assetManager) const
+        {
+            return {};
+        }
+
+        /// The files that let a decode run without the read path's contents (a texture's cooked
+        /// artifact), named before the read. When the AssetIOService reads every file named, it does
+        /// not read the path, and the decode gets no bytes. Runs on a reader thread.
+        virtual AssetDecodeInputs ResolveDecodeInputsWithoutBytes([[maybe_unused]] const AssetMetadata& metadata,
+                                                                  [[maybe_unused]] AssetManager& assetManager) const
+        {
+            return {};
         }
 
         /**
@@ -231,6 +254,14 @@ namespace GameEngine {
 
         /// Resolve the parser-owned payload before an asynchronous read.
         std::filesystem::path ResolveReadPath(const AssetMetadata& metadata, const AssetManager& assetManager) const;
+
+        /// The decode inputs the parser for `metadata` names (AssetParser::ResolveDecodeInputs).
+        AssetDecodeInputs ResolveDecodeInputs(const AssetMetadata& metadata, std::span<const uint8> bytes,
+                                              AssetManager& assetManager) const;
+
+        /// The files the parser for `metadata` names before the read (AssetParser::ResolveDecodeInputsWithoutBytes).
+        AssetDecodeInputs ResolveDecodeInputsWithoutBytes(const AssetMetadata& metadata,
+                                                          AssetManager& assetManager) const;
 
         /**
          * @brief Find all parsers for a file extension

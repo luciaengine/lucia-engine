@@ -96,7 +96,17 @@ build/                Build trees, one per preset (gitignored)
 
 ## Contributing
 
-[CONTRIBUTING.md](CONTRIBUTING.md) and [CodingStyle.md](CodingStyle.md). The team's working notes are not part of the repository.
+This is an alpha: APIs and file formats may change between releases.
+
+The engine is yours as much as ours: open issues, send pull requests, and help shape it. [CONTRIBUTING.md](CONTRIBUTING.md) and [CodingStyle.md](CodingStyle.md) say how.
+
+Join us on Discord: https://discord.gg/ptyXSNz7NW
+
+## A note on AI
+
+AI tools were used in the development of Open Engine. The engine is not "vibe coded": every change draws on its developers' experience and passes human review before it lands, and the same review stands at the door for contributions. Pull requests are judged on design, correctness and evidence, whoever or whatever wrote them; generated code that is not understood, tested and explained by its author is not accepted.
+
+The team welcomes the responsible use of AI. The engine ships with built-in MCP tools and integrations to enable agentic workflows driven by human creativity and design.
 
 ## License
 

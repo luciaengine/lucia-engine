@@ -8,7 +8,7 @@
 
 #include "Engine/Rendering/Material.h"
 
-#include "Rendering/Materials/MaterialBlend.h"
+#include "Rendering/Materials/MaterialBlend/MaterialBlend.h"
 
 #include <optional>
 

@@ -1,5 +1,4 @@
 #include "Assets/AssetManager.h"
-#include "Events/Event.h"
 #include "AssetPathSyntax.h"
 
 #include "Assets/AssetDbProfiler.h"
@@ -8,12 +7,12 @@
 #include "Assets/AssetTasks.h"
 #include "Assets/ShaderProgramAsset.h"
 #include "Assets/TextureAsset.h"
+#include "Assets/TextureCookActivity.h"
 #include "Assets/TextureCookWorkers.h"
 #include "Assets/CoreAssetRegistrations.h"
 #include "AssetCore/PathNormalization.h"
 #include "Core/CpuProfiler.h"
 #include "Logger/Logger.h"
-#include "Platform/Environment.h"
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -261,15 +260,8 @@ static constexpr std::chrono::milliseconds kWriteEchoWindow{5000};
 
 AssetManager::AssetManager()
     : m_Initialized(false), m_HotReloadEnabled(false), m_JobSystem(nullptr),
-      m_ExpectedWrites(kWriteEchoWindow)
+      m_ExpectedWrites(kWriteEchoWindow), m_TextureCookActivity(std::make_unique<TextureCookActivity>())
 {
-}
-
-Event<std::span<const GUID>>& AssetManager::GetFilesChangedEvent()
-{
-    if (!m_FilesChanged)
-        m_FilesChanged = MakeUnique<Event<std::span<const GUID>>>();
-    return *m_FilesChanged;
 }
 
 AssetManager::~AssetManager()
@@ -352,7 +344,8 @@ namespace
 {
 bool IsPackagedPlayerEnvironment()
 {
-    return Platform::EnvironmentSwitchEnabled("GE_PACKAGED_PLAYER", false);
+    const char* env = std::getenv("GE_PACKAGED_PLAYER");
+    return env && env[0] != '\0' && !(env[0] == '0' && env[1] == '\0');
 }
 
 // One place decides what an inline reload outcome means for the log and for
@@ -479,9 +472,6 @@ void AssetManager::Shutdown()
     InvalidateResolveMemo();
     m_Registry.SetGuidRemapCallback(nullptr);
 
-    // Shutdown registry
-    m_Registry.Shutdown();
-
     // Withdraw async reload pipelines before stopping the IO service: flags
     // first (claimed reads and queued/running decodes defuse themselves),
     // then queued reads. CancelRequest may fire a request's OnFailure inline
@@ -566,9 +556,9 @@ void AssetManager::Shutdown()
     }
 
     // Drop the pending ejects without finishing them and without running their
-    // continuations. Everything an eject would still do is already done above —
-    // the sources are gone, the loaded assets are released, the registry is
-    // shut down — and a continuation here would run editor code (remounting
+    // continuations. Everything an eject would still do, this Shutdown does —
+    // the sources are gone, the loaded assets are released, the registry shuts
+    // down below — and a continuation here would run editor code (remounting
     // packages, touching a window that no longer exists) into a torn-down
     // application: the editor destroys its UI before the engine shuts down.
     m_PendingEjects.clear();
@@ -595,6 +585,12 @@ void AssetManager::Shutdown()
         std::lock_guard<std::mutex> lk(m_InFlightMutex);
         m_ReloadsRequestedDuringLoad.clear();
     }
+
+    // The registry shuts down after the IO service stops and every decode and
+    // reload job is done: a decode reads it (a model's LOD slots, its meta
+    // values) until its last instruction, and the registry releases the stores
+    // those reads use.
+    m_Registry.Shutdown();
 
     // Shutdown parser registry
     m_ParserRegistry.Shutdown();
@@ -1777,7 +1773,7 @@ bool AssetManager::ReleaseTransientAsset(const GUID& requestedGuid)
     const AssetType type = released->GetType();
     const std::string path = released->GetPath().string();
     released->Unload();
-
+    UpdateMemoryStatsIncremental(released, false);
     released.reset();
     DispatchWithRedirectSources(AssetEvents::AssetUnloaded(guid, type, path));
     return true;
@@ -1823,6 +1819,73 @@ void AssetManager::SetHotReloadEnabled(bool enabled)
     Logger::Log::Info("Asset hot reloading {}", enabled ? "enabled" : "disabled");
 }
 
+AssetManager::MemoryStats AssetManager::GetMemoryStats() const
+{
+    // Update cache if needed (lock-free check first)
+    if (m_StatsNeedUpdate.load(std::memory_order_acquire))
+    {
+        UpdateMemoryStatsCache();
+    }
+
+    MemoryStats stats{};
+    stats.LoadedAssetCount = m_CachedAssetCount.load(std::memory_order_relaxed);
+    stats.TotalMemoryUsed = m_CachedTotalMemory.load(std::memory_order_relaxed);
+    stats.LastUpdated = std::chrono::steady_clock::now();
+
+    // Copy cached memory by type (this is the only part that needs a brief lock)
+    {
+        std::lock_guard<std::mutex> lock(m_StatsCacheMutex);
+        for (const auto& [type, memory] : m_CachedMemoryByType)
+        {
+            stats.MemoryByType[type] = memory.load(std::memory_order_relaxed);
+        }
+    }
+
+    return stats;
+}
+
+AssetManager::MemoryStats AssetManager::RecalculateMemoryStats() const
+{
+    MemoryStats stats{};
+    std::shared_lock<std::shared_mutex> lock(m_LoadedAssetsMutex);
+
+    stats.LoadedAssetCount = m_LoadedAssets.size();
+    stats.TotalMemoryUsed = 0;
+    stats.LastUpdated = std::chrono::steady_clock::now();
+
+    // Calculate actual memory usage from loaded assets
+    for (const auto& [guid, entry] : m_LoadedAssets)
+    {
+        const auto& asset = entry.Instance;
+        if (asset)
+        {
+            uint64 assetMemory = asset->GetMemoryUsage();
+            stats.TotalMemoryUsed += assetMemory;
+
+            // Track by asset type
+            AssetType type = asset->GetType();
+            stats.MemoryByType[type] += assetMemory;
+        }
+    }
+
+    // Update cache with fresh values
+    m_CachedAssetCount.store(stats.LoadedAssetCount, std::memory_order_relaxed);
+    m_CachedTotalMemory.store(stats.TotalMemoryUsed, std::memory_order_relaxed);
+
+    {
+        std::lock_guard<std::mutex> cacheLock(m_StatsCacheMutex);
+        m_CachedMemoryByType.clear();
+        for (const auto& [type, memory] : stats.MemoryByType)
+        {
+            m_CachedMemoryByType[type].store(memory, std::memory_order_relaxed);
+        }
+    }
+
+    m_StatsNeedUpdate.store(false, std::memory_order_release);
+
+    return stats;
+}
+
 SharedPtr<Asset> AssetManager::CreateAsset(const AssetMetadata& metadata)
 {
     // First try to use asset type registry for direct creation
@@ -1855,6 +1918,7 @@ SharedPtr<Asset> AssetManager::CreateAsset(const AssetMetadata& metadata)
         if (asset)
         {
             Logger::Log::Debug("Created asset using asset type registry: {}", metadata.Name);
+            asset->SetName(metadata.Name);
             return asset;
         }
         Logger::Log::Warning("Asset type registry failed to create asset: {} (type: {}): {}",
@@ -1867,6 +1931,7 @@ SharedPtr<Asset> AssetManager::CreateAsset(const AssetMetadata& metadata)
     if (result.Success && result.ParsedAsset)
     {
         Logger::Log::Debug("Created asset using parser registry: {}", metadata.Name);
+        result.ParsedAsset->SetName(metadata.Name);
         return result.ParsedAsset;
     }
 
@@ -2277,8 +2342,8 @@ void AssetManager::CheckForReloads()
         }
     }
 
-    if (m_FilesChanged && !toReload.empty())
-        m_FilesChanged->Invoke(toReload);
+    if (!toReload.empty())
+        FilesChanged.Invoke(toReload);
 
     std::vector<GUID> timestampCandidates;
     const auto now = std::chrono::steady_clock::now();
@@ -2391,7 +2456,7 @@ void AssetManager::DispatchWithRedirectSources(AssetEvent event)
 }
 
 void AssetManager::StartAsyncReload(const GUID& guid, const SharedPtr<Asset>& asset, bool watchReason,
-                                    bool restartSameMtime)
+                                    bool restartSameMtime, AssetLoadPriority priority)
 {
     AssetMetadata metadata{};
     if (!m_Registry.TryGetAssetMetadata(guid, metadata) || metadata.Path.empty())
@@ -2445,15 +2510,15 @@ void AssetManager::StartAsyncReload(const GUID& guid, const SharedPtr<Asset>& as
     request.AssetGuid = guid;
     request.Metadata = metadata;
     request.Metadata.Path = m_ParserRegistry.ResolveReadPath(metadata, *this);
-    request.Priority = AssetLoadPriority::High; // the user just saved this file
+    request.Priority = priority;
     request.CancelRequested = cancelFlag;
     request.ProcessData = [this, guid, metadata, cancelFlag, generation,
-                           submitTime](Vector<uint8> data) -> SharedPtr<Asset>
+                           submitTime](ByteBuffer data) -> SharedPtr<Asset>
     {
         SharedPtr<Asset> staged;
         if (!cancelFlag->load(std::memory_order_acquire))
         {
-            staged = DecodeAssetPayload(*this, guid, metadata, data, cancelFlag);
+            staged = DecodeAssetPayload(*this, guid, metadata, std::move(data), cancelFlag);
         }
         const double offThreadMs =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - submitTime).count();
@@ -2466,6 +2531,8 @@ void AssetManager::StartAsyncReload(const GUID& guid, const SharedPtr<Asset>& as
         FinishReloadJob();
         return staged;
     };
+    request.ResolveDecodeInputs = MakeDecodeInputResolver(*this, metadata);
+    request.ResolveDecodeInputsWithoutBytes = MakeDecodeInputWithoutBytesResolver(*this, metadata);
     request.OnFailure = [this, guid, cancelFlag, generation, submitTime](const String& error)
     {
         if (!cancelFlag->load(std::memory_order_acquire))
@@ -2480,7 +2547,7 @@ void AssetManager::StartAsyncReload(const GUID& guid, const SharedPtr<Asset>& as
     m_IOService->SubmitRead(std::move(request));
 }
 
-bool AssetManager::RequestAsyncReload(const GUID& guid)
+bool AssetManager::RequestAsyncReload(const GUID& guid, AssetLoadPriority priority)
 {
     // A first load still in flight may already have read the settings this request is
     // about, and there is nothing resident to reload yet, so the request waits for the load
@@ -2491,25 +2558,27 @@ bool AssetManager::RequestAsyncReload(const GUID& guid)
         std::lock_guard<std::mutex> lock(m_InFlightMutex);
         if (m_InFlight.find(guid) != m_InFlight.end())
         {
-            m_ReloadsRequestedDuringLoad.insert(guid);
+            auto [requested, inserted] = m_ReloadsRequestedDuringLoad.try_emplace(guid, priority);
+            if (!inserted)
+                requested->second = std::max(requested->second, priority);
             return true;
         }
     }
     SharedPtr<Asset> asset = GetLoadedAsset(guid);
     if (!asset)
         return false;
-    StartAsyncReload(guid, asset, /*watchReason=*/false, /*restartSameMtime=*/true);
+    StartAsyncReload(guid, asset, /*watchReason=*/false, /*restartSameMtime=*/true, priority);
     return true;
 }
 
 void AssetManager::StartReloadsRequestedDuringLoad()
 {
-    std::vector<GUID> landed;
+    std::vector<std::pair<GUID, AssetLoadPriority>> landed;
     {
         std::lock_guard<std::mutex> lock(m_InFlightMutex);
         for (auto it = m_ReloadsRequestedDuringLoad.begin(); it != m_ReloadsRequestedDuringLoad.end();)
         {
-            if (m_InFlight.find(*it) != m_InFlight.end())
+            if (m_InFlight.find(it->first) != m_InFlight.end())
             {
                 ++it;
                 continue;
@@ -2519,10 +2588,10 @@ void AssetManager::StartReloadsRequestedDuringLoad()
         }
     }
     // A load that failed or was cancelled left nothing resident; its request goes with it.
-    for (const GUID& guid : landed)
+    for (const auto& [guid, priority] : landed)
     {
         if (SharedPtr<Asset> asset = GetLoadedAsset(guid))
-            StartAsyncReload(guid, asset, /*watchReason=*/false, /*restartSameMtime=*/true);
+            StartAsyncReload(guid, asset, /*watchReason=*/false, /*restartSameMtime=*/true, priority);
     }
 }
 
@@ -2698,6 +2767,22 @@ std::future<SharedPtr<Asset>> AssetManager::LoadAssetSynchronous(const AssetMeta
     return promise.get_future();
 }
 
+std::future<Vector<SharedPtr<Asset>>> AssetManager::LoadAssetsSequential(const Vector<GUID>& guids, AssetLoadPriority priority)
+{
+    std::promise<Vector<SharedPtr<Asset>>> promise;
+    Vector<SharedPtr<Asset>> results;
+    results.reserve(guids.size());
+
+    for (const auto& guid : guids)
+    {
+        auto future = LoadAssetAsync(guid, priority);
+        results.push_back(future.get());
+    }
+
+    promise.set_value(std::move(results));
+    return promise.get_future();
+}
+
 void AssetManager::RegisterLoadedAsset(const GUID& guid, SharedPtr<Asset> asset)
 {
     // E5: a decode pipeline launched before a remap registers with the GUID
@@ -2717,6 +2802,9 @@ void AssetManager::RegisterLoadedAsset(const GUID& guid, SharedPtr<Asset> asset)
         profileLock.OnAcquired();
         m_LoadedAssets.insert_or_assign(key, LoadedAssetEntry{asset, transient});
     }
+
+    // Update memory statistics incrementally (lock-free)
+    UpdateMemoryStatsIncremental(asset, true);
 }
 
 void AssetManager::UnregisterLoadedAsset(const GUID& guid)
@@ -2733,6 +2821,12 @@ void AssetManager::UnregisterLoadedAsset(const GUID& guid)
             m_LoadedAssets.erase(it);
         }
     }
+
+    // Update memory statistics incrementally (lock-free)
+    if (removedAsset)
+    {
+        UpdateMemoryStatsIncremental(removedAsset, false);
+    }
 }
 
 // ========================================
@@ -2746,14 +2840,31 @@ AssetFuture AssetManager::CreateEnhancedFuture(std::shared_future<SharedPtr<Asse
 
 bool AssetManager::RenameAssetPath(const std::filesystem::path& oldPath, const std::filesystem::path& newPath)
 {
+    // A folder is not a registered asset; the files under it are. Each one keeps its GUID at its
+    // new path, so references to it stay valid and a loaded instance reports where it now lives.
+    std::error_code ec;
+    if (std::filesystem::is_directory(newPath, ec))
+    {
+        bool movedAny = false;
+        for (std::filesystem::recursive_directory_iterator it(newPath, ec), end; !ec && it != end; it.increment(ec))
+        {
+            if (it->is_regular_file(ec))
+                movedAny |= RenameAssetPath(oldPath / it->path().lexically_relative(newPath), it->path());
+        }
+        return movedAny;
+    }
+
     const GUID guid = m_Registry.GetAssetGUID(oldPath);
     if (!m_Registry.TryRenameAssetPath(oldPath, newPath))
         return false;
-    // The instance carries the registry's normalized form of the path, as it did
-    // when it was loaded.
+    // The instance carries the registry's normalized form of the path and the file's
+    // spelling, as it did when it was loaded.
     AssetMetadata metadata;
     if (SharedPtr<Asset> asset = GetLoadedAsset(guid); asset && m_Registry.TryGetAssetMetadata(guid, metadata))
+    {
         asset->SetPath(metadata.Path);
+        asset->SetName(metadata.Name);
+    }
     return true;
 }
 
@@ -2820,6 +2931,67 @@ AssetLoadHandle AssetManager::CreateLoadHandle(const GUID& assetGuid, AssetLoadR
     }
 
     return handle;
+}
+
+void AssetManager::UpdateMemoryStatsCache() const
+{
+    // Double-checked locking pattern for cache updates
+    if (!m_StatsNeedUpdate.load(std::memory_order_acquire))
+    {
+        return; // Another thread already updated
+    }
+
+    std::lock_guard<std::mutex> lock(m_StatsCacheMutex);
+
+    // Check again after acquiring lock
+    if (!m_StatsNeedUpdate.load(std::memory_order_relaxed))
+    {
+        return;
+    }
+
+    // Force recalculation (this will update the cache)
+    RecalculateMemoryStats();
+}
+
+void AssetManager::UpdateMemoryStatsIncremental(const SharedPtr<Asset>& asset, bool added) const
+{
+    if (!asset)
+        return;
+
+    uint64 assetMemory = asset->GetMemoryUsage();
+    AssetType assetType = asset->GetType();
+
+    if (added)
+    {
+        // Asset was added
+        m_CachedAssetCount.fetch_add(1, std::memory_order_relaxed);
+        m_CachedTotalMemory.fetch_add(assetMemory, std::memory_order_relaxed);
+
+        // Update type-specific counter
+        std::lock_guard<std::mutex> lock(m_StatsCacheMutex);
+        if (m_CachedMemoryByType.find(assetType) == m_CachedMemoryByType.end())
+        {
+            m_CachedMemoryByType[assetType].store(assetMemory, std::memory_order_relaxed);
+        }
+        else
+        {
+            m_CachedMemoryByType[assetType].fetch_add(assetMemory, std::memory_order_relaxed);
+        }
+    }
+    else
+    {
+        // Asset was removed
+        m_CachedAssetCount.fetch_sub(1, std::memory_order_relaxed);
+        m_CachedTotalMemory.fetch_sub(assetMemory, std::memory_order_relaxed);
+
+        // Update type-specific counter
+        std::lock_guard<std::mutex> lock(m_StatsCacheMutex);
+        auto it = m_CachedMemoryByType.find(assetType);
+        if (it != m_CachedMemoryByType.end())
+        {
+            it->second.fetch_sub(assetMemory, std::memory_order_relaxed);
+        }
+    }
 }
 
 SharedPtr<Asset> AssetManager::GetLoadedAsset(const GUID& guid, bool pinResidency) const
@@ -3037,8 +3209,11 @@ void AssetManager::OnGuidRemapped(const GUID& oldGuid, const GUID& newGuid, cons
             m_InFlight.erase(it);
             m_InFlight.emplace(newGuid, std::move(entry));
         }
-        if (m_ReloadsRequestedDuringLoad.erase(oldGuid) > 0)
-            m_ReloadsRequestedDuringLoad.insert(newGuid);
+        if (auto requested = m_ReloadsRequestedDuringLoad.extract(oldGuid))
+        {
+            requested.key() = newGuid;
+            m_ReloadsRequestedDuringLoad.insert(std::move(requested));
+        }
     }
 
     // Pending reloads + suppression follow the identity.
@@ -3106,6 +3281,33 @@ bool AssetManager::CancelInFlightLoad(const GUID& guid)
     if (decodeHandle.IsValid())
         decodeHandle.Cancel();
     return true;
+}
+
+JobSystem::TaskHandle AssetManager::UnloadAssetWithDependencies(const GUID& guid)
+{
+    if (!m_Initialized || !m_JobSystem || !m_BatchCoordinator)
+    {
+        Logger::Log::Error("AssetManager not properly initialized for unified asset unloading");
+        return JobSystem::TaskHandle();
+    }
+
+    // An in-flight load of this GUID is moot once the caller decided to
+    // unload: withdraw it before scheduling the unload work.
+    CancelInFlightLoad(guid);
+
+    try
+    {
+        // Use unified batch coordinator for unloading
+        auto handle = m_BatchCoordinator->UnloadAsset(guid);
+
+        Logger::Log::Debug("Started unified asset unloading for asset {}", guid.ToString());
+        return handle;
+    }
+    catch (const std::exception& e)
+    {
+        Logger::Log::Error("Failed to create unified unload task for {}: {}", guid.ToString(), e.what());
+        return JobSystem::TaskHandle();
+    }
 }
 
 } // namespace GameEngine

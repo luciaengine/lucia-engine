@@ -42,9 +42,9 @@
 #include "Engine/Rendering/PipelineVariantCache.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineIdentifiers.h"
+#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 #include "Types/StringId.h"
 
 #include "TestDeviceHelper.h"

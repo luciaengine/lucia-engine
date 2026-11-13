@@ -2,20 +2,21 @@
 
 #include "ECS/ComponentFieldRegistry.h"  // ECS::ComponentTypeId
 
-#include <functional>
 #include <span>
+#include <string>
 #include <string_view>
 
 namespace GameEngine {
 
-namespace ECS
-{
-class World;
-}
-
 struct InspectorContext;
-struct OverrideMenuTarget;
 class UIElement;
+
+namespace ECS {
+class World;
+struct EntityHandle;
+struct EnumNameValue;
+struct FieldInfo;
+}
 
 // Render a reflection-driven inspector for a component that has a registered
 // field table (see ComponentFieldRegistry / GE_REFLECT) but no hand-written
@@ -42,8 +43,12 @@ bool RenderReflectedFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId 
 // badge shows the answer's badge text ("Added" on an entity the instance added).
 void UpdateEntityNameOverrideMark(UIElement& header, UIElement& nameField, ECS::World& world, ECS::EntityHandle entity);
 
-// Opens, on a right-click on `element`, the entries InspectorRegistry::QueryOverrideMenu gives `target`, and
-// runs `refresh` after the chosen entry. A right-click opens nothing while the target has no entries.
-void AttachOverrideMenu(UIElement& element, const OverrideMenuTarget& target, std::function<void()> refresh);
+// The row label of a reflected field, as the Inspector shows it: its "// @ge-label" text, otherwise
+// its identifier as words.
+std::string FieldDisplayName(const ECS::FieldInfo& field);
+
+// The option label of an enumerator, as the reflected enum rows show it: its "// @ge-label" text,
+// otherwise its identifier as words.
+std::string EnumDisplayName(const ECS::EnumNameValue& value);
 
 } // namespace GameEngine

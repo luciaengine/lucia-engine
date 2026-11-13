@@ -15,7 +15,7 @@
 // ctx and no friend grant on RenderServices — only the enumerated seam below.
 
 #include "Engine/Rendering/ShadowFrameInfo.h"  // Area/Spot/PointShadowFrameInfo snapshots
-#include "Rendering/CameraTypes.h"              // ViewId
+#include "Rendering/Camera/CameraTypes.h"              // ViewId
 #include "Rendering/Core/RenderGraph/RGFrame.h" // RGBuffer
 
 #include <cstdint>
@@ -96,8 +96,6 @@ struct FeatureDeclareContext
     // cull, so a tint cascade declared for it can only ever clear to the value the
     // 1x1 fallback already carries.
     bool HasTransmissiveCaster = false;
-    // Content and program revisions of the submitted caster materials. The rigid
-    // key excludes a material only when every submitted caster using it is skinned.
     uint64_t CascadeMaterialContentKey = 0;
     uint64_t RigidCascadeMaterialContentKey = 0;
 

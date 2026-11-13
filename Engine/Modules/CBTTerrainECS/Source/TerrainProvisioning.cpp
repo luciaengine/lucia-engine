@@ -6,6 +6,7 @@
 
 #include "ECS/ECS.h"
 #include "ECS/ECSTemplates.h"
+#include "TerrainECS/TerrainRenderPublication.h"
 #include "TerrainECS/TerrainSizingPlan.h"
 #include "Terrain/TerrainTypes.h" // TerrainNeedsTiling
 
@@ -30,10 +31,8 @@ static_assert(kSphereBaseDepth == 5u, "cube-sphere roots sit at heap depth 5");
 // shipped 1 m target capped walking detail at ~1 m — the #599 0.3-0.4 m numbers were only
 // reachable at the +40 probe cap, not this default).
 // The derived subdiv stays under the fp32-store cap up to ~R=50000 (lands ~37 there,
-// cap 40); beyond that (Earth-scale) the clamp holds and the facet floor rises above
-// 0.25 m unless the deep (sector, local) store lifts the cap to 50 (GE_CBT_DEEP_DECODE
-// -> floor 0.298 m at Earth). The unclamped Earth derivation wants 51, so even the deep
-// cap clamps there — by 1, not by 11.
+// cap 40). On the wide arm the sphere's (sector, local) store lifts the cap to 50, so the
+// Earth floor is 0.298 m: the unclamped Earth derivation wants 51 and clamps by 1.
 constexpr float32 kPlanetTargetFacetMeters = 0.25f;
 
 constexpr float32 kPi = 3.14159265358979323846f;
@@ -57,25 +56,20 @@ uint32 DepthFromRatio(uint32 baseDepth, float32 ratio, uint32 capSubdiv)
 
 } // namespace
 
-uint32 SubdivCapFor(Components::TerrainDomain domain, bool deepDecode, bool narrowHeap)
+uint32 SubdivCapFor(Components::TerrainDomain domain, bool narrowHeap)
 {
-    // Narrow-heap kernels: the heap ID is a u32, so this cap is not a precision preference
-    // but the representation's own ceiling — exceed it and the decode reads a truncated ID.
-    // Deep decode does not exist on that arm (it is int64 by construction), so the flag is
-    // moot there.
+    // Narrow-heap kernels: the heap ID is a u32, so this cap is the representation's own
+    // ceiling. That arm has no deep decode (it is int64 by construction).
     if (narrowHeap)
         return CBTTerrain::kHeap32DecodeSubdiv;
-    const bool sphericalDeep =
-        deepDecode && domain == Components::TerrainDomain::Spherical;
-    return sphericalDeep ? CBTTerrain::DeepDecode::kDeepDecodeSubdiv
-                         : CBTTerrain::kMaxDecodeSubdiv;
+    return domain == Components::TerrainDomain::Spherical ? CBTTerrain::DeepDecode::kDeepDecodeSubdiv
+                                                          : CBTTerrain::kMaxDecodeSubdiv;
 }
 
 uint32 DeriveTerrainMaxDepth(Components::TerrainDomain domain, float32 sizeX, float32 sizeZ,
-                             float32 samplesPerMeter, float32 planetRadius, bool deepDecode,
-                             bool narrowHeap)
+                             float32 samplesPerMeter, float32 planetRadius, bool narrowHeap)
 {
-    const uint32 capSubdiv = SubdivCapFor(domain, deepDecode, narrowHeap);
+    const uint32 capSubdiv = SubdivCapFor(domain, narrowHeap);
     if (domain == Components::TerrainDomain::Spherical)
     {
         // A cube-sphere facet floor follows (piR/2) * 2^(-(depth-base)/2). Solve for
@@ -99,17 +93,17 @@ uint32 DeriveTerrainMaxDepth(Components::TerrainDomain domain, float32 sizeX, fl
 }
 
 uint32 ResolveTerrainMaxDepth(const Components::Terrain& terrain, ImportedHeightSource imported,
-                              bool deepDecode, bool narrowHeap)
+                              bool narrowHeap)
 {
     if (terrain.MaxDepthOverride != 0u)
     {
         const uint32 baseDepth = BaseDepthFor(terrain.Domain);
-        const uint32 capSubdiv = SubdivCapFor(terrain.Domain, deepDecode, narrowHeap);
+        const uint32 capSubdiv = SubdivCapFor(terrain.Domain, narrowHeap);
         return std::clamp(terrain.MaxDepthOverride, baseDepth, baseDepth + capSubdiv);
     }
     const uint32 latticeCap = DeriveTerrainMaxDepth(terrain.Domain, terrain.SizeX, terrain.SizeZ,
                                                     terrain.SamplesPerMeter, terrain.PlanetRadius,
-                                                    deepDecode, narrowHeap);
+                                                    narrowHeap);
     // A tiled terrain keeps the lattice cap. Its tiles read the import, but its CBT spans the tile
     // grid (tilesPerAxis x tileWorldSize), which rounds up past the footprint (#2609), while the
     // import's spacing below is measured on the footprint. Where the grid overhangs, the import's
@@ -128,34 +122,17 @@ uint32 ResolveTerrainMaxDepth(const Components::Terrain& terrain, ImportedHeight
         (terrain.SizeX >= terrain.SizeZ ? imported.Width : imported.Height) - 1u;
     const float32 subdiv =
         std::ceil(2.0f * std::log2(static_cast<float32>(importedIntervals)));
-    const uint32 capSubdiv = SubdivCapFor(terrain.Domain, deepDecode, narrowHeap);
+    const uint32 capSubdiv = SubdivCapFor(terrain.Domain, narrowHeap);
     const float32 clamped = std::clamp(subdiv, 0.0f, static_cast<float32>(capSubdiv));
     const uint32 importedCap = kPlanarBaseDepth + static_cast<uint32>(clamped);
     return std::min(latticeCap, importedCap);
 }
 
-// The one liveness predicate: the first enabled terrain whose single OR tiled handle
-// is set, in chunk order. Both FindActiveTerrain and ResolveActivePlanetRelief resolve
-// off this so the Terrain and its companion relief always come from the same entity.
-// Exported so the CBT update system can key the service-global sculpt layer's reset on the
-// planet's entity identity (a delete/recreate must not inherit the old planet's frozen geometry).
+// The drawn terrain (TerrainECS::FindDrawnTerrain). FindActiveTerrain and ResolveActivePlanetRelief
+// resolve off this, so the Terrain and its relief come from the entity the renderer draws.
 ECS::EntityHandle FindActiveTerrainEntity(ECS::World& world)
 {
-    ECS::EntityHandle found{};
-    world.Query<ECS::Read<Components::Terrain>>().Each(
-        [&](ECS::EntityHandle entity, const Components::Terrain& terrain)
-        {
-            if (found.IsValid())
-                return;
-            const bool singleLive =
-                terrain.TerrainDataHandle != 0 || terrain.TerrainDataGeneration != 0;
-            const bool tiledLive =
-                terrain.TiledTerrainHandle != 0 || terrain.TiledTerrainGeneration != 0;
-            if (!(singleLive || tiledLive))
-                return;
-            found = entity;
-        });
-    return found;
+    return TerrainECS::FindDrawnTerrain(world);
 }
 
 bool FindActiveTerrain(ECS::World& world, Components::Terrain& out)
@@ -188,6 +165,7 @@ Components::Terrain MakeTerrainPreset(TerrainPreset preset)
         t.HeightScale = 128.0f;
         t.SamplesPerMeter = 2.0f;
         t.MaterialTiling = 10.0f;
+        t.BaseSource = Components::TerrainBaseSource::Flat;
         break;
     case TerrainPreset::LargePlanar:
         t.Domain = Components::TerrainDomain::Planar;
@@ -196,6 +174,7 @@ Components::Terrain MakeTerrainPreset(TerrainPreset preset)
         t.HeightScale = 512.0f;
         t.SamplesPerMeter = 1.0f; // 1 spm for 4 km+: halves memory, holds the size ceiling
         t.MaterialTiling = 80.0f; // ~10 per 512 m of extent to hold texel density at eye level
+        t.BaseSource = Components::TerrainBaseSource::Flat;
         break;
     case TerrainPreset::Planet5km:
         t.Domain = Components::TerrainDomain::Spherical;

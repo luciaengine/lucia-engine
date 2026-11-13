@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include "UI/UIElement.h"
+#include "UI/UIManagerRef.h"
 #include "UI/Layout/Docking.h"
 #include "UI/Layout/DockingHitTest.h"
 
@@ -34,12 +35,10 @@ public:
 
     DockingManager* GetModel() const { return m_Model; }
 
-    // Queues a rebuild with the owning UIManager, which runs it after event
-    // dispatch. The dirty mark is what makes the request visible to the
-    // idle/pointer gates: several call sites mutate only DockingManager model
-    // objects (no UIElement dirt), and without it an idle UI would never run it.
+    // Queues a rebuild with the owning UIManager, which runs it after event dispatch.
+    // The dirty mark wakes the idle and pointer-only gates: some callers change only
+    // the DockingManager model and mark no element dirty.
     void RequestRebuildFromModel();
-    bool ConsumeRebuildRequest() { bool v = m_NeedsRebuild; m_NeedsRebuild = false; return v; }
 
     // Hands a pending rebuild request to the new owner.
     void OnOwnerManagerChanged(UIManager* owner) override;
@@ -63,6 +62,11 @@ public:
         m_OnTabContextMenu(panelId, x, y);
         return true;
     }
+
+    /** Invoked when the user closes a dock tab with a close gesture (panelId). The host closes the panel. */
+    void SetOnTabCloseRequested(std::function<void(const std::string&)> cb) { m_OnTabCloseRequested = std::move(cb); }
+    /** Closes a tab's panel through the host's close handler, or removes the tab when no handler is set. */
+    void RequestTabClose(const std::string& panelId);
 
     struct DockInstrumentation
     {
@@ -89,7 +93,14 @@ public:
     void SetDockDragGhostUndockMode(bool undocking);
     void HideDockDragGhost();
 
+    // Accent color forwarded to dock drop overlays (ARGB: 0xAARRGGBB)
+    void SetAccentColor(uint32_t argb) { m_AccentColor = argb; }
+
 private:
+    // UIManager drains the request when it runs the queued rebuild.
+    friend class UIManager;
+    bool ConsumeRebuildRequest() { bool v = m_NeedsRebuild; m_NeedsRebuild = false; return v; }
+
     // Shared leaf-view resolver: finds UI elements for a leaf given a panelId.
     struct LeafView
     {
@@ -114,14 +125,17 @@ private:
 
     DockingManager* m_Model = nullptr;
     bool m_NeedsRebuild = false;
-    UIManager* m_RebuildQueuedWith = nullptr; // not owned; validated with UIManager::IsAlive
+    UIManagerRef m_RebuildQueuedWith;
     DockInstrumentation m_Instrumentation{};
     std::function<void()> m_OnPostRebuild;
     std::function<void(const std::string&, float, float)> m_OnTabContextMenu;
+    std::function<void(const std::string&)> m_OnTabCloseRequested;
 
     std::unique_ptr<DockNode> m_SavedRoot;
+    uint32_t m_AccentColor = 0xFF3A8FFF;
 
     UIElement* m_DragGhost = nullptr; // Non-owning; child of root element
+    Label* m_DragGhostLabel = nullptr;
     Label* m_DragGhostUndockLabel = nullptr;
     UIElement* m_DragGhostTab = nullptr;
     UIElement* m_DragGhostBody = nullptr;

@@ -1,16 +1,18 @@
 #pragma once
 
+#include "Engine/Rendering/FogSunLightingResolver.h"
 #include "Engine/Rendering/IRenderFeature.h"
 #include "Engine/Rendering/VolumetricFogSettings.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineIdentifiers.h"
+#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
 #include <unordered_map>
 
 namespace GameEngine::Engine::Renderer::Pipeline
 {
+struct PipelineBufferBindingRG;
 struct ViewDeclare;
 }
 
@@ -55,13 +57,9 @@ class VolumetricFogRenderer final : public IRenderFeature
         VolumetricFogGrid historyGrid{};
         float effectiveMaxDistance = 0.0f;
         float historyMaxDistance = 0.0f;
-        float currentSunDirection[3]{0.35f, -0.65f, 0.68f};
-        float currentSunColor[3]{1.0f, 0.86f, 0.62f};
-        float currentSunIntensity = 1.0f;
+        ResolvedFogSun currentSun{};
         bool hasLocalFogLights = false;
-        float historySunDirection[3]{0.35f, -0.65f, 0.68f};
-        float historySunColor[3]{1.0f, 0.86f, 0.62f};
-        float historySunIntensity = 1.0f;
+        ResolvedFogSun historySun{};
         uint64_t frameCounter = 0;
         uint64_t historyFrame = 0;
         bool historyValid = false;
@@ -78,8 +76,12 @@ class VolumetricFogRenderer final : public IRenderFeature
     ::GameEngine::Rendering::BufferHandle GetOrCreateLocalVolumeBuffer(PerViewState& state, uint32_t slot);
     // Lazily-created zero-fallback buffers for the RenderGraph lighting bind (a missing
     // cluster/light ref binds these so the fog dispatch still runs).
-    ::GameEngine::Rendering::BufferHandle GetZeroShadowBuffer(::GameEngine::Rendering::IDevice* dev);
+    ::GameEngine::Rendering::BufferHandle GetZeroUniformBuffer(::GameEngine::Rendering::IDevice* dev);
     ::GameEngine::Rendering::BufferHandle GetZeroStorageBuffer(::GameEngine::Rendering::IDevice* dev);
+    // Writes the view's ViewParams at kViewParamsBinding, or zeros when the view published none.
+    void BindViewParams(::GameEngine::Rendering::IDevice& dev, ::GameEngine::Rendering::DescriptorSetHandle set,
+                        const Pipeline::PipelineBufferBindingRG& viewParams);
+    static constexpr uint32_t kViewParamsBinding = 21; // GE_VIEW_PARAMS_BINDING in the fog shaders
     bool CreateDensityNoiseAtlasTexture();
     void FillParams(RenderServices& services,
                     ::GameEngine::Rendering::ViewId viewId,
@@ -131,7 +133,7 @@ class VolumetricFogRenderer final : public IRenderFeature
     ::GameEngine::Rendering::TextureHandle m_JitterAtlasTexture{};
     ::GameEngine::Rendering::SamplerHandle m_DensityNoiseSampler{};
     ::GameEngine::Rendering::TextureHandle m_DensityNoiseTexture{};
-    ::GameEngine::Rendering::BufferHandle m_ZeroShadowBuffer{};
+    ::GameEngine::Rendering::BufferHandle m_ZeroUniformBuffer{};
     ::GameEngine::Rendering::BufferHandle m_ZeroStorageBuffer{};
 
     mutable VolumetricFogSettings m_DefaultSettings{};

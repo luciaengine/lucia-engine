@@ -1,14 +1,12 @@
 #include "Inspectors/AudioEmitterInspector.h"
 
 #include "InspectorRegistry.h"
-#include "Editor/Entities/EditorComponentTraits.h"
-#include "Components/Audio/AudioListener.h"
 
 #include "Components/Audio/AudioEmitter.h"
 #include "Editor/Entities/EditorComponentTraits.h"
 #include "Editor/Entities/EditorECSHelpers.h"
 
-#include "Inspectors/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
 #include "UI/Controls/Dropdown.h"
@@ -21,7 +19,7 @@
 namespace GameEngine
 {
 
-// The smallest Min Distance the inspector offers, in world units (1 cm at the engine's meter
+// The smallest Min Distance the inspector offers, in world units (1 cm at the engine's metre
 // scale): Inverse and Exponential divide by it, so a value near 0 drops the sound below
 // audibility from the first unit out.
 static constexpr float kMinDistanceFloor = 0.01f;
@@ -35,26 +33,6 @@ static constexpr EnumEntry<Components::AudioEmitterAttenuation> kAttenuationMode
 
 void RegisterAudioEmitterInspector()
 {
-    {
-        Editor::EditorComponentTraits traits;
-        traits.DisplayName = "Audio Emitter";
-        traits.Category = "Audio";
-        traits.Tooltip = "Plays audio clips from this entity's position";
-        traits.InspectorIconClass = "inspector-section-icon-audio-emitter";
-        traits.EnableToggleTooltip = "Off stops its sound.";
-        Editor::EditorComponentTraitsRegistry::Get().Register(
-            ECS::GetComponentTypeId<Components::AudioEmitter>(), std::move(traits));
-    }
-    {
-        Editor::EditorComponentTraits traits;
-        traits.DisplayName = "Audio Listener";
-        traits.Category = "Audio";
-        traits.Tooltip = "Marks this entity as the audio listener (usually the camera)";
-        traits.InspectorIconClass = "inspector-section-icon-audio-listener";
-        Editor::EditorComponentTraitsRegistry::Get().Register(
-            ECS::GetComponentTypeId<Components::AudioListener>(), std::move(traits));
-    }
-
     InspectorFn fn = [](const InspectorContext& ctx)
     {
         if (!ctx.Parent || !ctx.World || !ctx.Entity.IsValid())
@@ -353,6 +331,11 @@ void RegisterAudioEmitterInspector()
     };
 
     InspectorRegistry::Get().RegisterComponentInspector<Components::AudioEmitter>(std::move(fn));
+
+    Editor::EditorComponentTraits traits;
+    traits.EnableToggleTooltip = "Switch this component on or off. Off stops its sound.";
+    Editor::EditorComponentTraitsRegistry::Get().Register(
+        ECS::GetComponentTypeId<Components::AudioEmitter>(), std::move(traits));
 }
 
 } // namespace GameEngine

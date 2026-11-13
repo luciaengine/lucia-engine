@@ -35,6 +35,7 @@ namespace
 using GameEngine::Editor::DescribeCameraProjection;
 using GameEngine::Mathematics::MakeOrthographicLH_ZO_ReverseZ;
 using GameEngine::Mathematics::MakePerspectiveLH_ZO_ReverseZ;
+using GameEngine::Mathematics::Matrix4x4;
 using json = nlohmann::json;
 
 constexpr float kDegToRad = 0.01745329251994329577f;
@@ -44,7 +45,7 @@ constexpr float kFar = 1000.0f;
 json Perspective(float fovVerticalDeg, float aspect, unsigned w = 1920, unsigned h = 1080)
 {
     const auto proj = MakePerspectiveLH_ZO_ReverseZ(fovVerticalDeg * kDegToRad, aspect, kNear, kFar);
-    return DescribeCameraProjection(proj.Data(), w, h);
+    return DescribeCameraProjection(proj, w, h);
 }
 
 // tan(fovH/2) = tan(fovV/2) * aspect — the engine's own derivation
@@ -122,7 +123,7 @@ TEST(CameraProjectionReport, OrthographicReportsHeightAndNoAngles)
     const float halfW = halfH * kAspect;
     const auto proj = MakeOrthographicLH_ZO_ReverseZ(-halfW, halfW, -halfH, halfH, kNear, kFar);
 
-    const json out = DescribeCameraProjection(proj.Data(), 1920, 1080);
+    const json out = DescribeCameraProjection(proj, 1920, 1080);
 
     EXPECT_EQ(out["type"], "orthographic");
     EXPECT_NEAR(out["orthoHeight"].get<float>(), kDistance, 1e-3f);
@@ -145,7 +146,7 @@ TEST(CameraProjectionReport, OrthographicAspectPresetDivergesFromTheViewportRati
     const float halfW = halfH * kPresetAspect;
     const auto proj = MakeOrthographicLH_ZO_ReverseZ(-halfW, halfW, -halfH, halfH, kNear, kFar);
 
-    const json out = DescribeCameraProjection(proj.Data(), 1920, 1080);
+    const json out = DescribeCameraProjection(proj, 1920, 1080);
 
     EXPECT_NEAR(out["aspect"].get<float>(), kPresetAspect, 1e-4f);
     const float pixelRatio = 1920.0f / 1080.0f;
@@ -156,9 +157,8 @@ TEST(CameraProjectionReport, OrthographicAspectPresetDivergesFromTheViewportRati
 
 TEST(CameraProjectionReport, DegenerateMatrixReportsNothingRatherThanAGuess)
 {
-    float zeroed[16] = {};
+    const Matrix4x4 zeroed{glm::mat4(0.0f)};
     EXPECT_TRUE(DescribeCameraProjection(zeroed, 1920, 1080).is_null());
-    EXPECT_TRUE(DescribeCameraProjection(nullptr, 1920, 1080).is_null());
 }
 
 TEST(CameraProjectionReport, NegativeDiagonalScalesReportNothingRatherThanANegativeAngle)
@@ -167,14 +167,12 @@ TEST(CameraProjectionReport, NegativeDiagonalScalesReportNothingRatherThanANegat
     // describe. atan(1/-x) is a perfectly well-formed negative angle, which is
     // the worst possible answer: it reads as data.
     auto proj = MakePerspectiveLH_ZO_ReverseZ(60.0f * kDegToRad, 16.0f / 9.0f, kNear, kFar);
-    float flippedY[16];
-    std::memcpy(flippedY, proj.Data(), sizeof(flippedY));
-    flippedY[5] = -flippedY[5];
+    Matrix4x4 flippedY = proj;
+    flippedY[1][1] = -flippedY[1][1];
     EXPECT_TRUE(DescribeCameraProjection(flippedY, 1920, 1080).is_null());
 
-    float flippedX[16];
-    std::memcpy(flippedX, proj.Data(), sizeof(flippedX));
-    flippedX[0] = -flippedX[0];
+    Matrix4x4 flippedX = proj;
+    flippedX[0][0] = -flippedX[0][0];
     EXPECT_TRUE(DescribeCameraProjection(flippedX, 1920, 1080).is_null());
 }
 
@@ -187,12 +185,13 @@ TEST(CameraProjectionReport, GameCameraReportsDeclaredTranslationRollProjectionA
     const auto world = Mathematics::Matrix4x4::FromColumnMajor(worldData);
     const auto view = Mathematics::Inverse(world);
     const auto projection = MakePerspectiveLH_ZO_ReverseZ(48.0f * kDegToRad, 16.0f / 9.0f, kNear, kFar);
-    std::memcpy(camera.view, view.Data(), sizeof(camera.view));
-    std::memcpy(camera.proj, projection.Data(), sizeof(camera.proj));
-    camera.cameraPos[0] = 12;
-    camera.cameraPos[1] = 3;
-    camera.cameraPos[2] = -4;
-    auto out = Editor::DescribeGameViewCamera(camera, Components::ExposureMode::Auto, 160, 90);
+    camera.view = view;
+    camera.proj = projection;
+    camera.cameraPos.x = 12;
+    camera.cameraPos.y = 3;
+    camera.cameraPos.z = -4;
+    auto out = Editor::DescribeGameViewCamera(camera, Components::ExposureMode::Auto,
+                                              Components::ExposureMeter::Lights, 160, 90);
     EXPECT_EQ(out["position"], (json{12.0f, 3.0f, -4.0f}));
     ASSERT_EQ(out["worldTransform"].size(), 16u);
     for (int index = 0; index < 16; ++index)
@@ -201,13 +200,18 @@ TEST(CameraProjectionReport, GameCameraReportsDeclaredTranslationRollProjectionA
     EXPECT_EQ(out["projection"]["viewportWidthPx"], 160);
     EXPECT_EQ(out["projection"]["viewportHeightPx"], 90);
     EXPECT_EQ(out["exposure"]["mode"], "auto");
+    EXPECT_EQ(out["exposure"]["meter"], "lights");
+    EXPECT_EQ(Editor::DescribeGameViewCamera(camera, Components::ExposureMode::Auto,
+                                             Components::ExposureMeter::Picture, 160, 90)["exposure"]["meter"],
+              "picture");
     EXPECT_TRUE(out["exposure"]["metered"].is_null()) << "settings are not a meter sample";
-    for (const auto [mode, name] : {std::pair{Components::ExposureMode::Fixed, "fixed"},
+    for (const auto& [mode, name] : {std::pair{Components::ExposureMode::Fixed, "fixed"},
                                   std::pair{Components::ExposureMode::Manual, "manual"},
                                   std::pair{Components::ExposureMode::Physical, "physical"}})
     {
-        out = Editor::DescribeGameViewCamera(camera, mode, 160, 90);
+        out = Editor::DescribeGameViewCamera(camera, mode, Components::ExposureMeter::Lights, 160, 90);
         EXPECT_EQ(out["exposure"]["mode"], name);
+        EXPECT_TRUE(out["exposure"]["meter"].is_null()) << "a meter only reads under Auto";
         EXPECT_TRUE(out["exposure"]["metered"].is_null());
     }
 }

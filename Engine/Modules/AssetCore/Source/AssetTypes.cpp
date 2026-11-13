@@ -84,6 +84,7 @@ static const std::unordered_map<String, AssetType>& GetExtensionMap()
         {".geom", AssetType::Shader},
         {".comp", AssetType::Shader},
         {".shader", AssetType::Shader},
+        {".slang", AssetType::Shader}, // Slang module: an edit is announced like a GLSL include
 
         // Render pipeline / render graph formats
         {".rendergraph", AssetType::RenderPipeline},
@@ -137,7 +138,7 @@ static const std::unordered_map<String, AssetType>& GetExtensionMap()
 
         // Navigation formats
         {".navgrid", AssetType::NavigationGrid},
-        {".navmesh", AssetType::NavigationMesh},
+        {".navsurface", AssetType::NavigationSurfaceData},
 
         // Terrain heightmap raw formats (16-bit PNG heightmaps stay Texture)
         {".r16", AssetType::TerrainHeightmap},
@@ -146,8 +147,8 @@ static const std::unordered_map<String, AssetType>& GetExtensionMap()
         // Terrain brush zone payload (sculpt R32F offsets / paint R8 mask)
         {".tzone", AssetType::TerrainZoneData},
 
-        // Planet sphere sculpt page store (sparse dab + modifier pages)
-        {".tsculpt", AssetType::TerrainSphereSculptData},
+        // A terrain's authored height layer (a height page store)
+        {".gepage", AssetType::TerrainHeightLayer},
 
         // A terrain's ordered material list, keyed by stable slot ID
         {".terrainmatlib", AssetType::TerrainMaterialLibrary},
@@ -155,6 +156,12 @@ static const std::unordered_map<String, AssetType>& GetExtensionMap()
         {".daycycle.json", AssetType::DayCycleProfile},
         // A particle emitter's processor stack
         {".particlestack", AssetType::ParticleStack},
+
+        // An AI program's option set and its difficulty presets
+        {".aioptions", AssetType::AiOptionSet},
+
+        // An AI state-tree program
+        {".scribe", AssetType::AiStateTree},
 
         // Ocean formats
         {".oceandepth", AssetType::OceanDepthCache},
@@ -170,6 +177,9 @@ static const std::unordered_map<String, AssetType>& GetExtensionMap()
         {".profile.json", AssetType::SkeletonProfile},
         {".humanoidrig.json", AssetType::HumanoidRig},
         {".retargetmap.json", AssetType::RetargetMap},
+
+        // Day Cycle profiles: tracks over the sun's elevation
+        {".daycycle.json", AssetType::DayCycleProfile},
 
         // Animation clip sidecars (Phase B3 .blend Action extraction)
         {".anim.json", AssetType::Animation},
@@ -294,6 +304,7 @@ bool IsTextBasedAssetType(AssetType type) {
         case AssetType::Script:
         case AssetType::CubeLut:
         case AssetType::Scene:
+        case AssetType::Prefab:
         case AssetType::Material:
         case AssetType::Shader:
         case AssetType::RenderPipeline:
@@ -307,11 +318,9 @@ bool IsTextBasedAssetType(AssetType type) {
         case AssetType::TileSet:
         case AssetType::TileMap:
         case AssetType::PhysicsMaterial:
-        case AssetType::Prefab:
         case AssetType::Timeline:
         case AssetType::AnimationGraph:
         case AssetType::ClipSet:
-        case AssetType::NavigationMesh:
         case AssetType::OceanWaveSpectrum:
         case AssetType::OceanSettings:
         case AssetType::OceanPreset:
@@ -324,6 +333,8 @@ bool IsTextBasedAssetType(AssetType type) {
         case AssetType::TerrainMaterialLibrary:
         case AssetType::DayCycleProfile:
         case AssetType::ParticleStack:
+        case AssetType::AiOptionSet:
+        case AssetType::AiStateTree:
             return true;
         default:
             return false;

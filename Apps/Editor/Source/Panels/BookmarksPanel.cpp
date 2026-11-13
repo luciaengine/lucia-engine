@@ -1,4 +1,3 @@
-#include "Assets/AssetGridDragState.h"
 #include "Panels/BookmarksPanel.h"
 #include "EditorContext.h"
 #include "Input/KeyCodes.h"
@@ -15,7 +14,7 @@
 #include "UI/UIElement.h"
 #include "UI/UIEvents.h"
 #include "UI/Interaction/Payload.h"
-#include "UI/Interaction/DragDropManager.h"
+#include "UI/Interaction/DragDrop/DragDropManager.h"
 #include "UI/UIManager.h"
 #include "UI/Controls/ScrollView.h"
 #include "UI/Controls/Label.h"
@@ -25,9 +24,8 @@
 #include "UI/StyleProperties.h"
 #include "Panels/SettingsPanel.h"
 #include "Panels/AssetsPanel.h"
-#include "Assets/PolyhavenDownloadManager.h"
-#include "Assets/PolyhavenService.h"
-#include "Scheduler/Scheduler.h"
+#include "Assets/Polyhaven/PolyhavenDownloadManager.h"
+#include "Assets/Polyhaven/PolyhavenService.h"
 #include "Panels/HierarchyPanel.h"
 #include "Thumbnails/IThumbnailProvider.h"
 #include "Logger/Logger.h"
@@ -40,10 +38,10 @@
 #include "Input/InputSystem.h"
 #include "Panels/ConfirmActionModal.h"
 #include "ECS/ECS.h"
-#include "Editor/Hierarchy/HierarchyEntityIcon.h"
+#include "Editor/Hierarchy/HierarchyEntity/HierarchyEntityIcon.h"
+#include "Types/StringUtils.h"
 
 #include <algorithm>
-#include <cctype>
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <cmath>
@@ -53,6 +51,16 @@ namespace GameEngine {
 
 // Static callback for adding bookmarks
 std::function<void(const Bookmark&)> BookmarksPanel::s_OnAddBookmark = nullptr;
+
+// Static drag state to track what's being dragged across panels
+// Defined here, declared extern in AssetsBrowserController
+struct DragState {
+    bool active = false;
+    std::filesystem::path assetPath;
+    std::string scenePath;
+    std::string entityId;
+};
+DragState g_DragState;
 
 void BookmarksPanel::SetOnAddBookmark(std::function<void(const Bookmark&)> cb)
 {
@@ -176,7 +184,6 @@ void BookmarksPanel::BuildUI()
     // Search bar at the top
     auto built = BuildPanelSearchBar(
         "bookmarks-search-field",
-        []() { return SettingsPanel::GetSearchBarsVisible(); },
         [this](const std::string& value)
         {
             m_SearchQuery = value;
@@ -195,6 +202,7 @@ void BookmarksPanel::BuildUI()
         });
     m_SearchBar = built.RootPtr;
     m_SearchField = built.FieldPtr;
+    container->AddClass("panel-search-host");
     container->AddChild(std::move(built.Root));
     SettingsPanel::RegisterSearchBar(m_SearchBar, built.IconPtr);
     
@@ -202,7 +210,7 @@ void BookmarksPanel::BuildUI()
     auto scrollView = std::make_unique<ScrollView>();
     scrollView->SetId("bookmarks-scroll");
     scrollView->AddClass("bookmarks-list");
-    scrollView->Overrides().SetCustomNumber(StringId("--ui_scrollview_measure_horizontal"), 0.0f);
+    scrollView->Style().SetCustomNumber(HashStringId("--ui_scrollview_measure_horizontal"), 0.0f);
     m_ScrollView = scrollView.get();
     
     // Handle Ctrl+Scroll to adjust row height
@@ -293,7 +301,7 @@ void BookmarksPanel::BuildUI()
         if (bm.Type == BookmarkType::Scene || bm.Type == BookmarkType::Entity)
         {
             dragPayload.GhostIconKind = UI::Interaction::DragGhostIconKind::AssetFile;
-            dragPayload.GhostThumbnailEngineName = "Icons/sceneicon.png";
+            dragPayload.GhostThumbnailEngineName = "Icons/sceneicon.svg";
         }
         else if (bm.Type == BookmarkType::Asset && m_Context)
         {
@@ -343,7 +351,7 @@ void BookmarksPanel::BuildUI()
                 {
                     const std::string ext = assetPath.extension().string();
                     if (ext == ".scene")
-                        dragPayload.GhostThumbnailEngineName = "Icons/sceneicon.png";
+                        dragPayload.GhostThumbnailEngineName = "Icons/sceneicon.svg";
                     else if (m_Context->Thumbnails)
                     {
                         const std::string thumb = m_Context->Thumbnails->GetOrRequest(assetPath, 128, [](const std::string&) {});
@@ -476,9 +484,7 @@ void BookmarksPanel::RebuildBookmarkRows()
     else
     {
         // Filter by the selected bookmark field.
-        std::string searchLower = m_SearchQuery;
-        std::transform(searchLower.begin(), searchLower.end(), searchLower.begin(),
-            [](unsigned char c) { return std::tolower(c); });
+        const std::string searchLower = ToLowerAscii(m_SearchQuery);
         
         for (size_t i = 0; i < m_Bookmarks.size(); ++i)
         {
@@ -494,8 +500,7 @@ void BookmarksPanel::RebuildBookmarkRows()
                 searchable = bm.Reference;
             else
                 searchable = bm.Name + " " + typeName + " " + bm.Reference;
-            std::transform(searchable.begin(), searchable.end(), searchable.begin(),
-                [](unsigned char c) { return std::tolower(c); });
+            searchable = ToLowerAscii(searchable);
             
             if (searchable.find(searchLower) != std::string::npos)
             {
@@ -562,7 +567,7 @@ void BookmarksPanel::CreateBookmarkRow(size_t index, UIElement* container)
     if (m_SelectedIndices.count(index) != 0)
         row->AddClass("selected");
     // Apply custom row height (dynamic, needs inline style)
-    row->Overrides().Set(Style::MinHeight, StyleLength::Px(m_RowHeight)).Set(Style::Height, StyleLength::Px(m_RowHeight));
+    row->Style().Set(Style::MinHeight, StyleLength::Px(m_RowHeight)).Set(Style::Height, StyleLength::Px(m_RowHeight));
     
     // Drag handle - use icon image (styled via CSS class)
     auto dragHandle = std::make_unique<UIElement>();
@@ -578,7 +583,7 @@ void BookmarksPanel::CreateBookmarkRow(size_t index, UIElement* container)
     iconEl->AddClass("bookmark-icon");
     iconEl->AddClass("list-item-icon");
     // Dynamic icon size needs inline style
-    iconEl->Overrides().Set(Style::Width, StyleLength::Px(iconSize)).Set(Style::Height, StyleLength::Px(iconSize))
+    iconEl->Style().Set(Style::Width, StyleLength::Px(iconSize)).Set(Style::Height, StyleLength::Px(iconSize))
         .Set(Style::MinWidth, StyleLength::Px(iconSize)).Set(Style::MinHeight, StyleLength::Px(iconSize));
     UpdateBookmarkIcon(iconEl.get(), bookmark);
     
@@ -598,6 +603,7 @@ void BookmarksPanel::CreateBookmarkRow(size_t index, UIElement* container)
     
     // Remove button (styled via CSS class)
     auto removeBtn = std::make_unique<Button>();
+    removeBtn->AddClass("icon-button");
     removeBtn->AddClass("bookmark-remove");
     removeBtn->SetText("×");
     // Capture bookmark identity at row creation time (not at click time) so the
@@ -747,7 +753,7 @@ void BookmarksPanel::SetupDragAndDrop(UIElement* row, UIElement* /*dragHandle*/,
     
     // Drag from whole row (except remove button): mouse down arms drag and captures panel (same as TreeView).
     // Panel receives mouse move when it has capture; drag starts in panel's kEventMouseMove handler.
-    row->RegisterEventHandler(kEventMouseDown, [this, row, index](UIEvent& e)
+    row->RegisterEventHandler(kEventMouseDown, [this, index](UIEvent& e)
     {
         if (e.Button != 0)
             return;
@@ -987,27 +993,8 @@ void BookmarksPanel::PerformDrop(const UI::Interaction::DropRequest& request)
         // Immediate rebuild + next-frame rebuild so first drop always shows.
         if (m_ListContainer)
         {
-            RebuildBookmarkRows();
-            m_ListContainer->MarkDirty(UIElement::ChildrenDirty | UIElement::LayoutDirty | UIElement::VisualDirty);
-            if (m_ScrollView)
-                m_ScrollView->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
-            MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
-            RequestRelayout();
-            Scheduler::IScheduler* sched = GetScheduler();
-            if (sched)
-            {
-                sched->ScheduleNext([this]()
-                {
-                    if (!m_ListContainer)
-                        return;
-                    RebuildBookmarkRows();
-                    m_ListContainer->MarkDirty(UIElement::ChildrenDirty | UIElement::LayoutDirty | UIElement::VisualDirty);
-                    if (m_ScrollView)
-                        m_ScrollView->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
-                    MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
-                    RequestRelayout();
-                });
-            }
+            RebuildRowsAndRelayout();
+            PostAction([this]() { RebuildRowsAndRelayout(); });
         }
         return;
     }
@@ -1062,7 +1049,7 @@ void BookmarksPanel::PerformDrop(const UI::Interaction::DropRequest& request)
             bookmark.Name = item.name.empty() ? item.slug : item.name;
 
             // Use cached Polyhaven thumbnail if available.
-            std::filesystem::path thumbPath = PolyhavenService::GetCacheDir() / (item.slug + ".png");
+            std::filesystem::path thumbPath = PolyhavenService::GetThumbnailPath(item.slug);
             std::error_code ec;
             if (std::filesystem::exists(thumbPath, ec))
                 bookmark.IconPath = thumbPath.string();
@@ -1127,7 +1114,7 @@ void BookmarksPanel::SetDropPreview(const UI::Interaction::DropPreviewState& sta
     if (!wantsLine)
     {
         if (m_InsertionIndicator)
-            m_InsertionIndicator->Overrides().Set(Style::Display, DisplayMode::None);
+            m_InsertionIndicator->Style().Set(Style::Display, DisplayMode::None);
         return;
     }
 
@@ -1143,11 +1130,11 @@ void BookmarksPanel::SetDropPreview(const UI::Interaction::DropPreviewState& sta
                                       : (m_Bookmarks.empty() ? 0 : m_Bookmarks.size() - 1);
     const bool lineBelowRow = (insertIndex >= static_cast<int>(m_Bookmarks.size()) && !m_Bookmarks.empty());
 
-    UIElement* row = m_ListContainer->FindById("bookmark-row-" + std::to_string(rowToHighlight));
+    UIElement* row = m_ListContainer->FindById(HashStringId("bookmark-row-" + std::to_string(rowToHighlight)));
     if (!row)
     {
         if (m_InsertionIndicator)
-            m_InsertionIndicator->Overrides().Set(Style::Display, DisplayMode::None);
+            m_InsertionIndicator->Style().Set(Style::Display, DisplayMode::None);
         return;
     }
 
@@ -1162,7 +1149,7 @@ void BookmarksPanel::SetDropPreview(const UI::Interaction::DropPreviewState& sta
     const float topPx = (lineBelowRow ? (ry + rh) : ry) - containerY;
 
     const uint32_t lineArgb = state.Allowed ? 0xF200C864u : 0xF2FF5050u; // rgba(0,200,100,0.95) / rgba(255,80,80,0.95)
-    m_InsertionIndicator->Overrides()
+    m_InsertionIndicator->Style()
         .Set(Style::PositionLeft, StyleLength::Px(0.0f))
         .Set(Style::PositionTop, StyleLength::Px(topPx))
         .Set(Style::Width, StyleLength::Percent(100.0f))
@@ -1245,47 +1232,26 @@ void BookmarksPanel::AddBookmarkAt(const Bookmark& bookmark, size_t insertIndex)
     {
         if (UIElement::IsInEventDispatch())
         {
-            // Schedule rebuild at the start of the NEXT frame so layout/paint run after our
-            // changes. PostAction runs after event dispatch in the same frame, but layout/paint
-            // have already run for this frame, so the new bookmark only appears after focusing
-            // the panel. ScheduleNext runs in the next Update()'s first drain, before layout/paint.
-            Scheduler::IScheduler* sched = GetScheduler();
-            if (sched)
-            {
-                sched->ScheduleNext([this]()
-                {
-                    if (!m_ListContainer)
-                        return;
-            RebuildBookmarkRows();
-                    if (m_ListContainer)
-                        m_ListContainer->MarkDirty(UIElement::ChildrenDirty | UIElement::LayoutDirty | UIElement::VisualDirty);
-                    if (m_ScrollView)
-                        m_ScrollView->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
-                    MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
-                    RequestRelayout();
-        });
-    }
-    else
-    {
-                PostAction([this]()
-                {
-                    if (!m_ListContainer)
-                        return;
-        RebuildBookmarkRows();
-                    if (m_ListContainer)
-                        m_ListContainer->MarkDirty(UIElement::ChildrenDirty | UIElement::LayoutDirty | UIElement::VisualDirty);
-                    if (m_ScrollView)
-                        m_ScrollView->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
-                    MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
-                    RequestRelayout();
-                });
-            }
+            // RemoveChild defers during dispatch, so the rebuild runs in the drain right after it.
+            PostAction([this]() { RebuildRowsAndRelayout(); });
         }
         else
         {
             RebuildBookmarkRows();
         }
     }
+}
+
+void BookmarksPanel::RebuildRowsAndRelayout()
+{
+    if (!m_ListContainer)
+        return;
+    RebuildBookmarkRows();
+    m_ListContainer->MarkDirty(UIElement::ChildrenDirty | UIElement::LayoutDirty | UIElement::VisualDirty);
+    if (m_ScrollView)
+        m_ScrollView->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
+    MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
+    RequestRelayout();
 }
 
 void BookmarksPanel::RemoveBookmark(size_t index)
@@ -1525,17 +1491,8 @@ void BookmarksPanel::NavigateToEntity(const std::string& scenePath, const std::s
                 if (m_OnOpenScene)
                 {
                     m_OnOpenScene(sp);
-                    // Schedule selection for the next 2 frames to let the scene load
-                    Scheduler::IScheduler* sched = GetScheduler();
-                    if (sched)
-                    {
-                        sched->ScheduleNext([this, eid]()
-                        {
-                            Scheduler::IScheduler* s = GetScheduler();
-                            if (s)
-                                s->ScheduleNext([this, eid]() { SelectEntityById(eid); });
-                        });
-                    }
+                    // Two deferred drains later the scene open has settled.
+                    SelectEntityAfterDrains(eid, 2);
                 }
             });
 
@@ -1549,6 +1506,16 @@ void BookmarksPanel::NavigateToEntity(const std::string& scenePath, const std::s
     }
 
     SelectEntityById(entityId);
+}
+
+void BookmarksPanel::SelectEntityAfterDrains(std::string entityId, int drains)
+{
+    if (drains <= 0)
+    {
+        SelectEntityById(entityId);
+        return;
+    }
+    PostAction([this, entityId = std::move(entityId), drains] { SelectEntityAfterDrains(entityId, drains - 1); });
 }
 
 void BookmarksPanel::SelectEntityById(const std::string& entityId)
@@ -1599,7 +1566,7 @@ void BookmarksPanel::UpdateBookmarkIcon(UIElement* iconEl, const Bookmark& bookm
         if (bookmark.Reference.rfind("polyhaven:", 0) == 0)
         {
             const std::string slug = bookmark.Reference.substr(10);
-            std::filesystem::path thumbPath = PolyhavenService::GetCacheDir() / (slug + ".png");
+            std::filesystem::path thumbPath = PolyhavenService::GetThumbnailPath(slug);
             std::error_code ec;
             if (std::filesystem::exists(thumbPath, ec))
                 UI::Layout::SetBackgroundPath(*iconEl, thumbPath.string());
@@ -1697,7 +1664,7 @@ void BookmarksPanel::UpdateBookmarkIcon(UIElement* iconEl, const Bookmark& bookm
                         }
                         else if (!iconId.empty())
                         {
-                            iconEl = FindById(iconId);
+                            iconEl = FindById(HashStringId(iconId));
                         }
                         
                         // Verify element is still valid.
@@ -2084,7 +2051,7 @@ void BookmarksPanel::SetupDropHandlers(UIElement* container)
         mouseOverPanel = false;
         m_AssetDropInsertIndex = -1;
         if (m_InsertionIndicator)
-            m_InsertionIndicator->Overrides().Set(Style::Display, DisplayMode::None);
+            m_InsertionIndicator->Style().Set(Style::Display, DisplayMode::None);
     });
 
     // Mouse move - show insertion line when dragging an asset (g_DragState) or reordering bookmarks (DragDropManager)
@@ -2114,7 +2081,7 @@ void BookmarksPanel::SetupDropHandlers(UIElement* container)
             const bool isCurrentTarget = (dd->GetCurrentTargetElement() == this);
             if (!isCurrentTarget)
             {
-                insertionIndicator->Overrides().Set(Style::Display, DisplayMode::None);
+                insertionIndicator->Style().Set(Style::Display, DisplayMode::None);
                 return;
             }
             UI::Interaction::DropHit hit{};
@@ -2132,7 +2099,7 @@ void BookmarksPanel::SetupDropHandlers(UIElement* container)
                                           : (m_Bookmarks.empty() ? 0 : m_Bookmarks.size() - 1);
                 const bool lineBelowRow = (insertIndex >= static_cast<int>(m_Bookmarks.size()) && !m_Bookmarks.empty());
 
-                UIElement* row = m_ListContainer->FindById("bookmark-row-" + std::to_string(rowIdx));
+                UIElement* row = m_ListContainer->FindById(HashStringId("bookmark-row-" + std::to_string(rowIdx)));
                 if (row)
                 {
                     UI::Interaction::DropRequest req{};
@@ -2146,7 +2113,7 @@ void BookmarksPanel::SetupDropHandlers(UIElement* container)
                     const float containerY = m_ListContainer->GetLayoutY();
                     const float topPx = yLine - containerY;
                     const uint32_t lineArgb = fb.Allowed ? 0xF200C864u : 0xF2FF5050u;
-                    insertionIndicator->Overrides()
+                    insertionIndicator->Style()
                         .Set(Style::PositionLeft, StyleLength::Px(0.0f))
                         .Set(Style::PositionTop, StyleLength::Px(topPx))
                         .Set(Style::Width, StyleLength::Percent(100.0f))
@@ -2157,14 +2124,14 @@ void BookmarksPanel::SetupDropHandlers(UIElement* container)
                     return;
                 }
             }
-            insertionIndicator->Overrides().Set(Style::Display, DisplayMode::None);
+            insertionIndicator->Style().Set(Style::Display, DisplayMode::None);
             return;
         }
 
-        if (!g_DragState.Active || g_DragState.AssetPath.empty())
+        if (!g_DragState.active || g_DragState.assetPath.empty())
         {
             m_AssetDropInsertIndex = -1;
-            insertionIndicator->Overrides().Set(Style::Display, DisplayMode::None);
+            insertionIndicator->Style().Set(Style::Display, DisplayMode::None);
             return;
         }
 
@@ -2223,7 +2190,7 @@ void BookmarksPanel::SetupDropHandlers(UIElement* container)
             indicatorAbsY = lastRow->GetLayoutY() + lastRow->GetLayoutHeight();
         }
         float indicatorY = indicatorAbsY - containerY;
-        insertionIndicator->Overrides().Set(Style::PositionTop, StyleLength::Px(indicatorY)).Set(Style::Display, DisplayMode::Block);
+        insertionIndicator->Style().Set(Style::PositionTop, StyleLength::Px(indicatorY)).Set(Style::Display, DisplayMode::Block);
     });
     
     // Mouse up - handle drop when mouse is released over the panel
@@ -2235,45 +2202,25 @@ void BookmarksPanel::SetupDropHandlers(UIElement* container)
         int insertIdx = m_AssetDropInsertIndex;
         m_AssetDropInsertIndex = -1;
         if (m_InsertionIndicator)
-            m_InsertionIndicator->Overrides().Set(Style::Display, DisplayMode::None);
+            m_InsertionIndicator->Style().Set(Style::Display, DisplayMode::None);
 
         // Force immediate rebuild + schedule next-frame rebuild so first drop always shows.
         auto forceRefresh = [this]()
         {
             if (!m_ListContainer)
                 return;
-            // Immediate rebuild
-            RebuildBookmarkRows();
-            m_ListContainer->MarkDirty(UIElement::ChildrenDirty | UIElement::LayoutDirty | UIElement::VisualDirty);
-            if (m_ScrollView)
-                m_ScrollView->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
-            MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
-            RequestRelayout();
-            // Also schedule next-frame rebuild to catch any deferred layout
-            Scheduler::IScheduler* sched = GetScheduler();
-            if (sched)
-            {
-                sched->ScheduleNext([this]()
-                {
-                    if (!m_ListContainer)
-                        return;
-                    RebuildBookmarkRows();
-                    m_ListContainer->MarkDirty(UIElement::ChildrenDirty | UIElement::LayoutDirty | UIElement::VisualDirty);
-                    if (m_ScrollView)
-                        m_ScrollView->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
-                    MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
-                    RequestRelayout();
-                });
-            }
+            RebuildRowsAndRelayout();
+            // Again after the deferred drain, which catches a RemoveChild deferred by the drop.
+            PostAction([this]() { RebuildRowsAndRelayout(); });
         };
         
-        if (g_DragState.Active)
+        if (g_DragState.active)
         {
-            if (!g_DragState.AssetPath.empty() && std::filesystem::exists(g_DragState.AssetPath))
+            if (!g_DragState.assetPath.empty() && std::filesystem::exists(g_DragState.assetPath))
             {
-                std::filesystem::path path = g_DragState.AssetPath;
-                g_DragState.Active = false;
-                g_DragState.AssetPath.clear();
+                std::filesystem::path path = g_DragState.assetPath;
+                g_DragState.active = false;
+                g_DragState.assetPath.clear();
                 if (m_Context)
                 {
                     HandleAssetDrop(path, insertIdx);
@@ -2282,10 +2229,22 @@ void BookmarksPanel::SetupDropHandlers(UIElement* container)
                 e.Stop();
                 return;
             }
+            else if (!g_DragState.scenePath.empty() && !g_DragState.entityId.empty())
+            {
+                std::string scenePath = g_DragState.scenePath;
+                std::string entityId = g_DragState.entityId;
+                g_DragState.active = false;
+                g_DragState.scenePath.clear();
+                g_DragState.entityId.clear();
+                HandleEntityDrop(scenePath, entityId);
+                forceRefresh();
+                e.Stop();
+                return;
+            }
         }
         
-        g_DragState.Active = false;
-        g_DragState.AssetPath.clear();
+        g_DragState.active = false;
+        g_DragState.assetPath.clear();
     });
 }
 
@@ -2344,7 +2303,7 @@ void BookmarksPanel::HandleAssetDrop(const std::filesystem::path& assetPath, int
             else
                 bookmark.Name = pathStr;
         }
-        bookmark.IconPath = "Icons/Folder@32px.png"; // Set folder icon path explicitly
+        bookmark.IconPath = "Icons/Folder@32px.svg"; // Set folder icon path explicitly
         
         AddBookmarkAt(bookmark, at);
         return;
@@ -2409,61 +2368,76 @@ void BookmarksPanel::RefreshBookmarks()
     }
 }
 
-namespace
+void BookmarksPanel::HandleEntityDrop(const std::string& scenePath, const std::string& entityId)
 {
-Bookmark MakeEntityBookmark(const ECS::World* world, ECS::EntityHandle handle,
-                            const std::string& scenePath)
-{
+    if (scenePath.empty() || entityId.empty())
+        return;
+
+    std::string entityName = entityId;
+    ECS::World* world = EngineCore::GetInstance().EnsurePrimaryWorld();
+    if (world)
+    {
+        size_t colon = entityId.find(':');
+        ECS::EntityIndex idx = static_cast<ECS::EntityIndex>(std::stoul(entityId.substr(0, colon)));
+        ECS::EntityVersion ver = (colon != std::string::npos)
+            ? static_cast<ECS::EntityVersion>(std::stoul(entityId.substr(colon + 1)))
+            : 0;
+        ECS::EntityHandle h(idx, ver);
+        if (world->IsValid(h))
+        {
+            if (auto* n = world->GetComponent<Components::Name>(h))
+                if (!n->View().empty())
+                    entityName = std::string(n->View());
+        }
+    }
+
     Bookmark bookmark;
     bookmark.Type = BookmarkType::Entity;
-    bookmark.Reference = scenePath + "|" + std::to_string(handle.index) + ":" +
-                         std::to_string(handle.version);
-    bookmark.Name = "Entity";
-    if (world && world->IsValid(handle))
-    {
-        if (const auto* name = world->GetComponent<Components::Name>(handle);
-            name && !name->View().empty())
-            bookmark.Name = std::string(name->View());
-    }
-    return bookmark;
-}
-} // namespace
+    bookmark.Reference = scenePath + "|" + entityId;
+    bookmark.Name = entityName;
+    bookmark.IconPath = "";
 
-std::string BookmarksPanel::GetCurrentScenePathString() const
-{
-    if (!m_GetCurrentScenePath)
-        return {};
-    const auto path = m_GetCurrentScenePath();
-    return path.has_value() ? path->string() : std::string{};
+    AddBookmark(bookmark);
 }
-
-void BookmarksPanel::AddEntityBookmarks(const std::vector<ECS::EntityHandle>& entities)
-{
-    auto* world = EngineCore::GetInstance().EnsurePrimaryWorld();
-    if (!world)
-        return;
-    const std::string scenePath = GetCurrentScenePathString();
-    for (const auto& handle : entities)
-    {
-        if (world->IsValid(handle))
-            AddBookmark(MakeEntityBookmark(world, handle, scenePath));
-    }
-}
-
 
 void BookmarksPanel::HandleEntityPayloadDrop(const std::vector<std::uint64_t>& treeIds, int insertIndex)
 {
-    const std::string scenePath = GetCurrentScenePathString();
+    std::string scenePath;
+    if (m_GetCurrentScenePath)
+    {
+        auto opt = m_GetCurrentScenePath();
+        if (opt.has_value())
+            scenePath = opt->string();
+    }
+
     ECS::World* world = EngineCore::GetInstance().EnsurePrimaryWorld();
-    const int at = (insertIndex >= 0) ? insertIndex : static_cast<int>(m_Bookmarks.size());
+    int at = (insertIndex >= 0) ? insertIndex : static_cast<int>(m_Bookmarks.size());
+
     for (size_t i = 0; i < treeIds.size(); ++i)
     {
-        const uint32_t raw = static_cast<uint32_t>(treeIds[i]);
-        const auto index = static_cast<ECS::EntityIndex>(raw & ECS::kEntityIndexMask);
-        const auto version = static_cast<ECS::EntityVersion>(
-            (raw >> ECS::kEntityIndexBits) & ECS::kEntityVersionMask);
-        AddBookmarkAt(MakeEntityBookmark(world, ECS::EntityHandle(index, version), scenePath),
-                      static_cast<size_t>(at + static_cast<int>(i)));
+        // Decode packed TreeId: same encoding as HierarchyDataProvider::Encode
+        uint32_t raw = static_cast<uint32_t>(treeIds[i]);
+        ECS::EntityIndex idx = static_cast<ECS::EntityIndex>(raw & ECS::kEntityIndexMask);
+        ECS::EntityVersion ver = static_cast<ECS::EntityVersion>((raw >> ECS::kEntityIndexBits) & ECS::kEntityVersionMask);
+        ECS::EntityHandle handle(idx, ver);
+
+        std::string entityName = "Entity";
+        if (world && world->IsValid(handle))
+        {
+            if (auto* n = world->GetComponent<Components::Name>(handle))
+                if (!n->View().empty())
+                    entityName = std::string(n->View());
+        }
+
+        std::string entityId = std::to_string(idx) + ":" + std::to_string(ver);
+
+        Bookmark bookmark;
+        bookmark.Type = BookmarkType::Entity;
+        bookmark.Reference = scenePath + "|" + entityId;
+        bookmark.Name = entityName;
+        bookmark.IconPath = "";
+
+        AddBookmarkAt(bookmark, static_cast<size_t>(at + static_cast<int>(i)));
     }
 }
 

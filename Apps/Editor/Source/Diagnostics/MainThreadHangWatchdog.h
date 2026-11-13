@@ -20,6 +20,17 @@
 // GE_HANG_WATCHDOG_SHUTDOWN_STACKS=1 arms teardown stack capture for a
 // diagnostic run (hazard below).
 // Stack capture is Windows-only; other platforms log durations without stacks.
+//
+// Every frame-window stall report also names what each thread of the engine's
+// job system is running (WorkStealingThreadPool::SnapshotOccupancy: lock-free
+// and allocation-free, so the read cannot wait on a wedged pool or on the
+// suspended main thread). Teardown reports leave it out: the pool is destroyed
+// during teardown, so BeginShutdownWatch stops reading it.
+
+namespace JobSystem
+{
+class WorkStealingThreadPool;
+}
 
 namespace GameEngine::Editor
 {
@@ -29,13 +40,16 @@ class MainThreadHangWatchdog
   public:
     // Call once on the MAIN thread (captures its thread identity), before the
     // main loop starts. Safe to call when disabled via env — becomes a no-op.
-    static void Start();
+    // `jobSystem`, when not null, is the pool whose occupancy each stall
+    // report carries; it must stay alive until BeginShutdownWatch or Stop.
+    static void Start(const JobSystem::WorkStealingThreadPool* jobSystem);
 
     // Switches the watch to the teardown window: the main loop is over, so no
     // heartbeat is coming and the stall clock restarts here against a
     // threshold sized for a whole shutdown. Call on the main thread
     // immediately before Application::Shutdown, so a teardown step that wedges
-    // is reported instead of vanishing into a log that simply stops.
+    // is reported instead of vanishing into a log that simply stops. From here
+    // on the job system given to Start is no longer read: teardown destroys it.
     //
     // The report carries duration and phase only, not a stack. Capturing one
     // means suspending the main thread and running dbghelp inside the suspend

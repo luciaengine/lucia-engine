@@ -14,10 +14,10 @@ using V3 = Mathematics::Vector3;
 constexpr float32 kPi = 3.14159265358979323846f;
 constexpr float32 kDegreesPerRadian = 180.0f / kPi;
 
-// Relative slack on kMitreLimit, so a corner authored at exactly the limit
-// (whose float cos(60°) makes the scale 2.0000001) is built as the Mitre the
+// Relative slack on kMiterLimit, so a corner authored at exactly the limit
+// (whose float cos(60°) makes the scale 2.0000001) is built as the Miter the
 // limit promises; about 0.007° of turn.
-constexpr float32 kMitreLimitTolerance = 1.0e-4f;
+constexpr float32 kMiterLimitTolerance = 1.0e-4f;
 
 // Below this turn the two legs are one straight run and there is no corner to
 // build: the crease would split the normals of two coplanar faces.
@@ -94,15 +94,15 @@ struct CornerTurn
     float32 Turn = 0.0f;   // radians, 0 = straight on, π = a hairpin
     bool RightTurn = true;
     bool BuildRound = false;
-    bool PastMitreLimit = false;
-    bool Fallback = false; // a Mitre past kMitreLimit
+    bool PastMiterLimit = false;
+    bool Fallback = false; // a Miter past kMiterLimit
     // Reach shortened to what the legs hold (BoundReachPastTheLimit), so the
     // inside face narrows toward the corner instead of folding past a leg.
     bool Bounded = false;
     // Lateral axis placing the faces of both legs on one edge: the bisector's
-    // right scaled by 1 / cos(θ/2), which puts the inside at the inner mitre
+    // right scaled by 1 / cos(θ/2), which puts the inside at the inner miter
     // point. A bounded reach scales it shorter.
-    V3 MitreRight{};
+    V3 MiterRight{};
     // How far before and after the corner, along each leg, the inside faces
     // meet: the inside half-width times tan(θ/2).
     float32 Reach = 0.0f;
@@ -155,16 +155,16 @@ struct CornerTurn
     turn.RightTurn = V3::Dot(V3::Cross(turn.InPlan, turn.OutPlan), up) >= 0.0f;
 
     const float32 halfTurnCosine = std::cos(turn.Turn * 0.5f);
-    const float32 mitreScale =
+    const float32 miterScale =
         halfTurnCosine > 1.0e-6f ? 1.0f / halfTurnCosine : std::numeric_limits<float32>::max();
-    // Past the limit a Mitre is built Round, and the inner mitre point runs
+    // Past the limit a Miter is built Round, and the inner miter point runs
     // away toward a hairpin: ApplyCorners bounds its reach by the legs.
-    turn.PastMitreLimit = mitreScale > kMitreLimit * (1.0f + kMitreLimitTolerance);
-    turn.Fallback = style == SplineCornerStyle::Mitre && turn.PastMitreLimit;
+    turn.PastMiterLimit = miterScale > kMiterLimit * (1.0f + kMiterLimitTolerance);
+    turn.Fallback = style == SplineCornerStyle::Miter && turn.PastMiterLimit;
     turn.BuildRound = style == SplineCornerStyle::Round || turn.Fallback;
 
     const V3 bisector = NormalizedOr(turn.InPlan + turn.OutPlan, turn.InPlan);
-    turn.MitreRight = NormalizedOr(V3::Cross(up, bisector), V3{1.0f, 0.0f, 0.0f}) * mitreScale;
+    turn.MiterRight = NormalizedOr(V3::Cross(up, bisector), V3{1.0f, 0.0f, 0.0f}) * miterScale;
     const float32 insideHalfWidth = turn.RightTurn ? here.HalfWidthRight : here.HalfWidthLeft;
     turn.ReachPerMetre = std::tan(turn.Turn * 0.5f);
     turn.Reach = std::max(0.0f, insideHalfWidth) * turn.ReachPerMetre;
@@ -196,9 +196,9 @@ void StampCornerFaceTurn(SplineStripStation& ring, const CornerTurn& turn, float
     return ring;
 }
 
-// A Mitre: the corner ring twice, once shaded as the incoming leg and once as
+// A Miter: the corner ring twice, once shaded as the incoming leg and once as
 // the outgoing one, at the same positions.
-void AppendMitre(std::vector<SplineStripStation>& out, const SplineStripStation& corner,
+void AppendMiter(std::vector<SplineStripStation>& out, const SplineStripStation& corner,
                  const CornerTurn& turn, const V3& up, bool incomingHalf, bool outgoingHalf)
 {
     const Frame in = FrameAlong(turn.In, up);
@@ -206,14 +206,14 @@ void AppendMitre(std::vector<SplineStripStation>& out, const SplineStripStation&
     const V3 cornerUp = NormalizedOr(in.Up + outgoing.Up, up);
 
     SplineStripStation incoming = CornerRing(corner, in, cornerUp);
-    incoming.MitreRight = turn.MitreRight;
-    incoming.MitreSides = kSplineMitreBothSides;
-    // The outer face reaches the mitre edge tan(θ/2) per metre of half-width
+    incoming.MiterRight = turn.MiterRight;
+    incoming.MiterSides = kSplineMiterBothSides;
+    // The outer face reaches the miter edge tan(θ/2) per metre of half-width
     // beyond the centreline, and the inner one falls as far short of it.
     StampCornerFaceTurn(incoming, turn, turn.ReachPerMetre);
     SplineStripStation leaving = CornerRing(corner, outgoing, cornerUp);
-    leaving.MitreRight = turn.MitreRight;
-    leaving.MitreSides = kSplineMitreBothSides;
+    leaving.MiterRight = turn.MiterRight;
+    leaving.MiterSides = kSplineMiterBothSides;
     StampCornerFaceTurn(leaving, turn, turn.ReachPerMetre);
 
     if (incomingHalf)
@@ -244,7 +244,7 @@ constexpr float32 kRoundCornerRingTolerance = 1.0e-3f;
 
 // A Round: a fan of rings turning about the corner point. The outside of the
 // turn sweeps an arc of the wall's own half-width; the inside stays on the inner
-// mitre point, bounded by the legs past the mitre limit.
+// miter point, bounded by the legs past the miter limit.
 void AppendRound(std::vector<SplineStripStation>& out, const SplineStripStation& corner,
                  const CornerTurn& turn, const V3& up, uint32 firstRing)
 {
@@ -258,7 +258,7 @@ void AppendRound(std::vector<SplineStripStation>& out, const SplineStripStation&
     const V3 towardTurn = turn.RightTurn ? rightOfTravel : rightOfTravel * -1.0f;
     const float32 gradeIn = Grade(turn.In, up);
     const float32 gradeOut = Grade(turn.Out, up);
-    const uint8 insideSide = turn.RightTurn ? kSplineMitreRightSide : kSplineMitreLeftSide;
+    const uint8 insideSide = turn.RightTurn ? kSplineMiterRightSide : kSplineMiterLeftSide;
 
     for (uint32 i = firstRing; i <= segments; ++i)
     {
@@ -280,8 +280,8 @@ void AppendRound(std::vector<SplineStripStation>& out, const SplineStripStation&
             forward = NormalizedOr(plan + up * grade, plan);
         }
         SplineStripStation ring = CornerRing(corner, FrameAlong(forward, up), cornerUp);
-        ring.MitreRight = turn.MitreRight;
-        ring.MitreSides = insideSide;
+        ring.MiterRight = turn.MiterRight;
+        ring.MiterSides = insideSide;
         // The outside sweeps an arc of the half-width: radians of turn so far.
         StampCornerFaceTurn(ring, turn,
                             turn.Turn * static_cast<float32>(i) / static_cast<float32>(segments));
@@ -290,7 +290,7 @@ void AppendRound(std::vector<SplineStripStation>& out, const SplineStripStation&
     }
 }
 
-// Shortest band the inside face keeps before (and after) the inner mitre
+// Shortest band the inside face keeps before (and after) the inner miter
 // point. A station at the reach puts its inside vertex on that point, and one a
 // hair beyond it — float rounding of the reach, or the arc-length table placing
 // a sample a centimetre off along the run — leaves a band too short to see that
@@ -298,7 +298,7 @@ void AppendRound(std::vector<SplineStripStation>& out, const SplineStripStation&
 // station is dropped with the stations inside the reach.
 constexpr float32 kMinInsideBandMetres = 0.05f;
 
-// Mark the stations between a corner and the inner mitre point on each leg,
+// Mark the stations between a corner and the inner miter point on each leg,
 // and those within kMinInsideBandMetres beyond it. Scans stop at another corner and never
 // take a stream end.
 void MarkWithinReach(std::span<const SplineStripStation> stations, uint32 corner, float32 reach,
@@ -326,8 +326,8 @@ void MarkWithinReach(std::span<const SplineStripStation> stations, uint32 corner
     }
 }
 
-// Bound each corner past the mitre limit to the reach its legs hold. Its inner
-// mitre point stands halfWidth · tan(θ/2) back along each leg, which runs away
+// Bound each corner past the miter limit to the reach its legs hold. Its inner
+// miter point stands halfWidth · tan(θ/2) back along each leg, which runs away
 // toward a hairpin; where a leg is shorter than that, the inside point moves in
 // along the bisector until it stands only as far back as the shorter leg allows,
 // and the inside face narrows toward the corner rather than folding back past
@@ -366,7 +366,7 @@ void BoundReachPastTheLimit(std::span<const SplineStripStation> stations,
     for (size_t t = 0; t < count; ++t)
     {
         CornerTurn& turn = turns[t];
-        if (!turn.PastMitreLimit)
+        if (!turn.PastMiterLimit)
             continue;
         const float32 held = std::max(0.0f, std::min(room(t, -1), room(t, +1)));
         if (turn.Reach <= held)
@@ -381,7 +381,7 @@ void BoundReachPastTheLimit(std::span<const SplineStripStation> stations,
         // A point s · halfWidth out along the bisector's right stands
         // s · halfWidth · sin(θ/2) back along each leg.
         const float32 scale = held / (insideHalfWidth * halfTurnSine);
-        turn.MitreRight = NormalizedOr(turn.MitreRight, V3{1.0f, 0.0f, 0.0f}) * scale;
+        turn.MiterRight = NormalizedOr(turn.MiterRight, V3{1.0f, 0.0f, 0.0f}) * scale;
         turn.Bounded = true;
     }
 }
@@ -464,7 +464,7 @@ std::vector<SplineCornerIssue> ApplyCorners(std::vector<SplineStripStation>& sta
             continue;
         if (turn.Fallback)
         {
-            issues.push_back({SplineCornerIssueKind::PastMitreLimit, site.PointIndex, 0u,
+            issues.push_back({SplineCornerIssueKind::PastMiterLimit, site.PointIndex, 0u,
                               turn.Turn * kDegreesPerRadian});
         }
         isSite[index] = 1u;
@@ -510,7 +510,7 @@ std::vector<SplineCornerIssue> ApplyCorners(std::vector<SplineStripStation>& sta
         }
         else
         {
-            AppendMitre(reshaped, stations[i], turn, up, /*incomingHalf=*/!openingSeam,
+            AppendMiter(reshaped, stations[i], turn, up, /*incomingHalf=*/!openingSeam,
                         /*outgoingHalf=*/!closingSeam);
         }
     }
@@ -550,7 +550,7 @@ void AccumulateFaceTurn(std::span<SplineStripStation> stations, const Mathematic
 {
     // Running face turn per side over the plain stations. A corner's rings are
     // measured from the base the leg brought them to; past the corner, a side
-    // whose rings stand on the mitre point (MitreSides) gains its stamp once
+    // whose rings stand on the miter point (MiterSides) gains its stamp once
     // more — the other leg's stretch to or from that point — while a side that
     // swept an arc ends where its last ring stands.
     float32 left = 0.0f;
@@ -570,7 +570,7 @@ void AccumulateFaceTurn(std::span<SplineStripStation> stations, const Mathematic
         SplineStripStation& station = stations[i];
         const float32 turn = i == 0u ? 0.0f : PlanTurn(previousForward, station.Forward, up);
         previousForward = station.Forward;
-        const bool cornerRing = station.MitreSides != 0u;
+        const bool cornerRing = station.MiterSides != 0u;
         const bool opensCorner =
             cornerRing && (!inCorner || station.Join == SplineStationJoin::Advance);
         if (inCorner && (!cornerRing || opensCorner))
@@ -592,12 +592,12 @@ void AccumulateFaceTurn(std::span<SplineStripStation> stations, const Mathematic
 
         const float32 stampLeft = station.CornerTurnLeft;
         const float32 stampRight = station.CornerTurnRight;
-        // A round fan's rings stand on the mitre point on the inside only; their
+        // A round fan's rings stand on the miter point on the inside only; their
         // outside sweeps an arc of the outside half-width, `arc` so far.
         float32 arc = 0.0f;
-        if (station.MitreSides == kSplineMitreRightSide)
+        if (station.MiterSides == kSplineMiterRightSide)
             arc = station.HalfWidthLeft * stampLeft;
-        else if (station.MitreSides == kSplineMitreLeftSide)
+        else if (station.MiterSides == kSplineMiterLeftSide)
             arc = station.HalfWidthRight * stampRight;
         if (opensCorner)
         {
@@ -611,9 +611,9 @@ void AccumulateFaceTurn(std::span<SplineStripStation> stations, const Mathematic
         exitAllowance = arc;
         station.FaceTurnLeft = baseLeft + stampLeft;
         station.FaceTurnRight = baseRight + stampRight;
-        exitLeft = (station.MitreSides & kSplineMitreLeftSide) != 0u ? 2.0f * stampLeft : stampLeft;
+        exitLeft = (station.MiterSides & kSplineMiterLeftSide) != 0u ? 2.0f * stampLeft : stampLeft;
         exitRight =
-            (station.MitreSides & kSplineMitreRightSide) != 0u ? 2.0f * stampRight : stampRight;
+            (station.MiterSides & kSplineMiterRightSide) != 0u ? 2.0f * stampRight : stampRight;
     }
 }
 

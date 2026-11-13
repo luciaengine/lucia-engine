@@ -19,14 +19,14 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Text/FontAtlas.h"
 #include "Rendering/Text/TextLayout.h"
+#include "UI/Controls/Button.h"
+#include "UI/Controls/Dropdown.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/TextArea.h"
 #include "UI/Registration/ElementRegistration.h"
 #include "UI/UIManager.h"
 #include "UI/UIPlatform.h"
 #include "UI/UIPrimitive.h"
-
-#include "TestTempDir.h"
 
 #include <gtest/gtest.h>
 
@@ -93,9 +93,8 @@ struct WrappedLabelFixture
         Ui->SetPlatform(Platform.get());
         Ui->SetRoot(std::move(root));
 
-        const TestUtils::ScopedTempDir cssDirectory(TestUtils::MakeUniqueTempDirectory("ui_multiline"));
         const auto css =
-            cssDirectory.Path() /
+            std::filesystem::temp_directory_path() /
             ("ui_multiline_" + std::to_string(reinterpret_cast<uintptr_t>(this)) + ".css");
         {
             std::ofstream f(css);
@@ -410,6 +409,28 @@ TEST(MultilineTextLayout, WrappedBlockHeightIsAWholeNumberOfLinesAtEveryScale)
         for (size_t i = 0; i < glyphs.size(); ++i)
             EXPECT_NEAR(glyphs[i].Y - contentTop, shaped.Glyphs[i].y, 1.5f)
                 << "scale=" << scale << " glyph " << i;
+    }
+}
+
+// UIManager::MeasureTextLineCount answers for any text what the label's own measure answers:
+// at the label's width it counts the three lines the block above is laid out with, and a
+// shorter text, or the same text at a wider width, one. The label's own text stays as it was.
+TEST(MultilineTextLayout, MeasureTextLineCountAgreesWithTheLabelsOwnMeasure)
+{
+    for (float scale : kContentScales)
+    {
+        WrappedLabelFixture fx;
+        ASSERT_TRUE(fx.Init(scale, 150.0f, "left", kParagraph)) << "scale=" << scale;
+        if (!fx.ResolvedRoboto())
+            GTEST_SKIP() << "Staged Roboto-Regular.ttf not found next to the test executable";
+
+        EXPECT_EQ(fx.Ui->MeasureTextLineCount(*fx.Lbl, kParagraph, 150.0f), 3) << "scale=" << scale;
+        EXPECT_EQ(fx.Ui->MeasureTextLineCount(*fx.Lbl, "The quick", 150.0f), 1) << "scale=" << scale;
+        EXPECT_EQ(fx.Ui->MeasureTextLineCount(*fx.Lbl, kParagraph, 600.0f), 1) << "scale=" << scale;
+        EXPECT_EQ(fx.Lbl->GetText(), kParagraph);
+        const float height = fx.Lbl->GetLayoutHeight();
+        fx.Pump();
+        EXPECT_FLOAT_EQ(fx.Lbl->GetLayoutHeight(), height) << "measuring leaves the label's layout alone";
     }
 }
 
@@ -815,9 +836,8 @@ struct TextAreaFixture
         Ui->SetPlatform(Platform.get());
         Ui->SetRoot(std::move(root));
 
-        const TestUtils::ScopedTempDir cssDirectory(TestUtils::MakeUniqueTempDirectory("ui_textarea"));
         const auto css =
-            cssDirectory.Path() /
+            std::filesystem::temp_directory_path() /
             ("ui_textarea_" + std::to_string(reinterpret_cast<uintptr_t>(this)) + ".css");
         {
             std::ofstream f(css);
@@ -1004,3 +1024,87 @@ TEST(MultilineTextLayout, HorizontalMovementClearsColumnAffinity)
     EXPECT_NE(fx.Area->GetCaretIndex(), 18);
 }
 
+
+// UIManager::MeasureTextWidth answers for any text what the label's own measure answers: the
+// width of a label sized to its text, at every scale, whatever the label shows; a longer text
+// is measured on one line, unwrapped. The label's own text stays as it was.
+TEST(MultilineTextLayout, MeasureTextWidthAgreesWithTheLabelsOwnMeasure)
+{
+    for (float scale : kContentScales)
+    {
+        WrappedLabelFixture fx;
+        ASSERT_TRUE(fx.Init(scale, 150.0f, "left", "The quick", "width: auto; align-self: flex-start;"))
+            << "scale=" << scale;
+        if (!fx.ResolvedRoboto())
+            GTEST_SKIP() << "Staged Roboto-Regular.ttf not found next to the test executable";
+
+        const float laidOut = fx.Lbl->GetLayoutWidth();
+        ASSERT_GT(laidOut, 0.0f) << "scale=" << scale;
+        EXPECT_NEAR(fx.Ui->MeasureTextWidth(*fx.Lbl, "The quick"), laidOut, 0.5f) << "scale=" << scale;
+        EXPECT_GT(fx.Ui->MeasureTextWidth(*fx.Lbl, kParagraph), 2.0f * laidOut) << "scale=" << scale;
+        EXPECT_EQ(fx.Lbl->GetText(), "The quick");
+    }
+}
+
+// Button::WidthForText and Dropdown::WidthForLabel answer for the text a control shows the width
+// it is laid out at with `width: auto`, its padding, border and chevron included, at every scale;
+// a control not yet laid out answers 0.
+TEST(MultilineTextLayout, ControlsReportTheWidthTheyAreLaidOutAtForTheirText)
+{
+    Button detached;
+    EXPECT_EQ(detached.WidthForText("Run the turn"), 0.0f) << "no layout yet";
+
+    for (float scale : kContentScales)
+    {
+        // First: destroyed last, after the manager released its buffers.
+        SharedDeviceReleaseRetirement retirement;
+        IDevice* device = SharedHeadlessDevice();
+        if (!device)
+            GTEST_SKIP() << "No headless device";
+        UIRegistration::RegisterBuiltInControls();
+
+        auto root = std::make_unique<UIElement>();
+        root->SetId("root");
+        auto ownedButton = std::make_unique<Button>();
+        Button* button = ownedButton.get();
+        button->SetText("Run the turn");
+        root->AddChild(std::move(ownedButton));
+        auto ownedDropdown = std::make_unique<Dropdown>();
+        Dropdown* dropdown = ownedDropdown.get();
+        dropdown->SetOptionsFromLabels({"Auto", "Claude (local session)"}, 1);
+        root->AddChild(std::move(ownedDropdown));
+
+        FixedScalePlatform platform(scale);
+        UIManager ui(device);
+        ui.SetPlatform(&platform);
+        ui.SetRoot(std::move(root));
+        const auto css = std::filesystem::temp_directory_path() / "ui_control_widths.css";
+        {
+            std::ofstream f(css);
+            f << "#root { display: flex; flex-direction: column; align-items: flex-start; width: 600px; "
+                 "height: 400px; }\n"
+              << ".button { display: flex; flex-direction: row; padding: 4px 11px; border-width: 1px; }\n"
+              << ".dropdown { display: flex; flex-direction: column; }\n"
+              << ".dropdown-header { display: flex; flex-direction: row; align-items: center; gap: 4px; "
+                 "padding: 4px 6px 4px 10px; border-width: 1px; }\n"
+              << ".dropdown-chevron { width: 8px; height: 8px; flex-shrink: 0; }\n"
+              << ".dropdown-items { display: none; }\n"
+              << ".button-text, .dropdown-header-label { font-family: Roboto; font-size: 16px; "
+                 "white-space: nowrap; }\n";
+        }
+        ASSERT_TRUE(ui.AttachStyleFromFile(css.string()));
+        UiRgHarness harness(device);
+        for (int frame = 0; frame < 4; ++frame)
+        {
+            ui.Update(0.016f, /*interactive=*/true);
+            DriveUiRender(ui, harness);
+        }
+
+        const float buttonWidth = button->WidthForText(button->GetText());
+        ASSERT_GT(buttonWidth, 0.0f) << "scale=" << scale;
+        EXPECT_NEAR(buttonWidth, button->GetLayoutWidth(), 0.5f) << "scale=" << scale;
+        const float dropdownWidth = dropdown->WidthForLabel(dropdown->GetSelectedLabel());
+        ASSERT_GT(dropdownWidth, 0.0f) << "scale=" << scale;
+        EXPECT_NEAR(dropdownWidth, dropdown->GetLayoutWidth(), 0.5f) << "scale=" << scale;
+    }
+}

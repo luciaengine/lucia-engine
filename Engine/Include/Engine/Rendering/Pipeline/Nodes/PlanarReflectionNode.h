@@ -1,6 +1,6 @@
 #pragma once
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include <memory>
 

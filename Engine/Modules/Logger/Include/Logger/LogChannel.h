@@ -93,3 +93,16 @@ void Write(const LogChannel& channel, LogLevel level, const char* file, int line
                                 Format __VA_OPT__(, ) __VA_ARGS__);                                                \
         }                                                                                                          \
     } while (false)
+
+// ========================================
+// CONVENIENCE MACROS
+// ========================================
+
+// The Core channel with the call site's file, line and function; GE_LOG removes Trace and Debug where
+// the engine is built without debug instrumentation.
+#define LOG_TRACE(format, ...) GE_LOG(::Logger::CoreLog, Trace, format __VA_OPT__(,) __VA_ARGS__)
+#define LOG_DEBUG(format, ...) GE_LOG(::Logger::CoreLog, Debug, format __VA_OPT__(,) __VA_ARGS__)
+#define LOG_INFO(format, ...) GE_LOG(::Logger::CoreLog, Info, format __VA_OPT__(,) __VA_ARGS__)
+#define LOG_WARNING(format, ...) GE_LOG(::Logger::CoreLog, Warning, format __VA_OPT__(,) __VA_ARGS__)
+#define LOG_ERROR(format, ...) GE_LOG(::Logger::CoreLog, Error, format __VA_OPT__(,) __VA_ARGS__)
+#define LOG_CRITICAL(format, ...) GE_LOG(::Logger::CoreLog, Critical, format __VA_OPT__(,) __VA_ARGS__)

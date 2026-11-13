@@ -1,7 +1,6 @@
 #include "Graph/GameLogicGraphCompiler.h"
 
 #include "Graph/GameLogicActionCatalog.h"
-#include "Types/StringUtils.h"
 
 #include <algorithm>
 #include <cctype>
@@ -58,15 +57,25 @@ std::string SanitizeIdentifier(std::string value)
     return value;
 }
 
-bool IsTrueText(const std::string& value)
+std::string TrimCopy(const std::string& value)
 {
-    const std::string text = ToLowerAscii(TrimWhitespaceView(value));
-    return text == "true" || text == "1" || text == "yes" || text == "on";
+    auto begin = std::find_if_not(value.begin(), value.end(), [](unsigned char c) { return std::isspace(c) != 0; });
+    auto end = std::find_if_not(value.rbegin(), value.rend(), [](unsigned char c) { return std::isspace(c) != 0; }).base();
+    if (begin >= end)
+        return {};
+    return std::string(begin, end);
+}
+
+bool IsTrueText(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    value = TrimCopy(value);
+    return value == "true" || value == "1" || value == "yes" || value == "on";
 }
 
 std::string NumberOrFallback(const std::string& value, const char* fallback)
 {
-    const std::string trimmed = TrimWhitespace(value);
+    const std::string trimmed = TrimCopy(value);
     if (trimmed.empty())
         return fallback;
     char* end = nullptr;
@@ -88,7 +97,7 @@ std::string FloatLiteral(const std::string& value, const char* fallback = "0")
 
 std::string IntOrFallback(const std::string& value, const char* fallback)
 {
-    const std::string trimmed = TrimWhitespace(value);
+    const std::string trimmed = TrimCopy(value);
     if (trimmed.empty())
         return fallback;
     char* end = nullptr;
@@ -318,7 +327,7 @@ private:
             return Vec3Literal(value);
         if (type == "entity")
         {
-            if (TrimWhitespaceView(value).empty() || value == "self")
+            if (TrimCopy(value).empty() || value == "self")
                 return "ctx.Self()";
             return "ctx.FindEntityByName(" + CppString(value) + ")";
         }

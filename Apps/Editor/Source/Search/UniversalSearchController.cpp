@@ -9,8 +9,8 @@
 #include "UndoRedo/UndoRedoService.h"
 #include "Panels/AssetsPanel.h"
 #include "Panels/HierarchyPanel.h"
-#include "Panels/ProjectFolderPickerModal.h"
-#include "Panels/ScriptEditorPanel.h"
+#include "Panels/ProjectPicker/ProjectPickerModal.h"
+#include "Panels/Script/ScriptEditorPanel.h"
 #include "Panels/SettingsPanel.h"
 #include "Platform/Shell.h"
 #include "PlayMode/PlayModeManager.h"
@@ -168,7 +168,7 @@ void UniversalSearchController::RegisterCommands()
                [this]() { if (m_Deps.SceneEditor) m_Deps.SceneEditor->RequestNewScene(); });
     addCommand("Open Project", "File", "switch choose folder workspace", {},
                Icon("icon-command-open-project"), 65,
-               [this]() { if (m_Deps.ProjectFolderModal) m_Deps.ProjectFolderModal->Show(); });
+               [this]() { if (m_Deps.ProjectPicker) m_Deps.ProjectPicker->Show(); });
     addCommand("Undo", "Edit", "history revert previous change", "Ctrl/Cmd+Z",
                Icon("icon-command-undo"), 95,
                [this]() { if (m_Deps.UndoRedo) m_Deps.UndoRedo->Undo(); });

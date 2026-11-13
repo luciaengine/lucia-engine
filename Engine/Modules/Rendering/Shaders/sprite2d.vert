@@ -5,8 +5,8 @@ layout(set = 0, binding = 5) uniform CameraUBO {
 } Cam;
 
 // One instanced quad per visible Sprite2D / AnimatedSprite2D. The instance
-// carries the quad's world-space frame (centre plus half-extent axes taken from
-// the entity's local X/Y columns), so the transform's rotation and scale apply
+// carries the quad's render-origin-relative centre and world-space axes from
+// the entity's local X/Y columns, so the transform's rotation and scale apply
 // without a per-sprite matrix multiply here.
 //
 // Sprites lie in the entity's local XY plane with +Y up (the tilemap
@@ -14,7 +14,7 @@ layout(set = 0, binding = 5) uniform CameraUBO {
 
 struct SpriteInstance
 {
-    vec4 Center; // xyz = quad centre in world space, w unused
+    vec4 Center; // xyz = quad centre relative to this view's render origin, w unused
     vec4 AxisX;  // xyz = world half-extent along the sprite's local +X
     vec4 AxisY;  // xyz = world half-extent along the sprite's local +Y
     vec4 UVRect; // (u0, v0, u1, v1), flips already applied by the extractor
@@ -59,7 +59,7 @@ void main()
     const vec2 corner = kCorners[gl_VertexIndex];
 
     const vec3 worldPos = inst.Center.xyz + corner.x * inst.AxisX.xyz + corner.y * inst.AxisY.xyz;
-    gl_Position = Cam.uVP * vec4(worldPos, 1.0);
+    gl_Position = Cam.uVPRel * vec4(worldPos, 1.0);
 
     // The tangent frame follows the texture: a flipped rect mirrors its axis,
     // so the normal map's +X and +Y still point where the art says. The face

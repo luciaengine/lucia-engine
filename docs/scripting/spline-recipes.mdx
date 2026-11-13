@@ -9,4 +9,50 @@ The native `SplineRecipes` API reports whether authored spline recipes have buil
 
 `Failures(world, buffer)` writes failed recipe statuses into a span and returns the total number, including entries that do not fit. Each status contains its recipe entity and build state. The managed generated binding is added with the scripting bindings port.
 
-The Player's startup ready message and `--screenshot` capture wait for both the scene resolve batch and spline recipes by default. Set `waitForSplineRecipes` to `false` in `game.config` to wait only for the resolve batch. Recipe hold budgets bound individual waits; readiness has no independent timer.
+The scene is settled when no recipe is `Pending` or `Held`. A scene with no recipe is settled at once.
+
+## Wait for the roads in a loading flow
+
+Poll `IsSceneSettled` each frame while the loading view shows. Do not keep the answer: an edit, a spline that a game moves, or an asset that loads late makes the scene unsettled again for a few frames.
+
+```csharp
+using System;
+using GameEngine.Scripting;
+
+// Called each frame while the loading view shows.
+void UpdateLoading()
+{
+    if (!SplineRecipes.IsSceneSettled())
+        return; // roads and walls still building
+
+    Span<RecipeStatus> failures = stackalloc RecipeStatus[8];
+    int count = SplineRecipes.Failures(failures);
+    for (int i = 0; i < Math.Min(count, failures.Length); i++)
+        Console.Error.WriteLine(failures[i].Recipe.SplineRecipes.ReasonOf()); // goes to the engine log
+
+    StartGameplay();
+}
+```
+
+`Failures` writes the failed recipes into the span and returns how many there are, also when that is more than the span holds. `entity.SplineRecipes.StateOf()` gives the state of one recipe, and `entity.SplineRecipes.ReasonOf()` gives the reason of a `Held` or `Failed` recipe, or of a `Built` recipe that made nothing, or an empty string.
+
+The Player waits the same way before it writes its startup line and its `--screenshot` capture: after the scene loader reveals the startup scene, the Player waits until the scene is settled. The startup line names each failed recipe with its reason. A recipe that waits for a terrain or a model stops waiting after a time limit, so the wait always ends. A Player that runs with no render device, such as `--headless`, builds no recipe: each recipe reads `Failed` on the first frame, with the reason, and the scene settles at once.
+
+The scene loader does not wait for the recipes. A game's own load raises `Revealed` when the scene is ready to show, and its roads can still build after that. To wait for them, a game polls `IsSceneSettled` as above, or it loads with `SceneRevealPolicy::WhenGameReleases` and calls `Reveal()` when `IsSceneSettled` is true (see [Click to continue](scene-loader.mdx#click-to-continue)).
+
+Navigation surfaces wait for the same summary: a surface does not bake until every recipe of the scene has built or failed.
+
+## Native C++
+
+The same functions are in `SplineRecipes/SplineRecipesScriptApi.h`, in the namespace `GameEngine::SplineRecipes`. They take the world as their first argument.
+
+```cpp
+#include "SplineRecipes/SplineRecipesScriptApi.h"
+
+if (!GameEngine::SplineRecipes::IsSceneSettled(world))
+    return; // roads and walls still building
+```
+
+Call them on the main thread, outside a job. A call from another thread is refused: it logs an error once and returns `Pending`, `false`, `0` or an empty string. A recipe reads `Pending` until the recipe system runs its first update, so a process with no rendering loop never settles a scene that has a recipe.
+
+A system of the schedule can run on a job, so it calls `IsSceneSettledAtLastUpdate(world)`. It returns the summary that the recipe system wrote at the end of its last update of that world. Before that update, it returns what `IsSceneSettled` returns: `false` while the world has a recipe, and `true` when it has none. The same is true for a world that the recipe system does not update, such as a world that a game updates itself. The value can be one frame behind: a recipe that was added after that update does not count until the next update. The navigation surface bake reads this function.

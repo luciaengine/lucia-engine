@@ -1,11 +1,13 @@
 #pragma once
 
-#include "Rendering/CameraTypes.h"
-#include "Rendering/Core/HashUtils.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
+#include "Rendering/Core/RenderGraph/RGFullscreen.h"
+#include "Types/StringId.h"
+#include "Types/Types.h"
 
-#include <string>
-#include <unordered_map>
+#include <cstdint>
+#include <string_view>
 
 namespace GameEngine::Engine::Renderer::Pipeline
 {
@@ -32,27 +34,41 @@ struct PipelineBufferBindingRG
     uint64_t Size = 0;
     ::GameEngine::Rendering::RenderGraph::RGBuffer Graph{};
     bool IsValid() const { return Buffer.IsValid(); }
+    /// This range as a fullscreen pass's buffer input, with Graph as the buffer the pass declares a read of.
+    /// The caller sets Binding and IsStorage.
+    ::GameEngine::Rendering::RenderGraph::RGFullscreenBufferInput AsFullscreenInput() const
+    {
+        ::GameEngine::Rendering::RenderGraph::RGFullscreenBufferInput input{};
+        input.Buffer = Buffer;
+        input.Offset = Offset;
+        input.Size = Size;
+        input.Declare = Graph;
+        return input;
+    }
 };
 
-// The pipeline's per-frame blackboard, rebuilt from scratch on every Declare.
-// Values are RGFrame-local; Frame is the identity guard (same pattern as
-// RenderServices::ViewFrameRG — an entry from a dead frame must read as
-// absent, never as a usable id).
+// The pipeline's per-frame blackboard. BeginFrame empties the tables at the start of every Declare
+// and keeps their storage. Values are RGFrame-local; Frame and FrameIndex are the identity guard
+// (as RenderServices::ViewFrameRG): an entry from a dead frame reads as absent.
 struct PipelineFrameResources
 {
+    // A resource name in a view (ViewId 0 = frame scope). The key holds the name's StringId, not the
+    // name, so a key copies no string and keeps no reference to the caller's string.
     struct Key
     {
-        ::GameEngine::Rendering::ViewId ViewId = 0; // 0 = frame scope
-        std::string Name;
-        bool operator==(const Key& o) const { return ViewId == o.ViewId && Name == o.Name; }
+        ::GameEngine::Rendering::ViewId ViewId = 0;
+        StringId NameId = 0;
+        Key(::GameEngine::Rendering::ViewId viewId, std::string_view name)
+            : ViewId(viewId), NameId(HashStringId(name))
+        {
+        }
+        bool operator==(const Key&) const = default;
     };
     struct KeyHash
     {
-        size_t operator()(const Key& k) const noexcept
+        uint64_t operator()(const Key& key) const noexcept
         {
-            const uint64_t h = ::GameEngine::Rendering::HashUtils::HashCombine(
-                static_cast<uint32_t>(k.ViewId), std::hash<std::string>{}(k.Name));
-            return static_cast<size_t>(h);
+            return key.NameId ^ (static_cast<uint64_t>(key.ViewId) * 0x9e3779b97f4a7c15ull);
         }
     };
     // Per-view scalars the pre-pass derives once per frame.
@@ -67,26 +83,35 @@ struct PipelineFrameResources
         // against this ("extent.basis": "output" in the blueprint).
         uint32_t OutputWidth = 0;
         uint32_t OutputHeight = 0;
-        // The render->output crossing for this view is the pixel-perfect
-        // integer upscale, not the render-scale one: Render* is the camera's
-        // padded reference RT and Output* the panel it is zoomed into. The two
-        // crossings are mutually exclusive.
         bool PixelPerfectCrossing = false;
     };
 
     ::GameEngine::Rendering::RenderGraph::RGFrame* Frame = nullptr;
-    // BeginFrame index of the incarnation Declare ran against. RGFrame
-    // pointers are reused across frames (stream identity), so pointer
-    // equality alone validates a stale incarnation — consumers compare
-    // (Frame, FrameIndex) via FrameResourcesFor.
+    // The RGFrame index of the incarnation Declare ran against. An RGFrame address is used again in
+    // later frames, so a pointer match alone can accept a dead frame. FrameResourcesFor compares Frame
+    // and FrameIndex.
     uint64_t FrameIndex = 0;
-    std::unordered_map<Key, ::GameEngine::Rendering::RenderGraph::RGTexture, KeyHash> Textures;
-    std::unordered_map<Key, PipelineBufferBindingRG, KeyHash> Buffers;
-    std::unordered_map<::GameEngine::Rendering::ViewId, ViewInfo> Views;
+    FastHashMap<Key, ::GameEngine::Rendering::RenderGraph::RGTexture, KeyHash> Textures;
+    FastHashMap<Key, PipelineBufferBindingRG, KeyHash> Buffers;
+    FastHashMap<::GameEngine::Rendering::ViewId, ViewInfo> Views;
+    // Textures holding scene colour stored at a view's pre-exposure P (pre_exposure_snapshot.comp),
+    // by render graph resource id: the view's colour target, the blueprint's "preExposed" textures
+    // when they materialize, and the ones nodes create (ViewDeclare::MarkPreExposed).
+    FastHashMap<uint32_t, ::GameEngine::Rendering::ViewId> PreExposedTextures;
 
-    // Per-view entries first, then frame-scope — the enumeration shape the
-    // old ForEachBufferRef had (per-view names shadow frame-scope ones at
-    // the binding table's last-add-wins upsert).
+    // Empties every table for the frame Declare runs against. The tables keep their storage.
+    void BeginFrame(::GameEngine::Rendering::RenderGraph::RGFrame& frame)
+    {
+        Frame = &frame;
+        FrameIndex = frame.FrameIndex();
+        Textures.clear();
+        Buffers.clear();
+        Views.clear();
+        PreExposedTextures.clear();
+    }
+
+    // Calls fn(nameId, binding) for the frame-scope entries, then for the view's entries: a per-view
+    // name shadows a frame-scope one at the binding table's last-add-wins upsert.
     template <class Fn>
     void ForEachBufferBinding(::GameEngine::Rendering::ViewId viewId, Fn&& fn) const
     {
@@ -95,13 +120,13 @@ struct PipelineFrameResources
             for (const auto& [key, b] : Buffers)
             {
                 if (key.ViewId == 0)
-                    fn(key.Name, b);
+                    fn(key.NameId, b);
             }
         }
         for (const auto& [key, b] : Buffers)
         {
             if (key.ViewId == viewId)
-                fn(key.Name, b);
+                fn(key.NameId, b);
         }
     }
 };

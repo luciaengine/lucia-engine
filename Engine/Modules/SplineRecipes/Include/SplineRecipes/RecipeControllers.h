@@ -15,6 +15,7 @@ namespace GameEngine::SplineRecipes
 {
 
 class SplineExtrudeController;
+struct FenceMeshBounds;
 class SplineFenceController;
 class SplineGroundAuthorityController;
 class SplinePlacementController;
@@ -50,6 +51,9 @@ public:
 
     // The fence's last layout's spans per run (SplineFenceController::RunSpanCounts).
     std::span<const uint32> FenceRunSpanCounts(ECS::EntityHandle entity) const;
+
+    // The fence's parts' mesh bounds as its last rebuild resolved them (SplineFenceController::PartBounds).
+    std::span<const FenceMeshBounds> FencePartBounds(ECS::EntityHandle entity) const;
 
     // What the paving on `entity` did at its last rebuild, or null before its first
     // (SplinePavingController::StatusOf).

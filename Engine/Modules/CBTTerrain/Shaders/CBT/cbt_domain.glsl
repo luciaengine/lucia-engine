@@ -57,10 +57,8 @@ vec3 CBT_CubeCorner(int idx)
                 (idx & 4) != 0 ? 1.0 : -1.0);
 }
 
-// 6 faces, 4 corner indices each, wound CCW as seen from OUTSIDE (outward normal by
-// the right-hand rule). MUST match kCubeFaces in CBTSphereRoots.h exactly — the C++
-// side builds the neighbor topology from this table and the GPU decodes geometry from
-// it, so a divergence would put geometry and topology on different meshes.
+// 6 faces, 4 corner indices each, wound CCW seen from outside. Must equal Mathematics::kCubeFaces
+// (Mathematics/CubeFaces.h): the C++ side builds the neighbor topology from that table.
 const int CBT_CUBE_FACES[24] = int[24](
     1, 3, 7, 5,  // +X
     0, 4, 6, 2,  // -X
@@ -134,9 +132,9 @@ vec2 CBT_PlanarBaryToUV(uint rootIndex, CBT_BVEC3 bary, float invScale)
 // A function of the UNIT direction only — two triangles sharing a vertex normalize to
 // the same direction and so get the same relief: crack-free (see the header note).
 //
-// LOCKSTEP with CBTPlanetShading.h (PlanetBaseNoise / PlanetRelief / PlanetReliefGradient):
-// the CPU mirror is what the arc-law oracles validate, so these must stay bit-for-bit
-// equivalent. The fBM stack (persistence/lacunarity) is normalized by its amplitude sum so
+// LOCKSTEP with CBTPlanetShading.h (PlanetBaseNoise / PlanetRelief / PlanetReliefGradient): the same
+// formula. The CPU relief is the reference and uses Math::FastSin; this code uses sin, so the two agree to
+// the GPU sin's error (#6823). The fBM stack (persistence/lacunarity) is normalized by its amplitude sum so
 // the TOTAL relief keeps the +/- 1.5*amplitude envelope for ANY octave count — the on-shell
 // bound in CBTSphereDomainTests stays valid regardless of octave count.
 const float CBT_RELIEF_PERSISTENCE = 0.5;

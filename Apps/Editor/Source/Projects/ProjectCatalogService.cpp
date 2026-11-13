@@ -1,4 +1,3 @@
-#include "JobSystem/JobChannel.h"
 #include "Projects/ProjectCatalogService.h"
 
 #include "Editor/EditorPaths.h"
@@ -6,9 +5,7 @@
 #include "FileSystem/FileSystem.h"
 #include "Logger/Logger.h"
 #include "Platform/HttpClient.h"
-#include "Core/Engine.h"
-#include "JobSystem/WorkStealingThreadPool.h"
-#include "Types/Fnv1a.h"
+#include "JobSystem/JobChannel.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -92,7 +89,12 @@ std::string ThumbnailExtensionOf(const std::string& url)
 // and entries with the same id from different catalog sources can't collide.
 std::string UrlHashOf(const std::string& url)
 {
-    const uint64_t hash = Hashing::Fnv1a64(url);
+    uint64_t hash = 14695981039346656037ull;
+    for (const char c : url)
+    {
+        hash ^= static_cast<unsigned char>(c);
+        hash *= 1099511628211ull;
+    }
     char hex[17];
     std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(hash));
     return hex;
@@ -135,7 +137,7 @@ void ResolveThumbnailsToCache(ProjectCatalog& catalog, const fs::path& thumbnail
             continue;
         }
 
-        const HttpClient::HttpResponse response = HttpClient::Get(entry.ThumbnailRef);
+        const HttpClient::HttpResponse response = HttpClient::Get(entry.ThumbnailRef, {}, {});
         if (response.success && response.statusCode == 200 && !response.body.empty() &&
             WriteStringToFile(cached, response.body))
         {
@@ -261,7 +263,7 @@ void ProjectCatalogService::FetchWorker(std::string source, fs::path cacheRoot)
     std::string fetchError;
     if (IsHttpSource(source))
     {
-        const HttpClient::HttpResponse response = HttpClient::Get(source);
+        const HttpClient::HttpResponse response = HttpClient::Get(source, {}, {});
         if (response.success && response.statusCode == 200)
             jsonText = response.body;
         else

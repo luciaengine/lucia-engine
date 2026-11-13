@@ -261,8 +261,10 @@ float MapLit(const Scene& s, float x, float y, float z, bool onGround, float tan
 constexpr float kMarchStepsPerCell = 16.0f;
 constexpr float kCrestMarchStepsPerCell = 256.0f;
 
-// Ray-march the bilinear field toward the sun at stepsPerCell until the terrain boundary.
-// Receivers keep their height unless below the terrain, where they start on its surface.
+// The reference: march from the receiver toward the sun over the bilinear field in steps of
+// 1 / stepsPerCell of a cell until the ray leaves the terrain's rectangle; occluded where the field rises
+// above the ray. A receiver on the ground starts on the field; others keep their height, a base
+// sunk into the terrain lifted onto it.
 float MarchLit(const HeightField& f, float azimuthDeg, float elevationDeg, float x, float y, float z, bool onGround,
                float stepsPerCell)
 {
@@ -626,8 +628,11 @@ HeightField RidgeRows()
     });
 }
 
-// Reference patch visibility compares all ground with the ground first reached by view rays.
-// Ray marching supplies both shares; the baked map supplies matching mean visibility and occluder-octave channels.
+// What a view sees of the sun on the ground of a patch, over the points of the patch's mean plane at
+// y = meanY the view's rays aim at: the lit share of all the patch's ground (All) and of the
+// ground the rays reach first (Seen), both ray-marched (the truth); and the lit field's two channels
+// over the same ground from the baked map (FieldLit, FieldOctaves: what terrain_shadow_field_lit.comp
+// averages).
 struct PatchShares
 {
     float All = 0.0f;
@@ -771,8 +776,13 @@ void ExpectCastShadowShownAsItIs(const GrazingRead& plain)
 }
 } // namespace
 
-// At grazing angles, compare the lit share of visible ridge faces for sunward and sun-behind views.
-// Require agreement within 0.1 at three degrees; steeper views stay within the map error.
+// The lit field averages the sun over all the ground a pixel covers. The ridge field (the R3 evidence
+// poses at eye height) seen at a grazing angle: its crests hide the ground behind them, and which ground
+// that is depends on the sun's side. With the sun behind the eye the view looks down the shadows and
+// sees lit faces only; looking into the sun it sees the faces turned from it. The share shown follows
+// the truth on both sides, within 0.1 at 3 degrees; seen steeply with the sun behind, where the view
+// sees both faces, it moves from the field's share toward the truth, and past it by no more than the
+// map's own error.
 TEST(TerrainShadowMap, LitFieldShowsWhatAGrazingViewSeesOnEitherSideOfTheSun)
 {
     const Scene behind = BakeScene(RidgeRows(), 180.0f, kGrazingSunElevationDeg); // sun toward -X
@@ -805,8 +815,10 @@ TEST(TerrainShadowMap, ViewMaskingCountsOnlyTheReliefTheDrawNoLongerShows)
     EXPECT_FLOAT_EQ(Shader::GE_TerrainShadowUndrawnRelief(1.5f), 0.5f);
 }
 
-// Shadow footprint widens head-on coverage by grazing angle across draw levels 0..1.
-// At level 1 it reaches 1/cosine, capped at 64 times; nearer levels blend toward no widening.
+// The ground a pixel covers, one rule for both shadow modes: the head-on footprint widened by 1 / cos
+// along the draw's level rule (cbt_height_chain.glsl CBT_GrazingShare): not at draw level 0 and
+// nearer, fully from draw level 1, between draw levels 0 and 1 by 1 / cos raised to the draw level,
+// and at most 64 times.
 TEST(TerrainShadowMap, FootprintWidensByTheDrawsLevelRule)
 {
     constexpr float kHeadOn = 0.5f;
@@ -820,9 +832,12 @@ TEST(TerrainShadowMap, FootprintWidensByTheDrawsLevelRule)
     EXPECT_EQ(Shader::GE_TerrainShadowFootprint(kHeadOn, 1.0f, 3.0f), kHeadOn) << "a view straight down";
 }
 
-// At a 15-degree sun angle, sun-behind views retain the field share of lit ridge faces.
-// Sunward views account for masking only as unresolved relief blends out across draw levels 1..2.
-// Both shadow modes use the same arithmetic.
+// The ridge field at the R3 evidence sun (15 degrees) seen at a grazing angle. With the sun behind the
+// eye the view looks down the shadows: the field shows the lit faces the view sees at every draw
+// level, so the horizon of the eye-height frame carries no dark line where the draw level is low.
+// Looking into the sun the view's masking takes lit ground away, which is counted only for the relief
+// the draw no longer shows: the share falls from the field's own at draw level 1 to the model's at 2.
+// The numbers pin the arithmetic both shadow modes run.
 TEST(TerrainShadowMap, FieldShownTakesLitGroundAwayOnlyForTheReliefTheDrawNoLongerShows)
 {
     constexpr float kR3SunElevationDeg = 15.0f;
@@ -847,8 +862,10 @@ TEST(TerrainShadowMap, FieldShownTakesLitGroundAwayOnlyForTheReliefTheDrawNoLong
     EXPECT_LE(std::fabs(undrawn.Shown - undrawn.Shares.Seen), 0.1f);
 }
 
-// With sun azimuth 45 degrees from behind the eye, ridge-view and sun masking favor the same ground.
-// Require the shown lit share to match the ray-marched reference within 0.1.
+// The ridge field with the sun 45 degrees around from behind the eye, seen at a grazing angle: the
+// ridges cross the view and the sun alike, so the view still looks down the shadows and sees lit
+// faces. The view's and the sun's masking favor the same ground while their azimuths are near, so the
+// share shown follows the truth within 0.1.
 TEST(TerrainShadowMap, LitFieldShowsWhatAGrazingViewSeesWithTheSunPartWayAround)
 {
     constexpr float kSunAzimuthDeg = 135.0f; // toward -X and +Z: 45 degrees from behind the eye
@@ -859,8 +876,12 @@ TEST(TerrainShadowMap, LitFieldShowsWhatAGrazingViewSeesWithTheSunPartWayAround)
     EXPECT_LE(std::fabs(read.Shown - read.Shares.Seen), 0.1f);
 }
 
-// Model joint view/sun visibility as 1/(1+max(Ls,Lv)+c*min(Ls,Lv)).
-// The azimuth correlation is c=4.41*phi/(4.41*phi+1), with phi capped at a quarter turn.
+// The ground the view and the sun both see, in the height-direction correlated form
+// 1 / (1 + max(Ls, Lv) + c min(Ls, Lv)), with c = 4.41 phi / (4.41 phi + 1) for phi the horizontal angle
+// between the eye and the sun, at most a quarter turn. Half the ground in local shadow gives the sun's
+// Ls = 1; a view at half the sun's tangent gives the view's Lv = 2 and a visible share of 1 / 3, so a
+// lit share of 0.4 is shown as 2.4 / (3 + c): c = 0 with the sun behind the eye, 0.776 at 45
+// degrees around, 0.874 from the side.
 TEST(TerrainShadowMap, SeenShareCorrelatesTheTwoMaskingsByTheirAzimuths)
 {
     constexpr float kLit = 0.4f;
@@ -875,8 +896,11 @@ TEST(TerrainShadowMap, SeenShareCorrelatesTheTwoMaskingsByTheirAzimuths)
         << "the sun to the side: 2.4 / 3.874";
 }
 
-// A shadow cast from beyond the pixel footprint hides no local ground from the view.
-// Its shown share must remain the baked field share for every sun azimuth.
+// A shadow cast onto flat ground from farther than the pixel's footprint hides nothing from the view:
+// the view sees every point of the ground the field averages, so the share shown is the field's, with
+// the sun to the side, behind the eye or ahead of it. Behind and ahead, the model would move a local
+// shadow's share all the way (to 1 with the sun behind, to 0 ahead): the field's occluder distances
+// are what tell this shadow from a local one.
 TEST(TerrainShadowMap, LitFieldShowsACastShadowOnFlatGroundAsItIs)
 {
     const Scene side = BakeScene(PlainUnderACliff(), 90.0f, kGrazingSunElevationDeg); // sun toward +Z

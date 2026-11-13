@@ -13,8 +13,7 @@ namespace {
 
 // Cluster-relative world matrix: subtract the cluster origin from the (column-
 // major) translation column. Left-multiplication by a pure translation shifts
-// only cols 12..14, preserving rotation/scale — the ComposeEffectiveWorldTransform
-// identity. Keeps baked vertices small-magnitude around the proxy origin,
+// only cols 12..14, preserving rotation/scale. Keeps baked vertices small-magnitude around the proxy origin,
 // preserving float precision + composing with camera-relative rendering.
 void ClusterRelative(const float world[16], const float origin[3], float out[16]) {
     for (int i = 0; i < 16; ++i)
@@ -63,6 +62,7 @@ HlodBakedScene BakeScene(std::span<const MemberInput> members,
             baked.BoundsMax[c] = cluster.BoundsMax[c];
         }
         baked.SphereRadius = cluster.SphereRadius;
+        baked.RenderLayers = cluster.RenderLayers;
 
         // Member records (cluster-relative transforms — the C3 key inputs) +
         // the parallel merge inputs.
@@ -80,6 +80,7 @@ HlodBakedScene BakeScene(std::span<const MemberInput> members,
             ClusterRelative(m.WorldMatrix, cluster.SphereCenter, ref.Transform);
             ref.ChosenLod = m.ChosenLod;
             ref.CastsShadow = m.CastsShadow ? 1u : 0u;
+            ref.RenderLayers = m.RenderLayers;
             baked.Members.push_back(ref);
 
             const Mesh* geometry = mi < memberGeometry.size() ? memberGeometry[mi] : nullptr;

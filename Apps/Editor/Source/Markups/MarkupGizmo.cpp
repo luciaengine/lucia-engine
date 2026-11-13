@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace GameEngine::Editor
@@ -106,7 +107,7 @@ void DrawRegionFill(GizmoRenderContext& context, const MarkupECS::MarkupRegionMe
 
 // The outward normal on the ground plane at ring point `i` (the ring counter-clockwise from
 // above, not closed by a repeated point): the mean of its two edges' outward normals.
-Vector3 RingOutward(const std::vector<Vector3>& ring, std::size_t i)
+Vector3 RingOutward(std::span<const Vector3> ring, std::size_t i)
 {
     const Vector3& previous = ring[(i + ring.size() - 1) % ring.size()];
     const Vector3& next = ring[(i + 1) % ring.size()];
@@ -174,31 +175,36 @@ void DrawPath(GizmoRenderContext& context, const MarkupECS::MarkupRegionGround& 
     context.DrawColoredLines(scratch.data(), scratch.size() / 2, lineColor, kLineThickness);
 }
 
-// The region's ring at its base and along its top edge, `grow` meters outward on the ground plane.
+// The region's rings at their base and along their top edge, `grow` meters out of each ring on
+// the ground plane; an outline that is not closed, at its base only.
 void DrawRegionOutline(GizmoRenderContext& context, const MarkupECS::MarkupRegionDisplayCache::Entry& region,
                        const Color& color, float grow, std::vector<Vector3>& scratch)
 {
-    const std::vector<Vector3>& base = region.Mesh.BaseOutline;
-    if (base.size() < 2)
-        return;
-    const std::vector<Vector3>& ring = region.Ground.Outline;
-    const bool closed = region.Ground.Closed;
+    const MarkupECS::MarkupRegionGround& ground = region.Ground;
+    const bool closed = ground.Closed;
     const Vector3 lift(0.0f, region.ExtrudeHeight, 0.0f);
     scratch.clear();
-    for (std::size_t i = 0; i + 1 < base.size(); ++i)
+    for (std::size_t r = 0; r < ground.GetRingCount(); ++r)
     {
-        Vector3 from = base[i];
-        Vector3 to = base[i + 1];
-        if (closed && grow > 0.0f)
+        const std::span<const Vector3> ring = ground.GetRing(r);
+        const std::size_t edges = closed ? ring.size() : ring.size() - 1;
+        for (std::size_t i = 0; i < edges && ring.size() >= 2; ++i)
         {
-            from = from + RingOutward(ring, i % ring.size()) * grow;
-            to = to + RingOutward(ring, (i + 1) % ring.size()) * grow;
+            const std::size_t next = (i + 1) % ring.size();
+            Vector3 from = ring[i];
+            Vector3 to = ring[next];
+            if (closed && grow > 0.0f)
+            {
+                from = from + RingOutward(ring, i) * grow;
+                to = to + RingOutward(ring, next) * grow;
+            }
+            scratch.insert(scratch.end(), {from, to});
+            if (closed)
+                scratch.insert(scratch.end(), {from + lift, to + lift});
         }
-        scratch.insert(scratch.end(), {from, to});
-        if (closed)
-            scratch.insert(scratch.end(), {from + lift, to + lift});
     }
-    context.DrawColoredLines(scratch.data(), scratch.size() / 2, color, kLineThickness);
+    if (!scratch.empty())
+        context.DrawColoredLines(scratch.data(), scratch.size() / 2, color, kLineThickness);
 }
 
 } // namespace
@@ -236,7 +242,7 @@ void MarkupGizmo::Draw(GizmoRenderContext& context, ECS::World& world, const Mar
     std::size_t filled = m_CollectedBodies;
     if (!m_Collected)
         filled = CollectMarkupDrawItems(world, bridge, highlight, cameraPos, m_HasFrustum ? m_Frustum.data() : nullptr,
-                                        frame, m_Items);
+                                        frame, m_Items, m_ExcludedScratch);
     const std::vector<MarkupDrawItem>& items = m_Collected ? *m_Collected : m_Items;
     if (items.empty())
         return;

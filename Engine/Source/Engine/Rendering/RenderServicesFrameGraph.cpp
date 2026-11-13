@@ -22,7 +22,6 @@
 #include "Assets/MaterialAsset.h"
 #include "Assets/ModelAsset.h"
 #include "Assets/TextureAsset.h"
-#include "Engine/Rendering/EmbeddedImageDecoder.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
 #include "Engine/Rendering/ImageBasedLightingFeature.h"
@@ -36,8 +35,8 @@
 #include "Rendering/Core/BindlessResourceManager.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/DeviceFormatting.h"
-#include "Rendering/Core/PipelineTypes.h"
-#include "Rendering/CameraDerivation.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Camera/CameraDerivation.h"
 #include "Rendering/Core/CullingStrategy.h"
 #include "Rendering/Core/FrustumCullingStrategy.h"
 #include "Rendering/Core/GPUCulling.h"
@@ -45,14 +44,14 @@
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/Materials/MaterialBuilder.h"
-#include "Rendering/Materials/ShaderReflection.h"
+#include "Rendering/Materials/Shader/ShaderReflection.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Passes/SRGBEncodePass.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Rendering/Utils/BufferHelpers.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
-#include "Rendering/Utils/CubeLutFileParser.h"
-#include "Rendering/Utils/CubeLutGpuUpload.h"
+#include "Rendering/Utils/CubeLut/CubeLutFileParser.h"
+#include "Rendering/Utils/CubeLut/CubeLutGpuUpload.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
 #include "Types/StringId.h"
 #include "Mathematics/Matrix4x4.h"
@@ -265,13 +264,17 @@ void RenderServices::BeginWorldDrawFrame()
     m_WorldBeginFrameIndex = frameIdx;
     m_WorldDrawListsBuiltFrameIndex = 0xFFFFFFFFFFFFFFFFull;
     m_WorldSubmissionCountThisFrame.store(0, std::memory_order_relaxed);
-    m_WorldWeatherWind.clear();
+    // The sort bracket of this app frame. BuildWorldBatchKeys writes it when it runs,
+    // so a frame that builds no keys reports zero cost, not the last frame's value.
+    m_RenderTimelineStats.SortMs = 0.0;
+    m_RenderTimelineStats.SortViewCount = 0;
     // Rebuilt from this frame's submissions; a world that stops submitting
     // deforming content must stop forcing its caches to recompute.
     m_AnimatedVertexModifierWorlds.clear();
     for (auto& [worldId, lights] : m_WorldLights)
         lights.clear();
     m_WorldPostProcess.clear();
+    m_WorldWeatherWind.Clear();
     // Cleared with the other per-world extraction state so destroyed worlds
     // (thumbnail/preview churn) can't accumulate entries; every live world's
     // extraction republishes before probes read it later the same frame.

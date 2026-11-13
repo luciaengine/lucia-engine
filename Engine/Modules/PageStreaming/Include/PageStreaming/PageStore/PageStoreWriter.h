@@ -19,9 +19,12 @@ namespace GameEngine::PageStreaming
 
 struct EncodedPage;
 
-/// Assembles a store in a temporary sibling; Finish publishes it by rename.
-/// Concurrent WritePage/ReadPage calls are allowed. Other operations require no page call in flight.
-/// Destruction before Finish removes the temporary file.
+/// Writes one page store, a page at a time in any order, then publishes it whole.
+///
+/// The store is assembled in a temporary sibling of its target and put in place by rename in
+/// Finish, so a reader never opens a partial store. A writer destroyed before Finish removes its
+/// temporary file. WritePage and ReadPage may be called from any number of threads at once;
+/// Create, OpenForPatch, AddPresentPages, Finish and Abandon from one thread with no page call in flight.
 class PageStoreWriter
 {
 public:
@@ -41,15 +44,18 @@ public:
     std::string OpenForPatch(const std::filesystem::path& existing, const std::filesystem::path& target,
                              PageStoreLayout layout);
 
-    /// Adds the pages `present` marks to the store being written, unwritten, and moves the pages under
-    /// the longer index to the end of the store. Not while a page call runs. Returns an empty string,
-    /// else the reason (the store is dropped).
-    std::string AddPresentPages(std::span<const uint8> present);
+    /// Adds the pages of `added` (in any order; a page the store holds is skipped) to the store being
+    /// written, unwritten, and moves the pages under the longer index to the end of the store. Not while
+    /// a page call runs. Returns an empty string, else the reason (an address outside the store, a failed
+    /// move); the store is dropped then.
+    std::string AddPresentPages(std::span<const PageAddress> added);
 
     const PageStoreLayout& Layout() const { return m_Layout; }
 
-    /// Writes a present page and its entry, appending when its stored size changes.
-    /// Returns false on an invalid address, a byte count inconsistent with the format/flags, or I/O failure.
+    /// Writes a present page's bytes and records its entry. A page keeps its place in the file while
+    /// its size does; a first write, or one that changes the size, appends. False on an absent or
+    /// out-of-store address, bytes that do not match the store's format and the page's flags, or an
+    /// I/O failure.
     bool WritePage(const PageAddress& address, const EncodedPage& page);
 
     /// Reads back the stored bytes and the entry of a present page already written (or kept by a

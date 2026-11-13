@@ -2,6 +2,7 @@
 
 #include "Components/Markup/Markup.h"
 #include "ECS/ECS.h"
+#include "Mathematics/Matrix4x4.h"
 #include "Mathematics/Vector3.h"
 #include "Types/Types.h"
 
@@ -11,9 +12,11 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace GameEngine
 {
+struct ColorSRGB;
 class SceneViewController;
 struct SceneViewCameraPose;
 class UIElement;
@@ -36,18 +39,24 @@ std::optional<uint32_t> MarkupTagArgb(uint32 tagId);
 // black and white): a pill filled with the tag's color then takes the dark-text class.
 bool MarkupTagReadsDarkText(uint32 tagId);
 // The tag's name as the user reads it, empty for an unknown id. The vocabulary keeps the
-// name the agent API uses ("InProgress"); every surface shows it with a lowercase word
-// break at each lower-to-upper case step ("In progress"). Names without one show as named.
+// name the agent API uses ("InProgress"); every surface shows it as words in title case
+// through IdentifierToWords ("In Progress"). A name that holds a space shows as named.
 std::string MarkupTagLabel(uint32 tagId);
-// The mark-up's name, or "Mark-up" when it has none. The view lives while the entity's Name
-// is unchanged.
+// What every surface calls a mark-up with no name: the Mark-ups panel's row, the Scene View's
+// label, the inspector's header and the Hierarchy (EditorComponentTraits::UntitledName).
+inline constexpr std::string_view kUntitledMarkupName = "Untitled mark-up";
+// The mark-up's name, or kUntitledMarkupName when it has none. The view lives while the entity's
+// Name is unchanged.
 std::string_view MarkupTitleView(const ECS::World& world, ECS::EntityHandle entity);
 std::string MarkupTitle(const ECS::World& world, ECS::EntityHandle entity);
+// The names of the mark-up's free tags in its notes' order (MarkupNotes::Tags), the slots the
+// vocabulary cannot read skipped; empty for a mark-up with none.
+std::vector<std::string> MarkupTagNames(const ECS::World& world, ECS::EntityHandle entity);
 // Whether the mark-up has a color of its own (Markup::Color not all zero).
 bool MarkupHasOwnColor(const Components::Markup& markup);
 // The color a mark-up draws in: its own (Markup::Color), else its status tag's, else the
 // theme's grey for a status the vocabulary does not hold (--ui_color_markup_unknown_status).
-std::array<float32, 3> MarkupDisplayRgb(const Components::Markup& markup);
+ColorSRGB MarkupDisplayRgb(const Components::Markup& markup);
 // MarkupDisplayRgb as opaque 0xAARRGGBB.
 uint32_t MarkupDisplayArgb(const Components::Markup& markup);
 // Makes `argb` (0xAARRGGBB, as the color picker gives it) the mark-up's own color, opaque.
@@ -63,7 +72,7 @@ const char* MarkupAuthorText(Components::MarkupAuthor author);
 // Activity tab alike.
 bool MarkupEntryIsAction(const MarkupECS::MarkupEntry& entry);
 // What an action entry did, as its line reads after the author: "created it", "set it to
-// In progress", "moved and resized it", "renamed it to The Docks and changed its color to" (a
+// In Progress", "moved and resized it", "renamed it to The Docks and changed its color to" (a
 // recolor that kept its color ends the line, its swatch after it: BuildMarkupEntryColorSwatch).
 // A comment's text.
 std::string MarkupEntryText(const MarkupECS::MarkupEntry& entry);
@@ -88,9 +97,9 @@ struct MarkupWorldVolume
     float BoundingRadius = 0.0f;                 // of the sphere around the shape
     float TopY = 0.0f;                           // the highest world Y the shape reaches
 };
-// The shape `matrix` (a WorldTransform's, column-major) places; none for a zero scale.
+// The shape the world matrix `matrix` places; none for a zero scale.
 std::optional<MarkupWorldVolume> MarkupWorldVolumeFromMatrix(Components::MarkupVolumeShape shape,
-                                                             const float32 (&matrix)[16]);
+                                                             const Mathematics::Matrix4x4& matrix);
 // The mark-up's shape in the world; none without a MarkupVolume and a WorldTransform.
 std::optional<MarkupWorldVolume> ReadMarkupWorldVolume(const ECS::World& world, ECS::EntityHandle entity);
 // Whether `point` lies inside `volume` or on its surface.

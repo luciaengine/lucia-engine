@@ -28,7 +28,6 @@
 
 #include "FixedScalePlatform.h"
 #include "UIRgTestHarness.h"
-#include "TestTempDir.h"
 
 #include "Input/InputSystem.h"
 #include "Input/KeyCodes.h"
@@ -142,8 +141,7 @@ struct TextFieldFixture
         Ui->SetPlatform(Platform.get());
         Ui->SetRoot(std::move(root));
 
-        const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_text_geometry"));
-        const auto css = tempDir.Path() /
+        const auto css = std::filesystem::temp_directory_path() /
                          ("ui_text_geometry_" + std::to_string(reinterpret_cast<uintptr_t>(this)) + ".css");
         {
             std::ofstream f(css);

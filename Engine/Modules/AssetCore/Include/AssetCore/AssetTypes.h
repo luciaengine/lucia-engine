@@ -1,6 +1,6 @@
 #pragma once
 
-#include "AssetCore/Types.h"
+#include "Types/Types.h"
 
 #include <string_view>
 
@@ -88,11 +88,12 @@ namespace GameEngine {
        dimensions. GUID-referenced from a TerrainSculptZone / TerrainPaintZone \
        component; authored in place by the terrain brush (edit-pipeline sec 9.3). */ \
     X(TerrainZoneData) \
-    /* A planet's sphere sculpt page store (.tsculpt): the sparse virtual pages \
-       (dab + modifier layers) of a spherical terrain's authored sculpt, saved \
-       as a sidecar next to the scene. GUID-referenced from the Terrain \
-       component's sphereSculpt field; written by the editor's save flush. */ \
-    X(TerrainSphereSculptData) \
+    /* A terrain's authored height layer (.gepage height store): the sculpt's \
+       pages on a fixed 2^-14 m lattice, saved next to the scene. \
+       GUID-referenced from the Terrain component's heightLayer field; written \
+       by the editor's save flush. The derived page caches under .Cache use \
+       the same extension and are never scanned. */ \
+    X(TerrainHeightLayer) \
     /* A terrain's ordered material list (.terrainmatlib JSON): the authored \
        records its surface shades with, each keyed by a stable slot ID that the \
        painted splat stores. GUID-referenced from the Terrain component, so one \
@@ -109,7 +110,10 @@ namespace GameEngine {
     X(TileSet) \
     X(TileMap) \
     X(DayCycleProfile) \
-    X(Prefab)
+    X(Prefab) \
+    X(NavigationSurfaceData) \
+    X(AiOptionSet) \
+    X(AiStateTree)
 
 /**
  * @brief Asset types supported by the engine
@@ -215,7 +219,15 @@ AssetType GetAssetTypeFromExtension(const String& extension);
  */
 String GetCompoundExtensionFromPath(const String& path);
 
-/// The filename without its registered extension, including compound extensions.
+/**
+ * @brief The asset's name: the file name without its extension, a compound extension taken off whole
+ *
+ * `Marsh.daycycle.json` is `Marsh` and `Hero.profile.json` is `Hero`; `Rock.png` is `Rock`.
+ *
+ * @param path The asset path (absolute or relative; only the filename is read)
+ * @return The filename without the extension GetCompoundExtensionFromPath() returns, or the whole
+ *         filename when it is all extension (`.gitignore`)
+ */
 String GetAssetNameFromPath(const String& path);
 
 /**

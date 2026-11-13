@@ -36,7 +36,7 @@
 
 #include "Engine/Rendering/Material.h"
 
-#include "Rendering/Materials/ShaderVariantKey.h"
+#include "Rendering/Materials/Shader/ShaderVariantKey.h"
 
 namespace GameEngine::Engine::Renderer
 {

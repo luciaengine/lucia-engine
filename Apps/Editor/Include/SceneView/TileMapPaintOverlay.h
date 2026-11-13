@@ -4,7 +4,7 @@
 #include "SceneView/SceneViewTools.h"
 #include "SceneView/TileMapPaintTarget.h"
 
-#include "AssetCore/Types.h"
+#include "Types/Types.h"
 
 #include <vector>
 

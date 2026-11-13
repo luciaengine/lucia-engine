@@ -1,14 +1,13 @@
 #include "Inspectors/ValueCurveInspector.h"
 
 #include "InspectorRegistry.h"
-#include "Editor/Entities/EditorComponentTraits.h"
 
 #include "Components/Animation/ValueCurve.h"
 #include "Editor/Entities/EditorECSHelpers.h"
-#include "Inspectors/InspectorComponentRowHelpers.h"
-#include "Inspectors/InspectorComponentSection.h"
+#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
+#include "Mathematics/Interpolation.h"
 #include "UI/StyleProperties.h"
 #include "UI/EditorIcons.h"
 #include "UI/UIEvents.h"
@@ -69,36 +68,36 @@ std::vector<Math::CurveKey> ShapeKeys(const Components::ValueCurve& c)
 CubicBezierShape CubicBezierShapeFromCurve(const Components::ValueCurve& c)
 {
     return {
-        std::clamp(c.CubicBezierControl1X, 0.0f, 1.0f),
-        std::clamp(c.CubicBezierControl1Y, 0.0f, 1.0f),
-        std::clamp(c.CubicBezierControl2X, 0.0f, 1.0f),
-        std::clamp(c.CubicBezierControl2Y, 0.0f, 1.0f),
-        std::clamp(c.CubicBezierAnchorStartY, 0.0f, 1.0f),
-        std::clamp(c.CubicBezierAnchorEndY, 0.0f, 1.0f),
+        Math::Clamp01(c.CubicBezierControl1X),
+        Math::Clamp01(c.CubicBezierControl1Y),
+        Math::Clamp01(c.CubicBezierControl2X),
+        Math::Clamp01(c.CubicBezierControl2Y),
+        Math::Clamp01(c.CubicBezierAnchorStartY),
+        Math::Clamp01(c.CubicBezierAnchorEndY),
     };
 }
 
 CubicBezierShape CubicBezierShapeFromPreset(const CurvePresets::CubicBezierPreset& preset)
 {
     return {
-        std::clamp(preset.Control1X, 0.0f, 1.0f),
-        std::clamp(preset.Control1Y, 0.0f, 1.0f),
-        std::clamp(preset.Control2X, 0.0f, 1.0f),
-        std::clamp(preset.Control2Y, 0.0f, 1.0f),
-        std::clamp(preset.AnchorStartY, 0.0f, 1.0f),
-        std::clamp(preset.AnchorEndY, 0.0f, 1.0f),
+        Math::Clamp01(preset.Control1X),
+        Math::Clamp01(preset.Control1Y),
+        Math::Clamp01(preset.Control2X),
+        Math::Clamp01(preset.Control2Y),
+        Math::Clamp01(preset.AnchorStartY),
+        Math::Clamp01(preset.AnchorEndY),
     };
 }
 
 CurvePresets::CubicBezierPreset CubicBezierPresetFromCurve(const Components::ValueCurve& c)
 {
     return {
-        std::clamp(c.CubicBezierControl1X, 0.0f, 1.0f),
-        std::clamp(c.CubicBezierControl1Y, 0.0f, 1.0f),
-        std::clamp(c.CubicBezierControl2X, 0.0f, 1.0f),
-        std::clamp(c.CubicBezierControl2Y, 0.0f, 1.0f),
-        std::clamp(c.CubicBezierAnchorStartY, 0.0f, 1.0f),
-        std::clamp(c.CubicBezierAnchorEndY, 0.0f, 1.0f),
+        Math::Clamp01(c.CubicBezierControl1X),
+        Math::Clamp01(c.CubicBezierControl1Y),
+        Math::Clamp01(c.CubicBezierControl2X),
+        Math::Clamp01(c.CubicBezierControl2Y),
+        Math::Clamp01(c.CubicBezierAnchorStartY),
+        Math::Clamp01(c.CubicBezierAnchorEndY),
     };
 }
 
@@ -106,12 +105,12 @@ void ApplyCubicBezierShape(Components::ValueCurve& c, const CubicBezierShape& sh
 {
     c.ShapeMode = Components::ValueCurveShapeMode::CubicBezier;
     c.UseBuiltinEasing = false;
-    c.CubicBezierControl1X = std::clamp(shape.C1X, 0.0f, 1.0f);
-    c.CubicBezierControl1Y = std::clamp(shape.C1Y, 0.0f, 1.0f);
-    c.CubicBezierControl2X = std::clamp(shape.C2X, 0.0f, 1.0f);
-    c.CubicBezierControl2Y = std::clamp(shape.C2Y, 0.0f, 1.0f);
-    c.CubicBezierAnchorStartY = std::clamp(shape.AnchorStartY, 0.0f, 1.0f);
-    c.CubicBezierAnchorEndY = std::clamp(shape.AnchorEndY, 0.0f, 1.0f);
+    c.CubicBezierControl1X = Math::Clamp01(shape.C1X);
+    c.CubicBezierControl1Y = Math::Clamp01(shape.C1Y);
+    c.CubicBezierControl2X = Math::Clamp01(shape.C2X);
+    c.CubicBezierControl2Y = Math::Clamp01(shape.C2Y);
+    c.CubicBezierAnchorStartY = Math::Clamp01(shape.AnchorStartY);
+    c.CubicBezierAnchorEndY = Math::Clamp01(shape.AnchorEndY);
     Components::RefreshValueCurveCurrentValueFromEvaluation(c);
 }
 
@@ -142,17 +141,17 @@ Math::Curve SampleCubicBezierAsShape(const Components::ValueCurve& c, int sample
 
 void SeedCubicBezierFromShape(Components::ValueCurve& c)
 {
-    const float y0 = std::clamp(c.Shape.Evaluate(0.0f), 0.0f, 1.0f);
-    const float y3 = std::clamp(c.Shape.Evaluate(1.0f), 0.0f, 1.0f);
+    const float y0 = Math::Clamp01(c.Shape.Evaluate(0.0f));
+    const float y3 = Math::Clamp01(c.Shape.Evaluate(1.0f));
     constexpr float eps = 0.01f;
-    const float m0 = (std::clamp(c.Shape.Evaluate(eps), 0.0f, 1.0f) - y0) / eps;
-    const float m1 = (y3 - std::clamp(c.Shape.Evaluate(1.0f - eps), 0.0f, 1.0f)) / eps;
+    const float m0 = (Math::Clamp01(c.Shape.Evaluate(eps)) - y0) / eps;
+    const float m1 = (y3 - Math::Clamp01(c.Shape.Evaluate(1.0f - eps))) / eps;
     c.CubicBezierAnchorStartY = y0;
     c.CubicBezierAnchorEndY = y3;
     c.CubicBezierControl1X = 1.0f / 3.0f;
-    c.CubicBezierControl1Y = std::clamp(y0 + m0 / 3.0f, 0.0f, 1.0f);
+    c.CubicBezierControl1Y = Math::Clamp01(y0 + m0 / 3.0f);
     c.CubicBezierControl2X = 2.0f / 3.0f;
-    c.CubicBezierControl2Y = std::clamp(y3 - m1 / 3.0f, 0.0f, 1.0f);
+    c.CubicBezierControl2Y = Math::Clamp01(y3 - m1 / 3.0f);
 }
 
 void ApplyShapeModeChange(Components::ValueCurve& c, Components::ValueCurveShapeMode mode)
@@ -194,13 +193,13 @@ void ApplyKeysToShape(Components::ValueCurve& c, const std::vector<Math::CurveKe
 float ElapsedSecondsFromNormalizedTime(const Components::ValueCurve& curve, float normalizedTime)
 {
     constexpr float kMinDurationSeconds = 0.0001f;
-    return std::clamp(normalizedTime, 0.0f, 1.0f) * std::max(curve.DurationSeconds, kMinDurationSeconds);
+    return Math::Clamp01(normalizedTime) * std::max(curve.DurationSeconds, kMinDurationSeconds);
 }
 
 float FindClosestNormalizedTimeForOutput(const Components::ValueCurve& curve, float targetOutput)
 {
     auto valueAt = [&curve](float t) {
-        const float eased = Components::EvaluateValueCurve01(curve, std::clamp(t, 0.0f, 1.0f));
+        const float eased = Components::EvaluateValueCurve01(curve, Math::Clamp01(t));
         return curve.StartValue + (curve.EndValue - curve.StartValue) * eased;
     };
     auto errorAt = [&](float t) {
@@ -233,7 +232,7 @@ float FindClosestNormalizedTimeForOutput(const Components::ValueCurve& curve, fl
         else
             lo = m1;
     }
-    return std::clamp((lo + hi) * 0.5f, 0.0f, 1.0f);
+    return Math::Clamp01((lo + hi) * 0.5f);
 }
 
 float NormalizedPlaybackTime(const Components::ValueCurve& curve)
@@ -255,26 +254,13 @@ float NormalizedPlaybackTime(const Components::ValueCurve& curve)
         cycleT = std::clamp(cycleT, 0.0f, 2.0f);
         return (cycleT > 1.0f) ? (2.0f - cycleT) : cycleT;
     }
-    return std::clamp(cycleT, 0.0f, 1.0f);
+    return Math::Clamp01(cycleT);
 }
 
 } // namespace
 
 void RegisterValueCurveInspector()
 {
-    constexpr int kValueCurveSortKey = 34;
-
-    {
-        Editor::EditorComponentTraits traits;
-        traits.DisplayName = "Value Curve";
-        traits.Category = "Animation";
-        traits.SortKey = kValueCurveSortKey;
-        traits.Tooltip = "Tween curve with easing, duration, and looping behavior";
-        traits.InspectorIconClass = "inspector-section-icon-animator";
-        Editor::EditorComponentTraitsRegistry::Get().Register(
-            ECS::GetComponentTypeId<Components::ValueCurve>(), std::move(traits));
-    }
-
     using namespace InspectorDrag;
 
     InspectorRegistry::Get().RegisterComponentInspector<Components::ValueCurve>(
@@ -411,7 +397,7 @@ void RegisterValueCurveInspector()
             cfg.MaxKeys = Math::Curve::Capacity;
             curveField->SetConfig(cfg);
             curveField->SetKeys(ShapeKeys(*curve));
-            curveField->Overrides()
+            curveField->Style()
                 .Set(Style::Height, StyleLength::Px(220.0f))
                 .Set(Style::MinHeight, StyleLength::Px(220.0f))
                 .Set(Style::MarginTop, StyleLength::Px(8.0f));
@@ -435,7 +421,7 @@ void RegisterValueCurveInspector()
             auto setPlaybackIndicator = [curveFieldRaw, bezierFieldRaw](const Components::ValueCurve& vc)
             {
                 const float t = NormalizedPlaybackTime(vc);
-                const float v = std::clamp(Components::EvaluateValueCurve01(vc, t), 0.0f, 1.0f);
+                const float v = Math::Clamp01(Components::EvaluateValueCurve01(vc, t));
                 if (curveFieldRaw)
                     curveFieldRaw->SetPlaybackIndicator(t, v, vc.Enabled);
                 if (bezierFieldRaw)
@@ -725,9 +711,11 @@ void RegisterValueCurveInspector()
 
             // Preset foldout: curated built-ins + the user's saved library. Picking replaces the shape;
             // saving captures the current shape into the shared user library.
-            Foldout* presetFoldout =
-                InspectorUI::AddComponentSection(ctx.Parent, "ValueCurve/Presets", "Presets", false);
+            auto presetFoldout = std::make_unique<Foldout>();
+            presetFoldout->SetTitle("Presets");
+            presetFoldout->AddClass("rp-foldout");
             presetFoldout->AddClass("curve-preset-foldout");
+            presetFoldout->SetExpanded(false);
             UIElement* presetContent = presetFoldout->GetContentContainer();
 
             auto picker = std::make_unique<CurvePresetPicker>();
@@ -834,6 +822,7 @@ void RegisterValueCurveInspector()
                         pickerRaw->Refresh();
                 });
             presetContent->AddChild(std::move(picker));
+            ctx.Parent->AddChild(std::move(presetFoldout));
 
             shapeModeDropdown->SetOnValueChanged(
                 [getWorld, entity, notifications, undo, curveFieldRaw, bezierFieldRaw, suppressShapeModeChange, setPlaybackIndicator](

@@ -15,8 +15,6 @@
 #ifndef GE_SHADOW_SAMPLING_GLSL
 #define GE_SHADOW_SAMPLING_GLSL
 
-#include "forward_shader_specialization.glsl"
-
 #include "compat_profile.glsl"
 #include "shadow_pcss_decisions.glsl"
 #include "shadow_receiver_plane.glsl"
@@ -41,11 +39,17 @@ float ge_ReceiveShadows = 1.0;
 // GE_TERRAIN_SHADOW_RECEIVER_DECLARED announces it, as GE_RECEIVE_SHADOWS_DECLARED does above.
 #define GE_TERRAIN_SHADOW_RECEIVER_DECLARED 1
 float ge_ShadowReceiverOnTerrain = 0.0;
-// Head-on terrain pixel footprint in meters, set per fragment in the far-field branch; zero elsewhere.
-// Terrain shadows widen it for grazing views and select a lit-field mip when it covers multiple map samples.
+// The terrain surface's head-on pixel footprint in meters: the distance times the view ray's angle
+// per pixel. The terrain surface sets it per fragment, inside its far-field branch (cbt_surface.glsl);
+// it stays 0 elsewhere. The terrain shadow widens it for the grazing view (terrain_shadow.glsl
+// GE_TerrainShadowFootprint), and a terrain pixel whose footprint covers more than one sample of the
+// clearance map reads the lit field at the level of its footprint (GE_TerrainShadow). 0: one read of
+// the map.
 float ge_ShadowReceiverFootprint = 0.0;
-// Mean-surface view cosine, unit direction toward the eye and continuous terrain draw level.
-// Defaults are 1, zero direction and level 0; footprint filtering uses these to estimate visible ground.
+// The cosine between the view and the terrain's mean surface at the fragment, the unit direction toward
+// the eye and the terrain's continuous draw level there, set beside the footprint; 1, 0 and 0
+// elsewhere. The lit field counts them toward what the view sees (terrain_shadow.glsl
+// GE_TerrainShadowFootprintLit).
 float ge_ShadowReceiverViewCos = 1.0;
 vec3 ge_ShadowReceiverToEye = vec3(0.0);
 float ge_ShadowReceiverDrawLevel = 0.0;
@@ -76,7 +80,8 @@ layout(set = 0, binding = 8, std140) uniform ShadowData
     // Per-cascade PCSS metrics (precomputed on CPU):
     //   x = world-per-texel (world units per shadow-map texel)
     //   y = depth span (world units, used to convert NDC depth delta to world delta)
-    //   z = bindless index for this cascade's raw-depth texture (PCSS blocker search)
+    //   z = bindless index for this cascade's raw-depth texture (PCSS blocker search);
+    //       unused under the compat profile, which reads ge_shadowMapRaw by layer
     //   w = effective light size for this cascade (= global * falloff^cascadeIdx)
     vec4 ge_shadowPcssCascades[4];
     // Per-cascade PCSS min/max pyramid (ShadowMinMaxPyramid, R = min, G = max):
@@ -90,17 +95,41 @@ layout(set = 0, binding = 8, std140) uniform ShadowData
     //   x = dither basis (0 = screen space, 1 = shadow space) — ShadowDitherBasis
     //   y = authored distance fade fraction, zw = reserved (0)
     vec4 ge_shadowFilterParams;
-    // Sun-space terrain clearance uniforms. std140 member order must match ShadowDataGPU.
-    vec4 ge_terrainShadowGrid0; // xy: grid center XZ; zw: terrain corner XZ, view-relative
-    vec4 ge_terrainShadowGrid1; // xy: terrain extent XZ; zw: horizontal sun direction XZ
-    vec4 ge_terrainShadowGrid2; // x: elevation tangent; y: texel meters; zw: first u/v sample
-    vec4 ge_terrainShadowGrid3; // xy: grid dimensions; z: base height; w: meters per normalized height
-    uvec4 ge_terrainShadowSource; // xy: map/height indices; z: present; w: map side in texels
+    // The terrain's sun-space clearance map (terrain_shadow.glsl), ShadowDataGPU terrainShadow*:
+    //   grid0: x, y = grid centre X, Z; z, w = terrain corner X, Z (render-origin relative)
+    //   grid1: x, y = terrain extent X, Z; z, w = sun horizontal direction X, Z
+    //   grid2: x = tan(elevation); y = texel (m); z, w = u of sample 0, v of line 0
+    //   grid3: x = samples per line; y = lines; z = the terrain's base height (render-origin
+    //          relative); w = metres per normalized height
+    //   source: x = map bindless index; y = height texture bindless index; z = 1 when a map is
+    //           published for this view this frame; w = map side (texels)
+    //   field: x = the lit field's bindless index (0: none, TerrainShadowMap FieldLit); y = its levels
+    //   heightSpan: x, y = the extent the height texture spans X, Z (whole tiles; grid1.xy is the
+    //               authored size, the bound of "on the terrain")
+    // Order matters more than naming: std140 lays this block out by position, matching
+    // ShadowDataGPU member for member. A mismatch here is silent garbage, not a compile error.
+    vec4 ge_terrainShadowGrid0;
+    vec4 ge_terrainShadowGrid1;
+    vec4 ge_terrainShadowGrid2;
+    vec4 ge_terrainShadowGrid3;
+    uvec4 ge_terrainShadowSource;
     vec4 ge_shadowReferenceDepth; // source-camera depth plane for mirror receivers
-    uvec4 ge_terrainShadowField; // x: lit-field index (0 absent); y: mip levels; zw: zero
+    uvec4 ge_terrainShadowField;
+    vec4 ge_terrainShadowHeightSpan;
 };
 
 layout(set = 0, binding = 9) uniform sampler2DArrayShadow ge_shadowMapArray;
+
+#if defined(GE_COMPAT_PROFILE)
+// The same cascade array as binding 9, read for depth VALUES (the PCSS blocker
+// search and DPCF's occluder distances) where the full profile reads them through
+// its bindless layer views. A samplerless texture: texelFetch needs no sampler, so
+// it costs one sampled texture and no sampler slot per stage. WebGPU binds a
+// depth32float texture to two read-only bindings at once; this one's layout entry
+// is unfilterable-float (fetch-only usage), the comparison binding's is depth.
+#extension GL_EXT_samplerless_texture_functions : require
+layout(set = 0, binding = 51) uniform texture2DArray ge_shadowMapRaw;
+#endif
 
 // Ray-traced directional shadow mask (DirectionalShadowMode::RayTraced). Full-res R8
 // written by rt_shadow_mask.comp (1 = lit, 0 = occluded), bound by name
@@ -144,7 +173,7 @@ vec2 GE_TerrainShadowReadClearance(vec2 gridCoord)
 float GE_TerrainShadowReadGround(float x, float z)
 {
     vec2 dim = vec2(textureSize(ge_BindlessTextures[nonuniformEXT(ge_terrainShadowSource.y)], 0));
-    vec2 terrainUV = clamp((vec2(x, z) - ge_terrainShadowGrid0.zw) / ge_terrainShadowGrid1.xy, 0.0, 1.0);
+    vec2 terrainUV = clamp((vec2(x, z) - ge_terrainShadowGrid0.zw) / ge_terrainShadowHeightSpan.xy, 0.0, 1.0);
     return textureLod(GE_BTEX(ge_terrainShadowSource.y, GE_TS_CLAMP), (terrainUV * (dim - 1.0) + 0.5) / dim,
                       0.0).r * ge_terrainShadowGrid3.w;
 }
@@ -168,7 +197,7 @@ float GE_TerrainShadow(vec3 posRel, float maxPenumbraRadius)
 {
     if (ge_terrainShadowSource.z == 0u)
         return 1.0;
-    int quality = (GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER);
+    int quality = int(ge_shadowDebug.w + 0.5);
     float tanHalfAngle = (quality == 3 || quality == 5) ? ge_shadowPcssCascades[0].w : 0.0;
     GE_TerrainShadowGrid g;
     g.CenterX = ge_terrainShadowGrid0.x;
@@ -200,13 +229,9 @@ float GE_TerrainShadow(vec3 posRel, float maxPenumbraRadius)
 
 // Procedural caustic web (GE_CausticWeb) for the glass focused-light dapple.
 #include "caustics.glsl"
+#include "shadow_cascade_blend.glsl"
 #include "shadow_distance_fade.glsl"
 #include "shadow_filter.glsl"
-
-// Cross-cascade blending: fraction of depth range, with a minimum world-space
-// distance to ensure near cascades (small depth range) still get a smooth blend.
-const float kCascadeBlendFraction = 0.1;
-const float kCascadeBlendMinDistance = 3.0; // Minimum blend zone in world units.
 
 // Compile-time upper bound on the runtime-variable tap count. Drivers need a
 // constant loop bound for clean SPIR-V codegen; the actual iteration count is
@@ -261,8 +286,7 @@ int GE_PcssTapCount()
     return clamp(n, 8, kPcssMaxTaps);
 }
 
-// Kernel width, in texels, at which the authored tap count applies exactly.
-// Wider kernels get proportionally more taps and narrower ones fewer.
+// Kernel width, in texels, from which the tap count grows past the authored one.
 const float kPcssTapRefTexels = 16.0;
 
 // Sample count scaled to how many texels the kernel actually spans.
@@ -277,11 +301,18 @@ const float kPcssTapRefTexels = 16.0;
 //
 // Linear in radius, not quadratic: constant sample DENSITY over a disk would
 // need taps proportional to area, which explodes. Linear keeps the cost bounded
-// and the clamp to [8, kPcssMaxTaps] bounds it absolutely.
+// and kPcssMaxTaps bounds it absolutely.
+//
+// The authored count is the floor: a kernel narrower than kPcssTapRefTexels keeps
+// it rather than scaling down. A physical sun's penumbra is a few texels wide (a
+// 0.53 degree sun over a 2 m composition: about 4.6 texels), and scaled down that
+// kernel fell to 8 taps, too few for the per-pixel rotated disk to read as
+// anything but stipple. Taps lie in [authored, kPcssMaxTaps].
 int GE_PcssTapsForRadius(float radiusTexels)
 {
-    float scaled = float(GE_PcssTapCount()) * max(radiusTexels, 1.0) / kPcssTapRefTexels;
-    return clamp(int(scaled + 0.5), 8, kPcssMaxTaps);
+    int authored = GE_PcssTapCount();
+    float scaled = float(authored) * radiusTexels / kPcssTapRefTexels;
+    return clamp(int(scaled + 0.5), authored, kPcssMaxTaps);
 }
 
 // MSM4 (Peters & Klein 2015) decode matrix from supplementary listing 2,
@@ -421,24 +452,35 @@ bool GE_ShadowUVInBounds(vec2 uv)
     return uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0;
 }
 
-// PCSS blocker search: sample raw depth values via bindless texelFetch to
-// find the average occluder depth. Returns -1.0 if no blockers found.
-// searchRadiusTexels scales the sampling disk (in shadow-map texels).
-// bindlessIdx is this cascade's bindless-texture index (the allocator does
-// not guarantee contiguity, so each cascade is indexed independently).
-// Raw shadow-map depth for the blocker phase. The compat profile has no
-// bindless array to texelFetch, and PCSS is a full-profile quality tier there
-// anyway (GE_PcssActive is forced off), so the fetch resolves to "no blocker".
+// Raw shadow-map depth for PCSS's blocker search and DPCF. `rawSource` is what
+// GE_PcssRawSource returned for the cascade: under the full profile that
+// cascade's bindless-texture index (the allocator does not guarantee contiguity,
+// so each cascade is indexed independently); under the compat profile the
+// cascade's layer in ge_shadowMapRaw.
 #if defined(GE_COMPAT_PROFILE)
-float GE_PcssRawDepth(int bindlessIdx, ivec2 coord) { return -1.0; }
-#else
-float GE_PcssRawDepth(int bindlessIdx, ivec2 coord)
+int GE_PcssRawSource(int cascadeIdx)
 {
-    return texelFetch(ge_BindlessTextures[nonuniformEXT(bindlessIdx)], coord, 0).r;
+    return cascadeIdx;
+}
+float GE_PcssRawDepth(int rawSource, ivec2 coord)
+{
+    return texelFetch(ge_shadowMapRaw, ivec3(coord, rawSource), 0).r;
+}
+#else
+int GE_PcssRawSource(int cascadeIdx)
+{
+    return int(ge_shadowPcssCascades[cascadeIdx].z);
+}
+float GE_PcssRawDepth(int rawSource, ivec2 coord)
+{
+    return texelFetch(ge_BindlessTextures[nonuniformEXT(rawSource)], coord, 0).r;
 }
 #endif
 
-float GE_BlockerSearch(vec2 shadowUV, float refDepth, vec2 rpBias, int bindlessIdx, vec2 screenPos,
+// PCSS blocker search: sample raw depth values to find the average occluder
+// depth. Returns -1.0 if no blockers found. searchRadiusTexels scales the
+// sampling disk (in shadow-map texels).
+float GE_BlockerSearch(vec2 shadowUV, float refDepth, vec2 rpBias, int rawSource, vec2 screenPos,
                        float searchRadiusTexels, int tapCount)
 {
     ivec2 texSize = textureSize(ge_shadowMapArray, 0).xy;
@@ -462,7 +504,7 @@ float GE_BlockerSearch(vec2 shadowUV, float refDepth, vec2 rpBias, int bindlessI
             continue;
         ivec2 coord = ivec2(sampleUV * vec2(texSize));
         coord = clamp(coord, ivec2(0), texSize - ivec2(1));
-        float d = GE_PcssRawDepth(bindlessIdx, coord);
+        float d = GE_PcssRawDepth(rawSource, coord);
         if (GE_PcssIsBlocker(d, refDepth, offset / vec2(texSize), rpBias))
         {
             blockerSum += d;
@@ -703,7 +745,7 @@ float GE_SampleCascade(vec3 biasedPos, int cascadeIdx, vec2 screenPos,
     vec2 sc = GE_PoissonRotation(screenPos, shadowUV,
                                  vec2(textureSize(ge_shadowMapArray, 0).xy));
 
-    int quality = (GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER);
+    int quality = int(ge_shadowDebug.w + 0.5);
 
     // MSM4: pre-filtered analytic bound. Falls back to the path below if
     // the moments aren't ready (CPU sets quality=3 in BuildShadowDataGPU
@@ -718,20 +760,16 @@ float GE_SampleCascade(vec3 biasedPos, int cascadeIdx, vec2 screenPos,
         return GE_SampleCascadeMsm(cascadeIdx, shadowUV, receiverFZ);
     }
 
-    // Both contact-hardening paths below (DPCF and PCSS) read raw depth through
-    // the bindless texture array, which the compat profile does not have, so
-    // they compile out there and those quality tiers fall through to plain PCF.
-#if !defined(GE_COMPAT_PROFILE)
     // DPCF: contact hardening from ONE tap set. Every tap contributes to BOTH
     // the occluded count and the occluder-distance sum, so the penumbra estimate
     // costs no extra fetch and no dependent read — the property PCSS cannot have
-    // and the reason this fit a gen8 60 Hz budget. Shares PCSS's bindless
-    // raw-depth prerequisite (ge_shadowDebug.y), hence the same gate.
+    // and the reason this fit a gen8 60 Hz budget. Shares PCSS's raw-depth
+    // prerequisite (ge_shadowDebug.y), hence the same gate.
     if (quality == 5 && int(ge_shadowDebug.y) != 0)
     {
         float worldPerTexel = ge_shadowPcssCascades[cascadeIdx].x;
         float depthSpanWorld = ge_shadowPcssCascades[cascadeIdx].y;
-        int bindlessIdx = int(ge_shadowPcssCascades[cascadeIdx].z);
+        int rawSource = GE_PcssRawSource(cascadeIdx);
         float tanHalfAngle = max(ge_shadowPcssCascades[cascadeIdx].w, 0.0);
 
         // Kernel width is authored, not searched: DPCF never learns how far the
@@ -754,7 +792,7 @@ float GE_SampleCascade(vec3 biasedPos, int cascadeIdx, vec2 screenPos,
             if (!GE_ShadowUVInBounds(sampleUV))
                 continue; // out of the map reads as lit, matching the PCSS path
             ivec2 coord = clamp(ivec2(sampleUV * vec2(texSize)), ivec2(0), texSize - ivec2(1));
-            float d = texelFetch(ge_BindlessTextures[nonuniformEXT(bindlessIdx)], coord, 0).r;
+            float d = GE_PcssRawDepth(rawSource, coord);
             // Reverse-Z: a stored depth LARGER than the receiver is nearer the
             // light, so dist > 0 marks a blocker — the same convention the
             // source relies on ("as our SM depth is inverted").
@@ -789,22 +827,17 @@ float GE_SampleCascade(vec3 biasedPos, int cascadeIdx, vec2 screenPos,
         return 1.0 - GE_DpcfCurve(percentageOccluded, pcfWeight);
     }
 
-#endif
-#if defined(GE_COMPAT_PROFILE)
-    if (false)
-#else
     if (quality == 3 && int(ge_shadowDebug.y) != 0)
-#endif
     {
         // PCSS: three-phase contact-hardening shadows.
-        //   1) Blocker search reads raw depth via bindless texelFetch.
+        //   1) Blocker search reads raw depth (GE_PcssRawDepth).
         //   2) Penumbra size derived from (refDepth - avgBlocker) scaled by
         //      the physical light size, converted to shadow-map texels using
         //      the cascade's world-per-texel and world-space depth span.
         //   3) Variable-radius Poisson PCF via the hardware compare sampler.
         float worldPerTexel = ge_shadowPcssCascades[cascadeIdx].x;
         float depthSpanWorld = ge_shadowPcssCascades[cascadeIdx].y;
-        int bindlessIdx = int(ge_shadowPcssCascades[cascadeIdx].z);
+        int rawSource = GE_PcssRawSource(cascadeIdx);
         // tan(half angular diameter) of the light — dimensionless, NOT a length.
         float tanHalfAngle = max(ge_shadowPcssCascades[cascadeIdx].w, 0.0);
 
@@ -917,7 +950,7 @@ float GE_SampleCascade(vec3 biasedPos, int cascadeIdx, vec2 screenPos,
         // Committed to the filter: the search sizes the kernel (the minimum one
         // when it finds no blocker) and the PCF loop below decides the result.
         ge_lastPcssBranch = kPcssBranchFullPath;
-        float avgBlocker = GE_BlockerSearch(shadowUV, refDepth, rpBias, bindlessIdx, screenPos,
+        float avgBlocker = GE_BlockerSearch(shadowUV, refDepth, rpBias, rawSource, screenPos,
                                             searchTexels, searchTaps);
         float penumbraTexels = GE_PcssPenumbraTexels(avgBlocker, refDepth, depthSpanWorld, tanHalfAngle,
                                                      worldPerTexel, effectiveCapWorld);
@@ -946,13 +979,28 @@ float GE_SampleCascade(vec3 biasedPos, int cascadeIdx, vec2 screenPos,
         // tighter shadow edge. kernelScale shrinks the radius on far cascades
         // so the world-space disk stays roughly constant.
         float radius = 1.5 * texelSize * max(ge_shadowPcss.x, 0.0) * kernelScale;
+
+        // Where the screen-pixel floor (GE_ShadowFilterFloorTexels) widens the disk,
+        // its taps follow the receiver's plane in depth, as the grids' do, so a
+        // sloped receiver does not shadow itself across the wider disk. Elsewhere
+        // the kernel is unchanged.
+        vec2 texSize = vec2(textureSize(ge_shadowMapArray, 0).xy);
+        mat3 toShadow = mat3(ge_shadowVP[cascadeIdx]);
+        vec3 floorDx = (toShadow * receiverDx) * vec3(0.5, -0.5, 1.0);
+        vec3 floorDy = (toShadow * receiverDy) * vec3(0.5, -0.5, 1.0);
+        float floorRadius = GE_ShadowFilterFloorTexels(floorDx.xy, floorDy.xy, texSize) * texelSize;
+        bool floorBinds = floorRadius > radius;
+        radius = max(radius, floorRadius);
+        vec2 floorGradient = floorBinds ? GE_ShadowReceiverPlaneGradient(floorDx, floorDy) : vec2(0.0);
+
         float shadow = 0.0;
         int poissonTaps = GE_PcssTapCount();
         for (int i = 0; i < kPcssMaxTaps; ++i)
         {
             if (i >= poissonTaps) break;
             vec2 rotated = GE_VogelDisk(i, poissonTaps, sc) * radius;
-            shadow += GE_ShadowCompareTap(shadowUV + rotated, layer, refDepth);
+            float tapDepth = GE_FlooredKernelTapDepth(floorBinds, refDepth, rotated, floorGradient, texelSize);
+            shadow += GE_ShadowCompareTap(shadowUV + rotated, layer, tapDepth);
         }
         return shadow / float(poissonTaps);
     }
@@ -1037,7 +1085,7 @@ float GE_ScreenSpaceShadow(float shadow, float linearDepth, vec2 screenPos)
         }
     }
 #endif
-    int mode = (GE_FORWARD_SHADOW_DEBUG ? int(ge_shadowDebug.x + 0.5) : 0);
+    int mode = int(ge_shadowDebug.x + 0.5);
     if (mode == 6)
     {
         ge_lastShadowTint = vec3(1.0);
@@ -1068,8 +1116,8 @@ float GE_SampleShadow(vec3 posWS, vec3 normalWS, float linearDepth, vec3 lightDi
     receiverDx = ge_shadowReceiverDx;
     receiverDy = ge_shadowReceiverDy;
     #else
-    if ((GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER) <= 1 ||
-        (ge_shadowPcss.w > 0.5 && (GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER) == 3))
+    if (int(ge_shadowDebug.w + 0.5) <= 1 ||
+        (ge_shadowPcss.w > 0.5 && int(ge_shadowDebug.w + 0.5) == 3))
     {
         receiverDx = GE_DFDX(posWS);
         receiverDy = GE_DFDY(posWS);
@@ -1143,7 +1191,7 @@ float GE_SampleShadow(vec3 posWS, vec3 normalWS, float linearDepth, vec3 lightDi
         float splitDist = ge_shadowSplits[cascadeIdx];
         float cascadeStart = (cascadeIdx == 0) ? 0.0 : ge_shadowSplits[cascadeIdx - 1];
         float cascadeRange = splitDist - cascadeStart;
-        float blendBand = max(cascadeRange * kCascadeBlendFraction, kCascadeBlendMinDistance);
+        float blendBand = GE_CascadeBlendBand(cascadeRange);
         float distToSplit = splitDist - linearDepth;
 
         if (distToSplit < blendBand)
@@ -1155,10 +1203,11 @@ float GE_SampleShadow(vec3 posWS, vec3 normalWS, float linearDepth, vec3 lightDi
     }
 
     float normalBias = GE_ShadowNormalBiasWorld(ge_shadowParams.y, texelWorld,
-        ge_shadowPcssCascades[0].x, (GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER), ge_shadowPcss.x,
+        ge_shadowPcssCascades[0].x, int(ge_shadowDebug.w + 0.5), ge_shadowPcss.x,
         dot(normalWS, lightDirWS),
         maxPenumbraWorld,
-        ge_shadowPcss.w > 0.5);
+        ge_shadowPcss.w > 0.5,
+        GE_ShadowFilterFloorWorld(receiverDx, receiverDy, texelWorld));
     vec3 biasedPos = posWS + normalWS * normalBias;
     float shadow = GE_SampleCascade(biasedPos, cascadeIdx, screenPos, receiverDx, receiverDy);
     if (inBlendZone)
@@ -1198,7 +1247,7 @@ float GE_SampleShadow(vec3 posWS, vec3 normalWS, float linearDepth, vec3 lightDi
 bool GE_GetShadowDebugColor(float shadowFactor, out vec3 outColor)
 {
     outColor = vec3(0.0);
-    int mode = (GE_FORWARD_SHADOW_DEBUG ? int(ge_shadowDebug.x + 0.5) : 0);
+    int mode = int(ge_shadowDebug.x + 0.5);
     if (mode == 1)
     {
         // Cascade color tint: blend the cascade color with the shadow factor.

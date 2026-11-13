@@ -1,4 +1,5 @@
 #include "Engine/Rendering/PlanarReflectionMath.h"
+#include "Engine/Rendering/RenderOrigin.h"
 
 #include <algorithm>
 #include <cmath>
@@ -97,19 +98,35 @@ bool MakePlanarReflectionCamera(const Rendering::CameraData& main,
 bool MakeMirrorCaptureCamera(const Rendering::CameraData& main, const glm::vec4& unitPlane,
                              float clipBias, bool oneSided, Rendering::CameraData& reflected)
 {
-    const auto view = glm::make_mat4(main.view);
-    const auto proj = glm::make_mat4(main.proj);
+    const auto view = main.view.GetGLM();
+    const auto proj = main.proj.GetGLM();
     if (!Finite(view) || !Finite(proj) || std::abs(glm::determinant(proj)) < 1e-12f)
         return false;
-    const glm::vec4 position(main.cameraPos[0], main.cameraPos[1], main.cameraPos[2], 1);
-    // One-sided mirrors: do not render a capture from behind/on the plane.
-    if (oneSided && !(glm::dot(unitPlane, position) > clipBias + 1e-4f))
+    const auto eye = CameraEye(main);
+    const glm::dvec3 physicalEye(eye.X, eye.Y, eye.Z);
+    glm::dvec3 normal(unitPlane);
+    const double length = glm::length(normal);
+    if (!std::isfinite(length) || length < 1e-6)
         return false;
-    const auto mirror = PlanarReflectionMatrix(unitPlane);
-    const auto reflectedView = view * mirror;
-    glm::vec4 clipPlane = unitPlane;
-    clipPlane.w -= clipBias;
-    clipPlane = glm::transpose(glm::inverse(reflectedView)) * clipPlane;
+    normal /= length;
+    const double planeOffset = static_cast<double>(unitPlane.w) / length;
+    const double distance = glm::dot(normal, physicalEye) + planeOffset;
+    // Form distances before narrowing the eye into an absolute float position.
+    if (oneSided && !(distance > static_cast<double>(clipBias) + 1e-4))
+        return false;
+    const glm::dvec3 mirroredEye = physicalEye - 2.0 * distance * normal;
+    const glm::dmat3 reflection = glm::dmat3(1.0) - 2.0 * glm::outerProduct(normal, normal);
+    const glm::dmat3 reflectedRotation = glm::dmat3(view) * reflection;
+    const glm::dvec3 translation = -reflectedRotation * mirroredEye;
+    glm::mat4 reflectedView(1.0f);
+    for (int c = 0; c < 3; ++c)
+        for (int r = 0; r < 3; ++r)
+            reflectedView[c][r] = static_cast<float>(reflectedRotation[c][r]);
+    reflectedView[3] = glm::vec4(glm::vec3(translation), 1.0f);
+    // Transform the plane with the reflected rotation and its exact eye, avoiding
+    // cancellation in the inverse of a rounded absolute view translation.
+    const glm::dvec3 clipNormal = glm::transpose(glm::inverse(reflectedRotation)) * normal;
+    const glm::vec4 clipPlane(glm::vec3(clipNormal), static_cast<float>(-distance - clipBias));
     const auto sign = [](float x) { return x >= 0.0f ? 1.0f : -1.0f; };
     const auto q = glm::inverse(proj) * glm::vec4(sign(clipPlane.x), sign(clipPlane.y), 0, 1);
     const float denominator = glm::dot(clipPlane, q);
@@ -124,11 +141,10 @@ bool MakeMirrorCaptureCamera(const Rendering::CameraData& main, const glm::vec4&
     const auto vp = reflectedProj * reflectedView;
     if (!Finite(vp)) return false;
     reflected = main;
-    std::memcpy(reflected.view, glm::value_ptr(reflectedView), sizeof(main.view));
-    std::memcpy(reflected.proj, glm::value_ptr(reflectedProj), sizeof(main.proj));
-    std::memcpy(reflected.viewProj, glm::value_ptr(vp), sizeof(main.viewProj));
-    const auto mirroredPosition = mirror * position;
-    for (int i = 0; i < 3; ++i) reflected.cameraPos[i] = mirroredPosition[i];
+    reflected.view = Mathematics::Matrix4x4(reflectedView);
+    reflected.proj = Mathematics::Matrix4x4(reflectedProj);
+    reflected.viewProj = Mathematics::Matrix4x4(vp);
+    SetCameraEye(reflected, Mathematics::WorldPosition{mirroredEye.x, mirroredEye.y, mirroredEye.z});
     return true;
 }
 } // namespace GameEngine::Engine::Renderer

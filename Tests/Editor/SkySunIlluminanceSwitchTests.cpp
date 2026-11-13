@@ -11,7 +11,7 @@
 #include "Components/Rendering/SkySunDrive.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
-#include "Sky/SkySunIlluminanceSwitch.h"
+#include "Sky/SkySun/SkySunIlluminanceSwitch.h"
 #include "UndoRedo/UndoRedoService.h"
 
 using namespace GameEngine;

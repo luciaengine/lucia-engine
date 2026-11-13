@@ -38,6 +38,12 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/Assets)
   # tree does not have. The prune removes only files the mirror itself staged
   # (cmake/PruneStagedMirrorOrphans.cmake), so runtime state tests write into
   # the staged root — script assemblies, derived cache, logs — is never touched.
+  # The test shader root follows the layout rule in cmake/OutputLayout.cmake.
+  if(CMAKE_CONFIGURATION_TYPES OR CMAKE_BUILD_TYPE)
+    set(_ge_test_shaders_dir "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/Tests/Assets/Shaders")
+  else()
+    set(_ge_test_shaders_dir "${CMAKE_BINARY_DIR}/bin/Tests/Assets/Shaders")
+  endif()
   add_custom_target(StageTestAssets
     COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
             ${CMAKE_SOURCE_DIR}/Assets
@@ -60,6 +66,37 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/Assets)
             -DSRC=${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders
             -DDST=${CMAKE_BINARY_DIR}/Engine/Modules/Rendering/Shaders
             -P ${CMAKE_SOURCE_DIR}/cmake/PruneStagedMirrorOrphans.cmake
+    # Shaders that tests compile at runtime from the exe-anchored Assets/Shaders:
+    # the ocean simulations (Ocean, Includes) and the grass-placement oracles
+    # (TerrainGrass, CBT).
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Ocean
+            ${_ge_test_shaders_dir}/Ocean
+    COMMAND ${CMAKE_COMMAND}
+            -DSRC=${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Ocean
+            -DDST=${_ge_test_shaders_dir}/Ocean
+            -P ${CMAKE_SOURCE_DIR}/cmake/PruneStagedMirrorOrphans.cmake
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Includes
+            ${_ge_test_shaders_dir}/Includes
+    COMMAND ${CMAKE_COMMAND}
+            -DSRC=${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Includes
+            -DDST=${_ge_test_shaders_dir}/Includes
+            -P ${CMAKE_SOURCE_DIR}/cmake/PruneStagedMirrorOrphans.cmake
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainGrass/Shaders/TerrainGrass
+            ${_ge_test_shaders_dir}/TerrainGrass
+    COMMAND ${CMAKE_COMMAND}
+            -DSRC=${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainGrass/Shaders/TerrainGrass
+            -DDST=${_ge_test_shaders_dir}/TerrainGrass
+            -P ${CMAKE_SOURCE_DIR}/cmake/PruneStagedMirrorOrphans.cmake
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            ${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT
+            ${_ge_test_shaders_dir}/CBT
+    COMMAND ${CMAKE_COMMAND}
+            -DSRC=${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT
+            -DDST=${_ge_test_shaders_dir}/CBT
+            -P ${CMAKE_SOURCE_DIR}/cmake/PruneStagedMirrorOrphans.cmake
     COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
             ${CMAKE_SOURCE_DIR}/Engine/Modules/GPUFogParticles/Shaders
             ${CMAKE_BINARY_DIR}/Engine/Modules/GPUFogParticles/Shaders
@@ -73,6 +110,29 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/Assets)
     COMMAND ${CMAKE_COMMAND}
             -DSRC=${CMAKE_SOURCE_DIR}/Tests/Projects/Biggles/Assets/Scenes
             -DDST=${CMAKE_BINARY_DIR}/Tests/Projects/Biggles/Assets/Scenes
+            -P ${CMAKE_SOURCE_DIR}/cmake/PruneStagedMirrorOrphans.cmake
+    # The committed script projects' C# sources: ProjectScriptsOnOpenTests
+    # compiles each one, so a sample that stops compiling fails a suite.
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            ${CMAKE_SOURCE_DIR}/Tests/Projects/WASDDemo/Assets
+            ${CMAKE_BINARY_DIR}/Tests/Projects/WASDDemo/Assets
+    COMMAND ${CMAKE_COMMAND}
+            -DSRC=${CMAKE_SOURCE_DIR}/Tests/Projects/WASDDemo/Assets
+            -DDST=${CMAKE_BINARY_DIR}/Tests/Projects/WASDDemo/Assets
+            -P ${CMAKE_SOURCE_DIR}/cmake/PruneStagedMirrorOrphans.cmake
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            ${CMAKE_SOURCE_DIR}/Tests/Projects/Biggles/Assets/Scripts
+            ${CMAKE_BINARY_DIR}/Tests/Projects/Biggles/Assets/Scripts
+    COMMAND ${CMAKE_COMMAND}
+            -DSRC=${CMAKE_SOURCE_DIR}/Tests/Projects/Biggles/Assets/Scripts
+            -DDST=${CMAKE_BINARY_DIR}/Tests/Projects/Biggles/Assets/Scripts
+            -P ${CMAKE_SOURCE_DIR}/cmake/PruneStagedMirrorOrphans.cmake
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            ${CMAKE_SOURCE_DIR}/Tests/EditorHarness/game-ui-hud-csharp/Assets/Scripts
+            ${CMAKE_BINARY_DIR}/Tests/EditorHarness/game-ui-hud-csharp/Assets/Scripts
+    COMMAND ${CMAKE_COMMAND}
+            -DSRC=${CMAKE_SOURCE_DIR}/Tests/EditorHarness/game-ui-hud-csharp/Assets/Scripts
+            -DDST=${CMAKE_BINARY_DIR}/Tests/EditorHarness/game-ui-hud-csharp/Assets/Scripts
             -P ${CMAKE_SOURCE_DIR}/cmake/PruneStagedMirrorOrphans.cmake
     # The web seed project's scenes: ShippedSceneExposureTests reads the
     # shipped bytes, and only the scenes — the rest of the seed project is
@@ -331,11 +391,20 @@ if(MSVC)
             -P ${CMAKE_SOURCE_DIR}/cmake/Tests/GenerateEngineExportsDefTest.cmake)
 endif()
 
-# An export compiles the Player against the Editor's staged SDK. An editor that
-# runs outside its build tree has no vcpkg tree to name, so the Player must
-# configure and link without one. Needs the Editor built (its SDK staged); runs
-# a real configure and link of the SDK's Player template, about a minute.
-if(TARGET Editor AND WIN32)
+# The export-all step of the shared libraries that export every symbol writes exports.def again
+# after a source leaves the target; this exercises that rule against a scratch object list, without a build.
+if(CMAKE_GENERATOR MATCHES "^Visual Studio")
+  add_test(NAME WindowsExportAllSymbols.RewritesAStaleDefinition
+    COMMAND ${CMAKE_COMMAND}
+            -DSCRIPT=${CMAKE_SOURCE_DIR}/cmake/WindowsExportAllSymbols.cmake
+            -DWORK=${CMAKE_BINARY_DIR}/Tests/WindowsExportAllSymbolsScratch
+            -P ${CMAKE_SOURCE_DIR}/cmake/Tests/WindowsExportAllSymbolsTest.cmake)
+endif()
+
+# An export outside the build tree compiles the Player against the staged SDK with no vcpkg tree.
+# Needs the Editor built (its SDK staged): a real configure and link, about a minute. A Mac export
+# injects a prebuilt Player bundle and compiles none.
+if(TARGET Editor AND (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
   add_test(NAME EngineSdk.PlayerLinksWithoutAVcpkgTree
     COMMAND ${CMAKE_COMMAND}
             -DSDK=$<TARGET_FILE_DIR:Editor>/SDK
@@ -452,6 +521,19 @@ if(ENABLE_SCRIPTING)
 # name the configuration that actually produced the file.
 set(GE_MANAGED_FIXTURE_CONFIG Debug)
 
+# CompileServerHost reads generators beside the test executable.
+# Stage the generator built in the same native configuration.
+function(ge_stage_entity_system_generator target_name)
+  add_dependencies(${target_name} EntitySystemGeneratorAssembly)
+  add_custom_command(TARGET ${target_name} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+      $<TARGET_FILE_DIR:${target_name}>/SourceGenerators
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      ${CMAKE_SOURCE_DIR}/Managed/SourceGenerators/EntitySystemGenerator/bin/$<CONFIG>/netstandard2.0/EntitySystemGenerator.dll
+      $<TARGET_FILE_DIR:${target_name}>/SourceGenerators/EntitySystemGenerator.dll
+    COMMENT "Staging EntitySystemGenerator to ${target_name} output")
+endfunction()
+
 # Hand a suite the two configuration names, plus the header that turns them into
 # fixture paths (Tests/ManagedFixturePaths.h). Every scripting-ABI suite resolves
 # its managed fixtures through this and never spells a configuration itself.
@@ -488,9 +570,71 @@ if(TARGET StageTestAssets)
   add_dependencies(AbiNativeSmokeTest StageTestAssets)
 endif()
 
+# The generated native binding of the binding generators' fixture script API
+# (Tools/ComponentScanner/Tests/Fixtures/Bindings), generated by this build's scanner and called
+# through its table: the argument checks, the thread rules, the hash refusal, the last error.
+if(TARGET EngineScriptBindings)
+  if(GE_COMPONENT_SCANNER_EXECUTABLE)
+    set(_ge_probe_scanner "${GE_COMPONENT_SCANNER_EXECUTABLE}")
+  else()
+    set(_ge_probe_scanner ComponentScanner)
+  endif()
+  set(_ge_probe_binding_dir "${CMAKE_CURRENT_BINARY_DIR}/ScriptBindings/generated")
+  set(_ge_probe_fixture "${CMAKE_SOURCE_DIR}/Tools/ComponentScanner/Tests/Fixtures/Bindings/Good")
+  add_custom_command(
+    OUTPUT "${_ge_probe_binding_dir}/Probe.script.gen.cpp" "${_ge_probe_binding_dir}/Probe.script.gen.h"
+    COMMAND ${_ge_probe_scanner} --api-modules "${_ge_probe_fixture}" --emit-api "${_ge_probe_binding_dir}/api"
+            --emit-native "${_ge_probe_binding_dir}"
+    DEPENDS "${_ge_probe_fixture}/Probe/Include/Probe/ProbeScriptApi.h" ${_ge_probe_scanner}
+    COMMENT "Generating the native binding of the binding fixture"
+    VERBATIM)
+  # The layout pins of the component mirror fixture (Tools/ComponentScanner/Tests/Fixtures/Components):
+  # compiling them proves every size, offset and enum value its C# mirrors take, which
+  # Managed/BindingTests compiles and reads.
+  set(_ge_mirror_fixture "${CMAKE_SOURCE_DIR}/Tools/ComponentScanner/Tests/Fixtures/Components/Good")
+  set(_ge_mirror_pins "${_ge_probe_binding_dir}/mirrors/Components.layout.gen.cpp")
+  file(GLOB_RECURSE _ge_mirror_fixture_headers CONFIGURE_DEPENDS "${_ge_mirror_fixture}/*.h")
+  add_custom_command(
+    OUTPUT "${_ge_mirror_pins}"
+    COMMAND ${_ge_probe_scanner} --api-modules "${_ge_mirror_fixture}/Modules" --api-components "${_ge_mirror_fixture}/Components"
+            --emit-api "${_ge_probe_binding_dir}/mirrors/api" --emit-native "${_ge_probe_binding_dir}/mirrors"
+    DEPENDS ${_ge_mirror_fixture_headers} ${_ge_probe_scanner}
+    COMMENT "Generating the layout pins of the component mirror fixture"
+    VERBATIM)
+  add_executable(ScriptBindingTests
+    ScriptBindings/ScriptBindingTests.cpp
+    ScriptBindings/ProbeScriptApi.cpp
+    ScriptBindings/ProbeBinding.cpp
+    "${_ge_probe_binding_dir}/Probe.script.gen.h"
+    "${_ge_mirror_pins}"
+    ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp)
+  set_source_files_properties("${_ge_probe_binding_dir}/Probe.script.gen.h" PROPERTIES GENERATED TRUE)
+  # ProbeBinding.cpp includes the generated unit, which is compiled there and nowhere else.
+  set_source_files_properties(ScriptBindings/ProbeBinding.cpp PROPERTIES
+    OBJECT_DEPENDS "${_ge_probe_binding_dir}/Probe.script.gen.cpp")
+  target_include_directories(ScriptBindingTests PRIVATE
+    "${_ge_probe_fixture}/Probe/Include"
+    "${_ge_mirror_fixture}"
+    "${_ge_mirror_fixture}/Modules/FixtureShapes/Include"
+    "${_ge_probe_binding_dir}"
+    "${CMAKE_SOURCE_DIR}/Engine/Source")
+  # The probe's GE_Probe_GetInterface is defined here, as the generated units of the engine are in
+  # GameEngine.Native.
+  target_compile_definitions(ScriptBindingTests PRIVATE GE_SCRIPTING_BUILD)
+  target_link_libraries(ScriptBindingTests PRIVATE Engine EngineScriptBindings GTest::gtest GTest::gtest_main)
+  ge_set_output_tests(ScriptBindingTests)
+  ge_stage_runtime_dependencies(ScriptBindingTests)
+  add_test(NAME ScriptBindingTests COMMAND $<TARGET_FILE:ScriptBindingTests>)
+  set_tests_properties(ScriptBindingTests PROPERTIES WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+  if(TARGET StageTestAssets)
+    add_dependencies(ScriptBindingTests StageTestAssets)
+  endif()
+endif()
+
 # Scripting ABI Integration Tests (GTest)
 add_executable(ScriptingAbiIntegrationTests
     Integration/ScriptingAbiPrefabSpawnTests.cpp
+    Integration/ProjectScriptsOnOpenTests.cpp
     Integration/ScriptingAbiPackageTest.cpp
     Integration/ScriptingAbiDomainTests.cpp
     Integration/ScriptingAbiAdditionalTests.cpp
@@ -544,7 +688,11 @@ add_custom_command(TARGET ScriptingAbiIntegrationTests POST_BUILD
     ${CMAKE_SOURCE_DIR}/Packages/unity-import/Tools/UnityConverter.dll
     $<TARGET_FILE_DIR:ScriptingAbiIntegrationTests>/TestData/Packages/unity-import/Tools/UnityConverter.dll
   COMMENT "Staging the unity-import converter assembly for ScriptingAbiIntegrationTests")
+ge_stage_entity_system_generator(ScriptingAbiIntegrationTests)
 ge_managed_fixture_paths(ScriptingAbiIntegrationTests)
+if(TARGET StageTestCompileServerHost)
+  add_dependencies(ScriptingAbiIntegrationTests StageTestCompileServerHost)
+endif()
 ge_set_output_tests(ScriptingAbiIntegrationTests)
 ge_stage_runtime_dependencies(ScriptingAbiIntegrationTests)
 if(TARGET StageTestAssets)
@@ -667,6 +815,15 @@ add_custom_target(BuildScriptsAssembly ALL
   COMMENT "Building + staging GameEngine.Scripts (skips when the emitted project is absent)")
 add_dependencies(ScriptingAbiIntegrationTests BuildScriptsAssembly)
 
+include(${CMAKE_SOURCE_DIR}/cmake/ScriptSurfaceAssemblies.cmake)
+set(_ge_script_surface_copies)
+foreach(_ge_surface_dir IN LISTS GE_SCRIPT_SURFACE_MANAGED_DIRS)
+  list(APPEND _ge_script_surface_copies
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+      ${CMAKE_SOURCE_DIR}/Managed/${_ge_surface_dir}/bin/$<CONFIG>
+      $<TARGET_FILE_DIR:ScriptingAbiIntegrationTests>)
+endforeach()
+
 # Stage CoreBridge and HotReload near the test exe and ScriptAssemblies for robust resolution
 add_custom_target(StageCoreBridgeAndHotReload ALL
   # Next to test exe (Editor/CoreBridge resolution)
@@ -710,11 +867,12 @@ add_custom_target(StageCoreBridgeAndHotReload ALL
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     ${CMAKE_SOURCE_DIR}/Managed/Scripting.Runtime/bin/$<CONFIG>/GameEngine.ECS.ABI.dll
     $<TARGET_FILE_DIR:ScriptingAbiIntegrationTests>/GameEngine.ECS.ABI.dll
+  ${_ge_script_surface_copies}
   COMMENT "Staging CoreBridge and HotReload near test exe, test exe dir, and under ScriptAssemblies")
 # This target only copies; the assemblies it copies are produced by the managed
 # targets below. Without these edges a fresh worktree fails the copy outright
 # (MSB8066) because nothing has run `dotnet build` yet.
-foreach(_ge_staged_assembly CoreBridgeAssembly HotReloadAssembly ScriptingRuntimeAssembly)
+foreach(_ge_staged_assembly CoreBridgeAssembly HotReloadAssembly ${GE_SCRIPT_SURFACE_ASSEMBLY_TARGETS})
   if(TARGET ${_ge_staged_assembly})
     add_dependencies(StageCoreBridgeAndHotReload ${_ge_staged_assembly})
   endif()
@@ -871,6 +1029,7 @@ add_executable(PhysicsSmokeTests
 # fix pattern after Phase 1's STATIC→OBJECT module conversion.
 target_link_libraries(PhysicsSmokeTests PRIVATE Engine GTest::gtest GTest::gtest_main)
 target_include_directories(PhysicsSmokeTests PRIVATE
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/PhysicsECS/Source
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_SOURCE_DIR}/Engine/Include
   ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainECS/Include
@@ -958,8 +1117,13 @@ endforeach()
 add_executable(TerrainRegionBakeTests
   ${_GE_SURFACE_RULE_HEADERS}
   TerrainRegionBakeTests.cpp
-  # The single terrain's baked-terrain cache: hit identity, key classes, pins.
-  TerrainBakeCacheTests.cpp
+  # Helpers the target's terrain test files share: the planet layer oracle.
+  TerrainTestHelpers.h
+  TerrainTestHelpers.cpp
+  # The modifier bake output pins: an output change bumps the bake version.
+  TerrainBakeOutputPinTests.cpp
+  # The terrain colour map: the compose of its writers, the grass's ground write, the colour zones.
+  TerrainColorMapTests.cpp
   # Raw .r16/.r32 heightmaps: the grid their import settings declare, and the refusal that
   # names the fix when the file cannot be read on any grid.
   RawHeightmapTests.cpp
@@ -976,10 +1140,26 @@ add_executable(TerrainRegionBakeTests
   # in every blend mode, and the contracts around them (a claim writes no
   # height; claims combine by max). Emits the offline twin's parity fixture.
   TerrainFlattenPoolTests.cpp
+  # The harmonic surface of a spline-area flatten and its road openings.
+  TerrainAreaFlattenSurfaceTests.cpp
+  # The route's segment grid against the station scan, bit for bit, and the streamed-tile
+  # height bake's bytes pinned for a route, a polygon area and noise across a tile border.
+  TerrainStreamedBakeParityTests.cpp
+  # The GPU height bake's refusal report: the reason and the volume that keep a bake on the CPU.
+  TerrainGpuBakeRefusalTests.cpp
   # Surface rules (F10 S2): condition evaluation, the AND product, the band and
   # curve shapes, the caps, the GPU splat gate, and the rules arm of the splat
   # claim end to end.
   TerrainSurfaceRulesTests.cpp
+  # Surface rules on a planet: the planet sample, the Latitude kind, the default planet
+  # rows against the slope-and-altitude blend, and the rule-set presets.
+  TerrainPlanetSurfaceRulesTests.cpp
+  # The planet's generated surface pages: the rule oracle on six faces and the apron across a face edge.
+  TerrainPlanetSurfacePageTests.cpp
+  # The planet's rule weights over a row of texels against the scalar weight, bit for bit.
+  TerrainPlanetSurfaceRuleRowTests.cpp
+  # The atmosphere height of a planet: Auto from the radius and the relief, and the two authored modes.
+  PlanetAtmosphereHeightTests.cpp
   # Default surface rules (F10 S5): the measured slope/height distribution the
   # default rows are placed against, the pin that every authored band stays
   # REACHABLE on real ground, and what the rows actually place for the look review.
@@ -994,20 +1174,24 @@ add_executable(TerrainRegionBakeTests
   # CBTTreeSeed: when the CBT tree restarts from its roots (a retired terrain, a lowered depth
   # cap, a domain switch).
   CBTTreeSeedTests.cpp
-  # Sphere sculpt .tsculpt persistence at the service level: restore-is-an-edit,
-  # saved-grid load x #632 radius remap, #630 undo-across-load, needs-save lifecycle.
-  SphereSculptPersistenceTests.cpp
 )
 target_link_libraries(TerrainRegionBakeTests PRIVATE Engine Noise GTest::gtest GTest::gtest_main)
 target_include_directories(TerrainRegionBakeTests PRIVATE
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainECS/Source
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_SOURCE_DIR}/Engine/Include
   ${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrainECS/Include
   ${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Include
+  # EngineLogCapture.h: the warnings the engine library logs.
+  ${CMAKE_SOURCE_DIR}/Engine/Tests
   # GlslShim.h, and the generated headers the extraction above writes.
   ${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Tests
   ${CMAKE_CURRENT_BINARY_DIR}/generated
   ${CMAKE_SOURCE_DIR}/Engine/Modules/Memory/Testing
+  # TerrainColorMapCompose.h: the colour map's texel arithmetic the colour map tests hold texels to.
+  # TerrainRowBands.h: the row bands and the parallel threshold the bake and grass tests check;
+  # TerrainSurface/TerrainSurfaceSessionStore.h: the session folders the session tests read.
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainECS/Source
 )
 ge_set_output_tests(TerrainRegionBakeTests)
 ge_stage_runtime_dependencies(TerrainRegionBakeTests)
@@ -1016,10 +1200,8 @@ set_tests_properties(TerrainRegionBakeTests PROPERTIES
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 
-# PlanetColliderTests: pure-function oracles for the planet collider height source —
-# per-face body frames (valid rotations), HEIGHT-MATCH (collider samples == the CBT
-# render height field), the gnomonic skew budget, the sculpt-edit UV rect -> grid rect
-# mapping, and the TerrainService planet-face slot lifecycle. No device / physics world.
+# PlanetColliderTests: pure-function oracles for the planet page body fill (FillPlanetPageBody):
+# its samples lie on the drawn surface. No device / physics world.
 add_executable(PlanetColliderTests
   PlanetColliderTests.cpp
 )
@@ -1028,7 +1210,9 @@ target_include_directories(PlanetColliderTests PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_SOURCE_DIR}/Engine/Include
   ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainECS/Include
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainECS/Source
   ${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Include
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/PageStreaming/Include
 )
 ge_set_output_tests(PlanetColliderTests)
 ge_stage_runtime_dependencies(PlanetColliderTests)
@@ -1068,13 +1252,42 @@ foreach(_block TYPES RESOLVE)
   list(APPEND _GE_PAGE_RESOLVE_HEADERS ${_out})
 endforeach()
 
+# The df64 arithmetic and the page store's equal-angle map the sphere's vertices sample by.
+set(_GE_EQUAL_ANGLE_GLSL ${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT/cbt_deep_decode.glsl)
+set(_GE_EQUAL_ANGLE_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/EqualAngleExtracted.h)
+add_custom_command(
+  OUTPUT ${_GE_EQUAL_ANGLE_HEADER}
+  COMMAND ${CMAKE_COMMAND} -DSRC=${_GE_EQUAL_ANGLE_GLSL}
+                           -DOUT=${_GE_EQUAL_ANGLE_HEADER}
+                           "-DBEGIN_MARKER=// GE_SHARED_EQUAL_ANGLE_BEGIN"
+                           "-DEND_MARKER=// GE_SHARED_EQUAL_ANGLE_END"
+                           -P ${_GE_EXTRACT_SHADER_BLOCK}
+  DEPENDS ${_GE_EQUAL_ANGLE_GLSL} ${_GE_EXTRACT_SHADER_BLOCK}
+  COMMENT "Extracting the equal-angle map from cbt_deep_decode.glsl"
+  VERBATIM)
+list(APPEND _GE_PAGE_RESOLVE_HEADERS ${_GE_EQUAL_ANGLE_HEADER})
+# The planet fragment's page point and height gradient.
+set(_GE_PLANET_PAGE_GLSL ${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT/cbt_planet_page.glsl)
+set(_GE_PLANET_PAGE_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/PlanetPageExtracted.h)
+add_custom_command(
+  OUTPUT ${_GE_PLANET_PAGE_HEADER}
+  COMMAND ${CMAKE_COMMAND} -DSRC=${_GE_PLANET_PAGE_GLSL}
+                           -DOUT=${_GE_PLANET_PAGE_HEADER}
+                           "-DBEGIN_MARKER=// GE_SHARED_PLANET_PAGE_BEGIN"
+                           "-DEND_MARKER=// GE_SHARED_PLANET_PAGE_END"
+                           -P ${_GE_EXTRACT_SHADER_BLOCK}
+  DEPENDS ${_GE_PLANET_PAGE_GLSL} ${_GE_EXTRACT_SHADER_BLOCK}
+  COMMENT "Extracting the planet page block from cbt_planet_page.glsl"
+  VERBATIM)
+list(APPEND _GE_PAGE_RESOLVE_HEADERS ${_GE_PLANET_PAGE_HEADER})
+
 # The resolve's device probe: cbt_page.glsl in a compute kernel, so the device parity test runs the
 # shipped resolve with the hardware's bilinear tap.
 set(_GE_PAGE_RESOLVE_PROBE_SPV ${CMAKE_CURRENT_BINARY_DIR}/Shaders/terrain_page_resolve_probe.comp.spv)
 add_custom_command(
   OUTPUT ${_GE_PAGE_RESOLVE_PROBE_SPV}
   COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/Shaders"
-  COMMAND ${CBT_GLSLC_EXECUTABLE} --target-env=vulkan1.3
+  COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.3
           -I ${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT
           ${CMAKE_CURRENT_SOURCE_DIR}/TerrainPageResolveProbe.comp -o ${_GE_PAGE_RESOLVE_PROBE_SPV}
   DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/TerrainPageResolveProbe.comp ${_GE_PAGE_RESOLVE_GLSL}
@@ -1083,13 +1296,21 @@ add_custom_command(
 
 add_executable(TerrainAtlasTests
   TerrainAtlasTests.cpp
+  # The atlas tile resample of the color map and the grass control field, byte for byte.
+  TerrainFieldResampleTests.cpp
   # The paged height source: the level rule, the page cache, the residency, the resolve mirror and
   # the shipped GLSL resolve against it, on the host and on the device.
   TerrainPageResidencyTests.cpp
+  TerrainPlanetPageRequesterTests.cpp
+  # The collider charts of a planet: the page-to-chart map, the cap, the frame and the plane cover.
+  TerrainPlanetChartTests.cpp
   TerrainPageResolveGpuTests.cpp
+  # The GLSL equal-angle map against the page store's CPU map.
+  TerrainEqualAngleMapTests.cpp
+  # The planet fragment's height gradient against the provider's central difference.
+  TerrainPlanetPageNormalTests.cpp
   # The height source of a tiled terrain and the main-thread half of its height pages.
   TerrainHeightPagesTests.cpp
-  TerrainHeightPagePublicationTests.cpp
   TerrainCpuHeightPagesTests.cpp
   ${_GE_PAGE_RESOLVE_HEADERS}
   ${_GE_PAGE_RESOLVE_PROBE_SPV}
@@ -1107,8 +1328,8 @@ target_include_directories(TerrainAtlasTests PRIVATE
   ${CMAKE_SOURCE_DIR}/Engine/Include
   ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainECS/Include
   ${CMAKE_SOURCE_DIR}/Engine/Modules/PageStreaming/Include
-  # Grass atlas params builder oracle (TerrainGrassRenderFeature::BuildAtlasParams) + its deps.
-  ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainGrass/Include
+  # Shared height/surface page parameters used by grass placement.
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainGrass/Source
   ${CMAKE_SOURCE_DIR}/Engine/Modules/Terrain/Include
   ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Include
   ${CMAKE_SOURCE_DIR}/Engine/Modules/Types/Include
@@ -1125,6 +1346,23 @@ add_test(NAME TerrainAtlasTests COMMAND $<TARGET_FILE:TerrainAtlasTests>)
 set_tests_properties(TerrainAtlasTests PROPERTIES
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )
+
+# Page-cache publication owns its submission, cancellation and GPU readback checks.
+add_executable(TerrainPagePublicationTests
+  TerrainHeightPagePublicationTests.cpp
+  ${_GE_PAGE_RESOLVE_PROBE_SPV}
+)
+target_compile_definitions(TerrainPagePublicationTests PRIVATE
+  TERRAIN_PAGE_PROBE_SPV="${_GE_PAGE_RESOLVE_PROBE_SPV}")
+if(MSVC)
+  target_compile_options(TerrainPagePublicationTests PRIVATE /wd6326)
+endif()
+target_link_libraries(TerrainPagePublicationTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+target_include_directories(TerrainPagePublicationTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+ge_set_output_tests(TerrainPagePublicationTests)
+ge_stage_runtime_dependencies(TerrainPagePublicationTests)
+add_test(NAME TerrainPagePublicationTests COMMAND $<TARGET_FILE:TerrainPagePublicationTests>)
+set_tests_properties(TerrainPagePublicationTests PROPERTIES WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 # PageStoreTests: the terrain page store (Engine/Modules/PageStreaming) as pure oracles: the
 # .gepage round trip, the apron's bit-equality under the store-wide height quantum, the sparse
@@ -1183,11 +1421,14 @@ set_tests_properties(WorldHookOwnershipTests PROPERTIES
 # reopening a scene does not ratchet.
 add_executable(TerrainWorldHookTests
   TerrainWorldHookTests.cpp
+  TerrainHeightFunctionRegistryTests.cpp
 )
 target_link_libraries(TerrainWorldHookTests PRIVATE Engine GTest::gtest GTest::gtest_main)
 target_include_directories(TerrainWorldHookTests PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_SOURCE_DIR}/Engine/Include
+  # The height function registry and instances, private to TerrainECS.
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainECS/Source
 )
 ge_set_output_tests(TerrainWorldHookTests)
 ge_stage_runtime_dependencies(TerrainWorldHookTests)
@@ -1320,6 +1561,14 @@ target_include_directories(HotReloadDemo PRIVATE
 ge_set_output_tests(HotReloadDemo)
 ge_stage_runtime_dependencies(HotReloadDemo)
 
+if(ENABLE_SCRIPTING)
+  # One managed configuration for every managed test build, staging copy and run.
+  # DebugFast maps to Debug because the suites call Debug-only managed test hooks.
+  set(GE_MANAGED_TEST_CFG "$<IF:$<OR:$<CONFIG:Debug>,$<CONFIG:DebugFast>>,Debug,Release>")
+  add_subdirectory(NativeShim)
+  add_subdirectory(ManagedInterop)
+endif()
+
 # Add async hot-reload job system tests
 add_subdirectory(Jobs)
 
@@ -1355,6 +1604,9 @@ add_subdirectory(Editor)
 # Standalone Player startup resolution (HDR output options).
 add_subdirectory(Player)
 
+# The web library's page reflection, compiled for the desktop.
+add_subdirectory(WebLibrary)
+
 # EditorSDK ABI tests (registries + Editor-kind module build/load); no-op
 # when the Editor (and its EditorSDK target) is not built.
 add_subdirectory(EditorSDK)
@@ -1375,3 +1627,24 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/Tools/Benchmarks/Particles
 # Texture cook encode timing tool, built only on request (--target TextureCookBenchmark).
 add_subdirectory(${CMAKE_SOURCE_DIR}/Tools/Benchmarks/TextureCook
                  ${CMAKE_BINARY_DIR}/Tools/Benchmarks/TextureCook)
+
+# The engine version is read from the root VERSION file; the configured string and the
+# generated header must be what the file holds, and a malformed file is refused.
+add_test(NAME EngineVersion.ConfiguredFromTheVersionFile
+  COMMAND ${CMAKE_COMMAND}
+          -DSCRIPT=${CMAKE_SOURCE_DIR}/cmake/EngineVersion.cmake
+          -DVERSION_FILE=${CMAKE_SOURCE_DIR}/VERSION
+          -DCONFIGURED=${GE_ENGINE_VERSION}
+          -DCONFIGURED_NUMERIC=${GE_ENGINE_VERSION_NUMERIC}
+          -DHEADER=${CMAKE_BINARY_DIR}/generated/Core/EngineVersion.h
+          -DWORK=${CMAKE_BINARY_DIR}/Tests/EngineVersionScratch
+          -P ${CMAKE_SOURCE_DIR}/cmake/Tests/EngineVersionTest.cmake)
+
+
+# Standalone maintained-tool regressions use temporary projects and never edit a workspace.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(NAME PrefabMigrationTests
+  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/PrefabMigrationTests.py)
+add_test(NAME CleanupGateTests
+  COMMAND ${Python3_EXECUTABLE} -I -m unittest discover
+          -s ${CMAKE_SOURCE_DIR}/Tools/CleanupGate -p "test_*.py")

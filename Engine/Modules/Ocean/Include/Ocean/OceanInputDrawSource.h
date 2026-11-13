@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Mathematics/Vector4.h"
 #include "Types/Types.h"
 
 #include <span>
@@ -66,7 +67,7 @@ struct OceanInputDrawPacket
     float32 ExtentX = 0.0f;
     float32 ExtentZ = 0.0f;
     float32 Feather = 0.0f;
-    float32 Value[4] = {};
+    Mathematics::Vector4 Value;
 };
 
 class IOceanInputDrawSource

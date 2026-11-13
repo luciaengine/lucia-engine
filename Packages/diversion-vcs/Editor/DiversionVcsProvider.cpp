@@ -387,7 +387,7 @@ void BuildDiversionSettingsContent(ScrollView& contentBody)
         
         auto labelContainer = std::make_unique<UIElement>();
         {
-            labelContainer->Overrides()
+            labelContainer->Style()
                 .Set(Style::Display, DisplayMode::Flex)
                 .Set(Style::AlignItems, AlignItems::Center)
                 .Set(Style::Gap, StyleLength::Px(8.0f));

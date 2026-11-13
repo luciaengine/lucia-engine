@@ -1,4 +1,5 @@
 #include "UI/Layout/YogaLayout.h"
+#include "Mathematics/Vector2.h"
 #include <algorithm>
 #include <cassert>
 
@@ -8,7 +9,7 @@
 
 namespace GameEngine { namespace UILayout {
 
-// Cascade seam guard state. thread_local so the state is per-thread; the assert
+// MT-4.0 seam guard state. thread_local so the state is per-thread; the assert
 // is only present in true Debug builds (see header note).
 #ifdef _DEBUG
 namespace { thread_local bool g_CascadeComputeActive = false; }
@@ -112,12 +113,36 @@ void YogaAdapter::DestroyNode(YGNodeRef node) {
 #endif
 }
 
-void YogaAdapter::ApplyStyle(YGNodeRef node, const ResolvedStyle& style) {
+// A viewport unit as logical px: one percent of the root's layout size on the
+// unit's axis. Every other unit passes through for Yoga to resolve.
+static StyleLength ResolveViewportUnit(const StyleLength& len, const Mathematics::Vector2& viewport)
+{
+    constexpr float kPercent = 0.01f;
+    switch (len.Unit)
+    {
+        case StyleLength::UnitType::Vw:   return StyleLength::Px(len.Value * kPercent * viewport.x);
+        case StyleLength::UnitType::Vh:   return StyleLength::Px(len.Value * kPercent * viewport.y);
+        case StyleLength::UnitType::Vmin: return StyleLength::Px(len.Value * kPercent * std::min(viewport.x, viewport.y));
+        case StyleLength::UnitType::Vmax: return StyleLength::Px(len.Value * kPercent * std::max(viewport.x, viewport.y));
+        default:                          return len;
+    }
+}
+
+bool YogaAdapter::ApplyStyle(YGNodeRef node, const ResolvedStyle& style, const Mathematics::Vector2& viewport) {
     AssertNotCascadeCompute();
 #if defined(GE_HAVE_YOGA) && GE_HAVE_YOGA
-    if (!node) return;
+    if (!node) return false;
 
-    const auto& lay = style.Layout;
+    // The style with every viewport unit resolved to px; Yoga has no viewport unit.
+    LayoutInputs lay = style.Layout;
+    bool resolvedViewportUnit = false;
+    for (StyleLength* len : {&lay.PositionLeft, &lay.PositionTop, &lay.PositionRight, &lay.PositionBottom,
+                             &lay.FlexBasis, &lay.Width, &lay.Height, &lay.MinWidth, &lay.MinHeight,
+                             &lay.MaxWidth, &lay.MaxHeight})
+    {
+        resolvedViewportUnit = resolvedViewportUnit || len->IsViewport();
+        *len = ResolveViewportUnit(*len, viewport);
+    }
 
     YGNodeStyleSetDisplay(node, lay.DisplayMode == DisplayMode::None ? YGDisplayNone : YGDisplayFlex);
 
@@ -299,8 +324,10 @@ void YogaAdapter::ApplyStyle(YGNodeRef node, const ResolvedStyle& style) {
         YGNodeStyleSetAspectRatio(node, lay.AspectRatio);
     else
         YGNodeStyleSetAspectRatio(node, YGUndefined);
+    return resolvedViewportUnit;
 #else
-    (void)node; (void)style;
+    (void)node; (void)style; (void)viewport;
+    return false;
 #endif
 }
 

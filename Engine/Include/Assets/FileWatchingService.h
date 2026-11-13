@@ -236,9 +236,9 @@ private:
      * Each watcher in @p leaving is told to stop and parked in
      * m_RetiredWatchers, never joined here: its thread may be running any
      * subscription's callback, or be the calling thread. On return, @p leaving
-     * holds the parked watchers whose threads have returned; the caller
-     * calls StopWatching on them after releasing m_Mutex, which does not wait.
-     * StopWatching joins the rest.
+     * holds the parked watchers whose threads have returned, or none while
+     * StopWatching joins; the caller calls StopWatching on them after releasing
+     * m_Mutex, which does not wait. StopWatching joins the rest.
      */
     void CollectWatchersToStop(std::vector<std::unique_ptr<DirectoryWatcher>>& leaving);
 
@@ -253,6 +253,9 @@ private:
     // Removed from the service and asked to stop, not yet joined. Guarded by
     // m_Mutex; see CollectWatchersToStop.
     std::vector<std::unique_ptr<DirectoryWatcher>> m_RetiredWatchers;
+    // True while StopWatching joins outside m_Mutex. Guarded by m_Mutex. While it is
+    // true, CollectWatchersToStop gives out no watcher; StopWatching joins them after.
+    bool m_StopJoining = false;
 
     SubscriptionId m_NextSubscriptionId = 1;
     bool m_Watching = false;

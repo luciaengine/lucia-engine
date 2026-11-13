@@ -1,18 +1,22 @@
 #include "Engine/Rendering/Pipeline/Nodes/LensFlareRenderNode.h"
 
-#include "Engine/Rendering/ViewExposureScale.h"
+#include "Engine/Rendering/ExposureReadbackFeature.h"
 #include "Engine/Rendering/LensFlareRenderFeature.h"
 #include "Mathematics/Curve.h" // ::GameEngine::Math::EvaluateCurveKeys
 #include "Engine/Rendering/Pipeline/PipelineResourceNames.h"
+#include "Engine/Rendering/Pipeline/ViewExposureHistory.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/SunScreenProjection.h"
-#include "Rendering/CameraTypes.h"
+#include "Mathematics/Interpolation.h"
+#include "Mathematics/Vector3.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
 #include <algorithm>
 #include <cmath>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -39,7 +43,7 @@ constexpr float kNdcPerScaleUnit = 0.01f;
 // stand-in until keyframed curves are imported.
 float EvalDefaultEdgeCurve(float t)
 {
-    t = std::clamp(t, 0.0f, 1.0f);
+    t = Math::Clamp01(t);
     return t <= 0.5f ? t * 2.0f : 2.0f - t * 2.0f;
 }
 
@@ -66,6 +70,8 @@ float EdgeAmountForAxis(float v, float range, float bias)
 // regardless of scene luminance — the same pre-exposure compensation HDRP's
 // SRP lens flares use. Clamp keeps a degenerate metered scale from producing
 // inf/NaN instance colors.
+constexpr float kMinExposureScale = 1.0e-4f;
+constexpr float kMaxExposureScale = 1.0e4f;
 
 // One draw's worth of instances sharing an atlas texture.
 struct AtlasBatch
@@ -102,15 +108,15 @@ void BuildViewInstances(const std::vector<ResolvedFlare>& flares,
         }
         std::vector<FlareInstanceGPU>& out = batch->Instances;
 
-        float ndcX = 0.0f, ndcY = 0.0f, ndcDepth = 0.0f;
-        const bool projected = rf.SunMode
-                                   ? ProjectSunDirectionToNdc(
-                                         cam, rf.Forward, ndcX, ndcY, ndcDepth)
-                                   : ProjectToNdc(
-                                         cam.viewProj, rf.WorldPos[0], rf.WorldPos[1],
-                                         rf.WorldPos[2], ndcX, ndcY, ndcDepth);
-        if (!projected)
+        const std::optional<Mathematics::Vector3> ndc =
+            rf.SunMode
+                ? ProjectSunDirectionToNdc(cam, Mathematics::Vector3(rf.Forward[0], rf.Forward[1], rf.Forward[2]))
+                : ProjectToNdc(cam, Mathematics::Vector3(rf.WorldPos[0], rf.WorldPos[1], rf.WorldPos[2]));
+        if (!ndc)
             continue;
+        const float ndcX = ndc->x;
+        const float ndcY = ndc->y;
+        const float ndcDepth = ndc->z;
 
         // Optical axis: source -> screen-center (NDC origin).
         const float axisX = -ndcX;
@@ -125,12 +131,12 @@ void BuildViewInstances(const std::vector<ResolvedFlare>& flares,
         // Camera->source vector; the distance fade uses VIEW DEPTH (projection
         // onto the camera forward), not euclidean distance, per the source's
         // dot(heading, cam.forward). Forward = view matrix Z row (LH).
-        const float dx = rf.SunMode ? rf.Forward[0] : rf.WorldPos[0] - cam.cameraPos[0];
-        const float dy = rf.SunMode ? rf.Forward[1] : rf.WorldPos[1] - cam.cameraPos[1];
-        const float dz = rf.SunMode ? rf.Forward[2] : rf.WorldPos[2] - cam.cameraPos[2];
-        const float camFwdX = cam.view[2];
-        const float camFwdY = cam.view[6];
-        const float camFwdZ = cam.view[10];
+        const float dx = rf.SunMode ? rf.Forward[0] : rf.WorldPos[0] - cam.cameraPos.x;
+        const float dy = rf.SunMode ? rf.Forward[1] : rf.WorldPos[1] - cam.cameraPos.y;
+        const float dz = rf.SunMode ? rf.Forward[2] : rf.WorldPos[2] - cam.cameraPos.z;
+        const float camFwdX = cam.view[0][2];
+        const float camFwdY = cam.view[1][2];
+        const float camFwdZ = cam.view[2][2];
 
         const float maxDistance =
             rf.MaxDistanceOverride > 0.0f ? rf.MaxDistanceOverride : g.MaxDistance;
@@ -141,7 +147,7 @@ void BuildViewInstances(const std::vector<ResolvedFlare>& flares,
             distanceFalloff = 1.0f - viewDepth / maxDistance;
             if (distanceFalloff < 0.001f && !g.NeverCull)
                 continue;
-            distanceFalloff = std::clamp(distanceFalloff, 0.0f, 1.0f);
+            distanceFalloff = Math::Clamp01(distanceFalloff);
         }
 
         // Angle falloff: angle between the flare's own forward and the vector
@@ -159,7 +165,7 @@ void BuildViewInstances(const std::vector<ResolvedFlare>& flares,
                 const float angleDeg = std::acos(cosA) / kDegToRad;
                 angleFalloff = angleDeg > g.MaxAngle
                                    ? 0.0f
-                                   : std::clamp(1.0f - angleDeg / (g.MaxAngle * 0.5f), 0.0f, 1.0f);
+                                   : Math::Clamp01(1.0f - angleDeg / (g.MaxAngle * 0.5f));
                 if (g.UseAngleCurve && !rf.AngleCurve.empty())
                     angleFalloff = std::max(
                         0.0f, ::GameEngine::Math::EvaluateCurveKeys(rf.AngleCurve.data(),
@@ -196,7 +202,7 @@ void BuildViewInstances(const std::vector<ResolvedFlare>& flares,
         float offScreenFade = 1.0f;
         if (rEdge > 1.0f && !g.NeverCull)
             offScreenFade =
-                std::clamp(1.0f - (rEdge - 1.0f) / std::max(g.OffScreenFadeDist, 1e-3f), 0.0f, 1.0f);
+                Math::Clamp01(1.0f - (rEdge - 1.0f) / std::max(g.OffScreenFadeDist, 1e-3f));
 
         // Dynamic boosts are per ELEMENT (an element may override the flare's
         // coefficient): add the boost to the element's alpha term, then apply
@@ -242,8 +248,8 @@ void BuildViewInstances(const std::vector<ResolvedFlare>& flares,
             // not a size stretch.
             float posX = ndcX + axisX * e.Position;
             float posY = ndcY + axisY * e.Position;
-            posX += (ndcX - posX) * std::clamp(e.AnamorphicX, 0.0f, 1.0f) + e.OffsetX;
-            posY += (ndcY - posY) * std::clamp(e.AnamorphicY, 0.0f, 1.0f) + e.OffsetY;
+            posX += (ndcX - posX) * Math::Clamp01(e.AnamorphicX) + e.OffsetX;
+            posY += (ndcY - posY) * Math::Clamp01(e.AnamorphicY) + e.OffsetY;
             // Per-element size boost (element override or the flare's global).
             float elemScaleBoost = 0.0f;
             if (g.UseDynamicEdgeScale)
@@ -396,7 +402,17 @@ void LensFlareRenderNode::DeclareForView(ViewDeclare& d)
     // readback (enabled on demand — a view showing flares keeps the 16-byte/
     // frame readback on); until the first readback lands, the settings' base
     // exposure keeps the flare merely dim for a frame or two rather than wrong.
-    const float32 exposureScale = ResolveViewExposureScale(rs, d.View);
+    const PostProcessSettings& pp = rs.GetEffectivePostProcessSettings(d.View.id, d.View.worldId);
+    float exposureScale = pp.Exposure;
+    if (pp.IsAutoExposureActive())
+    {
+        auto& readback = rs.EnsureFeature<ExposureReadbackFeature>();
+        readback.SetReadbackEnabled(d.View.id, true);
+        float adapted = 0.0f;
+        if (readback.TryResolveAdaptedExposure(d.View.id, adapted))
+            exposureScale = adapted;
+    }
+    exposureScale = std::clamp(exposureScale, kMinExposureScale, kMaxExposureScale);
     const float invExposure = 1.0f / exposureScale;
 
     const float viewportAspect =
@@ -455,6 +471,11 @@ void LensFlareRenderNode::DeclareForView(ViewDeclare& d)
     const uint32_t atlasBinding = feature.GetAtlasBinding();
     const uint32_t instanceBinding = feature.GetInstanceBinding();
     const uint32_t depthBinding = feature.GetDepthBinding();
+    const uint32_t exposureBinding = feature.GetExposureBinding();
+    // The flare light lands in scene colour at the frame's pre-exposure P.
+    const PipelineBufferBindingRG exposure = ResolveViewExposureHistory(d);
+    if (!exposure.IsValid())
+        return;
     const uint32_t renderW = d.RenderWidth;
     const uint32_t renderH = d.RenderHeight;
 
@@ -464,16 +485,16 @@ void LensFlareRenderNode::DeclareForView(ViewDeclare& d)
         passName.c_str(), Rendering::PassPhase::kPostProcess,
         [&](RenderGraph::RGPassBuilder& p)
         {
-            p.UsePipeline(pipe);
             RenderGraph::RGAttachmentOps ops{};
             ops.Load = RenderGraph::RGLoadOp::Load; // preserve the scene
             ops.Store = RenderGraph::RGStoreOp::Store;
             p.AttachColor(0, target, ops);
             if (depth.IsValid())
                 p.Read(depth, RenderGraph::RGTextureRead::Sampled);
+            p.Read(exposure.Graph, RenderGraph::RGBufferRead::Storage);
         },
         [pipe, layout, sampler, draws, depth, instanceBuf, renderW, renderH, atlasBinding,
-         instanceBinding, depthBinding](RenderGraph::RGContext& ctx)
+         instanceBinding, depthBinding, exposureBinding, exposure](RenderGraph::RGContext& ctx)
         {
             auto* dev = ctx.GetDevice();
             auto* cl = ctx.Cmd;
@@ -509,6 +530,8 @@ void LensFlareRenderNode::DeclareForView(ViewDeclare& d)
                     static_cast<size_t>(drawBatch.Count) * sizeof(FlareInstanceGPU));
                 dev->UpdateCombinedImageSamplerBinding(
                     ds, depthBinding, depthPhys.IsValid() ? depthPhys : drawBatch.Atlas, sampler);
+                dev->UpdateStorageBufferBinding(ds, exposureBinding, exposure.Buffer, exposure.Offset,
+                                                exposure.Size);
 
                 cl->BindDescriptorSet(0, ds, pso);
                 const int32_t atlasHasAuthoredAlpha = drawBatch.HasAuthoredAlpha ? 1 : 0;

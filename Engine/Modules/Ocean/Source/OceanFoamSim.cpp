@@ -1,15 +1,15 @@
 #include "Ocean/OceanFoamSim.h"
 #include "Ocean/OceanInputDrawSource.h"
-#include "Ocean/OceanShaderProgram.h"
-#include "Rendering/Materials/ShaderLayoutShape.h"
-#include "OceanShaderDirectory.h"
+#include "Ocean/OceanShader/OceanShaderProgram.h"
+#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
+#include "OceanShader/OceanShaderDirectory.h"
 
 #include "Logger/Logger.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
 
 #include <algorithm>
 #include <cmath>
@@ -139,23 +139,14 @@ const OceanCascadeLayoutGPU& OceanFoamSim::GetFoamLayout() const
     return m_Foam[m_WriteIndex].GetLayout();
 }
 
-TextureHandle OceanFoamSim::GetFoamTexture(const RenderGraph::RGFrame& frame) const
-{
-    return m_PlannedFrame.IsFor(frame) && !m_Plan->Steps.empty()
-        ? m_Foam[m_Plan->Steps.back().WriteIndex].GetTexture() : GetFoamTexture();
-}
-
-const OceanCascadeLayoutGPU& OceanFoamSim::GetFoamLayout(const RenderGraph::RGFrame& frame) const
-{
-    return m_PlannedFrame.IsFor(frame) && !m_Plan->Steps.empty()
-        ? m_Plan->Steps.back().Cascade : GetFoamLayout();
-}
-
 RenderGraph::RGTexture OceanFoamSim::ImportWriteRG(RenderGraph::RGFrame& frame) const
 {
-    const uint32 index = m_PlannedFrame.IsFor(frame) && !m_Plan->Steps.empty()
-        ? m_Plan->Steps.back().WriteIndex : m_WriteIndex;
-    return m_Foam[index].ImportRG(frame);
+    return m_Foam[m_WriteIndex].ImportRG(frame);
+}
+
+RenderGraph::RGTexture OceanFoamSim::ImportPrevRG(RenderGraph::RGFrame& frame) const
+{
+    return m_Foam[m_WriteIndex ^ 1u].ImportRG(frame);
 }
 
 RenderGraph::RGTexture OceanFoamSim::ImportWriteRG(RenderGraph::RGFrame& frame,
@@ -170,16 +161,18 @@ RenderGraph::RGTexture OceanFoamSim::ImportPrevRG(RenderGraph::RGFrame& frame,
     return m_Foam[(writeIndex & 1u) ^ 1u].ImportRG(frame);
 }
 
-const OceanCascadeFramePlan& OceanFoamSim::PlanSubsteps(
-    RenderGraph::RGFrame& frame, float cameraX, float cameraZ)
+void OceanFoamSim::BeginFrame(float cameraX, float cameraZ)
 {
-    if (!m_PlannedFrame.IsFor(frame))
-    {
-        m_Plan = PlanOceanCascadeSteps(frame, m_Foam, m_WriteIndex, m_PendingSubsteps, cameraX, cameraZ);
-        m_PlannedFrame.Stamp(frame);
-        m_NextSubstep = 0;
-    }
-    return *m_Plan;
+    // Flip first so the write target is fixed for the whole frame (binding +
+    // dispatch agree); the previous write becomes this frame's advection read.
+    m_WriteIndex ^= 1u;
+    m_Foam[m_WriteIndex].SnapToCamera(cameraX, cameraZ);
+}
+
+uint32 OceanFoamSim::BeginSubstep(float cameraX, float cameraZ)
+{
+    BeginFrame(cameraX, cameraZ);
+    return m_WriteIndex;
 }
 
 void OceanFoamSim::ConfigureSimulation(float32 frequency, uint32 maximumSubsteps)
@@ -211,8 +204,7 @@ void OceanFoamSim::SetFrameInputs(TextureHandle fftDisplacement, SamplerHandle f
     m_Params.FadeRate = fadeRate;
     m_Params.Coverage = coverage;
     m_Params.Strength = strength;
-    const uint32 pendingSubsteps = m_PendingSubsteps;
-    const float32 pendingDelta = m_SubstepDelta;
+    m_SkippedTime += static_cast<float32>(m_PendingSubsteps) * m_SubstepDelta;
     if (m_UseFixedStep)
     {
         m_TimeAccumulator += std::max(deltaTime, 0.0f);
@@ -231,14 +223,6 @@ void OceanFoamSim::SetFrameInputs(TextureHandle fftDisplacement, SamplerHandle f
         m_PendingSubsteps = deltaTime > 0.0f ? 1u : 0u;
         m_SubstepDelta = std::max(deltaTime, 0.0f);
     }
-    if (m_PendingSubsteps == 0u && pendingSubsteps > 0u)
-    {
-        // A paused or fractional update must not discard steps that never ran.
-        m_PendingSubsteps = pendingSubsteps;
-        m_SubstepDelta = pendingDelta;
-    }
-    else
-        m_SkippedTime += static_cast<float32>(pendingSubsteps) * pendingDelta;
     m_Params.DeltaTime = m_SubstepDelta;
     m_Params.ShapeWeight = shapeWeight;
     m_Params.ShapeMaxHorizontalDisplacement = shapeMaxHorizontalDisplacement;
@@ -290,7 +274,19 @@ void OceanFoamSim::SetFlowInputs(TextureHandle flow, SamplerHandle flowSampler, 
     m_Params.FlowAvailable = available ? 1u : 0u;
 }
 
-void OceanFoamSim::FillParams(OceanFoamParamsGPU& out, const OceanCascadeStep& step,
+void OceanFoamSim::FillParams(OceanFoamParamsGPU& out)
+{
+    m_Params.Resolution = m_Resolution;
+    m_Params.LodCount = m_LodCount;
+    // The write target's layout drives the dispatch. The previous target keeps the
+    // layout it was written with, so the shader can reproject history by world XZ
+    // instead of by same-UV.
+    m_Params.Cascade = m_Foam[m_WriteIndex].GetLayout();
+    m_Params.PrevCascade = m_Foam[m_WriteIndex ^ 1u].GetLayout();
+    out = m_Params;
+}
+
+void OceanFoamSim::FillParams(OceanFoamParamsGPU& out, uint32 writeIndex,
                               uint32 substepIndex) const
 {
     out = m_Params;
@@ -310,49 +306,52 @@ void OceanFoamSim::FillParams(OceanFoamParamsGPU& out, const OceanCascadeStep& s
             DecayedDepositScale(m_Params.FadeRate * m_Params.ShorelineFadeRateScale, out.DeltaTime);
         for (uint32 i = 0u; i < out.AuthoredFoamSourceCount; ++i)
         {
-            float32* amountFeatherBlend = out.AuthoredFoamSources[i].AmountFeatherBlend;
+            Mathematics::Vector4& amountFeatherBlend = out.AuthoredFoamSources[i].AmountFeatherBlend;
             if (std::lround(amountFeatherBlend[2]) == static_cast<long>(OceanInputBlendMode::Additive))
                 amountFeatherBlend[0] *= waveScale;
         }
     }
-    out.Cascade = step.Cascade;
-    out.PrevCascade = step.PrevCascade;
+    out.Cascade = m_Foam[writeIndex & 1u].GetLayout();
+    out.PrevCascade = m_Foam[(writeIndex & 1u) ^ 1u].GetLayout();
 }
 
-OceanPreparedSimulationDispatch OceanFoamSim::PrepareDispatch(
-    IDevice* device, BufferHandle paramsBuffer, uint64 paramsOffset,
-    const OceanCascadeFramePlan& plan, uint32 substepIndex) const
+void OceanFoamSim::RecordDispatch(IDevice* device, CommandList* cl,
+                                  BufferHandle paramsBuffer, uint64 paramsOffset)
 {
-    // Every step prepares before the first step records. Only consumed steps are refused here.
-    if (m_Plan != &plan || substepIndex >= plan.Steps.size() || substepIndex < m_NextSubstep)
-        return {};
-    const auto& step = plan.Steps[substepIndex];
-    if (step.WriteIndex >= 2u ||
-        m_Foam[0].GetTexture() != plan.Textures[0] ||
-        m_Foam[1].GetTexture() != plan.Textures[1])
-        return {};
-    if (!m_Ready || !device || !paramsBuffer.IsValid())
-        return {};
-    if (!m_FFTDisplacement.IsValid() || !m_FFTSampler.IsValid())
-        return {};
+    RecordDispatch(device, cl, paramsBuffer, paramsOffset, m_WriteIndex);
+}
 
-    const uint32 writeIndex = step.WriteIndex;
+void OceanFoamSim::RecordDispatch(IDevice* device, CommandList* cl,
+                                  BufferHandle paramsBuffer, uint64 paramsOffset,
+                                  uint32 writeIndex)
+{
+    if (!m_Ready || !cl || !device || !paramsBuffer.IsValid())
+        return;
+    if (!m_FFTDisplacement.IsValid() || !m_FFTSampler.IsValid())
+        return;
+
+    writeIndex &= 1u;
     const uint32 readIndex = writeIndex ^ 1u;
     const TextureHandle prevFoam = m_Foam[readIndex].GetTexture();
     const TextureHandle nextFoam = m_Foam[writeIndex].GetTexture();
     const uint32 layers = m_LodCount;
 
-    PipelineHandle pipe = device->TryGetWarmComputePipeline(m_Pipe);
+    PipelineHandle pipe = device->GetOrCreateComputePipeline(m_Pipe);
     if (!pipe)
-        return {};
+        return;
+
+    // Sync is graph-derived: the pass declares Read(prev/displacement/seabed/
+    // flow) + Write(next), the first declared reader restores ShaderReadOnly,
+    // and MarkOutput covers reader-less frames. On the very first dispatch both
+    // arrays were created in ShaderResource (initialState) and the read target
+    // samples zeroed (no-foam) contents — no clear needed.
+    cl->SetPipeline(pipe);
 
     DescriptorSetDesc dsDesc{};
     dsDesc.layout = m_Layout;
     dsDesc.transient = true;
     dsDesc.debugName = "OceanFoam_DS";
     DescriptorSetHandle ds = device->CreateDescriptorSet(dsDesc);
-    if (!ds.IsValid())
-        return {};
 
     device->UpdateBufferBinding(ds, 0, paramsBuffer, paramsOffset, sizeof(OceanFoamParamsGPU));
     device->UpdateCombinedImageSamplerBinding(ds, 1, prevFoam, m_Sampler);
@@ -379,33 +378,10 @@ OceanPreparedSimulationDispatch OceanFoamSim::PrepareDispatch(
         ? m_CombinedSampler : m_FFTSampler;
     device->UpdateCombinedImageSamplerBinding(ds, 6, combinedTex, combinedSamp);
 
+    cl->BindDescriptorSet(0, ds, pipe);
+
     const uint32 g8 = (m_Resolution + 7u) / 8u;
-    return {{pipe, ds, g8, g8, layers, nextFoam},
-            step, m_PlannedFrame, &plan, substepIndex};
-}
-
-bool OceanFoamSim::IsCurrentPlan(const OceanPreparedSimulationDispatch& dispatch) const
-{
-    return m_Plan && dispatch.Plan == m_Plan &&
-        dispatch.Owner.Frame == m_PlannedFrame.Frame &&
-        dispatch.Owner.FrameIndex == m_PlannedFrame.FrameIndex &&
-        dispatch.SubstepIndex < m_Plan->Steps.size() &&
-        dispatch.SubstepIndex == m_NextSubstep &&
-        dispatch.Step.WriteIndex < 2u &&
-        dispatch.Step.WriteIndex == m_Plan->Steps[dispatch.SubstepIndex].WriteIndex &&
-        m_Plan->Textures[dispatch.Step.WriteIndex] == dispatch.Commands.Target &&
-        m_Foam[dispatch.Step.WriteIndex].GetTexture() == dispatch.Commands.Target;
-}
-
-void OceanFoamSim::RecordDispatch(CommandList* commands, const OceanPreparedSimulationDispatch& dispatch)
-{
-    if (!IsCurrentPlan(dispatch) || !RecordOceanPreparedDispatch(commands, dispatch.Commands))
-        return;
-    m_WriteIndex = dispatch.Step.WriteIndex;
-    m_Foam[m_WriteIndex].CommitLayout(dispatch.Step.Cascade);
-    ++m_NextSubstep;
-    if (m_NextSubstep == m_Plan->Steps.size())
-        FinishSubsteps();
+    cl->Dispatch(g8, g8, layers);
 }
 
 } // namespace GameEngine::Ocean

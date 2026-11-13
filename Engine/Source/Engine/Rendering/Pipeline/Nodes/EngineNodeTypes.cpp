@@ -16,9 +16,9 @@
 #include "Engine/Rendering/Pipeline/Nodes/LensFlareRenderNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/LightUploadNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/OcclusionCullP2Node.h"
-#include "Engine/Rendering/Pipeline/Nodes/PlanarReflectionNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/RenderScaleUpscaleNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/PixelPerfectUpscaleNode.h"
+#include "Engine/Rendering/Pipeline/Nodes/PlanarReflectionNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/ScatterBNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/ScreenSpaceReflectionsNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/ShadowMapNode.h"
@@ -67,8 +67,7 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<WorldRenderNode>(); },
         /*perView*/ true,
-        RenderPipelineNodeResourceFields{
-            .StaticPublishNames = {Names::View::EffectiveColor},
+        RenderPipelineNodeResourceFields{.StaticPublishNames = {Names::View::EffectiveColor},
             .ReadsViewResources = {RenderPipelineViewResource::ViewParameters,
                                    RenderPipelineViewResource::PrepassDepth,
                                    RenderPipelineViewResource::Shadows}});
@@ -77,16 +76,15 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         "TransmissiveRender",
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<TransmissivePassNode>(); },
-        /*perView*/ true);
+        /*perView*/ true,
+        RenderPipelineNodeResourceFields{.RefKeys = {"output", "clouds"}});
 
     (void)registry.Register(
         "DepthPrepass",
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<DepthPrepassNode>(); },
         /*perView*/ true,
-        RenderPipelineNodeResourceFields{
-            .RefKeys = {{"depth", RenderGraph::RGResourceKind::Texture}},
-            .PublishKeys = {{"depth", Names::View::Depth}},
+        RenderPipelineNodeResourceFields{.RefKeys = {{"depth", RenderGraph::RGResourceKind::Texture}}, .PublishKeys = {{"depth", Names::View::Depth}},
             .ReadsViewResources = {RenderPipelineViewResource::ViewParameters},
             .WritesViewResources = {RenderPipelineViewResource::PrepassDepth}});
 
@@ -95,9 +93,7 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<DepthResolveNode>(); },
         /*perView*/ true,
-        RenderPipelineNodeResourceFields{
-            .RefKeys = {{"output", RenderGraph::RGResourceKind::Texture}},
-            .PublishKeys = {{"output", Names::View::DepthResolved}},
+        RenderPipelineNodeResourceFields{.RefKeys = {"output"}, .PublishKeys = {{"output", Names::View::DepthResolved}},
             .ReadsViewResources = {RenderPipelineViewResource::PrepassDepth}});
 
     (void)registry.Register(
@@ -118,7 +114,10 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<ScreenSpaceReflectionsNode>(); },
         /*perView*/ true,
-        RenderPipelineNodeResourceFields{.RefKeys = {"input", "output"}, .PublishKeys = {{"output", "HDRSSSR"}}});
+        RenderPipelineNodeResourceFields{.RefKeys = {"input", "output"},
+                                         .PublishKeys = {{"output", "HDRSSSR"}},
+                                         .StaticPublishNames = {Names::View::DepthResolvedPostOcean,
+                                                                Names::View::SSRHiZ}});
 
     (void)registry.Register(
         "FidelityFXDepthOfField",
@@ -183,9 +182,7 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<ViewParamsUploadNode>(); },
         /*perView*/ true,
-        RenderPipelineNodeResourceFields{
-            .RefKeys = {{"buffer", RenderGraph::RGResourceKind::Buffer}},
-            .PublishKeys = {{"buffer", Names::Res::ViewParams}},
+        RenderPipelineNodeResourceFields{.RefKeys = {{"buffer", RenderGraph::RGResourceKind::Buffer}}, .PublishKeys = {{"buffer", Names::Res::ViewParams}},
             .WritesViewResources = {RenderPipelineViewResource::ViewParameters}});
 
     (void)registry.Register(
@@ -251,7 +248,10 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<SkyRenderNode>(); },
         /*perView*/ true,
-        RenderPipelineNodeResourceFields{.RefKeys = {"output"}, .PublishKeys = {{"output", Names::View::Color}}});
+        RenderPipelineNodeResourceFields{.RefKeys = {"output"},
+                                         .PublishKeys = {{"output", Names::View::Color}},
+                                         .StaticPublishNames = {Names::Res::SkyBackdrop,
+                                                                Names::Res::SkyStarLight}});
 
     (void)registry.Register(
         "ShadowMap",
@@ -297,13 +297,14 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         /*perView*/ true,
         RenderPipelineNodeResourceFields{.RefKeys = {"output"},
          .PublishKeys = {{"output", Names::View::Resolve}},
-         .StaticPublishNames = {Names::View::DepthResolvedPostOcean}});
+         .StaticPublishNames = {Names::View::DepthResolvedPostOcean, Names::Res::VolumetricFogParams,
+                                Names::Res::VolumetricFog}});
 
     // Two-phase HZB occlusion (R2.1) nodes, wired into the ForwardPlus
     // blueprints after WorldRender. HZBBuild builds the MIN/occlusion
-    // pyramid for a view that opted in via HzbCullingStrategy, and the
-    // MAX/nearest SSR pyramid for a view with SSSR active — each
-    // independently, neither when a view needs neither. The phase-B
+    // pyramid for a view that opted in via HzbCullingStrategy, nothing for
+    // any other view. (The MAX/nearest reflection pyramid is built by the
+    // reflections node from the final depth, with its own instance.) The phase-B
     // cull/scatter nodes stay inert without a slicePhase==1 reservation, so
     // probes and thumbnails still pay zero cost; scene panes and the Game
     // View DO opt in, so one frame commonly carries several HZB views

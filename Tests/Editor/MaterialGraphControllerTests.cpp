@@ -7,7 +7,7 @@
 #include <gtest/gtest.h>
 
 #include "Graph/GraphModel.h"
-#include "ShaderGraph/MaterialGraphController.h"
+#include "ShaderGraph/MaterialGraph/MaterialGraphController.h"
 
 #include <cstddef>
 #include <filesystem>

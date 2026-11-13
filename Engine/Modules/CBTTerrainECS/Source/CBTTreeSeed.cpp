@@ -25,6 +25,19 @@ void CBTTreeSeed::Seeded(uint32_t domain, uint32_t maxDepth)
     m_DeepestAllowedDepth = maxDepth;
     m_TerrainRetired = false;
     m_Holding = false;
+    m_HasDrawnTerrain = false;
+}
+
+bool CBTTreeSeed::NoteDrawnTerrain(uint32_t index, uint32_t generation)
+{
+    const bool switched =
+        m_HasDrawnTerrain && (index != m_DrawnTerrainIndex || generation != m_DrawnTerrainGeneration);
+    m_HasDrawnTerrain = true;
+    m_DrawnTerrainIndex = index;
+    m_DrawnTerrainGeneration = generation;
+    if (switched)
+        NoteTerrainRetired();
+    return switched;
 }
 
 CBTTreeRestart CBTTreeSeed::RestartReason(uint32_t domain, uint32_t maxDepth, uint32_t frameCounter)

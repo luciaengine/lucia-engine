@@ -2,6 +2,7 @@
 // real texture formats, representative pixel locations, radius rejection and
 // temporal disocclusion; they do not duplicate the GLSL estimator on the CPU.
 #include "Engine/Rendering/AmbientOcclusion/GtaoQuality.h"
+#include "Engine/Rendering/CameraUtils.h"
 #include "Engine/Rendering/Pipeline/Nodes/AONode.h"
 #include "Engine/Rendering/Pipeline/Nodes/ViewParamsUploadNode.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
@@ -11,13 +12,15 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/QueryPool.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Core/ViewParamsLayout.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
+#include "TestCameraEye.h"
 #include "TestDeviceHelper.h"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -108,8 +111,13 @@ class GtaoComputeTest : public ::testing::Test
         std::memcpy(Params.ge_prevViewProj, &proj[0][0], 64);
         std::memcpy(Params.ge_view, &identity[0][0], 64);
         std::memcpy(Params.ge_invView, &identity[0][0], 64);
-        Params.ge_nearFar[0] = Near;
-        Params.ge_nearFar[1] = Far;
+        const auto depthTerms = GameEngine::Engine::Renderer::ProjectionDepthTerms::Of(proj);
+        Params.ge_depthTerms[0] = depthTerms.M22;
+        Params.ge_depthTerms[1] = depthTerms.M32;
+        Params.ge_depthTerms[2] = depthTerms.M23;
+        Params.ge_depthTerms[3] = depthTerms.M33;
+        Params.ge_viewRanges[0] = Near;
+        Params.ge_viewRanges[1] = Far;
         Params.ge_screenSize[0] = float(w);
         Params.ge_screenSize[1] = float(h);
         Params.ge_screenSize[2] = 1.0f / w;
@@ -953,10 +961,10 @@ TEST_F(GtaoComputeTest, ProductionNodeExecutesBothResolutionPathsAndKeepsViewHis
     {
         const auto cameraId = services.Views().AllocateCamera("GtaoTestCamera");
         CameraData camera{};
-        std::memcpy(camera.view, Params.ge_view, 64);
-        std::memcpy(camera.proj, Params.ge_proj, 64);
-        std::memcpy(camera.viewProj, Params.ge_viewProj, 64);
-        services.Views().SetCameraData(cameraId, camera);
+        camera.view = GameEngine::Mathematics::Matrix4x4::FromColumnMajor(Params.ge_view);
+        camera.proj = GameEngine::Mathematics::Matrix4x4::FromColumnMajor(Params.ge_proj);
+        camera.viewProj = GameEngine::Mathematics::Matrix4x4::FromColumnMajor(Params.ge_viewProj);
+        services.Views().SetCameraData(cameraId, ::GameEngine::Tests::TestCameraWithEye(camera), {Near, Far});
         const auto viewA = services.Views().AllocateView("GtaoTestA", cameraId);
         const auto viewB = services.Views().AllocateView("GtaoTestB", cameraId);
         PostProcessSettings settings{};
@@ -1086,13 +1094,13 @@ TEST_F(GtaoComputeTest, ProductionNodeAppliesHistoryAndDropsItOnTheFirstFrameAft
             glm::mat4 proj(1.0f);
             std::memcpy(&proj[0][0], Params.ge_proj, 64);
             const glm::mat4 viewProj = proj * view;
-            std::memcpy(camera.view, &view[0][0], 64);
-            std::memcpy(camera.proj, Params.ge_proj, 64);
-            std::memcpy(camera.viewProj, &viewProj[0][0], 64);
-            std::memcpy(camera.viewRel, &view[0][0], 64);
-            std::memcpy(camera.viewProjRel, &viewProj[0][0], 64);
-            camera.cameraPos[0] = x;
-            services.Views().SetCameraData(cameraId, camera);
+            camera.view = view;
+            camera.proj = proj;
+            camera.viewProj = viewProj;
+            camera.viewRel = view;
+            camera.viewProjRel = viewProj;
+            camera.cameraPos.x = x;
+            services.Views().SetCameraData(cameraId, ::GameEngine::Tests::TestCameraWithEye(camera), {Near, Far});
         };
         SetCameraAt(0.0f);
         const auto view = services.Views().AllocateView("GtaoCutView", cameraId);

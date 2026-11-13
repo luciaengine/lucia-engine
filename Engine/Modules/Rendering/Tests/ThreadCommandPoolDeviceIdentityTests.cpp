@@ -4,7 +4,7 @@
 #include "Rendering/Core/Device.h"
 
 #include "Source/Vulkan/VulkanCommandList.h"
-#include "Source/Vulkan/VulkanDevice.h"
+#include "Source/Vulkan/VulkanDevice/VulkanDevice.h"
 
 #include <memory>
 

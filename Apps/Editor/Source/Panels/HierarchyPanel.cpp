@@ -1,7 +1,8 @@
 #include "Panels/HierarchyPanel.h"
-
-#include "UI/Interaction/FocusIsInside.h"
-#include "Panels/HierarchyCommandIds.h"
+#include "Prefabs/PrefabService.h"
+#include "SceneView/SceneViewDropPlacement.h"
+#include "SceneView/SceneViewNoticeOverlay.h"
+#include "UndoRedo/SceneViewDropUndoCommand.h"
 #include "AssetCore/Asset.h"
 #include "AssetCore/AssetTypes.h"
 #include "AssetCore/GUID.h"
@@ -10,12 +11,19 @@
 #include "Editor/Entities/SkyboxEntityFactory.h"
 #include "Assets/AssetRegistry.h"
 #include "Assets/ModelAsset.h"
-#include "Assets/PolyhavenDownloadManager.h"
-#include "Assets/PolyhavenPlaceholderFactory.h"
-#include "Assets/PolyhavenService.h"
+#include "Assets/Polyhaven/PolyhavenDownloadManager.h"
+#include "Assets/Polyhaven/PolyhavenPlaceholderFactory.h"
+#include "Assets/Polyhaven/PolyhavenService.h"
 #include "Assets/TextureAsset.h"
 #include "EditorContextMenu/UIContextMenu.h"
 #include "Editor/Registries/EditorPluginRegistry.h"
+#include "Editor/Hierarchy/HierarchyDataProvider.h"
+#include "Editor/Hierarchy/HierarchyEmptyParent.h"
+#include "Editor/Hierarchy/HierarchyEntity/HierarchyEntityCommands.h"
+#include "Editor/Hierarchy/HierarchyEntity/HierarchyEntityDelete.h"
+#include "Editor/Hierarchy/HierarchyEntity/HierarchyEntityRename.h"
+#include "Editor/Hierarchy/HierarchyOrdering.h"
+#include "Editor/Hierarchy/HierarchyReparent.h"
 #include "Editor/Hierarchy/HierarchyReparentRules.h"
 #include "Editor/Hierarchy/HierarchySearch.h"
 #include "Components/Hierarchy.h"
@@ -23,7 +31,6 @@
 #include "Components/PolyhavenPlaceholder.h"
 #include "Components/Rendering/Camera.h"
 #include "Components/Rendering/Light.h"
-#include "Components/Rendering/LightPhotometry.h"
 #include "Components/Rendering/LensFlareSource.h"
 #include "Components/Rendering/MeshRenderer.h"
 #include "Components/Rendering/Ocean.h"
@@ -31,24 +38,15 @@
 #include "Components/Rendering/DDGIVolume.h"
 #include "Components/Rendering/PostProcessVolume.h"
 #include "Components/Rendering/ReflectionProbe.h"
-#include "Components/Rendering/RenderLayer.h"
 #include "Components/Rendering/SkinnedMeshRenderer.h"
 #include "Components/Rendering/Skybox.h"
 #include "Components/Rendering/WindVolume.h"
 #include "Components/RuntimeOnlyEntity.h"
-#include "Components/SceneBlueprintInstance.h"
-#include "Assets/AssetPlacementRegistry.h"
-#include "SceneView/SceneViewDropPlacement.h"
-#include "SceneView/SceneViewNoticeOverlay.h"
-#include "UndoRedo/SceneViewDropUndoCommand.h"
 #include "Components/SceneEntityTag.h"
 #include "Components/Spline/SplineComponent.h"
-#include "Components/Terrain/Terrain.h"
 #include "Components/Terrain/TerrainGrass.h"
-#include "Components/Terrain/TerrainPlanetRelief.h"
 #include "Components/Transform.h"
 #include "Core/Engine.h"
-#include "Editor/Assets/AssetRelativePath.h"
 #include "ECS/Components.h"   // Disabled marker component
 #include "ECS/ComponentRegistry.h"
 #include "ECS/ECSTemplates.h" // ensure template implementations are visible
@@ -61,10 +59,12 @@
 #include "Editor/Entities/EntityMaterialTextureAssign.h"
 #include "Editor/Hierarchy/HierarchyEnableState.h"
 #include "Editor/Hierarchy/HierarchyRowActivity.h"
+#include "Editor/Hierarchy/HierarchyRowEye.h"
 #include "Editor/Hierarchy/HierarchyLightIconTint.h"
 #include "Editor/Hierarchy/HierarchyRenderLayerEdit.h"
-#include "Editor/Hierarchy/HierarchyEntityIcon.h"
+#include "Inspectors/RenderLayers/RenderLayerField.h"
 #include "Editor/Entities/EditorComponentTraits.h"
+#include "Editor/Hierarchy/HierarchyEntity/HierarchyEntityIcon.h"
 #include "Editor/Hierarchy/HierarchyOrdering.h"
 #include "Editor/Hierarchy/HierarchyNavigationBar.h"
 #include "Editor/Settings/FbxImportSettings.h"
@@ -72,8 +72,9 @@
 #include "EditorContext.h"
 #include "EditorContextMenu/UIContextMenu.h"
 #include "InspectorRegistry.h"
-#include "Inspectors/InspectorComponentRowHelpers.h"
-#include "Sky/SkyEnvironmentCreation.h"
+#include "Inspectors/ComponentPresets.h"
+#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
+#include "Sky/SkyEnvironment/SkyEnvironmentCreation.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/ModelEntityFactory.h"
 #include "Engine/Rendering/PrimitiveGenerator.h"
@@ -82,20 +83,17 @@
 #include "Logger/Logger.h"
 #include "Mathematics/Types.h"
 #include "Editor/Shortcuts/EditorShortcuts.h"
-#include "Panels/SettingsPanel.h"
 #include "Platform/ContextMenu.h"
 #include "Platform/Window.h"
 #include "PlayMode/PlayModeManager.h"
 #include "Scripting/EditorScriptMenuRegistry.h"
 #include "CBTTerrainECS/TerrainProvisioning.h"
 #include "Terrain/TerrainEntityProvisioning.h"
-#include "TerrainECS/TerrainFactory.h"
-#include "TerrainECS/TerrainService.h"
 #include "Thumbnails/IThumbnailProvider.h"
-#include "Thumbnails/ModelThumbnailHandler.h"
-#include "Types/StringUtils.h"
+#include "Thumbnails/ModelThumbnail/ModelThumbnailHandler.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/Dropdown.h"
+#include "UI/Controls/MaskField.h"
 #include "UI/EditorIcons.h"
 #include "UI/EditorSearchBars.h"
 #include "UI/Interaction/Payload.h"
@@ -112,7 +110,6 @@
 #include "UndoRedo/UndoRedoService.h"
 #include "VersionControl/Ui/HierarchyVcsController.h"
 #include "Editor/Vcs/VcsStatusUi.h"
-#include "Platform/Environment.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <thread>
@@ -124,17 +121,19 @@
 #include "PhysicsECS/Components/PhysicsCollider.h"
 #include "PhysicsECS/Components/PhysicsWorldSettingsComponent.h"
 #include "PhysicsECS/Components/SphereColliderShape.h"
+#include "Types/StringUtils.h"
 #include <algorithm>
 #include <cassert>
-#include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <functional>
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -145,24 +144,17 @@ namespace GameEngine
 {
 namespace
 {
-// Above this many per-Update deltas (created + destroyed entities, or actual reparent
-// moves) the per-entity ops lose to a single full Rebuild: each sorted-insert / erase into
-// a large sibling list is O(list), so an N-sized delta degrades to O(N^2) vector shifts
-// (a 100k bench spawn would memmove gigabytes and hang for seconds). At/under the threshold
-// the per-entity path wins; over it, Rebuild is the always-correct fallback (and reseeds all
-// bookkeeping). 512 is comfortably above normal editor/gameplay per-frame churn yet far below
-// the point where O(N^2) bites.
-constexpr std::size_t kIncrementalDeltaMax = 512;
-
-// Row icons are left-aligned in their box, so a letterboxed sprite preview lines
-// up with the glyph icons in the rows above and below it.
-constexpr float kHierarchyRowIconAlignPercent = 0.0f;
 
 // Kill switch (design §5): GE_HIERARCHY_INCREMENTAL=0 restores the pre-incremental
-// full-Refresh Update path exactly. Default ON. Read once per process.
+// full-Refresh Update path exactly. Default ON. Read once per process. Prefix-'0' convention
+// matches ECS::ChangeFilter::Enabled (any value beginning with '0' disables).
 bool HierarchyIncrementalEnabled()
 {
-    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_HIERARCHY_INCREMENTAL", true);
+    static const bool enabled = []()
+    {
+        const char* v = std::getenv("GE_HIERARCHY_INCREMENTAL");
+        return !(v && v[0] == '0');
+    }();
     return enabled;
 }
 
@@ -180,229 +172,6 @@ struct ScopedFlag
     ScopedFlag& operator=(const ScopedFlag&) = delete;
 };
 
-static bool IsDescendantOf(ECS::World& world, ECS::EntityHandle node, ECS::EntityHandle possibleAncestor)
-{
-    if (!node.IsValid() || !possibleAncestor.IsValid())
-        return false;
-    if (!world.IsValid(node) || !world.IsValid(possibleAncestor))
-        return false;
-
-    ECS::EntityHandle cur = node;
-    while (cur.IsValid() && world.IsValid(cur))
-    {
-        if (cur.id == possibleAncestor.id)
-            return true;
-        auto* p = world.GetComponent<Components::Parent>(cur);
-        if (!p || !p->parent.IsValid() || !world.IsValid(p->parent))
-            break;
-        cur = p->parent;
-    }
-    return false;
-}
-
-static ECS::EntityHandle GetEffectiveParent(ECS::World& world, ECS::EntityHandle e)
-{
-    if (!e.IsValid() || !world.IsValid(e))
-        return {};
-    if (auto* p = world.GetComponent<Components::Parent>(e))
-    {
-        if (p->parent.IsValid() && world.IsValid(p->parent))
-            return p->parent;
-    }
-    return {};
-}
-
-static std::int32_t GetOrderOrDefault(ECS::World& world, ECS::EntityHandle e)
-{
-    if (!e.IsValid() || !world.IsValid(e))
-        return 0;
-    if (auto* o = world.GetComponent<Components::HierarchyOrder>(e))
-        return o->order;
-    return 0;
-}
-
-static std::vector<ECS::EntityHandle> CollectAllEntities(ECS::World& world)
-{
-    std::vector<ECS::EntityHandle> out;
-    auto archetypes = world.GetAllArchetypes();
-    for (auto* arch : archetypes)
-    {
-        if (!arch)
-            continue;
-        auto ents = arch->CollectEntities();
-        for (const auto& e : ents)
-        {
-            if (e.IsValid() && world.IsValid(e))
-                out.push_back(e);
-        }
-    }
-
-    return out;
-}
-
-constexpr std::int32_t kDropSiblingOrderStep = 10;
-constexpr std::string_view kPolyhavenBookmarkPrefix = "polyhaven:";
-
-void SortByOrderThenId(ECS::World& world, std::vector<ECS::EntityHandle>& entities)
-{
-    std::sort(entities.begin(), entities.end(), [&world](const ECS::EntityHandle& a, const ECS::EntityHandle& b)
-    {
-        const std::int32_t oa = GetOrderOrDefault(world, a);
-        const std::int32_t ob = GetOrderOrDefault(world, b);
-        if (oa != ob)
-            return oa < ob;
-        return a.id < b.id;
-    });
-}
-
-// The children of `parent` ({} = the roots) in display order, with `inserted`
-// placed at the drop line: before or after `target` when the drop landed
-// between rows next to it, otherwise last.
-std::vector<ECS::EntityHandle> SiblingsWithDropInsertion(ECS::World& world,
-                                                         ECS::EntityHandle parent,
-                                                         ECS::EntityHandle target,
-                                                         UI::Interaction::DropLocation location,
-                                                         const std::vector<ECS::EntityHandle>& inserted)
-{
-    const auto isInserted = [&inserted](const ECS::EntityHandle& e)
-    {
-        return std::any_of(inserted.begin(), inserted.end(),
-                           [&e](const ECS::EntityHandle& i) { return i.id == e.id; });
-    };
-
-    std::vector<ECS::EntityHandle> siblings;
-    for (const ECS::EntityHandle e : CollectAllEntities(world))
-    {
-        const ECS::EntityHandle effectiveParent = GetEffectiveParent(world, e);
-        const bool sameParent = parent.IsValid() ? (effectiveParent.IsValid() && effectiveParent.index == parent.index)
-                                                 : !effectiveParent.IsValid();
-        if (sameParent && !isInserted(e))
-            siblings.push_back(e);
-    }
-    SortByOrderThenId(world, siblings);
-
-    std::size_t insertIndex = siblings.size();
-    if (target.IsValid() && (location == UI::Interaction::DropLocation::BeforeItem ||
-                             location == UI::Interaction::DropLocation::AfterItem))
-    {
-        for (std::size_t i = 0; i < siblings.size(); ++i)
-        {
-            if (siblings[i].id == target.id)
-            {
-                insertIndex = location == UI::Interaction::DropLocation::AfterItem ? i + 1 : i;
-                break;
-            }
-        }
-    }
-
-    siblings.insert(siblings.begin() + static_cast<std::ptrdiff_t>(insertIndex), inserted.begin(), inserted.end());
-    return siblings;
-}
-
-// Renumbers `siblings` in list order.
-void WriteSiblingOrder(ECS::World& world, const std::vector<ECS::EntityHandle>& siblings)
-{
-    for (std::size_t i = 0; i < siblings.size(); ++i)
-    {
-        if (!siblings[i].IsValid() || !world.IsValid(siblings[i]))
-            continue;
-        Components::HierarchyOrder order{};
-        order.order = static_cast<std::int32_t>(i) * kDropSiblingOrderStep;
-        world.AddComponentImmediate(siblings[i], order);
-    }
-}
-
-Editor::ReparentReorderEntitiesCommand::EntityState CaptureReparentState(ECS::World& world, ECS::EntityHandle e)
-{
-    Editor::ReparentReorderEntitiesCommand::EntityState s{};
-    s.entity = e;
-    if (auto* p = world.GetComponent<Components::Parent>(e))
-    {
-        s.hadParent = p->parent.IsValid() && world.IsValid(p->parent);
-        s.parent = *p;
-    }
-    if (auto* o = world.GetComponent<Components::HierarchyOrder>(e))
-    {
-        s.hadOrder = true;
-        s.order = *o;
-    }
-    if (auto* t = world.GetComponent<Components::Transform>(e))
-    {
-        s.hadTransform = true;
-        s.transform = *t;
-    }
-    return s;
-}
-
-void ParentUnder(ECS::World& world, ECS::EntityHandle child, ECS::EntityHandle parent)
-{
-    if (!parent.IsValid())
-        return;
-    Components::Parent p{};
-    p.parent = parent;
-    world.AddComponentImmediate(child, p);
-}
-
-
-
-// A lens flare source named after the definition file.
-ECS::EntityHandle CreateLensFlareEntity(ECS::World& world,
-                                        const std::filesystem::path& flarePath,
-                                        const GUID& flareGuid,
-                                        ECS::EntityHandle parent)
-{
-    const ECS::EntityHandle flareEntity = world.CreateEntity();
-    if (!flareEntity.IsValid())
-        return {};
-
-    Components::Name name{};
-    const std::string stem = flarePath.stem().string();
-    std::strncpy(name.value, stem.c_str(), sizeof(name.value) - 1);
-    world.AddComponentImmediate(flareEntity, name);
-
-    Components::Transform transform{};
-    transform.SetIdentity();
-    world.AddComponentImmediate(flareEntity, transform);
-
-    Components::LensFlareSource source{};
-    source.Flare.Set(flareGuid);
-    world.AddComponentImmediate(flareEntity, source);
-
-    ParentUnder(world, flareEntity, parent);
-    return flareEntity;
-}
-
-// An entity that instances the dropped file as a scene blueprint.
-ECS::EntityHandle CreateBlueprintInstanceEntity(ECS::World& world,
-                                                const std::filesystem::path& absPath,
-                                                ECS::EntityHandle parent)
-{
-    const ECS::EntityHandle e = world.CreateEntity();
-    if (!e.IsValid())
-        return {};
-
-    Components::Name nm{};
-    std::memset(nm.value, 0, sizeof(nm.value));
-    const std::string stem = absPath.stem().string();
-    std::strncpy(nm.value, stem.c_str(), sizeof(nm.value) - 1);
-    world.AddComponentImmediate(e, nm);
-
-    Components::SceneBlueprintInstance inst{};
-    std::memset(inst.sourcePath, 0, sizeof(inst.sourcePath));
-    // Drop payloads carry registry paths, which are folded on
-    // case-insensitive platforms while the root carries its own
-    // spelling; a lexical subtraction compares case and would
-    // persist an absolute path into the scene file.
-    std::string relStr = Editor::TryMakeAssetRelativePathString(
-        EngineCore::GetInstance().GetAssetManager(), absPath);
-    if (relStr.empty())
-        relStr = absPath.generic_string();
-    std::strncpy(inst.sourcePath, relStr.c_str(), sizeof(inst.sourcePath) - 1);
-    world.AddComponentImmediate(e, inst);
-
-    ParentUnder(world, e, parent);
-    return e;
-}
 } // namespace
 
 using Components::MeshRenderer;
@@ -441,23 +210,60 @@ ECS::EntityHandle FindEntityBySceneTag(ECS::World& world, std::string_view tag)
 }
 } // namespace
 
-static constexpr TreeId kRootId = std::numeric_limits<TreeId>::max();
+static constexpr TreeId kRootId = HierarchyDataProvider::kRootId;
 
 namespace
 {
-constexpr const char* kIconEmptyEntity = "editor:Icons/EmptyEntity.png";
-constexpr const char* kIconCamera = "editor:Icons/videocam.png";
-constexpr const char* kIconLightDirectional = "editor:Icons/DirectionalLight.png";
-constexpr const char* kIconLightSpot = "editor:Icons/SpotLight.png";
-constexpr const char* kIconLightAmbient = "editor:Icons/AmbientLight.png";
-constexpr const char* kIconLightArea = "editor:Icons/arealight.png";
+// Built-in Hierarchy context menu commands (must fit in 16-bit on Win32).
+constexpr uint32_t kCmdCreateEmptyEntity = 0x4101;
+constexpr uint32_t kCmdCreateAsEmptyParent = 0x4102;
+constexpr uint32_t kCmdCreateShapeCube = 0x4110;
+constexpr uint32_t kCmdCreateShapeSphere = 0x4111;
+constexpr uint32_t kCmdCreateShapeCapsule = 0x4112;
+constexpr uint32_t kCmdCreateShapePlane = 0x4113;
+constexpr uint32_t kCmdCreateCamera = 0x4120;
+constexpr uint32_t kCmdCreateLightDirectional = 0x4130;
+constexpr uint32_t kCmdCreateLightPoint = 0x4131;
+constexpr uint32_t kCmdCreateLightSpot = 0x4132;
+constexpr uint32_t kCmdCreateLightAmbient = 0x4133;
+constexpr uint32_t kCmdCreateLightArea = 0x4134;
+constexpr uint32_t kCmdCreateTerrain = 0x4140;      // "Terrain (512 m)" preset + the create_terrain IPC default
+constexpr uint32_t kCmdCreateTerrainLarge = 0x4147; // "Terrain - Large (4 km)"
+constexpr uint32_t kCmdCreatePlanet5km = 0x4148;    // "Planet (5 km)"
+constexpr uint32_t kCmdCreatePlanet50km = 0x4149;   // "Planet (50 km)"
+constexpr uint32_t kCmdCreatePostProcessVolume = 0x4141;
+constexpr uint32_t kCmdCreateOcean = 0x4143;
+constexpr uint32_t kCmdCreateParticleEmitter = 0x4142;
+constexpr uint32_t kCmdCreateWindVolume = 0x4144;
+constexpr uint32_t kCmdCreateReflectionProbe = 0x4145;
+constexpr uint32_t kCmdCreateSkyEnvironment = 0x4146;
+constexpr uint32_t kCmdCreateDDGIVolume = 0x414A;
+constexpr uint32_t kCmdNewScene = 0x4150;
+constexpr uint32_t kCmdSortCustom = 0x4170;
+constexpr uint32_t kCmdSortAlphabetical = 0x4171;
+constexpr uint32_t kCmdSortType = 0x4172;
+constexpr uint32_t kCmdSortAscending = 0x4173;
+constexpr uint32_t kCmdSortDescending = 0x4174;
+constexpr uint32_t kCmdShowRenderLayer = 0x4175;
+constexpr uint32_t kCmdShowVcsSceneDiffDots = 0x4176;
+constexpr uint32_t kCmdShowMeshLocation = 0x4180;
+constexpr uint32_t kCmdAddToBookmarks = 0x4190;
+constexpr uint32_t kCmdLoadRecentSceneBase = 0x41A0;
+constexpr uint32_t kCmdLoadRecentSceneCount = 10;
+constexpr uint32_t kCmdLoadRecentSceneEmpty = 0x41AF;
+constexpr const char* kIconEmptyEntity = "editor:Icons/EmptyEntity.svg";
+constexpr const char* kIconCamera = "editor:Icons/videocam.svg";
+constexpr const char* kIconLightDirectional = "editor:Icons/DirectionalLight.svg";
+constexpr const char* kIconLightSpot = "editor:Icons/SpotLight.svg";
+constexpr const char* kIconLightAmbient = "editor:Icons/AmbientLight.svg";
+constexpr const char* kIconLightArea = "editor:Icons/arealight.svg";
 constexpr const char* kIconPlanet = "editor:Icons/planet.svg";
-constexpr const char* kIconParticles = "editor:Icons/sparkles.png";
-constexpr const char* kIconSkyEnvironment = "editor:Icons/skyenvironment.png";
+constexpr const char* kIconParticles = "editor:Icons/sparkles.svg";
+constexpr const char* kIconSkyEnvironment = "editor:Icons/skyenvironment.svg";
 
 bool IsLoadRecentSceneCommand(uint32_t cmd)
 {
-    return cmd >= HierarchyCommandIds::kCmdLoadRecentSceneBase && cmd < (HierarchyCommandIds::kCmdLoadRecentSceneBase + HierarchyCommandIds::kCmdLoadRecentSceneCount);
+    return cmd >= kCmdLoadRecentSceneBase && cmd < (kCmdLoadRecentSceneBase + kCmdLoadRecentSceneCount);
 }
 
 std::string BuildRecentSceneMenuLabel(const std::filesystem::path& scenePath,
@@ -785,784 +591,7 @@ class CreateReflectionProbeEntityCommand final : public Editor::IEditorCommand
     Components::HierarchyOrder m_HierarchyOrder{};
 };
 
-class CreateAsEmptyParentCommand final : public Editor::IEditorCommand
-{
-  public:
-    CreateAsEmptyParentCommand(std::string name,
-                               ECS::World* world,
-                               Editor::EditorChangeNotifications* notifications,
-                               ECS::EntityHandle child,
-                               ECS::EntityHandle newParent,
-                               bool childHadParent,
-                               Parent childParentBefore,
-                               Transform childTransformBefore,
-                               Name parentName)
-        : m_Name(std::move(name)), m_World(world), m_Notifications(notifications), m_Child(child), m_NewParent(newParent), m_ChildHadParent(childHadParent), m_ChildParentBefore(childParentBefore), m_ChildTransformBefore(childTransformBefore), m_ParentName(parentName)
-    {
-    }
-
-    const char* GetName() const override { return m_Name.c_str(); }
-
-    void Do() override { Redo(); }
-
-    void Undo() override
-    {
-        if (!m_World || !m_Child.IsValid() || !m_NewParent.IsValid())
-            return;
-
-        // Restore child first so it doesn't reference a destroyed parent.
-        m_World->AddComponentImmediate(m_Child, m_ChildTransformBefore);
-        if (m_ChildHadParent)
-        {
-            m_World->AddComponentImmediate(m_Child, m_ChildParentBefore);
-        }
-        else
-        {
-            m_World->RemoveComponentImmediate<Parent>(m_Child);
-        }
-
-        m_World->DestroyEntityImmediatePreserveHandle(m_NewParent);
-        NotifyWorldStructure(m_Notifications, m_World);
-    }
-
-    void Redo() override
-    {
-        if (!m_World || !m_Child.IsValid() || !m_NewParent.IsValid())
-            return;
-
-        if (!m_World->ReviveEntityImmediatePreserveHandle(m_NewParent))
-            return;
-
-        // New parent local transform is the child's previous local transform.
-        m_World->AddComponentImmediate(m_NewParent, m_ChildTransformBefore);
-        m_World->AddComponentImmediate(m_NewParent, m_ParentName);
-        if (m_ChildHadParent)
-        {
-            // Parent the new entity under the child's previous parent.
-            m_World->AddComponentImmediate(m_NewParent, m_ChildParentBefore);
-        }
-        else
-        {
-            // Ensure no Parent component on the inserted parent if original child was root.
-            m_World->RemoveComponentImmediate<Parent>(m_NewParent);
-        }
-
-        // Reparent child under the new parent and reset its local transform to identity.
-        Parent p{};
-        p.parent = m_NewParent;
-        m_World->AddComponentImmediate(m_Child, p);
-        m_World->AddComponentImmediate(m_Child, MakeIdentityTransform());
-
-        NotifyWorldStructure(m_Notifications, m_World);
-    }
-
-  private:
-    std::string m_Name;
-    ECS::World* m_World = nullptr;                                // not owned
-    Editor::EditorChangeNotifications* m_Notifications = nullptr; // not owned
-    ECS::EntityHandle m_Child{};
-    ECS::EntityHandle m_NewParent{};
-    bool m_ChildHadParent = false;
-    Parent m_ChildParentBefore{};
-    Transform m_ChildTransformBefore{};
-    Name m_ParentName{};
-};
-
 } // namespace
-
-// Private provider implementation
-class HierarchyPanel::HierarchyDataProvider final : public TreeChangeTrackingProvider
-{
-  public:
-    explicit HierarchyDataProvider(World* world)
-        : m_World(world) {}
-
-    void SetWorld(World* world)
-    {
-        m_World = world;
-        Rebuild();
-    }
-
-    void SetSortMode(HierarchySortMode mode) { m_SortMode = mode; }
-    void SetSortDirection(HierarchySortDirection dir) { m_SortDirection = dir; }
-    void Rebuild()
-    {
-        m_Roots.clear();
-        m_Children.clear();
-        m_EntityParentKey.clear();
-        m_PendingResortParents.clear(); // a full rebuild resorts everything; drop stale deferrals
-        if (!m_World)
-        {
-            m_Labels.clear();
-            return;
-        }
-        // m_Labels is intentionally retained across rebuilds: strings are reused in place
-        // below (assign keeps each buffer) and stale entries are pruned at the end.
-
-        // Collect alive entities from the World's canonical metadata.
-        // This avoids observing transient archetype-move states and eliminates the need for
-        // defensive de-duplication when components are added/removed immediately.
-        m_World->GetAliveEntitiesSnapshot(m_SnapshotScratch);
-
-        // Physics world settings live in Settings > Project Settings > Physics; hide here.
-        m_SnapshotScratch.erase(
-            std::remove_if(m_SnapshotScratch.begin(), m_SnapshotScratch.end(), [this](const EntityHandle& e)
-                           { return m_World->GetComponent<Components::PhysicsWorldSettingsComponent>(e) != nullptr; }),
-            m_SnapshotScratch.end());
-
-        // Stable pre-sort by TreeId (Encode). The decorate-sort below (SortGroup) applies a
-        // total order with an id tie-break, so this only fixes the flatten-path order
-        // deterministically; final sibling order is fully determined by SortGroup.
-        std::sort(m_SnapshotScratch.begin(), m_SnapshotScratch.end(), [](const EntityHandle& a, const EntityHandle& b)
-                  { return Encode(a) < Encode(b); });
-
-        // Build membership set (use the same packed representation as TreeId)
-        std::unordered_set<uint32_t> alive;
-        alive.reserve(m_SnapshotScratch.size());
-        for (auto& e : m_SnapshotScratch)
-        {
-            alive.insert(static_cast<uint32_t>(Encode(e)));
-        }
-
-        // Build adjacency from Parent component
-        bool anyParent = false;
-        for (auto& e : m_SnapshotScratch)
-        {
-            ECS::Entity ent(m_World, e);
-            if (auto* p = ent.Get<Parent>())
-            {
-                anyParent = true;
-
-                // Key children by the same packed representation we expose via TreeId
-                TreeId parentKey = Encode(p->parent);
-                if (p->parent.IsValid() && alive.count(static_cast<uint32_t>(parentKey)))
-                {
-                    m_Children[static_cast<uint32_t>(parentKey)].push_back(e);
-                }
-                else
-                {
-                    m_Roots.push_back(e);
-                }
-            }
-            else
-            {
-                m_Roots.push_back(e);
-            }
-        }
-
-        // No Parent anywhere: show every entity as a root (still ordered by HierarchyOrder below).
-        if (!anyParent)
-        {
-            m_Children.clear();
-            m_Roots = m_SnapshotScratch;
-        }
-
-        // Sibling order: either scene-authored (HierarchyOrder) or overridden by the
-        // view-only sort mode configured on the panel. The decorate-sort keys and comparator
-        // (KeyOf / KeyLess, via SortGroup) are the SAME ones the incremental sorted-inserts
-        // use — comparator parity is the correctness crux, so both paths share one helper.
-        SortGroup(m_Roots);
-        for (auto& kv : m_Children)
-            SortGroup(kv.second);
-
-        // Labels: prefer Name component if present, fall back to entity id. Reuse the existing
-        // label strings across rebuilds (assign into the slot keeps its buffer) and prune
-        // entries whose entity is no longer alive, so a rebuild does not free and reallocate one
-        // string per entity every time.
-        for (const EntityHandle& e : m_SnapshotScratch)
-            BuildLabel(e);
-        for (auto it = m_Labels.begin(); it != m_Labels.end();)
-        {
-            if (alive.count(static_cast<uint32_t>(it->first)) == 0)
-                it = m_Labels.erase(it);
-            else
-                ++it;
-        }
-
-        // Seed the incremental position index from the freshly-built adjacency so the per-entity
-        // ops and the identity diff have correct bookkeeping to mutate.
-        SeedParentKeyIndex();
-
-        MarkAllChanged();
-    }
-
-    // ------------------------------------------------------------------
-    // Incremental maintenance (design §2 Tier 1+2). Each op mutates the built
-    // adjacency for the touched entity/entities only, ending with a structure/subset
-    // change signal so TreeView pays only its O(visible) flat walk — not a full rebuild.
-    // ------------------------------------------------------------------
-
-    struct DiffOutcome
-    {
-        bool AnyDestroyed = false;        // a tracked row vanished → caller revalidates selection
-        bool AnyMembershipChange = false; // any entity created OR destroyed this batch
-        bool Escalate = false;            // delta too large for per-entity ops → caller full-rebuilds
-    };
-
-    // Entity create/destroy authority (there are no entity-level lifecycle events, only
-    // per-component ones). Merge-diffs the live entity set against the tracked set — no
-    // component reads, no sorting — then applies per-delta ops. Also the swap-generation
-    // gap-heal backstop. Nothing is applied when the delta exceeds kIncrementalDeltaMax
-    // (F1: per-entity inserts into large sibling lists are O(list), so a mass spawn/despawn
-    // would be O(N^2)); the caller full-rebuilds instead.
-    DiffOutcome ApplyIdentityDiff()
-    {
-        DiffOutcome out;
-        if (!m_World)
-            return out;
-
-        m_World->GetAliveEntitiesSnapshot(m_SnapshotScratch);
-
-        // created = live keys not yet tracked. The hide filter is deferred to ApplyCreated
-        // (only new entities need the component read), keeping this pass free of reads.
-        m_DiffCreated.clear();
-        std::unordered_set<uint32_t> snapKeys;
-        snapKeys.reserve(m_SnapshotScratch.size());
-        for (const EntityHandle& e : m_SnapshotScratch)
-        {
-            const uint32_t key = static_cast<uint32_t>(Encode(e));
-            snapKeys.insert(key);
-            if (m_EntityParentKey.find(key) == m_EntityParentKey.end())
-                m_DiffCreated.push_back(e);
-        }
-
-        // destroyed = tracked keys no longer live. Removed handles are IDs only — never
-        // dereferenced (ApplyDestroyed works purely on provider state).
-        m_DiffDestroyed.clear();
-        for (const auto& kv : m_EntityParentKey)
-            if (snapKeys.find(kv.first) == snapKeys.end())
-                m_DiffDestroyed.push_back(Decode(static_cast<TreeId>(kv.first)));
-
-        out.AnyMembershipChange = !m_DiffCreated.empty() || !m_DiffDestroyed.empty();
-        out.AnyDestroyed = !m_DiffDestroyed.empty();
-
-        // F1: bail to a full Rebuild for large deltas (mass spawn/despawn). Measure-only up to
-        // here (no structures mutated), so nothing to unwind.
-        if (m_DiffCreated.size() + m_DiffDestroyed.size() > kIncrementalDeltaMax)
-        {
-            out.Escalate = true;
-            return out;
-        }
-
-        for (const EntityHandle& e : m_DiffDestroyed)
-            ApplyDestroyed(e);
-        for (const EntityHandle& e : m_DiffCreated)
-            ApplyCreated(e);
-        // Intra-batch parent adoption: a child created before its (also-new) parent was
-        // rooted during ApplyCreated because the parent wasn't tracked yet. Now that the
-        // whole created set is present, re-home any such child. ApplyReparented no-ops when
-        // placement is already correct, so pre-existing correctly-placed creates cost nothing.
-        for (const EntityHandle& e : m_DiffCreated)
-            ApplyReparented(e);
-
-        return out;
-    }
-
-    // C6 (visibility inversion): an entity can be query-visible a frame before its Added
-    // event, and the identity diff may have already inserted it — so this is insert-if-absent.
-    void ApplyCreated(const EntityHandle& e)
-    {
-        if (!m_World || !e.IsValid())
-            return;
-        const uint32_t childKey = static_cast<uint32_t>(Encode(e));
-        if (m_EntityParentKey.find(childKey) != m_EntityParentKey.end())
-            return; // already tracked (C6 / re-delivered)
-
-        // Same hide filter Rebuild applies.
-        if (m_World->GetComponent<Components::PhysicsWorldSettingsComponent>(e) != nullptr)
-            return;
-
-        const TreeId parentKey = DesiredParentKey(e);
-        if (parentKey == kRootId)
-            SortedInsert(m_Roots, e);
-        else
-            SortedInsert(m_Children[static_cast<uint32_t>(parentKey)], e);
-        m_EntityParentKey[childKey] = parentKey;
-        BuildLabel(e);
-        MarkStructureChanged();
-    }
-
-    void ApplyDestroyed(const EntityHandle& e)
-    {
-        const uint32_t childKey = static_cast<uint32_t>(Encode(e));
-        auto itPos = m_EntityParentKey.find(childKey);
-        if (itPos == m_EntityParentKey.end())
-            return; // not tracked — idempotent
-        const TreeId storedParent = itPos->second; // copy: the map may rehash below
-
-        // Remove from its own sibling list.
-        RemoveFromSiblingList(storedParent, e);
-
-        // Re-root its children: dangling Parent ⇒ root (matches Rebuild's alive-check). Their
-        // Parent components still point at the dead handle — identical to today's post-rebuild
-        // state.
-        auto childrenIt = m_Children.find(childKey);
-        if (childrenIt != m_Children.end())
-        {
-            std::vector<EntityHandle> orphans = std::move(childrenIt->second);
-            m_Children.erase(childrenIt);
-            for (const EntityHandle& c : orphans)
-            {
-                SortedInsert(m_Roots, c);
-                m_EntityParentKey[static_cast<uint32_t>(Encode(c))] = kRootId;
-            }
-        }
-
-        m_EntityParentKey.erase(childKey);
-        m_Labels.erase(Encode(e));
-        MarkStructureChanged();
-    }
-
-    // Idempotent within a window (LifecycleEvents contract): compares the current Parent
-    // against tracked placement and no-ops when unchanged — so re-delivered Added/Removed
-    // spans and chunk-granular Changed<Parent> over-reports cost nothing. Returns true only
-    // when the entity actually moved (the caller counts real moves for the F1 escalation; a
-    // no-op is O(1) so over-reports don't count against the threshold).
-    bool ApplyReparented(const EntityHandle& e)
-    {
-        if (!m_World)
-            return false;
-        const uint32_t childKey = static_cast<uint32_t>(Encode(e));
-        auto itPos = m_EntityParentKey.find(childKey);
-        if (itPos == m_EntityParentKey.end())
-            return false; // destroyed / hidden / never tracked — idempotent no-op
-        const TreeId storedParent = itPos->second;
-        const TreeId desiredParent = DesiredParentKey(e); // absent Parent ⇒ root (Removed<Parent>)
-        if (desiredParent == storedParent)
-            return false;
-
-        RemoveFromSiblingList(storedParent, e);
-        if (desiredParent == kRootId)
-            SortedInsert(m_Roots, e);
-        else
-            SortedInsert(m_Children[static_cast<uint32_t>(desiredParent)], e);
-        m_EntityParentKey[childKey] = desiredParent;
-        MarkStructureChanged();
-        return true;
-    }
-
-    // Tier 1: label update + Subset rebind (no flat rebuild). Under name-sensitive sort modes
-    // (Alphabetical / Type) a rename can reorder siblings, so escalate to a one-list resort —
-    // but only RECORD the touched list (FlushPendingResorts sorts each once). F2: early-return
-    // when the freshly computed label is unchanged, so the chunk-stamp over-report (an archetype
-    // move stamps every column of source+dest chunks, so Changed<Name> reports ~a chunk of
-    // unrelated entities per unrelated create/destroy) costs one string compare, not a resort.
-    void ApplyRenamed(const EntityHandle& e)
-    {
-        if (!m_World)
-            return;
-        const uint32_t childKey = static_cast<uint32_t>(Encode(e));
-        auto itPos = m_EntityParentKey.find(childKey);
-        if (itPos == m_EntityParentKey.end())
-            return; // not tracked — idempotent
-
-        const TreeId tid = Encode(e);
-        ComputeLabel(e, m_LabelScratch);
-        auto lit = m_Labels.find(tid);
-        const bool changed = (lit == m_Labels.end()) || (lit->second != m_LabelScratch);
-        if (!changed)
-            return; // F2: no actual label change (filters the chunk-stamp over-report)
-        if (lit != m_Labels.end())
-            lit->second = m_LabelScratch;
-        else
-            m_Labels.emplace(tid, m_LabelScratch);
-
-        if (m_SortMode == HierarchySortMode::Custom)
-        {
-            MarkChanged(tid); // name-independent order: paint-only rebind
-            return;
-        }
-        // Name-sensitive sort: defer the resort of the touched sibling list (coalesced across all
-        // renames this Update by FlushPendingResorts — many renames into one list resort once).
-        m_PendingResortParents.insert(itPos->second);
-        MarkStructureChanged();
-    }
-
-    // Sort each sibling list recorded by ApplyRenamed exactly once. Called by the panel after a
-    // rename batch (the Changed<Name> scan and the editor Name-commit path both flush).
-    void FlushPendingResorts()
-    {
-        if (m_PendingResortParents.empty())
-            return;
-        for (TreeId parentKey : m_PendingResortParents)
-        {
-            if (parentKey == kRootId)
-                SortGroup(m_Roots);
-            else if (auto cit = m_Children.find(static_cast<uint32_t>(parentKey)); cit != m_Children.end())
-                SortGroup(cit->second);
-        }
-        m_PendingResortParents.clear();
-    }
-
-// Debug-config-only parity check. `!defined(NDEBUG)` catches unoptimized debug builds on every
-// compiler (incl. macOS/clang Debug where the MSVC-ism `_DEBUG` is unset); `!defined(GE_DEBUGFAST)`
-// then excludes this engine's DebugFast config, which seeds Debug flags (so NDEBUG is unset there
-// too) but is the daily-driver perf config that must NOT pay a per-frame Rebuild. Release defines
-// NDEBUG and is excluded by the first clause.
-#if !defined(NDEBUG) && !defined(GE_DEBUGFAST)
-    // Behavioral-parity cross-check (design §4): the incremental result must be
-    // byte-equivalent to a fresh Rebuild after every mutation batch. Save the incremental
-    // state, rebuild from scratch, compare, then restore the incremental state so latent
-    // cross-frame accumulation bugs surface instead of being masked.
-    void DebugVerifyAgainstRebuild()
-    {
-        std::vector<EntityHandle> incRoots = m_Roots;
-        std::unordered_map<uint32_t, std::vector<EntityHandle>> incChildren = m_Children;
-        std::unordered_map<TreeId, std::string> incLabels = m_Labels;
-        std::unordered_map<uint32_t, TreeId> incParentKey = m_EntityParentKey;
-
-        Rebuild(); // authoritative; overwrites members
-
-        const bool ok = (incRoots == m_Roots) && (incChildren == m_Children) && (incLabels == m_Labels);
-        if (!ok)
-        {
-            Logger::Log::Error("[Hierarchy] incremental sync diverged from a fresh Rebuild");
-            assert(false && "HierarchyDataProvider incremental sync diverged from Rebuild");
-        }
-
-        m_Roots = std::move(incRoots);
-        m_Children = std::move(incChildren);
-        m_Labels = std::move(incLabels);
-        m_EntityParentKey = std::move(incParentKey);
-    }
-#endif
-
-    // Baseline-only rows, injected by the VCS controller. The provider stores
-    // and orders them but knows nothing about version control.
-    struct GhostRow
-    {
-        TreeId Id = 0;
-        TreeId ParentId = kRootId;
-        std::string Label;
-    };
-
-    void SetGhostRows(std::vector<GhostRow> rows)
-    {
-        if (rows.empty() && m_GhostChildren.empty())
-            return;
-        m_GhostChildren.clear();
-        m_GhostLabels.clear();
-        for (GhostRow& row : rows)
-        {
-            m_GhostChildren[row.ParentId].push_back(row.Id);
-            m_GhostLabels.emplace(row.Id, std::move(row.Label));
-        }
-        MarkStructureChanged();
-        MarkAllChanged();
-    }
-
-    int GhostChildCount(TreeId parent) const
-    {
-        const auto it = m_GhostChildren.find(parent);
-        return it == m_GhostChildren.end() ? 0 : static_cast<int>(it->second.size());
-    }
-
-    // ITreeDataProvider
-    int GetRootCount() const override { return 1; }
-    TreeId GetRootId(int) const override { return kRootId; }
-    int GetChildCount(TreeId parent) const override
-    {
-        if (parent == kRootId)
-            return static_cast<int>(m_Roots.size()) + GhostChildCount(parent);
-        if (Editor::IsGhostTreeId(parent))
-            return GhostChildCount(parent);
-        const auto pid = static_cast<uint32_t>(parent);
-        auto it = m_Children.find(pid);
-        const int entityCount = it == m_Children.end() ? 0 : static_cast<int>(it->second.size());
-        return entityCount + GhostChildCount(parent);
-    }
-    TreeId GetChildId(TreeId parent, int index) const override
-    {
-        // Ghost rows sort after the live children of the same parent: a deleted
-        // sibling should not displace the entities that are still there.
-        const auto ghostAt = [this, parent](int ghostIndex) -> TreeId
-        {
-            const auto it = m_GhostChildren.find(parent);
-            if (it == m_GhostChildren.end() || ghostIndex < 0 ||
-                ghostIndex >= static_cast<int>(it->second.size()))
-                return 0;
-            return it->second[static_cast<size_t>(ghostIndex)];
-        };
-
-        if (parent == kRootId)
-        {
-            const int rootCount = static_cast<int>(m_Roots.size());
-            if (index >= 0 && index < rootCount)
-                return Encode(m_Roots[static_cast<size_t>(index)]);
-            return ghostAt(index - rootCount);
-        }
-        if (Editor::IsGhostTreeId(parent))
-            return ghostAt(index);
-        const auto pid = static_cast<uint32_t>(parent);
-        auto it = m_Children.find(pid);
-        const int entityCount = it == m_Children.end() ? 0 : static_cast<int>(it->second.size());
-        if (index >= 0 && index < entityCount)
-            return Encode(it->second[static_cast<size_t>(index)]);
-        return ghostAt(index - entityCount);
-    }
-    const char* GetLabel(TreeId id) const override
-    {
-        if (Editor::IsGhostTreeId(id))
-        {
-            const auto ghost = m_GhostLabels.find(id);
-            return ghost != m_GhostLabels.end() ? ghost->second.c_str() : "";
-        }
-        auto it = m_Labels.find(id);
-        if (it != m_Labels.end())
-            return it->second.c_str();
-        return "";
-    }
-    bool IsExpandable(TreeId id) const override
-    {
-        if (id == kRootId)
-            return true;
-        if (Editor::IsGhostTreeId(id))
-            return GhostChildCount(id) > 0;
-        const auto pid = static_cast<uint32_t>(id);
-        auto it = m_Children.find(pid);
-        if (it != m_Children.end() && !it->second.empty())
-            return true;
-        return GhostChildCount(id) > 0;
-    }
-
-    std::unordered_map<TreeId, std::vector<TreeId>> m_GhostChildren;
-    std::unordered_map<TreeId, std::string> m_GhostLabels;
-
-    static TreeId Encode(const EntityHandle& e)
-    {
-        // Pack [version (upper kEntityVersionBits) | index (lower kEntityIndexBits)] explicitly.
-        // This avoids relying on EntityHandle's union layout when round-tripping through TreeId.
-        uint32 idx = static_cast<uint32>(e.index) & ECS::kEntityIndexMask;
-        uint32 ver = static_cast<uint32>(e.version) & ECS::kEntityVersionMask;
-        uint32 raw = idx | (ver << ECS::kEntityIndexBits);
-        return static_cast<TreeId>(raw);
-    }
-
-    static EntityHandle Decode(TreeId id)
-    {
-        uint32 raw = static_cast<uint32>(id);
-        ECS::EntityIndex idx = static_cast<ECS::EntityIndex>(raw & ECS::kEntityIndexMask);
-        ECS::EntityVersion ver = static_cast<ECS::EntityVersion>((raw >> ECS::kEntityIndexBits) & ECS::kEntityVersionMask);
-        return EntityHandle(idx, ver);
-    }
-
-  private:
-    // Decorated sort key for one entity under the active sort mode. Only the field(s) the mode
-    // needs are filled; KeyLess reads only those. Shared by Rebuild's decorate-sort AND the
-    // incremental sorted-inserts (via KeyOf/KeyLess/SortGroup) — one key helper so the two
-    // ordering paths cannot diverge (the correctness crux, design §3).
-    struct SortKey
-    {
-        uint32_t Id = 0;         // unique tie-break (EntityHandle::id) — makes KeyLess a total order
-        std::int32_t Order = 0;  // Custom mode
-        int TypeRank = 0;        // Type mode
-        std::string NameKey;     // lowercased; Alphabetical / Type modes
-    };
-    struct SortScratchEntry
-    {
-        EntityHandle Handle{};
-        SortKey Key;
-    };
-
-    std::int32_t OrderOf(const EntityHandle& h) const
-    {
-        if (auto* o = m_World->GetComponent<Components::HierarchyOrder>(h))
-            return o->order;
-        return 0;
-    }
-    std::string LowerNameOf(const EntityHandle& h) const
-    {
-        std::string name;
-        if (auto* n = m_World->GetComponent<Components::Name>(h); n && n->value[0])
-            name = n->View();
-        else
-            name = std::string("Entity ") + std::to_string(h.id);
-        for (char& c : name)
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        return name;
-    }
-    int TypeRankOf(const EntityHandle& h) const
-    {
-        // Lower rank sorts first in ascending order. Groups roughly by how "structural" the
-        // entity is in the scene.
-        if (m_World->GetComponent<Components::Camera>(h))
-            return 0;
-        if (m_World->GetComponent<Components::Light>(h))
-            return 1;
-        if (m_World->GetComponent<Components::Skybox>(h))
-            return 2;
-        if (m_World->GetComponent<Components::Terrain>(h))
-            return 3;
-        if (m_World->GetComponent<Components::ParticleEmitter3D>(h))
-            return 4;
-        if (m_World->GetComponent<Components::MeshRenderer>(h))
-            return 5;
-        return 6; // Empty / other
-    }
-
-    // Read one entity's sort key (per active mode) from the ECS. One read per key field.
-    SortKey KeyOf(const EntityHandle& e) const
-    {
-        SortKey k;
-        k.Id = e.id;
-        switch (m_SortMode)
-        {
-        case HierarchySortMode::Alphabetical:
-            k.NameKey = LowerNameOf(e);
-            break;
-        case HierarchySortMode::Type:
-            k.TypeRank = TypeRankOf(e);
-            k.NameKey = LowerNameOf(e);
-            break;
-        case HierarchySortMode::Custom:
-        default:
-            k.Order = OrderOf(e);
-            break;
-        }
-        return k;
-    }
-
-    // Strict total order matching Rebuild's old `entryLess` exactly, with direction applied.
-    bool KeyLess(const SortKey& a, const SortKey& b) const
-    {
-        return (m_SortDirection == HierarchySortDirection::Descending) ? KeyLessAsc(b, a) : KeyLessAsc(a, b);
-    }
-    bool KeyLessAsc(const SortKey& a, const SortKey& b) const
-    {
-        switch (m_SortMode)
-        {
-        case HierarchySortMode::Alphabetical:
-            if (a.NameKey != b.NameKey)
-                return a.NameKey < b.NameKey;
-            return a.Id < b.Id;
-        case HierarchySortMode::Type:
-            if (a.TypeRank != b.TypeRank)
-                return a.TypeRank < b.TypeRank;
-            if (a.NameKey != b.NameKey)
-                return a.NameKey < b.NameKey;
-            return a.Id < b.Id;
-        case HierarchySortMode::Custom:
-        default:
-            if (a.Order != b.Order)
-                return a.Order < b.Order;
-            return a.Id < b.Id;
-        }
-    }
-
-    // Decorate-sort one sibling list in place (Rebuild + rename escalation).
-    void SortGroup(std::vector<EntityHandle>& group)
-    {
-        if (group.size() < 2)
-            return;
-        m_SortScratch.clear();
-        m_SortScratch.reserve(group.size());
-        for (const EntityHandle& e : group)
-            m_SortScratch.push_back(SortScratchEntry{e, KeyOf(e)});
-        std::sort(m_SortScratch.begin(), m_SortScratch.end(),
-                  [this](const SortScratchEntry& a, const SortScratchEntry& b)
-                  { return KeyLess(a.Key, b.Key); });
-        for (size_t i = 0; i < group.size(); ++i)
-            group[i] = m_SortScratch[i].Handle;
-    }
-
-    // Insert e into a sorted sibling list at the position dictated by KeyLess (the same total
-    // order SortGroup produces), so a sequence of inserts equals a full std::sort of the set.
-    void SortedInsert(std::vector<EntityHandle>& list, const EntityHandle& e)
-    {
-        const SortKey key = KeyOf(e);
-        auto pos = std::lower_bound(list.begin(), list.end(), key,
-                                    [this](const EntityHandle& a, const SortKey& k)
-                                    { return KeyLess(KeyOf(a), k); });
-        list.insert(pos, e);
-    }
-
-    // Remove e from the sibling list identified by its stored parent key; drops an emptied
-    // m_Children bucket so the map key-set matches a fresh Rebuild (which never creates empty
-    // buckets). Linear find by id: e's sort key may have changed since insertion (an unresorted
-    // rename), so a key-based binary search could miss it.
-    void RemoveFromSiblingList(TreeId storedParent, const EntityHandle& e)
-    {
-        if (storedParent == kRootId)
-        {
-            auto it = std::find(m_Roots.begin(), m_Roots.end(), e);
-            if (it != m_Roots.end())
-                m_Roots.erase(it);
-            return;
-        }
-        auto cit = m_Children.find(static_cast<uint32_t>(storedParent));
-        if (cit == m_Children.end())
-            return;
-        auto& list = cit->second;
-        auto it = std::find(list.begin(), list.end(), e);
-        if (it != list.end())
-            list.erase(it);
-        if (list.empty())
-            m_Children.erase(cit);
-    }
-
-    // Desired sibling-list key for e's CURRENT Parent: the parent's key if it is a tracked
-    // (alive + visible) entity, else kRootId. Absent/invalid/dangling Parent ⇒ root — matches
-    // Rebuild's alive-check semantics.
-    TreeId DesiredParentKey(const EntityHandle& e) const
-    {
-        if (auto* p = m_World->GetComponent<Components::Parent>(e); p && p->parent.IsValid())
-        {
-            const uint32_t pk = static_cast<uint32_t>(Encode(p->parent));
-            if (m_EntityParentKey.find(pk) != m_EntityParentKey.end())
-                return static_cast<TreeId>(pk);
-        }
-        return kRootId;
-    }
-
-    // Label rule shared by Rebuild/ApplyCreated (unconditional set) and ApplyRenamed (compare
-    // first, F2). Name component if present, else the entity-id fallback.
-    void ComputeLabel(const EntityHandle& e, std::string& out) const
-    {
-        if (auto* name = m_World->GetComponent<Components::Name>(e); name && name->value[0])
-            out.assign(name->View());
-        else
-        {
-            out.assign("Entity ");
-            out += std::to_string(e.id);
-        }
-    }
-
-    void BuildLabel(const EntityHandle& e) { ComputeLabel(e, m_Labels[Encode(e)]); }
-
-    // (Re)build the child→parent position index from the current adjacency. Called at the end
-    // of every full Rebuild so the incremental ops have correct bookkeeping to mutate.
-    void SeedParentKeyIndex()
-    {
-        m_EntityParentKey.clear();
-        // Reserve for the total tracked entity count (roots + all children == the hide-filtered
-        // snapshot), not m_Children.size() which is the parent-bucket count.
-        m_EntityParentKey.reserve(m_SnapshotScratch.size());
-        for (const EntityHandle& r : m_Roots)
-            m_EntityParentKey[static_cast<uint32_t>(Encode(r))] = kRootId;
-        for (const auto& kv : m_Children)
-            for (const EntityHandle& c : kv.second)
-                m_EntityParentKey[static_cast<uint32_t>(Encode(c))] = static_cast<TreeId>(kv.first);
-    }
-
-    World* m_World = nullptr; // not owned
-    std::vector<EntityHandle> m_Roots;
-    std::unordered_map<uint32_t, std::vector<EntityHandle>> m_Children; // key = parent id
-    std::unordered_map<TreeId, std::string> m_Labels;
-
-    // Child key (Encode as uint32) → its sibling list key: kRootId for a root, else the parent's
-    // TreeId. Doubles as the tracked-entity membership set for the identity diff and the O(1)
-    // position lookup the reparent/destroy ops need. Kept in lockstep with m_Roots/m_Children.
-    std::unordered_map<uint32_t, TreeId> m_EntityParentKey;
-
-    std::vector<EntityHandle> m_SnapshotScratch; // reused alive-snapshot buffer (Rebuild + diff)
-    std::vector<EntityHandle> m_DiffCreated;     // reused identity-diff delta buffers
-    std::vector<EntityHandle> m_DiffDestroyed;
-    std::vector<SortScratchEntry> m_SortScratch; // reused across rebuilds and sibling groups
-    std::unordered_set<TreeId> m_PendingResortParents; // sibling lists to resort (coalesced renames)
-    std::string m_LabelScratch;                  // reused by ApplyRenamed's compare-then-assign
-    HierarchySortMode m_SortMode = HierarchySortMode::Custom;
-    HierarchySortDirection m_SortDirection = HierarchySortDirection::Ascending;
-};
 
 namespace
 {
@@ -1642,10 +671,95 @@ HierarchyPanel::HierarchyPanel()
                                       UI::Interaction::ItemId anchorAfter = m_Selection->GetAnchor();
                                       std::vector<UI::Interaction::ItemId> selectionAfter = m_Selection->GetSelection();
 
-                                      if (m_Undo && !m_SuppressSelectionUndo &&
-                                          (!SelectionItemSetsEqual(m_LastSelectionIds, selectionAfter) ||
-                                           m_LastSelectionAnchor != anchorAfter))
-                                          m_Undo->CommitPendingEdit();
+                                      if (m_Undo && !m_SuppressSelectionUndo)
+                                      {
+                                          std::vector<UI::Interaction::ItemId> selectionBefore = m_LastSelectionIds;
+                                          UI::Interaction::ItemId anchorBefore = m_LastSelectionAnchor;
+
+                                          // Only create an undo command if the selection actually changed.
+                                          if (!SelectionItemSetsEqual(selectionBefore, selectionAfter) || anchorBefore != anchorAfter)
+                                          {
+                                              class HierarchySelectionCommand final : public Editor::IEditorCommand
+                                              {
+                                                public:
+                                                  using NotifyFn = std::function<void(UI::Interaction::ItemId)>;
+
+                                                  HierarchySelectionCommand(UI::Interaction::SelectionModel* selection,
+                                                                            std::vector<UI::Interaction::ItemId> beforeIds,
+                                                                            UI::Interaction::ItemId beforeAnchor,
+                                                                            std::vector<UI::Interaction::ItemId> afterIds,
+                                                                            UI::Interaction::ItemId afterAnchor,
+                                                                            bool* suppressFlag,
+                                                                            NotifyFn notify)
+                                                      : m_Selection(selection), m_BeforeIds(std::move(beforeIds)), m_AfterIds(std::move(afterIds)), m_BeforeAnchor(beforeAnchor), m_AfterAnchor(afterAnchor), m_SuppressFlag(suppressFlag), m_Notify(std::move(notify))
+                                                  {
+                                                  }
+
+                                                  const char* GetName() const override { return "Hierarchy Selection"; }
+
+                                                  void Do() override { Redo(); }
+
+                                                  void Undo() override
+                                                  {
+                                                      if (!m_Selection || !m_SuppressFlag)
+                                                          return;
+                                                      *m_SuppressFlag = true;
+                                                      m_Selection->SetSelection(m_BeforeIds, m_BeforeAnchor);
+                                                      *m_SuppressFlag = false;
+                                                      if (m_Notify)
+                                                          m_Notify(m_BeforeAnchor);
+                                                  }
+
+                                                  void Redo() override
+                                                  {
+                                                      if (!m_Selection || !m_SuppressFlag)
+                                                          return;
+                                                      *m_SuppressFlag = true;
+                                                      m_Selection->SetSelection(m_AfterIds, m_AfterAnchor);
+                                                      *m_SuppressFlag = false;
+                                                      if (m_Notify)
+                                                          m_Notify(m_AfterAnchor);
+                                                  }
+
+                                                private:
+                                                  UI::Interaction::SelectionModel* m_Selection = nullptr; // not owned
+                                                  std::vector<UI::Interaction::ItemId> m_BeforeIds;
+                                                  std::vector<UI::Interaction::ItemId> m_AfterIds;
+                                                  UI::Interaction::ItemId m_BeforeAnchor = 0;
+                                                  UI::Interaction::ItemId m_AfterAnchor = 0;
+                                                  bool* m_SuppressFlag = nullptr; // not owned
+                                                  NotifyFn m_Notify;
+                                              };
+
+                                              auto notify = [this](UI::Interaction::ItemId /*anchorId*/)
+                                              {
+                                                  // Undo/redo applied SetSelection already; sync snapshot so the next user
+                                                  // selection compares against the correct baseline (otherwise undo appears broken).
+                                                  m_SuppressSelectionUndo = true;
+                                                  if (m_Selection)
+                                                  {
+                                                      m_LastSelectionIds = m_Selection->GetSelection();
+                                                      m_LastSelectionAnchor = m_Selection->GetAnchor();
+                                                  }
+                                                  if (m_Tree)
+                                                  {
+                                                      m_Tree->RefreshFromProvider();
+                                                      m_Tree->SyncSelectionVisuals();
+                                                  }
+                                                  m_SuppressSelectionUndo = false;
+                                              };
+
+                                              auto cmd = std::make_unique<HierarchySelectionCommand>(
+                                                  m_Selection.get(),
+                                                  std::move(selectionBefore),
+                                                  anchorBefore,
+                                                  selectionAfter,
+                                                  anchorAfter,
+                                                  &m_SuppressSelectionUndo,
+                                                  notify);
+                                              m_Undo->CommitAlreadyApplied(std::move(cmd));
+                                          }
+                                      }
 
                                       // Update snapshot for next time.
                                       m_LastSelectionIds = std::move(selectionAfter);
@@ -1716,12 +830,26 @@ HierarchyPanel::HierarchyPanel()
         if (!m_OnHierarchyItemActivated || id == 0 || id == kRootId)
             return;
         m_OnHierarchyItemActivated(HierarchyDataProvider::Decode(id)); });
+    // A slow second click on the selected entity renames it, as F2 does.
+    m_Tree->SetOnItemRenameRequested([this](TreeId) { BeginRenameOfSelectedEntity(); });
 
+    m_RowEye = std::make_unique<Editor::HierarchyRowEye>(Editor::HierarchyRowEyeHost{
+        [this] { return m_World; },
+        [this](const UIElement& row) { return EntityShownBy(row); },
+        [this](ECS::EntityHandle clicked) { return ResolveRowActionTargets(clicked); },
+        [this](UIElement& row, ECS::EntityHandle entity)
+        {
+            if (m_World && m_Tree)
+                m_RowActivity.Present(*m_World, entity, m_Tree->BoundIdOf(&row), row);
+        }});
     // Per-row styling: add/remove a class when the underlying entity is disabled.
     m_Tree->SetOnRowBound([this](TreeId id, UIElement* row)
                           {
 	        if (!row)
 	            return;
+	        // A rename field on a row that now shows another entity would rename the wrong one.
+	        const bool showsEntity = id != 0 && id != kRootId && !Editor::IsGhostTreeId(id);
+	        m_EntityRename.OnRowBound(*row, showsEntity ? HierarchyDataProvider::Decode(id) : ECS::EntityHandle{});
 	        if (!m_World)
 	            return;
 	        if (id == 0 || id == kRootId)
@@ -1732,7 +860,6 @@ HierarchyPanel::HierarchyPanel()
             // anyway, so take it here and give the row its own presentation.
             if (Editor::IsGhostTreeId(id))
             {
-                m_LayerControls.Hide(*row);
                 if (m_VcsController)
                     m_VcsController->DecorateGhostRow(id, *row);
                 return;
@@ -1759,13 +886,16 @@ HierarchyPanel::HierarchyPanel()
 	        else
 	            row->RemoveClass("entity-runtime");
 
-	        Editor::ApplyHierarchyEntityIconClasses(m_World, row, handle);
+	        // The provider's child lists are the tree the rows show.
+	        auto childrenOf = [this](ECS::EntityHandle parent) { return m_Provider->ChildrenOf(parent); };
+	        Editor::ApplyHierarchyEntityIconClasses(m_World, row, handle, childrenOf);
 
             // Keep the preview icon separate from the title so it can have its own
             // hover state.  TreeView rows are pooled, so create the child once and
             // reuse it across bindings just like the Assets tree does.
             UIElement* titleEl = nullptr;
             UIElement* previewIconEl = nullptr;
+            MaskField* renderLayerField = nullptr;
             for (const auto& child : row->GetChildren())
             {
                 if (child && child->HasClass("tree-title"))
@@ -1774,9 +904,13 @@ HierarchyPanel::HierarchyPanel()
                 }
                 else if (child && child->HasClass("hierarchy-preview-icon"))
                     previewIconEl = child.get();
+                else if (child && child->HasClass("hierarchy-render-layer-dropdown"))
+                    renderLayerField = dynamic_cast<MaskField*>(child.get());
             }
             if (m_VcsController)
                 m_VcsController->DecorateRow(handle, *row);
+            Editor::HierarchyRowParts rowParts{*row, titleEl};
+            Editor::ApplyHierarchyRowDecorations(*m_World, handle, rowParts);
             if (titleEl && !previewIconEl)
             {
                 auto previewIcon = std::make_unique<UIElement>();
@@ -1791,10 +925,11 @@ HierarchyPanel::HierarchyPanel()
                 previewIconEl = previewIcon.get();
                 row->AddChild(std::move(previewIcon));
             }
-            m_RowActivity.Present(*m_World, handle, id, *row);
-            if (!row->HasClass("hierarchy-hover-wired"))
+            if (!renderLayerField)
             {
-                row->AddClass("hierarchy-hover-wired");
+                // A pooled row's first bind: the layer field is created once per row, so the
+                // row's own handlers are wired here too. Each asks the tree which item the
+                // row shows now, so a recycled row never answers for its previous item.
                 row->RegisterEventHandler(kEventMouseEnter, [this, row](UIEvent&)
                                           {
                     if (!m_OnHoverEntity || !m_Tree)
@@ -1810,15 +945,56 @@ HierarchyPanel::HierarchyPanel()
                         m_OnHoverEntity({});
                 });
 
+                auto layers = std::make_unique<MaskField>();
+                layers->AddClass("hierarchy-render-layer-dropdown");
+                Editor::FeedRenderLayerNames(*layers);
+                layers->SetNothingTooltip(Editor::kRenderLayersNothingTooltip);
+                renderLayerField = layers.get();
+                renderLayerField->SetOnBitsChanged([this, row](uint32 bits, bool on)
+                {
+                    if (!m_World || !m_Tree)
+                        return;
+                    const TreeId tid = m_Tree->BoundIdOf(row);
+                    if (tid == 0 || tid == kRootId)
+                        return;
+                    const ECS::EntityHandle entity = HierarchyDataProvider::Decode(tid);
+                    if (!entity.IsValid() || !m_World->IsValid(entity))
+                        return;
+
+                    // A row inside the selection applies the layer to the whole selection,
+                    // the same rule the enable-toggle icon follows; each entity keeps its
+                    // other layers.
+                    Editor::ApplyRenderLayerBits(*m_World, ResolveRowActionTargets(entity), bits, on,
+                                                 m_Undo, m_ChangeNotifications);
+                });
+                row->AddChild(std::move(layers));
+
+                m_RowEye->AddTo(*row);
             }
-            if (titleEl)
-                m_LayerControls.Present(*m_World, handle, *row, *titleEl, GetLayoutWidth(),
-                    [this, row]()
-                    {
-                        if (!m_Tree)
-                            return std::vector<ECS::EntityHandle>{};
-                        return ResolveRowActionTargets(HierarchyDataProvider::Decode(m_Tree->BoundIdOf(row)));
-                    }, m_Undo, m_ChangeNotifications);
+            // After the row's own children exist, so a first bind presents the eye too.
+            m_RowActivity.Present(*m_World, handle, id, *row);
+            m_RowEye->Present(*row, handle, m_Provider->IsExpandable(id));
+
+            const auto* layerRenderer = m_World->GetComponent<Components::MeshRenderer>(handle);
+            const bool showRenderLayerDropdown = m_ShowRenderLayer && layerRenderer;
+            UI::Layout::SetElementHidden(*renderLayerField, !showRenderLayerDropdown);
+            // The dropdown is anchored to the row's right edge rather than flowed,
+            // so the title has to reserve its strip explicitly (theme/views.css).
+            if (showRenderLayerDropdown)
+                row->AddClass("has-render-layer");
+            else
+                row->RemoveClass("has-render-layer");
+            // A narrow panel gets a shorter control rather than none: the layer
+            // stays readable and the name keeps usable room.
+            constexpr float kNarrowRenderLayerPx = 400.0f;
+            const bool narrowRenderLayer =
+                showRenderLayerDropdown && GetLayoutWidth() < kNarrowRenderLayerPx;
+            if (narrowRenderLayer)
+                row->AddClass("render-layer-narrow");
+            else
+                row->RemoveClass("render-layer-narrow");
+            if (showRenderLayerDropdown)
+                renderLayerField->SetValueWithoutNotify(layerRenderer->RenderLayers.Bits);
             if (titleEl && previewIconEl)
             {
                 titleEl->AddClass("tree-title-no-icon");
@@ -1826,7 +1002,7 @@ HierarchyPanel::HierarchyPanel()
                 UI::Layout::DisableBackgroundOverride(*titleEl);
 
                 const float iconSize = std::max(1.0f, m_LastTreeIconSizePx);
-                previewIconEl->Overrides()
+                previewIconEl->Style()
                     .Set(Style::Width, StyleLength::Px(iconSize))
                     .Set(Style::Height, StyleLength::Px(iconSize))
                     .Set(Style::MinWidth, StyleLength::Px(iconSize))
@@ -1840,7 +1016,7 @@ HierarchyPanel::HierarchyPanel()
                    the Inspector header and the Bookmarks row. The row keeps its
                    own copy of the kind class for IsCssGlyphEntity and the
                    row-level rules. */
-                Editor::ApplyHierarchyEntityIconClassesToIcon(m_World, previewIconEl, handle);
+                Editor::ApplyHierarchyEntityIconClassesToIcon(m_World, previewIconEl, handle, childrenOf);
 
                 Editor::ApplyHierarchyLightIconTint(*m_World, handle, *previewIconEl);
 
@@ -1857,7 +1033,7 @@ HierarchyPanel::HierarchyPanel()
                     const auto* phPlaceholder = m_World->GetComponent<Components::PolyhavenPlaceholder>(handle);
                     if (phPlaceholder && phPlaceholder->slug[0] != '\0')
                     {
-                        std::filesystem::path thumbPath = PolyhavenService::GetCacheDir() / (std::string(phPlaceholder->Slug()) + ".png");
+                        std::filesystem::path thumbPath = PolyhavenService::GetThumbnailPath(std::string(phPlaceholder->Slug()));
                         std::error_code ec;
                         if (std::filesystem::exists(thumbPath, ec))
                         {
@@ -1865,12 +1041,12 @@ HierarchyPanel::HierarchyPanel()
                             if (mgr)
                             {
                                 std::string pathStr = thumbPath.string();
-                                GUID thumbGuid = mgr->ResolveBackgroundImagePath(pathStr);
+                                GUID thumbGuid = mgr->BackgroundImages().ResolvePath(pathStr);
                                 if (!thumbGuid.IsNull())
                                 {
                                     // Uploads at once when the texture is loaded, otherwise requests it;
                                     // never waits (a first open can still be cooking it).
-                                    mgr->EnsureBackgroundTextureUploaded(thumbGuid);
+                                    mgr->BackgroundImages().EnsureUploaded(thumbGuid);
 
                                     // Fit thumbnail inside the square icon area (1:1), keeping aspect ratio.
                                     BackgroundImageSource source{};
@@ -1883,9 +1059,9 @@ HierarchyPanel::HierarchyPanel()
                                     size.SizeXIsPercent = false;
                                     size.SizeY = icon;
                                     size.SizeYIsPercent = false;
-                                    BackgroundPositionValue pos{0.0f, true, 50.0f, true};
+                                    BackgroundPositionValue pos = BackgroundPositionValue::Percent(0.0f, 50.0f);
                                     previewIconEl->AddClass("hierarchy-entity-model-thumb");
-                                    previewIconEl->Overrides()
+                                    previewIconEl->Style()
                                         .Set(Style::BackgroundImage, source)
                                         .Set(Style::BackgroundRepeatProp, BackgroundRepeat::NoRepeat)
                                         .Set(Style::BackgroundSize, size)
@@ -1897,49 +1073,55 @@ HierarchyPanel::HierarchyPanel()
                             }
                         }
                     }
-                    else if (row->HasClass("hierarchy-entity-animated-sprite") &&
-                             m_Context && m_Context->Assets && m_Context->Thumbnails &&
-                             !m_Context->UIReplayActive)
-                    {
-                        // Sprite sheets are useless as previews, so the thumbnail
-                        // service crops the entity's current frame out of its
-                        // sheet. Falls back to the CSS sprite icon (via class)
-                        // while the crop is generating, or when it cannot be.
-                        const Editor::SpriteFramesPreviewRequest request =
-                            Editor::TryResolveSpriteFramesPreview(m_World, handle, m_Context->Assets);
-                        if (!request.AssetPath.empty())
-                        {
-                            IThumbnailProvider* thumbnails = m_Context->Thumbnails;
-                            ApplyGeneratedRowPreview(
-                                row, id, previewIconEl,
-                                [thumbnails, request](std::function<void(const std::string&)> onReady)
-                                {
-                                    return thumbnails->GetOrRequestSpriteFrame(
-                                        request.AssetPath, request.AnimationName, request.FlipX,
-                                        std::move(onReady));
-                                });
-                        }
-                    }
                     else if (row->HasClass("hierarchy-entity-sprite") &&
-                             m_Context && m_Context->Assets && m_Context->Thumbnails && !m_Context->UIReplayActive)
+                             m_Context && m_Context->Assets)
                     {
-                        const auto path = Editor::TryResolveSpriteAlbedoTexturePath(m_World, handle, m_Context->Assets);
-                        if (!path.empty())
+                        // Sprite: show the bound albedo texture as the icon. Fall back to
+                        // the CSS sprite icon (via class) when the texture can't be resolved.
+                        const std::filesystem::path spritePath =
+                            Editor::TryResolveSpriteAlbedoTexturePath(m_World, handle, m_Context->Assets);
+                        std::error_code ec;
+                        if (!spritePath.empty() && std::filesystem::exists(spritePath, ec))
                         {
-                            const auto uv = Editor::ResolveSpritePreviewUV(m_World, handle, m_Context->Assets);
-                            const auto keying = Editor::ResolveSpritePreviewKey(m_World, handle, m_Context->Assets);
-                            auto* thumbnails = m_Context->Thumbnails;
-                            ApplyGeneratedRowPreview(row, id, previewIconEl,
-                                [thumbnails, path, uv, keying](std::function<void(const std::string&)> onReady) {
-                                    return thumbnails->GetOrRequestAtlasRegion(path, uv, std::move(onReady), keying);
-                                });
+                            UIManager* mgr = GetOwnerManager();
+                            if (mgr)
+                            {
+                                const std::string pathStr = spritePath.string();
+                                const GUID bgGuid = mgr->BackgroundImages().ResolvePath(pathStr);
+                                if (!bgGuid.IsNull())
+                                {
+                                    // Uploads at once when the texture is loaded, otherwise requests it;
+                                    // never waits (a first open can still be cooking it). The upload's
+                                    // completion repaints the icon.
+                                    mgr->BackgroundImages().EnsureUploaded(bgGuid);
+
+                                    // Fit inside the square icon box while preserving the texture's
+                                    // aspect ratio, left-aligned and vertically centred like other
+                                    // hierarchy row icons: contain sizes from the uploaded image.
+                                    BackgroundImageSource source{};
+                                    source.Kind = BackgroundImageSource::SourceKind::Path;
+                                    source.Value = pathStr;
+                                    BackgroundSizeValue size{};
+                                    size.Mode = BackgroundSizeMode::Contain;
+                                    BackgroundPositionValue pos = BackgroundPositionValue::Percent(0.0f, 50.0f);
+                                    previewIconEl->AddClass("hierarchy-entity-model-thumb");
+                                    previewIconEl->Style()
+                                        .Set(Style::BackgroundImage, source)
+                                        .Set(Style::BackgroundRepeatProp, BackgroundRepeat::NoRepeat)
+                                        .Set(Style::BackgroundSize, size)
+                                        .Set(Style::BackgroundPosition, pos)
+                                        .Set(Style::BackgroundTint, uint32_t(0xFFFFFFFFu));
+                                    ApplyModelThumbColorOverride(previewIconEl);
+                                    previewIconEl->MarkDirty(UIElement::VisualDirty);
+                                }
+                            }
                         }
                     }
                     else
                     {
                         // Check entity itself or its children for a model asset (submesh models
                         // have MeshRenderer on children, not the parent).
-                        const GUID modelGuid = Editor::FindModelGuidForEntityOrChildren(m_World, handle);
+                        const GUID modelGuid = Editor::FindModelGuidForEntityOrChildren(m_World, handle, childrenOf);
                         if (!modelGuid.IsNull() &&
                             m_Context && m_Context->Thumbnails && !m_Context->UIReplayActive)
                             {
@@ -1964,15 +1146,15 @@ HierarchyPanel::HierarchyPanel()
                 {
                     titleEl->RemoveClass("search-match");
                 }
-            }
-            Editor::HierarchyRowParts parts{*row, titleEl};
-            Editor::ApplyHierarchyRowDecorations(*m_World, handle, parts);
-        });
+            } });
 
-    // The tree takes every payload the panel takes, plus entity drags for reparenting.
-    m_Tree->SetAcceptsPayload([this](UI::Interaction::PayloadTypeId tid)
-                              { return AcceptsPayload(tid) ||
-                                       tid == UI::Interaction::GetPayloadTypeId<Editor::HierarchyEntityDragPayload>(); });
+    // Accept asset drags (e.g. prefab scene files) to instantiate entities.
+    // Accept bookmark drags from Bookmarks panel to navigate (open scene, select entity).
+    m_Tree->SetAcceptsPayload([](UI::Interaction::PayloadTypeId tid)
+                              { return tid == UI::Interaction::GetPayloadTypeId<Editor::AssetPathsDragPayload>() ||
+                                       tid == UI::Interaction::GetPayloadTypeId<Editor::HierarchyEntityDragPayload>() ||
+                                       tid == UI::Interaction::GetPayloadTypeId<Editor::BookmarkDragPayload>() ||
+                                       tid == UI::Interaction::GetPayloadTypeId<Editor::OnlineAssetDragPayload>(); });
     m_Tree->SetDragPayloadBuilder([this](TreeId dragSourceId) -> UI::Interaction::DragPayload
                                   {
         if (!m_Selection || !m_World || dragSourceId == 0)
@@ -2066,8 +1248,81 @@ HierarchyPanel::HierarchyPanel()
     // EntityField without the press re-selecting it and swapping the inspector mid-drag. A drag never
     // changes selection; plain clicks commit on release. Shift/Ctrl/RMB/keyboard stay immediate.
     m_Tree->SetSelectOnMouseUp(true);
-    m_Tree->SetOnCanDrop([this](const UI::Interaction::DropRequest& req) { return CanDrop(req); });
-    m_Tree->SetOnPerformDrop([this](const UI::Interaction::DropRequest& req) { PerformDrop(req); });
+    m_Tree->SetOnCanDrop([this](const UI::Interaction::DropRequest& req) -> UI::Interaction::DropFeedback
+                         {
+        if (!m_World)
+            return {false, "No world"};
+
+        if (const auto* assetPayload = req.payload.TryGet<Editor::AssetPathsDragPayload>())
+        {
+            if (!m_Context)
+                return {false, "No editor context"};
+            if (assetPayload->paths.empty())
+                return {false, "Empty payload"};
+            if (std::string refusal = Editor::DescribeRefusedDrop(assetPayload->paths); !refusal.empty())
+                return {false, std::move(refusal)};
+            return {true, {}};
+        }
+
+        if (const auto* bookmarkPayload = req.payload.TryGet<Editor::BookmarkDragPayload>())
+        {
+            if (m_OnNavigateToBookmark)
+                return {true, {}};
+            return {false, "No navigate callback"};
+        }
+
+        if (req.payload.Is<Editor::OnlineAssetDragPayload>())
+            return {true, {}};
+
+        const auto* entPayload = req.payload.TryGet<Editor::HierarchyEntityDragPayload>();
+        if (!entPayload)
+            return {false, "Wrong payload"};
+        if (!m_World)
+            return {false, "No world"};
+        if (entPayload->treeIds.empty())
+            return {false, "Empty payload"};
+
+        // Resolve destination parent from drop hit.
+        ECS::EntityHandle target{};
+        if (req.hit.TargetId != 0 && req.hit.Location != UI::Interaction::DropLocation::OnEmptySpace)
+        {
+            target = HierarchyDataProvider::Decode(static_cast<TreeId>(req.hit.TargetId));
+            if (!target.IsValid() || !m_World->IsValid(target))
+                target = {};
+        }
+
+        ECS::EntityHandle destParent{};
+        if (req.hit.Location == UI::Interaction::DropLocation::OnItem)
+        {
+            destParent = target;
+        }
+        else if (req.hit.Location == UI::Interaction::DropLocation::BeforeItem ||
+                 req.hit.Location == UI::Interaction::DropLocation::AfterItem)
+        {
+            if (target.IsValid())
+                destParent = Editor::GetEffectiveParent(*m_World, target); // {} means root
+        }
+
+        if (!Editor::CanAcceptAuthoredChildren(*m_World, destParent))
+            return {false, "Generated - drop onto its parent instead"};
+
+        // Cycle check: cannot parent under any of the moved entities or their descendants.
+        for (std::uint64_t tid : entPayload->treeIds)
+        {
+            if (tid == 0 || tid == kRootId)
+                continue;
+            ECS::EntityHandle moved = HierarchyDataProvider::Decode(static_cast<TreeId>(tid));
+            if (!moved.IsValid() || !m_World->IsValid(moved))
+                continue;
+
+            if (destParent.IsValid() && destParent.id == moved.id)
+                return {false, "Cannot parent under self"};
+            if (destParent.IsValid() && Editor::IsDescendantOf(*m_World, destParent, moved))
+                return {false, "Cycle"};
+        }
+
+        return {true, {}}; });
+    m_Tree->SetOnPerformDrop([this](const UI::Interaction::DropRequest& req) { HandleTreeDrop(req); });
 
     // Icon click: toggle the entity's Enabled/Disabled state and update the row class.
     m_Tree->SetOnIconClicked([this](TreeId id, UIElement* row)
@@ -2256,14 +1511,14 @@ HierarchyPanel::HierarchyPanel()
         ContextMenuBuilder builder;
         // Built-in Create actions
         builder.AddItem("Create", 0, MenuItemFlag_None, -100, EditorIcons::kPlus);
-        builder.AddItem("Create/Empty Entity", HierarchyCommandIds::kCmdCreateEmptyEntity, MenuItemFlag_None, -100, kIconEmptyEntity);
+        builder.AddItem("Create/Empty Entity", kCmdCreateEmptyEntity, MenuItemFlag_None, -100, kIconEmptyEntity);
         if (mask == static_cast<uint32_t>(Editor::EditorContextMenuTarget::HierarchyItem))
         {
-            builder.AddItem("Create/As Empty Parent", HierarchyCommandIds::kCmdCreateAsEmptyParent, MenuItemFlag_None, -99, kIconEmptyEntity);
-            builder.AddItem("Duplicate", HierarchyCommandIds::kCmdDuplicate, MenuItemFlag_None, -50, EditorIcons::kCopy);
+            builder.AddItem("Create/As Empty Parent", kCmdCreateAsEmptyParent, MenuItemFlag_None, -99, kIconEmptyEntity);
+            Editor::AddHierarchyEntityEditItems(builder);
 
             if (m_OnAddEntitiesToBookmarks)
-                builder.AddItem("Add to Bookmarks", HierarchyCommandIds::kCmdAddToBookmarks, MenuItemFlag_None, -48, EditorIcons::kBookmark);
+                builder.AddItem("Add to Bookmarks", kCmdAddToBookmarks, MenuItemFlag_None, -48, EditorIcons::kBookmark);
 
             // "Show Mesh Location" — only when the target entity (or one of its
             // children) references a model asset we can locate on disk.
@@ -2276,35 +1531,35 @@ HierarchyPanel::HierarchyPanel()
                     AssetMetadata meta;
                     if (m_Context->Assets->GetRegistry().TryGetAssetMetadata(modelGuid, meta) && !meta.Path.empty())
                     {
-                        builder.AddItem("Show Mesh Location", HierarchyCommandIds::kCmdShowMeshLocation, MenuItemFlag_None, -40, EditorIcons::kEye);
+                        builder.AddItem("Show Mesh Location", kCmdShowMeshLocation, MenuItemFlag_None, -40, EditorIcons::kEye);
                     }
                 }
             }
         }
         builder.AddItem("Create/Shape", 0, MenuItemFlag_None, -98, EditorIcons::kCube);
-        builder.AddItem("Create/Shape/Cube", HierarchyCommandIds::kCmdCreateShapeCube, MenuItemFlag_None, -98, EditorIcons::kCube);
-        builder.AddItem("Create/Shape/Sphere", HierarchyCommandIds::kCmdCreateShapeSphere, MenuItemFlag_None, -97, EditorIcons::kSphere);
-        builder.AddItem("Create/Shape/Capsule", HierarchyCommandIds::kCmdCreateShapeCapsule, MenuItemFlag_None, -96, EditorIcons::kCapsule);
-        builder.AddItem("Create/Shape/Plane", HierarchyCommandIds::kCmdCreateShapePlane, MenuItemFlag_None, -95, EditorIcons::kPlane);
+        builder.AddItem("Create/Shape/Cube", kCmdCreateShapeCube, MenuItemFlag_None, -98, EditorIcons::kCube);
+        builder.AddItem("Create/Shape/Sphere", kCmdCreateShapeSphere, MenuItemFlag_None, -97, EditorIcons::kSphere);
+        builder.AddItem("Create/Shape/Capsule", kCmdCreateShapeCapsule, MenuItemFlag_None, -96, EditorIcons::kCapsule);
+        builder.AddItem("Create/Shape/Plane", kCmdCreateShapePlane, MenuItemFlag_None, -95, EditorIcons::kPlane);
         builder.AddItem("Create/Light", 0, MenuItemFlag_None, -93, EditorIcons::kLight);
-        builder.AddItem("Create/Light/Directional", HierarchyCommandIds::kCmdCreateLightDirectional, MenuItemFlag_None, -93, kIconLightDirectional);
-        builder.AddItem("Create/Light/Point", HierarchyCommandIds::kCmdCreateLightPoint, MenuItemFlag_None, -92, EditorIcons::kLight);
-        builder.AddItem("Create/Light/Spot", HierarchyCommandIds::kCmdCreateLightSpot, MenuItemFlag_None, -91, kIconLightSpot);
-        builder.AddItem("Create/Light/Area", HierarchyCommandIds::kCmdCreateLightArea, MenuItemFlag_None, -90, kIconLightArea);
-        builder.AddItem("Create/Light/Ambient", HierarchyCommandIds::kCmdCreateLightAmbient, MenuItemFlag_None, -88, kIconLightAmbient);
+        builder.AddItem("Create/Light/Directional", kCmdCreateLightDirectional, MenuItemFlag_None, -93, kIconLightDirectional);
+        builder.AddItem("Create/Light/Point", kCmdCreateLightPoint, MenuItemFlag_None, -92, EditorIcons::kLight);
+        builder.AddItem("Create/Light/Spot", kCmdCreateLightSpot, MenuItemFlag_None, -91, kIconLightSpot);
+        builder.AddItem("Create/Light/Area", kCmdCreateLightArea, MenuItemFlag_None, -90, kIconLightArea);
+        builder.AddItem("Create/Light/Ambient", kCmdCreateLightAmbient, MenuItemFlag_None, -88, kIconLightAmbient);
         builder.AddItem("Create/Terrain", 0, MenuItemFlag_None, -87, EditorIcons::kTerrain);
-        builder.AddItem("Create/Terrain/Terrain (512 m)", HierarchyCommandIds::kCmdCreateTerrain, MenuItemFlag_None, -87, EditorIcons::kTerrain);
-        builder.AddItem("Create/Terrain/Terrain \xe2\x80\x94 Large (4 km)", HierarchyCommandIds::kCmdCreateTerrainLarge, MenuItemFlag_None, -87, EditorIcons::kTerrain);
-        builder.AddItem("Create/Terrain/Planet (5 km)", HierarchyCommandIds::kCmdCreatePlanet5km, MenuItemFlag_None, -86, kIconPlanet);
-        builder.AddItem("Create/Terrain/Planet (50 km)", HierarchyCommandIds::kCmdCreatePlanet50km, MenuItemFlag_None, -86, kIconPlanet);
-        builder.AddItem("Create/Camera", HierarchyCommandIds::kCmdCreateCamera, MenuItemFlag_None, -86, kIconCamera);
-        builder.AddItem("Create/Ocean", HierarchyCommandIds::kCmdCreateOcean, MenuItemFlag_None, -85, EditorIcons::kOcean);
-        builder.AddItem("Create/Sky Environment", HierarchyCommandIds::kCmdCreateSkyEnvironment, MenuItemFlag_None, -85, kIconSkyEnvironment);
-        builder.AddItem("Create/Reflection Probe", HierarchyCommandIds::kCmdCreateReflectionProbe, MenuItemFlag_None, -84, EditorIcons::kProbe);
-        builder.AddItem("Create/Post Process Volume", HierarchyCommandIds::kCmdCreatePostProcessVolume, MenuItemFlag_None, -84, EditorIcons::kColorFilter);
-        builder.AddItem("Create/DDGI Volume", HierarchyCommandIds::kCmdCreateDDGIVolume, MenuItemFlag_None, -84, EditorIcons::kDDGIVolume);
-        builder.AddItem("Create/Wind Volume", HierarchyCommandIds::kCmdCreateWindVolume, MenuItemFlag_None, -83, EditorIcons::kWind);
-        builder.AddItem("Create/Particle Emitter", HierarchyCommandIds::kCmdCreateParticleEmitter, MenuItemFlag_None, -82, kIconParticles);
+        builder.AddItem("Create/Terrain/Terrain (512 m)", kCmdCreateTerrain, MenuItemFlag_None, -87, EditorIcons::kTerrain);
+        builder.AddItem("Create/Terrain/Terrain \xe2\x80\x94 Large (4 km)", kCmdCreateTerrainLarge, MenuItemFlag_None, -87, EditorIcons::kTerrain);
+        builder.AddItem("Create/Terrain/Planet (5 km)", kCmdCreatePlanet5km, MenuItemFlag_None, -86, kIconPlanet);
+        builder.AddItem("Create/Terrain/Planet (50 km)", kCmdCreatePlanet50km, MenuItemFlag_None, -86, kIconPlanet);
+        builder.AddItem("Create/Camera", kCmdCreateCamera, MenuItemFlag_None, -86, kIconCamera);
+        builder.AddItem("Create/Ocean", kCmdCreateOcean, MenuItemFlag_None, -85, EditorIcons::kOcean);
+        builder.AddItem("Create/Sky Environment", kCmdCreateSkyEnvironment, MenuItemFlag_None, -85, kIconSkyEnvironment);
+        builder.AddItem("Create/Reflection Probe", kCmdCreateReflectionProbe, MenuItemFlag_None, -84, EditorIcons::kProbe);
+        builder.AddItem("Create/Post Process Volume", kCmdCreatePostProcessVolume, MenuItemFlag_None, -84, EditorIcons::kColorFilter);
+        builder.AddItem("Create/DDGI Volume", kCmdCreateDDGIVolume, MenuItemFlag_None, -84, EditorIcons::kDDGIVolume);
+        builder.AddItem("Create/Wind Volume", kCmdCreateWindVolume, MenuItemFlag_None, -83, EditorIcons::kWind);
+        builder.AddItem("Create/Particle Emitter", kCmdCreateParticleEmitter, MenuItemFlag_None, -82, kIconParticles);
 
         Editor::HierarchyContextMenuContext pluginMenuCtx{};
         pluginMenuCtx.World = m_World;
@@ -2329,40 +1584,44 @@ HierarchyPanel::HierarchyPanel()
             const bool isAsc    = (m_SortDirection == HierarchySortDirection::Ascending);
             const bool isDesc   = (m_SortDirection == HierarchySortDirection::Descending);
 
-            builder.AddItem("Sort By",              0,                                         MenuItemFlag_None,   50, EditorIcons::kSortList);
-            builder.AddItem("Sort By/Custom",       HierarchyCommandIds::kCmdSortCustom,       oneOf(isCustom), 50, EditorIcons::kPointer);
-            builder.AddItem("Sort By/Alphabetical", HierarchyCommandIds::kCmdSortAlphabetical, oneOf(isAlpha),  51, EditorIcons::kSortList);
-            builder.AddItem("Sort By/Type",         HierarchyCommandIds::kCmdSortType,         oneOf(isType),   52, EditorIcons::kTag);
-            builder.AddItem("Sort By/-",            0,                                         MenuItemFlag_None,   55);
-            builder.AddItem("Sort By/Ascending",    HierarchyCommandIds::kCmdSortAscending,    oneOf(isAsc),    60, EditorIcons::kArrowUp);
-            builder.AddItem("Sort By/Descending",   HierarchyCommandIds::kCmdSortDescending,   oneOf(isDesc),   61, EditorIcons::kArrowDown);
+            builder.AddItem("Sort By",              0,                    MenuItemFlag_None,   50, EditorIcons::kSortList);
+            builder.AddItem("Sort By/Custom",       kCmdSortCustom,       oneOf(isCustom), 50, EditorIcons::kPointer);
+            builder.AddItem("Sort By/Alphabetical", kCmdSortAlphabetical, oneOf(isAlpha),  51, EditorIcons::kSortList);
+            builder.AddItem("Sort By/Type",         kCmdSortType,         oneOf(isType),   52, EditorIcons::kTag);
+            builder.AddItem("Sort By/-",            0,                    MenuItemFlag_None,   55);
+            builder.AddItem("Sort By/Ascending",    kCmdSortAscending,    oneOf(isAsc),    60, EditorIcons::kArrowUp);
+            builder.AddItem("Sort By/Descending",   kCmdSortDescending,   oneOf(isDesc),   61, EditorIcons::kArrowDown);
             builder.AddItem("Hierarchy Options", 0, MenuItemFlag_None, 70, EditorIcons::kSettings);
-            m_LayerControls.BuildMenu(builder);
+            builder.AddItem("Hierarchy Options/Show Render Layer",
+                            kCmdShowRenderLayer,
+                            checkedIf(m_ShowRenderLayer),
+                            70,
+                            EditorIcons::kEye);
             // One preference behind both panels, so the label says so rather
             // than implying the Hierarchy has its own.
             if (m_VcsController && m_VcsController->CanToggleIndicatorVisibility())
                 builder.AddItem("Hierarchy Options/Show Version Control Dots",
-                                HierarchyCommandIds::kCmdShowVcsSceneDiffDots,
+                                kCmdShowVcsSceneDiffDots,
                                 checkedIf(Editor::AreVcsSceneDiffIndicatorsVisible()),
                                 71,
                                 EditorIcons::kEye);
         }
 
         // Scene actions
-        builder.AddItem("New Scene", HierarchyCommandIds::kCmdNewScene, MenuItemFlag_None, 100, EditorIcons::kScene);
+        builder.AddItem("New Scene", kCmdNewScene, MenuItemFlag_None, 100, EditorIcons::kScene);
         m_ContextMenuRecentScenes.clear();
         if (m_GetRecentScenes)
         {
             m_ContextMenuRecentScenes = m_GetRecentScenes();
-            if (m_ContextMenuRecentScenes.size() > HierarchyCommandIds::kCmdLoadRecentSceneCount)
-                m_ContextMenuRecentScenes.resize(HierarchyCommandIds::kCmdLoadRecentSceneCount);
+            if (m_ContextMenuRecentScenes.size() > kCmdLoadRecentSceneCount)
+                m_ContextMenuRecentScenes.resize(kCmdLoadRecentSceneCount);
         }
 
         builder.AddItem("Load Recent Scene", 0, MenuItemFlag_None, 101, EditorIcons::kScene);
         if (m_ContextMenuRecentScenes.empty())
         {
             builder.AddItem("Load Recent Scene/No Recent Scenes",
-                            HierarchyCommandIds::kCmdLoadRecentSceneEmpty,
+                            kCmdLoadRecentSceneEmpty,
                             MenuItemFlag_Disabled,
                             101);
         }
@@ -2374,7 +1633,7 @@ HierarchyPanel::HierarchyPanel()
 
             for (size_t i = 0; i < m_ContextMenuRecentScenes.size(); ++i)
             {
-                const uint32_t cmd = HierarchyCommandIds::kCmdLoadRecentSceneBase + static_cast<uint32_t>(i);
+                const uint32_t cmd = kCmdLoadRecentSceneBase + static_cast<uint32_t>(i);
                 builder.AddItem("Load Recent Scene/" + BuildRecentSceneMenuLabel(m_ContextMenuRecentScenes[i], fileNameCounts),
                                 cmd,
                                 MenuItemFlag_None,
@@ -2397,115 +1656,21 @@ HierarchyPanel::HierarchyPanel()
         m_ContextMenu->Show(m_Window, (int)x, (int)y); };
     m_Tree->SetOnContextMenu(m_ShowContextMenu);
 
-    m_Tree->RegisterEventHandler(kEventKeyDown, [this](UIEvent& event) {
-        const auto* manager = GetOwnerManager();
-        if (!manager || !UI::FocusIsInside(*m_Tree) || UI::FocusIsInTextInput(*manager, m_Tree))
-            return;
-        const uint32_t command = Editor::EditorPluginRegistry::Get().HierarchyCommandForKey(event.Key, event.Mods);
-        if (command == 0)
-            return;
-        m_ContextTargetEntity = {};
-        if (m_Selection)
-        {
-            const auto& selected = m_Selection->GetSelection();
-            if (!selected.empty())
-                m_ContextTargetEntity = HierarchyDataProvider::Decode(static_cast<TreeId>(selected.front()));
-        }
-        if (HandleCommand(command))
-            event.Stop();
-    });
-
-    // Cmd/Ctrl+D: duplicate selected entities.
+    // The panel's key map: the same commands its context menu runs. Keys typed into an open
+    // rename field belong to the field, even the ones it leaves unhandled.
     m_Tree->RegisterEventHandler(kEventKeyDown, [this](UIEvent& e)
                                  {
-                                     if (!Editor::MatchesCatalogShortcut("Hierarchy", "Duplicate", e.Key, e.Mods))
+                                     if (m_EntityRename.GetTitle())
                                          return;
-                                     DuplicateSelectedEntities();
-                                     e.Stop(); });
-
-    // Delete key: delete selected entity (and its subtree) as a single undo step.
-    m_Tree->RegisterEventHandler(kEventKeyDown, [this](UIEvent& e)
-                                 {
-                                     if (!Editor::MatchesCatalogShortcut("Hierarchy", "Delete", e.Key, e.Mods))
-                                         return;
-                                     if (!m_World || !m_Selection)
-                                         return;
-                                     const auto selectedIds = m_Selection->GetSelection();
-                                     if (selectedIds.empty())
-                                         return;
-
-                                     // Collect union of selected subtrees (avoid duplicates).
-                                     std::unordered_set<std::uint64_t> seen;
-                                     seen.reserve(selectedIds.size() * 8);
-                                     std::vector<ECS::EntityHandle> ents;
-                                     ents.reserve(selectedIds.size() * 8);
-
-                                     for (auto sid : selectedIds)
+                                     std::uint32_t command = Editor::HierarchyEntityCommandForKey(e.Key, e.Mods);
+                                     if (command == 0)
                                      {
-                                         const TreeId tid = static_cast<TreeId>(sid);
-                                         if (tid == 0 || tid == kRootId)
-                                             continue;
-                                         ECS::EntityHandle h = HierarchyDataProvider::Decode(tid);
-                                         if (!h.IsValid() || !m_World->IsValid(h))
-                                             continue;
-                                         auto subtree = Editor::DeleteEntitiesCommand::CollectSubtree(*m_World, h);
-                                         for (auto& se : subtree)
-                                         {
-                                             if (!se.IsValid() || !m_World->IsValid(se))
-                                                 continue;
-                                             if (seen.insert((std::uint64_t)se.id).second)
-                                                 ents.push_back(se);
-                                         }
+                                         // A plugin's key acts on the selection, as its menu entry does.
+                                         command = Editor::EditorPluginRegistry::Get().HierarchyCommandForKey(e.Key, e.Mods);
+                                         m_ContextTargetEntity = command != 0 ? FirstSelectedEntity() : m_ContextTargetEntity;
                                      }
-
-                                     if (ents.empty())
-                                         return;
-
-                                     std::sort(ents.begin(), ents.end(), [](const ECS::EntityHandle& a, const ECS::EntityHandle& b) { return a.id < b.id; });
-
-                                     const std::string undoName = (ents.size() > 1) ? "Delete Entities" : "Delete Entity";
-                                     if (m_Undo)
-                                     {
-                                         // Delete + deselect + (on undo) re-select as ONE undo step. The wrapper
-                                         // reselects the deleted entities on Undo, so a single Ctrl+Z brings them
-                                         // back AND restores selection (redo re-deletes + deselects). The
-                                         // applySelection callback (ApplySelectionProgrammatic) suppresses its own
-                                         // selection-undo and drives the inspector/gizmo; the deferred Refresh() is
-                                         // likewise guarded — so no stray HierarchySelectionCommand lands on top.
-                                         std::vector<UI::Interaction::ItemId> selectionBefore =
-                                             m_Selection ? m_Selection->GetSelection() : std::vector<UI::Interaction::ItemId>{};
-                                         UI::Interaction::ItemId anchorBefore = m_Selection ? m_Selection->GetAnchor() : 0;
-                                         auto applySelection = [this](const std::vector<UI::Interaction::ItemId>& ids,
-                                                                      UI::Interaction::ItemId anchor)
-                                         {
-                                             ApplySelectionProgrammatic(ids, anchor);
-                                             if (m_OnSelectEntity)
-                                             {
-                                                 ScopedFlag suppress(m_SuppressSelectionUndo);
-                                                 if (ids.empty())
-                                                     m_OnSelectEntity({});
-                                                 else
-                                                     m_OnSelectEntity(HierarchyDataProvider::Decode(static_cast<TreeId>(anchor)));
-                                             }
-                                         };
-                                         auto onDeleted = [applySelection]() { applySelection({}, 0); };
-                                         auto onRevived = [applySelection, selectionBefore, anchorBefore]()
-                                         { applySelection(selectionBefore, anchorBefore); };
-                                         m_Undo->Execute(std::make_unique<Editor::DeleteEntitiesSelectionCommand>(
-                                             undoName, m_World, m_ChangeNotifications, std::move(ents),
-                                             std::move(onDeleted), std::move(onRevived)));
-                                     }
-                                     else
-                                     {
-                                         Editor::DeleteEntitiesCommand cmdObj(
-                                             undoName, m_World, m_ChangeNotifications, std::move(ents));
-                                         cmdObj.Redo();
-                                         if (m_Selection)
-                                             m_Selection->Clear();
-                                         if (m_OnSelectEntity)
-                                             m_OnSelectEntity({});
-                                     }
-                                     e.Stop(); });
+                                     if (command != 0 && HandleCommand(command))
+                                         e.Stop(); });
 
     if (m_Tree)
     {
@@ -2534,11 +1699,9 @@ HierarchyPanel::HierarchyPanel()
             m_OnTreeIconSizeWheelCommit(px);
     });
 
-    // Search bar placement and visibility are controlled via Settings.
+    // Search bar placement is controlled via Settings.
     auto built = BuildPanelSearchBar(
         "hierarchy-search-field",
-        []()
-        { return SettingsPanel::GetSearchBarsVisible(); },
         {},
         [this](const std::string& text)
         { ApplySearchFilter(text); },
@@ -2555,571 +1718,575 @@ HierarchyPanel::HierarchyPanel()
         m_SearchField->SetTooltip("Search names, or combine filters: t:Light path:\"/World/Root\" name:Key id:42");
     navigationBar->SetSearchBar(std::move(built.Root));
     AddChild(std::move(navigationBar));
-    // The row, not the search inside it, is what the top/bottom setting moves.
     EditorSearchBars::RegisterHosted(m_SearchBar, m_NavigationBar);
 }
 
-bool HierarchyPanel::AcceptsPayload(UI::Interaction::PayloadTypeId typeId) const
+void HierarchyPanel::HandleTreeDrop(const UI::Interaction::DropRequest& req)
 {
-    return typeId == UI::Interaction::GetPayloadTypeId<Editor::AssetPathsDragPayload>() ||
-           typeId == UI::Interaction::GetPayloadTypeId<Editor::BookmarkDragPayload>() ||
-           typeId == UI::Interaction::GetPayloadTypeId<Editor::OnlineAssetDragPayload>();
-}
+    if (!m_World)
+        return;
 
-bool HierarchyPanel::HitTestDropTarget(float x, float y, UI::Interaction::DropHit& out) const
-{
-    if (!ContainsPoint(x, y))
-        return false;
-    out.TargetId = 0;
-    out.Location = UI::Interaction::DropLocation::OnEmptySpace;
-    out.IndentDepth = 0;
-    return true;
-}
-
-UI::Interaction::DropFeedback HierarchyPanel::CanDrop(const UI::Interaction::DropRequest& request) const
-{
-    if (request.payload.Is<Editor::BookmarkDragPayload>())
+    // Resolve bookmark drag to asset path so it uses the same model-aware drop logic below.
+    // For online asset bookmarks (polyhaven:slug), synthesize an OnlineAssetDragPayload and
+    // re-dispatch so the existing download+placeholder logic handles it.
+    Editor::AssetPathsDragPayload bookmarkAsPaths;
+    if (const auto* bookmarkPayload = req.payload.TryGet<Editor::BookmarkDragPayload>())
     {
-        if (m_OnNavigateToBookmark)
-            return {true, {}};
-        return {false, "No navigate callback"};
+        const Bookmark& b = bookmarkPayload->bookmark;
+        if (b.Type == BookmarkType::Asset && m_Context && !b.Reference.empty())
+        {
+            if (b.Reference.rfind("polyhaven:", 0) == 0)
+            {
+                const std::string slug = b.Reference.substr(10);
+                Editor::OnlineAssetDragPayload syntheticOnline;
+                syntheticOnline.slug = slug;
+                syntheticOnline.name = b.Name;
+                syntheticOnline.type = "models";
+                syntheticOnline.entries.push_back({slug, b.Name});
+
+                UI::Interaction::DropRequest syntheticReq = req;
+                syntheticReq.payload = UI::Interaction::DragPayload::Create(std::move(syntheticOnline));
+                // Re-enter the tree's drop handler with the online payload.
+                m_Tree->PerformDrop(syntheticReq);
+                return;
+            }
+
+            GUID guid(b.Reference);
+            if (!guid.IsNull())
+            {
+                auto& engine = EngineCore::GetInstance();
+                AssetMetadata metadata;
+                if (engine.GetAssetManager().GetRegistry().TryGetAssetMetadata(guid, metadata) && !metadata.Path.empty())
+                {
+                    std::filesystem::path absPath = metadata.Path;
+                    if (!absPath.is_absolute() && !m_Context->AssetsRoot.empty())
+                        absPath = m_Context->AssetsRoot / absPath;
+                    bookmarkAsPaths.paths.push_back(std::move(absPath));
+                }
+            }
+        }
+        if (bookmarkAsPaths.paths.empty())
+        {
+            // Entity/Scene or asset resolve failed: navigate to bookmark.
+            if (m_OnNavigateToBookmark)
+                m_OnNavigateToBookmark(b);
+            return;
+        }
     }
 
-    if (!m_World)
-        return {false, "No world"};
+    const auto* payload = req.payload.TryGet<Editor::AssetPathsDragPayload>();
+    if (!payload && !bookmarkAsPaths.paths.empty())
+        payload = &bookmarkAsPaths;
 
-    if (const auto* assetPayload = request.payload.TryGet<Editor::AssetPathsDragPayload>())
+    if (payload)
     {
         if (!m_Context)
-            return {false, "No editor context"};
-        if (assetPayload->paths.empty())
-            return {false, "Empty payload"};
-        if (std::string refusal = Editor::DescribeRefusedDrop(assetPayload->paths); !refusal.empty())
-            return {false, std::move(refusal)};
-        return {true, {}};
-    }
-
-    if (request.payload.Is<Editor::OnlineAssetDragPayload>())
-        return {true, {}};
-
-    if (const auto* entityPayload = request.payload.TryGet<Editor::HierarchyEntityDragPayload>())
-        return CanDropEntities(request.hit, *entityPayload);
-
-    return {false, "Wrong payload"};
-}
-
-UI::Interaction::DropFeedback HierarchyPanel::CanDropEntities(const UI::Interaction::DropHit& hit,
-                                                              const Editor::HierarchyEntityDragPayload& payload) const
-{
-    if (payload.treeIds.empty())
-        return {false, "Empty payload"};
-
-    const ECS::EntityHandle destParent = ResolveDropPlacement(hit).Parent;
-    if (!Editor::CanAcceptAuthoredChildren(*m_World, destParent))
-        return {false, "Generated - drop onto its parent instead"};
-
-    // Cycle check: cannot parent under any of the moved entities or their descendants.
-    for (std::uint64_t tid : payload.treeIds)
-    {
-        if (tid == 0 || tid == kRootId)
-            continue;
-        ECS::EntityHandle moved = HierarchyDataProvider::Decode(static_cast<TreeId>(tid));
-        if (!moved.IsValid() || !m_World->IsValid(moved))
-            continue;
-
-        if (destParent.IsValid() && destParent.id == moved.id)
-            return {false, "Cannot parent under self"};
-        if (destParent.IsValid() && IsDescendantOf(*m_World, destParent, moved))
-            return {false, "Cycle"};
-    }
-
-    return {true, {}};
-}
-
-void HierarchyPanel::PerformDrop(const UI::Interaction::DropRequest& request)
-{
-    if (const auto* bookmarkPayload = request.payload.TryGet<Editor::BookmarkDragPayload>())
-        DropBookmark(request, bookmarkPayload->bookmark);
-    else if (const auto* assetPayload = request.payload.TryGet<Editor::AssetPathsDragPayload>())
-        DropAssetPaths(request, assetPayload->paths);
-    else if (const auto* onlinePayload = request.payload.TryGet<Editor::OnlineAssetDragPayload>())
-        DropOnlineAssets(request, *onlinePayload);
-    else if (const auto* entityPayload = request.payload.TryGet<Editor::HierarchyEntityDragPayload>())
-        DropEntities(request, *entityPayload);
-}
-
-void HierarchyPanel::SetDropPreview(const UI::Interaction::DropPreviewState& state)
-{
-    (void)state;
-}
-
-HierarchyPanel::DropPlacement HierarchyPanel::ResolveDropPlacement(const UI::Interaction::DropHit& hit) const
-{
-    DropPlacement placement{};
-    if (hit.TargetId != 0 && hit.Location != UI::Interaction::DropLocation::OnEmptySpace)
-    {
-        const ECS::EntityHandle target = HierarchyDataProvider::Decode(static_cast<TreeId>(hit.TargetId));
-        if (target.IsValid() && m_World->IsValid(target))
-            placement.Target = target;
-    }
-
-    if (hit.Location == UI::Interaction::DropLocation::OnItem)
-        placement.Parent = placement.Target;
-    else if (hit.Location == UI::Interaction::DropLocation::BeforeItem ||
-             hit.Location == UI::Interaction::DropLocation::AfterItem)
-        placement.Parent = GetEffectiveParent(*m_World, placement.Target); // {} = root
-    return placement;
-}
-
-void HierarchyPanel::MarkSceneStructureChanged()
-{
-    NotifyWorldStructure(m_ChangeNotifications, m_World);
-    if (m_Context && m_Context->OnSceneDirty)
-        m_Context->OnSceneDirty();
-}
-
-std::function<void()> HierarchyPanel::SceneDirtyCallback() const
-{
-    return [ctx = m_Context]()
-    {
-        if (ctx && ctx->OnSceneDirty)
-            ctx->OnSceneDirty();
-    };
-}
-
-void HierarchyPanel::RebuildTreeAndSelect(ECS::EntityHandle entity)
-{
-    if (m_Provider)
-        m_Provider->Rebuild();
-    m_Tree->RefreshFromProvider();
-    if (entity.IsValid())
-        SelectEntity(entity);
-}
-
-void HierarchyPanel::RunDropCommand(std::unique_ptr<Editor::IEditorCommand> command)
-{
-    if (m_Undo)
-        m_Undo->Execute(std::move(command));
-    else
-        command->Do();
-}
-
-void HierarchyPanel::DropBookmark(const UI::Interaction::DropRequest& request, const Bookmark& bookmark)
-{
-    // An asset bookmark drops as the asset it names: a Polyhaven reference as
-    // the online asset, a GUID as its file. Any other bookmark navigates.
-    if (bookmark.Type == BookmarkType::Asset && m_World && m_Context)
-    {
-        if (bookmark.Reference.starts_with(kPolyhavenBookmarkPrefix))
-        {
-            const std::string slug = bookmark.Reference.substr(kPolyhavenBookmarkPrefix.size());
-            Editor::OnlineAssetDragPayload onlinePayload;
-            onlinePayload.slug = slug;
-            onlinePayload.name = bookmark.Name;
-            onlinePayload.type = "models";
-            onlinePayload.entries.push_back({slug, bookmark.Name});
-            DropOnlineAssets(request, onlinePayload);
             return;
+
+        // Parent under target only when dropping onto an item.
+        ECS::EntityHandle parent{};
+        if (req.hit.TargetId != 0 && req.hit.Location == UI::Interaction::DropLocation::OnItem)
+        {
+            parent = HierarchyDataProvider::Decode(static_cast<TreeId>(req.hit.TargetId));
+            if (!parent.IsValid() || !m_World->IsValid(parent))
+                parent = {};
         }
 
-        const GUID guid(bookmark.Reference);
-        AssetMetadata metadata;
-        if (!guid.IsNull() &&
-            EngineCore::GetInstance().GetAssetManager().GetRegistry().TryGetAssetMetadata(guid, metadata) &&
-            !metadata.Path.empty())
+        // Single texture drop: either assign to an existing mesh under the
+        // cursor (fast path) or spawn a textured plane "sprite" entity with
+        // the texture's aspect ratio when the drop doesn't land on a mesh.
+        if (payload->paths.size() == 1 && !payload->paths[0].empty() && m_Context->Assets)
         {
-            std::filesystem::path absPath = metadata.Path;
-            if (!absPath.is_absolute() && !m_Context->AssetsRoot.empty())
-                absPath = m_Context->AssetsRoot / absPath;
-            DropAssetPaths(request, {std::move(absPath)});
-            return;
-        }
-    }
-
-    if (m_OnNavigateToBookmark)
-        m_OnNavigateToBookmark(bookmark);
-}
-
-void HierarchyPanel::DropAssetPaths(const UI::Interaction::DropRequest& request,
-                                    const std::vector<std::filesystem::path>& paths)
-{
-    if (!m_World || !m_Context)
-        return;
-
-    if (const std::string refusal = Editor::DescribeRefusedDrop(paths); !refusal.empty())
-    {
-        Editor::ShowSceneViewNotice(refusal);
-        return;
-    }
-
-    // Asset drops parent under a row only when dropped onto it; between rows they land at the root.
-    const ECS::EntityHandle parent = request.hit.Location == UI::Interaction::DropLocation::OnItem
-                                         ? ResolveDropPlacement(request.hit).Parent
-                                         : ECS::EntityHandle{};
-
-    if (paths.size() == 1 && !paths[0].empty() && m_Context->Assets && DropSingleAsset(paths[0], parent))
-        return;
-
-    const auto selectionBefore = GetSelectionItemIds();
-    const auto anchorBefore = GetSelectionAnchor();
-
-    // Parenting keeps the model's own scale instead of multiplying it by the parent's.
-    Mathematics::Vector3 parentInvScale{1.0f, 1.0f, 1.0f};
-    if (parent.IsValid())
-    {
-        if (const auto* wt = m_World->GetComponent<Components::WorldTransform>(parent))
-        {
-            Components::Transform tmp;
-            std::memcpy(tmp.matrix, wt->matrix, sizeof(tmp.matrix));
-            auto ps = tmp.GetScale();
-            if (ps.x > 0.0f) parentInvScale.x = 1.0f / ps.x;
-            if (ps.y > 0.0f) parentInvScale.y = 1.0f / ps.y;
-            if (ps.z > 0.0f) parentInvScale.z = 1.0f / ps.z;
-        }
-    }
-
-    std::vector<ECS::EntityHandle> createdEntities;
-    for (const auto& absPath : paths)
-    {
-        if (absPath.empty())
-            continue;
-
-        const std::string ext = absPath.extension().string();
-        if (GetAssetTypeFromExtension(ext) == AssetType::LensFlareDefinition && m_Context->Assets)
-        {
-            const GUID flareGuid = m_Context->Assets->ResolveAssetGuid(absPath);
-            if (!flareGuid.IsNull())
+            const std::filesystem::path& texPath = payload->paths[0];
+            if (Editor::IsHdriPath(texPath))
             {
-                const ECS::EntityHandle flareEntity = CreateLensFlareEntity(*m_World, absPath, flareGuid, parent);
-                if (flareEntity.IsValid())
-                    createdEntities.push_back(flareEntity);
-            }
-            continue;
-        }
-
-        if (Editor::IsPlacedModelExtension(ext) && m_Context->Assets && m_Context->RenderServices)
-        {
-            const GUID modelGuid = m_Context->Assets->ResolveAssetGuid(absPath);
-            if (!modelGuid.IsNull())
-            {
-                SpawnModelWhenLoaded(absPath, modelGuid, parent, parentInvScale);
-                continue;
-            }
-        }
-
-        if (const auto place = Editor::AssetPlacementRegistry::Get().Find(GetAssetTypeFromExtension(ext));
-            place && m_Context->Assets)
-        {
-            Components::Transform at{};
-            at.SetIdentity();
-            const auto root = place(*m_World, *m_Context->Assets, absPath, at, parent);
-            if (root.IsValid())
-                createdEntities.push_back(root);
-            continue;
-        }
-
-        const ECS::EntityHandle blueprintEntity = CreateBlueprintInstanceEntity(*m_World, absPath, parent);
-        if (blueprintEntity.IsValid())
-            createdEntities.push_back(blueprintEntity);
-    }
-
-    if (!createdEntities.empty())
-        Editor::AppendUnorderedRootsToHierarchyEnd(*m_World, createdEntities);
-    MarkSceneStructureChanged();
-    RebuildTreeAndSelect(createdEntities.empty() ? ECS::EntityHandle{} : createdEntities.back());
-    CommitDropStep(createdEntities, selectionBefore, anchorBefore);
-}
-
-void HierarchyPanel::CommitDropStep(const std::vector<ECS::EntityHandle>& roots,
-                                   const std::vector<UI::Interaction::ItemId>& selectionBefore,
-                                   UI::Interaction::ItemId anchorBefore)
-{
-    if (!m_Undo || !m_World || roots.empty())
-        return;
-    m_Undo->CommitAlreadyApplied(std::make_unique<Editor::SceneViewDropUndoCommand>(
-        Editor::SceneViewDropUndoCommand::NameFor(*m_World, roots), m_World, m_ChangeNotifications,
-        roots, selectionBefore, anchorBefore, GetSelectionItemIds(), GetSelectionAnchor(),
-        [this](const std::vector<UI::Interaction::ItemId>& ids, UI::Interaction::ItemId anchor)
-        { ApplySelectionProgrammatic(ids, anchor); }));
-}
-
-bool HierarchyPanel::DropSingleAsset(const std::filesystem::path& path, ECS::EntityHandle parent)
-{
-    AssetManager& assets = *m_Context->Assets;
-    if (Editor::IsHdriPath(path))
-    {
-        const ECS::EntityHandle skybox =
-            Editor::CreateSkyboxEntityFromHdri(*m_World, assets, path, m_ChangeNotifications, SceneDirtyCallback());
-        if (skybox.IsValid())
-            RebuildTreeAndSelect(skybox);
-        return true;
-    }
-
-    const AssetType assetType = GetAssetTypeFromExtension(path.extension().string());
-    const bool onMesh = parent.IsValid() && m_World->GetComponent<Components::MeshRenderer>(parent) != nullptr;
-
-    if (assetType == AssetType::Texture && onMesh)
-    {
-        const GUID textureGuid = assets.ResolveAssetGuid(path);
-        if (textureGuid.IsNull())
-            return false;
-        RunDropCommand(std::make_unique<Editor::TextureDropOnMeshCommand>(
-            "Assign Texture", m_World, parent, textureGuid, "albedoMap", std::string(),
-            SceneDirtyCallback(), m_ChangeNotifications));
-        return true;
-    }
-
-    // A texture that lands off a mesh becomes a plane sprite with the texture's aspect ratio.
-    if (assetType == AssetType::Texture && m_Context->RenderServices)
-    {
-        const bool is2D = m_Context->IsSceneView2D && m_Context->IsSceneView2D();
-        const ECS::EntityHandle sprite = Editor::CreateSpriteEntityFromTexture(
-            *m_World, *m_Context->RenderServices, assets, path, Mathematics::Vector3{0.0f, 0.0f, 0.0f}, is2D);
-        if (!sprite.IsValid())
-            return false;
-        ParentUnder(*m_World, sprite, parent);
-        Editor::AppendUnorderedRootsToHierarchyEnd(*m_World, std::span(&sprite, 1));
-        MarkSceneStructureChanged();
-        RebuildTreeAndSelect(sprite);
-        return true;
-    }
-
-    if (assetType == AssetType::Material && onMesh)
-    {
-        const GUID materialGuid = assets.ResolveAssetGuid(path);
-        if (materialGuid.IsNull())
-            return false;
-        if (!assets.GetAsset(materialGuid))
-            assets.LoadAsset(materialGuid, AssetLoadResultCallback{});
-        RunDropCommand(std::make_unique<Editor::MaterialDropOnMeshCommand>(
-            "Assign Material", m_World, parent, materialGuid, SceneDirtyCallback(), m_ChangeNotifications));
-        return true;
-    }
-
-    return false;
-}
-
-void HierarchyPanel::SpawnModelWhenLoaded(const std::filesystem::path& modelPath,
-                                          const GUID& modelGuid,
-                                          ECS::EntityHandle parent,
-                                          const Mathematics::Vector3& parentInvScale)
-{
-    // The load runs asynchronously and the model spawns on the UI-thread
-    // continuation, unselected. The context and world outlive the load.
-    const EditorContext* ctx = m_Context;
-    ECS::World* world = m_World;
-    Editor::RunWhenAssetLoaded(*m_Context->Assets, modelGuid, AssetLoadPriority::High, this, world,
-        [ctx, world, modelGuid, modelPath, parent, parentInvScale]()
-        {
-            if (!ctx || !world || !ctx->Assets || !ctx->RenderServices)
-                return;
-            AssetManager& assets = *ctx->Assets;
-            SharedPtr<Asset> asset = assets.GetAsset(modelGuid);
-            auto* modelAsset = dynamic_cast<ModelAsset*>(asset.get());
-            if (!modelAsset || !modelAsset->IsLoaded())
-                return;
-
-            auto result = Engine::Renderer::ModelEntityFactory::CreateFromModel(
-                *ctx->RenderServices, *world, *modelAsset, modelGuid, modelPath.stem().string(),
-                Editor::GetFbxModelEntityFactoryOptions(modelPath));
-            if (!result.IsValid())
-                return;
-
-            Editor::ExportModelMaterials(modelPath, modelGuid, result.submeshEntities, *world, assets);
-            Editor::AppendUnorderedRootsToHierarchyEnd(*world, std::span(&result.rootEntity, 1));
-            if (parent.IsValid())
-            {
-                ParentUnder(*world, result.rootEntity, parent);
-                if (auto* lt = world->GetComponentForWrite<Components::Transform>(result.rootEntity))
+                ECS::EntityHandle skybox = Editor::CreateSkyboxEntityFromHdri(
+                    *m_World, *m_Context->Assets, texPath, m_ChangeNotifications,
+                    [ctx = m_Context]() { if (ctx && ctx->OnSceneDirty) ctx->OnSceneDirty(); });
+                if (skybox.IsValid())
                 {
-                    auto childScale = lt->GetScale();
-                    lt->SetScale(childScale.x * parentInvScale.x,
-                                 childScale.y * parentInvScale.y,
-                                 childScale.z * parentInvScale.z);
+                    if (m_Provider)
+                        m_Provider->Rebuild();
+                    m_Tree->RefreshFromProvider();
+                    SelectEntity(skybox);
+                }
+                return;
+            }
+
+            const AssetType assetType = GetAssetTypeFromExtension(texPath.extension().string());
+            if (assetType == AssetType::Texture)
+            {
+                auto& am = *m_Context->Assets;
+                const bool onMesh = parent.IsValid() &&
+                    m_World->GetComponent<Components::MeshRenderer>(parent) != nullptr;
+
+                if (onMesh)
+                {
+                    const GUID texGuid = am.ResolveAssetGuid(texPath);
+                    if (!texGuid.IsNull())
+                    {
+                        auto cmd = std::make_unique<Editor::TextureDropOnMeshCommand>(
+                            "Assign Texture", m_World, parent, texGuid, "albedoMap", std::string(),
+                            [ctx = m_Context]() { if (ctx && ctx->OnSceneDirty) ctx->OnSceneDirty(); },
+                            m_ChangeNotifications);
+                        if (m_Undo)
+                            m_Undo->Execute(std::move(cmd));
+                        else
+                            cmd->Do();
+                        return;
+                    }
+                }
+                else if (m_Context->RenderServices)
+                {
+                    // A texture not loaded yet becomes its sprite once the load lands; the drop
+                    // never waits for a cook.
+                    const GUID texGuid = am.ResolveAssetGuid(texPath);
+                    if (!texGuid.IsNull() && !am.IsAssetLoaded(texGuid))
+                    {
+                        DeferTreeTextureDrop(texPath, texGuid, parent);
+                        return;
+                    }
+                    if (FinishTreeTextureDrop(texPath, parent))
+                        return;
                 }
             }
 
-            if (ctx->OnSceneDirty)
-                ctx->OnSceneDirty();
-        }, modelPath.filename().string());
-}
-
-void HierarchyPanel::DropOnlineAssets(const UI::Interaction::DropRequest& request,
-                                      const Editor::OnlineAssetDragPayload& payload)
-{
-    if (!m_World || !m_Context || payload.slug.empty())
-        return;
-
-    std::vector<Editor::OnlineAssetEntry> items = payload.entries;
-    if (items.empty())
-        items.push_back({payload.slug, payload.name});
-
-    if (payload.type == "hdris")
-    {
-        ECS::EntityHandle lastSkybox{};
-        for (const auto& item : items)
-        {
-            const ECS::EntityHandle skybox =
-                Editor::CreateSkyboxEntityFromPolyhavenHdri(*m_World, *m_Context, item.slug, item.name,
-                                                            m_ChangeNotifications);
-            if (skybox.IsValid())
-                lastSkybox = skybox;
-        }
-
-        if (lastSkybox.IsValid())
-            RebuildTreeAndSelect(lastSkybox);
-        return;
-    }
-
-    const DropPlacement placement = ResolveDropPlacement(request.hit);
-
-    // Reparenting keeps the spawned entity's world pose.
-    glm::mat4 parentWorldInv(1.0f);
-    if (placement.Parent.IsValid())
-    {
-        if (const auto* wt = m_World->GetComponent<Components::WorldTransform>(placement.Parent))
-            parentWorldInv = glm::inverse(glm::make_mat4(wt->matrix));
-    }
-
-    std::vector<ECS::EntityHandle> createdEntities;
-    for (const auto& item : items)
-    {
-        ECS::EntityHandle createdEntity = SpawnDownloadedOnlineAsset(item);
-        if (createdEntity.IsValid() && placement.Parent.IsValid())
-        {
-            ParentUnder(*m_World, createdEntity, placement.Parent);
-            if (auto* lt = m_World->GetComponentForWrite<Components::Transform>(createdEntity))
+            if (assetType == AssetType::Material)
             {
-                glm::mat4 childLocal = glm::make_mat4(lt->matrix);
-                glm::mat4 newLocal = parentWorldInv * childLocal;
-                std::memcpy(lt->matrix, &newLocal[0][0], sizeof(float32) * 16);
+                auto& am = *m_Context->Assets;
+                const bool onMesh = parent.IsValid() &&
+                    m_World->GetComponent<Components::MeshRenderer>(parent) != nullptr;
+
+                if (onMesh)
+                {
+                    const GUID matGuid = am.ResolveAssetGuid(texPath);
+                    if (!matGuid.IsNull())
+                    {
+                        if (!am.GetAsset(matGuid))
+                            am.LoadAsset(matGuid, AssetLoadResultCallback{});
+
+                        auto cmd = std::make_unique<Editor::MaterialDropOnMeshCommand>(
+                            "Assign Material", m_World, parent, matGuid,
+                            [ctx = m_Context]() { if (ctx && ctx->OnSceneDirty) ctx->OnSceneDirty(); },
+                            m_ChangeNotifications);
+                        if (m_Undo)
+                            m_Undo->Execute(std::move(cmd));
+                        else
+                            cmd->Do();
+                        return;
+                    }
+                }
             }
         }
-        if (!createdEntity.IsValid())
-            createdEntity = CreateOnlineAssetPlaceholder(item, payload.type, placement.Parent);
-        if (createdEntity.IsValid())
-            createdEntities.push_back(createdEntity);
-    }
 
-    if (!createdEntities.empty())
-    {
-        WriteSiblingOrder(*m_World,
-                          SiblingsWithDropInsertion(*m_World, placement.Parent, placement.Target,
-                                                    request.hit.Location, createdEntities));
-    }
-
-    MarkSceneStructureChanged();
-    RebuildTreeAndSelect(createdEntities.empty() ? ECS::EntityHandle{} : createdEntities.back());
-}
-
-ECS::EntityHandle HierarchyPanel::SpawnDownloadedOnlineAsset(const Editor::OnlineAssetEntry& item)
-{
-    // Project assets first, then an early download completed into the temp cache.
-    const std::filesystem::path assetsRoot = m_Context->AssetsRoot;
-    std::filesystem::path mainFilePath = PolyhavenService::FindDownloadedFile(item.slug, assetsRoot);
-    if (mainFilePath.empty())
-    {
-        std::filesystem::path cachedFile = PolyhavenService::FindCachedDownloadFile(item.slug);
-        if (!cachedFile.empty())
+        // If parenting, compute inverse parent scale to prevent squashing.
+        Mathematics::Vector3 parentInvScale{1.0f, 1.0f, 1.0f};
+        if (parent.IsValid())
         {
-            std::filesystem::path projectDir = assetsRoot / "Polyhaven" / item.slug;
-            mainFilePath = PolyhavenService::MoveDownloadToProject(cachedFile, cachedFile.parent_path(), projectDir);
+            if (const auto* wt = m_World->GetComponent<Components::WorldTransform>(parent))
+            {
+                Components::Transform tmp;
+                tmp.Basis = wt->Basis;
+                auto ps = tmp.GetScale();
+                if (ps.x > 0.0f) parentInvScale.x = 1.0f / ps.x;
+                if (ps.y > 0.0f) parentInvScale.y = 1.0f / ps.y;
+                if (ps.z > 0.0f) parentInvScale.z = 1.0f / ps.z;
+            }
         }
-    }
-    if (mainFilePath.empty() || !m_Context->Assets || !m_Context->RenderServices)
-        return {};
 
-    AssetManager& assets = *m_Context->Assets;
-    const std::string ext = mainFilePath.extension().string();
-    if (GetAssetTypeFromExtension(ext) == AssetType::Texture)
+        const std::vector<UI::Interaction::ItemId> selectionBefore = GetSelectionItemIds();
+        const UI::Interaction::ItemId anchorBefore = GetSelectionAnchor();
+        std::vector<ECS::EntityHandle> droppedRoots;
+        ECS::EntityHandle lastCreated{};
+        for (const auto& absPath : payload->paths)
+        {
+            if (absPath.empty())
+                continue;
+
+            const std::string ext = absPath.extension().string();
+            if (GetAssetTypeFromExtension(ext) == AssetType::LensFlareDefinition && m_Context->Assets)
+            {
+                const GUID flareGuid = m_Context->Assets->ResolveAssetGuid(absPath);
+                if (!flareGuid.IsNull())
+                {
+                    ECS::EntityHandle flareEntity = m_World->CreateEntity();
+                    if (flareEntity.IsValid())
+                    {
+                        Components::Name name{};
+                        const std::string stem = absPath.stem().string();
+                        std::strncpy(name.value, stem.c_str(), sizeof(name.value) - 1);
+                        m_World->AddComponentImmediate(flareEntity, name);
+
+                        Components::Transform transform{};
+                        transform.SetIdentity();
+                        m_World->AddComponentImmediate(flareEntity, transform);
+
+                        Components::LensFlareSource source{};
+                        source.Flare.Set(flareGuid);
+                        m_World->AddComponentImmediate(flareEntity, source);
+
+                        if (parent.IsValid())
+                        {
+                            Parent p{};
+                            p.Entity = parent;
+                            m_World->AddComponentImmediate(flareEntity, p);
+                        }
+
+                        lastCreated = flareEntity;
+                        droppedRoots.push_back(flareEntity);
+                    }
+                }
+                continue;
+            }
+
+            const bool isModel = Editor::IsPlacedModelFile(absPath);
+
+            if (isModel && m_Context->Assets && m_Context->RenderServices && m_World)
+            {
+                auto& am = *m_Context->Assets;
+                const GameEngine::GUID assetGuid = am.ResolveAssetGuid(absPath);
+                if (!assetGuid.IsNull())
+                {
+                    // Async: schedule the model load; spawn entities + export
+                    // materials on the load-complete UI-thread continuation,
+                    // dropped if a scene opened meanwhile cleared the world.
+                    // Captures are stable external pointers (Context outlives
+                    // the panel; the load itself outlives any single panel
+                    // rebuild). Selection-after-spawn is intentionally not
+                    // wired here — entities for async drops appear unselected.
+                    const EditorContext* ctx = m_Context;
+                    ECS::World* world = m_World;
+                    Editor::RunWhenAssetLoaded(am, assetGuid, AssetLoadPriority::High, this, world,
+                        [ctx, world, assetGuid, absPath, parent, parentInvScale]()
+                        {
+                            if (!ctx || !world || !ctx->Assets || !ctx->RenderServices)
+                                return;
+                            auto& am2 = *ctx->Assets;
+                            SharedPtr<Asset> asset = am2.GetAsset(assetGuid);
+                            auto* modelAsset = dynamic_cast<ModelAsset*>(asset.get());
+                            if (!modelAsset || !modelAsset->IsLoaded())
+                                return;
+
+                            const std::string name = absPath.stem().string();
+                            auto result = Engine::Renderer::ModelEntityFactory::CreateFromModel(
+                                *ctx->RenderServices, *world, *modelAsset, assetGuid, name,
+                                Editor::GetFbxModelEntityFactoryOptions(absPath));
+                            if (!result.IsValid())
+                                return;
+
+                            Editor::ExportModelMaterials(absPath, assetGuid,
+                                                         result.submeshEntities, *world, am2);
+                            if (parent.IsValid() && world->IsValid(parent))
+                            {
+                                Parent p{};
+                                p.Entity = parent;
+                                world->AddComponentImmediate(result.rootEntity, p);
+                                if (auto* lt = world->GetComponentForWrite<Components::Transform>(result.rootEntity))
+                                {
+                                    auto childScale = lt->GetScale();
+                                    lt->SetScale(childScale.x * parentInvScale.x,
+                                                 childScale.y * parentInvScale.y,
+                                                 childScale.z * parentInvScale.z);
+                                }
+                            }
+
+                            if (ctx->OnSceneDirty)
+                                ctx->OnSceneDirty();
+                        },
+                        absPath.filename().string());
+                    continue;
+                }
+            }
+
+            if (GetAssetTypeFromExtension(ext) == AssetType::Prefab && m_Context->Assets)
+            {
+                Components::Transform at{};
+                at.SetIdentity();
+                at.SetScale(parentInvScale.x, parentInvScale.y, parentInvScale.z);
+                const ECS::EntityHandle root = Editor::PrefabService(*m_Context->Assets).Place(*m_World, absPath, at, parent);
+                if (root.IsValid())
+                {
+                    lastCreated = root;
+                    droppedRoots.push_back(root);
+                }
+                continue;
+            }
+
+            Editor::ShowSceneViewNotice(Editor::DescribeUnplaceableFile(absPath));
+        }
+
+        NotifyWorldStructure(m_ChangeNotifications, m_World);
+        if (m_Context && m_Context->OnSceneDirty)
+            m_Context->OnSceneDirty();
+
+        if (m_Provider)
+            m_Provider->Rebuild();
+        m_Tree->RefreshFromProvider();
+        if (lastCreated.IsValid())
+            SelectEntity(lastCreated);
+        CommitDropStep(droppedRoots, selectionBefore, anchorBefore);
+        return;
+    }
+
+    if (const auto* onlinePayload = req.payload.TryGet<Editor::OnlineAssetDragPayload>())
     {
-        const bool is2D = m_Context->IsSceneView2D && m_Context->IsSceneView2D();
-        const ECS::EntityHandle sprite = Editor::CreateSpriteEntityFromTexture(
-            *m_World, *m_Context->RenderServices, assets, mainFilePath, Mathematics::Vector3{}, is2D);
-        if (sprite.IsValid())
-            Logger::Log::Info("HierarchyPanel: dropped texture '{}' as plane sprite", item.slug);
+        if (!m_Context || onlinePayload->slug.empty())
+            return;
+
+        // Build entries list: use entries vector if populated, otherwise single slug.
+        std::vector<Editor::OnlineAssetEntry> items;
+        if (!onlinePayload->entries.empty())
+            items = onlinePayload->entries;
         else
-            Logger::Log::Warning("HierarchyPanel: CreateSpriteEntityFromTexture failed for '{}'", item.slug);
-        return sprite;
+            items.push_back({onlinePayload->slug, onlinePayload->name});
+
+        if (onlinePayload->type == "hdris")
+        {
+            ECS::EntityHandle lastSkybox{};
+            for (const auto& item : items)
+            {
+                const ECS::EntityHandle skybox =
+                    Editor::CreateSkyboxEntityFromPolyhavenHdri(*m_World, *m_Context, item.slug, item.name,
+                                                                m_ChangeNotifications);
+                if (skybox.IsValid())
+                    lastSkybox = skybox;
+            }
+
+            if (lastSkybox.IsValid())
+            {
+                if (m_Provider)
+                    m_Provider->Rebuild();
+                m_Tree->RefreshFromProvider();
+                SelectEntity(lastSkybox);
+            }
+            return;
+        }
+
+        // Determine parent entity from drop location.
+        ECS::EntityHandle target{};
+        if (req.hit.TargetId != 0 && req.hit.Location != UI::Interaction::DropLocation::OnEmptySpace)
+        {
+            target = HierarchyDataProvider::Decode(static_cast<TreeId>(req.hit.TargetId));
+            if (!target.IsValid() || !m_World->IsValid(target))
+                target = {};
+        }
+
+        ECS::EntityHandle dropParent{};
+        if (req.hit.Location == UI::Interaction::DropLocation::OnItem)
+        {
+            dropParent = target;
+        }
+        else if (req.hit.Location == UI::Interaction::DropLocation::BeforeItem ||
+                 req.hit.Location == UI::Interaction::DropLocation::AfterItem)
+        {
+            if (target.IsValid())
+                dropParent = Editor::GetEffectiveParent(*m_World, target);
+        }
+
+        // The inverse parent world matrix is relative to the parent's position, so a child's
+        // pose relative to the parent stays exact far from the origin.
+        glm::mat4 parentWorldInv(1.0f);
+        Mathematics::WorldPosition parentWorldPos{};
+        if (dropParent.IsValid())
+        {
+            if (const auto* wt = m_World->GetComponent<Components::WorldTransform>(dropParent))
+            {
+                parentWorldInv = glm::inverse(wt->ToMatrix4x4(Mathematics::Vector3{}).GetGLM());
+                parentWorldPos = wt->GetPosition();
+            }
+        }
+
+        const std::filesystem::path assetsRoot = m_Context->AssetsRoot;
+        ECS::EntityHandle lastCreated{};
+        std::vector<ECS::EntityHandle> createdEntities;
+
+        for (const auto& item : items)
+        {
+            ECS::EntityHandle createdEntity{};
+
+            // Check project assets first, then temp cache for completed early downloads.
+            std::filesystem::path mainFilePath = PolyhavenService::FindDownloadedFile(item.slug, assetsRoot);
+            if (mainFilePath.empty())
+            {
+                std::filesystem::path cachedFile = PolyhavenService::FindCachedDownloadFile(item.slug);
+                if (!cachedFile.empty())
+                {
+                    std::filesystem::path projectDir = assetsRoot / "Polyhaven" / item.slug;
+                    mainFilePath = PolyhavenService::MoveDownloadToProject(cachedFile, cachedFile.parent_path(), projectDir);
+                }
+            }
+            if (!mainFilePath.empty() && m_Context->Assets && m_Context->RenderServices)
+            {
+                const std::string ext = mainFilePath.extension().string();
+                const bool isModel = (ext == ".glb" || ext == ".gltf" || ext == ".obj" || ext == ".fbx");
+
+                if (isModel)
+                {
+                    auto& am = *m_Context->Assets;
+                    GameEngine::GUID assetGuid = am.ResolveAssetGuid(mainFilePath);
+                    if (!assetGuid.IsNull())
+                    {
+                        SharedPtr<Asset> asset = am.GetAsset(assetGuid);
+                        if (!asset)
+                        {
+                            DeferFileDrop(mainFilePath, assetGuid, item.name);
+                            continue;
+                        }
+                        auto* modelAsset = dynamic_cast<ModelAsset*>(asset.get());
+                        if (modelAsset && modelAsset->IsLoaded())
+                        {
+                            auto result = Engine::Renderer::ModelEntityFactory::CreateFromModel(
+                                *m_Context->RenderServices, *m_World,
+                                *modelAsset, assetGuid, item.name, Editor::GetFbxModelEntityFactoryOptions(mainFilePath));
+                            if (result.IsValid())
+                            {
+                                Editor::ExportModelMaterials(mainFilePath, assetGuid, result.submeshEntities, *m_World, am);
+                                createdEntity = result.rootEntity;
+                                Editor::AppendUnorderedRootsToHierarchyEnd(*m_World, std::span(&createdEntity, 1));
+                                Logger::Log::Info("HierarchyPanel: dropped model '{}' (tree)", item.slug);
+                                if (dropParent.IsValid())
+                                {
+                                    Parent p{};
+                                    p.Entity = dropParent;
+                                    m_World->AddComponentImmediate(createdEntity, p);
+                                    if (auto* lt = m_World->GetComponentForWrite<Components::Transform>(createdEntity))
+                                    {
+                                        const glm::mat4 childLocal =
+                                            lt->ToMatrix4x4(lt->GetPosition() - parentWorldPos).GetGLM();
+                                        const glm::mat4 newLocal = parentWorldInv * childLocal;
+                                        *lt = Components::Transform::FromMatrix4x4(Mathematics::Matrix4x4(newLocal));
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                Logger::Log::Warning("HierarchyPanel: CreateFromModel failed for '{}' (tree)", item.slug);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        Logger::Log::Warning("HierarchyPanel: ResolveAssetGuid null for '{}' path={} (tree)",
+                            item.slug, mainFilePath.string());
+                    }
+                }
+            }
+
+            // Not downloaded — create a placeholder entity and start background download.
+            if (!createdEntity.IsValid() && m_Context->RenderServices)
+            {
+                Mathematics::Vector3 dropPos{};
+                Mathematics::Vector3 defaultCamPos{0.0f, 0.0f, -5.0f};
+                std::filesystem::path thumbPath = PolyhavenService::GetThumbnailPath(item.slug);
+                auto placeholderResult = PolyhavenPlaceholderFactory::Create(
+                    *m_World, *m_Context->RenderServices, m_Context->Assets,
+                    item.slug, onlinePayload->type, dropPos, defaultCamPos, thumbPath, dropParent);
+
+                if (placeholderResult.entity.IsValid())
+                {
+                    createdEntity = placeholderResult.entity;
+                    // Hide the placeholder billboard; the scene download pill is the indicator.
+                    if (m_World->HasComponent<Components::MeshRenderer>(createdEntity))
+                        ECS::Entity(m_World, createdEntity).SetEnabled<Components::MeshRenderer>(false);
+                    if (m_Context->DownloadManager)
+                    {
+                        if (m_Context->DownloadManager->IsDownloadingOrCompleted(item.slug))
+                            m_Context->DownloadManager->AssignPlaceholder(item.slug, createdEntity, m_World);
+                        else
+                            m_Context->DownloadManager->StartDownloadForPlaceholder(
+                                item.slug, onlinePayload->type, assetsRoot, createdEntity, m_World);
+                    }
+                }
+            }
+
+            if (createdEntity.IsValid())
+            {
+                lastCreated = createdEntity;
+                createdEntities.push_back(createdEntity);
+            }
+        }
+
+        // Set sibling ordering so entities appear at the correct drop position.
+        if (!createdEntities.empty())
+        {
+            std::vector<ECS::EntityHandle> dstList = Editor::ChildrenInHierarchyOrder(*m_World, dropParent);
+
+            // Remove created entities from their current position in the list.
+            dstList.erase(std::remove_if(dstList.begin(), dstList.end(), [&](const ECS::EntityHandle& e) {
+                for (auto& c : createdEntities)
+                    if (c.id == e.id) return true;
+                return false;
+            }), dstList.end());
+
+            // Compute insertion index from drop location.
+            std::size_t insertIndex = dstList.size();
+            if (req.hit.Location == UI::Interaction::DropLocation::BeforeItem ||
+                req.hit.Location == UI::Interaction::DropLocation::AfterItem)
+            {
+                if (target.IsValid())
+                {
+                    for (std::size_t i = 0; i < dstList.size(); ++i)
+                    {
+                        if (dstList[i].id == target.id)
+                        {
+                            insertIndex = (req.hit.Location == UI::Interaction::DropLocation::AfterItem) ? (i + 1) : i;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            insertIndex = std::min(insertIndex, dstList.size());
+            dstList.insert(dstList.begin() + static_cast<std::ptrdiff_t>(insertIndex),
+                           createdEntities.begin(), createdEntities.end());
+
+            // Renormalize order for the destination parent.
+            Editor::WriteSiblingOrder(*m_World, dstList);
+        }
+
+        NotifyWorldStructure(m_ChangeNotifications, m_World);
+        if (m_Context && m_Context->OnSceneDirty)
+            m_Context->OnSceneDirty();
+
+        if (m_Provider)
+            m_Provider->Rebuild();
+        m_Tree->RefreshFromProvider();
+
+        if (lastCreated.IsValid())
+            SelectEntity(lastCreated);
+
+        return;
     }
 
-    if (!Editor::IsPlacedModelExtension(ext))
-        return {};
-
-    const GUID assetGuid = assets.ResolveAssetGuid(mainFilePath);
-    if (assetGuid.IsNull())
-    {
-        Logger::Log::Warning("HierarchyPanel: ResolveAssetGuid null for '{}' path={}", item.slug, mainFilePath.string());
-        return {};
-    }
-
-    SharedPtr<Asset> asset = assets.GetAsset(assetGuid);
-    if (!asset)
-        asset = assets.LoadAssetAsync(assetGuid, AssetLoadPriority::High).get();
-    auto* modelAsset = dynamic_cast<ModelAsset*>(asset.get());
-    if (!modelAsset || !modelAsset->IsLoaded())
-        return {};
-
-    auto result = Engine::Renderer::ModelEntityFactory::CreateFromModel(
-        *m_Context->RenderServices, *m_World, *modelAsset, assetGuid, item.name,
-        Editor::GetFbxModelEntityFactoryOptions(mainFilePath));
-    if (!result.IsValid())
-    {
-        Logger::Log::Warning("HierarchyPanel: CreateFromModel failed for '{}'", item.slug);
-        return {};
-    }
-
-    Editor::ExportModelMaterials(mainFilePath, assetGuid, result.submeshEntities, *m_World, assets);
-    Editor::AppendUnorderedRootsToHierarchyEnd(*m_World, std::span(&result.rootEntity, 1));
-    Logger::Log::Info("HierarchyPanel: dropped model '{}'", item.slug);
-    return result.rootEntity;
-}
-
-ECS::EntityHandle HierarchyPanel::CreateOnlineAssetPlaceholder(const Editor::OnlineAssetEntry& item,
-                                                               const std::string& assetType,
-                                                               ECS::EntityHandle parent)
-{
-    if (!m_Context->RenderServices)
-        return {};
-
-    Logger::Log::Info("HierarchyPanel: creating placeholder for '{}'", item.slug);
-    const Mathematics::Vector3 dropPos{};
-    const Mathematics::Vector3 defaultCamPos{0.0f, 0.0f, -5.0f};
-    const std::filesystem::path thumbPath = PolyhavenService::GetCacheDir() / (item.slug + ".png");
-    const auto placeholderResult = PolyhavenPlaceholderFactory::Create(
-        *m_World, *m_Context->RenderServices, m_Context->Assets,
-        item.slug, assetType, dropPos, defaultCamPos, thumbPath, parent);
-    const ECS::EntityHandle placeholder = placeholderResult.entity;
-    if (!placeholder.IsValid())
-        return {};
-
-    // Hide the placeholder billboard; the scene download pill is the indicator.
-    if (m_World->HasComponent<Components::MeshRenderer>(placeholder))
-        ECS::Entity(m_World, placeholder).SetEnabled<Components::MeshRenderer>(false);
-    if (m_Context->DownloadManager)
-    {
-        if (m_Context->DownloadManager->IsDownloadingOrCompleted(item.slug))
-            m_Context->DownloadManager->AssignPlaceholder(item.slug, placeholder, m_World);
-        else
-            m_Context->DownloadManager->StartDownloadForPlaceholder(
-                item.slug, assetType, m_Context->AssetsRoot, placeholder, m_World);
-    }
-    return placeholder;
-}
-
-void HierarchyPanel::DropEntities(const UI::Interaction::DropRequest& req,
-                                  const Editor::HierarchyEntityDragPayload& payload)
-{
-    if (!m_World || payload.treeIds.empty())
+    const auto* entPayload = req.payload.TryGet<Editor::HierarchyEntityDragPayload>();
+    if (!entPayload || entPayload->treeIds.empty())
         return;
 
-    const DropPlacement placement = ResolveDropPlacement(req.hit);
-    const ECS::EntityHandle destParent = placement.Parent;
+    // Resolve target and destination parent.
+    ECS::EntityHandle target{};
+    if (req.hit.TargetId != 0 && req.hit.Location != UI::Interaction::DropLocation::OnEmptySpace)
+    {
+        target = HierarchyDataProvider::Decode(static_cast<TreeId>(req.hit.TargetId));
+        if (!target.IsValid() || !m_World->IsValid(target))
+            target = {};
+    }
+
+    ECS::EntityHandle destParent{};
+    if (req.hit.Location == UI::Interaction::DropLocation::OnItem)
+    {
+        destParent = target;
+    }
+    else if (req.hit.Location == UI::Interaction::DropLocation::BeforeItem ||
+             req.hit.Location == UI::Interaction::DropLocation::AfterItem)
+    {
+        if (target.IsValid())
+            destParent = Editor::GetEffectiveParent(*m_World, target); // {} = root
+    }
 
     // Build moved entity list.
     std::vector<ECS::EntityHandle> moved;
-    moved.reserve(payload.treeIds.size());
-    for (std::uint64_t tid : payload.treeIds)
+    moved.reserve(entPayload->treeIds.size());
+    for (std::uint64_t tid : entPayload->treeIds)
     {
         if (tid == 0 || tid == kRootId)
             continue;
@@ -3135,70 +2302,35 @@ void HierarchyPanel::DropEntities(const UI::Interaction::DropRequest& req,
     {
         if (destParent.IsValid() && destParent.id == m.id)
             return;
-        if (destParent.IsValid() && IsDescendantOf(*m_World, destParent, m))
+        if (destParent.IsValid() && Editor::IsDescendantOf(*m_World, destParent, m))
             return;
     }
 
-    // Moved entities keep their relative order.
-    SortByOrderThenId(*m_World, moved);
-    const std::vector<ECS::EntityHandle> dstList =
-        SiblingsWithDropInsertion(*m_World, destParent, placement.Target, req.hit.Location, moved);
+    // Preserve moved ordering by current order/id.
+    Editor::SortByHierarchyOrder(*m_World, moved);
 
-    // Determine which entities are affected: moved + any entities in the destination list (order renormalized).
-    std::vector<ECS::EntityHandle> affected = dstList;
-    for (auto& m : moved)
-        affected.push_back(m);
-    std::sort(affected.begin(), affected.end(), [](auto& a, auto& b) { return a.id < b.id; });
-    affected.erase(std::unique(affected.begin(), affected.end(), [](auto& a, auto& b) { return a.id == b.id; }), affected.end());
-
-    std::vector<Editor::ReparentReorderEntitiesCommand::EntityState> before;
-    before.reserve(affected.size());
-    for (auto& e : affected)
-        before.push_back(CaptureReparentState(*m_World, e));
-
-    // Apply parent changes for moved immediately (we commit already-applied for undo).
-    // Adjust local transforms so world-space position/rotation/scale are preserved.
-    for (auto& m : moved)
+    // Insertion index among the destination's children other than the moved ones.
+    std::size_t insertIndex = Editor::kInsertAtEnd;
+    if ((req.hit.Location == UI::Interaction::DropLocation::BeforeItem ||
+         req.hit.Location == UI::Interaction::DropLocation::AfterItem) &&
+        target.IsValid())
     {
-        if (destParent.IsValid())
+        std::vector<ECS::EntityHandle> siblings = Editor::ChildrenInHierarchyOrder(*m_World, destParent);
+        std::erase_if(siblings, [&moved](const ECS::EntityHandle& e) {
+            return std::any_of(moved.begin(), moved.end(), [&e](const ECS::EntityHandle& m) { return m.id == e.id; });
+        });
+        for (std::size_t i = 0; i < siblings.size(); ++i)
         {
-            Components::Parent p{};
-            p.parent = destParent;
-            m_World->AddComponentImmediate(m, p);
-
-            auto* childWorld = m_World->GetComponent<Components::WorldTransform>(m);
-            auto* parentWorld = m_World->GetComponent<Components::WorldTransform>(destParent);
-            if (childWorld && parentWorld)
+            if (siblings[i].id == target.id)
             {
-                glm::mat4 parentMat = glm::make_mat4(parentWorld->matrix);
-                glm::mat4 childMat = glm::make_mat4(childWorld->matrix);
-                glm::mat4 newLocal = glm::inverse(parentMat) * childMat;
-
-                Transform xf{};
-                std::memcpy(xf.matrix, &newLocal[0][0], sizeof(float32) * 16);
-                m_World->AddComponentImmediate(m, xf);
+                insertIndex = (req.hit.Location == UI::Interaction::DropLocation::AfterItem) ? (i + 1) : i;
+                break;
             }
-        }
-        else
-        {
-            // Moving to root: local transform becomes the current world transform.
-            auto* childWorld = m_World->GetComponent<Components::WorldTransform>(m);
-            if (childWorld)
-            {
-                Transform xf{};
-                std::memcpy(xf.matrix, childWorld->matrix, sizeof(float32) * 16);
-                m_World->AddComponentImmediate(m, xf);
-            }
-            m_World->RemoveComponentImmediate<Components::Parent>(m);
         }
     }
 
-    WriteSiblingOrder(*m_World, dstList);
-
-    std::vector<Editor::ReparentReorderEntitiesCommand::EntityState> after;
-    after.reserve(affected.size());
-    for (auto& e : affected)
-        after.push_back(CaptureReparentState(*m_World, e));
+    // Applied immediately (committed already-applied for undo); world poses are preserved.
+    Editor::HierarchyMoveStates states = Editor::MoveEntitiesKeepingWorldPose(*m_World, moved, destParent, insertIndex);
 
     // Group the reparent and the follow-up selection change into one undo step so a single
     // Ctrl+Z restores both the hierarchy AND the selection that was active before the drag.
@@ -3223,8 +2355,8 @@ void HierarchyPanel::DropEntities(const UI::Interaction::DropRequest& req,
             "Reparent Entities",
             m_World,
             m_ChangeNotifications,
-            std::move(before),
-            std::move(after));
+            std::move(states.Before),
+            std::move(states.After));
         m_Undo->CommitAlreadyApplied(std::move(cmd));
     }
 
@@ -3257,6 +2389,93 @@ void HierarchyPanel::DropEntities(const UI::Interaction::DropRequest& req,
         m_Tree->SyncSelectionVisuals();
     }
     // compoundScope's dtor calls EndCompound here, when the handler scope exits.
+}
+
+void HierarchyPanel::BeginRenameOfSelectedEntity()
+{
+    if (!m_World || !m_Selection || !m_Tree)
+        return;
+    const std::vector<UI::Interaction::ItemId> selected = m_Selection->GetSelection();
+    if (selected.size() != 1)
+        return;
+    const TreeId id = static_cast<TreeId>(selected.front());
+    if (id == 0 || id == kRootId || Editor::IsGhostTreeId(id))
+        return;
+    const ECS::EntityHandle entity = HierarchyDataProvider::Decode(id);
+    if (!entity.IsValid() || !m_World->IsValid(entity))
+        return;
+
+    m_Tree->ScrollToItem(id);
+    if (Label* title = m_Tree->FindBoundRowTitle(id))
+        m_EntityRename.Begin(title, m_Tree, *m_World, entity, m_Undo, m_ChangeNotifications);
+}
+
+void HierarchyPanel::DeleteSelectedEntities()
+{
+    if (!m_World || !m_Selection)
+        return;
+
+    std::vector<ECS::EntityHandle> selected;
+    for (const UI::Interaction::ItemId id : m_Selection->GetSelection())
+    {
+        const TreeId tid = static_cast<TreeId>(id);
+        if (tid != 0 && tid != kRootId)
+            selected.push_back(HierarchyDataProvider::Decode(tid));
+    }
+    // Delete, deselect and (on undo) reselect as one undo step: a single Ctrl+Z brings the
+    // entities back and restores the selection, and redo deletes and deselects again.
+    // ApplySelectionProgrammatic records no selection undo of its own, and the deferred Refresh
+    // the delete's structure notification posts is guarded the same way, so no stray
+    // HierarchySelectionCommand lands on top.
+    const std::vector<UI::Interaction::ItemId> selectionBefore = m_Selection->GetSelection();
+    const UI::Interaction::ItemId anchorBefore = m_Selection->GetAnchor();
+    auto applySelection = [this](const std::vector<UI::Interaction::ItemId>& ids, UI::Interaction::ItemId anchor)
+    {
+        ApplySelectionProgrammatic(ids, anchor);
+        if (m_OnSelectEntity)
+        {
+            ScopedFlag suppress(m_SuppressSelectionUndo);
+            m_OnSelectEntity(ids.empty() ? ECS::EntityHandle{} : HierarchyDataProvider::Decode(static_cast<TreeId>(anchor)));
+        }
+    };
+    auto onDeleted = [applySelection]() { applySelection({}, 0); };
+    auto onRevived = [applySelection, selectionBefore, anchorBefore]() { applySelection(selectionBefore, anchorBefore); };
+    Editor::DeleteHierarchySelection(*m_World, m_Undo, m_ChangeNotifications, selected, std::move(onDeleted),
+                                     std::move(onRevived));
+}
+
+std::vector<ECS::EntityHandle> HierarchyPanel::ContextTargetEntities() const
+{
+    std::vector<ECS::EntityHandle> targets{m_ContextTargetEntity};
+    if (!m_Selection || !m_World)
+        return targets;
+    const auto selected = m_Selection->GetSelection();
+    if (std::find(selected.begin(), selected.end(), HierarchyDataProvider::Encode(m_ContextTargetEntity)) ==
+        selected.end())
+        return targets;
+    targets.clear();
+    for (const auto id : selected)
+    {
+        const TreeId treeId = static_cast<TreeId>(id);
+        const ECS::EntityHandle entity = treeId == kRootId ? ECS::EntityHandle{} : HierarchyDataProvider::Decode(treeId);
+        if (entity.IsValid() && m_World->IsValid(entity))
+            targets.push_back(entity);
+    }
+    return targets;
+}
+
+ECS::EntityHandle HierarchyPanel::FirstSelectedEntity() const
+{
+    if (!m_Selection || !m_World)
+        return {};
+    for (const auto id : m_Selection->GetSelection())
+    {
+        const TreeId treeId = static_cast<TreeId>(id);
+        const ECS::EntityHandle entity = treeId == kRootId ? ECS::EntityHandle{} : HierarchyDataProvider::Decode(treeId);
+        if (entity.IsValid() && m_World->IsValid(entity))
+            return entity;
+    }
+    return {};
 }
 
 void HierarchyPanel::DuplicateSelectedEntities()
@@ -3383,857 +2602,740 @@ bool HierarchyPanel::HandleCommand(std::uint32_t cmd)
 {
     if (IsLoadRecentSceneCommand(cmd))
     {
-        const size_t index = static_cast<size_t>(cmd - HierarchyCommandIds::kCmdLoadRecentSceneBase);
+        const size_t index = static_cast<size_t>(cmd - kCmdLoadRecentSceneBase);
         if (index < m_ContextMenuRecentScenes.size() && m_OnOpenRecentScene)
             m_OnOpenRecentScene(m_ContextMenuRecentScenes[index]);
         return true;
     }
-    if (cmd == HierarchyCommandIds::kCmdLoadRecentSceneEmpty)
+    if (cmd == kCmdLoadRecentSceneEmpty)
         return true;
 
     if (!m_World)
         return false;
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    if (m_LayerControls.HandleCommand(cmd))
+    enum class PhysicsSpawn : uint8_t
     {
+        None = 0,
+        DynamicBox,
+        DynamicSphere,
+        DynamicCapsule,
+        StaticPlaneBox,
+    };
+
+    auto scheduleSelectCreatedEntity = [this](ECS::EntityHandle entity)
+    {
+        if (!entity.IsValid())
+            return;
+        this->PostSafeAction([this, entity]()
+                             {
+                                 if (!m_World || !m_World->IsValid(entity))
+                                     return;
+
+                                 if (m_Selection)
+                                 {
+                                     m_SuppressSelectionUndo = true;
+                                     m_Selection->SetSingle(HierarchyDataProvider::Encode(entity));
+                                     m_LastSelectionIds = m_Selection->GetSelection();
+                                     m_LastSelectionAnchor = m_Selection->GetAnchor();
+                                     m_SuppressSelectionUndo = false;
+                                 }
+
+                                 if (m_Tree)
+                                     m_Tree->RefreshFromProvider();
+
+                                 if (m_OnSelectEntity)
+                                     m_OnSelectEntity(entity);
+
+                                 if (m_OnEntityCreated)
+                                     m_OnEntityCreated(entity); });
+    };
+
+    auto createEntity = [&](const std::string& undoName,
+                            const std::string& displayName,
+                            bool withRenderer,
+                            uint32_t meshId,
+                            bool withCamera,
+                            bool withLight,
+                            Components::LightType lightType,
+                            PhysicsSpawn physics)
+    {
+        ECS::World* world = m_World;
+        if (!world)
+            return;
+
+        const bool hasParent = m_ContextTargetEntity.IsValid() && world->IsValid(m_ContextTargetEntity);
+        Parent parentComp{};
+        if (hasParent)
+            parentComp.Entity = m_ContextTargetEntity;
+
+        ECS::EntityHandle h = world->CreateEntity();
+        if (!h.IsValid())
+            return;
+
+        Transform xf = MakeIdentityTransform();
+        if (withLight && lightType == Components::LightType::Directional)
+        {
+            xf = Transform::FromTRS(
+                Mathematics::WorldPosition{},
+                Components::QuaternionFromEulerXYZDegrees(
+                    Components::kDefaultDirectionalLightEulerXDeg,
+                    Components::kDefaultDirectionalLightEulerYDeg,
+                    Components::kDefaultDirectionalLightEulerZDeg),
+                Mathematics::Vector3{1.0f, 1.0f, 1.0f});
+        }
+        Name nm = MakeName(displayName);
+
+        world->AddComponentImmediate(h, xf);
+        world->AddComponentImmediate(h, nm);
+        if (hasParent)
+            world->AddComponentImmediate(h, parentComp);
+
+        MeshRenderer mr{};
+        if (withRenderer)
+        {
+            mr.meshId = meshId;
+            mr.RenderLayers = Rendering::RenderLayerMask::Default();
+
+            // Resolve primitive GUID once (single source of truth — adding
+            // a 5th primitive ID requires updating only this switch).
+            GUID meshGuid;
+            switch (meshId)
+            {
+            case 1u:
+                meshGuid = Engine::Renderer::PrimitiveGenerator::CubeGuid();
+                break;
+            case 2u:
+                meshGuid = Engine::Renderer::PrimitiveGenerator::SphereGuid();
+                break;
+            case 3u:
+                meshGuid = Engine::Renderer::PrimitiveGenerator::CapsuleGuid();
+                break;
+            case 4u:
+                meshGuid = Engine::Renderer::PrimitiveGenerator::PlaneGuid();
+                break;
+            default:
+                meshGuid = GUID::Null();
+                break;
+            }
+
+            if (m_Context && m_Context->RenderServices && !meshGuid.IsNull())
+            {
+                auto matGuid = Engine::Renderer::PrimitiveGenerator::DefaultMaterialGuid();
+                mr = Engine::Renderer::PrimitiveGenerator::MakePrimitiveMeshRenderer(
+                    m_Context->RenderServices, meshGuid, matGuid);
+            }
+
+            world->AddComponentImmediate(h, mr);
+
+            // Primitives carry their own LocalBounds so spatial queries
+            // (picking, culling, AI LOS) see real bounds rather than
+            // per-system fallback rules. Matches BuiltInSceneSchemas.
+            if (Engine::Renderer::PrimitiveGenerator::IsPrimitive(meshGuid))
+            {
+                world->AddComponentImmediate(h,
+                                             Engine::Renderer::PrimitiveGenerator::MakePrimitiveLocalBounds(
+                                                 m_Context ? m_Context->RenderServices : nullptr, meshGuid));
+            }
+        }
+
+        Components::Camera cam{};
+        if (withCamera)
+        {
+            world->AddComponentImmediate(h, cam);
+        }
+
+        Components::Light light{};
+        if (withLight)
+        {
+            light.Type = lightType;
+            // Physical, realistic defaults per light type (Area/Ambient/Volume have no physical unit,
+            // so they stay Unitless).
+            if (light.Type == Components::LightType::Directional)
+            {
+                light = Editor::MakeDefaultDirectionalLight();
+            }
+            else if (light.Type == Components::LightType::Point)
+            {
+                light.Intensity = 1500.0f;                       // a bright household bulb (~1500 lm)
+                light.IntensityUnit = Components::LightUnit::Lumen;
+                light.Range = 10.0f;
+            }
+            else if (light.Type == Components::LightType::Spot)
+            {
+                light.Intensity = 3000.0f;                       // a bright downlight/spot (~3000 lm)
+                light.IntensityUnit = Components::LightUnit::Lumen;
+                light.Range = 12.0f;
+                light.InnerAngle = 0.35f;
+                light.OuterAngle = 0.6f;
+            }
+            else if (light.Type == Components::LightType::Ambient)
+            {
+                light.Intensity = 0.020f;
+            }
+            else if (light.Type == Components::LightType::Area)
+            {
+                light.Intensity = 40.0f;
+                light.Range = 12.0f;
+                light.AreaShape = Components::AreaLightShape::Rectangle;
+                light.AreaWidth = 2.0f;
+                light.AreaHeight = 2.0f;
+                light.AreaRadius = 1.0f;
+                light.Decay = 2.0f;
+            }
+            else if (light.Type == Components::LightType::Volume)
+            {
+                light.Intensity = 8.0f;
+                light.Range = 8.0f;
+                light.Decay = 2.0f;
+            }
+            world->AddComponentImmediate(h, light);
+        }
+
+        // Optional default physics components for primitive shapes.
+        bool withPhysicsBody = false;
+        bool withPhysicsCollider = false;
+        bool withBoxShape = false;
+        bool withSphereShape = false;
+        bool withCapsuleShape = false;
+        Components::PhysicsBody body{};
+        Components::PhysicsCollider col{};
+        Components::BoxColliderShape box{};
+        Components::SphereColliderShape sphere{};
+        Components::CapsuleColliderShape capsule{};
+
+        if (physics != PhysicsSpawn::None)
+        {
+            withPhysicsBody = true;
+            withPhysicsCollider = true;
+
+            // Defaults.
+            body.motionType = Physics::MotionType::Dynamic;
+            col.layer = Physics::Layers::Dynamic;
+
+            if (physics == PhysicsSpawn::StaticPlaneBox)
+            {
+                body.motionType = Physics::MotionType::Static;
+                col.layer = Physics::Layers::Static;
+                withBoxShape = true;
+                // Match the visual plane (unit quad) with a thin box so transform scale works.
+                box.halfExtentsX = 0.5f;
+                box.halfExtentsY = 0.05f;
+                box.halfExtentsZ = 0.5f;
+            }
+            else if (physics == PhysicsSpawn::DynamicBox)
+            {
+                withBoxShape = true;
+                box.halfExtentsX = 0.5f;
+                box.halfExtentsY = 0.5f;
+                box.halfExtentsZ = 0.5f;
+            }
+            else if (physics == PhysicsSpawn::DynamicSphere)
+            {
+                withSphereShape = true;
+                sphere.radius = 0.5f;
+            }
+            else if (physics == PhysicsSpawn::DynamicCapsule)
+            {
+                withCapsuleShape = true;
+                capsule.radius = 0.5f;
+                capsule.halfHeight = 0.5f;
+                capsule.axis = 1; // Y
+            }
+
+            world->AddComponentImmediate(h, body);
+            world->AddComponentImmediate(h, col);
+            if (withBoxShape)
+                world->AddComponentImmediate(h, box);
+            if (withSphereShape)
+                world->AddComponentImmediate(h, sphere);
+            if (withCapsuleShape)
+                world->AddComponentImmediate(h, capsule);
+        }
+
+        const Components::HierarchyOrder hierarchyOrder = Editor::NextHierarchyOrderAtBottom(world);
+        world->AddComponentImmediate(h, hierarchyOrder);
+
+        if (m_Undo)
+        {
+            auto cmdObj = std::make_unique<CreateEntityCommand>(
+                undoName,
+                world,
+                m_ChangeNotifications,
+                h,
+                xf,
+                nm,
+                hasParent,
+                parentComp,
+                withRenderer,
+                mr,
+                withCamera,
+                cam,
+                withLight,
+                light,
+                withPhysicsBody,
+                body,
+                withPhysicsCollider,
+                col,
+                withBoxShape,
+                box,
+                withSphereShape,
+                sphere,
+                withCapsuleShape,
+                capsule,
+                hierarchyOrder);
+            m_Undo->CommitAlreadyApplied(std::move(cmdObj));
+        }
+
+        // Select after the structure notification refresh has run. Doing this
+        // synchronously from key/native-menu command callbacks can re-enter
+        // TreeView/SceneView selection wiring while the hierarchy is rebuilding.
+        if (hasParent && m_Tree)
+        {
+            m_Tree->SetExpanded(HierarchyDataProvider::Encode(m_ContextTargetEntity), true);
+        }
+
+        NotifyWorldStructure(m_ChangeNotifications, world);
+        scheduleSelectCreatedEntity(h);
+    };
+
+    auto tryHandlePluginCommand = [&]() -> bool
+    {
+        Editor::HierarchyCommandContext pluginCtx{};
+        pluginCtx.World = m_World;
+        pluginCtx.TargetEntity = m_ContextTargetEntity;
+        pluginCtx.HasTargetEntity = m_ContextTargetEntity.IsValid() && m_World && m_World->IsValid(m_ContextTargetEntity);
+        if (pluginCtx.HasTargetEntity)
+            pluginCtx.TargetEntities = ContextTargetEntities();
+        pluginCtx.EditorCtx = m_Context;
+        pluginCtx.ChangeNotifications = m_ChangeNotifications;
+        pluginCtx.Undo = m_Undo;
+        pluginCtx.DialogHost = this;
+        pluginCtx.SelectEntity = [this](ECS::EntityHandle entity)
+        {
+            if (m_OnSelectEntity)
+                m_OnSelectEntity(entity);
+        };
+        pluginCtx.NotifyEntityCreated = [this](ECS::EntityHandle entity)
+        {
+            if (m_OnEntityCreated)
+                m_OnEntityCreated(entity);
+        };
+        pluginCtx.NotifyWorldStructureChanged = [this]()
+        {
+            NotifyWorldStructure(m_ChangeNotifications, m_World);
+            if (m_Context && m_Context->OnSceneDirty)
+                m_Context->OnSceneDirty();
+        };
+        pluginCtx.PingAsset = m_PingAsset;
+        return Editor::EditorPluginRegistry::Get().HandleHierarchyCommand(cmd, pluginCtx);
+    };
+
+    auto createAsEmptyParent = [&]()
+    {
+        ECS::World* world = m_World;
+        if (!world)
+            return;
+        if (!m_ContextTargetEntity.IsValid() || !world->IsValid(m_ContextTargetEntity))
+            return;
+
+        Editor::EmptyParentResult created =
+            Editor::CreateEmptyParent(*world, m_ChangeNotifications, ContextTargetEntities(), MakeName("Empty Parent"));
+        if (!created.NewParent.IsValid())
+        {
+            Logger::Log::Warning("[Hierarchy] Create Empty Parent: a generated entity takes no authored children; select entities outside it");
+            return;
+        }
+        if (m_Undo)
+            m_Undo->CommitAlreadyApplied(std::move(created.Command));
+
+        // Select after the hierarchy refresh posted by the structure notification.
         if (m_Tree)
-            m_Tree->RefreshFromProvider();
-        return true;
-    }
+        {
+            const ECS::EntityHandle placedUnder = Editor::GetEffectiveParent(*world, created.NewParent);
+            if (placedUnder.IsValid())
+                m_Tree->SetExpanded(HierarchyDataProvider::Encode(placedUnder), true);
+            m_Tree->SetExpanded(HierarchyDataProvider::Encode(created.NewParent), true);
+        }
+
+        NotifyWorldStructure(m_ChangeNotifications, world);
+        scheduleSelectCreatedEntity(created.NewParent);
+    };
+
+    auto createParticleEmitter = [&]()
+    {
+        ECS::World* world = m_World;
+        if (!world)
+            return;
+
+        const bool hasParent = m_ContextTargetEntity.IsValid() && world->IsValid(m_ContextTargetEntity);
+        Parent parentComp{};
+        if (hasParent)
+            parentComp.Entity = m_ContextTargetEntity;
+
+        ECS::EntityHandle h = world->CreateEntity();
+        if (!h.IsValid())
+            return;
+
+        const bool is2D = m_Context && m_Context->IsSceneView2D && m_Context->IsSceneView2D();
+        Transform xf = MakeIdentityTransform();
+        Name nm = MakeName("Particle Emitter");
+        const Components::ParticleEmitter3D emitter =
+            is2D ? Components::MakeParticleEmitter2DDefaults() : Components::ParticleEmitter3D{};
+        const Components::HierarchyOrder hierarchyOrder = Editor::NextHierarchyOrderAtBottom(world);
+
+        world->AddComponentImmediate(h, xf);
+        world->AddComponentImmediate(h, nm);
+        if (hasParent)
+            world->AddComponentImmediate(h, parentComp);
+        world->AddComponentImmediate(h, emitter);
+        world->AddComponentImmediate(h, hierarchyOrder);
+
+        if (m_Undo)
+        {
+            auto cmdObj = std::make_unique<CreateParticleEmitterEntityCommand>(
+                "Create Particle Emitter",
+                world,
+                m_ChangeNotifications,
+                h,
+                xf,
+                nm,
+                hasParent,
+                parentComp,
+                emitter,
+                hierarchyOrder);
+            m_Undo->CommitAlreadyApplied(std::move(cmdObj));
+        }
+
+        if (hasParent && m_Tree)
+            m_Tree->SetExpanded(HierarchyDataProvider::Encode(m_ContextTargetEntity), true);
+
+        NotifyWorldStructure(m_ChangeNotifications, world);
+        scheduleSelectCreatedEntity(h);
+    };
+
+    auto createReflectionProbe = [&]()
+    {
+        ECS::World* world = m_World;
+        if (!world)
+            return;
+
+        const bool hasParent = m_ContextTargetEntity.IsValid() && world->IsValid(m_ContextTargetEntity);
+        Parent parentComp{};
+        if (hasParent)
+            parentComp.Entity = m_ContextTargetEntity;
+
+        ECS::EntityHandle h = world->CreateEntity();
+        if (!h.IsValid())
+            return;
+
+        Transform xf = Transform::FromTRS(
+            Mathematics::WorldPosition{},
+            Mathematics::Quaternion{},
+            Mathematics::Vector3{100.0f, 100.0f, 100.0f});
+        Name nm = MakeName("Reflection Probe");
+        Components::ReflectionProbe probe{};
+        const Components::HierarchyOrder hierarchyOrder = Editor::NextHierarchyOrderAtBottom(world);
+
+        world->AddComponentImmediate(h, xf);
+        world->AddComponentImmediate(h, nm);
+        if (hasParent)
+            world->AddComponentImmediate(h, parentComp);
+        world->AddComponentImmediate(h, probe);
+        world->AddComponentImmediate(h, hierarchyOrder);
+
+        if (m_Undo)
+        {
+            auto cmdObj = std::make_unique<CreateReflectionProbeEntityCommand>(
+                "Create Reflection Probe",
+                world,
+                m_ChangeNotifications,
+                h,
+                xf,
+                nm,
+                hasParent,
+                parentComp,
+                probe,
+                hierarchyOrder);
+            m_Undo->CommitAlreadyApplied(std::move(cmdObj));
+        }
+
+        if (hasParent && m_Tree)
+            m_Tree->SetExpanded(HierarchyDataProvider::Encode(m_ContextTargetEntity), true);
+
+        NotifyWorldStructure(m_ChangeNotifications, world);
+        scheduleSelectCreatedEntity(h);
+    };
+
     switch (cmd)
     {
-    case HierarchyCommandIds::kCmdCreateEmptyEntity:
-        CreateEntityFromMenu("Create Empty Entity", "Empty Entity", /*withRenderer*/ false, 0u, /*withCamera*/ false, /*withLight*/ false, Components::LightType::Directional, PhysicsSpawn::None);
+    case kCmdCreateEmptyEntity:
+        createEntity("Create Empty Entity", "Empty Entity", /*withRenderer*/ false, 0u, /*withCamera*/ false, /*withLight*/ false, Components::LightType::Directional, PhysicsSpawn::None);
         return true;
-    case HierarchyCommandIds::kCmdCreateAsEmptyParent:
-        CreateEmptyParentForContextTarget();
+    case kCmdCreateAsEmptyParent:
+        createAsEmptyParent();
         return true;
-    case HierarchyCommandIds::kCmdCreateShapeCube:
-        CreateEntityFromMenu("Create Cube", "Cube", /*withRenderer*/ true, 1u, /*withCamera*/ false, /*withLight*/ false, Components::LightType::Directional, PhysicsSpawn::DynamicBox);
+    case kCmdCreateShapeCube:
+        createEntity("Create Cube", "Cube", /*withRenderer*/ true, 1u, /*withCamera*/ false, /*withLight*/ false, Components::LightType::Directional, PhysicsSpawn::DynamicBox);
         return true;
-    case HierarchyCommandIds::kCmdCreateShapeSphere:
-        CreateEntityFromMenu("Create Sphere", "Sphere", /*withRenderer*/ true, 2u, /*withCamera*/ false, /*withLight*/ false, Components::LightType::Directional, PhysicsSpawn::DynamicSphere);
+    case kCmdCreateShapeSphere:
+        createEntity("Create Sphere", "Sphere", /*withRenderer*/ true, 2u, /*withCamera*/ false, /*withLight*/ false, Components::LightType::Directional, PhysicsSpawn::DynamicSphere);
         return true;
-    case HierarchyCommandIds::kCmdCreateShapeCapsule:
-        CreateEntityFromMenu("Create Capsule", "Capsule", /*withRenderer*/ true, 3u, /*withCamera*/ false, /*withLight*/ false, Components::LightType::Directional, PhysicsSpawn::DynamicCapsule);
+    case kCmdCreateShapeCapsule:
+        createEntity("Create Capsule", "Capsule", /*withRenderer*/ true, 3u, /*withCamera*/ false, /*withLight*/ false, Components::LightType::Directional, PhysicsSpawn::DynamicCapsule);
         return true;
-    case HierarchyCommandIds::kCmdCreateShapePlane:
-        CreateEntityFromMenu("Create Plane", "Plane", /*withRenderer*/ true, 4u, /*withCamera*/ false, /*withLight*/ false, Components::LightType::Directional, PhysicsSpawn::StaticPlaneBox);
+    case kCmdCreateShapePlane:
+        createEntity("Create Plane", "Plane", /*withRenderer*/ true, 4u, /*withCamera*/ false, /*withLight*/ false, Components::LightType::Directional, PhysicsSpawn::StaticPlaneBox);
         return true;
-    case HierarchyCommandIds::kCmdCreateCamera:
-        CreateEntityFromMenu("Create Camera", "Camera", /*withRenderer*/ false, 0u, /*withCamera*/ true, /*withLight*/ false, Components::LightType::Directional, PhysicsSpawn::None);
+    case kCmdCreateCamera:
+        createEntity("Create Camera", "Camera", /*withRenderer*/ false, 0u, /*withCamera*/ true, /*withLight*/ false, Components::LightType::Directional, PhysicsSpawn::None);
         return true;
-    case HierarchyCommandIds::kCmdCreateLightDirectional:
-        CreateEntityFromMenu("Create Directional Light", "Directional Light", /*withRenderer*/ false, 0u, /*withCamera*/ false, /*withLight*/ true, Components::LightType::Directional, PhysicsSpawn::None);
+    case kCmdCreateLightDirectional:
+        createEntity("Create Directional Light", "Directional Light", /*withRenderer*/ false, 0u, /*withCamera*/ false, /*withLight*/ true, Components::LightType::Directional, PhysicsSpawn::None);
         return true;
-    case HierarchyCommandIds::kCmdCreateLightPoint:
-        CreateEntityFromMenu("Create Point Light", "Point Light", /*withRenderer*/ false, 0u, /*withCamera*/ false, /*withLight*/ true, Components::LightType::Point, PhysicsSpawn::None);
+    case kCmdCreateLightPoint:
+        createEntity("Create Point Light", "Point Light", /*withRenderer*/ false, 0u, /*withCamera*/ false, /*withLight*/ true, Components::LightType::Point, PhysicsSpawn::None);
         return true;
-    case HierarchyCommandIds::kCmdCreateLightSpot:
-        CreateEntityFromMenu("Create Spot Light", "Spot Light", /*withRenderer*/ false, 0u, /*withCamera*/ false, /*withLight*/ true, Components::LightType::Spot, PhysicsSpawn::None);
+    case kCmdCreateLightSpot:
+        createEntity("Create Spot Light", "Spot Light", /*withRenderer*/ false, 0u, /*withCamera*/ false, /*withLight*/ true, Components::LightType::Spot, PhysicsSpawn::None);
         return true;
-    case HierarchyCommandIds::kCmdCreateLightArea:
-        CreateEntityFromMenu("Create Area Light", "Area Light", /*withRenderer*/ false, 0u, /*withCamera*/ false, /*withLight*/ true, Components::LightType::Area, PhysicsSpawn::None);
+    case kCmdCreateLightArea:
+        createEntity("Create Area Light", "Area Light", /*withRenderer*/ false, 0u, /*withCamera*/ false, /*withLight*/ true, Components::LightType::Area, PhysicsSpawn::None);
         return true;
-    case HierarchyCommandIds::kCmdCreateLightAmbient:
-        CreateEntityFromMenu("Create Ambient Light", "Ambient Light", /*withRenderer*/ false, 0u, /*withCamera*/ false, /*withLight*/ true, Components::LightType::Ambient, PhysicsSpawn::None);
+    case kCmdCreateLightAmbient:
+        createEntity("Create Ambient Light", "Ambient Light", /*withRenderer*/ false, 0u, /*withCamera*/ false, /*withLight*/ true, Components::LightType::Ambient, PhysicsSpawn::None);
         return true;
-    case HierarchyCommandIds::kCmdCreateOcean:
-    CreateOceanEntity();
+    case kCmdCreateOcean:
+    {
+        ECS::World* world = m_World;
+        if (!world)
+            return true;
+
+        ECS::EntityHandle h = world->CreateEntity();
+        if (!h.IsValid())
+            return true;
+
+        world->AddComponentImmediate(h, MakeIdentityTransform());
+        world->AddComponentImmediate(h, MakeName("Ocean"));
+        world->AddComponentImmediate(h, Editor::NextHierarchyOrderAtBottom(world));
+        world->AddComponentImmediate(h, Components::OceanSurface{});
+        world->AddComponentImmediate(h, Components::OceanWaveSpectrum{});
+
+        if (m_Selection)
+            m_Selection->SetSingle(HierarchyDataProvider::Encode(h));
+
+        NotifyWorldStructure(m_ChangeNotifications, world);
+
+        if (m_OnSelectEntity)
+            m_OnSelectEntity(h);
+        if (m_OnEntityCreated)
+            m_OnEntityCreated(h);
+
         return true;
-    case HierarchyCommandIds::kCmdCreateSkyEnvironment:
+    }
+    case kCmdCreateSkyEnvironment:
     {
         if (!m_World)
             return true;
 
         const ECS::EntityHandle h = Editor::CreateSkyEnvironmentEntity(*m_World, m_Undo, m_ChangeNotifications);
         NotifyWorldStructure(m_ChangeNotifications, m_World);
-        ScheduleSelectCreatedEntity(h);
+        scheduleSelectCreatedEntity(h);
         return true;
     }
-    case HierarchyCommandIds::kCmdCreateTerrain:
-    case HierarchyCommandIds::kCmdCreateTerrainLarge:
-    case HierarchyCommandIds::kCmdCreatePlanet5km:
-    case HierarchyCommandIds::kCmdCreatePlanet50km:
-    CreateTerrainEntity(cmd);
+    case kCmdCreateTerrain:
+    case kCmdCreateTerrainLarge:
+    case kCmdCreatePlanet5km:
+    case kCmdCreatePlanet50km:
+    {
+        if (!m_World)
+            return true;
+
+        const CBTTerrainECS::TerrainPreset preset =
+            (cmd == kCmdCreateTerrainLarge) ? CBTTerrainECS::TerrainPreset::LargePlanar :
+            (cmd == kCmdCreatePlanet5km)    ? CBTTerrainECS::TerrainPreset::Planet5km :
+            (cmd == kCmdCreatePlanet50km)   ? CBTTerrainECS::TerrainPreset::Planet50km :
+                                              CBTTerrainECS::TerrainPreset::SmallPlanar;
+        const ECS::EntityHandle h = Editor::CreateTerrainEntity(*m_World, m_Undo, m_ChangeNotifications, preset);
+        NotifyWorldStructure(m_ChangeNotifications, m_World);
+        scheduleSelectCreatedEntity(h);
         return true;
-    case HierarchyCommandIds::kCmdCreateDDGIVolume:
-    CreateDDGIVolumeEntity();
+    }
+    case kCmdCreateDDGIVolume:
+    {
+        ECS::World* world = m_World;
+        if (!world)
+            return true;
+
+        ECS::EntityHandle h = world->CreateEntity();
+        if (!h.IsValid())
+            return true;
+
+        // Sized by its transform (DDGIVolume.h), and a unit cube would be a
+        // 1 m probe grid — too small to light anything on first placement.
+        // Spawn at 10 m per side so a fresh volume covers a room-sized space
+        // and is immediately visible in the scene view; the scale gizmo takes
+        // it from there.
+        constexpr float kDefaultVolumeSize = 10.0f;
+        world->AddComponentImmediate(
+            h, Transform::FromTRS(Mathematics::WorldPosition{}, Quaternion{},
+                                  Vector3{kDefaultVolumeSize, kDefaultVolumeSize, kDefaultVolumeSize}));
+        world->AddComponentImmediate(h, MakeName("DDGI Volume"));
+        world->AddComponentImmediate(h, Components::DDGIVolume{});
+        world->AddComponentImmediate(h, Editor::NextHierarchyOrderAtBottom(world));
+
+        if (m_Selection)
+            m_Selection->SetSingle(HierarchyDataProvider::Encode(h));
+
+        NotifyWorldStructure(m_ChangeNotifications, world);
+
+        if (m_OnSelectEntity)
+            m_OnSelectEntity(h);
+        if (m_OnEntityCreated)
+            m_OnEntityCreated(h);
+
         return true;
-    case HierarchyCommandIds::kCmdCreatePostProcessVolume:
-    CreatePostProcessVolumeEntity();
+    }
+    case kCmdCreatePostProcessVolume:
+    {
+        ECS::World* world = m_World;
+        if (!world)
+            return true;
+
+        ECS::EntityHandle h = world->CreateEntity();
+        if (!h.IsValid())
+            return true;
+
+        world->AddComponentImmediate(h, MakeIdentityTransform());
+        world->AddComponentImmediate(h, MakeName("Post Process Volume"));
+        world->AddComponentImmediate(h, Components::PostProcessVolume{});
+        world->AddComponentImmediate(h, Editor::NextHierarchyOrderAtBottom(world));
+
+        if (m_Selection)
+            m_Selection->SetSingle(HierarchyDataProvider::Encode(h));
+
+        NotifyWorldStructure(m_ChangeNotifications, world);
+
+        if (m_OnSelectEntity)
+            m_OnSelectEntity(h);
+        if (m_OnEntityCreated)
+            m_OnEntityCreated(h);
+
         return true;
-    case HierarchyCommandIds::kCmdCreateWindVolume:
-    CreateWindVolumeEntity();
+    }
+    case kCmdCreateWindVolume:
+    {
+        ECS::World* world = m_World;
+        if (!world)
+            return true;
+
+        ECS::EntityHandle h = world->CreateEntity();
+        if (!h.IsValid())
+            return true;
+
+        world->AddComponentImmediate(h, MakeIdentityTransform());
+        world->AddComponentImmediate(h, MakeName("Wind Volume"));
+        world->AddComponentImmediate(h, Components::WindVolume{});
+        world->AddComponentImmediate(h, Editor::NextHierarchyOrderAtBottom(world));
+
+        if (m_Selection)
+            m_Selection->SetSingle(HierarchyDataProvider::Encode(h));
+
+        NotifyWorldStructure(m_ChangeNotifications, world);
+
+        if (m_OnSelectEntity)
+            m_OnSelectEntity(h);
+        if (m_OnEntityCreated)
+            m_OnEntityCreated(h);
+
         return true;
-    case HierarchyCommandIds::kCmdCreateReflectionProbe:
-        CreateReflectionProbeEntity();
+    }
+    case kCmdCreateReflectionProbe:
+        createReflectionProbe();
         return true;
-    case HierarchyCommandIds::kCmdCreateParticleEmitter:
-        CreateParticleEmitterEntity();
+    case kCmdCreateParticleEmitter:
+        createParticleEmitter();
         return true;
-    case HierarchyCommandIds::kCmdNewScene:
+    case kCmdNewScene:
         if (m_OnNewScene)
             m_OnNewScene();
         return true;
-    case HierarchyCommandIds::kCmdDuplicate:
+    case Editor::kHierarchyCmdDuplicate:
         DuplicateSelectedEntities();
         return true;
-    case HierarchyCommandIds::kCmdSortCustom:
+    case Editor::kHierarchyCmdDelete:
+        DeleteSelectedEntities();
+        return true;
+    case Editor::kHierarchyCmdRename:
+        BeginRenameOfSelectedEntity();
+        return true;
+    case kCmdSortCustom:
         m_SortMode = HierarchySortMode::Custom;
         ApplySortSettings();
         return true;
-    case HierarchyCommandIds::kCmdSortAlphabetical:
+    case kCmdSortAlphabetical:
         m_SortMode = HierarchySortMode::Alphabetical;
         ApplySortSettings();
         return true;
-    case HierarchyCommandIds::kCmdSortType:
+    case kCmdSortType:
         m_SortMode = HierarchySortMode::Type;
         ApplySortSettings();
         return true;
-    case HierarchyCommandIds::kCmdSortAscending:
+    case kCmdSortAscending:
         m_SortDirection = HierarchySortDirection::Ascending;
         ApplySortSettings();
         return true;
-    case HierarchyCommandIds::kCmdSortDescending:
+    case kCmdSortDescending:
         m_SortDirection = HierarchySortDirection::Descending;
         ApplySortSettings();
         return true;
-    case HierarchyCommandIds::kCmdShowVcsSceneDiffDots:
+    case kCmdShowVcsSceneDiffDots:
         if (m_VcsController)
             m_VcsController->ToggleIndicatorVisibility();
         return true;
-    case HierarchyCommandIds::kCmdShowMeshLocation:
-    ShowContextTargetMeshLocation();
+    case kCmdShowRenderLayer:
+        m_ShowRenderLayer = !m_ShowRenderLayer;
+        ApplyRenderLayerVisibility();
         return true;
-    case HierarchyCommandIds::kCmdAddToBookmarks:
-    AddSelectionToBookmarks();
+    case kCmdShowMeshLocation:
+    {
+        if (!m_ContextTargetEntity.IsValid() || !m_World->IsValid(m_ContextTargetEntity))
+            return true;
+        if (!m_Context || !m_Context->Assets || !m_PingAsset)
+            return true;
+        const GUID modelGuid = Editor::FindModelGuidForEntityOrChildren(m_World, m_ContextTargetEntity);
+        if (modelGuid.IsNull())
+            return true;
+        AssetMetadata meta;
+        if (!m_Context->Assets->GetRegistry().TryGetAssetMetadata(modelGuid, meta) || meta.Path.empty())
+            return true;
+        m_PingAsset(meta.Path);
         return true;
+    }
+    case kCmdAddToBookmarks:
+    {
+        if (!m_OnAddEntitiesToBookmarks || !m_World)
+            return true;
+        std::vector<ECS::EntityHandle> entities;
+        if (m_Selection)
+        {
+            for (auto id : m_Selection->GetSelection())
+            {
+                ECS::EntityHandle h = HierarchyDataProvider::Decode(static_cast<TreeId>(id));
+                if (h.IsValid() && m_World->IsValid(h))
+                    entities.push_back(h);
+            }
+        }
+        if (entities.empty() && m_ContextTargetEntity.IsValid() && m_World->IsValid(m_ContextTargetEntity))
+            entities.push_back(m_ContextTargetEntity);
+        if (!entities.empty())
+            m_OnAddEntitiesToBookmarks(entities);
+        return true;
+    }
     default:
         break;
     }
 
-    return TryHandlePluginCommand(cmd);
-}
-
-void HierarchyPanel::ScheduleSelectCreatedEntity(ECS::EntityHandle entity)
-{
-    if (!entity.IsValid())
-        return;
-    this->PostSafeAction([this, entity]()
-                         {
-                             if (!m_World || !m_World->IsValid(entity))
-                                 return;
-
-                             if (m_Selection)
-                             {
-                                 m_SuppressSelectionUndo = true;
-                                 m_Selection->SetSingle(HierarchyDataProvider::Encode(entity));
-                                 m_LastSelectionIds = m_Selection->GetSelection();
-                                 m_LastSelectionAnchor = m_Selection->GetAnchor();
-                                 m_SuppressSelectionUndo = false;
-                             }
-
-                             if (m_Tree)
-                                 m_Tree->RefreshFromProvider();
-
-                             if (m_OnSelectEntity)
-                                 m_OnSelectEntity(entity);
-
-                             if (m_OnEntityCreated)
-                                 m_OnEntityCreated(entity); });
-}
-
-void HierarchyPanel::CreateEntityFromMenu(const std::string& undoName, const std::string& displayName,
-                              bool withRenderer, uint32_t meshId, bool withCamera, bool withLight,
-                              Components::LightType lightType, PhysicsSpawn physics)
-{
-    ECS::World* world = m_World;
-    if (!world)
-        return;
-
-    const bool hasParent = m_ContextTargetEntity.IsValid() && world->IsValid(m_ContextTargetEntity);
-    Parent parentComp{};
-    if (hasParent)
-        parentComp.parent = m_ContextTargetEntity;
-
-    ECS::EntityHandle h = world->CreateEntity();
-    if (!h.IsValid())
-        return;
-
-    Transform xf = MakeIdentityTransform();
-    if (withLight && lightType == Components::LightType::Directional)
-    {
-        xf = Transform::FromTRS(
-            Mathematics::Vector3{},
-            Components::QuaternionFromEulerXYZDegrees(
-                Components::kDefaultDirectionalLightEulerXDeg,
-                Components::kDefaultDirectionalLightEulerYDeg,
-                Components::kDefaultDirectionalLightEulerZDeg),
-            Mathematics::Vector3{1.0f, 1.0f, 1.0f});
-    }
-    Name nm = MakeName(displayName);
-
-    world->AddComponentImmediate(h, xf);
-    world->AddComponentImmediate(h, nm);
-    if (hasParent)
-        world->AddComponentImmediate(h, parentComp);
-
-    MeshRenderer mr{};
-    if (withRenderer)
-    {
-        mr.meshId = meshId;
-        mr.renderLayerMask = 1u; // Scene View layer only (for now)
-
-        // Resolve primitive GUID once (single source of truth — adding
-        // a 5th primitive ID requires updating only this switch).
-        GUID meshGuid;
-        switch (meshId)
-        {
-        case 1u:
-            meshGuid = Engine::Renderer::PrimitiveGenerator::CubeGuid();
-            break;
-        case 2u:
-            meshGuid = Engine::Renderer::PrimitiveGenerator::SphereGuid();
-            break;
-        case 3u:
-            meshGuid = Engine::Renderer::PrimitiveGenerator::CapsuleGuid();
-            break;
-        case 4u:
-            meshGuid = Engine::Renderer::PrimitiveGenerator::PlaneGuid();
-            break;
-        default:
-            meshGuid = GUID::Null();
-            break;
-        }
-
-        if (m_Context && m_Context->RenderServices && !meshGuid.IsNull())
-        {
-            auto matGuid = Engine::Renderer::PrimitiveGenerator::DefaultMaterialGuid();
-            mr = Engine::Renderer::PrimitiveGenerator::MakePrimitiveMeshRenderer(
-                m_Context->RenderServices, meshGuid, matGuid);
-        }
-
-        world->AddComponentImmediate(h, mr);
-
-        // Primitives carry their own LocalBounds so spatial queries
-        // (picking, culling, AI LOS) see real bounds rather than
-        // per-system fallback rules. Matches BuiltInSceneSchemas.
-        if (Engine::Renderer::PrimitiveGenerator::IsPrimitive(meshGuid))
-        {
-            world->AddComponentImmediate(h,
-                                         Engine::Renderer::PrimitiveGenerator::MakePrimitiveLocalBounds(
-                                             m_Context ? m_Context->RenderServices : nullptr, meshGuid));
-        }
-    }
-
-    Components::Camera cam{};
-    if (withCamera)
-    {
-        world->AddComponentImmediate(h, cam);
-    }
-
-    Components::Light light{};
-    if (withLight)
-    {
-        light.Type = lightType;
-        // Physical, realistic defaults per light type (Area/Ambient/Volume have no physical unit,
-        // so they stay Unitless).
-        if (light.Type == Components::LightType::Directional)
-        {
-            light.Intensity = Components::kClearNoonSunIlluminanceLux;
-            light.IntensityUnit = Components::LightUnit::Lux;
-        }
-        else if (light.Type == Components::LightType::Point)
-        {
-            light.Intensity = 1500.0f;                       // a bright household bulb (~1500 lm)
-            light.IntensityUnit = Components::LightUnit::Lumen;
-            light.Range = 10.0f;
-        }
-        else if (light.Type == Components::LightType::Spot)
-        {
-            light.Intensity = 3000.0f;                       // a bright downlight/spot (~3000 lm)
-            light.IntensityUnit = Components::LightUnit::Lumen;
-            light.Range = 12.0f;
-            light.InnerAngle = 0.35f;
-            light.OuterAngle = 0.6f;
-        }
-        else if (light.Type == Components::LightType::Ambient)
-        {
-            light.Intensity = 0.020f;
-        }
-        else if (light.Type == Components::LightType::Area)
-        {
-            light.Intensity = 40.0f;
-            light.Range = 12.0f;
-            light.AreaShape = Components::AreaLightShape::Rectangle;
-            light.AreaWidth = 2.0f;
-            light.AreaHeight = 2.0f;
-            light.AreaRadius = 1.0f;
-            light.Decay = 2.0f;
-        }
-        else if (light.Type == Components::LightType::Volume)
-        {
-            light.Intensity = 8.0f;
-            light.Range = 8.0f;
-            light.Decay = 2.0f;
-        }
-        world->AddComponentImmediate(h, light);
-    }
-
-    // Optional default physics components for primitive shapes.
-    bool withPhysicsBody = false;
-    bool withPhysicsCollider = false;
-    bool withBoxShape = false;
-    bool withSphereShape = false;
-    bool withCapsuleShape = false;
-    Components::PhysicsBody body{};
-    Components::PhysicsCollider col{};
-    Components::BoxColliderShape box{};
-    Components::SphereColliderShape sphere{};
-    Components::CapsuleColliderShape capsule{};
-
-    if (physics != PhysicsSpawn::None)
-    {
-        withPhysicsBody = true;
-        withPhysicsCollider = true;
-
-        // Defaults.
-        body.motionType = Physics::MotionType::Dynamic;
-        col.layer = Physics::Layers::Dynamic;
-
-        if (physics == PhysicsSpawn::StaticPlaneBox)
-        {
-            body.motionType = Physics::MotionType::Static;
-            col.layer = Physics::Layers::Static;
-            withBoxShape = true;
-            // Match the visual plane (unit quad) with a thin box so transform scale works.
-            box.halfExtentsX = 0.5f;
-            box.halfExtentsY = 0.05f;
-            box.halfExtentsZ = 0.5f;
-        }
-        else if (physics == PhysicsSpawn::DynamicBox)
-        {
-            withBoxShape = true;
-            box.halfExtentsX = 0.5f;
-            box.halfExtentsY = 0.5f;
-            box.halfExtentsZ = 0.5f;
-        }
-        else if (physics == PhysicsSpawn::DynamicSphere)
-        {
-            withSphereShape = true;
-            sphere.radius = 0.5f;
-        }
-        else if (physics == PhysicsSpawn::DynamicCapsule)
-        {
-            withCapsuleShape = true;
-            capsule.radius = 0.5f;
-            capsule.halfHeight = 0.5f;
-            capsule.axis = 1; // Y
-        }
-
-        world->AddComponentImmediate(h, body);
-        world->AddComponentImmediate(h, col);
-        if (withBoxShape)
-            world->AddComponentImmediate(h, box);
-        if (withSphereShape)
-            world->AddComponentImmediate(h, sphere);
-        if (withCapsuleShape)
-            world->AddComponentImmediate(h, capsule);
-    }
-
-    const Components::HierarchyOrder hierarchyOrder = Editor::NextHierarchyOrderAtBottom(world);
-    world->AddComponentImmediate(h, hierarchyOrder);
-
-    if (m_Undo)
-    {
-        auto cmdObj = std::make_unique<CreateEntityCommand>(
-            undoName,
-            world,
-            m_ChangeNotifications,
-            h,
-            xf,
-            nm,
-            hasParent,
-            parentComp,
-            withRenderer,
-            mr,
-            withCamera,
-            cam,
-            withLight,
-            light,
-            withPhysicsBody,
-            body,
-            withPhysicsCollider,
-            col,
-            withBoxShape,
-            box,
-            withSphereShape,
-            sphere,
-            withCapsuleShape,
-            capsule,
-            hierarchyOrder);
-        m_Undo->CommitAlreadyApplied(std::move(cmdObj));
-    }
-
-    // Select after the structure notification refresh has run. Doing this
-    // synchronously from key/native-menu command callbacks can re-enter
-    // TreeView/SceneView selection wiring while the hierarchy is rebuilding.
-    if (hasParent && m_Tree)
-    {
-        m_Tree->SetExpanded(HierarchyDataProvider::Encode(m_ContextTargetEntity), true);
-    }
-
-    NotifyWorldStructure(m_ChangeNotifications, world);
-    ScheduleSelectCreatedEntity(h);
-}
-
-bool HierarchyPanel::TryHandlePluginCommand(std::uint32_t cmd)
-{
-    Editor::HierarchyCommandContext pluginCtx{};
-    pluginCtx.World = m_World;
-    pluginCtx.TargetEntity = m_ContextTargetEntity;
-    pluginCtx.HasTargetEntity = m_ContextTargetEntity.IsValid() && m_World && m_World->IsValid(m_ContextTargetEntity);
-    pluginCtx.EditorCtx = m_Context;
-    pluginCtx.ChangeNotifications = m_ChangeNotifications;
-    pluginCtx.Undo = m_Undo;
-    pluginCtx.SelectEntity = [this](ECS::EntityHandle entity)
-    {
-        if (m_OnSelectEntity)
-            m_OnSelectEntity(entity);
-    };
-    pluginCtx.NotifyEntityCreated = [this](ECS::EntityHandle entity)
-    {
-        if (m_OnEntityCreated)
-            m_OnEntityCreated(entity);
-    };
-    pluginCtx.NotifyWorldStructureChanged = [this]()
-    {
-        NotifyWorldStructure(m_ChangeNotifications, m_World);
-        if (m_Context && m_Context->OnSceneDirty)
-            m_Context->OnSceneDirty();
-    };
-    if (UIManager* manager = GetOwnerManager())
-        pluginCtx.DialogHost = manager->GetRootElement();
-    if (m_PingAsset)
-        pluginCtx.PingAsset = m_PingAsset;
-    if (m_Selection && pluginCtx.HasTargetEntity)
-    {
-        const auto selected = m_Selection->GetSelection();
-        if (std::find(selected.begin(), selected.end(), HierarchyDataProvider::Encode(pluginCtx.TargetEntity)) !=
-            selected.end())
-        {
-            for (const auto id : selected)
-            {
-                const auto entity = HierarchyDataProvider::Decode(static_cast<TreeId>(id));
-                if (m_World->IsValid(entity))
-                    pluginCtx.TargetEntities.push_back(entity);
-            }
-        }
-    }
-    return Editor::EditorPluginRegistry::Get().HandleHierarchyCommand(cmd, pluginCtx);
-}
-
-void HierarchyPanel::CreateEmptyParentForContextTarget()
-{
-    ECS::World* world = m_World;
-    if (!world)
-        return;
-    if (!m_ContextTargetEntity.IsValid() || !world->IsValid(m_ContextTargetEntity))
-        return;
-
-    const ECS::EntityHandle child = m_ContextTargetEntity;
-
-    // Capture the child's current local transform (relative to its current parent).
-    Transform childLocal = MakeIdentityTransform();
-    if (auto* t = world->GetComponent<Transform>(child))
-    {
-        childLocal = *t;
-    }
-    else
-    {
-        // Best-effort: ensure Transform exists so we can preserve it.
-        world->AddComponentImmediate(child, childLocal);
-    }
-
-    bool childHadParent = false;
-    Parent childParentBefore{};
-    if (auto* p = world->GetComponent<Parent>(child))
-    {
-        childHadParent = true;
-        childParentBefore = *p;
-    }
-
-    ECS::EntityHandle newParent = world->CreateEntity();
-    if (!newParent.IsValid())
-        return;
-
-    // New parent inherits the child's previous local transform so its world pose matches.
-    world->AddComponentImmediate(newParent, childLocal);
-    Name parentName = MakeName("Empty Parent");
-    world->AddComponentImmediate(newParent, parentName);
-    if (childHadParent)
-    {
-        // Insert between child's old parent and the child.
-        world->AddComponentImmediate(newParent, childParentBefore);
-    }
-
-    // Reparent child under new parent and reset child's local transform to identity.
-    Parent newParentComp{};
-    newParentComp.parent = newParent;
-    world->AddComponentImmediate(child, newParentComp);
-    world->AddComponentImmediate(child, MakeIdentityTransform());
-
-    if (m_Undo)
-    {
-        auto cmdObj = std::make_unique<CreateAsEmptyParentCommand>(
-            "Create Empty Parent",
-            world,
-            m_ChangeNotifications,
-            child,
-            newParent,
-            childHadParent,
-            childParentBefore,
-            childLocal,
-            parentName);
-        m_Undo->CommitAlreadyApplied(std::move(cmdObj));
-    }
-
-    // Select after the hierarchy refresh posted by the structure notification.
-    if (m_Tree)
-    {
-        if (childHadParent && childParentBefore.parent.IsValid())
-        {
-            m_Tree->SetExpanded(HierarchyDataProvider::Encode(childParentBefore.parent), true);
-        }
-        m_Tree->SetExpanded(HierarchyDataProvider::Encode(newParent), true);
-    }
-
-    NotifyWorldStructure(m_ChangeNotifications, world);
-    ScheduleSelectCreatedEntity(newParent);
-}
-
-void HierarchyPanel::CreateParticleEmitterEntity()
-{
-    ECS::World* world = m_World;
-    if (!world)
-        return;
-
-    const bool hasParent = m_ContextTargetEntity.IsValid() && world->IsValid(m_ContextTargetEntity);
-    Parent parentComp{};
-    if (hasParent)
-        parentComp.parent = m_ContextTargetEntity;
-
-    ECS::EntityHandle h = world->CreateEntity();
-    if (!h.IsValid())
-        return;
-
-    const bool is2D = m_Context && m_Context->IsSceneView2D && m_Context->IsSceneView2D();
-    Transform xf = MakeIdentityTransform();
-    Name nm = MakeName("Particle Emitter");
-    const Components::ParticleEmitter3D emitter =
-        is2D ? Components::MakeParticleEmitter2DDefaults() : Components::ParticleEmitter3D{};
-    const Components::HierarchyOrder hierarchyOrder = Editor::NextHierarchyOrderAtBottom(world);
-
-    world->AddComponentImmediate(h, xf);
-    world->AddComponentImmediate(h, nm);
-    if (hasParent)
-        world->AddComponentImmediate(h, parentComp);
-    world->AddComponentImmediate(h, emitter);
-    world->AddComponentImmediate(h, hierarchyOrder);
-
-    if (m_Undo)
-    {
-        auto cmdObj = std::make_unique<CreateParticleEmitterEntityCommand>(
-            "Create Particle Emitter",
-            world,
-            m_ChangeNotifications,
-            h,
-            xf,
-            nm,
-            hasParent,
-            parentComp,
-            emitter,
-            hierarchyOrder);
-        m_Undo->CommitAlreadyApplied(std::move(cmdObj));
-    }
-
-    if (hasParent && m_Tree)
-        m_Tree->SetExpanded(HierarchyDataProvider::Encode(m_ContextTargetEntity), true);
-
-    NotifyWorldStructure(m_ChangeNotifications, world);
-    ScheduleSelectCreatedEntity(h);
-}
-
-void HierarchyPanel::CreateReflectionProbeEntity()
-{
-    ECS::World* world = m_World;
-    if (!world)
-        return;
-
-    const bool hasParent = m_ContextTargetEntity.IsValid() && world->IsValid(m_ContextTargetEntity);
-    Parent parentComp{};
-    if (hasParent)
-        parentComp.parent = m_ContextTargetEntity;
-
-    ECS::EntityHandle h = world->CreateEntity();
-    if (!h.IsValid())
-        return;
-
-    Transform xf = Transform::FromTRS(
-        Mathematics::Vector3{0.0f, 0.0f, 0.0f},
-        Mathematics::Quaternion{},
-        Mathematics::Vector3{100.0f, 100.0f, 100.0f});
-    Name nm = MakeName("Reflection Probe");
-    Components::ReflectionProbe probe{};
-    const Components::HierarchyOrder hierarchyOrder = Editor::NextHierarchyOrderAtBottom(world);
-
-    world->AddComponentImmediate(h, xf);
-    world->AddComponentImmediate(h, nm);
-    if (hasParent)
-        world->AddComponentImmediate(h, parentComp);
-    world->AddComponentImmediate(h, probe);
-    world->AddComponentImmediate(h, hierarchyOrder);
-
-    if (m_Undo)
-    {
-        auto cmdObj = std::make_unique<CreateReflectionProbeEntityCommand>(
-            "Create Reflection Probe",
-            world,
-            m_ChangeNotifications,
-            h,
-            xf,
-            nm,
-            hasParent,
-            parentComp,
-            probe,
-            hierarchyOrder);
-        m_Undo->CommitAlreadyApplied(std::move(cmdObj));
-    }
-
-    if (hasParent && m_Tree)
-        m_Tree->SetExpanded(HierarchyDataProvider::Encode(m_ContextTargetEntity), true);
-
-    NotifyWorldStructure(m_ChangeNotifications, world);
-    ScheduleSelectCreatedEntity(h);
-}
-
-void HierarchyPanel::CreateOceanEntity()
-{
-    ECS::World* world = m_World;
-    if (!world)
-        return;
-
-    ECS::EntityHandle h = world->CreateEntity();
-    if (!h.IsValid())
-        return;
-
-    world->AddComponentImmediate(h, MakeIdentityTransform());
-    world->AddComponentImmediate(h, MakeName("Ocean"));
-    world->AddComponentImmediate(h, Editor::NextHierarchyOrderAtBottom(world));
-    world->AddComponentImmediate(h, Components::OceanSurface{});
-    world->AddComponentImmediate(h, Components::OceanWaveSpectrum{});
-
-    if (m_Selection)
-        m_Selection->SetSingle(HierarchyDataProvider::Encode(h));
-
-    NotifyWorldStructure(m_ChangeNotifications, world);
-
-    if (m_OnSelectEntity)
-        m_OnSelectEntity(h);
-    if (m_OnEntityCreated)
-        m_OnEntityCreated(h);
-
-    return;
-}
-
-void HierarchyPanel::CreateTerrainEntity(std::uint32_t cmd)
-{
-    ECS::World* world = m_World;
-    if (!world)
-        return;
-
-    ECS::EntityHandle h = world->CreateEntity();
-    if (!h.IsValid())
-        return;
-
-    const CBTTerrainECS::TerrainPreset preset =
-        (cmd == HierarchyCommandIds::kCmdCreateTerrainLarge) ? CBTTerrainECS::TerrainPreset::LargePlanar :
-        (cmd == HierarchyCommandIds::kCmdCreatePlanet5km)    ? CBTTerrainECS::TerrainPreset::Planet5km :
-        (cmd == HierarchyCommandIds::kCmdCreatePlanet50km)   ? CBTTerrainECS::TerrainPreset::Planet50km :
-                                          CBTTerrainECS::TerrainPreset::SmallPlanar;
-    const Components::Terrain terrainComp = CBTTerrainECS::MakeTerrainPreset(preset);
-    const Components::TerrainPlanetRelief reliefComp =
-        CBTTerrainECS::MakePlanetReliefPreset(preset);
-    const bool spherical = terrainComp.Domain == Components::TerrainDomain::Spherical;
-
-    world->AddComponentImmediate(h, MakeIdentityTransform());
-    world->AddComponentImmediate(h, MakeName(spherical ? "Planet" : "Terrain"));
-    world->AddComponentImmediate(h, Editor::NextHierarchyOrderAtBottom(world));
-
-    // Shared with the create_terrain / create_entity IPC: adds Terrain + grass,
-    // provisions single-tile noise data, gates the heightfield collider to planar
-    // single-tile terrains, attaches the base relief to a planet and spawns the
-    // scene's default surface rules. The presets are inside every limit it checks.
-    if (const std::string refusal = Editor::ProvisionTerrainEntity(*world, h, terrainComp, reliefComp);
-        !refusal.empty())
-        Logger::Log::Error("HierarchyPanel: the terrain preset was refused: {}", refusal);
-
-    // Select the new terrain entity in the hierarchy.
-    if (m_Selection)
-        m_Selection->SetSingle(HierarchyDataProvider::Encode(h));
-
-    NotifyWorldStructure(m_ChangeNotifications, world);
-
-    if (m_OnSelectEntity)
-        m_OnSelectEntity(h);
-    if (m_OnEntityCreated)
-        m_OnEntityCreated(h);
-
-    return;
-}
-
-void HierarchyPanel::CreateDDGIVolumeEntity()
-{
-    ECS::World* world = m_World;
-    if (!world)
-        return;
-
-    ECS::EntityHandle h = world->CreateEntity();
-    if (!h.IsValid())
-        return;
-
-    // Sized by its transform (DDGIVolume.h), and a unit cube would be a
-    // 1 m probe grid — too small to light anything on first placement.
-    // Spawn at 10 m per side so a fresh volume covers a room-sized space
-    // and is immediately visible in the scene view; the scale gizmo takes
-    // it from there.
-    constexpr float kDefaultVolumeSize = 10.0f;
-    world->AddComponentImmediate(
-        h, Transform::FromTRS(Vector3{0.0f, 0.0f, 0.0f}, Quaternion{},
-                              Vector3{kDefaultVolumeSize, kDefaultVolumeSize, kDefaultVolumeSize}));
-    world->AddComponentImmediate(h, MakeName("DDGI Volume"));
-    world->AddComponentImmediate(h, Components::DDGIVolume{});
-    world->AddComponentImmediate(h, Editor::NextHierarchyOrderAtBottom(world));
-
-    if (m_Selection)
-        m_Selection->SetSingle(HierarchyDataProvider::Encode(h));
-
-    NotifyWorldStructure(m_ChangeNotifications, world);
-
-    if (m_OnSelectEntity)
-        m_OnSelectEntity(h);
-    if (m_OnEntityCreated)
-        m_OnEntityCreated(h);
-
-    return;
-}
-
-void HierarchyPanel::CreatePostProcessVolumeEntity()
-{
-    ECS::World* world = m_World;
-    if (!world)
-        return;
-
-    ECS::EntityHandle h = world->CreateEntity();
-    if (!h.IsValid())
-        return;
-
-    world->AddComponentImmediate(h, MakeIdentityTransform());
-    world->AddComponentImmediate(h, MakeName("Post Process Volume"));
-    world->AddComponentImmediate(h, Components::PostProcessVolume{});
-    world->AddComponentImmediate(h, Editor::NextHierarchyOrderAtBottom(world));
-
-    if (m_Selection)
-        m_Selection->SetSingle(HierarchyDataProvider::Encode(h));
-
-    NotifyWorldStructure(m_ChangeNotifications, world);
-
-    if (m_OnSelectEntity)
-        m_OnSelectEntity(h);
-    if (m_OnEntityCreated)
-        m_OnEntityCreated(h);
-
-    return;
-}
-
-void HierarchyPanel::CreateWindVolumeEntity()
-{
-    ECS::World* world = m_World;
-    if (!world)
-        return;
-
-    ECS::EntityHandle h = world->CreateEntity();
-    if (!h.IsValid())
-        return;
-
-    world->AddComponentImmediate(h, MakeIdentityTransform());
-    world->AddComponentImmediate(h, MakeName("Wind Volume"));
-    world->AddComponentImmediate(h, Components::WindVolume{});
-    world->AddComponentImmediate(h, Editor::NextHierarchyOrderAtBottom(world));
-
-    if (m_Selection)
-        m_Selection->SetSingle(HierarchyDataProvider::Encode(h));
-
-    NotifyWorldStructure(m_ChangeNotifications, world);
-
-    if (m_OnSelectEntity)
-        m_OnSelectEntity(h);
-    if (m_OnEntityCreated)
-        m_OnEntityCreated(h);
-
-    return;
-}
-
-void HierarchyPanel::ShowContextTargetMeshLocation()
-{
-    if (!m_ContextTargetEntity.IsValid() || !m_World->IsValid(m_ContextTargetEntity))
-        return;
-    if (!m_Context || !m_Context->Assets || !m_PingAsset)
-        return;
-    const GUID modelGuid = Editor::FindModelGuidForEntityOrChildren(m_World, m_ContextTargetEntity);
-    if (modelGuid.IsNull())
-        return;
-    AssetMetadata meta;
-    if (!m_Context->Assets->GetRegistry().TryGetAssetMetadata(modelGuid, meta) || meta.Path.empty())
-        return;
-    m_PingAsset(meta.Path);
-    return;
-}
-
-void HierarchyPanel::AddSelectionToBookmarks()
-{
-    if (!m_OnAddEntitiesToBookmarks || !m_World)
-        return;
-    std::vector<ECS::EntityHandle> entities;
-    if (m_Selection)
-    {
-        for (auto id : m_Selection->GetSelection())
-        {
-            ECS::EntityHandle h = HierarchyDataProvider::Decode(static_cast<TreeId>(id));
-            if (h.IsValid() && m_World->IsValid(h))
-                entities.push_back(h);
-        }
-    }
-    if (entities.empty() && m_ContextTargetEntity.IsValid() && m_World->IsValid(m_ContextTargetEntity))
-        entities.push_back(m_ContextTargetEntity);
-    if (!entities.empty())
-        m_OnAddEntitiesToBookmarks(entities);
-    return;
+    return tryHandlePluginCommand();
 }
 
 HierarchyPanel::~HierarchyPanel()
@@ -4246,7 +3348,7 @@ HierarchyPanel::~HierarchyPanel()
     m_RefreshQueued = false;
     ClearSearchHighlights();
     if (m_SearchBar)
-        SettingsPanel::UnregisterSearchBar(m_SearchBar);
+        EditorSearchBars::Unregister(m_SearchBar);
 
     if (m_ChangeNotifications && m_StructureSub)
     {
@@ -4260,17 +3362,13 @@ HierarchyPanel::~HierarchyPanel()
     {
         m_ChangeNotifications->Unsubscribe(m_MeshRendererChangedSub);
     }
-    if (m_ChangeNotifications && m_SkinnedMeshRendererChangedSub)
-    {
-        m_ChangeNotifications->Unsubscribe(m_SkinnedMeshRendererChangedSub);
-    }
-    if (m_ChangeNotifications && m_RenderLayerChangedSub)
-    {
-        m_ChangeNotifications->Unsubscribe(m_RenderLayerChangedSub);
-    }
     if (m_ChangeNotifications && m_NameChangedSub)
     {
         m_ChangeNotifications->Unsubscribe(m_NameChangedSub);
+    }
+    if (m_ChangeNotifications && m_DecorationChangedSub)
+    {
+        m_ChangeNotifications->Unsubscribe(m_DecorationChangedSub);
     }
 }
 
@@ -4296,26 +3394,21 @@ void HierarchyPanel::SetChangeNotifications(Editor::EditorChangeNotifications* n
     {
         m_ChangeNotifications->Unsubscribe(m_MeshRendererChangedSub);
     }
-    if (m_ChangeNotifications && m_SkinnedMeshRendererChangedSub)
-    {
-        m_ChangeNotifications->Unsubscribe(m_SkinnedMeshRendererChangedSub);
-    }
-    if (m_ChangeNotifications && m_RenderLayerChangedSub)
-    {
-        m_ChangeNotifications->Unsubscribe(m_RenderLayerChangedSub);
-    }
     if (m_ChangeNotifications && m_NameChangedSub)
     {
         m_ChangeNotifications->Unsubscribe(m_NameChangedSub);
+    }
+    if (m_ChangeNotifications && m_DecorationChangedSub)
+    {
+        m_ChangeNotifications->Unsubscribe(m_DecorationChangedSub);
     }
 
     m_ChangeNotifications = notifications;
     m_StructureSub = {};
     m_LightChangedSub = {};
     m_MeshRendererChangedSub = {};
-    m_SkinnedMeshRendererChangedSub = {};
-    m_RenderLayerChangedSub = {};
     m_NameChangedSub = {};
+    m_DecorationChangedSub = {};
 
     if (!m_ChangeNotifications)
     {
@@ -4345,7 +3438,7 @@ void HierarchyPanel::SetChangeNotifications(Editor::EditorChangeNotifications* n
     // Live hierarchy icon tint: follow color-picker drags on Light.Color.
     const ECS::ComponentTypeId lightTypeId = ECS::GetComponentTypeId<Components::Light>();
     m_LightChangedSub = m_ChangeNotifications->SubscribeComponentChanged(
-        [this, lightTypeId](const Editor::EditorChangeNotifications::ComponentChangedEvent& e)
+        [this](const Editor::EditorChangeNotifications::ComponentChangedEvent& e)
         {
             if (e.world != m_World || e.componentType != lightTypeId)
                 return;
@@ -4355,7 +3448,7 @@ void HierarchyPanel::SetChangeNotifications(Editor::EditorChangeNotifications* n
     // Refresh sprite/model thumbnails when MeshRenderer changes (e.g. texture drop on mesh).
     const ECS::ComponentTypeId meshRendererTypeId = ECS::GetComponentTypeId<Components::MeshRenderer>();
     m_MeshRendererChangedSub = m_ChangeNotifications->SubscribeComponentChanged(
-        [this, meshRendererTypeId](const Editor::EditorChangeNotifications::ComponentChangedEvent& e)
+        [this](const Editor::EditorChangeNotifications::ComponentChangedEvent& e)
         {
             if (e.world != m_World || e.componentType != meshRendererTypeId)
                 return;
@@ -4368,29 +3461,20 @@ void HierarchyPanel::SetChangeNotifications(Editor::EditorChangeNotifications* n
                                  this->Refresh(false); });
         });
 
-    const auto refreshRenderLayerLabel = [this](const Editor::EditorChangeNotifications::ComponentChangedEvent& e)
-    {
-        if (e.world != m_World || !m_LayerControls.IsRenderLayerVisible() || m_RefreshQueued)
-            return;
-        m_RefreshQueued = true;
-        this->PostAction([this]()
-                         {
-                             m_RefreshQueued = false;
-                             this->Refresh(false); });
-    };
-    const ECS::ComponentTypeId skinnedMeshRendererTypeId = ECS::GetComponentTypeId<Components::SkinnedMeshRenderer>();
-    m_SkinnedMeshRendererChangedSub = m_ChangeNotifications->SubscribeComponentChanged(
-        [refreshRenderLayerLabel](const Editor::EditorChangeNotifications::ComponentChangedEvent& e)
+    // A committed edit can change what a registered row decoration shows on the edited entity's
+    // row; the decorations run again on that row in place, after the edit returns.
+    m_DecorationChangedSub = m_ChangeNotifications->SubscribeComponentChanged(
+        [this](const Editor::EditorChangeNotifications::ComponentChangedEvent& e)
         {
-            if (e.componentType == skinnedMeshRendererTypeId)
-                refreshRenderLayerLabel(e);
-        });
-    const ECS::ComponentTypeId renderLayerTypeId = ECS::GetComponentTypeId<Components::RenderLayer>();
-    m_RenderLayerChangedSub = m_ChangeNotifications->SubscribeComponentChanged(
-        [refreshRenderLayerLabel](const Editor::EditorChangeNotifications::ComponentChangedEvent& e)
-        {
-            if (e.componentType == renderLayerTypeId)
-                refreshRenderLayerLabel(e);
+            if (e.world != m_World || e.kind == Editor::EditorChangeNotifications::ChangeKind::Preview)
+                return;
+            const ECS::EntityHandle entity = e.entity;
+            this->PostAction([this, entity]()
+                             {
+                                 if (m_World && m_Tree)
+                                     Editor::ApplyHeldHierarchyRowDecorations(*m_World, entity, *m_Tree,
+                                                                              HierarchyDataProvider::Encode(entity));
+                             });
         });
 
     // Label text comes from Name; inspector edits notify Commit without always sending
@@ -4399,7 +3483,7 @@ void HierarchyPanel::SetChangeNotifications(Editor::EditorChangeNotifications* n
     // the coalesced full label rebuild, byte-identical to before.
     const ECS::ComponentTypeId nameTypeId = ECS::GetComponentTypeId<Components::Name>();
     m_NameChangedSub = m_ChangeNotifications->SubscribeComponentChanged(
-        [this, nameTypeId](const Editor::EditorChangeNotifications::ComponentChangedEvent& e)
+        [this](const Editor::EditorChangeNotifications::ComponentChangedEvent& e)
         {
             if (e.world != m_World || e.componentType != nameTypeId)
                 return;
@@ -4442,44 +3526,6 @@ void HierarchyPanel::SetChangeNotifications(Editor::EditorChangeNotifications* n
         });
 }
 
-void HierarchyPanel::ApplyGeneratedRowPreview(
-    UIElement* row, TreeId id, UIElement* previewIconEl,
-    const std::function<std::string(std::function<void(const std::string&)>)>& request)
-{
-    const auto weakPanel = UIElement::MakeWeakRef(this);
-    const auto weakRow = UIElement::MakeWeakRef(row);
-    const auto weakIcon = UIElement::MakeWeakRef(previewIconEl);
-    const std::string immediate = request(
-        [weakPanel, weakRow, weakIcon, id](const std::string& rel)
-        {
-            if (rel.empty())
-                return;
-            // The concrete thumbnail service delivers this callback on the UI
-            // thread; the panel can have closed while the worker produced it.
-            auto* panel = weakPanel.Get();
-            if (!panel)
-                return;
-            panel->PostAction(
-                [weakPanel, weakRow, weakIcon, id, rel]()
-                {
-                    auto* currentPanel = weakPanel.Get();
-                    auto* currentRow = weakRow.Get();
-                    auto* currentIcon = weakIcon.Get();
-                    if (!currentPanel || !currentRow || !currentIcon || !currentPanel->m_Tree)
-                        return;
-                    if (currentPanel->m_Context && currentPanel->m_Context->UIReplayActive)
-                        return;
-                    // TreeView owns pooled-row bindings. A live row may now
-                    // represent another entity even when its icon still exists.
-                    if (currentPanel->m_Tree->BoundIdOf(currentRow) != id)
-                        return;
-                    Editor::ApplySpriteFrameThumbnail(*currentIcon, rel, kHierarchyRowIconAlignPercent);
-                });
-        });
-    if (!immediate.empty())
-        Editor::ApplySpriteFrameThumbnail(*previewIconEl, immediate, kHierarchyRowIconAlignPercent);
-}
-
 void HierarchyPanel::ApplyModelThumbColorOverride(UIElement* titleEl)
 {
     if (!titleEl || !titleEl->HasClass("hierarchy-entity-model-thumb"))
@@ -4494,8 +3540,8 @@ void HierarchyPanel::ApplyModelThumbColorOverride(UIElement* titleEl)
                                root->HasClass("hierarchy-icons-colored");
     if (!modelsColored)
         return;
-    titleEl->Overrides().Set(Style::BackgroundImageSaturation, 1.0f);
-    titleEl->Overrides().Set(Style::BackgroundTint, uint32_t(0xFFFFFFFFu));
+    titleEl->Style().Set(Style::BackgroundImageSaturation, 1.0f);
+    titleEl->Style().Set(Style::BackgroundTint, uint32_t(0xFFFFFFFFu));
     titleEl->MarkDirty(UIElement::VisualDirty);
 }
 
@@ -4591,6 +3637,16 @@ void HierarchyPanel::RePresentHeldRows()
     m_Tree->CollectBoundIds(held);
     m_Provider->MarkChangedBatch(held);
     m_Tree->RefreshFromProvider();
+}
+
+ECS::EntityHandle HierarchyPanel::EntityShownBy(const UIElement& row) const
+{
+    if (!m_Tree)
+        return {};
+    const TreeId tid = m_Tree->BoundIdOf(&row);
+    if (tid == 0 || tid == kRootId)
+        return {};
+    return HierarchyDataProvider::Decode(tid);
 }
 
 std::vector<ECS::EntityHandle> HierarchyPanel::ResolveRowActionTargets(
@@ -4722,8 +3778,6 @@ void HierarchyPanel::Update()
     if (!m_World || !m_Provider || !m_Tree)
         return;
 
-    if (m_LayerControls.NeedsRefresh(*m_World))
-        RePresentHeldRows();
     m_RowActivity.Refresh(*m_World, *m_Tree, *m_Provider);
 
     if (m_VcsController)
@@ -4861,7 +3915,7 @@ void HierarchyPanel::Update()
         if (escalateReparent)
             return;
         incrementalTouched = true;
-        if (m_Provider->ApplyReparented(e) && ++reparentMoves > kIncrementalDeltaMax)
+        if (m_Provider->ApplyReparented(e) && ++reparentMoves > HierarchyDataProvider::kIncrementalDeltaMax)
             escalateReparent = true;
     };
 
@@ -5039,6 +4093,8 @@ void HierarchyPanel::Refresh(bool restoreHierarchyUiFromSceneAfterCommit)
 {
     if (!m_Tree || !m_Provider)
         return;
+    // The rebuild rebinds every row.
+    m_EntityRename.Cancel();
     // A world-change-driven refresh may drop the selected row (e.g. after a delete) or
     // otherwise re-sync selection. That selection change is a consequence of the world
     // edit, not a user selection action, so it must not record its own selection-undo
@@ -5247,8 +4303,15 @@ void HierarchyPanel::ApplySortSettings()
     Refresh();
 }
 
-// has-* follows whether a bar is really on screen, so the navigation row only
-// rides up when there is a bar to make room for.
+void HierarchyPanel::ApplyRenderLayerVisibility()
+{
+    if (!m_Tree)
+        return;
+    m_Tree->RefreshFromProvider();
+}
+
+// has-* follows whether a bar is really on screen, so the size bar and a bottom search only
+// ride up when there is a bar to make room for.
 void HierarchyPanel::SetHorizontalBarPresent(bool present)
 {
     if (m_Tree)
@@ -5319,7 +4382,7 @@ void HierarchyPanel::RestoreHierarchyUiFromSceneAfterSceneCommit()
     if (!m_Tree || !m_Provider || !m_World || !m_Selection)
         return;
 
-    std::optional<Scene::SceneHierarchyUiFromFile> pending;
+    std::optional<Editor::SceneHierarchyUiFromFile> pending;
     if (m_PendingHierarchyUiProvider)
         pending = m_PendingHierarchyUiProvider();
 
@@ -5328,9 +4391,9 @@ void HierarchyPanel::RestoreHierarchyUiFromSceneAfterSceneCommit()
 
     m_Tree->ClearExpansionState();
 
-    if (pending->hadSection)
+    if (pending->Ui)
     {
-        for (const std::string& tag : pending->ui.expandedSceneEntityTags)
+        for (const std::string& tag : pending->Ui->expandedSceneEntityTags)
         {
             if (tag.empty())
                 continue;
@@ -5346,9 +4409,9 @@ void HierarchyPanel::RestoreHierarchyUiFromSceneAfterSceneCommit()
 
     m_Tree->RefreshFromProvider();
 
-    if (pending->hadSection)
+    if (pending->Ui)
     {
-        const auto& ordered = pending->ui.selectionSceneEntityTagsOrdered;
+        const auto& ordered = pending->Ui->selectionSceneEntityTagsOrdered;
         if (!ordered.empty())
         {
             std::vector<UI::Interaction::ItemId> ids;
@@ -5480,11 +4543,8 @@ void HierarchyPanel::ApplySearchFilter(const std::string& searchText)
             continue;
         SearchableComponentType type;
         type.Id = info->TypeId;
-        type.FullName = registeredName;
-        std::transform(type.FullName.begin(), type.FullName.end(), type.FullName.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        const size_t namespaceEnd = type.FullName.rfind("::");
-        type.LeafName = namespaceEnd == std::string::npos ? type.FullName : type.FullName.substr(namespaceEnd + 2);
+        type.FullName = ToLowerAscii(registeredName);
+        type.LeafName = std::string(UnqualifiedName(type.FullName));
         componentTypes.push_back(std::move(type));
     }
 
@@ -5551,6 +4611,475 @@ void HierarchyPanel::ApplySearchFilter(const std::string& searchText)
         m_Tree->SetExpanded(id, true);
     m_Tree->SetVisibilityFilter([this](TreeId id)
                                 { return m_SearchVisibleIds.count(id) != 0; });
+}
+
+bool HierarchyPanel::AcceptsPayload(UI::Interaction::PayloadTypeId typeId) const
+{
+    return typeId == UI::Interaction::GetPayloadTypeId<Editor::BookmarkDragPayload>() ||
+           typeId == UI::Interaction::GetPayloadTypeId<Editor::OnlineAssetDragPayload>();
+}
+
+bool HierarchyPanel::HitTestDropTarget(float x, float y, UI::Interaction::DropHit& out) const
+{
+    if (!ContainsPoint(x, y))
+        return false;
+    out.TargetId = 0;
+    out.Location = UI::Interaction::DropLocation::OnEmptySpace;
+    out.IndentDepth = 0;
+    return true;
+}
+
+UI::Interaction::DropFeedback HierarchyPanel::CanDrop(const UI::Interaction::DropRequest& request) const
+{
+    if (const auto* pl = request.payload.TryGet<Editor::BookmarkDragPayload>())
+    {
+        (void)pl;
+        if (m_OnNavigateToBookmark)
+            return {true, {}};
+        return {false, "No navigate callback"};
+    }
+    if (request.payload.Is<Editor::OnlineAssetDragPayload>())
+        return {true, {}};
+
+    // Asset paths (textures, models, etc.) from Assets panel
+    if (const auto* pathsPl = request.payload.TryGet<Editor::AssetPathsDragPayload>())
+    {
+        if (pathsPl->paths.empty())
+            return {false, "Empty payload"};
+        if (std::string refusal = Editor::DescribeRefusedDrop(pathsPl->paths); !refusal.empty())
+            return {false, std::move(refusal)};
+        return {true, {}};
+    }
+
+    return {false, "Wrong payload"};
+}
+
+void HierarchyPanel::CommitDropStep(const std::vector<ECS::EntityHandle>& droppedRoots,
+                                    const std::vector<UI::Interaction::ItemId>& selectionBefore,
+                                    UI::Interaction::ItemId anchorBefore)
+{
+    if (!m_Undo || !m_World || droppedRoots.empty())
+        return;
+    m_Undo->CommitAlreadyApplied(std::make_unique<Editor::SceneViewDropUndoCommand>(
+        Editor::SceneViewDropUndoCommand::NameFor(*m_World, droppedRoots), m_World, m_ChangeNotifications,
+        droppedRoots, selectionBefore, anchorBefore, GetSelectionItemIds(), GetSelectionAnchor(),
+        [this](const std::vector<UI::Interaction::ItemId>& ids, UI::Interaction::ItemId anchor)
+        { ApplySelectionProgrammatic(ids, anchor); }));
+}
+
+void HierarchyPanel::DeferFileDrop(const std::filesystem::path& assetPath, const GUID& assetGuid,
+                                   const std::string& entityName)
+{
+    if (!m_Context || !m_Context->Assets)
+        return;
+    Editor::RunWhenAssetLoaded(*m_Context->Assets, assetGuid, AssetLoadPriority::High, this, m_World,
+        [this, assetPath, assetGuid, entityName]() { FinishFileDrop(assetPath, assetGuid, entityName); },
+        assetPath.filename().string());
+}
+
+bool HierarchyPanel::FinishTreeTextureDrop(const std::filesystem::path& texturePath, ECS::EntityHandle parent)
+{
+    if (!m_Context || !m_World || !m_Context->Assets || !m_Context->RenderServices)
+        return false;
+    const bool is2D = m_Context->IsSceneView2D && m_Context->IsSceneView2D();
+    const ECS::EntityHandle sprite = Editor::CreateSpriteEntityFromTexture(
+        *m_World, *m_Context->RenderServices, *m_Context->Assets, texturePath,
+        Mathematics::Vector3{0.0f, 0.0f, 0.0f}, is2D);
+    if (!sprite.IsValid())
+        return false;
+    if (parent.IsValid() && m_World->IsValid(parent))
+    {
+        Parent p{};
+        p.Entity = parent;
+        m_World->AddComponentImmediate(sprite, p);
+    }
+    NotifyWorldStructure(m_ChangeNotifications, m_World);
+    if (m_Context->OnSceneDirty)
+        m_Context->OnSceneDirty();
+    if (m_Provider)
+        m_Provider->Rebuild();
+    m_Tree->RefreshFromProvider();
+    SelectEntity(sprite);
+    return true;
+}
+
+void HierarchyPanel::DeferTreeTextureDrop(const std::filesystem::path& texturePath, const GUID& textureGuid,
+                                          ECS::EntityHandle parent)
+{
+    Editor::RunWhenAssetLoaded(*m_Context->Assets, textureGuid, AssetLoadPriority::High, this, m_World,
+        [this, texturePath, parent]() { FinishTreeTextureDrop(texturePath, parent); },
+        texturePath.filename().string());
+}
+
+void HierarchyPanel::FinishFileDrop(const std::filesystem::path& assetPath, const GUID& assetGuid,
+                                    const std::string& entityName)
+{
+    if (!m_Context || !m_World || !m_Context->Assets)
+        return;
+    auto& am = *m_Context->Assets;
+    const std::string ext = assetPath.extension().string();
+    const bool isTexture = (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".hdr" || ext == ".exr");
+    const bool isModel = (ext == ".glb" || ext == ".gltf" || ext == ".obj" || ext == ".fbx");
+    const bool isLensFlare = GetAssetTypeFromExtension(ext) == AssetType::LensFlareDefinition;
+    SharedPtr<Asset> asset = am.GetAsset(assetGuid);
+
+    ECS::EntityHandle createdEntity{};
+    if (isLensFlare)
+    {
+        createdEntity = m_World->CreateEntity();
+        if (createdEntity.IsValid())
+        {
+            Components::Name name{};
+            const std::string stem = assetPath.stem().string();
+            std::strncpy(name.value, stem.c_str(), sizeof(name.value) - 1);
+            m_World->AddComponentImmediate(createdEntity, name);
+
+            Components::Transform transform{};
+            transform.SetIdentity();
+            m_World->AddComponentImmediate(createdEntity, transform);
+
+            Components::LensFlareSource source{};
+            source.Flare.Set(assetGuid);
+            m_World->AddComponentImmediate(createdEntity, source);
+            Logger::Log::Info("HierarchyPanel: dropped lens flare '{}'", assetPath.string());
+        }
+    }
+    else if (isModel)
+    {
+        auto* modelAsset = dynamic_cast<ModelAsset*>(asset.get());
+        if (modelAsset && modelAsset->IsLoaded())
+        {
+            auto result = Engine::Renderer::ModelEntityFactory::CreateFromModel(
+                *m_Context->RenderServices, *m_World,
+                *modelAsset, assetGuid, entityName, Editor::GetFbxModelEntityFactoryOptions(assetPath));
+            if (result.IsValid())
+            {
+                Editor::ExportModelMaterials(assetPath, assetGuid, result.submeshEntities, *m_World, am);
+                createdEntity = result.rootEntity;
+                Editor::AppendUnorderedRootsToHierarchyEnd(*m_World, std::span(&createdEntity, 1));
+                Logger::Log::Info("HierarchyPanel: dropped model '{}'", assetPath.string());
+            }
+        }
+    }
+    else if (isTexture)
+    {
+        auto* textureAsset = dynamic_cast<TextureAsset*>(asset.get());
+        if (textureAsset && textureAsset->IsLoaded())
+        {
+            const bool is2D = m_Context && m_Context->IsSceneView2D && m_Context->IsSceneView2D();
+            auto spriteResult = Editor::CreateSpriteEntityFromTexture(
+                *m_World, *m_Context->RenderServices, am, assetPath,
+                Mathematics::Vector3{}, is2D);
+            if (spriteResult.IsValid())
+            {
+                createdEntity = spriteResult;
+                Logger::Log::Info("HierarchyPanel: dropped texture '{}'", assetPath.string());
+            }
+        }
+    }
+
+    if (createdEntity.IsValid())
+    {
+        // Assign HierarchyOrder so the entity appears at the bottom of the tree.
+        int32_t maxOrder = 0;
+        std::vector<ECS::EntityHandle> alive;
+        m_World->GetAliveEntitiesSnapshot(alive);
+        for (const auto& h : alive)
+        {
+            if (auto* o = m_World->GetComponent<Components::HierarchyOrder>(h))
+            {
+                if (o->order > maxOrder)
+                    maxOrder = o->order;
+            }
+        }
+
+        Components::HierarchyOrder ho{};
+        ho.order = ++maxOrder;
+        m_World->AddComponentImmediate(createdEntity, ho);
+
+        NotifyWorldStructure(m_ChangeNotifications, m_World);
+        if (m_Context && m_Context->OnSceneDirty)
+            m_Context->OnSceneDirty();
+
+        if (m_Provider)
+            m_Provider->Rebuild();
+        m_Tree->RefreshFromProvider();
+        SelectEntity(createdEntity);
+    }
+}
+
+void HierarchyPanel::PerformDrop(const UI::Interaction::DropRequest& request)
+{
+    // Asset paths drop (textures, models from Assets panel)
+    if (const auto* pathsPl = request.payload.TryGet<Editor::AssetPathsDragPayload>())
+    {
+        if (!m_Context || !m_World || pathsPl->paths.empty())
+            return;
+
+        const std::filesystem::path& assetPath = pathsPl->paths[0];
+        const std::string ext = assetPath.extension().string();
+        const bool isTexture = (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".hdr" || ext == ".exr");
+        const bool isModel = (ext == ".glb" || ext == ".gltf" || ext == ".obj" || ext == ".fbx");
+        const bool isLensFlare = GetAssetTypeFromExtension(ext) == AssetType::LensFlareDefinition;
+
+        if (GetAssetTypeFromExtension(ext) == AssetType::Prefab && m_Context->Assets)
+        {
+            const std::vector<UI::Interaction::ItemId> selectionBefore = GetSelectionItemIds();
+            const UI::Interaction::ItemId anchorBefore = GetSelectionAnchor();
+            Components::Transform at{};
+            at.SetIdentity();
+            const ECS::EntityHandle root = Editor::PrefabService(*m_Context->Assets).Place(*m_World, assetPath, at, {});
+            if (!root.IsValid())
+                return;
+            NotifyWorldStructure(m_ChangeNotifications, m_World);
+            if (m_Context->OnSceneDirty)
+                m_Context->OnSceneDirty();
+            if (m_Provider)
+                m_Provider->Rebuild();
+            m_Tree->RefreshFromProvider();
+            SelectEntity(root);
+            CommitDropStep({root}, selectionBefore, anchorBefore);
+            return;
+        }
+        if (!isTexture && !isModel && !isLensFlare)
+        {
+            Editor::ShowSceneViewNotice(Editor::DescribeUnplaceableFile(assetPath));
+            return;
+        }
+
+        auto& am = *m_Context->Assets;
+        const GUID assetGuid = am.ResolveAssetGuid(assetPath);
+        if (assetGuid.IsNull())
+            return;
+        // A model or texture not loaded yet becomes its entity once the load lands; the drop
+        // never waits for an import or a cook. A lens flare needs only its GUID.
+        if (isLensFlare || am.IsAssetLoaded(assetGuid))
+        {
+            FinishFileDrop(assetPath, assetGuid, assetPath.stem().string());
+            return;
+        }
+        DeferFileDrop(assetPath, assetGuid, assetPath.stem().string());
+        return;
+    }
+
+    if (const auto* pl = request.payload.TryGet<Editor::BookmarkDragPayload>())
+    {
+        // Online asset bookmark — synthesize an OnlineAssetDragPayload and re-dispatch.
+        if (pl->bookmark.Reference.rfind("polyhaven:", 0) == 0)
+        {
+            const std::string slug = pl->bookmark.Reference.substr(10);
+            Editor::OnlineAssetDragPayload syntheticOnline;
+            syntheticOnline.slug = slug;
+            syntheticOnline.name = pl->bookmark.Name;
+            syntheticOnline.type = "models";
+            syntheticOnline.entries.push_back({slug, pl->bookmark.Name});
+
+            UI::Interaction::DropRequest syntheticReq = request;
+            syntheticReq.payload = UI::Interaction::DragPayload::Create(std::move(syntheticOnline));
+            PerformDrop(syntheticReq);
+            return;
+        }
+
+        if (m_OnNavigateToBookmark)
+            m_OnNavigateToBookmark(pl->bookmark);
+        return;
+    }
+
+    if (const auto* onlinePayload = request.payload.TryGet<Editor::OnlineAssetDragPayload>())
+    {
+        if (!m_Context || !m_World || onlinePayload->slug.empty())
+            return;
+
+        std::vector<Editor::OnlineAssetEntry> items;
+        if (!onlinePayload->entries.empty())
+            items = onlinePayload->entries;
+        else
+            items.push_back({onlinePayload->slug, onlinePayload->name});
+
+        const std::filesystem::path assetsRoot = m_Context->AssetsRoot;
+        ECS::EntityHandle lastCreated{};
+
+        if (onlinePayload->type == "hdris")
+        {
+            for (const auto& item : items)
+            {
+                const ECS::EntityHandle skybox =
+                    Editor::CreateSkyboxEntityFromPolyhavenHdri(*m_World, *m_Context, item.slug, item.name,
+                                                                m_ChangeNotifications);
+                if (skybox.IsValid())
+                    lastCreated = skybox;
+            }
+
+            if (lastCreated.IsValid())
+            {
+                if (m_Provider)
+                    m_Provider->Rebuild();
+                m_Tree->RefreshFromProvider();
+                SelectEntity(lastCreated);
+            }
+            return;
+        }
+
+        // Find the highest HierarchyOrder among existing entities so new drops appear at the bottom.
+        int32_t maxOrder = 0;
+        {
+            std::vector<ECS::EntityHandle> alive;
+            m_World->GetAliveEntitiesSnapshot(alive);
+            for (const auto& h : alive)
+            {
+                if (auto* o = m_World->GetComponent<Components::HierarchyOrder>(h))
+                {
+                    if (o->order > maxOrder)
+                        maxOrder = o->order;
+                }
+            }
+        }
+
+        for (const auto& item : items)
+        {
+            ECS::EntityHandle createdEntity{};
+
+            // Check project assets first, then temp cache for completed early downloads.
+            std::filesystem::path mainFilePath = PolyhavenService::FindDownloadedFile(item.slug, assetsRoot);
+            if (mainFilePath.empty())
+            {
+                std::filesystem::path cachedFile = PolyhavenService::FindCachedDownloadFile(item.slug);
+                if (!cachedFile.empty())
+                {
+                    std::filesystem::path projectDir = assetsRoot / "Polyhaven" / item.slug;
+                    mainFilePath = PolyhavenService::MoveDownloadToProject(cachedFile, cachedFile.parent_path(), projectDir);
+                }
+            }
+            if (!mainFilePath.empty() && m_Context->Assets && m_Context->RenderServices)
+            {
+                const std::string ext = mainFilePath.extension().string();
+                const bool isModel = (ext == ".glb" || ext == ".gltf" || ext == ".obj" || ext == ".fbx");
+                const bool isTexture = (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".hdr" || ext == ".exr");
+
+                if (isModel)
+                {
+                    auto& am = *m_Context->Assets;
+                    GameEngine::GUID assetGuid = am.ResolveAssetGuid(mainFilePath);
+                    if (!assetGuid.IsNull())
+                    {
+                        SharedPtr<Asset> asset = am.GetAsset(assetGuid);
+                        if (!asset)
+                        {
+                            DeferFileDrop(mainFilePath, assetGuid, item.name);
+                            continue;
+                        }
+                        auto* modelAsset = dynamic_cast<ModelAsset*>(asset.get());
+                        if (modelAsset && modelAsset->IsLoaded())
+                        {
+                            auto result = Engine::Renderer::ModelEntityFactory::CreateFromModel(
+                                *m_Context->RenderServices, *m_World,
+                                *modelAsset, assetGuid, item.name, Editor::GetFbxModelEntityFactoryOptions(mainFilePath));
+                            if (result.IsValid())
+                            {
+                                Editor::ExportModelMaterials(mainFilePath, assetGuid, result.submeshEntities, *m_World, am);
+                                createdEntity = result.rootEntity;
+                                Editor::AppendUnorderedRootsToHierarchyEnd(*m_World, std::span(&createdEntity, 1));
+                                Logger::Log::Info("HierarchyPanel: dropped model '{}' (panel)", item.slug);
+                            }
+                            else
+                            {
+                                Logger::Log::Warning("HierarchyPanel: CreateFromModel failed for '{}' (panel)", item.slug);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        Logger::Log::Warning("HierarchyPanel: ResolveAssetGuid null for '{}' path={} (panel)",
+                                             item.slug, mainFilePath.string());
+                    }
+                }
+                else if (isTexture)
+                {
+                    // Texture drop: create a textured plane sprite.
+                    auto& am = *m_Context->Assets;
+                    GameEngine::GUID texGuid = am.ResolveAssetGuid(mainFilePath);
+                    if (!texGuid.IsNull())
+                    {
+                        SharedPtr<Asset> asset = am.GetAsset(texGuid);
+                        if (!asset)
+                        {
+                            DeferFileDrop(mainFilePath, texGuid, item.name);
+                            continue;
+                        }
+                        auto* textureAsset = dynamic_cast<TextureAsset*>(asset.get());
+                        if (textureAsset && textureAsset->IsLoaded())
+                        {
+                            const bool is2D = m_Context && m_Context->IsSceneView2D && m_Context->IsSceneView2D();
+                            auto spriteResult = Editor::CreateSpriteEntityFromTexture(
+                                *m_World, *m_Context->RenderServices, am, mainFilePath,
+                                Mathematics::Vector3{}, is2D);
+                            if (spriteResult.IsValid())
+                            {
+                                createdEntity = spriteResult;
+                                Logger::Log::Info("HierarchyPanel: dropped texture '{}' as plane sprite (panel)", item.slug);
+                            }
+                            else
+                            {
+                                Logger::Log::Warning("HierarchyPanel: CreateSpriteEntityFromTexture failed for '{}' (panel)", item.slug);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!createdEntity.IsValid() && m_Context->RenderServices)
+            {
+                Logger::Log::Info("HierarchyPanel: creating placeholder for '{}' (panel)", item.slug);
+                Mathematics::Vector3 dropPos{};
+                Mathematics::Vector3 defaultCamPos{0.0f, 0.0f, -5.0f};
+                std::filesystem::path thumbPath = PolyhavenService::GetThumbnailPath(item.slug);
+                auto placeholderResult = PolyhavenPlaceholderFactory::Create(
+                    *m_World, *m_Context->RenderServices, m_Context->Assets,
+                    item.slug, onlinePayload->type, dropPos, defaultCamPos, thumbPath);
+
+                if (placeholderResult.entity.IsValid())
+                {
+                    createdEntity = placeholderResult.entity;
+                    // Hide the placeholder billboard; the scene download pill is the indicator.
+                    if (m_World->HasComponent<Components::MeshRenderer>(createdEntity))
+                        ECS::Entity(m_World, createdEntity).SetEnabled<Components::MeshRenderer>(false);
+                    if (m_Context->DownloadManager)
+                    {
+                        if (m_Context->DownloadManager->IsDownloadingOrCompleted(item.slug))
+                            m_Context->DownloadManager->AssignPlaceholder(item.slug, createdEntity, m_World);
+                        else
+                            m_Context->DownloadManager->StartDownloadForPlaceholder(
+                                item.slug, onlinePayload->type, assetsRoot, createdEntity, m_World);
+                    }
+                }
+            }
+
+            if (createdEntity.IsValid())
+            {
+                // Assign HierarchyOrder so the entity appears at the bottom of the tree.
+                Components::HierarchyOrder ho{};
+                ho.order = ++maxOrder;
+                m_World->AddComponentImmediate(createdEntity, ho);
+                lastCreated = createdEntity;
+            }
+        }
+
+        NotifyWorldStructure(m_ChangeNotifications, m_World);
+        if (m_Context && m_Context->OnSceneDirty)
+            m_Context->OnSceneDirty();
+
+        if (m_Provider)
+            m_Provider->Rebuild();
+        m_Tree->RefreshFromProvider();
+        if (lastCreated.IsValid())
+            SelectEntity(lastCreated);
+        return;
+    }
+}
+
+void HierarchyPanel::SetDropPreview(const UI::Interaction::DropPreviewState& state)
+{
+    (void)state;
 }
 
 std::vector<UI::Interaction::ItemId> HierarchyPanel::GetSelectionItemIds() const
@@ -5628,13 +5157,14 @@ void HierarchyPanel::SyncSelectionWithSceneViewPick(ECS::EntityHandle entity)
         ~SkipGuard() { flag = false; }
     } guard{m_SkipOnSelectEntity};
 
+    if (entity.IsValid() && !m_World->IsValid(entity))
+        return;
+    // A generated entity has no row: the row of its nearest listed ancestor shows the pick.
+    entity = HierarchyDataProvider::ListedSelfOrAncestor(*m_World, entity);
+
     if (!entity.IsValid())
     {
         m_Selection->Clear();
-    }
-    else if (!m_World->IsValid(entity))
-    {
-        return;
     }
     else
     {
@@ -5667,12 +5197,12 @@ void HierarchyPanel::ExpandAncestors(ECS::EntityHandle entity)
     while (cur.IsValid() && m_World->IsValid(cur))
     {
         auto* p = m_World->GetComponent<Parent>(cur);
-        if (!p || !p->parent.IsValid() || !m_World->IsValid(p->parent))
+        if (!p || !p->Entity.IsValid() || !m_World->IsValid(p->Entity))
             break;
-        const TreeId parentTid = HierarchyDataProvider::Encode(p->parent);
+        const TreeId parentTid = HierarchyDataProvider::Encode(p->Entity);
         if (parentTid != 0 && parentTid != kRootId)
             m_Tree->SetExpanded(parentTid, true);
-        cur = p->parent;
+        cur = p->Entity;
     }
 }
 
@@ -5687,38 +5217,20 @@ void HierarchyPanel::SelectEntities(const std::vector<ECS::EntityHandle>& entiti
     if (m_SkipSyncFromSceneView)
         return;
 
+    // A generated entity has no row: the row of its nearest listed ancestor shows the pick.
     std::vector<UI::Interaction::ItemId> ids;
-    ids.reserve(entities.size());
-    for (ECS::EntityHandle h : entities)
-    {
-        if (!h.IsValid() || !m_World->IsValid(h))
-            continue;
-
-        const TreeId tid = HierarchyDataProvider::Encode(h);
-        if (tid == 0 || tid == kRootId)
-            continue;
-
-        ids.push_back(static_cast<UI::Interaction::ItemId>(tid));
-    }
-
+    const UI::Interaction::ItemId anchor = HierarchyDataProvider::ListedRowIds(*m_World, entities, ids);
     if (ids.empty())
         return;
 
     // Reveal the most recent valid pick (the scene view's primary is the last
     // entry): expand its ancestors before the refresh, scroll after.
     ECS::EntityHandle reveal{};
-    for (auto it = entities.rbegin(); it != entities.rend(); ++it)
-    {
-        if (it->IsValid() && m_World->IsValid(*it))
-        {
-            reveal = *it;
-            break;
-        }
-    }
+    for (auto it = entities.rbegin(); it != entities.rend() && !reveal.IsValid(); ++it)
+        reveal = HierarchyDataProvider::ListedSelfOrAncestor(*m_World, *it);
     if (reveal.IsValid())
         ExpandAncestors(reveal);
 
-    const UI::Interaction::ItemId anchor = ids[0];
     ApplySelectionProgrammatic(ids, anchor);
 
     if (reveal.IsValid())
@@ -5729,6 +5241,14 @@ void HierarchyPanel::SelectEntity(ECS::EntityHandle entity)
 {
     if (!m_Provider || !m_Tree || !m_World || !m_World->IsValid(entity))
         return;
+
+    // A structure change posts its refresh to the next UI drain. Until then the rows are those of the
+    // old world, so rebuild them here: a select of an entity made in the same action finds its row.
+    if (m_RefreshQueued)
+    {
+        m_Provider->Rebuild();
+        m_Tree->RefreshFromProvider();
+    }
 
     // Find the TreeId for this entity by traversing the tree
     TreeId targetTid = HierarchyDataProvider::Encode(entity);

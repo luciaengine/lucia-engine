@@ -7,12 +7,12 @@ set(ASSETRUNTIME_SOURCES
     Source/AssetRegistry.cpp
     Source/AssetDependencyExtractor.cpp
     Source/ParserRegistry.cpp
-    Source/MaterialAsset.cpp
-    Source/MaterialXImport.cpp
+    Source/Material/MaterialAsset.cpp
+    Source/Material/MaterialXImport.cpp
     Source/TextureAlphaProbe.cpp
     Source/RenderPipelineAsset.cpp
-    Source/ShaderProgramAsset.cpp
-    Source/ShaderSourceAsset.cpp
+    Source/Shader/ShaderProgramAsset.cpp
+    Source/Shader/ShaderSourceAsset.cpp
     Source/ScriptAsset.cpp
     Source/XmlAsset.cpp
     Source/BinaryAsset.cpp
@@ -23,15 +23,16 @@ set(ASSETRUNTIME_SOURCES
     Source/AssetTasks.cpp
     Source/AsyncRegistryTasks.cpp
     Source/AssetDbProfiler.cpp
-    Source/MaterialAssetParser.cpp
+    Source/Material/MaterialAssetParser.cpp
     Source/SceneAssetParser.cpp
     Source/AnimationAssetParser.cpp
     Source/UILayoutAssetParser.cpp
     Source/UIStyleAssetParser.cpp
+    Source/Shader/ShaderSourceAssetParser.cpp
     Source/FlareAtlasAsset.cpp
-    Source/LensFlareDefinitionAsset.cpp
-    Source/LensFlareImporter.cpp
-    Source/LensFlareParsers.cpp
+    Source/LensFlare/LensFlareDefinitionAsset.cpp
+    Source/LensFlare/LensFlareImporter.cpp
+    Source/LensFlare/LensFlareParsers.cpp
     Source/TerrainMaterialLibraryAsset.cpp
     Source/TerrainMaterialLibraryParser.cpp
 )
@@ -53,7 +54,6 @@ target_include_directories(AssetRuntime
 	    PUBLIC
 	        ${CMAKE_SOURCE_DIR}/Engine/Include
 	        ${CMAKE_SOURCE_DIR}/Engine/Modules/Animation/Include
-	        ${CMAKE_SOURCE_DIR}/Engine/Modules/Sprite2D/Include
 	    PRIVATE
 	        Source
 	        ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Include
@@ -62,6 +62,8 @@ target_include_directories(AssetRuntime
 	        ${CMAKE_SOURCE_DIR}/Engine/Modules/Scheduler/Include
 	        ${CMAKE_SOURCE_DIR}/Engine/Modules/Pathfinding/Include
 	        ${CMAKE_SOURCE_DIR}/Engine/Modules/Particles/Include
+	        # UI/ControlAssetPaths.h: the UIStyle parser gives a control sheet its origin.
+	        ${CMAKE_BINARY_DIR}/generated
 	)
 
 # Link dependencies
@@ -69,17 +71,20 @@ target_include_directories(AssetRuntime
 # - AssetCore (core asset types/interfaces)
 # - JobSystem (async tasks/dependencies)
 # - FileWatcher (file change notifications)
+# - Events (AssetManager.h exposes Event<std::span<const GUID>>)
 target_link_libraries(AssetRuntime
     PUBLIC
+        Events
         Logger
         AssetCore
         AssetDatabase
         JobSystem
         FileWatcher
     PRIVATE
-        Localization
         Platform
         FileSystem
+        Serialization
+        Sprite2D
 )
 
 # Optional JSON dependency (ParserRegistry / tasks)

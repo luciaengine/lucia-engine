@@ -1,4 +1,4 @@
-#include "UI/StyleOverrides.h"
+#include "UI/StyleDeclaration.h"
 
 #include <gtest/gtest.h>
 
@@ -9,7 +9,7 @@ namespace GameEngine {
 // #AARRGGBB renders an opaque dark gray as translucent red.
 TEST(StyleOverrideCustomColorTests, ArgbFormatsAsRrggbbaa)
 {
-    StyleOverrides overrides;
+    StyleDeclaration overrides;
     const StringId name = HashStringId("--test-color");
 
     overrides.SetCustomColor(name, 0xFF202020u);

@@ -208,7 +208,7 @@ TEST(CurveField, TheLabelStripFollowsTheResolvedFontSize)
     const auto heightAt = [&field](float fontSize) {
         field.GetMutableResolvedStyle().Visual.FontSize = fontSize;
         field.OnPostLayout();
-        return field.Overrides().Get(Style::Height).value_or(StyleLength::Px(0.0f)).Value;
+        return field.Style().Get(Style::Height).value_or(StyleLength::Px(0.0f)).Value;
     };
     const float at12 = heightAt(12.0f);
     const float at20 = heightAt(20.0f);
@@ -227,14 +227,14 @@ TEST(CurveField, AHostSetsTheLabelledPlotsHeight)
     field.SetConfig(config);
     field.GetMutableResolvedStyle().Visual.FontSize = 12.0f;
     field.OnPostLayout();
-    const float defaultHeight = field.Overrides().Get(Style::Height).value_or(StyleLength::Px(0.0f)).Value;
+    const float defaultHeight = field.Style().Get(Style::Height).value_or(StyleLength::Px(0.0f)).Value;
 
     auto scope = std::make_shared<CustomPropertyScope>();
     scope->UniqueId = 1;
     scope->Local.InsertOrAssign(HashStringId("--curve-field-plot-height"), CustomPropertyScope::Entry{false, "200px"});
     field.GetMutableResolvedStyle().CustomScope = scope;
     field.OnPostLayout();
-    EXPECT_FLOAT_EQ(field.Overrides().Get(Style::Height).value_or(StyleLength::Px(0.0f)).Value,
+    EXPECT_FLOAT_EQ(field.Style().Get(Style::Height).value_or(StyleLength::Px(0.0f)).Value,
                     defaultHeight + (200.0f - 110.0f));
 }
 

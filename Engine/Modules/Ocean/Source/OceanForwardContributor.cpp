@@ -2,6 +2,7 @@
 #include "Ocean/OceanRenderFeature.h"
 #include "Ocean/OceanSurfaceMaterial.h"
 #include "Ocean/OceanTypes.h"
+#include "OceanSurfaceMaterialInternal.h"
 
 #include "Engine/Rendering/DrawBindings.h"
 #include "Engine/Rendering/IEnvironmentSource.h"
@@ -12,10 +13,10 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/SkyRenderFeature.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Materials/MaterialDocument.h"
-#include "Rendering/Materials/ShaderProfileDefines.h"
-#include "Rendering/Materials/ShaderVariantKey.h"
+#include "Rendering/Materials/Shader/ShaderProfileDefines.h"
+#include "Rendering/Materials/Shader/ShaderVariantKey.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
 #include "Logger/Logger.h"
 #include "AssetCore/GUID.h"
@@ -80,46 +81,126 @@ bool OceanForwardContributor::EnsureFallbackCascade(::GameEngine::Rendering::IDe
     return m_FallbackCascade.IsValid() && m_FallbackCascadeSampler.IsValid();
 }
 
-bool OceanForwardContributor::EnsureMaterial()
+Engine::Renderer::Material* OceanForwardContributor::EnsureMaterial(Rendering::MaterialKeyword passKeywords,
+                                                                    bool compileOnWorker)
 {
-    if (m_Material)
-        return true;
-    if (m_MaterialInitAttempted)
-        return false;
-    m_MaterialInitAttempted = true;
+    const size_t index = OceanSurfacePassKeywordSetIndex(passKeywords);
+    if (m_Materials[index])
+        return m_Materials[index];
+    if (m_MaterialInitAttempted[index])
+        return nullptr;
+    m_MaterialInitAttempted[index] = true;
 
+    const GUID& guid = OceanSurfaceMaterialGuid(passKeywords);
     auto& registry = m_RenderServices.Materials().Registry();
-    m_Material = registry.Find(OceanSurfaceMaterialGuid());
-    if (m_Material)
-        return true;
+    m_Materials[index] = registry.Find(guid);
+    if (m_Materials[index])
+        return m_Materials[index];
 
-    m_Material = m_RenderServices.Materials().RegisterMaterialFromDocument(
-        OceanSurfaceMaterialGuid(), BuildOceanSurfaceMaterialDocument(),
-        OceanSurfaceMaterialKeywords(Rendering::IsCompatShaderProfile()));
+    const Rendering::MaterialKeyword surfacePassKeywords = passKeywords & kOceanSurfacePassKeywords;
+    const Rendering::MaterialKeyword keywords =
+        OceanSurfaceMaterialKeywords(Rendering::IsCompatShaderProfile()) | surfacePassKeywords;
+    using CompileMode = Engine::Renderer::MaterialSystem::BaseCompileMode;
+    m_Materials[index] = m_RenderServices.Materials().RegisterMaterialFromDocument(
+        guid, BuildOceanSurfaceMaterialDocument(), keywords,
+        compileOnWorker ? CompileMode::Async : CompileMode::Synchronous);
 
-    if (!m_Material)
+    const bool heightFog = Rendering::HasKeyword(surfacePassKeywords, Rendering::MaterialKeyword::HeightFog);
+    const bool reflectionSlices =
+        Rendering::HasKeyword(surfacePassKeywords, Rendering::MaterialKeyword::SSSRNormalRoughness);
+    if (!m_Materials[index])
     {
-        Logger::Log::Error("OceanForwardContributor: failed to register material");
-        return false;
+        Logger::Log::Error("OceanForwardContributor: failed to register the {}{}material",
+                           heightFog ? "height fog " : "", reflectionSlices ? "reflection slices " : "");
+        return nullptr;
     }
 
+    Logger::Log::Info("OceanForwardContributor: {}{}material registered; {}", heightFog ? "height fog " : "",
+                      reflectionSlices ? "reflection slices " : "",
+                      compileOnWorker ? "its pipeline builds on a worker" : "its pipeline is built");
+    return m_Materials[index];
+}
 
-    Logger::Log::Info("OceanForwardContributor: material registered and compiled");
+bool OceanForwardContributor::DrawsSurfaceInto(Rendering::ViewId viewId) const
+{
+    if (!m_Feature.IsInitialized() || !m_Feature.HasOcean())
+        return false;
+    if (IsAssetPreviewView(m_RenderServices.Views().FindViewDesc(viewId)))
+        return false;
+    // Never emit the surface into auxiliary ocean scene-capture views. The
+    // reflection view must not recurse the ocean into its own mirror, and the
+    // raster-depth view must not capture the water plane as seabed.
+    if (m_Feature.GetPlanarReflection().IsReflectionView(viewId))
+        return false;
+    const auto rasterDepthViewId = m_Feature.GetRasterDepthCapture().GetCaptureViewId();
+    if (rasterDepthViewId != 0 && viewId == rasterDepthViewId)
+        return false;
+    return m_Feature.GetGridVB().IsValid() && m_Feature.GetGridIB().IsValid() && m_Feature.GetGridIndexCount() != 0;
+}
+
+Rendering::GraphicsPipelineId OceanForwardContributor::SurfacePipelineId(Rendering::IDevice& device,
+                                                                          const Engine::Renderer::Material& material,
+                                                                          Rendering::MaterialKeyword passKeywords,
+                                                                          bool twoSided)
+{
+    // The material's base pipeline has the standard mesh layout; ocean vertices carry local XZ, LOD
+    // and skirt scale in one vec4. A material recompile drops both cached variants.
+    const size_t materialIndex = OceanSurfacePassKeywordSetIndex(passKeywords);
+    const uint32_t materialVersion = material.GetVersion();
+    if (m_PipelineMaterialVersions[materialIndex] != materialVersion)
+    {
+        m_OceanPipelineIds[materialIndex][0] = {};
+        m_OceanPipelineIds[materialIndex][1] = {};
+        m_PipelineMaterialVersions[materialIndex] = materialVersion;
+    }
+
+    auto& oceanPipelineId = m_OceanPipelineIds[materialIndex][twoSided ? 1 : 0];
+    if (oceanPipelineId.IsValid())
+        return oceanPipelineId;
+    const auto* base = device.LookupGraphicsPipeline(material.GetGraphicsPipelineId());
+    if (!base)
+        return {};
+    Rendering::GraphicsPipelineDesc gd = *base;
+    gd.VertexBindings = {{0, sizeof(float) * 4, 0}};
+    gd.VertexAttributes = {{0, 0, Rendering::Format::R32G32B32A32_FLOAT, 0}};
+    if (twoSided)
+        gd.Rasterization.cullMode = Rendering::CullModeFlagBits::None;
+    oceanPipelineId = device.InternGraphicsPipeline(std::move(gd));
+    return oceanPipelineId;
+}
+
+bool OceanForwardContributor::RequestSurfacePipeline(Rendering::ViewId viewId, Rendering::MaterialKeyword passKeywords,
+                                                     const Rendering::PipelineFormatKey& formats)
+{
+    Rendering::IDevice* device = m_RenderServices.GetDevice();
+    if (!device || !DrawsSurfaceInto(viewId))
+        return false;
+    // The paused frame compiles nothing on the main thread. The surface pipeline is asked for on a
+    // paused frame after the material's publish.
+    const Engine::Renderer::Material* material = EnsureMaterial(passKeywords, true);
+    if (!material)
+        return false;
+    const Rendering::GraphicsPipelineId id =
+        SurfacePipelineId(*device, *material, passKeywords, m_Feature.IsSurfaceUndersideVisible(viewId));
+    if (!id.IsValid())
+        return false;
+    device->RequestGraphicsPipeline(id, formats);
     return true;
 }
 
 bool OceanForwardContributor::BuildForwardCommand(
-    Engine::Renderer::ForwardEmitContext& ctx, Engine::Renderer::DrawCommand& outCommand,
+    Engine::Renderer::ForwardEmitContext& ctx, Rendering::MaterialKeyword passKeywords,
+    Engine::Renderer::DrawCommand& outCommand,
     std::span<const ::GameEngine::Rendering::RenderGraph::RGTexture>* outSampledCascades)
 {
-    if (!m_Feature.IsInitialized() || !m_Feature.HasOcean())
-        return false;
-
     const auto viewId = ctx.ViewId;
-    if (IsAssetPreviewView(m_RenderServices.Views().FindViewDesc(viewId)))
+    if (!DrawsSurfaceInto(viewId))
         return false;
 
-    if (!EnsureMaterial())
+    // The surface takes the height fog when its pass draws it, and writes the reflection slices
+    // when its pass has them attached.
+    Engine::Renderer::Material* material = EnsureMaterial(passKeywords, false);
+    if (!material)
         return false;
 
     auto* device = ctx.Device;
@@ -128,21 +209,9 @@ bool OceanForwardContributor::BuildForwardCommand(
 
     const uint32 frameIndex = ctx.FrameIndex;
 
-    // Never emit the surface into auxiliary ocean scene-capture views. The
-    // reflection view must not recurse the ocean into its own mirror, and the
-    // raster-depth view must not capture the water plane as seabed.
-    const auto reflectionViewId = m_Feature.GetPlanarReflection().GetReflectionViewId();
-    if (reflectionViewId != 0 && viewId == reflectionViewId)
-        return false;
-    const auto rasterDepthViewId = m_Feature.GetRasterDepthCapture().GetCaptureViewId();
-    if (rasterDepthViewId != 0 && viewId == rasterDepthViewId)
-        return false;
-
     const auto gridVB = m_Feature.GetGridVB();
     const auto gridIB = m_Feature.GetGridIB();
     const uint32 indexCount = m_Feature.GetGridIndexCount();
-    if (!gridVB.IsValid() || !gridIB.IsValid() || indexCount == 0)
-        return false;
 
     // Refraction grab: bound only when the node built a grab texture this frame
     // (SceneColor resolved + copy shader present). When it declined, the surface
@@ -205,12 +274,12 @@ bool OceanForwardContributor::BuildForwardCommand(
     // capture produced a reflection texture this frame. Otherwise the surface
     // reads the procedural sky dome (PlanarReflectionAvailable stays 0).
     const bool allowPlanarReflection =
-        ctx.Purpose != Engine::Renderer::ForwardEmitPurpose::ReflectionProbeCapture &&
-        ctx.Purpose != Engine::Renderer::ForwardEmitPurpose::PlanarReflectionCapture;
-    const bool planarReflectionReady =
-        allowPlanarReflection &&
-        m_Feature.GetParams().PlanarReflections != 0u &&
-        m_Feature.GetPlanarReflection().IsReady(frameIndex);
+        ctx.Purpose != Engine::Renderer::ForwardEmitPurpose::ReflectionProbeCapture;
+    const OceanPlanarReflection::Mirror* planarReflection =
+        allowPlanarReflection && m_Feature.GetParams().PlanarReflections != 0u
+            ? m_Feature.GetPlanarReflection().Find(viewId)
+            : nullptr;
+    const bool planarReflectionReady = planarReflection && planarReflection->IsReady(frameIndex);
 
     // Combine cascade: currently only bound if a world-stable bake was scheduled.
     // Otherwise the surface sums the FFT cascades directly (CombineWavesAvailable 0).
@@ -231,39 +300,14 @@ bool OceanForwardContributor::BuildForwardCommand(
     paramsAlloc.Ptr->RefractionDepthMatched =
         refractionReady && m_Feature.GetSceneGrab().IsDepthMatched(viewId) ? 1u : 0u;
 
-    // Two-sided whenever the authored underwater look is enabled: the surface's
-    // underside must remain rasterizable even if the per-view submersion flag is
-    // late/missing for an editor view. The shader still uses the per-view
-    // Underwater flag to decide when to flip underside normals and add submerged
-    // lighting; this only controls culling.
-    const bool twoSided = m_Feature.IsUnderwaterEnabled() ||
-                          m_Feature.GetParamsForView(viewId).Underwater != 0u;
+    // Two-sided only while this view's camera can see the underside: from above a height
+    // field, a view ray meets a front face first. Overhanging choppy crests cull from above.
+    // This controls culling only; the shader reads the Underwater flag for underside shading.
+    const bool twoSided = m_Feature.IsSurfaceUndersideVisible(viewId);
 
-    // Build the vec4 clipmap-vertex pipeline variant (material base id has the
-    // standard mesh layout; ocean vertices carry local XZ, LOD and skirt scale).
-    // Rebuild both cached
-    // variants on a material recompile so the cull mode can be selected per view.
-    const uint32_t materialVersion = m_Material->GetVersion();
-    if (m_PipelineMaterialVersion != materialVersion)
-    {
-        m_OceanPipelineIds[0] = {};
-        m_OceanPipelineIds[1] = {};
-        m_PipelineMaterialVersion = materialVersion;
-    }
-
-    auto& oceanPipelineId = m_OceanPipelineIds[twoSided ? 1 : 0];
+    const auto oceanPipelineId = SurfacePipelineId(*device, *material, passKeywords, twoSided);
     if (!oceanPipelineId.IsValid())
-    {
-        const auto* base = device->LookupGraphicsPipeline(m_Material->GetGraphicsPipelineId());
-        if (!base)
-            return false;
-        Rendering::GraphicsPipelineDesc gd = *base;
-        gd.VertexBindings = {{0, sizeof(float) * 4, 0}};
-        gd.VertexAttributes = {{0, 0, Rendering::Format::R32G32B32A32_FLOAT, 0}};
-        if (twoSided)
-            gd.Rasterization.cullMode = Rendering::CullModeFlagBits::None;
-        oceanPipelineId = device->InternGraphicsPipeline(std::move(gd));
-    }
+        return false;
 
     using namespace Engine::Renderer;
 
@@ -401,7 +445,7 @@ bool OceanForwardContributor::BuildForwardCommand(
     bool boundFoam = false;
     if (m_Feature.IsFoamReady())
     {
-        const auto foamTex = m_Feature.GetFoamTexture(*ctx.Frame);
+        const auto foamTex = m_Feature.GetFoamTexture();
         if (foamTex.IsValid())
         {
             DrawBindings::TextureEntry tex{};
@@ -436,7 +480,7 @@ bool OceanForwardContributor::BuildForwardCommand(
     if (const auto layoutAlloc = ctx.Frame->AllocUpload<OceanSampledCascadeLayoutsGPU>();
         layoutAlloc.Valid())
     {
-        *layoutAlloc.Ptr = m_Feature.SampledCascadeLayouts(*ctx.Frame, available);
+        *layoutAlloc.Ptr = m_Feature.SampledCascadeLayouts(available);
         scratch.Buffers.push_back({HashStringId("OceanCascadeLayout"), layoutAlloc.Buffer,
                                    layoutAlloc.Offset,
                                    static_cast<uint64_t>(sizeof(OceanSampledCascadeLayoutsGPU))});
@@ -564,34 +608,82 @@ bool OceanForwardContributor::BuildForwardCommand(
     // the binder's default-slot fallback covers the unbound case.
     if (planarReflectionReady)
     {
-        const auto reflTex = m_Feature.GetPlanarReflection().GetReflectionTexture();
-        if (reflTex.IsValid())
-        {
-            DrawBindings::TextureEntry tex{};
-            tex.Name = HashStringId("uOceanReflection");
-            tex.Texture = reflTex;
-            tex.Sampler = m_Feature.GetPlanarReflection().GetSampler();
-            tex.ArrayIndex = 0;
-            scratch.Textures.push_back(tex);
-            collectRG([&] { return m_Feature.GetPlanarReflection().ImportForSampling(*ctx.Frame, frameIndex); });
-        }
+        DrawBindings::TextureEntry tex{};
+        tex.Name = HashStringId("uOceanReflection");
+        tex.Texture = planarReflection->ColorTexture;
+        tex.Sampler = m_Feature.GetPlanarReflection().GetSampler();
+        tex.ArrayIndex = 0;
+        scratch.Textures.push_back(tex);
+        collectRG([&] { return m_Feature.GetPlanarReflection().ImportForSampling(*ctx.Frame, viewId, frameIndex); });
     }
 
-    // Environment resources are inherited from the shared forward pass.
+    // Image-based lighting: ocean uses an interned custom grid pipeline, so it
+    // does not get recompiled through the ordinary per-draw world-pass variant
+    // path. Bind the shared IBL resources directly under the same reflected names
+    // as RenderServices so the ocean can match the active sky/environment.
+    auto& ibl = m_RenderServices.EnsureFeature<Engine::Renderer::ImageBasedLightingFeature>();
+    if (!ibl.IsInitialized())
+        ibl.Initialize(device);
+    if (ibl.IsInitialized())
+    {
+        if (auto* sky = m_RenderServices.GetFeature<Engine::Renderer::SkyRenderFeature>();
+            sky && sky->HasActiveSettings())
+        {
+            ibl.SetIblIntensity(sky->GetSettings().iblIntensity);
+        }
+        if (auto* iblSource = ibl.GetEnvironmentSource(); !iblSource || iblSource->InputDigest() == 0)
+            ibl.SetIblIntensity(0.0f);
+        const auto envBuffer = ibl.UploadEnvData(device);
+
+        const auto cubeSampler = ibl.GetCubeSampler();
+        const auto lutSampler = ibl.GetLutSampler();
+        if (cubeSampler.IsValid())
+        {
+            if (const auto irradiance = ibl.GetIrradianceCube(); irradiance.IsValid())
+            {
+                DrawBindings::TextureEntry tex{};
+                tex.Name = HashStringId("ge_irradianceCube");
+                tex.Texture = irradiance;
+                tex.Sampler = cubeSampler;
+                scratch.Textures.push_back(tex);
+            }
+            if (const auto prefilter = ibl.GetPrefilterCube(); prefilter.IsValid())
+            {
+                DrawBindings::TextureEntry tex{};
+                tex.Name = HashStringId("ge_prefilterCube");
+                tex.Texture = prefilter;
+                tex.Sampler = cubeSampler;
+                scratch.Textures.push_back(tex);
+            }
+        }
+        if (lutSampler.IsValid())
+        {
+            if (const auto brdfLut = ibl.GetBrdfLut(); brdfLut.IsValid())
+            {
+                DrawBindings::TextureEntry tex{};
+                tex.Name = HashStringId("ge_brdfLUT");
+                tex.Texture = brdfLut;
+                tex.Sampler = lutSampler;
+                scratch.Textures.push_back(tex);
+            }
+        }
+        if (envBuffer.IsValid())
+            scratch.Buffers.push_back({HashStringId("Env"), envBuffer, 0u, 0u});
+    }
 
     // The per-view accumulated field is declared after the engine shadow pass.
     const auto shadowInfo = ctx.Frame->AllocUpload<OceanShadowSamplingGPU>();
     if (shadowInfo.Valid())
     {
         const bool ready =
-            m_Feature.GetShadows().FillSampling(viewId, *ctx.Frame, *shadowInfo.Ptr);
+            m_Feature.GetShadows().FillSampling(viewId, ctx.Frame->FrameIndex(), *shadowInfo.Ptr);
         scratch.Buffers.push_back({HashStringId("OceanShadowInfo"), shadowInfo.Buffer, shadowInfo.Offset,
                                    sizeof(OceanShadowSamplingGPU)});
         if (ready)
         {
             DrawBindings::TextureEntry tex{};
             tex.Name = HashStringId("uOceanShadows");
-            tex.Texture = m_Feature.GetShadows().GetTexture(viewId, *ctx.Frame);
+            tex.Texture = m_Feature.GetShadows().GetTexture(viewId);
             tex.Sampler = m_Feature.GetShadows().GetSampler();
             scratch.Textures.push_back(tex);
             collectRG([&] { return m_Feature.GetShadows().ImportRG(*ctx.Frame, viewId); });
@@ -625,7 +717,7 @@ bool OceanForwardContributor::BuildForwardCommand(
     // default-slot fallback covers the unbound case.
     if (dynWavesReady)
     {
-        const auto dynTex = m_Feature.GetDynWavesTexture(*ctx.Frame);
+        const auto dynTex = m_Feature.GetDynWavesTexture();
         if (dynTex.IsValid())
         {
             DrawBindings::TextureEntry tex{};
@@ -695,17 +787,13 @@ bool OceanForwardContributor::BuildForwardCommand(
         }
     }
 
-    Rendering::MaterialKeyword passKeywords = Rendering::MaterialKeyword::None;
-    if (auto kw = m_RenderServices.GetWorldPassKeywords(viewId))
-        passKeywords = *kw;
-
     DrawBindings drawBindings{};
     drawBindings.Buffers = scratch.Buffers;
     drawBindings.Textures = scratch.Textures;
 
     outCommand = {};
     outCommand.InternedPipeline = oceanPipelineId;
-    outCommand.Material = m_Material;
+    outCommand.Material = material;
     outCommand.VertexFlags = Rendering::VertexAttributeFlags::None;
     outCommand.PassKeywords = passKeywords;
     outCommand.Geometry.AltGeom = {gridVB, gridIB, Rendering::IndexType::Uint32};

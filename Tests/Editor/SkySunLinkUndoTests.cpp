@@ -25,9 +25,9 @@
 #include "Editor/Entities/ComponentEnabledToggle.h"
 #include "Editor/Entities/ComponentRemoval.h"
 #include "Engine/Rendering/RenderServices.h"
-#include "Sky/SkyEnvironmentComponentTraits.h"
-#include "Sky/SkyEnvironmentCreation.h"
-#include "Sky/SkySunLinkUndo.h"
+#include "Sky/SkyEnvironment/SkyEnvironmentComponentTraits.h"
+#include "Sky/SkyEnvironment/SkyEnvironmentCreation.h"
+#include "Sky/SkySun/SkySunLinkUndo.h"
 #include "UndoRedo/MultiEntityComponentSnapshot.h"
 #include "UndoRedo/UndoRedoService.h"
 

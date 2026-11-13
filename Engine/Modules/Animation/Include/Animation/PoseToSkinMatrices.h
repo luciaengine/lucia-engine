@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Animation/AnimationPose.h"
-#include "Animation/SkeletonData.h"
+#include "Animation/Skeleton/SkeletonData.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -12,8 +12,6 @@ namespace GameEngine
 {
 namespace Animation
 {
-
-class BoneEvaluationPlan;
 
 // Workspace buffers reused by BuildPoseToSkinMatrices to avoid per-frame
 // heap allocations. Layout matches the Engine::Renderer::PoseSampleWorkspace
@@ -37,14 +35,6 @@ struct PoseSampleWorkspace
     std::vector<uint8_t> Built;
 };
 
-/// Blend local transforms on one skeleton. Omitted nodes keep their current
-/// values when a plan built from that skeleton is supplied.
-void BlendLocalPoses(const SkeletonData& skeleton,
-                     PoseSampleWorkspace& current,
-                     const PoseSampleWorkspace& previous,
-                     float32 alpha,
-                     const BoneEvaluationPlan* plan = nullptr);
-
 // Build target-skeleton local matrices, walk the hierarchy, and emit the
 // compact skin palette. Both the regular and retargeted sample paths call
 // this after their respective ws.Pose population. Operates entirely on the
@@ -52,8 +42,7 @@ void BlendLocalPoses(const SkeletonData& skeleton,
 void BuildPoseToSkinMatrices(const SkeletonData& skeleton,
                              std::vector<float>* outNodeWorldMatrices,
                              std::vector<float>* outCompactSkinMatrices,
-                             PoseSampleWorkspace& ws,
-                             const BoneEvaluationPlan* plan = nullptr);
+                             PoseSampleWorkspace& ws);
 
 // Copy local TRS from an AnimationPose into the workspace and emit the
 // compact skin palette. Bones past pose.BoneCount keep workspace defaults
@@ -61,8 +50,7 @@ void BuildPoseToSkinMatrices(const SkeletonData& skeleton,
 void EmitSkinMatricesFromAnimationPose(const SkeletonData& skeleton,
                                        const AnimationPose& localPose,
                                        std::vector<float>& outCompactSkinMatrices,
-                                       PoseSampleWorkspace& ws,
-                                       const BoneEvaluationPlan* plan = nullptr);
+                                       PoseSampleWorkspace& ws);
 
 } // namespace Animation
 } // namespace GameEngine

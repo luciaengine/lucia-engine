@@ -1,7 +1,7 @@
 #include "Particles/Processors/ParticleShapeProcessor.h"
 
 #include "Mathematics/Interpolation.h"
-#include "Particles/ParticleStackDocument.h"
+#include "Particles/ParticleStack/ParticleStackDocument.h"
 #include "Processors/ParticleBuiltInProcessors.h"
 #include "Processors/ParticleProcessorOptions.h"
 

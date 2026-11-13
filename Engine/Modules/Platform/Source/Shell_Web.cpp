@@ -150,6 +150,14 @@ EM_ASYNC_JS(char*, GeWebPickFilesIntoMemfs, (int multiple), {
     return stringToNewUTF8(root);
 });
 
+EM_JS(void, GeWebOpenUrl, (const char* url), {
+    window.open(UTF8ToString(url), "_blank", "noopener");
+});
+
+EM_JS(void, GeWebAlert, (const char* text), {
+    window.alert(UTF8ToString(text));
+});
+
 namespace GameEngine
 {
 namespace Platform
@@ -180,7 +188,7 @@ bool OpenUrl(const std::string& url)
     }
     // Popup blockers refuse this outside a user gesture; the browser reports
     // nothing back, so a true here means "handed to the browser", not "shown".
-    EM_ASM({ window.open(UTF8ToString($0), '_blank', 'noopener'); }, url.c_str());
+    GeWebOpenUrl(url.c_str());
     return true;
 }
 
@@ -336,7 +344,7 @@ int ShowNativeChoiceDialog(const std::string& title, const std::string& message,
     // browser dialog, and it carries no custom buttons — the caller's default
     // is what gets chosen.
     const std::string text = title + "\n\n" + message;
-    EM_ASM({ window.alert(UTF8ToString($0)); }, text.c_str());
+    GeWebAlert(text.c_str());
     return defaultButton;
 }
 

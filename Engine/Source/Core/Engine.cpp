@@ -1,10 +1,11 @@
 #include "EngineShaderPath.h"
+#include "Core/ApplicationPaths.h"
 #include "Core/Engine.h"
 #include "Memory/ImagePins.h"
 #include "Scene/PrefabLibrary.h"
 
+#include "Engine/Loading/SceneLoader.h"
 #include "SceneLoadTracker/SceneLoadTracker.h"
-#include "Scene/SceneLoadingGates.h"
 
 #include "EngineShaderHookState.h"
 #include "Logger/Logger.h"
@@ -36,6 +37,8 @@
 #include "Assets/TextureAsset.h"
 #include "Assets/RenderPipelineAsset.h"
 
+#include "Memory/FrameJoinedScope.h"
+#include "Memory/ImagePins.h"
 #include "NativeScripting/NativeScriptManager.h"
 #include "UI/ModuleOwnedHandlers.h"
 
@@ -43,6 +46,9 @@
 
 // Rendering utilities (shader loader indirection)
 #include "Rendering/Common/Utils.h"
+#include "Rendering/ShaderCache/MetalLibraryArchive.h"
+#include "Rendering/ShaderCache/ShaderPackageIO.h"
+#include "Rendering/ShaderCache/ShaderStageRecord.h"
 #include "Rendering/ShaderGraph/SgGraphFileIO.h"
 
 // Rendering hot-reload bridge (Engine side)
@@ -73,23 +79,29 @@
 #include "TileMapECS/RegisterTileMap.h"
 #include "TileMapECS/TileMapRuntimeStore.h"
 #include "MarkupECS/MarkupService.h"
+#include "SplineECS/SplineNetwork.h"
 #include "SplineECS/SplineService.h"
 #include "SplineRecipes/SplineRecipeSystem.h"
 #include "SplineECS/SplineNetwork.h"
 #include "SplineECS/Systems/RegisterSplineSystems.h"
+#include "SplineRecipes/SplineRecipeSystem.h"
 #include "PathfindingECS/NavigationService.h"
 #include "PathfindingECS/Systems/RegisterPathfindingSystems.h"
+#include "SpatialGridECS/Systems/SpatialGridBuildSystem.h"
+#include "AIECS/AiGroupKnowledge.h"
+#include "AIECS/AiRegistry.h"
 // ECS integration
 #include "Components/Components.h"
 #include "Components/Audio/AudioEmitter.h"
 #include "Components/Hierarchy.h" // Components::Parent — lifecycle-event subscription (hierarchy incremental sync)
 #include "ECS/ComponentFieldRegistry.h" // C12 load-abort purge
 #include "ECS/ComponentRegistry.h"
-#include "Particles/ParticleProcessorRegistry.h" // C12 load-abort purge, unload ledger
+#include "Particles/ParticleProcessor/ParticleProcessorRegistry.h" // C12 load-abort purge, unload ledger
 #include "ECS/ECS.h"
 #include "ECS/Entity.h"
 #include "ECS/SystemScheduling.h"
 #include "ECS/World.h"
+#include "Scene/PrefabLibrary.h"
 #include "Scene/SceneSchemaRegistry.h" // built-in schema registration, C12 load-abort purge
 #include "Engine/Rendering/FrameOrchestrator.h"
 #include "Engine/Rendering/RenderServices.h"
@@ -115,6 +127,18 @@ bool EqualsIgnoringCase(const std::string& a, const std::string& b)
            std::equal(a.begin(), a.end(), b.begin(), [](unsigned char l, unsigned char r) {
                return std::tolower(l) == std::tolower(r);
            });
+}
+
+// The time the last frame's main thread waited for a free frame slot and for the next swapchain
+// image. Zero when the device does not report it.
+std::chrono::microseconds LastFrameGpuWait(const Engine::Renderer::RenderServices* services)
+{
+    Rendering::IDevice* device = services ? services->GetDevice() : nullptr;
+    Rendering::IDevice::FrameSyncTimings sync{};
+    if (!device || !device->GetLastFrameSyncTimings(sync))
+        return std::chrono::microseconds{0};
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::duration<double, std::milli>(sync.beginFrameWaitMs + sync.acquireMs));
 }
 
 // An asset root that does not exist is either a brand-new project (fine — the
@@ -176,7 +200,7 @@ void DiagnoseAssetRootBeforeCreation(const std::filesystem::path& workspaceRoot,
 // relative directory is interpreted against the executable directory.
 std::filesystem::path ResolveWorkspaceRoot(const std::filesystem::path& directory)
 {
-    const std::filesystem::path exeDir = PathUtils::GetExecutableDirectory();
+    const std::filesystem::path exeDir = ApplicationPaths::GetExecutableDirectory();
     std::filesystem::path root = directory.empty() ? exeDir : directory;
     if (!root.is_absolute())
         root = exeDir / root;
@@ -226,7 +250,23 @@ static std::filesystem::path ResolveEngineShaderPath(const std::filesystem::path
 
 static std::string ShaderPackageRebuildAction(const std::string& packageName)
 {
-    return Detail::ShaderPackageRebuildAction(packageName, PathUtils::GetExecutableDirectory());
+    return Detail::ShaderPackageRebuildAction(packageName, ApplicationPaths::GetExecutableDirectory());
+}
+
+// An export reads the stages it compiled offline from its bundled cache. A development run on a Mac records
+// the stage inputs it uses in its project, where the next export of that project reads them. Only a Mac
+// exports to Mac. A staging workspace or the executable's folder (a test's) is not a project.
+static void ApplyPrecompiledShaderFiles([[maybe_unused]] const std::filesystem::path& workspaceRoot,
+                                        [[maybe_unused]] bool workspaceIsFallback)
+{
+    Rendering::PrecompiledShaderFiles files;
+    if (const std::filesystem::path bundleCache = ApplicationPaths::GetBundledShaderCacheRoot(); !bundleCache.empty())
+        files.MetalLibraries = bundleCache / Rendering::kMetalLibraryArchiveFileName;
+#if defined(__APPLE__)
+    else if (!workspaceIsFallback && workspaceRoot != ResolveWorkspaceRoot({}))
+        files.StageRecord = Rendering::ShaderStageRecordFile(workspaceRoot);
+#endif
+    Rendering::SetPrecompiledShaderFiles(std::move(files));
 }
 
 static std::vector<uint8_t> EngineShaderBytecodeLoaderFromAssets(const char* name)
@@ -361,6 +401,7 @@ class EngineCore::InitializeTransaction
             return;
         m_Engine.DiscardAudioInitAfterFailedInitialize();
         m_Engine.m_StartupChannel.reset();
+        m_Engine.m_StartupJobsHook = nullptr;
         m_Engine.m_ShaderHookState.reset();
         m_Engine.SetPostGate(PostGate::ShutDown);
         m_Engine.m_InitializingThread.store(std::thread::id{}, std::memory_order_release);
@@ -426,14 +467,15 @@ EngineCore::MainThreadPost EngineCore::RequestManagedPostDrain()
 }
 
 EngineCore::EngineCore()
-    : m_SceneLoadTracker(MakeUnique<SceneLoadTracker>()),
-      m_SceneLoadingGates(MakeUnique<SceneLoadingGates>(*this))
+    : m_SceneLoadTracker(MakeUnique<SceneLoadTracker>())
 {
     if (s_Instance != nullptr)
     {
         Logger::Log::Critical("Engine instance already exists!");
     }
     s_Instance = this;
+    m_SceneLoadTracker = MakeUnique<SceneLoadTracker>();
+    m_SceneLoader = MakeUnique<SceneLoader>(*m_SceneLoadTracker);
 }
 
 EngineCore::~EngineCore()
@@ -448,6 +490,11 @@ EngineCore::~EngineCore()
 void EngineCore::SetScriptsConfig(const ScriptsConfig& config)
 {
     m_ScriptsConfig = config;
+}
+
+void EngineCore::SetStartupJobsHook(std::function<void(JobSystem::JobChannel&)> hook)
+{
+    m_StartupJobsHook = std::move(hook);
 }
 
 bool EngineCore::Initialize(const ApplicationConfig& config)
@@ -468,6 +515,7 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
             "engine it runs with: SDK consumers get the value from "
             "find_package(GameEngine), in-tree targets from the repository's CMake.",
             config.HostDebugInstrumentation, static_cast<uint32>(GE_DEBUG_INSTRUMENTATION));
+        m_StartupJobsHook = nullptr;
         return false;
     }
 
@@ -515,7 +563,7 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
     {
         // The shader-graph node library ships with the engine assets; the
         // Rendering module cannot locate the executable itself on every host.
-        const std::filesystem::path installAssets = PathUtils::GetInstallAssetsRoot();
+        const std::filesystem::path installAssets = ApplicationPaths::GetInstallAssetsRoot();
         if (!installAssets.empty())
             ShaderGraph::SetEngineGraphNodesRoot(installAssets / "Shaders" / "Graph" / "Nodes");
     }
@@ -538,7 +586,7 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
 
     // Ensure process working directory matches the resolved workspace root.
     // This keeps relative path usage project-centric and avoids accidental writes into app bundles.
-    GameEngine::PathUtils::EnsureWorkingDirectoryMatches(resolvedWorkspaceRoot);
+    GameEngine::ApplicationPaths::EnsureWorkingDirectoryMatches(resolvedWorkspaceRoot);
 
     // Resolve the configured asset directory and asset database locations against the
     // workspace root, and publish them for consumers (Editor, tools).
@@ -597,11 +645,19 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
         Logger::Log::Info("[Startup] Primary world pool: backfilled (world predates JobSystem)");
     }
 
+    m_StartupChannel = MakeUnique<JobSystem::JobChannel>(
+        *m_JobSystem, JobSystem::JobChannelDesc{.Name = "Engine startup", .MaxRunning = 2});
+    if (m_StartupJobsHook)
+    {
+        const std::function<void(JobSystem::JobChannel&)> hook = std::move(m_StartupJobsHook);
+        m_StartupJobsHook = nullptr;
+        hook(*m_StartupChannel);
+    }
+
     // Create asset manager instance. We register core asset types *before*
     // initializing/scanning so startup indexing can assign correct types.
     tPhase = std::chrono::high_resolution_clock::now();
     m_AssetManager = MakeUnique<AssetManager>();
-    m_PrefabLibrary = MakeUnique<Scene::PrefabLibrary>(*m_AssetManager);
 
     // Register core engine asset types
     try
@@ -622,6 +678,7 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
         return false;
     }
     Logger::Log::Info("[Startup] AssetManager: {:.1f}ms", MsSince(tPhase));
+    m_PrefabLibrary = MakeUnique<Scene::PrefabLibrary>(*m_AssetManager);
 
     // Native C++ user-script manager (watches sources; build/load pipeline lands in C10+).
     // After AssetManager + FileWatchingService so its watch subscriptions are valid.
@@ -646,6 +703,8 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
             ECS::ComponentFieldRegistry::PurgeModuleFieldTables(moduleId, generation);
             Scene::SceneSchemaRegistry::PurgeModuleSchemas(moduleId, generation);
             Particles::ParticleProcessorRegistry::PurgeModuleProcessors(moduleId, generation);
+            AIECS::AiRegistry::Get().PurgeModuleRegistrations(moduleId, generation);
+            TerrainECS::TerrainService::RevokeHeightFunctions(moduleId, generation, generation + 1u);
             if (m_RenderServices)
                 m_RenderServices->Spine().PurgeModulePipelineNodes(moduleId, generation);
             if (m_RenderingLoop)
@@ -709,7 +768,7 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
     // dispatch before any liveness flag is read. Engine.dll and Editor.exe are
     // never in the set these ranges describe, so an engine-registered handler
     // cannot be revoked here; the discrimination is structural.
-    m_NativeScriptManager->SetModuleImageObserver([] {
+    m_NativeScriptManager->SetModuleImageObserver([this] {
         NativeScripting::NativeScriptManager::ModuleImageObserver observer;
         observer.ImageMapBegin = [] { UI::OpenImageAttribution(); };
         observer.ImageMapEnd = [](uint64 base, uint64 size) {
@@ -737,20 +796,24 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
             }
             return pins;
         };
-        observer.ImageUnmapping = [](uint64 base, uint64 size) {
+        // A finished job's result and callbacks can be the image's code; the pool
+        // releases the ones only its registry still holds.
+        observer.ImageUnmapping = [this](uint64 base, uint64 size) {
             UI::RevokeHandlersOwnedByImage(base, size);
+            m_JobSystem->ReleaseFinishedTasks();
         };
         observer.ImageUnmapped = [](uint64 base) { UI::RetractHotSwappableImage(base); };
         return observer;
     }());
 
-    // C12 reload reconcile: after a successful reload's replay re-owned the
-    // re-declared registrations, retire the pipeline-node factories the replay
-    // stopped declaring and rebuild live pipeline instances from the newest
-    // factories — before the unload decision reads the ledger above.
+    // Reload reconcile: retire the AI entries, pipeline-node factories and terrain height functions
+    // that the new load did not register, and rebuild live pipelines, before the unload decision.
+    // A terrain regenerates from the new load's height function.
     m_NativeScriptManager->SetModuleReloadReconcileHandler(
         [this](std::string_view moduleId, uint64 generation)
         {
+            AIECS::AiRegistry::Get().RetireSupersededModuleRegistrations(moduleId, generation);
+            TerrainECS::TerrainService::RevokeHeightFunctions(moduleId, 0u, generation);
             if (m_RenderServices)
                 m_RenderServices->Spine().ReconcileModuleNodeRegistrations(moduleId, generation);
         });
@@ -761,13 +824,14 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
     Rendering::Utils::SetShaderPathResolver(&ResolveEngineShaderPath);
     Rendering::SetShaderPackageRebuildAction(&ShaderPackageRebuildAction);
     {
-        std::filesystem::path shaderCacheRoot = resolvedWorkspaceRoot / ".Cache" / "Shaders";
-        // Runtimes without a compiler read the current bundled packages for
-        // every project. A persisted project cache can contain older variants
-        // or metadata and must not shadow that authoritative bundle.
-        if (const auto bundleCache = PathUtils::GetBundledShaderCacheRoot(); !bundleCache.empty())
-            shaderCacheRoot = bundleCache;
-        ShaderProgramAsset::SetShaderCacheRoot(shaderCacheRoot);
+        // The cooked cache a runtime ships is probed before the workspace's own, so a persisted
+        // workspace cache never shadows it; a program it lacks compiles into the workspace.
+        ShaderCacheRoots shaderCacheRoots;
+        if (const auto bundleCache = ApplicationPaths::GetBundledShaderCacheRoot(); !bundleCache.empty())
+            shaderCacheRoots.ReadOnly.push_back(bundleCache);
+        shaderCacheRoots.Writable = resolvedWorkspaceRoot / ".Cache" / "Shaders";
+        ShaderProgramAsset::SetShaderCacheRoots(std::move(shaderCacheRoots));
+        ApplyPrecompiledShaderFiles(resolvedWorkspaceRoot, config.WorkspaceDirectoryIsFallback);
     }
 
     // Initialize script manager (only when scripting is enabled at build time).
@@ -776,7 +840,7 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
     ScriptsConfig scriptsConfig;
     std::filesystem::path scriptsNativeDllPath;
     {
-        using GameEngine::PathUtils;
+        using GameEngine::ApplicationPaths;
 
         const std::filesystem::path& workspaceRoot = resolvedWorkspaceRoot;
 
@@ -815,12 +879,13 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
         if (scriptsNativeDllPath.empty())
         {
             // Fallback for unusual dev layouts; prefer the platform-specific resolver above.
-            scriptsNativeDllPath = PathUtils::GetExecutableDirectory() / "GameEngine.Native.dll";
+            scriptsNativeDllPath = ApplicationPaths::GetExecutableDirectory() / "GameEngine.Native.dll";
         }
     }
 
     // If scripting is effectively disabled by config, skip ScriptManager initialization entirely.
     // This keeps headless tools/tests fast and avoids unnecessary file watcher + hot reload pipeline setup.
+    // A NativeAOT Player runs scripts with the CLR off, and keeps the manager for its main-thread queue.
     const bool scriptingFullyDisabled =
         !scriptsConfig.nativeAot &&
         scriptsConfig.disableClr &&
@@ -980,6 +1045,7 @@ GameEngine::ECS::World* GameEngine::EngineCore::EnsurePrimaryWorld()
         TerrainECS::RegisterTerrainWorldHooks(*m_PrimaryWorld);
         PhysicsECS::RegisterPhysicsWorldHooks(*m_PrimaryWorld);
         PathfindingECS::RegisterNavigationWorldHooks(*m_PrimaryWorld);
+        AIECS::RegisterAiWorldHooks(*m_PrimaryWorld);
 
         // Per-entity dirty feed (change-signaling §5 P2): subscribe the
         // engine-driven world to WorldTransform. Only worlds whose swap is
@@ -1081,6 +1147,9 @@ void EngineCore::Shutdown()
 
     Logger::Log::Info("Shutting down Game Engine");
 
+    // A read in flight uses the asset manager and the job system.
+    m_SceneLoader->Shutdown();
+
     // Tear down engine-managed rendering loop and primary ECS world while the
     // process is still in a well-defined state (before static destruction).
     // This avoids lifetime issues during CRT atexit when the Engine singleton
@@ -1138,8 +1207,8 @@ void EngineCore::Shutdown()
     // Join the async audio init before tearing audio down: the init job must
     // not outlive the AudioSystem it is initializing.
     (void)GetAudioSystem();
-    // The startup jobs are joined (the audio init above, an application's
-    // preloads by the application before this Shutdown).
+    // The startup jobs that use engine state are joined (the audio init above, an application's
+    // preloads by the application). The package-cache maintenance job uses process state only.
     m_StartupChannel.reset();
     // Shutdown audio before AssetManager so any clip resolution/handles are no longer used.
     if (m_AudioSystem)
@@ -1214,6 +1283,9 @@ void EngineCore::SetWorkspaceRoot(const std::filesystem::path& newRoot)
     m_ResolvedAssetRoot = projectPaths.AssetRoot;
     m_AuthoritativeAssetDbFile = projectPaths.AssetDatabaseFile;
     m_AssetDbCacheRoot = projectPaths.AssetDatabaseCacheRoot;
+    // An editor on a Mac records the stage inputs of the project it opens, so the next export of it compiles them.
+    if (m_ShaderHookState)
+        ApplyPrecompiledShaderFiles(m_WorkspaceRoot, m_WorkspaceRootIsFallback);
 
     // Propagate to ScriptManager so it watches the new project's script directory.
     if (m_ScriptManager && m_ScriptManager->IsInitialized())
@@ -1225,24 +1297,14 @@ void EngineCore::SetWorkspaceRoot(const std::filesystem::path& newRoot)
         m_ScriptManager->RebindProjectScripts(newScriptsConfig);
     }
 
-    ApplyTerrainBakeCacheLocation();
+    ApplyTerrainPageStoreLocation();
     Logger::Log::Info("Engine workspace root updated to: {}", m_WorkspaceRoot.string());
 }
 
-void EngineCore::ApplyTerrainBakeCacheLocation()
+void EngineCore::ApplyTerrainPageStoreLocation()
 {
     if (!TerrainECS::TerrainService::IsInitialized())
         return;
-    // A packaged game reads the bakes its build staged beside the asset manifest
-    // and never writes beside its install; a run on a project workspace reads and
-    // fills that workspace's derived-data cache; a run without one always bakes.
-    TerrainECS::TerrainBakeCacheConfig cache;
-    if (m_ScriptsConfig && m_ScriptsConfig->packagedMode && m_AssetManager)
-        cache = {m_AssetManager->GetAssetRoot() / ".terrainbake", false};
-    else if (!m_WorkspaceRoot.empty() && !m_WorkspaceRootIsFallback)
-        cache = {m_WorkspaceRoot / ".Cache" / "TerrainBake", true};
-    TerrainECS::TerrainService::Get().SetBakeCache(std::move(cache));
-
     // The cooked height stores the paged terrains read: the build's terrain containers in a
     // packaged game (never cooked on load), the workspace's derived-data cache otherwise (cooked
     // there in the background when missing), none without a workspace.
@@ -1261,7 +1323,11 @@ void EngineCore::Update(float64 deltaTime)
         return;
     }
 
-    m_SceneLoadTracker->Tick(std::chrono::steady_clock::now());
+    // The frame boundary of the load snapshot: it reads what the previous frame left pending.
+    const auto frameStart = std::chrono::steady_clock::now();
+    m_SceneLoadTracker->Tick(frameStart);
+    // Before the systems run: a load's instantiate and its first resolve slice share this frame.
+    m_SceneLoader->Tick(frameStart, LastFrameGpuWait(m_RenderServices));
 
     // Update asset manager (process loading queue, check for file changes)
     if (m_AssetManager)
@@ -1318,6 +1384,10 @@ void EngineCore::Update(float64 deltaTime)
     // CRITICAL: Process main thread tasks for hot reload system
     if (m_ScriptManager)
     {
+#if GE_DEBUG_INSTRUMENTATION
+        // Scripting posts these from work that can outlive the frame, so they never get frame memory.
+        const Memory::Detail::FrameJoinedScope notFrameJoined(false);
+#endif
         size_t tasksProcessed = m_ScriptManager->ProcessMainThreadTasks();
         if (tasksProcessed > 0)
         {
@@ -1447,12 +1517,19 @@ bool EngineCore::EnableRenderingLoop(Engine::Renderer::RenderServices* renderSer
             m_RenderServices = nullptr;
             return false;
         }
+        m_RenderingLoop->GetSceneResolveService().ReportLoadingWork(*m_SceneLoadTracker);
+        // A RenderServices with no device has no variant cache and no texture service to report.
+        if (renderServices && renderServices->GetDevice())
+        {
+            renderServices->Materials().ReportLoadingWork(*m_SceneLoadTracker);
+            renderServices->Textures().ReportLoadingWork(*m_SceneLoadTracker);
+        }
         m_RenderingLoopEnabled = true;
         (void)EnsurePrimaryWorld();
 
         // Initialize world services and register module pipeline node types.
         InitializeWorldServices();
-        ApplyTerrainBakeCacheLocation();
+        ApplyTerrainPageStoreLocation();
         // A headless host passes no render services: there are no pipeline node types
         // to register, and every scheduled system skips its render work.
         if (!renderServices)
@@ -1505,6 +1582,8 @@ bool EngineCore::EnableRenderingLoop(Engine::Renderer::RenderServices* renderSer
         SplineECS::AddSplineSystemsToSchedule(schedule);
         SplineRecipes::AddSplineRecipeSystemsToSchedule(schedule, renderServices);
         PathfindingECS::AddPathfindingSystemsToSchedule(schedule);
+        SpatialGridECS::AddSpatialGridSystemsToSchedule(schedule);
+        AIECS::AiRegistry::Get().AddSystemsToSchedule(schedule);
         // Associate contributions with their plugin so reload reconciliation
         // can replace or retire that plugin's systems.
         for (Plugins::IEnginePlugin* plugin :

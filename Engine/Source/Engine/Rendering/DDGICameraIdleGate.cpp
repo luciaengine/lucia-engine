@@ -40,12 +40,11 @@ bool DDGICameraIdleGate::UpdateAndIsMoving(const ViewRegistry& views, uint64 wor
 
         ViewPose pose{};
         pose.ViewId = view.id;
-        pose.PositionWS = Mathematics::Vector3(cam->cameraPos[0], cam->cameraPos[1], cam->cameraPos[2]);
+        pose.PositionWS = Mathematics::Vector3(cam->cameraPos.x, cam->cameraPos.y, cam->cameraPos.z);
         // Column-major view matrix: columns 0..2 carry the rotation basis,
         // column 3 the translation (which cameraPos above already covers).
         for (int col = 0; col < 3; ++col)
-            pose.Basis[col] = glm::vec3(cam->view[col * 4 + 0], cam->view[col * 4 + 1],
-                                        cam->view[col * 4 + 2]);
+            pose.Basis[col] = glm::vec3(cam->view[col]);
         pose.SeenSerial = m_Serial;
 
         auto it = std::find_if(m_Poses.begin(), m_Poses.end(),

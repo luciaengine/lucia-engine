@@ -4,6 +4,8 @@
 #include "Ocean/ocean_material_profiles.glsl"
 
 #include "Includes/screen_position.glsl"
+#include "Includes/reverse_z.glsl"
+#include "Includes/shadow_cascade_blend.glsl"
 #include "Ocean/ocean_cascade_common.glsl"
 
 // Underwater fullscreen composite. Runs at the post/composite phase when the
@@ -14,9 +16,12 @@
 // frame untouched, below it applies the underwater look —
 //   * per-channel Beer-Lambert fog that fades distant geometry into the deep body,
 //   * single-scatter sun inscattering (Henyey-Greenstein), refracted into water,
-//   * procedural god-ray shafts modulating the inscatter (clean-room Wicked port),
+//   * procedural god-ray shafts modulating the inscatter,
 //   * lens-barrel + waterline-intersection screen distortion,
 //   * a thin constant-width meniscus seam on the line.
+//
+// The shafts and the waterline distortion follow the approach of Wicked Engine's
+// underwater effect. Engine/Modules/Ocean/NOTICE carries its license.
 //
 // OceanUnderwater.cpp binds the scene, wave fields, volume/material tables and
 // optional shadows. OceanSurface fields control extinction, caustics and scattering.
@@ -26,6 +31,16 @@ layout(location = 0) out vec4 outColor;
 
 layout(set = 0, binding = 0) uniform sampler2D uScene;
 layout(set = 0, binding = 1) uniform sampler2D uDepth;
+// The view's exposure state (ExposureHistory). uScene is stored at the frame's pre-exposure P while
+// the water body, in-scatter, god rays and meniscus are absolute: the scene is read back to absolute
+// units (SceneAbsolute) and the result is stored at P again.
+#define GE_EXPOSURE_HISTORY_BINDING 19
+#include "Includes/exposure_history.glsl"
+
+vec3 SceneAbsolute(vec2 uv)
+{
+    return textureLod(uScene, uv, 0.0).rgb / GE_PreExposure();
+}
 
 layout(std140, set = 0, binding = 2) uniform OceanUnderwaterParams
 {
@@ -86,18 +101,9 @@ layout(set = 0, binding = 15) uniform sampler2DArray uOceanLocalDisplacement7;
 layout(set = 0, binding = 16) uniform sampler2DArray uOceanLocalFFTMask1;
 
 #ifdef OCEAN_UNDERWATER_SHADOWS
-layout(set = 0, binding = 8, std140) uniform ShadowData
-{
-    mat4 ge_shadowVP[4];
-    vec4 ge_shadowSplits;
-    vec4 ge_shadowParams; // x=depthBias, y=normalBias, z=numCascades, w=maxShadowDistance
-    vec4 ge_shadowDebug;
-    vec4 ge_shadowPcss;
-    vec4 ge_shadowPcssCascades[4];
-    vec4 ge_shadowPcssPyramid[4];
-};
-
-layout(set = 0, binding = 9) uniform sampler2DArrayShadow ge_shadowMapArray;
+#define GE_VIEW_PARAMS_BINDING 20
+#include "Includes/view_params.glsl"
+#include "Ocean/ocean_god_ray_shadow.glsl"
 #endif
 
 const float PI = 3.14159265;
@@ -399,84 +405,7 @@ float GodRaySurfaceMask(vec2 entryXZ, float t, float density)
     return smoothstep(0.48, 0.86, shafts);
 }
 
-#ifdef OCEAN_UNDERWATER_SHADOWS
-bool GodRayShadowUVInBounds(vec2 uv)
-{
-    return uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0;
-}
-
-float GodRayShadowCompareTap(vec2 uv, float layer, float refDepth)
-{
-    if (!GodRayShadowUVInBounds(uv))
-        return 1.0;
-    return texture(ge_shadowMapArray, vec4(uv, layer, refDepth));
-}
-
-float SampleGodRayCascade(vec3 posWS, int cascadeIdx)
-{
-    vec4 shadowClip = ge_shadowVP[cascadeIdx] * vec4(posWS, 1.0);
-    vec3 shadowNDC = shadowClip.xyz / max(abs(shadowClip.w), 1.0e-5);
-    vec2 shadowUV = shadowNDC.xy * 0.5 + 0.5;
-    shadowUV.y = 1.0 - shadowUV.y;
-
-    float refDepthSpan = max(ge_shadowPcssCascades[0].y, 1.0e-3);
-    float thisDepthSpan = max(ge_shadowPcssCascades[cascadeIdx].y, 1.0e-3);
-    float biasScale = refDepthSpan / thisDepthSpan;
-    float refDepth = shadowNDC.z + ge_shadowParams.x * biasScale;
-
-    if (!GodRayShadowUVInBounds(shadowUV) || refDepth < 0.0 || refDepth > 1.0)
-        return 1.0;
-
-    float texelSize = 1.0 / float(textureSize(ge_shadowMapArray, 0).x);
-    float layer = float(cascadeIdx);
-    float shadow = 0.0;
-    for (int y = -1; y <= 1; ++y)
-    {
-        for (int x = -1; x <= 1; ++x)
-        {
-            vec2 offset = vec2(float(x), float(y)) * texelSize;
-            shadow += GodRayShadowCompareTap(shadowUV + offset, layer, refDepth);
-        }
-    }
-    return shadow * (1.0 / 9.0);
-}
-
-float SampleGodRayShadow(vec3 posWS, float linearDepth)
-{
-    int numCascades = int(ge_shadowParams.z + 0.5);
-    if (numCascades <= 0 || linearDepth > ge_shadowParams.w)
-        return 1.0;
-
-    numCascades = clamp(numCascades, 1, 4);
-    int cascadeIdx = numCascades - 1;
-    for (int i = 0; i < numCascades; ++i)
-    {
-        if (linearDepth < ge_shadowSplits[i])
-        {
-            cascadeIdx = i;
-            break;
-        }
-    }
-
-    if (cascadeIdx < numCascades - 1)
-    {
-        float splitDist = ge_shadowSplits[cascadeIdx];
-        float cascadeStart = (cascadeIdx == 0) ? 0.0 : ge_shadowSplits[cascadeIdx - 1];
-        float cascadeRange = max(splitDist - cascadeStart, 1.0e-3);
-        float blendBand = max(cascadeRange * 0.1, 3.0);
-        float distToSplit = splitDist - linearDepth;
-        if (distToSplit < blendBand)
-        {
-            float t = smoothstep(0.0, 1.0, distToSplit / blendBand);
-            float currentShadow = SampleGodRayCascade(posWS, cascadeIdx);
-            float nextShadow = SampleGodRayCascade(posWS, cascadeIdx + 1);
-            return mix(nextShadow, currentShadow, t);
-        }
-    }
-
-    return SampleGodRayCascade(posWS, cascadeIdx);
-}
-#else
+#ifndef OCEAN_UNDERWATER_SHADOWS
 float SampleGodRayShadow(vec3 posWS, float linearDepth)
 {
     return 1.0;
@@ -953,7 +882,7 @@ void main()
     // uScene (the scene copy) and uDepth (the resolved depth) have one mip, so the
     // explicit-LOD fetches below read exactly what texture() would, and stay legal
     // inside the per-quad branches.
-    vec3 sceneAtPixel = textureLod(uScene, uv, 0.0).rgb;
+    vec3 sceneAtPixel = SceneAbsolute(uv);
 
     // A dry camera sees water only through a portal volume, and its lens is off
     // (FillUnderwaterParams), so this ray is the one the full path shades. A pixel
@@ -965,7 +894,7 @@ void main()
         vec3 dryViewDir = normalize(WorldFromDepth(uv, 1.0e-4) - uCameraPos.xyz);
         float dryDepth = textureLod(uDepth, uv, 0.0).r;
         float drySceneDist = uFogDensity.w;
-        if (dryDepth > 1e-6)
+        if (!IsBackgroundDepth(dryDepth))
             drySceneDist = length(WorldFromDepth(uv, dryDepth) - uCameraPos.xyz);
         dryPortalHit = UnderwaterPortalHit(dryViewDir, drySceneDist);
     }
@@ -997,9 +926,9 @@ void main()
         oceanH = OceanHeightAt(probe.xz, reach);
         signedDepth = oceanH - probe.y;                       // pre-distort
 
-        // --- Screen distortion: intersection refraction pinch (Wicked INTERSECTION_DISTORT)
-        // then Brown-Conrady barrel. After the pinch, RECOMPUTE the probe from the bent ray
-        // (as Wicked does) so the waterline mask + fog track the distorted boundary. ---
+        // --- Screen distortion: an intersection refraction pinch, then a Brown-Conrady barrel.
+        // The pinch follows the approach of Wicked Engine's underwater effect. After the pinch,
+        // RECOMPUTE the probe from the bent ray so the waterline mask + fog track the boundary. ---
         if (uDistortion.x > 0.5)
         {
             vec2 ndc = UvToNdc(uv);
@@ -1057,13 +986,13 @@ void main()
         vec2 seamOffset = (edgeNormal * (0.45 + 0.35 * ripple) + edgeTangent * ripple * 0.55)
                         * refractStrength * 3.0 / vec2(textureSize(uScene, 0));
         vec2 sceneUV = clamp(mix(uvUW, uvUW + seamOffset, seamProximity), vec2(0.0), vec2(1.0));
-        originalColor = mix(originalColor, textureLod(uScene, sceneUV, 0.0).rgb, seamProximity * 0.65);
+        originalColor = mix(originalColor, SceneAbsolute(sceneUV), seamProximity * 0.65);
 
         viewDir = normalize(WorldFromDepth(sceneUV, 1.0e-4) - uCameraPos.xyz);
-        scene = textureLod(uScene, sceneUV, 0.0).rgb;
+        scene = SceneAbsolute(sceneUV);
         rawDepth = textureLod(uDepth, sceneUV, 0.0).r;
         worldPos = uCameraPos.xyz + viewDir * uFogDensity.w;
-        if (rawDepth > 1e-6)
+        if (!IsBackgroundDepth(rawDepth))
         {
             worldPos = WorldFromDepth(sceneUV, rawDepth);
             // Extinction is measured through water, not through the air before a
@@ -1140,7 +1069,7 @@ void main()
         float footprintLod = 0.5 * log2(max(max(dot(footprintX, footprintX), dot(footprintY, footprintY)), 1.0));
         float focalLod = abs(depthBelow - uCaustics.w) / max(uCausticsFocus.x, 0.001);
         float causticLod = max(footprintLod, focalLod);
-        if (uShape.x > 0.5 && rawDepth > 1e-6 && belowMask > 0.01 && sunDir.y > 0.0)
+        if (uShape.x > 0.5 && !IsBackgroundDepth(rawDepth) && belowMask > 0.01 && sunDir.y > 0.0)
         {
             float a = textureLod(uOceanCaustics, causticUV + vec2(0.044 * t + 17.16, -0.169 * t), causticLod).b;
             float b = textureLod(uOceanCaustics, 1.37 * causticUV + vec2(0.248 * t, 0.117 * t), causticLod + 0.45).b;
@@ -1188,9 +1117,9 @@ void main()
         result = mix(originalColor, fogged, belowMask);
 
         // --- God rays (additive, underwater) ---
-        // Short volumetric integration, Wicked-style: march along the view ray and
-        // accumulate sun scatter. The shaft mask is world-anchored at the water surface,
-        // so the beams stay in the volume instead of sticking to screen angle.
+        // Short volumetric integration (the approach of Wicked Engine's underwater effect): march
+        // along the view ray and accumulate sun scatter. The shaft mask is world-anchored at the
+        // water surface, so the beams stay in the volume instead of sticking to screen angle.
         if (uGodRays.x > 0.5)
         {
             result += IntegrateUnderwaterGodRays(viewDir, waterStart, waterDist, belowMask,
@@ -1218,5 +1147,6 @@ void main()
         }
     }
 
-    outColor = vec4(pixelSeesWater > 0.5 ? result : sceneAtPixel, 1.0);
+    outColor = vec4((pixelSeesWater > 0.5 ? result : sceneAtPixel) *
+                    GE_PreExposure(), 1.0);
 }

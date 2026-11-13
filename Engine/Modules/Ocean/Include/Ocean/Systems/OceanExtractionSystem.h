@@ -1,19 +1,18 @@
 #pragma once
 
 #include "Ocean/OceanTypes.h"
-#include "Ocean/OceanPresetCache.h"
-#include "Ocean/OceanPresetOverrideValidator.h"
+#include "Ocean/OceanPreset/OceanPresetCache.h"
+#include "Ocean/OceanPreset/OceanPresetOverrideValidator.h"
 #include "Ocean/OceanTime.h"
 
 #include "AssetCore/GUID.h"
 #include "ECS/Systems.h"
-#include "Types/ScopedSubscription.h"
+#include "Types/FlatMap.h"
 #include "Types/Types.h"
 
 #include <array>
 #include <filesystem>
 #include <memory>
-#include <unordered_map>
 
 namespace GameEngine::Engine::Renderer
 {
@@ -29,7 +28,6 @@ namespace GameEngine::Ocean
 {
 
 class OceanFFTCollisionAsset;
-class OceanRenderFeature;
 class OceanPresetAsset;
 class OceanSettingsAsset;
 
@@ -53,8 +51,6 @@ public:
     void Update(ECS::World& world, float32 deltaTime) override;
 
 private:
-    void PublishWorldContent(OceanRenderFeature& feature, uint64 worldId, bool hasSurface);
-
     Engine::Renderer::RenderServices* m_RenderServices = nullptr;
     float32 m_Time = 0.0f;
 
@@ -89,7 +85,7 @@ private:
     // Previous-frame world XYZ per OceanWaterInteraction entity, so wake/splash
     // injection can derive horizontal and vertical speed from the position delta
     // (no physics dependency — works for kinematic and simulated bodies alike).
-    std::unordered_map<uint32, std::array<float32, 3>> m_PrevInteractionXYZ;
+    FlatMap<uint32, Mathematics::Vector3> m_PrevInteractionXYZ;
 
     GUID m_LastCollisionAssetGuid{};
     std::shared_ptr<const OceanFFTCollisionAsset> m_CollisionAsset;
@@ -106,9 +102,6 @@ private:
     OceanCustomTimeProvider m_CustomTimeProvider;
     OceanNetworkOffsetTimeProvider m_NetworkTimeProvider;
     OceanTimelineTimeProvider m_TimelineTimeProvider;
-    // Keeps this world's entry in the feature's content-digest table while the
-    // system (and so its world) lives.
-    ScopedSubscription m_WorldContentTracking;
 };
 
 } // namespace GameEngine::Ocean

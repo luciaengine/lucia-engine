@@ -1,8 +1,9 @@
 #include "Placement/RecipeEditorHooks.h"
 
+#include "Editor/Registries/EditorServiceRegistry.h"
 #include "Placement/FenceSpanOverrideRemap.h"
-#include "SplineGroundEditCommand.h"
-#include "UndoRedo/SplinePointEdits.h"
+#include "UndoRedo/Spline/SplineGroundEditCommand.h"
+#include "UndoRedo/Spline/SplinePointEdits.h"
 #include "UndoRedo/UndoRedoService.h"
 
 #include "ECS/Systems.h"
@@ -13,6 +14,14 @@
 
 namespace GameEngine::Editor
 {
+
+std::unique_ptr<IEditorService> RecipeEditorHooks::Create(const EditorServiceContext& context)
+{
+    auto* recipes = context.Systems.GetSystem<SplineRecipes::SplineRecipeSystem>();
+    if (!recipes)
+        return nullptr;
+    return std::make_unique<RecipeEditorHooks>(context.Undo, *recipes);
+}
 
 RecipeEditorHooks::RecipeEditorHooks(UndoRedoService* undo, SplineRecipes::SplineRecipeSystem& recipes)
     : m_Undo(undo),
@@ -33,9 +42,10 @@ void RecipeEditorHooks::RecordGroundEdit(ECS::World& world, const SplineRecipes:
 {
     if (!m_Undo)
         return;
+    // A pending authoring action owns its generated ground changes. Published revisions stay immutable.
     const auto action = m_Undo->GetPendingActionId();
     if (action != 0)
-        m_Undo->AppendConsequence(action, std::make_unique<SplineGroundEditCommand>(&world, edit));
+        (void)m_Undo->AppendConsequence(action, std::make_unique<SplineGroundEditCommand>(&world, edit));
     else if (edit.Removes())
         m_Undo->CommitAlreadyApplied(std::make_unique<SplineGroundEditCommand>(&world, edit));
 }

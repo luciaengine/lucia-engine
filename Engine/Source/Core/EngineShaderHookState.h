@@ -15,14 +15,16 @@ struct EngineCore::ShaderHookState
     Rendering::Utils::ShaderFileLoaderFunc Loader = Rendering::Utils::GetShaderFileLoader();
     Rendering::Utils::ShaderPathResolverFunc Resolver = Rendering::Utils::GetShaderPathResolver();
     Rendering::ShaderPackageRebuildActionFunc RebuildAction = Rendering::GetShaderPackageRebuildAction();
-    std::filesystem::path CacheRoot = ShaderProgramAsset::GetShaderCacheRoot();
+    ShaderCacheRoots CacheRoots = ShaderProgramAsset::GetShaderCacheRoots();
+    Rendering::PrecompiledShaderFiles PrecompiledShaders = Rendering::GetPrecompiledShaderFiles();
 
     ~ShaderHookState()
     {
         Rendering::Utils::SetShaderFileLoader(Loader);
         Rendering::Utils::SetShaderPathResolver(Resolver);
         Rendering::SetShaderPackageRebuildAction(RebuildAction);
-        ShaderProgramAsset::SetShaderCacheRoot(std::move(CacheRoot));
+        ShaderProgramAsset::SetShaderCacheRoots(std::move(CacheRoots));
+        Rendering::SetPrecompiledShaderFiles(std::move(PrecompiledShaders));
     }
 };
 } // namespace GameEngine

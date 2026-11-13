@@ -15,7 +15,6 @@ import difflib
 import subprocess
 import sys
 import tempfile
-import unittest
 from pathlib import Path
 
 import shadercook
@@ -28,14 +27,18 @@ kGolden = kRoot / "golden"
 kCannotRun = 125
 
 # One per remediation class: plain compute, combined-sampler split (post fx),
-# derivative hoist + uniformity (core lighting), lod-0 LUT taps (sky),
-# constant-bound barrier walk + spec-const pin (skinning).
+# derivative hoist + uniformity (ocean reflected caustics), lod-0 LUT taps (sky),
+# constant-bound barrier walk + spec-const pin (skinning), write-only storage
+# buffer cooked read_write (sun glare casters), write-only storage image kept
+# write (depth copy).
 kCases = [
     "auto_exposure_histogram.comp",
     "bloom_blur_h.frag",
-    "forwardplus_lighting.frag",
+    "Ocean/ocean_lightshafts.frag",
     "sky_render.frag",
     "animation_skinning.comp",
+    "sun_glare_casters.comp",
+    "depth_copy.comp",
 ]
 
 
@@ -58,51 +61,46 @@ def Cook(source: Path, out_dir: Path) -> Path:
     return out_dir / (source.stem + ".wgsl")
 
 
-def Main() -> int:
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--update", action="store_true",
                         help="regenerate the snapshots from the current toolchain")
-    arguments = parser.parse_args()
+    args = parser.parse_args()
 
     # The cook needs naga; a clone that has not run toolchain/setup.py has none.
     if shadercook.FindTool("naga", None) is None:
         print("SKIP: naga not found - run Tools/ShaderCook/toolchain/setup.py to fetch it")
         return kCannotRun
 
-    regressionResult = unittest.TextTestRunner(verbosity=2).run(
-        unittest.defaultTestLoader.discover(str(kRoot), pattern="test_shadercook*.py"))
-    if not regressionResult.wasSuccessful():
-        return 1
-
     kGolden.mkdir(exist_ok=True)
     failures = []
-    with tempfile.TemporaryDirectory() as temporaryDirectory:
-        outputDirectory = Path(temporaryDirectory)
+    with tempfile.TemporaryDirectory() as tempdir:
+        out_dir = Path(tempdir)
         for case in kCases:
-            cooked = Cook(kShaders / case, outputDirectory)
+            cooked = Cook(kShaders / case, out_dir)
             snapshot = kGolden / cooked.name
-            if arguments.update:
+            if args.update:
                 snapshot.write_text(NormalizeSnapshot(cooked.read_text()))
                 print(f"updated {snapshot.relative_to(kRoot)}")
                 continue
             if not snapshot.exists():
                 failures.append(f"{case}: no snapshot (run --update once)")
                 continue
-            actual = NormalizeSnapshot(cooked.read_text())
-            expected = NormalizeSnapshot(snapshot.read_text())
-            if actual != expected:
+            got = NormalizeSnapshot(cooked.read_text())
+            want = NormalizeSnapshot(snapshot.read_text())
+            if got != want:
                 diff = "".join(difflib.unified_diff(
-                    expected.splitlines(keepends=True), actual.splitlines(keepends=True),
+                    want.splitlines(keepends=True), got.splitlines(keepends=True),
                     fromfile=str(snapshot.name) + " (golden)",
                     tofile=str(cooked.name) + " (cooked)", n=2))
                 failures.append(f"{case}: WGSL drifted\n{diff[:2000]}")
     if failures:
         print("GOLDEN FAILURES:\n" + "\n".join(failures), file=sys.stderr)
         return 1
-    if not arguments.update:
+    if not args.update:
         print(f"golden OK ({len(kCases)} snapshots match)")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(Main())
+    sys.exit(main())

@@ -111,7 +111,7 @@ bool BuildPipeline::PrepareMobileContent(const BuildSettings& settings, std::fil
     }
     TexturePackageCookStats stats;
     if (!CookStagedContent(contentRoot, manifest, assets.GetRegistry(), assets.GetParserRegistry(),
-        assets.GetTextureCookWorkers(), [this] { return IsCancelled(); }, stats, error)) return false;
+        assets.GetTextureCookWorkers(), &EngineCore::GetInstance().GetJobSystem(), [this] { return IsCancelled(); }, stats, error)) return false;
     CookMeshLODs(contentRoot, manifest);
     StageTerrainBakes(contentRoot, settings, manifest);
     CopyThirdPartyNotices(contentRoot, settings);

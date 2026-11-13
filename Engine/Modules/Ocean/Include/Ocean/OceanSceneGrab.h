@@ -2,7 +2,7 @@
 
 #include "Rendering/Core/Device.h" // PipelineDesc, DescriptorSetLayoutDesc
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/PipelineIdentifiers.h" // GraphicsPipelineId
+#include "Rendering/Core/Pipeline/PipelineIdentifiers.h" // GraphicsPipelineId
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
 #include <cstdint>
@@ -48,6 +48,12 @@ public:
     // when a grab texture is available to bind on the ocean draw this frame.
     bool DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d, uint32_t frameIndex,
                         ::GameEngine::Rendering::RenderGraph::RGTexture* outGraphTexture = nullptr);
+
+    // Asks the device for the pipeline that DeclareForView binds when the colour it grabs has the
+    // attachment of `source`: the MSAA resolve for a multisampled colour, else the copy. The build
+    // runs off the calling thread.
+    void RequestPipeline(::GameEngine::Rendering::IDevice& device,
+                         const ::GameEngine::Rendering::PipelineFormatKey& source);
 
     bool IsReady(uint32_t viewId, uint32_t frameIndex) const
     {

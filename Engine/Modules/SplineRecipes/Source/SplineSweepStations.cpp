@@ -180,14 +180,14 @@ void InsertSagittaSamples(const Spline::SplineData& data, const Mathematics::Mat
 
 // How far a station's grounded points sink: the fall of the ground from the
 // station out to the lower of the base's two edges, each placed where the
-// builder places it (along MitreRight on a mitreed side). Both edges sink by
+// builder places it (along MiterRight on a mitered side). Both edges sink by
 // it, so the downhill edge meets the ground and the uphill one stands in it.
 [[nodiscard]] float32 GroundedBaseSink(const SG::SplineStripStation& station, const Vector3& rise)
 {
     const Vector3 leftAxis =
-        (station.MitreSides & SG::kSplineMitreLeftSide) != 0u ? station.MitreRight : station.Right;
+        (station.MiterSides & SG::kSplineMiterLeftSide) != 0u ? station.MiterRight : station.Right;
     const Vector3 rightAxis =
-        (station.MitreSides & SG::kSplineMitreRightSide) != 0u ? station.MitreRight : station.Right;
+        (station.MiterSides & SG::kSplineMiterRightSide) != 0u ? station.MiterRight : station.Right;
     const float32 leftFall = Vector3::Dot(rise, leftAxis * station.HalfWidthLeft);
     const float32 rightFall = -Vector3::Dot(rise, rightAxis * station.HalfWidthRight);
     return std::max({0.0f, leftFall, rightFall});
@@ -234,11 +234,11 @@ std::vector<std::string> CornerValidation(std::string_view recipeName,
     {
         switch (issue.Kind)
         {
-        case SG::SplineCornerIssueKind::PastMitreLimit:
+        case SG::SplineCornerIssueKind::PastMiterLimit:
             validation.push_back(std::format(
-                "{}: point {} turns past the {:.0f}-degree mitre limit, so the corner "
-                "is built round. Widen the turn to keep a mitreed corner.",
-                recipeName, issue.PointIndex, SG::kMitreLimitTurnDegrees));
+                "{}: point {} turns past the {:.0f}-degree miter limit, so the corner "
+                "is built round. Widen the turn to keep a mitered corner.",
+                recipeName, issue.PointIndex, SG::kMiterLimitTurnDegrees));
             break;
         case SG::SplineCornerIssueKind::LegShorterThanReach:
             validation.push_back(std::format(

@@ -9,7 +9,6 @@
 #include "DayCycle/DayCycleSunNow.h"
 #include "DayCycle/DayCycleTrackRows.h"
 #include "UI/Controls/CurveField.h"
-#include "UI/Controls/Dropdown.h"
 #include "UI/Controls/Toggle.h"
 #include "UI/UiContext.h"
 #include "UI/UiDispatcher.h"
@@ -25,6 +24,17 @@ using DayCycleEditorTesting::NameOf;
 using DayCycleEditorTesting::kRadiansToDegrees;
 using DayCycleEditorTesting::kMarshProfile;
 using DayCycleEditorTesting::kEmptyProfile;
+
+namespace
+{
+Button* ClearDayPreset(UIElement& root)
+{
+    for (Button* button : All<Button>(root))
+        if (button->GetText() == "Clear day")
+            return button;
+    return nullptr;
+}
+} // namespace
 
 TEST_F(DayCycleEditorTests, TheInspectorShowsAKeyedTrackOnItsGraphAndNamesALeftOutOne)
 {
@@ -90,9 +100,9 @@ TEST_F(DayCycleEditorTests, TheInspectorFollowsAPresetLoad)
     ASSERT_TRUE(HasText(root, "Separate dusk"));
     ASSERT_EQ(All<Toggle>(root).size(), 1u);
     ASSERT_TRUE(All<Toggle>(root).front()->GetValue());
-    const auto presets = All<Dropdown>(root);
-    ASSERT_EQ(presets.size(), 1u);
-    presets.front()->SetSelectedValue("Clear day");
+    Button* preset = ClearDayPreset(root);
+    ASSERT_NE(preset, nullptr);
+    preset->TriggerClick();
     dispatcher.Drain();
     ASSERT_EQ(All<Toggle>(root).size(), 1u);
     EXPECT_FALSE(All<Toggle>(root).front()->GetValue()) << "the inspector still shows the split dusk after the load";
@@ -125,10 +135,10 @@ TEST_F(DayCycleEditorTests, SaveIsEnabledOnlyWithUnsavedChanges)
                 save = button;
         }
         ASSERT_NE(save, nullptr);
-        const auto presets = All<Dropdown>(root);
-        ASSERT_EQ(presets.size(), 1u);
+        Button* preset = ClearDayPreset(root);
+        ASSERT_NE(preset, nullptr);
         EXPECT_FALSE(save->IsEnabled()) << "nothing to save yet";
-        presets.front()->SetSelectedValue("Clear day");
+        preset->TriggerClick();
         dispatcher.Drain();
         EXPECT_TRUE(save->IsEnabled()) << "the preset load left unsaved changes";
     }
@@ -139,7 +149,9 @@ TEST_F(DayCycleEditorTests, SaveIsEnabledOnlyWithUnsavedChanges)
         BuildInspector(root, asset);
         for (Button* button : All<Button>(root))
             if (button->GetText() == "Save a copy to the project")
+            {
                 EXPECT_TRUE(button->IsEnabled());
+            }
         EXPECT_TRUE(HasButton(root, "Save a copy to the project"));
     }
 }
@@ -209,9 +221,9 @@ TEST_F(DayCycleEditorTests, AnUndoPastASaveMarksTheProfileUnsavedAgain)
         if (button->GetText() == "Save")
             save = button;
     ASSERT_NE(save, nullptr);
-    const auto presets = All<Dropdown>(root);
-    ASSERT_EQ(presets.size(), 1u);
-    presets.front()->SetSelectedValue("Clear day");
+    Button* preset = ClearDayPreset(root);
+    ASSERT_NE(preset, nullptr);
+    preset->TriggerClick();
     dispatcher.Drain();
     save->TriggerClick();
     dispatcher.Drain();

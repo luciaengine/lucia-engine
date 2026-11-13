@@ -67,10 +67,6 @@ public:
     {
         m_Shortcuts.emplace_back(commandId, keyText);
     }
-    void SetItemTooltip(uint32_t commandId, const std::string& text) override
-    {
-        m_Tooltips.emplace_back(commandId, text);
-    }
     void Show(Platform::Window*, int, int) override {}
 
     std::vector<SubMenuRecord>    m_SubMenus;
@@ -78,7 +74,6 @@ public:
     std::vector<SeparatorRecord>  m_Separators;
     std::vector<std::pair<uint32_t, std::string>> m_SubMenuIcons;
     std::vector<std::pair<uint32_t, std::string>> m_Shortcuts;
-    std::vector<std::pair<uint32_t, std::string>> m_Tooltips;
 
 private:
     uint32_t m_NextId = 1;
@@ -184,28 +179,27 @@ TEST(ContextMenuBuilderTests, AppliesIconToCommandlessSubmenu)
     FakeContextMenu menu;
 
     BuildContextMenuFromPaths(&menu,
-                              {{ "Create/Terrain", 0u, MenuItemFlag_None, 0, "editor:Icons/terrain.png" },
+                              {{ "Create/Terrain", 0u, MenuItemFlag_None, 0, "editor:Icons/terrain.svg" },
                                { "Create/Terrain/Planet", 1u, MenuItemFlag_None, 0 }},
                               /*SortByPriorityThenPath=*/true);
 
     ASSERT_EQ(menu.m_SubMenuIcons.size(), 1u);
     ASSERT_EQ(menu.m_SubMenus.size(), 2u);
     EXPECT_EQ(menu.m_SubMenuIcons[0].first, menu.m_SubMenus[1].id);
-    EXPECT_EQ(menu.m_SubMenuIcons[0].second, "editor:Icons/terrain.png");
+    EXPECT_EQ(menu.m_SubMenuIcons[0].second, "editor:Icons/terrain.svg");
 }
 
 
-TEST(ContextMenuBuilderTests, GivesDisabledItemsTheirShortcutAndRefusalText)
+TEST(ContextMenuBuilderTests, GivesAnItemItsShortcutText)
 {
     FakeContextMenu menu;
     ContextMenuBuilder builder;
-    builder.AddItem("Create Prefab", 7, MenuItemFlag_Disabled, 0, {}, "Ctrl+Shift+P", "Select an entity first.")
+    builder.AddItem("Rename", 7, MenuItemFlag_None, 0, {}, "F2")
         .AddItem("Refresh", 8);
     builder.Build(&menu);
-    const std::vector<std::pair<uint32_t, std::string>> shortcuts{{7u, "Ctrl+Shift+P"}};
-    const std::vector<std::pair<uint32_t, std::string>> tooltips{{7u, "Select an entity first."}};
-    EXPECT_EQ(menu.m_Shortcuts, shortcuts);
-    EXPECT_EQ(menu.m_Tooltips, tooltips);
+
+    const std::vector<std::pair<uint32_t, std::string>> expected{{7u, "F2"}};
+    EXPECT_EQ(menu.m_Shortcuts, expected) << "only the item that names a key shows one";
 }
 
 TEST(PlatformShellTests, OpenPath_ReturnsFalseForEmptyAndNonExisting)

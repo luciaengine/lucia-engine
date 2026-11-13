@@ -70,17 +70,6 @@ struct FieldTypeTraits<::GameEngine::Components::AssetRef<kAssetType>>
     static constexpr FieldTypeId kType = FieldTypeId::AssetGuid;
 };
 
-// A plain GUID field is an asset GUID too, with no category. A component header that holds one
-// includes this header, so the trait is visible wherever the field is reflected.
-template <>
-struct FieldTypeTraits<::GameEngine::GUID>
-{
-    static constexpr FieldTypeId kType = FieldTypeId::AssetGuid;
-};
-
-static_assert(FieldElementSize(FieldTypeId::AssetGuid) == sizeof(::GameEngine::GUID),
-              "FieldElementSize(AssetGuid) must equal sizeof(GUID)");
-
 // Carry the ref's compile-time category into reflection so the editor asset picker
 // filters to it generically (no per-component table). Mirrors the trait above.
 template <::GameEngine::AssetType kAssetType>

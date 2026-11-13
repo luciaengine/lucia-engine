@@ -20,9 +20,6 @@ constexpr uint32_t kNativeMenuCmdLast = 0x6FFFu;
 // Folder context-menu items: next to the native range, clear of the same users.
 constexpr uint32_t kDirectoryMenuCmdFirst = 0x7000u;
 constexpr uint32_t kDirectoryMenuCmdLast = 0x70FFu;
-// File context-menu items: right after the folder items.
-constexpr uint32_t kAssetFileMenuCmdFirst = 0x7100u;
-constexpr uint32_t kAssetFileMenuCmdLast = 0x71FFu;
 } // namespace
 
 EditorMenuRegistry& EditorMenuRegistry::Get()
@@ -31,19 +28,29 @@ EditorMenuRegistry& EditorMenuRegistry::Get()
     return s_Instance;
 }
 
-void EditorMenuRegistry::RegisterMenuItem(EditorMenuItemDescriptor descriptor)
+ScopedSubscription EditorMenuRegistry::RegisterMenuItem(EditorMenuItemDescriptor descriptor)
+{
+    const int32_t index = AddMenuItem(std::move(descriptor));
+    if (index < 0)
+        return {};
+    const size_t slot = static_cast<size_t>(index);
+    const uint32_t generation = m_Items[slot].Generation;
+    return ScopedSubscription(m_Keepalive, [this, slot, generation]() { RemoveMenuItem(slot, generation); });
+}
+
+int32_t EditorMenuRegistry::AddMenuItem(EditorMenuItemDescriptor descriptor)
 {
     if (descriptor.Path.empty() || !descriptor.Action)
     {
         Logger::Log::Error("EditorMenuRegistry: rejecting menu item registration without {}",
                            descriptor.Path.empty() ? "a Path" : ("an Action ('" + descriptor.Path + "')"));
-        return;
+        return -1;
     }
     if (descriptor.Path.find('/') == std::string::npos)
     {
         Logger::Log::Error("EditorMenuRegistry: menu item '{}' needs at least \"Menu/Item\"; ignored",
                            descriptor.Path);
-        return;
+        return -1;
     }
 
     const auto samePath = [&](const Entry& existing) {
@@ -56,24 +63,37 @@ void EditorMenuRegistry::RegisterMenuItem(EditorMenuItemDescriptor descriptor)
         // the process lifetime, so swapping the descriptor is safe and the
         // stale action stops being dispatched. The command id stays stable —
         // a rebuilt toolbar and an un-rebuilt one dispatch the same item.
-        Logger::Log::Info("EditorMenuRegistry: menu item '{}' re-registered (module reload); "
-                          "replacing forward",
-                          descriptor.Path);
+        if (existing->Descriptor.Action)
+        {
+            Logger::Log::Info("EditorMenuRegistry: menu item '{}' re-registered (module reload); "
+                              "replacing forward",
+                              descriptor.Path);
+        }
         existing->Descriptor = std::move(descriptor);
         existing->Module = ECS::GetActiveRegistrationModule();
+        ++existing->Generation;
+        m_Dirty = true;
+        return static_cast<int32_t>(existing - m_Items.begin());
     }
-    else
+    const uint32_t id = kNativeMenuCmdFirst + static_cast<uint32_t>(m_Items.size());
+    if (id > kNativeMenuCmdLast)
     {
-        const uint32_t id = kNativeMenuCmdFirst + static_cast<uint32_t>(m_Items.size());
-        if (id > kNativeMenuCmdLast)
-        {
-            Logger::Log::Error("EditorMenuRegistry: native menu command range exhausted ({} items); "
-                               "'{}' not registered",
-                               m_Items.size(), descriptor.Path);
-            return;
-        }
-        m_Items.push_back(Entry{std::move(descriptor), id, ECS::GetActiveRegistrationModule()});
+        Logger::Log::Error("EditorMenuRegistry: native menu command range exhausted ({} items); "
+                           "'{}' not registered",
+                           m_Items.size(), descriptor.Path);
+        return -1;
     }
+    m_Items.push_back(Entry{std::move(descriptor), id, ECS::GetActiveRegistrationModule()});
+    m_Dirty = true;
+    return static_cast<int32_t>(m_Items.size() - 1);
+}
+
+void EditorMenuRegistry::RemoveMenuItem(size_t index, uint32_t generation)
+{
+    if (index >= m_Items.size() || m_Items[index].Generation != generation || !m_Items[index].Descriptor.Action)
+        return;
+    m_Items[index].Descriptor.Action = nullptr;
+    m_Items[index].Module = {};
     m_Dirty = true;
 }
 
@@ -82,8 +102,12 @@ std::vector<EditorMenuItemSnapshot> EditorMenuRegistry::Snapshot() const
     std::vector<EditorMenuItemSnapshot> out;
     out.reserve(m_Items.size());
     for (const Entry& entry : m_Items)
-        out.push_back(EditorMenuItemSnapshot{entry.CommandId, entry.Descriptor.Path,
-                                             entry.Descriptor.Priority});
+    {
+        if (entry.Descriptor.Action)
+            out.push_back(EditorMenuItemSnapshot{entry.CommandId, entry.Descriptor.Path, entry.Descriptor.Priority,
+                                                 entry.Descriptor.ShortcutGroup, entry.Descriptor.ShortcutName,
+                                                 entry.Descriptor.SeparatorBefore});
+    }
     std::sort(out.begin(), out.end(),
               [](const EditorMenuItemSnapshot& a, const EditorMenuItemSnapshot& b) {
                   if (a.Priority != b.Priority)
@@ -97,7 +121,7 @@ bool EditorMenuRegistry::TryInvoke(uint32_t commandId) const
 {
     const auto it = std::find_if(m_Items.begin(), m_Items.end(),
                                  [&](const Entry& e) { return e.CommandId == commandId; });
-    if (it == m_Items.end())
+    if (it == m_Items.end() || !it->Descriptor.Action)
         return false;
     it->Descriptor.Action();
     return true;
@@ -149,57 +173,6 @@ bool EditorMenuRegistry::TryInvokeDirectoryItem(uint32_t commandId, const std::f
     return true;
 }
 
-void EditorMenuRegistry::RegisterAssetFileMenuItem(EditorAssetFileMenuItemDescriptor descriptor)
-{
-    if (descriptor.Path.empty() || !descriptor.Action || !descriptor.AppliesTo)
-    {
-        Logger::Log::Error("EditorMenuRegistry: rejecting file menu item registration without {}",
-                           descriptor.Path.empty() ? std::string("a Path")
-                           : !descriptor.Action    ? "an Action ('" + descriptor.Path + "')"
-                                                   : "an AppliesTo ('" + descriptor.Path + "')");
-        return;
-    }
-    const auto existing = std::find_if(m_AssetFileItems.begin(), m_AssetFileItems.end(),
-                                       [&](const AssetFileEntry& e) { return e.Descriptor.Path == descriptor.Path; });
-    if (existing != m_AssetFileItems.end())
-    {
-        existing->Descriptor = std::move(descriptor);
-        existing->Module = ECS::GetActiveRegistrationModule();
-        return;
-    }
-    const uint32_t id = kAssetFileMenuCmdFirst + static_cast<uint32_t>(m_AssetFileItems.size());
-    if (id > kAssetFileMenuCmdLast)
-    {
-        Logger::Log::Error("EditorMenuRegistry: file menu command range exhausted ({} items); '{}' not registered",
-                           m_AssetFileItems.size(), descriptor.Path);
-        return;
-    }
-    m_AssetFileItems.push_back(AssetFileEntry{std::move(descriptor), id, ECS::GetActiveRegistrationModule()});
-}
-
-std::vector<EditorAssetFileMenuItemSnapshot> EditorMenuRegistry::AssetFileMenuSnapshot(
-    const std::filesystem::path& file) const
-{
-    std::vector<EditorAssetFileMenuItemSnapshot> out;
-    for (const AssetFileEntry& entry : m_AssetFileItems)
-    {
-        if (entry.Descriptor.AppliesTo(file))
-            out.push_back(EditorAssetFileMenuItemSnapshot{entry.CommandId, entry.Descriptor.Path,
-                                                          entry.Descriptor.Priority, entry.Descriptor.Icon});
-    }
-    return out;
-}
-
-bool EditorMenuRegistry::TryInvokeAssetFileItem(uint32_t commandId, const std::filesystem::path& file) const
-{
-    const auto it = std::find_if(m_AssetFileItems.begin(), m_AssetFileItems.end(),
-                                 [&](const AssetFileEntry& e) { return e.CommandId == commandId; });
-    if (it == m_AssetFileItems.end() || !it->Descriptor.AppliesTo(file))
-        return false;
-    it->Descriptor.Action(file);
-    return true;
-}
-
 void EditorMenuRegistry::RegisterCommand(EditorCommandDescriptor descriptor)
 {
     if (descriptor.CommandId == 0u || !descriptor.Invoke)
@@ -210,14 +183,12 @@ void EditorMenuRegistry::RegisterCommand(EditorCommandDescriptor descriptor)
         return;
     }
     if ((descriptor.CommandId >= kNativeMenuCmdFirst && descriptor.CommandId <= kNativeMenuCmdLast) ||
-        (descriptor.CommandId >= kDirectoryMenuCmdFirst && descriptor.CommandId <= kDirectoryMenuCmdLast) ||
-        (descriptor.CommandId >= kAssetFileMenuCmdFirst && descriptor.CommandId <= kAssetFileMenuCmdLast))
+        (descriptor.CommandId >= kDirectoryMenuCmdFirst && descriptor.CommandId <= kDirectoryMenuCmdLast))
     {
         Logger::Log::Error("EditorMenuRegistry: command id {:#x} lies in a range the registry assigns "
-                           "({:#x}-{:#x} menu items, {:#x}-{:#x} folder menu items, {:#x}-{:#x} file menu items); "
-                           "pick an id outside them",
+                           "({:#x}-{:#x} menu items, {:#x}-{:#x} folder menu items); pick an id outside them",
                            descriptor.CommandId, kNativeMenuCmdFirst, kNativeMenuCmdLast, kDirectoryMenuCmdFirst,
-                           kDirectoryMenuCmdLast, kAssetFileMenuCmdFirst, kAssetFileMenuCmdLast);
+                           kDirectoryMenuCmdLast);
         return;
     }
 
@@ -262,11 +233,6 @@ void EditorMenuRegistry::AppendModulePins(std::string_view moduleId,
     {
         if (entry.Module.ModuleId == moduleId)
             outPins.push_back("folder menu item '" + entry.Descriptor.Path + "'");
-    }
-    for (const AssetFileEntry& entry : m_AssetFileItems)
-    {
-        if (entry.Module.ModuleId == moduleId)
-            outPins.push_back("file menu item '" + entry.Descriptor.Path + "'");
     }
     for (const CommandEntry& entry : m_Commands)
     {

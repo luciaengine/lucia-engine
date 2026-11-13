@@ -26,8 +26,6 @@
 #include <memory>
 #include "UIRgTestHarness.h"
 
-#include "TestTempDir.h"
-
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
 
@@ -90,8 +88,7 @@ uint32_t BuildAndGetCascadeShared(IDevice* dev, bool withTarget,
 
     // Non-empty, non-share-sensitive class rules — required for share
     // eligibility (an empty rule-index set disqualifies sharing outright).
-    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("cascade_share_parity_test"));
-    const auto css = tempDir.Path() / "cascade_share_parity_test.css";
+    const auto css = std::filesystem::temp_directory_path() / "cascade_share_parity_test.css";
     {
         std::ofstream f(css);
         f << ".host-root{width:200px;height:200px;} .host{width:100px;}"

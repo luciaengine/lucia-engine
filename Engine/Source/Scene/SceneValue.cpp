@@ -1,8 +1,12 @@
 #include "Scene/SceneValue.h"
 
+#include "Mathematics/Curve.h"
+#include "Mathematics/WorldPosition.h"
 #include "Types/FormatNumber.h"
 #include "Types/StringUtils.h"
 
+#include <algorithm>
+#include <array>
 #include <charconv>
 #include <cctype>
 #include <cstdint>
@@ -14,6 +18,17 @@ namespace GameEngine::Scene
 {
 namespace
 {
+// Scene whitespace around a value token. LF belongs here as much as CR does: a value read from a
+// CRLF file, or the last one before the terminator, arrives with its line ending attached.
+static std::string_view Trim(std::string_view s)
+{
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\r' || s.front() == '\n'))
+        s.remove_prefix(1);
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r' || s.back() == '\n'))
+        s.remove_suffix(1);
+    return s;
+}
+
 static bool SplitCsvTuple(std::string_view inner, std::vector<std::string_view>& outParts)
 {
     outParts.clear();
@@ -23,10 +38,10 @@ static bool SplitCsvTuple(std::string_view inner, std::vector<std::string_view>&
         const size_t comma = s.find(',');
         if (comma == std::string_view::npos)
         {
-            outParts.push_back(TrimSceneWhitespace(s));
+            outParts.push_back(Trim(s));
             break;
         }
-        outParts.push_back(TrimSceneWhitespace(s.substr(0, comma)));
+        outParts.push_back(Trim(s.substr(0, comma)));
         s = s.substr(comma + 1);
     }
     return !outParts.empty();
@@ -41,7 +56,7 @@ static bool IsIdentChar(char c)
 static bool SplitTopLevelList(std::string_view inner, std::vector<std::string_view>& outParts)
 {
     outParts.clear();
-    inner = TrimSceneWhitespace(inner);
+    inner = Trim(inner);
     if (inner.empty())
         return true;
 
@@ -67,24 +82,14 @@ static bool SplitTopLevelList(std::string_view inner, std::vector<std::string_vi
 
         if (c == ',' && depthParen == 0 && depthBracket == 0)
         {
-            outParts.push_back(TrimSceneWhitespace(inner.substr(start, i - start)));
+            outParts.push_back(Trim(inner.substr(start, i - start)));
             start = i + 1;
         }
     }
-    outParts.push_back(TrimSceneWhitespace(inner.substr(start)));
+    outParts.push_back(Trim(inner.substr(start)));
     return true;
 }
 } // namespace
-
-std::string_view TrimSceneWhitespace(std::string_view text)
-{
-    constexpr std::string_view kSceneWhitespace = " \t\r\n";
-    const size_t first = text.find_first_not_of(kSceneWhitespace);
-    if (first == std::string_view::npos)
-        return {};
-    const size_t last = text.find_last_not_of(kSceneWhitespace);
-    return text.substr(first, last - first + 1);
-}
 
 bool IsGuidText(std::string_view s)
 {
@@ -110,7 +115,7 @@ bool IsGuidText(std::string_view s)
 template <class T>
 IntegerTokenResult ParseIntegerToken(std::string_view text, T& value)
 {
-    text = TrimSceneWhitespace(text);
+    text = Trim(text);
     // from_chars leaves '+' out of its grammar; scene decimal integers have always accepted one.
     if (!text.empty() && text.front() == '+')
     {
@@ -143,7 +148,7 @@ template IntegerTokenResult ParseIntegerToken<std::uint64_t>(std::string_view, s
 
 bool ParseQuotedString(std::string_view s, std::string& out)
 {
-    s = TrimSceneWhitespace(s);
+    s = Trim(s);
     if (s.size() < 2 || s.front() != '"' || s.back() != '"')
         return false;
     out.assign(s.substr(1, s.size() - 2));
@@ -152,7 +157,7 @@ bool ParseQuotedString(std::string_view s, std::string& out)
 
 bool ParseFloat(std::string_view s, float& out)
 {
-    s = TrimSceneWhitespace(s);
+    s = Trim(s);
     if (s.empty())
         return false;
     std::string tmp(s);
@@ -163,7 +168,7 @@ bool ParseFloat(std::string_view s, float& out)
 
 bool ParseFloat3(std::string_view s, Float3& out)
 {
-    s = TrimSceneWhitespace(s);
+    s = Trim(s);
     if (s.size() < 5 || s.front() != '(' || s.back() != ')')
         return false;
     const std::string_view inner = s.substr(1, s.size() - 2);
@@ -176,7 +181,7 @@ bool ParseFloat3(std::string_view s, Float3& out)
 
 bool ParseFloat4(std::string_view s, Float4& out)
 {
-    s = TrimSceneWhitespace(s);
+    s = Trim(s);
     if (s.size() < 7 || s.front() != '(' || s.back() != ')')
         return false;
     const std::string_view inner = s.substr(1, s.size() - 2);
@@ -189,7 +194,7 @@ bool ParseFloat4(std::string_view s, Float4& out)
 
 bool ParseIdentifier(std::string_view s, std::string& out)
 {
-    s = TrimSceneWhitespace(s);
+    s = Trim(s);
     if (s.empty())
         return false;
     for (char c : s)
@@ -212,7 +217,7 @@ static bool ParseInt64(std::string_view s, long long& out)
 
 static bool ParseDouble(std::string_view s, double& out)
 {
-    s = TrimSceneWhitespace(s);
+    s = Trim(s);
     if (s.empty())
         return false;
     std::string tmp(s);
@@ -224,9 +229,21 @@ static bool ParseDouble(std::string_view s, double& out)
     return true;
 }
 
+bool ParseWorldPosition(std::string_view s, Mathematics::WorldPosition& out)
+{
+    s = Trim(s);
+    if (s.size() < 5 || s.front() != '(' || s.back() != ')')
+        return false;
+    std::vector<std::string_view> parts;
+    SplitCsvTuple(s.substr(1, s.size() - 2), parts);
+    if (parts.size() != 3)
+        return false;
+    return ParseDouble(parts[0], out.X) && ParseDouble(parts[1], out.Y) && ParseDouble(parts[2], out.Z);
+}
+
 bool ParseValue(std::string_view s, SceneValue& out, std::string* outError)
 {
-    s = TrimSceneWhitespace(s);
+    s = Trim(s);
     if (s.empty())
     {
         if (outError)
@@ -335,7 +352,7 @@ bool ParseValue(std::string_view s, SceneValue& out, std::string* outError)
         out.Items.reserve(parts.size());
         for (auto part : parts)
         {
-            if (TrimSceneWhitespace(part).empty())
+            if (Trim(part).empty())
                 continue;
             SceneValue elem{};
             std::string err;
@@ -356,7 +373,7 @@ bool ParseValue(std::string_view s, SceneValue& out, std::string* outError)
     // Tell them apart by looking for `=` before any unquoted top-level `,`.
     if (s.size() >= 2 && s.front() == '[' && s.back() == ']')
     {
-        const std::string_view inner = TrimSceneWhitespace(s.substr(1, s.size() - 2));
+        const std::string_view inner = Trim(s.substr(1, s.size() - 2));
 
         bool inString = false;
         bool sawAssign = false;
@@ -472,7 +489,7 @@ bool ParseValue(std::string_view s, SceneValue& out, std::string* outError)
         out.Items.reserve(parts.size());
         for (auto part : parts)
         {
-            if (TrimSceneWhitespace(part).empty())
+            if (Trim(part).empty())
                 continue;
             SceneValue elem{};
             std::string err;
@@ -590,6 +607,13 @@ std::string FormatFloat4(float x, float y, float z, float w)
     return out;
 }
 
+std::string FormatWorldPosition(const Mathematics::WorldPosition& position)
+{
+    const std::array<std::string, 3> axes{FormatDouble(position.X), FormatDouble(position.Y),
+                                          FormatDouble(position.Z)};
+    return "(" + Join(axes, ", ") + ")";
+}
+
 std::string_view AssetRefPath(const SceneValue& v)
 {
     if (v.Kind != SceneValueKind::AssetRef || v.Items.size() < 1)
@@ -602,6 +626,76 @@ std::string_view AssetRefGuid(const SceneValue& v)
     if (v.Kind != SceneValueKind::AssetRef || v.Items.size() < 2)
         return {};
     return v.Items[1].StringValue;
+}
+
+std::string FormatCurveKeys(const Math::Curve& curve)
+{
+    std::string out;
+    for (uint8_t i = 0; i < curve.KeyCount; ++i)
+    {
+        const Math::CurveKey& k = curve.Keys[i];
+        if (i > 0)
+            out += ';';
+        out += FormatFloat(k.Time);
+        out += ',';
+        out += FormatFloat(k.Value);
+        out += ',';
+        out += FormatFloat(k.InTangent);
+        out += ',';
+        out += FormatFloat(k.OutTangent);
+        out += ',';
+        out += std::to_string(static_cast<int>(k.Interp));
+        out += ',';
+        out += std::to_string(static_cast<int>(k.TangentMode));
+    }
+    return out;
+}
+
+Math::Curve ParseCurveKeys(std::string_view value)
+{
+    Math::Curve curve{};
+    size_t segStart = 0;
+    while (segStart <= value.size() && curve.KeyCount < Math::Curve::Capacity)
+    {
+        const size_t segEnd = value.find(';', segStart);
+        const std::string_view seg = value.substr(
+            segStart, segEnd == std::string_view::npos ? value.size() - segStart : segEnd - segStart);
+        if (!seg.empty())
+        {
+            float fields[6] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+            size_t fieldStart = 0;
+            for (int f = 0; f < 6; ++f)
+            {
+                const size_t fieldEnd = seg.find(',', fieldStart);
+                const std::string_view tok = seg.substr(
+                    fieldStart,
+                    fieldEnd == std::string_view::npos ? seg.size() - fieldStart : fieldEnd - fieldStart);
+                SceneValue parsed{};
+                if (ParseValue(tok, parsed, nullptr))
+                {
+                    if (parsed.Kind == SceneValueKind::Float)
+                        fields[f] = static_cast<float>(parsed.FloatValue);
+                    else if (parsed.Kind == SceneValueKind::Int)
+                        fields[f] = static_cast<float>(parsed.IntValue);
+                }
+                if (fieldEnd == std::string_view::npos)
+                    break;
+                fieldStart = fieldEnd + 1;
+            }
+            Math::CurveKey key;
+            key.Time = fields[0];
+            key.Value = fields[1];
+            key.InTangent = fields[2];
+            key.OutTangent = fields[3];
+            key.Interp = static_cast<Math::CurveInterp>(std::clamp(static_cast<int>(fields[4]), 0, 2));
+            key.TangentMode = static_cast<Math::CurveTangentMode>(std::clamp(static_cast<int>(fields[5]), 0, 4));
+            curve.TryInsert(key);
+        }
+        if (segEnd == std::string_view::npos)
+            break;
+        segStart = segEnd + 1;
+    }
+    return curve;
 }
 
 std::string FormatAssetRef(std::string_view path, std::string_view guid)
@@ -629,30 +723,6 @@ std::string FormatAssetRef(std::string_view path, std::string_view guid)
     }
     out.push_back(']');
     return out;
-}
-
-// Serializes every curve key field as comma-separated values, with semicolons between keys.
-std::string FormatCurveKeys(const Math::Curve& curve)
-{
-    std::string text;
-    for (std::uint8_t index = 0; index < curve.KeyCount; ++index)
-    {
-        const Math::CurveKey& key = curve.Keys[index];
-        if (index > 0)
-            text += ';';
-        text += FormatFloat(key.Time);
-        text += ',';
-        text += FormatFloat(key.Value);
-        text += ',';
-        text += FormatFloat(key.InTangent);
-        text += ',';
-        text += FormatFloat(key.OutTangent);
-        text += ',';
-        text += std::to_string(static_cast<int>(key.Interp));
-        text += ',';
-        text += std::to_string(static_cast<int>(key.TangentMode));
-    }
-    return text;
 }
 
 } // namespace GameEngine::Scene

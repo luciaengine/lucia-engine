@@ -88,6 +88,8 @@ struct MarkupRegionMember
     ECS::EntityHandle Entity{};
     MarkupMemberMode Mode = MarkupMemberMode::Include;
     uint8 _Pad[3] = {};  // @ge-hidden
+
+    bool operator==(const MarkupRegionMember&) const = default;
 };
 
 // The most members a region holds.

@@ -1,7 +1,5 @@
 #include "Markups/MarkupEditorBridge.h"
 
-#include "UndoRedo/History/HistoryReplayScope.h"
-
 #include "Components/Name.h"
 #include "Components/SceneEntityTag.h"
 #include "Components/Spline/SplineComponent.h"
@@ -11,11 +9,9 @@
 #include "ECS/Query.h"
 #include "Editor/Settings/SettingsStore.h"
 #include "Logger/Logger.h"
-#include "SceneViewController.h"
+#include "SceneView/SceneViewController.h"
 #include "MarkupECS/MarkupService.h"
 #include "Markups/MarkupPresentation.h"
-#include "SceneView/SceneViewCameraRig.h"
-#include "SceneView/SceneViewFraming.h"
 #include "Spline/SplineData.h"
 #include "SplineECS/SplineService.h"
 
@@ -319,7 +315,8 @@ MarkupEditorBridge::EditBaseline MarkupEditorBridge::ReadBaseline(const ECS::Wor
 {
     EditBaseline baseline;
     if (const auto* transform = world.GetComponent<Components::Transform>(entity))
-        std::copy(std::begin(transform->matrix), std::end(transform->matrix), baseline.Matrix);
+        std::copy_n(transform->ToMatrix4x4(transform->GetPosition() - Mathematics::WorldPosition{}).Data(), 16,
+                    baseline.Matrix);
     if (const auto* name = world.GetComponent<Components::Name>(entity))
         baseline.Name = name->View();
     if (const auto* volume = world.GetComponent<Components::MarkupVolume>(entity))
@@ -373,11 +370,20 @@ uint8 MarkupEditorBridge::TakeEditChanges(const ECS::World& world, ECS::EntityHa
 MarkupEditorBridge::WorldState& MarkupEditorBridge::StateOf(const ECS::World& world) const
 {
     WorldState& state = m_Worlds[world.GetWorldId()];
-    const uint64 generation = world.GetLifecycleResetGeneration();
-    if (state.Generation != generation)
+    const uint64 epoch = world.GetEntityHandleEpoch();
+    const uint64 reset = world.GetLifecycleResetGeneration();
+    if (state.HandleEpoch != epoch)
     {
         state = WorldState{};
-        state.Generation = generation;
+        state.HandleEpoch = epoch;
+        state.ResetGeneration = reset;
+    }
+    else if (state.ResetGeneration != reset)
+    {
+        state.Baselines.clear();
+        state.RegionDisplays.Clear();
+        state.FrameGroundFrame.reset();
+        state.ResetGeneration = reset;
     }
     return state;
 }
@@ -653,29 +659,13 @@ void MarkupEditorBridge::SaveViewerFile() const
         Logger::Log::Warning("Mark-ups: could not save the hidden and seen state: {}", error);
 }
 
-void MarkupEditorBridge::SelectMarkup(ECS::World& world, ECS::EntityHandle entity, bool frame)
+void MarkupEditorBridge::SelectMarkup(ECS::World& world, ECS::EntityHandle entity)
 {
     SceneViewController* view = m_SceneViewProvider ? m_SceneViewProvider() : nullptr;
     if (!view || !world.IsValid(entity))
         return;
     view->OnEntityPicked(entity);
     MarkSeen(world, entity);
-    if (!frame)
-        return;
-    // The volume, not the entity's origin: a mark-up carries no bounds the Scene View's
-    // own framing reads. Its bounding sphere fits the view's field of view.
-    const std::optional<MarkupWorldVolume> volume = ReadMarkupWorldVolume(world, entity);
-    if (!volume)
-    {
-        view->FrameOrigin();
-        return;
-    }
-    SceneViewCameraPose pose = view->GetCameraPose();
-    const CameraRig::Vec3d look = CameraRig::LookDirection(pose.YawDeg, pose.PitchDeg);
-    const Mathematics::Vector3 direction(static_cast<float>(look.X), static_cast<float>(look.Y),
-                                         static_cast<float>(look.Z));
-    if (ComputeLookAtPose(volume->Center, direction, MarkupFrameDistance(*volume, MarkupFrameTanHalfFov(view)), pose))
-        view->SetCameraPose(pose);
 }
 
 MarkupHighlightState MarkupEditorBridge::GetHighlight() const
@@ -759,11 +749,6 @@ void MarkupEditorBridge::OnComponentChanged(const EditorChangeNotifications::Com
     if (const auto seen = state.Seen.find(event.entity);
         seen != state.Seen.end() && seen->second.RevisionKnown && seen->second.EntryCount > notes->Entries.size())
         seen->second.EntryCount = notes->Entries.size();
-    if (HistoryReplayScope::IsActive())
-    {
-        (void)TakeEditChanges(*event.world, event.entity);
-        return;
-    }
     if (const uint8 changes = TakeEditChanges(*event.world, event.entity); changes != 0)
         (void)service->RecordEdit(*event.world, event.entity, changes, CurrentAuthor(), Now());
     else

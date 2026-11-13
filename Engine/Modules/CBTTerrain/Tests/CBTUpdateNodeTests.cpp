@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -136,39 +137,6 @@ class CBTUpdateNodeTest : public ::testing::Test
     CBTKernelSet m_KernelSet;
 };
 
-TEST_F(CBTUpdateNodeTest, PublicationAcknowledgementRequiresASubmittedUpdate)
-{
-    CBTInstance instance;
-    ASSERT_TRUE(instance.Initialize(*m_Device, m_KernelSet));
-    ASSERT_TRUE(instance.InitializeRoots());
-    FramePools pools(m_Device.get());
-    RGFrame frame(m_Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
-    const CBTClassifyDesc classify{kClassifyDepthTarget, 0u, kDefaultBaseDepth};
-    uint32_t acknowledgements = 0;
-    frame.BeginFrame(0);
-    CBTUpdateNode::DeclareUpdatePass(frame, instance, classify, CBTIdentityFrameParams(), 0, {}, {},
-                                     [&acknowledgements] { ++acknowledgements; });
-    frame.AddPass("AbandonUpdate", 0,
-        [](RGPassBuilder& pass)
-        {
-            pass.PreventCulling();
-            pass.Prepare([](RGPrepareContext&) { return false; });
-        }, [](RGContext&) {});
-    frame.Execute();
-    EXPECT_EQ(frame.Stats().PreparationFailures, 1u);
-    EXPECT_EQ(frame.Stats().SubmissionsMade, 0u);
-    EXPECT_EQ(acknowledgements, 0u);
-    frame.BeginFrame(1);
-    CBTUpdateNode::DeclareUpdatePass(frame, instance, classify, CBTIdentityFrameParams(), 1, {}, {},
-                                     [&acknowledgements] { ++acknowledgements; });
-    EXPECT_EQ(acknowledgements, 0u);
-    frame.Execute();
-    m_Device->WaitForIdle();
-    EXPECT_GT(frame.Stats().SubmissionsMade, 0u);
-    EXPECT_EQ(acknowledgements, 1u);
-    EXPECT_EQ(ReadbackDrawCount(*m_Device, instance), kRootHalfedgeCount * 3u);
-}
-
 TEST_F(CBTUpdateNodeTest, DeclaresAndRunsUpdatePassThroughRenderGraph)
 {
     CBTInstance instance;
@@ -254,9 +222,6 @@ TEST_F(CBTUpdateNodeTest, DeclaredOutputsCarryTheirByteSize)
     EXPECT_EQ(declaredSize(out.IndicesAll), res.GetBufferByteSize(CBTBinding::IndicesAll));
     EXPECT_EQ(declaredSize(out.IndicesVisible), res.GetBufferByteSize(CBTBinding::IndicesVisible));
     EXPECT_EQ(declaredSize(out.CurrentVertex), res.GetBufferByteSize(CBTBinding::CurrentVertex));
-    ASSERT_TRUE(out.NormalChain.IsValid());
-    EXPECT_TRUE(frame.Graph().ResourceDesc(out.NormalChain.Id).SampledInGeneralLayout);
-    EXPECT_TRUE(frame.Graph().HasWriteAccess(out.Update.Id, out.NormalChain.Id));
 }
 
 // The RG-pass path and the direct CommandList path must converge to the same
@@ -379,7 +344,7 @@ TEST_F(CBTUpdateNodeTest, AStillViewSettlesAndStopsUpdating)
             gate.OnActivityRead(sequence, activity);
         std::vector<uint8_t> inputs(sizeof(refine));
         std::memcpy(inputs.data(), &refine, sizeof(refine));
-        const bool skip = gate.CanSkip(inputs);
+        const bool skip = gate.CanSkip(inputs, std::chrono::steady_clock::now());
         if (!skip)
             CBTUpdateNode::DeclareUpdatePass(frame, instance, refine, CBTIdentityFrameParams(), f,
                                              TextureHandle{},
@@ -404,7 +369,9 @@ TEST_F(CBTUpdateNodeTest, AStillViewSettlesAndStopsUpdating)
             settledCount = ReadbackDrawCount(*m_Device, instance);
         }
         if (firstSkipped < f)
+        {
             EXPECT_FALSE(declared) << "a settled still view declared the update again at frame " << f;
+        }
     }
     ASSERT_LT(firstSkipped, kFrames) << "the update never settled";
     EXPECT_GT(settledCount, kRootHalfedgeCount * 3u) << "settled before the tree refined";

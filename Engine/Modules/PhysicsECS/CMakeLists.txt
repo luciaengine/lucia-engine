@@ -8,7 +8,7 @@ add_library(PhysicsECS OBJECT
     Source/PhysicsEntityEventCallbacks.cpp
     Source/PhysicsScriptApi.cpp
     Source/PhysicsWorldService.cpp
-    Source/MeshColliderData.cpp
+    Source/ProceduralMeshColliders.cpp
     Source/HeightFieldDataProvider.cpp
     Source/HeightFieldCollisionReadiness.cpp
     Source/PhysicsWorldSettingsHelpers.cpp
@@ -35,6 +35,7 @@ target_include_directories(PhysicsECS
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/Include
     PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/Source
         $<TARGET_PROPERTY:FileWatcher,INTERFACE_INCLUDE_DIRECTORIES>
         $<TARGET_PROPERTY:GameEngineRendering,INTERFACE_INCLUDE_DIRECTORIES>
 )
@@ -51,5 +52,7 @@ target_link_libraries(PhysicsECS
         Logger
         Spline
         SplineECS
+    PRIVATE
+        JobSystem
 )
 

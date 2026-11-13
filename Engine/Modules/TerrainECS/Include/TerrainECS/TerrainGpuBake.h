@@ -1,37 +1,100 @@
 #pragma once
 
+#include "ECS/ECS.h"
 #include "Types/Types.h"
 
 #include <cstdlib>
 #include <vector>
 
-// GPU-resident terrain modifier bake — slice 1 (planar height-only), the CPU-side
-// contract shared by the bake kernel (terrain_height_bake.comp), the dispatch node,
-// and the device-oracle test.
-//
-// Slice 1 moves the planar HEIGHT evaluation (base value-noise fill + the pure-math
-// modifier stack) onto a compute pass that writes THROUGH the resident-window atlas
-// slot indirection, gated by GE_TERRAIN_GPU_BAKE (default ON, kill switch =0; inert without the
-// resident-window atlas + a whole-resident terrain, so a default no-atlas build is unaffected). Only self-contained
-// modifier types (Flatten, Noise) are GPU-bakeable in slice 1; payload zones, stamps,
-// splines, and paint layers stay on the CPU (design slices 4-5). When any modifier or
-// tile in a bake is ineligible the whole bake falls back to the byte-identical CPU path.
+// The CPU side of the GPU terrain height bake: the kill switch, the rows the kernel
+// (terrain_height_bake.comp) reads, and the report of why a bake stays on the CPU. A bake that holds
+// one modifier or tile the kernel cannot express runs whole on the CPU.
 
 namespace GameEngine::TerrainECS
 {
 
-// Kill switch: GE_TERRAIN_GPU_BAKE arms the planar GPU height bake, default ON (=0 disables),
-// mirroring the DeferSplatResplatEnabled convention. Defined
-// in TerrainGpuBake.cpp (not header-inline) so the test override below is one instance across the
+// Kill switch: GE_TERRAIN_GPU_BAKE arms the planar GPU height bake, default ON (=0 disables).
+// Defined in TerrainGpuBake.cpp (not header-inline) so the test override below is one instance across the
 // Engine-dll / test-exe boundary — a DATA symbol does not export reliably under the auto-export.
 bool IsGpuHeightBakeEnabled();
-/// Return true when the sculpt normal experiment is enabled and GPU height baking is disabled.
+// Regenerate normals from CPU-sculpted atlas heights when GPU height baking is off.
 bool IsGpuSculptNormalEnabled();
 
 // Test seam for the GPU eval-skip oracles: force the gate on/off (state 0/1) or clear back to the
 // env (state -1). The env gate caches on first read, so a test can't arm the path by setting the
 // env after the first Update() already latched it off — this drives it deterministically instead.
 void SetGpuHeightBakeEnabledForTests(int state);
+
+// Why a tiled terrain's height bake runs on the CPU instead of the GPU kernel. The order of the
+// enumerators is not the check order: the terrain gates (Disabled, TextureLayout, BaseSource) are
+// checked first, then each modifier in priority order (PackModifiersForGpuBake).
+enum class GpuHeightBakeRefusalReason : uint8
+{
+    None,
+    // Terrain gates.
+    Disabled,              // GE_TERRAIN_GPU_BAKE=0
+    TextureLayout,         // the heights are not in an atlas that holds every tile (Single, Unified)
+    BaseSource,            // the base is not the procedural noise the kernel composes
+    // Modifier gates, one modifier and one effect at a time.
+    SplineShape,
+    GlobalVolume,
+    InwardFeatherOrWeight, // an inward feather, or a master weight other than 1
+    PooledBlend,           // an effect with the Average blend
+    HeightFromVolume,      // a flatten that takes its height from the volume
+    Erosion,               // a noise effect with erosion armed
+    HeightOffset,
+    Stamp,
+    GroundClaim,
+    OtherEffect,           // an effect kind the GPU bake has no code for (grass, color)
+    SculptZone,
+};
+
+// The reason in plain words, for the debug readback and the log.
+const char* GpuHeightBakeRefusalName(GpuHeightBakeRefusalReason reason);
+
+// The first refusal and the volume or zone entity that holds it. Entity is invalid for a terrain gate.
+struct GpuHeightBakeRefusal
+{
+    GpuHeightBakeRefusalReason Reason = GpuHeightBakeRefusalReason::None;
+    ECS::EntityHandle Entity{};
+
+    bool operator==(const GpuHeightBakeRefusal&) const = default;
+};
+
+enum class TerrainHeightBakePath : uint8
+{
+    NotBaked,
+    Gpu,
+    Cpu,
+};
+
+// The path in one word, for the debug readback.
+const char* TerrainHeightBakePathName(TerrainHeightBakePath path);
+
+// What the last height bake of a tiled terrain did (TerrainModifierSystem writes it; the debug
+// readback and the volume inspector read it). The modifier refusal is found even when a terrain gate
+// refuses first, so a reader sees both walls.
+struct TerrainHeightBakeReport
+{
+    TerrainHeightBakePath Path = TerrainHeightBakePath::NotBaked;
+    GpuHeightBakeRefusalReason TerrainRefusal = GpuHeightBakeRefusalReason::None;
+    GpuHeightBakeRefusal ModifierRefusal;
+    // The refusing effects after ModifierRefusal; a modifier that refuses as a whole counts once.
+    uint32 OtherModifierRefusals = 0;
+    // Increases each time the path or a refusal changes, so a reader can follow the report.
+    uint32 Revision = 0;
+    // Lattice samples the page overlay composed with the modifier stack itself in its last build.
+    // Zero when the overlay read every sample from the baked tiles.
+    uint64 PageOverlayComposedSamples = 0;
+
+    // The refusal a reader acts on: the terrain gate when one refuses, else the modifier refusal.
+    GpuHeightBakeRefusal FirstRefusal() const
+    {
+        if (TerrainRefusal != GpuHeightBakeRefusalReason::None)
+            return GpuHeightBakeRefusal{TerrainRefusal, ECS::EntityHandle{}};
+        return ModifierRefusal;
+    }
+};
 
 // GPU-bakeable modifier kinds (slice 1). Mirror the branch ids in terrain_height_bake.comp.
 enum class ModifierGpuType : uint32
@@ -206,7 +269,7 @@ inline SurfaceRuleBindingSizes ComputeSurfaceRuleBindingSizes(size_t ruleCount,
 }
 
 // Push constants for one tile's bake dispatch (mirror PushConstants in
-// terrain_height_bake.comp). Under the 128-byte guaranteed minimum.
+// terrain_height_bake.comp). 80 bytes, under the 128-byte guaranteed minimum.
 struct TerrainHeightBakePush
 {
     int32  RectMinX;   // tile-local interior sample rect (inclusive origin)
@@ -219,8 +282,8 @@ struct TerrainHeightBakePush
     float TileSize;    // tile world size (square)
     float HeightScale;
 
-    float  BaseFreq;   // base value-noise fill params (kTileNoise*)
-    float  BaseAmp;
+    float  BaseFreq;   // the base value noise's stack (Terrain::TerrainNoiseStack)
+    float  BaseGain;
     uint32 BaseOctaves;
     uint32 BaseSeed;
 
@@ -230,13 +293,6 @@ struct TerrainHeightBakePush
     uint32 SlotStride;
 
     uint32 SlotsPerRow;
-    // Committed global height range for the SPLAT kernel's altitude classification (KERNEL_SPLAT
-    // only; left 0 for the height/normal dispatches, which ignore them). Set per-bake from the
-    // tiled terrain's committed SplatBakeMinH/MaxH so the mid-stroke GPU splat normalizes against
-    // the SAME range the CPU region-splat would — a mid-stroke range extension makes the GPU splat
-    // a stale preview, re-splat CPU-side at settle (design §5 slice-3; no GPU-side renormalize).
-    float32 SplatMinH;
-    float32 SplatMaxH;
     // Surface rule rows in the row buffer (SPLAT kernel only; 0 for height/normal). Rules
     // composite on top of the procedural classification in buffer order.
     uint32 SurfaceRuleCount;
@@ -246,16 +302,14 @@ struct TerrainHeightBakePush
     // measures its world-space target against this, mirroring NormalizedHeightForWorldY on the
     // CPU arm.
     float TerrainOriginY;
-
-    // Uploaded heights use adjacent slots instead of the procedural height apron.
-    // An absent neighbor uses the same sentinel as the atlas table.
     uint32 NormalReadsUploadedHeight = 0;
     uint32 NormalNeighborLeft = 0xFFFFFFFFu;
     uint32 NormalNeighborRight = 0xFFFFFFFFu;
     uint32 NormalNeighborUp = 0xFFFFFFFFu;
     uint32 NormalNeighborDown = 0xFFFFFFFFu;
+    float BaseAmplitude = 0.0f;
 };
-static_assert(sizeof(TerrainHeightBakePush) == 104, "TerrainHeightBakePush must match terrain_height_bake.comp push_constant layout");
+static_assert(sizeof(TerrainHeightBakePush) == 108, "TerrainHeightBakePush must match terrain_height_bake.comp push_constant layout");
 
 // One tile's GPU height-bake request. The TerrainModifierSystem records these (with the
 // tile-local sample rect it would have CPU-baked) onto the service when the GPU path is
@@ -296,19 +350,13 @@ struct GpuHeightBakeBatch
     // world-space targets the way the CPU bake does.
     float TerrainOriginY = 0.0f;
     float BaseFreq = 0.0f;
-    float BaseAmp = 0.0f;
+    float BaseGain = 0.0f;
     uint32 BaseOctaves = 0;
     uint32 BaseSeed = 0;
-    // Slice-3 GPU splat: the committed global height range the mid-stroke splat normalizes
-    // against, and whether the splat pass may run for this bake. SplatEligible is false when the
-    // bake carries a splat writer the kernel has no twin for — paint (PaintLayer / PaintZone /
-    // spline paint), or a surface-rules volume on a spline shape. The procedural GPU splat would
-    // drop their composited layers, so those keep the CPU splat (byte-identical) until settle. The
-    // committed range is always valid here: the recorder commits the deterministic resident band
-    // on the first GPU bake (before it, SplatBakeMin/MaxH are the [0,0] sentinel) rather than
-    // gating the splat off, so the GPU splat runs live from the first stroke.
-    float SplatMinH = 0.0f;
-    float SplatMaxH = 0.0f;
+    float BaseAmplitude = 0.0f;
+    // Whether the splat pass may run for this bake. False when the bake carries a splat writer
+    // the kernel has no twin for (paint, or a surface-rules volume on a spline shape): those keep
+    // the CPU splat until settle.
     bool SplatEligible = false;
     // Surface rule rows the splat kernel composites on top of the procedural classification,
     // already flattened into (modifier priority, then stack order) with each row carrying its
@@ -325,11 +373,10 @@ struct GpuHeightBakeBatch
         HeightScale = 0.0f;
         TerrainOriginY = 0.0f;
         BaseFreq = 0.0f;
-        BaseAmp = 0.0f;
+        BaseGain = 0.0f;
         BaseOctaves = 0;
         BaseSeed = 0;
-        SplatMinH = 0.0f;
-        SplatMaxH = 0.0f;
+        BaseAmplitude = 0.0f;
         SplatEligible = false;
         SurfaceRules.clear();
         SurfaceRuleConditions.clear();

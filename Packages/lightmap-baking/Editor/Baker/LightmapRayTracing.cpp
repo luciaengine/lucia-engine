@@ -4,7 +4,7 @@
 #include "Rendering/Core/Device.h"
 #include "Logger/Logger.h"
 #include "Assets/ShaderProgramAsset.h"
-#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>

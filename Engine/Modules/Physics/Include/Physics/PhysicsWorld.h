@@ -39,6 +39,8 @@ public:
     // Shapes
     // ---------------------------------------------------------------------
     ShapeHandle CreateShape(const ShapeDefinition& definition, const Vector3& bakedScale = Vector3(1, 1, 1));
+    /// Returns the thread-safe shape builder for procedural terrain jobs.
+    HeightFieldShapeBuilder GetHeightFieldShapeBuilder() const;
     void DestroyShape(ShapeHandle shape);
     bool IsShapeValid(ShapeHandle shape) const;
 
@@ -54,6 +56,15 @@ public:
     // Required after any heightfield geometry change so sleeping bodies
     // notice the ground moving.
     void ActivateBodiesInAABB(const AABB& worldBox);
+
+    /// The dynamic bodies, asleep or awake, whose broadphase box meets `worldBox` (the bodies
+    /// ActivateBodiesInAABB wakes, without the kinematic ones), each with its world-space bounds.
+    /// Clears `outBodies` first.
+    void GetDynamicBodiesInAABB(const AABB& worldBox, std::vector<BodyBounds>& outBodies) const;
+
+    /// The distance in meters at which two bodies start a contact. A body placed this far above a
+    /// surface comes to rest on it.
+    float32 GetContactDistance() const;
 
     // ---------------------------------------------------------------------
     // Bodies
@@ -88,31 +99,19 @@ public:
     Vector3 GetAngularVelocity(BodyHandle body) const;
     void SetAngularVelocity(BodyHandle body, const Vector3& velocity);
 
-    // World-space center of mass (reference point for buoyancy torque).
-    Vector3 GetCenterOfMassPosition(BodyHandle body) const;
-
-    // World-space velocity that `body` imparts to the world-space point
-    // `worldPoint`, including the angular contribution — so a point on a
-    // rotating platform reports the correct tangential speed, not the
-    // platform's linear velocity.
-    //
-    // This is the engine-side obligation for riders that are not dynamic bodies.
-    // A dynamic rider needs nothing: contact friction against a properly moved
-    // kinematic body carries it. A character that does its own sweeping instead
-    // of being simulated has no contact to draw from, so it queries the surface
-    // it is standing on and adds this to its own motion.
-    //
-    // Zero for a static or invalid body.
-    Vector3 GetPointVelocity(BodyHandle body, const Vector3& worldPoint) const;
+    /// Exact world-space center of mass, the reference point for force torque.
+    WorldPosition GetCenterOfMassPosition(BodyHandle body) const;
+    /// Velocity at an exact world point, including angular motion. Invalid bodies return zero.
+    Vector3 GetPointVelocity(BodyHandle body, const WorldPosition& worldPoint) const;
 
     // Forces/torques accumulate and apply during the next Step(); impulses
     // change velocity immediately. The "AtPosition" variants apply at a
     // world-space point (producing torque) — used for buoyancy at probe points.
     void AddForce(BodyHandle body, const Vector3& force);
-    void AddForceAtPosition(BodyHandle body, const Vector3& force, const Vector3& worldPosition);
+    void AddForceAtPosition(BodyHandle body, const Vector3& force, const WorldPosition& worldPosition);
     void AddTorque(BodyHandle body, const Vector3& torque);
     void AddImpulse(BodyHandle body, const Vector3& impulse);
-    void AddImpulseAtPosition(BodyHandle body, const Vector3& impulse, const Vector3& worldPosition);
+    void AddImpulseAtPosition(BodyHandle body, const Vector3& impulse, const WorldPosition& worldPosition);
 
     // ---------------------------------------------------------------------
     // Characters
@@ -122,7 +121,9 @@ public:
     bool IsCharacterValid(CharacterHandle character) const;
 
     Transform GetCharacterTransform(CharacterHandle character) const;
-    void SetCharacterPosition(CharacterHandle character, const Vector3& position);
+    // Moves the character to `position` at once (a teleport or a respawn). The writeback writes a
+    // character's pose over its Transform, so this is how game code moves a character.
+    void SetCharacterPosition(CharacterHandle character, const WorldPosition& position);
 
     Vector3 GetCharacterLinearVelocity(CharacterHandle character) const;
     void SetCharacterLinearVelocity(CharacterHandle character, const Vector3& velocity);

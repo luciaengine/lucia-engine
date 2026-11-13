@@ -1,13 +1,18 @@
 #pragma once
 
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
-#include "Rendering/Core/PipelineIdentifiers.h"
+#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 
 #include <memory>
 #include <unordered_map>
 #include <vector>
+
+namespace GameEngine::Rendering
+{
+struct GPUInstance;
+}
 
 namespace GameEngine::Engine::Renderer::Pipeline
 {
@@ -46,6 +51,20 @@ class ViewMotionVectors
     static MoverMotionPath ClassifyMoverMotionPath(Rendering::VertexAttributeFlags vertexFlags,
                                                    bool paletteActive, bool hasSkinStreams,
                                                    bool skinnedShaderAvailable);
+
+    // Whether a view's motion vectors include the frame mover `instance`. An instance the
+    // view's color passes leave out (shadows-only; in the Scene View, hidden by its eye:
+    // `dropEditorHidden`, ViewDesc::DropsEditorHidden) has no pixels to move; an instance of
+    // another world is not in the view. `viewWorldKey` 0 accepts every world. The movers pass
+    // and TAA's mover census both ask this, so they agree on what moves in a view.
+    static bool DrawsMover(const Rendering::GPUInstance& instance, uint32_t viewWorldKey,
+                           bool dropEditorHidden);
+
+    // Whether the view draws content that moved this frame: a drawn mover of the view's world
+    // (DrawsMover), or motion without an instance or an epoch (RenderServices::HasUnversionedMotion).
+    // History validation uses this conservative superset of the motion-vector pass's movers.
+    static bool ViewHasMovers(const RenderServices& rs, Rendering::ViewId viewId,
+                              uint64_t worldId);
 
   private:
     bool EnsureLoaded(IDevice* device);

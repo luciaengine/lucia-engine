@@ -1,3 +1,4 @@
+#include "TestCameraEye.h"
 #include "Engine/Rendering/Pipeline/PipelineResourceNames.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
@@ -7,10 +8,10 @@
 #include "Rendering/Core/BarrierMapping.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Materials/ShaderCompileService.h"
-#include "Rendering/Materials/ShaderLayoutShape.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
 #include "TestTempDir.h"
 #include "Types/Color.h"
 
@@ -128,13 +129,13 @@ class OceanSprayPreparationTest : public ::testing::Test
             Mathematics::Vector3(0, 1, 0), Mathematics::Vector3(0, 1, 1), Mathematics::Vector3(0, 1, 0));
         const auto projection = Mathematics::Matrix4x4::PerspectiveReverseZ(1.0471976f, 1.0f, 0.1f, 100.0f);
         const auto viewProjection = projection * view;
-        std::memcpy(camera.view, view.Data(), sizeof(camera.view));
-        std::memcpy(camera.proj, projection.Data(), sizeof(camera.proj));
-        std::memcpy(camera.viewProj, viewProjection.Data(), sizeof(camera.viewProj));
+        camera.view = view;
+        camera.proj = projection;
+        camera.viewProj = viewProjection;
         camera.cameraPos[1] = 1.0f;
-        m_Services->Views().SetCameraData(m_Camera, camera);
+        m_Services->Views().SetCameraData(m_Camera, ::GameEngine::Tests::TestCameraWithEye(camera), {0.1f, 100.0f});
         m_View = m_Services->Views().AllocateView("OceanSprayView", m_Camera);
-        m_Services->Views().SetViewRenderLayerMask(m_View, 1);
+        m_Services->Views().SetViewRenderLayerMask(m_View, Rendering::RenderLayerMask::Default());
         ViewClearConfig clear{};
         m_Services->Views().SetViewTargets(m_View, 0, 0, 0, clear);
         m_Ocean = &m_Services->EnsureFeature<OceanRenderFeature>();

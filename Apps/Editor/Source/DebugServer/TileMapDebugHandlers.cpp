@@ -4,13 +4,13 @@
 
 #include "DebugServer/DebugServerReply.h"
 #include "DebugServer/EditorDebugServer.h"
-#include "EditorApplication.h"
+#include "EditorApplication/EditorApplication.h"
 
 #include "Panels/TilePalettePanel.h"
 #include "Panels/TileSetEditorPanel.h"
 #include "SceneView/TileMapPaintTool.h"
 #include "SceneView/TileMapPaintToolStripEntry.h"
-#include "SceneViewController.h"
+#include "SceneView/SceneViewController.h"
 #include "TileMap/TileMapEditContext.h"
 #include "TileMap/TileMapEditorIntegration.h"
 #include "TileMap/TileReplaceEdit.h"

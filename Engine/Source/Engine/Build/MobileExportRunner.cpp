@@ -1,4 +1,5 @@
 #include "Engine/Build/MobileExportRunner.h"
+#include "Core/ApplicationPaths.h"
 
 #include "Engine/Build/BuildHost.h"
 #include "Engine/Build/PythonBuildTool.h"
@@ -93,7 +94,7 @@ bool RunMobileBuildTool(const BuildSettings& settings, BuildPipeline& pipeline,
         const fs::path configPath = fs::canonical(contentRoot / "game.config");
         if (fs::is_symlink(requestPath))
             throw std::runtime_error("Remove the symbolic link at the mobile build request path.");
-        std::string artifactName = PathUtils::SanitizeForFolderName(settings.playerConfig.gameName);
+        std::string artifactName = ApplicationPaths::SanitizeForFolderName(settings.playerConfig.gameName);
         while (!artifactName.empty() && artifactName.front() == '.') artifactName.erase(artifactName.begin());
         if (artifactName.empty()) artifactName = "Game";
         const nlohmann::json request = {

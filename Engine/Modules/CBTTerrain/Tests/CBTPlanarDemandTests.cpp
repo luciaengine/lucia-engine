@@ -1,5 +1,23 @@
-// Runs the shader's demand, flat veto, plane fold and curvature math through GlslShim.
-// Random LEB paths must have nonincreasing child demand and bounded surface-to-facet distance.
+// The planar split demand (cbt_planar_demand.glsl): a child never demands more than its parent, and the
+// height term r bounds the surface's distance from the facet's own plane.
+//
+// The shared block of cbt_planar_demand.glsl is extracted at build time (Tests/ExtractShaderBlock.cmake)
+// and compiled here through GlslShim.h, so the oracle runs the shader's own demand, depth bound, flat
+// veto, plane fold and curvature bound. It walks random LEB paths from the two roots and asks each
+// parent and child the same question under random cameras: eye height looking along the ground, a
+// grazing view across ridges at the lattice's frequency, views from above and views at the screen's
+// edges. A node's box is its UV box in XZ with the range of a min/max block pyramid's cover in Y, built
+// and read as the kernels build and read theirs (aligned blocks nest, so the cover of a child lies in
+// the cover of its parent). r is the smallest of the box's range, the step bound, the curvature bound
+// and the plane width, as CBT_PlanarNodeBox and CBT_PlanarNodeSplits take it, with the first stored
+// level at 2-cell blocks (a 1025^2 lattice) and at 8-cell blocks (a 4097^2 lattice).
+//
+//   AChildNeverDemandsMoreThanItsParent - over 60,000 parent and child pairs on each terrain and first
+//     level, the child's r and demand are at most its parent's, a parent the flat veto holds holds its
+//     child, and the surface at points inside each facet (lattice samples, lattice-line crossings of
+//     its edges, the peak in each cell along a diagonal edge, random points) stands at most r from the plane through its corners. On a tilted plane
+//     the flat veto holds every facet. The positive control: the projected split edge on the
+//     point-sampled corners has a child above its parent on the same pairs.
 
 #include <gtest/gtest.h>
 
@@ -58,8 +76,10 @@ enum class TerrainKind : uint32_t
     TiltedPlane,
 };
 
-// Square lattice with relief in meters and aligned block pyramids from level First.
-// Stores min/max heights, residual planes and first-level differences at the shader's offsets.
+// A heightfield on a square terrain: the lattice, its size and relief in meters, and its block pyramids
+// from the first stored level `First` up (level k: blocks of 2^k cells): the min/max range of the samples
+// each block covers, its boundary included; each block's plane (CBTLayout.h kCBTHeightPlaneFirstWord);
+// and the first level's differences (kCBTHeightDifferencesFirstWord).
 struct Terrain
 {
     const char* Label = "";
@@ -262,8 +282,10 @@ CellSpan RangeCells(vec2 lo, vec2 hi)
     return {static_cast<uint32_t>(x0), static_cast<uint32_t>(z0), static_cast<uint32_t>(x1), static_cast<uint32_t>(z1)};
 }
 
-// Finds the height and difference bounds over the UV box's coarsest two-block-per-axis cover.
-// The cover is never finer than the first stored pyramid level.
+// The pyramid's cover of a UV box (cbt_kernels.comp CBT_PyramidRangeOverUV): the lowest and highest
+// normalized height over at most 2 x 2 blocks of the coarsest level that holds the cells to two blocks
+// per axis, never finer than the first stored level, and the largest of each difference in those
+// blocks when they are the first level's, else kNoBound.
 struct Cover
 {
     vec2 Range;
@@ -403,8 +425,10 @@ float PointDeviationM(const Terrain& terrain, const Facet& f, const std::array<f
     return std::abs(CornerHeight(terrain, p) - (b.x * cornerM[0] + b.y * cornerM[1] + b.z * cornerM[2]));
 }
 
-// Finds maximum surface-to-plane deviation along one diagonal cell crossing.
-// The bilinear surface minus the facet plane is a parabola, so its peak may lie between crossings.
+// The deviation at the peak of a diagonal edge's run [s0, s1] through one cell, s along the edge from
+// corner `edge` to the next. Along a line that is not axis-aligned the bilinear surface is quadratic and
+// the plane is linear, so the signed distance is a parabola whose vertex, found from three evenly spaced
+// samples, can lie between the lattice crossings.
 float EdgeCellPeakDeviationM(const Terrain& terrain, const Facet& f, const std::array<float, 3>& cornerM, uint32_t edge, float s0, float s1)
 {
     constexpr float kMinRun = 1.0e-6f;
@@ -427,8 +451,10 @@ float EdgeCellPeakDeviationM(const Terrain& terrain, const Facet& f, const std::
     return PointDeviationM(terrain, f, cornerM, a + (b - a) * peak);
 }
 
-// Checks surface-to-facet distance at random points, edge midpoints and lattice crossings.
-// Small boxes also include every lattice sample and diagonal-cell peak.
+// The largest distance (meters) between the bilinear surface and the facet's plane over random points
+// inside the facet, its edges' midpoints and, for a box at most kLatticeCheckCells across, every lattice
+// sample inside it, every crossing of a lattice line with its edges and the peak in each cell along a
+// diagonal edge.
 float FacetDeviationM(const Terrain& terrain, const Facet& f, vec2 lo, vec2 hi, std::mt19937& rng)
 {
     const std::array<float, 3> cornerM = {CornerHeight(terrain, f[0]), CornerHeight(terrain, f[1]), CornerHeight(terrain, f[2])};

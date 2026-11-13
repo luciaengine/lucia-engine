@@ -2,6 +2,8 @@
 
 #include "Core/Engine.h"
 #include "Editor/Settings/SettingsStore.h"
+#include "Projects/ProjectStartupScene.h"
+#include "Types/StringUtils.h"
 
 namespace GameEngine::Editor
 {
@@ -23,22 +25,11 @@ SettingsStore OpenBuildSettingsStore()
 std::vector<std::string> ParseSceneList(const std::string& raw)
 {
     std::vector<std::string> out;
-    for (size_t start = 0; start < raw.size();)
+    for (std::string_view line : Split(raw, '\n'))
     {
-        size_t end = raw.find('\n', start);
-        if (end == std::string::npos)
-            end = raw.size();
-        std::string line = raw.substr(start, end - start);
-        while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
-            line.pop_back();
-        size_t first = 0;
-        while (first < line.size() && (line[first] == ' ' || line[first] == '\t'))
-            ++first;
-        if (first < line.size())
-            line = line.substr(first);
+        line = TrimWhitespaceView(line);
         if (!line.empty())
-            out.push_back(std::move(line));
-        start = end + (end < raw.size() ? 1u : 0u);
+            out.emplace_back(line);
     }
     return out;
 }
@@ -132,6 +123,27 @@ bool LoadBuildPlatformUseGlobalScenes(const std::string& platformName)
 {
     // Default on: a fresh project ships every platform from the global list.
     return LoadBuildBoolSetting(BuildPlatformPrefKey(platformName, "useGlobalScenes"), true);
+}
+
+std::vector<std::string> LoadEffectiveBuildScenes(const std::string& platformName)
+{
+    if (LoadBuildPlatformUseGlobalScenes(platformName))
+    {
+        std::vector<std::string> globalScenes = LoadGlobalBuildScenes();
+        if (!globalScenes.empty())
+            return globalScenes;
+    }
+    std::vector<std::string> platformScenes = LoadBuildScenes(platformName);
+    if (!platformScenes.empty())
+        return platformScenes;
+    const std::filesystem::path& projectRoot = EngineCore::GetInstance().GetWorkspaceRoot();
+    SettingsStore settings = OpenBuildSettingsStore();
+    std::string err;
+    settings.Load(&err);
+    std::string startupScene = ReadProjectStartupScene(settings);
+    if (projectRoot.empty() || !ResolveNamedScene(projectRoot / "Assets", startupScene, kProjectStartupSceneKey))
+        return {};
+    return {std::move(startupScene)};
 }
 
 std::string LoadBuildGlobalIcon()

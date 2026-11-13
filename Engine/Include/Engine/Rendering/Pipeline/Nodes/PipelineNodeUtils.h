@@ -4,11 +4,12 @@
 #include <cctype>
 #include <cstdint>
 #include <string>
+#include <unordered_set>
 
 #include "Logger/Logger.h"
 #include "Rendering/Core/Device.h"
 #include "Types/StringUtils.h"
-#include "Rendering/Materials/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 
 namespace GameEngine::Engine::Renderer::Pipeline::Nodes::Detail
 {
@@ -20,29 +21,6 @@ inline bool RequiresPointSampling(Rendering::TextureFormat format,
     return !capabilities.supportsFilterableFloat32 &&
         (format == Rendering::TextureFormat::R32_FLOAT ||
          format == Rendering::TextureFormat::R32G32B32A32_FLOAT);
-}
-
-inline bool TryGetSet0BindingByName(const GameEngine::Rendering::ShaderMeta& meta,
-                                   const std::string& name,
-                                   uint32_t& outBinding,
-                                   GameEngine::Rendering::DescriptorType& outType)
-{
-    for (const auto& s : meta.Sets)
-    {
-        if (s.Set != 0)
-            continue;
-        for (const auto& b : s.Bindings)
-        {
-            if (b.Name == name)
-            {
-                outBinding = b.Binding;
-                outType = static_cast<GameEngine::Rendering::DescriptorType>(b.Type);
-                return true;
-            }
-        }
-        return false;
-    }
-    return false;
 }
 
 // Resolve a set0 binding's reflected name (for diagnostics) by binding index.
@@ -90,7 +68,7 @@ inline bool BindStorageImageByName(GameEngine::Rendering::IDevice* device,
         return false;
     uint32_t binding = 0;
     GameEngine::Rendering::DescriptorType reflectedType{};
-    if (!TryGetSet0BindingByName(meta, name, binding, reflectedType))
+    if (!GameEngine::Rendering::TryGetSet0BindingByName(meta, name, binding, reflectedType))
         return false;
     GameEngine::Rendering::DescriptorSetUpdate u{};
     u.binding = binding;
@@ -109,20 +87,19 @@ inline bool BindStorageImageByName(GameEngine::Rendering::IDevice* device,
 // devices without VK_EXT_robustness2/nullDescriptor (this device). Filling the
 // gap with a valid placeholder keeps the draw/dispatch legal.
 //
-// Real binds always win: only indices for which `isWritten` returns false are touched.
+// Real binds always win: only indices NOT in `writtenBindings` are touched.
 // StorageImage write targets are never defaulted (a write target must be real),
 // but a missing one is still reported as a genuine wiring error.
 //
 // Returns true if any binding was defaulted. `loggedOnce` gates a single
 // per-node warning listing the auto-defaulted (and missing storage-image)
 // bindings so the gap stays diagnosable.
-template <class IsWritten>
 inline bool DefaultFillUnwrittenSet0Bindings(
     GameEngine::Rendering::IDevice* device,
     GameEngine::Rendering::DescriptorSetHandle set0,
     const GameEngine::Rendering::DescriptorSetLayoutDesc& layout,
     const GameEngine::Rendering::ShaderMeta& meta,
-    IsWritten&& isWritten,
+    const std::unordered_set<uint32_t>& writtenBindings,
     GameEngine::Rendering::BufferHandle defaultBuffer,
     GameEngine::Rendering::TextureHandle defaultTexture,
     GameEngine::Rendering::SamplerHandle defaultSampler,
@@ -150,7 +127,7 @@ inline bool DefaultFillUnwrittenSet0Bindings(
 
     for (const auto& lb : layout.bindings)
     {
-        if (isWritten(lb.binding))
+        if (writtenBindings.find(lb.binding) != writtenBindings.end())
             continue; // real bind already provided — never override it
 
         switch (lb.type)

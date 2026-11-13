@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Components/Rendering/Camera.h"
-#include "Rendering/CameraTypes.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Types/Types.h"
 #include "Mathematics/Rect.h"
 
@@ -47,6 +47,7 @@ struct CameraAspectResolution
 struct PixelPerfectViewState
 {
     bool Active = false;
+    float32 WorldUnitsPerTexel = 0.0f;
     uint32 ReferenceWidth = 0;
     uint32 ReferenceHeight = 0;
     // Reference resolution + 1-texel border on each axis (the offscreen RT size).
@@ -54,18 +55,12 @@ struct PixelPerfectViewState
     uint32 PaddedHeight = 0;
     // Largest integer factor that fits ReferenceWidth/Height in the swapchain.
     uint32 Zoom = 1;
+    // Display extent of the integer upscale, including letterbox bars.
+    uint32 DisplayWidth = 0;
+    uint32 DisplayHeight = 0;
     // Sub-pixel camera remainder in source texels, range [-0.5, 0.5] per axis.
     float FracX = 0.0f;
     float FracY = 0.0f;
-    // Texel size in world units (1 / pixels-per-unit): the grid the snapped
-    // camera sits on, and the grid a sprite has to sit on to stay crisp.
-    float WorldUnitsPerTexel = 0.0f;
-    // The viewport this state was computed against — the extent the upscale
-    // writes, letterbox bars included. This is the pipeline's OUTPUT extent for
-    // the view: the render half rasters at PaddedWidth/Height and everything
-    // past the crossing (bloom, tonemap, the LDR display effects) runs here.
-    uint32 DisplayWidth = 0;
-    uint32 DisplayHeight = 0;
 };
 
 float GetCameraAspectPresetRatio(CameraAspectPreset preset);
@@ -91,13 +86,13 @@ ViewLetterbox ComputeLetterboxRect(uint32_t viewportWidth,
                                  uint32_t viewportHeight,
                                  float targetAspect);
 
-// Camera rectangle in render-target UV; inactive or degenerate inputs use the whole target.
+// Camera rectangle in target UV; inactive or degenerate inputs use the whole target.
 Mathematics::Rect ComputeViewportRect(const ViewLetterbox& letterbox,
                                       uint32_t targetWidth, uint32_t targetHeight);
 
 class RenderServices;
 
-struct Camera;
+class Camera;
 
 void ApplyActiveCameraAspect(RenderServices& rs,
                              ::GameEngine::Rendering::ViewId viewId,

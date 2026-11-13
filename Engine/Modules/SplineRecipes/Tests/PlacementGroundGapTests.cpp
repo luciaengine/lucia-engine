@@ -14,7 +14,7 @@
 #include "ECS/ECSTemplates.h" // World's component templates: definitions, not just declarations
 #include "ECS/World.h"
 #include "SplineRecipes/PlacementGroundGap.h"
-#include "TerrainECS/PlanarHeightQuery.h"
+#include "TerrainECS/SurfaceHeightQuery.h"
 #include "TerrainECS/TerrainModifierSystem.h"
 #include "TerrainECS/TerrainService.h"
 
@@ -27,8 +27,8 @@ using GameEngine::SplineRecipes::kGroundGapProbeCount;
 using GameEngine::SplineRecipes::MeasurePieceGroundGap;
 using GameEngine::SplineRecipes::MeasureRouteGroundGaps;
 using GameEngine::SplineRecipes::PieceGroundGap;
-using GameEngine::TerrainECS::PlanarHeightQuery;
-using GameEngine::TerrainECS::ResolvePlanarHeightQuery;
+using GameEngine::TerrainECS::SurfaceHeightQuery;
+using GameEngine::TerrainECS::ResolveSurfaceHeightQuery;
 using GameEngine::Mathematics::Vector3;
 using GameEngine::TerrainECS::TerrainService;
 
@@ -36,9 +36,13 @@ namespace
 {
 
 // The finest ground height at world (x, z), the policy the placement gap reads with.
-bool SampleGround(const PlanarHeightQuery& query, float32 worldX, float32 worldZ, float32& outY)
+bool SampleGround(const SurfaceHeightQuery& query, float32 worldX, float32 worldZ, float32& outY)
 {
-    return query.SampleHeight(worldX, worldZ, outY);
+    TerrainECS::SurfaceHeightSample sample;
+    if (!query.SampleHeight(Vector3{worldX, 0.0f, worldZ}, TerrainECS::SurfaceHeightPolicy::RequireFinest, sample))
+        return false;
+    outY = sample.Height;
+    return true;
 }
 
 constexpr float32 kWorldSize = 256.0f;
@@ -103,21 +107,10 @@ Components::WorldTransform PoseAt(const Vector3& position, float32 pitchDeg, flo
     const float32 sy = std::sin(yawDeg * kDegToRad);
 
     Components::WorldTransform xf{};
-    xf.matrix[0] = cy * scale.x;
-    xf.matrix[1] = 0.0f;
-    xf.matrix[2] = -sy * scale.x;
-
-    xf.matrix[4] = sy * sp * scale.y;
-    xf.matrix[5] = cp * scale.y;
-    xf.matrix[6] = cy * sp * scale.y;
-
-    xf.matrix[8] = sy * cp * scale.z;
-    xf.matrix[9] = -sp * scale.z;
-    xf.matrix[10] = cy * cp * scale.z;
-
-    xf.matrix[12] = position.x;
-    xf.matrix[13] = position.y;
-    xf.matrix[14] = position.z;
+    xf.Basis[0] = glm::vec3(cy * scale.x, 0.0f, -sy * scale.x);
+    xf.Basis[1] = glm::vec3(sy * sp * scale.y, cp * scale.y, cy * sp * scale.y);
+    xf.Basis[2] = glm::vec3(sy * cp * scale.z, -sp * scale.z, cy * cp * scale.z);
+    xf.Position = Mathematics::WorldPosition::FromVector3(position);
     return xf;
 }
 
@@ -130,9 +123,7 @@ Components::WorldTransform IdentityAt(float32 x, float32 y, float32 z)
 // piece without changing the box it occupies.
 Components::WorldTransform MirrorColumn(Components::WorldTransform xf, uint32 column)
 {
-    xf.matrix[column * 4u] *= -1.0f;
-    xf.matrix[column * 4u + 1u] *= -1.0f;
-    xf.matrix[column * 4u + 2u] *= -1.0f;
+    xf.Basis[static_cast<int>(column)] *= -1.0f;
     return xf;
 }
 
@@ -251,11 +242,11 @@ constexpr float32 PivotForUnderside(float32 undersideY)
     return undersideY + kPieceHalfY;
 }
 
-SplineRecipes::PieceGroundGap Measure(const TerrainECS::PlanarHeightQuery& query, const Vector3& half,
+SplineRecipes::PieceGroundGap Measure(const TerrainECS::SurfaceHeightQuery& query, const Vector3& half,
                        const Components::WorldTransform& xf)
 {
     SplineRecipes::PieceGroundGap gap{};
-    MeasurePieceGroundGap(query, BoundsOf(half).Box, GameEngine::Mathematics::Matrix4x4::FromColumnMajor(xf.matrix), gap);
+    MeasurePieceGroundGap(query, BoundsOf(half).Box, xf.ToMatrix4x4(xf.GetPosition() - Mathematics::WorldPosition{}), gap);
     return gap;
 }
 
@@ -269,7 +260,7 @@ TEST(ComposedGroundQuery, ReadsTheModifierAndNotTheBaseHeightmap)
     AddFlattenVolume(world, 0.0f, 0.0f, kFlattenRadius, kFlattenTargetY);
     BakeModifiers(world);
 
-    const TerrainECS::PlanarHeightQuery query = TerrainECS::ResolvePlanarHeightQuery(world);
+    const TerrainECS::SurfaceHeightQuery query = TerrainECS::ResolveSurfaceHeightQuery(world, Mathematics::Vector3{});
     ASSERT_TRUE(query.IsValid());
 
     float32 inside = 0.0f;
@@ -294,7 +285,7 @@ TEST(ComposedGroundQuery, OutsideTheFootprintRefusesRatherThanReportingZero)
     CreateFlatTerrain(world);
     BakeModifiers(world);
 
-    const TerrainECS::PlanarHeightQuery query = TerrainECS::ResolvePlanarHeightQuery(world);
+    const TerrainECS::SurfaceHeightQuery query = TerrainECS::ResolveSurfaceHeightQuery(world, Mathematics::Vector3{});
     ASSERT_TRUE(query.IsValid());
 
     constexpr float32 kBeyondEdge = kWorldSize;
@@ -312,7 +303,7 @@ TEST(PlacementGroundGap, SignsFloatingPositiveAndBuriedNegative)
     AddFlattenVolume(world, 0.0f, 0.0f, kFlattenRadius, kFlattenTargetY);
     BakeModifiers(world);
 
-    const TerrainECS::PlanarHeightQuery query = TerrainECS::ResolvePlanarHeightQuery(world);
+    const TerrainECS::SurfaceHeightQuery query = TerrainECS::ResolveSurfaceHeightQuery(world, Mathematics::Vector3{});
     ASSERT_TRUE(query.IsValid());
 
     // Ground here is the flattened kFlattenTargetY, so the arithmetic is
@@ -353,7 +344,7 @@ TEST(PlacementGroundGap, MeasuresAgainstComposedGroundNotTheBase)
     AddFlattenVolume(world, 0.0f, 0.0f, kFlattenRadius, kFlattenTargetY);
     BakeModifiers(world);
 
-    const TerrainECS::PlanarHeightQuery query = TerrainECS::ResolvePlanarHeightQuery(world);
+    const TerrainECS::SurfaceHeightQuery query = TerrainECS::ResolveSurfaceHeightQuery(world, Mathematics::Vector3{});
     ASSERT_TRUE(query.IsValid());
 
     // A piece bedded on the FLATTENED ground. Measured against the base it would
@@ -380,7 +371,7 @@ TEST(PlacementGroundGap, ReportsEveryPieceParentedToTheRoute)
     AddFlattenVolume(world, 0.0f, 0.0f, kFlattenRadius, kFlattenTargetY);
     BakeModifiers(world);
 
-    const TerrainECS::PlanarHeightQuery query = TerrainECS::ResolvePlanarHeightQuery(world);
+    const TerrainECS::SurfaceHeightQuery query = TerrainECS::ResolveSurfaceHeightQuery(world, Mathematics::Vector3{});
     ASSERT_TRUE(query.IsValid());
 
     auto route = world.CreateEntity();
@@ -427,7 +418,7 @@ TEST(PlacementGroundGap, PitchedPieceMeasuresItsOwnUndersideNotTheBoxUnderIt)
     AddFlattenVolume(world, 0.0f, 0.0f, kFlattenRadius, kFlattenTargetY);
     BakeModifiers(world);
 
-    const TerrainECS::PlanarHeightQuery query = TerrainECS::ResolvePlanarHeightQuery(world);
+    const TerrainECS::SurfaceHeightQuery query = TerrainECS::ResolveSurfaceHeightQuery(world, Mathematics::Vector3{});
     ASSERT_TRUE(query.IsValid());
 
     // Control: the ground under this piece is the flatten, everywhere it probes.
@@ -459,7 +450,8 @@ TEST(PlacementGroundGap, PitchedPieceMeasuresItsOwnUndersideNotTheBoxUnderIt)
     // The bias a world AABB carries, stated as a number rather than left implicit:
     // its floor is the lowest underside CORNER, not the underside under any
     // probe.
-    const Mathematics::AABB worldBox = BoundsOf(kSlabHalf).Box.TransformToAABB(xf.matrix);
+    const Mathematics::AABB worldBox =
+        BoundsOf(kSlabHalf).Box.TransformToAABB(xf.ToMatrix4x4(xf.GetPosition() - Mathematics::WorldPosition{}).Data());
     EXPECT_NEAR(gap.UndersideCenterY - worldBox.min.y,
                 kSlabHalf.z * std::sin(kPitchDeg * kDegToRad), kHeightTolerance);
 }
@@ -474,7 +466,7 @@ TEST(PlacementGroundGap, NonUniformScaleScalesTheUndersideWithThePiece)
     AddFlattenVolume(world, 0.0f, 0.0f, kFlattenRadius, kFlattenTargetY);
     BakeModifiers(world);
 
-    const TerrainECS::PlanarHeightQuery query = TerrainECS::ResolvePlanarHeightQuery(world);
+    const TerrainECS::SurfaceHeightQuery query = TerrainECS::ResolveSurfaceHeightQuery(world, Mathematics::Vector3{});
     ASSERT_TRUE(query.IsValid());
 
     const Vector3 scale{3.0f, 2.0f, 1.5f};
@@ -512,7 +504,8 @@ TEST(PlacementGroundGap, YawedPieceProbesOnlyGroundItActuallyCovers)
     // Level, with its underside exactly on the untouched base ground.
     const Components::WorldTransform xf =
         PoseAt(Vector3{0.0f, kBaseGroundY + plankHalf.y, 0.0f}, 0.0f, kYawDeg, kUnitScale);
-    const Mathematics::AABB worldBox = BoundsOf(plankHalf).Box.TransformToAABB(xf.matrix);
+    const Mathematics::AABB worldBox =
+        BoundsOf(plankHalf).Box.TransformToAABB(xf.ToMatrix4x4(xf.GetPosition() - Mathematics::WorldPosition{}).Data());
 
     // The spike sits under the box's (max.x, min.z) corner — a corner of the
     // inflated box, and nowhere near the plank.
@@ -521,7 +514,7 @@ TEST(PlacementGroundGap, YawedPieceProbesOnlyGroundItActuallyCovers)
     AddFlattenVolume(world, spikeX, spikeZ, kSpikeRadius, kSpikeTargetY);
     BakeModifiers(world);
 
-    const TerrainECS::PlanarHeightQuery query = TerrainECS::ResolvePlanarHeightQuery(world);
+    const TerrainECS::SurfaceHeightQuery query = TerrainECS::ResolveSurfaceHeightQuery(world, Mathematics::Vector3{});
     ASSERT_TRUE(query.IsValid());
 
     // Controls, both directions: the spike really is there (a fixture whose
@@ -574,7 +567,7 @@ TEST(PlacementGroundGap, LiftingAPieceLiftsEveryGapByTheSameAmount)
     AddFlattenVolume(world, 0.0f, 0.0f, kFlattenRadius, kFlattenTargetY);
     BakeModifiers(world);
 
-    const TerrainECS::PlanarHeightQuery query = TerrainECS::ResolvePlanarHeightQuery(world);
+    const TerrainECS::SurfaceHeightQuery query = TerrainECS::ResolveSurfaceHeightQuery(world, Mathematics::Vector3{});
     ASSERT_TRUE(query.IsValid());
 
     constexpr float32 kLift = 0.37f;
@@ -612,7 +605,7 @@ TEST(PlacementGroundGap, MirroredTransformMeasuresThePhysicallyLowerFace)
     AddFlattenVolume(world, 0.0f, 0.0f, kFlattenRadius, kFlattenTargetY);
     BakeModifiers(world);
 
-    const TerrainECS::PlanarHeightQuery query = TerrainECS::ResolvePlanarHeightQuery(world);
+    const TerrainECS::SurfaceHeightQuery query = TerrainECS::ResolveSurfaceHeightQuery(world, Mathematics::Vector3{});
     ASSERT_TRUE(query.IsValid());
 
     const float32 pivotY =
@@ -650,7 +643,7 @@ TEST(PlacementGroundGap, WallLikePieceRefusesAndASteepRampStillMeasures)
     AddFlattenVolume(world, 0.0f, 0.0f, kFlattenRadius, kFlattenTargetY);
     BakeModifiers(world);
 
-    const TerrainECS::PlanarHeightQuery query = TerrainECS::ResolvePlanarHeightQuery(world);
+    const TerrainECS::SurfaceHeightQuery query = TerrainECS::ResolveSurfaceHeightQuery(world, Mathematics::Vector3{});
     ASSERT_TRUE(query.IsValid());
 
     const float32 pivotY = kFlattenTargetY + 1.0f;
@@ -682,7 +675,7 @@ TEST(PlacementGroundGap, PieceOffTheTerrainReportsNoGroundRatherThanZero)
     CreateFlatTerrain(world);
     BakeModifiers(world);
 
-    const TerrainECS::PlanarHeightQuery query = TerrainECS::ResolvePlanarHeightQuery(world);
+    const TerrainECS::SurfaceHeightQuery query = TerrainECS::ResolveSurfaceHeightQuery(world, Mathematics::Vector3{});
     ASSERT_TRUE(query.IsValid());
 
     const SplineRecipes::PieceGroundGap gap =
@@ -706,3 +699,128 @@ TEST(PlacementGroundGap, PieceOffTheTerrainReportsNoGroundRatherThanZero)
 // on a tiled terrain comes from the residency and NOT from the terrain
 // component's own Size fields.
 // ---------------------------------------------------------------------------
+
+namespace
+{
+
+// A 4 km island's shape: 1 sample per metre, so the per-tile heightmap lands on the
+// 1025-sample maximum and the terrain tiles rather than staying single.
+constexpr float32 kTiledWorldSize = 4096.0f;
+constexpr float32 kTiledHeightScale = 200.0f;
+constexpr float32 kTiledNormalizedHeight = 0.25f;
+constexpr float32 kTiledGroundY = kTerrainOriginY + kTiledNormalizedHeight * kTiledHeightScale;
+
+// A component footprint that DISAGREES with the residency, so a reader that takes
+// the footprint from the component instead of the tiles is caught.
+constexpr float32 kStaleComponentSize = 256.0f;
+
+struct ResidentTiledTerrain
+{
+    TerrainECS::TiledTerrainHandle Handle{};
+    float32 TileWorldSize = 0.0f;
+    float32 WorldOriginX = 0.0f;
+    float32 WorldOriginZ = 0.0f;
+};
+
+// One resident tile, filled with a constant so the expected ground is arithmetic.
+// LoadTile leaves a tile Empty and fills it with procedural noise; production
+// streams tiles to Full, and the sampler refuses an Empty tile, so both are set
+// the way the sibling tiled suite sets them.
+ResidentTiledTerrain CreateTiledTerrainWithOneResidentTile(ECS::World& world)
+{
+    TerrainService& service = TerrainService::Get();
+
+    TerrainECS::TiledTerrainConfig config{};
+    config.WorldSizeX = kTiledWorldSize;
+    config.WorldSizeZ = kTiledWorldSize;
+    config.HeightScale = kTiledHeightScale;
+    config.SamplesPerMeter = 1.0f;
+    config.PatchGridSize = 32;
+
+    ResidentTiledTerrain resident{};
+    resident.Handle = service.CreateTiledTerrain(config);
+    auto* data = service.GetTiledTerrainData(resident.Handle);
+    EXPECT_NE(data, nullptr);
+    if (!data)
+        return resident;
+    resident.TileWorldSize = data->Config.TileWorldSize;
+    resident.WorldOriginX = data->WorldOriginX;
+    resident.WorldOriginZ = data->WorldOriginZ;
+    EXPECT_EQ(data->Config.TileConfig.HeightmapWidth, 1025u)
+        << "this fixture is meant to sit on the per-tile sample maximum";
+
+    auto* tile = service.LoadTile(resident.Handle, TerrainECS::TileCoord{0, 0});
+    EXPECT_NE(tile, nullptr);
+    if (tile)
+    {
+        const uint32 width = tile->Heightfield.GetWidth();
+        const uint32 height = tile->Heightfield.GetHeight();
+        for (uint32 z = 0u; z < height; ++z)
+            for (uint32 x = 0u; x < width; ++x)
+                tile->Heightfield.SetSample(x, z, kTiledNormalizedHeight);
+        tile->LodState = TerrainECS::TileLodState::Full;
+    }
+
+    auto entity = world.CreateEntity();
+    Components::Terrain terrain{};
+    terrain.SizeX = kStaleComponentSize;
+    terrain.SizeZ = kStaleComponentSize;
+    terrain.HeightScale = kTiledHeightScale;
+    terrain.TiledTerrainHandle = resident.Handle.Index;
+    terrain.TiledTerrainGeneration = resident.Handle.Generation;
+    // No single residency: an index this far out of range can never match a slot,
+    // so the query must resolve through the tiles.
+    terrain.TerrainDataHandle = 0xFFFFFFFFu;
+    terrain.TerrainDataGeneration = 0xFFFFFFFFu;
+    terrain.BaseSource = Components::TerrainBaseSource::Flat;
+    world.AddComponentImmediate<Components::Terrain>(entity, terrain);
+    world.AddComponentImmediate<Components::WorldTransform>(
+        entity, IdentityAt(0.0f, kTerrainOriginY, 0.0f));
+    return resident;
+}
+
+} // namespace
+
+TEST(PlacementGroundGap, RefusesAPieceOnATiledTerrainWhoseHeightsHaveNoSourceYet)
+{
+    EnsureTerrainService();
+    ECS::World world;
+    const ResidentTiledTerrain resident = CreateTiledTerrainWithOneResidentTile(world);
+
+    // No height-page Update has run, so the terrain's pages have no source: the state of a height
+    // store still cooking. Its resident tile holds a height, and the query must not answer with it.
+    const TerrainECS::SurfaceHeightQuery query = TerrainECS::ResolveSurfaceHeightQuery(
+        world, Mathematics::Vector3(resident.WorldOriginX, 0.0f, resident.WorldOriginZ));
+    ASSERT_TRUE(query.IsValid());
+    ASSERT_EQ(query.WholeMap(), nullptr) << "a single heightfield would answer instead of the pages";
+    EXPECT_EQ(query.Edits().Source, 0u);
+
+    // The footprint is the tiles', not the component's stale Size.
+    EXPECT_NEAR(query.FootprintSizeX(), kTiledWorldSize, kHeightTolerance);
+    EXPECT_NEAR(query.FootprintOriginX(), resident.WorldOriginX, kHeightTolerance);
+    EXPECT_NEAR(query.LatticeSpacingX(),
+                resident.TileWorldSize / static_cast<float32>(1025u - 1u), kHeightTolerance);
+
+    const float32 insideTileX = resident.WorldOriginX + resident.TileWorldSize * 0.5f;
+    const float32 insideTileZ = resident.WorldOriginZ + resident.TileWorldSize * 0.5f;
+    EXPECT_TRUE(query.ContainsXZ(insideTileX, insideTileZ));
+
+    // Unsampled under both policies, never the resident tile's stale height.
+    TerrainECS::SurfaceHeightSample sample;
+    const Vector3 inside{insideTileX, 0.0f, insideTileZ};
+    EXPECT_FALSE(query.SampleHeight(inside, TerrainECS::SurfaceHeightPolicy::RequireFinest, sample));
+    EXPECT_FALSE(query.SampleHeight(inside, TerrainECS::SurfaceHeightPolicy::AcceptCoarse, sample));
+    uint32 pageX = 0u;
+    uint32 pageZ = 0u;
+    EXPECT_FALSE(query.FinestPageAt(insideTileX, insideTileZ, pageX, pageZ)) << "no source names no page to wait on";
+
+    // The piece is refused, not measured: the user sees the store's cook state, not a gap.
+    const float32 pivotY = PitchedPivotForUndersideCenter(kTiledGroundY, kPitchDeg, kSlabHalf);
+    const SplineRecipes::PieceGroundGap gap =
+        Measure(query, kSlabHalf,
+                PoseAt(Vector3{insideTileX, pivotY, insideTileZ}, kPitchDeg, 0.0f, kUnitScale));
+    EXPECT_EQ(gap.Status, SplineRecipes::GroundGapStatus::NoGroundSampled);
+    EXPECT_EQ(gap.ProbesSampled, 0u);
+
+    TerrainService::Get().DestroyTiledTerrain(resident.Handle);
+}

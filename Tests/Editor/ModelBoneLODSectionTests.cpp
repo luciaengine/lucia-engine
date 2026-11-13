@@ -125,7 +125,7 @@ TEST_F(ModelBoneLODSectionTest, InvalidSettingsResetCanUndoBackToTheAuthoredValu
     ASSERT_TRUE(registry.SetMetaValue(model->GetPath(), BoneLODAssetSettings::kMetadataKey, "{broken"));
     Editor::UndoRedoService undo;
     Editor::ModelBoneLODSection section(*model, &undo, {});
-    auto* reset = dynamic_cast<Button*>(section.FindById("BoneLODReset"));
+    auto* reset = dynamic_cast<Button*>(section.FindById("BoneLODReset"_sid));
     ASSERT_NE(reset, nullptr);
     ASSERT_TRUE(reset->IsEnabledInHierarchy());
     UIEvent event;

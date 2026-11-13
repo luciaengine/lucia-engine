@@ -1,8 +1,8 @@
 #include "CBTTerrain/CBTInstance.h"
 
 #include "CBTTerrain/CBTKernelSet.h"
+#include "CBTTerrain/CBTPoolCensus.h"
 #include "CBTTerrain/CBTSphereRoots.h"
-#include "CBTTerrain/SphereSculptLayer.h" // ResolveSculptPagePoolCount
 
 #include "Rendering/Core/CommandList.h"
 #include "Logger/Logger.h"
@@ -31,6 +31,9 @@ constexpr uint64_t kReadbackValidationOffset = kReadbackDrawBytes;
 constexpr uint64_t kReadbackValidationBytes = static_cast<uint64_t>(kValidationWords) * 4u;
 // Depth-target passes RefineUniform runs past one per level.
 constexpr uint32_t kRefineUniformExtraPasses = 2u;
+// Passes RefineToView runs past one per level: its first pass classifies on the corners that the
+// uniform seed evaluated flat.
+constexpr uint32_t kRefineToViewExtraPasses = 1u;
 
 // The level-0 samples a UV rect reaches along an axis of `samples`, one sample past each side: the
 // rect comes from a texel rect padded one texel (TerrainRenderFeature::AccumulateUnifiedHeightDirty),
@@ -121,16 +124,10 @@ bool CBTInstance::InitializeRoots(uint32_t domainMode)
 
     const bool firstDrawResourceInit = !m_DrawResourcesInitialized;
 
-    // A live re-seed can replace sculpt-ring descriptors as well as topology. Retire their
-    // graphics users before rebinding; unrelated compute/transfer work does not need a drain.
+    // A live re-seed replaces persistent topology behind its previous users. Retire their
+    // graphics users first; unrelated compute/transfer work does not need a drain.
     if (!firstDrawResourceInit)
         m_Device->WaitGpuSyncToken(m_Device->LastGraphicsSubmissionToken());
-
-    // The sculpt rings follow the domain: full rings for a sphere, placeholders for a planar tree.
-    // Before the domain fields change: a refused allocation leaves the instance on its previous
-    // domain, tree and rings.
-    if (!m_Resources.ProvisionSculptRings(domainMode == kDomainSpherical, ResolveSculptPagePoolCount()))
-        return false;
 
     m_DomainMode = domainMode;
     m_BaseDepth = (domainMode == kDomainSpherical) ? kSphereBaseDepth : kDefaultBaseDepth;
@@ -232,7 +229,7 @@ bool CBTInstance::InitializeRoots(uint32_t domainMode)
           static_cast<size_t>(m_PoolSize - rootCount) * sizeof(uint64_t));
     clear(CBTBinding::Bitfield, sizeof(uint32_t),
           static_cast<size_t>(CBTBitfieldWords(m_PoolSize) - 1u) * sizeof(uint32_t));
-    for (const auto [binding, words] : {
+    for (const auto& [binding, words] : {
              std::pair{CBTBinding::WorkQueue, kWQCounterSlots},
              std::pair{CBTBinding::IndirectDispatch, kIndirectDispatchWords},
              std::pair{CBTBinding::IndirectDraw, kIndirectDrawWords},
@@ -254,8 +251,7 @@ bool CBTInstance::InitializeRoots(uint32_t domainMode)
     {
         for (const TextureHandle texture : {m_Resources.GetDefaultHeightTexture(),
                  m_Resources.GetDefaultAtlasHeightTexture(),
-                 m_Resources.GetDefaultAtlasCoarseTexture(),
-                 m_Resources.GetDefaultPageCacheTexture()})
+                 m_Resources.GetDefaultAtlasCoarseTexture()})
         {
             if (!texture.IsValid())
                 continue;
@@ -299,13 +295,31 @@ void CBTInstance::RefineUniform(uint32_t depth, uint32_t frameCounter)
     // One pass splits every leaf once; the passes past depth - base absorb the conforming splits
     // a pass defers, and are no-ops once every leaf is at `depth`.
     const uint32_t passes = (depth - m_BaseDepth) + kRefineUniformExtraPasses;
+    SubmitUpdatesAndWait(classify, CBTIdentityFrameParams(), passes, frameCounter, false);
+}
+
+uint32_t CBTInstance::RefineToView(const CBTClassifyDesc& classify, const CBTFrameParams& params,
+                                   uint32_t uniformDepth, uint32_t frameCounter)
+{
+    if (!m_Ready || classify.TargetDepth <= uniformDepth)
+        return 0u;
+    const uint32_t passes = (classify.TargetDepth - uniformDepth) + kRefineToViewExtraPasses;
+    SubmitUpdatesAndWait(classify, params, passes, frameCounter, true);
+    return passes;
+}
+
+void CBTInstance::SubmitUpdatesAndWait(CBTClassifyDesc classify, const CBTFrameParams& params,
+                                       uint32_t passes, uint32_t frameCounter, bool forceFirstVertexEval)
+{
+    const uint32_t gate = classify.GateVertexEval;
     for (uint32_t pass = 0; pass < passes; ++pass)
     {
+        classify.GateVertexEval = (forceFirstVertexEval && pass == 0u) ? 0u : gate;
         auto cl = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
         if (!cl)
             return;
         cl->Begin();
-        RecordUpdate(*cl, classify, CBTIdentityFrameParams(), frameCounter);
+        RecordUpdate(*cl, classify, params, frameCounter);
         cl->End();
         std::vector<CommandList*> lists{cl.get()};
         m_Device->ExecuteCommandLists(lists);
@@ -498,7 +512,7 @@ void CBTInstance::RecordUpdate(CommandList& cl, const CBTClassifyDesc& classify,
     // Upload this frame's camera + terrain params to the UBO ring element the kernels
     // read, CBTFrameRingSlot(frameCounter). Host-visible write completes before submit;
     // the ring + frame fence keep it clear of the previous frame's in-flight read.
-    m_Resources.UploadFrameParams(frameCounter, params);
+    m_Resources.UploadFrameParams(frameCounter, params, classify.SphereDirty);
 
     CBTPushConstants pc{};
     pc.BaseDepth = m_BaseDepth;
@@ -518,20 +532,16 @@ void CBTInstance::RecordUpdate(CommandList& cl, const CBTClassifyDesc& classify,
     pc.DirtyMinV = classify.DirtyMinV;
     pc.DirtyMaxU = classify.DirtyMaxU;
     pc.DirtyMaxV = classify.DirtyMaxV;
-    // Planet editing (plan §planet-editing): the (face,rect) selector + the sculpt-sample
-    // gate. On the sphere the dirty rect is face-local; DirtyFace names the face.
-    pc.DirtyFace = classify.DirtyFace;
-    pc.SphereSculptEnabled = classify.SphereSculptEnabled;
-    // The narrow-heap kernels (no 64-bit integers: WebGPU) cannot bind the
-    // modified index stream — it would be the 11th storage buffer against a
-    // per-stage limit of 10 — so VertexEval always walks the full live stream there.
+    // The narrow-heap kernels (no 64-bit integers: WebGPU) do not read the modified
+    // index stream (their VertexEval reads 8 storage buffers, the WebGPU default limit
+    // per stage), so VertexEval always walks the full live stream there.
     const bool vertexEvalGateSupported = m_Device->GetCapabilities().supportsShaderInt64;
     pc.GateVertexEval = vertexEvalGateSupported ? classify.GateVertexEval : 0u;
-    pc.EditRetessEnabled = classify.EditRetessEnabled;
     pc.NearFieldGate = classify.NearFieldGate;
-    pc.DeepDecode = classify.DeepDecode;
     pc.PoolPressure = classify.PoolPressure;
     pc.Settle = classify.Settle;
+    pc.Census = classify.Census;
+    pc.BehindEye = static_cast<uint32_t>(classify.BehindEye);
 
     // Indexation and Validate still scan the whole pool (Indexation IS the pointer-cache
     // that rebuilds the live compact stream every frame; Validate's zombie check must see the
@@ -588,8 +598,9 @@ void CBTInstance::RecordUpdate(CommandList& cl, const CBTClassifyDesc& classify,
     // 1.6 The planar split: Classify reads the height-range pyramid of this frame's heights and of the
     // chain the draw shows, so the chain is built first.
     const bool editRect = classify.DirtyMaxU > classify.DirtyMinU && classify.DirtyMaxV > classify.DirtyMinV;
-    const bool chainRebuilt = RecordHeightChainBuild(cl, classify, params, pc, frameCounter, refreshBeforeClassify, editRect);
-    RecordHeightRangeBuild(cl, classify, params, pc, frameCounter, refreshBeforeClassify || editRect || chainRebuilt);
+    const bool chainRebuiltWhole =
+        RecordHeightChainBuild(cl, classify, params, pc, frameCounter, refreshBeforeClassify, editRect);
+    RecordHeightRangeBuild(cl, classify, params, pc, frameCounter, refreshBeforeClassify || chainRebuiltWhole, editRect);
 
     // 2. Classify drives the deterministic depth-target metric. It reads the
     //    CurrentVertexBuffer written by the PREVIOUS frame's vertex-eval (step
@@ -702,7 +713,7 @@ void CBTInstance::RecordUpdate(CommandList& cl, const CBTClassifyDesc& classify,
 
 void CBTInstance::RecordHeightRangeBuild(CommandList& cl, const CBTClassifyDesc& classify,
                                          const CBTFrameParams& params, CBTPushConstants pc,
-                                         uint32_t frameCounter, bool heightsChanged)
+                                         uint32_t frameCounter, bool forced, bool edited)
 {
     const BufferHandle range = m_Resources.GetHeightRangeBuffer();
     if (!range.IsValid() || classify.Mode != kClassifyScreenSpace || m_DomainMode != kDomainPlanar ||
@@ -720,7 +731,8 @@ void CBTInstance::RecordHeightRangeBuild(CommandList& cl, const CBTClassifyDesc&
                                          m_HeightChainLattice == lattice
                                      ? CBTHeightChainRangeLevels(width, height)
                                      : 0u;
-    if (!heightsChanged && source == m_HeightRangeSource && chainLevels == m_HeightRangeChainLevels)
+    const bool whole = forced || source != m_HeightRangeSource || chainLevels != m_HeightRangeChainLevels;
+    if (!whole && !edited)
         return;
     m_HeightRangeSource = source;
     m_HeightRangeChainLevels = chainLevels;
@@ -732,19 +744,61 @@ void CBTInstance::RecordHeightRangeBuild(CommandList& cl, const CBTClassifyDesc&
     if (first == 0u)
         return;
     const uint32_t top = std::max(CBTHeightRangeTopLevel(cellsX, cellsY), first);
+
+    // An edit rebuilds the blocks that read its samples at the first level and at each chain level's base
+    // level, and above them the blocks that fold those. The edit's samples are the ones
+    // RecordHeightChainBuild rebuilds from, plus one each side for the first level's differences, which
+    // read one sample past a block; a chain level's are the chain samples that build rewrote.
+    std::array<CBTHeightBuildRegion, kCBTHeightChainMaxLevel + 1u> chainSamples{};
+    CBTHeightBuildRegion edit;
+    if (!whole)
+    {
+        chainSamples[0].MinX = DirtySampleLow(classify.DirtyMinU, width);
+        chainSamples[0].MinZ = DirtySampleLow(classify.DirtyMinV, height);
+        chainSamples[0].MaxX = DirtySampleHigh(classify.DirtyMaxU, width);
+        chainSamples[0].MaxZ = DirtySampleHigh(classify.DirtyMaxV, height);
+        for (uint32_t chainLevel = 1u; chainLevel <= chainLevels; ++chainLevel)
+            chainSamples[chainLevel] = CBTHeightChainCoarserRegion(chainSamples[chainLevel - 1u],
+                                                                   CBTHeightChainSamples(width, chainLevel - 1u),
+                                                                   CBTHeightChainSamples(height, chainLevel - 1u));
+        edit.MinX = chainSamples[0].MinX > 0u ? chainSamples[0].MinX - 1u : 0u;
+        edit.MinZ = chainSamples[0].MinZ > 0u ? chainSamples[0].MinZ - 1u : 0u;
+        edit.MaxX = std::min(chainSamples[0].MaxX + 1u, cellsX);
+        edit.MaxZ = std::min(chainSamples[0].MaxZ + 1u, cellsY);
+    }
+
     const ResourceBarrier written =
         ResourceBarrier::CreateBufferBarrier(range, ResourceState::UnorderedAccess,
                                              ResourceState::UnorderedAccess);
-    cl.SetMarker("CBT.HeightRangeBuild");
+    cl.SetMarker(whole ? "CBT.HeightRangeBuild" : "CBT.HeightRangeBuildEdit");
+    CBTHeightBuildRegion region;
     for (uint32_t level = first; level <= top; ++level)
     {
+        const uint32_t blocksX = CBTHeightRangeDim(cellsX, level);
+        const uint32_t blocksZ = CBTHeightRangeDim(cellsY, level);
+        if (whole)
+            region = {0u, 0u, blocksX - 1u, blocksZ - 1u};
+        else
+            region = level == first ? CBTHeightRangeBlocksReading(edit, level, blocksX, blocksZ)
+                                    : CBTHeightRangeCoarserRegion(region);
         // The level-0 blocks, then one set per chain level whose pyramid has this level.
         uint32_t sets = 1u;
-        for (uint32_t j = 1u; j <= chainLevels; ++j)
-            sets += CBTHeightChainRangeBase(first, top, j) <= level ? 1u : 0u;
+        for (uint32_t chainLevel = 1u; chainLevel <= chainLevels; ++chainLevel)
+        {
+            const uint32_t base = CBTHeightChainRangeBase(first, top, chainLevel);
+            sets += base <= level ? 1u : 0u;
+            if (!whole && base == level)
+                region = CBTHeightBuildRegionUnion(
+                    region, CBTHeightRangeBlocksReading(chainSamples[chainLevel], level - chainLevel,
+                                                        blocksX, blocksZ));
+        }
+        const uint32_t regionX = region.MaxX - region.MinX + 1u;
+        const uint32_t regionZ = region.MaxZ - region.MinZ + 1u;
         pc.PassIndex = level | (chainLevels << 8u);
-        const uint32_t entries = CBTHeightRangeDim(cellsX, level) * CBTHeightRangeDim(cellsY, level);
-        DispatchDirect(cl, CBTKernel::HeightRangeBuild, pc, CeilDiv(entries * sets, kComputeWorkgroupSize));
+        pc.BuildRegionMin = region.MinX | (region.MinZ << 16u);
+        pc.BuildRegionExtent = regionX | (regionZ << 16u);
+        DispatchDirect(cl, CBTKernel::HeightRangeBuild, pc,
+                       CeilDiv(regionX * regionZ * sets, kComputeWorkgroupSize));
         cl.Barrier(written);
     }
 }
@@ -775,7 +829,7 @@ bool CBTInstance::RecordHeightChainBuild(CommandList& cl, const CBTClassifyDesc&
     m_HeightChainLattice = lattice;
     m_HeightChainBuffer = chain;
 
-    CBTHeightChainRegion region;
+    CBTHeightBuildRegion region;
     if (whole)
     {
         region.MaxX = samplesX - 1u;
@@ -793,7 +847,7 @@ bool CBTInstance::RecordHeightChainBuild(CommandList& cl, const CBTClassifyDesc&
     const uint32_t normalMips = m_Resources.GetNormalChainMips();
     const bool normals = m_Resources.HasNormalChainFor(samplesX, samplesZ) &&
                          normalMips == CBTNormalChainMips(samplesX, samplesZ) && normalMips > 0u;
-    std::array<CBTHeightChainRegion, kCBTNormalChainMaxMips> levelRegions{};
+    std::array<CBTHeightBuildRegion, kCBTNormalChainMaxMips> levelRegions{};
     cl.SetMarker("CBT.HeightChainBuild");
     for (uint32_t level = 1u; level <= top; ++level)
     {
@@ -804,15 +858,15 @@ bool CBTInstance::RecordHeightChainBuild(CommandList& cl, const CBTClassifyDesc&
         const uint32_t width = region.MaxX - region.MinX + 1u;
         const uint32_t height = region.MaxZ - region.MinZ + 1u;
         pc.PassIndex = level;
-        pc.HeightChainRegionMin = region.MinX | (region.MinZ << 16u);
-        pc.HeightChainRegionExtent = width | (height << 16u);
+        pc.BuildRegionMin = region.MinX | (region.MinZ << 16u);
+        pc.BuildRegionExtent = width | (height << 16u);
         DispatchDirect(cl, CBTKernel::HeightChainBuild, pc, CeilDiv(width * height, kComputeWorkgroupSize));
         cl.Barrier(written);
     }
     if (!normals)
-        return true; // not provisioned for this lattice: the surface keeps the level-0 normal map
-    // The normal chain stays GENERAL for its shared storage and sampled descriptors.
-    // Order prior reads before these writes, then publish the completed mips.
+        return whole; // not provisioned for this lattice: the surface keeps the level-0 normal map
+    // The normal chain reads the finished height chain; its mips are independent of each other. It rests
+    // in GENERAL because shared storage descriptors and sampled draws name the same texture.
     const TextureHandle normalChain = m_Resources.GetNormalChainTexture();
     cl.SetMarker("CBT.NormalChainBuild");
     cl.Barrier(ResourceBarrier::CreateTextureBarrier(normalChain, ResourceState::UnorderedAccess,
@@ -822,7 +876,7 @@ bool CBTInstance::RecordHeightChainBuild(CommandList& cl, const CBTClassifyDesc&
         const uint32_t level = mip + 1u;
         const uint32_t texelsX = CBTNormalChainTexels(samplesX, mip);
         const uint32_t texelsZ = CBTNormalChainTexels(samplesZ, mip);
-        CBTHeightChainRegion texelRegion;
+        CBTHeightBuildRegion texelRegion;
         NormalTexelRange(levelRegions[mip].MinX, levelRegions[mip].MaxX, level, samplesX, texelsX,
                          texelRegion.MinX, texelRegion.MaxX);
         NormalTexelRange(levelRegions[mip].MinZ, levelRegions[mip].MaxZ, level, samplesZ, texelsZ,
@@ -830,13 +884,13 @@ bool CBTInstance::RecordHeightChainBuild(CommandList& cl, const CBTClassifyDesc&
         const uint32_t width = texelRegion.MaxX - texelRegion.MinX + 1u;
         const uint32_t height = texelRegion.MaxZ - texelRegion.MinZ + 1u;
         pc.PassIndex = mip;
-        pc.HeightChainRegionMin = texelRegion.MinX | (texelRegion.MinZ << 16u);
-        pc.HeightChainRegionExtent = width | (height << 16u);
+        pc.BuildRegionMin = texelRegion.MinX | (texelRegion.MinZ << 16u);
+        pc.BuildRegionExtent = width | (height << 16u);
         DispatchDirect(cl, CBTKernel::NormalChainBuild, pc, CeilDiv(width * height, kComputeWorkgroupSize));
     }
     cl.Barrier(ResourceBarrier::CreateTextureBarrier(normalChain, ResourceState::UnorderedAccess,
                                                      ResourceState::UnorderedAccess, 0u, normalMips));
-    return true;
+    return whole;
 }
 
 void CBTInstance::RecordReadback(CommandList& cl)
@@ -1002,6 +1056,8 @@ CBTTessellationStats CBTInstance::ReadTessellationStats()
     st.DispatchClampTotal = sig(kWQDispatchClampCounter);
     st.PressureStep = sig(kWQPressureStep);
     st.OffFrustumKeepStep = sig(kWQOffFrustumKeepStep);
+    st.OffFrustumKeepFloor = sig(kWQOffFrustumKeepFloor);
+    st.MergeCandidates = sig(kWQMergeCandidateCounter);
 
     // The sum-tree root (live bisector count) sits at the heap base, past the packed leaves.
     const uint32_t rootWord = CBTSumTreeHeapBase(m_PoolSize);
@@ -1009,6 +1065,25 @@ CBTTessellationStats CBTInstance::ReadTessellationStats()
     if (rootWord < sumTree.size())
         st.LiveCount = sumTree[rootWord];
     return st;
+}
+
+CBTPoolCensus CBTInstance::ReadPoolCensus()
+{
+    CBTPoolCensus census;
+    if (!m_Ready || m_Device == nullptr)
+        return census;
+    const std::vector<uint32_t> words =
+        DebugReadWords(CBTBinding::WorkQueue, kCensusWords, WQCensusOffset(m_PoolSize));
+    if (words.size() != kCensusWords)
+        return census;
+    for (uint32_t level = 0; level < kCensusLevels; ++level)
+    {
+        census.InViewByLevel[level] = words[2u * level];
+        census.OffViewByLevel[level] = words[2u * level + 1u];
+    }
+    for (uint32_t classIndex = 0; classIndex < kCensusClassCount; ++classIndex)
+        census.OffViewByClass[classIndex] = words[2u * kCensusLevels + classIndex];
+    return census;
 }
 
 } // namespace GameEngine::CBTTerrain

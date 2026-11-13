@@ -19,6 +19,7 @@ set(ASSET_TEST_SOURCES
     AssetIOServiceTests.cpp
     AssetDecodeGateTests.cpp
     AssetDecodeCancellationTests.cpp
+    AssetDecodeInputReadTests.cpp
     AsyncAssetReloadTests.cpp
     InlineReloadDeferralTests.cpp
     ParserRegistryExtensionDispatchTests.cpp
@@ -28,17 +29,24 @@ set(ASSET_TEST_SOURCES
     Complete4StagePipelineIntegrationTest.cpp
     DayCycleProfileAssetTests.cpp
     AudioAssetPolicyTests.cpp
+    CubeLutAssetTests.cpp
     MetaFileRegistryTests.cpp
     AssetMetaMaintenanceTests.cpp
     FilePatternTests.cpp
     AssetRegistryConcurrencyTests.cpp
     RegistryScanFanoutTests.cpp
+    AssetDbParallelLoadTests.cpp
+    AssetDbStoreLoadTests.cpp
     AssetRootSeparationTests.cpp
     FoldedPathIndexTests.cpp
     AssetDbLegacyPathNormalizationTests.cpp
     AssetDbIgnoresMetaSidecarsTests.cpp
     AssetDbTypeInferencePersistenceTests.cpp
     TerrainMaterialLibraryAssetTests.cpp
+    NavSurfaceAssetTests.cpp
+    DayCycleProfileAssetTests.cpp
+    AiOptionSetAssetTypeTests.cpp
+    AiStateTreeAssetTypeTests.cpp
     AssetDbHardeningTests.cpp
     AssetDbDerivedReconcileTests.cpp
     AssetDbDerivedRedirectTests.cpp
@@ -69,6 +77,9 @@ set(ASSET_TEST_SOURCES
     BuildRenderPipelineCollectionTests.cpp
     BuildSceneCollectionTests.cpp
     BuildDefaultUIFontCollectionTests.cpp
+    BuildUIControlAssetCollectionTests.cpp
+    WebExportContentTests.cpp
+    ShipRulesTests.cpp
     FbxLoaderOptionsTests.cpp
 )
 
@@ -145,6 +156,7 @@ add_executable(AssetPerformanceBenchmarks
     AssetPerformanceRegressionFramework.cpp
     AssetDbLargeProjectPerformanceTests.cpp
     SnapshotWarmStartBenchmark.cpp
+    AssetReadBenchmark.cpp
     ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp
 )
 

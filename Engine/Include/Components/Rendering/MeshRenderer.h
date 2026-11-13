@@ -1,6 +1,9 @@
 #pragma once
 
 #include "Components/AssetRef.h"
+#include "Components/Rendering/MeshGPUData.h"
+#include "ECS/RequiredComponents.h"
+#include "Rendering/RenderLayerMask.h"
 #include "Types/StringId.h"
 #include "Types/Types.h"
 #include <string_view>
@@ -11,6 +14,28 @@ namespace GameEngine
 {
 namespace Components
 {
+
+/// Whether a mesh is drawn and whether it casts a shadow. Off: the mesh is drawn and casts no
+/// shadow. On: the mesh is drawn and casts a shadow. ShadowsOnly: the mesh is not drawn and still
+/// casts its shadow, the way a cheap proxy casts the shadow of a detailed building.
+enum class ShadowCasting : uint8
+{
+    Off = 0,
+    On = 1,
+    ShadowsOnly = 2,
+};
+
+/// The enumerator's name, which is also its scene value (`MeshRenderer.shadowCasting = ShadowsOnly`).
+constexpr std::string_view ShadowCastingName(ShadowCasting casting)
+{
+    switch (casting)
+    {
+    case ShadowCasting::Off: return "Off";
+    case ShadowCasting::On: return "On";
+    case ShadowCasting::ShadowsOnly: return "ShadowsOnly";
+    }
+    return "On";
+}
 
 struct MeshRenderer
 {
@@ -29,6 +54,7 @@ struct MeshRenderer
     // MeshGPURegistry handle stored as raw uint64 (trivially copyable for ECS).
     // Cache filled on first bind from modelAssetGuid. Extraction uses this
     // when non-zero; zero means "not bound yet" (scene deserialize, spawn).
+    // @ge-hidden the engine's GPU handle: not script data, not saved in scenes
     uint64 meshGpuHandleId = 0;
     // Asset-backed material reference.
     // The extraction system resolves this via MaterialRegistry::Find.
@@ -36,8 +62,9 @@ struct MeshRenderer
     // Asset-backed model reference. Extraction bind uses this when the
     // handle is still zero (Ensure model GPU resources, then cache the handle).
     Components::ModelRef modelAssetGuid;
-    uint32 renderLayerMask = 1u;
-    bool castShadows = true;
+    // The views that draw this mesh: a view draws it when their layers intersect.
+    Rendering::RenderLayerMask RenderLayers;
+    ShadowCasting shadowCasting = ShadowCasting::On;
     bool receiveShadows = true;
     bool motionVectors = true;
 };
@@ -124,3 +151,12 @@ inline StringId HashMeshName(std::string_view name)
 
 } // namespace Components
 } // namespace GameEngine
+
+// A MeshRenderer holds its GPUScene index bridge from creation (unassigned until
+// render extraction assigns a slot), so extraction never adds it with an
+// archetype move per entity.
+template <>
+struct GameEngine::ECS::Detail::RequiredComponents<GameEngine::Components::MeshRenderer>
+{
+    using type = TypeList<GameEngine::Components::MeshGPUData>;
+};

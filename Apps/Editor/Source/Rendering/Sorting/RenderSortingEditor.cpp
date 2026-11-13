@@ -8,7 +8,7 @@
 #include "Editor/Entities/EditorComponentTraits.h"
 #include "Editor/Registries/EditorPanelRegistry.h"
 #include "InspectorRegistry.h"
-#include "Inspectors/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
 #include "Rendering/Sorting/SortingLayerSettings.h"
 #include "UndoRedo/UndoRedoService.h"
 

@@ -7,7 +7,7 @@
 #include "ECS/ECSTemplates.h"
 #include "Engine/Rendering/OceanDepthCacheBaker.h"
 #include "SplineECS/SplineService.h"
-#include "TerrainECS/PlanarHeightQuery.h"
+#include "TerrainECS/SurfaceHeightQuery.h"
 #include "TerrainECS/TerrainModifierSystem.h"
 #include "TerrainECS/TerrainService.h"
 
@@ -60,9 +60,7 @@ protected:
     static Components::WorldTransform At(float x, float y, float z)
     {
         Components::WorldTransform transform;
-        transform.matrix[12] = x;
-        transform.matrix[13] = y;
-        transform.matrix[14] = z;
+        transform.Position = Mathematics::WorldPosition{x, y, z};
         return transform;
     }
 
@@ -139,12 +137,12 @@ TEST_F(OceanSceneTerrainBake, CenteredComposedTerrainCoversNegativeWorldCoordina
     TerrainECS::TerrainModifierSystem modifiers;
     modifiers.Update(World, 1.f / 60);
 
-    const auto query = TerrainECS::ResolvePlanarHeightQuery(World);
-    float height = 0;
-    ASSERT_TRUE(query.SampleHeight(-120, -160, height));
-    ASSERT_NEAR(height, 1, 1e-4f);
-    ASSERT_TRUE(query.SampleHeight(120, 160, height));
-    ASSERT_NEAR(height, 4, 1e-4f);
+    const auto query = TerrainECS::ResolveSurfaceHeightQuery(World, {-120, 0, -160});
+    TerrainECS::SurfaceHeightSample sample;
+    ASSERT_TRUE(query.SampleHeight({-120, 0, -160}, TerrainECS::SurfaceHeightPolicy::RequireFinest, sample));
+    ASSERT_NEAR(sample.Height, 1, 1e-4f);
+    ASSERT_TRUE(query.SampleHeight({120, 0, 160}, TerrainECS::SurfaceHeightPolicy::RequireFinest, sample));
+    ASSERT_NEAR(sample.Height, 4, 1e-4f);
 
     // The affected scene's real cache rectangle lies wholly inside [-288,288]^2.
     Ocean::OceanDepthCacheBakeDesc desc{1024, 1024, -224, -272, 432, 496, 10, 60000};

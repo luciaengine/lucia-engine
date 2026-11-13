@@ -165,7 +165,7 @@ namespace GameEngine.SourceGenerators
             public readonly uint Size;
             public readonly uint Alignment;
             public readonly ushort FieldType; // ComponentFieldType value; 0 = not schema-representable
-            public readonly ushort AssetCategory;
+            public readonly ushort AssetCategory; // the AssetType an AssetGuid field names; 0 = any
             public readonly bool Valid;
 
             public TypeLayout(uint size, uint alignment, ushort fieldType, ushort assetCategory = 0)
@@ -184,10 +184,12 @@ namespace GameEngine.SourceGenerators
         private const ushort kBool = 1, kInt8 = 2, kInt16 = 3, kInt32 = 4, kInt64 = 5;
         private const ushort kUInt8 = 6, kUInt16 = 7, kUInt32 = 8, kUInt64 = 9;
         private const ushort kFloat = 10, kDouble = 11;
-        private const ushort kVec2 = 12, kVec3 = 13, kVec4 = 14, kQuat = 15, kColor = 17;
-
+        private const ushort kVec2 = 12, kVec3 = 13, kVec4 = 14, kQuat = 15, kColor = 17, kRenderLayerMask = 22;
         private const ushort kAssetGuid = 18;
-        private const ushort kAssetCategoryPrefab = 46; // ECSABI.h
+
+        // The engine's AssetType::Prefab, which ECSABI.h names GE_ECS_ASSET_CATEGORY_PREFAB.
+        private const ushort kAssetCategoryPrefab = 46;
+        private const uint kPrefabRefSize = 16;
 
         private static TypeLayout LayoutOfType(ITypeSymbol type)
         {
@@ -220,8 +222,10 @@ namespace GameEngine.SourceGenerators
 
             if (type is INamedTypeSymbol named && named.TypeKind == TypeKind.Struct)
             {
+                // A game sees the engine's PrefabRef as metadata, without the private bytes of its GUID, so its
+                // layout is the fixed one of the engine's type: 16 bytes, aligned to 1.
                 if (named.ToDisplayString() == "GameEngine.Scripting.PrefabRef")
-                    return new TypeLayout(16, 1, kAssetGuid, kAssetCategoryPrefab);
+                    return new TypeLayout(kPrefabRefSize, 1, kAssetGuid, kAssetCategoryPrefab);
                 var nested = ComputeLayout(named, ReadStructLayout(named));
                 if (!nested.Valid)
                     return TypeLayout.Invalid;
@@ -231,6 +235,7 @@ namespace GameEngine.SourceGenerators
                     "System.Numerics.Vector3" => kVec3,
                     "System.Numerics.Vector4" => kVec4,
                     "System.Numerics.Quaternion" => kQuat,
+                    "GameEngine.Scripting.RenderLayerMask" => kRenderLayerMask,
                     _ => (ushort)0, // unknown composite: occupies space, not schema-representable
                 };
                 return new TypeLayout(nested.Size, nested.Alignment, fieldType);

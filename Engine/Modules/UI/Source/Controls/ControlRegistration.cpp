@@ -1,3 +1,4 @@
+#include "Logger/Logger.h"
 #include "UI/Controls/BaseField.h"
 #include "UI/Controls/FloatField.h"
 #include "UI/Controls/IntField.h"
@@ -7,10 +8,14 @@
 #include "UI/Controls/Vector3Field.h"
 #include "UI/Registration/ElementRegistration.h"
 #include "UI/UIElement.h"
+#include "UI/UIPrimitive.h"
 
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Checkbox.h"
 #include "UI/Controls/Dropdown.h"
+#include "UI/Controls/MaskField.h"
+#include "UI/Controls/PopoverArrow.h"
+#include "UI/Controls/ProgressBar.h"
 #include "UI/Controls/ScrollView.h"
 #include "UI/Controls/Scrollbar.h"
 #include "UI/Controls/Slider.h"
@@ -49,6 +54,40 @@ struct Parser<Dropdown::Mode>
 };
 
 template<>
+struct Parser<UI::ArrowDirection>
+{
+    static UI::ArrowDirection Parse(std::string_view s)
+    {
+        const std::string lower = ToLowerAscii(s);
+        if (lower == "down")
+            return UI::ArrowDirection::Down;
+        if (lower == "left")
+            return UI::ArrowDirection::Left;
+        if (lower == "right")
+            return UI::ArrowDirection::Right;
+        return UI::ArrowDirection::Up;
+    }
+};
+
+template<>
+struct Parser<ProgressBar::FillDirection>
+{
+    static ProgressBar::FillDirection Parse(std::string_view s)
+    {
+        const std::string lower = ToLowerAscii(s);
+        if (lower == "left")
+            return ProgressBar::FillDirection::Left;
+        if (lower == "up")
+            return ProgressBar::FillDirection::Up;
+        if (lower == "down")
+            return ProgressBar::FillDirection::Down;
+        if (lower != "right")
+            Logger::Log::Warning("UI: progress direction '{}' is not known; the bar fills to the right. Use right, left, up or down.", s);
+        return ProgressBar::FillDirection::Right;
+    }
+};
+
+template<>
 struct Parser<Accordion::Mode>
 {
     static Accordion::Mode Parse(std::string_view s)
@@ -80,13 +119,11 @@ void DefineBuiltInControls()
                                    { return std::make_unique<UIElement>(); })
         .Attr("tabindex", &UIElement::SetTabIndex)
         .Attr("focusable", &UIElement::SetFocusable)
-        .Attr("enabled", &UIElement::SetEnabled)
-        .Attr("disabled", &UIElement::SetDisabled);
+        .Attr("enabled", &UIElement::SetEnabled);
 
-    Register<MarkdownText>("MarkdownText");
     Register<Label>("label")
-        .Text(&Label::SetAuthoredText)
-        .Attr("text", &Label::SetAuthoredText);
+        .Text(&Label::SetText)
+        .Attr("text", &Label::SetText);
 
     // Public string field element. Uses TextField (string-based typed field)
     // and keeps legacy aliases for backwards compatibility.
@@ -94,6 +131,8 @@ void DefineBuiltInControls()
         auto reg = Register<TextField>("TextField");
         reg.Attr("value", &BaseField::SetValue);
         reg.Attr("selectallonmousefocus", &TextFieldBase<std::string>::SetSelectsAllOnMouseFocus);
+        reg.Attr("masked", &TextField::SetMasked);
+        reg.Attr("placeholder", &TextFieldBase<std::string>::SetPlaceholder);
         reg.TagAlias("textfield"); // legacy lowercase tag
         reg.TagAlias("input");     // legacy <input> alias
     }
@@ -117,6 +156,9 @@ void DefineBuiltInControls()
     Register<TextArea>("textarea")
         .Attr("value", &BaseField::SetValue)
         .Attr("readonly", &TextArea::SetReadOnly);
+
+    // Read-only Markdown; its text is set from code (SetMarkdown), never from the layout file.
+    Register<MarkdownText>("MarkdownText");
 
     RegisterWithFactory<Scrollbar>("scrollbar", []()
                                    { return std::make_unique<Scrollbar>(Scrollbar::Orientation::Vertical); });
@@ -168,6 +210,9 @@ void DefineBuiltInControls()
         .Attr("checked", &Toggle::SetChecked)
         .TagAlias("toggle");
 
+    RegisterWithFactory<MaskField>("MaskField", []()
+                                   { return std::make_unique<MaskField>(); });
+
     RegisterWithFactory<Slider>("Slider", []()
                                 { return std::make_unique<Slider>(); })
         .Attr("min", &Slider::SetMin)
@@ -180,6 +225,18 @@ void DefineBuiltInControls()
         .Attr("range", &Slider::SetRangeMode)
         .Attr("rangestart", &Slider::SetRangeStart)
         .TagAlias("slider");
+
+    RegisterWithFactory<ProgressBar>("ProgressBar", []()
+                                     { return std::make_unique<ProgressBar>(); })
+        .Attr("max", &ProgressBar::SetMax)
+        .Attr("value", &ProgressBar::SetValue)
+        .Attr("indeterminate", &ProgressBar::SetIndeterminate)
+        .Attr("direction", &ProgressBar::SetFillDirection)
+        .TagAlias("progress");
+
+    Register<PopoverArrow>("PopoverArrow")
+        .Attr("side", &PopoverArrow::SetSide)
+        .TagAlias("popoverarrow");
 
     RegisterWithFactory<Dropdown>("Dropdown", []()
                                   { return std::make_unique<Dropdown>(); })

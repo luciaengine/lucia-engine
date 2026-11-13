@@ -1,0 +1,179 @@
+---
+title: Exposing a function to scripts
+description: How an engine developer gives scripts a new engine call, what the build generates from the marked declaration, and how a C# script then calls it.
+---
+
+This page is for engine developers. You write a function once, in C++, and mark it. The build generates the native binding and the C# binding from it. A game developer then writes only the call.
+
+## The steps
+
+:::steps
+
+1. Declare the function in a script API header of the module, `Engine/Modules/<Module>/Include/<Module>/<Name>ScriptApi.h`, as a free function in the `GameEngine::<Module>::Script` namespace. The header's `<Name>` names the script module: its description, its C# class and its view of an entity. `PhysicsECS/PhysicsScriptApi.h` is the `Physics` module. Give it a `///` comment: the comment is the documentation a script author reads. [Script API markers](../contributing/script-api-markers.mdx) gives the markers, the kinds a declaration may use, and the refusals.
+2. Mark it `// @ge-script`. If the function reaches a running system, take that system as the first parameter and mark it `@ge-context`. Add `@ge-engine-thread` or `@ge-any-thread` when the function may run off the main thread.
+3. Write the body in the module, in `Source/<Module>ScriptApi.cpp`.
+4. Build. The build scans the headers and generates the native binding. A declaration the generators cannot emit fails the build with its file, its line and the fix.
+5. Build the `UpdateEngineApi` target, and commit the two files it rewrites with the header change: the description, `Engine/Scripting/engine-api/<Name>.json`, and the C# binding, `Managed/Scripting.Bindings/Generated/<Name>.g.cs`. `ComponentScannerTests` fails while either differs from a fresh scan.
+
+:::
+
+```cpp title="Input/InputScriptApi.h"
+namespace GameEngine::Input::Script
+{
+
+/// Asks the host to hide the cursor and hold the pointer in the window, so the mouse steers
+/// the game. The request stays until UnlockPointer or the end of the session.
+// @ge-script @ge-context @ge-engine-thread
+void LockPointer(InputSystem& input);
+
+} // namespace GameEngine::Input::Script
+```
+
+```csharp title="Call it from a script"
+Input.LockPointer();
+```
+
+## What the build generates
+
+| File | Committed | What it holds |
+|---|---|---|
+| `Engine/Scripting/engine-api/<Name>.json` | yes | The description of the module's script API, and its hash. |
+| `<build>/generated/scripting/<Name>.script.gen.cpp` and `.h` | no | One native function per marked function (the thunk), two per event, and the module's function table. |
+| `Managed/Scripting.Bindings/Generated/<Name>.g.cs` | yes | The C# enums, records, event handler delegates, the static class `<Name>` in `GameEngine.Scripting`, and its view of an entity, `entity.<Name>`. |
+
+The thunk is what a script calls. Before it calls your function it checks the arguments, starts the engine in a process that has none (a `dotnet test` host), applies the thread rule, and gets the system from `ScriptContext` in `Engine/Source/Scripting/ScriptThunks.h`. A new `@ge-context` type needs one specialization there that returns the running system. The thunk catches every exception of your function. It never lets one cross into the script.
+
+The function table carries the module's hash. A C# binding built from another description is refused when it binds the table, at its first call, with both hashes in the message. The usual cause is a changed `*ScriptApi.h` whose C# was not regenerated: build the `UpdateEngineApi` target and rebuild. Otherwise rebuild the engine and the managed assemblies from one source tree. On the web, each thunk is also a named export, `ge_<module>_<function>`.
+
+## How a call crosses
+
+| C++ kind | C# type | Across the boundary |
+|---|---|---|
+| `bool` | `bool` | one byte |
+| `std::int8_t` to `std::uint64_t`, `float`, `double`, `Mathematics::Radians` | `sbyte` to `ulong`, `float`, `double`, `float` | the value |
+| `StringId` | `StringId` (`StringId.Of(name)`, made once) | the 64-bit hash; 0 is refused |
+| a marked `enum class` | the enum, with the same underlying type | the value |
+| `Mathematics::Vector2`, `Vector3`, `Vector4`, `Quaternion`, `Matrix4x4` | `System.Numerics` `Vector2`, `Vector3`, `Vector4`, `Quaternion`, `Matrix4x4` | a pointer to the bytes, unchanged |
+| `Mathematics::WorldPosition` | `GameEngine.Scripting.WorldPosition` (three doubles; a record field of it has no initializer) | a pointer to the bytes, unchanged |
+| `ECS::EntityHandle` | `GameEngine.Entity` | the packed 32-bit entity id |
+| `Rendering::RenderLayerMask` | `GameEngine.Scripting.RenderLayerMask` | the 32-bit word of layers; a call that does not run answers `RenderLayerMask.None` |
+| `std::string_view` in, `std::string` returned | `string` | UTF-8 bytes and their length; see [Text](#text) |
+| a marked `struct` (a record) | a struct with the same field offsets and the same field defaults | a pointer to the bytes |
+| `std::span<T>`, `T` a record or `ECS::EntityHandle` | `Span<T>`, `T` the record or `Entity` | the caller's buffer and its capacity; the function returns the count; see [Many results](#many-results) |
+
+A function's return value and its out parameter (`T&`) cross as a pointer the thunk writes. A parameter with a default becomes an optional C# parameter; a record parameter with the default `{}` becomes `T? name = null`, which takes the record's own defaults. A `bool` function marked `@ge-script-try` with one out parameter is `bool TryX(..., out T)` in C#.
+
+A function whose first parameter, after the context, is an entity is a method of the module's view of an entity in C#, not a static method: `SetLinearVelocity(ECS::World&, ECS::EntityHandle, Vector3)` is `ball.Physics.SetLinearVelocity(v)`. A `Get` and `Set` pair stays two methods, because C# refuses to assign a property of a view that an expression returns.
+
+The generators do not emit a `std::span<const T>` parameter, a span of results of any other element kind, a `ColorLinear` or handle kind, an event scoped to a handle, or an event with `@ge-context`. A marked declaration that uses one fails the build.
+
+## Text
+
+Text crosses as UTF-8 bytes and a length, never as a NUL-terminated string. Take text as `std::string_view` and return it as `std::string`. The scanner refuses a returned `std::string_view`, because a view can outlive the text it views. Text is never an out parameter or a record field.
+
+- **Text in.** The bytes belong to the caller and are valid for the call only. Copy them before you keep them. A null pointer with a length of 0 is the empty text. A null pointer with a length, or a negative length, is refused before your function runs.
+- **Text out.** The thunk copies your text into a buffer the caller owns. It copies what fits and always reports the full length, so a short buffer is a retry, never a silent truncation (the `CopyTextOut` contract of `Scripting/AbiTextOut.h`). The engine allocates nothing that the caller frees.
+
+In C#, a text parameter is a `string` and a text return value is a `string`. A `null` string throws `ArgumentNullException`. A call that does not run, such as a call before the engine starts, returns the empty string.
+
+What a C# call costs for its text:
+
+| | Cost per call |
+|---|---|
+| A `string` argument | encoded into a 256-byte stack buffer; no allocation. A longer text rents a pooled array. |
+| A `string` return value | one allocation, the string. A text longer than 256 bytes is asked a second time, with a pooled buffer of the length the engine reported. |
+
+## Many results
+
+A function that finds a variable number of results takes a `std::span<T>` and writes them into it. `T` is a marked record or `ECS::EntityHandle`. The function returns the number of results there are, as `std::int32_t`. The scanner refuses a function that takes a `std::span<T>` and returns anything else.
+
+- **The buffer.** The buffer and its capacity belong to the caller, for the call only. The thunk gives your function a span of the capacity, so it cannot write past it. Write the results that fit and return how many there are, also when that is more than the span holds.
+- **The count.** The count is always the full number of results, so a short buffer is a retry, never a silent truncation. A capacity of 0 asks for the count only. A null buffer with a capacity, a negative capacity, and a null count slot are refused before your function runs. A call that does not run returns 0.
+
+In C#, the parameter is a `Span<T>` that the caller sizes, and the method returns the count. The call allocates nothing on the script side: the span is pinned for the call, and a `stackalloc` buffer or an array the script keeps is used as it is. There is one method; a caller that needs every result calls again with a buffer of the count.
+
+```cpp title="PhysicsECS/PhysicsScriptApi.h"
+/// Casts a ray and writes every body it hits within maxDistance into hits, nearest first. Returns the number of
+/// bodies the ray hits.
+// @ge-script @ge-context
+std::int32_t RayCastAll(Physics::PhysicsWorld& physics, Mathematics::WorldPosition origin,
+                        Mathematics::Vector3 direction, std::span<RayHit> hits, float maxDistance = 1000.0f,
+                        std::uint32_t layerMask = kAllLayers, bool ignoreTriggers = false);
+```
+
+```csharp title="Call it from a script"
+Span<RayHit> hits = stackalloc RayHit[16];
+int count = Physics.RayCastAll(origin, forward, hits, maxDistance: 100f);
+for (int i = 0; i < Math.Min(count, hits.Length); i++)
+    Damage(hits[i].Entity, hits[i].Point);
+```
+
+## A record
+
+A marked `struct` crosses by value. Give every field its default in the declaration: the C# record starts with the same defaults, so `new RayHit()` in C# has the bytes of `RayHit{}` in C++. An entity field starts as `Entity.None` on both sides. A `bool` field is one byte on both sides. The generated native unit checks the size, the alignment, every offset and every scalar default at compile time.
+
+```cpp title="PhysicsECS/PhysicsScriptApi.h"
+/// Where a ray hit a body: the body's entity, the hit point, the surface normal there, and the
+/// distance from the ray's origin.
+// @ge-script
+struct RayHit
+{
+    ECS::EntityHandle entity{};
+    Mathematics::WorldPosition point;
+    Mathematics::Vector3 normal{0.0f, 1.0f, 0.0f};
+    float distance = 0.0f;
+};
+
+/// Casts a ray and finds the nearest body it hits within maxDistance.
+// @ge-script @ge-script-try @ge-context
+bool RayCast(Physics::PhysicsWorld& physics, Mathematics::WorldPosition origin, Mathematics::Vector3 direction,
+             RayHit& hit, float maxDistance = 1000.0f, std::uint32_t layerMask = kAllLayers,
+             bool ignoreTriggers = false);
+```
+
+```csharp title="Call it from a script"
+if (Physics.RayCast(origin, forward, out RayHit hit, maxDistance: 100f))
+    Damage(hit.Entity, hit.Point);
+```
+
+## An event
+
+An event is a pair of functions marked `@ge-script-event`. The subscribe function takes the entity and a `ScriptCallback<Payload>` (`Types/ScriptCallback.h`), and returns a `SubscriptionId`. The unsubscribe function takes that id. The marker on the subscribe function names the delivery, which tells when the handler runs.
+
+```cpp title="PhysicsECS/PhysicsScriptApi.h"
+/// Calls the handler when a solid body of the entity starts to touch another.
+// @ge-script-event PhysicsStep
+SubscriptionId SubscribeContactBegin(ECS::EntityHandle scope, ScriptCallback<ContactEvent> callback);
+
+/// Stops the calls of SubscribeContactBegin.
+// @ge-script-event
+void UnsubscribeContactBegin(SubscriptionId subscription);
+```
+
+```csharp title="Handle it in a script"
+brick.Physics.ContactBegin += OnBrickHit;      // void OnBrickHit(in ContactEvent e)
+brick.Physics.ContactBegin -= OnBrickHit;
+```
+
+The body keeps the callback and calls its `Invoke` with the payload and its `User` word for each event, on the delivery's thread. When the subscription ends, for whatever reason, the body calls the callback's `Ended` once with `User`, and never calls either function again. The C# side releases the handler there. So every path that ends a subscription in the module (an unsubscribe, a shutdown, a cleared table) must call `Ended`. [Physics from scripts](physics-from-scripts.mdx#when-a-subscription-ends) gives the rules a script author sees.
+
+## What a C# call does with an error
+
+| The thunk answers | The C# call |
+|---|---|
+| Ok | returns the answer |
+| The engine or the function's system is not running (input before play) | returns the default of its type; a call that changes something does nothing |
+| An argument is refused (a null pointer, an id of 0, a negative text length) | throws `ArgumentException` |
+| Called off its thread, or your function threw | throws `EngineCallException` |
+
+The exception carries the engine's text for the failure, which names the function and the fix. Native code reads the same text with `GE_GetLastScriptError`.
+
+## Thread rules
+
+| Marker | Who may call | Refused |
+|---|---|---|
+| (none) | the main thread, outside a job | another thread, or a job |
+| `@ge-engine-thread` | the main thread, or a job the engine runs (a system's update) | a thread the engine does not run, such as `Task.Run` |
+| `@ge-any-thread` | any thread | nothing |
+
+The C# documentation of every generated call states its rule. A refusal logs one line per function per process.
