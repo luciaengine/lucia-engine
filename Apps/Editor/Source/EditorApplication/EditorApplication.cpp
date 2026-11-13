@@ -8344,7 +8344,7 @@ EditorApplication::RenderWindowFrameResult EditorApplication::RenderWindowFrame(
         // via tickets — the backbuffer import is discard-contract and may not
         // support readback.
         const bool captureWantsComposite =
-            m_DebugServer && m_DebugServer->HasAnyPendingRenderCallbacks();
+            m_DebugServer && m_DebugServer->HasPendingRenderCallbacks(ctx->windowId);
         // 8e-7: a pixel-probing replay reads the composite the same way.
         const bool uiReplayWantsComposite =
             !passiveUi && m_UiReplay && m_UiReplay->WantsPixelReadbackComposite();
@@ -8488,7 +8488,7 @@ EditorApplication::RenderWindowFrameResult EditorApplication::RenderWindowFrame(
             ctx->rg2Capture.backbufferId = backbuffer.Id;
             ctx->rg2Capture.pure = true;
             ctx->rg2Capture.frameIndex = frame.FrameIndex();
-            m_DebugServer->RunRenderCallbacks();
+            m_DebugServer->RunRenderCallbacks(ctx->windowId);
         }
 
         // A2.4-P0-R (§D6.6): inject a fork-join primitive so RGFrame can record the

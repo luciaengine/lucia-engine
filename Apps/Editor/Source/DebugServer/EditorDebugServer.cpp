@@ -942,20 +942,15 @@ void EditorDebugServer::EnqueueDeferredResponse(const std::string& requestId, De
          std::string(m_CurrentRequestMethod), m_CurrentRequestId});
 }
 
-void EditorDebugServer::EnqueueRenderCallback(RenderCallback cb)
+void EditorDebugServer::EnqueueRenderCallback(uint64_t windowId,
+                                             const std::shared_ptr<RenderCallback>& callback)
 {
-    m_RenderCallbacks.push_back({std::move(cb)});
+    m_RenderCallbacks.Enqueue(windowId, callback);
 }
 
-void EditorDebugServer::RunRenderCallbacks()
+void EditorDebugServer::RunRenderCallbacks(uint64_t windowId)
 {
-    if (m_RenderCallbacks.empty())
-        return;
-
-    auto callbacks = std::move(m_RenderCallbacks);
-    m_RenderCallbacks.clear();
-    for (auto& entry : callbacks)
-        entry.Fn();
+    m_RenderCallbacks.Dispatch(windowId);
 }
 
 } // namespace GameEngine

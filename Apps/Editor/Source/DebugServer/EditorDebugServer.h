@@ -1,5 +1,7 @@
 #pragma once
 
+#include "WindowRenderCallbackQueue.h"
+
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -109,14 +111,12 @@ class EditorDebugServer
     void EnqueueDeferredResponse(const std::string& requestId, DeferredPollFn pollFn,
                                  int pollBudget = 30);
 
-    // Render-phase callbacks: enqueued during FlushPendingRequests, executed
-    // during Render after BeginFrame (when the render graph is fresh).
-    using RenderCallback = std::function<void()>;
-    void EnqueueRenderCallback(RenderCallback cb);
-    void RunRenderCallbacks();
-    // Any pending callback at all — the pure frame driver force-creates the
-    // FinalLinear composite when a capture might want to read it.
-    bool HasAnyPendingRenderCallbacks() const { return !m_RenderCallbacks.empty(); }
+    // The response owns the callback until completion. Dispatch occurs only at
+    // the target window's current pre-Execute seam, never a retained graph.
+    using RenderCallback = Editor::WindowRenderCallbackQueue::Callback;
+    void EnqueueRenderCallback(uint64_t windowId, const std::shared_ptr<RenderCallback>& callback);
+    void RunRenderCallbacks(uint64_t windowId);
+    bool HasPendingRenderCallbacks(uint64_t windowId) const { return m_RenderCallbacks.HasPending(windowId); }
 
   private:
     // Each request carries the originating client ID so responses route back.
@@ -218,11 +218,7 @@ class EditorDebugServer
     std::mutex m_ResponseMutex;
 
     std::vector<DeferredEntry> m_DeferredResponses;
-    struct RenderCallbackEntry
-    {
-        RenderCallback Fn;
-    };
-    std::vector<RenderCallbackEntry> m_RenderCallbacks;
+    Editor::WindowRenderCallbackQueue m_RenderCallbacks;
 
     // Requests a gate parked and the later requests of their connections, in arrival
     // order; main thread only.

@@ -24,10 +24,9 @@ static_assert(kFaceCullMarginFloor > kPointShadowNormalBias,
               "face-cull keep margin floor must exceed the receiver normal bias, "
               "else a normal-biased fragment could sample a culled (cleared-far) face");
 
-// Keep-bias: a separating plane only counts when the opposing hull clears it by
-// more than this world margin, so faces grazing the frustum boundary stay
-// KEPT (a culled-face pop across the boundary is a correctness bug). Scaled by
-// the light range with an absolute floor for tiny lights.
+// A separating plane must clear the opposing hull by more than the margin.
+// This margin covers normal bias and the filter's bilinear footprint for
+// the point atlas's 256-, 512-, and 1024-texel tiles.
 inline float KeepBiasMargin(float range)
 {
     return std::max(range * 0.02f, kFaceCullMarginFloor);

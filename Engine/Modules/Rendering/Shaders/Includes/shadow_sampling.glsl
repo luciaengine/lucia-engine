@@ -238,6 +238,8 @@ float GE_TerrainShadow(vec3 posRel, float maxPenumbraRadius)
 // capped at runtime via `tapCount` (clamped to [8, 64] from ge_shadowPcss.y).
 const int kPcssMaxTaps = 64;
 
+#include "vogel_disk.glsl"
+
 // Per-pixel pseudo-random rotation for the Vogel disk. Returns (cosA, sinA).
 //
 // Interleaved gradient noise (Jimenez 2014) over a basis chosen at runtime by

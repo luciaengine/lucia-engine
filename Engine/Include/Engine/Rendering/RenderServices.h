@@ -328,10 +328,9 @@ struct alignas(16) SpotShadowDataGPU
 };
 static_assert(sizeof(SpotShadowDataGPU) == 96, "SpotShadowDataGPU must be 96 bytes");
 
-// One element of the M1 std430 point-shadow slot SSBO array (binding 25), mirroring
-// clustered_lighting.glsl PointShadowSlot. std430 array stride == sizeof == 416
-// (already 16-aligned: six mat4 columns are each 16-aligned, two vec4 tails). Hand-
-// verify against the GLSL if any field moves (the AtmosphereUBO std140 lesson).
+// One std430 atlas slot at binding 25, mirrored by point_shadow_sampling.glsl.
+// Six 16-byte-aligned matrices and two vec4 tails give a 416-byte array stride.
+// Keep the CPU and shader layouts identical.
 struct alignas(16) PointShadowSlotGPU
 {
     float pointShadowVP[6][16]{};
