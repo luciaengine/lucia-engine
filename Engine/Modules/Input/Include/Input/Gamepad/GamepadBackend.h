@@ -13,7 +13,7 @@ enum class GamepadRuntimeState : std::uint8_t;
  * @brief One platform's gamepad source, driven by GamepadPoller: Start once on a blocking job, Read
  * on the frame thread after Start returned Available, optional bounded Refresh jobs, and Stop
  * once after Start, the last Refresh and the last Read.
- * Device discovery belongs to Start and the backend's own threads: Read never enumerates.
+ * Device discovery belongs to Start, Refresh and platform callbacks: Read never enumerates.
  */
 class GamepadBackend
 {
@@ -37,8 +37,8 @@ class GamepadBackend
     virtual void Stop() = 0;
 };
 
-/// The backend of this platform: GameInput on Windows, the Game Controller framework on macOS,
-/// GLFW's joystick API on Linux and in the browser.
+/// GameInput on Windows, Game Controller on Apple platforms, SDL3 on other mobile platforms,
+/// and GLFW's joystick API on desktop Linux and in the browser.
 std::unique_ptr<GamepadBackend> CreatePlatformGamepadBackend();
 
 } // namespace GameEngine::Input
