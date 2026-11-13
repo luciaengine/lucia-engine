@@ -34,9 +34,9 @@ namespace GameEngine::Engine::Renderer
 inline Mathematics::Vector3 SectorToWorld(const Mathematics::Vector3Int& sector)
 {
     constexpr float32 kSectorSize = static_cast<float32>(Mathematics::kWorldSectorSize);
-    return Mathematics::Vector3{static_cast<float32>(sector.x) * kSectorSize,
-                                static_cast<float32>(sector.y) * kSectorSize,
-                                static_cast<float32>(sector.z) * kSectorSize};
+    return Mathematics::Vector3{static_cast<float32>(sector.X) * kSectorSize,
+                                static_cast<float32>(sector.Y) * kSectorSize,
+                                static_cast<float32>(sector.Z) * kSectorSize};
 }
 
 // The render origin of an eye: the eye's own sector (the WorldPosition split), clamped to the
@@ -67,9 +67,9 @@ inline Mathematics::Vector3F64 ComputeRebasedViewTranslation(const Mathematics::
                                                              const Mathematics::Vector3Int& sector)
 {
     const float64 sectorSize = Mathematics::kWorldSectorSize;
-    const float64 lx = eye.X - static_cast<float64>(sector.x) * sectorSize;
-    const float64 ly = eye.Y - static_cast<float64>(sector.y) * sectorSize;
-    const float64 lz = eye.Z - static_cast<float64>(sector.z) * sectorSize;
+    const float64 lx = eye.X - static_cast<float64>(sector.X) * sectorSize;
+    const float64 ly = eye.Y - static_cast<float64>(sector.Y) * sectorSize;
+    const float64 lz = eye.Z - static_cast<float64>(sector.Z) * sectorSize;
     return Mathematics::Vector3F64(-(static_cast<float64>(view[0][0]) * lx + static_cast<float64>(view[1][0]) * ly +
                                      static_cast<float64>(view[2][0]) * lz),
                                    -(static_cast<float64>(view[0][1]) * lx + static_cast<float64>(view[1][1]) * ly +
@@ -87,7 +87,7 @@ inline Mathematics::Matrix4x4 ComputeRebasedLightVP(const Mathematics::Matrix4x4
                                                     const Mathematics::WorldPosition& eye,
                                                     const Mathematics::Vector3Int& sector)
 {
-    if (sector.x == 0 && sector.y == 0 && sector.z == 0)
+    if (sector.X == 0 && sector.Y == 0 && sector.Z == 0)
         return worldVP;
 
     const Mathematics::Vector3F64 t = ComputeRebasedViewTranslation(rotView, eye, sector);
@@ -145,9 +145,9 @@ inline Mathematics::Matrix4x4 PremultiplyTranslationBySectorDelta(const Mathemat
     const float64 size = Mathematics::kWorldSectorSize;
     const float64 w = static_cast<float64>(matrix[3][3]);
     Mathematics::Matrix4x4 out = matrix;
-    out[3][0] = static_cast<float32>(static_cast<float64>(matrix[3][0]) + static_cast<float64>(from.x - to.x) * size * w);
-    out[3][1] = static_cast<float32>(static_cast<float64>(matrix[3][1]) + static_cast<float64>(from.y - to.y) * size * w);
-    out[3][2] = static_cast<float32>(static_cast<float64>(matrix[3][2]) + static_cast<float64>(from.z - to.z) * size * w);
+    out[3][0] = static_cast<float32>(static_cast<float64>(matrix[3][0]) + static_cast<float64>(from.X - to.X) * size * w);
+    out[3][1] = static_cast<float32>(static_cast<float64>(matrix[3][1]) + static_cast<float64>(from.Y - to.Y) * size * w);
+    out[3][2] = static_cast<float32>(static_cast<float64>(matrix[3][2]) + static_cast<float64>(from.Z - to.Z) * size * w);
     return out;
 }
 
@@ -168,7 +168,7 @@ inline Mathematics::Matrix4x4 ComposeWorldModelMatrix(const Mathematics::Matrix4
                                                       uint32 sectorP1)
 {
     Mathematics::Vector3Int sector;
-    Rendering::UnpackSector(sectorP0, sectorP1, sector.x, sector.y, sector.z);
+    Rendering::UnpackSector(sectorP0, sectorP1, sector.X, sector.Y, sector.Z);
     const Mathematics::Vector3 origin = SectorToWorld(sector);
     Mathematics::Matrix4x4 out = matrix;
     out[3][0] = matrix[3][0] + origin.x;
@@ -189,14 +189,14 @@ inline void ComputeRebasedView(const Mathematics::Matrix4x4& view, const Mathema
                                int32 outSector[4])
 {
     const Mathematics::Vector3Int origin = ComputeRenderOriginSector(eye);
-    outSector[0] = origin.x;
-    outSector[1] = origin.y;
-    outSector[2] = origin.z;
+    outSector[0] = origin.X;
+    outSector[1] = origin.Y;
+    outSector[2] = origin.Z;
     outSector[3] = static_cast<int32>(Mathematics::kWorldSectorSize);
 
     outViewRel = view;
     outViewProjRel = viewProj;
-    if (origin.x == 0 && origin.y == 0 && origin.z == 0)
+    if (origin.X == 0 && origin.Y == 0 && origin.Z == 0)
         return; // sector (0,0,0): bit copies
 
     // The origin in double, straight from the integer sector.

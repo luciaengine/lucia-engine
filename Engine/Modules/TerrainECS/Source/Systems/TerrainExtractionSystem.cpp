@@ -157,9 +157,9 @@ void AppendTerrainMaterials(Terrain::TerrainGPUParams& params,
             const double p = static_cast<double>(sector) * Mathematics::kWorldSectorSize * effTiling;
             return static_cast<float32>(p - std::floor(p));
         };
-        record.UVPhaseX = wrapPhase(renderOriginSector.x);
-        record.UVPhaseY = wrapPhase(renderOriginSector.y);
-        record.UVPhaseZ = wrapPhase(renderOriginSector.z);
+        record.UVPhaseX = wrapPhase(renderOriginSector.X);
+        record.UVPhaseY = wrapPhase(renderOriginSector.Y);
+        record.UVPhaseZ = wrapPhase(renderOriginSector.Z);
         // params carries the extent the terrain's textures cover (the tile grid's, for a tiled
         // terrain); a Planar material spans the authored size inside it.
         SetPlanarFootprintScale(record, params.WorldSizeX, params.WorldSizeZ, terrain.SizeX,

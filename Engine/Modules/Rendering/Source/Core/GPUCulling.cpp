@@ -1026,9 +1026,9 @@ void GPUCullingPipeline::BuildCullingElisionBlob(ElisionInputBlob& blob,
         blob.Append(v.nearPlane);
         appendVec3(v.cameraForward);
         blob.Append(v.farPlane);
-        blob.Append(v.originSector.x);
-        blob.Append(v.originSector.y);
-        blob.Append(v.originSector.z);
+        blob.Append(v.originSector.X);
+        blob.Append(v.originSector.Y);
+        blob.Append(v.originSector.Z);
         blob.Append(v.firstInstance);
         blob.Append(v.instanceCount);
         blob.Append(v.renderLayerMask.Bits);
@@ -1068,9 +1068,9 @@ void GPUCullingPipeline::BuildCullingElisionBlob(ElisionInputBlob& blob,
         blob.Append(g.nearPlane);
         appendVec3(g.cameraForward);
         blob.Append(g.farPlane);
-        blob.Append(g.originSector.x);
-        blob.Append(g.originSector.y);
-        blob.Append(g.originSector.z);
+        blob.Append(g.originSector.X);
+        blob.Append(g.originSector.Y);
+        blob.Append(g.originSector.Z);
         blob.Append(g.firstInstance);
         blob.Append(g.instanceCount);
         blob.Append(g.renderLayerMask.Bits);
