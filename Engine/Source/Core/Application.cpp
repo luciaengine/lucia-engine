@@ -1,5 +1,7 @@
 #include "Core/Application.h"
 #include "Core/Engine.h"
+#include "Memory/FrameJoinedScope.h"
+#include "Memory/FrameMemory.h"
 #include "Logger/Logger.h"
 #include "Logger/FileSink.h"
 #include "Input/Gamepad/GamepadBackend.h"
@@ -7,17 +9,15 @@
 #include "Input/GamepadFrame.h"
 #include "Input/Gamepad/GamepadPoller.h"
 #include "Input/InputSystem.h"
+#include "Platform/Environment.h"
 #include "Platform/ApplicationScriptApi.h"
-#include "Platform/Thread.h"
 #include "Platform/Window.h"
 #include "Core/CpuProfiler.h"
 #include "Core/DebugMetrics.h"
 #include "Core/NvtxRange.h"
 #include "Core/Time.h"
-#include "Memory/FrameJoinedScope.h"
-#include "Memory/FrameMemory.h"
-#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <optional>
 #include <thread>
 #include <utility>
@@ -36,16 +36,7 @@ namespace
     // spamming logs in normal runs.
     inline bool IsFrameTraceEnabled()
     {
-        static bool s_Enabled = []() {
-            const char* env = std::getenv("GE_FRAME_TRACE");
-            if (!env || !*env)
-            {
-                return false;
-            }
-
-            // Treat "0" as explicit off; anything else enables tracing.
-            return !(env[0] == '0' && env[1] == '\0');
-        }();
+        static bool s_Enabled = GameEngine::Platform::EnvironmentSwitchEnabled("GE_FRAME_TRACE", false);
         return s_Enabled;
     }
 }
@@ -105,7 +96,7 @@ bool Application::Initialize() {
 	            fileCfg.minLevel = logCfg.GlobalMinLevel;
 	            fileCfg.includeTimestamp = true;
 	            fileCfg.includeSource = logCfg.EnableSourceLocation;
-	            Logger::Log::AddSink(std::make_unique<Logger::FileSink>(fileCfg));
+	            Logger::Log::AddSink(Logger::MakeUnique<Logger::FileSink>(fileCfg));
 	            Logger::Log::Info("File logging enabled: {}", fileCfg.filename);
 	        }
 	    #endif // LOGGER_ENABLE_FILE_LOGGING
@@ -127,6 +118,14 @@ bool Application::Initialize() {
 	    // Create a shared InputSystem instance for the application. Derived
 	    // applications (Editor, games) can configure actions/contexts via
 	    // GetInputSystem(), while the main loop handles per-frame pumping.
+#if defined(GE_PLATFORM_MOBILE)
+    // SDL's mobile subsystems must exist before the backend's discovery job can start.
+    if (!m_Config.Headless && !Platform::Window::Initialize())
+    {
+        EngineCore::GetInstance().Shutdown();
+        return false;
+    }
+#endif
 	    m_InputSystem = std::make_unique<Input::InputSystem>();
 	    // Gamepad discovery starts on a blocking job; frames read no pad until it returns.
 	    // A headless application reads no gamepad, so it starts no backend.
@@ -197,9 +196,7 @@ void Application::Shutdown() {
     }
 
     Logger::Log::Info("Shutting down application");
-
 #if GE_DEBUG_INSTRUMENTATION
-    // The frame loop stops here, so the pool's threads may exit with the memory of the last frames.
     Memory::Detail::StopFrameLoop();
 #endif
 
@@ -279,9 +276,6 @@ bool Application::Tick() {
         // Optional CPU profiler: closes the frame that just finished — that is
         // the frame its readers see — and opens the one starting here.
         GameEngine::Profiling::CpuProfiler::Get().BeginFrame();
-
-        // Frame memory from two frames ago becomes free. Until Tick returns, this thread and
-        // the Run and ParallelFor units it joins may use frame memory.
         Memory::Detail::AdvanceFrameIndex();
 #if GE_DEBUG_INSTRUMENTATION
         const Memory::Detail::FrameJoinedScope frameJoined(true);
@@ -412,14 +406,27 @@ bool Application::Tick() {
 	        // Close the frame's NVTX range before any throttling below.
 	        frameRange.reset();
 
-        // A CPU wait holds the frame to the lowest rate that GE_FRAME_CAP, SetFrameRateCap or a
-        // headless fixed frame rate asks for. With no request, the frame does not wait: VSync or
-        // the uncapped choice paces it. A fixed frame rate ignores GE_FRAME_CAP.
+        // Frame rate limiting, only on request: an application cap takes precedence
+        // over GE_FRAME_CAP. The environment variable set to a positive
+        // rate (e.g. 60, 120) holds each frame to it with a CPU wait. Unset,
+        // empty, 0 or unparsable means no limiter, in every application: with
+        // VSync on, present paces the frame, and an application that turns VSync
+        // off asked for uncapped frames. A fixed frame rate (SetFixedFrameRate)
+        // ignores GE_FRAME_CAP. A headless application at a fixed frame rate
+        // holds each frame to that rate: nothing presents, so nothing else paces it.
+        //
+        // A plain sleep under a coarse timer (common on Windows) quantizes to
+        // ~15.6 ms and turns a 60 fps cap into 30 to 40 fps, so the wait below
+        // sleeps most of the remainder and yields for the tail.
         double targetFps = 0.0;
         if (IsFixedFrameRateEnabled())
         {
             if (m_Config.Headless)
                 targetFps = GetFixedFrameRate();
+        }
+        else if (m_FrameRateCapFps > 0.0)
+        {
+            targetFps = m_FrameRateCapFps;
         }
         else
         {
@@ -436,8 +443,6 @@ bool Application::Tick() {
                 }
             }
         }
-        if (m_FrameRateCap > 0.0)
-            targetFps = targetFps > 0.0 ? std::min(targetFps, m_FrameRateCap) : m_FrameRateCap;
 
         if (targetFps > 0.0)
         {
@@ -449,11 +454,10 @@ bool Application::Tick() {
             {
                 const double remaining = targetFrameTime - frameTime;
                 const auto tSleep0 = std::chrono::high_resolution_clock::now();
-                // A plain sleep on a coarse timer (common on Windows) rounds up to ~15.6 ms.
-                // Sleep most of the remainder on a precise timer, then yield for the tail.
+                // Sleep most of the remaining time, then spin/yield for the tail to reduce oversleep.
                 if (remaining > 0.002)
                 {
-                    Platform::SleepPrecise(std::chrono::duration<double>(remaining - 0.001));
+                    std::this_thread::sleep_for(std::chrono::duration<double>(remaining - 0.001));
                 }
                 while (std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - m_LastFrameTime).count() < targetFrameTime)
                 {
@@ -580,6 +584,11 @@ void Application::UpdateTiming() {
     metrics.PushSample("Time/FrameMs", frameMs);
 }
 
+void Application::SetFrameRateCap(double fps)
+{
+    m_FrameRateCapFps = std::isfinite(fps) && fps > 0.0 ? fps : 0.0;
+}
+
 void Application::SetFixedFrameRate(double fps)
 {
     m_FixedDeltaTime = (fps > 0.0) ? (1.0 / fps) : 0.0;
@@ -588,11 +597,6 @@ void Application::SetFixedFrameRate(double fps)
 void Application::ClearFixedFrameRate()
 {
     m_FixedDeltaTime = 0.0;
-}
-
-void Application::SetFrameRateCap(double fps)
-{
-    m_FrameRateCap = fps > 0.0 ? fps : 0.0;
 }
 
 } // namespace GameEngine

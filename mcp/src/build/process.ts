@@ -84,13 +84,16 @@ export async function pollUntil(predicate: () => Promise<boolean>, timeoutMs: nu
 // This process's environment with `variables` set over it. Windows names are case
 // insensitive, so a registered PATH replaces the inherited Path rather than sitting
 // beside it.
-function withVariables(variables: Record<string, string>): NodeJS.ProcessEnv {
+function withVariables(variables: Record<string, string>, clearGtestEnvironment: boolean): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const [name, value] of Object.entries(variables)) {
     if (process.platform === "win32") {
       for (const existing of Object.keys(env)) if (existing.toLowerCase() === name.toLowerCase()) delete env[existing];
     }
     env[name] = value;
+  }
+  if (clearGtestEnvironment) {
+    for (const name of Object.keys(env)) if (name.toUpperCase().startsWith("GTEST_")) delete env[name];
   }
   return env;
 }
@@ -99,40 +102,55 @@ export interface LoggedRun {
   exitCode: number | null;
   timedOut: boolean;
   durationMs: number;
+  cleanupUncertain: boolean;
 }
 
 /**
- * Runs `command` with its stdout and stderr written to `logPath` and nothing
- * kept in memory: the build and test tools return a summary and the log's path,
- * never the output itself. A run past `timeoutMs` is killed and reported as
- * timed out; the log keeps what it wrote until then. `env` is applied over this
- * process's environment.
+ * Streams a direct child's output to a fresh log. On timeout only that child is
+ * signalled; descendant cleanup is unverified and must be checked by the owner.
  */
 export function runToLog(command: string, args: string[],
-  options: { cwd: string; logPath: string; timeoutMs: number; env?: Record<string, string> }): Promise<LoggedRun> {
+  options: { cwd: string; logPath: string; timeoutMs: number; env?: Record<string, string>; clearGtestEnvironment?: boolean }): Promise<LoggedRun> {
   fs.mkdirSync(path.dirname(options.logPath), { recursive: true });
-  const log = fs.openSync(options.logPath, "w");
+  const log = fs.openSync(options.logPath, "wx");
   const start = Date.now();
   return new Promise((resolve) => {
     let timedOut = false;
     let finished = false;
-    const child = spawn(command, args, {
-      cwd: options.cwd,
-      env: withVariables(options.env ?? {}),
-      stdio: ["ignore", log, log],
-      windowsHide: true,
-    });
-    const timer = setTimeout(() => { timedOut = true; child.kill(); }, options.timeoutMs);
-    // A failed start reports "error" and may still report "close"; only the first counts.
-    const finish = (exitCode: number | null) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (exitCode: number | null, cleanupUncertain: boolean) => {
       if (finished) return;
       finished = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       fs.closeSync(log);
-      resolve({ exitCode, timedOut, durationMs: Date.now() - start });
+      resolve({ exitCode, timedOut, cleanupUncertain, durationMs: Date.now() - start });
     };
-    child.on("error", (err) => { fs.writeSync(log, `\n${err.message}\n`); finish(null); });
-    child.on("close", (code) => finish(code));
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(command, args, {
+        cwd: options.cwd,
+        env: withVariables(options.env ?? {}, options.clearGtestEnvironment ?? false),
+        stdio: ["ignore", log, log],
+        windowsHide: true,
+      });
+    } catch (error) {
+      fs.writeSync(log, `\n${String(error)}\n`);
+      finish(null, false);
+      return;
+    }
+    timer = setTimeout(() => {
+      if (finished) return;
+      timedOut = true;
+      fs.writeSync(log, "\nTimed out: direct-child termination requested; descendant cleanup is unverified.\n");
+      // No PID search, process-name match or later signal against a recycled PID.
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+    }, options.timeoutMs);
+    child.on("error", (error) => {
+      if (finished) return;
+      fs.writeSync(log, `\n${error.message}\n`);
+      finish(null, child.pid !== undefined);
+    });
+    child.on("close", (code) => finish(code, timedOut));
   });
 }
 
@@ -140,8 +158,10 @@ export function runToLog(command: string, args: string[],
  * A file-name-safe local timestamp with milliseconds and this process's id, so two
  * runs of the same tool keep separate logs; names sort in time order within a process.
  */
+let runSequence = 0;
+
 export function runStamp(): string {
   const now = new Date();
   const pad = (value: number, width = 2) => String(value).padStart(width, "0");
-  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}-${pad(now.getMilliseconds(), 3)}-${process.pid}`;
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}-${pad(now.getMilliseconds(), 3)}-${process.pid}-${++runSequence}`;
 }

@@ -50,7 +50,10 @@ TEST_P(PlayerManagedExit, RequestStopsPlayerAfterTheCurrentFrame)
     launch.Arguments = {"--headless", "--fixed-fps", "60", "--quit-after", "120",
                         "--config", (project / "game.config").string(),
                         "--asset-root", (project / "Assets").string()};
-    launch.Environment = {{"EXIT_PROBE_MODE", scenario.Mode}, {"APPDATA", (project / "Profile").string()}};
+    launch.Environment = {{"EXIT_PROBE_MODE", scenario.Mode},
+                          {"APPDATA", (project / "Profile").string()},
+                          {"LOCALAPPDATA", (project / "Profile").string()},
+                          {"XDG_CACHE_HOME", (project / "Profile/Cache").string()}};
 
     constexpr std::chrono::minutes kShutdownTimeout{2};
     const auto deadline = std::chrono::steady_clock::now() + kShutdownTimeout;

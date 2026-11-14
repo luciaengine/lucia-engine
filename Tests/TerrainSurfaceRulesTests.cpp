@@ -13,6 +13,7 @@
 //     definition a paint stroke, so the two must bake byte-identically.
 
 #include <gtest/gtest.h>
+#include <memory>
 
 #include "TerrainTestHelpers.h"
 

@@ -4,6 +4,7 @@
 #include "SceneView/SceneViewGizmos.h"
 #include "SceneView/SelectionTool.h"
 #include "UndoRedo/UndoRedoService.h"
+#include "EditorChangeNotifications.h"
 #include "ECS/Entity.h"
 #include "Mathematics/Vector3.h"
 #include "SplineECS/SplineNetwork.h"
@@ -336,7 +337,7 @@ private:
 
     void SyncTransformGizmoTarget();
     void NotifySplineSelectionChanged(ECS::World* world, ECS::EntityHandle entity);
-    void NotifyEditedSplineControls(ECS::World* world, Editor::EditorChangeNotifications::ChangeKind kind);
+    void NotifyEditedSplineControls(ECS::World* world, Editor::EditChangeKind kind);
     void BeginSelectedControlTransformEdit(const char* editName);
     void ApplySelectedControlTransformDelta(const Mathematics::Vector3& deltaWorld);
     void CommitSelectedControlTransformEdit();

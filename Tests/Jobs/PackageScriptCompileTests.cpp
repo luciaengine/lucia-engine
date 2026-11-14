@@ -1,3 +1,4 @@
+#include "Core/ApplicationPaths.h"
 // P1 package C# modules: the compile-server request builder (References/Defines
 // and the language-setting protocol fields), the generated package csproj shape,
 // and end-to-end compiles through a REAL resident CompileServerHost proving that
@@ -7,7 +8,7 @@
 // and the prebuilt rule: a declared DLL stands in for a module with no sources.
 
 #include "CompileServerTestHost.h"
-#include "Core/ApplicationPaths.h"
+#include "Types/PathUtils.h"
 #include "Engine/Build/DotnetHost.h"
 #include "EngineLogCapture.h" // Engine/Tests
 #include "JobSystem/WorkStealingThreadPool.h"

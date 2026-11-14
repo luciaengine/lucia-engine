@@ -1,5 +1,5 @@
 [scene name="WebSmoke" version=1]
-; The web Player's smoke scene: primitive meshes only (generated at runtime
+; Web Player phase-6 smoke scene: primitive meshes only (generated at runtime
 ; by PrimitiveGenerator — no cooked models or textures), one shadow-casting
 ; sun under a gradient sky, an ambient fill, a sphere/cube/capsule row on a
 ; near-mirror pad, and a fixed camera above the terrain looking out over the
@@ -49,7 +49,7 @@ Transform.scale = (1, 1, 1)
 ; up-facing surface lands within a tenth of a stop of the ambient light above,
 ; which is what lights the scene wherever no sky pass runs.
 ;
-; TimeOfDayDrivesSunLight is off, so the sky follows the light: it takes its sun
+; TimeOfDayDrivesSunLight is off, so the link is a FOLLOW: the sky takes its sun
 ; direction from the light instead of placing a sun of its own, and never writes
 ; the light back. The lux authored above stays the scene's key.
 
@@ -57,7 +57,11 @@ Transform.scale = (1, 1, 1)
 Name.value = "Sky Environment"
 SkyEnvironment.Enabled = true
 SkyEnvironment.Mode = 1
+SkyEnvironment.GradientSkyTopColor = (0.2, 0.42, 0.78)
+SkyEnvironment.GradientSkyHorizonColor = (0.6, 0.72, 0.86)
+SkyEnvironment.GradientSkyBottomColor = (0.32, 0.3, 0.28)
 SkyEnvironment.GradientSkyIntensity = 18000
+SkyEnvironment.AutoSunMoon = false
 SkyEnvironment.TimeOfDayDrivesSunLight = false
 SkyEnvironment.SunLight = "e_1"
 Transform.position = (0, 0, 0)
@@ -159,12 +163,15 @@ Terrain.renderLayers = [0]
 Terrain.castShadows = true
 Terrain.receiveShadows = true
 TerrainGrass.enabled = true
+TerrainGrass.bladesPerSquareMeter = 21
 TerrainGrass.bladeHeight = 2.4
-TerrainGrass.bladeWidth = 0.12
+TerrainGrass.bladeWidth = 0.06
 TerrainGrass.bladeSegments = 5
 TerrainGrass.randomScale = 0.35
+TerrainGrass.bladeBend = 0.35
 TerrainGrass.layerIndex = 0
 TerrainGrass.maskThreshold = 0.45
+TerrainGrass.range = 500
 Transform.position = (0, 0, 0)
 Transform.rotation = (0, 0, 0, 1)
 Transform.scale = (1, 1, 1)

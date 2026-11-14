@@ -25,8 +25,10 @@ void RigidAnimationSystem::Update(ECS::World& world, [[maybe_unused]] float32 de
                              ECS::Read<SkeletonRef>,
                              ECS::Read<AnimatedNodeRef>,
                              ECS::Write<Transform>>();
-    query.Each([&](ECS::EntityHandle, AnimatorRef& animator, const SkeletonRef& skeletonRef, const AnimatedNodeRef& nodeRef, Transform& transform)
+    query.Each([&](ECS::EntityHandle, ECS::Writable<AnimatorRef> animatorRow, const SkeletonRef& skeletonRef, const AnimatedNodeRef& nodeRef, ECS::Writable<Transform> transformRow)
     {
+        auto& animator = animatorRow.Mutable();
+        auto& transform = transformRow.Mutable();
         if (animator.ClipIndex == 0 || skeletonRef.skeletonId == 0)
             return;
 

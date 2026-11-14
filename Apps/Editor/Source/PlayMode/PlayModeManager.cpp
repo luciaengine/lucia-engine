@@ -1,4 +1,6 @@
 #include "PlayMode/PlayModeManager.h"
+#include "Editor/Registries/EditorMenuRegistry.h"
+#include "Automation/UiReplayCommandIds.h"
 #include "PlayMode/ModelAnimationPlayMode.h"
 #include "PlayMode/PlayModeEntryGate.h"
 #include "Inspectors/AnimationPreviewManager.h"
@@ -68,8 +70,9 @@ static void ResetTransientRenderState(ECS::World& world)
     // including the ones belonging to entities that are switched off.
     world.Query<ECS::Write<Components::MeshGPUData>>()
         .IncludeDisabled()
-        .Each([](Components::MeshGPUData& meshGpu)
+        .Each([](ECS::Writable<Components::MeshGPUData> meshGpuRow)
               {
+                  auto& meshGpu = meshGpuRow.Mutable();
                   meshGpu = Components::MeshGPUData{};
               });
 }
@@ -163,6 +166,97 @@ void PlayModeManager::ApplyEditModeSystemGating()
     SetRuntimeSimulationSystemsEnabled(false);
 }
 
+namespace
+{
+
+// State names in the fixed-id commands' error messages.
+const char* CommandStateName(PlayModeState state)
+{
+    switch (state)
+    {
+    case PlayModeState::Edit:
+        return "Edit";
+    case PlayModeState::EnteringPlay:
+        return "EnteringPlay";
+    case PlayModeState::Play:
+        return "Play";
+    case PlayModeState::Paused:
+        return "Paused";
+    case PlayModeState::ExitingPlay:
+        return "ExitingPlay";
+    case PlayModeState::ChangeReview:
+        return "ChangeReview";
+    }
+    return "Unknown";
+}
+
+bool ExpectState(PlayModeState actual, bool matches, const char* expected, std::string* outError)
+{
+    if (matches)
+        return true;
+    if (outError)
+        *outError = std::string("expected ") + expected + ", got " + CommandStateName(actual);
+    return false;
+}
+
+} // namespace
+
+void PlayModeManager::RegisterCommands()
+{
+    auto& registry = EditorMenuRegistry::Get();
+    registry.RegisterCommand(
+        {UiReplayCommandIds::PlayEnter, [this](std::string* outError) { return RunPlayEnterCommand(outError); }});
+    registry.RegisterCommand({UiReplayCommandIds::PlayTogglePause,
+                              [this](std::string* outError) { return RunPlayTogglePauseCommand(outError); }});
+    // Stop leaves Edit alone and discards a pending Change Review.
+    registry.RegisterCommand({UiReplayCommandIds::PlayStop, [this](std::string*) {
+                                  if (m_State == PlayModeState::Edit)
+                                      ExitPlayMode();
+                                  else
+                                      TogglePlayStop();
+                                  return true;
+                              }});
+    registry.RegisterCommand({UiReplayCommandIds::AssertPlayModeEdit, [this](std::string* outError) {
+                                  return ExpectState(m_State, m_State == PlayModeState::Edit, "Edit", outError);
+                              }});
+    registry.RegisterCommand({UiReplayCommandIds::AssertPlayModePlay, [this](std::string* outError) {
+                                  return ExpectState(m_State, m_State == PlayModeState::Play, "Play", outError);
+                              }});
+    registry.RegisterCommand({UiReplayCommandIds::AssertPlayModePaused, [this](std::string* outError) {
+                                  return ExpectState(m_State, m_State == PlayModeState::Paused, "Paused", outError);
+                              }});
+    registry.RegisterCommand({UiReplayCommandIds::AssertPlayModeNotRunning, [this](std::string* outError) {
+                                  const bool notRunning =
+                                      m_State == PlayModeState::Edit || m_State == PlayModeState::ChangeReview;
+                                  return ExpectState(m_State, notRunning, "not-running (Edit or ChangeReview)",
+                                                     outError);
+                              }});
+}
+
+bool PlayModeManager::RunPlayEnterCommand(std::string* outError)
+{
+    if (m_State != PlayModeState::Edit)
+    {
+        if (outError)
+            *outError = std::string("expected Edit before PlayEnter, got ") + CommandStateName(m_State);
+        return false;
+    }
+    EnterPlayMode();
+    return true;
+}
+
+bool PlayModeManager::RunPlayTogglePauseCommand(std::string* outError)
+{
+    if (!IsPlayingOrPaused())
+    {
+        if (outError)
+            *outError = "PlayTogglePause requires Play or Paused state";
+        return false;
+    }
+    TogglePause();
+    return true;
+}
+
 void PlayModeManager::TogglePlayStop()
 {
     if (m_State == PlayModeState::Edit)
@@ -226,6 +320,9 @@ void PlayModeManager::EnterPlayMode()
     if (m_EntryGate.Hold([this]() { EnterPlayMode(); }))
         return;
 
+    if (m_UndoRedo && !m_UndoRedo->CommitPendingEdit())
+        return;
+    m_ExitRequested = false;
     SetState(PlayModeState::EnteringPlay);
 
     // Isolate undo history for play mode.
@@ -233,7 +330,7 @@ void PlayModeManager::EnterPlayMode()
     {
         m_UndoStash = std::make_unique<UndoHistoryStash>();
         m_UndoStash->editHistory = m_UndoRedo->DetachHistory();
-        // Start with a clean play-mode history (DetachHistory already cleared stacks).
+        // Start with a clean play-mode history (DetachHistory already cleared the graph).
         m_UndoStash->playHistory = {};
     }
 
@@ -352,6 +449,8 @@ void PlayModeManager::ExitPlayMode()
     if (m_State == PlayModeState::ChangeReview)
         return;
 
+    if (m_UndoRedo && !m_UndoRedo->CommitPendingEdit())
+        m_UndoRedo->DiscardPendingEdit();
     m_ExitRequested = false;
     if (m_State == PlayModeState::Paused)
         ResumeSimulationClock();
@@ -440,7 +539,7 @@ void PlayModeManager::ExitPlayMode()
         m_Notifications->NotifyWorldStructureChanged(e);
     }
 
-    // Capture play-mode undo stack for future change review, then restore edit-mode history.
+    // Capture play-mode history for change review, then restore edit-mode history.
     if (m_UndoRedo && m_UndoStash)
     {
         m_UndoStash->playHistory = m_UndoRedo->DetachHistory();
@@ -448,8 +547,9 @@ void PlayModeManager::ExitPlayMode()
 
         // Convert play undo history into pending changes (in chronological order).
         m_PendingChanges.clear();
-        m_PendingChanges.reserve(m_UndoStash->playHistory.undo.size());
-        for (auto& cmd : m_UndoStash->playHistory.undo)
+        auto commands = m_UndoStash->playHistory.Graph.TakeActiveCommands();
+        m_PendingChanges.reserve(commands.size());
+        for (auto& cmd : commands)
         {
             if (cmd)
             {
@@ -460,7 +560,7 @@ void PlayModeManager::ExitPlayMode()
             }
         }
 
-        // Discard redo stack and release stash storage (we moved commands out).
+        // Release the play history after extracting its active branch.
         m_UndoStash.reset();
     }
 

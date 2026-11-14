@@ -10,6 +10,7 @@
 #pragma once
 
 #include "Engine/Rendering/DepthPassTypes.h" // DepthOnlyPassParamsRG (+ RGContext, GPUDrawStreamBuilder, IDevice, CullModeFlags)
+#include "Engine/Rendering/DepthProducerState.h"
 #include "Engine/Rendering/DrawCommand.h"
 #include "Rendering/Materials/MaterialAlphaMode.h"
 #include "Rendering/Materials/Shader/ShaderMeta.h"
@@ -25,6 +26,11 @@ namespace GameEngine
 {
 namespace Rendering
 {
+namespace RenderGraph
+{
+class RGPrepareContext;
+class RGFrame;
+}
 class GPUScene;
 class MeshGPURegistry;
 } // namespace Rendering
@@ -35,9 +41,10 @@ class CpuDrawStreamBuilder;
 class WorldDrawBuilder;
 class MaterialSystem;
 class ViewRegistry;
+class TextureService;
 
 // Exec→declare under-draw feedback (cascade static-shadow cache correctness).
-// RecordDepthOnlyPass has silent skip paths that drop draws the always-render
+// PrepareDepthOnlyPass has silent skip paths that drop draws the always-render
 // pipeline would simply re-record next frame: the async depth-variant publish
 // gate (depth-pipeline-invalid / material-bind-invalid), the M2a shadow-walk
 // early-out on a frames-stale survivor readback (the pass already CLEARED the
@@ -88,9 +95,9 @@ class DepthUnderDrawTracker
 };
 
 // The complete dependency surface of the depth-draw executor, resolved as
-// references/pointers into RenderServices-owned subsystems. Built fresh at EXEC
-// time by RenderServices::MakeDepthDrawServices() and consumed synchronously
-// within a single RecordDepthOnlyPass call; never stored across frames. CullMode
+// references/pointers into RenderServices-owned subsystems. Built at preparation
+// by RenderServices::MakeDepthDrawServices() and consumed synchronously; the
+// frame-owned replay state retains handles and service pointers for that frame. CullMode
 // is the set-once debug rasterizer override the executor formerly reached for as
 // m_CullMode — carried by value so no getter joins the RenderServices surface.
 struct DepthDrawServices
@@ -120,6 +127,7 @@ struct DepthDrawServices
     // one DrawIndexedIndirectCount per scatter-published range. Null on the
     // GPU-driven path.
     const CpuDrawStreamBuilder*      CpuDrawStream = nullptr;
+    const TextureService*            Textures = nullptr;
 };
 
 // Which depth pipeline ONE draw segment takes. The crossfade rule lives here
@@ -404,11 +412,28 @@ inline DepthSegmentPipelineChoice ChooseDepthHeadPipeline(
 // (GE_PREPASS_SHARED_DEPTH=0 disables it for triage).
 bool PrepassSharedDepthEnabled();
 
-// Record the depth/shadow draws for one declared depth-only pass. params arrives
-// by value (moved from the exec lambda); the services bundle by const-ref.
-void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
-                         DepthOnlyPassParamsRG params,
-                         const DepthDrawServices& services);
+// Frame-owned state is opaque: selection, pipelines and descriptors are prepared
+// before any command list records; replay emits only the accepted draws.
+struct PreparedDepthOnlyPass;
+PreparedDepthOnlyPass* AllocatePreparedDepthOnlyPass(Rendering::RenderGraph::RGFrame& frame,
+                                                    DepthOnlyPassParamsRG params);
+bool PrepareDepthOnlyPass(Rendering::RenderGraph::RGPrepareContext& c,
+                          PreparedDepthOnlyPass& data, const DepthDrawServices& services);
+/** Read the current prepared producer; unsupported producers remain incomplete. */
+DepthProducerState GetPreparedDepthProducerState(const PreparedDepthOnlyPass& data,
+                                                CascadeCasters casters);
+void RecordPreparedDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
+                                  const PreparedDepthOnlyPass& data);
+// Primary command list, inside the cascade's Load pass. A failed rigid restore
+// clears the layer and replays all prepared casters instead of omitting rigids.
+void RecordPreparedCascadeDepth(Rendering::RenderGraph::RGContext& c,
+                                const PreparedDepthOnlyPass& data,
+                                Rendering::TextureHandle target, uint32_t layer,
+                                bool restoredRigidDepth);
+/** Clear the complete layer and record the prepared rigid subset on the primary list. */
+void RecordPreparedRigidCascadeDepth(Rendering::RenderGraph::RGContext& c,
+                                     const PreparedDepthOnlyPass& data,
+                                     Rendering::TextureHandle target, uint32_t layer);
 
 } // namespace Engine::Renderer
 } // namespace GameEngine

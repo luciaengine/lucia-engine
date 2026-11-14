@@ -152,8 +152,12 @@ RenderServices::PipelineOutputRG RenderServices::GetPipelineOutputRG(
         return result;
     // Frame-identity guard: a blackboard declared against another frame (or
     // a stale incarnation of this one) holds dead frame-local ids.
-    if (!instance->FrameResourcesFor(&frame))
+    const auto* resources = instance->FrameResourcesFor(&frame);
+    if (!resources)
         return result;
+    const auto viewInfo = resources->Views.find(viewId);
+    if (viewInfo != resources->Views.end())
+        result.PixelPerfectCrossing = viewInfo->second.PixelPerfectCrossing;
     result.Out = instance->GetOutputRG(viewId, "FinalColor");
     if (result.Out.IsValid())
         result.Physical = frame.PhysicalTexture(result.Out);
@@ -270,6 +274,7 @@ void RenderServices::BeginWorldDrawFrame()
     for (auto& [worldId, lights] : m_WorldLights)
         lights.clear();
     m_WorldPostProcess.clear();
+    m_WorldWeatherWind.Clear();
     // Cleared with the other per-world extraction state so destroyed worlds
     // (thumbnail/preview churn) can't accumulate entries; every live world's
     // extraction republishes before probes read it later the same frame.

@@ -15,7 +15,6 @@
 #include "EditorChangeNotifications.h"
 #include "GameView/GameViewController.h"
 #include "Input/InputSystem.h"
-#include "Input/KeyCodes.h"
 #include "UI/Controls/Button.h"
 #include "UI/Internal/LayoutAccess.h"
 #include "UI/UIManager.h"
@@ -57,7 +56,7 @@ class GameViewControllerInputTests : public testing::Test
 {
   protected:
     GameUIHost OtherHost{nullptr, nullptr, nullptr};
-    GameViewController Controller{nullptr, nullptr};
+    GameViewController Controller{nullptr, {}};
     GameUIHost* Host = nullptr;
     ECS::World* World = nullptr;
     Button* Target = nullptr;
@@ -95,46 +94,14 @@ class GameViewControllerInputTests : public testing::Test
 
     void TearDown() override
     {
-        Controller.HandleGameUiPointerMove(false, 0, 0, 0);
+        Controller.HandleGameUiPointer(false, 0, 0, false, 0);
         GameUI::SetHost(nullptr);
         World->Clear();
     }
 
-    void Move(float x = .3125f, float y = .35f, int mods = 0)
-    {
-        Controller.HandleGameUiPointerMove(true, x, y, mods);
-    }
-    void Press(float x = .3125f, float y = .35f, int mods = 0)
-    {
-        Move(x, y, mods);
-        Controller.HandleGameUiPointerButton(Input::kMouseButton_Left, true, mods);
-    }
-    void Release(float x = .3125f, float y = .35f, int mods = 0)
-    {
-        Move(x, y, mods);
-        Controller.HandleGameUiPointerButton(Input::kMouseButton_Left, false, mods);
-    }
+    void Press() { Controller.HandleGameUiPointer(true, .3125f, .35f, true, 0); }
+    void Release() { Controller.HandleGameUiPointer(true, .3125f, .35f, false, 0); }
 };
-
-TEST_F(GameViewControllerInputTests, AMoveWithTheButtonHeldKeepsThePress)
-{
-    Press();
-    Move(.33f, .37f); // still over the target, the button held
-    EXPECT_TRUE(Target->HasClass("pressed")) << "a move released the press";
-    EXPECT_EQ(Clicks, 0);
-    Release(.33f, .37f);
-    EXPECT_EQ(Clicks, 1);
-}
-
-TEST_F(GameViewControllerInputTests, ALeftDragOutOfTheViewDoesNotEatTheNextClick)
-{
-    Press();
-    // The pointer leaves the view with the button held; the release lands outside it.
-    Controller.HandleGameUiPointerMove(false, 0, 0, 0);
-    Press();
-    Release();
-    EXPECT_EQ(Clicks, 1) << "the leave waited for a release that never reaches the view";
-}
 
 TEST_F(GameViewControllerInputTests, MapsAgainstLastUiExtentWithoutRendering)
 {
@@ -144,10 +111,8 @@ TEST_F(GameViewControllerInputTests, MapsAgainstLastUiExtentWithoutRendering)
     // A different recorded UI extent uses different normalized coordinates for
     // the same gameplay button. Neither input sequence invokes a render path.
     GameViewControllerTestAccess::SetUiFrame(Controller, *World, 1600, 800);
-    Controller.HandleGameUiPointerMove(true, .15625f, .175f, 0);
-    Controller.HandleGameUiPointerButton(Input::kMouseButton_Left, true, 0);
-    Controller.HandleGameUiPointerMove(true, .15625f, .175f, 0);
-    Controller.HandleGameUiPointerButton(Input::kMouseButton_Left, false, 0);
+    Controller.HandleGameUiPointer(true, .15625f, .175f, true, 0);
+    Controller.HandleGameUiPointer(true, .15625f, .175f, false, 0);
     EXPECT_EQ(Clicks, 2);
     EXPECT_EQ(Presses, 2);
 }
@@ -166,10 +131,8 @@ TEST_F(GameViewControllerInputTests, CarriesReleaseModifiersIntoTheReceivingHost
 {
     int modifiers = -1;
     Target->SetOnClick([&](UIEvent& event) { modifiers = event.Mods; });
-    Controller.HandleGameUiPointerMove(true, .3125f, .35f, Input::kModControl);
-    Controller.HandleGameUiPointerButton(Input::kMouseButton_Left, true, Input::kModControl);
-    Controller.HandleGameUiPointerMove(true, .3125f, .35f, Input::kModShift);
-    Controller.HandleGameUiPointerButton(Input::kMouseButton_Left, false, Input::kModShift);
+    Controller.HandleGameUiPointer(true, .3125f, .35f, true, Input::kModControl);
+    Controller.HandleGameUiPointer(true, .3125f, .35f, false, Input::kModShift);
     EXPECT_EQ(modifiers, Input::kModShift);
     Press();
     Release();
@@ -178,7 +141,7 @@ TEST_F(GameViewControllerInputTests, CarriesReleaseModifiersIntoTheReceivingHost
 
 TEST_F(GameViewControllerInputTests, UnsetExtentDoesNotDeliverPointerEdges)
 {
-    for (const auto& extent : {std::pair{0u, 400u}, std::pair{800u, 0u}, std::pair{0u, 0u}})
+    for (const auto extent : {std::pair{0u, 400u}, std::pair{800u, 0u}, std::pair{0u, 0u}})
     {
         GameViewControllerTestAccess::SetUiFrame(Controller, *World, extent.first, extent.second);
         Press();
@@ -230,8 +193,7 @@ TEST_F(GameViewControllerInputTests, ExplicitCancellationUsesReceivingHost)
 {
     Press();
     GameUI::SetHost(&OtherHost);
-    Controller.HandleGameUiPointerMove(false, 0, 0, 0);
-    Controller.HandleGameUiPointerButton(Input::kMouseButton_Left, false, 0);
+    Controller.HandleGameUiPointer(false, 0, 0, false, 0);
     EXPECT_EQ(Cancels, 1);
     EXPECT_FALSE(Target->HasClass("pressed"));
     Release();
@@ -242,7 +204,7 @@ TEST_F(GameViewControllerInputTests, PressBeforeValidExtentCannotArmOnLaterHeldM
     GameViewControllerTestAccess::SetUiFrame(Controller, *World, 0, 0);
     Press();
     GameViewControllerTestAccess::SetUiFrame(Controller, *World);
-    Controller.HandleGameUiPointerMove(true, .3125f, .35f, 0); // held movement, not another physical press
+    Controller.HandleGameUiPointer(true, .3125f, .35f, true, 0); // held movement, not another physical press
     Release();
     EXPECT_EQ(Presses, 0);
     EXPECT_EQ(Clicks, 0);
@@ -251,27 +213,13 @@ TEST_F(GameViewControllerInputTests, PressBeforeValidExtentCannotArmOnLaterHeldM
     EXPECT_EQ(Clicks, 1);
 }
 
-TEST(GameViewControllerProjectSwitchTests, AProjectSwitchReleasesTheHudHost)
-{
-    Editor::EditorChangeNotifications notifications;
-    GameViewController controller{nullptr, &notifications};
-    GameUIHost& host = GameViewControllerTestAccess::InstallHost(controller);
-    GameUI::SetHost(&host);
-
-    notifications.NotifyProjectSwitched();
-
-    // The view has no device, so it cannot build the next host.
-    EXPECT_EQ(controller.GetGameUI(), nullptr);
-    EXPECT_EQ(GameUI::GetHost(), nullptr);
-}
-
 class GameViewControllerReadbackTests : public testing::Test
 {
   protected:
     std::unique_ptr<Rendering::IDevice> Device;
     Engine::Renderer::RenderServices Services;
     ECS::World World;
-    GameViewController Controller{nullptr, nullptr};
+    GameViewController Controller{nullptr, {}};
     ECS::EntityHandle CameraEntity;
     std::unique_ptr<Rendering::RenderGraph::RGResourcePool> Persistent;
     std::unique_ptr<Rendering::RenderGraph::RGTransientPool> Transient;
@@ -434,8 +382,8 @@ TEST_F(GameViewControllerReadbackTests, DeclaredCameraTracksDeclaresAndSurvivesA
     Declare(7);
     ASSERT_TRUE(Controller.GetDeclaredCamera().has_value());
     EXPECT_EQ(Controller.GetDeclaredCamera()->FrameIndex, 7u);
-    EXPECT_FLOAT_EQ(Controller.GetDeclaredCamera()->Data.cameraPos.x, 12.0f);
-    EXPECT_FLOAT_EQ(Controller.GetDeclaredCamera()->Data.cameraPos.y, 3.0f);
+    EXPECT_FLOAT_EQ(Controller.GetDeclaredCamera()->Data.cameraPos[0], 12.0f);
+    EXPECT_FLOAT_EQ(Controller.GetDeclaredCamera()->Data.cameraPos[1], 3.0f);
     EXPECT_EQ(Controller.GetDeclaredCamera()->Width, 160u);
     EXPECT_EQ(Controller.GetDeclaredCamera()->Height, 90u);
     EXPECT_EQ(Controller.GetDeclaredCamera()->ExposureMode, Components::ExposureMode::Auto);
@@ -447,13 +395,13 @@ TEST_F(GameViewControllerReadbackTests, DeclaredCameraTracksDeclaresAndSurvivesA
     EXPECT_TRUE(Controller.IsWaitingForExtraction());
     ASSERT_TRUE(Controller.GetDeclaredCamera().has_value());
     EXPECT_EQ(Controller.GetDeclaredCamera()->FrameIndex, 7u);
-    EXPECT_FLOAT_EQ(Controller.GetDeclaredCamera()->Data.cameraPos.x, 12.0f);
+    EXPECT_FLOAT_EQ(Controller.GetDeclaredCamera()->Data.cameraPos[0], 12.0f);
     Services.Views().MarkViewExtracted(view, 8);
     Declare(9);
     EXPECT_FALSE(Controller.IsWaitingForExtraction());
     ASSERT_TRUE(Controller.GetDeclaredCamera().has_value());
     EXPECT_EQ(Controller.GetDeclaredCamera()->FrameIndex, 9u);
-    EXPECT_FLOAT_EQ(Controller.GetDeclaredCamera()->Data.cameraPos.x, 17.0f);
+    EXPECT_FLOAT_EQ(Controller.GetDeclaredCamera()->Data.cameraPos[0], 17.0f);
 
     Controller.DeactivateRenderView();
     EXPECT_FALSE(Controller.GetDeclaredCamera().has_value());

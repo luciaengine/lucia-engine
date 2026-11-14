@@ -51,6 +51,9 @@ struct PackageManifest
     std::string Name;
     PackageVersion Version;
     std::string DisplayName; // defaults to Name
+    // Optional package-root-relative artwork for the Package Manager.
+    std::string Icon;
+    std::string Screenshot;
     // Dependency name -> raw semver range text (validated at parse time).
     std::map<std::string, PackageVersionRange> Dependencies;
     // Package-relative asset dir mounted into the asset database. Default "Assets/".

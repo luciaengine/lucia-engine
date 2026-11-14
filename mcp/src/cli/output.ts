@@ -1,8 +1,8 @@
 import * as fs from "fs";
 import * as path from "path";
+import { cliNextCall } from "../next-call.js";
 import { ipcConfig } from "../config.js";
 import { formatEndpoint } from "../ipc-client.js";
-import { cliNextCall } from "../next-call.js";
 import { ToolError, type ToolErrorCode, type ToolOutput } from "../registry.js";
 
 // Rendering and exit codes for the CLI. Everything an operator or a script

@@ -2,11 +2,11 @@
 // scene — one playing skinned entity plus one morph-carrying entity, with no
 // actual changes — must not write-grant ("stamp") the three extraction probe
 // columns (MeshRenderer, LocalBounds, LODGroup) frame over
-// frame. The ECS stamps write columns at visit, BEFORE the callback, for
-// every non-filtered chunk, so any per-frame system that binds a probed
-// column mutably re-arms this failure regardless of what its body does.
-// This is the tripwire that keeps a Changed<>-gated extraction fast path
-// viable in real content against the next mutable-binding regression.
+// frame. A write grant on a probed column — a Mutable() or Set() taken without
+// a change, a pointer-shape or inferred mutable binding (both stamp every
+// visited chunk), or GetComponentForWrite — re-arms this failure. This is the
+// tripwire that keeps a Changed<>-gated extraction fast path viable in real
+// content against the next such regression.
 
 #include <gtest/gtest.h>
 
@@ -148,11 +148,18 @@ TEST(ExtractionStampAuditTests, IdleAnimatedSceneDoesNotStampProbedColumns)
     skinned.Set(Components::LocalBounds{});
     skinned.Set(Components::LODGroup{});
 
-    // Morph-carrying entity: MorphTargetSystem visits its chunk every frame
-    // (null model GUID -> early return, but stamp-at-visit fires before the
-    // callback body, which is exactly the shape under audit).
+    // Morph-carrying entity: MorphTargetSystem visits its chunk every frame.
+    // Its model never resolves, so the system returns before writing; the
+    // resolver's call count proves the visits happened.
+    uint32 morphVisits = 0;
+    morphSystem.SetModelResolverForTest([&morphVisits](const GUID&) -> ModelAsset* {
+        ++morphVisits;
+        return nullptr;
+    });
+    Components::MeshRenderer morphRenderer{};
+    morphRenderer.modelAssetGuid.Set(GUID::Generate());
     ECS::Entity morph = world.Create();
-    morph.Set(Components::MeshRenderer{});
+    morph.Set(morphRenderer);
     morph.Set(Components::MorphTargetWeights{});
     morph.Set(Components::LocalBounds{});
     morph.Set(Components::LODGroup{});
@@ -168,18 +175,20 @@ TEST(ExtractionStampAuditTests, IdleAnimatedSceneDoesNotStampProbedColumns)
     morphSystem.Update(world, kDt);
 
     const uint64 gate = world.GetGlobalSystemVersion();
+    const uint32 morphVisitsBefore = morphVisits;
     for (int frame = 0; frame < kIdleFrames; ++frame)
     {
         animationSystem.Update(world, kDt);
         morphSystem.Update(world, kDt);
     }
 
-    // Liveness: the systems really visited their chunks. AnimatorRef and
-    // MorphTargetWeights are genuine per-frame write columns, so their
-    // stamps prove the dispatches ran (and playback advanced).
+    // Liveness: the systems really visited their chunks. AnimatorRef is a
+    // genuine per-frame write column, so its stamp proves the playback
+    // dispatch ran (and playback advanced); the resolver count proves the
+    // morph dispatch did.
     EXPECT_GT(VisitedSince<Components::AnimatorRef>(world, gate), 0u)
         << "AnimationSystem did not visit the skinned entity - the audit is vacuous";
-    EXPECT_GT(VisitedSince<Components::MorphTargetWeights>(world, gate), 0u)
+    EXPECT_EQ(morphVisits - morphVisitsBefore, static_cast<uint32>(kIdleFrames))
         << "MorphTargetSystem did not visit the morph entity - the audit is vacuous";
     const auto* animAfter = world.GetComponent<Components::AnimatorRef>(skinned.GetHandle());
     ASSERT_NE(animAfter, nullptr);
@@ -198,7 +207,7 @@ TEST(ExtractionStampAuditTests, IdleAnimatedSceneDoesNotStampProbedColumns)
     // be a probe that matches nothing.
     const uint64 gateMr = world.GetGlobalSystemVersion();
     if (auto* mr = world.GetComponentForWrite<Components::MeshRenderer>(skinned.GetHandle()))
-        mr->shadowCasting = Components::ShadowCasting::Off;
+        mr->castShadows = !mr->castShadows;
     EXPECT_GT(VisitedSince<Components::MeshRenderer>(world, gateMr), 0u);
 
     const uint64 gateLb = world.GetGlobalSystemVersion();

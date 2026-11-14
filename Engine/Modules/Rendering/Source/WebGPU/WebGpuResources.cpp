@@ -5,6 +5,8 @@
 #include "WebGpuUnsupported.h"
 
 #include "Logger/Logger.h"
+#include "Types/Fnv1a.h"
+#include "Platform/Environment.h"
 
 #if !defined(__EMSCRIPTEN__)
 // wgpu-native extras (immediates, DevicePoll); Dawn/emdawnwebgpu has no wgpu.h.
@@ -12,7 +14,6 @@
 #endif
 
 #include <algorithm>
-#include <cstdlib>
 #include <cstring>
 
 namespace GameEngine::Rendering
@@ -42,20 +43,6 @@ uint64_t AlignDown(uint64_t value, uint64_t alignment)
     return value & ~(alignment - 1);
 }
 
-// FNV-1a over one audit page. Only ever compared against itself, so the
-// hash needs speed and a low accidental-collision rate, not cryptography.
-uint64_t HashPage(const uint8_t* data, size_t bytes)
-{
-    constexpr uint64_t kFnvOffsetBasis = 1469598103934665603ull;
-    constexpr uint64_t kFnvPrime = 1099511628211ull;
-    uint64_t hash = kFnvOffsetBasis;
-    for (size_t i = 0; i < bytes; ++i)
-    {
-        hash = (hash ^ data[i]) * kFnvPrime;
-    }
-    return hash;
-}
-
 bool EnvFlagEnabled(const char* name)
 {
     const char* value = std::getenv(name);
@@ -74,8 +61,8 @@ constexpr const char* kFlushAuditEnvVar = "GE_WEBGPU_FLUSH_AUDIT";
 
 void WebGpuDevice::ReadFlushDiagnosticSettings()
 {
-    m_FlushWholeShadows = EnvFlagEnabled(kFlushWholeShadowsEnvVar);
-    m_AuditUndeclaredWrites = EnvFlagEnabled(kFlushAuditEnvVar);
+    m_FlushWholeShadows = Platform::EnvironmentSwitchEnabled(kFlushWholeShadowsEnvVar, false);
+    m_AuditUndeclaredWrites = Platform::EnvironmentSwitchEnabled(kFlushAuditEnvVar, false);
     if (m_FlushWholeShadows)
     {
         Logger::Log::Warning("WebGpuDevice: {}=1 — every mapped shadow uploads in full. "
@@ -411,7 +398,7 @@ void WebGpuDevice::AuditUndeclaredWrites(WebGpuBuffer& buffer)
     {
         const uint64_t begin = page * kAuditPageBytes;
         const uint64_t end = std::min(begin + kAuditPageBytes, buffer.size);
-        if (HashPage(buffer.shadow.data() + begin, static_cast<size_t>(end - begin)) ==
+        if (Hashing::Fnv1a64(buffer.shadow.data() + begin, static_cast<size_t>(end - begin)) ==
             buffer.auditPageHashes[page])
         {
             continue;
@@ -454,7 +441,7 @@ void WebGpuDevice::RefreshAuditHashes(WebGpuBuffer& buffer, uint64_t begin, uint
         const uint64_t pageBegin = page * kAuditPageBytes;
         const uint64_t pageEnd = std::min(pageBegin + kAuditPageBytes, buffer.size);
         buffer.auditPageHashes[page] =
-            HashPage(buffer.shadow.data() + pageBegin, static_cast<size_t>(pageEnd - pageBegin));
+            Hashing::Fnv1a64(buffer.shadow.data() + pageBegin, static_cast<size_t>(pageEnd - pageBegin));
     }
 }
 

@@ -85,6 +85,7 @@ class SceneEditorController
 
     // Top toolbar save icon / menu: same behavior as Editor.Global.SaveScene (Ctrl+S).
     void RequestSaveScene();
+    void RegisterCommands();
     /// Save As dialog (e.g. toolbar save with Shift held).
     void RequestSaveSceneAs();
     // Discard unsaved edits. Saved documents reload from disk; untitled

@@ -8,14 +8,26 @@
 #include "Components/Transform.h"
 #include "DayCycle/DayCycleAxis.h"
 #include "DayCycle/DayCycleScrub.h"
+#include "DayCycle/DayCycleSunNow.h"
 #include "DayCycle/DayCycleWindow/DayCycleWindow.h"
 #include "Editor/Entities/EditorECSHelpers.h"
 #include "Engine/Rendering/SkyRenderFeature.h"
 #include "UI/Controls/CurveField.h"
 
-using namespace GameEngine;
-using namespace GameEngine::Editor;
-using namespace GameEngine::DayCycleEditorTesting;
+#include <algorithm>
+#include <cmath>
+
+namespace GameEngine::Editor
+{
+using DayCycleEditorTesting::DayCycleEditorTests;
+using DayCycleEditorTesting::All;
+using DayCycleEditorTesting::HasText;
+using DayCycleEditorTesting::HasButton;
+using DayCycleEditorTesting::ReadText;
+using DayCycleEditorTesting::NameOf;
+using DayCycleEditorTesting::kRadiansToDegrees;
+using DayCycleEditorTesting::kMarshProfile;
+using DayCycleEditorTesting::kEmptyProfile;
 
 // The window opens the shipped Default by its place in the editor source; the asset browser hands the
 // inspector the same file under the path the registry stores. Both are one profile, so one copy.
@@ -127,8 +139,13 @@ TEST_F(DayCycleEditorTests, AScrubPreviewsTheHourAndLeavesTheSceneAlone)
     window.SetScrubHeld(false);
     ASSERT_EQ(Sky.GetPreviewHour(World.GetWorldId()), std::optional<float>(18.5f));
     Sky.Update(World, 0.0f);
-    const float elevation = Render.GetFeature<Engine::Renderer::SkyRenderFeature>()->GetSunState().SunElevation;
+    const auto* feature = Render.GetFeature<Engine::Renderer::SkyRenderFeature>();
+    ASSERT_NE(feature, nullptr);
+    const float elevation = feature->GetSunState().SunElevation;
     EXPECT_NEAR(elevation * kRadiansToDegrees, ElevationDegreesAtHour(DayCyclePathOf(SkyNow()), 18.5f), 0.01f);
+    const DayCycleSunNow now = ReadDayCycleSunNow(World, &Render, &Sky);
+    EXPECT_NEAR(now.ElevationDegrees, ElevationDegreesAtHour(DayCyclePathOf(SkyNow()), 18.5f), 0.01f);
+    EXPECT_TRUE(now.DuskHalf);
 
     EXPECT_EQ(SkyNow().TimeOfDayHours, 10.0f);
     EXPECT_EQ(Undo.GetUndoCount(), 0u);
@@ -300,3 +317,5 @@ TEST_F(DayCycleEditorTests, TheWindowCanOutliveItsSkySystem)
     window.reset();
     EXPECT_EQ(SkyNow().TimeOfDayHours, 8.0f);
 }
+
+} // namespace GameEngine::Editor

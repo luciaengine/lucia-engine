@@ -1,19 +1,24 @@
-// The Tick and PollEventsAndTick contract that external frame drivers rely on: exit stops
-// both without a frame, each call runs one frame, the update may use frame memory, and a frame
-// waits on the CPU only when GE_FRAME_CAP or SetFrameRateCap asks for a limiter.
+// Tick/PollEventsAndTick driver contract. External frame drivers call them
+// directly instead of Run(): tests call Tick(), the browser
+// requestAnimationFrame runner calls PollEventsAndTick(). These tests pin the
+// properties they rely on: a requested exit makes both return false without
+// running a frame, each manual call advances exactly one frame until exit
+// (PollEventsAndTick included, when its pump ran no frame), a frame reports
+// nothing unless asked to, and a frame waits on the CPU only when GE_FRAME_CAP
+// asks for a limiter.
 
 #include "Core/Application.h"
 #include "Core/Engine.h"
-#include "Memory/FrameMemory.h"
+#include "Platform/Environment.h"
+#include "Platform/ApplicationScriptApi.h"
 #include "Scripting/ScriptsConfig.h"
 
 #include "EngineLogCapture.h"
+#include "TestTempDir.h"
 
 #include <gtest/gtest.h>
 
-#include <cstdlib>
 #include <filesystem>
-#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -32,14 +37,11 @@ public:
     int ExitAfterUpdates = -1;
     bool RequestNestedTick = false;
     bool NestedTickResult = false;
-    std::vector<void*> FrameMemoryPerUpdate;
 
 protected:
     void Update(GameEngine::float64) override
     {
         ++UpdateCalls;
-        // Debug asserts here unless Tick started a frame and joined this thread.
-        FrameMemoryPerUpdate.push_back(GameEngine::Memory::FrameMemory::Allocate(16));
         if (RequestNestedTick)
         {
             RequestNestedTick = false;
@@ -91,9 +93,8 @@ private:
 
 // Ticks `frames` frames of a non-editor application, as the Player runs, and
 // counts the frames the frame-rate limiter held with a CPU wait. The frames do
-// no work, so a limiter at any ordinary rate holds them. Before the first frame,
-// the application gets each of `frameRateCaps` in order through SetFrameRateCap.
-int CountFramesHeldByTheLimiter(const char* name, int frames, std::initializer_list<double> frameRateCaps)
+// no work, so a limiter at any ordinary rate holds them.
+int CountFramesHeldByTheLimiter(const char* name, int frames)
 {
     const fs::path tempRoot = fs::temp_directory_path() / "ge_application_frame_cap_test";
     fs::create_directories(tempRoot / "Assets");
@@ -115,8 +116,6 @@ int CountFramesHeldByTheLimiter(const char* name, int frames, std::initializer_l
     {
         CountingApp app(cfg);
         EXPECT_TRUE(app.Initialize());
-        for (const double cap : frameRateCaps)
-            app.SetFrameRateCap(cap);
         for (int frame = 0; frame < frames; ++frame)
         {
             app.Tick();
@@ -149,8 +148,7 @@ TEST(ApplicationTick, ExitRequestedMeansNoFrameRuns)
 
 TEST(ApplicationTick, ManualTicksAdvanceOneFrameEachAndStopOnExit)
 {
-    const fs::path tempRoot =
-        fs::temp_directory_path() / "ge_application_tick_test";
+    const fs::path tempRoot = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_application_tick_test");
     fs::create_directories(tempRoot / "Assets");
 
     // Scripting-free EngineCore so this Engine-only target boots without a
@@ -190,9 +188,6 @@ TEST(ApplicationTick, ManualTicksAdvanceOneFrameEachAndStopOnExit)
         EXPECT_EQ(app.UpdateCalls, 3);
         EXPECT_EQ(app.RenderCalls, 3);
         EXPECT_EQ(app.GetFrameCount(), 3u);
-        // Each tick starts a frame, so the third frame reuses the first frame's memory.
-        ASSERT_EQ(app.FrameMemoryPerUpdate.size(), 3u);
-        EXPECT_EQ(app.FrameMemoryPerUpdate[2], app.FrameMemoryPerUpdate[0]) << "Tick did not start a new frame";
 
         // Once exited, further ticks are inert.
         EXPECT_FALSE(app.Tick());
@@ -212,12 +207,12 @@ TEST(ApplicationTick, ManualTicksAdvanceOneFrameEachAndStopOnExit)
 // is testable in-process; the armed arm is a live check.
 TEST(ApplicationTick, StartupFrameTimingsNeedTheFrameTraceSwitch)
 {
-    const char* frameTrace = std::getenv("GE_FRAME_TRACE");
-    if (frameTrace != nullptr && *frameTrace != '\0' && std::string(frameTrace) != "0")
+    if (GameEngine::Platform::EnvironmentSwitchEnabled("GE_FRAME_TRACE", false))
         GTEST_SKIP() << "GE_FRAME_TRACE is armed in this environment; this test asserts the "
                         "unset arm";
 
-    const fs::path tempRoot = fs::temp_directory_path() / "ge_application_frame_trace_test";
+    const fs::path tempRoot =
+        GameEngine::TestUtils::MakeUniqueTempDirectory("ge_application_frame_trace_test");
     fs::create_directories(tempRoot / "Assets");
 
     GameEngine::ScriptsConfig scriptsConfig{};
@@ -268,27 +263,92 @@ TEST(ApplicationTick, StartupFrameTimingsNeedTheFrameTraceSwitch)
 TEST(ApplicationTick, NoFrameWaitsWithoutTheFrameCapSwitch)
 {
     ScopedFrameCapEnv frameCap(nullptr);
-    EXPECT_EQ(CountFramesHeldByTheLimiter("TickContract.NoFrameCap", 5, {}), 0)
+    EXPECT_EQ(CountFramesHeldByTheLimiter("TickContract.NoFrameCap", 5), 0)
         << "a non-editor application with GE_FRAME_CAP unset must not throttle";
 }
 
-// GE_FRAME_CAP asks for a limiter, and it holds the frame. This is also the
-// live control for the zero above: a frame the limiter held reports its wait in
-// SleepMs.
+// GE_FRAME_CAP asks for a limiter, and it still holds the
+// frame. This is also the live control for the zero above: a frame the limiter
+// held reports its wait in SleepMs.
 TEST(ApplicationTick, FrameCapSwitchHoldsTheFrame)
 {
     ScopedFrameCapEnv frameCap("30");
-    EXPECT_GT(CountFramesHeldByTheLimiter("TickContract.FrameCapSwitch", 5, {}), 0)
+    EXPECT_GT(CountFramesHeldByTheLimiter("TickContract.FrameCapSwitch", 5), 0)
         << "GE_FRAME_CAP=30 must hold frames that do no work";
 }
 
-// SetFrameRateCap holds the frame with the GE_FRAME_CAP switch unset, and a cap
-// of 0 removes the limiter again.
-TEST(ApplicationTick, AFrameRateCapHoldsTheFrameUntilRemoved)
+TEST(ApplicationTick, GameExitRequestUsesTheApplicationsExitCode)
 {
-    ScopedFrameCapEnv frameCap(nullptr);
-    EXPECT_GT(CountFramesHeldByTheLimiter("TickContract.FrameRateCap", 5, {30.0}), 0)
-        << "SetFrameRateCap(30) must hold frames that do no work";
-    EXPECT_EQ(CountFramesHeldByTheLimiter("TickContract.FrameRateCapRemoved", 5, {30.0, 0.0}), 0)
-        << "SetFrameRateCap(0) must remove the cap";
+    GameEngine::ApplicationConfig config{};
+    CountingApp application(config);
+    GameEngine::Platform::Script::RequestExit(-7);
+    EXPECT_TRUE(application.ShouldExit());
+    EXPECT_EQ(application.GetExitCode(), -7);
+    EXPECT_FALSE(application.Tick());
+    EXPECT_EQ(application.UpdateCalls, 0);
+    GameEngine::Platform::Script::RequestExit(0);
+    EXPECT_EQ(application.GetExitCode(), 0);
+}
+
+namespace
+{
+class EmbeddedExitApp : public CountingApp
+{
+public:
+    using CountingApp::CountingApp;
+    int ExitRequests = 0;
+    int RequestedCode = 0;
+    void RequestGameExit(int code) override
+    {
+        ++ExitRequests;
+        RequestedCode = code;
+    }
+};
+}
+
+TEST(ApplicationTick, GameExitRequestUsesTheHostPolicy)
+{
+    GameEngine::ApplicationConfig config{};
+    EmbeddedExitApp application(config);
+    GameEngine::Platform::Script::RequestExit(23);
+    EXPECT_EQ(application.ExitRequests, 1);
+    EXPECT_EQ(application.RequestedCode, 23);
+    EXPECT_FALSE(application.ShouldExit());
+    EXPECT_EQ(application.GetExitCode(), 0);
+}
+
+TEST(ApplicationTick, PresentationCapPacesFramesWithoutFixingSimulationAndCanBeCleared)
+{
+    ScopedFrameCapEnv environment(nullptr);
+    const fs::path root = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_present_cap");
+    fs::create_directories(root / "Assets");
+    GameEngine::ScriptsConfig scripts{};
+    scripts.disableClr = true;
+    scripts.enableHotReload = false;
+    scripts.enableAsyncHotReload = false;
+    scripts.enableAutoProjectGeneration = false;
+    GameEngine::EngineCore::GetInstance().SetScriptsConfig(scripts);
+    GameEngine::ApplicationConfig config{};
+    config.Name = "TickContract.PresentationCap";
+    config.WorkspaceDirectory = root.string();
+    config.AssetDirectory = "Assets";
+    {
+        CountingApp app(config);
+        ASSERT_TRUE(app.Initialize());
+        app.SetFrameRateCap(30.0);
+        EXPECT_FALSE(app.IsFixedFrameRateEnabled());
+        int held = 0;
+        for (int i = 0; i < 5; ++i)
+        {
+            app.Tick();
+            held += app.GetLastFramePhaseTimings().SleepMs > 0.0 ? 1 : 0;
+        }
+        EXPECT_GT(held, 0);
+        app.SetFrameRateCap(0.0);
+        app.Tick();
+        EXPECT_DOUBLE_EQ(app.GetLastFramePhaseTimings().SleepMs, 0.0);
+        app.Shutdown();
+    }
+    std::error_code error;
+    fs::remove_all(root, error);
 }

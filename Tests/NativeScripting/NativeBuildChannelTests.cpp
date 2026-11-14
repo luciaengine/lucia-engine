@@ -11,8 +11,6 @@
 #include "NativeScripting/NativeBuildConfig.h"
 #include "NativeScripting/NativeScriptManager.h"
 
-#include "../TestTempDir.h"
-
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -48,13 +46,6 @@ constexpr auto kCanceledDetectionJoinDeadline = 1s;
 // A compute job on an idle worker finishes in microseconds; this bounds it on a
 // loaded machine without letting a parked worker pass.
 constexpr auto kComputeJobDeadline = 5s;
-// The module build waits up to 20 s for the toolchain detection (vswhere and vcvars,
-// real processes) before its first cmake call, and the detection itself runs those
-// processes: on a loaded machine either took longer than 10 s. These bounds sit well
-// above that, so only a build or a detection that waits on the parked worker misses
-// them.
-constexpr auto kReachCMakeDeadline = 60s;
-constexpr auto kToolchainDetectionDeadline = 60s;
 
 // A latch the test opens. Declare it before the pool: a job can still be
 // inside Wait() after the gate opens, and only the pool's destructor joins it.
@@ -129,8 +120,7 @@ bool HasVswhere()
 #endif
 
 // Parks every cmake process the build starts on a gate, then reports a failed
-// process. Restores the shell and opens the gate when it leaves scope; a manager
-// whose build it parks is destroyed first, so OpenOnExit opens the gate before that.
+// process. Restores the shell and opens the gate on every exit path.
 class ParkedCMakeProcesses
 {
 public:
@@ -151,27 +141,12 @@ public:
     ParkedCMakeProcesses(const ParkedCMakeProcesses&) = delete;
     ParkedCMakeProcesses& operator=(const ParkedCMakeProcesses&) = delete;
 
-    bool WaitUntilEntered() { return WaitUntil([this] { return m_Entered.load(); }, kReachCMakeDeadline); }
+    bool WaitUntilEntered() { return WaitUntil([this] { return m_Entered.load(); }, kDeadline); }
     void Open() { m_Gate.Open(); }
 
 private:
     Gate m_Gate;
     std::atomic<bool> m_Entered{false};
-};
-
-// Opens the parked processes' gate when it leaves scope. Declared after the manager, it
-// releases the parked build before the manager's destructor waits on it, on every exit
-// path, a failed assertion included.
-class OpenOnExit
-{
-public:
-    explicit OpenOnExit(ParkedCMakeProcesses& processes) : m_Processes(processes) {}
-    ~OpenOnExit() { m_Processes.Open(); }
-    OpenOnExit(const OpenOnExit&) = delete;
-    OpenOnExit& operator=(const OpenOnExit&) = delete;
-
-private:
-    ParkedCMakeProcesses& m_Processes;
 };
 
 bool ComputeJobCompletes(JobSystem::WorkStealingThreadPool& pool)
@@ -184,9 +159,10 @@ bool ComputeJobCompletes(JobSystem::WorkStealingThreadPool& pool)
 
 TEST(NativeBuildChannel, ParkedModuleBuildHoldsNoComputeWorker)
 {
-    GameEngine::TestUtils::ScopedTempDir scratch(GameEngine::TestUtils::MakeUniqueTempDirectory("ge_nbc_parked_build"));
-    const std::filesystem::path root = scratch.Path();
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / "GE_NativeBuildChannel_ParkedBuild";
     std::error_code ec;
+    std::filesystem::remove_all(root, ec);
     std::filesystem::create_directories(root / "Source", ec);
     std::ofstream(root / "Source" / "ParkedModule.cpp") << "int GeParkedModuleProbe() { return 1; }\n";
 
@@ -201,7 +177,6 @@ TEST(NativeBuildChannel, ParkedModuleBuildHoldsNoComputeWorker)
     {
         ParkedCMakeProcesses cmake;
         ns::NativeScriptManager manager;
-        OpenOnExit release(cmake);
         ASSERT_TRUE(manager.Initialize(&pool));
         manager.SetPackageModuleConfigs({config});
         manager.RequestRebuild();
@@ -209,7 +184,11 @@ TEST(NativeBuildChannel, ParkedModuleBuildHoldsNoComputeWorker)
 
         ASSERT_TRUE(cmake.WaitUntilEntered()) << "the module build never reached cmake";
         EXPECT_TRUE(ComputeJobCompletes(pool)) << "the parked module build holds the only compute worker";
+
+        cmake.Open();
+        manager.Shutdown();
     }
+    std::filesystem::remove_all(root, ec);
 }
 
 TEST(NativeBuildChannel, ToolchainDetectionHoldsNoComputeWorker)

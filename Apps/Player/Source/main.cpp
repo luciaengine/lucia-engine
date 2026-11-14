@@ -18,7 +18,7 @@
 #include "Scripting/ScriptingABI.h"
 #include "Scripting/ECSABI.h"
 #include "ECS/ECS.h"
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentRegistry.h"
 #if GE_PLAYER_MOVIE_RECORDER
 #include "Rendering/Passes/TemporalDither.h"
 #include "Video/VideoWriter.h"

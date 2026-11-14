@@ -41,8 +41,7 @@ void TerrainUploadNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& 
     const uint64 rgFrame = d.Frame.FrameIndex();
 
     // The height pages published since the last frame: their staged slot uploads ride this pass,
-    // and the page tables latched with them become readable once the pass is declared
-    // (TerrainPageFeature::CommitLatch).
+    // and their page tables become readable only after successful submission.
     auto& pages = rs.EnsureFeature<TerrainPageFeature>();
     pages.Latch(*device, rgFrame);
     pages.DeclareTableReport(d.Frame);
@@ -64,8 +63,12 @@ void TerrainUploadNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& 
     {
         const RenderGraph::RGPass uploadPass = d.Frame.AddPass(
             "TerrainHeightmapUpload", Rendering::PassPhase::kEarlySetup,
-            [&](RenderGraph::RGPassBuilder& p) { p.PreventCulling(); },
-            [featurePtr = &feature, pagesPtr = &pages](RenderGraph::RGContext& ctx)
+            [&](RenderGraph::RGPassBuilder& p)
+            {
+                p.PreventCulling();
+                pages.DeclareUploads(d.Frame, p);
+            },
+            [featurePtr = &feature, pagesPtr = &pages, graph = &d.Frame](RenderGraph::RGContext& ctx)
             {
                 if (!ctx.Cmd)
                     return;
@@ -75,13 +78,12 @@ void TerrainUploadNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& 
                 // visible to the CBT update sampling binding 18.
                 featurePtr->FlushPendingUploads(ctx.Cmd);
                 featurePtr->FlushPendingBakes(ctx.Cmd);
-                pagesPtr->FlushUploads(*ctx.Cmd);
+                pagesPtr->FlushUploads(*ctx.Cmd, *graph);
             });
 
         // Consumers pull this and order themselves after it. This node never learns who they
         // are — the dependency belongs to whoever samples the textures.
         feature.RecordHeightmapUploadPassRG(rgFrame, &d.Frame, uploadPass.Id);
-        pages.CommitLatch();
     }
 }
 

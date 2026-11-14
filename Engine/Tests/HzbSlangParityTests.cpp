@@ -22,6 +22,7 @@
 
 #include "StorageImageLayoutHelper.h"
 #include "TestDeviceHelper.h"
+#include "TestTempDir.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -125,9 +126,7 @@ class HzbSlangParityTest : public ::testing::Test
         // (slangc -> reflect -> meta), exactly what HZBBuildNode runs.
         {
             ScopedEnvVar lane("GE_SHADER_SLANG_LANE", "1");
-            m_CacheRoot = fs::temp_directory_path() /
-                          ("ge_hzb_slang_parity_" +
-                           std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+            m_CacheRoot = TestUtils::MakeUniqueTempDirectory("ge_hzb_slang_parity");
 
             ShaderProgramCompileRequest req{};
             req.debugName = "hzb_build.slang(parity)";

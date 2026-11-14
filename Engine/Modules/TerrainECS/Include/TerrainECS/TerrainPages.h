@@ -128,6 +128,7 @@ struct HeightPageUpload
     /// The page's bytes: kPageSampleCount float32 heights (PageStreaming::HeightSamples), row-major,
     /// apron included.
     std::vector<uint8> Bytes;
+    uint32 Terrain = 0; ///< the render handle of the terrain whose payload changed
 };
 
 /// A terrain-UV rect whose height changed source this frame: the CBT re-evaluates the bisectors

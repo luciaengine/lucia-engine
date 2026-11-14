@@ -52,6 +52,7 @@ Transform.scale = (1, 1, 1)
 
 [entity id="e_sky"]
 SkyEnvironment.IblIntensity = 0.02
+SkyEnvironment.GradientSkyIntensity = 40
 SkyEnvironment.AutoSunMoon = false
 Name.value = "Sky"
 Transform.position = (0, 0, 0)

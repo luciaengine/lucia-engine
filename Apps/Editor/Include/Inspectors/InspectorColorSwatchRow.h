@@ -16,32 +16,14 @@
 namespace GameEngine::InspectorUI
 {
 
-/// The inspector's color chip: one size and border for every color row, whatever owns the
-/// value behind it. Callers hand it sRGB-encoded ARGB — the picker and the CSS palette both
-/// speak sRGB bytes, so a linear value is encoded on the way in.
-inline constexpr float kColorSwatchSizePx = 20.0f;
-inline constexpr float kColorSwatchBorderRadiusPx = 3.0f;
-inline constexpr float kColorSwatchGapPx = 6.0f;
-inline constexpr std::uint32_t kColorSwatchBorderArgb = 0xFF555555u;
-
+/// Applies the shared inspector chip class and its sRGB-encoded ARGB color.
+/// The inspector stylesheet owns the size, border, radius and cursor.
 inline void StyleColorSwatch(UIElement* swatch, std::uint32_t argb)
 {
     if (!swatch)
         return;
-    swatch->Style()
-        .Set(Style::Width, StyleLength::Px(kColorSwatchSizePx))
-        .Set(Style::Height, StyleLength::Px(kColorSwatchSizePx))
-        .Set(Style::MinWidth, StyleLength::Px(kColorSwatchSizePx))
-        .Set(Style::MinHeight, StyleLength::Px(kColorSwatchSizePx))
-        .Set(Style::BorderRadius,
-             CornerRadiiTLTRBRBL{kColorSwatchBorderRadiusPx, kColorSwatchBorderRadiusPx,
-                                 kColorSwatchBorderRadiusPx, kColorSwatchBorderRadiusPx})
-        .Set(Style::BorderWidth, Box4{1.0f, 1.0f, 1.0f, 1.0f})
-        .Set(Style::BorderColor,
-             BorderColorsTRBL{kColorSwatchBorderArgb, kColorSwatchBorderArgb,
-                              kColorSwatchBorderArgb, kColorSwatchBorderArgb})
-        .Set(Style::BackgroundColor, argb)
-        .Set(Style::Cursor, CursorStyle::Pointer);
+    swatch->AddClass("inspector-color-swatch");
+    swatch->Style().Set(Style::BackgroundColor, argb);
 }
 
 /// What the color picker and the chip show for an HDR linear color: a unit color and an intensity that
@@ -104,10 +86,7 @@ inline ColorSwatchRow AddColorSwatchRow(UIElement* parent, const std::string& la
     UIElement* field = InspectorUI::AddFieldContainer(rowElement);
     if (!field)
         return row;
-    field->Style()
-        .Set(Style::FlexDir, FlexDirection::Row)
-        .Set(Style::AlignItems, AlignItems::Center)
-        .Set(Style::Gap, StyleLength::Px(kColorSwatchGapPx));
+    field->AddClass("inspector-color-swatch-field");
 
     auto swatch = std::make_unique<UIElement>();
     row.Swatch = swatch.get();
@@ -117,8 +96,8 @@ inline ColorSwatchRow AddColorSwatchRow(UIElement* parent, const std::string& la
     auto value = std::make_unique<Label>();
     row.Value = value.get();
     row.Value->AddClass("inspector-text");
+    row.Value->AddClass("inspector-color-swatch-value");
     row.Value->SetText(valueText);
-    row.Value->Style().Set(Style::Cursor, CursorStyle::Pointer);
     field->AddChild(std::move(value));
 
     return row;

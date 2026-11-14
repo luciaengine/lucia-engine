@@ -3,7 +3,7 @@
 #include "UI/UIHotReload.h"
 #include "UI/UIManager.h"
 #include "UI/UITextureRegistry.h"
-#include "UIManager_Internal.h"
+#include "UIManager/UIManager_Internal.h"
 
 #include <cassert>
 

@@ -78,15 +78,15 @@ TEST(ViewRegistryTests, ReleaseCameraErasesPerCameraSideTables)
     ViewRegistry::CameraExposure exposure{};
     exposure.Mode = 1;
     rs.Views().SetCameraExposure(cam, exposure);
-    rs.Views().SetCameraVolumeLayers(cam, GameEngine::Rendering::RenderLayerMask{0x2u});
+    rs.Views().SetCameraPostProcessMask(cam, 0x2u);
 
     ASSERT_NE(rs.Views().FindCameraExposure(cam), nullptr);
-    EXPECT_TRUE(rs.Views().HasCameraVolumeLayers(cam));
+    EXPECT_TRUE(rs.Views().HasCameraPostProcessMask(cam));
 
     ASSERT_TRUE(rs.Views().ReleaseCamera(cam));
 
     EXPECT_EQ(rs.Views().FindCameraExposure(cam), nullptr);
-    EXPECT_FALSE(rs.Views().HasCameraVolumeLayers(cam));
+    EXPECT_FALSE(rs.Views().HasCameraPostProcessMask(cam));
 }
 
 // L5(d) — S0 subset: ReleaseView succeeds exactly once (double-release is a
@@ -161,7 +161,7 @@ TEST(ViewRegistryTests, OnDemandViewStartsExpiredUntilArmed)
     const CameraId cam = rs.Views().AllocateCamera("cam");
     const ViewId view = rs.Views().AllocateView("onDemand", cam, ViewPurpose::EditorScene,
                                         ViewParticipation::OnDemand);
-    rs.Views().SetViewRenderLayerMask(view, GameEngine::Rendering::RenderLayerMask::Default());
+    rs.Views().SetViewRenderLayerMask(view, 1u);
 
     const ViewDesc* dormant = rs.Views().FindViewDesc(view);
     ASSERT_NE(dormant, nullptr);
@@ -187,7 +187,7 @@ TEST(ViewRegistryTests, A16_HideLapsesOnDemandViewWithoutReleasing)
     const CameraId cam = rs.Views().AllocateCamera("cam");
     const ViewId view = rs.Views().AllocateView("onDemand", cam, ViewPurpose::EditorScene,
                                         ViewParticipation::OnDemand);
-    rs.Views().SetViewRenderLayerMask(view, GameEngine::Rendering::RenderLayerMask::Default());
+    rs.Views().SetViewRenderLayerMask(view, 1u);
 
     // Visible frame: the pane declares, arming the view for this frame + the next.
     rs.Views().RequestViewFrame(view);
@@ -225,7 +225,7 @@ TEST(ViewRegistryTests, A16_QuickReshowReusesSameViewIdAndRearms)
     const CameraId cam = rs.Views().AllocateCamera("cam");
     const ViewId view = rs.Views().AllocateView("onDemand", cam, ViewPurpose::EditorScene,
                                         ViewParticipation::OnDemand);
-    rs.Views().SetViewRenderLayerMask(view, GameEngine::Rendering::RenderLayerMask::Default());
+    rs.Views().SetViewRenderLayerMask(view, 1u);
 
     // Visible, then hide -> lapse to dormant (two decrements, no re-arm).
     rs.Views().RequestViewFrame(view);
@@ -266,30 +266,35 @@ TEST(ViewRegistryTests, A16_DestroyReleasesViewFromRegistry)
     EXPECT_TRUE(rs.Views().ReleaseCamera(cam)) << "camera releasable once its view is gone";
 }
 
-// A Game View whose world has no camera sleeps: it is OnDemand and nothing arms it, so its effective
-// layers are None and no extraction, culling slice or pass reads it. With a camera it draws the camera's
-// Visible Layers for the frame it is declared in and the next.
-TEST(ViewRegistryTests, ACameraLessGameViewSleepsAndACameraGivesItsLayers)
+TEST(ViewRegistryTests, PixelationViewsInheritEditorVisibilityAndRemainUtilityViews)
 {
-    RenderServices rs;
-    const CameraId cam = rs.Views().AllocateCamera("cam");
-    const ViewId view = rs.Views().AllocateView("Game View", cam, ViewPurpose::Game, ViewParticipation::OnDemand);
-
-    DeclareGameCameraView(rs.Views(), view, nullptr);
-    EXPECT_EQ(rs.Views().FindViewDesc(view)->ActiveRenderLayerMask(), RenderLayerMask::None())
-        << "a camera-less Game View gets no submissions and no culling slice";
-
-    Camera camera{};
-    camera.params.VisibleLayers = RenderLayerMask::FromLayer(0) | RenderLayerMask::FromLayer(4);
-    DeclareGameCameraView(rs.Views(), view, &camera);
-    EXPECT_EQ(rs.Views().FindViewDesc(view)->ActiveRenderLayerMask(), camera.params.VisibleLayers);
-
-    rs.Views().BeginFrame();
-    rs.Views().BeginFrame();
-    DeclareGameCameraView(rs.Views(), view, nullptr);
-    EXPECT_EQ(rs.Views().FindViewDesc(view)->ActiveRenderLayerMask(), RenderLayerMask::None())
-        << "the camera went away: the view sleeps again once its last arm lapses";
+    RenderServices services;
+    const auto camera = services.Views().AllocateCamera("PixelationVisibility");
+    const auto parent = services.Views().AllocateView("Scene", camera, ViewPurpose::EditorScene);
+    services.Views().SetViewWorldId(parent, 42);
+    PostProcessSettings settings{};
+    settings.DepthPixelationIntensity = 1.0f;
+    services.SetWorldPostProcessSettings(42, settings);
+    services.SyncDepthPixelationViews(42);
+    const auto* bands = services.FindDepthPixelationViews(parent);
+    ASSERT_NE(bands, nullptr);
+    for (const auto viewId : bands->Views)
+    {
+        if (viewId == 0)
+            continue;
+        const auto* view = services.Views().FindViewDesc(viewId);
+        ASSERT_NE(view, nullptr);
+        EXPECT_EQ(view->purpose, ViewPurpose::UtilityCapture);
+        EXPECT_TRUE(view->DropsEditorHidden());
+    }
+    settings.DepthPixelationIntensity = 0.0f;
+    services.SetWorldPostProcessSettings(42, settings);
+    services.SyncDepthPixelationViews(42);
+    EXPECT_EQ(services.FindDepthPixelationViews(parent), nullptr);
+    EXPECT_EQ(services.Views().GetViews().size(), 1u);
 }
+
+
 
 // A camera with World Drawing Paused pauses its Game View: the view draws no layer, so no extraction,
 // culling or shadow pass reads it. Clearing the field gives the camera's layers back.

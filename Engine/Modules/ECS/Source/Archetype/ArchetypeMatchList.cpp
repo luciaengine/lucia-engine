@@ -1,6 +1,7 @@
 #include "ECS/Archetype/ArchetypeMatchList.h"
 
 #include "ECS/World.h"
+#include "ECS/Components.h"
 #include "Memory/Arena.h"
 #include "Types/GeometricReserve.h"
 
@@ -49,11 +50,18 @@ bool ArchetypeMatchList::HasFilter(const ArchetypeFilter& filter) const
            SameMember(m_Filter.DisabledInclude, filter.DisabledInclude);
 }
 
+bool ArchetypeMatchList::Matches(const Archetype* archetype) const
+{
+    // Pending schemas remain hidden until required components have been installed.
+    const ComponentSignature& signature = archetype->GetSignature();
+    return !signature.Contains(GetComponentTypeId<PendingActivation>()) && m_Filter.Matches(signature);
+}
+
 void ArchetypeMatchList::AppendMatching(std::span<Archetype* const> archetypes, Memory::Arena& arena)
 {
     const auto added = static_cast<std::size_t>(
         std::count_if(archetypes.begin(), archetypes.end(),
-                      [this](const Archetype* archetype) { return m_Filter.Matches(archetype->GetSignature()); }));
+                      [this](const Archetype* archetype) { return Matches(archetype); }));
     if (added == 0)
         return;
 
@@ -77,7 +85,7 @@ void ArchetypeMatchList::AppendMatching(std::span<Archetype* const> archetypes, 
     }
     for (Archetype* archetype : archetypes)
     {
-        if (m_Filter.Matches(archetype->GetSignature()))
+        if (Matches(archetype))
             buffer[count++] = archetype;
     }
     m_Count.store(count, std::memory_order_release);

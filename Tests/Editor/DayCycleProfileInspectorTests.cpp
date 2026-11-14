@@ -13,9 +13,28 @@
 #include "UI/UiContext.h"
 #include "UI/UiDispatcher.h"
 
-using namespace GameEngine;
-using namespace GameEngine::Editor;
-using namespace GameEngine::DayCycleEditorTesting;
+namespace GameEngine::Editor
+{
+using DayCycleEditorTesting::DayCycleEditorTests;
+using DayCycleEditorTesting::All;
+using DayCycleEditorTesting::HasText;
+using DayCycleEditorTesting::HasButton;
+using DayCycleEditorTesting::ReadText;
+using DayCycleEditorTesting::NameOf;
+using DayCycleEditorTesting::kRadiansToDegrees;
+using DayCycleEditorTesting::kMarshProfile;
+using DayCycleEditorTesting::kEmptyProfile;
+
+namespace
+{
+Button* ClearDayPreset(UIElement& root)
+{
+    for (Button* button : All<Button>(root))
+        if (button->GetText() == "Clear day")
+            return button;
+    return nullptr;
+}
+} // namespace
 
 TEST_F(DayCycleEditorTests, TheInspectorShowsAKeyedTrackOnItsGraphAndNamesALeftOutOne)
 {
@@ -81,15 +100,22 @@ TEST_F(DayCycleEditorTests, TheInspectorFollowsAPresetLoad)
     ASSERT_TRUE(HasText(root, "Separate dusk"));
     ASSERT_EQ(All<Toggle>(root).size(), 1u);
     ASSERT_TRUE(All<Toggle>(root).front()->GetValue());
-    Button* clearDay = nullptr;
-    for (Button* button : All<Button>(root))
-        if (button->GetText() == "Clear day")
-            clearDay = button;
-    ASSERT_NE(clearDay, nullptr);
-    clearDay->TriggerClick();
+    Button* preset = ClearDayPreset(root);
+    ASSERT_NE(preset, nullptr);
+    preset->TriggerClick();
     dispatcher.Drain();
     ASSERT_EQ(All<Toggle>(root).size(), 1u);
     EXPECT_FALSE(All<Toggle>(root).front()->GetValue()) << "the inspector still shows the split dusk after the load";
+    EXPECT_EQ(All<CurveField>(root).front()->GetKeys().size(), 1u);
+    ASSERT_TRUE(Undo.CanUndo());
+    Undo.Undo();
+    dispatcher.Drain();
+    ASSERT_EQ(All<Toggle>(root).size(), 1u);
+    EXPECT_TRUE(All<Toggle>(root).front()->GetValue());
+    EXPECT_EQ(All<CurveField>(root).front()->GetKeys().size(), 3u);
+    Undo.Redo();
+    dispatcher.Drain();
+    EXPECT_FALSE(All<Toggle>(root).front()->GetValue());
     EXPECT_EQ(All<CurveField>(root).front()->GetKeys().size(), 1u);
 }
 
@@ -103,18 +129,16 @@ TEST_F(DayCycleEditorTests, SaveIsEnabledOnlyWithUnsavedChanges)
         UIElement root;
         BuildInspector(root, asset);
         Button* save = nullptr;
-        Button* clearDay = nullptr;
         for (Button* button : All<Button>(root))
         {
             if (button->GetText() == "Save")
                 save = button;
-            if (button->GetText() == "Clear day")
-                clearDay = button;
         }
         ASSERT_NE(save, nullptr);
-        ASSERT_NE(clearDay, nullptr);
+        Button* preset = ClearDayPreset(root);
+        ASSERT_NE(preset, nullptr);
         EXPECT_FALSE(save->IsEnabled()) << "nothing to save yet";
-        clearDay->TriggerClick();
+        preset->TriggerClick();
         dispatcher.Drain();
         EXPECT_TRUE(save->IsEnabled()) << "the preset load left unsaved changes";
     }
@@ -193,17 +217,13 @@ TEST_F(DayCycleEditorTests, AnUndoPastASaveMarksTheProfileUnsavedAgain)
     UIElement root;
     BuildInspector(root, asset);
     Button* save = nullptr;
-    Button* clearDay = nullptr;
     for (Button* button : All<Button>(root))
-    {
         if (button->GetText() == "Save")
             save = button;
-        if (button->GetText() == "Clear day")
-            clearDay = button;
-    }
     ASSERT_NE(save, nullptr);
-    ASSERT_NE(clearDay, nullptr);
-    clearDay->TriggerClick();
+    Button* preset = ClearDayPreset(root);
+    ASSERT_NE(preset, nullptr);
+    preset->TriggerClick();
     dispatcher.Drain();
     save->TriggerClick();
     dispatcher.Drain();
@@ -246,7 +266,9 @@ TEST_F(DayCycleEditorTests, TheScrubStripSharesTheTracksAxis)
     DayCycleTrackRowsContext context;
     context.Profile = DayCycleWorkingCopy::Open(Assets, ShippedDefault(), error);
     ASSERT_NE(context.Profile, nullptr) << error;
-    context.Path = DayCyclePathOf(SkyNow());
+    auto sky = SkyNow();
+    sky.Latitude = 40.0f;
+    context.Path = DayCyclePathOf(sky);
     context.OnScrub = [](float) {};
     context.ScrubRow = true;
     UIElement root;
@@ -288,3 +310,5 @@ TEST_F(DayCycleEditorTests, TheEndLabelNearTheZeroGivesWay)
     EXPECT_EQ(config.ValueLabel(0.0f), "0");
     EXPECT_TRUE(config.ValueLabel(config.ValueAxisMarks[2]).empty());
 }
+
+} // namespace GameEngine::Editor

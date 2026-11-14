@@ -1,9 +1,7 @@
 #pragma once
 
-// The Application script API: what a game asks of the application that runs it. Every marked
-// declaration is generated into the C# binding (Application); a native script calls the same
-// functions. The bodies are in Engine (Engine/Source/Core/Application.cpp), beside the
-// application they ask.
+// Native gameplay requests for the application host. Script markers describe
+// the entry points for binding generation. Implementations live in Engine.
 
 #include <cstdint>
 

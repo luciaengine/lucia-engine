@@ -53,7 +53,7 @@ struct BuildSettings
                                                 // CRT flavor's runtime DLLs for a cross-flavor package, and
                                                 // extra Player link inputs (-DGAMEENGINE_VCPKG_INSTALLED);
                                                 // the Player links against the SDK alone without it
-    std::string engineVersion;                  // engine version for SDK compatibility check (e.g. "2026.10.0-alpha.4")
+    std::string engineVersion;                  // engine version for SDK compatibility check (e.g. "1.0.0")
 };
 
 struct BuildProgress
@@ -116,8 +116,7 @@ struct BuildStep
 ///  3. CompilePlayer          — cmake configure + build
 ///  4. CompileScripts         — dotnet build
 ///  5. hooks: PostCompile
-///  6. AssetCollector::CollectGameContent — produces AssetManifest (NOT a hook, core
-///     phase); the Web export ships the same set
+///  6. CollectAssets           — produces AssetManifest (NOT a hook, core phase)
 ///  7. hooks: PreAssetCopy    — receives mutable AssetManifest& (baking hooks go here)
 ///  8. CopyAssets             — copies files listed in manifest
 ///  9. CopyEngineShaders      — engine shaders (not GUID-tracked)
@@ -205,13 +204,6 @@ public:
         const std::filesystem::path& engineRuntimeDir,
         const std::vector<std::filesystem::path>& crossFlavorVcpkgBinDirs, const std::filesystem::path& editorDir);
 
-    /// The Player executable that the generated Player project built for the target `platformName`
-    /// in `playerBuildDir`: under `<buildConfiguration>/` for a multi-config generator, else in
-    /// the directory itself. Empty when the build left none.
-    static std::filesystem::path FindCompiledPlayer(const std::filesystem::path& playerBuildDir,
-                                                    std::string_view buildConfiguration,
-                                                    std::string_view platformName);
-
     /// Request cancellation of the current build. Safe to call from any thread.
     void RequestCancel();
     bool IsCancelled() const;
@@ -219,6 +211,13 @@ public:
     /// Runs a shell command with cancellation support. Used by editor-hosted build paths.
     ShellProcessResult RunShellCommand(const std::string& command,
                                        std::function<void(const std::string& line)> onLine = nullptr);
+
+    /// Runs an executable with literal arguments and build cancellation.
+    ShellProcessResult RunProcess(const ProcessLaunch& launch,
+                                  std::function<void(const std::string&)> onLine = nullptr);
+
+    /// Stages mobile content using the normal asset collection, manifests, package validation, and cooking.
+    bool PrepareMobileContent(const BuildSettings& settings, std::filesystem::path& contentRoot, std::string& error);
 
     void RegisterStep(BuildStep step);
 
@@ -235,24 +234,16 @@ private:
     // user scripts and every package's native runtime module. Empty when there are none.
     std::string DescribeStagedNativeModules(const BuildSettings& s) const;
     bool CompileScripts(const BuildSettings& s, const std::filesystem::path& stagingDir);
-    // Regenerates the scripts csproj and resolves it and the dotnet that builds the
-    // sources (DecideScriptCompile). True with `outNothingToCompile` when there is nothing
-    // to compile; false, with the error recorded, when the build needs the generated
-    // project and it is missing.
-    bool PrepareScriptProject(const BuildSettings& s, const ShippedScriptSources& sources, bool nativeAot,
-                              std::filesystem::path& outProject, std::filesystem::path& outDotnet,
-                              bool& outNothingToCompile);
+    // Regenerates the scripts csproj and resolves it and the dotnet that builds it. True
+    // with `outNothingToCompile` when the project has no script project and no C# sources.
+    bool PrepareScriptProject(const BuildSettings& s, std::filesystem::path& outProject,
+                              std::filesystem::path& outDotnet, bool& outNothingToCompile);
     // The Debug package's managed build of `scriptsProj` into <staging>/Managed.
     bool BuildManagedScripts(const BuildSettings& s, const std::filesystem::path& stagingDir,
                              const std::filesystem::path& scriptsProj, const std::filesystem::path& dotnetExe);
-    // Restores the NuGet packages of `scriptsProj` into the scripts' Dependencies folder
-    // for the AOT publish, which compiles them in by reference.
-    bool RestoreScriptPackagesForExport(const std::filesystem::path& scriptsProj,
-                                        std::vector<std::filesystem::path>& outPackageAssemblies);
     bool CompileScriptsNativeAOT(const BuildSettings& s,
                                   const std::filesystem::path& stagingDir,
-                                  const ShippedScriptSources& sources,
-                                  const std::vector<std::filesystem::path>& packageAssemblies,
+                                  const std::filesystem::path& scriptsProj,
                                   const std::filesystem::path& dotnetExe);
     bool CopyAssets(const std::filesystem::path& stagingDir, const AssetManifest& manifest);
     bool CopyEngineShaders(const std::filesystem::path& stagingDir);
@@ -281,6 +272,8 @@ private:
     // root and must run after CopyRuntimeDependencies decided the script mode —
     // neither travels through BuildContext.
     bool RunPackageAssetStep(BuildContext& ctx);
+    void ResolvePackagesForBuild(const BuildSettings& settings);
+    static bool ProjectHasCSharpSources(const std::filesystem::path& assetsRoot);
     bool StagePackageCode(const std::filesystem::path& contentRoot, const BuildSettings& s);
 
     // Step 0: blocks this build thread until the editor's native module builds

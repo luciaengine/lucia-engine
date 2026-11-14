@@ -19,7 +19,11 @@
 #include "Engine/Rendering/Exposure.h"
 #include "Engine/Rendering/PrimitiveGenerator.h"
 #include "Engine/Rendering/RenderOrigin.h"
+#include "Engine/Rendering/RenderSorting.h"
+#include "Components/Rendering/RenderSorting.h"
+#include "Components/Hierarchy.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/WindVolumeResolver.h"
 #include "Core/Engine.h"
 #include "Rendering/Common/MatrixUtils.h"
 
@@ -221,6 +225,7 @@ struct RenderExtractionParallelState
         const Material* material = nullptr;
         uint32 flags = 0u;
         RenderLayerMask renderLayerMask = RenderLayerMask::None();
+        RenderSortingData Sorting{};
         uint32 stableInstanceIndex = 0xFFFFFFFFu;    // Update/Skip emission index
         // Mover qualification needs both palette endpoints, and Skip carries no
         // payload to read the current one from.
@@ -368,14 +373,15 @@ struct SkinPaletteOffsets
     bool Active() const { return Current != 0u; }
 };
 
-SkinPaletteOffsets ResolveSkinPaletteOffsets(uint32 skeletonId, bool hasActiveAnimation,
+SkinPaletteOffsets ResolveSkinPaletteOffsets(uint32 skeletonId, bool hasClipAnimation,
                                              uint32 runtimeId)
 {
     SkinPaletteOffsets offsets{};
-    if (skeletonId == 0 || !hasActiveAnimation || runtimeId == 0)
+    if (skeletonId == 0 || runtimeId == 0)
         return offsets;
     const auto* runtime = SkeletonStore::Instance().GetRuntime(runtimeId);
-    if (runtime == nullptr || runtime->CompactSkinMatrices.empty())
+    if (runtime == nullptr || (!hasClipAnimation && !runtime->GraphPoseActive) ||
+        runtime->CompactSkinMatrices.empty())
         return offsets;
     offsets.Current = runtime->AtlasPaletteOffsetBones;
     offsets.Previous = runtime->PrevAtlasPaletteValid
@@ -502,7 +508,8 @@ void BuildGpuInstancePayload(GPUInstance& instance, const Mathematics::Matrix4x4
 void EmitSubmissions(std::vector<WorldSubmissionRecord>& subs,
                      const std::vector<const ViewDesc*>& matchingViews,
                      MeshGPUHandle meshHandle, const Material* material,
-                     uint32 instanceIndex, uint32 flags, RenderLayerMask renderLayers)
+                     uint32 instanceIndex, uint32 flags, RenderLayerMask renderLayers,
+                     const RenderSortingData& sorting, ECS::EntityHandle owner)
 {
     for (const ViewDesc* view : matchingViews)
     {
@@ -515,6 +522,8 @@ void EmitSubmissions(std::vector<WorldSubmissionRecord>& subs,
         sub.instanceIndex = instanceIndex;
         sub.renderLayerMask = renderLayers;
         sub.flags = flags;
+        sub.Sorting = sorting;
+        sub.SortingOwner = owner;
         subs.push_back(sub);
     }
 }
@@ -532,20 +541,36 @@ uint64 RecordDigestTerm(const WorldRenderableRecord& rec)
     // In the digest or a live toggle does nothing until an unrelated field
     // happens to re-arm extraction.
     recDigest = Fnv1a64Value(recDigest, rec.giEmitter);
+    if (rec.Sorting.Authored)
+    {
+        recDigest = Fnv1a64Value(recDigest, rec.Sorting.Layer);
+        recDigest = Fnv1a64Value(recDigest, rec.Sorting.Order);
+        recDigest = Fnv1a64Value(recDigest, rec.Sorting.Group.id);
+        recDigest = Fnv1a64Value(recDigest, rec.Sorting.MemberOrder);
+        recDigest = Fnv1a64Value(recDigest, rec.Sorting.SortByY);
+        recDigest = Fnv1a64Value(recDigest, rec.Sorting.SortY);
+        recDigest = Fnv1a64Value(recDigest, rec.Sorting.GroupSortByY);
+        recDigest = Fnv1a64Value(recDigest, rec.Sorting.GroupPosition.X);
+        recDigest = Fnv1a64Value(recDigest, rec.Sorting.GroupPosition.Y);
+        recDigest = Fnv1a64Value(recDigest, rec.Sorting.GroupPosition.Z);
+    }
     return recDigest;
 }
 
 // The world-mesh gather query: every enabled renderable with what its record reads.
+template <typename Required = void>
 auto RenderableQuery(ECS::World& world)
 {
     return world.Query<
         ECS::Read<Components::WorldTransform>,
         ECS::Read<Components::MeshRenderer>,
-        ECS::Optional<Components::LocalBounds>,
+        std::conditional_t<std::is_same_v<Required, Components::LocalBounds>,
+                           ECS::Read<Components::LocalBounds>, ECS::Optional<Components::LocalBounds>>,
         ECS::Optional<Components::SkinnedMeshRenderer>,
         ECS::Optional<Components::SkeletonRef>,
         ECS::Optional<Components::AnimatorRef>,
-        ECS::Optional<Components::LODGroup>,
+        std::conditional_t<std::is_same_v<Required, Components::LODGroup>,
+                           ECS::Read<Components::LODGroup>, ECS::Optional<Components::LODGroup>>,
         ECS::Optional<Components::MeshGPUData>,
         ECS::Optional<Components::GIEmitter>,
         ECS::Optional<Components::Transform>,
@@ -565,15 +590,33 @@ auto RenderableQuery(ECS::World& world)
 // it ran this tick) is counted in `pendingUnresolved`, not recorded: preparing
 // it now would draw it at the origin and give its next frame a motion vector
 // from there; the pending count (E8) brings it in next frame.
-template <typename QueryT>
-void AppendRenderableRecords(QueryT& query, std::vector<WorldRenderableRecord>& out, uint32& hlodSkipped,
-                             uint32& pendingUnresolved)
+template <typename T>
+auto ComponentPointer(const T& value)
 {
+    if constexpr (std::is_pointer_v<T>)
+        return value;
+    else
+        return &value;
+}
+
+template <typename Required = void, typename QueryT>
+void AppendRenderableRecords(QueryT& query, std::vector<WorldRenderableRecord>& out, uint32& hlodSkipped,
+                             uint32& pendingUnresolved, ECS::World& world, const Rendering::SortingLayers& layers)
+{
+    const bool hasSorting = world.Query<ECS::Read<Components::RenderSorting>>().Count() != 0;
+    bool hasGroups = false;
+    if (hasSorting)
+        world.Query<ECS::Read<Components::RenderSorting>>().Each(
+            [&](const Components::RenderSorting& sorting) { hasGroups |= sorting.GroupChildren; });
+    using BoundsArg = std::conditional_t<std::is_same_v<Required, Components::LocalBounds>,
+                                          const Components::LocalBounds&, const Components::LocalBounds*>;
+    using LodArg = std::conditional_t<std::is_same_v<Required, Components::LODGroup>,
+                                       const Components::LODGroup&, const Components::LODGroup*>;
     query.Each([&](ECS::EntityHandle e, const Components::WorldTransform& xf,
-                   const Components::MeshRenderer& mr, const Components::LocalBounds* wb,
+                   const Components::MeshRenderer& mr, BoundsArg bounds,
                    const Components::SkinnedMeshRenderer* smr,
                    const Components::SkeletonRef* skelRef, const Components::AnimatorRef* anim,
-                   const Components::LODGroup* lodGroup, Components::MeshGPUData* meshGpu,
+                   LodArg lod, Components::MeshGPUData* meshGpu,
                    const Components::GIEmitter* giEmitter, const Components::Transform* local,
                    const Components::SceneViewHidden* hidden,
                    const Components::SceneViewHiddenInHierarchy* hiddenInHierarchy)
@@ -588,10 +631,15 @@ void AppendRenderableRecords(QueryT& query, std::vector<WorldRenderableRecord>& 
                        ++pendingUnresolved;
                        return;
                    }
+                   const auto* wb = ComponentPointer(bounds);
+                   const auto* lodGroup = ComponentPointer(lod);
                    WorldRenderableRecord rec{};
                    rec.entity = e;
                    rec.worldTransform = xf;
                    rec.meshRenderer = mr;
+                   rec.Sorting.Layer = layers.Priority(0);
+                   if (hasSorting)
+                       rec.Sorting = ResolveRenderSorting(world, e, layers, hasGroups);
                    rec.giEmitter = giEmitter != nullptr;
                    rec.editorHidden = hidden != nullptr || hiddenInHierarchy != nullptr;
                    rec.alwaysRefreshCarrier = smr != nullptr || skelRef != nullptr || anim != nullptr;
@@ -606,7 +654,7 @@ void AppendRenderableRecords(QueryT& query, std::vector<WorldRenderableRecord>& 
                    if (skelRef && skelRef->runtimeId != 0)
                        rec.runtimeId = skelRef->runtimeId;
                    if (anim && anim->ClipIndex != 0)
-                       rec.hasActiveAnimation = true;
+                       rec.hasClipAnimation = true;
                    if (lodGroup)
                        rec.lodBias = lodGroup->Bias;
                    out.push_back(rec);
@@ -714,7 +762,7 @@ void PrepareRecord(const WorldRenderableRecord& rec,
     // Bone-palette atlas offset (SkinDiag logging is intentionally omitted here —
     // it is env-gated diagnostics that would log unordered from workers).
     const SkinPaletteOffsets paletteOffsets =
-        ResolveSkinPaletteOffsets(rec.skeletonId, rec.hasActiveAnimation, rec.runtimeId);
+        ResolveSkinPaletteOffsets(rec.skeletonId, rec.hasClipAnimation, rec.runtimeId);
     const uint32 skinPaletteOffset = paletteOffsets.Current;
 
     const float boundsRadius = rec.hasBounds ? rec.bounds.Box.Radius() : -1.0f;
@@ -776,6 +824,7 @@ void PrepareRecord(const WorldRenderableRecord& rec,
     out.material = material;
     out.flags = flags;
     out.renderLayerMask = rec.meshRenderer.RenderLayers;
+    out.Sorting = rec.Sorting;
     out.skinPaletteOffset = paletteOffsets.Current;
     out.prevSkinPaletteOffset = paletteOffsets.Previous;
 
@@ -786,7 +835,7 @@ void PrepareRecord(const WorldRenderableRecord& rec,
         out.stableInstanceIndex = meshGpu->instanceIndex;
         const std::size_t emittedBefore = cr.subs.size();
         EmitSubmissions(cr.subs, matchingViews, meshHandle, material,
-                        meshGpu->instanceIndex, flags, rec.meshRenderer.RenderLayers);
+                        meshGpu->instanceIndex, flags, rec.meshRenderer.RenderLayers, rec.Sorting, rec.entity);
         out.subCount = static_cast<uint32>(cr.subs.size() - emittedBefore);
         return;
     }
@@ -805,9 +854,9 @@ void PrepareRecord(const WorldRenderableRecord& rec,
     const Mathematics::Matrix4x4 prevMatrix =
         hasHistory ? PreviousMatrixInSector(scene.GetInstances()[meshGpu->instanceIndex].transform, *meshGpu, sector)
                    : localMatrix;
-    const int32 secX = sector.x;
-    const int32 secY = sector.y;
-    const int32 secZ = sector.z;
+    const int32 secX = sector.X;
+    const int32 secY = sector.Y;
+    const int32 secZ = sector.Z;
     BuildGpuInstancePayload(out.payload, localMatrix, prevMatrix, rec.hasBounds,
                             boundsCenter, boundsRadius, mshIdx, matIdx, flags,
                             rec.lodBias, skinPaletteOffset, rec.runtimeId, secX, secY, secZ,
@@ -836,7 +885,7 @@ void PrepareRecord(const WorldRenderableRecord& rec,
                     boundsRadius, secX, secY, secZ, prevDiffers);
     const std::size_t emittedBefore = cr.subs.size();
     EmitSubmissions(cr.subs, matchingViews, meshHandle, material,
-                    meshGpu->instanceIndex, flags, rec.meshRenderer.RenderLayers);
+                    meshGpu->instanceIndex, flags, rec.meshRenderer.RenderLayers, rec.Sorting, rec.entity);
     out.subCount = static_cast<uint32>(cr.subs.size() - emittedBefore);
 }
 
@@ -938,7 +987,7 @@ void BuildPatchedInstances(std::span<const RenderExtractionParallelState::DirtyR
                                 meshGpu->LastBoundsRadius,
                                 meshGpu->meshIndex, meshGpu->materialIndex, meshGpu->LastFlags,
                                 meshGpu->LastLodBias, meshGpu->LastSkinPaletteOffset,
-                                meshGpu->LastRuntimeId, sector.x, sector.y, sector.z, mr->RenderLayers);
+                                meshGpu->LastRuntimeId, sector.X, sector.Y, sector.Z, mr->RenderLayers);
         const bool differs = PayloadPrevDiffers(write.Instance);
         isMover[i] = (differs && mr) ? 1u : 0u;
         if (isMover[i] != 0u)
@@ -946,9 +995,9 @@ void BuildPatchedInstances(std::span<const RenderExtractionParallelState::DirtyR
                                write.Instance.skinPaletteOffset,
                                RenderServices::kNoPreviousSkinPalette};
         meshGpu->LastTransformVersion = wt->Version;
-        meshGpu->LastSectorX = sector.x;
-        meshGpu->LastSectorY = sector.y;
-        meshGpu->LastSectorZ = sector.z;
+        meshGpu->LastSectorX = sector.X;
+        meshGpu->LastSectorY = sector.Y;
+        meshGpu->LastSectorZ = sector.Z;
         meshGpu->LastPrevDiffers = differs;
     }
 }
@@ -1124,7 +1173,7 @@ void ProcessRecordsParallel(
         case Op::Add:
             prep.meshGpu->instanceIndex = scene.AddInstance(prep.payload);
             EmitSubmissions(submissions, matchingViews, prep.meshHandle, prep.material,
-                            prep.meshGpu->instanceIndex, prep.flags, prep.renderLayerMask);
+                            prep.meshGpu->instanceIndex, prep.flags, prep.renderLayerMask, prep.Sorting, prep.entity);
             break;
         }
     }
@@ -1363,6 +1412,7 @@ SettingsBlendGroupMask SpatialBlendGroups(const PostProcessExtractedVolume& volu
     groups.Set(SettingsBlendGroup::VolumetricFog, volume.HasVolumetricFog);
     groups.Set(SettingsBlendGroup::AtmosphericCloud, volume.HasAtmosphericCloud);
     groups.Set(SettingsBlendGroup::VolumetricClouds, volume.HasVolumetricClouds);
+    groups.Set(SettingsBlendGroup::Rain, volume.Settings.RainSettingsActive != 0);
     return groups;
 }
 
@@ -1725,6 +1775,31 @@ bool RenderExtractionSystem::EvaluateFastPathPreconditions(ECS::World& world, ui
         reasons |= kEscalationProbeLocalBounds;
     if (ProbeColumnChanged<Components::LODGroup>(world, m_ProbeGateLodGroup, probeVersion))
         reasons |= kEscalationProbeLodGroup;
+
+    // Authored order changes invalidate cached stationary submissions. Parent and group
+    // transform changes may affect descendants that have no sorting component of their own.
+    const bool sortingChanged = ProbeColumnChanged<Components::RenderSorting>(world, m_ProbeGateSorting, probeVersion);
+    const bool parentsChanged = ProbeColumnChanged<Components::Parent>(world, m_ProbeGateSortingParents, probeVersion);
+    // Exact world positions share the WorldTransform stamp with the basis. Group
+    // movement is probed here; ordinary movement stays on the O(dirty) feed lane.
+    bool groupTransformChanged = false;
+    auto sortingTransforms = world.Query<ECS::Read<Components::RenderSorting>, ECS::Read<Components::WorldTransform>,
+                                         ECS::Optional<Components::MeshRenderer>>();
+    sortingTransforms.Changed<Components::WorldTransform>(m_ProbeGateSortingTransforms);
+    sortingTransforms.Each([&groupTransformChanged](const Components::RenderSorting& sorting,
+                                                   const Components::WorldTransform&,
+                                                   const Components::MeshRenderer* meshRenderer)
+                          { groupTransformChanged = groupTransformChanged || sorting.GroupChildren ||
+                                                    (sorting.SortByY && meshRenderer != nullptr); });
+    m_ProbeGateSortingTransforms.LastRunVersion = probeVersion;
+    const uint64 sortingRevision = m_SortingSnapshotRevision;
+    const bool hasSorting = world.Query<ECS::Read<Components::RenderSorting>>().Count() != 0;
+    if (sortingChanged || groupTransformChanged || ((hasSorting || m_HadSorting) && (parentsChanged ||
+        world.GetStructuralChangeVersion() != m_FullPassStructuralVersion)) ||
+        sortingRevision != m_SortingRevision)
+        reasons |= kEscalationSorting;
+    m_SortingRevision = sortingRevision;
+    m_HadSorting = hasSorting;
 
     // E6 — mesh registry reload/unregister event since the last consume.
     if (m_MeshReloadPending.exchange(false, std::memory_order_relaxed))
@@ -2127,7 +2202,7 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
         const uint32 skeletonId =
             (smr && !skinnedOff && smr->skeletonId != 0) ? smr->skeletonId : 0u;
         const uint32 runtimeId = (skelRef && skelRef->runtimeId != 0) ? skelRef->runtimeId : 0u;
-        const bool hasActiveAnimation = anim && anim->ClipIndex != 0;
+        const bool hasClipAnimation = anim && anim->ClipIndex != 0;
         const float lodBias = lodGroup ? lodGroup->Bias : 0.0f;
 
         const uint32 flags =
@@ -2137,7 +2212,7 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
                                  hidden != nullptr || hiddenInHierarchy != nullptr, worldId);
 
         const SkinPaletteOffsets paletteOffsets =
-            ResolveSkinPaletteOffsets(skeletonId, hasActiveAnimation, runtimeId);
+            ResolveSkinPaletteOffsets(skeletonId, hasClipAnimation, runtimeId);
         const uint32 skinPaletteOffset = paletteOffsets.Current;
 
         const float boundsRadius = hasBounds ? lb->Box.Radius() : -1.0f;
@@ -2186,7 +2261,7 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
         const Mathematics::Matrix4x4 prevMatrix = PreviousMatrixInSector(previousInstance.transform, *meshGpu, sector);
         BuildGpuInstancePayload(payload, localMatrix, prevMatrix, hasBounds, boundsCenter,
                                 boundsRadius, mshIdx, matIdx, flags, lodBias,
-                                skinPaletteOffset, runtimeId, sector.x, sector.y, sector.z, mr->RenderLayers);
+                                skinPaletteOffset, runtimeId, sector.X, sector.Y, sector.Z, mr->RenderLayers);
         const bool prevDiffers = PayloadPrevDiffers(payload);
         // Before UpdateInstance overwrites the mirror `previousInstance` aliases.
         // A refreshed caster counts as changed whatever field moved — a palette
@@ -2208,7 +2283,7 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
                                             paletteOffsets.Current, paletteOffsets.Previous);
         WriteLastCaches(*meshGpu, mshIdx, matIdx, meshEntry->uploadSeq, wt->Version, flags,
                         skinPaletteOffset, lodBias, runtimeId, boundsCenter, boundsRadius,
-                        sector.x, sector.y, sector.z, prevDiffers);
+                        sector.X, sector.Y, sector.Z, prevDiffers);
         ++refreshed;
     }
     return refreshed;
@@ -2229,13 +2304,14 @@ void RenderExtractionSystem::ReleaseUngatheredInstances(ECS::World& world, GPUSc
              GameEngine::ECS::Optional<
                  GameEngine::ECS::ComponentDisabled<GameEngine::Components::MeshRenderer>>>()
         .IncludeDisabled()
-        .Each([&](GameEngine::Components::MeshGPUData& meshGpu,
+        .Each([&](ECS::Writable<GameEngine::Components::MeshGPUData> meshGpuRow,
                   const GameEngine::Components::MeshRenderer* mr,
                   const GameEngine::ECS::Disabled* disabled,
                   const GameEngine::ECS::DisabledInHierarchy* inactive,
                   const GameEngine::ECS::ComponentDisabled<
                       GameEngine::Components::MeshRenderer>* rendererOff)
               {
+                  auto& meshGpu = meshGpuRow.Mutable();
                   if (!mr)
                       ReleaseMeshGpuInstance(scene, meshGpu);
                   else if (disabled || inactive || rendererOff)
@@ -2246,6 +2322,8 @@ bool RenderExtractionSystem::IsStructuralDeltaEligible(uint32 reasons) const
 {
     constexpr uint32 kCoverable = kEscalationStructuralChange | kEscalationProbeMeshRenderer |
                                   kEscalationProbeLocalBounds | kEscalationProbeLodGroup;
+    // Sorting changes can affect descendants outside the changed record columns
+    // below, so kEscalationSorting deliberately requires the full lane.
     // Slotless or HLOD-skipped renderables are tracked by no slot, so the
     // count check could not see them leave: such a world keeps the full lane.
     return m_FeedFastPath && m_KeyedStatePrimed && reasons != 0 && (reasons & ~kCoverable) == 0 &&
@@ -2258,9 +2336,18 @@ bool RenderExtractionSystem::GatherStructuralDeltaRecords(ECS::World& world,
     out.clear();
     uint32 hlodSkipped = 0;
     uint32 pendingUnresolved = 0;
-    auto changed = RenderableQuery(world);
-    changed.Changed<Components::MeshRenderer, Components::LocalBounds, Components::LODGroup>(m_ProbeSince);
-    AppendRenderableRecords(changed, out, hlodSkipped, pendingUnresolved);
+    auto meshes = RenderableQuery(world);
+    meshes.Changed<Components::MeshRenderer>(m_ProbeSince);
+    AppendRenderableRecords(meshes, out, hlodSkipped, pendingUnresolved, world, m_SortingLayers);
+    auto bounds = RenderableQuery<Components::LocalBounds>(world);
+    bounds.Changed<Components::LocalBounds>(m_ProbeSince);
+    AppendRenderableRecords<Components::LocalBounds>(bounds, out, hlodSkipped, pendingUnresolved, world, m_SortingLayers);
+    auto lods = RenderableQuery<Components::LODGroup>(world);
+    lods.Changed<Components::LODGroup>(m_ProbeSince);
+    AppendRenderableRecords<Components::LODGroup>(lods, out, hlodSkipped, pendingUnresolved, world, m_SortingLayers);
+    std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return a.entity.id < b.entity.id; });
+    out.erase(std::unique(out.begin(), out.end(),
+                          [](const auto& a, const auto& b) { return a.entity == b.entity; }), out.end());
     // An unresolved pose waits for the full lane's pending count (E8).
     if (hlodSkipped != 0 || pendingUnresolved != 0)
         return false;
@@ -2485,6 +2572,12 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
     // TLAS m_NeedsReconcile precedent); any failure runs the shipped full
     // lane below unchanged, which self-repairs everything and re-primes
     // every fast-path cache at its end.
+    const uint64 sortingRevision = Rendering::SortingLayers::Revision();
+    if (sortingRevision != m_SortingSnapshotRevision)
+    {
+        m_SortingLayers = Rendering::SortingLayers::Current();
+        m_SortingSnapshotRevision = sortingRevision;
+    }
     uint32_t escalationReasons = 0;
     bool fastFrame = false;
     m_DeltaPreparedIds.clear();
@@ -2573,7 +2666,12 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
     }
     lightsMs = elapsedMs(lightsStart, ExtractionClock::now());
 
+    if (rs)
+        rs->SetWorldWeatherWind(worldId, WindVolumeResolver::ExtractForGpu(world));
     ExtractPostProcessVolumes(world, worldId, rs);
+    for (const auto& hooks : Rendering::PostProcessEffectRegistry::AllViewPreparations())
+        if (hooks.AfterWorldExtraction)
+            hooks.AfterWorldExtraction(*rs, worldId);
     m_Particles.Extract(world, worldId, rs, deltaTime);
     // Single source of truth: order the world's lights strongest-first after
     // every SubmitLight, the particle lights included, and before any consumer
@@ -2760,7 +2858,7 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
             uint32_t pendingUnresolvedTransform = 0;
             const auto gatherStart = ExtractionClock::now();
             auto renderables = RenderableQuery(world);
-            AppendRenderableRecords(renderables, records, hlodSkipped, pendingUnresolvedTransform);
+            AppendRenderableRecords(renderables, records, hlodSkipped, pendingUnresolvedTransform, world, m_SortingLayers);
             gatherMs = elapsedMs(gatherStart, ExtractionClock::now());
             recordCountOut = static_cast<uint32_t>(records.size());
 

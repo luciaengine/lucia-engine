@@ -188,7 +188,7 @@ namespace GameEngine.SourceGenerators
         private const ushort kAssetGuid = 18;
 
         // The engine's AssetType::Prefab, which ECSABI.h names GE_ECS_ASSET_CATEGORY_PREFAB.
-        private const ushort kAssetCategoryPrefab = 42;
+        private const ushort kAssetCategoryPrefab = 46;
         private const uint kPrefabRefSize = 16;
 
         private static TypeLayout LayoutOfType(ITypeSymbol type)

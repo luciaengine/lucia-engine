@@ -14,7 +14,7 @@ namespace GameEngine::Memory
 /// Memory valid through the end of the next frame, for the frame thread in its frame and the `Run`
 /// and `ParallelFor` units it joins. Debug and DebugFast refuse a `Submit` or `EnqueueWork` body.
 /// Each thread allocates from its own two arenas, and nothing is freed one by one. The rules are in
-/// docs/scripting/memory.mdx, section 7.
+/// docs/scripting/memory-allocators.mdx.
 class FrameMemory
 {
   public:

@@ -5,6 +5,7 @@
 #include "TerrainECS/TerrainPages.h"
 #include "TerrainECS/TerrainSurface/TerrainSurfaceStore.h"
 #include "Rendering/Core/Handle.h"
+#include "Rendering/Core/Device.h"
 #include "Types/FlatMap.h"
 
 #include <array>
@@ -12,7 +13,6 @@
 #include <memory>
 #include <mutex>
 #include <span>
-#include <unordered_map>
 #include <vector>
 
 namespace GameEngine::Rendering
@@ -22,12 +22,18 @@ class IDevice;
 enum class TextureFormat : uint32_t;
 } // namespace GameEngine::Rendering
 
+namespace GameEngine::Rendering::RenderGraph
+{
+class RGFrame;
+class RGPassBuilder;
+}
+
 namespace GameEngine::TerrainECS
 {
 
 /// The GPU side of the paged fields: the height cache texture and one texture per surface plane, shared
 /// by every paged terrain, and each paged terrain's page-table words. Tables become readable only with
-/// the upload pass that writes their pages (CommitLatch); until then readers keep the last committed ones.
+/// successful submission of the upload pass that writes their pages; until then readers keep the last committed ones.
 class TerrainPageFeature : public Engine::Renderer::IRenderFeature
 {
 public:
@@ -43,31 +49,44 @@ public:
     void Latch(Rendering::IDevice& device, uint64 rgFrame);
     /// True when latched uploads are staged and wait for an upload pass.
     bool HasStagedUploads() const { return m_Staging.IsValid(); }
-    /// Render thread, once the upload pass that will call FlushUploads is declared: the tables
-    /// latched with the staged uploads become the readable ones.
-    void CommitLatch();
+    /// Declares page-cache writes and commits their tables only after successful submission.
+    void DeclareUploads(Rendering::RenderGraph::RGFrame& frame, Rendering::RenderGraph::RGPassBuilder& pass);
     /// Records the staged uploads: clears the height cache to 0 on first use, copies each slot of
     /// each field and plane, and leaves every written texture in ShaderResource.
-    void FlushUploads(Rendering::CommandList& cl);
+    void FlushUploads(Rendering::CommandList& cl, const Rendering::RenderGraph::RGFrame& frame);
 
     /// The cache texture, invalid until a latch after the one whose upload pass cleared it: a
     /// consumer bound in the frame that creates it could run before that pass clears it (a draw
     /// at rest has no edge to the upload pass), so it reads the texture of a later frame, whose
     /// submission follows the clear.
-    Rendering::TextureHandle CacheTexture() const { return m_CacheReadable ? m_Cache : Rendering::TextureHandle{}; }
+    /// An upload graph can read its planned cache after the declared copy.
+    Rendering::TextureHandle CacheTexture(const Rendering::RenderGraph::RGFrame* frame = nullptr) const;
     /// The committed words of paged terrain `terrain` and their version; false when it is not paged.
-    bool LatchedTable(uint32 terrain, std::span<const uint32>& words, uint64& version) const;
+    bool LatchedTable(uint32 terrain, std::span<const uint32>& words, uint64& version,
+                      uint64* contentGeneration = nullptr, const Rendering::RenderGraph::RGFrame* frame = nullptr,
+                      uint64* revision = nullptr) const;
+    /// Bounds covering every unconsumed revision in the selected graph snapshot; false requires full evaluation.
+    bool DirtyRegionSince(uint32 terrain, uint32 terrainGeneration, uint64 consumedRevision,
+                          uint64 selectedRevision, const Rendering::RenderGraph::RGFrame* frame,
+                          HeightPageDirtyRect& region) const;
+    /// Retires bounds only when this exact geometry publication reaches a submitted update.
+    void AcknowledgePublication(uint32 terrain, uint64 revision);
+    /// True when requested table words or payloads differ from a terrain update's consumed publication.
+    bool HasPendingPublication(uint32 terrain, uint64 version, uint64 contentGeneration) const;
     /// The committed surface words of terrain `terrain` and their version; false when its surface is
     /// not paged.
-    bool LatchedSurfaceTable(uint32 terrain, std::span<const uint32>& words, uint64& version) const;
+    bool LatchedSurfaceTable(uint32 terrain, std::span<const uint32>& words, uint64& version,
+                             const Rendering::RenderGraph::RGFrame* frame = nullptr) const;
     /// The cache texture of surface plane `plane` for terrain `terrain`. Invalid when the terrain's
     /// committed surface table does not have the plane, and until a latch after the one whose upload
     /// pass first wrote the texture (the rule of CacheTexture).
-    Rendering::TextureHandle SurfacePlaneTexture(uint32 terrain, PageStreaming::PageFieldKind plane) const;
+    Rendering::TextureHandle SurfacePlaneTexture(uint32 terrain, PageStreaming::PageFieldKind plane,
+                                                   const Rendering::RenderGraph::RGFrame* frame = nullptr) const;
     /// Render thread, after Latch: this frame's slot of the page-table ring with terrain `terrain`'s
     /// committed height table, then its surface table when paged. The terrain draw and the grass bind
     /// this one slot. Invalid Buffer when the terrain's height is not paged.
-    TerrainPageTableRing::Slot BindTableRing(uint32 terrain, uint32 generation);
+    TerrainPageTableRing::Slot BindTableRing(uint32 terrain, uint32 generation,
+                                           const Rendering::RenderGraph::RGFrame* frame = nullptr);
     /// A paged terrain's height table at a publish: its version, its word count and TerrainPages::WholeTableHash.
     struct PublishedTable
     {
@@ -94,7 +113,6 @@ public:
     void DeclareTableReport(Rendering::RenderGraph::RGFrame& frame);
     void OnFrameSubmittedRG(Rendering::RenderGraph::RGFrame& frame,
                             const Rendering::IDevice::GpuSyncToken& token) override;
-    void OnFrameStreamRetiredRG(Rendering::RenderGraph::RGFrame& frame) override;
     /// Render thread: the serial of the last committed page change (an entry, a fade or an upload) of
     /// terrain `terrain` that meets terrain-UV rect `uv` (X along U, Y along V), to one cell of
     /// kChangeGridCells a side; 0 before the first. The table versions change for every page instead.
@@ -102,7 +120,39 @@ public:
     /// Bumped when the device was rebuilt: the main side restarts its cache (every page re-uploads).
     uint64 DeviceEpoch() const { return m_DeviceEpoch.load(std::memory_order_acquire); }
 
+    struct TerrainReadiness
+    {
+        uint32 Terrain = 0;
+        uint64 RequestedVersion = 0;
+        uint64 CommittedVersion = 0;
+        uint64 RequestedContentGeneration = 0;
+        uint64 CommittedContentGeneration = 0;
+    };
+    struct Readiness
+    {
+        uint32 Slots = 0;
+        uint32 Resident = 0;
+        uint32 Deferred = 0;
+        uint32 LoadsStarted = 0;
+        uint64 CpuBytes = 0;
+        uint64 CacheBytes = 0;
+        uint64 PublishedUploads = 0;
+        uint64 LatchedUploads = 0;
+        uint64 PublishedSurfaceUploads = 0;
+        uint64 LatchedSurfaceUploads = 0;
+        uint64 PendingBytes = 0;
+        uint64 RetiringBytes = 0;
+        uint64 LatchedFrame = ~0ull;
+        uint64 SubmittedFrame = ~0ull;
+        bool CacheReady = false;
+        bool StagingReady = false;
+        std::vector<TerrainReadiness> Terrains;
+    };
+    /// Any thread: a copied snapshot of the shared caches and their publication queues.
+    Readiness GetReadiness() const;
+
     void OnDeviceRebuilt(Rendering::IDevice* device) override;
+    void OnFrameStreamRetiredRG(Rendering::RenderGraph::RGFrame& frame) override;
 
 private:
     // The snapshots of one table that no set holds any more, kept for Publish to bring up to date.
@@ -116,11 +166,19 @@ private:
     // changed since its own version.
     struct Table
     {
+        uint64 Version = 0;
+        uint64 ContentGeneration = 0;
+        uint64 Revision = 0;
+        uint64 DirtyBaseRevision = 0;
+        HeightPageDirtyRect Dirty;
+        bool DirtyPending = false;
+        bool DirtyFullRequired = false;
+        bool Changed = false;
         std::shared_ptr<const PackedPageTable> Snapshot;
         uint32 PlaneMask = 0;            // a surface table's planes (TerrainSurfacePageSource::PlaneMask)
         std::shared_ptr<TablePool> Pool; // Publish's: where this table's released snapshots return
     };
-    using TableMap = std::unordered_map<uint32, Table>;
+    using TableMap = FlatMap<uint32, Table>;
     struct TableSet
     {
         TableMap Height;
@@ -130,14 +188,17 @@ private:
     {
         Rendering::BufferHandle Buffer;
         uint64 Frame = 0;
+        Rendering::IDevice::GpuSyncToken Submission{};
+        const Rendering::RenderGraph::RGFrame* Stream = nullptr;
+        uint64 Bytes = 0;
     };
     // One plane's cache texture. A slot is read only after its upload, so the texture is never cleared:
     // a BC5 image cannot take a clear.
     struct PlaneCache
     {
         Rendering::TextureHandle Texture;
-        uint32 SlotsPerRow = 0; // the field's slots per row when the texture was made
-        bool Written = false;   // FlushUploads recorded an upload into it
+        uint32 SlotsPerRow = 0;
+        bool Written = false; // An upload into this texture submitted successfully.
         bool Readable = false; // an upload into it precedes this latch
     };
     // The report that the GPU copies now: declared in a frame, then sealed at that frame's submit.
@@ -166,21 +227,24 @@ private:
     void EnsurePlaneCaches();
     void FlushSurfaceUploads(Rendering::CommandList& cl);
     Rendering::TextureHandle CreateCacheTexture(uint32 dim, Rendering::TextureFormat format, const char* name);
-    // Every copy into `texture` on `cl` is recorded: it returns to ShaderResource.
-    static void EndCopies(Rendering::CommandList& cl, Rendering::TextureHandle texture);
     void StageUploads();
-    void RetireStaging();
+    void SubmitUploads(Rendering::RenderGraph::RGFrame& frame);
     // Marks the latched change rects with a new serial: called where the latched tables commit.
     void CommitChanges();
+    void UpdateReadiness();
+    bool HasPlannedUploads(const Rendering::RenderGraph::RGFrame* frame) const;
     // Hashes a whole pack of each table in `paged` for the requested report.
     void PublishTableHashes(const TerrainPages& pages, std::span<const uint32> paged);
     // Makes the sealed copy the last report once the GPU completes it.
     void CompleteTableReport();
 
     // Published by the main thread, under m_Mutex.
-    std::mutex m_Mutex;
-    std::vector<HeightPageUpload> m_PublishedUploads;
-    std::vector<SurfacePageUpload> m_PublishedSurfaceUploads;
+    mutable std::mutex m_Mutex;
+    Readiness m_Readiness;
+    uint64 m_ContentGeneration = 0;
+    uint64 m_PublicationRevision = 0;
+    FlatMap<uint32, HeightPageUpload> m_PublishedUploads;
+    FlatMap<uint32, SurfacePageUpload> m_PublishedSurfaceUploads;
     TableSet m_PublishedTables;
     std::vector<PageChangeRect> m_PublishedChanges;
     uint32 m_CacheDim = 0;
@@ -188,16 +252,20 @@ private:
 
     // Render thread only.
     Rendering::IDevice* m_Device = nullptr;
-    std::vector<HeightPageUpload> m_LatchedUploads;
-    std::vector<SurfacePageUpload> m_LatchedSurfaceUploads;
-    std::vector<std::size_t> m_SurfaceStagingOffsets; // each latched surface upload's bytes in m_Staging
+    FlatMap<uint32, HeightPageUpload> m_LatchedUploads;
+    FlatMap<uint32, SurfacePageUpload> m_LatchedSurfaceUploads;
+    FlatMap<uint32, std::size_t> m_SurfaceStagingOffsets; // each latched surface upload's bytes in m_Staging
     TableSet m_LatchedTables;                          // latched with the latched uploads
     std::vector<PageChangeRect> m_LatchedChanges;      // commit with m_LatchedTables
     TableSet m_CommittedTables;                        // what LatchedTable and LatchedSurfaceTable read
     Rendering::BufferHandle m_Staging;                 // the latched uploads, staged
     std::vector<RetiringBuffer> m_Retiring;
+    Rendering::RenderGraph::RGFrame* m_UploadGraph = nullptr;
+    uint64 m_UploadFrame = ~0ull;
+    bool m_UploadRecorded = false;
+    std::array<bool, kSurfacePlanes.size()> m_RecordedPlanes{};
     Rendering::TextureHandle m_Cache;
-    bool m_CacheCleared = false;  // its clear is recorded (FlushUploads)
+    bool m_CacheCleared = false;  // its clear submitted successfully
     bool m_CacheReadable = false; // its clear was recorded before this latch
     // Per paged terrain, by render index: the serial of the last committed change in each cell of its
     // UV, kChangeGridCells x kChangeGridCells, row-major in V.

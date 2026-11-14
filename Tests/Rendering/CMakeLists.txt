@@ -12,6 +12,8 @@ find_package(GTest REQUIRED)
 # Source/HotReloadNativeStubs.cpp). Tests linking Engine inherit them via the
 # import lib; no per-target compile of the stub source needed.
 add_executable(AnimationSystemTests AnimationSystemTests.cpp
+    AnimationClipCompressionTests.cpp
+    BoneLODPolicyTests.cpp
     AnimationEventDispatchTests.cpp
     AnimatorClipTimeTests.cpp
     ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp)
@@ -57,6 +59,7 @@ if(TARGET GameEngine.Native)
 endif()
 target_include_directories(MaterialLitCubeTests
     PRIVATE
+    ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/Tests
     # StagedTestPaths.h — exe-anchored resolution of the staged adapter shaders.
     ${CMAKE_SOURCE_DIR}/Engine/Tests
@@ -79,6 +82,7 @@ target_link_libraries(AnimationSystemTests
     GTest::gtest
     GTest::gtest_main
 )
+target_include_directories(AnimationSystemTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 target_include_directories(AnimationSystemTests
     PRIVATE
     # StagedTestPaths.h — exe-anchored resolution of the staged Assets/ root.
@@ -140,13 +144,14 @@ include(GoogleTest)
 add_test(NAME AnimationSystemTests COMMAND AnimationSystemTests)
 add_test(NAME TimelinePlaybackTests COMMAND TimelinePlaybackTests)
 add_test(NAME TransformMathTests COMMAND TransformMathTests)
-# ECS::ChangeFilter::Enabled() is read once per process: the hierarchy's change-filter-off path runs in a
-# process of its own.
-add_test(NAME TransformMathTests_ChangeFilterOff COMMAND TransformMathTests --gtest_filter=TransformMathTests.Hierarchy_*)
-set_tests_properties(TransformMathTests_ChangeFilterOff PROPERTIES ENVIRONMENT "GE_ECS_CHANGE_FILTER=0")
 
 # The working directory is the engine's workspace root; the build root, like
 # every other engine-initialising suite's. The asset root is exe-anchored.
 set_tests_properties(AnimationSystemTests PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )
+
+# Keep the metric checks independent of host font installation and platform.
+ge_stage_test_asset(TextCoreMetricsTests
+    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Fonts/Roboto-Regular.ttf"
+    "Assets/Fonts/Roboto-Regular.ttf")

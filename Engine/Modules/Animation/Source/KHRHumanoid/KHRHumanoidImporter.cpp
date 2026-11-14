@@ -1,6 +1,6 @@
 #include "Animation/KHRHumanoid/KHRHumanoidImporter.h"
 
-#include "KHRHumanoidShared.h"
+#include "KHRHumanoid/KHRHumanoidShared.h"
 #include "Logger/Logger.h"
 
 #include <cgltf.h>

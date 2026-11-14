@@ -1,6 +1,7 @@
 #include "Assets/AssetManager.h"
 #include "Assets/AuthoredLodImport.h"
 #include "Assets/ModelAssetSettings.h"
+#include "Assets/BoneLOD/BoneLODAssetSettings.h"
 #include "Assets/RuntimeHumanoidProfile.h"
 #include "Core/Engine.h"
 #include "Engine/Build/BuildPipeline.h"
@@ -86,6 +87,7 @@ TEST_F(PackagedAssetManifestTest, RuntimeSettingsSurviveExportAndPlayerManifestM
         {"Model.obj", "assets.lod.slot2", slot},
         {"Model.obj", "assets.lod.slot3", slot},
         {"Model.obj", "assets.model.rigKind", "none"},
+        {"Model.obj", "assets.model.boneLOD", R"({"budget":24,"mandatoryPaths":[["Root","Hand"]]})"},
         {"Image.svg", "assets.texture.svgRasterSize", "64"},
         {"Model.obj", "assets.lod.generate", "false"},
         {"Image.svg", "assets.texture.filter", "point"},
@@ -120,5 +122,9 @@ TEST_F(PackagedAssetManifestTest, RuntimeSettingsSurviveExportAndPlayerManifestM
     }
     EXPECT_EQ(ModelAssetSettings::Load(playerRegistry, Output / "Assets/Model.obj").RigKind,
               ModelRigKind::NotHumanoid);
+    const auto boneLOD = BoneLODAssetSettings::Load(playerRegistry, Output / "Assets/Model.obj");
+    EXPECT_TRUE(boneLOD.Error.empty());
+    EXPECT_EQ(boneLOD.BoneBudget, 24u);
+    EXPECT_EQ(boneLOD.MandatoryPaths, (std::vector<std::vector<std::string>>{{"Root", "Hand"}}));
     playerAssets.Shutdown();
 }

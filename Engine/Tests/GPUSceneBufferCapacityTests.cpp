@@ -6,6 +6,7 @@
 // the scene up to the declared capacity.
 
 #include <gtest/gtest.h>
+#include <string>
 
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUScene.h"

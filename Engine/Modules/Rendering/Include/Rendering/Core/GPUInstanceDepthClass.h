@@ -14,8 +14,9 @@
  */
 #pragma once
 
+#include "Platform/Environment.h"
+
 #include <cstdint>
-#include <cstdlib>
 
 namespace GameEngine
 {
@@ -118,11 +119,7 @@ inline constexpr bool InstanceInShadowPass(uint32_t instanceFlags, bool dropEdit
 /// the env var is read exactly once regardless of how many TUs call this.
 inline bool MirroredWindingEnabled()
 {
-    static const bool kEnabled = []
-    {
-        const char* v = std::getenv("GE_MIRRORED_WINDING");
-        return v == nullptr || v[0] != '0';
-    }();
+    static const bool kEnabled = Platform::EnvironmentSwitchEnabled("GE_MIRRORED_WINDING", true);
     return kEnabled;
 }
 

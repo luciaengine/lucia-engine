@@ -1,4 +1,6 @@
 #pragma once
+#include "Engine/Rendering/RenderSortKey.h"
+#include "Engine/Rendering/SortingLayers.h"
 
 #include "Particles/Rendering/ParticleExtraction.h"
 #include "Types/ScopedSubscription.h"
@@ -69,6 +71,7 @@ public:
         GameEngine::ECS::EntityHandle entity;
         GameEngine::Components::WorldTransform worldTransform;
         GameEngine::Components::MeshRenderer meshRenderer;
+        Engine::Renderer::RenderSortingData Sorting{};
         // Components::GIEmitter presence, resolved once at gather time.
         bool giEmitter = false;
         // Hidden by the Scene View eye (Components::SceneViewHidden or
@@ -82,7 +85,7 @@ public:
         GameEngine::Components::LocalBounds bounds{};
         uint32 skeletonId = 0;      // Non-zero when entity has SkinnedMeshRenderer
         uint32 runtimeId = 0;       // Per-entity skeleton runtime for independent animation
-        bool hasActiveAnimation = false; // True when entity has AnimatorRef with a valid clip
+        bool hasClipAnimation = false; // True when AnimatorRef names a clip.
         float lodBias = 0.0f;       // LODGroup.Bias (log2 coverage scale for ge_SelectLOD)
 
         // Cached GPUScene-index component pointer, captured cache-coherently by
@@ -130,6 +133,7 @@ public:
         kEscalationCachesUnprimed     = 1u << 14, // E11
         kEscalationValidator          = 1u << 15, // D9 shadow validator (debug builds)
         kEscalationHlodResidency      = 1u << 16, // HLOD cluster flip: proxy/member residency changed
+        kEscalationSorting            = 1u << 17, // Authored order/group edits require descendant regather
     };
 
     // Force the next extraction Update onto the full lane. The HLODSelectSystem
@@ -222,6 +226,13 @@ private:
     bool m_FeedFastPath = false;      // constructor latch (env default / test seam)
     uint32 m_MaxAlwaysRefresh = 0;    // E10 always-refresh subset ceiling
     ECS::SwapGenerationGuard m_FeedGuard;         // E3
+    ECS::ChangeGate m_ProbeGateSorting;
+    ECS::ChangeGate m_ProbeGateSortingParents;
+    ECS::ChangeGate m_ProbeGateSortingTransforms;
+    uint64 m_SortingRevision = 0;
+    bool m_HadSorting = false;
+    Rendering::SortingLayers m_SortingLayers;
+    uint64 m_SortingSnapshotRevision = 0;
     ECS::ChangeGate m_ProbeGateMeshRenderer;      // E5 — one gate per probe query (R8)
     ECS::ChangeGate m_ProbeGateLocalBounds;
     ECS::ChangeGate m_ProbeGateLodGroup;

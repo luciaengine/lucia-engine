@@ -83,6 +83,7 @@ struct PipelineFrameResources
         // against this ("extent.basis": "output" in the blueprint).
         uint32_t OutputWidth = 0;
         uint32_t OutputHeight = 0;
+        bool PixelPerfectCrossing = false;
     };
 
     ::GameEngine::Rendering::RenderGraph::RGFrame* Frame = nullptr;

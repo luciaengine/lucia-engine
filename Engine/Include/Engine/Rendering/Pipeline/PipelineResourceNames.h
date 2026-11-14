@@ -20,6 +20,7 @@ namespace GameEngine::Engine::Renderer::Pipeline::Names
 // Per-view builtins seeded by the pipeline spine and republishable by nodes.
 namespace View
 {
+inline constexpr const char* PlanarReflectionMask = "View.PlanarReflectionMask";
 inline constexpr const char* Color = "View.Color";
 inline constexpr const char* Depth = "View.Depth";
 inline constexpr const char* Resolve = "View.Resolve";
@@ -45,7 +46,7 @@ inline constexpr const char* MotionVectors = "View.MotionVectors";
 // View.DepthResolvedPostOcean.
 inline constexpr const char* SSRHiZ = "View.SSRHiZ";
 // Forward-pass MRT slice: .rg = octahedral VIEW-space normal, .b = perceptual
-// roughness, .a = metallic. Written only under MaterialKeyword::SSSRNormalRoughness.
+// roughness, .a = planar coverage. Written only under MaterialKeyword::SSSRNormalRoughness.
 // A consumer with its own per-view target for the slice (the DDGI glossy
 // resolve's shading-normal history) hands it to ReflectionsProvider instead
 // of resolving this name; the *Written publish below then names that texture.

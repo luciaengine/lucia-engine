@@ -1,13 +1,15 @@
 #pragma once
 
+#include "Rendering/Core/DescriptorType.h"
 #include "Rendering/Materials/Shader/ShaderPropertyTable.h"
 #include "Types/StringId.h"
 
 #include <cstdint>
-#include <string>
-#include <vector>
+#include <memory>
 #include <optional>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace GameEngine { namespace Rendering {
 
@@ -73,6 +75,23 @@ namespace ShaderMetaBindingType
     static constexpr uint32_t kAccelerationStructure = 6;
 }
 
+/// Maps reflection binding types to device descriptor types.
+/// Unknown raw values resolve to UniformBuffer.
+inline DescriptorType MapShaderMetaBindingType(uint32_t rawType)
+{
+    switch (rawType)
+    {
+        case ShaderMetaBindingType::kUniformBuffer:         return DescriptorType::UniformBuffer;
+        case ShaderMetaBindingType::kStorageBuffer:         return DescriptorType::StorageBuffer;
+        case ShaderMetaBindingType::kSampler:               return DescriptorType::Sampler;
+        case ShaderMetaBindingType::kSampledImage:          return DescriptorType::Texture;
+        case ShaderMetaBindingType::kStorageImage:          return DescriptorType::StorageImage;
+        case ShaderMetaBindingType::kCombinedImageSampler:  return DescriptorType::CombinedImageSampler;
+        case ShaderMetaBindingType::kAccelerationStructure: return DescriptorType::AccelerationStructure;
+        default: return DescriptorType::UniformBuffer;
+    }
+}
+
 // ShaderMeta stage-mask encoding (DescriptorBindingMeta::StagesMask and PushConstantRangeMeta::StagesMask,
 // set by SPIR-V reflection): one backend-neutral bit per stage. MaterialBuilder maps it to the backend's
 // stage flags.
@@ -115,7 +134,8 @@ struct DescriptorBindingMeta {
     // unfiltered, which also keeps them bindable to non-filterable formats.
     struct ImageInfo { uint32_t Dim = 2; bool Arrayed = false; bool Multisample = false;
                        bool Cube = false; bool Depth = false; bool Filtered = false;
-                       uint32_t Format = 0; bool UnsignedInteger = false; };
+                       uint32_t Format = 0; bool UnsignedInteger = false;
+                       bool operator==(const ImageInfo&) const = default; };
     std::optional<ImageInfo> Image; // for image/sampler types
 
     StringId ResolvedNameId() const
@@ -124,41 +144,57 @@ struct DescriptorBindingMeta {
     }
 };
 
+/// Binding metadata published through shared ownership of a const plan.
+/// Build before sharing with render workers; create a new plan when reflection changes.
+/// Descriptor caches retain plan ownership while descriptors are live.
+struct DescriptorBindingPlan
+{
+    enum class Source { Named, BindlessTextures, MaterialTextures };
+    enum class ImageDefault { Named2D, ColorArray, ColorCube, Depth2D, DepthArray, Unavailable };
+    /// Selects an image fallback shape; unsupported shapes have no fallback.
+    static ImageDefault DefaultFor(const std::optional<DescriptorBindingMeta::ImageInfo>& image)
+    {
+        if (!image)
+            return ImageDefault::Named2D;
+        if (image->Dim != 2 || image->Multisample || image->UnsignedInteger)
+            return ImageDefault::Unavailable;
+        if (image->Cube)
+            return image->Depth || image->Arrayed ? ImageDefault::Unavailable : ImageDefault::ColorCube;
+        if (image->Depth)
+            return image->Arrayed ? ImageDefault::DepthArray : ImageDefault::Depth2D;
+        return image->Arrayed ? ImageDefault::ColorArray : ImageDefault::Named2D;
+    }
+    struct Slot
+    {
+        std::string Name;
+        StringId NameId;
+        DescriptorType Type;
+        uint32_t Binding;
+        uint32_t Count;
+        uint32_t StagesMask;
+        bool ReadOnly;
+        std::optional<DescriptorBindingMeta::ImageInfo> Image;
+        ImageDefault Fallback;
+        bool operator==(const Slot&) const = default;
+    };
+
+    Source SetSource = Source::Named;
+    std::vector<Slot> Slots;
+    bool operator==(const DescriptorBindingPlan&) const = default;
+};
+
 struct DescriptorSetMeta {
     uint32_t Set = 0;
     std::vector<DescriptorBindingMeta> Bindings;
 
-    // Precomputed FNV-1a hash over the bindings — populated by
-    // `FinalizeSetLayout` (called at the end of `MergeStages` and after
-    // JSON deserialization). MaterialBinder uses this for its per-pass
-    // descriptor-set cache key, avoiding a heap-allocating layout build
-    // + walk-and-hash per draw. Tests that synthesize DescriptorSetMeta
-    // directly may leave this at zero — the binder falls back to an
-    // on-the-fly compute when it sees zero, so test setups still work
-    // without an extra call.
+    // Derived fields are rebuilt after merge or deserialization. Hand-built
+    // reflection can omit them; callers compile a temporary plan on demand.
     uint64_t BuiltLayoutHash = 0;
+    std::shared_ptr<const DescriptorBindingPlan> BindingPlan{};
 };
 
-// FNV-1a over the binding signature (binding index, type, count, stages
-// mask). Inputs are the RAW ShaderMetaBindingType / stages mask — NOT
-// the backend-mapped `Rendering::DescriptorType` / shader-stage bits the
-// old `HashSetLayout(DescriptorSetLayoutDesc)` operated on. Deliberate:
-// the hash only needs to be consistent + discriminating across calls
-// inside MaterialBinder, and hashing pre-mapping skips a per-binding
-// map call on the hot path.
-//
-// Implication if MapShaderMetaBindingType / MapShaderMetaStagesToBackend
-// ever stops being injective (two raw types collapsing onto one backend
-// type, or vice versa): this hash will discriminate raw inputs that the
-// backend would treat as identical. That's safe — the cache holds the
-// descriptor set keyed on its actual reflected layout, so distinct raw
-// shapes that the backend lumps together would live in separate cache
-// entries (slight memory cost, no correctness issue). Conversely the
-// hash will NEVER produce a false collision the old function avoided,
-// since the backend mapping cannot expand the domain.
-//
-// Used as cache-key material in MaterialBinder's per-pass descriptor-
-// set cache.
+// Structural digest for descriptor cache lookup. Provider names, image shape,
+// storage access and resolved writes are compared separately on a hit.
 inline uint64_t ComputeDescriptorSetLayoutHash(const DescriptorSetMeta& sm) noexcept
 {
     uint64_t h = 1469598103934665603ull;  // FNV-1a offset basis
@@ -177,12 +213,37 @@ inline uint64_t ComputeDescriptorSetLayoutHash(const DescriptorSetMeta& sm) noex
     return h != 0 ? h : 1ull;
 }
 
-// Convenience: finalize the precomputed fields on a single set.
-inline void FinalizeSetLayout(DescriptorSetMeta& sm) noexcept
+/// Builds an immutable plan from a stable reflection snapshot.
+/// The caller protects snapshot access and rebuilds the plan when bindings change.
+inline std::shared_ptr<const DescriptorBindingPlan> BuildDescriptorBindingPlan(const DescriptorSetMeta& setMeta)
 {
-    sm.BuiltLayoutHash = ComputeDescriptorSetLayoutHash(sm);
-    for (auto& b : sm.Bindings)
-        b.NameId = HashStringId(b.Name);
+    auto plan = std::make_shared<DescriptorBindingPlan>();
+    plan->Slots.reserve(setMeta.Bindings.size());
+    for (const auto& binding : setMeta.Bindings)
+    {
+        const auto type = MapShaderMetaBindingType(binding.Type);
+        plan->Slots.push_back({binding.Name, binding.ResolvedNameId(), type, binding.Binding, binding.Count,
+                              binding.StagesMask, binding.ReadOnly, binding.Image,
+                              DescriptorBindingPlan::DefaultFor(binding.Image)});
+        if (binding.Binding == 0 && (type == DescriptorType::Texture || type == DescriptorType::CombinedImageSampler))
+        {
+            if (binding.Name == "ge_BindlessTextures")
+                plan->SetSource = DescriptorBindingPlan::Source::BindlessTextures;
+            else if (binding.Name == "ge_MaterialTextures0")
+                plan->SetSource = DescriptorBindingPlan::Source::MaterialTextures;
+        }
+    }
+    return plan;
+}
+
+/// Rebuilds derived binding data after reflection merge or decode.
+/// Requires exclusive access; finalize each changed snapshot before publication.
+inline void FinalizeSetLayout(DescriptorSetMeta& setMeta)
+{
+    setMeta.BuiltLayoutHash = ComputeDescriptorSetLayoutHash(setMeta);
+    for (auto& binding : setMeta.Bindings)
+        binding.NameId = HashStringId(binding.Name);
+    setMeta.BindingPlan = BuildDescriptorBindingPlan(setMeta);
 }
 
 struct StageIO {

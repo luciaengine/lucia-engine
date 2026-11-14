@@ -15,7 +15,8 @@ namespace GameEngine
 //       "ocean-pack": "file:../SharedPackages/OceanPack",   // local path
 //       "debug-tools": "embedded"                           // <project>/Packages/debug-tools/
 //     },
-//     "disabled": ["heavy-megapack"]
+//     "disabled": ["heavy-megapack"],
+//     "enabled": ["optional-baker"]
 //   }
 //
 // P0 supports the "file:<path>" and "embedded" specs only (git+... is the P3
@@ -25,6 +26,8 @@ struct ProjectPackagesManifest
     // Dependency name -> raw spec text ("file:<path>" or "embedded").
     std::map<std::string, std::string> Dependencies;
     std::set<std::string> Disabled;
+    // Explicit opt-in for staged packages whose enabledByDefault is false.
+    std::set<std::string> Enabled;
 };
 
 // Load <manifestFile>. Returns:
@@ -38,9 +41,8 @@ bool TryLoadProjectPackagesManifest(const std::filesystem::path& manifestFile,
 // Add or remove `packageName` in the manifest's "disabled" array, preserving
 // every other field (parse -> mutate -> rewrite; JSON comments do not survive
 // the rewrite). The Package Manager panel's enable/disable toggle; mounts and
-// code modules pick the change up on the next project open. Disabling creates
-// a missing manifest and parent directory; enabling with no manifest is a
-// successful no-op. Fails when an existing manifest is malformed or writing
+// code modules pick the change up on the next project open. Either choice creates
+// a missing manifest and parent directory; enabling records an explicit opt-in. Fails when an existing manifest is malformed or writing
 // fails.
 bool SetPackageDisabledInProjectManifest(const std::filesystem::path& manifestFile,
                                          const std::string& packageName,
@@ -57,7 +59,7 @@ bool AddPackageToProjectManifest(const std::filesystem::path& manifestFile,
                                  const std::string& spec,
                                  std::string& outError);
 
-// Delete "dependencies.<packageName>" and any matching "disabled" entry.
+// Delete "dependencies.<packageName>" and matching enabled/disabled overrides.
 // Fails when the dependency is not declared (the caller is confused about
 // state — surface it) or the file is missing/malformed.
 bool RemovePackageFromProjectManifest(const std::filesystem::path& manifestFile,

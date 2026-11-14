@@ -22,6 +22,9 @@
 #endif
 #include <algorithm>
 #include <cstring>
+#if defined(GE_PLATFORM_MOBILE)
+#include <SDL3/SDL.h>
+#endif
 
 // For compression (optional - can be disabled)
 #ifdef RENDERING_HAS_COMPRESSION
@@ -50,7 +53,15 @@ VulkanPipelineCache::~VulkanPipelineCache()
 
 std::string VulkanPipelineCache::GetPlatformCacheDirectory()
 {
-#ifdef _WIN32
+#if defined(GE_PLATFORM_MOBILE)
+    char* preferences = SDL_GetPrefPath("OpenEngine", "Player");
+    if (preferences != nullptr)
+    {
+        const auto directory = std::filesystem::path(preferences) / "Cache/PipelineCache";
+        SDL_free(preferences);
+        return directory.string() + "/";
+    }
+#elif defined(_WIN32)
     // Windows: Use %LOCALAPPDATA%/GameEngine/PipelineCache/
     char* localAppData = nullptr;
     size_t len = 0;
@@ -133,7 +144,7 @@ bool VulkanPipelineCache::Initialize()
     // Create cache directory if it doesn't exist
     if (m_Config.PersistToDisk && !CreateCacheDirectory())
     {
-        std::cerr << "PipelineCache: Failed to create cache directory" << std::endl;
+        Logger::Log::Error("PipelineCache: cannot create cache directory '{}'", m_Config.CacheDirectory);
         return false;
     }
 

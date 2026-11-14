@@ -1,7 +1,7 @@
 #include "UI/Internal/AttachDetachInternal.h"
 #include "UI/Internal/AttachedRootAccess.h"
 #include "UI/UIManager.h"
-#include "UIManager_Internal.h"
+#include "UIManager/UIManager_Internal.h"
 #include "../DefaultStylesheet.h"
 #include "UI/UiContext.h"
 #include "UI/UiDispatcher.h"
@@ -995,7 +995,7 @@ namespace
 		        if (child)
 		            exportChildren.push_back(child.get());
 		    }
-		
+
 		    if (const auto* mount = dynamic_cast<const GameEngine::Mount*>(element))
 		    {
 		        if (auto* target = mount->GetTarget())

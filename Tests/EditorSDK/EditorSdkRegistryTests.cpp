@@ -9,14 +9,14 @@
 //
 // Links EditorSDK.dll — the same registries Editor.exe and module DLLs share.
 
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentRegistry.h"
 #include "ECS/Components.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
 #include "Editor/Entities/EditorComponentTraits.h"
+#include "Editor/Entities/PlanarReflectionComponentTraits.h"
+#include "Components/Rendering/PlanarReflection.h"
 #include "Editor/Registries/EditorPluginRegistry.h"
-#include "Input/InputSystem.h"
-#include "Input/KeyCodes.h"
 #include "InspectorRegistry.h"
 #include "Picking/EditorPickProviders.h"
 
@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ed = GameEngine::Editor;
@@ -107,6 +108,18 @@ TEST(EditorPluginRegistry, LateRegistrationReplaysInspectorPass)
     EXPECT_NE(GameEngine::InspectorRegistry::Get().TryGetComponentInspector(0xE002), nullptr);
 }
 
+TEST(EditorComponentTraits, PlanarReflectionRegistersItsPresentation)
+{
+    ed::RegisterPlanarReflectionComponentTraits();
+    ed::EditorComponentTraits traits;
+    ASSERT_TRUE(ed::EditorComponentTraitsRegistry::Get().TryGet(
+        GameEngine::ECS::GetComponentTypeId<GameEngine::Components::PlanarReflection>(), traits));
+    EXPECT_EQ(traits.DisplayName, "Planar Reflection");
+    EXPECT_EQ(traits.InspectorIconClass, "inspector-section-icon-reflection-probe");
+    EXPECT_EQ(traits.Category, "Rendering");
+    EXPECT_EQ(traits.SortKey, 141);
+}
+
 TEST(EditorComponentTraits, RegistrationReplacesByTypeId)
 {
     auto& registry = ed::EditorComponentTraitsRegistry::Get();
@@ -118,6 +131,8 @@ TEST(EditorComponentTraits, RegistrationReplacesByTypeId)
 
     ed::EditorComponentTraits second;
     second.DisplayName = "Second";
+    second.Category = "Rendering";
+    second.SortKey = 141;
     second.HierarchyRowClass = "hierarchy-entity-test";
     second.IsPickInstanceRoot = true;
     registry.Register(typeId, second);
@@ -125,10 +140,44 @@ TEST(EditorComponentTraits, RegistrationReplacesByTypeId)
     ed::EditorComponentTraits out;
     ASSERT_TRUE(registry.TryGet(typeId, out));
     EXPECT_EQ(out.DisplayName, "Second");
+    EXPECT_EQ(out.Category, "Rendering");
+    EXPECT_EQ(out.SortKey, 141);
     EXPECT_EQ(out.HierarchyRowClass, "hierarchy-entity-test");
     EXPECT_TRUE(out.IsPickInstanceRoot);
 
     EXPECT_FALSE(registry.TryGet(0xDEAD, out));
+}
+
+// The inspector and hierarchy scan the registry per row and per rebuild, so each
+// query returns only the types that set the trait it asks about.
+TEST(EditorComponentTraits, PresenceQueriesReturnOnlyTheTypesThatSetTheTrait)
+{
+    auto& registry = ed::EditorComponentTraitsRegistry::Get();
+    const GameEngine::ECS::ComponentTypeId hiddenId = 0xE00A;
+    const GameEngine::ECS::ComponentTypeId shownId = 0xE00B;
+
+    ed::EditorComponentTraits hidden;
+    hidden.HiddenInInspector = true;
+    registry.Register(hiddenId, hidden);
+
+    ed::EditorComponentTraits shown;
+    shown.DisplayName = "Presence Query Shown";
+    shown.HierarchyRowClass = "hierarchy-entity-presence-query";
+    shown.GizmoPivotAtEntityOrigin = true;
+    registry.Register(shownId, shown);
+
+    EXPECT_TRUE(registry.IsHiddenInInspector(hiddenId));
+    EXPECT_FALSE(registry.IsHiddenInInspector(shownId));
+    EXPECT_FALSE(registry.IsHiddenInInspector(0xDEAD));
+    EXPECT_EQ(registry.FindByDisplayName("Presence Query Shown"), shownId);
+
+    const auto rowClasses = registry.HierarchyRowClasses();
+    EXPECT_NE(std::find(rowClasses.begin(), rowClasses.end(),
+                        std::make_pair(shownId, std::string("hierarchy-entity-presence-query"))),
+              rowClasses.end());
+    const auto pivotTypes = registry.GizmoPivotAtEntityOriginTypes();
+    EXPECT_NE(std::find(pivotTypes.begin(), pivotTypes.end(), shownId), pivotTypes.end());
+    EXPECT_EQ(std::find(pivotTypes.begin(), pivotTypes.end(), hiddenId), pivotTypes.end());
 }
 
 TEST(EditorComponentTraits, SectionHostIsFoundByTheSectionsItHosts)
@@ -138,8 +187,13 @@ TEST(EditorComponentTraits, SectionHostIsFoundByTheSectionsItHosts)
     const GameEngine::ECS::ComponentTypeId hostedTypeId = 0xE011;
 
     ed::EditorComponentTraits host;
-    host.HostsInspectorSection = [](GameEngine::ECS::ComponentTypeId typeId)
-    { return typeId == hostedTypeId; };
+    host.HostsInspectorSection = [hostedTypeId](GameEngine::ECS::ComponentTypeId typeId)
+    {
+        // A claim may consult registries, this one included: re-entering it must
+        // not deadlock.
+        (void)ed::EditorComponentTraitsRegistry::Get().IsHiddenInInspector(typeId);
+        return typeId == hostedTypeId;
+    };
     host.MissingHostBadge = "No Host";
     registry.Register(hostTypeId, host);
 
@@ -336,55 +390,5 @@ TEST(EditorPluginRegistry, EnabledResolutionIsCachedUntilInvalidated)
 
     // Restore the default resolver state so later tests see default-enabled
     // semantics (the registry is process-global).
-    registry.SetEnabledResolver(nullptr);
-}
-
-namespace
-{
-
-// A plugin that binds one key with its modifiers to one Hierarchy command.
-class KeyPlugin final : public ed::IEditorPlugin
-{
-public:
-    KeyPlugin(const char* id, int key, int mods, uint32_t command) : m_Key(key), m_Mods(mods), m_Command(command)
-    {
-        m_Descriptor = {id, "Key Plugin", "1.0.0", true};
-    }
-
-    const GameEngine::Plugins::PluginDescriptor& GetDescriptor() const override { return m_Descriptor; }
-
-    uint32_t HierarchyCommandForKey(int key, int mods) const override
-    {
-        return key == m_Key && mods == m_Mods ? m_Command : 0u;
-    }
-
-private:
-    GameEngine::Plugins::PluginDescriptor m_Descriptor{};
-    int m_Key = 0;
-    int m_Mods = 0;
-    uint32_t m_Command = 0;
-};
-
-} // namespace
-
-// The Hierarchy asks the registry for the command a key runs: the first enabled plugin that binds it answers,
-// a disabled plugin and an unbound key answer 0.
-TEST(EditorPluginRegistry, HierarchyCommandForKeyComesFromTheFirstEnabledPluginThatBindsIt)
-{
-    namespace input = GameEngine::Input;
-    auto& registry = ed::EditorPluginRegistry::Get();
-    const int chord = input::kModControl | input::kModShift;
-    static KeyPlugin first("sdkTest.keyFirst", input::kKeyCode_P, chord, 0x5101u);
-    static KeyPlugin second("sdkTest.keySecond", input::kKeyCode_P, chord, 0x7001u);
-    registry.RegisterPlugin(first);
-    registry.RegisterPlugin(second);
-
-    EXPECT_EQ(registry.HierarchyCommandForKey(input::kKeyCode_P, chord), 0x5101u);
-    EXPECT_EQ(registry.HierarchyCommandForKey(input::kKeyCode_D, input::kModControl), 0u) << "no plugin binds Ctrl+D";
-
-    registry.SetEnabledResolver([](std::string_view id, bool defaultEnabled)
-                                { return id == "sdkTest.keyFirst" ? false : defaultEnabled; });
-    EXPECT_EQ(registry.HierarchyCommandForKey(input::kKeyCode_P, chord), 0x7001u)
-        << "a disabled plugin answers nothing";
     registry.SetEnabledResolver(nullptr);
 }

@@ -194,6 +194,8 @@ GameConfig LoadGameConfig(const std::filesystem::path& path)
         cfg.renderLayerNames = Rendering::RenderLayerNames::ReadFrom(doc["rendering"]);
     }
 
+    cfg.sortingLayers = Rendering::SortingLayers::FromJson(doc);
+
     // Clamp window dimensions to reasonable bounds.
     constexpr uint32_t kMinWindowSize = 320;
     constexpr uint32_t kMaxWindowSize = 7680; // 8K
@@ -255,6 +257,7 @@ bool SaveGameConfig(const std::filesystem::path& path, const GameConfig& cfg)
     cfg.renderQuality.WriteTo(rendering);
     cfg.renderLayerNames.WriteTo(rendering);
     doc["rendering"] = rendering;
+    cfg.sortingLayers.WriteToJson(doc);
 
     std::ofstream file(path);
     if (!file.is_open())

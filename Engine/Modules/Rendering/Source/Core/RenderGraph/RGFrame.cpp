@@ -1,6 +1,7 @@
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
 #include "Logger/Logger.h"
+#include "Rendering/Core/Pipeline/PipelineCache.h"
 #include "Rendering/Core/Pipeline/PipelineManager.h"
 
 #include <cassert>
@@ -241,6 +242,24 @@ void RGPassBuilder::RecordInSecondary()
 
 // ── RGContext ───────────────────────────────────────────────────────────────
 
+void RGPassBuilder::UsePipeline(GraphicsPipelineId pipeline)
+{
+    auto& preparation = m_Frame->m_Prepare[m_Pass];
+    if (preparation.RequiredCount == 0)
+        preparation.RequiredFirst = static_cast<uint32_t>(m_Frame->m_RequiredPipelines.size());
+    m_Frame->m_RequiredPipelines.push_back({pipeline, {}});
+    ++preparation.RequiredCount;
+}
+
+void RGPassBuilder::UsePipeline(ComputePipelineId pipeline)
+{
+    auto& preparation = m_Frame->m_Prepare[m_Pass];
+    if (preparation.RequiredCount == 0)
+        preparation.RequiredFirst = static_cast<uint32_t>(m_Frame->m_RequiredPipelines.size());
+    m_Frame->m_RequiredPipelines.push_back({{}, pipeline});
+    ++preparation.RequiredCount;
+}
+
 TextureHandle RGContext::GetTexture(RGTexture t) const
 {
     return TextureHandle(m_Frame->PhysicalOf(t.Id));
@@ -337,6 +356,18 @@ uint32_t RGContext::GetCurrentSampleCount() const
     return BuildCurrentFormatKey().RasterizationSamples;
 }
 
+GraphicsPipelineId RGContext::ResolveGraphicsPipelineId(GraphicsPipelineId id) const
+{
+    if (!m_Frame->m_Device || !id.IsValid())
+        return {};
+    if (m_Pass < m_Frame->m_GraphicsSpecializations.size())
+    {
+        if (const auto& values = m_Frame->m_GraphicsSpecializations[m_Pass])
+            return m_Frame->m_Device->GetMutablePipelineCache().SpecializeGraphicsPipeline(id, *values);
+    }
+    return id;
+}
+
 PipelineHandle RGContext::GetOrCreatePipelineVariant(GraphicsPipelineId id) const
 {
     if (!m_Frame->m_Device || !id.IsValid())
@@ -349,6 +380,7 @@ PipelineHandle RGContext::GetOrCreatePipelineVariant(GraphicsPipelineId id) cons
                            m_Frame->m_Graph.PassName(m_Pass));
         return {};
     }
+    id = ResolveGraphicsPipelineId(id);
     const PipelineHandle h =
         m_Frame->m_Device->GetOrCreateGraphicsPipeline(id, BuildCurrentFormatKey());
     // The concrete cache can hand back a handle whose pipeline slot is gone
@@ -499,7 +531,8 @@ void RGFrame::BeginFrame(uint64_t frameIndex)
             m_TimelineCreated[q] = false;
             m_LastSignaled[q] = 0;
         }
-        m_Graph.ResetCrossFrameAccesses();
+        m_ExportTimeline = {};
+        m_ExportSignalValue = 0;
         m_DeviceRebuildGen = rebuildGen;
     }
 
@@ -524,11 +557,25 @@ void RGFrame::DiscardRecordedPasses()
     ResetRecording();
 }
 
+void RGFrame::SetGraphicsPipelineSpecialization(
+    RGPass pass, std::shared_ptr<const SpecializationConstants> values)
+{
+    if (!pass.IsValid() || pass.Id >= m_Graph.PassCount())
+        return;
+    if (m_GraphicsSpecializations.size() <= pass.Id)
+        m_GraphicsSpecializations.resize(pass.Id + 1);
+    m_GraphicsSpecializations[pass.Id] = std::move(values);
+}
+
 void RGFrame::ResetRecording()
 {
     m_Graph.BeginFrame(); // resets the arena → runs last frame's exec-lambda dtors
     m_Exec.clear();
+    m_Prepare.clear();
+    m_OnSubmitted.clear();
+    m_RequiredPipelines.clear();
     m_PassRecordSecondary.clear();
+    m_GraphicsSpecializations.clear();
     // m_Secondary is retired to the device at the end of the prior RecordAndSubmit;
     // clearing here just releases the now-empty unique_ptr slots.
     m_Secondary.clear();
@@ -538,6 +585,10 @@ void RGFrame::ResetRecording()
     m_ZeroInitBufferIds.clear();
     m_InitializedTextureIds.clear();
     m_RequiredTransferUsage.clear();
+    m_ExternalSubmissionWaits.clear();
+    m_ExportPassCount = 0;
+    m_ExportedWork = {};
+    m_OrderedGraphicsWait = {};
     m_Attachments.clear();
     m_Physical.assign(m_Physical.size(), 0);
     m_HasPhysical.assign(m_HasPhysical.size(), 0);
@@ -826,6 +877,8 @@ void RGFrame::ReadCompletedTimelineValues(uint64_t (&outValues)[kQueueCount]) co
 
 void RGFrame::Execute()
 {
+    m_Stats.PrepareMs = 0.0;
+    m_Stats.RecordAndSubmitMs = 0.0;
     const size_t passCount = m_Graph.PassCount();
     if (passCount == 0)
         return;
@@ -911,7 +964,14 @@ void RGFrame::Execute()
 
         // Record real command buffers per submission (barriers → render passes →
         // pass lambdas with ctx.Cmd) and submit with timeline-semaphore sync.
+        if (!PreparePasses())
+        {
+            MaintainPools();
+            return;
+        }
+        const auto recordBegin = RGClock::now();
         RecordAndSubmit();
+        m_Stats.RecordAndSubmitMs = elapsedMs(recordBegin);
         // Only a frame that reached submission counts: an abandoned or
         // all-culled frame leaves the count where it was, which is what the
         // declare-side histories compare against.
@@ -953,6 +1013,11 @@ void RGFrame::Execute()
 
     // Pool maintenance every frame (also when everything culled): transients
     // free, idle entries — incl. a hidden view's persistents — age out.
+    MaintainPools();
+}
+
+void RGFrame::MaintainPools()
+{
     m_TransientPool->ReleaseFrame(m_FrameIndex);
     m_TransientPool->EvictIdle(m_FrameIndex, kTransientMaxIdleFrames);
     // The frame that retires a physical can still read it, and that frame is complete only after the

@@ -22,12 +22,13 @@
 #include "Ocean/Systems/OceanExtractionSystem.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Components/Rendering/Ocean.h"
-#include "Components/Transform.h"
-#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/ComponentFieldRegistry.h"
 #include "ECS/ECS.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Systems.h"
 #include "Mathematics/Matrix4x4.h"
+
+#include "TestTempDir.h"
 #include "Mathematics/MatrixOps.h"
 #include "DeathTestChild.h"
 
@@ -226,6 +227,37 @@ TEST(OceanQueryTests, DynamicWaveQuiescenceAdvancesOnlyWithSimulationTime)
     EXPECT_TRUE(waves.IsQuiescent());
 }
 
+TEST(OceanQueryTests, DynamicWaveQuiescenceDropsOldWorkBeforeAcceptingNewImpulses)
+{
+    for (const bool fixed : {false, true})
+    {
+        SCOPED_TRACE(fixed ? "fixed" : "variable");
+        OceanDynWaves waves;
+        if (fixed)
+            waves.ConfigureSimulation(20.0f, 4u, 0.1f, 0.6f, 9.81f,
+                                      0.75f, 0.4f, 2.0f, 0u, 3u);
+        std::array<OceanWaveImpulseGPU, kMaxOceanWaveImpulses> old{};
+        for (auto& impulse : old)
+            impulse.CenterRadiusAmp[3] = 0.5f;
+        waves.SetFrameInputs(old.data(), kMaxOceanWaveImpulses, 4.0f, 0.2f, 0.1f);
+        for (uint32 second = 0u; second < 30u; ++second)
+            waves.SetFrameInputs(nullptr, 0u, 4.0f, 0.2f, 1.0f);
+        ASSERT_TRUE(waves.IsQuiescent());
+        waves.InvalidateHistory();
+        OceanWaveImpulseGPU fresh{};
+        fresh.CenterRadiusAmp[3] = 0.75f;
+        waves.SetFrameInputs(&fresh, 1u, 4.0f, 0.2f, 0.05f);
+        EXPECT_FALSE(waves.IsQuiescent());
+        EXPECT_EQ(waves.GetPendingSubstepCount(), 1u);
+        OceanDynWavesParamsGPU params{};
+        waves.FillParams(params, {}, 0u);
+        EXPECT_FLOAT_EQ(params.DeltaTime, 0.05f);
+        EXPECT_EQ(params.ImpulseCount, 1u);
+        EXPECT_FLOAT_EQ(params.Impulses[0].CenterRadiusAmp[3], 0.75f);
+        EXPECT_EQ(params.ResetHistory, 1u);
+    }
+}
+
 TEST(OceanQueryTests, DynamicAndFoamSettingsAccumulateFixedSubsteps)
 {
     OceanDynWaves dynamic;
@@ -256,6 +288,91 @@ TEST(OceanQueryTests, DynamicAndFoamSettingsAccumulateFixedSubsteps)
     EXPECT_EQ(foam.GetPendingSubstepCount(), 2u);
 }
 
+TEST(OceanQueryTests, DynamicWavesRetainUnrecordedFixedStepsWhilePaused)
+{
+    OceanDynWaves waves;
+    waves.ConfigureSimulation(20.0f, 4u, 0.1f, 0.6f, 9.81f,
+                              0.75f, 0.4f, 2.0f, 0u, 3u);
+    OceanWaveImpulseGPU impulse{};
+    impulse.CenterRadiusAmp[3] = 0.5f;
+    waves.SetFrameInputs(&impulse, 1u, 4.0f, 0.2f, 0.15f);
+    ASSERT_EQ(waves.GetPendingSubstepCount(), 3u);
+    for (uint32 retry = 0u; retry < 3u; ++retry)
+    {
+        waves.SetFrameInputs(nullptr, 0u, 4.0f, 0.2f, 0.0f);
+        EXPECT_EQ(waves.GetPendingSubstepCount(), 3u);
+        OceanDynWavesParamsGPU params{};
+        waves.FillParams(params, {}, 0u);
+        EXPECT_FLOAT_EQ(params.DeltaTime, 0.05f);
+        EXPECT_EQ(params.ImpulseCount, 1u);
+    }
+    waves.FinishSubsteps();
+    waves.SetFrameInputs(nullptr, 0u, 4.0f, 0.2f, 0.0f);
+    EXPECT_EQ(waves.GetPendingSubstepCount(), 0u);
+}
+
+TEST(OceanQueryTests, DynamicWavesRetainTimeAndAppendUnrecordedImpulses)
+{
+    OceanDynWaves waves;
+    OceanWaveImpulseGPU first{}, second{};
+    first.CenterRadiusAmp[3] = 0.5f;
+    second.CenterRadiusAmp[3] = 0.75f;
+    waves.SetFrameInputs(&first, 1u, 4.0f, 0.2f, 0.1f);
+    waves.SetFrameInputs(&second, 1u, 4.0f, 0.2f, 0.2f);
+    waves.SetFrameInputs(nullptr, 0u, 4.0f, 0.2f, 0.0f);
+    ASSERT_EQ(waves.GetPendingSubstepCount(), 1u);
+    OceanDynWavesParamsGPU params{};
+    waves.FillParams(params, {}, 0u);
+    EXPECT_NEAR(params.DeltaTime, 0.3f, 1e-6f);
+    ASSERT_EQ(params.ImpulseCount, 2u);
+    EXPECT_FLOAT_EQ(params.Impulses[0].CenterRadiusAmp[3], 0.5f);
+    EXPECT_FLOAT_EQ(params.Impulses[1].CenterRadiusAmp[3], 0.75f);
+    waves.FillParams(params, {}, 1u);
+    EXPECT_EQ(params.ImpulseCount, 0u);
+    waves.FinishSubsteps();
+    waves.SetFrameInputs(nullptr, 0u, 4.0f, 0.2f, 0.0f);
+    EXPECT_EQ(waves.GetPendingSubstepCount(), 0u);
+}
+
+TEST(OceanQueryTests, DynamicWavesRetainOldestImpulsesWithoutDeduplicating)
+{
+    OceanDynWaves waves;
+    std::array<OceanWaveImpulseGPU, kMaxOceanWaveImpulses> impulses{};
+    for (auto& impulse : impulses)
+        impulse.CenterRadiusAmp[3] = 0.5f;
+    waves.SetFrameInputs(impulses.data(), kMaxOceanWaveImpulses - 1u, 4.0f, 0.2f, 0.0f);
+    impulses[0].CenterRadiusAmp[3] = 0.75f;
+    waves.SetFrameInputs(impulses.data(), 2u, 4.0f, 0.2f, 0.0f);
+    OceanDynWavesParamsGPU params{};
+    waves.FillParams(params, {}, 0u);
+    ASSERT_EQ(params.ImpulseCount, kMaxOceanWaveImpulses);
+    for (uint32 i = 0u; i < kMaxOceanWaveImpulses - 1u; ++i)
+        EXPECT_FLOAT_EQ(params.Impulses[i].CenterRadiusAmp[3], 0.5f);
+    EXPECT_FLOAT_EQ(params.Impulses[kMaxOceanWaveImpulses - 1u].CenterRadiusAmp[3], 0.75f);
+    EXPECT_EQ(waves.GetPendingSubstepCount(), 1u);
+}
+
+TEST(OceanQueryTests, DynamicWavesRetainSecondsAcrossSimulationCadenceChanges)
+{
+    OceanDynWaves waves;
+    OceanWaveImpulseGPU impulse{};
+    waves.SetFrameInputs(&impulse, 1u, 4.0f, 0.2f, 0.15f);
+    waves.ConfigureSimulation(20.0f, 4u, 0.1f, 0.6f, 9.81f,
+                              0.75f, 0.4f, 2.0f, 0u, 3u);
+    waves.SetFrameInputs(nullptr, 0u, 4.0f, 0.2f, 0.0f);
+    EXPECT_EQ(waves.GetPendingSubstepCount(), 3u);
+    waves.ConfigureSimulation(40.0f, 8u, 0.1f, 0.6f, 9.81f,
+                              0.75f, 0.4f, 2.0f, 0u, 3u);
+    waves.SetFrameInputs(nullptr, 0u, 4.0f, 0.2f, 0.0f);
+    EXPECT_EQ(waves.GetPendingSubstepCount(), 6u);
+    waves.ClearSimulationConfiguration();
+    waves.SetFrameInputs(nullptr, 0u, 4.0f, 0.2f, 0.0f);
+    EXPECT_EQ(waves.GetPendingSubstepCount(), 1u);
+    OceanDynWavesParamsGPU params{};
+    waves.FillParams(params, {}, 0u);
+    EXPECT_NEAR(params.DeltaTime, 0.15f, 1e-6f);
+}
+
 // Frames whose foam step never ran (no water in view) are caught up by the next
 // step as one step over the whole gap: it decays the old foam over the gap, and
 // its deposits are scaled so each equals the exponential integral over the gap.
@@ -276,7 +393,7 @@ TEST(OceanQueryTests, FoamCatchesUpSkippedFramesInOneClosedFormStep)
     frameInputs();
 
     OceanFoamParamsGPU params{};
-    foam.FillParams(params, 0u, 0u);
+    foam.FillParams(params, {}, 0u);
     const float gap = 3.0f * kFrame;
     EXPECT_FLOAT_EQ(params.DeltaTime, gap);
     const auto integralScale = [gap](float rate) { return (1.0f - std::exp(-rate * gap)) / (rate * gap); };
@@ -285,10 +402,60 @@ TEST(OceanQueryTests, FoamCatchesUpSkippedFramesInOneClosedFormStep)
     foam.FinishSubsteps();
 
     frameInputs();
-    foam.FillParams(params, 0u, 0u);
+    foam.FillParams(params, {}, 0u);
     EXPECT_FLOAT_EQ(params.DeltaTime, kFrame);
     EXPECT_FLOAT_EQ(params.Strength, 1.0f);
     EXPECT_FLOAT_EQ(params.ShorelineStrength, 2.0f);
+}
+
+TEST(OceanQueryTests, FoamRetainsUnrecordedStepsAcrossFractionalAndPausedUpdates)
+{
+    OceanFoamSim foam;
+    foam.ConfigureSimulation(10.0f, 2u);
+    foam.InvalidateHistory();
+    const auto inputs = [&foam](float dt)
+    {
+        foam.SetFrameInputs({}, {}, 0u, 0.8f, 0.55f, 1.0f, dt,
+                            1.0f, 15.0f, 10.0f, 1.0f, 10.0f, 0.0f, 0.0f);
+    };
+    inputs(0.1f);
+    inputs(0.01f);
+    for (uint32 retry = 0u; retry < 3u; ++retry)
+    {
+        inputs(0.0f);
+        EXPECT_EQ(foam.GetPendingSubstepCount(), 1u);
+        OceanFoamParamsGPU params{};
+        foam.FillParams(params, {}, 0u);
+        EXPECT_FLOAT_EQ(params.DeltaTime, 0.1f);
+        EXPECT_EQ(params.ResetHistory, 1u);
+        EXPECT_FLOAT_EQ(params.Strength, 1.0f);
+    }
+    foam.FinishSubsteps();
+    inputs(0.09f);
+    EXPECT_EQ(foam.GetPendingSubstepCount(), 1u);
+    OceanFoamParamsGPU params{};
+    foam.FillParams(params, {}, 0u);
+    EXPECT_FLOAT_EQ(params.DeltaTime, 0.1f);
+    EXPECT_EQ(params.ResetHistory, 0u);
+}
+
+TEST(OceanQueryTests, TemporalSimulationClaimsUseTheWholeWorldFrameEpoch)
+{
+    OceanRenderFeature feature;
+    constexpr uint64 first = 1u;
+    constexpr uint64 later = (uint64{1} << 32u) + first;
+    EXPECT_TRUE(feature.TryClaimDynWavesDispatch(first));
+    EXPECT_FALSE(feature.TryClaimDynWavesDispatch(first));
+    EXPECT_TRUE(feature.TryClaimDynWavesDispatch(later));
+    EXPECT_FALSE(feature.TryClaimDynWavesDispatch(later));
+    EXPECT_TRUE(feature.TryClaimFoamDispatch(first));
+    EXPECT_FALSE(feature.TryClaimFoamDispatch(first));
+    EXPECT_TRUE(feature.TryClaimFoamDispatch(later));
+    EXPECT_FALSE(feature.TryClaimFoamDispatch(later));
+    EXPECT_TRUE(feature.TryClaimGPUQueryDispatch(first));
+    EXPECT_FALSE(feature.TryClaimGPUQueryDispatch(first));
+    EXPECT_TRUE(feature.TryClaimGPUQueryDispatch(later));
+    EXPECT_FALSE(feature.TryClaimGPUQueryDispatch(later));
 }
 
 // The declare runs once per presented window: one window dispatching the waves
@@ -307,9 +474,7 @@ TEST(OceanQueryTests, WaveDataStaysCurrentWhileAnyWindowDispatches)
         now += halfFrame;
         demand.Update(now);
         if (frame > 0)
-        {
             EXPECT_FALSE(demand.IsWaveDataStale(now)) << "window A, frame " << frame;
-        }
         demand.NoteWaveDispatch(now);
         // Window B: no water in view, no dispatch.
         now += halfFrame;
@@ -637,14 +802,17 @@ TEST(OceanQueryTests, UnderwaterPortalDataCarriesOccludersWithoutExcludingCamera
 
 // A camera at the origin looking along +Z (left-handed, reverse-Z), 60 degrees
 // vertical, 16:9.
-Mathematics::Matrix4x4 ForwardViewProj()
+std::array<float, 16> ForwardViewProj()
 {
     const Mathematics::Matrix4x4 view = Mathematics::Matrix4x4::LookAt(
         Mathematics::Vector3(0.0f, 0.0f, 0.0f), Mathematics::Vector3(0.0f, 0.0f, 1.0f),
         Mathematics::Vector3(0.0f, 1.0f, 0.0f));
     const Mathematics::Matrix4x4 projection =
         Mathematics::Matrix4x4::PerspectiveReverseZ(1.0471976f, 16.0f / 9.0f, 0.5f, 600.0f);
-    return projection * view;
+    const Mathematics::Matrix4x4 viewProj = projection * view;
+    std::array<float, 16> out{};
+    std::memcpy(out.data(), viewProj.Data(), sizeof(float) * 16);
+    return out;
 }
 
 OceanUnderwaterPortalBox PortalBoxAt(float x, float y, float z)
@@ -664,20 +832,20 @@ OceanUnderwaterPortalBox PortalBoxAt(float x, float y, float z)
 // cone is not, and one straddling a frustum plane with its centre outside is.
 TEST(OceanQueryTests, UnderwaterPortalInViewFollowsTheVolumeBounds)
 {
-    const Mathematics::Matrix4x4 viewProj = ForwardViewProj();
+    const std::array<float, 16> viewProj = ForwardViewProj();
     OceanUnderwaterPortalData data;
-    EXPECT_FALSE(IsUnderwaterPortalInView(data, viewProj));
+    EXPECT_FALSE(IsUnderwaterPortalInView(data, viewProj.data()));
 
     data.Volumes = {PortalBoxAt(0.0f, 0.0f, 50.0f)};
-    EXPECT_TRUE(IsUnderwaterPortalInView(data, viewProj));
+    EXPECT_TRUE(IsUnderwaterPortalInView(data, viewProj.data()));
 
     data.Volumes = {PortalBoxAt(0.0f, 0.0f, -50.0f), PortalBoxAt(200.0f, 0.0f, 20.0f)};
-    EXPECT_FALSE(IsUnderwaterPortalInView(data, viewProj));
+    EXPECT_FALSE(IsUnderwaterPortalInView(data, viewProj.data()));
 
     // The right plane crosses x = 51.3 at z = 50 (horizontal half-angle 45.7
     // degrees): the centre at x = 55 is outside, the face at x = 50 inside.
     data.Volumes = {PortalBoxAt(55.0f, 0.0f, 50.0f)};
-    EXPECT_TRUE(IsUnderwaterPortalInView(data, viewProj));
+    EXPECT_TRUE(IsUnderwaterPortalInView(data, viewProj.data()));
     data.Volumes.clear();
 
     OceanUnderwaterPortalPolygon polygon{};
@@ -691,12 +859,12 @@ TEST(OceanQueryTests, UnderwaterPortalInViewFollowsTheVolumeBounds)
     polygon.X[2] = 0.0f;
     polygon.Z[2] = 50.0f;
     data.Polygons = {polygon};
-    EXPECT_TRUE(IsUnderwaterPortalInView(data, viewProj));
+    EXPECT_TRUE(IsUnderwaterPortalInView(data, viewProj.data()));
 
     for (uint32_t i = 0u; i < polygon.PointCount; ++i)
         polygon.Z[i] -= 90.0f;
     data.Polygons = {polygon};
-    EXPECT_FALSE(IsUnderwaterPortalInView(data, viewProj));
+    EXPECT_FALSE(IsUnderwaterPortalInView(data, viewProj.data()));
     data.Polygons.clear();
 
     // Spline ribbons: the tree's root branch record carries their bounds.
@@ -709,11 +877,11 @@ TEST(OceanQueryTests, UnderwaterPortalInViewFollowsTheVolumeBounds)
     root.B[1] = 0.0f;
     root.B[2] = -40.0f;
     data.Ribbons = {root};
-    EXPECT_FALSE(IsUnderwaterPortalInView(data, viewProj));
+    EXPECT_FALSE(IsUnderwaterPortalInView(data, viewProj.data()));
     root.A[2] = 40.0f;
     root.B[2] = 60.0f;
     data.Ribbons = {root};
-    EXPECT_TRUE(IsUnderwaterPortalInView(data, viewProj));
+    EXPECT_TRUE(IsUnderwaterPortalInView(data, viewProj.data()));
 }
 
 // Reflected caustics are declared only when the band around a water body can be
@@ -721,7 +889,7 @@ TEST(OceanQueryTests, UnderwaterPortalInViewFollowsTheVolumeBounds)
 // margin reaches into the view, and an unconfined ocean always is.
 TEST(OceanQueryTests, WaterFootprintInViewFollowsTheWaterBodies)
 {
-    const Mathematics::Matrix4x4 viewProj = ForwardViewProj();
+    const std::array<float, 16> viewProj = ForwardViewProj();
     OceanRenderFeature feature;
 
     OceanRenderFeature::WaterBodyBox ahead{};
@@ -729,17 +897,17 @@ TEST(OceanQueryTests, WaterFootprintInViewFollowsTheWaterBodies)
     ahead.HalfX = 5.0f;
     ahead.HalfZ = 5.0f;
     feature.SetWaterBodies({ahead}, true);
-    EXPECT_TRUE(feature.IsWaterFootprintInView(viewProj, -1.0f, 3.0f, 0.0f));
+    EXPECT_TRUE(feature.IsWaterFootprintInView(viewProj.data(), -1.0f, 3.0f, 0.0f));
 
     OceanRenderFeature::WaterBodyBox behind = ahead;
     behind.CenterZ = -50.0f;
     feature.SetWaterBodies({behind}, true);
-    EXPECT_FALSE(feature.IsWaterFootprintInView(viewProj, -1.0f, 3.0f, 0.0f));
-    EXPECT_TRUE(feature.IsWaterFootprintInView(viewProj, -1.0f, 3.0f, 60.0f));
+    EXPECT_FALSE(feature.IsWaterFootprintInView(viewProj.data(), -1.0f, 3.0f, 0.0f));
+    EXPECT_TRUE(feature.IsWaterFootprintInView(viewProj.data(), -1.0f, 3.0f, 60.0f));
 
     // A body whose footprint lies in view but whose band is far below it.
     feature.SetWaterBodies({ahead}, true);
-    EXPECT_FALSE(feature.IsWaterFootprintInView(viewProj, -200.0f, -150.0f, 0.0f));
+    EXPECT_FALSE(feature.IsWaterFootprintInView(viewProj.data(), -200.0f, -150.0f, 0.0f));
 
     OceanRenderFeature::WaterBodyPolygon polygon{};
     polygon.PointCount = 3u;
@@ -751,12 +919,12 @@ TEST(OceanQueryTests, WaterFootprintInViewFollowsTheWaterBodies)
     polygon.Z[2] = -50.0f;
     feature.SetWaterBodies({}, true);
     feature.SetWaterBodyPolygons({polygon});
-    EXPECT_FALSE(feature.IsWaterFootprintInView(viewProj, -1.0f, 3.0f, 0.0f));
-    EXPECT_TRUE(feature.IsWaterFootprintInView(viewProj, -1.0f, 3.0f, 60.0f));
+    EXPECT_FALSE(feature.IsWaterFootprintInView(viewProj.data(), -1.0f, 3.0f, 0.0f));
+    EXPECT_TRUE(feature.IsWaterFootprintInView(viewProj.data(), -1.0f, 3.0f, 60.0f));
     for (uint32_t i = 0u; i < polygon.PointCount; ++i)
         polygon.Z[i] += 90.0f;
     feature.SetWaterBodyPolygons({polygon});
-    EXPECT_TRUE(feature.IsWaterFootprintInView(viewProj, -1.0f, 3.0f, 0.0f));
+    EXPECT_TRUE(feature.IsWaterFootprintInView(viewProj.data(), -1.0f, 3.0f, 0.0f));
 
     feature.SetWaterBodyPolygons({});
 
@@ -764,10 +932,10 @@ TEST(OceanQueryTests, WaterFootprintInViewFollowsTheWaterBodies)
     stamp.CenterZ = -50.0f;
     stamp.HalfWidth = 5.0f;
     feature.SetWaterBodyStamps({stamp});
-    EXPECT_FALSE(feature.IsWaterFootprintInView(viewProj, -1.0f, 3.0f, 0.0f));
+    EXPECT_FALSE(feature.IsWaterFootprintInView(viewProj.data(), -1.0f, 3.0f, 0.0f));
     stamp.CenterZ = 50.0f;
     feature.SetWaterBodyStamps({stamp});
-    EXPECT_TRUE(feature.IsWaterFootprintInView(viewProj, -1.0f, 3.0f, 0.0f));
+    EXPECT_TRUE(feature.IsWaterFootprintInView(viewProj.data(), -1.0f, 3.0f, 0.0f));
     feature.SetWaterBodyStamps({});
 
     // A surface-carrying spline ribbon counts by its XZ bounds (A/B/C: x, z).
@@ -780,22 +948,22 @@ TEST(OceanQueryTests, WaterFootprintInViewFollowsTheWaterBodies)
     ribbon.C[0] = 0.0f;
     ribbon.C[1] = -55.0f;
     feature.GetSplineRaster().SetTriangles({ribbon});
-    EXPECT_FALSE(feature.IsWaterFootprintInView(viewProj, -1.0f, 3.0f, 0.0f));
+    EXPECT_FALSE(feature.IsWaterFootprintInView(viewProj.data(), -1.0f, 3.0f, 0.0f));
     ribbon.A[1] = ribbon.B[1] = 45.0f;
     ribbon.C[1] = 55.0f;
     feature.GetSplineRaster().SetTriangles({ribbon});
-    EXPECT_TRUE(feature.IsWaterFootprintInView(viewProj, -1.0f, 3.0f, 0.0f));
+    EXPECT_TRUE(feature.IsWaterFootprintInView(viewProj.data(), -1.0f, 3.0f, 0.0f));
     // A floating-origin shift of +100 m on Z moves the ribbon to z = -55 .. -45,
     // behind the camera: the gate follows the shifted bounds.
     feature.GetSplineRaster().RebaseOrigin(0.0f, 100.0f);
-    EXPECT_FALSE(feature.IsWaterFootprintInView(viewProj, -1.0f, 3.0f, 0.0f));
+    EXPECT_FALSE(feature.IsWaterFootprintInView(viewProj.data(), -1.0f, 3.0f, 0.0f));
     feature.GetSplineRaster().SetTriangles({});
 
     feature.SetWaterBodies({behind}, false);
-    EXPECT_TRUE(feature.IsWaterFootprintInView(viewProj, -1.0f, 3.0f, 0.0f));
+    EXPECT_TRUE(feature.IsWaterFootprintInView(viewProj.data(), -1.0f, 3.0f, 0.0f));
     // An unbounded ocean is a band across the whole world: a band above the
     // frustum's reach is out of view.
-    EXPECT_FALSE(feature.IsWaterFootprintInView(viewProj, 400.0f, 500.0f, 0.0f));
+    EXPECT_FALSE(feature.IsWaterFootprintInView(viewProj.data(), 400.0f, 500.0f, 0.0f));
 }
 
 // The reflected-caustics band is measured from sea level, widened by how far the
@@ -1361,9 +1529,8 @@ TEST(OceanQueryTests, DepthCacheAssetSamplesAndRoundTrips)
     EXPECT_NEAR(depth, 5.0f, 1e-5f);
     EXPECT_FALSE(cache.SampleDepth(2.1f, 1.0f, depth));
 
-    const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "GameEngine_OceanDepthCacheAsset_Test.oceandepth";
-    std::filesystem::remove(path);
+    const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("GameEngine_OceanDepthCacheAsset_Test")};
+    const std::filesystem::path path = directory.Path() / "GameEngine_OceanDepthCacheAsset_Test.oceandepth";
     ASSERT_TRUE(cache.SaveBinary(path));
 
     OceanDepthCacheAsset loaded;
@@ -1516,10 +1683,10 @@ TEST(OceanQueryTests, DepthCacheBakerSamplesHeightfieldSources)
     source.SizeZ = 1.0f;
     source.HeightScale = 10.0f;
     source.WorldOriginY = -5.0f;
-    source.Layers = GameEngine::Rendering::RenderLayerMask{0x1u};
+    source.LayerMask = 0x1u;
 
     OceanDepthCacheAsset cache;
-    ASSERT_TRUE(BakeOceanDepthCacheFromHeightfields(desc, &source, 1, GameEngine::Rendering::RenderLayerMask{0x1u}, cache));
+    ASSERT_TRUE(BakeOceanDepthCacheFromHeightfields(desc, &source, 1, 0x1u, cache));
 
     float32 depth = 0.0f;
     ASSERT_TRUE(cache.SampleDepth(0.5f, 0.5f, depth));
@@ -1545,23 +1712,23 @@ TEST(OceanQueryTests, DepthCacheBakerFiltersAndOverlapsHeightfieldLayers)
     sources[0].Height = 1;
     sources[0].SizeX = 1.0f;
     sources[0].SizeZ = 1.0f;
-    sources[0].Layers = GameEngine::Rendering::RenderLayerMask{0x1u};
+    sources[0].LayerMask = 0x1u;
     sources[1] = sources[0];
     sources[1].Samples = shallowFloor;
-    sources[1].Layers = GameEngine::Rendering::RenderLayerMask{0x2u};
+    sources[1].LayerMask = 0x2u;
 
     OceanDepthCacheAsset cache;
     float32 depth = 0.0f;
 
-    ASSERT_TRUE(BakeOceanDepthCacheFromHeightfields(desc, sources, 2, GameEngine::Rendering::RenderLayerMask{0x1u}, cache));
+    ASSERT_TRUE(BakeOceanDepthCacheFromHeightfields(desc, sources, 2, 0x1u, cache));
     ASSERT_TRUE(cache.SampleDepth(0.5f, 0.5f, depth));
     EXPECT_NEAR(depth, 10.0f, 1e-5f);
 
-    ASSERT_TRUE(BakeOceanDepthCacheFromHeightfields(desc, sources, 2, GameEngine::Rendering::RenderLayerMask{0x2u}, cache));
+    ASSERT_TRUE(BakeOceanDepthCacheFromHeightfields(desc, sources, 2, 0x2u, cache));
     ASSERT_TRUE(cache.SampleDepth(0.5f, 0.5f, depth));
     EXPECT_NEAR(depth, 2.0f, 1e-5f);
 
-    ASSERT_TRUE(BakeOceanDepthCacheFromHeightfields(desc, sources, 2, GameEngine::Rendering::RenderLayerMask{0x3u}, cache));
+    ASSERT_TRUE(BakeOceanDepthCacheFromHeightfields(desc, sources, 2, 0x3u, cache));
     ASSERT_TRUE(cache.SampleDepth(0.5f, 0.5f, depth));
     EXPECT_NEAR(depth, 2.0f, 1e-5f);
 }
@@ -1590,10 +1757,10 @@ TEST(OceanQueryTests, DepthCacheBakerCapturesMeshGeometry)
     source.VertexCount = 4;
     source.Indices = indices;
     source.IndexCount = 6;
-    source.Layers = GameEngine::Rendering::RenderLayerMask{0x1u};
+    source.LayerMask = 0x1u;
 
     OceanDepthCacheAsset cache;
-    ASSERT_TRUE(BakeOceanDepthCacheFromMeshes(desc, &source, 1, GameEngine::Rendering::RenderLayerMask{0x1u}, cache));
+    ASSERT_TRUE(BakeOceanDepthCacheFromMeshes(desc, &source, 1, 0x1u, cache));
 
     const std::vector<float32>& depths = cache.GetDepths();
     ASSERT_EQ(depths.size(), 4u);
@@ -1626,10 +1793,12 @@ TEST(OceanQueryTests, DepthCacheBakerTransformsMeshSources)
     source.Indices = indices;
     source.IndexCount = 6;
     source.UseLocalToWorld = true;
-    source.LocalToWorld = Mathematics::MakeTranslation(Mathematics::Vector3(10.0f, -3.0f, 20.0f));
+    source.LocalToWorld[12] = 10.0f;
+    source.LocalToWorld[13] = -3.0f;
+    source.LocalToWorld[14] = 20.0f;
 
     OceanDepthCacheAsset cache;
-    ASSERT_TRUE(BakeOceanDepthCacheFromMeshes(desc, &source, 1, GameEngine::Rendering::RenderLayerMask{0xFFFFFFFFu}, cache));
+    ASSERT_TRUE(BakeOceanDepthCacheFromMeshes(desc, &source, 1, 0xFFFFFFFFu, cache));
 
     float32 depth = 0.0f;
     ASSERT_TRUE(cache.SampleDepth(10.5f, 20.5f, depth));
@@ -1666,23 +1835,23 @@ TEST(OceanQueryTests, DepthCacheBakerFiltersAndOverlapsMeshLayers)
     sources[0].VertexCount = 4;
     sources[0].Indices = indices;
     sources[0].IndexCount = 6;
-    sources[0].Layers = GameEngine::Rendering::RenderLayerMask{0x1u};
+    sources[0].LayerMask = 0x1u;
     sources[1] = sources[0];
     sources[1].Positions = shallowPositions;
-    sources[1].Layers = GameEngine::Rendering::RenderLayerMask{0x2u};
+    sources[1].LayerMask = 0x2u;
 
     OceanDepthCacheAsset cache;
     float32 depth = 0.0f;
 
-    ASSERT_TRUE(BakeOceanDepthCacheFromMeshes(desc, sources, 2, GameEngine::Rendering::RenderLayerMask{0x1u}, cache));
+    ASSERT_TRUE(BakeOceanDepthCacheFromMeshes(desc, sources, 2, 0x1u, cache));
     ASSERT_TRUE(cache.SampleDepth(0.5f, 0.5f, depth));
     EXPECT_NEAR(depth, 10.0f, 1e-5f);
 
-    ASSERT_TRUE(BakeOceanDepthCacheFromMeshes(desc, sources, 2, GameEngine::Rendering::RenderLayerMask{0x2u}, cache));
+    ASSERT_TRUE(BakeOceanDepthCacheFromMeshes(desc, sources, 2, 0x2u, cache));
     ASSERT_TRUE(cache.SampleDepth(0.5f, 0.5f, depth));
     EXPECT_NEAR(depth, 2.0f, 1e-5f);
 
-    ASSERT_TRUE(BakeOceanDepthCacheFromMeshes(desc, sources, 2, GameEngine::Rendering::RenderLayerMask{0x3u}, cache));
+    ASSERT_TRUE(BakeOceanDepthCacheFromMeshes(desc, sources, 2, 0x3u, cache));
     ASSERT_TRUE(cache.SampleDepth(0.5f, 0.5f, depth));
     EXPECT_NEAR(depth, 2.0f, 1e-5f);
 }
@@ -1758,9 +1927,8 @@ TEST(OceanQueryTests, SavedDepthCacheReloadsWhenSourceFileChanges)
     OceanDepthCacheAsset second;
     ASSERT_TRUE(second.Reset(desc, {7.0f, 7.0f, 7.0f, 7.0f}));
 
-    const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "GameEngine_OceanDepthCacheReload_Test.oceandepth";
-    std::filesystem::remove(path);
+    const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("GameEngine_OceanDepthCacheReload_Test")};
+    const std::filesystem::path path = directory.Path() / "GameEngine_OceanDepthCacheReload_Test.oceandepth";
     ASSERT_TRUE(first.SaveBinary(path));
 
     std::error_code ec;
@@ -1800,9 +1968,8 @@ TEST(OceanQueryTests, SavedDepthCacheReloadsWhenRevisionChangesWithoutTimestampC
     OceanDepthCacheAsset second;
     ASSERT_TRUE(second.Reset(desc, {7.0f, 7.0f, 7.0f, 7.0f}));
 
-    const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "GameEngine_OceanDepthCacheRevision_Test.oceandepth";
-    std::filesystem::remove(path);
+    const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("GameEngine_OceanDepthCacheRevision_Test")};
+    const std::filesystem::path path = directory.Path() / "GameEngine_OceanDepthCacheRevision_Test.oceandepth";
     ASSERT_TRUE(first.SaveBinary(path));
 
     std::error_code ec;
@@ -1853,12 +2020,9 @@ TEST(OceanQueryTests, SavedDepthCacheLoadsAndComposesMultipleFiles)
     OceanDepthCacheAsset right;
     ASSERT_TRUE(right.Reset(rightDesc, {4.0f}));
 
-    const std::filesystem::path leftPath =
-        std::filesystem::temp_directory_path() / "GameEngine_OceanDepthCache_Left.oceandepth";
-    const std::filesystem::path rightPath =
-        std::filesystem::temp_directory_path() / "GameEngine_OceanDepthCache_Right.oceandepth";
-    std::filesystem::remove(leftPath);
-    std::filesystem::remove(rightPath);
+    const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("GameEngine_OceanDepthCache")};
+    const std::filesystem::path leftPath = directory.Path() / "GameEngine_OceanDepthCache_Left.oceandepth";
+    const std::filesystem::path rightPath = directory.Path() / "GameEngine_OceanDepthCache_Right.oceandepth";
     ASSERT_TRUE(left.SaveBinary(leftPath));
     ASSERT_TRUE(right.SaveBinary(rightPath));
 
@@ -1902,9 +2066,8 @@ TEST(OceanQueryTests, FFTCollisionAssetBakesSamplesAndRoundTrips)
     EXPECT_NEAR(sample.Height, 4.0f, 1e-4f);
     EXPECT_NEAR(sample.VelocityWS[1], 0.0f, 0.1f);
 
-    const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "GameEngine_OceanFFTCollision_Test.oceanfft";
-    std::filesystem::remove(path);
+    const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("GameEngine_OceanFFTCollision_Test")};
+    const std::filesystem::path path = directory.Path() / "GameEngine_OceanFFTCollision_Test.oceanfft";
     ASSERT_TRUE(asset.SaveBinary(path));
     OceanFFTCollisionAsset loaded;
     ASSERT_TRUE(loaded.LoadBinary(path));
@@ -2017,7 +2180,53 @@ TEST(OceanQueryTests, ArbitraryGPUQueryQueuesWorldPointsAndSpatialLengths)
     EXPECT_FLOAT_EQ(params.Points[0][2], 0.5f);
     EXPECT_FLOAT_EQ(params.Points[1][0], -4000.0f);
     EXPECT_FLOAT_EQ(params.Points[1][1], 9200.0f);
+    EXPECT_TRUE(query.HasPending());
+}
+
+TEST(OceanQueryTests, ActiveGPUQuerySurvivesAnUnrecordedFrameAndRefreshesItsEnvironment)
+{
+    OceanGPUQuery query;
+    const OceanSurfaceQueryPoint point{12.0f, -8.0f};
+    const auto token = query.Enqueue(&point, 1u, 0.5f);
+    OceanParamsGPU ocean{};
+    ocean.Time = 3.0f;
+    ASSERT_EQ(query.PrepareNext(ocean, {}, false), token);
+    EXPECT_TRUE(query.HasPending());
+    ocean.Time = 9.0f;
+    ocean.SeaLevel = 17.0f;
+    ocean.WaveOriginOffsetX = 32.0f;
+    OceanCascadeLayoutGPU combined{};
+    combined.LodCount = 1u;
+    combined.CascadeOriginScale[0][0] = 64.0f;
+    ASSERT_EQ(query.PrepareNext(ocean, combined, true), token);
+    OceanGPUQueryParamsGPU params{};
+    query.FillParams(params);
+    EXPECT_EQ(params.PointCount, 1u);
+    EXPECT_FLOAT_EQ(params.Points[0][0], point.X);
+    EXPECT_FLOAT_EQ(params.Points[0][1], point.Z);
+    EXPECT_FLOAT_EQ(params.Points[0][2], 0.5f);
+    EXPECT_FLOAT_EQ(params.Points[0][3], 9.0f);
+    EXPECT_FLOAT_EQ(params.SeaLevel, 17.0f);
+    EXPECT_FLOAT_EQ(params.WaveOriginOffsetX, 32.0f);
+    EXPECT_EQ(params.CombinedAvailable, 1u);
+    EXPECT_FLOAT_EQ(params.CombinedCascade.CascadeOriginScale[0][0], 64.0f);
+    query.Clear();
     EXPECT_FALSE(query.HasPending());
+}
+
+TEST(OceanQueryTests, UnrecordedGPUQueryStaysAheadOfNewerRequests)
+{
+    OceanGPUQuery query;
+    const OceanSurfaceQueryPoint first{12.0f, -8.0f}, second{50.0f, 60.0f};
+    const auto token = query.Enqueue(&first, 1u);
+    query.Enqueue(&second, 1u);
+    ASSERT_EQ(query.PrepareNext({}, {}, false), token);
+    ASSERT_EQ(query.PrepareNext({}, {}, false), token);
+    OceanGPUQueryParamsGPU params{};
+    query.FillParams(params);
+    EXPECT_FLOAT_EQ(params.Points[0][0], first.X);
+    EXPECT_FLOAT_EQ(params.Points[0][1], first.Z);
+    EXPECT_TRUE(query.HasPending());
 }
 
 TEST(OceanQueryTests, OceanRayTracerFindsFirstSurfaceCrossing)
@@ -2119,9 +2328,8 @@ TEST(OceanQueryTests, OceanSettingsAssetRoundTripsAndAssetTypesAreRegistered)
     settings.DynamicWaves.SimulationFrequency = 90.0f;
     settings.DynamicWaves.MaximumSubsteps = 6u;
     settings.DynamicWaves.CourantNumber = 0.6f;
-    const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "GameEngine_OceanSettings_Test.oceansettings";
-    std::filesystem::remove(path);
+    const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("GameEngine_OceanSettings_Test")};
+    const std::filesystem::path path = directory.Path() / "GameEngine_OceanSettings_Test.oceansettings";
     ASSERT_TRUE(settings.SaveJson(path));
     OceanSettingsAsset loaded;
     ASSERT_TRUE(loaded.LoadJson(path));
@@ -2161,9 +2369,8 @@ TEST(OceanQueryTests, OceanPresetAppliesLiveBaseAndSparseOverrides)
     EXPECT_TRUE(instance.ResetField("Renderer.LodCount"));
     EXPECT_EQ(*std::get_if<uint64>(instance.Resolve("Renderer.LodCount")), 3u);
 
-    const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "GameEngine_OceanPreset_Test.oceanpreset";
-    std::filesystem::remove(path);
+    const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("GameEngine_OceanPreset_Test")};
+    const std::filesystem::path path = directory.Path() / "GameEngine_OceanPreset_Test.oceanpreset";
     ASSERT_TRUE(preset->SaveJson(path));
     OceanPresetAsset loaded;
     ASSERT_TRUE(loaded.LoadJson(path));
@@ -2264,10 +2471,10 @@ TEST(OceanQueryTests, RibbonApronCarriesTheEdgeRampButQueriesEndAtTheTrueEdge)
     ASSERT_EQ(triangles.size(), 2u);
     float reach = 0;
     for (const auto &t : triangles)
-        for (const float *v : {t.A.v, t.B.v, t.C.v})
+        for (const float *v : {t.A, t.B, t.C})
             reach = std::max(reach, std::abs(v[1]));
     EXPECT_FLOAT_EQ(reach, 4.0f) << "the apron is one half-width by default";
-    Mathematics::Vector3 bary;
+    float bary[3];
     ASSERT_TRUE(SampleOceanRibbonTriangle(triangles[0], 5, -3, bary) ||
                 SampleOceanRibbonTriangle(triangles[1], 5, -3, bary));
     OceanSplineRaster ribbon;
@@ -2286,7 +2493,7 @@ TEST(OceanQueryTests, RibbonApronCarriesTheEdgeRampButQueriesEndAtTheTrueEdge)
     const auto feathered = BuildOceanRibbon({{0, 0, 0, 1, 0}, {10, 0, 0, 1, 0}}, style);
     reach = 0;
     for (const auto &t : feathered)
-        for (const float *v : {t.A.v, t.B.v, t.C.v})
+        for (const float *v : {t.A, t.B, t.C})
             reach = std::max(reach, std::abs(v[1]));
     EXPECT_FLOAT_EQ(reach, 7.0f) << "a wide feather widens the apron to half the feather";
 }
@@ -2444,21 +2651,6 @@ TEST(OceanQueryTests, ShallowClarityWindowFieldsAreReflectedWithSliderRanges)
     EXPECT_EQ(preset.Apply("Surface", type, &surface, sizeof(surface), {}), 2u);
     EXPECT_FLOAT_EQ(surface.ShallowClarityDistance, 2.5f);
     EXPECT_FLOAT_EQ(surface.ShallowClarityFloor, 0.1f);
-}
-
-// The inspector's tooltip is the field's "@ge-tooltip" marker in the component header,
-// carried into the field table by the generated reflection.
-TEST(OceanQueryTests, SurfaceAndRendererFieldsCarryTheirHeaderTooltips)
-{
-    const ECS::FieldInfo* deepColor =
-        ECS::ComponentFieldRegistry::FindField(ECS::GetComponentTypeId<Components::OceanSurface>(), "DeepColor");
-    ASSERT_NE(deepColor, nullptr);
-    EXPECT_EQ(deepColor->Tooltip, "Base deep-water color used when depth fog fully hides the refracted scene.");
-
-    const ECS::FieldInfo* lodCount =
-        ECS::ComponentFieldRegistry::FindField(ECS::GetComponentTypeId<Components::OceanRenderer>(), "LodCount");
-    ASSERT_NE(lodCount, nullptr);
-    EXPECT_EQ(lodCount->Tooltip, "Number of camera-snapped ocean LOD cascade layers.");
 }
 
 namespace

@@ -1,5 +1,7 @@
 #include "Terrain/TerrainInspector.h"
 
+#include "Inspectors/InspectorColorSwatchRow.h"
+
 #include "InspectorRegistry.h"
 
 #include "AssetCore/AssetTypes.h"
@@ -188,23 +190,6 @@ static std::string FormatGrassColor(uint32_t argb)
     return buf;
 }
 
-// Colour chip. The cursor is left to the caller: a swatch that opens a picker sets Pointer,
-// a read-only one (the layer fallback tint) keeps the default arrow.
-static void StyleColorSwatch(UIElement* swatch, uint32_t argb)
-{
-    if (!swatch)
-        return;
-    swatch->Style()
-        .Set(Style::Width, StyleLength::Px(kColorSwatchSize))
-        .Set(Style::Height, StyleLength::Px(kColorSwatchSize))
-        .Set(Style::MinWidth, StyleLength::Px(kColorSwatchSize))
-        .Set(Style::MinHeight, StyleLength::Px(kColorSwatchSize))
-        .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{3.0f, 3.0f, 3.0f, 3.0f})
-        .Set(Style::BorderWidth, Box4{1.0f, 1.0f, 1.0f, 1.0f})
-        .Set(Style::BorderColor, BorderColorsTRBL{kColorSwatchBorder, kColorSwatchBorder, kColorSwatchBorder, kColorSwatchBorder})
-        .Set(Style::BackgroundColor, OpaqueArgb(argb));
-}
-
 static uint32_t GetGrassColor(const Components::TerrainGrass& grass, int slot)
 {
     switch (slot)
@@ -259,7 +244,7 @@ static void AddGrassColorSwatch(UIElement* field,
     auto swatch = std::make_unique<UIElement>();
     UIElement* swatchRaw = swatch.get();
     const uint32_t initialArgb = GetGrassColor(*comp, slot);
-    StyleColorSwatch(swatchRaw, initialArgb);
+    InspectorUI::StyleColorSwatch(swatchRaw, OpaqueArgb(initialArgb));
     swatchRaw->Style().Set(Style::Cursor, CursorStyle::Pointer);
     swatchRaw->SetTooltip(std::string(name) + " " + FormatGrassColor(initialArgb));
     groupRaw->AddChild(std::move(swatch));
@@ -299,7 +284,7 @@ static void AddGrassColorSwatch(UIElement* field,
             else
                 Editor::PreviewComponentUpdate(w, e, n, updated);
             const uint32_t newColor = GetGrassColor(updated, slot);
-            StyleColorSwatch(swatchRaw, newColor);
+            InspectorUI::StyleColorSwatch(swatchRaw, OpaqueArgb(newColor));
             swatchRaw->SetTooltip(label + " " + FormatGrassColor(newColor));
             if (commit && onCommitted)
                 onCommitted();
@@ -502,7 +487,8 @@ static void AddFallbackTintRow(UIElement* parent, uint32_t layer, const std::str
         .Set(Style::Gap, StyleLength::Px(8.0f));
 
     auto swatch = std::make_unique<UIElement>();
-    StyleColorSwatch(swatch.get(), TerrainLayers::FallbackTintSwatchArgb(layer));
+    InspectorUI::StyleColorSwatch(swatch.get(), OpaqueArgb(TerrainLayers::FallbackTintSwatchArgb(layer)));
+    swatch->AddClass("inspector-color-swatch-readonly");
     field->AddChild(std::move(swatch));
 
     auto label = std::make_unique<Label>();

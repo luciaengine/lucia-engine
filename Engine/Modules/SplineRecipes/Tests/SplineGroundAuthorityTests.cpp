@@ -21,7 +21,7 @@
 #include "Components/Terrain/TerrainModifierEffects.h"
 #include "Components/Terrain/TerrainModifierVolume.h"
 #include "Components/Transform.h"
-#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/ComponentFieldRegistry.h"
 #include "ECS/ECSTemplates.h" // World's component templates: definitions, not just declarations
 #include "ECS/UnresolvedComponentStore.h"
 #include "ECS/World.h"

@@ -1,9 +1,10 @@
+#include "Core/ApplicationPaths.h"
 #include <gtest/gtest.h>
 
 #include "AssetDatabase/AssetStore_TextJsonl.h"
 #include "Assets/TextureCook.h"
-#include "Core/ApplicationPaths.h"
-#include "ECS/Component/ComponentFactory.h"
+#include "Core/Application.h" // ApplicationPaths::GetExecutableDirectory
+#include "ECS/ComponentFactory.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/SystemScheduling.h"
 #include "ECS/Systems.h"
@@ -602,7 +603,7 @@ TEST(EZTreeNativeTests, DefaultTexturesDeclareTheImportSettingsTheirMaterialSlot
     ASSERT_TRUE(std::filesystem::exists(manifestFile))
         << manifestFile.string() << " missing — the eztree package manifest is not staged";
 
-    AssetDatabase::AssetStore_TextJsonl manifest(nullptr);
+    AssetDatabase::AssetStore_TextJsonl manifest{nullptr};
     ASSERT_TRUE(manifest.LoadFromFile(manifestFile, nullptr));
 
     size_t declared = 0;

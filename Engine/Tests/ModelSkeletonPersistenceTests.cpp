@@ -93,7 +93,7 @@ class ModelSkeletonPersistence : public testing::Test
         ref.instanceOwner = owner;
         world.AddComponentImmediate(entity, ref);
         Parent parent{};
-        parent.Entity = owner;
+        parent.parent = owner;
         world.AddComponentImmediate(entity, parent);
         if (helper)
             world.AddComponentImmediate(entity, AnimatedNodeRef{1});
@@ -120,7 +120,7 @@ class ModelSkeletonPersistence : public testing::Test
     {
         Scene::SceneInstantiateOptions options{.ClearWorldFirst = clearWorldFirst};
         const Scene::SceneInstantiateResult readResult = Scene::ReadSceneInto(world, Path, {}, options);
-        ASSERT_TRUE(readResult);
+        ASSERT_TRUE(readResult) << readResult.Error->message;
         const Scene::SceneDegradation& degradation = readResult.Degradation;
         EXPECT_TRUE(degradation.skips.empty());
     }

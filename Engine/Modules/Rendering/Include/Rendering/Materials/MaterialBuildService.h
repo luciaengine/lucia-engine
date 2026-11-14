@@ -81,6 +81,7 @@ MaterialBuildResult BuildMaterialToShaderPackage(const GameEngine::MaterialDocum
                                                  const MaterialBuildContext& context,
                                                  ShaderSourceKind kind,
                                                  MaterialKeyword pipelineKeywords = MaterialKeyword::None,
-                                                 VertexAttributeFlags meshVertexFlags = VertexAttributeFlags::None);
+                                                 VertexAttributeFlags meshVertexFlags = VertexAttributeFlags::None,
+                                                 const ShaderCompileTarget& target = CurrentShaderCompileTarget());
 } // namespace GameEngine::Rendering
 

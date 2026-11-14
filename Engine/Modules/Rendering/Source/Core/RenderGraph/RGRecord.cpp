@@ -1,5 +1,7 @@
-#include "Logger/Logger.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
+
+#include "Logger/Logger.h"
+#include "Platform/Environment.h"
 
 // Engine stage/access mask bits. (Header drags the old RenderGraph.h include
 // chain — pruned when the old graph is deleted at Stage 2c.)
@@ -9,7 +11,6 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
-#include <cstdlib>
 #include <cstring>
 #include <string_view>
 #include <vector>
@@ -78,34 +79,6 @@ uint64_t ToEngineStageMask(uint32_t s)
     if (s & RGStage::Transfer)
         m |= Bit(PipelineStageMask::Transfer);
     return m; // TopOfPipe-only → 0 → backend derives from state (Undefined → TOP)
-}
-
-uint64_t ToEngineAccessMask(uint32_t a)
-{
-    uint64_t m = 0;
-    if (a & RGAccessMask::IndirectRead)
-        m |= Bit(ResourceAccessMask::IndirectCommandRead);
-    // No dedicated INDEX_READ bit in the engine mask; VertexAttributeRead is the
-    // closest read scope on the same stage.
-    if (a & (RGAccessMask::IndexRead | RGAccessMask::VertexAttribRead))
-        m |= Bit(ResourceAccessMask::VertexAttributeRead);
-    if (a & (RGAccessMask::UniformRead | RGAccessMask::ShaderRead))
-        m |= Bit(ResourceAccessMask::ShaderRead);
-    if (a & RGAccessMask::ShaderWrite)
-        m |= Bit(ResourceAccessMask::ShaderWrite);
-    if (a & RGAccessMask::ColorWrite)
-        m |= Bit(ResourceAccessMask::ColorAttachmentWrite);
-    if (a & RGAccessMask::ColorRead)
-        m |= Bit(ResourceAccessMask::ColorAttachmentRead);
-    if (a & RGAccessMask::DepthRead)
-        m |= Bit(ResourceAccessMask::DepthStencilRead);
-    if (a & RGAccessMask::DepthWrite)
-        m |= Bit(ResourceAccessMask::DepthStencilWrite);
-    if (a & RGAccessMask::TransferRead)
-        m |= Bit(ResourceAccessMask::TransferRead);
-    if (a & RGAccessMask::TransferWrite)
-        m |= Bit(ResourceAccessMask::TransferWrite);
-    return m;
 }
 
 // Representative engine state for buffer barriers (fallback path only — the
@@ -214,6 +187,8 @@ RGFrame::~RGFrame()
     for (uint32_t q = 0; q < kQueueCount; ++q)
         if (m_TimelineCreated[q])
             m_Device->DestroySemaphore(m_QueueTimelines[q]);
+    if (m_ExportTimeline.IsValid() && m_DeviceRebuildGen == m_Device->GetDeviceRebuildGeneration())
+        m_Device->DestroySemaphore(m_ExportTimeline);
 }
 
 void RGFrame::SetPhysicalQueueMap(const uint8_t physicalOfLogical[3])
@@ -351,10 +326,7 @@ void RGFrame::MarkRecordSecondary(RGPassId p)
 // R2 loop records every pass interior inline, exactly as pre-fork.
 static bool ParallelRecordEnabled()
 {
-    static const bool kEnabled = []() {
-        const char* e = std::getenv("GE_PARALLEL_RECORD");
-        return e != nullptr && e[0] != '0' && e[0] != '\0';
-    }();
+    static const bool kEnabled = Platform::EnvironmentSwitchEnabled("GE_PARALLEL_RECORD", false);
     return kEnabled;
 }
 
@@ -367,6 +339,7 @@ uint32_t RGFrame::RecordSecondariesParallel()
 
     const size_t passCount = m_Graph.PassCount();
     m_Secondary.clear();
+    m_SecondaryRecordMs.assign(passCount, 0.0);
     m_Secondary.resize(passCount); // default-constructs null unique_ptrs (no copy)
 
     // Eligible = flagged RecordInSecondary AND has attachments (a secondary
@@ -380,6 +353,7 @@ uint32_t RGFrame::RecordSecondariesParallel()
             continue;
         eligible.push_back(p);
     }
+    m_Stats.SecondaryPassesEligible = static_cast<uint32_t>(eligible.size());
     if (eligible.empty())
         return 0;
 
@@ -431,16 +405,80 @@ uint32_t RGFrame::RecordSecondariesParallel()
 
         sec->BeginSecondary(info);
         ctx.Cmd = sec.get();
+        const auto recordBegin = std::chrono::steady_clock::now();
         m_Exec[p].Invoke(m_Exec[p].Fn, ctx);
+        m_SecondaryRecordMs[p] = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - recordBegin).count();
         sec->End();
         m_Secondary[p] = std::move(sec);
     });
 
     uint32_t forked = 0;
-    for (RGPassId p : eligible)
-        if (m_Secondary[p])
+    for (RGPassId pass : eligible)
+    {
+        if (m_Secondary[pass])
             ++forked;
+        m_Stats.WorkerRecordMs += m_SecondaryRecordMs[pass];
+    }
+    m_Stats.SecondaryPassesRecorded = forked;
+    m_Stats.SecondaryPassesFallback = m_Stats.SecondaryPassesEligible - forked;
     return forked;
+}
+
+bool RGFrame::PreparePasses()
+{
+    const auto prepareBegin = std::chrono::steady_clock::now();
+    const size_t passCount = m_Graph.PassCount();
+    // Per-pass attachment ranges (attachments are recorded contiguously per pass
+    // during the AddPass setup lambda — single-threaded declaration).
+    m_ScratchAttRange.assign(passCount, {0u, 0u});
+    for (uint32_t attachmentIndex = 0; attachmentIndex < m_Attachments.size(); ++attachmentIndex)
+    {
+        auto& range = m_ScratchAttRange[m_Attachments[attachmentIndex].Pass];
+        if (range.second == 0)
+            range.first = attachmentIndex;
+        ++range.second;
+    }
+
+    for (RGPassId pass : m_Graph.ScheduledOrder())
+    {
+        const PrepareThunk& prepare = m_Prepare[pass];
+        if (prepare.Fn == nullptr && prepare.RequiredCount == 0)
+            continue;
+        RGContext resources;
+        resources.m_Frame = this;
+        resources.m_Pass = pass;
+        resources.m_AttFirst = m_ScratchAttRange[pass].first;
+        resources.m_AttCount = m_ScratchAttRange[pass].second;
+        RGPrepareContext context(resources);
+        bool ready = true;
+        for (uint32_t index = 0; index < prepare.RequiredCount; ++index)
+        {
+            const PipelineRequirement& required = m_RequiredPipelines[prepare.RequiredFirst + index];
+            const PipelineHandle pipeline = required.Graphics.IsValid()
+                ? context.PreparePipeline(required.Graphics) : context.PreparePipeline(required.Compute);
+            if (!pipeline.IsValid())
+            {
+                ready = false;
+                break;
+            }
+        }
+        if (ready && prepare.Fn != nullptr)
+            ready = prepare.Invoke(prepare.Fn, context);
+        ++m_Stats.PreparedPasses;
+        if (!ready)
+        {
+            ++m_Stats.PreparationFailures;
+            m_Stats.PrepareMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - prepareBegin).count();
+            Logger::Log::Error("RenderGraph: preparation failed for pass '{}' — frame not submitted",
+                               m_Graph.PassName(pass));
+            return false;
+        }
+    }
+    m_Stats.PrepareMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - prepareBegin).count();
+    return true;
 }
 
 void RGFrame::RecordAndSubmit()
@@ -457,28 +495,20 @@ void RGFrame::RecordAndSubmit()
         return std::chrono::duration<double, std::milli>(RGClock::now() - begin).count();
     };
 
-    // Per-pass attachment ranges (attachments are recorded contiguously per pass
-    // during the AddPass setup lambda — single-threaded declaration).
-    m_ScratchAttRange.assign(passCount, {0u, 0u});
-    for (uint32_t i = 0; i < m_Attachments.size(); ++i)
-    {
-        auto& r = m_ScratchAttRange[m_Attachments[i].Pass];
-        if (r.second == 0)
-            r.first = i;
-        ++r.second;
-    }
-
     // ── Phase R1 (A2.4-P0-R): fork the RecordInSecondary passes' interiors onto
     // job-system workers into per-pass secondaries. Off ⇒ m_Secondary stays empty
     // and the R2 loop below records every interior inline (serial fallback). The
     // whole R1/R2 split is byte-identical to pre-fork when the env kill switch is
     // off or no pool is injected. Barriers / BeginRenderPass / submit stay serial.
     m_Secondary.clear();
-    // A query active across vkCmdExecuteCommands needs inherited queries, so a
-    // frame with pipeline statistics on records every pass inline.
+    m_SecondaryRecordMs.clear();
     const bool statisticsOn = m_ProfilingEnabled && m_PipelineStatisticsEnabled;
     if (ParallelRecordEnabled() && !statisticsOn)
+    {
+        const auto parallelBegin = RGClock::now();
         RecordSecondariesParallel();
+        m_Stats.ParallelRecordWallMs = elapsedMs(parallelBegin);
+    }
 
     // Barrier-batch lookup by scheduled index. The export batch (sentinel
     // ScheduledIndex == pass count) owns no scheduled slot: like every other
@@ -574,11 +604,26 @@ void RGFrame::RecordAndSubmit()
     bool queryResetDone = false;
 
     const std::vector<RGSubmission>& submissions = m_Graph.Submissions();
+    uint32_t exportAfter = kInvalidId;
+    if (m_ExportPassCount && submissions.size() == 1 && submissions.front().PhysicalQueue == 0 &&
+        m_Device->GetAPI() == GraphicsAPI::Metal)
+    {
+        // The schedule may reorder or cull a producer pass. Signal after the
+        // last surviving member of the declared prefix, in schedule order.
+        for (uint32_t si = 0; si < order.size(); ++si)
+            if (order[si] < m_ExportPassCount)
+                exportAfter = si;
+        if (exportAfter != kInvalidId && !m_ExportTimeline.IsValid())
+            m_ExportTimeline = m_Device->CreateTimelineSemaphore(0);
+    }
     for (uint32_t subIndex = 0; subIndex < submissions.size(); ++subIndex)
     {
         const RGSubmission& sub = submissions[subIndex];
         CommandList* cl = GetOrCreateCommandList(sub.PhysicalQueue);
         cl->Begin();
+        const bool encodedWait = m_OrderedGraphicsWait.IsValid() && submissions.size() == 1 &&
+                                 sub.PhysicalQueue == 0 && cl->EncodeTimelineWait(m_OrderedGraphicsWait);
+        IDevice::GpuSyncToken exportedWork{};
 
         if (resetPool && !queryResetDone)
         {
@@ -640,8 +685,8 @@ void RGFrame::RecordAndSubmit()
             // checkpoints, so arming checkpoints without per-pass markers would
             // leave every render-graph pass invisible to the executed-side dump.
             static const bool kRgPassDiagMarkers =
-                std::getenv("GE_VK_DEBUG_MARKERS") != nullptr ||
-                std::getenv("GE_VK_GPU_CHECKPOINTS") != nullptr;
+                Platform::EnvironmentSwitchEnabled("GE_VK_DEBUG_MARKERS", false) ||
+                Platform::EnvironmentSwitchEnabled("GE_VK_GPU_CHECKPOINTS", false);
             if (kRgPassDiagMarkers)
                 cl->SetMarker(name ? name : "RGPass");
 
@@ -745,6 +790,7 @@ void RGFrame::RecordAndSubmit()
                 ctx.m_KeyDirty = true; // every pass, incl. attachment-less — no stale key leaks
                 ctx.m_ProfilerScopesArmed = m_ScopeRecord.Armed;
                 m_Exec[p].Invoke(m_Exec[p].Fn, ctx);
+                ++m_Stats.InlinePassesRecorded;
                 ctx.m_ProfilerScopesArmed = false;
             }
 
@@ -757,6 +803,7 @@ void RGFrame::RecordAndSubmit()
             if (m_ProfilingEnabled)
             {
                 RGPassTiming& t = m_ProfilingCurrent.back();
+                t.WorkerRecordMs = p < m_SecondaryRecordMs.size() ? m_SecondaryRecordMs[p] : 0.0;
                 if (qp)
                     t.EndQuery = qp->WriteTimestamp(cl, TimestampPoint::SpanEnd);
                 t.CpuMs = std::chrono::duration<double, std::milli>(
@@ -778,6 +825,12 @@ void RGFrame::RecordAndSubmit()
                 cl->SetMarker(endMarker);
             }
             cl->EndEvent();
+            if (si == exportAfter && m_ExportTimeline.IsValid())
+            {
+                const IDevice::GpuSyncToken token{m_ExportTimeline, ++m_ExportSignalValue};
+                if (cl->EncodeTimelineSignal(token))
+                    exportedWork = token;
+            }
         }
 
         // Barriers the plan placed on THIS submission record at its tail —
@@ -835,6 +888,18 @@ void RGFrame::RecordAndSubmit()
             EnsureTimeline(static_cast<uint8_t>(w.Queue));
             m_ScratchWaits.push_back({m_QueueTimelines[w.Queue], w.Value});
         }
+        for (const auto& external : m_ExternalSubmissionWaits)
+        {
+            if (encodedWait && external.OrderedGraphicsFallback)
+                continue;
+            const auto& token = external.Token;
+            const auto wait = std::find_if(m_ScratchWaits.begin(), m_ScratchWaits.end(),
+                                          [&token](const auto& item) { return item.first == token.sem; });
+            if (wait == m_ScratchWaits.end())
+                m_ScratchWaits.emplace_back(token.sem, token.value);
+            else
+                wait->second = std::max(wait->second, token.value);
+        }
         m_ScratchSignals.clear();
         m_ScratchSignals.push_back({m_QueueTimelines[sub.PhysicalQueue], sub.SignalValue});
         m_ScratchSubmitLists.clear();
@@ -851,14 +916,25 @@ void RGFrame::RecordAndSubmit()
             // of this frame and let the health machine drive recovery. A submit
             // failure on a healthy device is still a bug worth catching (and the
             // GE_DEVICE_RECOVERY=0 lane keeps that assert — health stays Healthy).
-            if (m_Device->GetDeviceHealth() != DeviceHealth::Healthy)
-            {
-                break;
-            }
-            assert(ok && "RenderGraph: QueueSubmit failed");
+            assert(m_Device->GetDeviceHealth() != DeviceHealth::Healthy &&
+                   "RenderGraph: QueueSubmit failed");
+            break;
         }
+        if (exportedWork.IsValid())
+            m_ExportedWork = exportedWork;
         m_LastSignaled[sub.PhysicalQueue] = sub.SignalValue; // WaitForPendingWork target
         ++m_Stats.SubmissionsMade;
+
+        if (!m_OnSubmitted.empty())
+        {
+            const uint32_t end = sub.ScheduledFirst + sub.ScheduledCount;
+            for (uint32_t scheduledIndex = sub.ScheduledFirst; scheduledIndex < end; ++scheduledIndex)
+            {
+                const RGPassId pass = order[scheduledIndex];
+                if (pass < m_OnSubmitted.size() && m_OnSubmitted[pass].Invoke)
+                    m_OnSubmitted[pass].Invoke(m_OnSubmitted[pass].Fn);
+            }
+        }
     }
 
     // Retire the Phase-R1 secondaries AFTER the last QueueSubmit (the primaries
@@ -895,6 +971,18 @@ void RGFrame::RecordAndSubmit()
         m_ProfilingSegmentsCurrent.clear();
     }
     m_ProfilingSkippedCurrent.clear();
+}
+
+void RGFrame::AddSubmissionWait(IDevice::GpuSyncToken producer, bool orderedGraphicsFallback)
+{
+    assert(producer.IsValid() && "external wait requires a submitted producer");
+    m_ExternalSubmissionWaits.push_back({producer, orderedGraphicsFallback});
+}
+
+void RGFrame::AddOrderedGraphicsWait(IDevice::GpuSyncToken producer)
+{
+    assert(producer.IsValid() && !m_OrderedGraphicsWait.IsValid());
+    m_OrderedGraphicsWait = producer;
 }
 
 IDevice::GpuSyncToken RGFrame::SubmissionToken(RGQueue queue) const

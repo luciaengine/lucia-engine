@@ -30,8 +30,8 @@
 	        <Slider id="UIDemoSliderRange" class="ui-demo-slider" min="0" max="100" range="true" rangestart="20" value="80" />
 	    </UIElement>
 
-	    	<Dropdown id="UIDemoDropdownUi" class="dropdown-ui" options="Low, Medium, High" />
-	    	<Dropdown id="UIDemoDropdownNative" class="dropdown-native" mode="native" options="Option A, Option B, Option C" />
+		<Dropdown id="UIDemoDropdownUi" class="dropdown-ui" options="Low, Medium, High" />
+		<Dropdown id="UIDemoDropdownNative" class="dropdown-native" mode="native" options="Option A, Option B, Option C" />
 
     <!-- Foldout Demo -->
     <Label class="ui-demo-section-header">Foldout</Label>
@@ -72,4 +72,3 @@
         </AccordionItem>
     </Accordion>
 </UIElement>
-

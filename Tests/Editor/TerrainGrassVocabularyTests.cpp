@@ -17,7 +17,6 @@
 
 #include <cctype>
 #include <string>
-#include <utility>
 
 #include "Terrain/TerrainGrass/TerrainGrassVocabulary.h"
 
@@ -70,20 +69,6 @@ TEST(TerrainGrassVocabulary, TheInactiveNoteScopesItselfToEveryActiveTerrain)
         "One draw serves every active terrain, so this row still counts while any other "
         "terrain needs the alpha path."))
         << note;
-}
-
-// Ground Tint Height acts only on a gradient that starts from the ground: the note shows in the three
-// other states and names both switches.
-TEST(TerrainGrassVocabulary, GroundTintHeightIsReportedInactiveWithoutTheGroundInTheGradient)
-{
-    EXPECT_TRUE(GrassVocab::GroundTintHeightInactiveNote(/*automaticRootColor=*/true, /*splatRootColor=*/true).empty());
-    for (const auto& [automatic, splat] : {std::pair{false, true}, std::pair{true, false}, std::pair{false, false}})
-    {
-        const std::string note = GrassLower(GrassVocab::GroundTintHeightInactiveNote(automatic, splat));
-        EXPECT_TRUE(GrassHas(note, "changes nothing")) << note;
-        EXPECT_TRUE(GrassHas(note, "root color to auto")) << note;
-        EXPECT_TRUE(GrassHas(note, "splat root color on")) << note;
-    }
 }
 
 // ---- The dropdown tooltip -------------------------------------------------
@@ -153,16 +138,6 @@ TEST(TerrainGrassVocabulary, AShortenedRangeNamesWhatIsDeliveredAndWhatWasAsked)
     EXPECT_TRUE(GrassHas(note, "369 m")) << note;
     EXPECT_TRUE(GrassHas(note, "500 m")) << note;
     EXPECT_TRUE(GrassHas(GrassLower(note), "budget")) << note;
-}
-
-// The note names Density Falloff: it buys range at the same near density, so it is the fix a
-// field that must reach the hills needs.
-TEST(TerrainGrassVocabulary, AShortenedRangeNamesDensityFalloffAsAFix)
-{
-    const std::string note = GrassVocab::RangeFitNote(500.0f, 150.0f, /*textureCards=*/false);
-    ASSERT_FALSE(note.empty());
-    EXPECT_TRUE(GrassHas(note, "Density Falloff")) << note;
-    EXPECT_TRUE(GrassHas(note, "Grass reaches about 150 m of the 500 m range")) << note;
 }
 
 // The note names the density the fit was actually run on. The placement compute fits a texture-card

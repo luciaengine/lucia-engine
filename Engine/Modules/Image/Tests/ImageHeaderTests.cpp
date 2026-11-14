@@ -1,4 +1,5 @@
 #include "Image/ImageHeader.h"
+#include "Image/Encode.h"
 
 #include <gtest/gtest.h>
 
@@ -82,4 +83,17 @@ TEST(ImageHeader, ReportsWhetherAPngIsWithinWhatTheDecoderReads)
     EXPECT_FALSE(declared.WithinDecoderLimits);
     EXPECT_EQ(declared.Width, 40000u);
     std::filesystem::remove(huge);
+}
+
+TEST(ImageHeader, MemoryReaderReportsTheEncodedExtentWithoutDecoding)
+{
+    const std::vector<uint8_t> pixels(7u * 3u * 4u, 127);
+    const auto png = GameEngine::Image::EncodePng(pixels, 7, 3);
+    const auto header = GameEngine::Image::ReadImageHeader(png);
+    ASSERT_TRUE(header.Valid);
+    EXPECT_EQ(header.Width, 7u);
+    EXPECT_EQ(header.Height, 3u);
+    EXPECT_EQ(header.Channels, 4u);
+    EXPECT_TRUE(header.WithinDecoderLimits);
+    EXPECT_FALSE(GameEngine::Image::ReadImageHeader(std::span<const uint8_t>{}).Valid);
 }

@@ -1,4 +1,5 @@
 #include "Engine/Rendering/Pipeline/ReflectionsProvider.h"
+#include "Engine/Rendering/PlanarReflectionFeature.h"
 
 #include "Engine/Rendering/Pipeline/PipelineResourceNames.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
@@ -37,6 +38,8 @@ std::optional<WrittenSlices> ResolveWrittenSlices(ViewDeclare& d,
     if (!d.Services.GetEffectivePostProcessSettings(d.View.id, d.View.worldId).IsSSSRActive())
         return std::nullopt;
     if (!targets.Depth.IsValid())
+        return std::nullopt;
+    if (d.Frame.Graph().ResourceDesc(targets.Depth.Id).SampleCount != kSliceSampleCount)
         return std::nullopt;
     WrittenSlices slices{d.ResolveTexture(Names::View::NormalRoughnessWritten),
                          d.ResolveTexture(Names::View::SSRSpecularWeightWritten),
@@ -102,7 +105,10 @@ Rendering::MaterialKeyword ReflectionsProvider::ContributeWorldPassTargets(
 
     const auto settings =
         d.Services.GetEffectivePostProcessSettings(d.View.id, d.View.worldId);
-    if (!settings.IsSSSRActive() && !normalTarget.IsValid())
+    const auto* planar = d.Services.GetFeature<PlanarReflectionFeature>();
+    const bool planarActive = planar && planar->HasPlanes(d.View);
+    const bool reflectionConsumer = settings.IsSSSRActive() || planarActive;
+    if (!reflectionConsumer && !normalTarget.IsValid())
         return Rendering::MaterialKeyword::None;
 
     // A consumer-owned normal target wins over the blueprint's: the SSR node,
@@ -145,7 +151,7 @@ Rendering::MaterialKeyword ReflectionsProvider::ContributeWorldPassTargets(
             gb.format = static_cast<uint32_t>(Rendering::TextureFormat::R16G16B16A16_FLOAT);
             gb.debugName = "SSSR.SpecularRadiance";
             specularRadiance = d.Frame.CreateTexture(d.PassName("SSSR.SpecularRadiance").c_str(), gb);
-            d.MarkPreExposed(specularRadiance); // the forward pass writes it at the frame's P
+            d.MarkPreExposed(specularRadiance);
             d.PublishTexture(Names::View::SSRSpecularRadiance, specularRadiance);
         }
     }
@@ -165,9 +171,10 @@ Rendering::MaterialKeyword ReflectionsProvider::ContributeWorldPassTargets(
     const uint32_t colorSamples = d.Frame.Graph().ResourceDesc(colorTarget.Id).SampleCount;
     const uint32_t sliceSamples = d.Frame.Graph().ResourceDesc(normalRoughness.Id).SampleCount;
     Rendering::RenderGraph::RGTexture normalResolve{};
+    Rendering::RenderGraph::RGTexture specularWeightResolve{}, specularRadianceResolve{};
     if (colorSamples != sliceSamples)
     {
-        if (!normalTarget.IsValid() || d.RenderWidth == 0 || d.RenderHeight == 0)
+        if ((!normalTarget.IsValid() && !planarActive) || d.RenderWidth == 0 || d.RenderHeight == 0)
         {
             static bool warnedOnce = false;
             if (!warnedOnce)
@@ -189,14 +196,19 @@ Rendering::MaterialKeyword ReflectionsProvider::ContributeWorldPassTargets(
         ms.usage = static_cast<uint32_t>(Rendering::TextureUsage::RenderTarget);
         ms.format = static_cast<uint32_t>(Rendering::TextureFormat::R16G16B16A16_FLOAT);
         ms.debugName = "SSSR.NormalRoughness.MS";
-        normalResolve = normalTarget;
+        normalResolve = normalRoughness;
+        if (planarActive)
+        {
+            specularWeightResolve = specularWeight;
+            specularRadianceResolve = specularRadiance;
+        }
         normalRoughness = d.Frame.CreateTexture(d.PassName("SSSR.NormalRoughness.MS").c_str(), ms);
         ms.format = static_cast<uint32_t>(Rendering::TextureFormat::R16G16B16A16_FLOAT);
         ms.debugName = "SSSR.SpecularWeight.MS";
         specularWeight = d.Frame.CreateTexture(d.PassName("SSSR.SpecularWeight.MS").c_str(), ms);
         ms.debugName = "SSSR.SpecularRadiance.MS";
         specularRadiance = d.Frame.CreateTexture(d.PassName("SSSR.SpecularRadiance.MS").c_str(), ms);
-        d.MarkPreExposed(specularRadiance); // the forward pass writes it at the frame's P
+        d.MarkPreExposed(specularRadiance);
         if (!normalRoughness.IsValid() || !specularWeight.IsValid() || !specularRadiance.IsValid())
             return Rendering::MaterialKeyword::None;
     }
@@ -207,7 +219,7 @@ Rendering::MaterialKeyword ReflectionsProvider::ContributeWorldPassTargets(
     nr.Store = multisampled ? Rendering::RenderGraph::RGStoreOp::DontCare
                             : Rendering::RenderGraph::RGStoreOp::Store;
     // .rg = oct(+Z view normal) = (0.5,0.5); .b = roughness 1 (SSR classify
-    // skips it); .a = metallic 0. Sky/untouched pixels stay out of SSR by
+    // skips it); .a = planar coverage 0. Sky/untouched pixels stay out of SSR by
     // roughness alone.
     nr.Clear.Color[0] = 0.5f;
     nr.Clear.Color[1] = 0.5f;
@@ -216,22 +228,31 @@ Rendering::MaterialKeyword ReflectionsProvider::ContributeWorldPassTargets(
     targets.AddExtraColor(kNormalRoughnessAttachment, normalRoughness, nr, normalResolve);
 
     // Specular MRTs ride the NormalRoughness gate. Their stores are needed
-    // only while SSR runs; a DDGI-only normal consumer discards them.
-    Rendering::RenderGraph::RGAttachmentOps al{};
-    al.Load = Rendering::RenderGraph::RGLoadOp::Clear;
-    al.Store = (settings.IsSSSRActive() && !multisampled)
-                   ? Rendering::RenderGraph::RGStoreOp::Store
-                   : Rendering::RenderGraph::RGStoreOp::DontCare;
-    al.Clear.Color[3] = 0.0f;
-    targets.AddExtraColor(kSpecularWeightAttachment, specularWeight, al);
-    targets.AddExtraColor(kSpecularRadianceAttachment, specularRadiance, al);
+    // while either reflection consumer runs; a DDGI-only normal consumer discards them.
+    if (specularWeight.IsValid())
+    {
+        Rendering::RenderGraph::RGAttachmentOps al{};
+        al.Load = Rendering::RenderGraph::RGLoadOp::Clear;
+        al.Store = (reflectionConsumer && !multisampled)
+                       ? Rendering::RenderGraph::RGStoreOp::Store
+                       : Rendering::RenderGraph::RGStoreOp::DontCare;
+        al.Clear.Color[3] = 0.0f;
+        targets.AddExtraColor(kSpecularWeightAttachment, specularWeight, al, specularWeightResolve);
+        targets.AddExtraColor(kSpecularRadianceAttachment, specularRadiance, al, specularRadianceResolve);
+    }
 
     // Positive signal for the SSR node: published exactly when the
-    // single-sample slices are attached (cleared + written) this frame.
+    // single-sample slices are attached or resolved (cleared + written) this frame.
     // Mirrors the attach conditions above so the signal can never outrun the
     // data.
-    if (!multisampled)
+    if (!multisampled || planarActive)
     {
+        if (multisampled)
+        {
+            normalRoughness = normalResolve;
+            specularWeight = specularWeightResolve;
+            specularRadiance = specularRadianceResolve;
+        }
         d.PublishTexture(Names::View::NormalRoughnessWritten, normalRoughness);
         d.PublishTexture(Names::View::SSRSpecularWeightWritten, specularWeight);
         d.PublishTexture(Names::View::SSRSpecularRadianceWritten, specularRadiance);

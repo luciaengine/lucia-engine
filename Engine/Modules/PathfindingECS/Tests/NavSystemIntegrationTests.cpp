@@ -1,4 +1,5 @@
 #include "PathfindingECS/NavigationService.h"
+#include "PathfindingECS/NavigationSurfaceRuntime.h"
 #include "Components/Navigation/NavigationAgent.h"
 #include "PathfindingECS/Components/NavigationAgentState.h"
 #include "Components/Navigation/NavigationSurface.h"
@@ -14,14 +15,18 @@
 #include "ECS/Entity.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Systems.h"
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentRegistry.h"
 #include "Pathfinding/NavigationWorld.h"
 #include "Pathfinding/GridMap.h"
+#include "Pathfinding/DetourNavMap.h"
 #include "Pathfinding/PathfindingTypes.h"
 #include "Pathfinding/PathBuffer.h"
 
-#include <gtest/gtest.h>
+#include <array>
 #include <cmath>
+#include <string>
+
+#include <gtest/gtest.h>
 
 using namespace GameEngine;
 using namespace GameEngine::PathfindingECS;
@@ -430,6 +435,84 @@ TEST_F(NavSystemIntegrationTest, DebugDataGenerated)
     const auto& debugData = NavigationService::GetDebugData();
     EXPECT_FALSE(debugData.Lines.empty())
         << "Debug data should contain grid lines when ShowGrid is enabled";
+}
+
+TEST_F(NavSystemIntegrationTest, NavMeshDebugTrianglesReflectOnlyTheCurrentVisibleMesh)
+{
+    auto surfaceEntity = world->Create();
+    surfaceEntity.Set(Components::NavigationSurface{});
+    world->ProcessCommands();
+    auto* surface = surfaceEntity.GetForWrite<Components::NavigationSurface>();
+    ASSERT_NE(surface, nullptr);
+    const auto handle = CreateNavigationSurfaceMap(*world, *surface);
+    ASSERT_TRUE(handle.IsValid());
+    auto* map = ResolveNavigationSurfaceMesh(*world, *surface);
+    ASSERT_NE(map, nullptr);
+    Pathfinding::NavMeshSettings settings;
+    Pathfinding::NavMeshChart chart;
+    chart.Span = Pathfinding::DetourNavMap::GetTileSize(settings);
+    const Pathfinding::NavTileKey key{chart.Id, 0, 0};
+    ASSERT_TRUE(map->Initialize(settings, chart));
+    std::array<float32, 12> vertices{-8, 0, -8, 40, 0, -8, -8, 0, 40, 40, 0, 40};
+    const std::array<uint32, 6> indices{0, 2, 1, 1, 2, 3};
+    const Pathfinding::DetourNavMap::InputGeometry geometry{vertices.data(), 4, indices.data(), 2};
+    Pathfinding::NavMeshTileData tile;
+    std::string error;
+    ASSERT_TRUE(Pathfinding::DetourNavMap::BuildTile(settings, key, geometry, tile, error)) << error;
+    ASSERT_FALSE(tile.Data.empty());
+    ASSERT_TRUE(map->AddTile(tile, &error)) << error;
+
+    auto debugEntity = world->Create();
+    Components::NavigationDebugSettings debugSettings{};
+    debugSettings.ShowNavMesh = true;
+    debugSettings.ShowPaths = true;
+    debugEntity.Set(debugSettings);
+    world->ProcessCommands();
+    NavigationDebugSystem debugSystem;
+    debugSystem.Update(*world, kDeltaTime);
+    const auto& debugData = NavigationService::GetDebugData();
+    ASSERT_GT(map->GetDebugTriangleCount(), 0u);
+    EXPECT_EQ(debugData.Triangles.size(), map->GetDebugTriangleCount());
+    debugSystem.Update(*world, kDeltaTime);
+    EXPECT_EQ(debugData.Triangles.size(), map->GetDebugTriangleCount());
+
+    for (size_t index = 1; index < vertices.size(); index += 3)
+        vertices[index] = 6;
+    ASSERT_TRUE(Pathfinding::DetourNavMap::BuildTile(settings, key, geometry, tile, error)) << error;
+    ASSERT_FALSE(tile.Data.empty());
+    ASSERT_TRUE(map->AddTile(tile, &error)) << error;
+    debugSystem.Update(*world, kDeltaTime);
+    ASSERT_EQ(debugData.Triangles.size(), map->GetDebugTriangleCount());
+    for (const auto& triangle : debugData.Triangles)
+    {
+        EXPECT_GT(triangle.Y1, 5.9f);
+        EXPECT_GT(triangle.Y2, 5.9f);
+        EXPECT_GT(triangle.Y3, 5.9f);
+    }
+
+    Pathfinding::NavMeshTileData empty;
+    empty.Key = key;
+    ASSERT_TRUE(map->AddTile(empty, &error)) << error;
+    EXPECT_EQ(map->GetDebugTriangleCount(), 0u);
+    debugSystem.Update(*world, kDeltaTime);
+    EXPECT_TRUE(debugData.CachedTriangles.empty());
+    EXPECT_TRUE(debugData.Triangles.empty());
+    ASSERT_TRUE(map->AddTile(tile, &error)) << error;
+    debugSystem.Update(*world, kDeltaTime);
+    ASSERT_GT(map->GetDebugTriangleCount(), 0u);
+    EXPECT_EQ(debugData.Triangles.size(), map->GetDebugTriangleCount());
+
+    debugSettings.ShowNavMesh = false;
+    debugEntity.Set(debugSettings);
+    world->ProcessCommands();
+    debugSystem.Update(*world, kDeltaTime);
+    EXPECT_TRUE(debugData.CachedTriangles.empty());
+    EXPECT_TRUE(debugData.Triangles.empty());
+    debugSettings.ShowNavMesh = true;
+    debugEntity.Set(debugSettings);
+    world->ProcessCommands();
+    debugSystem.Update(*world, kDeltaTime);
+    EXPECT_EQ(debugData.Triangles.size(), map->GetDebugTriangleCount());
 }
 
 // ---------------------------------------------------------------------------

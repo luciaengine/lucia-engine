@@ -1,7 +1,7 @@
 #pragma once
 
-#include "ECS/Archetype/ArchetypeTable.h"
-#include "ECS/Component/ComponentConcepts.h"
+#include "ECS/ArchetypeTable.h"
+#include "ECS/ComponentConcepts.h"
 #include "ECS/Components.h"
 #include "ECS/ECS.h"
 #include "ECS/QueryPolicy.h"
@@ -72,10 +72,6 @@ class Archetype
     // worldMutex disappeared — the redundant lock measured 15-20% of
     // archetype-transition cost when MoveEntity dropped it).
     EntityLocation AddEntityUnsafe(EntityHandle entity);
-
-    // Add entities as one run of consecutive rows (ArchetypeTable::AddEntities)
-    // and stamp the run's chunk once. The run may hold fewer rows than asked;
-    // add the rest with another call. Same locking contract as AddEntityUnsafe.
     RowRun AddEntitiesUnsafe(std::span<const EntityHandle> entities);
 
     // Remove entity at the given location. Returns the entity that was swapped
@@ -83,8 +79,8 @@ class Archetype
     // Same locking contract as AddEntityUnsafe: caller must hold worldMutex.
     EntityHandle RemoveEntityUnsafe(EntityLocation loc);
 
-    // Initialize the colocated ArchetypeTable from registered component sizes.
-    void InitializeTable(const std::unordered_map<ComponentTypeId, std::size_t>& componentSizes);
+    // Initialize the colocated ArchetypeTable from the owning World's registered component sizes.
+    void InitializeTable();
 
     const ComponentSignature& GetSignature() const { return signature; }
     std::size_t GetEntityCount() const { return m_Table ? m_Table->GetEntityCount() : 0; }
@@ -202,8 +198,6 @@ class Archetype
     // must hold worldMutex exclusively — mutates m_MovePlans on first use.
     const std::vector<CopyStep>& GetOrBakeMovePlan(Archetype* target);
 
-    // Remove any graph edge that points to an archetype in the given set.
-    // Called after PruneEmptyArchetypes to avoid dangling edge pointers.
     void EraseEdgesTo(const FlatSet<Archetype*>& pruned)
     {
         for (auto it = m_AddEdges.begin(); it != m_AddEdges.end();)

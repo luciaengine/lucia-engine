@@ -11,6 +11,7 @@
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/Vector3.h"
 #include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/Core/CommandList.h"
 #include "Rendering/Common/Frustum.h"
 #include "Rendering/Core/CullingStrategy.h"
 
@@ -23,6 +24,44 @@ namespace GameEngine
 {
 namespace Engine::Renderer
 {
+
+// Tracks geometry bindings within one command list and suppresses identical binds.
+class DrawGeometryBindings
+{
+  public:
+    explicit DrawGeometryBindings(Rendering::CommandList& commands, uint32_t trackedVertexSlots = kVertexSlots)
+        : m_Commands(commands), m_TrackedVertexSlots(trackedVertexSlots)
+    {
+    }
+
+    void BindVertexBuffer(Rendering::BufferHandle buffer, uint32_t slot)
+    {
+        if (!buffer.IsValid() || (slot < m_TrackedVertexSlots && m_VertexBuffers[slot] == buffer))
+            return;
+        m_Commands.SetVertexBuffer(buffer, slot);
+        if (slot < m_TrackedVertexSlots)
+            m_VertexBuffers[slot] = buffer;
+    }
+
+    void BindIndexBuffer(Rendering::BufferHandle buffer, Rendering::IndexType type)
+    {
+        if (!buffer.IsValid() || (m_IndexInitialized && m_IndexBuffer == buffer && m_IndexType == type))
+            return;
+        m_Commands.SetIndexBuffer(buffer, type);
+        m_IndexBuffer = buffer;
+        m_IndexType = type;
+        m_IndexInitialized = true;
+    }
+
+  private:
+    static constexpr uint32_t kVertexSlots = 14;
+    Rendering::CommandList& m_Commands;
+    uint32_t m_TrackedVertexSlots;
+    std::array<Rendering::BufferHandle, kVertexSlots> m_VertexBuffers{};
+    Rendering::BufferHandle m_IndexBuffer{};
+    Rendering::IndexType m_IndexType = Rendering::IndexType::Uint16;
+    bool m_IndexInitialized = false;
+};
 
 // 4x4 identity matrix for fallback transforms and camera UBOs.
 static const Mathematics::Matrix4x4 kIdentity4x4 = Mathematics::Matrix4x4::Identity();

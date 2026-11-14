@@ -25,4 +25,3 @@ private:
 // TODO: Provide factory and platform-specific transports in follow-up changes.
 
 } // namespace GameEngine
-

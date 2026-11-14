@@ -21,6 +21,8 @@ namespace Rendering
 
 class MetalDevice;
 struct MetalTexture;
+struct MetalDescriptorSet;
+struct MetalPipeline;
 
 // Metal command list. Metal records through per-domain encoders (render /
 // blit / compute) that must be ended before switching domains, so this class
@@ -34,6 +36,8 @@ class MetalCommandList : public CommandList
 
     void Begin() override;
     void End() override;
+    bool EncodeTimelineWait(IDevice::GpuSyncToken token) override;
+    bool EncodeTimelineSignal(IDevice::GpuSyncToken token) override;
 
     void SetPipeline(PipelineHandle pipeline) override;
     void SetVertexBuffer(BufferHandle buffer, uint32_t slot = 0) override;
@@ -95,16 +99,15 @@ class MetalCommandList : public CommandList
     void ClearRenderTarget(TextureHandle target, float r, float g, float b, float a) override;
     void GetTextureSize(TextureHandle texture, uint32_t& outWidth, uint32_t& outHeight) override;
 
-    // Ends open encoders and hands the command buffer (+1, uncommitted) to
-    // the caller — the device's submit queues own the commit so semaphore
-    // waits can be satisfied CPU-side first. Returns nullptr if nothing was
-    // recorded.
     // Opens (or returns) this command buffer's acceleration-structure encoder,
     // ending any other open encoder first. Used by MetalAccelerationStructures
     // to record BLAS/TLAS builds; that encoder boundary is also what orders
     // builds against prior GPU work (Metal tracks the hazards itself).
     MTL::AccelerationStructureCommandEncoder* EnsureAccelerationStructureEncoder();
 
+    // Ends open encoders and hands the uncommitted command buffer (+1) to the
+    // caller. The submit queue owns commit and submission-level waits.
+    // Returns nullptr if nothing was recorded.
     MTL::CommandBuffer* Detach();
     bool IsRecording() const { return m_IsRecording; }
     IDevice::QueueType GetQueueType() const { return m_Queue; }
@@ -120,6 +123,8 @@ class MetalCommandList : public CommandList
     void SetVisibilityResultMode(uint32_t mode, uint64_t offsetBytes);
 
   private:
+    friend struct MetalCommandListTestAccess;
+
     // Reserved Metal buffer index for engine push constants. Matches the
     // SPIRV-Cross MSL default the milestone-3 translator will pin.
     static constexpr uint32_t kPushConstantBufferIndex = 30;
@@ -137,6 +142,8 @@ class MetalCommandList : public CommandList
                                           const float rgba[4]);
     void ApplyRenderState();
     void ApplyPushConstants();
+    void BindDirectDescriptorSet(uint32_t setIndex, MetalDescriptorSet& descriptors, const MetalPipeline& pipeline);
+    std::array<uint32_t, 31> m_DirectBufferSizes{};
 
     // Claims start/end boundary samples for a new encoder and binds pending
     // span-begin queries to the start. False when profiling is inactive or the

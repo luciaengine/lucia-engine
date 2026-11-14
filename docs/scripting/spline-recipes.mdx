@@ -1,18 +1,13 @@
 ---
-title: Spline recipes
-description: Read whether the spline recipes of a scene (its roads, walls, fences and tiles) have built, from C# or native C++, so a loading flow starts gameplay only on complete geometry.
+title: Spline recipe readiness
+description: Wait for spline recipe output and inspect build failures.
 ---
 
-A spline recipe builds its output after the scene opens: a road or a wall builds after the terrain under it loads, and a long road builds over several frames. The `SplineRecipes` API tells a game where each recipe's build stands, so a loading view can wait until the roads are there.
+The native `SplineRecipes` API reports whether authored spline recipes have built. Call it on the main thread outside a job. Off-thread calls are refused and logged.
 
-Each recipe entity has a build state:
+`StateOf(world, entity)` returns Pending, Held, Built, or Failed. `ReasonOf` explains a hold, failure, or an intentionally empty result. `IsSceneSettled(world)` is true when every recipe is Built or Failed; an edit or a late asset can make it false again. A world with no recipes is settled. Without a running recipe system, a recipe remains Pending.
 
-| State | What it means |
-| --- | --- |
-| `Pending` | The recipe has not built yet, or an edit to it waits for its rebuild. |
-| `Held` | The recipe waits for something it builds on, such as the terrain under it. `ReasonOf` says what. |
-| `Built` | The recipe's output matches the recipe. When the output is empty, `ReasonOf` says why, for example a river with no water to fill. |
-| `Failed` | The recipe cannot build, for example because its spline has fewer than 2 points. `ReasonOf` says why and how to fix it. |
+`Failures(world, buffer)` writes failed recipe statuses into a span and returns the total number, including entries that do not fit. Each status contains its recipe entity and build state. The managed generated binding is added with the scripting bindings port.
 
 The scene is settled when no recipe is `Pending` or `Held`. A scene with no recipe is settled at once.
 

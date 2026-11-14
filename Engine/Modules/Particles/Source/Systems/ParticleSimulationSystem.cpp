@@ -298,8 +298,9 @@ void ParticleSimulationSystem::Update(ECS::World& world, float32 deltaTime)
 
     ParticleCollisionEventsBuffer* fallbackEvents = nullptr;
     world.Query<ECS::Write<ParticleCollisionEventsBuffer>>().Each(
-        [&fallbackEvents](ECS::EntityHandle, ParticleCollisionEventsBuffer& events)
+        [&fallbackEvents](ECS::EntityHandle, ECS::Writable<ParticleCollisionEventsBuffer> eventsRow)
         {
+            auto& events = eventsRow.Mutable();
             events.Clear();
             if (!fallbackEvents)
                 fallbackEvents = &events;

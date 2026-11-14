@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 #include "Assets/AssetDecodeGate.h"
-#include "Assets/AssetDecodeInputFiles.h"
 #include "Assets/AssetIOService.h"
 #include "Assets/TextureCookWorkers.h"
 #include "JobSystem/TaskHandle.h"
@@ -15,12 +14,6 @@
 #include <mutex>
 #include <thread>
 #include <vector>
-
-#if !defined(_WIN32)
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#endif
 
 using namespace GameEngine;
 
@@ -75,13 +68,11 @@ class AssetIOServiceTest : public ::testing::Test
     }
 
     // A read request whose decode continuation stashes the bytes and whose
-    // failure path stores the first error and counts every call. Exactly one
-    // of the two futures resolves.
+    // failure path stores the error. Exactly one of the two futures resolves.
     struct CapturedRead
     {
         std::shared_ptr<std::promise<Vector<uint8>>> BytesPromise = std::make_shared<std::promise<Vector<uint8>>>();
         std::shared_ptr<std::promise<String>> FailurePromise = std::make_shared<std::promise<String>>();
-        std::shared_ptr<std::atomic<int>> FailureCount = std::make_shared<std::atomic<int>>(0);
         std::future<Vector<uint8>> Bytes = BytesPromise->get_future();
         std::future<String> Failure = FailurePromise->get_future();
     };
@@ -98,10 +89,9 @@ class AssetIOServiceTest : public ::testing::Test
             bytesPromise->set_value(Vector<uint8>(data.begin(), data.end()));
             return SharedPtr<Asset>{};
         };
-        request.OnFailure = [failurePromise = capture.FailurePromise, failureCount = capture.FailureCount](const String& error)
+        request.OnFailure = [failurePromise = capture.FailurePromise](const String& error)
         {
-            if (failureCount->fetch_add(1) == 0)
-                failurePromise->set_value(error);
+            failurePromise->set_value(error);
         };
         return request;
     }
@@ -120,28 +110,6 @@ class AssetIOServiceTest : public ::testing::Test
             queued = service->GetQueuedReadCount();
         }
         return queued;
-    }
-
-    // Poll until every decode-gate slot can be taken, then report how many could be. A reader
-    // gives its claimed slot back as it leaves the request, just after OnFailure, so the
-    // deadline only bounds a slot that is never given back.
-    size_t AwaitFreeDecodeSlots()
-    {
-        const std::shared_ptr<AssetDecodeGate> gate = service->GetDecodeGate();
-        if (!gate)
-            return 0;
-        const auto deadline = std::chrono::steady_clock::now() + kResultTimeout;
-        while (true)
-        {
-            size_t taken = 0;
-            while (taken < gate->MaxWorkers() && gate->TryAcquire(AssetDecodeGate::Work::Other))
-                ++taken;
-            for (size_t released = 0; released < taken; ++released)
-                gate->Release(AssetDecodeGate::Work::Other);
-            if (taken == gate->MaxWorkers() || std::chrono::steady_clock::now() > deadline)
-                return taken;
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
     }
 
     std::filesystem::path testDir;

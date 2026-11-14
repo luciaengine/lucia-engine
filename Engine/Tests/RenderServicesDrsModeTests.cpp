@@ -6,6 +6,7 @@
 // touch the device, so a bare RenderServices instance suffices.
 
 #include "Engine/Rendering/RenderServices.h"
+#include <string>
 
 #include "Logger/CallbackSink.h"
 #include "Logger/Logger.h"
@@ -183,6 +184,8 @@ TEST(RenderServicesDrsMode, UnreachableWarningLatchesUntilConfigOrModeChange)
                 std::string::npos)
                 warningCount->fetch_add(1);
         });
+    // Drain pending warnings from earlier tests before this sink can count them.
+    Logger::Log::Flush();
     Logger::Log::AddSink(std::move(sink));
 
     RenderServices rs;

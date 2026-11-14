@@ -4,11 +4,14 @@
  */
 
 #include "VulkanDevice.h"
+#include "Rendering/Core/BarrierMapping.h"
 #include "Rendering/Core/TextureFormatSupportGate.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/RendererProfile.h"
 #include "Rendering/Core/BufferManager.h"
+#include "Rendering/Core/HashUtils.h"
 #include "Rendering/Core/Pipeline/PipelineManager.h"
+#include "Rendering/Core/RenderingDebugFlags.h"
 #include "Rendering/Core/SamplerManager.h"
 #include "Rendering/Core/SpecializationConstants.h"
 #include "Rendering/Core/TextureManager.h"
@@ -34,9 +37,10 @@
 #include "Rendering/Materials/MaterialBuilder.h"
 #include "Rendering/Materials/ReflectionCache.h"
 
-#include "Core/EngineVersion.h"
 #include "Logger/Logger.h"
-#include "../VulkanPipelineCache/VulkanPipelineCacheAdapter.h"
+#include "Platform/Environment.h"
+#include "Types/StringUtils.h"
+#include "VulkanPipelineCache/VulkanPipelineCacheAdapter.h"
 
 #include <atomic>
 #include <cassert>
@@ -73,7 +77,12 @@
 #define GLFW_INCLUDE_VULKAN
 #include "VulkanHandleHelpers.h"
 
+#if defined(GE_PLATFORM_MOBILE)
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_vulkan.h>
+#else
 #include <GLFW/glfw3.h>
+#endif
 #if defined(_WIN32)
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
@@ -118,15 +127,6 @@ static inline VmaAllocator AsVmaAllocator(void* ptr)
 
 namespace
 {
-inline bool IsEnvEnabled(const char* name)
-{
-    const char* v = std::getenv(name);
-    if (!v)
-        return false;
-    // Treat unset/empty/"0" as false; anything else as true
-    return v[0] != '\0' && !(v[0] == '0' && v[1] == '\0');
-}
-
 /// GE_VK_CAPTURE_COMPAT: drop the descriptor-buffer and acceleration-structure
 /// device features for this session (see the device-creation site for why).
 /// Instance creation reads it too — it is the one thing knowable that early which
@@ -134,8 +134,7 @@ inline bool IsEnvEnabled(const char* name)
 /// rather than two copies that could drift apart.
 inline bool IsCaptureCompatRequested()
 {
-    const char* env = std::getenv("GE_VK_CAPTURE_COMPAT");
-    return env && env[0] != '\0' && env[0] != '0' && env[0] != 'f' && env[0] != 'F';
+    return GameEngine::Platform::EnvironmentSwitchEnabled("GE_VK_CAPTURE_COMPAT", false);
 }
 
 /// GE_VK_NO_DEBUG_UTILS: drop VK_EXT_debug_utils for this process.
@@ -146,8 +145,7 @@ inline bool IsCaptureCompatRequested()
 /// its doc comment); a value that cannot differ needs no key entry.
 inline bool IsDebugUtilsDisabled()
 {
-    static const bool s_Disabled =
-        GameEngine::Rendering::ParseDebugUtilsDisabled(std::getenv("GE_VK_NO_DEBUG_UTILS"));
+    static const bool s_Disabled = GameEngine::Platform::EnvironmentSwitchEnabled("GE_VK_NO_DEBUG_UTILS", false);
     return s_Disabled;
 }
 
@@ -156,7 +154,8 @@ inline bool IsResourcePoolDiagnosticsEnabled()
 #if defined(DEBUG) || defined(_DEBUG)
     return true;
 #else
-    static const bool s_Enabled = IsEnvEnabled("GE_VK_LOG_POOL_HIGH_WATER") || IsEnvEnabled("GE_VK_LOG_RESOURCE_POOL_HIGH_WATER");
+    static const bool s_Enabled = GameEngine::Platform::EnvironmentSwitchEnabled("GE_VK_LOG_POOL_HIGH_WATER", false) ||
+                                  GameEngine::Platform::EnvironmentSwitchEnabled("GE_VK_LOG_RESOURCE_POOL_HIGH_WATER", false);
     return s_Enabled;
 #endif
 }
@@ -166,7 +165,8 @@ inline bool ShouldSuppressUnusedVertexInputPerformanceWarning(const char* messag
     // Keep validation logs actionable by default: this specific performance warning
     // is expected when a mesh provides optional vertex streams (e.g. tangent) that
     // a given shader variant does not consume.
-    static const bool s_LogAllPerformanceWarnings = IsEnvEnabled("GE_VK_LOG_ALL_PERF_WARNINGS");
+    static const bool s_LogAllPerformanceWarnings =
+        GameEngine::Platform::EnvironmentSwitchEnabled("GE_VK_LOG_ALL_PERF_WARNINGS", false);
     if (s_LogAllPerformanceWarnings)
         return false;
     if (!messageId || !message)
@@ -175,30 +175,6 @@ inline bool ShouldSuppressUnusedVertexInputPerformanceWarning(const char* messag
         return false;
     return std::strstr(message, "Vertex attribute at location") != nullptr &&
            std::strstr(message, "not consumed by vertex shader") != nullptr;
-}
-
-inline int StrCaseCmp(const char* a, const char* b)
-{
-    if (a == b)
-        return 0;
-    if (!a)
-        return -1;
-    if (!b)
-        return 1;
-    while (*a && *b)
-    {
-        unsigned char ca = static_cast<unsigned char>(*a);
-        unsigned char cb = static_cast<unsigned char>(*b);
-        int da = std::tolower(ca);
-        int db = std::tolower(cb);
-        if (da != db)
-        {
-            return da - db;
-        }
-        ++a;
-        ++b;
-    }
-    return static_cast<unsigned char>(*a) - static_cast<unsigned char>(*b);
 }
 
 #if defined(PLATFORM_MACOS)
@@ -430,13 +406,7 @@ const char* kSync2Ext = VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME;
 // ValidationMessageTraps decides which messages trap. Suppressed messages are counted and do not trap.
 static bool ValidationAssertEnabledFromEnv()
 {
-    static const bool kEnabled = []
-    {
-        const char* v = std::getenv("GE_VK_VALIDATION_ASSERT");
-        if (!v || v[0] == '\0')
-            return true; // unset => on with validation
-        return !(v[0] == '0' && v[1] == '\0');
-    }();
+    static const bool kEnabled = GameEngine::Platform::EnvironmentSwitchEnabled("GE_VK_VALIDATION_ASSERT", true);
     return kEnabled;
 }
 
@@ -633,11 +603,12 @@ void VulkanDevice::ClearDebugBarriers()
 }
 #endif
 
-// GE_DEVICE_RECOVERY kill switch, read once per process (design §12). See
-// ParseDeviceRecoveryEnabled for the semantics.
+// GE_DEVICE_RECOVERY kill switch, read once per process (design §12). Off
+// restores latch + suppress (no poll-resume, no rebuild machinery); unset or on
+// leaves recovery enabled.
 static bool DeviceRecoveryEnabledFromEnv()
 {
-    static const bool kEnabled = ParseDeviceRecoveryEnabled(std::getenv("GE_DEVICE_RECOVERY"));
+    static const bool kEnabled = GameEngine::Platform::EnvironmentSwitchEnabled("GE_DEVICE_RECOVERY", true);
     return kEnabled;
 }
 
@@ -651,16 +622,18 @@ bool VulkanDevice::Initialize(const DeviceDesc& desc)
     m_FaultSubmitCounter = 0;
     m_FaultAcquireCounter = 0;
     m_FaultAcquireForcedSuboptimal = false;
+    m_AcquireReportedSuboptimal = false;
     m_InitDesc = desc; // stashed for RebuildDevice (Q6 slice 2)
     if (m_FaultInjection.Active())
     {
-        Logger::Log::Warning("VulkanDevice: [fault-injection] active — GE_VK_FORCE_DEVICE_LOST / GE_VK_FORCE_BEGINFRAME_TIMEOUT / "
-                             "GE_VK_FORCE_GPU_HANG / GE_VK_FORCE_ACQUIRE_SUBOPTIMAL set");
+        Logger::Log::Warning("VulkanDevice: [fault-injection] active — GE_VK_FORCE_DEVICE_LOST / GE_VK_FORCE_BEGINFRAME_TIMEOUT / GE_VK_FORCE_GPU_HANG / GE_VK_FORCE_ACQUIRE_SUBOPTIMAL set");
     }
     m_DebugLayerEnabled = desc.enableDebugLayer;
     m_ApplicationName = desc.applicationName;
 
     m_EnableDescriptorValidation = desc.enableDescriptorValidation;
+    m_FillNewTargetsWithNaN =
+        GameEngine::Platform::EnvironmentSwitchEnabled("GE_VK_FILL_NEW_TARGETS_NAN", false);
     // Respect config toggle for bindless capability gating
     m_ForceDisableBindlessResources = desc.forceDisableBindlessResources;
     // Record whether swapchain/WSI should be enabled for this device
@@ -679,12 +652,7 @@ bool VulkanDevice::Initialize(const DeviceDesc& desc)
     // B8G8R8A8_SRGB / R8G8B8A8_SRGB fallbacks, so SDR frames exercise the
     // Finalize D(c) arm (encode_srgb.frag outEncoding 6) against a real
     // hardware-sRGB ROP instead of the raw requantize into RGB10A2.
-    m_FillNewTargetsWithNaN = IsEnvEnabled("GE_VK_FILL_NEW_TARGETS_NAN");
-    if (m_FillNewTargetsWithNaN)
-        Logger::Log::Warning("VulkanDevice: GE_VK_FILL_NEW_TARGETS_NAN — new float color targets and storage buffers start "
-                             "as NaN and render-graph transients are not recycled, so a read before the first write "
-                             "shows NaN (diagnostic; every such creation costs a fill)");
-    if (IsEnvEnabled("GE_FORCE_8BIT_SRGB_SWAPCHAIN"))
+    if (GameEngine::Platform::EnvironmentSwitchEnabled("GE_FORCE_8BIT_SRGB_SWAPCHAIN", false))
     {
         SetPreferTenBitSwapchain(false);
         Logger::Log::Info(
@@ -924,8 +892,9 @@ bool VulkanDevice::CreateDeviceAndResources(const DeviceDesc& desc)
 
     // Configure pipeline cache with platform-specific directory
     VulkanPipelineCache::Config cacheConfig;
-    cacheConfig.CacheDirectory = VulkanPipelineCache::GetPlatformCacheDirectory();
     cacheConfig.PersistToDisk = desc.persistPipelineCache;
+    cacheConfig.CacheDirectory = desc.pipelineCacheDirectory.empty()
+        ? VulkanPipelineCache::GetPlatformCacheDirectory() : desc.pipelineCacheDirectory;
 
     m_VkDiskPipelineCache = std::make_unique<VulkanPipelineCache>(m_Device, cacheConfig);
     if (!m_VkDiskPipelineCache->Initialize())
@@ -1670,7 +1639,7 @@ bool VulkanDevice::CreateInstance(const DeviceDesc& desc)
         const char* existing = std::getenv("VK_ICD_FILENAMES");
         const char* existingDriverFiles = std::getenv("VK_DRIVER_FILES");
         const bool preferExistingIcd =
-            (std::getenv("GE_USE_SYSTEM_MOLTENVK") && std::getenv("GE_USE_SYSTEM_MOLTENVK")[0] != '\0');
+            GameEngine::Platform::EnvironmentSwitchEnabled("GE_USE_SYSTEM_MOLTENVK", false);
 
         auto trySetIcd = [existing, existingDriverFiles](const std::filesystem::path& p, bool preferBundle) -> bool
         {
@@ -1801,12 +1770,7 @@ bool VulkanDevice::CreateInstance(const DeviceDesc& desc)
     appInfo.pApplicationName = desc.applicationName.c_str();
     appInfo.applicationVersion = desc.applicationVersion;
     appInfo.pEngineName = "GameEngine";
-    // The calendar version packed as (year - 2000, month, patch): the packed major has 7 bits,
-    // too few for the year itself. The prerelease suffix has no field and is dropped.
-    static_assert(GameEngine::kEngineVersionYear >= 2000 && GameEngine::kEngineVersionYear - 2000 < 128,
-                  "the engine version's year no longer fits VkApplicationInfo::engineVersion's 7-bit major");
-    appInfo.engineVersion = VK_MAKE_API_VERSION(0, GameEngine::kEngineVersionYear - 2000u,
-                                                GameEngine::kEngineVersionMonth, GameEngine::kEngineVersionPatch);
+    appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
     // Request the highest Vulkan API version supported by the loader/driver.
     // On platforms where vkEnumerateInstanceVersion is not available, fall back
     // to Vulkan 1.0 (per spec). This avoids VK_ERROR_INCOMPATIBLE_DRIVER when
@@ -1843,8 +1807,8 @@ bool VulkanDevice::CreateInstance(const DeviceDesc& desc)
     // sharing lookup because these are instance-level: they are part of which
     // instance this device is asking for, not something it can add to one later.
     ValidationLayerSettingsDesc validationDesc{};
-    validationDesc.SyncValidation = ParseSyncValidationEnabled(std::getenv("GE_VK_SYNC_VALIDATION"));
-    validationDesc.GpuAssistedValidation = ParseGpuAssistedValidationEnabled(std::getenv("GE_VK_GPU_AV"));
+    validationDesc.SyncValidation = GameEngine::Platform::EnvironmentSwitchEnabled("GE_VK_SYNC_VALIDATION", false);
+    validationDesc.GpuAssistedValidation = GameEngine::Platform::EnvironmentSwitchEnabled("GE_VK_GPU_AV", false);
 
     // Shader instrumentation has to be asked for here, at instance creation, but
     // whether VK_EXT_descriptor_buffer ends up enabled is settled at device
@@ -1866,7 +1830,7 @@ bool VulkanDevice::CreateInstance(const DeviceDesc& desc)
     // Read here rather than at the messenger below: the messenger is created once
     // per instance and inherited as it stands, so asking for verbose output is part
     // of which instance this device is asking for, not something it can widen later.
-    const bool verboseMessenger = IsEnvEnabled("GE_VK_VALIDATION_VERBOSE");
+    const bool verboseMessenger = GameEngine::Platform::EnvironmentSwitchEnabled("GE_VK_VALIDATION_VERBOSE", false);
 
     // Share an existing instance only with a device that is asking for the same
     // one — see SharedInstanceKey for what that means. Built from the members the
@@ -1907,7 +1871,11 @@ bool VulkanDevice::CreateInstance(const DeviceDesc& desc)
 
     // Get GLFW required extensions (may be null/zero in headless/offscreen tests)
     uint32_t glfwExtensionCount = 0;
+#if defined(GE_PLATFORM_MOBILE)
+    const char* const* glfwExtensions = SDL_Vulkan_GetInstanceExtensions(&glfwExtensionCount);
+#else
     const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+#endif
     if (glfwExtensions && glfwExtensionCount > 0)
     {
         for (uint32_t i = 0; i < glfwExtensionCount; i++)
@@ -2490,6 +2458,7 @@ bool VulkanDevice::SelectPhysicalDevice()
 
 bool VulkanDevice::CreateLogicalDevice()
 {
+    m_ShaderInterpolationFunctionsEnabledAtInit = false;
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
     std::set<uint32_t> uniqueQueueFamilies = {m_GraphicsQueueFamily, m_PresentQueueFamily};
 
@@ -2559,11 +2528,9 @@ bool VulkanDevice::CreateLogicalDevice()
     // (draw_command_scatter.comp) and the grass LOD pool both write it, and without this
     // feature any non-zero firstInstance is VUID-VkDrawIndexedIndirectCommand-firstInstance-00554.
     deviceFeatures.drawIndirectFirstInstance = supportedFeatures.drawIndirectFirstInstance;
-    // The parallax colour variants take their relief footprint through interpolateAtOffset, whose
-    // SPIR-V InterpolationFunction capability requires sampleRateShading (otherwise
-    // VUID-VkShaderModuleCreateInfo-pCode-08740 on every such module). Enabling the feature turns no
-    // pipeline to per-sample shading; that stays each pipeline's sampleShadingEnable. Enabled
-    // whenever supported, so capability reporting can assume support == enabled.
+    // InterpolationFunction requires the core feature; portability devices also
+    // need shaderSampleRateInterpolationFunctions in their extension feature chain.
+    // Per-sample pipeline shading remains controlled by sampleShadingEnable.
     deviceFeatures.sampleRateShading = supportedFeatures.sampleRateShading;
     // A tiled terrain clips its draw at its authored edge through gl_ClipDistance (the SPIR-V
     // ClipDistance capability). Same support == enabled contract.
@@ -2587,12 +2554,16 @@ bool VulkanDevice::CreateLogicalDevice()
     VkPhysicalDeviceFeatures2 tmpQry{};
     tmpQry.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     tmpQry.pNext = &supported12;
-    vkGetPhysicalDeviceFeatures2(m_PhysicalDevice, &tmpQry);
+    if (m_DeviceProperties.apiVersion >= VK_API_VERSION_1_2)
+    {
+        vkGetPhysicalDeviceFeatures2(m_PhysicalDevice, &tmpQry);
+    }
 
     // Enable required Vulkan 1.2/1.3 features (guarded by support)
     VkPhysicalDeviceVulkan12Features enabled12{};
     enabled12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     enabled12.timelineSemaphore = supported12.timelineSemaphore;
+    m_TimelineSemaphoresEnabledAtInit = enabled12.timelineSemaphore == VK_TRUE;
     enabled12.hostQueryReset = supported12.hostQueryReset; // Promote hostQueryReset via v1.2 struct
     enabled12.bufferDeviceAddress = supported12.bufferDeviceAddress;
     m_HostQueryResetEnabledAtInit = (supported12.hostQueryReset == VK_TRUE);
@@ -2715,8 +2686,8 @@ bool VulkanDevice::CreateLogicalDevice()
             enabled13.pNext = &sync2KHR;
         }
     }
-    // On MoltenVK / portability subset devices, enable mutableComparisonSamplers so
-    // shadow-map comparison samplers can be written to descriptor sets.
+    // Portability devices enable supported comparison-sampler updates, image-view swizzles,
+    // and shader interpolation functions; unsupported interpolation uses the centroid footprint.
     // The struct lives in vulkan_beta.h behind VK_ENABLE_BETA_EXTENSIONS; define
     // the sType constant and struct layout inline to avoid pulling in all beta APIs.
 #ifndef VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR
@@ -2745,7 +2716,8 @@ bool VulkanDevice::CreateLogicalDevice()
 #endif
     VkPhysicalDevicePortabilitySubsetFeaturesKHR portabilityFeatures{};
     portabilityFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR;
-    if (CheckExtensionSupport("VK_KHR_portability_subset"))
+    const bool hasPortabilitySubset = CheckExtensionSupport("VK_KHR_portability_subset");
+    if (hasPortabilitySubset)
     {
         // Query which portability features the device actually supports
         VkPhysicalDevicePortabilitySubsetFeaturesKHR supportedPortability{};
@@ -2756,6 +2728,9 @@ bool VulkanDevice::CreateLogicalDevice()
         vkGetPhysicalDeviceFeatures2(m_PhysicalDevice, &portabilityQuery);
 
         portabilityFeatures.mutableComparisonSamplers = supportedPortability.mutableComparisonSamplers;
+        portabilityFeatures.imageViewFormatSwizzle = supportedPortability.imageViewFormatSwizzle;
+        portabilityFeatures.shaderSampleRateInterpolationFunctions =
+            supportedFeatures.sampleRateShading && supportedPortability.shaderSampleRateInterpolationFunctions;
         portabilityFeatures.pNext = enabled13.pNext;
         enabled13.pNext = &portabilityFeatures;
     }
@@ -2866,7 +2841,7 @@ bool VulkanDevice::CreateLogicalDevice()
     // zero-initialised, because that blob needs a vendor offline tool to read while
     // the address and vendor-info records are readable in the log.
     const bool deviceFaultRequested =
-        ParseDeviceFaultEnabled(std::getenv("GE_VK_DEVICE_FAULT"), kDeviceFaultDefaultEnabled);
+        GameEngine::Platform::EnvironmentSwitchEnabled("GE_VK_DEVICE_FAULT", kDeviceFaultDefaultEnabled);
     VkPhysicalDeviceFaultFeaturesEXT faultFeatures{};
     faultFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT;
     m_DeviceFaultEnabledAtInit = false;
@@ -2892,12 +2867,14 @@ bool VulkanDevice::CreateLogicalDevice()
                       rayQueryExtsAvailable ? "present" : "missing",
                       supported12.bufferDeviceAddress == VK_TRUE ? "supported" : "unsupported");
 
-    enabled12.pNext = &enabled13;
+    enabled12.pNext = m_DeviceProperties.apiVersion >= VK_API_VERSION_1_3
+        ? static_cast<void*>(&enabled13) : enabled13.pNext;
 
     VkPhysicalDeviceFeatures2 enabledFeatures2{};
     enabledFeatures2.sType    = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     enabledFeatures2.features = deviceFeatures;
-    enabledFeatures2.pNext    = &enabled12;
+    enabledFeatures2.pNext = m_DeviceProperties.apiVersion >= VK_API_VERSION_1_2
+        ? static_cast<void*>(&enabled12) : enabled12.pNext;
 
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -2931,7 +2908,7 @@ bool VulkanDevice::CreateLogicalDevice()
     // VK_KHR_portability_subset device extension must be enabled whenever it
     // is reported. Guard it behind CheckExtensionSupport so we only request
     // it when available.
-    if (CheckExtensionSupport("VK_KHR_portability_subset"))
+    if (hasPortabilitySubset)
     {
         deviceExtensions.push_back("VK_KHR_portability_subset");
         m_IsPortabilitySubsetDevice = true;
@@ -2996,9 +2973,6 @@ bool VulkanDevice::CreateLogicalDevice()
     createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
     createInfo.ppEnabledExtensionNames = deviceExtensions.data();
 
-    // Chain feature structs (Vulkan 1.2/1.3). Descriptor indexing is enabled via enabled12.* fields.
-    enabled12.pNext = &enabled13;
-    enabledFeatures2.pNext = &enabled12;
     createInfo.pNext = &enabledFeatures2;
 
     if (m_DebugLayerEnabled)
@@ -3031,12 +3005,14 @@ bool VulkanDevice::CreateLogicalDevice()
         // Fallback: retry with a minimal feature/ext set to tolerate picky drivers/VMs.
         // Keep swapchain enabled when rendering to a window; otherwise the device
         // can be created but presentation entry points are unavailable.
-        Logger::Log::Warning("Retrying vkCreateDevice with minimal device features and required presentation extensions...");
+        Logger::Log::Warning("Retrying vkCreateDevice with minimal device features and required device extensions...");
         std::vector<const char*> fallbackExtensions;
         if (m_UseSwapchain && CheckExtensionSupport(VK_KHR_SWAPCHAIN_EXTENSION_NAME))
         {
             fallbackExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
         }
+        if (hasPortabilitySubset)
+            fallbackExtensions.push_back("VK_KHR_portability_subset");
         VkPhysicalDeviceFeatures minimalFeatures{};
         minimalFeatures.samplerAnisotropy = supportedFeatures.samplerAnisotropy;
         // Keep Int64 enabled in the fallback path too — buffer_reference shaders
@@ -3053,7 +3029,7 @@ bool VulkanDevice::CreateLogicalDevice()
         // device, and a PSO requesting it without the feature is invalid usage.
         minimalFeatures.depthClamp = supportedFeatures.depthClamp;
         minimalFeatures.drawIndirectFirstInstance = supportedFeatures.drawIndirectFirstInstance;
-        // Same support == enabled contract for sampleRateShading (the parallax footprint).
+        // Keep the core prerequisite enabled in both fallback attempts.
         minimalFeatures.sampleRateShading = supportedFeatures.sampleRateShading;
         minimalFeatures.shaderClipDistance = supportedFeatures.shaderClipDistance;
         VkPhysicalDeviceVulkan12Features fallback12{};
@@ -3074,9 +3050,15 @@ bool VulkanDevice::CreateLogicalDevice()
         VkPhysicalDeviceFeatures2 fallbackFeatures2{};
         fallbackFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
         fallbackFeatures2.features = minimalFeatures;
-        fallbackFeatures2.pNext = &fallback12;
+        fallbackFeatures2.pNext = m_DeviceProperties.apiVersion >= VK_API_VERSION_1_2 ? &fallback12 : nullptr;
+        auto fallbackPortability = portabilityFeatures;
+        if (hasPortabilitySubset)
+        {
+            fallbackPortability.pNext = fallbackFeatures2.pNext;
+            fallbackFeatures2.pNext = &fallbackPortability;
+        }
         VkDeviceCreateInfo fallbackCreateInfo = createInfo;
-        fallbackCreateInfo.pNext = &fallbackFeatures2; // no optional extension feature structs
+        fallbackCreateInfo.pNext = &fallbackFeatures2; // only required portability extension features
         fallbackCreateInfo.pEnabledFeatures = nullptr;
         fallbackCreateInfo.enabledExtensionCount = static_cast<uint32_t>(fallbackExtensions.size());
         fallbackCreateInfo.ppEnabledExtensionNames = fallbackExtensions.data();
@@ -3097,8 +3079,13 @@ bool VulkanDevice::CreateLogicalDevice()
             VkPhysicalDeviceFeatures2 minimalFeatures2{};
             minimalFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
             minimalFeatures2.features = minimalFeatures;
-            minimalFeatures2.pNext = &minimal12;
+            minimalFeatures2.pNext = m_DeviceProperties.apiVersion >= VK_API_VERSION_1_2 ? &minimal12 : nullptr;
 
+            if (hasPortabilitySubset)
+            {
+                fallbackPortability.pNext = minimalFeatures2.pNext;
+                minimalFeatures2.pNext = &fallbackPortability;
+            }
             VkDeviceCreateInfo minimalCreateInfo = createInfo;
             minimalCreateInfo.pNext = &minimalFeatures2;
             minimalCreateInfo.pEnabledFeatures = nullptr;
@@ -3120,6 +3107,7 @@ bool VulkanDevice::CreateLogicalDevice()
         m_SupportsDynamicRendering = false;
         m_SupportsSync2 = false;
         m_HostQueryResetEnabledAtInit = (fallback12.hostQueryReset == VK_TRUE);
+        m_TimelineSemaphoresEnabledAtInit = fallback12.timelineSemaphore == VK_TRUE;
         m_BufferDeviceAddressEnabledAtInit = (fallback12.bufferDeviceAddress == VK_TRUE);
         m_DescriptorIndexingEnabledAtInit =
             fallback12.descriptorIndexing == VK_TRUE &&
@@ -3129,17 +3117,14 @@ bool VulkanDevice::CreateLogicalDevice()
             fallback12.shaderSampledImageArrayNonUniformIndexing == VK_TRUE;
         m_DescriptorBufferEnabledAtInit = false;
         m_Capabilities.supportsDescriptorBuffer = false;
-        // The fallback ext list carries presentation only, so the device this path
-        // creates genuinely does not enable descriptor buffer.
+        // The fallback enables presentation and required portability extensions only.
+        // Descriptor buffers remain disabled.
         m_DescriptorBufferExtensionEnabledOnDevice = false;
         m_RayQueryEnabledAtInit = false;
         m_SwapchainColorSpaceExtEnabled = false;
         m_HdrMetadataExtEnabled = false;
-        // The fallback ext list carries presentation only, so neither the
-        // checkpoints nor the device-fault extension is enabled on this device
-        // however their probes went. Leaving either flag set would resolve an
-        // entry point for an extension this device never enabled, and report the
-        // instrument as armed right up until the loss it cannot service.
+        // The fallback does not enable checkpoint or device-fault extensions.
+        // Clear their flags before resolving device entry points.
         m_DeviceDiagnosticCheckpointsEnabledAtInit = false;
         m_DeviceFaultEnabledAtInit = false;
         // m_DebugUtilsExtEnabled is deliberately NOT cleared with them:
@@ -3150,6 +3135,11 @@ bool VulkanDevice::CreateLogicalDevice()
         // this path ended up creating.
     }
 
+    // All successful creation paths use the same core and required portability bits.
+    m_ShaderInterpolationFunctionsEnabledAtInit = deviceFeatures.sampleRateShading == VK_TRUE &&
+        (!hasPortabilitySubset || portabilityFeatures.shaderSampleRateInterpolationFunctions == VK_TRUE);
+
+    m_PromotedCommands.Initialize(m_Device);
     vkGetDeviceQueue(m_Device, m_GraphicsQueueFamily, 0, &m_GraphicsQueue);
     vkGetDeviceQueue(m_Device, m_PresentQueueFamily, 0, &m_PresentQueue);
     if (m_ComputeQueueFamily != kInvalidQueueFamilyIndex)
@@ -3205,6 +3195,9 @@ bool VulkanDevice::CreateLogicalDevice()
     {
         m_FpCmdSetDepthWriteEnable = reinterpret_cast<PFN_vkCmdSetDepthWriteEnable>(vkGetDeviceProcAddr(m_Device, "vkCmdSetDepthWriteEnable"));
     }
+
+    if (const char* value = std::getenv("GE_VK_NO_DYNAMIC_DEPTH_WRITE"); value && value[0] == '1')
+        m_FpCmdSetDepthWriteEnable = nullptr;
 
     if (m_Capabilities.supportsMeshShaders)
     {
@@ -3303,7 +3296,7 @@ bool VulkanDevice::CreateLogicalDevice()
     // checkpoint was ever recorded). The name table is created once and kept
     // across device rebuilds so recorded ordinals stay comparable.
     m_GpuCheckpointsEnabled = m_DeviceDiagnosticCheckpointsEnabledAtInit &&
-                              ParseGpuCheckpointsEnabled(std::getenv("GE_VK_GPU_CHECKPOINTS"));
+                              GameEngine::Platform::EnvironmentSwitchEnabled("GE_VK_GPU_CHECKPOINTS", false);
     if (m_GpuCheckpointsEnabled && !m_GpuCheckpointNames)
     {
         m_GpuCheckpointNames = std::make_unique<GpuCheckpointNameTable>();
@@ -3373,11 +3366,7 @@ bool VulkanDevice::CreateLogicalDevice()
     // _BUFFER=0 forces the legacy pool path for bisection / regression testing.
     if (m_Capabilities.supportsDescriptorBuffer)
     {
-        m_UseDescriptorBuffer = true;
-        if (const char* env = std::getenv("GE_VK_USE_DESCRIPTOR_BUFFER"))
-        {
-            m_UseDescriptorBuffer = (env[0] != '\0' && env[0] != '0' && env[0] != 'f' && env[0] != 'F');
-        }
+        m_UseDescriptorBuffer = GameEngine::Platform::EnvironmentSwitchEnabled("GE_VK_USE_DESCRIPTOR_BUFFER", true);
         if (m_UseDescriptorBuffer)
         {
             Logger::Log::Info("VK_EXT_descriptor_buffer runtime path ENABLED (default on)");
@@ -3528,6 +3517,14 @@ bool VulkanDevice::CheckExtensionSupport(const char* extensionName)
 void VulkanDevice::QueryDeviceCapabilities()
 {
     m_Capabilities = {};
+    m_Capabilities.supportsFilterableFloat32 = true;
+    for (const auto format : {VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32G32B32A32_SFLOAT})
+    {
+        VkFormatProperties properties{};
+        vkGetPhysicalDeviceFormatProperties(m_PhysicalDevice, format, &properties);
+        m_Capabilities.supportsFilterableFloat32 &=
+            (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
+    }
     // Rehydrate descriptor-buffer enablement stash-set by CreateLogicalDevice — it runs
     // before this function and sets m_Capabilities.supportsDescriptorBuffer, which the
     // above reset clobbers. Keep the runtime gate consistent.
@@ -3566,8 +3563,7 @@ void VulkanDevice::QueryDeviceCapabilities()
         m_Capabilities.maxSamplerAnisotropy = (baseFeatures.samplerAnisotropy == VK_TRUE)
                                                   ? m_DeviceProperties.limits.maxSamplerAnisotropy
                                                   : 1.0f;
-        // Same contract: CreateLogicalDevice enables sampleRateShading whenever supported.
-        m_Capabilities.supportsInterpolationFunctions = (baseFeatures.sampleRateShading == VK_TRUE);
+        m_Capabilities.supportsShaderInterpolationFunctions = m_ShaderInterpolationFunctionsEnabledAtInit;
         m_Capabilities.supportsShaderClipDistance = (baseFeatures.shaderClipDistance == VK_TRUE);
     }
 
@@ -3584,8 +3580,10 @@ void VulkanDevice::QueryDeviceCapabilities()
     // 1.2 devices cap at 1.5 so their packages remain loadable.
     ShaderCompileService::SetMaxSupportedSpirv(
         m_DeviceProperties.apiVersion >= VK_API_VERSION_1_3
-            ? ShaderCompileService::SpirvTarget::Spirv_1_6
-            : ShaderCompileService::SpirvTarget::Spirv_1_5);
+            ? ::GameEngine::Rendering::SpirvTarget::Spirv_1_6
+            : m_DeviceProperties.apiVersion >= VK_API_VERSION_1_2
+                ? ::GameEngine::Rendering::SpirvTarget::Spirv_1_5
+                : ::GameEngine::Rendering::SpirvTarget::Spirv_1_3);
     m_Capabilities.maxPerStageSamplers = m_DeviceProperties.limits.maxPerStageDescriptorSamplers;
     m_Capabilities.maxPerStageSampledImages = m_DeviceProperties.limits.maxPerStageDescriptorSampledImages;
     m_Capabilities.maxPerStageResources = m_DeviceProperties.limits.maxPerStageResources;
@@ -3596,6 +3594,12 @@ void VulkanDevice::QueryDeviceCapabilities()
     {
         m_Capabilities.vendorId = m_DeviceProperties.vendorID;
         m_Capabilities.vendor   = ClassifyGpuVendor(m_DeviceProperties.vendorID);
+        m_Capabilities.prefersForwardShaderSpecialization =
+            m_Capabilities.vendor == GpuVendor::Amd ||
+            (m_DeviceProperties.vendorID == 0x5143u &&
+             std::strstr(m_DeviceProperties.deviceName, "Adreno") != nullptr &&
+             std::strstr(m_DeviceProperties.deviceName, "630") != nullptr &&
+             m_DeviceProperties.apiVersion < VK_API_VERSION_1_2);
         const bool isAmd = m_Capabilities.vendor == GpuVendor::Amd;
         const char* deviceName = m_DeviceProperties.deviceName;
         const bool isRadeon = std::strstr(deviceName, "Radeon") != nullptr;
@@ -3809,7 +3813,7 @@ void VulkanDevice::QueryDeviceCapabilities()
         // Consider either independentResolve or independentResolveNone as signal for some level of independence
         m_Capabilities.supportsIndependentStencilResolve = (dsProps.independentResolve == VK_TRUE) || (dsProps.independentResolveNone == VK_TRUE);
 
-        if (std::getenv("GE_DEBUG_PRINT_RESOLVE_CAPS"))
+        if (GameEngine::Platform::EnvironmentSwitchEnabled("GE_DEBUG_PRINT_RESOLVE_CAPS", false))
         {
             auto printModes = [](uint32_t flags)
             {
@@ -4314,27 +4318,28 @@ void VulkanDevice::LogSampleCountFallbackIfNeeded(uint32_t requestedSamples, uin
 
 void VulkanDevice::FillNewTargetWithNaN(TextureHandle texture, const TextureDesc& desc)
 {
-    const auto format = static_cast<TextureFormat>(desc.format);
-    const bool floatColor = format == TextureFormat::R32G32B32A32_FLOAT || format == TextureFormat::R16G16B16A16_FLOAT ||
-                            format == TextureFormat::R11G11B10_FLOAT || format == TextureFormat::R16_FLOAT ||
-                            format == TextureFormat::R16G16_FLOAT || format == TextureFormat::R32_FLOAT ||
-                            format == TextureFormat::R32G32_FLOAT;
-    const uint32_t targetUsage = static_cast<uint32_t>(TextureUsage::RenderTarget) |
-                                 static_cast<uint32_t>(TextureUsage::UnorderedAccess);
-    if (!floatColor || (desc.usage & targetUsage) == 0)
-        return;
     const float nan = std::numeric_limits<float>::quiet_NaN();
     const float rgba[4] = {nan, nan, nan, nan};
-    auto cl = CreateCommandList(QueueType::Graphics);
-    cl->Begin();
+    auto commands = CreateCommandList(QueueType::Graphics);
+    commands->Begin();
     const uint32_t mips = desc.mipLevels > 0 ? desc.mipLevels : 1;
     const uint32_t layers = desc.arrayLayers > 0 ? desc.arrayLayers : 1;
     for (uint32_t mip = 0; mip < mips; ++mip)
         for (uint32_t layer = 0; layer < layers; ++layer)
-            cl->ClearColorImageSubresource(texture, mip, layer, rgba);
-    cl->End();
-    CommandList* raw = cl.get();
-    ExecuteCommandLists({raw});
+            commands->ClearColorImageSubresource(texture, mip, layer, rgba);
+    // Diagnostic clears precede the graph's first-use discard. Make their writes
+    // available without changing the graph's authority over image layouts.
+    VkMemoryBarrier clearWrites{};
+    clearWrites.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    clearWrites.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    clearWrites.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    vkCmdPipelineBarrier(static_cast<VulkanCommandList*>(commands.get())->GetVkCommandBuffer(),
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         0, 1, &clearWrites, 0, nullptr, 0, nullptr);
+    commands->End();
+    CommandList* commandList = commands.get();
+    // Allocation returns after the clear so any queue can use the new image.
+    WaitGpuSyncToken(ExecuteCommandListsTracked({commandList}).graphics);
 }
 
 void VulkanDevice::FillNewStorageBufferWithNaN(BufferHandle buffer, uint64_t sizeBytes)
@@ -4345,14 +4350,18 @@ void VulkanDevice::FillNewStorageBufferWithNaN(BufferHandle buffer, uint64_t siz
     const uint64_t fillBytes = sizeBytes & ~uint64_t{3};
     if (fillBytes == 0)
         return;
-    auto cl = CreateCommandList(QueueType::Graphics);
-    cl->Begin();
-    cl->FillBuffer(buffer, 0, static_cast<size_t>(fillBytes), kNaNPattern);
-    cl->End();
-    CommandList* raw = cl.get();
-    // Waited, not just submitted: the caller's next write may come from the
-    // host through a mapping or from another queue, and must land after the fill.
-    WaitGpuSyncToken(ExecuteCommandListsTracked({raw}).graphics);
+    auto commands = CreateCommandList(QueueType::Graphics);
+    commands->Begin();
+    commands->FillBuffer(buffer, 0, static_cast<size_t>(fillBytes), kNaNPattern);
+    commands->Barrier(ResourceBarrier::CreateMemoryBarrier(
+        static_cast<uint64_t>(PipelineStageMask::Transfer),
+        static_cast<uint64_t>(PipelineStageMask::Host),
+        static_cast<uint64_t>(ResourceAccessMask::TransferWrite),
+        static_cast<uint64_t>(ResourceAccessMask::HostRead)));
+    commands->End();
+    CommandList* commandList = commands.get();
+    // Wait before returning so mapped reads and later writes follow the fill.
+    WaitGpuSyncToken(ExecuteCommandListsTracked({commandList}).graphics);
 }
 
 TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc)
@@ -4419,10 +4428,22 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc)
         return INVALID_TEXTURE_HANDLE;
     }
 
+    const auto format = static_cast<TextureFormat>(desc.format);
+    const bool floatColor = format == TextureFormat::R32G32B32A32_FLOAT || format == TextureFormat::R16G16B16A16_FLOAT ||
+                            format == TextureFormat::R11G11B10_FLOAT || format == TextureFormat::R16_FLOAT ||
+                            format == TextureFormat::R16G16_FLOAT || format == TextureFormat::R32_FLOAT ||
+                            format == TextureFormat::R32G32_FLOAT;
+    const uint32_t targetUsage = static_cast<uint32_t>(TextureUsage::RenderTarget) |
+                                 static_cast<uint32_t>(TextureUsage::UnorderedAccess);
+    const bool fillWithNaN = m_FillNewTargetsWithNaN && floatColor && (desc.usage & targetUsage) != 0;
+
     VulkanTexture* vulkanTexture = new VulkanTexture();
     vulkanTexture->device = m_Device;
     vulkanTexture->extent = {desc.width, desc.height, desc.depth > 0 ? desc.depth : 1};
     vulkanTexture->usage = static_cast<TextureUsage>(desc.usage);
+    // The backend owns this extra transfer use, including under strict auditing.
+    if (fillWithNaN)
+        vulkanTexture->usage = vulkanTexture->usage | TextureUsage::TransferDst;
     vulkanTexture->debugName = desc.debugName ? desc.debugName : "";
     vulkanTexture->trackedLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     vulkanTexture->arrayLayers = is3DTexture ? 1 : (desc.arrayLayers > 0 ? desc.arrayLayers : 1);
@@ -4472,14 +4493,14 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc)
     {
         vkUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     }
-    if (desc.usage & static_cast<uint32_t>(TextureUsage::TransferDst))
+    if (static_cast<uint32_t>(vulkanTexture->usage & TextureUsage::TransferDst) != 0)
     {
         vkUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     }
     // Every image gets both transfer bits regardless of what it declared, which is
     // why TransferSrc/TransferDst are the only usage bits this backend does not
-    // enforce. Strict mode maps exactly the declaration instead, turning an
-    // undeclared copy into a validation error at the command. Not yet the default:
+    // enforce. Strict mode maps the declaration plus backend-owned diagnostic
+    // uses, turning an undeclared copy into a validation error. Not yet the default:
     // paths no platform has exercised would fail here first.
     if (!TextureUsagePolicy::IsStrict())
     {
@@ -4725,7 +4746,7 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc)
 
     if (vulkanTexture->image == VK_NULL_HANDLE)
     {
-        if (std::getenv("GE_DEBUG_TRACE_RENDERING"))
+        if (GameEngine::Rendering::RenderingDebugFlags::Get().traceRendering)
         {
             const char* name = desc.debugName ? desc.debugName : "<unnamed>";
             Logger::Log::Debug(
@@ -4742,7 +4763,7 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc)
 
     // Use global texture manager and track live handle for safe shutdown
     TextureHandle h = GameEngine::Rendering::CreateTexture(vulkanTexture);
-    if (std::getenv("GE_DEBUG_TRACE_RENDERING"))
+    if (GameEngine::Rendering::RenderingDebugFlags::Get().traceRendering)
     {
         const char* name = desc.debugName ? desc.debugName : "<unnamed>";
         Logger::Log::Debug(
@@ -4763,7 +4784,7 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc)
             m_LiveTextures.push_back(h);
         }
 
-        if (m_FillNewTargetsWithNaN)
+        if (fillWithNaN)
             FillNewTargetWithNaN(h, desc);
 
         // If caller requested a non-Undefined initial state, transition now via a
@@ -4774,7 +4795,7 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc)
             cl->Begin();
             cl->Barrier(ResourceBarrier::CreateTextureBarrier(
                 h,
-                m_FillNewTargetsWithNaN ? ResourceState::CopyDest : ResourceState::Undefined,
+                fillWithNaN ? ResourceState::CopyDest : ResourceState::Undefined,
                 desc.initialState,
                 0, desc.mipLevels > 0 ? desc.mipLevels : 1,
                 0, desc.arrayLayers > 0 ? desc.arrayLayers : 1));
@@ -4969,7 +4990,7 @@ PipelineHandle VulkanDevice::CreatePipelineInternal(const PipelineDesc& desc)
             VulkanPipeline* pipelinePtr = new VulkanPipeline(std::move(vulkanPipeline));
             PipelineHandle h = GameEngine::Rendering::CreatePipeline(pipelinePtr);
 #ifndef NDEBUG
-            if (std::getenv("GE_DEBUG_TRACE_RENDERING"))
+            if (GameEngine::Rendering::RenderingDebugFlags::Get().traceRendering)
             {
                 fprintf(stderr, "[VK] Created pipeline (compute) name='%s' handle=%llu\n",
                         pipelinePtr->debugName.c_str(), (unsigned long long)h);
@@ -5150,7 +5171,7 @@ PipelineHandle VulkanDevice::CreatePipelineInternal(const PipelineDesc& desc)
         ensureDyn(VK_DYNAMIC_STATE_SCISSOR);
         // Allow depth write to be toggled dynamically so passes with read-only depth
         // attachments can disable writes without needing separate pipeline variants.
-        if (m_DeviceProperties.apiVersion >= VK_API_VERSION_1_3)
+        if (GetCmdSetDepthWriteEnable())
             ensureDyn(VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE);
         VkPipelineDynamicStateCreateInfo dynamicState{};
         dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
@@ -5200,6 +5221,8 @@ PipelineHandle VulkanDevice::CreatePipelineInternal(const PipelineDesc& desc)
             pipelineInfo.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
 
         VkPipeline pipeline{};
+        PIPELINE_CREATION_TIMER(m_VkDiskPipelineCache.get(), false);
+        VkPipeline readOnlyDepthPipeline{};
         VkResult res;
         {
             const std::span<const uint8_t> stageCode[] = {reflected.meshShader, reflected.pixelShader};
@@ -5208,6 +5231,12 @@ PipelineHandle VulkanDevice::CreatePipelineInternal(const PipelineDesc& desc)
             PIPELINE_CREATION_TIMER(m_VkDiskPipelineCache.get(), false);
             VkPipelineCache pc = m_VkDiskPipelineCache ? m_VkDiskPipelineCache->GetVkPipelineCache() : VK_NULL_HANDLE;
             res = vkCreateGraphicsPipelines(m_Device, pc, 1, &pipelineInfo, nullptr, &pipeline);
+            if (res == VK_SUCCESS && !GetCmdSetDepthWriteEnable() && depthStencil.depthWriteEnable)
+            {
+                depthStencil.depthWriteEnable = VK_FALSE;
+                res = vkCreateGraphicsPipelines(m_Device, pc, 1, &pipelineInfo, nullptr, &readOnlyDepthPipeline);
+                if (res != VK_SUCCESS) vkDestroyPipeline(m_Device, pipeline, nullptr);
+            }
         }
         // Cleanup shader modules
         vkDestroyShaderModule(m_Device, meshModule, nullptr);
@@ -5215,12 +5244,15 @@ PipelineHandle VulkanDevice::CreatePipelineInternal(const PipelineDesc& desc)
             vkDestroyShaderModule(m_Device, fragModule, nullptr);
         if (res != VK_SUCCESS)
         {
+            ReleasePipelineLayoutCached(pipelineLayout);
+            for (auto layout : vkLayouts) ReleaseDescriptorSetLayoutCached(layout);
             return INVALID_PIPELINE_HANDLE;
         }
         SetVkObjectName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(pipeline),
                         vulkanPipeline.debugName.c_str());
 
         vulkanPipeline.pipeline = pipeline;
+        vulkanPipeline.readOnlyDepthPipeline = readOnlyDepthPipeline;
         vulkanPipeline.layout = pipelineLayout;
         vulkanPipeline.renderPass = m_SwapchainRenderPass; // may be null when dynamic rendering used
         vulkanPipeline.type = PipelineType::Mesh;
@@ -5239,12 +5271,12 @@ PipelineHandle VulkanDevice::CreatePipelineInternal(const PipelineDesc& desc)
         return GameEngine::Rendering::CreatePipeline(pipelinePtr);
     }
 
-    // Graphics pipeline creation (existing logic)
-    // Decide if we can use dynamic rendering (explicit formats or feature enabled)
-    const bool canUseDynamicPath = (!desc.colorAttachmentFormats.empty()) || (m_SupportsDynamicRendering && m_EnableDynamicRendering);
-    // Only require/create a swapchain render pass when we cannot use the dynamic rendering path
-
-    if (!canUseDynamicPath)
+    // Explicit offscreen attachments create their own compatible legacy pass;
+    // a headless depth-only pipeline must not require a swapchain template.
+    const bool hasExplicitAttachments = !desc.colorAttachmentFormats.empty() ||
+        desc.depthAttachmentFormat != 0 || desc.stencilAttachmentFormat != 0;
+    const bool canUseDynamicPath = m_SupportsDynamicRendering && m_EnableDynamicRendering;
+    if (!canUseDynamicPath && !hasExplicitAttachments)
     {
         if (m_SwapchainRenderPass == VK_NULL_HANDLE)
         {
@@ -5319,7 +5351,7 @@ PipelineHandle VulkanDevice::CreatePipelineInternal(const PipelineDesc& desc)
         }
         // Use reflected desc for creation
         VkShaderModule vsm = CreateShaderModuleFromBytes(reflected.vertexShader);
-        VkShaderModule fsm = CreateShaderModuleFromBytes(reflected.pixelShader);
+        VkShaderModule fsm = reflected.pixelShader.empty() ? VK_NULL_HANDLE : CreateShaderModuleFromBytes(reflected.pixelShader);
         auto pipelineResult = CreateVulkanPipelineFromDesc(reflected, vsm, fsm);
         if (vsm != VK_NULL_HANDLE)
             vkDestroyShaderModule(m_Device, vsm, nullptr);
@@ -5328,6 +5360,7 @@ PipelineHandle VulkanDevice::CreatePipelineInternal(const PipelineDesc& desc)
         if (pipelineResult.pipeline != VK_NULL_HANDLE)
         {
             vulkanPipeline.pipeline = pipelineResult.pipeline;
+            vulkanPipeline.readOnlyDepthPipeline = pipelineResult.readOnlyDepthPipeline;
             vulkanPipeline.layout = pipelineResult.layout;
             vulkanPipeline.descriptorSetLayout = pipelineResult.descriptorSetLayout;
             vulkanPipeline.renderPass = m_SwapchainRenderPass;
@@ -5389,7 +5422,7 @@ PipelineHandle VulkanDevice::CreatePipelineInternal(const PipelineDesc& desc)
             PipelineHandle h = GameEngine::Rendering::CreatePipeline(pipelinePtr);
 #ifndef NDEBUG
             // Print color formats for diagnostics
-            if (std::getenv("GE_DEBUG_TRACE_RENDERING"))
+            if (GameEngine::Rendering::RenderingDebugFlags::Get().traceRendering)
             {
                 fprintf(stderr, "[VK] Created pipeline (gfx) name='%s' handle=%llu formats=[",
                         pipelinePtr->debugName.c_str(), (unsigned long long)h);
@@ -5461,6 +5494,7 @@ PipelineHandle VulkanDevice::CreatePipelineInternal(const PipelineDesc& desc)
     if (pipelineResult.pipeline != VK_NULL_HANDLE)
     {
         vulkanPipeline.pipeline = pipelineResult.pipeline;
+        vulkanPipeline.readOnlyDepthPipeline = pipelineResult.readOnlyDepthPipeline;
         vulkanPipeline.layout = pipelineResult.layout;
         vulkanPipeline.descriptorSetLayout = pipelineResult.descriptorSetLayout;
         vulkanPipeline.renderPass = m_SwapchainRenderPass;
@@ -6230,6 +6264,8 @@ void VulkanDevice::DestroyPipeline(PipelineHandle handle)
             {
                 vkDestroyPipeline(pipeline->device, pipeline->pipeline, nullptr);
             }
+            if (pipeline->readOnlyDepthPipeline != VK_NULL_HANDLE)
+                vkDestroyPipeline(pipeline->device, pipeline->readOnlyDepthPipeline, nullptr);
             // Release pipeline layout and descriptor set layout via cache-aware helpers
             // Guard: only release via this device's caches if the pipeline belongs to this VkDevice
             if (pipeline->device == m_Device)
@@ -6427,7 +6463,8 @@ uint64_t VulkanDevice::GetBufferDeviceAddress(BufferHandle handle)
     VkBufferDeviceAddressInfo info{};
     info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
     info.buffer = vulkanBuffer->buffer;
-    return static_cast<uint64_t>(vkGetBufferDeviceAddress(m_Device, &info));
+    if (m_PromotedCommands.GetBufferDeviceAddress == nullptr) return 0;
+    return static_cast<uint64_t>(m_PromotedCommands.GetBufferDeviceAddress(m_Device, &info));
 }
 
 IAccelerationStructureBackend* VulkanDevice::GetAccelerationStructureBackend()
@@ -6634,6 +6671,11 @@ void VulkanDevice::UpdateBuffer(BufferHandle handle, size_t offset, size_t size,
 
 SemaphoreHandle VulkanDevice::CreateTimelineSemaphore(uint64_t initialValue)
 {
+    if (!m_TimelineSemaphoresEnabledAtInit || m_PromotedCommands.GetSemaphoreCounterValue == nullptr ||
+        m_PromotedCommands.WaitSemaphores == nullptr)
+    {
+        return INVALID_HANDLE;
+    }
     // Try to create a timeline semaphore; if unavailable, fall back to binary and mark type accordingly
     VkSemaphoreTypeCreateInfo typeInfo{};
     typeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
@@ -6748,6 +6790,27 @@ const QueueSubmitContext& VulkanDevice::SubmitContextFor(QueueType queue) const
     return *m_SubmitContextByRole[QueueOrdinal(queue)];
 }
 
+void VulkanDevice::RetireLegacyRenderObjects(QueueType queue, std::vector<VkFramebuffer>& framebuffers,
+                                            std::vector<VkRenderPass>& renderPasses, SemaphoreHandle timeline,
+                                            uint64_t timelineValue)
+{
+    if (framebuffers.empty() && renderPasses.empty())
+        return;
+    std::lock_guard<std::mutex> lock(m_DeferredDestroyMutex);
+    auto& frame = m_Frames[m_CurrentFrame];
+    auto& resources = queue == QueueType::Graphics ? frame.graphics
+        : queue == QueueType::Compute ? frame.compute : frame.transfer;
+    resources.deferredFramebuffers.insert(resources.deferredFramebuffers.end(), framebuffers.begin(), framebuffers.end());
+    resources.deferredRenderPasses.insert(resources.deferredRenderPasses.end(), renderPasses.begin(), renderPasses.end());
+    if (timeline.IsValid() && timelineValue > resources.legacyObjectsTimelineValue)
+    {
+        resources.legacyObjectsTimeline = timeline;
+        resources.legacyObjectsTimelineValue = timelineValue;
+    }
+    framebuffers.clear();
+    renderPasses.clear();
+}
+
 VulkanDevice::UploadWait VulkanDevice::PendingUploadWait(const QueueSubmitContext& context) const
 {
     const QueueSubmitContext& uploadContext = SubmitContextFor(QueueType::Transfer);
@@ -6787,7 +6850,7 @@ void VulkanDevice::RouteSubmittedCommandList(VulkanCommandList* list, SemaphoreH
     // Nulls the list's buffer, so the destructor can no longer recycle a buffer the GPU is
     // still executing. Pairing this with the routing above is what makes "submitted" and
     // "tagged for retirement" one step rather than two a mid-frame return can separate.
-    list->OnSubmitted();
+    list->OnSubmitted(timeline, timelineValue);
 }
 
 bool VulkanDevice::QueueSubmit(QueueType queue,
@@ -6860,7 +6923,7 @@ bool VulkanDevice::QueueSubmit(QueueType queue,
         }
     }
     if (cbs.empty())
-        return true;
+        return false;
 
     bool touchesSwapchainPath = false;
     if (queue == QueueType::Graphics && m_HasActiveWindowTarget && m_ActiveWindowTargetId != 0)
@@ -7081,7 +7144,10 @@ bool VulkanDevice::QueueSubmit(QueueType queue,
 
         VkSubmitInfo submit{};
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit.pNext = &tsi;
+        submit.pNext = submitContext.HasTimeline() ? &tsi : nullptr;
+        submit.waitSemaphoreCount = (uint32_t)waitSems.size();
+        submit.pWaitSemaphores = waitSems.empty() ? nullptr : waitSems.data();
+        submit.pWaitDstStageMask = waitStagesLocal.empty() ? nullptr : waitStagesLocal.data();
         submit.commandBufferCount = (uint32_t)cbs.size();
         submit.pCommandBuffers = cbs.data();
         submit.pSignalSemaphores = signalSems.data();
@@ -7283,7 +7349,7 @@ IDevice::GpuSyncToken VulkanDevice::SubmitTextureUploads(const TextureUploadRequ
                 m_DeferredStagingBuffers.push_back({staging[i], transferTimeline, signaledValue});
         }
     }
-    vcl->OnSubmitted();
+    vcl->OnSubmitted(transferTimeline, signaledValue);
 
     return GpuSyncToken{transferTimeline, signaledValue};
 }
@@ -7914,6 +7980,11 @@ VulkanDevice::ExecuteCommandListsTracked(const std::vector<CommandList*>& comman
     // execution order.
     tokens.compute = submitBatch(QueueType::Compute, cmpCBs, cmpLists);
     tokens.transfer = submitBatch(QueueType::Transfer, xferCBs, xferLists);
+    // Immediate uploads cannot hand back an asynchronous completion token on
+    // a device without timelines. Complete them before callers retire staging
+    // resources or the first BeginFrame recycles their command buffers.
+    if (!HasGraphicsTimelineSemaphore())
+        EnsureGlobalGpuIdle();
     return tokens;
 }
 
@@ -8191,8 +8262,7 @@ bool VulkanDevice::BeginFrame()
 
     static const bool s_DeferLogEnabled = []() -> bool
     {
-        const char* v = std::getenv("GE_VK_DEFER_DESTROY_LOG");
-        return (v && v[0] == '1');
+        return GameEngine::Platform::EnvironmentSwitchEnabled("GE_VK_DEFER_DESTROY_LOG", false);
     }();
     static int s_DeferLogBudget = 128;
 
@@ -8429,25 +8499,44 @@ bool VulkanDevice::BeginFrame()
         // and destroy outside it — the Destroy*Immediate helpers take other locks.
         if (canRecycle)
         {
+            std::vector<PersistentDescriptorBytes> descriptorBytes;
+            std::vector<VkDescriptorSet> poolDescriptorSets;
             std::vector<BufferHandle> buffers;
             std::vector<TextureViewHandle> views;
             std::vector<TextureHandle> textures;
             std::vector<SamplerHandle> samplers;
-            std::vector<PersistentDescriptorBytes> descriptorBytes;
-            std::vector<VkDescriptorSet> poolDescriptorSets;
+            std::vector<VkFramebuffer> framebuffers;
+            std::vector<VkRenderPass> renderPasses;
             {
                 std::lock_guard<std::mutex> lock(m_DeferredDestroyMutex);
+                descriptorBytes.swap(pq.deferredDescriptorBytes);
+                poolDescriptorSets.swap(pq.deferredPoolDescriptorSets);
                 buffers.swap(pq.deferredBuffers);
                 views.swap(pq.deferredTextureViews);
                 textures.swap(pq.deferredTextures);
                 samplers.swap(pq.deferredSamplers);
-                descriptorBytes.swap(pq.deferredDescriptorBytes);
-                poolDescriptorSets.swap(pq.deferredPoolDescriptorSets);
+                // A bootstrap submit can precede the slot's first fence. Its
+                // render objects still need the actual submission's completion.
+                uint64_t completed = 0;
+                const bool legacyObjectsComplete = pq.legacyObjectsTimelineValue == 0 ||
+                    (GetTimelineSemaphoreValue(pq.legacyObjectsTimeline, completed) &&
+                     completed >= pq.legacyObjectsTimelineValue);
+                if (legacyObjectsComplete)
+                {
+                    framebuffers.swap(pq.deferredFramebuffers);
+                    renderPasses.swap(pq.deferredRenderPasses);
+                    pq.legacyObjectsTimeline = {};
+                    pq.legacyObjectsTimelineValue = 0;
+                }
             }
             for (const PersistentDescriptorBytes& bytes : descriptorBytes)
                 ReleaseDescriptorBytesImmediate(bytes);
             for (VkDescriptorSet set : poolDescriptorSets)
                 m_DsAllocator.FreePersistent(set);
+            for (auto framebuffer : framebuffers)
+                vkDestroyFramebuffer(m_Device, framebuffer, nullptr);
+            for (auto renderPass : renderPasses)
+                vkDestroyRenderPass(m_Device, renderPass, nullptr);
             if (s_DeferLogEnabled && !(buffers.empty() && textures.empty()) && s_DeferLogBudget-- > 0)
             {
                 Logger::Log::Info("[VulkanDefer] drain frame={} buffers={} textures={}",
@@ -8739,7 +8828,7 @@ bool VulkanDevice::GetTimelineSemaphoreValue(SemaphoreHandle sem, uint64_t& outV
     if (it == m_TimelineSemaphores.end() || it->second.sem == VK_NULL_HANDLE || !it->second.isTimeline)
         return false;
     uint64_t value = 0;
-    VkResult r = vkGetSemaphoreCounterValue(m_Device, it->second.sem, &value);
+    VkResult r = m_PromotedCommands.GetSemaphoreCounterValue(m_Device, it->second.sem, &value);
     if (r != VK_SUCCESS)
         return false;
     outValue = value;
@@ -8778,7 +8867,7 @@ VulkanDevice::TimelineWaitOutcome VulkanDevice::WaitTimelineSemaphore(SemaphoreH
     wi.pSemaphores = &vkSem;
     wi.pValues = &value;
 
-    switch (vkWaitSemaphores(m_Device, &wi, timeoutNs))
+    switch (m_PromotedCommands.WaitSemaphores(m_Device, &wi, timeoutNs))
     {
     case VK_SUCCESS: return TimelineWaitOutcome::Completed;
     case VK_TIMEOUT: return TimelineWaitOutcome::TimedOut;
@@ -8820,7 +8909,7 @@ uint64_t VulkanDevice::GetGraphicsTimelineCompletedValue() const
     if (it == m_TimelineSemaphores.end() || it->second.sem == VK_NULL_HANDLE || !it->second.isTimeline)
         return 0;
     uint64_t value = 0;
-    VkResult r = vkGetSemaphoreCounterValue(m_Device, it->second.sem, &value);
+    VkResult r = m_PromotedCommands.GetSemaphoreCounterValue(m_Device, it->second.sem, &value);
     return (r == VK_SUCCESS) ? value : 0;
 }
 
@@ -9322,6 +9411,8 @@ VulkanDevice::WindowTargetState VulkanDevice::CaptureWindowTargetState() const
     state.swapchainImageFormat = m_SwapchainImageFormat;
     state.swapchainColorSpace = m_SwapchainColorSpace;
     state.swapchainExtent = m_SwapchainExtent;
+    state.surfaceTransformAtCreation = m_SurfaceTransformAtCreation;
+    state.compositorRotatesSurface = m_CompositorRotatesSurface;
     state.swapchainSupportsReadback = m_SwapchainSupportsReadback;
     state.hdrState = m_HdrState;
     state.swapchainRenderPass = m_SwapchainRenderPass;
@@ -9346,6 +9437,8 @@ void VulkanDevice::ApplyWindowTargetState(const WindowTargetState& state)
     m_SwapchainImageFormat = state.swapchainImageFormat;
     m_SwapchainColorSpace = state.swapchainColorSpace;
     m_SwapchainExtent = state.swapchainExtent;
+    m_SurfaceTransformAtCreation = state.surfaceTransformAtCreation;
+    m_CompositorRotatesSurface = state.compositorRotatesSurface;
     m_SwapchainSupportsReadback = state.swapchainSupportsReadback;
     m_HdrState = state.hdrState;
     m_SwapchainRenderPass = state.swapchainRenderPass;
@@ -9376,6 +9469,8 @@ void VulkanDevice::ResetWindowTargetMembers()
     m_SwapchainSupportsReadback = false;
     m_HdrState.activeMode = HdrOutputMode::Off;
     m_SwapchainExtent = {0, 0};
+    m_SurfaceTransformAtCreation = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    m_CompositorRotatesSurface = false;
     m_SwapchainRenderPass = VK_NULL_HANDLE;
     m_SwapchainFramebuffers.clear();
     m_PresentReadySemaphores.clear();
@@ -9738,25 +9833,35 @@ void VulkanDevice::FlushPerFrameDeferredResourcesAfterIdle()
         auto flushQueue = [&](PerQueueFrame& q)
         {
             // Concurrent producers: swap out under the deferral lock, destroy after.
+            std::vector<PersistentDescriptorBytes> descriptorBytes;
+            std::vector<VkDescriptorSet> poolDescriptorSets;
             std::vector<BufferHandle> buffers;
             std::vector<TextureViewHandle> views;
             std::vector<SamplerHandle> samplers;
             std::vector<TextureHandle> textures;
-            std::vector<PersistentDescriptorBytes> descriptorBytes;
-            std::vector<VkDescriptorSet> poolDescriptorSets;
+            std::vector<VkFramebuffer> framebuffers;
+            std::vector<VkRenderPass> renderPasses;
             {
                 std::lock_guard<std::mutex> lock(m_DeferredDestroyMutex);
+                descriptorBytes.swap(q.deferredDescriptorBytes);
+                poolDescriptorSets.swap(q.deferredPoolDescriptorSets);
                 buffers.swap(q.deferredBuffers);
                 views.swap(q.deferredTextureViews);
                 samplers.swap(q.deferredSamplers);
                 textures.swap(q.deferredTextures);
-                descriptorBytes.swap(q.deferredDescriptorBytes);
-                poolDescriptorSets.swap(q.deferredPoolDescriptorSets);
+                framebuffers.swap(q.deferredFramebuffers);
+                renderPasses.swap(q.deferredRenderPasses);
+                q.legacyObjectsTimeline = {};
+                q.legacyObjectsTimelineValue = 0;
             }
             for (const PersistentDescriptorBytes& bytes : descriptorBytes)
                 ReleaseDescriptorBytesImmediate(bytes);
             for (VkDescriptorSet set : poolDescriptorSets)
                 m_DsAllocator.FreePersistent(set);
+            for (auto framebuffer : framebuffers)
+                vkDestroyFramebuffer(m_Device, framebuffer, nullptr);
+            for (auto renderPass : renderPasses)
+                vkDestroyRenderPass(m_Device, renderPass, nullptr);
             for (auto h : views)
                 if (h.IsValid())
                     DestroyTextureViewImmediate(h);
@@ -10684,6 +10789,7 @@ bool VulkanDevice::RecreateActiveSwapchain(uint32_t width, uint32_t height)
     m_CurrentSwapchainImage = UINT32_MAX;
     m_AcquiredThisFrame = false;
     m_AcquireReportedSuboptimal = false;
+    m_FaultAcquireForcedSuboptimal = false;
     m_AcquireSemaphoreThisFrame = VK_NULL_HANDLE;
     m_WaitedOnImageAvailableThisFrame = false;
     m_AnyGraphicsSubmitThisFrame = false;
@@ -10844,7 +10950,8 @@ void VulkanDevice::ShutdownVMA()
         VmaTotalStatistics stats{};
         vmaCalculateStatistics(AsVmaAllocator(m_VmaAllocator), &stats);
         // Detailed leak diagnostics (gated behind env var to avoid JSON spam)
-        if (IsEnvEnabled("GE_DUMP_VMA_STATS") || IsEnvEnabled("GE_VMA_DUMP"))
+        if (GameEngine::Platform::EnvironmentSwitchEnabled("GE_DUMP_VMA_STATS", false) ||
+            GameEngine::Platform::EnvironmentSwitchEnabled("GE_VMA_DUMP", false))
         {
             char* statsStr = nullptr;
             vmaBuildStatsString(AsVmaAllocator(m_VmaAllocator), &statsStr, VK_TRUE);
@@ -11231,10 +11338,16 @@ bool VulkanDevice::CreateSurface(void* windowHandle)
     }
 
     // Create surface from GLFW window
+#if !defined(GE_PLATFORM_MOBILE)
     GLFWwindow* glfwWindow = static_cast<GLFWwindow*>(windowHandle);
+#endif
 
     // Prefer GLFW path; if it fails, attempt direct Win32 surface creation as a fallback
+#if defined(GE_PLATFORM_MOBILE)
+    VkResult result = SDL_Vulkan_CreateSurface(static_cast<SDL_Window*>(windowHandle), m_Instance, nullptr, &m_Surface) ? VK_SUCCESS : VK_ERROR_INITIALIZATION_FAILED;
+#else
     VkResult result = glfwCreateWindowSurface(m_Instance, glfwWindow, nullptr, &m_Surface);
+#endif
 #if defined(_WIN32)
     if (result != VK_SUCCESS)
     {
@@ -11423,8 +11536,27 @@ bool VulkanDevice::PrepareSwapchain(uint32_t width, uint32_t height, SwapchainCr
         createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     }
 
-    createInfo.preTransform = surfaceCapabilities.currentTransform;
+    // Rendered pixels and pointer coordinates use the window's logical orientation.
+    // Identity asks the compositor to perform the display rotation; choosing the
+    // current surface transform would require pre-rotating every rendered view.
+    createInfo.preTransform = (surfaceCapabilities.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+        ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR : surfaceCapabilities.currentTransform;
+    Logger::Log::Info("VulkanDevice: surface transform current={} supported={} selected={}",
+        static_cast<uint32_t>(surfaceCapabilities.currentTransform),
+        static_cast<uint32_t>(surfaceCapabilities.supportedTransforms),
+        static_cast<uint32_t>(createInfo.preTransform));
     createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    constexpr VkCompositeAlphaFlagBitsKHR kCompositeAlphaModes[] = {
+        VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+        VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR, VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR};
+    for (const auto mode : kCompositeAlphaModes)
+    {
+        if ((surfaceCapabilities.supportedCompositeAlpha & mode) != 0)
+        {
+            createInfo.compositeAlpha = mode;
+            break;
+        }
+    }
     createInfo.presentMode = presentMode;
     createInfo.clipped = VK_TRUE;
     createInfo.oldSwapchain = VK_NULL_HANDLE;
@@ -11432,6 +11564,7 @@ bool VulkanDevice::PrepareSwapchain(uint32_t width, uint32_t height, SwapchainCr
     outPlan.surfaceFormat = surfaceFormat;
     outPlan.surfaceMinImageCount = surfaceCapabilities.minImageCount;
     outPlan.surfaceMaxImageCount = surfaceCapabilities.maxImageCount;
+    outPlan.surfaceTransformAtCreation = surfaceCapabilities.currentTransform;
     return true;
 }
 
@@ -11443,6 +11576,8 @@ void VulkanDevice::ApplySwapchainPlanProperties(const SwapchainCreatePlan& plan)
     m_SwapchainImageFormat = surfaceFormat.format;
     m_SwapchainColorSpace = surfaceFormat.colorSpace;
     m_SwapchainExtent = plan.createInfo.imageExtent;
+    m_SurfaceTransformAtCreation = plan.surfaceTransformAtCreation;
+    m_CompositorRotatesSurface = plan.createInfo.preTransform != plan.surfaceTransformAtCreation;
 
     // Debug: log the chosen swapchain format and color space in engine terms
     TextureFormat swapchainFmt = FromVkFormat(m_SwapchainImageFormat);
@@ -11825,11 +11960,11 @@ VkPresentModeKHR VulkanDevice::ChooseSwapPresentMode(const std::vector<VkPresent
                     return true;
             return false;
         };
-        if (StrCaseCmp(pm, "IMMEDIATE") == 0 && match(VK_PRESENT_MODE_IMMEDIATE_KHR))
+        if (EqualsIgnoreCase(pm, "IMMEDIATE") && match(VK_PRESENT_MODE_IMMEDIATE_KHR))
             return VK_PRESENT_MODE_IMMEDIATE_KHR;
-        if (StrCaseCmp(pm, "MAILBOX") == 0 && match(VK_PRESENT_MODE_MAILBOX_KHR))
+        if (EqualsIgnoreCase(pm, "MAILBOX") && match(VK_PRESENT_MODE_MAILBOX_KHR))
             return VK_PRESENT_MODE_MAILBOX_KHR;
-        if (StrCaseCmp(pm, "FIFO") == 0 && match(VK_PRESENT_MODE_FIFO_KHR))
+        if (EqualsIgnoreCase(pm, "FIFO") && match(VK_PRESENT_MODE_FIFO_KHR))
             return VK_PRESENT_MODE_FIFO_KHR;
     }
     // VSync: use FIFO (hard vsync, always available per spec)
@@ -12276,7 +12411,7 @@ static uint64_t Hash64(uint64_t x)
 }
 static uint64_t CombineHash(uint64_t a, uint64_t b)
 {
-    return Hash64(a ^ (b + 0x9e3779b97f4a7c15ULL + (a << 6) + (a >> 2)));
+    return Hash64(HashUtils::HashCombine(a, b));
 }
 
 VkRenderPass VulkanDevice::GetOrCreateRenderPass(
@@ -12376,36 +12511,12 @@ VkRenderPass VulkanDevice::GetOrCreateRenderPass(
     subpass.pColorAttachments = colorRefs.data();
     subpass.pDepthStencilAttachment = hasDepth ? &depthRef : nullptr;
 
-    // Add a default subpass dependency to match pipeline compatibility expectations
-    VkSubpassDependency dep{};
-    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dep.dstSubpass = 0;
-    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.srcAccessMask = 0;
-    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-    VkSubpassDependency depOut{};
-    depOut.srcSubpass = 0;
-    depOut.dstSubpass = VK_SUBPASS_EXTERNAL;
-    depOut.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    depOut.dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-    depOut.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    depOut.dstAccessMask = 0;
-
     VkRenderPassCreateInfo rpci{};
     rpci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     rpci.attachmentCount = static_cast<uint32_t>(attachments.size());
     rpci.pAttachments = attachments.data();
     rpci.subpassCount = 1;
     rpci.pSubpasses = &subpass;
-    if (colorFinalPresent && colorCount == 1 && !hasDepth)
-    {
-        VkSubpassDependency deps[2] = {dep, depOut};
-        rpci.dependencyCount = 2;
-        rpci.pDependencies = deps;
-    }
-
     VkRenderPass renderPass = VK_NULL_HANDLE;
     if (vkCreateRenderPass(m_Device, &rpci, nullptr, &renderPass) != VK_SUCCESS)
     {
@@ -12707,17 +12818,15 @@ bool VulkanDevice::AcquireNextImage(uint32_t& imageIndex)
             Logger::Log::Warning("VulkanDevice: [fault-injection] forcing VK_SUBOPTIMAL_KHR on acquire {}", m_FaultAcquireCounter);
         }
     }
+
     m_AcquireReportedSuboptimal = (result == VK_SUBOPTIMAL_KHR);
 
     // Mark that we must wait on the imageAvailable semaphore once this frame
     m_WaitedOnImageAvailableThisFrame = false;
 
-    // VK_SUBOPTIMAL_KHR is a successful acquire: the image is valid and the
-    // imageAvailable semaphore will be signaled, so the frame must go on to
-    // render and present it. Skipping the frame here would leave that binary
-    // semaphore signaled, and the next acquire on this frame slot would reuse it
-    // (VUID-vkAcquireNextImageKHR-semaphore-01286). PresentImage recreates the
-    // swapchain after the present, whatever the present itself returns.
+    // SUBOPTIMAL is a successful acquire: its image is valid and its binary
+    // semaphore will signal. Render/present this frame before recreating, or
+    // the next acquire would reuse an unconsumed signal (VUID 01286).
     if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)
     {
         m_CurrentSwapchainImage = imageIndex;
@@ -12818,8 +12927,10 @@ bool VulkanDevice::PresentImage(uint32_t imageIndex)
     QueueSubmitContext& presentContext = SubmitContextFor(QueueType::Graphics);
     const auto t0 = std::chrono::high_resolution_clock::now();
     VkResult result = presentContext.WithQueueLocked([&] {
-        const VkResult presentRes = vkQueuePresentKHR(m_PresentQueue, &presentInfo);
-        if (presentRes != VK_SUCCESS)
+        VkResult presentRes = vkQueuePresentKHR(m_PresentQueue, &presentInfo);
+        if (m_FaultAcquireForcedSuboptimal && m_FaultInjection.acquireSuboptimalAlsoPresent && presentRes == VK_SUCCESS)
+            presentRes = VK_SUBOPTIMAL_KHR;
+        if (presentRes != VK_SUCCESS && presentRes != VK_SUBOPTIMAL_KHR)
             return presentRes;
 
         // Arm a per-target completion fence with an empty submit on the present
@@ -12862,13 +12973,10 @@ bool VulkanDevice::PresentImage(uint32_t imageIndex)
     const auto t1 = std::chrono::high_resolution_clock::now();
     m_LastFrameSyncTimings.presentMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-    if (m_FaultAcquireForcedSuboptimal && m_FaultInjection.acquireSuboptimalAlsoPresent && result == VK_SUCCESS)
-    {
-        result = VK_SUBOPTIMAL_KHR;
-    }
+    const bool compositorSuboptimal = PresentSuboptimalIsCompositorRotation(result);
     m_FaultAcquireForcedSuboptimal = false;
 
-    if (result == VK_SUCCESS)
+    if (result == VK_SUCCESS || compositorSuboptimal)
     {
 
         // Advance global device frame pacing.
@@ -12881,15 +12989,13 @@ bool VulkanDevice::PresentImage(uint32_t imageIndex)
             if (it != m_WindowTargets.end())
                 it->second.frameIndex = m_ActiveWindowTargetFrameIndex;
         }
-        // A present can succeed on a swapchain its acquire reported as suboptimal;
-        // the surface still no longer matches it.
+        // Some drivers flag only acquire. The semaphore has now been consumed,
+        // so it is safe to recreate even when present itself reported success.
         if (m_AcquireReportedSuboptimal && m_SwapchainExtent.width > 0 && m_SwapchainExtent.height > 0)
         {
             const WindowTargetHandle activeTarget = GetActiveWindowTarget();
             if (activeTarget.IsValid())
-            {
                 RecreateWindowTargetSwapchain(activeTarget, m_SwapchainExtent.width, m_SwapchainExtent.height);
-            }
         }
         return true;
     }
@@ -12922,6 +13028,26 @@ bool VulkanDevice::PresentImage(uint32_t imageIndex)
         }
         return false;
     }
+}
+
+// Identity-transform Android swapchains can remain SUBOPTIMAL solely because
+// the compositor rotates them. Preserve the valid frame on an unchanged surface;
+// extent/transform changes, query failures and injected faults still recreate.
+bool VulkanDevice::PresentSuboptimalIsCompositorRotation(VkResult presentResult)
+{
+    if (!m_CompositorRotatesSurface || m_FaultAcquireForcedSuboptimal ||
+        (presentResult != VK_SUBOPTIMAL_KHR && !m_AcquireReportedSuboptimal))
+        return false;
+    VkSurfaceCapabilitiesKHR capabilities{};
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_PhysicalDevice, m_Surface, &capabilities) != VK_SUCCESS ||
+        capabilities.currentTransform != m_SurfaceTransformAtCreation)
+        return false;
+    if (capabilities.currentExtent.width != UINT32_MAX &&
+        (capabilities.currentExtent.width != m_SwapchainExtent.width ||
+         capabilities.currentExtent.height != m_SwapchainExtent.height))
+        return false;
+    m_AcquireReportedSuboptimal = false;
+    return presentResult == VK_SUBOPTIMAL_KHR;
 }
 
 TextureHandle VulkanDevice::GetCurrentSwapchainImageHandle()
@@ -12997,34 +13123,15 @@ VkRenderPass VulkanDevice::GetOrCreateSwapchainRenderPass()
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &colorAttachmentRef;
 
-    // Add subpass dependencies for proper synchronization
-    VkSubpassDependency dependencies[2] = {};
-
-    // Dependency for transition into the render pass
-    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependencies[0].dstSubpass = 0;
-    dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependencies[0].srcAccessMask = 0;
-    dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-    // Dependency for transition out of the render pass (for presentation)
-    dependencies[1].srcSubpass = 0;
-    dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-    dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    dependencies[1].dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-    dependencies[1].dstAccessMask = 0;
-
     VkRenderPassCreateInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     renderPassInfo.attachmentCount = 1;
     renderPassInfo.pAttachments = &colorAttachment;
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
-    renderPassInfo.dependencyCount = 2;
+    renderPassInfo.dependencyCount = 0;
 
-    renderPassInfo.pDependencies = dependencies;
+    renderPassInfo.pDependencies = nullptr;
 
     VkResult result = vkCreateRenderPass(m_Device, &renderPassInfo, nullptr, &m_SwapchainRenderPass);
     if (result == VK_SUCCESS)
@@ -13398,7 +13505,7 @@ VulkanDevice::PipelineCreationResult VulkanDevice::CreateVulkanPipelineFromDesc(
     {
         dynamicStates.push_back(VK_DYNAMIC_STATE_SCISSOR);
     }
-    if (m_DeviceProperties.apiVersion >= VK_API_VERSION_1_3 &&
+    if (GetCmdSetDepthWriteEnable() &&
         std::find(dynamicStates.begin(), dynamicStates.end(), VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE) == dynamicStates.end())
     {
         dynamicStates.push_back(VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE);
@@ -13801,7 +13908,7 @@ VulkanDevice::PipelineCreationResult VulkanDevice::CreateVulkanPipelineFromDesc(
 
     VkPipelineCache pipelineCache = m_VkDiskPipelineCache ? m_VkDiskPipelineCache->GetVkPipelineCache() : VK_NULL_HANDLE;
 #ifndef NDEBUG
-    if (std::getenv("GE_DEBUG_TRACE_RENDERING"))
+    if (GameEngine::Rendering::RenderingDebugFlags::Get().traceRendering)
     {
         const char* name = desc.debugName ? desc.debugName : "";
         Logger::Log::Debug("[VK][CreateGfx-DR] name='{}' pcSize={} pcStages=0x{:X} layout={}",
@@ -13886,7 +13993,24 @@ VulkanDevice::PipelineCreationResult VulkanDevice::CreateVulkanPipelineFromDesc(
 
     // Keep first layout (or VK_NULL_HANDLE if none) to honor existing API contract
     VkDescriptorSetLayout firstLayout = vkLayouts.empty() ? VK_NULL_HANDLE : vkLayouts[0];
-    return {graphicsPipeline, pipelineLayout, firstLayout};
+    VkPipeline readOnlyDepthPipeline = VK_NULL_HANDLE;
+    if (!GetCmdSetDepthWriteEnable() && depthStencil.depthWriteEnable)
+    {
+        // Vulkan 1.1 has no dynamic depth-write switch. Keep a static pair,
+        // like the Metal/WebGPU backends' per-pass depth-write selection.
+        depthStencil.depthWriteEnable = VK_FALSE;
+        const VkResult readOnlyResult = vkCreateGraphicsPipelines(
+            m_Device, pipelineCache, 1, &pipelineInfo, nullptr, &readOnlyDepthPipeline);
+        if (readOnlyResult != VK_SUCCESS)
+        {
+            vkDestroyPipeline(m_Device, graphicsPipeline, nullptr);
+            ReleasePipelineLayoutCached(pipelineLayout);
+            for (auto layout : vkLayouts) ReleaseDescriptorSetLayoutCached(layout);
+            Logger::Log::Error("Vulkan: failed to create read-only depth pipeline for '{}'", desc.debugName ? desc.debugName : "");
+            return {};
+        }
+    }
+    return {graphicsPipeline, pipelineLayout, firstLayout, readOnlyDepthPipeline};
 }
 
 void VulkanDevice::BindDescriptorSet(VkCommandBuffer commandBuffer, VkPipelineLayout pipelineLayout, VkDescriptorSet descriptorSet)
@@ -16065,7 +16189,7 @@ void VulkanDevice::WriteDescriptorBufferUpdate(DescriptorSetHandle handle, const
                 if (vkBuf == VK_NULL_HANDLE) return "buffer handle did not resolve";
                 VkBufferDeviceAddressInfo ai{}; ai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
                 ai.buffer = vkBuf;
-                VkDeviceAddress base = vkGetBufferDeviceAddress(m_Device, &ai);
+                VkDeviceAddress base = m_PromotedCommands.GetBufferDeviceAddress(m_Device, &ai);
                 VkDeviceSize offset = (element < update.bufferOffsets.size()) ? static_cast<VkDeviceSize>(update.bufferOffsets[element]) : 0;
                 VkDeviceSize range  = (element < update.bufferRanges.size())  ? static_cast<VkDeviceSize>(update.bufferRanges[element])  : VK_WHOLE_SIZE;
                 // VkDescriptorAddressInfoEXT forbids VK_WHOLE_SIZE (VUID-08939). Resolve it here

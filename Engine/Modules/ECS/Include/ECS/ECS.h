@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ECS/Component/ComponentTypeName.h"
+#include "ECS/ComponentTypeName.h"
 #include "JobSystem/TaskHandle.h"
 #include "JobSystem/TaskTypes.h"
 #include "JobSystem/WorkStealingThreadPool.h"
@@ -246,12 +246,14 @@ struct Command
         ADD_COMPONENT,
         REMOVE_COMPONENT,
         SET_COMPONENT,
+        // A required component (Detail::RequiredComponents): added with this value only
+        // when the entity lacks it at the flush, so it never replaces a value the entity
+        // has, including one queued earlier in the same flush.
+        ADD_REQUIRED_COMPONENT,
         // World::SetEntityEnabledImmediate at flush: the same single move as an
         // immediate switch, so a queued switch keeps the derived tag exactly
         // where an immediate one would (see SetEntityEnabledImmediate).
         SET_ENTITY_ENABLED,
-        // World::SetComponentBytesFromScriptImmediate at flush: a script's write merges with
-        // the component's value at that point, not at the time it was queued.
         SET_COMPONENT_FROM_SCRIPT
     };
 
@@ -269,6 +271,14 @@ struct Command
         cmd.entity = entity;
         cmd.componentType = GetComponentTypeId<T>();
         cmd.componentData.Assign(&component, sizeof(T));
+        return cmd;
+    }
+
+    template <Component T>
+    static Command addRequiredComponent(EntityHandle entity, const T& component)
+    {
+        Command cmd = addComponent(entity, component);
+        cmd.type = ADD_REQUIRED_COMPONENT;
         return cmd;
     }
 };
@@ -415,8 +425,6 @@ ComponentSignature BuildSignature()
 {
     ComponentSignature signature;
     (signature.Add(GetComponentTypeId<Cs>()), ...);
-    // Hash() caches lazily in a mutable member. Computing it here, while the shared static is
-    // built, leaves the query threads that key the World's match cache on it only reading it.
     signature.Hash();
     return signature;
 }
@@ -497,8 +505,7 @@ struct EntityMetadata
     uint16_t chunkIndex = 0;       // Which 16KB chunk in the table (max 65535)
     uint16_t indexInChunk = 0;     // Slot within that chunk (max 65535, typical ~200)
     EntityVersion version = 0;     // 2 bytes
-    bool alive = false;            // 1 byte
-    bool onFreeList = false;       // 1 byte (16 bytes total): the index is in World's free list
+    bool alive = false;            // 1 byte + 1 padding = 16 bytes total
 
     EntityLocation GetLocation() const { return {chunkIndex, indexInChunk}; }
     void SetLocation(const EntityLocation& loc)

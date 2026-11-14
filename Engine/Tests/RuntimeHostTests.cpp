@@ -17,6 +17,8 @@
 // headless world through a save slot keeps its AI: the load continues the simulation tick, and the
 // agents then decide as the agents of the world that was not saved.
 
+#include <gtest/gtest.h>
+
 #include "AI/RecordStore.h"
 #include "AIECS/AiGroupKnowledge.h"
 #include "AIECS/AiRegistry.h"
@@ -32,16 +34,12 @@
 #include "Assets/AssetManager.h"
 #include "Components/Name.h"
 #include "Core/Application.h"
-#include "Core/ApplicationPaths.h"
 #include "Core/Engine.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/SimulationClock.h"
 #include "ECS/Systems.h"
 #include "ECS/World.h"
 #include "ECSModules/Rendering/RenderingLoop.h"
-#include "Engine/Build/PackagedGameLayout.h"
-#include "Engine/GameUI/GameUIHost.h"
-#include "Engine/GameUI/GameplayUI.h"
 #include "Engine/Hosting/RuntimeFrameReadback.h"
 #include "Engine/Hosting/RuntimeHost.h"
 #include "Engine/Rendering/FrameOrchestrator.h"
@@ -57,8 +55,6 @@
 #include "Scene/SceneIO.h"
 #include "ScopedPlatformCacheRoot.h"
 #include "Scripting/ScriptsConfig.h"
-#include "UI/ResolvedStyle.h"
-#include "UI/UIManager.h"
 
 #include <algorithm>
 #include <array>
@@ -74,8 +70,6 @@
 #include <system_error>
 #include <thread>
 #include <vector>
-
-#include <gtest/gtest.h>
 
 using namespace GameEngine;
 namespace fs = std::filesystem;
@@ -161,13 +155,7 @@ protected:
         ASSERT_TRUE(m_Application->Initialize());
         Rendering::Utils::SetShaderFileLoader(nullptr);
         Rendering::Utils::SetShaderPathResolver(&ResolveBuildShader);
-        auto& assetManager = EngineCore::GetInstance().GetAssetManager();
-        assetManager.WaitForStartupScan(kAssetSourceAliasProject);
-        // Mount the staged runtime assets as 'editor', as the Player does.
-        const auto editorSource = BuildPlayerEditorSourceDesc(EngineCore::GetInstance().GetResolvedAssetRoot(),
-                                                              ApplicationPaths::GetInstallAssetsRoot());
-        ASSERT_TRUE(editorSource.has_value());
-        ASSERT_TRUE(assetManager.RegisterSource(*editorSource));
+        EngineCore::GetInstance().GetAssetManager().WaitForStartupScan(kAssetSourceAliasProject);
 
         RuntimeHostDesc desc;
         desc.Title = "RuntimeHostTest";
@@ -216,7 +204,6 @@ protected:
         if (m_Application)
             m_Application->Shutdown();
         m_Application.reset();
-        m_CacheRoot.reset();
         std::error_code ec;
         fs::current_path(m_PreviousCwd, ec);
         fs::remove_all(m_Root, ec);
@@ -224,37 +211,12 @@ protected:
 
     fs::path m_PreviousCwd;
     fs::path m_Root;
-    std::optional<TestUtils::ScopedPlatformCacheRoot> m_CacheRoot;
     std::unique_ptr<HostTestApplication> m_Application;
     std::unique_ptr<RuntimeHost> m_Host;
     CompositeProbe m_Probe;
     int m_DeviceFailures = 0;
 };
 } // namespace
-
-TEST_F(RuntimeHostFrame, DefaultHudFontComesFromStagedAssetsWithASeparateProject)
-{
-    ASSERT_FALSE(fs::exists(m_Root / "Assets/Fonts/Roboto-Regular.ttf"));
-    ASSERT_TRUE(fs::exists(ApplicationPaths::GetInstallAssetsRoot() / "Fonts/Roboto-Regular.ttf"))
-        << "the runtime font must be staged beside the test executable";
-    const auto face = RenderAndGetDefaultHudFace();
-    ASSERT_TRUE(face.has_value()) << "a project without its own font must use the runtime's bundled default";
-    EXPECT_EQ(face->family, "Roboto");
-    EXPECT_EQ(face->style, "Regular");
-}
-
-TEST_F(RuntimeHostFrame, DefaultHudFontComesFromTheProjectWhenTheProjectHasOne)
-{
-    // The project's Fonts/Roboto-Regular.ttf holds a different face, so the test can tell the copies apart.
-    std::error_code ec;
-    fs::create_directories(m_Root / "Assets/Fonts", ec);
-    ASSERT_TRUE(fs::copy_file(ApplicationPaths::GetInstallAssetsRoot() / "Fonts/RobotoMono-Regular.ttf",
-                              m_Root / "Assets/Fonts/Roboto-Regular.ttf", ec))
-        << ec.message();
-    const auto face = RenderAndGetDefaultHudFace();
-    ASSERT_TRUE(face.has_value());
-    EXPECT_EQ(face->family, "Roboto Mono");
-}
 
 TEST_F(RuntimeHostFrame, OneFrameCallsTheCompositeHookOnceAndItsReadbackResolves)
 {

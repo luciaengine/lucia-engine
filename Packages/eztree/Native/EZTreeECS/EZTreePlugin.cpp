@@ -1,7 +1,7 @@
 #include "EZTreeECS/EZTreePlugin.h"
 
-#include "ECS/Component/ComponentFactory.h"
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentFactory.h"
+#include "ECS/ComponentRegistry.h"
 #include "EZTree/EZTreeOptions.h"
 #include "EZTreeECS/Components/EZTreeComponent.h"
 #include "EZTreeECS/EZTreeService.h"

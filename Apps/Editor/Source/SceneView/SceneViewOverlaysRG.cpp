@@ -24,6 +24,7 @@
 #include "Components/Rendering/MeshRenderer.h"
 #include "Components/Transform.h"
 #include "Core/Application.h"
+#include "Core/ApplicationPaths.h"
 #include "Core/Engine.h"
 #include "ECS/Components.h"
 #include "Engine/GameUI/GameUIHost.h"
@@ -942,7 +943,8 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
             // so a Fullscreen UIDocument must NOT clear it (neverClearTarget=true).
             m_GameUI = GameUIHost::CreateForHost(
                 device, &EngineCore::GetInstance().GetAssetManager(),
-                &EngineCore::GetInstance().GetJobSystem(), /*neverClearTarget=*/true);
+                &EngineCore::GetInstance().GetJobSystem(), ApplicationPaths::GetInstallAssetsRoot(),
+                /*neverClearTarget=*/true);
         m_GameUiScale.Apply(*m_GameUI->GetUIManager());
         // The HUD composites onto the scene pipeline's finalColor: its
         // declared space is the PRODUCER's stamp (#784), not the display's.

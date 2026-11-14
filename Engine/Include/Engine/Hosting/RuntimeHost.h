@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Engine/Rendering/SortingLayers.h"
+
 #include "Core/WindowInputRouter.h"
 #include "Engine/Build/GameConfig.h"
 #include "Engine/Rendering/AntiAliasingProjectSettings.h"
@@ -55,6 +57,7 @@ struct RuntimeHostDesc
     Rendering::LodProjectSettings LodSelection;
     /// The engine-wide anti-aliasing and render scale; per-camera overrides still win per view.
     Rendering::AntiAliasingProjectSettings RenderQuality;
+    Rendering::SortingLayers SortingLayers = Rendering::SortingLayers::Defaults();
     /// Asset-relative path of the .rendergraph to render with; empty selects the engine's
     /// default pipeline.
     std::string RenderPipeline;
@@ -128,11 +131,10 @@ public:
     Engine::Renderer::RenderDeviceContext* GetRenderDeviceContext() const { return m_RenderCtx.get(); }
 
 private:
-    // The window's play surface, resolved per event: whether the window holds
-    // the pointer locked, the HUD host, and the mapping that makes this window's
-    // pointer the HUD's. The HUD legs are empty until the first rendered frame
-    // builds the host. No gameplay sink — with no chrome above it, the game's own
-    // InputSystem ends the chain instead of sitting inside it.
+    // The window's play surface, resolved per event: the HUD host, and the
+    // mapping that makes this window's pointer the HUD's. Empty until the first
+    // rendered frame builds the host. No gameplay sink — with no chrome above
+    // it, the game's own InputSystem ends the chain instead of sitting inside it.
     WindowInputRouterConfig::PlaySurface HudPlaySurface() const;
     // The immediate-mode frame for the window — pool imports for the view targets,
     // ImportBackbuffer, the spine, the HUD composite, the composite hook, the
@@ -172,6 +174,9 @@ private:
     // Game UI host: composites UIDocument entities over FinalColor before the
     // terminal encode — the runtime HUD. Lazy-created on first render.
     std::unique_ptr<GameUIHost> m_GameUI;
+    bool m_IncludeUIInPostProcessing = false;
+    std::shared_ptr<uint8_t> m_UiPostProcessLifetime = std::make_shared<uint8_t>(0);
+    uint64_t m_UiCompositedFrame = ~uint64_t{0};
 };
 
 } // namespace GameEngine

@@ -9,9 +9,11 @@
 #include "Scene/SceneIOContext.h"
 #include "Scene/SceneValue.h"
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -221,6 +223,135 @@ struct SceneWriteOptions
     // When non-null, appended as a trailing [editor_camera] section with the scene-view camera pose.
     const SceneEditorCamera* editorCamera = nullptr;
 };
+
+// Thread-local failure record for parser-only preparation, projection and staged-session creation.
+// Document reads, instantiation and writes return their errors directly.
+const SceneIOError& GetLastSceneIOError();
+void ClearLastSceneIOError();
+
+// Immutable, owned parse/validation result. Preparing does not access an ECS
+// world, register schemas, resolve assets or submit GPU work. It can run on a
+// worker if the configured file reader supports it and is not being changed.
+// Failure returns null; GetLastSceneIOError belongs to the preparing thread.
+// Includes are captured now. Referenced prefab/subscene files retain the
+// existing late-load semantics during instantiation; this is not a frozen
+// dependency package or a promise of nonblocking instantiation.
+struct PreparedScene;
+std::shared_ptr<const PreparedScene> PrepareSceneFromFile(
+    const std::filesystem::path& sceneFilePath, SceneReadTimings* outTimings = nullptr);
+
+struct PreparedSceneEntityInfo
+{
+    std::string Id;
+    std::string Name;
+    std::optional<std::string> Parent;
+    std::vector<std::string> Components;
+    std::vector<std::string> DependencyIds;
+};
+
+// Canonical-parser projection for derived runtime scene packages. No world,
+// schema registration, asset resolution or source writes. Flat scenes only;
+// prefab/subscene/embed documents and unparseable property values fail closed.
+// DependencyIds includes parents, explicit $ references and every quoted/bare
+// string matching a document entity id (including nested values). The latter is
+// deliberately conservative: existing schemas also encode entity links as plain
+// quoted strings. An ordinary string matching an id may over-include an entity.
+// Runtime lookups by name, script-owned links and other semantic dependencies
+// are NOT inferred: the project must explicitly include those roots.
+std::optional<std::vector<PreparedSceneEntityInfo>> DescribePreparedScene(
+    const PreparedScene& prepared);
+
+// Select roots AND their transitive DependencyIds, preserving document order,
+// authored ids/properties and the full resource table. Unknown roots fail; an
+// empty root list produces an empty scene. No duplication within one result.
+// Separately selected groups may overlap: do not instantiate them together
+// without an explicit shared-entity ownership/binding policy.
+std::shared_ptr<const PreparedScene> SelectPreparedSceneEntities(
+    const PreparedScene& prepared, std::span<const std::string> rootIds);
+
+// Batch equivalent, building the full document's reference catalog only once.
+// Results preserve input-group order; each is independently closed and may
+// overlap another. Any invalid group rejects the entire batch without mutation.
+std::optional<std::vector<std::shared_ptr<const PreparedScene>>> SelectPreparedSceneGroups(
+    const PreparedScene& prepared, std::span<const std::vector<std::string>> rootGroups);
+
+// Emit a flat runtime document without instantiating ECS or reserializing
+// component values through schemas. Includes are already expanded; editor-only
+// hierarchy/camera snapshots are omitted. Relative asset paths are unchanged:
+// load with the same asset root, and preserve the source directory semantics.
+// Does not write a file or overwrite the authored source.
+std::optional<std::string> SerializePreparedScene(const PreparedScene& prepared);
+
+// Owner-thread phase. The prepared root and its includes are not read or parsed
+// again. Resolver/materializer pointers are used only here and must be valid for
+// this call. ECS creation is still synchronous; callers must not treat this as a
+// frame-budgeted loader. Timings include the original preparation phases, not
+// time spent waiting between preparation and instantiation. The immutable
+// document may be reused; each additive instantiation gets its own namespace.
+// Referenced sources are frozen at this call; errors and timings are returned in the result.
+struct SceneInstantiateResult;
+SceneInstantiateResult InstantiatePreparedScene(ECS::World& world, const PreparedScene& prepared,
+                                                const SceneReadOptions& readOptions = {},
+                                                const SceneInstantiateOptions& instantiateOptions = {});
+
+enum class SceneActivationPhase
+{
+    Creating, Applying, Parenting, Ready, Publishing, Complete, Cancelling, Cancelled, Failed
+};
+
+struct SceneActivationOptions
+{
+    // Non-owning; must outlive the activation, including its cancellation.
+    ISceneAssetResolver* assetResolver = nullptr;
+    std::filesystem::path assetRootOverride;
+};
+
+// Additive, owner-thread staging for prepared flat scene documents. Never clears
+// the existing world. Unsupported prefab/subscene/embed documents fail BEFORE
+// any mutation; there is no hidden synchronous fallback. Schema callbacks may
+// still do indivisible work, so budgets are checked BETWEEN entity operations,
+// not a hard frame-time guarantee. Creation, components and parenting finish
+// with entities excluded from native and type-erased queries through a transient
+// PendingActivation tag, separate from authored Disabled state. Direct handle
+// access and raw archetype enumeration are not hidden. RequestPublish explicitly
+// begins query visibility changes; schema callbacks must not publish work through
+// other channels or mutate the world/session outside their destination entity.
+// Keep presentation covering the destination until publication is Complete.
+//
+// World, resolver and this session must stay on the owning thread; world must
+// outlive the session. Do not modify its staged handles externally. A World::Clear
+// invalidates the session, which then leaves replacement entities untouched.
+// Normal engine command/hierarchy synchronization remains the caller's job;
+// Step never flushes unrelated global command buffers.
+class StagedSceneActivation
+{
+public:
+    ~StagedSceneActivation();
+    StagedSceneActivation(const StagedSceneActivation&) = delete;
+    StagedSceneActivation& operator=(const StagedSceneActivation&) = delete;
+    SceneActivationPhase Phase() const;
+    std::size_t Step(std::size_t maxOperations, std::chrono::microseconds budget);
+    bool RequestPublish();
+    void RequestCancel();
+    std::span<const ECS::EntityHandle> CreatedEntities() const;
+    const SceneDegradation& Degradation() const;
+    const SceneIOError& Error() const;
+
+    // Destruction before Complete rolls back synchronously as a safety net.
+    // For responsive cancellation call RequestCancel and drain Step first.
+    // Complete transfers ownership to the world; destruction then retains the
+    // entities. Explicit RequestCancel after Complete can unload this group.
+private:
+    struct Impl;
+    explicit StagedSceneActivation(std::unique_ptr<Impl> impl);
+    std::unique_ptr<Impl> m_Impl;
+    friend std::unique_ptr<StagedSceneActivation> BeginStagedSceneActivation(
+        ECS::World&, std::shared_ptr<const PreparedScene>, const SceneActivationOptions&);
+};
+
+std::unique_ptr<StagedSceneActivation> BeginStagedSceneActivation(
+    ECS::World& world, std::shared_ptr<const PreparedScene> prepared,
+    const SceneActivationOptions& options = {});
 
 // The parsed files of one scene read. Private to the scene IO sources.
 struct SceneDocumentFiles;

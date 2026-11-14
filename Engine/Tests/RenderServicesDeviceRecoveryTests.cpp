@@ -16,7 +16,6 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/DrawCommandProducer.h"
 #include "Engine/Rendering/SceneAccelerationStructureService.h"
-#include "Engine/Rendering/StagingViewPool.h"
 #include "Rendering/Core/AccelerationStructure.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialRegistry.h"
@@ -28,14 +27,15 @@
 
 #include "Engine/Rendering/ViewReadbackUtils.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Passes/TonemapPass.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <vector>
 
 #include "TestDeviceHelper.h"
+#include "TestTempDir.h"
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -303,7 +303,9 @@ TEST(RenderServicesDeviceRecovery, PerViewLightBufferIsForgottenSoItIsRecreatedA
 
     const auto* pv = rs.Views().FindPerView(viewId);
     ASSERT_NE(pv, nullptr);
-    ASSERT_TRUE(pv->HasLiveLightBuffer())
+    const auto beforeSlot = std::find_if(pv->LightBuffers.begin(), pv->LightBuffers.end(),
+                                         [](const auto& b) { return b.IsValid(); });
+    ASSERT_NE(beforeSlot, pv->LightBuffers.end())
         << "the fixture must have created a light buffer, or the test proves nothing";
 
     // Drive the injected loss and the rebuild that follows it. Loop on the
@@ -323,8 +325,9 @@ TEST(RenderServicesDeviceRecovery, PerViewLightBufferIsForgottenSoItIsRecreatedA
     // IsValid(), which is exactly why the lazy create could not re-fire.
     const auto* pvAfter = rs.Views().FindPerView(viewId);
     ASSERT_NE(pvAfter, nullptr);
-    EXPECT_FALSE(pvAfter->HasLiveLightBuffer())
-        << "a handle surviving the rebuild leaves the lazy create permanently inert";
+    for (const auto& buf : pvAfter->LightBuffers)
+        EXPECT_FALSE(buf.IsValid())
+            << "a handle surviving the rebuild leaves the lazy create permanently inert";
 
     // And the lazy path must actually produce a live buffer on the new device.
     // Inside an acquired frame, as production does: the light buffer is one slot
@@ -334,7 +337,10 @@ TEST(RenderServicesDeviceRecovery, PerViewLightBufferIsForgottenSoItIsRecreatedA
     rs.WriteViewLightBuffer(viewId);
     const auto* pvRecreated = rs.Views().FindPerView(viewId);
     ASSERT_NE(pvRecreated, nullptr);
-    EXPECT_TRUE(pvRecreated->HasLiveLightBuffer())
+    const auto afterSlot = std::find_if(pvRecreated->LightBuffers.begin(),
+                                        pvRecreated->LightBuffers.end(),
+                                        [](const auto& b) { return b.IsValid(); });
+    EXPECT_NE(afterSlot, pvRecreated->LightBuffers.end())
         << "forgetting is only half the fix: the write must recreate on the live device";
 
     rs.Shutdown();
@@ -494,9 +500,7 @@ TEST(RenderServicesDeviceRecovery, ReadbackTicketsAcrossDeviceRebuild)
             << "post-rebuild readback must resolve — a stale RGFrame queue "
                "timeline wedges every later readback for the process lifetime";
         if (!postRes.pixels.empty())
-        {
             EXPECT_EQ(postRes.width, 8u);
-        }
     }
     device->Shutdown();
     UnsetEnvVar("GE_VK_FORCE_DEVICE_LOST");
@@ -618,67 +622,107 @@ TEST(RenderServicesDeviceRecovery, AccelerationStructuresAreReleasedWithTheLostD
 
 namespace
 {
-// Declares one staging output into a frame that never executes: DeclareOutput creates the output
-// texture before it adds the tonemap pass.
-void DeclareStagingOutput(IDevice& device, StagingView& view)
+class PreparationReadbackTest : public ::testing::TestWithParam<GraphicsAPI>
 {
-    RenderGraph::RGResourcePool persistent(&device);
-    RenderGraph::RGTransientPool transient(&device);
-    RenderGraph::RGUploadRing uploadRing(&device, 2, 4096);
-    RenderGraph::RGFrame frame(&device, &persistent, &transient, &uploadRing);
-    frame.BeginFrame(0);
-    TextureDesc desc{};
-    desc.width = view.RenderWidth();
-    desc.height = view.RenderHeight();
-    desc.format = static_cast<uint32_t>(TextureFormat::R16G16B16A16_FLOAT);
-    desc.usage = static_cast<uint32_t>(TextureUsage::ShaderResource | TextureUsage::RenderTarget);
-    const RenderGraph::RGTexture source = frame.CreateTexture("StagingRebuild.Source", desc);
-    view.DeclareOutput(frame, source, Passes::TonemapParams{});
+};
+
+std::shared_ptr<RGReadbackTicket> ExecutePreparationTicketFrame(
+    IDevice& device, RenderGraph::RGFrame& frame, uint64_t frameIndex, bool ready, uint32_t colorChannel)
+{
+    if (!device.BeginFrame())
+    {
+        ADD_FAILURE() << "headless device failed to begin a frame";
+        return {};
+    }
+    frame.BeginFrame(frameIndex);
+    TextureDesc description{};
+    description.width = description.height = 4;
+    description.format = static_cast<uint32_t>(TextureFormat::RGBA8_UNORM);
+    description.usage = static_cast<uint32_t>(TextureUsage::RenderTarget | TextureUsage::ShaderResource);
+    const auto color = frame.CreateTexture("PreparationTicket.Color", description);
+    frame.AddPass("PreparationTicket.Clear", 0,
+                  [&](RenderGraph::RGPassBuilder& builder) {
+                      RenderGraph::RGAttachmentOps operations{};
+                      operations.Load = RenderGraph::RGLoadOp::Clear;
+                      operations.Clear.Color[colorChannel] = 1.0f;
+                      operations.Clear.Color[3] = 1.0f;
+                      builder.AttachColor(0, color, operations);
+                      builder.Prepare([ready](RenderGraph::RGPrepareContext&) { return ready; });
+                  },
+                  [](RenderGraph::RGContext&) {});
+    auto ticket = RequestTextureReadbackRG(&device, frame, color, "PreparationTicket.Readback");
+    const uint64_t submissionsBefore = frame.SubmittedFrameCount();
+    frame.Execute();
+    NotifyRenderGraphExecution(frame, submissionsBefore, nullptr);
+    device.Present();
+    return ticket;
+}
+
+void ExpectPreparationTicketColor(const std::shared_ptr<RGReadbackTicket>& ticket, uint32_t colorChannel)
+{
+    ASSERT_TRUE(ticket);
+    EXPECT_TRUE(ticket->IsStamped());
+    ViewReadbackResult result{};
+    ASSERT_TRUE(ticket->TryGet(result));
+    ASSERT_EQ(result.width, 4u);
+    ASSERT_EQ(result.height, 4u);
+    ASSERT_EQ(result.pixels.size(), 4u * 4u * 4u);
+    for (size_t offset = 0; offset < result.pixels.size(); offset += 4u)
+    {
+        for (uint32_t channel = 0; channel < 3u; ++channel)
+            EXPECT_EQ(result.pixels[offset + channel], channel == colorChannel ? 255u : 0u);
+        EXPECT_EQ(result.pixels[offset + 3], 255u);
+    }
 }
 } // namespace
 
-// A staging view's output across an in-place rebuild. The rebuild destroys the output texture, and
-// the old handle still reports IsValid(): the pool must forget it, report no output, and create a
-// new one on the next declared frame.
-TEST(RenderServicesDeviceRecovery, StagingViewOutputIsForgottenAndRecreatedAfterRebuild)
+TEST_P(PreparationReadbackTest, FailedPreparationCancelsTheTicketAndTheNextFrameRecovers)
 {
-    SetEnvVar("GE_VK_FORCE_DEVICE_LOST", "2");
-    auto device = CreateVulkanDeviceFast();
-    if (!device)
-    {
-        UnsetEnvVar("GE_VK_FORCE_DEVICE_LOST");
-        GTEST_SKIP() << "No Vulkan device available";
-    }
+    TestUtils::ScopedTempDir cache(TestUtils::MakeUniqueTempDirectory("preparation-ticket"));
+    DeviceDesc description{};
+    description.preferredAPI = GetParam();
+    description.enableSwapchain = false;
+    description.enableDynamicRendering = true;
+    description.pipelineCacheDirectory = cache.Path().string();
+    auto device = DeviceFactory::CreateDevice(description);
+    if (!device || !device->Initialize(description))
+        GTEST_SKIP() << "requested headless backend unavailable";
+    ASSERT_EQ(device->GetAPI(), GetParam());
+    RenderGraph::RGResourcePool persistent(device.get());
+    RenderGraph::RGTransientPool transient(device.get());
+    RenderGraph::RGUploadRing upload(device.get(), 2, 4096);
+    RenderGraph::RGFrame frame(device.get(), &persistent, &transient, &upload);
 
-    RenderServices rs;
-    ASSERT_TRUE(rs.Initialize(device.get()));
-    {
-        constexpr uint32_t kSize = 16;
-        StagingViewPool& pool = rs.EnsureFeature<StagingViewPool>(rs);
-        StagingView view = pool.Acquire(StagingViewDesc{kSize, kSize, "StagingRebuild"});
-        DeclareStagingOutput(*device, view);
-        ASSERT_TRUE(view.OutputTexture().IsValid())
-            << "the fixture must have created the output, or the test proves nothing";
+    auto first = ExecutePreparationTicketFrame(*device, frame, 0, true, 0);
+    device->WaitForIdle();
+    ExpectPreparationTicketColor(first, 0);
+    EXPECT_EQ(frame.SubmittedFrameCount(), 1u);
 
-        bool rebuilt = false;
-        for (int i = 0; i < 16 && !rebuilt; ++i)
-        {
-            RunDeviceFrame(*device);
-            rebuilt = (device->GetDeviceRebuildGeneration() != 0u);
-        }
-        ASSERT_TRUE(rebuilt) << "the injected loss should rebuild the device in place";
-        ASSERT_EQ(device->GetDeviceHealth(), DeviceHealth::Healthy);
+    auto aborted = ExecutePreparationTicketFrame(*device, frame, 1, false, 1);
+    ASSERT_TRUE(aborted);
+    EXPECT_EQ(frame.Stats().SubmissionsMade, 0u);
+    EXPECT_EQ(frame.Stats().PreparationFailures, 1u);
+    EXPECT_EQ(frame.SubmittedFrameCount(), 1u);
+    EXPECT_TRUE(aborted->IsConsumed());
+    EXPECT_FALSE(aborted->IsStamped());
+    ViewReadbackResult unavailable{};
+    EXPECT_FALSE(aborted->TryGet(unavailable));
 
-        EXPECT_FALSE(view.OutputTexture().IsValid()) << "a UI must not import the destroyed output";
-        EXPECT_EQ(view.OutputWidth(), 0u) << "the owner sees no output at the view size, so it renders again";
-
-        // Inside an acquired frame, as production declares it.
-        ASSERT_TRUE(device->BeginFrame());
-        DeclareStagingOutput(*device, view);
-        EXPECT_TRUE(view.OutputTexture().IsValid()) << "the next declared frame creates the output on the live device";
-        EXPECT_EQ(view.OutputWidth(), kSize);
-    }
-    rs.Shutdown();
-    device->Shutdown();
-    UnsetEnvVar("GE_VK_FORCE_DEVICE_LOST");
+    auto recovered = ExecutePreparationTicketFrame(*device, frame, 2, true, 2);
+    device->WaitForIdle();
+    ExpectPreparationTicketColor(recovered, 2);
+    EXPECT_EQ(frame.SubmittedFrameCount(), 2u);
+    EXPECT_EQ(frame.Stats().PreparationFailures, 0u);
 }
+
+namespace
+{
+constexpr GraphicsAPI kPreparationReadbackBackends[]{
+    GraphicsAPI::Vulkan,
+#if defined(RENDERING_HAS_METAL)
+    GraphicsAPI::Metal,
+#endif
+};
+}
+INSTANTIATE_TEST_SUITE_P(RenderBackends, PreparationReadbackTest,
+                         ::testing::ValuesIn(kPreparationReadbackBackends));

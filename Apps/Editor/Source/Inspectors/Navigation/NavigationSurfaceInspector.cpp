@@ -12,7 +12,7 @@
 #include "UI/Controls/Vector3Field.h"
 #include "UI/InspectorSection.h"
 
-#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/ComponentFieldRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
 #include "Components/Transform.h"

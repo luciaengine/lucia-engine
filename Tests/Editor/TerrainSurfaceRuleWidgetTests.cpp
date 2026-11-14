@@ -976,7 +976,7 @@ namespace
 std::string ReadRuleRowsSource()
 {
     const std::filesystem::path path =
-        std::filesystem::path(GE_EDITOR_SOURCE_DIR) / "Source" / "Terrain" / "TerrainRule" / "TerrainRuleRows.cpp";
+        std::filesystem::path(GE_EDITOR_SOURCE_DIR) / "Source" / "Terrain" / "TerrainRuleRows.cpp";
     std::ifstream in(path);
     EXPECT_TRUE(in.good()) << "could not read " << path.string();
     std::ostringstream ss;
@@ -1102,7 +1102,7 @@ TEST(TerrainRuleVocabulary, CaptionsCarryTheSameDigitsTheFieldShows)
 // survive anywhere.
 TEST(TerrainRuleVocabulary, NoCaptionCarriesATrailingZero)
 {
-    for (const auto& pair : {std::pair<Kind, float>{Kind::SlopeDegrees, 34.0f},
+    for (const auto pair : {std::pair<Kind, float>{Kind::SlopeDegrees, 34.0f},
                             std::pair<Kind, float>{Kind::SlopeDegrees, 4.0f},
                             std::pair<Kind, float>{Kind::HeightMeters, 400.0f},
                             std::pair<Kind, float>{Kind::Noise, 1.0f}})

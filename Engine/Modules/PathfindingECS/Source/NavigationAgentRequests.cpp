@@ -298,13 +298,15 @@ void BindNavigationAgents(ECS::World& world)
 
     // The query's archetype tells whether an agent has a physics body, so no agent is looked up.
     world.Query<ECS::Read<NavigationAgent>, ECS::Write<NavigationAgentState>, ECS::Read<Components::PhysicsBody>>()
-        .Each([&](ECS::EntityHandle entity, const NavigationAgent& agent, NavigationAgentState& state,
+        .Each([&](ECS::EntityHandle entity, const NavigationAgent& agent, ECS::Writable<NavigationAgentState> stateRow,
                   const Components::PhysicsBody& body) {
+                      auto& state = stateRow.Mutable();
             BindAgent(entity, agent, state, surfaceOf(agent), body.motionType == Physics::MotionType::Dynamic);
         });
     auto withoutBody = world.Query<ECS::Read<NavigationAgent>, ECS::Write<NavigationAgentState>>();
     withoutBody.Without<Components::PhysicsBody>();
-    withoutBody.Each([&](ECS::EntityHandle entity, const NavigationAgent& agent, NavigationAgentState& state) {
+    withoutBody.Each([&](ECS::EntityHandle entity, const NavigationAgent& agent, ECS::Writable<NavigationAgentState> stateRow) {
+        auto& state = stateRow.Mutable();
         BindAgent(entity, agent, state, surfaceOf(agent), false);
     });
 }

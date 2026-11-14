@@ -20,6 +20,9 @@
 #include "Rendering/Materials/MaterialDocument.h"
 #include "AssetCore/GUID.h"
 #include "TestCameraEye.h"
+#include "Assets/ModelAsset.h"
+#include "Mathematics/Matrix4x4.h"
+#include "Engine/Rendering/Pipeline/Nodes/WorldRenderNode.h"
 #include "Types/StringId.h"
 
 #include <algorithm>
@@ -2608,6 +2611,230 @@ TEST(RenderServicesRGPassTests, GlossyResolveDeclaresTheLobeTargetsItBindsWithLo
         EXPECT_EQ(glossy.Id, glossyBlurId);
 
         f.Device->DestroyBuffer(viewParams);
+    }
+    f.Down();
+}
+
+namespace
+{
+class CascadeFitFrame
+{
+  public:
+    CascadeFitFrame(RsFixture& fixture, RenderGraph::RGFrame& frame,
+                    ShadowMapRenderFeature& feature, uint32_t resolution)
+        : m_Fixture(fixture), m_Frame(frame), m_Feature(feature), m_Resolution(resolution)
+    {
+    }
+
+    RenderGraph::RGPass Declare(uint64_t frameIndex, const CascadeFrameData& fit)
+    {
+        m_Frame.BeginFrame(frameIndex);
+        m_Fixture.Rs.BeginWorldDrawFrame();
+        m_Fixture.Rs.BuildWorldBatchKeys();
+        m_Feature.CacheFrameData(m_Fixture.View, fit);
+        auto context = m_Fixture.Rs.MakeFeatureDeclareContext(
+            m_Frame, m_Fixture.View, 1, m_Resolution, nullptr, {});
+        // A cleared cascade without contributors can become cacheable.
+        context.ViewNeedsCascades = true;
+        return m_Feature.DeclareCascadePass(m_Frame, m_Fixture.Rs, context, 0, "AbortFit.Cascade");
+    }
+
+    ShadowDataGPU BuildSamplingData(const CascadeFrameData& fit)
+    {
+        ShadowDataGPU data{};
+        m_Feature.BuildShadowDataGPU(fit, m_Fixture.View, m_Fixture.Rs, m_Frame, 0, data);
+        return data;
+    }
+
+    void Execute()
+    {
+        const auto color = m_Frame.ImportPersistentTexture("AbortFit.Anchor", ColorTargetDesc());
+        m_Frame.AddPass("AbortFit.Anchor", 0,
+                       [color](RenderGraph::RGPassBuilder& pass)
+                       { pass.AttachColor(0, color, {.Load = RenderGraph::RGLoadOp::Clear}); },
+                       [](RenderGraph::RGContext&) {});
+        m_Frame.MarkOutput(color);
+        m_Frame.Execute();
+        m_Fixture.Device->WaitForIdle();
+    }
+
+    void ExpectSamplingFit(const ShadowDataGPU& data, const CascadeFrameData& expected) const
+    {
+        EXPECT_EQ(std::memcmp(data.shadowVP[0], expected.LightVPRel[0].Data(), sizeof(data.shadowVP[0])), 0);
+        EXPECT_FLOAT_EQ(data.shadowPcssCascades[0][0], 2 * expected.OrthoHalfExtent[0] / m_Resolution);
+        EXPECT_FLOAT_EQ(data.shadowPcssCascades[0][1], expected.DepthSpan[0]);
+    }
+
+  private:
+    RsFixture& m_Fixture;
+    RenderGraph::RGFrame& m_Frame;
+    ShadowMapRenderFeature& m_Feature;
+    uint32_t m_Resolution;
+};
+} // namespace
+
+TEST(RenderServicesRGPassTests, AbortedPreparationKeepsTheRenderedCascadeFit)
+{
+    RsFixture fixture;
+    if (!fixture.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        FramePools pools(fixture.Device.get());
+        RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        auto& feature = fixture.Rs.EnsureFeature<ShadowMapRenderFeature>();
+        CascadedShadowConfig config{};
+        config.NumCascades = 1;
+        config.Resolution = 128;
+        ASSERT_TRUE(feature.Initialize(fixture.Device.get(), config));
+        feature.SetMotionCap(0);
+
+        CascadeFrameData fitA{};
+        fitA.NumCascades = 1;
+        fitA.LightVP[0] = Mathematics::Matrix4x4::Identity();
+        fitA.LightVPRel[0] = Mathematics::Matrix4x4::Identity();
+        fitA.OrthoHalfExtent[0] = 16.0f;
+        fitA.DepthSpan[0] = 32.0f;
+        CascadeFrameData fitB = fitA;
+        fitB.LightVP[0].Data()[12] = 0.25f;
+        fitB.LightVPRel[0].Data()[12] = 0.25f;
+        fitB.OrthoHalfExtent[0] = 24.0f;
+        fitB.DepthSpan[0] = 48.0f;
+
+        CascadeFitFrame cascadeFrame(fixture, frame, feature, config.Resolution);
+
+        ASSERT_TRUE(cascadeFrame.Declare(0, fitA).IsValid());
+        cascadeFrame.Execute();
+        EXPECT_EQ(frame.Stats().PreparationFailures, 0u);
+        ASSERT_TRUE(cascadeFrame.Declare(1, fitA).IsValid());
+        // Two identical renders settle the cull/content cache.
+        cascadeFrame.Execute();
+
+        ASSERT_TRUE(cascadeFrame.Declare(2, fitB).IsValid());
+        // Same-frame receivers need the scheduled fit.
+        cascadeFrame.ExpectSamplingFit(cascadeFrame.BuildSamplingData(fitB), fitB);
+        frame.AddPass("AbortFit.FailPreparation", 0,
+                      [](RenderGraph::RGPassBuilder& pass)
+                      {
+                          pass.PreventCulling();
+                          pass.Prepare([](RenderGraph::RGPrepareContext&) { return false; });
+                      }, [](RenderGraph::RGContext&) {});
+        const auto submitted = frame.SubmittedFrameCount();
+        cascadeFrame.Execute();
+        EXPECT_EQ(frame.SubmittedFrameCount(), submitted);
+        EXPECT_EQ(frame.Stats().PreparationFailures, 1u);
+
+        ASSERT_FALSE(cascadeFrame.Declare(3, fitA).IsValid()) << "the settled A layer must be reused";
+        // Aborted B must not replace retained A.
+        cascadeFrame.ExpectSamplingFit(cascadeFrame.BuildSamplingData(fitA), fitA);
+        cascadeFrame.Execute();
+    }
+    fixture.Down();
+}
+
+TEST(RenderServicesRGPassTests, InPlaceGeometryReplacementInvalidatesRetainedCascadeDepth)
+{
+    RsFixture fixture;
+    if (!fixture.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        Mesh mesh{};
+        mesh.Vertices.resize(3);
+        mesh.Vertices[0].Position[0] = -0.5f;
+        mesh.Vertices[1].Position[0] = 0.5f;
+        mesh.Vertices[2].Position[1] = 0.5f;
+        mesh.Indices = {0, 1, 2};
+        const MeshGPUKey key{GUID::Generate(), 0};
+        const auto handle = fixture.Rs.GetMeshGPURegistry().RegisterSubmesh(key, mesh);
+        ASSERT_TRUE(handle.IsValid());
+        const uint64_t geometryBefore = fixture.Rs.GetMeshGPURegistry().GetContentRevision();
+        const uint64_t casterBefore = fixture.Rs.ShadowCasterContentVersion(0u);
+
+        FramePools pools(fixture.Device.get());
+        RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        auto& feature = fixture.Rs.EnsureFeature<ShadowMapRenderFeature>();
+        CascadedShadowConfig config{};
+        config.NumCascades = 1;
+        config.Resolution = 128;
+        ASSERT_TRUE(feature.Initialize(fixture.Device.get(), config));
+        feature.SetMotionCap(0);
+        CascadeFrameData fit{};
+        fit.NumCascades = 1;
+        fit.LightVP[0] = Mathematics::Matrix4x4::Identity();
+        fit.LightVPRel[0] = Mathematics::Matrix4x4::Identity();
+        CascadeFitFrame cascade(fixture, frame, feature, config.Resolution);
+        ASSERT_TRUE(cascade.Declare(0u, fit).IsValid());
+        cascade.Execute();
+        ASSERT_TRUE(cascade.Declare(1u, fit).IsValid());
+        cascade.Execute();
+        ASSERT_FALSE(cascade.Declare(2u, fit).IsValid()) << "the unchanged layer must be cached";
+        cascade.Execute();
+
+        mesh.Vertices[2].Position[1] = 0.75f;
+        ASSERT_EQ(fixture.Rs.GetMeshGPURegistry().RegisterSubmesh(key, mesh), handle);
+        ASSERT_GT(fixture.Rs.GetMeshGPURegistry().GetContentRevision(), geometryBefore);
+        ASSERT_EQ(fixture.Rs.ShadowCasterContentVersion(0u), casterBefore);
+        EXPECT_TRUE(cascade.Declare(3u, fit).IsValid())
+            << "replacing geometry in a stable handle must invalidate retained depth";
+        cascade.Execute();
+    }
+    fixture.Down();
+}
+
+
+TEST(RenderServicesRGPassTests, SortedArtworkWithoutMeshSubmissionsKeepsItsDrainActive)
+{
+    RsFixture f;
+    ASSERT_TRUE(f.Up());
+    {
+        FramePools pools(f.Device.get());
+        RenderGraph::RGFrame frame(f.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        frame.BeginFrame(0);
+        const auto color = frame.ImportPersistentTexture("Artwork.Color", ColorTargetDesc());
+        const auto depth = frame.ImportPersistentTexture("Artwork.Depth", DepthTargetDesc());
+        SortedTransparentCommand sprite{};
+        sprite.Sorting.Order = 3;
+        sprite.Entity.id = 1;
+        uint32 calls = 0;
+        const auto ordinaryProducer = f.Rs.RegisterForwardEmit(
+            [&](ForwardEmitContext& context)
+            {
+                if (context.ViewId == f.View)
+                    f.Rs.EmitSortedTransparentCommand(context.ViewId, sprite);
+            }, {.WritesDepth = false});
+        const auto producer = f.Rs.RegisterForwardEmit(
+            [&](ForwardEmitContext& context)
+            {
+                if (context.ViewId != f.View)
+                    return;
+                ++calls;
+                EXPECT_EQ(context.Frame, &frame);
+                if (context.Frame)
+                    f.Rs.EmitSortedTransparentCommand(context.ViewId, sprite);
+            }, {.WritesDepth = false, .RequiresFrame = true});
+        f.Rs.BeginWorldDrawFrame();
+        f.Rs.BuildWorldBatchKeys();
+        EXPECT_EQ(calls, 0u);
+        ASSERT_TRUE(f.Rs.GetEntityBatchKeys(f.View).empty());
+        Pipeline::ViewDeclare declaration(frame, *f.Rs.Views().FindViewDesc(f.View), f.Rs, "World");
+        declaration.ViewColor = color;
+        declaration.ViewDepth = depth;
+        declaration.PipelineHasSortedTransparentPass = true;
+        Pipeline::Nodes::WorldRenderNode node;
+        ASSERT_TRUE(node.Initialize("World", "{}", nullptr));
+        node.DeclareForView(declaration);
+        EXPECT_EQ(calls, 1u);
+        EXPECT_TRUE(f.Rs.IsSortedTransparentActive(f.View));
+        EXPECT_TRUE(f.Rs.GetForwardCommands(f.View).empty());
+        ASSERT_EQ(f.Rs.Views().PerView(f.View).SortedTransparentCommands.size(), 2u);
+        node.DeclareForView(declaration);
+        EXPECT_EQ(calls, 1u);
+        EXPECT_EQ(f.Rs.Views().PerView(f.View).SortedTransparentCommands.size(), 2u);
+        f.Rs.ClearForwardCommands();
+        EXPECT_TRUE(f.Rs.Views().PerView(f.View).SortedTransparentCommands.empty());
+        frame.BeginFrame(1);
+        f.Rs.EmitFrameForwardCommandsForView(frame, f.View);
+        EXPECT_EQ(calls, 2u);
+        EXPECT_EQ(f.Rs.Views().PerView(f.View).SortedTransparentCommands.size(), 1u);
     }
     f.Down();
 }

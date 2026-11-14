@@ -8,6 +8,7 @@
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Rendering/Core/ThreadingUtils.h"
+#include "Rendering/Core/HashUtils.h"
 
 #include <algorithm>
 #include <cassert>
@@ -21,6 +22,15 @@ using namespace ::GameEngine::Rendering;
 
 namespace
 {
+void AddShadowMembership(WorldDrawBuilder::ShadowSubmissionState& state,
+                         uint64_t identity, bool drawable)
+{
+    // Addition preserves order independence and multiplicity, unlike XOR.
+    state.MembershipKey += HashUtils::HashValue(identity, drawable);
+    ++state.MembershipCount;
+    state.Complete = state.Complete && drawable;
+}
+
 // The material facts the key derivation reads, one bit each.
 constexpr uint32_t kPipelineValid = 1u << 0;
 constexpr uint32_t kTransmission = 1u << 1;
@@ -54,6 +64,7 @@ void WorldDrawBuilder::ViewBatchState::Reset()
     Submissions.clear();
     Keys.clear();
     DeformingKeys.clear();
+    ShadowSubmissions = {};
     ShadowCaster = false;
     TransmissiveCaster = false;
     AnimatedVertexModifier = false;
@@ -183,7 +194,9 @@ bool WorldDrawBuilder::MaterialsGiveSameKeyInputs(std::span<const uint32_t> mate
         const uint32_t materialIndex = material.GetGpuSceneMaterialIndex();
         if (materialIndex != state.MaterialIndex ||
             ColorClassOf(materialIndex, materialColorClass) != state.ColorClassId ||
-            MaterialKeyPredicates(material) != state.Predicates)
+            MaterialKeyPredicates(material) != state.Predicates ||
+            material.GetContentRevision() != state.ContentRevision ||
+            material.GetVersion() != state.ProgramVersion)
             return false;
     }
     return true;
@@ -199,7 +212,8 @@ void WorldDrawBuilder::CaptureMaterialKeyStates(std::span<const uint32_t> materi
         m_MaterialReadByIndex[materialIndex] = nullptr;
         m_LastBuildMaterials.push_back(MaterialKeyState{material, materialIndex,
                                                         ColorClassOf(materialIndex, materialColorClass),
-                                                        MaterialKeyPredicates(*material)});
+                                                        MaterialKeyPredicates(*material),
+                                                        material->GetContentRevision(), material->GetVersion()});
     }
     m_MaterialsRead.clear();
 }
@@ -304,6 +318,13 @@ bool WorldDrawBuilder::HasAnimatedVertexModifierCasterSubmissions(Rendering::Vie
     return view && view->AnimatedVertexModifierCaster;
 }
 
+WorldDrawBuilder::ShadowSubmissionStates WorldDrawBuilder::GetShadowSubmissionStates(
+    Rendering::ViewId viewId) const
+{
+    const auto* view = m_Views.Find(viewId);
+    return view ? view->ShadowSubmissions : ShadowSubmissionStates{};
+}
+
 void WorldDrawBuilder::DeriveBatchKeysForView(ViewBatchState& view,
                                               const Rendering::MeshGPURegistry& meshRegistry,
                                               std::span<const uint32_t> materialColorClass,
@@ -316,11 +337,35 @@ void WorldDrawBuilder::DeriveBatchKeysForView(ViewBatchState& view,
     bool transmissiveCaster = false;
     bool animatedVertexModifier = false;
     bool animatedVertexModifierCaster = false;
+    ShadowSubmissionStates shadowSubmissions{};
+    shadowSubmissions.All.Complete = true;
+    shadowSubmissions.Rigid.Complete = true;
+    FlatMap<const Material*, bool> shadowMaterialKinds;
 
     for (const auto& rec : view.Submissions)
     {
+        const auto* entry = meshRegistry.Find(rec.meshHandle);
+        const bool drawable = rec.material && rec.material->GetGraphicsPipelineId().IsValid() &&
+                              entry && entry->gpuMeshIndex != ~0u && entry->indexCount != 0u;
         // A census of submitted casters, ahead of every drawability filter.
         shadowCaster = shadowCaster || (rec.flags & kSubmissionFlagCastShadows) != 0u;
+        if ((rec.flags & kSubmissionFlagCastShadows) != 0u)
+        {
+            uint64_t identity = HashUtils::HashValue(0u, static_cast<uint64_t>(rec.meshHandle));
+            identity = HashUtils::HashValue(identity, rec.instanceIndex);
+            identity = HashUtils::HashValue(identity, rec.renderLayerMask);
+            if (rec.material)
+            {
+                const auto& guid = rec.material->GetGuid().GetData();
+                identity = HashUtils::Fnv1a64(guid.data(), guid.size(), identity);
+            }
+            const bool rigid = !entry || !Rendering::IsSkinned(entry->vertexFlags);
+            AddShadowMembership(shadowSubmissions.All, identity, drawable);
+            if (rigid)
+                AddShadowMembership(shadowSubmissions.Rigid, identity, drawable);
+            if (rec.material)
+                shadowMaterialKinds.GetOrInsert(rec.material) |= rigid;
+        }
         if (!rec.material)
             continue;
         const uint32_t materialIndex = rec.material->GetGpuSceneMaterialIndex();
@@ -359,7 +404,6 @@ void WorldDrawBuilder::DeriveBatchKeysForView(ViewBatchState& view,
         }
         if (!rec.material->GetGraphicsPipelineId().IsValid())
             continue;
-        const auto* entry = meshRegistry.Find(rec.meshHandle);
         if (!entry || entry->gpuMeshIndex == ~0u || entry->indexCount == 0u)
             continue;
         // bit 0 == castsShadows (ComputeInstanceFlags), the same bit the shadow
@@ -375,6 +419,20 @@ void WorldDrawBuilder::DeriveBatchKeysForView(ViewBatchState& view,
             entry->gpuMeshIndex,
             ColorClassOf(materialIndex, materialColorClass)});
     }
+
+    for (const auto& [material, rigid] : shadowMaterialKinds)
+    {
+        const auto& identity = material->GetGuid().GetData();
+        uint64_t stamp = HashUtils::Fnv1a64(identity.data(), identity.size());
+        stamp = HashUtils::HashValue(stamp, material->GetContentRevision());
+        stamp = HashUtils::HashValue(stamp, material->GetVersion());
+        shadowSubmissions.All.MaterialContentKey =
+            HashUtils::HashCombine(shadowSubmissions.All.MaterialContentKey, stamp);
+        if (rigid)
+            shadowSubmissions.Rigid.MaterialContentKey =
+                HashUtils::HashCombine(shadowSubmissions.Rigid.MaterialContentKey, stamp);
+    }
+    view.ShadowSubmissions = shadowSubmissions;
 
     // Sort by (colorClassId, meshIndex, materialIndex): grouping by
     // (colorClassId, meshIndex) makes the merge members contiguous for the

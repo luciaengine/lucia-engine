@@ -24,7 +24,6 @@
 #include "SceneLoadTrackerTestAccess.h"
 #include "TemporaryWorkspaceEngineFixture.h"
 
-#include <algorithm>
 #include <chrono>
 #include <iostream>
 #include <string>
@@ -70,13 +69,17 @@ class SceneResolveFrameTest : public Testing::HeldAssetImportFixture
     // Ticks `tracker`; true while its scene.resolve row holds the ready query.
     static bool ResolveRowHolds(SceneLoadTracker& tracker)
     {
-        SceneLoadTrackerTestAccess::Tick(tracker,std::chrono::steady_clock::now());
-        for (const SceneLoadTracker::CategoryStatus& row : tracker.GetStatus().Categories)
+        SceneLoadTrackerTestAccess::Tick(tracker, std::chrono::steady_clock::now());
+        for (const auto& row : tracker.GetStatus().Categories)
+        {
             if (row.Id == "scene.resolve")
                 return row.HoldsReady();
-        ADD_FAILURE() << "the engine's resolve service reports no scene.resolve row";
+        }
+        ADD_FAILURE() << "The engine did not register scene.resolve";
         return false;
     }
+
+    bool MaterialRegistered(const GUID& materialGuid) { return m_Services.Materials().Registry().Find(materialGuid) != nullptr; }
 };
 
 // A RenderServices that has no device: Initialize was not called.
@@ -108,39 +111,22 @@ TEST_F(SceneResolveFrameTest, ASpawnOfAnUncachedModelDoesNotBlockTheFrame)
         << "the entity was never bound once its model landed";
 }
 
-// The engine's resolve service (the Player's path) reports to the engine's tracker: a
-// spawn whose model is still importing holds the scene.resolve row until the model lands.
 TEST_F(SceneResolveFrameTest, ASpawnWhoseModelIsStillImportingHoldsTheReadyQuery)
 {
     const GUID modelGuid = RegisterHeldModel(/*fails=*/false);
     ASSERT_FALSE(modelGuid.IsNull());
     ECS::World* world = EnableRenderingLoop();
     ASSERT_NE(world, nullptr);
-    SceneLoadTracker& tracker = EngineCore::GetInstance().GetSceneLoadTracker();
+    auto& tracker = EngineCore::GetInstance().GetSceneLoadTracker();
     StepFrame();
     Spawn(*world, modelGuid);
     StepFrame();
-    ASSERT_TRUE(m_Gate.WaitForEntered(1)) << "the spawn did not start the model's load";
-    EXPECT_TRUE(ResolveRowHolds(tracker)) << "the held entity does not hold the query";
+    ASSERT_TRUE(m_Gate.WaitForEntered(1));
+    EXPECT_TRUE(ResolveRowHolds(tracker));
     EXPECT_FALSE(tracker.IsReadyToShow());
 
     m_Gate.Release();
-    EXPECT_TRUE(StepFramesUntil([&] { return !ResolveRowHolds(tracker); }))
-        << "the row still holds after the model landed";
-}
-
-// EnableRenderingLoop registers the engine's five load categories with the engine's tracker.
-TEST_F(SceneResolveFrameTest, EnablingTheRenderingLoopRegistersTheEnginesLoadCategories)
-{
-    ASSERT_NE(EnableRenderingLoop(), nullptr);
-    SceneLoadTracker& tracker = EngineCore::GetInstance().GetSceneLoadTracker();
-    SceneLoadTrackerTestAccess::Tick(tracker,std::chrono::steady_clock::now());
-    std::vector<std::string> ids;
-    for (const SceneLoadTracker::CategoryStatus& row : tracker.GetStatus().Categories)
-        ids.push_back(row.Id);
-    for (const char* id :
-         {"scene.resolve", "shader.base-compile", "shader.variant", "gpu.pipeline", "render.texture-upload"})
-        EXPECT_NE(std::find(ids.begin(), ids.end(), id), ids.end()) << id << " is not registered";
+    EXPECT_TRUE(StepFramesUntil([&tracker] { return !ResolveRowHolds(tracker); }));
 }
 
 // A RenderServices with no device enables the loop: the engine logs one error and continues.

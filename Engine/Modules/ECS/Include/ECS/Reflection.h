@@ -23,7 +23,7 @@
 // Other composite types (math vectors, nested PODs) opt in by specializing
 // FieldTypeTraits<T> — see FieldTypeTraits below.
 
-#include "ECS/Component/ComponentTypeName.h"
+#include "ECS/ComponentTypeName.h"
 #include "Types/Color.h"
 
 #include <cstddef>
@@ -44,12 +44,12 @@ struct EntityHandle;
 //
 // These values are a stable taxonomy: APPEND-ONLY, never renumber — once the
 // snapshot codec / cross-DLL registrar (Phase 2) persists them they become an
-// on-disk/ABI contract. Several values have no producer yet and are the forward
-// vocabulary, reachable once their FieldTypeTraits specialization or consumer
-// lands: Vec2/Vec4/Quat/Mat4 (await the Mathematics traits — ECS does not link
-// Mathematics today), AssetGuid (awaits a named asset-handle type; raw uint8[16]
-// fields currently reflect as a UInt8 array, not AssetGuid), and Bytes (opaque
-// variable-length blobs).
+// on-disk/ABI contract. Vec2/Vec3/Vec4/Quat come from the Mathematics traits
+// (Components/MathReflectionTraits.h) and AssetGuid from the AssetRef<T> and GUID
+// traits (Components/AssetRef.h), because ECS links neither Mathematics nor
+// AssetCore; a raw uint8[16] field reflects as a UInt8 array, not AssetGuid.
+// Mat4 and Bytes (opaque variable-length blobs) have no producer yet and are the
+// forward vocabulary.
 enum class FieldTypeId : std::uint16_t
 {
     Unknown      = 0,

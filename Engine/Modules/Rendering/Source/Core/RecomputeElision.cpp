@@ -1,6 +1,6 @@
 #include "Rendering/Core/RecomputeElision.h"
 
-#include <cstdlib>
+#include "Platform/Environment.h"
 
 namespace GameEngine
 {
@@ -30,8 +30,7 @@ const char* ElisionDisengageReason(ElisionCause cause, bool skip)
 
 bool IdleElisionLoggingEnabled()
 {
-    static const bool enabled =
-        ParseIdleElisionLoggingEnabled(std::getenv("GE_IDLE_ELISION_LOG"));
+    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_IDLE_ELISION_LOG", false);
     return enabled;
 }
 

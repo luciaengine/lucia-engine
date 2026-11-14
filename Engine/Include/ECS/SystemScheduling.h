@@ -184,7 +184,7 @@ public:
                                "already does (RunAfterAllOthers holds one system per schedule). Give "
                                "'{}' a dependency on what it reads instead.",
                                name, m_RunsLast, name);
-            Logger::Log::FlushForCrash(Logger::Log::kCrashFlushTimeout);
+            Logger::Log::FlushForCrash(kScheduleAbortFlushTimeout);
             assert(false && "[ECS] RunAfterAllOthers already holds another system — see the preceding error log");
             return *this;
         }
@@ -556,6 +556,9 @@ public:
 private:
     static constexpr size_t kNotInstantiated = ~size_t{0};
 
+    // The logger is asynchronous: a scheduler error that precedes an assert is
+    // drained first, or the abort would discard the line that explains it.
+    static constexpr std::chrono::milliseconds kScheduleAbortFlushTimeout{2000};
     // Kahn's algorithm by waves over the nodes in `member`: all indegree-0 nodes
     // form the current wave. Within each wave, sort by (Phase, Order, Name) for
     // determinism; a node past the registrations (a run of Simulation systems) sorts last.
@@ -719,7 +722,7 @@ private:
                                    "(RunAfterAllOthers) but no system has that name; register it "
                                    "or remove the ordering",
                                    m_RunsLast);
-                Logger::Log::FlushForCrash(Logger::Log::kCrashFlushTimeout);
+                Logger::Log::FlushForCrash(kScheduleAbortFlushTimeout);
                 assert(false && "[ECS] RunAfterAllOthers names an unregistered system — see the preceding error log");
             }
             return;
@@ -802,7 +805,7 @@ private:
         // explains the abort. Bounded, because an unbounded flush on a path that
         // ends in abort() hangs the process instead whenever the drain thread is
         // blocked behind the sink mutex.
-        Logger::Log::FlushForCrash(Logger::Log::kCrashFlushTimeout);
+        Logger::Log::FlushForCrash(kScheduleAbortFlushTimeout);
         assert(false && "[ECS] Unresolved required system dependency — see the preceding error log");
     }
 

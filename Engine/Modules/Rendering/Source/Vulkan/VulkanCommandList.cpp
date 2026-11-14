@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include "Rendering/Core/BarrierMapping.h"
 #include "Rendering/Core/RenderingDebugFlags.h"
 
@@ -237,6 +238,9 @@ void VulkanCommandList::BeginSecondary(const SecondaryInheritance& inheritance)
     VkResult result = vkBeginCommandBuffer(m_CommandBuffer, &beginInfo);
     if (result == VK_SUCCESS)
     {
+        m_BoundGraphicsPipeline = VK_NULL_HANDLE;
+        m_ViewportPending = false;
+        m_ScissorPending = false;
         m_IsRecording = true;
         m_HasBegun = true;
         m_HasEnded = false;
@@ -325,8 +329,10 @@ void VulkanCommandList::ReleaseAttachmentViews(bool destroyAll)
     }
 }
 
-void VulkanCommandList::OnSubmitted()
+void VulkanCommandList::OnSubmitted(SemaphoreHandle timeline, uint64_t timelineValue)
 {
+    m_Device->RetireLegacyRenderObjects(m_QueueType, m_PendingFramebufferDestroys,
+                                      m_PendingRenderPassDestroys, timeline, timelineValue);
     ReleaseAttachmentViews(false);
     m_CommandBuffer = VK_NULL_HANDLE;
 }
@@ -361,6 +367,9 @@ void VulkanCommandList::Begin()
     VkResult result = vkBeginCommandBuffer(m_CommandBuffer, &beginInfo);
     if (result == VK_SUCCESS)
     {
+        m_BoundGraphicsPipeline = VK_NULL_HANDLE;
+        m_ViewportPending = false;
+        m_ScissorPending = false;
         m_IsRecording = true;
         m_HasBegun = true;
         m_HasEnded = false;
@@ -642,6 +651,13 @@ void VulkanCommandList::SetPipeline(PipelineHandle pipeline)
         else
             m_Device->DebugIncPipelineBindCompute();
 
+        if (bindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS)
+        {
+            if (const auto* native = GetVulkanPipeline(pipeline);
+                m_DepthReadOnly && native && native->readOnlyDepthPipeline != VK_NULL_HANDLE)
+                vkPipeline = native->readOnlyDepthPipeline;
+            m_BoundGraphicsPipeline = vkPipeline;
+        }
         vkCmdBindPipeline(m_CommandBuffer, bindPoint, vkPipeline);
 
         // Set dynamic depth write enable per-pipeline (Vulkan 1.3+).
@@ -658,7 +674,7 @@ void VulkanCommandList::SetPipeline(PipelineHandle pipeline)
         // reads it off the same RenderPassDesc the primary is begun with); a
         // forked pass that attaches depth read-only is not hypothetical.
         if (bindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS
-            && (m_DynamicRenderingBegun || m_IsSecondary)
+            && (m_DynamicRenderingBegun || m_LegacyRenderPassBegun || m_IsSecondary)
             && m_Device->GetCmdSetDepthWriteEnable())
         {
             auto setDepthWriteEnable = m_Device->GetCmdSetDepthWriteEnable();
@@ -1301,6 +1317,7 @@ void VulkanCommandList::Draw(uint32_t vertexCount, uint32_t instanceCount)
             boundSets.empty() ? "<none>" : boundSets);
     }
 
+    ApplyRasterState();
     MaybeCaptureDescriptorState();
     vkCmdDraw(m_CommandBuffer, vertexCount, instanceCount, 0, 0);
 }
@@ -1325,6 +1342,7 @@ void VulkanCommandList::Draw(uint32_t vertexCount, uint32_t instanceCount,
 
     // Validate at draw as well
     ValidatePipelineMatchesActiveScope(m_CurrentPipelineHandle);
+    ApplyRasterState();
     MaybeCaptureDescriptorState();
     vkCmdDraw(m_CommandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
 }
@@ -1347,6 +1365,7 @@ void VulkanCommandList::DrawIndexed(uint32_t indexCount, uint32_t instanceCount,
 
     // Additional runtime validation at draw time to ensure visibility even if pipeline was bound pre-rendering
     ValidatePipelineMatchesActiveScope(m_CurrentPipelineHandle);
+    ApplyRasterState();
     MaybeCaptureDescriptorState();
     vkCmdDrawIndexed(m_CommandBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
 }
@@ -1358,6 +1377,7 @@ void VulkanCommandList::DrawIndexed(uint32_t indexCount, uint32_t instanceCount)
         return;
     }
 
+    ApplyRasterState();
     MaybeCaptureDescriptorState();
     vkCmdDrawIndexed(m_CommandBuffer, indexCount, instanceCount, 0, 0, 0);
 }
@@ -1368,6 +1388,7 @@ void VulkanCommandList::DrawMeshTasks(uint32_t taskCount)
     {
         return;
     }
+    ApplyRasterState();
     if (m_Device && m_Device->SupportsMeshShadersEXT() && m_Device->GetCmdDrawMeshTasksEXT())
     {
         m_Device->GetCmdDrawMeshTasksEXT()(m_CommandBuffer, taskCount, 0, 0);
@@ -1389,6 +1410,7 @@ void VulkanCommandList::DrawIndirect(BufferHandle commandBuffer, uint32_t drawCo
     VkBuffer vkBuffer = m_Device->GetVkBuffer(commandBuffer);
     if (vkBuffer != VK_NULL_HANDLE)
     {
+        ApplyRasterState();
         MaybeCaptureDescriptorState();
         vkCmdDrawIndirect(m_CommandBuffer, vkBuffer, 0, drawCount, stride);
     }
@@ -1404,6 +1426,7 @@ void VulkanCommandList::DrawIndexedIndirect(BufferHandle commandBuffer, uint32_t
     VkBuffer vkBuffer = m_Device->GetVkBuffer(commandBuffer);
     if (vkBuffer != VK_NULL_HANDLE)
     {
+        ApplyRasterState();
         MaybeCaptureDescriptorState();
         vkCmdDrawIndexedIndirect(m_CommandBuffer, vkBuffer, 0, drawCount, stride);
     }
@@ -1428,6 +1451,7 @@ void VulkanCommandList::DrawIndexedIndirectCount(BufferHandle commandBuffer,
         return;
     }
 
+    ApplyRasterState();
     MaybeCaptureDescriptorState();
     if (m_Device && !m_Device->SupportsDrawIndirectCount())
     {
@@ -1472,9 +1496,8 @@ void VulkanCommandList::DrawIndexedIndirectCount(BufferHandle commandBuffer,
         return;
     }
 
-    // Core in Vulkan 1.2+; engine requires API ≥ 1.2 for descriptor indexing
-    // anyway (see VulkanDevice apiVersion gate), so no fallback path needed.
-    vkCmdDrawIndexedIndirectCount(
+    // The promoted command table resolves the core or KHR entry point.
+    m_Device->GetPromotedCommands().CmdDrawIndexedIndirectCount(
         m_CommandBuffer,
         vkCmdBuf,   static_cast<VkDeviceSize>(commandBufferOffset),
         vkCountBuf, static_cast<VkDeviceSize>(countBufferOffset),
@@ -1510,6 +1533,12 @@ void VulkanCommandList::Dispatch(uint32_t x, uint32_t y, uint32_t z)
     if (!RequireComputePipelineBound("Dispatch"))
     {
         return;
+    }
+    if (RenderingDebugFlags::Get().traceRendering)
+    {
+        Logger::Log::Info("Vulkan Dispatch: pass='{}' pipeline={} groups={}x{}x{}",
+                          m_LastMarkerName, m_CurrentPipelineHandle.id, x, y, z);
+        Logger::Log::Flush();
     }
     vkCmdDispatch(m_CommandBuffer, x, y, z);
 }
@@ -1584,16 +1613,11 @@ void VulkanCommandList::BeginRenderPass(const RenderPassDesc& desc)
     m_LegacyRenderPassBegun = false;
     m_LegacySwapchainAttachment = INVALID_HANDLE;
     m_LegacyOneOffUsesRP2 = false;
+    m_DepthReadOnly = desc.depthReadOnly;
 
-    // StoreOp::None means "preserve, write nothing" — the only op a read-only
-    // attachment may carry, and it preserves the contents only while nothing
-    // writes the attachment. What suppresses the writes is
-    // vkCmdSetDepthWriteEnable(VK_FALSE), which SetPipeline issues only inside a
-    // dynamic render pass or a secondary inheriting one; a legacy render pass
-    // leaves every pipeline's compiled depthWriteEnable in force, so NONE there
-    // could leave the contents undefined. Falling back to STORE keeps them
-    // (never DONT_CARE, which discards them): it costs the sync-hazard freedom,
-    // not the pixels.
+    // Dynamic read-only passes may preserve depth without a store operation.
+    // Legacy passes retain STORE for compatibility; their static pipeline pair
+    // still disables writes while the attachment is read-only.
     const bool storeOpNoneUsable = m_Device->SupportsAttachmentStoreOpNone()
                                    && m_DynamicRenderingActive
                                    && m_Device->GetCmdSetDepthWriteEnable() != nullptr;
@@ -2129,12 +2153,38 @@ void VulkanCommandList::BeginRenderPass(const RenderPassDesc& desc)
             rpci2.subpassCount = 1;
             rpci2.pSubpasses = &subpass2;
 
-            if (vkCreateRenderPass2(m_Device->GetVkDevice(), &rpci2, nullptr, &renderPass) != VK_SUCCESS)
+            if (!anyDSResolve)
             {
-                return;
+                // Color resolves are core Vulkan 1.0; they do not require
+                // VK_KHR_create_renderpass2 (absent on Vulkan 1.1 Android devices).
+                VkSubpassDescription subpass{};
+                subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+                subpass.colorAttachmentCount = colorCount;
+                subpass.pColorAttachments = colorRefs.data();
+                subpass.pResolveAttachments = colorResolveCount ? colorResolveRefs.data() : nullptr;
+                VkAttachmentReference depthReference{};
+                depthReference.attachment = static_cast<uint32_t>(depthAttachIndex);
+                depthReference.layout = depthRefLayout;
+                subpass.pDepthStencilAttachment = hasDepth ? &depthReference : nullptr;
+                VkRenderPassCreateInfo info{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+                info.attachmentCount = static_cast<uint32_t>(attachments.size());
+                info.pAttachments = attachments.data();
+                info.subpassCount = 1;
+                info.pSubpasses = &subpass;
+                if (vkCreateRenderPass(m_Device->GetVkDevice(), &info, nullptr, &renderPass) != VK_SUCCESS)
+                    return;
+            }
+            else
+            {
+                if (m_Device->GetPromotedCommands().CreateRenderPass2 == nullptr ||
+                    m_Device->GetPromotedCommands().CreateRenderPass2(m_Device->GetVkDevice(), &rpci2, nullptr, &renderPass) != VK_SUCCESS)
+                {
+                    Logger::Log::Error("Vulkan: depth/stencil resolve requires render pass 2 support");
+                    return;
+                }
+                m_LegacyOneOffUsesRP2 = true;
             }
             m_PendingRenderPassDestroys.push_back(renderPass);
-            m_LegacyOneOffUsesRP2 = true;
 
             legacyExtraAttachments = colorResolveCount + ((hasDepth && depthResolveAttachIndex >= 0) ? 1u : 0u);
             framebuffer = createTransientFramebuffer(renderPass,
@@ -2705,13 +2755,15 @@ void VulkanCommandList::BeginRenderPass(const RenderPassDesc& desc)
             viewport.width = static_cast<float>(extent.width);
             viewport.minDepth = 0.0f;
             viewport.maxDepth = 1.0f;
-            vkCmdSetViewport(m_CommandBuffer, 0, 1, &viewport);
+            m_Viewport = viewport;
+            m_ViewportPending = true;
 
             VkRect2D scissor{};
             scissor.offset.x = 0;
             scissor.offset.y = 0;
             scissor.extent = extent;
-            vkCmdSetScissor(m_CommandBuffer, 0, 1, &scissor);
+            m_Scissor = scissor;
+            m_ScissorPending = true;
         }
         // If any color target is the swapchain backbuffer, mark for Present wait selection
         for (uint32_t i = 0; i < 8; ++i)
@@ -2816,7 +2868,7 @@ void VulkanCommandList::BeginRenderPass(const RenderPassDesc& desc)
         VkSubpassBeginInfo subpassBegin{};
         subpassBegin.sType = VK_STRUCTURE_TYPE_SUBPASS_BEGIN_INFO;
         subpassBegin.contents = VK_SUBPASS_CONTENTS_INLINE;
-        vkCmdBeginRenderPass2(m_CommandBuffer, &renderPassInfo, &subpassBegin);
+        m_Device->GetPromotedCommands().CmdBeginRenderPass2(m_CommandBuffer, &renderPassInfo, &subpassBegin);
     }
     else
     {
@@ -2851,7 +2903,7 @@ void VulkanCommandList::EndRenderPass()
         {
             VkSubpassEndInfo subpassEnd{};
             subpassEnd.sType = VK_STRUCTURE_TYPE_SUBPASS_END_INFO;
-            vkCmdEndRenderPass2(m_CommandBuffer, &subpassEnd);
+            m_Device->GetPromotedCommands().CmdEndRenderPass2(m_CommandBuffer, &subpassEnd);
         }
         else
         {
@@ -2868,6 +2920,7 @@ void VulkanCommandList::EndRenderPass()
     }
 
     m_LegacyOneOffUsesRP2 = false;
+    m_DepthReadOnly = false;
 
     m_LastMarkerName.clear();
 
@@ -2880,6 +2933,30 @@ void VulkanCommandList::EndRenderPass()
     // Present transition is handled at the device Present() stage
     m_LastRenderPassWasPresent = false;
     m_LastRenderPassImage = VK_NULL_HANDLE;
+}
+
+void VulkanCommandList::ApplyRasterState()
+{
+    if (const auto* pipeline = GetVulkanPipeline(m_CurrentPipelineHandle);
+        pipeline && pipeline->type != PipelineType::Compute && pipeline->readOnlyDepthPipeline != VK_NULL_HANDLE)
+    {
+        const VkPipeline selected = m_DepthReadOnly ? pipeline->readOnlyDepthPipeline : pipeline->pipeline;
+        if (m_BoundGraphicsPipeline != selected)
+        {
+            vkCmdBindPipeline(m_CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, selected);
+            m_BoundGraphicsPipeline = selected;
+        }
+    }
+    if (m_ViewportPending)
+    {
+        vkCmdSetViewport(m_CommandBuffer, 0, 1, &m_Viewport);
+        m_ViewportPending = false;
+    }
+    if (m_ScissorPending)
+    {
+        vkCmdSetScissor(m_CommandBuffer, 0, 1, &m_Scissor);
+        m_ScissorPending = false;
+    }
 }
 
 void VulkanCommandList::SetViewport(float x, float y, float width, float height)
@@ -2907,7 +2984,8 @@ void VulkanCommandList::SetViewport(float x, float y, float width, float height)
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
 
-    vkCmdSetViewport(m_CommandBuffer, 0, 1, &viewport);
+    m_Viewport = viewport;
+    m_ViewportPending = true;
 }
 
 void VulkanCommandList::SetScissor(uint32_t x, uint32_t y, uint32_t width, uint32_t height)
@@ -2937,7 +3015,8 @@ void VulkanCommandList::SetScissor(uint32_t x, uint32_t y, uint32_t width, uint3
     scissor.extent.width = width;
     scissor.extent.height = height;
 
-    vkCmdSetScissor(m_CommandBuffer, 0, 1, &scissor);
+    m_Scissor = scissor;
+    m_ScissorPending = true;
 }
 
 void VulkanCommandList::SetDepthBounds(float minDepth, float maxDepth)
@@ -3020,9 +3099,29 @@ void VulkanCommandList::FillBuffer(BufferHandle dst, size_t offset, size_t size,
 
 void VulkanCommandList::CopyTexture(TextureHandle src, TextureHandle dst)
 {
+    RecordTextureCopy(src, dst, 0);
+}
+
+bool VulkanCommandList::CopyDepthArrayLayer(TextureHandle src, TextureHandle dst, uint32_t layer)
+{
+    if (src == dst || m_Device->GetTextureFormat(src) != TextureFormat::D32_FLOAT ||
+        m_Device->GetTextureFormat(dst) != TextureFormat::D32_FLOAT ||
+        m_Device->GetTextureSampleCount(src) != 1u || m_Device->GetTextureSampleCount(dst) != 1u ||
+        layer >= m_Device->GetTextureArrayLayers(src) || layer >= m_Device->GetTextureArrayLayers(dst))
+        return false;
+    const VkExtent3D srcExtent = m_Device->GetVkImageExtent(src);
+    const VkExtent3D dstExtent = m_Device->GetVkImageExtent(dst);
+    if (srcExtent.width != dstExtent.width || srcExtent.height != dstExtent.height ||
+        srcExtent.depth != 1u || dstExtent.depth != 1u)
+        return false;
+    return RecordTextureCopy(src, dst, layer);
+}
+
+bool VulkanCommandList::RecordTextureCopy(TextureHandle src, TextureHandle dst, uint32_t layer)
+{
     if (m_CommandBuffer == VK_NULL_HANDLE || !m_IsRecording)
     {
-        return;
+        return false;
     }
 
     VkImage srcImage = m_Device->GetVkImage(src);
@@ -3039,13 +3138,13 @@ void VulkanCommandList::CopyTexture(TextureHandle src, TextureHandle dst)
         VkImageCopy copyRegion{};
         copyRegion.srcSubresource.aspectMask = GetVkImageAspectFlags(src);
         copyRegion.srcSubresource.mipLevel = 0;
-        copyRegion.srcSubresource.baseArrayLayer = 0;
+        copyRegion.srcSubresource.baseArrayLayer = layer;
         copyRegion.srcSubresource.layerCount = 1;
         copyRegion.srcOffset = {0, 0, 0};
 
         copyRegion.dstSubresource.aspectMask = GetVkImageAspectFlags(dst);
         copyRegion.dstSubresource.mipLevel = 0;
-        copyRegion.dstSubresource.baseArrayLayer = 0;
+        copyRegion.dstSubresource.baseArrayLayer = layer;
         copyRegion.dstSubresource.layerCount = 1;
         copyRegion.dstOffset = {0, 0, 0};
 
@@ -3072,7 +3171,7 @@ void VulkanCommandList::CopyTexture(TextureHandle src, TextureHandle dst)
         u.Layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         u.BaseMip = 0;
         u.LevelCount = 1;
-        u.BaseLayer = 0;
+        u.BaseLayer = layer;
         u.LayerCount = 1;
         u.AspectMask = GetVkImageAspectFlags(src);
         m_UsedResources.push_back(u);
@@ -3088,11 +3187,12 @@ void VulkanCommandList::CopyTexture(TextureHandle src, TextureHandle dst)
         u.Layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         u.BaseMip = 0;
         u.LevelCount = 1;
-        u.BaseLayer = 0;
+        u.BaseLayer = layer;
         u.LayerCount = 1;
         u.AspectMask = GetVkImageAspectFlags(dst);
         m_UsedResources.push_back(u);
     }
+    return srcImage != VK_NULL_HANDLE && dstImage != VK_NULL_HANDLE;
 }
 
 void VulkanCommandList::BeginEvent(const char* name)
@@ -4059,8 +4159,8 @@ void VulkanCommandList::CopyTextureSubresourceToBuffer(TextureHandle srcTexture,
         1, &toSrc);
     m_SubresourceLayouts[MakeSubKey(srcTexture, mip, rangeCopy.baseArrayLayer)] = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     // Optional diagnostic: clear depth to 0.5 right before readback to validate copy path
-    const char* dbgClr = std::getenv("GE_DEBUG_CLEAR_DEPTH_BEFORE_READBACK");
-    if (dbgClr && aspectSingle == VK_IMAGE_ASPECT_DEPTH_BIT)
+    if (GameEngine::Platform::EnvironmentSwitchEnabled("GE_DEBUG_CLEAR_DEPTH_BEFORE_READBACK", false) &&
+        aspectSingle == VK_IMAGE_ASPECT_DEPTH_BIT)
     {
         // Transition to TRANSFER_DST_OPTIMAL (barrier must include both aspects for combined formats)
         VkImageMemoryBarrier toDst{};
@@ -4153,7 +4253,6 @@ void VulkanCommandList::CopyTextureSubresourceToBuffer(TextureHandle srcTexture,
 
     // If requested via env var, perform a diagnostic blit of the source mip into a temporary 1-mip image,
     // then use the known-good CopyTextureToBuffer path on that temp. This is to isolate readback behavior.
-    const char* dbgBlit = std::getenv("GE_DEBUG_BLIT_READBACK");
     vkFmt = m_Device->GetVkImageFormat(srcTexture);
     // Single source of truth for texel size — see BytesPerPixel(TextureFormat) in
     // Device.h. bpp sizes the trailing transfer→host buffer barrier: a table that
@@ -4162,7 +4261,7 @@ void VulkanCommandList::CopyTextureSubresourceToBuffer(TextureHandle srcTexture,
     // 4-byte fallback. Returns 0 only for block-compressed sources.
     uint32_t bpp = BytesPerPixel(m_Device->GetTextureFormat(srcTexture));
 
-    if (dbgBlit && dbgBlit[0] == '1' && mip != 0)
+    if (GameEngine::Platform::EnvironmentSwitchEnabled("GE_DEBUG_BLIT_READBACK", false) && mip != 0)
     {
         // Create a transient temp image (1 mip) with transfer src/dst usage
         TextureDesc td{};
@@ -4582,16 +4681,12 @@ void VulkanCommandList::CopyBufferToTextureSubresource(BufferHandle srcBuffer, T
     // subresource discard otherwise). Without a caller state the old layout comes from
     // command-list-local tracking, which for a fresh list means UNDEFINED — correct only
     // for whole-subresource rewrites.
-    // The barrier covers every aspect of the format (depth and stencil together for a
-    // combined format); a buffer copy writes exactly one, the depth for a depth format.
     VkImageSubresourceRange range{};
     range.aspectMask = GetVkImageAspectFlags(dstTexture);
     range.baseMipLevel = mip;
     range.levelCount = 1;
     range.baseArrayLayer = is3DTexture ? 0 : layer;
     range.layerCount = 1;
-    const VkImageAspectFlags copyAspect =
-        (range.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
 
     // The same rule as the readback: this list's layout record first, because it holds
     // what this list did after the caller last knew the state; the caller's stated
@@ -4657,7 +4752,9 @@ void VulkanCommandList::CopyBufferToTextureSubresource(BufferHandle srcBuffer, T
     region.bufferOffset = srcOffsetBytes;
     region.bufferRowLength = (srcRowPitchBytes && bpp) ? static_cast<uint32_t>(srcRowPitchBytes / bpp) : 0;
     region.bufferImageHeight = (srcSlicePitchBytes && srcRowPitchBytes) ? static_cast<uint32_t>(srcSlicePitchBytes / srcRowPitchBytes) : 0;
-    region.imageSubresource.aspectMask = copyAspect;
+    // Buffer copies name one aspect; combined depth/stencil uploads carry depth.
+    region.imageSubresource.aspectMask = (range.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT)
+        ? static_cast<VkImageAspectFlags>(VK_IMAGE_ASPECT_DEPTH_BIT) : range.aspectMask;
     region.imageSubresource.mipLevel = mip;
     region.imageSubresource.baseArrayLayer = is3DTexture ? 0 : layer;
     region.imageSubresource.layerCount = 1;

@@ -1,9 +1,9 @@
 #pragma once
 
-#include <cstdlib>
+#include "Platform/Environment.h"
 
 // Centralized renderer debug env-var checks, evaluated once via Meyers singleton.
-// Lightweight header — no engine dependencies. Safe to include from any TU.
+// Lightweight header — depends only on Platform's header-only environment switch.
 namespace GameEngine::Rendering
 {
 
@@ -16,12 +16,8 @@ struct RenderingDebugFlags
     {
         static const RenderingDebugFlags instance = [] {
             RenderingDebugFlags f;
-            auto enabled = [](const char* name) {
-                const char* v = std::getenv(name);
-                return v && *v && *v != '0';
-            };
-            f.traceRendering = enabled("GE_DEBUG_TRACE_RENDERING");
-            f.srgbDiag = enabled("GE_DEBUG_SRGB_ENCODE");
+            f.traceRendering = Platform::EnvironmentSwitchEnabled("GE_DEBUG_TRACE_RENDERING", false);
+            f.srgbDiag = Platform::EnvironmentSwitchEnabled("GE_DEBUG_SRGB_ENCODE", false);
             return f;
         }();
         return instance;

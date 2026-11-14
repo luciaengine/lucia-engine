@@ -790,3 +790,36 @@ TEST_F(LoggerAsyncTest, MultiThreadThroughputRegression)
 }
 
 } // anonymous namespace
+
+namespace
+{
+GE_LOG_CHANNEL(AsyncTestChannel, "Tests.AsyncChannel", Warning)
+
+size_t CountInfoMessages(const RingBufferSink& spy, std::string_view text)
+{
+    const auto messages = spy.GetMessages({.MinLevel = LogLevel::Info}).Messages;
+    return static_cast<size_t>(std::count_if(messages.begin(), messages.end(), [text](const auto& message)
+        { return message.Level == LogLevel::Info && message.Message.find(text) != std::string::npos; }));
+}
+}
+
+TEST_F(LoggerAsyncTest, NamedChannelLevelOnlyChangesThatChannel)
+{
+    const auto& channel = AsyncTestChannel();
+    Log::SetChannelLevel(channel.Index, std::nullopt);
+    int evaluations = 0;
+    GE_LOG(AsyncTestChannel, Info, "channel info {}", ++evaluations);
+    EXPECT_EQ(evaluations, 0);
+    EXPECT_EQ(Log::GetChannelName(channel.Index), "Tests.AsyncChannel");
+
+    Log::SetChannelLevel(channel.Index, LogLevel::Info);
+    GE_LOG(AsyncTestChannel, Info, "channel info {}", ++evaluations);
+    Log::SetChannelLevel(channel.Index, LogLevel::Off);
+    GE_LOG(AsyncTestChannel, Error, "channel error {}", ++evaluations);
+    Log::Info("core info");
+    Log::Flush();
+    EXPECT_EQ(evaluations, 1);
+    EXPECT_EQ(CountInfoMessages(*m_Spy, "channel info"), 1u);
+    EXPECT_EQ(CountInfoMessages(*m_Spy, "core info"), 1u);
+    Log::SetChannelLevel(channel.Index, std::nullopt);
+}

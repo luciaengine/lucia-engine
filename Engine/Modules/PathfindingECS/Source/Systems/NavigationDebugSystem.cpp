@@ -258,6 +258,7 @@ void NavigationDebugSystem::Update(ECS::World& world, float32 deltaTime)
 
     NavDebugData& debugData = NavigationService::GetDebugData();
     debugData.Clear();
+    debugData.CachedTriangles.clear();
 
     // Find active debug settings (use first one found)
     bool showGrid = false;

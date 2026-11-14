@@ -9,9 +9,7 @@
 #include "TestTempDir.h"
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
-#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -21,8 +19,6 @@
 #include <vector>
 
 #ifdef PLATFORM_WINDOWS
-#include <share.h>
-
 // Declared directly instead of via <windows.h>: that header's global GUID
 // typedef is ambiguous against GameEngine::GUID under the using-directive
 // below. Signatures match kernel32 exactly (BOOL=int, DWORD=unsigned long).

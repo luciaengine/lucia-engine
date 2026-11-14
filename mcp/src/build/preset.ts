@@ -110,6 +110,11 @@ export function detectPreset(config: string = "DebugFast"): string {
   return candidates[0];
 }
 
+// Check if a preset is a non-preset (macOS/Linux custom build dir).
+export function isCustomBuild(preset: string): boolean {
+  return preset.startsWith("__");
+}
+
 // Get the cmake build arguments for a given preset or custom build.
 export function buildArgs(preset: string, config: string, target: string, jobs: string): string[] {
   if (preset === "__macos_ninja__") {
@@ -122,6 +127,28 @@ export function buildArgs(preset: string, config: string, target: string, jobs: 
     return ["--build", "build-linux", "--target", target, "-j", jobs];
   }
   return ["--build", `build/${preset}`, "--config", config, "--target", target, "-j", jobs];
+}
+
+// Get the CTest arguments for a given preset or custom build.
+export function ctestArgs(preset: string, config: string, testFilter?: string): string[] {
+  if (preset === "__macos_ninja__") {
+    const args = ["--test-dir", "build-macos", "--output-on-failure"];
+    if (testFilter) args.push("-R", testFilter);
+    return args;
+  }
+  if (preset === "__macos_xcode__") {
+    const args = ["--test-dir", "build-xcode", "--output-on-failure", "-C", config];
+    if (testFilter) args.push("-R", testFilter);
+    return args;
+  }
+  if (preset === "__linux_ninja__") {
+    const args = ["--test-dir", "build-linux", "--output-on-failure"];
+    if (testFilter) args.push("-R", testFilter);
+    return args;
+  }
+  const args = ["--test-dir", `build/${preset}`, "--output-on-failure", "-C", config];
+  if (testFilter) args.push("-R", testFilter);
+  return args;
 }
 
 // The directory a preset or custom build configures into, relative to the repository root.

@@ -11,7 +11,7 @@ using System.Runtime.InteropServices;
 
 namespace GameEngine.Scripting
 {
-    [StructLayout(LayoutKind.Explicit, Size = 92)]
+    [StructLayout(LayoutKind.Explicit, Size = 152)]
     [BuiltInComponent("GameEngine::Components::AnimatedSprite2D")]
     public partial struct AnimatedSprite2D : IComponent
     {
@@ -24,7 +24,7 @@ namespace GameEngine.Scripting
         }
 
         [FieldOffset(0)]
-        public AssetGuid SpriteFramesGuid;
+        public AssetGuid SpriteFrames;
 
         [InlineArray(64)]
         private struct AnimationNameArray
@@ -47,9 +47,42 @@ namespace GameEngine.Scripting
         public float SpeedScale;
 
         [FieldOffset(88)]
+        public float PixelsPerUnit;
+
+        [FieldOffset(92)]
+        public float PivotX;
+
+        [FieldOffset(96)]
+        public float PivotY;
+
+        [FieldOffset(100)]
+        public ColorLinear Tint;
+
+        [FieldOffset(116)]
+        public uint RenderLayers;
+
+        [FieldOffset(120)]
         public bool Playing;
 
-        [FieldOffset(89)]
-        public bool Loop;
+        [FieldOffset(121)]
+        public bool Visible;
+
+        [FieldOffset(122)]
+        public bool FlipX;
+
+        [FieldOffset(123)]
+        public bool FlipY;
+
+        [FieldOffset(124)]
+        public uint PendingPlaybackEvents;
+
+        [FieldOffset(128)]
+        public uint PlaybackEventFrame;
+
+        [FieldOffset(136)]
+        public long PlaybackEventLoops;
+
+        [FieldOffset(144)]
+        public float PlaybackEventTimeSeconds;
     }
 }

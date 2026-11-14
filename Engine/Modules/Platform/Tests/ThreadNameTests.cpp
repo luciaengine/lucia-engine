@@ -6,6 +6,10 @@
 #include <cstdint>
 #include <thread>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 #if defined(__linux__)
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -16,7 +20,7 @@ using namespace GameEngine;
 namespace
 {
 // The id GetThreadName takes: what the Memory module's scratch stats record per thread.
-std::uint64_t ThisOsThreadId()
+[[maybe_unused]] std::uint64_t ThisOsThreadId()
 {
 #if defined(_WIN32)
     return ::GetCurrentThreadId();
@@ -35,6 +39,9 @@ std::uint64_t ThisOsThreadId()
 // The debug server names another thread by the OS id the Memory stats carry.
 TEST(PlatformThread, GetThreadNameReadsAnotherThreadsName)
 {
+#if (!defined(_WIN32) && !defined(__APPLE__) && !defined(__linux__)) || (defined(__APPLE__) && TARGET_OS_IPHONE)
+    GTEST_SKIP() << "Reading another thread name is unavailable on this platform";
+#else
     std::atomic<std::uint64_t> id{0};
     std::atomic<bool> done{false};
     std::thread named([&id, &done] {
@@ -49,4 +56,5 @@ TEST(PlatformThread, GetThreadNameReadsAnotherThreadsName)
     done.store(true, std::memory_order_release);
     named.join();
     EXPECT_EQ(name, "Platform Probe");
+#endif
 }

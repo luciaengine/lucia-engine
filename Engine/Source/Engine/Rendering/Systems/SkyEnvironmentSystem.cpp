@@ -411,7 +411,8 @@ void SkyEnvironmentSystem::Update(ECS::World& world, float32 deltaTime)
 
     {
         world.Query<ECS::Write<Components::SkyEnvironment>>()
-            .Each([&](Components::SkyEnvironment& env) {
+            .Each([&](ECS::Writable<Components::SkyEnvironment> envRow) {
+                auto& env = envRow.Mutable();
                 ++environmentCount;
                 if (foundEnvironment)
                     return;

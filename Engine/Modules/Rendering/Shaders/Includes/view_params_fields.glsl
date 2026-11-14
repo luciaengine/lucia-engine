@@ -1,5 +1,5 @@
 // Shared per-view ViewParams std140 field list — the single source for the
-// canonical block (view_params.glsl, set 0 binding 7, 720 B), its truncated
+// canonical block (view_params.glsl, set 0 binding 7, 736 B), its truncated
 // prefixes declared inline by the packaged Forward+ / post-FX shaders, and the
 // C++ mirror (Rendering/Core/ViewParamsLayout.h). Field order and std140
 // offsets are a GPU ABI; every declaration derives from this list via #include,
@@ -11,12 +11,12 @@
 //   C++:   #define GE_VP_MAT4(n) float n[16]; #define GE_VP_VEC4(n) float n[4];
 //
 // Prefix rule: a shorter consumer declares an exact leading prefix by #defining
-// a level guard BEFORE the include. The full 720 B block is the default.
+// a level guard BEFORE the include. The full 736 B block is the default.
 //   GE_VIEWPARAMS_CORE_ONLY -> 176 B (invProj, view, depthTerms, viewRanges, cameraPosWS)
 //   GE_VIEWPARAMS_OMIT_PROJ -> 256 B (adds screenSize, viewProj; omits proj)
-//   (neither)               -> 720 B (adds proj, mipBiasParams, prevViewProj, invView,
+//   (neither)               -> 736 B (adds proj, mipBiasParams, prevViewProj, invView,
 //                                 taaJitter, exposureParams and the relative frame from 496)
-//                                 — canonical block + C++ mirror
+//                                 and pixelationBand) — canonical block + C++ mirror
 //
 // Order and offsets are shared with every consumer: change them only together with
 // ViewParamsLayout.h and the packaged copies of the block.
@@ -59,5 +59,6 @@ GE_VP_MAT4(ge_prevViewProjRel) // 624 previous rendered frame's UNJITTERED origi
 GE_VP_VEC4(ge_cameraPosRel)    // 688 xyz = the eye relative to the origin (ge_invViewRel[3]), w = 0
 GE_VP_VEC4(ge_renderOrigin)    // 704 xyz = the render origin sector (integers stored as float),
                                //     w = the sector size in meters. Origin = xyz * w.
+GE_VP_VEC4(ge_pixelationBand) // 720 x=start, y=end, z=enabled, w=distance mode.
 #endif
 #endif

@@ -8,6 +8,7 @@ import { tools as ecsAuthoring } from "./ecs-authoring.js";
 import { tools as editorState } from "./editor-state.js";
 import { tools as gameGraph } from "./game-graph.js";
 import { tools as ground } from "./ground.js";
+import { tools as lightmaps } from "./lightmaps.js";
 import { tools as lifecycle } from "./lifecycle.js";
 import { tools as markups } from "./markups.js";
 import { tools as profiling } from "./profiling.js";
@@ -26,6 +27,7 @@ export const allTools: readonly ToolDef[] = Object.freeze([
   ...editorState,
   ...scene,
   ...ground,
+  ...lightmaps,
   ...ai,
   ...markups,
   ...animation,

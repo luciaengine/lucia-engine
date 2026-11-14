@@ -35,6 +35,7 @@ public:
     bool IsBodyValid(BodyHandle body) const override;
 
     Transform GetBodyTransform(BodyHandle body) const override;
+    WorldPosition GetCenterOfMassPosition(BodyHandle body) const override;
     void SetBodyTransform(BodyHandle body, const Transform& transform, ActivationMode activation) override;
     void MoveKinematic(BodyHandle body, const Transform& target, float32 deltaTime) override;
 
@@ -66,6 +67,8 @@ public:
     bool RayCastAll(const RayCastQuery& query, std::vector<RayCastResult>& outResults, uint32 maxResults) const override;
     bool BoxOverlap(const BoxOverlapQuery& query, std::vector<OverlapResult>& outResults, uint32 maxResults) const override;
 
+    void SetContactModifyCallback(ContactModifyCallback callback, void* context) override;
+    void SetBodyContactFlags(BodyHandle body, uint32 contactFlags) override;
     void SetContactCallback(ContactCallback callback) override;
     void SetTriggerCallback(TriggerCallback callback) override;
     void ProcessEvents() override;

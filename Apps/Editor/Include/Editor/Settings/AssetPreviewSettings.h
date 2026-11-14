@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Events/Event.h"
+
 namespace GameEngine::Editor
 {
 
@@ -10,5 +12,9 @@ void ApplyAssetPreviewSettingsFromPreferences();
 
 // Register the Asset Preview settings category (UI > Asset Preview).
 void RegisterAssetPreviewSettingsCategory();
+
+bool GetPackagePreviewsEnabled();
+// Main-thread notification. Package panels rebuild after the settings event.
+Event<>& PackagePreviewsChanged();
 
 } // namespace GameEngine::Editor

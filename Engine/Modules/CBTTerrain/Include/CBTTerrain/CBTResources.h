@@ -18,6 +18,7 @@
 namespace GameEngine::Rendering
 {
 class IDevice;
+class CommandList;
 }
 
 namespace GameEngine::CBTTerrain
@@ -94,6 +95,8 @@ class CBTResources
         return static_cast<uint32_t>(m_FrameCounter.Tick(deviceFrameIndex));
     }
 
+    void OnRootInitializationSubmitted() { m_SourceReadersSubmitted = true; }
+
     // C4 per-frame params UBO (binding 14) — camera + terrain params consumed by
     // Classify (screen-space error) and VertexEval (displacement). Host-visible,
     // ring-buffered over kCBTFrameParamsRing frames. Write one slot per frame.
@@ -108,7 +111,7 @@ class CBTResources
     // descriptor element an in-flight frame is still reading. No-op when that element's
     // handle is unchanged. The default is a 1x1 zero R32_FLOAT so every element is
     // always valid before any terrain binds (heightScale = 0 makes its content moot).
-    void SetHeightSource(uint32_t frameCounter, Rendering::TextureHandle texture);
+    bool SetHeightSource(uint32_t frameCounter, Rendering::TextureHandle texture);
     Rendering::TextureHandle GetDefaultHeightTexture() const { return m_DefaultHeight; }
     // The height texture bound in `frameCounter`'s ring element (the flat default when none).
     Rendering::TextureHandle GetBoundHeightSource(uint32_t frameCounter) const;
@@ -130,26 +133,21 @@ class CBTResources
     // a lattice; the texture rests in ShaderResource between frames. Wide arm only, like the height chain.
     Rendering::TextureHandle GetNormalChainTexture() const { return m_NormalChain; }
     uint32_t GetNormalChainMips() const { return m_NormalChainMips; }
+    bool HasNormalChainFor(uint32_t samplesX, uint32_t samplesZ) const
+    {
+        return samplesX >= 2u && samplesZ >= 2u && samplesX <= 0xFFFFu && samplesZ <= 0xFFFFu &&
+               m_NormalChain.IsValid() && m_NormalChainLattice == (samplesX | (samplesZ << 16u));
+    }
     // Creates the chain for a lattice of `samplesX` x `samplesZ` (CBTNormalChainTexels / Mips), replacing
     // one made for another lattice; true when it matches. False when the arm builds no chain or the
     // allocation fails: the previous texture stays bound and the surface keeps the level-0 normal map.
     bool ProvisionNormalChain(uint32_t samplesX, uint32_t samplesZ);
     Rendering::SamplerHandle GetHeightSampler() const { return m_HeightSampler; }
 
-    // In-place re-provision safety. The per-slot SetHeightSource/SetAtlasSource/SetCoarseSource
-    // refresh above only rewrites the current frame's ring element, so evicting a retired terrain
-    // texture from EVERY element relies on the ring rotating through all slots before that image
-    // clears its owner's frames-in-flight quarantine and is freed — a self-heal with only a
-    // one-frame margin that a SamplesPerMeter/size edit (destroy + recreate of the unified
-    // textures) can lose under load, leaving a ring element sampling a freed VkImageView from CBT
-    // VertexEval a few frames later (VK_ERROR_DEVICE_LOST). RebindTerrainSourcesToDefault rewrites
-    // EVERY height (15) / atlas (18) / coarse (19) ring element back to its built-in default in one
-    // shot and bumps GetTerrainSourceGeneration, so a retired texture is dropped from the whole ring
-    // deterministically — no dependence on ring rotation. The caller MUST first retire the graphics
-    // work already submitted (CBTInstance::RefreshTerrainSources waits that timeline value): this
-    // rewrites descriptor elements in-flight frames may still be sampling. Returns true when any
-    // element actually changed.
-    bool RebindTerrainSourcesToDefault();
+    /// Rebinds every height, atlas, coarse and page-cache slot after its readers retire.
+    /// False keeps unretired bindings available for retry; changed names completed replacements.
+    /// Uses graphics completion without changing the device-wide idle state.
+    bool RebindTerrainSourcesToDefault(bool& changed);
 
     // Monotonic version of the terrain-texture ring bindings (height/atlas/coarse). Bumped whenever
     // SetHeightSource/SetAtlasSource/SetCoarseSource actually change a slot, and by
@@ -167,10 +165,10 @@ class CBTResources
     // terrain's atlas height texture (or the flat default when invalid). Same in-flight
     // safety as SetHeightSource — only this frame's element is touched. No-op when that
     // element's handle is unchanged.
-    void SetAtlasSource(uint32_t frameCounter, Rendering::TextureHandle atlasTexture);
+    bool SetAtlasSource(uint32_t frameCounter, Rendering::TextureHandle atlasTexture);
     // Binding 19: rebind the frame's coarse height field texture (out-of-window fallback), or
     // the flat default when invalid. Same per-slot in-flight safety as SetAtlasSource.
-    void SetCoarseSource(uint32_t frameCounter, Rendering::TextureHandle coarseTexture);
+    bool SetCoarseSource(uint32_t frameCounter, Rendering::TextureHandle coarseTexture);
     // Binding 17: write `rowCount` 16-B indirection rows into the frame's ring slot from
     // the residency controller's table (host-visible; completes before submit, like the
     // params UBO). `rows` points at kAtlasRowBytes-sized TileAtlasSlot entries; the copy is
@@ -181,10 +179,10 @@ class CBTResources
     //
     // Binding 23: rebind this frame's ring element to the height page cache texture (or the flat
     // default when invalid). Same per-slot in-flight safety as SetAtlasSource.
-    void SetPageCacheSource(uint32_t frameCounter, Rendering::TextureHandle cacheTexture);
+    bool SetPageCacheSource(uint32_t frameCounter, Rendering::TextureHandle cacheTexture);
     // Binding 22: binds TerrainPageFeature's page-table ring, whose slot for this frame starts at word
     // `firstWord`; an invalid ring binds the zeroed default. A new ring handle rewrites the sets.
-    void SetPageTable(Rendering::BufferHandle ring, uint32_t firstWord);
+    bool SetPageTable(Rendering::BufferHandle ring, uint32_t firstWord);
     Rendering::BufferHandle GetPageTableBuffer() const { return m_PageTable; }
     Rendering::TextureHandle GetDefaultAtlasHeightTexture() const { return m_DefaultAtlasHeight; }
     Rendering::TextureHandle GetDefaultAtlasCoarseTexture() const { return m_DefaultAtlasCoarse; }
@@ -245,6 +243,7 @@ class CBTResources
     uint32_t m_TextureRing = kCBTTextureRingMax; // elements the loaded kernels declare per texture
     // One shared set where the device binds the whole family's storage buffers in one
     // stage; one set per kernel where it cannot (CBTKernelSet::UsesPerKernelLayouts).
+    bool m_SourceReadersSubmitted = false;
     Rendering::DescriptorSetHandle m_DescriptorSet{};
     std::vector<Rendering::DescriptorSetHandle> m_KernelSets;
     std::vector<std::vector<uint32_t>> m_KernelSetBindings;
@@ -252,7 +251,14 @@ class CBTResources
     void WriteOneSet(Rendering::DescriptorSetHandle set, const std::vector<uint32_t>& only);
     // Rewrites one ring element of a terrain-source binding in every set that
     // binds it (the per-kernel sets, or the single shared set).
-    void UpdateTerrainSourceBinding(uint32_t binding, Rendering::TextureHandle texture,
+    bool WaitForSourceReaders();
+    bool WaitForGraphicsReaders();
+    bool SubmitGraphicsAndWait(Rendering::CommandList& command);
+    Rendering::SemaphoreHandle m_GraphicsCompletion{};
+    uint64_t m_GraphicsCompletionValue = 0;
+    bool RebindSourceRingToDefault(std::array<Rendering::TextureHandle, kCBTTextureRingMax>& ring,
+                                   Rendering::TextureHandle texture, uint32_t binding, bool& changed);
+    bool UpdateTerrainSourceBinding(uint32_t binding, Rendering::TextureHandle texture,
                                     uint32_t slot);
     Rendering::BufferHandle m_Readback{};
     uint64_t m_ReadbackSize = 0;

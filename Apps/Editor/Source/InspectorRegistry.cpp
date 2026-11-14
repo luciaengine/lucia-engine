@@ -1,6 +1,6 @@
 #include "InspectorRegistry.h"
 
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentRegistry.h"
 
 namespace GameEngine {
 

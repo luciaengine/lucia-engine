@@ -86,4 +86,3 @@ TEST(InspectorPercentRowLayout, ThePercentFollowsTheNumber)
     const float gap = suffix->GetLayoutX() - valueEnd;
     EXPECT_LE(gap, kMaxValueToSuffixGap) << "the \"%\" sits " << gap << " px after \"50\"";
 }
-

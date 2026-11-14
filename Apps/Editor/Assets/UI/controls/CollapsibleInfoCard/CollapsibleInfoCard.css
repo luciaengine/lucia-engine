@@ -81,3 +81,27 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
+
+
+/* The card's action: content width, after the copy, on the copy's first line. */
+.editor-info-card-action {
+	flex: 0 0 auto;
+}
+
+/* "Show Info Cards" off: a card with an action stays, as its action alone, so the state the action
+   names stays visible. The three classes outrank the theme's `.info-card-off.info-card-off`. */
+.info-card-off.info-card-off.editor-info-card-has-action {
+	display: flex;
+	background-color: transparent;
+	outline-width: 0;
+	padding: 0;
+	justify-content: flex-end;
+}
+
+.info-card-off .editor-info-card-chevron {
+	display: none;
+}
+
+.info-card-off .editor-info-card-line {
+	display: none;
+}

@@ -10,6 +10,7 @@
 #include "Core/Engine.h"
 #include "ECS/Query.h"
 #include "ECS/World.h"
+#include "ECS/ECSTemplates.h"
 #include "ECSModules/Rendering/RenderingLoop.h"
 #include "Engine/Rendering/PrimitiveGenerator.h"
 #include "Logger/Logger.h"

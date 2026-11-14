@@ -96,18 +96,6 @@ const char* ElisionCauseName(ElisionCause cause);
 // disabled state instead.
 const char* ElisionDisengageReason(ElisionCause cause, bool skip);
 
-// Parse the GE_IDLE_ELISION_LOG toggle. Leading-character idiom shared with
-// ParseGpuCheckpointsEnabled / ParseSyncValidationEnabled, and OFF for the same
-// reason — but note the polarity is the OPPOSITE of the neighbouring
-// GE_IDLE_ELISION kill switches, which default ON: an unset or falsey value
-// here means "do not log", so "false" must read as off rather than as any
-// non-"0" string.
-inline bool ParseIdleElisionLoggingEnabled(const char* envValue) noexcept
-{
-    return envValue != nullptr && envValue[0] != '\0' && envValue[0] != '0' &&
-           envValue[0] != 'f' && envValue[0] != 'F';
-}
-
 // Opt-in for every idle-elision diagnostic line — the engaged/disengaged
 // transition edges, the periodic cause-window summaries, and the [CascadeCache]
 // window twin — read once (house latch idiom). Default OFF: all of it is an

@@ -7,7 +7,7 @@
 // the RenderServices& that Declare receives: the passkey-gated
 // ImportShadowMapArrayRG / ImportTransmittanceShadowArrayRG / BuildShadowPassResources
 // / Publish{Area,Spot,Point}Shadow — never a friend grant. Each pass exec lambda
-// records via the free RecordDepthOnlyPass over a bundle from rs.MakeDepthDrawServices().
+// records via the free RecordPreparedDepthOnlyPass over a bundle from rs.MakeDepthDrawServices().
 // Recording order and the read/write sets are identical to the
 // former RenderServices bodies (§2): each pass records into the same frame at the
 // same sequence position, so the RGSchedule hazard edges are invariant under
@@ -19,21 +19,20 @@
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/Vector3.h"
 #include "Mathematics/WorldPosition.h"
 #include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/RecomputeElision.h"
-#include "Rendering/Core/ReverseZ.h"
+#include "Rendering/Core/HashUtils.h"
 
 #include <algorithm>
 #include <array>
 #include <bit>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
-#include <memory>
 #include <string>
 
 #include "RenderServicesDetail.h"
@@ -44,37 +43,56 @@ namespace Engine::Renderer
 {
 using namespace ::GameEngine::Rendering;
 
+struct ShadowMapRenderFeature::RigidCascadeFrame
+{
+    Rendering::ViewId View{};
+    uint32_t Slot = 0;
+    uint32_t Layer = 0;
+    uint64_t FrameStamp = 0;
+    uint64_t WriteGeneration = 0;
+    CascadeRenderInputs Inputs{};
+    CascadeRenderInputs PreparedInputs{};
+    Rendering::TextureHandle Texture{};
+    PreparedDepthOnlyPass* Prepared = nullptr;
+    DepthProducerState Producer;
+    bool Reuse = false;
+    bool Recorded = false;
+};
+
 namespace
 {
+struct RigidDepthRestore
+{
+    bool Copied = false;
+};
+
 // GE_SHADOW_STATIC_CACHE=0 forces the always-render baseline (the A/B lane
-// and kill switch). Any other value (or unset) keeps static-scene cascade
-// shadow caching ON — the standard GE_ flag idiom, flipped from review-gated
-// default-OFF after the dual review's fixes landed and the runtime gates
-// (bit-exact static parity, orbit/dynamic invalidation, tint family, zero
-// validation errors) passed. Read once so the branch is stable for the
-// process lifetime.
+// and kill switch). Unset keeps static-scene cascade shadow caching ON,
+// flipped from review-gated default-OFF after the dual review's fixes landed
+// and the runtime gates (bit-exact static parity, orbit/dynamic invalidation,
+// tint family, zero validation errors) passed. Read once so the branch is
+// stable for the process lifetime.
 bool IsStaticShadowCacheEnabled()
 {
-    static const bool s_Enabled = []()
-    {
-        const char* env = std::getenv("GE_SHADOW_STATIC_CACHE");
-        return !env || std::strcmp(env, "0") != 0;
-    }();
+    static const bool s_Enabled = Platform::EnvironmentSwitchEnabled("GE_SHADOW_STATIC_CACHE", true);
     return s_Enabled;
 }
 
 // Cache-key view of the caster-reduction lane. Mirrors the file-local
 // IsCasterReductionEnabled in ShadowMapRenderFeature.cpp (anonymous namespace
-// there — same env var, same ON-unless-"0" semantics): the lane changes the
+// there — same env var, same on-unless-switched-off semantics): the lane changes the
 // cull planes and therefore the rendered caster set, so it is a content input.
 bool CacheKeyCasterReductionLane()
 {
-    static const bool s_Enabled = []()
-    {
-        const char* env = std::getenv("GE_SHADOW_CASTER_REDUCTION");
-        return !env || std::strcmp(env, "0") != 0;
-    }();
+    static const bool s_Enabled = Platform::EnvironmentSwitchEnabled("GE_SHADOW_CASTER_REDUCTION", true);
     return s_Enabled;
+}
+
+uint64_t CascadeCasterContentKey(uint64_t casterEpoch, uint64_t materialKey,
+                                 uint64_t geometryRevision)
+{
+    return HashUtils::HashCombine(HashUtils::HashCombine(casterEpoch, materialKey),
+                                  geometryRevision);
 }
 
 // Assemble the full content-input record for one cascade (or tint) slot. Every
@@ -94,7 +112,8 @@ CascadeRenderInputs BuildCascadeCacheInputs(RenderServices& rs, ViewId viewId,
                                             const CascadeFrameData& fd, uint32_t cascadeIndex,
                                             uint64_t physicalId, uint32_t resolution,
                                             bool hasContributorCommands, bool fitFreeze,
-                                            CascadeShadowCache& cache, uint32_t cacheSlot)
+                                            CascadeShadowCache& cache, uint32_t cacheSlot,
+                                            uint64_t materialContentKey)
 {
     CascadeRenderInputs in{};
     std::memcpy(in.LightVP, fd.LightVP[cascadeIndex].Data(), sizeof(in.LightVP));
@@ -111,8 +130,8 @@ CascadeRenderInputs BuildCascadeCacheInputs(RenderServices& rs, ViewId viewId,
     if (const auto* viewDesc = rs.Views().FindViewDesc(viewId))
     {
         in.WorldId = viewDesc->worldId;
-        const CascadeShadowCache::CasterEpochs epochs = cache.TrackCasterChanges(viewId,
-            cacheSlot, in.WorldId, rs.GetShadowCasterChanges(in.WorldId), in.LightVP, resolution);
+        const auto epochs = cache.TrackCasterChanges(viewId, cacheSlot, in.WorldId,
+            rs.GetShadowCasterChanges(in.WorldId), in.LightVP, resolution);
         in.CasterEpoch = epochs.Content;
         in.DeformationEpoch = epochs.Deformation;
         in.Layers = viewDesc->ActiveRenderLayerMask();
@@ -143,15 +162,90 @@ CascadeRenderInputs BuildCascadeCacheInputs(RenderServices& rs, ViewId viewId,
         static_cast<uint32_t>(rs.GetMeshGPURegistry().GetLodSelectionMode());
     in.CasterReduction = CacheKeyCasterReductionLane();
     in.HasContributorDrawCommands = hasContributorCommands;
+    // Spatial attribution consumes monotonic caster epochs. The equality key
+    // also covers material edits and CPU geometry replaced in the same handle.
+    in.CasterEpoch = CascadeCasterContentKey(in.CasterEpoch, materialContentKey,
+                                             rs.GetMeshGPURegistry().GetContentRevision());
     return in;
+}
+template <typename PublishContents>
+Rendering::RenderGraph::RGPass DeclareCascadeDepth(
+    Rendering::RenderGraph::RGFrame& frame, RenderServices& services,
+    const FeatureDeclareContext& context, const char* name,
+    Rendering::RenderGraph::RGTexture target, DepthOnlyPassParamsRG passParameters,
+    Rendering::RenderGraph::RGLoadOp load, RigidDepthRestore* restored,
+    bool publishAfterSubmission, PublishContents publishContents,
+    PreparedDepthOnlyPass* sharedDepth = nullptr)
+{
+    namespace RenderGraph = Rendering::RenderGraph;
+    const auto viewId = passParameters.ViewId;
+    const uint32_t cascadeIndex = passParameters.CascadeIndex;
+    const RenderGraph::RGRange layer{.BaseLayer = cascadeIndex, .LayerCount = 1};
+    RenderServices* servicesPointer = &services;
+    auto* preparedDepth = sharedDepth ? sharedDepth : AllocatePreparedDepthOnlyPass(frame, std::move(passParameters));
+    return frame.AddPass(
+        name, Rendering::PassPhase::kEarlySetup,
+        [preparedDepth, ownsPreparation = sharedDepth == nullptr, publishAfterSubmission, publishContents, restored, &context,
+         viewId, cascadeIndex, load, target, layer, servicesPointer]
+        (RenderGraph::RGPassBuilder& builder)
+        {
+            if (ownsPreparation)
+                builder.Prepare([servicesPointer, preparedDepth](RenderGraph::RGPrepareContext& prepare)
+                {
+                    return PrepareDepthOnlyPass(prepare, *preparedDepth, servicesPointer->MakeDepthDrawServices());
+                });
+            if (publishAfterSubmission)
+                builder.OnSubmitted([preparedDepth, publishContents] { publishContents(*preparedDepth); });
+            // Each layer has its own viewport and bindings and can
+            // record independently, except the composite must consume
+            // the preceding restore's result on the primary list.
+            if (!restored)
+                builder.RecordInSecondary();
+            if (context.SkinPaletteAtlas.IsValid())
+                builder.Read(context.SkinPaletteAtlas);
+            else if (context.HasPendingSkinnedInstances)
+                Logger::Log::Error(
+                    "[RenderGraph] AddShadowCascadePassForView(view {}, cascade {}): skinned "
+                    "instances pending but no SkinPaletteAtlas value is published — declare "
+                    "ScheduleGpuSkinningAndRetarget(frame) BEFORE the cascade passes",
+                    viewId, cascadeIndex);
+            if (context.DrawStreamOrdering.IsValid())
+                builder.Read(context.DrawStreamOrdering, RenderGraph::RGBufferRead::Indirect);
+            else if (context.HasPendingBucketerSlices)
+                Logger::Log::Error(
+                    "[RenderGraph] AddShadowCascadePassForView(view {}, cascade {}): buckets are "
+                    "registered but no DrawStreamOrdering value is published — declare "
+                    "ScheduleWorldBucketerDispatches(frame) BEFORE the cascade passes",
+                    viewId, cascadeIndex);
+
+            RenderGraph::RGAttachmentOps ops{};
+            ops.Load = load;
+            ops.Store = RenderGraph::RGStoreOp::Store;
+            ops.Clear.Depth = 0.0f; // reverse-Z: clear to far
+            builder.AttachDepth(target, ops, RenderGraph::RGDepthAccess::ReadWrite, layer);
+            builder.PreventCulling();
+        },
+        [preparedDepth, publishContents, restored, publishAfterSubmission, target, cascadeIndex]
+        (RenderGraph::RGContext& commands)
+        {
+            if (!commands.Cmd)
+                return;
+            if (restored)
+                RecordPreparedCascadeDepth(commands, *preparedDepth, commands.GetTexture(target),
+                                            cascadeIndex, restored->Copied);
+            else
+                RecordPreparedDepthOnlyPass(commands, *preparedDepth);
+            if (!publishAfterSubmission)
+                publishContents(*preparedDepth);
+        });
 }
 } // namespace
 
 void ShadowMapRenderFeature::Declare(Rendering::RenderGraph::RGFrame& frame, RenderServices& rs,
                                           const FeatureDeclareContext& ctx)
 {
-    m_CascadeDeclareFrameIndex = frame.FrameIndex();
-    m_DeclaredCascadePassesThisFrame = 0;
+    m_MotionPlanByView[ctx.View] = {};
+    m_MotionPlanByView[ctx.View].For.Stamp(frame);
 
     // Directional cascades + glass tint only when the view has a shadow-casting
     // directional light (the node's full branch). Depth cascades first, then the
@@ -168,9 +262,9 @@ void ShadowMapRenderFeature::Declare(Rendering::RenderGraph::RGFrame& frame, Ren
         PlanCascadeMotionFrame(frame, rs, ctx);
         for (uint32_t c = 0; c < ctx.CascadeCount; ++c)
         {
-            char suffix[24];
-            std::snprintf(suffix, sizeof(suffix), "Cascade%u", c);
-            const std::string name = ctx.PassName ? ctx.PassName(suffix) : std::string(suffix);
+            std::array<char, 24> suffix{};
+            std::snprintf(suffix.data(), suffix.size(), "Cascade%u", c);
+            const std::string name = ctx.PassName ? ctx.PassName(suffix.data()) : std::string(suffix.data());
             DeclareCascadePass(frame, rs, ctx, c, name.c_str());
         }
         for (uint32_t c = 0; c < ctx.CascadeCount; ++c)
@@ -195,10 +289,7 @@ void ShadowMapRenderFeature::Declare(Rendering::RenderGraph::RGFrame& frame, Ren
         // starves the shader's own pyramidIdx >= 0 guard automatically:
         // with no pyramid declared this frame, BuildShadowDataGPU finds nothing
         // to publish and leaves the negative sentinel in place.
-        // The shader reads the pyramid through bindless views only; the compat
-        // profile's PCSS runs unaccelerated, so it builds none.
         const bool buildPyramid = ctx.ViewNeedsCascades && IsInitialized() &&
-                                  rs.Textures().IsBindlessEnabled() &&
                                   ResolveEffectiveFilterQuality(rs, ctx.View) ==
                                       ShadowFilterQuality::PCSS;
         RenderGraph::RGTexture pyramidSrc{};
@@ -220,7 +311,7 @@ void ShadowMapRenderFeature::Declare(Rendering::RenderGraph::RGFrame& frame, Ren
                 pyramidCascades =
                     std::min({frameData->NumCascades, ctx.CascadeCount, kMaxShadowCascades});
                 pyramidKernelTexels =
-                    PcssWidestKernelTexels(ctx.View, *frameData, pyramidCascades);
+                    PcssWidestKernelTexels(ctx.View, *frameData, pyramidCascades, frame);
             }
         }
         // Publish whatever Declare returned, invalid handle included, so the id
@@ -251,7 +342,7 @@ void ShadowMapRenderFeature::PlanCascadeMotionFrame(Rendering::RenderGraph::RGFr
     const ViewId viewId = ctx.View;
 
     MotionFramePlan plan{};
-    plan.FrameStamp = frame.FrameIndex();
+    plan.For.Stamp(frame);
 
     // Deferral requires the static-cache lane: its records define the retained
     // content the deferred slots keep sampling, and its under-draw feedback is
@@ -308,13 +399,13 @@ void ShadowMapRenderFeature::PlanCascadeMotionFrame(Rendering::RenderGraph::RGFr
     std::array<CascadeUpdateClass, CascadeMotionScheduler::kMaxCascades> classes{};
     std::array<uint64_t, CascadeMotionScheduler::kMaxCascades> staleness{};
     staleness.fill(CascadeMotionScheduler::kStalenessUnknown);
-    // CasterDeformation only when no Motion pair carries a camera or fit cause.
     CascadeMotionSource source = CascadeMotionSource::CasterDeformation;
     for (uint32_t c = 0; c < numCascades; ++c)
     {
         const CascadeRenderInputs depthIn = BuildCascadeCacheInputs(
             rs, viewId, *frameData, c, depthPhys, res, cascadeContrib, m_FitFreezeEnabled,
-            m_CascadeShadowCache, CascadeShadowCache::kDepthSlotBase + c);
+            m_CascadeShadowCache, CascadeShadowCache::kDepthSlotBase + c,
+            ctx.CascadeMaterialContentKey);
         const bool depthPending = rs.DepthUnderDraw().Peek(
             static_cast<uint32_t>(viewId), static_cast<uint8_t>(DepthPassType::ShadowCascade), c);
         const CascadeCacheDirtyCause depthCause = m_CascadeShadowCache.PeekCause(
@@ -325,7 +416,8 @@ void ShadowMapRenderFeature::PlanCascadeMotionFrame(Rendering::RenderGraph::RGFr
         {
             const CascadeRenderInputs tintIn = BuildCascadeCacheInputs(
                 rs, viewId, *frameData, c, tintPhys, res, tintContrib, m_FitFreezeEnabled,
-                m_CascadeShadowCache, CascadeShadowCache::kTintSlotBase + c);
+                m_CascadeShadowCache, CascadeShadowCache::kTintSlotBase + c,
+                ctx.CascadeMaterialContentKey);
             const bool tintPending = rs.DepthUnderDraw().Peek(
                 static_cast<uint32_t>(viewId),
                 static_cast<uint8_t>(DepthPassType::TransmittanceCascade), c);
@@ -335,7 +427,7 @@ void ShadowMapRenderFeature::PlanCascadeMotionFrame(Rendering::RenderGraph::RGFr
                        std::memcmp((*fits)[c].LightVP.Data(), (*tintFits)[c].LightVP.Data(),
                                    16 * sizeof(float)) == 0;
         }
-        const CascadeCacheDirtyCause* pairTintCause = tintDeclares ? &tintCause : nullptr;
+        const auto* pairTintCause = tintDeclares ? &tintCause : nullptr;
         classes[c] = ClassifyCascadePair(depthCause, pairTintCause, lockstep);
         if (IsCameraMotionPair(classes[c], depthCause, pairTintCause))
             source = CascadeMotionSource::Camera;
@@ -351,12 +443,101 @@ void ShadowMapRenderFeature::PlanCascadeMotionFrame(Rendering::RenderGraph::RGFr
 }
 
 bool ShadowMapRenderFeature::IsCascadeDeferredThisFrame(Rendering::ViewId viewId,
-                                                        uint64_t frameStamp,
+                                                        const RenderGraph::RGFrame& frame,
                                                         uint32_t cascadeIndex) const
 {
     const auto it = m_MotionPlanByView.find(viewId);
-    return it != m_MotionPlanByView.end() && it->second.FrameStamp == frameStamp &&
+    return it != m_MotionPlanByView.end() && it->second.For.IsFor(frame) &&
            cascadeIndex < 32 && ((it->second.DeferMask >> cascadeIndex) & 1u) != 0;
+}
+
+uint32_t ShadowMapRenderFeature::ScheduledCascadeMask(
+    Rendering::ViewId viewId, const RenderGraph::RGFrame& frame) const
+{
+    const auto it = m_MotionPlanByView.find(viewId);
+    return it != m_MotionPlanByView.end() && it->second.For.IsFor(frame)
+        ? it->second.ScheduledDepthMask : 0u;
+}
+
+bool ShadowMapRenderFeature::IsRigidCascadeCacheEnabled() const
+{
+    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_SHADOW_RIGID_CASCADE_CACHE", false);
+    return enabled && IsStaticShadowCacheEnabled() && m_Device &&
+           m_Device->GetAPI() == Rendering::GraphicsAPI::Vulkan;
+}
+
+void ShadowMapRenderFeature::ConfigureRigidCascadeDepth(RenderGraph::RGPassBuilder& builder,
+                                                         RigidCascadeFrame& pending,
+                                                         RenderServices& services,
+                                                         const FeatureDeclareContext& context,
+                                                         RenderGraph::RGTexture target)
+{
+    builder.Prepare([this, &pending, &services](RenderGraph::RGPrepareContext& prepare)
+    { return PrepareRigidCascadeDepth(prepare, pending, services); });
+    builder.OnSubmitted([this, &pending] { SubmitRigidCascadeDepth(pending); });
+    if (context.SkinPaletteAtlas.IsValid())
+        builder.Read(context.SkinPaletteAtlas);
+    if (context.DrawStreamOrdering.IsValid())
+        builder.Read(context.DrawStreamOrdering, RenderGraph::RGBufferRead::Indirect);
+    RenderGraph::RGAttachmentOps ops{};
+    ops.Load = RenderGraph::RGLoadOp::Load;
+    ops.Store = RenderGraph::RGStoreOp::Store;
+    const RenderGraph::RGRange layer{.BaseLayer = pending.Layer, .LayerCount = 1};
+    builder.AttachDepth(target, ops, RenderGraph::RGDepthAccess::ReadWrite, layer);
+    builder.PreventCulling();
+}
+
+bool ShadowMapRenderFeature::PrepareRigidCascadeDepth(RenderGraph::RGPrepareContext& context,
+                                                       RigidCascadeFrame& pending, RenderServices& services)
+{
+    if (!PrepareDepthOnlyPass(context, *pending.Prepared, services.MakeDepthDrawServices()))
+        return false;
+    pending.Producer = GetPreparedDepthProducerState(*pending.Prepared, CascadeCasters::Rigid);
+    pending.PreparedInputs = pending.Inputs;
+    uint64_t content = HashUtils::HashValue(pending.Inputs.CasterEpoch, pending.Producer.MembershipKey);
+    content = HashUtils::HashValue(content, pending.Producer.MembershipCount);
+    pending.PreparedInputs.CasterEpoch = HashUtils::HashValue(content, pending.Producer.ServedContentKey);
+    const auto decision = m_RigidCascadeCache.Evaluate(
+        pending.View, pending.Slot, pending.FrameStamp, pending.PreparedInputs,
+        pending.Producer.Complete, m_FitFreezeEnabled);
+    const auto& certificate = m_RigidCascadeCertificates.GetOrInsert(pending.View)[pending.Slot];
+    pending.Reuse = decision.Skip && certificate.Valid &&
+                    certificate.PhysicalId == static_cast<uint64_t>(pending.Texture) &&
+                    certificate.Producer == pending.Producer;
+    return true;
+}
+
+void ShadowMapRenderFeature::RecordRigidCascadeDepth(RenderGraph::RGContext& context,
+                                                     RigidCascadeFrame& pending)
+{
+    if (!context.Cmd || pending.Reuse)
+        return;
+    auto& certificate = m_RigidCascadeCertificates.GetOrInsert(pending.View)[pending.Slot];
+    certificate.Valid = false;
+    certificate.Producer = pending.Producer;
+    certificate.PhysicalId = static_cast<uint64_t>(pending.Texture);
+    certificate.WriteGeneration = ++m_RigidCascadeWriteGeneration;
+    pending.WriteGeneration = certificate.WriteGeneration;
+    m_RigidCascadeCache.MarkUnderDrew(pending.View, pending.Slot);
+    RecordPreparedRigidCascadeDepth(context, *pending.Prepared, pending.Texture, pending.Layer);
+    pending.Recorded = true;
+}
+
+void ShadowMapRenderFeature::SubmitRigidCascadeDepth(const RigidCascadeFrame& pending)
+{
+    if (!pending.Recorded || !pending.Producer.Complete)
+        return;
+    auto* found = m_RigidCascadeCertificates.Find(pending.View);
+    if (!found)
+        return;
+    auto& certificate = (*found)[pending.Slot];
+    if (certificate.WriteGeneration != pending.WriteGeneration ||
+        certificate.PhysicalId != static_cast<uint64_t>(pending.Texture) ||
+        certificate.Producer != pending.Producer)
+        return;
+    m_RigidCascadeCache.OnRendered(pending.View, pending.Slot, pending.PreparedInputs);
+    certificate.Producer = pending.Producer;
+    certificate.Valid = true;
 }
 
 Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
@@ -365,6 +546,17 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
 {
     namespace RenderGraph = Rendering::RenderGraph;
     const ViewId viewId = ctx.View;
+
+    auto ensureFramePlan = [&]()
+    {
+        auto& motionPlan = m_MotionPlanByView[viewId];
+        if (!motionPlan.For.IsFor(frame))
+        {
+            motionPlan = {};
+            motionPlan.For.Stamp(frame);
+        }
+    };
+    ensureFramePlan();
 
     // The old activation predicate, evaluated at declaration (snapshotted).
     if (!ctx.ViewNeedsCascades)
@@ -383,6 +575,7 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
     // the adopt drops the retained-layer records and content fits. It keeps the
     // frame data, so the cascade renders into the new physical on that frame.
     const RenderGraph::RGTexture shadowArr = rs.ImportShadowMapArrayRG(frame, viewId, ctx.Seam);
+    ensureFramePlan(); // A physical adopt may invalidate the previous plan.
     if (!shadowArr.IsValid())
     {
         frame.NoteSkippedPass(passName, RenderGraph::RGFrame::RGSkippedPassState::MissingInput);
@@ -411,7 +604,9 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
         rs, viewId, *frameData, cascadeIndex,
         static_cast<uint64_t>(frame.PhysicalTexture(shadowArr)), res,
         rs.HasDepthCommands(viewId, DepthPassType::ShadowCascade), m_FitFreezeEnabled,
-        m_CascadeShadowCache, cacheSlot);
+        m_CascadeShadowCache, cacheSlot, ctx.CascadeMaterialContentKey);
+    const bool prepareRigid = IsRigidCascadeCacheEnabled() && ctx.HasPendingSkinnedInstances &&
+                              !cacheIn.HasContributorDrawCommands && !rs.GetProfile().IsCompat();
     if (cascadeIndex == 0)
         LogCascadeCacheStatsPeriodic(viewId, IsStaticShadowCacheEnabled(),
                                      rs.ShadowCasterContentVersion(cacheIn.WorldId));
@@ -424,7 +619,7 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
                                     cascadeIndex))
         m_CascadeShadowCache.MarkUnderDrew(viewId, cacheSlot);
     if (m_CascadeShadowCache
-            .Evaluate(viewId, cacheSlot, frame.FrameIndex(), cacheIn, IsStaticShadowCacheEnabled(),
+            .Evaluate(viewId, cacheSlot, frame.FrameIndex(), cacheIn, IsStaticShadowCacheEnabled() && !prepareRigid,
                       /*includeCameraInSettle=*/m_FitFreezeEnabled)
             .Skip)
     {
@@ -441,7 +636,7 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
     // to keep this cascade's retained layer for one more frame. No pass, no
     // OnRendered — the cache record and content fit keep describing the
     // retained content, and BuildShadowDataGPU samples it through that fit.
-    if (IsCascadeDeferredThisFrame(viewId, frame.FrameIndex(), cascadeIndex))
+    if (IsCascadeDeferredThisFrame(viewId, frame, cascadeIndex))
     {
         frame.NoteSkippedPass(passName, RenderGraph::RGFrame::RGSkippedPassState::Deferred);
         return {};
@@ -483,73 +678,110 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
     params.ViewportHeight = res;
     params.Resources = rs.BuildShadowPassResources(ctx.Seam, frame, viewId, cam.Buffer, cam.Offset);
 
-    RenderServices* rsPtr = &rs;
-    const RenderGraph::RGPass pass = frame.AddPass(
-        passName, Rendering::PassPhase::kEarlySetup,
-        [this, &ctx, shadowArr, cascadeIndex, viewId, frameData,
-         frameStamp = frame.FrameIndex()](RenderGraph::RGPassBuilder& p)
-        {
-            // A2.4-P0-R: each directional depth cascade renders into its own array
-            // layer with a self-contained exec (own viewport/scissor + per-draw
-            // binds), so the 4 cascades record into workers concurrently.
-            p.RecordInSecondary();
-            // Builder runs synchronously inside AddPass — it MAY read ctx.
-            if (ctx.SkinPaletteAtlas.IsValid())
-                p.Read(ctx.SkinPaletteAtlas);
-            else if (ctx.HasPendingSkinnedInstances)
-                Logger::Log::Error(
-                    "[RenderGraph] AddShadowCascadePassForView(view {}, cascade {}): skinned "
-                    "instances pending but no SkinPaletteAtlas value is published — declare "
-                    "ScheduleGpuSkinningAndRetarget(frame) BEFORE the cascade passes",
-                    ctx.View, cascadeIndex);
-            if (ctx.DrawStreamOrdering.IsValid())
-                p.Read(ctx.DrawStreamOrdering, RenderGraph::RGBufferRead::Indirect);
-            else if (ctx.HasPendingBucketerSlices)
-                Logger::Log::Error(
-                    "[RenderGraph] AddShadowCascadePassForView(view {}, cascade {}): buckets are "
-                    "registered but no DrawStreamOrdering value is published — declare "
-                    "ScheduleWorldBucketerDispatches(frame) BEFORE the cascade passes",
-                    ctx.View, cascadeIndex);
+    CascadeContentFit scheduledFit{};
+    scheduledFit.LightVP = frameData->LightVP[cascadeIndex];
+    scheduledFit.LightVPRel = frameData->LightVPRel[cascadeIndex];
+    for (uint32_t axis = 0; axis < 3; ++axis)
+        scheduledFit.Sector[axis] = frameData->RenderOriginSector[axis];
+    scheduledFit.OrthoHalfExtent = frameData->OrthoHalfExtent[cascadeIndex];
+    scheduledFit.DepthSpan = frameData->DepthSpan[cascadeIndex];
+    scheduledFit.FrameStamp = frame.FrameIndex();
+    scheduledFit.Valid = true;
+    // Reserve the view serially. Distinct cascade callbacks write distinct slots.
+    m_CascadeContentFit.try_emplace(viewId);
+    const auto expectedPhysical = frame.PhysicalTexture(shadowArr);
 
-            RenderGraph::RGAttachmentOps dops{};
-            dops.Load = RenderGraph::RGLoadOp::Clear;
-            dops.Store = RenderGraph::RGStoreOp::Store;
-            dops.Clear.Depth = Rendering::ReverseZ::kClearFar;
-            // Per-layer attach: 2b-1 cell tracking keeps the four cascades from
-            // self-serializing beyond their real hazards.
-            p.AttachDepth(shadowArr, dops, RenderGraph::RGDepthAccess::ReadWrite,
-                          RenderGraph::RGRange{.BaseLayer = cascadeIndex, .LayerCount = 1});
-            // A declared cascade must actually clear+rasterize the persistent
-            // layer. Culling it leaves reverse-Z uncleared (1.0 = fully
-            // shadowed) which the static cache would then freeze.
-            p.PreventCulling();
-            // Content-fit commit stays at DECLARE: BuildShadowDataGPU uploads this
-            // snapshot for receivers in the same frame, before any pass executes.
-            // Committing it at exec would leave receivers transforming by the
-            // PREVIOUS frame's fit while sampling texels rasterized under this
-            // one — a one-frame mismatch that shifts shadow edges whenever the
-            // fit moves. PreventCulling above is what makes this safe: the layer
-            // is guaranteed to clear+rasterize under exactly this fit.
-            CascadeContentFit& cf = m_CascadeContentFit[viewId][cascadeIndex];
-            cf.LightVP = frameData->LightVP[cascadeIndex];
-            cf.LightVPRel = frameData->LightVPRel[cascadeIndex];
-            cf.Sector[0] = frameData->RenderOriginSector[0];
-            cf.Sector[1] = frameData->RenderOriginSector[1];
-            cf.Sector[2] = frameData->RenderOriginSector[2];
-            cf.OrthoHalfExtent = frameData->OrthoHalfExtent[cascadeIndex];
-            cf.DepthSpan = frameData->DepthSpan[cascadeIndex];
-            cf.FrameStamp = frameStamp;
-            cf.Valid = true;
-        },
-        [this, rsPtr, params = std::move(params), viewId, cacheSlot,
-         cacheIn](RenderGraph::RGContext& c) mutable
+    const RenderGraph::RGRange layer{.BaseLayer = cascadeIndex, .LayerCount = 1};
+
+    auto load = RenderGraph::RGLoadOp::Clear;
+    RigidDepthRestore* restored = nullptr;
+    PreparedDepthOnlyPass* sharedDepth = nullptr;
+    if (prepareRigid)
+    {
+        Rendering::TextureDesc td{};
+        td.width = res;
+        td.height = res;
+        td.depth = 1;
+        td.mipLevels = 1;
+        td.arrayLayers = frameData->NumCascades;
+        td.format = static_cast<uint32_t>(Rendering::TextureFormat::D32_FLOAT);
+        td.usage = static_cast<uint32_t>(Rendering::TextureUsage::DepthStencil) |
+                   static_cast<uint32_t>(Rendering::TextureUsage::TransferSrc);
+        td.sampleCount = 1;
+        td.flags = Rendering::TextureCreateFlags::ForceArrayView;
+        const std::string rigidName = "RigidCascadeDepth.View" + std::to_string(static_cast<uint32_t>(viewId));
+        td.debugName = rigidName.c_str();
+        const auto rigid = frame.ImportPersistentTexture(rigidName.c_str(), td);
+        if (rigid.IsValid() && frame.PhysicalTexture(rigid).IsValid())
         {
-            RecordDepthOnlyPass(c, std::move(params), rsPtr->MakeDepthDrawServices());
-            // Settle stamp only: this records that the layer was actually
-            // rasterized. The fit receivers use is committed at declare.
-            m_CascadeShadowCache.OnRendered(viewId, cacheSlot, cacheIn);
-        });
-    ++m_DeclaredCascadePassesThisFrame;
+            auto rigidIn = cacheIn;
+            rigidIn.PhysicalId = static_cast<uint64_t>(frame.PhysicalTexture(rigid));
+            rigidIn.CasterEpoch = CascadeCasterContentKey(
+                rs.RigidShadowCasterContentVersion(cacheIn.WorldId),
+                ctx.RigidCascadeMaterialContentKey,
+                rs.GetMeshGPURegistry().GetContentRevision());
+            sharedDepth = AllocatePreparedDepthOnlyPass(frame, params);
+            auto* pending = frame.AllocatePassData<RigidCascadeFrame>();
+            pending->View = viewId;
+            pending->Slot = cacheSlot;
+            pending->Layer = cascadeIndex;
+            pending->FrameStamp = frame.FrameIndex();
+            pending->Inputs = rigidIn;
+            pending->Texture = frame.PhysicalTexture(rigid);
+            pending->Prepared = sharedDepth;
+            const std::string rigidPass = std::string(passName) + ".RigidDepth";
+            const auto raster = frame.AddPass(rigidPass.c_str(), Rendering::PassPhase::kEarlySetup,
+                [this, pending, rigid, &ctx, &rs](RenderGraph::RGPassBuilder& builder)
+                { ConfigureRigidCascadeDepth(builder, *pending, rs, ctx, rigid); },
+                [this, pending](RenderGraph::RGContext& commands)
+                { RecordRigidCascadeDepth(commands, *pending); });
+            const bool rigidReady = raster.IsValid();
+            if (rigidReady)
+            {
+                auto* restoreResult = frame.AllocatePassData<RigidDepthRestore>();
+                const std::string restore = std::string(passName) + ".RestoreRigid";
+                const auto copy = frame.AddPass(restore.c_str(), Rendering::PassPhase::kEarlySetup,
+                    [&](RenderGraph::RGPassBuilder& p)
+                    {
+                        p.Read(rigid, RenderGraph::RGTextureRead::CopySrc, layer);
+                        p.Write(shadowArr, RenderGraph::RGTextureWrite::CopyDst, layer);
+                        p.PreventCulling();
+                    },
+                    [rigid, shadowArr, cascadeIndex, restoreResult](RenderGraph::RGContext& c)
+                    {
+                        restoreResult->Copied = c.Cmd && c.Cmd->CopyDepthArrayLayer(
+                            c.GetTexture(rigid), c.GetTexture(shadowArr), cascadeIndex);
+                        if (!restoreResult->Copied)
+                            Logger::Log::Warning(
+                                "Rigid shadow depth restore failed for cascade {}; redrawing all casters",
+                                cascadeIndex);
+                    });
+                if (copy.IsValid())
+                {
+                    restored = restoreResult;
+                    load = RenderGraph::RGLoadOp::Load;
+                }
+            }
+        }
+    }
+
+    const RenderGraph::RGPass pass = DeclareCascadeDepth(
+        frame, rs, ctx, passName, shadowArr, std::move(params), load,
+        restored, /*publishAfterSubmission=*/false,
+        [this, viewId, cacheSlot, cacheIn, expectedPhysical, scheduledFit, forFrame = &frame]
+        (const PreparedDepthOnlyPass&)
+        {
+            // Another graph/physical may have invalidated this view since declaration.
+            const auto fit = m_CascadeContentFit.find(viewId);
+            if (fit != m_CascadeContentFit.end() &&
+                GetShadowMapTexture(viewId, *forFrame) == expectedPhysical)
+            {
+                fit->second[cacheSlot - CascadeShadowCache::kDepthSlotBase] = scheduledFit;
+                m_CascadeShadowCache.OnRendered(viewId, cacheSlot, cacheIn);
+            }
+        }, sharedDepth);
+    if (pass.IsValid())
+        m_MotionPlanByView[viewId].ScheduledDepthMask |= 1u << cascadeIndex;
     return pass;
 }
 
@@ -614,7 +846,7 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareTransmittancePass(
         static_cast<uint64_t>(frame.PhysicalTexture(tintArr)), res,
         rs.HasDepthCommands(viewId, DepthPassType::ShadowCascade) ||
             rs.HasDepthCommands(viewId, DepthPassType::TransmittanceCascade),
-        m_FitFreezeEnabled, m_CascadeShadowCache, cacheSlot);
+        m_FitFreezeEnabled, m_CascadeShadowCache, cacheSlot, ctx.CascadeMaterialContentKey);
     if (rs.DepthUnderDraw().Consume(static_cast<uint32_t>(viewId),
                                     static_cast<uint8_t>(DepthPassType::TransmittanceCascade),
                                     cascadeIndex))
@@ -639,7 +871,7 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareTransmittancePass(
     // plan phase already canceled the deferral if EITHER family carried a
     // correctness-class cause or the families' content fits desynced
     // (transmission-visibility gap).
-    if (IsCascadeDeferredThisFrame(viewId, frame.FrameIndex(), cascadeIndex))
+    if (IsCascadeDeferredThisFrame(viewId, frame, cascadeIndex))
     {
         frame.NoteSkippedPass(passName, RenderGraph::RGFrame::RGSkippedPassState::Deferred);
         return {};
@@ -664,9 +896,9 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareTransmittancePass(
         // glass normal, so it needs the cascade light direction. cameraPos is
         // unused for an ortho light shadow camera, so carry the (caller-resolved,
         // shadow-casting) directional light's world direction there.
-        shadowCam.cameraPos.x = lightDirWS[0];
-        shadowCam.cameraPos.y = lightDirWS[1];
-        shadowCam.cameraPos.z = lightDirWS[2];
+        shadowCam.cameraPos[0] = lightDirWS[0];
+        shadowCam.cameraPos[1] = lightDirWS[1];
+        shadowCam.cameraPos[2] = lightDirWS[2];
         *cam.Ptr = shadowCam;
     }
 
@@ -689,11 +921,16 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareTransmittancePass(
     params.Resources = rs.BuildShadowPassResources(ctx.Seam, frame, viewId, cam.Buffer, cam.Offset);
 
     RenderServices* rsPtr = &rs;
+    auto* preparedDepth = AllocatePreparedDepthOnlyPass(frame, std::move(params));
     const RenderGraph::RGPass pass = frame.AddPass(
         passName, Rendering::PassPhase::kEarlySetup,
-        [&ctx, shadowArr, tintArr, cascadeIndex](RenderGraph::RGPassBuilder& p)
+        [&](RenderGraph::RGPassBuilder& p)
         {
-            // A2.4-P0-R: same self-contained RecordDepthOnlyPass exec as the depth
+            p.Prepare([rsPtr, preparedDepth](RenderGraph::RGPrepareContext& prepare)
+            {
+                return PrepareDepthOnlyPass(prepare, *preparedDepth, rsPtr->MakeDepthDrawServices());
+            });
+            // A2.4-P0-R: same self-contained RecordPreparedDepthOnlyPass exec as the depth
             // cascades (own viewport/scissor + per-draw binds), per-layer attach
             // isolation on both the tint color and the read-only depth.
             p.RecordInSecondary();
@@ -732,11 +969,11 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareTransmittancePass(
             p.AttachDepth(shadowArr, dops, RenderGraph::RGDepthAccess::ReadOnly,
                           RenderGraph::RGRange{.BaseLayer = cascadeIndex, .LayerCount = 1});
         },
-        [this, rsPtr, params = std::move(params), viewId, cacheSlot, cacheIn, cascadeIndex,
+        [this, preparedDepth, viewId, cacheSlot, cacheIn, cascadeIndex,
          lightVP = frameData->LightVP[cascadeIndex],
          frameStamp = frame.FrameIndex()](RenderGraph::RGContext& c) mutable
         {
-            RecordDepthOnlyPass(c, std::move(params), rsPtr->MakeDepthDrawServices());
+            RecordPreparedDepthOnlyPass(c, *preparedDepth);
             m_CascadeShadowCache.OnRendered(viewId, cacheSlot, cacheIn);
             CascadeContentFit& cf = m_TintContentFit[viewId][cascadeIndex];
             cf.LightVP = lightVP;
@@ -843,11 +1080,16 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareAreaPass(
         "AreaShadow[View#" + std::to_string(static_cast<uint32_t>(viewId)) + "]";
 
     RenderServices* rsPtr = &rs;
+    auto* preparedDepth = AllocatePreparedDepthOnlyPass(frame, std::move(params));
     return frame.AddPass(
         passName.c_str(), Rendering::PassPhase::kEarlySetup,
-        [&ctx, areaMap](RenderGraph::RGPassBuilder& p)
+        [&](RenderGraph::RGPassBuilder& p)
         {
-            // A2.4-P0-R: self-contained RecordDepthOnlyPass exec over a dedicated
+            p.Prepare([rsPtr, preparedDepth](RenderGraph::RGPrepareContext& prepare)
+            {
+                return PrepareDepthOnlyPass(prepare, *preparedDepth, rsPtr->MakeDepthDrawServices());
+            });
+            // A2.4-P0-R: self-contained RecordPreparedDepthOnlyPass exec over a dedicated
             // depth target — worker-recordable like the cascades.
             p.RecordInSecondary();
             if (ctx.SkinPaletteAtlas.IsValid())
@@ -870,12 +1112,12 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareAreaPass(
             RenderGraph::RGAttachmentOps dops{};
             dops.Load = RenderGraph::RGLoadOp::Clear;
             dops.Store = RenderGraph::RGStoreOp::Store;
-            dops.Clear.Depth = Rendering::ReverseZ::kClearFar;
+            dops.Clear.Depth = 0.0f;
             p.AttachDepth(areaMap, dops, RenderGraph::RGDepthAccess::ReadWrite);
             // No PreventCulling: the world pass's sampled Read anchors it.
         },
-        [rsPtr, params = std::move(params)](RenderGraph::RGContext& c) mutable
-        { RecordDepthOnlyPass(c, std::move(params), rsPtr->MakeDepthDrawServices()); });
+        [preparedDepth](RenderGraph::RGContext& c) mutable
+        { RecordPreparedDepthOnlyPass(c, *preparedDepth); });
 }
 
 Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareSpotPass(
@@ -964,11 +1206,16 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareSpotPass(
         "SpotShadow[View#" + std::to_string(static_cast<uint32_t>(viewId)) + "]";
 
     RenderServices* rsPtr = &rs;
+    auto* preparedDepth = AllocatePreparedDepthOnlyPass(frame, std::move(params));
     return frame.AddPass(
         passName.c_str(), Rendering::PassPhase::kEarlySetup,
-        [&ctx, spotMap](RenderGraph::RGPassBuilder& p)
+        [&](RenderGraph::RGPassBuilder& p)
         {
-            // A2.4-P0-R: self-contained RecordDepthOnlyPass exec over a dedicated
+            p.Prepare([rsPtr, preparedDepth](RenderGraph::RGPrepareContext& prepare)
+            {
+                return PrepareDepthOnlyPass(prepare, *preparedDepth, rsPtr->MakeDepthDrawServices());
+            });
+            // A2.4-P0-R: self-contained RecordPreparedDepthOnlyPass exec over a dedicated
             // depth target — worker-recordable like the cascades.
             p.RecordInSecondary();
             if (ctx.SkinPaletteAtlas.IsValid())
@@ -991,11 +1238,11 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareSpotPass(
             RenderGraph::RGAttachmentOps dops{};
             dops.Load = RenderGraph::RGLoadOp::Clear;
             dops.Store = RenderGraph::RGStoreOp::Store;
-            dops.Clear.Depth = Rendering::ReverseZ::kClearFar;
+            dops.Clear.Depth = 0.0f;
             p.AttachDepth(spotMap, dops, RenderGraph::RGDepthAccess::ReadWrite);
         },
-        [rsPtr, params = std::move(params)](RenderGraph::RGContext& c) mutable
-        { RecordDepthOnlyPass(c, std::move(params), rsPtr->MakeDepthDrawServices()); });
+        [preparedDepth](RenderGraph::RGContext& c) mutable
+        { RecordPreparedDepthOnlyPass(c, *preparedDepth); });
 }
 
 void ShadowMapRenderFeature::DeclarePointPasses(Rendering::RenderGraph::RGFrame& frame,
@@ -1094,6 +1341,7 @@ void ShadowMapRenderFeature::DeclarePointPasses(Rendering::RenderGraph::RGFrame&
     const auto slotAlloc = frame.AllocUpload(slotBytes, 256);
     if (slotAlloc.Ptr)
     {
+        std::memset(slotAlloc.Ptr, 0, static_cast<size_t>(slotBytes));
         auto* slots = static_cast<PointShadowSlotGPU*>(slotAlloc.Ptr);
         std::uninitialized_value_construct_n(slots, budget);
         const Mathematics::Vector3Int receiverSector = CameraRenderOriginSector(rs.Views().ResolveCameraData(viewId));
@@ -1188,10 +1436,15 @@ void ShadowMapRenderFeature::DeclarePointPasses(Rendering::RenderGraph::RGFrame&
                                          std::to_string(slot) + ".Face" + std::to_string(face) + "]";
 
             RenderServices* rsPtr = &rs;
+            auto* preparedDepth = AllocatePreparedDepthOnlyPass(frame, std::move(params));
             frame.AddPass(
                 passName.c_str(), Rendering::PassPhase::kEarlySetup,
-                [&ctx, atlas, slot, face, globalSlice](RenderGraph::RGPassBuilder& p)
+                [&](RenderGraph::RGPassBuilder& p)
                 {
+                    p.Prepare([rsPtr, preparedDepth](RenderGraph::RGPrepareContext& prepare)
+                    {
+                        return PrepareDepthOnlyPass(prepare, *preparedDepth, rsPtr->MakeDepthDrawServices());
+                    });
                     // A2.4-P0-R: each point face renders into its own atlas layer
                     // with a self-contained exec (tile-local viewport + per-draw
                     // binds) — the point-shadow arc's M2 fork-join slice.
@@ -1218,12 +1471,12 @@ void ShadowMapRenderFeature::DeclarePointPasses(Rendering::RenderGraph::RGFrame&
                     RenderGraph::RGAttachmentOps dops{};
                     dops.Load = RenderGraph::RGLoadOp::Clear;
                     dops.Store = RenderGraph::RGStoreOp::Store;
-                    dops.Clear.Depth = Rendering::ReverseZ::kClearFar;
+                    dops.Clear.Depth = 0.0f;
                     p.AttachDepth(atlas, dops, RenderGraph::RGDepthAccess::ReadWrite,
                                   RenderGraph::RGRange{.BaseLayer = globalSlice, .LayerCount = 1});
                 },
-                [rsPtr, params = std::move(params)](RenderGraph::RGContext& c) mutable
-                { RecordDepthOnlyPass(c, std::move(params), rsPtr->MakeDepthDrawServices()); });
+                [preparedDepth](RenderGraph::RGContext& c) mutable
+                { RecordPreparedDepthOnlyPass(c, *preparedDepth); });
         }
     }
 }

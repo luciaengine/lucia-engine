@@ -1,7 +1,7 @@
+#include "Core/ApplicationPaths.h"
 #include <gtest/gtest.h>
 #include "Core/Engine.h"
 #include "Core/Application.h"
-#include "Core/ApplicationPaths.h"
 #include "Scripting/ScriptManager.h"
 #include "ECS/Systems.h"
 #include "ECSModules/Rendering/Systems/AnimationSystem.h"
@@ -41,6 +41,7 @@
 #include "Types/StringId.h"
 #include "EngineLogCapture.h"
 #include "StagedTestPaths.h"
+#include "TestTempDir.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -126,10 +127,8 @@ TEST(AnimationSystemTests, SamplesTranslationAndBuildsPalette) {
 
 TEST(AnimationSystemTests, SavesAndLoadsNativeAnimationClip)
 {
-    const std::filesystem::path tempPath =
-        std::filesystem::temp_directory_path() / "gameengine-animation-save-load.anim";
-    std::error_code ec;
-    std::filesystem::remove(tempPath, ec);
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameengine-animation-save-load"));
+    const std::filesystem::path tempPath = tempDir.Path() / "gameengine-animation-save-load.anim";
 
     AnimationClip clip(GUID::Generate(), std::filesystem::path());
     clip.SetSourceInfo("Source/Fox.glb", 2u);
@@ -149,8 +148,6 @@ TEST(AnimationSystemTests, SavesAndLoadsNativeAnimationClip)
     EXPECT_EQ(loaded.GetSourceAnimationIndex(), 2u);
     ASSERT_EQ(loaded.GetChannels()[0].keys.size(), 2u);
     EXPECT_NEAR(loaded.GetChannels()[0].keys[1].translation[0], 2.5f, 1e-4f);
-
-    std::filesystem::remove(tempPath, ec);
 }
 
 TEST(AnimationSystemTests, SupportsAuthoringOperationsOnAnimationClip)
@@ -1154,6 +1151,11 @@ TEST(AnimationGraphHost, EvaluateWritesCompactSkinMatricesAndClearsClipIndex)
     ASSERT_NE(runtime, nullptr);
     ASSERT_GE(runtime->CompactSkinMatrices.size(), 16u);
     EXPECT_NEAR(runtime->CompactSkinMatrices[12], 2.0f, 1e-4f);
+    EXPECT_TRUE(runtime->GraphPoseActive);
+
+    world.GetComponentForWrite<Components::Animator>(e)->active = false;
+    system.Update(world, 0.0f);
+    EXPECT_FALSE(runtime->GraphPoseActive);
 
     graphStore.ClearForTest();
 }

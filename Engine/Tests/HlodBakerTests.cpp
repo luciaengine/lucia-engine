@@ -2,6 +2,8 @@
 #include "Assets/HlodCache.h"
 #include "Assets/ModelAsset.h"
 
+#include "TestTempDir.h"
+
 #include <gtest/gtest.h>
 
 #include <cmath>
@@ -172,7 +174,8 @@ TEST(HlodBaker, FullBakeWriteReadRoundTrip) {
     }
     HlodBakedScene scene = BakeScene(members, geometry, Config(), nullptr);
 
-    const auto file = std::filesystem::temp_directory_path() / "hlod_baker_roundtrip.gehlod";
+    const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("hlod_baker_roundtrip")};
+    const auto file = directory.Path() / "hlod_baker_roundtrip.gehlod";
     ASSERT_TRUE(WriteHlodCache(file, scene));
     const uint64 configHash = scene.Key.ConfigHash;
     HlodBakedScene loaded;

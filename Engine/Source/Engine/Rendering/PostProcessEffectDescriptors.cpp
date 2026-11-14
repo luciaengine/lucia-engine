@@ -31,7 +31,7 @@
 #include "Engine/Rendering/ColorGradeParamsUBO.h"
 #include "Engine/Rendering/PostProcessEffectRegistry.h"
 
-#include "ECS/Component/ComponentFactory.h"
+#include "ECS/ComponentFactory.h"
 #include "ECS/ECS.h" // GetComponentTypeId
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
@@ -45,6 +45,7 @@
 #include "Components/Rendering/PostProcessEffects/AtmosphericCloudLayer.h"
 #include "Components/Rendering/PostProcessEffects/BloomEffect.h"
 #include "Components/Rendering/PostProcessEffects/ChromaticAberrationEffect.h"
+#include "Components/Rendering/PostProcessEffects/DepthPixelationEffect.h"
 #include "Components/Rendering/PostProcessEffects/ColorFilterEffect.h"
 #include "Components/Rendering/PostProcessEffects/ColorGradeEffect.h"
 #include "Components/Rendering/PostProcessEffects/ContrastAdaptiveSharpenEffect.h"
@@ -56,6 +57,7 @@
 #include "Components/Rendering/PostProcessEffects/FastBlurEffect.h"
 #include "Components/Rendering/PostProcessEffects/FilmSimulationEffect.h"
 #include "Components/Rendering/PostProcessEffects/HeatDistortionEffect.h"
+#include "Components/Rendering/PostProcessEffects/RainSettingsEffect.h"
 #include "Components/Rendering/PostProcessEffects/HeightFogEffect.h"
 #include "Components/Rendering/PostProcessEffects/HeightFogEffectPresets.h"
 #include "Components/Rendering/PostProcessEffects/ScreenSpaceReflectionsEffect.h"
@@ -351,6 +353,19 @@ constexpr EffectFieldIO kFastBlurIO[]{
     {.FieldName = "MaxRadius", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = 24.0f},
 };
 
+constexpr EffectFieldIO kRainSettingsIO[]{
+    {.FieldName = "WaterDropSize", .HasClamp = true, .ClampMin = 0.25f, .ClampMax = 2.0f},
+    {.FieldName = "FallingRainSizeOffset", .HasClamp = true, .ClampMin = -1.75f, .ClampMax = 1.75f},
+    {.FieldName = "WaterRippleSpeed", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = 4.0f},
+};
+
+constexpr EffectSettingsField kRainSettingsSettings[]{
+    PP_BLEND_IN(RainSettingsActive, Rain),
+    PP_SETTING_IN("waterDropSize", WaterDropSize, Rain),
+    PP_SETTING_IN("fallingRainSizeOffset", FallingRainSizeOffset, Rain),
+    PP_SETTING_IN("waterRippleSpeed", WaterRippleSpeed, Rain),
+};
+
 constexpr EffectFieldIO kHeatDistortionIO[]{
     {.FieldName = "Strength", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = kNoMax},
     {.FieldName = "Scale", .HasClamp = true, .ClampMin = 0.01f, .ClampMax = kNoMax},
@@ -454,6 +469,96 @@ constexpr EffectFieldIO kShadowSettingsIO[]{
     {.FieldName = "DepthBias", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = 0.01f},
     {.FieldName = "NormalBias", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = 5.0f},
     {.FieldName = "ScreenSpaceShadowThickness", .HasClamp = true, .ClampMin = 0.0001f, .ClampMax = 0.05f},
+};
+
+constexpr EffectFieldIO kDepthPixelationIO[]{
+    {.FieldName = "AutoBandResolution", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = 1.0f},
+    {.FieldName = "AutoFarPixelSize", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 2.0f},
+    {.FieldName = "SimpleScreenSpace", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = 1.0f},
+    {.FieldName = "StabilizationMode", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = 2.0f},
+    {.FieldName = "DistanceMode", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = 1.0f},
+    {.FieldName = "BandCount", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 10.0f},
+    {.FieldName = "Band3End", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = 1000000.0f},
+    {.FieldName = "Band4End", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = 1000000.0f},
+    {.FieldName = "Band5End", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = 1000000.0f},
+    {.FieldName = "Band6End", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = 1000000.0f},
+    {.FieldName = "Band7End", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = 1000000.0f},
+    {.FieldName = "Band8End", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = 1000000.0f},
+    {.FieldName = "Band9End", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = 1000000.0f},
+    {.FieldName = "Band4Resolution", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+    {.FieldName = "Band5Resolution", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+    {.FieldName = "Band6Resolution", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+    {.FieldName = "Band7Resolution", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+    {.FieldName = "Band8Resolution", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+    {.FieldName = "Band9Resolution", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+    {.FieldName = "Band10Resolution", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+    {.FieldName = "Band4Divisor", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+    {.FieldName = "Band5Divisor", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+    {.FieldName = "Band6Divisor", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+    {.FieldName = "Band7Divisor", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+    {.FieldName = "Band8Divisor", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+    {.FieldName = "Band9Divisor", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+    {.FieldName = "Band10Divisor", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+
+    {.FieldName = "ResolutionMode", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = 1.0f},
+    {.FieldName = "NearDivisor", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+    {.FieldName = "MiddleDivisor", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+    {.FieldName = "FarDivisor", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+    {.FieldName = "SkyDivisor", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+
+    {.FieldName = "Intensity", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = 1.0f},
+    {.FieldName = "NearEnd", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = 1000000.0f},
+    {.FieldName = "MiddleEnd", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = 1000000.0f},
+    {.FieldName = "NearResolution", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+    {.FieldName = "MiddleResolution", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+    {.FieldName = "FarResolution", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+    {.FieldName = "SkyResolution", .HasClamp = true, .ClampMin = 1.0f, .ClampMax = 16384.0f},
+    {.FieldName = "DebugRanges", .HasClamp = true, .ClampMin = 0.0f, .ClampMax = 1.0f},
+};
+
+constexpr EffectSettingsField kDepthPixelationSettings[]{
+    PP_SETTING("depthPixelationAutoBandResolution", DepthPixelationAutoBandResolution),
+    PP_SETTING("depthPixelationAutoFarPixelSize", DepthPixelationAutoFarPixelSize),
+    PP_SETTING("depthPixelationSimpleScreenSpace", DepthPixelationSimpleScreenSpace),
+    PP_SETTING("depthPixelationStabilizationMode", DepthPixelationStabilizationMode),
+    PP_SETTING("depthPixelationDistanceMode", DepthPixelationDistanceMode),
+    PP_SETTING("depthPixelationBandCount", DepthPixelationBandCount),
+    PP_SETTING("depthPixelationBand3End", DepthPixelationBand3End),
+    PP_SETTING("depthPixelationBand4End", DepthPixelationBand4End),
+    PP_SETTING("depthPixelationBand5End", DepthPixelationBand5End),
+    PP_SETTING("depthPixelationBand6End", DepthPixelationBand6End),
+    PP_SETTING("depthPixelationBand7End", DepthPixelationBand7End),
+    PP_SETTING("depthPixelationBand8End", DepthPixelationBand8End),
+    PP_SETTING("depthPixelationBand9End", DepthPixelationBand9End),
+    PP_SETTING("depthPixelationBand4Resolution", DepthPixelationBand4Resolution),
+    PP_SETTING("depthPixelationBand5Resolution", DepthPixelationBand5Resolution),
+    PP_SETTING("depthPixelationBand6Resolution", DepthPixelationBand6Resolution),
+    PP_SETTING("depthPixelationBand7Resolution", DepthPixelationBand7Resolution),
+    PP_SETTING("depthPixelationBand8Resolution", DepthPixelationBand8Resolution),
+    PP_SETTING("depthPixelationBand9Resolution", DepthPixelationBand9Resolution),
+    PP_SETTING("depthPixelationBand10Resolution", DepthPixelationBand10Resolution),
+    PP_SETTING("depthPixelationBand4Divisor", DepthPixelationBand4Divisor),
+    PP_SETTING("depthPixelationBand5Divisor", DepthPixelationBand5Divisor),
+    PP_SETTING("depthPixelationBand6Divisor", DepthPixelationBand6Divisor),
+    PP_SETTING("depthPixelationBand7Divisor", DepthPixelationBand7Divisor),
+    PP_SETTING("depthPixelationBand8Divisor", DepthPixelationBand8Divisor),
+    PP_SETTING("depthPixelationBand9Divisor", DepthPixelationBand9Divisor),
+    PP_SETTING("depthPixelationBand10Divisor", DepthPixelationBand10Divisor),
+
+    PP_SETTING("depthPixelationResolutionMode", DepthPixelationResolutionMode),
+    PP_SETTING("depthPixelationNearDivisor", DepthPixelationNearDivisor),
+    PP_SETTING("depthPixelationMiddleDivisor", DepthPixelationMiddleDivisor),
+    PP_SETTING("depthPixelationFarDivisor", DepthPixelationFarDivisor),
+    PP_SETTING("depthPixelationSkyDivisor", DepthPixelationSkyDivisor),
+
+    PP_SETTING("depthPixelationIntensity", DepthPixelationIntensity),
+    PP_SETTING("depthPixelationNearEnd", DepthPixelationNearEnd),
+    PP_SETTING("depthPixelationMiddleEnd", DepthPixelationMiddleEnd),
+    PP_SETTING("depthPixelationNearResolution", DepthPixelationNearResolution),
+    PP_SETTING("depthPixelationMiddleResolution", DepthPixelationMiddleResolution),
+    PP_SETTING("depthPixelationFarResolution", DepthPixelationFarResolution),
+    PP_SETTING("depthPixelationSkyResolution", DepthPixelationSkyResolution),
+    PP_SETTING("depthPixelationDebugRanges", DepthPixelationDebugRanges),
 };
 
 constexpr EffectFieldIO kChromaticAberrationIO[]{
@@ -1470,6 +1575,28 @@ void RegisterBuiltInPostProcessEffectDescriptors()
         },
     });
     Registry::Register({
+        .Type = RegisterEffectComponent<RainSettingsEffect>(),
+        .ComponentName = "RainSettingsEffect",
+        .DisplayName = "Rain & Water",
+        .Description = "Global water drop size and ripple animation; wind volumes drive local wind",
+        .IconPath = "Icons/PostFX/RainWater.svg",
+        .FieldIO = kRainSettingsIO,
+        .SettingsFields = kRainSettingsSettings,
+        .Extract =
+            +[](ECS::World& world, const ECS::EntityHandle& entity,
+                const Engine::Renderer::PostProcessExtractContext&,
+                Engine::Renderer::PostProcessExtractedVolume& out)
+        {
+            if (auto* rain = world.GetComponent<RainSettingsEffect>(entity); rain && rain->Enabled)
+            {
+                out.Settings.RainSettingsActive = 1;
+                out.Settings.WaterDropSize = std::clamp(rain->WaterDropSize, 0.25f, 2.0f);
+                out.Settings.FallingRainSizeOffset = std::clamp(rain->FallingRainSizeOffset, -1.75f, 1.75f);
+                out.Settings.WaterRippleSpeed = std::clamp(rain->WaterRippleSpeed, 0.0f, 4.0f);
+            }
+        },
+    });
+    Registry::Register({
         .Type = RegisterEffectComponent<HeatDistortionEffect>(),
         .ComponentName = "HeatDistortionEffect",
         .DisplayName = "Heat Distortion",
@@ -1603,6 +1730,71 @@ void RegisterBuiltInPostProcessEffectDescriptors()
                 out.Settings.ColorGradeHighlightsEnd   = Math::Clamp01(grade->HighlightsEnd);
             }
         },
+    });
+    Registry::Register({
+        .Type = RegisterEffectComponent<DepthPixelationEffect>(),
+        .ComponentName = "DepthPixelationEffect",
+        .DisplayName = "Depth Pixelation",
+        .Description = "Independent near, middle, far and sky pixel resolutions; debug colors show depth ranges",
+        .IconClass = "postfx-depth-pixelation-icon",
+        .FieldIO = kDepthPixelationIO,
+        .SettingsFields = kDepthPixelationSettings,
+        .Extract = +[](ECS::World& world, const ECS::EntityHandle& entity,
+                      const Engine::Renderer::PostProcessExtractContext&,
+                      Engine::Renderer::PostProcessExtractedVolume& out)
+        {
+            if (auto* effect = world.GetComponent<DepthPixelationEffect>(entity); effect && effect->Enabled)
+            {
+                out.Settings.DepthPixelationResolutionMode = std::clamp(effect->ResolutionMode, 0, 1);
+                out.Settings.DepthPixelationNearDivisor = std::clamp(effect->NearDivisor, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationMiddleDivisor = std::clamp(effect->MiddleDivisor, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationFarDivisor = std::clamp(effect->FarDivisor, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationSkyDivisor = std::clamp(effect->SkyDivisor, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationBandCount = std::clamp(effect->BandCount, 1, 10);
+                out.Settings.DepthPixelationBand3End = std::clamp(effect->Band3End, 0.0f, 1000000.0f);
+                out.Settings.DepthPixelationBand4End = std::clamp(effect->Band4End, 0.0f, 1000000.0f);
+                out.Settings.DepthPixelationBand5End = std::clamp(effect->Band5End, 0.0f, 1000000.0f);
+                out.Settings.DepthPixelationBand6End = std::clamp(effect->Band6End, 0.0f, 1000000.0f);
+                out.Settings.DepthPixelationBand7End = std::clamp(effect->Band7End, 0.0f, 1000000.0f);
+                out.Settings.DepthPixelationBand8End = std::clamp(effect->Band8End, 0.0f, 1000000.0f);
+                out.Settings.DepthPixelationBand9End = std::clamp(effect->Band9End, 0.0f, 1000000.0f);
+                out.Settings.DepthPixelationBand4Resolution = std::clamp(effect->Band4Resolution, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationBand5Resolution = std::clamp(effect->Band5Resolution, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationBand6Resolution = std::clamp(effect->Band6Resolution, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationBand7Resolution = std::clamp(effect->Band7Resolution, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationBand8Resolution = std::clamp(effect->Band8Resolution, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationBand9Resolution = std::clamp(effect->Band9Resolution, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationBand10Resolution = std::clamp(effect->Band10Resolution, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationBand4Divisor = std::clamp(effect->Band4Divisor, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationBand5Divisor = std::clamp(effect->Band5Divisor, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationBand6Divisor = std::clamp(effect->Band6Divisor, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationBand7Divisor = std::clamp(effect->Band7Divisor, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationBand8Divisor = std::clamp(effect->Band8Divisor, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationBand9Divisor = std::clamp(effect->Band9Divisor, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationBand10Divisor = std::clamp(effect->Band10Divisor, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationDistanceMode = std::clamp(effect->DistanceMode, 0, 1);
+                out.Settings.DepthPixelationIntensity = 1.0f;
+                out.Settings.DepthPixelationAutoBandResolution = std::clamp(effect->AutoBandResolution, 0, 1);
+                out.Settings.DepthPixelationAutoFarPixelSize = std::clamp(effect->AutoFarPixelSize, 1, 2);
+                out.Settings.DepthPixelationSimpleScreenSpace = std::clamp(effect->SimpleScreenSpace, 0, 1);
+                out.Settings.DepthPixelationStabilizationMode = std::clamp(effect->StabilizationMode, 0, 2);
+                out.Settings.DepthPixelationNearEnd = std::clamp(effect->NearEnd, 0.0f, 1000000.0f);
+                out.Settings.DepthPixelationMiddleEnd = std::clamp(effect->MiddleEnd, 0.0f, 1000000.0f);
+                out.Settings.DepthPixelationNearResolution = std::clamp(effect->NearResolution, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationMiddleResolution = std::clamp(effect->MiddleResolution, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationFarResolution = std::clamp(effect->FarResolution, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationSkyResolution = std::clamp(effect->SkyResolution, 1.0f, 16384.0f);
+                out.Settings.DepthPixelationMiddleEnd = std::max(out.Settings.DepthPixelationNearEnd, out.Settings.DepthPixelationMiddleEnd);
+                out.Settings.DepthPixelationDebugRanges = std::clamp(effect->DebugRanges, 0, 1);
+            }
+        },
+        .ViewPreparation = {
+            +[](Engine::Renderer::RenderServices& services, uint64_t worldId) { services.SyncDepthPixelationViews(worldId); },
+            +[](Engine::Renderer::RenderServices& services, RenderGraph::RGFrame& frame,
+                std::span<const Engine::Renderer::Pipeline::ViewTargetsRG> parents,
+                std::vector<Engine::Renderer::Pipeline::ViewTargetsRG>& targets) {
+                services.PrepareDepthPixelationFrame(frame, parents, targets);
+            }},
     });
     Registry::Register({
         .Type = RegisterEffectComponent<ChromaticAberrationEffect>(),

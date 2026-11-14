@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <title>Unity Package Importer</title>
+  <defs>
+    <linearGradient id="surface" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#303451"/>
+      <stop offset="1" stop-color="#1D2335"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="62" height="62" rx="14" fill="url(#surface)"/>
+  <rect x="1.5" y="1.5" width="61" height="61" rx="13.5" fill="none" stroke="#BABEF7" stroke-opacity="0.18"/>
+  <g fill="none" stroke="#BABEF7" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m15 27 17 9 17-9m-17 9v17M15 27v17l17 9 17-9V27"/>
+    <path d="m15 27 8-4m18 0 8 4M32 11v18m-6-6 6 6 6-6"/>
+      </g>
+</svg>

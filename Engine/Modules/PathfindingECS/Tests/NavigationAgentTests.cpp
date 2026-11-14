@@ -15,7 +15,7 @@
 #include "PhysicsECS/Components/PhysicsCollider.h"
 
 #include "Components/Transform.h"
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Systems.h"
 #include "ECS/World.h"

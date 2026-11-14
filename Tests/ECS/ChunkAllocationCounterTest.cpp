@@ -3,7 +3,7 @@
 // _aligned_malloc reads as zero allocations, and a test or lab that counts a structural
 // change would miss the dominant allocation of the path.
 
-#include "ECS/Archetype/ArchetypeTable.h"
+#include "ECS/ArchetypeTable.h"
 #include "Memory/AllocationCountScope.h"
 
 #include <gtest/gtest.h>

@@ -18,8 +18,8 @@ export interface IpcConfig {
   assistantToken: string | null;
 }
 
-export const kDefaultIpcPort = 9999;
 export const kDefaultIpcHost = "127.0.0.1";
+export const kDefaultIpcPort = 9999;
 
 function readPortEnv(): number {
   const raw = process.env.GE_EDITOR_DEBUG_PORT ?? process.env.GE_IPC_PORT;

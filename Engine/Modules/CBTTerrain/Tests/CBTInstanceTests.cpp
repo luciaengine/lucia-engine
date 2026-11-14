@@ -127,7 +127,9 @@ TEST_F(CBTInstanceTest, RefreshTerrainSourcesDropsRetiredHeightmapAfterUpdate)
     ASSERT_EQ(instance.CountTerrainSourceSlots(retired), kCBTFrameParamsRing);
 
     const uint64_t genBefore = instance.GetTerrainSourceGeneration();
-    EXPECT_TRUE(instance.RefreshTerrainSources());
+    bool changed = false;
+    EXPECT_TRUE(instance.RefreshTerrainSources(changed));
+    EXPECT_TRUE(changed);
     EXPECT_EQ(instance.CountTerrainSourceSlots(retired), 0u)
         << "no ring element may reference the retired heightmap after the refresh";
     EXPECT_GT(instance.GetTerrainSourceGeneration(), genBefore);

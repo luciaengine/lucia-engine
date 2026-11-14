@@ -89,10 +89,11 @@ bool AgentConversationRow::Build(UIManager& ui)
     m_Calls = TakeElement<UIElement>(*this, "AgentRowCalls", m_Index);
     m_Status = TakeElement<UIElement>(*this, "AgentRowStatus", m_Index);
     m_Actions = TakeElement<UIElement>(*this, "AgentRowActions", m_Index);
+    m_FileChips = TakeElement<UIElement>(*this, "AgentRowFiles", m_Index);
     m_MarkupChips = TakeElement<UIElement>(*this, "AgentRowMarkups", m_Index);
     m_SetupRefusalHost = TakeElement<UIElement>(*this, "AgentRowSetupRefusal", m_Index);
     if (!m_Header || !m_Time || !m_Stop || !m_Retry || !m_UndoTurn || !m_Retried || !m_Text || !m_Reply || !m_Calls ||
-        !m_Status || !m_Actions || !m_MarkupChips || !m_SetupRefusalHost)
+        !m_Status || !m_Actions || !m_FileChips || !m_MarkupChips || !m_SetupRefusalHost)
     {
         Logger::Log::Error("AI Assistant: {} is missing a row element.", kLayoutAssetPath);
         return false;
@@ -120,6 +121,8 @@ void AgentConversationRow::Show(const AgentConversationRowModel& model, const st
         m_Time->SetText(time);
         SetClassIf(*this, "agent-row-user", model.FromUser);
     }
+    if (!shown || shown->FileChips != model.FileChips)
+        BuildFileChips(model.FileChips);
     if (!shown || shown->MarkupChips != model.MarkupChips)
         BuildMarkupChips(model.MarkupChips);
     if (!shown || shown->Header != model.Header)
@@ -207,6 +210,19 @@ void AgentConversationRow::ShowCalls(const std::vector<AgentCallRowModel>& calls
     for (size_t call = 0; call < calls.size(); ++call)
         m_CallRows[call]->Show(calls[call]);
     SetClassIf(*m_Calls, "hidden", calls.empty());
+}
+
+void AgentConversationRow::BuildFileChips(const std::vector<std::string>& files)
+{
+    m_FileChips->RemoveAllChildren();
+    SetClassIf(*m_FileChips, "hidden", files.empty());
+    for (const std::string& name : files)
+    {
+        auto label = std::make_unique<Label>();
+        label->AddClass("agent-row-file-chip");
+        label->SetText(name);
+        m_FileChips->AddChild(std::move(label));
+    }
 }
 
 void AgentConversationRow::BuildMarkupChips(const std::vector<MarkupChip>& chips)

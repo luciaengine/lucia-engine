@@ -1,5 +1,7 @@
 #include "ValidationStats.h"
 
+#include "Types/Fnv1a.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <string>
@@ -26,13 +28,7 @@ ValidationRecordOutcome ValidationStatsStore::Record(const ValidationMessageInfo
     std::string_view key = info.Vuid;
     if (key.empty())
     {
-        uint64_t h = 1469598103934665603ull; // FNV-1a
-        const size_t n = std::min<size_t>(info.Message.size(), 256);
-        for (size_t i = 0; i < n; ++i)
-        {
-            h ^= static_cast<uint8_t>(info.Message[i]);
-            h *= 1099511628211ull;
-        }
+        const uint64_t h = Hashing::Fnv1a64(info.Message.substr(0, 256));
         std::snprintf(keyBuf, sizeof(keyBuf), "msg-%016llx", static_cast<unsigned long long>(h));
         key = keyBuf;
     }

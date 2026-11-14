@@ -1,6 +1,7 @@
 #include "ShaderIncludeClosure.h"
 
 #include "ShaderSourceCache.h"
+#include "Types/Fnv1a.h"
 
 #include "AssetCore/SharedFileRead.h"
 #include "Logger/Logger.h"
@@ -10,15 +11,7 @@ namespace GameEngine { namespace Rendering {
 
 uint64_t HashShaderBytes(const void* data, size_t size, uint64_t seed)
 {
-    const uint8_t* b = static_cast<const uint8_t*>(data);
-    constexpr uint64_t prime = 1099511628211ull;
-    uint64_t h = seed;
-    for (size_t i = 0; i < size; ++i)
-    {
-        h ^= static_cast<uint64_t>(b[i]);
-        h *= prime;
-    }
-    return h;
+    return Hashing::Fnv1a64(data, size, seed);
 }
 
 uint64_t HashShaderString(uint64_t seed, const std::string& s)

@@ -147,7 +147,7 @@ class SystemWaveTrace
 
 #if defined(__APPLE__)
       private:
-        uint64 m_Id = 0;
+        [[maybe_unused]] uint64 m_Id = 0;
 #endif
     };
 
@@ -162,7 +162,7 @@ class SystemWaveTrace
 
 #if defined(__APPLE__)
       private:
-        uint64 m_Id = 0;
+        [[maybe_unused]] uint64 m_Id = 0;
 #endif
     };
 
@@ -173,7 +173,7 @@ class SystemWaveTrace
     bool m_ClearPending = false;
 #if defined(__APPLE__)
     // The os_signpost id of the wave in flight; 0 when none is open.
-    uint64 m_WaveSignpost = 0;
+    [[maybe_unused]] uint64 m_WaveSignpost = 0;
 #endif
 };
 

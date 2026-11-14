@@ -1,7 +1,7 @@
 #include "Ocean/OceanPreset/OceanPresetOverrideValidator.h"
 
 #include "Components/Rendering/Ocean.h"
-#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/ComponentFieldRegistry.h"
 #include "ECS/Query.h"
 #include "ECS/World.h"
 #include "Logger/Logger.h"

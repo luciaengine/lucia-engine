@@ -307,17 +307,45 @@ PagedTerrain* FindPagedTerrain(std::vector<PagedTerrain>& terrains, uint32 index
     return nullptr;
 }
 
+struct PageColliderPose
+{
+    Mathematics::WorldPosition Center;
+    float32 SizeX;
+    float32 SizeZ;
+    float32 HeightScale;
+};
+
+PageColliderPose GetPageColliderPose(const SurfaceHeightQuery& query, uint32 pageX, uint32 pageZ)
+{
+    constexpr float32 kOwned = static_cast<float32>(PageStreaming::kPageOwnedSamples);
+    const float32 sizeX = kOwned * query.LatticeSpacingX();
+    const float32 sizeZ = kOwned * query.LatticeSpacingZ();
+    return {{query.FootprintOriginX() + (static_cast<float64>(pageX) + 0.5) * sizeX,
+             query.OriginY(), query.FootprintOriginZ() + (static_cast<float64>(pageZ) + 0.5) * sizeZ},
+            sizeX, sizeZ, query.HeightScale()};
+}
+
+bool PageColliderMatchesPose(const ECS::World& world, ECS::EntityHandle entity, const PageColliderPose& pose)
+{
+    const auto* transform = world.GetComponent<Components::Transform>(entity);
+    const auto* shape = world.GetComponent<Components::HeightFieldColliderShape>(entity);
+    return transform && shape && transform->Position.X == pose.Center.X &&
+           transform->Position.Y == pose.Center.Y && transform->Position.Z == pose.Center.Z &&
+           shape->sizeX == pose.SizeX && shape->sizeZ == pose.SizeZ && shape->heightScale == pose.HeightScale;
+}
+
 // Keeps a collider whose page is still in its terrain's window and whose samples come from the
 // stream it reads now: it leaves the window list (not provisioned again) and takes the edits to its
 // page as a region of its body. Any other collider is an orphan.
-void SweepPageCollider(TerrainService& service, std::vector<PagedTerrain>& terrains, PageColliderOrphans& orphans,
+void SweepPageCollider(ECS::World& world, TerrainService& service, std::vector<PagedTerrain>& terrains, PageColliderOrphans& orphans,
                        ECS::EntityHandle entity, const Components::TerrainPageCollider& tag)
 {
     PagedTerrain* paged = FindPagedTerrain(terrains, tag.TiledIndex, tag.TiledGeneration);
     const uint64 key = PageKey(tag.PageX, tag.PageZ);
     const TerrainService::PageColliderData* data =
         service.ResolvePageCollider(tag.PhysicsHandleIndex, tag.PhysicsHandleGeneration);
-    const bool current = paged && data && data->ReadAt.Epoch == paged->Query.PageStamp().Epoch;
+    const bool current = paged && data && data->ReadAt.Epoch == paged->Query.PageStamp().Epoch &&
+                         PageColliderMatchesPose(world, entity, GetPageColliderPose(paged->Query, tag.PageX, tag.PageZ));
     if (current && std::binary_search(paged->SortedWindow.begin(), paged->SortedWindow.end(), key))
     {
         std::erase(paged->SortedWindow, key);
@@ -682,8 +710,8 @@ void TerrainPhysicsSystem::UpdatePageColliders(ECS::World& world, TerrainService
     // its page slot released here (its OnRemove hook then finds the slot gone).
     PageColliderOrphans orphans;
     world.Query<ECS::Read<Components::TerrainPageCollider>>().IncludeDisabled().Each(
-        [&service, &terrains, &orphans](ECS::EntityHandle entity, const Components::TerrainPageCollider& tag) {
-            SweepPageCollider(service, terrains, orphans, entity, tag);
+        [&world, &service, &terrains, &orphans](ECS::EntityHandle entity, const Components::TerrainPageCollider& tag) {
+            SweepPageCollider(world, service, terrains, orphans, entity, tag);
         });
     // The body is freed now, in the window PhysicsInit mutates bodies in and before the step; the
     // entity's destruction is deferred to the next flush (ReleaseColliderBody).
@@ -692,7 +720,6 @@ void TerrainPhysicsSystem::UpdatePageColliders(ECS::World& world, TerrainService
     // A window page without a collider gets one once it is on the CPU at level 0; the residency's
     // window fetch brings it (design D3), so a page still on its way is provisioned a later frame.
     // Its body is built on the job pool (PhysicsInitSystem) from the samples read here.
-    constexpr float32 kOwned = static_cast<float32>(PageStreaming::kPageOwnedSamples);
     for (const PagedTerrain& paged : terrains)
         for (const PageStreaming::PageAddress& page : paged.Window)
         {
@@ -701,15 +728,10 @@ void TerrainPhysicsSystem::UpdatePageColliders(ECS::World& world, TerrainService
             const TerrainService::PagePhysicsHandle handle = service.AcquirePagePhysicsHandle(paged.Query, page.X, page.Z);
             if (handle.Index == 0)
                 continue;
-            const SurfaceHeightQuery& query = paged.Query;
-            const float32 sizeX = kOwned * query.LatticeSpacingX();
-            const float32 sizeZ = kOwned * query.LatticeSpacingZ();
-            const Mathematics::WorldPosition center{
-                query.FootprintOriginX() + (static_cast<float64>(page.X) + 0.5) * sizeX, query.OriginY(),
-                query.FootprintOriginZ() + (static_cast<float64>(page.Z) + 0.5) * sizeZ};
+            const PageColliderPose pose = GetPageColliderPose(paged.Query, page.X, page.Z);
             const ECS::EntityHandle entity =
-                CreateTerrainColliderEntity(world, MakeTranslation(center), MakeWorldTranslation(center), handle.Index,
-                                            handle.Generation, sizeX, sizeZ, query.HeightScale());
+                CreateTerrainColliderEntity(world, MakeTranslation(pose.Center), MakeWorldTranslation(pose.Center),
+                                            handle.Index, handle.Generation, pose.SizeX, pose.SizeZ, pose.HeightScale);
             Components::TerrainPageCollider tag{};
             tag.TiledIndex = paged.Tiled.Index;
             tag.TiledGeneration = paged.Tiled.Generation;

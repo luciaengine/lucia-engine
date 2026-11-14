@@ -19,6 +19,8 @@
 #include "UI/UIPlatform.h"
 #include "UI/UIStyle.h"
 
+#include "TestTempDir.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -204,6 +206,18 @@ bool CanMeasure(const ViewOutputBytes& handoff, const ViewStageTap& source)
         return false;
     float probe = 0.0f;
     return ReadDestinationEncoded(handoff, 0, 0, probe);
+}
+
+// The residual maps of this test process. They are failure artifacts opened after the run, so
+// the directory is never removed; it is unique to the process, so a concurrent ctest process
+// running the same tests cannot overwrite them.
+const std::filesystem::path& ResidualMapDirectory()
+{
+    static const std::filesystem::path directory =
+        TestUtils::MakeUniqueTempDirectory("headless-view-residual");
+    std::error_code ec;
+    std::filesystem::create_directories(directory, ec);
+    return directory;
 }
 
 } // namespace
@@ -503,7 +517,7 @@ HeadlessViewStatus HeadlessViewFixture::Up()
     cd.viewProj = Mathematics::Matrix4x4::Identity();
     m_Services->Views().SetCameraData(m_Camera, ::GameEngine::Tests::TestCameraWithEye(cd), {0.1f, 1000.0f});
     m_View = m_Services->Views().AllocateView("HeadlessView", m_Camera);
-    m_Services->Views().SetViewRenderLayerMask(m_View, GameEngine::Rendering::RenderLayerMask::Default());
+    m_Services->Views().SetViewRenderLayerMask(m_View, 1u);
 
     // One instance so the GPU-driven prologue does not vacuously early-out —
     // the spine's culling and bucketer stages are part of "a real world view".
@@ -758,7 +772,8 @@ HeadlessViewStatus HeadlessViewFixture::Render(const HeadlessViewDesc& desc)
 
     Rendering::ViewClearConfig clear{};
     clear.clearColor = true;
-    clear.clearColorValue = desc.ClearLinear;
+    for (int i = 0; i < 4; ++i)
+        clear.clearColorValue[i] = desc.ClearLinear[i];
     clear.clearDepth = true;
     clear.clearDepthValue = 0.0f; // reverse-Z far
     m_Services->Views().SetViewClearConfig(m_View, clear);
@@ -1280,7 +1295,7 @@ std::filesystem::path HeadlessViewFixture::WriteResidualMap(const std::string& t
     const float codeScale = DestinationCodeScale(m_Handoff.Format);
     const float unit = codeScale > 0.0f ? codeScale : 255.0f;
     const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / ("headless-view-residual-" + tag + ".ppm");
+        ResidualMapDirectory() / ("headless-view-residual-" + tag + ".ppm");
     std::ofstream f(path, std::ios::binary);
     if (!f)
         return {};

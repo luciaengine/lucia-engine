@@ -1,4 +1,5 @@
 #include "Engine/Rendering/Pipeline/Nodes/ScreenSpaceReflectionsNode.h"
+#include "Engine/Rendering/CameraAspectRatio.h"
 
 #include "Engine/Rendering/CameraAspectRatio.h"
 #include "Engine/Rendering/Pipeline/Nodes/PipelineNodeUtils.h"
@@ -145,7 +146,8 @@ PipelineHandle ScreenSpaceReflectionsNode::BeginProgram(RenderGraph::RGContext& 
                                                          const PostProcessSettings& settings,
                                                          uint32_t frameIndex,
                                                          bool historyValid,
-                                                         const Mathematics::Rect& viewportRect) const
+                                                         const Mathematics::Rect& viewportRect,
+                                                         bool hasPlanarMask) const
 {
     const ComputeProgram& p = m_Programs[program];
     PipelineHandle pipeline = ctx.GetOrCreatePipelineVariant(p.Pipeline);
@@ -167,6 +169,7 @@ PipelineHandle ScreenSpaceReflectionsNode::BeginProgram(RenderGraph::RGContext& 
             writer.Add("debugMode", SssrDebugMode());
             writer.Add("sampleQuality", settings.SSSRSampleQuality);
             writer.Add("multiBounce", settings.SSSRMultiBounce);
+            writer.Add("hasPlanarMask", hasPlanarMask ? 1u : 0u);
             // Rect is four consecutive floats in the shader's member order.
             static_assert(sizeof(Mathematics::Rect) == 4 * sizeof(float));
             writer.Add("viewportRect", viewportRect);
@@ -183,21 +186,7 @@ uint32_t ScreenSpaceReflectionsNode::TraceFrameIndex(Rendering::ViewId view) con
     return history != nullptr ? history->TraceFrame : 0u;
 }
 
-Mathematics::Rect ScreenSpaceReflectionsNode::ComputeViewportRect(const ViewLetterbox& letterbox,
-                                                                  uint32_t targetWidth,
-                                                                  uint32_t targetHeight)
-{
-    const Mathematics::Rect wholeTarget{0.0f, 0.0f, 1.0f, 1.0f};
-    if (!letterbox.active || targetWidth == 0 || targetHeight == 0 || letterbox.width == 0 ||
-        letterbox.height == 0)
-        return wholeTarget;
-    const float w = static_cast<float>(targetWidth);
-    const float h = static_cast<float>(targetHeight);
-    return Mathematics::Rect{static_cast<float>(letterbox.x) / w,
-                             static_cast<float>(letterbox.y) / h,
-                             static_cast<float>(letterbox.width) / w,
-                             static_cast<float>(letterbox.height) / h};
-}
+
 
 void ScreenSpaceReflectionsNode::DeclareForView(ViewDeclare& d)
 {
@@ -594,7 +583,7 @@ bool ScreenSpaceReflectionsNode::DeclareChain(ViewDeclare& d)
                                            ctx.GetTexture(hitData));
             Detail::BindStorageImageByName(device, set, meta, "uPrefiltered",
                                            ctx.GetTexture(prefiltered));
-            if (BeginProgram(ctx, Classify, set, settings, frameIndex, historyValid, viewportRect).IsValid())
+            if (BeginProgram(ctx, Classify, set, settings, frameIndex, historyValid, viewportRect, false).IsValid())
                 ctx.Cmd->Dispatch(gx, gy, 1);
         });
 
@@ -615,7 +604,7 @@ bool ScreenSpaceReflectionsNode::DeclareChain(ViewDeclare& d)
             NamedDescriptorWriter writer(device, set, meta, 0);
             writer.AddStorageBuffer("Args", ctx.GetBuffer(indirectArgs), 0, kArgsBytes);
             writer.Flush();
-            if (BeginProgram(ctx, PrepareArgs, set, settings, frameIndex, historyValid, viewportRect)
+            if (BeginProgram(ctx, PrepareArgs, set, settings, frameIndex, historyValid, viewportRect, false)
                     .IsValid())
                 ctx.Cmd->Dispatch(1, 1, 1);
         });
@@ -672,7 +661,7 @@ bool ScreenSpaceReflectionsNode::DeclareChain(ViewDeclare& d)
                                            ctx.GetTexture(radiance));
             Detail::BindStorageImageByName(device, set, meta, "uHitData",
                                            ctx.GetTexture(hitData));
-            if (BeginProgram(ctx, Intersect, set, settings, frameIndex, historyValid, viewportRect)
+            if (BeginProgram(ctx, Intersect, set, settings, frameIndex, historyValid, viewportRect, false)
                     .IsValid())
                 ctx.Cmd->DispatchIndirect(ctx.GetBuffer(indirectArgs), 0);
         });
@@ -726,7 +715,7 @@ bool ScreenSpaceReflectionsNode::DeclareChain(ViewDeclare& d)
                                            ctx.GetTexture(reprojectedMoments));
             Detail::BindStorageImageByName(device, set, meta, "uAvgRadiance",
                                            ctx.GetTexture(avgRadiance));
-            if (BeginProgram(ctx, Reproject, set, settings, frameIndex, historyValid, viewportRect).IsValid())
+            if (BeginProgram(ctx, Reproject, set, settings, frameIndex, historyValid, viewportRect, false).IsValid())
                 ctx.Cmd->Dispatch(gx, gy, 1);
         });
 
@@ -776,7 +765,7 @@ bool ScreenSpaceReflectionsNode::DeclareChain(ViewDeclare& d)
             // One workgroup per denoise tile. Tiles with no reflective pixel are
             // never launched, so the cost tracks the reflective share of the frame
             // instead of its resolution.
-            if (BeginProgram(ctx, Prefilter, set, settings, frameIndex, historyValid, viewportRect).IsValid())
+            if (BeginProgram(ctx, Prefilter, set, settings, frameIndex, historyValid, viewportRect, false).IsValid())
                 ctx.Cmd->DispatchIndirect(ctx.GetBuffer(indirectArgs), kTileArgsOffset);
         });
 
@@ -822,10 +811,11 @@ bool ScreenSpaceReflectionsNode::DeclareChain(ViewDeclare& d)
                                            ctx.GetTexture(momentsWrite));
             Detail::BindStorageImageByName(device, set, meta, "uSurfaceOut",
                                            ctx.GetTexture(surfaceWrite));
-            if (BeginProgram(ctx, Temporal, set, settings, frameIndex, historyValid, viewportRect).IsValid())
+            if (BeginProgram(ctx, Temporal, set, settings, frameIndex, historyValid, viewportRect, false).IsValid())
                 ctx.Cmd->Dispatch(gx, gy, 1);
         });
 
+    const auto planarMask = d.ResolveTexture(Names::View::PlanarReflectionMask);
     d.Frame.AddPass(
         d.PassName("Composite").c_str(), PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
@@ -836,6 +826,8 @@ bool ScreenSpaceReflectionsNode::DeclareChain(ViewDeclare& d)
             p.Read(normalRoughness, RenderGraph::RGTextureRead::SampledCompute);
             p.Read(specularWeight, RenderGraph::RGTextureRead::SampledCompute);
             p.Read(specularRadiance, RenderGraph::RGTextureRead::SampledCompute);
+            if (planarMask.IsValid())
+                p.Read(planarMask, RenderGraph::RGTextureRead::SampledCompute);
             p.Write(output, RenderGraph::RGTextureWrite::Storage);
             p.Write(sceneHistoryWrite, RenderGraph::RGTextureWrite::Storage);
         },
@@ -852,13 +844,14 @@ bool ScreenSpaceReflectionsNode::DeclareChain(ViewDeclare& d)
                                            m_PointSampler);
             writer.AddCombinedImageSampler("uSpecularWeight", ctx.GetTexture(specularWeight), m_PointSampler);
             writer.AddCombinedImageSampler("uSpecularRadiance", ctx.GetTexture(specularRadiance), m_PointSampler);
+            writer.AddCombinedImageSampler("uPlanarMask", ctx.GetTexture(planarMask.IsValid() ? planarMask : depth), m_PointSampler);
             writer.AddUniformBuffer("ViewParams", viewParams.Buffer, viewParams.Offset,
                                     viewParams.Size);
             writer.Flush();
             Detail::BindStorageImageByName(device, set, meta, "uOutput", ctx.GetTexture(output));
             Detail::BindStorageImageByName(device, set, meta, "uSceneHistoryOut",
                                            ctx.GetTexture(sceneHistoryWrite));
-            if (BeginProgram(ctx, Composite, set, settings, frameIndex, historyValid, viewportRect)
+            if (BeginProgram(ctx, Composite, set, settings, frameIndex, historyValid, viewportRect, planarMask.IsValid())
                     .IsValid())
                 ctx.Cmd->Dispatch(gx, gy, 1);
         });

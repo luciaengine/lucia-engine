@@ -2739,7 +2739,7 @@ class Outer
     [Fact]
     public void ComponentSchema_PrefabRefField_IsAnAssetGuidThatNamesThePrefabCategory()
     {
-        // A PrefabRef field registers as an AssetGuid field (18) of the prefab category (AssetType::Prefab, 42), so
+        // A PrefabRef field registers as an AssetGuid field (18) of the prefab category (AssetType::Prefab, 46), so
         // the scene saves it, the Inspector offers prefabs and a scene that holds it keeps the prefab loaded. The
         // stubs are a referenced assembly, as the engine is to a game, so the private fields of AssetGuid are not seen.
         const string source = """
@@ -2760,7 +2760,7 @@ class Outer
         var (_, hubText, diagnostics) = RunGeneratorSchemaHub(source, stubsInOwnAssembly: true);
         Assert.DoesNotContain(diagnostics, d => d.Severity == DiagnosticSeverity.Error);
         Assert.Contains(
-            "new GameEngine.ECS.ComponentFieldDesc(\"Soldier\", 4, 16, (GameEngine.ECS.ComponentFieldType)18, 42)",
+            "new GameEngine.ECS.ComponentFieldDesc(\"Soldier\", 4, 16, (GameEngine.ECS.ComponentFieldType)18, 46)",
             hubText);
     }
 

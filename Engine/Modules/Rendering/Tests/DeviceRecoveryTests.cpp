@@ -10,6 +10,7 @@
 #include "Source/Vulkan/VulkanDevice/VulkanDevice.h"
 #include "Source/Vulkan/VulkanFaultInjection.h"
 #include "ScopedEnvVar.h"
+#include "TestTempDir.h"
 
 #include <gtest/gtest.h>
 
@@ -145,16 +146,6 @@ TEST(DeviceHealthStateMachine, HungElapsedTracksTime)
     EXPECT_NEAR(health.HungElapsedMs(t0 + std::chrono::milliseconds(250)), 250.0, 0.001);
     health.NoteFenceSignaled();
     EXPECT_DOUBLE_EQ(health.HungElapsedMs(t0 + std::chrono::seconds(1)), 0.0); // Healthy again -> 0
-}
-
-TEST(DeviceHealthStateMachine, KillSwitchParse)
-{
-    // Only a leading '0' disables (matches the GE_* toggle idiom). Unset -> on.
-    EXPECT_TRUE(ParseDeviceRecoveryEnabled(nullptr));
-    EXPECT_TRUE(ParseDeviceRecoveryEnabled("1"));
-    EXPECT_TRUE(ParseDeviceRecoveryEnabled(""));
-    EXPECT_FALSE(ParseDeviceRecoveryEnabled("0"));
-    EXPECT_FALSE(ParseDeviceRecoveryEnabled("0-legacy"));
 }
 
 // --- Slice 2: Tier-2 rebuild state machine -----------------------------------
@@ -592,9 +583,12 @@ std::unique_ptr<IDevice> MakeHeadlessDevice()
 {
     // Deliberately unscoped: every device in this process wants headless mode.
     GameEngine::Rendering::Tests::SetEnvVar("GE_HEADLESS_TEST", "1");
+    static GameEngine::TestUtils::ScopedTempDir cache{
+        GameEngine::TestUtils::MakeUniqueTempDirectory("device-recovery")};
     DeviceDesc dd{};
     dd.preferredAPI = GraphicsAPI::Vulkan;
     dd.enableDynamicRendering = true;
+    dd.pipelineCacheDirectory = cache.Path().string();
     auto dev = DeviceFactory::CreateDevice(dd);
     if (!dev || !dev->Initialize(dd))
     {
@@ -1974,9 +1968,8 @@ DeviceLostScan ScanForDeviceLostRouting(const std::filesystem::path& dir)
 TEST(DeviceLossRouting, ScannerFlagsUnroutedSitesAndOnlyThose)
 {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / "ge_devloss_routing_lint_selftest";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_devloss_routing_lint_selftest");
     std::error_code ec;
-    fs::remove_all(dir, ec);
     ASSERT_TRUE(fs::create_directories(dir, ec)) << ec.message();
 
     {
@@ -2018,9 +2011,8 @@ TEST(DeviceLossRouting, ScannerFlagsUnroutedSitesAndOnlyThose)
 TEST(DeviceLossRouting, ScannerDoesNotLetOneSiteBorrowTheNextSitesRouting)
 {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / "ge_devloss_routing_lint_shadowtest";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_devloss_routing_lint_shadowtest");
     std::error_code ec;
-    fs::remove_all(dir, ec);
     ASSERT_TRUE(fs::create_directories(dir, ec)) << ec.message();
 
     {
@@ -2053,9 +2045,8 @@ TEST(DeviceLossRouting, ScannerDoesNotLetOneSiteBorrowTheNextSitesRouting)
 TEST(DeviceLossRouting, ScannerAcceptsACheckAndObserverOnOneLine)
 {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / "ge_devloss_routing_lint_onelinetest";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_devloss_routing_lint_onelinetest");
     std::error_code ec;
-    fs::remove_all(dir, ec);
     ASSERT_TRUE(fs::create_directories(dir, ec)) << ec.message();
 
     {
@@ -2080,9 +2071,8 @@ TEST(DeviceLossRouting, ScannerAcceptsACheckAndObserverOnOneLine)
 TEST(DeviceLossRouting, ScannerAcceptsTheWorkerThreadHandoffAsRouting)
 {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / "ge_devloss_routing_lint_handofftest";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_devloss_routing_lint_handofftest");
     std::error_code ec;
-    fs::remove_all(dir, ec);
     ASSERT_TRUE(fs::create_directories(dir, ec)) << ec.message();
 
     {
@@ -2111,9 +2101,8 @@ TEST(DeviceLossRouting, ScannerAcceptsTheWorkerThreadHandoffAsRouting)
 TEST(DeviceLossRouting, ScannerFlagsALossCapableResultTestedOnlyAgainstVkSuccess)
 {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / "ge_devloss_routing_lint_successtest";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_devloss_routing_lint_successtest");
     std::error_code ec;
-    fs::remove_all(dir, ec);
     ASSERT_TRUE(fs::create_directories(dir, ec)) << ec.message();
 
     {
@@ -2154,9 +2143,8 @@ TEST(DeviceLossRouting, ScannerFlagsALossCapableResultTestedOnlyAgainstVkSuccess
 TEST(DeviceLossRouting, ScannerAcceptsASuccessBranchWhoseResultIsRoutedElsewhere)
 {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / "ge_devloss_routing_lint_bothbranches";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_devloss_routing_lint_bothbranches");
     std::error_code ec;
-    fs::remove_all(dir, ec);
     ASSERT_TRUE(fs::create_directories(dir, ec)) << ec.message();
 
     {
@@ -2192,9 +2180,8 @@ TEST(DeviceLossRouting, ScannerAcceptsASuccessBranchWhoseResultIsRoutedElsewhere
 TEST(DeviceLossRouting, ScannerJudgesAReusedResultNameAgainstItsNearestBinding)
 {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / "ge_devloss_routing_lint_reusetest";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_devloss_routing_lint_reusetest");
     std::error_code ec;
-    fs::remove_all(dir, ec);
     ASSERT_TRUE(fs::create_directories(dir, ec)) << ec.message();
 
     {
@@ -2240,9 +2227,8 @@ TEST(DeviceLossRouting, ScannerJudgesAReusedResultNameAgainstItsNearestBinding)
 TEST(DeviceLossRouting, ScannerDoesNotLetARebindingsRoutingAnswerTheEarlierCall)
 {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / "ge_devloss_routing_lint_rebindtest";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_devloss_routing_lint_rebindtest");
     std::error_code ec;
-    fs::remove_all(dir, ec);
     ASSERT_TRUE(fs::create_directories(dir, ec)) << ec.message();
 
     {
@@ -2283,9 +2269,8 @@ TEST(DeviceLossRouting, ScannerDoesNotLetARebindingsRoutingAnswerTheEarlierCall)
 TEST(DeviceLossRouting, ScannerSeesASubmitProducedInsideABoundLambda)
 {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / "ge_devloss_routing_lint_lambdabind";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_devloss_routing_lint_lambdabind");
     std::error_code ec;
-    fs::remove_all(dir, ec);
     ASSERT_TRUE(fs::create_directories(dir, ec)) << ec.message();
 
     {
@@ -2322,9 +2307,8 @@ TEST(DeviceLossRouting, ScannerSeesASubmitProducedInsideABoundLambda)
 TEST(DeviceLossRouting, ScannerJudgesAYieldedResultAtItsCallSitesNotItsOwnCheck)
 {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / "ge_devloss_routing_lint_yield";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_devloss_routing_lint_yield");
     std::error_code ec;
-    fs::remove_all(dir, ec);
     ASSERT_TRUE(fs::create_directories(dir, ec)) << ec.message();
 
     {
@@ -2371,9 +2355,8 @@ TEST(DeviceLossRouting, ScannerJudgesAYieldedResultAtItsCallSitesNotItsOwnCheck)
 TEST(DeviceLossRouting, ScannerAcceptsRoutingAtTheCallSiteOfAYieldedResult)
 {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / "ge_devloss_routing_lint_yieldrouted";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_devloss_routing_lint_yieldrouted");
     std::error_code ec;
-    fs::remove_all(dir, ec);
     ASSERT_TRUE(fs::create_directories(dir, ec)) << ec.message();
 
     {
@@ -2417,9 +2400,8 @@ TEST(DeviceLossRouting, ScannerAcceptsRoutingAtTheCallSiteOfAYieldedResult)
 TEST(DeviceLossRouting, ScannerDoesNotTreatABoolReturnAsHandingTheResultOn)
 {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / "ge_devloss_routing_lint_boolreturn";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_devloss_routing_lint_boolreturn");
     std::error_code ec;
-    fs::remove_all(dir, ec);
     ASSERT_TRUE(fs::create_directories(dir, ec)) << ec.message();
 
     {
@@ -2447,9 +2429,8 @@ TEST(DeviceLossRouting, ScannerDoesNotTreatABoolReturnAsHandingTheResultOn)
 TEST(DeviceLossRouting, ScannerDoesNotAcceptAnEscapeThatHoldsOnlyOnTheSuccessPath)
 {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / "ge_devloss_routing_lint_partialescape";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_devloss_routing_lint_partialescape");
     std::error_code ec;
-    fs::remove_all(dir, ec);
     ASSERT_TRUE(fs::create_directories(dir, ec)) << ec.message();
 
     {
@@ -2490,9 +2471,8 @@ TEST(DeviceLossRouting, ScannerDoesNotAcceptAnEscapeThatHoldsOnlyOnTheSuccessPat
 TEST(DeviceLossRouting, ScannerCountsADiscardedCallToAYieldingHelperAsACallSite)
 {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / "ge_devloss_routing_lint_discardedyield";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_devloss_routing_lint_discardedyield");
     std::error_code ec;
-    fs::remove_all(dir, ec);
     ASSERT_TRUE(fs::create_directories(dir, ec)) << ec.message();
 
     {
@@ -2537,9 +2517,8 @@ TEST(DeviceLossRouting, ScannerCountsADiscardedCallToAYieldingHelperAsACallSite)
 TEST(DeviceLossRouting, ScannerDoesNotAcceptACommentAsRouting)
 {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / "ge_devloss_routing_lint_blockcomment";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_devloss_routing_lint_blockcomment");
     std::error_code ec;
-    fs::remove_all(dir, ec);
     ASSERT_TRUE(fs::create_directories(dir, ec)) << ec.message();
 
     {

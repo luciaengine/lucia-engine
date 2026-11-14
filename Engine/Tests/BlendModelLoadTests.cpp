@@ -40,7 +40,7 @@ fs::path StagedRoot()
 
 fs::path SamplesRoot()
 {
-    return StagedRoot() / "Tests" / "BlendSamples";
+    return StagedRoot() / "Tools" / "ai" / "retarget-redesign" / "blend-samples";
 }
 
 fs::path SidecarFor(const fs::path& modelPath)

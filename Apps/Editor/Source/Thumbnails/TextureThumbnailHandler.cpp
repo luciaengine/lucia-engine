@@ -425,7 +425,7 @@ TextureThumbnailHandler::Outcome TextureThumbnailHandler::GenerateThumbnail(
     // The compressed bytes are dead once the pixels exist, and two decodes
     // holding both at once is the peak this handler is budgeted against.
     bytes = ByteBuffer();
-    
+
 
     // sRGB-aware filtering: browsing is dominated by color textures, and
     // averaging those in gamma space darkens every thumbnail. Alpha weights the

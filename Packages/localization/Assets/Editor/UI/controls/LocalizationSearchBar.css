@@ -1,0 +1,12 @@
+/* The shared .panel-search-bar is pinned absolutely in side panes; here it fills its slot,
+   as in the Mark-ups panel. */
+.localization-search {
+	display: flex;
+	flex-direction: row;
+	position: relative;
+	top: unset;
+	right: unset;
+	bottom: unset;
+	left: unset;
+	flex-grow: 1;
+}

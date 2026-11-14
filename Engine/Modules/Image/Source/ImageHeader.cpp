@@ -4,6 +4,7 @@
 
 #include <stb_image.h>
 
+#include <climits>
 #include <fstream>
 #include <optional>
 #include <span>
@@ -32,6 +33,28 @@ int IsStreamAtEnd(void* user)
     auto* stream = static_cast<std::ifstream*>(user);
     return stream->peek() == std::ifstream::traits_type::eof() ? 1 : 0;
 }
+ImageHeader MakeHeader(const std::optional<PngDeclaration>& png, int width, int height, int channels, bool read)
+{
+    ImageHeader header{};
+    if (png)
+    {
+        // The IHDR is the declaration, including an extent stb_image refuses to read.
+        header.Width = png->Width;
+        header.Height = png->Height;
+        header.Channels = read ? static_cast<uint32_t>(channels) : png->Channels;
+        header.Valid = true;
+        header.WithinDecoderLimits = png->WithinDecoderLimits;
+        return header;
+    }
+    if (!read)
+        return header;
+    header.Width = static_cast<uint32_t>(width);
+    header.Height = static_cast<uint32_t>(height);
+    header.Channels = static_cast<uint32_t>(channels);
+    header.Valid = true;
+    header.WithinDecoderLimits = true;
+    return header;
+}
 } // namespace
 
 ImageHeader ReadImageHeader(const std::filesystem::path& file)
@@ -53,24 +76,20 @@ ImageHeader ReadImageHeader(const std::filesystem::path& file)
     int channels = 0;
     const bool read =
         stbi_info_from_callbacks(&callbacks, &stream, &width, &height, &channels) && width > 0 && height > 0;
-    if (png)
-    {
-        // The IHDR is the declaration, including an extent stb_image refuses to read.
-        header.Width = png->Width;
-        header.Height = png->Height;
-        header.Channels = read ? static_cast<uint32_t>(channels) : png->Channels;
-        header.Valid = true;
-        header.WithinDecoderLimits = png->WithinDecoderLimits;
-        return header;
-    }
-    if (!read)
-        return header;
-    header.Width = static_cast<uint32_t>(width);
-    header.Height = static_cast<uint32_t>(height);
-    header.Channels = static_cast<uint32_t>(channels);
-    header.Valid = true;
-    header.WithinDecoderLimits = true;
-    return header;
+    return MakeHeader(png, width, height, channels, read);
+}
+
+ImageHeader ReadImageHeader(std::span<const uint8_t> fileBytes)
+{
+    if (fileBytes.empty() || fileBytes.size() > static_cast<size_t>(INT_MAX))
+        return {};
+    const auto png = ReadPngDeclaration(fileBytes);
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    const bool read = stbi_info_from_memory(fileBytes.data(), static_cast<int>(fileBytes.size()),
+                                            &width, &height, &channels) && width > 0 && height > 0;
+    return MakeHeader(png, width, height, channels, read);
 }
 
 } // namespace GameEngine::Image

@@ -1,0 +1,71 @@
+{
+  "jsonVersion": "1.5.3",
+  "externalLevels": false,
+  "defs": {
+    "tilesets": [
+      {
+        "uid": 1,
+        "identifier": "Terrain",
+        "relPath": "tiles.png",
+        "pxWid": 64,
+        "pxHei": 32,
+        "tileGridSize": 16,
+        "spacing": 0,
+        "padding": 0,
+        "customData": [ { "tileId": 0, "data": "grass" } ],
+        "enumTags": [ { "enumValueId": "Solid", "tileIds": [1, 2] } ]
+      }
+    ],
+    "layers": [
+      { "uid": 10, "identifier": "Tiles", "type": "Tiles", "gridSize": 16 },
+      {
+        "uid": 11,
+        "identifier": "Ground",
+        "type": "IntGrid",
+        "gridSize": 16,
+        "intGridValues": [
+          { "value": 1, "identifier": "dirt", "color": "#AA5500" },
+          { "value": 2, "identifier": "water", "color": "#0055AA" }
+        ]
+      }
+    ]
+  },
+  "levels": [
+    {
+      "identifier": "Level_0",
+      "pxWid": 64,
+      "pxHei": 48,
+      "layerInstances": [
+        {
+          "__identifier": "Tiles",
+          "__type": "Tiles",
+          "__cWid": 4,
+          "__cHei": 3,
+          "__gridSize": 16,
+          "__tilesetDefUid": 1,
+          "layerDefUid": 10,
+          "gridTiles": [
+            { "px": [0, 0],   "src": [0, 0],   "f": 0, "t": 0 },
+            { "px": [16, 0],  "src": [16, 0],  "f": 1, "t": 1 },
+            { "px": [0, 32],  "src": [32, 16], "f": 2, "t": 6 },
+            { "px": [48, 32], "src": [48, 16], "f": 3, "t": 7 }
+          ]
+        },
+        {
+          "__identifier": "Ground",
+          "__type": "IntGrid",
+          "__cWid": 4,
+          "__cHei": 3,
+          "__gridSize": 16,
+          "__tilesetDefUid": 1,
+          "layerDefUid": 11,
+          "intGridCsv": [1, 0, 0, 2, 0, 0, 0, 0, 1, 1, 0, 0],
+          "autoLayerTiles": [
+            { "px": [0, 0], "src": [0, 16],  "f": 0, "t": 4 },
+            { "px": [0, 0], "src": [16, 16], "f": 0, "t": 5 }
+          ]
+        }
+      ]
+    }
+  ]
+}

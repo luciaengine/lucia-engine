@@ -23,6 +23,7 @@ class WorkStealingThreadPool;
 // Forward declare ECS World to avoid heavy includes in header
 namespace GameEngine
 {
+namespace Scene { class PrefabLibrary; }
 class SceneLoader;
 class SceneLoadTracker;
 
@@ -101,6 +102,8 @@ enum class EngineLifecycleState : uint8_t
     Initializing,
     Initialized,
 };
+
+class SceneLoadTracker;
 
 /**
  * @brief Main engine class that manages all subsystems
@@ -369,15 +372,13 @@ class EngineCore
 
     /// Enable the engine-owned rendering loop and its shared system schedule. A null
     /// `renderServices` (a headless host) runs the schedule with no render work: every
-    /// system skips what needs a device. Data only a render-side system produces is then
-    /// missing: terrain height (no terrain collider), ocean buoyancy, and the skeleton
-    /// binding of scene-loaded skinned meshes.
+    /// system skips what needs a device.
     bool EnableRenderingLoop(Engine::Renderer::RenderServices* renderServices);
     void DisableRenderingLoop();
     // Non-owning access to the RenderServices instance currently driving the engine-managed rendering loop (if enabled).
     Engine::Renderer::RenderServices* GetRenderServices() const { return m_RenderServices; }
-    /// The owners of loading work report it here; a game asks it if the scene is ready to
-    /// show (docs/scripting/scene-ready-to-show.mdx). Lives as long as the engine instance.
+
+    /// Read the readiness snapshot from the start of the current frame on the main thread.
     SceneLoadTracker& GetSceneLoadTracker() { return *m_SceneLoadTracker; }
     /// The one way to replace the scene a game shows (docs/scripting/scene-loader.mdx).
     /// Lives as long as the engine instance.
@@ -443,7 +444,6 @@ class EngineCore
     // Set on entry to Initialize(), before the lifecycle is claimed, so a reader that
     // sees Initializing or Initialized also sees this. Never cleared.
     std::atomic<bool> m_EverInitialized{false};
-    // The thread of the most recent Initialize(); default id before the first one.
     std::atomic<std::thread::id> m_MainThreadId{};
     std::atomic<bool> m_StandaloneHosted{false};
 
@@ -479,9 +479,8 @@ class EngineCore
     // Subsystems
     UniquePtr<JobSystem::WorkStealingThreadPool> m_JobSystem;
     UniquePtr<AssetManager> m_AssetManager;
-    // Built after the AssetManager and destroyed before it: it listens for changed files.
-    UniquePtr<Scene::PrefabLibrary> m_PrefabLibrary;
     UniquePtr<SceneLoadTracker> m_SceneLoadTracker;
+    UniquePtr<Scene::PrefabLibrary> m_PrefabLibrary;
     UniquePtr<SceneLoader> m_SceneLoader; // reports to m_SceneLoadTracker
     // Engine-managed rendering loop state
     UniquePtr<Engine::Renderer::RenderingLoop> m_RenderingLoop;

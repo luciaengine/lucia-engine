@@ -34,6 +34,8 @@ if(WIN32)
         COMMENT "Embedding the controller mapping database"
         VERBATIM)
     list(APPEND INPUT_SOURCES ${INPUT_CONTROLLER_MAPPINGS_HEADER})
+elseif(GE_MOBILE AND NOT APPLE)
+    list(APPEND INPUT_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Source/Gamepad/GamepadBackend_Sdl.cpp)
 elseif(APPLE)
     # The framework's extended gamepad profile is the standard layout: no mapping database.
     list(APPEND INPUT_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Source/Gamepad/GamepadBackend_GameController.mm)
@@ -71,6 +73,9 @@ elseif(APPLE)
     # GameController.framework is a system framework, as the Platform module's frameworks.
     target_link_libraries(Input PRIVATE "-framework GameController" "-framework Foundation")
     set_target_properties(Input PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES)
+elseif(GE_MOBILE)
+    find_package(SDL3 CONFIG REQUIRED)
+    target_link_libraries(Input PRIVATE SDL3::SDL3)
 elseif(NOT EMSCRIPTEN)
     find_package(glfw3 CONFIG REQUIRED)
     target_link_libraries(Input PRIVATE glfw)

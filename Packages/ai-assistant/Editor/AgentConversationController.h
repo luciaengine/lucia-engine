@@ -74,7 +74,8 @@ public:
     /// it was sent with. Returns
     /// false, queuing nothing, when `text` is longer than Conversation::kMaxMessageBytes:
     /// a prompt is refused whole, never cut.
-    bool Send(std::string text, SentMarkups markups, std::string model, std::string effort);
+    bool Send(std::string text, SentMarkups markups, std::string model, std::string effort,
+              std::vector<PromptFile> files = {});
     /// Sends the prompt of the failed reply at `messageIndex` again as a new turn,
     /// answered by the same connection (and so the same local session), model and effort.
     /// The failed reply stays, marked Retried, and is retried once: does nothing for

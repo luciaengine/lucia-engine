@@ -49,18 +49,22 @@ enum class MetalShaderStage
 MetalShaderTranslation TranslateSpirvToMsl(const std::vector<uint8_t>& spirv,
                                            MetalShaderStage stage,
                                            const std::vector<const DescriptorSetLayoutDesc*>& setLayouts,
-                                           const SpecializationConstants* specialization);
+                                           const SpecializationConstants* specialization, bool tier2ArgumentBuffers = true);
 
 // The translation key: a hash of every input TranslateSpirvToMsl reads and of the translator
 // version (kMslCacheVersion). It keys the MSL disk cache and the shipped Metal libraries.
 uint64_t ComputeTranslationHash(const std::vector<uint8_t>& spirv, MetalShaderStage stage,
                                 const std::vector<const DescriptorSetLayoutDesc*>& setLayouts,
-                                const SpecializationConstants* specialization);
+                                const SpecializationConstants* specialization, bool tier2ArgumentBuffers = true);
 
 // The MSL language version of the device's compile and of an export's offline compile. One version at
 // both ends gives one result for a stage that ships in one pipeline and compiles in another.
 constexpr uint32_t kMetalLanguageMajor = 3;
+#if defined(GE_PLATFORM_IOS)
+constexpr uint32_t kMetalLanguageMinor = 0; // The mobile Player targets iOS 16.3.
+#else
 constexpr uint32_t kMetalLanguageMinor = 2;
+#endif
 // A shipped game compiles MSL with fast math; GE_METAL_PRECISE_MATH=1 turns it off for a debugging run.
 constexpr bool kShippedFastMath = true;
 

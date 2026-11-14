@@ -28,11 +28,18 @@ enum class PrepassHeads : uint8_t
     NonOccluding,
 };
 
+enum class CascadeCasters : uint8_t
+{
+    All,
+    Rigid,
+    Skinned,
+};
+
 // RenderGraph depth-only pass params. All declaration-time:
 // Cam is an upload-ring {buffer, offset} written at declaration; the
 // resolved table arrives PRE-BUILT (Cam-patched + contributor overrides
 // applied — the old path patched pass.PassResources after BeginPass).
-// Keyword narrowing stays at EXEC (old-arm parity): the world arm writes
+// Keyword narrowing runs during preparation after every declaration: the world arm writes
 // PerViewResources::WorldPassKeywords during declaration, AFTER the depth
 // arms ran in recording order, and the recorded value is reset on every
 // pipeline build — narrowing at declaration would miss Instanced for one
@@ -56,6 +63,7 @@ struct DepthOnlyPassParamsRG
     uint32_t RasterizationSamples = 0;
     DepthPassType PassType = DepthPassType::Prepass;
     uint32_t CascadeIndex = 0;
+    CascadeCasters Casters = CascadeCasters::All;
     // Culling generation this pass consumes ranges from. Phase A is the
     // frame's first generation (the only one for frustum-only views); the
     // HZB recover prepass (design §5-A4) consumes phase B. Selects the

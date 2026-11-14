@@ -62,11 +62,17 @@ using GameEngine::CBTTerrainECS::TerrainPreset;
 
 namespace
 {
-// Planar base depth 1, spherical 5; the decode-precision ceiling is baseDepth + the cap of
-// the domain's gVertex store on the wide arm: kMaxDecodeSubdiv (40, the fp32 world store)
-// for planar, DeepDecode::kDeepDecodeSubdiv (50, the (sector, local) df64 store) for the sphere.
-constexpr uint32_t kPlanarCeiling = 1u + GameEngine::CBTTerrain::kMaxDecodeSubdiv;          // 41
-constexpr uint32_t kSphereCeiling = 5u + GameEngine::CBTTerrain::DeepDecode::kDeepDecodeSubdiv; // 55
+// Planar base depth 1, spherical 5; the decode-precision ceiling is baseDepth + the cap the
+// ACTIVE gVertex representation carries: kMaxDecodeSubdiv (40 — the fp32-world-store cap,
+// raised from the old fp32-exact rung of 23 in slice 1) with the flag off, and
+// DeepDecode::kDeepDecodeSubdiv (50 — the (sector, local) df64 store, decode-precision arc
+// S2b) for a SPHERICAL terrain with the flag on. Every deepDecode=false expectation below is
+// pinned UNCHANGED from before the S2b lift (the #617 rule: the flag off must be bywise the
+// shipped behavior).
+constexpr uint32_t kPlanarCeiling = 1u + GameEngine::CBTTerrain::kMaxDecodeSubdiv;  // 41
+constexpr uint32_t kSphereCeiling = 5u + GameEngine::CBTTerrain::kMaxDecodeSubdiv;  // 45
+constexpr uint32_t kSphereDeepCeiling =
+    5u + GameEngine::CBTTerrain::DeepDecode::kDeepDecodeSubdiv; // 55
 } // namespace
 
 // ---- Planar: derived cap tracks the provisioned heightfield lattice ----
@@ -75,30 +81,30 @@ TEST(TerrainMaxDepth, PlanarTracksSampleResolution)
 {
     // subdiv = round(2*log2(lattice intervals)); depth = 1 + subdiv. These sizes provision
     // exactly size*spm intervals.
-    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Planar, 256.0f, 256.0f, 2.0f, 0.0f, false), 19u);  // 2*log2(512)=18
-    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Planar, 512.0f, 512.0f, 2.0f, 0.0f, false), 21u);  // 2*log2(1024)=20
-    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Planar, 1024.0f, 1024.0f, 2.0f, 0.0f, false), 23u); // 2*log2(2048)=22
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Planar, 256.0f, 256.0f, 2.0f, 0.0f, false, false), 19u);  // 2*log2(512)=18
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Planar, 512.0f, 512.0f, 2.0f, 0.0f, false, false), 21u);  // 2*log2(1024)=20
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Planar, 1024.0f, 1024.0f, 2.0f, 0.0f, false, false), 23u); // 2*log2(2048)=22
 }
 
 TEST(TerrainMaxDepth, PlanarClampsToDecodeCeiling)
 {
     // subdiv = round(2*log2(intervals)); it pins at kMaxDecodeSubdiv (40) once intervals >= 2^20.
     // 2^20 @ 1spm -> 2*log2(2^20)=40 subdiv -> depth 41 (the ceiling exactly).
-    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Planar, 1048576.0f, 1048576.0f, 1.0f, 0.0f, false), kPlanarCeiling);
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Planar, 1048576.0f, 1048576.0f, 1.0f, 0.0f, false, false), kPlanarCeiling);
     // 2^22 @ 2spm -> deeper than the cap, still pinned at the ceiling.
-    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Planar, 4194304.0f, 4194304.0f, 2.0f, 0.0f, false), kPlanarCeiling);
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Planar, 4194304.0f, 4194304.0f, 2.0f, 0.0f, false, false), kPlanarCeiling);
     // A 4 km @ 1 spm terrain (2*log2(4096)=24) now derives BELOW the ceiling — the old cap (23)
     // clamped it, the raised cap lets the 1 m sample-spacing target through at depth 25.
-    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Planar, 4096.0f, 4096.0f, 1.0f, 0.0f, false), 25u);
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Planar, 4096.0f, 4096.0f, 1.0f, 0.0f, false, false), 25u);
 }
 
 TEST(TerrainMaxDepth, PlanarNeverBelowBaseDepth)
 {
     // A zero-size terrain provisions no heightfield and floors at the base depth, never below.
-    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Planar, 0.0f, 0.0f, 0.0f, 0.0f, false), 1u);
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Planar, 0.0f, 0.0f, 0.0f, 0.0f, false, false), 1u);
     // The smallest heightfield provisioned is 65 x 65 samples, so even a 1 m terrain at 1 spm
     // holds 64 intervals: 2*log2(64) = 12, depth 13.
-    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Planar, 1.0f, 1.0f, 1.0f, 0.0f, false), 13u);
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Planar, 1.0f, 1.0f, 1.0f, 0.0f, false, false), 13u);
 }
 
 // ---- Spherical: derived cap scales with radius, pins at the ceiling for big planets ----
@@ -106,26 +112,52 @@ TEST(TerrainMaxDepth, PlanarNeverBelowBaseDepth)
 TEST(TerrainMaxDepth, SphericalScalesWithRadius)
 {
     // subdiv = round(2*log2(pi*R/2 / 0.25)); depth = 5 + subdiv (target 0.25 m facet, #603).
-    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 250.0f, false), 26u);
-    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 500.0f, false), 28u);
-    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 1000.0f, false), 30u);
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 250.0f, false, false), 26u);
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 500.0f, false, false), 28u);
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 1000.0f, false, false), 30u);
 }
 
 TEST(TerrainMaxDepth, SphericalClampsToDecodeCeiling)
 {
-    // subdiv = round(2*log2(pi*R/2 / 0.25)); it pins at kDeepDecodeSubdiv (50). R = 50 km derives
-    // depth 42 and R = 700 km depth 49, both below the ceiling. Earth wants 51 and clamps at 50:
-    // depth 55, facet floor (pi*R/2)*2^-25 = 0.298 m.
-    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 50000.0f, false), 42u);
-    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 700000.0f, false), 49u);
-    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 6371000.0f, false), kSphereCeiling); // Earth
+    // subdiv = round(2*log2(pi*R/2 / 0.25)); it pins at kMaxDecodeSubdiv (40) once pi*R/2 >= 0.25*2^20,
+    // i.e. R >= ~167 km. Mid-size planets (2-50 km) derive BELOW the ceiling — the 0.25 m facet
+    // target (#603) lands R=50 km at depth 42.
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 50000.0f, false, false), 42u);
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 700000.0f, false, false), kSphereCeiling);
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 6371000.0f, false, false), kSphereCeiling); // Earth
 }
 
 TEST(TerrainMaxDepth, SphericalDeeperThanPlanarCeiling)
 {
-    // The spherical path must be allowed past the planar ceiling (41): an Earth-scale planet
-    // reaches heap depth 55.
-    EXPECT_GT(DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 6371000.0f, false), kPlanarCeiling);
+    // The spherical path must be allowed past the planar ceiling (41): the sphere base depth (5)
+    // is higher, so an Earth-scale planet reaches heap depth 45, four levels past the planar cap.
+    EXPECT_GT(DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 6371000.0f, false, false), kPlanarCeiling);
+}
+
+// ---- Deep-decode cap lift (decode-precision arc S2b): flag ON -> the SPHERICAL ceiling
+// lifts 40 -> 50, because the (sector, local) df64 gVertex store carries those depths
+// (measured: decode error <= 2e-5 m at Earth vs the fp32 world store's ~0.25 m). ----
+
+TEST(TerrainMaxDepth, DeepDecodeLiftsSphericalCeilingOnly)
+{
+    // Earth: the unclamped 0.25 m facet derivation wants round(2*log2(pi*6.371e6/2 / 0.25))
+    // = 51, so it clamps at the deep cap 50 -> depth 55. Facet floor (pi*R/2)*2^-25 =
+    // 0.298 m — under the 0.5 m walking bar (the arc's product moment: was 9.54 m at 45).
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 6371000.0f, true, false),
+              kSphereDeepCeiling);
+    // 700 km: wants round(2*log2(pi*3.5e5 / 0.25)) = 44 — ceiling-clamped to 45 under the
+    // fp32 store (44 > 40), derives FREE at depth 49 under the deep cap (44 < 50).
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 700000.0f, true, false), 49u);
+    // 50 km: derives 37 < 40 in BOTH modes -> depth 42 either way. The no-regression guard:
+    // scenes the fp32 cap already served must not re-tessellate when the flag flips.
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 50000.0f, true, false), 42u);
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 50000.0f, false, false), 42u);
+    // Planar IGNORES the flag: the deep (sector, local) store is spherical-only (planar
+    // VertexEval never takes the df64 path), so its fp32-world cap must hold at 41.
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Planar, 1048576.0f, 1048576.0f, 1.0f, 0.0f, true, false),
+              kPlanarCeiling);
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Planar, 4194304.0f, 4194304.0f, 2.0f, 0.0f, true, false),
+              kPlanarCeiling);
 }
 
 // ---- Narrow-heap arm: a device without 64-bit shader integers runs the u32-heap kernels,
@@ -136,27 +168,47 @@ TEST(TerrainMaxDepth, NarrowHeapCeilingIsTheHeapIdRangeInEveryDomain)
 {
     constexpr uint32_t kNarrow = GameEngine::CBTTerrain::kHeap32DecodeSubdiv;
 
-    // The domain is moot on the narrow arm: the deep store is int64 by construction, so it
-    // does not exist there.
-    EXPECT_EQ(SubdivCapFor(TerrainDomain::Planar, true), kNarrow);
-    EXPECT_EQ(SubdivCapFor(TerrainDomain::Spherical, true), kNarrow);
+    // Domain and the deep-decode flag are both moot on the narrow arm: the deep store is
+    // int64 by construction, so it does not exist there.
+    EXPECT_EQ(SubdivCapFor(TerrainDomain::Planar, false, true), kNarrow);
+    EXPECT_EQ(SubdivCapFor(TerrainDomain::Spherical, false, true), kNarrow);
+    EXPECT_EQ(SubdivCapFor(TerrainDomain::Spherical, true, true), kNarrow);
 
-    // The wide arm is what the narrow one gives up: the planar fp32 store and the sphere's deep store.
-    EXPECT_EQ(SubdivCapFor(TerrainDomain::Planar, false), GameEngine::CBTTerrain::kMaxDecodeSubdiv);
-    EXPECT_EQ(SubdivCapFor(TerrainDomain::Spherical, false),
+    // The wide arm is what the narrow one gives up, and it must stay where it was.
+    EXPECT_EQ(SubdivCapFor(TerrainDomain::Planar, false, false),
+              GameEngine::CBTTerrain::kMaxDecodeSubdiv);
+    EXPECT_EQ(SubdivCapFor(TerrainDomain::Spherical, true, false),
               GameEngine::CBTTerrain::DeepDecode::kDeepDecodeSubdiv);
     EXPECT_LT(kNarrow, GameEngine::CBTTerrain::kMaxDecodeSubdiv);
 
     // And it reaches the derived cap: a planet big enough to want every subdivision the wide
     // arm allows lands on the narrow ceiling instead.
-    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 6371000.0f, true),
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 6371000.0f, false, true),
               5u + kNarrow);
-    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Planar, 1048576.0f, 1048576.0f, 1.0f, 0.0f, true),
+    EXPECT_EQ(DeriveTerrainMaxDepth(TerrainDomain::Planar, 1048576.0f, 1048576.0f, 1.0f, 0.0f, false, true),
               1u + kNarrow);
 }
 
-// ---- The cap->store oracle (can-fail): the cap each arm hands the sphere must be a depth
-// whose STORAGE REPRESENTATION carries the facets — measured here, not assumed. ----
+TEST(TerrainMaxDepth, DeepDecodeOverrideClampFollowsRepresentation)
+{
+    // The MaxDepthOverride escape hatch clamps to the representation ceiling too: the deep
+    // flag lifts the spherical clamp to 55 and leaves planar at 41; flag off is the
+    // unchanged 45/41.
+    Terrain sphere{};
+    sphere.Domain = TerrainDomain::Spherical;
+    sphere.MaxDepthOverride = 99u;
+    EXPECT_EQ(ResolveTerrainMaxDepth(sphere, {}, true, false), kSphereDeepCeiling);
+    EXPECT_EQ(ResolveTerrainMaxDepth(sphere, {}, false, false), kSphereCeiling);
+
+    Terrain planar{};
+    planar.Domain = TerrainDomain::Planar;
+    planar.MaxDepthOverride = 99u;
+    EXPECT_EQ(ResolveTerrainMaxDepth(planar, {}, true, false), kPlanarCeiling);
+    EXPECT_EQ(ResolveTerrainMaxDepth(planar, {}, false, false), kPlanarCeiling);
+}
+
+// ---- The flag->cap coupling oracle (S2b, can-fail): the cap each mode hands out must be a
+// depth whose STORAGE REPRESENTATION carries the facets — measured here, not assumed. ----
 
 namespace
 {
@@ -183,30 +235,33 @@ constexpr uint64_t kSamplePaths[3] = {0xAAAAAAAAAAAAAAAAull, 0x5555555555555555u
 
 TEST(TerrainMaxDepth, DecodeCapMatchesWhatTheRepresentationCanCarry)
 {
-    // At the cap each arm derives for the sphere at Earth radius, that arm's own store keeps its
-    // error under 25% of the facet short edge: (sector, local) on the wide arm, fp32 world on the
-    // narrow arm. Handing the narrow arm the deep cap 50 makes the fp32 error 2.7x the facet: red.
+    // The invariant that makes the flag->cap coupling load-bearing: at the cap either mode
+    // derives at Earth radius, the mode's OWN storage representation must keep its decode/
+    // store error under 25% of the facet short edge (the S1 degeneracy criterion; err/short
+    // was 8.6% at the fp32 cap 40 and 275% at 50 — design §1's measured table). CAN-FAIL:
+    // force the flag-off spherical cap to 50 (e.g. by lifting kMaxDecodeSubdiv or breaking
+    // SubdivCapFor's coupling) and the fp32 leg below measures ~2.7x the facet -> red.
     namespace DD = GameEngine::CBTTerrain::DeepDecode;
     using GameEngine::CBTTerrain::BuildSphereRoots;
     using GameEngine::CBTTerrain::kSphereBaseDepth;
     constexpr double kEarthR = 6.371e6;
     const auto roots = BuildSphereRoots();
 
-    const uint32_t narrowCap =
-        DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 6371000.0f, true) -
+    const uint32_t offCap =
+        DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 6371000.0f, false, false) -
         kSphereBaseDepth;
-    const uint32_t wideCap =
-        DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 6371000.0f, false) -
+    const uint32_t onCap =
+        DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 6371000.0f, true, false) -
         kSphereBaseDepth;
-    ASSERT_EQ(narrowCap, GameEngine::CBTTerrain::kHeap32DecodeSubdiv);
-    ASSERT_EQ(wideCap, DD::kDeepDecodeSubdiv);
+    ASSERT_EQ(offCap, GameEngine::CBTTerrain::kMaxDecodeSubdiv);
+    ASSERT_EQ(onCap, DD::kDeepDecodeSubdiv);
     // The int64 LEB walk is exact only to numSubdiv ~52 (scale = 2^52 < 2^63) — no cap may
-    // ever exceed it.
-    ASSERT_LE(wideCap, 52u);
+    // ever exceed it, in any mode.
+    ASSERT_LE(onCap, 52u);
 
     for (const bool deep : {false, true})
     {
-        const uint32_t cap = deep ? wideCap : narrowCap;
+        const uint32_t cap = deep ? onCap : offCap;
         double maxErr = 0.0;
         double minShort = 1e30;
         for (uint32_t root : kSampleRoots)
@@ -222,8 +277,8 @@ TEST(TerrainMaxDepth, DecodeCapMatchesWhatTheRepresentationCanCarry)
                     DD::DecodeExact(num, kEarthR, 0.0, c[corner]);
                     if (!deep)
                     {
-                        // fp32 world store: one float cast per component (what the narrow
-                        // arm's Kernel_VertexEval persists into gVertex).
+                        // fp32 world store: one float cast per component (what legacy
+                        // Kernel_VertexEval persists into gVertex).
                         const double f[3] = {double(float(c[corner][0])),
                                              double(float(c[corner][1])),
                                              double(float(c[corner][2]))};
@@ -259,7 +314,7 @@ TEST(TerrainMaxDepth, DecodeCapMatchesWhatTheRepresentationCanCarry)
                     deep ? 1 : 0, cap, minShort, maxErr, 100.0 * ratio);
         EXPECT_LT(ratio, 0.25) << (deep ? "deep (sector, local) store" : "fp32 world store")
                                << " cannot carry the facets at its own derived cap ("
-                               << cap << ")";
+                               << cap << ") — the flag->cap coupling is broken";
     }
 }
 
@@ -271,7 +326,7 @@ TEST(TerrainMaxDepth, OverrideWinsWhenSet)
     t.Domain = TerrainDomain::Spherical;
     t.PlanetRadius = 50000.0f; // would auto-derive to 42
     t.MaxDepthOverride = 12u;
-    EXPECT_EQ(ResolveTerrainMaxDepth(t, {}, false), 12u);
+    EXPECT_EQ(ResolveTerrainMaxDepth(t, {}, false, false), 12u);
 }
 
 TEST(TerrainMaxDepth, OverrideClampsToDomainCeilingAndFloor)
@@ -279,14 +334,14 @@ TEST(TerrainMaxDepth, OverrideClampsToDomainCeilingAndFloor)
     Terrain sphere{};
     sphere.Domain = TerrainDomain::Spherical;
     sphere.MaxDepthOverride = 99u;
-    EXPECT_EQ(ResolveTerrainMaxDepth(sphere, {}, false), kSphereCeiling); // clamp high
+    EXPECT_EQ(ResolveTerrainMaxDepth(sphere, {}, false, false), kSphereCeiling); // clamp high
     sphere.MaxDepthOverride = 2u;
-    EXPECT_EQ(ResolveTerrainMaxDepth(sphere, {}, false), 5u);             // clamp to sphere base depth
+    EXPECT_EQ(ResolveTerrainMaxDepth(sphere, {}, false, false), 5u);             // clamp to sphere base depth
 
     Terrain planar{};
     planar.Domain = TerrainDomain::Planar;
     planar.MaxDepthOverride = 99u;
-    EXPECT_EQ(ResolveTerrainMaxDepth(planar, {}, false), kPlanarCeiling);
+    EXPECT_EQ(ResolveTerrainMaxDepth(planar, {}, false, false), kPlanarCeiling);
 }
 
 TEST(TerrainMaxDepth, ZeroOverrideFallsBackToAuto)
@@ -297,8 +352,8 @@ TEST(TerrainMaxDepth, ZeroOverrideFallsBackToAuto)
     t.SizeZ = 512.0f;
     t.SamplesPerMeter = 2.0f;
     t.MaxDepthOverride = 0u; // default: auto
-    EXPECT_EQ(ResolveTerrainMaxDepth(t, {}, false),
-              DeriveTerrainMaxDepth(TerrainDomain::Planar, 512.0f, 512.0f, 2.0f, 0.0f, false));
+    EXPECT_EQ(ResolveTerrainMaxDepth(t, {}, false, false),
+              DeriveTerrainMaxDepth(TerrainDomain::Planar, 512.0f, 512.0f, 2.0f, 0.0f, false, false));
 }
 
 TEST(TerrainMaxDepth, PlanarAutoUsesLongerAxis)
@@ -310,10 +365,10 @@ TEST(TerrainMaxDepth, PlanarAutoUsesLongerAxis)
     t.SizeX = 256.0f;
     t.SizeZ = 1024.0f;
     t.SamplesPerMeter = 2.0f;
-    EXPECT_EQ(ResolveTerrainMaxDepth(t, {}, false),
-              DeriveTerrainMaxDepth(TerrainDomain::Planar, 1024.0f, 1024.0f, 2.0f, 0.0f, false));
-    EXPECT_NE(ResolveTerrainMaxDepth(t, {}, false),
-              DeriveTerrainMaxDepth(TerrainDomain::Planar, 256.0f, 256.0f, 2.0f, 0.0f, false));
+    EXPECT_EQ(ResolveTerrainMaxDepth(t, {}, false, false),
+              DeriveTerrainMaxDepth(TerrainDomain::Planar, 1024.0f, 1024.0f, 2.0f, 0.0f, false, false));
+    EXPECT_NE(ResolveTerrainMaxDepth(t, {}, false, false),
+              DeriveTerrainMaxDepth(TerrainDomain::Planar, 256.0f, 256.0f, 2.0f, 0.0f, false, false));
 }
 
 namespace
@@ -343,7 +398,7 @@ TEST(TerrainMaxDepth, PlanarCapReachesTheProvisionedLattice)
     // (2 x log2(1024) = 20 subdivisions, depth 21); deriving from the authored density
     // (2 x log2(576) = 18.3, depth 19) stops at 1.125 m legs, every other sample.
     const Terrain lakeside = MakePlanar(576.0f, 576.0f, 1.0f);
-    EXPECT_EQ(ResolveTerrainMaxDepth(lakeside, {}, false), 21u);
+    EXPECT_EQ(ResolveTerrainMaxDepth(lakeside, {}, false, false), 21u);
 
     // Every one-tile terrain: the cap's leg equals the lattice spacing the sizing plan
     // provisions, whatever the authored size and density.
@@ -374,7 +429,7 @@ TEST(TerrainMaxDepth, PlanarTiledCapFollowsTheTileLattice)
         GameEngine::TerrainECS::DeriveTerrainSizingPlan(3000.0f, 400.0f, 1.0f);
     ASSERT_GT(plan.TotalTiles, 1u);
     ASSERT_FLOAT_EQ(plan.MetresPerTexelNear, 0.78125f);
-    EXPECT_EQ(ResolveTerrainMaxDepth(MakePlanar(3000.0f, 400.0f, 1.0f), {}, false), 25u);
+    EXPECT_EQ(ResolveTerrainMaxDepth(MakePlanar(3000.0f, 400.0f, 1.0f), {}, false, false), 25u);
 }
 
 TEST(TerrainMaxDepth, PlanarImportedHeightmapCapsAtTheImportsSpacing)
@@ -385,32 +440,32 @@ TEST(TerrainMaxDepth, PlanarImportedHeightmapCapsAtTheImportsSpacing)
     // 19 subdivisions, depth 20 (0.795 m legs, the first level at or below 1 m; depth 19's
     // 1.125 m legs would skip source samples).
     const Terrain lakeside = MakePlanar(576.0f, 576.0f, 1.0f);
-    EXPECT_EQ(ResolveTerrainMaxDepth(lakeside, ImportedHeightSource{577u, 577u}, false), 20u);
+    EXPECT_EQ(ResolveTerrainMaxDepth(lakeside, ImportedHeightSource{577u, 577u}, false, false), 20u);
 
     // Heights from modifiers, sculpting, noise or a flat base have the lattice as their source.
-    EXPECT_EQ(ResolveTerrainMaxDepth(lakeside, {}, false), 21u);
+    EXPECT_EQ(ResolveTerrainMaxDepth(lakeside, {}, false, false), 21u);
 
     // An import finer than the lattice changes nothing: the lattice already caps it.
-    EXPECT_EQ(ResolveTerrainMaxDepth(lakeside, ImportedHeightSource{4097u, 4097u}, false), 21u);
+    EXPECT_EQ(ResolveTerrainMaxDepth(lakeside, ImportedHeightSource{4097u, 4097u}, false, false), 21u);
 
     // A rectangular terrain reads the import along its longer axis, as the root legs do.
     Terrain wide = MakePlanar(576.0f, 288.0f, 1.0f);
-    EXPECT_EQ(ResolveTerrainMaxDepth(wide, ImportedHeightSource{577u, 2049u}, false), 20u);
+    EXPECT_EQ(ResolveTerrainMaxDepth(wide, ImportedHeightSource{577u, 2049u}, false, false), 20u);
 
     // An import whose interval count is a power of two caps exactly at its level: 513 samples on
     // 512 m at 2 samples per metre (lattice 1024 intervals, cap 21) gives 2 x log2(512) = 18,
     // depth 19.
     EXPECT_EQ(ResolveTerrainMaxDepth(MakePlanar(512.0f, 512.0f, 2.0f), ImportedHeightSource{513u, 513u},
-                                     false),
+                                     false, false),
               19u);
 
     // Tiled terrains keep their lattice cap, with or without an import (3000 x 400 m at 1 spm, the
     // 0.78 m tile lattice): their tiles read the import, but their CBT spans the tile grid, which
     // can overhang the footprint the import is measured on
     // (PlanarTiledCapKeepsEveryImportSampleOnTheOverhangingGrid).
-    EXPECT_EQ(ResolveTerrainMaxDepth(MakePlanar(3000.0f, 400.0f, 1.0f), {}, false), 25u);
+    EXPECT_EQ(ResolveTerrainMaxDepth(MakePlanar(3000.0f, 400.0f, 1.0f), {}, false, false), 25u);
     EXPECT_EQ(ResolveTerrainMaxDepth(MakePlanar(3000.0f, 400.0f, 1.0f), ImportedHeightSource{577u, 577u},
-                                     false),
+                                     false, false),
               25u);
 }
 
@@ -430,7 +485,7 @@ TEST(TerrainMaxDepth, PlanarTiledCapKeepsEveryImportSampleOnTheOverhangingGrid)
 
     const float importSpacing = 576.0f / 576.0f;
     const uint32_t cap = ResolveTerrainMaxDepth(MakePlanar(576.0f, 576.0f, 2.0f),
-                                                ImportedHeightSource{577u, 577u}, false);
+                                                ImportedHeightSource{577u, 577u}, false, false);
     EXPECT_LE(PlanarCapLegMetres(gridMetres, cap), importSpacing * (1.0f + 1e-4f))
         << "cap " << cap << " skips import samples on the tile grid";
     EXPECT_EQ(cap, 21u);
@@ -447,7 +502,7 @@ TEST(TerrainPresets, SmallPlanarIsDefaultScale)
     EXPECT_FLOAT_EQ(t.SamplesPerMeter, 2.0f);
     EXPECT_EQ(t.MaxDepthOverride, 0u);     // auto
     EXPECT_EQ(t.TerrainDataHandle, 0u);    // not provisioned yet
-    EXPECT_EQ(ResolveTerrainMaxDepth(t, {}, false), 21u);
+    EXPECT_EQ(ResolveTerrainMaxDepth(t, {}, false, false), 21u);
 }
 
 TEST(TerrainPresets, EveryPresetStartsAtTheDefaultTarget)
@@ -474,7 +529,7 @@ TEST(TerrainPresets, LargePlanarTilesAndHoldsTexelDensity)
     EXPECT_FLOAT_EQ(t.MaterialTiling, 80.0f); // ~10 per 512 m
     // 4096 @ 1spm -> 2*log2(4096)=24 subdiv -> depth 25 (below the raised ceiling; the old 23 cap
     // pinned it at 24).
-    EXPECT_EQ(ResolveTerrainMaxDepth(t, {}, false), 25u);
+    EXPECT_EQ(ResolveTerrainMaxDepth(t, {}, false, false), 25u);
 }
 
 TEST(TerrainPresets, Planet5kmIsSphericalWithReliefAndAutoDepth)
@@ -484,7 +539,7 @@ TEST(TerrainPresets, Planet5kmIsSphericalWithReliefAndAutoDepth)
     EXPECT_FLOAT_EQ(t.PlanetRadius, 5000.0f);
     EXPECT_EQ(t.MaxDepthOverride, 0u);
     // R=5 km -> round(2*log2(pi*2500/0.25))=30 subdiv -> depth 35 (0.25 m facet target, #603).
-    EXPECT_EQ(ResolveTerrainMaxDepth(t, {}, false), 35u);
+    EXPECT_EQ(ResolveTerrainMaxDepth(t, {}, false, false), 35u);
 
     // The base relief is a companion component now (MakePlanetReliefPreset), not a
     // Terrain field — same authored values, just relocated.
@@ -499,7 +554,7 @@ TEST(TerrainPresets, Planet50kmIsSphericalWithScaledRelief)
     EXPECT_EQ(t.Domain, TerrainDomain::Spherical);
     EXPECT_FLOAT_EQ(t.PlanetRadius, 50000.0f);
     // R=50 km -> round(2*log2(pi*25000/0.25))=37 subdiv -> depth 42 (0.25 m facet target, #603).
-    EXPECT_EQ(ResolveTerrainMaxDepth(t, {}, false), 42u);
+    EXPECT_EQ(ResolveTerrainMaxDepth(t, {}, false, false), 42u);
 
     const TerrainPlanetRelief r = MakePlanetReliefPreset(TerrainPreset::Planet50km);
     EXPECT_FLOAT_EQ(r.Amplitude, 1250.0f); // ~= R/40
@@ -656,7 +711,7 @@ TEST(TerrainDebugView, DefaultsOffAndValuesAreLockstep)
     EXPECT_EQ(static_cast<uint32_t>(TerrainDebugView::AtlasSlots), 2u);
 }
 
-TEST(TerrainDebugView, SurfaceParamsDefaultsTakeNoOptionalBranch)
+TEST(TerrainDebugView, SurfaceParamsLayoutLockstep)
 {
     // A terrain that sets nothing takes no debug or atlas branch in cbt_surface.glsl, because
     // every optional CBTSurfaceParams field defaults to 0. The struct size and field offsets
@@ -716,7 +771,7 @@ void ApplyTerrainProperty(GameEngine::ECS::World& world, GameEngine::ECS::Entity
 {
     const auto* schema = FindTerrainSchema();
     ASSERT_NE(schema, nullptr);
-    GameEngine::Scene::SceneReadContext loadCtx{};
+    GameEngine::Scene::SceneLoadContext loadCtx{};
     std::string err;
     ASSERT_TRUE(schema->ApplyProperty(world, entity, loadCtx, property, value, &err)) << err;
 }
@@ -917,7 +972,7 @@ bool TryLoadComponentBlock(World& world, GameEngine::ECS::EntityHandle entity,
     for (std::size_t i = 0; i < props.size(); ++i)
         lowered.emplace_back(keys[i], props[i].second);
 
-    GameEngine::Scene::SceneReadContext ctx{};
+    GameEngine::Scene::SceneLoadContext ctx{};
     std::size_t failed = 0;
     return schema->ApplyProperties(world, entity, ctx, lowered, outError, &failed);
 }
@@ -940,7 +995,7 @@ std::vector<std::pair<std::string, std::string>> SerializedProps(
     GameEngine::ECS::EntityHandle entity)
 {
     std::vector<std::string> lines;
-    GameEngine::Scene::SceneWriteContext saveCtx{};
+    GameEngine::Scene::SceneSaveContext saveCtx{};
     schema.Serialize(world, entity, saveCtx, lines);
 
     std::vector<std::pair<std::string, std::string>> props;
@@ -1138,7 +1193,7 @@ TEST(TerrainModifierMigration, TwoModifiersOnOneEntityStackInLoadOrder)
 // two independent constructions they were free to disagree, and did: a bare
 // block produced SplinePath while an authored one produced SplineArea, so the
 // same closed spline meant a swept band in one scene and a filled area in the
-// next. AddDefault, the IPC's create_component and prefab overrides all
+// next. AddDefault, the IPC's create_component and blueprint overrides all
 // arrive here.
 TEST(TerrainModifierMigration, BareSplineModifierBlockLoadsTheSameRegionAsADefaultOne)
 {
@@ -1157,7 +1212,7 @@ TEST(TerrainModifierMigration, BareSplineModifierBlockLoadsTheSameRegionAsADefau
 
     World spelled;
     const auto a = spelled.CreateEntity();
-    GameEngine::Scene::SceneReadContext loadCtx{};
+    GameEngine::Scene::SceneLoadContext loadCtx{};
     std::string err;
     std::size_t failed = 0;
     ASSERT_TRUE(schema->ApplyProperties(spelled, a, loadCtx, pairs, &err, &failed)) << err;
@@ -1229,11 +1284,11 @@ TEST(TerrainModifierMigration, VolumeAndEffectsRoundTripThroughTheirOwnSchemas)
         const auto* schema = GameEngine::Scene::SceneSchemaRegistry::Find(name);
         ASSERT_NE(schema, nullptr) << name;
         std::vector<std::string> lines;
-        GameEngine::Scene::SceneWriteContext saveCtx{};
+        GameEngine::Scene::SceneSaveContext saveCtx{};
         schema->Serialize(src, a, saveCtx, lines);
         ASSERT_FALSE(lines.empty()) << name;
 
-        GameEngine::Scene::SceneReadContext loadCtx{};
+        GameEngine::Scene::SceneLoadContext loadCtx{};
         for (const std::string& line : lines)
         {
             const std::size_t dot = line.find('.');
@@ -1761,7 +1816,7 @@ bool TryLoadRuleProps(World& world, GameEngine::ECS::EntityHandle entity,
     pairs.reserve(props.size());
     for (const auto& kv : props)
         pairs.emplace_back(kv.first, kv.second);
-    GameEngine::Scene::SceneReadContext ctx{};
+    GameEngine::Scene::SceneLoadContext ctx{};
     std::size_t failed = 0;
     return schema->ApplyProperties(world, entity, ctx, pairs, outError, &failed);
 }
@@ -1925,9 +1980,7 @@ TEST(TerrainSurfaceRulesSchema, ARowIndexTooLargeForUint32IsRejectedRatherThanWr
     // Nothing was written to the row the wrap would have selected.
     const auto* loaded = w.GetComponent<TerrainSurfaceRulesEffect>(e);
     if (loaded)
-    {
         EXPECT_EQ(loaded->Rules[0].MaterialSlot, 0u) << "the wrapped index reached row 0";
-    }
 
     World w2;
     const auto e2 = w2.CreateEntity();
@@ -2004,11 +2057,11 @@ void RoundTripBlock(const char* name, World& src, GameEngine::ECS::EntityHandle 
     const auto* schema = GameEngine::Scene::SceneSchemaRegistry::Find(name);
     ASSERT_NE(schema, nullptr) << name;
     std::vector<std::string> lines;
-    GameEngine::Scene::SceneWriteContext saveCtx{};
+    GameEngine::Scene::SceneSaveContext saveCtx{};
     schema->Serialize(src, a, saveCtx, lines);
     ASSERT_FALSE(lines.empty()) << name;
 
-    GameEngine::Scene::SceneReadContext loadCtx{};
+    GameEngine::Scene::SceneLoadContext loadCtx{};
     for (const std::string& line : lines)
     {
         const std::size_t dot = line.find('.');
@@ -2033,7 +2086,7 @@ bool SchemaAcceptsAverage(const char* name)
         return false;
     World w;
     const auto e = w.CreateEntity();
-    GameEngine::Scene::SceneReadContext ctx{};
+    GameEngine::Scene::SceneLoadContext ctx{};
     std::string err;
     return schema->ApplyProperty(w, e, ctx, "blend", "8", &err);
 }
@@ -2137,7 +2190,7 @@ TEST(TerrainEffectPoolSchema, AnOverLongPoolGroupIsRefusedRatherThanTruncated)
         ASSERT_NE(schema, nullptr) << name;
         World w;
         const auto e = w.CreateEntity();
-        GameEngine::Scene::SceneReadContext ctx{};
+        GameEngine::Scene::SceneLoadContext ctx{};
         std::string err;
         EXPECT_FALSE(schema->ApplyProperty(w, e, ctx, "poolgroup",
                                            "\"" + tooLong + "\"", &err))

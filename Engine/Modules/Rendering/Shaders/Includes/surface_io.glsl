@@ -10,6 +10,8 @@
 #ifndef GE_SURFACE_IO_GLSL
 #define GE_SURFACE_IO_GLSL
 
+#include "forward_shader_specialization.glsl"
+
 // Emission authoring anchor: a surface emitting this many nits maps to scene-linear 1.0
 // (BT.2408 reference white). Fixed so a material's authored nits read the same on SDR and
 // HDR; the terminal tonemap/encode places scene-linear 1.0 at the actual display paperwhite.
@@ -116,6 +118,7 @@ struct SurfaceOutput
     vec3 coatNormalWS; // clear-coat shading normal; == normalWS unless a coat normal map perturbs it (GE_COAT_NORMAL_ENABLED)
     vec3 emissive;
     float opacity;
+    float planarReflectionMask; // Material coverage of a planar reflection, independent of opacity.
 
     // Extended (used by specific lighting models)
     float ao;
@@ -242,6 +245,7 @@ SurfaceOutput DefaultSurfaceOutput()
     o.coatNormalWS = vec3(0.0, 1.0, 0.0); // mirrors normalWS; the coat lobe reads it only under GE_COAT_NORMAL_ENABLED
     o.emissive = vec3(0.0);
     o.opacity = 1.0;
+    o.planarReflectionMask = 1.0;
     o.ao = 1.0;
     o.bentNormalWS = vec3(0.0, 1.0, 0.0);
     o.clearCoat = 0.0;
@@ -403,7 +407,7 @@ void GE_ComputeHexBlendUV(vec2 uv, vec4 st, vec4 st2, float hexEnabled, float he
                           out vec2 uvA, out vec2 uvB, out float blend)
 {
     vec2 transformed = GE_TransformUV(uv, st, st2);
-    if (hexEnabled < 0.5)
+    if (!GE_FORWARD_HEX_TILING || hexEnabled < 0.5)
     {
         uvA = transformed;
         uvB = transformed;

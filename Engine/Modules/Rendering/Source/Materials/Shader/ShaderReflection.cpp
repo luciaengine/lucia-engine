@@ -94,8 +94,10 @@ static void FillBlockLayout(const SpvReflectBlockVariable& src, BlockLayout& dst
     }
 }
 
-// SPIR-V storage-image texel format to engine TextureFormat, for the formats the engine's shaders declare.
-// Returns 0 for an image without a declared format. ReflectSpirv refuses a declared format that is not here.
+// SPIR-V storage-image texel format -> engine TextureFormat: the formats the engine's
+// shaders declare. 0 for an image declared without a format, and for a declared
+// format missing here, which ReflectSpirv refuses: a layout built from 0 would bind
+// a texture of the wrong format.
 static uint32_t ImageFormatToEngineFormat(SpvImageFormat f) {
     switch (f) {
         case SpvImageFormatRgba32f:  return static_cast<uint32_t>(TextureFormat::R32G32B32A32_FLOAT);
@@ -359,10 +361,10 @@ bool ReflectSpirv(ShaderStageKind stage, const uint32_t* words, size_t wordCount
                     info.Format = ImageFormatToEngineFormat(declared);
                     if (info.Format == 0 && declared != SpvImageFormatUnknown) {
                         if (outError)
-                            *outError = std::format(
-                                "storage image '{}' (set {}, binding {}) declares SPIR-V image format {}, "
-                                "which ImageFormatToEngineFormat does not map; add it there",
-                                b->name ? b->name : "", s->set, b->binding, static_cast<int>(declared));
+                            *outError = "storage image '" + std::string(b->name ? b->name : "") + "' (set " +
+                                        std::to_string(s->set) + ", binding " + std::to_string(b->binding) +
+                                        ") declares SPIR-V image format " + std::to_string(static_cast<int>(declared)) +
+                                        ", which ImageFormatToEngineFormat does not map; add it there";
                         spvReflectDestroyShaderModule(&module);
                         return false;
                     }

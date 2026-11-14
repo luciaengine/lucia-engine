@@ -397,6 +397,15 @@ std::span<const VolumetricFogLocalVolume> RenderServices::GetEffectiveVolumetric
     return GetWorldVolumetricFogVolumes(worldId);
 }
 
+void RenderServices::PackViewWeather(ViewId viewId, uint64 worldId, ForwardLightUBO& ubo) const
+{
+    const auto& settings = GetEffectivePostProcessSettings(viewId, worldId);
+    const WeatherWindGPU* wind = m_WorldWeatherWind.Find(worldId);
+    ubo.WeatherWind = wind ? *wind : WeatherWindGPU{};
+    ubo.WeatherWind.Count[1] = std::clamp(settings.WaterDropSize, 0.25f, 2.0f);
+    ubo.WeatherWind.Count[2] = std::clamp(settings.WaterRippleSpeed, 0.0f, 4.0f);
+}
+
 void RenderServices::WriteViewLightBuffer(ViewId viewId)
 {
     const ViewDesc* view = m_ViewRegistry.FindViewDesc(viewId);
@@ -453,6 +462,7 @@ void RenderServices::WriteViewLightBuffer(ViewId viewId)
     ubo.uTimeParams[2] =
         m_ViewTemporalHistory.ResolveDeformationClock(Time::GetCumulativeSeconds()).TimeSeconds;
     ubo.uTimeParams[3] = ubo.uTimeParams[1];
+    PackViewWeather(viewId, view->worldId, ubo);
 
     void* mapped = m_Device->MapBuffer(buf);
     if (mapped)

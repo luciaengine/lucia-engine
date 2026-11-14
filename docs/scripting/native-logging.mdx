@@ -1,23 +1,51 @@
 ---
-title: Logging from C++ with channels
-description: Declare a log channel in a module, log on it with GE_LOG, set a channel's level from code or the Log panel, and filter the Log panel by channel.
-sidebar:
-  order: 4
+title: Native logging
+description: Write named log channels and filter them in the editor.
 ---
 
-A log channel is a name for one part of a game or the engine, such as `Rendering` or `Inventory`. Each record carries its channel, the source file, the line, and the function that logged it. Each channel has its own level, so you can turn on Debug for one channel and keep the rest at Warning. The Log panel shows the channel of each line and can hide the lines of a channel.
+Open the **Log** panel and select **Channels** to show or hide registered channels.
+The channel filter combines with the existing search and severity filters. All
+three conditions must match for a line to appear. Copy without a selection
+copies the lines that pass those filters.
+
+The channel list has its own search. **Show all** and **Hide all** apply to the
+channels that match that search. Closing the list keeps its visibility choices
+for the current panel. Hiding a channel keeps its stored lines.
+
+Each channel also has a minimum logging level. This controls whether the logger
+creates new records. It does not remove records already stored in the panel.
+**Default** uses the stricter of the global level and the channel's declared
+level. An explicit channel level overrides that threshold. Global **Off** stops
+all channels. These settings last for the current process.
 
 ## Declare a channel
 
-Declare a channel once, in a header of the module that owns it. `GE_LOG_CHANNEL` takes the accessor's name, the channel's name, and the channel's default level without its scope. The header includes only `Logger/LogChannel.h`. That header needs `Logger/LogLevel.h`, `<cstdint>`, `<format>` and `<string_view>`, nothing more.
+Declare a channel once in the owning module's header. Its first call registers
+its name. Registrations with the same name share one channel across modules.
+Names have at most 63 UTF-8 bytes. A process has at most 256 channels, including
+**Core**.
 
-```cpp title="Inventory/InventoryLog.h"
-#pragma once
+Channel handles belong to their logger state. A host or module that calls
+`Logger::Log::RedirectToSharedState` must redirect before registering channels
+or using `GE_LOG`. Registration can then precede logger initialization.
+
+```cpp title="Declare and use a gameplay channel"
 #include "Logger/LogChannel.h"
-namespace Inventory { GE_LOG_CHANNEL(InventoryLog, "Inventory", Info) }
+
+namespace MyGame
+{
+GE_LOG_CHANNEL(GameplayLog, "Gameplay", Info)
+
+void ReportSpawn(int entityCount)
+{
+    GE_LOG(GameplayLog, Info, "Spawned {} entities", entityCount);
+}
+}
 ```
 
-The line defines the accessor `Inventory::InventoryLog()`. No `.cpp` file is necessary. The accessor is the name that the compiler checks at each call site. Give each accessor a name that no other channel uses in its namespace: the linker keeps one of two accessors with the same name and shows no error, so one channel then gets the records of both.
+`GE_LOG` does not evaluate format arguments when the channel rejects the level.
+Trace and Debug calls are compiled out when debug instrumentation is disabled.
+Critical records flush to the sinks before the call returns.
 
 The channel registers when its accessor runs the first time. Nothing lists the channels in one place. Each DLL that calls the accessor registers the name again and gets the same channel. Two modules that declare the same name write to one channel, and the first declaration's default level applies. A process can register up to 256 channels.
 

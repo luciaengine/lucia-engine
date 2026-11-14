@@ -543,3 +543,27 @@ TEST_F(AudioEmitterSystemTest, SpatializedEmitterFalloffReachesItsVoiceAndFollow
     EXPECT_TRUE(m_Audio->IsAlive(voice)) << "a falloff edit restarted the voice";
     ExpectFalloff(m_Audio->GetFalloff(voice), Audio::AudioAttenuationModel::Exponential, 4.0f, 400.0f, 2.0f);
 }
+
+TEST_F(AudioEmitterSystemTest, MasterMuteKeepsLiveVoicesAndAuthoredBusVolumes)
+{
+    (void)CreateEmitterEntity();
+    SwapAndRun();
+    m_Audio->Update(kDt);
+    ASSERT_EQ(AliveVoices(), 1u);
+    m_Audio->SetBusVolume(0, 0.4f);
+    m_Audio->SetBusVolume(1, 0.6f);
+
+    m_Audio->SetMasterMuted(true);
+    m_Audio->Update(kDt);
+    EXPECT_FLOAT_EQ(m_Audio->GetBusMeterLevel(0), 0.0f);
+    EXPECT_FLOAT_EQ(m_Audio->GetBusVolume(0), 0.4f);
+    EXPECT_FLOAT_EQ(m_Audio->GetBusVolume(1), 0.6f);
+    EXPECT_EQ(AliveVoices(), 1u);
+
+    m_Audio->SetBusVolume(0, 0.3f);
+    m_Audio->SetMasterMuted(false);
+    m_Audio->Update(kDt);
+    EXPECT_FLOAT_EQ(m_Audio->GetBusVolume(0), 0.3f);
+    EXPECT_FLOAT_EQ(m_Audio->GetBusVolume(1), 0.6f);
+    EXPECT_EQ(AliveVoices(), 1u);
+}

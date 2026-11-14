@@ -29,6 +29,7 @@ class Label;
 class ScrollView;
 class PromptMicButton;
 class PromptTextArea;
+class PromptFileTray;
 namespace EditorUI
 {
 class ItemSizeSlider;
@@ -138,6 +139,7 @@ private:
     AgentModelPopover* m_ModelPopover = nullptr;
     std::unique_ptr<AgentSessionPicker> m_SessionPicker;
     std::unique_ptr<MarkupTokenPicker> m_MarkupPicker;
+    std::unique_ptr<PromptFileTray> m_FileTray;
     // The first row of a conversation that continues a chosen session; hidden otherwise.
     Label* m_ContinuedRow = nullptr;
     // The session m_ContinuedRow describes and the text it shows; both empty while

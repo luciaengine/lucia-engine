@@ -253,7 +253,7 @@ bool VulkanDescriptorBufferPool::CreateBackingBufferLocked(VkDeviceSize totalSiz
     VkBufferDeviceAddressInfo addrInfo{};
     addrInfo.sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
     addrInfo.buffer = buf;
-    const VkDeviceAddress addr = vkGetBufferDeviceAddress(m_Device->GetVkDevice(), &addrInfo);
+    const VkDeviceAddress addr = m_Device->GetPromotedCommands().GetBufferDeviceAddress(m_Device->GetVkDevice(), &addrInfo);
 
     m_BackingBuffer     = buf;
     m_BackingAllocation = alloc;
@@ -317,7 +317,7 @@ bool VulkanDescriptorBufferPool::PushSpillBlockLocked(FrameState& frame, VkDevic
     VkBufferDeviceAddressInfo addrInfo{};
     addrInfo.sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
     addrInfo.buffer = buf;
-    const VkDeviceAddress addr = vkGetBufferDeviceAddress(m_Device->GetVkDevice(), &addrInfo);
+    const VkDeviceAddress addr = m_Device->GetPromotedCommands().GetBufferDeviceAddress(m_Device->GetVkDevice(), &addrInfo);
 
     SpillBlock b;
     b.Buffer     = buf;

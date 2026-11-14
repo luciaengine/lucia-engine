@@ -196,6 +196,7 @@ struct AgentConversationController::TurnInFlight
     Conversation::TurnId Turn = 0;
     std::shared_ptr<IAgentProvider> Provider;
     std::vector<ConversationMessage> History;
+    std::vector<PromptFile> Images;
     AgentTurnRequest Request;
     CancelToken Cancel;
     /// The editor's MCP server the request attaches, when it does.
@@ -362,13 +363,13 @@ void AgentConversationController::AttachTools(TurnInFlight& turn)
 }
 
 bool AgentConversationController::Send(std::string text, SentMarkups markups, std::string model,
-                                       std::string effort)
+                                       std::string effort, std::vector<PromptFile> files)
 {
     if (text.size() > Conversation::kMaxMessageBytes)
         return false;
     const Conversation::TurnId turn =
         m_Conversation.AddTurn(std::move(text), std::move(markups), m_ProviderId, std::move(model),
-                               std::move(effort), std::chrono::system_clock::now());
+                               std::move(effort), std::chrono::system_clock::now(), std::move(files));
     m_Queue.push_back(turn);
     return true;
 }
@@ -386,7 +387,8 @@ void AgentConversationController::Retry(size_t messageIndex)
     const Conversation::TurnId turn = m_Conversation.AddTurn(messages[messageIndex - 1].Text,
                                                              messages[messageIndex - 1].Markups, m_ProviderId,
                                                              reply.Model, reply.Effort,
-                                                             std::chrono::system_clock::now());
+                                                             std::chrono::system_clock::now(),
+                                                             messages[messageIndex - 1].Files);
     m_Queue.push_back(turn);
     m_Conversation.MarkRetried(m_Conversation.TurnOf(messageIndex));
 }
@@ -532,6 +534,10 @@ void AgentConversationController::StartNextTurn()
     inFlight->Request.SystemPrompt = kSystemPrompt;
     inFlight->Request.History = inFlight->History;
     inFlight->Request.UserText = user->SentText();
+    for (const PromptFile& file : user->Files)
+        if (file.Kind == PromptFileKind::Image)
+            inFlight->Images.push_back(file);
+    inFlight->Request.Images = inFlight->Images;
     inFlight->Request.Model = reply->Model;
     inFlight->Request.Effort = reply->Effort;
     if (inFlight->Provider->Capabilities().OwnsTranscript)

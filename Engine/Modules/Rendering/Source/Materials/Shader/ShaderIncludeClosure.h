@@ -14,9 +14,12 @@
 
 namespace GameEngine { namespace Rendering {
 
+// Seed of the shader cache key. It is not the FNV-1a offset basis (one digit
+// short), but the key addresses compiled programs in the on-disk shader cache:
+// changing it invalidates every cached program.
 inline constexpr uint64_t kShaderHashOffsetBasis = 1469598103934665603ull;
 
-// FNV-1a over raw bytes. Seeded so callers can fold many inputs into one key.
+// Hashing::Fnv1a64 over raw bytes. Seeded so callers can fold many inputs into one key.
 uint64_t HashShaderBytes(const void* data, size_t size, uint64_t seed = kShaderHashOffsetBasis);
 
 // Fold a string plus a delimiter, so "ab"+"c" and "a"+"bc" hash differently.

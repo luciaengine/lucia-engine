@@ -17,6 +17,8 @@
 #include "Engine/Rendering/Pipeline/Nodes/LightUploadNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/OcclusionCullP2Node.h"
 #include "Engine/Rendering/Pipeline/Nodes/RenderScaleUpscaleNode.h"
+#include "Engine/Rendering/Pipeline/Nodes/PixelPerfectUpscaleNode.h"
+#include "Engine/Rendering/Pipeline/Nodes/PlanarReflectionNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/ScatterBNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/ScreenSpaceReflectionsNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/ShadowMapNode.h"
@@ -52,7 +54,9 @@ RenderPipelineNodeResourceFields FullscreenShaderResourceFields()
 // keeps that name a valid target.
 RenderPipelineNodeResourceFields ShadowMapResourceFields()
 {
-    return {.RefKeys = {"buffer"}, .PublishKeys = {{"buffer", Names::Res::ShadowData}}};
+    return {.RefKeys = {{"buffer", RenderGraph::RGResourceKind::Buffer}},
+            .PublishKeys = {{"buffer", Names::Res::ShadowData}},
+            .WritesViewResources = {RenderPipelineViewResource::Shadows}};
 }
 } // namespace
 
@@ -63,7 +67,11 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<WorldRenderNode>(); },
         /*perView*/ true,
-        RenderPipelineNodeResourceFields{.StaticPublishNames = {Names::View::EffectiveColor}});
+        RenderPipelineNodeResourceFields{
+            .StaticPublishNames = {Names::View::EffectiveColor},
+            .ReadsViewResources = {RenderPipelineViewResource::ViewParameters,
+                                   RenderPipelineViewResource::PrepassDepth,
+                                   RenderPipelineViewResource::Shadows}});
 
     (void)registry.Register(
         "TransmissiveRender",
@@ -77,14 +85,21 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<DepthPrepassNode>(); },
         /*perView*/ true,
-        RenderPipelineNodeResourceFields{.RefKeys = {"depth"}, .PublishKeys = {{"depth", Names::View::Depth}}});
+        RenderPipelineNodeResourceFields{
+            .RefKeys = {{"depth", RenderGraph::RGResourceKind::Texture}},
+            .PublishKeys = {{"depth", Names::View::Depth}},
+            .ReadsViewResources = {RenderPipelineViewResource::ViewParameters},
+            .WritesViewResources = {RenderPipelineViewResource::PrepassDepth}});
 
     (void)registry.Register(
         "DepthResolve",
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<DepthResolveNode>(); },
         /*perView*/ true,
-        RenderPipelineNodeResourceFields{.RefKeys = {"output"}, .PublishKeys = {{"output", Names::View::DepthResolved}}});
+        RenderPipelineNodeResourceFields{
+            .RefKeys = {{"output", RenderGraph::RGResourceKind::Texture}},
+            .PublishKeys = {{"output", Names::View::DepthResolved}},
+            .ReadsViewResources = {RenderPipelineViewResource::PrepassDepth}});
 
     (void)registry.Register(
         "AmbientOcclusion",
@@ -92,6 +107,12 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         { return std::make_unique<AONode>(); },
         /*perView*/ true,
         RenderPipelineNodeResourceFields{.RefKeys = {"output"}, .PublishKeys = {{"output", Names::View::GTAO}}});
+
+    (void)registry.Register(
+        "PlanarReflection",
+        []() -> std::unique_ptr<IRenderPipelineNode>
+        { return std::make_unique<PlanarReflectionNode>(); },
+        /*perView*/ true);
 
     (void)registry.Register(
         "ScreenSpaceReflections",
@@ -141,6 +162,13 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         RenderPipelineNodeResourceFields{.RefKeys = {"input", "output"}, .PublishKeys = {{"output", "LDRSmaa"}}});
 
     (void)registry.Register(
+        "PixelPerfectUpscale",
+        []() -> std::unique_ptr<IRenderPipelineNode>
+        { return std::make_unique<PixelPerfectUpscaleNode>(); },
+        true,
+        RenderPipelineNodeResourceFields{.RefKeys = {"input", "output"}, .PublishKeys = {{"output", "HDRPixelPerfect"}}});
+
+    (void)registry.Register(
         "RenderScaleUpscale",
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<RenderScaleUpscaleNode>(); },
@@ -159,7 +187,10 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<ViewParamsUploadNode>(); },
         /*perView*/ true,
-        RenderPipelineNodeResourceFields{.RefKeys = {"buffer"}, .PublishKeys = {{"buffer", Names::Res::ViewParams}}});
+        RenderPipelineNodeResourceFields{
+            .RefKeys = {{"buffer", RenderGraph::RGResourceKind::Buffer}},
+            .PublishKeys = {{"buffer", Names::Res::ViewParams}},
+            .WritesViewResources = {RenderPipelineViewResource::ViewParameters}});
 
     (void)registry.Register(
         "HeightFogParamsUpload",
@@ -197,6 +228,13 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         FullscreenShaderResourceFields());
 
     (void)registry.Register(
+        "DepthPixelation",
+        []() -> std::unique_ptr<IRenderPipelineNode>
+        { return std::make_unique<DepthPixelationNode>(); },
+        /*perView*/ true,
+        FullscreenShaderResourceFields());
+
+    (void)registry.Register(
         "TemporalFullscreenShader",
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<TemporalFullscreenShaderNode>(); },
@@ -224,16 +262,6 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
 
     (void)registry.Register(
         "ShadowMap",
-        []() -> std::unique_ptr<IRenderPipelineNode>
-        { return std::make_unique<ShadowMapNode>(); },
-        /*perView*/ true,
-        ShadowMapResourceFields());
-
-    // Legacy alias: pre-Q4 projects serialize the type as "CascadedShadowMap".
-    // Registered identically so those blueprints still compile; ValidateBlueprint
-    // emits a deprecation warning nudging authors to the "ShadowMap" key.
-    (void)registry.Register(
-        "CascadedShadowMap",
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<ShadowMapNode>(); },
         /*perView*/ true,

@@ -6,7 +6,7 @@
 #include "Components/Rendering/PostProcessEffects/VignetteEffect.h"
 #include "Components/Rendering/PostProcessVolume.h"
 #include "Components/Rendering/Look.h"
-#include "ECS/Component/ComponentFactory.h"
+#include "ECS/ComponentFactory.h"
 #include "ECS/World.h"
 #include "Editor/Entities/EditorComponentTraits.h"
 #include "Editor/Entities/EditorECSHelpers.h"

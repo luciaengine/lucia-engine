@@ -260,6 +260,7 @@ layout(set = 0, binding = 6) uniform LightUBO {
     vec4 uSecondaryCount;
     vec4 uSecondaryDirs[3];
     vec4 uSecondaryColors[3];
+#include "../Includes/weather_wind_fields.glsl"
 } Light;
 #endif
 

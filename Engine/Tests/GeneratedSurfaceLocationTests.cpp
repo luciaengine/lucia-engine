@@ -13,6 +13,7 @@
 #include "Engine/Rendering/ShaderGraphMaterial.h"
 #include "Rendering/Materials/MaterialBuildContext.h"
 #include "Rendering/Materials/MaterialDocument.h"
+#include "TestTempDir.h"
 
 #include <chrono>
 #include <filesystem>
@@ -55,10 +56,7 @@ protected:
     void SetUp() override
     {
         std::error_code ec;
-        m_Root = std::filesystem::temp_directory_path(ec) /
-                 ("ge_gen_surface_" + std::to_string(::testing::UnitTest::GetInstance()
-                                                         ->random_seed()) +
-                  "_" + std::to_string(reinterpret_cast<uintptr_t>(this)));
+        m_Root = TestUtils::MakeUniqueTempDirectory("ge_gen_surface");
         m_MaterialDir = m_Root / "assets" / "materials";
         m_CacheRoot = m_Root / ".Cache" / "Shaders";
         std::filesystem::create_directories(m_MaterialDir, ec);
@@ -459,4 +457,32 @@ TEST_F(GeneratedSurfaceLocationTest, MovingANodeDoesNotRewriteTheGeneratedSurfac
 
     EXPECT_EQ(std::filesystem::last_write_time(generated), firstWrite)
         << "a node move rewrote the generated surface — the shader cache entry dies with it";
+}
+
+// Registry paths may use different casing from the physical mount. Name the
+// generated artifact by the same mount alias and relative path in either case.
+TEST_F(GeneratedSurfaceLocationTest, RegistrySpellingIdentifiesGraphUnderMixedCaseMount)
+{
+    auto context = MakeContext();
+    const auto physicalRoot = m_Root / "EditorAssets";
+    const auto registryRoot = m_Root / "editorassets";
+    context.AssetSourceRoots = {{"editor", physicalRoot, registryRoot}};
+    auto registryDocument = MakeGraphMaterial();
+    registryDocument.surfaceShader = m_GraphPath.string();
+    std::vector<std::string> errors;
+    ASSERT_TRUE(PrepareMaterialDocumentForShaderPackage(
+        registryDocument, registryRoot / "materials/test.material", context, errors));
+
+    auto physicalDocument = MakeGraphMaterial();
+    physicalDocument.surfaceShader = m_GraphPath.string();
+    ASSERT_TRUE(PrepareMaterialDocumentForShaderPackage(
+        physicalDocument, physicalRoot / "materials/test.material", context, errors));
+    EXPECT_EQ(registryDocument.surfaceShader, physicalDocument.surfaceShader);
+    EXPECT_EQ(context.AssetSourceRoots.front().Root, physicalRoot)
+        << "registry identity must not change the physical source root";
+
+    auto outsideDocument = MakeGraphMaterial();
+    outsideDocument.surfaceShader = m_GraphPath.string();
+    EXPECT_FALSE(PrepareMaterialDocumentForShaderPackage(
+        outsideDocument, m_Root / "editorassets-extra/test.material", context, errors));
 }

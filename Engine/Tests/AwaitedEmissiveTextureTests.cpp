@@ -18,8 +18,6 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Materials/MaterialDocument.h"
 #include "TestDeviceHelper.h"
-#include "TestTempDir.h"
-#include "Types/Fnv1a.h"
 
 #include <chrono>
 #include <cstdint>
@@ -99,8 +97,10 @@ class AwaitedEmissiveTextureUploadJob : public testing::Test
         m_Device = CreateVulkanDeviceFast();
         if (!m_Device)
             GTEST_SKIP() << "No Vulkan device available";
-        m_Workspace = TestUtils::MakeUniqueTempDirectory("ge-awaited-emissive");
+        m_Workspace = fs::temp_directory_path() / ("ge-awaited-emissive-" + GUID::Generate().ToString());
         fs::create_directories(m_Workspace / "Assets");
+        // Match the physical workspace spelling EngineCore publishes to its registry.
+        m_Workspace = fs::canonical(m_Workspace);
         m_PreviousDirectory = fs::current_path();
         auto& engine = EngineCore::GetInstance();
         ScriptsConfig scripts;
@@ -189,6 +189,31 @@ TEST_F(AwaitedEmissiveTexture, AnEvictedEmissiveMapAwaitsItsReloadInBlack)
     // Classic bind group, the DDGI map atlas) see it as awaited, not as a texture to sample.
     EXPECT_FALSE(mat->GetTexture(kEmissive).IsValid());
     EXPECT_TRUE(mat->IsTextureAwaited(static_cast<uint32_t>(TextureSlot::kEmissive)));
+}
+
+// A model's embedded emissive image that cannot become a texture leaves the slot black; once it
+// is resident the slot samples the texture itself.
+TEST_F(AwaitedEmissiveTexture, AnEmbeddedEmissiveMapIsBlackWhenItFailsAndItsOwnTextureWhenResident)
+{
+    const GUID modelGuid = GUID::Generate();
+    MaterialDocument doc = MaterialDocument::CreateDefaultPBR("EmbeddedEmissive");
+    doc.textures["emissiveMap"] = std::string(kEmbeddedTexturePrefix) + "0";
+    Material* mat = m_Services->Materials().RegisterMaterialFromDocument(GUID::Generate(), doc);
+    ASSERT_NE(mat, nullptr);
+
+    Vector<EmbeddedImage> images(1);
+    images[0].MimeType = "image/png";
+    Textures().ResolveEmbeddedTextures(mat, doc, modelGuid, images);
+    EXPECT_EQ(mat->GetBindlessTextureIndex(kEmissive), Textures().DefaultBlackBindlessIndex())
+        << "an image with no bytes never becomes a texture";
+
+    images[0].Data.assign(std::begin(kOnePixelPng), std::end(kOnePixelPng));
+    Textures().ResolveEmbeddedTextures(mat, doc, modelGuid, images);
+    const uint32_t resident = mat->GetBindlessTextureIndex(kEmissive);
+    EXPECT_NE(resident, Textures().DefaultBlackBindlessIndex());
+    EXPECT_NE(resident, Textures().DefaultWhiteBindlessIndex());
+    EXPECT_TRUE(mat->GetTexture(kEmissive).IsValid());
+    EXPECT_FALSE(mat->IsTextureAwaited(static_cast<uint32_t>(TextureSlot::kEmissive)));
 }
 
 // A document reference that resolves to no asset is an assigned map that failed: black.

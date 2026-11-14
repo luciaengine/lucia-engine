@@ -19,7 +19,8 @@ const StringId kGroundedId = HashStringId("Grounded");
 void CharacterGraphParamSystem::Update(ECS::World& world, float32 /*deltaTime*/)
 {
     world.Query<ECS::Read<Components::CharacterController>, ECS::Write<Components::Animator>>()
-        .Each([](const Components::CharacterController& character, Components::Animator& animator) {
+        .Each([](const Components::CharacterController& character, ECS::Writable<Components::Animator> animatorRow) {
+            auto& animator = animatorRow.Mutable();
             if (!animator.active || animator.source != Components::AnimatorPlaybackSource::Graph)
                 return;
             const float32 speed = std::hypot(character.desiredVelocityX, character.desiredVelocityZ);

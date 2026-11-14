@@ -36,6 +36,8 @@ GamepadPoller::~GamepadPoller()
 {
     if (m_Start.IsValid())
         m_Start.Wait();
+    if (m_Refresh.IsValid())
+        m_Refresh.Wait();
     m_Backend->Stop();
     m_StartChannel.reset();
 }
@@ -62,6 +64,8 @@ void GamepadPoller::Read(GamepadFrame& frame)
     frame = GamepadFrame{};
     if (!m_Ready.load(std::memory_order_acquire))
         return;
+    if (m_Backend->NeedsRefresh() && (!m_Refresh.IsValid() || m_Refresh.IsDone()))
+        m_Refresh = m_StartChannel->Submit([this] { m_Backend->Refresh(); });
     m_Backend->Read(frame);
 }
 

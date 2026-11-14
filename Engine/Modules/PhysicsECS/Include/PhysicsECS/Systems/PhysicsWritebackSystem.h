@@ -5,8 +5,7 @@
 
 namespace GameEngine::PhysicsECS
 {
-// Copies simulated body transforms back into ECS Transform + WorldTransform. Kinematic bodies are skipped:
-// they follow their Transform.
+// Copies simulated body transforms back into ECS Transform + WorldTransform.
 class PhysicsWritebackSystem : public ECS::ISystem
 {
 public:

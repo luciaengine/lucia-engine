@@ -11,7 +11,28 @@ namespace GameEngine::Editor
 namespace
 {
 constexpr const char* kPrefKeyPreviewScrollZoom = "ui.previewScrollZoom";
+constexpr const char* kPrefKeyPackagePreviews = "ui.packagePreviews";
+bool s_PackagePreviewsEnabled = true;
+
+void SetPackagePreviewsEnabled(bool enabled)
+{
+    if (s_PackagePreviewsEnabled == enabled)
+        return;
+    s_PackagePreviewsEnabled = enabled;
+    PackagePreviewsChanged().Invoke();
+}
 } // namespace
+
+bool GetPackagePreviewsEnabled()
+{
+    return s_PackagePreviewsEnabled;
+}
+
+Event<>& PackagePreviewsChanged()
+{
+    static Event<> changed;
+    return changed;
+}
 
 void ApplyAssetPreviewSettingsFromPreferences()
 {
@@ -21,6 +42,9 @@ void ApplyAssetPreviewSettingsFromPreferences()
     bool scrollZoom = true;
     prefs.TryGetBool(kPrefKeyPreviewScrollZoom, scrollZoom);
     ModelThumbnailHandler::SetPreviewScrollZoomEnabled(scrollZoom);
+    bool packagePreviews = true;
+    prefs.TryGetBool(kPrefKeyPackagePreviews, packagePreviews);
+    SetPackagePreviewsEnabled(packagePreviews);
 }
 
 void RegisterAssetPreviewSettingsCategory()
@@ -45,6 +69,18 @@ void RegisterAssetPreviewSettingsCategory()
     { ModelThumbnailHandler::SetPreviewScrollZoomEnabled(enabled); };
     scrollZoom.Control = std::move(control);
     assetPreview.Fields.push_back(std::move(scrollZoom));
+
+    SettingsFieldDescriptor packagePreviews;
+    packagePreviews.Label = "Show Package Previews";
+    packagePreviews.Tooltip = "Show package icons and optional screenshots in the Packages window.";
+    packagePreviews.SearchKeywords = "package preview icon screenshot artwork";
+    packagePreviews.PrefKey = kPrefKeyPackagePreviews;
+    SettingsFieldDescriptor::ToggleField packagePreviewsControl;
+    packagePreviewsControl.DefaultValue = true;
+    packagePreviewsControl.Get = GetPackagePreviewsEnabled;
+    packagePreviewsControl.Set = SetPackagePreviewsEnabled;
+    packagePreviews.Control = std::move(packagePreviewsControl);
+    assetPreview.Fields.push_back(std::move(packagePreviews));
 
     EditorSettingsRegistry::Get().RegisterCategory(std::move(assetPreview));
 }

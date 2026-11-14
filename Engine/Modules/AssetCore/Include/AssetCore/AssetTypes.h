@@ -53,6 +53,7 @@ namespace GameEngine {
     X(Video) \
     /* Navigation formats */ \
     X(NavigationGrid) \
+    X(NavigationMesh) \
     /* Saved world-space ocean depth grid (.oceandepth) */ \
     X(OceanDepthCache) \
     /* Asset-backed ocean wave spectrum override (.oceanspectrum) */ \
@@ -100,21 +101,18 @@ namespace GameEngine {
     X(TerrainMaterialLibrary) \
     /* Pose graph (.animgraph JSON). Evaluated at runtime; node-graph authoring is later. */ \
     X(AnimationGraph) \
+    X(Localization) \
     /* A particle processor stack (.particlestack): JSON as authored, cooked binary in a \
        packaged game. GUID-referenced from ParticleEmitter3D. */ \
     X(ParticleStack) \
-    /* A navigation surface's baked tiles (.navsurface), written beside the scene \
-       when it is saved. GUID-referenced from NavigationSurface's BakedData. */ \
-    X(NavigationSurfaceData) \
-    /* A Day Cycle profile (.daycycle.json): tracks keyed over the sun's elevation, \
-       edited in the Day Cycle window. */ \
+    /* Shared contact surface (.physmat JSON). */ \
+    X(PhysicsMaterial) \
+    X(TileSet) \
+    X(TileMap) \
     X(DayCycleProfile) \
-    /* Reusable entity hierarchy placed in scenes (.prefab, scene text with one root) */ \
     X(Prefab) \
-    /* An AI program's option set with its difficulty presets (.aioptions JSON). \
-       Compiled into a program by AiRegistry::CompileProgram. */ \
+    X(NavigationSurfaceData) \
     X(AiOptionSet) \
-    /* An AI state-tree program (.scribe JSON), compiled at load into AI::StateTreeProgram. */ \
     X(AiStateTree)
 
 /**

@@ -1,8 +1,9 @@
 #include "PhysicsECS/PhysicsWorldService.h"
-
 #include "PhysicsECS/PhysicsEntityEventCallbacks.h"
 
 #include "Logger/Logger.h"
+#include "Core/Engine.h"
+#include "PhysicsECS/ContactSurfaceTable.h"
 
 #include <utility>
 
@@ -27,6 +28,11 @@ void PhysicsWorldService::Initialize(const Physics::PhysicsWorldSettings& settin
     s_LastKinematicBodiesMoving = 0;
     ++s_WorldGeneration;
     s_World = std::make_unique<Physics::PhysicsWorld>(settings);
+    ContactSurfaceTable::Reset();
+    ContactSurfaceTable::Install(*s_World);
+    auto& engine = EngineCore::GetInstance();
+    if (engine.IsInitialized())
+        ContactSurfaceTable::SubscribeToAssetChanges(engine.GetAssetManager().GetEventDispatcher());
     Logger::Log::Info("[PhysicsECS] PhysicsWorld initialized");
 }
 
@@ -34,6 +40,8 @@ void PhysicsWorldService::Shutdown()
 {
     PhysicsEntityEventCallbacks::ClearAll();
     s_World.reset();
+    ContactSurfaceTable::UnsubscribeFromAssetChanges();
+    ContactSurfaceTable::Reset();
     s_StepMs = 0.0f;
     s_LastBodiesComposed = 0;
     s_LastCharactersComposed = 0;
@@ -107,3 +115,4 @@ void PhysicsWorldService::SetLastKinematicBodiesMoving(uint32 count)
     s_LastKinematicBodiesMoving = count;
 }
 } // namespace GameEngine::PhysicsECS
+

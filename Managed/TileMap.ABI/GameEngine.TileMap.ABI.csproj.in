@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="@CMAKE_SOURCE_DIR@/Managed/Directory.Build.props"
+          Condition="Exists('@CMAKE_SOURCE_DIR@/Managed/Directory.Build.props')" />
+  <PropertyGroup>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <OutputPath>@CMAKE_SOURCE_DIR@/Managed/TileMap.ABI/bin/$(Configuration)/</OutputPath>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>GameEngine.TileMap.ABI</AssemblyName>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="@CMAKE_SOURCE_DIR@/Managed/TileMap.ABI/**/*.cs"
+             Exclude="@CMAKE_SOURCE_DIR@/Managed/TileMap.ABI/obj/**/*.cs;@CMAKE_SOURCE_DIR@/Managed/TileMap.ABI/bin/**/*.cs" />
+  </ItemGroup>
+  <Import Project="@CMAKE_SOURCE_DIR@/Managed/Directory.Build.targets"
+          Condition="Exists('@CMAKE_SOURCE_DIR@/Managed/Directory.Build.targets')" />
+</Project>

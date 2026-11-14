@@ -196,6 +196,31 @@ class ScriptManager
     bool IsAsyncHotReloadEnabled() const { return m_AsyncHotReloadEnabled; }
 
     /**
+     * @brief Record the calling thread as the main thread. Used to diagnose
+     *        main-thread tasks executing on a fallback thread.
+     */
+    void MarkMainThread();
+
+    /**
+     * @brief True once MarkMainThread ran, i.e. a live frame loop owns the
+     *        main-thread task queue. Standalone hosts (gtest, dotnet-test)
+     *        never mark one and must pump the queue themselves.
+     */
+    bool HasMarkedMainThread() const { return m_MainThreadId.load(std::memory_order_relaxed) != std::thread::id{}; }
+
+    /**
+     * @brief True when the calling thread is the marked main thread. False both
+     *        off-main and when no main thread has been marked at all, so a
+     *        caller that treats "no frame loop" as permissive must ask
+     *        HasMarkedMainThread() as well.
+     */
+    bool IsMainThread() const
+    {
+        const std::thread::id marked = m_MainThreadId.load(std::memory_order_relaxed);
+        return marked != std::thread::id{} && marked == std::this_thread::get_id();
+    }
+
+    /**
      * @brief Process pending main thread tasks (call from main thread)
      * @return Number of tasks processed; 0 immediately if another thread is
      *         already pumping (the owner drains the queue)
@@ -491,6 +516,7 @@ class ScriptManager
     std::filesystem::path m_WorkspaceRoot;
     std::filesystem::path m_ScriptsDirectory;
     std::filesystem::path m_AssembliesDirectory;
+    mutable std::mutex m_AssembliesDirectoryMutex;
     std::filesystem::path m_GeneratedProjectRoot;
     // Packaged-game mode (ScriptsConfig::prebuiltAssemblyPath): load exactly
     // this staged assembly; every compile path is disabled while set.
@@ -571,6 +597,7 @@ class ScriptManager
     std::mutex m_HotReloadStartMutex;
 
     // Main thread execution queue
+    std::atomic<std::thread::id> m_MainThreadId{};
     std::queue<std::function<void()>> m_MainThreadTasks;
     std::mutex m_MainThreadTasksMutex;
     // Serialize consumers while allowing a callback to pump this queue again on

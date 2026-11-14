@@ -17,15 +17,16 @@ namespace GameEngine
 // path elements, not characters, so a name that merely starts with two dots is
 // inside, and the test reads the same on every platform whatever
 // path::native() is spelled in.
-inline std::filesystem::path RelativePathUnderRoot(const std::filesystem::path& path, const std::filesystem::path& root)
+inline std::filesystem::path RelativePathUnderRoot(const std::filesystem::path& path,
+                                                   const std::filesystem::path& root)
 {
     if (root.empty())
         return {};
-    const std::filesystem::path relative =
+    const std::filesystem::path rel =
         path.lexically_normal().lexically_relative(root.lexically_normal());
-    if (relative.empty() || relative == "." || *relative.begin() == "..")
+    if (rel.empty() || rel == "." || *rel.begin() == "..")
         return {};
-    return relative;
+    return rel;
 }
 
 /// The path that `utf8`, a UTF-8 string such as a zip entry name or a name from a JSON

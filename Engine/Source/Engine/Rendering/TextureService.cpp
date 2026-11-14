@@ -81,6 +81,7 @@
 #include "Rendering/Utils/CubeLut/CubeLutFileParser.h"
 #include "Rendering/Utils/CubeLut/CubeLutGpuUpload.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
+#include "Types/ParseNumber.h"
 #include "Types/StringId.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/MatrixOps.h"
@@ -161,6 +162,14 @@ TextureService::SelectMaterialIndexingMode(const Rendering::RenderingDeviceCapab
 bool TextureService::Initialize(IDevice* device, MaterialRegistry& materials,
                                 const Rendering::RendererProfile& profile)
 {
+    m_MaterialMipBudgetBytes = 0;
+    if (const char* value = std::getenv("GE_MATERIAL_MIP_BUDGET_MB"))
+    {
+        constexpr uint64_t kBytesPerMiB = 1024 * 1024;
+        if (const auto budgetMiB = ParseUnsigned(value); budgetMiB && *budgetMiB <= UINT32_MAX)
+            m_MaterialMipBudgetBytes = *budgetMiB * kBytesPerMiB;
+    }
+
     m_Device = device;
     m_Materials = &materials;
     m_Profile = profile;
@@ -475,6 +484,9 @@ void TextureService::ReprovisionAfterDeviceRebuild()
         m_TextureLoadsKicked.clear();
         m_MaterialTextureRefs.clear();
         m_TextureToMaterialBindings.clear();
+        m_MaterialMipStreams.Clear();
+        m_FullTextureRequests.Clear();
+        m_HotSwapTextureRequests.Clear();
     }
 
     // Forget the stale GPU caches (dead handles — no Destroy*). These are not
@@ -574,6 +586,8 @@ void TextureService::ReprovisionAfterDeviceRebuild()
 
 void TextureService::WithdrawTextureLoadsLocked()
 {
+    for (const GUID& guid : m_TextureLoadsKicked)
+        ++m_TextureEpochByGuid[guid];
     for (auto& [guid, handle] : m_TextureLoadHandles)
         handle.Cancel();
     m_TextureLoadHandles.clear();
@@ -595,6 +609,8 @@ void TextureService::CancelPendingLoads()
     m_TextureLoadsKicked.clear();
     m_MaterialTextureRefs.clear();
     m_TextureToMaterialBindings.clear();
+    m_FullTextureRequests.Clear();
+    m_HotSwapTextureRequests.Clear();
 }
 
 void TextureService::Shutdown()
@@ -656,6 +672,14 @@ void TextureService::Shutdown()
                     m_Device->DestroyTexture(texture);
             }
         }
+
+        for (const auto& [guid, stream] : m_MaterialMipStreams)
+        {
+            for (const TextureHandle texture : {stream.Resident.Texture, stream.Resident.NormalVarianceCompanion})
+                if (texture.IsValid())
+                    m_Device->DestroyTexture(texture);
+        }
+        m_MaterialMipStreams.Clear();
 
         if (m_BindlessTextureSet.IsValid())
         {
@@ -831,7 +855,13 @@ void TextureService::DeclareTextureClassification(const GUID& texGuid,
     // where Evict's material-registry walk and immediate DestroyTexture are out of bounds. The
     // parked swap also keeps the old upload sampled until the new one is ready — no default-
     // texture frame.
-    if (m_TextureGPUCache.Contains(texGuid))
+    TextureGPUCache::Entry cached;
+    bool hasCachedTexture = false;
+    {
+        std::lock_guard lock(m_PendingTexturesMutex);
+        hasCachedTexture = TryGetMaterialTextureLocked(texGuid, cached);
+    }
+    if (hasCachedTexture)
         RequestReupload(texGuid);
     // A usage change moves the cooked artifact's format (BC5/BC7), which only a re-cook produces.
     if (newUsageTag)
@@ -897,7 +927,14 @@ void TextureService::BindMaterialTextureSlot(Material* mat, const GUID& matGuid,
     const bool newColorTag = EnsureDataTextureColorSpaceTagged(texGuid, slotName);
     const bool newUsageTag =
         EnsureTextureCookUsageTagged(texGuid, TextureCookUsageForMaterialSlot(slotName), matGuid, slotName);
-    if ((newColorTag || newUsageTag) && m_TextureGPUCache.Contains(texGuid))
+    bool hasCachedTexture = false;
+    if (newColorTag || newUsageTag)
+    {
+        std::lock_guard lock(m_PendingTexturesMutex);
+        TextureGPUCache::Entry cached;
+        hasCachedTexture = TryGetMaterialTextureLocked(texGuid, cached);
+    }
+    if (hasCachedTexture)
     {
         Evict(texGuid);
     }
@@ -908,12 +945,17 @@ void TextureService::BindMaterialTextureSlot(Material* mat, const GUID& matGuid,
         RequestRecook(texGuid, AssetLoadPriority::Low);
     }
 
-    // Fast path: already in GPU cache — bind immediately.
-    if (TextureGPUCache::Entry cached; m_TextureGPUCache.TryGet(texGuid, cached))
+    // Material bindings prefer the streamed image over an independent full-resolution request.
+    TextureGPUCache::Entry cached;
+    bool resident = false;
+    {
+        std::lock_guard lock(m_PendingTexturesMutex);
+        resident = TryGetMaterialTextureLocked(texGuid, cached);
+        TrackMaterialTextureRefLocked(matGuid, slotName, texGuid);
+    }
+    if (resident)
     {
         BindCachedMaterialTexture(mat, slotName, cached);
-        std::lock_guard lock(m_PendingTexturesMutex);
-        TrackMaterialTextureRefLocked(matGuid, slotName, texGuid);
         return;
     }
 
@@ -934,8 +976,6 @@ void TextureService::BindMaterialTextureSlot(Material* mat, const GUID& matGuid,
     {
         BindCachedMaterialTexture(mat, slotName, GetOrUploadEntry(texGuid));
     }
-    std::lock_guard lock(m_PendingTexturesMutex);
-    TrackMaterialTextureRefLocked(matGuid, slotName, texGuid);
 }
 
 void TextureService::UntrackMaterialTextureRef(const GUID& matGuid, StringId slotName)
@@ -1710,6 +1750,252 @@ struct TextureService::PreparedTextureUpload
     bool LogTiming = false;
 };
 
+struct TextureService::MaterialMipData
+{
+    Rendering::TextureFormat Format;
+    Rendering::TextureFormat CompanionFormat = Rendering::TextureFormat::RGBA8_UNORM;
+    std::vector<TextureCookMipLevel> Levels;
+    std::vector<TextureCookMipLevel> CompanionLevels;
+    std::vector<uint64_t> SuffixBytes;
+    uint32_t Tail = 0;
+
+    static bool Snapshot(const TextureAsset& asset, std::vector<TextureCookMipLevel>& levels)
+    {
+        if (!asset.GetPixelData() || asset.GetMipChain().empty())
+            return false;
+        for (const auto& mip : asset.GetMipChain())
+        {
+            if (mip.Offset > asset.GetDataSize() || mip.Size > asset.GetDataSize() - mip.Offset)
+                return false;
+            auto& level = levels.emplace_back();
+            level.Width = mip.Width;
+            level.Height = mip.Height;
+            const auto* bytes = asset.GetPixelData() + mip.Offset;
+            level.Bytes.assign(bytes, bytes + mip.Size);
+        }
+        return true;
+    }
+
+    static std::optional<Rendering::StagedTextureUpload> StageLevels(
+        IDevice& device, Rendering::TextureFormat format, const std::vector<TextureCookMipLevel>& levels,
+        uint32_t firstMip, const char* name, const char*& refusal)
+    {
+        std::vector<Rendering::TextureMipUploadEntry> mips;
+        for (const auto& level : std::span(levels).subspan(firstMip))
+            mips.push_back({level.Bytes.data(), level.Bytes.size(), level.Width, level.Height});
+        return StageMipChain(device, format, mips, name, refusal);
+    }
+
+    TextureGPUCache::Entry Stage(IDevice& device, uint32_t firstMip,
+                                 std::vector<Rendering::StagedTextureUpload>& batch, const char*& refusal) const
+    {
+        const auto texture = StageLevels(device, Format, Levels, firstMip, "MaterialMipStream", refusal);
+        if (!texture)
+            return {};
+        std::optional<Rendering::StagedTextureUpload> companion;
+        if (!CompanionLevels.empty())
+        {
+            const uint32_t companionMip = std::min(firstMip, static_cast<uint32_t>(CompanionLevels.size() - 1));
+            companion = StageLevels(device, CompanionFormat, CompanionLevels, companionMip,
+                                    "MaterialMipVariance", refusal);
+            if (!companion)
+            {
+                device.DestroyBuffer(texture->Staging);
+                device.DestroyTexture(texture->Texture);
+                return {};
+            }
+        }
+        batch.push_back(*texture);
+        if (companion)
+            batch.push_back(*companion);
+        return {texture->Texture, companion ? companion->Texture : TextureHandle{}};
+    }
+};
+
+bool TextureService::TryGetMaterialTextureLocked(const GUID& guid, TextureGPUCache::Entry& out) const
+{
+    if (const auto* stream = m_MaterialMipStreams.Find(guid))
+    {
+        out = stream->Resident;
+        return true;
+    }
+    return m_TextureGPUCache.TryGet(guid, out);
+}
+
+TextureGPUCache::Entry TextureService::RemoveMaterialMipStreamLocked(const GUID& guid)
+{
+    const auto* stream = m_MaterialMipStreams.Find(guid);
+    if (!stream)
+        return {};
+    const TextureGPUCache::Entry resident = stream->Resident;
+    m_MaterialMipStreams.Erase(guid);
+    return resident;
+}
+
+std::shared_ptr<const TextureService::MaterialMipData> TextureService::PrepareMaterialMipStream(
+    const GUID& guid, const PreparedTextureUpload& prepared)
+{
+    if (!m_MaterialMipBudgetBytes || !prepared.Container)
+        return {};
+    const auto& texture = *prepared.Container;
+    const auto& chain = texture.GetMipChain();
+    constexpr uint32_t kTailExtent = 256;
+    const auto tail = std::find_if(chain.begin(), chain.end(), [](const auto& level)
+    {
+        return std::max(level.Width, level.Height) <= kTailExtent;
+    });
+    if (tail == chain.begin() || tail == chain.end())
+        return {};
+    {
+        std::lock_guard lock(m_PendingTexturesMutex);
+        if (!m_TextureToMaterialBindings.contains(guid) || m_FullTextureRequests.Contains(guid))
+            return {};
+    }
+    const auto format = ResolveContainerGpuFormat(*m_Device, texture, prepared.Path, prepared.ColorSpace);
+    if (!format)
+        return {};
+
+    // A reload replaces the asset's pixels. The stream owns both mip chains across frames.
+    auto data = std::make_shared<MaterialMipData>();
+    data->Format = *format;
+    data->Tail = static_cast<uint32_t>(tail - chain.begin());
+    if (!MaterialMipData::Snapshot(texture, data->Levels))
+        return {};
+    if (const TextureAsset* companion = texture.GetNormalVarianceCompanion())
+    {
+        const auto companionFormat = ResolveContainerGpuFormat(*m_Device, *companion, prepared.Path,
+                                                               TextureColorSpace::Linear);
+        if (!companionFormat || !MaterialMipData::Snapshot(*companion, data->CompanionLevels))
+            return {};
+        data->CompanionFormat = *companionFormat;
+    }
+    data->SuffixBytes.resize(chain.size());
+    uint64_t bytes = 0;
+    for (size_t index = chain.size(); index-- > 0;)
+    {
+        bytes += data->Levels[index].Bytes.size();
+        uint64_t companionBytes = 0;
+        if (!data->CompanionLevels.empty())
+        {
+            const size_t first = std::min(index, data->CompanionLevels.size() - 1);
+            for (size_t mip = first; mip < data->CompanionLevels.size(); ++mip)
+                companionBytes += data->CompanionLevels[mip].Bytes.size();
+        }
+        data->SuffixBytes[index] = bytes + companionBytes;
+    }
+    return data;
+}
+
+void TextureService::AdvanceMaterialMipStreams()
+{
+    if (!m_MaterialMipBudgetBytes)
+        return;
+
+    GUID chosen{};
+    MaterialMipStream candidate;
+    uint32_t targetMip = 0;
+    {
+        std::lock_guard lock(m_PendingTexturesMutex);
+        uint64_t usedBytes = 0;
+        m_MaterialMipStreams.EraseIf([this](const GUID& guid, const MaterialMipStream& stream)
+        {
+            if (m_TextureToMaterialBindings.contains(guid))
+                return false;
+            RetireCacheEntry(stream.Resident);
+            return true;
+        });
+        for (const auto& [guid, stream] : m_MaterialMipStreams)
+            usedBytes += stream.Data->SuffixBytes[stream.FirstMip];
+        uint64_t best = 0;
+        for (const auto& [guid, stream] : m_MaterialMipStreams)
+        {
+            const auto& data = *stream.Data;
+            const uint32_t current = stream.FirstMip;
+            if (usedBytes > m_MaterialMipBudgetBytes)
+            {
+                if (current == data.Tail)
+                    continue;
+                const uint64_t saving = data.SuffixBytes[current] - data.SuffixBytes[current + 1];
+                if (saving < best || (saving == best && !chosen.IsNull() && !(guid < chosen)))
+                    continue;
+                best = saving;
+                targetMip = current + 1;
+            }
+            else
+            {
+                if (current == 0)
+                    continue;
+                const uint64_t increase = data.SuffixBytes[current - 1] - data.SuffixBytes[current];
+                if (increase > m_MaterialMipBudgetBytes - usedBytes ||
+                    (!chosen.IsNull() && (increase > best || (increase == best && !(guid < chosen)))))
+                    continue;
+                best = increase;
+                targetMip = current - 1;
+            }
+            chosen = guid;
+            candidate = stream;
+        }
+    }
+
+    if (chosen.IsNull())
+        return;
+    std::vector<Rendering::StagedTextureUpload> batch;
+    const char* refusal = kDeviceRefusal;
+    const TextureGPUCache::Entry replacement = candidate.Data->Stage(*m_Device, targetMip, batch, refusal);
+    if (!replacement.Texture.IsValid() || !SubmitOrDiscardStagedUploads(*m_Device, batch))
+        return;
+    const uint32_t index = GetBindlessIndex(replacement.Texture);
+    if (m_IndexingMode != MaterialIndexingMode::Classic && index == 0u)
+    {
+        RetireCacheEntry(replacement);
+        return;
+    }
+
+    {
+        std::lock_guard lock(m_PendingTexturesMutex);
+        auto* entry = m_MaterialMipStreams.Find(chosen);
+        const auto refs = m_TextureToMaterialBindings.find(chosen);
+        if (!entry || entry->Resident != candidate.Resident ||
+            m_TextureEpochByGuid[chosen] != candidate.Epoch ||
+            refs == m_TextureToMaterialBindings.end())
+        {
+            RetireCacheEntry(replacement);
+            return;
+        }
+        for (const auto& [materialGuid, slotName] : refs->second)
+        {
+            if (Material* material = m_Materials->Find(materialGuid);
+                material && material->GetTexture(slotName) == candidate.Resident.Texture)
+            {
+                ApplyMaterialSlotBinding(material, slotName, replacement, index);
+            }
+        }
+        entry->Resident = replacement;
+        entry->FirstMip = targetMip;
+    }
+    RetireCacheEntry(candidate.Resident);
+}
+
+Rendering::TextureHandle TextureService::GetOrRequestTexture(const GUID& textureGuid)
+{
+    if (textureGuid.IsNull() || !m_Device)
+        return {};
+    TextureGPUCache::Entry cached;
+    if (m_TextureGPUCache.TryGet(textureGuid, cached))
+        return cached.Texture; // Includes terminal negative entries; no retry storm.
+    {
+        std::lock_guard lock(m_PendingTexturesMutex);
+        // Only optional preloads are back-pressured. Eviction-triggered rebinds
+        // must never be dropped: unlike this API they have no polling caller.
+        if (m_TextureLoadsKicked.size() >= 32)
+            return {};
+        if (m_MaterialMipBudgetBytes)
+            m_FullTextureRequests.Insert(textureGuid);
+    }
+    ScheduleMaterialTextureLoad(textureGuid, GUID::Null(), StringId{});
+    return {};
+}
+
 Rendering::TextureHandle TextureService::GetOrUpload(const GUID& textureGuid)
 {
     return GetOrUploadEntry(textureGuid).Texture;
@@ -1722,6 +2008,12 @@ TextureGPUCache::Entry TextureService::GetOrUploadEntry(const GUID& textureGuid)
 
     if (TextureGPUCache::Entry cached; m_TextureGPUCache.TryGet(textureGuid, cached))
         return cached;
+
+    if (m_MaterialMipBudgetBytes)
+    {
+        std::lock_guard lock(m_PendingTexturesMutex);
+        m_FullTextureRequests.Insert(textureGuid);
+    }
 
     // Resolve GUID to an asset path and load.
     auto& am = GameEngine::EngineCore::GetInstance().GetAssetManager();
@@ -2060,7 +2352,9 @@ void TextureService::ScheduleMaterialTextureLoad(const GUID& texGuid, const GUID
             // render thread. The asset is the AssetManager's shared instance, whose payload a reload
             // swaps in place on the main thread, so it is read only there.
             std::lock_guard lock(m_PendingTexturesMutex);
-            m_TextureLoadsKicked.erase(texGuid);
+            if (m_TextureEpochByGuid[texGuid] != capturedEpoch)
+                return;
+            const bool hotSwap = m_HotSwapTextureRequests.Erase(texGuid);
             // A texture that cannot load is cached as no texture, as a failed synchronous upload
             // is, so GetOrUpload stops re-requesting it every frame; an edit of the file evicts
             // the entry. A withdrawn load (Evict, shutdown) is not a verdict on the texture, and
@@ -2070,6 +2364,8 @@ void TextureService::ScheduleMaterialTextureLoad(const GUID& texGuid, const GUID
                 m_TextureGPUCache.PublishOrAdopt(texGuid, TextureGPUCache::Entry{});
             if (!ok)
             {
+                m_TextureLoadsKicked.erase(texGuid);
+                m_FullTextureRequests.Erase(texGuid);
                 // Drop the corresponding load handle and pending bind entries
                 // so we don't keep stillPending growing forever. Without this
                 // a missing/broken texture file leaves IsMaterialTextureBindingComplete
@@ -2081,7 +2377,17 @@ void TextureService::ScheduleMaterialTextureLoad(const GUID& texGuid, const GUID
                     std::remove_if(m_PendingTextureBinds.begin(), m_PendingTextureBinds.end(),
                         [&](const PendingTextureBind& b) { return b.TextureGuid == texGuid; }),
                     m_PendingTextureBinds.end());
-                UntrackTextureFromAllMaterialsLocked(texGuid);
+                if (!hotSwap && !m_MaterialMipStreams.Contains(texGuid))
+                    UntrackTextureFromAllMaterialsLocked(texGuid);
+                return;
+            }
+            if (hotSwap)
+            {
+                m_TextureLoadsKicked.erase(texGuid);
+                m_TextureLoadHandles.erase(texGuid);
+                if (std::find(m_PendingTextureReupload.begin(), m_PendingTextureReupload.end(), texGuid) ==
+                    m_PendingTextureReupload.end())
+                    m_PendingTextureReupload.push_back(texGuid);
                 return;
             }
             m_PendingGpuUploads.push_back({texGuid, std::move(r.Value()), capturedEpoch});
@@ -2090,15 +2396,11 @@ void TextureService::ScheduleMaterialTextureLoad(const GUID& texGuid, const GUID
     // The handle is retained so teardown and eviction can withdraw the request
     // (Cancel) before our callback runs into state they are clearing.
     //
-    // Race: the worker callback can fire and erase texGuid from
-    // m_TextureLoadsKicked between LoadAsset returning and us reaching this
-    // store. The kicked-flag presence indicates an outstanding load for this
-    // GUID (ours, or a later overlapping schedule). If our specific callback
-    // already fired, storing this handle would orphan it until the next
-    // eviction — gate the insert on the flag still being present.
+    // Admission remains held through queued uploads. A failed or superseded load must not
+    // replace the current epoch's handle when its scheduling call returns.
     {
         std::lock_guard lock(m_PendingTexturesMutex);
-        if (m_TextureLoadsKicked.find(texGuid) != m_TextureLoadsKicked.end())
+        if (m_TextureEpochByGuid[texGuid] == capturedEpoch && m_TextureLoadsKicked.contains(texGuid))
             m_TextureLoadHandles[texGuid] = std::move(handle);
     }
 }
@@ -2135,15 +2437,14 @@ void TextureService::ScheduleTextureUploadJob(const GUID& texGuid, const GUID& m
         if (!matGuid.IsNull())
             m_PendingTextureBinds.push_back({matGuid, slotName, texGuid});
         epoch = m_TextureEpochByGuid[texGuid];
+        // One owner holds admission until its queued upload is drained.
+        if (!m_TextureLoadsKicked.insert(texGuid).second)
+            return;
         if (resident)
         {
             m_PendingGpuUploads.push_back({texGuid, std::move(resident), epoch, nullptr, /*LogTiming=*/true});
             return;
         }
-        // One load per texture: a job or an AssetManager load already in flight lands the
-        // upload that this bind waits on.
-        if (!m_TextureLoadsKicked.insert(texGuid).second)
-            return;
         cancel = std::make_shared<std::atomic<bool>>(false);
         m_UploadJobCancels[texGuid] = cancel;
         m_UploadJobCounter.Add(1);
@@ -2188,14 +2489,15 @@ void TextureService::CompleteUploadJob(const GUID& texGuid, uint32_t epoch,
                                        std::shared_ptr<const PreparedTextureUpload> prepared)
 {
     std::lock_guard lock(m_PendingTexturesMutex);
-    if (auto it = m_UploadJobCancels.find(texGuid); it != m_UploadJobCancels.end() && it->second == cancel)
-    {
-        m_UploadJobCancels.erase(it);
-        m_TextureLoadsKicked.erase(texGuid);
-    }
-    // Cancelled (Evict, CancelPendingLoads, Shutdown): whoever cancelled owns what follows.
-    if (cancel->load(std::memory_order_relaxed) || !prepared)
+    const auto job = m_UploadJobCancels.find(texGuid);
+    if (job == m_UploadJobCancels.end() || job->second != cancel || m_TextureEpochByGuid[texGuid] != epoch)
         return;
+    m_UploadJobCancels.erase(job);
+    if (cancel->load(std::memory_order_relaxed) || !prepared)
+    {
+        m_TextureLoadsKicked.erase(texGuid);
+        return;
+    }
     // Ready or failed, the drain publishes it, under the epoch it was scheduled under: an Evict
     // since then makes the drain discard it.
     m_PendingGpuUploads.push_back({texGuid, nullptr, epoch, std::move(prepared)});
@@ -2278,6 +2580,7 @@ void TextureService::FlushPendingUploads()
     }
 
     m_CpuTextureSources->Flush(*m_Device);
+    AdvanceMaterialMipStreams();
 
     // Snapshot worker-touched state under the mutex once. Drop completed
     // upload handles in a small batch instead of re-locking per-iteration.
@@ -2290,7 +2593,7 @@ void TextureService::FlushPendingUploads()
         uploads = std::move(m_PendingGpuUploads);
         uploadEpochs.reserve(uploads.size());
         for (const auto& u : uploads)
-            uploadEpochs.emplace_back(u.TextureGuid, m_TextureEpochByGuid[u.TextureGuid]);
+            uploadEpochs.emplace_back(u.TextureGuid, u.Epoch);
     }
 
     // The flush's uploads, staged for one command list, and what each publishes after the submit.
@@ -2300,6 +2603,8 @@ void TextureService::FlushPendingUploads()
         TextureGPUCache::Entry Uploaded;
         std::shared_ptr<const PreparedTextureUpload> Prepared;
         double StageMs = 0.0;
+        std::shared_ptr<const MaterialMipData> StreamData;
+        uint32_t Epoch = 0;
     };
     using Clock = std::chrono::high_resolution_clock;
     std::vector<Rendering::StagedTextureUpload> batch;
@@ -2309,16 +2614,29 @@ void TextureService::FlushPendingUploads()
     {
         auto& upload = uploads[i];
 
-        // Stale-load guard: an Evict between schedule and
-        // flush bumped m_TextureEpochByGuid[guid]. If our captured epoch no
-        // longer matches the snapshot taken above, the loaded bytes belong
-        // to a superseded version and must not be installed into the cache.
-        const uint32_t currentEpoch = uploadEpochs[i].second;
+        // Eviction or cancellation supersedes queued bytes. Only the current epoch may publish.
+        uint32_t currentEpoch = 0;
+        {
+            std::lock_guard lock(m_PendingTexturesMutex);
+            currentEpoch = m_TextureEpochByGuid[upload.TextureGuid];
+        }
         if (upload.Epoch != currentEpoch)
         {
             Logger::Log::Debug("Discarded stale texture load for {} (epoch {} != current {})",
                                upload.TextureGuid.ToString(), upload.Epoch, currentEpoch);
             continue;
+        }
+
+        {
+            std::lock_guard lock(m_PendingTexturesMutex);
+            // Completion can queue its bytes before a missing-resident swap records its intent.
+            if (m_HotSwapTextureRequests.Erase(upload.TextureGuid))
+            {
+                if (std::find(m_PendingTextureReupload.begin(), m_PendingTextureReupload.end(),
+                              upload.TextureGuid) == m_PendingTextureReupload.end())
+                    m_PendingTextureReupload.push_back(upload.TextureGuid);
+                continue;
+            }
         }
 
         // Idempotency: a hot-reload re-upload path may have already populated
@@ -2328,6 +2646,13 @@ void TextureService::FlushPendingUploads()
             std::any_of(staged.begin(), staged.end(),
                         [&](const StagedFlushUpload& source) { return source.TextureGuid == upload.TextureGuid; }))
             continue;
+
+        {
+            std::lock_guard lock(m_PendingTexturesMutex);
+            if (m_MaterialMipStreams.Contains(upload.TextureGuid) &&
+                !m_FullTextureRequests.Contains(upload.TextureGuid))
+                continue;
+        }
 
         // The CPU half ran on the loading worker (or an upload job); a queued load without it
         // runs it here. Either way this thread only stages the upload.
@@ -2367,14 +2692,18 @@ void TextureService::FlushPendingUploads()
         }
         const auto tStage = Clock::now();
         const char* refusal = kDeviceRefusal;
-        const TextureGPUCache::Entry uploaded = StagePreparedUpload(*prepared, batch, refusal);
+        const auto streamData = PrepareMaterialMipStream(upload.TextureGuid, *prepared);
+        const TextureGPUCache::Entry uploaded = streamData
+            ? streamData->Stage(*m_Device, streamData->Tail, batch, refusal)
+            : StagePreparedUpload(*prepared, batch, refusal);
         if (!uploaded.Texture.IsValid())
         {
             PublishFailedUpload(upload.TextureGuid, prepared->Path, refusal);
             continue;
         }
         staged.push_back({upload.TextureGuid, uploaded, std::move(prepared),
-                          std::chrono::duration<double, std::milli>(Clock::now() - tStage).count()});
+                          std::chrono::duration<double, std::milli>(Clock::now() - tStage).count(),
+                          streamData, upload.Epoch});
     }
 
     // One command list copies every texture of this flush, submitted once. Each texture is
@@ -2384,7 +2713,31 @@ void TextureService::FlushPendingUploads()
         for (const StagedFlushUpload& upload : staged)
         {
             LogUploadTiming(*upload.Prepared, "stage", upload.StageMs);
-            PublishUploadedEntry(upload.TextureGuid, upload.Uploaded);
+            bool adopted = false;
+            {
+                std::lock_guard lock(m_PendingTexturesMutex);
+                if (m_TextureEpochByGuid[upload.TextureGuid] == upload.Epoch)
+                {
+                    if (upload.StreamData)
+                    {
+                        if (m_TextureToMaterialBindings.contains(upload.TextureGuid))
+                        {
+                            adopted = !m_MaterialMipStreams.Contains(upload.TextureGuid);
+                            if (adopted)
+                                m_MaterialMipStreams.InsertOrAssign(upload.TextureGuid,
+                                    MaterialMipStream{upload.StreamData, upload.Uploaded,
+                                                      upload.StreamData->Tail, upload.Epoch});
+                        }
+                    }
+                    else
+                    {
+                        PublishUploadedEntry(upload.TextureGuid, upload.Uploaded);
+                        adopted = true;
+                    }
+                }
+            }
+            if (!adopted)
+                RetireCacheEntry(upload.Uploaded);
         }
     }
     else
@@ -2414,10 +2767,13 @@ void TextureService::FlushPendingUploads()
     std::vector<ResolvedBind> resolved;
     {
         std::lock_guard lock(m_PendingTexturesMutex);
-        for (const auto& [guid, _epoch] : uploadEpochs)
+        for (const auto& [guid, epoch] : uploadEpochs)
         {
-            if (m_TextureGPUCache.Contains(guid))
-                m_TextureLoadHandles.erase(guid);
+            if (m_TextureEpochByGuid[guid] != epoch)
+                continue;
+            m_TextureLoadsKicked.erase(guid);
+            m_FullTextureRequests.Erase(guid);
+            m_TextureLoadHandles.erase(guid);
         }
 
         std::vector<PendingTextureBind> stillPending;
@@ -2426,7 +2782,7 @@ void TextureService::FlushPendingUploads()
         for (auto& bind : m_PendingTextureBinds)
         {
             TextureGPUCache::Entry bound{};
-            if (!m_TextureGPUCache.TryGet(bind.TextureGuid, bound))
+            if (!TryGetMaterialTextureLocked(bind.TextureGuid, bound))
             {
                 stillPending.push_back(bind);
                 continue;
@@ -2473,9 +2829,13 @@ void TextureService::Evict(const GUID& textureGuid)
     // once the new texture is uploaded.
     std::vector<std::pair<GUID, StringId>> affectedRefs;
     bool needsReload = false;
+    TextureGPUCache::Entry oldStream;
     {
         std::lock_guard lock(m_PendingTexturesMutex);
         ++m_TextureEpochByGuid[textureGuid];
+        oldStream = RemoveMaterialMipStreamLocked(textureGuid);
+        m_FullTextureRequests.Erase(textureGuid);
+        m_HotSwapTextureRequests.Erase(textureGuid);
         // Drop any not-yet-uploaded entry for this GUID — bytes there are
         // pre-reload and would clobber the next live upload.
         m_PendingGpuUploads.erase(
@@ -2533,6 +2893,8 @@ void TextureService::Evict(const GUID& textureGuid)
     if (TextureGPUCache::Entry entry{}; m_TextureGPUCache.Remove(textureGuid, entry))
         RetireCacheEntry(entry);
 
+    RetireCacheEntry(oldStream);
+
     // Re-trigger the async load so AssetManager re-reads the (now-updated)
     // texture file. The bind queue already holds entries from the loop above;
     // the load's completion lands a fresh PendingGpuUpload, and the next
@@ -2580,6 +2942,10 @@ TextureGPUCache::Entry TextureService::UploadForHotSwap(const GUID& textureGuid)
     auto resident = std::dynamic_pointer_cast<TextureAsset>(assets.GetAsset(textureGuid));
     if (!resident || !resident->IsLoaded())
     {
+        {
+            std::lock_guard lock(m_PendingTexturesMutex);
+            m_HotSwapTextureRequests.Insert(textureGuid);
+        }
         assets.ClearLoadSuppressed(textureGuid);
         ScheduleMaterialTextureLoad(textureGuid, GUID::Null(), StringId{});
         return {};
@@ -2621,14 +2987,18 @@ void TextureService::HotSwapTexture(const GUID& textureGuid)
     // Until this point every material still samples the OLD texture, so there is no
     // default-texture gap.
     std::vector<std::pair<GUID, StringId>> refs;
+    TextureGPUCache::Entry oldStream;
     {
         std::lock_guard lock(m_PendingTexturesMutex);
         if (auto rev = m_TextureToMaterialBindings.find(textureGuid); rev != m_TextureToMaterialBindings.end())
             refs = rev->second;
+        oldStream = RemoveMaterialMipStreamLocked(textureGuid);
     }
     for (const auto& [matGuid, slotName] : refs)
     {
-        if (Material* mat = (*m_Materials).Find(matGuid))
+        if (Material* mat = (*m_Materials).Find(matGuid);
+            mat && (!oldStream.Texture.IsValid() || mat->GetTexture(slotName) == oldStream.Texture ||
+                    mat->GetTexture(slotName) == oldEntry.Texture))
         {
             ApplyTextureFilterMeta(mat, slotName, textureGuid);
             ApplyMaterialSlotBinding(mat, slotName, newEntry, newIdx);
@@ -2639,6 +3009,7 @@ void TextureService::HotSwapTexture(const GUID& textureGuid)
     // destroy them (the device defers the VkImage teardown past frames-in-flight,
     // same as Evict).
     RetireCacheEntry(oldEntry);
+    RetireCacheEntry(oldStream);
 }
 
 void TextureService::EvictCubeLut(const GUID& lutGuid)
@@ -3200,7 +3571,13 @@ void TextureService::RestoreMaterialTextureBinding(Material* mat, const GUID& ma
                                  ResolveDefaultBindlessIndex(slotName));
         return;
     }
-    if (TextureGPUCache::Entry authored; m_TextureGPUCache.TryGet(authoredTexGuid, authored))
+    TextureGPUCache::Entry authored;
+    bool resident = false;
+    {
+        std::lock_guard lock(m_PendingTexturesMutex);
+        resident = TryGetMaterialTextureLocked(authoredTexGuid, authored);
+    }
+    if (resident)
     {
         BindCachedMaterialTexture(mat, slotName, authored);
         return;

@@ -16,9 +16,9 @@
 #include "Core/Application.h"
 #include "Core/Engine.h"
 #include "ECS/ClonePlan.h"
-#include "ECS/Component/ComponentFactory.h"
-#include "ECS/Component/ComponentFieldRegistry.h"
-#include "ECS/Component/ComponentTypeName.h"
+#include "ECS/ComponentFactory.h"
+#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/ComponentTypeName.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Query.h"
 #include "ECS/Reflection.h"
@@ -459,10 +459,8 @@ std::vector<Scene::PrefabOverride> OverridesOf(ECS::World& world, ECS::EntityHan
     return FindDescribed(entities, entity).Overrides;
 }
 
-// Design 4.4 item 3, 2.6 and 4.11: Apply writes the field into the prefab file, under the file's own
-// name, and every other instance in the world shows it; the applier has no override left, and an
-// instance with its own override keeps it. Writing the text from before (the undo) gives the
-// instances the old value back.
+// Apply writes the source field and updates following instances while preserving local overrides.
+// Writing the undo snapshot restores the source value.
 TEST_F(PrefabLibraryTests, AnApplyWritesTheFieldIntoThePrefabAndTheOtherInstancesFollowItAndItsUndo)
 {
     const std::filesystem::path file = Write("Crate.prefab", kCratePrefab);
@@ -1245,7 +1243,7 @@ void SuppressCrtDialogsInDeathTestChild()
 #endif
 }
 
-// Spawns in a job body that the main thread runs while it waits: the pool's one worker is busy.
+// An inline pool executes on the main thread, but the caller is still inside a job body.
 void SpawnInAJobTheMainThreadRuns(ECS::World& world, const GUID& prefab)
 {
     // Declared before the pool: the held job can still read it after the release.
@@ -1259,11 +1257,8 @@ void SpawnInAJobTheMainThreadRuns(ECS::World& world, const GUID& prefab)
         std::this_thread::yield();
     pool.Run([&] { Scene::SpawnPrefab(world, prefab, Components::Transform{}, {}); }, spawn);
     pool.Wait(spawn);
-    release = true;
-    pool.Wait(blocker);
 }
 
-// A job body is not the main thread for a spawn, also when the main thread runs it while it waits.
 TEST_F(PrefabLibraryTests, ASpawnInAJobBodyThatTheMainThreadRunsAsserts)
 {
     GTEST_FLAG_SET(death_test_style, "threadsafe");

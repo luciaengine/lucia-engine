@@ -113,6 +113,8 @@ class PlayModeManager
     // Intended to be called after the engine rendering loop is enabled.
     void ApplyEditModeSystemGating();
 
+    void RegisterCommands();
+
   private:
     struct ManagedPlayModeCallbacks
     {
@@ -133,6 +135,8 @@ class PlayModeManager
     struct UndoHistoryStash;
 
     void SetState(PlayModeState s);
+    bool RunPlayEnterCommand(std::string* outError);
+    bool RunPlayTogglePauseCommand(std::string* outError);
     // Sets the world clock's time scale to 0, which stops gameplay time.
     void PauseSimulationClock();
     // Restores the time scale that PauseSimulationClock found.

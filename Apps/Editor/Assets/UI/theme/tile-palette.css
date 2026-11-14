@@ -1,0 +1,483 @@
+/* Tile Palette panel — tileset picker, tool row, atlas grid, layer list.
+ *
+ * Attached to the panel subtree via RequestSubtreeStyleAssetPath, so every
+ * selector is scoped under .tile-palette-panel and design tokens resolve from
+ * :root. The atlas grid is a custom-painted element: CSS only gives it a box
+ * to grow into (it has no intrinsic size), which is why it carries a
+ * min-height rather than relying on content.
+ */
+
+.tile-palette-panel .tp-root {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    background-color: var(--ui_color_bg_panel);
+    padding: 8px;
+    gap: 6px;
+    box-sizing: border-box;
+}
+
+/* ---- Rows ---- */
+
+.tile-palette-panel .tp-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    column-gap: 6px;
+    row-gap: 6px;
+    flex: 0 0 auto;
+}
+
+.tile-palette-panel .tp-row-label {
+    font-size: 12px;
+    color: var(--ui_color_text_muted);
+    flex: 0 0 auto;
+    min-width: 52px;
+}
+
+.tile-palette-panel .tp-tileset-section {
+    display: flex;
+    flex-direction: column;
+    row-gap: 6px;
+    flex: 0 0 auto;
+}
+
+.tile-palette-panel .tp-tileset-actions {
+    justify-content: flex-end;
+}
+
+.tile-palette-panel .tp-tileset-actions.hidden {
+    display: none;
+}
+
+.tile-palette-panel .tp-tileset-field {
+    flex: 1 1 auto;
+    min-width: 120px;
+    /* Reserve the preview strip's height. AssetField hides the strip the moment
+       the value changes and shows it again when the thumbnail arrives a frame or
+       more later, so without a floor this row -- the topmost in the panel --
+       shrinks and grows on every layer switch and shoves everything below it. */
+    min-height: 50px;
+}
+
+.tile-palette-panel .tp-row Button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    font-size: 12px;
+}
+
+/* Armed tool: accent fill, white glyph. The class is applied by the panel from
+   the edit context, never by hover/focus, so it must outrank the button's own
+   state styling. */
+.tile-palette-panel button.tm-icon.tp-tool.selected {
+    background-color: var(--ui_color_accent);
+    border-color: var(--ui_color_accent);
+    color: #FFFFFF;
+    background-image-tint: #FFFFFF;
+}
+
+/* Hover brightens the glyph only. The accent belongs to the armed tool, so
+   reusing it here would make "under the cursor" and "armed" the same picture;
+   the theme's own hover fill still supplies the chip. */
+.tile-palette-panel button.tm-icon.tp-tool:hover {
+    background-image-tint: var(--ui_icon_tint_hover);
+}
+
+/* Stamp-row icons (flip/rotate) carry no .tp-tool, so their glyph never
+   brightened on hover the way the tools' now does. */
+.tile-palette-panel .tp-stamp-row Button:hover {
+    background-image-tint: var(--ui_icon_tint_hover);
+}
+
+.tile-palette-panel .tp-scatter {
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: var(--ui_color_text);
+}
+
+/* Atlas over layer list, with a draggable split between them. Both need
+   min-height:0 or the flex children refuse to shrink and the grid falls back to
+   its own min-height instead of taking the pane's share. */
+.tile-palette-panel .tp-split-body {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+/* Wide dock: atlas and layer list sit side by side instead of stacked. */
+.tile-palette-panel .tp-split-body.horizontal {
+    flex-direction: row;
+}
+
+/* The splitter turns into a vertical rule, with its margins transposed. */
+.tile-palette-panel .tp-layers-splitter.row {
+    width: 1px;
+    height: auto;
+    margin: 8px 6px;
+}
+
+.tile-palette-panel .tp-pane {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    /* Basis 0 so the splitter's weights govern the WHOLE span. Left at content
+       basis, Yoga distributes only the free space, so a weight change moves the
+       handle by less than the mouse travelled -- proportionally, for the whole
+       drag, which is what "the splitter lags" actually was. */
+    flex-basis: 0;
+}
+
+/* A 1px rule with air around it. Splitter::GetHitTestBounds pads the grab area
+   to 6px on its own, so the line can be hairline without becoming hard to
+   catch -- the margin is breathing room, not target area. */
+.tile-palette-panel .tp-layers-splitter {
+    height: 1px;
+    margin: 6px 8px;
+    flex: 0 0 auto;
+}
+
+/* A section with nothing usable in it takes no space at all. */
+.tile-palette-panel .tp-terrain-section.hidden {
+    display: none;
+}
+
+/* ---- Atlas grid ---- */
+
+.tile-palette-panel .tp-grid {
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+    min-height: 140px;
+    overflow: hidden;
+    border-width: 1px;
+    border-color: var(--ui_color_border_subtle);
+    border-radius: 4px;
+}
+
+/* ---- Hint line ---- */
+
+.tile-palette-panel .tp-hint {
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: var(--ui_color_text_muted);
+    padding: 2px 0;
+}
+
+.tile-palette-panel .tp-hint.hidden {
+    display: none;
+}
+
+/* ---- Layer list ---- */
+
+.tile-palette-panel .tp-layers {
+    display: flex;
+    flex-direction: column;
+    /* Fills its pane so the list runs to the bottom of the panel; the splitter
+       above decides how much of the panel that is. */
+    flex: 1 1 auto;
+    gap: 4px;
+    min-height: 0;
+}
+
+/* Padding here is what insets the row bars, so their rounded ends clear the
+   panel edge without giving any row a margin of its own. */
+.tile-palette-panel .tp-layer-list-viewport {
+    display: flex;
+    flex-direction: column;
+    row-gap: 4px;
+}
+
+.tile-palette-panel .tp-layer-list {
+    /* Equal on all four sides, and the same gap between bars, so a selected row
+       sits inside matching margins instead of touching its neighbours. */
+    padding: 8px;
+    /* Grows with the section rather than sitting at a fixed 120px, which left
+       dead space under the rows whenever the pane was taller. */
+    flex: 1 1 auto;
+    min-height: 80px;
+    border-width: 1px;
+    border-color: var(--ui_color_border_subtle);
+    border-radius: 4px;
+    /* The panel's own colour, matching the inspector: the border delineates the
+       list, so a darker well would only make the section read as a separate
+       surface from the rest of the editor's lists. */
+    background-color: var(--ui_color_bg_panel);
+}
+
+.tile-palette-panel .tp-layer-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    /* Width, not margin. A horizontal margin on a stretched flex child inside
+       the layer ScrollView sends layout into a loop and overflows the stack, so
+       the inset comes from the list's padding below. */
+    width: 100%;
+    border-width: 1px;
+    border-color: transparent;
+    border-radius: 4px;
+    column-gap: 6px;
+    padding: 0 6px;
+    flex: 0 0 auto;
+}
+
+/* Full-width bar: the row is the flex container, so the fill spans the whole
+   strip rather than sitting behind the name alone. */
+.tile-palette-panel .tp-layer-row:hover {
+    background-color: var(--ui_color_bg_hover);
+    border-color: var(--ui_color_border_subtle);
+}
+
+/* After :hover at equal specificity, so the targeted layer keeps its bar while
+   the cursor is somewhere else in the list. */
+.tile-palette-panel .tp-layer-row.active {
+    background-color: var(--ui_color_bg_selected);
+    border-color: #5A5A5A;
+}
+
+/* Hovering the row you are already painting into still has to answer. */
+.tile-palette-panel .tp-layer-row.active:hover {
+    background-color: var(--ui_color_bg_scrollbar_thumb);
+}
+
+/* Rows marked with Ctrl/Shift-click for a batch action; the target row keeps
+   its own fill, the others show the mark on the border alone. */
+.tile-palette-panel .tp-layer-row.selected {
+    border-color: var(--ui_color_accent);
+}
+
+.tile-palette-panel .tp-layer-name {
+    /* Hugs its text instead of stretching: a field spanning the row meant a
+       click on empty strip started editing rather than selecting the layer. */
+    flex: 0 1 auto;
+    min-width: 0;
+    font-size: 12px;
+    text-align: left;
+    background-color: transparent;
+    border-width: 0;
+    color: var(--ui_color_text);
+    padding: 0;
+}
+
+/* Reads as a label until it has focus, so the row still looks like a list. */
+.tile-palette-panel .tp-layer-name:focus {
+    background-color: var(--ui_color_bg_input);
+}
+
+.tile-palette-panel .tp-layer-visible {
+    flex: 0 0 auto;
+}
+
+/* The inspector section headers' own glyph, so a row's overflow menu looks like
+   every other overflow menu in the editor. */
+.tile-palette-panel .tp-layer-options {
+    background-image: url("editor:Icons/options.png");
+    background-size: 16px 16px;
+    background-repeat: no-repeat;
+    background-position: center;
+}
+
+/* Unlocked: an open padlock, dimmed so a row of them stays quiet. */
+.tile-palette-panel button.tp-layer-lock {
+    flex: 0 0 auto;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    background-color: transparent;
+    border-width: 0;
+    background-image: url("editor:Icons/LockOpen.png");
+    background-size: 20px 20px;
+    background-repeat: no-repeat;
+    background-position: center;
+    opacity: 0.35;
+}
+
+/* Locked: closed padlock at full strength, so the guarded layer stands out. */
+.tile-palette-panel button.tp-layer-lock.locked {
+    background-image: url("editor:Icons/LockClosed.png");
+    opacity: 1.0;
+}
+
+.tile-palette-panel button.tp-layer-lock:hover {
+    opacity: 1.0;
+}
+
+/* Row icons match the tool glyphs at 20px. The shared arrow/copy art is
+   background-size: contain in core.css, which sizes to the box instead, so the
+   row would otherwise render them a different size to everything above it. */
+.tile-palette-panel button.tp-layer-move {
+    flex: 0 0 auto;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    background-color: transparent;
+    border-width: 0;
+    background-size: 20px 20px;
+    background-repeat: no-repeat;
+    background-position: center;
+}
+
+.tile-palette-panel .tp-empty {
+    font-size: 12px;
+    color: var(--ui_color_text_muted);
+    padding: 6px;
+}
+
+/* ---- Rename field: the panel scope has no inspector field context, so the
+   inner TextInput needs its own box here. ---- */
+
+.tile-palette-panel .tp-field {
+    flex: 1 1 auto;
+    min-width: 100px;
+}
+
+.tile-palette-panel .tp-field TextInput {
+    padding: 4px 8px;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: var(--ui_color_border_subtle);
+    background-color: #202020;
+    color: var(--ui_color_text);
+    font-size: 12px;
+    height: 24px;
+    min-height: 24px;
+}
+
+/* ---- Empty state ----
+   Stands in for the atlas grid before a tileset is assigned. Sized to a short
+   message rather than the grid's height, so an unconfigured panel does not open
+   on a large blank block. */
+
+.tile-palette-panel .tp-grid-empty {
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: var(--ui_color_text_muted);
+    background-color: var(--ui_color_bg_input);
+    border-width: 1px;
+    border-color: var(--ui_color_border_subtle);
+    border-radius: 4px;
+    padding: 14px 10px;
+    text-align: center;
+}
+
+.tile-palette-panel .tp-grid-empty.hidden {
+    display: none;
+}
+
+.tile-palette-panel .tp-grid.hidden {
+    display: none;
+}
+
+/* Hover readout and zoom buttons under the atlas. */
+.tile-palette-panel .tp-grid-bar {
+    justify-content: flex-end;
+    flex-wrap: nowrap;
+}
+
+.tile-palette-panel .tp-grid-bar.hidden {
+    display: none;
+}
+
+.tile-palette-panel .tp-grid-status {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 12px;
+    color: var(--ui_color_text_muted);
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+/* The Scene View is on another tool: the armed brush is what the next tile
+   click will use, but nothing reaches it yet, so the row reads as parked. */
+.tile-palette-panel .tp-tool-row.disarmed {
+    opacity: 0.55;
+}
+
+/* The replace row's two id fields: wide enough for a five-digit id, no wider,
+   so the two buttons stay on the same line. */
+.tile-palette-panel .tp-replace-field {
+    width: 64px;
+    flex: 0 0 auto;
+}
+
+/* A brush chip's art: the footprint fitted into a fixed box beside its name. */
+.tile-palette-panel .tp-brush-icon {
+    width: 28px;
+    height: 28px;
+    flex: 0 0 auto;
+}
+
+/* ---- Terrain chooser ----
+   Chips are authored data: the swatch paints the terrain's own colour, so CSS
+   only sizes it. The section collapses to its label when a tileset defines no
+   terrain sets. */
+
+.tile-palette-panel .tp-terrain-section {
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 auto;
+    /* Room between a section's header, its chips and the next section, so the
+       Brushes and Replace rows do not read as one dense block. */
+    row-gap: 6px;
+    padding: 4px 0;
+}
+
+.tile-palette-panel .tp-terrain-list {
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 auto;
+    gap: 4px;
+}
+
+.tile-palette-panel .tp-terrain-set-label {
+    font-size: 12px;
+    color: var(--ui_color_text_muted);
+    flex: 0 0 auto;
+}
+
+.tile-palette-panel .tp-terrain-row {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: 6px;
+    row-gap: 4px;
+    flex: 0 0 auto;
+}
+
+.tile-palette-panel .tp-terrain-entry {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    column-gap: 4px;
+    flex: 0 0 auto;
+}
+
+.tile-palette-panel .tp-terrain-swatch {
+    width: 12px;
+    height: 12px;
+    flex: 0 0 auto;
+}
+
+.tile-palette-panel .tp-terrain-chip {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    font-size: 12px;
+}
+
+.tile-palette-panel .tp-terrain-chip.selected {
+    background-color: var(--ui_color_accent);
+    border-color: var(--ui_color_accent);
+    color: #FFFFFF;
+}
+
+/* Eats the slack between the name and the overflow glyph, so the glyph lands at
+   the row's right end without the name field stretching to meet it. */
+.tile-palette-panel .tp-layer-spacer {
+    flex: 1 1 auto;
+    min-width: 0;
+}

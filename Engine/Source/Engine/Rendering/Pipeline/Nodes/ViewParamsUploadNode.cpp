@@ -195,6 +195,16 @@ void ViewParamsUploadNode::DeclareForView(ViewDeclare& d)
     ubo.ge_exposureParams[2] = static_cast<float>(
         post.ViewOutput == PostProcessViewOutput::NoLook ? Passes::kTonemapNoLookArm : post.Look);
 
+    float bandStart = 0, bandEnd = 0;
+    int distanceMode = 0;
+    if (d.Services.GetDepthPixelationBandRange(d.View.id, bandStart, bandEnd, distanceMode))
+    {
+        ubo.ge_pixelationBand[0] = bandStart;
+        ubo.ge_pixelationBand[1] = bandEnd;
+        ubo.ge_pixelationBand[2] = 1.0f;
+        ubo.ge_pixelationBand[3] = static_cast<float>(distanceMode);
+    }
+
     *alloc.Ptr = ubo;
     d.PublishBuffer(m_BufferRef,
                     {alloc.Buffer, alloc.Offset, sizeof(ViewParamsUBO), /*Graph*/ {}});

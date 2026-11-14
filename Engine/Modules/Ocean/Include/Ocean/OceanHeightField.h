@@ -97,6 +97,11 @@ public:
 
     // Post-submit stamp: attaches the submission's fence token to this frame's
     // pending readback (RGReadbackRing completion contract).
+    void OnFrameAborted(const Rendering::RenderGraph::RGFrame& frame)
+    {
+        m_Readback.CancelUnsubmitted(frame);
+    }
+
     void OnFrameSubmitted(const ::GameEngine::Rendering::RenderGraph::RGFrame& frame,
                           const ::GameEngine::Rendering::IDevice::GpuSyncToken& token)
     {

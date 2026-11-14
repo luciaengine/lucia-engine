@@ -42,9 +42,7 @@ struct Probe : ns::IUserSystem
         ++Posts;
         LastDelta = dt;
         if (ReenterPost)
-        {
             EXPECT_FALSE(ns::PostSimulateUserSystems(world));
-        }
         if (ThrowPost)
             throw std::runtime_error("late callback test");
     }
@@ -92,7 +90,7 @@ TEST_F(NativePostSimulation, AdapterOptsInAndLegacySystemsRemainNoOp)
     ECS::UserSystemAdapter<OldStyleSystem> old("OldStyleSystem");
     EXPECT_TRUE(late.HasPostSimulation());
     EXPECT_FALSE(old.HasPostSimulation());
-    EXPECT_EQ(GE_USERMODULE_ABI_VERSION, 3u);
+    EXPECT_EQ(GE_USERMODULE_ABI_VERSION, 2u);
     AdapterProbe::Posts = 0;
     ns::RegisterUserSystem(&late);
     ns::RegisterUserSystem(&old);
@@ -269,7 +267,9 @@ class ExclusiveSystem : public ECS::ISystem
   public:
     explicit ExclusiveSystem(WaveState* state) : State(state) {}
     const char* GetName() const override { return "Exclusive"; }
-    bool RequiresExclusiveUpdate() const override { return true; }
+    // No override specifier so the same regression compiles against the old
+    // scheduler: its ignored requirement then fails the actual wave assertions.
+    bool RequiresExclusiveUpdate() const { return true; }
     void Update(ECS::World&, float32) override
     {
         EXPECT_EQ(std::this_thread::get_id(), State->Caller);

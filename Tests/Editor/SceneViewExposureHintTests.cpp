@@ -161,9 +161,9 @@ TEST(SceneViewExposureHint, ASettingChangedOnOneSideShowsTheSettingsSentence)
     SceneViewSettings::Exposure brighterView = stockView;
     brighterView.Compensation = 1.0f;
     EXPECT_EQ(WithoutAReading(brighterView, stockCamera), Message::SettingsDiffer);
-    SceneViewSettings::Exposure fixedView = stockView;
-    fixedView.Mode = SceneViewExposureMode::Fixed;
-    EXPECT_EQ(WithoutAReading(fixedView, stockCamera), Message::SettingsDiffer);
+    SceneViewSettings::Exposure autoView = stockView;
+    autoView.Mode = SceneViewExposureMode::Auto;
+    EXPECT_EQ(WithoutAReading(autoView, stockCamera), Message::SettingsDiffer);
     Components::Camera darkerCamera{};
     darkerCamera.ExposureCompensation = -1.0f;
     EXPECT_EQ(WithoutAReading(stockView, darkerCamera), Message::SettingsDiffer);

@@ -25,10 +25,12 @@
 #include "PageStreaming/PageTableEntry.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
+#include "Rendering/Core/RenderGraph/RGFrame.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstring>
 #include <array>
 #include <bit>
 #include <format>
@@ -70,6 +72,51 @@ TerrainHeightSourceInputs BakedPageable()
 bool CoversWholeTerrain(const HeightPageDirtyRect& rect)
 {
     return rect.MinU == 0.0f && rect.MinV == 0.0f && rect.MaxU == 1.0f && rect.MaxV == 1.0f;
+}
+
+} // namespace
+
+namespace
+{
+
+std::span<const float32> UploadSamples(const HeightPageUpload& upload)
+{
+    EXPECT_EQ(upload.Bytes.size(), PageStreaming::kPageSampleCount * sizeof(float32));
+    return PageStreaming::HeightSamples(std::span<const uint8>(upload.Bytes));
+}
+
+void SubmitPageUploads(Rendering::IDevice& device, TerrainPageFeature& feature, uint64 frameIndex,
+                       bool refusePreparation = false)
+{
+    namespace RG = Rendering::RenderGraph;
+    RG::RGResourcePool persistent(&device);
+    RG::RGTransientPool transient(&device);
+    RG::RGUploadRing ring(&device, 2, 4096);
+    RG::RGFrame frame(&device, &persistent, &transient, &ring);
+    frame.BeginFrame(frameIndex);
+    frame.AddPass("TerrainPages.Upload", Rendering::PassPhase::kEarlySetup,
+                  [&](RG::RGPassBuilder& pass)
+                  {
+                      pass.PreventCulling();
+                      feature.DeclareUploads(frame, pass);
+                  },
+                  [featurePtr = &feature, graph = &frame](RG::RGContext& context)
+                  {
+                      if (context.Cmd)
+                          featurePtr->FlushUploads(*context.Cmd, *graph);
+                  });
+    if (refusePreparation)
+        frame.AddPass("TerrainPages.RefusePreparation", Rendering::PassPhase::kFinalize,
+                      [](RG::RGPassBuilder& pass)
+                      {
+                          pass.PreventCulling();
+                          pass.Prepare([](RG::RGPrepareContext&) { return false; });
+                      },
+                      [](RG::RGContext&) {});
+    frame.Execute();
+    if (refusePreparation)
+        EXPECT_EQ(frame.Stats().SubmissionsMade, 0u);
+    device.WaitForIdle();
 }
 
 } // namespace
@@ -724,7 +771,7 @@ TEST(TerrainPages, AStoreOffTheTileLatticeTakesNoModifierOverlayAndTheRefusalNam
     EXPECT_NE(refusal.find("Import the heightmap at 16385 x 4097 samples"), std::string::npos) << refusal;
 }
 
-TEST(TerrainPageFeature, ATableBecomesReadableOnlyWithTheUploadPassThatRecordsItsPages)
+TEST(TerrainPageFeature, ATableBecomesReadableOnlyAfterTheUploadPassSubmitsItsPages)
 {
     Rendering::DeviceDesc desc{};
     desc.preferredAPI = Rendering::GraphicsAPI::Vulkan;
@@ -760,15 +807,9 @@ TEST(TerrainPageFeature, ATableBecomesReadableOnlyWithTheUploadPassThatRecordsIt
         feature.Latch(*device, 2); // a frame whose graph declared no upload pass
         EXPECT_FALSE(feature.LatchedTable(request.Terrain, words, version));
 
-        feature.CommitLatch(); // the upload pass that flushes the staged pages is declared
+        SubmitPageUploads(*device, feature, 2);
         ASSERT_TRUE(feature.LatchedTable(request.Terrain, words, version));
         EXPECT_EQ(version, published);
-        auto list = device->CreateCommandList(Rendering::IDevice::QueueType::Graphics);
-        list->Begin();
-        feature.FlushUploads(*list);
-        list->End();
-        device->ExecuteCommandLists({list.get()});
-        device->WaitForIdle();
         EXPECT_FALSE(feature.HasStagedUploads());
     }
     device->Shutdown();
@@ -809,13 +850,7 @@ TEST(TerrainPageFeature, ASnapshotTakenFromThePoolHoldsTheWordsOfThePublishedVer
 
             feature.Publish(pages);
             feature.Latch(*device, frame);
-            feature.CommitLatch();
-            auto list = device->CreateCommandList(Rendering::IDevice::QueueType::Graphics);
-            list->Begin();
-            feature.FlushUploads(*list);
-            list->End();
-            device->ExecuteCommandLists({list.get()});
-            device->WaitForIdle();
+            SubmitPageUploads(*device, feature, frame);
 
             std::span<const uint32> words;
             uint64 version = 0;
@@ -857,13 +892,7 @@ TEST(TerrainPageFeature, TheCacheTextureIsReadableOnlyFromTheLatchAfterItsClear)
             << "a consumer of this frame could run before the upload pass clears the new cache";
         feature.Latch(*device, 2); // a frame whose upload pass never ran
         EXPECT_FALSE(feature.CacheTexture().IsValid()) << "the cache was never cleared";
-        feature.CommitLatch();
-        auto list = device->CreateCommandList(Rendering::IDevice::QueueType::Graphics);
-        list->Begin();
-        feature.FlushUploads(*list);
-        list->End();
-        device->ExecuteCommandLists({list.get()});
-        device->WaitForIdle();
+        SubmitPageUploads(*device, feature, 2);
         EXPECT_FALSE(feature.CacheTexture().IsValid()) << "the clear is recorded in this frame";
         feature.Latch(*device, 3);
         EXPECT_TRUE(feature.CacheTexture().IsValid());
@@ -875,7 +904,7 @@ namespace
 {
 
 // One render frame of the page feature over `pages`: request `cameras`, update, publish, latch,
-// commit with a declared upload pass and record the uploads.
+// submit the upload pass before observing the committed tables.
 void StepPagesAndFeature(TerrainPages& pages, TerrainPageFeature& feature, Rendering::IDevice& device,
                          const PagedTerrainRequest& request, std::span<const Mathematics::Vector3> cameras,
                          uint64 frame)
@@ -885,13 +914,8 @@ void StepPagesAndFeature(TerrainPages& pages, TerrainPageFeature& feature, Rende
     pages.Update(frame, 1.0f / 60.0f, false, 2);
     feature.Publish(pages);
     feature.Latch(device, frame);
-    feature.CommitLatch();
-    auto list = device.CreateCommandList(Rendering::IDevice::QueueType::Graphics);
-    list->Begin();
-    feature.FlushUploads(*list);
-    list->End();
-    device.ExecuteCommandLists({list.get()});
-    device.WaitForIdle();
+    if (feature.HasStagedUploads())
+        SubmitPageUploads(device, feature, frame);
 }
 
 // The terrain-UV rect of a grass cell window of +-48 m about world (x, z) on StreamedFieldRequest's
@@ -1057,13 +1081,12 @@ TEST(TerrainPageFeature, ASurfacePageWritesEachPlaneIntoTheSameSlotOfItsPlaneTex
         ASSERT_TRUE(feature.HasStagedUploads());
         EXPECT_FALSE(feature.SurfacePlaneTexture(kTerrain, PageStreaming::PageFieldKind::Splat).IsValid())
             << "a plane texture is readable only from the latch after its first upload";
-        feature.CommitLatch();
+        SubmitPageUploads(*device, feature, 1);
+        feature.Latch(*device, 2);
 
         std::array<Rendering::BufferHandle, 2 * 3> readbacks{};
         auto list = device->CreateCommandList(Rendering::IDevice::QueueType::Graphics);
         list->Begin();
-        feature.FlushUploads(*list);
-        feature.Latch(*device, 2);
         for (std::size_t p = 0; p < planes.size(); ++p)
         {
             const Rendering::TextureHandle texture = feature.SurfacePlaneTexture(kTerrain, planes[p]);
@@ -1136,13 +1159,7 @@ TEST(TerrainPageFeature, ATerrainReadsOnlyThePlaneTexturesOfItsOwnPlanes)
         TerrainPageFeature feature;
         feature.Publish(pages);
         feature.Latch(*device, 1);
-        feature.CommitLatch();
-        auto list = device->CreateCommandList(Rendering::IDevice::QueueType::Graphics);
-        list->Begin();
-        feature.FlushUploads(*list);
-        list->End();
-        device->ExecuteCommandLists({list.get()});
-        device->WaitForIdle();
+        SubmitPageUploads(*device, feature, 1);
         feature.Latch(*device, 2);
         EXPECT_EQ(ReadablePlanes(feature, kFourPlaneTerrain), 0b1111u) << "every plane texture exists";
         EXPECT_EQ(ReadablePlanes(feature, kTwoPlaneTerrain), 0b0011u)
@@ -1348,7 +1365,7 @@ TEST(TerrainPages, APlanetIsPublishedOnlyOnceItsTopLevelIsResidentAndAgainAfterA
 
 // An overlay with a 5 m bump on one face of a published planet: the resident pages under it are uploaded again
 // with the bump, and the CBT re-evaluates around the bump on that face only, though no page changes its slot.
-TEST(TerrainHeightPages, AnOverlayOnOneFaceOfAPlanetRewritesItsPagesWithTheBumpAndDirtiesThatFace)
+TEST(TerrainPages, AnOverlayOnOneFaceOfAPlanetRewritesItsPagesWithTheBumpAndDirtiesThatFace)
 {
     TerrainPages pages(nullptr, nullptr, HeightPageProfile{512, kDesktopHeightPages.DenseTableWords},
                        DesktopSurfacePageProfile());
@@ -1430,7 +1447,7 @@ float32 LargestUploadedHeight(TerrainPages& pages)
 
 // An overlay made for the planet's lattice, then a re-provision to a finer lattice with the same overlay: the
 // restarted stream ignores it (its samples are the old lattice's), so every page is the relief alone.
-TEST(TerrainHeightPages, APlanetIgnoresAnOverlayMadeForItsOldLattice)
+TEST(TerrainPages, APlanetIgnoresAnOverlayMadeForItsOldLattice)
 {
     TerrainPages pages(nullptr, nullptr, HeightPageProfile{512, kDesktopHeightPages.DenseTableWords},
                        DesktopSurfacePageProfile());
@@ -1525,6 +1542,103 @@ uint32 Wanted(const std::vector<PageLevelCounts>& levels)
     for (const PageLevelCounts& level : levels)
         wanted += level.Wanted;
     return wanted;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+TEST(TerrainPages, AnUnindexableCpuDirectoryExplainsTheAuthoredResolutionFix)
+{
+    EXPECT_EQ(DenseDirectoryRefusal("Near", 8193, 2049), "");
+    const std::string refusal = DenseDirectoryRefusal("Outer", (1u << 22u) + 1u, 257);
+    EXPECT_NE(refusal.find("Outer"), std::string::npos) << refusal;
+    EXPECT_NE(refusal.find("Samples Per Meter"), std::string::npos) << refusal;
+}
+
+
+
+TEST(TerrainPages, ReturningFromCpuOnlyPagingRestoresTheTableOfRetainedGpuPages)
+{
+    TerrainPages pages(nullptr, nullptr, HeightPageProfile{64, kDesktopHeightPages.DenseTableWords}, kDesktopSurfacePages);
+    PagedTerrainRequest request = FlatTileRequest(257);
+    const Mathematics::Vector3 camera{128.0f, 10.0f, 128.0f};
+    const PageLevelView view = MakePageLevelView(kPageLevelReferenceRows, 1.0f, 11.0f);
+    pages.Update(1, 1.0f / 60.0f, false, 2);
+    uint32 uploads = 0;
+    for (uint64 frame = 2; frame < 62; ++frame)
+    {
+        pages.Request(request, {&camera, 1}, view);
+        pages.Update(frame, 1.0f / 60.0f, false, 2);
+        uploads += static_cast<uint32>(pages.Uploads().size());
+    }
+    ASSERT_EQ(uploads, 14u) << "the pinned pyramid is resident and its arrival fades have settled";
+    uint64 version = 0;
+    const auto* words = pages.TableWords(request.Terrain, version);
+    ASSERT_NE(words, nullptr);
+    const std::vector<uint32> residentTable = *words;
+
+    // A reopened terrain waits for its modifiers on the CPU before drawing its pages again.
+    ++request.TerrainGeneration;
+    request.GpuPages = false;
+    pages.Request(request, {&camera, 1}, view);
+    pages.Update(62, 1.0f / 60.0f, false, 2);
+    EXPECT_EQ(pages.TableWords(request.Terrain, version), nullptr);
+    request.GpuPages = true;
+    pages.Request(request, {&camera, 1}, view);
+    pages.Update(63, 1.0f / 60.0f, false, 2);
+    EXPECT_TRUE(pages.Uploads().empty()) << "retained pages need no upload or residency transition";
+    words = pages.TableWords(request.Terrain, version);
+    ASSERT_NE(words, nullptr);
+    EXPECT_EQ(*words, residentTable) << "every retained page and settled fade must return to the GPU table";
+}
+
+TEST(TerrainPages, The60By15KmTerrainUsesADenseDesktopTableAndABoundedDeckTable)
+{
+    PageTable desktop;
+    desktop.Reset(240001, 60001, 1u, kDesktopHeightPages.Slots,
+                  {kDesktopHeightPages.DenseTableWords, kDesktopHeightPages.TableMidBlocks,
+                   kDesktopHeightPages.TableLeafBlocks});
+    EXPECT_EQ(desktop.TierCount(), 0u);
+    EXPECT_EQ(desktop.Words().size() + 136u + kDesktopHeightPages.Slots, 1174877u);
+    PageTable deck;
+    deck.Reset(240001, 60001, 1u, kSteamDeckHeightPages.Slots,
+               {kSteamDeckHeightPages.DenseTableWords, kSteamDeckHeightPages.TableMidBlocks,
+                kSteamDeckHeightPages.TableLeafBlocks});
+    EXPECT_GT(deck.TierCount(), 0u);
+    EXPECT_LT(deck.Words().size(), desktop.Words().size());
+    EXPECT_EQ(DenseDirectoryRefusal("Outer", 240001, 60001), "");
+}
+
+TEST(TerrainHeightSource, AnUnindexableDirectoryDisablesCpuAndGpuPagesWithoutChangingTheLattice)
+{
+    TerrainHeightSourceInputs inputs = BakedPageable();
+    const uint32 unindexable = PageStreaming::kCpuDirectoryMaxSamplesPerAxis + 1u;
+    EXPECT_FALSE(DenseDirectoryRefusal("Outer", unindexable, 257).empty());
+    inputs.CookedStoreOpen = DenseDirectoryRefusal("Outer", unindexable, 257).empty();
+    EXPECT_TRUE(inputs.PagesOnLattice);
+    EXPECT_FALSE(TerrainHeightHasCpuPages(inputs));
+    EXPECT_FALSE(TerrainHeightIsPaged(inputs));
+}
+
+TEST(TerrainHeightSource, CpuPagesIgnoreTheGpuArmAndPendingModifiersButRequireTheLattice)
+{
+    TerrainHeightSourceInputs inputs = BakedPageable();
+    inputs.GpuReadsPages = false;
+    inputs.ModifiersPending = true;
+    EXPECT_TRUE(TerrainHeightHasCpuPages(inputs));
+    inputs.PagesOnLattice = false;
+    EXPECT_FALSE(TerrainHeightHasCpuPages(inputs));
+    EXPECT_FALSE(TerrainHeightIsPaged(inputs));
 }
 
 } // namespace
@@ -1790,4 +1904,97 @@ TEST(TerrainPages, ALayerWriteRewritesTheSurfacePagesWhoseWindowReadsItPastTheir
         EXPECT_TRUE(PageStreaming::PageReadsLevel0Rect(address, bump, PageStreaming::kPageSurfaceWindowMarginSamples))
             << "face " << int(address.Face) << " level " << int(address.Level) << " page (" << address.X << ", "
             << address.Z << ") was rewritten though its window does not read the write";
+}
+
+TEST(TerrainPageFeature, SurfaceCacheShrinkDropsOldPublishedAndAbortedUploads)
+{
+    Rendering::DeviceDesc desc{};
+    desc.preferredAPI = Rendering::GraphicsAPI::Vulkan;
+    desc.enableDynamicRendering = true;
+    std::unique_ptr<Rendering::IDevice> device = Rendering::DeviceFactory::CreateDevice(desc);
+    if (!device || !device->Initialize(desc))
+        GTEST_SKIP() << "no Vulkan device";
+    for (const bool latchOldUploads : {false, true})
+    {
+        SCOPED_TRACE(latchOldUploads);
+        TerrainPages pages(nullptr, nullptr, HeightPageProfile{64, kDesktopHeightPages.DenseTableWords},
+                           SurfacePageProfile{4u, 16u});
+        const PlanetPagedRequest height = FlatPlanetRequest(true);
+        const Components::TerrainSurfaceRulesEffect rules = MakeDefaultPlanetSurfaceRules(-10.0f, 10.0f);
+        PlanetSurfacePagedRequest planetSurface;
+        planetSurface.Planet = height.Planet;
+        planetSurface.Rules = &rules;
+        planetSurface.RulesIdentity = 1;
+        pages.Update(1, 1.0f / 60.0f, false, 2);
+        const Mathematics::Vector3 camera{static_cast<float32>(height.Shape.ReferenceRadius) + 5.0f, 0, 0};
+        const PageRequestCamera everyWay{camera, {}, 0.0f, false};
+        const auto view = MakePageLevelView(kPageLevelReferenceRows, 1.0f, 11.0f);
+        pages.RequestPlanet(height, {&camera, 1}, view);
+        pages.RequestPlanetSurface(planetSurface, {&everyWay, 1}, view);
+        pages.Update(2, 1.0f / 60.0f, false, 2);
+        ASSERT_EQ(pages.Surface().Geometry().SlotsPerRow, 4u);
+        constexpr auto kPlane = PageStreaming::PageFieldKind::Splat;
+        pages.Surface().Uploads().clear();
+        pages.Surface().Uploads().push_back({15u, 1u, SurfacePlanePattern(kPlane, 17u), height.RenderTerrain});
+        pages.Uploads().clear();
+        pages.Uploads().push_back({0u, std::vector<uint8>(PageStreaming::kPageSampleCount * sizeof(float32), 0u),
+                                   height.RenderTerrain});
+        TerrainPageFeature feature;
+        feature.Publish(pages);
+        ASSERT_EQ(feature.GetReadiness().PublishedSurfaceUploads, 1u);
+        if (latchOldUploads)
+        {
+            feature.Latch(*device, 1);
+            ASSERT_TRUE(feature.HasStagedUploads());
+            SubmitPageUploads(*device, feature, 1, true);
+            const auto aborted = feature.GetReadiness();
+            ASSERT_EQ(aborted.LatchedSurfaceUploads, 1u);
+            ASSERT_EQ(aborted.LatchedUploads, 1u);
+            ASSERT_EQ(aborted.SubmittedFrame, ~0ull);
+        }
+
+        // Removing the actual planet returns the field to its four planar slots.
+        pages.Update(3, 1.0f / 60.0f, false, 2);
+        ASSERT_EQ(pages.Surface().Geometry().SlotsPerRow, 2u);
+        const std::array<PageStreaming::PageFieldKind, 1> planes{kPlane};
+        const auto source = EmptySurfaceSource(planes);
+        constexpr uint32 kTerrain = 9u;
+        RequestSurface(pages, kTerrain, source);
+        pages.Update(4, 1.0f / 60.0f, false, 2);
+        pages.Surface().Uploads().clear();
+        const auto expected = SurfacePlanePattern(kPlane, 93u);
+        pages.Surface().Uploads().push_back({0u, source.PlaneMask, expected, kTerrain});
+        feature.Publish(pages);
+        // Fail before any unsafe GPU copy if a queue still holds slot 15 of the old image.
+        ASSERT_EQ(feature.GetReadiness().PublishedSurfaceUploads, 1u);
+        feature.Latch(*device, 2);
+        const auto latched = feature.GetReadiness();
+        ASSERT_EQ(latched.LatchedSurfaceUploads, 1u);
+        EXPECT_EQ(latched.LatchedUploads, 1u) << "surface layout changes retain the queued height page";
+        ASSERT_TRUE(feature.HasStagedUploads());
+        SubmitPageUploads(*device, feature, 2);
+        EXPECT_EQ(feature.GetReadiness().LatchedSurfaceUploads, 0u);
+        EXPECT_EQ(feature.GetReadiness().SubmittedFrame, 2u);
+        feature.Latch(*device, 3);
+        const auto texture = feature.SurfacePlaneTexture(kTerrain, kPlane);
+        ASSERT_TRUE(texture.IsValid());
+        const uint32 stride = PageStreaming::PageStrideTexels(SurfacePlaneFormat(kPlane));
+        const auto readback = device->CreateReadbackBuffer(expected.size());
+        ASSERT_TRUE(readback.IsValid());
+        auto list = device->CreateCommandList(Rendering::IDevice::QueueType::Graphics);
+        list->Begin();
+        list->Barrier(Rendering::ResourceBarrier::CreateTextureBarrier(
+            texture, Rendering::ResourceState::ShaderResource, Rendering::ResourceState::CopySource));
+        list->CopyTextureSubresourceToBuffer(texture, 0, 0, readback, stride, stride, 0, 0);
+        list->End();
+        device->ExecuteCommandLists({list.get()});
+        device->WaitForIdle();
+        const auto* mapped = static_cast<const uint8*>(device->MapBuffer(readback));
+        ASSERT_NE(mapped, nullptr);
+        const std::vector<uint8> actual(mapped, mapped + expected.size());
+        device->UnmapBuffer(readback);
+        EXPECT_EQ(actual, expected) << "the new layout's page survives retry and reaches its in-range slot";
+        device->DestroyBuffer(readback);
+    }
+    device->Shutdown();
 }

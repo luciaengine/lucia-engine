@@ -80,6 +80,7 @@ struct MetalTextureView
 struct MetalSemaphore
 {
     MTL::SharedEvent* event = nullptr; // owned (+1)
+    MTL::Event* deviceEvent = nullptr; // optional GPU-only timeline, owned (+1)
 };
 
 // One resident of a descriptor set as the command list declares it to the
@@ -102,6 +103,11 @@ struct MetalCompactResident
 // MetalTransientDescriptorArena, valid until that slot is recycled.
 struct MetalDescriptorSet
 {
+    std::vector<MTL::Buffer*> directBuffers;
+    std::vector<size_t> directBufferOffsets;
+    std::vector<MTL::Texture*> directTextures;
+    std::vector<MTL::SamplerState*> directSamplers;
+    std::vector<uint32_t> directBufferSizes;
     MTL::Buffer* argumentBuffer = nullptr; // owned (+1) only when ownsArgumentBuffer
     size_t argumentOffset = 0;             // byte offset of the table in argumentBuffer
     bool ownsArgumentBuffer = false;
@@ -183,6 +189,9 @@ struct MetalPipeline
     // MeshFragment pipeline: DrawMeshTasks dispatches mesh threadgroups using
     // localSize{X,Y,Z} (the mesh stage's workgroup size) as threads-per-mesh.
     bool isMeshPipeline = false;
+    // Fragment texture reads use native indirect draws: ICB execution can
+    // return zero from otherwise valid scene-color textures on Apple GPUs.
+    bool fragmentSamplesTextures = false;
 
     // Attachment formats the PSO was specialized for. Vulkan tolerates a
     // stale pipeline bind carried across render passes (only draws validate);
@@ -211,12 +220,8 @@ struct MetalPipeline
     uint32_t localSizeY = 0;
     uint32_t localSizeZ = 0;
 
-    // The argument-buffer layouts this pipeline was translated against, by set index: the device's
-    // shared layouts, which sets made from the same desc point at too. Read by the
-    // GE_METAL_VALIDATE_BINDINGS bind-time check.
     std::vector<const MetalArgumentBufferLayout*> setLayouts;
-    // Debug builds only: the storage bindings that a stage can write. A set bound with this pipeline must
-    // declare each one writable, because Metal does not track hazards for a write through a Read declaration.
+    std::vector<MetalArgumentBufferLayout> directSetLayouts;
     std::vector<MetalWrittenBinding> writtenStorage;
 
     uint32_t pushConstantSize = 0;
@@ -236,6 +241,8 @@ class MetalDevice : public IDevice
 {
     friend class MetalSwapchain;
     friend class MetalCommandList;
+    friend class MetalSubmitQueue;
+    friend struct MetalDeviceTestAccess;
 
   public:
     MetalDevice();
@@ -291,6 +298,7 @@ class MetalDevice : public IDevice
     size_t DebugGetAllocatedBytes() const override;
     size_t DebugGetTextureBytes() const override;
     size_t DebugGetBufferBytes() const override;
+    ResourcePoolStats GetResourcePoolStats() const override;
     void DebugEnumerateResources(const std::function<void(const DebugResourceInfo&)>& fn) const override;
     bool GetLastFrameSyncTimings(FrameSyncTimings& out) const override;
 
@@ -327,6 +335,11 @@ class MetalDevice : public IDevice
     std::unique_ptr<CommandList> CreateCommandList(QueueType queue) override;
     void ExecuteCommandLists(const std::vector<CommandList*>& commandLists) override;
     void WaitForIdle() override;
+    DeviceHealth GetDeviceHealth() const override
+    {
+        return m_SubmissionFailed.load(std::memory_order_acquire) ? DeviceHealth::Failed : DeviceHealth::Healthy;
+    }
+    uint64_t GetIdleDrainCount() const override { return m_IdleDrainCount.load(std::memory_order_relaxed); }
 
     // Frame loop
     bool BeginFrame() override;
@@ -435,7 +448,7 @@ class MetalDevice : public IDevice
 
     // Queue an owned Metal object for release once the current frame slot's
     // GPU work has provably completed (kFramesInFlight frames later).
-    void DeferRelease(NS::Object* object);
+    void DeferRelease(NS::Object* object, bool isTextureView = false);
 
   private:
     static constexpr uint32_t kFramesInFlight = 3;
@@ -467,12 +480,19 @@ class MetalDevice : public IDevice
     MetalSwapchain* GetSwapchain(WindowTargetHandle target);
     const MetalSwapchain* GetSwapchain(WindowTargetHandle target) const;
     MetalSubmitQueue* GetSubmitQueue(QueueType queue);
-    // Stamps `buffer` with the current frame slot before it is enqueued. RecycleFrameSlot
-    // waits for all buffers stamped with a slot; the pacing semaphore sees only frame ends.
-    // A buffer on m_GraphicsQueue is also counted in m_GraphicsCbsInFlight.
-    void TrackFrameCommandBuffer(MTL::CommandBuffer* buffer);
-    // Completion handler of a tracked buffer (a Metal-owned thread).
-    void RetireTrackedCommandBuffer(uint32_t slot, bool onGraphicsQueue);
+    // Tags `buffer` against the current frame slot before it is enqueued.
+    // BeginFrame blocks until a slot's tagged buffers all completed before
+    // recycling that slot's transient sets / deferred releases — the frame
+    // pacing semaphore alone only covers work enqueued before the present
+    // (late submissions like thumbnail views would otherwise still be
+    // executing when their resources recycle). A buffer on m_GraphicsQueue is
+    // also counted in m_GraphicsCbsInFlight.
+    std::shared_ptr<MetalSubmitQueue::Submit::TrackedBuffer> TrackFrameCommandBuffer(
+        MTL::CommandBuffer* buffer, dispatch_semaphore_t frameSemaphore = nullptr);
+    void RecordSubmissionFailure();
+    // Retires a claimed completion or cancellation.
+    void RetireTrackedCommandBuffer(const MetalSubmitQueue::Submit::TrackedBuffer& tracked,
+                                   MTL::CommandBuffer* completed);
     void WaitForSlotCommandBuffers(uint32_t slot);
     // Capture the frame-terminal command buffer's GPU end time (called from its
     // completion handler on a background queue) to derive frameGpuPeriodMs.
@@ -507,6 +527,7 @@ class MetalDevice : public IDevice
     MetalSubmitQueue m_GraphicsSubmitQueue;
     MetalSubmitQueue m_ComputeSubmitQueue;
     MetalSubmitQueue m_TransferSubmitQueue;
+    std::atomic<bool> m_SubmissionFailed{false};
     std::unique_ptr<MetalQueryPool> m_QueryPool;
     HdrOutputState m_HdrState{};
     // The DeviceDesc HDR request, pending until the first window target is
@@ -515,9 +536,7 @@ class MetalDevice : public IDevice
     std::array<std::atomic<uint32_t>, kFramesInFlight> m_SlotInFlightCbs{};
     // Tracked command buffers on m_GraphicsQueue that are enqueued and not yet
     // completed, whatever their frame slot. Counted before a buffer can reach
-    // the GPU and uncounted by its completion handler, so zero means every
-    // tracked graphics buffer has completed. The untracked ones (the submit
-    // worker's signal-only buffer, WaitForIdle's marker) write no resource.
+    // the GPU and retired on completion or cancellation.
     std::atomic<uint32_t> m_GraphicsCbsInFlight{0};
     std::mutex m_SlotCbMutex;
     std::condition_variable m_SlotCbCv;
@@ -551,6 +570,8 @@ class MetalDevice : public IDevice
     NS::AutoreleasePool* m_FramePool = nullptr;
 
     std::array<std::vector<NS::Object*>, kFramesInFlight> m_DeferredReleases;
+    std::array<size_t, kFramesInFlight> m_DeferredTextureViewCounts{};
+    std::atomic<uint64_t> m_IdleDrainCount{0};
 
     mutable std::recursive_mutex m_ResourceMutex;
     GenerationalVector<MetalBuffer> m_Buffers;

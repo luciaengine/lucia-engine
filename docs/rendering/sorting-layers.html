@@ -1,0 +1,30 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sorting Layers</title><style>body{color:#e6edf3;background:#101720;font:16px/1.6 system-ui;max-width:980px;margin:40px auto;padding:0 24px}pre{padding:16px;background:#1c2633;overflow:auto}a{color:#8cc8ff}</style><main><p>---</p>
+<p>title: Sorting layers and groups</p>
+<p>description: Set authored draw order for alpha-blended mesh artwork with named layers and parent groups.</p>
+<p>---</p>
+<p>Sorting layers control the draw order of artwork with an alpha Blend material. Disable depth writes on that material for painter order. A depth-writing material can still hide later draws. They work with Mesh Renderer and Skinned Mesh Renderer components. The mesh can be a plane, a thin box, or another shape. Its name and source asset do not affect sorting.</p>
+<p>Opaque and alpha-tested materials still use depth. Additive and multiply materials retain their order-independent batching. A sorting layer does not make an opaque object draw over geometry in front of it. Use an alpha-blended material when the artwork needs authored painter order.</p>
+<h2>Set an object&#x27;s order</h2>
+<p>1. Select the object in the Hierarchy.</p>
+<p>2. Add **Render Sorting** from **Add Component &gt; Rendering**.</p>
+<p>3. Choose a **Sorting Layer**.</p>
+<p>4. Set **Order in Layer**. Lower values draw first.</p>
+<p>The renderer compares layer priority first, then order within the layer, then camera depth by default. Enable Sort by Y to compare ground points instead. See <a href="ground-sorting.mdx">Ground sorting for 2D artwork</a>. Objects without Render Sorting use the Default layer and order zero. Draws with equal keys keep a fixed order; assign different order values when their overlap matters.</p>
+<p>The Inspector shows the effective layer, order, and outermost group beneath the fields.</p>
+<p>The component does not move the object. Its transform, collider, and visibility mask stay independent of its draw order.</p>
+<h2>Edit layers in the Hierarchy</h2>
+<p>Open the Hierarchy context menu and enable **Hierarchy Options &gt; Show Sorting Layer**. The picker appears on renderer entities and entities that already have Render Sorting.</p>
+<p>Changing the picker on a selected row applies that layer to all supported entities in the selection. Undo restores the whole selection in one step. If an assignment added Render Sorting, undo removes that component.</p>
+<p>**Show Render Layer** is a separate control. Render layers filter visibility through camera masks. Sorting layers choose draw order. Both controls can be shown together.</p>
+<h2>Name and reorder layers</h2>
+<p>Open **Settings &gt; Project Settings &gt; Sorting Layers**. Each layer has a persistent ID, a name, and a priority. Lower priorities draw first. Use **Move Back** or **Move Forward** to swap a layer with its neighbor without changing scene references.</p>
+<p>Use **Add Sorting Layer** to create another layer. Change its name and priority in the same page. **Remove Layer** removes a custom layer definition. The Default layer cannot be removed. Removed IDs stay reserved so a later layer cannot take over existing scene references. Names and priorities must be unique. Names must contain text and cannot exceed 80 characters. Priorities are signed whole numbers.</p>
+<p>Changing a name or priority keeps the layer ID. Scene references therefore continue to select the same layer. Project settings are saved in `.Editor/ProjectSettings.json` and included in a built player&#x27;s `game.config`.</p>
+<h2>Keep children together</h2>
+<p>Add Render Sorting to a parent and enable **Group Children**. The outermost enabled group places its descendants together at the parent&#x27;s layer, order, and camera depth by default. Enable Sort by Y on the group to use its ground point. Descendants use their authored order within that group.</p>
+<p>Use a group for artwork made from several renderers that should remain together when it overlaps another object. The group does not change hierarchy order or parent transforms.</p>
+<p>If a scene references a layer that is not in the project settings, the picker shows **Missing layer**. Rendering uses the Default layer&#x27;s priority until a valid layer is assigned.</p>
+<h2>Sprites, tiles and custom pipelines</h2>
+<p>Sprites and tile-map artwork share the <code>SortedTransparent</code> drain with alpha-blended meshes. Include that node after opaque recovery and before post-processing, using the same keywords as <code>WorldRender</code>. The shipped ForwardPlus, ForwardPlus Debug Overlay and Sample Post Stack graphs include it.</p>
+<h2>Changelog</h2><p>2026-11-02: Clarified equal-key ordering and the shared sprite/tile drain.</p>
+</main></html>

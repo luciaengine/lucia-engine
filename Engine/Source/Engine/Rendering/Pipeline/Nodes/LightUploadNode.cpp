@@ -3,6 +3,7 @@
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Core/Time.h"
 
 #include "Logger/Logger.h"
 #include "Mathematics/Interpolation.h"
@@ -59,12 +60,15 @@ bool LightUploadNode::Initialize(std::string nodeId, std::string nodeJson, std::
 {
     m_Id = std::move(nodeId);
     m_Json = std::move(nodeJson);
+    m_ForwardBufferRef.clear();
 
     try
     {
         auto j = nlohmann::json::parse(m_Json);
         if (j.is_object())
         {
+            if (j.contains("forwardBuffer") && j["forwardBuffer"].is_string())
+                m_ForwardBufferRef = j["forwardBuffer"].get<std::string>();
             if (j.contains("buffer") && j["buffer"].is_string())
             {
                 m_BufferRef = j["buffer"].get<std::string>();
@@ -95,6 +99,33 @@ void LightUploadNode::DeclareForView(ViewDeclare& d)
     // kMaxLights truncation below (a first-N walk) keeps the top-contribution
     // lights deterministically instead of dropping by arbitrary iteration order.
     const auto lights = d.Services.GetWorldLights(worldId);
+
+    if (!m_ForwardBufferRef.empty())
+    {
+        auto forward = d.Frame.AllocUpload<ForwardLightUBO>();
+        if (forward.Ptr)
+        {
+            ForwardLightUBO ubo{};
+            ubo.uLightVP[0] = ubo.uLightVP[5] = ubo.uLightVP[10] = ubo.uLightVP[15] = 1.0f;
+            PackForwardLightDirectionals(lights, ubo);
+            for (const auto& light : lights)
+            {
+                if (light.type != GameEngine::Components::LightType::Ambient || !light.castsLight)
+                    continue;
+                for (size_t i = 0; i < 3; ++i)
+                    ubo.uAmbient[i] += light.color[i] * light.intensity;
+            }
+            ubo.uAmbient[3] = 1.0f;
+            ubo.uTimeParams[0] = d.Services.GetShaderAnimationTimeSeconds();
+            ubo.uTimeParams[1] = d.Services.GetScrollAnimationTimeSeconds();
+            ubo.uTimeParams[2] =
+                d.Services.TemporalHistory().ResolveDeformationClock(Time::GetCumulativeSeconds()).TimeSeconds;
+            ubo.uTimeParams[3] = ubo.uTimeParams[1];
+            d.Services.PackViewWeather(d.View.id, worldId, ubo);
+            std::memcpy(forward.Ptr, &ubo, sizeof(ubo));
+            d.PublishBuffer(m_ForwardBufferRef, {forward.Buffer, forward.Offset, sizeof(ubo), {}});
+        }
+    }
 
     constexpr uint32_t kMaxLights = 1024;
     constexpr size_t kHeaderBytes = sizeof(uint32_t) * 4;

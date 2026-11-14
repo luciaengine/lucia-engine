@@ -398,6 +398,7 @@ bool VideoPlayer::Load(const std::string& path)
         }
         if (!track)
             return false;
+
         CGSize naturalSize = track.naturalSize;
         CGAffineTransform t = track.preferredTransform;
         // Account for rotation (portrait video has swapped dimensions after transform).

@@ -32,16 +32,10 @@ class ShadowFilterComputeTest : public ::testing::Test
         // Linear depth, max shadow distance, ranged (cascade) term, terrain term.
         std::array<float, 4> FadeDepth{0.0f, 1.0f, 0.0f, 0.0f};
         std::array<float, 4> FadeControl{0.1f, 0.0f, 0.0f, 0.0f};
-        // Shadow-UV change per screen pixel along x, disk radius in texels, tap count.
-        std::array<float, 4> FootprintDx{0.0f, 0.0f, 1.0f, 32.0f};
-        // Shadow-UV change per screen pixel along y, receiver depth change per pixel along x and y.
-        std::array<float, 4> FootprintDy{};
     };
     // [0..3]: filtered, reference, normal bias, receiver-plane gradient error.
     // [4]: distance fade. [5]: GE_JoinTerrainAfterFade of FadeDepth's two terms.
-    // [8]: the disk radius raised to the screen-pixel floor (texels).
-    // [9]: the disk kernel's visibility at that radius. [10]: 1 where the floor binds.
-    using Result = std::array<float, 12>;
+    using Result = std::array<float, 8>;
 
     void SetUp() override
     {
@@ -204,9 +198,7 @@ TEST_F(ShadowFilterComputeTest, NineSamplesMatchFullConvolutionAcrossPhasesLayer
         if (r[0] > 0.01f && r[0] < 0.99f)
             ++fractional;
         if (queries[i].UVDepthLayer[2] == 1.0f)
-        {
             EXPECT_NEAR(r[0], 1.0f, 0.00001f); // reverse-Z fully-lit invariant
-        }
     }
     EXPECT_GT(fractional, 1000u); // ensure the equality was tested on edges, not just constants
     EXPECT_LT(largestError, 0.004f); // permits hardware subtexel filtering precision
@@ -236,13 +228,9 @@ TEST_F(ShadowFilterComputeTest, NormalBiasPreservesAuthoredCapsAndShrinksWithTex
         EXPECT_GE(bias, 0.0f);
         EXPECT_LE(bias, authored + 1e-7f);
         if (q.Bias[0] <= 0.001f)
-        {
             EXPECT_NEAR(bias, authored, 1e-7f);
-        }
         if (q.Bias[0] == 0.5f && q.Control[0] == 3.0f && q.Control[1] == 0.0f)
-        {
             EXPECT_NEAR(bias, 2.0f * q.Bias[1], 1e-7f);
-        }
     }
 }
 
@@ -366,13 +354,9 @@ TEST_F(ShadowFilterComputeTest, DistanceFadeEndsShadowsSmoothlyAtMaxShadowDistan
             const float fade = m_Results[index][4];
             ASSERT_TRUE(std::isfinite(fade));
             if (depth <= 0.9f * maxDistance)
-            {
                 EXPECT_LE(fade, 1e-6f) << "shadow weakened before the band at " << depth << " of " << maxDistance;
-            }
             if (depth >= maxDistance)
-            {
                 EXPECT_EQ(fade, 1.0f) << "shadow survives past the distance at " << depth << " of " << maxDistance;
-            }
             if (i > 0)
             {
                 const float step = fade - m_Results[index - 1][4];
@@ -442,13 +426,9 @@ TEST_F(ShadowFilterComputeTest, DistanceFadeEndsTheCascadeTermAndLeavesTheTerrai
             EXPECT_NEAR(joined, ranged + (1.0f - ranged) * fade, 1e-6f)
                 << "the cascade term must fade by the band's weight: " << where;
         if (terrain == 1.0f && depth >= maxDistance)
-        {
             EXPECT_EQ(joined, 1.0f) << "a cascade-only shadow must be gone past the distance: " << where;
-        }
         if (terrain == 1.0f && depth <= 0.9f * maxDistance)
-        {
             EXPECT_NEAR(joined, ranged, 1e-6f) << "the cascade term must be whole before the band: " << where;
-        }
     }
     // Mid-band, a cascade-only shadow is half faded, and a terrain-shadowed point is not faded at all.
     const size_t perDistance = kDepthFractions.size() * kTerms.size();
@@ -457,131 +437,6 @@ TEST_F(ShadowFilterComputeTest, DistanceFadeEndsTheCascadeTermAndLeavesTheTerrai
     {
         EXPECT_NEAR(m_Results[d * perDistance + midBand + 0][5], 0.5f, 1e-4f);
         EXPECT_EQ(m_Results[d * perDistance + midBand + 1][5], 0.0f);
-    }
-}
-
-// The 10-90 % rise of the disk kernel's visibility ([9]) over a sweep of steps + 1
-// results starting at `first`, sampled 1/16 px apart, in screen pixels.
-float EdgeWidthPixels(const std::vector<std::array<float, 12>>& results, size_t first, int steps)
-{
-    int rise10 = -1;
-    int rise90 = -1;
-    for (int i = 0; i <= steps; ++i)
-    {
-        const float visibility = results[first + i][9];
-        if (rise10 < 0 && visibility >= 0.1f)
-            rise10 = i;
-        if (rise90 < 0 && visibility >= 0.9f)
-            rise90 = i;
-    }
-    EXPECT_GE(rise10, 0);
-    EXPECT_GT(rise90, rise10);
-    return static_cast<float>(rise90 - rise10) / 16.0f;
-}
-
-// The disk kernels' radius is a world size, so a fitted cascade range can make it
-// a fraction of a texel while the texel projects to about one screen pixel: the
-// edge is then the texel staircase. The floor holds the radius at
-// kShadowFilterFloorPixels (2) screen pixels, set by the longer screen axis,
-// and leaves a radius that already spans it untouched.
-TEST_F(ShadowFilterComputeTest, DiskKernelSpansTheScreenPixelFloorAtAOnePixelTexel)
-{
-    constexpr uint32_t kWidth = 64, kHeight = 8;
-    constexpr float kEdgeTexel = 32.0f;
-    std::vector<float> depths(kWidth * kHeight * 2);
-    for (uint32_t layer = 0; layer < 2; ++layer)
-        for (uint32_t y = 0; y < kHeight; ++y)
-            for (uint32_t x = 0; x < kWidth; ++x)
-                depths[(layer * kHeight + y) * kWidth + x] = x < kEdgeTexel ? 0.8f : 0.0f;
-
-    // One texel per screen pixel on both axes, in UV.
-    const std::array<float, 2> onePixelDx{1.0f / kWidth, 0.0f};
-    const std::array<float, 2> onePixelDy{0.0f, 1.0f / kHeight};
-    struct Sweep
-    {
-        float RadiusTexels;
-        std::array<float, 2> Dx;
-        std::array<float, 2> Dy;
-    };
-    const std::array<Sweep, 2> sweeps{{
-        {0.25f, onePixelDx, onePixelDy},  // an outer cascade's world-sized radius, floored
-        {0.25f, {0.0f, 0.0f}, {0.0f, 0.0f}}, // no screen footprint: the radius as given
-    }};
-    constexpr int kSteps = 192; // -6 to +6 px around the edge, 1/16 px apart
-    std::vector<Query> queries;
-    for (const Sweep& sweep : sweeps)
-        for (int i = 0; i <= kSteps; ++i)
-        {
-            Query q;
-            const float texel = kEdgeTexel - 6.0f + static_cast<float>(i) / 16.0f;
-            q.UVDepthLayer = {texel / kWidth, 0.5f, 0.5f, 0.0f};
-            q.FootprintDx = {sweep.Dx[0], sweep.Dx[1], sweep.RadiusTexels, 32.0f};
-            q.FootprintDy = {sweep.Dy[0], sweep.Dy[1], 0.0f, 0.0f};
-            queries.push_back(q);
-        }
-    // Radius only: unchanged where it spans the floor, the longer axis sets the floor.
-    const size_t radiusQueries = queries.size();
-    for (const auto& [radius, dx, dy] : std::array<std::array<float, 3>, 3>{{
-             {3.0f, 1.0f, 1.0f}, {0.5f, 2.0f, 0.5f}, {1.5f, 0.5f, 0.5f}}})
-    {
-        Query q;
-        q.FootprintDx = {dx / kWidth, 0.0f, radius, 32.0f};
-        q.FootprintDy = {0.0f, dy / kHeight, 0.0f, 0.0f};
-        queries.push_back(q);
-    }
-    Dispatch(kWidth, kHeight, depths, queries);
-    ASSERT_EQ(m_Results.size(), queries.size());
-
-    const size_t perSweep = kSteps + 1;
-    EXPECT_FLOAT_EQ(m_Results[0][8], 2.0f);
-    EXPECT_EQ(m_Results[perSweep][8], 0.25f);
-    const float floored = EdgeWidthPixels(m_Results, 0, kSteps);
-    const float unfloored = EdgeWidthPixels(m_Results, perSweep, kSteps);
-    RecordProperty("edge_width_px_floored", std::to_string(floored));
-    RecordProperty("edge_width_px_unfloored", std::to_string(unfloored));
-    EXPECT_GE(floored, 2.5f) << "the floor must spread the edge over at least 2.5 px";
-    EXPECT_LE(floored, 3.5f) << "the floor must not blur past about 3 px";
-    EXPECT_LT(unfloored, 1.5f) << "without a footprint the sweep must show the bare sub-texel kernel";
-
-    EXPECT_EQ(m_Results[radiusQueries + 0][8], 3.0f) << "a radius past the floor stays bit-exact";
-    EXPECT_FLOAT_EQ(m_Results[radiusQueries + 1][8], 4.0f) << "the longer screen axis sets the floor";
-    EXPECT_EQ(m_Results[radiusQueries + 2][8], 1.5f) << "a radius over the 1-texel floor at half a texel per pixel stays";
-}
-
-// At a grazing view the longer screen axis spans many texels per pixel. The floor
-// stops at kShadowFilterFloorMaxTexels (8), and a floored disk follows the
-// receiver's plane in depth, so a lit receiver sloped in light space stays lit
-// across the whole disk instead of shadowing itself on its uphill side.
-TEST_F(ShadowFilterComputeTest, FlooredDiskStaysLitOnASlopedReceiverAtAGrazingFootprint)
-{
-    constexpr uint32_t kWidth = 64, kHeight = 64;
-    constexpr float kDepthPerTexel = 0.002f; // the receiver's slope along u, reverse-Z depth per texel
-    std::vector<float> depths(kWidth * kHeight * 2);
-    for (uint32_t layer = 0; layer < 2; ++layer)
-        for (uint32_t y = 0; y < kHeight; ++y)
-            for (uint32_t x = 0; x < kWidth; ++x)
-                depths[(layer * kHeight + y) * kWidth + x] =
-                    0.5f + kDepthPerTexel * (static_cast<float>(x) + 0.5f - kWidth * 0.5f);
-
-    constexpr float kTexelsPerPixel = 10.0f; // along x; one along y
-    std::vector<Query> queries;
-    for (float u : {0.4f, 0.5f, 0.6f})
-    {
-        Query q;
-        const float planeDepth = 0.5f + kDepthPerTexel * (u * kWidth - kWidth * 0.5f);
-        q.UVDepthLayer = {u, 0.5f, planeDepth + 1e-4f, 0.0f};
-        q.FootprintDx = {kTexelsPerPixel / kWidth, 0.0f, 0.25f, 16.0f};
-        q.FootprintDy = {0.0f, 1.0f / kHeight, kDepthPerTexel * kTexelsPerPixel, 0.0f};
-        queries.push_back(q);
-    }
-    Dispatch(kWidth, kHeight, depths, queries);
-    ASSERT_EQ(m_Results.size(), queries.size());
-    for (size_t i = 0; i < queries.size(); ++i)
-    {
-        SCOPED_TRACE(::testing::Message() << "u=" << queries[i].UVDepthLayer[0]);
-        EXPECT_FLOAT_EQ(m_Results[i][8], 8.0f) << "the floor stops at 8 texels however grazing the view";
-        EXPECT_EQ(m_Results[i][10], 1.0f) << "the floor binds on a quarter-texel disk";
-        EXPECT_GE(m_Results[i][9], 0.99f) << "a lit sloped receiver must not shadow itself across the floored disk";
     }
 }
 } // namespace

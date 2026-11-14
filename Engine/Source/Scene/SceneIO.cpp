@@ -10,8 +10,8 @@
 #include "Components/SceneEntityTag.h"
 #include "Components/Transform.h"
 #include "Core/Engine.h"
-#include "ECS/Component/ComponentFieldRegistry.h"
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/ComponentRegistry.h"
 #include "ECS/Components.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/UnresolvedComponentStore.h"
@@ -49,6 +49,25 @@
 
 namespace GameEngine::Scene
 {
+// Parser-only prepared projections report failures on the calling thread. Normal document
+// reads and instantiations carry their errors in their result objects.
+static thread_local SceneIOError s_PreparedSceneError{};
+
+const SceneIOError& GetLastSceneIOError()
+{
+    return s_PreparedSceneError;
+}
+
+void ClearLastSceneIOError()
+{
+    s_PreparedSceneError = {};
+}
+
+static void SetError(const std::filesystem::path& file, int line, const std::string& message)
+{
+    s_PreparedSceneError = SceneIOError{file, line, message};
+}
+
 // A save drops a never-preserved row's text only while the entity, and for a field row its
 // component, is still in the world. A row with no entity stands until a save.
 static bool NeverPreservedSkipIsOutstanding(const ECS::World& world, const SceneDegradation::Skip& skip)
@@ -3120,6 +3139,407 @@ static bool LoadParsedIntoWorld(ECS::World& world,
     return true;
 }
 
+struct PreparedScene
+{
+    std::filesystem::path Source;
+    SceneDoc Document;
+    SceneReadTimings Timings;
+};
+
+static bool IsFlatRuntimeDocument(const PreparedScene& prepared)
+{
+    const auto& doc = prepared.Document;
+    if (doc.isPrefab || !doc.prefabInstances.empty() || !doc.subscenes.empty() || !doc.embeds.empty())
+    {
+        SetError(prepared.Source, 0, "Runtime scene projection requires a flat scene without prefabs, subscenes or embeds");
+        return false;
+    }
+    return true;
+}
+
+std::optional<std::vector<PreparedSceneEntityInfo>> DescribePreparedScene(const PreparedScene& prepared)
+{
+    ClearLastSceneIOError();
+    if (!IsFlatRuntimeDocument(prepared))
+        return std::nullopt;
+    std::unordered_set<std::string> ids;
+    for (const auto& entity : prepared.Document.entities)
+        ids.insert(entity.id);
+    std::vector<PreparedSceneEntityInfo> result;
+    result.reserve(prepared.Document.entities.size());
+    for (const auto& entity : prepared.Document.entities)
+    {
+        PreparedSceneEntityInfo info{entity.id, {}, entity.parent, {}, {}};
+        std::unordered_set<std::string> seen;
+        const auto addDependency = [&](const std::string& id)
+        {
+            if (id != entity.id && ids.contains(id) && seen.insert(id).second)
+                info.DependencyIds.push_back(id);
+        };
+        if (entity.parent)
+            addDependency(*entity.parent);
+        for (const auto& component : entity.components)
+        {
+            info.Components.push_back(component.originalName.empty() ? component.name : component.originalName);
+            for (const auto& [key, property] : component.props)
+            {
+                SceneValue value;
+                std::string error;
+                if (!ParseValue(property.value, value, &error))
+                {
+                    SetError(prepared.Source, property.line,
+                             "Cannot project unparseable property '" + entity.id + "." + component.name + "." + key + "': " + error);
+                    return std::nullopt;
+                }
+                if (component.name == "name" && key == "value" && value.Kind == SceneValueKind::String)
+                    info.Name = value.StringValue;
+                const auto walk = [&](auto&& self, const SceneValue& node) -> void
+                {
+                    if (node.Kind == SceneValueKind::EntityRef || node.Kind == SceneValueKind::String ||
+                        node.Kind == SceneValueKind::Identifier)
+                        addDependency(node.StringValue);
+                    for (const auto& child : node.Items)
+                        self(self, child);
+                };
+                walk(walk, value);
+            }
+        }
+        result.push_back(std::move(info));
+    }
+    return result;
+}
+
+static std::shared_ptr<const PreparedScene> SelectWithCatalog(
+    const PreparedScene& prepared, std::span<const std::string> rootIds,
+    const std::vector<PreparedSceneEntityInfo>& catalog,
+    const std::unordered_map<std::string, std::size_t>& byId)
+{
+    std::vector<bool> included(catalog.size(), false);
+    std::vector<std::size_t> pending;
+    for (const auto& id : rootIds)
+    {
+        const auto found = byId.find(id);
+        if (found == byId.end())
+        {
+            SetError(prepared.Source, 0, "Unknown scene projection root '" + id + "'");
+            return nullptr;
+        }
+        pending.push_back(found->second);
+    }
+    while (!pending.empty())
+    {
+        const auto index = pending.back();
+        pending.pop_back();
+        if (included[index])
+            continue;
+        included[index] = true;
+        for (const auto& dependency : catalog[index].DependencyIds)
+            pending.push_back(byId.at(dependency));
+    }
+    auto result = std::make_shared<PreparedScene>();
+    result->Source = prepared.Source;
+    result->Timings = prepared.Timings;
+    result->Document.name = prepared.Document.name;
+    result->Document.version = prepared.Document.version;
+    result->Document.simulationTick = prepared.Document.simulationTick;
+    result->Document.resources = prepared.Document.resources;
+    for (std::size_t i = 0; i < included.size(); ++i)
+        if (included[i])
+            result->Document.entities.push_back(prepared.Document.entities[i]);
+    return result;
+}
+
+std::optional<std::vector<std::shared_ptr<const PreparedScene>>> SelectPreparedSceneGroups(
+    const PreparedScene& prepared, std::span<const std::vector<std::string>> rootGroups)
+{
+    const auto catalog = DescribePreparedScene(prepared);
+    if (!catalog)
+        return std::nullopt;
+    std::unordered_map<std::string, std::size_t> byId;
+    for (std::size_t i = 0; i < catalog->size(); ++i)
+        byId.emplace((*catalog)[i].Id, i);
+    std::vector<std::shared_ptr<const PreparedScene>> results;
+    results.reserve(rootGroups.size());
+    for (const auto& roots : rootGroups)
+    {
+        auto result = SelectWithCatalog(prepared, roots, *catalog, byId);
+        if (!result)
+            return std::nullopt;
+        results.push_back(std::move(result));
+    }
+    return results;
+}
+
+std::shared_ptr<const PreparedScene> SelectPreparedSceneEntities(
+    const PreparedScene& prepared, std::span<const std::string> rootIds)
+{
+    const std::vector<std::vector<std::string>> groups{std::vector<std::string>(rootIds.begin(), rootIds.end())};
+    auto selected = SelectPreparedSceneGroups(prepared, groups);
+    return selected ? std::move(selected->front()) : nullptr;
+}
+
+std::optional<std::string> SerializePreparedScene(const PreparedScene& prepared)
+{
+    // Also rejects tolerant-but-unparseable fields: do not certify an unknown
+    // dependency syntax as safe merely because the normal loader preserves it.
+    if (!DescribePreparedScene(prepared))
+        return std::nullopt;
+    const auto& doc = prepared.Document;
+    std::ostringstream out;
+    out << "[scene name=" << FormatQuoted(doc.name) << " version=" << doc.version << "]\n";
+    std::vector<std::string> resources;
+    for (const auto& [id, resource] : doc.resources)
+        resources.push_back(id);
+    std::sort(resources.begin(), resources.end());
+    for (const auto& id : resources)
+    {
+        const auto& resource = doc.resources.at(id);
+        out << "\n[resource id=" << FormatQuoted(id) << " path=" << FormatQuoted(resource.path);
+        if (!resource.guid.empty())
+            out << " guid=" << FormatQuoted(resource.guid);
+        out << "]\n";
+    }
+    for (const auto& entity : doc.entities)
+    {
+        out << "\n[entity id=" << FormatQuoted(entity.id);
+        if (entity.parent)
+            out << " parent=" << FormatQuoted(*entity.parent);
+        out << "]\n";
+        for (const auto& component : entity.components)
+            for (const auto& [key, property] : component.props)
+                out << (component.originalName.empty() ? component.name : component.originalName) << '.'
+                    << (property.originalKey.empty() ? key : property.originalKey) << " = " << property.value << '\n';
+    }
+    return out.str();
+}
+
+struct StagedSceneActivation::Impl
+{
+    ECS::World& World;
+    const uint64_t WorldId;
+    const uint64_t ResetGeneration;
+    std::shared_ptr<const PreparedScene> Prepared;
+    SceneReadContext Context;
+    Instantiated Entities;
+    SceneDegradation Degradation;
+    SceneIOError Error;
+    SceneActivationPhase Phase = SceneActivationPhase::Creating;
+    std::size_t Cursor = 0;
+    bool InStep = false;
+    bool Failed = false;
+
+    Impl(ECS::World& world, std::shared_ptr<const PreparedScene> prepared,
+         const SceneActivationOptions& options)
+        : World(world), WorldId(world.GetWorldId()),
+          ResetGeneration(world.GetLifecycleResetGeneration()), Prepared(std::move(prepared))
+    {
+        SceneLoadOptions loadOptions{};
+        loadOptions.Read.AssetResolver = options.assetResolver;
+        loadOptions.Read.AssetRootOverride = options.assetRootOverride;
+        Context = MakeDocumentLoadContext(world, Prepared->Source, Prepared->Document, loadOptions);
+        Context.EntityIdMap = &Entities.idToEntity;
+        Context.EntityIdPrefix = "import_" + std::to_string(++g_AdditiveImportCounter) + ".";
+        const auto count = Prepared->Document.entities.size();
+        Entities.created.reserve(count);
+        Entities.idToEntity.reserve(count);
+        if (count == 0)
+            Phase = SceneActivationPhase::Ready;
+    }
+
+    bool CheckWorld()
+    {
+        if (World.GetWorldId() == WorldId &&
+            World.GetLifecycleResetGeneration() == ResetGeneration)
+            return true;
+        Error = {Prepared->Source, 0, "World reset invalidated staged scene activation", false};
+        Failed = true;
+        Phase = SceneActivationPhase::Failed;
+        return false; // Handles can alias a new scene after Clear; NEVER destroy them.
+    }
+
+    void Fail(const char* message)
+    {
+        Error = {Prepared->Source, 0, message, false};
+        Failed = true;
+        Phase = SceneActivationPhase::Cancelling;
+        Cursor = Entities.created.size();
+    }
+
+    bool ProcessOne()
+    {
+        if (!CheckWorld())
+            return false;
+        const auto& doc = Prepared->Document;
+        if (Phase == SceneActivationPhase::Cancelling)
+        {
+            if (Cursor == 0)
+            {
+                Phase = Failed ? SceneActivationPhase::Failed : SceneActivationPhase::Cancelled;
+                return false;
+            }
+            const auto handle = Entities.created[--Cursor];
+            if (World.IsValid(handle))
+                World.DestroyEntityImmediate(handle);
+            if (Cursor == 0)
+                Phase = Failed ? SceneActivationPhase::Failed : SceneActivationPhase::Cancelled;
+            return true;
+        }
+        if (Phase == SceneActivationPhase::Creating)
+        {
+            const auto handle = World.CreateEntity();
+            if (!handle.IsValid())
+            {
+                Fail("Failed to create staged entity");
+                return false;
+            }
+            Entities.created.push_back(handle);
+            Entities.idToEntity.emplace(Context.EntityIdPrefix + doc.entities[Cursor].id, handle);
+            World.AddComponentImmediate(handle, ECS::PendingActivation{});
+            if (++Cursor == doc.entities.size())
+            {
+                Cursor = 0;
+                Phase = SceneActivationPhase::Applying;
+            }
+            return true;
+        }
+        if (Phase != SceneActivationPhase::Applying && Phase != SceneActivationPhase::Parenting &&
+            Phase != SceneActivationPhase::Publishing)
+            return false;
+        const auto handle = Entities.created[Cursor];
+        if (!World.IsValid(handle))
+        {
+            Fail("Staged entity was removed before activation completed");
+            return false;
+        }
+        if (Phase == SceneActivationPhase::Applying)
+        {
+            // Construction visibility is independent of authored Disabled state.
+            // Keep the barrier present throughout schema callbacks as well.
+            const auto& entity = doc.entities[Cursor];
+            ApplyEntityComponents(World, Context, Prepared->Source, handle, entity,
+                                  Context.EntityIdPrefix + entity.id, {}, &Degradation);
+            if (!CheckWorld())
+                return false;
+            if (!World.IsValid(handle) || !World.HasComponent<ECS::PendingActivation>(handle))
+            {
+                Fail("Schema callback invalidated a staged entity");
+                return false;
+            }
+            if (++Cursor == doc.entities.size())
+            {
+                Cursor = 0;
+                Phase = SceneActivationPhase::Parenting;
+            }
+        }
+        else if (Phase == SceneActivationPhase::Parenting)
+        {
+            const auto& entity = doc.entities[Cursor];
+            if (entity.parent)
+            {
+                const auto parent = Entities.idToEntity.find(Context.EntityIdPrefix + *entity.parent);
+                if (parent == Entities.idToEntity.end() || !World.IsValid(parent->second))
+                {
+                    Fail("Missing staged parent during activation");
+                    return false;
+                }
+                Components::Parent component{};
+                component.Entity = parent->second;
+                World.AddComponentImmediate(handle, component);
+            }
+            else
+                World.RemoveComponentImmediate<Components::Parent>(handle);
+            if (++Cursor == doc.entities.size())
+            {
+                Cursor = 0;
+                Phase = SceneActivationPhase::Ready;
+            }
+        }
+        else
+        {
+            World.RemoveComponentImmediate<ECS::PendingActivation>(handle);
+            if (++Cursor == doc.entities.size())
+                Phase = SceneActivationPhase::Complete;
+        }
+        return true;
+    }
+};
+
+StagedSceneActivation::StagedSceneActivation(std::unique_ptr<Impl> impl) : m_Impl(std::move(impl)) {}
+StagedSceneActivation::~StagedSceneActivation()
+{
+    if (m_Impl->Phase == SceneActivationPhase::Complete ||
+        m_Impl->Phase == SceneActivationPhase::Cancelled || m_Impl->Phase == SceneActivationPhase::Failed)
+        return;
+    RequestCancel();
+    while (m_Impl->Phase == SceneActivationPhase::Cancelling)
+        m_Impl->ProcessOne();
+}
+SceneActivationPhase StagedSceneActivation::Phase() const { return m_Impl->Phase; }
+std::span<const ECS::EntityHandle> StagedSceneActivation::CreatedEntities() const { return m_Impl->Entities.created; }
+const SceneDegradation& StagedSceneActivation::Degradation() const { return m_Impl->Degradation; }
+const SceneIOError& StagedSceneActivation::Error() const { return m_Impl->Error; }
+
+std::size_t StagedSceneActivation::Step(std::size_t maxOperations, std::chrono::microseconds budget)
+{
+    if (m_Impl->InStep || maxOperations == 0)
+        return 0;
+    struct StepGuard
+    {
+        bool& Active;
+        explicit StepGuard(bool& active) : Active(active) { Active = true; }
+        ~StepGuard() { Active = false; }
+    } guard(m_Impl->InStep);
+    const auto start = std::chrono::steady_clock::now();
+    std::size_t processed = 0;
+    do
+    {
+        if (!m_Impl->ProcessOne())
+            break;
+        ++processed;
+    } while (processed < maxOperations && std::chrono::steady_clock::now() - start < budget);
+    return processed;
+}
+
+bool StagedSceneActivation::RequestPublish()
+{
+    if (m_Impl->InStep || !m_Impl->CheckWorld() || m_Impl->Phase != SceneActivationPhase::Ready)
+        return false;
+    m_Impl->Cursor = 0;
+    m_Impl->Phase = m_Impl->Entities.created.empty() ? SceneActivationPhase::Complete
+                                                   : SceneActivationPhase::Publishing;
+    return true;
+}
+
+void StagedSceneActivation::RequestCancel()
+{
+    if (m_Impl->InStep || !m_Impl->CheckWorld() ||
+        m_Impl->Phase == SceneActivationPhase::Cancelled || m_Impl->Phase == SceneActivationPhase::Failed ||
+        m_Impl->Phase == SceneActivationPhase::Cancelling)
+        return;
+    m_Impl->Cursor = m_Impl->Entities.created.size();
+    m_Impl->Phase = m_Impl->Cursor ? SceneActivationPhase::Cancelling : SceneActivationPhase::Cancelled;
+}
+
+std::unique_ptr<StagedSceneActivation> BeginStagedSceneActivation(
+    ECS::World& world, std::shared_ptr<const PreparedScene> prepared, const SceneActivationOptions& options)
+{
+    s_PreparedSceneError = {};
+    if (!prepared)
+    {
+        SetError({}, 0, "Staged activation requires a prepared scene");
+        return nullptr;
+    }
+    const auto& doc = prepared->Document;
+    if (doc.isPrefab || !doc.prefabInstances.empty() || !doc.subscenes.empty() || !doc.embeds.empty())
+    {
+        SetError(prepared->Source, 0, "Staged activation requires a flat scene without prefab, subscene or embed work");
+        return nullptr;
+    }
+    EnsureBuiltInSchemasRegistered();
+    return std::unique_ptr<StagedSceneActivation>(new StagedSceneActivation(
+        std::make_unique<StagedSceneActivation::Impl>(world, std::move(prepared), options)));
+}
+
 // The state of one ReadSceneDocument call while it reads the sources that the scene names.
 struct SourceRead
 {
@@ -3268,79 +3688,101 @@ static std::filesystem::path ChainPath(const std::filesystem::path& sceneFilePat
     return (ec ? sceneFilePath : absolute).lexically_normal();
 }
 
-SceneReadResult ReadSceneDocument(const std::filesystem::path& sceneFilePath, const SceneReadOptions& options)
+// Shared root parser for worker documents and parser-only runtime projections.
+static bool ReadRootDocument(const std::filesystem::path& path, SceneDoc& document,
+                             SceneReadTimings& timings, SceneIOError& error)
 {
-    SceneReadResult result;
-    using PhaseClock = std::chrono::steady_clock;
-    auto phaseStart = PhaseClock::now();
-    // Closes the phase that just ran and opens the next one.
-    auto markPhase = [&phaseStart](double& out) {
-        const auto now = PhaseClock::now();
-        out = std::chrono::duration<double, std::milli>(now - phaseStart).count();
+    using Clock = std::chrono::steady_clock;
+    auto phaseStart = Clock::now();
+    auto markPhase = [&phaseStart](double& elapsed) {
+        const auto now = Clock::now();
+        elapsed = std::chrono::duration<double, std::milli>(now - phaseStart).count();
         phaseStart = now;
     };
-
+    error = SceneIOError{path};
     std::string text;
-    if (sceneFilePath.empty() || !ReadTextFile(sceneFilePath, text))
+    if (path.empty() || !ReadTextFile(path, text))
     {
-        result.Error = SceneIOError{sceneFilePath, 0, "Failed to read file"};
-        Logger::Log::Debug("Scene: '{}' stopped at read.", sceneFilePath.string());
-        return result;
+        error.message = "Failed to read file";
+        return false;
     }
-    markPhase(result.Timings.ReadMs);
+    markPhase(timings.ReadMs);
+    if (!ParseDocument(path, text, document, &error.message, &error.line))
+        return false;
+    std::unordered_set<std::string> visited;
+    std::filesystem::path errorFile;
+    if (!ExpandIncludes(path, document, visited, &error.message, &errorFile, &error.line))
+    {
+        if (!errorFile.empty())
+            error.file = errorFile;
+        return false;
+    }
+    markPhase(timings.ParseMs);
+    if (!ValidateDocument(document, &error.message, &error.line))
+        return false;
+    markPhase(timings.ValidateMs);
+    return true;
+}
 
+std::shared_ptr<const PreparedScene> PrepareSceneFromFile(
+    const std::filesystem::path& path, SceneReadTimings* outTimings)
+{
+    ClearLastSceneIOError();
+    auto prepared = std::make_shared<PreparedScene>();
+    prepared->Source = path;
+    SceneIOError error;
+    const bool success = ReadRootDocument(path, prepared->Document, prepared->Timings, error);
+    if (outTimings)
+        *outTimings = prepared->Timings;
+    if (!success)
+    {
+        s_PreparedSceneError = std::move(error);
+        return nullptr;
+    }
+    return prepared;
+}
+
+// A prepared root is already parsed. Freeze only its dependency files and resource paths.
+static SceneReadResult FreezeSceneDocument(const std::filesystem::path& path, SceneDoc document,
+                                           const SceneReadOptions& options, SceneReadTimings timings)
+{
+    SceneReadResult result;
+    result.Timings = timings;
     auto files = std::make_shared<SceneDocumentFiles>();
     files->ReadOptions = options;
+    files->Scene = std::move(document);
     SceneDoc& doc = files->Scene;
-    SceneIOError error{sceneFilePath};
-    if (!ParseDocument(sceneFilePath, text, doc, &error.message, &error.line))
+    SceneIOError error{path};
+    const auto start = std::chrono::steady_clock::now();
+    SourceRead sourceRead{options, MakeResolveContext(options), *files, {ChainPath(path)}, error};
+    RecordResourcePaths(sourceRead.resolveContext, path, doc);
+    if (!ReadDocumentSources(sourceRead, path, doc))
     {
-        Logger::Log::Debug("Scene: '{}' stopped at parse, line {}.", sceneFilePath.string(), error.line);
         result.Error = std::move(error);
         return result;
     }
-
-    {
-        std::unordered_set<std::string> visited;
-        std::filesystem::path errFile;
-        if (!ExpandIncludes(sceneFilePath, doc, visited, &error.message, &errFile, &error.line))
-        {
-            if (!errFile.empty())
-                error.file = errFile;
-            Logger::Log::Debug("Scene: '{}' stopped at include expansion, {}:{}.", sceneFilePath.string(),
-                               error.file.string(), error.line);
-            result.Error = std::move(error);
-            return result;
-        }
-    }
-    markPhase(result.Timings.ParseMs);
-
-    if (!ValidateDocument(doc, &error.message, &error.line))
-    {
-        Logger::Log::Debug("Scene: '{}' stopped at validation, line {}.", sceneFilePath.string(), error.line);
-        result.Error = std::move(error);
-        return result;
-    }
-    markPhase(result.Timings.ValidateMs);
-
-    SourceRead sourceRead{options, MakeResolveContext(options), *files, {ChainPath(sceneFilePath)}, error};
-    RecordResourcePaths(sourceRead.resolveContext, sceneFilePath, doc);
-    if (!ReadDocumentSources(sourceRead, sceneFilePath, doc))
-    {
-        Logger::Log::Debug("Scene: '{}' stopped at a source, {}:{}.", sceneFilePath.string(), error.file.string(),
-                           error.line);
-        result.Error = std::move(error);
-        return result;
-    }
-    markPhase(result.Timings.SourcesMs);
-
-    result.Document.Path = sceneFilePath;
+    result.Timings.SourcesMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    result.Document.Path = path;
     if (doc.hasHierarchyUi)
         result.Document.HierarchyUi = doc.hierarchyUi;
     if (doc.hasEditorCamera)
         result.Document.EditorCamera = doc.editorCamera;
     result.Document.Files = std::move(files);
     return result;
+}
+
+SceneReadResult ReadSceneDocument(const std::filesystem::path& path, const SceneReadOptions& options)
+{
+    SceneReadResult result;
+    SceneDoc document;
+    SceneIOError error;
+    if (!ReadRootDocument(path, document, result.Timings, error))
+    {
+        result.Error = std::move(error);
+        return result;
+    }
+    return FreezeSceneDocument(path, std::move(document), options, result.Timings);
 }
 
 SceneInstantiateResult InstantiateSceneDocument(ECS::World& world,
@@ -3447,25 +3889,37 @@ SceneInstantiateResult InstantiateSceneDocument(ECS::World& world,
     return result;
 }
 
-SceneInstantiateResult ReadSceneInto(ECS::World& world,
-                                     const std::filesystem::path& sceneFilePath,
-                                     const SceneReadOptions& readOptions,
-                                     const SceneInstantiateOptions& instantiateOptions)
+static SceneInstantiateResult InstantiateReadScene(ECS::World& world, const SceneReadResult& read,
+                                                   const SceneInstantiateOptions& options)
 {
-    SceneReadResult read = ReadSceneDocument(sceneFilePath, readOptions);
     if (!read)
     {
         SceneInstantiateResult failed;
-        failed.Error = std::move(read.Error);
+        failed.Error = read.Error;
         failed.Timings = read.Timings;
         return failed;
     }
-    SceneInstantiateResult instantiated = InstantiateSceneDocument(world, read.Document, instantiateOptions);
-    instantiated.Timings.ReadMs = read.Timings.ReadMs;
-    instantiated.Timings.ParseMs = read.Timings.ParseMs;
-    instantiated.Timings.ValidateMs = read.Timings.ValidateMs;
-    instantiated.Timings.SourcesMs = read.Timings.SourcesMs;
-    return instantiated;
+    auto result = InstantiateSceneDocument(world, read.Document, options);
+    result.Timings.ReadMs = read.Timings.ReadMs;
+    result.Timings.ParseMs = read.Timings.ParseMs;
+    result.Timings.ValidateMs = read.Timings.ValidateMs;
+    result.Timings.SourcesMs = read.Timings.SourcesMs;
+    return result;
+}
+
+SceneInstantiateResult InstantiatePreparedScene(ECS::World& world, const PreparedScene& prepared,
+                                                const SceneReadOptions& readOptions,
+                                                const SceneInstantiateOptions& instantiateOptions)
+{
+    return InstantiateReadScene(world,
+        FreezeSceneDocument(prepared.Source, prepared.Document, readOptions, prepared.Timings), instantiateOptions);
+}
+
+SceneInstantiateResult ReadSceneInto(ECS::World& world, const std::filesystem::path& path,
+                                     const SceneReadOptions& readOptions,
+                                     const SceneInstantiateOptions& instantiateOptions)
+{
+    return InstantiateReadScene(world, ReadSceneDocument(path, readOptions), instantiateOptions);
 }
 
 // Append serialized lines for every reflected component on `entity` that has no hand-written schema
@@ -3669,6 +4123,8 @@ SceneIOResult WriteSceneFile(ECS::World& world,
         for (auto* a : arches)
         {
             if (!a)
+                continue;
+            if (a->GetSignature().Contains(ECS::GetComponentTypeId<ECS::PendingActivation>()))
                 continue;
             for (const auto& h : a->CollectEntities())
             {

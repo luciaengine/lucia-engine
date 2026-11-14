@@ -30,5 +30,6 @@ class LightUploadNode final : public IRenderPipelineNode
     std::string m_Id;
     std::string m_Json;
     std::string m_BufferRef = "LightBuffer";
+    std::string m_ForwardBufferRef;
 };
 } // namespace GameEngine::Engine::Renderer::Pipeline::Nodes

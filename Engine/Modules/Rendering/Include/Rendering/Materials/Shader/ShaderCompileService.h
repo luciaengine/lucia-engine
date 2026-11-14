@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Rendering/Materials/ShaderCompileTarget.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -40,6 +42,7 @@ struct ShaderProgramCompileRequest
     std::filesystem::path cacheRoot;       // <workspace>/.Cache/Shaders: probed last, a miss compiles into it
     std::vector<std::filesystem::path> includeDirs;
     std::vector<ShaderStageCompileSpec> stages;
+    ShaderCompileTarget Target = CurrentShaderCompileTarget();
 };
 
 struct ShaderProgramCompileResult
@@ -114,10 +117,9 @@ public:
     // Highest SPIR-V version the active rendering backend can consume. A backend-
     // agnostic capability: each backend maps its own support to a SPIR-V version
     // (Vulkan from its API version, Metal from its SPIRV-Cross input support) and
-    // publishes it once at device init. The service emits every stage at this
-    // version, raised to any per-stage compile floor (mesh shaders require 1.6).
-    // Defaults to Spirv_1_5 (loads on the widest range of drivers) until set.
-    enum class SpirvTarget { Spirv_1_5, Spirv_1_6 };
+    // publishes it at device init. New requests capture this default in Target;
+    // every stage uses that snapshot, raised to its compile floor (mesh needs 1.6).
+    // Defaults to Spirv_1_5 until a device publishes its capability.
     static void SetMaxSupportedSpirv(SpirvTarget target);
     // The target feeds the program cache KEY, so anything that needs to compile at a
     // specific one (a test asserting a cooked cache addresses identically) has to be able

@@ -360,7 +360,8 @@ bool StagePackagedTextureCooks(const fs::path& contentRoot,
                 ByteBuffer cooked;
                 ByteBuffer companion;
                 bool inSourceCache = false;
-                bool reused = ReadArtifactPair(destination, withCompanion, output, inputs, hdr, cooked, companion);
+                const bool alreadyStaged = ReadArtifactPair(destination, withCompanion, output, inputs, hdr, cooked, companion);
+                bool reused = alreadyStaged;
                 if (!reused && cacheRoot)
                     reused = inSourceCache =
                         ReadArtifactPair(sourceCacheFile, withCompanion, output, inputs, hdr, cooked, companion);
@@ -387,7 +388,7 @@ bool StagePackagedTextureCooks(const fs::path& contentRoot,
                     }
                 }
                 if (cancelled()) { error = kTextureCookCancelledError; return false; }
-                if (!PublishArtifactPair(destination, cooked, companion, error))
+                if (!alreadyStaged && !PublishArtifactPair(destination, cooked, companion, error))
                     return false;
                 std::string cacheError;
                 if (sourceCooks && !inSourceCache)

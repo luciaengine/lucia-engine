@@ -1,11 +1,12 @@
 ---
-title: Scene ready to show
-description: Ask the engine if the loaded scene's models, materials, shaders and textures are ready, so a game can hide its world until the first frame draws complete.
-sidebar:
-  order: 6
+title: Scene readiness
+description: Check whether a loaded scene is ready to show.
 ---
 
-A scene that has just loaded can draw before its work is done: models still loading, materials not yet registered, shaders and pipelines still compiling, textures still decoding. Those frames show placeholders or silhouettes. The scene load tracker collects that pending work from the systems that do it and answers one question once per frame: is the scene ready to show?
+A game can read the scene readiness snapshot from a native C++ system update.
+The snapshot is taken at the start of the frame and includes pending model and
+material resolution, editor scene opening, material shader compilation,
+draw variant compilation, device pipeline builds, and material texture binds.
 
 The query is the same in the Player and in editor play mode. A game does not need to know which engine service holds the work.
 
@@ -31,8 +32,11 @@ void MenuBackdrop::OnUpdate(float deltaSeconds)
 }
 ```
 
-::::
-::::tab[C#]
+Work requested in the current frame appears in the next snapshot. Keep the
+loading screen visible in the frame that starts a load. If loads generate work
+over several frames, wait for several consecutive ready snapshots before
+revealing the world. `GetStatus()` gives the pending counts by category and
+`Describe()` gives the details for a stalled load. Read both on the main thread.
 
 :::caution[C# binding pending]
 No managed call yet. The native call is `SceneLoadTracker::IsReadyToShow`.

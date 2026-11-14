@@ -10,6 +10,7 @@
 #include "SplineRecipes/SplineGroundAuthority.h"
 #include "SplineRecipes/SplineRecipeSystem.h"
 #include "UndoRedo/UndoRedoService.h"
+#include "UndoRedo/MultiEntityComponentSnapshot.h"
 
 #include "Components/Spline/SplineExtrude.h"
 #include "Components/Spline/SplinePaving.h"
@@ -67,48 +68,6 @@ TEST(SplineGroundAuthority, RecipeCreatedCleanupIsUndoable)
     EXPECT_TRUE(marker->Flatten && marker->Claim && marker->Volume);
 }
 
-TEST(SplineGroundAuthority, OwnsToGradesRemovesOnlyARecipeCreatedClaim)
-{
-    ScopedTerrainService terrainScope;
-    ScopedSplineService splineScope;
-    ECS::World world;
-    const ECS::EntityHandle run = CreateRun(world, SplineECS::SplineService::Get(), 0.0f);
-    Components::SplineExtrude recipe{};
-    recipe.Profile = Components::SplineExtrudeProfile::Crown;
-    world.AddComponentImmediate<Components::SplineExtrude>(run, recipe);
-
-    Editor::UndoRedoService undo;
-    SplineRecipes::SplineRecipeSystem recipes(nullptr);
-    Editor::RecipeEditorHooks journal(&undo, recipes);
-    SplineRecipes::SplineGroundAuthorityController controller;
-    controller.Update(world, &journal);
-    ASSERT_NE(world.GetComponent<Components::TerrainGroundClaimEffect>(run), nullptr);
-
-    auto* live = world.GetComponentForWrite<Components::SplineExtrude>(run);
-    ASSERT_NE(live, nullptr);
-    live->GroundAuthority = SplineGroundAuthority::Grades;
-    controller.Update(world, &journal);
-
-    EXPECT_EQ(world.GetComponent<Components::TerrainGroundClaimEffect>(run), nullptr)
-        << "the recipe-created claim comes off when the authority stops owning";
-    const auto* flatten = world.GetComponent<Components::TerrainFlattenEffect>(run);
-    ASSERT_NE(flatten, nullptr);
-    EXPECT_TRUE(flatten->RespectClaims) << "a graded run defers to claims again";
-    EXPECT_TRUE(Components::EffectPoolName(*flatten).empty());
-    const auto* marker = world.GetComponent<Components::SplineGroundProvisioned>(run);
-    ASSERT_NE(marker, nullptr);
-    EXPECT_FALSE(marker->Claim);
-    EXPECT_TRUE(marker->Flatten && marker->Volume);
-
-    ASSERT_TRUE(undo.CanUndo());
-    undo.Undo();
-    EXPECT_NE(world.GetComponent<Components::TerrainGroundClaimEffect>(run), nullptr)
-        << "undo must restore the claim";
-    const auto* restored = world.GetComponent<Components::SplineGroundProvisioned>(run);
-    ASSERT_NE(restored, nullptr);
-    EXPECT_TRUE(restored->Claim);
-}
-
 TEST(SplineGroundAuthority, APavedAreaTurnedOffComesBackOnUndoWithItsGrassAndPaint)
 {
     ScopedTerrainService terrainScope;
@@ -142,24 +101,20 @@ namespace
 {
 
 // The inspector's edit of a paving's Ground Authority, as one undo entry.
-class SetPavingAuthority final : public Editor::IEditorCommand
+void SetPavingAuthority(Editor::UndoRedoService& undo, ECS::World& world,
+                         ECS::EntityHandle area, SplineGroundAuthority value)
 {
-public:
-    SetPavingAuthority(ECS::World& world, ECS::EntityHandle area, SplineGroundAuthority value)
-        : m_World(world), m_Area(area), m_Value(value)
+    auto target = Editor::MultiEntityUndo::MakeComponentSnapshotTarget(
+        &world, {area}, ECS::GetComponentTypeId<Components::SplinePaving>(), nullptr,
+        "Change Spline Paving Ground Authority");
+    auto edit = undo.BeginInteractiveEdit("Change Spline Paving Ground Authority", std::move(target));
+    ASSERT_TRUE(edit);
+    edit.Preview([&world, area, value]
     {
-    }
-    const char* GetName() const override { return "Change Spline Paving Ground Authority"; }
-    void Do() override { Swap(); }
-    void Undo() override { Swap(); }
-
-private:
-    void Swap() { std::swap(m_World.GetComponentForWrite<Components::SplinePaving>(m_Area)->GroundAuthority, m_Value); }
-
-    ECS::World& m_World;
-    ECS::EntityHandle m_Area;
-    SplineGroundAuthority m_Value;
-};
+        world.GetComponentForWrite<Components::SplinePaving>(area)->GroundAuthority = value;
+    });
+    edit.Commit();
+}
 
 } // namespace
 
@@ -176,7 +131,7 @@ TEST(SplineGroundAuthority, PickingNoneIsOneUndoStepWithTheCleanupItCauses)
     SplineRecipes::SplineGroundAuthorityController controller;
     controller.Update(world, &journal);
 
-    undo.Execute(std::make_unique<SetPavingAuthority>(world, area, SplineGroundAuthority::None));
+    SetPavingAuthority(undo, world, area, SplineGroundAuthority::None);
     controller.Update(world, &journal);
     ASSERT_EQ(world.GetComponent<Components::TerrainGrassEffect>(area), nullptr);
     EXPECT_EQ(undo.GetUndoCount(), 1u) << "the cleanup joins the edit that caused it";
@@ -213,7 +168,7 @@ TEST(SplineGroundAuthority, UndoOfPickingOwnsRemovesWhatItProvisionedAndKeepsThe
     controller.Update(world, &journal);
     ASSERT_EQ(world.GetComponent<Components::TerrainGrassEffect>(area), nullptr);
 
-    undo.Execute(std::make_unique<SetPavingAuthority>(world, area, SplineGroundAuthority::Owns));
+    SetPavingAuthority(undo, world, area, SplineGroundAuthority::Owns);
     controller.Update(world, &journal);
     ASSERT_NE(world.GetComponent<Components::TerrainGrassEffect>(area), nullptr);
     EXPECT_EQ(undo.GetUndoCount(), 1u) << "the provisioning joins the edit that caused it";
@@ -233,4 +188,52 @@ TEST(SplineGroundAuthority, UndoOfPickingOwnsRemovesWhatItProvisionedAndKeepsThe
     EXPECT_NE(world.GetComponent<Components::TerrainGrassEffect>(area), nullptr);
     EXPECT_NE(world.GetComponent<Components::TerrainGroundClaimEffect>(area), nullptr);
     EXPECT_EQ(undo.GetUndoCount(), 1u);
+}
+
+
+TEST(SplineGroundAuthority, OwnsToGradesRemovesOnlyARecipeCreatedClaim)
+{
+    ScopedTerrainService terrainScope;
+    ScopedSplineService splineScope;
+    ECS::World world;
+    const ECS::EntityHandle run = CreateRun(world, SplineECS::SplineService::Get(), 0.0f);
+    Components::SplineExtrude recipe{};
+    recipe.Profile = Components::SplineExtrudeProfile::Crown;
+    world.AddComponentImmediate<Components::SplineExtrude>(run, recipe);
+
+    Editor::UndoRedoService undo;
+    SplineRecipes::SplineRecipeSystem recipes(nullptr);
+    Editor::RecipeEditorHooks journal(&undo, recipes);
+    SplineRecipes::SplineGroundAuthorityController controller;
+    controller.Update(world, &journal);
+    ASSERT_NE(world.GetComponent<Components::TerrainGroundClaimEffect>(run), nullptr);
+
+    auto* live = world.GetComponentForWrite<Components::SplineExtrude>(run);
+    ASSERT_NE(live, nullptr);
+    auto target = Editor::MultiEntityUndo::MakeComponentSnapshotTarget(
+        &world, {run}, ECS::GetComponentTypeId<Components::SplineExtrude>(), nullptr, "Ground Authority");
+    auto edit = undo.BeginInteractiveEdit("Ground Authority", std::move(target));
+    ASSERT_TRUE(edit);
+    edit.Preview([live] { live->GroundAuthority = SplineGroundAuthority::Grades; });
+    edit.Commit();
+    controller.Update(world, &journal);
+
+    EXPECT_EQ(world.GetComponent<Components::TerrainGroundClaimEffect>(run), nullptr)
+        << "the recipe-created claim comes off when the authority stops owning";
+    const auto* flatten = world.GetComponent<Components::TerrainFlattenEffect>(run);
+    ASSERT_NE(flatten, nullptr);
+    EXPECT_TRUE(flatten->RespectClaims) << "a graded run defers to claims again";
+    EXPECT_TRUE(Components::EffectPoolName(*flatten).empty());
+    const auto* marker = world.GetComponent<Components::SplineGroundProvisioned>(run);
+    ASSERT_NE(marker, nullptr);
+    EXPECT_FALSE(marker->Claim);
+    EXPECT_TRUE(marker->Flatten && marker->Volume);
+
+    ASSERT_TRUE(undo.CanUndo());
+    undo.Undo();
+    EXPECT_NE(world.GetComponent<Components::TerrainGroundClaimEffect>(run), nullptr)
+        << "undo must restore the claim";
+    const auto* restored = world.GetComponent<Components::SplineGroundProvisioned>(run);
+    ASSERT_NE(restored, nullptr);
+    EXPECT_TRUE(restored->Claim);
 }

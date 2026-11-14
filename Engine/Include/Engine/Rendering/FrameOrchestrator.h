@@ -289,7 +289,12 @@ class FrameOrchestrator
     // Borrows the frame until RemovePipelineInstanceForFrame. The caller must
     // remove the stream while frame/device are alive, before destroying either.
     // Includes short-lived capture/test frames as well as window-owned streams.
-    void BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame, const FrameGraphBuildParamsRG& params);
+    // The multi-window driver selects the first ready world window before it
+    // declares any view. Other streams can declare after that graph submits.
+    void SelectSharedSceneProducer(Rendering::RenderGraph::RGFrame& frame);
+    // Returns false while the selected producer has no successful submission.
+    bool BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame, const FrameGraphBuildParamsRG& params);
+    void OnFrameAbortedRG(Rendering::RenderGraph::RGFrame& frame);
     void OnFrameSubmittedRG(Rendering::RenderGraph::RGFrame& frame,
                             const Rendering::IDevice::GpuSyncToken& token);
     // Caller-thread only, outside frame recording/Execute. Retires callbacks and
@@ -471,6 +476,9 @@ class FrameOrchestrator
         // an evicted or never-declared stream's submit stamps nothing).
         uint64_t DeclareSeq = 0;
         GpuDrivenFrameRG Values; // this stream's frame-local ids
+        Rendering::RenderGraph::RGFrame* SceneProducer = nullptr;
+        bool Submitted = false;
+        bool ExportedSceneSubmission = false;
     };
     // Find-or-create by RGFrame*, bounded; FIFO-evicting a LIVE stream also
     // destroys its pipeline instance (its outputs die for that frame) —
@@ -490,6 +498,11 @@ class FrameOrchestrator
     uint64_t m_WorldFrameEpoch = 1;
     uint64_t m_GlobalStagesEpoch = 0;
     Rendering::RenderGraph::RGFrame* m_GlobalStagesFrame = nullptr;
+    uint64_t m_SelectedSceneProducerEpoch = 0;
+    Rendering::RenderGraph::RGFrameStamp m_SelectedSceneProducer;
+    bool m_SelectedSceneProducerSubmitted = false;
+    Rendering::IDevice::GpuSyncToken m_SceneProducerPrologue{};
+    std::array<Rendering::IDevice::GpuSyncToken, Rendering::RenderGraph::kQueueCount> m_SceneProducerTokens{};
     // Monotonic declare sequence, minted once per BuildFrameGraph spine call.
     uint64_t m_RGDeclareSeqCounter = 0;
     uint64_t m_RGDeclareSeq = 0;
@@ -582,6 +595,10 @@ class FrameOrchestrator
     // defers to the next spine call. Reset before member teardown (§0a-A7).
     AssetReloadInvalidator m_PipelineReloadInvalidator;
 };
+
+// Route submission stamps or cancellation after executing a frame.
+void NotifyRenderGraphExecution(Rendering::RenderGraph::RGFrame& frame,
+                                uint64_t previousSubmissionCount, FrameOrchestrator* orchestrator);
 
 } // namespace Engine::Renderer
 } // namespace GameEngine

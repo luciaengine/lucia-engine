@@ -212,15 +212,11 @@ textarea {
 .bottom-toolbar-status.is-building { color: #C8C8C8; }
 .bottom-toolbar-status.is-ok       { color: #5FB85F; }
 .bottom-toolbar-status.is-fail     { color: #E0A030; }
-/* Registered status items (Editor::StatusBarItemRegistry): one label each, in registration order,
-   left of the fixed status labels; an item with no text is hidden and takes no space. */
-.bottom-toolbar-status-items {
-	display: flex;
-	flex-direction: row;
-	align-items: center;
-}
-.bottom-toolbar-status-item {
-	margin-right: 12px;
+/* Build-configuration tag on the left side of the footer. Present in every configuration, so a
+   missing tag reads as a stale or broken build rather than "this one must be Release". */
+.bottom-toolbar-build-config {
+	font-size: 12px;
+	color: #8A8A8A;
 }
 /* Vulkan validation-error badge: empty (invisible) at zero errors, red count otherwise. */
 .vk-validation-badge {
@@ -264,9 +260,7 @@ button.icon-button.dragging,
 /* Opens the live panel inventory from the top toolbar. */
 .menulist-icon {
 	background-image: url("editor:Icons/menulist.svg");
-	/* 4/3 of the 16-unit art: its 3-unit line spacing becomes 4 whole pixels, so the
-	   three lines land on the same sub-pixel offset and draw at the same width. */
-	background-size: 21.333px 21.333px;
+	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
 	opacity: 0.35;
@@ -293,7 +287,7 @@ button.drag-ghost,
 
 /* Add layout button (plus icon) - must come after icon-button to override */
 .plus-icon {
-	background-image: url("editor:Icons/plus.svg");
+	background-image: url("editor:Icons/plus.png");
 	/* Keep the 32px source artwork compact inside the 24px button hit target. */
 	background-size: 16px 16px !important;
 	background-repeat: no-repeat;
@@ -337,7 +331,7 @@ button.drag-ghost,
 }
 
 .xclose-icon {
-	background-image: url("editor:Icons/xclose.svg");
+	background-image: url("editor:Icons/xclose.png");
 	background-size: 16px 16px;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -375,7 +369,7 @@ button.fullscreen-icon.pressed,
 }
 
 .stop-icon {
-	background-image: url("editor:Icons/stop.svg");
+	background-image: url("editor:Icons/stop.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -388,7 +382,7 @@ button.fullscreen-icon.pressed,
 }
 
 .play-icon {
-	background-image: url("editor:Icons/play.svg");
+	background-image: url("editor:Icons/play.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -396,7 +390,7 @@ button.fullscreen-icon.pressed,
 }
 
 .play-backward-icon {
-	background-image: url("editor:Icons/play-backward.svg");
+	background-image: url("editor:Icons/play-backward.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -415,7 +409,7 @@ button.fullscreen-icon.pressed,
 .play-icon:active,
 .play-icon.pressed {
 	opacity: 1.0;
-	background-image: url("editor:Icons/playactive.svg");
+	background-image: url("editor:Icons/playactive.png");
 	background-color: transparent !important;
 }
 
@@ -423,7 +417,7 @@ button.fullscreen-icon.pressed,
 .play-backward-icon:active,
 .play-backward-icon.pressed {
 	opacity: 1.0;
-	background-image: url("editor:Icons/playbackwardactive.svg");
+	background-image: url("editor:Icons/playbackwardactive.png");
 	background-color: transparent !important;
 }
 
@@ -459,7 +453,7 @@ button.fullscreen-icon.pressed,
 }
 
 .loop-icon {
-	background-image: url("editor:Icons/looptime.svg");
+	background-image: url("editor:Icons/looptime.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -477,11 +471,11 @@ button.loop-icon.secondary.active,
 	opacity: 1.0;
 	background-color: transparent !important;
 	border-color: transparent !important;
-	background-image: url("editor:Icons/looptime.svg");
+	background-image: url("editor:Icons/looptime.png");
 }
 
 .sync-playhead-icon {
-	background-image: url("editor:Icons/sync-playhead.svg");
+	background-image: url("editor:Icons/sync-playhead.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -501,7 +495,7 @@ button.sync-playhead-icon.secondary.active,
 }
 
 .record-icon {
-	background-image: url("editor:Icons/record.svg");
+	background-image: url("editor:Icons/record.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -517,7 +511,7 @@ button.sync-playhead-icon.secondary.active,
 	border-color: transparent !important;
 }
 
-/* Recording state: use recording.svg (red icon) */
+/* Recording state: use recording.png (red icon) */
 .record-icon.active,
 button.record-icon.active,
 .button.record-icon.active,
@@ -526,7 +520,7 @@ button.record-icon.secondary.active,
 	opacity: 1.0;
 	background-color: transparent !important;
 	border-color: transparent !important;
-	background-image: url("editor:Icons/recording.svg");
+	background-image: url("editor:Icons/recording.png");
 }
 
 /* VHS transport uses the familiar red VCR record dot even while idle. */
@@ -535,7 +529,7 @@ button.toolbar-record-icon.vhs-record-red,
 .button.toolbar-record-icon.vhs-record-red {
 	opacity: 1.0;
 	background-color: transparent !important;
-	background-image: url("editor:Icons/recording_on_button.svg");
+	background-image: url("editor:Icons/recording_on_button.png");
 	background-position: center;
 	background-repeat: no-repeat;
 	background-size: contain;
@@ -557,12 +551,12 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .vhs-rewind-icon {
-	background-image: url("editor:Icons/rewind.svg");
+	background-image: url("editor:Icons/rewind.png");
 	opacity: 0.35;
 }
 
 .vhs-fast-forward-icon {
-	background-image: url("editor:Icons/fastforward.svg");
+	background-image: url("editor:Icons/fastforward.png");
 	opacity: 0.35;
 }
 
@@ -611,7 +605,7 @@ button.toolbar-record-icon.vhs-record-red,
    ====================================== */
 
 .copy-icon {
-	background-image: url("editor:Icons/copy.svg");
+	background-image: url("editor:Icons/copy.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -619,7 +613,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .paste-icon {
-	background-image: url("editor:Icons/paste.svg");
+	background-image: url("editor:Icons/paste.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -627,7 +621,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .eye-icon {
-	background-image: url("editor:Icons/eye.svg");
+	background-image: url("editor:Icons/eye.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -635,7 +629,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .fold-icon {
-	background-image: url("editor:Icons/fold.svg");
+	background-image: url("editor:Icons/fold.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -643,7 +637,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .expand-outline-icon {
-	background-image: url("editor:Icons/expand_outline.svg");
+	background-image: url("editor:Icons/expand_outline.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -651,7 +645,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .contract-outline-icon {
-	background-image: url("editor:Icons/contract_outline.svg");
+	background-image: url("editor:Icons/contract_outline.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -667,7 +661,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .frame-all-icon {
-	background-image: url("editor:Icons/frame_all.svg");
+	background-image: url("editor:Icons/frame_all.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -675,7 +669,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .frame-selected-curves-icon {
-	background-image: url("editor:Icons/frame selected curves.svg");
+	background-image: url("editor:Icons/frame selected curves.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -683,7 +677,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .fit-height-icon {
-	background-image: url("editor:Icons/fit_heigth.svg");
+	background-image: url("editor:Icons/fit_heigth.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -691,7 +685,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .snap-time-icon {
-	background-image: url("editor:Icons/snap value.svg");
+	background-image: url("editor:Icons/snap value.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -699,7 +693,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .snap-value-icon {
-	background-image: url("editor:Icons/snap time.svg");
+	background-image: url("editor:Icons/snap time.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -707,7 +701,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .linear-curve-icon {
-	background-image: url("editor:Icons/linear_curve.svg");
+	background-image: url("editor:Icons/linear_curve.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -715,7 +709,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .stepped-curve-icon {
-	background-image: url("editor:Icons/stepped_curve.svg");
+	background-image: url("editor:Icons/stepped_curve.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -723,7 +717,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .spline-curve-icon {
-	background-image: url("editor:Icons/spline_curve.svg");
+	background-image: url("editor:Icons/spline_curve.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -731,7 +725,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .smooth-lowpass-icon {
-	background-image: url("editor:Icons/simplyfy_curve.svg");
+	background-image: url("editor:Icons/simplyfy_curve.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -739,7 +733,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .smooth-peak-icon {
-	background-image: url("editor:Icons/smooth_peak.svg");
+	background-image: url("editor:Icons/smooth_peak.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -747,7 +741,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .simplify-curve-icon {
-	background-image: url("editor:Icons/smooth_curve.svg");
+	background-image: url("editor:Icons/smooth_curve.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -755,7 +749,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .draw-curve-icon {
-	background-image: url("editor:Icons/draw_curve.svg");
+	background-image: url("editor:Icons/draw_curve.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -763,7 +757,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .retime-icon {
-	background-image: url("editor:Icons/retime.svg");
+	background-image: url("editor:Icons/retime.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -771,7 +765,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .draw-curve-icon {
-	background-image: url("editor:Icons/draw_curve.svg");
+	background-image: url("editor:Icons/draw_curve.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -784,7 +778,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .ease-ease-icon {
-	background-image: url("editor:Icons/ease_ease.svg");
+	background-image: url("editor:Icons/ease_ease.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -792,7 +786,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .ease-out-icon {
-	background-image: url("editor:Icons/ease_out.svg");
+	background-image: url("editor:Icons/ease_out.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -800,7 +794,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .ease-in-icon {
-	background-image: url("editor:Icons/easy_in.svg");
+	background-image: url("editor:Icons/easy_in.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -808,7 +802,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .toggle-keytool-icon {
-	background-image: url("editor:Icons/toggle_keytool.svg");
+	background-image: url("editor:Icons/toggle_keytool.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -816,7 +810,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .add-key-marker-icon {
-	background-image: url("editor:Icons/add_key_marker.svg");
+	background-image: url("editor:Icons/add_key_marker.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -824,7 +818,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .add-noise-icon {
-	background-image: url("editor:Icons/add_noise.svg");
+	background-image: url("editor:Icons/add_noise.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -832,7 +826,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .euler-filter-icon {
-	background-image: url("editor:Icons/euler_filter.svg");
+	background-image: url("editor:Icons/euler_filter.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -840,7 +834,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .lattice-icon {
-	background-image: url("editor:Icons/lattice.svg");
+	background-image: url("editor:Icons/lattice.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -848,7 +842,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .bone-icon {
-	background-image: url("editor:Icons/bone_icon.svg");
+	background-image: url("editor:Icons/bone_icon.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -856,7 +850,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .break-tangents-icon {
-	background-image: url("editor:Icons/break_tangent.svg");
+	background-image: url("editor:Icons/break_tangent.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -864,7 +858,7 @@ button.toolbar-record-icon.vhs-record-red,
 }
 
 .unify-tangents-icon {
-	background-image: url("editor:Icons/unify_tangent.svg");
+	background-image: url("editor:Icons/unify_tangent.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -882,7 +876,7 @@ button.stacked-curves-icon,
 }
 
 .frame-playback-range-icon {
-	background-image: url("editor:Icons/FramePlaybackRange.svg");
+	background-image: url("editor:Icons/FramePlaybackRange.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -890,7 +884,7 @@ button.stacked-curves-icon,
 }
 
 .star-icon {
-	background-image: url("editor:Icons/star.svg");
+	background-image: url("editor:Icons/star.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -959,7 +953,7 @@ button.eye-icon:hover,
 }
 
 .link-icon {
-	background-image: url("editor:Icons/link.svg");
+	background-image: url("editor:Icons/link.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -972,7 +966,7 @@ button.eye-icon:hover,
 }
 
 .pin-icon {
-	background-image: url("editor:Icons/pin.svg");
+	background-image: url("editor:Icons/pin.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -1024,7 +1018,7 @@ button.eye-icon:hover,
 }
 
 .brush-icon {
-	background-image: url("editor:Icons/brush.svg");
+	background-image: url("editor:Icons/brush.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -1037,7 +1031,7 @@ button.eye-icon:hover,
 }
 
 .eraser-icon {
-	background-image: url("editor:Icons/eraser.svg");
+	background-image: url("editor:Icons/eraser.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -1050,7 +1044,7 @@ button.eye-icon:hover,
 }
 
 .gizmo-rotate-icon {
-	background-image: url("editor:Icons/GizmoRotate.svg");
+	background-image: url("editor:Icons/GizmoRotate.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -1063,7 +1057,7 @@ button.eye-icon:hover,
 }
 
 .eyedropper-icon {
-	background-image: url("editor:Icons/colorpicker.svg");
+	background-image: url("editor:Icons/colorpicker.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -1076,7 +1070,7 @@ button.eye-icon:hover,
 }
 
 .arrow-up-icon {
-	background-image: url("editor:Icons/ArrowUp.svg");
+	background-image: url("editor:Icons/ArrowUp.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -1089,7 +1083,7 @@ button.eye-icon:hover,
 }
 
 .arrow-down-icon {
-	background-image: url("editor:Icons/ArrowDown.svg");
+	background-image: url("editor:Icons/ArrowDown.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -1102,7 +1096,7 @@ button.eye-icon:hover,
 }
 
 .trash-icon {
-	background-image: url("editor:Icons/trash.svg");
+	background-image: url("editor:Icons/trash.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -1238,7 +1232,7 @@ button.eye-icon:hover,
 }
 
 .checkmark-circle-icon {
-	background-image: url("editor:Icons/checkmark-circle.svg");
+	background-image: url("editor:Icons/checkmark-circle.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -1310,7 +1304,7 @@ button.eye-icon:hover,
 
 /* Grid and List view toggle buttons - matching top toolbar button styling */
 .grid-view-icon {
-	background-image: url("editor:Icons/grid.svg");
+	background-image: url("editor:Icons/grid.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -1347,7 +1341,7 @@ button.eye-icon:hover,
 }
 
 .list-view-icon {
-	background-image: url("editor:Icons/column-horizontal.svg");
+	background-image: url("editor:Icons/column-horizontal.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -1558,19 +1552,19 @@ button.layout-button,
 
 /* Layout icon images - scoped to layout buttons only */
 .layout-button.layout-left-icon { 
-	background-image: url("editor:Icons/layout-left.svg"); 
+	background-image: url("editor:Icons/layout-left.png"); 
 	opacity: 0.5;
 }
 .layout-button.layout-right-icon { 
-	background-image: url("editor:Icons/layout-right.svg"); 
+	background-image: url("editor:Icons/layout-right.png"); 
 	opacity: 0.5;
 }
 .layout-button.layout-3split-icon { 
-	background-image: url("editor:Icons/layout3split.svg"); 
+	background-image: url("editor:Icons/layout3split.png"); 
 	opacity: 0.5;
 }
 .layout-button.layout-top-icon { 
-	background-image: url("editor:Icons/layouttop.svg"); 
+	background-image: url("editor:Icons/layouttop.png"); 
 	opacity: 0.5;
 }
 
@@ -1760,13 +1754,13 @@ button.layout-button.active,
 	/* Overlap the shared edge so the controls form one continuous pill. */
 	right: 19px;
 	border-radius: var(--ui_radius_sm) 0 0 var(--ui_radius_sm);
-	background-image: url("editor:Icons/fold-left.svg");
+	background-image: url("editor:Icons/fold-left.png");
 }
 
 .dock-tab-scroll-right {
 	right: 0;
 	border-radius: 0 var(--ui_radius_sm) var(--ui_radius_sm) 0;
-	background-image: url("editor:Icons/fold-right.svg");
+	background-image: url("editor:Icons/fold-right.png");
 }
 
 .dock-tab-scroll:hover {
@@ -1856,19 +1850,57 @@ button.layout-button.active,
 	background-color: var(--ui_color_accent);
 }
 
-/* Ghost panel preview shown under cursor while dock-dragging a tab */
+/* Ghost panel preview shown under the cursor while dock-dragging a tab. The
+   container has no surface; the tab and body paint it. DockspaceElement sets
+   position and size, and adds .undocking while a drop would undock the panel. */
 .dock-drag-ghost {
+	opacity: 0.8;
+}
+
+.dock-drag-ghost.undocking {
+	opacity: 1;
+}
+
+.dock-drag-ghost-tab {
+	display: flex;
+	align-items: center;
+	justify-content: center;
 	background-color: var(--ui_color_bg_panel);
-	border: 2px solid var(--ui_color_accent);
-	border-radius: 4px;
-	opacity: 0.75;
+	border: 2px solid var(--ui_color_dock_ghost_border);
+	border-bottom-width: 0px;
+	border-radius: 4px 4px 0px 0px;
+}
+
+.dock-drag-ghost-tab.undocking {
+	border-color: var(--ui_color_accent);
 }
 
 .dock-drag-ghost-label {
 	color: var(--ui_color_text_bright);
 	font-size: 12px;
-	padding: 4px 8px;
-	background-color: var(--ui_color_bg_tabbar);
+}
+
+.dock-drag-ghost-body {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background-color: var(--ui_color_dock_ghost_body);
+	border: 2px solid var(--ui_color_dock_ghost_border);
+	border-radius: 0px 4px 4px 4px;
+}
+
+.dock-drag-ghost-body.undocking {
+	border-color: var(--ui_color_accent);
+}
+
+.dock-drag-ghost-undock-label {
+	display: none;
+	color: var(--ui_color_text_bright);
+	font-size: 16px;
+}
+
+.dock-drag-ghost-undock-label.undocking {
+	display: flex;
 }
 
 .dock-content {

@@ -197,8 +197,12 @@ class UnresolvedComponentStore
             m_ReferencePathsByGuid.try_emplace(guid, path);
     }
 
-    // Drops the overrides of an entity whose destroy released its handle. Not for the destroy that
-    // keeps the handle (editor undo parks it): the overrides must survive a delete and an undo.
+    // Drop every override belonging to an entity that no longer exists. The overrides describe
+    // component instances the destroy just took with it.
+    //
+    // Only for a destroy that RELEASES the handle. The preserve-handle destroy is editor undo/redo
+    // parking the same EntityHandle for revival, and dropping the overrides there would lose the
+    // authored text across a delete-then-undo — the very loss this table prevents.
     void EraseEntity(EntityHandle entity)
     {
         m_ByEntity.erase(entity);

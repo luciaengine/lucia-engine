@@ -2,5 +2,6 @@
   "name": "chromatic-aberration",
   "version": "1.0.0",
   "displayName": "Chromatic Aberration",
+  "icon": "Preview/icon.svg",
   "assets": "Assets/"
 }

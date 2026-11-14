@@ -22,6 +22,7 @@ enum class ForwardEmitPurpose : uint8_t
 {
     World,
     ReflectionProbeCapture,
+    PlanarReflectionCapture,
 };
 
 // Identifies the type of depth pass invoking a registered depth emit callback.
@@ -95,6 +96,23 @@ struct ForwardEmitContext
     ::GameEngine::Rendering::ViewId ViewId{};
     uint32_t FrameIndex = 0;
     ForwardEmitPurpose Purpose = ForwardEmitPurpose::World;
+};
+
+/// How a registered forward producer takes part in the frame (RenderServices::RegisterForwardEmit).
+struct ForwardProducerOptions
+{
+    /// The producer's depth contract for idle recompute elision. True (the conservative default)
+    /// declares its draws can change the rasterized depth of a view (opaque or alpha-tested content
+    /// such as terrain, grass and water surfaces), which pins every depth-derived elision family to
+    /// recompute each frame while the producer is registered. Blend-only producers that never write
+    /// depth (smoke and spray billboards, sprites) set false: their color changes are invisible to
+    /// depth-derived passes.
+    bool WritesDepth = true;
+
+    /// True runs the producer during world declaration, when resource imports belong to the
+    /// current RGFrame, including views without mesh submissions. False runs it while batch keys
+    /// are built, when ForwardEmitContext::Frame can still be null.
+    bool RequiresFrame = false;
 };
 
 // Parameter bag passed to a registered depth-emit callback. Producers push

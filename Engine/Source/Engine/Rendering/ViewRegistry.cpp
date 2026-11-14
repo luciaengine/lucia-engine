@@ -248,13 +248,9 @@ const ViewRegistry::ViewAntiAliasing* ViewRegistry::AdvanceViewAntiAliasing(View
         // produces CameraData twice per frame (Update + Declare), so keying on
         // the frame index — never call count — is what keeps one jitter sample
         // per rendered frame.
-        // Prev* snapshot the LAST RENDERED frame, however long ago: an OnDemand
-        // view that lapses (hidden tab, collapsed pane) resumes with a frame
-        // gap, and its surviving history was written by exactly that last
-        // rendered camera — so the pair stays valid for reprojection. Whether
-        // the history PHYSICAL survived is the render-graph pool's freshness
-        // arm (TemporalAANode), not the camera pair's concern.
-        taa.PrevValid = (taa.FrameStamp != ~0ull);
+        // A declared frame can be discarded; the resolve matches this stamp to its submitted history.
+        taa.PrevFrameStamp = taa.FrameStamp;
+        taa.PrevValid = (taa.PrevFrameStamp != ~0ull);
         taa.PrevCamera = taa.CurrCamera;
         taa.PrevJitterX = taa.JitterX;
         taa.PrevJitterY = taa.JitterY;
@@ -408,6 +404,30 @@ void ViewRegistry::SetViewCamera(ViewId id, CameraId cameraId)
         if (view.id == id)
         {
             view.cameraId = cameraId;
+            return;
+        }
+    }
+}
+
+void ViewRegistry::SetViewDropsEditorHidden(ViewId id, bool enabled)
+{
+    for (auto& view : m_Views)
+    {
+        if (view.id == id)
+        {
+            view.DropEditorHidden = enabled;
+            return;
+        }
+    }
+}
+
+void ViewRegistry::SetViewBackgroundOnly(ViewId id, bool enabled)
+{
+    for (auto& view : m_Views)
+    {
+        if (view.id == id)
+        {
+            view.backgroundOnly = enabled;
             return;
         }
     }

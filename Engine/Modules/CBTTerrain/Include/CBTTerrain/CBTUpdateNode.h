@@ -12,6 +12,7 @@
 // against them — that declared read is what orders the draw after this pass.
 
 #include <cstdint>
+#include <functional>
 
 #include "CBTTerrain/CBTActivityReadback.h" // CBTActivitySlot (a defaulted argument)
 #include "Rendering/Core/Handle.h" // TextureHandle
@@ -68,7 +69,7 @@ class CBTUpdateNode
                                               const CBTClassifyDesc& classify,
                                               const CBTFrameParams& params, uint32_t frameCounter,
                                               Rendering::TextureHandle heightSource,
-                                              const CBTActivitySlot& activity = {});
+                                              const CBTActivitySlot& activity = {}, std::function<void()> onSubmitted = {});
 };
 
 } // namespace GameEngine::CBTTerrain

@@ -26,7 +26,7 @@
 // RunLevelWaveCascadeProbe entry declared in UIManager.h.
 
 #include "UI/UIManager.h"
-#include "UIManager_Internal.h"
+#include "UIManager/UIManager_Internal.h"
 
 #include "UI/Parsers/CSSParser.h"
 #include "UI/ResolvedStyle.h"

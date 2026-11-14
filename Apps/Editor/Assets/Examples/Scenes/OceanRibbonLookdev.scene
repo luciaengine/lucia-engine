@@ -1,7 +1,7 @@
 [scene name="OceanRibbonLookdev" version=1]
 ; A continuous, bounded river with flow and material optics,
 ; running in a channel its own spline carves through the terrain and out into the sea.
-; The ocean surface detail guide (docs/rendering/ocean-surface-detail.mdx) explains the controls.
+; The ocean surface detail guide (docs/Rendering/ocean-surface-detail.html) explains the controls.
 
 [entity id="sun"]
 Name.value = "Sun"

@@ -1,12 +1,11 @@
 #include "Engine/Build/WebExportRunner.h"
-
-#include "WebExportContent.h"
-
 #include "Core/ApplicationPaths.h"
-#include "Core/Engine.h"
+
+#include "Core/Application.h"
+#include "Types/PathUtils.h"
 #include "Engine/Build/BuildPipeline.h"
 #include "Engine/Build/GameConfig.h"
-#include "Engine/Build/MaterialVariantCookTool.h"
+#include "Engine/Build/PythonBuildTool.h"
 #include "Engine/GameUI/UIScaleProjectSettings.h"
 
 #include <cstdlib>
@@ -27,6 +26,29 @@ constexpr const char* kPlayerNoticesFile = "THIRD_PARTY_NOTICES.md";
 /// developer usually has.
 constexpr const char* kWasmPresetBinDirs[] = {"build/wasm-release/bin", "build/wasm-debug/bin"};
 
+/// First existing file at `relative` under `start` or any of its ancestors.
+///
+/// The walk runs to the filesystem root rather than a fixed depth: the staged
+/// Editor sits nine directories inside a build tree on macOS (bundle Contents,
+/// Apps/Editor, bin/<config>, the preset directory) and fewer elsewhere, and a
+/// depth guess that is right on one platform silently finds nothing on another.
+std::filesystem::path FindFileUpward(std::filesystem::path start,
+                                     const std::filesystem::path& relative)
+{
+    std::error_code ec;
+    while (!start.empty())
+    {
+        const auto candidate = start / relative;
+        if (std::filesystem::is_regular_file(candidate, ec))
+            return candidate;
+        const auto parent = start.parent_path();
+        if (parent == start)
+            break;
+        start = parent;
+    }
+    return {};
+}
+
 std::string Quote(const std::filesystem::path& path)
 {
     return "\"" + path.generic_string() + "\"";
@@ -43,53 +65,22 @@ std::filesystem::path FindExportScript(const std::filesystem::path& projectRoot)
 
     if (!projectRoot.empty())
     {
-        const auto inProject = ApplicationPaths::FindFileUpward(projectRoot, relative);
+        const auto inProject = FindFileUpward(projectRoot, relative);
         if (!inProject.empty())
             return inProject;
     }
-    return ApplicationPaths::FindFileUpward(ApplicationPaths::GetExecutableDirectory(), relative);
+    return FindFileUpward(ApplicationPaths::GetExecutableDirectory(), relative);
 }
 
-std::filesystem::path FindPythonExecutable()
+
+std::filesystem::path FindMaterialVariantCook()
 {
 #if defined(_WIN32)
-    const char* names[] = {"python.exe", "python3.exe"};
-    const char kPathSeparator = ';';
+    const std::filesystem::path relative = std::filesystem::path("Tools") / "MaterialVariantCook.exe";
 #else
-    const char* names[] = {"python3", "python"};
-    const char kPathSeparator = ':';
+    const std::filesystem::path relative = std::filesystem::path("Tools") / "MaterialVariantCook";
 #endif
-
-    std::vector<std::filesystem::path> searchDirs;
-#if defined(__APPLE__)
-    // A bundled Editor launched from Finder inherits a minimal PATH, so the
-    // usual package-manager prefixes are searched explicitly.
-    searchDirs.emplace_back("/opt/homebrew/bin");
-    searchDirs.emplace_back("/usr/local/bin");
-    searchDirs.emplace_back("/usr/bin");
-#endif
-    if (const char* pathEnv = std::getenv("PATH"))
-    {
-        std::stringstream stream(pathEnv);
-        std::string entry;
-        while (std::getline(stream, entry, kPathSeparator))
-        {
-            if (!entry.empty())
-                searchDirs.emplace_back(entry);
-        }
-    }
-
-    std::error_code ec;
-    for (const char* name : names)
-    {
-        for (const auto& dir : searchDirs)
-        {
-            const auto candidate = dir / name;
-            if (std::filesystem::is_regular_file(candidate, ec))
-                return candidate;
-        }
-    }
-    return {};
+    return FindFileUpward(ApplicationPaths::GetExecutableDirectory(), relative);
 }
 
 bool HoldsPlayerLinkFiles(const std::filesystem::path& directory)
@@ -217,7 +208,7 @@ bool RunWebExport(const BuildSettings& settings,
         return false;
     }
 
-    const auto python = FindPythonExecutable();
+    const auto python = FindPythonBuildExecutable();
     if (python.empty())
     {
         outError = "Web export needs Python 3, which was not found on PATH. Install Python 3 "
@@ -242,40 +233,17 @@ bool RunWebExport(const BuildSettings& settings,
         return false;
     }
 
-    // The export's own scratch folder beside its output (the script replaces the output folder):
-    // the generated game.config, the content list and the stripped scenes, removed after the run.
-    const auto scratch = settings.outputDirectory.parent_path() /
-                         (settings.outputDirectory.filename().string() + ".web-export");
-    std::filesystem::remove_all(scratch, ec);
-    std::filesystem::create_directories(scratch, ec);
-
     // The project directory holds no game.config; the export needs one, and the
     // Editor's build settings are what a desktop package would be built from.
-    const auto generatedConfig = scratch / "game.config";
+    const auto generatedConfig = settings.outputDirectory.parent_path() / ".web-export-game.config";
+    std::filesystem::create_directories(generatedConfig.parent_path(), ec);
     GameConfig config = settings.playerConfig;
     config.uiScale = UIScaleProjectSettings::Load(settings.projectRoot);
     if (!SaveGameConfig(generatedConfig, config))
     {
         outError = "Failed to write the generated game.config at " + generatedConfig.generic_string() +
                    ". Check that the build folder is writable.";
-        std::filesystem::remove_all(scratch, ec);
         return false;
-    }
-
-    // What ships is decided here, by the desktop export's collection; the script
-    // stages exactly this list.
-    const auto contentList = scratch / kWebExportContentListName;
-    std::vector<std::string> contentWarnings;
-    if (!StageWebExportContent(EngineCore::GetInstance().GetAssetManager(), settings,
-                               EngineCore::GetInstance().GetResolvedAssetRoot(), scratch, contentWarnings, outError))
-    {
-        std::filesystem::remove_all(scratch, ec);
-        return false;
-    }
-    for (const std::string& warning : contentWarnings)
-    {
-        if (onLine)
-            onLine("warning: " + warning);
     }
 
     std::string command;
@@ -287,7 +255,6 @@ bool RunWebExport(const BuildSettings& settings,
     command += Quote(python) + " " + Quote(exportScript) +
                " --project " + Quote(settings.projectRoot) +
                " --game-config " + Quote(generatedConfig) +
-               " --content-list " + Quote(contentList) +
                " --out " + Quote(settings.outputDirectory) +
                " --template " + Quote(playerTemplate) +
                " --shaderpkg-dir " + Quote(shaderPackages) +
@@ -302,7 +269,7 @@ bool RunWebExport(const BuildSettings& settings,
             onLine(line);
     });
 
-    std::filesystem::remove_all(scratch, ec);
+    std::filesystem::remove(generatedConfig, ec);
 
     if (result.cancelled || pipeline.IsCancelled())
     {

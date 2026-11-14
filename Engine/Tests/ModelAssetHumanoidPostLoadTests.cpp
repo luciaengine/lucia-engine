@@ -306,12 +306,19 @@ TEST(HumanoidAutoImport, StaticGltfRunsNoRigHeuristic)
 }
 
 // A four-legged creature from the optional Assets/Models/FBXTest/ payload; empty when absent.
-std::filesystem::path CreatureFbx(const char* fileName)
+std::filesystem::path CreatureFbx(const char* relative)
 {
-    const auto p = StagedRoot() / "Assets/Models/FBXTest" / fileName;
-    std::error_code ec;
-    if (std::filesystem::exists(p, ec) && !ec)
-        return p;
+    const std::filesystem::path roots[] = {
+        std::filesystem::path(R"(C:\Dev\Games\AshenCrown)"),
+        std::filesystem::path(R"(C:/Dev/Games/AshenCrown)"),
+    };
+    for (const auto& root : roots)
+    {
+        const auto p = root / relative;
+        std::error_code ec;
+        if (std::filesystem::exists(p, ec) && !ec)
+            return p;
+    }
     return {};
 }
 
@@ -340,14 +347,14 @@ TEST(HumanoidAutoImport, FourLeggedCreatureFbxFailsStanceGate)
     ASSERT_TRUE(profile.Load()) << profilePath.string();
     ASSERT_EQ(profile.GetState(), AssetState::Loaded);
 
-    const char* fileNames[] = {
-        "Sheep.fbx",
-        "Wolf.fbx",
+    const char* relatives[] = {
+        "Assets/Models/Fantasy/Creatures/Sheep.fbx",
+        "Assets/Models/Fantasy/Creatures/Wolf.fbx",
     };
     int ran = 0;
-    for (const char* fileName : fileNames)
+    for (const char* rel : relatives)
     {
-        const auto path = CreatureFbx(fileName);
+        const auto path = CreatureFbx(rel);
         if (path.empty())
             continue;
         Vector<uint8> bytes;

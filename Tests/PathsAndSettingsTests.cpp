@@ -1,6 +1,7 @@
+#include "Core/ApplicationPaths.h"
 #include <gtest/gtest.h>
 
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h"
 #include "Core/StandardPaths.h"
 #include "Scripting/PathResolver.h"
 #include "Rendering/Sky/SkyRenderer.h"
@@ -260,9 +261,8 @@ TEST(Paths, BundleResourcesDirectory_ResolvesOnlyFromABundleExecutableDirectory)
 TEST(Paths, EngineManagedDirectory_IsTheBundleManagedResourcesInsideAnAppBundle)
 {
     namespace fs = std::filesystem;
-    const fs::path root = fs::temp_directory_path() / "GE_EngineManagedDirProbe";
+    const fs::path root = GameEngine::TestUtils::MakeUniqueTempDirectory("GE_EngineManagedDirProbe");
     std::error_code ec;
-    fs::remove_all(root, ec);
     const fs::path exeDir = root / "Probe.app" / "Contents" / "MacOS";
     const fs::path managedDir = root / "Probe.app" / "Contents" / "Resources" / "Managed";
     ASSERT_TRUE(fs::create_directories(exeDir, ec)) << ec.message();

@@ -30,6 +30,7 @@
 #include "TerrainECS/SurfaceHeightQuery.h"
 #include "TerrainECS/TerrainPageFeature.h"
 #include "TerrainECS/TerrainPages.h"
+#include "TerrainECS/TerrainPageFeature.h"
 #include "TerrainECS/TerrainRenderFeature.h"
 #include "TerrainECS/TerrainRenderPublication.h"
 #include "TerrainECS/TerrainService.h"
@@ -54,6 +55,30 @@ using json = nlohmann::json;
 
 namespace
 {
+
+json HeightPageReadiness(const TerrainECS::TerrainPageFeature* feature)
+{
+    if (feature == nullptr)
+        return nullptr;
+    const auto snapshot = feature->GetReadiness();
+    json terrains = json::array();
+    for (const auto& terrain : snapshot.Terrains)
+        terrains.push_back({{"terrainIndex", terrain.Terrain},
+                            {"requestedVersion", terrain.RequestedVersion},
+                            {"committedVersion", terrain.CommittedVersion},
+                            {"requestedContentGeneration", terrain.RequestedContentGeneration},
+                            {"committedContentGeneration", terrain.CommittedContentGeneration}});
+    return {{"slots", snapshot.Slots}, {"resident", snapshot.Resident}, {"deferred", snapshot.Deferred},
+            {"loadsStarted", snapshot.LoadsStarted}, {"cpuBytes", snapshot.CpuBytes},
+            {"cacheBytes", snapshot.CacheBytes}, {"publishedUploads", snapshot.PublishedUploads},
+            {"latchedUploads", snapshot.LatchedUploads},
+            {"publishedSurfaceUploads", snapshot.PublishedSurfaceUploads},
+            {"latchedSurfaceUploads", snapshot.LatchedSurfaceUploads}, {"pendingBytes", snapshot.PendingBytes},
+            {"retiringBytes", snapshot.RetiringBytes}, {"cacheReady", snapshot.CacheReady},
+            {"stagingReady", snapshot.StagingReady},
+            {"latchedFrame", snapshot.LatchedFrame == ~0ull ? json(nullptr) : json(snapshot.LatchedFrame)},
+            {"submittedFrame", snapshot.SubmittedFrame == ~0ull ? json(nullptr) : json(snapshot.SubmittedFrame)}, {"terrains", std::move(terrains)}};
+}
 
 std::string EntityNameFromWorld(ECS::World* world, ECS::EntityHandle entity)
 {
@@ -856,6 +881,7 @@ void RegisterTerrainDebugHandlers(EditorDebugServer& server, EditorApplication& 
 
         return json{
             {"terrainCount", terrains.size()},
+            {"heightPages", HeightPageReadiness(rs ? rs->GetFeature<TerrainECS::TerrainPageFeature>() : nullptr)},
             {"terrainServiceAvailable", terrainService != nullptr},
             {"terrainRenderFeatureAvailable", feature != nullptr},
             {"activeRenderTerrainCount", activeTerrains.size()},
@@ -1015,7 +1041,7 @@ void RegisterTerrainDebugHandlers(EditorDebugServer& server, EditorApplication& 
         // Whether the planar pool-pressure controller is armed (GE_CBT_POOL_PRESSURE). Without it a
         // pressureStep of 0 below reads the same whether the controller is off or simply not engaged.
         out["poolPressure"] = cbt->GetClassify().PoolPressure != 0u;
-        out["updateRecordCount"] = static_cast<uint64_t>(cbt->GetUpdateRecordCount());
+        out["updateSubmissionCount"] = static_cast<uint64_t>(cbt->GetUpdateSubmissionCount());
         // Page samples no resident page answered: the newest read update, and the updates with any.
         out["unresolvedPageSamples"] = cbt->GetUnresolvedPageSamples();
         out["unresolvedPageUpdates"] = cbt->GetUnresolvedPageUpdates();

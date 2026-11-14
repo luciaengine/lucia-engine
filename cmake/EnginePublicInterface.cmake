@@ -47,6 +47,9 @@ function(_ge_engine_public_interface_lists)
     # <target>|<include directory>|<reason>; <src> is the source tree, <build> the build
     # tree, <vcpkg> the vcpkg install tree of the target triplet.
     set(_GE_PUBLIC_INCLUDE_EXCEPTIONS
+        "ECS|<src>/Engine/Modules/Platform/Include|ECS/ChangeFilter.h reads Platform/Environment.h"
+        "Memory|<src>/Engine/Include|Memory/AllocationCategory.h, Memory/MemoryManager.h and Memory/Allocators public headers"
+        "GameEngineRendering|<src>/Engine/Modules/Platform/Include|RenderingDebugFlags.h and GPUInstanceDepthClass.h read Platform/Environment.h"
         "Engine|<build>/generated|generated headers (EngineVersion.h, ...); #3695"
         "Engine|<src>/Engine/Modules/VolumetricFog/Include|#3695"
         "Engine|<src>/Engine/Modules/HeightFog/Include|#3695"

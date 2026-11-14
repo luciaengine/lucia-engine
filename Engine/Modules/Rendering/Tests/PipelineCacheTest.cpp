@@ -387,3 +387,29 @@ int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
+
+TEST_F(VulkanPipelineCacheTest, ADevicePersistsToItsApplicationOwnedDirectory) {
+    GameEngine::TestUtils::ScopedTempDir root(
+        GameEngine::TestUtils::MakeUniqueTempDirectory("application_pipeline_cache"));
+    const auto directory = root.Path() / "isolated";
+    const auto file = directory / "vulkan_pipeline_cache.bin";
+    WriteCacheFileWithBadChecksum(file);
+    ScopedLogCapture capture;
+    DeviceDesc desc{};
+    desc.preferredAPI = GraphicsAPI::Vulkan;
+    desc.enableSwapchain = false;
+    desc.enableDynamicRendering = true;
+    desc.persistPipelineCache = true;
+    desc.pipelineCacheDirectory = directory.string();
+    auto device = DeviceFactory::CreateDevice(desc);
+    ASSERT_NE(device, nullptr);
+    ASSERT_TRUE(device->Initialize(desc));
+    EXPECT_EQ(capture.CountLinesContaining("PipelineCache: checksum mismatch"), 1u);
+    device.reset();
+    ASSERT_TRUE(std::filesystem::exists(file));
+    EXPECT_GT(std::filesystem::file_size(file), 20u);
+    std::ifstream persisted(file, std::ios::binary);
+    uint32_t header[5]{};
+    persisted.read(reinterpret_cast<char*>(header), sizeof(header));
+    EXPECT_NE(header[3], 0xFFFFFFFFu) << "The application-owned cache was not replaced";
+}

@@ -194,8 +194,8 @@ void CBTUpdateSystem::Update(ECS::World& world, float32 /*deltaTime*/)
 
             CBTTerrain::SphereEditRegions regions{};
             if (service)
-                service->ConsumePlanetLayerDirtyRegions(regions); // drains the render dirty union
-            ConsumePlanetLayerEdits(feature.GetUpdateRecordCount(), regions, classify);
+                service->ConsumePlanetLayerDirtyRegions(regions);
+            ConsumePlanetLayerEdits(feature.GetUpdateSubmissionCount(), regions, classify);
         }
         else
         {
@@ -209,12 +209,12 @@ void CBTUpdateSystem::Update(ECS::World& world, float32 /*deltaTime*/)
             {
                 auto* terrainFeature =
                     m_RenderServices->GetFeature<TerrainECS::TerrainRenderFeature>();
-                ConsumeUnifiedTiledDirtyRegion(terrainFeature, feature.GetUpdateRecordCount(),
+                ConsumeUnifiedTiledDirtyRegion(terrainFeature, feature.GetUpdateSubmissionCount(),
                                                tuning, classify);
             }
             else
             {
-                ConsumeDirtyRegion(world, feature.GetUpdateRecordCount(), classify);
+                ConsumeDirtyRegion(world, feature.GetUpdateSubmissionCount(), classify);
             }
         }
     }
@@ -279,7 +279,7 @@ void CBTUpdateSystem::LogProvisionSignal(const Components::Terrain& tuning, uint
                           std::max(tuning.SizeX, tuning.SizeZ), resolvedMaxDepth, depthKind);
 }
 
-void CBTUpdateSystem::ConsumePlanetLayerEdits(uint64 updateRecordCount, const CBTTerrain::SphereEditRegions& regions,
+void CBTUpdateSystem::ConsumePlanetLayerEdits(uint64 updateSubmissionCount, const CBTTerrain::SphereEditRegions& regions,
                                               CBTTerrain::CBTClassifyDesc& classify)
 {
     // Ingest the drained dirty union (clear-on-read from TerrainService, so every non-empty call
@@ -308,7 +308,7 @@ void CBTUpdateSystem::ConsumePlanetLayerEdits(uint64 updateRecordCount, const CB
 
     // An update recorded since the last push: a face whose pushed rect did not grow since is done; a
     // grown one stays pending and goes again at its new extent.
-    if (m_SpherePushed.Count != 0u && updateRecordCount != m_SpherePushedRecordCount)
+    if (m_SpherePushed.Count != 0u && updateSubmissionCount != m_SpherePushedRecordCount)
     {
         for (uint32 i = 0; i < m_SpherePushed.Count; ++i)
         {
@@ -333,7 +333,7 @@ void CBTUpdateSystem::ConsumePlanetLayerEdits(uint64 updateRecordCount, const CB
     if (classify.SphereDirty.Count == 0u)
         return;
     m_SpherePushed = classify.SphereDirty;
-    m_SpherePushedRecordCount = updateRecordCount;
+    m_SpherePushedRecordCount = updateSubmissionCount;
 }
 
 bool CBTUpdateSystem::ComputeTerrainActive(ECS::World& world)
@@ -357,7 +357,7 @@ bool CBTUpdateSystem::ComputeTerrainActive(ECS::World& world)
     return active;
 }
 
-void CBTUpdateSystem::ConsumeDirtyRegion(ECS::World& world, uint64 updateRecordCount,
+void CBTUpdateSystem::ConsumeDirtyRegion(ECS::World& world, uint64 updateSubmissionCount,
                                          CBTTerrain::CBTClassifyDesc& classify)
 {
     // C5 (plan §8): consume CBT's OWN cursor into the drawn terrain's region-dirty
@@ -394,7 +394,7 @@ void CBTUpdateSystem::ConsumeDirtyRegion(ECS::World& world, uint64 updateRecordC
     // record count moved past what we saw when we pushed). Only then commit the log
     // cursor past that edit — otherwise the edit was never handed to the GPU (a frame
     // with no scene view / instance not ready), so hold the cursor and re-arm below.
-    if (cursor.InFlight && updateRecordCount != cursor.InFlightRecordCount)
+    if (cursor.InFlight && updateSubmissionCount != cursor.InFlightRecordCount)
     {
         cursor.CommittedVersion = cursor.InFlightVersion;
         cursor.InFlight = false;
@@ -424,11 +424,11 @@ void CBTUpdateSystem::ConsumeDirtyRegion(ECS::World& world, uint64 updateRecordC
     // cursor until a later frame confirms an update recorded it (above).
     cursor.InFlight = true;
     cursor.InFlightVersion = data->HeightfieldVersion;
-    cursor.InFlightRecordCount = updateRecordCount;
+    cursor.InFlightRecordCount = updateSubmissionCount;
 }
 
 void CBTUpdateSystem::ConsumeUnifiedTiledDirtyRegion(TerrainECS::TerrainRenderFeature* feature,
-                                                     uint64 updateRecordCount,
+                                                     uint64 updateSubmissionCount,
                                                      const Components::Terrain& tuning,
                                                      CBTTerrain::CBTClassifyDesc& classify)
 {
@@ -455,11 +455,11 @@ void CBTUpdateSystem::ConsumeUnifiedTiledDirtyRegion(TerrainECS::TerrainRenderFe
 
     // Run the discipline even when nothing was drained (taken == false) so an
     // unconfirmed pending rect from a prior frame re-arms or commits on schedule.
-    ConsumeUnifiedDirtyRect(taken, minU, minV, maxU, maxV, updateRecordCount, classify);
+    ConsumeUnifiedDirtyRect(taken, minU, minV, maxU, maxV, updateSubmissionCount, classify);
 }
 
 void CBTUpdateSystem::ConsumeUnifiedDirtyRect(bool takenHasRect, float minU, float minV, float maxU,
-                                              float maxV, uint64 updateRecordCount,
+                                              float maxV, uint64 updateSubmissionCount,
                                               CBTTerrain::CBTClassifyDesc& classify)
 {
     // Confirm: a CBT.Update recorded the rect we pushed last time (the feature's record
@@ -484,7 +484,7 @@ void CBTUpdateSystem::ConsumeUnifiedDirtyRect(bool takenHasRect, float minU, flo
     // tripwire at the CBT.Update claim site (CBTRenderNode::DeclareForView, via
     // TerrainRenderFeature::HeightmapUploadClaimedInOtherGraph), so a future change that
     // splits them fails loudly instead of silently committing against pre-copy texels.
-    if (m_UnifiedInFlight && updateRecordCount != m_UnifiedInFlightRecordCount)
+    if (m_UnifiedInFlight && updateSubmissionCount != m_UnifiedInFlightRecordCount)
     {
         m_UnifiedInFlight = false;
         m_UnifiedPendingHasRect = false;
@@ -523,7 +523,7 @@ void CBTUpdateSystem::ConsumeUnifiedDirtyRect(bool takenHasRect, float minU, flo
     // Mark the rect in-flight at the current record count; hold it until a later frame
     // confirms an update recorded it (above).
     m_UnifiedInFlight = true;
-    m_UnifiedInFlightRecordCount = updateRecordCount;
+    m_UnifiedInFlightRecordCount = updateSubmissionCount;
 }
 
 } // namespace GameEngine::CBTTerrainECS

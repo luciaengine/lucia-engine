@@ -44,9 +44,9 @@ PointShadowLodKey Knobs(float bias = 0.0f, uint32_t forceLevel = kLodAuto,
 float ScatterCoverage(const GameEngine::Rendering::GPUDrawStreamBuilder::ViewLODParams& p,
                       const Vector3& casterCenter, float casterRadius)
 {
-    const float dx = p.cameraPos.x - casterCenter.x;
-    const float dy = p.cameraPos.y - casterCenter.y;
-    const float dz = p.cameraPos.z - casterCenter.z;
+    const float dx = p.cameraPos[0] - casterCenter.x;
+    const float dy = p.cameraPos[1] - casterCenter.y;
+    const float dz = p.cameraPos[2] - casterCenter.z;
     const float dist = std::max(std::sqrt(dx * dx + dy * dy + dz * dz), 1e-4f);
     return casterRadius * p.projScaleY / dist * std::exp2(p.lodBiasGlobal);
 }
@@ -61,7 +61,7 @@ float ScatterCoverage(const GameEngine::Rendering::GPUDrawStreamBuilder::ViewLOD
 TEST(PointShadowLodSelection, PointFaceProjScaleYMatchesFaceProjection)
 {
     constexpr float kPi = 3.14159265358979323846f;
-    for (const auto& [nearPlane, farPlane] : {std::pair{0.025f, 10.0f}, std::pair{0.025f, 500.0f},
+    for (const auto [nearPlane, farPlane] : {std::pair{0.025f, 10.0f}, std::pair{0.025f, 500.0f},
                                              std::pair{1.0f, 4.0f}})
     {
         const GameEngine::Mathematics::Matrix4x4 faceProj =
@@ -80,9 +80,9 @@ TEST(PointShadowLodSelection, SelectsFromTheLightNotTheCamera)
     // parameter to pass, so no camera term can reach selection.
     const Vector3 lightPos{12.0f, 3.5f, -40.0f};
     const auto p = MakePointFaceLodParams(lightPos, kTileHigh, Knobs());
-    EXPECT_FLOAT_EQ(p.cameraPos.x, lightPos.x);
-    EXPECT_FLOAT_EQ(p.cameraPos.y, lightPos.y);
-    EXPECT_FLOAT_EQ(p.cameraPos.z, lightPos.z);
+    EXPECT_FLOAT_EQ(p.cameraPos[0], lightPos.x);
+    EXPECT_FLOAT_EQ(p.cameraPos[1], lightPos.y);
+    EXPECT_FLOAT_EQ(p.cameraPos[2], lightPos.z);
 }
 
 TEST(PointShadowLodSelection, CoverageIsAngularHalfExtentSeenFromTheLight)

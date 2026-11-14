@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Rendering/Materials/ShaderCompileTarget.h"
+
 namespace GameEngine
 {
 namespace Rendering
@@ -7,19 +9,8 @@ namespace Rendering
 
 struct RendererProfile;
 
-// The compat shader profile is a property of the device the process booted on,
-// not of any one material, so it lives beside the variant key rather than
-// inside it: GenerateDefines emits GE_COMPAT_PROFILE from here, and
-// ShaderVariantKey::Hash folds the same bit in so a compat run can never serve
-// a desktop run's cached SPIR-V (or the reverse) out of the on-disk shader
-// cache. Set once from the resolved RendererProfile at renderer init, before
-// any variant is requested.
-//
-// The storage lives in the Rendering module, never inline in this header: an
-// inline definition gives every binary that links the engine its own copy, and
-// on Windows an executable's copy is not the engine DLL's. An offline tool
-// setting the profile from its own main() would then set a flag that no shader
-// compose ever reads.
+// Device defaults for new requests. Queued work retains its ShaderCompileTarget;
+// changing these defaults does not change an existing request or cache key.
 bool IsCompatShaderProfile();
 void SetCompatShaderProfile(bool compat);
 
@@ -40,6 +31,7 @@ void SetClipDistancesAvailable(bool available);
 // offline cook passes the profile of the device class it cooks for, so each cooked program carries the
 // defines that class's runtime composes and the runtime finds it under the same cache key.
 void ApplyShaderCompileProfile(const RendererProfile& profile);
+void ApplyShaderCompileProfile(const ShaderCompileTarget& target);
 
 } // namespace Rendering
 } // namespace GameEngine

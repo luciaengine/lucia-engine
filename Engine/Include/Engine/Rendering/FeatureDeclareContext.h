@@ -96,6 +96,8 @@ struct FeatureDeclareContext
     // cull, so a tint cascade declared for it can only ever clear to the value the
     // 1x1 fallback already carries.
     bool HasTransmissiveCaster = false;
+    uint64_t CascadeMaterialContentKey = 0;
+    uint64_t RigidCascadeMaterialContentKey = 0;
 
     // Punctual (area/spot/point) shadow geometry, resolved ONCE by
     // MakeFeatureDeclareContext (FindViewDesc -> GetWorldLights -> Build*ShadowFrameInfo)

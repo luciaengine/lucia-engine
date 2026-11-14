@@ -79,7 +79,7 @@ function writePieces(element, pieces) {
 
 /**
  * @param {Document} page
- * @param {{ show: (url: string, onProgress: (progress: import('@game-crafters-guild/openengine-web').LoadProgress) => void, look: { pitch?: number, yaw?: number, emissiveStrength?: number }) => Promise<string[]>,
+ * @param {{ show: (url: string, onProgress: (progress: import('@openengine/web').LoadProgress) => void, look: { pitch?: number, yaw?: number, emissiveStrength?: number }) => Promise<string[]>,
  *     timeOfDay: number, setTimeOfDay: (hours: number) => void, exposure: number, setExposure: (ev: number) => void,
  *     setStage: (part: 'floor' | 'gi', on: boolean) => Promise<void>, play: (clip: string, speed: number) => void, pause: () => void,
  *     reframe: () => void }} callbacks

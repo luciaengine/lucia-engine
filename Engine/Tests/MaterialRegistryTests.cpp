@@ -5,14 +5,19 @@
 #include <gtest/gtest.h>
 
 #include "Assets/ModelAsset.h"
+#include "Core/Application.h"
+#include "Core/Engine.h"
+#include "Engine/Rendering/CompileConcurrencyGate.h"
 #include "Engine/Rendering/MaterialDepthClassify.h"
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/MaterialPrewarmVariants.h"
+#include "Engine/Rendering/MaterialPrewarmPolicy.h"
 #include "Engine/Rendering/MaterialSystem.h"
 #include "Engine/Rendering/ParallaxReliefDepth.h"
 #include "Engine/Rendering/ModelMaterialBridge.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Rendering/Core/Device.h"
+#include "Rendering/Common/Utils.h"
 #include "Rendering/Materials/MaterialBuildContext.h"
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialDocument.h"
@@ -22,6 +27,7 @@
 #include "Types/StringId.h"
 
 #include "ScopedCompatShaderProfile.h"
+#include "ScopedShaderCompileTarget.h"
 #include "StagedTestPaths.h"
 
 #include <algorithm>
@@ -48,7 +54,7 @@ TEST(MaterialPrewarmVariantsTest, IncludesBaseColorDepthAndSkinnedLayouts)
     base.lightingModel = HashStringId("StandardPBR");
     base.materialKeywords = MaterialKeyword::AlphaTest | MaterialKeyword::ClearCoat;
     const auto color = MaterialKeyword::ForwardPlus | MaterialKeyword::IBL | MaterialKeyword::Instanced;
-    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask);
+    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask, CrossfadeTailWarmup::Warm);
     // The base, 16 colour keys, and the coverage head and its crossfade tail on the standard and skinned depth
     // layouts, without and with the vertex-colour stream.
     ASSERT_EQ(keys.size(), 25u);
@@ -70,7 +76,7 @@ TEST(MaterialPrewarmVariantsTest, GlassIncludesGrabVariants)
     ShaderVariantKey base{};
     base.materialKeywords = MaterialKeyword::Transmission;
     const auto keys = MaterialPrewarmVariantKeys(base, MaterialKeyword::ForwardPlus, false,
-                                                 MaterialAlphaMode::Opaque);
+                                                 MaterialAlphaMode::Opaque, CrossfadeTailWarmup::Warm);
     ASSERT_EQ(keys.size(), 27u);
     EXPECT_EQ(std::count_if(keys.begin(), keys.end(), [](const auto& key) {
         return HasKeyword(key.materialKeywords, MaterialKeyword::SceneColorGrab);
@@ -83,6 +89,22 @@ TEST(MaterialPrewarmVariantsTest, GlassIncludesGrabVariants)
     EXPECT_EQ(std::count_if(keys.begin(), keys.end(), [](const auto& key) {
         return HasKeyword(key.materialKeywords, MaterialKeyword::DepthOnlyTransmissionColor);
     }), 2);
+}
+
+// A runtime with no shader compiler warms no crossfade tail: the material cook ships none, so the
+// key can never resolve there, and the world pass draws a cold tail with its head variant.
+TEST(MaterialPrewarmVariantsTest, SkippedCrossfadeTailsWarmNoLodCrossfadeKey)
+{
+    ShaderVariantKey base{};
+    const auto isTail = [](const auto& key) { return HasKeyword(key.materialKeywords, MaterialKeyword::LodCrossfade); };
+    const auto warmed = MaterialPrewarmVariantKeys(base, MaterialKeyword::Instanced, false, MaterialAlphaMode::Mask,
+                                                   CrossfadeTailWarmup::Warm);
+    const auto skipped = MaterialPrewarmVariantKeys(base, MaterialKeyword::Instanced, false, MaterialAlphaMode::Mask,
+                                                    CrossfadeTailWarmup::Skip);
+    ASSERT_GT(std::count_if(warmed.begin(), warmed.end(), isTail), 0);
+    EXPECT_EQ(std::count_if(skipped.begin(), skipped.end(), isTail), 0);
+    for (const auto& key : skipped)
+        EXPECT_NE(std::find(warmed.begin(), warmed.end(), key), warmed.end());
 }
 
 // Every key the warm-up requests for a glass material composes and compiles through the real
@@ -115,7 +137,8 @@ TEST(MaterialPrewarmVariantsTest, EveryGlassWarmKeyCompiles)
     base.materialKeywords = MaterialKeyword::Transmission | MaterialKeyword::TransmissionThick;
     const auto color = MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows | MaterialKeyword::IBL |
                        MaterialKeyword::Instanced;
-    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Opaque);
+    const auto keys = MaterialPrewarmVariantKeys(base, color, false,
+                                                 MaterialAlphaMode::Opaque, CrossfadeTailWarmup::Warm);
     ASSERT_FALSE(keys.empty());
     for (const auto& key : keys)
     {
@@ -176,7 +199,7 @@ void ExpectEveryParallaxWarmKeyCompiles(MaterialAlphaMode alphaMode)
     base.lightingModel = HashStringId("StandardPBR");
     const auto color = MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows | MaterialKeyword::IBL |
                        MaterialKeyword::Instanced | MaterialKeyword::SSSRNormalRoughness | MaterialKeyword::GTAO;
-    const auto keys = MaterialPrewarmVariantKeys(base, color, false, alphaMode);
+    const auto keys = MaterialPrewarmVariantKeys(base, color, false, alphaMode, CrossfadeTailWarmup::Warm);
     ASSERT_FALSE(keys.empty());
     size_t marching = 0;
     for (const auto& key : keys)
@@ -225,7 +248,8 @@ TEST(MaterialPrewarmVariantsTest, IncludesAssetPreviewPassVariants)
     ShaderVariantKey base{};
     base.vertexFlags = VertexAttributeFlags::StandardMesh;
     const auto color = MaterialKeyword::ForwardPlus | MaterialKeyword::IBL | MaterialKeyword::Instanced;
-    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Opaque);
+    const auto keys = MaterialPrewarmVariantKeys(base, color, false,
+                                                 MaterialAlphaMode::Opaque, CrossfadeTailWarmup::Warm);
     ASSERT_EQ(keys.size(), 19u);
     constexpr auto standard = VertexAttributeFlags::HasPosition | VertexAttributeFlags::HasNormal |
                               VertexAttributeFlags::HasUV0;
@@ -251,7 +275,8 @@ TEST(MaterialPrewarmVariantsTest, IncludesAssetPreviewPassVariants)
 
     ShaderVariantKey modified = base;
     modified.materialKeywords = MaterialKeyword::HasVertexMod;
-    const auto modifiedKeys = MaterialPrewarmVariantKeys(modified, color, false, MaterialAlphaMode::Opaque);
+    const auto modifiedKeys = MaterialPrewarmVariantKeys(modified, color, false,
+                                                         MaterialAlphaMode::Opaque, CrossfadeTailWarmup::Warm);
     EXPECT_EQ(countWithKeywords(modifiedKeys, MaterialKeyword::HasVertexMod | kAssetPreviewPassKeywords), 4);
 }
 
@@ -264,7 +289,8 @@ TEST(MaterialPrewarmVariantsTest, IncludesLodCrossfadeTailVariants)
     ShaderVariantKey base{};
     base.vertexFlags = VertexAttributeFlags::StandardMesh;
     const auto color = MaterialKeyword::ForwardPlus | MaterialKeyword::IBL | MaterialKeyword::Instanced;
-    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Opaque);
+    const auto keys = MaterialPrewarmVariantKeys(base, color, false,
+                                                 MaterialAlphaMode::Opaque, CrossfadeTailWarmup::Warm);
     const auto has = [&](VertexAttributeFlags flags, MaterialKeyword keywords) {
         ShaderVariantKey key = base;
         key.vertexFlags = flags;
@@ -283,7 +309,8 @@ TEST(MaterialPrewarmVariantsTest, IncludesLodCrossfadeTailVariants)
     EXPECT_TRUE(has(skinned, MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyFragment |
                                  MaterialKeyword::LodCrossfade));
 
-    const auto procedural = MaterialPrewarmVariantKeys(base, color, true, MaterialAlphaMode::Opaque);
+    const auto procedural = MaterialPrewarmVariantKeys(base, color, true,
+                                                       MaterialAlphaMode::Opaque, CrossfadeTailWarmup::Warm);
     EXPECT_EQ(std::count_if(procedural.begin(), procedural.end(), [](const auto& key) {
         return HasKeyword(key.materialKeywords, MaterialKeyword::LodCrossfade);
     }), 0);
@@ -299,7 +326,8 @@ TEST(MaterialPrewarmVariantsTest, MaskIncludesCoverageDepthVariant)
     base.vertexFlags = VertexAttributeFlags::StandardMesh;
     base.materialKeywords = MaterialKeyword::AlphaTest;
     const auto color = MaterialKeyword::ForwardPlus | MaterialKeyword::IBL | MaterialKeyword::Instanced;
-    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask);
+    const auto keys = MaterialPrewarmVariantKeys(base, color, false,
+                                                 MaterialAlphaMode::Mask, CrossfadeTailWarmup::Warm);
     constexpr auto standard = VertexAttributeFlags::HasPosition | VertexAttributeFlags::HasNormal |
                               VertexAttributeFlags::HasUV0;
     for (const auto flags : {standard, standard | VertexAttributeFlags::Skinned})
@@ -362,7 +390,7 @@ TEST(MaterialPrewarmVariantsTest, OnlyTheCameraPrepassWritesTheReliefDepth)
     base.vertexFlags = VertexAttributeFlags::StandardMesh;
     base.materialKeywords = MaterialKeyword::Parallax;
     const auto keys = MaterialPrewarmVariantKeys(base, MaterialKeyword::ForwardPlus | MaterialKeyword::Instanced, false,
-                                                 MaterialAlphaMode::Opaque);
+                                                 MaterialAlphaMode::Opaque, CrossfadeTailWarmup::Warm);
     ShaderVariantKey warmed = base;
     warmed.vertexFlags = VertexAttributeFlags::HasPosition | VertexAttributeFlags::HasNormal | VertexAttributeFlags::HasUV0;
     warmed.materialKeywords = MaterialKeyword::Parallax | MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyFragment |
@@ -567,7 +595,7 @@ TEST(MaterialPrewarmVariantsTest, AVertexModifiedMaterialWarmsTheDepthHeadsItDra
                        VertexAttributeFlags::HasUV0 | VertexAttributeFlags::HasUV1;
     base.materialKeywords = MaterialKeyword::HasVertexMod | MaterialKeyword::AlphaTest;
     const MaterialKeyword color = MaterialKeyword::ForwardPlus | MaterialKeyword::IBL | MaterialKeyword::Instanced;
-    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask);
+    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask, CrossfadeTailWarmup::Warm);
     const VertexAttributeFlags tangentLayout =
         VertexAttributeFlags::HasPosition | VertexAttributeFlags::HasNormal | VertexAttributeFlags::HasUV0 |
         VertexAttributeFlags::HasTangent;
@@ -627,7 +655,7 @@ TEST(MaterialPrewarmVariantsTest, AMaskHeadReadsTheColorStreamItsColourPassReads
     base.vertexFlags = VertexAttributeFlags::StandardMesh;
     base.materialKeywords = MaterialKeyword::AlphaTest;
     const MaterialKeyword color = MaterialKeyword::ForwardPlus | MaterialKeyword::IBL | MaterialKeyword::Instanced;
-    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask);
+    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask, CrossfadeTailWarmup::Warm);
     constexpr VertexAttributeFlags standard = stripped;
     constexpr VertexAttributeFlags warmedLayouts[] = {
         standard, standard | VertexAttributeFlags::HasTangent, standard | VertexAttributeFlags::Skinned,
@@ -671,7 +699,7 @@ TEST(MaterialPrewarmVariantsTest, AVertexColourMaskWarmsTheDepthHeadsItDrawsBesi
     ShaderVariantKey base{};
     base.vertexFlags = VertexAttributeFlags::StandardMesh;
     base.materialKeywords = MaterialKeyword::AlphaTest;
-    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask);
+    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask, CrossfadeTailWarmup::Warm);
     Vector<ShaderVariantKey> expected;
     for (const DepthPassType pass : {DepthPassType::Prepass, DepthPassType::ShadowCascade})
     {
@@ -713,7 +741,7 @@ TEST(MaterialPrewarmVariantsTest, AVertexColourMaskWarmsTheDepthHeadsItDrawsBesi
     }
 
     // Ignoring vertex colour: the same set without the vertex-colour heads.
-    const auto ignoring = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask, true);
+    const auto ignoring = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask, CrossfadeTailWarmup::Warm, true);
     EXPECT_EQ(std::count_if(ignoring.begin(), ignoring.end(), hasColor), 0);
     Vector<ShaderVariantKey> withoutColorHeads;
     std::copy_if(keys.begin(), keys.end(), std::back_inserter(withoutColorHeads),
@@ -723,14 +751,14 @@ TEST(MaterialPrewarmVariantsTest, AVertexColourMaskWarmsTheDepthHeadsItDrawsBesi
     // Opaque: the depth draws decide coverage without the surface.
     ShaderVariantKey opaque = base;
     opaque.materialKeywords = MaterialKeyword::None;
-    const auto opaqueKeys = MaterialPrewarmVariantKeys(opaque, color, false, MaterialAlphaMode::Opaque);
+    const auto opaqueKeys = MaterialPrewarmVariantKeys(opaque, color, false, MaterialAlphaMode::Opaque, CrossfadeTailWarmup::Warm);
     EXPECT_EQ(std::count_if(opaqueKeys.begin(), opaqueKeys.end(), hasColor), 0);
 
     // Vertex-modified: reading or ignoring vertex colour warms the same set.
     ShaderVariantKey modified = base;
     modified.materialKeywords |= MaterialKeyword::HasVertexMod;
-    EXPECT_EQ(MaterialPrewarmVariantKeys(modified, color, false, MaterialAlphaMode::Mask),
-              MaterialPrewarmVariantKeys(modified, color, false, MaterialAlphaMode::Mask, true));
+    EXPECT_EQ(MaterialPrewarmVariantKeys(modified, color, false, MaterialAlphaMode::Mask, CrossfadeTailWarmup::Warm),
+              MaterialPrewarmVariantKeys(modified, color, false, MaterialAlphaMode::Mask, CrossfadeTailWarmup::Warm, true));
 }
 
 TEST(MaterialPrewarmVariantsTest, ProceduralVariantsAreClampedAndDeduplicated)
@@ -738,7 +766,7 @@ TEST(MaterialPrewarmVariantsTest, ProceduralVariantsAreClampedAndDeduplicated)
     ShaderVariantKey base{};
     base.userKeywordHash = 42;
     const auto keys = MaterialPrewarmVariantKeys(base, MaterialKeyword::ForwardPlus | MaterialKeyword::Instanced,
-                                                 true, MaterialAlphaMode::Opaque);
+                                                 true, MaterialAlphaMode::Opaque, CrossfadeTailWarmup::Warm);
     ASSERT_EQ(keys.size(), 3u);
     for (const auto& key : keys)
     {
@@ -1460,9 +1488,81 @@ class MaterialShaderIdentityTest : public ::MaterialRegistryTest
         EXPECT_EQ(identity.Spec.parallax, spec.parallax);
         EXPECT_EQ(identity.AlphaMode, mat->GetAlphaMode());
     }
+    static void SetCompileHook(RenderServices& services, std::function<void()> hook)
+    {
+        services.Materials().m_ShaderCompilationCache.SetCompileEnteredHookForTesting(std::move(hook));
+    }
+
+    static void HoldPrewarmJobs(RenderServices& services, std::vector<std::function<void()>>& jobs)
+    {
+        auto& materials = services.Materials();
+        ASSERT_NE(materials.m_CompileGate, nullptr);
+        ASSERT_EQ(materials.m_CompileGate->Running(), 0u);
+        ASSERT_EQ(materials.m_CompileGate->PendingCount(), 0u);
+        materials.m_CompileGate = std::make_unique<CompileConcurrencyGate>(1u,
+            [&jobs](std::function<void()> job, JobSystem::JobPriority) { jobs.push_back(std::move(job)); });
+    }
+
+    static std::shared_ptr<SharedShaderVariant> ReadProgram(
+        RenderServices& services, const ShaderCacheKey& key, const MaterialCompileSpec& spec,
+        const Rendering::MaterialBuildContext& context)
+    {
+        return services.Materials().m_ShaderCompilationCache.GetOrCompile(
+            key, spec, context, "CapturedPrewarm", Rendering::ShaderSourceKind::SpirV);
+    }
+
+};
+
+class MaterialTargetPrewarmTest : public MaterialShaderIdentityTest
+{
+  protected:
+    void SetUp() override
+    {
+        MaterialShaderIdentityTest::SetUp();
+        if (HasFatalFailure() || IsSkipped())
+            return;
+        m_PreviousDirectory = std::filesystem::current_path();
+        m_PreviousResolver = Rendering::Utils::GetShaderPathResolver();
+        m_Workspace = std::filesystem::temp_directory_path() / ("ge-target-prewarm-" + GUID::Generate().ToString());
+        std::filesystem::create_directories(m_Workspace / "Assets");
+        auto& engine = EngineCore::GetInstance();
+        ASSERT_FALSE(engine.IsInitialized());
+        ScriptsConfig scripts;
+        scripts.disableClr = true;
+        scripts.enableHotReload = false;
+        scripts.enableAsyncHotReload = false;
+        scripts.enableAutoProjectGeneration = false;
+        engine.SetScriptsConfig(scripts);
+        ApplicationConfig config;
+        config.WorkspaceDirectory = m_Workspace.string();
+        config.EnableEditor = false;
+        m_EngineInitialized = engine.Initialize(config);
+        ASSERT_TRUE(m_EngineInitialized);
+    }
+
+    void TearDown() override
+    {
+        if (m_EngineInitialized)
+            EngineCore::GetInstance().Shutdown();
+        if (!m_PreviousDirectory.empty())
+        {
+            std::filesystem::current_path(m_PreviousDirectory);
+            Rendering::Utils::SetShaderPathResolver(m_PreviousResolver);
+        }
+        std::error_code error;
+        if (!m_Workspace.empty())
+            std::filesystem::remove_all(m_Workspace, error);
+        MaterialShaderIdentityTest::TearDown();
+    }
+
+    std::filesystem::path m_Workspace;
+    std::filesystem::path m_PreviousDirectory;
+    Rendering::Utils::ShaderPathResolverFunc m_PreviousResolver = nullptr;
+    bool m_EngineInitialized = false;
 };
 } // namespace GameEngine::Engine::Renderer
 using GameEngine::Engine::Renderer::MaterialShaderIdentityTest;
+using GameEngine::Engine::Renderer::MaterialTargetPrewarmTest;
 
 TEST_F(MaterialShaderIdentityTest, KeywordedMaterialMatchesRegistration)
 {
@@ -1515,4 +1615,187 @@ TEST_F(MaterialShaderIdentityTest, DemotableMaskMatchesRegistration)
     ExpectShaderIdentityMatchesRegistration(rs, doc, MaterialAlphaMode::Opaque);
 
     rs.Shutdown();
+}
+
+TEST(MaterialVariantKeyDerivation, MaskedTransmissionKeepsItsSilhouetteCompileFlag)
+{
+    MaterialDocument doc{};
+    doc.lightingModel = "StandardPBR";
+    doc.alphaMode = MaterialAlphaMode::Mask;
+    doc.surfaceShader = "Surfaces/rain_falling.glsl";
+    doc.properties["enableTransmission"] = true;
+    EXPECT_EQ(DeriveRenderedAlphaMode(doc), MaterialAlphaMode::Mask);
+    EXPECT_TRUE(DeriveCompileSpec(doc).alphaTest);
+    EXPECT_TRUE(HasKeyword(DeriveBaseVariantKey(doc).materialKeywords, MaterialKeyword::AlphaTest));
+}
+
+TEST(MaterialVariantKeyDerivation, BlendedTransmissionStillUsesReplacementRendering)
+{
+    MaterialDocument doc{};
+    doc.lightingModel = "StandardPBR";
+    doc.alphaMode = MaterialAlphaMode::Blend;
+    doc.properties["enableTransmission"] = true;
+    EXPECT_EQ(DeriveRenderedAlphaMode(doc), MaterialAlphaMode::Opaque);
+    EXPECT_FALSE(DeriveCompileSpec(doc).alphaTest);
+    doc.properties["enableTransmission"] = false;
+    EXPECT_EQ(DeriveRenderedAlphaMode(doc), MaterialAlphaMode::Blend);
+}
+
+TEST_F(MaterialShaderIdentityTest, InFlightDepthPublicationKeepsTheCapturedMetadataProfile)
+{
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(m_device.get()));
+    TestSupport::ScopedShaderCompileTarget restore{Rendering::CurrentShaderCompileTarget()};
+    const auto captured = Rendering::CurrentShaderCompileTarget();
+    Rendering::ShaderCompileTarget later = captured;
+    later.Compatibility = !captured.Compatibility;
+    Rendering::MaterialBuildContext context{};
+    context.AdapterShaderDir = TestPaths::StagedRenderingShadersDir();
+    context.CacheRoot = std::filesystem::temp_directory_path() / ("ge-depth-target-" + GUID::Generate().ToString());
+    context.IncludeDirs = {context.AdapterShaderDir};
+    services.Materials().SetMaterialBuildContext(context);
+    auto document = MakeTestPBRDocument("CapturedDepthTarget");
+    document.surfaceShader = "Surfaces/standard_pbr.glsl";
+    Material* material = services.Materials().RegisterMaterialFromDocument(GUID::Generate(), document);
+    ASSERT_NE(material, nullptr);
+    services.Materials().FlushAsyncMaterialCompiles();
+    auto& variants = services.Materials().Variants();
+    const auto flags = Rendering::VertexAttributeFlags::StandardMesh | Rendering::VertexAttributeFlags::HasColor;
+    const auto keywords = Rendering::MaterialKeyword::ForwardPlus | Rendering::MaterialKeyword::Instanced |
+                          Rendering::MaterialKeyword::Shadows | Rendering::MaterialKeyword::IBL;
+    int entered = 0;
+    SetCompileHook(services, [&entered, later]
+    {
+        ++entered;
+        Rendering::ApplyShaderCompileProfile(later);
+    });
+    const auto key = variants.EnqueueDepthVariantCompileForTesting(
+        *material, flags, Rendering::PrimitiveTopology::TriangleList, keywords, 0u, false, false,
+        Rendering::FrontFace::CounterClockwise);
+    variants.SubmitPendingVariantCompiles();
+    services.Materials().FlushAsyncMaterialCompiles();
+    variants.ApplyPendingVariantPublishes();
+    SetCompileHook(services, {});
+    ASSERT_EQ(entered, 1);
+    EXPECT_TRUE(variants.HasDepthVariantForTesting(key));
+    Rendering::ApplyShaderCompileProfile(captured);
+    const auto* published = variants.FindOrRequestPrepassVariant(
+        *material, flags, Rendering::PrimitiveTopology::TriangleList, keywords,
+        Rendering::FrontFace::CounterClockwise);
+    ASSERT_NE(published, nullptr);
+    ASSERT_NE(published->VariantMeta, nullptr);
+    size_t fragmentOnly = 0;
+    for (const auto& set : published->VariantMeta->Sets)
+        for (const auto& binding : set.Bindings)
+            if (set.Set != 1u && (binding.StagesMask & Rendering::ShaderMetaStage::kVertex) == 0u)
+                ++fragmentOnly;
+    if (captured.Compatibility)
+    {
+        EXPECT_EQ(fragmentOnly, 0u);
+    }
+    else
+    {
+        EXPECT_GT(fragmentOnly, 0u);
+    }
+    services.Shutdown();
+    std::error_code error;
+    std::filesystem::remove_all(context.CacheRoot, error);
+}
+
+TEST_F(MaterialShaderIdentityTest, FailedInlineRecompileCannotRestoreAnotherTarget)
+{
+    TestSupport::ScopedShaderCompileTarget restore{Rendering::CurrentShaderCompileTarget()};
+    const auto captured = Rendering::CurrentShaderCompileTarget();
+    for (const bool flipBeforeAdmission : {false, true})
+    {
+        Rendering::ApplyShaderCompileProfile(captured);
+        RenderServices services;
+        ASSERT_TRUE(services.Initialize(m_device.get()));
+        Rendering::ShaderCompileTarget later = captured;
+        later.Compatibility = !captured.Compatibility;
+        Rendering::MaterialBuildContext context{};
+        context.AdapterShaderDir = TestPaths::StagedRenderingShadersDir();
+        context.IncludeDirs = {context.AdapterShaderDir};
+        context.CacheRoot = std::filesystem::temp_directory_path() / ("ge-failed-target-" + GUID::Generate().ToString());
+        services.Materials().SetMaterialBuildContext(context);
+        const GUID guid = GUID::Generate();
+        auto document = MakeTestPBRDocument("FailedInlineTarget");
+        document.surfaceShader = "Surfaces/standard_pbr.glsl";
+        Material* material = services.Materials().RegisterMaterialFromDocument(guid, document);
+        ASSERT_NE(material, nullptr);
+        ASSERT_TRUE(material->GetGraphicsPipelineId().IsValid());
+        int entered = 0;
+        if (flipBeforeAdmission)
+            Rendering::ApplyShaderCompileProfile(later);
+        SetCompileHook(services, [&entered, later]
+        {
+            ++entered;
+            Rendering::ApplyShaderCompileProfile(later);
+        });
+        document.surfaceShader = "Missing/failed_target_surface.glsl";
+        services.Materials().RecompileMaterialPipeline(guid, document);
+        SetCompileHook(services, {});
+        ASSERT_EQ(entered, 1);
+        EXPECT_FALSE(material->GetGraphicsPipelineId().IsValid());
+        services.Shutdown();
+        std::error_code error;
+        std::filesystem::remove_all(context.CacheRoot, error);
+    }
+}
+
+TEST_F(MaterialTargetPrewarmTest, QueuedVariantSetRetainsItsAdmissionTarget)
+{
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(m_device.get()));
+    TestSupport::ScopedShaderCompileTarget restore{CurrentShaderCompileTarget()};
+    const ShaderCompileTarget captured = CurrentShaderCompileTarget();
+    ShaderCompileTarget later = captured;
+    later.Compatibility = !later.Compatibility;
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = TestPaths::StagedRenderingShadersDir();
+    context.IncludeDirs = {context.AdapterShaderDir};
+    context.CacheRoot = m_Workspace / "CompiledShaders";
+    services.Materials().SetMaterialBuildContext(context);
+    auto document = MakeTestPBRDocument("CapturedPrewarmSet");
+    document.surfaceShader = "Surfaces/standard_pbr.glsl";
+    Material* material = services.Materials().RegisterMaterialFromDocument(GUID::Generate(), document);
+    ASSERT_NE(material, nullptr);
+    ASSERT_TRUE(material->GetGraphicsPipelineId().IsValid());
+    services.Materials().FlushAsyncMaterialCompiles();
+    std::vector<std::function<void()>> jobs;
+    HoldPrewarmJobs(services, jobs);
+    constexpr auto kPassKeywords = MaterialKeyword::ForwardPlus | MaterialKeyword::Instanced | MaterialKeyword::Shadows;
+    ASSERT_EQ(GetMaterialPrewarmPolicy(), MaterialPrewarmPolicy::Full);
+    const auto keys = MaterialPrewarmVariantKeys(material->GetVariantKey(), kPassKeywords, false,
+                                                material->GetAlphaMode(), CrossfadeTailWarmup::Warm);
+    ASSERT_GT(keys.size(), 1u);
+    int entered = 0;
+    SetCompileHook(services, [&entered] { ++entered; });
+    services.Materials().PrewarmMaterialVariants(*material, kPassKeywords);
+    ASSERT_EQ(jobs.size(), 1u);
+    ApplyShaderCompileProfile(later);
+    while (!jobs.empty())
+    {
+        auto job = std::move(jobs.back());
+        jobs.pop_back();
+        job();
+    }
+    services.Materials().FlushAsyncMaterialCompiles();
+    const int admittedCompiles = entered;
+    ASSERT_GT(admittedCompiles, 1);
+    for (const auto& variant : keys)
+    {
+        ShaderCacheKey key{};
+        key.Target = captured;
+        key.VariantKey = variant;
+        key.Source.SurfaceShaderPath = material->GetCompileSpec().surfaceShaderPath;
+        key.Source.VertexModifierPath = material->GetCompileSpec().vertexModifierPath;
+        key.Source.MaterialAssetPath = material->GetMaterialAssetPath();
+        const auto program = ReadProgram(services, key, material->GetCompileSpec(), context);
+        ASSERT_NE(program, nullptr);
+        EXPECT_FALSE(program->vertexBytes.empty());
+    }
+    SetCompileHook(services, {});
+    EXPECT_EQ(entered, admittedCompiles);
+    services.Shutdown();
 }

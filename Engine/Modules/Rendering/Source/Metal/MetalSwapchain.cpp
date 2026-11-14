@@ -5,8 +5,7 @@
 #include "MetalMappings.h"
 
 #include "Logger/Logger.h"
-
-#include <cstdlib>
+#include "Platform/Environment.h"
 
 namespace GameEngine
 {
@@ -19,13 +18,12 @@ bool MetalSwapchain::Initialize(MetalDevice& device, void* glfwWindow, uint32_t 
     m_Width = width;
     m_Height = height;
 
-    CA::MetalLayer* layer = CA::MetalLayer::layer(); // autoreleased
+    CA::MetalLayer* layer = MetalLayerBridge::CreateWindowLayer(glfwWindow);
     if (layer == nullptr)
     {
         Logger::Log::Error("MetalSwapchain: failed to create CAMetalLayer");
         return false;
     }
-    layer->retain();
     m_Layer = layer;
 
     m_Layer->setDevice(device.GetMTLDevice());
@@ -34,22 +32,11 @@ bool MetalSwapchain::Initialize(MetalDevice& device, void* glfwWindow, uint32_t 
     // swapchain readback (thumbnails, tests), so keep it off.
     // GE_METAL_FBO_ONLY=1 flips it on for fill-rate A/B experiments (drawable
     // compression) — readback paths will fail while set.
-    static const bool kFramebufferOnly = []() {
-        const char* env = std::getenv("GE_METAL_FBO_ONLY");
-        return env != nullptr && env[0] != '0';
-    }();
+    static const bool kFramebufferOnly = Platform::EnvironmentSwitchEnabled("GE_METAL_FBO_ONLY", false);
     m_Layer->setFramebufferOnly(kFramebufferOnly);
     m_Layer->setDrawableSize(CGSize{static_cast<double>(width), static_cast<double>(height)});
     MetalLayerBridge::SetLayerDisplaySyncEnabled(m_Layer, vsync);
     MetalLayerBridge::SetLayerMaximumDrawableCount(m_Layer, kImageCount);
-
-    if (!MetalLayerBridge::AttachLayerToGLFWWindow(glfwWindow, m_Layer))
-    {
-        Logger::Log::Error("MetalSwapchain: failed to attach CAMetalLayer to window");
-        m_Layer->release();
-        m_Layer = nullptr;
-        return false;
-    }
 
     // No frames are in flight during initialization, so no drain is needed.
     SyncDrawableSizeToLayerBounds(nullptr);
@@ -157,7 +144,7 @@ void MetalSwapchain::SyncDrawableSizeToLayerBounds(MetalDevice* device)
     MetalLayerBridge::SyncLayerContentsScale(m_GlfwWindow, m_Layer);
     uint32_t boundsWidth = 0;
     uint32_t boundsHeight = 0;
-    if (!MetalLayerBridge::GetLayerPixelSize(m_Layer, boundsWidth, boundsHeight))
+    if (!MetalLayerBridge::GetWindowPixelSize(m_GlfwWindow, m_Layer, boundsWidth, boundsHeight))
     {
         return;
     }

@@ -1,7 +1,7 @@
 // ComponentFieldRegistry::FindByName: the name index follows each registration of a type, and a worker
 // thread reads it while the main thread registers.
 
-#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/ComponentFieldRegistry.h"
 #include "JobSystem/TaskHandle.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 

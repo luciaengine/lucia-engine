@@ -1,5 +1,7 @@
 #include "Inspectors/DefaultComponentInspector.h"
 
+#include "Inspectors/InspectorColorSwatchRow.h"
+
 #include "InspectorRegistry.h"           // InspectorContext
 #include "EditorChangeNotifications.h"
 #include "Mathematics/Interpolation.h"
@@ -18,8 +20,8 @@
 #include "UI/StyleProperties.h"               // Style::* for the Color swatch drawer
 #include "UI/UIManager.h"                      // GetFocusedElementId for the live-refresh focus skip
 
-#include "ECS/Component/ComponentFactory.h"            // GetDefaultBytes (the None value of a float row)
-#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/ComponentFactory.h"            // GetDefaultBytes (the None value of a float row)
+#include "ECS/ComponentFieldRegistry.h"
 #include "ECS/FieldAccess.h"             // ReadFieldInteger / WriteFieldInteger
 #include "ECS/Reflection.h"               // FieldInfo, FieldTypeId, FieldElementSize
 
@@ -171,7 +173,7 @@ void WireEdit(const std::shared_ptr<std::optional<Editor::UndoRedoService::Inter
             applyLive(value);
             return;
         }
-        if (!editState->has_value())
+        if (!editState->has_value() || !editState->value())
             editState->emplace(fec.Undo->BeginInteractiveEdit(fec.Label, MakeEditTarget(fec)));
         editState->value().Preview([&]() { applyLive(value); });
     };
@@ -182,8 +184,10 @@ void WireEdit(const std::shared_ptr<std::optional<Editor::UndoRedoService::Inter
             applyLive(value);
             return;
         }
-        if (!editState->has_value())
+        if (!editState->has_value() || !editState->value())
             editState->emplace(fec.Undo->BeginInteractiveEdit(fec.Label, MakeEditTarget(fec)));
+        if (!editState->value())
+            return;
         applyLive(value);
         // Move the edit out and clear the shared state before Commit: Commit fires
         // Notify (which fans out across all edited entities), and were that ever to
@@ -259,7 +263,11 @@ void CommitFieldPatch(const FieldEditContext& fec, const std::function<void(Snap
             applyOne(e);
         return;
     }
+    if (!fec.Undo->CommitPendingEdit())
+        return;
     auto edit = fec.Undo->BeginInteractiveEdit(fec.Label, MakeEditTarget(fec));
+    if (!edit)
+        return;
     applyOne(fec.Entity);
     for (ECS::EntityHandle e : fec.Extras)
         applyOne(e);
@@ -668,21 +676,6 @@ std::uint32_t ColorFloatsToArgb(const float* c)
          | (static_cast<std::uint32_t>(q(c[1])) << 8) | static_cast<std::uint32_t>(q(c[2]));
 }
 
-void StyleColorSwatch(UIElement* swatch, std::uint32_t argb)
-{
-    constexpr float kSize = 20.0f;
-    constexpr std::uint32_t kBorder = 0xFF555555u;
-    swatch->Style()
-        .Set(Style::Width, StyleLength::Px(kSize))
-        .Set(Style::Height, StyleLength::Px(kSize))
-        .Set(Style::MinWidth, StyleLength::Px(kSize))
-        .Set(Style::MinHeight, StyleLength::Px(kSize))
-        .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{3.0f, 3.0f, 3.0f, 3.0f})
-        .Set(Style::BorderWidth, Box4{1.0f, 1.0f, 1.0f, 1.0f})
-        .Set(Style::BorderColor, BorderColorsTRBL{kBorder, kBorder, kBorder, kBorder})
-        .Set(Style::BackgroundColor, argb)
-        .Set(Style::Cursor, CursorStyle::Pointer);
-}
 
 // Emit a Color (RGBA float4 at baseOffset) as a swatch + RGB label. Clicking the
 // swatch opens the shared color picker; dragging previews live and Apply commits
@@ -708,7 +701,7 @@ void EmitColorSwatchRow(UIElement* parent, RefreshPlan* plan, const Snapshot& by
     const std::uint32_t argb = ColorFloatsToArgb(rgba.data());
     auto swatch = std::make_unique<UIElement>();
     UIElement* swatchRaw = swatch.get();
-    StyleColorSwatch(swatchRaw, argb);
+    InspectorUI::StyleColorSwatch(swatchRaw, argb);
     if (tooltip)
         swatchRaw->SetTooltip(tooltip);
     fc->AddChild(std::move(swatch));
@@ -762,7 +755,7 @@ void EmitColorSwatchRow(UIElement* parent, RefreshPlan* plan, const Snapshot& by
             Label* rgbLabel = rgbLabelRef.Get();
             if (!swatch || !rgbLabel)
                 return;
-            StyleColorSwatch(swatch, newArgb | 0xFF000000u);
+            InspectorUI::StyleColorSwatch(swatch, newArgb | 0xFF000000u);
             char b2[48];
             std::snprintf(b2, sizeof(b2), "(%.2f, %.2f, %.2f)", nc[0], nc[1], nc[2]);
             rgbLabel->SetText(b2);
@@ -784,7 +777,7 @@ void EmitColorSwatchRow(UIElement* parent, RefreshPlan* plan, const Snapshot& by
             }
             else
             {
-                if (!editState->has_value())
+                if (!editState->has_value() || !editState->value())
                     editState->emplace(fec.Undo->BeginInteractiveEdit(fec.Label, MakeEditTarget(fec)));
                 editState->value().Preview([&]() { applyLive(nc); });
             }
@@ -855,7 +848,7 @@ void EmitColorSwatchRow(UIElement* parent, RefreshPlan* plan, const Snapshot& by
             if (lastShown->has_value() && lastShown->value().first == argb &&
                 lastShown->value().second == label)
                 return;
-            StyleColorSwatch(swatchRaw, argb);
+            InspectorUI::StyleColorSwatch(swatchRaw, argb);
             rgbLabelRaw->SetText(label);
             *lastShown = std::make_pair(argb, std::move(label));
         }});

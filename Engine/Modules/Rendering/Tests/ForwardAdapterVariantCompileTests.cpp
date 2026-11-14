@@ -22,6 +22,7 @@
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "StagedTestPaths.h"
 #include "TestUtils.h"
+#include "TestTempDir.h"
 
 #include <nlohmann/json.hpp>
 
@@ -56,23 +57,21 @@ constexpr MaterialKeyword kDebugOverlayWorldPass =
 
 fs::path MakeTempCacheRoot()
 {
-    static std::atomic<uint32_t> counter{0};
-    return fs::temp_directory_path() /
-           ("ge_fwd_variant_" +
-            std::to_string(::testing::UnitTest::GetInstance()->random_seed()) + "_" +
-            std::to_string(counter.fetch_add(1)));
+    return TestUtils::MakeUniqueTempDirectory("ge_fwd_variant");
 }
 
 // A stock material on the engine's built-in surface shader: an empty
 // surfaceShader makes the composer substitute Surfaces/standard_surface.glsl,
 // which is what an ordinary scene material compiles as.
 MaterialBuildResult BuildStockMaterial(const std::string& lightingModel, MaterialKeyword keywords,
-                                       const std::string& surfaceShader = {}, bool heightMapped = false)
+                                       const std::string& surfaceShader = {}, bool heightMapped = false,
+                                       MaterialAlphaMode alphaMode = MaterialAlphaMode::Opaque)
 {
     MaterialDocument doc{};
     doc.materialName = "ForwardAdapterVariantProbe";
     doc.lightingModel = lightingModel;
     doc.surfaceShader = surfaceShader;
+    doc.alphaMode = alphaMode;
     if (heightMapped)
         doc.textures["heightMap"] = "__embedded__:0";
 
@@ -344,6 +343,41 @@ TEST(ForwardAdapterVariantCompile, ShippedTexturedSurfacesUseAdapterTextureAlias
             const auto result = BuildStockMaterial(model,
                 kWorldDrawBase | MaterialKeyword::ForwardPlus | MaterialKeyword::IBL | extra,
                 std::string("Surfaces/") + surface + ".glsl");
+            SKIP_WITHOUT_SHADERC(result);
+            ExpectBuildSucceeded(result);
+        }
+    }
+}
+
+TEST(ForwardAdapterVariantCompile, CanonicalStandardPbrCompilesForLayeredAndCoveragePasses)
+{
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = GameEngine::Rendering::Tests::GetAdapterShaderDir();
+    const TestUtils::ScopedTempDir cache{MakeTempCacheRoot()};
+    context.CacheRoot = cache.Path();
+    const fs::path surface = context.AdapterShaderDir / "Surfaces/standard_pbr.glsl";
+    ASSERT_TRUE(fs::is_regular_file(surface));
+
+    MaterialDocument document{};
+    document.materialName = "CanonicalStandardPbrProbe";
+    document.lightingModel = "StandardPBR";
+    // An absolute staged path selects the canonical surface rather than a material-local copy.
+    document.surfaceShader = surface.string();
+    constexpr MaterialKeyword kColour = kWorldDrawBase | MaterialKeyword::ForwardPlus |
+        MaterialKeyword::Shadows | MaterialKeyword::IBL | MaterialKeyword::DDGI;
+    for (const auto alphaMode : {MaterialAlphaMode::Opaque, MaterialAlphaMode::Mask})
+    {
+        document.alphaMode = alphaMode;
+        for (const auto keywords : {kColour,
+                 kColour | MaterialKeyword::ClearCoat | MaterialKeyword::CoatNormal |
+                     MaterialKeyword::SSSRNormalRoughness,
+                 kWorldDrawBase | MaterialKeyword::DepthOnlyFragment})
+        {
+            SCOPED_TRACE(static_cast<uint64_t>(keywords));
+            SCOPED_TRACE(static_cast<uint32_t>(alphaMode));
+            const auto result = BuildMaterialToShaderPackage(document,
+                context.CacheRoot / "CanonicalStandardPbrProbe.material", document.materialName,
+                context, ShaderSourceKind::SpirV, keywords, VertexAttributeFlags::StandardMeshWithTangent);
             SKIP_WITHOUT_SHADERC(result);
             ExpectBuildSucceeded(result);
         }
@@ -882,49 +916,134 @@ void main()
     fs::remove_all(cache, ec);
 }
 
-// A surface's light visibility (SurfaceOutput.lightVisibility) scales everything the lit model sends
-// back and leaves the emission: the whole direct sum, after the last light is added, and the ambient
-// light and the reflection weight through ambientMultiplier. The lit block calls the whole BRDF and
-// the light lists, so it cannot run alone on the GPU as the emission and alpha blocks do; this reads
-// the staged adapter's structure instead.
-TEST(ForwardAdapterLightVisibility, ScalesTheDirectAndAmbientLightAndLeavesTheEmission)
+TEST(ForwardAdapterVariantCompile, MaskedPuddleSurfaceCompilesWithAndWithoutReflectionOutputs)
 {
-    const fs::path path = GameEngine::Rendering::Tests::GetAdapterShaderDir() / "Adapters/adapter_forward.glsl";
-    std::ifstream input(path, std::ios::binary);
-    ASSERT_TRUE(input.good()) << path.string();
-    const std::string adapter{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
-
-    const size_t litBegin = adapter.find("#ifdef LIGHTING_MODEL_STANDARD_PBR\n\n  #ifdef FORWARD_PLUS");
-    ASSERT_NE(litBegin, std::string::npos);
-    const size_t litEnd = adapter.find("#elif defined(LIGHTING_MODEL_SHADOW_ONLY)", litBegin);
-    ASSERT_NE(litEnd, std::string::npos);
-    const std::string lit = adapter.substr(litBegin, litEnd - litBegin);
-    const size_t afterLights = lit.rfind("  #endif");
-    ASSERT_NE(afterLights, std::string::npos);
-    const std::string tail = lit.substr(afterLights);
-    EXPECT_NE(tail.find("finalColor *= so.lightVisibility;"), std::string::npos)
-        << "the direct light is no longer scaled by the surface's light visibility after every light";
-    EXPECT_NE(tail.find("ambientMultiplier = so.lightVisibility;"), std::string::npos)
-        << "the ambient light no longer takes the surface's light visibility";
-    EXPECT_EQ(tail.find("finalColor +="), std::string::npos) << "a light is added after the visibility scale";
-
-    const size_t ambientBegin = adapter.find("    // Ambient / environment.", litEnd);
-    ASSERT_NE(ambientBegin, std::string::npos);
-    const size_t ambientEnd = adapter.find("    // Emissive contribution", ambientBegin);
-    ASSERT_NE(ambientEnd, std::string::npos);
-    int ambientAdds = 0;
-    for (size_t at = adapter.find("finalColor +=", ambientBegin); at < ambientEnd;
-         at = adapter.find("finalColor +=", at + 1))
+    for (const auto keywords : {
+        kWorldDrawBase | MaterialKeyword::IBL,
+        kWorldDrawBase | MaterialKeyword::ForwardPlus | MaterialKeyword::IBL |
+            MaterialKeyword::SSSRNormalRoughness,
+        kWorldDrawBase | MaterialKeyword::ForwardPlus | MaterialKeyword::IBL |
+            MaterialKeyword::Shadows | MaterialKeyword::SSSRNormalRoughness | MaterialKeyword::GTAO})
     {
-        const std::string statement = adapter.substr(at, adapter.find(';', at) - at);
-        EXPECT_NE(statement.find("ambientMultiplier"), std::string::npos) << statement;
-        ++ambientAdds;
+        const auto result = BuildStockMaterial("StandardPBR", keywords, "Surfaces/puddle_ground.glsl");
+        SKIP_WITHOUT_SHADERC(result);
+        ExpectBuildSucceeded(result);
+        EXPECT_TRUE(FragmentSpvNames(result, "planarReflectionMask"));
     }
-    EXPECT_GE(ambientAdds, 3) << "the ambient paths (particle, environment, flat ambient) moved";
+}
 
-    int uses = 0;
-    for (size_t at = adapter.find("lightVisibility"); at != std::string::npos; at = adapter.find("lightVisibility", at + 1))
-        ++uses;
-    EXPECT_EQ(uses, 2) << "the light visibility reaches more than the direct sum and the ambient multiplier "
-                          "(the emission keeps its full value)";
+TEST(ForwardAdapterVariantCompile, RainSurfacesCompileForWorldAndPlanarCapture)
+{
+    for (const auto extra : {MaterialKeyword::None, MaterialKeyword::SSSRNormalRoughness})
+    {
+        const auto keywords = kWorldDrawBase | MaterialKeyword::ForwardPlus | MaterialKeyword::IBL | extra;
+        const auto wet = BuildStockMaterial("StandardPBR", keywords | MaterialKeyword::ClearCoat |
+            MaterialKeyword::CoatNormal, "Surfaces/rain_wet_object.glsl");
+        SKIP_WITHOUT_SHADERC(wet);
+        ExpectBuildSucceeded(wet);
+        const auto wetWithoutCoat = BuildStockMaterial("StandardPBR", keywords, "Surfaces/rain_wet_object.glsl");
+        ExpectBuildSucceeded(wetWithoutCoat);
+        const auto rain = BuildStockMaterial("StandardPBR", keywords | MaterialKeyword::Transmission |
+            MaterialKeyword::SceneColorGrab, "Surfaces/rain_falling.glsl", false, MaterialAlphaMode::Mask);
+        SKIP_WITHOUT_SHADERC(rain);
+        ExpectBuildSucceeded(rain);
+        const auto glass = BuildStockMaterial("StandardPBR", keywords | MaterialKeyword::Transmission |
+            MaterialKeyword::SceneColorGrab, "Surfaces/rain_window.glsl");
+        SKIP_WITHOUT_SHADERC(glass);
+        ExpectBuildSucceeded(glass);
+    }
+}
+
+TEST(ForwardAdapterVariantCompile, OnlyPixelationBandsDiscardOpaqueGeometryOutsideTheirInterval)
+{
+    const auto ordinary = BuildStockMaterial("StandardPBR", kWorldDrawBase);
+    SKIP_WITHOUT_SHADERC(ordinary);
+    ExpectBuildSucceeded(ordinary);
+    const auto band = BuildStockMaterial("StandardPBR", kWorldDrawBase | MaterialKeyword::DepthPixelationBand);
+    ExpectBuildSucceeded(band);
+    EXPECT_FALSE(FragmentDepth(ordinary).Discards);
+    EXPECT_TRUE(FragmentDepth(band).Discards);
+}
+
+TEST(ForwardAdapterVariantCompile, LocalProbesCoexistWithDdgiAndMeteredExposure)
+{
+    const auto result = BuildStockMaterial("StandardPBR", kWorldDrawBase | MaterialKeyword::IBL |
+        MaterialKeyword::DDGI, "Surfaces/standard_pbr.glsl");
+    SKIP_WITHOUT_SHADERC(result);
+    ExpectBuildSucceeded(result);
+}
+
+TEST(ForwardAdapterLodCrossfadeReadback, FlagBitsDoNotFadeARecordAndAPhasePairKeepsComplementaryPixels)
+{
+    const fs::path shaders = GameEngine::Rendering::Tests::GetAdapterShaderDir();
+    std::ifstream input(shaders / "Includes/lod_crossfade.glsl", std::ios::binary);
+    ASSERT_TRUE(input.good()) << (shaders / "Includes/lod_crossfade.glsl").string();
+    const std::string crossfade{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+
+    DeviceDesc desc{};
+    desc.preferredAPI = GraphicsAPI::Vulkan;
+    desc.enableSwapchain = false;
+    desc.enableDynamicRendering = true;
+    desc.enableDebugLayer = true;
+    auto device = DeviceFactory::CreateDevice(desc);
+    if (!device || !device->Initialize(desc))
+        GTEST_SKIP() << "No Vulkan device available";
+    if (!device->GetValidationStats().Enabled)
+    {
+        device->Shutdown();
+        GTEST_SKIP() << "Vulkan validation layer unavailable";
+    }
+    constexpr uint32_t kInstanceFlags = 0x3u;   // castShadows | receiveShadows
+    constexpr uint32_t kWeight = 64u;           // of 127: the Bayer levels 0..8 of 16 lie below it
+    constexpr uint32_t kPhaseBit = 0x80000000u;
+    const uint32_t kCodes[3] = {kInstanceFlags, (kWeight << 24) | kInstanceFlags,
+                                kPhaseBit | (kWeight << 24) | kInstanceFlags};
+    const fs::path cache = MakeTempCacheRoot();
+    std::vector<uint8_t> kept[3];
+    for (int record = 0; record < 3; ++record)
+    {
+        SCOPED_TRACE(record);
+        ShaderProgramCompileRequest request{};
+        request.debugName = "ForwardAdapterLodCrossfadeProbe";
+        request.cacheRoot = cache;
+        request.baseDirectory = shaders / "Adapters";
+        ShaderStageCompileSpec vertex{};
+        vertex.stage = "vs";
+        vertex.sourcePath = "crossfade-probe.vert";
+        vertex.inlineSource = R"(#version 450
+void main()
+{
+    const vec2 positions[3] = vec2[3](vec2(-1, -1), vec2(3, -1), vec2(-1, 3));
+    gl_Position = vec4(positions[gl_VertexIndex], 0.5, 1);
+}
+)";
+        ShaderStageCompileSpec fragment{};
+        fragment.stage = "fs";
+        fragment.sourcePath = "crossfade-probe.frag";
+        fragment.inlineSource = "#version 450\n#define GE_LOD_CROSSFADE\n" + crossfade +
+                                "\nlayout(location=0) out vec4 color;\nvoid main() {\n"
+                                "if (!GE_LodCrossfadeKeep(" + std::to_string(kCodes[record]) +
+                                "u, gl_FragCoord.xy)) discard;\ncolor = vec4(1.0);\n}\n";
+        request.stages = {vertex, fragment};
+        ShaderProgramCompileResult program{};
+        std::string error;
+        const bool compiled = ShaderCompileService::CompileProgramToCache(
+            request, ShaderSourceKind::SpirV, program, &error);
+        ASSERT_TRUE(compiled) << error;
+        kept[record] = DrawAdapterProbe(*device, program, false);
+        ASSERT_EQ(kept[record].size(), size_t(kProbeWidth) * kProbeHeight * 4);
+    }
+    size_t incoming = 0;
+    for (size_t at = 0; at < kept[0].size(); at += 4)
+    {
+        EXPECT_EQ(kept[0][at], 255) << "a record that is not fading lost pixel " << at / 4;
+        EXPECT_NE(kept[1][at] == 255, kept[2][at] == 255)
+            << "pixel " << at / 4 << " must be kept by exactly one record of the pair";
+        incoming += kept[1][at] == 255;
+    }
+    EXPECT_EQ(incoming, size_t(kProbeWidth) * kProbeHeight * 9 / 16) << "the incoming level keeps 9 of 16 levels";
+    EXPECT_EQ(device->GetValidationStats().ErrorCount, 0u);
+    device->Shutdown();
+    std::error_code ec;
+    fs::remove_all(cache, ec);
 }

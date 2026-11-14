@@ -7,10 +7,15 @@
 #include <objc/message.h>
 #include <objc/runtime.h>
 
+#if defined(GE_PLATFORM_IOS)
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_metal.h>
+#else
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #define GLFW_EXPOSE_NATIVE_COCOA
 #include <GLFW/glfw3native.h>
+#endif
 
 namespace GameEngine::Rendering::MetalLayerBridge
 {
@@ -19,11 +24,14 @@ namespace
 {
 using ObjcId = ::id;
 
+#if !defined(GE_PLATFORM_IOS)
 ObjcId Send(ObjcId receiver, const char* selector)
 {
     using Fn = ObjcId (*)(ObjcId, SEL);
     return reinterpret_cast<Fn>(objc_msgSend)(receiver, sel_registerName(selector));
 }
+
+#endif
 
 void SendVoidBool(ObjcId receiver, const char* selector, bool value)
 {
@@ -31,11 +39,14 @@ void SendVoidBool(ObjcId receiver, const char* selector, bool value)
     reinterpret_cast<Fn>(objc_msgSend)(receiver, sel_registerName(selector), value ? YES : NO);
 }
 
+#if !defined(GE_PLATFORM_IOS)
 void SendVoidId(ObjcId receiver, const char* selector, ObjcId value)
 {
     using Fn = void (*)(ObjcId, SEL, ObjcId);
     reinterpret_cast<Fn>(objc_msgSend)(receiver, sel_registerName(selector), value);
 }
+
+#endif
 
 void SendVoidDouble(ObjcId receiver, const char* selector, double value)
 {
@@ -56,23 +67,43 @@ double SendDouble(ObjcId receiver, const char* selector)
 }
 } // namespace
 
-bool AttachLayerToGLFWWindow(void* glfwWindow, CA::MetalLayer* layer)
+#if defined(GE_PLATFORM_IOS)
+CA::MetalLayer* CreateWindowLayer(void* window)
 {
-    if (glfwWindow == nullptr || layer == nullptr)
+    auto* sdlWindow = static_cast<SDL_Window*>(window);
+    const auto properties = SDL_GetWindowProperties(sdlWindow);
+    auto view = SDL_Metal_CreateView(sdlWindow);
+    if (view == nullptr) return nullptr;
+    if (!SDL_SetPointerPropertyWithCleanup(properties, "GameEngine.MetalView", view,
+        [](void*, void* value) { SDL_Metal_DestroyView(value); }, nullptr))
     {
-        return false;
+        SDL_Metal_DestroyView(view);
+        return nullptr;
+    }
+    auto* layer = static_cast<CA::MetalLayer*>(SDL_Metal_GetLayer(view));
+    if (layer != nullptr) layer->retain();
+    return layer;
+}
+#else
+CA::MetalLayer* CreateWindowLayer(void* glfwWindow)
+{
+    if (glfwWindow == nullptr)
+    {
+        return nullptr;
     }
 
+    auto* layer = CA::MetalLayer::layer();
+    if (layer == nullptr) return nullptr;
     ObjcId nsWindow = glfwGetCocoaWindow(static_cast<GLFWwindow*>(glfwWindow));
     if (nsWindow == nullptr)
     {
-        return false;
+        return nullptr;
     }
 
     ObjcId contentView = Send(nsWindow, "contentView");
     if (contentView == nullptr)
     {
-        return false;
+        return nullptr;
     }
 
     const double scale = SendDouble(nsWindow, "backingScaleFactor");
@@ -81,8 +112,11 @@ bool AttachLayerToGLFWWindow(void* glfwWindow, CA::MetalLayer* layer)
     SendVoidDouble(layerId, "setContentsScale:", scale > 0.0 ? scale : 1.0);
     SendVoidBool(contentView, "setWantsLayer:", true);
     SendVoidId(contentView, "setLayer:", layerId);
-    return true;
+    layer->retain();
+    return layer;
 }
+
+#endif
 
 double GetWindowBackingScale(void* glfwWindow)
 {
@@ -90,6 +124,9 @@ double GetWindowBackingScale(void* glfwWindow)
     {
         return 1.0;
     }
+#if defined(GE_PLATFORM_IOS)
+    return SDL_GetWindowDisplayScale(static_cast<SDL_Window*>(glfwWindow));
+#else
     ObjcId nsWindow = glfwGetCocoaWindow(static_cast<GLFWwindow*>(glfwWindow));
     if (nsWindow == nullptr)
     {
@@ -97,14 +134,18 @@ double GetWindowBackingScale(void* glfwWindow)
     }
     const double scale = SendDouble(nsWindow, "backingScaleFactor");
     return scale > 0.0 ? scale : 1.0;
+#endif
 }
 
 void SetLayerDisplaySyncEnabled(CA::MetalLayer* layer, bool enabled)
 {
+#if defined(GE_PLATFORM_IOS)
+    (void)layer;
+    (void)enabled; // iOS presentation follows the display refresh.
+#else
     if (layer != nullptr)
-    {
         SendVoidBool(reinterpret_cast<ObjcId>(layer), "setDisplaySyncEnabled:", enabled);
-    }
+#endif
 }
 
 void SetLayerMaximumDrawableCount(CA::MetalLayer* layer, unsigned long count)
@@ -154,6 +195,9 @@ void GetWindowEdrHeadroom(void* glfwWindow, float& outCurrent, float& outPotenti
 {
     outCurrent = 1.0f;
     outPotential = 1.0f;
+#if defined(GE_PLATFORM_IOS)
+    (void)glfwWindow;
+#else
     if (glfwWindow == nullptr)
     {
         return;
@@ -172,9 +216,10 @@ void GetWindowEdrHeadroom(void* glfwWindow, float& outCurrent, float& outPotenti
     const double potential = SendDouble(screen, "maximumPotentialExtendedDynamicRangeColorComponentValue");
     outCurrent = current > 0.0 ? static_cast<float>(current) : 1.0f;
     outPotential = potential > 0.0 ? static_cast<float>(potential) : 1.0f;
+#endif
 }
 
-bool GetLayerPixelSize(CA::MetalLayer* layer, unsigned int& outWidth, unsigned int& outHeight)
+bool GetWindowPixelSize(void* window, CA::MetalLayer* layer, unsigned int& outWidth, unsigned int& outHeight)
 {
     outWidth = 0;
     outHeight = 0;
@@ -182,6 +227,15 @@ bool GetLayerPixelSize(CA::MetalLayer* layer, unsigned int& outWidth, unsigned i
     {
         return false;
     }
+#if defined(GE_PLATFORM_IOS)
+    int width = 0, height = 0;
+    if (!SDL_GetWindowSizeInPixels(static_cast<SDL_Window*>(window), &width, &height) || width <= 0 || height <= 0)
+        return false;
+    outWidth = static_cast<unsigned int>(width);
+    outHeight = static_cast<unsigned int>(height);
+    return true;
+#else
+    (void)window;
     ObjcId layerId = reinterpret_cast<ObjcId>(layer);
     using BoundsFn = CGRect (*)(ObjcId, SEL);
 #if defined(__aarch64__)
@@ -200,6 +254,7 @@ bool GetLayerPixelSize(CA::MetalLayer* layer, unsigned int& outWidth, unsigned i
     outWidth = static_cast<unsigned int>(w + 0.5);
     outHeight = static_cast<unsigned int>(h + 0.5);
     return true;
+#endif
 }
 
 } // namespace GameEngine::Rendering::MetalLayerBridge

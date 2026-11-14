@@ -15,7 +15,7 @@ struct NavDebugData
     struct Line { float32 X1, Y1, Z1, X2, Y2, Z2; float32 R, G, B, A; };
     struct Triangle { float32 X1, Y1, Z1, X2, Y2, Z2, X3, Y3, Z3; float32 R, G, B, A; };
 
-    // Cached: regenerated only when grid topology changes
+    // Cache grid lines until topology changes. Replace mesh triangles each debug update.
     std::vector<Line> CachedLines;
     std::vector<Triangle> CachedTriangles;
 

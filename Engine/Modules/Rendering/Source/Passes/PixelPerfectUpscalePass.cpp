@@ -1,6 +1,5 @@
 #include "Rendering/Passes/PixelPerfectUpscalePass.h"
 
-#include "Mathematics/Vector2.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
@@ -9,6 +8,7 @@
 #include "Rendering/Materials/Shader/ShaderMeta.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Logger/Logger.h"
+#include "Mathematics/Vector2.h"
 
 #include <algorithm>
 #include <cmath>
@@ -162,6 +162,76 @@ void CleanupPixelPerfectUpscalePassForDevice(IDevice* device)
     g_UpscalePerDevice.erase(it);
 }
 
+static bool PreparePixelPerfectUpscaleDescriptors(RenderGraph::RGPrepareContext& context,
+                                      RenderGraph::RGTexture source,
+                                      const DescriptorSetLayoutDesc& layout,
+                                      const ShaderMeta& meta,
+                                      DescriptorSetHandle& descriptors)
+{
+    IDevice* device = context.GetDevice();
+    if (device == nullptr)
+        return false;
+    const TextureHandle texture = context.GetTexture(source);
+    if (!texture.IsValid())
+        return false;
+    const SamplerHandle sampler = GetOrCreateUpscaleSampler(device);
+    if (!sampler.IsValid())
+        return false;
+    DescriptorSetDesc descriptorDesc{};
+    descriptorDesc.layout = layout;
+    descriptorDesc.transient = true;
+    descriptorDesc.debugName = "PixelPerfectUpscale.DS0";
+    descriptors = device->CreateDescriptorSet(descriptorDesc);
+    if (!descriptors.IsValid())
+        return false;
+    NamedDescriptorWriter writer(device, descriptors, meta, 0);
+    writer.AddCombinedImageSampler("uSourceColor", texture, sampler);
+    writer.Flush();
+    return true;
+}
+
+static void RecordPixelPerfectUpscalePass(RenderGraph::RGContext& context, GraphicsPipelineId pipelineId,
+                              DescriptorSetHandle descriptors, const NamedPushConstantWriter& pushConstants,
+                              uint32_t width, uint32_t height)
+{
+    auto* commands = context.Cmd;
+    auto* device = context.GetDevice();
+    if (!commands || !device)
+        return;
+    const PipelineHandle pipeline = device->TryGetWarmGraphicsPipeline(pipelineId, context.BuildCurrentFormatKey());
+    if (!pipeline.IsValid())
+        return;
+
+    commands->SetPipeline(pipeline);
+    if (pushConstants.IsValid())
+        pushConstants.Flush(commands);
+    // Viewport is the full destination — the shader letterboxes via
+    // gl_FragCoord.
+    commands->SetViewport(0.0f, 0.0f, static_cast<float>(width),
+                    static_cast<float>(height));
+    commands->SetScissor(0, 0, static_cast<int>(width), static_cast<int>(height));
+
+    commands->BindDescriptorSet(0, descriptors, pipeline);
+    commands->Draw(3, 1);
+}
+
+static void DeclarePixelPerfectUpscalePass(RenderGraph::RGPassBuilder& pass, GraphicsPipelineId pipelineId,
+                               DescriptorSetHandle* descriptors, RenderGraph::RGTexture source,
+                               RenderGraph::RGTexture destination, const DescriptorSetLayoutDesc& set0,
+                               const ShaderMeta& meta)
+{
+    pass.UsePipeline(pipelineId);
+    pass.Prepare([descriptors, source, set0, meta = &meta](RenderGraph::RGPrepareContext& context) {
+        return PreparePixelPerfectUpscaleDescriptors(context, source, set0, *meta, *descriptors);
+    });
+    pass.Read(source, RenderGraph::RGTextureRead::Sampled);
+    RenderGraph::RGAttachmentOps ops{};
+    // The shader writes every pixel, including black letterbox bars.
+    ops.Load = RenderGraph::RGLoadOp::DontCare;
+    ops.Store = RenderGraph::RGStoreOp::Store;
+    pass.AttachColor(0, destination, ops);
+}
+
 RenderGraph::RGPass AddPixelPerfectUpscalePassRG(RenderGraph::RGFrame& frame,
                                          const PixelPerfectUpscaleParamsRG& params,
                                          FinalizeInputSpace inputSpace,
@@ -201,42 +271,42 @@ RenderGraph::RGPass AddPixelPerfectUpscalePassRG(RenderGraph::RGFrame& frame,
 
     // Layout + push-constant block derived from the shaderpkg's reflection
     // meta. Interned per device; the per-frame cost is the variant-cache hit.
-    GraphicsPipelineDesc gd{};
-    gd.Kind = GraphicsPipelineKind::VertexFragment;
-    gd.VertexShader = std::make_shared<const std::vector<uint8_t>>(shaders.vs);
-    gd.PixelShader = std::make_shared<const std::vector<uint8_t>>(shaders.fs);
-    gd.Topology = PrimitiveTopology::TriangleList;
-    gd.Rasterization.cullMode = CullModeFlagBits::None;
-    gd.Rasterization.frontFace = FrontFace::CounterClockwise;
-    gd.DepthStencil.depthTestEnable = false;
-    gd.DepthStencil.depthWriteEnable = false;
-    DynamicStateInfo dyn{};
-    dyn.states.push_back(DynamicState::Viewport);
-    dyn.states.push_back(DynamicState::Scissor);
-    gd.DynamicState = std::move(dyn);
-    gd.DebugName = "PixelPerfectUpscale.Pipeline";
+    GraphicsPipelineDesc pipelineDesc{};
+    pipelineDesc.Kind = GraphicsPipelineKind::VertexFragment;
+    pipelineDesc.VertexShader = std::make_shared<const std::vector<uint8_t>>(shaders.vs);
+    pipelineDesc.PixelShader = std::make_shared<const std::vector<uint8_t>>(shaders.fs);
+    pipelineDesc.Topology = PrimitiveTopology::TriangleList;
+    pipelineDesc.Rasterization.cullMode = CullModeFlagBits::None;
+    pipelineDesc.Rasterization.frontFace = FrontFace::CounterClockwise;
+    pipelineDesc.DepthStencil.depthTestEnable = false;
+    pipelineDesc.DepthStencil.depthWriteEnable = false;
+    DynamicStateInfo dynamicState{};
+    dynamicState.states.push_back(DynamicState::Viewport);
+    dynamicState.states.push_back(DynamicState::Scissor);
+    pipelineDesc.DynamicState = std::move(dynamicState);
+    pipelineDesc.DebugName = "PixelPerfectUpscale.Pipeline";
     DescriptorSetLayoutDesc set0{};
     {
-        std::string metaErr;
+        std::string metaError;
         if (!MaterialHelper::ApplyShaderMetaToGraphicsDesc(
-                *device, shaders.meta, gd, MaterialBuilder::MergeMode::Auto, {true, 128},
-                [&](uint32_t setIndex, DescriptorSetLayoutDesc& dsl)
+                *device, shaders.meta, pipelineDesc, MaterialBuilder::MergeMode::Auto, {true, 128},
+                [&set0](uint32_t setIndex, DescriptorSetLayoutDesc& setLayout)
                 {
                     if (setIndex == 0)
-                        set0 = dsl;
+                        set0 = setLayout;
                 },
-                &metaErr))
+                &metaError))
         {
             static bool s_WarnedMeta = false;
             if (!s_WarnedMeta)
             {
                 s_WarnedMeta = true;
-                Logger::Log::Warning("PixelPerfectUpscale: shader meta rejected ({})", metaErr);
+                Logger::Log::Warning("PixelPerfectUpscale: shader meta rejected ({})", metaError);
             }
             return {};
         }
     }
-    const GraphicsPipelineId pipelineId = device->InternGraphicsPipeline(std::move(gd));
+    const GraphicsPipelineId pipelineId = device->InternGraphicsPipeline(std::move(pipelineDesc));
     if (!pipelineId.IsValid())
         return {};
 
@@ -246,9 +316,9 @@ RenderGraph::RGPass AddPixelPerfectUpscalePassRG(RenderGraph::RGFrame& frame,
     // the declared input space — a linear input keeps the passthrough /
     // self-encode duality; an encoded input passes bytes through raw (or
     // hands an _SRGB destination D(c)).
-    const RenderGraph::RGResourceDesc dd = frame.Graph().ResourceDesc(params.Dst.Id);
-    const uint32_t dstWidth = dd.Width > 0 ? dd.Width : 1u;
-    const uint32_t dstHeight = dd.Height > 0 ? dd.Height : 1u;
+    const RenderGraph::RGResourceDesc destinationDesc = frame.Graph().ResourceDesc(params.Dst.Id);
+    const uint32_t width = destinationDesc.Width > 0 ? destinationDesc.Width : 1u;
+    const uint32_t height = destinationDesc.Height > 0 ? destinationDesc.Height : 1u;
 
     const float zoom = static_cast<float>(std::max(1u, params.Zoom));
     const float refW = static_cast<float>(std::max(1u, params.ReferenceWidth));
@@ -256,8 +326,8 @@ RenderGraph::RGPass AddPixelPerfectUpscalePassRG(RenderGraph::RGFrame& frame,
     const float outW = refW * zoom;
     const float outH = refH * zoom;
     // Center the upscaled rect; floor so the origin lands on a whole pixel.
-    const float outOriginX = std::floor((static_cast<float>(dstWidth) - outW) * 0.5f);
-    const float outOriginY = std::floor((static_cast<float>(dstHeight) - outH) * 0.5f);
+    const float outOriginX = std::floor((static_cast<float>(width) - outW) * 0.5f);
+    const float outOriginY = std::floor((static_cast<float>(height) - outH) * 0.5f);
 
     UpscaleValues pc{};
     pc.sourceSize[0] = static_cast<float>(std::max(1u, params.SourceWidth));
@@ -300,73 +370,33 @@ RenderGraph::RGPass AddPixelPerfectUpscalePassRG(RenderGraph::RGFrame& frame,
 
     // Values -> push constants by MEMBER NAME against the reflected block,
     // resolved at declaration (the by-value contract).
-    NamedPushConstantWriter pcw =
+    NamedPushConstantWriter pushConstants =
         shaders.meta.PushConstants.empty()
             ? NamedPushConstantWriter(shaders.meta, std::string{})
             : NamedPushConstantWriter(shaders.meta, shaders.meta.PushConstants[0].Name);
-    if (pcw.IsValid())
+    if (pushConstants.IsValid())
     {
-        pcw.Add("sourceSize", pc.sourceSize);
-        pcw.Add("referenceSize", pc.referenceSize);
-        pcw.Add("sampleOrigin", pc.sampleOrigin);
-        pcw.Add("outputOrigin", pc.outputOrigin);
-        pcw.Add("outputSize", pc.outputSize);
-        pcw.Add("zoom", pc.zoom);
-        pcw.Add("outEncoding", pc.outEncoding);
-        pcw.Add("paperWhiteNits", pc.paperWhiteNits);
+        pushConstants.Add("sourceSize", pc.sourceSize);
+        pushConstants.Add("referenceSize", pc.referenceSize);
+        pushConstants.Add("sampleOrigin", pc.sampleOrigin);
+        pushConstants.Add("outputOrigin", pc.outputOrigin);
+        pushConstants.Add("outputSize", pc.outputSize);
+        pushConstants.Add("zoom", pc.zoom);
+        pushConstants.Add("outEncoding", pc.outEncoding);
+        pushConstants.Add("paperWhiteNits", pc.paperWhiteNits);
     }
 
-    const RenderGraph::RGTexture src = params.Src;
+    const RenderGraph::RGTexture source = params.Src;
+    auto* descriptors = frame.AllocatePassData<DescriptorSetHandle>();
     return frame.AddPass(
         passName ? passName : "PixelPerfectUpscale", PassPhase::kFinalize,
-        [&](RenderGraph::RGPassBuilder& p)
+        [pipelineId, descriptors, source, &set0, &shaders, &params](RenderGraph::RGPassBuilder& pass)
         {
-            p.Read(src, RenderGraph::RGTextureRead::Sampled);
-            RenderGraph::RGAttachmentOps ops{};
-            // The fullscreen shader writes every destination pixel (letterbox
-            // bars are shader-black), so DontCare is safe — the old arm's
-            // Load was only alias hygiene.
-            ops.Load = RenderGraph::RGLoadOp::DontCare;
-            ops.Store = RenderGraph::RGStoreOp::Store;
-            p.AttachColor(0, params.Dst, ops);
+            DeclarePixelPerfectUpscalePass(pass, pipelineId, descriptors, source, params.Dst, set0, shaders.meta);
         },
-        [pipelineId, src, set0, pcw, meta = &shaders.meta, dstWidth, dstHeight](RenderGraph::RGContext& ctx)
+        [pipelineId, descriptors, pushConstants, width, height](RenderGraph::RGContext& context)
         {
-            auto* cl = ctx.Cmd;
-            auto* dev = ctx.GetDevice();
-            if (!cl || !dev)
-                return;
-            const auto srcTex = ctx.GetTexture(src);
-            if (!srcTex.IsValid())
-                return;
-            const SamplerHandle sampler = GetOrCreateUpscaleSampler(dev);
-            if (!sampler.IsValid())
-                return;
-            const PipelineHandle pipeline = ctx.GetOrCreatePipelineVariant(pipelineId);
-            if (!pipeline.IsValid())
-                return;
-
-            cl->SetPipeline(pipeline);
-            if (pcw.IsValid())
-                pcw.Flush(cl);
-            // Viewport is the full destination — the shader letterboxes via
-            // gl_FragCoord.
-            cl->SetViewport(0.0f, 0.0f, static_cast<float>(dstWidth),
-                            static_cast<float>(dstHeight));
-            cl->SetScissor(0, 0, static_cast<int>(dstWidth), static_cast<int>(dstHeight));
-
-            DescriptorSetDesc dsDesc{};
-            dsDesc.layout = set0;
-            dsDesc.transient = true;
-            dsDesc.debugName = "PixelPerfectUpscale.DS0";
-            const DescriptorSetHandle ds = dev->CreateDescriptorSet(dsDesc);
-            if (!ds.IsValid())
-                return;
-            NamedDescriptorWriter wd(dev, ds, *meta, 0);
-            wd.AddCombinedImageSampler("uSourceColor", srcTex, sampler);
-            wd.Flush();
-            cl->BindDescriptorSet(0, ds, pipeline);
-            cl->Draw(3, 1);
+            RecordPixelPerfectUpscalePass(context, pipelineId, *descriptors, pushConstants, width, height);
         });
 }
 

@@ -7,11 +7,41 @@
 // entries (Common) only occur for externally-provided states, where the caller
 // supplies the truth explicitly.
 
+#include "Rendering/Core/BarrierMapping.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGBarrier.h"
 
 namespace GameEngine::Rendering::RenderGraph
 {
+
+/// Converts graph access scopes to the engine barrier mask used by command recording.
+inline uint64_t ToEngineAccessMask(uint32_t accessMask)
+{
+    uint64_t engineMask = 0;
+    if (accessMask & RGAccessMask::IndirectRead)
+        engineMask |= static_cast<uint64_t>(ResourceAccessMask::IndirectCommandRead);
+    if (accessMask & RGAccessMask::IndexRead)
+        engineMask |= static_cast<uint64_t>(ResourceAccessMask::IndexRead);
+    if (accessMask & RGAccessMask::VertexAttribRead)
+        engineMask |= static_cast<uint64_t>(ResourceAccessMask::VertexAttributeRead);
+    if (accessMask & (RGAccessMask::UniformRead | RGAccessMask::ShaderRead))
+        engineMask |= static_cast<uint64_t>(ResourceAccessMask::ShaderRead);
+    if (accessMask & RGAccessMask::ShaderWrite)
+        engineMask |= static_cast<uint64_t>(ResourceAccessMask::ShaderWrite);
+    if (accessMask & RGAccessMask::ColorWrite)
+        engineMask |= static_cast<uint64_t>(ResourceAccessMask::ColorAttachmentWrite);
+    if (accessMask & RGAccessMask::ColorRead)
+        engineMask |= static_cast<uint64_t>(ResourceAccessMask::ColorAttachmentRead);
+    if (accessMask & RGAccessMask::DepthRead)
+        engineMask |= static_cast<uint64_t>(ResourceAccessMask::DepthStencilRead);
+    if (accessMask & RGAccessMask::DepthWrite)
+        engineMask |= static_cast<uint64_t>(ResourceAccessMask::DepthStencilWrite);
+    if (accessMask & RGAccessMask::TransferRead)
+        engineMask |= static_cast<uint64_t>(ResourceAccessMask::TransferRead);
+    if (accessMask & RGAccessMask::TransferWrite)
+        engineMask |= static_cast<uint64_t>(ResourceAccessMask::TransferWrite);
+    return engineMask;
+}
 
 inline ResourceState ToResourceState(RGImageLayout l)
 {

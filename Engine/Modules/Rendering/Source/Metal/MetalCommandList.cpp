@@ -6,6 +6,7 @@
 #include "MetalQueryPool.h"
 
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 
 #include <algorithm>
 #include <cassert>
@@ -49,10 +50,7 @@ void MetalCommandList::Begin()
     }
     // GE_METAL_CB_ERRORS=1: attribute GPU faults to the encoder that caused
     // them (the completed-handler error then carries per-encoder info).
-    static const bool kEncoderErrorInfo = []() {
-        const char* env = std::getenv("GE_METAL_CB_ERRORS");
-        return env != nullptr && env[0] != '0';
-    }();
+    static const bool kEncoderErrorInfo = Platform::EnvironmentSwitchEnabled("GE_METAL_CB_ERRORS", false);
     if (kEncoderErrorInfo)
     {
         MTL::CommandBufferDescriptor* desc = MTL::CommandBufferDescriptor::alloc()->init();
@@ -67,6 +65,7 @@ void MetalCommandList::Begin()
     if (m_CommandBuffer == nullptr)
     {
         Logger::Log::Error("MetalCommandList: failed to obtain MTLCommandBuffer");
+        m_Device.RecordSubmissionFailure();
         return;
     }
     m_CommandBuffer->retain();
@@ -88,6 +87,38 @@ void MetalCommandList::End()
     EndActiveEncoders();
     FlushPendingTimestampQueries();
     m_IsRecording = false;
+}
+
+bool MetalCommandList::EncodeTimelineWait(IDevice::GpuSyncToken token)
+{
+    if (!m_IsRecording)
+        return false;
+    EndActiveEncoders();
+    std::lock_guard lock(m_Device.m_ResourceMutex);
+    const auto* semaphore = m_Device.m_Semaphores.Get(ToGeneric(token.sem));
+    if (!semaphore || !semaphore->deviceEvent)
+        return false;
+    m_CommandBuffer->encodeWait(semaphore->deviceEvent, token.value);
+    return true;
+}
+
+bool MetalCommandList::EncodeTimelineSignal(IDevice::GpuSyncToken token)
+{
+    if (!m_IsRecording)
+        return false;
+    EndActiveEncoders();
+    std::lock_guard lock(m_Device.m_ResourceMutex);
+    auto* semaphore = m_Device.m_Semaphores.Get(ToGeneric(token.sem));
+    if (!semaphore)
+        return false;
+    // This point is consumed only by GPU command buffers on this Metal
+    // device. Keep it independent of the CPU-visible submission timeline.
+    if (!semaphore->deviceEvent)
+        semaphore->deviceEvent = m_Device.GetMTLDevice()->newEvent();
+    if (!semaphore->deviceEvent)
+        return false;
+    m_CommandBuffer->encodeSignalEvent(semaphore->deviceEvent, token.value);
+    return true;
 }
 
 void MetalCommandList::SetVisibilityResultMode(uint32_t mode, uint64_t offsetBytes)
@@ -259,10 +290,7 @@ MTL::CommandBuffer* MetalCommandList::Detach()
     // GE_METAL_DUMP_CB_TIMING=1: per-command-buffer GPU occupancy from the
     // free kernel/GPU timestamps — enough to localize GPU time and scheduling
     // bubbles without a full Xcode capture.
-    static const bool kDumpCbTiming = []() {
-        const char* env = std::getenv("GE_METAL_DUMP_CB_TIMING");
-        return env != nullptr && env[0] != '0';
-    }();
+    static const bool kDumpCbTiming = Platform::EnvironmentSwitchEnabled("GE_METAL_DUMP_CB_TIMING", false);
     if (kDumpCbTiming)
     {
         cb->addCompletedHandler([](MTL::CommandBuffer* completed) {
@@ -621,10 +649,7 @@ void MetalCommandList::BeginRenderPass(const RenderPassDesc& desc)
         }
     }
 
-    static const bool kDumpPasses = []() {
-        const char* env = std::getenv("GE_METAL_DUMP_PASSES");
-        return env != nullptr && env[0] != '0';
-    }();
+    static const bool kDumpPasses = Platform::EnvironmentSwitchEnabled("GE_METAL_DUMP_PASSES", false);
     if (kDumpPasses)
     {
         Logger::Log::Warning(
@@ -771,10 +796,7 @@ void MetalCommandList::ApplyRenderState()
         // GE_METAL_FORCE_DEPTH_ALWAYS=1: bisection aid — replaces every
         // pipeline's depth compare with Always/write-on to separate "draw
         // produces no fragments" from "fragments rejected by the depth test".
-        static const bool kForceAlways = []() {
-            const char* env = std::getenv("GE_METAL_FORCE_DEPTH_ALWAYS");
-            return env != nullptr && env[0] != '0';
-        }();
+        static const bool kForceAlways = Platform::EnvironmentSwitchEnabled("GE_METAL_FORCE_DEPTH_ALWAYS", false);
         if (kForceAlways)
         {
             m_RenderEncoder->setDepthStencilState(m_Device.GetDebugAlwaysDepthState());
@@ -937,10 +959,7 @@ namespace
 // bug that renders garbage without any API validation error.
 void ValidateSetAgainstPipeline(uint32_t setIndex, const MetalDescriptorSet& ds, const MetalPipeline& pipeline)
 {
-    static const bool kValidate = []() {
-        const char* env = std::getenv("GE_METAL_VALIDATE_BINDINGS");
-        return env != nullptr && env[0] != '0';
-    }();
+    static const bool kValidate = Platform::EnvironmentSwitchEnabled("GE_METAL_VALIDATE_BINDINGS", false);
     if (!kValidate || setIndex >= pipeline.setLayouts.size())
     {
         return;
@@ -1007,6 +1026,12 @@ void AssertSetDeclaresShaderWrites(uint32_t setIndex, const MetalDescriptorSet& 
 void MetalCommandList::BindDescriptorSet(uint32_t set, DescriptorSetHandle descriptorSet, PipelineHandle pipeline)
 {
     MetalDescriptorSet* ds = m_Device.GetMetalDescriptorSet(descriptorSet);
+    if (ds != nullptr && !m_Device.GetCapabilities().supportsBindlessResources)
+    {
+        if (const auto* nativePipeline = m_Device.GetMetalPipeline(pipeline))
+            BindDirectDescriptorSet(set, *ds, *nativePipeline);
+        return;
+    }
     if (ds == nullptr || ds->argumentBuffer == nullptr)
     {
         return;
@@ -1026,10 +1051,7 @@ void MetalCommandList::BindDescriptorSet(uint32_t set, DescriptorSetHandle descr
     // buffer bound to set 0 in depth-touching render passes — distinguishes
     // "prepass and forward read different camera data" from shader-side
     // depth differences. Shared storage makes the bytes CPU-readable.
-    static const bool kDumpCamera = []() {
-        const char* env = std::getenv("GE_METAL_DUMP_CAMERA");
-        return env != nullptr && env[0] != '0';
-    }();
+    static const bool kDumpCamera = Platform::EnvironmentSwitchEnabled("GE_METAL_DUMP_CAMERA", false);
     if (kDumpCamera && m_RenderEncoder != nullptr && m_PassHasDepth && set == 0)
     {
         static int s_Budget = 60;
@@ -1351,6 +1373,7 @@ void MetalCommandList::DrawIndexedIndirectCount(BufferHandle commandBuffer, Buff
     }
     const MetalPipeline* pipeline = m_Device.GetMetalPipeline(m_CurrentPipelineHandle);
     MetalIndirectCountEncoder::Draw draw{};
+    draw.UseDirectDraws = pipeline != nullptr && pipeline->fragmentSamplesTextures;
     draw.Records = records;
     draw.RecordsOffset = commandBufferOffset;
     draw.RecordStride = stride;
@@ -1537,10 +1560,7 @@ void MetalCommandList::CopyTextureSubresourceToBuffer(TextureHandle srcTexture, 
     // GE_METAL_DEPTH_PROBE=1: log the exact float at the readback's center
     // pixel once the GPU finishes — readback buffers are shared storage, so
     // this gives ulp-accurate depth values without a GPU capture.
-    static const bool kDepthProbe = []() {
-        const char* env = std::getenv("GE_METAL_DEPTH_PROBE");
-        return env != nullptr && env[0] != '0';
-    }();
+    static const bool kDepthProbe = Platform::EnvironmentSwitchEnabled("GE_METAL_DEPTH_PROBE", false);
     if (kDepthProbe && tex->format == TextureFormat::D32_FLOAT && m_CommandBuffer != nullptr)
     {
         MTL::Buffer* dstBuffer = buf->buffer;
@@ -1652,9 +1672,8 @@ void MetalCommandList::ClearColorImageSubresourceByBlit(const MetalTexture& tex,
                                 MTL::Origin(0, y, z));
         }
     }
-    // The copies read the staging buffer when the GPU runs them, so it lives
-    // until this command buffer completes.
-    m_CommandBuffer->addCompletedHandler([staging](MTL::CommandBuffer*) { staging->release(); });
+    // The command buffer retains the copy source, including before commit.
+    staging->release();
 }
 
 void MetalCommandList::CopyBufferToTextureSubresource(BufferHandle srcBuffer, TextureHandle dstTexture, uint32_t mip,
@@ -1794,8 +1813,8 @@ void MetalCommandList::SetScissor(uint32_t x, uint32_t y, uint32_t width, uint32
     MTL::ScissorRect rect{};
     rect.x = std::min(x, m_RenderTargetWidth);
     rect.y = std::min(y, m_RenderTargetHeight);
-    rect.width = std::min<uint32_t>(width, m_RenderTargetWidth - rect.x);
-    rect.height = std::min<uint32_t>(height, m_RenderTargetHeight - rect.y);
+    rect.width = std::min<NS::UInteger>(width, m_RenderTargetWidth - rect.x);
+    rect.height = std::min<NS::UInteger>(height, m_RenderTargetHeight - rect.y);
     m_RenderEncoder->setScissorRect(rect);
 }
 

@@ -177,6 +177,33 @@ TEST(ComputePipelineDescHash, DebugNameDoesNotAffectHash)
 // Intern table — InternGraphicsPipeline idempotence
 // =====================================================================
 
+TEST(PipelineCache_Intern, GraphicsSpecializationKeepsUnchangedConstants)
+{
+    PipelineCache cache;
+    auto baseDesc = MakeMinimalGraphicsDesc();
+    baseDesc.Specialization.emplace();
+    baseDesc.Specialization->AddConstant(1, 10u);
+    baseDesc.Specialization->AddConstant(2, 20u);
+
+    SpecializationConstants overrides;
+    overrides.AddConstant(1, 11u);
+    overrides.AddConstant(3, 30u);
+    const auto base = cache.InternGraphicsPipeline(baseDesc);
+    const auto specialized = cache.SpecializeGraphicsPipeline(base, overrides);
+    ASSERT_TRUE(specialized.IsValid());
+    EXPECT_NE(specialized, base);
+    EXPECT_EQ(cache.SpecializeGraphicsPipeline(base, overrides), specialized);
+
+    baseDesc.Specialization.emplace();
+    baseDesc.Specialization->AddConstant(3, 30u);
+    baseDesc.Specialization->AddConstant(2, 20u);
+    baseDesc.Specialization->AddConstant(1, 11u);
+    EXPECT_EQ(cache.InternGraphicsPipeline(baseDesc), specialized);
+
+    cache.Clear();
+    EXPECT_FALSE(cache.SpecializeGraphicsPipeline(base, overrides).IsValid());
+}
+
 TEST(PipelineCache_Intern, GraphicsIdempotent)
 {
     PipelineCache cache;

@@ -369,7 +369,7 @@ void TerrainSurfacePages::CollectStreamChanges(uint32 terrain, PagedSurface& sur
             continue;
         if (const std::vector<uint8>* bytes = m_Residency.Bytes(surface.Stream, upload.Page.Address))
         {
-            m_Uploads.push_back(SurfacePageUpload{upload.Slot, surface.PlaneMask, *bytes});
+            m_Uploads.push_back(SurfacePageUpload{upload.Slot, surface.PlaneMask, *bytes, terrain});
             uploaded = true;
         }
     }

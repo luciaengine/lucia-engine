@@ -292,9 +292,10 @@ void NavigationMovementSystem::Update(ECS::World& world, float32 deltaTime)
                     ECS::Write<Components::NavigationAgentState>,
                     ECS::Read<Components::WorldTransform>>().Each(
             [&](ECS::EntityHandle /*e*/, const Components::NavigationAgent& agent,
-                Components::NavigationAgentState& state,
+                ECS::Writable<Components::NavigationAgentState> stateRow,
                 const Components::WorldTransform& wt)
             {
+                auto& state = stateRow.Mutable();
                 Pathfinding::NavMapHandle mapHandle{state.NavMapIndex, state.NavMapGeneration};
                 bool isNavMeshAgent = (navWorld->GetDetourNavMap(mapHandle) != nullptr);
                 if (!isNavMeshAgent)
@@ -373,10 +374,11 @@ void NavigationMovementSystem::Update(ECS::World& world, float32 deltaTime)
                 ECS::Read<Components::Transform>,
                 ECS::Read<Components::WorldTransform>>().Each(
         [&](ECS::EntityHandle e, const Components::NavigationAgent& agent,
-            Components::NavigationAgentState& state,
+            ECS::Writable<Components::NavigationAgentState> stateRow,
             const Components::Transform& /*xf*/,
             const Components::WorldTransform& wt)
         {
+            auto& state = stateRow.Mutable();
             const Mathematics::Vector3 agentPosition = wt.GetPosition() - Mathematics::WorldPosition{};
             // Halt / arrival: drop the lookahead corridor but keep a body
             // stamp on the cell the agent is standing in so others cannot

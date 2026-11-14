@@ -53,8 +53,6 @@ class ScreenSpaceReflectionsNode final : public IRenderPipelineNode
     // camera's NDC on every ray, so they are handed this rather than assuming
     // the viewport fills the target. Degenerate inputs fall back to the whole
     // target, which is what an inactive letterbox means.
-    static Mathematics::Rect ComputeViewportRect(const ViewLetterbox& letterbox,
-                                                 uint32_t targetWidth, uint32_t targetHeight);
 
     /// The frame index the view's last declared SSSR passes push as `frameIndex`. It holds while
     /// the view is still (ViewContentStamp::ViewIsStill), so the trace repeats its samples; a
@@ -103,7 +101,8 @@ class ScreenSpaceReflectionsNode final : public IRenderPipelineNode
                                             const PostProcessSettings& settings,
                                             uint32_t frameIndex,
                                             bool historyValid,
-                                            const Mathematics::Rect& viewportRect) const;
+                                            const Mathematics::Rect& viewportRect,
+                                            bool hasPlanarMask) const;
 
     // Non-owning; retained from LoadShaders so the destructor can release the
     // device objects created there.

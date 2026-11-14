@@ -11,9 +11,9 @@
 #include "Components/PrefabInstance.h"
 #include "Components/Transform.h"
 #include "Core/Engine.h"
-#include "ECS/Component/ComponentFactory.h"
-#include "ECS/Component/ComponentFieldRegistry.h"
-#include "ECS/Component/ComponentTypeName.h"
+#include "ECS/ComponentFactory.h"
+#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/ComponentTypeName.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Reflection.h"
 #include "ECS/World.h"
@@ -195,9 +195,9 @@ TEST_F(ScriptingAbiPrefabSpawnTest, SpawnReturnsARootWhoseTreeMatchesThePrefab)
 
     std::size_t children = 0;
     world.Query<ECS::Read<Components::Parent>>().Each(
-        [&](const Components::Parent& parent)
+        [&children, root](const Components::Parent& parent)
         {
-            if (parent.Entity == root)
+            if (parent.parent == root)
                 ++children;
         });
     EXPECT_EQ(children, 2u);
@@ -225,7 +225,7 @@ TEST_F(ScriptingAbiPrefabSpawnTest, SpawnWhileChangesAreDeferredCreatesAtOnceAnd
     EXPECT_EQ(world.GetComponent<Components::Transform>(first), firstTransform);
     const auto* parent = world.GetComponent<Components::Parent>(ECS::EntityHandle(secondId));
     ASSERT_NE(parent, nullptr);
-    EXPECT_EQ(parent->Entity, first);
+    EXPECT_EQ(parent->parent, first);
     world.SetDeferStructuralChanges(false);
 }
 

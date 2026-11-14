@@ -4,7 +4,7 @@
 #include "Prefabs/PrefabOverrideRecordsCommand.h"
 #include "UndoRedo/UndoRedoService.h"
 
-#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/ComponentFieldRegistry.h"
 #include "ECS/Entity.h"
 #include "Scene/SceneSchemaRegistry.h"
 #include "Types/StringUtils.h"
@@ -21,12 +21,6 @@ namespace GameEngine::Editor
 
 // The name of the records command. The step it joins keeps the name of the edit.
 static constexpr const char* kKeepOverridesLabel = "Keep prefab overrides";
-
-static uint64 NewestUndoStep(const UndoRedoService* undo)
-{
-    const std::size_t count = undo ? undo->GetUndoCount() : 0;
-    return count > 0 ? undo->GetUndoEntryIdAt(count - 1) : 0;
-}
 
 const Scene::PrefabInstanceEntity* DescribedPrefabInstance::Find(ECS::EntityHandle entity) const
 {
@@ -127,13 +121,11 @@ void PrefabInstanceDescriptions::RecordOverridesBeforeEdit(EditorChangeNotificat
                                                            const EditorChangeNotifications::ComponentChangedEvent& change,
                                                            ECS::EntityHandle root)
 {
-    // The records join an open compound, or the newest undo entry when the interactive edit that announces this
-    // commit is in it. An edit in no entry gives no record. A commit outside the undo history keeps its records
-    // with no step.
-    const bool inCompound = m_Undo && m_Undo->HasOpenCompound();
-    const std::optional<uint64> editEntry = m_Undo ? m_Undo->GetAnnouncedEditEntryId() : std::nullopt;
-    if (editEntry && !inCompound &&
-        (*editEntry == 0 || *editEntry != NewestUndoStep(m_Undo) || !m_Undo->CanJoinTop()))
+    const bool ownsMutation = HistoryMutationScope::IsActiveFor(m_Undo);
+    if (HistoryMutationScope::IsRestoringFor(m_Undo))
+        return;
+    const uint64 action = ownsMutation ? m_Undo->GetPendingActionId() : 0;
+    if (ownsMutation && action == 0)
         return;
     if (m_Epoch != change.world->GetEntityHandleEpoch())
         return;
@@ -153,10 +145,8 @@ void PrefabInstanceDescriptions::RecordOverridesBeforeEdit(EditorChangeNotificat
         return;
     auto command = std::make_unique<PrefabOverrideRecordsCommand>(
         *change.world, &notifications, added, std::span<const Scene::PrefabOverrideTarget>(), kKeepOverridesLabel);
-    if (inCompound)
-        m_Undo->CommitAlreadyApplied(std::move(command));
-    else if (editEntry)
-        m_Undo->CommitJoiningTop(std::move(command));
+    if (action != 0)
+        m_Undo->AppendConsequence(action, std::move(command));
 }
 
 void PrefabInstanceDescriptions::OnWorldStructureChanged(

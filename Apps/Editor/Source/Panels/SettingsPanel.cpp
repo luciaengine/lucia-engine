@@ -863,7 +863,7 @@ SettingsSliderRow CreateSettingsSliderRow(
     UIElement* parent)
 {
     SettingsSliderRow result;
-    
+
     auto section = std::make_unique<UIElement>();
     section->AddClass("settings-row");
     result.section = section.get();
@@ -904,7 +904,7 @@ SettingsSliderRow CreateSettingsSliderRow(
     
     slider->SetValue(currentValue);
     valueField->SetValue(currentValue);
-    
+
     // Seed live state from the stored value; see the ScrollView overload above.
     if (config.onSeed)
         config.onSeed(currentValue);
@@ -990,10 +990,10 @@ SettingsSliderRow CreateSettingsSliderRow(
     section->AddChild(std::move(label));
     section->AddChild(std::move(slider));
     section->AddChild(std::move(valueField));
-    
+
     if (parent)
         parent->AddChild(std::move(section));
-    
+
     return result;
 }
 
@@ -1007,7 +1007,7 @@ SettingsTreeDataProvider::SettingsTreeDataProvider()
 {
     // Build the tree structure
     // Two root categories shown at top level
-    
+
     // Project Settings with children
     m_Nodes[static_cast<TreeId>(SettingsCategory::ProjectSettings)] = {
         "Project Settings",
@@ -1026,7 +1026,7 @@ SettingsTreeDataProvider::SettingsTreeDataProvider()
         },
         true  // has children, expandable
     };
-    
+
     // Version Control children are dynamic: one tab per registered VCS
     // provider (EditorVcsProviderRegistry), refreshed on every tree query so
     // package-provided tabs appear after project open.
@@ -1036,7 +1036,7 @@ SettingsTreeDataProvider::SettingsTreeDataProvider()
         true  // has children, expandable
     };
     RefreshVcsProviderNodes();
-    
+
     // User Settings with children
     m_Nodes[static_cast<TreeId>(SettingsCategory::UserSettings)] = {
         "User Settings",
@@ -1050,7 +1050,7 @@ SettingsTreeDataProvider::SettingsTreeDataProvider()
         },
         true  // has children, expandable
     };
-    
+
     // Project Settings children (leaf nodes)
     m_Nodes[static_cast<TreeId>(SettingsCategory::AudioSettings)] = {"Audio Settings", {}, false};
     m_Nodes[static_cast<TreeId>(SettingsCategory::Physics)] = {"Physics", {}, false};
@@ -1966,7 +1966,7 @@ void SettingsPanel::ApplyAccentColorToUI()
         ui->ReplaceGlobalStylesheetBlock(oldBlock, {});
         m_UIAccentStylesheet.reset();
     }
-    
+
     // Forward accent color to dock overlays
     if (auto* root = ui->GetRootElement())
     {
@@ -3020,7 +3020,7 @@ void SettingsPanel::OnPostLayout()
         // Apply saved gray sliders style on first build
         ApplyGraySlidersStyleToUI();
     }
-    
+
     // Take keyboard focus on first layout so the user can drive the category
     // tree with arrows without having to hover or click first. The key dispatch
     // "light path" prefers focused element over hovered element.
@@ -3054,14 +3054,14 @@ void SettingsPanel::OnPostLayout()
         // Check for aspect ratio changes and rebuild layout if needed
         float width = GetLayoutWidth();
         float height = GetLayoutHeight();
-        
+
         if (width > 0 && height > 0)
         {
             float aspectRatio = width / height;
-            
+
             // Determine the appropriate layout mode for current aspect ratio
             LayoutMode desiredMode = (aspectRatio > 1.0f) ? LayoutMode::Horizontal : LayoutMode::Vertical;
-            
+
             // Only rebuild if mode changed (with a threshold to avoid flickering)
             if (desiredMode != m_CurrentLayoutMode && std::abs(aspectRatio - m_LastAspectRatio) > 0.15f)
             {
@@ -3210,9 +3210,9 @@ void SettingsPanel::OnCategorySelected(TreeId id)
 {
     if (id == 0)
         return;  // Invalid selection
-        
+
     auto category = static_cast<SettingsCategory>(id);
-    
+
     // Parent categories: expand on first click when collapsed so the children become visible.
     // Collapsing is left to the chevron and TreeView's own double-click handler — clicking
     // an already-selected parent row must not silently fold it back up.
@@ -3226,7 +3226,7 @@ void SettingsPanel::OnCategorySelected(TreeId id)
                 UpdateTreePaneHeight();
         }
     }
-    
+
     // Track which child was selected for each parent
     // Project Settings children: AudioSettings, Camera, Animation, Input, VersionControl
     if (category == SettingsCategory::AudioSettings ||
@@ -3282,9 +3282,9 @@ void SettingsPanel::OnCategorySelected(TreeId id)
     {
         m_LastUsedChild[SettingsCategory::UserSettings] = category;
     }
-    
+
     m_CurrentCategory = category;
-    
+
     // Defer content update to avoid infinite loop during event dispatch
     // (RemoveChild defers when called during dispatch, causing the clear loop to never terminate)
     this->PostAction([this, category]() {
@@ -3339,7 +3339,7 @@ void SettingsPanel::ClearContentPane()
     m_SearchHighlightedElements.clear();
     m_SearchFilteredElements.clear();
     m_SearchSegmentReplacements.clear();
-    
+
     UIElement* viewport = m_ContentBody->GetViewport();
     if (viewport)
     {
@@ -3356,7 +3356,7 @@ void SettingsPanel::ClearContentPane()
             viewport->RemoveChild(child);
     }
     m_PageColorPickers.CloseAll();
-    
+
     // Clear element pointers
     m_HierarchyTreeChildIndentSlider = nullptr;
     m_HierarchyTreeChildIndentLabel = nullptr;
@@ -3382,7 +3382,7 @@ void SettingsPanel::ClearContentPane()
     m_FontSizeTreeSlider = nullptr;
     m_FontSizeSmallSlider = nullptr;
     m_FontSizeHeaderSlider = nullptr;
-    
+
     // Clear syntax highlighting field pointers
     m_SyntaxKeywordColorField = nullptr;
     m_SyntaxStringColorField = nullptr;
@@ -3390,11 +3390,11 @@ void SettingsPanel::ClearContentPane()
     m_SyntaxNumberColorField = nullptr;
     m_SyntaxTypeColorField = nullptr;
     m_SyntaxDefaultColorField = nullptr;
-    
+
     // Clear script settings pointers
     m_ScriptOpenInInspectorToggle = nullptr;
     m_ShaderGraphGlslOpenToggle = nullptr;
-    
+
     m_UIAccentColorSwatch = nullptr;
     m_UIAssetIconTintSwatch = nullptr;
     m_UISmartFolderIconTintSwatch = nullptr;
@@ -3502,7 +3502,7 @@ void SettingsPanel::RequestShowRegistryCategory(std::string_view categoryId)
 void SettingsPanel::ShowCategoryContent(SettingsCategory category)
 {
     ClearContentPane();
-    
+
     if (!m_ContentHeader || !m_ContentBody)
         return;
 
@@ -3663,12 +3663,12 @@ void SettingsPanel::ShowCategoryContent(SettingsCategory category)
         default:
             break;
     }
-    
+
     if (auto* label = dynamic_cast<Label*>(m_ContentHeader))
     {
         label->SetText(headerText);
     }
-    
+
     // Request relayout
     if (m_ContentBody)
     {
@@ -3706,7 +3706,7 @@ void SettingsPanel::CreateUIColorsContent()
         if (prefs.TryGetInt64(UI::AccentStyleHelper::kPrefKeyAccentColor, stored))
             m_UIAccentColor = static_cast<uint32_t>(stored);
     }
-    
+
     // Accent Color: 16x16 clickable swatch that opens the color picker
     {
         auto section = std::make_unique<UIElement>();
@@ -4699,14 +4699,14 @@ void SettingsPanel::CreateUIFontSizesContent()
 {
     if (!m_ContentBody)
         return;
-    
+
     // Helper to update a single CSS variable in the root element's style
     auto updateCssVar = [](UIElement* root, const std::string& varName, int valuePx) {
         if (!root)
             return;
         root->Style().SetCustom(HashStringId(varName), FormatPxValue(static_cast<float>(valuePx)));
     };
-    
+
     // Helper to update spacing CSS variables proportionally based on base font size
     // Default base font is 14px, spacing scales linearly with font size
     auto updateSpacingVars = [updateCssVar](UIElement* root, float baseFontSize) {
@@ -4718,19 +4718,19 @@ void SettingsPanel::CreateUIFontSizesContent()
         updateCssVar(root, "--ui_spacing_lg", (int)std::round(12.0f * scale));
         updateCssVar(root, "--ui_spacing_xl", (int)std::round(16.0f * scale));
     };
-    
+
     // Helper lambda to create a font size slider setting
     auto createFontSizeSetting = [this, updateCssVar, updateSpacingVars](const char* labelText, const char* prefKey, const char* cssVar,
                                         Slider*& sliderPtr, float defaultValue, bool isBaseFontSize = false) {
         auto section = std::make_unique<UIElement>();
         section->AddClass("settings-row");
-        
+
         auto label = std::make_unique<Label>();
         label->SetText(labelText);
         label->AddClass("settings-row-label");
         Label* fontSizeLabelPtr = label.get();
         section->AddChild(std::move(label));
-        
+
         auto slider = std::make_unique<Slider>();
         sliderPtr = slider.get();
         slider->AddClass("settings-row-slider");
@@ -4739,7 +4739,7 @@ void SettingsPanel::CreateUIFontSizesContent()
         slider->SetMin(12.0f);
         slider->SetMax(32.0f);
         slider->SetStep(1.0f);
-        
+
         // Load from preferences
         float fontSize = defaultValue;
         {
@@ -4751,7 +4751,7 @@ void SettingsPanel::CreateUIFontSizesContent()
                 fontSize = std::clamp(static_cast<float>(stored), 12.0f, 32.0f);
         }
         slider->SetValue(fontSize);
-        
+
         // Apply initial value to CSS variable (and spacing if base font)
         if (m_UIManager)
         {
@@ -4763,17 +4763,17 @@ void SettingsPanel::CreateUIFontSizesContent()
                 m_UIManager->MarkStyleDirtySubtree(root);
             }
         }
-        
+
         std::string cssVarStr = cssVar;
         std::string prefKeyStr = prefKey;
-        
+
         auto applyFontSize = [this, cssVarStr, isBaseFontSize, updateCssVar, updateSpacingVars](float value) {
             if (!m_UIManager)
                 return;
             auto* root = m_UIManager->GetRootElement();
             if (!root)
                 return;
-            
+
             updateCssVar(root, cssVarStr, (int)value);
             if (isBaseFontSize)
             {
@@ -4821,7 +4821,7 @@ void SettingsPanel::CreateUIFontSizesContent()
         section->AddChild(std::move(valueField));
         return section;
     };
-    
+
     // UI Text Scale - adjusts spacing proportionally (12px = compact, 16px = spacious)
     // Note: CSS variable font sizes don't update live in this UI system,
     // so this slider only affects spacing variables which do update properly.
@@ -5178,10 +5178,10 @@ void SettingsPanel::CreateUIAssetsContent()
         auto section = std::make_unique<UIElement>();
         section->AddClass("settings-row");
         section->AddClass("settings-toggle-row");
-        
+
         auto toggle = std::make_unique<Toggle>();
         toggle->AddClass("settings-toggle");
-        
+
         // Load from preferences (default is list view = false)
         bool useGridView = false;
         {
@@ -5191,7 +5191,7 @@ void SettingsPanel::CreateUIAssetsContent()
             prefs.TryGetBool("ui.assetsDefaultGridView", useGridView);
         }
         toggle->SetChecked(useGridView);
-        
+
         toggle->SetOnValueChanged([](const bool& enabled) {
             auto prefs = Editor::OpenEditorPreferences();
             std::string err;
@@ -5201,7 +5201,7 @@ void SettingsPanel::CreateUIAssetsContent()
         });
         Toggle* gridViewTogglePtr = toggle.get();
         section->AddChild(std::move(toggle));
-        
+
         auto label = std::make_unique<Label>();
         label->SetText("Default to Grid View");
         label->AddClass("settings-row-label");
@@ -5372,7 +5372,7 @@ void SettingsPanel::CreateUIAssetsContent()
             return clamped;
         };
         slider->SetOnValueChanging([applySize](const float& value) { applySize(value); });
-        slider->SetOnValueChanged([this, applySize](const float& value) { 
+        slider->SetOnValueChanged([this, applySize](const float& value) {
             const float clamped = applySize(value);
             // Save only on drag end
             if (m_OnGridIconSizeFinalized)
@@ -6071,10 +6071,10 @@ void SettingsPanel::CreateUIAssetsContent()
         auto section = std::make_unique<UIElement>();
         section->AddClass("settings-row");
         section->AddClass("settings-toggle-row");
-        
+
         auto toggle = std::make_unique<Toggle>();
         toggle->AddClass("settings-toggle");
-        
+
         // Load from preferences
         bool truncationEnabled = true;
         {
@@ -6084,7 +6084,7 @@ void SettingsPanel::CreateUIAssetsContent()
             prefs.TryGetBool("ui.textTruncation", truncationEnabled);
         }
         toggle->SetChecked(truncationEnabled);
-        
+
         toggle->SetOnValueChanged([this](const bool& enabled) {
             auto prefs = Editor::OpenEditorPreferences();
             std::string err;
@@ -6094,14 +6094,14 @@ void SettingsPanel::CreateUIAssetsContent()
             {
                 Logger::Log::Error("Failed to save text truncation setting: {}", err);
             }
-            
+
             if (m_OnTruncationEnabledChanged)
                 m_OnTruncationEnabledChanged(enabled);
         });
 
         Toggle* truncationTogglePtr = toggle.get();
         section->AddChild(std::move(toggle));
-        
+
         auto label = std::make_unique<Label>();
         label->SetText("Text Truncation");
         label->AddClass("settings-row-label");
@@ -6120,18 +6120,18 @@ void SettingsPanel::CreateUIAssetsContent()
         });
         m_ContentBody->AddContent(std::move(section));
     }
-    
+
     // Truncation Threshold setting
     {
         auto section = std::make_unique<UIElement>();
         section->AddClass("settings-row");
-        
+
         auto label = std::make_unique<Label>();
         label->SetText("Truncation Threshold");
         label->AddClass("settings-row-label");
         Label* truncationThresholdLabelPtr = label.get();
         section->AddChild(std::move(label));
-        
+
         auto slider = std::make_unique<Slider>();
         Slider* truncationThresholdSliderPtr = slider.get();
         slider->AddClass("settings-row-slider");
@@ -6140,7 +6140,7 @@ void SettingsPanel::CreateUIAssetsContent()
         slider->SetMin(64.0f);
         slider->SetMax(256.0f);
         slider->SetStep(8.0f);
-        
+
         // Load from preferences
         float threshold = 128.0f;
         {
@@ -9144,7 +9144,7 @@ void SettingsPanel::CreateGizmoSettingsContent()
                 if (m_OnTranslateGizmoThicknessChanged)
                     m_OnTranslateGizmoThicknessChanged(value);
             };
-            
+
             auto row = CreateSettingsSliderRow(config, sectionContainer.get());
             m_TranslateGizmoThicknessSlider = row.slider;
         }
@@ -9162,7 +9162,7 @@ void SettingsPanel::CreateGizmoSettingsContent()
                 if (m_OnRotateGizmoThicknessChanged)
                     m_OnRotateGizmoThicknessChanged(value);
             };
-            
+
             auto row = CreateSettingsSliderRow(config, sectionContainer.get());
             m_RotateGizmoThicknessSlider = row.slider;
         }
@@ -9180,7 +9180,7 @@ void SettingsPanel::CreateGizmoSettingsContent()
                 if (m_OnScaleGizmoThicknessChanged)
                     m_OnScaleGizmoThicknessChanged(value);
             };
-            
+
             auto row = CreateSettingsSliderRow(config, sectionContainer.get());
             m_ScaleGizmoThicknessSlider = row.slider;
         }
@@ -9218,7 +9218,7 @@ void SettingsPanel::CreateGizmoSettingsContent()
                 if (m_OnTranslateGizmoScaleChanged)
                     m_OnTranslateGizmoScaleChanged(value);
             };
-            
+
             auto row = CreateSettingsSliderRow(config, sectionContainer.get());
             m_TranslateGizmoScaleSlider = row.slider;
         }
@@ -9236,7 +9236,7 @@ void SettingsPanel::CreateGizmoSettingsContent()
                 if (m_OnRotateGizmoScaleChanged)
                     m_OnRotateGizmoScaleChanged(value);
             };
-            
+
             auto row = CreateSettingsSliderRow(config, sectionContainer.get());
             m_RotateGizmoScaleSlider = row.slider;
         }
@@ -9254,7 +9254,7 @@ void SettingsPanel::CreateGizmoSettingsContent()
                 if (m_OnScaleGizmoScaleChanged)
                     m_OnScaleGizmoScaleChanged(value);
             };
-            
+
             auto row = CreateSettingsSliderRow(config, sectionContainer.get());
             m_ScaleGizmoScaleSlider = row.slider;
         }
@@ -9280,7 +9280,7 @@ void SettingsPanel::CreateGizmoSettingsContent()
                 if (m_OnTranslateConstantThicknessChanged)
                     m_OnTranslateConstantThicknessChanged(value);
             };
-            
+
             auto row = CreateSettingsSliderRow(config, sectionContainer.get());
             m_TranslateConstantThicknessSlider = row.slider;
         }
@@ -9298,7 +9298,7 @@ void SettingsPanel::CreateGizmoSettingsContent()
                 if (m_OnRotateConstantThicknessChanged)
                     m_OnRotateConstantThicknessChanged(value);
             };
-            
+
             auto row = CreateSettingsSliderRow(config, sectionContainer.get());
             m_RotateConstantThicknessSlider = row.slider;
         }
@@ -9316,7 +9316,7 @@ void SettingsPanel::CreateGizmoSettingsContent()
                 if (m_OnScaleConstantThicknessChanged)
                     m_OnScaleConstantThicknessChanged(value);
             };
-            
+
             auto row = CreateSettingsSliderRow(config, sectionContainer.get());
             m_ScaleConstantThicknessSlider = row.slider;
         }
@@ -11818,7 +11818,7 @@ void SettingsPanel::CreateScriptSettingsContent()
 {
     if (!m_ContentBody)
         return;
-    
+
     // ========================================================================
     // Script Editor Section
     // ========================================================================
@@ -11828,34 +11828,34 @@ void SettingsPanel::CreateScriptSettingsContent()
         sectionHeader->AddClass("settings-section-header");
         m_ContentBody->AddContent(std::move(sectionHeader));
     }
-    
+
     // Double-click behavior toggle: Script Inspector vs IDE
     {
         auto section = std::make_unique<UIElement>();
         section->AddClass("settings-row");
         section->AddClass("settings-toggle-row");
-        
+
         auto toggle = std::make_unique<Toggle>();
         m_ScriptOpenInInspectorToggle = toggle.get();
         toggle->AddClass("settings-toggle");
         toggle->SetChecked(Editor::ScriptEditorSettings::Get().GetOpenInScriptInspector());
-        
+
         // Hook up callback to update settings
         toggle->SetOnValueChanged([](const bool& openInInspector) {
             Editor::ScriptEditorSettings::Get().SetOpenInScriptInspector(openInInspector);
         });
-        
+
         section->AddChild(std::move(toggle));
-        
+
         auto label = std::make_unique<Label>();
         label->SetText("Open in Script Inspector");
         label->SetTooltip("Double-click opens in Script Inspector");
         label->AddClass("settings-row-label");
         section->InsertChild(0, std::move(label));
-        
+
         m_ContentBody->AddContent(std::move(section));
     }
-    
+
     // Description label
     {
         m_ContentBody->AddContent(MakeSettingsInfoCard(
@@ -11962,7 +11962,7 @@ void SettingsPanel::CreateScriptSettingsContent()
         sectionHeader->AddClass("settings-section-header");
         m_ContentBody->AddContent(std::move(sectionHeader));
     }
-    
+
     // Helper: update hex text field from ARGB
     auto setHexField = [](TextField* f, uint32_t argb) {
         if (!f) return;
@@ -12532,7 +12532,7 @@ void SettingsPanel::CreateProjectSettingsContent()
 {
     if (!m_ContentBody)
         return;
-    
+
     auto placeholder = std::make_unique<Label>();
     placeholder->AddClass("settings-placeholder");
     placeholder->AddClass("settings-overview-text");
@@ -12675,7 +12675,7 @@ void SettingsPanel::RegisterSearchableItems()
     m_SearchableItems.push_back({"External Script Editor", "script editor path external code", SettingsCategory::Script, nullptr});
     m_SearchableItems.push_back({"Open in Inspector", "script inspector open", SettingsCategory::Script, nullptr});
     m_SearchableItems.push_back({"Syntax Highlighting", "syntax color keyword string comment", SettingsCategory::Script, nullptr});
-    
+
     // Version Control Settings
     m_SearchableItems.push_back({"Version Control", "version control vcs", SettingsCategory::VersionControl, nullptr});
 
@@ -12696,7 +12696,7 @@ void SettingsPanel::RegisterSearchableItems()
 
     // Audio Settings
     m_SearchableItems.push_back({"Audio Settings", "audio sound volume", SettingsCategory::AudioSettings, nullptr});
-    
+
     // Scene View Settings
     m_SearchableItems.push_back({"Scene View Settings", "scene view camera fov", SettingsCategory::Camera, nullptr});
     m_SearchableItems.push_back({"Anti-Aliasing", "scene view anti aliasing taa msaa fxaa temporal two-frame smaa ssaa supersample multisample off 4x 2x", SettingsCategory::Camera, nullptr});
@@ -12710,7 +12710,7 @@ void SettingsPanel::RegisterSearchableItems()
     
     // Animation Settings
     m_SearchableItems.push_back({"Animation Settings", "animation keyframe timeline", SettingsCategory::Animation, nullptr});
-    
+
     // Input Settings
     m_SearchableItems.push_back({"Input Settings", "input keyboard mouse controller", SettingsCategory::Input, nullptr});
 

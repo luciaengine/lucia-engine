@@ -1,4 +1,4 @@
-// Late plugin registration replay + replace-forward/unregister seam.
+// Late plugin registration replay + replace-forward seam.
 //
 // EngineCore's hook fan-outs (RegisterEngineComponents / RegisterSceneSchemas /
 // RegisterRenderPipelineNodes / AddSystemsToSchedule / OnRuntimeInitialized)
@@ -47,7 +47,7 @@ private:
     Plugins::PluginDescriptor m_Descriptor;
 };
 
-// Replaced/unregistered fakes leave the registry, but any fake still
+// Replaced or purged fakes leave the registry, but any fake still
 // registered when its test ends keeps receiving later tests' fan-outs — so
 // fakes must outlive the test: allocate and leak them, unique ids per test.
 FakePlugin& MakePlugin(const char* id)
@@ -158,7 +158,7 @@ TEST(EnginePluginReplaceForward, SameIdReplacementSwapsDispatch)
 
     FakePlugin& original = MakePlugin("test.replace.dispatch");
     registry.RegisterPlugin(original);
-    const std::size_t countAfterFirst = registry.GetPlugins().size();
+    const std::size_t countAfterFirst = registry.GetEnabledPlugins().size();
 
     Plugins::EnginePluginContext context{};
     registry.OnRuntimeInitialized(context);
@@ -167,7 +167,7 @@ TEST(EnginePluginReplaceForward, SameIdReplacementSwapsDispatch)
     FakePlugin& replacement = MakePlugin("test.replace.dispatch");
     registry.RegisterPlugin(replacement);
 
-    const std::vector<Plugins::IEnginePlugin*> plugins = registry.GetPlugins();
+    const std::vector<Plugins::IEnginePlugin*> plugins = registry.GetEnabledPlugins();
     EXPECT_EQ(plugins.size(), countAfterFirst) << "same-id re-registration must not grow the registry";
     EXPECT_FALSE(ContainsPlugin(plugins, &original)) << "the old instance must stop being dispatched";
     EXPECT_TRUE(ContainsPlugin(plugins, &replacement));
@@ -176,37 +176,6 @@ TEST(EnginePluginReplaceForward, SameIdReplacementSwapsDispatch)
     EXPECT_EQ(original.RuntimeInitCount, 1) << "replaced instance still receives hooks";
     EXPECT_EQ(replacement.RuntimeInitCount, 1);
 }
-
-TEST(EnginePluginUnregister, RemovesDispatchAndRefusesStaleInstance)
-{
-    RegistryWiringScope scope;
-    auto& registry = Plugins::EnginePluginRegistry::Get();
-
-    FakePlugin& original = MakePlugin("test.unregister");
-    FakePlugin& replacement = MakePlugin("test.unregister");
-    registry.RegisterPlugin(original);
-    registry.RegisterPlugin(replacement); // replace-forward: original is out
-
-    // A stale (already-replaced) instance must not knock out its successor.
-    EXPECT_FALSE(registry.UnregisterPlugin(original));
-    EXPECT_TRUE(ContainsPlugin(registry.GetPlugins(), &replacement));
-
-    // A never-registered instance is refused.
-    FakePlugin& stranger = MakePlugin("test.unregister.stranger");
-    EXPECT_FALSE(registry.UnregisterPlugin(stranger));
-
-    // Unregistering the active instance detaches it from all dispatch.
-    EXPECT_TRUE(registry.UnregisterPlugin(replacement));
-    EXPECT_FALSE(ContainsPlugin(registry.GetPlugins(), &replacement));
-
-    Plugins::EnginePluginContext context{};
-    registry.OnRuntimeInitialized(context);
-    EXPECT_EQ(replacement.RuntimeInitCount, 0) << "unregistered instance still receives hooks";
-
-    // Double-unregister is refused, not a crash or a silent success.
-    EXPECT_FALSE(registry.UnregisterPlugin(replacement));
-}
-
 
 // ---------------------------------------------------------------------------
 // Composition with the persistent schedule model (C12): a replaced plugin's
@@ -336,7 +305,10 @@ TEST(EnginePluginReplaceForward, ReplacedPluginSystemsSwapToNewCode)
     EXPECT_EQ(Count(log, "PkgSys/v2"), 0);
     EXPECT_EQ(Count(log, "PkgSysNew/v2"), 0) << "system dropped by the replacement must retire";
 
-    registry.UnregisterPlugin(v3);
+    // v3's systems log into this test's stack: hand the id to an inert fake
+    // (no replay handler, so nothing re-solves) before the log goes away.
+    registry.SetLateRegistrationHandler({});
+    registry.RegisterPlugin(MakePlugin("test.replace.systems"));
 }
 
 // ---------------------------------------------------------------------------
@@ -361,7 +333,7 @@ TEST(EnginePluginRegistrationHold, ReplayDefersUntilHoldEnds)
     EXPECT_TRUE(replayed.empty()) << "replay must not fire under the hold";
     // The registration itself is live immediately (dispatch works during the
     // hold; only the replay waits).
-    EXPECT_TRUE(ContainsPlugin(registry.GetPlugins(), &held));
+    EXPECT_TRUE(ContainsPlugin(registry.GetEnabledPlugins(), &held));
 
     registry.EndRegistrationHold();
     ASSERT_EQ(replayed.size(), 1u);
@@ -370,8 +342,6 @@ TEST(EnginePluginRegistrationHold, ReplayDefersUntilHoldEnds)
     // Idempotent: a second End fires nothing.
     registry.EndRegistrationHold();
     EXPECT_EQ(replayed.size(), 1u);
-
-    registry.UnregisterPlugin(held);
 }
 
 TEST(EnginePluginRegistrationHold, AbortPurgeScrubsQueuedReplay)
@@ -395,7 +365,7 @@ TEST(EnginePluginRegistrationHold, AbortPurgeScrubsQueuedReplay)
     registry.EndRegistrationHold();
 
     EXPECT_EQ(replays, 0) << "a purged (aborted) module must never replay";
-    EXPECT_FALSE(ContainsPlugin(registry.GetPlugins(), &doomed));
+    EXPECT_FALSE(ContainsPlugin(registry.GetEnabledPlugins(), &doomed));
 }
 
 // ---------------------------------------------------------------------------
@@ -419,23 +389,20 @@ TEST(EnginePluginModuleAttribution, PurgeByModuleUnregistersExactGeneration)
     FakePlugin& startup = MakePlugin("test.attr.static");
     registry.RegisterPlugin(startup);
 
-    const std::vector<std::string> packAIds = registry.GetModulePluginIds("PackA");
-    ASSERT_EQ(packAIds.size(), 1u);
-    EXPECT_EQ(packAIds[0], "test.attr.packA");
+    ASSERT_TRUE(ContainsPlugin(registry.GetEnabledPlugins(), &packA));
 
     // Wrong generation purges nothing; the exact stamp purges exactly PackA's.
     EXPECT_EQ(registry.PurgeModulePlugins("PackA", 2), 0u);
     EXPECT_EQ(registry.PurgeModulePlugins("PackA", 1), 1u);
-    EXPECT_FALSE(ContainsPlugin(registry.GetPlugins(), &packA));
-    EXPECT_TRUE(ContainsPlugin(registry.GetPlugins(), &packB));
-    EXPECT_TRUE(ContainsPlugin(registry.GetPlugins(), &startup));
+    EXPECT_FALSE(ContainsPlugin(registry.GetEnabledPlugins(), &packA));
+    EXPECT_TRUE(ContainsPlugin(registry.GetEnabledPlugins(), &packB));
+    EXPECT_TRUE(ContainsPlugin(registry.GetEnabledPlugins(), &startup));
 
     // Empty module id must never purge (static registrations are not module-owned).
     EXPECT_EQ(registry.PurgeModulePlugins("", 0), 0u);
-    EXPECT_TRUE(ContainsPlugin(registry.GetPlugins(), &startup));
+    EXPECT_TRUE(ContainsPlugin(registry.GetEnabledPlugins(), &startup));
 
-    registry.UnregisterPlugin(packB);
-    registry.UnregisterPlugin(startup);
+    EXPECT_EQ(registry.PurgeModulePlugins("PackB", 3), 1u);
 }
 
 TEST(EnginePluginModuleAttribution, SupersededLedgerCountsStaleGenerations)
@@ -459,5 +426,5 @@ TEST(EnginePluginModuleAttribution, SupersededLedgerCountsStaleGenerations)
     ECS::ClearActiveRegistrationModule();
     EXPECT_EQ(registry.CountSupersededModulePlugins("LedgerPack", 2), 0u);
 
-    registry.UnregisterPlugin(v2);
+    EXPECT_EQ(registry.PurgeModulePlugins("LedgerPack", 2), 1u);
 }

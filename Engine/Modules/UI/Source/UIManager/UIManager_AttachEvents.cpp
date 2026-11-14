@@ -22,7 +22,7 @@
 #include "UI/Internal/AttachStateAccess.h"
 #include "UI/UIElement.h"
 #include "UI/UIEvents.h"
-#include "UIManager_Internal.h"
+#include "UIManager/UIManager_Internal.h"
 
 #include "Core/CpuProfiler.h"
 #include "Logger/Logger.h"

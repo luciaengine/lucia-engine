@@ -45,6 +45,7 @@ public:
     /// <Model>` and `--effort <Effort>` when it names them and `--append-system-prompt
     /// <SystemPrompt>` when it has one. A resumed session takes them too: each turn is a
     /// process of its own, so a change applies from the next turn.
+    std::string TurnInput(const AgentTurnRequest& request) const override;
     std::vector<std::string> TurnArguments(const AgentTurnRequest& request) const override;
 
 private:

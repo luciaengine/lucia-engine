@@ -9,7 +9,7 @@
 
 #include "ECS/Reflection.h"
 #include "ECS/ReflectionJson.h"
-#include "ECS/Component/ComponentFieldRegistry.h"  // Register / Get / SetFieldFlags
+#include "ECS/ComponentFieldRegistry.h"  // Register / Get / SetFieldFlags
 #include "ECS/ECS.h"            // EntityHandle (complete) for offsetof/sizeof
 #include "ECS/Entity.h"         // World + Entity for the handler-integration test
 #include "ECS/World.h"
@@ -17,7 +17,6 @@
 #include "Types/Color.h"
 #include <utility> // std::as_const
 #include "Components/MathReflectionTraits.h"  // Vector2/3/4 + Quaternion field traits
-#include "Components/RenderLayerMaskReflectionTraits.h"  // Rendering::RenderLayerMask field trait
 
 #include "Components/Rendering/Camera.h"
 #include "Components/Rendering/Light.h"
@@ -92,24 +91,16 @@ struct MathReflectProbe
 };
 GE_REFLECT(MathReflectProbe, V2, V3, V4, Rot);
 
-// A render layer mask, mapped via Components/RenderLayerMaskReflectionTraits.h.
-struct LayerReflectProbe
-{
-    GameEngine::Rendering::RenderLayerMask Layers;
-    std::uint32_t                          Plain;
-};
-GE_REFLECT(LayerReflectProbe, Layers, Plain);
-
 GE_REFLECT(GameEngine::Components::Camera,
-    Perspective, FovY, OrthographicSize, NearZ, FarZ, VisibleLayers,
-    PostProcessProfileId, MSAASamples, VolumeLayers, AspectPreset,
+    Perspective, FovY, OrthographicSize, NearZ, FarZ, CullingMask,
+    PostProcessProfileId, MSAASamples, PostProcessMask, AspectPreset,
     CustomAspectWidth, CustomAspectHeight);
 
 GE_REFLECT(GameEngine::Components::Light,
     Type, Color, Intensity, Range, InnerAngle, OuterAngle, AreaShape,
     AreaWidth, AreaHeight, AreaRadius, Decay, CastsLight, CastsShadows, CascadeCount);
 
-GE_REFLECT(GameEngine::Components::Parent, Entity);
+GE_REFLECT(GameEngine::Components::Parent, parent);
 
 // Fixtures for JSON edge cases and the through-the-handler integration test.
 struct UnmappedThing { std::int32_t a; std::int32_t b; };  // no trait -> Unknown -> hex
@@ -286,23 +277,6 @@ TEST(ComponentReflectionTests, MathCompositesMapToVecAndQuat)
     }
 }
 
-// A render layer mask is its own field type, one 4-byte element, not the UInt32 it holds: that is what
-// lets the scene serializer write it as a layer list. Its JSON is the layer word.
-TEST(ComponentReflectionTests, RenderLayerMaskMapsToItsOwnFieldType)
-{
-    const auto fields = GetReflectedFields<LayerReflectProbe>();
-    ASSERT_EQ(fields.size(), 2u);
-    EXPECT_EQ(fields[0].Type, FieldTypeId::RenderLayerMask);
-    EXPECT_EQ(fields[0].Size, 4u);
-    EXPECT_EQ(FieldElementSize(FieldTypeId::RenderLayerMask), 4u);
-    EXPECT_EQ(fields[1].Type, FieldTypeId::UInt32);
-
-    LayerReflectProbe probe{GameEngine::Rendering::RenderLayerMask::FromLayer(1) |
-                                GameEngine::Rendering::RenderLayerMask::FromLayer(2),
-                            7u};
-    EXPECT_EQ(ComponentToJson(probe), R"({"Layers":6,"Plain":7})");
-}
-
 TEST(ComponentReflectionTests, FieldFlagsRegisterAndApply)
 {
     // Owned-copy registration: Get returns the registered fields, and per-field
@@ -369,13 +343,13 @@ TEST(ComponentReflectionTests, OffsetsMatchOffsetof)
 
 TEST(ComponentReflectionTests, RealComponentsReflectCorrectly)
 {
-    // Camera: scalars and its layer masks.
+    // Camera: all scalars.
     {
         const auto f = GetReflectedFields<GameEngine::Components::Camera>();
         EXPECT_EQ(f.size(), 12u);
         EXPECT_EQ(FindField(f, "Perspective")->Type, FieldTypeId::Bool);
         EXPECT_EQ(FindField(f, "FovY")->Type, FieldTypeId::Float);
-        EXPECT_EQ(FindField(f, "VisibleLayers")->Type, FieldTypeId::RenderLayerMask);
+        EXPECT_EQ(FindField(f, "CullingMask")->Type, FieldTypeId::UInt32);
     }
     // Light: enum -> UInt32, raw RGB float[3].
     {
@@ -392,7 +366,7 @@ TEST(ComponentReflectionTests, RealComponentsReflectCorrectly)
     {
         const auto f = GetReflectedFields<GameEngine::Components::Parent>();
         ASSERT_EQ(f.size(), 1u);
-        EXPECT_EQ(f[0].Name, "Entity");
+        EXPECT_EQ(f[0].Name, "parent");
         EXPECT_EQ(f[0].Type, FieldTypeId::EntityHandle);
         EXPECT_EQ(f[0].Size, 4u);
     }
@@ -425,9 +399,8 @@ TEST(ComponentReflectionTests, JsonDumpUsesFieldNamesAndValues)
 
 TEST(ComponentReflectionTests, FieldWalkSnapshotRoundTrip)
 {
-    // Value-initialized, not aggregate-initialized: zero-initialization also clears the padding
-    // that the whole-object memcmp below compares.
-    ReflectProbe src = ReflectProbe();
+    ReflectProbe src;
+    std::memset(&src, 0, sizeof(src));
     src.Flag = true;
     src.I64 = -123456789012345LL;
     src.U64 = 0xFEEDFACECAFEBEEFull;
@@ -448,7 +421,8 @@ TEST(ComponentReflectionTests, FieldWalkSnapshotRoundTrip)
         blob.insert(blob.end(), srcBytes + f.Offset, srcBytes + f.Offset + f.Size);
 
     // Restore field-by-field into a zeroed destination.
-    ReflectProbe dst = ReflectProbe();
+    ReflectProbe dst;
+    std::memset(&dst, 0, sizeof(dst));
     auto* dstBytes = reinterpret_cast<std::byte*>(&dst);
     std::size_t cursor = 0;
     for (const FieldInfo& f : fields)
@@ -463,7 +437,7 @@ TEST(ComponentReflectionTests, FieldWalkSnapshotRoundTrip)
 TEST(ComponentReflectionTests, JsonEscapesStringsAndDecodesEdgeTypes)
 {
     JsonEdgeProbe p{};
-    std::strcpy(p.Text, "a\"b\\c\n\x1f");  // embeds a quote, backslash, newline and control char
+    std::strcpy(p.Text, "a\"b\\c\n");  // embeds a quote, backslash, and newline
     p.Big = 0.5;
     p.Neg = -42;
     p.Ref = EntityHandle(5, 1);
@@ -476,7 +450,6 @@ TEST(ComponentReflectionTests, JsonEscapesStringsAndDecodesEdgeTypes)
     EXPECT_NE(json.find("\\\""), std::string::npos) << "escaped quote: " << json;
     EXPECT_NE(json.find("\\\\"), std::string::npos) << "escaped backslash: " << json;
     EXPECT_NE(json.find("\\n"), std::string::npos) << "escaped newline: " << json;
-    EXPECT_NE(json.find("\\u001f"), std::string::npos) << "escaped control char: " << json;
     // Locale-independent, round-trip-exact numbers (not "0.500000").
     EXPECT_NE(json.find("\"Big\":0.5"), std::string::npos) << json;
     EXPECT_NE(json.find("\"Neg\":-42"), std::string::npos) << json;

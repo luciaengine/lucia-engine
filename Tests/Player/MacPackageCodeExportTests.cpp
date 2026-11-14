@@ -1,3 +1,4 @@
+#include "Core/ApplicationPaths.h"
 // A macOS export of a project whose package carries native code, through BuildPipeline::Execute:
 // the package's runtime module and the project's own native scripts ship in the bundle's
 // Contents/Frameworks, signed with it, where the packaged Player's loads reach them; the package's
@@ -7,7 +8,6 @@
 #include "Assets/Packages/PackageResolver.h"
 #include "Assets/RuntimeHumanoidProfile.h"
 #include "Core/Application.h"
-#include "Core/ApplicationPaths.h"
 #include "Core/Engine.h"
 #include "Engine/Build/BuildPipeline.h"
 #include "NativeScripting/BuildCacheRecord.h"
@@ -130,12 +130,9 @@ class MacPackageCodeExportTest : public testing::Test
                   "<key>CFBundlePackageType</key><string>APPL</string></dict></plist>\n");
         fs::create_directories(templateApp / "MacOS");
         fs::copy_file("/usr/bin/true", templateApp / "MacOS/Player");
-        WriteFile(Sdk / "nativescripting/manifest.txt",
-                  "includedir=include\nimportlib=lib/libEngine.dylib\nenginebinary=lib/libEngine.dylib\n");
+        WriteFile(Sdk / "nativescripting/manifest.txt", "includedir=include\nimportlib=lib/libEngine.dylib\n");
         WriteFile(Sdk / "include/Engine.h", "#pragma once\n");
-        // A real image: the engine-ABI digest reads its LC_UUID.
-        fs::create_directories(Sdk / "lib");
-        fs::copy_file(GE_MAC_BUNDLE_FIXTURE_DYLIB, Sdk / "lib/libEngine.dylib", fs::copy_options::overwrite_existing);
+        WriteFile(Sdk / "lib/libEngine.dylib", "engine");
 
         // Opaque mandatory dependencies of every export.
         WriteFile(Assets / "Fonts/Roboto-Regular.ttf", "TTFDATA");

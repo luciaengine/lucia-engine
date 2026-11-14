@@ -93,11 +93,11 @@ GE_API GE_Result GE_CDECL GE_GameUI_FindElement(uint64_t entityId, const char* i
         // script passing one has a bug that a NotFound poll would hide forever.
         if (!id || *id == '\0')
             return GE_Result_InvalidArg;
-        // Script ids arrive as strings; this is where they are hashed, once per call.
+        // Document roots look up hashed ids; the host accepts the script string.
         const GameEngine::StringId key = GameEngine::HashStringId(id);
         GameEngine::UIElement* el = nullptr;
         if (entityId == 0)
-            el = GameEngine::GameUI::FindElementById(key);
+            el = GameEngine::GameUI::FindElementById(id);
         else if (GameEngine::UIElement* root = GameEngine::GameUI::FindDocumentRoot(entityId))
             el = root->FindById(key);
         if (!el)

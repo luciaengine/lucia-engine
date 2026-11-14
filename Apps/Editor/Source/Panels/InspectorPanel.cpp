@@ -1,4 +1,7 @@
 #include "Panels/InspectorPanel.h"
+
+#include "Inspectors/InspectorColorSwatchRow.h"
+#include "Inspectors/EntityHeader/InspectorEntityNameField.h"
 #include "VersionControl/EditorVersionControlService.h"
 #include "VersionControl/Ui/InspectorVcsController.h"
 #include "Scene/SceneSchemaRegistry.h"
@@ -109,7 +112,7 @@
 #include "Components/Transform.h"
 #include "Core/Engine.h"
 #include "Engine/Rendering/RenderServices.h"
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentRegistry.h"
 #include "ECS/Components.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
@@ -178,8 +181,8 @@
 #include "TerrainECS/TerrainModifierComponents.h"
 #include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
 #include "Inspectors/DefaultComponentInspector.h"
-#include "ECS/Component/ComponentFactory.h"
-#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/ComponentFactory.h"
+#include "ECS/ComponentFieldRegistry.h"
 
 #include <unordered_set>
 
@@ -364,21 +367,6 @@ static void ArgbIntensityToGraphColor(uint32_t argb, float intensity, float& r, 
     b = static_cast<float>(argb & 0xFF) * scale;
 }
 
-static void StyleGraphColorSwatch(UIElement* swatch, uint32_t argb)
-{
-    if (!swatch)
-        return;
-    swatch->Style()
-        .Set(Style::Width, StyleLength::Px(20.0f))
-        .Set(Style::Height, StyleLength::Px(20.0f))
-        .Set(Style::MinWidth, StyleLength::Px(20.0f))
-        .Set(Style::MinHeight, StyleLength::Px(20.0f))
-        .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{3.0f, 3.0f, 3.0f, 3.0f})
-        .Set(Style::BorderWidth, Box4{1.0f, 1.0f, 1.0f, 1.0f})
-        .Set(Style::BorderColor, BorderColorsTRBL{0xFF555555u, 0xFF555555u, 0xFF555555u, 0xFF555555u})
-        .Set(Style::BackgroundColor, argb)
-        .Set(Style::Cursor, CursorStyle::Pointer);
-}
 
 static std::string FormatGraphVariableVec3(float r, float g, float b)
 {
@@ -453,7 +441,7 @@ static void AddGraphColorSwatchRow(UIElement* parent,
 
     auto swatch = std::make_unique<UIElement>();
     UIElement* swatchRaw = swatch.get();
-    StyleGraphColorSwatch(swatchRaw, argb);
+    InspectorUI::StyleColorSwatch(swatchRaw, argb);
     fieldContainerRaw->AddChild(std::move(swatch));
 
     auto applyWithSwatch = [applyColor = std::move(applyColor), swatchRaw](uint32_t newArgb, float newIntensity, bool commitUndo)
@@ -464,7 +452,7 @@ static void AddGraphColorSwatchRow(UIElement* parent,
         float ng = 1.0f;
         float nb = 1.0f;
         ArgbIntensityToGraphColor(newArgb, newIntensity, nr, ng, nb);
-        StyleGraphColorSwatch(swatchRaw, GraphColorToArgb(nr, ng, nb, 1.0f, std::max(1.0f, newIntensity)));
+        InspectorUI::StyleColorSwatch(swatchRaw, GraphColorToArgb(nr, ng, nb, 1.0f, std::max(1.0f, newIntensity)));
     };
 
     auto clickHandler = [argb, intensity, openPicker, applyWithSwatch](UIEvent& e)
@@ -1418,119 +1406,18 @@ class AddPresetComponentsCommand final : public Editor::IEditorCommand
     const char* GetName() const override { return m_Name.c_str(); }
     void Do() override { Redo(); }
 
+    // Removes only what Redo added, newest first.
     void Undo() override
     {
         if (!m_World || !m_Entity.IsValid() || !m_World->IsValid(m_Entity))
             return;
 
-        // Remove only what we added in Redo().
-        if (m_AddedCamera)
+        for (auto it = m_AddedTypeIds.rbegin(); it != m_AddedTypeIds.rend(); ++it)
         {
-            m_World->RemoveComponentImmediate<Components::Camera>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::Camera>());
+            if (m_World->RemoveComponentByTypeIdImmediate(m_Entity, *it))
+                NotifyComponentChanged(m_Notifications, m_World, m_Entity, *it);
         }
-        if (m_AddedLight)
-        {
-            m_World->RemoveComponentImmediate<Components::Light>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::Light>());
-        }
-        if (m_AddedSkyEnvironment)
-        {
-            m_World->RemoveComponentImmediate<Components::SkyEnvironment>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::SkyEnvironment>());
-        }
-        if (m_AddedSkybox)
-        {
-            m_World->RemoveComponentImmediate<Components::Skybox>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::Skybox>());
-        }
-        if (m_AddedPhysicsBody)
-        {
-            m_World->RemoveComponentImmediate<Components::PhysicsBody>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::PhysicsBody>());
-        }
-        if (m_AddedCharacterController)
-        {
-            m_World->RemoveComponentImmediate<Components::CharacterController>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::CharacterController>());
-        }
-        if (m_AddedBoxShape)
-        {
-            m_World->RemoveComponentImmediate<Components::BoxColliderShape>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::BoxColliderShape>());
-        }
-        if (m_AddedSphereShape)
-        {
-            m_World->RemoveComponentImmediate<Components::SphereColliderShape>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::SphereColliderShape>());
-        }
-        if (m_AddedPlaneShape)
-        {
-            m_World->RemoveComponentImmediate<Components::PlaneColliderShape>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::PlaneColliderShape>());
-        }
-        // After the shapes: a collider shape requires the collider.
-        if (m_AddedPhysicsCollider)
-        {
-            m_World->RemoveComponentImmediate<Components::PhysicsCollider>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::PhysicsCollider>());
-        }
-        if (m_AddedAudioEmitter)
-        {
-            m_World->RemoveComponentImmediate<Components::AudioEmitter>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::AudioEmitter>());
-        }
-        if (m_AddedAudioListener)
-        {
-            m_World->RemoveComponentImmediate<Components::AudioListener>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::AudioListener>());
-        }
-        if (m_AddedPostProcessVolume)
-        {
-            m_World->RemoveComponentImmediate<Components::PostProcessVolume>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::PostProcessVolume>());
-        }
-        if (m_AddedWindVolume)
-        {
-            m_World->RemoveComponentImmediate<Components::WindVolume>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::WindVolume>());
-        }
-        if (m_AddedParticleEmitter)
-        {
-            m_World->RemoveComponentImmediate<Components::ParticleEmitter3D>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::ParticleEmitter3D>());
-        }
-        if (m_AddedParticleCollisionEvents)
-        {
-            m_World->RemoveComponentImmediate<Components::ParticleCollisionEventsBuffer>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::ParticleCollisionEventsBuffer>());
-        }
-        if (m_AddedTerrainEffectTypeId != 0
-            && m_World->RemoveComponentByTypeIdImmediate(m_Entity, m_AddedTerrainEffectTypeId))
-        {
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, m_AddedTerrainEffectTypeId);
-        }
-        if (m_AddedTerrainModifierVolume)
-        {
-            m_World->RemoveComponentImmediate<Components::TerrainModifierVolume>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity,
-                                   ECS::GetComponentTypeId<Components::TerrainModifierVolume>());
-        }
-        if (m_AddedSplineComponent)
-        {
-            m_World->RemoveComponentImmediate<Components::SplineComponent>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::SplineComponent>());
-        }
-        if (m_AddedValueCurve)
-        {
-            m_World->RemoveComponentImmediate<Components::ValueCurve>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::ValueCurve>());
-        }
-        if (m_AddedVideoTexture)
-        {
-            m_World->RemoveComponentImmediate<Components::VideoTextureComponent>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::VideoTextureComponent>());
-        }
+        m_AddedTypeIds.clear();
     }
 
     void Redo() override
@@ -1538,224 +1425,19 @@ class AddPresetComponentsCommand final : public Editor::IEditorCommand
         if (!m_World || !m_Entity.IsValid() || !m_World->IsValid(m_Entity))
             return;
 
-        // Reset "added" flags on redo so repeated redo/undo behaves correctly.
-        m_AddedCamera = false;
-        m_AddedLight = false;
-        m_AddedSkyEnvironment = false;
-        m_AddedSkybox = false;
-        m_AddedPhysicsBody = false;
-        m_AddedCharacterController = false;
-        m_AddedPhysicsCollider = false;
-        m_AddedBoxShape = false;
-        m_AddedSphereShape = false;
-        m_AddedPlaneShape = false;
-        m_AddedAudioEmitter = false;
-        m_AddedAudioListener = false;
-        m_AddedPostProcessVolume = false;
-        m_AddedWindVolume = false;
-        m_AddedParticleEmitter = false;
-        m_AddedParticleCollisionEvents = false;
-        m_AddedTerrainModifierVolume = false;
-        m_AddedTerrainEffectTypeId = 0;
-        m_AddedSplineComponent = false;
-        m_AddedValueCurve = false;
-        m_AddedVideoTexture = false;
-
-        auto addIfMissing = [&](auto tag, auto value)
-        {
-            using T = typename decltype(tag)::type;
-            if (!m_World->HasComponent<T>(m_Entity))
-            {
-                m_World->AddComponentImmediate<T>(m_Entity, value);
-                NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<T>());
-                return true;
-            }
-            return false;
-        };
-
-        // Terrain area presets are answered by the table that pairs a preset
-        // with its effect, never by a case label: a sixth canonical effect
-        // reaches this command from its table row alone.
-        if (const Editor::TerrainAreaPreset* area = Editor::FindTerrainAreaPreset(m_Preset))
-        {
-            const Editor::TerrainAreaPresetAdditions added =
-                Editor::ApplyTerrainAreaPreset(*m_World, m_Entity, *area);
-            m_AddedTerrainModifierVolume = added.AddedVolume;
-            m_AddedTerrainEffectTypeId = added.AddedEffectTypeId;
-            m_AddedSplineComponent = added.AddedSpline;
-            if (added.AddedSpline)
-            {
-                NotifyComponentChanged(m_Notifications, m_World, m_Entity,
-                                       ECS::GetComponentTypeId<Components::SplineComponent>());
-            }
-            if (added.AddedVolume)
-            {
-                NotifyComponentChanged(m_Notifications, m_World, m_Entity,
-                                       ECS::GetComponentTypeId<Components::TerrainModifierVolume>());
-            }
-            if (added.AddedEffectTypeId != 0)
-                NotifyComponentChanged(m_Notifications, m_World, m_Entity, added.AddedEffectTypeId);
-            return;
-        }
-
-        switch (m_Preset)
-        {
-        case ComponentPreset::TerrainFlattenArea:
-        case ComponentPreset::TerrainHeightOffsetArea:
-        case ComponentPreset::TerrainNoiseArea:
-        case ComponentPreset::TerrainStampArea:
-        case ComponentPreset::TerrainPaintArea:
-        case ComponentPreset::TerrainRulesArea:
-        case ComponentPreset::TerrainGroundClaimArea:
-        case ComponentPreset::TerrainGrassArea:
-        case ComponentPreset::TerrainColorArea:
-            break; // Handled by FindTerrainAreaPreset above.
-        case ComponentPreset::Count:
-            break; // Sentinel, not a preset.
-        case ComponentPreset::Camera:
-            m_AddedCamera = addIfMissing(ECS::TypeTag<Components::Camera>{}, Components::Camera{});
-            break;
-        case ComponentPreset::Light:
-            m_AddedLight = addIfMissing(ECS::TypeTag<Components::Light>{}, Editor::MakeDefaultDirectionalLight());
-            break;
-        case ComponentPreset::SkyEnvironment:
-            m_AddedSkyEnvironment = addIfMissing(ECS::TypeTag<Components::SkyEnvironment>{}, Components::SkyEnvironment{});
-            break;
-        case ComponentPreset::Skybox:
-            m_AddedSkybox = addIfMissing(ECS::TypeTag<Components::Skybox>{}, Components::Skybox{});
-            break;
-        case ComponentPreset::PhysicsDynamicBox:
-        {
-            Components::PhysicsBody body{};
-            body.motionType = Physics::MotionType::Dynamic;
-            m_AddedPhysicsBody = addIfMissing(ECS::TypeTag<Components::PhysicsBody>{}, body);
-            m_AddedPhysicsCollider = addIfMissing(ECS::TypeTag<Components::PhysicsCollider>{}, Components::PhysicsCollider{});
-            m_AddedBoxShape = addIfMissing(ECS::TypeTag<Components::BoxColliderShape>{}, Components::BoxColliderShape{});
-            break;
-        }
-        case ComponentPreset::PhysicsDynamicSphere:
-        {
-            Components::PhysicsBody body{};
-            body.motionType = Physics::MotionType::Dynamic;
-            m_AddedPhysicsBody = addIfMissing(ECS::TypeTag<Components::PhysicsBody>{}, body);
-            m_AddedPhysicsCollider = addIfMissing(ECS::TypeTag<Components::PhysicsCollider>{}, Components::PhysicsCollider{});
-            m_AddedSphereShape = addIfMissing(ECS::TypeTag<Components::SphereColliderShape>{}, Components::SphereColliderShape{});
-            break;
-        }
-        case ComponentPreset::PhysicsStaticPlane:
-        {
-            Components::PhysicsBody body{};
-            body.motionType = Physics::MotionType::Static;
-            m_AddedPhysicsBody = addIfMissing(ECS::TypeTag<Components::PhysicsBody>{}, body);
-            m_AddedPhysicsCollider = addIfMissing(ECS::TypeTag<Components::PhysicsCollider>{}, Components::PhysicsCollider{});
-            Components::PlaneColliderShape plane{};
-            plane.normalX = 0.0f;
-            plane.normalY = 1.0f;
-            plane.normalZ = 0.0f;
-            plane.d = 0.0f;
-            plane.halfExtent = 50.0f;
-            m_AddedPlaneShape = addIfMissing(ECS::TypeTag<Components::PlaneColliderShape>{}, plane);
-            break;
-        }
-        case ComponentPreset::PhysicsStaticBox:
-        {
-            Components::PhysicsBody body{};
-            body.motionType = Physics::MotionType::Static;
-            m_AddedPhysicsBody = addIfMissing(ECS::TypeTag<Components::PhysicsBody>{}, body);
-            m_AddedPhysicsCollider = addIfMissing(ECS::TypeTag<Components::PhysicsCollider>{}, Components::PhysicsCollider{});
-            m_AddedBoxShape = addIfMissing(ECS::TypeTag<Components::BoxColliderShape>{}, Components::BoxColliderShape{});
-            break;
-        }
-        case ComponentPreset::PhysicsCharacterController:
-            m_AddedCharacterController =
-                addIfMissing(ECS::TypeTag<Components::CharacterController>{}, Components::CharacterController{});
-            break;
-        case ComponentPreset::AudioEmitter:
-            m_AddedAudioEmitter = addIfMissing(ECS::TypeTag<Components::AudioEmitter>{}, Components::AudioEmitter{});
-            break;
-        case ComponentPreset::AudioListener:
-            m_AddedAudioListener = addIfMissing(ECS::TypeTag<Components::AudioListener>{}, Components::AudioListener{});
-            break;
-        case ComponentPreset::PostProcessVolume:
-            m_AddedPostProcessVolume = addIfMissing(ECS::TypeTag<Components::PostProcessVolume>{}, Components::PostProcessVolume{});
-            break;
-        case ComponentPreset::WindVolume:
-            m_AddedWindVolume = addIfMissing(ECS::TypeTag<Components::WindVolume>{}, Components::WindVolume{});
-            break;
-        case ComponentPreset::ParticleEmitter2D:
-            m_AddedParticleEmitter = addIfMissing(ECS::TypeTag<Components::ParticleEmitter3D>{}, Components::MakeParticleEmitter2DDefaults());
-            break;
-        case ComponentPreset::ParticleEmitter3D:
-            m_AddedParticleEmitter = addIfMissing(ECS::TypeTag<Components::ParticleEmitter3D>{}, Components::ParticleEmitter3D{});
-            break;
-        case ComponentPreset::ParticleCollisionEvents:
-            m_AddedParticleCollisionEvents = addIfMissing(ECS::TypeTag<Components::ParticleCollisionEventsBuffer>{}, Components::ParticleCollisionEventsBuffer{});
-            break;
-        case ComponentPreset::TerrainSplineFlatten:
-        {
-            // The spline supplies the region, so the volume takes its shape from
-            // it. Adding the SplineComponent here is the point: the pre-volume
-            // spline preset added a modifier that silently did nothing without one.
-            m_AddedSplineComponent = addIfMissing(
-                ECS::TypeTag<Components::SplineComponent>{}, Components::SplineComponent{});
-            Components::TerrainModifierVolume volume{};
-            volume.Shape = Components::TerrainVolumeShape::SplineArea;
-            m_AddedTerrainModifierVolume =
-                addIfMissing(ECS::TypeTag<Components::TerrainModifierVolume>{}, volume);
-            AddTerrainEffect(ECS::GetComponentTypeId<Components::TerrainFlattenEffect>());
-            break;
-        }
-        case ComponentPreset::SplineComponent:
-            m_AddedSplineComponent = addIfMissing(ECS::TypeTag<Components::SplineComponent>{}, Components::SplineComponent{});
-            break;
-        case ComponentPreset::ValueCurve:
-            m_AddedValueCurve = addIfMissing(ECS::TypeTag<Components::ValueCurve>{}, Components::ValueCurve{});
-            break;
-        case ComponentPreset::VideoTexture:
-            m_AddedVideoTexture = addIfMissing(ECS::TypeTag<Components::VideoTextureComponent>{}, Components::VideoTextureComponent{});
-            break;
-        }
+        m_AddedTypeIds = Editor::ApplyComponentPreset(*m_World, m_Entity, m_Preset);
+        for (ECS::ComponentTypeId addedTypeId : m_AddedTypeIds)
+            NotifyComponentChanged(m_Notifications, m_World, m_Entity, addedTypeId);
     }
 
   private:
-    // Adds one terrain effect by type id, stacked above any already there.
-    // Records it so Undo removes exactly what this preset created.
-    void AddTerrainEffect(ECS::ComponentTypeId effectTypeId)
-    {
-        const int32 stackOrder = TerrainECS::NextEffectStackOrder(*m_World, m_Entity);
-        if (!TerrainECS::AddTerrainEffectDefault(*m_World, m_Entity, effectTypeId, stackOrder))
-            return;
-        m_AddedTerrainEffectTypeId = effectTypeId;
-        NotifyComponentChanged(m_Notifications, m_World, m_Entity, effectTypeId);
-    }
-
     std::string m_Name;
     ECS::World* m_World = nullptr;                                // not owned
     Editor::EditorChangeNotifications* m_Notifications = nullptr; // not owned
     ECS::EntityHandle m_Entity{};
     ComponentPreset m_Preset{};
-
-    bool m_AddedCamera = false;
-    bool m_AddedLight = false;
-    bool m_AddedSkyEnvironment = false;
-    bool m_AddedSkybox = false;
-    bool m_AddedPhysicsBody = false;
-    bool m_AddedCharacterController = false;
-    bool m_AddedPhysicsCollider = false;
-    bool m_AddedBoxShape = false;
-    bool m_AddedSphereShape = false;
-    bool m_AddedPlaneShape = false;
-    bool m_AddedAudioEmitter = false;
-    bool m_AddedAudioListener = false;
-    bool m_AddedTerrainModifierVolume = false;
-    ECS::ComponentTypeId m_AddedTerrainEffectTypeId = 0;
-    bool m_AddedSplineComponent = false;
-    bool m_AddedValueCurve = false;
-    bool m_AddedPostProcessVolume = false;
-    bool m_AddedWindVolume = false;
-    bool m_AddedParticleEmitter = false;
-    bool m_AddedParticleCollisionEvents = false;
-    bool m_AddedVideoTexture = false;
+    // What the last Redo added, in add order; the entity already carried the rest.
+    std::vector<ECS::ComponentTypeId> m_AddedTypeIds;
 };
 
 // Map context menu add-command IDs to ComponentPreset (kCmdInspectorAddPresetBase + ordinal).
@@ -1923,16 +1605,8 @@ private:
 
         // Components a curated preset already adds shouldn't also appear as a
         // standalone single (avoids Camera/Light duplicating their presets).
-        std::unordered_set<ECS::ComponentTypeId> presetCovered;
-        for (const auto& preset : ComponentPresetCatalog())
-            for (ECS::ComponentTypeId id : ComponentTypeIdsForPreset(preset.Preset))
-                presetCovered.insert(id);
-
-        // The modifier volume is the exception: every terrain preset adds one,
-        // but none of them IS one. An empty volume authored on its own — region
-        // first, effects from its Add Effect picker after — is a real flow, so
-        // it keeps its standalone entry instead of being deduplicated away.
-        presetCovered.erase(ECS::GetComponentTypeId<Components::TerrainModifierVolume>());
+        const auto presetOnly = Editor::ComponentTypeIdsOfferedOnlyByPresets();
+        const std::unordered_set<ECS::ComponentTypeId> presetCovered(presetOnly.begin(), presetOnly.end());
 
         // Any component with a default-construct factory is addable, unless the
         // inspector hides it, a preset covers it, or it is a volume-owned stack
@@ -4156,12 +3830,7 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
                                          m_Context != nullptr && m_Context->UIReplayActive, this);
     }
 
-    // Entity name: editable field when single-select (always) or multi-select with a
-    // Name on the primary entity. The Name component is created lazily on the first edit
-    // (applyHeaderNameToWorld), so single-select entities are editable even before one
-    // exists. Live typing updates come through SetOnValueChanging — not SetOnValueChanged —
-    // because SetOnCommit replaces TextInput's hook and bypasses TextFieldBase::OnTextCommit
-    // (see wiring below).
+    // The primary name remains editable when no Name component exists.
     const bool isMultiEdit = m_Entities.size() > 1;
     std::string headerText = Editor::EntityDisplayName(*m_World, entity);
     auto* nameComponent = m_World->GetComponent<Name>(entity);
@@ -4173,74 +3842,15 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
     const bool headerNameEditable = !isMultiEdit || (nameComponent != nullptr);
     if (headerNameEditable)
     {
-        auto headerField = std::make_unique<TextField>();
-        headerField->AddClass("inspector-header");
-        headerField->SetValue(headerText);
-        headerField->SetFocusable(true);
+        InspectorContext nameContext{};
+        nameContext.World = m_World;
+        nameContext.Entity = entity;
+        nameContext.Entities = m_Entities;
+        nameContext.Undo = m_Undo;
+        nameContext.ChangeNotifications = m_ChangeNotifications;
+        auto headerField = std::make_unique<InspectorEntityNameField>(
+            nameContext, [this] { RefreshTrackedComponentSignature(); });
         auto* headerFieldRaw = headerField.get();
-
-        const std::string multiEditSuffix =
-            isMultiEdit ? (" (+" + std::to_string(m_Entities.size() - 1) + " more)") : std::string{};
-
-        auto sanitizeHeaderNameInput = [isMultiEdit, multiEditSuffix](std::string text) -> std::string
-        {
-            if (isMultiEdit && !multiEditSuffix.empty() && text.size() >= multiEditSuffix.size())
-            {
-                if (text.compare(text.size() - multiEditSuffix.size(), multiEditSuffix.size(), multiEditSuffix) ==
-                    0)
-                    text.resize(text.size() - multiEditSuffix.size());
-            }
-            return text;
-        };
-
-        auto applyHeaderNameToWorld = [this, entity, sanitizeHeaderNameInput](const std::string& rawName)
-        {
-            if (!m_World || !entity.IsValid() || !m_World->IsValid(entity))
-                return;
-            const std::string cleaned = sanitizeHeaderNameInput(rawName);
-            constexpr size_t kNameCapacity = 63; // Name::value is char[64]
-            auto* n = m_World->GetComponentForWrite<Name>(entity);
-            if (!n)
-            {
-                Name nm{};
-                std::memset(nm.value, 0, sizeof(nm.value));
-                std::strncpy(nm.value, cleaned.c_str(), kNameCapacity);
-                nm.value[kNameCapacity] = '\0';
-                m_World->AddComponentImmediate(entity, nm);
-                // Lazy Name-add (see ShowEntity): fold this archetype move into the tracked
-                // signature before NotifyComponentCommit fires below, so our own structural
-                // change does not trip the change subscription into rebuilding the inspector
-                // and resetting the header field mid-type.
-                RefreshTrackedComponentSignature();
-            }
-            else
-            {
-                std::strncpy(n->value, cleaned.c_str(), kNameCapacity);
-                n->value[kNameCapacity] = '\0';
-            }
-            if (m_ChangeNotifications)
-                m_ChangeNotifications->NotifyComponentCommit<Name>(m_World, entity);
-        };
-
-        // TextField routes keystrokes through SetOnValueChanging only; SetOnValueChanged runs from the
-        // inner TextInput→OnTextCommit path, which we replace below via SetOnCommit. Sync the ECS on
-        // every edit and again on blur/Enter so names persist and saves see the latest string.
-        headerField->SetOnValueChanging(
-            [applyHeaderNameToWorld](const std::string& newName)
-            { applyHeaderNameToWorld(newName); });
-        headerField->SetOnValueChanged(
-            [applyHeaderNameToWorld](const std::string& newName)
-            { applyHeaderNameToWorld(newName); });
-
-        headerFieldRaw->SetOnCommit([this, entity, headerFieldRaw, applyHeaderNameToWorld]()
-                                    {
-            if (!m_ChangeNotifications || !m_World || !entity.IsValid() || !m_World->IsValid(entity))
-                return;
-            applyHeaderNameToWorld(headerFieldRaw->GetValue());
-            Editor::EditorChangeNotifications::WorldStructureChangedEvent e{};
-            e.world = m_World;
-            e.kind = Editor::EditorChangeNotifications::ChangeKind::Commit;
-            m_ChangeNotifications->NotifyWorldStructureChanged(e); });
         headerContainer->AddChild(std::move(headerField));
         if (!isMultiEdit)
         {
@@ -6878,7 +6488,7 @@ void InspectorPanel::TickSimulationRefresh()
     {
         std::vector<ECS::ComponentTypeId> current =
             CollectVisibleComponentSignature(m_World, m_Entity);
-        if (current != m_LastComponentSignature)
+        if (current != m_LastComponentSignature && !(m_Undo && m_Undo->HasOpenInteractiveEdit()))
         {
             m_LastComponentSignature = std::move(current);
             ShowEntity(m_World, m_Entity, /*force=*/true);

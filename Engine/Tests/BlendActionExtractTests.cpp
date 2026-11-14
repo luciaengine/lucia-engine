@@ -39,7 +39,7 @@ fs::path StagedRoot()
 
 fs::path SamplesRoot()
 {
-    return StagedRoot() / "Tests" / "BlendSamples";
+    return StagedRoot() / "Tools" / "ai" / "retarget-redesign" / "blend-samples";
 }
 
 bool ReadFileBytes(const fs::path& path, Vector<uint8>& out)

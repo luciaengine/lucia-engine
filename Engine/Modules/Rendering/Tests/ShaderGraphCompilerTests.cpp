@@ -6,6 +6,7 @@
 #include "Rendering/ShaderGraph/SgPropertyBinding.h"
 #include "Rendering/ShaderGraph/SgPseudoNodes.h"
 #include "Rendering/ShaderGraph/SgTagParser.h"
+#include "TestTempDir.h"
 
 #include <gtest/gtest.h>
 
@@ -444,12 +445,9 @@ TEST(ShaderGraphCompilerTests, CompilesSampleTexture2DGraphAgainstRealSignature)
 TEST(ShaderGraphCompilerTests, SaveGraphFileSkipsRewriteWhenContentUnchanged)
 {
     namespace fs = std::filesystem;
-    const fs::path path =
-        fs::temp_directory_path() /
-        ("ge_sg_save_norewrite_" +
-         std::to_string(::testing::UnitTest::GetInstance()->random_seed()) + ".glsl");
-    std::error_code ec;
-    fs::remove(path, ec);
+    const GameEngine::TestUtils::ScopedTempDir tempDir(
+        GameEngine::TestUtils::MakeUniqueTempDirectory("ge_sg_save_norewrite"));
+    const fs::path path = tempDir.Path() / "ge_sg_save_norewrite.glsl";
 
     SgGraphDocument doc;
     doc.GraphName = "NoRewrite";
@@ -474,8 +472,6 @@ TEST(ShaderGraphCompilerTests, SaveGraphFileSkipsRewriteWhenContentUnchanged)
     const std::string onDisk((std::istreambuf_iterator<char>(in)),
                              std::istreambuf_iterator<char>());
     EXPECT_NE(onDisk.find("// changed"), std::string::npos);
-
-    fs::remove(path, ec);
 }
 
 // ---- Minimal walkthrough examples: smallest v2 tag-block graph that parses

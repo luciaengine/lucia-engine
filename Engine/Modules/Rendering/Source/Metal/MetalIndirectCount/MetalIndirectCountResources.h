@@ -22,7 +22,9 @@ class MetalIndirectCommandArena;
 // RecordStride bytes between records. The kernel encodes the drawn ones into
 // the indirect command buffer from FirstCommand on and writes the execution
 // range the render encoder runs them with to RangeAddress. Layout mirrors the
-// kernel's `Segment` struct.
+// kernel's `Segment` struct. A nonzero OutputRecordsAddress selects native
+// indirect draws instead: no command buffer or execution range is used, and
+// CommandCount packed draw records are written there, zero beyond the count.
 struct MetalIndirectCountSegment
 {
     MTL::ResourceID CommandBuffer{};
@@ -38,8 +40,9 @@ struct MetalIndirectCountSegment
     uint32_t IndexType = 0;     // MTL::IndexType
     uint32_t PrimitiveType = 0; // MTL::PrimitiveType
     uint32_t Padding = 0;
+    uint64_t OutputRecordsAddress = 0;
 };
-static_assert(sizeof(MetalIndirectCountSegment) == 72, "mirrors the translate kernel's Segment");
+static_assert(sizeof(MetalIndirectCountSegment) == 80, "mirrors the translate kernel's Segment");
 
 // One translate dispatch: its first 12 bytes are the dispatch's own indirect
 // threadgroup counts (one threadgroup per segment), so the CPU can add

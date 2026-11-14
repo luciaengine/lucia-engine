@@ -1428,16 +1428,6 @@ ListView {
 	height: 24px;
 }
 
-/* The Hierarchy's bottom search sits 6px above its item size bar (22px at 8px). */
-.hierarchy-panel-search {
-	bottom: 36px;
-}
-
-/* The size bar rides above the tree's horizontal scrollbar (19px); the search follows it. */
-.hierarchy-panel-search-above-scrollbar {
-	bottom: 47px;
-}
-
 .panel-search-bar.search-bar-at-top {
 	top: 6px;
 	bottom: unset;
@@ -1475,4 +1465,3 @@ ListView {
 .panel-search-bar.search-accent-focus:focus-within {
 	border-color: var(--ui_color_accent);
 }
-

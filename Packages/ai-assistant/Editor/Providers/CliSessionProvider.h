@@ -120,6 +120,8 @@ protected:
     virtual std::string_view DisplayName() const = 0;
     /// The arguments of one turn; the prompt itself goes on stdin.
     virtual std::vector<std::string> TurnArguments(const AgentTurnRequest& request) const = 0;
+    /// The text or image content blocks supplied on stdin for this turn.
+    virtual std::string TurnInput(const AgentTurnRequest& request) const { return request.UserText; }
     /// Reads one stdout line of the turn and reports through `turn.Events`.
     virtual void ReadLine(std::string_view line, TurnState& turn) const = 0;
     /// The program step: `<executable> --version` ran and printed the CLI's version.

@@ -81,6 +81,11 @@ public:
     bool TryTake(OceanGPUQueryToken token, std::vector<OceanSurfaceSample>& out);
     void Clear();
 
+    void OnFrameAborted(const Rendering::RenderGraph::RGFrame& frame)
+    {
+        m_Readback.CancelUnsubmitted(frame);
+    }
+
     void OnFrameSubmitted(const ::GameEngine::Rendering::RenderGraph::RGFrame& frame,
                           const ::GameEngine::Rendering::IDevice::GpuSyncToken& token)
     {

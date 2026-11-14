@@ -8,13 +8,13 @@
 
 #include "ECS/World.h"
 #include "Logger/Logger.h"
+#include "Types/FlatSet.h"
 #include "Physics/PhysicsWorld.h"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <mutex>
-#include <unordered_set>
 #include <vector>
 
 namespace GameEngine::PhysicsECS::Script
@@ -47,16 +47,16 @@ bool IgnoresScriptVelocity(const ECS::World& world, ECS::EntityHandle entity)
     if (!world.HasComponent<Components::KinematicBody>(entity))
         return false;
     static std::mutex s_WarnedMutex;
-    static std::unordered_set<std::uint32_t> s_Warned;
+    static FlatSet<std::uint32_t> s_Warned;
     static std::uint64_t s_WarnedGeneration = 0;
     std::lock_guard<std::mutex> lock(s_WarnedMutex);
     const std::uint64_t generation = PhysicsWorldService::GetWorldGeneration();
     if (generation != s_WarnedGeneration)
     {
-        s_Warned.clear();
+        s_Warned.Clear();
         s_WarnedGeneration = generation;
     }
-    if (s_Warned.insert(entity.id).second)
+    if (s_Warned.Insert(entity.id))
         Logger::Log::Warning("[PhysicsECS] Entity {} has a kinematic body, which follows its Transform, so the "
                              "script velocity is ignored. Move the Transform instead.",
                              entity.id);
@@ -261,6 +261,8 @@ bool IsGrounded(ECS::World& world, ECS::EntityHandle entity)
 
 SubscriptionId SubscribeContactBegin(ECS::EntityHandle scope, ScriptCallback<ContactEvent> callback)
 {
+    if (callback.Invoke == nullptr)
+        return 0;
     return PhysicsEntityEventCallbacks::SubscribeContactBegin(scope, Relay<EntityContactEvent>(callback), EndedRelay(callback));
 }
 
@@ -271,6 +273,8 @@ void UnsubscribeContactBegin(SubscriptionId subscription)
 
 SubscriptionId SubscribeContactEnd(ECS::EntityHandle scope, ScriptCallback<ContactEvent> callback)
 {
+    if (callback.Invoke == nullptr)
+        return 0;
     return PhysicsEntityEventCallbacks::SubscribeContactEnd(scope, Relay<EntityContactEvent>(callback), EndedRelay(callback));
 }
 
@@ -281,6 +285,8 @@ void UnsubscribeContactEnd(SubscriptionId subscription)
 
 SubscriptionId SubscribeTriggerEnter(ECS::EntityHandle scope, ScriptCallback<TriggerEvent> callback)
 {
+    if (callback.Invoke == nullptr)
+        return 0;
     return PhysicsEntityEventCallbacks::SubscribeTriggerEnter(scope, Relay<EntityTriggerEvent>(callback), EndedRelay(callback));
 }
 
@@ -291,6 +297,8 @@ void UnsubscribeTriggerEnter(SubscriptionId subscription)
 
 SubscriptionId SubscribeTriggerExit(ECS::EntityHandle scope, ScriptCallback<TriggerEvent> callback)
 {
+    if (callback.Invoke == nullptr)
+        return 0;
     return PhysicsEntityEventCallbacks::SubscribeTriggerExit(scope, Relay<EntityTriggerEvent>(callback), EndedRelay(callback));
 }
 

@@ -132,6 +132,13 @@ std::optional<PipelineBuildState> PipelineBuildTable::Find(uint64_t key, uint64_
     return std::nullopt;
 }
 
+size_t PipelineBuildTable::CountPending() const
+{
+    std::lock_guard lock(m_Mutex);
+    return static_cast<size_t>(std::count_if(m_Rows.begin(), m_Rows.end(),
+        [](const auto& row) { return row.second.RowStatus != Status::Failed; }));
+}
+
 void PipelineBuildTable::Quiesce()
 {
     std::unique_lock lock(m_Mutex);

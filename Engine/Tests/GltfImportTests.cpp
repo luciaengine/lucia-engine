@@ -10,6 +10,9 @@
 #include <gtest/gtest.h>
 
 #include "Animation/AnimationClip.h"
+#include "Animation/EvaluationContext.h"
+#include "Animation/Nodes/BlendSpace1DNode.h"
+#include "Animation/Nodes/ClipPlayerNode.h"
 #include "AnimationClipSchema.h"
 #include "Assets/AssetDecodeInputFiles.h"
 #include "Assets/FbxLoaderOptions.h"
@@ -1311,7 +1314,7 @@ TEST(GltfImport, SmallExternalBuffersKeepOnlyOneDeclaredPrefixOfALargeFile)
     ASSERT_TRUE(backing);
     ASSERT_EQ(backing->size(), 1u);
     EXPECT_EQ(backing->begin()->second.Size(), 64u);
-    
+
 }
 
 // Inside a decode, the bytes the IO reader read for a glTF's external buffer and image are the only
@@ -3275,6 +3278,99 @@ TEST(GltfImport, AnimationWithNoKeyIsRefusedWithItsCause)
     EXPECT_EQ(Engine::Renderer::ClipStore::Instance().GetIndexIfPresent(
                   ModelAsset::DeriveEmbeddedClipGuid(asset.GetGUID(), 0)),
               0u);
+}
+
+TEST(GltfImport, BlendSpaceSynchronizesAuthoredMarkersAndKeepsPhaseAtTheEndpoint)
+{
+    ClipLoad walk = LoadClip(SwingClipWithExtras(R"({"clip": {"schemaVersion": 1,
+        "syncMarkers": [{"frame": 2, "name": "left"}, {"frame": 6, "name": "right"}]}})"), "walk.glb");
+    ClipLoad run = LoadClip(SwingClipWithExtras(R"({"clip": {"schemaVersion": 1,
+        "syncMarkers": [{"frame": 4, "name": "left"}, {"frame": 7, "name": "right"}],
+        "events": [{"frame": 3, "name": "beforeLeft"}]}})"), "run.glb");
+    ASSERT_TRUE(walk.Loaded);
+    ASSERT_TRUE(run.Loaded);
+    auto lower = std::make_unique<Animation::ClipPlayerNode>();
+    auto upper = std::make_unique<Animation::ClipPlayerNode>();
+    auto* runPlayer = upper.get();
+    lower->SetClip(std::move(walk.Clip));
+    upper->SetClip(std::move(run.Clip));
+    Animation::BlendSpace1DNode blend;
+    blend.AddSample(std::move(lower), 0.0f);
+    blend.AddSample(std::move(upper), 1.0f);
+    blend.SetParameter(0.5f);
+
+    Animation::AnimationEventCollector events;
+    Animation::EvaluationContext context;
+    context.Events = &events;
+    context.DeltaTime = 0.2f;
+    Animation::AnimationPose pose;
+    blend.Evaluate(context, pose);
+    EXPECT_NEAR(runPlayer->GetTime(), 0.4f, 1e-6f);
+    ASSERT_EQ(events.GetEvents().size(), 1u);
+    EXPECT_EQ(events.GetEvents()[0].Event.Name, "beforeLeft");
+
+    events.Clear();
+    context.DeltaTime = 0.0f;
+    blend.SetParameter(1.0f);
+    blend.Evaluate(context, pose);
+    EXPECT_NEAR(runPlayer->GetTime(), 0.4f, 1e-6f);
+    EXPECT_FALSE(events.HasEvents());
+
+    blend.SetParameter(0.5f);
+    context.DeltaTime = 1.0f;
+    blend.Evaluate(context, pose);
+    EXPECT_NEAR(runPlayer->GetTime(), 0.4f, 1e-6f);
+    ASSERT_EQ(events.GetEvents().size(), 1u);
+    EXPECT_EQ(events.GetEvents()[0].Event.Name, "beforeLeft");
+}
+
+TEST(GltfImport, BlendSpaceDeliversEventsWhenOnlyOneClipWraps)
+{
+    ClipLoad walk = LoadClip(SwingClipWithExtras(R"({"clip": {"schemaVersion": 1,
+        "syncMarkers": [{"frame": 2, "name": "left"}, {"frame": 6, "name": "right"}]}})"), "walk.glb");
+    ClipLoad run = LoadClip(SwingClipWithExtras(R"({"clip": {"schemaVersion": 1,
+        "syncMarkers": [{"frame": 4, "name": "left"}, {"frame": 7, "name": "right"}],
+        "events": [{"frame": 0, "name": "start"}, {"frame": 10, "name": "end"}]}})"), "run.glb");
+    ASSERT_TRUE(walk.Loaded);
+    ASSERT_TRUE(run.Loaded);
+    auto lower = std::make_unique<Animation::ClipPlayerNode>();
+    auto upper = std::make_unique<Animation::ClipPlayerNode>();
+    auto* walkPlayer = lower.get();
+    auto* runPlayer = upper.get();
+    lower->SetClip(std::move(walk.Clip));
+    upper->SetClip(std::move(run.Clip));
+    Animation::BlendSpace1DNode blend;
+    blend.AddSample(std::move(lower), 0.0f);
+    blend.AddSample(std::move(upper), 1.0f);
+    blend.SetParameter(0.5f);
+
+    Animation::AnimationEventCollector events;
+    Animation::EvaluationContext context;
+    context.Events = &events;
+    context.DeltaTime = 0.1f;
+    Animation::AnimationPose pose;
+    walkPlayer->SetTime(0.8f);
+    blend.Evaluate(context, pose);
+    EXPECT_NEAR(walkPlayer->GetTime(), 0.9f, 1e-6f);
+    EXPECT_NEAR(runPlayer->GetTime(), 0.05f, 1e-6f);
+    ASSERT_EQ(events.GetEvents().size(), 2u);
+    EXPECT_EQ(events.GetEvents()[0].Event.Name, "end");
+    EXPECT_EQ(events.GetEvents()[1].Event.Name, "start");
+
+    events.Clear();
+    walkPlayer->SetTime(0.95f);
+    blend.Evaluate(context, pose);
+    EXPECT_NEAR(walkPlayer->GetTime(), 0.05f, 1e-6f);
+    EXPECT_NEAR(runPlayer->GetTime(), 0.225f, 1e-6f);
+    EXPECT_FALSE(events.HasEvents());
+}
+
+TEST(GltfImport, ClipSchemaRejectsCoincidentSyncMarkers)
+{
+    const SchemaRead read = ReadSchema(R"({"clip": {"schemaVersion": 1,
+        "syncMarkers": [{"frame": 2, "name": "left"}, {"frame": 2, "name": "right"}]}})");
+    EXPECT_NE(read.Refusal.find("distinct frames"), std::string::npos);
+    EXPECT_TRUE(read.Settings.SyncMarkers.empty());
 }
 
 } // namespace GameEngine

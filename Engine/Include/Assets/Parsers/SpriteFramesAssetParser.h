@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Animation/SpriteFrames.h"
+#include "Sprite2D/SpriteFrames.h"
 #include "Assets/ParserRegistry.h"
 
 namespace GameEngine
@@ -16,7 +16,7 @@ public:
     {
         try
         {
-            return AssetParseResult(std::make_shared<Animation::SpriteFrames>(metadata.Guid, metadata.Path));
+            return AssetParseResult(std::make_shared<Sprite2D::SpriteFrames>(metadata.Guid, metadata.Path));
         }
         catch (const std::exception& e)
         {

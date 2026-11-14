@@ -11,7 +11,6 @@
 #include "Engine/Rendering/DDGIMaterialUpdates.h"
 #include "Assets/ModelAsset.h"
 #include "Engine/Rendering/DDGISceneService.h"
-#include "Mathematics/Vector3.h"
 #include "SceneBvh/MeshGeometryView.h"
 #include "SceneBvh/ThreadedBvh.h"
 #include "SceneBvh/ThreadedBvhBuilder.h"
@@ -435,18 +434,6 @@ TEST(DDGIDynamicsTest, MovingAnInstanceLeavesEveryBlasArrayByteIdentical)
     EXPECT_TRUE(anyInstanceFloatMoved);
 }
 
-// Both DDGI lanes trace through DDGITracesInstance: a shadows-only proxy stays out of the traced
-// scene, and the caster beside it is the control.
-TEST(DDGIParticipation, AShadowsOnlyInstanceIsNotTraced)
-{
-    Rendering::GPUInstance caster{};
-    caster.flags = 1u;
-    Rendering::GPUInstance proxy{};
-    proxy.flags = 1u | Rendering::kInstanceFlagShadowsOnly;
-    EXPECT_TRUE(DDGITracesInstance(caster));
-    EXPECT_FALSE(DDGITracesInstance(proxy));
-}
-
 TEST(ThreadedBvhPoolTest, MismatchedMaterialSlotCountPoolsNothing)
 {
     const std::vector<TestMesh> meshes{MakeGridMesh(4u, 1u, Vector3(0.0f, 0.0f, 0.0f))};
@@ -603,9 +590,7 @@ TEST(ThreadedBvhPoolTest, PooledTraversalHitsTheSameTrianglesAsTheSourceTrees)
             // Only well defined when one triangle uniquely owns the closest t
             // (a shared edge can tie), same caveat as SceneBvhTests'.
             if (tiedCount == 1)
-            {
                 EXPECT_EQ(reference.Triangle + triangleBase, traversed.Triangle) << "mesh " << m;
-            }
         }
     }
     EXPECT_GT(hitsChecked, 0u) << "the fixture produced no hits — the parity check proved nothing";
@@ -663,21 +648,21 @@ TEST(ThreadedBvhPoolTest, PooledRangesDoNotBleedIntoEachOther)
 
 TEST(DDGIEmissiveTest, AuthoredNitsAreFoldedByTheReferenceWhiteAnchor)
 {
-    const DDGIEmissive baked = ComputeDDGIEmissive(ColorLinear(0.25f, 0.5f, 1.0f), 203.0f);
+    const DDGIEmissive baked = ComputeDDGIEmissive(0.25f, 0.5f, 1.0f, 203.0f);
 
     // 203 nits IS the anchor, so it must come out as scene-linear 1.0 — the
     // whole point of the constant.
-    EXPECT_FLOAT_EQ(0.25f, baked.Color.r);
-    EXPECT_FLOAT_EQ(0.5f, baked.Color.g);
-    EXPECT_FLOAT_EQ(1.0f, baked.Color.b);
+    EXPECT_FLOAT_EQ(0.25f, baked.Color[0]);
+    EXPECT_FLOAT_EQ(0.5f, baked.Color[1]);
+    EXPECT_FLOAT_EQ(1.0f, baked.Color[2]);
 
     // Away from the anchor the colour scales by nits / referenceWhite.
     constexpr float32 kNits = 812.0f;  // 4x the anchor
-    const DDGIEmissive bright = ComputeDDGIEmissive(ColorLinear(0.2f, 0.4f, 0.8f), kNits);
+    const DDGIEmissive bright = ComputeDDGIEmissive(0.2f, 0.4f, 0.8f, kNits);
     const float32 expectedScale = kNits / Components::kReferenceWhiteNits;
-    EXPECT_FLOAT_EQ(0.2f * expectedScale, bright.Color.r);
-    EXPECT_FLOAT_EQ(0.4f * expectedScale, bright.Color.g);
-    EXPECT_FLOAT_EQ(0.8f * expectedScale, bright.Color.b);
+    EXPECT_FLOAT_EQ(0.2f * expectedScale, bright.Color[0]);
+    EXPECT_FLOAT_EQ(0.4f * expectedScale, bright.Color[1]);
+    EXPECT_FLOAT_EQ(0.8f * expectedScale, bright.Color[2]);
 }
 
 // The GLSL half of the contract cannot be linked against, so the shader source
@@ -835,9 +820,8 @@ Mesh MakeEmitterQuad(float width, float height)
 {
     Mesh mesh;
     mesh.Vertices.resize(4);
-    const std::array<Mathematics::Vector3, 4> positions{
-        Mathematics::Vector3(0, 0, 0), Mathematics::Vector3(width, 0, 0), Mathematics::Vector3(width, height, 0),
-        Mathematics::Vector3(0, height, 0)};
+    const std::array<std::array<float, 3>, 4> positions{{
+        {0, 0, 0}, {width, 0, 0}, {width, height, 0}, {0, height, 0}}};
     for (size_t i = 0; i < positions.size(); ++i)
         for (size_t axis = 0; axis < 3; ++axis)
             mesh.Vertices[i].Position[axis] = positions[i][axis];

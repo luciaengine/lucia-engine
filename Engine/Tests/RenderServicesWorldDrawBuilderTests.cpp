@@ -21,6 +21,7 @@
 #include "JobSystem/JobCounter.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "TestCameraEye.h"
+#include "Memory/AllocationCountScope.h"
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -33,18 +34,26 @@ namespace
 
 // Build a minimal mesh and register it in the RenderServices' MeshGPURegistry
 // so the WorldDrawBuilder's resident-mesh guard accepts submissions for it.
-Rendering::MeshGPUHandle RegisterTestMesh(RenderServices& rs)
+Rendering::MeshGPUHandle RegisterTestMesh(RenderServices& rs, bool skinned = false)
 {
-    Mesh m{};
-    m.Name = "TestTriangle";
+    Mesh mesh{};
+    mesh.Name = "TestTriangle";
     Vertex v0{}, v1{}, v2{};
     v0.Position[0] = 0.0f; v0.Position[1] = 1.0f; v0.Position[2] = 0.0f;
     v1.Position[0] = -1.0f; v1.Position[1] = -1.0f; v1.Position[2] = 0.0f;
     v2.Position[0] = 1.0f; v2.Position[1] = -1.0f; v2.Position[2] = 0.0f;
     v0.Normal[2] = 1.0f; v1.Normal[2] = 1.0f; v2.Normal[2] = 1.0f;
-    m.Vertices = {v0, v1, v2};
-    m.Indices = {0, 1, 2};
-    return rs.GetMeshGPURegistry().RegisterSubmesh({GUID::Generate(), 0}, m);
+    mesh.Vertices = {v0, v1, v2};
+    mesh.Indices = {0, 1, 2};
+    if (skinned)
+    {
+        mesh.Skinned = true;
+        mesh.Joints0.assign(mesh.Vertices.size() * 4u, 0u);
+        mesh.Weights0.assign(mesh.Vertices.size() * 4u, 0.0f);
+        for (size_t vertex = 0; vertex < mesh.Vertices.size(); ++vertex)
+            mesh.Weights0[vertex * 4u] = 1.0f;
+    }
+    return rs.GetMeshGPURegistry().RegisterSubmesh({GUID::Generate(), 0}, mesh);
 }
 
 constexpr Rendering::ViewId kSubmitBufferTestViewId = 21u;
@@ -1384,5 +1393,305 @@ TEST(RenderServicesWorldDrawBuilderTests, ClearViewEndsTheKeptBuild)
     EXPECT_EQ(wdb.GetBatchKeys(kKeptBuildViewId).size(), 1u);
 
     rs.Shutdown();
+    device->Shutdown();
+}
+
+// An empty color-class map is the merge-OFF signal: colorClassId == materialIndex,
+// so every distinct material keeps its own key exactly as before P2.
+TEST(RenderServicesWorldDrawBuilderTests, ColorClassMerge_EmptyMapKeepsPerMaterialKeys)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+
+    RenderServices rs;
+    ASSERT_TRUE(rs.Initialize(device.get()));
+    Rendering::MeshGPUHandle mesh = RegisterTestMesh(rs);
+
+    Material matA = Material::TestFactory::Create(GUID::Generate(), "MatA", 32u);
+    Material::TestFactory::SetGraphicsPipelineId(matA, Rendering::GraphicsPipelineId{1u});
+    Material::TestFactory::SetGpuSceneMaterialIndex(matA, 5u);
+    Material matB = Material::TestFactory::Create(GUID::Generate(), "MatB", 32u);
+    Material::TestFactory::SetGraphicsPipelineId(matB, Rendering::GraphicsPipelineId{1u});
+    Material::TestFactory::SetGpuSceneMaterialIndex(matB, 2u);
+
+    const uint32 viewId = 4u;
+    WorldSubmissionRecord recs[2]{};
+    recs[0].viewId = viewId; recs[0].meshHandle = mesh; recs[0].material = &matA;
+    recs[1].viewId = viewId; recs[1].meshHandle = mesh; recs[1].material = &matB;
+
+    WorldDrawBuilder wdb(nullptr);
+    wdb.BeginFrame();
+    wdb.Submit(std::span<const WorldSubmissionRecord>(recs, 2u));
+    wdb.BuildBatchKeys(rs.GetMeshGPURegistry(), /*materialColorClass=*/{}, kTestMaterialGeneration);
+
+    auto keys = wdb.GetBatchKeys(viewId);
+    ASSERT_EQ(keys.size(), 2u);
+    for (const auto& k : keys)
+        EXPECT_EQ(k.colorClassId, k.materialIndex) << "empty map = identity classId";
+
+    rs.Shutdown();
+    device->Shutdown();
+}
+
+
+
+TEST(RenderServicesWorldDrawBuilderTests, CpuDrawStream_SteadySceneRebuildAllocatesNothing)
+{
+#if !GE_ENGINE_ALLOCATION_COUNTING
+    GTEST_SKIP() << "Engine allocation counting requires Debug/DebugFast with ENABLE_MIMALLOC=OFF";
+#endif
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+
+    RenderServices rs;
+    ASSERT_TRUE(rs.Initialize(device.get()));
+    Rendering::GPUScene* scene = rs.GetGPUScene();
+    ASSERT_NE(scene, nullptr);
+
+    Rendering::MeshGPUHandle mesh = RegisterTestMesh(rs);
+    const auto* entry = rs.GetMeshGPURegistry().Find(mesh);
+    ASSERT_NE(entry, nullptr);
+
+    // Several batch keys in both sets, so a per-key cost shows as a count.
+    constexpr uint32_t kMaterials = 8u;
+    std::vector<Material> materials;
+    materials.reserve(kMaterials);
+    for (uint32_t m = 0; m < kMaterials; ++m)
+    {
+        materials.push_back(Material::TestFactory::Create(GUID::Generate(), "Mat", 32u));
+        Material::TestFactory::SetGraphicsPipelineId(materials.back(), Rendering::GraphicsPipelineId{1u});
+        Material::TestFactory::SetGpuSceneMaterialIndex(materials.back(), 10u + m);
+    }
+
+    const CameraId camId = rs.Views().AllocateCamera("cam");
+    rs.Views().SetCameraData(camId, ::GameEngine::Tests::TestCameraWithEye(MakeIdentityFrustumCamera()), {0.1f, 1000.0f});
+    const ViewId viewId = rs.Views().AllocateView("view", camId);
+
+    std::vector<WorldSubmissionRecord> recs;
+    for (uint32_t i = 0; i < kMaterials * 3u; ++i)
+    {
+        const uint32_t inst = AddPointInstance(*scene, 0.0f, 0.0f, 0.5f);
+        recs.push_back(MakeRecord(viewId, mesh, materials[i % kMaterials], inst, kSubmissionFlagCastShadows));
+    }
+
+    WorldDrawBuilder wdb(nullptr);
+    wdb.BeginFrame();
+    wdb.Submit(std::span<const WorldSubmissionRecord>(recs));
+    wdb.BuildBatchKeys(rs.GetMeshGPURegistry(), {}, kTestMaterialGeneration);
+
+    CpuDrawStreamBuilder cds;
+    constexpr int kWarmupBuilds = 2;
+    constexpr int kMeasuredBuilds = 8;
+    uint64_t allocations = 0;
+    for (int build = 0; build < kWarmupBuilds + kMeasuredBuilds; ++build)
+    {
+        uint32_t listed = 0;
+        uint64_t count = 0;
+        {
+            Memory::AllocationCountScope scope(Memory::CountWindow::ThisThread);
+            cds.Build(wdb, rs.GetMeshGPURegistry(), *scene, rs.Views(), nullptr);
+            for (uint32_t m = 0; m < kMaterials; ++m)
+            {
+                for (const auto set : {CpuDrawStreamBuilder::InstanceSet::Camera,
+                                       CpuDrawStreamBuilder::InstanceSet::ShadowCasters})
+                    listed += cds.GetInstances(viewId, 10u + m, entry->gpuMeshIndex, set).Count;
+            }
+            count = scope.Count();
+        }
+        ASSERT_EQ(listed, kMaterials * 3u * 2u) << "build " << build;
+        ASSERT_EQ(cds.GetStats().CameraBatches, kMaterials) << "build " << build;
+        if (build >= kWarmupBuilds)
+            allocations += count;
+    }
+    EXPECT_EQ(allocations, 0u) << "over " << kMeasuredBuilds << " builds of " << kMaterials * 2u << " batches";
+
+    rs.Shutdown();
+    device->Shutdown();
+}
+
+TEST(RenderServicesWorldDrawBuilderTests, MaterialContentKeysIncludeMergedNonRepresentativeCasters)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+    const auto mesh = RegisterTestMesh(services);
+    Material first = Material::TestFactory::Create(GUID::Generate(), "First", 32u);
+    Material second = Material::TestFactory::Create(GUID::Generate(), "Second", 32u);
+    Material nonCaster = Material::TestFactory::Create(GUID::Generate(), "NonCaster", 32u);
+    Material::TestFactory::SetGraphicsPipelineId(first, GraphicsPipelineId{1u});
+    Material::TestFactory::SetGraphicsPipelineId(second, GraphicsPipelineId{1u});
+    Material::TestFactory::SetGraphicsPipelineId(nonCaster, GraphicsPipelineId{1u});
+    Material::TestFactory::SetGpuSceneMaterialIndex(first, 1u);
+    Material::TestFactory::SetGpuSceneMaterialIndex(second, 2u);
+    Material::TestFactory::SetGpuSceneMaterialIndex(nonCaster, 3u);
+    constexpr ViewId kView = 81u;
+    WorldSubmissionRecord records[3]{};
+    for (auto& record : records)
+    {
+        record.viewId = kView;
+        record.meshHandle = mesh;
+        record.flags = kSubmissionFlagCastShadows;
+    }
+    records[0].material = &first;
+    records[1].material = &second;
+    records[2].material = &nonCaster;
+    records[2].flags = 0u;
+    const uint32_t classes[] = {0u, 1u, 1u, 1u};
+    WorldDrawBuilder builder(nullptr);
+    builder.Submit(records);
+    builder.BuildBatchKeys(services.GetMeshGPURegistry(), classes, kTestMaterialGeneration);
+    ASSERT_EQ(builder.GetBatchKeys(kView).size(), 1u);
+    ASSERT_EQ(builder.GetBatchKeys(kView)[0].material, &first);
+    const auto before = builder.GetShadowSubmissionStates(kView);
+
+    const uint32_t revision = second.GetContentRevision();
+    second.SetBindlessTextureIndex(TextureSlot::kAlbedo, 7u);
+    ASSERT_GT(second.GetContentRevision(), revision);
+    builder.BuildBatchKeys(services.GetMeshGPURegistry(), classes, kTestMaterialGeneration);
+    const auto edited = builder.GetShadowSubmissionStates(kView);
+    EXPECT_NE(edited.All.MaterialContentKey, before.All.MaterialContentKey);
+    EXPECT_NE(edited.Rigid.MaterialContentKey, before.Rigid.MaterialContentKey);
+    EXPECT_EQ(builder.GetBatchKeys(kView)[0].material, &first);
+
+    nonCaster.SetBindlessTextureIndex(TextureSlot::kAlbedo, 9u);
+    builder.BuildBatchKeys(services.GetMeshGPURegistry(), classes, kTestMaterialGeneration);
+    const auto isolated = builder.GetShadowSubmissionStates(kView);
+    EXPECT_EQ(isolated.All.MaterialContentKey, edited.All.MaterialContentKey);
+    EXPECT_EQ(isolated.Rigid.MaterialContentKey, edited.Rigid.MaterialContentKey);
+
+    // Submission order and repeated instances do not change material content.
+    builder.BeginFrame();
+    std::swap(records[0], records[1]);
+    builder.Submit(records);
+    builder.Submit(records);
+    builder.BuildBatchKeys(services.GetMeshGPURegistry(), classes, kTestMaterialGeneration);
+    const auto reordered = builder.GetShadowSubmissionStates(kView);
+    EXPECT_EQ(reordered.All.MaterialContentKey, edited.All.MaterialContentKey);
+    EXPECT_EQ(reordered.Rigid.MaterialContentKey, edited.Rigid.MaterialContentKey);
+    services.Shutdown();
+    device->Shutdown();
+}
+
+TEST(RenderServicesWorldDrawBuilderTests, SkinnedMaterialEditsPreserveOnlyUnsharedRigidContent)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+    const auto rigidMesh = RegisterTestMesh(services);
+    const auto skinnedMesh = RegisterTestMesh(services, true);
+    const auto* skinned = services.GetMeshGPURegistry().Find(skinnedMesh);
+    ASSERT_NE(skinned, nullptr);
+    ASSERT_TRUE(Rendering::IsSkinned(skinned->vertexFlags));
+    Material rigid = Material::TestFactory::Create(GUID::Generate(), "Rigid", 32u);
+    Material animated = Material::TestFactory::Create(GUID::Generate(), "Animated", 32u);
+    Material::TestFactory::SetGraphicsPipelineId(rigid, GraphicsPipelineId{1u});
+    Material::TestFactory::SetGraphicsPipelineId(animated, GraphicsPipelineId{1u});
+    Material::TestFactory::SetGpuSceneMaterialIndex(rigid, 1u);
+    Material::TestFactory::SetGpuSceneMaterialIndex(animated, 2u);
+    constexpr ViewId kView = 82u;
+    WorldSubmissionRecord records[2]{};
+    for (auto& record : records)
+    {
+        record.viewId = kView;
+        record.flags = kSubmissionFlagCastShadows;
+    }
+    records[0].meshHandle = rigidMesh;
+    records[0].material = &rigid;
+    records[1].meshHandle = skinnedMesh;
+    records[1].material = &animated;
+    WorldDrawBuilder builder(nullptr);
+    builder.Submit(records);
+    builder.BuildBatchKeys(services.GetMeshGPURegistry(), {}, kTestMaterialGeneration);
+    const auto before = builder.GetShadowSubmissionStates(kView);
+    animated.SetBindlessTextureIndex(TextureSlot::kAlbedo, 7u);
+    builder.BuildBatchKeys(services.GetMeshGPURegistry(), {}, kTestMaterialGeneration);
+    const auto edited = builder.GetShadowSubmissionStates(kView);
+    EXPECT_NE(edited.All.MaterialContentKey, before.All.MaterialContentKey);
+    EXPECT_EQ(edited.Rigid.MaterialContentKey, before.Rigid.MaterialContentKey);
+
+    // The same material also used by rigid geometry cannot be excluded.
+    builder.BeginFrame();
+    builder.Submit(records);
+    records[1].meshHandle = rigidMesh;
+    builder.Submit(std::span<const WorldSubmissionRecord>(&records[1], 1u));
+    builder.BuildBatchKeys(services.GetMeshGPURegistry(), {}, kTestMaterialGeneration);
+    const auto shared = builder.GetShadowSubmissionStates(kView);
+    animated.SetBindlessTextureIndex(TextureSlot::kAlbedo, 11u);
+    builder.BuildBatchKeys(services.GetMeshGPURegistry(), {}, kTestMaterialGeneration);
+    const auto changed = builder.GetShadowSubmissionStates(kView);
+    EXPECT_NE(changed.All.MaterialContentKey, shared.All.MaterialContentKey);
+    EXPECT_NE(changed.Rigid.MaterialContentKey, shared.Rigid.MaterialContentKey);
+    services.Shutdown();
+    device->Shutdown();
+}
+
+TEST(RenderServicesWorldDrawBuilderTests, ShadowMembershipPreservesMultiplicityAndSameCountReplacement)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+    const auto mesh = RegisterTestMesh(services);
+    Material material = Material::TestFactory::Create(GUID::Generate(), "Caster", 32u);
+    Material::TestFactory::SetGraphicsPipelineId(material, GraphicsPipelineId{1u});
+    Material::TestFactory::SetGpuSceneMaterialIndex(material, 1u);
+    constexpr ViewId kView = 84u;
+    WorldSubmissionRecord records[2]{};
+    for (auto& record : records)
+    {
+        record.viewId = kView;
+        record.meshHandle = mesh;
+        record.material = &material;
+        record.flags = kSubmissionFlagCastShadows;
+    }
+    records[0].instanceIndex = 7u;
+    records[1].instanceIndex = 9u;
+    WorldDrawBuilder builder(nullptr);
+    builder.Submit(records);
+    builder.BuildBatchKeys(services.GetMeshGPURegistry(), {}, kTestMaterialGeneration);
+    const auto before = builder.GetShadowSubmissionStates(kView);
+    ASSERT_TRUE(before.Rigid.Complete);
+    ASSERT_EQ(before.Rigid.MembershipCount, 2u);
+
+    builder.BeginFrame();
+    records[1].instanceIndex = 10u;
+    builder.Submit(records);
+    builder.BuildBatchKeys(services.GetMeshGPURegistry(), {}, kTestMaterialGeneration);
+    const auto replaced = builder.GetShadowSubmissionStates(kView);
+    EXPECT_EQ(replaced.Rigid.MembershipCount, before.Rigid.MembershipCount);
+    EXPECT_NE(replaced.Rigid.MembershipKey, before.Rigid.MembershipKey);
+    EXPECT_EQ(replaced.Rigid.MaterialContentKey, before.Rigid.MaterialContentKey);
+
+    builder.BeginFrame();
+    std::swap(records[0], records[1]);
+    builder.Submit(records);
+    builder.BuildBatchKeys(services.GetMeshGPURegistry(), {}, kTestMaterialGeneration);
+    EXPECT_EQ(builder.GetShadowSubmissionStates(kView).Rigid.MembershipKey, replaced.Rigid.MembershipKey);
+    builder.Submit(records);
+    builder.BuildBatchKeys(services.GetMeshGPURegistry(), {}, kTestMaterialGeneration);
+    const auto repeated = builder.GetShadowSubmissionStates(kView);
+    EXPECT_EQ(repeated.Rigid.MembershipCount, 4u);
+    EXPECT_NE(repeated.Rigid.MembershipKey, replaced.Rigid.MembershipKey);
+
+    builder.BeginFrame();
+    EXPECT_FALSE(builder.GetShadowSubmissionStates(kView).Rigid.Complete);
+    builder.Submit(records);
+    builder.BuildBatchKeys(services.GetMeshGPURegistry(), {}, kTestMaterialGeneration);
+    ASSERT_TRUE(builder.GetShadowSubmissionStates(kView).Rigid.Complete);
+    builder.ClearView(kView);
+    EXPECT_FALSE(builder.GetShadowSubmissionStates(kView).Rigid.Complete);
+    builder.Submit(records);
+    builder.BuildBatchKeys(services.GetMeshGPURegistry(), {}, kTestMaterialGeneration);
+    ASSERT_TRUE(builder.GetShadowSubmissionStates(kView).Rigid.Complete);
+    builder.Clear();
+    EXPECT_FALSE(builder.GetShadowSubmissionStates(kView).Rigid.Complete);
+    services.Shutdown();
     device->Shutdown();
 }

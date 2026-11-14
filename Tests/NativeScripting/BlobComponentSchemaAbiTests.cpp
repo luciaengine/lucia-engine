@@ -22,14 +22,15 @@
 
 #include "Core/Engine.h"
 #include "Components/Name.h"
-#include "ECS/Component/ComponentFieldRegistry.h"
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/ComponentRegistry.h"
 #include "ECS/UnresolvedComponentStore.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
 #include "Scene/SceneIO.h"
 #include "Scene/SceneSchemaRegistry.h"
 #include "Scripting/ECSABI.h"
+#include "TestTempDir.h"
 
 namespace
 {
@@ -105,8 +106,12 @@ class BlobComponentSchemaAbiTests : public ::testing::Test
 
     std::filesystem::path TempScene(const char* name) const
     {
-        return std::filesystem::temp_directory_path() / name;
+        return m_TempDir.Path() / name;
     }
+
+  private:
+    GameEngine::TestUtils::ScopedTempDir m_TempDir{
+        GameEngine::TestUtils::MakeUniqueTempDirectory("ge_blob_schema_abi")};
 };
 
 // Mirror of a C# component: {float Health; int Ammo; bool Alive; <pad>; Vector3 Position}.
@@ -128,6 +133,32 @@ std::vector<GE_ECS_FieldDesc> StatsFields()
         Desc("Alive", 8, 1, kFtBool),
         Desc("Position", 12, 12, kFtVec3),
     };
+}
+
+TEST_F(BlobComponentSchemaAbiTests, PrefabGuidCategorySurvivesAbiRegistration)
+{
+    auto field = Desc("Prefab", 1, 16, static_cast<uint16_t>(GameEngine::ECS::FieldTypeId::AssetGuid));
+    field.assetCategory = GE_ECS_ASSET_CATEGORY_PREFAB;
+    const auto id = RegisterSchema("CsSchemaTest.PrefabSpawner", 17, {field});
+    ASSERT_NE(id, 0u);
+
+    const auto fields = GameEngine::ECS::ComponentFieldRegistry::Get(id);
+    ASSERT_EQ(fields.size(), 1u);
+    EXPECT_EQ(fields[0].Type, GameEngine::ECS::FieldTypeId::AssetGuid);
+    EXPECT_EQ(fields[0].AssetCategory, GE_ECS_ASSET_CATEGORY_PREFAB);
+    EXPECT_EQ(fields[0].Offset, 1u);
+    EXPECT_EQ(fields[0].Size, 16u);
+}
+
+TEST_F(BlobComponentSchemaAbiTests, RejectsUnknownAssetCategoriesBeforeRegisteringSchema)
+{
+    constexpr char kName[] = "CsSchemaTest.UnknownAssetCategory";
+    auto field = Desc("Asset", 0, 16, static_cast<uint16_t>(GameEngine::ECS::FieldTypeId::AssetGuid));
+    field.assetCategory = 0xFFFFu;
+    GE_ECS_ComponentTypeId id = 0;
+    EXPECT_EQ(GE_ECSABI_RegisterBlobComponentWithSchema(kName, sizeof(kName) - 1, 16, &field, 1, &id),
+              GE_Result_InvalidArg);
+    EXPECT_EQ(id, 0u);
 }
 
 TEST_F(BlobComponentSchemaAbiTests, SceneRoundTripThroughAbiSchema)

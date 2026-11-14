@@ -1,6 +1,6 @@
 # Modern GPU-Driven Rendering Library
 cmake_minimum_required(VERSION 3.20)
-project(GameEngineRendering LANGUAGES CXX)
+project(GameEngineRendering VERSION 1.0.0 LANGUAGES CXX)
 
 # C++20 requirement for modern features
 set(CMAKE_CXX_STANDARD 20)
@@ -34,6 +34,8 @@ option(RENDERING_ENABLE_GPU_CULLING "Build GPU culling examples" OFF)
 # classify as Linux.
 if(EMSCRIPTEN)
     set(RENDERING_PLATFORM_WEB TRUE)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(RENDERING_PLATFORM_IOS TRUE)
 elseif(WIN32)
     set(RENDERING_PLATFORM_WINDOWS TRUE)
 elseif(UNIX AND NOT APPLE)
@@ -117,7 +119,9 @@ endif()
 # vcpkg-provided headers/loader rather than a hard-coded local SDK path.
 # Validation layers come from the system Vulkan SDK install (registered with
 # the Vulkan loader via OS config), not from vcpkg.
-find_package(Vulkan QUIET)
+if(RENDERING_BUILD_VULKAN)
+    find_package(Vulkan QUIET)
+endif()
 
 # On macOS, if CMake did not find Vulkan but the official Vulkan SDK
 # (MoltenVK) is installed and VULKAN_SDK is set, fall back to using that
@@ -166,7 +170,7 @@ else()
 endif()
 
 # Metal (macOS only)
-if(RENDERING_PLATFORM_MACOS AND RENDERING_BUILD_METAL)
+if((RENDERING_PLATFORM_MACOS OR RENDERING_PLATFORM_IOS) AND RENDERING_BUILD_METAL)
     set(RENDERING_HAS_METAL TRUE)
     message(STATUS "Metal backend enabled (macOS)")
 else()
@@ -203,7 +207,7 @@ include(FetchContent)
 
 # GLFW via vcpkg (required on desktop). On wasm the GLFW API is emscripten's
 # JS implementation: headers ship in the sysroot, -s USE_GLFW=3 links it.
-if(NOT EMSCRIPTEN)
+if(NOT EMSCRIPTEN AND NOT GE_MOBILE)
     find_package(glfw3 CONFIG REQUIRED)
     message(STATUS "GLFW found via find_package (glfw3 CONFIG)")
 
@@ -270,10 +274,17 @@ if(GLSLC_EXECUTABLE)
     if(BUILD_TESTING AND EXISTS "${CMAKE_SOURCE_DIR}/Engine/Tests/Shaders")
         list(APPEND GE_SHADER_SOURCE_DIRS "${CMAKE_SOURCE_DIR}/Engine/Tests/Shaders")
     endif()
-    file(GLOB GE_SHADER_COMMON_INCLUDES "${SHADER_SOURCE_DIR}/Includes/*.glsl")
     set(GE_VOLUMETRIC_FOG_SHADER_DIR "${CMAKE_SOURCE_DIR}/Engine/Modules/VolumetricFog/Shaders")
     if(EXISTS "${GE_VOLUMETRIC_FOG_SHADER_DIR}")
         list(APPEND GE_SHADER_SOURCE_DIRS "${GE_VOLUMETRIC_FOG_SHADER_DIR}")
+    endif()
+    set(GE_HEIGHT_FOG_SHADER_DIR "${CMAKE_SOURCE_DIR}/Engine/Modules/HeightFog/Shaders")
+    if(EXISTS "${GE_HEIGHT_FOG_SHADER_DIR}")
+        list(APPEND GE_SHADER_SOURCE_DIRS "${GE_HEIGHT_FOG_SHADER_DIR}")
+    endif()
+    set(GE_TILEMAP_SHADER_DIR "${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Shaders")
+    if(EXISTS "${GE_TILEMAP_SHADER_DIR}")
+        list(APPEND GE_SHADER_SOURCE_DIRS "${GE_TILEMAP_SHADER_DIR}")
     endif()
     # Ocean lives in a SUBdirectory of the shader root, and the auto-glob below
     # is not recursive, so none of it was ever compiled: the module fell back to
@@ -290,24 +301,18 @@ if(GLSLC_EXECUTABLE)
     set(GE_AMBIENT_OCCLUSION_SHADER_DIR "${SHADER_SOURCE_DIR}/AmbientOcclusion")
     if(EXISTS "${GE_AMBIENT_OCCLUSION_SHADER_DIR}")
         list(APPEND GE_SHADER_SOURCE_DIRS "${GE_AMBIENT_OCCLUSION_SHADER_DIR}")
-        file(GLOB GE_AMBIENT_OCCLUSION_INCLUDES "${GE_AMBIENT_OCCLUSION_SHADER_DIR}/*.glsl")
-        list(APPEND GE_SHADER_COMMON_INCLUDES ${GE_AMBIENT_OCCLUSION_INCLUDES})
     endif()
     # Screen-space reflections own a subdirectory of the shader root for the same
     # reason ambient occlusion does, and the auto-glob below is not recursive.
     set(GE_SCREEN_SPACE_REFLECTIONS_SHADER_DIR "${SHADER_SOURCE_DIR}/ScreenSpaceReflections")
     if(EXISTS "${GE_SCREEN_SPACE_REFLECTIONS_SHADER_DIR}")
         list(APPEND GE_SHADER_SOURCE_DIRS "${GE_SCREEN_SPACE_REFLECTIONS_SHADER_DIR}")
-        file(GLOB GE_SCREEN_SPACE_REFLECTIONS_INCLUDES "${GE_SCREEN_SPACE_REFLECTIONS_SHADER_DIR}/*.glsl")
-        list(APPEND GE_SHADER_COMMON_INCLUDES ${GE_SCREEN_SPACE_REFLECTIONS_INCLUDES})
     endif()
     # Screen-space shadows own a subdirectory of the shader root for the same
     # reason ambient occlusion does, and the auto-glob below is not recursive.
     set(GE_SCREEN_SPACE_SHADOWS_SHADER_DIR "${SHADER_SOURCE_DIR}/ScreenSpaceShadows")
     if(EXISTS "${GE_SCREEN_SPACE_SHADOWS_SHADER_DIR}")
         list(APPEND GE_SHADER_SOURCE_DIRS "${GE_SCREEN_SPACE_SHADOWS_SHADER_DIR}")
-        file(GLOB GE_SCREEN_SPACE_SHADOWS_INCLUDES "${GE_SCREEN_SPACE_SHADOWS_SHADER_DIR}/*.glsl")
-        list(APPEND GE_SHADER_COMMON_INCLUDES ${GE_SCREEN_SPACE_SHADOWS_INCLUDES})
     endif()
     set(GE_VOLUMETRIC_CLOUDS_SHADER_DIR "${CMAKE_SOURCE_DIR}/Engine/Modules/VolumetricClouds/Shaders")
     if(EXISTS "${GE_VOLUMETRIC_CLOUDS_SHADER_DIR}")
@@ -351,6 +356,9 @@ if(GLSLC_EXECUTABLE)
     list(APPEND VERTEX_SHADERS lens_flare.vert)
     list(APPEND FRAGMENT_SHADERS lens_flare.frag)
 
+    # 2D sprites (instanced world-space quads, unlit + alpha blended)
+    list(APPEND VERTEX_SHADERS sprite2d.vert)
+    list(APPEND FRAGMENT_SHADERS sprite2d.frag)
     # Sun glare (analytic additive veiling halo)
     list(APPEND VERTEX_SHADERS sun_glare.vert)
     list(APPEND VERTEX_SHADERS sun_glare_ms.vert)
@@ -388,10 +396,8 @@ if(GLSLC_EXECUTABLE)
     # fails only on a root-relative one, so an omission stays invisible until a
     # shader gains an include or moves directory.
     #
-    # glslc writes the include set it actually opened to a depfile, which is the
-    # only exact record of it: the DEPENDS globs cover Includes/ and UI/, and
-    # every shader that includes across a module directory - the ocean cascade
-    # and FFT headers, the fog and cloud commons - falls outside them.
+    # The compiler depfile tracks the includes opened by this stage and variant.
+    # Explicit dependencies retain generated-input and tool ordering.
     function(ge_compile_shader)
         cmake_parse_arguments(ARG "VULKAN13" "OUTPUT;SOURCE;COMMENT" "DEFINES;DEPENDS" ${ARGN})
         set(_ge_flags -I${SHADER_SOURCE_DIR})
@@ -403,7 +409,7 @@ if(GLSLC_EXECUTABLE)
             OUTPUT ${ARG_OUTPUT}
             COMMAND ${GLSLC_EXECUTABLE} ${_ge_flags} ${ARG_DEFINES} ${ARG_SOURCE}
                     -o ${ARG_OUTPUT} -MD -MF ${ARG_OUTPUT}.d
-            DEPENDS ${ARG_SOURCE} ${ARG_DEPENDS}
+            DEPENDS ${ARG_SOURCE} ${GLSLC_EXECUTABLE} ${ARG_DEPENDS}
             DEPFILE ${ARG_OUTPUT}.d
             COMMENT "${ARG_COMMENT}"
             VERBATIM
@@ -413,8 +419,7 @@ if(GLSLC_EXECUTABLE)
 
     # UI SDF shaders. One table of (output stem, stage, defines) rather than a
     # block per variant: the profile axis alone would otherwise double six
-    # copies. Include dependencies are listed explicitly so an edit to any
-    # UI/*.glsl recompiles every variant.
+    # copies. Each variant tracks only the includes its compiler opens.
     #
     #   (none)   the Vulkan/Metal default
     #   subpixel dual-source blending: per-channel text coverage in a second
@@ -425,7 +430,6 @@ if(GLSLC_EXECUTABLE)
     #   compat   GE_COMPAT_PROFILE — fixed texture slots, hoisted derivatives and
     #            a per-run draw base, for the WebGPU-class target. Selected at
     #            load time by UIManager from the resolved RendererProfile
-    file(GLOB UI_SDF_INCLUDES "${SHADER_SOURCE_DIR}/UI/*.glsl")
     set(UI_SDF_VARIANTS
         "ui_sdf|"
         "ui_sdf_subpixel|-DUI_SUBPIXEL_DUAL_SRC"
@@ -451,7 +455,6 @@ if(GLSLC_EXECUTABLE)
         ge_compile_shader(
             OUTPUT ${SHADER_OUTPUT} SOURCE ${SHADER_SOURCE}
             DEFINES ${_defineList}
-            DEPENDS ${UI_SDF_INCLUDES} ${SHADER_SOURCE_DIR}/Includes/error_function.glsl
             COMMENT "Compiling UI shader: ${_stem}.${_stage}")
         set(GE_ALL_SHADER_SPV_OUTPUTS ${GE_ALL_SHADER_SPV_OUTPUTS} PARENT_SCOPE)
     endfunction()
@@ -538,7 +541,6 @@ if(GLSLC_EXECUTABLE)
         if(EXISTS "${SHADER_SOURCE}")
             ge_compile_shader(
                 OUTPUT ${SHADER_OUTPUT} SOURCE ${SHADER_SOURCE}
-                DEPENDS ${GE_SHADER_COMMON_INCLUDES}
                 COMMENT "Compiling vertex shader: ${SHADER}")
         endif()
     endforeach()
@@ -555,7 +557,6 @@ if(GLSLC_EXECUTABLE)
         if(EXISTS "${SHADER_SOURCE}")
             ge_compile_shader(
                 OUTPUT ${SHADER_OUTPUT} SOURCE ${SHADER_SOURCE}
-                DEPENDS ${GE_SHADER_COMMON_INCLUDES}
                 COMMENT "Compiling fragment shader: ${SHADER}")
         endif()
     endforeach()
@@ -572,7 +573,6 @@ if(GLSLC_EXECUTABLE)
         if(EXISTS "${SHADER_SOURCE}")
             ge_compile_shader(
                 OUTPUT ${SHADER_OUTPUT} SOURCE ${SHADER_SOURCE}
-                DEPENDS ${GE_SHADER_COMMON_INCLUDES}
                 COMMENT "Compiling compute shader: ${SHADER}")
         endif()
     endforeach()
@@ -586,7 +586,6 @@ if(GLSLC_EXECUTABLE)
         OUTPUT ${SHADER_OUTPUT_DIR}/Tests/animation_skinning_compat.comp.spv
         SOURCE ${SHADER_SOURCE_DIR}/animation_skinning.comp
         DEFINES -DGE_COMPAT_PROFILE
-        DEPENDS ${GE_SHADER_COMMON_INCLUDES}
         COMMENT "Compiling compute shader: animation_skinning.comp (compat profile arm)")
     # The SDSM receiver reduce's GE_COMPAT_PROFILE arm (its depth flush), on the same
     # terms, for ShadowReceiverReduceComputeTests.
@@ -594,7 +593,6 @@ if(GLSLC_EXECUTABLE)
         OUTPUT ${SHADER_OUTPUT_DIR}/Tests/depth_reduce_compat.comp.spv
         SOURCE ${SHADER_SOURCE_DIR}/depth_reduce.comp
         DEFINES -DGE_COMPAT_PROFILE
-        DEPENDS ${GE_SHADER_COMMON_INCLUDES}
         COMMENT "Compiling compute shader: depth_reduce.comp (compat profile arm)")
     # The per-tile depth min/max at 16 and 8 threads per axis (GE_DEPTH_MINMAX_THREADS; the
     # generic rule above builds 32). The DepthMinMax pass falls back to them on a device whose
@@ -623,7 +621,6 @@ if(GLSLC_EXECUTABLE)
         set(SCATTER_COMP_SPV ${SHADER_OUTPUT_DIR}/draw_command_scatter.comp.spv)
         ge_compile_shader(VULKAN13
             OUTPUT ${SCATTER_COMP_SPV} SOURCE ${SCATTER_COMP_SRC}
-            DEPENDS ${GE_SHADER_COMMON_INCLUDES}
             COMMENT "Compiling compute shader (vulkan1.3): draw_command_scatter.comp")
 
         # Coalesced scatter-hot variant (-DSCATTER_COMPACT): same source, binds
@@ -633,7 +630,6 @@ if(GLSLC_EXECUTABLE)
         ge_compile_shader(VULKAN13
             OUTPUT ${SCATTER_COMPACT_COMP_SPV} SOURCE ${SCATTER_COMP_SRC}
             DEFINES -DSCATTER_COMPACT
-            DEPENDS ${GE_SHADER_COMMON_INCLUDES}
             COMMENT "Compiling compute shader (vulkan1.3): draw_command_scatter.comp [SCATTER_COMPACT]")
 
         # Instrumentation variants (-DSCATTER_STATS): identical scatter, plus the
@@ -647,14 +643,12 @@ if(GLSLC_EXECUTABLE)
         ge_compile_shader(VULKAN13
             OUTPUT ${SCATTER_STATS_COMP_SPV} SOURCE ${SCATTER_COMP_SRC}
             DEFINES -DSCATTER_STATS
-            DEPENDS ${GE_SHADER_COMMON_INCLUDES}
             COMMENT "Compiling compute shader (vulkan1.3): draw_command_scatter.comp [SCATTER_STATS]")
 
         set(SCATTER_COMPACT_STATS_COMP_SPV ${SHADER_OUTPUT_DIR}/draw_command_scatter_compact_stats.comp.spv)
         ge_compile_shader(VULKAN13
             OUTPUT ${SCATTER_COMPACT_STATS_COMP_SPV} SOURCE ${SCATTER_COMP_SRC}
             DEFINES -DSCATTER_COMPACT -DSCATTER_STATS
-            DEPENDS ${GE_SHADER_COMMON_INCLUDES}
             COMMENT "Compiling compute shader (vulkan1.3): draw_command_scatter.comp [SCATTER_COMPACT SCATTER_STATS]")
     endif()
 
@@ -672,7 +666,6 @@ if(GLSLC_EXECUTABLE)
         set(RT_SHADOW_MASK_COMP_SPV ${SHADER_OUTPUT_DIR}/rt_shadow_mask.comp.spv)
         ge_compile_shader(VULKAN13
             OUTPUT ${RT_SHADOW_MASK_COMP_SPV} SOURCE ${RT_SHADOW_MASK_COMP_SRC}
-            DEPENDS ${GE_SHADER_COMMON_INCLUDES}
             COMMENT "Compiling compute shader (vulkan1.3): rt_shadow_mask.comp")
     endif()
 
@@ -689,7 +682,6 @@ if(GLSLC_EXECUTABLE)
         set(DDGI_TRACE_HW_COMP_SPV ${SHADER_OUTPUT_DIR}/ddgi_trace_hw.comp.spv)
         ge_compile_shader(VULKAN13
             OUTPUT ${DDGI_TRACE_HW_COMP_SPV} SOURCE ${DDGI_TRACE_HW_COMP_SRC}
-            DEPENDS ${GE_SHADER_COMMON_INCLUDES}
             COMMENT "Compiling compute shader (vulkan1.3): ddgi_trace_hw.comp")
     endif()
 
@@ -707,7 +699,6 @@ if(GLSLC_EXECUTABLE)
         set(DDGI_CLASSIFY_COMP_SPV ${SHADER_OUTPUT_DIR}/ddgi_classify.comp.spv)
         ge_compile_shader(VULKAN13
             OUTPUT ${DDGI_CLASSIFY_COMP_SPV} SOURCE ${DDGI_CLASSIFY_COMP_SRC}
-            DEPENDS ${GE_SHADER_COMMON_INCLUDES}
             COMMENT "Compiling compute shader (vulkan1.3): ddgi_classify.comp")
     endif()
 
@@ -867,6 +858,7 @@ set(RENDERING_METAL_SOURCES
     Source/Metal/MetalDevice.cpp
     Source/Metal/MetalHdrOutput.cpp
     Source/Metal/MetalCommandList.cpp
+    Source/Metal/MetalDirectDescriptorBinding.cpp
     Source/Metal/MetalResources.cpp
     Source/Metal/MetalTransientDescriptorArena.cpp
     Source/Metal/MetalSwapchain.cpp
@@ -932,9 +924,6 @@ if(RENDERING_HAS_VULKAN)
     target_sources(GameEngineRendering PRIVATE Source/Vulkan/VulkanDescriptorBufferPool.cpp)
 
     target_include_directories(GameEngineRendering PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Source/Vulkan)
-    # Core/EngineVersion.h (the root CMakeLists writes it from VERSION) for the Vulkan
-    # instance's engineVersion.
-    target_include_directories(GameEngineRendering PRIVATE "${CMAKE_BINARY_DIR}/generated")
 endif()
 
 # Materials, shader-graph and shader-package plumbing are API-agnostic (the
@@ -1085,8 +1074,15 @@ if(EMSCRIPTEN)
     # runtime's JS GLFW, pulled in at executable link.
     target_link_options(GameEngineRendering INTERFACE "SHELL:-s USE_GLFW=3")
 else()
-    # We already require glfw3 via find_package above
-    target_link_libraries(GameEngineRendering PUBLIC glfw)
+    if(GE_MOBILE)
+        find_package(SDL3 CONFIG REQUIRED)
+        target_link_libraries(GameEngineRendering PUBLIC SDL3::SDL3)
+        if(RENDERING_PLATFORM_IOS)
+            target_link_libraries(GameEngineRendering PUBLIC "-framework Metal" "-framework QuartzCore" "-framework Foundation" "-framework IOSurface")
+        endif()
+    else()
+        target_link_libraries(GameEngineRendering PUBLIC glfw)
+    endif()
 endif()
 
 # Mirror the Engine-level profiling switch so RenderGraph can strip per-pass
@@ -1165,8 +1161,8 @@ endif()
 if(RENDERING_HAS_METAL)
     target_sources(GameEngineRendering PRIVATE ${RENDERING_METAL_SOURCES})
     target_compile_definitions(GameEngineRendering PRIVATE RENDERING_HAS_METAL=1)
-    # A shipped stage library targets the macOS the binaries run on (MetalLibraryCompileFlags).
-    target_compile_definitions(GameEngineRendering PRIVATE GE_MACOS_DEPLOYMENT_TARGET="${CMAKE_OSX_DEPLOYMENT_TARGET}")
+    # A shipped stage library targets the Apple OS the binaries run on.
+    target_compile_definitions(GameEngineRendering PRIVATE GE_METAL_DEPLOYMENT_TARGET="${CMAKE_OSX_DEPLOYMENT_TARGET}")
 
     # Vendored metal-cpp headers (no vcpkg port exists). SYSTEM silences the
     # vendor headers under -Wall -Wextra.
@@ -1197,6 +1193,13 @@ target_include_directories(GameEngineRendering
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/Source
 )
+
+# Platform's header-only pieces: the environment switch every GE_ switch reads
+# through (Rendering/Core/GPUInstanceDepthClass.h reads one inline, so the path
+# is public) and the WebGPU surface bridge's native-window access. Include path
+# only: standalone renderer consumers need no Platform runtime objects.
+target_include_directories(GameEngineRendering PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Engine/Modules/Platform/Include>)
 
 # Compiler-specific settings
 if(MSVC)
@@ -1263,7 +1266,7 @@ endif()
 if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTABLE))
     if(GE_SHADERREFLECT_EXECUTABLE)
         set(_GE_SHADERREFLECT_CMD "${GE_SHADERREFLECT_EXECUTABLE}")
-        set(_GE_SHADERREFLECT_TOOL_DEP "")
+        set(_GE_SHADERREFLECT_TOOL_DEP "${GE_SHADERREFLECT_EXECUTABLE}")
     else()
         set(_GE_SHADERREFLECT_CMD "$<TARGET_FILE:ShaderReflect>")
         set(_GE_SHADERREFLECT_TOOL_DEP ShaderReflect)
@@ -1326,7 +1329,6 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
         OUTPUT ${SHADER_OUTPUT_DIR}/markup_glow_ms.frag.spv
         SOURCE ${SHADER_SOURCE_DIR}/markup_glow.frag
         DEFINES -DGE_MARKUP_GLOW_MS_DEPTH
-        DEPENDS ${GE_SHADER_COMMON_INCLUDES}
         COMMENT "Compiling fragment shader: markup_glow_ms.frag")
     _ge_add_shaderpkg_graphics(markup_glow_ms markup_glow.vert markup_glow_ms.frag)
     # A region's display: its walls and lid from a vertex buffer, the glow's fragment stage.
@@ -1349,6 +1351,8 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
         DEPENDS ${GE_SHADER_COMMON_INCLUDES}
         COMMENT "Compiling vertex shader: sky_stars_billboard_fog.vert")
     _ge_add_shaderpkg_graphics(lens_flare lens_flare.vert lens_flare.frag)
+    _ge_add_shaderpkg_graphics(tilemap tilemap.vert tilemap.frag)
+    _ge_add_shaderpkg_graphics(sprite2d sprite2d.vert sprite2d.frag)
     _ge_add_shaderpkg_graphics(sun_glare sun_glare.vert sun_glare.frag)
     # MSAA variant: same fragment stage, a sampler2DMS depth probe in the vertex stage.
     _ge_add_shaderpkg_graphics(sun_glare_ms sun_glare_ms.vert sun_glare.frag)
@@ -1398,7 +1402,6 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
         OUTPUT ${SHADER_OUTPUT_DIR}/ocean_underwater_shadowed.frag.spv
         SOURCE ${GE_OCEAN_SHADER_DIR}/ocean_underwater.frag
         DEFINES -DOCEAN_UNDERWATER_SHADOWS
-        DEPENDS ${GE_SHADER_COMMON_INCLUDES}
         COMMENT "Compiling fragment shader: ocean_underwater_shadowed.frag")
     _ge_add_shaderpkg_graphics(ocean_underwater_shadowed ocean_fullscreen.vert ocean_underwater_shadowed.frag)
     _ge_add_shaderpkg_compute(volumetric_fog_media volumetric_fog_media.comp)
@@ -1422,7 +1425,6 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_compute(rt_shadow_denoise rt_shadow_denoise.comp)
     # Terrain shadows: the sun-space clearance map bake (TerrainShadowBake).
     _ge_add_shaderpkg_compute(terrain_shadow_bake terrain_shadow_bake.comp)
-    # ... and its lit field's mip chain, the shadow averaged over a far pixel (TerrainShadowFieldLit).
     _ge_add_shaderpkg_compute(terrain_shadow_field_lit terrain_shadow_field_lit.comp)
     _ge_add_shaderpkg_compute(screen_space_shadow screen_space_shadow.comp)
     _ge_add_shaderpkg_compute(screen_space_shadow_prepare screen_space_shadow_prepare.comp)
@@ -1466,6 +1468,9 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_graphics(cas fullscreen_noinput.vert cas.frag)
     _ge_add_shaderpkg_graphics(fast_blur_dof fullscreen_noinput.vert fast_blur_dof.frag)
     _ge_add_shaderpkg_graphics(heat_distortion fullscreen_noinput.vert heat_distortion.frag)
+    _ge_add_shaderpkg_graphics(camera_rain fullscreen_noinput.vert camera_rain.frag)
+    _ge_add_shaderpkg_graphics(rain_streaks rain_streaks.vert rain_streaks.frag)
+    _ge_add_shaderpkg_graphics(depth_pixelation fullscreen_noinput.vert depth_pixelation.frag)
     _ge_add_shaderpkg_compute(sssr_classify sssr_classify.comp)
     _ge_add_shaderpkg_compute(sssr_prepare_args sssr_prepare_args.comp)
     _ge_add_shaderpkg_compute(sssr_intersect sssr_intersect.comp)
@@ -1473,6 +1478,8 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_compute(sssr_prefilter sssr_prefilter.comp)
     _ge_add_shaderpkg_compute(sssr_temporal sssr_temporal.comp)
     _ge_add_shaderpkg_compute(sssr_composite sssr_composite.comp)
+    _ge_add_shaderpkg_compute(planar_reflection_blur planar_reflection_blur.comp)
+    _ge_add_shaderpkg_compute(planar_reflection_composite planar_reflection_composite.comp)
     _ge_add_shaderpkg_graphics(fog_glow_prefilter fullscreen_noinput.vert fog_glow_prefilter.frag)
     _ge_add_shaderpkg_graphics(fog_glow_fast fullscreen_noinput.vert fog_glow_fast.frag)
     _ge_add_shaderpkg_graphics(fog_glow_downsample fullscreen_noinput.vert fog_glow_downsample.frag)
@@ -1522,15 +1529,11 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_compute(hzb_spd_nearest hzb_spd_nearest.comp)
     _ge_add_shaderpkg_compute(hzb_spd_nearest_finalize hzb_spd_nearest_finalize.comp)
     _ge_add_shaderpkg_compute(hzb_culling hzb_culling.comp)
-    # Sorted transparent GPU path (transparency-scale S1/S2): the reusable GPU
-    # sort primitive plus the fused runtime drain (gather + key + sort +
-    # scatter — one dispatch per view, see sorted_transparent_drain.comp).
-    _ge_add_shaderpkg_compute(sorted_transparent_sort sorted_transparent_sort.comp)
-    _ge_add_shaderpkg_compute(sorted_transparent_drain sorted_transparent_drain.comp)
     _ge_add_shaderpkg_compute(visibility_union visibility_union.comp)
     _ge_add_shaderpkg_compute(runtime_visibility_aggregate runtime_visibility_aggregate.comp)
     _ge_add_shaderpkg_compute(draw_command_scatter draw_command_scatter.comp)
     _ge_add_shaderpkg_compute(draw_stream_group_compact draw_stream_group_compact.comp)
+    _ge_add_shaderpkg_compute(draw_stream_instance_compact draw_stream_instance_compact.comp)
     _ge_add_shaderpkg_compute(draw_command_scatter_compact draw_command_scatter_compact.comp)
     _ge_add_shaderpkg_compute(draw_command_scatter_stats draw_command_scatter_stats.comp)
     _ge_add_shaderpkg_compute(draw_command_scatter_compact_stats draw_command_scatter_compact_stats.comp)
@@ -1588,7 +1591,7 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
         DEPENDS ${_GE_SHADERPKG_OUTPUTS} ${_GE_SLANG_LANE_STAGED}
         COMMENT "Packaging shaders into .shaderpkg"
     )
-    if(_GE_SHADERREFLECT_TOOL_DEP)
+    if(NOT GE_SHADERREFLECT_EXECUTABLE)
         add_dependencies(CompileShaderPkgs CompileShaders ShaderReflect)
     else()
         add_dependencies(CompileShaderPkgs CompileShaders)
@@ -1737,7 +1740,8 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         GTest::gtest
         GTest::gtest_main
     )
-    # rendering_test_link_image splices Logger's objects in; do not also link Logger
+    target_include_directories(ShaderGraphCompilerTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
+    # rendering_test_link_stb splices Logger's objects in; do not also link Logger
     # directly or its .obj files get pulled in twice (LNK2005).
     rendering_test_link_image(ShaderGraphCompilerTests)
     rendering_test_shader_paths(ShaderGraphCompilerTests)
@@ -1872,7 +1876,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     # helpers (Buf/Tex/Bake/ColorDesc/FramePools) that ODR-collide when unity-concatenated.
     set_target_properties(RenderGraphTests PROPERTIES FOLDER "Rendering/Tests/RenderGraph" UNITY_BUILD OFF)
     # Include dir (for "Rendering/Core/RenderGraph/..") + module root (for "Tests/RenderGraph/.." test headers).
-    target_include_directories(RenderGraphTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_include_directories(RenderGraphTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Include ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/Tests)
     if(RENDERING_HAS_VULKAN)
         # The retirement regression observes the real backend's timeline wait.
         target_include_directories(RenderGraphTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source ${VMA_INCLUDE_DIRS})
@@ -2120,6 +2124,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         GTest::gtest
         GTest::gtest_main
     )
+    target_include_directories(DeviceRecoveryTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
     rendering_test_shader_paths(DeviceRecoveryTests)
     target_include_directories(DeviceRecoveryTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     # The device-loss routing lint proves "no unrouted VK_ERROR_DEVICE_LOST site
@@ -2129,6 +2134,17 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         GE_VULKAN_BACKEND_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/Source/Vulkan")
     add_dependencies(DeviceRecoveryTests CompileShaders)
     add_test(NAME DeviceRecoveryTests COMMAND DeviceRecoveryTests)
+
+    # Real acquired-image/semaphore regression, using a hidden window surface.
+    add_executable(RenderingSwapchainAcquireTests Tests/SwapchainAcquireTests.cpp)
+    set_target_properties(RenderingSwapchainAcquireTests PROPERTIES FOLDER "Rendering/Tests")
+    target_link_libraries(RenderingSwapchainAcquireTests PRIVATE
+        GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
+    target_include_directories(RenderingSwapchainAcquireTests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/Tests)
+    rendering_test_shader_paths(RenderingSwapchainAcquireTests)
+    add_dependencies(RenderingSwapchainAcquireTests CompileShaders)
+    add_test(NAME RenderingSwapchainAcquireTests COMMAND RenderingSwapchainAcquireTests)
 
     # Per-device-generation VkSemaphore parity across an in-place device rebuild.
     # Needs a real window target (the rebuild's swapchain-recreation step is a
@@ -2238,15 +2254,22 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     # Runtime-gated — skip when the device or env flag are not available.
     add_executable(DescriptorBufferTests Tests/DescriptorBufferTests.cpp)
     set_target_properties(DescriptorBufferTests PROPERTIES FOLDER "Rendering/Tests")
+    # Standalone consumers link Image objects for the shared image implementation.
+    target_link_libraries(DescriptorBufferTests PRIVATE Image)
+    target_compile_definitions(DescriptorBufferTests PRIVATE GE_HAVE_STB)
+    if(TARGET stb::stb)
+        target_link_libraries(DescriptorBufferTests PRIVATE stb::stb)
+    elseif(STB_INCLUDE_DIRS)
+        target_include_directories(DescriptorBufferTests PRIVATE ${STB_INCLUDE_DIRS})
+    endif()
     target_link_libraries(DescriptorBufferTests PRIVATE
         GameEngineRendering
         FileSystemObjects
         GTest::gtest
         GTest::gtest_main
     )
-    # Tests that link GameEngineRendering but not Engine splice the OBJECT
-    # libraries' objects themselves.
-    rendering_test_link_image(DescriptorBufferTests)
+    # Standalone consumers link Image objects for the shared image implementation.
+    rendering_test_link_logger(DescriptorBufferTests)
     rendering_test_shader_paths(DescriptorBufferTests)
     target_include_directories(DescriptorBufferTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME DescriptorBufferTests COMMAND DescriptorBufferTests)
@@ -2669,6 +2692,7 @@ if(GTest_FOUND)
             Tests/ParallaxOcclusionTests.cpp
             Tests/RendererProfileTests.cpp
             Tests/ShaderVariantKeyTests.cpp
+            Tests/ShaderCompileTargetTests.cpp
             Tests/MaterialKeywordDerivationTests.cpp
             Tests/ShaderCompileCacheKeyTests.cpp
             Tests/ShaderMetaBinaryTests.cpp
@@ -2690,6 +2714,8 @@ if(GTest_FOUND)
             Tests/VertexDeformationClockTests.cpp
             Tests/DeformationMotionVariantTests.cpp)
         target_link_libraries(ShaderVariantKeyTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
+        target_include_directories(ShaderVariantKeyTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
+        # Module-private headers (Source/Materials/ShaderSourceCache.h) by module path.
         # Module-private headers (Source/Materials/Shader/ShaderSourceCache.h) by module path; the
         # engine headers for the projection depth terms (Engine/Rendering/CameraUtils.h).
         target_include_directories(ShaderVariantKeyTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
@@ -2790,9 +2816,20 @@ if(GTest_FOUND)
         add_test(NAME PipelineWarmProbeTests COMMAND $<TARGET_FILE:PipelineWarmProbeTests>)
 
         # Pipeline cache intern + concrete + LRU + L1 tests.
-        add_executable(PipelineDescHashTests Tests/PipelineDescHashTests.cpp)
+        add_executable(PipelineDescHashTests
+            Tests/PipelineDescHashTests.cpp
+            Tests/SpecializationConstantsTest.cpp)
+        # Standalone consumers link Image objects for the shared image implementation.
+        target_link_libraries(PipelineDescHashTests PRIVATE Image)
+        target_compile_definitions(PipelineDescHashTests PRIVATE GE_HAVE_STB)
+        if(TARGET stb::stb)
+            target_link_libraries(PipelineDescHashTests PRIVATE stb::stb)
+        elseif(STB_INCLUDE_DIRS)
+            target_include_directories(PipelineDescHashTests PRIVATE ${STB_INCLUDE_DIRS})
+        endif()
         target_link_libraries(PipelineDescHashTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
-        rendering_test_link_image(PipelineDescHashTests)
+        # Standalone consumers link Image objects for the shared image implementation.
+        rendering_test_link_logger(PipelineDescHashTests)
         rendering_test_shader_paths(PipelineDescHashTests)
         add_test(NAME PipelineDescHashTests COMMAND $<TARGET_FILE:PipelineDescHashTests>)
 
@@ -3576,8 +3613,17 @@ endif()
 if(GTest_FOUND OR TARGET GTest::gtest)
 
   add_executable(TextureViewTests Tests/TextureViewTests.cpp)
+  # Standalone consumers link Image objects for the shared image implementation.
+  target_link_libraries(TextureViewTests PRIVATE Image)
+  target_compile_definitions(TextureViewTests PRIVATE GE_HAVE_STB)
+  if(TARGET stb::stb)
+    target_link_libraries(TextureViewTests PRIVATE stb::stb)
+  elseif(STB_INCLUDE_DIRS)
+    target_include_directories(TextureViewTests PRIVATE ${STB_INCLUDE_DIRS})
+  endif()
   target_link_libraries(TextureViewTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
-  rendering_test_link_image(TextureViewTests)
+  # Standalone consumers link Image objects for the shared image implementation.
+  rendering_test_link_logger(TextureViewTests)
   rendering_test_shader_paths(TextureViewTests)
   set_target_properties(TextureViewTests PROPERTIES
     CXX_STANDARD 20
@@ -3694,13 +3740,7 @@ endif()
 # UI Shapes demo example (offscreen) and Shape Geometry tests
 # -----------------------------------------------------------------------------
 
-# Every executable that links the GameEngineRendering OBJECT library directly hits
-# the same latent rot: OBJECT->OBJECT object files (Logger, Memory, Image,
-# AssetCore) are not spliced transitively on the VS generator, so they come up as
-# unresolved externals at link time. Rather than hand-maintain a rendering_test_link_image
-# call next to each of the ~150 test targets above, sweep this directory's executables once: any
-# that link GameEngineRendering and have not already been spliced (no Logger objects
-# in their SOURCES yet) get the full helper here.
+# Standalone consumers link Image objects for the shared image implementation.
 get_property(_GE_RENDERING_DIR_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 foreach(_tgt IN LISTS _GE_RENDERING_DIR_TARGETS)
 	get_target_property(_tgt_type ${_tgt} TYPE)

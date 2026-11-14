@@ -16,14 +16,16 @@
 #include <emscripten/html5.h>
 #endif
 
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__APPLE__)
 #include "Display/DisplayChangeListener.h"
+#endif
+
+#if defined(_WIN32)
 #ifndef OEMRESOURCE
 #define OEMRESOURCE
 #endif
 #include <windows.h>
 #elif defined(__APPLE__)
-#include "Display/DisplayChangeListener.h"
 // Forward declarations for macOS Objective-C++ implementations
 extern "C" {
     uint32_t GE_MacOS_GetScreenPixelColor(int screenX, int screenY);
@@ -49,6 +51,7 @@ extern "C" {
     // Window level
     void GE_MacOS_SetWindowAlwaysOnTop(void* nsWindow, bool enable);
     void GE_MacOS_FocusWindow(void* nsWindow);
+    bool GE_MacOS_GetMouseButtonEventPosition(void* nsWindow, int button, double* x, double* y);
     void* GE_MacOS_InstallTitleBarRightClickMonitor(void* nsWindow, void (*callback)(int, int, void*), void* userData);
     void GE_MacOS_RemoveTitleBarRightClickMonitor(void* monitor);
 }
@@ -187,7 +190,6 @@ namespace {
 #endif
     }
 
-    // Set by a display change; the next PollEvents resolves every window's monitor again.
     static bool s_DisplayConfigurationChanged = false;
 #if defined(_WIN32) || defined(__APPLE__)
     static GameEngine::Platform::DisplayChangeListener s_DisplayChangeListener;
@@ -275,7 +277,6 @@ inline void ApplyExecutableIconToWindow(GLFWwindow* handle)
     SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(hIcon));
     SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hIcon));
 }
-
 // Measures the frame of a window that is not fullscreen or minimized: each side of the outer
 // rect minus the client rect. GLFW assumes a standard caption, but a custom title bar puts the
 // caption in the client rect.
@@ -701,6 +702,8 @@ void Window::Destroy()
     glfwSetWindowCloseCallback(m_Handle, nullptr);
     glfwSetDropCallback(m_Handle, nullptr);
     glfwSetWindowUserPointer(m_Handle, nullptr);
+    UnlockCursor();
+    m_CursorHidden = false;
     // Clean up custom cursor
     if (m_Cursor)
     {
@@ -1018,7 +1021,6 @@ void Window::PollEvents()
         ~PollScope() { pollingWindowEvents = false; }
     } scope;
 #if !defined(_WIN32) && !defined(__APPLE__)
-    // Linux and the web have no display-change listener; here every frame reads the monitors again.
     OnDisplayConfigurationChanged();
 #endif
     glfwPollEvents();
@@ -1084,6 +1086,7 @@ void Window::Terminate()
     s_DisplayChangeListener.Destroy();
 #endif
     glfwTerminate();
+    InvalidateMonitors();
     s_GlfwInitialized = false;
 }
 
@@ -1648,20 +1651,24 @@ void Window::MouseButtonThunk(GLFWwindow* win, int button, int action, int mods)
     if (auto* self = FromGLFW(win))
     {
 #if !defined(_WIN32)
-        // Refresh the cursor position ahead of a press: macOS can emit a
-        // spurious cursor-leave when a click focuses a text input (tracking
-        // area churn), which sentinels the UI's cursor position — the press
-        // would then hit-test against nothing and read as an outside click,
-        // dismissing every popup under the pointer. Not on Win32: the patched
-        // GLFW (cmake/ports/glfw3) reports the button message's own point
-        // through the cursor callback just before this one, and querying the
-        // OS cursor now would replace it with wherever the mouse moved since.
-        if (action == GLFW_PRESS && self->m_MouseMove)
+        // Button events carry client coordinates on AppKit. Apply them to both
+        // halves of the gesture so release hit testing uses the release location.
+        if (self->m_MouseMove)
         {
             double cx = 0.0;
             double cy = 0.0;
-            glfwGetCursorPos(win, &cx, &cy);
-            self->m_MouseMove(static_cast<float>(cx), static_cast<float>(cy));
+            bool hasPosition = false;
+#if defined(__APPLE__)
+            hasPosition = GE_MacOS_GetMouseButtonEventPosition(glfwGetCocoaWindow(win), button, &cx, &cy);
+#endif
+            // Focus changes can emit cursor-leave sentinels before a press.
+            if (!hasPosition && action == GLFW_PRESS)
+            {
+                glfwGetCursorPos(win, &cx, &cy);
+                hasPosition = true;
+            }
+            if (hasPosition)
+                self->m_MouseMove(static_cast<float>(cx), static_cast<float>(cy));
         }
 #endif
 #if defined(__linux__)

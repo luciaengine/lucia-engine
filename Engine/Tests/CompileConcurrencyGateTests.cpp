@@ -464,34 +464,11 @@ TEST(CompileConcurrencyGate, ConcurrentMultiSubmitterStress)
     EXPECT_EQ(gate.PendingCount(), 0u) << "gate leaked a pending job";
 }
 
-// The cap leaves two pool workers to the frame's own jobs: over the Player's 8-worker pool the gate
-// admits at most 6 compiles at once, whatever the core count or the env override.
-TEST(CompileConcurrencyGate, CapOverAnEightWorkerPoolAdmitsAtMostSix)
-{
-    constexpr size_t kPoolWorkers = 8;
-    constexpr uint32_t kFrameWorkers = 2;
-    constexpr int kSubmitted = 16;
-    const uint32_t cap = ComputeShaderCompileConcurrencyCap(kPoolWorkers);
-    ManualExecutor executor;
-    CompileConcurrencyGate gate(cap, [&executor](std::function<void()> work, JobPriority priority)
-                                { executor.Dispatch(std::move(work), priority); });
-    for (int i = 0; i < kSubmitted; ++i)
-        gate.Submit([] {}, JobPriority::Background);
-    EXPECT_GE(gate.HighWater(), 1u);
-    EXPECT_LE(gate.HighWater(), kPoolWorkers - kFrameWorkers) << "the gate admitted compiles into the frame's workers";
-    executor.RunAll();
-    EXPECT_EQ(gate.Running(), 0u);
-    EXPECT_EQ(gate.PendingCount(), 0u);
-    EXPECT_EQ(ComputeShaderCompileConcurrencyCap(2), 1u) << "a pool of two workers still admits one compile";
-}
-
 TEST(CompileConcurrencyGate, ComputedCapIsSane)
 {
-    const uint32_t cap = ComputeShaderCompileConcurrencyCap(0);
+    const uint32_t cap = ComputeShaderCompileConcurrencyCap();
     EXPECT_GE(cap, 2u) << "cap must leave at least a minimum of parallelism";
     if (std::getenv("GE_SHADER_COMPILE_CAP") == nullptr)
-    {
         EXPECT_LE(cap, std::max(2u, std::thread::hardware_concurrency()))
             << "derived cap must not exceed the logical core count";
-    }
 }

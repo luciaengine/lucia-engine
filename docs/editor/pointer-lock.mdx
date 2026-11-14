@@ -1,0 +1,5 @@
+# Pointer lock during value drags
+
+Dragging an inspector float, integer, or slider label, a float value box, or a Vector3 axis label hides and locks the pointer after the drag threshold. A click stays unlocked. Movement continues past the window edge. Releasing commits the value and returns the cursor to where the lock began. Escape or another mouse button cancels the drag and restores its starting value.
+
+Controls can request this behavior with `UIManager::LockCapturedPointer` after a captured press becomes a drag. `SetPointerLockCallback` tells the host when the lock begins or ends. The lock belongs to that capture and ends when the capture is released, replaced, or destroyed. A game's pointer-lock request takes priority over an editor value drag and uses raw mouse motion where available. A UI drag uses accelerated cursor motion.

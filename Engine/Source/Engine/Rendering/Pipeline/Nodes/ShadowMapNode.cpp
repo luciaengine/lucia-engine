@@ -388,6 +388,7 @@ void ShadowMapNode::DeclareForView(ViewDeclare& d)
     // A terrain map published after this node (CBTRender declared later) is written into this
     // upload by the feature, so the declare order does not decide whether the term arrives.
     feature->AttachShadowDataUpload(viewId, d.Frame.FrameIndex(), sd.Ptr);
+    rs->PublishDirectionalShadowDataRG(d.Frame, viewId, sd);
     d.PublishBuffer(m_BufferRef.empty() ? std::string(Names::Res::ShadowData) : m_BufferRef,
                     {sd.Buffer, sd.Offset, sizeof(ShadowDataGPU), /*Graph*/ {}});
 

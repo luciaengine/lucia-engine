@@ -6,13 +6,9 @@
 //
 //   1. Light level  — is the light's range sphere potentially inside the view?
 //                      An out-of-range / off-screen light declares NO faces.
-//   2. Per face     — can face f's 90° cube-face frustum affect any visible
-//                      fragment? A shaded fragment samples EXACTLY ONE cube
-//                      face (largest-axis of light->fragment), so a face whose
-//                      frustum cannot intersect the camera frustum can never be
-//                      the sampled face for an on-screen pixel — skipping it is
-//                      free correctness (design §4.3), provided the test is
-//                      conservative.
+//   2. Per face     — can a visible fragment sample face f's 90° frustum?
+//                      The keep margin covers the receiver normal bias and
+//                      filter taps that cross onto adjacent faces.
 //
 // The per-face test is a conservative separating-axis test over the two
 // frustums' FACE-NORMAL axes only (skipping edge-cross axes). SAT proves two

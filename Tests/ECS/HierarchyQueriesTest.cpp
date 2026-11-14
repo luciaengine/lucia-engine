@@ -6,23 +6,16 @@
 #include "ECS/Entity.h"
 #include "ECS/ECSTemplates.h"
 #include "TestComponents.h"
-#include "Memory/Testing/ScopedAllocationFault.h"
 
 #include <algorithm>
-#include <new>
-#include <optional>
 
 using namespace GameEngine::ECS;
 using GameEngine::Components::Parent;
 using GameEngine::Components::ParentRelationIndex;
 using GameEngine::Components::ChildrenOf;
 using GameEngine::Components::DescendantsOf;
-using GameEngine::Components::DestroySubtreeImmediate;
 using GameEngine::Components::IsDescendantOf;
 using GameEngine::ECS::test::Position;
-using GameEngine::ECS::test::Velocity;
-using GameEngine::Memory::Testing::FaultRepeat;
-using GameEngine::Memory::Testing::ScopedAllocationFault;
 
 namespace {
 
@@ -35,16 +28,6 @@ static EntityHandle MakeNode(World& w, EntityHandle parent = {}) {
 
 static bool Contains(const std::vector<EntityHandle>& v, EntityHandle e) {
     return std::find(v.begin(), v.end(), e) != v.end();
-}
-
-std::vector<EntityHandle> removedOrder;
-EntityHandle denyAllocationsAfter;
-std::optional<ScopedAllocationFault> deniedAllocations;
-
-// Records the removal order. After `denyAllocationsAfter` is removed, every allocation fails.
-static void RecordRemoval(EntityHandle entity, Position&) {
-    removedOrder.push_back(entity);
-    if (entity == denyAllocationsAfter) deniedAllocations.emplace(0, 1, FaultRepeat::Every);
 }
 
 } // namespace
@@ -207,8 +190,8 @@ TEST(HierarchyQueries, IsDescendantOf_DepthCapReturnsFalseBeyondLimit) {
     EntityHandle probe = cur;
     for (int i = 0; i < 100; ++i) {
         auto* p = w.GetComponent<Parent>(probe);
-        if (!p || !p->Entity.IsValid()) break;
-        probe = p->Entity;
+        if (!p || !p->parent.IsValid()) break;
+        probe = p->parent;
     }
     EXPECT_TRUE(IsDescendantOf(w, cur, probe));
 

@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <memory>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -8,6 +9,7 @@
 #include "Logger/Logger.h"
 #include "Scripting/ScriptingABI.h"
 #include "Scripting/ScriptingTestHooks.h"
+#include "TestTempDir.h"
 
 using namespace std::filesystem;
 
@@ -31,6 +33,15 @@ static void SetEnvGeLogFile(const std::string& path)
 }
 #endif
 
+// Both tests leave a file sink attached and GE_LOGFILE pointing into this directory when
+// they end, so it lives for the whole process.
+static const path& LoggerBridgeTempDirectory()
+{
+    static const GameEngine::TestUtils::ScopedTempDir directory(
+        GameEngine::TestUtils::MakeUniqueTempDirectory("GE_LoggerBridgeTests"));
+    return directory.Path();
+}
+
 static std::string ReadAllText(const path& p)
 {
     std::ifstream ifs(p, std::ios::in | std::ios::binary);
@@ -51,13 +62,8 @@ TEST(ScriptingAbiLoggerBridge, AttachesFileSinkWhenNoSinksAndGeLogFileSet)
     // Ensure no sinks are present before the first GE_Log call.
     EXPECT_EQ(Log::GetSinkCount(), static_cast<size_t>(0));
 
-    path tmpDir = temp_directory_path() / "GE_LoggerBridgeTests";
-    create_directories(tmpDir);
+    path tmpDir = LoggerBridgeTempDirectory();
     path logPath = tmpDir / "bridge_no_sinks.log";
-    if (exists(logPath))
-    {
-        remove(logPath);
-    }
 
     SetEnvGeLogFile(logPath.string());
 
@@ -77,13 +83,9 @@ TEST(ScriptingAbiLoggerBridge, RespectsPreconfiguredSinksAndIgnoresGeLogFile)
     GameEngine::ResetNativeLoggerBridgeForTests();
 
     // Manually configure a file sink before the first GE_Log call.
-    path tmpDir = temp_directory_path() / "GE_LoggerBridgeTests";
-    create_directories(tmpDir);
+    path tmpDir = LoggerBridgeTempDirectory();
     path preconfiguredPath = tmpDir / "bridge_preconfigured.log";
     path ignoredPath = tmpDir / "bridge_ignored.log";
-
-    if (exists(preconfiguredPath)) remove(preconfiguredPath);
-    if (exists(ignoredPath)) remove(ignoredPath);
 
     Logger::Log::Config cfg;
     cfg.GlobalMinLevel = Logger::LogLevel::Debug;

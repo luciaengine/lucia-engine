@@ -184,10 +184,11 @@ void MorphTargetSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     query.IncludeDisabled<Components::MorphTargetWeights>();
     query.Each([&](ECS::EntityHandle entity,
                    const Components::MeshRenderer& meshRenderer,
-                   Components::MorphTargetWeights& morph,
+                   ECS::Writable<Components::MorphTargetWeights> morphRow,
                    const Components::LocalBounds* localBounds,
                    const ECS::ComponentDisabled<Components::MorphTargetWeights>* morphOff)
     {
+        auto& morph = morphRow.Mutable();
         const GUID modelGuid = meshRenderer.modelAssetGuid.ToGuid();
         if (modelGuid.IsNull())
             return;

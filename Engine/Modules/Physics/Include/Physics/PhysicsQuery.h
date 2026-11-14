@@ -6,12 +6,9 @@
 
 namespace GameEngine::Physics
 {
-/// Which bodies a query sees.
 struct CollisionFilter
 {
-    /// Bit n set: bodies on collision layer n are seen; the others are passed through as if absent.
     uint32 layerMask = 0xFFFFFFFFu;
-    /// Sensors (trigger bodies) are passed through when set, and seen like solid bodies when not.
     bool ignoreSensors = false;
 
     bool PassesLayer(CollisionLayer layer) const

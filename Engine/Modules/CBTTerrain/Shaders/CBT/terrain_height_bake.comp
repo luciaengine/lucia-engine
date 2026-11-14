@@ -67,6 +67,11 @@ layout(push_constant) uniform PushConstants
     // read back as `normalized * HeightScale + TerrainOriginY`, so a world-space flatten target
     // is measured against it. Mirrors NormalizedHeightForWorldY in TerrainModifierSystem.h.
     float TerrainOriginY;
+    uint NormalReadsUploadedHeight;
+    uint NormalNeighborLeft;
+    uint NormalNeighborRight;
+    uint NormalNeighborUp;
+    uint NormalNeighborDown;
     float BaseAmplitude; // the base stack's Amplitude (Terrain::TerrainNoiseStack)
 } pc;
 
@@ -89,9 +94,15 @@ CBTAtlasParams MakeAtlasParams()
 layout(r32f,  set = 0, binding = 0) uniform readonly  image2D gAtlasHeightRead;
 layout(rg16f, set = 0, binding = 1) uniform writeonly image2D gAtlasNormalStorage;
 
-float LoadH(CBTAtlasParams ap, int sx, int sz)
+float LoadH(CBTAtlasParams ap, ivec2 sampleCoord, uint neighborSlot, ivec2 neighborCoord)
 {
-    return imageLoad(gAtlasHeightRead, CBT_AtlasSlotTexel(pc.Slot, ivec2(sx, sz), ap)).r;
+    if (pc.NormalReadsUploadedHeight == 0u)
+        return imageLoad(gAtlasHeightRead, CBT_AtlasSlotTexel(pc.Slot, sampleCoord, ap)).r;
+    int last = int(pc.TileRes) - 1;
+    ivec2 local = clamp(sampleCoord, ivec2(0), ivec2(last));
+    if (any(notEqual(local, sampleCoord)) && neighborSlot != CBT_ATLAS_NO_SLOT)
+        return imageLoad(gAtlasHeightRead, CBT_AtlasSlotTexel(neighborSlot, neighborCoord, ap)).r;
+    return imageLoad(gAtlasHeightRead, CBT_AtlasSlotTexel(pc.Slot, local, ap)).r;
 }
 
 void main()
@@ -113,10 +124,11 @@ void main()
     float spacingX = pc.TileSize / denom;
     float spacingZ = pc.TileSize / denom;
 
-    float hL = LoadH(ap, sx - 1, sz);   // apron at a slot edge = neighbour continuation
-    float hR = LoadH(ap, sx + 1, sz);
-    float hD = LoadH(ap, sx, sz - 1);
-    float hU = LoadH(ap, sx, sz + 1);
+    int lastX = int(pc.TileRes) - 1;
+    float hL = LoadH(ap, ivec2(sx - 1, sz), pc.NormalNeighborLeft, ivec2(lastX - 1, sz));
+    float hR = LoadH(ap, ivec2(sx + 1, sz), pc.NormalNeighborRight, ivec2(1, sz));
+    float hD = LoadH(ap, ivec2(sx, sz - 1), pc.NormalNeighborUp, ivec2(sx, lastX - 1));
+    float hU = LoadH(ap, ivec2(sx, sz + 1), pc.NormalNeighborDown, ivec2(sx, 1));
     float dx = (hR - hL) / (spacingX * 2.0);
     float dz = (hU - hD) / (spacingZ * 2.0);
     vec3 n = normalize(vec3(-dx, 1.0, -dz));
@@ -127,7 +139,6 @@ void main()
 
     // Normal apron: duplicate the interior edge into the 1-texel apron (clamp-sample straddle
     // guard). The shared edge is already seamless, so a duplicate is exact here.
-    int lastX = int(pc.TileRes) - 1;
     bool eL = (sx == 0), eR = (sx == lastX), eD = (sz == 0), eU = (sz == lastX);
     if (eL) imageStore(gAtlasNormalStorage, texel + ivec2(-1, 0), pk);
     if (eR) imageStore(gAtlasNormalStorage, texel + ivec2( 1, 0), pk);

@@ -1,10 +1,12 @@
 #include "MetalShaderTranslator.h"
 
-#include "Types/Fnv1a.h"
 #include "MetalArgumentBufferLayout.h"
+#include "MetalDirectBindings.h"
 #include "Rendering/Core/SpecializationConstants.h"
 
 #include "Logger/Logger.h"
+#include "Types/Fnv1a.h"
+#include "Platform/Environment.h"
 
 #include <Metal/Metal.hpp>
 #include <spirv_cross/spirv_msl.hpp>
@@ -29,18 +31,12 @@ namespace
 // editor); macOS's automatic shader cache only covers the Metal compiler
 // stages after it. Keyed by a content hash of every translation input.
 // GE_METAL_NO_MSL_CACHE=1 disables it when bisecting translator changes.
-constexpr uint32_t kMslCacheVersion = 1; // bump when a translator change alters the MSL it writes
+constexpr uint32_t kMslCacheVersion = 4;
 
-uint64_t Fnv1a(const void* data, size_t size, uint64_t hash)
-{
-    const auto* bytes = static_cast<const uint8_t*>(data);
-    for (size_t i = 0; i < size; ++i)
-    {
-        hash ^= bytes[i];
-        hash *= 1099511628211ull;
-    }
-    return hash;
-}
+// Seed of the MSL cache key. It is not the FNV-1a offset basis (one digit
+// short), but the key names cache files on disk: changing it orphans every
+// cached translation.
+constexpr uint64_t kMslCacheKeySeed = 1469598103934665603ull;
 
 // Specialization entries by id: the key must not depend on the order of insertion.
 std::vector<std::pair<uint32_t, SpecializationConstants::Entry>> SortedSpecialization(
@@ -55,20 +51,28 @@ std::vector<std::pair<uint32_t, SpecializationConstants::Entry>> SortedSpecializ
 }
 
 // SPIR-V to MSL options. They are the same for every stage; ComputeMetalLibraryOptionsHash hashes them.
-spirv_cross::CompilerMSL::Options MakeMslOptions()
+spirv_cross::CompilerMSL::Options MakeMslOptions(bool tier2ArgumentBuffers = true)
 {
     spirv_cross::CompilerMSL::Options options{};
+#if defined(GE_PLATFORM_IOS)
+    options.platform = spirv_cross::CompilerMSL::Options::iOS;
+    options.set_msl_version(tier2ArgumentBuffers ? 3 : 2, tier2ArgumentBuffers ? 0 : 3);
+#else
     options.platform = spirv_cross::CompilerMSL::Options::macOS;
     options.set_msl_version(3, 0);
-    options.argument_buffers = true;
-    options.argument_buffers_tier = spirv_cross::CompilerMSL::Options::ArgumentBuffersTier::Tier2;
-    options.force_active_argument_buffer_resources = true;
+#endif
+    options.argument_buffers = tier2ArgumentBuffers;
+    options.buffer_size_buffer_index = kMetalDirectBufferSizesIndex;
+    options.argument_buffers_tier = tier2ArgumentBuffers
+        ? spirv_cross::CompilerMSL::Options::ArgumentBuffersTier::Tier2
+        : spirv_cross::CompilerMSL::Options::ArgumentBuffersTier::Tier1;
+    options.force_active_argument_buffer_resources = tier2ArgumentBuffers;
     // Positional padding is load-bearing: the GPU reads the argument
     // buffer through the generated struct, so member POSITION is the
     // memory offset. Padding keeps position == [[id(n)]] for bindings a
     // stage doesn't use, matching the contiguous slot ids assigned in
     // ComputeMetalArgumentBufferLayout.
-    options.pad_argument_buffer_resources = true;
+    options.pad_argument_buffer_resources = tier2ArgumentBuffers;
     options.pad_fragment_output_components = true;
     options.texture_buffer_native = true;
     // The swizzle-buffer default (30) collides with the engine's push
@@ -81,16 +85,23 @@ spirv_cross::CompilerMSL::Options MakeMslOptions()
 
 uint64_t ComputeTranslationHash(const std::vector<uint8_t>& spirv, MetalShaderStage stage,
                                 const std::vector<const DescriptorSetLayoutDesc*>& setLayouts,
-                                const SpecializationConstants* specialization)
+                                const SpecializationConstants* specialization, bool tier2ArgumentBuffers)
 {
-    uint64_t hash = Fnv1a(&kMslCacheVersion, sizeof(kMslCacheVersion), 1469598103934665603ull);
-    hash = Fnv1a(spirv.data(), spirv.size(), hash);
+    uint64_t hash = Hashing::Fnv1a64(&kMslCacheVersion, sizeof(kMslCacheVersion), Hashing::kFnv1a64OffsetBasis);
+    hash = Hashing::Fnv1a64(&tier2ArgumentBuffers, sizeof(tier2ArgumentBuffers), hash);
+#if defined(GE_PLATFORM_IOS)
+    constexpr uint32_t platform = 1;
+#else
+    constexpr uint32_t platform = 0;
+#endif
+    hash = Hashing::Fnv1a64(&platform, sizeof(platform), hash);
+    hash = Hashing::Fnv1a64(spirv.data(), spirv.size(), hash);
     const uint32_t stageValue = static_cast<uint32_t>(stage);
-    hash = Fnv1a(&stageValue, sizeof(stageValue), hash);
+    hash = Hashing::Fnv1a64(&stageValue, sizeof(stageValue), hash);
     for (const DescriptorSetLayoutDesc* layout : setLayouts)
     {
         const uint32_t marker = layout != nullptr ? 1u : 0u;
-        hash = Fnv1a(&marker, sizeof(marker), hash);
+        hash = Hashing::Fnv1a64(&marker, sizeof(marker), hash);
         if (layout == nullptr)
         {
             continue;
@@ -99,13 +110,13 @@ uint64_t ComputeTranslationHash(const std::vector<uint8_t>& spirv, MetalShaderSt
         {
             const uint32_t fields[5] = {binding.binding, static_cast<uint32_t>(binding.type), binding.count,
                                         binding.shaderStages, binding.flags};
-            hash = Fnv1a(fields, sizeof(fields), hash);
+            hash = Hashing::Fnv1a64(fields, sizeof(fields), hash);
         }
     }
     for (const auto& [id, entry] : SortedSpecialization(specialization))
     {
-        hash = Fnv1a(&id, sizeof(id), hash);
-        hash = Fnv1a(specialization->GetDataPtr() + entry.Offset, entry.Size, hash);
+        hash = Hashing::Fnv1a64(&id, sizeof(id), hash);
+        hash = Hashing::Fnv1a64(specialization->GetDataPtr() + entry.Offset, entry.Size, hash);
     }
     return hash;
 }
@@ -131,9 +142,14 @@ uint64_t ComputeMetalLibraryOptionsHash(bool fastMath)
 
 std::vector<std::string> MetalLibraryCompileFlags(bool fastMath)
 {
+#if defined(GE_PLATFORM_IOS)
+    constexpr const char* kDeploymentFlag = "-mios-version-min=" GE_METAL_DEPLOYMENT_TARGET;
+#else
+    constexpr const char* kDeploymentFlag = "-mmacosx-version-min=" GE_METAL_DEPLOYMENT_TARGET;
+#endif
     return {fastMath ? "-ffast-math" : "-fno-fast-math",
             std::format("-std=metal{}.{}", kMetalLanguageMajor, kMetalLanguageMinor),
-            "-mmacosx-version-min=" GE_MACOS_DEPLOYMENT_TARGET};
+            kDeploymentFlag};
 }
 
 // The depth prepass and the color pass compile one vertex shader into two pipelines. The reverse-Z
@@ -162,10 +178,7 @@ namespace
 
 bool MslCacheEnabled()
 {
-    static const bool kDisabled = []() {
-        const char* env = std::getenv("GE_METAL_NO_MSL_CACHE");
-        return env != nullptr && env[0] != '0';
-    }();
+    static const bool kDisabled = Platform::EnvironmentSwitchEnabled("GE_METAL_NO_MSL_CACHE", false);
     return !kDisabled;
 }
 
@@ -254,15 +267,19 @@ spv::ExecutionModel ToExecutionModel(MetalShaderStage stage)
 }
 
 void AddLayoutBindings(spirv_cross::CompilerMSL& compiler, spv::ExecutionModel model,
-                       const std::vector<const DescriptorSetLayoutDesc*>& setLayouts)
+                       const std::vector<const DescriptorSetLayoutDesc*>& setLayouts, bool tier2ArgumentBuffers)
 {
+    std::vector<MetalArgumentBufferLayout> layouts;
+    for (const auto* layout : setLayouts)
+        layouts.push_back(layout ? ComputeMetalArgumentBufferLayout(*layout) : MetalArgumentBufferLayout{});
+    if (!tier2ArgumentBuffers) layouts = ComputeMetalDirectBindings(layouts);
     for (uint32_t set = 0; set < setLayouts.size(); ++set)
     {
         if (setLayouts[set] == nullptr)
         {
             continue;
         }
-        const MetalArgumentBufferLayout layout = ComputeMetalArgumentBufferLayout(*setLayouts[set]);
+        const MetalArgumentBufferLayout& layout = layouts[set];
         for (const MetalArgumentSlot& slot : layout.Slots)
         {
             spirv_cross::MSLResourceBinding binding{};
@@ -323,6 +340,7 @@ void AddLayoutBindings(spirv_cross::CompilerMSL& compiler, spv::ExecutionModel m
         // resource (emitted as an invalid reinterpret_cast). Reserve the slot
         // right after the layout's resources; CreateDescriptorSet stores there
         // the address of the sizes it keeps after the set's table.
+        if (!tier2ArgumentBuffers) continue;
         spirv_cross::MSLResourceBinding sizeBinding{};
         sizeBinding.stage = model;
         sizeBinding.basetype = spirv_cross::SPIRType::Void;
@@ -415,7 +433,7 @@ void ApplySpecializationConstants(spirv_cross::CompilerMSL& compiler, const Spec
 MetalShaderTranslation TranslateSpirvToMsl(const std::vector<uint8_t>& spirv,
                                            MetalShaderStage stage,
                                            const std::vector<const DescriptorSetLayoutDesc*>& setLayouts,
-                                           const SpecializationConstants* specialization)
+                                           const SpecializationConstants* specialization, bool tier2ArgumentBuffers)
 {
     MetalShaderTranslation result{};
     if (spirv.size() < 4 || (spirv.size() % 4) != 0)
@@ -427,7 +445,7 @@ MetalShaderTranslation TranslateSpirvToMsl(const std::vector<uint8_t>& spirv,
     std::filesystem::path cachePath;
     if (MslCacheEnabled())
     {
-        cachePath = MslCachePath(ComputeTranslationHash(spirv, stage, setLayouts, specialization));
+        cachePath = MslCachePath(ComputeTranslationHash(spirv, stage, setLayouts, specialization, tier2ArgumentBuffers));
         if (TryLoadCachedMsl(cachePath, result))
         {
             return result;
@@ -445,9 +463,9 @@ MetalShaderTranslation TranslateSpirvToMsl(const std::vector<uint8_t>& spirv,
         const std::string spirvEntryName(compiler.get_entry_points_and_stages()[0].name);
         compiler.set_entry_point(spirvEntryName, model);
 
-        compiler.set_msl_options(MakeMslOptions());
+        compiler.set_msl_options(MakeMslOptions(tier2ArgumentBuffers));
 
-        AddLayoutBindings(compiler, model, setLayouts);
+        AddLayoutBindings(compiler, model, setLayouts, tier2ArgumentBuffers);
         ApplySpecializationConstants(compiler, specialization);
         if (stage == MetalShaderStage::Vertex)
         {

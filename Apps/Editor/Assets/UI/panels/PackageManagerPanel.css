@@ -22,6 +22,19 @@
 
 /* ---- Toolbar: global actions (add / browse / refresh) ---- */
 
+.pkg-search {
+    flex: 0 0 auto;
+    width: 100%;
+    min-width: 0;
+}
+
+.pkg-refresh-status {
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: #70C080;
+    white-space: nowrap;
+}
+
 .package-manager-panel .pkg-toolbar {
     display: flex;
     flex-direction: row;
@@ -221,7 +234,8 @@
     display: flex;
     flex-direction: row;
     align-items: center;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    flex: 0 0 auto;
     gap: 4px;
     min-width: 0;
 }
@@ -240,7 +254,11 @@
 .package-manager-panel .pkg-pill.git      { background-color: #223A55; color: #8FC0FF; }
 .package-manager-panel .pkg-pill.file     { background-color: #263A2A; color: #9FD09F; }
 .package-manager-panel .pkg-pill.embedded { background-color: #352C4E; color: #C4AEF0; }
-.package-manager-panel .pkg-pill.engine   { background-color: #333333; color: #B0B0B0; }
+.pkg-pill.engine {
+    font-size: 12px;
+    background-color: rgba(76, 151, 240, 0.16);
+    color: #9FCFFF;
+}
 
 .package-manager-panel .pkg-badge {
     flex: 0 0 auto;
@@ -284,10 +302,44 @@
 .package-manager-panel .pkg-detail-head {
     display: flex;
     flex-direction: row;
-    align-items: baseline;
+    align-items: center;
     flex-wrap: wrap;
     gap: 8px;
     min-width: 0;
+}
+
+.pkg-row-icon {
+    flex: 0 0 24px;
+    width: 24px;
+    height: 24px;
+    background-repeat: no-repeat;
+    background-size: contain;
+    background-position: center;
+    pointer-events: none;
+}
+
+.pkg-detail-icon {
+    flex: 0 0 36px;
+    width: 36px;
+    height: 36px;
+    background-repeat: no-repeat;
+    background-size: contain;
+    background-position: center;
+    pointer-events: none;
+}
+
+.pkg-screenshot {
+    flex: 0 0 auto;
+    width: 100%;
+    max-width: 480px;
+    aspect-ratio: 16/9;
+    background-color: var(--ui_color_bg_panel);
+    background-repeat: no-repeat;
+    background-size: contain;
+    background-position: center;
+    border-radius: 6px;
+    margin-top: 4px;
+    margin-bottom: 8px;
 }
 
 .package-manager-panel .pkg-detail-name {

@@ -1,6 +1,10 @@
+#include "Engine/Rendering/Pipeline/RenderPipeline.h"
+#include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
 #include "Engine/Hosting/RuntimeHost.h"
+#include "SplineRecipes/SplineRecipeSystem.h"
 
 #include "Assets/AssetManager.h"
+#include "Assets/AssetRegistry.h"
 #include "Components/Rendering/Camera.h"
 #include "Components/Transform.h"
 #include "Core/Application.h"
@@ -33,13 +37,14 @@
 #include "UI/UIManager.h"
 #include "UI/UITextureSpace.h"
 
+#if !defined(GE_PLATFORM_MOBILE)
+#include <GLFW/glfw3.h>
+#endif
 #include <cstdio>
 #include <cstdlib>
 #include <optional>
 #include <span>
 #include <utility>
-
-#include <GLFW/glfw3.h>
 
 namespace GameEngine {
 
@@ -60,6 +65,7 @@ void ApplyFullscreenMode(Platform::Window& window, WindowMode mode)
         if (window.IsFullscreen())
             window.SetFullscreen(false);
         window.SetDecorated(false);
+#if !defined(GE_PLATFORM_MOBILE)
         GLFWmonitor* monitor = glfwGetPrimaryMonitor();
         const GLFWvidmode* videoMode = monitor ? glfwGetVideoMode(monitor) : nullptr;
         if (videoMode)
@@ -67,6 +73,7 @@ void ApplyFullscreenMode(Platform::Window& window, WindowMode mode)
             window.SetPosition(0, 0);
             window.SetWindowSize(videoMode->width, videoMode->height);
         }
+#endif
         break;
     }
 
@@ -184,9 +191,7 @@ void RuntimeHost::FollowFramebufferSize(int width, int height)
 bool RuntimeHost::InitRendering()
 {
     // Headless: no render device. The engine's schedule still runs every frame, with no
-    // render services, so physics, pathfinding and script systems tick. Terrain height,
-    // ocean buoyancy and the skeleton binding of scene-loaded skinned meshes come from
-    // render-side work and are absent.
+    // render services, so physics, pathfinding, animation and script systems tick.
     if (m_Application.GetConfig().Headless)
     {
         auto& engine = EngineCore::GetInstance();
@@ -287,6 +292,9 @@ bool RuntimeHost::InitRendering()
     // Engine-wide AA + render scale, cooked into game.config the same way.
     // Cameras with mode Default inherit these; per-camera overrides still win.
     m_Desc.RenderQuality.ApplyTo(*rs);
+    std::string sortingError;
+    if (!Rendering::SortingLayers::SetCurrent(m_Desc.SortingLayers, sortingError))
+        Logger::Log::Error("Runtime sorting layers: {}", sortingError);
     Logger::Log::Info(
         "Runtime: Applied render quality settings (aaMode={}, msaa={} sample(s), renderScale={})",
         static_cast<uint32_t>(rs->GetDefaultAntiAliasingMode()), rs->GetDefaultMSAASampleCount(),
@@ -318,6 +326,17 @@ Engine::Renderer::PipelineResolveFailure RuntimeHost::LoadRenderPipeline()
     Logger::Log::Info("Runtime: render pipeline '{}' applied", requested.generic_string());
     return Engine::Renderer::PipelineResolveFailure::None;
 }
+
+namespace
+{
+void ReleaseSceneRecipes(EngineCore& engine, ECS::World& world)
+{
+    auto* loop = engine.GetRenderingLoop();
+    auto* systems = loop ? loop->GetSystemManager() : nullptr;
+    if (auto* recipes = systems ? systems->GetSystem<SplineRecipes::SplineRecipeSystem>() : nullptr)
+        recipes->ReleaseSceneScoped(world);
+}
+} // namespace
 
 void RuntimeHost::EnsureCamera(ECS::World& world)
 {
@@ -399,7 +418,6 @@ void RuntimeHost::Render(float deltaTime)
 
             if (m_ViewId != 0)
             {
-                // The view draws the camera's Visible Layers.
                 Engine::Renderer::DeclareGameCameraView(rs->Views(), m_ViewId, &*activeCam);
                 rs->Views().SetViewWorldId(m_ViewId, world->GetWorldId());
                 // Two-phase HZB occlusion for the shipped player's main view,
@@ -419,6 +437,7 @@ void RuntimeHost::Render(float deltaTime)
                     .SampleCount;
 
             Engine::Renderer::ApplyActiveCameraAspect(*rs, m_ViewId, m_CameraId, *activeCam, w, h);
+            m_IncludeUIInPostProcessing = activeCam->params.IncludeUIInPostProcessing;
             rs->Views().SetCameraVolumeLayers(m_CameraId, activeCam->params.VolumeLayers);
             rs->Views().SetCameraExposure(m_CameraId, Engine::Renderer::ToCameraExposure(activeCam->params));
             // Per-camera render scale: an explicit value pins this view to a
@@ -520,14 +539,7 @@ void RuntimeHost::RenderFrameRG(Engine::Renderer::RenderServices& rs,
 
     Rendering::ViewClearConfig clear{};
     clear.clearColor = true;
-    if (useBlackClear)
-    {
-        clear.clearColorValue = ColorLinear(0.0f, 0.0f, 0.0f, 1.0f);
-    }
-    else
-    {
-        clear.clearColorValue = ColorLinear(0.02f, 0.02f, 0.02f, 1.0f);
-    }
+    clear.clearColorValue = useBlackClear ? ColorLinear(0, 0, 0, 1) : ColorLinear(0.02f, 0.02f, 0.02f, 1);
     clear.clearDepth = true;
     clear.clearDepthValue = Rendering::ReverseZ::kClearFar;
     rs.Views().SetViewClearConfig(m_ViewId, clear);
@@ -547,8 +559,10 @@ void RuntimeHost::RenderFrameRG(Engine::Renderer::RenderServices& rs,
         m_GameUI = GameUIHost::CreateForHost(
             &device, &EngineCore::GetInstance().GetAssetManager(),
             &EngineCore::GetInstance().GetJobSystem(),
-            // The host owns its FinalColor target.
-            /*neverClearTarget=*/false);
+            // Default HUD font from the project asset root (Assets/Fonts/Roboto-Regular.ttf),
+            // staged beside a development runtime and shipped with every export. The host
+            // owns its FinalColor target.
+            EngineCore::GetInstance().GetResolvedAssetRoot(), /*neverClearTarget=*/false);
         m_GameUI->GetUIManager()->SetScaleSettings(m_Desc.UIScale);
     }
     GameUI::SetHost(m_GameUI.get());
@@ -578,6 +592,31 @@ void RuntimeHost::RenderFrameRG(Engine::Renderer::RenderServices& rs,
         params.ViewTargets = std::span<const Engine::Renderer::Pipeline::ViewTargetsRG>(&vt, 1);
     params.BuildWorldDrawListsIfReady = false; // the ECS loop builds keys during Update
     params.DeltaTime = deltaTime;
+    if (auto* pipeline = rs.Spine().PipelineInstanceForFrame(*m_RenderGraphStream.Frame))
+    {
+        const std::weak_ptr<uint8_t> lifetime = m_UiPostProcessLifetime;
+        pipeline->SetBeforePostProcessCallback(this, [this, lifetime, hasHudDocuments](
+            Engine::Renderer::Pipeline::ViewDeclare& d) {
+            if (lifetime.expired() || !hasHudDocuments || !m_IncludeUIInPostProcessing ||
+                d.View.id != m_ViewId || !d.ViewColor.IsValid() ||
+                m_UiCompositedFrame == d.Frame.FrameIndex())
+                return;
+            auto* services = EngineCore::GetInstance().GetRenderServices();
+            auto* device = services ? services->GetDevice() : nullptr;
+            if (!device)
+                return;
+            const auto& desc = d.Frame.Graph().ResourceDesc(d.ViewColor.Id);
+            // Keep the UI pending for the resolved/final target: its pipelines
+            // cannot draw into a multisampled attachment.
+            if (desc.SampleCount > 1)
+                return;
+            m_GameUI->UpdateAndRender(d.Frame, d.ViewColor,
+                UI::UITargetSpace::ForPipelineOutput(services->GetPipelineOutputSpaceRG(),
+                                                     device->GetActiveHdrOutputMode()),
+                desc.Width, desc.Height);
+            m_UiCompositedFrame = d.Frame.FrameIndex();
+        });
+    }
     rs.Spine().BuildFrameGraph(*m_RenderGraphStream.Frame, params);
 
     // Covered: the single-sample view target the menu owns (the resolve when MSAA is
@@ -688,7 +727,7 @@ void RuntimeHost::RenderFrameRG(Engine::Renderer::RenderServices& rs,
                 presentSrc = view.Image;
                 finalizeInput = Rendering::Passes::FinalizeInputSpace::EncodedSrgb;
             }
-            if (hasHudDocuments)
+            if (hasHudDocuments && m_UiCompositedFrame != m_RenderGraphStream.Frame->FrameIndex())
             {
                 // The HUD's target is whatever the chain finished with, and its
                 // blend space is that image's PRODUCER stamp — never the display's.
@@ -755,15 +794,9 @@ void RuntimeHost::RenderFrameRG(Engine::Renderer::RenderServices& rs,
         }
     }
 
+    const uint64_t submittedFramesBefore = m_RenderGraphStream.Frame->SubmittedFrameCount();
     m_RenderGraphStream.Frame->Execute();
-
-    // Stamp the frame's graphics token onto the CPU-readback pendings
-    // (GPU-culling visibility + SDSM bounds) queued during declaration.
-    rs.Spine().OnFrameSubmittedRG(*m_RenderGraphStream.Frame, m_RenderGraphStream.Frame->SubmissionToken());
-
-    // Every readback declared on the frame, the composite hook's and any pass's,
-    // becomes pollable only once it carries this frame's submission token.
-    Rendering::OnFrameSubmittedReadbacksRG(*m_RenderGraphStream.Frame, m_RenderGraphStream.Frame->SubmissionToken());
+    Engine::Renderer::NotifyRenderGraphExecution(*m_RenderGraphStream.Frame, submittedFramesBefore, &rs.Spine());
 
     // GE_RG_DIAG=1: a pass dump and per-pass GPU timings.
     if (m_RenderGraphDiagnostics && m_RGFrameIndex == 2)
@@ -823,9 +856,13 @@ void RuntimeHost::Shutdown()
     // manager and rendering device. Destroy it before the render context and
     // EngineCore are torn down, rather than leaving it until the host's
     // destructor after those services are gone.
+    m_UiPostProcessLifetime.reset();
     m_GameUI.reset();
 
-    EngineCore::GetInstance().DisableRenderingLoop();
+    auto& engine = EngineCore::GetInstance();
+    if (auto* world = engine.GetPrimaryWorld())
+        ReleaseSceneRecipes(engine, *world);
+    engine.DisableRenderingLoop();
 
     if (m_RenderCtx)
     {

@@ -1,23 +1,20 @@
-// Headless tests for the point-shadow face-cull math (arc slice S1). The mask
-// is pure geometry, so these exercise it directly with hand-built cameras and
-// lights — no device, no RenderServices.
-//
-// The load-bearing property: NO visible fragment may sample a culled face. Each
-// property test samples world points that are both inside the camera frustum
-// and within the light range, computes the cube face each would sample (exactly
-// as GE_PointShadowFace does), and asserts that face is KEPT. A keep-biased test
-// may keep extra faces (safe) but must never drop one a visible fragment needs.
+// Headless geometry checks for point-shadow face culling. Visible receiver
+// centers and every contributing filtered face must remain in the kept mask.
+// The footprint control uses the production cube projections and culler.
 
 #include "Engine/Rendering/PointShadowFaceCull.h"
+#include "Engine/Rendering/RenderServices.h"
+#include "../Source/Engine/Rendering/RenderServicesDetail.h"
 
 #include "Mathematics/MatrixOps.h"
 #include "Mathematics/Vector3.h"
 #include "Mathematics/Vector4.h"
 #include "Rendering/Common/Frustum.h"
 
-#include <gtest/gtest.h>
-
+#include <algorithm>
 #include <cmath>
+
+#include <gtest/gtest.h>
 
 namespace
 {
@@ -296,4 +293,165 @@ TEST(PointShadowFaceCull, EarthScaleKeepBiasHolds)
     const Vector3 lightRel{light.x - cam.CameraPosition.x, light.y - cam.CameraPosition.y,
                            light.z - cam.CameraPosition.z};
     ExpectNoOverCullRelative(cam, lightRel, range, mask);
+}
+
+namespace
+{
+using GameEngine::Engine::Renderer::PointShadowFrameInfo;
+
+PointShadowCameraCull MakeReceiverBox(const Vector3& receiver, float range)
+{
+    const float extent = range * 0.000001f;
+    PointShadowCameraCull camera{};
+    camera.CameraPosition = receiver + Vector3{0, 0, -3.0f * range};
+    camera.FrustumPlanes = {{
+        {1, 0, 0, extent - receiver.x}, {-1, 0, 0, extent + receiver.x},
+        {0, 1, 0, extent - receiver.y}, {0, -1, 0, extent + receiver.y},
+        {0, 0, 1, extent - receiver.z}, {0, 0, -1, extent + receiver.z},
+    }};
+    for (uint32_t corner = 0; corner < camera.FrustumCorners.size(); ++corner)
+        camera.FrustumCorners[corner] = receiver + Vector3{
+            corner & 1u ? extent : -extent,
+            corner & 2u ? extent : -extent,
+            corner & 4u ? extent : -extent};
+    return camera;
+}
+
+Vector3 UnprojectFilterPoint(const Matrix4x4& inverse, float horizontal, float vertical, float depth)
+{
+    const Vector4 point = inverse.Transform({2.0f * horizontal - 1.0f,
+        1.0f - 2.0f * vertical, depth, 1.0f});
+    return {point.x / point.w, point.y / point.w, point.z / point.w};
+}
+
+uint8_t RequiredFilterFaces(const PointShadowFrameInfo& geometry, const Vector3& position)
+{
+    constexpr float kRadius = 1.5f / 1024.0f;
+    constexpr float kTileResolution = 256.0f;
+    constexpr uint32_t kTapCount = 12;
+    const uint32_t selected = static_cast<uint32_t>(SampledFace(position, geometry.position));
+    const Matrix4x4& selectedVP = geometry.lightVP[selected];
+    const Vector4 selectedClip = selectedVP.Transform({position.x, position.y, position.z, 1});
+    const float horizontal = 0.5f + 0.5f * selectedClip.x / selectedClip.w;
+    const float vertical = 0.5f - 0.5f * selectedClip.y / selectedClip.w;
+    const float seed = (std::floor(std::clamp(horizontal, 0.0f, 0.999999f) * kTileResolution) +
+        selected * 17.0f) * 0.06711056f +
+        (std::floor(std::clamp(vertical, 0.0f, 0.999999f) * kTileResolution) + selected * 31.0f) * 0.00583715f;
+    const float hash = 52.9829189f * (seed - std::floor(seed));
+    const float angle = (hash - std::floor(hash)) * 6.2831853f;
+    const Vector3 right{selectedVP.Data()[0], selectedVP.Data()[4], selectedVP.Data()[8]};
+    const Vector3 up{selectedVP.Data()[1], selectedVP.Data()[5], selectedVP.Data()[9]};
+    uint8_t required = 0;
+    for (uint32_t tap = 0; tap < kTapCount; ++tap)
+    {
+        const float radius = std::sqrt((tap + 0.5f) / kTapCount) * kRadius;
+        const float theta = tap * 2.39996323f;
+        const float offsetU = radius * (std::cos(theta) * std::cos(angle) -
+            std::sin(theta) * std::sin(angle));
+        const float offsetV = radius * (std::cos(theta) * std::sin(angle) +
+            std::sin(theta) * std::cos(angle));
+        const Vector3 tapPosition = position +
+            (right * offsetU - up * offsetV) * (2.0f * selectedClip.w);
+        uint32_t face = selected;
+        float tapU = horizontal + offsetU;
+        float tapV = vertical + offsetV;
+        if (tapU < 0 || tapU > 1 || tapV < 0 || tapV > 1)
+            face = static_cast<uint32_t>(SampledFace(tapPosition, geometry.position));
+        const Matrix4x4& faceVP = geometry.lightVP[face];
+        const Vector4 clip = faceVP.Transform({tapPosition.x, tapPosition.y, tapPosition.z, 1});
+        tapU = 0.5f + 0.5f * clip.x / clip.w;
+        tapV = 0.5f - 0.5f * clip.y / clip.w;
+        const float texelU = tapU * kTileResolution - 0.5f;
+        const float texelV = tapV * kTileResolution - 0.5f;
+        const float baseU = std::floor(texelU);
+        const float baseV = std::floor(texelV);
+        const float fractionU = texelU - baseU;
+        const float fractionV = texelV - baseV;
+        const Matrix4x4 inverse = GameEngine::Mathematics::Inverse(faceVP);
+        for (uint32_t cornerV = 0; cornerV < 2; ++cornerV)
+            for (uint32_t cornerU = 0; cornerU < 2; ++cornerU)
+            {
+                const float weight = (cornerU ? fractionU : 1.0f - fractionU) *
+                    (cornerV ? fractionV : 1.0f - fractionV);
+                if (weight <= 0)
+                    continue;
+                const float pointU = (baseU + cornerU + 0.5f) / kTileResolution;
+                const float pointV = (baseV + cornerV + 0.5f) / kTileResolution;
+                const bool outsideU = pointU < 0 || pointU > 1;
+                const bool outsideV = pointV < 0 || pointV > 1;
+                if (!outsideU && !outsideV)
+                    required |= static_cast<uint8_t>(1u << face);
+                else
+                {
+                    const Vector3 corner = UnprojectFilterPoint(inverse, pointU, pointV, clip.z / clip.w);
+                    if (outsideU && outsideV)
+                    {
+                        const Vector3 direction = corner - geometry.position;
+                        required |= static_cast<uint8_t>((1u << (direction.x >= 0 ? 0 : 1)) |
+                            (1u << (direction.y >= 0 ? 2 : 3)) | (1u << (direction.z >= 0 ? 4 : 5)));
+                    }
+                    else
+                        required |= static_cast<uint8_t>(1u << SampledFace(corner, geometry.position));
+                }
+            }
+    }
+    return required;
+}
+} // namespace
+
+TEST(PointShadowFaceCull, KeepsEveryFilteredFaceAtEdgesAndVerticesWithNormalBias)
+{
+    using GameEngine::Engine::Renderer::kPointShadowNormalBias;
+    using GameEngine::Engine::Renderer::PopulatePointShadowGeometry;
+    uint32_t checked = 0;
+    uint32_t partialMasks = 0;
+    for (float range : {0.2f, 0.5f, 1.0f, 2.5f, 20.0f, 1000.0f})
+    {
+        PointShadowFrameInfo geometry{};
+        PopulatePointShadowGeometry(geometry, {0, 0, 0}, range, 0, 0, nullptr);
+        ASSERT_TRUE(geometry.valid);
+        for (uint32_t face = 0; face < 6; ++face)
+        {
+            const Matrix4x4 inverse = GameEngine::Mathematics::Inverse(geometry.lightVP[face]);
+            for (float inset : {-0.125f / 256.0f, 0.0f, 0.125f / 256.0f, 0.5f / 256.0f})
+                for (uint32_t boundary = 0; boundary < 8; ++boundary)
+                {
+                    const float horizontal = boundary < 4 ?
+                        (boundary < 2 ? (boundary == 0 ? inset : 1.0f - inset) : 0.37123f) :
+                        (boundary & 1u ? 1.0f - inset : inset);
+                    const float vertical = boundary < 4 ?
+                        (boundary < 2 ? 0.62711f : (boundary == 2 ? inset : 1.0f - inset)) :
+                        (boundary & 2u ? 1.0f - inset : inset);
+                    const Vector3 direction = UnprojectFilterPoint(inverse, horizontal, vertical, 0.5f).Normalize();
+                    const Vector3 receiver = direction * (range * 0.75f);
+                    const auto camera = MakeReceiverBox(receiver, range);
+                    ASSERT_TRUE(InFrustum(receiver, camera));
+                    ASSERT_GT(camera.CameraPosition.Length(), range);
+                    const auto kept = ComputePointShadowFaceMask(geometry.position, range, camera);
+                    partialMasks += kept != kAllFaces;
+                    const Vector3 tangent = Vector3::Cross(direction,
+                        std::fabs(direction.y) < 0.9f ? Vector3{0, 1, 0} : Vector3{1, 0, 0}).Normalize();
+                    const Vector3 bitangent = Vector3::Cross(direction, tangent).Normalize();
+                    for (const Vector3 normal : {direction, direction * -1.0f, tangent,
+                        tangent * -1.0f, bitangent, bitangent * -1.0f})
+                    {
+                        const float bias = kPointShadowNormalBias *
+                            (1.0f - std::fabs(Vector3::Dot(normal, direction)));
+                        const Vector3 biased = receiver + normal * bias;
+                        ASSERT_LT(biased.Length(), range);
+                        const uint8_t required = RequiredFilterFaces(geometry, biased);
+                        ASSERT_NE(required, 0u);
+                        EXPECT_EQ(kept & required, required)
+                            << "range=" << range << " face=" << face << " inset=" << inset
+                            << " boundary=" << boundary << " required=" << unsigned(required)
+                            << " kept=" << unsigned(kept);
+                        ++checked;
+                    }
+                }
+        }
+    }
+    EXPECT_EQ(checked, 6912u);
+    EXPECT_GT(partialMasks, 0u);
+    RecordProperty("filter_face_queries", checked);
+    RecordProperty("partial_face_masks", partialMasks);
 }

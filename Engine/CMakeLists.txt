@@ -1,5 +1,8 @@
 # Engine library
 set(ENGINE_SOURCES
+    Source/Engine/Rendering/2D/Systems/SpriteAnimationSystem.cpp
+    Source/Engine/Rendering/2D/SpriteRenderFeature.cpp
+    Source/Engine/Rendering/SortedTransparentComposition.cpp
 	Source/Core/Application.cpp
     Source/Core/Time.cpp
     Source/Core/CpuProfiler.cpp
@@ -259,6 +262,7 @@ set(ENGINE_HEADERS
     Include/Components/Rendering/ExposureCompensationCurve.h
     Include/Components/Rendering/Light.h
     Include/Components/Rendering/ReflectionProbe.h
+    Include/Components/Rendering/PlanarReflection.h
     Include/Components/Rendering/LODGroup.h
     Include/Components/Rendering/PostProcessVolume.h
     Include/Components/Rendering/WindVolume.h
@@ -347,6 +351,9 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/AntiAliasingProjectSettings.cpp
 	Source/Engine/Rendering/LodProjectSettings.cpp
 	Source/Engine/Rendering/RenderLayerNames.cpp
+    Source/Engine/Rendering/SortingLayers.cpp
+    Source/Engine/Rendering/RenderSorting.cpp
+    Source/Engine/Rendering/ViewExposureScale.cpp
 	Source/Engine/Rendering/HlodRuntime.cpp
 	Source/Engine/Rendering/RenderServicesDetail.cpp
 	Source/Engine/Rendering/PointShadowFaceCull.cpp
@@ -385,6 +392,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/DepthDrawRecorder.cpp
 	Source/Engine/Rendering/RenderServicesWorldPass.cpp
 	Source/Engine/Rendering/RenderServicesSortedTransparent.cpp
+    Source/Engine/Rendering/RenderServicesDepthPixelation.cpp
 	Source/Engine/Rendering/WorldDrawBuilder.cpp
 	Source/Engine/Rendering/CpuDrawStreamBuilder.cpp
 	Source/Engine/Rendering/MaterialBinder.cpp
@@ -420,6 +428,11 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/SkyEnvironmentSource.cpp
 	Source/Engine/Rendering/SceneReflectionProbeEnvironmentSource.cpp
 	Source/Engine/Rendering/SceneProbeRecaptureSchedule.cpp
+	Source/Engine/Rendering/MirrorCaptureView.cpp
+	Source/Engine/Rendering/PlanarReflectionMath.cpp
+	Source/Engine/Rendering/PlanarReflectionFeature.cpp
+	Source/Engine/Rendering/Systems/PlanarReflectionSystem.cpp
+	Source/Engine/Rendering/Pipeline/Nodes/PlanarReflectionNode.cpp
 	Source/Engine/Rendering/RetargetRenderFeature.cpp
 	Source/Engine/Rendering/Pipeline/ReflectionsProvider.cpp
 	Source/Engine/Rendering/DeformationMotionParams.cpp
@@ -435,6 +448,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/Pipeline/PipelineEnumTables.cpp
 	Source/Engine/Rendering/Pipeline/ExpressionEvaluator.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/WorldRenderNode.cpp
+	Source/Engine/Rendering/Pipeline/Nodes/ForwardShaderSpecialization.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/SortedTransparentNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/TransmissivePassNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/DepthPrepassNode.cpp
@@ -447,6 +461,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/Pipeline/Nodes/SmaaNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/TemporalFxaaNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/RenderScaleUpscaleNode.cpp
+	Source/Engine/Rendering/Pipeline/Nodes/PixelPerfectUpscaleNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/LightUploadNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/ViewParamsUploadNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/HeightFogParamsUploadNode.cpp
@@ -841,6 +856,9 @@ target_sources(Engine PRIVATE
     Source/Engine/Build/AppIconGenerator.cpp
     Source/Engine/Build/BuildHost.cpp
     Source/Engine/Build/BuildPipeline.cpp
+    Source/Engine/Build/MobileContentStaging.cpp
+    Source/Engine/Build/MobileExportRunner.cpp
+    Source/Engine/Build/PythonBuildTool.cpp
     Source/Engine/Build/TerrainPageExport.cpp
     Source/Engine/Build/TexturePackageCook.cpp
     Source/Engine/Build/StagedAssetCook.cpp
@@ -1171,9 +1189,10 @@ set(GE_ENGINE_MODULES
     Platform FileSystem FileSystemCore Memory GameEngineRendering RenderServices VolumetricFog HeightFog GPUFogParticles Particles ParticlesAuthoring ParticlesAssets ParticlesSystems ParticlesRendering Animation NumericExpression UI Physics PhysicsECS
     Pathfinding PathfindingECS AI AIECS SpatialGrid SpatialGridECS Terrain PageStreaming TerrainECS TerrainGrass CBTTerrain CBTTerrainECS Ocean Spline SplineGeometry SplineLayout SplineECS SplineRecipes MarkupECS Graph
     GenerationalVector Scheduler SceneLoadTracker Scene SceneBvh MeshPicking Text Input PluginAPI Image
+    Sprite2D TileMap TileMapECS
     PlatformServices PlatformProvider${GE_PLATFORM_BACKEND})
 target_link_libraries(Engine
-    PRIVATE ${GE_ENGINE_MODULES} ${PLATFORM_LIBS} concurrentqueue::concurrentqueue
+    PRIVATE ${GE_ENGINE_MODULES} ${PLATFORM_LIBS} concurrentqueue::concurrentqueue Localization
 )
 foreach(_ge_mod IN LISTS GE_ENGINE_MODULES)
     # Splice each OBJECT module's .obj files into Engine via TARGET_OBJECTS so
@@ -1467,6 +1486,7 @@ if(ENABLE_SCRIPTING)
       Source/Scripting/ScriptingABI.cpp
       Source/Scripting/TimelineABI.cpp
       Source/Scripting/AnimatorABI.cpp
+      Source/Scripting/SpriteAnimationABI.cpp
       Source/Scripting/ModelABI.cpp
       Source/Scripting/ECSABI.cpp
       Source/Scripting/GameUIABI.cpp
@@ -1752,6 +1772,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     add_executable(EngineApplicationTickTests
         Tests/ApplicationTickTests.cpp
         )
+    target_include_directories(EngineApplicationTickTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests)
     target_link_libraries(EngineApplicationTickTests PRIVATE Engine GTest::gtest GTest::gtest_main)
     set_target_properties(EngineApplicationTickTests PROPERTIES
         CXX_STANDARD 20
@@ -1831,6 +1852,8 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         Tests/MeshLODVisibleErrorTests.cpp
         Tests/MeshLODGeometryTests.cpp
         Tests/LodAssetSettingsTests.cpp
+        Tests/BoneLODAssetSettingsTests.cpp
+        Tests/ModelBoneLODTests.cpp
         Tests/MeshLODCacheTests.cpp
         Tests/PackagedModelLodTests.cpp
         Tests/AuthoredLODColorTests.cpp
@@ -1899,7 +1922,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     ge_stage_runtime_dependencies(EngineCompileServerUtilTests)
     # Multi-config name baked in so the test resolves the exact staged host path.
     target_compile_definitions(EngineCompileServerUtilTests PRIVATE GE_TEST_CONFIG_NAME="$<CONFIG>")
-    if(WIN32 AND ENABLE_SCRIPTING)
+    if(ENABLE_SCRIPTING)
         # The spoof-version suites launch GameEngine.CompileServerHost.dll
         # themselves. Stage it beside the exe in the same layout the Editor
         # stages (and CompileServerClient::FindHostPath probes) so the test
@@ -2168,9 +2191,11 @@ endif()
                 Tests/GPUScenePrevVisibleResetTests.cpp
                 Tests/GPUSceneBufferCapacityTests.cpp
                 Tests/BatchScatterComputeTests.cpp
+                Tests/DrawStreamInstanceComputeTests.cpp
                 Tests/PropCoverageFloorTests.cpp
                 Tests/HzbBuildComputeTests.cpp
                 Tests/HzbSpdParityTests.cpp
+                Tests/HzbSpdMinMaxParityTests.cpp
                 Tests/ClusterDepthMinMaxParityTests.cpp
                 Tests/HzbCullingComputeTests.cpp
                 Tests/VertexModifierEnvelopeSampledTests.cpp
@@ -2182,8 +2207,10 @@ endif()
                 Tests/SceneResolveFrameTests.cpp
                 Tests/CompileLoadReportTests.cpp
                 Tests/SceneResolveServiceTests.cpp
+                Tests/SortedTransparentPixelTests.cpp
                 Tests/SortedTransparentCullTests.cpp
                 Tests/SortedTransparentRunTests.cpp
+                Tests/RenderSortingTests.cpp
                 Tests/GPUSortTests.cpp
                 Tests/SortedTransparentDeciderTests.cpp
                 Tests/SortedTransparentBuildAllocationTests.cpp
@@ -2201,9 +2228,19 @@ endif()
                 Tests/LodCrossfadeShaderContractTests.cpp)
             # Engine/Source: the private headers the world-draw tests reach (ECS/SceneViewHiddenInHierarchySystem.h,
             # Engine/Rendering/MaterialSystemTesting.h).
-            target_include_directories(EngineWorldDrawTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Source")
+            target_include_directories(EngineWorldDrawTests PRIVATE
+                "${CMAKE_CURRENT_SOURCE_DIR}/Source"
+                ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
             # Modules/Rendering: the shader source cache's read counter (Source/Materials/Shader/ShaderSourceCache.h).
             target_include_directories(EngineWorldDrawTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Modules/Rendering")
+
+            ge_add_render_services_test(ComputeDescriptorScratchTests
+                Tests/ComputeDescriptorScratchTests.cpp)
+            target_compile_definitions(ComputeDescriptorScratchTests PRIVATE
+                GE_DESCRIPTOR_ALLOCATION_COUNTING=$<NOT:$<BOOL:${ENABLE_MIMALLOC}>>)
+            if(NOT ENABLE_MIMALLOC)
+                target_sources(ComputeDescriptorScratchTests PRIVATE ${_allocation_hook_source})
+            endif()
 
             # Opt-in render checks no gate runs: the Slang lane's parity gate, which needs an
             # external slangc (GE_SLANGC), and the extraction fast path's manual
@@ -2229,6 +2266,7 @@ endif()
                 Tests/ShadowPcssDecisionTests.cpp
                 Tests/ShadowMinMaxPyramidTests.cpp
                 Tests/ShadowFilterComputeTests.cpp
+                Tests/PointShadowFilterComputeTests.cpp
                 Tests/RTShadowMaskShaderContractTests.cpp
                 Tests/RTShadowDenoiseShaderContractTests.cpp
                 Tests/ShadowDitherBasisTests.cpp
@@ -2243,6 +2281,9 @@ endif()
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${CMAKE_BINARY_DIR}/Shaders/shadow_filter_test.comp.spv"
                     "$<TARGET_FILE_DIR:EngineShadowTests>/TestData/ShadowFilter/shadow_filter_test.spv"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_BINARY_DIR}/Shaders/point_shadow_filter_test.comp.spv"
+                    "$<TARGET_FILE_DIR:EngineShadowTests>/TestData/ShadowFilter/point_shadow_filter_test.spv"
                 VERBATIM)
             add_dependencies(ShadowFilterTestShader CompileShaders)
             add_dependencies(EngineShadowTests ShadowFilterTestShader)
@@ -2251,6 +2292,8 @@ endif()
             # sun glare, temporal anti-aliasing jitter, GTAO and screen-space reflections.
             ge_add_render_services_test(EnginePostProcessTests
                 Tests/TemporalAAJitterTests.cpp
+                Tests/PlanarReflectionTests.cpp
+                Tests/PlanarCompositeComputeTests.cpp
                 Tests/SssrRefineBudgetTests.cpp
                 Tests/SssrHistoryPolicyTests.cpp
                 Tests/GtaoPackingContractTests.cpp
@@ -2310,6 +2353,9 @@ endif()
                 Tests/DDGIRelocationComputeTests.cpp
                 Tests/DDGIResolveBlurComputeTests.cpp
                 Tests/OceanCascadeLayoutTests.cpp
+                Tests/OceanPreparedDispatchTests.cpp
+                Tests/OceanSprayPreparationTests.cpp
+                Tests/OceanRasterCapturePreparationTests.cpp
                 Tests/OceanSeabedDepthShaderTests.cpp
                 Tests/OceanRingLayoutShaderTests.cpp
                 Tests/OceanShallowClarityShaderTests.cpp
@@ -2326,6 +2372,7 @@ endif()
                 Tests/BrdfLutTableTests.cpp
                 Tests/GlassTransmissionShaderContractTests.cpp
                 Tests/SkyGroundBounceContractTests.cpp
+                Tests/SkyLutRestingLayoutTests.cpp
                 Tests/SkySunColorTests.cpp
                 Tests/SkySunAnchorTests.cpp
                 Tests/SkySunIlluminanceTests.cpp
@@ -2354,7 +2401,8 @@ endif()
                 Tests/ReadbackSourceSpaceTests.cpp
                 Tests/ShaderAnimationClockContractTests.cpp)
             target_include_directories(EngineRenderServicesTests PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/Modules/Ocean/Source) # OceanRingMesh.h
+                ${CMAKE_CURRENT_SOURCE_DIR}/Modules/Ocean/Source # OceanRingMesh.h
+                ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
             # The screen-space shadow tests dispatch these compiled kernels; without
             # glslc the commands below would compile nothing and the tests would
             # read missing files.
@@ -2775,7 +2823,8 @@ endif()
 			    add_executable(CpuTextureSourceTests Tests/CpuTextureSourceTests.cpp)
 			    target_include_directories(CpuTextureSourceTests PRIVATE
 			        "${CMAKE_CURRENT_SOURCE_DIR}/Source/Engine/Rendering"
-			        "${CMAKE_CURRENT_SOURCE_DIR}/Modules/Rendering")
+			        "${CMAKE_CURRENT_SOURCE_DIR}/Modules/Rendering"
+			        "${CMAKE_CURRENT_SOURCE_DIR}/Modules/PathfindingECS/Tests")
 			    target_link_libraries(CpuTextureSourceTests PRIVATE Engine GTest::gtest GTest::gtest_main)
 			    set_target_properties(CpuTextureSourceTests PROPERTIES
 			        CXX_STANDARD 20
@@ -2862,6 +2911,7 @@ endif()
 			    target_link_libraries(RenderPipelineDeclareTests PRIVATE Engine RenderGraphTestSupport SharedHeadlessDeviceTestSupport
 			        GTest::gtest GTest::gtest_main)
 			    target_include_directories(RenderPipelineDeclareTests PRIVATE
+                ${CMAKE_SOURCE_DIR}/Tests
 			        ${CMAKE_SOURCE_DIR}/Engine/Source/Engine/Rendering # SceneDrawWarm.h
 			        ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainGrass/Source) # GrassBladeInstanceGPU.h
                 if(MSVC)
@@ -2987,6 +3037,7 @@ endif()
 			        Tests/RenderPipelineNodeModuleReloadTests.cpp
 			        )
 			    target_link_libraries(RenderPipelineCompilerTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+			    target_include_directories(RenderPipelineCompilerTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests)
 			    set_target_properties(RenderPipelineCompilerTests PROPERTIES
 			        CXX_STANDARD 20
 			        CXX_STANDARD_REQUIRED ON
@@ -3131,14 +3182,42 @@ endif()
 		    add_test(NAME TerrainRenderFeatureTests COMMAND $<TARGET_FILE:TerrainRenderFeatureTests>)
 	endif()
 
+	if(GTest_FOUND OR TARGET GTest::gtest)
+	    add_executable(TileMapECSTests
+	        Tests/TileMapRenderFeatureTests.cpp
+	        Tests/EngineTestShaderSetup.cpp
+	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TransparentArtworkOrderTests.cpp
+	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileChunkInstancesTests.cpp
+	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileMapCollisionSystemTests.cpp
+	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileMapParallaxTests.cpp
+	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileMapPixelGridTests.cpp
+	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileMapRuntimeStoreTests.cpp
+	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileSetGpuTablesTests.cpp)
+	    target_link_libraries(TileMapECSTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+	    target_compile_definitions(TileMapECSTests PRIVATE ENGINE_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}")
+	    add_dependencies(TileMapECSTests CompileShaderPkgs)
+	    set_target_properties(TileMapECSTests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON FOLDER "Engine/Tests/TileMap")
+	    ge_set_output_tests(TileMapECSTests)
+	    ge_stage_runtime_dependencies(TileMapECSTests)
+	    add_test(NAME TileMapECSTests COMMAND $<TARGET_FILE:TileMapECSTests>)
+	endif()
+
 	# Engine tests: GPU compute skinning validation (requires Vulkan device)
 	if(GTest_FOUND OR TARGET GTest::gtest)
 	    add_executable(GPUAnimationComputeTests
 	        Tests/GPUAnimationComputeTests.cpp
+	        Tests/EngineTestShaderSetup.cpp
 	        )
 	    target_link_libraries(GPUAnimationComputeTests PRIVATE
 	        Engine GameEngine.Native
 	        GTest::gtest GTest::gtest_main)
+	    if(APPLE)
+	        # Native fault injection derives from MetalDevice, which includes metal-cpp.
+	        target_include_directories(GPUAnimationComputeTests SYSTEM PRIVATE
+	            ${CMAKE_SOURCE_DIR}/ThirdParty/metal-cpp)
+	    endif()
+	    target_compile_definitions(GPUAnimationComputeTests PRIVATE
+	        ENGINE_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}")
 	    set_target_properties(GPUAnimationComputeTests PROPERTIES
 	        CXX_STANDARD 20
 	        CXX_STANDARD_REQUIRED ON
@@ -3659,6 +3738,7 @@ endif()
 	# does without.
 	if(GTest_FOUND OR TARGET GTest::gtest)
 	    add_executable(EngineSceneIOTests
+	        Tests/WeatherWindTests.cpp
 	        Tests/SceneIOTests.cpp
 	        Tests/EmbeddedAnimationPersistenceTests.cpp
 	        Tests/PrefabLibraryTests.cpp
@@ -3796,4 +3876,42 @@ if(BUILD_TESTING AND TARGET GTest::gtest_main)
     ge_set_output_tests(EngineShaderHookLifetimeTests)
     ge_stage_runtime_dependencies(EngineShaderHookLifetimeTests)
     add_test(NAME EngineShaderHookLifetimeTests COMMAND EngineShaderHookLifetimeTests)
+endif()
+
+if(BUILD_TESTING)
+	if(GTest_FOUND OR TARGET GTest::gtest)
+	    add_executable(SpriteRuntimeTests
+	        Tests/RenderYSortingTests.cpp
+	        Tests/SpriteRenderFeatureTests.cpp
+	        Tests/SpriteAnimationSystemTests.cpp
+	        Tests/SpriteAtlasSamplingTests.cpp
+	        Tests/EngineTestShaderSetup.cpp)
+	    target_link_libraries(SpriteRuntimeTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+	    if(TARGET GameEngine.Native)
+	        target_sources(SpriteRuntimeTests PRIVATE Tests/SpriteAnimationEventsAbiTests.cpp)
+	        target_link_libraries(SpriteRuntimeTests PRIVATE GameEngine.Native)
+	    endif()
+	    target_compile_definitions(SpriteRuntimeTests PRIVATE ENGINE_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}")
+	    target_compile_features(SpriteRuntimeTests PRIVATE cxx_std_20)
+	    ge_set_output_tests(SpriteRuntimeTests)
+	    ge_stage_runtime_dependencies(SpriteRuntimeTests)
+	    add_dependencies(SpriteRuntimeTests CompileShaderPkgs)
+	    add_test(NAME SpriteRuntimeTests COMMAND $<TARGET_FILE:SpriteRuntimeTests>)
+	endif()
+
+	# Engine tests: sprite quad placement (pivot anchoring, flips, transform axes).
+	# Header-only math, so it links no Engine target.
+	if(GTest_FOUND OR TARGET GTest::gtest)
+	    add_executable(SpriteQuadTests Tests/SpriteQuadTests.cpp)
+	    target_link_libraries(SpriteQuadTests PRIVATE ECSComponents Mathematics GTest::gtest GTest::gtest_main)
+	    set_target_properties(SpriteQuadTests PROPERTIES
+	        CXX_STANDARD 20
+	        CXX_STANDARD_REQUIRED ON
+	        FOLDER "Engine/Tests"
+	    )
+	    ge_set_output_tests(SpriteQuadTests)
+	    ge_stage_runtime_dependencies(SpriteQuadTests)
+	    add_test(NAME SpriteQuadTests COMMAND $<TARGET_FILE:SpriteQuadTests>)
+	endif()
+
 endif()

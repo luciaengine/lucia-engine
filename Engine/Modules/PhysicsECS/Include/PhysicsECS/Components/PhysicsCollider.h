@@ -2,8 +2,10 @@
 
 #include "Types/Types.h"
 
+#include "Components/AssetRef.h"
 #include "Components/Transform.h"
 #include "ECS/RequiredComponents.h"
+#include "Physics/PhysicsMaterial.h"
 #include "Physics/PhysicsTypes.h"
 
 namespace GameEngine::Components
@@ -25,7 +27,11 @@ struct PhysicsCollider
     // Trigger/sensor (non-solid).
     bool isTrigger = false;
 
-    // Optional override material for this collider.
+    // Authored contact surface (.physmat). Null => the inline values below.
+    AssetRef<AssetType::PhysicsMaterial> materialAsset;
+
+    // Optional override material for this collider, used when materialAsset is
+    // null or has not resolved yet.
     bool overrideMaterial = false;
     Physics::PhysicsMaterial material{};
 };

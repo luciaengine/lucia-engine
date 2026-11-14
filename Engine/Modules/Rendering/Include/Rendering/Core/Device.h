@@ -1,10 +1,15 @@
 #pragma once
 
+#include "Rendering/Core/DescriptorType.h"
+#include "Rendering/Core/Handle.h"
+#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cctype>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -12,10 +17,6 @@
 #include <string>
 #include <string_view>
 #include <vector>
-
-#include "Rendering/Core/Handle.h"
-#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
-#include <functional>
 
 namespace GameEngine
 {
@@ -81,7 +82,7 @@ enum class ShaderSourceKind : uint8_t
 // by polling. Lost means the backend reported a real device loss on some op;
 // rendering is suppressed until the recovery machine rebuilds.
 //
-// The remaining states drive the Tier-2 in-place rebuild (slice 2):
+// Recovery and terminal states:
 //   Rebuilding          — a rebuild is running on the render thread; device-scoped
 //                         Vulkan objects are being replaced. No work is issued.
 //   AwaitingReprovision — the device was rebuilt and is fully functional, but the
@@ -91,8 +92,8 @@ enum class ShaderSourceKind : uint8_t
 //                         pass completes and calls NotifyReprovisionComplete()
 //                         (slice 3a owns that consumer). Direct device GPU ops
 //                         (buffer create/upload, submit, fence) work here.
-//   Failed              — the rebuild exhausted its bounded retries (a persistently
-//                         dying GPU). No healthy device; only save-and-restart is
+//   Failed              — recovery is unavailable or exhausted its bounded retries.
+//                         No healthy device; only save-and-restart is
 //                         viable (slice 6 owns the UX).
 // The backend reads this once per window per frame plus on error paths, so a
 // healthy steady state pays nothing.
@@ -377,10 +378,9 @@ struct DeviceDesc
     bool enableDescriptorValidation = true;
     // When true, the device will create and manage a presentation swapchain if supported by the active backend.
     bool enableSwapchain = true;
-    // Seed the backend pipeline cache from the user's on-disk cache at creation and
-    // write it back at destruction. Off by default: the cost is a read and a write of a
-    // machine-global file that reaches tens of MB, which only an application's
-    // long-lived device earns; a device that lives for a test keeps its cache in memory.
+    // Optional application-owned pipeline cache directory; empty uses the platform default.
+    std::string pipelineCacheDirectory;
+    /// Persist the native pipeline cache; headless test devices default to memory only.
     bool persistPipelineCache = false;
     std::string applicationName = "GameEngine Application";
     uint32_t applicationVersion = 1;
@@ -912,19 +912,10 @@ struct RenderingDeviceCapabilities
     // subpixel RGB text AA. Callers must fall back to single-source blending
     // when false.
     bool supportsDualSourceBlending = false;
-    // True when the colour attachments of one pipeline may differ in blend
-    // state and write mask (Vulkan independentBlend, enabled at device creation
-    // when available; same support == enabled contract as shaderInt64). The
-    // transmissive pass's glass writes one of the screen-space reflection
-    // slices and masks the other two, which needs it.
+    // True when color attachments can use separate blend states.
     bool supportsIndependentBlend = false;
-    // True when shaders can use the interpolation functions (interpolateAtOffset, the SPIR-V
-    // InterpolationFunction capability): Vulkan with sampleRateShading enabled (support == enabled),
-    // Metal with pull-model interpolation. RendererProfile maps it to UseInterpolationFunctions.
-    bool supportsInterpolationFunctions = false;
-    // True when vertex shaders can write gl_ClipDistance (the SPIR-V ClipDistance capability):
-    // Vulkan with shaderClipDistance enabled (support == enabled), Metal always ([[clip_distance]]).
-    // RendererProfile maps it to UseClipDistance.
+    // Effective enabled interpolation capability of the backend.
+    bool supportsShaderInterpolationFunctions = false;
     bool supportsShaderClipDistance = false;
 
     uint32_t maxBindlessTextures = 0;
@@ -972,6 +963,8 @@ struct RenderingDeviceCapabilities
     // Vulkan drivers handle the engine's bindless raw-depth PCSS reads
     // unreliably, while the comparison-sampler PCF path remains stable.
     bool prefersStableShadowFiltering = false;
+    // Prefer pipeline constants for absent forward features on AMD and legacy Adreno.
+    bool prefersForwardShaderSpecialization = false;
     // Whether one buffer may be both a shader storage target and CPU-mappable.
     // Vulkan and Metal allow it (a storage buffer in host-visible memory);
     // WebGPU forbids it outright — MapRead composes with CopyDst and nothing
@@ -1273,26 +1266,6 @@ struct RendererProfile;
 /// filtering.
 SamplerDesc ResolveSamplerPreset(SamplerPreset preset, const RendererProfile& profile);
 
-// Descriptor type enumeration.
-//
-// Append only: MetalShaderTranslator's on-disk MSL cache hashes the raw
-// numeric value of every binding's type, so renumbering silently invalidates
-// nothing and reuses stale translations.
-enum class DescriptorType
-{
-    UniformBuffer,
-    StorageBuffer,
-    Texture,
-    Sampler,
-    CombinedImageSampler,
-    StorageImage,
-    // Ray-query scene TLAS (GLSL accelerationStructureEXT / MSL
-    // raytracing::acceleration_structure). Only meaningful on a device whose
-    // RenderingDeviceCapabilities::supportsRayQuery is set — a layout
-    // containing one cannot be created otherwise.
-    AccelerationStructure
-};
-
 // Backend-agnostic shader stage mask constants (matches Vulkan bit positions)
 static constexpr uint32_t kShaderStageVertex = 0x00000001u;
 static constexpr uint32_t kShaderStageFragment = 0x00000010u;
@@ -1344,9 +1317,7 @@ struct DescriptorBinding
     // filters (the sky LUT chain over rgba16f) says so here or WebGPU rejects
     // the pipeline for pairing an unfilterable layout with its sampler.
     bool imageFilterableFloat = false;
-    // The image fields above come from reflecting the shader's own usage, so an
-    // unset imageFilterableFloat means no stage filters this binding. False on a
-    // hand-built layout, which says nothing about usage.
+    // True when reflection established how the shader accesses this image.
     bool imageUsageReflected = false;
     // Multisampled sampled image (GLSL sampler2DMS / WGSL texture_multisampled_2d), read with
     // texelFetch and never with a sampler. WebGPU bakes this into the bind group layout: a layout
@@ -2776,6 +2747,8 @@ class IDevice
     // combination is left un-cached.
     PipelineHandle CreateGraphicsPipelineDirect(GraphicsPipelineId id, const PipelineFormatKey& fk);
 
+    /// Number of queued or running pipeline builds at the time of the call. Thread-safe.
+    size_t PendingPipelineBuildCount() const;
     PipelineCacheStats GetPipelineCacheStats() const;
 
     // Direct access to the pipeline cache. Used by hot-reload paths that need

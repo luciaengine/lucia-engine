@@ -37,10 +37,11 @@ constexpr GameEngine::Rendering::CameraRanges kNoRanges{};
 CameraData PoseAt(float x, float y, float z)
 {
     CameraData data{};
-    data.view = GameEngine::Mathematics::Matrix4x4::Identity();
-    data.cameraPos.x = x;
-    data.cameraPos.y = y;
-    data.cameraPos.z = z;
+    for (int i = 0; i < 16; ++i)
+        data.view[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+    data.cameraPos[0] = x;
+    data.cameraPos[1] = y;
+    data.cameraPos[2] = z;
     return data;
 }
 
@@ -51,10 +52,10 @@ CameraData PoseYawed(float radians)
     CameraData data = PoseAt(0.0f, 0.0f, 0.0f);
     const float c = std::cos(radians);
     const float s = std::sin(radians);
-    data.view[0][0] = c;
-    data.view[0][2] = -s;
-    data.view[2][0] = s;
-    data.view[2][2] = c;
+    data.view[0] = c;
+    data.view[2] = -s;
+    data.view[8] = s;
+    data.view[10] = c;
     return data;
 }
 

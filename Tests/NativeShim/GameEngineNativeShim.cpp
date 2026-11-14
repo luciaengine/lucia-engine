@@ -1,8 +1,7 @@
-#include <cstdint>
-
-// Build this shim as the scripting module and include public ABI once
 #define GE_SCRIPTING_BUILD 1
 #include "Scripting/ScriptingABI.h"
+
+#include <cstdint>
 
 static GE_Result GE_CDECL Shim_Log(GE_LogLevel /*level*/, const char* /*msg*/, uint32_t /*len*/) { return GE_Result_Ok; }
 static GE_Result GE_CDECL Shim_RegisterManagedCallback(GE_CallbackId /*id*/, void* /*fnPtr*/) { return GE_Result_Ok; }

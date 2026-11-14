@@ -3,7 +3,9 @@
   "version-string": "1.0.0",
 
   "dependencies": [
+    "clipper2",
     "freetype",
+    "icu",
     {
       "name": "harfbuzz",
       "platform": "!nothreads",
@@ -11,13 +13,14 @@
     },
     "miniaudio",
     "libvorbis",
+    { "name": "sdl2", "default-features": false, "platform": "!wasm32" },
     "nlohmann-json",
+    "zlib",
     "sqlite3",
     "concurrentqueue",
     "cgltf",
     "stb",
     "meshoptimizer",
-    "clipper2",
     "tinyexpr",
     "ez-tree-upstream",
     "diharaw-volumetric-fog-upstream",
@@ -35,13 +38,19 @@
     },
     "glm",
     {
-      "name": "glfw3",
-      "platform": "!wasm32 & !linux"
+      "name": "sdl3",
+      "default-features": false,
+      "features": [ "vulkan" ],
+      "platform": "android"
+    },
+    {
+      "name": "sdl3",
+      "default-features": false,
+      "platform": "ios"
     },
     {
       "name": "glfw3",
-      "features": ["wayland"],
-      "platform": "linux"
+      "platform": "!wasm32 & !android & !ios"
     },
     {
       "name": "gameinput",
@@ -62,11 +71,11 @@
     },
     {
       "name": "vulkan",
-      "platform": "!wasm32"
+      "platform": "!wasm32 & !ios"
     },
     {
       "name": "vulkan-headers",
-      "platform": "wasm32"
+      "platform": "wasm32 | ios"
     },
     {
       "name": "wgpu-native",
@@ -80,7 +89,7 @@
     },
     {
       "name": "spirv-cross",
-      "platform": "osx"
+      "platform": "osx | ios"
     },
     "ktx",
     {
@@ -93,10 +102,6 @@
       "platform": "(windows & (x64 | arm64) & !uwp) | (linux & (x64 | arm64)) | osx"
     },
     {
-      "name": "webview2",
-      "platform": "windows"
-    },
-    {
       "name": "mimalloc",
       "platform": "!wasm32"
     },
@@ -105,7 +110,8 @@
       "platform": "!wasm32"
     },
     "utf8proc",
-    "unordered-dense"
+    "unordered-dense",
+    { "name": "webview2", "platform": "windows" }
   ],
 
   "default-features": [ "video", "physics", "nav", "ui-extras", "tests" ],
@@ -134,7 +140,7 @@
     },
 
     "ui-extras": {
-      "description": "Optional UI helpers: HTML parsing via lexbor (used by the editor's docs/AI tooling) and SVG rasterization via thorvg (used by SvgRasterizer). Both have QUIET find_package's so opting out degrades gracefully.",
+      "description": "Optional UI helpers: HTML parsing via lexbor, SVG parsing/rasterization via thorvg. The integrations use QUIET find_package calls so opting out degrades gracefully.",
       "dependencies": [ "lexbor", "thorvg" ]
     },
 

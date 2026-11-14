@@ -309,6 +309,16 @@ public:
     // readback ring's pendings with the frame's fence token — completion is
     // the token signaling, so any dispatch cadence (dyn-waves quiescence,
     // one-shot raster captures) is safe without resets.
+    void OnFrameAbortedRG(Rendering::RenderGraph::RGFrame& frame) override
+    {
+        m_HeightField.OnFrameAborted(frame);
+        for (auto& local : m_LocalHeightField)
+            local.OnFrameAborted(frame);
+        m_DynWavesReadback.OnFrameAborted(frame);
+        m_GPUQuery.OnFrameAborted(frame);
+        m_RasterDepthCapture.OnFrameAborted(frame);
+    }
+
     void OnFrameSubmittedRG(::GameEngine::Rendering::RenderGraph::RGFrame& frame,
                             const ::GameEngine::Rendering::IDevice::GpuSyncToken& token) override
     {

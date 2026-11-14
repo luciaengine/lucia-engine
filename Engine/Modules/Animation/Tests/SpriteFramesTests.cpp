@@ -1,4 +1,4 @@
-#include "Animation/SpriteFrames.h"
+#include "Sprite2D/SpriteFrames.h"
 #include "LogCapture.h"
 
 #include <gtest/gtest.h>
@@ -7,7 +7,7 @@
 #include <vector>
 
 using namespace GameEngine;
-using namespace GameEngine::Animation;
+using namespace GameEngine::Sprite2D;
 
 TEST(SpriteFrames, LoadsAndSamplesFrames)
 {

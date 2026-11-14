@@ -55,19 +55,19 @@ class CBTUpdateSystem : public ECS::ISystem
     // Fills `classify`'s dirty UV rect from CBT's cursor into the first terrain's
     // region-dirty log (E0). No-op (leaves the rect empty) when nothing new was
     // logged since CBT last reclassified — that empty rect keeps Classify quiescent.
-    // `updateRecordCount` is CBTRenderFeature::GetUpdateRecordCount() this frame: the
+    // `updateSubmissionCount` is CBTRenderFeature::GetUpdateSubmissionCount() this frame: the
     // cursor only COMMITS (advances past a consumed edit) once that count advances,
     // proving a CBT.Update pass recorded the pushed rect; otherwise the rect is
     // re-armed so a frame that skipped the update (no scene view / instance not ready)
     // does not silently drop the edit. Public so it is directly unit-testable with an
     // ECS world + a real TerrainService terrain (no RenderServices needed).
-    void ConsumeDirtyRegion(ECS::World& world, uint64 updateRecordCount,
+    void ConsumeDirtyRegion(ECS::World& world, uint64 updateSubmissionCount,
                             CBTTerrain::CBTClassifyDesc& classify);
 
     // The sphere's analogue of ConsumeDirtyRegion: each changed face's face-local rect joins its face's pending
     // union (`regions` is the clear-on-read drain of TerrainService::ConsumePlanetLayerDirtyRegions), and every
     // pending face goes to Classify in the same update until an update records its rect unchanged. Public for tests.
-    void ConsumePlanetLayerEdits(uint64 updateRecordCount, const CBTTerrain::SphereEditRegions& regions,
+    void ConsumePlanetLayerEdits(uint64 updateSubmissionCount, const CBTTerrain::SphereEditRegions& regions,
                                  CBTTerrain::CBTClassifyDesc& classify);
 
     // Tiled-streaming analogue of ConsumeDirtyRegion: applies TerrainRenderFeature's
@@ -80,7 +80,7 @@ class CBTUpdateSystem : public ECS::ISystem
     // ConsumeDirtyRegion is inert for it — this feeds the same channel from the GPU
     // texture side instead. Public so it is directly unit-testable (no RenderServices).
     void ConsumeUnifiedDirtyRect(bool takenHasRect, float minU, float minV, float maxU,
-                                 float maxV, uint64 updateRecordCount,
+                                 float maxV, uint64 updateSubmissionCount,
                                  CBTTerrain::CBTClassifyDesc& classify);
 
     // Update()'s tiled-planar routing: resolves the active tiled terrain's global GPU
@@ -91,7 +91,7 @@ class CBTUpdateSystem : public ECS::ISystem
     // real feature + TerrainService tiled terrain; a null feature / missing tiled data runs
     // the discipline with nothing drained (a pending rect still re-arms / commits).
     void ConsumeUnifiedTiledDirtyRegion(TerrainECS::TerrainRenderFeature* feature,
-                                        uint64 updateRecordCount,
+                                        uint64 updateSubmissionCount,
                                         const Components::Terrain& tuning,
                                         CBTTerrain::CBTClassifyDesc& classify);
 

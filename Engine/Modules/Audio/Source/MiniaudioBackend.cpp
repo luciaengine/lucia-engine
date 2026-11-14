@@ -1,9 +1,9 @@
 #include "MiniaudioBackend.h"
 #include "Audio/AudioDecoderConfig.h"
+#include "DeviceOutput.h"
 
 #include "Audio/SpatializerHandedness.h"
 #include "Logger/Logger.h"
-#include "Mathematics/Interpolation.h"
 
 #include <cmath>
 #include <cstring>
@@ -470,7 +470,7 @@ void AudioSystem::MiniaudioBackend::SetBusMeterLevel(AudioBusId bus, float level
     const unsigned idx = (bus < static_cast<AudioBusId>(kMaxBuses)) ? static_cast<unsigned>(bus) : 0u;
     if (idx == 0u)
         return;
-    float v = Math::Clamp01(level);
+    float v = (level < 0.0f) ? 0.0f : (level > 1.0f ? 1.0f : level);
     m_BusMeterLevels[idx] = v;  // so this channel tracks master in real time while it has playing voices
 }
 
@@ -481,30 +481,13 @@ void AudioSystem::MiniaudioBackend::OnDeviceDataCallback(ma_device* pDevice, voi
     const ma_uint32 channels = pDevice->playback.channels;
     if (channels == 0)
         return;
-    float* samples = static_cast<float*>(pOutput);
-    const ma_uint32 totalSamples = frameCount * channels;
-
-    // The capture tap reads the full mix: recordings keep their sound while the
-    // speakers are muted. The mute is applied after it, on the device write only.
     OutputCaptureCallback capture;
     {
         std::lock_guard<std::mutex> lock(m_OutputCaptureMutex);
         capture = m_OutputCaptureCallback;
     }
-    if (capture)
-        capture(samples, static_cast<std::uint32_t>(frameCount), static_cast<std::uint32_t>(channels), static_cast<std::uint32_t>(pDevice->sampleRate));
-
-    if (m_OutputMuted.load(std::memory_order_relaxed))
-        std::memset(samples, 0, static_cast<std::size_t>(totalSamples) * sizeof(float));
-
-    // The master meter reads what reaches the speakers.
-    float peak = 0.0f;
-    for (ma_uint32 i = 0; i < totalSamples; ++i)
-    {
-        const float a = std::fabs(samples[i]);
-        if (a > peak)
-            peak = a;
-    }
+    const float peak = Detail::FinalizeDeviceOutput(
+        static_cast<float*>(pOutput), frameCount, channels, pDevice->sampleRate, m_OutputMuted, capture);
     m_MasterMeterPeak.store(peak, std::memory_order_relaxed);
 }
 
@@ -612,8 +595,12 @@ float AudioSystem::MiniaudioBackend::GetBusVolume(AudioBusId bus) const
 void AudioSystem::MiniaudioBackend::SetOutputMuted(bool muted)
 {
     m_OutputMuted.store(muted, std::memory_order_relaxed);
-    // An engine-owned device has no data callback of ours, and so no capture tap to
-    // preserve: mute it through the engine's endpoint gain instead.
+    if (muted)
+    {
+        m_MasterMeterPeak.store(0.0f, std::memory_order_relaxed);
+        m_BusMeterLevels[0] = 0.0f;
+    }
+    // An engine-owned fallback device has no custom capture tap to preserve.
     if (m_EngineInitialized && !m_DeviceOwned)
         ma_engine_set_volume(&m_Engine, muted ? 0.0f : 1.0f);
 }
@@ -621,13 +608,15 @@ void AudioSystem::MiniaudioBackend::SetOutputMuted(bool muted)
 float AudioSystem::MiniaudioBackend::GetBusMeterLevel(AudioBusId bus) const
 {
     const unsigned idx = (bus < static_cast<AudioBusId>(kMaxBuses)) ? static_cast<unsigned>(bus) : 0u;
+    if (idx == 0 && m_OutputMuted.load(std::memory_order_relaxed))
+        return 0.0f;
     return m_BusMeterLevels[idx];
 }
 
 void AudioSystem::MiniaudioBackend::PeakBusMeter(AudioBusId bus, float level)
 {
     const unsigned idx = (bus < static_cast<AudioBusId>(kMaxBuses)) ? static_cast<unsigned>(bus) : 0u;
-    float v = Math::Clamp01(level);
+    float v = (level < 0.0f) ? 0.0f : (level > 1.0f ? 1.0f : level);
     if (v > m_BusMeterLevels[idx])
         m_BusMeterLevels[idx] = v;
 }

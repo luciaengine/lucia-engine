@@ -1,3 +1,4 @@
+#include "Core/ApplicationPaths.h"
 // EditorSDK phase 1 end-to-end: generate → compile → load a REAL native
 // Editor-kind package module against the EditorSDK interface, and assert its
 // registrations land in the process-wide editor registries.
@@ -15,7 +16,7 @@
 // project open) — the fixture's inspector must arrive via the late-plugin
 // replay, not by luck of ordering.
 
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h" // ApplicationPaths::GetExecutableDirectory
 #include "Editor/Entities/EditorComponentTraits.h"
 #include "Editor/Registries/BuildExporterRegistry.h"
 #include "Editor/Registries/EditorMenuRegistry.h"
@@ -176,7 +177,6 @@ ns::NativeBuildConfig MakeEditorModuleConfig(const std::map<std::string, std::st
     config.CMakeExe = kv.at("cmake");
     config.Config = kv.at("config");
     config.EngineImportLib = kv.at("importlib");
-    config.EngineBinary = kv.at("enginebinary");
     config.SdkEntrySource = kv.at("sdkentry");
     config.ModuleName = moduleName;
     for (const auto& d : SplitList(kv.at("includes"), ';'))
@@ -188,7 +188,6 @@ ns::NativeBuildConfig MakeEditorModuleConfig(const std::map<std::string, std::st
     for (const auto& d : SplitList(kv.count("globaldefs") ? kv.at("globaldefs") : "", ';'))
         config.CompileDefinitions.push_back(d);
     config.EditorImportLib = kv.at("editorimportlib");
-    config.EditorBinary = kv.at("editorbinary");
     for (const auto& d : SplitList(kv.at("editorincludes"), ';'))
         config.EditorIncludeDirs.emplace_back(d);
     return config;
@@ -365,16 +364,14 @@ TEST(EditorModuleBuildLoad, EztreeEditorModuleBuildsAndRegistersRealPlugin)
 
     // Traits registered at module load: find by display name (the test does
     // not compile against the package's component headers).
-    const auto traitsSnapshot = ed::EditorComponentTraitsRegistry::Get().Snapshot();
-    const auto treeTraits = std::find_if(traitsSnapshot->begin(), traitsSnapshot->end(),
-                                         [](const auto& entry) {
-                                             return entry.second.DisplayName == "Tree Generator";
-                                         });
-    ASSERT_NE(treeTraits, traitsSnapshot->end());
-    EXPECT_EQ(treeTraits->second.HierarchyRowClass, "hierarchy-entity-tree-generator");
-    EXPECT_EQ(treeTraits->second.InspectorIconClass, "inspector-section-icon-tree-generator");
-    EXPECT_TRUE(treeTraits->second.IsPickInstanceRoot);
-    EXPECT_TRUE(treeTraits->second.GizmoPivotAtEntityOrigin);
+    const auto treeTypeId = ed::EditorComponentTraitsRegistry::Get().FindByDisplayName("Tree Generator");
+    ASSERT_NE(treeTypeId, decltype(treeTypeId){});
+    ed::EditorComponentTraits treeTraits;
+    ASSERT_TRUE(ed::EditorComponentTraitsRegistry::Get().TryGet(treeTypeId, treeTraits));
+    EXPECT_EQ(treeTraits.HierarchyRowClass, "hierarchy-entity-tree-generator");
+    EXPECT_EQ(treeTraits.InspectorIconClass, "inspector-section-icon-tree-generator");
+    EXPECT_TRUE(treeTraits.IsPickInstanceRoot);
+    EXPECT_TRUE(treeTraits.GizmoPivotAtEntityOrigin);
 
     // Phase 2: the module registered its Tree Stats panel descriptor with the
     // package-mount-scoped UI asset paths, and its factory produces a real

@@ -48,6 +48,7 @@ class ArchetypeMatchList
 
     /// True if this list was built for a filter with the same five signatures as `filter`.
     bool HasFilter(const ArchetypeFilter& filter) const;
+    bool Matches(const Archetype* archetype) const;
     /// Appends, in order, the archetypes of `archetypes` the filter matches. A buffer too small
     /// for them is replaced once by a larger copy taken from `arena`; the old one stays where a
     /// reader may still hold it.

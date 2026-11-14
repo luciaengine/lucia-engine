@@ -1,3 +1,22 @@
+#include "Components/Animation/AnimatedSprite2D.h"
+#include "Components/Animation/HumanoidRetargeterComponent.h"
+#include "Components/Navigation/NavigationAgent.h"
+#include "Components/Navigation/NavigationSurface.h"
+#include "Components/SceneViewHidden.h"
+#include "TerrainGrass/TerrainGrassPresets.h"
+#include "MarkupECS/MarkupService.h"
+#include "Components/Navigation/NavigationSource.h"
+#include "SplineECS/SplineService.h"
+#include "Types/Fnv1a.h"
+#include <format>
+#include <functional>
+#include <initializer_list>
+#include "Components/Audio/AudioEmitter.h"
+#include "Components/Animation/ValueCurve.h"
+#include "Components/Rendering/PostProcessEffects/RainSettingsEffect.h"
+#include "Components/Rendering/WindVolume.h"
+#include "PhysicsECS/Components/MovingPlatform.h"
+#include "PhysicsECS/Components/PhysicsCollider.h"
 #include "Particles/ParticleStack/ParticleStackAuthoring.h"
 #include <gtest/gtest.h>
 
@@ -17,22 +36,15 @@
 #include "Assets/AssetDependencyExtractor.h"
 #include "Assets/Packages/ProjectPackagesManifest.h"
 
-#include "Components/Audio/AudioEmitter.h"
 #include "Components/Hierarchy.h"
 #include "Components/Name.h"
-#include "Components/PrefabInstance.h"
 #include "Components/Animation/AnimatedNodeRef.h"
-#include "Components/Animation/AnimatedSprite2D.h"
-#include "Components/Animation/HumanoidRetargeterComponent.h"
-#include "Components/Animation/ValueCurve.h"
 #include "Components/Rendering/Camera.h"
 #include "Components/Rendering/LODGroup.h"
 #include "Components/Rendering/Ocean.h"
 #include "Components/Rendering/Light.h"
 #include "Components/Rendering/SkySunDrive.h"
 #include "Components/Rendering/MeshRenderer.h"
-#include "Components/Navigation/NavigationAgent.h"
-#include "Components/Navigation/NavigationSurface.h"
 #include "Engine/Rendering/MeshNameRegistry.h"
 #include "Components/Rendering/ParticleRenderer.h"
 #include "Components/Rendering/Particles.h"
@@ -44,6 +56,7 @@
 #include "Components/Rendering/PostProcessEffects/VolumetricClouds.h"
 #include "Components/Rendering/PostProcessEffects/BloomEffect.h"
 #include "Components/Rendering/PostProcessEffects/ChromaticAberrationEffect.h"
+#include "Components/Rendering/PostProcessEffects/DepthPixelationEffect.h"
 #include "Components/Rendering/PostProcessEffects/ColorFilterEffect.h"
 #include "Components/Rendering/PostProcessEffects/ColorGradeEffect.h"
 #include "Components/Rendering/PostProcessEffects/ContrastAdaptiveSharpenEffect.h"
@@ -64,8 +77,9 @@
 #include "Components/Rendering/AmbientLight.h"
 #include "Components/Rendering/SkyEnvironment.h"
 #include "Components/RuntimeOnlyEntity.h"
+#include "Components/PrefabInstance.h"
 #include "Components/SceneEntityTag.h"
-#include "Components/SceneViewHidden.h"
+#include "Components/SceneSubsceneInstance.h"
 #include "Components/Spline/SplineExtrude.h"
 #include "Components/Spline/SplineFence.h"
 #include "Components/Spline/SplineWall.h"
@@ -73,7 +87,6 @@
 #include "Components/TemplateGroundPlaceholder.h"
 #include "Components/Terrain/Terrain.h"
 #include "Terrain/TerrainTypes.h" // kMaxTerrainMaterialLayers (the paint-layer clamp bound)
-#include "TerrainGrass/TerrainGrassPresets.h"
 #include "Components/Terrain/TerrainGrass.h"
 #include "Components/Terrain/TerrainModifierEffects.h"
 #include "Components/Terrain/TerrainModifierVolume.h"
@@ -81,20 +94,19 @@
 #include "Components/Terrain/TerrainPlanetRelief.h"
 #include "Components/Transform.h"
 #include "Components/Video/VideoTextureComponent.h"
-#include "ECS/Component/ComponentFactory.h"
-#include "ECS/Component/ComponentFieldRegistry.h"
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentFactory.h"
+#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Components.h"
+#include "ECS/CachedQuery.h"
+#include "ECS/ComponentRegistry.h"
+#include "ECS/World.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
 #include "ECS/UnresolvedComponentStore.h"
 #include "Logger/Logger.h"
-#include "MarkupECS/MarkupService.h"
-#include "Components/Navigation/NavigationSource.h"
-#include "SplineECS/SplineService.h"
 #include "TerrainECS/Scene/TerrainSceneSchemas.h"
 #include "TerrainECS/SurfaceHeightQuery.h"
 #include "TerrainGrass/Scene/TerrainGrassSceneSchemas.h"
-#include "Types/Fnv1a.h"
 
 #include <algorithm>
 #include <cctype>
@@ -103,9 +115,8 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
-#include <format>
 #include <fstream>
-#include <functional>
+#include <future>
 #include <iterator>
 #include <sstream>
 #include <limits>
@@ -113,6 +124,7 @@
 #include <utility>
 #include <vector>
 #include "StagedTestPaths.h"
+#include "TestTempDir.h"
 
 using namespace GameEngine;
 
@@ -150,7 +162,7 @@ class HealthSchema final : public Scene::ISceneComponentSchema
 
     bool ApplyProperty(ECS::World& world,
                        ECS::EntityHandle entity,
-                       const Scene::SceneReadContext& ctx,
+                       [[maybe_unused]] const Scene::SceneReadContext& ctx,
                        std::string_view property,
                        std::string_view value,
                        std::string* outError) const override
@@ -186,7 +198,7 @@ class DebugMarkerSchema final : public Scene::ISceneComponentSchema
 
     bool ApplyProperty(ECS::World& world,
                        ECS::EntityHandle entity,
-                       const Scene::SceneReadContext& ctx,
+                       [[maybe_unused]] const Scene::SceneReadContext& ctx,
                        std::string_view property,
                        std::string_view value,
                        std::string* outError) const override
@@ -233,7 +245,7 @@ class MatUserSchema final : public Scene::ISceneComponentSchema
 
     bool ApplyProperty(ECS::World& world,
                        ECS::EntityHandle entity,
-                       const Scene::SceneReadContext& ctx,
+                       [[maybe_unused]] const Scene::SceneReadContext& ctx,
                        std::string_view property,
                        std::string_view value,
                        std::string* outError) const override
@@ -321,7 +333,7 @@ class MatUserV2Schema final : public Scene::ISceneComponentSchema
 
     bool ApplyProperty(ECS::World& world,
                        ECS::EntityHandle entity,
-                       const Scene::SceneReadContext& ctx,
+                       [[maybe_unused]] const Scene::SceneReadContext& ctx,
                        std::string_view property,
                        std::string_view value,
                        std::string* outError) const override
@@ -388,7 +400,7 @@ class MatUserV2Schema final : public Scene::ISceneComponentSchema
 GE_REGISTER_SCENE_SCHEMA(MatUserV2Schema)
 
 // Test resolver: in-memory map of (guid <-> path) pairs.
-// Set up in the test, then passed to Save/SceneReadOptions.
+// Set up in the test, then passed to Save/LoadOptions.
 class FakeAssetResolver final : public Scene::ISceneAssetResolver
 {
   public:
@@ -495,12 +507,17 @@ class FakeAssetResolver final : public Scene::ISceneAssetResolver
     bool m_MintRequiresFileOnDisk = false;
 };
 
+// The scene files of this test process, removed at exit: a concurrent ctest process running the
+// same tests writes its own.
+static const std::filesystem::path& SceneTestDirectory()
+{
+    static const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("GameEngine_SceneIOTests")};
+    return directory.Path();
+}
+
 static std::filesystem::path MakeTempPath(const char* filename)
 {
-    const auto dir = std::filesystem::temp_directory_path() / "GameEngine_SceneIOTests";
-    std::error_code ec;
-    std::filesystem::create_directories(dir, ec);
-    return (dir / filename).lexically_normal();
+    return (SceneTestDirectory() / filename).lexically_normal();
 }
 
 // Staged fixture mirror root (StageTestAssets); never climbs into the source tree.
@@ -555,7 +572,6 @@ static ECS::EntityHandle FindByTag(ECS::World& world, const std::string& tag)
     }
     return ECS::EntityHandle::Invalid();
 }
-// Writes `text` to `path` and loads it; the load must succeed. Returns the load report.
 static Scene::SceneDegradation LoadSceneTextWithReport(ECS::World& world, const std::filesystem::path& path,
                                                        const std::string& text)
 {
@@ -8764,7 +8780,7 @@ TEST(SceneIO, Validate_CycleFailsLoad)
 
 TEST(SceneIO, PrefabInstance_InstantiatesWithPrefixAndOverrides)
 {
-    const auto dir = std::filesystem::temp_directory_path() / "GameEngine_SceneIOTests";
+    const auto dir = SceneTestDirectory();
     const auto bpPath = (dir / "bp.prefab").lexically_normal();
     const auto scenePath = (dir / "bp_scene.scene").lexically_normal();
 
@@ -8801,7 +8817,7 @@ TEST(SceneIO, PrefabInstance_InstantiatesWithPrefixAndOverrides)
 
 TEST(SceneIO, Save_PreservesPrefabInstanceAndRemovalDirectives)
 {
-    const auto dir = std::filesystem::temp_directory_path() / "GameEngine_SceneIOTests";
+    const auto dir = SceneTestDirectory();
     const auto bpPath = (dir / "bp_remove.prefab").lexically_normal();
     const auto scenePath = (dir / "bp_remove_scene.scene").lexically_normal();
     const auto outPath = (dir / "bp_remove_scene_out.scene").lexically_normal();
@@ -8855,7 +8871,7 @@ static void LoadSaveAndReloadPrefabScene(const std::vector<std::pair<std::string
                                          const std::function<void(ECS::World&)>& edit, ECS::World& reloaded,
                                          std::string& savedText)
 {
-    const auto dir = std::filesystem::temp_directory_path() / "GameEngine_SceneIOTests";
+    const auto dir = SceneTestDirectory();
     for (const auto& [file, text] : prefabs)
         ASSERT_TRUE(WriteFile(dir / file, text));
     const auto scenePath = MakeTempPath(sceneFile.c_str());
@@ -8956,7 +8972,7 @@ static Scene::SceneIOError LoadPrefabSceneError(const std::vector<std::pair<std:
                                         const std::string& sceneFile, const std::string& scene,
                                         ECS::World& world, Scene::SceneDegradation* report = nullptr)
 {
-    const auto dir = std::filesystem::temp_directory_path() / "GameEngine_SceneIOTests";
+    const auto dir = SceneTestDirectory();
     for (const auto& [file, text] : prefabs)
         EXPECT_TRUE(WriteFile(dir / file, text));
     const auto scenePath = MakeTempPath(sceneFile.c_str());
@@ -9530,7 +9546,7 @@ TEST(SceneIO, TwoPathsWithOneHashedTagAreRefused)
 // prefab's path is refused with the fix rather than writing a [resource] line with no path.
 TEST(SceneIO, Save_RefusesAPrefabInstanceWhoseSourceTheAssetDatabaseCannotName)
 {
-    const auto dir = std::filesystem::temp_directory_path() / "GameEngine_SceneIOTests";
+    const auto dir = SceneTestDirectory();
     const auto prefabPath = (dir / "unnamed_source.prefab").lexically_normal();
     const auto scenePath = (dir / "unnamed_source_scene.scene").lexically_normal();
     ASSERT_TRUE(WriteFile(prefabPath, "[prefab version=1]\n[entity id=\"root\"]\nName.value = \"P\"\n"));
@@ -9573,7 +9589,7 @@ TEST(SceneIO, Load_RefusesABlueprintSectionAndNamesTheMigrationScript)
 // error message (empty when the load succeeds).
 static std::string LoadErrorForPrefab(const char* stem, const std::string& prefab)
 {
-    const auto dir = std::filesystem::temp_directory_path() / "GameEngine_SceneIOTests";
+    const auto dir = SceneTestDirectory();
     const std::string prefabFile = std::string(stem) + ".prefab";
     const auto scenePath = MakeTempPath((std::string(stem) + ".scene").c_str());
     EXPECT_TRUE(WriteFile(dir / prefabFile, prefab));
@@ -9665,7 +9681,7 @@ static void ExpectNavigationSourcePolicies(ECS::World& world, const char* pass)
 // the prefab's child authors none and keeps none, so it goes on following the root.
 TEST(SceneIO, SaveThenLoad_NavigationSourcePolicyOnEntitiesAndPrefabs)
 {
-    const auto dir = std::filesystem::temp_directory_path() / "GameEngine_SceneIOTests";
+    const auto dir = SceneTestDirectory();
     const auto bpPath = (dir / "nav_source_tree.prefab").lexically_normal();
     const auto scenePath = (dir / "nav_source_scene.scene").lexically_normal();
     const auto outPath = (dir / "nav_source_scene_out.scene").lexically_normal();
@@ -9713,7 +9729,7 @@ TEST(SceneIO, SaveThenLoad_NavigationSourcePolicyOnEntitiesAndPrefabs)
 
 TEST(SceneIO, Save_PreservesSubsceneInstanceAndDoesNotFlatten)
 {
-    const auto dir = std::filesystem::temp_directory_path() / "GameEngine_SceneIOTests";
+    const auto dir = SceneTestDirectory();
     const auto chunkPath = (dir / "chunk_a.scene").lexically_normal();
     const auto scenePath = (dir / "subscene_main.scene").lexically_normal();
     const auto outPath = (dir / "subscene_main_out.scene").lexically_normal();
@@ -9750,7 +9766,7 @@ TEST(SceneIO, Save_PreservesSubsceneInstanceAndDoesNotFlatten)
 
 TEST(SceneIO, Save_PreservesCommentBlocksBeforeSections)
 {
-    const auto dir = std::filesystem::temp_directory_path() / "GameEngine_SceneIOTests";
+    const auto dir = SceneTestDirectory();
     const auto bpPath = (dir / "bp_comment.prefab").lexically_normal();
     const auto chunkPath = (dir / "chunk_comment.scene").lexically_normal();
     const auto scenePath = (dir / "comment_main.scene").lexically_normal();
@@ -9816,7 +9832,7 @@ TEST(SceneIO, Save_PreservesCommentBlocksBeforeSections)
 
 TEST(SceneIO, Save_PreservesEmbedBlocksOnOverwrite)
 {
-    const auto dir = std::filesystem::temp_directory_path() / "GameEngine_SceneIOTests";
+    const auto dir = SceneTestDirectory();
     const auto scenePath = (dir / "embed_preserve.scene").lexically_normal();
 
     const std::string scene =
@@ -10473,7 +10489,7 @@ TEST(SceneIO, CustomComponentSchema_LoadAndSaveRoundTrip)
 
 TEST(SceneIO, Include_MergesResourcesAndEnablesPrefabUse)
 {
-    const auto dir = std::filesystem::temp_directory_path() / "GameEngine_SceneIOTests";
+    const auto dir = SceneTestDirectory();
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
 
@@ -10511,7 +10527,7 @@ TEST(SceneIO, Include_MergesResourcesAndEnablesPrefabUse)
 
 TEST(SceneIO, AssetDependencyExtractor_FindsSceneAndPrefabPathRefs)
 {
-    const auto dir = std::filesystem::temp_directory_path() / "GameEngine_SceneIOTests";
+    const auto dir = SceneTestDirectory();
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
 
@@ -10577,7 +10593,7 @@ TEST(SceneIO, ValidateFails_OnDanglingResourceReference)
 
 TEST(SceneIO, ValidateFails_WhenIncludeContainsEntities)
 {
-    const auto dir = std::filesystem::temp_directory_path() / "GameEngine_SceneIOTests";
+    const auto dir = SceneTestDirectory();
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
 
@@ -10642,7 +10658,7 @@ TEST(SceneIO, ParseFails_WhenSubsceneEnabledIsNotBool)
 
 TEST(SceneIO, PrefabFileWithNoRootIsRefused)
 {
-    const auto dir = std::filesystem::temp_directory_path() / "GameEngine_SceneIOTests";
+    const auto dir = SceneTestDirectory();
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
 
@@ -13162,4 +13178,1702 @@ TEST(SceneIO, AReadErrorCarriesFileAndLineAcrossThreads)
     EXPECT_EQ(read.Error->line, 4);
     EXPECT_FALSE(read.Error->message.empty());
     EXPECT_FALSE(read.Document.Files);
+}
+
+
+static void BuildStagedToReady(Scene::StagedSceneActivation& activation)
+{
+    for (int i = 0; i < 1000 && activation.Phase() != Scene::SceneActivationPhase::Ready; ++i)
+        activation.Step(2, std::chrono::seconds(1));
+    ASSERT_EQ(activation.Phase(), Scene::SceneActivationPhase::Ready) << activation.Error().message;
+}
+
+
+TEST(SceneIO, SaveThenLoad_SplineFencePoolHoleSurvives)
+{
+    const auto scenePath = MakeTempPath("roundtrip_spline_fence_hole.scene");
+
+    ECS::World w1;
+    const ECS::EntityHandle e = w1.CreateEntity();
+    ASSERT_TRUE(e.IsValid());
+    w1.AddComponentImmediate(e, Components::SceneEntityTag{{'h', 'o', 'l', 'e', 'd', '\0'}});
+
+    Components::SplineFence authored{};
+    authored.Parts[0].Mesh = PoolTestRef(41);
+    // Parts[1] is empty.
+    authored.Parts[2] = {PoolTestRef(43), Components::SplineFencePartKind::Span};
+    w1.AddComponentImmediate(e, authored);
+
+    ASSERT_TRUE(Scene::WriteSceneFile(w1, scenePath, Scene::SceneWriteOptions{}));
+
+    ECS::World w2;
+    ASSERT_TRUE(Scene::ReadSceneInto(w2, scenePath, Scene::SceneReadOptions{}));
+
+    const auto e2 = FindByTag(w2, "holed");
+    ASSERT_TRUE(e2.IsValid());
+    const auto* loaded = w2.GetComponent<Components::SplineFence>(e2);
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->Parts[0], authored.Parts[0]);
+    EXPECT_TRUE(loaded->Parts[1].Mesh.IsNull());
+    EXPECT_EQ(loaded->Parts[2], authored.Parts[2]);
+}
+
+
+TEST(SceneIO, CameraIncludesGameUiInPostProcessingByDefault)
+{
+    EXPECT_TRUE(Components::Camera{}.IncludeUIInPostProcessing);
+}
+
+
+TEST(SceneIO, SaveThenLoad_RoundTripNightTintColorAndStrength)
+{
+    const auto scenePath = MakeTempPath("night_tint_roundtrip.scene");
+    ECS::World authored;
+    const auto entity = authored.CreateEntity();
+    authored.AddComponentImmediate(entity, MakeSceneTag("tint"));
+    Components::PostProcessVolume volume{};
+    volume.NightTintStrength = 0.65f;
+    volume.NightTintColor = ColorLinear{0.125f, 0.25f, 0.75f, 1.0f};
+    authored.AddComponentImmediate(entity, volume);
+    ASSERT_TRUE(Scene::WriteSceneFile(authored, scenePath, Scene::SceneWriteOptions{}));
+
+    ECS::World reloaded;
+    Scene::SceneDegradation report;
+    Scene::SceneReadOptions options{};
+    const auto sceneLoadResult1 = Scene::ReadSceneInto(reloaded, scenePath, options);
+    report = sceneLoadResult1.Degradation;
+    ASSERT_TRUE(sceneLoadResult1) << (*sceneLoadResult1.Error).message;
+    EXPECT_TRUE(report.skips.empty());
+    const auto* loaded = reloaded.GetComponent<Components::PostProcessVolume>(FindByTag(reloaded, "tint"));
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_FLOAT_EQ(loaded->NightTintStrength, volume.NightTintStrength);
+    EXPECT_FLOAT_EQ(loaded->NightTintColor.r, volume.NightTintColor.r);
+    EXPECT_FLOAT_EQ(loaded->NightTintColor.g, volume.NightTintColor.g);
+    EXPECT_FLOAT_EQ(loaded->NightTintColor.b, volume.NightTintColor.b);
+}
+
+
+TEST(SceneIO, WorldClearedFlagResetsOnTheNextLoad)
+{
+    const auto badPath = MakeTempPath("sticky_bad.scene");
+    ASSERT_TRUE(WriteSceneFailingAfterTheClear(badPath));
+    const auto goodPath = MakeTempPath("sticky_good.scene");
+    ASSERT_TRUE(WriteFile(goodPath, "[scene name=\"Fine\" version=1]\n[entity id=\"only\"]\n"));
+    ECS::World world;
+    const auto failed = Scene::ReadSceneInto(world, badPath);
+    ASSERT_FALSE(failed);
+    ASSERT_TRUE(failed.Error->worldCleared);
+    const auto loaded = Scene::ReadSceneInto(world, goodPath);
+    ASSERT_TRUE(loaded);
+    EXPECT_FALSE(loaded.Error.has_value());
+    EXPECT_EQ(world.GetEntityCount(), 1u);
+}
+
+
+TEST(SceneIO, PostProcessSchemaCollapse_ColorGradeDropsRetiredKeysSilently)
+{
+    const ECS::ComponentTypeId typeId = ECS::ComponentFieldRegistry::FindByName("ColorGradeEffect");
+    ASSERT_NE(typeId, 0u);
+    const Scene::ReflectionSceneSchema reflection(typeId, "ColorGradeEffect");
+    ECS::World w;
+    const ECS::EntityHandle e = w.CreateEntity();
+    ASSERT_TRUE(e.IsValid());
+    const std::vector<std::pair<std::string_view, std::string_view>> props{
+        {"brightness", "0.5"}, {"gamma", "1.2"}, {"hue", "0.1"}, {"contrast", "1.25"}};
+    Scene::SceneReadContext ctx{};
+    std::string err;
+    ASSERT_TRUE(reflection.ApplyProperties(w, e, ctx, props, &err, nullptr)) << err;
+    const auto* grade = w.GetComponent<Components::ColorGradeEffect>(e);
+    ASSERT_NE(grade, nullptr);
+    EXPECT_FLOAT_EQ(grade->Contrast, 1.25f); // the live key still applies
+}
+
+
+TEST(SceneIO, ValueCurveRejectsUnknownTarget)
+{
+    Scene::EnsureBuiltInSchemasRegistered();
+    const Scene::ISceneComponentSchema* schema = Scene::SceneSchemaRegistry::Find("ValueCurve");
+    ASSERT_NE(schema, nullptr);
+
+    ECS::World w;
+    const ECS::EntityHandle e = w.CreateEntity();
+    ASSERT_TRUE(e.IsValid());
+
+    const Scene::SceneReadContext loadCtx{};
+    std::string err;
+    ASSERT_TRUE(schema->ApplyProperty(w, e, loadCtx, "target", "postProcessWeight", &err)) << err;
+
+    EXPECT_FALSE(schema->ApplyProperty(w, e, loadCtx, "target", "postProcessExposure", &err));
+    EXPECT_EQ(w.GetComponent<Components::ValueCurve>(e)->Target, Components::ValueCurveTarget::PostProcessWeight);
+    EXPECT_NE(err.find("must be one of: none, transformPositionX,"), std::string::npos) << err;
+    EXPECT_NE(err.find("postProcessWeight"), std::string::npos) << err;
+}
+
+
+TEST(SceneIO, ValueCurveTargetNamesRoundTrip)
+{
+    Scene::EnsureBuiltInSchemasRegistered();
+    const Scene::ISceneComponentSchema* schema = Scene::SceneSchemaRegistry::Find("ValueCurve");
+    ASSERT_NE(schema, nullptr);
+
+    constexpr std::string_view kTargetPrefix = "ValueCurve.target = ";
+    for (const Components::ValueCurveTargetEntry& entry : Components::kValueCurveTargetEntries)
+    {
+        const Components::ValueCurveTarget target = entry.Value;
+        ECS::World w;
+        const ECS::EntityHandle saved = w.CreateEntity();
+        Components::ValueCurve curve{};
+        curve.Target = target;
+        w.AddComponentImmediate(saved, curve);
+
+        std::vector<std::string> lines;
+        schema->Serialize(w, saved, Scene::SceneWriteContext{}, lines);
+        const auto line = std::find_if(lines.begin(), lines.end(), [&](const std::string& l)
+                                       { return l.starts_with(kTargetPrefix); });
+        ASSERT_NE(line, lines.end()) << entry.Name;
+        const std::string name = line->substr(kTargetPrefix.size());
+
+        std::string upperName = name;
+        std::transform(upperName.begin(), upperName.end(), upperName.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+        for (const std::string& written : {name, upperName})
+        {
+            const ECS::EntityHandle loaded = w.CreateEntity();
+            std::string err;
+            ASSERT_TRUE(schema->ApplyProperty(w, loaded, Scene::SceneReadContext{}, "target", written, &err))
+                << written << ": " << err;
+            EXPECT_EQ(w.GetComponent<Components::ValueCurve>(loaded)->Target, target) << written;
+        }
+    }
+}
+
+
+TEST(SceneIO, Load_RetiredTerrainGrassFieldsAreIgnoredAndDoNotDegradeTheScene)
+{
+    const auto scenePath = MakeTempPath("terrain_grass_legacy_fields.scene");
+    Scene::EnsureTerrainSceneSchemasRegistered();
+    Scene::EnsureTerrainGrassSceneSchemasRegistered();
+
+    const std::string src =
+        "[scene name=\"LegacyGrass\" version=1]\n"
+        "\n"
+        "[entity id=\"legacygrass\"]\n"
+        "Terrain.enabled = true\n"
+        "Terrain.sizeX = 512\n"
+        "Terrain.sizeZ = 512\n"
+        "Terrain.heightScale = 100\n"
+        "Terrain.grassDensity = 0.5\n"
+        "Terrain.grassFadeStart = 350\n"
+        "Terrain.grassFadeEnd = 500\n"
+        "Terrain.grassScale = 2\n"
+        "TerrainGrass.enabled = true\n"
+        "TerrainGrass.density = 0.5\n"
+        "TerrainGrass.fadeStart = 350\n"
+        "TerrainGrass.fadeEnd = 500\n"
+        "TerrainGrass.distanceFadeEnabled = true\n"
+        "TerrainGrass.textureDensity = 0.18\n"
+        "TerrainGrass.bladeHeight = 3.5\n";
+    ASSERT_TRUE(WriteFile(scenePath, src));
+
+    ECS::World w;
+    const auto diagnosticResult1 = Scene::ReadSceneInto(w, scenePath, Scene::SceneReadOptions{});
+    ASSERT_TRUE(diagnosticResult1)
+        << (*diagnosticResult1.Error).message;
+
+    const auto loadedEntity = FindByTag(w, "legacygrass");
+    ASSERT_TRUE(loadedEntity.IsValid());
+    const auto* grass = w.GetComponent<Components::TerrainGrass>(loadedEntity);
+    ASSERT_NE(grass, nullptr);
+    // The assignments that still exist survived...
+    EXPECT_TRUE(ECS::Entity(&w, loadedEntity).IsEnabled<Components::TerrainGrass>());
+    EXPECT_FLOAT_EQ(grass->BladeHeight, 3.5f);
+    // ...and the retired ones fell back to the current defaults rather than being reinterpreted.
+    // No value is carried across: the old Density was a fraction of a terrain-sized lattice, so it
+    // names no particular blades/m2.
+    EXPECT_FLOAT_EQ(grass->BladesPerSquareMeter, 21.0f);
+    EXPECT_FLOAT_EQ(grass->Range, 500.0f);
+    EXPECT_FLOAT_EQ(grass->DensityFalloff, 2.0f);
+
+    // And the round trip is clean: re-saving carries no retired key forward.
+    const auto resavedPath = MakeTempPath("terrain_grass_legacy_resaved.scene");
+    ASSERT_TRUE(Scene::WriteSceneFile(w, resavedPath, Scene::SceneWriteOptions{}));
+    std::string resaved;
+    ASSERT_TRUE(ReadFile(resavedPath, resaved));
+    EXPECT_EQ(resaved.find("TerrainGrass.density ="), std::string::npos);
+    EXPECT_EQ(resaved.find("TerrainGrass.fadeStart ="), std::string::npos);
+    EXPECT_EQ(resaved.find("TerrainGrass.distanceFadeEnabled ="), std::string::npos);
+    EXPECT_NE(resaved.find("TerrainGrass.bladesPerSquareMeter = 21"), std::string::npos);
+}
+
+
+TEST(SceneIO, UnknownTerrainGrassRootFieldsAreReportedAndDropped)
+{
+    const auto scenePath = MakeTempPath("terrain_grass_root_alpha.scene");
+    Scene::EnsureTerrainSceneSchemasRegistered();
+    Scene::EnsureTerrainGrassSceneSchemasRegistered();
+
+    const std::string src =
+        "[scene name=\"RootFade\" version=1]\n"
+        "\n"
+        "[entity id=\"rootfade\"]\n"
+        "TerrainGrass.enabled = true\n"
+        "TerrainGrass.rootAlpha = 0.9\n"
+        "TerrainGrass.rootAlphaBlendRange = 0.15\n"
+        "TerrainGrass.bladeHeight = 0.72\n";
+    ASSERT_TRUE(WriteFile(scenePath, src));
+
+    std::vector<std::string> logLines;
+    ScopedEngineLogCapture capture(&logLines);
+
+    // Positive control on the instrument. A capture that sees nothing is indistinguishable from a
+    // notice that was never emitted, and the second reading is the one that would quietly pass a
+    // broken retirement. Prove the sink is live BEFORE reading a zero out of it.
+    Logger::Log::Warning("SceneIO log-capture self test");
+    Logger::Log::Flush();
+    ASSERT_EQ(CountLinesContaining(logLines, "SceneIO log-capture self test"), 1u)
+        << "the log capture is not receiving engine warnings — every count below would be a "
+           "false zero";
+    logLines.clear();
+
+    ECS::World w;
+    const auto diagnosticResult2 = Scene::ReadSceneInto(w, scenePath, Scene::SceneReadOptions{});
+    ASSERT_TRUE(diagnosticResult2)
+        << (*diagnosticResult2.Error).message;
+    Logger::Log::Flush();
+
+    // Every unsupported field has an actionable diagnostic.
+    std::string dump;
+    for (const auto& l : logLines) dump += "\n  | " + l;
+    EXPECT_EQ(CountLinesContaining(logLines, "TerrainGrass has no field named 'rootAlpha'"), 1u)
+        << "captured " << logLines.size() << " line(s):" << dump;
+    EXPECT_EQ(CountLinesContaining(logLines, "TerrainGrass has no field named 'rootAlphaBlendRange'"), 1u);
+    const std::string notice = FirstLineContaining(logLines, "TerrainGrass has no field named 'rootAlpha'");
+    EXPECT_NE(notice.find("delete the line"), std::string::npos) << notice;
+    EXPECT_NE(notice.find("correct the spelling"), std::string::npos) << notice;
+    // The notice explains whether saving preserves the unsupported assignment.
+    EXPECT_NE(notice.find("does not keep it"), std::string::npos) << notice;
+
+    // The assignments that still exist survived the load.
+    const auto loadedEntity = FindByTag(w, "rootfade");
+    ASSERT_TRUE(loadedEntity.IsValid());
+    const auto* grass = w.GetComponent<Components::TerrainGrass>(loadedEntity);
+    ASSERT_NE(grass, nullptr);
+    EXPECT_TRUE(ECS::Entity(&w, loadedEntity).IsEnabled<Components::TerrainGrass>());
+    EXPECT_FLOAT_EQ(grass->BladeHeight, 0.72f);
+
+    // A repeated read reports the same unsupported assignments.
+    logLines.clear();
+    ECS::World w2;
+    const auto diagnosticResult3 = Scene::ReadSceneInto(w2, scenePath, Scene::SceneReadOptions{});
+    ASSERT_TRUE(diagnosticResult3)
+        << (*diagnosticResult3.Error).message;
+    Logger::Log::Flush();
+    EXPECT_EQ(CountLinesContaining(logLines, "TerrainGrass has no field named"), 2u);
+
+    // And the round trip is clean: re-saving carries no retired key forward, under either spelling.
+    const auto resavedPath = MakeTempPath("terrain_grass_root_alpha_resaved.scene");
+    ASSERT_TRUE(Scene::WriteSceneFile(w, resavedPath, Scene::SceneWriteOptions{}));
+    std::string resaved;
+    ASSERT_TRUE(ReadFile(resavedPath, resaved));
+    EXPECT_EQ(resaved.find("TerrainGrass.rootAlpha"), std::string::npos);
+    EXPECT_NE(resaved.find("TerrainGrass.bladeHeight = 0.72"), std::string::npos);
+}
+
+
+TEST(SceneIO, TerrainGrassGroundingFieldsSurviveRepeatedLoadsAndResave)
+{
+    const auto scenePath = MakeTempPath("terrain_grass_grounding.scene");
+    Scene::EnsureTerrainSceneSchemasRegistered();
+    Scene::EnsureTerrainGrassSceneSchemasRegistered();
+    ASSERT_TRUE(WriteFile(scenePath,
+                         "[scene name=\"Grounding\" version=1]\n"
+                         "[entity id=\"grass\"]\n"
+                         "TerrainGrass.enabled = true\n"
+                         "TerrainGrass.groundingStrength = 0.78\n"
+                         "TerrainGrass.groundTintHeight = 0.75\n"
+                         "TerrainGrass.canopyShade = 0.82\n"));
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        ECS::World world;
+        Scene::SceneDegradation report;
+        Scene::SceneReadOptions options{};
+        const auto sceneLoadResult2 = Scene::ReadSceneInto(world, scenePath, options);
+        report = sceneLoadResult2.Degradation;
+        ASSERT_TRUE(sceneLoadResult2) << (*sceneLoadResult2.Error).message;
+        EXPECT_TRUE(report.skips.empty()) << pass;
+        const auto entity = FindByTag(world, "grass");
+        const auto* grass = world.GetComponent<Components::TerrainGrass>(entity);
+        ASSERT_NE(grass, nullptr);
+        EXPECT_TRUE(ECS::Entity(&world, entity).IsEnabled<Components::TerrainGrass>());
+        EXPECT_FLOAT_EQ(grass->GroundingStrength, 0.78f);
+        EXPECT_FLOAT_EQ(grass->GroundTintHeight, 0.75f);
+        EXPECT_FLOAT_EQ(grass->CanopyShade, 0.82f);
+        ASSERT_TRUE(Scene::WriteSceneFile(world, scenePath, Scene::SceneWriteOptions{}));
+    }
+    std::string saved;
+    ASSERT_TRUE(ReadFile(scenePath, saved));
+    EXPECT_NE(saved.find("TerrainGrass.groundingStrength = 0.78"), std::string::npos);
+    EXPECT_NE(saved.find("TerrainGrass.groundTintHeight = 0.75"), std::string::npos);
+    EXPECT_NE(saved.find("TerrainGrass.canopyShade = 0.82"), std::string::npos);
+}
+
+
+TEST(SceneIO, UnknownTerrainGrassColorFieldsAreReportedAndDropped)
+{
+    const auto scenePath = MakeTempPath("terrain_grass_colour_variation.scene");
+    Scene::EnsureTerrainSceneSchemasRegistered();
+    Scene::EnsureTerrainGrassSceneSchemasRegistered();
+
+    const std::string src =
+        "[scene name=\"ColourVariation\" version=1]\n"
+        "\n"
+        "[entity id=\"colourvar\"]\n"
+        "TerrainGrass.enabled = true\n"
+        "TerrainGrass.clumpHueVariance = 0.7\n"
+        "TerrainGrass.bladeHueVariance = 0.45\n"
+        "TerrainGrass.randomColor = 4282672844\n"
+        "TerrainGrass.hueVariation = 0.25\n";
+    ASSERT_TRUE(WriteFile(scenePath, src));
+
+    std::vector<std::string> logLines;
+    ScopedEngineLogCapture capture(&logLines);
+
+    // Positive control on the instrument: a capture that sees nothing is indistinguishable from a
+    // notice that was never emitted.
+    Logger::Log::Warning("SceneIO log-capture self test");
+    Logger::Log::Flush();
+    ASSERT_EQ(CountLinesContaining(logLines, "SceneIO log-capture self test"), 1u)
+        << "the log capture is not receiving engine warnings — every count below would be a "
+           "false zero";
+    logLines.clear();
+
+    ECS::World w;
+    const auto diagnosticResult4 = Scene::ReadSceneInto(w, scenePath, Scene::SceneReadOptions{});
+    ASSERT_TRUE(diagnosticResult4)
+        << (*diagnosticResult4.Error).message;
+    Logger::Log::Flush();
+
+    std::string dump;
+    for (const auto& l : logLines) dump += "\n  | " + l;
+    for (const char* key : {"TerrainGrass has no field named 'clumpHueVariance'",
+                            "TerrainGrass has no field named 'bladeHueVariance'",
+                            "TerrainGrass has no field named 'randomColor'"})
+        EXPECT_EQ(CountLinesContaining(logLines, key), 1u)
+            << key << "; captured " << logLines.size() << " line(s):" << dump;
+
+    // No value is carried across: the survivor keeps what the scene authored for IT, and the
+    // retired keys neither overwrite it nor are reinterpreted into it.
+    const auto loadedEntity = FindByTag(w, "colourvar");
+    ASSERT_TRUE(loadedEntity.IsValid());
+    const auto* grass = w.GetComponent<Components::TerrainGrass>(loadedEntity);
+    ASSERT_NE(grass, nullptr);
+    EXPECT_TRUE(ECS::Entity(&w, loadedEntity).IsEnabled<Components::TerrainGrass>());
+    EXPECT_FLOAT_EQ(grass->HueVariation, 0.25f);
+
+    // A repeated read reports the same unsupported assignments.
+    logLines.clear();
+    ECS::World w2;
+    const auto diagnosticResult5 = Scene::ReadSceneInto(w2, scenePath, Scene::SceneReadOptions{});
+    ASSERT_TRUE(diagnosticResult5)
+        << (*diagnosticResult5.Error).message;
+    Logger::Log::Flush();
+    EXPECT_EQ(CountLinesContaining(logLines, "TerrainGrass has no field named"), 3u);
+
+    // And the round trip is clean: re-saving sheds all three keys and keeps the survivor.
+    const auto resavedPath = MakeTempPath("terrain_grass_colour_variation_resaved.scene");
+    ASSERT_TRUE(Scene::WriteSceneFile(w, resavedPath, Scene::SceneWriteOptions{}));
+    std::string resaved;
+    ASSERT_TRUE(ReadFile(resavedPath, resaved));
+    EXPECT_EQ(resaved.find("TerrainGrass.clumpHueVariance"), std::string::npos);
+    EXPECT_EQ(resaved.find("TerrainGrass.bladeHueVariance"), std::string::npos);
+    EXPECT_EQ(resaved.find("TerrainGrass.randomColor"), std::string::npos);
+    EXPECT_NE(resaved.find("TerrainGrass.hueVariation = 0.25"), std::string::npos);
+}
+
+
+TEST(SceneIO, UnknownTerrainGrassFieldDoesNotChangeGrounding)
+{
+    const auto scenePath = MakeTempPath("terrain_grass_shadow_strength.scene");
+    Scene::EnsureTerrainSceneSchemasRegistered();
+    Scene::EnsureTerrainGrassSceneSchemasRegistered();
+
+    const std::string src =
+        "[scene name=\"Grounding\" version=1]\n"
+        "\n"
+        "[entity id=\"grounding\"]\n"
+        "TerrainGrass.enabled = true\n"
+        "TerrainGrass.shadowStrength = 0.25\n";
+    ASSERT_TRUE(WriteFile(scenePath, src));
+
+    std::vector<std::string> logLines;
+    ScopedEngineLogCapture capture(&logLines);
+    Logger::Log::Warning("SceneIO log-capture self test");
+    Logger::Log::Flush();
+    ASSERT_EQ(CountLinesContaining(logLines, "SceneIO log-capture self test"), 1u)
+        << "the log capture is not receiving engine warnings";
+    logLines.clear();
+
+    ECS::World w;
+    const auto diagnosticResult6 = Scene::ReadSceneInto(w, scenePath, Scene::SceneReadOptions{});
+    ASSERT_TRUE(diagnosticResult6)
+        << (*diagnosticResult6.Error).message;
+    Logger::Log::Flush();
+
+    EXPECT_EQ(CountLinesContaining(logLines, "TerrainGrass has no field named 'shadowStrength'"), 1u);
+    const std::string notice =
+        FirstLineContaining(logLines, "TerrainGrass has no field named 'shadowStrength'");
+    EXPECT_NE(notice.find("correct the spelling"), std::string::npos)
+        << "the notice does not explain how to fix the unsupported field: " << notice;
+
+    // Dropped, not carried: the successor is at its own default.
+    const auto loadedEntity = FindByTag(w, "grounding");
+    ASSERT_TRUE(loadedEntity.IsValid());
+    const auto* grass = w.GetComponent<Components::TerrainGrass>(loadedEntity);
+    ASSERT_NE(grass, nullptr);
+    EXPECT_FLOAT_EQ(grass->GroundingStrength, 1.0f);
+
+    const auto resavedPath = MakeTempPath("terrain_grass_shadow_strength_resaved.scene");
+    ASSERT_TRUE(Scene::WriteSceneFile(w, resavedPath, Scene::SceneWriteOptions{}));
+    std::string resaved;
+    ASSERT_TRUE(ReadFile(resavedPath, resaved));
+    EXPECT_EQ(resaved.find("TerrainGrass.shadowStrength"), std::string::npos);
+    EXPECT_NE(resaved.find("TerrainGrass.groundingStrength = 1"), std::string::npos);
+}
+
+
+TEST(SceneIO, Load_RetiredTerrainFieldsAreIgnored)
+{
+    const auto scenePath = MakeTempPath("terrain_legacy_fields.scene");
+    Scene::EnsureTerrainSceneSchemasRegistered();
+
+    const std::string src =
+        "[scene name=\"Legacy\" version=1]\n"
+        "\n"
+        "[entity id=\"legacy\"]\n"
+        "Terrain.enabled = true\n"
+        "Terrain.sizeX = 512\n"
+        "Terrain.sizeZ = 512\n"
+        "Terrain.heightScale = 100\n"
+        "Terrain.patchGridSize = 128\n"
+        "Terrain.samplesPerMeter = 1\n"
+        "Terrain.lodRangeScale = 1\n";
+    ASSERT_TRUE(WriteFile(scenePath, src));
+
+    ECS::World w;
+    const auto diagnosticResult7 = Scene::ReadSceneInto(w, scenePath, Scene::SceneReadOptions{});
+    ASSERT_TRUE(diagnosticResult7)
+        << (*diagnosticResult7.Error).message;
+
+    const auto loadedEntity = FindByTag(w, "legacy");
+    ASSERT_TRUE(loadedEntity.IsValid());
+    const auto* loaded = w.GetComponent<Components::Terrain>(loadedEntity);
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_FLOAT_EQ(loaded->SizeX, 512.0f);
+    EXPECT_FLOAT_EQ(loaded->HeightScale, 100.0f);
+}
+
+
+TEST(SceneIO, SphericalTerrainAndReliefLoadFromTheirComponents)
+{
+    const auto scenePath = MakeTempPath("terrain_cbt_migration.scene");
+    Scene::EnsureTerrainSceneSchemasRegistered();
+
+    const std::string src =
+        "[scene name=\"Planet\" version=1]\n"
+        "\n"
+        "[entity id=\"planet\"]\n"
+        "Terrain.enabled = true\n"
+        "Terrain.sizeX = 512\n"
+        "Terrain.sizeZ = 512\n"
+        "Terrain.domain = 1\n"
+        "Terrain.planetRadius = 5000\n"
+        "TerrainPlanetRelief.amplitude = 125\n"
+        "TerrainPlanetRelief.frequency = 8\n"
+        "TerrainPlanetRelief.octaves = 4\n"
+        "Terrain.targetPixelError = 6\n"
+        "Terrain.maxDepthOverride = 0\n";
+    ASSERT_TRUE(WriteFile(scenePath, src));
+
+    ECS::World w;
+    const auto diagnosticResult8 = Scene::ReadSceneInto(w, scenePath, Scene::SceneReadOptions{});
+    ASSERT_TRUE(diagnosticResult8)
+        << (*diagnosticResult8.Error).message;
+
+    const auto e = FindByTag(w, "planet");
+    ASSERT_TRUE(e.IsValid());
+    const auto* loaded = w.GetComponent<Components::Terrain>(e);
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->Domain, Components::TerrainDomain::Spherical); // the planet stays a planet
+    EXPECT_FLOAT_EQ(loaded->PlanetRadius, 5000.0f);
+    EXPECT_FLOAT_EQ(loaded->TargetPixelError, 6.0f);
+    EXPECT_FLOAT_EQ(loaded->SizeX, 512.0f);          // from the Terrain block
+    EXPECT_EQ(loaded->MaxDepthOverride, 0u);         // Automatic depth selection.
+
+    // Relief belongs to its companion component.
+    const auto* loadedRelief = w.GetComponent<Components::TerrainPlanetRelief>(e);
+    ASSERT_NE(loadedRelief, nullptr);
+    EXPECT_FLOAT_EQ(loadedRelief->Amplitude, 125.0f);
+    EXPECT_FLOAT_EQ(loadedRelief->Frequency, 8.0f);
+    EXPECT_EQ(loadedRelief->Octaves, 4u);
+
+    // A save retains the supported component structure.
+    const auto resavePath = MakeTempPath("terrain_cbt_migration_resave.scene");
+    ASSERT_TRUE(Scene::WriteSceneFile(w, resavePath, Scene::SceneWriteOptions{}));
+    std::string resaved;
+    ASSERT_TRUE(ReadFile(resavePath, resaved));
+    EXPECT_EQ(resaved.find("TerrainCBT"), std::string::npos);
+    EXPECT_NE(resaved.find("Terrain.domain = 1"), std::string::npos);
+    EXPECT_NE(resaved.find("Terrain.planetRadius = 5000"), std::string::npos);
+}
+
+
+TEST(SceneIO, SphericalTerrainIntegerDomainLoads)
+{
+    const auto scenePath = MakeTempPath("terrain_cbt_int_domain.scene");
+    Scene::EnsureTerrainSceneSchemasRegistered();
+
+    const std::string src =
+        "[scene name=\"PlanetInt\" version=1]\n"
+        "\n"
+        "[entity id=\"planet\"]\n"
+        "Terrain.domain = 1\n"
+        "Terrain.planetRadius = 5000\n";
+    ASSERT_TRUE(WriteFile(scenePath, src));
+
+    ECS::World w;
+    const auto diagnosticResult9 = Scene::ReadSceneInto(w, scenePath, Scene::SceneReadOptions{});
+    ASSERT_TRUE(diagnosticResult9)
+        << (*diagnosticResult9.Error).message;
+    const auto* loaded = w.GetComponent<Components::Terrain>(FindByTag(w, "planet"));
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->Domain, Components::TerrainDomain::Spherical);
+    EXPECT_FLOAT_EQ(loaded->PlanetRadius, 5000.0f);
+}
+
+
+TEST(SceneIO, UnknownComponentsAndFieldsProduceActionableDiagnostics)
+{
+    const auto scenePath = MakeTempPath("upgrade_path_warnings.scene");
+    const std::string src =
+        "[scene name=\"Upgrade\" version=1]\n"
+        "\n"
+        "[entity id=\"old_emitter\"]\n"
+        "ParticleEmitter3D.Amount = 1000\n"
+        "ParticleEmitter3D.fixedFps = 60\n"
+        "ParticleEmitter3D.lifetime = 2\n"
+        "ParticleEmitter3D.transformAlign = 1\n"
+        "RetiredEffectSettings.amount = 1000\n"
+        "RetiredEffectSettings.gravity = (0, -1, 0)\n";
+    ASSERT_TRUE(WriteFile(scenePath, src));
+
+    std::vector<std::string> logLines;
+    ScopedEngineLogCapture capture(&logLines, Logger::LogLevel::Warning);
+    Logger::Log::Warning("SceneIO warning capture self test");
+    Logger::Log::Flush();
+    ASSERT_EQ(CountLinesContaining(logLines, "SceneIO warning capture self test"), 1u)
+        << "the capture is not receiving engine warnings; every count below would be a false zero";
+    logLines.clear();
+
+    ECS::World w;
+    const auto diagnosticResult10 = Scene::ReadSceneInto(w, scenePath, Scene::SceneReadOptions{});
+    ASSERT_TRUE(diagnosticResult10)
+        << (*diagnosticResult10.Error).message;
+    Logger::Log::Flush();
+
+    std::string dump;
+    for (const auto& line : logLines)
+        dump += "\n  | " + line;
+    EXPECT_EQ(CountLinesContaining(logLines, "no registered type is named 'RetiredEffectSettings'"), 1u)
+        << "an unregistered component warns once" << dump;
+    EXPECT_EQ(CountLinesContaining(logLines, "ParticleEmitter3D has no field named"), 3u) << dump;
+    const std::string dropped = dump;
+    for (const char* key : {"'fixedFps'", "'lifetime'", "'transformAlign'"})
+        EXPECT_NE(dropped.find(key), std::string::npos) << key << " missing from: " << dropped;
+
+    const auto entity = FindByTag(w, "old_emitter");
+    ASSERT_TRUE(entity.IsValid());
+    const auto* emitter = w.GetComponent<Components::ParticleEmitter3D>(entity);
+    ASSERT_NE(emitter, nullptr);
+    EXPECT_EQ(emitter->Amount, 1000u) << "the fields the component still has are applied";
+}
+
+
+TEST(SceneIO, TwoPrefabSourcesAndPlainEntityRoundTripTogether)
+{
+    const auto dir = SceneTestDirectory();
+    const auto input = dir / "mixed-prefab.scene";
+    const auto output = dir / "mixed-prefab-out.scene";
+    ASSERT_TRUE(WriteFile(dir / "mixed-first.prefab",
+                         "[prefab name=\"First\" version=1]\n"
+                         "[entity id=\"root\"]\nName.value = \"First\"\n"
+                         "[entity id=\"child\" parent=\"root\"]\nName.value = \"First child\"\n"));
+    ASSERT_TRUE(WriteFile(dir / "mixed-linked.prefab",
+                         "[prefab version=1]\n"
+                         "[entity id=\"root\"]\nName.value = \"Linked\"\n"
+                         "[entity id=\"child\" parent=\"root\"]\nName.value = \"Linked child\"\n"));
+    ASSERT_TRUE(WriteFile(input,
+                         "[scene name=\"Mixed\" version=1]\n"
+                         "[resource id=\"bp\" path=\"mixed-first.prefab\"]\n"
+                         "[resource id=\"pf\" path=\"mixed-linked.prefab\"]\n"
+                         "[entity id=\"old_tag\"]\nName.value = \"Plain entity\"\n"
+                         "[prefab id=\"first\" source=\"bp\"]\n"
+                         "[prefab id=\"linked\" source=\"pf\"]\n"));
+    FakeAssetResolver resolver;
+    resolver.SetRoot(dir);
+    resolver.Bind(GUID::Generate(), "mixed-first.prefab", AssetType::Prefab);
+    resolver.Bind(GUID::Generate(), "mixed-linked.prefab", AssetType::Prefab);
+    Scene::SceneReadOptions load{};
+    load.AssetResolver = &resolver;
+    ECS::World world;
+    const auto diagnosticResult11 = Scene::ReadSceneInto(world, input, load);
+    ASSERT_TRUE(diagnosticResult11) << (*diagnosticResult11.Error).message;
+    ASSERT_TRUE(FindByTag(world, "first.child").IsValid());
+    const auto linked = FindByTag(world, "linked.child");
+    ASSERT_TRUE(linked.IsValid());
+    world.AddComponentImmediate(linked, Components::Name{"Child override"});
+
+    Scene::SceneWriteOptions save{};
+    save.assetResolver = &resolver;
+    const auto diagnosticResult12 = Scene::WriteSceneFile(world, output, save);
+    ASSERT_TRUE(diagnosticResult12) << (*diagnosticResult12.Error).message;
+    std::string serialized;
+    ASSERT_TRUE(ReadFile(output, serialized));
+    EXPECT_NE(serialized.find("[prefab id=\"first\""), std::string::npos);
+    EXPECT_NE(serialized.find("[prefab id=\"linked\""), std::string::npos);
+
+    ECS::World reloaded;
+    const auto diagnosticResult13 = Scene::ReadSceneInto(reloaded, output, load);
+    ASSERT_TRUE(diagnosticResult13) << (*diagnosticResult13.Error).message;
+    ASSERT_TRUE(FindByTag(reloaded, "first.child").IsValid());
+    EXPECT_TRUE(FindByTag(reloaded, "old_tag").IsValid());
+    const auto* name = reloaded.GetComponent<Components::Name>(FindByTag(reloaded, "linked.child"));
+    ASSERT_NE(name, nullptr);
+    EXPECT_EQ(name->View(), "Child override");
+}
+
+
+TEST(SceneIO, Save_SubsceneResourceGuidKeepsOneResourceLine)
+{
+    const TestUtils::ScopedTempDir scratch{TestUtils::MakeUniqueTempDirectory("subscene_guid")};
+    const auto dir = scratch.Path();
+    const auto chunkPath = (dir / "chunk_guid.scene").lexically_normal();
+    const auto scenePath = (dir / "subscene_guid_main.scene").lexically_normal();
+    const auto outPath = (dir / "subscene_guid_main_out.scene").lexically_normal();
+
+    ASSERT_TRUE(WriteFile(chunkPath,
+                          "[scene name=\"Chunk\" version=1]\n"
+                          "\n"
+                          "[entity id=\"root\"]\n"
+                          "Name.value = \"ChunkRoot\"\n"));
+
+    const std::string authoredGuid = "0000AB12-0000-0000-0000-00000000C0DE";
+    ASSERT_TRUE(WriteFile(scenePath,
+                          "[scene name=\"Main\" version=1]\n"
+                          "[resource id=\"chunk\" path=\"chunk_guid.scene\" guid=\"" + authoredGuid + "\"]\n"
+                          "\n"
+                          "[subscene id=\"area\" source=\"chunk\"]\n"
+                          "offset = (1, 2, 3)\n"));
+
+    ECS::World world;
+    ASSERT_TRUE(Scene::ReadSceneInto(world, scenePath, Scene::SceneReadOptions{}));
+
+    const ECS::EntityHandle root = FindByTag(world, "area");
+    ASSERT_TRUE(root.IsValid());
+    const auto* instance = world.GetComponent<Components::SceneSubsceneInstance>(root);
+    ASSERT_NE(instance, nullptr);
+    EXPECT_EQ(GUID(std::string(instance->SourceGuid())), GUID(authoredGuid));
+    EXPECT_TRUE(instance->hasOffset);
+    EXPECT_FLOAT_EQ(instance->offsetX, 1.0f);
+    EXPECT_FLOAT_EQ(instance->offsetY, 2.0f);
+    EXPECT_FLOAT_EQ(instance->offsetZ, 3.0f);
+
+    Scene::SceneWriteOptions so{};
+    so.preserveSubscenes = true;
+    ASSERT_TRUE(Scene::WriteSceneFile(world, outPath, so));
+
+    std::string saved;
+    ASSERT_TRUE(ReadFile(outPath, saved));
+    const size_t firstResource = saved.find("[resource ");
+    ASSERT_NE(firstResource, std::string::npos);
+    EXPECT_EQ(saved.find("[resource ", firstResource + 1), std::string::npos) << saved;
+
+    // Saving to another file renumbers resource ids, so read the id back from
+    // the one resource line and require the subscene to name it.
+    const std::string idKey = "id=\"";
+    const size_t idStart = saved.find(idKey, firstResource);
+    ASSERT_NE(idStart, std::string::npos) << saved;
+    const size_t idEnd = saved.find('"', idStart + idKey.size());
+    ASSERT_NE(idEnd, std::string::npos) << saved;
+    const std::string resourceId = saved.substr(idStart + idKey.size(), idEnd - idStart - idKey.size());
+    EXPECT_NE(saved.find("[subscene id=\"area\" source=\"" + resourceId + "\"]"), std::string::npos) << saved;
+}
+
+
+TEST(SceneIO, SceneInstanceSourceMetadataIsOwnedBySceneLoading)
+{
+    for (const auto type : {ECS::GetComponentTypeId<Components::PrefabInstance>(),
+                            ECS::GetComponentTypeId<Components::SceneSubsceneInstance>()})
+    {
+        EXPECT_TRUE(ECS::ComponentFieldRegistry::IsComponentDoNotSerialize(type));
+        const auto rule = ECS::ComponentFieldRegistry::GetScriptWriteRule(type);
+        EXPECT_EQ(rule.Access, ECS::ScriptWrite::EngineInternal);
+        EXPECT_EQ(rule.Writer, "scene loading");
+    }
+    const auto* source = ECS::ComponentFieldRegistry::FindField(
+        ECS::GetComponentTypeId<Components::PrefabInstance>(), "Source");
+    ASSERT_NE(source, nullptr);
+    EXPECT_EQ(source->Size, sizeof(GUID));
+    EXPECT_TRUE(ECS::HasAnyFlag(source->Flags, ECS::FieldFlags::Hidden));
+}
+
+
+TEST(SceneIO, LoadLegacyLODFields_AcceptedAndIgnored)
+{
+    const auto scenePath = MakeTempPath("lod_legacy.scene");
+
+    ECS::World w1;
+    const ECS::EntityHandle e = w1.CreateEntity();
+    ASSERT_TRUE(e.IsValid());
+    w1.AddComponentImmediate(e, Components::SceneEntityTag{{'l', 'o', 'd', '\0'}});
+    Components::MeshRenderer mr{};
+    w1.AddComponentImmediate(e, mr);
+    Components::LODGroup lg{};
+    lg.Bias = 0.5f;
+    w1.AddComponentImmediate(e, lg);
+    ASSERT_TRUE(Scene::WriteSceneFile(w1, scenePath, Scene::SceneWriteOptions{}));
+
+    // Inject the legacy lines a pre-R1.2 save would have written.
+    {
+        std::ifstream in(scenePath, std::ios::binary);
+        std::string body((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        in.close();
+        std::istringstream iss(body);
+        std::ostringstream oss;
+        for (std::string line; std::getline(iss, line);)
+        {
+            oss << line << "\n";
+            if (line.find("MeshRenderer.castShadows") != std::string::npos)
+                oss << "MeshRenderer.lodGroupId = 7\n";
+            if (line.find("LODGroup.bias") != std::string::npos)
+            {
+                oss << "LODGroup.lodCount = 3\n";
+                oss << "LODGroup.threshold0 = 0.6\n";
+                oss << "LODGroup.threshold1 = 0.3\n";
+            }
+        }
+        std::ofstream out(scenePath, std::ios::binary | std::ios::trunc);
+        out << oss.str();
+    }
+
+    ECS::World w2;
+    ASSERT_TRUE(Scene::ReadSceneInto(w2, scenePath, Scene::SceneReadOptions{}));
+    auto e2 = FindByTag(w2, "lod");
+    ASSERT_TRUE(e2.IsValid());
+    EXPECT_NE(w2.GetComponent<Components::MeshRenderer>(e2), nullptr);
+    auto* lg2 = w2.GetComponent<Components::LODGroup>(e2);
+    ASSERT_NE(lg2, nullptr);
+    EXPECT_FLOAT_EQ(lg2->Bias, 0.5f);
+}
+
+
+TEST(SceneIO, PreparedScene_WorkerSnapshotPreservesWorldUntilActivation)
+{
+    const auto path = MakeTempPath("prepared_worker.scene");
+    ASSERT_TRUE(WriteFile(path,
+        "[scene name=\"Prepared\" version=1]\n"
+        "[entity id=\"child\" parent=\"root\"]\nName.value = \"Snapshot\"\n"
+        "[entity id=\"root\"]\nName.value = \"Root\"\n"));
+    ECS::World world;
+    const auto existing = world.CreateEntity();
+    auto job = std::async(std::launch::async, [path] {
+        return Scene::PrepareSceneFromFile(path);
+    });
+    auto prepared = job.get();
+    ASSERT_TRUE(prepared);
+    EXPECT_EQ(world.GetEntityCount(), 1u);
+    EXPECT_TRUE(world.IsValid(existing));
+    // Activation must use the owned document, not reopen the now-invalid root.
+    ASSERT_TRUE(WriteFile(path, "not a scene anymore\n"));
+    ASSERT_TRUE(Scene::InstantiatePreparedScene(world, *prepared));
+    EXPECT_EQ(world.GetEntityCount(), 2u);
+    const auto child = FindByTag(world, "child");
+    const auto root = FindByTag(world, "root");
+    ASSERT_TRUE(child.IsValid());
+    ASSERT_TRUE(root.IsValid());
+    const auto* parent = world.GetComponent<Components::Parent>(child);
+    ASSERT_NE(parent, nullptr);
+    EXPECT_EQ(parent->Entity, root);
+    ASSERT_NE(world.GetComponent<Components::Name>(child), nullptr);
+    EXPECT_STREQ(world.GetComponent<Components::Name>(child)->value, "Snapshot");
+}
+
+
+TEST(SceneIO, PreparedScene_IncludesAreOwnedAndNotReread)
+{
+    const auto path = MakeTempPath("prepared_includes.scene");
+    const auto include = path.parent_path() / "prepared_resources.scene";
+    const char* guid = "11111111-2222-3333-4444-555555555555";
+    ASSERT_TRUE(WriteFile(include,
+        "[scene name=\"Resources\" version=1]\n"
+        "[resource id=\"mat\" path=\"original.material\" guid=\"" +
+        std::string(guid) + "\"]\n"));
+    ASSERT_TRUE(WriteFile(path,
+        "[scene name=\"Root\" version=1]\n"
+        "[include path=\"prepared_resources.scene\"]\n"
+        "[entity id=\"user\"]\nMatUser.material = #mat\n"));
+    const auto prepared = Scene::PrepareSceneFromFile(path);
+    ASSERT_TRUE(prepared);
+    ASSERT_TRUE(WriteFile(include, "invalid include after preparation\n"));
+    ECS::World world;
+    ASSERT_TRUE(Scene::InstantiatePreparedScene(world, *prepared));
+    const auto user = FindByTag(world, "user");
+    ASSERT_TRUE(user.IsValid());
+    const auto* material = world.GetComponent<MatUser>(user);
+    ASSERT_NE(material, nullptr);
+    EXPECT_STREQ(material->guid, guid);
+}
+
+
+TEST(SceneIO, PreparedScene_ReusableAdditiveNamespacesRemainIndependent)
+{
+    const auto path = MakeTempPath("prepared_additive.scene");
+    ASSERT_TRUE(WriteFile(path,
+        "[scene name=\"Add\" version=1]\n"
+        "[entity id=\"child\" parent=\"root\"]\n"
+        "[entity id=\"root\"]\n"));
+    Scene::SceneReadTimings preparation{};
+    const auto prepared = Scene::PrepareSceneFromFile(path, &preparation);
+    ASSERT_TRUE(prepared);
+    ECS::World world;
+    const auto existing = world.CreateEntity();
+    const auto first = Scene::InstantiatePreparedScene(world, *prepared, {}, {.ClearWorldFirst = false});
+    ASSERT_TRUE(first);
+    const auto second = Scene::InstantiatePreparedScene(world, *prepared, {}, {.ClearWorldFirst = false});
+    ASSERT_TRUE(second);
+    const auto& activation = second.Timings;
+    EXPECT_TRUE(world.IsValid(existing));
+    EXPECT_EQ(world.GetEntityCount(), 5u);
+    EXPECT_DOUBLE_EQ(activation.ReadMs, preparation.ReadMs);
+    EXPECT_DOUBLE_EQ(activation.ParseMs, preparation.ParseMs);
+    EXPECT_DOUBLE_EQ(activation.ValidateMs, preparation.ValidateMs);
+    EXPECT_DOUBLE_EQ(activation.ClearMs, 0.0);
+    std::unordered_set<std::string> ids;
+    std::unordered_set<uint64_t> parents;
+    world.Query<ECS::Read<Components::SceneEntityTag>>().Each(
+        [&](ECS::EntityHandle, const Components::SceneEntityTag& tag) { ids.insert(tag.value); });
+    world.Query<ECS::Read<Components::Parent>>().Each(
+        [&](ECS::EntityHandle, const Components::Parent& parent) {
+            EXPECT_TRUE(world.IsValid(parent.Entity));
+            parents.insert(parent.Entity.id);
+        });
+    EXPECT_EQ(ids.size(), 4u);
+    EXPECT_EQ(parents.size(), 2u);
+}
+
+
+TEST(SceneIO, PreparedScene_ValidationFailureDoesNotTouchWorldAndErrorsAreThreadLocal)
+{
+    const auto path = MakeTempPath("prepared_invalid.scene");
+    ASSERT_TRUE(WriteFile(path,
+        "[scene name=\"Invalid\" version=1]\n"
+        "[entity id=\"a\"]\n[entity id=\"a\"]\n"));
+    ECS::World world;
+    const auto existing = world.CreateEntity();
+    EXPECT_FALSE(Scene::PrepareSceneFromFile({}));
+    const auto mainError = Scene::GetLastSceneIOError().message;
+    auto job = std::async(std::launch::async, [path] {
+        const auto prepared = Scene::PrepareSceneFromFile(path);
+        return std::make_pair(bool(prepared), Scene::GetLastSceneIOError());
+    });
+    const auto result = job.get();
+    EXPECT_FALSE(result.first);
+    EXPECT_NE(result.second.message.find("Duplicate entity id"), std::string::npos);
+    EXPECT_FALSE(result.second.worldCleared);
+    EXPECT_EQ(Scene::GetLastSceneIOError().message, mainError);
+    EXPECT_TRUE(world.IsValid(existing));
+    EXPECT_EQ(world.GetEntityCount(), 1u);
+}
+
+
+TEST(SceneIO, PreparedScene_DiscardReleasesDocumentWithoutActivation)
+{
+    const auto path = MakeTempPath("prepared_discard.scene");
+    ASSERT_TRUE(WriteFile(path, "[scene name=\"Discard\" version=1]\n[entity id=\"a\"]\n"));
+    auto prepared = Scene::PrepareSceneFromFile(path);
+    ASSERT_TRUE(prepared);
+    const std::weak_ptr<const Scene::PreparedScene> weak = prepared;
+    prepared.reset();
+    EXPECT_TRUE(weak.expired());
+}
+
+
+TEST(SceneIO, PreparedProjection_ClosesParentsAndQuotedLinksInDocumentOrder)
+{
+    const auto path = MakeTempPath("projection_closure.scene");
+    ASSERT_TRUE(WriteFile(path,
+        "[scene name=\"Projection\" version=1]\n"
+        "[entity id=\"child\" parent=\"root\"]\nName.value=\"Destination\"\nSkyEnvironment.SunLight=\"sun\"\n"
+        "[entity id=\"unused\"]\nName.value=\"Other level\"\n"
+        "[entity id=\"sun\"]\nLight.intensity=2\n"
+        "[entity id=\"root\"]\nName.value=\"Shared parent\"\n"));
+    const auto prepared = Scene::PrepareSceneFromFile(path);
+    ASSERT_TRUE(prepared);
+    const auto full = Scene::DescribePreparedScene(*prepared);
+    ASSERT_TRUE(full);
+    ASSERT_EQ(full->size(), 4u);
+    EXPECT_EQ((*full)[0].Name, "Destination");
+    EXPECT_EQ((*full)[0].DependencyIds, (std::vector<std::string>{"root", "sun"}));
+    const std::vector<std::string> roots{"child", "child"};
+    auto selected = Scene::SelectPreparedSceneEntities(*prepared, roots);
+    ASSERT_TRUE(selected);
+    const auto subset = Scene::DescribePreparedScene(*selected);
+    ASSERT_TRUE(subset);
+    ASSERT_EQ(subset->size(), 3u);
+    EXPECT_EQ((*subset)[0].Id, "child");
+    EXPECT_EQ((*subset)[1].Id, "sun");
+    EXPECT_EQ((*subset)[2].Id, "root");
+    EXPECT_EQ(Scene::DescribePreparedScene(*prepared)->size(), 4u);
+    ECS::World world;
+    auto activation = Scene::BeginStagedSceneActivation(world, selected);
+    ASSERT_TRUE(activation);
+    BuildStagedToReady(*activation);
+    EXPECT_EQ(world.Query<ECS::Read<Components::Name>>().Count(), 0u);
+    ASSERT_TRUE(activation->RequestPublish());
+    activation->Step(10, std::chrono::seconds(1));
+    ASSERT_EQ(activation->Phase(), Scene::SceneActivationPhase::Complete);
+    const auto handles = activation->CreatedEntities();
+    ASSERT_EQ(handles.size(), 3u);
+    EXPECT_EQ(world.GetComponent<Components::Parent>(handles[0])->Entity, handles[2]);
+    EXPECT_EQ(world.GetComponent<Components::SkyEnvironment>(handles[0])->SunLight, handles[1]);
+}
+
+
+TEST(SceneIO, PreparedProjection_NestedAndCyclicReferencesCloseWithoutRecursion)
+{
+    const auto path = MakeTempPath("projection_nested.scene");
+    ASSERT_TRUE(WriteFile(path,
+        "[scene name=\"Nested\" version=1]\n"
+        "[entity id=\"a\"]\nFuture.Links=[$b, [\"c\", b]]\n"
+        "[entity id=\"b\"]\nFuture.Link=\"a\"\n"
+        "[entity id=\"c\"]\nFuture.Link=$c\n"
+        "[entity id=\"unused\"]\n"));
+    const auto prepared = Scene::PrepareSceneFromFile(path);
+    ASSERT_TRUE(prepared) << Scene::GetLastSceneIOError().message;
+    const std::vector<std::string> roots{"a"};
+    const auto selected = Scene::SelectPreparedSceneEntities(*prepared, roots);
+    ASSERT_TRUE(selected) << Scene::GetLastSceneIOError().message;
+    const auto info = Scene::DescribePreparedScene(*selected);
+    ASSERT_TRUE(info);
+    EXPECT_EQ(info->size(), 3u);
+    EXPECT_EQ((*info)[0].DependencyIds, (std::vector<std::string>{"b", "c"}));
+}
+
+
+TEST(SceneIO, PreparedProjection_ConservativeStringsButNotAssetPaths)
+{
+    const auto path = MakeTempPath("projection_strings.scene");
+    ASSERT_TRUE(WriteFile(path,
+        "[scene name=\"Strings\" version=1]\n"
+        "[entity id=\"a\"]\nName.value=\"b\"\nFuture.File=@\"unused\"\nFuture.Asset=[path=\"unused\"]\n"
+        "[entity id=\"b\"]\n[entity id=\"unused\"]\n"));
+    const auto prepared = Scene::PrepareSceneFromFile(path);
+    ASSERT_TRUE(prepared);
+    const std::vector<std::string> roots{"a"};
+    const auto selected = Scene::SelectPreparedSceneEntities(*prepared, roots);
+    ASSERT_TRUE(selected);
+    const auto info = Scene::DescribePreparedScene(*selected);
+    ASSERT_TRUE(info);
+    EXPECT_EQ(info->size(), 2u);
+}
+
+
+TEST(SceneIO, PreparedProjection_SerializesCapturedResourcesAndExactUnknownValues)
+{
+    const auto path = MakeTempPath("projection_capture.scene");
+    const auto include = path.parent_path()/"projection_include.scene";
+    const auto output = MakeTempPath("projection_result.scene");
+    ASSERT_TRUE(WriteFile(include,
+        "[scene name=\"Resources\" version=1]\n"
+        "[resource id=\"mat\" path=\"original.material\" guid=\"11111111-2222-3333-4444-555555555555\"]\n"));
+    ASSERT_TRUE(WriteFile(path,
+        "[scene name=\"Captured\" version=1]\n[include path=\"projection_include.scene\"]\n"
+        "[entity id=\"a\"]\nFutureCamelCase.KeepThisKey = (0.123456789, 2, 3)\nMatUser.material=#mat\n"
+        "[entity id=\"unused\"]\n"));
+    const auto prepared = Scene::PrepareSceneFromFile(path);
+    ASSERT_TRUE(prepared);
+    ASSERT_TRUE(WriteFile(include, "broken after preparation"));
+    ASSERT_TRUE(WriteFile(path, "broken after preparation"));
+    const std::vector<std::string> roots{"a"};
+    const auto selected = Scene::SelectPreparedSceneEntities(*prepared, roots);
+    ASSERT_TRUE(selected);
+    const auto encoded = Scene::SerializePreparedScene(*selected);
+    ASSERT_TRUE(encoded);
+    EXPECT_NE(encoded->find("FutureCamelCase.KeepThisKey = (0.123456789, 2, 3)"), std::string::npos);
+    EXPECT_NE(encoded->find("original.material"), std::string::npos);
+    EXPECT_EQ(encoded->find("[include"), std::string::npos);
+    EXPECT_EQ(encoded->find("unused"), std::string::npos);
+    ASSERT_TRUE(WriteFile(output, *encoded));
+    const auto reloaded = Scene::PrepareSceneFromFile(output);
+    ASSERT_TRUE(reloaded) << Scene::GetLastSceneIOError().message;
+    EXPECT_EQ(Scene::SerializePreparedScene(*reloaded), encoded);
+    ECS::World world;
+    ASSERT_TRUE(Scene::InstantiatePreparedScene(world, *reloaded));
+    EXPECT_EQ(world.GetEntityCount(), 1u);
+    const auto* material = world.GetComponent<MatUser>(FindByTag(world, "a"));
+    ASSERT_NE(material, nullptr);
+    EXPECT_STREQ(material->guid, "11111111-2222-3333-4444-555555555555");
+}
+
+
+TEST(SceneIO, PreparedProjection_EmptyRootsAndUnknownRootsAreDistinct)
+{
+    const auto path = MakeTempPath("projection_roots.scene");
+    ASSERT_TRUE(WriteFile(path, "[scene name=\"Roots\" version=1]\n[entity id=\"a\"]\n"));
+    const auto prepared = Scene::PrepareSceneFromFile(path);
+    ASSERT_TRUE(prepared);
+    const std::vector<std::string> unknown{"missing"};
+    EXPECT_FALSE(Scene::SelectPreparedSceneEntities(*prepared, unknown));
+    EXPECT_NE(Scene::GetLastSceneIOError().message.find("Unknown"), std::string::npos);
+    const auto empty = Scene::SelectPreparedSceneEntities(*prepared, {});
+    ASSERT_TRUE(empty);
+    EXPECT_TRUE(Scene::DescribePreparedScene(*empty)->empty());
+    EXPECT_TRUE(Scene::GetLastSceneIOError().message.empty());
+}
+
+
+TEST(SceneIO, PreparedProjection_BatchMatchesSinglesAndRejectsInvalidBatch)
+{
+    const auto path = MakeTempPath("projection_batch.scene");
+    ASSERT_TRUE(WriteFile(path,
+        "[scene name=\"Batch\" version=1]\n[entity id=\"a\" parent=\"b\"]\n[entity id=\"b\"]\n[entity id=\"c\"]\n"));
+    const auto prepared = Scene::PrepareSceneFromFile(path);
+    ASSERT_TRUE(prepared);
+    const std::vector<std::vector<std::string>> roots{{"a"}, {"b"}, {"c"}, {}};
+    auto groups = Scene::SelectPreparedSceneGroups(*prepared, roots);
+    ASSERT_TRUE(groups);
+    ASSERT_EQ(groups->size(), roots.size());
+    for (std::size_t i = 0; i < roots.size(); ++i)
+    {
+        const auto single = Scene::SelectPreparedSceneEntities(*prepared, roots[i]);
+        ASSERT_TRUE(single);
+        EXPECT_EQ(Scene::SerializePreparedScene(*(*groups)[i]), Scene::SerializePreparedScene(*single));
+    }
+    const std::vector<std::vector<std::string>> invalid{{"a"}, {"missing"}};
+    EXPECT_FALSE(Scene::SelectPreparedSceneGroups(*prepared, invalid));
+    EXPECT_EQ(Scene::DescribePreparedScene(*prepared)->size(), 3u);
+}
+
+
+TEST(SceneIO, PreparedProjection_RejectsUnsupportedDocumentsAndUnparseableValues)
+{
+    const auto path = MakeTempPath("projection_unsupported.scene");
+    const std::array<std::string, 4> bodies{{
+        "[resource id=\"bp\" path=\"missing.prefab\"]\n[prefab id=\"inst\" source=\"bp\"]\n",
+        "[resource id=\"sub\" path=\"missing.scene\"]\n[subscene id=\"sub\" source=\"sub\"]\nenabled=true\n",
+        "[embed id=\"mat\" type=\"Material\"]\nalbedo=(1,0,0)\n",
+        "[entity id=\"bad\"]\nFuture.Value=(incomplete\n"
+    }};
+    for (const auto& body : bodies)
+    {
+        ASSERT_TRUE(WriteFile(path, "[scene name=\"Unsupported\" version=1]\n" + body));
+        const auto prepared = Scene::PrepareSceneFromFile(path);
+        ASSERT_TRUE(prepared) << Scene::GetLastSceneIOError().message;
+        EXPECT_FALSE(Scene::DescribePreparedScene(*prepared));
+        EXPECT_FALSE(Scene::SelectPreparedSceneEntities(*prepared, {}));
+        EXPECT_FALSE(Scene::SerializePreparedScene(*prepared));
+        EXPECT_FALSE(Scene::GetLastSceneIOError().message.empty());
+    }
+}
+
+
+TEST(SceneIO, PreparedProjection_WorkerSnapshotLifetimeDoesNotNeedWorld)
+{
+    const auto path = MakeTempPath("projection_worker.scene");
+    ASSERT_TRUE(WriteFile(path,
+        "[scene name=\"Worker\" version=1]\n[entity id=\"a\"]\nName.value=\"Selected\"\n[entity id=\"b\"]\n"));
+    auto job = std::async(std::launch::async, [path] {
+        const auto prepared = Scene::PrepareSceneFromFile(path);
+        if (!prepared)
+            return std::shared_ptr<const Scene::PreparedScene>{};
+        const std::vector<std::string> roots{"a"};
+        return Scene::SelectPreparedSceneEntities(*prepared, roots);
+    });
+    const auto selected = job.get();
+    ASSERT_TRUE(selected);
+    ASSERT_TRUE(WriteFile(path, "changed"));
+    ECS::World world;
+    ASSERT_TRUE(Scene::InstantiatePreparedScene(world, *selected));
+    EXPECT_EQ(world.GetEntityCount(), 1u);
+    EXPECT_STREQ(world.GetComponent<Components::Name>(FindByTag(world, "a"))->value, "Selected");
+}
+
+
+TEST(SceneIO, StagedActivation_CountAndZeroTimeBudgetsKeepNewEntitiesHidden)
+{
+    const auto path = MakeTempPath("staged_budget.scene");
+    ASSERT_TRUE(WriteFile(path,
+        "[scene name=\"Budget\" version=1]\n"
+        "[entity id=\"child\" parent=\"root\"]\nName.value = \"Child\"\n"
+        "SkyEnvironment.SunLight = \"root\"\n"
+        "[entity id=\"root\"]\nName.value = \"Root\"\nLight.intensity = 2\n"));
+    const auto prepared = Scene::PrepareSceneFromFile(path);
+    ASSERT_TRUE(prepared);
+    ECS::World world;
+    const auto loading = world.CreateEntity();
+    world.AddComponentImmediate(loading, Components::Name{});
+    auto activation = Scene::BeginStagedSceneActivation(world, prepared);
+    ASSERT_TRUE(activation);
+    EXPECT_EQ(world.GetEntityCount(), 1u); // Begin never creates entities.
+    EXPECT_EQ(activation->Step(0, std::chrono::seconds(1)), 0u);
+    EXPECT_FALSE(activation->RequestPublish());
+    for (int i = 0; i < 6; ++i)
+    {
+        EXPECT_EQ(activation->Step(100, std::chrono::microseconds(0)), 1u);
+        std::size_t visible = 0;
+        world.Query<ECS::Read<Components::Name>>().Each(
+            [&](ECS::EntityHandle, const Components::Name&) { ++visible; });
+        EXPECT_EQ(visible, 1u) << "Partially built scene leaked into normal queries";
+    }
+    ASSERT_EQ(activation->Phase(), Scene::SceneActivationPhase::Ready);
+    ASSERT_EQ(activation->CreatedEntities().size(), 2u);
+    const auto child = activation->CreatedEntities()[0];
+    const auto root = activation->CreatedEntities()[1];
+    ASSERT_NE(world.GetComponent<Components::Parent>(child), nullptr);
+    EXPECT_EQ(world.GetComponent<Components::Parent>(child)->Entity, root);
+    ASSERT_NE(world.GetComponent<Components::SkyEnvironment>(child), nullptr);
+    EXPECT_EQ(world.GetComponent<Components::SkyEnvironment>(child)->SunLight, root);
+    EXPECT_EQ(activation->Step(100, std::chrono::seconds(1)), 0u);
+    ASSERT_TRUE(activation->RequestPublish());
+    EXPECT_EQ(activation->Step(1, std::chrono::seconds(1)), 1u);
+    EXPECT_EQ(activation->Phase(), Scene::SceneActivationPhase::Publishing);
+    EXPECT_EQ(activation->Step(1, std::chrono::seconds(1)), 1u);
+    EXPECT_EQ(activation->Phase(), Scene::SceneActivationPhase::Complete);
+    activation.reset(); // Completed objects belong to world, not session lifetime.
+    EXPECT_EQ(world.GetEntityCount(), 3u);
+    EXPECT_TRUE(world.IsValid(loading));
+}
+
+
+TEST(SceneIO, StagedActivation_CachedQueriesRefreshOnlyAtPublication)
+{
+    const auto path = MakeTempPath("staged_cached_query.scene");
+    ASSERT_TRUE(WriteFile(path,
+        "[scene name=\"Cached\" version=1]\n[entity id=\"a\"]\nName.value = \"Destination\"\n"));
+    ECS::World world;
+    const auto resident = world.CreateEntity();
+    world.AddComponentImmediate(resident, Components::Name{});
+    auto native = world.Query<ECS::Read<Components::Name>>();
+    ECS::CachedQuery cached(&world, {ECS::GetComponentTypeId<Components::Name>()}, {});
+    const auto countCached = [&]()
+    {
+        cached.Refresh();
+        std::size_t count = 0;
+        for (std::size_t i = 0; i < cached.GetArchetypeCount(); ++i)
+            count += cached.GetArchetype(i)->GetEntityCount();
+        return count;
+    };
+    EXPECT_EQ(native.Count(), 1u);
+    EXPECT_EQ(countCached(), 1u);
+    auto activation = Scene::BeginStagedSceneActivation(world, Scene::PrepareSceneFromFile(path));
+    ASSERT_TRUE(activation);
+    for (int i = 0; i < 3; ++i)
+    {
+        ASSERT_EQ(activation->Step(1, std::chrono::seconds(1)), 1u);
+        EXPECT_EQ(native.Count(), 1u);
+        EXPECT_EQ(countCached(), 1u);
+    }
+    ASSERT_TRUE(activation->RequestPublish());
+    EXPECT_EQ(activation->Step(1, std::chrono::seconds(1)), 1u);
+    EXPECT_EQ(native.Count(), 2u);
+    EXPECT_EQ(countCached(), 2u);
+    activation->RequestCancel();
+    EXPECT_EQ(activation->Step(1, std::chrono::seconds(1)), 1u);
+    EXPECT_EQ(native.Count(), 1u);
+    EXPECT_EQ(countCached(), 1u);
+}
+
+
+TEST(SceneIO, StagedActivation_SaveDoesNotCaptureUnpublishedObjects)
+{
+    const auto path = MakeTempPath("staged_unsaved.scene");
+    const auto saved = MakeTempPath("staged_saved.scene");
+    ASSERT_TRUE(WriteFile(path,
+        "[scene name=\"Save\" version=1]\n[entity id=\"a\"]\nName.value = \"Unpublished\"\n"));
+    ECS::World world;
+    const auto resident = world.CreateEntity();
+    world.AddComponentImmediate(resident, Components::Name{});
+    auto activation = Scene::BeginStagedSceneActivation(world, Scene::PrepareSceneFromFile(path));
+    ASSERT_TRUE(activation);
+    BuildStagedToReady(*activation);
+    ASSERT_TRUE(Scene::WriteSceneFile(world, saved));
+    ECS::World reloaded;
+    ASSERT_TRUE(Scene::ReadSceneInto(reloaded, saved));
+    EXPECT_EQ(reloaded.GetEntityCount(), 1u);
+    ASSERT_TRUE(activation->RequestPublish());
+    activation->Step(1, std::chrono::seconds(1));
+    ASSERT_TRUE(Scene::WriteSceneFile(world, saved));
+    ASSERT_TRUE(Scene::ReadSceneInto(reloaded, saved));
+    EXPECT_EQ(reloaded.GetEntityCount(), 2u);
+}
+
+
+TEST(SceneIO, StagedActivation_IncludeDisabledCannotExposePartialObjects)
+{
+    const auto path = MakeTempPath("staged_include_disabled.scene");
+    ASSERT_TRUE(WriteFile(path,
+        "[scene name=\"Maintenance\" version=1]\n[entity id=\"a\"]\nName.value = \"Hidden\"\n"));
+    ECS::World world;
+    auto activation = Scene::BeginStagedSceneActivation(world, Scene::PrepareSceneFromFile(path));
+    ASSERT_TRUE(activation);
+    BuildStagedToReady(*activation);
+    EXPECT_EQ(world.Query<ECS::Read<Components::Name>>().IncludeDisabled().Count(), 0u);
+    ASSERT_TRUE(activation->RequestPublish());
+    activation->Step(1, std::chrono::seconds(1));
+    EXPECT_EQ(world.Query<ECS::Read<Components::Name>>().IncludeDisabled().Count(), 1u);
+}
+
+
+TEST(SceneIO, StagedActivation_PreservesAuthoredDisabledState)
+{
+    const auto path = MakeTempPath("staged_disabled.scene");
+    ASSERT_TRUE(WriteFile(path,
+        "[scene name=\"Disabled\" version=1]\n"
+        "[entity id=\"off\"]\nName.value = \"Off\"\nDisabled.present = true\n"
+        "[entity id=\"on\"]\nName.value = \"On\"\nDisabled.present = false\n"));
+    ECS::World world;
+    auto activation = Scene::BeginStagedSceneActivation(world, Scene::PrepareSceneFromFile(path));
+    ASSERT_TRUE(activation);
+    BuildStagedToReady(*activation);
+    ASSERT_TRUE(activation->RequestPublish());
+    EXPECT_EQ(activation->Step(20, std::chrono::seconds(1)), 2u);
+    ASSERT_EQ(activation->Phase(), Scene::SceneActivationPhase::Complete);
+    EXPECT_TRUE(world.HasComponent<ECS::Disabled>(activation->CreatedEntities()[0]));
+    EXPECT_FALSE(world.HasComponent<ECS::Disabled>(activation->CreatedEntities()[1]));
+    EXPECT_FALSE(world.HasComponent<ECS::PendingActivation>(activation->CreatedEntities()[0]));
+    EXPECT_FALSE(world.HasComponent<ECS::PendingActivation>(activation->CreatedEntities()[1]));
+    std::size_t visible = 0;
+    world.Query<ECS::Read<Components::Name>>().Without<ECS::Disabled>().Each(
+        [&](ECS::EntityHandle, const Components::Name&) { ++visible; });
+    EXPECT_EQ(visible, 1u);
+}
+
+
+TEST(SceneIO, StagedActivation_CancelIsBoundedAndPreservesExistingWorld)
+{
+    const auto path = MakeTempPath("staged_cancel.scene");
+    ASSERT_TRUE(WriteFile(path,
+        "[scene name=\"Cancel\" version=1]\n[entity id=\"a\"]\n[entity id=\"b\"]\n"));
+    const auto prepared = Scene::PrepareSceneFromFile(path);
+    ASSERT_TRUE(prepared);
+    // Cancellation before creation, during each build phase, at Ready, during
+    // publication and after completion. No whole-world clear is permitted.
+    for (int operations = 0; operations <= 8; ++operations)
+    {
+        ECS::World world;
+        const auto resident = world.CreateEntity();
+        auto activation = Scene::BeginStagedSceneActivation(world, prepared);
+        ASSERT_TRUE(activation);
+        for (int i = 0; i < operations; ++i)
+        {
+            if (activation->Phase() == Scene::SceneActivationPhase::Ready)
+            {
+                ASSERT_TRUE(activation->RequestPublish());
+            }
+            EXPECT_EQ(activation->Step(1, std::chrono::seconds(1)), 1u);
+        }
+        const auto before = world.GetEntityCount();
+        activation->RequestCancel();
+        EXPECT_EQ(world.GetEntityCount(), before); // Request is not a bulk drain.
+        for (int i = 0; i < 3 && activation->Phase() != Scene::SceneActivationPhase::Cancelled; ++i)
+        {
+            const auto count = world.GetEntityCount();
+            EXPECT_LE(activation->Step(1, std::chrono::seconds(1)), 1u);
+            EXPECT_GE(world.GetEntityCount() + 1u, count);
+        }
+        EXPECT_EQ(activation->Phase(), Scene::SceneActivationPhase::Cancelled);
+        EXPECT_EQ(world.GetEntityCount(), 1u);
+        EXPECT_TRUE(world.IsValid(resident));
+    }
+}
+
+
+TEST(SceneIO, StagedActivation_DestructorRollsBackOnlyUncommittedObjects)
+{
+    const auto path = MakeTempPath("staged_destructor.scene");
+    ASSERT_TRUE(WriteFile(path, "[scene name=\"Drop\" version=1]\n[entity id=\"a\"]\n"));
+    ECS::World world;
+    const auto resident = world.CreateEntity();
+    {
+        auto activation = Scene::BeginStagedSceneActivation(world, Scene::PrepareSceneFromFile(path));
+        ASSERT_TRUE(activation);
+        BuildStagedToReady(*activation);
+        EXPECT_EQ(world.GetEntityCount(), 2u);
+    }
+    EXPECT_EQ(world.GetEntityCount(), 1u);
+    EXPECT_TRUE(world.IsValid(resident));
+}
+
+
+TEST(SceneIO, StagedActivation_WorldResetCannotDeleteRecycledHandles)
+{
+    const auto path = MakeTempPath("staged_reset.scene");
+    ASSERT_TRUE(WriteFile(path, "[scene name=\"Reset\" version=1]\n[entity id=\"a\"]\n"));
+    ECS::World world;
+    auto activation = Scene::BeginStagedSceneActivation(world, Scene::PrepareSceneFromFile(path));
+    ASSERT_TRUE(activation);
+    EXPECT_EQ(activation->Step(1, std::chrono::seconds(1)), 1u);
+    const auto staged = activation->CreatedEntities()[0];
+    world.Clear();
+    const auto replacement = world.CreateEntity();
+    EXPECT_EQ(staged, replacement) << "Exercise the actual Clear handle-reuse hazard";
+    EXPECT_EQ(activation->Step(1, std::chrono::seconds(1)), 0u);
+    EXPECT_EQ(activation->Phase(), Scene::SceneActivationPhase::Failed);
+    EXPECT_NE(activation->Error().message.find("World reset"), std::string::npos);
+    activation.reset();
+    EXPECT_TRUE(world.IsValid(replacement));
+    EXPECT_EQ(world.GetEntityCount(), 1u);
+}
+
+
+TEST(SceneIO, StagedActivation_UnsupportedDeferredDependenciesNeverMutateWorld)
+{
+    const auto path = MakeTempPath("staged_unsupported.scene");
+    const std::array<std::string, 3> bodies{{
+        "[resource id=\"bp\" path=\"missing.prefab\"]\n[prefab id=\"inst\" source=\"bp\"]\n",
+        "[resource id=\"sub\" path=\"missing.scene\"]\n[subscene id=\"sub\" source=\"sub\"]\nenabled=true\n",
+        "[embed id=\"mat\" type=\"Material\"]\nalbedo=(1,0,0)\n"
+    }};
+    for (const auto& body : bodies)
+    {
+        ASSERT_TRUE(WriteFile(path, "[scene name=\"Unsupported\" version=1]\n" + body));
+        const auto prepared = Scene::PrepareSceneFromFile(path);
+        ASSERT_TRUE(prepared) << Scene::GetLastSceneIOError().message;
+        ECS::World world;
+        const auto resident = world.CreateEntity();
+        EXPECT_FALSE(Scene::BeginStagedSceneActivation(world, prepared));
+        EXPECT_EQ(world.GetEntityCount(), 1u);
+        EXPECT_TRUE(world.IsValid(resident));
+    }
+}
+
+
+TEST(SceneIO, StagedActivation_EmptyAndNullPreparationHaveExplicitOutcomes)
+{
+    ECS::World world;
+    const auto resident = world.CreateEntity();
+    EXPECT_FALSE(Scene::BeginStagedSceneActivation(world, {}));
+    const auto path = MakeTempPath("staged_empty.scene");
+    ASSERT_TRUE(WriteFile(path, "[scene name=\"Empty\" version=1]\n"));
+    auto activation = Scene::BeginStagedSceneActivation(world, Scene::PrepareSceneFromFile(path));
+    ASSERT_TRUE(activation);
+    EXPECT_EQ(activation->Phase(), Scene::SceneActivationPhase::Ready);
+    EXPECT_EQ(activation->Step(10, std::chrono::seconds(1)), 0u);
+    ASSERT_TRUE(activation->RequestPublish());
+    EXPECT_EQ(activation->Phase(), Scene::SceneActivationPhase::Complete);
+    activation->RequestCancel();
+    EXPECT_EQ(activation->Phase(), Scene::SceneActivationPhase::Cancelled);
+    EXPECT_TRUE(world.IsValid(resident));
+}
+
+
+TEST(SceneIO, StagedActivation_OverlappingSessionsCancelOnlyTheirOwnHandles)
+{
+    const auto path = MakeTempPath("staged_overlap.scene");
+    ASSERT_TRUE(WriteFile(path, "[scene name=\"Overlap\" version=1]\n[entity id=\"a\"]\n"));
+    const auto prepared = Scene::PrepareSceneFromFile(path);
+    ASSERT_TRUE(prepared);
+    ECS::World world;
+    auto first = Scene::BeginStagedSceneActivation(world, prepared);
+    auto second = Scene::BeginStagedSceneActivation(world, prepared);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
+    BuildStagedToReady(*first);
+    BuildStagedToReady(*second);
+    const auto retained = second->CreatedEntities()[0];
+    first.reset();
+    EXPECT_EQ(world.GetEntityCount(), 1u);
+    EXPECT_TRUE(world.IsValid(retained));
+    ASSERT_TRUE(second->RequestPublish());
+    EXPECT_EQ(second->Step(10, std::chrono::seconds(1)), 1u);
+    EXPECT_EQ(second->Phase(), Scene::SceneActivationPhase::Complete);
+}
+
+
+TEST(SceneIO, LoadTimings_FailedParseLeavesLaterPhasesZero)
+{
+    const auto scenePath = MakeTempPath("timings_bad.scene");
+    ASSERT_TRUE(WriteFile(scenePath, "this is not a scene file\n[[[\n"));
+
+    ECS::World world;
+    const auto result = Scene::ReadSceneInto(world, scenePath);
+    EXPECT_FALSE(result);
+    const auto& timings = result.Timings;
+    EXPECT_EQ(timings.InstantiateMs, 0.0);
+    EXPECT_EQ(timings.ClearMs, 0.0);
+}
+
+
+TEST(SceneIO, SaveThenLoad_RoundTripColliderPhysicsMaterial)
+{
+    const auto scenePath = MakeTempPath("collider_material.scene");
+    const GUID materialGuid = GUID::Generate();
+    ECS::World original;
+    const auto entity = original.CreateEntity();
+    original.AddComponentImmediate(entity, MakeSceneTag("surface"));
+    original.AddComponentImmediate(entity, Components::Transform{});
+    Components::PhysicsCollider collider{};
+    collider.materialAsset.Set(materialGuid);
+    original.AddComponentImmediate(entity, collider);
+    ASSERT_TRUE(Scene::WriteSceneFile(original, scenePath, Scene::SceneWriteOptions{}));
+
+    ECS::World loaded;
+    ASSERT_TRUE(Scene::ReadSceneInto(loaded, scenePath, Scene::SceneReadOptions{}));
+    const auto loadedEntity = FindByTag(loaded, "surface");
+    ASSERT_TRUE(loadedEntity.IsValid());
+    const auto* restored = loaded.GetComponent<Components::PhysicsCollider>(loadedEntity);
+    ASSERT_NE(restored, nullptr);
+    EXPECT_EQ(restored->materialAsset.ToGuid(), materialGuid);
+}
+
+
+TEST(SceneIO, SaveThenLoad_RoundTripMovingPlatform)
+{
+    const auto scenePath = MakeTempPath("moving_platform.scene");
+
+    ECS::World w1;
+    const ECS::EntityHandle path = w1.CreateEntity();
+    ASSERT_TRUE(path.IsValid());
+    w1.AddComponentImmediate(path, Components::SceneEntityTag{{'p', 'a', 't', 'h', '\0'}});
+
+    const ECS::EntityHandle deck = w1.CreateEntity();
+    ASSERT_TRUE(deck.IsValid());
+    w1.AddComponentImmediate(deck, Components::SceneEntityTag{{'d', 'e', 'c', 'k', '\0'}});
+    Components::MovingPlatform mp{};
+    mp.pathMode = Components::PlatformPathMode::Loop;
+    mp.path = path;
+    mp.speed = 3.5f;
+    mp.endpointPause = 0.75f;
+    // Runtime state: deliberately non-default, and deliberately NOT expected back.
+    mp.distance = 42.0f;
+    mp.direction = -1;
+    mp.finished = true;
+    w1.AddComponentImmediate(deck, mp);
+
+    ASSERT_TRUE(Scene::WriteSceneFile(w1, scenePath, Scene::SceneWriteOptions{}));
+
+    // The mode is stored by name, so a scene diff stays readable and renumbering
+    // the enum cannot silently repoint an authored platform.
+    std::ifstream in(scenePath);
+    ASSERT_TRUE(in.is_open());
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    EXPECT_NE(buffer.str().find("MovingPlatform.pathMode = Loop"), std::string::npos);
+
+    ECS::World w2;
+    ASSERT_TRUE(Scene::ReadSceneInto(w2, scenePath, Scene::SceneReadOptions{}));
+
+    const auto deckLoaded = FindByTag(w2, "deck");
+    const auto pathLoaded = FindByTag(w2, "path");
+    ASSERT_TRUE(deckLoaded.IsValid());
+    ASSERT_TRUE(pathLoaded.IsValid());
+
+    const auto* back = w2.GetComponent<Components::MovingPlatform>(deckLoaded);
+    ASSERT_NE(back, nullptr);
+    EXPECT_FALSE(w2.HasComponent<ECS::ComponentDisabled<Components::MovingPlatform>>(deckLoaded));
+    EXPECT_EQ(back->pathMode, Components::PlatformPathMode::Loop);
+    EXPECT_FLOAT_EQ(back->speed, 3.5f);
+    EXPECT_FLOAT_EQ(back->endpointPause, 0.75f);
+
+    // The reference survives as a reference: it names the reloaded path entity,
+    // not whatever handle the old world happened to hand out.
+    EXPECT_EQ(back->path, pathLoaded);
+
+    // Where the platform had got to is not authoring data, so it comes back at
+    // the start of its path rather than 42 m along it, finished and reversed.
+    EXPECT_FLOAT_EQ(back->distance, 0.0f);
+    EXPECT_EQ(back->direction, 1);
+    EXPECT_FALSE(back->finished);
+}
+
+
+TEST(SceneIO, RainSettingsRoundTripAndClamp)
+{
+    ECS::World world;
+    const auto scenePath = MakeTempPath("rain_settings.scene");
+    ASSERT_TRUE(WriteFile(scenePath,
+        "[scene name=\"Weather\" version=1]\n"
+        "[entity id=\"rain\"]\n"
+        "RainSettingsEffect.waterDropSize = 1.7\n"
+        "RainSettingsEffect.fallingRainSizeOffset = -0.3\n"
+        "RainSettingsEffect.waterRippleSpeed = 2.5\n"
+        "WindVolume.rainAmount = 0.25\n"));
+    ASSERT_TRUE(Scene::ReadSceneInto(world, scenePath, Scene::SceneReadOptions{}));
+    const auto entity = FindByTag(world, "rain");
+    ASSERT_NE(world.GetComponent<Components::RainSettingsEffect>(entity), nullptr);
+    ASSERT_NE(world.GetComponent<Components::WindVolume>(entity), nullptr);
+    const auto saved = MakeTempPath("rain_settings_saved.scene");
+    ASSERT_TRUE(Scene::WriteSceneFile(world, saved));
+    ECS::World loaded;
+    ASSERT_TRUE(Scene::ReadSceneInto(loaded, saved, Scene::SceneReadOptions{}));
+    const auto e = FindByTag(loaded, "rain");
+    const auto* rain = loaded.GetComponent<Components::RainSettingsEffect>(e);
+    ASSERT_NE(rain, nullptr);
+    EXPECT_FLOAT_EQ(rain->WaterDropSize, 1.7f);
+    EXPECT_FLOAT_EQ(rain->FallingRainSizeOffset, -0.3f);
+    EXPECT_FLOAT_EQ(rain->WaterRippleSpeed, 2.5f);
+    const auto* wind = loaded.GetComponent<Components::WindVolume>(e);
+    ASSERT_NE(wind, nullptr);
+    EXPECT_FLOAT_EQ(wind->RainAmount, 0.25f);
+    ASSERT_TRUE(WriteFile(scenePath,
+        "[scene name=\"Weather\" version=1]\n"
+        "[entity id=\"rain\"]\n"
+        "RainSettingsEffect.waterDropSize = -8\n"
+        "RainSettingsEffect.fallingRainSizeOffset = 8\n"
+        "RainSettingsEffect.waterRippleSpeed = 8\n"
+        "WindVolume.rainAmount = -8\n"));
+    ASSERT_TRUE(Scene::ReadSceneInto(loaded, scenePath, Scene::SceneReadOptions{}));
+    const auto c = FindByTag(loaded, "rain");
+    const auto* clamped = loaded.GetComponent<Components::RainSettingsEffect>(c);
+    ASSERT_NE(clamped, nullptr);
+    EXPECT_FLOAT_EQ(clamped->WaterDropSize, 0.25f);
+    EXPECT_FLOAT_EQ(clamped->FallingRainSizeOffset, 1.75f);
+    EXPECT_FLOAT_EQ(clamped->WaterRippleSpeed, 4.0f);
+    ASSERT_NE(loaded.GetComponent<Components::WindVolume>(c), nullptr);
+    EXPECT_FLOAT_EQ(loaded.GetComponent<Components::WindVolume>(c)->RainAmount, 0.0f);
+}
+
+
+TEST(SceneIO, DepthPixelationEffectRoundTrip)
+{
+    Components::DepthPixelationEffect effect{};
+    effect.Enabled = false;
+    effect.AutoBandResolution = 1;
+    effect.AutoFarPixelSize = 2;
+    effect.SimpleScreenSpace = 1;
+    effect.StabilizationMode = 2;
+    effect.Intensity = 0.75f;
+    effect.NearEnd = 12.0f;
+    effect.MiddleEnd = 65.0f;
+    effect.NearResolution = 720.0f;
+    effect.MiddleResolution = 240.0f;
+    effect.FarResolution = 120.0f;
+    effect.SkyResolution = 60.0f;
+    effect.ResolutionMode = 1;
+    effect.NearDivisor = 16;
+    effect.MiddleDivisor = 8;
+    effect.FarDivisor = 4;
+    effect.SkyDivisor = 2;
+    effect.BandCount = 10;
+    effect.Band3End = 103.0f;
+    effect.Band4End = 163.0f;
+    effect.Band5End = 243.0f;
+    effect.Band6End = 363.0f;
+    effect.Band7End = 523.0f;
+    effect.Band8End = 723.0f;
+    effect.Band9End = 1003.0f;
+    effect.Band4Resolution = 93.0f;
+    effect.Band5Resolution = 93.0f;
+    effect.Band6Resolution = 93.0f;
+    effect.Band7Resolution = 93.0f;
+    effect.Band8Resolution = 93.0f;
+    effect.Band9Resolution = 93.0f;
+    effect.Band10Resolution = 93.0f;
+    effect.Band4Divisor = 7.0f;
+    effect.Band5Divisor = 7.0f;
+    effect.Band6Divisor = 7.0f;
+    effect.Band7Divisor = 7.0f;
+    effect.Band8Divisor = 7.0f;
+    effect.Band9Divisor = 7.0f;
+    effect.Band10Divisor = 7.0f;
+    effect.DistanceMode = 1;
+    effect.DebugRanges = 1;
+    ExpectReflectionSchemaParity("DepthPixelationEffect", effect,
+        [](const auto& a, const auto& b) {
+            EXPECT_EQ(a.Enabled, b.Enabled);
+            EXPECT_EQ(a.AutoBandResolution, b.AutoBandResolution);
+            EXPECT_EQ(a.AutoFarPixelSize, b.AutoFarPixelSize);
+            EXPECT_EQ(a.SimpleScreenSpace, b.SimpleScreenSpace);
+            EXPECT_EQ(a.StabilizationMode, b.StabilizationMode);
+            EXPECT_EQ(a.Intensity, b.Intensity);
+            EXPECT_EQ(a.NearEnd, b.NearEnd);
+            EXPECT_EQ(a.MiddleEnd, b.MiddleEnd);
+            EXPECT_EQ(a.NearResolution, b.NearResolution);
+            EXPECT_EQ(a.MiddleResolution, b.MiddleResolution);
+            EXPECT_EQ(a.FarResolution, b.FarResolution);
+            EXPECT_EQ(a.SkyResolution, b.SkyResolution);
+            EXPECT_EQ(a.ResolutionMode, b.ResolutionMode);
+            EXPECT_EQ(a.NearDivisor, b.NearDivisor);
+            EXPECT_EQ(a.MiddleDivisor, b.MiddleDivisor);
+            EXPECT_EQ(a.FarDivisor, b.FarDivisor);
+            EXPECT_EQ(a.SkyDivisor, b.SkyDivisor);
+            EXPECT_EQ(a.BandCount, b.BandCount);
+            EXPECT_EQ(a.Band3End, b.Band3End);
+            EXPECT_EQ(a.Band4End, b.Band4End);
+            EXPECT_EQ(a.Band5End, b.Band5End);
+            EXPECT_EQ(a.Band6End, b.Band6End);
+            EXPECT_EQ(a.Band7End, b.Band7End);
+            EXPECT_EQ(a.Band8End, b.Band8End);
+            EXPECT_EQ(a.Band9End, b.Band9End);
+            EXPECT_EQ(a.Band4Resolution, b.Band4Resolution);
+            EXPECT_EQ(a.Band5Resolution, b.Band5Resolution);
+            EXPECT_EQ(a.Band6Resolution, b.Band6Resolution);
+            EXPECT_EQ(a.Band7Resolution, b.Band7Resolution);
+            EXPECT_EQ(a.Band8Resolution, b.Band8Resolution);
+            EXPECT_EQ(a.Band9Resolution, b.Band9Resolution);
+            EXPECT_EQ(a.Band10Resolution, b.Band10Resolution);
+            EXPECT_EQ(a.Band4Divisor, b.Band4Divisor);
+            EXPECT_EQ(a.Band5Divisor, b.Band5Divisor);
+            EXPECT_EQ(a.Band6Divisor, b.Band6Divisor);
+            EXPECT_EQ(a.Band7Divisor, b.Band7Divisor);
+            EXPECT_EQ(a.Band8Divisor, b.Band8Divisor);
+            EXPECT_EQ(a.Band9Divisor, b.Band9Divisor);
+            EXPECT_EQ(a.Band10Divisor, b.Band10Divisor);
+            EXPECT_EQ(a.DistanceMode, b.DistanceMode);
+            EXPECT_EQ(a.DebugRanges, b.DebugRanges);
+        });
+}
+
+
+TEST(SceneIO, PreparedScene_NonflatSourcesAreReadAtInstantiationWithoutRereadingRoot)
+{
+    const auto path = MakeTempPath("prepared_prefab.scene");
+    const auto source = path.parent_path() / "prepared_prefab_source.prefab";
+    ASSERT_TRUE(WriteFile(source, "[prefab version=1]\n[entity id=\"root\"]\nName.value = \"First\"\n"));
+    ASSERT_TRUE(WriteFile(path,
+        "[scene name=\"PreparedPrefab\" version=1]\n"
+        "[resource id=\"p\" path=\"prepared_prefab_source.prefab\"]\n"
+        "[prefab id=\"instance\" source=\"p\"]\n"));
+    const auto prepared = Scene::PrepareSceneFromFile(path);
+    ASSERT_TRUE(prepared);
+    ASSERT_TRUE(WriteFile(path, "invalid root after preparation\n"));
+    ASSERT_TRUE(WriteFile(source, "[prefab version=1]\n[entity id=\"root\"]\nName.value = \"Later\"\n"));
+    ECS::World world;
+    const auto placed = Scene::InstantiatePreparedScene(world, *prepared);
+    ASSERT_TRUE(placed) << placed.Error->message;
+    const auto* name = world.GetComponent<Components::Name>(FindByTag(world, "instance"));
+    ASSERT_NE(name, nullptr);
+    EXPECT_EQ(name->View(), "Later");
+}
+
+
+TEST(SceneIO, PreparedScene_MissingSourceRefusesBeforeClearingTheDestination)
+{
+    const auto path = MakeTempPath("prepared_missing_source.scene");
+    const auto source = path.parent_path() / "prepared_source_removed.prefab";
+    ASSERT_TRUE(WriteFile(source, "[prefab version=1]\n[entity id=\"root\"]\n"));
+    ASSERT_TRUE(WriteFile(path,
+        "[scene name=\"PreparedMissing\" version=1]\n"
+        "[resource id=\"p\" path=\"prepared_source_removed.prefab\"]\n"
+        "[prefab id=\"instance\" source=\"p\"]\n"));
+    const auto prepared = Scene::PrepareSceneFromFile(path);
+    ASSERT_TRUE(prepared);
+    ASSERT_TRUE(std::filesystem::remove(source));
+    ECS::World world;
+    const auto existing = world.CreateEntity();
+    const auto placed = Scene::InstantiatePreparedScene(world, *prepared);
+    ASSERT_FALSE(placed);
+    ASSERT_TRUE(placed.Error.has_value());
+    EXPECT_FALSE(placed.Error->worldCleared);
+    EXPECT_TRUE(world.IsValid(existing));
+    EXPECT_EQ(world.GetEntityCount(), 1u);
 }

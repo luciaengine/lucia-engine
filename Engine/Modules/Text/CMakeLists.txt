@@ -29,4 +29,3 @@ endif()
 
 # C++ standard
 set_target_properties(Text PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES)
-

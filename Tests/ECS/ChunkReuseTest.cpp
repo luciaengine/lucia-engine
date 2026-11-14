@@ -2,7 +2,7 @@
 // the last is full, a frame of steady churn allocates no chunk after warm-up, and a drained table
 // holds no chunk for iteration to walk. The World patterns are the shapes counted in GE-366.
 
-#include "ECS/Archetype/ArchetypeTable.h"
+#include "ECS/ArchetypeTable.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
 #include "ECS/World.h"

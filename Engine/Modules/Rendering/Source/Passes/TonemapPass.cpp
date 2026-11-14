@@ -1,14 +1,5 @@
 #include "Rendering/Passes/TonemapPass.h"
 
-#include <algorithm>
-#include <atomic>
-#include <cstdint>
-#include <memory>
-#include <string>
-#include <unordered_map>
-#include <vector>
-
-#include "Mathematics/Interpolation.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
@@ -21,8 +12,14 @@
 #include "Rendering/Utils/CubeLut/CubeLutGpuUpload.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
 #include "Logger/Logger.h"
-
 #include "TonemapAces2Tables.h"
+
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace GameEngine {
 namespace Rendering {
@@ -287,11 +284,90 @@ void CleanupTonemapPassForDevice(IDevice* device)
 	g_TonemapPerDevice.erase(it);
 }
 
-RenderGraph::RGPass AddTonemapPassRG(RenderGraph::RGFrame& frame, RenderGraph::RGTexture src, RenderGraph::RGTexture dst,
+static bool PrepareTonemapDescriptors(RenderGraph::RGPrepareContext& context,
+                                      RenderGraph::RGTexture source,
+                                      const DescriptorSetLayoutDesc& layout,
+                                      const ShaderMeta& meta,
+                                      DescriptorSetHandle& descriptors, CubeLutGpuBindingState lut)
+{
+    IDevice* device = context.GetDevice();
+    if (device == nullptr)
+        return false;
+    const TextureHandle texture = context.GetTexture(source);
+    if (!texture.IsValid())
+        return false;
+    TonemapDeviceResources* resources = GetOrCreateTonemapResources(device);
+    if (!resources || !resources->sampler.IsValid() || !resources->exposureBuffer.IsValid() ||
+        !resources->aces2TablesBuffer.IsValid() || !resources->noCompensationBuffer.IsValid() ||
+        !resources->noNightTintInput.IsValid() || !resources->identityLut.Lut3D.IsValid() ||
+        !resources->identityLut.Lut1DStrip.IsValid())
+        return false;
+    DescriptorSetDesc descriptorDesc{};
+    descriptorDesc.layout = layout;
+    descriptorDesc.transient = true;
+    descriptorDesc.debugName = "Tonemap.DS0";
+    descriptors = device->CreateDescriptorSet(descriptorDesc);
+    if (!descriptors.IsValid())
+        return false;
+    NamedDescriptorWriter writer(device, descriptors, meta, 0);
+    writer.AddCombinedImageSampler("uHDRColor", texture, resources->sampler);
+    writer.AddStorageBuffer("uExposure", resources->exposureBuffer, 0, kTonemapExposureStateBytes);
+    writer.AddStorageBuffer("Aces2Tables", resources->aces2TablesBuffer, 0, kAces2TablesBytes);
+    writer.AddStorageBuffer("uCompensation", resources->noCompensationBuffer, 0, kTonemapCompensationStateBytes);
+    writer.AddCombinedImageSampler("uLut3d", lut.Lut3D.IsValid() ? lut.Lut3D : resources->identityLut.Lut3D,
+                                   resources->sampler);
+    writer.AddCombinedImageSampler("uLut1d", lut.Lut1DStrip.IsValid() ? lut.Lut1DStrip : resources->identityLut.Lut1DStrip,
+                                   resources->sampler);
+    writer.AddCombinedImageSampler("uStarLight", resources->noNightTintInput, resources->sampler);
+    writer.AddCombinedImageSampler("uDepth", resources->noNightTintInput, resources->sampler);
+    writer.Flush();
+    return true;
+}
+
+static void RecordTonemapPass(RenderGraph::RGContext& context, GraphicsPipelineId pipelineId,
+                              DescriptorSetHandle descriptors, const NamedPushConstantWriter& pushConstants,
+                              uint32_t width, uint32_t rowBegin, uint32_t rowCount)
+{
+    auto* commands = context.Cmd;
+    auto* device = context.GetDevice();
+    if (!commands || !device)
+        return;
+    const PipelineHandle pipeline = device->TryGetWarmGraphicsPipeline(pipelineId, context.BuildCurrentFormatKey());
+    if (!pipeline.IsValid())
+        return;
+
+    commands->SetPipeline(pipeline);
+    if (pushConstants.IsValid())
+        pushConstants.Flush(commands);
+    commands->SetViewport(0.0f, static_cast<float>(rowBegin), static_cast<float>(width), static_cast<float>(rowCount));
+    commands->SetScissor(0, static_cast<int>(rowBegin), static_cast<int>(width), static_cast<int>(rowCount));
+
+    commands->BindDescriptorSet(0, descriptors, pipeline);
+    commands->Draw(3, 1);
+}
+
+static void DeclareTonemapPass(RenderGraph::RGPassBuilder& pass, GraphicsPipelineId pipelineId,
+                               DescriptorSetHandle* descriptors, RenderGraph::RGTexture source,
+                               RenderGraph::RGTexture destination, const DescriptorSetLayoutDesc& set0,
+                               const ShaderMeta& meta, CubeLutGpuBindingState lut, bool partialRows)
+{
+    pass.UsePipeline(pipelineId);
+    pass.Prepare([descriptors, source, set0, meta = &meta, lut](RenderGraph::RGPrepareContext& context) {
+        return PrepareTonemapDescriptors(context, source, set0, *meta, *descriptors, lut);
+    });
+    pass.Read(source, RenderGraph::RGTextureRead::Sampled);
+    RenderGraph::RGAttachmentOps ops{};
+    // Full-screen triangle overwrites every pixel.
+    ops.Load = partialRows ? RenderGraph::RGLoadOp::Load : RenderGraph::RGLoadOp::DontCare;
+    ops.Store = RenderGraph::RGStoreOp::Store;
+    pass.AttachColor(0, destination, ops);
+}
+
+RenderGraph::RGPass AddTonemapPassRG(RenderGraph::RGFrame& frame, RenderGraph::RGTexture source, RenderGraph::RGTexture destination,
                              const TonemapParams& params, const char* passName)
 {
 	IDevice* device = frame.Device();
-	if (!device || !src.IsValid() || !dst.IsValid() || src.Id == dst.Id)
+	if (!device || !source.IsValid() || !destination.IsValid() || source.Id == destination.Id)
 		return {};
 	const auto& shaders = GetTonemapShaderBytes(*device);
 	if (shaders.vs.empty() || shaders.fs.empty())
@@ -300,141 +376,90 @@ RenderGraph::RGPass AddTonemapPassRG(RenderGraph::RGFrame& frame, RenderGraph::R
 	// Layout + push-constant block derived from the shaderpkg's reflection meta
 	// (never hand-mirrored — see TonemapShaderBytes). Interned per device; the
 	// per-frame cost is the variant-cache hit. Mirrors AddSRGBEncodePassRG.
-	GraphicsPipelineDesc gd{};
-	gd.Kind = GraphicsPipelineKind::VertexFragment;
-	gd.VertexShader = std::make_shared<const std::vector<uint8_t>>(shaders.vs);
-	gd.PixelShader = std::make_shared<const std::vector<uint8_t>>(shaders.fs);
-	gd.Topology = PrimitiveTopology::TriangleList;
-	gd.Rasterization.cullMode = CullModeFlagBits::None;
-	gd.Rasterization.frontFace = FrontFace::CounterClockwise;
-	gd.DepthStencil.depthTestEnable = false;
-	gd.DepthStencil.depthWriteEnable = false;
-	DynamicStateInfo dyn{};
-	dyn.states.push_back(DynamicState::Viewport);
-	dyn.states.push_back(DynamicState::Scissor);
-	gd.DynamicState = std::move(dyn);
-	gd.DebugName = "Tonemap.Pipeline";
+	GraphicsPipelineDesc pipelineDesc{};
+	pipelineDesc.Kind = GraphicsPipelineKind::VertexFragment;
+	pipelineDesc.VertexShader = std::make_shared<const std::vector<uint8_t>>(shaders.vs);
+	pipelineDesc.PixelShader = std::make_shared<const std::vector<uint8_t>>(shaders.fs);
+	pipelineDesc.Topology = PrimitiveTopology::TriangleList;
+	pipelineDesc.Rasterization.cullMode = CullModeFlagBits::None;
+	pipelineDesc.Rasterization.frontFace = FrontFace::CounterClockwise;
+	pipelineDesc.DepthStencil.depthTestEnable = false;
+	pipelineDesc.DepthStencil.depthWriteEnable = false;
+	DynamicStateInfo dynamicState{};
+	dynamicState.states.push_back(DynamicState::Viewport);
+	dynamicState.states.push_back(DynamicState::Scissor);
+	pipelineDesc.DynamicState = std::move(dynamicState);
+	pipelineDesc.DebugName = "Tonemap.Pipeline";
 	DescriptorSetLayoutDesc set0{};
 	{
-		std::string metaErr;
+		std::string metaError;
 		if (!MaterialHelper::ApplyShaderMetaToGraphicsDesc(
-				*device, shaders.meta, gd, MaterialBuilder::MergeMode::Auto, {true, 128},
-				[&](uint32_t setIndex, DescriptorSetLayoutDesc& dsl)
+				*device, shaders.meta, pipelineDesc, MaterialBuilder::MergeMode::Auto, {true, 128},
+				[&set0](uint32_t setIndex, DescriptorSetLayoutDesc& setLayout)
 				{
 					if (setIndex == 0)
-						set0 = dsl;
+						set0 = setLayout;
 				},
-				&metaErr))
+				&metaError))
 		{
 			static bool s_WarnedMeta = false;
 			if (!s_WarnedMeta)
 			{
 				s_WarnedMeta = true;
-				Logger::Log::Warning("Passes::Tonemap: shader meta rejected ({})", metaErr);
+				Logger::Log::Warning("Passes::Tonemap: shader meta rejected ({})", metaError);
 			}
 			return {};
 		}
 	}
-	const GraphicsPipelineId pipelineId = device->InternGraphicsPipeline(std::move(gd));
+	const GraphicsPipelineId pipelineId = device->InternGraphicsPipeline(std::move(pipelineDesc));
 	if (!pipelineId.IsValid())
 		return {};
 
 	// TonemapParams -> push constants by MEMBER NAME against the reflected
 	// block, resolved at declaration (the by-value contract). Unnamed members
-	// (ditherMode, useAutoExposure, lutStage) stay zero: outEncoding=1 emits
-	// undithered display-referred LINEAR, this standalone pass never meters, and
-	// a LUT it is given is sampled at the Finish stage.
-	NamedPushConstantWriter pcw =
+	// (ditherMode, useAutoExposure) stay zero: outEncoding=1 emits undithered
+	// display-referred LINEAR, and this standalone pass never meters.
+	NamedPushConstantWriter pushConstants =
 		shaders.meta.PushConstants.empty()
 			? NamedPushConstantWriter(shaders.meta, std::string{})
 			: NamedPushConstantWriter(shaders.meta, shaders.meta.PushConstants[0].Name);
-	if (pcw.IsValid())
+	if (pushConstants.IsValid())
 	{
-		pcw.Add("exposure", params.exposure);
-		pcw.Add("look", params.look);
-		pcw.Add("outEncoding", params.outEncoding);
-		pcw.Add("paperWhiteNits", params.paperWhiteNits);
-		pcw.Add("maxOutputNits", params.maxOutputNits);
-		pcw.Add("preserveAlpha", params.preserveAlpha);
-		pcw.Add("lutIntensity", Math::Clamp01(params.lutIntensity));
-		pcw.Add("lutInputEncoding", params.lut.InputEncoding);
-		pcw.Add("lutSize3d", params.lut.Size3D);
-		pcw.Add("lutSize1d", params.lut.Size1D);
-		pcw.Add("lutFlags", params.lut.Flags);
-		pcw.Add("lut1dInMin", params.lut.In1DMin);
-		pcw.Add("lut1dInMax", params.lut.In1DMax);
-		pcw.Add("lut3dInMin", params.lut.In3DMin);
-		pcw.Add("lut3dInMax", params.lut.In3DMax);
+		pushConstants.Add("exposure", params.exposure);
+		pushConstants.Add("look", params.look);
+		pushConstants.Add("outEncoding", params.outEncoding);
+		pushConstants.Add("paperWhiteNits", params.paperWhiteNits);
+		pushConstants.Add("maxOutputNits", params.maxOutputNits);
+		pushConstants.Add("preserveAlpha", params.preserveAlpha);
+        pushConstants.Add("lutIntensity", std::clamp(params.lutIntensity, 0.0f, 1.0f));
+        pushConstants.Add("lutInputEncoding", params.lut.InputEncoding);
+        pushConstants.Add("lutSize3d", params.lut.Size3D);
+        pushConstants.Add("lutSize1d", params.lut.Size1D);
+        pushConstants.Add("lutFlags", params.lut.Flags);
+        pushConstants.Add("lut1dInMin", params.lut.In1DMin);
+        pushConstants.Add("lut1dInMax", params.lut.In1DMax);
+        pushConstants.Add("lut3dInMin", params.lut.In3DMin);
+        pushConstants.Add("lut3dInMax", params.lut.In3DMax);
 	}
 
-	const RenderGraph::RGResourceDesc dd = frame.Graph().ResourceDesc(dst.Id);
-	const uint32_t w = dd.Width > 0 ? dd.Width : 1u;
-	const uint32_t h = dd.Height > 0 ? dd.Height : 1u;
-	const bool partialRows = params.targetRowEnd > params.targetRowBegin && params.targetRowEnd <= h &&
-							 (params.targetRowBegin > 0 || params.targetRowEnd < h);
-	const uint32_t rowBegin = partialRows ? params.targetRowBegin : 0u;
-	const uint32_t rowCount = partialRows ? params.targetRowEnd - params.targetRowBegin : h;
+	const RenderGraph::RGResourceDesc destinationDesc = frame.Graph().ResourceDesc(destination.Id);
+	const uint32_t width = destinationDesc.Width > 0 ? destinationDesc.Width : 1u;
+	const uint32_t height = destinationDesc.Height > 0 ? destinationDesc.Height : 1u;
+    const bool partialRows = params.targetRowEnd > params.targetRowBegin && params.targetRowEnd <= height &&
+                             (params.targetRowBegin > 0 || params.targetRowEnd < height);
+    const uint32_t rowBegin = partialRows ? params.targetRowBegin : 0u;
+    const uint32_t rowCount = partialRows ? params.targetRowEnd - params.targetRowBegin : height;
 
+	auto* descriptors = frame.AllocatePassData<DescriptorSetHandle>();
 	return frame.AddPass(
 		passName ? passName : "Tonemap", PassPhase::kFinalize,
-		[&](RenderGraph::RGPassBuilder& p)
+		[pipelineId, descriptors, source, destination, &set0, &shaders, lut = params.lut, partialRows](RenderGraph::RGPassBuilder& pass)
 		{
-			p.Read(src, RenderGraph::RGTextureRead::Sampled);
-			RenderGraph::RGAttachmentOps ops{};
-			// The full-screen triangle overwrites every pixel of its rows; the rows outside a partial
-			// range keep what dst holds.
-			ops.Load = partialRows ? RenderGraph::RGLoadOp::Load : RenderGraph::RGLoadOp::DontCare;
-			ops.Store = RenderGraph::RGStoreOp::Store;
-			p.AttachColor(0, dst, ops);
+		    DeclareTonemapPass(pass, pipelineId, descriptors, source, destination, set0, shaders.meta, lut, partialRows);
 		},
-		[pipelineId, src, set0, pcw, meta = &shaders.meta, w, rowBegin, rowCount, lut = params.lut](RenderGraph::RGContext& ctx)
+		[pipelineId, descriptors, pushConstants, width, rowBegin, rowCount](RenderGraph::RGContext& context)
 		{
-			auto* cl = ctx.Cmd;
-			auto* dev = ctx.GetDevice();
-			if (!cl || !dev)
-				return;
-			const auto srcTex = ctx.GetTexture(src);
-			if (!srcTex.IsValid())
-				return;
-			TonemapDeviceResources* res = GetOrCreateTonemapResources(dev);
-			if (!res || !res->sampler.IsValid() || !res->exposureBuffer.IsValid() ||
-				!res->noCompensationBuffer.IsValid())
-				return;
-			const PipelineHandle pipeline = ctx.GetOrCreatePipelineVariant(pipelineId);
-			if (!pipeline.IsValid())
-				return;
-
-			cl->SetPipeline(pipeline);
-			if (pcw.IsValid())
-				pcw.Flush(cl);
-			cl->SetViewport(0.0f, static_cast<float>(rowBegin), static_cast<float>(w), static_cast<float>(rowCount));
-			cl->SetScissor(0, static_cast<int>(rowBegin), static_cast<int>(w), static_cast<int>(rowCount));
-
-			DescriptorSetDesc dsDesc{};
-			dsDesc.layout = set0;
-			dsDesc.transient = true;
-			dsDesc.debugName = "Tonemap.DS0";
-			const DescriptorSetHandle ds = dev->CreateDescriptorSet(dsDesc);
-			if (!ds.IsValid())
-				return;
-			// Bind by reflected NAME: uExposure points at the never-metered
-			// default buffer (tonemap.frag statically references it even with
-			// useAutoExposure==0).
-			NamedDescriptorWriter wd(dev, ds, *meta, 0);
-			wd.AddCombinedImageSampler("uHDRColor", srcTex, res->sampler);
-			wd.AddStorageBuffer("uExposure", res->exposureBuffer, 0, kTonemapExposureStateBytes);
-			wd.AddStorageBuffer("uCompensation", res->noCompensationBuffer, 0, kTonemapCompensationStateBytes);
-			wd.AddStorageBuffer("Aces2Tables", res->aces2TablesBuffer, 0, kAces2TablesBytes);
-			wd.AddCombinedImageSampler("uLut3d", lut.Lut3D.IsValid() ? lut.Lut3D : res->identityLut.Lut3D,
-									   res->sampler);
-			wd.AddCombinedImageSampler("uLut1d",
-									   lut.Lut1DStrip.IsValid() ? lut.Lut1DStrip : res->identityLut.Lut1DStrip,
-									   res->sampler);
-			wd.AddCombinedImageSampler("uStarLight", res->noNightTintInput, res->sampler);
-			wd.AddCombinedImageSampler("uDepth", res->noNightTintInput, res->sampler);
-			wd.Flush();
-			cl->BindDescriptorSet(0, ds, pipeline);
-			cl->Draw(3, 1);
+		    RecordTonemapPass(context, pipelineId, *descriptors, pushConstants, width, rowBegin, rowCount);
 		});
 }
 

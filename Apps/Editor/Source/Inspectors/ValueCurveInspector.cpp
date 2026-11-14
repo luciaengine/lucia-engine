@@ -30,6 +30,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace GameEngine
@@ -39,17 +40,16 @@ namespace
 
 std::vector<Dropdown::Option> BuildTargetOptions()
 {
-    return {
-        {"0", "None"},
-        {"1", "Transform · Position · X"},
-        {"2", "Transform · Position · Y"},
-        {"3", "Transform · Position · Z"},
-        {"4", "Transform · Scale · X"},
-        {"5", "Transform · Scale · Y"},
-        {"6", "Transform · Scale · Z"},
-        {"7", "Light · Intensity"},
-        {"8", "Post Process · Blend Weight"},
-    };
+    std::vector<Dropdown::Option> options;
+    options.reserve(std::size(Components::kValueCurveTargetEntries));
+    for (const Components::ValueCurveTargetEntry& entry : Components::kValueCurveTargetEntries)
+    {
+        Dropdown::Option option;
+        option.value = std::to_string(static_cast<int>(entry.Value));
+        option.label = std::string(entry.Label);
+        options.push_back(std::move(option));
+    }
+    return options;
 }
 
 std::vector<Dropdown::Option> BuildShapeModeOptions()
@@ -904,12 +904,11 @@ void RegisterValueCurveInspector()
                         world, entity, notifications, undo, "Change Value Curve Target",
                         [target](Components::ValueCurve& c)
                         {
-                            constexpr int kMinTarget = static_cast<int>(Components::ValueCurveTarget::None);
-                            constexpr int kMaxTarget =
-                                static_cast<int>(Components::ValueCurveTarget::PostProcessWeight);
-                            if (target < kMinTarget || target > kMaxTarget)
+                            const Components::ValueCurveTargetEntry* entry =
+                                Components::FindValueCurveTargetEntry(target);
+                            if (!entry)
                                 return;
-                            c.Target = static_cast<Components::ValueCurveTarget>(target);
+                            c.Target = entry->Value;
                         });
                 });
         });

@@ -149,14 +149,15 @@ TEST(IblShaderContract, NoIblIntensityUseOutsideEnvSamplers)
 }
 
 // The floor joins the diffuse budget AFTER the (intensity-scaled) irradiance
-// sample, never inside it: (irr + GE_AmbientFloor(N)) keeps the floor alive at
+// sample, never inside it: GE_SurfaceDiffuseIrradiance(irr, GE_AmbientFloor(N))
+// is (irr + floor) without a lightmap, which keeps the floor alive at
 // iblIntensity == 0 and exactly zero without an AmbientLight component.
 TEST(IblShaderContract, AmbientFloorAddedOutsideSampledIrradiance)
 {
     const std::string source = LoadIblGlslWithoutComments();
     ASSERT_FALSE(source.empty()) << "ibl.glsl not found via GE_RENDERER_REPO_ROOT";
-    EXPECT_NE(source.find("irr + GE_AmbientFloor("), std::string::npos)
-        << "diffuse budget must be (sampled irradiance + additive floor)";
+    EXPECT_NE(source.find("GE_SurfaceDiffuseIrradiance(irr, GE_AmbientFloor("), std::string::npos)
+        << "diffuse budget must be (sampled irradiance + additive floor) through the surface hook";
 }
 
 // Material occlusion reaches indirect diffuse in EVERY variant. so.ao is the material's

@@ -1,5 +1,5 @@
 #include "UI/UIManager.h"
-#include "UIManager_Internal.h"
+#include "UIManager/UIManager_Internal.h"
 #include "UI/UIElement.h"
 #include "UI/ResolvedStyle.h"
 #include "UI/Controls/GridView.h"

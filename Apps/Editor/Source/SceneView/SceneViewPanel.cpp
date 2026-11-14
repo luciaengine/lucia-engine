@@ -76,7 +76,7 @@
 #include "Components/PrefabInstance.h"
 #include "Components/Transform.h"
 #include "ECS/Components.h"
-#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/ComponentFieldRegistry.h"
 #include "ECS/Entity.h"
 #include "ECS/Query.h"
 #include "ECS/World.h"

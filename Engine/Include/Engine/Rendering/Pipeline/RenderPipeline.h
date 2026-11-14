@@ -126,6 +126,7 @@ struct RenderPipelineBlueprint
     {
         std::string name;
         std::string resourceJson;
+        std::string VersionProducer{}; ///< The sole writer of a lowered texture version.
     };
 
     std::vector<Pass> passes;
@@ -236,6 +237,12 @@ class RenderPipelineInstance
         std::function<void(Rendering::RenderGraph::RGFrame&, RenderPipelineInstance&)>;
     void DeferDeclare(DeferredDeclareFn fn) { m_DeferredDeclares.push_back(std::move(fn)); }
 
+    using BeforePostProcessFn = std::function<void(ViewDeclare&)>;
+    void SetBeforePostProcessCallback(const void* owner, BeforePostProcessFn fn)
+    {
+        if (owner && fn)
+            m_BeforePostProcessCallbacks[owner] = std::move(fn);
+    }
     Engine::Renderer::RenderServices& GetRenderServices() const { return m_Rs; }
 
     // The view's ExposureHistory buffer for a texture holding scene colour stored at the frame's
@@ -272,6 +279,7 @@ class RenderPipelineInstance
     {
         bool HasRenderScaleUpscale = false;
         bool HasDepthResolve = false;
+        bool HasPixelPerfectUpscale = false;
     };
     RenderScaleSplitNodes FindRenderScaleSplitNodes() const;
     // The extent at which a view's live frame draws the world, read from its targets. Split* is the
@@ -326,7 +334,7 @@ class RenderPipelineInstance
                                                  Rendering::ViewId viewId,
                                                  std::string_view name, uint32_t renderW,
                                                  uint32_t renderH, uint32_t outputW = 0,
-                                                 uint32_t outputH = 0);
+                                                 uint32_t outputH = 0, std::string_view producer = {});
     PipelineBufferBindingRG MaterializeBuffer(Rendering::RenderGraph::RGFrame& frame,
                                               Rendering::ViewId viewId, std::string_view name,
                                               uint32_t renderW, uint32_t renderH);
@@ -398,6 +406,7 @@ class RenderPipelineInstance
     // Late declares queued during the current Declare's node loop (cleared
     // with the blackboard at the top of every Declare).
     std::vector<DeferredDeclareFn> m_DeferredDeclares;
+    std::unordered_map<const void*, BeforePostProcessFn> m_BeforePostProcessCallbacks;
 
     // Framework-level pass name cache for BuildForView().
     // Keyed by (nodeIndex << 48 | suffixHash << 32 | viewId) to remain stable

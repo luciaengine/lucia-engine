@@ -1,6 +1,7 @@
 // Shipped outdoor scenes must be lit for the stop the editor Scene View pins.
 //
-// The Scene View has no Camera entity of its own; Fixed exposes it at a stop that defaults to
+// The Scene View has no Camera entity of its own, so when its auto exposure is
+// off (the default) it exposes at a fixed photographic stop —
 // Components::kDefaultManualExposureEv, a sunlit exterior EV100. A scene
 // whose sun is authored on the unitless scale (a few units, i.e. a few hundred
 // lux) is five to eight stops under that stop and opens black, however bright it
@@ -31,7 +32,6 @@
 #include "ECS/World.h"
 #include "Engine/Rendering/Exposure.h"
 #include "Scene/SceneIO.h"
-#include "Types/ColorUtils.h"
 
 #include <algorithm>
 #include <cmath>
@@ -55,6 +55,16 @@ constexpr float kMidGreyAlbedo = 0.18f;
 
 // The scene-linear value the pinned stop maps to white.
 constexpr float kStopWhite = 1.0f;
+
+// Rec. 709 luma weights, for judging one gradient band against the stop.
+constexpr float kLumaR = 0.2126f;
+constexpr float kLumaG = 0.7152f;
+constexpr float kLumaB = 0.0722f;
+
+float Luma(const float rgb[3])
+{
+    return kLumaR * rgb[0] + kLumaG * rgb[1] + kLumaB * rgb[2];
+}
 
 // How far from middle grey a shipped scene's key surface may sit. Generous on
 // purpose — this gate exists to catch a scene that is unlit by orders of
@@ -80,7 +90,7 @@ GameEngine::Scene::SceneInstantiateResult LoadStagedScene(GameEngine::ECS::World
     GameEngine::Scene::SceneInstantiateOptions instantiateOptions;
     instantiateOptions.ClearWorldFirst = true;
     options.AssetRootOverride = scenePath.parent_path();
-    return GameEngine::Scene::ReadSceneInto(world, scenePath, options, instantiateOptions);
+    return static_cast<bool>(GameEngine::Scene::ReadSceneInto(world, scenePath, options, instantiateOptions));
 }
 
 KeyLight ResolveKeyLight(GameEngine::ECS::World& world)
@@ -199,9 +209,9 @@ TEST(ShippedSceneExposure, WebSmokeSeedSceneCarriesASkyLitForTheSameStop)
     const float gradientScale =
         sky.GradientSkyIntensity / GameEngine::Components::kReferenceWhiteNits;
     const float brightestBandLuma =
-        std::max({GameEngine::ColorUtils::LinearRec709Luminance(sky.GradientSkyTopColor),
-                  GameEngine::ColorUtils::LinearRec709Luminance(sky.GradientSkyHorizonColor),
-                  GameEngine::ColorUtils::LinearRec709Luminance(sky.GradientSkyBottomColor)}) *
+        std::max({Luma(sky.GradientSkyTopColor),
+                  Luma(sky.GradientSkyHorizonColor),
+                  Luma(sky.GradientSkyBottomColor)}) *
         gradientScale * exposure;
 
     EXPECT_GT(brightestBandLuma, kMidGreyAlbedo)

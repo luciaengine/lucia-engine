@@ -26,22 +26,6 @@ namespace Rendering {
     inline constexpr bool kDeviceFaultDefaultEnabled = false;
 #endif
 
-    /// Parse the GE_VK_DEVICE_FAULT toggle against the config default.
-    ///
-    /// Tri-state rather than the plain leading-character idiom the validation
-    /// toggles use, because this one has a default to fall back to: unset keeps
-    /// the config policy, while an explicit value overrides it in either
-    /// direction — arming a Release investigation, or disarming a developer build
-    /// to A/B whether the extension itself changed anything.
-    inline bool ParseDeviceFaultEnabled(const char* envValue, bool defaultEnabled) noexcept
-    {
-        if (envValue == nullptr || envValue[0] == '\0')
-        {
-            return defaultEnabled;
-        }
-        return envValue[0] != '0' && envValue[0] != 'f' && envValue[0] != 'F';
-    }
-
 #if defined(VK_EXT_device_fault)
 
     /// Spelled-out name for a fault address type. A value these headers do not

@@ -405,7 +405,7 @@ void RenderServices::UpdateIdleElisionFrameState()
     //      some view (OceanRenderFeature::PublishDepthClaim).
     bool anyDepthWritingProducer = !m_DrawProducers->Depth.empty();
     for (const ForwardProducerEntry& e : m_DrawProducers->Forward)
-        anyDepthWritingProducer = anyDepthWritingProducer || e.WritesDepth;
+        anyDepthWritingProducer = anyDepthWritingProducer || e.Options.WritesDepth;
     const bool skinPaletteChanged = m_SkinPaletteContentChanged;
     m_SkinPaletteContentChanged = false;
     bool anyDynamicDepthFeature = false;

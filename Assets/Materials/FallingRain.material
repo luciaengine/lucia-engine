@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 3,
+  "materialName": "FallingRain",
+  "lightingModel": "StandardPBR",
+  "alphaMode": "Mask",
+  "doubleSided": true,
+  "surfaceShader": "Surfaces/rain_falling.glsl",
+  "properties": {
+    "rainIntensity": 1,
+    "rainSpeed": 1.35,
+    "fallHeight": 8,
+    "groundHeight": 0,
+    "dropWidth": 0.008,
+    "dripMode": false,
+    "alphaCutoff": 0.2,
+    "enableTransmission": true,
+    "enableTransmissionThick": false,
+    "transmissionWeight": 1,
+    "refractionStrength": 0.025,
+    "splashStrength": 1.0,
+    "waterDropSizeOffset": 0.0
+  }
+}

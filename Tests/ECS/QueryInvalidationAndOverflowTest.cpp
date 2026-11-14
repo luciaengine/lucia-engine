@@ -6,7 +6,7 @@
 // component templates itself (see ECS/ECSTemplates.h).
 #include "ECS/ECSTemplates.h"
 #include "TestComponents.h"
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentRegistry.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 
 #include <cstddef>

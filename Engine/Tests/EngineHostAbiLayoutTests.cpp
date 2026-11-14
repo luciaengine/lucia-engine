@@ -98,12 +98,12 @@ struct AllowedConsumerSideGuard
 constexpr std::array<AllowedConsumerSideGuard, 5> kAllowedConsumerSideGuards{{
     {"Engine/Include/Engine/Rendering/VkValidationRequest.h",
      "inline default inside a function body; the calling app's config, not layout"},
-    {"Engine/Modules/ECS/Include/ECS/Archetype/ArchetypeTable.h",
+    {"Engine/Modules/ECS/Include/ECS/ArchetypeTable.h",
      "inline zero-fill of a freshly allocated chunk; code, not a member"},
     {"Engine/Modules/JobSystem/Include/JobSystem/JobCounter.h",
      "assert bodies; assert() follows NDEBUG whatever surrounds it"},
-    {"Engine/Modules/Particles/Include/Particles/ParticleChannels.h",
-     "inline debug check inside a function body; code, not layout"},
+    {"Engine/Modules/Logger/Include/Logger/Logger.h",
+     "LOG_TRACE and LOG_DEBUG selection; the consumer's own choice"},
     {"Engine/Modules/Rendering/Include/Rendering/Core/TextureFormatSupportGate.h",
      "inline return value; behaviour, not layout"},
 }};

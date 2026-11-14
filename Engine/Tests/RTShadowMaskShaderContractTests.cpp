@@ -162,12 +162,8 @@ TEST(RTShadowMaskShaderContract, MaskFadesOverTheCascadeBand)
     EXPECT_LT(lastRay, fade);
 }
 
-// The terrain is not in the TLAS, so both directional-shadow modes take its shadow from one map and
-// one lit field through one function (terrain_shadow.glsl GE_TerrainShadowFootprintLit): the raster
-// term (GE_SampleShadow, inside and beyond the cascades' range) and the ray-traced mask (every pixel,
-// and beyond the range where no ray is traced). The function reads the field over a pixel's footprint,
-// counted toward what the view sees, and the map's own lookup (GE_TerrainShadowLit) where the field
-// does not answer alone. A caller that marched or sampled on its own would let the modes disagree.
+// Raster and ray-traced directional shadows must call the same terrain footprint/visibility helper.
+// Both use the filtered field for broad pixels and the clearance lookup where the field does not fully answer.
 TEST(RTShadowMaskShaderContract, BothShadowModesReadTheTerrainsClearanceMap)
 {
     const std::string mask = RTShadowMaskSource();

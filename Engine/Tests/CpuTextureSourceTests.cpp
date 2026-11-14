@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #if defined(RENDERING_HAS_VULKAN) && RENDERING_HAS_VULKAN
 #include "Assets/RenderPipelineAsset.h"
+#include "Assets/TextureCook.h"
 #include "Components/Rendering/MeshRenderer.h"
 #include "Components/Transform.h"
 #include "CpuTextureSources.h"
@@ -10,24 +11,21 @@
 #include "Engine/Rendering/Pipeline/Nodes/EngineNodeTypes.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/TextureMipUpload.h"
 #include "Engine/Rendering/TextureService.h"
 #include "NativeScripting/UserSystemRegistry.h"
 #include "Components/Navigation/NavigationAgent.h"
 #include "PathfindingECS/Components/NavigationAgentState.h"
-#include "Components/Navigation/NavigationSurface.h"
-#include "PathfindingECS/NavigationSurfaceRuntime.h"
+#include "NavigationTestSurfaces.h"
 #include "PathfindingECS/NavigationService.h"
-#include "PathfindingECS/Systems/NavigationSurfaceSystem.h"
 #include "PathfindingECS/Systems/NavigationMovementSystem.h"
 #include "PathfindingECS/Systems/NavigationPathfindingSystem.h"
 #include "PathfindingECS/Systems/NavigationWorldHooks.h"
-#include "PhysicsECS/Components/PhysicsBody.h"
-#include "PhysicsECS/Components/PhysicsCollider.h"
-#include "PhysicsECS/Components/PlaneColliderShape.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
 #include "Scripting/NativePostSimulationSystem.h"
 #include "Source/Vulkan/VulkanDevice/VulkanDevice.h"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -39,6 +37,8 @@ using namespace GameEngine::Engine::Renderer;
 
 namespace
 {
+using GameEngine::Rendering::TextureFormat;
+
 TEST(CpuTexturePipeline, AuthoredOutputsResolveForFullscreenConsumers)
 {
     using namespace Pipeline;
@@ -396,6 +396,48 @@ TEST_F(CpuTextureTest, ScalarAndRgbaImagesDoNotRequireMetadata)
     }
 }
 
+TEST_F(CpuTextureTest, RgbaMipUploadRejectsPreparationFailuresAndRecovers)
+{
+    constexpr uint32_t kWidth = 8;
+    std::array<uint8_t, kWidth * kWidth * 4> pixels{};
+    pixels.fill(127);
+    const TextureCookSettings settings{};
+
+    for (bool refuseCommands : {false, true})
+    {
+        Device.RefuseStaging = !refuseCommands;
+        Device.RefuseCommands = refuseCommands;
+        const uint32_t created = Device.Created;
+        const uint32_t destroyed = Device.Destroyed;
+        const uint32_t submitted = Device.Submits;
+        uint32_t levels = 99;
+        const auto texture = UploadRgba8WithMips(&Device, pixels.data(), kWidth, kWidth,
+            TextureFormat::RGBA8_UNORM, settings, false, "RejectedRgba", "RejectedStaging", levels);
+        EXPECT_FALSE(texture.IsValid());
+        EXPECT_EQ(levels, 0u);
+        EXPECT_EQ(Device.Created, created + 1);
+        EXPECT_EQ(Device.Destroyed, destroyed + 1);
+        EXPECT_EQ(Device.Submits, submitted);
+    }
+
+    Device.RefuseStaging = false;
+    Device.RefuseCommands = false;
+    uint32_t levels = 0;
+    const auto texture = UploadRgba8WithMips(&Device, pixels.data(), kWidth, kWidth,
+        TextureFormat::RGBA8_UNORM, settings, false, "RecoveredRgba", "RecoveredStaging", levels);
+    ASSERT_TRUE(texture.IsValid());
+    EXPECT_GT(levels, 0u);
+    CpuTextureBinding binding{};
+    binding.Texture = texture;
+    binding.Width = kWidth;
+    binding.Height = kWidth;
+    binding.Format = TextureFormat::RGBA8_UNORM;
+    const auto actual = Read(binding);
+    Device.DestroyTexture(texture);
+    ASSERT_EQ(actual.size(), pixels.size());
+    EXPECT_EQ(std::memcmp(actual.data(), pixels.data(), pixels.size()), 0);
+}
+
 TEST_F(CpuTextureTest, CheckedBatchDoesNotSubmitAnyCopiesWhenOneStagingBufferFails)
 {
     TextureDesc desc{};
@@ -609,29 +651,10 @@ TEST_F(CpuTextureTest, ActualNavigationThenLateHookUploadsItsFirstRevisionInTheS
     PathfindingECS::RegisterNavigationWorldHooks(world);
     RenderServices services;
     ASSERT_TRUE(services.Initialize(&Device));
-    // Level ground (a static plane collider) under a 16 x 16 m grid surface whose cell (0, 0) starts
-    // at the origin.
-    auto ground = world.Create();
-    Components::PhysicsBody groundBody;
-    groundBody.motionType = Physics::MotionType::Static;
-    ground.Set(groundBody);
-    ground.Set(Components::PhysicsCollider{});
-    ground.Set(Components::PlaneColliderShape{});
-    ground.Set(Components::Transform{});
-    ground.Set(Components::WorldTransform{});
-    auto grid = world.Create();
-    Components::NavigationSurface desc;
-    desc.Mode = Components::NavigationSurfaceMode::Grid;
-    desc.CellSize = 1;
-    desc.FitBounds = false;
-    desc.Center = {8.0f, 0.0f, 8.0f};
-    desc.Extent = {8.0f, 1.0f, 8.0f};
-    grid.Set(desc);
-    world.ProcessCommands();
-    PathfindingECS::NavigationSurfaceSystem{}.Update(world, .1f);
-    world.ProcessCommands();
-    const auto sourceMap = PathfindingECS::ResolveNavigationSurfaceMap(world, *grid.Get<Components::NavigationSurface>());
-    ASSERT_TRUE(sourceMap.IsValid());
+    auto grid = PathfindingECS::Testing::CreateFlatGridSurface(world, 16, 16, 1.0f);
+    const auto sourceGrid = *grid.Get<Components::NavigationSurface>();
+    ASSERT_EQ(sourceGrid.BakePhase, Components::NavigationBakePhase::Baked);
+    ASSERT_TRUE(PathfindingECS::ResolveNavigationSurfaceMap(world, sourceGrid).IsValid());
     auto actor = world.Create();
     Components::Transform transform;
     transform.Position = Mathematics::WorldPosition{2.5, 0.0, 2.5};
@@ -644,9 +667,8 @@ TEST_F(CpuTextureTest, ActualNavigationThenLateHookUploadsItsFirstRevisionInTheS
     agent.StoppingDistance = .3f;
     agent.Radius = .25f;
     agent.AgentId = actor.GetHandle().id;
+    agent.Surface = grid.GetHandle();
     Components::NavigationAgentState nav;
-    nav.NavMapIndex = sourceMap.Index;
-    nav.NavMapGeneration = sourceMap.Generation;
     nav.HasDestination = true;
     nav.PathDirty = true;
     nav.DestinationX = 10.5f;
@@ -701,7 +723,7 @@ TEST_F(CpuTextureTest, ActualNavigationThenLateHookUploadsItsFirstRevisionInTheS
     NativePostSimulationSystem bridge(&services);
     bridge.Update(world, .1f);
     EXPECT_GT(publisher.PresentedX, publisher.InputX);
-    EXPECT_EQ(actor.Get<Components::MeshRenderer>()->RenderLayers, GameEngine::Rendering::RenderLayerMask::FromLayer(1));
+    EXPECT_EQ(actor.Get<Components::MeshRenderer>()->RenderLayers.Bits, 2u);
     const auto binding = services.Textures().GetCpuTextureForView(world.GetWorldId(), HashStringId("LateSight"));
     ASSERT_TRUE(binding.Texture.IsValid());
     EXPECT_EQ(Read(binding), (std::vector{std::byte{17}, std::byte{255}}));

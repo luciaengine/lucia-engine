@@ -1,8 +1,9 @@
 #pragma once
 
 #include "Engine/Rendering/AntiAliasingProjectSettings.h"
-#include "Engine/Rendering/LodProjectSettings.h"
+#include "Engine/Rendering/SortingLayers.h"
 #include "Engine/Rendering/RenderLayerNames.h"
+#include "Engine/Rendering/LodProjectSettings.h"
 #include "Rendering/Core/Device.h"
 #include "Types/Types.h"
 #include "UI/UIScaleSettings.h"
@@ -43,6 +44,8 @@ struct GameConfig
     std::string gameName = "My Game";
     std::string startupScene;       // asset-relative, e.g. "Scenes/Main.scene"
     std::string renderPipeline;     // asset-relative, e.g. "RenderPipelines/ForwardPlus.rendergraph"
+    // The Player waits for startup spline recipes before its ready line and screenshot.
+    bool waitForSplineRecipes = true;
 
     LodImportConfig lod;
 
@@ -59,9 +62,7 @@ struct GameConfig
     // startup — a shipped game runs the same AA stack the editor previewed,
     // SSAA included. Per-camera Camera overrides still win per view.
     Rendering::AntiAliasingProjectSettings renderQuality;
-
-    // The project's render layer names (rendering.renderLayerNames), copied from the project at
-    // package time; the Player sets them at startup, so a game's RenderLayers.Find answers with them.
+    Rendering::SortingLayers sortingLayers = Rendering::SortingLayers::Defaults();
     Rendering::RenderLayerNames renderLayerNames;
 
     // Window: the size and mode the runtime creates its window with at startup.

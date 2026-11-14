@@ -1,13 +1,13 @@
-// The inspector's notice control: a statement on a plate, optionally the one action that resolves it,
-// and optionally a Dismiss. What every consumer rests on is that the text and the action are in the element tree
+// The inspector's notice control: a statement on a plate, and optionally the one action that
+// resolves it. What every consumer rests on is that the text and the action are in the element tree
 // from construction (the layout is instantiated by the constructor, not on attach), so the first
 // test reads them from a notice no UIManager has seen, and another builds one inside an event
 // dispatch, where an inspector rebuild can build it. An action that rebuilds its own notice runs to
 // its end on the real input path. The layout tests lay the real notice out over the real editor
 // stylesheets: the action at the end of the text's row on its first line, no space for an action
 // the notice does not have, a long text wrapping beside its action at a narrow inspector, the action
-// under the text only where the row has no room for both, the dismiss after the action and wrapping
-// with it, and a notice keeping its height in a crowded column.
+// under the text only where the row has no room for both, and a notice keeping its height in a
+// crowded column.
 
 #include <gtest/gtest.h>
 
@@ -16,19 +16,16 @@
 #include "UI/Controls/Button.h"
 #include "UI/Controls/InspectorNotice.h"
 #include "UI/Controls/Label.h"
-#include "UI/Parsers/CSSParser.h"
 #include "UI/UIElement.h"
 #include "UI/UIEvents.h"
 
 #include <memory>
 #include <string>
-#include <utility>
 #include <vector>
 
 using GameEngine::Button;
 using GameEngine::kEventButtonClick;
 using GameEngine::Label;
-using GameEngine::HashStringId;
 using GameEngine::UIElement;
 using GameEngine::UIEvent;
 using GameEngine::EditorUI::InspectorNotice;
@@ -60,11 +57,6 @@ Label* TextOf(UIElement& notice)
 Button* ActionOf(UIElement& notice)
 {
     return dynamic_cast<Button*>(FindByClass(&notice, "inspector-notice-action"));
-}
-
-Button* DismissOf(UIElement& notice)
-{
-    return dynamic_cast<Button*>(FindByClass(&notice, "inspector-notice-dismiss"));
 }
 
 void Click(Button& button)
@@ -125,56 +117,19 @@ TEST(InspectorNotice, ShowsItsTextAndFiresItsAction)
     EXPECT_EQ(invoked, 1) << "the button has to reach the action it was given";
 }
 
-// A notice the user may put away shows a Dismiss button after its action; one without it shows none,
-// and the button reaches the handler it was given, not the action.
-TEST(InspectorNotice, ShowsADismissOnlyWhenGivenOneAndItReachesItsHandler)
-{
-    InspectorNotice notice("This view is brighter than the game camera, so the game will look darker.");
-    Button* dismiss = DismissOf(notice);
-    ASSERT_NE(dismiss, nullptr) << "the notice's dismiss is not in the tree; InspectorNotice.uxml is staged beside "
-                                   "the test executable under Assets/UI/controls/InspectorNotice/";
-    EXPECT_TRUE(dismiss->HasClass("hidden")) << "a notice that was not given a dismiss shows one";
-    EXPECT_EQ(dismiss->GetText(), "") << "a notice that was not given a dismiss carries its word, which a scan of the "
-                                         "notice's text reads";
-
-    int invoked = 0;
-    int dismissed = 0;
-    notice.SetAction("Match game camera", "", [&invoked]() { ++invoked; });
-    EXPECT_TRUE(dismiss->HasClass("hidden")) << "giving the notice an action showed its dismiss";
-    notice.SetDismiss("Hide this notice", [&dismissed]() { ++dismissed; });
-
-    EXPECT_FALSE(dismiss->HasClass("hidden"));
-    EXPECT_EQ(dismiss->GetText(), "Dismiss");
-    EXPECT_EQ(dismiss->GetTooltip(), "Hide this notice");
-    Click(*dismiss);
-    EXPECT_EQ(dismissed, 1) << "the dismiss has to reach the handler it was given";
-    EXPECT_EQ(invoked, 0) << "the dismiss ran the action";
-}
-
 // Focus is tracked by element id, so two notices whose actions shared one would hand the keyboard
 // to the first whichever was focused: Tab to the second notice's Discard and Enter discards the
 // first field.
-// A notice is a warning unless it is built to inform or to report a failure; the kind is one class on
-// the control and one on each part (the action included), which the stylesheet paints.
-TEST(InspectorNotice, TheKindIsOneClassOnTheControlAndOnEachPart)
+// A notice is a warning unless it is built to inform; each kind carries its own class, which the
+// stylesheet paints.
+TEST(InspectorNotice, TheKindIsOneClassOnTheControl)
 {
-    const std::vector<std::string> parts{"plate", "glyph", "title", "text", "action", "dismiss"};
-    const std::vector<std::pair<InspectorNotice::Kind, std::string>> kinds{
-        {InspectorNotice::Kind::Warning, "warning"},
-        {InspectorNotice::Kind::Information, "information"},
-        {InspectorNotice::Kind::Error, "error"}};
-    for (const auto& [kind, suffix] : kinds)
-    {
-        InspectorNotice notice("Authored value could not be read.", kind);
-        for (const auto& [otherKind, otherSuffix] : kinds)
-            EXPECT_EQ(notice.HasClass("inspector-notice-" + otherSuffix), otherSuffix == suffix) << suffix;
-        for (const std::string& part : parts)
-        {
-            UIElement* element = FindByClass(&notice, "inspector-notice-" + part);
-            ASSERT_NE(element, nullptr) << part;
-            EXPECT_TRUE(element->HasClass("inspector-notice-" + part + "-" + suffix)) << part << " of " << suffix;
-        }
-    }
+    InspectorNotice warning("Authored value could not be read.");
+    InspectorNotice information("The sky sets this light's direction.", InspectorNotice::Kind::Information);
+    EXPECT_TRUE(warning.HasClass("inspector-notice-warning"));
+    EXPECT_FALSE(warning.HasClass("inspector-notice-information"));
+    EXPECT_TRUE(information.HasClass("inspector-notice-information"));
+    EXPECT_FALSE(information.HasClass("inspector-notice-warning"));
 }
 
 TEST(InspectorNotice, EachActionIsAFocusTargetOfItsOwn)
@@ -196,7 +151,7 @@ TEST(InspectorNotice, EachActionIsAFocusTargetOfItsOwn)
     fixture.Ui->FocusElement(secondAction);
     const std::string& focusedId = fixture.Ui->GetFocusedElementId();
     ASSERT_FALSE(focusedId.empty());
-    EXPECT_EQ(fixture.Ui->GetRootElement()->FindById(HashStringId(focusedId)), secondAction)
+    EXPECT_EQ(fixture.Ui->GetRootElement()->FindById(GameEngine::HashStringId(focusedId)), secondAction)
         << "the focus resolves to another notice's action (id '" << focusedId << "')";
 }
 

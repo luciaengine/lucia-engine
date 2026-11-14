@@ -13,21 +13,23 @@ if(NOT GTest_FOUND)
 endif()
 
 add_executable(TypesTests
+    FunctionRefTests.cpp
+    InlineVectorTests.cpp
     ByteBufferTests.cpp
+    Base64Tests.cpp
     ColorTests.cpp
-    DisjointSetsTests.cpp
     FalseSharingTests.cpp
     FlatMapTests.cpp
     FlatSetTests.cpp
     FormatNumberTests.cpp
     Fnv1aTests.cpp
-    FunctionRefTests.cpp
-    InlineVectorTests.cpp
     NearestNameTests.cpp
     ParseIntegerTests.cpp
     ParseStrictDecimalTests.cpp
     PathUtilsTests.cpp
     StringUtilsTests.cpp
+    DisjointSetsTests.cpp
+    Utf8Tests.cpp
 )
 
 target_link_libraries(TypesTests
@@ -50,6 +52,12 @@ set_tests_properties(TypesTests PROPERTIES
     TIMEOUT 30
     LABELS "Types;Unit"
 )
+
+# These tests measure allocations made by their own executable.
+target_sources(TypesTests PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Modules/Memory/Source/AllocationHook.cpp)
+target_link_libraries(TypesTests PRIVATE Memory)
+set_source_files_properties(${CMAKE_SOURCE_DIR}/Engine/Modules/Memory/Source/AllocationHook.cpp
+    PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 
 # Only ctest builds these compile checks. Under clang, FunctionRefBoundToTemporary must fail (-Werror=dangling through
 # GE_LIFETIMEBOUND); other compilers get no attribute and skip it. CompilePassControl must compile on every compiler.

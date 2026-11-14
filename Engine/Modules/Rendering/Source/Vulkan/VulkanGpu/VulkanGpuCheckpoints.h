@@ -21,16 +21,6 @@
 namespace GameEngine {
 namespace Rendering {
 
-    /// Parse the GE_VK_GPU_CHECKPOINTS toggle. Split out from the env read so the
-    /// policy is unit-testable. OFF unless explicitly requested: emission adds a
-    /// GPU command per marker and the marker sites sit on per-frame paths. Same
-    /// leading-character idiom as GE_VK_USE_DESCRIPTOR_BUFFER.
-    inline bool ParseGpuCheckpointsEnabled(const char* envValue) noexcept
-    {
-        return envValue != nullptr && envValue[0] != '\0' && envValue[0] != '0' &&
-               envValue[0] != 'f' && envValue[0] != 'F';
-    }
-
     /// Marker names are stored verbatim up to this length (including the
     /// terminator); longer names are truncated to fit the fixed-size record.
     constexpr size_t kMaxGpuCheckpointNameLength = 64;

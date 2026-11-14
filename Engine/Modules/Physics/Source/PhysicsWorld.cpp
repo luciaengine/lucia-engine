@@ -41,6 +41,7 @@ public:
     bool IsBodyValid(BodyHandle body) const override { return body.IsValid(); }
 
     Transform GetBodyTransform(BodyHandle) const override { return {}; }
+    WorldPosition GetCenterOfMassPosition(BodyHandle) const override { return {}; }
     void SetBodyTransform(BodyHandle, const Transform&, ActivationMode) override {}
     void MoveKinematic(BodyHandle, const Transform&, float32) override {}
 
@@ -80,6 +81,8 @@ public:
         return false;
     }
 
+    void SetContactModifyCallback(ContactModifyCallback, void*) override {}
+    void SetBodyContactFlags(BodyHandle, uint32) override {}
     void SetContactCallback(IPhysicsBackend::ContactCallback) override {}
     void SetTriggerCallback(IPhysicsBackend::TriggerCallback) override {}
     void ProcessEvents() override {}
@@ -221,7 +224,8 @@ void PhysicsWorld::SetBodyTransform(BodyHandle body, const Transform& transform,
 
 void PhysicsWorld::MoveKinematic(BodyHandle body, const Transform& target, float32 deltaTime)
 {
-    if (m_Backend)
+    // A non-positive interval yields no finite velocity that reaches the target.
+    if (m_Backend && deltaTime > 0.0f)
         m_Backend->MoveKinematic(body, target, deltaTime);
 }
 
@@ -245,6 +249,21 @@ void PhysicsWorld::SetAngularVelocity(BodyHandle body, const Vector3& velocity)
 {
     if (m_Backend)
         m_Backend->SetAngularVelocity(body, velocity);
+}
+
+WorldPosition PhysicsWorld::GetCenterOfMassPosition(BodyHandle body) const
+{
+    return m_Backend ? m_Backend->GetCenterOfMassPosition(body) : WorldPosition{};
+}
+
+Vector3 PhysicsWorld::GetPointVelocity(BodyHandle body, const WorldPosition& worldPoint) const
+{
+    if (!m_Backend || !m_Backend->IsBodyValid(body))
+        return {};
+    const Vector3 linear = m_Backend->GetLinearVelocity(body);
+    const Vector3 angular = m_Backend->GetAngularVelocity(body);
+    const Vector3 lever = worldPoint - m_Backend->GetCenterOfMassPosition(body);
+    return linear + Vector3::Cross(angular, lever);
 }
 
 void PhysicsWorld::AddForce(BodyHandle body, const Vector3& force)
@@ -348,6 +367,18 @@ bool PhysicsWorld::BoxOverlap(const BoxOverlapQuery& query, std::vector<OverlapR
         return false;
     }
     return m_Backend->BoxOverlap(query, outResults, maxResults);
+}
+
+void PhysicsWorld::SetContactModifyCallback(ContactModifyCallback callback, void* context)
+{
+    if (m_Backend)
+        m_Backend->SetContactModifyCallback(callback, context);
+}
+
+void PhysicsWorld::SetBodyContactFlags(BodyHandle body, uint32 contactFlags)
+{
+    if (m_Backend)
+        m_Backend->SetBodyContactFlags(body, contactFlags);
 }
 
 void PhysicsWorld::SetContactCallback(ContactCallback callback)

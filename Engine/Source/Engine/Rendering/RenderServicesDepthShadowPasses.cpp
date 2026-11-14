@@ -240,6 +240,12 @@ FeatureDeclareContext RenderServices::MakeFeatureDeclareContext(
     ctx.WorldAlreadyDeclared = ViewFrameRGFor(frame, viewId).WorldDeclared;
     ctx.ViewNeedsCascades = ViewNeedsShadowCascadePasses(viewId);
     ctx.HasTransmissiveCaster = HasTransmissiveCasterInView(viewId);
+    if (ctx.ViewNeedsCascades && cascadeCount != 0u)
+    {
+        const auto submissions = m_WorldDrawBuilder.GetShadowSubmissionStates(viewId);
+        ctx.CascadeMaterialContentKey = submissions.All.MaterialContentKey;
+        ctx.RigidCascadeMaterialContentKey = submissions.Rigid.MaterialContentKey;
+    }
 
     // Punctual (area/spot/point) snapshots resolved ONCE per view and frame.
     // Present only under the gate: active render layers + shadow casters + a
@@ -356,6 +362,8 @@ Rendering::RenderGraph::RGTexture RenderServices::ImportShadowMapArrayRG(
     td.format = static_cast<uint32_t>(Rendering::TextureFormat::D32_FLOAT);
     td.usage = static_cast<uint32_t>(Rendering::TextureUsage::DepthStencil)
              | static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource);
+    if (feature->IsRigidCascadeCacheEnabled())
+        td.usage |= static_cast<uint32_t>(Rendering::TextureUsage::TransferDst);
     td.sampleCount = 1;
     td.flags = Rendering::TextureCreateFlags::ForceArrayView;
     const std::string name =
@@ -445,6 +453,42 @@ void RenderServices::PublishPointShadow(ShadowDeclareSeam, Rendering::RenderGrap
     vfr.PointShadowData = {slotBuffer, slotBufferOffset, slotBufferBytes};
 }
 
+void RenderServices::PublishDirectionalShadowDataRG(Rendering::RenderGraph::RGFrame& frame,
+    Rendering::ViewId viewId, Rendering::RenderGraph::RGFrame::TypedUpload<ShadowDataGPU> data)
+{
+    ViewFrameRGFor(frame, viewId).DirectionalShadowData = data;
+}
+
+bool RenderServices::ShareDirectionalShadowsRG(Rendering::RenderGraph::RGFrame& frame,
+    Rendering::ViewId sourceView, Rendering::ViewId receiverView)
+{
+    if (sourceView == receiverView) return false;
+    const auto* sourceDesc = Views().FindViewDesc(sourceView);
+    const auto* receiverDesc = Views().FindViewDesc(receiverView);
+    const auto* sourceFrame = FindViewFrameRGFor(frame, sourceView);
+    if (!sourceDesc || !receiverDesc || sourceDesc->worldId != receiverDesc->worldId ||
+        !sourceFrame || !sourceFrame->ShadowMapArray.IsValid() ||
+        !sourceFrame->DirectionalShadowData.Valid()) return false;
+    const auto* sourceCamera = Views().FindCameraData(sourceDesc->cameraId);
+    const auto* receiverCamera = Views().FindCameraData(receiverDesc->cameraId);
+    if (!sourceCamera || !receiverCamera) return false;
+    auto data = frame.AllocUpload<ShadowDataGPU>();
+    if (!data.Valid()) return false;
+    *data.Ptr = *sourceFrame->DirectionalShadowData.Ptr;
+    RebaseDirectionalShadowData(*data.Ptr, *sourceCamera, *receiverCamera);
+    // Copy before inserting: the destination can rehash m_ViewFrameRG.
+    const auto source = *sourceFrame;
+    auto& receiver = ViewFrameRGFor(frame, receiverView);
+    receiver.ShadowMapArray = source.ShadowMapArray;
+    receiver.TransmittanceShadowArray = source.TransmittanceShadowArray;
+    receiver.MsmMoments = source.MsmMoments;
+    receiver.ShadowPcssPyramid = source.ShadowPcssPyramid;
+    receiver.DirectionalShadowData = data;
+    if (const auto* sampler = Views().GetViewShadowResources(sourceView))
+        Views().SetViewShadowSampler(receiverView, sampler->shadowSampler);
+    return true;
+}
+
 void RenderServices::PublishPcssPyramid(ShadowDeclareSeam, Rendering::RenderGraph::RGFrame& frame,
                                         Rendering::ViewId viewId,
                                         Rendering::RenderGraph::RGTexture pyramid)
@@ -459,11 +503,13 @@ void RenderServices::SetPointShadowBudget(uint32_t budget)
 
 void RenderServices::NotifyShadowCasterContentChanged(
     uint64 worldId, std::span<const ShadowCasterChangeSphere> changedCasterSpheres,
-    ShadowCasterChangeScope scope)
+    ShadowCasterChangeScope scope, bool affectsRigidCasters)
 {
     assert(scope == ShadowCasterChangeScope::Bounded || changedCasterSpheres.empty());
     ShadowCasterChanges& changes = m_ShadowCasterChanges.GetOrInsert(worldId);
     ++changes.Version;
+    if (affectsRigidCasters)
+        changes.RigidVersion = changes.Version;
     changes.Scope = scope;
     // The stored set explains exactly the advance to `Version`; the planner
     // applies it only across that single step (any gap globalizes there).
@@ -650,7 +696,7 @@ DepthDrawServices RenderServices::MakeDepthDrawServices()
         m_WorldDrawBuilder, m_ViewRegistry, m_GpuScene.get(), m_MeshGPURegistry,
         m_DrawStreamBuilder.get(), m_MaterialSystem, m_Device, m_CullMode, m_FrontFace,
         MeshPoolGroupSpanForDraws(), &DepthUnderDraw(),
-        m_Profile.IsCompat() ? &m_CpuDrawStream : nullptr};
+        m_Profile.IsCompat() ? &m_CpuDrawStream : nullptr, m_Textures.get()};
 }
 
 DepthUnderDrawTracker& RenderServices::DepthUnderDraw()
@@ -781,10 +827,13 @@ Rendering::RenderGraph::RGPass RenderServices::AddDeformationMotionPassForView(
     params.Resources = BuildPassResourcesRG(frame, viewId, Rendering::MaterialKeyword::None,
                                             nullptr, cam.Buffer, cam.Offset);
 
+    auto* preparedDepth = AllocatePreparedDepthOnlyPass(frame, params);
     return frame.AddPass(
         passName.c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.Prepare([this, preparedDepth](RenderGraph::RGPrepareContext& context)
+            { return PrepareDepthOnlyPass(context, *preparedDepth, MakeDepthDrawServices()); });
             RenderGraph::RGAttachmentOps colorOps{};
             // One owner clears this target. The producer runs first and owns
             // the clear; the mover lane that follows loads, so neither erases
@@ -802,8 +851,8 @@ Rendering::RenderGraph::RGPass RenderServices::AddDeformationMotionPassForView(
             if (m_FrameRG.For.IsFor(frame) && m_FrameRG.DrawStreamOrdering.IsValid())
                 p.Read(m_FrameRG.DrawStreamOrdering, RenderGraph::RGBufferRead::Indirect);
         },
-        [this, params = std::move(params)](RenderGraph::RGContext& ctx) mutable
-        { RecordDepthOnlyPass(ctx, std::move(params), MakeDepthDrawServices()); });
+        [preparedDepth](RenderGraph::RGContext& context)
+        { RecordPreparedDepthOnlyPass(context, *preparedDepth); });
 }
 
 Rendering::RenderGraph::RGPass RenderServices::AddWorldDepthPrepassImpl(
@@ -816,6 +865,10 @@ Rendering::RenderGraph::RGPass RenderServices::AddWorldDepthPrepassImpl(
     const bool isRecover = phase == Rendering::GPUDrawStreamBuilder::SlicePhase::B;
     // The non-occluding prepass loads the camera prepass's depth and adds the non-occluding heads.
     const bool isNonOccluding = !isRecover && heads == PrepassHeads::NonOccluding;
+
+    // Band color fragments reject geometry by distance; their color pass writes matching depth.
+    if (IsDepthPixelationView(viewId))
+        return {};
 
     if (!depth.IsValid())
         return {};
@@ -893,10 +946,13 @@ Rendering::RenderGraph::RGPass RenderServices::AddWorldDepthPrepassImpl(
     params.Resources = BuildPassResourcesRG(frame, viewId, Rendering::MaterialKeyword::None,
                                             nullptr, cam.Buffer, cam.Offset);
 
+    auto* preparedDepth = AllocatePreparedDepthOnlyPass(frame, params);
     const RenderGraph::RGPass pass = frame.AddPass(
         passName.c_str(), Rendering::PassPhase::kWorldRender,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.Prepare([this, preparedDepth](RenderGraph::RGPrepareContext& context)
+            { return PrepareDepthOnlyPass(context, *preparedDepth, MakeDepthDrawServices()); });
             // A2.4-P0-R: the depth prepass exec is self-contained (own
             // viewport/scissor + per-draw binds) — eligible for secondary record.
             p.RecordInSecondary();
@@ -949,8 +1005,8 @@ Rendering::RenderGraph::RGPass RenderServices::AddWorldDepthPrepassImpl(
             // the read that keeps this alive. A frame where the world CLEARS
             // depth instead culls the prepass — correct dead-work elimination.
         },
-        [this, params = std::move(params)](RenderGraph::RGContext& ctx) mutable
-        { RecordDepthOnlyPass(ctx, std::move(params), MakeDepthDrawServices()); });
+        [preparedDepth](RenderGraph::RGContext& context)
+        { RecordPreparedDepthOnlyPass(context, *preparedDepth); });
 
     if (isNonOccluding)
         return pass;

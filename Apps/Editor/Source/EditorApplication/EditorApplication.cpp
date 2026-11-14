@@ -155,7 +155,7 @@
 #include "Panels/AssetsPanel.h"
 #include "Panels/TodoPanel.h"
 #include "Panels/BookmarksPanel.h"
-#include "Panels/UndoHistoryPanel.h"
+#include "Panels/UndoHistory/UndoHistoryPanel.h"
 #include "Panels/GameViewPanel.h"
 #include "Panels/HierarchyPanel.h"
 #include "Panels/InspectorPanel.h"
@@ -282,7 +282,7 @@
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
 #include "ECS/World.h"
-#include "ECS/Component/ComponentLayoutReloadMigrator.h" // hot-reload component migration
+#include "ECS/ComponentLayoutReloadMigrator.h" // hot-reload component migration
 #include "ECS/UnresolvedComponentStore.h"
 #include "InspectorRegistry.h"
 #include "Inspectors/BuiltInInspectorRegistration.h"
@@ -403,9 +403,6 @@ static std::filesystem::path ResolveStartupProjectSettingsRoot(const GameEngine:
         return std::filesystem::path(config.WorkspaceDirectory);
     return EngineCore::GetInstance().GetWorkspaceRoot();
 }
-
-
-
 
 namespace
 {
@@ -1155,7 +1152,8 @@ static bool RecordWindowWorldViews(EditorApplication::EditorWindowContext* ctx,
                     targets.data(), targets.size());
                 params.BuildWorldDrawListsIfReady = true;
                 params.DeltaTime = deltaTimeSeconds;
-                rs->Spine().BuildFrameGraph(*rg2Frame, params);
+                if (!rs->Spine().BuildFrameGraph(*rg2Frame, params))
+                    return false;
                 if (sceneDeclared)
                 {
                     Editor::SceneViewRenderCoordinator::DeclareOverlaysRG(ctx, *rg2Frame,
@@ -1503,6 +1501,7 @@ EditorApplication::EditorApplication(const ApplicationConfig& config)
         [this]() { return m_PlayMode && m_PlayMode->IsPlayingOrPaused(); });
     Editor::ScribePanel::Register(m_UndoRedo.get());
     m_SceneEditor = std::make_unique<GameEngine::Editor::SceneEditorController>();
+    m_SceneEditor->RegisterCommands();
     // Manual save reads the same write inhibit the autosave tick does
     // (IsPlayModeBlockingSceneWrites), because both protect the authored .scene file from the
     // in-place simulated world. Wired at construction; the controller holds the probe until
@@ -1587,6 +1586,7 @@ EditorApplication::EditorApplication(const ApplicationConfig& config)
             m_MarkupBridge->OnSceneSaved(*world);
     });
     m_PlayMode = std::make_unique<GameEngine::Editor::PlayModeManager>();
+    m_PlayMode->RegisterCommands();
     m_DownloadManager = std::make_unique<PolyhavenDownloadManager>();
     m_DownloadManager->SetOnDownloadFinished([this]()
     {
@@ -3771,7 +3771,7 @@ bool EditorApplication::Initialize()
                     return;
                 bookmarksPanel->HandleAssetDrops(paths);
             });
-            
+
             assetsPanel->SetOnEditAsset([this](const std::filesystem::path& path)
                                         {
                                             if (path.empty())
@@ -4058,7 +4058,7 @@ bool EditorApplication::Initialize()
                     if (hierarchyPanel && editorCtx)
                     {
                         hierarchyPanel->SetContext(editorCtx);
-                        
+
                         // Wire BookmarksPanel
                         if (bookmarksPanel && editorCtx)
                         {
@@ -7070,39 +7070,6 @@ bool EditorApplication::InvokeUiReplayCommand(std::uint32_t commandId, std::stri
         break;
     }
 
-    if (commandId == UiReplayCommandIds::SaveScene)
-    {
-        if (!m_SceneEditor)
-        {
-            if (outError)
-                *outError = "scene editor unavailable";
-            return false;
-        }
-        return m_SceneEditor->SaveActiveScene(outError);
-    }
-
-    const auto playModeStateName = [](Editor::PlayModeState state) -> const char*
-    {
-        using State = Editor::PlayModeState;
-        switch (state)
-        {
-        case State::Edit:
-            return "Edit";
-        case State::EnteringPlay:
-            return "EnteringPlay";
-        case State::Play:
-            return "Play";
-        case State::Paused:
-            return "Paused";
-        case State::ExitingPlay:
-            return "ExitingPlay";
-        case State::ChangeReview:
-            return "ChangeReview";
-        default:
-            return "Unknown";
-        }
-    };
-
     if (commandId == UiReplayCommandIds::UndockHierarchy || commandId == UiReplayCommandIds::UndockSceneView ||
         commandId == UiReplayCommandIds::UndockGameView || commandId == UiReplayCommandIds::UndockInspector ||
         commandId == UiReplayCommandIds::UndockNodeGraph || commandId == UiReplayCommandIds::UndockAssets)
@@ -7186,110 +7153,6 @@ bool EditorApplication::InvokeUiReplayCommand(std::uint32_t commandId, std::stri
         cand.kind = Editor::WindowDockingController::DropKind::None;
         cand.edge = DockPosition::Center;
         m_DockDnd->PerformDockDrop(cand);
-        return true;
-    }
-
-    if (commandId == UiReplayCommandIds::PlayEnter)
-    {
-        if (!m_PlayMode)
-        {
-            if (outError)
-                *outError = "play mode unavailable";
-            return false;
-        }
-
-        const Editor::PlayModeState state = m_PlayMode->GetState();
-        if (state != Editor::PlayModeState::Edit)
-        {
-            if (outError)
-                *outError = std::string("expected Edit before PlayEnter, got ") + playModeStateName(state);
-            return false;
-        }
-        m_PlayMode->EnterPlayMode();
-        return true;
-    }
-
-    if (commandId == UiReplayCommandIds::PlayTogglePause)
-    {
-        if (!m_PlayMode)
-        {
-            if (outError)
-                *outError = "play mode unavailable";
-            return false;
-        }
-        if (!m_PlayMode->IsPlayingOrPaused())
-        {
-            if (outError)
-                *outError = "PlayTogglePause requires Play or Paused state";
-            return false;
-        }
-        m_PlayMode->TogglePause();
-        return true;
-    }
-
-    if (commandId == UiReplayCommandIds::PlayStop)
-    {
-        if (!m_PlayMode)
-        {
-            if (outError)
-                *outError = "play mode unavailable";
-            return false;
-        }
-        const Editor::PlayModeState state = m_PlayMode->GetState();
-        if (state == Editor::PlayModeState::ChangeReview)
-        {
-            m_PlayMode->DiscardPendingChanges();
-            return true;
-        }
-        if (state == Editor::PlayModeState::Edit)
-            return true;
-
-        m_PlayMode->ExitPlayMode();
-        return true;
-    }
-
-    if (commandId == UiReplayCommandIds::AssertPlayModeEdit || commandId == UiReplayCommandIds::AssertPlayModePlay ||
-        commandId == UiReplayCommandIds::AssertPlayModePaused ||
-        commandId == UiReplayCommandIds::AssertPlayModeNotRunning)
-    {
-        if (!m_PlayMode)
-        {
-            if (outError)
-                *outError = "play mode unavailable";
-            return false;
-        }
-
-        const Editor::PlayModeState state = m_PlayMode->GetState();
-        bool ok = false;
-        const char* expected = "unknown";
-
-        if (commandId == UiReplayCommandIds::AssertPlayModeEdit)
-        {
-            expected = "Edit";
-            ok = (state == Editor::PlayModeState::Edit);
-        }
-        else if (commandId == UiReplayCommandIds::AssertPlayModePlay)
-        {
-            expected = "Play";
-            ok = (state == Editor::PlayModeState::Play);
-        }
-        else if (commandId == UiReplayCommandIds::AssertPlayModePaused)
-        {
-            expected = "Paused";
-            ok = (state == Editor::PlayModeState::Paused);
-        }
-        else
-        {
-            expected = "not-running (Edit or ChangeReview)";
-            ok = (state == Editor::PlayModeState::Edit || state == Editor::PlayModeState::ChangeReview);
-        }
-
-        if (!ok)
-        {
-            if (outError)
-                *outError = std::string("expected ") + expected + ", got " + playModeStateName(state);
-            return false;
-        }
         return true;
     }
 
@@ -8393,6 +8256,14 @@ EditorApplication::RenderWindowFrameResult EditorApplication::RenderWindowFrame(
     const bool uiRootReady =
         EnsureUiRootReadyForRender(ctx, passiveUi ? "single-window render" : "main-loop render");
     routing.pure = true;
+    if (m_Windows.size() > 1 && routing.rg2Scene && ctx->capabilities.worldRender)
+    {
+        if (!uiRootReady)
+            routing.rg2Scene = false;
+        else if (auto* rs = MainRenderServices())
+            rs->Spine().SelectSharedSceneProducer(*ctx->RenderGraphStream.Frame);
+    }
+
 
     if (ctx->ui)
         ctx->ui->ClearRenderTargetOverride();
@@ -8473,7 +8344,7 @@ EditorApplication::RenderWindowFrameResult EditorApplication::RenderWindowFrame(
         // via tickets — the backbuffer import is discard-contract and may not
         // support readback.
         const bool captureWantsComposite =
-            m_DebugServer && m_DebugServer->HasAnyPendingRenderCallbacks();
+            m_DebugServer && m_DebugServer->HasPendingRenderCallbacks(ctx->windowId);
         // 8e-7: a pixel-probing replay reads the composite the same way.
         const bool uiReplayWantsComposite =
             !passiveUi && m_UiReplay && m_UiReplay->WantsPixelReadbackComposite();
@@ -8617,7 +8488,7 @@ EditorApplication::RenderWindowFrameResult EditorApplication::RenderWindowFrame(
             ctx->rg2Capture.backbufferId = backbuffer.Id;
             ctx->rg2Capture.pure = true;
             ctx->rg2Capture.frameIndex = frame.FrameIndex();
-            m_DebugServer->RunRenderCallbacks();
+            m_DebugServer->RunRenderCallbacks(ctx->windowId);
         }
 
         // A2.4-P0-R (§D6.6): inject a fork-join primitive so RGFrame can record the
@@ -8762,9 +8633,6 @@ void EditorApplication::DebugExportCurrentUILayout(EditorWindowContext* ctx)
 }
 
 #endif // _DEBUG
-
-
-
 
 void EditorApplication::OnWindowMoved(EditorWindowContext* moving, int /*x*/, int /*y*/)
 {

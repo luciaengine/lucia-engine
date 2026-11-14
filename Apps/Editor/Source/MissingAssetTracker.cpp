@@ -4,7 +4,7 @@
 #include "Assets/AssetRegistry.h"
 #include "Core/DeferredActionQueue.h"
 #include "Components/SceneEntityTag.h"
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentRegistry.h"
 #include "ECS/UnresolvedComponentStore.h"
 #include "ECS/Entity.h"
 #include "ECS/World.h"

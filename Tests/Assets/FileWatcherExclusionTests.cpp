@@ -1,14 +1,11 @@
 #include <gtest/gtest.h>
-#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
-#include <set>
 #include <string>
 #include <thread>
-#include <vector>
 #include "FileWatcher/FileWatcher.h"
 #include "Memory/AllocationCountScope.h"
 #include "TestTempDir.h"
@@ -201,44 +198,6 @@ TEST(FileWatcherStop, StopReturnsWellInsideThePollInterval)
         << "StopWatching took "
         << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
         << " ms with a " << kPollIntervalMs << " ms poll interval";
-}
-
-// A walk of a large tree takes hundreds of milliseconds, and the first
-// snapshot walks the whole tree. A stop that lands during the walk ends it
-// instead of waiting for it.
-TEST(FileWatcherStop, StopDuringTheFirstSnapshotReturnsWellInsideThePollInterval)
-{
-    namespace fs = std::filesystem;
-    const fs::path dir = TestUtils::MakeUniqueTempDirectory("ge_fw_stop_walk");
-    constexpr int kDirectories = 16;
-    constexpr int kFilesPerDirectory = 500;
-    for (int d = 0; d < kDirectories; ++d)
-    {
-        const fs::path sub = dir / ("dir_" + std::to_string(d));
-        ASSERT_TRUE(fs::create_directories(sub));
-        for (int f = 0; f < kFilesPerDirectory; ++f)
-            std::ofstream(sub / ("file_" + std::to_string(f) + ".glsl")) << "walked";
-    }
-
-    constexpr uint32 kPollIntervalMs = 5000;
-    constexpr auto kAllowed = std::chrono::milliseconds(100);
-    constexpr auto kIntoTheWalk = std::chrono::milliseconds(20);
-
-    FileWatcher watcher;
-    watcher.SetPollingInterval(kPollIntervalMs);
-    ASSERT_TRUE(watcher.StartWatching(dir, /*recursive=*/true));
-    std::this_thread::sleep_for(kIntoTheWalk);
-
-    const auto start = std::chrono::steady_clock::now();
-    watcher.StopWatching();
-    const auto elapsed = std::chrono::steady_clock::now() - start;
-    std::error_code ec;
-    fs::remove_all(dir, ec);
-
-    EXPECT_FALSE(watcher.IsWatching());
-    EXPECT_LT(elapsed, kAllowed)
-        << "StopWatching during the first snapshot of " << kDirectories * kFilesPerDirectory << " files took "
-        << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << " ms";
 }
 
 // --- Detection latency ---

@@ -182,12 +182,12 @@ TEST(RenderOrigin, RebasedViewIsBitIdenticalWhenInactive)
     const Matrix4x4 viewProj = proj * view;
 
     Rendering::CameraData cam{};
-    cam.view = view;
-    cam.proj = proj;
-    cam.viewProj = viewProj;
-    cam.cameraPos.x = camPos.x;
-    cam.cameraPos.y = camPos.y;
-    cam.cameraPos.z = camPos.z;
+    std::memcpy(cam.view.Data(), view.Data(), sizeof(cam.view));
+    std::memcpy(cam.proj.Data(), proj.Data(), sizeof(cam.proj));
+    std::memcpy(cam.viewProj.Data(), viewProj.Data(), sizeof(cam.viewProj));
+    cam.cameraPos[0] = camPos.x;
+    cam.cameraPos[1] = camPos.y;
+    cam.cameraPos[2] = camPos.z;
 
     Origin::ComputeRebasedView(cam.view, cam.proj, cam.viewProj, WorldPosition::FromVector3(camPos), cam.viewRel,
                                cam.viewProjRel, cam.renderOriginSector);
@@ -256,7 +256,8 @@ TEST(RenderOrigin, RebasedProjectionMatchesFullWorldWhenClean)
                                cam.viewProjRel, cam.renderOriginSector);
     ASSERT_NE(cam.renderOriginSector[0] | cam.renderOriginSector[1] | cam.renderOriginSector[2], 0);
 
-    Matrix4x4 vpRel = cam.viewProjRel;
+    Matrix4x4 vpRel;
+    std::memcpy(vpRel.Data(), cam.viewProjRel.Data(), sizeof(cam.viewProjRel));
 
     const Vector3 origin = Origin::SectorToWorld(Origin::CameraRenderOriginSector(cam));
 
@@ -321,7 +322,7 @@ TEST(RenderOrigin, RebasedTranslationSmoothUnderRotationAtRange)
             -(static_cast<double>(v[2]) * lx + static_cast<double>(v[6]) * ly + static_cast<double>(v[10]) * lz)};
 
         for (int c = 0; c < 3; ++c)
-            maxNewErr = std::max(maxNewErr, std::fabs(static_cast<double>(cam.viewRel[3][c]) - ref[c]));
+            maxNewErr = std::max(maxNewErr, std::fabs(static_cast<double>(cam.viewRel[12 + c]) - ref[c]));
 
         // Legacy fp32 column rebase for the fails-before contrast.
         const Vector3 origin = Origin::SectorToWorld(Origin::CameraRenderOriginSector(cam));

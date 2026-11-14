@@ -10,6 +10,7 @@ add_executable(MathematicsTests
     Float8Tests.cpp
     GeometryTests.cpp
     MathInterpolationTests.cpp
+    Matrix3x3AffineTests.cpp
     QuaternionTests.cpp
     RectTests.cpp
     RectIntTests.cpp
@@ -19,6 +20,10 @@ add_executable(MathematicsTests
     MulAddTests.cpp
     TranscendentalTests.cpp
     Vector3IntTests.cpp
+    CurveEvaluationTests.cpp
+    GeometryTests.cpp
+    TriangulationTests.cpp
+    Matrix4x4Tests.cpp
     Vector3Tests.cpp
     Vector3F64Tests.cpp
     VectorComponentTests.cpp

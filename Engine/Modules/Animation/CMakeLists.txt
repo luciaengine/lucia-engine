@@ -37,7 +37,6 @@ set(ANIMATION_SOURCES
     Source/Skeleton/SkeletonData.cpp
     Source/Skeleton/SkeletonModifierStack.cpp
     Source/Skeleton/SkeletonProfile.cpp
-    Source/SpriteFrames.cpp
     Source/TweenService.cpp
     Source/VRM1Importer.cpp
     Source/Nodes/AdditiveBlendNode.cpp
@@ -70,6 +69,7 @@ target_include_directories(Animation
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/Include
     PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/Source
         ${CMAKE_SOURCE_DIR}/Engine/Include
 )
 

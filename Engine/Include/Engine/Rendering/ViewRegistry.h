@@ -15,12 +15,14 @@
 #include "Rendering/Core/RenderGraph/RGFrame.h"   // RGTexture, RGFrameStamp
 #include "Rendering/Materials/Shader/ShaderVariantKey.h" // MaterialKeyword
 #include "Engine/Rendering/CameraAspectRatio.h"   // ViewLetterbox, PixelPerfectViewState
-#include "Engine/Rendering/DrawCommand.h"         // DrawCommand
+#include "Engine/Rendering/DrawCommand.h"
+#include "Engine/Rendering/SortedTransparentCommand.h"         // DrawCommand
 #include "Engine/Rendering/DepthPassTypes.h"      // DepthPassType
 #include "Engine/Rendering/ParallaxReliefDepth.h" // ReliefDepthSource
 #include "Components/Rendering/PostProcessVolume.h" // kDefaultManualExposureEv
 #include "Components/Rendering/ExposureCompensationCurve.h"
 #include "Engine/Rendering/PostProcessSettings.h" // PostProcessSettings
+#include "Engine/Rendering/ExposureScale.h"
 #include "Engine/Rendering/VolumetricFogTypes.h"  // VolumetricFogLocalVolume
 #include "Types/Types.h"
 
@@ -63,8 +65,8 @@ public:
     // rather than the spatial volume. Mode is Components::ExposureMode as int32.
     struct CameraExposure
     {
-        int32 Mode = 3; // 3 = Auto
-        float32 Exposure = 1.0f;
+        int32 Mode = static_cast<int32>(Components::ExposureMode::Fixed);
+        float32 Exposure = Rendering::EvToLinearExposure(Components::kDefaultManualExposureEv);
         float32 ManualExposureEV = Components::kDefaultManualExposureEv;
         float32 ExposureCompensation = 0.0f;
         float32 Aperture = 16.0f;
@@ -116,6 +118,8 @@ public:
         // Forward DrawCommand stream. Producers append during the emit step;
         // the world pass execute lambda walks it and records draws. Contents
         // are frame-scoped (cleared in BeginWorldDrawFrame); capacity persists.
+        std::vector<SortedTransparentCommand> SortedTransparentCommands;
+        Rendering::RenderGraph::RGFrameStamp FrameForwardEmittedFor;
         std::vector<DrawCommand> ForwardCommands;
         // Alpha-blended contributor draws that must execute after late surface
         // features (ocean/refraction) instead of being captured into them.
@@ -348,17 +352,12 @@ public:
         float PrevNdcJitterX = 0.0f;
         float PrevNdcJitterY = 0.0f;
         bool NdcFrozen = false;
-        // Unjittered camera snapshots for the resolve's reprojection: Curr is
-        // the frame being declared, Prev the previous rendered frame's.
+        // Unjittered camera snapshots for the current and previous declared frames.
         Rendering::CameraData CurrCamera{};
         Rendering::CameraData PrevCamera{};
         uint64 FrameStamp = ~0ull;
-        // True once Prev* hold a real rendered frame's snapshot — the last
-        // frame this view advanced, however long ago. A frame gap (OnDemand
-        // lapse, hidden panel) does not invalidate reprojection: PrevCamera is
-        // exactly the camera that rendered the surviving history. Whether that
-        // history's physical still holds those texels is the render-graph
-        // pool's freshness arm, not the camera pair's.
+        uint64 PrevFrameStamp = ~0ull;
+        // The resolve checks this snapshot's frame against the submitted history's frame.
         bool PrevValid = false;
     };
     // `mode` selects the jitter generator (TAA Halton vs TemporalFXAA edge
@@ -382,6 +381,8 @@ public:
                                                     uint32 renderWidth, uint32 renderHeight);
 
     void SetViewCamera(Rendering::ViewId id, Rendering::CameraId cameraId);
+    void SetViewDropsEditorHidden(Rendering::ViewId id, bool enabled);
+    void SetViewBackgroundOnly(Rendering::ViewId id, bool enabled);
     void SetViewRenderLayerMask(Rendering::ViewId id, Rendering::RenderLayerMask layers);
     void SetViewActiveRenderPipeline(Rendering::ViewId id, bool enabled);
     /// Pauses or resumes the world drawing of a view (ViewDesc::worldPaused). A paused view

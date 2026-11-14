@@ -9,7 +9,7 @@ namespace GameEngine::Rendering
 {
 
 // FNV-1a 64-bit offset basis as the hash seed across this file.
-static constexpr uint64_t kHashSeed = 0xcbf29ce484222325ULL;
+static constexpr uint64_t kHashSeed = Hashing::kFnv1a64OffsetBasis;
 
 uint64_t PipelineFormatKey::Hash() const noexcept
 {
@@ -48,7 +48,7 @@ uint64_t HashDescriptorSetLayoutDesc(const DescriptorSetLayoutDesc& desc) noexce
         h = Fnv1a64Value(h, b.imageIsDepth);
         h = Fnv1a64Value(h, b.imageIsUnsignedInteger);
         h = Fnv1a64Value(h, b.storageTexelFormat);
-        // WebGPU bakes these into the bind group layout, so two descs that
+        // WebGPU bakes these three into the bind group layout, so two descs that
         // differ only here must intern to two layouts.
         h = Fnv1a64Value(h, b.storageReadOnly);
         h = Fnv1a64Value(h, b.imageFilterableFloat);

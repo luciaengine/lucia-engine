@@ -485,7 +485,8 @@ void HumanoidRetargetSystem::Update(ECS::World& world, float32 deltaTime)
     if (m_GPUStore) gpuCharParams.reserve(64);
 
     auto q = world.Query<ECS::Write<HumanoidRetargeterComponent>, ECS::Read<SkeletonRef>>();
-    q.Each([&](ECS::EntityHandle entity, HumanoidRetargeterComponent& rc, const SkeletonRef& sref) {
+    q.Each([&](ECS::EntityHandle entity, ECS::Writable<HumanoidRetargeterComponent> rcRow, const SkeletonRef& sref) {
+        auto& rc = rcRow.Mutable();
         // Sync clip selection from AnimatorRef. AnimationSystem skips entities
         // that already have HumanoidRetargeterComponent (~line 263), so clip
         // changes go through here. AnimatorRef is the source of truth: copy

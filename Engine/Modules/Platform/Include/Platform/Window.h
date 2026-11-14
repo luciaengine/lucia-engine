@@ -9,6 +9,9 @@
 // Forward declare GLFW types to avoid exposing GLFW in public headers
 struct GLFWwindow;
 struct GLFWcursor;
+#if defined(GE_PLATFORM_MOBILE)
+union SDL_Event;
+#endif
 
 namespace GameEngine
 {
@@ -70,8 +73,7 @@ class Window
     void* GetNativeHandle() const;     // returns GLFWwindow*
     GLFWwindow* GetGLFWHandle() const; // convenience
 
-    // Window queries. Every window size and position is that of the client area, with or without
-    // a custom title bar: SetWindowSize(1920, 1080) gives a 1920x1080 client area.
+    // Window queries
     void GetFramebufferSize(int& outWidth, int& outHeight) const;   // pixels
     void GetWindowSize(int& outWidth, int& outHeight) const;        // screen coords (DIP)
     void SetWindowSize(int width, int height);                      // screen coords (DIP)
@@ -264,10 +266,17 @@ class Window
 #endif
 
     GLFWwindow* m_Handle = nullptr;
+#if defined(GE_PLATFORM_MOBILE)
+    void* m_MobileHandle = nullptr;
+    bool m_MobileShouldClose = false;
+    bool m_MobilePointerDown = false;
+    uint64_t m_MobileFinger = 0;
+    static void DispatchMobileEvent(const SDL_Event& event);
+#endif
     void* m_UserPtr = nullptr;
     struct GLFWcursor* m_Cursor = nullptr; // custom cursor (if set)
     bool m_CursorLocked = false;
-    bool m_CursorHidden = false; // SetCursor(Hidden), restored when the lock ends
+    bool m_CursorHidden = false;
     float m_UiContentScale = 0.0f;         // 0 = unset; otherwise pushed by UI layer
 
     // Fullscreen bookkeeping for SetFullscreen.

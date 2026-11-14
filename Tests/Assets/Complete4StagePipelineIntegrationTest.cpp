@@ -19,8 +19,8 @@
 
 #ifdef UISYSTEM_AVAILABLE
 #include "UISystem/UISystemInitializer.h"
-#include "UISystem/UILayoutAsset.h"
-#include "UISystem/UIStyleAsset.h"
+#include "UI/Assets/UILayoutAsset.h"
+#include "UI/Assets/UIStyleAsset.h"
 #endif
 
 using namespace GameEngine;
@@ -349,7 +349,7 @@ TEST_F(Complete4StagePipelineIntegrationTest, AllAssetTypes_Complete4StagePipeli
     // Stage 3: Wait for completion and validate results
     Logger::Log::Info("=== Stage 3: Pipeline Completion Validation ===");
     
-    size_t completedAssets = 0;
+    std::size_t completedAssets = 0;
     int maxWaitIterations = 100; // 10 seconds max wait
     
     for (int iteration = 0; iteration < maxWaitIterations; ++iteration) {

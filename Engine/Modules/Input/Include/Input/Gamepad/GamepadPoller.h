@@ -22,7 +22,8 @@ enum class GamepadRuntimeState : std::uint8_t;
 
 /**
  * @brief Reads every gamepad once per frame through the platform's GamepadBackend.
- * The backend's Start runs on a blocking job, never on the reading thread. Until it returns
+ * The backend's Start and optional bounded Refresh run on blocking jobs. An inline pool runs
+ * those jobs synchronously on the caller. Until Start returns
  * Available, Read reports no pad and does not wait; a pad present at start arrives as a hot plug.
  */
 class GamepadPoller
@@ -30,7 +31,7 @@ class GamepadPoller
   public:
     /// Construct on the thread that calls Read. The pool must outlive the poller.
     GamepadPoller(JobSystem::WorkStealingThreadPool& pool, std::unique_ptr<GamepadBackend> backend);
-    /// Waits for Start to return, then stops the backend. Call before the pool shuts down.
+    /// Joins Start and the last bounded refresh, then stops the backend before the pool shuts down.
     ~GamepadPoller();
     GamepadPoller(const GamepadPoller&) = delete;
     GamepadPoller& operator=(const GamepadPoller&) = delete;
@@ -48,6 +49,7 @@ class GamepadPoller
     std::unique_ptr<GamepadBackend> m_Backend;
     std::unique_ptr<JobSystem::JobChannel> m_StartChannel;
     JobSystem::TaskHandle m_Start;
+    JobSystem::TaskHandle m_Refresh;
     std::thread::id m_FrameThread;
     // Release-stored by the start job when Start returns Available; Read acquires it.
     std::atomic<bool> m_Ready{false};

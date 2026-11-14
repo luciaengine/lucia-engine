@@ -1,3 +1,4 @@
+#include "Core/ApplicationPaths.h"
 // Minimal cross-platform CoreCLR hosting smoke test.
 // Verifies that CoreCLRHost can boot a runtime from a runtimeconfig and
 // invoke CoreBridge.SanityPing via the load_assembly_and_get_function_pointer
@@ -5,7 +6,7 @@
 
 #include <gtest/gtest.h>
 
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h" // ApplicationPaths::GetExecutableDirectory
 #include "Scripting/CoreCLRHost.h"
 #include "Scripting/PathResolver.h"
 #include "ScopedCurrentPath.h"

@@ -6,10 +6,10 @@
 // step is documented in each test's comment.
 #include "TerrainECS/AtlasSlotPool.h"
 #include "TerrainECS/AtlasTileNormal.h"
+#include "Components/Name.h"
 #include "TerrainECS/TerrainAtlas.h"
 #include "TerrainECS/TerrainSizingPlan.h" // height-source engagement rule + author-facing sizing
 #include "TerrainECS/TerrainRenderPublication.h" // did the terrain reach the renderer at all
-#include "Components/Name.h"
 #include "ECS/Components.h" // ECS::Disabled (the extraction filter the live count must match)
 #include "ECS/ECSTemplates.h" // World::Create and AddComponentImmediate, instantiated here
 #include "ECS/Entity.h"
@@ -26,7 +26,7 @@
 #include "TerrainECS/PageLevelRule.h" // kPinWholePyramidCacheFraction
 #include "TerrainECS/TerrainPages.h" // PlatformHeightPageProfile
 #include "Components/Terrain/TerrainSurfaceRules.h" // kMaxTerrainSurfaceRules (binding-size sweep)
-#include "GrassSurfaceParams.h" // TerrainGrass/Source
+#include "GrassSurfaceParams.h"
 #include "Terrain/Heightfield.h"
 #include "Mathematics/MatrixOps.h" // MakeLookAtLH (tile-priority +Z look pin)
 #include "PageStreaming/PageStore/PageStoreFormat.h" // the level bound of the sizing plan
@@ -979,8 +979,6 @@ TEST(TerrainRenderPublication, APartialPublishIsItsOwnStateNotSilentSuccess)
     EXPECT_NE(DiagnoseTerrainPublication(3, 1), TerrainPublicationState::Published);
 }
 
-// Only one terrain draws (#3013). An edit or a new terrain changes archetype order; for terrains
-// visited in the same frame the entity index decides, whichever archetype the query visits first.
 TEST(TerrainRenderPublication, TheSameTerrainDrawsWhicheverArchetypeTheQueryVisitsFirst)
 {
     for (const bool editFirst : {true, false})
@@ -1003,8 +1001,6 @@ TEST(TerrainRenderPublication, TheSameTerrainDrawsWhicheverArchetypeTheQueryVisi
     }
 }
 
-// The world reuses a freed entity index, so a terrain created after a delete can have a lower index
-// than the drawn terrain. The first terrain extraction visited keeps the draw.
 TEST(TerrainRenderPublication, ATerrainCreatedAfterADeleteDoesNotTakeTheDraw)
 {
     ECS::World world;
@@ -2151,12 +2147,130 @@ TEST(AtlasTileDirtyRoute, SplatOnlyEditRoutesToSplatChannelNotIgnored)
 }
 
 // ---------------------------------------------------------------------------
-// Grass placement's ground handoff
+// Grass-on-atlas placement (grass-on-atlas-terrains slice)
 //
-// The placement compute bakes a paged blade's terrain normal into the instance (world nx, nz); the
-// vertex modifier reconstructs ny. This pins the round trip.
+// The grass placement compute (terrain_grass_place.comp) snaps each blade's RootY through the
+// SAME resident-window resolve CBT displaces the surface with: rootY = originY + h01(u,v)*scale,
+// where h01 comes from the atlas (resident slot at full precision, coarse field out of window).
+// These oracles lock that CPU-mirrored math at texel centres + slot edges, prove the atlas path is
+// load-bearing (disabling it collapses roots to the base plane — the float/bury bug the #508 gate
+// guarded against), and pin the compute->vertex-modifier normal handoff + the un-gate builder.
 // ---------------------------------------------------------------------------
-TEST(GrassPlacementGround, NormalPackReconstructRoundTrips)
+namespace
+{
+// CPU mirror of the GLSL grass rootY: originY + normalized atlas height * heightScale.
+float32 GrassRootY(const AtlasHeightSampler& s, float32 u, float32 v,
+                   float32 originY, float32 heightScale)
+{
+    return originY + s.SampleHeightNormalized(u, v) * heightScale;
+}
+} // namespace
+
+TEST(AtlasGrassPlacement, RootSnapsToSurfaceAtTexelCentersAndSlotEdges)
+{
+    const uint32 tileRes = 9;
+    const float32 originY = 40.0f;
+    const float32 heightScale = 256.0f;
+    BuiltAtlas b = Build2x2FullAtlas(tileRes);
+    AtlasHeightSampler s{b.Geo, b.Table.Rows.data(), b.Atlas.data(), nullptr};
+
+    const int32 interior = static_cast<int32>(tileRes) - 1;
+    const int32 globalW = interior * 2 + 1; // 17
+    // Texel centres (every stitched grid sample) — bilinear collapses, so the root sits EXACTLY on
+    // the surface the CBT compute displaces to. A blade here neither floats nor buries.
+    for (int32 gz = 0; gz < globalW; ++gz)
+        for (int32 gx = 0; gx < globalW; ++gx)
+        {
+            const float32 u = static_cast<float32>(gx) / static_cast<float32>(globalW - 1);
+            const float32 v = static_cast<float32>(gz) / static_cast<float32>(globalW - 1);
+            const float32 surface = originY + WorldHeight(gx, gz) * heightScale;
+            EXPECT_FLOAT_EQ(GrassRootY(s, u, v, originY, heightScale), surface)
+                << "grid (" << gx << "," << gz << ")";
+        }
+
+    // Slot edge: the boundary UV between tile 0 and tile 1 is served by two disjoint slots whose
+    // shared edge is bit-equal, so a blade straddling the seam snaps continuously (no seam crack).
+    const float32 boundaryU = 0.5f;
+    for (float32 v = 0.0f; v <= 1.0f; v += 0.1f)
+    {
+        const float32 rootAt = GrassRootY(s, boundaryU, v, originY, heightScale);
+        const float32 rootLeft = GrassRootY(s, boundaryU - 1e-4f, v, originY, heightScale);
+        EXPECT_NEAR(rootAt, rootLeft, heightScale * 1e-3f) << "seam v=" << v;
+    }
+}
+
+TEST(AtlasGrassPlacement, RootFloatsWhenAtlasResolveDisabled)
+{
+    // Disable the atlas resolve (every row NO_SLOT, no coarse) — exactly the pre-slice state that
+    // made the #508 gate disable grass: h01 collapses to 0, so rootY freezes on the base plane
+    // while the CBT surface still has real relief. The blades would float over valleys and bury
+    // under peaks. This is the disable-and-fail that proves the resolve is load-bearing.
+    const uint32 tileRes = 9;
+    const float32 originY = 40.0f;
+    const float32 heightScale = 256.0f;
+    BuiltAtlas b = Build2x2FullAtlas(tileRes);
+    AtlasHeightSampler resolved{b.Geo, b.Table.Rows.data(), b.Atlas.data(), nullptr};
+
+    AtlasIndirectionTable disabled;
+    disabled.Resize(b.Geo);
+    disabled.Clear(); // every row -> kAtlasNoSlot
+    AtlasHeightSampler collapsed{b.Geo, disabled.Rows.data(), b.Atlas.data(), nullptr};
+
+    const int32 interior = static_cast<int32>(tileRes) - 1;
+    const int32 globalW = interior * 2 + 1;
+    float32 maxErr = 0.0f;
+    for (int32 gz = 0; gz < globalW; ++gz)
+        for (int32 gx = 0; gx < globalW; ++gx)
+        {
+            const float32 u = static_cast<float32>(gx) / static_cast<float32>(globalW - 1);
+            const float32 v = static_cast<float32>(gz) / static_cast<float32>(globalW - 1);
+            // Collapsed root is the flat base plane; resolved root is on the surface.
+            EXPECT_FLOAT_EQ(GrassRootY(collapsed, u, v, originY, heightScale), originY);
+            maxErr = std::max(maxErr,
+                std::abs(GrassRootY(resolved, u, v, originY, heightScale)
+                         - GrassRootY(collapsed, u, v, originY, heightScale)));
+        }
+    // The relief the disabled path drops is tens of metres (0.25 amplitude * 256 scale = 64 m band):
+    // far past any tolerable float/bury. If this ever shrank to ~0, the atlas resolve is a no-op.
+    EXPECT_GT(maxErr, 10.0f);
+}
+
+TEST(AtlasGrassPlacement, OutOfWindowRootUsesCoarseNotGarbage)
+{
+    // A blade beyond the resident window must resolve to the coarse field (height-continuous with
+    // resident relief), never garbage/base-plane. Near-camera grass never reaches here by
+    // construction (its tiles are resident), so this is the safety net for any spill past the window.
+    const uint32 tileRes = 9;
+    const float32 originY = 12.0f;
+    const float32 heightScale = 200.0f;
+    AtlasGeometry geo = MakeAtlasGeometry(tileRes, /*slots*/ 4, /*tilesX*/ 4, /*tilesZ*/ 4);
+    AtlasIndirectionTable table;
+    table.Resize(geo);
+    table.Clear(); // NOTHING resident -> every tile takes the coarse fallback
+
+    AtlasCoarseField coarse;
+    coarse.Dim = 8;
+    coarse.Heights.assign(static_cast<size_t>(coarse.Dim) * coarse.Dim, 0.0f);
+    for (uint32 z = 0; z < coarse.Dim; ++z)
+        for (uint32 x = 0; x < coarse.Dim; ++x)
+            coarse.Heights[static_cast<size_t>(z) * coarse.Dim + x] =
+                0.3f + 0.4f * (static_cast<float32>(x) / static_cast<float32>(coarse.Dim - 1));
+
+    AtlasHeightSampler withCoarse{geo, table.Rows.data(), nullptr, &coarse};
+    AtlasHeightSampler noCoarse{geo, table.Rows.data(), nullptr, nullptr};
+    for (float32 v = 0.05f; v < 1.0f; v += 0.17f)
+        for (float32 u = 0.05f; u < 1.0f; u += 0.13f)
+        {
+            const float32 root = GrassRootY(withCoarse, u, v, originY, heightScale);
+            // Coarse root lands within the terrain's height band (originY .. originY+scale), never NaN
+            // or a wild value. Without any coarse field it is the base plane (never garbage either).
+            EXPECT_GE(root, originY - 1.0f);
+            EXPECT_LE(root, originY + heightScale + 1.0f);
+            EXPECT_FLOAT_EQ(GrassRootY(noCoarse, u, v, originY, heightScale), originY);
+        }
+}
+
+TEST(AtlasGrassPlacement, NormalPackReconstructRoundTrips)
 {
     // The compute bakes the terrain normal as (nx, nz) into the blade instance; the vertex modifier
     // reconstructs ny = sqrt(1 - nx^2 - nz^2). Terrain surface normals always point up (ny >= 0), so
@@ -2173,6 +2287,8 @@ TEST(GrassPlacementGround, NormalPackReconstructRoundTrips)
         EXPECT_NEAR(std::sqrt(nx * nx + rny * rny + nz * nz), 1.0f, 1e-5f);
     }
 }
+
+
 
 TEST(GrassSurfaceParams, APagedHeightPublishesRowZeroAndTheSurfaceTableAfterTheHeightWords)
 {
@@ -2634,10 +2750,7 @@ TEST(AtlasRegionPatch, RegionNormalBoundaryBitEqualAcrossSlotsWithNeighbors)
     }
 }
 
-// A freshly streamed Full tile carries the streaming job's normal, and a whole slot patch
-// regenerates only its border ring. A height modifier that changes the tile before that patch
-// moves HeightfieldVersion past NormalmapVersion (MarkFullDirty, as the arrival compose does):
-// the job's normal is stale everywhere, so the patch regenerates the whole normal.
+
 TEST(AtlasRegionPatch, AFreshFullTileWhoseHeightsChangedRegeneratesItsWholeNormal)
 {
     constexpr uint32 tileRes = 17;
@@ -2670,9 +2783,6 @@ TEST(AtlasRegionPatch, AFreshFullTileWhoseHeightsChangedRegeneratesItsWholeNorma
         << "the patch kept the job's stale interior normal";
 }
 
-// The streaming job computes a tile's normal at the tiled terrain's height scale. When the
-// terrain draws at another height scale, the job's normal is wrong everywhere although it is
-// current for the heights, so the patch regenerates the whole normal at the drawn scale.
 TEST(AtlasRegionPatch, AFreshFullTileStreamedAtAnotherHeightScaleRegeneratesItsWholeNormal)
 {
     constexpr uint32 tileRes = 17;

@@ -20,9 +20,9 @@
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "StagedTestPaths.h"
 #include "TestUtils.h"
+#include "TestTempDir.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -97,11 +97,7 @@ size_t CountOccurrences(const std::string& haystack, const std::string& needle)
 
 fs::path MakeTempCacheRoot()
 {
-    static std::atomic<uint32_t> counter{0};
-    return fs::temp_directory_path() /
-           ("ge_deformation_clock_" +
-            std::to_string(::testing::UnitTest::GetInstance()->random_seed()) + "_" +
-            std::to_string(counter.fetch_add(1)));
+    return TestUtils::MakeUniqueTempDirectory("ge_deformation_clock");
 }
 
 // The world draw ORs Instanced onto the pass keywords (RenderServicesWorldPass.cpp) and the

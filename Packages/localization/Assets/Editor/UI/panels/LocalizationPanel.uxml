@@ -1,0 +1,108 @@
+<UIElement class="localization-root">
+  <UIElement class="panel-toolbar localization-toolbar">
+    <Button id="Open" class="secondary localization-icon-button localization-icon-open" text="Open" />
+    <Button id="Save" class="secondary localization-icon-button localization-icon-save" text="Save" />
+    <Label id="CatalogName" class="localization-catalog-name" text="New catalog" />
+    <UIElement class="localization-group-inline">
+      <Label class="localization-caption" text="Language" />
+      <Dropdown id="Locales" class="localization-locales" />
+    </UIElement>
+    <UIElement class="localization-group-inline">
+      <Button id="Import" class="secondary localization-icon-button localization-icon-import localization-collapsible" text="Import PO" />
+      <Button id="Export" class="secondary localization-icon-button localization-icon-export localization-collapsible" text="Export PO" />
+    </UIElement>
+    <UIElement id="AddLanguageRow" class="localization-add-language hidden">
+      <Label class="localization-caption" text="New language tag" />
+      <TextField id="NewLocale" class="value-box localization-new-locale" />
+      <Button id="AddLocale" class="localization-icon-button localization-icon-add" text="Add" />
+      <Button id="CancelLocale" class="secondary localization-icon-button localization-icon-cancel" text="Cancel" />
+      <Label id="NewLocaleError" class="field-message-error hidden" />
+    </UIElement>
+  </UIElement>
+  <UIElement id="LocalizationBody" class="localization-body">
+    <pane id="KeysPane" weight="0.2" class="pane localization-keys">
+      <UIElement class="localization-keys-header">
+        <UIElement id="SearchHost" class="localization-search-host" />
+        <Button id="NewKey" class="secondary localization-icon-button localization-icon-add" text="New key" />
+      </UIElement>
+      <Checkbox id="MissingOnly" class="localization-checkbox" text="Missing translations only" />
+      <ListView id="Keys" class="localization-key-list" />
+      <Label id="KeysEmpty" class="localization-empty hidden" />
+    </pane>
+    <Splitter id="LocalizationSplitter" class="splitter row" />
+    <pane id="EntryPane" weight="0.8" class="pane localization-entry-pane">
+      <UIElement class="localization-entry-header">
+        <UIElement class="localization-title-group">
+          <Label id="DraftBadge" class="localization-draft-badge hidden" text="Not applied" />
+          <UIElement id="EntryTitle" class="localization-entry-title">
+            <Label id="EntryTitlePrefix" class="localization-entry-title-prefix" />
+            <Label id="EntryTitleLast" class="localization-entry-title-last" text="New key" />
+          </UIElement>
+        </UIElement>
+        <UIElement class="localization-entry-actions">
+          <Button id="Discard" class="secondary localization-icon-button localization-icon-discard localization-collapsible" text="Discard changes" />
+          <Button id="Apply" class="localization-icon-button localization-icon-apply localization-collapsible" text="Apply changes" />
+        </UIElement>
+      </UIElement>
+      <ScrollView id="EntryScroll" class="localization-entry-scroll">
+      <UIElement id="EntryContent" class="localization-entry">
+        <UIElement class="localization-entry-columns">
+          <UIElement class="localization-column">
+            <Label id="KeyLabel" class="localization-field-label" text="Key" />
+            <TextField id="TranslationKey" class="value-box" />
+            <Label id="KeyFixed" class="localization-key-fixed hidden" />
+            <Label id="KeyError" class="field-message-error localization-field-message hidden" />
+          </UIElement>
+          <UIElement class="localization-column" />
+        </UIElement>
+        <UIElement class="localization-entry-columns">
+          <UIElement class="localization-column">
+            <UIElement class="localization-field-header">
+              <Label class="localization-field-label" text="English source (ICU MessageFormat)" />
+            </UIElement>
+            <UIElement class="localization-text-box">
+              <TextArea id="Source" class="value-box value-box-multiline localization-text" />
+            </UIElement>
+            <Label id="SourceError" class="field-message-error localization-field-message hidden" />
+            <Label id="SourceNotes" class="localization-source-notes hidden" />
+            <UIElement id="TranslationGroup" class="localization-group">
+              <Label id="TranslationLabel" class="localization-field-label" text="Translation" />
+              <UIElement class="localization-text-box">
+                <TextArea id="Translation" class="value-box value-box-multiline localization-text" />
+              </UIElement>
+              <Label id="TranslationError" class="field-message-error localization-field-message hidden" />
+              <Label id="TranslationCount" class="localization-character-count" />
+            </UIElement>
+          </UIElement>
+          <UIElement class="localization-column">
+            <UIElement class="localization-field-header">
+              <Label class="localization-field-label" text="Preview" />
+              <UIElement class="localization-spacer" />
+              <Checkbox id="Pseudo" class="localization-checkbox" text="Pseudolocalize" />
+            </UIElement>
+            <Label id="Preview" class="localization-preview" />
+            <Label id="PreviewNote" class="localization-preview-note hidden" />
+            <UIElement class="localization-field-header">
+              <Label class="localization-field-label" text="Arguments (JSON)" />
+            </UIElement>
+            <TextField id="Arguments" class="value-box localization-arguments" value="{}" />
+            <Label id="ArgumentsError" class="field-message-error localization-field-message hidden" />
+            <UIElement id="NotesHost" class="localization-notes" />
+            <UIElement id="NotesContent" class="localization-notes-content">
+              <Label class="localization-field-label" text="Context: where this text appears" />
+              <UIElement class="localization-text-box">
+                <TextArea id="Context" class="value-box value-box-multiline localization-text" />
+              </UIElement>
+              <Label class="localization-field-label" text="Translator notes: meaning, constraints and placeholders" />
+              <UIElement class="localization-text-box">
+                <TextArea id="Notes" class="value-box value-box-multiline localization-text" />
+              </UIElement>
+            </UIElement>
+          </UIElement>
+        </UIElement>
+      </UIElement>
+    </ScrollView>
+    </pane>
+  </UIElement>
+  <Label id="Status" class="localization-status" />
+</UIElement>

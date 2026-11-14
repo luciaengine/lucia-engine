@@ -1,5 +1,5 @@
 #include "UI/UIManager.h"
-#include "UIManager_Internal.h"
+#include "UIManager/UIManager_Internal.h"
 #include "../BorderPaint.h"
 
 #include "UI/Controls/Mount.h"

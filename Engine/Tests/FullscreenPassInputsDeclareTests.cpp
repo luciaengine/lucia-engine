@@ -23,6 +23,16 @@ namespace
 // The underwater overlay's buffer inputs with shadowed god rays (OceanUnderwater::DeclareForView).
 constexpr uint32_t kUnderwaterShadowedBufferInputs = 6;
 
+TextureDesc FullscreenTargetDesc()
+{
+    TextureDesc desc{};
+    desc.width = desc.height = 4;
+    desc.depth = desc.mipLevels = desc.arrayLayers = desc.sampleCount = 1;
+    desc.format = static_cast<uint32_t>(TextureFormat::R16G16B16A16_FLOAT);
+    desc.usage = static_cast<uint32_t>(TextureUsage::RenderTarget | TextureUsage::ShaderResource);
+    return desc;
+}
+
 struct FullscreenInputsFrame
 {
     IDevice* Device = nullptr;
@@ -47,11 +57,7 @@ struct FullscreenInputsFrame
     // `count` buffer inputs, each declaring a read of its own persistent storage buffer.
     RenderGraph::RGPass Declare(uint32_t count, std::set<std::string>& outBufferNames)
     {
-        TextureDesc td{};
-        td.width = td.height = 4;
-        td.depth = td.mipLevels = td.arrayLayers = td.sampleCount = 1;
-        td.format = static_cast<uint32_t>(TextureFormat::R16G16B16A16_FLOAT);
-        td.usage = static_cast<uint32_t>(TextureUsage::RenderTarget | TextureUsage::ShaderResource);
+        const TextureDesc td = FullscreenTargetDesc();
         const RenderGraph::RGTexture target = Frame->ImportPersistentTexture("FPI.Target", td);
 
         std::vector<RenderGraph::RGFullscreenBufferInput> inputs(count);
@@ -120,5 +126,55 @@ TEST(FullscreenPassInputs, ADeclarationOverTheCapIsRefusedWhole)
     const RenderGraph::RGPass pass = f.Declare(RenderGraph::kMaxFullscreenBufferInputs + 1, read);
     EXPECT_FALSE(pass.IsValid()) << "over the cap no pass is declared";
     EXPECT_TRUE(read.empty()) << "no input of a refused pass is half-declared";
+    f.Down();
+}
+
+TEST(FullscreenPassInputs, TheSecondOutputIsAttachedAndDeclaredWritten)
+{
+    FullscreenInputsFrame f;
+    if (!f.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    RenderGraph::RGFullscreenDesc desc{};
+    desc.Name = "FPI.TwoOutputs";
+    desc.Target = f.Frame->CreateTexture("FPI.Color", FullscreenTargetDesc());
+    desc.SecondTarget = f.Frame->CreateTexture("FPI.Delta", FullscreenTargetDesc());
+    const RenderGraph::RGPass pass = RenderGraph::AddFullscreenPass(*f.Frame, desc);
+    ASSERT_TRUE(pass.IsValid());
+    EXPECT_TRUE(f.Frame->Graph().HasWriteAccess(pass.Id, desc.Target.Id));
+    EXPECT_TRUE(f.Frame->Graph().HasWriteAccess(pass.Id, desc.SecondTarget.Id));
+    bool secondAttached = false;
+    for (const auto& attachment : f.Frame->Attachments())
+        secondAttached |= attachment.Pass == pass.Id && attachment.Slot == 1u &&
+                          attachment.Tex == desc.SecondTarget.Id && !attachment.IsDepth;
+    EXPECT_TRUE(secondAttached);
+    f.Down();
+}
+
+TEST(FullscreenPassInputs, ASecondOutputWithADifferentExtentOrSampleCountIsRefusedWhole)
+{
+    FullscreenInputsFrame f;
+    if (!f.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    const auto target = f.Frame->CreateTexture("FPI.Color", FullscreenTargetDesc());
+    for (uint32_t mismatch = 0; mismatch < 3u; ++mismatch)
+    {
+        SCOPED_TRACE(mismatch);
+        TextureDesc second = FullscreenTargetDesc();
+        if (mismatch == 0u)
+            second.width *= 2u;
+        else if (mismatch == 1u)
+            second.height *= 2u;
+        else
+            second.sampleCount *= 2u;
+        RenderGraph::RGFullscreenDesc desc{};
+        desc.Name = "FPI.MismatchedOutputs";
+        desc.Target = target;
+        const std::string name = "FPI.Second" + std::to_string(mismatch);
+        desc.SecondTarget = f.Frame->CreateTexture(name.c_str(), second);
+        const auto pass = RenderGraph::AddFullscreenPass(*f.Frame, desc);
+        EXPECT_FALSE(pass.IsValid());
+        EXPECT_EQ(f.Frame->Graph().PassCount(), 0u);
+        EXPECT_TRUE(f.Frame->Attachments().empty());
+    }
     f.Down();
 }

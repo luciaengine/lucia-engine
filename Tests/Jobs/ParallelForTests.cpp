@@ -461,10 +461,7 @@ TEST(ParallelFor, ACallerParkedOnAHelperThatBacksOutIsWoken)
     delete fork;
 }
 #else
-TEST(ParallelFor, ACallerParkedOnAHelperThatBacksOutIsWoken)
-{
-    GTEST_SKIP() << "needs the Debug-only helper hook (GE_DEBUG_INSTRUMENTATION)";
-}
+
 #endif
 
 #if GE_DEBUG_INSTRUMENTATION
@@ -528,10 +525,7 @@ TEST(ParallelFor, AHelperAdmittedPastTheEndReleasesItsAdmission)
     EXPECT_EQ(fork.Releases.load(), fork.Acquires.load()) << "an admission taken for a claim past the end was kept";
 }
 #else
-TEST(ParallelFor, AHelperAdmittedPastTheEndReleasesItsAdmission)
-{
-    GTEST_SKIP() << "needs the Debug-only helper hook (GE_DEBUG_INSTRUMENTATION)";
-}
+
 #endif
 
 // A Background body's forks, Run + Wait and ParallelFor alike, publish into
@@ -944,10 +938,7 @@ TEST(ParallelFor, AStoppedChunkedRunStartsNoChunkAfterItsStop)
     }
 }
 #else
-TEST(ParallelFor, AStoppedChunkedRunStartsNoChunkAfterItsStop)
-{
-    GTEST_SKIP() << "needs the Debug-only caller park count (GE_DEBUG_INSTRUMENTATION)";
-}
+
 #endif
 
 // The result is the unit form's for each way a run ends: true when nothing stopped it, false for a chunk's false

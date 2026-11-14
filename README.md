@@ -1,81 +1,100 @@
 <p align="center">
-  <img src="Apps/Editor/Assets/Icons/logo.svg" alt="Open Engine logo" width="160" height="160">
+  <img src="Apps/Editor/Icon/AppIcon.png" width="128" alt="Lucia Engine flame logo">
 </p>
 
-<h1 align="center">Open Engine</h1>
+# Lucia Engine
 
-A modern, high-performance, open-source game engine built for the community, by the community, with the goals of bringing power, scale, ease of use and true ownership to game developers.
+**Website:** [luciaengine.com](https://luciaengine.com/)
 
-It also builds for the web: the same engine runs in the browser on WebGPU, shipped as the `@game-crafters-guild/openengine-web` package with live examples. Its Web API is designed to bring the capabilities and performance of the engine into an HTML canvas anywhere.
+Lucia Engine is an open-source game engine sharing its foundations with [Open Engine](https://github.com/Game-Crafters-Guild/OpenEngine).
 
-**Platforms:** Windows x64 and ARM64 (primary), macOS on Apple Silicon and Intel (native Metal renderer), Linux, Steam Deck.
+Written in C++20, it combines hot-reloadable C# scripting, an archetype ECS, and an editor whose UI is built from XML and CSS.
 
-![The Open Engine editor on a stylized village scene at evening: long shadows across the houses, a lake below, and the post-processing inspector open](docs/images/editor/editor-overview.webp)
+**Platforms:** Windows x64 and ARM64 (primary), macOS on Apple Silicon and Intel (native Metal, with a MoltenVK fallback), Linux, Steam Deck.
 
-## Why Open Engine
+![Lucia Engine editor preview](docs/images/lucia-engine-editor.webp)
 
-Game developers need a powerful, modern engine that is theirs: open source, owned by the community that uses it, and built on current ideas about how an engine should work. An MIT engine with no product and no monetization inside it cannot change its terms underneath your game or cancel the feature you depend on because it stopped paying; and it is built so an AI assistant can reach everything a person can. The whole answer, including why AI is part of it, is in [WHY-OPEN-ENGINE.md](WHY-OPEN-ENGINE.md) and at [openengine.dev/why](https://openengine.dev/why).
+## Highlights
 
-## Foundation
-
-- Open source, MIT licensed.
-- A modern C++20 code base.
-- Hot-reloadable C# scripting on CoreCLR (.NET 10).
-- Native C++ scripting.
-- A modern renderer built on Vulkan, Metal and WebGPU.
-- A cross-platform editor for Windows, macOS, Linux and the web. Yes, the editor runs in the browser.
-- An ECS built on a true data-oriented design.
-- UI driven by CSS layout and XML, in the editor and in games.
-- Built for AI-assisted development: a bundled MCP server and CLI let AI agents drive the running editor, and an in-editor AI assistant ships as a preview. See [docs/getting-started/mcp-setup.mdx](docs/getting-started/mcp-setup.mdx).
-
-## Try it in the browser
-
-Live examples, built from the engine and published with each release (WebGPU):
-
-[![The model viewer: a sample model under cascaded shadows and a physical sky](docs/images/web/model-viewer.webp)](https://game-crafters-guild.github.io/opengine-web/package/examples/model-viewer/index.html)
-
-- [Model viewer](https://game-crafters-guild.github.io/opengine-web/package/examples/model-viewer/index.html): sample models or your own `.glb`, orbit and pan, time of day, exposure, and the model's animation clips.
-- [Instancing](https://game-crafters-guild.github.io/opengine-web/package/examples/instancing/index.html): one model drawn up to 100,000 times, each copy an entity.
-
-The library behind them is [`@game-crafters-guild/openengine-web`](https://www.npmjs.com/package/@game-crafters-guild/openengine-web) (`npm install @game-crafters-guild/openengine-web@alpha`); its README is the guide. The examples' source and the built package live in [opengine-web](https://github.com/Game-Crafters-Guild/opengine-web).
+- **Renderer**: native Metal and Vulkan backends with GPU-driven rendering: a render graph with automatic barriers and resource aliasing, clustered Forward+ lighting, cascaded shadow maps, schema-driven materials with composed shader variants, physical light units with an HDR pipeline, instanced draw batching, camera-relative rendering for planet-scale coordinates, reverse-Z depth.
+- **ECS**: archetype-based with chunked SoA storage: cache-coherent iteration, chunk-level change tracking, parallel queries, deferred commands, generational handles.
+- **C# scripting**: CoreCLR (.NET 10) embedded in the engine. Save a script and it recompiles through a resident Roslyn compile server and hot-swaps into the running process, with no restart.
+- **Editor**: a dockable multi-window editor. All editor UI is XML and CSS with live hot reload, and the same UI runtime ships in games (flexbox layout through Yoga, GPU text rendering).
+- **Assets**: GUID-based identity, parsers for glTF, KTX, audio, scenes, materials and animations, dependency-graph hot reload, async priority streaming.
+- **World systems**: Jolt physics, Recast/Detour navigation, GPU-adaptive CBT terrain for large worlds, skeletal animation with humanoid retargeting.
+- **AI-assisted development**: a bundled MCP server lets AI agents drive the running editor: query scenes and ECS state, read logs, take screenshots, inspect the render graph, trigger GPU captures, run tests. See [docs/MCP_SETUP.md](docs/MCP_SETUP.md).
 
 ## Build
+
+### macOS (Apple Silicon)
+
+Install full Xcode and finish its first-launch setup, then install the [.NET 10 SDK](https://dotnet.microsoft.com/en-us/download/dotnet/10.0) for macOS Arm64. With [Homebrew](https://brew.sh/) available:
+
+```bash
+brew install cmake ninja pkg-config autoconf autoconf-archive automake libtool molten-vk
+git clone https://github.com/luciaengine/lucia-engine.git
+cd lucia-engine
+cmake --preset macos-arm64-ninja
+cmake --build --preset macos-arm64-ninja --target Editor -j 8
+open build/macos-arm64-ninja/bin/DebugFast/Apps/Editor/Editor.app
+```
+
+On an Intel Mac, use `macos-x64-ninja` in both commands and the output path, and install the macOS x64 .NET SDK. These presets build **DebugFast**. Native Metal is selected by default; MoltenVK is also required by the default app-bundle staging for the Vulkan fallback. An installed [Vulkan SDK](https://vulkan.lunarg.com/) can supply MoltenVK instead of Homebrew. See [macOS setup](BUILD.md#macos) for prerequisites and the optional Xcode workflow.
+
+### Windows
 
 Prerequisites on Windows: Visual Studio 2026 with the *Desktop development with C++* workload (includes CMake, Ninja and Git), the .NET 10 SDK and a Vulkan-capable GPU driver.
 
 ```bat
-git clone https://github.com/Game-Crafters-Guild/OpenEngine.git
-cd OpenEngine
+cd /path/to/lucia-engine
 cmake --preset vs2026-x64-local
 cmake --build --preset vs2026-x64-local --config DebugFast --target Editor -j 12
 build\vs2026-x64-local\bin\DebugFast\Apps\Editor\Editor.exe
 ```
 
-The first configure bootstraps vcpkg and builds the third-party dependencies once (expect tens of minutes); every build after that is incremental. macOS and Linux build the same Editor through their own presets (`macos-arm64-local`, `linux-x64-local`); platform prerequisites, the Ninja fast build, Steam Deck, tests and troubleshooting are in [BUILD.md](BUILD.md). With the editor running, [Your first project](docs/getting-started/first-project.mdx) creates a project, saves a scene and exports a game.
+### Linux (x64)
+
+Install the [.NET 10 SDK for your distribution](https://learn.microsoft.com/en-us/dotnet/core/install/linux). Use a C++20 compiler, CMake 3.25 or newer, and Ninja. On Ubuntu 24.04 or newer, install the native build and windowing dependencies:
+
+```bash
+sudo apt update
+sudo apt install build-essential cmake ninja-build pkg-config git curl zip unzip tar \
+  autoconf autoconf-archive automake libtool \
+  libxinerama-dev libxcursor-dev xorg-dev libglu1-mesa-dev libwayland-dev
+```
+
+Install a Vulkan-capable driver for your GPU. For Intel or AMD GPUs on Ubuntu, use `sudo apt install mesa-vulkan-drivers vulkan-tools`. NVIDIA GPUs need a compatible NVIDIA driver. The default windowing backend uses X11, so a Wayland desktop needs XWayland.
+
+```bash
+git clone https://github.com/luciaengine/lucia-engine.git
+cd lucia-engine
+cmake --preset linux-x64-local -DCMAKE_BUILD_TYPE=DebugFast
+cmake --build --preset linux-x64-local --target Editor -j 8
+./build/linux-x64-local/bin/DebugFast/Apps/Editor/Editor
+```
+
+Run the `Editor` launcher shown above. It starts the native executable with the supported runtime defaults. Other distributions can use the equivalent packages listed in [Linux setup](BUILD.md#linux).
+
+The first configure bootstraps vcpkg and builds the third-party dependencies once (expect tens of minutes); every build after that is incremental. macOS and Linux build the same Editor through their own presets (`macos-arm64-ninja`, `linux-x64-local`); platform prerequisites, the Ninja fast build, Steam Deck, tests and troubleshooting are in [BUILD.md](BUILD.md). With the editor running, [Your first project](docs/first-project.html) creates a project, saves a scene and exports a game.
 
 ## Repository layout
 
 ```
-Engine/               The engine library: Include/, Source/, and one library per subsystem under Modules/
-  Assets/             Engine content the build stages beside the Editor and the Player: materials, render pipelines, textures, UI, graphs
-  ECSModules/         Shared ECS components (Audio, Components, Rendering)
-Apps/Editor/          The editor (C++, with CSS/XML UI)
-Apps/Player/          The game runtime the editor exports games with
-Apps/WebLibrary/      The web build: the WebGPU engine module and the @game-crafters-guild/openengine-web library
-Managed/              C# side: CoreBridge, HotReload, Scripting.ABI, CompileServerHost
-Packages/             Add-on packages: the AI assistant, version-control integrations, post effects, import tools
-Examples/             Standalone demos (BUILD_EXAMPLES)
+Engine/               Core engine library
+  Modules/            Subsystem libraries: Rendering, ECS, Physics, UI, AssetDatabase, JobSystem, ...
+Apps/Editor/          The editor application (C++ with C# integration)
+Apps/Player/          Standalone game player
+Managed/              C# side: CoreBridge, HotReload, Scripting.ABI, CompileServerHost, ...
+Examples/             Standalone demo applications
 Tests/                Integration tests (module unit tests live next to each module)
-ThirdParty/           Bundled third-party code, each with its own license
-cmake/                Build scripts, presets and ports
-mcp/                  The MCP server and CLI that drive a running editor
-docs/                 Documentation (start at docs/README.md)
+mcp/                  MCP server for AI agent and editor integration
+docs/                 Documentation (start at docs/index.html)
 Tools/                Developer tools and scripts
 dependencies/         Auto-provisioned vcpkg checkout (gitignored)
 build/                Build trees, one per preset (gitignored)
 ```
 
-## Community
+## Contributing
 
 This is an alpha: APIs and file formats may change between releases.
 
@@ -91,7 +110,7 @@ The team welcomes the responsible use of AI. The engine ships with built-in MCP 
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The people behind the engine are named in [AUTHORS.md](AUTHORS.md). Third-party code keeps its own license, stated next to it: the libraries under `Engine/Source/ThirdParty/` and `ThirdParty/`, the benchmark sources under `Tools/Benchmarks/ECS/third_party/`, and the dependencies installed through vcpkg.
+Lucia Engine is available under the [MIT License](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md) for Open Engine attribution and its preserved license notice. The people behind the engine are named in [AUTHORS.md](AUTHORS.md). Third-party code keeps its own license, stated next to it: the libraries under `Engine/Source/ThirdParty/` and `ThirdParty/`, the benchmark sources under `Tools/Benchmarks/ECS/third_party/`, and the dependencies installed through vcpkg.
 
 ## Tests
 

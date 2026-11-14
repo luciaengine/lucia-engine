@@ -4,8 +4,8 @@
 #include "Engine/Rendering/Pipeline/PipelineFrameResources.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
-#include <functional>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -91,6 +91,7 @@ struct ViewDeclare
     // from Render* to Output*.
     uint32_t OutputWidth = 0;
     uint32_t OutputHeight = 0;
+    bool PixelPerfectCrossing = false;
     // Split-active only: the caller's display-resolution color/depth (invalid
     // at scale 1.0). See Names::View::OutputColor/OutputDepth.
     Rendering::RenderGraph::RGTexture ViewOutputColor{};
@@ -108,7 +109,10 @@ struct ViewDeclare
     // Blackboard access. Resolvers return invalid entries for unknown refs;
     // publication overwrites (a node republishing "View.Depth" redirects every
     // LATER node in blueprint order — declaration order is the only ordering).
+    // Reads another view's publication from this frame without allocating a resource.
+    Rendering::RenderGraph::RGTexture FindPublishedViewTexture(Rendering::ViewId view, std::string_view ref) const;
     Rendering::RenderGraph::RGTexture ResolveTexture(std::string_view ref) const;
+    bool IsVersionedTexture(std::string_view ref) const;
     PipelineBufferBindingRG ResolveBuffer(std::string_view ref) const;
     void PublishTexture(std::string_view name, Rendering::RenderGraph::RGTexture t);
     void PublishBuffer(std::string_view name, const PipelineBufferBindingRG& b);
@@ -186,6 +190,9 @@ class IRenderPipelineNode
 
     virtual const char* GetTypeName() const = 0;
 
+    // Color filters preserve the incoming view color; replacement nodes leave UI until afterward.
+    virtual bool IsViewColorPostEffect() const { return false; }
+
     // Called once when the node is instantiated from a blueprint.
     // `nodeJson` is the full node JSON object serialized as a compact string.
     virtual bool Initialize(std::string nodeId, std::string nodeJson, std::string* outError) = 0;
@@ -218,6 +225,25 @@ class IRenderPipelineNode
 
 using RenderPipelineNodeFactory = std::function<std::unique_ptr<IRenderPipelineNode>()>;
 
+struct RenderPipelineResourceRef
+{
+    std::string Key;
+    std::optional<RenderGraph::RGResourceKind> Kind;
+
+    RenderPipelineResourceRef(const char* key,
+                              std::optional<RenderGraph::RGResourceKind> kind = std::nullopt)
+        : Key(key), Kind(kind)
+    {}
+};
+
+// Per-view products that the consumer resolves during declaration.
+enum class RenderPipelineViewResource
+{
+    ViewParameters,
+    PrepassDepth,
+    Shadows
+};
+
 // The JSON keys through which a node type references and publishes pipeline
 // resources. Blueprint validation resolves every reference against the builtin
 // view names, the declared resources and the names passes publish, so a type
@@ -226,7 +252,7 @@ using RenderPipelineNodeFactory = std::function<std::unique_ptr<IRenderPipelineN
 struct RenderPipelineNodeResourceFields
 {
     // Keys whose string value names one resource.
-    std::vector<std::string> RefKeys;
+    std::vector<RenderPipelineResourceRef> RefKeys;
     // Keys whose object value maps binding names to resources.
     std::vector<std::string> RefMapKeys;
     // Key whose value must name one of the pass's own "inputs" keys.
@@ -236,6 +262,10 @@ struct RenderPipelineNodeResourceFields
     std::vector<std::pair<std::string, std::string>> PublishKeys;
     // Names the node publishes regardless of its JSON.
     std::vector<std::string> StaticPublishNames;
+    // The built-in consumer has a fallback when the blueprint omits a
+    // producer. A producer included in the blueprint must declare first.
+    std::vector<RenderPipelineViewResource> ReadsViewResources;
+    std::vector<RenderPipelineViewResource> WritesViewResources;
 };
 
 struct RenderPipelineNodeTypeInfo

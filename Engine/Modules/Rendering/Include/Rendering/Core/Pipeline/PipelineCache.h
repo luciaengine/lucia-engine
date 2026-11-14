@@ -20,6 +20,7 @@
 
 #include "Rendering/Core/Handle.h"
 #include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Types/FlatMap.h"
 
 #include <atomic>
 #include <cstddef>
@@ -52,6 +53,9 @@ public:
     // content (after `ContentHash`) returns the same id. The interned desc
     // is owned by the cache and outlives any caller stack frame.
     GraphicsPipelineId InternGraphicsPipeline(GraphicsPipelineDesc desc);
+    /// Intern a graphics descriptor with constant overrides. Safe to call from recording workers.
+    GraphicsPipelineId SpecializeGraphicsPipeline(GraphicsPipelineId base,
+                                                   const SpecializationConstants& overrides);
     ComputePipelineId  InternComputePipeline(ComputePipelineDesc desc);
     DescriptorSetLayoutId InternDescriptorSetLayout(DescriptorSetLayoutDesc desc);
 
@@ -196,6 +200,7 @@ private:
     // Hash → id; vector indexed by id.Value-1.
     std::unordered_map<uint64_t, uint32_t> m_GraphicsHashToId;
     std::vector<InternEntry<GraphicsPipelineDesc>> m_GraphicsEntries;
+    FlatMap<std::pair<uint32_t, uint64_t>, GraphicsPipelineId> m_GraphicsSpecializations;
 
     std::unordered_map<uint64_t, uint32_t> m_ComputeHashToId;
     std::vector<InternEntry<ComputePipelineDesc>> m_ComputeEntries;
@@ -235,6 +240,7 @@ private:
     std::atomic<uint64_t> m_InvalidationEpoch{0};
 
     // Internal: caller holds m_Mutex.
+    GraphicsPipelineId InternGraphicsPipeline_NoLock(GraphicsPipelineDesc desc, uint64_t hash);
     void EnforceCapacity_NoLock();
     size_t RemoveKey_NoLock(uint64_t key);
     void DecrementInternRefcount_NoLock(const ConcreteEntry& entry);

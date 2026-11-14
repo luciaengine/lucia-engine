@@ -55,5 +55,5 @@ echo "publish: $version under the '$tag' dist-tag (dry run)"
 
 if [ "$mode" = --publish ]; then
     npm publish "$package" --access public --tag "$tag"
-    echo "publish: published $version under '$tag' (npm install @game-crafters-guild/openengine-web@$tag)"
+    echo "publish: published $version under '$tag' (npm install @openengine/web@$tag)"
 fi

@@ -1,0 +1,16 @@
+<UIElement class="sorting-layer-definition">
+  <Label id="LayerIdentity" class="settings-section-header" />
+  <UIElement class="settings-row">
+    <Label text="Name" class="settings-row-label" />
+    <TextField id="LayerName" class="settings-row-field" />
+  </UIElement>
+  <UIElement class="settings-row">
+    <Label text="Priority" class="settings-row-label" />
+    <TextField id="LayerPriority" class="settings-row-field" />
+  </UIElement>
+  <UIElement class="settings-row">
+    <Button id="LayerBack" text="Move Back" class="small secondary" />
+    <Button id="LayerForward" text="Move Forward" class="small secondary" />
+  </UIElement>
+  <Button id="LayerRemove" text="Remove Layer" class="small secondary" tooltip="Objects using this layer keep their ID and use Default priority until reassigned." />
+</UIElement>

@@ -25,6 +25,7 @@
 #include "Scene/SceneIO.h"
 #include "Scene/SceneSchemaRegistry.h"
 #include "Types/Color.h"
+#include "TestTempDir.h"
 
 namespace GeReflectTest
 {
@@ -114,8 +115,12 @@ class ReflectionSceneSerializationTests : public ::testing::Test
 
     std::filesystem::path TempScene(const char* name) const
     {
-        return std::filesystem::temp_directory_path() / name;
+        return m_TempDir.Path() / name;
     }
+
+  private:
+    GameEngine::TestUtils::ScopedTempDir m_TempDir{
+        GameEngine::TestUtils::MakeUniqueTempDirectory("ge_reflect_scene")};
 };
 
 GameEngine::ECS::EntityHandle FindByName(World& world, const char* name)

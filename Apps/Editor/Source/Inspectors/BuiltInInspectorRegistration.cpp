@@ -13,6 +13,7 @@
 #include "Inspectors/PostProcessEffects/BloomEffectInspector.h"
 #include "Inspectors/CameraInspector.h"
 #include "Inspectors/PostProcessEffects/ChromaticAberrationEffectInspector.h"
+#include "Inspectors/PostProcessEffects/DepthPixelationEffectInspector.h"
 #include "Inspectors/PostProcessEffects/ColorFilterEffectInspector.h"
 #include "Inspectors/PostProcessEffects/ColorGradeEffectInspector.h"
 #include "Inspectors/PostProcessEffects/ContrastAdaptiveSharpenEffectInspector.h"
@@ -25,6 +26,7 @@
 #include "Inspectors/PostProcessEffects/FastBlurEffectInspector.h"
 #include "Inspectors/PostProcessEffects/FilmSimulationEffectInspector.h"
 #include "Inspectors/PostProcessEffects/HeatDistortionEffectInspector.h"
+#include "Inspectors/PostProcessEffects/RainSettingsEffectInspector.h"
 #include "Inspectors/PostProcessEffects/HeightFogEffectInspector.h"
 #include "Inspectors/HumanoidRigInspector.h"
 #include "Inspectors/LensFlareSourceInspector.h"
@@ -104,6 +106,7 @@ void RegisterBuiltInInspectors()
     RegisterBuiltInComponentTraits();
     RegisterBloomEffectInspector();
     RegisterChromaticAberrationEffectInspector();
+    RegisterDepthPixelationEffectInspector();
     RegisterDepthOfFieldEffectInspector();
     RegisterFilmSimulationEffectInspector();
     RegisterAmbientOcclusionEffectInspector();
@@ -114,6 +117,7 @@ void RegisterBuiltInInspectors()
     RegisterCrtEffectInspector();
     RegisterFastBlurEffectInspector();
     RegisterHeatDistortionEffectInspector();
+    RegisterRainSettingsEffectInspector();
     RegisterVhsEffectInspector();
     RegisterHeightFogEffectInspector();
     RegisterColorFilterEffectInspector();

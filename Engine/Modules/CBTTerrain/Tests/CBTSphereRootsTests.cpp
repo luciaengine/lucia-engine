@@ -34,8 +34,8 @@ using GameEngine::Mathematics::Vector3Int;
 // maps to the same key regardless of traversal direction.
 std::array<int32_t, 6> EdgeKey(const Vector3Int& a, const Vector3Int& b)
 {
-    const std::array<int32_t, 6> forward{a.x, a.y, a.z, b.x, b.y, b.z};
-    const std::array<int32_t, 6> backward{b.x, b.y, b.z, a.x, a.y, a.z};
+    const std::array<int32_t, 6> forward{a.X, a.Y, a.Z, b.X, b.Y, b.Z};
+    const std::array<int32_t, 6> backward{b.X, b.Y, b.Z, a.X, a.Y, a.Z};
     return std::min(forward, backward);
 }
 

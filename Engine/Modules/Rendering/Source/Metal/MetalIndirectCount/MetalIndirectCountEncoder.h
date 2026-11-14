@@ -26,6 +26,14 @@ struct MetalBuffer;
 // before the render pass that executes them, so the CPU encodes one command per
 // call instead of one per record, and the GPU runs only the counted records.
 //
+// Fragment-textured pipelines use native indirect draws because ICB execution
+// can return zero for scene-color texture reads. For those draws the same
+// translation copies counted records into an append-only argument range and
+// zeros the rest. The CPU encodes MaxDrawCount draws, without reading GPU counts
+// back or requiring unused source records to be zero. Pipelines without fragment
+// textures retain ICB execution. This trades CPU encoding work for correct
+// sampling while preserving GPU culling and exact count semantics.
+//
 // Placement. A translation is encoded before a render pass whenever the open
 // one cannot serve it: none is open yet in the command buffer, a compute
 // encoder or a blit into an indirect-argument buffer ran since (either may
@@ -54,6 +62,7 @@ class MetalIndirectCountEncoder
   public:
     struct Draw
     {
+        bool UseDirectDraws = false;
         const MetalBuffer* Records = nullptr;
         size_t RecordsOffset = 0;
         uint32_t RecordStride = 0;

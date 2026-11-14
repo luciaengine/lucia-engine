@@ -310,9 +310,7 @@ TEST(CascadeReceiverFit, Cascade0StartsAtTheNearestMeasuredReceiver)
     for (const Receiver& r : receivers)
     {
         if (r.ViewDepth < fd.SplitDistances[0])
-        {
             EXPECT_LE(MaxLightNdc(fd, 0, r.Position), 1.0f) << "receiver at depth " << r.ViewDepth;
-        }
     }
 }
 
@@ -387,7 +385,11 @@ void CascadeDepthWindow(const CascadeFrameData& fd, uint32_t c, float& lo, float
 {
     lo = 0.0f;
     if (c > 0)
-        lo = fd.SplitDistances[c - 1] - ShadowMapRenderFeature::CascadeBlendBand(fd, c - 1);
+    {
+        const float prevStart = c == 1 ? 0.0f : fd.SplitDistances[c - 2];
+        const float band = std::max((fd.SplitDistances[c - 1] - prevStart) * 0.1f, 3.0f);
+        lo = fd.SplitDistances[c - 1] - band;
+    }
     hi = c + 1 == fd.NumCascades ? kMaxShadowDistance : fd.SplitDistances[c];
 }
 
@@ -959,7 +961,7 @@ TEST(CascadeReceiverFit, TheWindowCheckSeesTheFieldOfViewAspectOrthographicSizeA
         Rendering::CameraData cam = MakeCamera(pose);
         const Matrix4x4 proj = MakeOrthographicLH_ZO_ReverseZ(-halfHeight * kAspect, halfHeight * kAspect,
                                                               -halfHeight, halfHeight, kNear, kFar);
-        cam.proj = proj;
+        std::memcpy(cam.proj, proj.Data(), sizeof(cam.proj));
         ShadowReceiverMeasurement::Context c{};
         Renderer::SetShadowReceiverCamera(cam, true, c);
         return c;

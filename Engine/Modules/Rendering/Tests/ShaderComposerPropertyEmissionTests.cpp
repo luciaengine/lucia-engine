@@ -17,9 +17,9 @@
 #include "Logger/CallbackSink.h"
 #include "Logger/Logger.h"
 #include "TestUtils.h"
+#include "TestTempDir.h"
 
 #include <algorithm>
-#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -46,10 +46,7 @@ struct TempMaterialDir
     fs::path Root;
     explicit TempMaterialDir(const char* prefix)
     {
-        static std::atomic<uint32_t> counter{0};
-        Root = fs::temp_directory_path() /
-               (std::string(prefix) + "_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()) +
-                "_" + std::to_string(counter.fetch_add(1)));
+        Root = TestUtils::MakeUniqueTempDirectory(prefix);
         fs::create_directories(Root);
     }
     ~TempMaterialDir()

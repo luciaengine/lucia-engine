@@ -1,6 +1,9 @@
 #include "EngineShaderPath.h"
 #include "Core/ApplicationPaths.h"
 #include "Core/Engine.h"
+#include "Memory/ImagePins.h"
+#include "Scene/PrefabLibrary.h"
+
 #include "Engine/Loading/SceneLoader.h"
 #include "SceneLoadTracker/SceneLoadTracker.h"
 
@@ -73,9 +76,13 @@
 #include "CBTTerrainECS/Systems/RegisterCBTSystems.h"
 #include "TerrainGrass/RegisterTerrainGrass.h"
 #include "Ocean/Systems/RegisterOceanSystems.h"
+#include "TileMapECS/RegisterTileMap.h"
+#include "TileMapECS/TileMapRuntimeStore.h"
 #include "MarkupECS/MarkupService.h"
 #include "SplineECS/SplineNetwork.h"
 #include "SplineECS/SplineService.h"
+#include "SplineRecipes/SplineRecipeSystem.h"
+#include "SplineECS/SplineNetwork.h"
 #include "SplineECS/Systems/RegisterSplineSystems.h"
 #include "SplineRecipes/SplineRecipeSystem.h"
 #include "PathfindingECS/NavigationService.h"
@@ -87,8 +94,8 @@
 #include "Components/Components.h"
 #include "Components/Audio/AudioEmitter.h"
 #include "Components/Hierarchy.h" // Components::Parent — lifecycle-event subscription (hierarchy incremental sync)
-#include "ECS/Component/ComponentFieldRegistry.h" // C12 load-abort purge
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentFieldRegistry.h" // C12 load-abort purge
+#include "ECS/ComponentRegistry.h"
 #include "Particles/ParticleProcessor/ParticleProcessorRegistry.h" // C12 load-abort purge, unload ledger
 #include "ECS/ECS.h"
 #include "ECS/Entity.h"
@@ -99,6 +106,7 @@
 #include "Engine/Rendering/FrameOrchestrator.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/Systems/LensFlareExtractionSystem.h"
+#include "Engine/Rendering/2D/Systems/SpriteAnimationSystem.h"
 #include "Engine/Rendering/RenderWorldHooks.h"
 #include "Engine/Video/VideoTextureSystem.h"
 #include "PluginAPI/EnginePlugin.h"
@@ -320,6 +328,8 @@ const WorldServiceLifecycle kWorldServices[] = {
      &MarkupECS::MarkupService::Shutdown},
     {&PathfindingECS::NavigationService::IsInitialized, &PathfindingECS::NavigationService::Initialize,
      &PathfindingECS::NavigationService::Shutdown},
+    {&TileMapECS::TileMapRuntimeStore::IsInitialized, &TileMapECS::TileMapRuntimeStore::Initialize,
+     &TileMapECS::TileMapRuntimeStore::Shutdown},
 };
 
 void InitializeWorldServices()
@@ -340,7 +350,7 @@ void ShutdownWorldServices()
     }
 }
 
-// Opens the audio output. False (audio disabled) when the init fails or throws.
+// Initializes the selected audio output. False when initialization fails or throws.
 bool InitializeAudio(Audio::AudioSystem& audio, Audio::AudioOutput output)
 {
     try
@@ -361,8 +371,6 @@ bool InitializeAudio(Audio::AudioSystem& audio, Audio::AudioOutput output)
     }
 }
 
-// The image-pin answer for the arenas that still hold a destructor in [base, base + size):
-// "N arena(s) holding destructors: <names>", or empty when none does.
 std::string DescribeArenaImagePins(uint64 base, uint64 size)
 {
     const std::vector<std::string> arenas = Memory::Detail::DescribeArenasPinningImage(base, size);
@@ -395,7 +403,6 @@ class EngineCore::InitializeTransaction
         m_Engine.m_StartupChannel.reset();
         m_Engine.m_StartupJobsHook = nullptr;
         m_Engine.m_ShaderHookState.reset();
-        // The manager this Initialize may have opened the gate on is never pumped.
         m_Engine.SetPostGate(PostGate::ShutDown);
         m_Engine.m_InitializingThread.store(std::thread::id{}, std::memory_order_release);
         m_Engine.m_Lifecycle.store(EngineLifecycleState::Uninitialized, std::memory_order_release);
@@ -460,6 +467,7 @@ EngineCore::MainThreadPost EngineCore::RequestManagedPostDrain()
 }
 
 EngineCore::EngineCore()
+    : m_SceneLoadTracker(MakeUnique<SceneLoadTracker>())
 {
     if (s_Instance != nullptr)
     {
@@ -524,8 +532,6 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
         return false;
     }
     m_InitializingThread.store(std::this_thread::get_id(), std::memory_order_release);
-    // The frames run on this thread, whatever the configuration. Recorded before anything
-    // that can run a script, so the scripting ABI's thread predicates answer from the start.
     m_MainThreadId.store(std::this_thread::get_id(), std::memory_order_release);
     m_StandaloneHosted.store(config.StandaloneHosted, std::memory_order_release);
     InitializeTransaction transaction(*this);
@@ -781,8 +787,6 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
                     pins += ", ";
                 pins += std::to_string(hooks) + " ECS component hook(s)";
             }
-            // Arenas holding a destructor from the image run it at their owner's Reset or
-            // destruction; until then the code must stay mapped.
             const std::string arenas = DescribeArenaImagePins(base, size);
             if (!arenas.empty())
             {
@@ -899,8 +903,9 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
         {
             m_ScriptManager = MakeUnique<ScriptManager>();
         }
-        // Before the manager initializes: the CLR's initial load can post to the main thread,
-        // and the pump inside ScriptManager::Initialize runs what it posted.
+        // Engine init and Update run on this thread; record it so off-main-thread
+        // pumping of main-thread tasks gets diagnosed instead of passing silently.
+        m_ScriptManager->MarkMainThread();
         SetPostGate(PostGate::Live);
 
         if (!scriptsNativeDllPath.empty())
@@ -949,10 +954,11 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
     }
 #else
     SetPostGate(PostGate::NoQueue);
-    // Asset hot reloading (UI CSS and layouts, textures, shaders, terrain material libraries)
-    // does not depend on C# scripting: the same default as a scripting build (on unless the
-    // engine-level scripts config turns it off).
-    if (!m_ScriptsConfig.has_value() || m_ScriptsConfig->enableHotReload)
+    // Even when scripting is compiled out, we still want asset hot
+    // reloading (e.g., UI CSS/layout, textures, shaders) to work when
+    // requested via ScriptsConfig. Honor the engine-level scripts config
+    // for the AssetManager here.
+    if (m_ScriptsConfig.has_value() && m_ScriptsConfig->enableHotReload)
     {
         m_AssetManager->SetHotReloadEnabled(true);
         Logger::Log::Info("Asset hot reloading enabled (scripting disabled at build time)");
@@ -975,6 +981,8 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
     // A headless host opens no audio device: the engine runs as it does when the device
     // fails to open, with no AudioSystem and no audio systems in the schedule.
     tPhase = std::chrono::high_resolution_clock::now();
+    m_StartupChannel = MakeUnique<JobSystem::JobChannel>(
+        *m_JobSystem, JobSystem::JobChannelDesc{.Name = "Engine startup", .MaxRunning = 2});
     if (config.Headless)
     {
         Logger::Log::Info("[Startup] AudioSystem: none (headless)");
@@ -1177,9 +1185,9 @@ void EngineCore::Shutdown()
         PhysicsECS::PhysicsWorldService::Shutdown();
     }
 
-    // Shutdown subsystems in reverse order. The gate closes first, so a request that races
-    // this teardown is dropped instead of reaching the manager the reset below frees.
+    // Close posting before the script manager shuts down.
     SetPostGate(PostGate::ShutDown);
+    // Shutdown subsystems in reverse order
     if (m_ScriptManager)
     {
         m_ScriptManager->Shutdown();
@@ -1225,19 +1233,6 @@ void EngineCore::Shutdown()
                 Logger::Log::Warning("Failed to unregister shader hot-reload bridge: {}", e.what());
             }
             m_ShaderHotReloadHandle = 0;
-        }
-
-        // Unregister core engine asset types
-        try
-        {
-            auto& typeRegistry = m_AssetManager->GetAssetTypeRegistry();
-            typeRegistry.UnregisterAssetType(AssetType::Audio);
-            typeRegistry.UnregisterAssetType(AssetType::Model);
-            Logger::Log::Info("Core asset types unregistered");
-        }
-        catch (const std::exception& e)
-        {
-            Logger::Log::Error("Exception unregistering core asset types: {}", e.what());
         }
 
         m_AssetManager->Shutdown();
@@ -1339,7 +1334,6 @@ void EngineCore::Update(float64 deltaTime)
     {
         m_AssetManager->Update();
     }
-    // The library's frame boundary, after the reloads the update completed.
     if (m_PrefabLibrary)
         m_PrefabLibrary->CollectAtFrameBoundary();
 
@@ -1537,8 +1531,7 @@ bool EngineCore::EnableRenderingLoop(Engine::Renderer::RenderServices* renderSer
         InitializeWorldServices();
         ApplyTerrainPageStoreLocation();
         // A headless host passes no render services: there are no pipeline node types
-        // to register, and every scheduled system skips its render work, including the
-        // render-side systems that also produce terrain height and ocean buoyancy.
+        // to register, and every scheduled system skips its render work.
         if (!renderServices)
         {
             Logger::Log::Info("EnableRenderingLoop: no render services (headless); the schedule "
@@ -1569,6 +1562,10 @@ bool EngineCore::EnableRenderingLoop(Engine::Renderer::RenderServices* renderSer
         TerrainECS::AddTerrainSystemsToSchedule(schedule, renderServices);
         CBTTerrainECS::AddCBTSystemsToSchedule(schedule, renderServices);
         Ocean::AddOceanSystemsToSchedule(schedule, renderServices);
+        TileMapECS::AddTileMapSystemsToSchedule(schedule, renderServices);
+        schedule.Add<Engine::Renderer::SpriteAnimationSystem>(
+            "SpriteAnimation", ECS::SystemPhase::Extraction, 7,
+            {"TransformHierarchy"}, renderServices);
         schedule.Add<Engine::Renderer::LensFlareExtractionSystem>(
             "LensFlareExtraction", ECS::SystemPhase::Extraction, 7,
             {"TransformHierarchy", "Camera"}, renderServices);
@@ -1580,7 +1577,7 @@ bool EngineCore::EnableRenderingLoop(Engine::Renderer::RenderServices* renderSer
         // wave 0 alongside every other dependency-free system.
         schedule.Add<Video::VideoTextureSystem>(
             "VideoTexture", ECS::SystemPhase::Extraction, 8,
-            {"RenderExtraction", "TerrainExtraction"},
+            {"RenderExtraction", "TerrainExtraction", "SpriteAnimation", "TileMapExtraction"},
             renderServices ? renderServices->GetDevice() : nullptr, renderServices);
         SplineECS::AddSplineSystemsToSchedule(schedule);
         SplineRecipes::AddSplineRecipeSystemsToSchedule(schedule, renderServices);

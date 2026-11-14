@@ -1,4 +1,5 @@
 #include "Scene/SceneEditorController.h"
+#include "Automation/UiReplayCommandIds.h"
 
 #include "EditorInputActions.h"
 #include "Editor/Registries/EditorMenuRegistry.h"
@@ -169,6 +170,7 @@ void SceneEditorController::AttachToRoot(UIElement& root,
     // Document manager
     m_Doc = std::make_unique<SceneDocumentManager>();
     m_Doc->SetWorld(m_World);
+    m_Doc->SetUndoRedoService(m_UndoRedo);
     m_Doc->SetChangeNotifications(m_Notifications);
     m_Doc->MarkClean();
     // Supplied before this point: the owner wires it at service-construction
@@ -689,6 +691,8 @@ void SceneEditorController::ShowLoadFailure(LoadFailureKind kind, const Outgoing
 
 void SceneEditorController::Execute(const PendingAction& a)
 {
+    if (m_UndoRedo && !m_UndoRedo->CommitPendingEdit())
+        return;
     if (!m_Doc)
         return;
 
@@ -1329,6 +1333,12 @@ bool SceneEditorController::SaveActiveSceneAs(const std::filesystem::path& scene
     if (m_OnAfterSave)
         m_OnAfterSave(scenePath);
     return true;
+}
+
+void SceneEditorController::RegisterCommands()
+{
+    EditorMenuRegistry::Get().RegisterCommand(
+        {UiReplayCommandIds::SaveScene, [this](std::string* outError) { return SaveActiveScene(outError); }});
 }
 
 void SceneEditorController::AddRecentScenePath(const std::filesystem::path& path) const

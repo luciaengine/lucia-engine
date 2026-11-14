@@ -198,9 +198,10 @@ export class IpcClient extends EventEmitter {
    * freeing, shutdown) drive this client directly to get their own timeouts, so
    * attribution added above them would miss exactly the tools whose job is to
    * say which editor you just attached to. `ge batch` is the deliberate
-   * exception — it opens its own socket and reports its own endpoint. The
-   * endpoint is captured when the answer lands, so it survives the disconnect
-   * those helpers perform.
+   * exception — it opens its own socket and reports its own endpoint — as are
+   * the standalone raw-socket drivers under Tools/ai, which never load this
+   * package. The endpoint is captured when the answer lands, so it survives the
+   * disconnect those helpers perform.
    */
   get answeredCount(): number { return this.answered; }
   get lastAnsweredEndpoint(): string | null { return this.lastAnswerEndpoint; }

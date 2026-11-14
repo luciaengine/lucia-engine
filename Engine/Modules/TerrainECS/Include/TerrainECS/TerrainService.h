@@ -213,6 +213,8 @@ struct TerrainTileData
     // NOT re-generate the normal on the extraction thread (it only re-generates when a modifier bumps
     // HeightfieldVersion — heights actually changed). Guards the O(tileRes^2) extraction-thread stall.
     uint64 NormalmapVersion = 0;
+    // Height version rendered into the atlas normal; CPU normals may lag this cursor.
+    uint64 AtlasNormalVersion = 0;
 
     bool HeightfieldDirty = true;
     uint64 HeightfieldVersion = 0;

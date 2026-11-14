@@ -2,6 +2,7 @@
 
 #include "Rendering/Materials/MaterialAlphaMode.h"
 #include "Rendering/Materials/MaterialBlend/MaterialBlend.h"
+#include "Rendering/Materials/ShaderCompileTarget.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -92,10 +93,8 @@ std::string DescribeParallaxRefusal(ParallaxRefusal refusal, const std::string& 
 /// (ParallaxDepthOffset, ParallaxDepthFromPrepass, ParallaxPrepassDepthMultisample, ParallaxDepthTolerance) reach only a material that marches, so turning the
 /// view on recompiles the parallax variants alone and every other material keeps the variant it
 /// already draws. The compatibility profile never carries the relief's depth: WGSL has no conservative
-/// depth, and a depth-writing fragment there would lose early depth testing. The forward volumetric fog
-/// (MaterialKeyword::VolumetricFog) reaches only blended and transmissive materials: every other
-/// surface takes the volumetric fog from its composite. The clouds in front of a far blended surface
-/// (MaterialKeyword::VolumetricClouds) reach only blended materials.
-MaterialKeyword NarrowColorPassKeywords(MaterialKeyword materialKeywords, MaterialKeyword passKeywords);
+/// depth, and a depth-writing fragment there would lose early depth testing.
+MaterialKeyword NarrowColorPassKeywords(MaterialKeyword materialKeywords, MaterialKeyword passKeywords,
+                                        const ShaderCompileTarget& target);
 
 } // namespace GameEngine::Rendering

@@ -6,6 +6,7 @@
 
 #include <fstream>
 #include <sstream>
+#include <string_view>
 
 #include <nlohmann/json.hpp>
 
@@ -118,24 +119,24 @@ bool TryLoadProjectPackagesManifest(const std::filesystem::path& manifestFile,
         }
     }
 
-    if (doc.contains("disabled"))
+    for (const char* field : {"disabled", "enabled"})
     {
-        const auto& disabled = doc["disabled"];
-        if (!disabled.is_array())
+        if (!doc.contains(field))
+            continue;
+        if (!doc[field].is_array())
         {
-            outError = "Packages/manifest.json (" + manifestFile.generic_string() +
-                       "): field 'disabled': must be an array of package names";
+            outError = "Packages/manifest.json: field '" + std::string(field) + "' must be an array";
             return false;
         }
-        for (const auto& item : disabled)
+        auto& names = std::string_view(field) == "enabled" ? out.Enabled : out.Disabled;
+        for (const auto& item : doc[field])
         {
-            if (!item.is_string())
+            if (!item.is_string() || !IsValidPackageName(item.get<std::string>()))
             {
-                outError = "Packages/manifest.json (" + manifestFile.generic_string() +
-                           "): field 'disabled': must be an array of package names";
+                outError = "Packages/manifest.json: field '" + std::string(field) + "' contains an invalid package name";
                 return false;
             }
-            out.Disabled.insert(item.get<std::string>());
+            names.insert(item.get<std::string>());
         }
     }
 
@@ -148,6 +149,12 @@ bool SetPackageDisabledInProjectManifest(const std::filesystem::path& manifestFi
                                          std::string& outError)
 {
     outError.clear();
+    if (!IsValidPackageName(packageName))
+    {
+        outError = "'" + packageName + "' is not a valid package name";
+        return false;
+    }
+
 
     nlohmann::json doc = nlohmann::json::object();
     std::error_code ec;
@@ -163,12 +170,6 @@ bool SetPackageDisabledInProjectManifest(const std::filesystem::path& manifestFi
         if (!LoadManifestDoc(manifestFile, doc, outError))
             return false;
     }
-    else if (!disabled)
-    {
-        // Enabling a package when no opt-out manifest exists is already the
-        // desired state; keep the project free of an unnecessary empty file.
-        return true;
-    }
     else
     {
         std::filesystem::create_directories(manifestFile.parent_path(), ec);
@@ -180,25 +181,25 @@ bool SetPackageDisabledInProjectManifest(const std::filesystem::path& manifestFi
         }
     }
 
-    // Rebuild the array without the package, then append when disabling —
-    // dedupes historical duplicates as a side effect.
-    nlohmann::json filtered = nlohmann::json::array();
-    if (doc.contains("disabled") && doc["disabled"].is_array())
+    for (const char* field : {"disabled", "enabled"})
     {
-        for (const auto& item : doc["disabled"])
+        if (doc.contains(field) && !doc[field].is_array())
         {
-            if (item.is_string() && item.get<std::string>() == packageName)
-                continue;
-            filtered.push_back(item);
+            outError = "Packages/manifest.json: field '" + std::string(field) + "' must be an array";
+            return false;
         }
+        nlohmann::json filtered = nlohmann::json::array();
+        if (doc.contains(field))
+            for (const auto& item : doc[field])
+                if (item != packageName)
+                    filtered.push_back(item);
+        if (disabled == (std::string_view(field) == "disabled"))
+            filtered.push_back(packageName);
+        if (filtered.empty())
+            doc.erase(field);
+        else
+            doc[field] = std::move(filtered);
     }
-    if (disabled)
-        filtered.push_back(packageName);
-
-    if (filtered.empty())
-        doc.erase("disabled");
-    else
-        doc["disabled"] = std::move(filtered);
 
     return SaveManifestDoc(manifestFile, doc, outError);
 }
@@ -265,19 +266,18 @@ bool RemovePackageFromProjectManifest(const std::filesystem::path& manifestFile,
     if (doc["dependencies"].empty())
         doc.erase("dependencies");
 
-    if (doc.contains("disabled") && doc["disabled"].is_array())
+    for (const char* field : {"disabled", "enabled"})
     {
+        if (!doc.contains(field) || !doc[field].is_array())
+            continue;
         nlohmann::json filtered = nlohmann::json::array();
-        for (const auto& item : doc["disabled"])
-        {
-            if (item.is_string() && item.get<std::string>() == packageName)
-                continue;
-            filtered.push_back(item);
-        }
+        for (const auto& item : doc[field])
+            if (item != packageName)
+                filtered.push_back(item);
         if (filtered.empty())
-            doc.erase("disabled");
+            doc.erase(field);
         else
-            doc["disabled"] = std::move(filtered);
+            doc[field] = std::move(filtered);
     }
 
     return SaveManifestDoc(manifestFile, doc, outError);

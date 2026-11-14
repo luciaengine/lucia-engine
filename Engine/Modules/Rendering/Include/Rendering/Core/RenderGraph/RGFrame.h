@@ -49,6 +49,7 @@ namespace GameEngine::Rendering::RenderGraph
 {
 
 class RGFrame;
+class RGPrepareContext;
 
 // ── Typed frame-local handles (dense per-frame ids underneath) ──────────────
 struct RGTexture
@@ -206,6 +207,21 @@ class RGPassBuilder
     // flag is inert when the parallel-record window is off (serial fallback).
     void RecordInSecondary();
 
+    /// Declares a pipeline that must be ready before this live pass records.
+    void UsePipeline(GraphicsPipelineId pipeline);
+    void UsePipeline(ComputePipelineId pipeline);
+
+    /// Prepares live pass resources after realization and before any command recording.
+    /// Returning false cancels submission of the entire frame.
+    template <class PrepareFn>
+        requires std::is_invocable_r_v<bool, std::decay_t<PrepareFn>&, RGPrepareContext&>
+    void Prepare(PrepareFn&& prepare);
+
+    /// Runs on the caller thread when the submission containing this pass succeeds.
+    template <class SubmittedFn>
+        requires std::is_invocable_r_v<void, std::decay_t<SubmittedFn>&>
+    void OnSubmitted(SubmittedFn&& submitted);
+
   private:
     friend class RGFrame;
     RGFrame* m_Frame = nullptr;
@@ -244,6 +260,8 @@ class RGContext
     // key — lazily, memoized per pass). Compute variants need no key.
     PipelineFormatKey BuildCurrentFormatKey() const;
     uint32_t GetCurrentSampleCount() const;
+    /// Resolve this pass's graphics pipeline ID without building a concrete pipeline.
+    GraphicsPipelineId ResolveGraphicsPipelineId(GraphicsPipelineId id) const;
     PipelineHandle GetOrCreatePipelineVariant(GraphicsPipelineId id) const;
     PipelineHandle GetOrCreatePipelineVariant(ComputePipelineId id) const;
     // Resolve the variant and bind it (logs and leaves state untouched when the
@@ -273,6 +291,35 @@ class RGContext
     uint32_t m_AttCount = 0;
     mutable PipelineFormatKey m_CachedKey{};
     mutable bool m_KeyDirty = true;
+};
+
+/// Caller-thread preparation context. It exposes resources without a command list.
+class RGPrepareContext
+{
+  public:
+    TextureHandle GetTexture(RGTexture texture) const { return m_Context.GetTexture(texture); }
+    BufferHandle GetBuffer(RGBuffer buffer) const { return m_Context.GetBuffer(buffer); }
+    IDevice* GetDevice() const { return m_Context.GetDevice(); }
+    PipelineFormatKey BuildCurrentFormatKey() const { return m_Context.BuildCurrentFormatKey(); }
+    /// Resolve this pass's specialization without building a concrete backend pipeline.
+    GraphicsPipelineId ResolveGraphicsPipelineId(GraphicsPipelineId pipeline) const
+    {
+        return m_Context.ResolveGraphicsPipelineId(pipeline);
+    }
+    uint32_t GetCurrentSampleCount() const { return m_Context.GetCurrentSampleCount(); }
+    PipelineHandle PreparePipeline(GraphicsPipelineId pipeline) const
+    {
+        return m_Context.GetOrCreatePipelineVariant(pipeline);
+    }
+    PipelineHandle PreparePipeline(ComputePipelineId pipeline) const
+    {
+        return m_Context.GetOrCreatePipelineVariant(pipeline);
+    }
+
+  private:
+    friend class RGFrame;
+    explicit RGPrepareContext(const RGContext& context) : m_Context(context) {}
+    RGContext m_Context;
 };
 
 // ── Recording rules (pure; pinned by unit tests) ────────────────────────────
@@ -402,6 +449,10 @@ class RGFrame
     // frame rather than a capture stating it once. An external import has no
     // pool to carry it and stays as its owner declared it.
     void RequireTransferUsage(RGTexture t, TextureUsage usage);
+
+    /// Set immutable graphics constant overrides before recording the pass.
+    void SetGraphicsPipelineSpecialization(RGPass pass,
+        std::shared_ptr<const SpecializationConstants> values);
     // outNeedsZeroInit (optional) reports that the physical is fresh (first use
     // or desc-change realloc) and no EXECUTED frame has zero-filled it yet.
     // Pool memory is never zero-initialized and can be recycled from an
@@ -507,6 +558,14 @@ class RGFrame
         return TypedUpload<T>{static_cast<T*>(a.Ptr), a.Buffer, a.Offset};
     }
 
+    /// Allocates pass state that survives preparation and recording until the next frame reset.
+    template <class T, class... Args>
+        requires std::is_constructible_v<T, Args...>
+    T* AllocatePassData(Args&&... args)
+    {
+        return m_Graph.Arena().New<T>(std::forward<Args>(args)...);
+    }
+
     // Declare a pass. `setup` runs IMMEDIATELY (by-ref captures fine); `exec`
     // is stored — placement-new'd into the frame arena — and runs inside
     // Execute() in scheduled order. `exec` MUST capture by value.
@@ -549,6 +608,18 @@ class RGFrame
     // Invalid when nothing has been submitted there, which reads as
     // GpuSyncStatus::Unknown — never as completion.
     IDevice::GpuSyncToken SubmissionToken(RGQueue queue = RGQueue::Graphics) const;
+    // Every submission in this frame depends on this already-enqueued producer.
+    // Retain the producer timeline until the waiting submissions complete.
+    void AddSubmissionWait(IDevice::GpuSyncToken producer, bool orderedGraphicsFallback = false);
+    // Export completion of all live passes declared so far, if the backend
+    // can signal between passes on a single graphics submission. The caller
+    // still owns the fallback to the final token for other submission plans.
+    void ExportDeclaredWorkCompletion() { m_ExportPassCount = m_Graph.PassCount(); }
+    // GPU-only completion point. Use SubmissionToken for CPU waits or queries.
+    IDevice::GpuSyncToken DeclaredWorkCompletionToken() const { return m_ExportedWork; }
+    // A submitted early token replaces only waits tagged as its fallback,
+    // and only when it can be encoded on the sole graphics submission.
+    void AddOrderedGraphicsWait(IDevice::GpuSyncToken producer);
 
     // Recording statistics for the last Execute() (tests + MCP).
     struct FrameStats
@@ -569,6 +640,17 @@ class RGFrame
         double ScheduleMs = 0.0;           // RGGraph::Schedule
         double GenerateBarriersMs = 0.0;   // RGGraph::GenerateBarriers (barrier COMPUTE)
         double BuildSubmissionPlanMs = 0.0; // RGGraph::BuildSubmissionPlan
+        double ParallelRecordWallMs = 0.0; // elapsed fork + join on the caller
+        double WorkerRecordMs = 0.0; // sum of callback work; workers may overlap
+        uint32_t SecondaryPassesEligible = 0;
+        uint32_t SecondaryPassesRecorded = 0;
+        uint32_t SecondaryPassesFallback = 0;
+        uint32_t InlinePassesRecorded = 0;
+        // These two wall times describe the latest Execute attempt, including retries.
+        double PrepareMs = 0.0;
+        double RecordAndSubmitMs = 0.0; // includes fork/join and submission; zero when not recorded
+        uint32_t PreparedPasses = 0;
+        uint32_t PreparationFailures = 0;
         double QueueSubmitMs = 0.0;        // Σ IDevice::QueueSubmit across submissions
         double BarrierEmitMs = 0.0;        // Σ vkCmd*Barrier recording (hoist + per-pass + export)
     };
@@ -599,7 +681,8 @@ class RGFrame
         uint32_t PassId = kInvalidId;
         int32_t Phase = 0;
         RGQueue Queue = RGQueue::Graphics;
-        double CpuMs = 0.0; // record-side wall time of the pass bracket
+        double CpuMs = 0.0; // primary-command-list bracket, excluding worker recording
+        double WorkerRecordMs = 0.0; // this pass's secondary callback on its worker
         // GPU cost of the pass bracket, 0 until resolved (or on read failure).
         // What exactly it measures depends on the backend — see
         // TimingSemantics(). Under EncoderSpan it is an upper bound that may be
@@ -763,6 +846,7 @@ class RGFrame
 
   private:
     void ResetRecording();
+    void MaintainPools();
     friend class RGPassBuilder;
     friend class RGContext;
 
@@ -778,6 +862,7 @@ class RGFrame
         RGPassBuilder b;
         b.m_Frame = this;
         b.m_Pass = id;
+        m_Prepare.emplace_back();
         setup(b);
         // Decision (b): templated placement-new into the frame arena — the
         // concrete closure type, never std::function (no per-pass heap).
@@ -791,6 +876,30 @@ class RGFrame
     static void InvokeThunk(void* fn, RGContext& ctx)
     {
         (*static_cast<F*>(fn))(ctx);
+    }
+
+    template <class PrepareFn>
+    void SetPrepare(RGPassId pass, PrepareFn&& prepare)
+    {
+        using Function = std::decay_t<PrepareFn>;
+        static_assert(std::is_invocable_r_v<bool, Function&, RGPrepareContext&>);
+        assert(m_Prepare[pass].Fn == nullptr && "a pass has one preparation callback");
+        Function* function = m_Graph.Arena().New<Function>(std::forward<PrepareFn>(prepare));
+        m_Prepare[pass].Invoke = [](void* value, RGPrepareContext& context)
+                                { return (*static_cast<Function*>(value))(context); };
+        m_Prepare[pass].Fn = function;
+    }
+
+    template <class SubmittedFn>
+    void SetOnSubmitted(RGPassId pass, SubmittedFn&& submitted)
+    {
+        using Function = std::decay_t<SubmittedFn>;
+        if (m_OnSubmitted.size() <= pass)
+            m_OnSubmitted.resize(pass + 1);
+        auto& callback = m_OnSubmitted[pass];
+        assert(callback.Fn == nullptr && "a pass has one submission callback");
+        callback.Fn = m_Graph.Arena().New<Function>(std::forward<SubmittedFn>(submitted));
+        callback.Invoke = [](void* value) { (*static_cast<Function*>(value))(); };
     }
 
     uint64_t PhysicalOf(RGResourceId id) const
@@ -822,6 +931,23 @@ class RGFrame
         void (*Invoke)(void*, RGContext&);
         void* Fn;
     };
+    struct PrepareThunk
+    {
+        bool (*Invoke)(void*, RGPrepareContext&) = nullptr;
+        void* Fn = nullptr;
+        uint32_t RequiredFirst = 0;
+        uint32_t RequiredCount = 0;
+    };
+    struct SubmitThunk
+    {
+        void (*Invoke)(void*) = nullptr;
+        void* Fn = nullptr;
+    };
+    struct PipelineRequirement
+    {
+        GraphicsPipelineId Graphics{};
+        ComputePipelineId Compute{};
+    };
     struct PendingTex
     {
         RGResourceId Id;
@@ -848,6 +974,7 @@ class RGFrame
     const ImportRec* FindImport(uint64_t physical, RGResourceKind kind) const;
 
     // ── Command recording / submission (RGRecord.cpp) ──
+    bool PreparePasses();
     void RecordAndSubmit();
     CommandList* GetOrCreateCommandList(uint8_t physicalQueue);
     void EnsureTimeline(uint8_t physicalQueue);
@@ -884,6 +1011,9 @@ class RGFrame
     uint64_t m_SubmittedFrameCount = 0;
 
     RGGraph m_Graph;
+    std::vector<PrepareThunk> m_Prepare;
+    std::vector<SubmitThunk> m_OnSubmitted;
+    std::vector<PipelineRequirement> m_RequiredPipelines;
     std::vector<ExecThunk> m_Exec; // indexed by pass id
     std::vector<PendingTex> m_PendingTex;
     std::vector<PendingBuf> m_PendingBuf;
@@ -973,6 +1103,17 @@ class RGFrame
     std::vector<std::pair<uint32_t, uint32_t>> m_ScratchAttRange; // per pass (first,count)
     std::vector<const RGBarrierBatch*> m_ScratchBatchOfSched;
     std::vector<CommandList*> m_ScratchSubmitLists;
+    struct ExternalSubmissionWait
+    {
+        IDevice::GpuSyncToken Token;
+        bool OrderedGraphicsFallback;
+    };
+    std::vector<ExternalSubmissionWait> m_ExternalSubmissionWaits;
+    size_t m_ExportPassCount = 0;
+    SemaphoreHandle m_ExportTimeline{};
+    uint64_t m_ExportSignalValue = 0;
+    IDevice::GpuSyncToken m_ExportedWork{};
+    IDevice::GpuSyncToken m_OrderedGraphicsWait{};
     std::vector<std::pair<SemaphoreHandle, uint64_t>> m_ScratchWaits;
     std::vector<std::pair<SemaphoreHandle, uint64_t>> m_ScratchSignals;
 
@@ -981,10 +1122,26 @@ class RGFrame
     RecordParallelFn m_RecordParallel;
     // Per-pass RecordInSecondary opt-in (indexed by pass id; reset each frame).
     std::vector<uint8_t> m_PassRecordSecondary;
+    std::vector<std::shared_ptr<const SpecializationConstants>> m_GraphicsSpecializations;
     // Worker-recorded secondary command lists (indexed by pass id; a null slot =
     // that pass records inline). Kept alive from Phase R1 through submit; retired
     // to the device after the last QueueSubmit, then cleared next BeginFrame.
     std::vector<std::unique_ptr<CommandList>> m_Secondary;
+    std::vector<double> m_SecondaryRecordMs;
 };
+
+template <class PrepareFn>
+    requires std::is_invocable_r_v<bool, std::decay_t<PrepareFn>&, RGPrepareContext&>
+void RGPassBuilder::Prepare(PrepareFn&& prepare)
+{
+    m_Frame->SetPrepare(m_Pass, std::forward<PrepareFn>(prepare));
+}
+
+template <class SubmittedFn>
+    requires std::is_invocable_r_v<void, std::decay_t<SubmittedFn>&>
+void RGPassBuilder::OnSubmitted(SubmittedFn&& submitted)
+{
+    m_Frame->SetOnSubmitted(m_Pass, std::forward<SubmittedFn>(submitted));
+}
 
 } // namespace GameEngine::Rendering::RenderGraph

@@ -73,6 +73,7 @@ public:
 
 private:
     void BuildReplyActions(const std::vector<std::string>& actionIds);
+    void BuildFileChips(const std::vector<std::string>& files);
     void BuildMarkupChips(const std::vector<MarkupChip>& chips);
     void ShowStatus(const AgentConversationRowModel& model);
     void ShowCalls(const std::vector<AgentCallRowModel>& calls);
@@ -103,6 +104,8 @@ private:
     UIElement* m_Status = nullptr;
     UIElement* m_Actions = nullptr;
     bool m_ReplyActionsBuilt = false;
+    /// The names of the files attached to a user message; hidden without any.
+    UIElement* m_FileChips = nullptr;
     /// The chips of the mark-ups a user message names; hidden without any.
     UIElement* m_MarkupChips = nullptr;
     /// Holds m_SetupRefusal; hidden unless the setup check refused the reply.

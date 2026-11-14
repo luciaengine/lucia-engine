@@ -7,7 +7,7 @@
 // re-declaring the block.
 //
 // Fields come from the shared list (Includes/view_params_fields.glsl); this is
-// the full 720 B block. ViewParamsUBO in Rendering/Core/ViewParamsLayout.h
+// the full 736 B block. ViewParamsUBO in Rendering/Core/ViewParamsLayout.h
 // mirrors the same list on the C++ side.
 //
 // The block is at binding 7. A pass whose own layout uses binding 7 defines GE_VIEW_PARAMS_BINDING

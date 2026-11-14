@@ -16,7 +16,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <limits>
 #include <vector>
 
 namespace
@@ -75,7 +74,6 @@ void EnableZoneLifecycle(ECS::World& world)
 {
     world.EnableLifecycleEvents<Components::TerrainSculptZone>();
     world.EnableLifecycleEvents<Components::TerrainPaintZone>();
-    world.EnableLifecycleEvents<Components::TerrainColorZone>();
 }
 
 ECS::EntityHandle CreateFlatTerrainEntity(ECS::World& world, TerrainHandle handle,
@@ -308,26 +306,6 @@ TEST(TerrainZonePayload, CodecRoundTripsSculptAndPaint)
     EXPECT_EQ(pOut.Mask, paint.Mask);
 }
 
-// A colour payload carries four floats per texel (straight colour and weight) through the
-// .tzone codec exactly, including a weight of 0 (identity) and the small steps a soft dab writes.
-TEST(TerrainZonePayload, CodecRoundTripsColor)
-{
-    TerrainZonePayload color;
-    color.Allocate(ZonePayloadFormat::ColorRGBA32F, 7, 3);
-    ASSERT_EQ(color.Color.size(), 7u * 3u * kZonePayloadColorChannels);
-    for (size_t i = 0; i < color.Color.size(); ++i)
-        color.Color[i] = static_cast<float32>(i) * 0.0013f;
-    const std::vector<uint8> blob = EncodeZonePayload(color);
-    TerrainZonePayload out;
-    ASSERT_TRUE(DecodeZonePayload(blob.data(), blob.size(), out));
-    EXPECT_EQ(out.Format, ZonePayloadFormat::ColorRGBA32F);
-    EXPECT_EQ(out.Width, 7u);
-    EXPECT_EQ(out.Height, 3u);
-    EXPECT_EQ(out.Color, color.Color);
-    EXPECT_TRUE(out.Mask.empty());
-    EXPECT_TRUE(out.Offsets.empty());
-}
-
 TEST(TerrainZonePayload, DecodeRejectsGarbage)
 {
     const uint8 garbage[8] = {1, 2, 3, 4, 5, 6, 7, 8};
@@ -340,24 +318,6 @@ TEST(TerrainZonePayload, DecodeRejectsGarbage)
     std::vector<uint8> blob = EncodeZonePayload(full);
     blob.resize(blob.size() - 4);
     EXPECT_FALSE(DecodeZonePayload(blob.data(), blob.size(), out));
-}
-
-// A colour payload holding NaN or infinity in a colour channel or the weight is refused whole.
-TEST(TerrainZonePayload, DecodeRejectsNonFiniteColor)
-{
-    for (const float32 bad : {std::numeric_limits<float32>::quiet_NaN(), std::numeric_limits<float32>::infinity()})
-    {
-        for (uint32 channel : {0u, 3u})
-        {
-            TerrainZonePayload color;
-            color.Allocate(ZonePayloadFormat::ColorRGBA32F, 2, 2);
-            color.Color[kZonePayloadColorChannels + channel] = bad;
-            const std::vector<uint8> blob = EncodeZonePayload(color);
-            TerrainZonePayload out;
-            EXPECT_FALSE(DecodeZonePayload(blob.data(), blob.size(), out)) << "channel " << channel;
-            EXPECT_TRUE(out.Color.empty());
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -602,46 +562,6 @@ TEST(TerrainZoneBake, PaintZoneWritesLayerWeight)
     const size_t obase = (static_cast<size_t>(cx) * data->SplatmapWidth + ox) * 4;
     EXPECT_LT(data->Splatmap[obase + 2], 100);
     EXPECT_GT(data->Splatmap[base + 2], data->Splatmap[obase + 2]);
-}
-
-// A paint zone reads an R8 mask and nothing else: pointed at a colour payload (four floats per
-// texel), it paints nothing, so the splat equals the splat of the same terrain with no zone.
-TEST(TerrainZoneBake, ColorPayloadNeverReachesAPaintZone)
-{
-    ScopedTerrainService scoped;
-    auto& svc = TerrainService::Get();
-    const TerrainHandle handle = CreateFlatTerrain(svc);
-    auto* data = svc.GetTerrainData(handle);
-
-    TerrainZonePayload color;
-    color.Allocate(ZonePayloadFormat::ColorRGBA32F, 33, 33);
-    std::fill(color.Color.begin(), color.Color.end(), 1.0f);
-    const GUID payload = GUID::Generate();
-    svc.SeedZonePayloadForTests(payload, std::move(color));
-
-    ECS::World world;
-    EnableZoneLifecycle(world);
-    CreateFlatTerrainEntity(world, handle, Components::TerrainBaseSource::Flat);
-    // A sculpt zone with no payload keeps the bake running, so the splat is baked with and
-    // without the paint zone by the same path.
-    CreateSculptZone(world, GUID{}, 8.0f, 8.0f, MakeYRotScaleXf(90.0f, 90.0f, 0.0f, 1.0f, 1.0f));
-    TerrainModifierSystem system;
-    system.Update(world, 1.0f / 60.0f);
-    const std::vector<uint8> withoutZone = data->Splatmap;
-    ASSERT_FALSE(withoutZone.empty());
-
-    auto e = world.CreateEntity();
-    Components::TerrainPaintZone z{};
-    z.ExtentX = 24.0f;
-    z.ExtentZ = 24.0f;
-    z.Falloff = 0.0f;
-    z.LayerIndex = 2;
-    z.PayloadRef.Set(payload);
-    world.AddComponentImmediate<Components::TerrainPaintZone>(e, z);
-    world.AddComponentImmediate<Components::WorldTransform>(e, MakeYRotScaleXf(0.0f, 0.0f, 0.0f, 1.0f, 1.0f));
-    system.Update(world, 1.0f / 60.0f);
-
-    EXPECT_EQ(data->Splatmap, withoutZone);
 }
 
 // ---------------------------------------------------------------------------

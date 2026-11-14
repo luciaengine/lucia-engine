@@ -1059,7 +1059,7 @@ void TerrainPages::CollectPlanetChanges(PagedPlanet& planet)
         const std::vector<uint8>* bytes = m_Residency.Bytes(planet.Stream, upload.Page.Address);
         if (bytes == nullptr)
             continue;
-        HeightPageUpload& out = m_Uploads.emplace_back(HeightPageUpload{upload.Slot, *bytes});
+        HeightPageUpload& out = m_Uploads.emplace_back(HeightPageUpload{upload.Slot, *bytes, planet.RenderTerrain});
         ApplyPlanetLayers(planet, upload.Page.Address, PageStreaming::HeightSamples(out.Bytes));
         changed = true;
     }
@@ -1144,7 +1144,7 @@ void TerrainPages::CollectStreamChanges(uint32 terrainKey, PagedTerrain& terrain
         const std::vector<uint8>* bytes = m_Residency.Bytes(terrain.Stream, upload.Page.Address);
         if (bytes == nullptr)
             continue;
-        HeightPageUpload& out = m_Uploads.emplace_back(HeightPageUpload{upload.Slot, *bytes});
+        HeightPageUpload& out = m_Uploads.emplace_back(HeightPageUpload{upload.Slot, *bytes, terrainKey});
         if (terrain.Overlay)
             terrain.Overlay->ApplyToPage(upload.Page.Address, PageStreaming::HeightSamples(out.Bytes));
     }

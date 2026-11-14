@@ -13,27 +13,27 @@ namespace Mathematics {
 /// The components are plain members, not a union, so constant expressions can read them by index.
 struct Vector3Int
 {
-    int32_t x = 0;
-    int32_t y = 0;
-    int32_t z = 0;
+    int32_t X = 0;
+    int32_t Y = 0;
+    int32_t Z = 0;
 
     constexpr Vector3Int() = default;
-    constexpr Vector3Int(int32_t x_, int32_t y_, int32_t z_) : x(x_), y(y_), z(z_) {}
+    constexpr Vector3Int(int32_t xValue, int32_t yValue, int32_t zValue) : X(xValue), Y(yValue), Z(zValue) {}
 
-    /// Component by index: 0 is `x`, 1 is `y`, 2 is `z`. The caller keeps the index below 3.
-    constexpr int32_t operator[](std::size_t index) const { return index == 0 ? x : (index == 1 ? y : z); }
+    /// Component by index: 0 is `X`, 1 is `Y`, 2 is `Z`. The caller keeps the index below 3.
+    constexpr int32_t operator[](std::size_t index) const { return index == 0 ? X : (index == 1 ? Y : Z); }
 
     constexpr bool operator==(const Vector3Int& other) const = default;
 
-    constexpr Vector3Int operator+(const Vector3Int& other) const { return Vector3Int(x + other.x, y + other.y, z + other.z); }
+    constexpr Vector3Int operator+(const Vector3Int& other) const { return Vector3Int(X + other.X, Y + other.Y, Z + other.Z); }
 
     /// Each component divided by `divisor`, rounded toward zero.
-    constexpr Vector3Int operator/(int32_t divisor) const { return Vector3Int(x / divisor, y / divisor, z / divisor); }
+    constexpr Vector3Int operator/(int32_t divisor) const { return Vector3Int(X / divisor, Y / divisor, Z / divisor); }
 
     /// The same point as a float vector.
     constexpr explicit operator Vector3() const
     {
-        return Vector3(static_cast<float>(x), static_cast<float>(y), static_cast<float>(z));
+        return Vector3(static_cast<float>(X), static_cast<float>(Y), static_cast<float>(Z));
     }
 };
 

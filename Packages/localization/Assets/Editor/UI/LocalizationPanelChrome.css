@@ -1,0 +1,16 @@
+/* The Localization panel's icon, on its dock tab and in the panel menus (the Window menu and the
+   toolbar's panel list read this class's image). Loaded into the editor's own cascade by the
+   package's editor module, since the tab and the menus sit outside the panel. */
+.localization-tab-icon {
+	background-image: url("localization:Editor/Icons/localization.svg");
+	background-size: 16px 16px;
+	background-repeat: no-repeat;
+	background-position: center;
+	background-image-tint: rgba(255, 255, 255, 0.35);
+	background-color: transparent;
+	border-width: 0;
+}
+
+.localization-tab-icon:hover {
+	background-image-tint: rgba(255, 255, 255, 1.0);
+}

@@ -15,6 +15,8 @@ enum class PipelineStageMask : uint64_t {
     ComputeShader     = 1ull << 4,
     Transfer          = 1ull << 5,
     DrawIndirect      = 1ull << 6,
+    /// CPU access scope; wait for submission completion before mapped reads.
+    Host              = 1ull << 7,
 };
 
 inline PipelineStageMask operator|(PipelineStageMask a, PipelineStageMask b) {
@@ -38,6 +40,8 @@ enum class ResourceAccessMask : uint64_t {
     TransferRead          = 1ull << 7,
     TransferWrite         = 1ull << 8,
     IndirectCommandRead   = 1ull << 9,
+    IndexRead             = 1ull << 10,
+    HostRead              = 1ull << 11,
 };
 
 inline ResourceAccessMask operator|(ResourceAccessMask a, ResourceAccessMask b) {

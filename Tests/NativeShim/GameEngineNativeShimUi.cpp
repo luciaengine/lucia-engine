@@ -102,7 +102,6 @@ bool IsKnownEvent(const char* name)
     if (!name)
         return false;
     static const char* const kNames[] = {"UI.ButtonClick",   "UI.MouseEnter",    "UI.MouseMove",
-                                         "UI.MouseDown",     "UI.MouseUp",       "UI.MouseCancel",
                                          "UI.FocusIn",       "UI.ValueChanging", "UI.ValueChanged",
                                          "UI.ScrollOffsetChanged", "UI.AttachedToPanel",
                                          "UI.DetachedFromPanel"};
@@ -235,30 +234,6 @@ GE_API GE_Result GE_CDECL GE_GameUI_FindElement(uint64_t /*entityId*/, const cha
 GE_API GE_Result GE_CDECL GE_UIElement_SetWidthPercent(uint64_t instanceId, float /*pct*/)
 {
     return Resolve(instanceId) ? GE_Result_Ok : GE_Result_NotFound;
-}
-
-GE_API GE_Result GE_CDECL GE_UIElement_SetOffset(uint64_t instanceId, float /*x*/, float /*y*/)
-{
-    return Resolve(instanceId) ? GE_Result_Ok : GE_Result_NotFound;
-}
-
-// The element holding the pointer, as the real export's manager records it; 0 when none does.
-static uint64_t s_PointerHolderInstanceId = 0;
-
-GE_API GE_Result GE_CDECL GE_UIElement_CapturePointer(uint64_t instanceId)
-{
-    if (!Resolve(instanceId))
-        return GE_Result_NotFound;
-    s_PointerHolderInstanceId = instanceId;
-    return GE_Result_Ok;
-}
-
-GE_API GE_Result GE_CDECL GE_UIElement_ReleasePointer(uint64_t instanceId)
-{
-    if (instanceId == 0 || instanceId != s_PointerHolderInstanceId)
-        return GE_Result_NotFound;
-    s_PointerHolderInstanceId = 0;
-    return GE_Result_Ok;
 }
 
 GE_API GE_Result GE_CDECL GE_UIElement_SetLabelText(uint64_t instanceId, const char* /*text*/)
@@ -697,28 +672,6 @@ GE_API GE_Result GE_CDECL GE_TestUI_Dispatch(uint64_t instanceId, const char* ev
     return GE_Result_Ok;
 }
 
-// Raise a pointer button event: the pointer-shaped dispatch plus the button. Separate from
-// GE_TestUI_Dispatch so the callers that only send a position keep their signature.
-GE_API GE_Result GE_CDECL GE_TestUI_DispatchPress(uint64_t instanceId, const char* eventName, float x, float y,
-                                                 int32_t button, int32_t mods, int32_t* outInvoked)
-{
-    if (outInvoked)
-        *outInvoked = 0;
-    if (!IsKnownEvent(eventName))
-        return GE_Result_InvalidArg;
-    GE_UIEventData data{};
-    data.elementInstanceId = instanceId;
-    data.eventId = Fnv1a64(eventName);
-    data.x = x;
-    data.y = y;
-    data.button = button;
-    data.mods = mods;
-    const int invoked = DispatchToSubscribers(instanceId, eventName, data);
-    if (outInvoked)
-        *outInvoked = invoked;
-    return GE_Result_Ok;
-}
-
 // Register a do-nothing subscription and hand back the export's own result code, so a test
 // can observe the ABI's argument rules without owning a managed callback.
 // Raise an event that carries a PAYLOAD rather than a pointer position — a value change or
@@ -972,26 +925,6 @@ GE_API GE_Result GE_CDECL GE_TestUI_ResetTypeLifecycle()
     g_WindowRequests = 0;
     // g_PerformRegistrations is deliberately kept: the managed side installs it once per process
     // (installation is first-wins), so clearing it would make every test after the first blind.
-    return GE_Result_Ok;
-}
-
-GE_API GE_Result GE_CDECL GE_UIElement_SetZIndex(uint64_t instanceId, int32_t /*zIndex*/)
-{
-    return Resolve(instanceId) ? GE_Result_Ok : GE_Result_NotFound;
-}
-
-GE_API GE_Result GE_CDECL GE_UIElement_GetRect(uint64_t instanceId, float* x, float* y, float* width, float* height)
-{
-    if (!x || !y || !width || !height)
-        return GE_Result_InvalidArg;
-
-    if (!Resolve(instanceId))
-        return GE_Result_NotFound;
-
-    *x = 0.0f;
-    *y = 0.0f;
-    *width = 0.0f;
-    *height = 0.0f;
     return GE_Result_Ok;
 }
 

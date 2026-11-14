@@ -32,7 +32,7 @@
 #include "Components/Name.h"
 #include "Components/PrefabInstance.h"
 #include "Core/Engine.h"
-#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/ComponentFieldRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
 #include "Events/Event.h"

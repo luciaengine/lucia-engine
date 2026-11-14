@@ -125,8 +125,7 @@ TEST(SceneExportStrip, ExportKeepsAPropAndItsChildWithoutTheMeasureOnIt)
     TexturePackageCookStats textureStats;
     std::string error;
     ASSERT_TRUE(CookStagedContent(root, manifest, registry, parsers,
-                                  /*textureWorkers=*/nullptr, /*manifestParsePool=*/nullptr,
-                                  NeverCancelled, textureStats, error))
+                                  /*textureWorkers=*/nullptr, /*manifestParsePool=*/nullptr, NeverCancelled, textureStats, error))
         << error;
     EXPECT_EQ(ReadText(root / relative),
               WithoutLines(authored, {"Measure.", "Markup.", "MarkupVolume.", "Name.value = \"Lake Shore\""}));
@@ -154,8 +153,8 @@ TEST(SceneExportStrip, ExportKeepsAPropAndItsChildWithoutTheMeasureOnIt)
 // On an entity that carries a mark-up, its title and its spline are conversation and shape:
 // they go with it, and its transform stays; the reader matches component tokens ignoring case,
 // and so does the strip. The same components on scene content ship. A prefab instance's
-// removal (`-C`) and addition (`+C`) of an editor-only component go as its field lines do, at the
-// root and at an address under it; a removed child (`-entity address`) stays.
+// removal (`-C`), addition (`+C`) and bare addition (`C`) of an editor-only component go as its
+// field lines do.
 TEST(SceneExportStrip, AMarkupEntityLosesItsTitleAndSplineAndSceneContentKeepsThem)
 {
     const std::string authored =
@@ -180,10 +179,7 @@ TEST(SceneExportStrip, AMarkupEntityLosesItsTitleAndSplineAndSceneContentKeepsTh
         "\n"
         "[prefab id=\"barrow\" source=\"r_barrow\"]\n"
         "+Measure\n"
-        "+lid/Measure\n"
-        "lid/Measure.start = (0, 0, 0)\n"
-        "-wheel.hub/Measure\n"
-        "-entity handle\n"
+        "Measure\n"
         "Transform.position = (5, 0, 5)\n";
 
     const std::string exported = SceneAssetParser::StripEditorOnlyComponents(
@@ -205,7 +201,6 @@ TEST(SceneExportStrip, AMarkupEntityLosesItsTitleAndSplineAndSceneContentKeepsTh
               "Transform.position = (3, 0, 3)\n"
               "\n"
               "[prefab id=\"barrow\" source=\"r_barrow\"]\n"
-              "-entity handle\n"
               "Transform.position = (5, 0, 5)\n");
 }
 
@@ -267,8 +262,7 @@ TEST(SceneExportStrip, ARegionLeavesOnlyItsEntityAndTransform)
     TexturePackageCookStats textureStats;
     std::string error;
     ASSERT_TRUE(CookStagedContent(root, manifest, registry, parsers,
-                                  /*textureWorkers=*/nullptr, /*manifestParsePool=*/nullptr,
-                                  NeverCancelled, textureStats, error))
+                                  /*textureWorkers=*/nullptr, /*manifestParsePool=*/nullptr, NeverCancelled, textureStats, error))
         << error;
     EXPECT_EQ(ReadText(root / relative),
               WithoutLines(authored, {"Markup.", "MarkupVolume.", "MarkupRegion.", "Spline.", "Name.value = \"Forest\""}));

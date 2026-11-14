@@ -2,6 +2,7 @@
 #include <string>
 #include <filesystem>
 #include "Rendering/Text/FTUtils.h"
+#include "Platform/Shell.h"
 using GameEngine::Rendering::Text::FreeTypeLib;
 using GameEngine::Rendering::Text::FreeTypeFace;
 
@@ -10,15 +11,13 @@ TEST(TextCoreMetrics, WidthIncreasesWithMoreCharacters)
 #if !defined(GE_HAVE_FREETYPE)
     GTEST_SKIP() << "FreeType not available";
 #else
-    // Try a common Windows font; if not found, test will skip
-    const char* windir = std::getenv("WINDIR");
-    if (!windir) GTEST_SKIP() << "No WINDIR env";
-    std::string fontsDir = std::string(windir) + "\\Fonts\\";
-    std::string font = fontsDir + "segoeui.ttf";
-    if (!std::filesystem::exists(font)) GTEST_SKIP() << "Font not found";
+    const auto font = GameEngine::Platform::GetExecutablePath().parent_path() /
+        "Assets/Fonts/Roboto-Regular.ttf";
+    ASSERT_TRUE(std::filesystem::exists(font)) << "Bundled test font missing: " << font;
+
 
     FreeTypeLib lib; ASSERT_TRUE(lib.Init());
-    FreeTypeFace face; ASSERT_TRUE(face.NewFace(lib.Lib(), font.c_str()));
+    FreeTypeFace face; ASSERT_TRUE(face.NewFace(lib.Lib(), font.string().c_str()));
     face.SetPixelSizes(32);
 
     auto measure = [&](const char* s){
@@ -40,14 +39,13 @@ TEST(TextCoreMetrics, HeightRoughlyEqualsFontSize)
 #if !defined(GE_HAVE_FREETYPE)
     GTEST_SKIP() << "FreeType not available";
 #else
-    const char* windir = std::getenv("WINDIR");
-    if (!windir) GTEST_SKIP() << "No WINDIR env";
-    std::string fontsDir = std::string(windir) + "\\Fonts\\";
-    std::string font = fontsDir + "segoeui.ttf";
-    if (!std::filesystem::exists(font)) GTEST_SKIP() << "Font not found";
+    const auto font = GameEngine::Platform::GetExecutablePath().parent_path() /
+        "Assets/Fonts/Roboto-Regular.ttf";
+    ASSERT_TRUE(std::filesystem::exists(font)) << "Bundled test font missing: " << font;
+
 
     FreeTypeLib lib; ASSERT_TRUE(lib.Init());
-    FreeTypeFace face; ASSERT_TRUE(face.NewFace(lib.Lib(), font.c_str()));
+    FreeTypeFace face; ASSERT_TRUE(face.NewFace(lib.Lib(), font.string().c_str()));
     face.SetPixelSizes(48);
     float h = 0.0f;
     if (face.Face()->size)

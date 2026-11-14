@@ -283,15 +283,6 @@ WGPUTextureSampleType SampleTypeFromBinding(const DescriptorBinding& binding)
     // Float (filterable) sample type on a multisampled layout entry.
     if (binding.imageMultisample)
         return WGPUTextureSampleType_UnfilterableFloat;
-    // A sampled image that reflection saw no stage filter, separate or combined, is read
-    // with textureLoad only, on any stage. UnfilterableFloat accepts every float
-    // format Float does and depth32float besides, which a second, raw-depth
-    // binding of a shadow map needs (shadow_sampling.glsl's ge_shadowMapRaw), and so
-    // does a texelFetch of a single-sample depth attachment (sun_glare.vert's probe).
-    if ((binding.type == DescriptorType::Texture ||
-         binding.type == DescriptorType::CombinedImageSampler) &&
-        binding.imageUsageReflected && !binding.imageFilterableFloat)
-        return WGPUTextureSampleType_UnfilterableFloat;
     // Reflection records actual usage: imageFilterableFloat is true exactly
     // when some stage samples this binding through a filtering-capable op
     // (ImageInfo.Filtered from the SPIR-V walk). For compute the bit is

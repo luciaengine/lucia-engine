@@ -122,7 +122,7 @@ private:
 
 #if defined(_WIN32)
     void* m_ProcessHandle = nullptr;        // HANDLE; nullptr when idle
-#else
+#elif !defined(GE_PLATFORM_MOBILE)
     int   m_Pid = -1;                       // child pid; -1 when idle
 #endif
 };

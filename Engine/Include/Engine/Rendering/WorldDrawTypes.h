@@ -12,6 +12,7 @@
 #include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Materials/MaterialAlphaMode.h"
 #include "Types/Types.h"
+#include "Engine/Rendering/RenderSortKey.h"
 
 #include <cstdint>
 
@@ -45,6 +46,8 @@ struct WorldSubmissionRecord
     const Material* material = nullptr;      // Runtime material (non-owning)
     uint32 instanceIndex{0};                 // Index into GPUScene instance buffer
     Rendering::RenderLayerMask renderLayerMask = Rendering::RenderLayerMask::None();
+    RenderSortingData Sorting{};
+    ECS::EntityHandle SortingOwner{};
     uint32 flags{0};                         // e.g., opaque/transparent, castsShadows
 };
 

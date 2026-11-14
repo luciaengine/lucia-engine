@@ -32,11 +32,6 @@ namespace GameEngine { namespace Rendering {
 
 namespace {
 static std::atomic<uint64_t> g_TotalCompilations{0};
-// Highest SPIR-V version the active backend can consume (see SetMaxSupportedSpirv).
-// Defaults to 1.5 so that, absent a backend, shaders compile to the widely-loadable
-// target.
-static std::atomic<ShaderCompileService::SpirvTarget> g_MaxBackendSpirv{
-    ShaderCompileService::SpirvTarget::Spirv_1_5};
 // Whether this process may compile shader source. A shaderc-less build can
 // never turn it on; a build that has shaderc may turn it OFF to run exactly as
 // a cook-only runtime does (see SetCompilerAvailable).
@@ -73,15 +68,6 @@ bool ShaderCompileService::IsSlangLaneEnabled()
     return SlangLane::Enabled();
 }
 
-void ShaderCompileService::SetMaxSupportedSpirv(SpirvTarget target)
-{
-    g_MaxBackendSpirv.store(target, std::memory_order_relaxed);
-}
-
-ShaderCompileService::SpirvTarget ShaderCompileService::MaxSupportedSpirv()
-{
-    return g_MaxBackendSpirv.load(std::memory_order_relaxed);
-}
 
 std::string_view ShaderCompileService::CacheKeyTarget()
 {
@@ -272,18 +258,16 @@ static shaderc_shader_kind ToShadercKind(ShaderStageKind k)
 // Per-stage compile floor: GL_EXT_mesh_shader can only be compiled at SPIR-V 1.6;
 // other stages have no floor (1.5 compiles fine and loads on the widest range of
 // drivers). This is a property of the shader/toolchain, not of any backend.
-static ShaderCompileService::SpirvTarget StageMinSpirv(ShaderStageKind k)
+static SpirvTarget StageMinSpirv(ShaderStageKind k)
 {
-    return k == ShaderStageKind::Mesh ? ShaderCompileService::SpirvTarget::Spirv_1_6
-                                      : ShaderCompileService::SpirvTarget::Spirv_1_5;
+    return k == ShaderStageKind::Mesh ? SpirvTarget::Spirv_1_6
+                                      : SpirvTarget::Spirv_1_3;
 }
 
 // Emit at the backend's max SPIR-V version, raised to the stage's compile floor.
-static ShaderCompileService::SpirvTarget ChooseSpirv(ShaderStageKind k)
+static SpirvTarget ChooseSpirv(ShaderStageKind stage, SpirvTarget backendMax)
 {
-    const ShaderCompileService::SpirvTarget backendMax =
-        g_MaxBackendSpirv.load(std::memory_order_relaxed);
-    const ShaderCompileService::SpirvTarget floor = StageMinSpirv(k);
+    const SpirvTarget floor = StageMinSpirv(stage);
     return static_cast<int>(floor) > static_cast<int>(backendMax) ? floor : backendMax;
 }
 
@@ -326,6 +310,11 @@ static bool CompileOneStage(const ShaderStageCompileSpec& spec,
 
     if (isSlang)
     {
+        if (ChooseSpirv(stageKind, req.Target.Spirv) == SpirvTarget::Spirv_1_3)
+        {
+            outDiagnostics = "The Slang compiler lane requires Vulkan 1.2; use GLSL or HLSL on Vulkan 1.1 devices.";
+            return false;
+        }
         SlangLane::StageInput si{};
         si.sourcePath = srcPath;
         si.inlineSource = spec.inlineSource;
@@ -336,7 +325,7 @@ static bool CompileOneStage(const ShaderStageCompileSpec& spec,
         // then req.includeDirs.
         si.includeDirs = req.includeDirs;
         si.includeDirs.push_back(srcPath.parent_path());
-        si.targetSpirv16 = ChooseSpirv(stageKind) == ShaderCompileService::SpirvTarget::Spirv_1_6;
+        si.targetSpirv16 = ChooseSpirv(stageKind, req.Target.Spirv) == SpirvTarget::Spirv_1_6;
         si.scratchDir = req.cacheRoot / "SlangScratch";
 
         std::vector<std::string> moduleDeps;
@@ -376,10 +365,15 @@ static bool CompileOneStage(const ShaderStageCompileSpec& spec,
     // shaderc needs a target env paired with the SPIR-V version; that pairing is
     // internal toolchain plumbing. The emitted SPIR-V is either consumed directly
     // (Vulkan) or cross-compiled to MSL (Metal) by the backend.
-    if (ChooseSpirv(stageKind) == ShaderCompileService::SpirvTarget::Spirv_1_6)
+    if (ChooseSpirv(stageKind, req.Target.Spirv) == SpirvTarget::Spirv_1_6)
     {
         options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_3);
         options.SetTargetSpirv(shaderc_spirv_version_1_6);
+    }
+    else if (ChooseSpirv(stageKind, req.Target.Spirv) == SpirvTarget::Spirv_1_3)
+    {
+        options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_1);
+        options.SetTargetSpirv(shaderc_spirv_version_1_3);
     }
     else
     {
@@ -581,8 +575,18 @@ bool ShaderCompileService::CompileProgramToCache(const ShaderProgramCompileReque
     const uint64_t sourceGeneration = ShaderSourceCache::Get().Generation();
     uint64_t h = kShaderHashOffsetBasis;
     // Encode key-format version + chosen compile target so 1.2 and 1.3 builds
-    // never collide in a shared cache (CacheKeyTarget).
-    h = HashShaderString(h, std::string(CacheKeyTarget()));
+    // never collide in a shared cache. The version stands for everything the
+    // engine itself writes into a package that the key's inputs cannot see —
+    // the key format, the embedded compiler, the reflection walker's output —
+    // so it is bumped whenever any of those changes, and the entries an older
+    // engine wrote are orphaned rather than migrated: never addressed again.
+    // v8: reflection preserves unsigned sampled-image types for WebGPU layouts.
+    h = HashShaderString(h, std::to_string(req.Target.Hash()));
+    h = HashShaderString(h, req.Target.Spirv == SpirvTarget::Spirv_1_6
+            ? "ShaderCompileServiceTarget:v8:backend-max=spv1.6;mesh-floor=spv1.6"
+            : req.Target.Spirv == SpirvTarget::Spirv_1_3
+                ? "ShaderCompileServiceTarget:v8:backend-max=spv1.3;mesh-floor=spv1.6"
+                : "ShaderCompileServiceTarget:v8:backend-max=spv1.5;mesh-floor=spv1.6");
     // Accumulated across stages: vs and fs of one material share most of their
     // include closure, so a file already folded by an earlier stage need not be
     // read again — the key covers it either way.

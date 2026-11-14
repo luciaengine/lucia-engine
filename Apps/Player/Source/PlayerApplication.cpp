@@ -517,6 +517,7 @@ RuntimeHostDesc PlayerApplication::MakeRuntimeHostDesc() const
     desc.HdrMetadata = m_GameConfig.hdrStaticMetadata;
     desc.LodSelection = m_GameConfig.lodSelection;
     desc.RenderQuality = m_GameConfig.renderQuality;
+    desc.SortingLayers = m_GameConfig.sortingLayers;
     desc.RenderPipeline = m_GameConfig.renderPipeline;
     desc.UIScale = m_GameConfig.uiScale;
     return desc;

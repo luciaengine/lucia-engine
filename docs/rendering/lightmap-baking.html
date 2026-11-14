@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Optional lightmap baking package</title>
+<style>body{max-width:900px;margin:40px auto;padding:0 24px;font:16px/1.6 system-ui;color:#20242b}pre{overflow:auto;background:#f3f5f7;padding:16px}code{font-size:.9em}h1,h2{line-height:1.25}
+:root{--bg:#10151d;--panel:#19212c;--panel-light:#222e3b;--border:#344255;--text:#e5edf6;--muted:#a2b3c8;--accent:#84baff;--bad:#ff8d8d;--good:#94dcb1;--warn:#ffd38b}body{background:var(--bg);color:var(--text)}pre{background:var(--panel-light)}a{color:var(--accent)}h2{border-top:1px solid var(--border);padding-top:1rem}table{width:100%;border-collapse:collapse}th,td{padding:.5rem;border:1px solid var(--border);text-align:left}
+</style>
+</head><body><main>
+<p class="lede">GUIDE · LIGHTMAP BAKING</p>
+<h1>Baked diffuse GI and directional shadow lightmaps</h1>
+<p>The experimental <code>lightmap-baking</code> package is disabled by default. Enable it in the Package Manager and reopen the project, or add <code>&quot;enabled&quot;: [&quot;lightmap-baking&quot;]</code> to the project&#x27;s <code>Packages/manifest.json</code>. An explicit <code>disabled</code> entry takes precedence. Baking is an editor package; the engine&#x27;s default real-time lighting is unchanged.</p>
+<p>The package implements UV-space lightmapping. It writes two textures per static receiver:</p>
+<p>- A linear visibility PNG for the primary directional light. White is lit; black is occluded. A disk of rays produces soft shadows from the light&#x27;s angular diameter.</p>
+<p>- An HDR RGB texture containing diffuse irradiance divided by pi. Cosine-weighted path tracing includes bounced directional/point/spot light, emissive surfaces, vertex colours, albedo/metallic/emissive textures, and an optional environment. Direct lighting and specular reflections remain live.</p>
+<p>The default bake is <strong>1024×1024, 256 GI samples per subtexel, with denoising enabled</strong>. Scrambled Hammersley sampling spreads the first-bounce rays evenly. A variance-guided, three-pass à-trous filter smooths diffuse noise while respecting UV charts, world positions and normals. It runs before padding and does not blur the directional shadow texture. Set <code>denoise=false</code> for an unfiltered reference bake. Filtering can soften fine indirect detail; increase samples and resolution when that detail matters.</p>
+<p><code>Surfaces/shadow_lightmap_pbr.glsl</code> samples both through UV1. Baked irradiance replaces the diffuse environment/DDGI term on that receiver, including the ambient floor, so indirect lighting is not counted twice. Other meshes continue using the existing lighting pipeline. <code>receiveShadows=false</code> disables the baked directional mask too.</p>
+
+<h2>Prepare the scene</h2>
+<p>Use static, opaque Standard PBR meshes with <strong>a non-overlapping second UV channel (UV1)</strong> entirely inside <code>[0,1]</code>. Give separate charts a gutter of at least twice the bake padding, measured in texels. Padding expands into empty texels; sampling explicitly uses mip zero to avoid chart bleeding. Export UV1 from the modelling tool; the baker does not change the source model. Receivers with LODs that have independent vertex/UV streams are rejected.</p>
+<p>Choose receiver meshes and any additional static occluders. Receivers are automatically included as occluders. Every selected mesh must cast shadows. Skinned meshes, morph targets, procedural terrain, vertex modifiers, alpha-cutout/blended/transmissive materials, custom surface graphs, and hex tiling are rejected or outside the mesh input contract. Additional lights support directional, point and spot types; punctual bounce lights currently require physical inverse-square falloff. Emissive meshes can represent area emitters.</p>
+<p>All material inputs are snapshotted before the worker starts. Texture sampling supports source images decodable by stb_image, including PNG/JPEG/HDR; cooked GPU-only texture files are not decoded. The bake uses diffuse material reflectance rather than tracing specular/clear-coat lobes.</p>
+<h2>Bake in the editor</h2>
+<p>1. After enabling the package, choose <strong>Tools → Lighting Bake</strong> (the registered panel also appears in the Panels menu).</p>
+<p>2. Click <strong>Add scene receivers</strong> to collect eligible meshes automatically, or select meshes/model roots in the hierarchy and click <strong>Add selected receivers</strong>. The scene scan skips unsupported geometry/materials and meshes without UV1, and reports skipped names and reasons. Existing baked meshes remain eligible for rebaking. Mesh children are included for manual selection. Receivers need the second UV set described above.</p>
+<p>3. Leave <strong>Scene occluders</strong> enabled to use the scene&#x27;s static shadow-casting meshes for occlusion and bounced light. To choose these explicitly, turn it off and use <strong>Add selected occluders</strong>. Receivers always participate too.</p>
+<p>4. Keep the 1024 resolution, 256 GI samples, two bounces and denoising defaults, or choose a resolution up to <strong>8192×8192 (8K)</strong>. The panel uses the scene&#x27;s primary directional light and displays its name.</p>
+<p>5. Click <strong>Bake lighting</strong>. The baker automatically uses GPU ray queries when supported, and the progress label shows GPU or CPU. Progress updates within each mesh. <strong>Cancel</strong> stops the job and keeps existing materials. Baking continues if the panel is closed.</p>
+<p>6. When the panel reports that the baked materials were applied, save using the editor’s normal Save action.</p>
+<p><strong>Advanced</strong> contains shadow samples, the live-shadow fade range, uniform ambient light and an optional environment image path. The panorama path may be absolute or relative to project assets. The scene sky is not captured automatically. With diffuse GI disabled, the job only bakes the directional shadow texture.</p>
+<p>Meshes and materials are checked before baking; errors identify the mesh to fix. Switching scenes or entering playback cancels a pending bake and clears the panel&#x27;s mesh selection. Geometry, source assets or light changes during a bake prevent automatic material assignment. The panel and automation tools share one job and the same output handling.</p>
+<h2>Editor automation</h2>
+<p>The MCP/CLI tools <code>bake_lightmaps</code>, <code>get_lightmap_bake</code>, and <code>cancel_lightmap_bake</code> wrap the editor debug server. Rebuild the MCP package to expose the added tools. The debug server accepts these commands (the same JSON request transport as other editor automation):</p>
+<pre><code>{
+  &quot;id&quot;: 1,
+  &quot;method&quot;: &quot;bake_lightmaps&quot;,
+  &quot;params&quot;: {
+    &quot;receivers&quot;: [123, 456],
+    &quot;occluders&quot;: [789, 1011],
+    &quot;lightEntity&quot;: 42,
+    &quot;resolution&quot;: 1024,
+    &quot;giSamples&quot;: 256,
+    &quot;denoise&quot;: true,
+    &quot;useGpu&quot;: true,
+    &quot;bounces&quot;: 2,
+    &quot;shadowSamples&quot;: 32,
+    &quot;padding&quot;: 4,
+    &quot;bias&quot;: 0.001,
+    &quot;environmentRadiance&quot;: [0.03, 0.04, 0.06],
+    &quot;shadowMode&quot;: &quot;Overlay&quot;,
+    &quot;fadeStart&quot;: 40,
+    &quot;fadeEnd&quot;: 50,
+    &quot;apply&quot;: true
+  }
+}</code></pre>
+
+<table><thead><tr><th>Mode</th><th>Near camera</th><th>Beyond fade end</th></tr></thead><tbody>
+<tr><td>Replace</td><td>Live shadows</td><td>Baked shadows</td></tr>
+<tr><td>Overlay</td><td>Baked × live shadows</td><td>Baked shadows</td></tr>
+<tr><td>Only</td><td>Baked shadows</td><td>Baked shadows</td></tr></tbody></table>
+<p>For a panorama, replace <code>environmentRadiance</code> with <code>environmentTexture</code> (asset GUID or source image path), and optionally set <code>environmentIntensity</code> and <code>environmentRotationDegrees</code>. Mapping matches the engine&#x27;s latitude/longitude sky capture. The environment is explicit: the baker does not automatically capture the current procedural atmosphere, skybox or ambient floor. Omitted environment input is black. A panorama containing the sun can double-count it alongside the directional light; use an environment with the sun removed when that matters.</p>
+<p>The start call returns immediately with <code>status: &quot;baking&quot;</code> and a <code>jobId</code>. Poll <code>get_lightmap_bake</code> until complete; while baking it reports <code>progress</code> in <code>[0,1]</code>, <code>completedReceivers</code>, <code>totalReceivers</code>, <code>cancelling</code> and <code>acceleration</code> (<code>gpu_ray_query</code> or <code>cpu</code>). The editor imports completed outputs and, with <code>apply=true</code>, assigns the generated materials using normal editor component-commit notifications, even when the panel is closed and no client polls. It declines assignment when selected geometry, source asset files, material assignments, or captured lights changed during the bake. <code>cancel_lightmap_bake</code> requests cancellation. Only one bake is active at a time. Bakes cannot start during playback.</p>
+<p>Completed results and <code>bake.json</code> record <code>gpuTracedRays</code>, <code>tracedRays</code> and the actual <code>acceleration</code> (<code>cpu</code>, <code>gpu_ray_query</code>, or <code>gpu_and_cpu</code> after a partial GPU fallback). Set <code>useGpu=false</code> to force CPU tracing for comparisons.</p>
+<p>Outputs are stored in the current project&#x27;s <code>Assets/Lightmaps/&lt;jobId&gt;/</code>: one <code>.material</code>, <code>_shadow.png</code>, and <code>_indirect.hdr</code> per receiver, plus <code>bake.json</code>. Each job creates new assets, leaving existing materials and models intact. Save the scene after assignment to persist the material references. These are ordinary asset dependencies and follow normal player packaging. <code>apply=false</code> saves/imports without changing mesh assignments.</p>
+<p><code>giSamples=0</code> requests shadow-only baking. GI supports up to 16 diffuse bounces. Editor jobs accept 1–4096 receivers, up to 4096 explicitly listed occluders, and resolutions up to 8192. The package baker supports up to 8192² texels. Receivers bake sequentially; 8K uses 64 times as many texels as 1024, with correspondingly higher memory and bake time. A 64²/64-sample unfiltered bake is useful for testing the workflow, but is not a visual-quality preset. Use the defaults for review; increase to 512–1024 samples for larger surfaces or closer inspection. Small emissive sources need more samples because emissive lighting is discovered by path hits. Bake time grows with resolution squared and sample count.</p>
+<p>Bakes are static snapshots. Rebake after geometry, material, environment or light changes. Rotating the sun automatically disables its mismatched shadowmask; the baked GI still needs rebaking. There is no automatic invalidation of baked lighting after assignment, and the source-asset check during a bake uses file modification times.</p>
+<h2>Package architecture and validation</h2>
+<p><code>Packages/lightmap-baking/Editor/Baker/ShadowLightmapBaker.h</code> exposes <code>BakeShadowLightmap</code>, <code>ShadowLightmapMesh</code>, bake options and the result. Pass final model-to-world matrices (including source-node transforms), static occluders, and optional material/environment samplers. The output is unchanged on validation failure or cancellation. Set <code>options.CreateRayTracer=CreateGpuLightmapRayTracer</code> to select GPU acceleration in a package host; leaving it empty selects CPU. The editor shares one GPU BLAS/TLAS across the job’s receivers on a private headless device. It uses the enabled ray-query capability and a descriptor-bound acceleration structure on Metal/Vulkan, allowing the driver to use dedicated ray-tracing hardware where available. A GPU without ray-query support uses the CPU BVH.</p>
+<p>Directional visibility, diffuse path intersections and bounce-light shadow rays are submitted in batches of at most 65,536 rays. Path working memory is bounded independently of atlas size. Material/environment callbacks and denoising remain on the CPU, so texture evaluation and supported lighting match both paths. GPU allocation, compilation or submission failures retry the affected batch on the CPU and keep subsequent tracing there. Cancellation is checked between batches; an in-flight GPU batch must finish before its resources are released. No editor render-thread buffers or scene acceleration structures are shared with the baker.</p>
+<p>The CPU BVH is built once per receiver bake and shared by its visibility and GI rays. Sampling is deterministic for identical inputs; minor floating-point intersection differences between GPU and CPU can affect edge hits.</p>
+<p>Build and run <code>ShadowLightmapBakerTests</code> for numerical coverage, CPU fallback/cancellation, and live GPU tests for clipped closest hits, barycentrics, double-sided geometry, frame reuse, and textured multibounce agreement. GPU tests skip when ray queries are unavailable. <code>ShadowLightmapBakerTests --gtest_filter=LightmapSurfaceCompose.*</code> compiles the actual surface across forward/clustered/IBL/DDGI and missing-UV variants. These tests exercise core algorithms and shader compilation; they do not replace visual inspection of the chosen scene and unwraps.</p>
+
+<h2>Package boundaries</h2>
+<p>The editor module owns the CPU/GPU baker, bake service, panel, and automation commands. It registers the panel through <code>EditorPanelRegistry</code> and receives host lifetime and scene invalidation through <code>EditorPluginRegistry</code>. Jobs continue with the panel closed, cancel before scene replacement/playback, and finish shutting down before engine teardown. No lightmapper panel factory, bake service, or command handler is embedded in <code>EditorApplication</code>.</p>
+<p>Player receives the package&#x27;s material surface and generated ordinary texture/material assets, not the baking module. The surface owns the directional shadowmask equations and irradiance state. The shared renderer supplies generic material lighting hooks; ordinary materials use identity/default hooks. Generated materials enable <code>CUSTOM_LIGHTING</code> and use the existing user uniform lanes, without adding lightmap names to the core material parser or property table.</p>
+<p>Source attribution and the required MIT license remain in the package&#x27;s <code>Licenses</code> directory and the staged notices. Moving code does not remove attribution obligations.</p>
+<p>The editor integration fixture lives in <code>Tests/EditorHarness/lightmap-baking</code>; use a copied project and a dedicated editor debug port. The fixture explicitly enables the package. Run its <code>run-checks.mjs</code> and <code>run-ui-checks.mjs</code> with <code>--project</code> pointing at that copy; <code>--require-gpu</code> requires all rays to use GPU queries. The SDK lifecycle suite covers late loading, disable/re-enable, replacement, command dispatch, and shutdown. Package resolver coverage checks that the disabled-by-default package cannot load without opt-in.</p>
+<h2>Changelog</h2>
+<p>- Moved the experimental implementation into an optional editor package, added shared lifecycle and material-lighting extension hooks, and retained package-local license attribution.</p>
+<hr><footer>Version 1 · 2026-11-02</footer></main></body></html>

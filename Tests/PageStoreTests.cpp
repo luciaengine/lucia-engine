@@ -72,6 +72,7 @@
 #include <numbers>
 #include <random>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -7269,4 +7270,195 @@ TEST(PageResidencyTest, AnEarthFaceStoreBuildsACpuDirectoryOfThePagesTheCpuLoade
     EXPECT_EQ(directory.Page(PageAddress{0, 0, 0, 0}), CpuPageEntry::Missing);
     ASSERT_FALSE(directory.Empty());
     pool.Shutdown();
+}
+
+namespace
+{
+std::vector<float32> Dense(const PageSampleRect& rect, const std::vector<float32>& delta, const PageStoreLevel& level0)
+{
+    std::vector<float32> dense(static_cast<std::size_t>(level0.SamplesX) * level0.SamplesZ, 0.0f);
+    for (uint32 z = rect.MinZ; z <= rect.MaxZ; ++z)
+        for (uint32 x = rect.MinX; x <= rect.MaxX; ++x)
+            dense[static_cast<std::size_t>(z) * level0.SamplesX + x] =
+                delta[static_cast<std::size_t>(z - rect.MinZ) * rect.Width() + (x - rect.MinX)];
+    return dense;
+}
+
+void ExpectOverlayIsThePyramidOf(const HeightPageLayer& overlay, const std::vector<std::vector<float32>>& pyramid,
+                                 const std::vector<PageStoreLevel>& levels)
+{
+    for (uint32 level = 0; level < levels.size(); ++level)
+        for (uint32 z = 0; z < levels[level].SamplesZ; ++z)
+            for (uint32 x = 0; x < levels[level].SamplesX; ++x)
+                ASSERT_NEAR(LayerDelta(overlay, level, x, z),
+                            pyramid[level][static_cast<std::size_t>(z) * levels[level].SamplesX + x], 1.0e-6f)
+                    << "level " << level << " sample (" << x << ", " << z << ")";
+}
+}
+
+TEST(PageStoreFormatTest, EntryBitPackAndSentinelPreserveSlotAndLevel)
+{
+    static_assert(kNoPage == 0xFFFFFFFFu);
+    static_assert(kPageSlotMask == 0x00FFFFFFu);
+    static_assert(kPageLevelShift == 24u);
+    const uint32 entry = PackPageEntry(0x00ABCDEFu, 7u);
+    EXPECT_EQ(PageEntrySlot(entry), 0x00ABCDEFu);
+    EXPECT_EQ(PageEntryLevel(entry), 7u);
+    EXPECT_NE(PackPageEntry(kPageSlotMask, 254u), kNoPage);
+}
+
+TEST_F(PageStoreTest, WrappedDirectoryCountsAreRefusedBeforeReadingTheIndex)
+{
+    PageStoreHeader header;
+    header.SamplesX = 200;
+    header.SamplesZ = 200;
+    header.StepPerLevel.fill(1.0f);
+    PageStoreLayout layout = MakePageStoreLayout(header);
+    ASSERT_EQ(layout.Ranges.size(), 2u);
+    layout.Entries.clear();
+    layout.Ranges[0] = PageStoreRange{0, 2};
+    layout.Ranges[1] = PageStoreRange{2, std::numeric_limits<uint64>::max() - 1u};
+    const std::vector<uint8> bytes = SerializePageStoreHead(layout);
+    const std::filesystem::path file = m_Dir / "wrapped-ranges.gepage";
+    {
+        std::ofstream output(file, std::ios::binary);
+        output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        ASSERT_TRUE(output.good());
+    }
+
+    PageStoreReader reader;
+    EXPECT_FALSE(reader.Open(file, PageFieldKind::Height).empty());
+    EXPECT_FALSE(reader.IsOpen());
+}
+
+TEST(HeightPageOverlayTest, EachLevelIsTheStoresTentOfTheBakedMinusTheBase)
+{
+    const std::vector<PageStoreLevel> levels = BuildPageStoreLevels(601, 300);
+    const PageSampleRect rect{100, 40, 250, 170};
+    const std::vector<float32> delta = RectDelta(rect, 0.5f);
+    HeightPageLayer overlay(1u, levels);
+    overlay.WriteLevel0(0, rect, delta);
+    ExpectOverlayIsThePyramidOf(overlay, TentPyramid(Dense(rect, delta, levels.front()), levels), levels);
+}
+
+TEST(HeightPageOverlayTest, AnEditRebakesOnlyItsRectAndEqualsAFreshOverlay)
+{
+    const std::vector<PageStoreLevel> levels = BuildPageStoreLevels(601, 300);
+    const PageSampleRect rect{100, 40, 250, 170};
+    std::vector<float32> delta = RectDelta(rect, 0.5f);
+    HeightPageLayer after(1u, levels);
+    after.WriteLevel0(0, rect, delta);
+    const PageSampleRect edit{180, 90, 210, 140};
+    const std::vector<float32> edited = RectDelta(edit, 2.0f);
+    after.WriteLevel0(0, edit, edited);
+    for (uint32 z = edit.MinZ; z <= edit.MaxZ; ++z)
+        for (uint32 x = edit.MinX; x <= edit.MaxX; ++x)
+            delta[static_cast<std::size_t>(z - rect.MinZ) * rect.Width() + (x - rect.MinX)] =
+                edited[static_cast<std::size_t>(z - edit.MinZ) * edit.Width() + (x - edit.MinX)];
+    ExpectOverlayIsThePyramidOf(after, TentPyramid(Dense(rect, delta, levels.front()), levels), levels);
+}
+
+TEST(HeightPageOverlayTest, APageGainsItsLevelsDeltaUnderEveryStoredSampleApronIncluded)
+{
+    const std::vector<PageStoreLevel> levels = BuildPageStoreLevels(601, 300);
+    // Level-0 samples 120 to 140 on both axes: across the edge between pages (1, 0) and (0, 0) and
+    // the edge between (1, 0) and (1, 1), so page (1, 0)'s first apron column (x 127) and last apron
+    // row (z 128) lie inside the overlay.
+    const PageSampleRect rect{120, 120, 140, 140};
+    HeightPageLayer overlay(1u, levels);
+    overlay.WriteLevel0(0, rect, RectDelta(rect, 0.5f));
+    const uint32 pageX = 1u;
+    const PageAddress page{0, 0, pageX, 0};
+    std::vector<float32> samples(kPageSampleCount, 1.0f);
+    ASSERT_TRUE(overlay.ApplyToPage(page, samples));
+    const auto sampleAt = [&](uint32 stored, uint32 origin, uint32 count) {
+        return std::min<uint32>(origin + stored > 0u ? origin + stored - 1u : 0u, count - 1u);
+    };
+    for (uint32 row = 0; row < kPageStrideSamples; ++row)
+        for (uint32 i = 0; i < kPageStrideSamples; ++i)
+        {
+            const uint32 x = sampleAt(i, pageX * kPageOwnedSamples, levels[0].SamplesX);
+            const uint32 z = sampleAt(row, 0u, levels[0].SamplesZ);
+            ASSERT_FLOAT_EQ(samples[row * kPageStrideSamples + i], 1.0f + LayerDelta(overlay, 0, x, z));
+        }
+    const uint32 lastRow = kPageStrideSamples - 1u;
+    // Stored row r holds level-0 row r - 1 on this page (z 124 is row 125); stored column i holds
+    // x = 127 + i.
+    EXPECT_NE(LayerDelta(overlay, 0, pageX * kPageOwnedSamples - 1u, 124u), 0.0f) << "the first apron column is reached";
+    EXPECT_NE(samples[125u * kPageStrideSamples + 0u], 1.0f) << "the first apron column gains its delta";
+    EXPECT_NE(LayerDelta(overlay, 0, 130u, kPageOwnedSamples), 0.0f) << "the last apron row is reached";
+    EXPECT_NE(samples[lastRow * kPageStrideSamples + (130u - pageX * kPageOwnedSamples + 1u)], 1.0f)
+        << "the last apron row gains its delta";
+    std::vector<float32> far(kPageSampleCount, 1.0f);
+    EXPECT_FALSE(overlay.ApplyToPage(PageAddress{0, 0, 4, 2}, far)) << "a page no modifier reaches is untouched";
+    EXPECT_EQ(far, std::vector<float32>(kPageSampleCount, 1.0f));
+}
+
+TEST(PageResidencyTest, ARefreshedResidentPageIsRewrittenInItsSlotAndNeverLeavesIt)
+{
+    JobSystem::WorkStealingThreadPool pool(2);
+    const auto provider = std::make_shared<GeneratedHeightPageProvider>(NoiseLattice(0.0f, 0.0f, 1024.0f, 1, 1));
+    PageResidencyManager residency(&pool, nullptr, PageResidencyBudget{});
+    residency.ConfigureField(7, 128, 2, 0.4f);
+    residency.Configure(7, 7, PageSource{nullptr, provider});
+    const std::vector<PageWant> wanted = EveryPage(*provider);
+    residency.Request(7, wanted);
+    uint64 frame = RunFramesUntil(residency, 0, [&] { return residency.FieldCache(7).ResidentCount() == wanted.size(); });
+    ASSERT_EQ(residency.FieldCache(7).ResidentCount(), wanted.size());
+    for (int i = 0; i < 40; ++i)
+    {
+        residency.Request(7, wanted);
+        residency.Update(++frame, 1.0f / 60.0f, false);
+    }
+
+    // An edit over level-0 samples 10 to 20: the level-0 page (0, 0) and its ancestors read them.
+    const PageSampleRect edit{10, 10, 20, 20};
+    const CachedPage edited{7, PageAddress{0, 0, 0, 0}};
+    const uint32 slot = residency.FieldCache(7).SlotOf(edited);
+    residency.Refresh(7, edit);
+    std::vector<CachedPage> rewritten;
+    frame = RunFramesUntil(residency, frame, [&] {
+        residency.Request(7, wanted);
+        EXPECT_EQ(residency.FieldCache(7).ResidentCount(), wanted.size()) << "a refreshed page left its slot";
+        for (const PageUploadRequest& upload : residency.FieldCache(7).Uploads())
+        {
+            EXPECT_NE(residency.Samples(7, upload.Page.Address), nullptr) << "a rewrite without its samples";
+            rewritten.push_back(upload.Page);
+        }
+        return rewritten.size() >= provider->Levels().size();
+    });
+    EXPECT_EQ(residency.FieldCache(7).SlotOf(edited), slot);
+    EXPECT_NE(std::find(rewritten.begin(), rewritten.end(), edited), rewritten.end());
+    for (const CachedPage& page : rewritten)
+        EXPECT_TRUE(PageReadsLevel0Rect(page.Address, edit))
+            << "level " << int(page.Address.Level) << " page (" << page.Address.X << ", " << page.Address.Z
+            << ") was rewritten though the edit is not under it";
+    EXPECT_EQ(rewritten.size(), provider->Levels().size()) << "one page per level reads the edit";
+    pool.Shutdown();
+}
+
+TEST_F(PageStoreTest, APlanetCookRethrowsTheSourceErrorAfterJoiningItsWorkerBatches)
+{
+    JobSystem::WorkStealingThreadPool pool(2);
+    PlanetCookRequest request = SmallPlanetRequest(m_Dir / "failed-planet.gepage");
+    request.Pool = &pool;
+    request.Height = [](uint8 face, uint32 column, uint32 row, const Mathematics::Vector3& direction) {
+        if (face == 0 && column == 0 && row == 0)
+            throw std::runtime_error("planet height fixture failed");
+        return AnalyticPlanetHeight(face, column, row, direction);
+    };
+    EXPECT_THROW(CookPlanetPageStore(request), std::runtime_error);
+    EXPECT_TRUE(std::filesystem::is_empty(m_Dir)) << "a failed source published a store or leaked its scratch file";
+}
+
+TEST(HeightPageLayerTest, EstimatingTheMaximumLatticeCountsRectanglesWithoutAllocatingItsPageDirectory)
+{
+    const uint32 samples = kPageStoreMaxSamplesPerAxis;
+    const std::vector<PageStoreLevel> levels = BuildPageStoreLevels(samples, samples);
+    const PageSampleRect whole{0, 0, samples - 1u, samples - 1u};
+    const std::array rects{whole, whole, PageSampleRect{1, 1, 200, 200}};
+    uint64 pages = 0;
+    for (const PageStoreLevel& level : levels)
+        pages += static_cast<uint64>(level.PagesX) * level.PagesZ;
+    EXPECT_EQ(HeightPageLayerBytesOver(levels, rects), pages * kPageSampleCount * sizeof(float32));
 }

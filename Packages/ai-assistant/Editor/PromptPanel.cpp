@@ -18,6 +18,9 @@
 #include "MarkupContext.h"
 #include "MarkupTokenPicker.h"
 #include "PromptTextArea.h"
+#include "PromptFileDropZone.h"
+#include "PromptFileTray.h"
+#include "Core/Engine.h"
 #include "ModeControlFit.h"
 #include "Providers/CliSessionProvider.h"
 #include "Providers/IAgentProvider.h"
@@ -58,6 +61,8 @@ namespace GameEngine
 {
 namespace
 {
+auto s_PromptFileDropZoneRegistration = UIRegistration::RegisterWithFactory<PromptFileDropZone>(
+    "PromptFileDropZone", []() { return std::make_unique<PromptFileDropZone>(); });
 // Everything in the input pane that is not a line of text: the pane's own
 // padding (4 top + 8 bottom), the field border (1 each side) and the text
 // area's vertical padding (10 each side). Keep in sync with PromptPanel.css.
@@ -425,6 +430,23 @@ void PromptPanel::OnLayoutBound()
         if (UIManager* ui = GetOwnerManager())
             ui->FocusElement(m_PromptText);
     });
+    auto* fileStrip = dynamic_cast<PromptFileDropZone*>(findElement("PromptFileStrip"_sid));
+    UIElement* fileItems = findElement("PromptFileItems"_sid);
+    auto* inputDrop = dynamic_cast<PromptFileDropZone*>(m_InputRow);
+    Button* attachButton = findButton("PromptAttachButton"_sid);
+    if (!fileStrip || !fileItems || !inputDrop || !attachButton)
+    {
+        Logger::Log::Error("AI Assistant panel layout is missing its file attachment controls");
+        return;
+    }
+    m_FileTray = std::make_unique<PromptFileTray>(*fileStrip, *fileItems, EngineCore::GetInstance().GetJobSystem(),
+        [this](const std::string& text) { SetStatus(text); });
+    const auto addFiles = [this](std::span<const std::filesystem::path> paths) { m_FileTray->Add(paths); };
+    fileStrip->SetOnFilesDropped(addFiles);
+    inputDrop->SetOnFilesDropped(addFiles);
+    inputDrop->SetFeedbackElement(attachButton);
+    attachButton->SetTooltip("Add image or text files to the prompt");
+    attachButton->SetOnClick([this](UIEvent&) { PostAction([this]() { m_FileTray->Pick(); }); });
     m_SendButton->SetTooltip("Send prompt (Enter); a prompt sent while a reply runs waits its turn");
     m_SendButton->SetOnClick([this](UIEvent&) { SubmitPrompt(); });
     BindMicButton(dynamic_cast<PromptMicButton*>(findElement("PromptMicButton"_sid)));
@@ -772,11 +794,16 @@ void PromptPanel::SubmitPrompt()
     // A prompt over the cap is refused whole and stays in the field to be shortened.
     const std::string providerId = AiAssistantSettings::Provider();
     FollowProvider(providerId);
+    if (m_FileTray->IsLoading())
+    {
+        SetStatus("Wait for the files to finish loading, then send again");
+        return;
+    }
     // The mark-ups the prompt names are read now, as they are when it is sent.
     MarkupTurnContext markups = MarkupContext::ForPrompt(prompt, Editor::EditorMarkupRequests::Get());
     if (!m_Controller->Send(prompt, SentMarkups{std::move(markups.Text), std::move(markups.Mentions)},
                             AiAssistantSettings::Model(providerId),
-                            AiAssistantSettings::Effort(providerId)))
+                            AiAssistantSettings::Effort(providerId), m_FileTray->Files()))
     {
         SetStatus(PromptTooLongStatus(prompt.size()));
         return;
@@ -789,6 +816,7 @@ void PromptPanel::SubmitPrompt()
     m_PromptRecallCursor = -1;
     m_PromptRecallDraft.clear();
     m_PromptText->SetValue("");
+    m_FileTray->Clear();
     UpdateConversation();
 }
 

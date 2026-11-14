@@ -446,21 +446,21 @@ inline bool SubmitStagedTextureUploads(IDevice& device, std::span<const StagedTe
 
 // Upload a 2D mip chain (layer 0) with one submit. The texture needs mipLevels >= mipCount,
 // TransferDst usage and `format` as its format; it goes from Undefined to ShaderResource.
-// To upload several textures with one submit, use StageTextureMips and SubmitStagedTextureUploads.
-inline void UploadTextureMips(IDevice* device,
+// False if staging or submission cannot start. Batch with StageTextureMips and SubmitStagedTextureUploads.
+inline bool UploadTextureMips(IDevice* device,
                               TextureHandle tex,
                               const TextureMipUploadEntry* mips,
                               uint32_t mipCount,
                               TextureFormat format,
                               const char* stagingDebugName = "TexMipUploadStaging")
 {
-    if (!device || !mips || mipCount == 0)
-        return;
+    if (!device || !tex.IsValid() || !mips || mipCount == 0)
+        return false;
     std::optional<StagedTextureUpload> upload = StageTextureMips(*device, format, {mips, mipCount}, stagingDebugName);
     if (!upload)
-        return;
+        return false;
     upload->Texture = tex;
-    SubmitStagedTextureUploads(*device, {&*upload, 1});
+    return SubmitStagedTextureUploads(*device, {&*upload, 1});
 }
 
 // Upload tightly or explicitly pitched voxel data to a single existing 3D texture.

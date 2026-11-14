@@ -3,6 +3,7 @@
 #include "Components/Rendering/Camera.h"
 #include "Rendering/Camera/CameraTypes.h"
 #include "Types/Types.h"
+#include "Mathematics/Rect.h"
 
 #include <string>
 
@@ -46,6 +47,7 @@ struct CameraAspectResolution
 struct PixelPerfectViewState
 {
     bool Active = false;
+    float32 WorldUnitsPerTexel = 0.0f;
     uint32 ReferenceWidth = 0;
     uint32 ReferenceHeight = 0;
     // Reference resolution + 1-texel border on each axis (the offscreen RT size).
@@ -53,6 +55,9 @@ struct PixelPerfectViewState
     uint32 PaddedHeight = 0;
     // Largest integer factor that fits ReferenceWidth/Height in the swapchain.
     uint32 Zoom = 1;
+    // Display extent of the integer upscale, including letterbox bars.
+    uint32 DisplayWidth = 0;
+    uint32 DisplayHeight = 0;
     // Sub-pixel camera remainder in source texels, range [-0.5, 0.5] per axis.
     float FracX = 0.0f;
     float FracY = 0.0f;
@@ -80,6 +85,10 @@ PixelPerfectViewState ComputePixelPerfectViewState(const Components::Camera& cam
 ViewLetterbox ComputeLetterboxRect(uint32_t viewportWidth,
                                  uint32_t viewportHeight,
                                  float targetAspect);
+
+// Camera rectangle in target UV; inactive or degenerate inputs use the whole target.
+Mathematics::Rect ComputeViewportRect(const ViewLetterbox& letterbox,
+                                      uint32_t targetWidth, uint32_t targetHeight);
 
 class RenderServices;
 

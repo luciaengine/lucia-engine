@@ -1,6 +1,6 @@
 ---
 title: Spawning prefabs
-description: Spawn an instance of a prefab from C# with EntityCommands.Spawn, from native code with Scene::SpawnPrefab or from a game graph with Spawn Prefab, remove it with a despawn, and keep the prefab loaded with a PrefabRef field.
+description: Spawn an instance of a prefab from C# with EntityCommands.Spawn or from native code with Scene::SpawnPrefab, remove it with a despawn, and keep the prefab loaded with a PrefabRef field.
 ---
 
 A prefab is a reusable hierarchy of entities saved in a `.prefab` file. The engine keeps one template of each loaded prefab. A spawn copies the template into a world in one batch, so a spawn never reads a file.
@@ -134,7 +134,3 @@ Call `Scene::SpawnPrefab` and `Scene::PlacePrefab` from the main thread, outside
 A spawn runs at once, also inside a C# system, where the other structural changes wait for the end of the update: it adds new entities and moves no entity that already exists.
 
 When a prefab file changes, the engine builds a new template beside the old one. Spawns after the change use the new template. Entities that a spawn created before the change do not change.
-
-## Spawn from a game graph
-
-The **Spawn Prefab** action in the **Game Object** group of a game graph spawns a prefab when its flow input runs. Set **Prefab** to the GUID of the prefab asset, and **Position** and **Rotation** to the root's place in the world; **Rotation** is in degrees around X, Y and Z. The prefab must be loaded, as for any spawn. The action compiles to `ctx.SpawnPrefab(prefab, position, rotation)` in the graph's C++, and nothing in the engine runs a compiled graph today.

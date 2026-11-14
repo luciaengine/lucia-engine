@@ -3,7 +3,7 @@
 #include "EditorContextMenu/UIContextMenu.h"
 #include "Logger/Logger.h"
 #include "Panels/BacktraceFrameView.h"
-#include "Panels/LogChannelPopover.h"
+#include "Panels/LogPanel/LogChannelPopover.h"
 #include "Panels/LogView.h"
 #include "Platform/Clipboard.h"
 #include "Platform/ContextMenu.h"

@@ -100,6 +100,7 @@ struct SurfacePageUpload
     uint32 Slot = 0;
     uint32 PlaneMask = 0;     ///< the planes in Bytes (TerrainSurfacePageSource::PlaneMask)
     std::vector<uint8> Bytes; ///< each plane's PagePayloadBytes in turn, in PageFieldKind order
+    uint32 Terrain = 0; ///< the render handle of the terrain whose payload changed
 };
 
 /// The surface pages of every surface-paged terrain, on the main thread: each terrain's stream over

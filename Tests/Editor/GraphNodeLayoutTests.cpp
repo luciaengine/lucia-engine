@@ -530,9 +530,7 @@ TEST(GraphNodeLayoutTests, MaterialUnconnectedVec2InputHidesPortEditors)
     EXPECT_FALSE(uv->HasClass("has-inline-editor"));
     UIElement* editors = FindByClass(*uv, "graph-inline-editors");
     if (editors)
-    {
         EXPECT_TRUE(IsDisplayNone(*editors));
-    }
 }
 
 TEST(GraphNodeLayoutTests, GameLogicUnconnectedVec2InputGetsTwoDistinctFloatFields)
@@ -684,9 +682,7 @@ TEST(GraphNodeLayoutTests, ColorConstantShowsSwatchWithoutPortRgbFields)
     ASSERT_NE(value, nullptr);
     UIElement* editors = FindByClass(*value, "graph-inline-editors");
     if (editors)
-    {
         EXPECT_TRUE(IsDisplayNone(*editors));
-    }
 }
 
 TEST(GraphNodeLayoutTests, GameLogicUnconnectedBoolKeepsConditionLabelAndMarksEditor)
@@ -754,9 +750,7 @@ TEST(GraphNodeLayoutTests, ConnectedBoolInputHidesEditorClasses)
     EXPECT_FALSE(condition->HasClass("bool-editor"));
     UIElement* editors = FindByClass(*condition, "graph-inline-editors");
     if (editors)
-    {
         EXPECT_TRUE(IsDisplayNone(*editors));
-    }
 }
 
 TEST(GraphNodeLayoutTests, UnconnectedStringInputGetsTextField)
@@ -983,16 +977,6 @@ TEST(GraphNodeLayoutTests, NodePortLabelsAbbreviateButTooltipsKeepFullNames)
     EXPECT_EQ(label->GetText(), "Cycle Sec") << "the node shows the abbreviated form";
     EXPECT_NE(port->GetTooltip().find("Cycle Seconds"), std::string::npos)
         << "the tooltip keeps the full name";
-}
-
-// A port with no display name reads its id as words, acronyms kept whole.
-TEST(GraphNodeLayoutTests, PortWithoutDisplayNameReadsItsIdAsWords)
-{
-    Graph::Port port;
-    port.Id = "worldUVScale";
-    EXPECT_EQ(GraphNodeMetrics::PortDisplayLabel(port), "World UV Scale");
-    port.DisplayName = "Scale";
-    EXPECT_EQ(GraphNodeMetrics::PortDisplayLabel(port), "Scale");
 }
 
 TEST(GraphNodeLayoutTests, StackedFloatBoxesShareTheMostConstrainedWidth)

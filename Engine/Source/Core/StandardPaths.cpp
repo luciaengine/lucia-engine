@@ -1,6 +1,7 @@
 #include "Core/StandardPaths.h"
-
 #include "Core/ApplicationPaths.h"
+
+#include "Core/Application.h" // PathUtils
 
 namespace GameEngine
 {

@@ -50,7 +50,6 @@ void ApplySetMetaImageShapeToLayout(const DescriptorSetMeta& setMeta, Descriptor
             // that leaves it unset declares UnfilterableFloat, which rejects a
             // filtering sampler.
             binding.imageFilterableFloat = bm.Image->Filtered;
-            binding.imageUsageReflected = true;
             if (binding.type == DescriptorType::StorageImage)
             {
                 binding.storageTexelFormat = bm.Image->Format;

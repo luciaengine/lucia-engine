@@ -35,7 +35,7 @@ struct HpBarSystem : GameEngine::ECS::SystemBase
     static constexpr int kLowHealthPercent = 50;
 
     // Element `id` inside the one UIDocument this system drives, or nullptr.
-    static GameEngine::UIElement* FindInDocument(uint64_t entityId, GameEngine::StringId id)
+    static GameEngine::UIElement* FindInDocument(uint64_t entityId, std::string_view id)
     {
         GameEngine::UIElement* root = GameEngine::GameUI::FindDocumentRoot(entityId);
         return root ? root->FindById(id) : nullptr;
@@ -54,7 +54,7 @@ struct HpBarSystem : GameEngine::ECS::SystemBase
             else
                 bar->RemoveClass("low-health");
         }
-        if (auto* label = dynamic_cast<Label*>(FindInDocument(entityId, "hp-label"_sid)))
+        if (auto* label = dynamic_cast<Label*>(FindInDocument(entityId, "hp-label")))
             label->SetText(std::to_string(hp) + " / 100");
     }
 
@@ -63,7 +63,7 @@ struct HpBarSystem : GameEngine::ECS::SystemBase
         using namespace GameEngine;
         if (m_ButtonInstanceId != 0)
         {
-            UIElement* button = FindInDocument(m_EntityId, "damage-btn"_sid);
+            UIElement* button = FindInDocument(m_EntityId, "damage-btn");
             // The id can resolve to a REPLACEMENT button, which never saw this token.
             if (button && button->GetInstanceId() == m_ButtonInstanceId)
                 button->UnregisterEventHandler(m_Token);
@@ -102,7 +102,7 @@ struct HpBarSystem : GameEngine::ECS::SystemBase
         // a subscription left on the destroyed button invisible until someone clicks.
         if (m_ButtonInstanceId != 0)
         {
-            UIElement* wired = FindInDocument(m_EntityId, "damage-btn"_sid);
+            UIElement* wired = FindInDocument(m_EntityId, "damage-btn");
             if (wired && wired->GetInstanceId() == m_ButtonInstanceId)
                 return;
             Unwire();
@@ -112,7 +112,7 @@ struct HpBarSystem : GameEngine::ECS::SystemBase
             [&](ECS::EntityHandle e, const Components::UIDocument&) {
             if (m_ButtonInstanceId != 0)
                 return;
-            UIElement* button = FindInDocument(e.id, "damage-btn"_sid);
+            UIElement* button = FindInDocument(e.id, "damage-btn");
             if (!button)
                 return;
             m_EntityId = e.id;

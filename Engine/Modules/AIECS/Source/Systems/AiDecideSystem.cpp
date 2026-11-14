@@ -12,6 +12,7 @@
 #include "AIECS/Components/AiStateTree.h"
 #include "AIECS/Components/AiTrace.h"
 #include "AiGroup/AiGroupStore.h"
+#include "ECS/Writable.h"
 #include "Events/AiEventQueue.h"
 #include "JobSystem/ParallelAlgorithms.h"
 #include "Logger/Logger.h"
@@ -167,10 +168,11 @@ void AiDecideSystem::CollectDueAgents(ECS::World& world, uint32 tick)
                ECS::Optional<Components::AiTrace>, ECS::Optional<Components::AiStateTree>,
                ECS::Optional<Components::AiPathTrace>>()
         .Each(
-            [this, tick](ECS::EntityHandle entity, Components::AiAgent& agent, Components::AiCellsSmall* small,
+            [this, tick](ECS::EntityHandle entity, ECS::Writable<Components::AiAgent> agentRow, Components::AiCellsSmall* small,
                          Components::AiCellsMedium* medium, Components::AiCellsLarge* large,
                          Components::AiTrace* trace, Components::AiStateTree* tree, Components::AiPathTrace* pathTrace)
             {
+                Components::AiAgent& agent = agentRow.Mutable();
                 CollectAgent(tick, {&agent, tree, SelectCells(small, medium, large), trace, pathTrace, entity,
                                     agent.Program});
             });

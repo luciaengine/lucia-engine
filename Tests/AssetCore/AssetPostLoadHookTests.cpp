@@ -2,6 +2,7 @@
 #include "AssetCore/Asset.h"
 #include "AssetCore/AssetTypes.h"
 #include "AssetCore/GUID.h"
+#include "TestTempDir.h"
 #include <filesystem>
 #include <fstream>
 
@@ -78,7 +79,7 @@ class AssetPostLoadHookTest : public ::testing::Test
   protected:
     void SetUp() override
     {
-        m_TestDir = std::filesystem::temp_directory_path() / "asset_post_load_hook_test";
+        m_TestDir = TestUtils::MakeUniqueTempDirectory("asset_post_load_hook_test");
         std::filesystem::create_directories(m_TestDir);
         m_TestFile = m_TestDir / "asset.bin";
 

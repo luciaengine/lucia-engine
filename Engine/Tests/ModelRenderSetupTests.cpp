@@ -58,6 +58,27 @@ Vector<Mesh> NamedMeshes(std::initializer_list<std::pair<const char*, uint32>> i
 
 } // namespace
 
+TEST(ModelRenderSetupTest, DeferredDisabledModelsRemainEligibleAfterEnable)
+{
+    struct RestorePolicy {
+        bool previous = GetDeferredDisabledRendererLoading();
+        ~RestorePolicy() { SetDeferredDisabledRendererLoading(previous); }
+    } restore;
+    ECS::World world;
+    Components::MeshRenderer mr{};
+    mr.modelAssetGuid.Set(GUID::Generate());
+    auto entity = world.Create<Components::MeshRenderer>(mr);
+    entity.SetEnabled<Components::MeshRenderer>(false);
+
+    SetDeferredDisabledRendererLoading(false);
+    EXPECT_EQ(CollectUnresolvedModelEntities(world).size(), 1u);
+    SetDeferredDisabledRendererLoading(true);
+    EXPECT_TRUE(CollectUnresolvedModelEntities(world).empty());
+
+    entity.SetEnabled<Components::MeshRenderer>(true);
+    EXPECT_EQ(CollectUnresolvedModelEntities(world).size(), 1u);
+}
+
 // The default scene-load case (no positional meshId, no name selector) must
 // resolve to submesh 0 — never a skip. This is the exact contract whose failure
 // would leave every converted-scene MeshRenderer unbound (zero GPU instances).

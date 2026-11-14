@@ -2,13 +2,9 @@
 
 #include "Components/SceneEntityTag.h"
 #include "Components/Spline/SplineComponent.h"
-#include "Components/Spline/SplineExtrude.h"
-#include "Components/Spline/SplineNetworkMember.h"
-#include "Components/Spline/SplineNetworkOverrides.h"
-#include "Components/Spline/SplinePaving.h"
 #include "Components/Spline/SplineWall.h"
 #include "Components/Transform.h"
-#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/ComponentFieldRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Reflection.h"
 #include "EngineLogCapture.h"
@@ -24,7 +20,6 @@
 #include <fstream>
 #include <iterator>
 #include <string>
-#include <string_view>
 #include <vector>
 
 using namespace GameEngine;
@@ -96,12 +91,12 @@ class SplineSceneSerialization : public testing::Test
         return world.Create(tag, Components::Transform{}, component).GetHandle();
     }
 
-    ECS::EntityHandle Find(ECS::World& world, std::string_view id = "curve")
+    ECS::EntityHandle Find(ECS::World& world)
     {
         ECS::EntityHandle result{};
         world.Query<ECS::Read<Components::SceneEntityTag>>().Each(
             [&](ECS::EntityHandle entity, const Components::SceneEntityTag& tag)
-            { if (tag.View() == id) result = entity; });
+            { if (tag.View() == "curve") result = entity; });
         return result;
     }
 
@@ -208,7 +203,7 @@ TEST_F(SplineSceneSerialization, SaveIsPortableAndReloadOwnsIndependentGeometry)
 
 // A wall's corner is derived from its spline's type whenever the component is
 // added, a scene load included; the saved value is applied over it, so a Round
-// wall on a spline of straight segments, which would be derived Miter, loads
+// wall on a spline of straight segments, which would be derived Mitre, loads
 // Round.
 TEST_F(SplineSceneSerialization, AWallsSavedCornerWinsOverTheOneItsSplineWouldGive)
 {
@@ -232,7 +227,7 @@ TEST_F(SplineSceneSerialization, AWallsSavedCornerWinsOverTheOneItsSplineWouldGi
 
 // The derivation runs at load too, before the saved fields: a wall on a curved
 // spline whose file carries no Corner line loads Round, the corner its spline
-// gives, not the component's static Miter. With the saved value applied after
+// gives, not the component's static Mitre. With the saved value applied after
 // it (the test above), the order is pinned from both sides.
 TEST_F(SplineSceneSerialization, AWallSavedWithoutACornerTakesTheOneItsSplineGives)
 {

@@ -3339,3 +3339,31 @@ button.inspector-button.inspector-new-material-button,
 .settings-panel .foldout-header:hover > .foldout-title {
     color: #FFFFFF;
 }
+
+
+.inspector-color-swatch {
+	width: 20px;
+	height: 20px;
+	min-width: 20px;
+	min-height: 20px;
+	border-radius: 3px;
+	border-width: 1px;
+	border-color: var(--ui_color_swatch_border);
+	cursor: pointer;
+}
+
+
+.inspector-color-swatch-field {
+	flex-direction: row;
+	align-items: center;
+	gap: 6px;
+}
+
+
+.inspector-color-swatch-value {
+	cursor: pointer;
+}
+
+.inspector-color-swatch-readonly {
+    cursor: default;
+}

@@ -1,4 +1,5 @@
 #include "GameView/GameViewController.h"
+#include "Core/ApplicationPaths.h"
 
 #include "Core/Application.h"
 #include "Core/Engine.h"
@@ -119,7 +120,8 @@ void GameViewController::EnsureGameUI()
 
     m_GameUI = GameUIHost::CreateForHost(
         m_RenderServices->GetDevice(), &EngineCore::GetInstance().GetAssetManager(),
-        &EngineCore::GetInstance().GetJobSystem(), /*neverClearTarget=*/false);
+        &EngineCore::GetInstance().GetJobSystem(), ApplicationPaths::GetInstallAssetsRoot(),
+        /*neverClearTarget=*/false);
     m_GameUiScale.Apply(*m_GameUI->GetUIManager());
     GameUI::SetHost(m_GameUI.get());
 }
@@ -150,7 +152,7 @@ void GameViewController::HandleGameUiPointerMove(bool over, float x, float y, in
     {
         // Over the view, but the UI it would reach is gone or not laid out yet: cancel
         // from the host's own button state; a held press waits for its release here.
-        m_GameUI->OnPointerLeave();
+        m_GameUI->UpdatePointer(nullptr);
         return;
     }
     // The host's UIManager receives no key events in the editor: each move replaces
@@ -467,7 +469,7 @@ bool GameViewController::DeclareGameUICompositeRG(Rendering::RenderGraph::RGFram
     const uint64_t worldId = world ? world->GetWorldId() : 0;
     const uint64_t generation = world ? world->GetLifecycleResetGeneration() : 0;
     if (worldId != m_GameUiWorldId || generation != m_GameUiWorldGeneration)
-        m_GameUI->OnPointerLeave();
+        m_GameUI->UpdatePointer(nullptr);
     m_GameUI->SyncDocuments(world);
     m_GameUiWorldId = worldId;
     m_GameUiWorldGeneration = generation;
@@ -614,7 +616,7 @@ void GameViewController::DeclarePostPipelinePassesRG(Rendering::RenderGraph::RGF
     // resamples, which low-pass the noise and then re-round the recovered
     // detail undithered — one of those after the finalize stays forbidden, on
     // this arm and every other.
-    if (m_PixelPerfectStateRG.Active)
+    if (out.NeedsPixelPerfectFallback(m_PixelPerfectStateRG.Active))
     {
         const std::string ppName =
             "Editor.W" + std::to_string(windowId) + ".GameView.PixelPerfectOutput";

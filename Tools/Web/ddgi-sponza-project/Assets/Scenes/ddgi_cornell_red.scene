@@ -2,7 +2,7 @@
 ; DDGI reference-parity standard instrument. Closed 6x4x6 box, interior spans
 ; x:[-3,3]
 ; y:[0,4] z:[-3,3], red LEFT wall (-X), white everywhere else. Sky suppressed
-; (IblIntensity 0.02) and no sun — the interior point
+; (IblIntensity 0.02, GradientSkyIntensity 40) and no sun — the interior point
 ; light is the only source, so any indirect light on the floor/ceiling/right
 ; wall is DDGI's doing. Chromaticity asymmetry between mirror-symmetric floor
 ; sample points either side of the box's Z axis is the exposure-invariant
@@ -29,6 +29,7 @@ Transform.scale = (1, 1, 1)
 
 [entity id="e_sky"]
 SkyEnvironment.IblIntensity = 0.02
+SkyEnvironment.GradientSkyIntensity = 40
 SkyEnvironment.AutoSunMoon = false
 Name.value = "Sky"
 Transform.position = (0, 0, 0)

@@ -1,0 +1,214 @@
+/* Tile Set Editor panel — grid form above a live atlas preview.
+ *
+ * Attached to the panel subtree via RequestSubtreeStyleAssetPath. The form rows
+ * reuse the global .inspector-row scaffolding (theme/inspector.css), so only
+ * the panel-owned chrome is styled here. Design tokens resolve from :root.
+ */
+
+.tileset-editor-panel .ts-scroll {
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+}
+
+/* Inside the scroll viewport the root sizes to its content, so every section
+   below keeps a definite height rather than competing for a fixed box. */
+.tileset-editor-panel .ts-root {
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 auto;
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    background-color: var(--ui_color_bg_panel);
+    padding: 8px;
+    gap: 6px;
+    box-sizing: border-box;
+}
+
+.tileset-editor-panel .ts-form {
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 auto;
+    width: 100%;
+    min-width: 0;
+    gap: 2px;
+}
+
+.tileset-editor-panel .ts-summary {
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: var(--ui_color_text_muted);
+    padding: 2px 0px;
+}
+
+.tileset-editor-panel .ts-actions {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    flex: 0 0 auto;
+    column-gap: 6px;
+}
+
+.tileset-editor-panel .ts-actions Button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+.tileset-editor-panel .ts-status {
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: var(--ui_color_text_muted);
+    min-height: 16px;
+}
+
+.tileset-editor-panel .ts-status.error {
+    color: var(--ui_color_error);
+}
+
+/* Live preview: fills whatever vertical space the form leaves. The canvas
+ * paints its own background, so no background-color here. */
+/* The slice preview answers "did the grid parameters land"; the terrain canvas
+   below it is where the work happens, so the preview keeps a fixed band and the
+   terrain section takes whatever height the dock gives the panel. */
+.tileset-editor-panel .ts-preview {
+    flex: 0 0 auto;
+    width: 100%;
+    min-width: 0;
+    height: 120px;
+    min-height: 120px;
+}
+
+/* ---- Collision authoring ----
+   Same custom-painted canvas contract as the terrain bit editor below. */
+
+.tileset-editor-panel .ts-collision-section {
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 auto;
+    gap: 4px;
+}
+
+.tileset-editor-panel .ts-collision-canvas {
+    flex: 0 0 auto;
+    width: 100%;
+    min-width: 0;
+    height: 300px;
+    min-height: 300px;
+    border-width: 1px;
+    border-color: var(--ui_color_border_subtle);
+    border-radius: 4px;
+}
+
+/* Per-tile properties of whatever the canvas has selected. The rows themselves
+   are inspector scaffolding and take their styling from the global theme. */
+.tileset-editor-panel .ts-collision-tools {
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 auto;
+    gap: 2px;
+    padding-top: 4px;
+}
+
+/* ---- Terrain authoring ----
+   The bit-editor canvas is custom-painted and has no intrinsic size, so CSS
+   gives it the box to grow into. Terrain colours are authored data and are
+   painted by the canvas itself, never from a token here. */
+
+.tileset-editor-panel .ts-terrain-section {
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 auto;
+    gap: 4px;
+}
+
+.tileset-editor-panel .ts-terrain-header {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    column-gap: 6px;
+    flex: 0 0 auto;
+}
+
+.tileset-editor-panel .ts-section-label {
+    font-size: 12px;
+    color: var(--ui_color_text);
+    flex: 1 1 auto;
+}
+
+.tileset-editor-panel .ts-terrain-list {
+    height: 108px;
+    min-height: 108px;
+    flex: 0 0 auto;
+    border-width: 1px;
+    border-color: var(--ui_color_border_subtle);
+    border-radius: 4px;
+    background-color: #1A1B1D;
+}
+
+.tileset-editor-panel .ts-terrain-set-row,
+.tileset-editor-panel .ts-terrain-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    column-gap: 6px;
+    padding: 2px 6px;
+    flex: 0 0 auto;
+}
+
+.tileset-editor-panel .ts-terrain-row {
+    padding-left: 18px;
+}
+
+.tileset-editor-panel .ts-terrain-row.active {
+    background-color: var(--ui_color_bg_selected);
+}
+
+.tileset-editor-panel .ts-terrain-name {
+    flex: 1 1 auto;
+    min-width: 60px;
+}
+
+.tileset-editor-panel .ts-terrain-name TextInput {
+    padding: 2px 6px;
+    border-radius: 3px;
+    border-width: 1px;
+    border-color: var(--ui_color_border_subtle);
+    background-color: #202020;
+    color: var(--ui_color_text);
+    font-size: 12px;
+    height: 22px;
+    min-height: 22px;
+}
+
+.tileset-editor-panel .ts-terrain-mode {
+    flex: 0 0 auto;
+    min-width: 118px;
+    font-size: 12px;
+}
+
+.tileset-editor-panel .ts-terrain-arm {
+    flex: 0 0 auto;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.tileset-editor-panel .ts-terrain-empty,
+.tileset-editor-panel .ts-terrain-hint {
+    font-size: 12px;
+    color: var(--ui_color_text_muted);
+    padding: 4px 6px;
+    flex: 0 0 auto;
+}
+
+.tileset-editor-panel .ts-terrain-canvas {
+    flex: 0 0 auto;
+    width: 100%;
+    min-width: 0;
+    height: 300px;
+    min-height: 300px;
+    border-width: 1px;
+    border-color: var(--ui_color_border_subtle);
+    border-radius: 4px;
+}

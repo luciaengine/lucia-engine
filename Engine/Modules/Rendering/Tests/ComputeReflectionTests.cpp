@@ -98,27 +98,35 @@ TEST(ComputeReflection, BuiltLayoutsKeepAReadOnlyStorageImageReadOnly) {
     EXPECT_EQ(depthIn->storageTexelFormat, static_cast<uint32_t>(TextureFormat::R32_FLOAT));
 }
 
-// Reflection refuses a storage image whose declared format has no engine format: a layout
-// built from format 0 binds a texture of the wrong format.
-TEST(ComputeReflection, UnmappedStorageImageFormatFailsReflection) {
+TEST(ComputeReflection, AnUnmappedStorageImageFormatIsRefusedWithTheBindingNamed) {
 #if !RENDERING_ENABLE_SPIRV_REFLECTION
     GTEST_SKIP() << "Reflection disabled";
 #endif
-    constexpr uint32_t kHeaderWords = 5, kOpTypeImage = 25, kFormatOperand = 8;
-    constexpr uint32_t kSpvRg32f = 6, kSpvRgba16Snorm = 16;
+    constexpr uint32_t kOpTypeImage = 25;          // SpvOpTypeImage
+    constexpr uint32_t kImageFormatOperand = 8;    // word of OpTypeImage holding the Image Format
+    constexpr uint32_t kImageFormatRg32f = 6;      // SpvImageFormatRg32f
+    constexpr uint32_t kImageFormatRgba8ui = 32;   // SpvImageFormatRgba8ui
+    constexpr size_t kHeaderWords = 5;
+
     const std::vector<uint8_t> bytes = GameEngine::Rendering::Tests::ReadSpirvBytes("gtao_prepare.comp.spv");
     ASSERT_FALSE(bytes.empty()) << "Missing gtao_prepare.comp.spv";
     std::vector<uint32_t> words(bytes.size() / 4);
     std::memcpy(words.data(), bytes.data(), words.size() * 4);
-    bool patched = false;
-    for (size_t i = kHeaderWords; i < words.size() && (words[i] >> 16) != 0; i += words[i] >> 16) {
-        if ((words[i] & 0xFFFFu) == kOpTypeImage && (words[i] >> 16) > kFormatOperand && words[i + kFormatOperand] == kSpvRg32f) {
-            words[i + kFormatOperand] = kSpvRgba16Snorm;
-            patched = true;
+    int patched = 0;
+    for (size_t i = kHeaderWords; i < words.size();) {
+        const uint32_t wordCount = words[i] >> 16;
+        if (wordCount == 0) break;
+        if ((words[i] & 0xFFFFu) == kOpTypeImage && wordCount > kImageFormatOperand &&
+            words[i + kImageFormatOperand] == kImageFormatRg32f) {
+            words[i + kImageFormatOperand] = kImageFormatRgba8ui;
+            ++patched;
         }
+        i += wordCount;
     }
-    ASSERT_TRUE(patched) << "gtao_prepare.comp.spv declares no rg32f image";
+    ASSERT_EQ(patched, 1) << "gtao_prepare.comp.spv should declare one rg32f storage image";
+
     ReflectionOptions opts{}; StageReflectionResult result{}; std::string err;
     EXPECT_FALSE(ReflectSpirv(ShaderStageKind::Compute, words.data(), words.size(), opts, result, &err));
-    EXPECT_NE(err.find("'uGuide'"), std::string::npos) << err;
+    EXPECT_NE(err.find("storage image 'uGuide' (set 0, binding 1)"), std::string::npos) << err;
+    EXPECT_NE(err.find("ImageFormatToEngineFormat does not map"), std::string::npos) << err;
 }

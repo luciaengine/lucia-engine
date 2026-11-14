@@ -24,10 +24,6 @@
 
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
-#include "StagedTestPaths.h"
-
-#include <algorithm>
-#include <cmath>
 
 using namespace GameEngine;
 

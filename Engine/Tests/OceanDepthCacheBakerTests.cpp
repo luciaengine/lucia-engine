@@ -1,6 +1,3 @@
-#include "Assets/AssetManager.h"
-#include "Assets/ModelAsset.h"
-#include "Components/Rendering/MeshRenderer.h"
 #include "Components/Terrain/Terrain.h"
 #include "Components/Terrain/TerrainModifierEffects.h"
 #include "Components/Terrain/TerrainModifierVolume.h"
@@ -9,12 +6,10 @@
 #include "Core/Engine.h"
 #include "ECS/ECSTemplates.h"
 #include "Engine/Rendering/OceanDepthCacheBaker.h"
-#include "Mathematics/Vector2.h"
 #include "SplineECS/SplineService.h"
 #include "TerrainECS/SurfaceHeightQuery.h"
 #include "TerrainECS/TerrainModifierSystem.h"
 #include "TerrainECS/TerrainService.h"
-#include "PagedTiledTerrain.h"
 
 #include <gtest/gtest.h>
 
@@ -25,22 +20,6 @@
 using namespace GameEngine;
 namespace
 {
-
-// The finest ground height at world (x, z).
-bool SampleGround(const GameEngine::TerrainECS::SurfaceHeightQuery& query, GameEngine::float32 worldX,
-                  GameEngine::float32 worldZ, GameEngine::float32& outY)
-{
-    GameEngine::TerrainECS::SurfaceHeightSample sample;
-    if (!query.SampleHeight(GameEngine::Mathematics::Vector3{worldX, 0.0f, worldZ},
-                            GameEngine::TerrainECS::SurfaceHeightPolicy::RequireFinest, sample))
-        return false;
-    outY = sample.Height;
-    return true;
-}
-
-// The paged terrain tests' height scale: heights within +/- 40 m.
-constexpr GameEngine::float32 kTiledHeightScale = 20.0f;
-
 class OceanSceneTerrainBake : public testing::Test
 {
 protected:
@@ -109,13 +88,6 @@ protected:
         return service.GetTerrainData(handle);
     }
 
-    void AddTerrainEntity(const Components::Terrain& terrain)
-    {
-        auto entity = World.CreateEntity();
-        World.AddComponentImmediate(entity, terrain);
-        World.AddComponentImmediate(entity, Components::WorldTransform{});
-    }
-
     Ocean::OceanDepthCacheAsset Bake(const Ocean::OceanDepthCacheBakeDesc& desc,
                                      uint32 expectedSources = 1)
     {
@@ -165,12 +137,12 @@ TEST_F(OceanSceneTerrainBake, CenteredComposedTerrainCoversNegativeWorldCoordina
     TerrainECS::TerrainModifierSystem modifiers;
     modifiers.Update(World, 1.f / 60);
 
-    const auto query = TerrainECS::ResolveSurfaceHeightQuery(World, Mathematics::Vector3(-120.0f, 0.0f, -160.0f));
-    float height = 0;
-    ASSERT_TRUE(SampleGround(query, -120, -160, height));
-    ASSERT_NEAR(height, 1, 1e-4f);
-    ASSERT_TRUE(SampleGround(query, 120, 160, height));
-    ASSERT_NEAR(height, 4, 1e-4f);
+    const auto query = TerrainECS::ResolveSurfaceHeightQuery(World, {-120, 0, -160});
+    TerrainECS::SurfaceHeightSample sample;
+    ASSERT_TRUE(query.SampleHeight({-120, 0, -160}, TerrainECS::SurfaceHeightPolicy::RequireFinest, sample));
+    ASSERT_NEAR(sample.Height, 1, 1e-4f);
+    ASSERT_TRUE(query.SampleHeight({120, 0, 160}, TerrainECS::SurfaceHeightPolicy::RequireFinest, sample));
+    ASSERT_NEAR(sample.Height, 4, 1e-4f);
 
     // The affected scene's real cache rectangle lies wholly inside [-288,288]^2.
     Ocean::OceanDepthCacheBakeDesc desc{1024, 1024, -224, -272, 432, 496, 10, 60000};
@@ -213,96 +185,38 @@ TEST_F(OceanSceneTerrainBake, TranslatedRectangularTerrainPreservesHeightfieldCo
     EXPECT_EQ(mismatch, 0u);
 }
 
-// A MeshRenderer bakes at its world position: the entity's world transform moves the model's
-// local quad (y = -3 over x, z in [0, 2]) under the cache rectangle and lowers it 2 m.
-TEST_F(OceanSceneTerrainBake, AMeshRendererBakesAtItsWorldTransform)
-{
-    Mesh quad;
-    quad.Vertices.resize(4);
-    const Mathematics::Vector2 corners[4] = {{0, 0}, {2, 0}, {2, 2}, {0, 2}};
-    for (uint32 i = 0; i < 4; ++i)
-    {
-        quad.Vertices[i].Position[0] = corners[i].x;
-        quad.Vertices[i].Position[1] = -3;
-        quad.Vertices[i].Position[2] = corners[i].y;
-    }
-    quad.Indices = {0, 1, 2, 0, 2, 3};
-    auto model = std::make_shared<ModelAsset>(GUID::Generate(), std::filesystem::path("quad.gltf"));
-    model->SetMeshesForTest({quad});
-    EngineCore::GetInstance().GetAssetManager().RegisterLoadedAsset(model->GetGUID(), model);
-
-    Components::MeshRenderer renderer;
-    renderer.modelAssetGuid.Set(model->GetGUID());
-    const auto entity = World.CreateEntity();
-    World.AddComponentImmediate(entity, renderer);
-    World.AddComponentImmediate(entity, At(10, -2, 20));
-
-    const Ocean::OceanDepthCacheBakeDesc desc{2, 2, 10, 20, 2, 2, 1, 60000};
-    Ocean::OceanDepthCacheAsset cache;
-    Engine::Renderer::OceanSceneDepthBakeStats stats;
-    std::string error;
-    ASSERT_TRUE(Engine::Renderer::BakeOceanDepthCacheFromSceneMeshes(
-        World, desc, Engine::Renderer::OceanSceneDepthBakeOptions{}, cache, &stats, &error)) << error;
-    EXPECT_EQ(stats.MeshSources, 1u);
-    for (const float depth : cache.GetDepths())
-        EXPECT_NEAR(depth, 6, 1e-4f);
-}
-
-// A paged tiled terrain is baked at its finest height away from every CPU window and where its tile is
-// not resident: the bake fetches the finest pages under its area (the generated pages' level 0 is the
-// tile fill).
-TEST_F(OceanSceneTerrainBake, APagedTiledTerrainBakesItsFinestHeightWhereItsTileIsNotResident)
+TEST_F(OceanSceneTerrainBake, TiledTerrainKeepsResidentTileCornerOrigins)
 {
     auto& service = TerrainECS::TerrainService::Get();
-    TerrainECS::Test::PagedTiledTerrain paged =
-        TerrainECS::Test::CreatePagedTiledTerrain(service, 2048.0f, 1024.0f, kTiledHeightScale);
-    paged.Request.GpuPages = false; // only the CPU window wants level 0, and it is far from the bake
-    const Ocean::OceanDepthCacheBakeDesc desc{16, 16, 1500, 300, 64, 64, 100, 60000};
-    std::vector<float> expected(desc.Width * desc.Height);
-    TerrainECS::TerrainTileData* tile = service.LoadTile(paged.Tiled, {1, 0});
+    TerrainECS::TiledTerrainConfig config;
+    config.WorldSizeX = config.WorldSizeZ = 576;
+    config.HeightScale = 20;
+    config.SamplesPerMeter = 1;
+    const auto handle = service.CreateTiledTerrain(config);
+    auto* tiled = service.GetTiledTerrainData(handle);
+    ASSERT_NE(tiled, nullptr);
+    tiled->WorldOriginX = -300;
+    tiled->WorldOriginZ = -160;
+    auto* tile = service.LoadTile(handle, {0, 0});
     ASSERT_NE(tile, nullptr);
-    tile->LodState = TerrainECS::TileLodState::Full;
-    const TerrainECS::TiledTerrainData& tiled = *service.GetTiledTerrainData(paged.Tiled);
-    const float tileSize = tiled.Config.TileWorldSize;
-    for (uint32 z = 0; z < desc.Height; ++z)
-        for (uint32 x = 0; x < desc.Width; ++x)
-        {
-            const float wx = desc.OriginX + (x + .5f) * desc.SizeX / desc.Width;
-            const float wz = desc.OriginZ + (z + .5f) * desc.SizeZ / desc.Height;
-            const float u = (wx - tiled.WorldOriginX - tileSize) / tileSize;
-            const float v = (wz - tiled.WorldOriginZ) / tileSize;
-            expected[z * desc.Width + x] = desc.SeaLevel - tile->Heightfield.SampleBilinear(u, v) * kTiledHeightScale;
-        }
-    service.UnloadTile(paged.Tiled, {1, 0});
-    const Mathematics::Vector3 camera(200, 50, 200);
-    ASSERT_TRUE(TerrainECS::Test::StreamPagesUntilTheCameraPageLands(service, paged, camera));
-    AddTerrainEntity(paged.Component);
-
+    for (uint32 z = 0; z < tile->Heightfield.GetHeight(); ++z)
+        for (uint32 x = 0; x < tile->Heightfield.GetWidth(); ++x)
+            tile->Heightfield.SetSample(x, z, .25f);
+    Components::Terrain terrain;
+    terrain.SizeX = terrain.SizeZ = 576;
+    terrain.HeightScale = 20;
+    terrain.TiledTerrainHandle = handle.Index;
+    terrain.TiledTerrainGeneration = handle.Generation;
+    auto entity = World.CreateEntity();
+    World.AddComponentImmediate(entity, terrain);
+    // Tile world corners are already resolved; this translation contributes only Y.
+    World.AddComponentImmediate(entity, At(100, 3, 200));
+    const float side = tiled->Config.TileWorldSize;
+    Ocean::OceanDepthCacheBakeDesc desc{16, 16, -300, -160, side, side, 12, 60000};
     const auto cache = Bake(desc);
     ASSERT_TRUE(cache.IsValid());
-    unsigned mismatch = 0;
-    for (std::size_t texel = 0; texel < expected.size(); ++texel)
-        mismatch += std::abs(cache.GetDepths()[texel] - expected[texel]) > 0.01f;
-    EXPECT_EQ(mismatch, 0u);
-}
-
-// A tiled terrain whose pages have no source yet (its height store still cooking) fails the bake and
-// reports the texels it could not answer, rather than baking deep water there.
-TEST_F(OceanSceneTerrainBake, ATiledTerrainWithNoPageSourceFailsTheBakeAndReportsItsTexels)
-{
-    auto& service = TerrainECS::TerrainService::Get();
-    const TerrainECS::Test::PagedTiledTerrain paged =
-        TerrainECS::Test::CreatePagedTiledTerrain(service, 2048.0f, 1024.0f, kTiledHeightScale);
-    AddTerrainEntity(paged.Component);
-    const Ocean::OceanDepthCacheBakeDesc desc{16, 16, 1500, 300, 64, 64, 100, 60000};
-    Ocean::OceanDepthCacheAsset cache;
-    Engine::Renderer::OceanSceneDepthBakeStats stats;
-    std::string error;
-    EXPECT_FALSE(Engine::Renderer::BakeOceanDepthCacheFromSceneMeshes(
-        World, desc, Engine::Renderer::OceanSceneDepthBakeOptions{}, cache, &stats, &error));
-    EXPECT_EQ(stats.TerrainSources, 1u);
-    EXPECT_EQ(stats.UnsampledTerrainTexels, desc.Width * desc.Height);
-    EXPECT_NE(error.find("still cooking"), std::string::npos) << error;
+    for (const float depth : cache.GetDepths())
+        EXPECT_NEAR(depth, 4, 1e-4f);
 }
 } // namespace
 

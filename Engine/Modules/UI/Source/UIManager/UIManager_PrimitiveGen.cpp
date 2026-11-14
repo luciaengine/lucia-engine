@@ -1,6 +1,6 @@
 #include "Mathematics/Interpolation.h"
 #include "UI/UIManager.h"
-#include "UIManager_Internal.h"
+#include "UIManager/UIManager_Internal.h"
 #include "../BackgroundImage/BackgroundImageGeometry.h"
 #include "Core/CpuProfiler.h"
 #include "Logger/Logger.h"

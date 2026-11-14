@@ -2,11 +2,13 @@
 
 #include "UI/UIElement.h"
 
+#include <functional>
 #include <string>
 
 namespace GameEngine
 {
 class Label;
+class Button;
 
 namespace EditorUI
 {
@@ -35,6 +37,7 @@ public:
     // Replaces the copy; the card re-decides whether it needs to fold on the
     // next layout, so a card whose text shrinks to one row loses its chevron glyph.
     void SetText(const std::string& text);
+    void SetAction(const std::string& label, const std::string& tooltip, std::function<void()> onInvoke);
 
     bool IsFoldable() const { return m_Foldable; }
     bool IsExpanded() const { return m_Expanded; }
@@ -58,6 +61,8 @@ private:
     Label* m_Label = nullptr;
     // "show more", right-aligned on a collapsed card's line.
     Label* m_Toggle = nullptr;
+    Button* m_Action = nullptr;
+    std::function<void()> m_OnInvoke;
 };
 
 } // namespace EditorUI

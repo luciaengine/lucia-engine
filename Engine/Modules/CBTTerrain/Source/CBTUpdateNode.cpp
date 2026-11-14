@@ -11,6 +11,7 @@
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace GameEngine::CBTTerrain
 {
@@ -49,11 +50,9 @@ CBTUpdateOutputs CBTUpdateNode::ImportOutputs(RGFrame& frame, CBTInstance& insta
     out.HeightChain = frame.ImportExternalBuffer(
         "CBT.HeightChain", res.GetHeightChainBuffer(),
         static_cast<uint64_t>(res.GetHeightChainWords()) * sizeof(uint32_t));
-    // It rests in ShaderResource between frames: CBTResources creates it there, and the update's normal
-    // build barriers it to storage and back inside the pass (CBTInstance::RecordHeightChainBuild), so the
-    // graph sees only the draw's read.
+    // Storage and sampled descriptors share GENERAL throughout the chain's lifetime.
     out.NormalChain = frame.ImportExternalTexture("CBT.NormalChain", res.GetNormalChainTexture(),
-                                                  ResourceState::ShaderResource, TextureFormat::R16G16_FLOAT,
+                                                  ResourceState::UnorderedAccess, TextureFormat::R16G16_FLOAT,
                                                   std::max(res.GetNormalChainMips(), 1u));
     return out;
 }
@@ -62,7 +61,7 @@ CBTUpdateOutputs CBTUpdateNode::DeclareUpdatePass(RGFrame& frame, CBTInstance& i
                                                   const CBTClassifyDesc& classify,
                                                   const CBTFrameParams& params, uint32_t frameCounter,
                                                   TextureHandle heightSource,
-                                                  const CBTActivitySlot& activity)
+                                                  const CBTActivitySlot& activity, std::function<void()> onSubmitted)
 {
     CBTUpdateOutputs out = ImportOutputs(frame, instance);
     if (!out.IndirectDraw.IsValid())
@@ -92,6 +91,7 @@ CBTUpdateOutputs CBTUpdateNode::DeclareUpdatePass(RGFrame& frame, CBTInstance& i
     CBTInstance* inst = &instance;
     const CBTClassifyDesc desc = classify;
     const CBTFrameParams frameParams = params;
+    bool* recorded = frame.AllocatePassData<bool>(false);
     out.Update = frame.AddPass(
         "CBT.Update", kCBTUpdatePhase,
         [&](RGPassBuilder& p)
@@ -101,10 +101,17 @@ CBTUpdateOutputs CBTUpdateNode::DeclareUpdatePass(RGFrame& frame, CBTInstance& i
             p.Write(out.IndicesVisible, RGBufferWrite::Storage);
             p.Write(out.CurrentVertex, RGBufferWrite::Storage);
             p.Write(out.HeightChain, RGBufferWrite::Storage);
+            p.Write(out.NormalChain, RGTextureWrite::Storage);
             if (haveHeight)
                 p.Read(heightRG, RGTextureRead::SampledCompute);
+            if (onSubmitted)
+                p.OnSubmitted([recorded, submitted = std::move(onSubmitted)]
+                {
+                    if (*recorded)
+                        submitted();
+                });
         },
-        [inst, desc, frameParams, frameCounter, activity](RGContext& ctx)
+        [inst, desc, frameParams, frameCounter, activity, recorded](RGContext& ctx)
         {
             if (!ctx.Cmd)
                 return;
@@ -112,6 +119,7 @@ CBTUpdateOutputs CBTUpdateNode::DeclareUpdatePass(RGFrame& frame, CBTInstance& i
             CBTActivityReadback::Record(*ctx.Cmd,
                                         inst->GetResources().GetBuffer(CBTBinding::WorkQueue),
                                         activity);
+            *recorded = true;
         });
 
     // Anchor culling + form the trailing barriers for the draw consumer.

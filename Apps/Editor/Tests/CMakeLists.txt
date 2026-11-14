@@ -58,6 +58,7 @@ add_test(NAME EditorCaptureOutputDirectoryTests COMMAND EditorCaptureOutputDirec
 
 add_executable(EditorScreenshotCaptureWaitTests
     ScreenshotCaptureWaitTests.cpp
+    WindowRenderCallbackQueueTests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/DebugServer/ScreenshotCaptureWait.cpp
 )
 
@@ -419,3 +420,51 @@ add_custom_command(TARGET AiAssistantPanelTests POST_BUILD
         ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AgentModelPopover.uxml
         $<TARGET_FILE_DIR:AiAssistantPanelTests>/AiAssistantPanelFixtures/ai-assistant/Editor/UI/controls/AgentModelPopover.uxml)
 add_test(NAME AiAssistantPanelTests COMMAND AiAssistantPanelTests)
+
+add_executable(EditorLogViewTests
+    LogViewTests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Panels/LogView.cpp
+)
+
+target_include_directories(EditorLogViewTests
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../Include
+)
+
+target_link_libraries(EditorLogViewTests
+    PRIVATE
+        Engine
+        GTest::gtest
+        GTest::gtest_main
+)
+
+target_compile_features(EditorLogViewTests PRIVATE cxx_std_20)
+
+ge_set_output_tests(EditorLogViewTests)
+ge_stage_runtime_dependencies(EditorLogViewTests)
+
+add_test(NAME EditorLogViewTests COMMAND EditorLogViewTests)
+
+add_executable(EditorSceneViewPixelPerfectTests
+    SceneViewPixelPerfectTests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/SceneViewPixelPerfect.cpp
+)
+
+target_include_directories(EditorSceneViewPixelPerfectTests
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../Include
+)
+
+target_link_libraries(EditorSceneViewPixelPerfectTests
+    PRIVATE
+        Engine
+        GTest::gtest
+        GTest::gtest_main
+)
+
+target_compile_features(EditorSceneViewPixelPerfectTests PRIVATE cxx_std_20)
+
+ge_set_output_tests(EditorSceneViewPixelPerfectTests)
+ge_stage_runtime_dependencies(EditorSceneViewPixelPerfectTests)
+
+add_test(NAME EditorSceneViewPixelPerfectTests COMMAND EditorSceneViewPixelPerfectTests)

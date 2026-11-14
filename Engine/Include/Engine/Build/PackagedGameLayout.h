@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Core/ApplicationPaths.h"
+
 #include "Assets/AssetRegistry.h"
 #include "Scripting/ScriptsConfig.h"
 
@@ -42,8 +44,7 @@ PackagedGameLayout DetectPackagedGameLayout(const std::filesystem::path& content
 // Managed/Packages/ load beside it) and hard-disables every compile and
 // project-generation path in ScriptManager. Non-packaged (dev) runs keep the
 // CLR off unless a prebuilt assembly is explicitly staged. `useNativeAOT`
-// (scripts shipped as a native library) disables the CLR outright and sets
-// nativeAot, which keeps a ScriptManager for the main-thread queue.
+// (scripts shipped as a native library) disables the CLR outright.
 ScriptsConfig BuildPlayerScriptsConfig(const PackagedGameLayout& layout, bool useNativeAOT);
 
 // True when the Player must register ManagedSystemBridge so C# GameSystems tick

@@ -18,7 +18,8 @@ namespace
 // in the segment's indirect command buffer, and writes the execution range the
 // render encoder runs. Pipeline state and buffer bindings are inherited from
 // the render encoder, so a command carries only its draw arguments and the
-// index buffer address.
+// index buffer address. Segments with outputRecords instead copy counted
+// records to native indirect arguments and zero their unused tail.
 constexpr const char* kTranslateSource = R"(
 #include <metal_stdlib>
 using namespace metal;
@@ -53,6 +54,7 @@ struct Segment
     uint indexType;
     uint primitiveType;
     uint padding;
+    device DrawRecord* outputRecords;
 };
 
 struct Translation
@@ -87,9 +89,22 @@ kernel void ge_translate_indirect_count(device const Translation& translation [[
     device const Segment& segment = translation.segments[segmentIndex];
     const uint callDrawCount = min(*segment.count, segment.maxDrawCount);
     const uint drawCount = min(max(callDrawCount, segment.firstRecord) - segment.firstRecord, segment.commandCount);
-    if (lane == 0u)
+    if (lane == 0u && segment.range != nullptr)
     {
         *segment.range = ExecutionRange{segment.firstCommand, drawCount};
+    }
+    if (segment.outputRecords != nullptr)
+    {
+        for (uint i = lane; i < segment.commandCount; i += laneCount)
+        {
+            DrawRecord record = {0, 0, 0, 0, 0};
+            if (i < drawCount)
+            {
+                record = *reinterpret_cast<device const DrawRecord*>(segment.records + i * segment.recordStride);
+            }
+            segment.outputRecords[i] = record;
+        }
+        return;
     }
     const primitive_type primitive = ToPrimitiveType(segment.primitiveType);
     // MTLIndexTypeUInt32 == 1.

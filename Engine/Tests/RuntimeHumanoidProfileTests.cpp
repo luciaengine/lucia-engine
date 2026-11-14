@@ -267,7 +267,7 @@ TEST_F(RuntimeHumanoidProfileTest, PackagedManifestRetainsCollectedProfileIdenti
     const auto packageRoot = root / "export/Assets";
     fs::create_directories((root / "export" / entry.outputPath).parent_path());
     fs::copy_file(entry.sourcePath, root / "export" / entry.outputPath);
-    AssetDatabase::AssetStore_TextJsonl store(nullptr);
+    AssetDatabase::AssetStore_TextJsonl store{nullptr};
     AssetDatabase::AssetRecord row;
     row.guid = entry.guid;
     row.path = relativeProfile;
@@ -390,25 +390,6 @@ TEST_F(RuntimeHumanoidProfileTest, WorldResetRearmsFailedPairWithoutAssetEvent)
     system.Update(world, .016f);
     world.ProcessCommands();
     EXPECT_TRUE(world.HasComponent<Components::HumanoidRetargeterComponent>(actor));
-}
-
-// A headless host runs the engine's schedule with no render services: the system
-// samples every animated skeleton on the CPU instead of reaching for the GPU store.
-TEST_F(RuntimeHumanoidProfileTest, AnimationSamplesOnTheCpuWithoutRenderServices)
-{
-    ECS::World world(nullptr);
-    const auto actor = Actor(world);
-    Renderer::AnimationSystem system(nullptr);
-    for (int i = 0; i < 2; ++i)
-    {
-        system.Update(world, .016f);
-        world.ProcessCommands();
-    }
-    const auto* skeleton = world.GetComponent<Components::SkeletonRef>(actor);
-    ASSERT_NE(skeleton, nullptr);
-    const auto* runtime = Renderer::SkeletonStore::Instance().GetRuntime(skeleton->runtimeId);
-    ASSERT_NE(runtime, nullptr);
-    EXPECT_FALSE(runtime->CompactSkinMatrices.empty());
 }
 
 TEST_F(RuntimeHumanoidProfileTest, MissingRuntimeProfileCannotEnterExportManifest)

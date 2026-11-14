@@ -12,7 +12,7 @@
 #include "PathfindingECS/NavigationService.h"
 #include "PathfindingECS/Systems/NavigationWorldHooks.h"
 
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentRegistry.h"
 #include "Pathfinding/DetourNavMap.h"
 #include "Pathfinding/NavigationWorld.h"
 #include "Pathfinding/PathBuffer.h"

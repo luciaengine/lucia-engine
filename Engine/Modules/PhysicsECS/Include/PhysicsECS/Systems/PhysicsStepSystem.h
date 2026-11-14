@@ -24,9 +24,7 @@ public:
     static constexpr ECS::SystemCadence Cadence = ECS::SystemCadence::Simulation;
 
     const char* GetName() const override { return "PhysicsStepSystem"; }
-    // Contact and trigger handlers run inside the step and call the engine's main-thread script API
-    // (entity.Physics, an unsubscribe), so the step runs on the updating thread, outside any job,
-    // whatever else its wave holds.
+    // Backend event callbacks run on the updating thread, outside a job.
     bool RequiresExclusiveUpdate() const override { return true; }
     void Update(ECS::World& world, float32 deltaTime) override;
 
@@ -37,11 +35,12 @@ private:
         Physics::BodyHandle body{};
         Physics::Transform target{};
         bool moved = false;
+        ECS::EntityHandle entity{};
     };
 
     void MoveKinematicBodies(ECS::World& world, Physics::PhysicsWorld& physics, float32 duration);
     MovingBody* FindMovingBody(Physics::BodyHandle body);
-    void StopArrivedBodies(Physics::PhysicsWorld& physics);
+    void StopArrivedBodies(ECS::World& world, Physics::PhysicsWorld& physics);
 
     // The bodies moved on the last frame that ran a step, sorted by handle. On the next such frame, a body
     // whose Transform did not move has arrived: it is placed on its exact pose, its velocity is set to zero

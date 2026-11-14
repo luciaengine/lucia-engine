@@ -6,17 +6,23 @@
 
 #include "Rendering/Core/BarrierMapping.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
+#include "Source/Vulkan/TextureUsagePolicy.h"
 #include "Source/Vulkan/VulkanCommandList.h"
 #include "Tests/RenderGraph/RGTestDevice.h"
-
-#include <gtest/gtest.h>
+#include "Tests/ScopedEnvVar.h"
+#if defined(RENDERING_HAS_VULKAN)
+#include "Source/Vulkan/VulkanDevice/VulkanDevice.h"
+#endif
 
 #include <algorithm>
 #include <cstdlib>
 #include <string>
 
+#include <gtest/gtest.h>
+
 using namespace GameEngine::Rendering;
 using namespace GameEngine::Rendering::RenderGraph;
+using GameEngine::Rendering::Tests::ScopedEnvVar;
 
 namespace
 {
@@ -391,6 +397,100 @@ TEST(RGRecord, ValidationLayerFrameExecutesClean)
     EXPECT_EQ(stats.ErrorCount, 0u) << VuidSummary(stats);
 }
 
+TEST(RGRecord, NaNFilledTargetFirstUseIsSynchronized)
+{
+    const ScopedEnvVar api("GE_GFX_API", "vulkan");
+    const ScopedEnvVar fill("GE_VK_FILL_NEW_TARGETS_NAN", "1");
+    const ScopedEnvVar validation("GE_VK_VALIDATION", "1");
+    const ScopedEnvVar synchronizationValidation("GE_VK_SYNC_VALIDATION", "1");
+    const ScopedEnvVar gpuAssistedValidation("GE_VK_GPU_AV", "0");
+    const ScopedEnvVar validationAssert("GE_VK_VALIDATION_ASSERT", "0");
+    const ScopedEnvVar usageAudit("GE_TEXTURE_USAGE_AUDIT", "1");
+    auto device = MakeDevice(/*debugLayer=*/true);
+    ASSERT_TRUE(device);
+    ASSERT_EQ(device->GetAPI(), GraphicsAPI::Vulkan);
+    ASSERT_TRUE(device->DebugFillsNewResourcesWithNaN());
+    ASSERT_TRUE(TextureUsagePolicy::IsAuditEnabled());
+    const ValidationStats initialValidation = device->GetValidationStats();
+    ASSERT_TRUE(initialValidation.Enabled);
+    const bool frameBegan = device->BeginFrame();
+    ASSERT_TRUE(frameBegan);
+
+    constexpr uint32_t kWidth = 4;
+    constexpr uint32_t kHeight = 4;
+    constexpr uint32_t kTexelCount = kWidth * kHeight;
+    constexpr size_t kReadbackBytes = kTexelCount * sizeof(float);
+    constexpr float kClearRed = 0.25f;
+    const BufferHandle readback = device->CreateReadbackBuffer(kReadbackBytes, "NaNFirstUse.Readback");
+    ASSERT_TRUE(readback.IsValid());
+    FramePools pools(device.get());
+    RGFrame frame(device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    frame.BeginFrame(0);
+    TextureDesc textureDesc{};
+    textureDesc.width = kWidth;
+    textureDesc.height = kHeight;
+    textureDesc.format = static_cast<uint32_t>(TextureFormat::R32_FLOAT);
+    textureDesc.usage = static_cast<uint32_t>(TextureUsage::RenderTarget | TextureUsage::ShaderResource |
+                                              TextureUsage::TransferSrc);
+    textureDesc.debugName = "NaNFirstUse.Target";
+    const TextureUsageSnapshot initialUsage = TextureUsagePolicy::Snapshot();
+    const RGTexture target = frame.CreateTexture("NaNFirstUse.Target", textureDesc);
+    const RGBuffer destination = frame.ImportExternalBuffer("NaNFirstUse.Readback", readback, kReadbackBytes);
+    uint32_t recordedPasses = 0;
+    // Undefined first use discards prior contents, so the attachment establishes a finite value.
+    frame.AddPass("NaNFirstUse.Clear", 0,
+                  [target](RGPassBuilder& pass)
+                  {
+                      pass.AttachColor(0, target,
+                                       {.Load = RGLoadOp::Clear, .Clear = {.Color = {kClearRed, 0.0f, 0.0f, 1.0f}}});
+                  },
+                  [target, &recordedPasses](RGContext& context)
+                  {
+                      ASSERT_NE(context.Cmd, nullptr);
+                      ASSERT_TRUE(context.GetTexture(target).IsValid());
+                      ++recordedPasses;
+                  });
+    frame.AddPass("NaNFirstUse.Readback", 0,
+                  [target, destination](RGPassBuilder& pass)
+                  {
+                      pass.Read(target, RGTextureRead::CopySrc);
+                      pass.Write(destination, RGBufferWrite::CopyDst);
+                  },
+                  [target, readback, &recordedPasses](RGContext& context)
+                  {
+                      ASSERT_NE(context.Cmd, nullptr);
+                      context.Cmd->CopyTextureSubresourceToBuffer(context.GetTexture(target), 0, 0, readback,
+                                                                kWidth, kHeight, 0, 0, 0, 0);
+                      ++recordedPasses;
+                  });
+    frame.MarkOutput(destination);
+    frame.Execute();
+    device->FinalizeFrame();
+    device->WaitForIdle();
+    EXPECT_EQ(recordedPasses, 2u);
+    EXPECT_EQ(frame.Stats().SubmissionsMade, 1u);
+    EXPECT_EQ(frame.Stats().RenderPassesBegun, 1u);
+    EXPECT_EQ(frame.Stats().PreparationFailures, 0u);
+    EXPECT_EQ(frame.SubmittedFrameCount(), 1u);
+
+    const auto* texels = static_cast<const float*>(device->MapBuffer(readback));
+    ASSERT_NE(texels, nullptr);
+    for (uint32_t texelIndex = 0; texelIndex < kTexelCount; ++texelIndex)
+        EXPECT_EQ(texels[texelIndex], kClearRed) << "texel " << texelIndex;
+    device->UnmapBuffer(readback);
+    device->DestroyBuffer(readback);
+
+    const TextureUsageSnapshot finalUsage = TextureUsagePolicy::Snapshot();
+    EXPECT_GT(finalUsage.ObservedUses, initialUsage.ObservedUses);
+    EXPECT_EQ(finalUsage.UnresolvedUses, initialUsage.UnresolvedUses);
+    EXPECT_EQ(finalUsage.ViolationKeys, initialUsage.ViolationKeys);
+    const ValidationStats finalValidation = device->GetValidationStats();
+    EXPECT_TRUE(finalValidation.Enabled);
+    EXPECT_EQ(finalValidation.ErrorCount, initialValidation.ErrorCount) << VuidSummary(finalValidation);
+    EXPECT_EQ(finalValidation.SuppressedCount, initialValidation.SuppressedCount) << VuidSummary(finalValidation);
+    EXPECT_EQ(finalValidation.OverflowCount, initialValidation.OverflowCount) << VuidSummary(finalValidation);
+}
+
 // The cross-physical transition gate on a real device: graphics renders into a
 // colour attachment, compute samples it (§1's IBL_EnvCapture crossing). The
 // ColorAttachment->ShaderReadOnly transition must record at the GRAPHICS tail —
@@ -654,6 +754,58 @@ TEST(RGRecord, DestructionRightAfterExecuteDrainsOwnWork)
     }
     dev->WaitForIdle(); // device still healthy afterwards
 }
+
+#if defined(RENDERING_HAS_VULKAN)
+TEST(RGRecord, ConsumerSubmissionWaitsOnTheProducerTimeline)
+{
+    class WaitObservingDevice final : public VulkanDevice
+    {
+      public:
+        bool QueueSubmit(QueueType queue, const std::vector<CommandList*>& lists,
+                         const std::vector<std::pair<SemaphoreHandle, uint64_t>>& waits,
+                         const std::vector<std::pair<SemaphoreHandle, uint64_t>>& signals) override
+        {
+            Queue = queue;
+            Waits = waits;
+            return VulkanDevice::QueueSubmit(queue, lists, waits, signals);
+        }
+
+        QueueType Queue = QueueType::Graphics;
+        std::vector<std::pair<SemaphoreHandle, uint64_t>> Waits;
+    };
+
+    DeviceDesc desc{};
+    desc.preferredAPI = GraphicsAPI::Vulkan;
+    desc.enableDynamicRendering = true;
+    desc.enableSwapchain = false;
+    WaitObservingDevice device;
+    if (!device.Initialize(desc))
+        GTEST_SKIP() << "no headless Vulkan device available";
+
+    FramePools producerPools(&device);
+    RGFrame producer(&device, &producerPools.Persistent, &producerPools.Transient, &producerPools.Ring);
+    FramePools consumerPools(&device);
+    RGFrame consumer(&device, &consumerPools.Persistent, &consumerPools.Transient, &consumerPools.Ring);
+    consumer.SetPhysicalQueueMap(RGFrame::kIdentityQueueMap);
+    producer.BeginFrame(0);
+    producer.AddPass("ExternalWait.Producer", 0,
+                     [](RGPassBuilder& pass) { pass.PreventCulling(); }, [](RGContext&) {});
+    producer.Execute();
+    const auto token = producer.SubmissionToken();
+    ASSERT_TRUE(token.IsValid());
+
+    consumer.BeginFrame(0);
+    consumer.AddSubmissionWait(token);
+    consumer.AddComputePass("ExternalWait.Consumer", 0,
+                            [](RGPassBuilder& pass) { pass.PreventCulling(); }, [](RGContext&) {});
+    consumer.Execute();
+    EXPECT_EQ(device.Queue, IDevice::QueueType::Compute);
+    ASSERT_EQ(device.Waits.size(), 1u);
+    EXPECT_EQ(device.Waits.front().first, token.sem);
+    EXPECT_EQ(device.Waits.front().second, token.value);
+    device.WaitForIdle();
+}
+#endif
 
 // SubmissionToken replaces the old GetSubmissionToken for readback consumers:
 // a timeline (semaphore, value) pair pollable without a device stall.

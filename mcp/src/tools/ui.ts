@@ -28,6 +28,17 @@ function noKeyMessage(key: string | number): { message: string } {
 
 export const tools: ToolDef[] = [
   proxyTool({
+    name: "dock_panel",
+    category: "ui",
+    description:
+      "Move a docked panel into the same tab group as anchorPanelId, or show it without moving when no anchor is given. Closed panels use the editor's existing opening policy. Floating panels that remain outside the main dock report failure. Returns current dock leaf, activeTab, width and height after layout settles, plus movedFrom for a move. Opening a closed or floating panel may activate its window; do not use this operation for background-only validation.",
+    schema: {
+      panelId: z.string().min(1).describe("Registered panel ID, for example Assets"),
+      anchorPanelId: z.string().min(1).optional().describe("Panel already in the main dock whose tab group receives the moved panel"),
+    },
+  }),
+
+  proxyTool({
     name: "get_ui_tree",
     category: "ui",
     description:
@@ -79,7 +90,6 @@ export const tools: ToolDef[] = [
       x: z.coerce.number().optional().describe("X in the editor window's UI coordinates (the logical pixels get_ui_tree reports), not desktop pixels"),
       y: z.coerce.number().optional().describe("Y in the editor window's UI coordinates (the logical pixels get_ui_tree reports), not desktop pixels"),
       button: z.enum(["left", "right", "middle"]).optional().describe("Mouse button (default left). right opens real context menus — on macOS the popup is deferred past the IPC reply, so this does not stall; on Windows the native popup's nested message loop blocks the debug server until the menu closes, so prefer open_context_menu there"),
-      clickCount: z.coerce.number().int().min(1).max(3).optional().describe("Clicks in one gesture (default 1): 2 is a double-click, 3 a triple-click. The presses land inside the platform's double-click interval at any frame rate, which two separate click_element calls cannot promise"),
     },
   }),
 

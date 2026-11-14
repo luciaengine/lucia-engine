@@ -596,6 +596,20 @@ TEST(AiAssistantPanelTests, AProviderSwitchMidConversationStartsANewConversation
     EXPECT_EQ(second->Observed().size(), 1u);
 }
 
+TEST(AiAssistantPanelTests, AUserRowKeepsAttachedFilesAlongsideItsMarkupChips)
+{
+    Conversation conversation;
+    const Conversation::TurnId turn = conversation.AddTurn(
+        "Widen @markup:road", SentMarkups{"", {{"@markup:road", "North road"}}}, "claude-api", "", "", {},
+        {{.Name = "road.png", .Kind = PromptFileKind::Image}, {.Name = "notes.md", .Bytes = "Road width: 8"}});
+    const AgentConversationRowModel user = AgentConversationRowModel::From(*conversation.UserMessage(turn), {}, turn, {});
+    EXPECT_EQ(user.FileChips, (std::vector<std::string>{"road.png", "notes.md"}));
+    EXPECT_EQ(user.MarkupChips, (std::vector<MarkupChip>{{"@markup:road", "North road"}}));
+    const AgentConversationRowModel reply = AgentConversationRowModel::From(*conversation.Reply(turn), {}, turn, {});
+    EXPECT_TRUE(reply.FileChips.empty());
+    EXPECT_TRUE(reply.MarkupChips.empty());
+}
+
 TEST(AiAssistantPanelTests, TheRowModelShowsEachStageOfAReply)
 {
     Conversation conversation;
@@ -1179,6 +1193,57 @@ const UIElement* FindByClass(const UIElement& root, std::string_view cls)
     return nullptr;
 }
 } // namespace
+
+TEST(AiAssistantPanelTests, FileAndMarkupChipsUpdateIndependentlyInTheConversation)
+{
+    AgentConversationRowModel model;
+    model.Header = "You";
+    model.Text = "Widen @markup:road";
+    model.FromUser = true;
+    model.FileChips = {"road.png", "notes.md"};
+    model.MarkupChips = {{"@markup:road", "North road"}};
+    ConversationLayout layout;
+    if (!layout.Device)
+        GTEST_SKIP() << "No device";
+    const std::string built = BuildConversation(layout, 338.0f, model);
+    ASSERT_TRUE(built.empty()) << built;
+    UIElement* files = layout.Row->FindById(HashStringId("AgentRowFiles:1"));
+    UIElement* markups = layout.Row->FindById(HashStringId("AgentRowMarkups:1"));
+    ASSERT_NE(files, nullptr);
+    ASSERT_NE(markups, nullptr);
+    ASSERT_EQ(files->GetChildren().size(), 2u);
+    const auto* first = dynamic_cast<const Label*>(files->GetChildren()[0].get());
+    const auto* second = dynamic_cast<const Label*>(files->GetChildren()[1].get());
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+    EXPECT_EQ(first->GetText(), "road.png");
+    EXPECT_EQ(second->GetText(), "notes.md");
+    EXPECT_TRUE(first->HasClass("agent-row-file-chip"));
+    EXPECT_FALSE(files->HasClass("hidden"));
+    ASSERT_EQ(markups->GetChildren().size(), 1u);
+    const auto* markup = dynamic_cast<const Button*>(markups->GetChildren()[0].get());
+    ASSERT_NE(markup, nullptr);
+    EXPECT_EQ(markup->GetText(), "North road");
+
+    model.FileChips.clear();
+    layout.Row->Show(model, "10:21");
+    EXPECT_TRUE(files->GetChildren().empty());
+    EXPECT_TRUE(files->HasClass("hidden"));
+    EXPECT_FALSE(markups->HasClass("hidden"));
+    ASSERT_EQ(markups->GetChildren().size(), 1u);
+    EXPECT_EQ(markups->GetChildren()[0].get(), markup);
+
+    model.FileChips = {"new.png"};
+    model.MarkupChips.clear();
+    layout.Row->Show(model, "10:21");
+    EXPECT_FALSE(files->HasClass("hidden"));
+    ASSERT_EQ(files->GetChildren().size(), 1u);
+    first = dynamic_cast<const Label*>(files->GetChildren()[0].get());
+    ASSERT_NE(first, nullptr);
+    EXPECT_EQ(first->GetText(), "new.png");
+    EXPECT_TRUE(markups->GetChildren().empty());
+    EXPECT_TRUE(markups->HasClass("hidden"));
+}
 
 // A reply action that runs once per reply turns its button off only after a click that acted: a
 // refused click (a mark-up comment in play mode) leaves it on for another try.

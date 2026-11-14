@@ -1,0 +1,17 @@
+# Kinematic bodies
+
+Set a `PhysicsBody` component to `Physics::MotionType::Kinematic` to drive its body through the entity transform. The physics initialization system creates the backend body and adds the derived `Components::KinematicBody` tag. Do not author or save the tag.
+
+Update the entity transform before physics and let the transform hierarchy update its `WorldTransform`. The physics step gives the body a velocity that reaches that world pose over the scheduled simulation steps. This lets the body push dynamic bodies and carry objects resting on it. Physics writeback leaves the authored transform in place.
+
+A frame with no simulation step leaves the body unchanged. When the transform stops, the next simulated frame places the body on its exact target and clears its velocity. Resting bodies are omitted from subsequent movement work until their transform changes.
+
+Entities with `MovingPlatform` retain their platform controller behavior. That controller owns backend motion, and physics writeback publishes the simulated platform pose to the entity. Transform-driven motion does not take over these entities.
+
+## Native gameplay motion API
+
+Include `PhysicsECS/PhysicsScriptApi.h` for the `PhysicsECS::Script` functions. `GetLinearVelocity`, `GetAngularVelocity`, their setters, and `AddImpulse` operate on an entity's initialized physics body. `AddImpulseAtPosition` also applies rotation from an impulse away from the center of mass. Distances use meters, velocities use meters per second, and impulses use newton seconds.
+
+Velocity setters ignore kinematic bodies and log a warning once per entity in each physics-world lifetime. Move their transform, or configure their moving-platform controller, instead. An absent or uninitialized physics body returns zero velocity and ignores writes.
+
+For a `CharacterController`, use `GetDesiredVelocity`, `SetDesiredVelocity`, and `IsGrounded`. Setting desired velocity preserves the controller's grounded state.

@@ -10,8 +10,8 @@
 namespace GameEngine
 {
 
-/// An owned run of bytes for a read to fill: unlike `std::vector<uint8>(n)`, it does not set the
-/// bytes first, so the owner writes each byte before it reads it. It converts to
+/// An owned run of bytes of a fixed size for a read to fill: unlike `std::vector<uint8>(size)`, it does not
+/// set the bytes first, so the owner writes each byte before it reads it. It converts to
 /// `std::span<const uint8>` implicitly. Move-only; moving leaves the source empty.
 class ByteBuffer
 {

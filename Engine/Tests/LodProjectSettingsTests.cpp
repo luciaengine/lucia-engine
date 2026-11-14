@@ -22,6 +22,8 @@
 #include "Engine/Rendering/LodProjectSettings.h"
 #include "Engine/Rendering/RenderServices.h"
 
+#include "TestTempDir.h"
+
 #include <gtest/gtest.h>
 
 #include <filesystem>
@@ -43,11 +45,7 @@ class LodProjectSettingsTest : public ::testing::Test
   protected:
     void SetUp() override
     {
-        m_Root = std::filesystem::temp_directory_path() /
-                 ("ge_lod_ship_" + std::to_string(::testing::UnitTest::GetInstance()
-                                                      ->current_test_info()
-                                                      ->line()));
-        std::filesystem::remove_all(m_Root);
+        m_Root = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_lod_ship");
         std::filesystem::create_directories(m_Root);
     }
     void TearDown() override { std::filesystem::remove_all(m_Root); }

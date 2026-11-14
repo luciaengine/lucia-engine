@@ -1,6 +1,6 @@
 #include "UI/UIManager.h"
 #include "../ShippedFontFace.h"
-#include "UIManager_Internal.h"
+#include "UIManager/UIManager_Internal.h"
 
 #include "Logger/Logger.h"
 #include "Platform/SystemFonts.h"

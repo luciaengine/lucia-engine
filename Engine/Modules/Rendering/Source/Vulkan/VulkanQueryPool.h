@@ -92,6 +92,7 @@ namespace Rendering {
 
     private:
         VkDevice m_Device;
+        PFN_vkResetQueryPool m_ResetQueryPool = nullptr;
         VkPhysicalDevice m_PhysicalDevice;
         Config m_Config;
 

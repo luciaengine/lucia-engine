@@ -10,8 +10,7 @@ namespace JobSystem
 /**
  * @brief What the pool is doing: its threads and what each one runs, its
  * lanes, its channels and its cumulative queue traffic.
- * WorkStealingThreadPool::GetStatistics() fills it; the editor's
- * get_job_system debug method reports it.
+ * WorkStealingThreadPool::GetStatistics() fills it.
  *
  * Every gauge is a relaxed read taken while the pool runs, so two fields can
  * describe slightly different moments. The cumulative counters only grow.

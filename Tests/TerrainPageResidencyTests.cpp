@@ -1559,6 +1559,41 @@ std::size_t NeededPlusParents(const PageRequestTerrain& terrain, uint32 firstPin
     return needed.size();
 }
 
+
+TEST(PageLevelRule, AParkedCameraRequestsTheSameSetEveryFrame)
+{
+    const PageRequestTerrain terrain = UserTerrain();
+    const PageRequestCamera eye{{12000.0f, 800.0f, 3000.0f}};
+    std::vector<PageStreaming::PageWant> first;
+    std::vector<PageStreaming::PageWant> second;
+    PageRequester requester;
+    requester.Configure(terrain, PageRequestArea::Disc);
+    ASSERT_TRUE(requester.Build(std::span(&eye, 1), NoteView(), first));
+    second = first;
+    EXPECT_FALSE(requester.Build(std::span(&eye, 1), NoteView(), second));
+    ASSERT_EQ(first.size(), second.size());
+    for (std::size_t i = 0; i < first.size(); ++i)
+        EXPECT_EQ(first[i].Address, second[i].Address);
+}
+
+TEST(PageLevelRule, PinnedLevelsAreTheSixteenMeterTexelsAndUp)
+{
+    // 0.25 m: level 6 is the first 16 m texel; levels 6 to 11 are the note's 323 pinned pages.
+    const PageRequestTerrain terrain = UserTerrain();
+    const std::vector<PageStreaming::PageStoreLevel> levels = PageStreaming::BuildPageStoreLevels(240000, 60000);
+    const uint32 first = FirstPinnedPageLevel(levels, 1u, terrain.Level0TexelX, 2048u);
+    EXPECT_EQ(first, 6u);
+    uint32 pinnedPages = 0;
+    for (uint32 level = first; level < levels.size(); ++level)
+        pinnedPages += levels[level].PagesX * levels[level].PagesZ;
+    EXPECT_EQ(pinnedPages, 323u);
+
+    // A small terrain with no 16 m level pins its coarsest, so a fallback walk still ends on a page.
+    PageRequestTerrain small = terrain;
+    small.SamplesX = small.SamplesZ = 300;
+    EXPECT_EQ(FirstPinnedPageLevel(PageStreaming::BuildPageStoreLevels(300, 300), 1u, small.Level0TexelX, 0u), 2u);
+}
+
 } // namespace
 
 TEST(PageLevelRule, TheRequestAtTheThreeDemPosesIsTheNeededPagesWithTheirParents)

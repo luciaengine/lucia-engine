@@ -1,3 +1,4 @@
+#include "Core/ApplicationPaths.h"
 // C10 end-to-end integration test: generate → compile → load → register.
 //
 // Drives NativeScriptManager::BuildAndLoad on a freshly-written fixture component:
@@ -11,9 +12,9 @@
 // import lib, include dirs, compile defs, SDK paths, config) is supplied by CMake
 // via a generated `c10_config.txt` placed next to this test exe — see CMakeLists.
 
-#include "Core/ApplicationPaths.h"
-#include "ECS/Component/ComponentFactory.h"
-#include "ECS/Component/ComponentFieldRegistry.h"
+#include "Core/Application.h" // ApplicationPaths::GetExecutableDirectory
+#include "ECS/ComponentFactory.h"
+#include "ECS/ComponentFieldRegistry.h"
 #include "JobSystem/WorkStealingThreadPool.h" // drives the async build path (B9 deferral test)
 #include "NativeScripting/BuildCacheRecord.h" // packaged record + engine_abi marker (C1/C2 ship path)
 #include "NativeScripting/NativeBuildConfig.h"
@@ -85,7 +86,6 @@ ns::NativeBuildConfig MakeBaseConfig(const std::map<std::string, std::string>& k
     config.CMakeExe = kv.at("cmake");
     config.Config = kv.at("config");
     config.EngineImportLib = kv.at("importlib");
-    config.EngineBinary = kv.at("enginebinary");
     config.SdkEntrySource = kv.at("sdkentry");
     config.ModuleName = "UserScripts";
     for (const auto& d : SplitList(kv.at("includes"), ';'))
@@ -281,7 +281,8 @@ TEST(NativeUserModuleBuildLoad, CompilesAndRegistersAComponentViaMacro)
 TEST(NativeUserModuleBuildLoad, ScansAndRegistersInheritedComponent)
 {
     const auto kv = LoadConfigOrFail();
-    ASSERT_TRUE(kv.count("scanner")) << "missing config key: scanner";
+    for (const char* required : {"dotnet", "scannerdll"})
+        ASSERT_TRUE(kv.count(required)) << "missing config key: " << required;
 
     const fs::path root = fs::path(kv.at("workdir")) / "scanned";
     // Deliberately name the source dir "Components": this reproduces the include-root bug
@@ -289,7 +290,8 @@ TEST(NativeUserModuleBuildLoad, ScansAndRegistersInheritedComponent)
     // `#include "Components/X.h"` the user DLL (which has only SourceDir on its include path)
     // could not resolve. User-mode include roots must be relative to SourceDir.
     ns::NativeBuildConfig config = MakeBaseConfig(kv, root, "Components");
-    config.ComponentScannerExe = kv.at("scanner");
+    config.DotnetExe = kv.at("dotnet");
+    config.ComponentScannerDll = kv.at("scannerdll");
     config.DetectBase = "ComponentBase";
     const fs::path sourceDir = config.SourceDir;
     std::error_code ec;

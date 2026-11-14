@@ -12,9 +12,9 @@
 // timestamp check cannot see and the ones that move where a directive resolves.
 #include <gtest/gtest.h>
 
-#include "Rendering/Core/HotReloadIntegration.h"
 #include "Source/Materials/Shader/ShaderIncludeClosure.h"
 #include "Source/Materials/Shader/ShaderSourceCache.h"
+#include "TestTempDir.h"
 
 #include <algorithm>
 #include <atomic>
@@ -107,13 +107,7 @@ class ShaderSourceCacheTest : public ::testing::Test
   protected:
     void SetUp() override
     {
-        // A directory no earlier test of this process used: the cache is
-        // process-wide, so a reused path would be served what that test wrote.
-        static std::atomic<uint32_t> counter{0};
-        m_Root = fs::temp_directory_path() /
-                 ("shader_source_cache_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()) + "_" +
-                  std::to_string(counter.fetch_add(1)));
-        fs::remove_all(m_Root);
+        m_Root = GameEngine::TestUtils::MakeUniqueTempDirectory("shader_source_cache");
         fs::create_directories(m_Root);
     }
 

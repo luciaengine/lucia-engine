@@ -7,7 +7,10 @@
 #include "Animation/AnimationLibrary.h"
 #include "Animation/RetargetMap.h"
 #include "Animation/Skeleton/SkeletonProfile.h"
-#include "Animation/SpriteFrames.h"
+#include "Sprite2D/SpriteFrames.h"
+#include "TileMap/TileMapAsset.h"
+#include "TileMap/TileSetAsset.h"
+#include "PhysicsECS/PhysicsMaterialAsset.h"
 #include "Assets/AudioAsset.h"
 #include "Assets/AnimationClip.h"
 #include "Assets/BinaryAsset.h"
@@ -120,7 +123,11 @@ void RegisterCoreAssetTypes(AssetTypeRegistry& typeRegistry)
     RegisterCoreType(typeRegistry, AssetType::AnimationController,
                      &CreateAssetAtPath<Animation::AnimationController>, "Animation Controller");
     RegisterCoreType(typeRegistry, AssetType::SpriteFrames,
-                     &CreateAssetAtPath<Animation::SpriteFrames>, "Sprite Frames");
+                     &CreateAssetAtPath<Sprite2D::SpriteFrames>, "Sprite Frames");
+    RegisterCoreType(typeRegistry, AssetType::TileSet, &CreateAssetAtPath<TileMap::TileSetAsset>, "Tile Set");
+    RegisterCoreType(typeRegistry, AssetType::TileMap, &CreateAssetAtPath<TileMap::TileMapAsset>, "Tile Map");
+    RegisterCoreType(typeRegistry, AssetType::PhysicsMaterial,
+                     &CreateAssetAtPath<PhysicsECS::PhysicsMaterialAsset>, "Physics Material");
     RegisterCoreType(typeRegistry, AssetType::Timeline, &CreateAssetAtPath<TimelineAsset>, "Timeline Asset");
     RegisterCoreType(typeRegistry, AssetType::AnimationGraph,
                      &CreateAssetAtPath<AnimationGraphAsset>, "Animation Graph");

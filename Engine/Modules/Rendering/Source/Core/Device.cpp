@@ -876,6 +876,11 @@ std::unique_ptr<CommandList> IDevice::CreateSecondaryCommandList(QueueType /*que
         return CreateConcreteGraphicsPipeline(*gd, fk);
     }
 
+    size_t IDevice::PendingPipelineBuildCount() const
+    {
+        return m_PipelineBuilds->CountPending();
+    }
+
     namespace
     {
     // Records @p bytes when they are SPIR-V; a backend's own source (MSL text) has no record.

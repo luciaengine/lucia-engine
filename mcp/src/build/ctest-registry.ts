@@ -19,6 +19,7 @@ export interface SuiteRun {
   cwd: string;
   /** Variables the registration sets, applied over the caller's environment. */
   env: Record<string, string>;
+  unsupportedProperties?: string[];
 }
 
 export type SuiteResolution =
@@ -70,7 +71,13 @@ function runOf(test: Registration): SuiteRun {
     const equals = text.indexOf("=");
     if (equals > 0) env[text.slice(0, equals)] = text.slice(equals + 1);
   }
-  return { program, args, gtest, cwd, env };
+  const unsupportedProperties = ["WILL_FAIL", "PASS_REGULAR_EXPRESSION", "FAIL_REGULAR_EXPRESSION",
+    "SKIP_REGULAR_EXPRESSION", "SKIP_RETURN_CODE", "ENVIRONMENT_MODIFICATION", "DISABLED",
+    "FIXTURES_REQUIRED", "FIXTURES_SETUP", "FIXTURES_CLEANUP"].filter((name) => {
+      const value = property(test, name);
+      return value !== undefined && value !== false && value !== "" && !(Array.isArray(value) && value.length === 0);
+    });
+  return { program, args, gtest, cwd, env, unsupportedProperties };
 }
 
 function gtestExecutableStem(test: Registration): string | undefined {
@@ -129,12 +136,25 @@ export function resolveSuiteRun(showOnly: { tests?: Registration[] }, suite: str
  * with the XML report and the caller's filter after them; another registration's
  * arguments unchanged. A filter on a registration that is not a gtest suite is refused.
  */
-export function suiteArguments(run: SuiteRun, suite: string, xmlPath: string, filter?: string): { args: string[] } | { refusal: string } {
+export function suiteArguments(run: SuiteRun, suite: string, xmlPath: string, filter?: string): { args: string[]; filter?: string; clearGtestEnvironment?: boolean } | { refusal: string } {
+  if (run.unsupportedProperties?.length) {
+    return { refusal: `${suite} requires CTest properties this direct runner cannot preserve: ${run.unsupportedProperties.join(", ")}. Run it through CTest.` };
+  }
   if (!run.gtest) {
-    if (filter) {
+    if (filter !== undefined) {
       return { refusal: `${suite} is not a gtest suite (it runs ${path.basename(run.program)} ${run.args.join(" ")}), so it takes no filter. Run it without filter.` };
     }
     return { args: run.args };
   }
-  return { args: [...run.args, `--gtest_output=xml:${xmlPath}`, ...(filter ? [`--gtest_filter=${filter}`] : [])] };
+  const allowed = /^--gtest_(?:filter|output|repeat)=/;
+  if (run.args.some((arg) => !allowed.test(arg))) {
+    return { refusal: `${suite} has unsupported registered gtest controls; run its registered diagnostic separately, not as a whole-suite gate.` };
+  }
+  const registeredFilter = run.args.filter((arg) => kGtestFilterFlag.test(arg)).at(-1)?.slice("--gtest_filter=".length);
+  const effectiveFilter = filter ?? registeredFilter ?? "*";
+  return {
+    args: [`--gtest_output=xml:${xmlPath}`, `--gtest_filter=${effectiveFilter}`, "--gtest_repeat=1"],
+    ...(filter !== undefined || effectiveFilter !== "*" ? { filter: effectiveFilter } : {}),
+    clearGtestEnvironment: true,
+  };
 }

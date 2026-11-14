@@ -1,5 +1,5 @@
 #include "Engine/Build/BuildPipeline.h"
-#include "ShippedScriptSources.h"
+#include "Core/ApplicationPaths.h"
 #include "Engine/Build/AppIconGenerator.h"
 #include "Engine/Build/BuildHost.h"
 #include "Engine/Build/DirectoryCopy.h"
@@ -43,7 +43,7 @@
 #include "Assets/ShaderProgramAsset.h"
 #include "Assets/MeshLODGenerator.h"
 #include "Assets/ModelAsset.h"
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h" // PathUtils
 #include "Core/Engine.h"
 #include "Logger/Logger.h"
 #include "AssetDatabase/AssetStore_TextJsonl.h"
@@ -82,6 +82,7 @@ namespace fs = std::filesystem;
 
 namespace GameEngine {
 
+static bool ProjectHasCSharpSources(const fs::path& assetsRoot);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -179,40 +180,24 @@ static EngineAbiDigestSet ComputeEngineAbiDigestSet(const BuildSettings& s,
     return digests;
 }
 
-// True when `dir` holds the engine runtime the packaged game loads beside its executable: every
-// library of EngineRuntimeLibrarySet under this platform's shared-library name.
+// The engine runtime the packaged game loads beside its executable: Engine and the
+// GameEngine.Native shim, under this platform's shared-library names.
 static bool HoldsEngineRuntime(const fs::path& dir)
 {
 #if defined(_WIN32)
-    constexpr std::string_view kPrefix = "";
-    constexpr std::string_view kExtension = ".dll";
+    constexpr const char* kRuntimeFiles[] = {"Engine.dll", "GameEngine.Native.dll"};
 #elif defined(__APPLE__)
-    constexpr std::string_view kPrefix = "lib";
-    constexpr std::string_view kExtension = ".dylib";
+    constexpr const char* kRuntimeFiles[] = {"libEngine.dylib", "libGameEngine.Native.dylib"};
 #else
-    constexpr std::string_view kPrefix = "lib";
-    constexpr std::string_view kExtension = ".so";
+    constexpr const char* kRuntimeFiles[] = {"libEngine.so", "libGameEngine.Native.so"};
 #endif
     std::error_code ec;
-    for (const RuntimeDependency& library : EngineRuntimeLibrarySet())
+    for (const char* file : kRuntimeFiles)
     {
-        if (!fs::exists(dir / (std::string(kPrefix) + library.Candidates + std::string(kExtension)), ec))
+        if (!fs::exists(dir / file, ec))
             return false;
     }
     return true;
-}
-
-// "Engine and GameEngine.Native": the engine runtime libraries, for a refusal that names them.
-static std::string EngineRuntimeLibraryNames()
-{
-    std::string names;
-    for (const RuntimeDependency& library : EngineRuntimeLibrarySet())
-    {
-        if (!names.empty())
-            names += " and ";
-        names += library.Candidates;
-    }
-    return names;
 }
 
 BuildPipeline::PackagedEngineRuntime BuildPipeline::ResolvePackagedEngineRuntime(const BuildSettings& settings,
@@ -246,7 +231,7 @@ BuildPipeline::PackagedEngineRuntime BuildPipeline::ResolvePackagedEngineRuntime
         linkConfig == engineConfig ? settings.runtimeDepsPath : settings.editorSDKPath / "lib" / linked;
     if (!HoldsEngineRuntime(dir))
         return {{}, requested + " links the SDK's '" + linked + "' engine, but " + dir.generic_string() +
-                        " holds no engine runtime (" + EngineRuntimeLibraryNames() + "). Build the engine in '" + linked +
+                        " holds no engine runtime (Engine and GameEngine.Native). Build the engine in '" + linked +
                         "' and rebuild this editor so its SDK stages that runtime."};
     return {dir, {}};
 }
@@ -411,6 +396,12 @@ bool BuildPipeline::FailIfCancelled()
     return true;
 }
 
+ShellProcessResult BuildPipeline::RunProcess(const ProcessLaunch& launch,
+                                            std::function<void(const std::string&)> onLine)
+{
+    return m_ActiveShellProcess.Run(launch, [this] { return IsCancelled(); }, std::move(onLine));
+}
+
 ShellProcessResult BuildPipeline::RunShellCommand(const std::string& command,
                                                   std::function<void(const std::string& line)> onLine)
 {
@@ -472,6 +463,21 @@ bool BuildPipeline::Execute(const BuildSettings& settings, ProgressCallback prog
     }
 }
 
+void BuildPipeline::ResolvePackagesForBuild(const BuildSettings& settings)
+{
+    m_SessionMountedPackageAliases.clear();
+    for (const AssetSourceDesc& source :
+         EngineCore::GetInstance().GetAssetManager().GetRegisteredSources())
+    {
+        if (source.Alias != kAssetSourceAliasProject && source.Alias != kAssetSourceAliasEditor)
+            m_SessionMountedPackageAliases.push_back(source.Alias);
+    }
+    m_PackageResolution =
+        ResolveBuildTimePackages(settings.projectRoot, m_SessionMountedPackageAliases);
+    m_PackageRuntimeModules =
+        CollectPackageCodeModules(m_PackageResolution, /*editorContext=*/false);
+}
+
 bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
 {
     // A cancel requested before Execute (the Build panel closing right after it
@@ -527,23 +533,13 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
     // PreAssetCopy validation can attribute mid-session enable/disable drift
     // (mounts only update on project open). Player context — Editor-kind
     // modules never ship.
-    m_SessionMountedPackageAliases.clear();
-    for (const AssetSourceDesc& source :
-         EngineCore::GetInstance().GetAssetManager().GetRegisteredSources())
-    {
-        if (source.Alias != kAssetSourceAliasProject && source.Alias != kAssetSourceAliasEditor)
-            m_SessionMountedPackageAliases.push_back(source.Alias);
-    }
-    m_PackageResolution =
-        ResolveBuildTimePackages(settings.projectRoot, m_SessionMountedPackageAliases);
-    m_PackageRuntimeModules =
-        CollectPackageCodeModules(m_PackageResolution, /*editorContext=*/false);
+    ResolvePackagesForBuild(settings);
 
     // A native template is a runtime, not a cross-compiler. Refuse projects
     // needing target code instead of dropping their gameplay or shipping the
     // running editor's Mach-O/PE modules in a Linux game.
     if (crossHostTemplate &&
-        (HasAuthoredCSharpSources(settings.projectRoot / "Assets") ||
+        (ProjectHasCSharpSources(settings.projectRoot / "Assets") ||
          !settings.userCppSources.empty() ||
          !m_PackageRuntimeModules.empty() ||
          fs::exists(settings.projectRoot / ".Cache" / "NativeScripts" / "build" / "last_build.txt") ||
@@ -773,12 +769,6 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
         {
             if (m_Progress.cancelled)
                 return false;
-#if !GE_ENABLE_SCRIPTING
-            // Nothing compiled: CompileScripts refused a project with C# scripts, and its error
-            // names why.
-            ReportProgress(BuildProgress::Stage::Failed, 0.0f, "C# scripts cannot be packaged by this editor");
-            return false;
-#else
             if (!m_PackageResolution.Disabled.empty())
             {
                 std::string disabledNames;
@@ -797,7 +787,6 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
                 "Script compilation failed — the packaged game would ship without its C# gameplay");
             ReportProgress(BuildProgress::Stage::Failed, 0.0f, "Script compilation failed");
             return false;
-#endif
         }
     }
 
@@ -1005,7 +994,7 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
     std::string cookError;
     AssetManager& assets = EngineCore::GetInstance().GetAssetManager();
     if (!CookStagedContent(contentRoot, manifest, assets.GetRegistry(), assets.GetParserRegistry(),
-                           assets.GetTextureCookWorkers(), &assets.GetJobSystem(),
+                           assets.GetTextureCookWorkers(), &EngineCore::GetInstance().GetJobSystem(),
                            [this]() { return m_CancelRequested.load(); },
                            textureStats, cookError))
     {
@@ -1136,17 +1125,26 @@ bool BuildPipeline::PreparePlayerProject(const BuildSettings& s, const fs::path&
         }
     }
 
-    // Substitute the template variables. The game name goes into cmake project(), so the characters
-    // that break cmake syntax become '_'.
+    // Substitute template variables.
+    auto replaceAll = [](std::string& str, const std::string& from, const std::string& to) {
+        size_t pos = 0;
+        while ((pos = str.find(from, pos)) != std::string::npos)
+        {
+            str.replace(pos, from.length(), to);
+            pos += to.length();
+        }
+    };
+
+    // Sanitize game name for cmake project() — remove characters that break cmake syntax.
     std::string safeName = s.playerConfig.gameName;
     for (char& c : safeName)
         if (c == '"' || c == '\\' || c == ';')
             c = '_';
-    templateContent = ReplaceAll(std::move(templateContent), "@GE_GAME_NAME@", safeName);
-    templateContent = ReplaceAll(std::move(templateContent), "@GE_SDK_CMAKE_DIR@",
-                                 (s.editorSDKPath / "cmake").generic_string());
-    templateContent = ReplaceAll(std::move(templateContent), "@GE_DISCOVERED_SOURCES@", sourcesList);
-    templateContent = ReplaceAll(std::move(templateContent), "@GE_USER_INCLUDE_DIRS@", includeDirsList);
+    replaceAll(templateContent, "@GE_GAME_NAME@", safeName);
+    replaceAll(templateContent, "@GE_SDK_CMAKE_DIR@",
+               (s.editorSDKPath / "cmake").generic_string());
+    replaceAll(templateContent, "@GE_DISCOVERED_SOURCES@", sourcesList);
+    replaceAll(templateContent, "@GE_USER_INCLUDE_DIRS@", includeDirsList);
 
     std::string iconCmakeSection = "# No application icon configured\n";
     const AppIconGenerationResult iconResult = GenerateApplicationIcons(s, buildDir);
@@ -1156,7 +1154,7 @@ bool BuildPipeline::PreparePlayerProject(const BuildSettings& s, const fs::path&
         iconCmakeSection = iconResult.cmakeIconSection;
     for (const std::string& warning : iconResult.warnings)
         m_Progress.warnings.push_back("Application icon: " + warning);
-    templateContent = ReplaceAll(std::move(templateContent), "@GE_APP_ICON_SECTION@", iconCmakeSection);
+    replaceAll(templateContent, "@GE_APP_ICON_SECTION@", iconCmakeSection);
 
     const fs::path outputCMake = buildDir / "CMakeLists.txt";
     std::ofstream out(outputCMake);
@@ -1306,31 +1304,33 @@ std::string BuildPipeline::DescribeMissingDotnet(const fs::path& editorSdkPath)
            "), DOTNET_ROOT, PATH, and the platform's common install locations.";
 }
 
-#if GE_ENABLE_SCRIPTING
-// The root the generated scripts project compiles: the live script manager's when one is
-// bound, otherwise the project's Assets tree, where the editor binds it.
-static fs::path ProjectScriptsRoot(const BuildSettings& s)
+// True when any user-authored C# source exists under the project's Assets tree
+// (obj/bin build litter excluded). Decides whether a missing generated csproj is
+// a quiet no-scripts skip or a loud packaging failure.
+bool BuildPipeline::ProjectHasCSharpSources(const fs::path& assetsRoot)
 {
-    const fs::path& bound = EngineCore::GetInstance().GetScriptManager().GetScriptsDirectory();
-    if (!bound.empty() && bound.is_absolute())
-        return bound;
-    return s.projectRoot / "Assets";
-}
-#endif
-
-bool BuildPipeline::CompileScripts(const BuildSettings& s, [[maybe_unused]] const fs::path& stagingDir)
-{
-#if !GE_ENABLE_SCRIPTING
-    // This editor has no C# scripting: no dotnet compiles the scripts and the packaged Player has
-    // no host to run them. A project without C# packages as before; a project with C# is refused,
-    // never shipped without its scripts.
-    if (!HasAuthoredCSharpSources(s.projectRoot / "Assets"))
-        return true;
-    m_Progress.errors.push_back(
-        "This editor was built without C# scripting (ENABLE_SCRIPTING=OFF), so it cannot package the "
-        "project's C# scripts. Package from an editor built with scripting, or remove the C# scripts.");
+    std::error_code ec;
+    for (auto it = fs::recursive_directory_iterator(assetsRoot, ec);
+         !ec && it != fs::recursive_directory_iterator(); it.increment(ec))
+    {
+        std::error_code entryEc;
+        if (it->is_directory(entryEc))
+        {
+            const std::string dir = it->path().filename().string();
+            if (dir == "obj" || dir == "bin")
+            {
+                it.disable_recursion_pending();
+                continue;
+            }
+        }
+        if (it->is_regular_file(entryEc) && it->path().extension() == ".cs")
+            return true;
+    }
     return false;
-#else
+}
+
+bool BuildPipeline::CompileScripts(const BuildSettings& s, const fs::path& stagingDir)
+{
     // The csproj refresh and a Debug package's managed build are one job of the "Script
     // compiles" channel: they read the csproj and the package assemblies a live compile
     // rewrites, so they never run beside one. Every shipping configuration publishes the
@@ -1340,19 +1340,14 @@ bool BuildPipeline::CompileScripts(const BuildSettings& s, [[maybe_unused]] cons
     // have. That publish builds its own csproj under the staging tree and reads nothing a
     // live compile writes, so it runs here, on the export's own job, after the refresh.
     const bool nativeAot = IsShipOptimizedPlayerBuildConfig(s.buildConfiguration);
-    const ShippedScriptSources sources = CollectShippedScriptSources(ProjectScriptsRoot(s), m_PackageRuntimeModules);
     fs::path scriptsProj;
     fs::path dotnetExe;
-    std::vector<fs::path> packageAssemblies;
     bool nothingToCompile = false;
     bool ok = false;
     const bool ran = EngineCore::GetInstance().GetScriptManager().RunCompile([&]() {
-        ok = PrepareScriptProject(s, sources, nativeAot, scriptsProj, dotnetExe, nothingToCompile);
+        ok = PrepareScriptProject(s, scriptsProj, dotnetExe, nothingToCompile);
         if (ok && !nothingToCompile && !nativeAot)
             ok = BuildManagedScripts(s, stagingDir, scriptsProj, dotnetExe);
-        // The restore writes the Dependencies folder a live compile also writes.
-        if (ok && !nothingToCompile && nativeAot)
-            ok = RestoreScriptPackagesForExport(scriptsProj, packageAssemblies);
     });
     if (!ran)
     {
@@ -1361,33 +1356,11 @@ bool BuildPipeline::CompileScripts(const BuildSettings& s, [[maybe_unused]] cons
     }
     if (!ok || nothingToCompile || !nativeAot)
         return ok;
-    return CompileScriptsNativeAOT(s, stagingDir, sources, packageAssemblies, dotnetExe);
-#endif
+    return CompileScriptsNativeAOT(s, stagingDir, scriptsProj, dotnetExe);
 }
 
-bool BuildPipeline::RestoreScriptPackagesForExport(const fs::path& scriptsProj,
-                                                   std::vector<fs::path>& outPackageAssemblies)
-{
-    std::string engineBinDir = ScriptingPaths::ResolveEngineManagedDirectory().generic_string();
-    if (!engineBinDir.empty() && engineBinDir.back() != '/')
-        engineBinDir += '/';
-    const fs::path dependencies = EngineCore::GetInstance().GetScriptManager().GetAssembliesDirectory() /
-                                  ScriptingPaths::kScriptDependenciesFolderName;
-    const ScriptPackageRestoreResult restore =
-        RestoreScriptPackages(scriptsProj, dependencies, engineBinDir, /*cancelRequested=*/nullptr);
-    m_Progress.warnings.insert(m_Progress.warnings.end(), restore.Warnings.begin(), restore.Warnings.end());
-    if (!restore.Success)
-    {
-        m_Progress.errors.push_back(restore.Error);
-        Logger::Log::Error("Build: {}", restore.Error);
-        return false;
-    }
-    outPackageAssemblies = restore.StagedAssemblies;
-    return true;
-}
-
-bool BuildPipeline::PrepareScriptProject(const BuildSettings& s, const ShippedScriptSources& sources, bool nativeAot,
-                                         fs::path& outProject, fs::path& outDotnet, bool& outNothingToCompile)
+bool BuildPipeline::PrepareScriptProject(const BuildSettings& s, fs::path& outProject, fs::path& outDotnet,
+                                         bool& outNothingToCompile)
 {
     // Resolve the user script project the SAME way the ScriptManager decides
     // where to emit it (generated-project root, default the project root).
@@ -1407,22 +1380,23 @@ bool BuildPipeline::PrepareScriptProject(const BuildSettings& s, const ShippedSc
     }
 
     std::error_code ec;
-    switch (DecideScriptCompile(sources, fs::exists(scriptsProj, ec), nativeAot))
+    if (!fs::exists(scriptsProj, ec))
     {
-    case ScriptCompileStep::Skip:
-        Logger::Log::Info("Build: no C# scripts and no runtime C# package modules, skipping the script compile");
+        // A project WITH C# sources but no csproj means the editor never
+        // generated/compiled them — shipping a game without its scripts is a
+        // build failure, never a silent skip.
+        if (ProjectHasCSharpSources(s.projectRoot / "Assets"))
+        {
+            m_Progress.errors.push_back(
+                "Project has C# sources but no script project at '" + scriptsProj.generic_string() +
+                "' — open the project in the editor so scripts compile, then package again");
+            Logger::Log::Error("Build: C# sources present but script project missing at '{}'",
+                               scriptsProj.string());
+            return false;
+        }
+        Logger::Log::Info("Build: No script project found at '{}', skipping", scriptsProj.string());
         outNothingToCompile = true;
         return true;
-    case ScriptCompileStep::MissingProject:
-        // Shipping a game without its C# is a build failure, never a silent skip.
-        m_Progress.errors.push_back(
-            "Project has C# (its scripts or a package's runtime C# module) but no script project at '" +
-            scriptsProj.generic_string() +
-            "' - open the project in the editor so the script project is generated, then package again");
-        Logger::Log::Error("Build: C# present but script project missing at '{}'", scriptsProj.string());
-        return false;
-    case ScriptCompileStep::Compile:
-        break;
     }
 
     // The project HAS C# to compile past this point — refuse up front, naming
@@ -1524,8 +1498,7 @@ bool BuildPipeline::BuildManagedScripts(const BuildSettings& s, const fs::path& 
 
 bool BuildPipeline::CompileScriptsNativeAOT(const BuildSettings& s,
                                              const fs::path& stagingDir,
-                                             const ShippedScriptSources& sources,
-                                             const std::vector<fs::path>& packageAssemblies,
+                                             const fs::path& scriptsProj,
                                              const fs::path& dotnetExe)
 {
     // The managed side of an AOT publish is always -c Release: the player
@@ -1539,12 +1512,12 @@ bool BuildPipeline::CompileScriptsNativeAOT(const BuildSettings& s,
     // Resolve the AOT .csproj references against the STAGED SDK (ship-safety C4):
     // a relocated or shipped editor has no engine source tree, so the generated
     // project references the SDK's staged assemblies, never repo .csproj files.
+    const fs::path scriptSources = scriptsProj.parent_path();
     const fs::path sdkManagedDir = s.editorSDKPath / "managed";
-    const std::array<fs::path, 4> referenceDlls{
+    const std::array<fs::path, 3> referenceDlls{
         sdkManagedDir / "GameEngine.Scripting.Runtime.dll",
         sdkManagedDir / "GameEngine.Scripting.ABI.dll",
         sdkManagedDir / "GameEngine.ECS.ABI.dll",
-        sdkManagedDir / ScriptingPaths::kScriptBindingsAssemblyFileName,
     };
     const fs::path generatorDll = sdkManagedDir / "analyzers" / "EntitySystemGenerator.dll";
 
@@ -1572,15 +1545,26 @@ bool BuildPipeline::CompileScriptsNativeAOT(const BuildSettings& s,
             return false;
         }
 
-        // The authored scripts root and the runtime C# package modules, never the
-        // directory of the generated project: at the project root that would sweep
-        // caches and staging outputs into the compile.
+        // Editor-kind modules were excluded when the runtime module set was collected.
         NativeAotProjectDesc project;
-        project.ScriptSources = sources.AuthoredRoot;
-        project.PackageModules = sources.PackageModules;
+        project.ScriptSources = scriptSources;
+        project.PackageModules = m_PackageRuntimeModules;
         project.PackageDefines = CollectAllPackageDefines(m_PackageResolution);
+        std::string engineBinDir = ScriptingPaths::ResolveEngineManagedDirectory().generic_string();
+        if (!engineBinDir.empty() && engineBinDir.back() != '/')
+            engineBinDir += '/';
+        const fs::path dependencies = aotDir / ScriptingPaths::kScriptDependenciesFolderName;
+        const ScriptPackageRestoreResult restored =
+            RestoreScriptPackages(scriptsProj, dependencies, engineBinDir, nullptr);
+        m_Progress.warnings.insert(m_Progress.warnings.end(), restored.Warnings.begin(), restored.Warnings.end());
+        if (!restored.Success)
+        {
+            m_Progress.errors.push_back(restored.Error);
+            return false;
+        }
         project.ReferenceDlls.assign(referenceDlls.begin(), referenceDlls.end());
-        project.ReferenceDlls.insert(project.ReferenceDlls.end(), packageAssemblies.begin(), packageAssemblies.end());
+        project.ReferenceDlls.insert(project.ReferenceDlls.end(), restored.StagedAssemblies.begin(),
+                                     restored.StagedAssemblies.end());
         if (fs::exists(generatorDll, ec))
             project.GeneratorDll = generatorDll;
         f << GenerateNativeAotCsprojXml(project);
@@ -1709,6 +1693,11 @@ bool BuildPipeline::CompileScriptsNativeAOT(const BuildSettings& s,
     Logger::Log::Info("Build: NativeAOT scripts compiled -> '{}'", stagedLib.string());
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// CollectAssets
+// ---------------------------------------------------------------------------
+
 
 // ---------------------------------------------------------------------------
 // Package staging (P2)
@@ -2191,56 +2180,53 @@ bool BuildPipeline::CopyThirdPartyNotices(const fs::path& contentRoot, const Bui
 // CopyRuntimeDependencies
 // ---------------------------------------------------------------------------
 
-fs::path BuildPipeline::FindCompiledPlayer(const fs::path& playerBuildDir, std::string_view buildConfiguration,
-                                           std::string_view platformName)
-{
-    const std::string playerName = TargetExecutableFiles(platformName, "Player").Executable;
-    std::error_code ec;
-    for (const fs::path& candidate : {
-        playerBuildDir / buildConfiguration / playerName,
-        playerBuildDir / playerName,
-    })
-    {
-        if (fs::is_regular_file(candidate, ec))
-            return candidate;
-    }
-    return {};
-}
-
 bool BuildPipeline::CopyRuntimeDependencies(const fs::path& stagingDir, const BuildSettings& s)
 {
     std::error_code ec;
 
+    // Copy Player.exe from the build output.
     const fs::path playerBuildDir = s.projectRoot / ".Build" / "Player" / "build";
-    const ExecutableFiles playerFiles = TargetExecutableFiles(s.platformName, "Player");
-    const fs::path playerExe = FindCompiledPlayer(playerBuildDir, s.buildConfiguration, s.platformName);
+    fs::path playerExe;
+
+    // Search common output locations.
+    for (const auto& candidate : {
+        playerBuildDir / s.buildConfiguration / "Player.exe",
+        playerBuildDir / "Player.exe",
+        playerBuildDir / "Debug" / "Player.exe",
+        playerBuildDir / "Release" / "Player.exe",
+    })
+    {
+        if (fs::exists(candidate, ec))
+        {
+            playerExe = candidate;
+            break;
+        }
+    }
+
     if (playerExe.empty())
     {
-        m_Progress.errors.push_back(playerFiles.Executable + " not found in the " + s.platformName +
-                                    " Player build output " + playerBuildDir.generic_string() +
-                                    ": the Player build passed but left no executable there. Delete that folder, "
-                                    "then build again.");
+        m_Progress.errors.push_back("Player.exe not found in build output");
         return false;
     }
 
-    // The packaged executable takes the game name.
-    const ExecutableFiles gameFiles = TargetExecutableFiles(s.platformName, s.playerConfig.gameName);
-    fs::copy_file(playerExe, stagingDir / gameFiles.Executable, fs::copy_options::overwrite_existing, ec);
+    // Copy Player exe, renamed to the game name.
+    const std::string exeName = s.playerConfig.gameName + ".exe";
+    fs::copy_file(playerExe, stagingDir / exeName, fs::copy_options::overwrite_existing, ec);
     if (ec)
     {
-        m_Progress.errors.push_back("Failed to copy " + playerFiles.Executable + ": " + ec.message());
+        m_Progress.errors.push_back("Failed to copy Player.exe: " + ec.message());
         return false;
     }
 
-    // Ship separate symbols only when the target keeps them in a file of their own and the
-    // requested Player configuration includes them.
-    const fs::path playerSymbols = playerExe.parent_path() / playerFiles.Symbols;
-    if (!playerFiles.Symbols.empty() && PlayerBuildConfigIncludesDebugSymbols(s.buildConfiguration) &&
-        fs::exists(playerSymbols, ec))
+    // Ship separate symbols only when the requested Player configuration includes them.
+    fs::path playerPdb = playerExe;
+    playerPdb.replace_extension(".pdb");
+    if (PlayerBuildConfigIncludesDebugSymbols(s.buildConfiguration) && fs::exists(playerPdb, ec))
     {
-        fs::copy_file(playerSymbols, stagingDir / gameFiles.Symbols, fs::copy_options::overwrite_existing, ec);
+        const std::string pdbName = s.playerConfig.gameName + ".pdb";
+        fs::copy_file(playerPdb, stagingDir / pdbName, fs::copy_options::overwrite_existing, ec);
         if (ec)
-            Logger::Log::Warning("Build: Failed to copy {}: {}", playerFiles.Symbols, ec.message());
+            Logger::Log::Warning("Build: Failed to copy PDB: {}", ec.message());
     }
 
     if (!fs::is_directory(s.runtimeDepsPath, ec))
@@ -2250,10 +2236,10 @@ bool BuildPipeline::CopyRuntimeDependencies(const fs::path& stagingDir, const Bu
     }
 
     // Curated engine runtime set (ship-safety C5) — needed by BOTH script modes:
-    // Engine is a shared library, and GameEngine.Native (in a build with C# scripting)
-    // is the C ABI shim managed AND AOT scripts P/Invoke into. Replaces the old
-    // ship-everything *.dll glob; a missing required entry fails the build here, not
-    // the game at launch. The engine runtime libraries come first from the runtime of the
+    // Engine is a shared library, and GameEngine.Native is the C ABI shim managed
+    // AND AOT scripts P/Invoke into. Replaces the old ship-everything *.dll glob;
+    // a missing required entry fails the build here, not the game at launch.
+    // Engine and GameEngine.Native come first from the runtime of the
     // configuration the player links (m_EngineRuntimeDir), shadowing the editor's
     // own copies. Their vcpkg dependencies: same CRT flavor as this editor, the
     // editor's own directory; cross-flavor, the vcpkg tree's flavor bin dirs in
@@ -2353,8 +2339,7 @@ bool BuildPipeline::WriteGameConfig(const fs::path& stagingDir, const BuildSetti
     // server poke RenderServices directly, so a diagnostic tweak left standing
     // in the session would otherwise bake into the game.
     cfg.renderQuality = Rendering::AntiAliasingProjectSettings::Load(s.projectRoot);
-
-    // The render layer names a game's RenderLayers.Find answers with.
+    cfg.sortingLayers = Rendering::SortingLayers::Load(s.projectRoot);
     cfg.renderLayerNames = Rendering::RenderLayerNames::Load(s.projectRoot);
 
     // The game UI scale policy authored in the project settings.
@@ -2420,9 +2405,9 @@ bool BuildPipeline::StageAssetManifest(const fs::path& contentRoot, const AssetM
         {
             rel.erase(0, assetsPrefix.size());
         }
-        // Written here and never loaded, so no parse pool.
         AssetDatabase::AssetStore_TextJsonl& store =
-            stores.try_emplace(isPackageEntry ? entry.sourceAlias : std::string(), nullptr).first->second;
+            stores.try_emplace(isPackageEntry ? entry.sourceAlias : std::string(),
+                               &EngineCore::GetInstance().GetJobSystem()).first->second;
 
         // Store the path FIELD case-preserved (NormalizeCanonicalPath:
         // forward-slash + lexically-normal, real on-disk case) — the packaged
@@ -2532,7 +2517,7 @@ bool BuildPipeline::StageAssetManifest(const fs::path& contentRoot, const AssetM
     // The project manifest always ships (even empty — the Player's packaged
     // mount detection keys off its presence); package manifests only where a
     // package staged assets.
-    stores.try_emplace(std::string(), nullptr);
+    stores.try_emplace(std::string(), &EngineCore::GetInstance().GetJobSystem());
 
     for (auto& [alias, store] : stores)
     {

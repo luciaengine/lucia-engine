@@ -136,6 +136,16 @@ const char* PresetUndoDisplayName(ComponentPreset p);
 /// the inspector scrolls to after an add.
 std::vector<ECS::ComponentTypeId> ComponentTypeIdsForPreset(ComponentPreset p);
 
+/// Adds `p`'s components to `entity`, each only when the entity does not carry
+/// it yet, and returns the type ids it added in the order it added them: what
+/// the caller's undo removes, in reverse.
+std::vector<ECS::ComponentTypeId> ApplyComponentPreset(ECS::World& world, ECS::EntityHandle entity,
+                                                       ComponentPreset p);
+
+/// The components the Add Component picker offers only through a preset, never
+/// as a single entry of their own.
+std::vector<ECS::ComponentTypeId> ComponentTypeIdsOfferedOnlyByPresets();
+
 // One picker row.
 struct ComponentPresetEntry
 {

@@ -81,8 +81,9 @@ void VideoTextureSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     // the world. Re-enabling reopens the source from the start.
     auto q = world.Query<ECS::Write<Components::VideoTextureComponent>>();
     q
-     .Each([&](ECS::EntityHandle entity, Components::VideoTextureComponent& comp)
+     .Each([&](ECS::EntityHandle entity, ECS::Writable<Components::VideoTextureComponent> compRow)
     {
+        Components::VideoTextureComponent& comp = compRow.Mutable();
         VideoPlayerEntry& entry = EnsureEntry(entity, comp);
         entry.lastSeenTick = m_Tick;
 

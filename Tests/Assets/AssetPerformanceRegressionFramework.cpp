@@ -398,71 +398,7 @@ protected:
         return 50 * 1024 * 1024; // 50MB placeholder
     }
 
-    /**
-     * @brief Measure main thread blocking with artificial delay (for regression testing)
-     */
-    PerformanceMeasurement::Statistics MeasureMainThreadBlockingWithDelay(
-        const std::vector<std::filesystem::path>& assetPaths,
-        int iterations,
-        double delayMs) {
 
-        std::vector<double> measurements;
-        measurements.reserve(iterations);
-
-        for (int iter = 0; iter < iterations; ++iter) {
-            std::vector<GUID> assetGuids;
-            std::vector<AssetLoadHandle> handles;
-
-            for (const auto& path : assetPaths) {
-                GUID guid = GUID::Generate();
-                AssetMetadata metadata;
-                metadata.Guid = guid;
-                metadata.Path = path;
-                metadata.Name = path.stem().string();
-                metadata.Extension = path.extension().string();
-                metadata.Type = AssetType::Unknown;
-                metadata.FileSize = std::filesystem::file_size(path);
-
-                assetManager->GetRegistry().RegisterAssetMetadata(metadata);
-                assetGuids.push_back(guid);
-            }
-
-            auto start = PerformanceMeasurement::Now();
-
-            for (const auto& guid : assetGuids) {
-                // Add artificial delay to simulate regression using CPU work instead of sleep
-                // (sleep_for has poor precision on Windows)
-                volatile int dummy = 0;
-                int workAmount = static_cast<int>(delayMs * 10000); // Scale factor for CPU work
-                for (int i = 0; i < workAmount; ++i) {
-                    dummy += i;
-                }
-
-                AssetLoadRequest request;
-                request.AssetGuid = guid;
-                request.Priority = AssetLoadPriority::Normal;
-
-                auto handle = assetManager->LoadAsset(request);
-                handles.push_back(std::move(handle));
-            }
-
-            auto end = PerformanceMeasurement::Now();
-            auto duration = end - start;
-            double milliseconds = PerformanceMeasurement::ToMilliseconds(duration);
-            measurements.push_back(milliseconds);
-
-            // Wait for completion
-            for (auto& handle : handles) {
-                for (int wait = 0; wait < 100 && !handle.IsComplete(); ++wait) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1)); // Reduced from 10ms to 1ms
-                }
-            }
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(5)); // Reduced from 50ms to 5ms
-        }
-
-        return PerformanceMeasurement::CalculateStatistics(measurements);
-    }
 };
 
 // ========================================
@@ -693,33 +629,19 @@ TEST_F(AssetPerformanceRegressionFramework, MemoryUsage_Monitoring) {
     }
 }
 
-// Test performance regression detection
-TEST_F(AssetPerformanceRegressionFramework, RegressionDetection_Baseline) {
-    Logger::Log::Info("=== Testing Performance Regression Detection ===");
+// Validate the statistics used by the timed asset-loading benchmarks independently
+// of scheduler noise and the speed of an artificial CPU workload.
+TEST(AssetPerformanceStatistics, KnownMeasurements) {
+    const auto stats = PerformanceMeasurement::CalculateStatistics({5.0, 1.0, 4.0, 2.0, 3.0});
 
-    // Establish baseline performance
-    auto baselineStats = MeasureMainThreadBlocking(smallAssetPaths, 10);
-    Logger::Log::Info("Baseline Performance: {}", baselineStats.ToString());
-
-    // Simulate performance regression by adding artificial delay
-    auto regressionStats = MeasureMainThreadBlockingWithDelay(smallAssetPaths, 5, 0.1); // 0.1ms delay
-    Logger::Log::Info("Regression Performance: {}", regressionStats.ToString());
-
-    // Calculate regression percentage
-    double regressionPercent = ((regressionStats.mean - baselineStats.mean) / baselineStats.mean) * 100.0;
-    Logger::Log::Info("Performance Regression: {:.1f}%", regressionPercent);
-
-    // Regression detection thresholds - more realistic for small changes
-    EXPECT_LT(regressionPercent, 200.0)
-        << "Performance regression (" << regressionPercent << "%) exceeds 200% threshold";
-
-    if (regressionPercent > 50.0) {
-        Logger::Log::Warning("Significant performance regression detected: {:.1f}%", regressionPercent);
-    }
-
-    if (regressionPercent > 300.0) {
-        FAIL() << "Critical performance regression detected: " << regressionPercent << "%";
-    }
+    EXPECT_EQ(stats.sampleCount, 5u);
+    EXPECT_DOUBLE_EQ(stats.mean, 3.0);
+    EXPECT_DOUBLE_EQ(stats.median, 3.0);
+    EXPECT_DOUBLE_EQ(stats.min, 1.0);
+    EXPECT_DOUBLE_EQ(stats.max, 5.0);
+    EXPECT_DOUBLE_EQ(stats.p95, 5.0);
+    EXPECT_DOUBLE_EQ(stats.p99, 5.0);
+    EXPECT_DOUBLE_EQ(stats.stddev, std::sqrt(2.0));
 }
 
 // Test 240Hz frame rate compatibility

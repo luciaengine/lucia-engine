@@ -47,6 +47,8 @@ struct AgentTurnRequest
     std::span<const ConversationMessage> History;
     /// The user's new message.
     std::string UserText;
+    /// Images owned by the in-flight turn; only the new message sends image blocks.
+    std::span<const PromptFile> Images;
     /// The model to answer with, as named in settings; empty selects the provider's default.
     std::string Model;
     /// The reasoning effort to answer with, one of the levels the provider offers

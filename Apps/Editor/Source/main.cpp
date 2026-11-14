@@ -13,7 +13,7 @@
 #include "Scripting/ScriptingABI.h"
 #include "Scripting/ECSABI.h"
 #include "ECS/ECS.h"
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentRegistry.h"
 #include "Audio/AudioTypes.h"
 #include "Core/CommandLine.h"
 #include "Startup/EditorCommandLine.h"
@@ -671,14 +671,8 @@ static int EditorMainImpl(int argc, char** argv) {
     GameEngine::EngineCore::GetInstance().SetScriptsConfig(scriptsConfig);
 
 #if GE_ENABLE_SCRIPTING
-    // Unify the DLL-local logger with this module's state (same fix as the
-    // exe<->Engine.dll split): without it, GameEngine.Native.dll logs vanish.
+    // Share the host logger and component registry with the scripting library.
     GE_SetHostLoggerState(GameEngine::GetEngineLoggerState());
-
-    // Share the host's ComponentRegistry with the DLL. Without this, the DLL's
-    // copy of Engine.lib has separate handler maps, so blob-component metadata
-    // registered by the host isn't visible to managed code in the DLL.
-    // (ComponentTypeId is consteval post-Phase-1b — no allocator state to share.)
     GE_SetHostEcsState(
         GameEngine::ECS::ComponentRegistry::GetComponentsPtr(),
         GameEngine::ECS::ComponentRegistry::GetNameToTypeIdPtr(),

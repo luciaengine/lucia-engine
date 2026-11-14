@@ -104,7 +104,8 @@ class ShaderComposer
                                         const ShaderVariantKey& key,
                                         const std::filesystem::path& materialDir,
                                         const MaterialBuildContext& context,
-                                        std::vector<std::string>* outErrors = nullptr);
+                                        std::vector<std::string>* outErrors = nullptr,
+                                        const ShaderCompileTarget& target = CurrentShaderCompileTarget());
 
     // Resolve a surface / vertex-modifier reference against the shader root
     // chain: materialDir -> context.ProjectRoots -> context.PackageShaderDirs
@@ -151,7 +152,8 @@ class ShaderComposer
     // Generate the preprocessor preamble (the block of #define lines) for a variant.
     // `lightingModelName` is the original string (e.g. "StandardPBR") for the define.
     static std::string GenerateDefinePreamble(const ShaderVariantKey& key,
-                                              const std::string& lightingModelName);
+                                              const std::string& lightingModelName,
+                                              const ShaderCompileTarget& target = CurrentShaderCompileTarget());
 
     // Generate the preprocessor preamble from an explicit list of define strings.
     static std::string GenerateDefinePreamble(const std::vector<std::string>& defines);

@@ -1,3 +1,4 @@
+#include "Core/ApplicationPaths.h"
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <fstream>
@@ -5,7 +6,7 @@
 #include <thread>
 #include <vector>
 #include <string>
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h"
 #include "Engine/Build/DotnetHost.h"
 #include "Jobs/CompileServerUtil.h"
 #include "Jobs/CompileServerClient.h"

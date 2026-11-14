@@ -456,4 +456,3 @@ TEST(FenceMiterVariants, OneModelInTwoSlotsIsOneMesh)
         tightRegistry, tightCommit, tightCuts, kEntity, plan, {sources}, singleBytes);
     EXPECT_EQ(tight.PiecesPastBudget, 0u) << "a shared mesh must count its bytes once";
 }
-

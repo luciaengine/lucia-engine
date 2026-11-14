@@ -12,15 +12,15 @@ Apps/Editor/Source/DeviceLossSurfacer.cpp:std_thread:1                          
 Apps/Editor/Source/Diagnostics/MainThreadHangWatchdog.cpp:atomic_spin:1                      # a watchdog (must not depend on the pool it watches)
 Apps/Editor/Source/Diagnostics/MainThreadHangWatchdog.cpp:sleep_poll:1                       # a watchdog (must not depend on the pool it watches)
 Apps/Editor/Source/Diagnostics/MainThreadHangWatchdog.cpp:std_thread:2                       # a watchdog (must not depend on the pool it watches)
+Apps/Editor/Source/Panels/LogPanel/LogChannelPopover.cpp:add_child_calls:1                            # no layout file can name the search field; #5156
+Apps/Editor/Source/Panels/LogPanel/LogChannelPopover.cpp:control_creations:1                          # no layout file can name the search field; #5156
+Apps/Editor/Source/Panels/LogPanel/LogChannelPopover.cpp:files_assembling_ui:1                        # no layout file can name the search field; #5156
 Apps/Editor/Source/Inspectors/InspectorOverrideRows.h:one_free_function_file:1               # BindFieldRow and AttachOverrideMenu; the gate does not see BindFieldRow, whose last parameter defaults to {}
 Apps/Editor/Source/Panels/BuildPanel/ExportRequirementsSection.cpp:add_child_calls:1        # one notice per requirement of the enabled platforms, known at run time; the .uxml holds the fixed parts
 Apps/Editor/Source/Panels/BuildPanel/ExportRequirementsSection.cpp:control_creations:1      # one notice per requirement of the enabled platforms, known at run time; the .uxml holds the fixed parts
 Apps/Editor/Source/Panels/BuildPanel/ExportRequirementsSection.cpp:files_assembling_ui:1    # one notice per requirement of the enabled platforms, known at run time; the .uxml holds the fixed parts
 Apps/Editor/Source/Panels/BuildPanel/ExportRequirementsSection.cpp:named_for_a_function:1   # the class ExportRequirementsSection; the rule ignores the classes a file defines (#5208)
 Apps/Editor/Source/Panels/BuildPanel/ExportRequirementsSection.h:named_for_a_function:1     # the class ExportRequirementsSection; the rule ignores the classes a file defines (#5208)
-Apps/Editor/Source/Panels/LogChannelPopover.cpp:add_child_calls:1                            # no layout file can name the search field; #5156
-Apps/Editor/Source/Panels/LogChannelPopover.cpp:control_creations:1                          # no layout file can name the search field; #5156
-Apps/Editor/Source/Panels/LogChannelPopover.cpp:files_assembling_ui:1                        # no layout file can name the search field; #5156
 Apps/Editor/Source/Panels/ProjectPicker/ProjectCard.cpp:named_for_a_function:1               # the class ProjectCard; the rule ignores the classes a file defines (#5208)
 Apps/Editor/Source/Panels/ProjectPicker/ProjectCard.h:named_for_a_function:1                 # the class ProjectCard; the rule ignores the classes a file defines (#5208)
 Apps/Editor/Source/Panels/Scribe/ScribePanel.cpp:add_child_calls:13                          # one row per state, item and name of the open program, and the heading, notice, fields and action rows of the selected row; the two prompts go on the window root; the .uxml holds the fixed parts

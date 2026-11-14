@@ -42,10 +42,10 @@ void RecipeEditorHooks::RecordGroundEdit(ECS::World& world, const SplineRecipes:
 {
     if (!m_Undo)
         return;
-    // The edit that caused the sweep is the newest entry: one undo reverts both. With no entry to
-    // join, a sweep that removes a piece gets an entry of its own, so an undo puts the piece back.
-    if (m_Undo->CanJoinTop())
-        m_Undo->CommitJoiningTop(std::make_unique<SplineGroundEditCommand>(&world, edit));
+    // A pending authoring action owns its generated ground changes. Published revisions stay immutable.
+    const auto action = m_Undo->GetPendingActionId();
+    if (action != 0)
+        (void)m_Undo->AppendConsequence(action, std::make_unique<SplineGroundEditCommand>(&world, edit));
     else if (edit.Removes())
         m_Undo->CommitAlreadyApplied(std::make_unique<SplineGroundEditCommand>(&world, edit));
 }

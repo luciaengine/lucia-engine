@@ -1,3 +1,4 @@
+#include "Core/ApplicationPaths.h"
 // Deterministic unit tests for the C9 NativeScriptManager skeleton.
 //
 // Covers the parts that are pure logic — extension classification, the
@@ -6,14 +7,11 @@
 // here; it is exercised end-to-end once the build/load pipeline lands (C10+),
 // where the behavior is observable without racing the watcher thread.
 
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h" // ApplicationPaths::InstallContentRootFor
 #include "Engine/Build/BuildPipeline.h"
 #include "Engine/Build/MacBundleAssembler.h"
 #include "Engine/Build/NativeScriptStaging.h"
-#include "Memory/FrameMemory.h"
-#include "Memory/Testing/SimulatedFrame.h"
 #include "NativeScripting/BuildCacheRecord.h"
-#include "NativeScripting/CMakeInvoker.h"
 #include "NativeScripting/EngineBuildIdentity.h"
 #include "NativeScripting/NativeBuildConfig.h"
 #include "NativeScripting/NativeScriptManager.h"
@@ -22,16 +20,12 @@
 #include "NativeScripting/SdkManifest.h"
 #include "NativeScripting/ToolchainFingerprint.h"
 #include "NativeScripting/UserSystemRegistry.h"
-#include "StampedBinary.h"
-
-#include "InFlightModuleBuild.h"
-#include "../TestTempDir.h"
 
 #include "ECS/Entity.h" // full ECS::World definition (ECS.h only forward-declares it)
+#include "TestTempDir.h"
 
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -41,7 +35,6 @@
 #include <vector>
 
 namespace ns = GameEngine::NativeScripting;
-namespace nst = GameEngine::NativeScripting::Testing;
 
 TEST(NativeSourceTree, WatchedExtensionsAreCaseInsensitive)
 {
@@ -125,9 +118,7 @@ TEST(NativeScriptManager, InitialPackagePassSignalTracksConfigSetAndFirstKick)
     EXPECT_TRUE(mgr.InitialPackageModulePassComplete());
 
     // A non-empty config set arms the signal until the first KickBuild pass.
-    const std::filesystem::path root =
-        std::filesystem::temp_directory_path() / "ge_nsm_initial_pass_test";
-    std::filesystem::remove_all(root);
+    const std::filesystem::path root = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_nsm_initial_pass_test");
     std::filesystem::create_directories(root / "src");
     {
         std::ofstream src(root / "src" / "module.cpp");
@@ -194,7 +185,6 @@ void WriteFileInTree(const fs::path& path, const char* bytes)
 ns::NativeBuildConfig MakePruneFixture(const fs::path& root)
 {
     std::error_code ec;
-    fs::remove_all(root, ec);
     ns::NativeBuildConfig config;
     config.SourceDir = root / "Assets";
     config.BuildDir = root / "build";
@@ -210,7 +200,7 @@ ns::NativeBuildConfig MakePruneFixture(const fs::path& root)
 
 TEST(NativeScriptManager, ProjectOpenPrunesShadowCopiesUnreferencedByBuildCache)
 {
-    const fs::path root = fs::temp_directory_path() / "ge_nsm_prune";
+    const fs::path root = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_nsm_prune");
     ns::NativeBuildConfig config = MakePruneFixture(root);
     const fs::path referenced = config.ActiveDir / "UserScripts_bbbbbbbb.dll";
     {
@@ -237,7 +227,7 @@ TEST(NativeScriptManager, ProjectOpenPrunesShadowCopiesUnreferencedByBuildCache)
 
 TEST(NativeScriptManager, ProjectOpenWithoutBuildCachePrunesAllShadowCopies)
 {
-    const fs::path root = fs::temp_directory_path() / "ge_nsm_prune_nocache";
+    const fs::path root = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_nsm_prune_nocache");
     ns::NativeBuildConfig config = MakePruneFixture(root); // no last_build.txt written
 
     ns::NativeScriptManager mgr;
@@ -260,9 +250,8 @@ TEST(NativeScriptManager, ProjectOpenWithoutBuildCachePrunesAllShadowCopies)
 
 TEST(NativeSourceTree, BuildOutputInsideTheSourceRootLeavesTheDigestAlone)
 {
-    const fs::path root = fs::temp_directory_path() / "ge_nst_embedded_build";
+    const fs::path root = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_nst_embedded_build");
     std::error_code ec;
-    fs::remove_all(root, ec);
     WriteFileInTree(root / "Source" / "Widen.cpp", "void Widen() {}\n");
     WriteFileInTree(root / "Include" / "Widen.h", "#pragma once\n");
 
@@ -304,9 +293,8 @@ TEST(NativeSourceTree, APackagesTestsFolderLeavesItsModuleDigestAlone)
 
 TEST(NativeSourceTree, BuildOutputInsideTheSourceRootDoesNotOpenTheEmptyProjectGate)
 {
-    const fs::path root = fs::temp_directory_path() / "ge_nst_embedded_build_gate";
+    const fs::path root = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_nst_embedded_build_gate");
     std::error_code ec;
-    fs::remove_all(root, ec);
     WriteFileInTree(root / ".Cache" / "NativeScripts" / "build" / "UserScripts.gen.cpp",
                     "// scanner-generated registrations\n");
     EXPECT_FALSE(ns::HasWatchedNativeSource(root)) << "a leftover build tree is not user code";
@@ -326,9 +314,8 @@ TEST(NativeSourceTree, BuildOutputInsideTheSourceRootDoesNotOpenTheEmptyProjectG
 // ---------------------------------------------------------------------------
 TEST(BuildCacheRecord, RoundTripsAllFourLines)
 {
-    const fs::path dir = fs::temp_directory_path() / "ge_bcr_roundtrip";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_bcr_roundtrip");
     std::error_code ec;
-    fs::remove_all(dir, ec);
 
     ASSERT_TRUE(ns::WriteBuildCacheRecord(
         dir, ns::BuildCacheRecord{"full", "some/dir/UserScripts.dll", "abi", "enginebuild"}));
@@ -344,11 +331,10 @@ TEST(BuildCacheRecord, RoundTripsAllFourLines)
 
 TEST(BuildCacheRecord, ShorterLegacyCachesReadWithTheTrailingFieldsEmpty)
 {
-    const fs::path dir = fs::temp_directory_path() / "ge_bcr_legacy";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_bcr_legacy");
     std::error_code ec;
 
     // 2-line: pre-dates the ABI digest.
-    fs::remove_all(dir, ec);
     fs::create_directories(dir, ec);
     {
         std::ofstream out(dir / ns::kBuildCacheFileName, std::ios::trunc);
@@ -377,9 +363,8 @@ TEST(BuildCacheRecord, ShorterLegacyCachesReadWithTheTrailingFieldsEmpty)
 
 TEST(BuildCacheRecord, AbsentFileOrEmptyDllPathReadsAsNoRecord)
 {
-    const fs::path dir = fs::temp_directory_path() / "ge_bcr_absent";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_bcr_absent");
     std::error_code ec;
-    fs::remove_all(dir, ec);
     EXPECT_FALSE(ns::ReadBuildCacheRecord(dir).has_value());
 
     ASSERT_TRUE(ns::WriteBuildCacheRecord(dir, ns::BuildCacheRecord{"full", "", "abi"}));
@@ -390,9 +375,8 @@ TEST(BuildCacheRecord, AbsentFileOrEmptyDllPathReadsAsNoRecord)
 
 TEST(BuildCacheRecord, EngineAbiMarkerRoundTripsAndReadsEmptyWhenAbsent)
 {
-    const fs::path dir = fs::temp_directory_path() / "ge_bcr_marker";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_bcr_marker");
     std::error_code ec;
-    fs::remove_all(dir, ec);
 
     EXPECT_TRUE(ns::ReadEngineAbiMarker(dir).empty());
     ASSERT_TRUE(ns::WriteEngineAbiMarker(dir, "0123456789abcdef"));
@@ -401,20 +385,19 @@ TEST(BuildCacheRecord, EngineAbiMarkerRoundTripsAndReadsEmptyWhenAbsent)
     fs::remove_all(dir, ec);
 }
 
-TEST(BuildCacheRecord, EngineAbiDigestDiscriminatesConfigAndDefsAndEngineBinary)
+TEST(BuildCacheRecord, EngineAbiDigestDiscriminatesConfigAndDefsAndImportLib)
 {
-    const fs::path dir = fs::temp_directory_path() / "ge_bcr_digest";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_bcr_digest");
     std::error_code ec;
-    fs::remove_all(dir, ec);
-    nst::WriteStampedBinary(dir / "EngineA.bin", 0);
-    nst::WriteStampedBinary(dir / "EngineB.bin", 1);
+    fs::create_directories(dir, ec);
+    WriteFileBytes(dir / "EngineA.lib", "engine-a-bytes");
+    WriteFileBytes(dir / "EngineB.lib", "engine-b-bytes-longer");
 
     ns::NativeBuildConfig base;
     base.Config = "Release";
-    base.EngineBinary = dir / "EngineA.bin";
+    base.EngineImportLib = dir / "EngineA.lib";
     base.CompileDefinitions = {"GE_ENABLE_SCRIPTING=1"};
 
-    ASSERT_FALSE(ns::ComputeEngineAbiDigest(base).empty());
     EXPECT_EQ(ns::ComputeEngineAbiDigest(base), ns::ComputeEngineAbiDigest(base)) << "digest must be stable";
 
     ns::NativeBuildConfig otherConfig = base;
@@ -425,137 +408,32 @@ TEST(BuildCacheRecord, EngineAbiDigestDiscriminatesConfigAndDefsAndEngineBinary)
     otherDefs.CompileDefinitions.push_back("GE_EXTRA=1");
     EXPECT_NE(ns::ComputeEngineAbiDigest(base), ns::ComputeEngineAbiDigest(otherDefs));
 
-    ns::NativeBuildConfig otherEngine = base;
-    otherEngine.EngineBinary = dir / "EngineB.bin";
-    EXPECT_NE(ns::ComputeEngineAbiDigest(base), ns::ComputeEngineAbiDigest(otherEngine));
-
-    fs::remove_all(dir, ec);
-}
-
-// The engine_abi marker is written against the build tree's staged SDK and checked against
-// whichever copy of the Editor tree runs (an extracted release zip, an isolated editor copy),
-// so the digest reads the binaries' link stamps, never their paths or timestamps.
-TEST(BuildCacheRecord, EngineAbiDigestIgnoresBinaryLocationAndMtime)
-{
-    const fs::path dir = fs::temp_directory_path() / "ge_bcr_digest_relocated";
-    std::error_code ec;
-    fs::remove_all(dir, ec);
-    nst::WriteStampedBinary(dir / "build" / "Engine.bin", 0);
-    nst::WriteStampedBinary(dir / "build" / "EditorSDK.bin", 2);
-    fs::create_directories(dir / "copy", ec);
-    for (const char* binary : {"Engine.bin", "EditorSDK.bin"})
-    {
-        fs::copy_file(dir / "build" / binary, dir / "copy" / binary, ec);
-        fs::last_write_time(dir / "copy" / binary,
-                            fs::last_write_time(dir / "build" / binary) - std::chrono::hours(48), ec);
-    }
-
-    ns::NativeBuildConfig built;
-    built.Config = "Release";
-    built.EngineImportLib = dir / "build" / "Engine.lib";
-    built.EngineBinary = dir / "build" / "Engine.bin";
-    built.EditorImportLib = dir / "build" / "EditorSDK.lib";
-    built.EditorBinary = dir / "build" / "EditorSDK.bin";
-    built.CompileDefinitions = {"GE_ENABLE_SCRIPTING=1"};
-
-    ns::NativeBuildConfig relocated = built;
-    relocated.EngineImportLib = dir / "copy" / "Engine.lib";
-    relocated.EngineBinary = dir / "copy" / "Engine.bin";
-    relocated.EditorImportLib = dir / "copy" / "EditorSDK.lib";
-    relocated.EditorBinary = dir / "copy" / "EditorSDK.bin";
-
-    ASSERT_FALSE(ns::ComputeEngineAbiDigest(built).empty());
-    EXPECT_EQ(ns::ComputeEngineAbiDigest(built), ns::ComputeEngineAbiDigest(relocated));
-
-    fs::remove_all(dir, ec);
-}
-
-// A relink that changes only struct layouts keeps every export, and MSVC then leaves the
-// import library byte-identical and untouched; only the binaries' link stamps change. Two
-// such engines must digest apart even though their import libraries are the same file.
-TEST(BuildCacheRecord, EngineAbiDigestFollowsBinaryLinkStampNotImportLib)
-{
-    const fs::path dir = fs::temp_directory_path() / "ge_bcr_digest_stamp";
-    std::error_code ec;
-    fs::remove_all(dir, ec);
-    fs::create_directories(dir, ec);
-    WriteFileBytes(dir / "Engine.lib", "engine-import-library");
-    WriteFileBytes(dir / "EditorSDK.lib", "editor-sdk-import-library");
-    nst::WriteStampedBinary(dir / "Engine.bin", 0);
-    nst::WriteStampedBinary(dir / "EngineRelinked.bin", 1);
-    nst::WriteStampedBinary(dir / "EditorSDK.bin", 2);
-    nst::WriteStampedBinary(dir / "EditorSDKRelinked.bin", 3);
-
-    ns::NativeBuildConfig editor;
-    editor.Config = "Release";
-    editor.EngineImportLib = dir / "Engine.lib";
-    editor.EngineBinary = dir / "Engine.bin";
-    editor.EditorImportLib = dir / "EditorSDK.lib";
-    editor.EditorBinary = dir / "EditorSDK.bin";
-    editor.CompileDefinitions = {"GE_ENABLE_SCRIPTING=1"};
-    const std::string original = ns::ComputeEngineAbiDigest(editor);
-    ASSERT_FALSE(original.empty());
-
-    ns::NativeBuildConfig engineRelinked = editor;
-    engineRelinked.EngineBinary = dir / "EngineRelinked.bin";
-    EXPECT_NE(original, ns::ComputeEngineAbiDigest(engineRelinked));
-
-    ns::NativeBuildConfig editorRelinked = editor;
-    editorRelinked.EditorBinary = dir / "EditorSDKRelinked.bin";
-    EXPECT_NE(original, ns::ComputeEngineAbiDigest(editorRelinked));
-
-    fs::remove_all(dir, ec);
-}
-
-// An engine whose binary carries no readable link stamp cannot be identified: the digest
-// is empty rather than a value every such SDK would share, and nothing is matched against it.
-TEST(BuildCacheRecord, EngineAbiDigestIsEmptyWithoutAReadableLinkStamp)
-{
-    const fs::path dir = fs::temp_directory_path() / "ge_bcr_digest_unreadable";
-    std::error_code ec;
-    fs::remove_all(dir, ec);
-    fs::create_directories(dir, ec);
-    WriteFileBytes(dir / "NotABinary.bin", "no link stamp in here");
-    nst::WriteStampedBinary(dir / "Engine.bin", 0);
-
-    ns::NativeBuildConfig missing;
-    missing.Config = "Release";
-    missing.EngineBinary = dir / "Absent.bin";
-    EXPECT_TRUE(ns::ComputeEngineAbiDigest(missing).empty());
-
-    ns::NativeBuildConfig unstamped = missing;
-    unstamped.EngineBinary = dir / "NotABinary.bin";
-    EXPECT_TRUE(ns::ComputeEngineAbiDigest(unstamped).empty());
-
-    ns::NativeBuildConfig editorMissing = missing;
-    editorMissing.EngineBinary = dir / "Engine.bin";
-    editorMissing.EditorImportLib = dir / "EditorSDK.lib";
-    editorMissing.EditorBinary = dir / "AbsentEditor.bin";
-    EXPECT_TRUE(ns::ComputeEngineAbiDigest(editorMissing).empty());
+    ns::NativeBuildConfig otherLib = base;
+    otherLib.EngineImportLib = dir / "EngineB.lib";
+    EXPECT_NE(ns::ComputeEngineAbiDigest(base), ns::ComputeEngineAbiDigest(otherLib));
 
     fs::remove_all(dir, ec);
 }
 
 // EditorSDK phase 1: an Editor-kind module's digest folds the EditorSDK
-// binary's link stamp — a relinked editor surface must invalidate its cached
-// DLLs — while Runtime configs (EditorImportLib empty) hash no editor input.
-TEST(BuildCacheRecord, EngineAbiDigestFoldsEditorSdkBinaryOnlyWhenSet)
+// import-lib identity — a relinked editor surface must invalidate its cached
+// DLLs — while Runtime configs (EditorImportLib empty) hash exactly as before
+// the field existed, so existing runtime build caches stay valid.
+TEST(BuildCacheRecord, EngineAbiDigestFoldsEditorSdkImportLibOnlyWhenSet)
 {
-    const fs::path dir = fs::temp_directory_path() / "ge_bcr_editor_digest";
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_bcr_editor_digest");
     std::error_code ec;
-    fs::remove_all(dir, ec);
-    nst::WriteStampedBinary(dir / "Engine.bin", 0);
-    nst::WriteStampedBinary(dir / "EditorSDK.bin", 2);
-    nst::WriteStampedBinary(dir / "EditorSDKRelinked.bin", 3);
+    fs::create_directories(dir, ec);
+    WriteFileBytes(dir / "Engine.lib", "engine-bytes");
+    WriteFileBytes(dir / "EditorSDK.lib", "editor-sdk-bytes");
 
     ns::NativeBuildConfig runtime;
     runtime.Config = "Release";
-    runtime.EngineBinary = dir / "Engine.bin";
+    runtime.EngineImportLib = dir / "Engine.lib";
     runtime.CompileDefinitions = {"GE_ENABLE_SCRIPTING=1"};
 
     ns::NativeBuildConfig editor = runtime;
     editor.EditorImportLib = dir / "EditorSDK.lib";
-    editor.EditorBinary = dir / "EditorSDK.bin";
 
     const std::string runtimeDigest = ns::ComputeEngineAbiDigest(runtime);
     const std::string editorDigest = ns::ComputeEngineAbiDigest(editor);
@@ -563,13 +441,11 @@ TEST(BuildCacheRecord, EngineAbiDigestFoldsEditorSdkBinaryOnlyWhenSet)
         << "editor modules must be invalidated by an EditorSDK relink";
     EXPECT_EQ(editorDigest, ns::ComputeEngineAbiDigest(editor)) << "digest must be stable";
 
-    // An EditorSDK relink changes the editor digest but never the runtime one.
-    ns::NativeBuildConfig relinked = editor;
-    relinked.EditorBinary = dir / "EditorSDKRelinked.bin";
-    EXPECT_NE(editorDigest, ns::ComputeEngineAbiDigest(relinked));
-    ns::NativeBuildConfig runtimeAfterRelink = runtime;
-    runtimeAfterRelink.EditorBinary = dir / "EditorSDKRelinked.bin";
-    EXPECT_EQ(runtimeDigest, ns::ComputeEngineAbiDigest(runtimeAfterRelink));
+    // An EditorSDK relink (different bytes -> different size) changes the
+    // editor digest but never the runtime one.
+    WriteFileBytes(dir / "EditorSDK.lib", "editor-sdk-bytes-after-relink");
+    EXPECT_NE(editorDigest, ns::ComputeEngineAbiDigest(editor));
+    EXPECT_EQ(runtimeDigest, ns::ComputeEngineAbiDigest(runtime));
 
     fs::remove_all(dir, ec);
 }
@@ -582,24 +458,19 @@ TEST(BuildCacheRecord, EngineAbiDigestFoldsEditorSdkBinaryOnlyWhenSet)
 // native-script build is refused as "stale" against a perfectly fresh record.
 TEST(BuildCacheRecord, PackagedRecomputeMatchesEditorStampedRuntimeDigest)
 {
-    const fs::path sdkRoot = fs::temp_directory_path() / "ge_bcr_sdk_parity";
+    const fs::path sdkRoot = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_bcr_sdk_parity");
     std::error_code ec;
-    fs::remove_all(sdkRoot, ec);
     fs::create_directories(sdkRoot / "nativescripting", ec);
     fs::create_directories(sdkRoot / "include", ec);
     fs::create_directories(sdkRoot / "editor-include", ec);
     WriteFileBytes(sdkRoot / "Engine.lib", "engine-bytes");
     WriteFileBytes(sdkRoot / "EditorSDK.lib", "editor-sdk-bytes");
-    nst::WriteStampedBinary(sdkRoot / "Engine.bin", 0);
-    nst::WriteStampedBinary(sdkRoot / "EditorSDK.bin", 2);
     WriteFileBytes(sdkRoot / "nativescripting" / "manifest.txt",
                    "includedir=include\n"
                    "importlib=Engine.lib\n"
-                   "enginebinary=Engine.bin\n"
                    "defs=GE_ENABLE_SCRIPTING=1\n"
                    "config=Debug\n"
                    "editorimportlib=EditorSDK.lib\n"
-                   "editorbinary=EditorSDK.bin\n"
                    "editorincludes=editor-include\n");
 
     ns::NativeBuildConfig fromManifest;
@@ -614,7 +485,6 @@ TEST(BuildCacheRecord, PackagedRecomputeMatchesEditorStampedRuntimeDigest)
     // configs get the editor interface cleared before the manager stamps records.
     ns::NativeBuildConfig editorStamped = fromManifest;
     editorStamped.EditorImportLib.clear();
-    editorStamped.EditorBinary.clear();
     editorStamped.EditorIncludeDirs.clear();
     ns::AppendPackageDefines(editorStamped, packageDefines);
     const std::string recordDigest = ns::ComputeEngineAbiDigest(editorStamped);
@@ -624,7 +494,6 @@ TEST(BuildCacheRecord, PackagedRecomputeMatchesEditorStampedRuntimeDigest)
     ns::AppendPackageDefines(recompute, packageDefines);
     const std::string packageDigest = ns::ComputeRuntimeEngineAbiDigest(recompute);
 
-    ASSERT_FALSE(recordDigest.empty());
     EXPECT_EQ(recordDigest, packageDigest)
         << "packaged recompute must hash the same runtime-only inputs the editor stamped";
 
@@ -632,7 +501,7 @@ TEST(BuildCacheRecord, PackagedRecomputeMatchesEditorStampedRuntimeDigest)
     // hashing the manifest config directly (the regression) yields a different
     // digest, which is exactly the false 'stale scripts' C2 refusal.
     EXPECT_NE(packageDigest, ns::ComputeEngineAbiDigest(recompute))
-        << "fixture lost its teeth: digest no longer folds the EditorSDK binary when set";
+        << "fixture lost its teeth: digest no longer folds the EditorSDK lib when set";
 
     fs::remove_all(sdkRoot, ec);
 }
@@ -643,9 +512,8 @@ TEST(BuildCacheRecord, PackagedRecomputeMatchesEditorStampedRuntimeDigest)
 // also why the packaged probe path (<root>/NativeScripts) is exercised.
 TEST(NativeScriptManager, PrebuiltLoadRefusesPackagedModuleOnEngineAbiMismatch)
 {
-    const fs::path root = fs::temp_directory_path() / "ge_nsm_abi_mismatch";
+    const fs::path root = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_nsm_abi_mismatch");
     std::error_code ec;
-    fs::remove_all(root, ec);
     const fs::path pkgDir = root / "NativeScripts";
     fs::create_directories(pkgDir, ec);
     WriteFileBytes(pkgDir / "UserScripts.dll", "not-a-real-dll");
@@ -802,9 +670,8 @@ DevCacheProbe ProbeDevCacheLoad(const fs::path& root, const std::string& dllStem
 
 TEST(NativeScriptManager, DevCacheRecordFromAnotherEngineBuildIsSkippedBeforeTheImageIsMapped)
 {
-    const fs::path root = fs::temp_directory_path() / "ge_nsm_devcache_foreign";
+    const fs::path root = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_nsm_devcache_foreign");
     std::error_code ec;
-    fs::remove_all(root, ec);
 
     const DevCacheProbe probe = ProbeDevCacheLoad(root, "ForeignEngine", "not-this-engines-build-id");
     EXPECT_FALSE(probe.Loaded);
@@ -815,9 +682,8 @@ TEST(NativeScriptManager, DevCacheRecordFromAnotherEngineBuildIsSkippedBeforeThe
 
 TEST(NativeScriptManager, DevCacheRecordWithoutAnEngineIdentityIsSkippedBeforeTheImageIsMapped)
 {
-    const fs::path root = fs::temp_directory_path() / "ge_nsm_devcache_unstamped";
+    const fs::path root = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_nsm_devcache_unstamped");
     std::error_code ec;
-    fs::remove_all(root, ec);
 
     // A record written before the identity line existed. Unknown is NOT trusted:
     // the slot is machine-global, so "unknown" is far likelier to be another
@@ -831,9 +697,8 @@ TEST(NativeScriptManager, DevCacheRecordWithoutAnEngineIdentityIsSkippedBeforeTh
 
 TEST(NativeScriptManager, DevCacheRecordFromThisEngineBuildStillReachesTheLoad)
 {
-    const fs::path root = fs::temp_directory_path() / "ge_nsm_devcache_matching";
+    const fs::path root = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_nsm_devcache_matching");
     std::error_code ec;
-    fs::remove_all(root, ec);
 
     ASSERT_FALSE(ns::EngineBuildIdentity().empty())
         << "this platform must be able to identify its own engine image, or the gate is inert here";
@@ -961,7 +826,6 @@ struct FaultingUserSystem : ns::IUserSystem
     }
     void OnDestroy(GameEngine::ECS::World&) override {}
     const char* Name() const override { return "FaultingUserSystem"; }
-    int Order() const override { return -1; } // runs before the healthy system
 };
 #endif
 } // namespace
@@ -1034,10 +898,9 @@ TEST(UserSystemRegistry, PerModuleClearDropsOnlyThatModulesSystems)
     ns::RegisterUserSystem(&packageSystem);
     ns::SetActiveRegistrationModule({});
 
-    // Equal order and name: the module id decides.
     ASSERT_EQ(ns::GetUserSystems().size(), 2u);
-    EXPECT_EQ(ns::GetUserSystems()[0].ModuleId, "OceanPack");
-    EXPECT_EQ(ns::GetUserSystems()[1].ModuleId, "UserScripts");
+    EXPECT_EQ(ns::GetUserSystems()[0].ModuleId, "UserScripts");
+    EXPECT_EQ(ns::GetUserSystems()[1].ModuleId, "OceanPack");
 
     // Package reload: clear + re-register the package module only.
     ns::ClearUserSystems("OceanPack");
@@ -1137,30 +1000,6 @@ TEST(PrebuiltModuleBinaries, ModuleFileNameIsTheModuleNameWithTheHostExtensionAn
 #endif
 }
 
-// A host with no engine-ABI digest (a dev Player probes with a config that carries none)
-// still loads a marker-less prebuilt, whose own exported handshake is the gate, but cannot
-// verify a marker and refuses the prebuilt that ships one.
-TEST(PrebuiltModuleBinaries, LookupWithoutHostDigestRefusesOnlyMarkedPrebuilts)
-{
-    const GE_ToolchainFingerprint host = ns::HostToolchainFingerprint();
-    const auto root = MakePrebuiltTempDir();
-    const auto prebuilt = root / "Binaries";
-    const auto platformDir = prebuilt / ns::PrebuiltPlatformDirName(host);
-    const std::string dllName = ns::PrebuiltModuleFileName("WaterPack");
-    WriteFileAt(platformDir / dllName, "fake-dll-bytes");
-
-    auto lookup = ns::FindPrebuiltModule(prebuilt, host, "WaterPack", "");
-    EXPECT_EQ(lookup.Dll, platformDir / dllName) << lookup.Reason;
-
-    ASSERT_TRUE(ns::WriteEngineAbiMarker(platformDir, "abi123"));
-    lookup = ns::FindPrebuiltModule(prebuilt, host, "WaterPack", "");
-    EXPECT_TRUE(lookup.Dll.empty());
-    EXPECT_NE(lookup.Reason.find("unavailable"), std::string::npos) << lookup.Reason;
-
-    std::error_code ec;
-    std::filesystem::remove_all(root, ec);
-}
-
 TEST(PrebuiltModuleBinaries, LookupFindsMatchingDllAndHonorsMarker)
 {
     const GE_ToolchainFingerprint host = ns::HostToolchainFingerprint();
@@ -1216,238 +1055,4 @@ TEST(PrebuiltModuleBinaries, LookupFindsMatchingDllAndHonorsMarker)
 
     std::error_code ec;
     std::filesystem::remove_all(root, ec);
-}
-
-// Play mode waits on builds of modules that ship with the game (PlayModeEntryGate), not on a batch
-// of editor-only modules; a shipped module whose build failed is named, with its first error line.
-TEST(NativeScriptManager, PlayWaitsOnShippedModuleBuildsAndReadsTheirFailure)
-{
-    const std::filesystem::path root = std::filesystem::temp_directory_path() /
-        ("ge_nsm_shipped_pending_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    // Each block runs a real cmake configure and a failing build after up to 20 s of toolchain
-    // detection; the two together took 143 s on a loaded machine. Each gets its own bound well
-    // above that, which only stops a build that never completes.
-    constexpr auto kBuildDeadline = std::chrono::seconds(240);
-    auto deadline = std::chrono::steady_clock::now() + kBuildDeadline;
-    {
-        ns::Testing::InFlightModuleBuild editorOnly(root / "editor" / "src", root / "editor" / "cache",
-                                                    root / "editor" / "scratch", "Probe.Editor",
-                                                    ns::Testing::ModuleKind::EditorOnly, nullptr);
-        EXPECT_FALSE(editorOnly.Manager().AreShippedModuleBuildsPending())
-            << "an editor-only batch held play mode";
-        editorOnly.TickUntilCompleted(deadline);
-        EXPECT_TRUE(editorOnly.Manager().FailedShippedModules().empty());
-    }
-    deadline = std::chrono::steady_clock::now() + kBuildDeadline;
-    {
-        ns::Testing::InFlightModuleBuild shipped(root / "shipped" / "src", root / "shipped" / "cache",
-                                                 root / "shipped" / "scratch", "Probe", ns::Testing::ModuleKind::Shipped,
-                                                 nullptr);
-        EXPECT_TRUE(shipped.Manager().AreShippedModuleBuildsPending());
-        shipped.TickUntilCompleted(deadline);
-        ASSERT_EQ(shipped.Completions(), 1);
-        EXPECT_FALSE(shipped.Manager().AreShippedModuleBuildsPending());
-        EXPECT_EQ(shipped.Manager().FailedShippedModules(), std::vector<std::string>{"Probe"});
-        EXPECT_FALSE(shipped.Manager().FirstBuildErrorLine("Probe").empty());
-    }
-    std::error_code ec;
-    std::filesystem::remove_all(root, ec);
-}
-
-#if GE_DEBUG_INSTRUMENTATION && !defined(NDEBUG)
-// A build worker posts the completion task, so Debug refuses it frame memory inside a frame too.
-// The child dies before it cleans up, so the directory name is fixed and the parent removes it.
-TEST(NativeScriptManagerDeathTest, AMainThreadTaskCannotUseFrameMemory)
-{
-    GTEST_FLAG_SET(death_test_style, "threadsafe");
-    const std::filesystem::path root = std::filesystem::temp_directory_path() / "ge_nsm_main_thread_task_frame_memory";
-    std::error_code ec;
-    std::filesystem::remove_all(root, ec);
-    EXPECT_DEATH(
-        {
-            ns::Testing::InFlightModuleBuild build(root / "src", root / "cache", root / "scratch", "Probe",
-                                                   ns::Testing::ModuleKind::Shipped,
-                                                   [] { GameEngine::Memory::FrameMemory::Allocate(16); });
-            GameEngine::Memory::Testing::SimulatedFrame frame;
-            build.TickUntilCompleted(std::chrono::steady_clock::now() + std::chrono::seconds(240));
-            EXPECT_EQ(build.Completions(), 1) << "the build did not complete before the deadline";
-        },
-        "frame memory is only for the frame thread and the forks it joins");
-    std::filesystem::remove_all(root, ec);
-}
-#endif
-
-// Play mode loads the project module and the runtime package modules, never an editor-only
-// package module. A pass with all three kinds stale builds the first two as one batch and holds
-// the editor-only module for a second: the play gate waits for the first batch alone (counting only
-// its modules), while the module-pending signal and the first package pass wait for both.
-TEST(NativeScriptManager, EditorOnlyModulesBuildAfterTheModulesPlayModeLoads)
-{
-    namespace fs = std::filesystem;
-    const fs::path root = fs::temp_directory_path() /
-        ("ge_nsm_build_priority_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    fs::create_directories(root / "scratch");
-    std::ofstream(root / "scratch" / "not-a-directory") << "blocks every generated project directory";
-
-    // Each build fails fast at project generation: its project directory sits under a file.
-    auto makeConfig = [&root](const std::string& name) {
-        fs::create_directories(root / name / "src");
-        std::ofstream(root / name / "src" / (name + ".cpp")) << "int GeBuildPriorityProbe() { return 1; }\n";
-        ns::NativeBuildConfig config;
-        config.SourceDir = root / name / "src";
-        config.ProjectDir = root / "scratch" / "not-a-directory" / name;
-        config.BuildDir = root / name / "cache" / "build";
-        config.ActiveDir = root / name / "cache" / "active";
-        config.ModuleName = name;
-        return config;
-    };
-    ns::NativeBuildConfig runtimePackage = makeConfig("RuntimePackage");
-    ns::NativeBuildConfig editorPackage = makeConfig("ToolsPackage.Editor");
-    editorPackage.EditorImportLib = root / "EditorSDK.lib"; // absent file: only the kind matters
-    ns::NativeBuildConfig project = makeConfig("UserScripts");
-
-    JobSystem::WorkStealingThreadPool pool(2);
-    ns::NativeScriptManager manager;
-    ASSERT_TRUE(manager.Initialize(&pool));
-    std::vector<std::string> completedModules;
-    manager.SetBuildCompletedCallback([&completedModules](const ns::NativeBuildResult& result) {
-        EXPECT_FALSE(result.Success());
-        completedModules.push_back(result.ModuleId);
-    });
-    manager.SetPackageModuleConfigs({runtimePackage, editorPackage});
-    manager.SetBuildConfig(project);
-    manager.RequestRebuild();
-    manager.Tick(); // dispatches the first batch
-
-    EXPECT_TRUE(manager.AreShippedModuleBuildsPending());
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-    while (completedModules.size() < 2 && std::chrono::steady_clock::now() < deadline)
-    {
-        manager.Tick();
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    // The first batch is the two modules play mode loads, applied in load order (packages first).
-    ASSERT_EQ(completedModules.size(), 2u) << "the editor-only module was built in the same batch";
-    EXPECT_EQ(completedModules, (std::vector<std::string>{"RuntimePackage", "UserScripts"}));
-    EXPECT_EQ(manager.FailedShippedModules(), (std::vector<std::string>{"RuntimePackage", "UserScripts"}));
-    EXPECT_FALSE(manager.AreShippedModuleBuildsPending()) << "play waited for an editor-only module";
-    EXPECT_TRUE(manager.AreModulesPending()) << "the editor-only module was dropped";
-    EXPECT_FALSE(manager.InitialPackageModulePassComplete());
-
-    while (completedModules.size() < 3 && std::chrono::steady_clock::now() < deadline)
-    {
-        manager.Tick();
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    ASSERT_EQ(completedModules.size(), 3u);
-    EXPECT_EQ(completedModules, (std::vector<std::string>{"RuntimePackage", "UserScripts", "ToolsPackage.Editor"}));
-    EXPECT_FALSE(manager.AreModulesPending());
-    EXPECT_TRUE(manager.InitialPackageModulePassComplete());
-
-    manager.Shutdown();
-    std::error_code ec;
-    fs::remove_all(root, ec);
-}
-
-// A rebuild requested while the modules play mode loads are building (a source edit) goes ahead of
-// the held editor-only batch: otherwise the play gate, which counts the request, would wait out
-// every editor-only compile.
-TEST(NativeScriptManager, ARebuildRequestedDuringTheFirstBatchGoesAheadOfEditorOnlyModules)
-{
-    namespace fs = std::filesystem;
-    const fs::path root = fs::temp_directory_path() /
-        ("ge_nsm_rebuild_priority_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    fs::create_directories(root / "scratch");
-    std::ofstream(root / "scratch" / "not-a-directory") << "blocks every generated project directory";
-
-    // Each build fails fast at project generation, so the shipped modules stay stale and rebuild.
-    auto makeConfig = [&root](const std::string& name) {
-        fs::create_directories(root / name / "src");
-        std::ofstream(root / name / "src" / (name + ".cpp")) << "int GeRebuildPriorityProbe() { return 1; }\n";
-        ns::NativeBuildConfig config;
-        config.SourceDir = root / name / "src";
-        config.ProjectDir = root / "scratch" / "not-a-directory" / name;
-        config.BuildDir = root / name / "cache" / "build";
-        config.ActiveDir = root / name / "cache" / "active";
-        config.ModuleName = name;
-        return config;
-    };
-    ns::NativeBuildConfig editorPackage = makeConfig("ToolsPackage.Editor");
-    editorPackage.EditorImportLib = root / "EditorSDK.lib"; // absent file: only the kind matters
-
-    JobSystem::WorkStealingThreadPool pool(2);
-    ns::NativeScriptManager manager;
-    ASSERT_TRUE(manager.Initialize(&pool));
-    int completions = 0;
-    manager.SetBuildCompletedCallback([&completions](const ns::NativeBuildResult&) { ++completions; });
-    manager.SetPackageModuleConfigs({makeConfig("RuntimePackage"), editorPackage});
-    manager.SetBuildConfig(makeConfig("UserScripts"));
-    manager.RequestRebuild();
-    manager.Tick();           // dispatches the first batch: UserScripts and RuntimePackage
-    manager.RequestRebuild(); // a source edit while it builds
-
-    // Completion counts as each batch is applied: 2 (first batch), then the rebuilt pair (4), and
-    // only then the editor-only module (5). A 3 means the editor-only module went first.
-    std::vector<int> appliedCounts;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-    while (completions < 5 && std::chrono::steady_clock::now() < deadline)
-    {
-        const int before = completions;
-        manager.Tick();
-        if (completions != before)
-            appliedCounts.push_back(completions);
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    EXPECT_EQ(appliedCounts, (std::vector<int>{2, 4, 5})) << "the editor-only module built before the rebuild";
-
-    manager.Shutdown();
-    std::error_code ec;
-    fs::remove_all(root, ec);
-}
-
-// A scanner the SDK manifest names but the disk lacks is reported by its path and the fix,
-// before a shell runs it and answers with its own "not recognized" line.
-TEST(CMakeInvoker, MissingComponentScannerIsNamedWithTheFix)
-{
-    GameEngine::TestUtils::ScopedTempDir scratch(GameEngine::TestUtils::MakeUniqueTempDirectory("ge_nsm_missing_scanner"));
-    const fs::path root = scratch.Path();
-    ns::NativeBuildConfig config;
-    config.SourceDir = root / "Assets";
-    config.BuildDir = root / "build";
-    config.ComponentScannerExe = root / "nativescripting" / "ComponentScanner.exe";
-    std::string output;
-    std::string error;
-    ns::ComponentScanStats stats;
-
-    EXPECT_TRUE(ns::CMakeInvoker::RunComponentScanner(config, output, error, stats).empty());
-    EXPECT_NE(std::string::npos, error.find("component scanner is missing at")) << error;
-    EXPECT_NE(std::string::npos, error.find("nativescripting/ComponentScanner.exe")) << error;
-
-    error.clear();
-    EXPECT_TRUE(ns::CMakeInvoker::RunSystemScanner(config, output, error).empty());
-    EXPECT_NE(std::string::npos, error.find("component scanner is missing at")) << error;
-}
-
-// The scan command carries the project's paths as UTF-8, the encoding the shell process converts a
-// command from: a project under a folder the Windows ANSI code page cannot spell still scans.
-TEST(CMakeInvoker, ScansAProjectWhosePathIsNotAscii)
-{
-    GameEngine::TestUtils::ScopedTempDir scratch(GameEngine::TestUtils::MakeUniqueTempDirectory("ge_nsm_utf8_scan"));
-    const fs::path root = scratch.Path() / fs::path(u8"\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8");
-    ns::NativeBuildConfig config;
-    config.SourceDir = root / "Assets";
-    config.BuildDir = root / "build";
-    config.ComponentScannerExe = GE_COMPONENT_SCANNER_EXE;
-    config.DetectBase = "ComponentBase";
-    fs::create_directories(config.SourceDir);
-    std::ofstream(config.SourceDir / "Speed.h", std::ios::binary) << "struct Speed : ECS::ComponentBase { float Value; };\n";
-    std::string output;
-    std::string error;
-    ns::ComponentScanStats stats;
-
-    const fs::path generated = ns::CMakeInvoker::RunComponentScanner(config, output, error, stats);
-
-    EXPECT_EQ("", error) << output;
-    EXPECT_EQ(1, stats.Reflected) << output;
-    EXPECT_TRUE(fs::exists(generated)) << output;
 }

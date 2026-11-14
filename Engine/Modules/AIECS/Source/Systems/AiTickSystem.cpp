@@ -10,6 +10,7 @@
 #include "AIECS/Components/AiStateTree.h"
 #include "AiGroup/AiGroupStore.h"
 #include "ECS/ECSTemplates.h"
+#include "ECS/Writable.h"
 #include "Events/AiEventQueue.h"
 
 #include <algorithm>
@@ -58,14 +59,15 @@ void AiTickSystem::RemapAgents(ECS::World& world, uint32 tick, uint16 id, const 
                ECS::Optional<Components::AiCellsSmall>, ECS::Optional<Components::AiCellsMedium>,
                ECS::Optional<Components::AiCellsLarge>>()
         .Each(
-            [this, id](ECS::EntityHandle entity, Components::AiAgent& agent, Components::AiStateTree& tree,
+            [this, id](ECS::EntityHandle entity, ECS::Writable<Components::AiAgent> agentRow,
+                       ECS::Writable<Components::AiStateTree> treeRow,
                        Components::AiCellsSmall* small, Components::AiCellsMedium* medium,
                        Components::AiCellsLarge* large)
             {
-                if (agent.PathProgram == id)
+                if (agentRow->PathProgram == id)
                 {
-                    m_Remapped.push_back(
-                        {&agent, &tree, SelectCells(small, medium, large), nullptr, nullptr, entity, id});
+                    m_Remapped.push_back({&agentRow.Mutable(), &treeRow.Mutable(), SelectCells(small, medium, large),
+                                          nullptr, nullptr, entity, id});
                 }
             });
     std::sort(m_Remapped.begin(), m_Remapped.end(),

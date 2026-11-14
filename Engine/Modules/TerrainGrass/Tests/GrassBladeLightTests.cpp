@@ -529,4 +529,3 @@ TEST(GrassBladeLight, TheSpecularWeightScalesTheFaceOnReflectionOnly)
     EXPECT_NEAR(Shader::GE_FresnelF82(leafF0, white, cos80).y, 0.3853f, 1e-4f)
         << "the sun's Fresnel on the leaf part at 80 degrees";
 }
-

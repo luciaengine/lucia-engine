@@ -10,8 +10,14 @@ set(AUDIO_SOURCES
     Source/AudioDecoderConfig.cpp
     Source/AudioSystem.cpp
     Source/MiniaudioBackend.cpp
+    Source/DeviceOutput.h
     Source/miniaudio_impl.c
 )
+
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    enable_language(OBJC)
+    set_source_files_properties(Source/miniaudio_impl.c PROPERTIES LANGUAGE OBJC)
+endif()
 
 add_library(Audio OBJECT ${AUDIO_PUBLIC_HEADERS} ${AUDIO_SOURCES})
 
@@ -40,8 +46,6 @@ target_link_libraries(Audio
         AssetRuntime
 )
 
-# Ogg Vorbis decodes through libvorbisfile (miniaudio's libvorbis backend, compiled into
-# miniaudio_impl.c).
 find_package(Vorbis CONFIG REQUIRED)
 target_link_libraries(Audio PRIVATE Vorbis::vorbisfile)
 
@@ -58,3 +62,7 @@ if(APPLE)
 endif()
 
 
+
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    target_link_libraries(Audio PRIVATE "-framework AVFoundation")
+endif()

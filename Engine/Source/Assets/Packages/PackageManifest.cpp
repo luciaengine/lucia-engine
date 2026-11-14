@@ -124,6 +124,30 @@ bool IsSafeRelativeDir(std::string_view dir)
     return true;
 }
 
+bool TryReadPreviewPath(const nlohmann::json& doc, const char* field,
+                        const std::filesystem::path& manifestPath, std::string& out,
+                        std::string& outError)
+{
+    const auto value = doc.find(field);
+    if (value == doc.end())
+        return true;
+    if (value->is_string())
+    {
+        const std::string path = value->get<std::string>();
+        if (IsSafeRelativeDir(path) && path != "." &&
+            path.find_first_of(":\\") == std::string::npos &&
+            path.find('\0') == std::string::npos)
+        {
+            out = path;
+            return true;
+        }
+    }
+    outError = MakeError(manifestPath, field,
+                         "must be a non-empty package-relative image path using '/' separators, "
+                         "without '..' or a URL");
+    return false;
+}
+
 bool TryParseModuleRecord(const nlohmann::json& node,
                           size_t index,
                           const std::filesystem::path& manifestPath,
@@ -344,6 +368,10 @@ bool TryParsePackageManifest(std::string_view jsonText,
     }
     if (out.DisplayName.empty())
         out.DisplayName = out.Name;
+
+    if (!TryReadPreviewPath(doc, "icon", manifestPathForErrors, out.Icon, outError) ||
+        !TryReadPreviewPath(doc, "screenshot", manifestPathForErrors, out.Screenshot, outError))
+        return false;
 
     // dependencies
     if (doc.contains("dependencies"))

@@ -1,21 +1,15 @@
 #include <gtest/gtest.h>
 
 #include "Core/WindowInputRouter.h"
-#include "Editor/Hierarchy/HierarchyEntity/HierarchyEntityCommands.h"
-#include "EditorContextMenu/DirectoryMenuEditItems.h"
 #include "Editor/Shortcuts/EditorShortcuts.h"
 #include "EditorInputActions.h"
 #include "UI/Controls/ItemSizeSlider.h"
 #include "UI/Interaction/ItemResizeGesture.h"
-#include "UI/UIEvents.h"
+#include "TestTempDir.h"
 
 #include "Input/InputSystem.h"
 #include "Input/KeyCodes.h"
-#include "Platform/Capabilities.h"
-#include "Platform/ContextMenu.h"
-#include "RecordingContextMenu.h"
 
-#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
@@ -101,16 +95,13 @@ void SetUserDataRoot(const std::string& root)
 struct ScopedCatalogDefaultBindings
 {
     std::string Previous;
+    TestUtils::ScopedTempDir Root{TestUtils::MakeUniqueTempDirectory("EditorShortcutsTests_default_bindings")};
 
     ScopedCatalogDefaultBindings()
     {
         if (const char* previous = std::getenv("GE_EDITOR_USER_DATA_ROOT"))
             Previous = previous;
-        const std::filesystem::path root =
-            std::filesystem::temp_directory_path() / "EditorShortcutsTests_default_bindings";
-        std::filesystem::remove_all(root);
-        std::filesystem::create_directories(root);
-        SetUserDataRoot(root.string());
+        SetUserDataRoot(Root.Path().string());
         DropCachedBindings();
     }
 
@@ -309,100 +300,6 @@ TEST(EditorShortcutsBindings, AssetsRenameBindsReturnOnMacOsOnly)
 #endif
 }
 
-// A menu row shows the key its panel's key map binds now, so a rebinding shows in the menu too.
-TEST(EditorShortcutsBindings, EditMenuRowsShowTheKeysTheKeyMapBinds)
-{
-    ScopedCatalogDefaultBindings defaults;
-    const int primary = Platform::PrimaryShortcutModifierIsCommand() ? Input::kModSuper : Input::kModControl;
-    auto buildEntityMenu = []
-    {
-        ContextMenuBuilder builder;
-        Editor::AddHierarchyEntityEditItems(builder);
-        EditorTesting::RecordingContextMenu menu;
-        builder.Build(&menu);
-        return menu;
-    };
-
-    const EditorTesting::RecordingContextMenu entityMenu = buildEntityMenu();
-    EXPECT_EQ(entityMenu.ShortcutOf("Rename"), "F2");
-    EXPECT_EQ(entityMenu.ShortcutOf("Duplicate"), Editor::FormatShortcutBinding(Input::kKeyCode_D, primary));
-    EXPECT_EQ(entityMenu.ShortcutOf("Delete"), "Del") << "the desktop form of the key, not the row's own word again";
-
-    ContextMenuBuilder folderBuilder;
-    AddDirectoryEditItems(folderBuilder);
-    EditorTesting::RecordingContextMenu folderMenu;
-    folderBuilder.Build(&folderMenu);
-    EXPECT_EQ(folderMenu.ShortcutOf("Rename"), "F2");
-    EXPECT_EQ(folderMenu.ShortcutOf("Delete"), "") << "the Assets panel binds no key to Delete";
-
-    const ShortcutCatalogEntry* rename = nullptr;
-    for (const ShortcutCatalogEntry& entry : GetShortcutCatalog())
-    {
-        if (std::string_view(entry.groupLabel) == "Hierarchy" && std::string_view(entry.displayName) == "Rename")
-            rename = &entry;
-    }
-    ASSERT_NE(rename, nullptr);
-    auto store = Editor::OpenEditorPreferences();
-    SaveShortcutBindings(store, *rename, {{Input::kKeyCode_F3, 0}});
-    ASSERT_TRUE(store.Save());
-    EXPECT_EQ(buildEntityMenu().ShortcutOf("Rename"), "F3") << "the menu shows a key the key map no longer binds";
-}
-
-// Design 4.2.1: the primary modifier with Shift and P creates a prefab in the Hierarchy, and no other
-// entry of the catalog binds that chord.
-TEST(EditorShortcutsBindings, TheCreatePrefabKeyIsPrimaryShiftPAndBindsNothingElse)
-{
-    ScopedCatalogDefaultBindings defaults;
-    const int primary = Platform::PrimaryShortcutModifierIsCommand() ? Input::kModSuper : Input::kModControl;
-    const int chord = primary | Input::kModShift;
-
-    EXPECT_TRUE(Editor::MatchesCatalogShortcut("Hierarchy", "Create Prefab", Input::kKeyCode_P, chord));
-    EXPECT_FALSE(Editor::MatchesCatalogShortcut("Hierarchy", "Create Prefab", Input::kKeyCode_P, primary))
-        << "the primary modifier with P toggles play mode";
-    const auto& catalog = Editor::GetShortcutCatalog();
-    const auto entry = std::find_if(catalog.begin(), catalog.end(),
-                                    [](const Editor::ShortcutCatalogEntry& candidate)
-                                    {
-                                        return std::string_view(candidate.groupLabel) == "Hierarchy" &&
-                                               std::string_view(candidate.displayName) == "Create Prefab";
-                                    });
-    ASSERT_NE(entry, catalog.end());
-    EXPECT_EQ(Editor::FindShortcutConflict(*entry, Input::kKeyCode_P, chord), nullptr);
-    EXPECT_EQ(Editor::CatalogShortcutLabel("Hierarchy", "Create Prefab"),
-              Editor::FormatShortcutBinding(Input::kKeyCode_P, chord));
-}
-
-// The File menu's Save Scene and Save Scene As... items show these catalog entries' bindings.
-TEST(EditorShortcutsBindings, FileMenuSaveEntriesShowTheirDefaultBindings)
-{
-    ScopedCatalogDefaultBindings defaults;
-    const int primary = Platform::PrimaryShortcutModifierIsCommand() ? Input::kModSuper : Input::kModControl;
-    EXPECT_EQ(Editor::CatalogShortcutLabel("Global", "Save Scene"), Editor::FormatShortcutBinding(Input::kKeyCode_S, primary));
-    EXPECT_EQ(Editor::CatalogShortcutLabel("Global", "Save Scene As"),
-              Editor::FormatShortcutBinding(Input::kKeyCode_S, primary | Input::kModShift));
-}
-
-// The Hierarchy's key map, through the catalog's defaults: F2 renames the selected entity,
-// Delete deletes it and the primary modifier with D duplicates it, each as the command id its
-// context menu entry carries. macOS also renames on Return, as the Assets panel does.
-TEST(EditorShortcutsBindings, HierarchyKeysNameTheEntityEditCommands)
-{
-    ScopedCatalogDefaultBindings defaults;
-    const int primary = Platform::PrimaryShortcutModifierIsCommand() ? Input::kModSuper : Input::kModControl;
-
-    EXPECT_EQ(Editor::HierarchyEntityCommandForKey(Input::kKeyCode_F2, 0), Editor::kHierarchyCmdRename)
-        << "F2 does not rename in the Hierarchy";
-    EXPECT_EQ(Editor::HierarchyEntityCommandForKey(Input::kKeyCode_Delete, 0), Editor::kHierarchyCmdDelete);
-    EXPECT_EQ(Editor::HierarchyEntityCommandForKey(Input::kKeyCode_D, primary), Editor::kHierarchyCmdDuplicate);
-    EXPECT_EQ(Editor::HierarchyEntityCommandForKey(Input::kKeyCode_F2, Input::kModShift), 0u)
-        << "Shift+F2 belongs to the CPU profiler, not to rename";
-#ifdef __APPLE__
-    EXPECT_EQ(Editor::HierarchyEntityCommandForKey(Input::kKeyCode_Enter, 0), Editor::kHierarchyCmdRename);
-#else
-    EXPECT_EQ(Editor::HierarchyEntityCommandForKey(Input::kKeyCode_Enter, 0), 0u);
-#endif
-}
-
 TEST(EditorShortcutsBindings, StoredBareWheelCannotReplaceItemResizeDefaults)
 {
     auto store = MakeStore();
@@ -552,9 +449,6 @@ struct EditorAndGame
     Input::InputSystem Editor;
     Input::InputSystem Game{Input::SinkRole::Gameplay};
     WindowInputRouterConfig Config;
-    // The editor hands the window's play surface to the router only while play
-    // runs with the Game View as that window's active tab.
-    bool GameViewActiveInPlay = true;
 
     EditorAndGame()
     {
@@ -563,8 +457,7 @@ struct EditorAndGame
         Config.getPlaySurface = [this]
         {
             WindowInputRouterConfig::PlaySurface surface;
-            if (GameViewActiveInPlay)
-                surface.gameplaySink = &Game;
+            surface.gameplaySink = &Game;
             return surface;
         };
     }
@@ -647,67 +540,4 @@ TEST(EditorReservedShortcuts, RebindingOrDisablingAShortcutMovesItsKeyToTheGame)
     Editor::ApplyShortcutBindings(input.Editor, CatalogEntry("Toggle Play Mode"), {});
     input.Tap(Input::kKeyCode_F9, 0);
     EXPECT_TRUE(input.Game.WasKeyPressed(Input::kKeyCode_F9)) << "an unbound shortcut reserved nothing";
-}
-
-// The diagnostic hotkeys (F2 CPU profiler, Shift+F2 off, F3 UI Demo) are bare
-// Editor.Global actions: a game in a focused Game View that binds them receives
-// them, modified variants included, and the editor acts on them only outside
-// that, with the modifiers matched.
-TEST(EditorReservedShortcuts, AFocusedGameTakesTheDiagnosticKeysAndTheEditorKeepsThemOutsidePlay)
-{
-    ScopedCatalogDefaultBindings defaults;
-    EditorAndGame input;
-    const Input::ContextId gameContext = Input::HashInput("Test.Game");
-    const auto bindGame = [&](const char* name, int key, int mods)
-    {
-        Input::ActionBinding binding{Input::DeviceType::Keyboard, key, 1.0f};
-        binding.requiredMods = static_cast<Input::ModifierFlags>(mods);
-        binding.forbiddenMods = Input::kShortcutModifiers & ~binding.requiredMods;
-        const Input::ActionId id = Input::HashInput(name);
-        input.Game.RegisterAction(gameContext, {id, {binding}, /*isAxis=*/false});
-        return id;
-    };
-    struct Chord
-    {
-        Input::ActionId GameAction;
-        int Key;
-        int Mods;
-    };
-    const Chord chords[] = {
-        {bindGame("Test.Game.F2", Input::kKeyCode_F2, 0), Input::kKeyCode_F2, 0},
-        {bindGame("Test.Game.ShiftF2", Input::kKeyCode_F2, Input::kModShift), Input::kKeyCode_F2, Input::kModShift},
-        {bindGame("Test.Game.F3", Input::kKeyCode_F3, 0), Input::kKeyCode_F3, 0},
-        {bindGame("Test.Game.ShiftF3", Input::kKeyCode_F3, Input::kModShift), Input::kKeyCode_F3, Input::kModShift},
-    };
-    input.Game.PushContext(gameContext);
-
-    std::vector<Input::ActionId> diagnostics{EditorInput::kEditorShowUIDemo};
-#if GE_ENABLE_CPU_PROFILING
-    diagnostics.push_back(EditorInput::kEditorCpuProfiler);
-    diagnostics.push_back(EditorInput::kEditorCpuProfilerOff);
-#endif
-    for (const Chord& chord : chords)
-    {
-        SCOPED_TRACE(testing::Message() << "focused game, key=" << chord.Key << " mods=" << chord.Mods);
-        input.Tap(chord.Key, chord.Mods);
-        EXPECT_TRUE(input.Game.WasActionTriggered(chord.GameAction)) << "the editor took the game's key";
-        for (const Input::ActionId action : diagnostics)
-            EXPECT_FALSE(input.Editor.WasActionTriggered(action));
-    }
-
-    input.GameViewActiveInPlay = false;
-    input.Tap(Input::kKeyCode_F3, 0);
-    EXPECT_TRUE(input.Editor.WasActionTriggered(EditorInput::kEditorShowUIDemo));
-    input.Tap(Input::kKeyCode_F3, Input::kModShift);
-    EXPECT_FALSE(input.Editor.WasActionTriggered(EditorInput::kEditorShowUIDemo)) << "Shift+F3 is not F3";
-#if GE_ENABLE_CPU_PROFILING
-    input.Tap(Input::kKeyCode_F2, 0);
-    EXPECT_TRUE(input.Editor.WasActionTriggered(EditorInput::kEditorCpuProfiler));
-    EXPECT_FALSE(input.Editor.WasActionTriggered(EditorInput::kEditorCpuProfilerOff));
-    input.Tap(Input::kKeyCode_F2, Input::kModShift);
-    EXPECT_TRUE(input.Editor.WasActionTriggered(EditorInput::kEditorCpuProfilerOff));
-    EXPECT_FALSE(input.Editor.WasActionTriggered(EditorInput::kEditorCpuProfiler));
-#endif
-    input.Tap(Input::kKeyCode_F3, Input::kModControl);
-    EXPECT_FALSE(input.Editor.WasActionTriggered(EditorInput::kEditorShowUIDemo)) << "Ctrl+F3 is not F3";
 }

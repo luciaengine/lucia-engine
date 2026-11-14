@@ -532,20 +532,19 @@ class GPUDrawStreamBuilder
     static DescriptorSetLayoutDesc MakeScatterDescriptorSetLayout();
 
     /// Push constants for draw_stream_group_compact.comp (mesh-coherent group
-    /// compaction). Field order MUST match the shader's block (28 B).
+    /// compaction). Field order matches both compaction shaders (32 B).
     struct GroupCompactPushConstants
     {
         uint32_t recordCount;    // slice capacity domain (snapshotRecords)
         uint32_t rowCount;       // slice table rows
-        uint32_t cursorBase;     // arena-absolute base of the slice's row cursors
-        uint32_t countBase;      // arena-absolute base of the slice's run count slots
-        uint32_t srcRecordBase;  // arena-absolute staging block base (scatter output)
-        uint32_t dstRecordBase;  // arena-absolute draw block base (consumer input)
-        // != 0 for a crossfade TAIL block: its records are claimed in pairs, so
-        // the live count rounds DOWN to even. Without this an odd-capacity row
-        // whose tail filled would compact one unwritten slot into the draw
-        // block. 0 for the head block, where claims are single.
+        uint32_t cursorBase;     // arena-absolute source row counter base
+        uint32_t countBase;      // arena-absolute destination row or run counter base
+        uint32_t srcRecordBase;  // arena-absolute source command block
+        uint32_t dstRecordBase;  // arena-absolute destination command block
+        // Raw crossfade records are claimed in pairs. Clamp their live prefix
+        // to even before copying; instanced sources have applied this rule.
         uint32_t pairedRecords;
+        uint32_t InstancedRecords; // retain the prepacked per-instance indirection
     };
 
     /// Descriptor set layout for the group-compact pipeline (5 storage
@@ -625,15 +624,9 @@ class GPUDrawStreamBuilder
     // the compact fetch is active AND this buffer is valid, the scatter binds it
     // at binding 1 in place of `instances`; otherwise `instances` (240 B) is
     // bound, exactly as before. Callers pass both; the builder picks.
-    // `meshPoolOrdered` + `orderedToGroup` (MeshPoolGroupPlan's ordered mesh
-    // axis and its rank->group inverse) are the draw-consolidation switch:
-    // non-empty keys BOTH tables' mesh axis on the per-mesh ORDERED ranks
-    // (group members contiguous), uploads the map to the ring per call (same
-    // one-snapshot discipline as materialColorClass), scatters into per-mesh
-    // staging rows, mesh-major-compacts each (class, group, parity) run into
-    // the draw block, and publishes ONE range per run keyed by GROUP id —
-    // consumers look up by group id on the same signal. Empty = the per-mesh
-    // path, byte-identical to pre-consolidation. Pass both spans or neither.
+    // `meshPoolOrdered` and `orderedToGroup` enable consolidation; pass both or neither.
+    // Rows use ordered mesh ranks. Compatible instances combine before each class,
+    // pool group, and parity run publishes one dense command range keyed by group id.
     RenderGraph::RGBuffer ScheduleUnifiedScatter(RenderGraph::RGFrame& frame,
                                                  const char* passNameSuffix,
                                                  int32_t rgPassPhase,
@@ -1014,10 +1007,16 @@ class GPUDrawStreamBuilder
     void OnInstanceContinuityBroken(std::vector<uint32_t> changedSlots);
 
   private:
+    struct UnifiedScatterPass;
+
     IDevice*       m_Device   = nullptr;
     PipelineHandle m_ScatterPipeline;
     // Mesh-coherent group compaction (draw consolidation). Lazy like the
     // scatter pipeline, guarded by the same init mutex.
+    PipelineHandle GetOrCreateInstanceCompactPipeline();
+    PipelineHandle CreateCompactionPipeline(const char* package, const char* name);
+
+    PipelineHandle m_InstanceCompactPipeline;
     PipelineHandle m_GroupCompactPipeline;
     bool           m_GroupCompactFailureLogged = false;
     // The transient set descriptions of each scatter and group-compact dispatch.

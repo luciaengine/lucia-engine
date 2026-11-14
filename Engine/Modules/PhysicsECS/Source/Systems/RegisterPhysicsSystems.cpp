@@ -1,6 +1,7 @@
 #include "PhysicsECS/Systems/RegisterPhysicsSystems.h"
 #include "ECS/SystemScheduling.h"
 
+#include "PhysicsECS/Systems/MovingPlatformSystem.h"
 #include "PhysicsECS/Systems/CharacterControllerSystem.h"
 #include "PhysicsECS/Systems/CharacterControllerWritebackSystem.h"
 #include "PhysicsECS/Systems/PhysicsEventsSystem.h"
@@ -22,6 +23,7 @@ void AddPhysicsSystemsToSchedule(ECS::SystemScheduleBuilder& schedule)
     constexpr const char* kPhysicsBootstrap = "PhysicsWorldBootstrap";
     constexpr const char* kPhysicsEvents = "PhysicsEvents";
     constexpr const char* kPhysicsInit = "PhysicsInit";
+    constexpr const char* kMovingPlatform = "MovingPlatform";
     constexpr const char* kCharacterController = "CharacterController";
     constexpr const char* kPhysicsStep = "PhysicsStep";
     constexpr const char* kCharacterWriteback = "CharacterControllerWriteback";
@@ -40,10 +42,17 @@ void AddPhysicsSystemsToSchedule(ECS::SystemScheduleBuilder& schedule)
                              {kHierarchy, kPhysicsBootstrap, ECS::OptionalDependency("TerrainPhysics")});
     schedule.Add<CharacterControllerSystem>(kCharacterController, SystemPhase::Extraction, 4,
                                      {kHierarchy, kPhysicsInit, kPhysicsBootstrap});
-    schedule.Add<PhysicsStepSystem>(kPhysicsStep, SystemPhase::Extraction, 5,
-                             {kHierarchy, kPhysicsInit, kPhysicsEvents, kCharacterController});
-    schedule.Add<CharacterControllerWritebackSystem>(kCharacterWriteback, SystemPhase::Extraction, 6, {kPhysicsStep});
-    schedule.Add<PhysicsWritebackSystem>(kPhysicsWriteback, SystemPhase::Extraction, 7, {kPhysicsStep});
+    // Platform motion is set as a velocity on an already-provisioned body, so it
+    // must land after PhysicsInit and before the step that integrates it. The
+    // spline edge is optional (SplineECS is an optional module) but load-bearing
+    // when present: a path whose arc-length cache has not been rebuilt this
+    // frame reports zero length, and the platform holds still for a frame.
+    schedule.Add<MovingPlatformSystem>(kMovingPlatform, SystemPhase::Extraction, 5,
+                                {kPhysicsInit, ECS::OptionalDependency("SplineExtraction")});
+    schedule.Add<PhysicsStepSystem>(kPhysicsStep, SystemPhase::Extraction, 6,
+                             {kPhysicsInit, kPhysicsEvents, kCharacterController, kMovingPlatform, ECS::OptionalDependency("TileMapCollision")});
+    schedule.Add<CharacterControllerWritebackSystem>(kCharacterWriteback, SystemPhase::Extraction, 7, {kPhysicsStep});
+    schedule.Add<PhysicsWritebackSystem>(kPhysicsWriteback, SystemPhase::Extraction, 8, {kPhysicsStep});
 }
 
 } // namespace GameEngine::PhysicsECS

@@ -31,9 +31,8 @@ target_include_directories(ECSBenchCompare PRIVATE
 # Linked the way ECSCoreTests links the ECS module (Tests/ECS/CMakeLists.txt).
 target_link_libraries(ECSBenchCompare PRIVATE
     Logger
-    JobSystem
+    JobSystem Memory
     ECS
-    Memory
 )
 
 if(WIN32)

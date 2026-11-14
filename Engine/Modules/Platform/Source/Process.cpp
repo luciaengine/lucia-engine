@@ -8,7 +8,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) && !defined(GE_PLATFORM_IOS)
 #include <crt_externs.h>
 #else
 extern char** environ;
@@ -103,7 +103,7 @@ namespace
 {
 char** InheritedEnvironment()
 {
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(GE_PLATFORM_IOS)
     // A dylib has no direct access to environ on macOS.
     return *_NSGetEnviron();
 #else

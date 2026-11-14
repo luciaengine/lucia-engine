@@ -433,6 +433,56 @@ TEST_F(SceneResolveServiceTest, AKeptModelIsEvictedWhenItIsReloadedOrUnloaded)
         << "the spawn after the unload was bound to a released mesh handle";
 }
 
+TEST_F(SceneResolveServiceTest, DeferredStartupLeavesDisabledModelsUntilEnabled)
+{
+    struct RestorePolicy {
+        bool Previous = GetDeferredDisabledRendererLoading();
+        ~RestorePolicy() { SetDeferredDisabledRendererLoading(Previous); }
+    } restore;
+    SetDeferredDisabledRendererLoading(true);
+    ECS::World* world = EnableRenderingLoop();
+    ASSERT_NE(world, nullptr);
+    const GUID model = RegisterHeldModel(/*fails=*/false);
+    Components::MeshRenderer renderer{};
+    renderer.modelAssetGuid.Set(model);
+    auto entity = world->Create<Components::MeshRenderer>(renderer);
+    entity.SetEnabled<Components::MeshRenderer>(false);
+    const auto batch = EngineResolves().EnqueueWorld(*world, m_Services);
+    EXPECT_TRUE(EngineResolves().IsBatchComplete(batch));
+    EXPECT_EQ(EngineResolves().Counts().HeldEntities, 0u);
+    EXPECT_LT(StepFrame(), kAFrameThatWaited);
+    EXPECT_FALSE(EngineResolves().IsResolving(*world, entity.GetHandle()));
+
+    entity.SetEnabled<Components::MeshRenderer>(true);
+    EXPECT_LT(StepFrame(), kAFrameThatWaited);
+    EXPECT_TRUE(EngineResolves().IsResolving(*world, entity.GetHandle()));
+    m_Gate.Release();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (MeshHandle(*world, entity.GetHandle()) == 0 && std::chrono::steady_clock::now() < deadline)
+        EXPECT_LT(StepFrame(), kAFrameThatWaited);
+    EXPECT_NE(MeshHandle(*world, entity.GetHandle()), 0u);
+}
+
+TEST_F(SceneResolveServiceTest, DefaultStartupStillQueuesDisabledModels)
+{
+    struct RestorePolicy {
+        bool Previous = GetDeferredDisabledRendererLoading();
+        ~RestorePolicy() { SetDeferredDisabledRendererLoading(Previous); }
+    } restore;
+    SetDeferredDisabledRendererLoading(false);
+    ECS::World* world = EnableRenderingLoop();
+    ASSERT_NE(world, nullptr);
+    Components::MeshRenderer renderer{};
+    renderer.modelAssetGuid.Set(RegisterHeldModel(/*fails=*/false));
+    auto entity = world->Create<Components::MeshRenderer>(renderer);
+    entity.SetEnabled<Components::MeshRenderer>(false);
+    const auto batch = EngineResolves().EnqueueWorld(*world, m_Services);
+    EXPECT_FALSE(EngineResolves().IsBatchComplete(batch));
+    EXPECT_TRUE(EngineResolves().IsResolving(*world, entity.GetHandle()));
+    EXPECT_EQ(EngineResolves().Counts().HeldEntities, 1u);
+    m_Gate.Release();
+}
+
 // A job parses a landed model's surfaces, so the resolve registers its materials on the main thread
 // without reading a shader file; after an announced edit the next model's job parses the new slots.
 TEST_F(SceneResolveServiceTest, TheResolveRegistersAModelsMaterialsWithSurfacesAJobParsed)

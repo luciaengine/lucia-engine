@@ -9,16 +9,9 @@ namespace GameEngine
 
 struct TextureCookSettings;
 
-// Creates a persistent 2D texture from tightly packed RGBA8 pixels with a FULL mip
-// chain and uploads every level. A texture that arrives without a cooked container
-// still has to minify through trilinear levels, or it aliases into sparkle (a
-// surface) or stair steps (a UI icon drawn smaller than its raster). The chain is
-// built by the cook's own builder (BuildTextureCookMipChain) under `cookSettings`,
-// so a raw upload filters like the cooked artifact that may later replace it.
-// `srgb` selects the builder's sRGB, alpha-weighted filter; `gpuFormat` must be an
-// RGBA8 format. Returns an invalid handle when the device refuses the texture or an
-// alpha-coverage chain fails; `outLevels` reports the levels uploaded (1 when no
-// resampler is compiled in).
+/// Creates RGBA8 mips with cookSettings; srgb selects sRGB alpha-weighted filtering.
+/// gpuFormat must be RGBA8; outLevels reports uploaded levels (one without a resampler).
+/// Failure destroys any new texture, returns an invalid handle, and sets outLevels to zero.
 Rendering::TextureHandle UploadRgba8WithMips(Rendering::IDevice* device,
                                              const uint8_t* rgba, uint32_t width, uint32_t height,
                                              Rendering::TextureFormat gpuFormat,

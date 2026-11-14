@@ -1,51 +1,28 @@
-#include <algorithm>
 #include <cmath>
-#include <cstring>
-#include <filesystem>
-#include <optional>
-#include <string>
-#include <system_error>
 #include <gtest/gtest.h>
-#include <iterator>
 #include <limits>
-#include <vector>
 
 #include "Core/Application.h"
 #include "Core/Engine.h"
 
-#include "Components/Name.h"
-#include "Components/Rendering/LocalBounds.h"
-#include "Components/Rendering/MeshRenderer.h"
-#include "Components/RuntimeOnlyEntity.h"
 #include "Components/Spline/SplineComponent.h"
-#include "Components/Spline/SplineNetworkMember.h"
 #include "Components/Terrain/Terrain.h"
 #include "Components/Transform.h"
-#include "Editor/Settings/SettingsStore.h"
 #include "Editor/Settings/SplineEditorSettings.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
-#include "ECSModules/Rendering/Systems/RenderExtractionSystem.h"
-#include "Engine/Rendering/PrimitiveGenerator.h"
 #include "Input/KeyCodes.h"
 #include "Terrain/TerrainTypes.h"
 #include "Mathematics/Quaternion.h"
 #include "Mathematics/Vector3.h"
-#include "Memory/AllocationCountScope.h"
-#include "PendingBvhGrid.h"
 #include "SceneView/SplineTool/SplineOwnerQuery.h"
 #include "SceneView/SplineTool/SplineSceneGizmo.h"
 #include "SceneView/SplineTool/SplineTool.h"
-#include "SceneView/SplineTool/SplineToolStripEntry.h"
 #include "SceneView/TransformTool.h"
-#include "Scene/MeshBvhCache.h"
-#include "Scene/SceneTlas.h"
+#include "SceneView/SplineTool/SplineToolStripEntry.h"
 #include "Scripting/ScriptsConfig.h"
 #include "Spline/SplineData.h"
-#include "SplineECS/SplineNetwork.h"
 #include "SplineECS/SplineService.h"
-#include "TestEnvVar.h"
-#include "TestTempDir.h"
 #include "TerrainECS/TerrainService.h"
 #include "Types/ColorUtils.h"
 #include "UndoRedo/UndoRedoService.h"
@@ -141,63 +118,6 @@ class ScopedSplineStickToMeshSetting
 
   private:
     bool m_Previous = false;
-};
-
-// The snap's settings at their defaults, saved under a scratch user-data root, restored after.
-class ScopedSplineSnapSettings
-{
-  public:
-    explicit ScopedSplineSnapSettings(const char* name)
-        : m_Root(GameEngine::TestUtils::MakeUniqueTempDirectory(name))
-    {
-        GameEngine::Testing::SetEnvVar("GE_EDITOR_USER_DATA_ROOT", m_Root.string().c_str());
-        GameEngine::Editor::SplineEditorSettings& settings = GameEngine::Editor::SplineEditorSettings::Get();
-        m_KnotSize = settings.GetKnotSize();
-        m_ConstantScreenSize = settings.GetConstantScreenSize();
-        m_SmartDistance = settings.GetSmartDistanceScaling();
-        m_AutoConnect = settings.GetAutoConnect();
-        m_AutoCloseLoop = settings.GetAutoCloseLoop();
-        m_Smoothing = settings.GetSmoothingIterations();
-        m_Conform = settings.GetConformToSurface();
-        m_SnapToMeshes = settings.GetSnapToMeshes();
-        settings.SetKnotSize(0.3f);
-        settings.SetConstantScreenSize(true);
-        settings.SetSmartDistanceScaling(false);
-        settings.SetAutoConnect(true);
-        settings.SetAutoCloseLoop(true);
-        settings.SetSmoothingIterations(0);
-        settings.SetConformToSurface(false);
-        settings.SetSnapToMeshes(true);
-    }
-
-    ~ScopedSplineSnapSettings()
-    {
-        GameEngine::Editor::SplineEditorSettings& settings = GameEngine::Editor::SplineEditorSettings::Get();
-        settings.SetKnotSize(m_KnotSize);
-        settings.SetConstantScreenSize(m_ConstantScreenSize);
-        settings.SetSmartDistanceScaling(m_SmartDistance);
-        settings.SetAutoConnect(m_AutoConnect);
-        settings.SetAutoCloseLoop(m_AutoCloseLoop);
-        settings.SetSmoothingIterations(m_Smoothing);
-        settings.SetConformToSurface(m_Conform);
-        settings.SetSnapToMeshes(m_SnapToMeshes);
-        GameEngine::Testing::SetEnvVar("GE_EDITOR_USER_DATA_ROOT", "");
-        std::error_code ec;
-        std::filesystem::remove_all(m_Root, ec);
-    }
-
-    const std::filesystem::path& Root() const { return m_Root; }
-
-  private:
-    std::filesystem::path m_Root;
-    float m_KnotSize = 0.0f;
-    bool m_ConstantScreenSize = true;
-    bool m_SmartDistance = false;
-    bool m_AutoConnect = true;
-    bool m_AutoCloseLoop = true;
-    int m_Smoothing = 0;
-    bool m_Conform = false;
-    bool m_SnapToMeshes = true;
 };
 
 Vector3 Normalized(Vector3 v)
@@ -500,33 +420,6 @@ struct SplineFixture
     GameEngine::Spline::SplineData* Data = nullptr;
     GameEngine::ECS::EntityHandle SplineEntity{};
 };
-
-// A flat terrain at y = 0, `worldSize` meters on a side, that a raycast and a drape can hit.
-void CreateFlatTerrain(World* world, float worldSize)
-{
-    auto* terrainService = GameEngine::TerrainECS::TerrainService::TryGet();
-    ASSERT_NE(terrainService, nullptr);
-    GameEngine::Terrain::TerrainConfig config{};
-    config.HeightmapWidth = 9;
-    config.HeightmapHeight = 9;
-    config.WorldSizeX = worldSize;
-    config.WorldSizeZ = worldSize;
-    config.HeightScale = 1.0f;
-    config.LODLevels = 1;
-    config.PatchGridSize = 8;
-    const auto terrainHandle = terrainService->CreateTerrain(config);
-    ASSERT_NE(terrainHandle.Generation, 0u);
-    Entity terrainEntity = world->Create();
-    Terrain terrain{};
-    terrain.SizeX = config.WorldSizeX;
-    terrain.SizeZ = config.WorldSizeZ;
-    terrain.HeightScale = config.HeightScale;
-    terrain.TerrainDataHandle = terrainHandle.Index;
-    terrain.TerrainDataGeneration = terrainHandle.Generation;
-    terrainEntity.Set(terrain);
-    terrainEntity.Set(WorldTransform{});
-    world->ProcessCommands();
-}
 
 SplineFixture MakeSplineEntity(World* world, uint32_t pointCount, bool closed = false)
 {
@@ -837,20 +730,6 @@ TEST_F(SplineToolTests, AClaimedSplineOffersItsKnotsOnlyWhileSelectedAndShown)
     settings.SetShowAllControls(showAllBefore);
 }
 
-// A generated spline (a paving's approach piece) is its generator's: claimed and hidden with no owner query.
-TEST_F(SplineToolTests, AGeneratedSplineIsClaimedAndHidden)
-{
-    World* world = GetWorld();
-    const SplineFixture authored = MakeSplineEntity(world, 2);
-    const SplineFixture generated = MakeSplineEntity(world, 2);
-    world->AddComponentImmediate(generated.SplineEntity, GameEngine::Components::RuntimeOnlyEntity{});
-
-    EXPECT_FALSE(GameEngine::Editor::QuerySplineOwner(*world, authored.SplineEntity).Claimed);
-    const GameEngine::Editor::SplineOwnerClaim claim = GameEngine::Editor::QuerySplineOwner(*world, generated.SplineEntity);
-    EXPECT_TRUE(claim.Claimed);
-    EXPECT_TRUE(claim.Hidden);
-}
-
 // The spline gizmo draws knots by the same rule: while a region is selected, "show all controls"
 // draws no road's knots (the vertices drawn match the setting off), while a selected road's edit
 // draws the other road's (the positive control: the count sees knots).
@@ -940,8 +819,9 @@ TEST_F(SplineToolTests, AStrokeEndingOnARegionsKnotNeverJoinsIt)
     terrainEntity.Set(WorldTransform{});
     world->ProcessCommands();
 
-    // The defaults put the snap reach 0.75 m around an end seen from 10 m.
-    ScopedSplineSnapSettings snapSettings("SplineStrokeRegionKnot");
+    auto& settings = GameEngine::Editor::SplineEditorSettings::Get();
+    const bool autoConnectBefore = settings.GetAutoConnect();
+    settings.SetAutoConnect(true);
     // Knots on the ground (y = 0): the region's first at x = 0, the road's last at x = 4 + 10.
     const SplineFixture region = MakeSplineEntity(world, 3, /*closed=*/true);
     const SplineFixture road = MakeSplineEntity(world, 2);
@@ -989,6 +869,7 @@ TEST_F(SplineToolTests, AStrokeEndingOnARegionsKnotNeverJoinsIt)
     EXPECT_EQ(splineCount(), 3);
 
     GameEngine::Editor::SetSplineOwnerQuery({});
+    settings.SetAutoConnect(autoConnectBefore);
 }
 
 // Picking sizes a knot's hit radius with PickScreenScale and drawing sizes the

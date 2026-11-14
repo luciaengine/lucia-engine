@@ -7,10 +7,8 @@
 #include "EngineLogCapture.h"
 #include "Engine/Build/GameConfig.h"
 #include "Logger/DeferredSink.h"
-#include "Logger/FileSink.h"
 #include "Logger/Logger.h"
 #include "Platform/Process.h"
-#include "TestEnvVar.h"
 #include "TestTempDir.h"
 
 #include <gtest/gtest.h>
@@ -121,52 +119,6 @@ TEST(PlayerLog, ALogFileThatCannotOpenIsReportedAsMissing)
     EXPECT_FALSE(fs::exists(ThisProcessLogFile(logsDirectory)));
     EXPECT_EQ(GameEngine::TestLog::CountLinesContaining(captured, "Player: log file '"), 0u);
     EXPECT_EQ(GameEngine::TestLog::CountLinesContaining(captured, "Player: cannot open the log file"), 1u);
-}
-
-// A Player run is measured from its log: GE_LOG_FILE_LEVEL=debug must let the
-// debug lines through, the GE_FRAME_TRACE frame times among them, and the line
-// that announces the file names the level it records.
-TEST(PlayerLog, TheFileRecordsTheLevelGeLogFileLevelNames)
-{
-    GameEngine::TestUtils::ScopedTempDir temp(GameEngine::TestUtils::MakeUniqueTempDirectory("ge_player_log_level"));
-    const fs::path logsDirectory = temp.Path() / "Logs";
-
-    GameEngine::Testing::SetEnvVar(Logger::kFileLogLevelEnvVar, "debug");
-    std::vector<std::string> captured;
-    {
-        GameEngine::TestLog::ScopedEngineLogCapture capture(&captured, Logger::LogLevel::Debug);
-        Logger::DeferredSink& heldRecords = GameEngine::StartPlayerLog();
-        GameEngine::OpenPlayerLogFile(heldRecords, logsDirectory);
-        Logger::Log::Debug("[FrameTrace] frame=20 phase=BeginFrame dt=0.004");
-        Logger::Log::Flush();
-    }
-    GameEngine::Testing::SetEnvVar(Logger::kFileLogLevelEnvVar, "");
-
-    const std::string log = ReadWholeFile(ThisProcessLogFile(logsDirectory));
-    EXPECT_NE(log.find("[FrameTrace] frame=20 phase=BeginFrame"), std::string::npos) << log;
-    EXPECT_NE(log.find("records DEBUG and above"), std::string::npos) << log;
-}
-
-// With GE_LOG_FILE_LEVEL unset, the file records Info and above, even when the
-// global level lets debug lines through.
-TEST(PlayerLog, TheFileRecordsInfoAndAboveByDefault)
-{
-    GameEngine::TestUtils::ScopedTempDir temp(GameEngine::TestUtils::MakeUniqueTempDirectory("ge_player_log_default"));
-    const fs::path logsDirectory = temp.Path() / "Logs";
-
-    GameEngine::Testing::SetEnvVar(Logger::kFileLogLevelEnvVar, "");
-    std::vector<std::string> captured;
-    {
-        GameEngine::TestLog::ScopedEngineLogCapture capture(&captured, Logger::LogLevel::Debug);
-        Logger::DeferredSink& heldRecords = GameEngine::StartPlayerLog();
-        GameEngine::OpenPlayerLogFile(heldRecords, logsDirectory);
-        Logger::Log::Debug("[FrameTrace] frame=20 phase=BeginFrame dt=0.004");
-        Logger::Log::Flush();
-    }
-
-    const std::string log = ReadWholeFile(ThisProcessLogFile(logsDirectory));
-    EXPECT_EQ(log.find("[FrameTrace]"), std::string::npos) << log;
-    EXPECT_NE(log.find("records INFO and above"), std::string::npos) << log;
 }
 
 #endif // LOGGER_ENABLE_FILE_LOGGING

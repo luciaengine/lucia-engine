@@ -62,6 +62,8 @@ struct AgentConversationRowModel
     /// The ids of the registered reply actions the reply offers (AgentReplyAction::ShownFor its
     /// prompt), in registration order; the panel fills them, knowing the prompt.
     std::vector<std::string> ReplyActions;
+    /// On a user message: the names of the attached files, in input order.
+    std::vector<std::string> FileChips;
     /// On a user message: the mark-ups its tokens name, one chip each, in order.
     std::vector<MarkupChip> MarkupChips;
     /// The reply failed: the status reads as an error, and the row offers Retry (its

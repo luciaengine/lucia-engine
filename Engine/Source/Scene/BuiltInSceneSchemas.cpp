@@ -1562,6 +1562,9 @@ void PhysicsColliderSchema::Serialize(const ECS::World& world, ECS::EntityHandle
     outLines.push_back(std::string("PhysicsCollider.belongsToMask = ") + std::to_string(c->belongsToMask));
     outLines.push_back(std::string("PhysicsCollider.collidesWithMask = ") + std::to_string(c->collidesWithMask));
     outLines.push_back(std::string("PhysicsCollider.isTrigger = ") + (c->isTrigger ? "true" : "false"));
+    if (!c->materialAsset.IsNull())
+        outLines.push_back(std::string("PhysicsCollider.materialAsset = ") +
+                           FormatAssetReferenceForSave(ctx, c->materialAsset.ToGuid(), ""));
     outLines.push_back(std::string("PhysicsCollider.overrideMaterial = ") + (c->overrideMaterial ? "true" : "false"));
     outLines.push_back(std::string("PhysicsCollider.materialFriction = ") + FormatFloat(c->material.friction));
     outLines.push_back(std::string("PhysicsCollider.materialRestitution = ") + FormatFloat(c->material.restitution));
@@ -1617,6 +1620,16 @@ bool PhysicsColliderSchema::ApplyProperty(ECS::World& world,
     {
         if (!ParseBool(value, c.isTrigger, outError))
             return false;
+    }
+    else if (property == "materialasset")
+    {
+        SceneValue parsed{};
+        if (!ParseValue(value, parsed, outError))
+            return false;
+        AssetReference reference{};
+        if (!TryResolveAssetReference(ctx, parsed, AssetType::PhysicsMaterial, reference, outError))
+            return false;
+        c.materialAsset.Set(reference.guid);
     }
     else if (property == "overridematerial")
     {
@@ -4054,6 +4067,7 @@ class CameraSchema final : public ISceneComponentSchema
         outLines.push_back(std::string("Camera.antiAliasing = ") + std::to_string(c->AntiAliasing));
         outLines.push_back(std::string("Camera.renderScale = ") + FormatFloat(c->RenderScale));
         outLines.push_back(std::string("Camera.volumeLayers = ") + FormatRenderLayerMask(c->VolumeLayers));
+        outLines.push_back(std::string("Camera.includeUIInPostProcessing = ") + (c->IncludeUIInPostProcessing ? "true" : "false"));
         outLines.push_back(std::string("Camera.aspectPreset = ") + std::to_string(c->AspectPreset));
         outLines.push_back(std::string("Camera.customAspectWidth = ") + FormatFloat(c->CustomAspectWidth));
         outLines.push_back(std::string("Camera.customAspectHeight = ") + FormatFloat(c->CustomAspectHeight));
@@ -4152,6 +4166,11 @@ class CameraSchema final : public ISceneComponentSchema
         else if (property == "volumelayers")
         {
             if (!ParseRenderLayerMask(value, "volumeLayers", c.VolumeLayers, outError))
+                return false;
+        }
+        else if (property == "includeuiinpostprocessing")
+        {
+            if (!ParseBool(value, c.IncludeUIInPostProcessing, outError))
                 return false;
         }
         else if (property == "aspectpreset")
@@ -5379,90 +5398,36 @@ class ValueCurveSchema final : public ISceneComponentSchema
         return false;
     }
 
-    static std::string_view ToTargetName(Components::ValueCurveTarget target)
+    // The saved name of `target`; a stored value outside the target table saves as "none".
+    static constexpr std::string_view ToTargetName(Components::ValueCurveTarget target)
     {
-        using Target = Components::ValueCurveTarget;
-        switch (target)
-        {
-        case Target::None:
-            return "none";
-        case Target::TransformPositionX:
-            return "transformPositionX";
-        case Target::TransformPositionY:
-            return "transformPositionY";
-        case Target::TransformPositionZ:
-            return "transformPositionZ";
-        case Target::TransformScaleX:
-            return "transformScaleX";
-        case Target::TransformScaleY:
-            return "transformScaleY";
-        case Target::TransformScaleZ:
-            return "transformScaleZ";
-        case Target::LightIntensity:
-            return "lightIntensity";
-        case Target::PostProcessWeight:
-            return "postProcessWeight";
-        default:
-            return "none";
-        }
+        const Components::ValueCurveTargetEntry* entry =
+            Components::FindValueCurveTargetEntry(static_cast<int>(target));
+        return entry ? entry->Name : Components::kValueCurveTargetEntries[0].Name;
     }
 
-    static bool TryParseTarget(std::string_view name, Components::ValueCurveTarget& out)
+    // The target table row whose saved name is `name` in any case, or nullptr when no row has it.
+    static constexpr const Components::ValueCurveTargetEntry* FindTargetEntry(std::string_view name)
     {
-        using Target = Components::ValueCurveTarget;
-        if (name == "none")
+        for (const Components::ValueCurveTargetEntry& entry : Components::kValueCurveTargetEntries)
         {
-            out = Target::None;
-            return true;
+            if (EqualsIgnoreCase(name, entry.Name))
+                return &entry;
         }
-        if (name == "transformpositionx")
+        return nullptr;
+    }
+
+    static std::string FormatUnknownTargetError()
+    {
+        std::string message = "ValueCurve.target must be one of: ";
+        std::string_view separator;
+        for (const Components::ValueCurveTargetEntry& entry : Components::kValueCurveTargetEntries)
         {
-            out = Target::TransformPositionX;
-            return true;
+            message += separator;
+            message += entry.Name;
+            separator = ", ";
         }
-        if (name == "transformpositiony")
-        {
-            out = Target::TransformPositionY;
-            return true;
-        }
-        if (name == "transformpositionz")
-        {
-            out = Target::TransformPositionZ;
-            return true;
-        }
-        if (name == "transformscalex")
-        {
-            out = Target::TransformScaleX;
-            return true;
-        }
-        if (name == "transformscaley")
-        {
-            out = Target::TransformScaleY;
-            return true;
-        }
-        if (name == "transformscalez")
-        {
-            out = Target::TransformScaleZ;
-            return true;
-        }
-        if (name == "lightintensity")
-        {
-            out = Target::LightIntensity;
-            return true;
-        }
-        if (name == "postprocessweight")
-        {
-            out = Target::PostProcessWeight;
-            return true;
-        }
-        if (name == "postprocessexposure")
-        {
-            // Exposure moved off the volume onto the camera; the old curve target no longer exists.
-            // Migrate legacy scenes to an inert target rather than failing the load.
-            out = Target::None;
-            return true;
-        }
-        return false;
+        return message;
     }
 
     std::string_view GetComponentName() const override { return "ValueCurve"; }
@@ -5549,14 +5514,14 @@ class ValueCurveSchema final : public ISceneComponentSchema
             std::string quoted;
             if (ParseQuotedString(value, quoted))
                 raw = quoted;
-            std::transform(raw.begin(), raw.end(), raw.begin(), [](unsigned char ch)
-                           { return static_cast<char>(std::tolower(ch)); });
-            if (!TryParseTarget(raw, c.Target))
+            const Components::ValueCurveTargetEntry* entry = FindTargetEntry(raw);
+            if (!entry)
             {
                 if (outError)
-                    *outError = "ValueCurve.target must be a known target name";
+                    *outError = FormatUnknownTargetError();
                 return false;
             }
+            c.Target = entry->Value;
         }
         else if (property == "durationseconds")
         {
@@ -6125,11 +6090,13 @@ class WindVolumeSchema final : public ISceneComponentSchema
         outLines.push_back("WindVolume.blendDistance = " + FormatFloat(c->BlendDistance));
         outLines.push_back("WindVolume.weight = " + FormatFloat(c->Weight));
         outLines.push_back("WindVolume.priority = " + std::to_string(c->Priority));
+        outLines.push_back("WindVolume.layerMask = " + std::to_string(c->LayerMask));
         outLines.push_back("WindVolume.direction = (" +
                            FormatFloat(c->DirectionX) + ", " +
                            FormatFloat(c->DirectionY) + ", " +
                            FormatFloat(c->DirectionZ) + ")");
         outLines.push_back("WindVolume.speed = " + FormatFloat(c->Speed));
+        outLines.push_back("WindVolume.rainAmount = " + FormatFloat(c->RainAmount));
         outLines.push_back("WindVolume.turbulence = " + FormatFloat(c->Turbulence));
         outLines.push_back("WindVolume.gustFrequency = " + FormatFloat(c->GustFrequency));
         outLines.push_back("WindVolume.gustScale = " + FormatFloat(c->GustScale));
@@ -6194,6 +6161,11 @@ class WindVolumeSchema final : public ISceneComponentSchema
             if (!ParseI32(value, c.Priority, outError))
                 return false;
         }
+        else if (property == "layermask")
+        {
+            if (!ParseU32(value, c.LayerMask, outError))
+                return false;
+        }
         else if (property == "direction")
         {
             Float3 v{c.DirectionX, c.DirectionY, c.DirectionZ};
@@ -6212,6 +6184,12 @@ class WindVolumeSchema final : public ISceneComponentSchema
             if (!ParseF32(value, c.Speed, outError))
                 return false;
             c.Speed = std::max(0.0f, c.Speed);
+        }
+        else if (property == "rainamount")
+        {
+            if (!ParseF32(value, c.RainAmount, outError))
+                return false;
+            c.RainAmount = std::clamp(c.RainAmount, 0.0f, 2.0f);
         }
         else if (property == "turbulence")
         {

@@ -293,6 +293,7 @@ layout(set = 0, binding = 6) uniform LightUBO {
     vec4 uSecondaryCount;   // x=valid secondary directional count (as float)
     vec4 uSecondaryDirs[3];   // xyz=light->surface direction
     vec4 uSecondaryColors[3]; // rgb=color*intensity (premultiplied)
+#include "../Includes/weather_wind_fields.glsl"
 } Light;
 
 #include "../Includes/view_params.glsl"
@@ -567,7 +568,7 @@ float GE_ParallaxFragmentDepth(SurfaceOutput so, float eyeDistance)
 // The depth the prepass wrote at this pixel, never nearer than this fragment's own: the relief's hit,
 // unless something nearer covers the pixel. Multisampled, the farthest covered sample: each covered
 // sample holds this surface's hit or something nearer.
-float GE_ParallaxPrepassDepth()
+float GE_ParallaxPrepassDepth(int coveredSamples)
 {
     ivec2 pixel = ivec2(gl_FragCoord.xy);
   #ifdef GE_PARALLAX_PREPASS_DEPTH_MULTISAMPLE
@@ -575,7 +576,7 @@ float GE_ParallaxPrepassDepth()
     int samples = textureSamples(ge_prepassDepth);
     for (int s = 0; s < samples; ++s)
     {
-        if ((gl_SampleMaskIn[0] & (1 << s)) != 0)
+        if ((coveredSamples & (1 << s)) != 0)
             depth = min(depth, texelFetch(ge_prepassDepth, pixel, s).r);
     }
     return depth;
@@ -587,8 +588,12 @@ float GE_ParallaxPrepassDepth()
 
 // --- Main ---
 
+#include "Includes/depth_pixelation_coverage.glsl"
+
 void main()
 {
+
+
 #if defined(HAS_SHADOWS) && defined(GE_COMPAT_PROFILE)
     ge_shadowReceiverDx = dFdx(vPosRel);
     ge_shadowReceiverDy = dFdy(vPosRel);
@@ -606,6 +611,10 @@ void main()
     vec4 parallaxUvFootprint = vec4(dFdx(parallaxUv0AtCentre), dFdy(parallaxUv0AtCentre));
     vec3 parallaxPositionFootprintX = dFdx(parallaxPositionAtCentre);
     vec3 parallaxPositionFootprintY = dFdy(parallaxPositionAtCentre);
+#endif
+#if defined(GE_DEPTH_PIXELATION_BAND) && !defined(GE_DEPTH_ONLY_FRAGMENT) && !defined(GE_GLASS_SHADOW_COLOR)
+    if (!GE_DepthPixelationKeep((ge_viewRel * vec4(vPosRel, 1.0)).xyz, ge_pixelationBand))
+        discard;
 #endif
 #if defined(GE_DEPTH_ONLY_FRAGMENT) && defined(GE_LOD_CROSSFADE) && !defined(ALPHA_TEST)     && !defined(GE_PARALLAX_WRITES_DEPTH) \
     && !defined(GE_SURFACE_ALPHA_TO_COVERAGE)
@@ -637,7 +646,7 @@ void main()
     // Safe value for every adapter early-out below (glass transmittance, alpha
     // discard, debug); regular opaque shading overwrites it once EvaluateSurface
     // has finalized the normal. .rg = oct(+Z view normal) = (0.5,0.5);
-    // .b = roughness 1 (SSR classify skips it); .a = metallic 0.
+    // .b = roughness 1 (SSR classify skips it); .a = planar coverage 0.
     oNormalRoughness = vec4(0.5, 0.5, 1.0, 0.0);
     oSpecularWeight = vec4(0.0);
     oSpecularRadiance = vec4(0.0);
@@ -796,7 +805,11 @@ void main()
 #endif
 
 #ifdef GE_PARALLAX_READS_DEPTH
-    float parallaxPrepassDepth = GE_ParallaxPrepassDepth();
+  #ifdef GE_PARALLAX_PREPASS_DEPTH_MULTISAMPLE
+    float parallaxPrepassDepth = GE_ParallaxPrepassDepth(gl_SampleMaskIn[0]);
+  #else
+    float parallaxPrepassDepth = GE_ParallaxPrepassDepth(0);
+  #endif
     {
         bool perspective = ge_proj[2][3] != 0.0;
         float eyeDistance = length(eyeRel - vPosRel);
@@ -893,10 +906,10 @@ void main()
     // exists to suppress. Normals are stored in VIEW space so the stochastic
     // intersection and denoise taps avoid a matrix multiply per sample.
     vec3 sssrNormalVS = normalize(mat3(ge_view) * so.normalWS);
-    // .rg = octahedral view normal, .b = roughness, .a = metallic. SSR reads the
-    // normal and the roughness; the DDGI glossy resolve reads the normal.
+    // .rg = octahedral view normal, .b = roughness, .a = planar coverage.
+    // SSR reads its material response from the separate specular outputs.
     oNormalRoughness = vec4(GE_OctEncode(sssrNormalVS), clamp(so.roughness, 0.0, 1.0),
-                            clamp(so.metallic, 0.0, 1.0));
+                            clamp(so.planarReflectionMask, 0.0, 1.0));
 #endif
 
     // Per-instance receiveShadows (instance flags bit 1): when clear, the global
@@ -960,7 +973,7 @@ void main()
     // Secondary directionals: same BRDF, additive, UNSHADOWED (cascades belong to
     // the primary only). Colors arrive premultiplied (color * intensity).
     {
-        int secondaryCount = int(Light.uSecondaryCount.x);
+        int secondaryCount = GE_FORWARD_SECONDARY_LIGHTS ? int(Light.uSecondaryCount.x) : 0;
         for (int i = 0; i < secondaryCount; ++i)
         {
             vec3 secL = normalize(-Light.uSecondaryDirs[i].xyz);

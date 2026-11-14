@@ -64,9 +64,9 @@ inline void SetIdentityMatrix(float* m)
 inline CameraData MakeIdentityCamera()
 {
     CameraData data{};
-    data.view = Mathematics::Matrix4x4::Identity();
-    data.proj = Mathematics::Matrix4x4::Identity();
-    data.viewProj = Mathematics::Matrix4x4::Identity();
+    SetIdentityMatrix(data.view);
+    SetIdentityMatrix(data.proj);
+    SetIdentityMatrix(data.viewProj);
     return data;
 }
 
@@ -126,7 +126,7 @@ struct ExtractionHarness
         rs.Views().SetCameraData(cameraId, ::GameEngine::Tests::TestCameraWithEye(MakeIdentityCamera()), kIdentityCameraRanges);
         viewId = rs.Views().AllocateView("FastPathView", cameraId);
         rs.Views().SetViewWorldId(viewId, worldId);
-        rs.Views().SetViewRenderLayerMask(viewId, GameEngine::Rendering::RenderLayerMask::Default());
+        rs.Views().SetViewRenderLayerMask(viewId, 0x1u);
 
         extraction = std::make_unique<RenderExtractionSystem>(&rs, fastPath);
         return true;
@@ -146,7 +146,7 @@ struct ExtractionHarness
         e.Set(MakeTransformAt(x, y, z));
         MeshRenderer mr{};
         mr.meshGpuHandleId = static_cast<uint64>(meshHandle);
-        mr.RenderLayers = GameEngine::Rendering::RenderLayerMask::Default();
+        mr.renderLayerMask = 0x1u;
         mr.materialAssetGuid.Set(materialGuid);
         e.Set(mr);
         world->ProcessCommands();

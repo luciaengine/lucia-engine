@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 3,
+  "materialName": "CoolLightInterior",
+  "lightingModel": "StandardPBR",
+  "alphaMode": "Opaque",
+  "surfaceShader": "Surfaces/standard_pbr.glsl",
+  "properties": {
+    "baseColor": [
+      0.12,
+      0.4,
+      0.65,
+      1
+    ],
+    "metallic": 0,
+    "roughness": 0.25,
+    "emissive": [
+      0.12,
+      0.55,
+      1
+    ],
+    "emissionLuminance": 20000
+  }
+}

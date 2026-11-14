@@ -27,11 +27,14 @@ struct WindVolume
     float32 BlendDistance = 2.0f;
     float32 Weight = 1.0f;
     int32 Priority = 0;
+    uint32 LayerMask = 0xFFFFFFFFu;
 
     float32 DirectionX = 0.5f;
     float32 DirectionY = 0.0f;
     float32 DirectionZ = 0.5f;
     float32 Speed = 1.0f;
+    // Multiplier of authored rain density: 0 = dry, 1 = authored, 2 = twice the density.
+    float32 RainAmount = 1.0f;
     float32 Turbulence = 0.35f;
     float32 GustFrequency = 0.5f;
     float32 GustScale = 70.0f;

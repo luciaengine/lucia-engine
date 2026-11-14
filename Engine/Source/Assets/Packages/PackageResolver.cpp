@@ -423,7 +423,8 @@ PackageResolution PackageResolver::Resolve(const std::filesystem::path& projectR
             if (std::filesystem::is_directory(authored, authoringEc))
                 pkg.AuthoringRootDir = AssetPaths::NormalizeMountRoot(authored);
         }
-        pkg.Disabled = projectManifest.Disabled.count(name) != 0;
+        pkg.Disabled = projectManifest.Disabled.count(name) != 0 ||
+                       (!pkg.Manifest.EnabledByDefault && projectManifest.Enabled.count(name) == 0);
         aliasOwners.emplace(pkg.Alias, name);
         located.emplace(name, std::move(pkg));
     }

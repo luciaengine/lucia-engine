@@ -35,6 +35,7 @@
 #include "Rendering/Core/RenderGraph/RGUploadRing.h"
 #include "Rendering/Passes/FinalizeContract.h"
 #include "Rendering/Passes/SRGBEncodePass.h"
+#include "Types/Fnv1a.h"
 
 #include <gtest/gtest.h>
 
@@ -1032,12 +1033,7 @@ TEST(SrgbEncodeQuantizer, PresentedSizesToTheSuppliedPresentedFormat)
     // The unset arm's bytes as one number, so "unset is byte-identical to the
     // device read" can be COMPARED across builds rather than argued from the
     // shape of the expression.
-    uint64_t deviceHash = 1469598103934665603ull; // FNV-1a
-    for (const uint8_t b : deviceBytes)
-    {
-        deviceHash ^= b;
-        deviceHash *= 1099511628211ull;
-    }
+    const uint64_t deviceHash = GameEngine::Hashing::Fnv1a64(deviceBytes.data(), deviceBytes.size());
     GTEST_LOG_(INFO) << "presented amplitudes — 10-bit arm " << tenBitMaxDev << " (step "
                      << kTenBitLsb << "), 8-bit arm " << eightBitMaxDev << " (step " << kEightBitLsb
                      << "); unset-arm byte hash " << deviceHash;

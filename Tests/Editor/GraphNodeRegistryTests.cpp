@@ -459,9 +459,7 @@ TEST(GraphNodeRegistryTests, ParameterSwizzleAndComponentParamsCarryEnumOptions)
     for (const NodeParamSpec& param : vec3Param->Parameters)
     {
         if (param.Id == "variableName")
-        {
             EXPECT_TRUE(param.Options.empty());
-        }
     }
 }
 

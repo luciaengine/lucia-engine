@@ -34,6 +34,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <memory>
+#include <optional>
 
 namespace GameEngine::Editor
 {
@@ -106,6 +108,72 @@ float SphereScaleForFill(float fill)
 }
 
 } // namespace
+
+struct GraphPreviewAtlas::PreparedPass
+{
+    struct Cell
+    {
+        CellDraw Draw;
+        Engine::Renderer::PreparedDrawBindings Bindings;
+        uint32_t MaterialIndex = 0;
+        std::optional<uint32_t> ServedVersion;
+    };
+
+    Engine::Renderer::PassBindingContext Inputs;
+    Rendering::VertexAttributeFlags VertexFlags{};
+    bool UseIbl = false;
+    std::vector<CellDraw> PendingDraws;
+    std::vector<Cell> Cells;
+};
+
+bool GraphPreviewAtlas::PrepareDraws(RG::RGPrepareContext& context, PreparedPass& pass)
+{
+    pass.Inputs.FrameSlot = context.GetDevice()->GetFrameIndex();
+    pass.Inputs.Samples = context.GetCurrentSampleCount();
+    pass.Cells.clear();
+    pass.Cells.reserve(pass.PendingDraws.size());
+    auto& materials = m_Services->Materials();
+    for (const CellDraw& draw : pass.PendingDraws)
+    {
+        const auto* material = materials.Registry().Find(draw.MaterialGuid);
+        if (!material)
+            continue;
+        Rendering::PipelineHandle pipeline{};
+        const Engine::Renderer::PipelineVariantCache::VariantServeUnit* served = nullptr;
+        if (pass.UseIbl)
+        {
+            const auto variant = materials.Variants().PrepareColorVariant(
+                *material, pass.VertexFlags, Rendering::PrimitiveTopology::TriangleList,
+                MaterialKeyword::IBL, Rendering::FrontFace::CounterClockwise, context);
+            pipeline = variant.first;
+            served = variant.second;
+            if (!pipeline.IsValid())
+            {
+                m_RecordSkippedDraws.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+        }
+        else
+        {
+            pipeline = context.PreparePipeline(
+                material->GetGraphicsPipelineIdForFlags(pass.VertexFlags, m_Services->GetDevice()));
+        }
+        if (!pipeline.IsValid())
+            continue;
+        const auto bindings = materials.Binder().PrepareMaterialForDraw(
+            pass.Inputs, *material, pipeline,
+            served ? served->VariantMeta.get() : material->GetShaderMeta().get(), {}, 0,
+            served ? std::span<const Rendering::DescriptorSetLayoutId>(served->SetLayouts)
+                   : std::span<const Rendering::DescriptorSetLayoutId>{});
+        if (!bindings.Pipeline.IsValid())
+            continue;
+        PreparedPass::Cell cell{draw, bindings, material->GetGpuSceneMaterialIndex(), {}};
+        if (served)
+            cell.ServedVersion = served->MaterialVersion;
+        pass.Cells.push_back(std::move(cell));
+    }
+    return true;
+}
 
 void GraphPreviewAtlas::Initialize(Engine::Renderer::RenderServices* services)
 {
@@ -621,10 +689,20 @@ void GraphPreviewAtlas::TickRG(uint64_t windowId, UIManager* ui, RG::RGFrame& fr
 
     const uint32_t cellPx = GraphPreviewAtlasLayout::kCellPx;
 
+    auto prepared = std::make_shared<PreparedPass>();
+    prepared->Inputs.View = m_ViewId;
+    prepared->Inputs.PassKeywords = useIbl ? MaterialKeyword::IBL : MaterialKeyword::None;
+    prepared->Inputs.PassResources = std::move(resources);
+    prepared->VertexFlags = sphere->vertexFlags;
+    prepared->UseIbl = useIbl;
+    prepared->PendingDraws = std::move(draws);
+
     frame.AddPass(
         m_PassName.c_str(), Rendering::PassPhase::kWorldRender,
-        [&](RG::RGPassBuilder& p)
+        [this, prepared, msaa, msaaColor, hdr, depth](RG::RGPassBuilder& p)
         {
+            p.Prepare([this, prepared](RG::RGPrepareContext& context)
+                      { return PrepareDraws(context, *prepared); });
             RG::RGAttachmentOps color{};
             color.Load = RG::RGLoadOp::Clear;
             color.Store = RG::RGStoreOp::Store;
@@ -640,8 +718,7 @@ void GraphPreviewAtlas::TickRG(uint64_t windowId, UIManager* ui, RG::RGFrame& fr
             depthOps.Clear.Depth = Rendering::ReverseZ::kClearFar;
             p.AttachDepth(depth, depthOps, RG::RGDepthAccess::ReadWrite);
         },
-        [this, draws = std::move(draws), resources = std::move(resources), sphere, sphereBindings,
-         ibl = useIbl](RG::RGContext& ctx) mutable
+        [this, prepared, sphere, sphereBindings](RG::RGContext& ctx)
         {
             auto* cl = ctx.Cmd;
             if (!cl)
@@ -649,10 +726,9 @@ void GraphPreviewAtlas::TickRG(uint64_t windowId, UIManager* ui, RG::RGFrame& fr
 
             auto& binder = m_Services->Materials().Binder();
             auto pass = binder.BeginPass(*cl, m_ViewId, ctx,
-                                         ibl ? MaterialKeyword::IBL : MaterialKeyword::None,
-                                         std::move(resources), 0);
+                                         prepared->Inputs.PassKeywords, {}, 0);
 
-            const auto setVb = [&](Rendering::BufferHandle vb, uint32_t slot)
+            const auto setVb = [cl](Rendering::BufferHandle vb, uint32_t slot)
             {
                 if (vb.IsValid())
                     cl->SetVertexBuffer(vb, slot);
@@ -664,47 +740,9 @@ void GraphPreviewAtlas::TickRG(uint64_t windowId, UIManager* ui, RG::RGFrame& fr
             cl->SetIndexBuffer(sphereBindings.indexBuffer,
                                static_cast<Rendering::IndexType>(sphere->indexType));
 
-            auto& registry = m_Services->Materials().Registry();
-            for (const CellDraw& draw : draws)
+            for (const PreparedPass::Cell& cell : prepared->Cells)
             {
-                const Engine::Renderer::Material* mat = registry.Find(draw.MaterialGuid);
-                if (!mat)
-                    continue;
-                // The sphere's vertex layout, not the material's authored one:
-                // the base pipeline is interned for the material's variant-key
-                // flags and must be re-derived for the geometry actually bound.
-                Rendering::PipelineHandle pipeline{};
-                // The serve unit the handle was resolved from (current, or the
-                // previous one during a rebuild window) — its meta and set
-                // layouts always match the bound pipeline.
-                const Engine::Renderer::PipelineVariantCache::VariantServeUnit* variantEntry =
-                    nullptr;
-                if (ibl)
-                {
-                    // The IBL keyword variant compiles async behind the
-                    // publish-gate; a miss skips the cell and the atomic
-                    // re-marks the atlas dirty so it retries next frame.
-                    auto variant = m_Services->Materials().Variants().GetOrCompileColorVariant(
-                        *mat, sphere->vertexFlags,
-                        Rendering::PrimitiveTopology::TriangleList, MaterialKeyword::IBL,
-                        Rendering::FrontFace::CounterClockwise, ctx);
-                    pipeline = variant.first;
-                    variantEntry = variant.second;
-                    if (!pipeline.IsValid())
-                    {
-                        m_RecordSkippedDraws.fetch_add(1, std::memory_order_relaxed);
-                        continue;
-                    }
-                }
-                else
-                {
-                    pipeline = ctx.GetOrCreatePipelineVariant(
-                        mat->GetGraphicsPipelineIdForFlags(sphere->vertexFlags,
-                                                           m_Services->GetDevice()));
-                }
-                if (!pipeline.IsValid())
-                    continue;
-
+                const CellDraw& draw = cell.Draw;
                 uint32_t cellX = 0;
                 uint32_t cellY = 0;
                 m_Layout.CellOrigin(draw.Cell, cellX, cellY);
@@ -732,25 +770,20 @@ void GraphPreviewAtlas::TickRG(uint64_t windowId, UIManager* ui, RG::RGFrame& fr
                 pc.uN1[1] = 1.0f;
                 pc.uN2[0] = sy;
                 pc.uN2[2] = cy;
-                const uint32_t materialIndex = mat->GetGpuSceneMaterialIndex();
+                const uint32_t materialIndex = cell.MaterialIndex;
                 std::memcpy(&pc.uExtra[0], &materialIndex, sizeof(materialIndex));
 
-                Engine::Renderer::DrawBindings bindings{};
-                bindings.PushConstants = std::span<const std::byte>(
+                const auto pushConstants = std::span<const std::byte>(
                     reinterpret_cast<const std::byte*>(&pc), sizeof(pc));
-
-                const auto bound = binder.BindMaterialForDraw(
-                    pass, *mat, sphere->vertexFlags, bindings, pipeline,
-                    variantEntry ? variantEntry->VariantMeta.get() : mat->GetShaderMeta().get(),
-                    /*pipelineSetCount=*/0,
-                    variantEntry
-                        ? std::span<const Rendering::DescriptorSetLayoutId>(variantEntry->SetLayouts)
-                        : std::span<const Rendering::DescriptorSetLayoutId>{});
+                const auto bound = binder.BindPreparedForDraw(pass, cell.Bindings, pushConstants);
                 if (!bound.IsValid())
                     continue;
 
                 cl->DrawIndexed(sphere->indexCount, 1, sphere->firstIndex,
                                 static_cast<int32_t>(sphere->vertexOffset), 0);
+                if (cell.ServedVersion)
+                    m_Services->Materials().Variants().RecordServedGeneration(
+                        cell.MaterialIndex, Engine::Renderer::ServedPassClass::Color, *cell.ServedVersion);
             }
 
             binder.EndPass(pass);

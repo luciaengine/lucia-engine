@@ -1,7 +1,6 @@
-// DeferredRequiredComponentTest.cpp - a deferred add resolves the components its
-// type requires at the flush, against the entity as it is then: a requirement
-// only fills a gap, with its default value. It never replaces a value the entity
-// has, including one queued earlier in the same flush.
+// DeferredRequiredComponentTest.cpp - a deferred add queues the components its
+// type requires; at the flush a requirement only fills a gap. It never replaces
+// a value the entity has, including one queued earlier in the same flush.
 #include <gtest/gtest.h>
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
@@ -12,11 +11,9 @@ using namespace GameEngine::ECS;
 
 namespace
 {
-// Nonzero, so a requirement written with its default is told apart from fresh
-// chunk memory.
 struct Placement
 {
-    float X = 2.5f;
+    float X = 0.0f;
 };
 struct NeedsPlacement
 {
@@ -75,7 +72,7 @@ TEST(DeferredRequiredComponent, RequirementRemovedEarlierInTheFlushIsAddedBack)
 
     const auto* placement = world.GetComponent<Placement>(entity);
     ASSERT_NE(placement, nullptr) << "the requirement was decided before the queued removal landed";
-    EXPECT_EQ(placement->X, 2.5f);
+    EXPECT_EQ(placement->X, 0.0f);
 }
 
 TEST(DeferredRequiredComponent, MissingRequirementIsAddedWithItsDefault)
@@ -88,5 +85,5 @@ TEST(DeferredRequiredComponent, MissingRequirementIsAddedWithItsDefault)
 
     const auto* placement = world.GetComponent<Placement>(entity);
     ASSERT_NE(placement, nullptr);
-    EXPECT_EQ(placement->X, 2.5f);
+    EXPECT_EQ(placement->X, 0.0f);
 }

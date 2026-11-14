@@ -5,7 +5,7 @@
 #include "Engine/Build/DotnetHost.h"
 #include "Logger/Logger.h"
 #include "Scripting/CoreCLRHost.h"
-#include "Scripting/PackageScriptCompile.h"
+#include "Platform/Environment.h"
 #include "Scripting/PathResolver.h"
 #include "Scripting/ScriptManager.h"
 #include "Scripting/ScriptTargetFramework.h"
@@ -1087,8 +1087,7 @@ class DotNetCompiler : public Jobs::ICompiler
         // Execute compilation
         result.success = ExecuteCompilationAttempt(projectFile, result);
 #ifndef NDEBUG
-        const char* env = std::getenv("GE_LOG_COMPILE_TIMES");
-        if (env && std::string(env) == "1")
+        if (Platform::EnvironmentSwitchEnabled("GE_LOG_COMPILE_TIMES", false))
         {
             auto t1 = std::chrono::steady_clock::now();
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
@@ -1137,8 +1136,7 @@ class DotNetCompiler : public Jobs::ICompiler
 
 static bool DisableCompileServerEnv()
 {
-    const char* env = std::getenv("GE_DISABLE_COMPILE_SERVER");
-    return env && std::string(env) == "1";
+    return Platform::EnvironmentSwitchEnabled("GE_DISABLE_COMPILE_SERVER", false);
 }
 
 namespace Jobs
@@ -1199,9 +1197,9 @@ class CompileServerCompiler : public Jobs::ICompiler
         // Enumerate all .cs files (optional short-lived cache controlled by GE_CACHE_FILE_LISTS=1)
         std::vector<std::string> allFiles;
         bool usedCache = false;
-        const char* cacheEnv = std::getenv("GE_CACHE_FILE_LISTS");
+        const bool cacheFileLists = Platform::EnvironmentSwitchEnabled("GE_CACHE_FILE_LISTS", false);
         static std::unordered_map<std::string, std::pair<std::vector<std::string>, std::chrono::steady_clock::time_point>> s_Cache;
-        if (cacheEnv && std::string(cacheEnv) == "1")
+        if (cacheFileLists)
         {
             auto itc = s_Cache.find(projectRoot.string());
             if (itc != s_Cache.end())
@@ -1258,12 +1256,11 @@ class CompileServerCompiler : public Jobs::ICompiler
                     allFiles.push_back(pstr);
                 }
             }
-            if (cacheEnv && std::string(cacheEnv) == "1")
+            if (cacheFileLists)
             {
                 s_Cache[projectRoot.string()] = {allFiles, std::chrono::steady_clock::now()};
             }
-            const char* logEnv = std::getenv("GE_LOG_COMPILE_TIMES");
-            if (logEnv && std::string(logEnv) == "1")
+            if (Platform::EnvironmentSwitchEnabled("GE_LOG_COMPILE_TIMES", false))
             {
                 auto enumEnd = std::chrono::steady_clock::now();
                 auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(enumEnd - enumStart).count();
@@ -1288,8 +1285,7 @@ class CompileServerCompiler : public Jobs::ICompiler
 #endif
         auto changedFiles = TakeChangedFilesForNextCompile();
         // Build deeper AffectedFiles inference when enabled via GE_AFFECTS_INFERENCE=1
-        const char* inferEnv = std::getenv("GE_AFFECTS_INFERENCE");
-        bool doInfer = (inferEnv && std::string(inferEnv) == "1");
+        const bool doInfer = Platform::EnvironmentSwitchEnabled("GE_AFFECTS_INFERENCE", false);
         std::vector<std::string> affectedFiles = changedFiles;
         if (doInfer)
         {
@@ -1339,7 +1335,6 @@ class CompileServerCompiler : public Jobs::ICompiler
         json << "\"Tfm\":\"" << kScriptTargetFramework << "\",";
         // AffectedFiles heuristic: default to ChangedFiles; trigger full rebuild on .csproj change
         json << "\"EngineBinDir\":\"" << ScriptingPaths::ResolveEngineManagedDirectory().generic_string() << "\",";
-        json << ScriptSurfaceRequestField();
 
         bool forceFull = false;
         for (const auto& cf : changedFiles)
@@ -1509,8 +1504,7 @@ class CompileServerCompiler : public Jobs::ICompiler
         }
 
 #ifndef NDEBUG
-        const char* env = std::getenv("GE_LOG_COMPILE_TIMES");
-        if (env && std::string(env) == "1")
+        if (Platform::EnvironmentSwitchEnabled("GE_LOG_COMPILE_TIMES", false))
         {
             auto t1 = std::chrono::steady_clock::now();
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();

@@ -70,9 +70,9 @@ struct WorldPosition
     /// smallest bit is not below the spacing of a double at the position.
     static WorldPosition FromSector(const Vector3Int& sector, const Vector3& local)
     {
-        return WorldPosition{static_cast<double>(sector.x) * kWorldSectorSize + local.x,
-                             static_cast<double>(sector.y) * kWorldSectorSize + local.y,
-                             static_cast<double>(sector.z) * kWorldSectorSize + local.z};
+        return WorldPosition{static_cast<double>(sector.X) * kWorldSectorSize + local.x,
+                             static_cast<double>(sector.Y) * kWorldSectorSize + local.y,
+                             static_cast<double>(sector.Z) * kWorldSectorSize + local.z};
     }
 
     /// The one split: the sector is floor(x / kWorldSectorSize + 0.5) and the local is in [-512, 512),

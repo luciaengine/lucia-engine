@@ -381,6 +381,12 @@ void* GetCompileServerHostJobHandleForTests()
 // Launch the managed CompileServerHost process for the given pipe name.
 static std::optional<LaunchedHost> LaunchCompileServerProcess(const std::string& hostDll, const std::string& pipeNameUtf8)
 {
+#if defined(GE_PLATFORM_MOBILE)
+    (void)hostDll;
+    (void)pipeNameUtf8;
+    Logger::Log::Error("Managed compile servers cannot run inside a mobile application.");
+    return std::nullopt;
+#else
     const std::string parentPid = std::to_string(Platform::GetCurrentProcessId());
 #ifdef _WIN32
     // Shared engine-wide dotnet discovery (DOTNET_ROOT / PATH / standard install
@@ -497,6 +503,7 @@ static std::optional<LaunchedHost> LaunchCompileServerProcess(const std::string&
     }
 
     return LaunchedHost{static_cast<uint32_t>(pid), pipeNameUtf8};
+#endif
 #endif
 }
 

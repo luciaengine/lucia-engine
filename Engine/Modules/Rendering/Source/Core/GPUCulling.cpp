@@ -1,6 +1,7 @@
 #include "Rendering/Core/GPUCulling.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
 #include <iostream>
 #include <limits>
@@ -87,6 +88,206 @@ DescriptorSetLayoutDesc MakeHzbCullingDescriptorSetLayout()
     addStorage(5, "OcclusionStatsBuffer");
     addStorage(6, "DeformationMarginBuffer", kDescriptorBindingReadOnlyStorage);
     return layout;
+}
+
+struct HzbCullingPassData
+{
+    PipelineHandle Pipeline{};
+    SamplerHandle Sampler{};
+    RenderGraph::RGBuffer Instances{}, Visibility{}, PrevVisible{}, Stats{};
+    RenderGraph::RGTexture Hzb{};
+    BufferHandle CullingData{}, StatsBuffer{};
+    size_t CullingDataOffset = 0;
+    size_t InstanceBytes = 0;
+    uint32_t VisibilityBytes = 0, PrevVisibleBytes = 0, StatsBytes = 0;
+    HzbCullPC PushConstants{};
+    bool IsPhaseB = false;
+    DescriptorSetHandle DescriptorSet{};
+};
+
+bool PrepareHzbCullingPass(RenderGraph::RGPrepareContext& context, HzbCullingPassData& data)
+{
+    data.DescriptorSet = {};
+    data.StatsBuffer = {};
+    IDevice* device = context.GetDevice();
+    if (device == nullptr || !data.Pipeline.IsValid() || !data.Sampler.IsValid() ||
+        !data.CullingData.IsValid())
+        return false;
+    const BufferHandle instances = context.GetBuffer(data.Instances);
+    const BufferHandle visibility = context.GetBuffer(data.Visibility);
+    const BufferHandle previousVisible = context.GetBuffer(data.PrevVisible);
+    const BufferHandle stats = context.GetBuffer(data.Stats);
+    const TextureHandle hzb = context.GetTexture(data.Hzb);
+    if (!instances.IsValid() || !visibility.IsValid() || !previousVisible.IsValid() ||
+        !stats.IsValid() || !hzb.IsValid())
+        return false;
+    DescriptorSetDesc descriptorSetDescription{};
+    descriptorSetDescription.layout = MakeHzbCullingDescriptorSetLayout();
+    descriptorSetDescription.transient = true;
+    descriptorSetDescription.debugName = "GPUCulling_HzbCull_DS0";
+    data.DescriptorSet = device->CreateDescriptorSet(descriptorSetDescription);
+    if (!data.DescriptorSet.IsValid())
+        return false;
+    device->UpdateStorageBufferBinding(data.DescriptorSet, 0, instances, 0, data.InstanceBytes);
+    device->UpdateStorageBufferBinding(data.DescriptorSet, 1, data.CullingData, data.CullingDataOffset,
+                                      sizeof(GPUCullingData));
+    device->UpdateStorageBufferBinding(data.DescriptorSet, 2, visibility, 0, data.VisibilityBytes);
+    device->UpdateStorageBufferBinding(data.DescriptorSet, 3, previousVisible, 0, data.PrevVisibleBytes);
+    device->UpdateCombinedImageSamplerBinding(data.DescriptorSet, 4, hzb, data.Sampler);
+    device->UpdateStorageBufferBinding(data.DescriptorSet, 5, stats, 0, data.StatsBytes);
+    data.StatsBuffer = stats;
+    return true;
+}
+
+void RecordHzbCullingPass(RenderGraph::RGContext& context, const HzbCullingPassData& data)
+{
+    if (data.IsPhaseB)
+    {
+        // Zero the stats before the atomic-accumulate; FillBuffer is
+        // Transfer, the dispatch is Compute — intra-pass hazard, so the
+        // manual barrier stays (RG auto-barriers are inter-pass).
+        context.Cmd->FillBuffer(data.StatsBuffer, 0, data.StatsBytes, 0u);
+        ResourceBarrier clearBarrier = ResourceBarrier::CreateMemoryBarrier(
+            static_cast<uint64_t>(PipelineStageMask::Transfer),
+            static_cast<uint64_t>(PipelineStageMask::ComputeShader),
+            static_cast<uint64_t>(ResourceAccessMask::TransferWrite),
+            static_cast<uint64_t>(ResourceAccessMask::ShaderRead) |
+                static_cast<uint64_t>(ResourceAccessMask::ShaderWrite));
+        context.Cmd->Barrier(clearBarrier);
+    }
+
+    context.Cmd->SetPipeline(data.Pipeline);
+    context.Cmd->BindDescriptorSet(0, data.DescriptorSet, data.Pipeline);
+    context.Cmd->SetPushConstants(data.PushConstants);
+    context.Cmd->Dispatch((data.PushConstants.instanceCount + 63u) / 64u, 1, 1);
+}
+
+struct VisibilityUnionPassData
+{
+    PipelineHandle Pipeline{};
+    RenderGraph::RGBuffer Visibility{}, AnyVisible{};
+    BufferHandle Offsets{};
+    size_t OffsetsOffset = 0;
+    uint32_t VisibilityBytes = 0, FlagsBytes = 0, OffsetsBytes = 0;
+    VisibilityUnionPC PushConstants{};
+    DescriptorSetHandle DescriptorSet{};
+};
+
+bool PrepareVisibilityUnionPass(RenderGraph::RGPrepareContext& context, VisibilityUnionPassData& data)
+{
+    data.DescriptorSet = {};
+    IDevice* device = context.GetDevice();
+    if (device == nullptr || !data.Pipeline.IsValid())
+        return false;
+    const BufferHandle visibility = context.GetBuffer(data.Visibility);
+    const BufferHandle anyVisible = context.GetBuffer(data.AnyVisible);
+    const BufferHandle offsets = data.Offsets;
+    if (!visibility.IsValid() || !anyVisible.IsValid() || !offsets.IsValid())
+        return false;
+    DescriptorSetDesc descriptorSetDescription{};
+    descriptorSetDescription.layout.debugName = "VisibilityUnion_SetLayout";
+    for (uint32_t binding = 0; binding < 3; ++binding)
+    {
+        DescriptorBinding desc{};
+        desc.binding = binding;
+        desc.type = DescriptorType::StorageBuffer;
+        desc.count = 1;
+        desc.shaderStages = kShaderStageCompute;
+        descriptorSetDescription.layout.bindings.push_back(desc);
+    }
+    descriptorSetDescription.transient = true;
+    descriptorSetDescription.debugName = "VisibilityUnion_DS0";
+    data.DescriptorSet = device->CreateDescriptorSet(descriptorSetDescription);
+    if (!data.DescriptorSet.IsValid())
+        return false;
+    device->UpdateStorageBufferBinding(data.DescriptorSet, 0, visibility, 0, data.VisibilityBytes);
+    device->UpdateStorageBufferBinding(data.DescriptorSet, 1, anyVisible, 0, data.FlagsBytes);
+    device->UpdateStorageBufferBinding(data.DescriptorSet, 2, offsets, data.OffsetsOffset, data.OffsetsBytes);
+    return true;
+}
+
+void RecordVisibilityUnionPass(RenderGraph::RGContext& context, const VisibilityUnionPassData& data)
+{
+    context.Cmd->SetPipeline(data.Pipeline);
+    context.Cmd->BindDescriptorSet(0, data.DescriptorSet, data.Pipeline);
+    context.Cmd->SetPushConstants(data.PushConstants);
+    context.Cmd->Dispatch((data.PushConstants.instanceCount + 63u) / 64u, 1, 1);
+}
+
+struct RuntimeVisibilityPassData
+{
+    PipelineHandle Pipeline{};
+    RenderGraph::RGBuffer AnyVisible{}, Instances{}, RuntimeVisible{};
+    BufferHandle RuntimeVisibleBuffer{};
+    uint32_t FlagsBytes = 0;
+    size_t InstanceBytes = 0;
+    RuntimeVisibilityPC PushConstants{};
+    DescriptorSetHandle DescriptorSet{};
+};
+
+bool PrepareRuntimeVisibilityPass(RenderGraph::RGPrepareContext& context, RuntimeVisibilityPassData& data)
+{
+    data.DescriptorSet = {};
+    data.RuntimeVisibleBuffer = {};
+    IDevice* device = context.GetDevice();
+    if (device == nullptr || !data.Pipeline.IsValid())
+        return false;
+    const BufferHandle anyVisible = context.GetBuffer(data.AnyVisible);
+    const BufferHandle instances = context.GetBuffer(data.Instances);
+    const BufferHandle runtimeVisible = context.GetBuffer(data.RuntimeVisible);
+    if (!anyVisible.IsValid() || !instances.IsValid() || !runtimeVisible.IsValid())
+        return false;
+    data.RuntimeVisibleBuffer = runtimeVisible;
+    DescriptorSetDesc descriptorSetDescription{};
+    descriptorSetDescription.layout.debugName = "RuntimeVisibility_SetLayout";
+    for (uint32_t binding = 0; binding < 3; ++binding)
+    {
+        DescriptorBinding desc{};
+        desc.binding = binding;
+        desc.type = DescriptorType::StorageBuffer;
+        desc.count = 1;
+        desc.shaderStages = kShaderStageCompute;
+        descriptorSetDescription.layout.bindings.push_back(desc);
+    }
+    descriptorSetDescription.transient = true;
+    descriptorSetDescription.debugName = "RuntimeVisibility_DS0";
+    data.DescriptorSet = device->CreateDescriptorSet(descriptorSetDescription);
+    if (!data.DescriptorSet.IsValid())
+        return false;
+    device->UpdateStorageBufferBinding(data.DescriptorSet, 0, anyVisible, 0, data.FlagsBytes);
+    device->UpdateStorageBufferBinding(data.DescriptorSet, 1, instances, 0, data.InstanceBytes);
+    device->UpdateStorageBufferBinding(data.DescriptorSet, 2, runtimeVisible, 0,
+                                      data.PushConstants.runtimeVisibleCap * sizeof(uint32_t));
+    return true;
+}
+
+void RecordRuntimeVisibilityPass(RenderGraph::RGContext& context, const RuntimeVisibilityPassData& data)
+{
+    // Zero before atomic-ORs accumulate; FillBuffer is Transfer
+    // stage, the dispatch is Compute — intra-pass hazard, so the
+    // manual barrier stays (RG auto-barriers are inter-pass).
+    context.Cmd->FillBuffer(data.RuntimeVisibleBuffer, 0,
+                        data.PushConstants.runtimeVisibleCap * sizeof(uint32_t), 0u);
+    ResourceBarrier clearBarrier = ResourceBarrier::CreateMemoryBarrier(
+        static_cast<uint64_t>(PipelineStageMask::Transfer),
+        static_cast<uint64_t>(PipelineStageMask::ComputeShader),
+        static_cast<uint64_t>(ResourceAccessMask::TransferWrite),
+        static_cast<uint64_t>(ResourceAccessMask::ShaderRead) |
+            static_cast<uint64_t>(ResourceAccessMask::ShaderWrite));
+    context.Cmd->Barrier(clearBarrier);
+
+    context.Cmd->SetPipeline(data.Pipeline);
+    context.Cmd->BindDescriptorSet(0, data.DescriptorSet, data.Pipeline);
+    context.Cmd->SetPushConstants(data.PushConstants);
+    context.Cmd->Dispatch((data.PushConstants.instanceCount + 63u) / 64u, 1, 1);
+    // Make atomicOr results visible to the downstream skinning
+    // compute through the same-pass tail barrier.
+    ResourceBarrier readyBarrier = ResourceBarrier::CreateMemoryBarrier(
+        static_cast<uint64_t>(PipelineStageMask::ComputeShader),
+        static_cast<uint64_t>(PipelineStageMask::ComputeShader),
+        static_cast<uint64_t>(ResourceAccessMask::ShaderWrite),
+        static_cast<uint64_t>(ResourceAccessMask::ShaderRead));
+    context.Cmd->Barrier(readyBarrier);
 }
 
 // Shared between EndFrameRG's per-view dispatch and the deferred phase-B
@@ -489,7 +690,8 @@ RenderGraph::RGBuffer GPUCullingPipeline::ImportPrevVisible(RenderGraph::RGFrame
         return {};
     PrevVisibleView& pv = m_PrevVisible[viewId];
     // Sized for the global instance index the shader addresses (prevVisible[i]);
-    // grown like m_VisibilityBufferU.
+    // grown like m_VisibilityBufferU, to the next power of two, so a scene that
+    // streams in keeps this history across most new instance-count maxima.
     const size_t kMinBytes = 4096;
     const size_t needBytes =
         std::max(kMinBytes, static_cast<size_t>(instanceCount) * sizeof(uint32_t));
@@ -498,14 +700,15 @@ RenderGraph::RGBuffer GPUCullingPipeline::ImportPrevVisible(RenderGraph::RGFrame
     {
         if (pv.buffer.IsValid())
             m_Device->DestroyBuffer(pv.buffer); // deferred-destroy device-side
+        const size_t allocBytes = std::bit_ceil(needBytes);
         BufferDesc d{};
-        d.size = needBytes;
+        d.size = allocBytes;
         d.usage = static_cast<uint32_t>(BufferUsage::Storage | BufferUsage::TransferDst);
         d.memoryUsage = BufferMemoryUsage::DeviceLocal;
         pv.importName = "GPUCulling.PrevVisible.V" + std::to_string(static_cast<uint32_t>(viewId));
         d.debugName = pv.importName.c_str();
         pv.buffer = m_Device->CreateBuffer(d);
-        pv.bytes = pv.buffer.IsValid() ? needBytes : 0;
+        pv.bytes = pv.buffer.IsValid() ? allocBytes : 0;
         freshlyCreated = true;
     }
     if (!pv.buffer.IsValid())
@@ -650,6 +853,23 @@ void GPUCullingPipeline::ScheduleHzbCullPass(RenderGraph::RGFrame& frame,
     const int32_t phase =
         static_cast<int32_t>(isPhaseB ? PassPhase::kDefault : PassPhase::kEarlySetup);
 
+    auto* data = frame.AllocatePassData<HzbCullingPassData>();
+    data->Pipeline = pipeline;
+    data->Sampler = sampler;
+    data->Instances = instances;
+    data->Visibility = visibility;
+    data->PrevVisible = prevVisible;
+    data->Stats = stats;
+    data->Hzb = hzb;
+    data->CullingData = cd.Buffer;
+    data->CullingDataOffset = cd.Offset;
+    data->InstanceBytes = instanceBytes;
+    data->VisibilityBytes = visBytes;
+    data->PrevVisibleBytes = prevVisibleBytes;
+    data->StatsBytes = statsBytes;
+    data->PushConstants = pc;
+    data->IsPhaseB = isPhaseB;
+
     frame.AddPass(
         passName, phase,
         [&](RenderGraph::RGPassBuilder& p)
@@ -670,49 +890,10 @@ void GPUCullingPipeline::ScheduleHzbCullPass(RenderGraph::RGFrame& frame,
             {
                 p.Read(prevVisible);
             }
+            p.Prepare([data](RenderGraph::RGPrepareContext& context)
+                      { return PrepareHzbCullingPass(context, *data); });
         },
-        [pipeline, sampler, instances, visibility, prevVisible, stats, hzb, cdBuf = cd.Buffer,
-         cdOff = cd.Offset, margins, pc, instanceBytes, visBytes, prevVisibleBytes, isPhaseB,
-         instanceCount = sliceInstanceCount](RenderGraph::RGContext& ctx)
-        {
-            DescriptorSetDesc setDesc{};
-            setDesc.layout = MakeHzbCullingDescriptorSetLayout();
-            setDesc.transient = true;
-            setDesc.debugName = "GPUCulling_HzbCull_DS0";
-            DescriptorSetHandle set = ctx.GetDevice()->CreateDescriptorSet(setDesc);
-            if (!set.IsValid())
-                return;
-
-            if (isPhaseB)
-            {
-                // Zero the stats before the atomic-accumulate; FillBuffer is
-                // Transfer, the dispatch is Compute — intra-pass hazard, so the
-                // manual barrier stays (RG auto-barriers are inter-pass).
-                ctx.Cmd->FillBuffer(ctx.GetBuffer(stats), 0, statsBytes, 0u);
-                ResourceBarrier clearBarrier = ResourceBarrier::CreateMemoryBarrier(
-                    static_cast<uint64_t>(PipelineStageMask::Transfer),
-                    static_cast<uint64_t>(PipelineStageMask::ComputeShader),
-                    static_cast<uint64_t>(ResourceAccessMask::TransferWrite),
-                    static_cast<uint64_t>(ResourceAccessMask::ShaderRead) |
-                        static_cast<uint64_t>(ResourceAccessMask::ShaderWrite));
-                ctx.Cmd->Barrier(clearBarrier);
-            }
-
-            ctx.GetDevice()->UpdateStorageBufferBinding(set, 0, ctx.GetBuffer(instances), 0,
-                                                        instanceBytes);
-            ctx.GetDevice()->UpdateStorageBufferBinding(set, 1, cdBuf, cdOff, sizeof(GPUCullingData));
-            ctx.GetDevice()->UpdateStorageBufferBinding(set, 2, ctx.GetBuffer(visibility), 0, visBytes);
-            ctx.GetDevice()->UpdateStorageBufferBinding(set, 3, ctx.GetBuffer(prevVisible), 0,
-                                                        prevVisibleBytes);
-            ctx.GetDevice()->UpdateCombinedImageSamplerBinding(set, 4, ctx.GetTexture(hzb), sampler);
-            ctx.GetDevice()->UpdateStorageBufferBinding(set, 5, ctx.GetBuffer(stats), 0, statsBytes);
-            ctx.GetDevice()->UpdateStorageBufferBinding(set, 6, margins.Buffer, margins.Offset, margins.Bytes);
-
-            ctx.Cmd->SetPipeline(pipeline);
-            ctx.Cmd->BindDescriptorSet(0, set, pipeline);
-            ctx.Cmd->SetPushConstants(pc);
-            ctx.Cmd->Dispatch((instanceCount + 63u) / 64u, 1, 1);
-        });
+        [data](RenderGraph::RGContext& ctx) { RecordHzbCullingPass(ctx, *data); });
 }
 
 GPUCullingPipeline::OcclusionStats GPUCullingPipeline::ReadOcclusionStats() const
@@ -845,9 +1026,9 @@ void GPUCullingPipeline::BuildCullingElisionBlob(ElisionInputBlob& blob,
         blob.Append(v.nearPlane);
         appendVec3(v.cameraForward);
         blob.Append(v.farPlane);
-        blob.Append(v.originSector.x);
-        blob.Append(v.originSector.y);
-        blob.Append(v.originSector.z);
+        blob.Append(v.originSector.X);
+        blob.Append(v.originSector.Y);
+        blob.Append(v.originSector.Z);
         blob.Append(v.firstInstance);
         blob.Append(v.instanceCount);
         blob.Append(v.renderLayerMask.Bits);
@@ -887,9 +1068,9 @@ void GPUCullingPipeline::BuildCullingElisionBlob(ElisionInputBlob& blob,
         blob.Append(g.nearPlane);
         appendVec3(g.cameraForward);
         blob.Append(g.farPlane);
-        blob.Append(g.originSector.x);
-        blob.Append(g.originSector.y);
-        blob.Append(g.originSector.z);
+        blob.Append(g.originSector.X);
+        blob.Append(g.originSector.Y);
+        blob.Append(g.originSector.Z);
         blob.Append(g.firstInstance);
         blob.Append(g.instanceCount);
         blob.Append(g.renderLayerMask.Bits);
@@ -999,7 +1180,9 @@ void GPUCullingPipeline::EndFrameRG()
     }
 
     // ONE visibility buffer (the per-slot ring collapses — RenderGraph's first-touch
-    // import dependency provides the cross-frame WAR ordering).
+    // import dependency provides the cross-frame WAR ordering). It grows to the
+    // next power of two: every dispatch sizes its work by instance count, and
+    // the byte size is only a binding range.
     const size_t kMinVisBytes = 4096;
     size_t requiredBytes =
         std::max(kMinVisBytes, static_cast<size_t>(std::min<uint64_t>(
@@ -1009,14 +1192,15 @@ void GPUCullingPipeline::EndFrameRG()
     {
         if (m_VisibilityBufferU.IsValid())
             m_Device->DestroyBuffer(m_VisibilityBufferU); // deferred-destroy device-side
+        const size_t allocBytes = std::bit_ceil(requiredBytes);
         BufferDesc d{};
-        d.size = requiredBytes;
+        d.size = allocBytes;
         d.usage = static_cast<uint32_t>(BufferUsage::Storage | BufferUsage::TransferSrc |
                                         BufferUsage::TransferDst);
         d.memoryUsage = BufferMemoryUsage::DeviceLocal;
         d.debugName = "GPUCulling_Visibility.RenderGraph";
         m_VisibilityBufferU = m_Device->CreateBuffer(d);
-        m_VisibilityBufferUBytes = m_VisibilityBufferU.IsValid() ? requiredBytes : 0;
+        m_VisibilityBufferUBytes = m_VisibilityBufferU.IsValid() ? allocBytes : 0;
     }
     if (!m_VisibilityBufferU.IsValid())
         return;
@@ -1379,13 +1563,15 @@ void GPUCullingPipeline::ScheduleVisibilityUnion(RenderGraph::RGFrame& frame, GP
     {
         if (m_AnyViewVisibleU.IsValid())
             m_Device->DestroyBuffer(m_AnyViewVisibleU);
+        // Next power of two, like the visibility buffer it is the union of.
+        const size_t allocBytes = std::bit_ceil(flagsBytes);
         BufferDesc d{};
-        d.size = flagsBytes;
+        d.size = allocBytes;
         d.usage = static_cast<uint32_t>(BufferUsage::Storage | BufferUsage::TransferDst);
         d.memoryUsage = BufferMemoryUsage::DeviceLocal;
         d.debugName = "GPUCulling_AnyViewVisible.RenderGraph";
         m_AnyViewVisibleU = m_Device->CreateBuffer(d);
-        m_AnyViewVisibleUBytes = m_AnyViewVisibleU.IsValid() ? flagsBytes : 0;
+        m_AnyViewVisibleUBytes = m_AnyViewVisibleU.IsValid() ? allocBytes : 0;
     }
     if (!m_AnyViewVisibleU.IsValid())
         return;
@@ -1419,6 +1605,17 @@ void GPUCullingPipeline::ScheduleVisibilityUnion(RenderGraph::RGFrame& frame, GP
     const uint32_t flagsBytesU = static_cast<uint32_t>(m_AnyViewVisibleUBytes);
     const uint32_t offsBytes = viewCount * static_cast<uint32_t>(sizeof(uint32_t));
 
+    auto* data = frame.AllocatePassData<VisibilityUnionPassData>();
+    data->Pipeline = pipeline;
+    data->Visibility = visRG;
+    data->AnyVisible = anyRG;
+    data->Offsets = offs.Buffer;
+    data->OffsetsOffset = offs.Offset;
+    data->VisibilityBytes = visBytes;
+    data->FlagsBytes = flagsBytesU;
+    data->OffsetsBytes = offsBytes;
+    data->PushConstants = {instanceCount, viewCount};
+
     frame.AddPass("GPUCulling.VisibilityUnion", static_cast<int32_t>(PassPhase::kEarlySetup),
                   [&](RenderGraph::RGPassBuilder& p)
                   {
@@ -1441,39 +1638,10 @@ void GPUCullingPipeline::ScheduleVisibilityUnion(RenderGraph::RGFrame& frame, GP
                       // Locked by RGGpuDriven.VisibilityUnionReadsPostPhaseBSliceForHzbView.
                       p.Read(visRG);
                       p.Write(anyRG);
+                      p.Prepare([data](RenderGraph::RGPrepareContext& context)
+                                { return PrepareVisibilityUnionPass(context, *data); });
                   },
-                  [pipeline, visRG, anyRG, offsBuf = offs.Buffer, offsOff = offs.Offset, visBytes,
-                   flagsBytesU, offsBytes, instanceCount, viewCount](RenderGraph::RGContext& ctx)
-                  {
-                      DescriptorSetDesc setDesc{};
-                      DescriptorSetLayoutDesc layoutDesc{};
-                      layoutDesc.debugName = "VisibilityUnion_SetLayout";
-                      for (uint32_t i = 0; i < 3; ++i)
-                      {
-                          DescriptorBinding b{};
-                          b.binding = i;
-                          b.type = DescriptorType::StorageBuffer;
-                          b.count = 1;
-                          b.shaderStages = kShaderStageCompute;
-                          layoutDesc.bindings.push_back(b);
-                      }
-                      setDesc.layout = layoutDesc;
-                      setDesc.transient = true;
-                      setDesc.debugName = "VisibilityUnion_DS0";
-                      DescriptorSetHandle set = ctx.GetDevice()->CreateDescriptorSet(setDesc);
-                      if (!set.IsValid())
-                          return;
-                      ctx.GetDevice()->UpdateStorageBufferBinding(set, 0, ctx.GetBuffer(visRG), 0, visBytes);
-                      ctx.GetDevice()->UpdateStorageBufferBinding(set, 1, ctx.GetBuffer(anyRG), 0, flagsBytesU);
-                      ctx.GetDevice()->UpdateStorageBufferBinding(set, 2, offsBuf, offsOff, offsBytes);
-                      ctx.Cmd->SetPipeline(pipeline);
-                      ctx.Cmd->BindDescriptorSet(0, set, pipeline);
-                      VisibilityUnionPC pc{};
-                      pc.instanceCount = instanceCount;
-                      pc.viewCount = viewCount;
-                      ctx.Cmd->SetPushConstants(pc);
-                      ctx.Cmd->Dispatch((instanceCount + 63u) / 64u, 1, 1);
-                  });
+                  [data](RenderGraph::RGContext& ctx) { RecordVisibilityUnionPass(ctx, *data); });
 }
 
 void GPUCullingPipeline::ScheduleRuntimeVisibilityAggregate(RenderGraph::RGFrame& frame, GPUScene* scene)
@@ -1511,6 +1679,15 @@ void GPUCullingPipeline::ScheduleRuntimeVisibilityAggregate(RenderGraph::RGFrame
     const size_t instBytes =
         std::max<size_t>(1024, static_cast<size_t>(scene->GetInstanceCapacity()) * sizeof(GPUInstance));
 
+    auto* data = frame.AllocatePassData<RuntimeVisibilityPassData>();
+    data->Pipeline = pipeline;
+    data->AnyVisible = anyRG;
+    data->Instances = sceneRG.Instances;
+    data->RuntimeVisible = rvRG;
+    data->FlagsBytes = flagsBytesU;
+    data->InstanceBytes = instBytes;
+    data->PushConstants = {instanceCount, cap};
+
     frame.AddPass("GPUCulling.RuntimeVisibilityAggregate",
                   static_cast<int32_t>(PassPhase::kEarlySetup),
                   [&](RenderGraph::RGPassBuilder& p)
@@ -1525,60 +1702,10 @@ void GPUCullingPipeline::ScheduleRuntimeVisibilityAggregate(RenderGraph::RGFrame
                       // compute dispatch. The intra-pass Transfer→Compute
                       // barrier in the exec handles fill-before-dispatch.
                       p.Write(rvRG, RenderGraph::RGBufferWrite::CopyDst);
+                      p.Prepare([data](RenderGraph::RGPrepareContext& context)
+                                { return PrepareRuntimeVisibilityPass(context, *data); });
                   },
-                  [pipeline, anyRG, rvRG, instances = sceneRG.Instances, flagsBytesU, instBytes,
-                   instanceCount](RenderGraph::RGContext& ctx)
-                  {
-                      BufferHandle rv = ctx.GetBuffer(rvRG);
-                      // Zero before atomic-ORs accumulate; FillBuffer is Transfer
-                      // stage, the dispatch is Compute — intra-pass hazard, so the
-                      // manual barrier stays (RG auto-barriers are inter-pass).
-                      ctx.Cmd->FillBuffer(rv, 0, cap * sizeof(uint32_t), 0u);
-                      ResourceBarrier clearBarrier = ResourceBarrier::CreateMemoryBarrier(
-                          static_cast<uint64_t>(PipelineStageMask::Transfer),
-                          static_cast<uint64_t>(PipelineStageMask::ComputeShader),
-                          static_cast<uint64_t>(ResourceAccessMask::TransferWrite),
-                          static_cast<uint64_t>(ResourceAccessMask::ShaderRead) |
-                              static_cast<uint64_t>(ResourceAccessMask::ShaderWrite));
-                      ctx.Cmd->Barrier(clearBarrier);
-
-                      DescriptorSetDesc setDesc{};
-                      DescriptorSetLayoutDesc layoutDesc{};
-                      layoutDesc.debugName = "RuntimeVisibility_SetLayout";
-                      for (uint32_t i = 0; i < 3; ++i)
-                      {
-                          DescriptorBinding b{};
-                          b.binding = i;
-                          b.type = DescriptorType::StorageBuffer;
-                          b.count = 1;
-                          b.shaderStages = kShaderStageCompute;
-                          layoutDesc.bindings.push_back(b);
-                      }
-                      setDesc.layout = layoutDesc;
-                      setDesc.transient = true;
-                      setDesc.debugName = "RuntimeVisibility_DS0";
-                      DescriptorSetHandle set = ctx.GetDevice()->CreateDescriptorSet(setDesc);
-                      if (!set.IsValid())
-                          return;
-                      ctx.GetDevice()->UpdateStorageBufferBinding(set, 0, ctx.GetBuffer(anyRG), 0, flagsBytesU);
-                      ctx.GetDevice()->UpdateStorageBufferBinding(set, 1, ctx.GetBuffer(instances), 0, instBytes);
-                      ctx.GetDevice()->UpdateStorageBufferBinding(set, 2, rv, 0, cap * sizeof(uint32_t));
-                      ctx.Cmd->SetPipeline(pipeline);
-                      ctx.Cmd->BindDescriptorSet(0, set, pipeline);
-                      RuntimeVisibilityPC pc{};
-                      pc.instanceCount = instanceCount;
-                      pc.runtimeVisibleCap = cap;
-                      ctx.Cmd->SetPushConstants(pc);
-                      ctx.Cmd->Dispatch((instanceCount + 63u) / 64u, 1, 1);
-                      // Make atomicOr results visible to the downstream skinning
-                      // compute (same-pass tail barrier, kept verbatim).
-                      ResourceBarrier readyBarrier = ResourceBarrier::CreateMemoryBarrier(
-                          static_cast<uint64_t>(PipelineStageMask::ComputeShader),
-                          static_cast<uint64_t>(PipelineStageMask::ComputeShader),
-                          static_cast<uint64_t>(ResourceAccessMask::ShaderWrite),
-                          static_cast<uint64_t>(ResourceAccessMask::ShaderRead));
-                      ctx.Cmd->Barrier(readyBarrier);
-                  });
+                  [data](RenderGraph::RGContext& ctx) { RecordRuntimeVisibilityPass(ctx, *data); });
 }
 
 std::unique_ptr<GPUCullingPipeline> GPUCullingFactory::CreateBalanced(IDevice* device)

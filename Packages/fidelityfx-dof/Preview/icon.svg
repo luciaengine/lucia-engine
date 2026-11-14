@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <title>FidelityFX Depth of Field</title>
+  <defs>
+    <linearGradient id="surface" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#243C59"/>
+      <stop offset="1" stop-color="#152335"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="62" height="62" rx="14" fill="url(#surface)"/>
+  <rect x="1.5" y="1.5" width="61" height="61" rx="13.5" fill="none" stroke="#9FCFFF" stroke-opacity="0.18"/>
+  <g fill="none" stroke="#9FCFFF" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M13 24v-8h8m22 0h8v8m0 16v8h-8m-22 0h-8v-8"/>
+    <circle cx="32" cy="32" r="12"/>
+    <circle cx="32" cy="32" r="4" fill="#9FCFFF" stroke="none"/>
+      </g>
+</svg>

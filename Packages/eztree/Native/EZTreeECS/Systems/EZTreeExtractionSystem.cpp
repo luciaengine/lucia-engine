@@ -603,7 +603,7 @@ void SubmitPart(Engine::Renderer::RenderServices& renderServices,
     Rendering::GPUInstance instance{};
     std::memcpy(instance.transform.Data(), elements, sizeof(float) * 16);
     std::memcpy(instance.prevTransform.Data(), elements, sizeof(float) * 16);
-    GameEngine::Rendering::PackSector(sector.x, sector.y, sector.z, instance.sectorPacked[0], instance.sectorPacked[1]);
+    GameEngine::Rendering::PackSector(sector.X, sector.Y, sector.Z, instance.sectorPacked[0], instance.sectorPacked[1]);
     bool mirrored = false;
     Rendering::Vector4 normalColumn0;
     Rendering::MatrixUtils::ComputeNormalMatrixColumns(
@@ -732,9 +732,10 @@ void EZTreeExtractionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
                 ECS::Optional<ECS::DisabledInHierarchy>,
                 ECS::Optional<ECS::ComponentDisabled<Components::EZTree>>>()
         .IncludeDisabled()
-        .Each([&](ECS::EntityHandle entity, Components::EZTree& tree, const ECS::Disabled* disabled,
+        .Each([&](ECS::EntityHandle entity, ECS::Writable<Components::EZTree> treeRow, const ECS::Disabled* disabled,
                   const ECS::DisabledInHierarchy* inactive, const ECS::ComponentDisabled<Components::EZTree>* treeOff)
         {
+            auto& tree = treeRow.Mutable();
             if (world.GetComponent<Components::MeshRenderer>(entity))
                 world.RemoveComponentImmediate<Components::MeshRenderer>(entity);
             if (world.GetComponent<Components::MeshGPUData>(entity))

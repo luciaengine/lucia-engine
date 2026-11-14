@@ -661,6 +661,13 @@ void RegisterCameraInspector()
             "The volume layers this camera takes: a post-process volume affects it when their Volume Layers share a layer.",
             "Takes no post-process volume.", extras);
 
+        AddToggleRow(ctx.Parent, "Include UI in Post-Processing", cam->IncludeUIInPostProcessing,
+            [w, e, n, undo, extras](bool value) {
+                CommitComponentsWithUndo<Components::Camera>(w, e, extras, n, undo, "Change Camera UI Post-Processing",
+                    [value](Components::Camera& u) { u.IncludeUIInPostProcessing = value; });
+            },
+            "When enabled, fullscreen camera effects (such as CRT) also affect game UI. Disable to composite UI after those effects.");
+
         // --- Exposure (the camera's sensor; the active camera's exposure drives its view) ---
         InspectorUI::AddTextBlock(ctx.Parent, "Exposure", "inspector-section-subheader");
 

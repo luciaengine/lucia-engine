@@ -167,3 +167,22 @@ TEST(ArchetypeMatchCacheTest, ASnapshotTakenBeforeTheListGrowsStillReadsItsEntri
             EXPECT_EQ(snapshots[snapshot][entry], archetypes[entry]) << "snapshot " << snapshot << ", entry " << entry;
     }
 }
+
+TEST(ArchetypeMatchCacheTest, PendingRequiredSchemasStayHidden)
+{
+    World world;
+    Archetype* published = ArchetypeWith<Position>(world);
+    world.RegisterComponents<PendingActivation>();
+    const ComponentSignature pendingSignature = Detail::BuildSignature<Position, PendingActivation>();
+    Archetype* pending = world.GetOrCreateArchetype(pendingSignature);
+
+    ArchetypeMatchCache cache;
+    cache.AddArchetype(pending);
+    const ComponentSignature required = Detail::BuildSignature<Position>();
+    const ArchetypeFilter filter{&required};
+    const ArchetypeMatchList& matches = cache.Add(filter);
+    EXPECT_TRUE(matches.GetArchetypes().empty());
+    cache.AddArchetype(published);
+    ASSERT_EQ(matches.GetArchetypes().size(), 1u);
+    EXPECT_EQ(matches.GetArchetypes()[0], published);
+}

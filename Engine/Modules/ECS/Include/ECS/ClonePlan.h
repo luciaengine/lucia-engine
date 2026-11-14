@@ -10,22 +10,9 @@ namespace GameEngine::ECS
 
 class Archetype;
 
-/**
- * What World::CreateBatchFromWorld copies, worked out once for a list of
- * source entities by World::PlanClone: the entities grouped by archetype, and
- * every entity field of their rows with the list position of the entity it
- * names. A clone through a plan reads the source rows and does no lookup per
- * field.
- *
- * A source entity may appear more than once in the list: its k-th occurrence
- * belongs to copy k, and an entity field of a copy-k row names the copy-k
- * entry of the entity it names.
- *
- * A plan describes its entities as they were when it was built: their
- * archetypes and the entities their fields name. Build a new plan after
- * changing either; a clone through a plan whose entity died or changed
- * archetype is refused.
- */
+/// Groups source entities and entity-field remaps for World::CreateBatchFromWorld.
+/// Rebuild the plan after source archetypes or entity references change.
+/// Repeated source occurrences form separate copies with matching internal references.
 class ClonePlan
 {
   private:

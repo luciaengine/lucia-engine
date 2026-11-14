@@ -13,8 +13,6 @@ class PhysicsWorldService
 {
 public:
     static void Initialize(const Physics::PhysicsWorldSettings& settings = {});
-    // Ends every entity event subscription (PhysicsEntityEventCallbacks::ClearAll), then destroys
-    // the world.
     static void Shutdown();
 
     static Physics::PhysicsWorld& Get();
@@ -44,9 +42,7 @@ public:
     static uint32 GetLastCharactersComposed();
     static void SetLastCharactersComposed(uint32 count);
 
-    // Kinematic bodies the most recent frame that ran a step gave a velocity toward their Transform;
-    // a scene whose kinematic bodies rest reads 0. Read by editor diagnostics (Monitors
-    // "Physics/KinematicBodiesMoving"); reset to 0 across world lifetimes.
+    // Transform-driven bodies moved on the most recent simulated frame, excluding MovingPlatform.
     static uint32 GetLastKinematicBodiesMoving();
     static void SetLastKinematicBodiesMoving(uint32 count);
 

@@ -339,3 +339,12 @@ TEST(GeometryTests, LerpOfFourComponentsBlendsEveryComponentAndDoesNotClamp)
     EXPECT_FLOAT_EQ(Lerp(a, b, 1.0f).x, 5.0f);
     EXPECT_FLOAT_EQ(Lerp(a, b, 1.5f).w, 1.5f);
 }
+
+TEST(GeometryTests, ClosestSegmentParameterProjectsOntoTheSegmentAndClampsToItsEnds)
+{
+    using GameEngine::Mathematics::ClosestSegmentParameter;
+    EXPECT_FLOAT_EQ(ClosestSegmentParameter({0.0f, 0.0f}, {4.0f, 0.0f}, {1.0f, 3.0f}), 0.25f);
+    EXPECT_FLOAT_EQ(ClosestSegmentParameter({0.0f, 0.0f}, {4.0f, 0.0f}, {-2.0f, 1.0f}), 0.0f);
+    EXPECT_FLOAT_EQ(ClosestSegmentParameter({0.0f, 0.0f}, {4.0f, 0.0f}, {9.0f, -1.0f}), 1.0f);
+    EXPECT_FLOAT_EQ(ClosestSegmentParameter({1.0f, 1.0f}, {1.0f, 1.0f}, {5.0f, 5.0f}), 0.0f);
+}

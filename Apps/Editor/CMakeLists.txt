@@ -65,6 +65,7 @@ set(EDITOR_SOURCES
     Source/Assets/AssetRenameController.cpp
     Source/UndoRedo/GenericEditUndo.cpp
     Source/UndoRedo/EntityComponentsEdit.cpp
+    Source/Inspectors/EntityHeader/InspectorEntityNameField.cpp
     Source/UndoRedo/RenameAssetCommand.cpp
     Source/UndoRedo/SetAssetMetaValueCommand.cpp
     Source/UndoRedo/Spline/SplinePointEdits.cpp
@@ -96,7 +97,7 @@ set(EDITOR_SOURCES
     Source/Panels/AssetsPanel.cpp
     Source/Panels/TodoPanel.cpp
     Source/Panels/BookmarksPanel.cpp
-    Source/Panels/UndoHistoryPanel.cpp
+    Source/Panels/UndoHistory/UndoHistoryPanel.cpp
     Source/Panels/BuildPanel.cpp
     Source/Panels/BuildPanel/ExportRequirementsSection.cpp
     Source/Panels/BuiltInPanelTypes.cpp
@@ -111,7 +112,7 @@ set(EDITOR_SOURCES
     Source/Editor/Hierarchy/HierarchyReparent.cpp
     Source/Panels/InspectorPanel.cpp
     Source/Panels/AssetViewPanel.cpp
-    Source/Panels/LogChannelPopover.cpp
+    Source/Panels/LogPanel/LogChannelPopover.cpp
     Source/Panels/LogModel.cpp
     Source/Panels/LogPanel.cpp
     Source/Panels/LogView.cpp
@@ -359,6 +360,7 @@ set(EDITOR_SOURCES
 	Source/Inspectors/WindVolumeInspector.cpp
 	Source/Inspectors/PostProcessEffects/BloomEffectInspector.cpp
 	Source/Inspectors/PostProcessEffects/ChromaticAberrationEffectInspector.cpp
+    Source/Inspectors/PostProcessEffects/DepthPixelationEffectInspector.cpp
 	Source/Inspectors/PostProcessEffects/DepthOfFieldEffectInspector.cpp
 	Source/Inspectors/PostProcessEffects/FilmSimulationEffectInspector.cpp
 	Source/Inspectors/PostProcessEffects/AmbientOcclusionEffectInspector.cpp
@@ -368,6 +370,7 @@ set(EDITOR_SOURCES
 	Source/Inspectors/PostProcessEffects/CrtEffectInspector.cpp
 	Source/Inspectors/PostProcessEffects/FastBlurEffectInspector.cpp
 	Source/Inspectors/PostProcessEffects/HeatDistortionEffectInspector.cpp
+    Source/Inspectors/PostProcessEffects/RainSettingsEffectInspector.cpp
 	Source/Inspectors/PostProcessEffects/VhsEffectInspector.cpp
 	Source/Inspectors/PostProcessEffects/HeightFogEffectInspector.cpp
 	Source/Inspectors/PostProcessEffects/ColorFilterEffectInspector.cpp
@@ -892,12 +895,12 @@ set(EDITOR_HEADERS
     Include/Panels/TodoPanel.h
     Include/Panels/BookmarksPanel.h
     Include/Panels/BuiltInPanelTypes.h
-    Include/Panels/UndoHistoryPanel.h
+    Include/Panels/UndoHistory/UndoHistoryPanel.h
 		Include/Panels/HierarchyPanel.h
 		Include/Editor/Entities/CopiedEntityRuntimeRefs.h
 		Include/Editor/Entities/EntityDuplicate.h
 		Include/Editor/Hierarchy/HierarchyEntity/HierarchyEntityIcon.h
-    Include/Panels/LogChannelPopover.h
+    Include/Panels/LogPanel/LogChannelPopover.h
     Include/Panels/LogPanel.h
     Include/Panels/LogView.h
     Include/Panels/Script/ScriptDiagnosticsByAssembly.h
@@ -1045,6 +1048,8 @@ set(EDITOR_HEADERS
 # registry instance across plugin DLLs, headless module hosting, a curated
 # export ABI — presupposes dynamic linking the target does not have.
 set(EDITOR_SDK_SOURCES
+    Source/UndoRedo/History/HistoryComponentTargets.cpp
+    Source/UndoRedo/History/HistoryValueFormatter.cpp
 	Source/Editor/Registries/AssetOpenerRegistry.cpp
 	Source/Editor/Registries/BuildExporterRegistry.cpp
 	Source/Editor/Registries/DebugRequestGateRegistry.cpp

@@ -313,12 +313,8 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
     const uint64_t prevWrittenFrame = vh.LastWrittenFrame;
     const uint32_t prevOutWidth = vh.OutWidth;
     const uint32_t prevOutHeight = vh.OutHeight;
-    const bool prevCameraValid = state->PrevValid;
+    const bool prevCameraValid = state->PrevValid && state->PrevFrameStamp == vh.LastWrittenFrame;
     const uint32_t parity = static_cast<uint32_t>(vh.HistoryFrame & 1ull);
-    vh.HistoryFrame++;
-    vh.LastWrittenFrame = frameIndex;
-    vh.OutWidth = outW;
-    vh.OutHeight = outH;
 
     // ── Resources ──────────────────────────────────────────────────────────
     const std::string base = "TAA.View" + std::to_string(static_cast<uint32_t>(d.View.id));
@@ -461,10 +457,26 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
     const PipelineBufferBindingRG exposure = ResolveViewExposureHistory(d);
     if (!exposure.IsValid())
         return false;
+    ViewHistory next = vh;
+    next.HistoryFrame++;
+    next.LastWrittenFrame = frameIndex;
+    next.OutWidth = outW;
+    next.OutHeight = outH;
+    next.Content = content;
+    next.RenderWidth = w;
+    next.RenderHeight = h;
+    struct ResolveOutcome
+    {
+        bool Dispatched = false;
+    };
+    auto* outcome = d.Frame.AllocatePassData<ResolveOutcome>();
+    const uint32_t viewId = static_cast<uint32_t>(d.View.id);
+    const uint64_t expectedHistoryFrame = vh.HistoryFrame;
     d.Frame.AddComputePass(
         d.PassName("TAAResolve").c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(taau ? m_UpscalePipelineId : m_ResolvePipelineId);
             p.Read(input, RenderGraph::RGTextureRead::Sampled);
             p.Read(exposure.Graph, RenderGraph::RGBufferRead::Storage);
             p.Read(depthResolved, RenderGraph::RGTextureRead::Sampled);
@@ -472,9 +484,25 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
             p.Read(historyRead, RenderGraph::RGTextureRead::Sampled);
             p.Write(historyWrite, RenderGraph::RGTextureWrite::Storage);
             p.Write(outColor, RenderGraph::RGTextureWrite::Storage);
+            p.Prepare([this, viewId, expectedHistoryFrame, outcome](RenderGraph::RGPrepareContext&)
+            {
+                outcome->Dispatched = false;
+                const ViewHistory* history = m_ViewHistory.Find(viewId);
+                return history && history->HistoryFrame == expectedHistoryFrame;
+            });
+            // FlatMap entries can move when another view declares: retain the key, not a reference.
+            p.OnSubmitted([this, viewId, expectedHistoryFrame, next, outcome, frame = &d.Frame, historyWrite]
+            {
+                ViewHistory* history = m_ViewHistory.Find(viewId);
+                if (outcome->Dispatched && history && history->HistoryFrame == expectedHistoryFrame)
+                {
+                    *history = next;
+                    frame->MarkPersistentTextureInitialized(historyWrite);
+                }
+            });
         },
         [this, input, depthResolved, mvTex, historyRead, historyWrite, outColor, paramsBuffer,
-         paramsOffset, paramsSize, taau, outW, outH, exposure](RenderGraph::RGContext& ctx)
+         paramsOffset, paramsSize, taau, outW, outH, exposure, outcome](RenderGraph::RGContext& ctx)
         {
             auto* dev = ctx.GetDevice();
             auto* cl = ctx.Cmd;
@@ -496,6 +524,8 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
             dsDesc.transient = true;
             dsDesc.debugName = "TAAResolve.Set0";
             auto ds = dev->CreateDescriptorSet(dsDesc);
+            if (!ds.IsValid())
+                return;
             dev->UpdateStorageImageBinding(ds, 0, histW);
             dev->UpdateStorageImageBinding(ds, 1, outTex);
             {
@@ -532,15 +562,8 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
             cl->BindDescriptorSet(0, ds, pipe);
             // Dispatch over the OUTPUT extent (== render extent outside TAAU).
             cl->Dispatch((outW + 7) / 8, (outH + 7) / 8, 1);
+            outcome->Dispatched = true;
         });
-    // Mark only now that the resolve pass DECLARING the full-surface write
-    // exists: marking before the early-outs above would discharge the pool's
-    // freshness arm on a frame that never declared the rewrite, and the next
-    // frame would blend against an undefined physical as "resident" history.
-    d.Frame.MarkPersistentTextureInitialized(historyWrite);
-    vh.Content = content;
-    vh.RenderWidth = w;
-    vh.RenderHeight = h;
 
     d.PublishTexture(m_OutputKey, outColor);
 

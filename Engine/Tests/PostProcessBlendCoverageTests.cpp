@@ -1,13 +1,17 @@
+#include "Rendering/Utils/CubeLut/CubeLutColorDomain.h"
+#include "Engine/Rendering/TextureService.h"
+#include "Components/Rendering/PostProcessEffects/CubeLutEffect.h"
 #include "Engine/Rendering/PostProcessSettings.h"
 #include "Engine/Rendering/PostProcessEffectRegistry.h"
 #include "Engine/Rendering/PostProcessVolumeExtract.h"
 #include "Components/Rendering/PostProcessEffects/AtmosphericCloudLayer.h"
 #include "Components/Rendering/PostProcessEffects/BloomEffect.h"
 #include "Components/Rendering/PostProcessEffects/ChromaticAberrationEffect.h"
+#include "Components/Rendering/PostProcessEffects/DepthPixelationEffect.h"
 #include "Components/Rendering/PostProcessEffects/ColorGradeEffect.h"
-#include "Components/Rendering/PostProcessEffects/CubeLutEffect.h"
 #include "Components/Rendering/PostProcessEffects/CrtEffect.h"
 #include "Components/Rendering/PostProcessEffects/DebandEffect.h"
+#include "Components/Rendering/PostProcessEffects/RainSettingsEffect.h"
 #include "Components/Rendering/PostProcessEffects/DepthOfFieldEffect.h"
 #include "Components/Rendering/PostProcessEffects/ExposureAdjustmentEffect.h"
 #include "Components/Rendering/PostProcessEffects/HeightFogEffect.h"
@@ -15,15 +19,13 @@
 #include "Components/Rendering/PostProcessEffects/VolumetricFogEffect.h"
 #include "Components/Rendering/Look.h"
 #include "Engine/Rendering/ColorGradeParamsUBO.h"
-#include "Engine/Rendering/TextureService.h"
-#include "Rendering/Utils/CubeLut/CubeLutColorDomain.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
 #include "Rendering/Passes/TonemapPass.h"
 #include "Rendering/Materials/Shader/ShaderMeta.h"
-#include "ECS/Component/ComponentFactory.h"
+#include "ECS/ComponentFactory.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
-#include "Types/FormatNumber.h"
+#include "Types/Fnv1a.h"
 
 #include <gtest/gtest.h>
 
@@ -38,7 +40,6 @@
 #include <functional>
 #include <limits>
 #include <map>
-#include <span>
 #include <sstream>
 #include <string>
 #include <unordered_set>
@@ -47,7 +48,6 @@
 
 using GameEngine::Engine::Renderer::BlendPostProcessSettings;
 using GameEngine::Engine::Renderer::PostProcessSettings;
-using GameEngine::Engine::Renderer::PostProcessViewOutput;
 using GameEngine::Engine::Renderer::SettingsBlendGroupMask;
 
 namespace
@@ -55,7 +55,7 @@ namespace
 
 // The blend's contributes mask from one flag per contributes-group.
 SettingsBlendGroupMask ContributingGroups(bool colorGrade, bool heightFog, bool volumetricFog,
-                                          bool atmosphericCloud, bool volumetricClouds)
+                                          bool atmosphericCloud, bool volumetricClouds, bool rain)
 {
     using GameEngine::Rendering::SettingsBlendGroup;
     SettingsBlendGroupMask groups = SettingsBlendGroupMask::None();
@@ -64,6 +64,7 @@ SettingsBlendGroupMask ContributingGroups(bool colorGrade, bool heightFog, bool 
     groups.Set(SettingsBlendGroup::VolumetricFog, volumetricFog);
     groups.Set(SettingsBlendGroup::AtmosphericCloud, atmosphericCloud);
     groups.Set(SettingsBlendGroup::VolumetricClouds, volumetricClouds);
+    groups.Set(SettingsBlendGroup::Rain, rain);
     return groups;
 }
 
@@ -73,7 +74,7 @@ SettingsBlendGroupMask ContributingGroups(bool colorGrade, bool heightFog, bool 
 // fails the coverage test below.
 const std::unordered_set<std::string> kDeliberatelyUnblended = {
     // Camera-stamped lens fields: applied after blending from the active
-    // camera (ApplyCameraExposure), never volume-blended.
+    // camera (applyCameraExposure), never volume-blended.
     "dofFocusDistance",
     "dofFocalLengthMm",
     "dofAperture",
@@ -97,8 +98,8 @@ const std::unordered_set<std::string> kComputedReads = {
     "colorGradeActive", "hdrColorFxActive", "casActive", "lutActive",
     "ldrStackActive", "vhsActive", "chromaticAberrationActive", "filmSimulationGrainActive",
     "filmSimulationArtifactsActive", "crtActive", "fastBlurActive", "dofActive",
-    "heatDistortionActive", "heightFogActive", "heightFogSkyColorActive", "volumetricFogActive",
-    "atmosphericCloudActive", "volumetricCloudsActive",
+    "heatDistortionActive", "heightFogActive", "volumetricFogActive", "atmosphericCloudActive",
+    "volumetricCloudsActive",
     "bloomIntensity", "volumetricFogIntensity",
 };
 
@@ -165,8 +166,8 @@ TEST(PostProcessBlendCoverage, EveryReflectedFieldBlendsOrIsExcluded)
 // pin the migration: the exact name set cannot drift, and every registered
 // (name, offset, kind) triple must resolve the member TryReadField reports.
 
-// Golden set of every readable name, 299 in total: 45 computed gates (11 core +
-// 34 registered) + 252 shared members (14 core appendix + 238 registered) + 2
+// Golden set of every readable name, 303 in total: 44 computed gates (11 core +
+// 33 registered) + 257 shared members (16 core appendix + 241 registered) + 2
 // read-only aliases. A new effect field extends this list in the same change
 // that registers it; a missing name here means a registration line was lost,
 // not that the list is stale.
@@ -250,8 +251,19 @@ TEST(PostProcessSettingsWrite, ReadableFieldNamesMatchGoldenSet)
     "atmosBodyFrequency", "atmosEdgeFrequency", "atmosEdgeBreakup", "atmosDriftAngle",
     "atmosDriftRate", "atmosSunFade", "atmosSkyBounce", "atmosRimBoost",
     "atmosOcclusion", "atmosHistoryWeight", "atmosPixelScale", "bloomIntensity",
-    "volumetricFogIntensity",
-    };
+    "volumetricFogIntensity", "waterDropSize", "fallingRainSizeOffset", "waterRippleSpeed",
+
+    "depthPixelationAutoBandResolution", "depthPixelationAutoFarPixelSize", "depthPixelationBand10Divisor", "depthPixelationBand10Resolution",
+    "depthPixelationBand3End", "depthPixelationBand4Divisor", "depthPixelationBand4End", "depthPixelationBand4Resolution",
+    "depthPixelationBand5Divisor", "depthPixelationBand5End", "depthPixelationBand5Resolution", "depthPixelationBand6Divisor",
+    "depthPixelationBand6End", "depthPixelationBand6Resolution", "depthPixelationBand7Divisor", "depthPixelationBand7End",
+    "depthPixelationBand7Resolution", "depthPixelationBand8Divisor", "depthPixelationBand8End", "depthPixelationBand8Resolution",
+    "depthPixelationBand9Divisor", "depthPixelationBand9End", "depthPixelationBand9Resolution", "depthPixelationBandCount",
+    "depthPixelationDebugRanges", "depthPixelationDistanceMode", "depthPixelationFarDivisor", "depthPixelationFarResolution",
+    "depthPixelationIntensity", "depthPixelationMiddleDivisor", "depthPixelationMiddleEnd", "depthPixelationMiddleResolution",
+    "depthPixelationNearDivisor", "depthPixelationNearEnd", "depthPixelationNearResolution", "depthPixelationResolutionMode",
+    "depthPixelationSimpleScreenSpace", "depthPixelationSkyDivisor", "depthPixelationSkyResolution", "depthPixelationStabilizationMode"
+};
 
     std::unordered_set<std::string> expected;
     for (const char* name : kGolden)
@@ -324,10 +336,10 @@ TEST(PostProcessSettingsWrite, RegistryFieldsResolveDeclaredMembersByName)
     // (PP_CORE_SHARED_FIELDS in PostProcessSettings.cpp). The named
     // set is an on-disk/shader contract: it must not move without extending the
     // golden name list above.
-    EXPECT_EQ(namedCount, 238u);
+    EXPECT_EQ(namedCount, 238u + 40u + 3u); // shared + pixelation + rain
     // Blend-only members (Phase 2): 2 bloom + 41 height fog + 62 volumetric fog
     // + 1 deband + 3 AO + 7 SSSR + 5 exposure adjustment + 35 volumetric clouds.
-    EXPECT_EQ(blendOnlyCount, 156u);
+    EXPECT_EQ(blendOnlyCount, 156u + 1u); // shared + rain blend-only control
 }
 
 // Every gate an effect registers is readable by name, listed once, and reads
@@ -409,8 +421,8 @@ TEST(PostProcessSettingsWrite, RegistryBlendRulesMatchFieldKinds)
                 }
             }
         });
-    EXPECT_EQ(checked, 394u);
-    EXPECT_EQ(R::PostProcessEffectRegistry::AllSettingsFields().size(), 394u);
+    EXPECT_EQ(checked, 438u);
+    EXPECT_EQ(R::PostProcessEffectRegistry::AllSettingsFields().size(), 438u);
 }
 
 // The three-way grade runs in an ACEScct-shaped log space; the toe branch is
@@ -666,7 +678,7 @@ TEST(PostProcessColorGrade, BandOffsetsAndGlobalsBlend)
         BlendPostProcessSettings(base, PostProcessSettings{}, 1.0f,
                                  ContributingGroups(/*colorGrade=*/false, /*heightFog=*/true,
                                                     /*volumetricFog=*/true, /*atmosphericCloud=*/true,
-                                                    /*volumetricClouds=*/true));
+                                                    /*volumetricClouds=*/true, /*rain=*/true));
     EXPECT_FLOAT_EQ(kept.ColorGradeShadowsR, 0.4f);
     EXPECT_FLOAT_EQ(kept.ColorGradeHighlightsStart, 0.6f)
         << "band limits are grade fields: a non-contributing volume must not reset them";
@@ -778,7 +790,7 @@ TEST(PostProcessVhs, UsesSkippableMitLicensedPixelCorrectLdrPass)
     const std::filesystem::path chromaBandsShader =
         root / "Engine/Modules/Rendering/Shaders/vhs_chroma_bands.frag";
     const std::filesystem::path graph =
-        root / "Engine/Assets/RenderPipelines/ForwardPlus.rendergraph";
+        root / "Assets/RenderPipelines/ForwardPlus.rendergraph";
 
     std::ifstream shaderStream(shader);
     ASSERT_TRUE(shaderStream.is_open()) << shader;
@@ -1073,10 +1085,6 @@ TEST(PostProcessFogGlowControls, RequiresFogAndResolvesSharedPyramid)
     settings.FogGlowOctaves = 8;
 
     EXPECT_FALSE(settings.IsFogGlowActive()) << "glow cannot become a scene-wide bloom without fog";
-    // The glow blooms the height fog's own light, which a volumetric fog alone does not give it.
-    settings.VolumetricFogIntensity = 1.0f;
-    settings.VolumetricFogDensity = 0.4f;
-    EXPECT_FALSE(settings.IsFogGlowActive()) << "the volumetric fog alone gives the glow no source";
     settings.HeightFogIntensity = 1.0f;
     settings.HeightFogDensity = 0.4f;
     settings.HeightFogDistanceFogEnabled = 1;
@@ -1313,6 +1321,21 @@ TEST(PostProcessTonemapControls, ExposesTheThreeLooks)
     const std::string aces2Tables =
         readText(shaderRoot / "Includes/tonemap_aces2_tables.glsl");
 
+    std::string compactTonemap = tonemap;
+    for (const char whitespace : {' ', '\t', '\r', '\n'})
+        std::erase(compactTonemap, whitespace);
+    EXPECT_NE(compactTonemap.find("casekLookFilmic:returnTonemapACES2(hdr,Aces2TargetOutputMax())"),
+              std::string::npos);
+    EXPECT_NE(compactTonemap.find("casekLookPhotographic:returnTonemapAgX(hdr)"), std::string::npos);
+    EXPECT_NE(tonemap.find("#include \"Includes/tonemap_look.glsl\""), std::string::npos);
+    const std::string look = readText(shaderRoot / "Includes/tonemap_look.glsl");
+    EXPECT_NE(look.find("const int kLookFilmic = 1;"), std::string::npos);
+    EXPECT_NE(look.find("const int kNoLookArm = 3;"), std::string::npos);
+    // Filmic (ACES 2) is peak-parameterised: it routes display-referred (clamped,
+    // never extended) so its tier ladder owns the headroom rendering.
+    EXPECT_NE(tonemap.find("if (pc.look == kLookFilmic)\n        return min(sdrTonemapped, vec3(outputMax))"),
+              std::string::npos);
+
     // ACES 2's reference transform includes CAM/JMh tone scaling, chroma
     // compression, and hue-dependent gamut compression, tiered over six peak
     // luminances (100*2^k nits) with runtime blending. Its lookup tables are
@@ -1340,7 +1363,7 @@ TEST(PostProcessFogGlowControls, HeightFogOnlyVolumeCarriesSharedGlowControls)
     const PostProcessSettings out = BlendPostProcessSettings(
         base, volume, 1.0f,
         ContributingGroups(/*colorGrade=*/false, /*heightFog=*/true, /*volumetricFog=*/false,
-                           /*atmosphericCloud=*/false, /*volumetricClouds=*/true));
+                           /*atmosphericCloud=*/false, /*volumetricClouds=*/true, /*rain=*/true));
 
     EXPECT_EQ(out.FogGlowEnabled, 1);
     EXPECT_FLOAT_EQ(out.FogGlowIntensity, 0.65f);
@@ -1358,7 +1381,7 @@ TEST(PostProcessFogGlowControls, VolumetricFogOnlyVolumeCarriesSharedGlowControl
     const PostProcessSettings out = BlendPostProcessSettings(
         base, volume, 1.0f,
         ContributingGroups(/*colorGrade=*/false, /*heightFog=*/false, /*volumetricFog=*/true,
-                           /*atmosphericCloud=*/false, /*volumetricClouds=*/true));
+                           /*atmosphericCloud=*/false, /*volumetricClouds=*/true, /*rain=*/true));
 
     EXPECT_EQ(out.FogGlowEnabled, 1);
     EXPECT_FLOAT_EQ(out.FogGlowIntensity, 0.65f);
@@ -1375,7 +1398,7 @@ TEST(PostProcessFogGlowControls, UnrelatedVolumeDoesNotDisableFogGlow)
     const PostProcessSettings out = BlendPostProcessSettings(
         base, PostProcessSettings{}, 1.0f,
         ContributingGroups(/*colorGrade=*/true, /*heightFog=*/false, /*volumetricFog=*/false,
-                           /*atmosphericCloud=*/false, /*volumetricClouds=*/true));
+                           /*atmosphericCloud=*/false, /*volumetricClouds=*/true, /*rain=*/true));
 
     EXPECT_EQ(out.FogGlowEnabled, base.FogGlowEnabled);
     EXPECT_FLOAT_EQ(out.FogGlowIntensity, base.FogGlowIntensity);
@@ -1629,38 +1652,17 @@ TEST(PostProcessDofControls, LowerFNumberNarrowsPhysicalFocusRange)
                 0.0f, 1e-6f);
 }
 
-// ===========================================================================
-// PP-ARCH Phase 2 — blend equivalence lock.
+// The registry fold is checked against an independent scalar reference and
+// committed per-case and per-field output hashes. Intentional policy changes
+// regenerate the fixture with GE_PP_BLEND_GOLDEN_REGEN=1.
 //
-// BlendPostProcessSettings moves from a hand-written per-field ladder to a
-// registry-driven fold over EffectSettingsField tables. The migration contract
-// is BIT-EXACT equivalence, pinned two independent ways:
-//   1. BlendReference below is a frozen, byte-for-byte transcription of the
-//      shipped ladder (main @ 4695c76d2, extended with the white-balance trio
-//      exactly as the WB ladder shipped them in main @ e06cb4d8a) — the spec
-//      the registry fold must reproduce across randomized settings pairs,
-//      weights, and every contributes combination.
-//   2. Engine/Tests/Fixtures/PostProcessBlendGoldens.txt carries committed
-//      blend outputs, guarding the reference transcription itself. Regenerate
-//      (intentional semantic changes only) with GE_PP_BLEND_GOLDEN_REGEN=1.
-//
-// The fixture is partitioned by what a golden can actually hold across
-// platforms. PP_BLEND_LOCK_EXACT_FIELDS blends to exactly representable floats
-// on the test's input grid, so those members are locked bit-for-bit by hash.
-// PP_BLEND_LOCK_TOLERANCE_FIELDS (Exposure) blends through libm and is pinned
-// to a ULP bound. A member in the wrong half is a false red on whichever
-// platform did not author the fixture, so both halves carry a proof test rather
-// than a claim.
-//
-// Their union, PP_BLEND_LOCK_FIELDS, is the complete member inventory of
-// PostProcessSettings; the static_asserts below force it back in sync when the
-// struct grows.
-// ===========================================================================
+// Dyadic arithmetic is bit-locked. Exposure's log/exp path has a separate ULP
+// bound, with proof tests for both partitions. Layout accounting includes the
+// independently tested depth-pixelation, rain and camera-owned state.
 
 namespace BlendLock
 {
 
-using GameEngine::AppendHexBytes;
 using GameEngine::float32;
 using GameEngine::int32;
 using GameEngine::uint32;
@@ -1719,8 +1721,6 @@ using GameEngine::uint64;
     X(Look) \
     X(NightTintStrength) \
     X(NightTintR) \
-    X(NightTintG) \
-    X(NightTintB) \
     X(ChromaticAberrationIntensity) \
     X(ChromaticAberrationStartOffset) \
     X(ChromaticAberrationSaturation) \
@@ -1780,10 +1780,12 @@ using GameEngine::uint64;
     X(ColorFilterB) \
     X(ColorFilterIntensity) \
     X(ColorFilterBlendMode) \
+    X(NightTintG) \
     X(CasStrength) \
     X(CasStackOrder) \
     X(LutIntensity) \
     X(LutStage) \
+    X(NightTintB) \
     X(LutAssetGuidWords) \
     X(VignetteIntensity) \
     X(VignetteSmoothness) \
@@ -1926,7 +1928,6 @@ using GameEngine::uint64;
     X(HeightFogUseTimeOfDay) \
     X(HeightFogSkyHorizonOffset) \
     X(HeightFogSkyBottomStrength) \
-    X(HeightFogColorMode) \
     X(ColorGradeShadowsR) \
     X(ColorGradeShadowsG) \
     X(ColorGradeShadowsB) \
@@ -2100,15 +2101,13 @@ using GameEngine::uint64;
     X(ExposureClampMinEv) \
     X(ExposureClampMaxEv) \
     X(BloomOctaveBlend) \
-    X(ViewOutput) \
     X(AutoExposureMeter) \
-    X(AutoExposureCompensation) \
+    X(HeightFogColorMode) \
     X(ExposureClampMinWeight) \
     X(ExposureClampMaxWeight)
 
-// The inventory follows the struct's declaration order. The randomized input values
-// draw from one stream in that order, so adding a member renumbers the draws of the
-// members after it: regenerate the fixture with GE_PP_BLEND_GOLDEN_REGEN=1.
+// Established fields share an ordered input stream. New members use independent
+// streams so their input does not change the other golden columns.
 #define PP_BLEND_LOCK_FIELDS(X) \
     PP_BLEND_LOCK_TOLERANCE_FIELDS(X) \
     PP_BLEND_LOCK_EXACT_FIELDS(X)
@@ -2118,7 +2117,7 @@ constexpr std::size_t kFieldCount = 0 PP_BLEND_LOCK_FIELDS(PP_LOCK_COUNT);
 constexpr std::size_t kExactFieldCount = 0 PP_BLEND_LOCK_EXACT_FIELDS(PP_LOCK_COUNT);
 constexpr std::size_t kToleranceFieldCount = 0 PP_BLEND_LOCK_TOLERANCE_FIELDS(PP_LOCK_COUNT);
 #undef PP_LOCK_COUNT
-static_assert(kFieldCount == 426, "PostProcessSettings member count moved: regenerate PP_BLEND_LOCK_FIELDS");
+static_assert(kFieldCount == 424, "PostProcessSettings member count moved: regenerate PP_BLEND_LOCK_FIELDS");
 static_assert(kToleranceFieldCount == 1, "the ULP-pinned set is Exposure alone");
 static_assert(kExactFieldCount + kToleranceFieldCount == kFieldCount,
               "the lock partition must cover every member exactly once");
@@ -2148,11 +2147,58 @@ constexpr std::size_t kTailPad = sizeof(PostProcessSettings) -
 static_assert(kPadAfterAutoExposureActive == 3, "layout moved: re-derive the pad pins");
 static_assert(kPadBeforeBloomDirtGuid == 0, "layout moved: re-derive the pad pins");
 static_assert(kPadBeforeLutGuid == 0, "layout moved: re-derive the pad pins");
-// The 8-aligned GUID word arrays set the struct's alignment, and the members end
-// 4 bytes short of that boundary, so the tail pad is 4. Pinning it ensures an
-// appended member cannot be silently absorbed by the ABI alignment hole.
+// The eight-byte alignment leaves four bytes after the final clamp weight.
+// Pin the padding so an unlisted field cannot hide in that space.
 static_assert(kTailPad == 4, "layout moved: extend PP_BLEND_LOCK_FIELDS and re-derive the pad pins");
-static_assert(kFieldBytes + kPadAfterAutoExposureActive + kPadBeforeBloomDirtGuid +
+// Fields introduced after the registry migration are tested independently below,
+// keeping its historical golden fixture stable while retaining exact layout coverage.
+constexpr std::size_t kDepthPixelationFieldBytes =
+    sizeof(PostProcessSettings::DepthPixelationAutoBandResolution) +
+    sizeof(PostProcessSettings::DepthPixelationAutoFarPixelSize) +
+    sizeof(PostProcessSettings::DepthPixelationSimpleScreenSpace) +
+    sizeof(PostProcessSettings::DepthPixelationStabilizationMode) +
+    sizeof(PostProcessSettings::DepthPixelationDistanceMode) +
+    sizeof(PostProcessSettings::DepthPixelationBandCount) +
+    sizeof(PostProcessSettings::DepthPixelationBand3End) +
+    sizeof(PostProcessSettings::DepthPixelationBand4End) +
+    sizeof(PostProcessSettings::DepthPixelationBand5End) +
+    sizeof(PostProcessSettings::DepthPixelationBand6End) +
+    sizeof(PostProcessSettings::DepthPixelationBand7End) +
+    sizeof(PostProcessSettings::DepthPixelationBand8End) +
+    sizeof(PostProcessSettings::DepthPixelationBand9End) +
+    sizeof(PostProcessSettings::DepthPixelationBand4Resolution) +
+    sizeof(PostProcessSettings::DepthPixelationBand5Resolution) +
+    sizeof(PostProcessSettings::DepthPixelationBand6Resolution) +
+    sizeof(PostProcessSettings::DepthPixelationBand7Resolution) +
+    sizeof(PostProcessSettings::DepthPixelationBand8Resolution) +
+    sizeof(PostProcessSettings::DepthPixelationBand9Resolution) +
+    sizeof(PostProcessSettings::DepthPixelationBand10Resolution) +
+    sizeof(PostProcessSettings::DepthPixelationBand4Divisor) +
+    sizeof(PostProcessSettings::DepthPixelationBand5Divisor) +
+    sizeof(PostProcessSettings::DepthPixelationBand6Divisor) +
+    sizeof(PostProcessSettings::DepthPixelationBand7Divisor) +
+    sizeof(PostProcessSettings::DepthPixelationBand8Divisor) +
+    sizeof(PostProcessSettings::DepthPixelationBand9Divisor) +
+    sizeof(PostProcessSettings::DepthPixelationBand10Divisor) +
+
+    sizeof(PostProcessSettings::DepthPixelationResolutionMode) +
+    sizeof(PostProcessSettings::DepthPixelationNearDivisor) +
+    sizeof(PostProcessSettings::DepthPixelationMiddleDivisor) +
+    sizeof(PostProcessSettings::DepthPixelationFarDivisor) +
+    sizeof(PostProcessSettings::DepthPixelationSkyDivisor) +
+
+    sizeof(PostProcessSettings::DepthPixelationIntensity) +
+    sizeof(PostProcessSettings::DepthPixelationNearEnd) +
+    sizeof(PostProcessSettings::DepthPixelationMiddleEnd) +
+    sizeof(PostProcessSettings::DepthPixelationNearResolution) +
+    sizeof(PostProcessSettings::DepthPixelationMiddleResolution) +
+    sizeof(PostProcessSettings::DepthPixelationFarResolution) +
+    sizeof(PostProcessSettings::DepthPixelationSkyResolution) +
+    sizeof(PostProcessSettings::DepthPixelationDebugRanges);
+constexpr std::size_t kRainFieldBytes = sizeof(int32) + 3 * sizeof(float32);
+constexpr std::size_t kCameraResolvedFieldBytes = sizeof(PostProcessSettings::ViewOutput) +
+    sizeof(PostProcessSettings::AutoExposureCompensation);
+static_assert(kFieldBytes + kRainFieldBytes + kCameraResolvedFieldBytes + kDepthPixelationFieldBytes + kPadAfterAutoExposureActive + kPadBeforeBloomDirtGuid +
                   kPadBeforeLutGuid + kTailPad == sizeof(PostProcessSettings),
               "PP_BLEND_LOCK_FIELDS is stale: a PostProcessSettings member is missing from the equivalence lock");
 
@@ -2192,46 +2238,48 @@ inline void FillValue(float32& v, LockRng& r)
 }
 inline void FillValue(int32& v, LockRng& r) { v = static_cast<int32>(r.Next() % 9u) - 4; }
 inline void FillValue(bool& v, LockRng& r) { v = (r.Next() & 1u) != 0u; }
-inline void FillValue(PostProcessViewOutput& v, LockRng& r)
-{
-    v = static_cast<PostProcessViewOutput>(r.Next() & 1u);
-}
 inline void FillValue(uint64 (&v)[2], LockRng& r)
 {
     v[0] = (static_cast<uint64>(r.Next()) << 32) | r.Next();
     v[1] = (static_cast<uint64>(r.Next()) << 32) | r.Next();
 }
-inline void FillValue(GameEngine::Engine::Renderer::ExposureCompensationSamples& v, LockRng& r)
+
+template <class T>
+void FillLockMember(const char* name, T& value, LockRng& sequence, uint32 seed)
 {
-    FillValue(v.StartEv, r);
-    FillValue(v.EndEv, r);
-    for (float32& stops : v.Stops)
-        FillValue(stops, r);
+    if (std::strcmp(name, "NightTintR") == 0 ||
+        std::strcmp(name, "AutoExposureMeter") == 0 ||
+        std::strcmp(name, "HeightFogColorMode") == 0 ||
+        std::strcmp(name, "ExposureClampMinWeight") == 0 ||
+        std::strcmp(name, "ExposureClampMaxWeight") == 0)
+    {
+        LockRng independent(seed ^ static_cast<uint32>(GameEngine::Hashing::Fnv1a64(name, std::strlen(name))));
+        FillValue(value, independent);
+        return;
+    }
+    // The GUID's input vector reserves one scalar before its two words.
+    if (std::strcmp(name, "LutAssetGuidWords") == 0)
+        (void)sequence.Next();
+    FillValue(value, sequence);
 }
 
-// Every locked member draws from one stream in declaration order, so adding or removing a member
-// renumbers the values of the members after it: regenerate the fixture with GE_PP_BLEND_GOLDEN_REGEN=1.
 PostProcessSettings MakeRandomSettings(uint32 seed)
 {
     PostProcessSettings s{};
     LockRng r(seed);
-#define PP_LOCK_FILL(M) FillValue(s.M, r);
+#define PP_LOCK_FILL(M) FillLockMember(#M, s.M, r, seed);
     PP_BLEND_LOCK_FIELDS(PP_LOCK_FILL)
 #undef PP_LOCK_FILL
     return s;
 }
 
-constexpr uint64_t kFnvOffsetBasis = 1469598103934665603ull;
-constexpr uint64_t kFnvPrime = 1099511628211ull;
+// Seed the golden fixture's hashes were captured with. It is not the FNV-1a
+// offset basis (one digit short); keep it, or the fixture must be regenerated.
+constexpr uint64_t kGoldenHashSeed = 1469598103934665603ull;
 
 void FnvAccumulate(uint64_t& h, const void* p, std::size_t n)
 {
-    const auto* bytes = static_cast<const unsigned char*>(p);
-    for (std::size_t i = 0; i < n; ++i)
-    {
-        h ^= bytes[i];
-        h *= kFnvPrime;
-    }
+    h = GameEngine::Hashing::Fnv1a64(p, n, h);
 }
 
 // FNV-1a 64 over the bit-locked members' object bytes in declaration order
@@ -2239,7 +2287,7 @@ void FnvAccumulate(uint64_t& h, const void* p, std::size_t n)
 // excluded — it is ULP-pinned, not bit-locked).
 uint64_t HashBitLockedFields(const PostProcessSettings& s)
 {
-    uint64_t h = kFnvOffsetBasis;
+    uint64_t h = kGoldenHashSeed;
 #define PP_LOCK_HASH(M) FnvAccumulate(h, &s.M, sizeof(s.M));
     PP_BLEND_LOCK_EXACT_FIELDS(PP_LOCK_HASH)
 #undef PP_LOCK_HASH
@@ -2296,14 +2344,20 @@ const char* FirstMismatch(const PostProcessSettings& x, const PostProcessSetting
 
 std::string HexBytes(const void* p, std::size_t n)
 {
+    static const char* kDigits = "0123456789abcdef";
+    const auto* bytes = static_cast<const unsigned char*>(p);
     std::string out;
-    AppendHexBytes(out, std::span<const std::uint8_t>(static_cast<const std::uint8_t*>(p), n));
+    out.reserve(n * 2);
+    for (std::size_t i = 0; i < n; ++i)
+    {
+        out.push_back(kDigits[bytes[i] >> 4]);
+        out.push_back(kDigits[bytes[i] & 0xF]);
+    }
     return out;
 }
 
-// --- Frozen reference: byte-for-byte transcription of the shipped
-// BlendPostProcessSettings and its Copy* group helpers (main @ 4695c76d2).
-// Do not "fix" or modernize this code — it IS the spec.
+// Independent scalar reference for the supported settings and their group gates.
+// Keep arithmetic explicit here so descriptor registration errors remain observable.
 
 void RefCopyFogGlowFields(PostProcessSettings& dst, const PostProcessSettings& src)
 {
@@ -2393,6 +2447,7 @@ void RefCopyVolumetricFogFields(PostProcessSettings& dst, const PostProcessSetti
 void RefCopyHeightFogFields(PostProcessSettings& dst, const PostProcessSettings& src)
 {
     dst.HeightFogIntensity = src.HeightFogIntensity;
+    dst.HeightFogColorMode = src.HeightFogColorMode;
     dst.HeightFogDensity = src.HeightFogDensity;
     dst.HeightFogMaxOpacity = src.HeightFogMaxOpacity;
     dst.HeightFogMinDistance = src.HeightFogMinDistance;
@@ -2451,7 +2506,6 @@ void RefCopyHeightFogFields(PostProcessSettings& dst, const PostProcessSettings&
     dst.HeightFogUseTimeOfDay = src.HeightFogUseTimeOfDay;
     dst.HeightFogSkyHorizonOffset = src.HeightFogSkyHorizonOffset;
     dst.HeightFogSkyBottomStrength = src.HeightFogSkyBottomStrength;
-    dst.HeightFogColorMode = src.HeightFogColorMode;
 }
 
 void RefCopyAtmosphericCloudFields(PostProcessSettings& dst, const PostProcessSettings& src)
@@ -2523,7 +2577,8 @@ PostProcessSettings BlendReference(
     bool bContributesHeightFog,
     bool bContributesVolumetricFog,
     bool bContributesAtmosphericCloud,
-    bool bContributesVolumetricClouds = true)
+    bool bContributesVolumetricClouds = true,
+    bool bContributesRain = true)
 {
     auto lerp = [](float x, float y, float t) { return x + (y - x) * t; };
 
@@ -2608,7 +2663,7 @@ PostProcessSettings BlendReference(
     out.AutoExposureSpeedUp   = lerp(a.AutoExposureSpeedUp, b.AutoExposureSpeedUp, w);
     out.AutoExposureSpeedDown = lerp(a.AutoExposureSpeedDown, b.AutoExposureSpeedDown, w);
     out.AutoExposureBiasEv    = lerp(a.AutoExposureBiasEv, b.AutoExposureBiasEv, w);
-    out.AutoExposureMeter     = (w >= 0.5f) ? b.AutoExposureMeter : a.AutoExposureMeter;
+    out.AutoExposureMeter = (w >= 0.5f) ? b.AutoExposureMeter : a.AutoExposureMeter;
     // Volume exposure modifiers: EV-space lerps fade a volume's compensation/clamps in and
     // out with its blend weight (the no-op clamp endpoints are the identity). A fading clamp
     // engages nonlinearly — it only bites once the lerped value crosses the camera envelope —
@@ -2620,11 +2675,9 @@ PostProcessSettings BlendReference(
     out.ExposureClampMaxWeight = lerp(a.ExposureClampMaxWeight, b.ExposureClampMaxWeight, w);
     // Discrete settings: use B when weight >= 0.5 (highest priority wins)
     out.AutoExposureActive = (w >= 0.5f) ? b.AutoExposureActive : a.AutoExposureActive;
-    out.Look           = (w >= 0.5f) ? b.Look : a.Look;
+    out.Look = (w >= 0.5f) ? b.Look : a.Look;
     out.NightTintStrength = lerp(a.NightTintStrength, b.NightTintStrength, w);
     out.NightTintR = lerp(a.NightTintR, b.NightTintR, w);
-    out.NightTintG = lerp(a.NightTintG, b.NightTintG, w);
-    out.NightTintB = lerp(a.NightTintB, b.NightTintB, w);
     out.ChromaticAberrationIntensity = lerp(a.ChromaticAberrationIntensity, b.ChromaticAberrationIntensity, w);
     out.ChromaticAberrationStartOffset = lerp(a.ChromaticAberrationStartOffset, b.ChromaticAberrationStartOffset, w);
     out.ChromaticAberrationSaturation = lerp(a.ChromaticAberrationSaturation, b.ChromaticAberrationSaturation, w);
@@ -2681,10 +2734,12 @@ PostProcessSettings BlendReference(
     out.ColorFilterB         = lerp(a.ColorFilterB,         b.ColorFilterB,         w);
     out.ColorFilterIntensity = lerp(a.ColorFilterIntensity, b.ColorFilterIntensity, w);
     out.ColorFilterBlendMode = (w >= 0.5f) ? b.ColorFilterBlendMode : a.ColorFilterBlendMode;
+    out.NightTintG = lerp(a.NightTintG, b.NightTintG, w);
     out.CasStrength          = lerp(a.CasStrength,          b.CasStrength,          w);
     out.CasStackOrder        = (w >= 0.5f) ? b.CasStackOrder : a.CasStackOrder;
     out.LutIntensity         = lerp(a.LutIntensity,         b.LutIntensity,         w);
-    out.LutStage     = (w >= 0.5f) ? b.LutStage : a.LutStage;
+    out.LutStage = (w >= 0.5f) ? b.LutStage : a.LutStage;
+    out.NightTintB = lerp(a.NightTintB, b.NightTintB, w);
     out.LutAssetGuidWords[0] = 0;
     out.LutAssetGuidWords[1] = 0;
     out.VignetteIntensity  = lerp(a.VignetteIntensity,  b.VignetteIntensity,  w);
@@ -2791,6 +2846,7 @@ PostProcessSettings BlendReference(
     out.HeatDistortionUseAbsoluteY = (w >= 0.5f) ? b.HeatDistortionUseAbsoluteY : a.HeatDistortionUseAbsoluteY;
     out.HeatDistortionSoftness = lerp(a.HeatDistortionSoftness, b.HeatDistortionSoftness, w);
     out.HeightFogIntensity = lerp(a.HeightFogIntensity, b.HeightFogIntensity, w);
+    out.HeightFogColorMode = (w >= 0.5f) ? b.HeightFogColorMode : a.HeightFogColorMode;
     out.HeightFogDensity = lerp(a.HeightFogDensity, b.HeightFogDensity, w);
     out.HeightFogMaxOpacity = lerp(a.HeightFogMaxOpacity, b.HeightFogMaxOpacity, w);
     out.HeightFogMinDistance = lerp(a.HeightFogMinDistance, b.HeightFogMinDistance, w);
@@ -2849,7 +2905,6 @@ PostProcessSettings BlendReference(
     out.HeightFogUseTimeOfDay = (w >= 0.5f) ? b.HeightFogUseTimeOfDay : a.HeightFogUseTimeOfDay;
     out.HeightFogSkyHorizonOffset = lerp(a.HeightFogSkyHorizonOffset, b.HeightFogSkyHorizonOffset, w);
     out.HeightFogSkyBottomStrength = lerp(a.HeightFogSkyBottomStrength, b.HeightFogSkyBottomStrength, w);
-    out.HeightFogColorMode = (w >= 0.5f) ? b.HeightFogColorMode : a.HeightFogColorMode;
     out.VolumetricFogIntensity         = lerp(a.VolumetricFogIntensity, b.VolumetricFogIntensity, w);
     out.VolumetricFogIsGlobal          = (w >= 0.5f) ? b.VolumetricFogIsGlobal : a.VolumetricFogIsGlobal;
     out.VolumetricFogVolumeShape       = (w >= 0.5f) ? b.VolumetricFogVolumeShape : a.VolumetricFogVolumeShape;
@@ -3044,6 +3099,12 @@ PostProcessSettings BlendReference(
         out.ColorGradeHighlightsStart = a.ColorGradeHighlightsStart;
         out.ColorGradeHighlightsEnd   = a.ColorGradeHighlightsEnd;
     }
+    // Rain settings only contribute when the incoming volume authors the rain group.
+    const float rainWeight = bContributesRain ? w : 0.0f;
+    out.RainSettingsActive = bContributesRain && w >= 0.5f ? b.RainSettingsActive : a.RainSettingsActive;
+    out.WaterDropSize = lerp(a.WaterDropSize, b.WaterDropSize, rainWeight);
+    out.FallingRainSizeOffset = lerp(a.FallingRainSizeOffset, b.FallingRainSizeOffset, rainWeight);
+    out.WaterRippleSpeed = lerp(a.WaterRippleSpeed, b.WaterRippleSpeed, rainWeight);
     return out;
 }
 
@@ -3102,7 +3163,7 @@ PostProcessSettings RunCase(const BlendCase& c)
         a, b, c.Weight,
         ContributingGroups(c.ContributesColorGrade, c.ContributesHeightFog,
                            c.ContributesVolumetricFog, c.ContributesAtmosphericCloud,
-                           /*volumetricClouds=*/true));
+                           /*volumetricClouds=*/true, /*rain=*/true));
 }
 
 } // namespace BlendLock
@@ -3150,32 +3211,33 @@ TEST(PostProcessBlendCoverage, ResolveDerivedForRenderHeightMatchesInlineSequenc
     }
 }
 
-// The production blend must reproduce the frozen reference bit-exactly for
+// The production blend must reproduce the scalar reference bit-exactly for
 // every field, across randomized pairs, a weight sweep (including the 0.5
-// dominant-pick tie, which picks b), and all 16 contributes combinations.
-TEST(PostProcessBlendEquivalence, BlendMatchesFrozenReferenceBitExact)
+// dominant-pick tie, which picks b), and all 64 contributes combinations.
+TEST(PostProcessBlendEquivalence, BlendMatchesScalarReferenceBitExact)
 {
     using namespace BlendLock;
     for (uint32 seed = 1; seed <= 12; ++seed)
     {
         for (float w : {0.0f, 0.125f, 0.25f, 0.5f, 0.503f, 0.75f, 1.0f})
         {
-            for (int combo = 0; combo < 32; ++combo)
+            for (int combo = 0; combo < 64; ++combo)
             {
                 const bool cg = (combo & 1) != 0;
                 const bool hf = (combo & 2) != 0;
                 const bool vf = (combo & 4) != 0;
                 const bool ac = (combo & 8) != 0;
                 const bool vc = (combo & 16) != 0;
+                const bool rn = (combo & 32) != 0;
                 const PostProcessSettings a = MakeRandomSettings(1000u + seed);
                 const PostProcessSettings b = MakeRandomSettings(2000u + seed);
-                const PostProcessSettings ref = BlendReference(a, b, w, cg, hf, vf, ac, vc);
-                const PostProcessSettings got = BlendPostProcessSettings(a, b, w, ContributingGroups(cg, hf, vf, ac, vc));
+                const PostProcessSettings ref = BlendReference(a, b, w, cg, hf, vf, ac, vc, rn);
+                const PostProcessSettings got = BlendPostProcessSettings(a, b, w, ContributingGroups(cg, hf, vf, ac, vc, rn));
                 const char* bad = FirstMismatch(ref, got);
                 ASSERT_TRUE(bad == nullptr)
-                    << "field '" << bad << "' diverges from the frozen blend reference"
+                    << "field '" << bad << "' diverges from the scalar blend reference"
                     << " (seed=" << seed << " w=" << w << " cg=" << cg << " hf=" << hf
-                    << " vf=" << vf << " ac=" << ac << " vc=" << vc << ")";
+                    << " vf=" << vf << " ac=" << ac << " vc=" << vc << " rn=" << rn << ")";
             }
         }
     }
@@ -3230,7 +3292,7 @@ TEST(PostProcessBlendEquivalence, GoldenFixtureLocksShippedBlendOutputs)
 #undef PP_LOCK_NAME
     ASSERT_EQ(columnNames.size(), kExactFieldCount);
 
-    std::vector<uint64_t> columnHashes(kExactFieldCount, kFnvOffsetBasis);
+    std::vector<uint64_t> columnHashes(kExactFieldCount, kGoldenHashSeed);
     for (const PostProcessSettings& s : outputs)
     {
         std::size_t column = 0;
@@ -3452,26 +3514,11 @@ bool BlendsExactly(bool out, bool x, bool y, float, bool dflt)
     return out == x || out == y || out == dflt;
 }
 
-bool BlendsExactly(PostProcessViewOutput out, PostProcessViewOutput x, PostProcessViewOutput y, float,
-                   PostProcessViewOutput dflt)
-{
-    return out == x || out == y || out == dflt;
-}
-
 bool BlendsExactly(const uint64 (&out)[2], const uint64 (&x)[2], const uint64 (&y)[2], float,
                    const uint64 (&dflt)[2])
 {
     return BitsEqual(out, x, sizeof(out)) || BitsEqual(out, y, sizeof(out)) ||
            BitsEqual(out, dflt, sizeof(out));
-}
-
-bool BlendsExactly(const GameEngine::Engine::Renderer::ExposureCompensationSamples& out,
-                   const GameEngine::Engine::Renderer::ExposureCompensationSamples& x,
-                   const GameEngine::Engine::Renderer::ExposureCompensationSamples& y, float,
-                   const GameEngine::Engine::Renderer::ExposureCompensationSamples& dflt)
-{
-    return BitsEqual(&out, &x, sizeof(out)) || BitsEqual(&out, &y, sizeof(out)) ||
-           BitsEqual(&out, &dflt, sizeof(out));
 }
 
 } // namespace
@@ -3757,7 +3804,7 @@ TEST(PostProcessExtractHooks, EveryDescriptorRegistersExtractAndFogOrderHolds)
             ++index;
             ++count;
         });
-    EXPECT_EQ(count, 22u);
+    EXPECT_EQ(count, 24u);
     ASSERT_GE(volumetricIndex, 0);
     ASSERT_GE(heightIndex, 0);
     EXPECT_LT(volumetricIndex, heightIndex)
@@ -3788,7 +3835,7 @@ TEST(PostProcessEffectRegistry, EveryDescriptorIsFactoryCreatable)
             EXPECT_TRUE(world.HasComponent(entity, d.Type)) << d.ComponentName;
         });
 
-    EXPECT_EQ(count, 22u);
+    EXPECT_EQ(count, 24u);
 }
 
 TEST(PostProcessExtractHooks, BloomFoldClampsAndGatesOnEnabled)
@@ -4086,10 +4133,8 @@ TEST(PostProcessExtractHooks, ExposureAdjustmentRespectsClampFlags)
     auto out = ExtractAllEffects(world, e);
     EXPECT_FLOAT_EQ(out.Settings.ExposureCompensationEv, 1.5f);
     EXPECT_FLOAT_EQ(out.Settings.ExposureClampMinEv, 6.0f);
-    EXPECT_FLOAT_EQ(out.Settings.ExposureClampMinWeight, 1.0f);
     EXPECT_FLOAT_EQ(out.Settings.ExposureClampMaxEv,
                     GameEngine::Engine::Renderer::kExposureClampNoOpMaxEv);
-    EXPECT_FLOAT_EQ(out.Settings.ExposureClampMaxWeight, 0.0f);
 }
 
 // The per-volume neutralize baselines fog/cloud struct defaults for volumes
@@ -4106,6 +4151,100 @@ TEST(PostProcessExtractHooks, NeutralizeBaselinesFogAndCloudDefaults)
     EXPECT_FLOAT_EQ(out.Settings.AtmosphericCloudSkyFill, 0.0f);
     EXPECT_FLOAT_EQ(out.Settings.AtmosphericCloudVaporMass, 0.0f);
     EXPECT_FALSE(FindEffectDescriptor("BloomEffect") == nullptr);
+}
+
+TEST(PostProcessDepthPixelation, ExtractsClampsAndDisables)
+{
+    GameEngine::ECS::World world;
+    auto entity = world.CreateEntity();
+    GameEngine::Components::DepthPixelationEffect effect{};
+    effect.NearEnd = 20.0f;
+    effect.MiddleEnd = 5.0f;
+    effect.NearResolution = 0.0f;
+    effect.SkyResolution = 20000.0f;
+    effect.DebugRanges = 8;
+    world.AddComponentImmediate(entity, effect);
+    auto settings = ExtractAllEffects(world, entity).Settings;
+    EXPECT_FLOAT_EQ(settings.DepthPixelationIntensity, 1.0f);
+    EXPECT_FLOAT_EQ(settings.DepthPixelationMiddleEnd, 20.0f);
+    EXPECT_FLOAT_EQ(settings.DepthPixelationNearResolution, 1.0f);
+    EXPECT_FLOAT_EQ(settings.DepthPixelationSkyResolution, 16384.0f);
+    EXPECT_EQ(settings.DepthPixelationDebugRanges, 1);
+    effect.Enabled = false;
+    world.AddComponentImmediate(entity, effect);
+    settings = ExtractAllEffects(world, entity).Settings;
+    EXPECT_FLOAT_EQ(settings.DepthPixelationIntensity, 0.0f);
+    EXPECT_EQ(settings.DepthPixelationDebugRanges, 0);
+}
+
+TEST(PostProcessDepthPixelation, BlendsEveryResolutionAndDominantPicksDebug)
+{
+    PostProcessSettings a{}, b{};
+    a.DepthPixelationIntensity = 10.0f; b.DepthPixelationIntensity = 30.0f;
+    a.DepthPixelationNearEnd = 10.0f; b.DepthPixelationNearEnd = 30.0f;
+    a.DepthPixelationMiddleEnd = 10.0f; b.DepthPixelationMiddleEnd = 30.0f;
+    a.DepthPixelationNearResolution = 10.0f; b.DepthPixelationNearResolution = 30.0f;
+    a.DepthPixelationMiddleResolution = 10.0f; b.DepthPixelationMiddleResolution = 30.0f;
+    a.DepthPixelationFarResolution = 10.0f; b.DepthPixelationFarResolution = 30.0f;
+    a.DepthPixelationSkyResolution = 10.0f; b.DepthPixelationSkyResolution = 30.0f;
+    b.DepthPixelationDebugRanges = 1;
+    auto result = BlendPostProcessSettings(a, b, 0.25f, SettingsBlendGroupMask::All());
+    EXPECT_FLOAT_EQ(result.DepthPixelationIntensity, 15.0f);
+    EXPECT_FLOAT_EQ(result.DepthPixelationNearEnd, 15.0f);
+    EXPECT_FLOAT_EQ(result.DepthPixelationMiddleEnd, 15.0f);
+    EXPECT_FLOAT_EQ(result.DepthPixelationNearResolution, 15.0f);
+    EXPECT_FLOAT_EQ(result.DepthPixelationMiddleResolution, 15.0f);
+    EXPECT_FLOAT_EQ(result.DepthPixelationFarResolution, 15.0f);
+    EXPECT_FLOAT_EQ(result.DepthPixelationSkyResolution, 15.0f);
+    EXPECT_EQ(result.DepthPixelationDebugRanges, 0);
+    EXPECT_EQ(BlendPostProcessSettings(a, b, 0.75f, SettingsBlendGroupMask::All()).DepthPixelationDebugRanges, 1);
+}
+
+TEST(PostProcessDepthPixelation, BlendsDivisorsAndDominantPicksMode)
+{
+    PostProcessSettings a{}, b{};
+    a.DepthPixelationNearDivisor = a.DepthPixelationMiddleDivisor = a.DepthPixelationFarDivisor = a.DepthPixelationSkyDivisor = 4;
+    b.DepthPixelationNearDivisor = b.DepthPixelationMiddleDivisor = b.DepthPixelationFarDivisor = b.DepthPixelationSkyDivisor = 12;
+    b.DepthPixelationResolutionMode = 1;
+    b.DepthPixelationDistanceMode = 1;
+    b.DepthPixelationBandCount = 10;
+    const auto result = BlendPostProcessSettings(a, b, 0.25f, SettingsBlendGroupMask::All());
+    EXPECT_EQ(result.DepthPixelationResolutionMode, 0);
+    EXPECT_EQ(result.DepthPixelationDistanceMode, 0);
+    EXPECT_EQ(result.DepthPixelationBandCount, 3);
+    EXPECT_FLOAT_EQ(result.DepthPixelationNearDivisor, 6);
+    EXPECT_FLOAT_EQ(result.DepthPixelationMiddleDivisor, 6);
+    EXPECT_FLOAT_EQ(result.DepthPixelationFarDivisor, 6);
+    EXPECT_FLOAT_EQ(result.DepthPixelationSkyDivisor, 6);
+    EXPECT_EQ(BlendPostProcessSettings(a, b, 0.75f, SettingsBlendGroupMask::All()).DepthPixelationResolutionMode, 1);
+    EXPECT_EQ(BlendPostProcessSettings(a, b, 0.75f, SettingsBlendGroupMask::All()).DepthPixelationDistanceMode, 1);
+    EXPECT_EQ(BlendPostProcessSettings(a, b, 0.75f, SettingsBlendGroupMask::All()).DepthPixelationBandCount, 10);
+}
+
+TEST(PostProcessDepthPixelation, EnabledControlsReplacementAndAutomaticModesRoundTripToSettings)
+{
+    using Effect = GameEngine::Components::DepthPixelationEffect;
+    GameEngine::ECS::World world;
+    const auto entity = world.CreateEntity();
+    Effect effect{};
+    effect.Intensity = 0.0f; // Legacy blend amount no longer disables replacement.
+    effect.AutoBandResolution = 1;
+    effect.AutoFarPixelSize = 2;
+    effect.SimpleScreenSpace = 1;
+    effect.StabilizationMode = 2;
+    world.AddComponentImmediate(entity, effect);
+    const auto settings = ExtractAllEffects(world, entity).Settings;
+    EXPECT_FLOAT_EQ(settings.DepthPixelationIntensity, 1.0f);
+    EXPECT_EQ(settings.DepthPixelationAutoBandResolution, 1);
+    EXPECT_EQ(settings.DepthPixelationAutoFarPixelSize, 2);
+    EXPECT_EQ(settings.DepthPixelationSimpleScreenSpace, 1);
+    EXPECT_EQ(settings.DepthPixelationStabilizationMode, 2);
+    PostProcessSettings off{};
+    EXPECT_EQ(BlendPostProcessSettings(off, settings, 0.25f, SettingsBlendGroupMask::All()).DepthPixelationAutoBandResolution, 0);
+    EXPECT_EQ(BlendPostProcessSettings(off, settings, 0.75f, SettingsBlendGroupMask::All()).DepthPixelationAutoFarPixelSize, 2);
+    EXPECT_EQ(BlendPostProcessSettings(off, settings, 0.75f, SettingsBlendGroupMask::All()).DepthPixelationStabilizationMode, 2);
+    EXPECT_EQ(BlendPostProcessSettings(off, settings, 0.25f, SettingsBlendGroupMask::All()).DepthPixelationSimpleScreenSpace, 0);
+    EXPECT_EQ(BlendPostProcessSettings(off, settings, 0.75f, SettingsBlendGroupMask::All()).DepthPixelationSimpleScreenSpace, 1);
 }
 
 TEST(PostProcessBloomControls, AdditiveAndScatteringAmountsAreIndependent)

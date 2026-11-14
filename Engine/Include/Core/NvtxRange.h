@@ -40,7 +40,7 @@ class ScopedNvtxRange
     bool m_Active;
 };
 
-/// Resolves the GE_NVTX environment gate (truthy unless "0") and registers the
+/// Resolves the GE_NVTX environment gate (on unless switched off) and registers the
 /// NVTX domain. Call once from Application::Initialize before workers start;
 /// ranges constructed before this are inert.
 void InitializeNvtx();

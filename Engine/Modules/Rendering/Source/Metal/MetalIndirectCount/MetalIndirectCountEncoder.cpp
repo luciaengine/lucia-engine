@@ -168,6 +168,34 @@ void MetalIndirectCountEncoder::EncodeDraw(MTL::RenderCommandEncoder* encoder, c
         m_EncoderExecutedCommands = true;
     }
     m_State = TranslationState::Sealed;
+    if (draw.UseDirectDraws)
+    {
+        // Keep the GPU-written count authoritative. Mask unused records in a
+        // private range instead of replaying the caller's trailing records or
+        // synchronously reading the count back to the CPU.
+        constexpr size_t kDrawRecordBytes = 5 * sizeof(uint32_t);
+        const MetalIndirectCommandArena::UploadRange arguments =
+            m_Arena->AllocateUpload(static_cast<size_t>(draw.MaxDrawCount) * kDrawRecordBytes);
+        if (arguments.Buffer == nullptr)
+        {
+            return;
+        }
+        MetalIndirectCountSegment segment{};
+        segment.RecordsAddress = draw.Records->buffer->gpuAddress() + draw.RecordsOffset;
+        segment.CountAddress = draw.Count->buffer->gpuAddress() + draw.CountOffset;
+        segment.MaxDrawCount = draw.MaxDrawCount;
+        segment.CommandCount = draw.MaxDrawCount;
+        segment.RecordStride = draw.RecordStride;
+        segment.OutputRecordsAddress = arguments.GpuAddress;
+        m_Segments.push_back(segment);
+        for (uint32_t i = 0; i < draw.MaxDrawCount; ++i)
+        {
+            encoder->drawIndexedPrimitives(draw.PrimitiveType, draw.IndexType, draw.Indices->buffer, 0,
+                                           arguments.Buffer,
+                                           arguments.Offset + static_cast<size_t>(i) * kDrawRecordBytes);
+        }
+        return;
+    }
     // One execute per page-sized run of records; the translation writes each
     // run's range, so runs past the count execute nothing.
     uint32_t firstRecord = 0;

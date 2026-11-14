@@ -4,9 +4,9 @@
 // writes) and their first-write semantics had zero automated coverage. This
 // harness drives MorphTargetSystem against an in-memory synthesized morph
 // ModelAsset via the resolver seam and locks: first-frame writes happen,
-// idle frames take no grants, weight edits re-register + re-stamp, and the
-// runtime-mesh unregister fires the registry notification the extraction
-// fast path escalates on (E6).
+// idle frames take no grants, the first weight edit registers the runtime
+// mesh and re-stamps, later edits rewrite it in place under the same handle,
+// and zero weights hand the entity back to its source mesh.
 
 #include <gtest/gtest.h>
 
@@ -31,6 +31,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 using namespace GameEngine;
@@ -168,9 +169,8 @@ TEST(MorphTargetDeepPathTests, SynthesizedModelDrivesGatedWritesAndReRegisters)
     EXPECT_FLOAT_EQ(weights->appliedWeights[0], 1.0f);
     const uint64 firstRuntimeHandle = mrRead->meshGpuHandleId;
 
-    // Second weight edit: the old runtime mesh is unregistered (this is the
-    // UnregisterSubmesh shape the fusion fast path hears via the registry
-    // notification, E6) and a new morphed mesh takes its place.
+    // Second weight edit: the runtime mesh's vertices are rewritten in place,
+    // so the handle stays and no row is freed (no E6 notification).
     const size_t notificationsBefore = unregisterNotifications;
     if (auto* w = world.GetComponentForWrite<Components::MorphTargetWeights>(e.GetHandle()))
     {
@@ -178,15 +178,15 @@ TEST(MorphTargetDeepPathTests, SynthesizedModelDrivesGatedWritesAndReRegisters)
         ++w->version;
     }
     morphSystem.Update(world, kDt);
-    EXPECT_GT(unregisterNotifications, notificationsBefore)
-        << "re-registering the runtime mesh must announce the freed row";
+    EXPECT_EQ(unregisterNotifications, notificationsBefore)
+        << "an in-place rewrite must not announce a freed row";
     mrRead = world.GetComponent<Components::MeshRenderer>(e.GetHandle());
     ASSERT_NE(mrRead, nullptr);
-    EXPECT_NE(mrRead->meshGpuHandleId, 0u);
+    EXPECT_EQ(mrRead->meshGpuHandleId, firstRuntimeHandle)
+        << "a weight edit must keep the runtime mesh handle";
     weights = world.GetComponent<Components::MorphTargetWeights>(e.GetHandle());
     ASSERT_NE(weights, nullptr);
     EXPECT_FLOAT_EQ(weights->appliedWeights[0], 0.5f);
-    (void)firstRuntimeHandle;
 
     // Weights back to zero: the runtime mesh is dropped and the source
     // handle is re-assigned.
@@ -203,6 +203,118 @@ TEST(MorphTargetDeepPathTests, SynthesizedModelDrivesGatedWritesAndReRegisters)
     weights = world.GetComponent<Components::MorphTargetWeights>(e.GetHandle());
     ASSERT_NE(weights, nullptr);
     EXPECT_EQ(weights->runtimeMeshGpuHandleId, 0u);
+
+    token.Reset();
+    rs.Shutdown();
+    device->Shutdown();
+}
+
+// A steady weight animation rewrites the runtime mesh's vertices in place: the
+// handle, the GPUScene row and the index range stay, no unregister event fires,
+// and a vertex range becomes current again only once every frame that could
+// still read it has completed.
+TEST(MorphTargetDeepPathTests, WeightAnimationRewritesTheRuntimeMeshInPlace)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+
+    RenderServices rs;
+    ASSERT_TRUE(rs.Initialize(device.get()));
+    auto& registry = rs.GetMeshGPURegistry();
+
+    const GUID modelGuid = GUID::Generate();
+    auto model = std::make_unique<ModelAsset>(modelGuid,
+                                              std::filesystem::path("Synthetic://MorphInPlace"));
+    Vector<Mesh> meshes;
+    meshes.push_back(MakeMorphSourceMesh());
+    model->SetMeshesForTest(std::move(meshes));
+    ASSERT_TRUE(model->IsLoaded());
+
+    MorphTargetSystem morphSystem(&rs);
+    morphSystem.SetModelResolverForTest(
+        [&](const GUID& guid) { return guid == modelGuid ? model.get() : nullptr; });
+
+    ECS::World world(nullptr);
+    ECS::Entity e = world.Create();
+    Components::MeshRenderer mr{};
+    mr.modelAssetGuid.Set(modelGuid);
+    mr.meshId = 0;
+    e.Set(mr);
+    e.Set(Components::MorphTargetWeights{});
+    e.Set(Components::LocalBounds{});
+    world.ProcessCommands();
+
+    uint64_t frame = 0;
+    const auto stepWithWeight = [&](float weight)
+    {
+        registry.BeginFrame(++frame);
+        if (auto* w = world.GetComponentForWrite<Components::MorphTargetWeights>(e.GetHandle()))
+        {
+            w->weights[0] = weight;
+            ++w->version;
+        }
+        morphSystem.Update(world, kDt);
+    };
+
+    stepWithWeight(0.1f);
+    const auto* weights = world.GetComponent<Components::MorphTargetWeights>(e.GetHandle());
+    ASSERT_NE(weights, nullptr);
+    const uint64 runtimeHandleId = weights->runtimeMeshGpuHandleId;
+    ASSERT_NE(runtimeHandleId, 0u) << "setup: a runtime morphed mesh must be registered";
+    const Rendering::MeshGPUHandle runtimeHandle(runtimeHandleId);
+    const Rendering::MeshGPUEntry* entry = registry.Find(runtimeHandle);
+    ASSERT_NE(entry, nullptr);
+    ASSERT_NE(entry->gpuMeshIndex, ~0u) << "setup: the runtime mesh must own a GPUScene row";
+    const uint32_t gpuMeshIndex = entry->gpuMeshIndex;
+    const uint32_t firstIndex = entry->firstIndex;
+    const uint64_t indexOffsetBytes = entry->indexSubAlloc.offset;
+
+    size_t unregisterNotifications = 0;
+    auto token = registry.SubscribeReload([&](const GUID&) { ++unregisterNotifications; });
+
+    // The frame each vertex offset was last drawn from. A range the entry moves
+    // back to must have stayed out of use for a full frames-in-flight window.
+    std::unordered_map<uint32_t, uint64_t> lastCurrentFrame{{entry->vertexOffset, frame}};
+    uint32_t currentVertexOffset = entry->vertexOffset;
+    for (int step = 1; step <= 16; ++step)
+    {
+        const float weight = 0.1f + 0.05f * static_cast<float>(step);
+        stepWithWeight(weight);
+
+        weights = world.GetComponent<Components::MorphTargetWeights>(e.GetHandle());
+        ASSERT_NE(weights, nullptr);
+        EXPECT_EQ(weights->runtimeMeshGpuHandleId, runtimeHandleId)
+            << "a weight change must keep the runtime mesh handle (step " << step << ")";
+        const auto* mrRead = world.GetComponent<Components::MeshRenderer>(e.GetHandle());
+        ASSERT_NE(mrRead, nullptr);
+        EXPECT_EQ(mrRead->meshGpuHandleId, runtimeHandleId);
+
+        entry = registry.Find(runtimeHandle);
+        ASSERT_NE(entry, nullptr) << "the runtime mesh entry was released (step " << step << ")";
+        EXPECT_EQ(entry->gpuMeshIndex, gpuMeshIndex) << "the GPUScene row moved";
+        EXPECT_EQ(entry->firstIndex, firstIndex) << "the index data was uploaded again";
+        EXPECT_EQ(entry->indexSubAlloc.offset, indexOffsetBytes);
+        // Vertex 0 rises by 2 * weight, so the box spans y in [-1, 1 + 2w].
+        EXPECT_NEAR(entry->bounds.halfExtents.y, 1.0f + weight, 1e-5f)
+            << "the rewritten vertices did not reach the entry bounds";
+
+        if (entry->vertexOffset != currentVertexOffset)
+        {
+            const auto previous = lastCurrentFrame.find(entry->vertexOffset);
+            if (previous != lastCurrentFrame.end())
+            {
+                EXPECT_GE(frame - previous->second,
+                          static_cast<uint64_t>(Rendering::IDevice::kMaxSupportedFramesInFlight))
+                    << "vertex offset " << entry->vertexOffset
+                    << " was rewritten while a frame in flight could still read it";
+            }
+            currentVertexOffset = entry->vertexOffset;
+        }
+        lastCurrentFrame[currentVertexOffset] = frame;
+    }
+    EXPECT_EQ(unregisterNotifications, 0u)
+        << "a weight change must not free and re-create the runtime mesh row";
 
     token.Reset();
     rs.Shutdown();

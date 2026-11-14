@@ -48,7 +48,7 @@ namespace Rendering {
         // Releases command-buffer-scoped helpers through the device's deferred
         // destruction path, then nulls out m_CommandBuffer so the destructor won't
         // double-recycle it.
-        void OnSubmitted();
+        void OnSubmitted(SemaphoreHandle timeline = {}, uint64_t timelineValue = 0);
 
         // Access the underlying VkCommandBuffer (for submit/tracking).
         VkCommandBuffer GetVkCommandBuffer() const { return m_CommandBuffer; }
@@ -156,6 +156,7 @@ namespace Rendering {
         // Resource operations
         void CopyBuffer(BufferHandle src, BufferHandle dst, size_t size, size_t srcOffset = 0, size_t dstOffset = 0) override;
         void CopyTexture(TextureHandle src, TextureHandle dst) override;
+        bool CopyDepthArrayLayer(TextureHandle src, TextureHandle dst, uint32_t layer) override;
         void FillBuffer(BufferHandle dst, size_t offset, size_t size, uint32_t value) override;
 
 	        // Readback helper implementation
@@ -233,6 +234,7 @@ namespace Rendering {
         const std::vector<UsedResource>& GetUsedResources() const { return m_UsedResources; }
 
     private:
+        bool RecordTextureCopy(TextureHandle src, TextureHandle dst, uint32_t layer);
         // Single source of truth for vkCmdPushConstants stage flags — every push
         // path (SetConstants x4, by-name, by-id) resolves through here so the
         // flags exactly match the bound pipeline layout's declared range
@@ -243,12 +245,18 @@ namespace Rendering {
         VkShaderStageFlags ResolvePushConstantStageFlags(const VulkanPipeline* pipeline,
                                                          VkShaderStageFlags metadataStages) const;
 
-        // The part of `stages` this list's queue family can execute. The graphics
-        // (universal) queue keeps every stage. A stage another queue owns names work on
-        // that queue, which a semaphore wait in the submission orders, not a barrier here.
+        // Raster state is consumed by draws. Keeping it pending avoids dirtying
+        // graphics state before compute-only work on Adreno Vulkan 1.1 drivers.
         VkPipelineStageFlags QueueExpressibleStages(VkPipelineStageFlags stages) const;
-        // Applies QueueExpressibleStages to one side of a barrier (see the definition).
-        void ApplyQueueFloor(const ResourceBarrier& barrier, VkPipelineStageFlags& stage, VkAccessFlags& access) const;
+        void ApplyQueueFloor(const ResourceBarrier& barrier, VkPipelineStageFlags& stage,
+                             VkAccessFlags& access) const;
+
+        void ApplyRasterState();
+        VkPipeline m_BoundGraphicsPipeline = VK_NULL_HANDLE;
+        VkViewport m_Viewport{};
+        VkRect2D m_Scissor{};
+        bool m_ViewportPending = false;
+        bool m_ScissorPending = false;
 
         VulkanDevice* m_Device;
         VkCommandBuffer m_CommandBuffer = VK_NULL_HANDLE;

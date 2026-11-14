@@ -1,0 +1,7 @@
+<UIElement class="localization-key-row">
+  <Label class="localization-key-prefix" />
+  <Label class="localization-key-last" />
+  <UIElement class="localization-key-gap" />
+  <UIElement class="localization-dirty-dot" tooltip="Changes not applied" />
+  <UIElement class="localization-missing-dot" tooltip="Translation absent, empty, or missing plural forms" />
+</UIElement>

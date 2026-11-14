@@ -8,7 +8,7 @@ using GameEngine::Platform::SpeechInput;
 // wherever this is false.
 TEST(SpeechInput, IsAvailableOnMacOSOnly)
 {
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(GE_PLATFORM_MOBILE)
     EXPECT_TRUE(SpeechInput::IsAvailable());
 #else
     EXPECT_FALSE(SpeechInput::IsAvailable());

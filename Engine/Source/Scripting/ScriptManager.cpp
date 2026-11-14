@@ -173,7 +173,10 @@ bool ScriptManager::Initialize(const ScriptsConfig& config, JobSystem::WorkSteal
 
     m_WorkspaceRoot = config.workspaceRoot;
     m_ScriptsDirectory = config.scriptsRoot;
-    m_AssembliesDirectory = config.assembliesRoot;
+    {
+        std::lock_guard<std::mutex> lock(m_AssembliesDirectoryMutex);
+        m_AssembliesDirectory = config.assembliesRoot;
+    }
     m_GeneratedProjectRoot = config.generatedProjectRoot;
     Logger::Log::Info("Generated scripts project: {}", GeneratedProjectPath().string());
     m_AutoProjectGenerationEnabled = config.enableAutoProjectGeneration;
@@ -659,7 +662,10 @@ bool ScriptManager::RebindProjectScripts(const ScriptsConfig& newConfig)
     m_ScriptTypeCount.store(0);
     m_WorkspaceRoot = newConfig.workspaceRoot;
     m_ScriptsDirectory = newConfig.scriptsRoot;
-    m_AssembliesDirectory = newConfig.assembliesRoot;
+    {
+        std::lock_guard<std::mutex> lock(m_AssembliesDirectoryMutex);
+        m_AssembliesDirectory = newConfig.assembliesRoot;
+    }
     m_GeneratedProjectRoot = newConfig.generatedProjectRoot;
 
     // 4. Create directories if missing.
@@ -2285,10 +2291,12 @@ size_t ScriptManager::ProcessMainThreadTasks()
     // The MainThread.Post drain step: once per call, before the task loop and outside its cap,
     // so a flood of posts is one batch and an action that posts itself runs once per pump.
     // Inside the processing lock, so posted actions never run on two threads at once.
+    const bool mayDrainPosts = !HasMarkedMainThread() || IsMainThread();
     bool drainPosts = false;
     {
         std::lock_guard<std::mutex> lock(m_MainThreadTasksMutex);
-        drainPosts = std::exchange(m_ManagedPostDrainRequested, false);
+        if (mayDrainPosts)
+            drainPosts = std::exchange(m_ManagedPostDrainRequested, false);
     }
     if (drainPosts)
     {
@@ -2298,12 +2306,8 @@ size_t ScriptManager::ProcessMainThreadTasks()
         }
     }
 
-    // No thread waits for a hot-reload run, so the main thread's pump ends a run
-    // that passed its time bound.
-    if (m_HotReloadPipeline && EngineCore::GetInstance().IsMainThread())
-    {
+    if (m_HotReloadPipeline && IsMainThread())
         m_HotReloadPipeline->CancelOverdueRun(std::chrono::steady_clock::now());
-    }
 
     // RACE CONDITION FIX: Check if hot-reload is in progress and prioritize those tasks
     bool hotReloadInProgress = IsAsyncHotReloadInProgress();
@@ -2328,8 +2332,8 @@ size_t ScriptManager::ProcessMainThreadTasks()
             // in the editor/runtime it means thread-affine work may misbehave.
             // Deliberately checked before the first task runs so the warning is
             // in the log even if that task then deadlocks or crashes.
-            const EngineCore& engine = EngineCore::GetInstance();
-            if (engine.HasEverInitialized() && !engine.IsMainThread() &&
+            const std::thread::id mainThreadId = m_MainThreadId.load(std::memory_order_relaxed);
+            if (mainThreadId != std::thread::id{} && mainThreadId != std::this_thread::get_id() &&
                 !m_WarnedOffMainThreadPump.exchange(true))
             {
                 Logger::Log::Warning("ScriptManager: executing main-thread tasks on a non-main thread (fallback pump)");
@@ -2374,6 +2378,11 @@ bool ScriptManager::InstallManagedPostDrain(ManagedPostDrain drain)
 {
     ManagedPostDrain expected = nullptr;
     return s_ManagedPostDrain.compare_exchange_strong(expected, drain, std::memory_order_acq_rel);
+}
+
+void ScriptManager::MarkMainThread()
+{
+    m_MainThreadId.store(std::this_thread::get_id(), std::memory_order_relaxed);
 }
 
 void ScriptManager::QueueMainThreadTask(std::function<void()> task)
@@ -2425,14 +2434,14 @@ void ScriptManager::SetAsyncHotReloadEnabled(bool enabled)
 
 std::filesystem::path ScriptManager::GetAssembliesDirectory() const
 {
-    // Set from ScriptsConfig by Initialize and reassigned by RebindProjectScripts on the main
-    // thread; read here without a lock.
+    // RebindProjectScripts can replace the directory while workers read it.
+    std::lock_guard<std::mutex> lock(m_AssembliesDirectoryMutex);
     return m_AssembliesDirectory;
 }
 
 std::filesystem::path ScriptManager::GetScriptsAssemblyPath() const
 {
-    return m_AssembliesDirectory / ScriptingPaths::kScriptsAssemblyFileName;
+    return GetAssembliesDirectory() / ScriptingPaths::kScriptsAssemblyFileName;
 }
 
 namespace
@@ -2731,7 +2740,7 @@ bool ScriptManager::EnsureAutoProject(std::filesystem::path& outProjectPath) con
         // project directory.
         bool outputIsRelative = false;
         const std::string assembliesDirStr =
-            AnchorGeneratedPath(m_AssembliesDirectory, projectDir, m_WorkspaceRoot, outputIsRelative);
+            AnchorGeneratedPath(GetAssembliesDirectory(), projectDir, m_WorkspaceRoot, outputIsRelative);
         xml << "    <OutputPath>" << assembliesDirStr << "</OutputPath>\n";
         // Engine managed DLLs live in the engine managed directory (beside the executable;
         // Contents/Resources/Managed inside a macOS bundle). The baked value is a

@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SVG backgrounds</title><style>
+:root{--bg:#12151c;--panel:#1c2230;--panel-light:#252d3c;--border:#39445a;--text:#e7edf7;--muted:#a7b2c7;--accent:#8fbaff;--danger:#ff9090;--ok:#8ed2a6;--warn:#f2cc83}
+body{background:var(--bg);color:var(--text);font:16px/1.6 system-ui,sans-serif;max-width:900px;margin:40px auto;padding:0 24px}h2{border-top:1px solid var(--border);padding-top:20px}.lede,footer{color:var(--muted)}code{background:var(--panel-light);padding:2px 5px}a{color:var(--accent)}.panel{background:var(--panel);border:1px solid var(--border);padding:18px}.warn{border-color:var(--warn)}
+</style></head><body>
+<p class="lede">GUIDE · Editor appearance</p><h1>SVG backgrounds</h1>
+<p>Editor and game UI render SVG backgrounds as raster textures. Use SVG files with CSS <code>background-image</code> just like other image assets; sizing, tint, repetition, border slicing, and rounded clipping use the texture path.</p>
+<h2>Choose a raster size</h2>
+<p>Search Settings for <strong>UI SVG Raster Size</strong> to choose the default raster bounds for SVGs shipped with the editor. The image keeps its aspect ratio. Higher values preserve more detail when enlarging icons and use more texture memory.</p>
+<h2>Use SVGs as project textures</h2>
+<p>Import an SVG into the project to use it as an ordinary RGBA texture, including in material texture slots. Open <strong>Project Settings → Asset Import → SVG Texture Import</strong> and choose <strong>Default Raster Size</strong> for project SVGs without a per-asset size override. This setting is independent of the editor UI raster size. Aspect ratio is preserved.</p>
+<p>Raster size determines the texture resolution at import. Choose it for the largest on-screen size the texture needs; enlarging the texture later does not add detail.</p>
+<h2>Changelog</h2><p>2026-11-02: UI SVGs use the texture path. Documented the independent editor and project texture raster-size controls.</p>
+<hr><footer>SVG backgrounds guide · Version 2 · 2026-11-02</footer></body></html>

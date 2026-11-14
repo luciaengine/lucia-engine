@@ -17,7 +17,7 @@ namespace Platform
 
 bool SupportsDynamicNativeModules()
 {
-#if defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__) || defined(GE_PLATFORM_MOBILE)
     return false;
 #else
     return true;
@@ -26,7 +26,7 @@ bool SupportsDynamicNativeModules()
 
 bool SupportsMultipleWindows()
 {
-#if defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__) || defined(GE_PLATFORM_MOBILE)
     return false;
 #else
     return true;

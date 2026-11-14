@@ -10,13 +10,8 @@ namespace GameEngine::ECS
 
 class Archetype;
 
-/**
- * The result and the scratch storage of World::CreateBatchFromWorld.
- *
- * After a call, GetTargets()[i] is the entity created for entry i of the
- * call's ClonePlan. Keep one remap across calls to reuse its storage; each
- * call overwrites it.
- */
+/// Result and reusable scratch storage for World::CreateBatchFromWorld.
+/// GetTargets()[i] corresponds to entry i in the clone plan. Each call overwrites the result.
 class EntityRemap
 {
   public:

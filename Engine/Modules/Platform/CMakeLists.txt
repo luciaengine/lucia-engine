@@ -1,22 +1,21 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(Platform LANGUAGES CXX)
+project(Platform VERSION 1.0.0 LANGUAGES CXX)
 
 set(PLATFORM_SOURCES
 	Source/Capabilities.cpp
-	Source/Platform.cpp
 	Source/Thread.cpp
-	Source/Toolbar/ClientToolbar.cpp
 )
 
 # Desktop-only implementations: GLFW clipboard, OS shell
 # integration, curl HTTP. The wasm list below carries a web-shaped counterpart
 # for each.
-if(NOT EMSCRIPTEN)
+if(NOT EMSCRIPTEN AND NOT GE_MOBILE)
 	list(APPEND PLATFORM_SOURCES
 		Source/Window.cpp
 		Source/Display/Display.cpp
 		Source/Clipboard.cpp
+		Source/ControllerFeedback.cpp
 		Source/Shell.cpp
 		Source/HttpClient.cpp
 	)
@@ -37,17 +36,28 @@ list(APPEND PLATFORM_SOURCES Source/SecretStore/SecretStore.cpp)
 
 # Speech input (Platform/SpeechInput.h): the Speech framework on macOS, a stub that reports it
 # unavailable everywhere else.
-if(APPLE)
+if(APPLE AND NOT GE_MOBILE)
 	list(APPEND PLATFORM_SOURCES Source/SpeechInput_mac.mm)
 	# The one ARC file in the module: its session object owns AVFoundation and Speech objects
 	# across blocks, which manual retain/release would have to track by hand.
 	set_source_files_properties(Source/SpeechInput_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
 else()
-	list(APPEND PLATFORM_SOURCES Source/SpeechInput_Stub.cpp)
+    list(APPEND PLATFORM_SOURCES Source/SpeechInput_Stub.cpp)
+endif()
+
+if(NOT GE_MOBILE AND NOT EMSCRIPTEN)
+    if(WIN32)
+        list(APPEND PLATFORM_SOURCES Source/Display/DisplayChangeListener_Win32.cpp)
+    elseif(APPLE)
+        list(APPEND PLATFORM_SOURCES Source/Display/DisplayChangeListener_mac.mm)
+    endif()
 endif()
 
 # Platform-specific sources
-if(EMSCRIPTEN)
+if(GE_MOBILE)
+    include(Mobile.cmake)
+    list(APPEND PLATFORM_SOURCES Source/SecretStore/SecretStore_Stub.cpp)
+elseif(EMSCRIPTEN)
 	# SystemMetrics reuses the Linux TU's constant defaults (600 ms caret
 	# half-period, 400 ms double-click) until CSS-driven metrics arrive with
 	# the browser UI slice.
@@ -73,6 +83,7 @@ if(EMSCRIPTEN)
 		Source/ContextMenu/ContextMenu_Stub.cpp
 		Source/Clipboard_Web.cpp
 		Source/Shell_Web.cpp
+		Source/WebFileDownload.cpp
 		Source/WebView/WebView_Web.cpp
 		Source/WebEnvironment_Web.cpp
 		Source/WebPersistentStorage.cpp
@@ -80,7 +91,6 @@ if(EMSCRIPTEN)
 	)
 elseif (WIN32)
 	list(APPEND PLATFORM_SOURCES
-		Source/Display/DisplayChangeListener_Win32.cpp
 		Source/OverlayWindow_Win32.cpp
 		Source/Toolbar/Toolbar_Win32.cpp
 		Source/Toolbar/WindowFrame_Win32.cpp
@@ -104,8 +114,8 @@ elseif(APPLE)
         Source/SystemMetrics/SystemMetrics_mac.mm
         Source/Shell_mac.mm
         Source/ScreenColor_mac.mm
+        Source/WindowInput_mac.mm
         Source/Display/Display_mac.mm
-        Source/Display/DisplayChangeListener_mac.mm
 		Source/WebView/WebView_mac.mm
 		Source/SecretStore/SecretStore_mac.cpp
 	)
@@ -120,16 +130,19 @@ else()
 	)
 endif()
 
+if(NOT GE_MOBILE)
+    list(APPEND PLATFORM_SOURCES Source/Toolbar/ClientToolbar.cpp)
+endif()
+
 add_library(Platform OBJECT ${PLATFORM_SOURCES})
 
 target_compile_features(Platform PUBLIC cxx_std_20)
-if(APPLE)
+if(APPLE AND NOT GE_MOBILE)
     set_target_properties(Platform PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES)
 endif()
 
-# Public headers now live under Engine/Modules/Platform/Include
-# Keep Engine/Include for existing headers like Platform/Platform.h
-# so includes like "Platform/Platform.h" continue to work.
+# Public headers live under Engine/Modules/Platform/Include; Engine/Include
+# still holds Platform/Thread.h.
 target_include_directories(Platform
     PUBLIC
         ${CMAKE_SOURCE_DIR}/Engine/Modules/Platform/Include
@@ -142,14 +155,17 @@ target_include_directories(Platform
 )
 
 # Dependencies
-# Logger is used by Platform.cpp; Toolbar.h holds title bar bounds as Mathematics::RectInt.
-target_link_libraries(Platform PUBLIC Logger Types Mathematics)
-# MenuIconBitmap_Win32 decodes menu icons.
-target_link_libraries(Platform PRIVATE Image)
-if(NOT EMSCRIPTEN)
-    find_package(glfw3 CONFIG REQUIRED)
+if(GE_MOBILE)
+    find_package(SDL3 CONFIG REQUIRED)
     find_package(CURL REQUIRED)
-    target_link_libraries(Platform PRIVATE glfw CURL::libcurl)
+    target_link_libraries(Platform PUBLIC SDL3::SDL3 PRIVATE CURL::libcurl)
+endif()
+target_link_libraries(Platform PUBLIC Logger Types Mathematics PRIVATE Image)
+if(NOT EMSCRIPTEN AND NOT GE_MOBILE)
+    find_package(glfw3 CONFIG REQUIRED)
+    find_package(SDL2 2.26 CONFIG REQUIRED)
+    find_package(CURL REQUIRED)
+    target_link_libraries(Platform PRIVATE glfw CURL::libcurl SDL2::SDL2)
 endif()
 
  if (WIN32)
@@ -169,13 +185,13 @@ endif()
 	    target_link_libraries(Platform PRIVATE unofficial::webview2::webview2)
  endif()
 
-if (APPLE)
+if (APPLE AND NOT GE_MOBILE)
     target_link_libraries(Platform PRIVATE "-framework CoreText" "-framework CoreFoundation" "-framework Cocoa" "-framework WebKit"
         "-framework AVFoundation" "-framework Speech" "-framework Security")
 endif()
 
 # Emscripten sets UNIX; keep it out of the Linux desktop-integration probes.
-if (UNIX AND NOT APPLE AND NOT EMSCRIPTEN)
+if (UNIX AND NOT APPLE AND NOT EMSCRIPTEN AND NOT GE_MOBILE)
     if (CMAKE_CROSSCOMPILING)
         # Do not let CMake pick a host-architecture Fontconfig library while
         # cross-compiling a Linux player from an Apple Silicon Docker host.
@@ -266,7 +282,29 @@ endif()
 
 # Tests for Platform module (ContextMenuBuilder, etc.)
 if(BUILD_TESTING)
+    if(EMSCRIPTEN)
+        add_executable(WebFileDownloadTests Tests/WebFileDownloadTests.cpp Source/WebFileDownload.cpp)
+        target_include_directories(WebFileDownloadTests PRIVATE Include)
+        target_compile_features(WebFileDownloadTests PRIVATE cxx_std_20)
+        target_link_options(WebFileDownloadTests PRIVATE "-sENVIRONMENT=node" "-sEXIT_RUNTIME=1")
+        add_test(NAME WebFileDownloadTests COMMAND ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:WebFileDownloadTests>)
+        add_executable(WebFilePickerTests Tests/WebFilePickerTests.cpp Source/Shell_Web.cpp)
+        target_include_directories(WebFilePickerTests PRIVATE Include Source ../Logger/Include ../Events/Include ../Types/Include)
+        target_compile_features(WebFilePickerTests PRIVATE cxx_std_20)
+        target_link_options(WebFilePickerTests PRIVATE "-sENVIRONMENT=node" "-sEXIT_RUNTIME=1" "-sASYNCIFY" "-sWASMFS" "-sFORCE_FILESYSTEM=1")
+        add_test(NAME WebFilePickerTests COMMAND ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:WebFilePickerTests>)
+        set_tests_properties(WebFileDownloadTests WebFilePickerTests PROPERTIES LABELS "Platform;Web" TIMEOUT 30)
+    endif()
     find_package(GTest REQUIRED)
+    if(NOT EMSCRIPTEN)
+        add_executable(ControllerFeedbackTests Tests/ControllerFeedbackTests.cpp Source/ControllerFeedback.cpp)
+        target_include_directories(ControllerFeedbackTests PRIVATE Include)
+        target_link_libraries(ControllerFeedbackTests PRIVATE SDL2::SDL2)
+        target_compile_features(ControllerFeedbackTests PRIVATE cxx_std_20)
+        ge_set_output_tests(ControllerFeedbackTests)
+        ge_stage_runtime_dependencies(ControllerFeedbackTests)
+        add_test(NAME ControllerFeedbackTests COMMAND ControllerFeedbackTests)
+    endif()
 
     add_executable(PlatformContextMenuTests
         Tests/ContextMenuBuilderTests.cpp
@@ -289,19 +327,29 @@ if(BUILD_TESTING)
     # here rather than exported for the sake of a test.
     target_include_directories(PlatformContextMenuTests PRIVATE Source)
 
-    add_executable(PlatformClientToolbarTests Tests/ClientToolbarTests.cpp)
-    target_include_directories(PlatformClientToolbarTests PRIVATE Source)
-    target_link_libraries(PlatformClientToolbarTests PRIVATE Engine GTest::gtest GTest::gtest_main)
-    if(NOT EMSCRIPTEN)
-        target_link_libraries(PlatformClientToolbarTests PRIVATE glfw)
-    endif()
-    target_compile_features(PlatformClientToolbarTests PRIVATE cxx_std_20)
-    ge_set_output_tests(PlatformClientToolbarTests)
-    ge_stage_runtime_dependencies(PlatformClientToolbarTests)
-    add_test(NAME PlatformClientToolbarTests COMMAND PlatformClientToolbarTests)
-    set_tests_properties(PlatformClientToolbarTests PROPERTIES RUN_SERIAL TRUE)
-
     if(APPLE)
+        target_sources(PlatformContextMenuTests PRIVATE Tests/MacWindowInputTests.mm)
+        target_link_libraries(PlatformContextMenuTests PRIVATE "-framework AppKit")
+    endif()
+
+    if(NOT GE_MOBILE)
+        add_executable(PlatformClientToolbarTests Tests/ClientToolbarTests.cpp)
+        target_include_directories(PlatformClientToolbarTests PRIVATE Source)
+        target_link_libraries(PlatformClientToolbarTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+        if(APPLE)
+            target_include_directories(PlatformClientToolbarTests PRIVATE $<TARGET_PROPERTY:glfw,INTERFACE_INCLUDE_DIRECTORIES>)
+        elseif(NOT EMSCRIPTEN AND NOT GE_MOBILE)
+            target_link_libraries(PlatformClientToolbarTests PRIVATE glfw)
+        endif()
+        target_compile_features(PlatformClientToolbarTests PRIVATE cxx_std_20)
+        ge_set_output_tests(PlatformClientToolbarTests)
+        ge_stage_runtime_dependencies(PlatformClientToolbarTests)
+        add_test(NAME PlatformClientToolbarTests COMMAND PlatformClientToolbarTests)
+        set_tests_properties(PlatformClientToolbarTests PROPERTIES RUN_SERIAL TRUE)
+
+    endif()
+
+    if(APPLE AND NOT GE_MOBILE)
         add_executable(PlatformToolbarMacTests Tests/ToolbarMacTests.mm)
         set_target_properties(PlatformToolbarMacTests PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES)
         target_link_libraries(PlatformToolbarMacTests PRIVATE Engine GTest::gtest GTest::gtest_main "-framework Cocoa")
@@ -322,15 +370,16 @@ if(BUILD_TESTING)
 
         target_sources(PlatformContextMenuTests PRIVATE Tests/MenuIconBitmapTests.cpp)
 
-        # A PNG with partial alpha and one SVG of the editor's artwork, staged at
-        # the same relative path the editor mount uses, so the test resolves
+        # One PNG and one SVG of the editor's real artwork, staged at the same
+        # relative path the editor mount uses, so the test resolves
         # `editor:Icons/...` exactly as the running menu does.
         add_custom_command(TARGET PlatformContextMenuTests POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory
                 "$<TARGET_FILE_DIR:PlatformContextMenuTests>/Assets/Icons"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${CMAKE_CURRENT_SOURCE_DIR}/Tests/Fixtures/menu-icon-partial-alpha.png"
+                "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Icons/save.png"
                 "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Icons/DockLog.svg"
+                "${CMAKE_CURRENT_SOURCE_DIR}/Tests/Fixtures/menu-icon-partial-alpha.png"
                 "${CMAKE_CURRENT_SOURCE_DIR}/Tests/Fixtures/menu-icon-orientation.png"
                 "$<TARGET_FILE_DIR:PlatformContextMenuTests>/Assets/Icons/"
             COMMENT "Staging menu icon fixtures for PlatformContextMenuTests"
@@ -339,7 +388,7 @@ if(BUILD_TESTING)
 
     # The kept monitor list: a frame does not read the OS again; a display change does.
     # Linux has no display-change listener and reads the list every frame, so no suite.
-    if (WIN32 OR APPLE)
+    if ((WIN32 OR APPLE) AND NOT GE_MOBILE AND NOT EMSCRIPTEN)
         add_executable(PlatformDisplayTests Tests/MonitorCacheTests.cpp)
         target_include_directories(PlatformDisplayTests PRIVATE Source)
         target_link_libraries(PlatformDisplayTests PRIVATE Engine GTest::gtest GTest::gtest_main)
@@ -378,8 +427,8 @@ if(BUILD_TESTING)
 
     add_executable(PlatformCapabilitiesTests
         Tests/CapabilitiesTests.cpp
-        Tests/SpeechInputTests.cpp
         Tests/ThreadNameTests.cpp
+        Tests/SpeechInputTests.cpp
     )
 
     target_link_libraries(PlatformCapabilitiesTests
@@ -453,7 +502,7 @@ if(BUILD_TESTING)
     ge_stage_runtime_dependencies(PlatformSecretStoreTests)
     add_test(NAME PlatformSecretStoreTests COMMAND PlatformSecretStoreTests)
 
-    if(APPLE)
+    if(APPLE AND NOT GE_MOBILE)
         add_executable(PlatformWebViewPageStyleTests Tests/WebViewPageStyleTests_mac.mm)
         target_compile_features(PlatformWebViewPageStyleTests PRIVATE cxx_std_20)
         target_compile_options(PlatformWebViewPageStyleTests PRIVATE -fobjc-arc)

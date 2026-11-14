@@ -175,6 +175,7 @@ target_include_directories(UI PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Include)
 # Access Engine headers for AssetManager integration (UIStyleAsset, UILayoutAsset, UIManager)
 # This is a PRIVATE include since only UI .cpp files need it
 target_include_directories(UI PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Include)
+target_include_directories(UI PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
 # AssetManager.h includes FileWatcher/FileWatcher.h. Headers only: the
 # FileWatcher objects reach the binary through the Engine module splice.
 target_include_directories(UI PRIVATE $<TARGET_PROPERTY:FileWatcher,INTERFACE_INCLUDE_DIRECTORIES>)
@@ -569,6 +570,9 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedMarkupTextAreaFocusTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextSelectionColorTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedMarkupUnseenDotTests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedMarkupActivityStripeTests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedMarkupsTabTests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/LogToolbarLayoutTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedBadgeButtonStateTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedButtonOriginTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedSearchPlaceholderTests.cpp
@@ -611,6 +615,17 @@ if(BUILD_TESTING)
         ${GE_UITESTS_SHIPPED_CSS_COMMANDS}
         COMMENT "Staging shipped editor stylesheets for UIStyleTests"
         VERBATIM)
+
+    add_custom_command(TARGET UIStyleTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:UIStyleTests>/Assets/UI/controls"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/LogToolbarActions.uxml"
+            "$<TARGET_FILE_DIR:UIStyleTests>/Assets/UI/controls/LogToolbarActions.uxml"
+        COMMENT "Staging Log toolbar actions for UIStyleTests"
+        VERBATIM)
+    set_property(TARGET UIStyleTests APPEND PROPERTY LINK_DEPENDS
+        "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/LogToolbarActions.uxml")
 
     # layout.uxml alongside them: ClassBackgroundImageQueryTests reads the panel
     # inventory out of it and requires every panel's icon class to resolve
@@ -836,3 +851,6 @@ if(BUILD_TESTING)
     ge_add_ui_test(UIRestyleRelayoutBench
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIRestyleRelayoutBench.cpp)
 endif()
+
+# Localized controls are part of the engine UI contract.
+target_link_libraries(UI PUBLIC Localization)

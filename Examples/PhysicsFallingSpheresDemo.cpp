@@ -15,7 +15,6 @@
 #include "Rendering/Core/RenderGraph/RGResourcePool.h"
 #include "Rendering/Core/RenderGraph/RGTransientPool.h"
 #include "Rendering/Core/RenderGraph/RGUploadRing.h"
-#include "Rendering/Core/ReverseZ.h"
 #include "Engine/Rendering/Pipeline/PipelineFrameResources.h"
 #include "Rendering/Passes/SRGBEncodePass.h"
 #include <span>
@@ -153,7 +152,7 @@ static GroundEntities CreateGround(GameEngine::ECS::World& world)
 
     MeshRenderer mr{};
     mr.meshId = 1u;
-    mr.RenderLayers = GameEngine::Rendering::RenderLayerMask::Default();
+    mr.renderLayerMask = 1u;
     world.AddComponentImmediate(e, mr);
 
     // Physics: static floor. Use a box (more robust than infinite plane for demos).
@@ -183,7 +182,7 @@ static GroundEntities CreateGround(GameEngine::ECS::World& world)
         auto c = world.CreateEntity();
         out.post = c;
         GameEngine::Components::Parent parent{};
-        parent.Entity = e;
+        parent.parent = e;
         world.AddComponentImmediate(c, parent);
 
         // IMPORTANT:
@@ -216,7 +215,7 @@ static GroundEntities CreateGround(GameEngine::ECS::World& world)
         // Visualize the post (otherwise it's physics-only and you won't see it).
         MeshRenderer postMr{};
         postMr.meshId = 1u; // cube
-        postMr.RenderLayers = GameEngine::Rendering::RenderLayerMask::Default();
+        postMr.renderLayerMask = 1u;
         world.AddComponentImmediate(c, postMr);
 
         GameEngine::Components::PhysicsColliderOwner owner{};
@@ -269,7 +268,7 @@ static std::vector<GameEngine::ECS::EntityHandle> CreateSpheres(GameEngine::ECS:
 
             MeshRenderer mr{};
             mr.meshId = 2u;
-            mr.RenderLayers = GameEngine::Rendering::RenderLayerMask::Default();
+            mr.renderLayerMask = 1u;
             world.AddComponentImmediate(e, mr);
 
             PhysicsBody pb{};
@@ -460,7 +459,7 @@ int main()
     // Camera + view setup (owned by RenderServices, independent of ECS).
     const Rendering::CameraId camId = rs->Views().AllocateCamera("DemoCamera");
     const Rendering::ViewId viewId = rs->Views().AllocateView("DemoView", camId);
-    rs->Views().SetViewRenderLayerMask(viewId, GameEngine::Rendering::RenderLayerMask::Default());
+    rs->Views().SetViewRenderLayerMask(viewId, 1u);
     rs->Views().SetViewWorldId(viewId, world.GetWorldId());
 
     // Fixed timestep
@@ -533,8 +532,11 @@ int main()
         Rendering::ViewClearConfig clear{};
         clear.clearColor = true;
         clear.clearDepth = true;
-        clear.clearColorValue = ColorLinear(0.08f, 0.08f, 0.10f, 1.0f);
-        clear.clearDepthValue = Rendering::ReverseZ::kClearFar;
+        clear.clearColorValue[0] = 0.08f;
+        clear.clearColorValue[1] = 0.08f;
+        clear.clearColorValue[2] = 0.10f;
+        clear.clearColorValue[3] = 1.0f;
+        clear.clearDepthValue = 0.0f;
         rs->Views().SetViewTargets(viewId, 0, 0, 0, clear);
 
         // Update camera matrices.
@@ -562,7 +564,7 @@ int main()
         rs->Views().SetViewCamera(viewId, camId);
 
         // Run fixed-step simulation + extraction.
-        // Resolve WorldTransform for renderables even on frames where we don't step.
+        // Ensure WorldTransform exists for renderables even on frames where we don't step.
         xfSystem.Update(world, 0.0f);
         physicsInit.Update(world, 0.0f);
 

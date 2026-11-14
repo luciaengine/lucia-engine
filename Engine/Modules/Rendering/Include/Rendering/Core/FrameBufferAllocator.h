@@ -446,14 +446,10 @@ class FrameBufferAllocator
             return;
 
         const std::string name = SlotDebugName();
-        ring.Shutdown();
-        if (!ring.Initialize(m_Device, newCap, m_Usage, m_DefaultAlign, name.c_str()))
-        {
-            // The larger buffer did not fit. Restore the ring at the size it had —
-            // the Shutdown above already released it, so bailing here would leave
-            // the slot dead and fail every allocation from this frame on.
-            ring.Initialize(m_Device, currentCap, m_Usage, m_DefaultAlign, name.c_str());
-        }
+        // The accepted mapping remains live until the replacement succeeds.
+        BufferRing replacement;
+        if (replacement.Initialize(m_Device, newCap, m_Usage, m_DefaultAlign, name.c_str()))
+            ring = std::move(replacement);
     }
 
     // `currentCap` doubled until it covers `demand`, clamped to maxCapacityBytes.

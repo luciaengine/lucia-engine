@@ -38,8 +38,6 @@ namespace GameEngine::Engine::Renderer::Pipeline::Nodes
 // water are not mesh instances and do not extend it; the range has no upper
 // bound but the camera's far plane, which clamps the cascade splits. Meant for
 // pipelines whose scenes have no single scale, such as a model viewer.
-// The legacy type key "CascadedShadowMap" is still accepted (parsed identically,
-// with a deprecation warning); see the node registration in FrameOrchestrator.
 class ShadowMapNode final : public IRenderPipelineNode
 {
   public:

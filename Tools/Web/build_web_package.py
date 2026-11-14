@@ -70,7 +70,7 @@ kRepoRoot = Path(__file__).resolve().parents[2]
 kLibraryDir = kRepoRoot / "Apps" / "WebLibrary"
 kFacadeDir = kLibraryDir / "ts"
 
-kPackageName = "@game-crafters-guild/openengine-web"
+kPackageName = "@openengine/web"
 kBuilds = ("st", "mt")
 kFacadeName = "opengine.mjs"
 kBindingName = "opengine-core-binding.js"
@@ -146,8 +146,8 @@ kReleaseTag = re.compile(r"^v(\d{4}\.\d{1,2}\.\d+)(?:-(alpha|beta)\.\d+)?$")
 
 # The examples import the library by this specifier; in the source tree the import map points
 # it at the facade's tsc output, in the package at the bundled facade two folders up.
-kSourceImportTarget = '"@game-crafters-guild/openengine-web": "../../ts/dist/src/index.js"'
-kPackageImportTarget = '"@game-crafters-guild/openengine-web": "../../opengine.mjs"'
+kSourceImportTarget = '"@openengine/web": "../../ts/dist/src/index.js"'
+kPackageImportTarget = '"@openengine/web": "../../opengine.mjs"'
 # The gallery links the examples beside it in the source tree; on the site they sit in package/.
 kGalleryExamplesLink = 'href="../examples/'
 kSiteExamplesLink = 'href="package/examples/'
@@ -248,13 +248,16 @@ def CopyModules(directories: dict[str, Path], out: Path, allowStub: bool) -> Non
 
 
 def BundleFacade(out: Path, version: str) -> None:
-    esbuild = kFacadeDir / "node_modules" / "esbuild" / "bin" / "esbuild"
+    esbuild = kFacadeDir / "node_modules" / "esbuild" / "lib" / "main.js"
     if not esbuild.is_file():
         raise PackageError(f"{esbuild} is missing: run `npm ci` in {kFacadeDir}")
     target = (out / kFacadeName).resolve()
+    options = dict(entryPoints=["src/index.ts"], bundle=True, format="esm", target="es2022",
+                   logLevel="warning", outfile=str(target))
     result = subprocess.run(
-        ["node", str(esbuild), "src/index.ts", "--bundle", "--format=esm", "--target=es2022",
-         "--log-level=warning", f"--outfile={target}"],
+        ["node", "--input-type=commonjs", "-e",
+         "require(process.argv[1]).buildSync(JSON.parse(process.argv[2]));",
+         str(esbuild), json.dumps(options)],
         cwd=kFacadeDir, capture_output=True, text=True)
     if result.returncode != 0:
         raise PackageError(f"bundling the facade failed (exit {result.returncode}):\n"

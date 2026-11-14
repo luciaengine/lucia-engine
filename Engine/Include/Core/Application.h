@@ -15,13 +15,15 @@
 #include "Types/Types.h"
 #include <atomic>
 #include <cstddef>
-#include <cstdint>
+#include <filesystem>
 #include <memory>
 
 namespace GameEngine {
 
 namespace Input { class GamepadEdgeTracker; class GamepadPoller; class InputSystem; }
 namespace Audio { enum class AudioOutput : std::uint8_t; }
+
+
 
 // Default project layout, relative to the workspace root.
 inline constexpr const char* kDefaultAssetDirectory = "Assets";
@@ -47,6 +49,7 @@ struct ApplicationConfig {
     uint32 HostDebugInstrumentation = GE_DEBUG_INSTRUMENTATION;
 
     String Name = "Game Engine Application";
+    String Version = "1.0.0";
     uint32 WindowWidth = 1280;
     uint32 WindowHeight = 720;
     bool Fullscreen = false;
@@ -85,16 +88,10 @@ struct ApplicationConfig {
     // instead of running as fast as the CPU allows. For dedicated servers and
     // simulation runs; the host brings up no window or device of its own either.
     bool Headless = false;
-    // Where the engine's audio goes (Audio/AudioTypes.h). Value-initialized to
-    // AudioOutput::Silent, which mixes with no output device; an application that
-    // plays sound sets AudioOutput::Device. Ignored under Headless, which opens no audio.
-    Audio::AudioOutput AudioOutput{};
-    // Set only by the scripting ABI's bootstrap (DllBootstrap::EnsureEngineInitialized),
-    // which initializes an engine for a host that has no frame loop of its own (a
-    // `dotnet test` process): the caller is the only thread that drives the engine,
-    // nothing ever pumps the main-thread queue, and an export that asks for the main
-    // thread answers yes on every thread. No native host sets it.
+    /// A scripting ABI host with no frame loop; background posts run inline.
     bool StandaloneHosted = false;
+    /// Silent by default; applications that play sound select AudioOutput::Device. Ignored under Headless.
+    Audio::AudioOutput AudioOutput{};
 };
 
 /**
@@ -175,13 +172,7 @@ public:
      * The frame in progress completes; the loop stops before the next frame starts.
      */
     void RequestExit() { m_ShouldExit = true; }
-
-    /**
-     * @brief Request the running game to end, on the main thread outside a job.
-     *
-     * A standalone application finishes its current frame and exits with exitCode.
-     * A host can override this to end its game session without closing the host.
-     */
+    // The host can end a game session while keeping its application open.
     virtual void RequestGameExit(int exitCode);
 
     /// The process exit code when the application cannot start (a failed Initialize).
@@ -206,14 +197,14 @@ public:
      * headless application (ApplicationConfig::Headless) also waits out each
      * frame, so its fixed steps run in real time.
      */
+    /// Caps wall-clock frames without fixing the simulation step. A non-positive or
+    /// non-finite value clears the cap and restores the GE_FRAME_CAP policy.
+    void SetFrameRateCap(double fps);
+
     void SetFixedFrameRate(double fps);
     void ClearFixedFrameRate();
     bool IsFixedFrameRateEnabled() const { return m_FixedDeltaTime > 0.0; }
     double GetFixedFrameRate() const { return m_FixedDeltaTime > 0.0 ? (1.0 / m_FixedDeltaTime) : 0.0; }
-
-    /// @brief Hold each frame to at most `fps` with the GE_FRAME_CAP wait; 0 removes the cap. Main thread only.
-    /// When GE_FRAME_CAP or a headless fixed frame rate also holds the frame, the lower rate applies.
-    void SetFrameRateCap(double fps);
 
     // Coarse per-frame phase timings (CPU), captured once per frame from the main loop.
     struct FramePhaseTimings
@@ -333,7 +324,7 @@ private:
 	    float64 m_TotalTime;
 	    uint64 m_FrameCount;
         float64 m_FixedDeltaTime = 0.0;
-        float64 m_FrameRateCap = 0.0; // 0: no cap from SetFrameRateCap
+        float64 m_FrameRateCapFps = 0.0;
 
 	    // Sliding-window FPS state. Fixed-size ring instead of std::deque to
 	    // avoid per-block bookkeeping in Debug builds and per-frame heap
@@ -362,11 +353,9 @@ private:
 	    // names another: the shared InputSystem and nothing above it.
 	    WindowInputRouterConfig m_ApplicationInputChain;
 
-	    // Reads the gamepads once per frame. Null in a headless application.
-	    std::unique_ptr<Input::GamepadPoller> m_GamepadPoller;
-
 	    // Holds the previous poll so the buttons that changed since it become
 	    // edges, and everything else stays state.
+	    std::unique_ptr<Input::GamepadPoller> m_GamepadPoller;
 	    std::unique_ptr<Input::GamepadEdgeTracker> m_GamepadEdgeTracker;
 
     DISALLOW_COPY_AND_ASSIGN(Application);

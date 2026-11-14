@@ -1,3 +1,4 @@
+#include "Core/ApplicationPaths.h"
 // Staged engine assets do not live at one fixed offset from the executable: a
 // macOS app bundle (the Editor, the Player) puts them at Contents/Resources/Assets,
 // a sibling of the Contents/MacOS directory the executable sits in, while every
@@ -33,7 +34,7 @@
 //
 // Two files may spell the rule: Engine/Source/Core/ApplicationPaths.cpp, which owns it,
 // and Engine/Modules/Rendering/Source/ShaderGraph/SgGraphFileIO.cpp, whose module
-// cannot link ApplicationPaths (GameEngineRendering is linked standalone by its own test
+// cannot link PathUtils (GameEngineRendering is linked standalone by its own test
 // executables) and whose copy ShaderGraphNodesRootTests pins to the owner.
 //
 // Source-level invariant, so it reads the source tree (GE_REPO_SOURCE_DIR), the

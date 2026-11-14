@@ -7,7 +7,7 @@
 #include "InspectorLayoutFixture.h"
 #include "Logger/LogChannel.h"
 #include "Logger/Logger.h"
-#include "Panels/LogChannelPopover.h"
+#include "Panels/LogPanel/LogChannelPopover.h"
 #include "Panels/LogView.h"
 #include "UI/Controls/Dropdown.h"
 #include "UI/Controls/Label.h"

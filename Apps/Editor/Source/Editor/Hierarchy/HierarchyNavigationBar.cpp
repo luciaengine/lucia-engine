@@ -78,11 +78,12 @@ void HierarchyNavigationBar::ApplyResizeGesture(float scrollY)
         m_OnItemSizeChanged(resized);
 }
 
-void HierarchyNavigationBar::PlaceSearchAbove(UIElement* search)
+void HierarchyNavigationBar::SetSearchBar(std::unique_ptr<UIElement> searchBar)
 {
-    m_Search = search;
-    if (m_Search)
-        m_Search->AddClass("hierarchy-panel-search");
+    if (!searchBar)
+        return;
+    searchBar->AddClass("hierarchy-navigation-bar-search");
+    AddChild(std::move(searchBar));
 }
 
 void HierarchyNavigationBar::SetAboveHorizontalScrollbar(bool above)
@@ -91,12 +92,6 @@ void HierarchyNavigationBar::SetAboveHorizontalScrollbar(bool above)
         AddClass("hierarchy-navigation-bar-above-scrollbar");
     else
         RemoveClass("hierarchy-navigation-bar-above-scrollbar");
-    if (!m_Search)
-        return;
-    if (above)
-        m_Search->AddClass("hierarchy-panel-search-above-scrollbar");
-    else
-        m_Search->RemoveClass("hierarchy-panel-search-above-scrollbar");
 }
 
 } // namespace GameEngine::Editor

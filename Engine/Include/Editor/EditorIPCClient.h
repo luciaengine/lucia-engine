@@ -11,7 +11,8 @@
 #pragma comment(lib, "Ws2_32.lib")
 #endif
 
-#include <cstdlib>
+#include "Platform/Environment.h"
+
 #include <sstream>
 #include <string>
 
@@ -22,8 +23,7 @@ namespace EditorIPC
 
 inline bool IsEnabled()
 {
-    const char* env = std::getenv("GE_EDITOR_IPC");
-    return env && std::string(env) == "1";
+    return Platform::EnvironmentSwitchEnabled("GE_EDITOR_IPC", false);
 }
 
 #ifdef _WIN32

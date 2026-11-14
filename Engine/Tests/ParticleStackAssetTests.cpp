@@ -182,8 +182,7 @@ TEST(StagedAssetCook, TheBuildsContentCookShipsAStackCooked)
     TexturePackageCookStats textureStats;
     std::string error;
     ASSERT_TRUE(CookStagedContent(content.Root, content.Manifest, registry, parsers,
-                                  /*textureWorkers=*/nullptr, /*manifestParsePool=*/nullptr,
-                                  NeverCancelled, textureStats, error))
+                                  /*textureWorkers=*/nullptr, /*manifestParsePool=*/nullptr, NeverCancelled, textureStats, error))
         << error;
     EXPECT_TRUE(IsParticleStackBinary(ReadBytes(stack)));
     EXPECT_EQ(textureStats.Textures, 0u);

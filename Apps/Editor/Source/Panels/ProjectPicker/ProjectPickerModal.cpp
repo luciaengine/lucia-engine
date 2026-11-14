@@ -1588,7 +1588,7 @@ void ProjectPickerModal::Update()
         m_OnFolderSelected(pathToLoad);
         // Note: Hide() will be called after loading completes in SetProjectFolder
     }
-    
+
     if (m_Visible)
     {
         if (m_LastLogoUpdateTime < 0.0f)

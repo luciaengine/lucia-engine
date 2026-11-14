@@ -172,7 +172,7 @@ typedef struct GE_ECS_FieldDesc
 } GE_ECS_FieldDesc;
 
 // The AssetType value of a prefab, the category a C# PrefabRef field names.
-#define GE_ECS_ASSET_CATEGORY_PREFAB 42u
+#define GE_ECS_ASSET_CATEGORY_PREFAB 46u
 
 // v2.1: Register a blob component together with its reflected field table.
 // Subsumes RegisterBlobComponent for schema-carrying components:

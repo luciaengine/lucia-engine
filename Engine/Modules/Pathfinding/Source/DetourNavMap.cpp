@@ -1,11 +1,15 @@
 #include "Pathfinding/DetourNavMap.h"
 #include "Pathfinding/PathBuffer.h"
+#include "Logger/Logger.h"
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstring>
 #include <deque>
+#include <exception>
+#include <type_traits>
+#include <utility>
 #include <unordered_map>
 #include <vector>
 
@@ -174,6 +178,13 @@ const char* RefuseTileData(const NavMeshTileData& tile)
             return "a bounding-volume node of the tile names a polygon it does not have";
     }
     return nullptr;
+}
+
+bool RefuseTileReplacement(std::string* outRefusal, const char* reason)
+{
+    if (outRefusal)
+        *outRefusal = reason;
+    return false;
 }
 
 // Owns the Recast intermediates of one tile build and frees them on every exit path.
@@ -555,46 +566,99 @@ bool DetourNavMap::BuildTile(const NavMeshSettings& settings, const NavTileKey& 
 
 bool DetourNavMap::AddTile(const NavMeshTileData& tile, std::string* outRefusal)
 {
+    if (outRefusal)
+        outRefusal->clear();
     if (!IsBuilt())
-        return false;
+        return RefuseTileReplacement(outRefusal, "The navigation mesh is not initialized");
     if (!tile.Data.empty())
+        if (const char* refusal = RefuseTileData(tile))
+            return RefuseTileReplacement(outRefusal, refusal);
+
+    // All host and Detour allocations precede removal. The metadata copy also protects an
+    // input borrowed from the stored tile; publication uses a no-allocation swap.
+    NavMeshTileData staged = tile;
+    static_assert(std::is_nothrow_swappable_v<NavMeshTileData>);
+    dtNavMesh& navMesh = *m_Impl->NavMesh;
+    const dtTileRef oldRef = navMesh.getTileRefAt(staged.Key.X, staged.Key.Z, 0);
+    if (!staged.Data.empty() && m_Impl->FreeSlots.empty() && oldRef == 0)
+        return RefuseTileReplacement(outRefusal, "The navigation tile pool is full");
+
+    std::unique_ptr<uint8, decltype(&dtFree)> candidate(nullptr, dtFree);
+    std::unique_ptr<uint8, decltype(&dtFree)> backup(nullptr, dtFree);
+    int32 backupBytes = 0;
+    if (!staged.Data.empty())
     {
-        const char* refusal = RefuseTileData(tile);
-        if (refusal)
+        candidate.reset(static_cast<uint8*>(dtAlloc(staged.Data.size(), DT_ALLOC_PERM)));
+        if (!candidate)
+            return RefuseTileReplacement(outRefusal, "Not enough memory for the replacement navigation tile");
+        std::memcpy(candidate.get(), staged.Data.data(), staged.Data.size());
+        if (oldRef != 0)
         {
-            if (outRefusal)
-                *outRefusal = refusal;
-            return false;
+            const dtMeshTile* oldTile = navMesh.getTileByRef(oldRef);
+            backupBytes = oldTile->dataSize;
+            backup.reset(static_cast<uint8*>(dtAlloc(static_cast<size_t>(backupBytes), DT_ALLOC_PERM)));
+            if (!backup)
+                return RefuseTileReplacement(outRefusal, "Not enough memory to preserve the current navigation tile");
+            // Live bytes retain runtime area and flag edits that the authored copy does not hold.
+            std::memcpy(backup.get(), oldTile->data, static_cast<size_t>(backupBytes));
         }
     }
-    RemoveTile(tile.Key);
-    if (tile.Data.empty())
+
+    auto [metadata, inserted] = m_Impl->Tiles.try_emplace(staged.Key);
+    try
     {
-        // No walkable area: Detour holds nothing, the map keeps the key and the content hash.
-        m_Impl->Tiles[tile.Key] = tile;
+        if (oldRef != 0)
+            m_Impl->FreeSlots.push_back(static_cast<int32>(navMesh.decodePolyIdTile(oldRef)));
+    }
+    catch (...)
+    {
+        if (inserted)
+            m_Impl->Tiles.erase(metadata);
+        throw;
+    }
+    if (oldRef != 0 && dtStatusFailed(navMesh.removeTile(oldRef, nullptr, nullptr)))
+    {
+        m_Impl->FreeSlots.pop_back();
+        if (inserted)
+            m_Impl->Tiles.erase(metadata);
+        return RefuseTileReplacement(outRefusal, "Detour could not remove the current navigation tile");
+    }
+    if (staged.Data.empty())
+    {
+        std::swap(metadata->second, staged);
+        if (oldRef != 0)
+            m_Impl->DebugMeshDirty = true;
         return true;
     }
-    if (m_Impl->FreeSlots.empty())
-        return false;
 
-    // Detour owns and frees the data it is given (DT_TILE_FREE_DATA), so it gets its own copy.
-    auto* data = static_cast<uint8*>(dtAlloc(static_cast<int32>(tile.Data.size()), DT_ALLOC_PERM));
-    if (!data)
-        return false;
-    std::memcpy(data, tile.Data.data(), tile.Data.size());
-    // A tile reference naming the slot and its current salt makes Detour place the tile there.
-    dtNavMesh& navMesh = *m_Impl->NavMesh;
+    // The FIFO includes the old slot only after every previously vacant slot. Detour's current
+    // salt belongs to the new publication; a failed insertion restores the exact old reference.
     const int32 slot = m_Impl->FreeSlots.front();
     const dtMeshTile* slotTile = static_cast<const dtNavMesh&>(navMesh).getTile(slot);
     const dtTileRef slotRef = navMesh.encodePolyId(slotTile->salt, static_cast<uint32>(slot), 0);
-    if (dtStatusFailed(
-            navMesh.addTile(data, static_cast<int32>(tile.Data.size()), DT_TILE_FREE_DATA, slotRef, nullptr)))
+    const dtStatus added = navMesh.addTile(candidate.get(), static_cast<int32>(staged.Data.size()),
+                                         DT_TILE_FREE_DATA, slotRef, nullptr);
+    if (dtStatusFailed(added))
     {
-        dtFree(data);
-        return false;
+        if (oldRef != 0)
+        {
+            const dtStatus restored = navMesh.addTile(backup.get(), backupBytes, DT_TILE_FREE_DATA, oldRef, nullptr);
+            if (dtStatusFailed(restored))
+            {
+                Logger::Log::Error("Detour could not restore navigation tile ({}, {}) after refusing its replacement",
+                                   staged.Key.X, staged.Key.Z);
+                std::terminate();
+            }
+            backup.release();
+            m_Impl->FreeSlots.pop_back();
+        }
+        if (inserted)
+            m_Impl->Tiles.erase(metadata);
+        return RefuseTileReplacement(outRefusal, "Detour refused the replacement navigation tile");
     }
+    candidate.release();
     m_Impl->FreeSlots.pop_front();
-    m_Impl->Tiles[tile.Key] = tile;
+    std::swap(metadata->second, staged);
     m_Impl->DebugMeshDirty = true;
     return true;
 }

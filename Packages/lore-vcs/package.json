@@ -2,6 +2,7 @@
   "name": "lore-vcs",
   "version": "1.0.0",
   "displayName": "Lore Version Control",
+  "icon": "Preview/icon.svg",
   "assets": "Assets/",
   "modules": [
     {

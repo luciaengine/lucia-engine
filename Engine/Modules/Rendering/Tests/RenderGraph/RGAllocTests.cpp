@@ -4,16 +4,71 @@
 // This pins the immediate-mode design's core perf claim — and fails loudly if
 // someone reintroduces per-frame vector churn.
 //
-// Counted by the allocation counter in a process-wide window around the
+// Counting works by replacing the GLOBAL allocation functions for this test
+// binary; allocations are only counted while g_TrackAllocs is set, around the
 // steady-state frame.
 
 #include "Rendering/Core/RenderGraph/RGGraph.h"
 
 #include <gtest/gtest.h>
 
-#include "Memory/AllocationCountScope.h"
-
+#include <atomic>
 #include <cstdio>
+#include <cstdlib>
+#include <new>
+#if defined(_MSC_VER)
+#include <malloc.h>
+#endif
+
+namespace
+{
+std::atomic<uint64_t> g_AllocCount{0};
+std::atomic<bool> g_TrackAllocs{false};
+inline void NoteAlloc()
+{
+    if (g_TrackAllocs.load(std::memory_order_relaxed))
+        g_AllocCount.fetch_add(1, std::memory_order_relaxed);
+}
+} // namespace
+
+void* operator new(std::size_t n)
+{
+    NoteAlloc();
+    if (void* p = std::malloc(n ? n : 1))
+        return p;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t n)
+{
+    NoteAlloc();
+    if (void* p = std::malloc(n ? n : 1))
+        return p;
+    throw std::bad_alloc();
+}
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+#if defined(_MSC_VER)
+void* operator new(std::size_t n, std::align_val_t a)
+{
+    NoteAlloc();
+    if (void* p = _aligned_malloc(n ? n : 1, static_cast<std::size_t>(a)))
+        return p;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t n, std::align_val_t a)
+{
+    NoteAlloc();
+    if (void* p = _aligned_malloc(n ? n : 1, static_cast<std::size_t>(a)))
+        return p;
+    throw std::bad_alloc();
+}
+void operator delete(void* p, std::align_val_t) noexcept { _aligned_free(p); }
+void operator delete[](void* p, std::align_val_t) noexcept { _aligned_free(p); }
+void operator delete(void* p, std::size_t, std::align_val_t) noexcept { _aligned_free(p); }
+void operator delete[](void* p, std::size_t, std::align_val_t) noexcept { _aligned_free(p); }
+#endif
 
 using namespace GameEngine::Rendering::RenderGraph;
 
@@ -110,12 +165,12 @@ TEST(RGAlloc, SteadyStateFrameHeapAllocationsAreBounded)
     BuildRepresentativeFrame(g); // frame 0: capacities grow
     BuildRepresentativeFrame(g); // frame 1: settle
 
-    uint64_t allocs = 0;
-    {
-        const GameEngine::Memory::AllocationCountScope frame(GameEngine::Memory::CountWindow::Process);
-        BuildRepresentativeFrame(g); // frame 2: steady state
-        allocs = frame.Count();
-    }
+    g_AllocCount.store(0);
+    g_TrackAllocs.store(true);
+    BuildRepresentativeFrame(g); // frame 2: steady state
+    g_TrackAllocs.store(false);
+
+    const uint64_t allocs = g_AllocCount.load();
     std::printf("[RenderGraph] steady-state frame heap allocations: %llu\n",
                 static_cast<unsigned long long>(allocs));
     RecordProperty("steadyStateAllocs", static_cast<int>(allocs));

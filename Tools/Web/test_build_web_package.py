@@ -28,7 +28,7 @@ import export_web_player  # noqa: E402
 import gepak  # noqa: E402
 
 kSourceVersion = package.SourceVersion(package.kRepoRoot / "VERSION")
-kHasBundler = (package.kFacadeDir / "node_modules" / "esbuild" / "bin" / "esbuild").is_file()
+kHasBundler = (package.kFacadeDir / "node_modules" / "esbuild" / "lib" / "main.js").is_file()
 
 # Shader sources that hold third-party code, by the repository notice that covers them.
 # Patterns are relative to the repository root.
@@ -148,7 +148,7 @@ class PackageTests(unittest.TestCase):
         self.assertIn("## coi-serviceworker", notices)
 
         manifest = json.loads((self.out / "package.json").read_text(encoding="utf-8"))
-        self.assertEqual((manifest["name"], manifest["version"]), ("@game-crafters-guild/openengine-web", kSourceVersion))
+        self.assertEqual((manifest["name"], manifest["version"]), ("@openengine/web", kSourceVersion))
         self.assertEqual(manifest["exports"]["."]["default"], "./opengine.mjs")
         self.assertIs(manifest["sideEffects"], False)
         self.assertEqual(sorted(manifest["files"]),
@@ -172,7 +172,7 @@ class PackageTests(unittest.TestCase):
         package.Build(self.tree.Args(), self.out)
         report = io.StringIO()
         with contextlib.redirect_stdout(report):
-            self.assertEqual(package.Check(self.out, allowStub=True, reportSizes=False), [])
+            self.assertEqual(package.Check(self.out, allowStub=True, reportSizes=True), [])
         rows = {line[:32].strip(): [int(value.replace(",", "")) for value in line[32:].split()]
                 for line in report.getvalue().splitlines()[1:-1]}
         pack = rows["opengine-core.gepak"]

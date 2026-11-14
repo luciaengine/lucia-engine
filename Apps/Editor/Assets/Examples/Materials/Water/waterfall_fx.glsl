@@ -10,7 +10,7 @@
 // Nothing engine-side knows the word "waterfall". SELF-CONTAINED surface only: user names must
 // never be mixed with raw-ordinal texture access (the composer rejects that combination).
 //
-// Source-graph ground truth (GeneratedFromGraph-Waterfall.shader, SurfaceDescriptionFunction):
+// Unity ground truth (GeneratedFromGraph-Waterfall.shader, SurfaceDescriptionFunction):
 //   panUV    = uv0 + 0.01 * _Speed.xy * time             (the graph's own 0.01 damping)
 //   churn    = tex(_Texture_01, panUV)                   (panned ribbon color + alpha)
 //   detail   = tex(_Texture_02, uv0)                     (static brightness modulation)
@@ -25,7 +25,7 @@
 // the DIFFUSE base by alpha (URP's AlphaModulate touches only albedo), leaves specular and
 // emission un-premultiplied, and writes alpha for the destination attenuation. Where the
 // ribbon alpha thins, the emission still ADDS over the falls — the additive-looking churn
-// glow — while dense ribbon cores also occlude the background. Exactly the source graph's math.
+// glow — while dense ribbon cores also occlude the background. Exactly Unity's math.
 //
 // Emission units: the product is scene-linear against the OpenPBR emission lobe's paperwhite
 // anchor (1.0 == GE_EMISSION_PAPERWHITE_NITS == 203 nits), the same convention as

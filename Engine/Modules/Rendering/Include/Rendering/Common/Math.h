@@ -20,7 +20,7 @@
 
 namespace GameEngine {
 namespace Rendering {
-    	// Rendering's vector types are the Mathematics types.
+    // Rendering's vector types are the Mathematics types.
 	    using Vector3 = GameEngine::Mathematics::Vector3;
 	    using Vector4 = GameEngine::Mathematics::Vector4;
 

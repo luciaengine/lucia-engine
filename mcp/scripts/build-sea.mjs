@@ -58,17 +58,15 @@ try {
     logLevel: "warning",
   });
 
-  // 2. SEA preparation blob. The blob records `main` verbatim as the script's
-  // file name, so it is named relative to the work dir: an absolute path would
-  // embed this machine's temp folder (and on Windows its user name) in the exe.
+  // 2. SEA preparation blob.
   const blobPath = path.join(workDir, "sea-prep.blob");
   const seaConfigPath = path.join(workDir, "sea-config.json");
   fs.writeFileSync(seaConfigPath, JSON.stringify({
-    main: path.basename(bundlePath),
+    main: bundlePath,
     output: blobPath,
     disableExperimentalSEAWarning: true,
   }));
-  execFileSync(process.execPath, ["--experimental-sea-config", seaConfigPath], { cwd: workDir, stdio: ["ignore", "inherit", "inherit"] });
+  execFileSync(process.execPath, ["--experimental-sea-config", seaConfigPath], { stdio: ["ignore", "inherit", "inherit"] });
 
   // 3. Copy the running node binary and inject the blob — in the work dir,
   // not the staged path: a failure here or in the smoke test must not have
@@ -106,10 +104,6 @@ try {
   const refTools = listOf(process.execPath, [cliEntry, "list"]);
   if (exeTools.length === 0 || exeTools.join("\n") !== refTools.join("\n")) {
     console.error(`Smoke test failed: exe lists ${exeTools.length} tools, dist/cli.js lists ${refTools.length}.`);
-    process.exit(1);
-  }
-  if (fs.readFileSync(workExe).includes(workDir)) {
-    console.error(`Smoke test failed: the exe embeds the build machine's temp folder ${workDir}.`);
     process.exit(1);
   }
 

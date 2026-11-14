@@ -59,11 +59,17 @@ Transform MakeTransformAt(float x, float y, float z) {
                               Mathematics::Vector3{1.0f, 1.0f, 1.0f});
 }
 
+void SetIdentityMatrix(float* m) {
+    for (int i = 0; i < 16; ++i)
+        m[i] = 0.0f;
+    m[0] = m[5] = m[10] = m[15] = 1.0f;
+}
+
 CameraData MakeIdentityCamera() {
     CameraData data{};
-    data.view = Mathematics::Matrix4x4::Identity();
-    data.proj = Mathematics::Matrix4x4::Identity();
-    data.viewProj = Mathematics::Matrix4x4::Identity();
+    SetIdentityMatrix(data.view);
+    SetIdentityMatrix(data.proj);
+    SetIdentityMatrix(data.viewProj);
     return data;
 }
 
@@ -112,7 +118,7 @@ struct EvictionHarness {
         rs.Views().SetCameraData(cameraId, ::GameEngine::Tests::TestCameraWithEye(MakeIdentityCamera()), {0.1f, 1000.0f});
         ViewId viewId = rs.Views().AllocateView("HlodEvictView", cameraId);
         rs.Views().SetViewWorldId(viewId, worldId);
-        rs.Views().SetViewRenderLayerMask(viewId, GameEngine::Rendering::RenderLayerMask::Default());
+        rs.Views().SetViewRenderLayerMask(viewId, 0x1u);
 
         extraction = std::make_unique<RenderExtractionSystem>(&rs, /*feedFastPathEnabled=*/true);
         return true;
@@ -129,7 +135,7 @@ struct EvictionHarness {
         e.Set(MakeTransformAt(x, y, z));
         MeshRenderer mr{};
         mr.meshGpuHandleId = static_cast<uint64>(meshHandle);
-        mr.RenderLayers = GameEngine::Rendering::RenderLayerMask::Default();
+        mr.renderLayerMask = 0x1u;
         mr.materialAssetGuid.Set(materialGuid);
         e.Set(mr);
         world->ProcessCommands();

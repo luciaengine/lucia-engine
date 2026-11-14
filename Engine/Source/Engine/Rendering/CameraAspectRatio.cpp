@@ -41,6 +41,22 @@ float ResolveTargetAspect(const Components::Camera& camera)
 
 } // namespace
 
+Mathematics::Rect ComputeViewportRect(const ViewLetterbox& letterbox,
+                                                                  uint32_t targetWidth,
+                                                                  uint32_t targetHeight)
+{
+    const Mathematics::Rect wholeTarget{0.0f, 0.0f, 1.0f, 1.0f};
+    if (!letterbox.active || targetWidth == 0 || targetHeight == 0 || letterbox.width == 0 ||
+        letterbox.height == 0)
+        return wholeTarget;
+    const float w = static_cast<float>(targetWidth);
+    const float h = static_cast<float>(targetHeight);
+    return Mathematics::Rect{static_cast<float>(letterbox.x) / w,
+                             static_cast<float>(letterbox.y) / h,
+                             static_cast<float>(letterbox.width) / w,
+                             static_cast<float>(letterbox.height) / h};
+}
+
 float GetCameraAspectPresetRatio(CameraAspectPreset preset)
 {
     switch (preset)
@@ -238,7 +254,10 @@ PixelPerfectResult ComputePixelPerfect(const Components::Camera& camera,
     result.state.ReferenceHeight = visH;
     result.state.PaddedWidth = paddedW;
     result.state.PaddedHeight = paddedH;
+    result.state.WorldUnitsPerTexel = 1.0f / ppu;
     result.state.Zoom = zoom;
+    result.state.DisplayWidth = viewportWidth;
+    result.state.DisplayHeight = viewportHeight;
     return result;
 }
 } // namespace

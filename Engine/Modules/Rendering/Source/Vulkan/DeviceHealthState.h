@@ -10,15 +10,6 @@ namespace GameEngine
 namespace Rendering
 {
 
-// GE_DEVICE_RECOVERY kill switch (design §12). "0" restores today's behavior
-// (latch + suppress, no poll-resume / no rebuild machinery); unset or any other
-// value leaves recovery enabled. Pure so it is unit-testable without touching the
-// process environment; the once-per-process read wraps this in VulkanDevice.
-inline bool ParseDeviceRecoveryEnabled(const char* envValue) noexcept
-{
-    return envValue == nullptr || envValue[0] != '0';
-}
-
 // Device-health tri-state machine (Q6 device-lost recovery, design §7 Tier 0).
 //
 // Owns the atomic DeviceHealth and the legal transitions between Healthy, Hung

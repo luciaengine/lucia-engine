@@ -15,23 +15,6 @@ import {
 import { defineTool, type ToolDef, ToolError } from "../registry.js";
 import { proxyTool } from "./proxy.js";
 
-/**
- * A world point as `[x, y, z]`. A factory, not a shared const: one zod instance reused across two
- * properties emits a `$ref` for the second instead of inlining it (vec3Tuple()).
- * Unlike vec3Tuple() it also takes the JSON text the CLI passes.
- */
-function worldPoint() {
-  return z.preprocess(
-    (val) => {
-      if (typeof val === "string") {
-        try { return JSON.parse(val); } catch { return val; }
-      }
-      return val;
-    },
-    z.array(z.coerce.number()).length(3),
-  );
-}
-
 /** Image name the panel CLI is asked to capture. */
 const kEditorProcessName = process.platform === "win32" ? "Editor.exe" : "Editor";
 
@@ -69,11 +52,23 @@ async function requireAmdGpu(): Promise<GpuTooling> {
   return tooling;
 }
 
+function worldPoint() {
+  return z.preprocess(
+    (val) => {
+      if (typeof val === "string") {
+        try { return JSON.parse(val); } catch { return val; }
+      }
+      return val;
+    },
+    z.array(z.coerce.number()).length(3),
+  );
+}
+
 export const tools: ToolDef[] = [
   proxyTool({
     name: "get_render_stats",
     category: "profiling",
-    description: "Get rendering performance statistics. renderServices.ibl.bakeCount counts the image-based-lighting bakes (sky and reflection probes) since the renderer started, with framesSinceBake (absent before the first bake): a capture is settled once bakeCount stops rising. renderServices.renderThreadCpu.ecsSystems[].maxMs is each ECS system's slowest update since tracking began; pass resetSystemMaxima:true to clear it after this read, so the next read reports the worst single frame in between (read, act, read).",
+    description: "Get rendering performance statistics. renderServices.renderThreadCpu.ecsSystems[].maxMs is each ECS system's slowest update since tracking began; pass resetSystemMaxima:true to clear it after this read, so the next read reports the worst single frame in between (read, act, read).",
     schema: {
       resetSystemMaxima: z.coerce.boolean().optional().describe("Clear every ECS system's maxMs after this read (default false)"),
     },
@@ -300,4 +295,10 @@ export const tools: ToolDef[] = [
       enable: z.coerce.boolean().optional().describe("true to show, false to hide. Omit to toggle."),
     },
   }),
+
+
+
+
+
+
 ];

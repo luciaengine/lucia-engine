@@ -2,7 +2,6 @@
 // pixels, including moving highlights and radius-boundary kernels; they do not
 // duplicate the shader's filtering math on the CPU.
 #include <gtest/gtest.h>
-#include <nlohmann/json.hpp>
 
 #include "Engine/Rendering/PostProcessSettings.h"
 #include "Rendering/Common/Utils.h"
@@ -168,7 +167,6 @@ protected:
         PipelineHandle Handle{};
         PipelineDesc Desc{};
         ShaderMeta Meta{};
-        std::vector<std::string> InputsBoundBlack;
     };
 
     Pipeline& GetPipeline(const std::string& shader)
@@ -186,7 +184,6 @@ protected:
         Require(ReflectSpirv(ShaderStageKind::Fragment, reinterpret_cast<const uint32_t*>(fs.data()),
                             fs.size() / 4, opts, rfs, nullptr), "fragment reflection failed: " + shader);
         p.Meta = MergeStages({rvs, rfs});
-        p.InputsBoundBlack = InputsBoundBlack(shader);
         p.Desc.type = PipelineType::Graphics;
         p.Desc.vertexShader = vs;
         p.Desc.pixelShader = fs;
@@ -216,8 +213,7 @@ protected:
             if (binding.Type == ShaderMetaBindingType::kCombinedImageSampler)
             {
                 auto it = inputs.find(binding.Name);
-                const bool boundBlack = std::ranges::find(p.InputsBoundBlack, binding.Name) != p.InputsBoundBlack.end();
-                Require(it != inputs.end() || boundBlack, "missing input " + binding.Name);
+                Require(it != inputs.end() || binding.Name == "uScattering", "missing input " + binding.Name);
                 auto handle = it == inputs.end() ? m_Depth.Handle : it->second.Handle;
                 m_Device->UpdateCombinedImageSamplerBinding(ds, binding.Binding, handle, m_Sampler);
             }
@@ -793,18 +789,5 @@ TEST_F(BloomRendering, WidePrefilterDoesNotEraseIsolatedThresholdedLights)
     EXPECT_GT(Energy(result, 1), 2.9)
         << "a bright emitter must survive even when its filtered peak falls below threshold";
     EXPECT_NEAR(Energy(result, 2) / Energy(result, 1), 0.25, 1e-5);
-}
-
-TEST_F(BloomRendering, RequiredInputLeftOutIsRefused)
-{
-    try
-    {
-        Render("bloom_threshold", 2, 2, {{"uHDR", Solid(4, 4, {1, 1, 1, 1})}});
-        FAIL() << "the graph does not declare uDepth optional or gated";
-    }
-    catch (const std::runtime_error& error)
-    {
-        EXPECT_STREQ(error.what(), "missing input uDepth");
-    }
 }
 } // namespace

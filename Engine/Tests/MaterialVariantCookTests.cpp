@@ -32,21 +32,21 @@
 #include "Engine/Build/CancellableShellProcess.h"
 #include "Engine/Rendering/PackageShaderDirs.h"
 #include "TerrainGrass/GrassDrawMode.h"
-#include "TerrainGrass/GrassMaterialKeywords.h"
 #include "Engine/Rendering/ShaderGraphMaterial.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/ViewParamsLayout.h"
 #include "Rendering/Materials/MaterialBuildContext.h"
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialDocument.h"
+#include "Rendering/Materials/MaterialShaderIncludeRoots.h"
 #include "Rendering/Materials/Shader/ShaderCompileService.h"
 #include "Rendering/Materials/Shader/ShaderProfileDefines.h"
 #include "Rendering/Materials/Shader/ShaderVariantKey.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
-#include "Rendering/ShaderCache/ShaderProgramIndex.h"
 
 #include "ScopedCompatShaderProfile.h"
 #include "StagedTestPaths.h"
+#include "TestTempDir.h"
 #include "WebWgslCook.h"
 
 using namespace GameEngine;
@@ -63,10 +63,8 @@ struct TempTree
     explicit TempTree(const char* prefix)
     {
         static std::atomic<uint32_t> counter{0};
-        Root = fs::temp_directory_path()
-             / (std::string(prefix) + "_"
-                + std::to_string(::testing::UnitTest::GetInstance()->random_seed()) + "_"
-                + std::to_string(counter.fetch_add(1)));
+        Root = TestUtils::MakeUniqueTempDirectory(std::string(prefix) + "_"
+                                                  + std::to_string(counter.fetch_add(1)));
         fs::create_directories(Root);
     }
     ~TempTree()
@@ -109,7 +107,7 @@ using TestSupport::ScopedCompatShaderProfile;
 // pins the compat profile, or it passes alone and fails after any device-creating test.
 struct ScopedWebCacheSpirvTarget
 {
-    using Target = Rendering::ShaderCompileService::SpirvTarget;
+    using Target = ::GameEngine::Rendering::SpirvTarget;
     ScopedWebCacheSpirvTarget() : Prev(Rendering::ShaderCompileService::MaxSupportedSpirv())
     {
         Rendering::ShaderCompileService::SetMaxSupportedSpirv(Target::Spirv_1_5);
@@ -259,211 +257,6 @@ TEST_F(MaterialVariantCook, UncookedVariantFailsWithAnActionableMessage)
         << "the miss must say how to produce it:\n" << joined;
 }
 
-// --- Program index ----------------------------------------------------------
-//
-// The cook records each variant's build inputs against the program it built; a
-// runtime that ships the cache loads a variant's program through that index
-// without composing its source or hashing its include closure.
-
-namespace
-{
-std::string FirstError(const MaterialBuildResult& build)
-{
-    return build.errors.empty() ? std::string{} : build.errors.front();
-}
-
-// The index entries of cooked variants: each build's input key and its package
-// under the cache root, as the cook records them.
-std::vector<ShaderProgramIndex::Entry> IndexEntries(const std::vector<MaterialBuildResult>& builds,
-                                                    const fs::path& cacheRoot)
-{
-    std::vector<ShaderProgramIndex::Entry> entries;
-    for (const MaterialBuildResult& build : builds)
-        entries.push_back({build.programIndexKey,
-                           fs::path(build.generatedShaderPkgPath).lexically_relative(cacheRoot).generic_string()});
-    return entries;
-}
-
-// The files the cooked builds read, which the index records as its sources.
-std::vector<fs::path> IndexSources(const std::vector<MaterialBuildResult>& builds)
-{
-    std::vector<fs::path> sources;
-    for (const MaterialBuildResult& build : builds)
-        sources.insert(sources.end(), build.includeClosurePaths.begin(), build.includeClosurePaths.end());
-    return sources;
-}
-
-// Writes the index of `builds` into `project`'s cache root, as the cook does.
-bool WriteProgramIndex(const CookedProject& project, const std::vector<MaterialBuildResult>& builds,
-                       std::string& error)
-{
-    return ShaderProgramIndex::Write(project.Context.CacheRoot / kShaderProgramIndexFileName,
-                                     IndexEntries(builds, project.Context.CacheRoot), IndexSources(builds),
-                                     project.Context, &error);
-}
-
-// `cooked`'s tree copied to `shipDir` as a shipped runtime sees it: its cache read-only with the
-// index beside the programs, and a writable cache of its own.
-CookedProject ShipCookedProject(const CookedProject& cooked, const fs::path& shipDir, const fs::path& engineShaderDir)
-{
-    std::error_code ec;
-    fs::copy(cooked.Root, shipDir, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
-    CookedProject shipped = MakeProject(shipDir, engineShaderDir);
-    shipped.Context.AssetSourceRoots = {{"project", shipped.Root}};
-    shipped.Context.ReadOnlyCacheRoots = {shipped.Root / ".Cache" / "Shaders"};
-    shipped.Context.CacheRoot = shipDir / "UserCache";
-    return shipped;
-}
-
-std::shared_ptr<const ShaderProgramIndex> LoadShippedIndex(const CookedProject& shipped, std::string& reason)
-{
-    return ShaderProgramIndex::Load(shipped.Root / ".Cache" / "Shaders" / kShaderProgramIndexFileName,
-                                    shipped.Context, &reason);
-}
-} // namespace
-
-TEST_F(MaterialVariantCook, ProgramIndexFindsEachCookedVariantAndRefusesAStaleIndex)
-{
-    TempTree cookDir("ge_program_index");
-    CookedProject project = MakeProject(cookDir.Root, m_EngineShaderDir);
-    project.Context.AssetSourceRoots = {{"project", project.Root}};
-    std::vector<MaterialBuildResult> builds;
-    for (const MaterialKeyword variant : {kColorVariant, kDepthVariant})
-    {
-        builds.push_back(Build(project, variant));
-        ASSERT_TRUE(builds.back().success) << FirstError(builds.back());
-    }
-    ASSERT_NE(builds[0].programIndexKey, builds[1].programIndexKey);
-
-    const fs::path indexPath = project.Context.CacheRoot / kShaderProgramIndexFileName;
-    std::string error;
-    ASSERT_TRUE(WriteProgramIndex(project, builds, error)) << error;
-    std::string reason;
-    const std::shared_ptr<const ShaderProgramIndex> index = ShaderProgramIndex::Load(indexPath, project.Context, &reason);
-    ASSERT_NE(index, nullptr) << reason;
-    for (const MaterialBuildResult& build : builds)
-        EXPECT_EQ(index->Find(build.programIndexKey).lexically_normal(),
-                  fs::path(build.generatedShaderPkgPath).lexically_normal());
-    EXPECT_TRUE(index->Find(builds[0].programIndexKey ^ 1u).empty());
-
-    // Keys made for another SPIR-V target name other programs: that index is not used.
-    {
-        using Target = ShaderCompileService::SpirvTarget;
-        const Target cooked = ShaderCompileService::MaxSupportedSpirv();
-        ShaderCompileService::SetMaxSupportedSpirv(cooked == Target::Spirv_1_6 ? Target::Spirv_1_5 : Target::Spirv_1_6);
-        const std::shared_ptr<const ShaderProgramIndex> otherTarget =
-            ShaderProgramIndex::Load(indexPath, project.Context, &reason);
-        ShaderCompileService::SetMaxSupportedSpirv(cooked);
-        EXPECT_EQ(otherTarget, nullptr);
-        EXPECT_NE(reason.find("cooked for"), std::string::npos) << reason;
-    }
-
-    // An index written under another version is not read.
-    {
-        std::fstream file(indexPath, std::ios::in | std::ios::out | std::ios::binary);
-        file.seekp(8);
-        const uint32_t otherVersion = kShaderProgramIndexVersion + 1;
-        file.write(reinterpret_cast<const char*>(&otherVersion), sizeof(otherVersion));
-    }
-    EXPECT_EQ(ShaderProgramIndex::Load(indexPath, project.Context, &reason), nullptr);
-    EXPECT_NE(reason.find("version"), std::string::npos) << reason;
-}
-
-TEST_F(MaterialVariantCook, IndexedVariantResolvesWithoutComposing)
-{
-    TempTree cookDir("ge_program_index_cook");
-    TempTree shipDir("ge_program_index_ship");
-
-    CookedProject cooked = MakeProject(cookDir.Root, m_EngineShaderDir);
-    cooked.Context.AssetSourceRoots = {{"project", cooked.Root}};
-    std::vector<MaterialBuildResult> builds;
-    builds.push_back(Build(cooked, kColorVariant));
-    ASSERT_TRUE(builds[0].success) << FirstError(builds[0]);
-    std::string error;
-    ASSERT_TRUE(WriteProgramIndex(cooked, builds, error)) << error;
-
-    // The shipped runtime: its cache read-only with the index, no compiler.
-    std::string reason;
-    CookedProject shipped = ShipCookedProject(cooked, shipDir.Root, m_EngineShaderDir);
-    shipped.Context.ProgramIndex = LoadShippedIndex(shipped, reason);
-    ASSERT_NE(shipped.Context.ProgramIndex, nullptr) << reason;
-    // And no adapter templates once the index is loaded, so any composition fails.
-    shipped.Context.AdapterShaderDir = shipDir.Root / "NoAdapters";
-    fs::create_directories(shipped.Context.AdapterShaderDir);
-
-    ScopedCookOnlyRuntime cookOnly;
-    const MaterialBuildResult served = Build(shipped, kColorVariant);
-    ASSERT_TRUE(served.success) << FirstError(served);
-    ASSERT_NE(served.package, nullptr);
-    EXPECT_EQ(served.package->stageBytes, builds[0].package->stageBytes)
-        << "the index must serve the program the cook built for these inputs";
-    EXPECT_TRUE(served.composedVertexSource.empty() && served.composedFragmentSource.empty())
-        << "an indexed variant composes nothing";
-    EXPECT_EQ(shipped.Context.ProgramIndex->GetCounts().Hits, 1u);
-}
-
-// A shader source edited after the cook (a patch, a mod, a fix made in the shipped tree) changes
-// the program a variant composes to while leaving every input the index keys on alone. The index
-// records the sources its programs were composed from and is refused when one changed, so the
-// variant composes from the edited source instead of loading the program cooked from the old one.
-TEST_F(MaterialVariantCook, ProgramIndexIsRefusedWhenAShippedSourceChanged)
-{
-    TempTree cookDir("ge_program_index_stale_cook");
-    TempTree shipDir("ge_program_index_stale_ship");
-    CookedProject cooked = MakeProject(cookDir.Root, m_EngineShaderDir);
-    cooked.Context.AssetSourceRoots = {{"project", cooked.Root}};
-    std::vector<MaterialBuildResult> builds;
-    builds.push_back(Build(cooked, kColorVariant));
-    ASSERT_TRUE(builds[0].success) << FirstError(builds[0]);
-    std::string error;
-    ASSERT_TRUE(WriteProgramIndex(cooked, builds, error)) << error;
-
-    std::string reason;
-    CookedProject shipped = ShipCookedProject(cooked, shipDir.Root, m_EngineShaderDir);
-    ASSERT_NE(LoadShippedIndex(shipped, reason), nullptr) << "the unedited shipped tree must keep its index: " << reason;
-    std::string surface = kProbeSurface;
-    surface.replace(surface.find("vec3(0.25, 0.5, 0.75)"), 21, "vec3(0.75, 0.5, 0.25)");
-    WriteTextFile(shipped.Root / "Shaders" / "Surfaces" / "probe_surface.glsl", surface);
-
-    shipped.Context.ProgramIndex = LoadShippedIndex(shipped, reason);
-    EXPECT_EQ(shipped.Context.ProgramIndex, nullptr) << "an index whose sources changed was trusted";
-    EXPECT_NE(reason.find("Surfaces/probe_surface.glsl"), std::string::npos) << reason;
-    const MaterialBuildResult rebuilt = Build(shipped, kColorVariant);
-    ASSERT_TRUE(rebuilt.success) << FirstError(rebuilt);
-    EXPECT_NE(rebuilt.package->stageBytes, builds[0].package->stageBytes)
-        << "the variant must come from the edited source, not the program cooked from the old one";
-}
-
-// A variant the index names but whose package cannot be served composes and hashes like any other
-// miss, and counts as one: the served count is what loaded without composing.
-TEST_F(MaterialVariantCook, AnIndexedVariantWhosePackageIsGoneCountsAsAMiss)
-{
-    TempTree cookDir("ge_program_index_gone_cook");
-    TempTree shipDir("ge_program_index_gone_ship");
-    CookedProject cooked = MakeProject(cookDir.Root, m_EngineShaderDir);
-    cooked.Context.AssetSourceRoots = {{"project", cooked.Root}};
-    std::vector<MaterialBuildResult> builds;
-    builds.push_back(Build(cooked, kColorVariant));
-    ASSERT_TRUE(builds[0].success) << FirstError(builds[0]);
-    std::string error;
-    ASSERT_TRUE(WriteProgramIndex(cooked, builds, error)) << error;
-
-    std::string reason;
-    CookedProject shipped = ShipCookedProject(cooked, shipDir.Root, m_EngineShaderDir);
-    shipped.Context.ProgramIndex = LoadShippedIndex(shipped, reason);
-    ASSERT_NE(shipped.Context.ProgramIndex, nullptr) << reason;
-    const fs::path package = shipped.Context.ProgramIndex->Find(builds[0].programIndexKey);
-    ASSERT_FALSE(package.empty());
-    std::error_code ec;
-    fs::remove(package, ec);
-
-    const MaterialBuildResult served = Build(shipped, kColorVariant);
-    ASSERT_TRUE(served.success) << FirstError(served);
-    EXPECT_FALSE(served.composedVertexSource.empty()) << "a variant whose package is gone composes";
-    EXPECT_EQ(shipped.Context.ProgramIndex->GetCounts().Hits, 0u) << "a composed variant was counted as served";
-    EXPECT_EQ(shipped.Context.ProgramIndex->GetCounts().Misses, 1u);
-}
-
 // --- Web profile -----------------------------------------------------------
 //
 // A browser ingests no SPIR-V, so a cooked variant that only carries SPIR-V is
@@ -542,7 +335,7 @@ TEST_F(WebMaterialVariantCook, CompatVariantsTranslateToWgslAndServeWithoutAComp
         request.VertexSource = built.composedVertexSource;
         request.FragmentSource = built.composedFragmentSource;
         request.Defines = built.composedDefines;
-        request.IncludeRoots = built.composedIncludeRoots;
+        request.IncludeRoots = BuildMaterialIncludeRoots(project.Context, project.MaterialPath.parent_path());
         request.DebugName = "probe_" + std::to_string(static_cast<uint64_t>(variant));
 
         // tint runs inside this call and a rejection fails it, so a pass here IS
@@ -585,63 +378,6 @@ TEST_F(WebMaterialVariantCook, CompatVariantsTranslateToWgslAndServeWithoutAComp
     }
     EXPECT_EQ(ShaderCompileService::GetTotalCompilations(), compilesBefore)
         << "the web variants must be SERVED from the cooked cache, not recompiled";
-}
-
-// The batch's failure contract (WebWgslCook.h): one error per request in request order,
-// a cooked request's scratch removed and its package carrying WGSL, a failed request's
-// scratch kept (its error names the file there) and its package left without WGSL.
-TEST_F(WebMaterialVariantCook, ABatchReportsEachFailureAtItsOwnIndexAndKeepsOnlyItsScratch)
-{
-    ScopedCompatShaderProfile compat;
-    ScopedWebCacheSpirvTarget webSpirv;
-    TempTree cookDir("ge_web_variant_batch");
-    const CookedProject project = MakeProject(cookDir.Root, m_EngineShaderDir);
-
-    const MaterialBuildResult color = Build(project, kColorVariant);
-    const MaterialBuildResult depth = Build(project, kDepthVariant);
-    ASSERT_TRUE(color.success);
-    ASSERT_TRUE(depth.success);
-    // The failing request's own package: a SPIR-V-only copy nothing else writes.
-    const fs::path brokenPackage = cookDir.Root / "broken.shaderpkg";
-    fs::copy_file(depth.generatedShaderPkgPath, brokenPackage);
-
-    std::vector<GameEngine::Tools::WebWgslCookRequest> requests(3);
-    const MaterialBuildResult* sources[3] = {&color, &depth, &depth};
-    for (size_t i = 0; i < requests.size(); ++i)
-    {
-        GameEngine::Tools::WebWgslCookRequest& request = requests[i];
-        request.ShaderCookScript = m_ShaderCookScript;
-        request.ScratchDir = cookDir.Root / "Batch" / std::to_string(i);
-        request.VertexSource = sources[i]->composedVertexSource;
-        request.FragmentSource = sources[i]->composedFragmentSource;
-        request.Defines = sources[i]->composedDefines;
-        request.IncludeRoots = sources[i]->composedIncludeRoots;
-        request.DebugName = "batch_" + std::to_string(i);
-    }
-    requests[0].PackagePath = color.generatedShaderPkgPath;
-    requests[1].PackagePath = brokenPackage;
-    requests[1].VertexSource = "#version 450\nvoid main() { this does not compile; }\n";
-    requests[2].PackagePath = depth.generatedShaderPkgPath;
-
-    const std::vector<std::string> errors = GameEngine::Tools::CookWebWgslBatch(requests, 3);
-
-    ASSERT_EQ(errors.size(), 3u);
-    EXPECT_TRUE(errors[0].empty()) << errors[0];
-    EXPECT_TRUE(errors[2].empty()) << errors[2];
-    EXPECT_NE(errors[1].find("batch_1_vs.vert"), std::string::npos) << errors[1];
-    EXPECT_FALSE(fs::exists(requests[0].ScratchDir));
-    EXPECT_TRUE(fs::exists(requests[1].ScratchDir / "batch_1_vs.vert"));
-    EXPECT_FALSE(fs::exists(requests[2].ScratchDir));
-
-    const auto wgslStageCount = [](const fs::path& path) {
-        ShaderPackage pkg{};
-        std::string loadError;
-        EXPECT_TRUE(LoadShaderPkg(path.string(), ShaderSourceKind::SpirV, pkg, &loadError)) << loadError;
-        return pkg.wgslStages.count("vs") + pkg.wgslStages.count("fs");
-    };
-    EXPECT_EQ(wgslStageCount(requests[0].PackagePath), 2u);
-    EXPECT_EQ(wgslStageCount(requests[1].PackagePath), 0u);
-    EXPECT_EQ(wgslStageCount(requests[2].PackagePath), 2u);
 }
 
 // The cook and the runtime never configure the same include roots: an editor or
@@ -871,11 +607,9 @@ size_t CountEntryPointSampleSites(const std::vector<uint8_t>& module)
 }
 } // namespace
 
-// Unlit particles divide their colour and emission by the view's exposure: the vertex stage reads
-// the metered scale from the view's ExposureHistory and the static scale from ViewParams, at the
-// offset the C++ upload writes. Every particle's fragment stage reads the same block for the
-// pre-exposure P: the forward adapter stores its scene colour at P where it writes it, as every
-// shading variant does. Lit particles stay scene-linear, so their vertex stage resolves no exposure.
+// Unlit particles divide their colour and emission by the view's exposure: the program reads the
+// metered scale from the view's ExposureHistory and the static scale from ViewParams, at the offset
+// the C++ upload writes. Lit particles stay scene-linear and bind neither.
 TEST_F(MaterialVariantCook, UnlitParticlesReadTheViewsExposure)
 {
     TempTree dir("ge_variant_cook_particle_exposure");
@@ -896,7 +630,7 @@ TEST_F(MaterialVariantCook, UnlitParticlesReadTheViewsExposure)
     ASSERT_NE(history, nullptr) << "the unlit program must read the metered exposure";
     EXPECT_EQ(history->Binding, 47u);
     EXPECT_NE(history->StagesMask & kVertexStageBit, 0u) << "the vertex stage resolves the exposure for the draw";
-    EXPECT_NE(history->StagesMask & kFragmentStageBit, 0u) << "the fragment stores its colour at the pre-exposure";
+    EXPECT_EQ(history->StagesMask & kFragmentStageBit, 0u) << "no fragment reads the exposure";
     const DescriptorBindingMeta* viewParams = FindSetZeroBinding(unlitProgram.package->meta, "ViewParams");
     ASSERT_NE(viewParams, nullptr);
     ASSERT_TRUE(viewParams->Block.has_value());
@@ -913,11 +647,8 @@ TEST_F(MaterialVariantCook, UnlitParticlesReadTheViewsExposure)
                                      "lit particles", context, ShaderSourceKind::SpirV, kColorVariant,
                                      VertexAttributeFlags::StandardMesh);
     ASSERT_TRUE(litProgram.success) << (litProgram.errors.empty() ? std::string{} : litProgram.errors.front());
-    const DescriptorBindingMeta* litHistory = FindSetZeroBinding(litProgram.package->meta, "ExposureHistory");
-    ASSERT_NE(litHistory, nullptr) << "the lit fragment stores its colour at the pre-exposure";
-    EXPECT_NE(litHistory->StagesMask & kFragmentStageBit, 0u) << "the lit fragment stores its colour at the pre-exposure";
-    EXPECT_EQ(litHistory->StagesMask & kVertexStageBit, 0u)
-        << "lit particles are scene-linear: the scene's lights set their brightness, not the exposure";
+    EXPECT_EQ(FindSetZeroBinding(litProgram.package->meta, "ExposureHistory"), nullptr)
+        << "lit particles are scene-linear: the scene's lights set their brightness";
 }
 
 // A particle material without a texture draws the procedural shape on the default white albedo: its
@@ -1377,7 +1108,9 @@ TEST_F(MaterialVariantCook, TerrainGrassDitherInternsShippedWebEditorCache)
     // modifier + userKeywords; the registry key contributes HasVertexMod and the
     // draw contributes the world pass keywords (the cook's grass-forward row).
     const MaterialKeyword grassPass =
-        TerrainGrass::kGrassMaterialKeywords | MaterialKeyword::HasVertexMod;
+        MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows | MaterialKeyword::Instanced |
+        MaterialKeyword::IBL | MaterialKeyword::ProceduralVertexOutput |
+        MaterialKeyword::HasVertexMod;
 
     auto runtimeShapeOf = [](const MaterialDocument& cookDoc) {
         MaterialDocument doc{};

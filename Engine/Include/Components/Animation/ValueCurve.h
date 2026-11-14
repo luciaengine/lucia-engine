@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <string_view>
 #include <type_traits>
 
 namespace GameEngine::Components
@@ -25,6 +27,59 @@ enum class ValueCurveTarget : uint8
     LightIntensity,
     PostProcessWeight
 };
+
+// Every ValueCurveTarget with its saved scene name and its inspector label, in enum order. The scene
+// schema writes Name, loads Name in any case and lists every Name when a target is unknown; the
+// inspector shows Label and accepts only the values in this table.
+struct ValueCurveTargetEntry
+{
+    ValueCurveTarget Value;
+    std::string_view Name;
+    std::string_view Label;
+};
+
+inline constexpr ValueCurveTargetEntry kValueCurveTargetEntries[] = {
+    {ValueCurveTarget::None, "none", "None"},
+    {ValueCurveTarget::TransformPositionX, "transformPositionX", "Transform · Position · X"},
+    {ValueCurveTarget::TransformPositionY, "transformPositionY", "Transform · Position · Y"},
+    {ValueCurveTarget::TransformPositionZ, "transformPositionZ", "Transform · Position · Z"},
+    {ValueCurveTarget::TransformScaleX, "transformScaleX", "Transform · Scale · X"},
+    {ValueCurveTarget::TransformScaleY, "transformScaleY", "Transform · Scale · Y"},
+    {ValueCurveTarget::TransformScaleZ, "transformScaleZ", "Transform · Scale · Z"},
+    {ValueCurveTarget::LightIntensity, "lightIntensity", "Light · Intensity"},
+    {ValueCurveTarget::PostProcessWeight, "postProcessWeight", "Post Process · Blend Weight"},
+};
+
+constexpr bool IsValueCurveTargetTableDense()
+{
+    for (std::size_t index = 0; index < std::size(kValueCurveTargetEntries); ++index)
+    {
+        if (static_cast<std::size_t>(kValueCurveTargetEntries[index].Value) != index)
+            return false;
+    }
+    return true;
+}
+
+// Rule: row i of kValueCurveTargetEntries is the target with value i, one row per target up to the last.
+static_assert(IsValueCurveTargetTableDense(), "kValueCurveTargetEntries row i must hold the ValueCurveTarget with value i");
+static_assert(std::size(kValueCurveTargetEntries) == static_cast<std::size_t>(ValueCurveTarget::PostProcessWeight) + 1,
+              "Add a kValueCurveTargetEntries row for every ValueCurveTarget, and name the last target here");
+
+// The kValueCurveTargetEntries row for the target whose integer value is `value`, or nullptr when no
+// target has that value. The table is dense, so the value is the row index. A stored target can hold
+// a value outside the table (a raw component write sets any byte), so every caller handles nullptr.
+constexpr const ValueCurveTargetEntry* FindValueCurveTargetEntry(int value)
+{
+    if (value < 0 || static_cast<std::size_t>(value) >= std::size(kValueCurveTargetEntries))
+        return nullptr;
+    return &kValueCurveTargetEntries[value];
+}
+
+static_assert(FindValueCurveTargetEntry(static_cast<int>(ValueCurveTarget::LightIntensity))->Name == "lightIntensity",
+              "FindValueCurveTargetEntry must return the row that holds the value");
+static_assert(FindValueCurveTargetEntry(-1) == nullptr &&
+                  FindValueCurveTargetEntry(static_cast<int>(std::size(kValueCurveTargetEntries))) == nullptr,
+              "FindValueCurveTargetEntry must return nullptr for a value outside the table");
 
 enum class ValueCurveShapeMode : uint8
 {

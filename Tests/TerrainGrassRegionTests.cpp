@@ -1052,3 +1052,42 @@ TEST(TerrainGrassField, ComposeEqualsTheExhaustiveWalkOfEveryRegion)
     EXPECT_EQ(banded.NonNeutralTexels, field.NonNeutralTexels);
 }
 } // namespace
+
+
+TEST_F(TerrainGrassRegions, StructuralGrassPresenceRetainsExistingEqualPriorityGroundTieSemantics)
+{
+    // Moving the first of three entities also swap-removes the last one from
+    // its old archetype, making the tie-order change observable.
+    const auto a = GroundRegion(2, 0);
+    GroundRegion(4, 0);
+    GroundRegion(6, 0);
+    Tick();
+    const auto before = Data->Heightfield.GetRawSamples()[0];
+    World.AddComponentImmediate<Components::TerrainGrassEffect>(a, {});
+    Tick();
+    const auto afterAdd = Data->Heightfield.GetRawSamples()[0];
+    ASSERT_NE(before, afterAdd) << "fixture must actually change the equal-priority archetype gather order";
+    World.RemoveComponentImmediate<Components::TerrainGrassEffect>(a);
+    Tick();
+    EXPECT_NE(Data->Heightfield.GetRawSamples()[0], afterAdd)
+        << "removal must also exercise the existing structural tie order";
+    // Presence is a structural input to existing ground tie ordering. Consumers
+    // may ignore grass scalar edits, but cannot omit this presence dependency.
+}
+
+
+TEST_F(TerrainGrassRegions, UnrelatedRemovalReconcilesEqualPriorityStorageReorder)
+{
+    const auto far = Region(Components::TerrainVolumeShape::Circle, .7f, .7f, 500);
+    Region(Components::TerrainVolumeShape::Circle, .2f, .2f);
+    Region(Components::TerrainVolumeShape::Circle, .8f, .8f);
+    Tick();
+    const auto original = Data->GrassField.Pixels;
+    World.DestroyEntityImmediate(far); // swap-remove can reorder the two survivors
+    Tick();
+    const auto incremental = Data->GrassField.Pixels;
+    ASSERT_NE(original, incremental) << "fixture must actually reorder the overlapping survivors";
+    TerrainModifierSystem fresh;
+    fresh.Update(World, 1.0f/60.0f);
+    EXPECT_EQ(Data->GrassField.Pixels, incremental);
+}

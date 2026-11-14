@@ -287,6 +287,10 @@ class CommandList
     // Command list management
     virtual void Begin() = 0;
     virtual void End() = 0;
+    // Optional GPU events inside a command list. The caller must enqueue the
+    // signal first and record its wait before dependent work on the same queue.
+    virtual bool EncodeTimelineWait(IDevice::GpuSyncToken) { return false; }
+    virtual bool EncodeTimelineSignal(IDevice::GpuSyncToken) { return false; }
 
     // Pipeline state
     virtual void SetPipeline(PipelineHandle pipeline) = 0;
@@ -408,6 +412,10 @@ class CommandList
     virtual void CopyBuffer(BufferHandle src, BufferHandle dst, size_t size,
                             size_t srcOffset = 0, size_t dstOffset = 0) = 0;
     virtual void CopyTexture(TextureHandle src, TextureHandle dst) = 0;
+    // Copy mip zero of the same layer between matching single-sample D32 arrays.
+    // The graph declares CopySrc/CopyDst for this layer. Unsupported backends
+    // return false without recording work.
+    virtual bool CopyDepthArrayLayer(TextureHandle, TextureHandle, uint32_t) { return false; }
 
     // GPU-side buffer fill: writes `value` (a u32) across [offset, offset+size)
     // of `dst` in the GPU timeline, sequenced with subsequent commands. Use

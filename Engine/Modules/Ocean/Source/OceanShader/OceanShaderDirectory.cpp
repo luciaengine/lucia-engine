@@ -1,4 +1,4 @@
-#include "OceanShaderDirectory.h"
+#include "OceanShader/OceanShaderDirectory.h"
 
 #include "Core/ApplicationPaths.h"
 

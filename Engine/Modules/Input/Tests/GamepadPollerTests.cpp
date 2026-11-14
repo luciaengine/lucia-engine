@@ -16,6 +16,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <future>
 #include <initializer_list>
 #include <memory>
 #include <thread>
@@ -47,6 +48,46 @@ struct FakeRecord
     std::atomic<bool> StartReturned{false};
     std::thread::id StartThread;
     std::vector<std::thread::id> ReadThreads;
+    std::atomic<int> RefreshStarted{0};
+    std::atomic<int> RefreshCompleted{0};
+    std::atomic<int> StopCalls{0};
+    std::atomic<bool> StoppedBeforeRefreshCompleted{false};
+    std::thread::id RefreshThread;
+};
+
+void ReleaseGateAfterTimeout(std::atomic<bool>& gate, std::stop_token stop)
+{
+    const auto deadline = std::chrono::steady_clock::now() + kStartTimeout;
+    while (!stop.stop_requested() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    gate.store(true, std::memory_order_release);
+}
+
+// Release before the poller or a destruction thread joins, including on a fatal assertion.
+class ScopedGateRelease
+{
+  public:
+    ScopedGateRelease(std::atomic<bool>& gate, FakeRecord& record)
+        : m_Gate(gate), m_Record(record),
+          m_Watchdog([&gate](std::stop_token stop) { ReleaseGateAfterTimeout(gate, stop); })
+    {
+    }
+
+    ~ScopedGateRelease()
+    {
+        Release();
+        m_Watchdog.request_stop();
+        while (m_Record.RefreshCompleted.load(std::memory_order_acquire) <
+               m_Record.RefreshStarted.load(std::memory_order_acquire))
+            std::this_thread::yield();
+    }
+
+    void Release() { m_Gate.store(true, std::memory_order_release); }
+
+  private:
+    std::atomic<bool>& m_Gate;
+    FakeRecord& m_Record;
+    std::jthread m_Watchdog;
 };
 
 // Stands in for a platform backend. The test plays the device callback: it replaces the
@@ -54,8 +95,9 @@ struct FakeRecord
 class FakeGamepadBackend final : public GamepadBackend
 {
   public:
-    FakeGamepadBackend(FakeRecord& record, GamepadRuntimeState startState, std::atomic<bool>* startGate)
-        : m_Record(record), m_StartState(startState), m_StartGate(startGate)
+    FakeGamepadBackend(FakeRecord& record, GamepadRuntimeState startState, std::atomic<bool>* startGate,
+                       std::atomic<bool>* refreshGate)
+        : m_Record(record), m_StartState(startState), m_StartGate(startGate), m_RefreshGate(refreshGate)
     {
     }
 
@@ -87,7 +129,27 @@ class FakeGamepadBackend final : public GamepadBackend
         }
     }
 
-    void Stop() override {}
+    bool NeedsRefresh() const override { return m_RefreshGate != nullptr; }
+
+    void Refresh() override
+    {
+        FakeRecord& record = m_Record;
+        std::atomic<bool>* gate = m_RefreshGate;
+        record.RefreshThread = std::this_thread::get_id();
+        record.RefreshStarted.fetch_add(1, std::memory_order_release);
+        while (gate && !gate->load(std::memory_order_acquire))
+            std::this_thread::yield();
+        record.RefreshCompleted.fetch_add(1, std::memory_order_release);
+    }
+
+    void Stop() override
+    {
+        m_Record.StoppedBeforeRefreshCompleted.store(
+            m_Record.RefreshStarted.load(std::memory_order_acquire) !=
+                m_Record.RefreshCompleted.load(std::memory_order_acquire),
+            std::memory_order_release);
+        m_Record.StopCalls.fetch_add(1, std::memory_order_release);
+    }
 
     void PublishDevices(std::initializer_list<FakeDevice*> devices)
     {
@@ -102,6 +164,7 @@ class FakeGamepadBackend final : public GamepadBackend
     FakeRecord& m_Record;
     GamepadRuntimeState m_StartState;
     std::atomic<bool>* m_StartGate;
+    std::atomic<bool>* m_RefreshGate;
     SnapshotTripleBuffer<FakeSnapshot> m_Snapshots;
     GamepadSlotTable<FakeDevice> m_Slots;
 };
@@ -110,9 +173,10 @@ class GamepadPollerTests : public ::testing::Test
 {
   protected:
     std::unique_ptr<GamepadPoller> MakePoller(GamepadRuntimeState startState = GamepadRuntimeState::Available,
-                                              std::atomic<bool>* startGate = nullptr)
+                                              std::atomic<bool>* startGate = nullptr,
+                                              std::atomic<bool>* refreshGate = nullptr)
     {
-        auto backend = std::make_unique<FakeGamepadBackend>(m_Record, startState, startGate);
+        auto backend = std::make_unique<FakeGamepadBackend>(m_Record, startState, startGate, refreshGate);
         m_Backend = backend.get();
         return std::make_unique<GamepadPoller>(m_Pool, std::move(backend));
     }
@@ -129,8 +193,8 @@ class GamepadPollerTests : public ::testing::Test
             std::this_thread::yield();
     }
 
-    JobSystem::WorkStealingThreadPool m_Pool{2, 2};
     FakeRecord m_Record;
+    JobSystem::WorkStealingThreadPool m_Pool{2, 2};
     FakeGamepadBackend* m_Backend = nullptr;
 };
 
@@ -199,6 +263,78 @@ TEST_F(GamepadPollerTests, MissingRuntimeLeavesGamepadsOffAndNamesTheState)
     InputSystem input;
     EXPECT_EQ(input.GetGamepadRuntimeState(), GamepadRuntimeState::RuntimeMissing);
     EXPECT_EQ(Script::GetGamepadRuntimeState(input), GamepadRuntimeState::RuntimeMissing);
+}
+
+TEST_F(GamepadPollerTests, HeldRefreshRunsOffFrameAndReadsNeverWaitOrQueueAnotherRefresh)
+{
+    std::atomic<bool> refreshGate{false};
+    auto poller = MakePoller(GamepadRuntimeState::Available, nullptr, &refreshGate);
+    ScopedGateRelease releaseGate(refreshGate, m_Record);
+    WaitForStart();
+    ASSERT_EQ(GamepadPoller::GetRuntimeState(), GamepadRuntimeState::Available);
+    FakeDevice pad;
+    m_Backend->PublishDevices({&pad});
+
+    GamepadFrame frame;
+    poller->Read(frame);
+    const auto deadline = std::chrono::steady_clock::now() + kStartTimeout;
+    while (m_Record.RefreshStarted.load(std::memory_order_acquire) == 0 &&
+           std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    ASSERT_EQ(m_Record.RefreshStarted.load(std::memory_order_acquire), 1);
+    EXPECT_NE(m_Record.RefreshThread, std::this_thread::get_id());
+    for (int read = 0; read < 8; ++read)
+    {
+        poller->Read(frame);
+        EXPECT_TRUE(frame.slots[0].connected);
+        EXPECT_FALSE(refreshGate.load(std::memory_order_acquire)) << "Read waited until the held refresh was released";
+    }
+    EXPECT_EQ(m_Record.RefreshCompleted.load(std::memory_order_acquire), 0);
+
+    releaseGate.Release();
+    poller.reset();
+    // A queue of duplicate jobs would drain before the last handle completes.
+    EXPECT_EQ(m_Record.RefreshStarted.load(std::memory_order_acquire), 1);
+    EXPECT_EQ(m_Record.RefreshCompleted.load(std::memory_order_acquire), 1);
+    EXPECT_EQ(m_Record.StopCalls.load(std::memory_order_acquire), 1);
+    EXPECT_FALSE(m_Record.StoppedBeforeRefreshCompleted.load(std::memory_order_acquire));
+}
+
+TEST_F(GamepadPollerTests, DestructionJoinsHeldRefreshBeforeStoppingBackend)
+{
+    std::atomic<bool> refreshGate{false};
+    auto poller = MakePoller(GamepadRuntimeState::Available, nullptr, &refreshGate);
+    std::atomic<bool> destructionStarted{false};
+    std::promise<void> destroyed;
+    auto destructionFinished = destroyed.get_future();
+    std::jthread destroyer;
+    ScopedGateRelease releaseGate(refreshGate, m_Record);
+    WaitForStart();
+    ASSERT_EQ(GamepadPoller::GetRuntimeState(), GamepadRuntimeState::Available);
+    GamepadFrame frame;
+    poller->Read(frame);
+    const auto deadline = std::chrono::steady_clock::now() + kStartTimeout;
+    while (m_Record.RefreshStarted.load(std::memory_order_acquire) == 0 &&
+           std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    ASSERT_EQ(m_Record.RefreshStarted.load(std::memory_order_acquire), 1);
+
+    destroyer = std::jthread([owned = std::move(poller), &destructionStarted, &destroyed]() mutable {
+        destructionStarted.store(true, std::memory_order_release);
+        owned.reset();
+        destroyed.set_value();
+    });
+    while (!destructionStarted.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    ASSERT_TRUE(destructionStarted.load(std::memory_order_acquire));
+    EXPECT_EQ(destructionFinished.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout);
+    EXPECT_EQ(m_Record.StopCalls.load(std::memory_order_acquire), 0);
+
+    releaseGate.Release();
+    destroyer.join();
+    EXPECT_EQ(m_Record.RefreshCompleted.load(std::memory_order_acquire), 1);
+    EXPECT_EQ(m_Record.StopCalls.load(std::memory_order_acquire), 1);
+    EXPECT_FALSE(m_Record.StoppedBeforeRefreshCompleted.load(std::memory_order_acquire));
 }
 
 // After shutdown the state still says that gamepads are off; it does not go back to Starting.

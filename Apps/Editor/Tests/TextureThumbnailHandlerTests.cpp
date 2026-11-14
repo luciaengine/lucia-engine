@@ -7,6 +7,7 @@
 #include "Thumbnails/TextureThumbnailHandler.h"
 
 #include "Image/Encode.h"
+#include "TestTempDir.h"
 #include "Image/ImageHeader.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 
@@ -43,14 +44,12 @@ struct HandlerHarness
 // repeated runs never share a cache root.
 std::filesystem::path MakeTempRoot(const char* label)
 {
+    static const GameEngine::TestUtils::ScopedTempDir processRoot(
+        GameEngine::TestUtils::MakeUniqueTempDirectory("ge-texthumb"));
     static std::atomic<uint32_t> counter{0};
-    const auto pid = static_cast<uint64_t>(
-        std::hash<std::thread::id>{}(std::this_thread::get_id()));
-    std::filesystem::path root = std::filesystem::temp_directory_path() /
-        ("ge-texthumb-" + std::string(label) + "-" + std::to_string(pid) + "-" +
-         std::to_string(counter.fetch_add(1)));
+    std::filesystem::path root =
+        processRoot.Path() / (std::string(label) + "-" + std::to_string(counter.fetch_add(1)));
     std::error_code ec;
-    std::filesystem::remove_all(root, ec);
     std::filesystem::create_directories(root, ec);
     return root;
 }
@@ -600,6 +599,12 @@ TEST(TextureThumbnailHandler, AnInlineImageIsCachedAtItsOwnSizeBesideTheTile)
     handler.GetOrRequestInlineImage(small, smallImage.Callback());
     ASSERT_TRUE(smallImage.WaitForCount(1));
     EXPECT_EQ(smallImage.Results[0], small.generic_string()) << "a source no larger than the copy is shown as it is";
+}
+
+TEST(TextureThumbnailHandler, InlineImageAllowsAnEmptyCallback)
+{
+    HandlerHarness harness;
+    EXPECT_NO_THROW(harness.Handler.GetOrRequestInlineImage("missing.png", {}));
 }
 
 // A cache entry older than its source is stale. The editor's other thumbnail

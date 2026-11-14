@@ -62,6 +62,14 @@ void Key(UIElement& field, int key)
     field.OnEvent(e);
 }
 
+std::unique_ptr<UIElement> InDockRoot(std::unique_ptr<UIElement> content)
+{
+    auto root = std::make_unique<UIElement>();
+    root->AddClass("dock-root");
+    root->AddChild(std::move(content));
+    return root;
+}
+
 // Layout rounds to a fraction of a pixel; heights and edges are compared to this tolerance.
 constexpr float kLayoutTolerance = 0.5f;
 
@@ -170,7 +178,7 @@ TEST(PictureChoiceFieldLayout, InANarrowInspectorEachTileKeepsItsNameAndLine)
     InspectorLayoutFixture fixture;
     fixture.ViewportW = kNarrowInspectorW;
     fixture.ExtraSheets = {"Assets/UI/theme/core.css", "Assets/UI/controls/PictureChoiceField/PictureChoiceField.css"};
-    if (!fixture.Build(std::move(root)))
+    if (!fixture.Build(InDockRoot(std::move(root))))
         GTEST_SKIP() << fixture.Diagnostic;
 
     const float fieldRight = field->GetLayoutX() + field->GetLayoutWidth();
@@ -208,7 +216,7 @@ TEST(PictureChoiceFieldLayout, TheRowLabelSitsAtTheTopOfTheTiles)
     InspectorLayoutFixture fixture;
     fixture.ViewportW = kNarrowInspectorW;
     fixture.ExtraSheets = {"Assets/UI/theme/core.css", "Assets/UI/controls/PictureChoiceField/PictureChoiceField.css"};
-    if (!fixture.Build(std::move(section)))
+    if (!fixture.Build(InDockRoot(std::move(section))))
         GTEST_SKIP() << fixture.Diagnostic;
 
     UIElement* row = InspectorUI::RowOfControl(field);

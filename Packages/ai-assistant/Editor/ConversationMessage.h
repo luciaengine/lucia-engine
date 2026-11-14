@@ -1,5 +1,7 @@
 #pragma once
 
+#include "PromptFiles.h"
+
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -88,8 +90,16 @@ struct ConversationMessage
     /// On a user message: the mark-ups its tokens named when it was sent. The row shows Text, with
     /// a chip per token named by its mention's title.
     SentMarkups Markups;
+    std::vector<PromptFile> Files;
     /// What a provider receives for a user message: its text, then its mark-up blocks.
-    std::string SentText() const { return Markups.Blocks.empty() ? Text : Text + "\n\n" + Markups.Blocks; }
+    std::string SentText() const
+    {
+        std::string sent = Text;
+        for (const std::string& blocks : {Markups.Blocks, PromptFiles::Blocks(Files)})
+            if (!blocks.empty())
+                sent += "\n\n" + blocks;
+        return sent;
+    }
     /// The reply ran past Conversation::kMaxMessageBytes and Text holds its first part.
     bool Truncated = false;
     /// The reply failed and its prompt was sent again as a later turn (Retry).

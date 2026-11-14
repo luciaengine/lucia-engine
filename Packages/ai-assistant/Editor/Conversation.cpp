@@ -43,7 +43,7 @@ void AppendCapped(ConversationMessage& message, std::string_view text)
 
 Conversation::TurnId Conversation::AddTurn(std::string userText, SentMarkups markups, std::string providerId,
                                            std::string model, std::string effort,
-                                           std::chrono::system_clock::time_point now)
+                                           std::chrono::system_clock::time_point now, std::vector<PromptFile> files)
 {
     const TurnId turn = m_NextTurn++;
 
@@ -51,6 +51,7 @@ Conversation::TurnId Conversation::AddTurn(std::string userText, SentMarkups mar
     user.Role = MessageRole::User;
     AppendCapped(user, userText);
     user.Markups = std::move(markups);
+    user.Files = std::move(files);
     user.Time = now;
     m_Messages.push_back(std::move(user));
     m_Turns.push_back(turn);

@@ -2,7 +2,6 @@
 #include "gtest/gtest.h"
 #include "Scripting/PathResolver.h"
 #include "Scripting/ScriptingABI.h"
-#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <thread>

@@ -11,6 +11,7 @@ AtmosphericCloudLayer: game data, a full mirror
 AudioEmitter: game data, a full mirror
 AudioListener: game data, a full mirror
 BloomEffect: game data, a full mirror
+BoneLOD: game data, a full mirror
 Camera: game data, a full mirror
 ChromaticAberrationEffect: game data, a full mirror
 ClipPlaybackState: engine-internal, no mirror (@ge-engine-internal)
@@ -22,6 +23,7 @@ CubeLutEffect: game data, a full mirror
 DDGIVolume: game data, a full mirror
 DebandEffect: game data, a full mirror
 DepthOfFieldEffect: game data, a full mirror
+DepthPixelationEffect: game data, a full mirror
 ExposureAdjustmentEffect: game data, a full mirror
 FastBlurEffect: game data, a full mirror
 FilmSimulationEffect: game data, a full mirror
@@ -91,11 +93,16 @@ ParticlePlayback: game data, a full mirror
 ParticleRenderer: game data, a full mirror
 ParticleSubEmitter: element struct, mirrored inside its owner
 ParticleWorldSettings: game data, a full mirror
+PlanarReflection: game data, a full mirror
 PolyhavenPlaceholder: editor-only, no mirror (@ge-editor-only)
 PostProcessVolume: game data, a full mirror
 PrefabInstance: engine-internal, no mirror (@ge-engine-internal)
+RainSettingsEffect: game data, a full mirror
 ReflectionProbe: game data, a full mirror
+RenderLayer: game data, a full mirror
+RenderSorting: game data, a full mirror
 RuntimeOnlyEntity: engine-internal, no mirror (@ge-engine-internal)
+SceneBlueprintInstance: game data, a full mirror
 SceneEntityTag: engine-internal, no mirror (@ge-engine-internal)
 SceneSubsceneInstance: engine-internal, no mirror (@ge-engine-internal)
 SceneViewHidden: game data, a full mirror
@@ -125,6 +132,7 @@ SplinePavingMember: element struct, mirrored inside its owner
 SplinePlacement: game data, a full mirror
 SplineSpanOverride: element struct, mirrored inside its owner
 SplineWall: game data, a full mirror
+Sprite2D: game data, a full mirror
 TemplateGroundPlaceholder: editor-only, no mirror (@ge-editor-only)
 Terrain: game data, a full mirror
 TerrainColorZone: game data, a full mirror
@@ -135,6 +143,8 @@ TerrainPlanetRelief: game data, a full mirror
 TerrainRuleCondition: element struct, mirrored inside its owner
 TerrainSculptZone: game data, a full mirror
 TerrainSurfaceRule: game data, a full mirror
+TileMapCollider: game data, a full mirror
+TileMapLayerRef: game data, a full mirror
 TimelinePlaybackState: engine-owned, a readonly mirror (@ge-readonly)
 Transform: game data, a full mirror
 UIDocument: game data, a full mirror

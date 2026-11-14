@@ -11,12 +11,16 @@
 #include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Materials/Shader/ShaderReflection.h"
+#include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
 #include "StagedTestPaths.h"
 #include "TestDeviceHelper.h"
+#include "TestTempDir.h"
 
 #include <array>
 #include <cstddef>
 #include <cstring>
+#include <cmath>
 #include <vector>
 
 using namespace GameEngine;
@@ -219,11 +223,20 @@ class OceanCascadeLayoutTest : public ::testing::Test
                 return result;
             clip.FillParams(*params.Ptr);
             const RenderGraph::RGTexture clipRG = clip.ImportRG(frame);
+            auto* prepared = frame.AllocatePassData<OceanPreparedDispatch>();
             frame.AddPass(
                 "OceanClipSim", PassPhase::kEarlySetup,
-                [&](RenderGraph::RGPassBuilder& p) { p.Write(clipRG, RenderGraph::RGTextureWrite::Storage); },
-                [&clip, buffer = params.Buffer, offset = params.Offset](RenderGraph::RGContext& ctx)
-                { clip.RecordDispatch(ctx.GetDevice(), ctx.Cmd, buffer, offset); });
+                [&](RenderGraph::RGPassBuilder& p) {
+                    p.UsePipeline(clip.GetPipelineId());
+                    p.Prepare([&clip, prepared, buffer = params.Buffer,
+                               offset = params.Offset](RenderGraph::RGPrepareContext& ctx) {
+                        *prepared = clip.PrepareDispatch(ctx.GetDevice(), buffer, offset);
+                        return prepared->IsValid();
+                    });
+                    p.Write(clipRG, RenderGraph::RGTextureWrite::Storage);
+                },
+                [&clip, prepared](RenderGraph::RGContext& ctx)
+                { clip.RecordDispatch(ctx.Cmd, *prepared); });
             frame.MarkOutput(clipRG, RenderGraph::RGImageLayout::ShaderReadOnly);
             EXPECT_TRUE(raster.Declare(frame, m_Device.get(), 2u, clipRG, clip.GetLayout(), clip.GetResolution()));
             frame.Execute();
@@ -490,24 +503,32 @@ TEST_F(OceanCascadeLayoutTest, SampledCascadeLayoutsTakesEachSimsOwnLayout)
     ASSERT_TRUE(feature.GetWaveMask().Initialize(device));
     ASSERT_TRUE(feature.GetClip().Initialize(device));
     ASSERT_TRUE(feature.GetAlbedo().Initialize(device));
-    // Each sim snapped to a different camera, as when they snap on different frames.
-    feature.GetFoamSim().BeginFrame(-1000.0f, 0.0f);
+    RenderGraph::RGResourcePool persistent(device);
+    RenderGraph::RGTransientPool transient(device);
+    RenderGraph::RGUploadRing uploads(device, 2, 65536);
+    RenderGraph::RGFrame frame(device, &persistent, &transient, &uploads);
+    frame.BeginFrame(0);
+    feature.GetFoamSim().SetFrameInputs({}, {}, 0u, 0.8f, 0.55f, 1.0f, 0.1f,
+                                       1.0f, 15.0f, 10.0f, 1.0f, 10.0f, 0.0f, 0.0f);
+    feature.GetDynWaves().SetFrameInputs(nullptr, 0u, 4.0f, 0.2f, 0.1f);
+    // Each sim plans a different camera, as when their schedules differ.
+    feature.GetFoamSim().PlanSubsteps(frame, -1000.0f, 0.0f);
     feature.GetSeabedDepth().BeginFrame(-600.0f, 0.0f);
     feature.GetFlow().BeginFrame(-200.0f, 0.0f);
-    feature.GetDynWaves().BeginFrame(200.0f, 0.0f);
+    feature.GetDynWaves().PlanSubsteps(frame, 200.0f, 0.0f);
     feature.GetWaveMask().BeginFrame(600.0f, 0.0f);
     feature.GetClip().BeginFrame(1000.0f, 0.0f);
     feature.GetAlbedo().BeginFrame(1400.0f, 0.0f);
     const std::array<const OceanCascadeLayoutGPU*, kSampledCascades> own{
-        &feature.GetFoamSim().GetFoamLayout(), &feature.GetSeabedDepth().GetLayout(),
-        &feature.GetFlow().GetLayout(),        &feature.GetDynWaves().GetLayout(),
+        &feature.GetFoamSim().GetFoamLayout(frame), &feature.GetSeabedDepth().GetLayout(),
+        &feature.GetFlow().GetLayout(),        &feature.GetDynWaves().GetLayout(frame),
         &feature.GetWaveMask().GetLayout(),    &feature.GetClip().GetLayout(),
         &feature.GetAlbedo().GetLayout()};
 
     OceanRenderFeature::SampledCascadeAvailability available{};
     for (uint32_t index = 0; index < kSampledCascades; ++index)
         available.Available[index] = true;
-    const OceanSampledCascadeLayoutsGPU all = feature.SampledCascadeLayouts(available);
+    const OceanSampledCascadeLayoutsGPU all = feature.SampledCascadeLayouts(frame, available);
     for (uint32_t index = 0; index < kSampledCascades; ++index)
     {
         SCOPED_TRACE(::testing::Message() << "cascade " << index);
@@ -519,7 +540,7 @@ TEST_F(OceanCascadeLayoutTest, SampledCascadeLayoutsTakesEachSimsOwnLayout)
 
     available[OceanSampledCascade::Albedo] = false;
     feature.SetLodCountLimit(2);
-    const OceanSampledCascadeLayoutsGPU limited = feature.SampledCascadeLayouts(available);
+    const OceanSampledCascadeLayoutsGPU limited = feature.SampledCascadeLayouts(frame, available);
     EXPECT_EQ(limited[OceanSampledCascade::Albedo].LodCount, 0u);
     for (uint32_t index = 0; index < kSampledCascades; ++index)
     {

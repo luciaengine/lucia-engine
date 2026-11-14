@@ -613,7 +613,8 @@ set(EDITOR_TEST_SOURCES
 	# builds one; the rest of the panel types are covered by the source scan.
 	PanelDefaultTabIconTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/UIDemoPanel.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/UndoHistoryPanel.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/UndoHistory/UndoHistoryPanel.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/EntityHeader/InspectorEntityNameField.cpp
 	# Whether a dock config authored icon= at all, and whether it authored it
 	# empty, are different instructions. The two TUs below are the pair that has
 	# to keep them apart: the element that receives the attribute and the parser
@@ -868,7 +869,7 @@ set(EDITOR_TEST_SOURCES
 	LogChannelPopoverTests.cpp
 	# The Channels list laid out over the editor stylesheets: the Level column and its heading.
 	LogChannelPopoverLayoutTests.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/LogChannelPopover.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/LogPanel/LogChannelPopover.cpp
 	# The C# project a script opens with in the external editor: the path the
 	# scripts project is generated at. Opening the editor itself needs a desktop.
 	ExternalScriptEditorLauncherTests.cpp
@@ -1158,12 +1159,70 @@ set(EDITOR_TEST_SOURCES
 	MissingAssetTrackerTests.cpp
 	# Suites above leave the engine running; this shuts it down before the process exits.
 	${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp
+
+    LogPanelTests.cpp
+    TopToolbarIconTests.cpp
+    TileMapSourceImportTests.cpp
+    TileMapRulesCommandsTests.cpp
+    TileMapRulesWindowTests.cpp
+    TileMapTerrainBrushTests.cpp
+    SpritePlacementSizeTests.cpp
+    TileMapEditContextTests.cpp
+    TileSetDocumentTests.cpp
+    TileMapLayerRestoreTests.cpp
+    TileLayerEditsTests.cpp
+    TileMapThumbnailCompositeTests.cpp
+    TileThumbnailHandlerTests.cpp
+    TileMapLayerThumbnailTests.cpp
+    EditorTextBlendTests.cpp
+    TerrainPickingRayTests.cpp
+    ScenePickTerrainInclusionTests.cpp
+    MeshPickingPendingBvhTests.cpp
+    GraphSelectionHistoryTests.cpp
+    SceneDocumentHistoryTests.cpp
+    MeshBvhDiskFormatTests.cpp
+    EntityWorldPoseTests.cpp
+    OwnerRegisteredCommandTests.cpp
+    PlacementGroundGapTests.cpp
+    BoneLODTreeProviderTests.cpp
+    ModelBoneLODSectionTests.cpp
+    PolyhavenThumbnailTests.cpp
+    ScriptDocumentDiskTests.cpp
+    ReflectedEnumValueTests.cpp
+    ElementInstanceLedgerTests.cpp
+    DockPanelRequestTests.cpp
+    InspectorComponentSectionTests.cpp
+    InspectorColorSwatchRowTests.cpp
+    MarkupsPanelHeaderTests.cpp
+    InspectorEntityHeaderLayoutTests.cpp
+    AssetFieldThumbnailTests.cpp
+    TerrainHeightmapExtractionTests.cpp
+    EditorPreferencesEnvironment.cpp
+    GraphPreviewAtlasPreparationTests.cpp
 )
 # Always create EditorTests when BUILD_TESTING is enabled; no UISystem/UI gating.
 add_executable(EditorTests ${EDITOR_TEST_SOURCES})
 
 # Find Google Test
 find_package(GTest REQUIRED)
+
+# Prompt attachments share the assistant panel's production UI, device support and package fixtures.
+if(TARGET AiAssistantPanelTests)
+	target_sources(AiAssistantPanelTests PRIVATE
+		${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/PromptFilesTests.cpp
+		${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/PromptFileTrayTests.cpp
+		${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/PromptFiles.cpp
+		${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/PromptFileTray.cpp
+		${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/PromptFileItem.cpp
+		${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/PromptFileThumbnail.cpp
+		${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/PromptFileDropZone.cpp
+	)
+	target_include_directories(AiAssistantPanelTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests)
+	ge_stage_test_asset(AiAssistantPanelTests
+		"${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/PromptFileItem.uxml"
+		"AiAssistantPanelFixtures/ai-assistant/Editor/UI/controls/PromptFileItem.uxml"
+	)
+endif()
 
 # Pure editing algorithms, independent of UI initialization and engine fixtures.
 add_executable(AnimationEditingTests AnimationEditingTests.cpp)
@@ -1383,6 +1442,7 @@ add_executable(DayCycleEditorTests
 	DayCycleProfileSaveTests.cpp
 	DayCycleProfileInspectorTests.cpp
 	DayCycleWindowTests.cpp
+	DayCycleWindowBindingTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleAxis.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleDescriptionField.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleEditorServices.cpp
@@ -1435,6 +1495,10 @@ ge_stage_test_asset(DayCycleEditorTests
 ge_stage_test_asset(DayCycleEditorTests
 	"${CMAKE_SOURCE_DIR}/Engine/Assets/DayCycles/ClearDay.daycycle.json"
 	"Assets/DayCycles/ClearDay.daycycle.json"
+)
+ge_stage_test_asset(DayCycleEditorTests
+	"${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/panels/DayCycleWindow.uxml"
+	"Assets/UI/panels/DayCycleWindow.uxml"
 )
 add_test(NAME DayCycleEditorTests
 	COMMAND "${CMAKE_COMMAND}"
@@ -2325,6 +2389,13 @@ if(TARGET EditorTests)
 	        "Assets/Fonts/${_face}")
 	endforeach()
 
+	# Undo History reads its layouts from the editor install-assets root.
+	foreach(layout UndoHistory HistoryRevision HistoryLane)
+		ge_stage_test_asset(EditorTests
+		    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/UndoHistory/${layout}.uxml"
+		    "Assets/UI/controls/UndoHistory/${layout}.uxml")
+	endforeach()
+
 	# InspectorNotice builds its plate, text and action from its layout, read
 	# from the same install-assets root.
 	ge_stage_test_asset(EditorTests
@@ -2487,6 +2558,17 @@ if(TARGET EditorTests)
 	ge_stage_test_asset(EditorTests
 	    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/SettingsSectionBreak/SettingsSectionBreak.uxml"
 	    "Assets/UI/controls/SettingsSectionBreak/SettingsSectionBreak.uxml")
+
+	# The log and toolbar layout checks use the same staged editor chrome as the controls.
+	add_custom_target(StageEditorChromeTestAssets)
+	foreach(_chrome_directory UI Icons Fonts)
+	    add_custom_command(TARGET StageEditorChromeTestAssets POST_BUILD
+	        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+	            "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/${_chrome_directory}"
+	            "$<TARGET_FILE_DIR:EditorTests>/Assets/${_chrome_directory}"
+	        VERBATIM)
+	endforeach()
+	add_dependencies(EditorTests StageEditorChromeTestAssets)
 
 	# The Log list builds each row from its layout, read from the same root.
 	ge_stage_test_asset(EditorTests
@@ -2735,3 +2817,66 @@ if(TARGET Editor)
 	)
 	set_tests_properties(EditorProjectOpenTests PROPERTIES LABELS "Editor" TIMEOUT 1900)
 endif()
+
+target_sources(EditorTests PRIVATE ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Thumbnails/ThumbnailImageCache.cpp)
+
+add_executable(AtlasRegionThumbnailTests
+    AtlasRegionThumbnailTests.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Thumbnails/SpriteFramesThumbnailHandler.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Thumbnails/ThumbnailImageOps.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Thumbnails/ThumbnailImageCache.cpp)
+target_include_directories(AtlasRegionThumbnailTests PRIVATE ${CMAKE_SOURCE_DIR}/Apps/Editor/Include)
+target_link_libraries(AtlasRegionThumbnailTests PRIVATE GTest::gtest GTest::gtest_main Engine)
+target_compile_features(AtlasRegionThumbnailTests PRIVATE cxx_std_20)
+ge_set_output_tests(AtlasRegionThumbnailTests)
+ge_stage_runtime_dependencies(AtlasRegionThumbnailTests)
+add_test(NAME AtlasRegionThumbnailTests COMMAND $<TARGET_FILE:AtlasRegionThumbnailTests>)
+
+add_executable(RenderSortingEditorTests
+    RenderSortingEditorTests.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/Controls/CollapsibleInfoCard.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/RenderSortingDiagnostic.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/RenderSortingFields.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/SortingLayerSettingsWriter.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/RenderSortingEdit.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyLayerControls.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyRenderLayerEdit.cpp
+)
+target_include_directories(RenderSortingEditorTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Include
+    ${CMAKE_SOURCE_DIR}/Tests
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source
+)
+target_link_libraries(RenderSortingEditorTests PRIVATE Engine EditorSDK GTest::gtest GTest::gtest_main)
+set_target_properties(RenderSortingEditorTests PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    VCPKG_APPLOCAL_DEPS OFF
+)
+ge_set_output_tests(RenderSortingEditorTests)
+ge_stage_runtime_dependencies(RenderSortingEditorTests)
+add_test(NAME RenderSortingEditorTests
+    COMMAND "${CMAKE_COMMAND}"
+        -DTEST_EXE=$<TARGET_FILE:RenderSortingEditorTests>
+        -DTEST_WORKING_DIR=$<TARGET_FILE_DIR:RenderSortingEditorTests>
+        -P "${CMAKE_SOURCE_DIR}/cmake/RunTestExecutable.cmake"
+)
+
+add_executable(UndoHistoryTests UndoHistoryTests.cpp)
+target_include_directories(UndoHistoryTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Include
+    ${CMAKE_SOURCE_DIR}/Engine/Include
+    ${CMAKE_SOURCE_DIR}/Engine/Modules/Mathematics/Include
+    ${CMAKE_SOURCE_DIR}/Engine/Modules/Types/Include
+    ${CMAKE_SOURCE_DIR}/Engine/Modules/Events/Include
+)
+target_compile_definitions(UndoHistoryTests PRIVATE GE_ENABLE_CPU_PROFILING=0)
+target_link_libraries(UndoHistoryTests PRIVATE GTest::gtest_main)
+ge_set_output_tests(UndoHistoryTests)
+ge_stage_runtime_dependencies(UndoHistoryTests)
+add_test(NAME UndoHistoryTests
+    COMMAND "${CMAKE_COMMAND}"
+        -DTEST_EXE=$<TARGET_FILE:UndoHistoryTests>
+        -DTEST_WORKING_DIR=$<TARGET_FILE_DIR:UndoHistoryTests>
+        -P "${CMAKE_SOURCE_DIR}/cmake/RunTestExecutable.cmake"
+)

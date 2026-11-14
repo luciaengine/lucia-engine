@@ -167,3 +167,9 @@ With `d` the distance clamped between `minDistance` and `maxDistance`:
 The defaults give a gain of 1/distance from one unit out to 10000 units, where it holds at 1/10000 (-80 dB). An infinite `maxDistance` removes the limit. `Inverse` never reaches silence. A sound that should go quiet at a distance uses `Linear` with `maxDistance` there. `minDistance` must be above 0: full volume holds inside it, and close to 0 the sound is inaudible from the first unit out, so `SetFalloff` ignores a falloff whose minimum distance is 0, negative, infinite, or NaN, and a voice started with one takes the default, each with a warning naming the voice (the inspector's Min Distance starts at 0.01). Other values out of range are corrected when the voice takes them: a NaN `maxDistance` or a non-finite `rolloff` takes its default, `maxDistance` is at least `minDistance` (equal values turn attenuation off), and `rolloff` is at least 0.
 
 An `AudioEmitter` component carries the same four settings (Attenuation, Min Distance, Max Distance, and Rolloff in the inspector), and an edit reaches the playing voice at once.
+
+## Selecting audio output
+
+`ApplicationConfig::AudioOutput` and `AudioSystemConfig::output` default to `Audio::AudioOutput::Silent`. Silent output runs the mixer and advances voices on the null backend without opening a playback device. Applications that play sound select `Audio::AudioOutput::Device`; the Editor, Player, and web hosts do this by default. Headless applications do not initialize audio.
+
+Set `GE_AUDIO_OUTPUT=silent` to run the desktop Editor or Player without sound reaching a device. The Player also accepts `--silent-audio`, which takes precedence over the environment variable. `GE_AUDIO_OUTPUT=device` selects normal playback. An unrecognized value logs a warning and keeps device playback.

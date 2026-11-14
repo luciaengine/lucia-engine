@@ -32,6 +32,9 @@ constexpr uint32 kUploadPassAbsentFrameLimit = 8;
 TerrainRenderFeature::~TerrainRenderFeature()
 {
     if (m_Device)
+        for (const auto& pending : m_PendingSculptNormals)
+            m_Device->DestroyDescriptorSet(pending.Set);
+    if (m_Device)
         m_GrassWindVolumes.Destroy(*m_Device);
     // Flush any remaining deferred buffer destroys.
     for (auto& dd : m_DeferredDestroys)
@@ -163,6 +166,13 @@ void TerrainRenderFeature::ReleaseTerrainResources(TerrainHandle handle)
     // buffers (their CopyTextureToBuffer may still be in flight).
     std::erase_if(m_PendingBakes,
                   [&](const PendingBake& b) { return b.Handle.Index == handle.Index; });
+    std::erase_if(m_PendingSculptNormals,
+                  [this, handle](const PendingSculptNormals& batch) {
+                      if (batch.Handle.Index != handle.Index)
+                          return false;
+                      m_Device->DestroyDescriptorSet(batch.Set);
+                      return true;
+                  });
     std::erase_if(m_PendingReadbacks,
                   [&](const PendingReadback& rb)
                   {
@@ -258,6 +268,7 @@ void TerrainRenderFeature::OnDeviceRebuilt(Rendering::IDevice* device)
     m_PendingClears.clear();
     m_TexturesAwaitingGpuInit.clear();
     m_PendingBakes.clear();
+    m_PendingSculptNormals.clear();
     m_PendingReadbacks.clear();
     m_UnifiedTextureBytesLive = 0;
     m_UnifiedReprovisionDrainFrame = 0;
@@ -816,7 +827,7 @@ void TerrainRenderFeature::EnsureAtlasHeightTexture(TerrainHandle handle, uint32
     EnsureUnifiedEntry(m_AtlasHeights, handle, atlasDim, atlasDim,
                        static_cast<uint32>(Rendering::TextureFormat::R32_FLOAT),
                        sizeof(float32), "Terrain_AtlasHeight",
-                       /*needsStorage*/ IsGpuHeightBakeEnabled());
+                       /*needsStorage*/ IsGpuHeightBakeEnabled() || IsGpuSculptNormalEnabled());
 }
 
 Rendering::TextureViewHandle TerrainRenderFeature::GetAtlasHeightStorageView(TerrainHandle handle) const
@@ -840,18 +851,19 @@ void TerrainRenderFeature::UploadAtlasHeightSlot(TerrainHandle handle, const flo
                       sizeof(float32), dstX, dstY, "Terrain_AtlasHeight_Slot");
 }
 
-void TerrainRenderFeature::UploadAtlasHeightSlotRegion(TerrainHandle handle, const uint8* data,
+bool TerrainRenderFeature::UploadAtlasHeightSlotRegion(TerrainHandle handle, const uint8* data,
                                                        uint32 regionW, uint32 regionH,
                                                        uint32 dstX, uint32 dstY)
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
     if (!m_Device || !data || handle.Index >= m_AtlasHeights.size())
-        return;
+        return false;
     const auto& entry = m_AtlasHeights[handle.Index];
-    if (!entry.Texture.IsValid() || dstX + regionW > entry.Width || dstY + regionH > entry.Height)
-        return;
-    QueueRegionUpload(entry.Texture, data, regionW, regionH, sizeof(float32), dstX, dstY,
-                      "Terrain_AtlasHeight_Region");
+    if (!entry.Texture.IsValid() || dstX > entry.Width || dstY > entry.Height ||
+        regionW > entry.Width - dstX || regionH > entry.Height - dstY)
+        return false;
+    return QueueRegionUpload(entry.Texture, data, regionW, regionH, sizeof(float32), dstX, dstY,
+                             "Terrain_AtlasHeight_Region");
 }
 
 void TerrainRenderFeature::SetCompatLayerTextures(const CompatLayerTextures& textures)
@@ -1002,7 +1014,7 @@ void TerrainRenderFeature::EnsureAtlasNormalTexture(TerrainHandle handle, uint32
     EnsureUnifiedEntry(m_AtlasNormals, handle, atlasDim, atlasDim,
                        static_cast<uint32>(Rendering::TextureFormat::R16G16_FLOAT),
                        4u, "Terrain_AtlasNormal",
-                       /*needsStorage*/ IsGpuHeightBakeEnabled());
+                       /*needsStorage*/ IsGpuHeightBakeEnabled() || IsGpuSculptNormalEnabled());
 }
 
 Rendering::TextureViewHandle TerrainRenderFeature::GetAtlasNormalStorageView(TerrainHandle handle) const
@@ -1518,25 +1530,25 @@ void TerrainRenderFeature::QueueBandUpload(Rendering::TextureHandle texture,
     m_GrassContentEpoch.fetch_add(1, std::memory_order_release);
 }
 
-void TerrainRenderFeature::QueueRegionUpload(Rendering::TextureHandle texture,
+bool TerrainRenderFeature::QueueRegionUpload(Rendering::TextureHandle texture,
                                              const uint8* srcBytes, uint32 srcW, uint32 srcH,
                                              size_t bytesPerTexel, uint32 dstX, uint32 dstY,
                                              const char* stagingName)
 {
     if (!texture.IsValid() || srcBytes == nullptr || srcW == 0 || srcH == 0)
-        return;
+        return false;
 
     // D3D12 requires 256-aligned row pitch / 512-aligned source offset that the
     // terrain formats do not satisfy; the tiled render path is Vulkan-only today
     // (D3D12 terrain indirect draws are stubs), so skip the sub-rect copy there.
     if (m_Device->GetAPI() == Rendering::GraphicsAPI::DirectX12)
-        return;
+        return false;
 
     const size_t rowPitchBytes = static_cast<size_t>(srcW) * bytesPerTexel;
     const size_t uploadSize = static_cast<size_t>(srcH) * rowPitchBytes;
     auto staging = m_Device->CreateUploadBuffer(uploadSize, stagingName);
     if (!staging.IsValid())
-        return;
+        return false;
     m_Device->UpdateBuffer(staging, 0, uploadSize, srcBytes);
 
     PendingTextureUpload pending{};
@@ -1552,6 +1564,7 @@ void TerrainRenderFeature::QueueRegionUpload(Rendering::TextureHandle texture,
     // Grass placement samples this texture; the epoch is bumped where the copy is QUEUED so a
     // reader consulting it during this frame's declare already sees the change.
     m_GrassContentEpoch.fetch_add(1, std::memory_order_release);
+    return true;
 }
 
 void TerrainRenderFeature::FlushPendingUploads(Rendering::CommandList* cl)
@@ -1896,6 +1909,17 @@ static Rendering::DescriptorSetLayoutDesc MakeSplatBakeLayoutDesc()
     return l;
 }
 
+static Rendering::DescriptorSetLayoutDesc MakeNormalBakeLayoutDesc()
+{
+    Rendering::DescriptorSetLayoutDesc layout;
+    layout.debugName = "TerrainNormalBake_DSLayout";
+    layout.bindings = {
+        {0, Rendering::DescriptorType::StorageImage, 1, Rendering::kShaderStageCompute, "AtlasHeightRead"},
+        {1, Rendering::DescriptorType::StorageImage, 1, Rendering::kShaderStageCompute, "AtlasNormalStorage"},
+    };
+    return layout;
+}
+
 bool TerrainRenderFeature::EnsureGpuBakePipeline()
 {
     if (m_GpuBakePipeline.IsValid())
@@ -1969,12 +1993,7 @@ bool TerrainRenderFeature::EnsureGpuBakePipeline()
         auto itN = nresult.stageBytes.find("cs");
         if (itN != nresult.stageBytes.end())
         {
-            Rendering::DescriptorSetLayoutDesc nlayout;
-            nlayout.debugName = "TerrainNormalBake_DSLayout";
-            nlayout.bindings = {
-                {0, Rendering::DescriptorType::StorageImage, 1, Rendering::kShaderStageCompute, "AtlasHeightRead"},
-                {1, Rendering::DescriptorType::StorageImage, 1, Rendering::kShaderStageCompute, "AtlasNormalStorage"},
-            };
+            const auto nlayout = MakeNormalBakeLayoutDesc();
             Rendering::ComputePipelineDesc nd{};
             nd.ComputeShader = std::make_shared<const std::vector<uint8>>(std::move(itN->second));
             nd.DescriptorSetLayouts.push_back(m_Device->InternDescriptorSetLayout(nlayout));
@@ -2045,7 +2064,95 @@ void TerrainRenderFeature::QueueGpuHeightBake(TerrainHandle handle, std::vector<
 bool TerrainRenderFeature::HasPendingBakes() const
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
-    return !m_PendingBakes.empty();
+    return !m_PendingBakes.empty() ||
+           std::any_of(m_PendingSculptNormals.begin(), m_PendingSculptNormals.end(),
+                       [](const auto& batch) { return !batch.Dispatches.empty(); });
+}
+
+bool TerrainRenderFeature::QueueAtlasSculptNormals(TerrainHandle handle, const TerrainHeightBakePush& dispatch)
+{
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    if (handle.Index >= m_AtlasHeights.size() || handle.Index >= m_AtlasNormals.size())
+        return false;
+    const auto& height = m_AtlasHeights[handle.Index];
+    const auto& normal = m_AtlasNormals[handle.Index];
+    if (!height.Texture.IsValid() || !height.StorageView.IsValid() ||
+        !normal.Texture.IsValid() || !normal.StorageView.IsValid())
+        return false;
+    if (!EnsureGpuBakePipeline() || !m_GpuNormalPipeline.IsValid())
+        return false;
+
+    std::erase_if(m_PendingSculptNormals, [this, handle, &height, &normal](const PendingSculptNormals& batch) {
+        if (batch.Handle.Index != handle.Index ||
+            (batch.Handle == handle && batch.Height == height.Texture && batch.Normal == normal.Texture))
+            return false;
+        m_Device->DestroyDescriptorSet(batch.Set);
+        return true;
+    });
+    auto batch = std::find_if(m_PendingSculptNormals.begin(), m_PendingSculptNormals.end(),
+        [handle](const PendingSculptNormals& pending) { return pending.Handle == handle; });
+    if (batch == m_PendingSculptNormals.end())
+    {
+        Rendering::DescriptorSetDesc desc{};
+        desc.layout = MakeNormalBakeLayoutDesc();
+        desc.transient = false;
+        desc.debugName = "TerrainSculptNormals";
+        const auto set = m_Device->CreateDescriptorSet(desc);
+        if (!set.IsValid())
+            return false;
+        m_Device->UpdateStorageImageBinding(set, 0, height.StorageView);
+        m_Device->UpdateStorageImageBinding(set, 1, normal.StorageView);
+        m_PendingSculptNormals.push_back({handle, height.Texture, normal.Texture, set, {dispatch}});
+    }
+    else
+    {
+        batch->Dispatches.push_back(dispatch);
+    }
+    return true;
+}
+
+void TerrainRenderFeature::FlushSculptNormals(Rendering::CommandList& commandList)
+{
+    for (auto& pending : m_PendingSculptNormals)
+    {
+        if (pending.Dispatches.empty())
+            continue;
+        const auto index = pending.Handle.Index;
+        if (m_AtlasHeights[index].Texture != pending.Height || m_AtlasNormals[index].Texture != pending.Normal)
+        {
+            pending.Dispatches.clear();
+            continue;
+        }
+
+        for (const auto texture : {pending.Height, pending.Normal})
+            commandList.Barrier(Rendering::ResourceBarrier::CreateTextureBarrier(texture,
+                Rendering::ResourceState::ShaderResource, Rendering::ResourceState::UnorderedAccess));
+
+        commandList.SetPipeline(m_GpuNormalPipeline);
+        commandList.BindDescriptorSet(0, pending.Set, m_GpuNormalPipeline);
+        for (auto next = pending.Dispatches.cbegin(); next != pending.Dispatches.cend(); ++next)
+        {
+            const auto& dispatch = *next;
+            // A graph can skip a frame, allowing two dirty rectangles for the same slot
+            // to reach this flush. Serialize those writes, including any shared apron.
+            if (std::any_of(pending.Dispatches.cbegin(), next,
+                            [slot = dispatch.Slot](const auto& previous) { return previous.Slot == slot; }))
+            {
+                commandList.Barrier(Rendering::ResourceBarrier::CreateMemoryBarrier(
+                    static_cast<uint64>(Rendering::PipelineStageMask::ComputeShader),
+                    static_cast<uint64>(Rendering::PipelineStageMask::ComputeShader),
+                    static_cast<uint64>(Rendering::ResourceAccessMask::ShaderWrite),
+                    static_cast<uint64>(Rendering::ResourceAccessMask::ShaderWrite)));
+            }
+            commandList.SetPushConstants(dispatch);
+            commandList.Dispatch((dispatch.RectW * dispatch.RectH + 63u) / 64u, 1u, 1u);
+        }
+
+        for (const auto texture : {pending.Height, pending.Normal})
+            commandList.Barrier(Rendering::ResourceBarrier::CreateTextureBarrier(texture,
+                Rendering::ResourceState::UnorderedAccess, Rendering::ResourceState::ShaderResource));
+        pending.Dispatches.clear();
+    }
 }
 
 void TerrainRenderFeature::SeedPendingReadbackForTests(TerrainHandle handle)
@@ -2089,13 +2196,20 @@ void TerrainRenderFeature::FailNextStagingAllocationForTests()
 void TerrainRenderFeature::FlushPendingBakes(Rendering::CommandList* cl)
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
-    if (!cl || m_PendingBakes.empty())
+    if (!cl)
+        return;
+    if (m_PendingBakes.empty() && m_PendingSculptNormals.empty() &&
+        (!IsGpuSculptNormalEnabled() || m_GpuBakePipelineAttempted))
         return;
     if (!EnsureGpuBakePipeline())
     {
         m_PendingBakes.clear();
         return;
     }
+
+    FlushSculptNormals(*cl);
+    if (m_PendingBakes.empty())
+        return;
 
     const Rendering::DescriptorSetLayoutDesc layout = [] {
         Rendering::DescriptorSetLayoutDesc l;
@@ -2106,15 +2220,7 @@ void TerrainRenderFeature::FlushPendingBakes(Rendering::CommandList* cl)
         };
         return l;
     }();
-    const Rendering::DescriptorSetLayoutDesc normalLayout = [] {
-        Rendering::DescriptorSetLayoutDesc l;
-        l.debugName = "TerrainNormalBake_DSLayout";
-        l.bindings = {
-            {0, Rendering::DescriptorType::StorageImage, 1, Rendering::kShaderStageCompute, "AtlasHeightRead"},
-            {1, Rendering::DescriptorType::StorageImage, 1, Rendering::kShaderStageCompute, "AtlasNormalStorage"},
-        };
-        return l;
-    }();
+    const auto normalLayout = MakeNormalBakeLayoutDesc();
     const Rendering::DescriptorSetLayoutDesc splatLayout = MakeSplatBakeLayoutDesc();
 
     for (auto& bake : m_PendingBakes)

@@ -84,6 +84,7 @@ target_link_libraries(AssetRuntime
         Platform
         FileSystem
         Serialization
+        Sprite2D
 )
 
 # Optional JSON dependency (ParserRegistry / tasks)

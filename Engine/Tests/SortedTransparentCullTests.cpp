@@ -1,8 +1,8 @@
 // Sorted transparent CPU frustum cull (CullTransparentsToFrustum) with mock
 // spheres: in/out/straddle/behind, the "culled don't reach the drain"
-// invariant, the empty (zero-cost) path, and the sector composition that keeps
-// a far transparent culling as it does near the origin. The back-to-front order
-// runs on the GPU: SortedTransparentRunTests and GPUSortTests cover it.
+// invariant, the empty (zero-cost) path, and the camera-relative rebase that
+// keeps sector-tagged (planetary) transparents culling identically to the GPU
+// path. RenderSortingTests covers the order of the surviving records.
 
 #include <gtest/gtest.h>
 
@@ -15,7 +15,6 @@
 
 #include <cmath>
 #include <cstring>
-#include <memory_resource>
 #include <vector>
 
 using namespace GameEngine::Engine::Renderer;
@@ -91,9 +90,7 @@ TEST(SortedTransparentCull, EdgeStraddlingSphereIsKept)
     EXPECT_TRUE(drop.empty());
 }
 
-// The drain sorts VISIBLE transparents only: a scene whose total Blend count is
-// huge must stage only what the frustum keeps (this is also what keeps the
-// GPU-sort capacity a per-VIEW bound, not a per-scene one).
+// Only visible transparents enter the composition.
 TEST(SortedTransparentCull, CulledInstancesNeverReachTheDrain)
 {
     Rndr::Vector4 planes[6];
@@ -182,9 +179,9 @@ TEST(SortedTransparentCull, DerivedCameraForwardPointsIntoTheView)
     const Math::Matrix4x4 viewProj = proj * view;
 
     Rndr::CameraData cam{};
-    cam.view = view;
-    cam.proj = proj;
-    cam.viewProj = viewProj;
+    std::memcpy(cam.view, view.Data(), sizeof(cam.view));
+    std::memcpy(cam.proj, proj.Data(), sizeof(cam.proj));
+    std::memcpy(cam.viewProj, viewProj.Data(), sizeof(cam.viewProj));
 
     const Rndr::CameraDerivedData derived = Rndr::DeriveCameraData(cam, {0.1f, 500.0f});
 

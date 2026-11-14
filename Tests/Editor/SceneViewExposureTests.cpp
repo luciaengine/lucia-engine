@@ -82,12 +82,15 @@ class ScopedScenePreferences
 };
 } // namespace
 
-// The Scene View meters the lights by default, at once, with a game camera's floor and its ceiling at
-// the slider's top; a game camera keeps its ceiling 18. The sliders reach below a moonless night, so a
-// game camera set for one fits them.
-TEST(SceneViewExposure, TheDefaultIsAutoWithTheLightsMeterAndTheCamerasFloor)
+// Fixed exposure matches a new camera; Auto keeps its meter, range and adaptation settings.
+TEST(SceneViewExposure, TheDefaultIsFixedAndMatchesANewCamera)
 {
-    EXPECT_EQ(SceneViewSettings::kDefaultExposureMode, SceneViewExposureMode::Auto);
+    EXPECT_EQ(SceneViewSettings::kDefaultExposureMode, SceneViewExposureMode::Fixed);
+    EXPECT_EQ(SceneViewSettings::Exposure{}.Mode, SceneViewExposureMode::Fixed);
+    EXPECT_FLOAT_EQ(SceneViewSettings::Exposure{}.FixedEv, Components::kDefaultManualExposureEv);
+    EXPECT_EQ(Components::Camera{}.ExposureControl, Components::ExposureMode::Fixed);
+    EXPECT_NEAR(Rendering::LinearExposureToEv(Components::Camera{}.Exposure),
+                Components::kDefaultManualExposureEv, 1.0e-4f);
     EXPECT_EQ(SceneViewSettings::kDefaultExposureMeter, Components::ExposureMeter::Lights);
     EXPECT_EQ(SceneViewSettings::kDefaultAutoExposureMinEv, Components::Camera{}.AutoExposureMinEv)
         << "the Scene View and a game camera share one floor";
@@ -167,9 +170,7 @@ TEST(SceneViewExposure, SwitchingToFixedStartsAtTheShownEv)
     EXPECT_FLOAT_EQ(settings.GetPostFxFixedExposureEv(), 13.4f);
 }
 
-// What the Scene View publishes with its shipped settings: Auto on the Lights meter, the open clamps
-// (with no volume clamp, its own floor reaches a moonless night), and both speeds at the instant
-// constant, so a new reading lands on its first frame.
+// With Auto selected, the Scene View uses the Lights meter, open clamps and instant adaptation.
 TEST(SceneViewExposure, TheDefaultAutoPublishesTheLightsMeterTheFloorAndInstantSpeeds)
 {
     Engine::Renderer::PostProcessSettings settings{};

@@ -36,7 +36,7 @@ GameEngine::Components::DDGIVolume addable=1 doNotSerialize=0
   Cascades type=4 offset=116 size=4 category=0 flags=0 enum=SingleGrid:0,Cascaded2:1:Cascaded (2), tooltip=How many probe grids to run. Single Grid is the coarse lattice alone. Cascaded (2) adds a second, finer grid covering a smaller region centered on this volume, for closer-range indirect detail — roughly double the trace/blend/upload cost. Cascaded is the default, matching the reference library.
   FineCascadeExtentFraction type=10 offset=120 size=4 category=0 flags=0 range=0.05..0.9 tooltip=Fraction of this volume's extents the fine cascade covers (e.g. 0.35 = a sub-box 35% the size, centered the same). Clamped 0.05-0.9. Smaller = denser probes in a smaller region.
 GameEngine::Components::LensFlareSource addable=1 doNotSerialize=0
-  Flare type=18 offset=0 size=16 category=33 flags=0
+  Flare type=18 offset=0 size=16 category=34 flags=0
   SunMode type=1 offset=16 size=1 category=0 flags=0 tooltip=For a directional light, project the flare from the light direction as an infinite sun source. Positional distance and source-angle falloff are ignored.
   Intensity type=10 offset=20 size=4 category=0 flags=0 range=0..10 tooltip=Brightness multiplier on top of the flare definition's global brightness.
   Scale type=10 offset=24 size=4 category=0 flags=0 range=0..10 tooltip=Size multiplier on top of the flare definition's global scale.
@@ -69,7 +69,7 @@ GameEngine::Components::NavigationSurface addable=1 doNotSerialize=0
   Center type=13 offset=28 size=12 category=0 flags=0 tooltip=Meters from the entity's position to the middle of the baked box.
   Extent type=13 offset=40 size=12 category=0 flags=0 tooltip=Meters: half the baked box's size.
   AuthoredCells type=18 offset=52 size=16 category=22 flags=0 tooltip=Grid only: the cell costs and blocked cells painted with the navigation grid brush (.navgrid).
-  BakedData type=18 offset=68 size=16 category=40 flags=0 tooltip=Mesh only: the baked tiles saved with the scene (.navsurface). The surface loads them instead of baking when they match its settings and bounds. Written when the scene is saved.
+  BakedData type=18 offset=68 size=16 category=47 flags=0 tooltip=Mesh only: the baked tiles saved with the scene (.navsurface). The surface loads them instead of baking when they match its settings and bounds. Written when the scene is saved.
   NavMapIndex type=8 offset=84 size=4 category=0 flags=5
   NavMapGeneration type=8 offset=88 size=4 category=0 flags=5
   OwnerWorldId type=9 offset=96 size=8 category=0 flags=5
@@ -113,7 +113,7 @@ GameEngine::Components::OceanClipSource addable=1 doNotSerialize=0
 GameEngine::Components::OceanDepthCacheSource addable=1 doNotSerialize=0
   UseWhenStale type=1 offset=0 size=1 category=0 flags=0
   Path type=20 offset=1 size=260 category=0 flags=0
-  CacheAsset type=18 offset=261 size=16 category=23 flags=0
+  CacheAsset type=18 offset=261 size=16 category=24 flags=0
   SourceRevision type=8 offset=280 size=4 category=0 flags=0
   BakedRevision type=8 offset=284 size=4 category=0 flags=0
   CacheRevision type=8 offset=288 size=4 category=0 flags=0
@@ -176,7 +176,7 @@ GameEngine::Components::OceanPolygonWaterBody addable=1 doNotSerialize=0
   WaveChop type=10 offset=104 size=4 category=0 flags=0 range=0..2
   WaveFeather type=10 offset=108 size=4 category=0 flags=0 range=0..500
   UseLocalSpectrum type=1 offset=112 size=1 category=0 flags=0
-  LocalSpectrumAsset type=18 offset=113 size=16 category=24 flags=0
+  LocalSpectrumAsset type=18 offset=113 size=16 category=25 flags=0
   LocalWaveCount type=8 offset=132 size=4 category=0 flags=0
   LocalWaveAmplitude type=10 offset=136 size=4 category=0 flags=0 range=0..10
   LocalWaveWavelength type=10 offset=140 size=4 category=0 flags=0 range=0.1..200
@@ -184,7 +184,7 @@ GameEngine::Components::OceanPolygonWaterBody addable=1 doNotSerialize=0
   LocalWaveExtraAmplitude type=10 offset=148 size=12 category=0 flags=0 range=0..10
   LocalWaveExtraWavelength type=10 offset=160 size=12 category=0 flags=0 range=0.1..200
   LocalWaveExtraDirectionDegrees type=10 offset=172 size=12 category=0 flags=0 range=-360..360
-  MaterialOverride type=18 offset=184 size=16 category=27 flags=0 tooltip=Ocean preset whose surface values (color, optics, foam, detail textures) apply inside this water body. Empty keeps the ocean's own surface.
+  MaterialOverride type=18 offset=184 size=16 category=28 flags=0 tooltip=Ocean preset whose surface values (color, optics, foam, detail textures) apply inside this water body. Empty keeps the ocean's own surface.
   MaterialPriority type=4 offset=200 size=4 category=0 flags=0 tooltip=Where water-body materials overlap, higher priorities apply over lower ones.
 GameEngine::Components::OceanRenderer addable=1 doNotSerialize=0
   QualityOverride type=8 offset=0 size=4 category=0 flags=0 tooltip=Ocean quality tier. 0 = Low, 1 = Medium, 2 = High.
@@ -217,14 +217,14 @@ GameEngine::Components::OceanRenderer addable=1 doNotSerialize=0
   GlobalWindSpeed type=10 offset=108 size=4 category=0 flags=0 range=0..40 tooltip=Global wind speed in meters per second for FFT and Gerstner waves.
   GlobalWindDirection type=10 offset=112 size=4 category=0 flags=0 range=-180..180 tooltip=Global wind direction in degrees. 0 points along world +X.
   GlobalWindTurbulence type=10 offset=116 size=4 category=0 flags=0 range=0..1 tooltip=Directional spread of global wind waves. Higher values make a more chaotic sea.
-  SpectrumAsset type=18 offset=120 size=16 category=24 flags=0 tooltip=Optional asset-backed global wave spectrum.
+  SpectrumAsset type=18 offset=120 size=16 category=25 flags=0 tooltip=Optional asset-backed global wave spectrum.
   CollisionProvider type=8 offset=136 size=4 category=0 flags=0
-  FFTCollisionAsset type=18 offset=140 size=16 category=25 flags=0
+  FFTCollisionAsset type=18 offset=140 size=16 category=26 flags=0
   MaxCollisionQueryCount type=8 offset=156 size=4 category=0 flags=0
-  AnimatedWavesCollisionSettings type=18 offset=160 size=16 category=26 flags=0
-  DynamicWaveSettings type=18 offset=176 size=16 category=26 flags=0
-  FoamSettings type=18 offset=192 size=16 category=26 flags=0
-  ShadowSettings type=18 offset=208 size=16 category=26 flags=0
+  AnimatedWavesCollisionSettings type=18 offset=160 size=16 category=27 flags=0
+  DynamicWaveSettings type=18 offset=176 size=16 category=27 flags=0
+  FoamSettings type=18 offset=192 size=16 category=27 flags=0
+  ShadowSettings type=18 offset=208 size=16 category=27 flags=0
   CombineCascade type=1 offset=224 size=1 category=0 flags=0 tooltip=Experimental path that combines FFT displacement cascades once per frame.
 GameEngine::Components::OceanSeabed addable=1 doNotSerialize=0
   ExtentX type=10 offset=0 size=4 category=0 flags=0 range=0..2000
@@ -378,7 +378,7 @@ GameEngine::Components::OceanWaterBody addable=1 doNotSerialize=0
   WaveChop type=10 offset=44 size=4 category=0 flags=0 range=0..2
   WaveFeather type=10 offset=48 size=4 category=0 flags=0 range=0..500
   UseLocalSpectrum type=1 offset=52 size=1 category=0 flags=0
-  LocalSpectrumAsset type=18 offset=53 size=16 category=24 flags=0
+  LocalSpectrumAsset type=18 offset=53 size=16 category=25 flags=0
   LocalWaveCount type=8 offset=72 size=4 category=0 flags=0
   LocalWaveAmplitude type=10 offset=76 size=4 category=0 flags=0 range=0..10
   LocalWaveWavelength type=10 offset=80 size=4 category=0 flags=0 range=0.1..200
@@ -386,7 +386,7 @@ GameEngine::Components::OceanWaterBody addable=1 doNotSerialize=0
   LocalWaveExtraAmplitude type=10 offset=88 size=12 category=0 flags=0 range=0..10
   LocalWaveExtraWavelength type=10 offset=100 size=12 category=0 flags=0 range=0.1..200
   LocalWaveExtraDirectionDegrees type=10 offset=112 size=12 category=0 flags=0 range=-360..360
-  MaterialOverride type=18 offset=124 size=16 category=27 flags=0 tooltip=Ocean preset whose surface values (color, optics, foam, detail textures) apply inside this water body. Empty keeps the ocean's own surface.
+  MaterialOverride type=18 offset=124 size=16 category=28 flags=0 tooltip=Ocean preset whose surface values (color, optics, foam, detail textures) apply inside this water body. Empty keeps the ocean's own surface.
   MaterialPriority type=4 offset=140 size=4 category=0 flags=0 tooltip=Where water-body materials overlap, higher priorities apply over lower ones.
 GameEngine::Components::OceanWaterInteraction addable=1 doNotSerialize=0
   Radius type=10 offset=0 size=4 category=0 flags=0 range=0.1..50

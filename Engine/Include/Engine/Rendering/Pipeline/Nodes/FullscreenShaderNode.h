@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Engine/Rendering/Pipeline/PipelineEnumTables.h"
+#include "Engine/Rendering/Pipeline/DepthUpsamplePass.h"
 #include "Engine/Rendering/Pipeline/PipelineResourceNames.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
 #include "Rendering/Core/Device.h"
@@ -58,6 +59,7 @@ class FullscreenShaderNode : public IRenderPipelineNode
   public:
     ~FullscreenShaderNode() override;
     const char* GetTypeName() const override { return "FullscreenShader"; }
+    bool IsViewColorPostEffect() const override { return true; }
 
     bool Initialize(std::string nodeId, std::string nodeJson, std::string* outError) override;
     void Declare(RenderPipelineInstance& instance, const PipelineDeclareContext& ctx) override;
@@ -100,6 +102,7 @@ class FullscreenShaderNode : public IRenderPipelineNode
     std::string m_Json;
 
     std::string m_OutputRef = Names::View::Resolve;
+    std::string m_DepthOutputRef;
     std::unordered_map<std::string, std::string> m_Inputs; // bindingName -> resourceRef
     // Inputs sampled only while a PostProcessSettings gate reads active. This stage
     // neither resolves nor reads a gated-off input and its binding samples the
@@ -136,11 +139,14 @@ class FullscreenShaderNode : public IRenderPipelineNode
     // end state by culling the readerless copy). JSON "elideWhenIdentity".
     bool m_ElideWhenIdentity = false;
     bool m_PPOverrides = false;
+    uint32_t m_VertexCount = 3;
+    uint32_t m_InstanceCount = 1;
 
     // Cached GPU resources
     GameEngine::Rendering::IDevice* m_Device = nullptr;
     GameEngine::Engine::Renderer::RenderServices* m_RenderServices = nullptr;
     GameEngine::Rendering::SamplerHandle m_LinearClampSampler{};
+    GameEngine::Rendering::SamplerHandle m_PointClampSampler{};
     GameEngine::Rendering::SamplerHandle m_LinearRepeatSampler{};
     // Interned base pipeline (shaders + static state + meta-applied layouts).
     // Concrete (id, formatKey) handles are resolved at execute time via the
@@ -225,6 +231,19 @@ class FullscreenShaderNode : public IRenderPipelineNode
 // Fullscreen stage with persistent, per-view ping-pong history. Keeping the
 // history map here avoids charging every ordinary fullscreen node for temporal
 // state it can never use.
+class DepthPixelationNode final : public FullscreenShaderNode
+{
+  public:
+    const char* GetTypeName() const override { return "DepthPixelation"; }
+    bool IsViewColorPostEffect() const override { return false; }
+    bool Initialize(std::string nodeId, std::string nodeJson, std::string* outError) override;
+    void DeclareForView(ViewDeclare& d) override;
+  private:
+    std::string m_SourceRef;
+    std::string m_ResultRef;
+    DepthUpsamplePass m_DepthCopy;
+};
+
 class TemporalFullscreenShaderNode final : public FullscreenShaderNode
 {
   public:

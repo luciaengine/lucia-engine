@@ -1,8 +1,7 @@
 #include "Rendering/Core/HzbCullingStrategy.h"
 
+#include "Platform/Environment.h"
 #include "Rendering/Core/GPUCulling.h"
-
-#include <cstdlib>
 
 namespace GameEngine
 {
@@ -29,7 +28,7 @@ std::shared_ptr<ICullingStrategy> MakeDefaultOcclusionStrategyOrNull()
     static const std::shared_ptr<ICullingStrategy> s_Strategy =
         []() -> std::shared_ptr<ICullingStrategy>
     {
-        if (const char* env = std::getenv("GE_HZB_OCCLUSION"); env && env[0] == '0')
+        if (!Platform::EnvironmentSwitchEnabled("GE_HZB_OCCLUSION", true))
             return nullptr;
         return std::make_shared<HzbCullingStrategy>();
     }();

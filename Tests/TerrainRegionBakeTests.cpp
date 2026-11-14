@@ -20,6 +20,7 @@
 #include "ECSModules/Rendering/Systems/TransformHierarchySystem.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Mathematics/HalfFloat.h"
+#include "Memory/Testing/ScopedAllocationFault.h"
 #include "PageStreaming/GeneratedHeightPageProvider.h"
 #include "PageStreaming/Height/HeightPageLayer.h"
 #include "PageStreaming/PageResidency.h"
@@ -7032,6 +7033,45 @@ void HoldTheOnlyWorker(JobSystem::WorkStealingThreadPool& pool, std::shared_futu
 }
 } // namespace
 
+TEST(TerrainRegionBake, CoarseArrivalCarriesCurrentHeightsAndNormalsFromTheStreamingJob)
+{
+    ScopedTerrainService scoped;
+    auto& service = TerrainService::Get();
+    const GUID heightmapGuid = GUID::Generate();
+    ASSERT_NE(SeedNoiseHeightmap(service, heightmapGuid), nullptr);
+    const std::array terrains{
+        ProvisionStreamedTerrain(service, "coarse terrain", Components::TerrainBaseSource::HeightmapAsset,
+                                 heightmapGuid)};
+    ASSERT_NE(terrains[0].Tiled, nullptr);
+
+    JobSystem::WorkStealingThreadPool pool(4);
+    TileStreamingManager streaming(&pool);
+    ASSERT_TRUE(StreamUntilAFullJobIsInFlight(streaming, service, terrains));
+    const auto& tiled = *terrains[0].Tiled;
+    const auto coarse = std::find_if(tiled.Tiles.begin(), tiled.Tiles.end(),
+        [](const auto& entry) { return entry.second && entry.second->LodState == TileLodState::Coarse; });
+    ASSERT_NE(coarse, tiled.Tiles.end());
+    const auto& tile = *coarse->second;
+    ASSERT_NE(tile.CoarseStandIn, nullptr);
+
+    const uint32 resolution = tiled.Config.TileConfig.HeightmapWidth;
+    const float32 tileSize = tiled.Config.TileWorldSize;
+    const float32 heightScale = tiled.Config.HeightScale;
+    const auto& standIn = *tile.CoarseStandIn;
+    EXPECT_TRUE(standIn.Matches(resolution, tileSize, heightScale, tile.HeightfieldVersion));
+    EXPECT_FALSE(standIn.Matches(resolution, tileSize, heightScale, tile.HeightfieldVersion + 1));
+    EXPECT_FALSE(standIn.Matches(resolution + 1, tileSize, heightScale, tile.HeightfieldVersion));
+    EXPECT_FALSE(standIn.Matches(resolution, tileSize * 2.0f, heightScale, tile.HeightfieldVersion));
+    EXPECT_FALSE(standIn.Matches(resolution, tileSize, heightScale + 1.0f, tile.HeightfieldVersion));
+
+    CoarseTileStandIn rebuilt;
+    BuildCoarseTileStandIn(tile.Heightfield, resolution, tileSize, heightScale, rebuilt);
+    ASSERT_EQ(standIn.Heights.GetSampleCount(), rebuilt.Heights.GetSampleCount());
+    EXPECT_EQ(0, std::memcmp(standIn.Heights.GetRawSamples(), rebuilt.Heights.GetRawSamples(),
+                            rebuilt.Heights.GetSampleCount() * sizeof(float32)));
+    EXPECT_EQ(standIn.Normalmap, rebuilt.Normalmap);
+}
+
 // Forgetting a terrain whose jobs are still running (its re-provision or teardown, through
 // ForgetTiledTerrain): each job owns the result it writes, so it finishes into memory nothing
 // else holds; none of its output reaches the terrain that next takes the slot; and the other
@@ -10856,6 +10896,72 @@ TEST(TerrainRegionBake, ModifierMovedByLocalTransformEditRebakes)
 
     EXPECT_GT(data->HeightfieldVersion, idleVersion)
         << "a modifier moved by a local Transform edit (the inspector path) did not re-bake";
+}
+
+
+TEST(TerrainRegionBake, TwoDistantModifierFootprintsFitTheirSparsePageBudgetWithoutHoldingTheGap)
+{
+    ScopedTerrainService scoped;
+    auto& service = TerrainService::Get();
+    const auto handle = CreateResidentSquareTiledTerrain(service, 2);
+    auto* tiled = service.GetTiledTerrainData(handle);
+    ASSERT_NE(tiled, nullptr);
+    tiled->PageOverlayByteCap = kDesktopHeightPages.OverlayByteCap;
+    ECS::World world;
+    RegisterModifierLifecycleEvents(world);
+    CreateSquareTiledTerrainEntity(world, handle, 2);
+    CreateFlattenModifier(world, 200.0f, 200.0f, 35.0f, 20.0f);
+    TerrainModifierSystem system;
+    system.Update(world, 1.0f / 60.0f);
+    ASSERT_NE(tiled->PageOverlay, nullptr);
+    const uint64 firstBytes = tiled->PageOverlay->Bytes();
+    ASSERT_GT(firstBytes, 0u);
+    tiled->PageOverlayByteCap = firstBytes * 3u;
+    CreateFlattenModifier(world, 1800.0f, 1800.0f, 35.0f, 20.0f);
+    system.Update(world, 1.0f / 60.0f);
+    ASSERT_NE(tiled->PageOverlay, nullptr) << "the empty gap consumed the sparse modifier budget";
+    EXPECT_TRUE(tiled->PageOverlayCurrent);
+    EXPECT_EQ(tiled->PageOverlayRefusedBytes, 0u);
+    EXPECT_LE(tiled->PageOverlay->Bytes(), tiled->PageOverlayByteCap);
+    EXPECT_NE(LayerDelta(*tiled->PageOverlay, 0, 200, 200), 0.0f);
+    EXPECT_NE(LayerDelta(*tiled->PageOverlay, 0, 1800, 1800), 0.0f);
+    EXPECT_TRUE(tiled->PageOverlay->PageDeltas(PageStreaming::PageAddress{0, 0, 7, 7}).empty());
+    EXPECT_EQ(LayerDelta(*tiled->PageOverlay, 0, 1000, 1000), 0.0f);
+}
+
+
+TEST(TerrainRegionBake, MovingAModifierAcrossADistantGapNeverAllocatesTheGapsDenseDeltaGrid)
+{
+    ScopedTerrainService scoped;
+    auto& service = TerrainService::Get();
+    const auto handle = CreateResidentSquareTiledTerrain(service, 2);
+    auto* tiled = service.GetTiledTerrainData(handle);
+    ASSERT_NE(tiled, nullptr);
+    tiled->PageOverlayByteCap = kDesktopHeightPages.OverlayByteCap;
+    ECS::World world;
+    RegisterModifierLifecycleEvents(world);
+    CreateSquareTiledTerrainEntity(world, handle, 2);
+    const auto modifier = CreateFlattenModifier(world, 200.0f, 200.0f, 35.0f, 20.0f);
+    TerrainModifierSystem system;
+    system.Update(world, 1.0f / 60.0f);
+    ASSERT_NE(tiled->PageOverlay, nullptr);
+    const PageStreaming::PageSampleRect initial = tiled->PageOverlay->Extent(0).value();
+    tiled->PageOverlayByteCap = tiled->PageOverlay->Bytes() * 3u;
+    constexpr uint32 kMoveSamples = 1600u;
+    auto* transform = world.GetComponentForWrite<Components::WorldTransform>(modifier);
+    transform->Position.X += static_cast<float32>(kMoveSamples);
+    transform->Position.Z += static_cast<float32>(kMoveSamples);
+    const std::size_t denseBytes = static_cast<std::size_t>(initial.Width() + kMoveSamples) *
+                                   (initial.Height() + kMoveSamples) * sizeof(float32);
+    {
+        Memory::Testing::ScopedAllocationFault fault{denseBytes, 1, Memory::Testing::FaultRepeat::Once};
+        EXPECT_NO_THROW(system.Update(world, 1.0f / 60.0f));
+        EXPECT_FALSE(fault.Fired()) << "a sparse edit allocated the empty diagonal gap";
+    }
+    ASSERT_NE(tiled->PageOverlay, nullptr);
+    EXPECT_LE(tiled->PageOverlay->Bytes(), tiled->PageOverlayByteCap);
+    EXPECT_EQ(LayerDelta(*tiled->PageOverlay, 0, 200, 200), 0.0f);
+    EXPECT_NE(LayerDelta(*tiled->PageOverlay, 0, 1800, 1800), 0.0f);
 }
 
 namespace

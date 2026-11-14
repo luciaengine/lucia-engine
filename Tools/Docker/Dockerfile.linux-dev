@@ -1,41 +1,38 @@
-# The Linux x64 build image: Ubuntu 24.04 with the .NET 10 SDK, GCC 13, CMake, Ninja and the packages
-# BUILD.md's Linux section lists, Node.js for the MCP server and gameenginecli, patchelf for the
-# release packager, and Mesa's software Vulkan driver (lavapipe) with Xvfb for a run without a GPU.
-# The source is bind-mounted at /src, never copied in. Used by Tools/Docker/linux-x64/build.sh (a
-# Release build of the Editor, the Player, the MCP server and gameenginecli) and by the
-# Tools/Scripts/*linux*.ps1 scripts.
-#
-# The digest fixes the .NET SDK and the Ubuntu release. The compiler, CMake and the -dev packages
-# come from apt when the image is built, so two builds of the image weeks apart can differ in their
-# patch versions. The binaries need the glibc of Ubuntu 24.04 (2.39) or newer. The image is x86-64
-# only: on an arm64 host Docker runs it under emulation (Rosetta on Apple silicon).
-FROM mcr.microsoft.com/dotnet/sdk:10.0-noble@sha256:0d99ebf1ccad15037b5c98c9fe8979d6b8dbac23812feae2277a0b277b5c5ffa
+FROM mcr.microsoft.com/dotnet/sdk:10.0
+
+# Linux development image for building the GameEngine repo with CMake + Ninja.
+# This image is intended to be used from Windows via a bind mount of the
+# repository; it does not copy the source into the image.
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        build-essential cmake ninja-build pkg-config git ca-certificates nasm \
-        curl zip unzip tar xz-utils python3 autoconf autoconf-archive automake libtool libltdl-dev \
-        libxinerama-dev libxcursor-dev xorg-dev libglu1-mesa-dev libwayland-dev libxkbcommon-dev \
-        patchelf mesa-vulkan-drivers vulkan-tools xvfb xauth && \
-    rm -rf /var/lib/apt/lists/*
-
-# Node.js 24 from nodejs.org, checked against its published SHA-256: Ubuntu 24.04 ships 18, the MCP
-# server needs 20 or newer, and gameenginecli needs a Node build that carries the single executable
-# application fuse. gameenginecli embeds this executable, and the official build carries DWARF debug
-# information; it is stripped here because the single executable application cannot be stripped
-# after its script is injected.
-ARG NODE_VERSION=24.22.0
-ARG NODE_SHA256=cc2f601cee82d9a5a233302fe307abc600727035fd7d2c3a3571755989e95008
-RUN curl -fsSLo /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" && \
-    echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - && \
-    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --exclude='*.md' --exclude=LICENSE && \
-    strip --strip-debug /usr/local/bin/node && \
-    rm /tmp/node.tar.xz
-
-# The source tree is owned by the host user, not by the container's root.
-RUN git config --system --add safe.directory '*'
+	apt-get install -y --no-install-recommends \
+	    build-essential \
+	    cmake \
+	    ninja-build \
+	    pkg-config \
+	    python3 \
+		    autoconf \
+		    autoconf-archive \
+		    automake \
+		    libtool \
+	    git \
+	    curl \
+	    zip \
+	    unzip \
+	    # GLFW / X11 dev dependencies used by the Editor
+	    libxinerama-dev \
+	    libxcursor-dev \
+	    xorg-dev \
+		    libglu1-mesa-dev \
+		    libwayland-dev \
+	&& rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
-CMD ["bash", "-lc", "echo 'Linux x64 build container: mount the repository at /src. Tools/Docker/linux-x64/build.sh runs a Release build.'"]
+
+# vcpkg will be discovered automatically by cmake/Dependencies.cmake when
+# configuring the project. We expect the repo to be bind-mounted at /src so
+# that /src/dependencies/vcpkg is available inside the container.
+
+CMD ["bash", "-lc", "echo 'GameEngine Linux dev container ready. Mount the repo at /src and run cmake/ninja as documented.'"]

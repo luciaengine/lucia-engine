@@ -234,25 +234,6 @@ Material:
     EXPECT_EQ(doc.textures.at("albedoMap"), "26667450-ec0f-6554-9916-b07e332c0689");
 }
 
-// A Unity material with no colour property keeps Unity's default colour, white, not the engine's
-// new-material base colour.
-TEST(MaterialAssetParsingTest, UnityMat_WithoutAColorImportsWhite)
-{
-    const std::string unityMat = R"MAT(%YAML 1.1
---- !u!21 &2100000
-Material:
-  m_Name: Plain Stone
-  m_SavedProperties:
-    m_Floats:
-    - _Metallic: 0
-)MAT";
-
-    MaterialAsset asset(GUID::Generate(), "Plain Stone.mat");
-    ASSERT_TRUE(ParseMaterialJson(unityMat, asset)) << asset.GetErrors().front();
-    EXPECT_EQ(std::get<std::vector<float>>(asset.GetDocument().properties.at("baseColor")),
-              (std::vector<float>{1.0f, 1.0f, 1.0f, 1.0f}));
-}
-
 TEST(MaterialAssetParsingTest, UnityMat_EmissionMapEmitsAtReferenceWhite)
 {
     const std::string unityMat = R"MAT(%YAML 1.1
@@ -741,21 +722,6 @@ TEST(MaterialDocumentDefaultsTest, FreshDefaultDocumentIsFullyOpaque)
     EXPECT_NEAR(doc.DefaultOpacity(), 1.0f, 1e-6f);
 }
 
-// No real surface reflects all the light it receives: a new material's base colour is 0.8, a
-// bright plaster or paper, so a default-material object under the sun does not read as clipped
-// white. A partial .material with no base colour gets the same value from the fill.
-TEST(MaterialDocumentDefaultsTest, ANewMaterialsBaseColorIsAPlausibleAlbedo)
-{
-    const std::vector<float> expected{0.8f, 0.8f, 0.8f, 1.0f};
-    const MaterialDocument created = MaterialDocument::CreateDefaultPBR("New");
-    EXPECT_EQ(std::get<std::vector<float>>(created.properties.at("baseColor")), expected);
-
-    MaterialDocument partial{};
-    partial.lightingModel = "StandardPBR";
-    partial.FillMissingStandardPBRDefaults();
-    EXPECT_EQ(std::get<std::vector<float>>(partial.properties.at("baseColor")), expected);
-}
-
 // ---- Textures ----
 
 TEST(MaterialAssetParsingTest, Textures_StringAndNull)
@@ -835,9 +801,7 @@ TEST(MaterialAssetParsingTest, EmptyInput_Fails)
 
 // ---- Lighting model casing ----
 
-// The variant key folds the lighting model's case and the LIGHTING_MODEL_* define
-// does not, so a known model read in any case takes its one spelling.
-TEST(MaterialAssetParsingTest, LightingModel_KnownNameTakesItsOneSpelling)
+TEST(MaterialAssetParsingTest, LightingModel_PreservesCasing)
 {
     const std::string json = R"JSON({
         "schemaVersion": 3,
@@ -848,7 +812,7 @@ TEST(MaterialAssetParsingTest, LightingModel_KnownNameTakesItsOneSpelling)
 
     MaterialAsset asset(GUID::Generate(), "test.material");
     ASSERT_TRUE(ParseMaterialJson(json, asset));
-    EXPECT_EQ(asset.GetDocument().lightingModel, "Unlit");
+    EXPECT_EQ(asset.GetDocument().lightingModel, "unlit");
 }
 
 // ---- V3 dual serialization: both GUID and path fields ----
@@ -932,7 +896,7 @@ TEST(MaterialAssetParsingTest, V2_UnlitWhite_Pattern)
 
     const auto& doc = asset.GetDocument();
     EXPECT_EQ(doc.schemaVersion, 2);
-    EXPECT_EQ(doc.lightingModel, "Unlit");
+    EXPECT_EQ(doc.lightingModel, "unlit");
     EXPECT_EQ(doc.surfaceShader, "Surfaces/unlit_solid.glsl");
     EXPECT_TRUE(doc.surfaceShaderGuid.empty());
 }

@@ -26,9 +26,9 @@
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "StagedTestPaths.h"
 #include "TestUtils.h"
+#include "TestTempDir.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cstdint>
 #include <cstddef>
 #include <filesystem>
@@ -62,11 +62,7 @@ constexpr MaterialKeyword kMotionPass = MaterialKeyword::Instanced | MaterialKey
 
 fs::path MakeTempCacheRoot()
 {
-    static std::atomic<uint32_t> counter{0};
-    return fs::temp_directory_path() /
-           ("ge_motion_variant_" +
-            std::to_string(::testing::UnitTest::GetInstance()->random_seed()) + "_" +
-            std::to_string(counter.fetch_add(1)));
+    return TestUtils::MakeUniqueTempDirectory("ge_motion_variant");
 }
 
 MaterialBuildResult Build(const MaterialDocument& doc, MaterialKeyword keywords)

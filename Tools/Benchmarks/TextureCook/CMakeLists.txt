@@ -6,5 +6,7 @@
 add_executable(TextureCookBenchmark EXCLUDE_FROM_ALL TextureCookBenchmark.cpp)
 target_compile_features(TextureCookBenchmark PRIVATE cxx_std_20)
 target_link_libraries(TextureCookBenchmark PRIVATE Engine)
+find_path(GE_TEXTURE_COOK_BENCHMARK_STB_DIR stb_image.h REQUIRED)
+target_include_directories(TextureCookBenchmark PRIVATE ${GE_TEXTURE_COOK_BENCHMARK_STB_DIR})
 ge_set_output_benchmarks(TextureCookBenchmark)
 ge_stage_runtime_dependencies(TextureCookBenchmark)

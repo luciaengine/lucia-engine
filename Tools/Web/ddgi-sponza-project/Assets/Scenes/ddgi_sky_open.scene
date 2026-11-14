@@ -47,11 +47,12 @@ Transform.rotation = (0, 0, 0, 1)
 Transform.scale = (1, 1, 1)
 
 [entity id="e_sky"]
-; Gradient mode: a fixed, time-independent dome. The gradient draws no sun, moon
-; or stars, its fill is baked from the three colors alone, and no light is linked
-; to it, so two captures minutes apart see identical incoming radiance.
+; Gradient mode with the sun/moon driver off: a fixed, time-independent dome, so
+; two captures minutes apart see identical incoming radiance.
 SkyEnvironment.Mode = 1
 SkyEnvironment.GradientSkyIntensity = 2000
+SkyEnvironment.IblIntensity = 1
+SkyEnvironment.AutoSunMoon = false
 Name.value = "Sky"
 Transform.position = (0, 0, 0)
 Transform.rotation = (0, 0, 0, 1)

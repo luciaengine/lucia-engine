@@ -103,9 +103,8 @@ public:
     // Game View does. The ceiling ships at the slider's top: the editor shows what the meter reads.
     static constexpr float kDefaultAutoExposureMinEv = Components::kDefaultAutoExposureMinEv;
     static constexpr float kDefaultAutoExposureMaxEv = kMaxExposureEv;
-    // The Scene View meters by default, and meters the light falling on the world: steady while
-    // the camera moves, and following the time of day.
-    static constexpr SceneViewExposureMode kDefaultExposureMode = SceneViewExposureMode::Auto;
+    // Fixed exposure uses the same EV100 as a new game camera.
+    static constexpr SceneViewExposureMode kDefaultExposureMode = SceneViewExposureMode::Fixed;
     static constexpr Components::ExposureMeter kDefaultExposureMeter = Components::ExposureMeter::Lights;
     // Auto applies each new reading at once by default: the lights reading then lands in the frame
     // a light or the sky changes, and the Picture meter re-meters every frame unsmoothed. The delay

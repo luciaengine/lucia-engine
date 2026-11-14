@@ -102,6 +102,12 @@ struct ClipRootMotion
     bool Rotation = true;
 };
 
+struct AnimationSyncMarker
+{
+    float Time = 0.0f;
+    String Name;
+};
+
 /**
  * @brief The playback settings a clip's source file declares.
  *
@@ -115,6 +121,7 @@ struct AnimationClipSettings
     std::optional<bool> Loop;
     std::optional<float32> Speed;
     std::optional<ClipRootMotion> RootMotion;
+    std::vector<AnimationSyncMarker> SyncMarkers;
     ClipTranslationMode Translations = ClipTranslationMode::Absolute;
 };
 

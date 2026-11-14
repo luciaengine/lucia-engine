@@ -12,12 +12,9 @@
 
 #include "InspectorLayoutFixture.h"
 #include "Inspectors/InspectorUIHelpers.h"
-#include "UI/Controls/Label.h"
 #include "UI/InspectorSection.h"
-#include "UI/Parsers/CSSParser.h"
 #include "UI/UIElement.h"
 
-#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -41,9 +38,6 @@ constexpr float kMinShareOfABodyRow = 0.5f;
 // any usable inspector width, so a title taking its row's slack clears this and a content-sized
 // one does not.
 constexpr float kMinShareOfItsRow = 0.5f;
-
-// Layout rounds to a fraction of a pixel; extents are compared to this tolerance.
-constexpr float kLayoutTolerance = 0.5f;
 
 using InspectorLayoutTesting::FindByClass;
 using InspectorLayoutTesting::InspectorLayoutFixture;

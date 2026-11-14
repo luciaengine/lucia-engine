@@ -1,3 +1,4 @@
+#include "Core/ApplicationPaths.h"
 // Packages P0: manifest parsing, resolver semantics (topo order, priorities,
 // degraded resolution), and end-to-end mounting through AssetManager.
 
@@ -13,7 +14,7 @@
 #include "Assets/Packages/PackagesIndex.h"
 #include "Assets/Packages/PackageVersion.h"
 #include "Assets/Packages/ProjectPackagesManifest.h"
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h" // ApplicationPaths::GetExecutableDirectory
 #include "Core/EngineLoggerBridge.h"
 #include "Engine/Build/AssetCollector.h"
 #include "Engine/Build/PackageBuildStaging.h"
@@ -311,6 +312,44 @@ TEST(PackageManifestParse, DefaultsApply)
     EXPECT_EQ(manifest.AssetsDir, "Assets/");
     EXPECT_TRUE(manifest.EnabledByDefault);
     EXPECT_TRUE(manifest.Modules.empty());
+    EXPECT_TRUE(manifest.Icon.empty());
+    EXPECT_TRUE(manifest.Screenshot.empty());
+}
+
+TEST(PackageManifestParse, PreviewArtworkIsOptionalAndRelativeToPackageRoot)
+{
+    PackageManifest manifest;
+    std::string error;
+    ASSERT_TRUE(TryParsePackageManifest(
+        R"({"name":"art-pack","version":"1.0.0","icon":"Preview/icon.svg","screenshot":"Preview/screenshot.png"})",
+        "package.json", manifest, error)) << error;
+    EXPECT_EQ(manifest.Icon, "Preview/icon.svg");
+    EXPECT_EQ(manifest.Screenshot, "Preview/screenshot.png");
+
+    ASSERT_TRUE(TryParsePackageManifest(
+        R"({"name":"art-pack","version":"1.0.0","icon":"icon.png"})",
+        "package.json", manifest, error)) << error;
+    EXPECT_EQ(manifest.Icon, "icon.png");
+    EXPECT_TRUE(manifest.Screenshot.empty());
+}
+
+TEST(PackageManifestParse, RejectsUnsafeOrMalformedPreviewPaths)
+{
+    for (const std::string field : {"icon", "screenshot"})
+    {
+        for (const std::string value : {
+                 "null", "42", "[]", "\"\"", "\".\"", "\"../outside.png\"",
+                 "\"Preview/../../outside.png\"", "\"/tmp/outside.png\"",
+                 "\"C:/outside.png\"", "\"https://example.com/image.png\"",
+                 "\"Preview\\\\icon.png\"", "\"icon\\u0000.png\""})
+        {
+            PackageManifest manifest;
+            std::string error;
+            const std::string json = "{\"name\":\"art-pack\",\"version\":\"1.0.0\",\"" + field + "\":" + value + "}";
+            EXPECT_FALSE(TryParsePackageManifest(json, "art-pack/package.json", manifest, error)) << json;
+            EXPECT_NE(error.find("'" + field + "'"), std::string::npos) << error;
+        }
+    }
 }
 
 // A code-only package (unity-import: an Editor module, no mountable content)
@@ -2393,11 +2432,11 @@ TEST(PackageRuntimeAssetStaging, ProjectOutsideAPackagedGameDoesNotReportMisses)
     EXPECT_EQ(reports, 0);
 }
 
-// A component used only inside a prefab the scene instances, with no override of
+// A component used only inside a blueprint the scene instances, with no override of
 // its fields in the scene, still ships the package's runtimeAssets for it.
-TEST(PackageRuntimeAssetStaging, ComponentUsedOnlyInAPrefabShipsItsRuntimeAssets)
+TEST(PackageRuntimeAssetStaging, ComponentUsedOnlyInABlueprintShipsItsRuntimeAssets)
 {
-    E2EProject project("ge_pkg_runtime_assets_prefab");
+    E2EProject project("ge_pkg_runtime_assets_blueprint");
 
     WriteTextFile(project.Root / "Packages" / "tree-pack" / "package.json", R"({
         "name": "tree-pack", "version": "1.0.0",
@@ -2407,12 +2446,12 @@ TEST(PackageRuntimeAssetStaging, ComponentUsedOnlyInAPrefabShipsItsRuntimeAssets
     WriteTextFile(project.Root / "Packages" / "manifest.json", R"({
         "dependencies": { "tree-pack": "embedded" }
     })");
-    WriteTextFile(project.Root / "Assets" / "Prefabs" / "Oak.prefab",
-                  "[prefab name=\"Oak\" version=1]\n[entity id=\"root\"]\nTree.seed = 7\n");
+    WriteTextFile(project.Root / "Assets" / "Blueprints" / "Oak.blueprint",
+                  "[blueprint name=\"Oak\" version=1]\n[entity id=\"root\"]\nTree.seed = 7\n");
     WriteTextFile(project.Root / "Assets" / "Scenes" / "grove.scene",
                   "[scene name=\"grove\" version=1]\n"
-                  "[resource id=\"oak\" path=\"Prefabs/Oak.prefab\"]\n\n"
-                  "[prefab id=\"oak_0\" source=\"oak\"]\n"
+                  "[resource id=\"oak\" path=\"Blueprints/Oak.blueprint\"]\n\n"
+                  "[blueprint id=\"oak_0\" source=\"oak\"]\n"
                   "Transform.position = (0, 0, 0)\n");
 
     ASSERT_TRUE(project.Initialize());
@@ -2428,7 +2467,7 @@ TEST(PackageRuntimeAssetStaging, ComponentUsedOnlyInAPrefabShipsItsRuntimeAssets
     collector.CollectPackageRuntimeAssets(res.MountOrder[0], AssetCollector::CollectComponentNames(manifest), manifest);
     EXPECT_NE(manifest.FindByGuid(AssetRegistry::DeriveGuidForSourcePath("tree-pack", "Textures/Bark/oak.png")),
               nullptr)
-        << "the instanced prefab uses Tree, so the listed folder ships";
+        << "the instanced blueprint uses Tree, so the listed folder ships";
 }
 
 // ---------------------------------------------------------------------------
@@ -2630,7 +2669,7 @@ TEST(PackageMountE2E, SvnVcsModuleStaysEditorOnlyAndChromeCssResolves)
 
     // The chrome stylesheet + settings icon ship with the PACKAGE mount.
     const GUID chromeGuid = am.ResolveAssetGuid(fs::path("Editor/UI/SvnVcsChrome.css"), "svn-vcs");
-    const GUID iconGuid = am.ResolveAssetGuid(fs::path("Icons/SettingsSVN.svg"), "svn-vcs");
+    const GUID iconGuid = am.ResolveAssetGuid(fs::path("Icons/SettingsSVN.png"), "svn-vcs");
     EXPECT_FALSE(chromeGuid.IsNull());
     EXPECT_FALSE(iconGuid.IsNull());
     EXPECT_TRUE(am.ResolveAssetGuid(fs::path("Editor/UI/SvnVcsChrome.css"), "project").IsNull());
@@ -2686,7 +2725,7 @@ TEST(PackageMountE2E, DiversionVcsModuleStaysEditorOnlyAndChromeCssResolves)
     const GUID chromeGuid =
         am.ResolveAssetGuid(fs::path("Editor/UI/DiversionVcsChrome.css"), "diversion-vcs");
     const GUID iconGuid =
-        am.ResolveAssetGuid(fs::path("Icons/SettingsDiversion.svg"), "diversion-vcs");
+        am.ResolveAssetGuid(fs::path("Icons/SettingsDiversion.png"), "diversion-vcs");
     EXPECT_FALSE(chromeGuid.IsNull());
     EXPECT_FALSE(iconGuid.IsNull());
     EXPECT_TRUE(am.ResolveAssetGuid(fs::path("Editor/UI/DiversionVcsChrome.css"), "project").IsNull());
@@ -2741,7 +2780,7 @@ TEST(PackageMountE2E, LoreVcsModuleStaysEditorOnlyAndChromeCssResolves)
 
     // The chrome stylesheet + settings icon ship with the PACKAGE mount.
     const GUID chromeGuid = am.ResolveAssetGuid(fs::path("Editor/UI/LoreVcsChrome.css"), "lore-vcs");
-    const GUID iconGuid = am.ResolveAssetGuid(fs::path("Icons/SettingsLore.svg"), "lore-vcs");
+    const GUID iconGuid = am.ResolveAssetGuid(fs::path("Icons/SettingsLore.png"), "lore-vcs");
     EXPECT_FALSE(chromeGuid.IsNull());
     EXPECT_FALSE(iconGuid.IsNull());
     EXPECT_TRUE(am.ResolveAssetGuid(fs::path("Editor/UI/LoreVcsChrome.css"), "project").IsNull());
@@ -2766,4 +2805,28 @@ TEST(PackageMountE2E, LoreVcsModuleStaysEditorOnlyAndChromeCssResolves)
                                  return m.PackageName == "lore-vcs";
                              }))
         << "lore-vcs carries no runtime modules at all";
+}
+
+TEST(PackageResolver, OptionalEnginePackageRequiresExplicitProjectOptIn)
+{
+    E2EProject project("ge_optional_engine_package");
+    const fs::path engineRoot = project.Root / "StagedPackages";
+    WriteTextFile(engineRoot / "optional-baker" / "package.json",
+                  R"({"name":"optional-baker","version":"1.0.0","assets":"","enabledByDefault":false})");
+    auto resolution = PackageResolver::Resolve(project.Root, engineRoot);
+    ASSERT_TRUE(resolution.Errors.empty());
+    EXPECT_TRUE(resolution.MountOrder.empty());
+    ASSERT_EQ(resolution.Disabled.size(), 1u);
+    const auto manifestFile = project.Root / "Packages" / "manifest.json";
+    std::string error;
+    ASSERT_TRUE(SetPackageDisabledInProjectManifest(manifestFile, "optional-baker", false, error)) << error;
+    resolution = PackageResolver::Resolve(project.Root, engineRoot);
+    ASSERT_TRUE(resolution.Errors.empty());
+    ASSERT_EQ(resolution.MountOrder.size(), 1u);
+    EXPECT_EQ(resolution.MountOrder.front().Manifest.Name, "optional-baker");
+    EXPECT_TRUE(resolution.Disabled.empty());
+    ASSERT_TRUE(SetPackageDisabledInProjectManifest(manifestFile, "optional-baker", true, error)) << error;
+    resolution = PackageResolver::Resolve(project.Root, engineRoot);
+    EXPECT_TRUE(resolution.MountOrder.empty());
+    EXPECT_EQ(resolution.Disabled.size(), 1u);
 }

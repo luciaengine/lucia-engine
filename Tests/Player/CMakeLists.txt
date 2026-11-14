@@ -1,8 +1,8 @@
 # Standalone Player tests.
 #
-# PlayerHdrOptions, PlayerRunOptions and PlayerLog are leaf TUs — command-line parsing
-# plus Logger, and the log file's sinks — so the production sources compile in
-# directly: no Player executable, no window, no device.
+# PlayerHdrOptions and PlayerLog are leaf TUs — header-only mode parsing plus Logger,
+# and the log file's sinks — so the production sources compile in directly: no Player
+# executable, no window, no device.
 
 if(BUILD_TESTING)
     if(ENABLE_SCRIPTING AND TARGET Player)
@@ -76,10 +76,10 @@ if(BUILD_TESTING)
         PlayerLogTests.cpp
         PlayerRunOptionsTests.cpp
         PlayerStartupReadinessTests.cpp
+        ${CMAKE_SOURCE_DIR}/Apps/Player/Source/PlayerStartupReadiness.cpp
         ${CMAKE_SOURCE_DIR}/Apps/Player/Source/PlayerHdrOptions.cpp
         ${CMAKE_SOURCE_DIR}/Apps/Player/Source/PlayerLog.cpp
         ${CMAKE_SOURCE_DIR}/Apps/Player/Source/PlayerRunOptions.cpp
-        ${CMAKE_SOURCE_DIR}/Apps/Player/Source/PlayerStartupReadiness.cpp
     )
     target_include_directories(PlayerTests PRIVATE
         ${CMAKE_SOURCE_DIR}/Apps/Player/Source

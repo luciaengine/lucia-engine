@@ -1,5 +1,6 @@
 #include "ClaudeSessionProvider.h"
 
+#include "ClaudeUserContent.h"
 #include "CliSessionFiles.h"
 #include "JsonFields.h"
 
@@ -62,10 +63,26 @@ bool IsUnderDesktopAppFolder(std::string_view executable)
 }
 } // namespace
 
+std::string ClaudeSessionProvider::TurnInput(const AgentTurnRequest& request) const
+{
+    if (request.Images.empty())
+        return request.UserText;
+    const nlohmann::json message = {{"type", "user"},
+                                    {"message", {{"role", "user"}, {"content", ClaudeUserContent(request)}}}};
+    // One line: the CLI reads stream-json input a line at a time.
+    return message.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) + "\n";
+}
+
 std::vector<std::string> ClaudeSessionProvider::TurnArguments(const AgentTurnRequest& request) const
 {
     std::vector<std::string> arguments = {"-p", "--output-format", "stream-json", "--verbose",
                                           "--include-partial-messages"};
+    if (!request.Images.empty())
+    {
+        // Images travel only as content blocks: the session has no tool that could read a path.
+        arguments.push_back("--input-format");
+        arguments.push_back("stream-json");
+    }
     if (!request.SessionId.empty())
     {
         arguments.push_back("--resume");

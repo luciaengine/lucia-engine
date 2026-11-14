@@ -163,7 +163,7 @@ struct ViewDesc
     // Whether the view's passes, its own shadow passes included, leave out what the
     // Scene View eye hides (kInstanceFlagEditorHidden): the editor Scene View only.
     // Every other view keeps the instance.
-    bool DropsEditorHidden() const { return purpose == ViewPurpose::EditorScene; }
+    bool DropsEditorHidden() const { return purpose == ViewPurpose::EditorScene || DropEditorHidden; }
 
     // Whether the view takes part in this frame: always for an Always view, while armed for an
     // OnDemand one. A view that takes part runs its pipeline even when its layers are None.
@@ -171,17 +171,18 @@ struct ViewDesc
     {
         return participation != ViewParticipation::OnDemand || participationFrames > 0;
     }
-    // Whether the active render pipeline renders the view this frame: its switch is on and it takes
-    // part. A view on no layer still renders its clear and its sky.
+    // Auxiliary views inherit their editor owner visibility policy.
+    bool DropEditorHidden = false;
+    bool backgroundOnly = false;
+
     bool RenderedByPipeline() const { return activeRenderPipeline && Participates(); }
     RenderLayerMask ActiveRenderLayerMask() const
     {
         return worldPaused ? RenderLayerMask::None() : UnpausedRenderLayerMask();
     }
-    // The layers the view culls and draws once its world is not paused.
     RenderLayerMask UnpausedRenderLayerMask() const
     {
-        return Participates() ? renderLayerMask : RenderLayerMask::None();
+        return Participates() && !backgroundOnly ? renderLayerMask : RenderLayerMask::None();
     }
     // Optional association of this view to a specific ECS world.
     // When non-zero, render extraction should only submit entities from the

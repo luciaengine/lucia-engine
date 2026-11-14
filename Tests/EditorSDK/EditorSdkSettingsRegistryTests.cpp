@@ -19,6 +19,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace ed = GameEngine::Editor;
@@ -93,6 +94,83 @@ TEST(EditorSdkSettingsRegistryTests, ValueRowsNeedAValueSource)
     registry.RegisterCategory(keyed);
 
     EXPECT_EQ(registry.Snapshot().size(), before + 1);
+}
+
+// Number rows answer to the same value-source rule, and keep the range, the
+// default and the Preview/Set split they were registered with.
+TEST(EditorSdkSettingsRegistryTests, NumberRowsNeedAValueSourceAndKeepTheirRange)
+{
+    auto& registry = ed::EditorSettingsRegistry::Get();
+    const size_t before = registry.Snapshot().size();
+
+    ed::SettingsCategoryDescriptor unwiredNumber = MakeCategory("settingsTestBadNumber", "Bad Number");
+    unwiredNumber.Fields[0].Control = ed::SettingsFieldDescriptor::NumberField{};
+    registry.RegisterCategory(unwiredNumber);
+
+    ed::SettingsCategoryDescriptor unwiredInteger = MakeCategory("settingsTestBadInteger", "Bad Integer");
+    unwiredInteger.Fields[0].Control = ed::SettingsFieldDescriptor::IntegerField{};
+    registry.RegisterCategory(unwiredInteger);
+
+    EXPECT_EQ(registry.Snapshot().size(), before);
+
+    ed::SettingsCategoryDescriptor numbers = MakeCategory("settingsTestNumbers", "Numbers");
+    ed::SettingsFieldDescriptor::NumberField number;
+    number.DefaultValue = 0.5f;
+    number.MinValue = 0.25f;
+    number.MaxValue = 4.0f;
+    number.Get = []() { return 1.0f; };
+    number.Preview = [](float) {};
+    number.Set = [](float) {};
+    numbers.Fields[0].Control = number;
+
+    ed::SettingsFieldDescriptor keyedInteger;
+    keyedInteger.Label = "Steps";
+    keyedInteger.PrefKey = "settingsTest.steps";
+    ed::SettingsFieldDescriptor::IntegerField integer;
+    integer.DefaultValue = 2;
+    integer.MinValue = 1;
+    integer.MaxValue = 128;
+    keyedInteger.Control = integer;
+    numbers.Fields.push_back(std::move(keyedInteger));
+    registry.RegisterCategory(numbers);
+
+    ed::SettingsCategoryDescriptor stored;
+    ASSERT_TRUE(registry.TryGet("settingsTestNumbers", stored));
+    ASSERT_EQ(stored.Fields.size(), 2u);
+    const auto* storedNumber = std::get_if<ed::SettingsFieldDescriptor::NumberField>(&stored.Fields[0].Control);
+    ASSERT_NE(storedNumber, nullptr);
+    EXPECT_FLOAT_EQ(storedNumber->DefaultValue, 0.5f);
+    EXPECT_FLOAT_EQ(storedNumber->MinValue, 0.25f);
+    EXPECT_FLOAT_EQ(storedNumber->MaxValue, 4.0f);
+    EXPECT_TRUE(static_cast<bool>(storedNumber->Preview));
+    EXPECT_TRUE(static_cast<bool>(storedNumber->Set));
+    const auto* storedInteger = std::get_if<ed::SettingsFieldDescriptor::IntegerField>(&stored.Fields[1].Control);
+    ASSERT_NE(storedInteger, nullptr);
+    EXPECT_EQ(storedInteger->DefaultValue, 2);
+    EXPECT_EQ(storedInteger->MinValue, 1);
+    EXPECT_EQ(storedInteger->MaxValue, 128);
+}
+
+// The info card and the visibility condition belong to the field, whatever its
+// control, and reach the panel through the snapshot unchanged.
+TEST(EditorSdkSettingsRegistryTests, InfoCardAndVisibilityConditionSurviveTheSnapshot)
+{
+    auto& registry = ed::EditorSettingsRegistry::Get();
+
+    ed::SettingsCategoryDescriptor category = MakeCategory("settingsTestConditional", "Conditional");
+    auto shown = std::make_shared<bool>(false);
+    category.Fields[0].InfoCard = "Explains the row.";
+    category.Fields[0].IsVisible = [shown]() { return *shown; };
+    registry.RegisterCategory(category);
+
+    ed::SettingsCategoryDescriptor stored;
+    ASSERT_TRUE(registry.TryGet("settingsTestConditional", stored));
+    ASSERT_EQ(stored.Fields.size(), 1u);
+    EXPECT_EQ(stored.Fields[0].InfoCard, "Explains the row.");
+    ASSERT_TRUE(static_cast<bool>(stored.Fields[0].IsVisible));
+    EXPECT_FALSE(stored.Fields[0].IsVisible());
+    *shown = true;
+    EXPECT_TRUE(stored.Fields[0].IsVisible()) << "the condition is re-read, not captured at registration";
 }
 
 // Button and custom rows hold no value: they answer for their own wiring, and

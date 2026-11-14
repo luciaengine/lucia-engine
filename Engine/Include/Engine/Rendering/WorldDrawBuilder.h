@@ -110,6 +110,21 @@ class WorldDrawBuilder
         uint32_t colorClassId;
     };
     std::span<const BatchKey> GetBatchKeys(Rendering::ViewId viewId) const;
+    struct ShadowSubmissionState
+    {
+        uint64_t MembershipKey = 0;
+        uint64_t MembershipCount = 0;
+        uint64_t MaterialContentKey = 0;
+        bool Complete = false;
+    };
+    struct ShadowSubmissionStates
+    {
+        ShadowSubmissionState All;
+        ShadowSubmissionState Rigid;
+    };
+    /** Read this frame's caster census after BuildBatchKeys, on the render thread.
+     *  Completeness covers submission filters; depth preparation must refine it. */
+    ShadowSubmissionStates GetShadowSubmissionStates(Rendering::ViewId viewId) const;
     // The subset of GetBatchKeys whose material is in the deforming-motion
     // lane (MaterialDeformationClassify.h). Derived in the same pass as the
     // keys, so it costs one predicate per surviving key and carries identical
@@ -167,6 +182,7 @@ class WorldDrawBuilder
         std::vector<BatchKey> Keys;
         // The deforming subset of Keys.
         std::vector<BatchKey> DeformingKeys;
+        ShadowSubmissionStates ShadowSubmissions;
         bool ShadowCaster = false;
         bool TransmissiveCaster = false;
         bool AnimatedVertexModifier = false;
@@ -196,6 +212,8 @@ class WorldDrawBuilder
         uint32_t MaterialIndex = 0;
         uint32_t ColorClassId = 0;
         uint32_t Predicates = 0; // bits of MaterialKeyPredicates (WorldDrawBuilder.cpp)
+        uint64_t ContentRevision = 0;
+        uint64_t ProgramVersion = 0;
     };
 
     // Derive the unique (matIdx, mshIdx) batch-key set for a view from its

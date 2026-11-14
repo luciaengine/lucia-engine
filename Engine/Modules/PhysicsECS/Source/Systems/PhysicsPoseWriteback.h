@@ -1,4 +1,5 @@
 #pragma once
+#include "ECS/Writable.h"
 
 #include "Types/Types.h"
 
@@ -46,8 +47,8 @@ bool WritePhysicsPose(ECS::World& world,
                       const Physics::Transform& current,
                       const Physics::Transform* interpolateFrom,
                       float32 alpha,
-                      Components::Transform& transform,
-                      Components::WorldTransform& worldTransform,
+                      ECS::Writable<Components::Transform> transformWrite,
+                      ECS::Writable<Components::WorldTransform> worldWrite,
                       Components::PhysicsWritebackRecord& record);
 
 } // namespace GameEngine::PhysicsECS

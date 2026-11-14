@@ -22,7 +22,6 @@
 
 #include "Assets/FileWatchingService.h"
 #include "Assets/Packages/PackageCodeModules.h"
-#include "EngineLogCapture.h" // Engine/Tests
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Jobs/CompileServerTestDoubles.h" // Tests/Jobs
 #include "Jobs/CompileServerVersion.h"
@@ -43,7 +42,6 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <string_view>
 #include <thread>
 
 using namespace GameEngine;

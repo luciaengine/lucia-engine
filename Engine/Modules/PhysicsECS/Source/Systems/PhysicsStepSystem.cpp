@@ -1,17 +1,19 @@
 #include "PhysicsECS/Systems/PhysicsStepSystem.h"
 
+#include "PhysicsECS/ContactSurfaceTable.h"
 #include "PhysicsECS/PhysicsWorldService.h"
 
-#include "PhysicsECS/Components/KinematicBody.h"
 #include "PhysicsECS/Components/PhysicsBody.h"
-
+#include "PhysicsECS/Components/KinematicBody.h"
+#include "PhysicsECS/Components/MovingPlatform.h"
 #include "Components/Transform.h"
-#include "ECS/Query.h"
 #include "Physics/PhysicsWorld.h"
 
+#include "ECS/Query.h"
+
 #include <algorithm>
-#include <chrono>
 #include <cstring>
+#include <chrono>
 
 namespace GameEngine::PhysicsECS
 {
@@ -78,11 +80,12 @@ void PhysicsStepSystem::MoveKinematicBodies(ECS::World& world, Physics::PhysicsW
     if (ECS::ChangeFilter::Enabled())
         query.Changed<GameEngine::Components::WorldTransform>(m_TransformGate);
     query.Each(
-        [&](ECS::EntityHandle /*e*/,
+        [&](ECS::EntityHandle entity,
             const GameEngine::Components::WorldTransform& worldTransform,
             const GameEngine::Components::PhysicsBody& body)
         {
-            if (!body.initialized || !physics.IsBodyValid(body.body))
+            if (world.HasComponent<GameEngine::Components::MovingPlatform>(entity) ||
+                !body.initialized || !physics.IsBodyValid(body.body))
                 return;
             const Physics::Transform pose = PoseOf(worldTransform);
             // A body on the list whose Transform did not move has arrived, and StopArrivedBodies places it. A
@@ -93,11 +96,11 @@ void PhysicsStepSystem::MoveKinematicBodies(ECS::World& world, Physics::PhysicsW
             if (moving)
                 moving->moved = true;
             physics.MoveKinematic(body.body, pose, duration);
-            m_NextMoving.push_back({body.body, pose, false});
+            m_NextMoving.push_back({body.body, pose, false, entity});
         });
     m_TransformGate.LastRunVersion = entryVersion;
 
-    StopArrivedBodies(physics);
+    StopArrivedBodies(world, physics);
     std::sort(m_NextMoving.begin(), m_NextMoving.end(),
               [](const MovingBody& a, const MovingBody& b) { return HandleLess(a.body, b.body); });
     m_Moving.swap(m_NextMoving);
@@ -106,12 +109,13 @@ void PhysicsStepSystem::MoveKinematicBodies(ECS::World& world, Physics::PhysicsW
 
 // A body that reached its pose keeps the velocity of its last move, and its integrated pose is off the
 // target by rounding. It is placed on the exact pose with no velocity, so it stops, stays put and can sleep.
-void PhysicsStepSystem::StopArrivedBodies(Physics::PhysicsWorld& physics)
+void PhysicsStepSystem::StopArrivedBodies(ECS::World& world, Physics::PhysicsWorld& physics)
 {
     const Physics::Vector3 zero(0.0f, 0.0f, 0.0f);
     for (const MovingBody& arrived : m_Moving)
     {
-        if (arrived.moved || !physics.IsBodyValid(arrived.body))
+        if (arrived.moved || world.HasComponent<GameEngine::Components::MovingPlatform>(arrived.entity) ||
+            !physics.IsBodyValid(arrived.body))
             continue;
         physics.SetBodyTransform(arrived.body, arrived.target, Physics::ActivationMode::DontActivate);
         physics.SetLinearVelocity(arrived.body, zero);
@@ -125,7 +129,9 @@ void PhysicsStepSystem::Update(ECS::World& world, float32 deltaTime)
     if (!w)
         return;
 
-    // Time the step so the editor Monitors panel can chart the physics cost of a frame.
+    ContactSurfaceTable::DrainPendingReloads();
+
+    // Time each simulation tick for the per-world frame cost.
     const auto stepStart = std::chrono::steady_clock::now();
 
     const auto& s = PhysicsWorldService::GetSettings();
@@ -144,10 +150,11 @@ void PhysicsStepSystem::Update(ECS::World& world, float32 deltaTime)
     // Snapshot previous transforms for interpolation (prev <- current).
     world.Query<ECS::Write<GameEngine::Components::PhysicsBody>>()
         .Each(
-        [&](ECS::EntityHandle /*e*/, GameEngine::Components::PhysicsBody& body)
+        [&](ECS::EntityHandle /*e*/, ECS::Writable<GameEngine::Components::PhysicsBody> bodyRow)
         {
-            if (!body.initialized || !w->IsBodyValid(body.body))
+            if (!bodyRow->initialized || !w->IsBodyValid(bodyRow->body))
                 return;
+            auto& body = bodyRow.Mutable();
             body.prevPhysicsTransform = w->GetBodyTransform(body.body);
             body.hasPrevPhysicsTransform = true;
         });
@@ -159,3 +166,4 @@ void PhysicsStepSystem::Update(ECS::World& world, float32 deltaTime)
     PhysicsWorldService::AddStepMs(stepMs);
 }
 } // namespace GameEngine::PhysicsECS
+

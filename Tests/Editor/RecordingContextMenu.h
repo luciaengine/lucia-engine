@@ -85,7 +85,7 @@ public:
 private:
     const Row* Find(const std::string& title) const
     {
-        const auto it = std::find_if(Rows.begin(), Rows.end(), [&](const Row& row) { return row.Title == title; });
+        const auto it = std::find_if(Rows.begin(), Rows.end(), [&title](const Row& row) { return row.Title == title; });
         return it == Rows.end() ? nullptr : &*it;
     }
 

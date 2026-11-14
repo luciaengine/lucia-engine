@@ -4,6 +4,8 @@
 
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/Material.h"
+#include "Engine/Rendering/ForwardDrainOrder.h"
+#include "Engine/Rendering/MaterialPrewarmPolicy.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "ECSModules/Rendering/Systems/RenderExtractionSystem.h"
 #include "ECSModules/Rendering/Systems/TransformHierarchySystem.h"
@@ -16,6 +18,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <vector>
 
 #include "Components/Transform.h"
@@ -30,7 +33,10 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Common/Frustum.h"
+#include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialDocument.h"
+#include "StagedTestPaths.h"
+#include "TestTempDir.h"
 
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
 #include "Mathematics/MatrixOps.h"
@@ -43,16 +49,91 @@ using namespace GameEngine;
 using namespace GameEngine::Rendering;
 using namespace GameEngine::Engine::Renderer;
 using namespace GameEngine::ECS;
+
+TEST(MaterialPrewarmPolicyTest, FullKeepsExistingVariants)
+{
+    size_t calls = 0;
+    const auto count = ForEachMaterialPrewarmVariant(MaterialPrewarmPolicy::Full,
+        MaterialKeyword::None, MaterialKeyword::None,
+        [&](auto, auto) { ++calls; });
+    EXPECT_EQ(count, 8u);
+    EXPECT_EQ(calls, count);
+}
+
+TEST(MaterialPrewarmPolicyTest, StaticColorOmitsSkinningAndDepth)
+{
+    size_t calls = 0;
+    const auto count = ForEachMaterialPrewarmVariant(MaterialPrewarmPolicy::StaticColor,
+        MaterialKeyword::None, MaterialKeyword::None,
+        [&](auto flags, auto keywords) {
+            ++calls;
+            EXPECT_EQ(static_cast<uint32_t>(flags & VertexAttributeFlags::Skinned), 0u);
+            EXPECT_EQ(keywords, MaterialKeyword::None);
+        });
+    EXPECT_EQ(count, 2u);
+    EXPECT_EQ(calls, count);
+}
+
+TEST(MaterialPrewarmPolicyTest, StaticColorStillWarmsTransmission)
+{
+    size_t grabs = 0;
+    EXPECT_EQ(ForEachMaterialPrewarmVariant(MaterialPrewarmPolicy::StaticColor,
+        MaterialKeyword::Transmission, MaterialKeyword::None,
+        [&](auto, auto keywords) { if (HasKeyword(keywords, MaterialKeyword::SceneColorGrab)) ++grabs; }), 4u);
+    EXPECT_EQ(grabs, 2u);
+}
 using namespace GameEngine::Components;
 
 #include "TestDeviceHelper.h"
 
+TEST(ForwardDrainOrderTest, OpaqueContributorsPrecedeBlendedEntities)
+{
+    Material opaque = Material::TestFactory::Create(GUID::Derive(GUID{}, "order/opaque"), "opaque", 64u);
+    Material masked = Material::TestFactory::Create(GUID::Derive(GUID{}, "order/mask"), "mask", 64u);
+    Material blended = Material::TestFactory::Create(GUID::Derive(GUID{}, "order/blend"), "blend", 64u);
+    Material::TestFactory::SetAlphaMode(masked, MaterialAlphaMode::Mask);
+    Material::TestFactory::SetAlphaMode(blended, MaterialAlphaMode::Blend);
+    const std::array<const Material*, 4> entities{&blended, &masked, nullptr, &opaque};
+    DrawCommand blend{}; blend.Material = &blended;
+    DrawCommand solid{}; solid.Material = &opaque;
+    const std::array<DrawCommand, 3> contributors{blend, solid, blend};
+    std::vector<int> order;
+    DrainForwardOpaqueFirst([&](bool phase) {
+        for (size_t i = 0; i < entities.size(); ++i)
+            if (IsBlendedMaterial(entities[i]) == phase) order.push_back(static_cast<int>(i));
+    }, [&](bool phase) {
+        for (size_t i = 0; i < contributors.size(); ++i)
+            if (IsBlendedContributor(contributors[i]) == phase) order.push_back(10 + static_cast<int>(i));
+    });
+    EXPECT_EQ(order, (std::vector<int>{1, 2, 3, 11, 0, 10, 12}));
+}
+
+TEST(ForwardDrainOrderTest, EmptyStreamDoesNotSuppressTheOtherStream)
+{
+    std::vector<bool> contributors;
+    DrainForwardOpaqueFirst([](bool) {}, [&](bool phase) { contributors.push_back(phase); });
+    EXPECT_EQ(contributors, (std::vector<bool>{false, true}));
+    std::vector<bool> entities;
+    DrainForwardOpaqueFirst([&](bool phase) { entities.push_back(phase); }, [](bool) {});
+    EXPECT_EQ(entities, contributors);
+}
+
+static void SetIdentityMatrix4x4(float outM[16])
+{
+    for (int i = 0; i < 16; ++i)
+        outM[i] = 0.0f;
+    outM[0] = 1.0f;
+    outM[5] = 1.0f;
+    outM[10] = 1.0f;
+    outM[15] = 1.0f;
+}
+
 static CameraData MakeIdentityCameraData()
 {
     CameraData data{};
-    data.view = Mathematics::Matrix4x4::Identity();
-    data.proj = Mathematics::Matrix4x4::Identity();
-    data.viewProj = Mathematics::Matrix4x4::Identity();
+    SetIdentityMatrix4x4(data.view);
+    SetIdentityMatrix4x4(data.proj);
+    SetIdentityMatrix4x4(data.viewProj);
     return data;
 }
 
@@ -108,7 +189,7 @@ static MeshRenderer MakeTestMeshRenderer(const TestRenderableSetup& setup)
 {
     MeshRenderer mr{};
     mr.meshGpuHandleId = static_cast<uint64>(setup.meshHandle);
-    mr.RenderLayers = GameEngine::Rendering::RenderLayerMask::Default();
+    mr.renderLayerMask = 0x1u;
 
     mr.materialAssetGuid.Set(setup.materialGuid);
 
@@ -277,16 +358,16 @@ TEST(RenderServicesWorldMaterialTests, ECSWorldMeshExtraction_UsesWorldTransform
 
 	ViewId viewId = rs.Views().AllocateView("TestView", cameraId);
 	rs.Views().SetViewWorldId(viewId, worldId);
-	rs.Views().SetViewRenderLayerMask(viewId, GameEngine::Rendering::RenderLayerMask::Default());
+	rs.Views().SetViewRenderLayerMask(viewId, 0x1u);
 
 	// Views that must receive no world draw items: another world, another layer.
 	World otherWorld(nullptr);
 	ViewId viewWrongWorld = rs.Views().AllocateView("ViewWrongWorld", cameraId);
 	rs.Views().SetViewWorldId(viewWrongWorld, otherWorld.GetWorldId());
-	rs.Views().SetViewRenderLayerMask(viewWrongWorld, GameEngine::Rendering::RenderLayerMask::Default());
+	rs.Views().SetViewRenderLayerMask(viewWrongWorld, 0x1u);
 	ViewId viewWrongLayer = rs.Views().AllocateView("ViewWrongLayer", cameraId);
 	rs.Views().SetViewWorldId(viewWrongLayer, worldId);
-	rs.Views().SetViewRenderLayerMask(viewWrongLayer, GameEngine::Rendering::RenderLayerMask{0x2u});
+	rs.Views().SetViewRenderLayerMask(viewWrongLayer, 0x2u);
 
 	Entity parent = world.Create();
 	Entity child  = world.Create();
@@ -303,7 +384,7 @@ TEST(RenderServicesWorldMaterialTests, ECSWorldMeshExtraction_UsesWorldTransform
 	parent.Set(parentLocal);
 
 	Parent parentComp{};
-	parentComp.Entity = parent.GetHandle();
+	parentComp.parent = parent.GetHandle();
 
 	MeshRenderer mr = MakeTestMeshRenderer(setup);
 
@@ -393,7 +474,7 @@ TEST(RenderServicesWorldMaterialTests, DisabledRendererClearsCachedGPUSceneInsta
 
 	ViewId viewId = rs.Views().AllocateView("DisableTestView", cameraId);
 	rs.Views().SetViewWorldId(viewId, worldId);
-	rs.Views().SetViewRenderLayerMask(viewId, GameEngine::Rendering::RenderLayerMask::Default());
+	rs.Views().SetViewRenderLayerMask(viewId, 0x1u);
 
 	Entity entity = world.Create();
 	entity.Set(Transform::FromTRS(
@@ -505,7 +586,7 @@ TEST(RenderServicesWorldMaterialTests, LateExtractionRedirtiesGPUSceneForBuckete
 	{
 		ViewId viewMain = rs.Views().AllocateView("MainTestView", cameraId);
 		rs.Views().SetViewWorldId(viewMain, mainWorld.GetWorldId());
-		rs.Views().SetViewRenderLayerMask(viewMain, GameEngine::Rendering::RenderLayerMask::Default());
+		rs.Views().SetViewRenderLayerMask(viewMain, 0x1u);
 
 		Entity e = mainWorld.Create();
 		e.Set(Transform::FromTRS(
@@ -540,7 +621,7 @@ TEST(RenderServicesWorldMaterialTests, LateExtractionRedirtiesGPUSceneForBuckete
 	{
 		ViewId viewThumb = rs.Views().AllocateView("ThumbTestView", cameraId);
 		rs.Views().SetViewWorldId(viewThumb, thumbnailWorld.GetWorldId());
-		rs.Views().SetViewRenderLayerMask(viewThumb, GameEngine::Rendering::RenderLayerMask::Default());
+		rs.Views().SetViewRenderLayerMask(viewThumb, 0x1u);
 
 		Entity e = thumbnailWorld.Create();
 		e.Set(Transform::FromTRS(
@@ -956,7 +1037,7 @@ TEST(RenderServicesWorldMaterialTests, ECSWorldMeshExtraction_LODGroupBiasReache
 	rs.Views().SetCameraData(cameraId, ::GameEngine::Tests::TestCameraWithEye(MakeIdentityCameraData()), {0.1f, 1000.0f});
 	ViewId viewId = rs.Views().AllocateView("TestView", cameraId);
 	rs.Views().SetViewWorldId(viewId, world.GetWorldId());
-	rs.Views().SetViewRenderLayerMask(viewId, GameEngine::Rendering::RenderLayerMask::Default());
+	rs.Views().SetViewRenderLayerMask(viewId, 0x1u);
 
 	Entity plain = world.Create();
 	plain.Set(Transform::FromTRS({0.0, 0.0, 0.0}, Mathematics::Quaternion{}, {1.0f, 1.0f, 1.0f}));
@@ -1141,10 +1222,10 @@ TEST(TransformHierarchyParallelTests, ReparentTopologyRebuild_ChildFollowsNewPar
 	Entity c = world.Create(Transform::FromTRS({0.0, 0.0, 3.0}, Mathematics::Quaternion{}, {1, 1, 1}));
 
 	Parent bToA{};
-	bToA.Entity = a.GetHandle();
+	bToA.parent = a.GetHandle();
 	b.Set(bToA);
 	Parent cToB{};
-	cToB.Entity = b.GetHandle();
+	cToB.parent = b.GetHandle();
 	c.Set(cToB);
 	world.ProcessCommands();
 
@@ -1160,7 +1241,7 @@ TEST(TransformHierarchyParallelTests, ReparentTopologyRebuild_ChildFollowsNewPar
 
 	// Reparent c directly under a: c world = a(10,0,0) + local(0,0,3).
 	Parent cToA{};
-	cToA.Entity = a.GetHandle();
+	cToA.parent = a.GetHandle();
 	c.Set(cToA);
 	world.ProcessCommands();
 	parallel.Update(world, 0.0f);
@@ -1190,8 +1271,8 @@ TEST(TransformHierarchyParallelTests, MixedHierarchy_OffAndOnBitwiseIdentical)
 		Entity root = w.Create(MakeVariedLocalTransform(1000));
 		Entity mid = w.Create(MakeVariedLocalTransform(1001));
 		Entity leaf = w.Create(MakeVariedLocalTransform(1002));
-		Parent pm{}; pm.Entity = root.GetHandle(); mid.Set(pm);
-		Parent pl{}; pl.Entity = mid.GetHandle(); leaf.Set(pl);
+		Parent pm{}; pm.parent = root.GetHandle(); mid.Set(pm);
+		Parent pl{}; pl.parent = mid.GetHandle(); leaf.Set(pl);
 		handles.push_back(root.GetHandle());
 		handles.push_back(mid.GetHandle());
 		handles.push_back(leaf.GetHandle());
@@ -1217,4 +1298,54 @@ TEST(TransformHierarchyParallelTests, MixedHierarchy_OffAndOnBitwiseIdentical)
 		ASSERT_NE(b, nullptr);
 		ExpectWorldTransformBitwiseEqual(*a, *b, static_cast<uint32>(i));
 	}
+}
+
+// A keyword edit recompiles the pipeline in place. Re-registering the same
+// keywords keeps the compiled pipeline and its version.
+TEST(RenderServicesWorldMaterialTests, KeywordEditRecompilesPipeline)
+{
+    constexpr const char* kSurfaceShader = "Surfaces/standard_surface.glsl";
+    const auto shaderDir = TestPaths::StagedRenderingShadersDir();
+    ASSERT_TRUE(std::filesystem::is_regular_file(shaderDir / kSurfaceShader)) << shaderDir / kSurfaceShader;
+
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+
+    const TestUtils::ScopedTempDir shaderCache{TestUtils::MakeUniqueTempDirectory("world-draw-keywords")};
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = shaderDir;
+    context.CacheRoot = shaderCache.Path();
+    context.IncludeDirs = {shaderDir};
+    auto& materials = services.Materials();
+    materials.SetMaterialBuildContext(context);
+
+    const GUID materialGuid = GUID::Generate();
+    MaterialDocument document{};
+    document.materialName = "KwMat";
+    document.lightingModel = "StandardPBR";
+    document.surfaceShader = kSurfaceShader;
+    document.keywords = {"FLOW_MODE"};
+
+    Material* material = materials.RegisterMaterialFromDocument(materialGuid, document);
+    ASSERT_NE(material, nullptr);
+    ASSERT_TRUE(material->GetGraphicsPipelineId().IsValid()) << "initial material must compile";
+    const auto versionBeforeEdit = material->GetVersion();
+    EXPECT_NE(material->GetVariantKey().userKeywordHash, 0ull);
+
+    document.keywords = {"HIGH_DETAIL"};
+    ASSERT_EQ(materials.RegisterMaterialFromDocument(materialGuid, document), material);
+    const auto pipelineAfterEdit = material->GetGraphicsPipelineId();
+    ASSERT_TRUE(pipelineAfterEdit.IsValid());
+    const auto versionAfterEdit = material->GetVersion();
+    EXPECT_GT(versionAfterEdit, versionBeforeEdit) << "keyword edit must recompile";
+
+    ASSERT_EQ(materials.RegisterMaterialFromDocument(materialGuid, document), material);
+    EXPECT_EQ(material->GetGraphicsPipelineId(), pipelineAfterEdit);
+    EXPECT_EQ(material->GetVersion(), versionAfterEdit) << "identical keywords must keep the version";
+
+    services.Shutdown();
+    device->Shutdown();
 }

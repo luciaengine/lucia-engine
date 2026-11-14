@@ -17,6 +17,7 @@ layout(push_constant) uniform SssrParams
     uint debugMode;
     int sampleQuality;   // stochastic ray density: 0=Low, 1=Medium, 2=High
     int multiBounce;     // 1 = hits sample last frame's composited color
+    uint hasPlanarMask;  // planar-owned pixels bypass SSR composition
     // The camera's viewport inside the render target, in target UV: origin in
     // .xy, extent in .zw. A letterboxed view rasterizes the world into a
     // sub-rectangle of a full-size target, so a target UV is NOT an NDC of the
@@ -66,9 +67,8 @@ vec2 GE_ProjectView(vec3 positionVS, out float rawDepth)
 }
 
 // View.NormalRoughness layout (RGBA16F, written by the forward opaque pass):
-//   .rg = octahedral view-space normal, .b = perceptual roughness, .a = metallic.
-// The composite weights reflections with the forward pass's own specular
-// response (View.SSRSpecularWeight), so the metallic channel is not read here.
+//   .rg = octahedral view-space normal, .b = perceptual roughness, .a = planar reflection coverage.
+// The composite uses the forward pass's separate specular response.
 vec3 GE_DecodeNormalVS(vec4 normalRoughness) { return GE_OctDecode(normalRoughness.rg); }
 float GE_Roughness(vec4 normalRoughness) { return normalRoughness.b; }
 

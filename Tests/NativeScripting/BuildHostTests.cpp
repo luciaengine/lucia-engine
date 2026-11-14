@@ -9,7 +9,6 @@
 
 using GameEngine::BuildHost;
 using GameEngine::BuildHostCompilesTarget;
-using GameEngine::TargetExecutableFiles;
 using GameEngine::UnsupportedBuildTargetMessage;
 
 namespace
@@ -38,18 +37,6 @@ TEST(BuildHostTests, EachHostCompilesOnlyItsNativeTargets)
     EXPECT_TRUE(BuildHostCompilesTarget(BuildHost::Linux, "Steam"));
     EXPECT_FALSE(BuildHostCompilesTarget(BuildHost::Linux, "Windows"));
     EXPECT_FALSE(BuildHostCompilesTarget(BuildHost::Linux, "Mac"));
-}
-
-// The target decides the file names of the compiled Player and of the packaged game:
-// Windows adds .exe and a .pdb; Linux and Steam Deck keep the base name and their symbols inside.
-TEST(BuildHostTests, ExecutablesTakeTheTargetPlatformsFileNames)
-{
-    EXPECT_EQ(TargetExecutableFiles("Windows", "Player").Executable, "Player.exe");
-    EXPECT_EQ(TargetExecutableFiles("Windows", "Player").Symbols, "Player.pdb");
-    EXPECT_EQ(TargetExecutableFiles("Linux", "Player").Executable, "Player");
-    EXPECT_EQ(TargetExecutableFiles("Linux", "Player").Symbols, "");
-    EXPECT_EQ(TargetExecutableFiles("Steam", "My Game").Executable, "My Game");
-    EXPECT_EQ(TargetExecutableFiles("Steam", "My Game").Symbols, "");
 }
 
 // Windows has no runtime-template path, so its message must not send the user

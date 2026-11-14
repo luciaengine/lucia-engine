@@ -122,8 +122,9 @@ void ApplyAnimatorOnEnterPlayMode(ECS::World& world, AssetManager& am)
 {
     std::vector<ECS::EntityHandle> clipRoots;
     world.Query<ECS::Write<Components::Animator>>().Each(
-        [&](ECS::EntityHandle rootEntity, Components::Animator& animator)
+        [&](ECS::EntityHandle rootEntity, ECS::Writable<Components::Animator> animatorRow)
         {
+            auto& animator = animatorRow.Mutable();
             StartAnimatorPlayback(world, am, rootEntity, animator);
             if (animator.source == AnimatorPlaybackSource::Clip)
                 clipRoots.push_back(rootEntity);

@@ -142,24 +142,6 @@ flag and assertions are compiled out, so the Debug and Release libraries encode
 the same bytes (checked on the texture-cook fixtures when the port was added).
 It is built without `--opt=fast-math`, which changes the bytes as well.
 
-### miniaudio — the libvorbis decoding backend
-
-The registry port installs `miniaudio.h` only. This overlay keeps the baseline
-registry's **0.11.25** source and also installs miniaudio's
-`extras/decoders/libvorbis/miniaudio_libvorbis.{h,c}` beside it, with the
-header's repository-relative `#include "../../../miniaudio.h"` rewritten to
-`#include "miniaudio.h"`. `Engine/Modules/Audio/Source/miniaudio_impl.c`
-compiles the backend and `Audio::MakeDecoderConfig` hands it to every decoder;
-the `libvorbis` port (and `libogg` through it) supplies the decoder.
-
-Ogg Vorbis decodes through libvorbis rather than miniaudio's stb_vorbis
-backend because stb_vorbis 1.22 corrupts the heap or reads through a null
-pointer on malformed comment headers (two of 150 random corruptions of a test
-clip, both with valid page CRCs); libvorbis refused or decoded all 700 cases of
-the same sweep under AddressSanitizer. The two crash files are fixtures of
-`AudioOggVorbisTests`. Remove the overlay when the registry port installs the
-extras.
-
 ## macOS-only overlays (`cmake/macos-ports`)
 
 An overlay in `cmake/ports` reaches every triplet, and vcpkg hashes its files
@@ -270,3 +252,5 @@ Remove the overlay after the baseline includes an upstream quoted comparison,
 or when every supported build runs ports with vcpkg's pinned CMake and
 `CMP0174=NEW`, so system CMake older than 3.31 cannot reach this helper.
 Retain the regression against the replacement helper.
+
+The iOS mobile build additionally selects `cmake/ios-ports`: its SPIRV-Reflect port builds the library without command-line executables, which cannot be installed as device-side CMake executables. The `arm64-ios` triplet fixes the dependency deployment target to the Player's iOS 16.3 minimum.

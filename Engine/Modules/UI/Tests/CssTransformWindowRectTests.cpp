@@ -107,4 +107,3 @@ TEST(CssTransformWindowRect, AnOverlayPaintsInItsOwnersTransform)
     EXPECT_NEAR(local.x, 110.0f, kTolerance);
     EXPECT_NEAR(local.y, 160.0f, kTolerance);
 }
-

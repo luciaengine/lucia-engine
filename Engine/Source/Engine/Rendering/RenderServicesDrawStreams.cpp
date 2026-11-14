@@ -83,12 +83,12 @@ namespace Engine::Renderer
 {
 using namespace ::GameEngine::Rendering;
 
-ScopedSubscription RenderServices::RegisterForwardEmit(ForwardEmitFn fn, bool writesDepth)
+ScopedSubscription RenderServices::RegisterForwardEmit(ForwardEmitFn fn, ForwardProducerOptions options)
 {
     if (!fn)
         return {};
     const uint64_t handle = m_DrawProducers->NextHandle++;
-    m_DrawProducers->Forward.push_back({handle, std::move(fn), writesDepth});
+    m_DrawProducers->Forward.push_back({handle, std::move(fn), options});
     DrawProducerBlock* block = m_DrawProducers.get();
     return ScopedSubscription(m_DrawProducers, [block, handle]() {
         auto& fwd = block->Forward;
@@ -226,6 +226,8 @@ void RenderServices::ClearForwardCommands()
         {
             pv.ForwardCommands.clear();
             pv.LateForwardCommands.clear();
+            pv.SortedTransparentCommands.clear();
+            pv.FrameForwardEmittedFor = {};
             pv.ForwardSampledRG.clear();
             pv.ForwardSampledBufferRG.clear();
             pv.ForwardSampledFor = {};
@@ -287,9 +289,11 @@ void RenderServices::EmitProducerForwardCommandsForView(Rendering::ViewId viewId
     auto& pv = m_ViewRegistry.PerView(viewId);
     pv.ForwardCommands.clear();
     pv.LateForwardCommands.clear();
+    pv.SortedTransparentCommands.clear();
     pv.ForwardSampledRG.clear();
     pv.ForwardSampledBufferRG.clear();
     pv.ForwardSampledFor = {};
+    pv.FrameForwardEmittedFor = {};
     pv.ForwardDrawsWritingDepth = 0;
     // The prepass heads ride with the forward draws they belong to.
     pv.DepthCommands[static_cast<size_t>(DepthPassType::Prepass)].clear();
@@ -302,25 +306,22 @@ void RenderServices::EmitProducerForwardCommandsForView(Rendering::ViewId viewId
     ForwardEmitContext ctx{};
     ctx.Device = m_Device;
     ctx.Services = this;
-    // Emits run during declaration, so the frame stream tracked by m_FrameRG is
-    // the one the emitted draws execute in — producers sub-allocate per-frame
-    // binding data from its upload ring.
+    // Ordinary producers run while batch keys are built. The frame stamp can
+    // still be empty here; callbacks that import resources opt into the
+    // explicit frame-dependent declaration stage instead.
     ctx.Frame = m_FrameRG.For.Frame;
     ctx.FrameIndex = m_Device ? m_Device->GetFrameIndex() : 0;
     ctx.ViewId = viewId;
     ctx.Purpose = purpose;
 
-    // A depth-writing producer's draws carry no content epoch, so a view it draws into can change
-    // its depth this frame (grass sways).
-    bool drawsDynamicDepth = false;
     for (const auto& entry : m_DrawProducers->Forward)
-    {
-        const size_t emittedBefore = pv.ForwardCommands.size();
-        entry.Fn(ctx);
-        drawsDynamicDepth = drawsDynamicDepth || (entry.WritesDepth && pv.ForwardCommands.size() > emittedBefore);
-    }
-    if (drawsDynamicDepth)
-        NotifyUnversionedMotion(viewId);
+        if (!entry.Options.RequiresFrame)
+        {
+            const size_t emittedBefore = pv.ForwardCommands.size();
+            entry.Fn(ctx);
+            if (entry.Options.WritesDepth && pv.ForwardCommands.size() > emittedBefore)
+                NotifyUnversionedMotion(viewId);
+        }
 }
 
 void RenderServices::EmitProducerDepthCommands()
@@ -360,6 +361,35 @@ void RenderServices::EmitProducerDepthCommandsForView(Rendering::ViewId viewId)
         for (DepthPassType passType : kPassTypes)
             entry.Fn(ctx, passType);
     }
+}
+
+void RenderServices::EmitSortedTransparentCommand(Rendering::ViewId viewId,
+                                                 const SortedTransparentCommand& command)
+{
+    m_ViewRegistry.PerView(viewId).SortedTransparentCommands.push_back(command);
+}
+
+void RenderServices::EmitFrameForwardCommandsForView(RenderGraph::RGFrame& frame, ViewId viewId)
+{
+    auto& pv = m_ViewRegistry.PerView(viewId);
+    if (pv.FrameForwardEmittedFor.IsFor(frame))
+        return;
+    pv.FrameForwardEmittedFor.Stamp(frame);
+    ForwardEmitContext context{};
+    context.Device = m_Device;
+    context.Services = this;
+    context.Frame = &frame;
+    context.FrameIndex = m_Device ? m_Device->GetFrameIndex() : 0;
+    context.ViewId = viewId;
+    context.Purpose = ForwardEmitPurpose::World;
+    for (const auto& entry : m_DrawProducers->Forward)
+        if (entry.Options.RequiresFrame)
+        {
+            const size_t emittedBefore = pv.ForwardCommands.size();
+            entry.Fn(context);
+            if (entry.Options.WritesDepth && pv.ForwardCommands.size() > emittedBefore)
+                NotifyUnversionedMotion(viewId);
+        }
 }
 
 } // namespace Engine::Renderer

@@ -1,4 +1,4 @@
-#include "KHRHumanoidShared.h"
+#include "KHRHumanoid/KHRHumanoidShared.h"
 
 #include "Animation/Humanoid/HumanoidImport.h"
 #include "Animation/Humanoid/HumanoidNameMatcher.h"

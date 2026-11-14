@@ -1,8 +1,8 @@
-# @game-crafters-guild/openengine-web
+# @openengine/web
 
 The engine on a web page: a WebGPU renderer (clustered lighting, cascaded shadows, a physical sky) and an entity-component world behind a small TypeScript API.
 
-**Early access (alpha).** The engine and this API change between releases. Prereleases are published as `2026.10.0-alpha.1` and later under the `alpha` npm dist-tag (`npm install @game-crafters-guild/openengine-web@alpha`); nothing is published as `latest` yet.
+**Early access (alpha).** The engine and this API change between releases. Prereleases are published as `2026.10.0-alpha.1` and later under the `alpha` npm dist-tag (`npm install @openengine/web@alpha`); nothing is published as `latest` yet.
 
 The engine module and the engine pack carry third-party code and content; `THIRD_PARTY_NOTICES.md` beside this file holds their licenses.
 
@@ -11,7 +11,7 @@ Status: the engine module is built from source: the `WebLibrary` target writes `
 ## A model with an orbit camera
 
 ```js
-import { Engine, OrbitControls, Light } from '@game-crafters-guild/openengine-web';
+import { Engine, OrbitControls, Light } from '@openengine/web';
 
 const canvas = document.querySelector('canvas');
 if (!canvas) throw new Error('The page needs a <canvas> element.');
@@ -34,7 +34,7 @@ engine.run();
 
 | Call | What it does |
 |---|---|
-| `Engine.create({ canvas, threads, maxDrawingBufferPixels })` | Loads the engine, starts WebGPU on the canvas, and makes a world with a camera, a sun and a sky. The page sizes the canvas: its CSS size, or its `width` and `height` attributes when no CSS sizes it; the drawing buffer is that size times `devicePixelRatio`, lowered to fit `maxDrawingBufferPixels` (1,000,000 on a phone or tablet by default, no limit elsewhere; `Infinity` lifts it). |
+| `Engine.create({ canvas, threads, maxDrawingBufferPixels })` | Starts the engine on the canvas. The drawing buffer follows its CSS size times the device pixel ratio, capped at 1,000,000 pixels on phones/tablets by default. Desktop has no default cap; `Infinity` removes it. |
 | `engine.run()` | Starts the frame loop (`engine.pause()` stops it). |
 | `scene.load(url)` | Fetches a glTF or GLB model and places it; resolves to its root entity. Each call places another copy; a URL is fetched once and later calls reuse it. |
 | `scene.create(name)` | Makes an empty entity; `scene.create({ name, mesh: 'plane' })` makes one that draws a built-in mesh (`'plane'`, `'cube'`, `'sphere'`, `'capsule'`, unit-sized, with the default material). |
@@ -54,6 +54,8 @@ Two views are written by hand rather than generated from a component: `entity.tr
 ## A floor and global illumination
 
 `scene.create({ name: 'Floor', mesh: 'plane' })` makes a 1 m plane facing up; scale it through its transform (`floor.transform.scale.set(100, 1, 100)`) and place it at the model's feet (`model.bounds.min.y`). Global illumination is a `DDGIVolume`: a box of light probes, sized and placed by its entity's transform, that lights everything inside it with the sunlight and skylight bouncing off the surfaces around it, so a model's underside picks up the floor's light. `scene.create('GI').set(DDGIVolume, {})` adds one at the engine's defaults; scale it to enclose the model and the floor near it, or set `fit: 'FollowCamera'` to keep it centred on the camera. It costs GPU time every frame. On the web it runs without probe depth for now, so creases and contact shadows can darken; the model viewer offers it as a preview, opened with `?gi=1`.
+
+Create the engine after the canvas is visible and has a nonzero CSS size. A hidden or zero-size canvas is refused; show and size it before calling `Engine.create`.
 
 ## Exposure and emission
 
@@ -93,7 +95,7 @@ On a Pixel 6 with a one-megapixel drawing buffer, TAA at a render scale of 0.5 m
 While `forEachChunk` runs, the world holds still. Creating or destroying entities, adding or removing components and reparenting throw; make them after it returns. The arrays are valid until the callback returns or calls into the engine. Make the query once and run it every frame.
 
 ```js
-import { Engine, MeshRenderer, Transform } from '@game-crafters-guild/openengine-web';
+import { Engine, MeshRenderer, Transform } from '@openengine/web';
 
 const canvas = document.querySelector('canvas');
 if (!canvas) throw new Error('The page needs a <canvas> element.');
@@ -111,7 +113,7 @@ engine.run();
 A skinned model with animation clips plays them through `entity.animation` on the entity `scene.load` returned: `fox.animation.clips` lists the clip names in the model's order, `fox.animation.play('Run', { speed: 1.5 })` plays one, looping, at a multiple of its authored rate (default 1), and `fox.animation.pause()` holds the pose. Calling `play` for the clip that is already playing keeps its place, so it changes the speed or resumes after a pause; another clip starts from its beginning. A clip name the model does not have throws, naming the ones it has. A change takes effect on the next frame. The model rests in its bind pose until the page plays a clip.
 
 ```js
-import { Engine } from '@game-crafters-guild/openengine-web';
+import { Engine } from '@openengine/web';
 
 const canvas = document.querySelector('canvas');
 if (!canvas) throw new Error('The page needs a <canvas> element.');
@@ -149,7 +151,7 @@ The engine keeps running while a model loads: frames, `onFrame` callbacks, the o
 The engine is a download of some 20 MB, and a model can be more; on a slow connection that is minutes. `Engine.create({ canvas, onProgress })` and `scene.load(url, { onProgress })` report the downloads as `{ phase, loaded, total }`, so a page can draw a bar and say how far it is. The bytes are network bytes when the server sends `Content-Length` (a file it compresses counts its compressed size), and otherwise the file's decompressed bytes; `loaded / total` is the fraction done either way, so show a percentage rather than megabytes. `total` is 0 while a size is unknown: a model the server compresses has none until it has arrived (draw the bar without a value then).
 
 ```js
-import { Engine } from '@game-crafters-guild/openengine-web';
+import { Engine } from '@openengine/web';
 
 const canvas = document.querySelector('canvas');
 const status = document.querySelector('output');

@@ -222,8 +222,9 @@ void CBTRenderNode::DeclareForView(Pipeline::ViewDeclare& d)
     // invalidation does not cover). Poll the terrain feature's retire generation and, on a bump,
     // drop the retired views from every ring element this frame — before the quarantine frees the
     // image. No-op when nothing retired since last frame.
-    if (auto* terrainFeature = rs.GetFeature<TerrainECS::TerrainRenderFeature>())
-        feature.ConsumeTerrainRetire(*terrainFeature);
+    if (auto* terrainFeature = rs.GetFeature<TerrainECS::TerrainRenderFeature>();
+        terrainFeature != nullptr && !feature.ConsumeTerrainRetire(*terrainFeature))
+        return;
 
     // C7 planet observability (GE_CBT_PLANET_DEBUG): the falsifiable "planet is active"
     // signal for a runtime verify. The seed/re-seed already logs GE_CBT.Planet with the
@@ -262,7 +263,7 @@ void CBTRenderNode::DeclareForView(Pipeline::ViewDeclare& d)
     // SAME data CDLOD renders) and bind the height source into this frame's ring slot.
     // Returns false when there is no active terrain -> nothing to render this frame.
     CBTTerrain::CBTFrameParams params{};
-    if (!feature.BuildFrameParams(rs, d.View.id, d.RenderWidth, d.RenderHeight, frameCounter, params))
+    if (!feature.BuildFrameParams(rs, d.View.id, d.RenderWidth, d.RenderHeight, frameCounter, params, d.Frame))
         return;
     // A tree restarted above draws its settled shape at this camera from this frame on.
     feature.RefineRestartedTree(params, frameCounter);
@@ -324,12 +325,13 @@ void CBTRenderNode::DeclareForView(Pipeline::ViewDeclare& d)
             return;
         }
 
-        // Quiescence gate (plan §planet-shading perf): VertexEval evaluates only MODIFIED
-        // bisectors this frame (GateVertexEval = 1), unless a full-pool pass is due after init /
-        // a tree re-seed / a planet-param change (GateVertexEval = 0). Consumed once here, at
-        // the point the update actually records, so a change on a non-recording frame is kept.
+        // Full evaluations and selected page revisions stay pending until this update submits.
         CBTTerrain::CBTClassifyDesc classify = feature.GetClassify();
-        classify.GateVertexEval = feature.ConsumeForceVertexEval() ? 0u : 1u;
+        const uint64_t fullEvaluationTicket = feature.PendingForceVertexEval();
+        bool fullEvaluation = fullEvaluationTicket != 0u;
+        if (!fullEvaluation && feature.HasUnconsumedHeightPages())
+            fullEvaluation = !feature.ApplyHeightPageDirtyRegion(classify);
+        classify.GateVertexEval = fullEvaluation ? 0u : 1u;
         classify.Settle = feature.RestSettle();
         classify.Census = feature.ConsumePoolCensusRequest() ? 1u : 0u;
         // Forward the bound heightmap so the update pass declares its read edge on
@@ -338,14 +340,12 @@ void CBTRenderNode::DeclareForView(Pipeline::ViewDeclare& d)
             feature.BeginUpdateActivityReadback(d.Frame, classify.GateVertexEval == 0u);
         const CBTTerrain::CBTUpdateOutputs updateOut = CBTTerrain::CBTUpdateNode::DeclareUpdatePass(
             d.Frame, feature.GetInstance(), classify, params, frameCounter,
-            feature.GetBoundHeightmap(), activitySlot);
+            feature.GetBoundHeightmap(), activitySlot, feature.BuildUpdateSubmittedCallback(fullEvaluationTicket));
 
-        // VertexEval samples the terrain height texture the upload flush writes, and that write
-        // is invisible to the graph (bindless texture, raw copy inside the pass), so the declared
-        // accesses cannot order the two. Add the edge explicitly: without it the scheduler emits
-        // this whole component — the update and every draw reading its buffers — ahead of the
-        // flush, which is exactly what sampling a fresh texture uninitialized looks like.
-        if (auto* terrainFeature = rs.GetFeature<TerrainECS::TerrainRenderFeature>())
+        // Paged copies are graph-visible. Other bindless height uploads need an explicit edge.
+        constexpr float kPagedHeightSourceMode = 2.0f;
+        if (auto* terrainFeature = rs.GetFeature<TerrainECS::TerrainRenderFeature>();
+            terrainFeature != nullptr && params.AtlasParams1[2] != kPagedHeightSourceMode)
         {
             const Rendering::RenderGraph::RGPassId uploadPass =
                 terrainFeature->GetHeightmapUploadPassRG(rgFrame, graph);
@@ -358,11 +358,6 @@ void CBTRenderNode::DeclareForView(Pipeline::ViewDeclare& d)
         static const bool kCbtValidateDbg = std::getenv("GE_CBT_VALIDATE") != nullptr;
         if (kCbtValidateDbg)
             feature.GetValidationReadback().Tick(d.Frame, device, feature.GetInstance());
-
-        // Confirm to the extraction-side dirty-region cursor that this frame's classify
-        // (with whatever dirty rect it carries) was recorded, so CBTUpdateSystem can
-        // commit its log cursor rather than re-arm the rect (plan §8 C5).
-        feature.NotifyUpdateRecorded();
 
         // Falsifiable edit trace (GE_CBT_EDIT_DEBUG): log ONCE per edit frame, at the
         // point the update is recorded WITH a non-empty dirty rect. The C1 mirage

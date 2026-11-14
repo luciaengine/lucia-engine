@@ -11,8 +11,8 @@
 #include "Rendering/Materials/Shader/ShaderComposer.h"
 #include "Rendering/Materials/Shader/ShaderVariantKey.h"
 #include "TestUtils.h"
+#include "TestTempDir.h"
 
-#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -34,11 +34,7 @@ void WriteFile(const fs::path& p, const std::string& contents)
 
 fs::path UniqueTempDir(const char* prefix)
 {
-    static std::atomic<uint32_t> counter{0};
-    fs::path root = fs::temp_directory_path() /
-                    (std::string(prefix) + "_" +
-                     std::to_string(::testing::UnitTest::GetInstance()->random_seed()) + "_" +
-                     std::to_string(counter.fetch_add(1)));
+    fs::path root = TestUtils::MakeUniqueTempDirectory(prefix);
     fs::create_directories(root);
     return root;
 }

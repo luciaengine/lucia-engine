@@ -59,7 +59,7 @@ protected:
         Rendering::Utils::SetShaderFileLoader(&HostLoader);
         Rendering::Utils::SetShaderPathResolver(&HostResolver);
         Rendering::SetShaderPackageRebuildAction(&HostRebuild);
-        ShaderProgramAsset::SetShaderCacheRoots({{Temporary.Path() / "HostBundle"}, Temporary.Path() / "HostCache"});
+        ShaderProgramAsset::SetShaderCacheRoots({{Temporary.Path() / "HostCooked"}, Temporary.Path() / "HostCache"});
     }
     void TearDown() override
     {
@@ -94,7 +94,7 @@ TEST_F(EngineShaderHookLifetimeTest, RepeatedInitializeAndShutdownPreserveTheCap
     ASSERT_TRUE(Engine.Initialize(Config));
     Engine.Shutdown();
     host.ExpectCurrent();
-    ShaderProgramAsset::SetShaderCacheRoots({{}, Temporary.Path() / "NextHostCache"});
+    ShaderProgramAsset::SetShaderCacheRoots({{Temporary.Path() / "NextCooked"}, Temporary.Path() / "NextHostCache"});
     const HookSnapshot afterShutdown;
     Engine.Shutdown();
     afterShutdown.ExpectCurrent();

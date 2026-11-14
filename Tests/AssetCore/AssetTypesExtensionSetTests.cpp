@@ -54,3 +54,17 @@ TEST(AssetTypes, DefaultExtensionSetsContainExpectedEntries)
     EXPECT_NE(std::find(uiLayoutExts.begin(), uiLayoutExts.end(), ".uxml"), uiLayoutExts.end());
 }
 
+
+TEST(AssetTypes, ExistingAssetIdsAndCustomFormatsRemainStable)
+{
+    EXPECT_EQ(static_cast<int>(AssetType::NavigationMesh), 23);
+    EXPECT_EQ(static_cast<int>(AssetType::Localization), 40);
+    EXPECT_EQ(static_cast<int>(AssetType::PhysicsMaterial), 42);
+    EXPECT_EQ(static_cast<int>(AssetType::TileSet), 43);
+    EXPECT_EQ(static_cast<int>(AssetType::TileMap), 44);
+    EXPECT_EQ(GetAssetTypeFromExtension(".localization"), AssetType::Localization);
+    EXPECT_EQ(GetAssetTypeFromExtension(".physmat"), AssetType::PhysicsMaterial);
+    EXPECT_EQ(GetAssetTypeFromExtension(".tileset"), AssetType::TileSet);
+    EXPECT_EQ(GetAssetTypeFromExtension(".tilemap"), AssetType::TileMap);
+    EXPECT_EQ(GetAssetTypeFromExtension(".navsurface"), AssetType::NavigationSurfaceData);
+}

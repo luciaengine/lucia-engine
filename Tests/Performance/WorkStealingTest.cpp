@@ -125,11 +125,7 @@ TEST_F(WorkStealingTest, MixedWeightBurstDrainsPromptly) {
     // Basis: measured ~130-180ms (280-380k tasks/sec). A stranded backlog
     // (lost wakeup, dead propagation chain) runs into 1ms-per-task backstop
     // territory and misses this floor by orders of magnitude.
-    if (IsTooLoadedForBudgets()) {
-        GTEST_SKIP() << m_Budget.Describe();
-    }
-    EXPECT_LT(static_cast<double>(durationMs), m_Budget.Scale(600.0))
-        << "burst did not drain promptly - wake/propagation regression; " << m_Budget.Describe();
+    EXPECT_LT(durationMs, 600) << "burst did not drain promptly - wake/propagation regression";
 }
 
 // Bounded-wake propagation: one external producer, a wide uniform burst.
@@ -169,13 +165,10 @@ TEST_F(WorkStealingTest, BoundedWakePropagationCompletesPromptly) {
 
     EXPECT_EQ(completedTasks.load(), numTasks) << "every published task must execute";
     // Basis: measured ~40-70ms. See file header for the x3+ budget rationale.
+    EXPECT_LT(durationMs, 300) << "propagation stalled - backlog waited on the backstop";
+
     // The queues must be fully drained once every handle returned.
     EXPECT_EQ(pool.GetApproximateQueueSize(), 0u);
-    if (IsTooLoadedForBudgets()) {
-        GTEST_SKIP() << m_Budget.Describe();
-    }
-    EXPECT_LT(static_cast<double>(durationMs), m_Budget.Scale(300.0))
-        << "propagation stalled - backlog waited on the backstop; " << m_Budget.Describe();
 }
 
 // Per-width promptness: the pool completes a fixed storm within budget at
@@ -220,13 +213,8 @@ TEST_F(WorkStealingTest, StormCompletesWithinBudgetAtEveryWidth) {
         EXPECT_EQ(completedTasks.load(), numTasks)
             << "width " << numThreads << ": every published task must execute";
         // Basis: measured 10-30ms per width. Budget x3+ (see file header).
-        if (!IsTooLoadedForBudgets()) {
-            EXPECT_LT(static_cast<double>(durationMs), m_Budget.Scale(150.0))
-                << "width " << numThreads << ": storm exceeded budget - scheduling regression; " << m_Budget.Describe();
-        }
-    }
-    if (IsTooLoadedForBudgets()) {
-        GTEST_SKIP() << m_Budget.Describe();
+        EXPECT_LT(durationMs, 150)
+            << "width " << numThreads << ": storm exceeded budget - scheduling regression";
     }
 }
 

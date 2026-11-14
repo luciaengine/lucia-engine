@@ -2,6 +2,7 @@
 
 #include <stb_image_write.h>
 
+#include <algorithm>
 #include <climits>
 #include <fstream>
 
@@ -35,6 +36,17 @@ std::vector<uint8_t> EncodePng(std::span<const uint8_t> rgba, uint32_t width, ui
                                 rgba.data(), static_cast<int>(width * 4)))
         png.clear();
     return png;
+}
+
+std::vector<uint8_t> EncodeJpeg(std::span<const uint8_t> rgba, uint32_t width, uint32_t height, int quality)
+{
+    std::vector<uint8_t> jpeg;
+    if (!IsEncodeExtent(rgba.size(), width, height))
+        return jpeg;
+    if (!stbi_write_jpg_to_func(AppendEncodedBytes, &jpeg, static_cast<int>(width), static_cast<int>(height), 4,
+                               rgba.data(), std::clamp(quality, 1, 100)))
+        jpeg.clear();
+    return jpeg;
 }
 
 bool WritePngFile(const std::filesystem::path& path, std::span<const uint8_t> rgba, uint32_t width,

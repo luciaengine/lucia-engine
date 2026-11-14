@@ -16,8 +16,8 @@
 #include <fstream>
 #include <string>
 
-using namespace GameEngine;
-using namespace GameEngine::Editor;
+namespace GameEngine::Editor
+{
 
 namespace
 {
@@ -123,3 +123,5 @@ TEST_F(DayCycleProfileSaveTests, AProjectProfileSavesInPlace)
     ASSERT_TRUE(SaveDayCycleProfile(Assets, path, data, error)) << error;
     EXPECT_FLOAT_EQ(Read(path).Tracks.front().Keys.Keys[1].Value, -0.75f);
 }
+
+} // namespace GameEngine::Editor

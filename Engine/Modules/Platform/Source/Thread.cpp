@@ -1,6 +1,10 @@
 #include "Platform/Thread.h"
 
 #if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
 #  include <libproc.h>
 #  include <sys/proc_info.h>
 #  include <unistd.h>
@@ -26,7 +30,7 @@ std::string GetThreadName([[maybe_unused]] std::uint64_t osThreadId)
     }
     CloseHandle(thread);
     return name;
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) && !TARGET_OS_IPHONE
     proc_threadinfo info{};
     if (proc_pidinfo(getpid(), PROC_PIDTHREADID64INFO, osThreadId, &info, sizeof(info)) != sizeof(info))
         return {};

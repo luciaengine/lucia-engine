@@ -37,6 +37,8 @@
 #include "Rendering/Camera/CameraTypes.h"
 #include "TestCameraEye.h"
 
+#include "TestTempDir.h"
+
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -113,18 +115,21 @@ constexpr Rendering::CameraRanges kCameraAtRanges{0.1f, 1000.0f};
 // A camera at (x,y,z) with an identity projection (projScaleY = proj[1][1] = 1).
 Rendering::CameraData CameraAt(float x, float y, float z) {
     Rendering::CameraData cam{};
-    cam.view = Mathematics::Matrix4x4::Identity();
-    cam.proj = Mathematics::Matrix4x4::Identity();
-    cam.viewProj = Mathematics::Matrix4x4::Identity();
-    cam.cameraPos.x = x;
-    cam.cameraPos.y = y;
-    cam.cameraPos.z = z;
-    cam.cameraPos.w = 0.0f; // not a 2D ortho view -> LOD enabled
+    SetIdentity(cam.view);
+    SetIdentity(cam.proj);
+    SetIdentity(cam.viewProj);
+    cam.cameraPos[0] = x;
+    cam.cameraPos[1] = y;
+    cam.cameraPos[2] = z;
+    cam.cameraPos[3] = 0.0f; // not a 2D ortho view -> LOD enabled
     return cam;
 }
 
+// Under this test process's own directory, removed at exit: a concurrent ctest process running
+// the same tests writes its own.
 std::filesystem::path TempPath(const char* name) {
-    return std::filesystem::temp_directory_path() / name;
+    static const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("hlod_reconcile")};
+    return directory.Path() / name;
 }
 
 // One cell of `count` FAR statics, each a distinct model (r = 1 so the benefit
@@ -289,9 +294,7 @@ TEST(HlodRuntimeReconcile, ReconcileSpawnsEvictedProxiesAndTagsMembers) {
     for (ECS::EntityHandle member : cluster.Members) {
         const auto* gpu = world->GetComponent<MeshGPUData>(member);
         if (gpu)
-        {
             EXPECT_FALSE(gpu->hlodEvicted);
-        }
         // C6: eviction never disables the entity.
         ASSERT_NE(world->GetComponent<MeshRenderer>(member), nullptr);
         EXPECT_TRUE(ECS::Entity(world.get(), member).IsEnabled<MeshRenderer>());
@@ -309,61 +312,6 @@ TEST(HlodRuntimeReconcile, ReconcileSpawnsEvictedProxiesAndTagsMembers) {
         EXPECT_EQ(rs.GetMeshGPURegistry().FindByKey(key), nullptr)
             << "proxy mesh must be unregistered on retire";
 
-    world.reset();
-    rs.Shutdown();
-    std::error_code ec;
-    std::filesystem::remove(out, ec);
-}
-
-// Members in one cell on two layers bake into one cluster per layer set, and each proxy draws on its
-// members' layers: no proxy draws a member in a view that does not draw that member.
-TEST(HlodRuntimeReconcile, ProxyLayersEqualTheirMembersLayers) {
-    auto device = CreateVulkanDeviceFast();
-    if (!device)
-        GTEST_SKIP() << "No Vulkan device available";
-
-    RenderServices rs;
-    ASSERT_TRUE(rs.Initialize(device.get()));
-    auto world = std::make_unique<ECS::World>(nullptr);
-    ModelBank bank;
-    Hlod::HlodRuntime& runtime = rs.GetHlodRuntime();
-
-    const GUID matGuid = GUID::Derive(GUID::Null(), "reconcile/material-layers");
-    AddVolume(*world);
-    for (int i = 0; i < 2 * kMemberCount; ++i) {
-        const GUID modelGuid = GUID::Derive(GUID::Null(), "reconcile/layers/model/" + std::to_string(i));
-        bank.Add(modelGuid, 0xA000u + static_cast<uint64>(i));
-        ECS::Entity e = world->Create();
-        e.Set(WorldAt(static_cast<float>(i) * 2.0f, 0.0f, 0.0f));
-        e.Set(BoxBounds(1.0f));
-        e.Set(Tag("layered_" + std::to_string(i)));
-        MeshRenderer mr{};
-        mr.materialAssetGuid.Set(matGuid);
-        mr.modelAssetGuid.Set(modelGuid);
-        mr.RenderLayers = (i % 2 == 0) ? Rendering::RenderLayerMask::Default() : Rendering::RenderLayerMask::FromLayer(3);
-        e.Set(mr);
-        e.Set(MeshGPUData{});
-    }
-    world->ProcessCommands();
-
-    const std::filesystem::path out = TempPath("hlod_reconcile_layers.gehlod");
-    std::filesystem::remove(out);
-    ASSERT_EQ(Hlod::BakeHlodForWorld(*world, bank.Resolver(), out).Outcome, Hlod::BakeOutcome::Wrote);
-    runtime.ReconcileScene(*world, rs.GetMeshGPURegistry(), out, "test", bank.Resolver());
-
-    ASSERT_EQ(runtime.GetClusters().size(), 2u) << "one cluster per layer set in the cell";
-    for (const Hlod::RuntimeCluster& cluster : runtime.GetClusters()) {
-        ASSERT_FALSE(cluster.Proxies.empty());
-        ASSERT_FALSE(cluster.Members.empty());
-        for (ECS::EntityHandle proxy : cluster.Proxies) {
-            const auto* proxyRenderer = world->GetComponent<MeshRenderer>(proxy);
-            ASSERT_NE(proxyRenderer, nullptr);
-            for (ECS::EntityHandle member : cluster.Members)
-                EXPECT_EQ(proxyRenderer->RenderLayers, world->GetComponent<MeshRenderer>(member)->RenderLayers);
-        }
-    }
-
-    runtime.Retire(*world, rs.GetMeshGPURegistry());
     world.reset();
     rs.Shutdown();
     std::error_code ec;

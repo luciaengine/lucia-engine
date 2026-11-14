@@ -19,7 +19,7 @@
 #include "ECS/World.h"
 #include "ECS/Entity.h"
 #include "ECS/ECSTemplates.h"
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentRegistry.h"
 #include "Pathfinding/GridMap.h"
 #include "Pathfinding/NavigationWorld.h"
 #include "Scene/SceneIOContext.h"

@@ -10,6 +10,7 @@
 #include "Rendering/Geometry/VertexAttributeFlags.h"
 #include "Rendering/Materials/Shader/ShaderProfileDefines.h"
 #include "Types/Fnv1a.h"
+#include "Rendering/Core/HashUtils.h"
 #include "Types/StringId.h"
 #include "Types/StringUtils.h"
 
@@ -79,7 +80,8 @@ enum class MaterialKeyword : uint64_t
     UnfoggedBlend      = 1ull << 43, // Derived like PremultipliedBlend: a Blend material whose blend has no identity colour to fade toward (Min, Max, the subtractions, and every other factor pair): the fog leaves it as it is. Read only under HeightFog or VolumetricFog
     VolumetricClouds   = 1ull << 44, // Pass keyword (set on the late transparents of a view whose volumetric clouds composited this frame, drawn after that composite; NarrowColorPassKeywords keeps it only for blended materials): a blended surface beyond the clouds' mean distance at its pixel takes the clouds' transmittance on its contribution, so the clouds stand in front of it (Includes/forward_fog.glsl: ge_volumetricClouds at set-0 b57). A nearer surface is drawn over the clouds. Without the keyword neither binding nor test is in the SPIR-V
     SurfaceInputsAtPixelCenter = 1ull << 45, // Per material, set by the engine code that registers it (the CBT terrain): the forward adapter interpolates the surface inputs at the pixel center instead of the centroid (GE_SURFACE_INPUTS_AT_PIXEL_CENTER). Set for a surface whose inputs are continuous across its triangles: a partly covered MSAA pixel then reads its fields at the same place as a covered one
-    UV1Crossfade       = 1ull << 46, // Per material (enableUV1Crossfade): a mesh with a second UV and a vertex color mixes the albedo, metallic-roughness, occlusion and normal maps sampled at uv1 by the vertex alpha (GE_UV1_CROSSFADE). The vertex alpha is then a weight, not an opacity. The spline paving's seam bands set it
+    DepthPixelationBand = 1ull << 46, // Per-band color coverage.
+    UV1Crossfade = 1ull << 47, // Vertex-alpha weight blends UV0 and UV1 material samples.
 };
 
 inline constexpr MaterialKeyword operator|(MaterialKeyword a, MaterialKeyword b)
@@ -166,15 +168,9 @@ struct ShaderVariantKey
         // Every field enters whole through the combine, so no field shifts
         // another's high bits out of the 64-bit result.
         uint64_t h = static_cast<uint64_t>(vertexFlags);
-        h = Hashing::HashCombine(h, static_cast<uint64_t>(materialKeywords));
-        h = Hashing::HashCombine(h, static_cast<uint64_t>(lightingModel));
-        h = Hashing::HashCombine(h, userKeywordHash);
-        // The compat profile is process-wide. Its on-disk cache entries fork
-        // through the GE_COMPAT_PROFILE define (GenerateDefines), not through
-        // this hash; folding it here only keeps a compat key's hash and its
-        // stand-in material path apart from the desktop key's.
-        if (IsCompatShaderProfile())
-            h ^= 0xC0FFEEULL + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        h = HashUtils::HashCombine(h, static_cast<uint64_t>(materialKeywords));
+        h = HashUtils::HashCombine(h, static_cast<uint64_t>(lightingModel));
+        h = HashUtils::HashCombine(h, userKeywordHash);
         return h;
     }
 };
@@ -203,7 +199,8 @@ inline void ApplyCustomVertexShaderClamp(ShaderVariantKey& key)
 // produce the LIGHTING_MODEL_* define. It must correspond to the StringId
 // stored in key.lightingModel.
 inline std::vector<std::string> GenerateDefines(const ShaderVariantKey& key,
-                                                const std::string& lightingModelName)
+                                                const std::string& lightingModelName,
+                                                const ShaderCompileTarget& target = CurrentShaderCompileTarget())
 {
     std::vector<std::string> defs;
 
@@ -345,12 +342,15 @@ inline std::vector<std::string> GenerateDefines(const ShaderVariantKey& key,
     if (HasKeyword(key.materialKeywords, MaterialKeyword::UnfoggedBlend))
         defs.push_back("GE_BLEND_UNFOGGED");
 
+    if (HasKeyword(key.materialKeywords, MaterialKeyword::DepthPixelationBand))
+        defs.push_back("GE_DEPTH_PIXELATION_BAND");
+
     defs.push_back("LIGHTING_MODEL_" + ToUpperSnakeCase(lightingModelName));
 
     // Device-wide, not per-material: the compat profile selects the fixed
     // material texture bindings and the derivative/LOD fallbacks that the
     // WebGPU-class target needs (Includes/compat_profile.glsl).
-    if (IsCompatShaderProfile())
+    if (target.Compatibility)
         defs.push_back("GE_COMPAT_PROFILE");
     // Device-wide as well. Only the relief footprint reads it, so it reaches only the keys that march:
     // a Parallax key in a shading shape or in the depth-offset prepass shape, the condition
@@ -361,12 +361,12 @@ inline std::vector<std::string> GenerateDefines(const ShaderVariantKey& key,
     const bool marchesParallax = HasKeyword(key.materialKeywords, MaterialKeyword::Parallax) &&
                                  (!shadesNothing || depthOffsetPrepass) &&
                                  !HasKeyword(key.materialKeywords, MaterialKeyword::DepthOnlyTransmissionColor);
-    if (marchesParallax && AreInterpolationFunctionsAvailable() && !IsCompatShaderProfile())
+    if (marchesParallax && target.InterpolationFunctions && !target.Compatibility)
         defs.push_back("GE_INTERPOLATION_FUNCTIONS");
     // Device-wide too, and only the procedural vertex modifiers read it (the terrain clips at its
     // authored edge), so it reaches only CustomVertexShader keys.
-    if (HasKeyword(key.materialKeywords, MaterialKeyword::CustomVertexShader) && AreClipDistancesAvailable() &&
-        !IsCompatShaderProfile())
+    if (HasKeyword(key.materialKeywords, MaterialKeyword::CustomVertexShader) && target.ClipDistances &&
+        !target.Compatibility)
         defs.push_back("GE_CLIP_DISTANCE");
 
     return defs;

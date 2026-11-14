@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <mutex>
+#include <utility>
 
 namespace GameEngine::PhysicsECS::ProceduralMeshColliders
 {

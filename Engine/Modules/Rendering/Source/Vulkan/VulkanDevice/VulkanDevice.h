@@ -14,8 +14,9 @@
 #include "Rendering/Core/QueryPool.h"
 #include "Rendering/Core/ResourceManager.h"
 #include "Rendering/Core/TextureManager.h"
-#include "../VulkanPipelineCache/VulkanPipelineCache.h"
+#include "VulkanPipelineCache/VulkanPipelineCache.h"
 #include "VulkanPipelineCompileGate.h"
+#include "VulkanPromotedCommands.h"
 
 #include "DescriptorSetAllocator.h"
 #include "DeviceHealthState.h"
@@ -160,6 +161,7 @@ struct VulkanPipeline
 {
     VkDevice device = VK_NULL_HANDLE; // Track device for proper cleanup
     VkPipeline pipeline = VK_NULL_HANDLE;
+    VkPipeline readOnlyDepthPipeline = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkRenderPass renderPass = VK_NULL_HANDLE;
     PipelineType type = PipelineType::Graphics;
@@ -219,6 +221,7 @@ class VulkanDevice : public IDevice
         VkPipeline pipeline = VK_NULL_HANDLE;
         VkPipelineLayout layout = VK_NULL_HANDLE;
         VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE; // For compute pipelines
+        VkPipeline readOnlyDepthPipeline = VK_NULL_HANDLE;
     };
 
     VulkanDevice();
@@ -622,6 +625,7 @@ class VulkanDevice : public IDevice
     void UpdateDescriptorSetBatch(DescriptorSetHandle descriptorSet, std::span<const DescriptorSetUpdate> updates) override;
 
     // Vulkan-specific accessors
+    const VulkanPromotedCommands& GetPromotedCommands() const { return m_PromotedCommands; }
     VkDevice GetVkDevice() const { return m_Device; }
     VkPhysicalDevice GetVkPhysicalDevice() const { return m_PhysicalDevice; }
     VmaAllocator GetVmaAllocator() const { return reinterpret_cast<VmaAllocator>(m_VmaAllocator); }
@@ -833,6 +837,7 @@ class VulkanDevice : public IDevice
     PipelineHandle m_CurrentPipeline = INVALID_HANDLE;
 
   private:
+    VulkanPromotedCommands m_PromotedCommands;
     // Best-effort sync timing for stall diagnosis (written on render thread).
     IDevice::FrameSyncTimings m_LastFrameSyncTimings{};
 
@@ -1079,6 +1084,9 @@ class VulkanDevice : public IDevice
     VkFormat m_SwapchainImageFormat = VK_FORMAT_UNDEFINED;
     VkColorSpaceKHR m_SwapchainColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     VkExtent2D m_SwapchainExtent = {0, 0};
+    VkSurfaceTransformFlagBitsKHR m_SurfaceTransformAtCreation = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    bool m_CompositorRotatesSurface = false;
+    bool PresentSuboptimalIsCompositorRotation(VkResult presentResult);
     // True when the swapchain imageUsage includes TRANSFER_SRC (surface-dependent),
     // enabling direct backbuffer readback for full-window screenshots.
     bool m_SwapchainSupportsReadback = false;
@@ -1113,6 +1121,8 @@ class VulkanDevice : public IDevice
         VkFormat swapchainImageFormat = VK_FORMAT_UNDEFINED;
         VkColorSpaceKHR swapchainColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
         VkExtent2D swapchainExtent = {0, 0};
+        VkSurfaceTransformFlagBitsKHR surfaceTransformAtCreation = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+        bool compositorRotatesSurface = false;
         bool swapchainSupportsReadback = false;
         HdrOutputState hdrState{};
         VkRenderPass swapchainRenderPass = VK_NULL_HANDLE;
@@ -1154,6 +1164,7 @@ class VulkanDevice : public IDevice
         VkSurfaceFormatKHR surfaceFormat{};
         uint32_t surfaceMinImageCount = 0;
         uint32_t surfaceMaxImageCount = 0;
+        VkSurfaceTransformFlagBitsKHR surfaceTransformAtCreation = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
     };
     // The vkCreateSwapchainKHR of a dispatched CreateAndActivateWindowTarget, shared with the job that makes the call. The job reads
     // only `device` and `plan`, writes `swapchain` and `result`, then sets `done` under `mutex`.
@@ -1338,7 +1349,6 @@ class VulkanDevice : public IDevice
     uint64_t m_FaultFrameCounter = 0;  // 1-based BeginFrame ordinal
     uint64_t m_FaultSubmitCounter = 0; // 1-based graphics-submit ordinal
     uint64_t m_FaultAcquireCounter = 0; // 1-based successful-acquire ordinal
-    // This frame's acquire was forced to VK_SUBOPTIMAL_KHR; its present follows suit.
     bool m_FaultAcquireForcedSuboptimal = false;
     // Start time of the most recent rebuild attempt; TickDeviceRecovery spaces the
     // next attempt by RebuildBackoffFor() so a real TDR reset settles first.
@@ -1464,8 +1474,12 @@ class VulkanDevice : public IDevice
         std::vector<TextureHandle> deferredTextures;
         std::vector<TextureViewHandle> deferredTextureViews;
         std::vector<SamplerHandle> deferredSamplers;
+        std::vector<VkFramebuffer> deferredFramebuffers;
+        std::vector<VkRenderPass> deferredRenderPasses;
         std::vector<PersistentDescriptorBytes> deferredDescriptorBytes;
         std::vector<VkDescriptorSet> deferredPoolDescriptorSets;
+        SemaphoreHandle legacyObjectsTimeline{};
+        uint64_t legacyObjectsTimelineValue = 0;
         VkFence fence = VK_NULL_HANDLE;                // signals when this frame finishes (graphics path)
         bool fenceArmed = false;                       // true only if we submitted using this fence last time this frame index was active
         // Compute only: true once any command list was routed on the compute queue in this slot
@@ -1647,6 +1661,9 @@ class VulkanDevice : public IDevice
     // marks the list submitted. Call only for lists whose buffer actually reached vkQueueSubmit.
     void RouteSubmittedCommandList(VulkanCommandList* list, SemaphoreHandle timeline,
                                    uint64_t timelineValue);
+    void RetireLegacyRenderObjects(QueueType queue, std::vector<VkFramebuffer>& framebuffers,
+                                  std::vector<VkRenderPass>& renderPasses, SemaphoreHandle timeline,
+                                  uint64_t timelineValue);
 
     /// The device-level submit chokepoint: submits one batch to `context`'s queue and routes
     /// each of `commandLists` for deferred recycling against the value THIS submit signalled.
@@ -1874,8 +1891,7 @@ class VulkanDevice : public IDevice
 
     // Track swapchain acquisition and whether we've consumed imageAvailable in this frame
     bool m_AcquiredThisFrame = false;
-    // The last acquire returned VK_SUBOPTIMAL_KHR: PresentImage recreates the
-    // swapchain after presenting even when the present itself succeeds.
+    // Successful acquire whose surface mismatch is handled after present consumes its semaphore.
     bool m_AcquireReportedSuboptimal = false;
     bool m_WaitedOnImageAvailableThisFrame = false;
     VkSemaphore m_AcquireSemaphoreThisFrame = VK_NULL_HANDLE;
@@ -2164,9 +2180,12 @@ class VulkanDevice : public IDevice
     // Mirrors m_Capabilities.supportsDescriptorBuffer, but persists across the
     // QueryDeviceCapabilities() m_Capabilities-reset so the cap is rehydratable.
     bool m_DescriptorBufferEnabledAtInit = false;
+    // Effective interpolation support of the created device, retained across capability refreshes.
+    bool m_ShaderInterpolationFunctionsEnabledAtInit = false;
     // Stash for Vulkan 1.2 hostQueryReset. Set in CreateLogicalDevice and
     // consumed by the query pool config after device creation.
     bool m_HostQueryResetEnabledAtInit = false;
+    bool m_TimelineSemaphoresEnabledAtInit = false;
     // Stash for Vulkan 1.2 bufferDeviceAddress. Set in CreateLogicalDevice,
     // consumed by QueryDeviceCapabilities (which zeroes m_Capabilities before
     // repopulating). Without this stash, the VMA allocator would be created

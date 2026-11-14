@@ -1,0 +1,24 @@
+---
+title: Package previews
+description: Add package icons and optional screenshots to the Packages window.
+---
+
+Add an `icon` and an optional `screenshot` to `package.json` to show artwork in the Packages window:
+
+```json title="Package artwork in package.json"
+{
+  "name": "ocean-pack",
+  "version": "1.0.0",
+  "displayName": "Ocean",
+  "icon": "Preview/icon.svg",
+  "screenshot": "Preview/screenshot.png"
+}
+```
+
+Both paths are relative to the package folder that contains `package.json`, not its assets folder. PNG, JPEG, and SVG images are supported. Paths must use `/` separators and stay inside the package folder. URLs and paths through symbolic links outside the package are not loaded.
+
+The icon appears beside the package name and in its details. A package without an icon uses the generic package icon. The screenshot appears only in the details pane and fits without cropping. Missing files are omitted. Artwork can be shown for disabled packages without enabling their code or mounting their assets.
+
+Previews are enabled by default. Turn off **Settings → User Settings → UI → Asset Preview → Show Package Previews** to hide them. After editing the paths in `package.json`, click **Refresh** in the Packages window.
+
+Use **Search packages** to filter the list while typing. Search matches the package name, display name, version, or source kind. **REOPEN** appears on the package row only while a package state change is waiting for project reopen. **Refresh** re-resolves package metadata and shows its result beside the button.

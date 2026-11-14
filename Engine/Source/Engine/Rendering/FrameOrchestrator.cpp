@@ -7,6 +7,8 @@
 // friend grant for the frame-local state that stays RS-resident).
 #include "Engine/Rendering/FrameOrchestrator.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/ViewReadbackUtils.h"
+#include "Engine/Rendering/PostProcessEffectRegistry.h"
 #include "Core/CpuProfiler.h"
 #include "Engine/Rendering/IRenderFeature.h"
 
@@ -288,6 +290,42 @@ void FrameOrchestrator::RemovePipelineInstanceForFrame(Rendering::RenderGraph::R
     {
         if (it->first != frame)
             continue;
+        // Consumers can still be waiting on a producer's timeline when
+        // the producer window closes. Drain those submissions before the
+        // producer frame destroys its semaphores.
+        if (it->second.ExportedSceneSubmission)
+        {
+            for (auto& [otherFrame, otherSlot] : m_RGStreams)
+            {
+                if (otherFrame == frame)
+                    continue;
+                otherFrame->WaitForPendingWork();
+                if (otherSlot.SceneProducer != frame)
+                    continue;
+                otherSlot.SceneProducer = nullptr;
+                if (otherSlot.DeclaredFrameIndex != otherFrame->FrameIndex())
+                    continue;
+
+                // A consumer declaration keeps the semaphore even after
+                // execution. Discard it before it can submit again.
+                if (!otherSlot.Submitted)
+                {
+                    OnFrameAbortedRG(*otherFrame);
+                    Rendering::CancelPendingReadbacksRG(otherFrame);
+                }
+                otherFrame->DiscardRecordedPasses();
+                if (otherSlot.Instance)
+                    otherSlot.Instance->ResetFrameBlackboard();
+                otherSlot.DeclaredEpoch = 0;
+                otherSlot.DeclareSeq = 0;
+                otherSlot.Values = {};
+                if (m_Services->m_FrameRG.For.Frame == otherFrame)
+                    m_Services->m_FrameRG = {};
+                std::erase_if(m_Services->m_ViewFrameRG,
+                    [otherFrame](const auto& entry) { return entry.second.For.Frame == otherFrame; });
+            }
+        }
+
         // Pass closures (and their destructor thunks) may live in the same
         // module as the nodes. Retire them while both code and owners are alive.
         frame->DiscardRecordedPasses();
@@ -298,6 +336,11 @@ void FrameOrchestrator::RemovePipelineInstanceForFrame(Rendering::RenderGraph::R
     // cursor: a future RGFrame at the recycled address would alias it.
     if (m_GlobalStagesFrame == frame)
         m_GlobalStagesFrame = nullptr;
+    if (m_SelectedSceneProducer.Frame == frame)
+    {
+        m_SelectedSceneProducer = {};
+        m_SelectedSceneProducerSubmitted = false;
+    }
     // Pointer-only reap (A6-i): a dying frame at a soon-to-be-recycled address
     // must be cleared regardless of index, so this compares the address alone
     // and must NOT route through IsFor — adding the index check would let a
@@ -1162,10 +1205,26 @@ void FrameOrchestrator::PublishRenderTimelineStats(double bucketerScheduleMs)
     stats.BucketerScheduleMsMean = bucketerSum * invCount;
 }
 
-void FrameOrchestrator::BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame,
-                                     const FrameGraphBuildParamsRG& params)
+void FrameOrchestrator::SelectSharedSceneProducer(Rendering::RenderGraph::RGFrame& frame)
+{
+    if (m_SelectedSceneProducerEpoch == m_WorldFrameEpoch || m_GlobalStagesEpoch == m_WorldFrameEpoch)
+        return;
+    m_SelectedSceneProducerEpoch = m_WorldFrameEpoch;
+    m_SelectedSceneProducer.Stamp(frame);
+    m_SelectedSceneProducerSubmitted = false;
+    m_SceneProducerPrologue = {};
+    m_SceneProducerTokens.fill({});
+}
+
+bool FrameOrchestrator::BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame,
+                                       const FrameGraphBuildParamsRG& params)
 {
     GE_CPU_PROFILE_SCOPE("RenderServices.BuildFrameGraphRG");
+
+    const bool consumesSelectedProducer = m_SelectedSceneProducerEpoch == m_WorldFrameEpoch &&
+        !m_SelectedSceneProducer.IsFor(frame);
+    if (consumesSelectedProducer && !m_SelectedSceneProducerSubmitted)
+        return false;
 
     // Per-stream repeat guard (slice 8a). The stamps are (epoch, frameIndex):
     // pointer identity alone would no-op a frame re-begun mid-app-frame
@@ -1176,7 +1235,18 @@ void FrameOrchestrator::BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame,
     RGFrameStreamSlot* slot = FindOrCreateRGStream(frame);
     if (slot->DeclaredEpoch == m_WorldFrameEpoch &&
         slot->DeclaredFrameIndex == frame.FrameIndex())
-        return;
+        return true;
+    if (consumesSelectedProducer)
+    {
+        const bool hasPrologue = m_SceneProducerPrologue.IsValid();
+        for (const auto& token : m_SceneProducerTokens)
+            if (token.IsValid())
+                frame.AddSubmissionWait(token, hasPrologue);
+        if (hasPrologue)
+            frame.AddOrderedGraphicsWait(m_SceneProducerPrologue);
+    }
+    slot->SceneProducer = consumesSelectedProducer ? m_SelectedSceneProducer.Frame : nullptr;
+    slot->Submitted = false;
     slot->DeclaredEpoch = m_WorldFrameEpoch;
     slot->DeclaredFrameIndex = frame.FrameIndex();
     // Mint this spine call's declare sequence: it identifies THIS declare in
@@ -1185,6 +1255,13 @@ void FrameOrchestrator::BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame,
     // stream's feature readback pendings.
     m_RGDeclareSeq = ++m_RGDeclareSeqCounter;
     slot->DeclareSeq = m_RGDeclareSeq;
+    std::vector<Pipeline::ViewTargetsRG> effectTargets;
+    for (const auto& hooks : Rendering::PostProcessEffectRegistry::AllViewPreparations())
+        if (hooks.PrepareFrameTargets)
+            hooks.PrepareFrameTargets(*m_Services, frame, params.ViewTargets, effectTargets);
+    const std::span<const Pipeline::ViewTargetsRG> effectiveTargets =
+        effectTargets.empty() ? params.ViewTargets : std::span<const Pipeline::ViewTargetsRG>(effectTargets);
+
 
     // ── Stage G: app-frame-global GPU-driven work, declared ONCE per app
     // frame into the first frame stream that gets here (the "owner frame").
@@ -1197,6 +1274,8 @@ void FrameOrchestrator::BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame,
     {
         m_GlobalStagesEpoch = m_WorldFrameEpoch;
         m_GlobalStagesFrame = &frame;
+        m_Services->m_RenderTimelineStats.SortMs = 0.0;
+        m_Services->m_RenderTimelineStats.SortViewCount = 0;
 
         // 0. CPU draw-list build + GPUScene upload — same guards as the old
         //    spine above, shared semantics.
@@ -1251,6 +1330,16 @@ void FrameOrchestrator::BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame,
         m_Services->ScheduleRTShadowMask(frame);
 
         slot->Values = m_Services->m_FrameRG;
+        if (m_SelectedSceneProducerEpoch == m_WorldFrameEpoch)
+        {
+            // A different window may be the only consumer of these writes.
+            for (const auto resource : {slot->Values.SkinPaletteAtlas,
+                                        slot->Values.Visibility, slot->Values.DrawStreamOrdering})
+                if (resource.IsValid())
+                    frame.MarkOutput(resource);
+            frame.ExportDeclaredWorkCompletion();
+            slot->ExportedSceneSubmission = true;
+        }
     }
     else
     {
@@ -1349,7 +1438,7 @@ void FrameOrchestrator::BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame,
             }
             GE_CPU_PROFILE_SCOPE("RenderServices.BuildFrameGraphRG.PipelineDeclare");
             const auto& views = m_Services->Views().GetViews();
-            slot->Instance->Declare(frame, params.ViewTargets,
+            slot->Instance->Declare(frame, effectiveTargets,
                                     std::span<const Rendering::ViewDesc>(views.data(), views.size()),
                                     params.DeltaTime);
             // Nodes take their preloaded packages at their first declare; the store drops the rest.
@@ -1390,7 +1479,7 @@ void FrameOrchestrator::BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame,
     //    the next materialization, ahead of any capture request.
     if (slot->Instance)
     {
-        for (const auto& vt : params.ViewTargets)
+        for (const auto& vt : effectiveTargets)
         {
             const Rendering::ViewDesc* view = m_Services->Views().FindViewDesc(vt.View);
             // The pipeline's own rule (it declares every participating view, one on no layer
@@ -1405,6 +1494,7 @@ void FrameOrchestrator::BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame,
             }
         }
     }
+    return true;
 }
 
 void FrameOrchestrator::OnFrameSubmittedRG(Rendering::RenderGraph::RGFrame& frame,
@@ -1417,21 +1507,61 @@ void FrameOrchestrator::OnFrameSubmittedRG(Rendering::RenderGraph::RGFrame& fram
     // (old-arm excursion, HDR-switch abort) must not stamp last declare's
     // token-less pendings with a token from a submission that never ran the
     // dispatches.
-    bool found = false;
-    for (const auto& [framePtr, slot] : m_RGStreams)
+    RGFrameStreamSlot* submittedSlot = nullptr;
+    for (auto& [framePtr, slot] : m_RGStreams)
         if (framePtr == &frame)
         {
-            found = (slot.DeclareSeq != 0 && slot.DeclaredEpoch == m_WorldFrameEpoch &&
-                     slot.DeclaredFrameIndex == frame.FrameIndex());
+            if (slot.DeclareSeq != 0 && slot.DeclaredEpoch == m_WorldFrameEpoch &&
+                slot.DeclaredFrameIndex == frame.FrameIndex())
+                submittedSlot = &slot;
             break;
         }
-    if (!found)
+    if (!submittedSlot)
         return; // stream never declared this incarnation (or evicted) — nothing to stamp
+
+    const auto& submissions = frame.Graph().Submissions();
+    submittedSlot->Submitted = !submissions.empty() && frame.Stats().SubmissionsMade == submissions.size();
+    if (m_SelectedSceneProducerEpoch == m_WorldFrameEpoch && m_SelectedSceneProducer.IsFor(frame))
+    {
+        m_SelectedSceneProducerSubmitted = submittedSlot->Submitted;
+        m_SceneProducerPrologue = submittedSlot->Submitted ? frame.DeclaredWorkCompletionToken()
+                                                           : Rendering::IDevice::GpuSyncToken{};
+        for (const auto& submission : submissions)
+        {
+            const auto producerToken = frame.SubmissionToken(submission.Queue);
+            m_SceneProducerTokens[static_cast<size_t>(submission.Queue)] = producerToken;
+            m_SelectedSceneProducerSubmitted &= producerToken.IsValid();
+        }
+    }
+
     // Generic feature fan-out: readback rings stamp their pendings with the
     // submission token (RGReadbackRing completion contract). CSM's SDSM
     // readback rides this hook too — no feature-specific stamping remains.
     m_Services->ForEachFeature([&](IRenderFeature& feature)
                                { feature.OnFrameSubmittedRG(frame, token); });
+}
+
+void FrameOrchestrator::OnFrameAbortedRG(Rendering::RenderGraph::RGFrame& frame)
+{
+    if (m_SelectedSceneProducerEpoch == m_WorldFrameEpoch && m_SelectedSceneProducer.IsFor(frame))
+        m_SelectedSceneProducerSubmitted = false;
+    m_Services->ForEachFeature([&](IRenderFeature& feature) { feature.OnFrameAbortedRG(frame); });
+}
+
+void NotifyRenderGraphExecution(Rendering::RenderGraph::RGFrame& frame,
+                                uint64_t previousSubmissionCount, FrameOrchestrator* orchestrator)
+{
+    if (frame.SubmittedFrameCount() == previousSubmissionCount)
+    {
+        Rendering::CancelPendingReadbacksRG(&frame);
+        if (orchestrator)
+            orchestrator->OnFrameAbortedRG(frame);
+        return;
+    }
+    const auto token = frame.SubmissionToken();
+    if (orchestrator)
+        orchestrator->OnFrameSubmittedRG(frame, token);
+    Rendering::OnFrameSubmittedReadbacksRG(frame, token);
 }
 
 Pipeline::RenderPipelineInstance* FrameOrchestrator::PipelineInstanceForFrame(
@@ -1445,6 +1575,7 @@ Pipeline::RenderPipelineInstance* FrameOrchestrator::PipelineInstanceForFrame(
 
 void FrameOrchestrator::OnDeviceRebuilt()
 {
+    m_SelectedSceneProducerSubmitted = false;
     // A device rebuild leaves each node's lazily-cached device handles (samplers,
     // interned pipeline state, node-owned GPU buffers) dangling. Flag every live
     // stream's instance so its next Declare tears down the stale nodes (dtors

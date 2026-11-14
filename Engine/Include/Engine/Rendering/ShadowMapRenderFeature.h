@@ -2,6 +2,7 @@
 
 #include "Engine/Rendering/CascadeMotionScheduler.h"
 #include "Engine/Rendering/CascadeShadowCache.h"
+#include "Engine/Rendering/DepthProducerState.h"
 #include "Engine/Rendering/IRenderFeature.h"
 #include "Engine/Rendering/ShadowMinMaxPyramid.h"
 #include "Engine/Rendering/ShadowReceiverMeasurement.h"
@@ -13,6 +14,7 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/PerViewReadbackRings.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h" // RGFrame, RGFrameStamp
+#include "Types/FlatMap.h"
 
 #include <algorithm>
 #include <array>
@@ -244,8 +246,8 @@ enum class ShadowDebugMode : int
 // Shadow filter quality. Numerical values match the integer dispatched on
 // in shadow_sampling.glsl::GE_SampleCascade via ge_shadowDebug.w. PCSS and
 // MSM4 silently fall back to PCF when their prerequisites (bindless / a
-// ready moments texture) aren't met. Default is PCSS to match the engine's
-// effective default before the explicit-enum migration.
+// ready moments texture) aren't met. Default is PCSS, and DPCF under the compat
+// shader profile the browser runs (ShadowMapRenderFeature's constructor).
 enum class ShadowFilterQuality : int
 {
     Grid5x5 = 0,
@@ -359,10 +361,15 @@ struct alignas(16) ShadowDataGPU
     Mathematics::Vector4 terrainShadowGrid2;
     Mathematics::Vector4 terrainShadowGrid3;
     uint32_t terrainShadowSource[4];
+    float ShadowReferenceDepth[4];
     uint32_t terrainShadowField[4];
     Mathematics::Vector4 terrainShadowHeightSpan;
 };
-static_assert(sizeof(ShadowDataGPU) == 576, "ShadowDataGPU must be 576 bytes");
+static_assert(sizeof(ShadowDataGPU) == 592, "ShadowDataGPU must be 592 bytes");
+
+/// Rebase directional cascades, terrain coordinates and source-view depth.
+void RebaseDirectionalShadowData(ShadowDataGPU& data, const Rendering::CameraData& source,
+                                const Rendering::CameraData& receiver);
 
 class ShadowMapRenderFeature : public IRenderFeature
 {
@@ -533,7 +540,7 @@ class ShadowMapRenderFeature : public IRenderFeature
     // per-cascade texel size comes from, so the min/max pyramid built for it
     // always covers the lit proof's query.
     float PcssWidestKernelTexels(Rendering::ViewId viewId, const CascadeFrameData& frame,
-                                 uint32_t cascadeCount) const;
+                                 uint32_t cascadeCount, const RenderGraph::RGFrame& rgFrame) const;
 
     // IRenderFeature declaration hook — declares this view's shadow producer
     // passes, driven by ShadowMapNode. When ctx.DirectionalLightDirWS is
@@ -557,6 +564,9 @@ class ShadowMapRenderFeature : public IRenderFeature
                                                       RenderServices& rs,
                                                       const FeatureDeclareContext& ctx,
                                                       uint32_t cascadeIndex, const char* passName);
+    /// Whether rigid directional depth needs transfer-capable pooled attachments.
+    bool IsRigidCascadeCacheEnabled() const;
+
     Rendering::RenderGraph::RGPass DeclareTransmittancePass(Rendering::RenderGraph::RGFrame& frame,
                                                             RenderServices& rs,
                                                             const FeatureDeclareContext& ctx,
@@ -700,9 +710,8 @@ class ShadowMapRenderFeature : public IRenderFeature
 
     // True where SDSM runs: the device wants fits that follow the depth buffer
     // (Radeon and stable-shadow devices opt out: noisy readbacks can oscillate
-    // the splits). Every backend can read the result back: where a storage
-    // buffer cannot be mapped (WebGPU) the readback ring splits the slot and
-    // copies it into a mappable one (RGReadbackRing::Init).
+    // the splits) and can map a buffer one dispatch writes as storage (WebGPU
+    // cannot express the readback slot).
     static bool SupportsSdsm(const Rendering::IDevice* device);
 
     // Cache per-view frame data so cascade depth passes can read light VP matrices.
@@ -710,12 +719,12 @@ class ShadowMapRenderFeature : public IRenderFeature
     const CascadeFrameData* GetCachedFrameData(Rendering::ViewId viewId) const;
 
     // Camera-motion round-robin cap (GE_SHADOW_MOTION_CAP, default 2; 0 = off):
-    // at most this many unforced motion-class cascade renders PER (VIEW,
-    // FRAME), nearest-first — each shadow-casting view plans independently.
-    // The rest keep their retained layer for up to MotionMaxAge consecutive
-    // frames (GE_SHADOW_MOTION_MAX_AGE, default 2) and receivers sample it
-    // through the content fit; a layer past that bound renders on top of the
-    // cap. Correctness-class causes always render immediately and
+    // at most this many motion-class cascade renders PER (VIEW, FRAME) — each
+    // shadow-casting view plans independently, so a frame's total motion
+    // renders is cap × active cascade views. The rest keep their retained
+    // layer for up to MotionMaxAge consecutive frames
+    // (GE_SHADOW_MOTION_MAX_AGE, default 2) and receivers sample it through
+    // the content fit. Correctness-class causes always render immediately and
     // never count against the cap. Requires the static shadow cache lane
     // (GE_SHADOW_STATIC_CACHE != 0) — its records define the retained content.
     uint32_t GetMotionCap() const { return m_MotionCap; }
@@ -1197,11 +1206,8 @@ class ShadowMapRenderFeature : public IRenderFeature
     std::unordered_map<Rendering::ViewId, uint64_t> m_PointShadowDeclareState;
     ShadowDebugMode m_DebugMode = ShadowDebugMode::Off;
     bool m_ShowThumbnails = false;
-    // Default PCSS to match the engine's effective default before the
-    // PCSS-checkbox-to-enum migration. (The old code's m_PcssEnabled=true
-    // override silently promoted m_PcfQuality=0 to PCSS at runtime when
-    // bindless was on; the dropdown just makes that explicit.) MSM4 stays
-    // opt-in until projects validate it.
+    // PCSS, or DPCF under the compat shader profile (the constructor). MSM4
+    // stays opt-in until projects validate it.
     ShadowFilterQuality m_FilterQuality = ShadowFilterQuality::PCSS;
     float m_PoissonSoftness = 1.5f; // Softness multiplier — scales Poisson PCF radius AND PCSS penumbra.
                                     // For a directional light this is tan(angular-extent/2):
@@ -1255,14 +1261,25 @@ class ShadowMapRenderFeature : public IRenderFeature
     // pooled-physical adopt-change and device rebuild — content identity does
     // not track GPU lifetime.
     CascadeShadowCache m_CascadeShadowCache;
-
-    // Count of cascade depth passes actually declared this Declare() call.
-    // BuildShadowDataGPU uses it with content-fit validity: if this frame
-    // declared none and no layer has retained content, publish numCascades=0
-    // so sampling returns fully lit instead of sampling an unwritten reverse-Z
-    // image (1.0 = fully shadowed).
-    uint64_t m_CascadeDeclareFrameIndex = ~0ull;
-    uint32_t m_DeclaredCascadePassesThisFrame = 0;
+    CascadeShadowCache m_RigidCascadeCache;
+    struct RigidCascadeCertificate
+    {
+        DepthProducerState Producer;
+        uint64_t WriteGeneration = 0;
+        uint64_t PhysicalId = 0;
+        bool Valid = false;
+    };
+    FlatMap<Rendering::ViewId,
+        std::array<RigidCascadeCertificate, CascadeShadowCache::kSlotsPerView>> m_RigidCascadeCertificates;
+    uint64_t m_RigidCascadeWriteGeneration = 0;
+    struct RigidCascadeFrame;
+    void ConfigureRigidCascadeDepth(RenderGraph::RGPassBuilder& builder, RigidCascadeFrame& pending,
+                                     RenderServices& services, const FeatureDeclareContext& context,
+                                     RenderGraph::RGTexture target);
+    bool PrepareRigidCascadeDepth(RenderGraph::RGPrepareContext& context,
+                                   RigidCascadeFrame& pending, RenderServices& services);
+    void RecordRigidCascadeDepth(RenderGraph::RGContext& context, RigidCascadeFrame& pending);
+    void SubmitRigidCascadeDepth(const RigidCascadeFrame& pending);
 
     // ── Camera-motion round-robin (GE_SHADOW_MOTION_CAP) ──
     // Content-fit invariant: receivers must transform by the fit of the depth
@@ -1271,14 +1288,14 @@ class ShadowMapRenderFeature : public IRenderFeature
     // cache skips it byte-identically) the two are equal; only a motion-
     // deferred cascade diverges, and then BuildShadowDataGPU uploads this
     // snapshot (world fit rebased against the CURRENT render origin) plus the
-    // matching PCSS metrics. Updated on every declared depth cascade render;
+    // matching PCSS metrics. Updated when a depth cascade records;
     // invalidated with the cache (physical adopt-change / device rebuild).
     std::unordered_map<Rendering::ViewId, std::array<CascadeContentFit, kMaxShadowCascades>>
         m_CascadeContentFit;
     // Tint-family twin of the snapshot above (LightVP + FrameStamp + Valid
     // only; the PCSS metric fields stay zero — the tint is sampled through
     // the DEPTH content fit). Committed/refreshed exactly like the depth
-    // family's: on every declared tint render and on tint Cached skips. The
+    // family's: when a tint pass records and on tint Cached skips. The
     // plan phase requires byte-equal content-fit LightVPs across the pair
     // before a Motion pair may defer (ClassifyCascadePair) — a
     // transmission-visibility gap otherwise leaves an arbitrarily old tint
@@ -1289,12 +1306,13 @@ class ShadowMapRenderFeature : public IRenderFeature
     // Frame plan: built once per (view, frame) at the top of Declare's
     // directional branch, consumed by both cascade families so a deferred
     // depth layer and its glass-tint twin stay coherent under ONE sampling
-    // fit. Stamped with the declaring frame index — a plan from another frame
-    // (or a direct per-pass test call with no plan) never defers.
+    // fit. The graph incarnation separates streams that share a frame index.
+    // Scheduled layers use their current fit; skipped layers use retained content.
     struct MotionFramePlan
     {
-        uint64_t FrameStamp = ~0ull;
+        RenderGraph::RGFrameStamp For;
         uint32_t DeferMask = 0;
+        uint32_t ScheduledDepthMask = 0;
     };
     std::unordered_map<Rendering::ViewId, MotionFramePlan> m_MotionPlanByView;
     CascadeMotionScheduler m_MotionScheduler;
@@ -1306,7 +1324,7 @@ class ShadowMapRenderFeature : public IRenderFeature
     // at the top of Declare's directional branch, BEFORE any cascade declares.
     void PlanCascadeMotionFrame(Rendering::RenderGraph::RGFrame& frame, RenderServices& rs,
                                 const FeatureDeclareContext& ctx);
-    bool IsCascadeDeferredThisFrame(Rendering::ViewId viewId, uint64_t frameStamp,
+    bool IsCascadeDeferredThisFrame(Rendering::ViewId viewId, const RenderGraph::RGFrame& frame,
                                     uint32_t cascadeIndex) const;
 
     // Per-view declare counter setting the window cadence. Cadence only: the
@@ -1315,6 +1333,8 @@ class ShadowMapRenderFeature : public IRenderFeature
     // counter across a device rebuild shifts the window phase and nothing
     // else.
     std::unordered_map<Rendering::ViewId, uint32_t> m_CascadeCacheLogCounter;
+
+    uint32_t ScheduledCascadeMask(Rendering::ViewId viewId, const RenderGraph::RGFrame& frame) const;
 
     // Periodic (~every 300 declares per view) static-cache window log; warns
     // (edge-triggered) when the cache is enabled but produced zero skips over

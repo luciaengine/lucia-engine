@@ -9,6 +9,8 @@ import { resolveSuiteRun, suiteArguments, type SuiteRun } from "../build/ctest-r
 import { binaryDirectory, buildArgs, buildDirectory, detectPreset, editorExePath, normalizePreset } from "../build/preset.js";
 import { runStamp, runToLog } from "../build/process.js";
 import { type BuildRecord, formatBuildRecord, formatSuiteRecord, isPassingSuite, outputTail, type SuiteRecord, summarizeBuildOutput, summarizeGtestXml } from "../build/summaries.js";
+import { kTimingLockWaitSchema, passTimingLock } from "../build/timing-lock.js";
+import { runToolGate } from "../build/tool-gate.js";
 import { repoRoot } from "../paths.js";
 import { defineTool, type ToolDef, ToolError } from "../registry.js";
 
@@ -113,12 +115,13 @@ async function buildTarget(preset: string, config: string, target: string, jobs:
   // Whole seconds: some file systems store modification times at that resolution.
   const startMs = Math.floor(Date.now() / 1000) * 1000;
   const run = await runToLog("cmake", buildArgs(preset, config, target, jobs), { cwd: root, logPath, timeoutMs: kBuildTimeoutMs });
-  pruneToolLogs(path.dirname(logPath), `build-${target}-`);
+  if (!run.cleanupUncertain) pruneToolLogs(path.dirname(logPath), `build-${target}-`);
   const binDir = binaryDirectory(preset, config);
   const binaries = binariesWrittenSince(binDir, binDir, startMs);
   return {
     exitCode: run.exitCode,
     timedOut: run.timedOut,
+    cleanupUncertain: run.cleanupUncertain,
     durationSec: run.durationMs / 1000,
     targets: [target],
     preset,
@@ -131,7 +134,9 @@ async function buildTarget(preset: string, config: string, target: string, jobs:
 }
 
 // Building and launching happen on this host, not in the editor — these are the
-// only tools in the registry with no debug-server method behind them.
+// only tools in the registry with no debug-server method behind them. Every tool
+// here that starts a build, a test run or an editor runs the optional tool gate
+// and passes the timing lock before it touches a process.
 
 export const tools: ToolDef[] = [
   defineTool({
@@ -144,15 +149,18 @@ export const tools: ToolDef[] = [
       config: z.string().optional().describe("Build config: DebugFast, Debug or Release (default: DebugFast)"),
       jobs: z.coerce.number().optional().describe("Parallel jobs (default: 12)"),
       preset: z.string().optional().describe("CMake preset (auto-detected from platform/arch/VS version if omitted)"),
+      waitForTimingLockSec: kTimingLockWaitSchema,
       includeWarnings: z.boolean().optional().describe("List the first unique warning lines as well as their count (default false: the count only)"),
     },
-    run: async ({ target, config, jobs, preset, includeWarnings }) => {
+    run: async ({ target, config, jobs, preset, includeWarnings, waitForTimingLockSec }) => {
+      await runToolGate();
+      await passTimingLock(waitForTimingLockSec);
       const t = target ?? "Editor";
       const c = config ?? "DebugFast";
       const p = normalizePreset(preset ?? detectPreset(c));
       const record = await buildTarget(p, c, t, String(jobs ?? kDefaultBuildJobs), includeWarnings ?? false);
       const summary = formatBuildRecord(record);
-      if (record.exitCode !== 0) throw new ToolError(summary);
+      if (record.exitCode !== 0 || record.timedOut || record.cleanupUncertain) throw new ToolError(summary);
       return { data: record, summary };
     },
   }),
@@ -161,14 +169,17 @@ export const tools: ToolDef[] = [
     name: "run_tests",
     category: "lifecycle",
     actsOnHost: true,
-    description: "Run a registered test (a gtest suite gets the test summary; another registration its exit code) with the arguments, working directory and environment its CTest registration gives it, and return its summary. A gtest suite runs in one process: declared = ran + disabled, failed N with each failing test and its first message line, skipped N with each skip and its reason, the path of the gtest XML and the path of the full console log. A run in which no test ran (a filter that matches nothing) is void and fails. Any other registration (dotnet test, a node, python or cmake script) runs its registered command and reports its exit code, the last lines of its output and the log path; it takes no filter. The summary and the XML are the record of the run: never read the console log to find a result, and do not call get_log after a suite. Build the suite first with build_engine target=<suite>.",
+    description: "Run a registered test (a gtest suite gets the test summary; another registration its exit code) with the arguments, working directory and environment its CTest registration gives it, and return its summary. A gtest suite runs in one process: declared = ran + disabled, failed N with each failing test and its first message line, skipped N with each skip and its reason, the path of the gtest XML and the path of the full console log. A run with no executed non-skipped test, invalid XML accounting or a timeout fails. Inherited GTEST_* variables are removed; named filtered registrations are labeled scoped checks, not whole-suite gates. Any other registration (dotnet test, a node, python or cmake script) runs its registered command and reports its exit code, the last lines of its output and the log path; it takes no filter. The summary and the XML are the record of the run: never read the console log to find a result, and do not call get_log after a suite. Build the suite first with build_engine target=<suite>.",
     schema: {
       suite: z.string().describe("A registered test suite such as EditorTests or ManagedCoreBridgeTests"),
       filter: z.string().optional().describe("gtest filter (--gtest_filter), gtest suites only, for a red-first run of one test or a repeat of one failing test only; a gate runs the suite whole"),
       config: z.string().optional().describe("Build config (default: DebugFast)"),
       preset: z.string().optional().describe("CMake preset (auto-detected if omitted)"),
+      waitForTimingLockSec: kTimingLockWaitSchema,
     },
-    run: async ({ suite, filter, config, preset }) => {
+    run: async ({ suite, filter, config, preset, waitForTimingLockSec }) => {
+      await runToolGate();
+      await passTimingLock(waitForTimingLockSec);
       const c = config ?? "DebugFast";
       const p = normalizePreset(preset ?? detectPreset(c));
       const buildDir = path.join(repoRoot(), buildDirectory(p));
@@ -179,20 +190,21 @@ export const tools: ToolDef[] = [
       const logPath = `${stem}.log`;
       const invocation = suiteArguments(run, suite, xmlPath, filter);
       if ("refusal" in invocation) throw new ToolError(invocation.refusal);
-      const result = await runToLog(run.program, invocation.args, { cwd: run.cwd, env: run.env, logPath, timeoutMs: kSuiteTimeoutMs });
-      pruneToolLogs(logDir, `${suite}-`);
+      const result = await runToLog(run.program, invocation.args, { cwd: run.cwd, env: run.env, clearGtestEnvironment: invocation.clearGtestEnvironment, logPath, timeoutMs: kSuiteTimeoutMs });
+      if (!result.cleanupUncertain) pruneToolLogs(logDir, `${suite}-`);
       const record: SuiteRecord = {
         suite,
         gtest: run.gtest,
         exitCode: result.exitCode,
         timedOut: result.timedOut,
+        cleanupUncertain: result.cleanupUncertain,
         durationSec: result.durationMs / 1000,
         failures: [],
         skips: [],
         ...(run.gtest
           ? { ...(fs.existsSync(xmlPath) ? summarizeGtestXml(fs.readFileSync(xmlPath, "utf8")) : {}), xmlPath }
           : { outputTail: logTail(logPath) }),
-        ...(filter ? { filter } : {}),
+        ...(invocation.filter !== undefined ? { filter: invocation.filter } : {}),
         logPath,
       };
       const summary = formatSuiteRecord(record);
@@ -213,8 +225,11 @@ export const tools: ToolDef[] = [
       renderdoc: z.boolean().optional().describe("Launch under 'renderdoccmd capture' so trigger_capture can capture frames. Defaults captureCompat=true, which drops VK_EXT_descriptor_buffer so the .rdc replays — but that also makes HZB occlusion culling report zero culled draws, so pass captureCompat=false for occlusion or perf captures."),
       captureCompat: z.boolean().optional().describe("renderdoc=true: set GE_VK_CAPTURE_COMPAT=1 (default true). Set false to keep VK_EXT_descriptor_buffer — occlusion/perf numbers stay trustworthy, but the capture may fail to replay."),
       captureDir: z.string().optional().describe("renderdoc=true: directory for .rdc files (default: <editor exe dir>/Captures). The editor is pointed at the same directory via GE_RENDERDOC_CAPTURE_DIR."),
+      waitForTimingLockSec: kTimingLockWaitSchema,
     },
-    run: async ({ config, preset, extraArgs, renderdoc, captureCompat, captureDir }) => {
+    run: async ({ config, preset, extraArgs, renderdoc, captureCompat, captureDir, waitForTimingLockSec }) => {
+      await runToolGate();
+      await passTimingLock(waitForTimingLockSec);
       const c = config ?? "DebugFast";
       const p = normalizePreset(preset ?? detectPreset(c));
       const exe = editorExePath(p, c);
@@ -296,11 +311,14 @@ export const tools: ToolDef[] = [
       config: z.string().optional().describe("Build config: DebugFast, Debug or Release (default: DebugFast)"),
       target: z.string().optional().describe("CMake target (default: Editor)"),
       jobs: z.coerce.number().optional().describe("Parallel jobs (default: 12)"),
+      waitForTimingLockSec: kTimingLockWaitSchema,
     },
-    run: async ({ config, target, jobs }) => {
+    run: async ({ config, target, jobs, waitForTimingLockSec }) => {
+      await runToolGate();
+      await passTimingLock(waitForTimingLockSec);
       const c = config ?? "DebugFast";
       const t = target ?? "Editor";
-      const j = String(jobs ?? kDefaultBuildJobs);
+      const j = String(jobs ?? 12);
       const p = detectPreset(c);
       const steps: string[] = [];
 
@@ -315,10 +333,13 @@ export const tools: ToolDef[] = [
       // Step 2: Build.
       steps.push(`Building ${t} (${c})...`);
       const build = await buildTarget(p, c, t, j, false);
-      if (build.exitCode !== 0) throw new ToolError(formatBuildRecord(build));
+      if (build.exitCode !== 0 || build.timedOut || build.cleanupUncertain) throw new ToolError(formatBuildRecord(build));
       steps.push(`Build succeeded in ${build.durationSec.toFixed(1)} s.`);
 
-      // Step 3: Launch editor.
+      // Step 3: Recheck both gates before launching: a workflow gate or timing
+      // lock may have changed while the build ran.
+      await runToolGate();
+      await passTimingLock(waitForTimingLockSec);
       const exe = editorExePath(p, c);
       if (!fs.existsSync(exe)) throw new ToolError(`Editor exe not found at ${exe} after build.`);
       const { pid } = launchEditorProcess(exe);

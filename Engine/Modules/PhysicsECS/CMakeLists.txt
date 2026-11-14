@@ -10,7 +10,13 @@ add_library(PhysicsECS OBJECT
     Source/PhysicsWorldService.cpp
     Source/ProceduralMeshColliders.cpp
     Source/HeightFieldDataProvider.cpp
+    Source/HeightFieldCollisionReadiness.cpp
     Source/PhysicsWorldSettingsHelpers.cpp
+    Source/MovingPlatformReflection.cpp
+    Source/Systems/MovingPlatformSystem.cpp
+    Source/Systems/PlatformPathTraversal.cpp
+    Source/PhysicsMaterialAsset.cpp
+    Source/ContactSurfaceTable.cpp
     Source/Systems/PhysicsWorldBootstrapSystem.cpp
     Source/Systems/PhysicsEventsSystem.cpp
     Source/Systems/PhysicsInitSystem.cpp
@@ -30,16 +36,23 @@ target_include_directories(PhysicsECS
         ${CMAKE_CURRENT_SOURCE_DIR}/Include
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/Source
+        $<TARGET_PROPERTY:FileWatcher,INTERFACE_INCLUDE_DIRECTORIES>
+        $<TARGET_PROPERTY:GameEngineRendering,INTERFACE_INCLUDE_DIRECTORIES>
 )
 
 target_link_libraries(PhysicsECS
     PUBLIC
         Physics
+        AssetCore
         GenerationalVector
         ECS
         ECSComponents
         Types
         Mathematics
         Logger
+        Spline
+        SplineECS
+    PRIVATE
+        JobSystem
 )
 

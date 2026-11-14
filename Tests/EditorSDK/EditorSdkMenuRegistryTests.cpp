@@ -6,16 +6,16 @@
 //   * command ids live in the native range, disjoint from built-in and
 //     script commands, and are 16-bit (Win32 WM_COMMAND carries LOWORD),
 //   * TryInvoke dispatches the registered action and rejects unknown ids,
-//   * an item goes when its handle goes, keeps its id for the next
-//     registration, and a replaced item's old handle removes nothing,
 //   * registration flips the dirty flag exactly once per consume (the editor
 //     polls it to rebuild the toolbar after packages load at project open),
 //   * items without an Action, without a Path, or without at least
 //     "Menu/Item" are rejected loudly,
-//   * snapshot ordering is (Priority, Path), and a row keeps its separator,
+//   * snapshot ordering is (Priority, Path),
 //   * module-stamped registrations pin the module (C12 unload refusal),
 //   * folder context-menu items dispatch with their folder, in a range of
-//     their own.
+//     their own,
+//   * file context-menu items show on the files they accept and dispatch
+//     with their file, in a range of their own.
 //
 // Links EditorSDK.dll — the same registry Editor.exe and module DLLs share.
 // The registry is process-wide: every test uses its own paths.
@@ -47,45 +47,19 @@ const ed::EditorMenuItemSnapshot* FindByPath(const std::vector<ed::EditorMenuIte
 
 } // namespace
 
-TEST(EditorMenuRegistry, ScopedItemGoesWithItsHandleAndAStaleHandleRemovesNothing)
-{
-    auto& registry = ed::EditorMenuRegistry::Get();
-    int calls = 0;
-    auto handle = registry.RegisterMenuItem({"Tools/SdkTest Scoped", 0, [&] { ++calls; }});
-    const auto registered = registry.Snapshot();
-    const auto* item = FindByPath(registered, "Tools/SdkTest Scoped");
-    ASSERT_NE(item, nullptr);
-    const uint32_t id = item->CommandId;
-
-    handle.Reset();
-    EXPECT_EQ(FindByPath(registry.Snapshot(), "Tools/SdkTest Scoped"), nullptr);
-    EXPECT_FALSE(registry.TryInvoke(id));
-    EXPECT_EQ(calls, 0);
-
-    auto stale = registry.RegisterMenuItem({"Tools/SdkTest Scoped", 0, [&] { ++calls; }});
-    auto current = registry.RegisterMenuItem({"Tools/SdkTest Scoped", 0, [&] { calls += 10; }});
-    stale.Reset();
-    const auto afterReplace = registry.Snapshot();
-    const auto* replaced = FindByPath(afterReplace, "Tools/SdkTest Scoped");
-    ASSERT_NE(replaced, nullptr);
-    EXPECT_EQ(replaced->CommandId, id) << "the command id must survive removal";
-    EXPECT_TRUE(registry.TryInvoke(id));
-    EXPECT_EQ(calls, 10);
-}
-
 TEST(EditorMenuRegistry, SamePathRegistrationReplacesAndKeepsCommandIdStable)
 {
     auto& registry = ed::EditorMenuRegistry::Get();
 
     int firstCalls = 0;
     int secondCalls = 0;
-    const auto firstItem = registry.RegisterMenuItem({"Tools/SdkTest Replace", 0, [&] { ++firstCalls; }});
+    registry.RegisterMenuItem({"Tools/SdkTest Replace", 0, [&] { ++firstCalls; }});
     const auto beforeReplace = registry.Snapshot();
     const auto* first = FindByPath(beforeReplace, "Tools/SdkTest Replace");
     ASSERT_NE(first, nullptr);
     const uint32_t id = first->CommandId;
 
-    const auto secondItem = registry.RegisterMenuItem({"Tools/SdkTest Replace", 0, [&] { ++secondCalls; }});
+    registry.RegisterMenuItem({"Tools/SdkTest Replace", 0, [&] { ++secondCalls; }});
     const auto snapshot = registry.Snapshot();
     EXPECT_EQ(std::count_if(snapshot.begin(), snapshot.end(),
                             [](const ed::EditorMenuItemSnapshot& i) {
@@ -105,7 +79,7 @@ TEST(EditorMenuRegistry, SamePathRegistrationReplacesAndKeepsCommandIdStable)
 TEST(EditorMenuRegistry, CommandIdsAreSixteenBitAndInTheNativeRange)
 {
     auto& registry = ed::EditorMenuRegistry::Get();
-    const auto registration = registry.RegisterMenuItem({"Tools/SdkTest Range", 0, [] {}});
+    registry.RegisterMenuItem({"Tools/SdkTest Range", 0, [] {}});
     const auto snapshot = registry.Snapshot();
     const auto* item = FindByPath(snapshot, "Tools/SdkTest Range");
     ASSERT_NE(item, nullptr);
@@ -128,7 +102,7 @@ TEST(EditorMenuRegistry, RegistrationMarksDirtyOncePerConsume)
     auto& registry = ed::EditorMenuRegistry::Get();
     (void)registry.ConsumeDirty(); // drain other tests' registrations
 
-    const auto registration = registry.RegisterMenuItem({"Tools/SdkTest Dirty", 0, [] {}});
+    registry.RegisterMenuItem({"Tools/SdkTest Dirty", 0, [] {}});
     EXPECT_TRUE(registry.ConsumeDirty());
     EXPECT_FALSE(registry.ConsumeDirty()) << "consume must clear the flag";
 }
@@ -138,9 +112,9 @@ TEST(EditorMenuRegistry, RejectsInvalidDescriptors)
     auto& registry = ed::EditorMenuRegistry::Get();
     const size_t before = registry.Snapshot().size();
 
-    const auto noPath = registry.RegisterMenuItem({"", 0, [] {}});
-    const auto noAction = registry.RegisterMenuItem({"Tools/SdkTest NoAction", 0, nullptr});
-    const auto noSeparator = registry.RegisterMenuItem({"NoMenuSeparator", 0, [] {}});
+    registry.RegisterMenuItem({"", 0, [] {}});
+    registry.RegisterMenuItem({"Tools/SdkTest NoAction", 0, nullptr});
+    registry.RegisterMenuItem({"NoMenuSeparator", 0, [] {}});
 
     EXPECT_EQ(registry.Snapshot().size(), before)
         << "invalid descriptors must not enter the registry";
@@ -149,9 +123,9 @@ TEST(EditorMenuRegistry, RejectsInvalidDescriptors)
 TEST(EditorMenuRegistry, SnapshotOrdersByPriorityThenPath)
 {
     auto& registry = ed::EditorMenuRegistry::Get();
-    const auto itemB = registry.RegisterMenuItem({"Tools/SdkTest Order B", 5, [] {}});
-    const auto itemA = registry.RegisterMenuItem({"Tools/SdkTest Order A", 5, [] {}});
-    const auto itemC = registry.RegisterMenuItem({"Tools/SdkTest Order C", -5, [] {}});
+    registry.RegisterMenuItem({"Tools/SdkTest Order B", 5, [] {}});
+    registry.RegisterMenuItem({"Tools/SdkTest Order A", 5, [] {}});
+    registry.RegisterMenuItem({"Tools/SdkTest Order C", -5, [] {}});
 
     const auto snapshot = registry.Snapshot();
     const auto index = [&](std::string_view path) {
@@ -163,23 +137,12 @@ TEST(EditorMenuRegistry, SnapshotOrdersByPriorityThenPath)
     EXPECT_LT(index("Tools/SdkTest Order A"), index("Tools/SdkTest Order B"));
 }
 
-TEST(EditorMenuRegistry, SnapshotKeepsTheSeparatorAboveAnItem)
-{
-    auto& registry = ed::EditorMenuRegistry::Get();
-    const auto item = registry.RegisterMenuItem(
-        {.Path = "Tools/SdkTest Separator", .Action = [] {}, .SeparatorBefore = true});
-    const auto snapshot = registry.Snapshot();
-    const auto* row = FindByPath(snapshot, "Tools/SdkTest Separator");
-    ASSERT_NE(row, nullptr);
-    EXPECT_TRUE(row->SeparatorBefore);
-}
-
 TEST(EditorMenuRegistry, ModuleStampedItemsPinTheModule)
 {
     auto& registry = ed::EditorMenuRegistry::Get();
 
     ecs::SetActiveRegistrationModule("sdkTest.menu.module", 7);
-    const auto registration = registry.RegisterMenuItem({"Tools/SdkTest Pin", 0, [] {}});
+    registry.RegisterMenuItem({"Tools/SdkTest Pin", 0, [] {}});
     ecs::ClearActiveRegistrationModule();
 
     std::vector<std::string> pins;
@@ -282,4 +245,47 @@ TEST(EditorMenuRegistry, FolderMenuItemsDispatchTheFolderAndKeepTheirId)
     registry.RegisterCommand({id, [](std::string*) { return true; }});
     EXPECT_EQ(registry.InvokeCommand(id, &error), ed::EditorCommandResult::NotFound)
         << "a fixed-id command may not take a folder item's id";
+}
+
+// A file context-menu item shows only on the files its AppliesTo accepts,
+// dispatches with the file the menu was opened on, keeps its command id across
+// a same-Path re-registration, and takes ids no folder item or fixed-id command can.
+TEST(EditorMenuRegistry, FileMenuItemsShowOnTheirFilesAndDispatchTheFile)
+{
+    auto& registry = ed::EditorMenuRegistry::Get();
+    const auto received = std::make_shared<std::filesystem::path>();
+    const auto appliesTo = [](const std::filesystem::path& file) { return file.extension() == ".sdktest"; };
+    registry.RegisterAssetFileMenuItem({"SdkTest File Item", 0, {}, appliesTo,
+                                        [received](const std::filesystem::path& file) { *received = file; }});
+    const auto findItem = [&](const std::filesystem::path& file) {
+        const auto items = registry.AssetFileMenuSnapshot(file);
+        const auto it = std::find_if(items.begin(), items.end(), [](const ed::EditorAssetFileMenuItemSnapshot& i) {
+            return i.Path == "SdkTest File Item";
+        });
+        return it == items.end() ? 0u : it->CommandId;
+    };
+    const uint32_t id = findItem("Assets/map.sdktest");
+    ASSERT_NE(id, 0u);
+    EXPECT_EQ(findItem("Assets/map.png"), 0u);
+    for (const auto& folderItem : registry.DirectoryMenuSnapshot())
+        EXPECT_NE(folderItem.CommandId, id);
+
+    EXPECT_TRUE(registry.TryInvokeAssetFileItem(id, "Assets/map.sdktest"));
+    EXPECT_EQ(*received, std::filesystem::path("Assets/map.sdktest"));
+    EXPECT_FALSE(registry.TryInvokeAssetFileItem(id + 0x100u, "Assets/map.sdktest"));
+    EXPECT_FALSE(registry.TryInvokeDirectoryItem(id, "Assets"));
+    EXPECT_FALSE(registry.TryInvokeAssetFileItem(id, "Assets/map.png"));
+    EXPECT_EQ(*received, std::filesystem::path("Assets/map.sdktest"));
+
+    const auto replaced = std::make_shared<bool>(false);
+    registry.RegisterAssetFileMenuItem(
+        {"SdkTest File Item", 0, {}, appliesTo, [replaced](const std::filesystem::path&) { *replaced = true; }});
+    EXPECT_EQ(findItem("Assets/map.sdktest"), id);
+    EXPECT_TRUE(registry.TryInvokeAssetFileItem(id, "Assets/map.sdktest"));
+    EXPECT_TRUE(*replaced);
+
+    std::string error;
+    registry.RegisterCommand({id, [](std::string*) { return true; }});
+    EXPECT_EQ(registry.InvokeCommand(id, &error), ed::EditorCommandResult::NotFound)
+        << "a fixed-id command may not take a file item's id";
 }

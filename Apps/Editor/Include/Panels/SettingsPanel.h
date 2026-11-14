@@ -271,19 +271,19 @@ public:
     void SetOnTruncationEnabledChanged(std::function<void(bool)> cb) { m_OnTruncationEnabledChanged = std::move(cb); }
     void SetOnAssetsListColumnsChanged(std::function<void()> cb) { m_OnAssetsListColumnsChanged = std::move(cb); }
     void SetPingAsset(std::function<void(const std::filesystem::path&)> cb) { m_PingAsset = std::move(cb); }
-    
+
     // Gizmo thickness callbacks
     void SetOnTranslateGizmoThicknessChanged(std::function<void(float)> cb) { m_OnTranslateGizmoThicknessChanged = std::move(cb); }
     void SetOnRotateGizmoThicknessChanged(std::function<void(float)> cb) { m_OnRotateGizmoThicknessChanged = std::move(cb); }
     void SetOnScaleGizmoThicknessChanged(std::function<void(float)> cb) { m_OnScaleGizmoThicknessChanged = std::move(cb); }
     void SetOnGizmoConstantSizeChanged(std::function<void(bool)> cb) { m_OnGizmoConstantSizeChanged = std::move(cb); }
     void SetOnRotateGizmoEnhancedChanged(std::function<void(bool)> cb) { m_OnRotateGizmoEnhancedChanged = std::move(cb); }
-    
+
     // Gizmo scale callbacks (for constant screen size mode)
     void SetOnTranslateGizmoScaleChanged(std::function<void(float)> cb) { m_OnTranslateGizmoScaleChanged = std::move(cb); }
     void SetOnRotateGizmoScaleChanged(std::function<void(float)> cb) { m_OnRotateGizmoScaleChanged = std::move(cb); }
     void SetOnScaleGizmoScaleChanged(std::function<void(float)> cb) { m_OnScaleGizmoScaleChanged = std::move(cb); }
-    
+
     // Constant size thickness callbacks (separate from normal thickness)
     void SetOnTranslateConstantThicknessChanged(std::function<void(float)> cb) { m_OnTranslateConstantThicknessChanged = std::move(cb); }
     void SetOnRotateConstantThicknessChanged(std::function<void(float)> cb) { m_OnRotateConstantThicknessChanged = std::move(cb); }
@@ -518,12 +518,12 @@ private:
     TextField* m_SyntaxNumberColorField = nullptr;
     TextField* m_SyntaxTypeColorField = nullptr;
     TextField* m_SyntaxDefaultColorField = nullptr;
-    
+
     // Script settings
     Toggle* m_ScriptOpenInInspectorToggle = nullptr;
     Toggle* m_ShaderGraphGlslOpenToggle = nullptr;
     Slider* m_ScriptLineHeightSlider = nullptr;
-    
+
     // Closed whenever content-page elements are destroyed: a colour picker the
     // page opened closes with it instead of calling into the destroyed page.
     Editor::ColorPickerScope m_PageColorPickers;
@@ -700,7 +700,7 @@ private:
     std::function<void(float)> m_OnTranslateGizmoScaleChanged;
     std::function<void(float)> m_OnRotateGizmoScaleChanged;
     std::function<void(float)> m_OnScaleGizmoScaleChanged;
-    
+
     // Constant size thickness callbacks
     std::function<void(float)> m_OnTranslateConstantThicknessChanged;
     std::function<void(float)> m_OnRotateConstantThicknessChanged;
@@ -709,22 +709,22 @@ private:
     // Grid settings callbacks
     std::function<void(float)> m_OnGridOpacityChanged;
     std::function<void(float)> m_OnGridSnapSizeChanged;
-    
+
     // Gizmo thickness sliders
     Slider* m_TranslateGizmoThicknessSlider = nullptr;
     Slider* m_RotateGizmoThicknessSlider = nullptr;
     Slider* m_ScaleGizmoThicknessSlider = nullptr;
-    
+
     // Gizmo scale sliders (constant screen size)
     Slider* m_TranslateGizmoScaleSlider = nullptr;
     Slider* m_RotateGizmoScaleSlider = nullptr;
     Slider* m_ScaleGizmoScaleSlider = nullptr;
-    
+
     // Constant size thickness sliders
     Slider* m_TranslateConstantThicknessSlider = nullptr;
     Slider* m_RotateConstantThicknessSlider = nullptr;
     Slider* m_ScaleConstantThicknessSlider = nullptr;
-    
+
     // Gizmo settings section containers (for show/hide)
     UIElement* m_GizmoThicknessSection = nullptr;
     UIElement* m_GizmoConstantSizeSection = nullptr;

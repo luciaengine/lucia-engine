@@ -1,6 +1,5 @@
 #pragma once
 
-#include <chrono>
 #include <cstdint>
 #include <string>
 #include <thread>
@@ -59,10 +58,7 @@ inline void SetCurrentThreadName([[maybe_unused]] const char* name)
 #endif
 }
 
-// The name a thread of this process was given (SetCurrentThreadName, or by the
-// runtime), by its OS thread id: GetCurrentThreadId on Windows,
-// pthread_threadid_np on macOS, gettid on Linux. Empty when the thread is gone,
-// has no name, or the platform cannot read another thread's name.
+/// Read a process thread name by OS thread ID. Empty if unavailable or the thread has exited.
 std::string GetThreadName(std::uint64_t osThreadId);
 
 // Blocks the calling thread for `duration`, overshooting by well under a

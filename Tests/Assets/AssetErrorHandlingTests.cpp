@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <string>
 #include "Assets/AudioAsset.h"
 #include "Assets/ModelAsset.h"
 #include "Assets/BinaryAsset.h"
