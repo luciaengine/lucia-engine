@@ -120,6 +120,7 @@ set(UI_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_PrimitiveGen.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/NineSliceLayout.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/TextSegmentation.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/TextSegmentation_Unicode.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_Layout.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_CascadeProbe.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_Fonts.cpp

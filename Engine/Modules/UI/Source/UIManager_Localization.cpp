@@ -17,6 +17,7 @@ void UIManager::SetLocalizationCatalog(std::shared_ptr<Localization::Localizatio
 {
     m_LocalizationSubscription.Reset();
     m_LocalizationCatalog = std::move(catalog);
+    SetTextLanguage(m_LocalizationCatalog ? m_LocalizationCatalog->GetLocale() : "und");
     if (m_LocalizationCatalog)
         m_LocalizationSubscription = m_LocalizationCatalog->Changed.Subscribe([this]() { RefreshLocalizedText(); });
     RefreshLocalizedText();
