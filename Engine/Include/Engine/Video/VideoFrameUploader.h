@@ -39,8 +39,8 @@ namespace GameEngine::Video
 //   - A backend that publishes no graphics timeline hands back an INVALID token,
 //     which IDevice::QueryGpuSyncToken reports as Unknown — it cannot separate
 //     "never armed" from "already retired". VulkanDevice and MetalDevice override
-//     LastSubmissionToken(); D3D12Device inherits IDevice's `return {}`. On Unknown the slot falls back to what ring rotation alone
-//     guarantees: the allocator advances one slot per device frame over
+//     LastSubmissionToken(); D3D12Device inherits IDevice's `return {}`. On Unknown
+//     the slot falls back to what ring rotation alone guarantees: the allocator advances one slot per device frame over
 //     framesInFlight+1 slots, so a slot last written in an EARLIER device frame has
 //     been retired by the device's own frame pacing, and one written in THIS device
 //     frame has not.
