@@ -26,8 +26,6 @@ namespace UI {
 // each glyph quad by; a change to one is a change to both.
 [[nodiscard]] float TextEffectReachPx(const TextEffects& resolved);
 
-void OrderTextEffects(std::span<UIPrimitive> primitives);
-
 // Where an emitted glyph run lands: the primitive sink plus the shared state
 // every text surface already carries at its emission point.
 struct GlyphRunTarget
