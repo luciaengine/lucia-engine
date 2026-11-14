@@ -73,8 +73,7 @@ class ClusterLODRuntimeTest : public ::testing::Test
         m_Jobs = std::make_unique<JobSystem::WorkStealingThreadPool>(WorkerCount());
         m_Device = CreateDevice();
         if (!m_Device)
-            GTEST_SKIP() << "No Vulkan device available";
-        ASSERT_FALSE(m_Device->GetCapabilities().supportsRayQuery);
+            GTEST_SKIP() << "No device available";
         const auto& capabilities = m_Device->GetCapabilities();
         if (!capabilities.supportsBufferDeviceAddress || !capabilities.memoryTopology ||
             capabilities.memoryTopology->largestHostVisibleDeviceLocalHeapBytes == 0)
@@ -188,7 +187,6 @@ class ClusterLODRuntimeTest : public ::testing::Test
     }
 
     Rendering::Tests::ScopedEnvVar m_SingleQueue{"GE_ASYNC_COMPUTE", "0"};
-    Rendering::Tests::ScopedEnvVar m_RasterOnly{"GE_VK_DISABLE_RAY_QUERY", "1"};
     TestUtils::ScopedTempDir m_Temporary{TestUtils::MakeUniqueTempDirectory("cluster-runtime")};
     // The helper outlives pool shutdown even if its acquisition times out.
     std::shared_ptr<GameEngine::Tests::HeldWorkers> m_HeldWorkers;

@@ -803,11 +803,15 @@ bool ClusterLODFeature::Initialize(RenderServices& services, AssetManager& asset
     if (state.Initialized)
         return state.Services == &services && state.Assets == &assets;
     auto* device = services.GetDevice();
-    if (!device || device->GetAPI() != GraphicsAPI::Vulkan || device->GetCapabilities().supportsRayQuery ||
+    // Fine geometry needs a coherent write into host-visible device memory (TryWriteCoherentBuffer).
+    // Scene acceleration structures skip the fine domain, so ray tracing reads the coarse mesh.
+    const GraphicsAPI api = device ? device->GetAPI() : GraphicsAPI::Auto;
+    if (!device || (api != GraphicsAPI::Vulkan && api != GraphicsAPI::Metal) ||
         !device->GetCapabilities().supportsBufferDeviceAddress ||
         Platform::EnvironmentSwitchEnabled("GE_ASYNC_COMPUTE", true) || !services.Spine().TryRequireCurrentWorldEpoch())
     {
-        Logger::Log::Warning("Cluster LOD fine pages require Vulkan, startup admission, buffer addresses, GE_ASYNC_COMPUTE=0 and a raster-only device (GE_VK_DISABLE_RAY_QUERY=1)");
+        Logger::Log::Warning("Cluster LOD fine pages are off: they need Vulkan or Metal, buffer device addresses and "
+                             "GE_ASYNC_COMPUTE=0, and they start only with the first world.");
         return false;
     }
     state.Services = &services;

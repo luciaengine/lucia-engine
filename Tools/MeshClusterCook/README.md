@@ -39,11 +39,12 @@ error or a shading guarantee. This tool alone does not enable runtime fine-page
 selection or establish a memory/performance improvement.
 
 
-## Vulkan raster runtime prototype
+## Runtime fine pages
 
-Set `GE_CLUSTER_LOD=1`, `GE_ASYNC_COMPUTE=0`, and
-`GE_VK_DISABLE_RAY_QUERY=1` before starting the Editor or Player. Without all
-three settings and buffer-device-address support, fine mode stays disabled.
+Set `GE_CLUSTER_LOD=1` and `GE_ASYNC_COMPUTE=0` before starting the Editor or
+Player. Fine pages run on Vulkan and Metal devices with buffer device addresses;
+on any other device, or without both settings, fine mode stays disabled.
+Ray tracing reads the coarse model: scene acceleration structures skip fine pages.
 Import the generated `.gecluster` model normally. Fine pages use the existing
 asset IO service; pending or failed reads keep the complete coarse cover.
 
