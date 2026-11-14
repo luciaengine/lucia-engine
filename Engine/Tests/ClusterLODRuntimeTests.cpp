@@ -273,7 +273,8 @@ class ScopedQueueGates
     {
         const bool fine = ReleaseFine();
         if (!m_LaterReleased)
-            m_LaterReleased = Later.IsValid() && m_Device.QueueSubmit(m_ReleaseQueue, {m_Signals[1].get()}, {}, {{Later, 1}});
+            m_LaterReleased =
+                Later.IsValid() && m_Device.QueueSubmit(m_ReleaseQueue, {m_Signals[1].get()}, {}, {{Later, 1}});
         if (!fine || !m_LaterReleased)
             return false;
         if (!m_Device.WaitTimelineSemaphoreValue(Fine, 1, kTimeoutNs) ||
@@ -333,7 +334,8 @@ constexpr uint32 kFineReadBytes = 64;
 
 // Copies kFineReadBytes of fine storage into `destination` in one pass on `queue`.
 void SubmitFineCopy(RenderGraph::RGFrame& frame, RenderServices& services, BufferHandle source,
-                    uint64 offset, BufferHandle destination, RenderGraph::RGQueue queue = RenderGraph::RGQueue::Graphics)
+                    uint64 offset, BufferHandle destination,
+                    RenderGraph::RGQueue queue = RenderGraph::RGQueue::Graphics)
 {
     frame.BeginFrame(0);
     ASSERT_TRUE(services.Spine().BindWorldGeometry(frame));
