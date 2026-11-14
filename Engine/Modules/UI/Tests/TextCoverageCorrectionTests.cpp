@@ -69,11 +69,16 @@ TEST(TextCoverageCorrection, OnlyTheEncodedTargetSelectsTheEncodedArm)
 
 TEST(TextCoverageCorrection, DefaultKnobsReduceToContrastOnly)
 {
-    // The shipped default: contrast 1.0 (Skia's SK_GAMMA_CONTRAST as Chrome
-    // ships it on Windows) against a linear target on a linear attachment —
-    // identity retarget, so the colour-keyed boost is the entire correction.
-    const auto resolved =
-        UIManager::ResolveTextCoverageConstants(1.0f, 0.0f, UITargetSpace::LinearSdr());
+    // A UIManager's default: contrast 1.0 against the linear target. On a
+    // linear attachment (a HUD over the scene, the Player) that is the
+    // identity retarget, so the colour-keyed contrast is the entire
+    // correction. The editor opts into the encoded target itself
+    // (Editor::ApplyEditorTextBlend).
+    const UIManager defaults(nullptr);
+    EXPECT_FLOAT_EQ(1.0f, defaults.GetTextContrast());
+    EXPECT_FLOAT_EQ(0.0f, defaults.GetTextBlendGamma());
+    const auto resolved = UIManager::ResolveTextCoverageConstants(
+        defaults.GetTextContrast(), defaults.GetTextBlendGamma(), UITargetSpace::LinearSdr());
     EXPECT_FLOAT_EQ(1.0f, resolved.Contrast);
     EXPECT_FLOAT_EQ(0.0f, resolved.BlendGamma);
     EXPECT_EQ(0, resolved.BlendSpaceEncoded);
