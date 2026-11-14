@@ -117,14 +117,17 @@ The repair has four steps:
 
 :::steps
 
-1. Apply the Lucia work `8312be22b..e18015ee` again on top of `main` with a three-way merge, with `8312be22b` as the base. A helper commit holds the tree of `e18015ee` with `8312be22b` as its only parent. A merge of that commit into a branch from `main` then uses `8312be22b` as the base. Resolve the conflicts with the policy in [Resolve conflicts](#resolve-conflicts).
+1. Cherry-pick the Lucia commits of `8312be22b..e18015ee` onto a branch from `main`, one at a time, in topological order. Each commit message states the purpose of its conflicts. Resolve each conflict with the policy in [Resolve conflicts](#resolve-conflicts).
 
-   ```bash title="Replay the Lucia work onto a branch from main"
-   replay=$(git commit-tree 'e18015ee^{tree}' -p 8312be22b -m "Lucia work 8312be22b..e18015ee as one commit")
-   git -c merge.renameLimit=20000 merge --no-ff "$replay"
+   ```bash title="List the Lucia commits in replay order"
+   git rev-list --topo-order --reverse 8312be22b..e18015ee
    ```
 
-   A file that merges with no conflict is not always correct. Review each file that the replay adds or changes with no conflict, by the Lucia commit that changed it. A file from a commit that ported OpenEngine code, or from a feature that both projects built, can bring back a second implementation.
+   - Skip a commit that only ported OpenEngine code which `be9186a7` already contains.
+   - A file whose `main` version already holds the final Lucia change keeps the `main` version.
+   - A merge commit with a hand resolution has no cherry-pick. Apply its resolution as a patch.
+   - A file that merges with no conflict is not always correct. Before each commit, read the staged change. A clean merge can add a second copy of a declaration, a test or a build entry that `main` holds at another place.
+   - A Lucia feature that `main` holds only in part, and that needs a GPU check in a running editor, is deferred to its own port instead of a part merge.
 
 2. Build the result, run the focused suites, and merge it to `main` with **Create a merge commit**.
 
