@@ -11,7 +11,7 @@ Lucia is a downstream fork of OpenEngine. Each OpenEngine release enters Lucia t
 - Merge the import pull request with **Create a merge commit**. Do not squash it and do not rebase it. A squash drops the OpenEngine parent, and git loses the common base.
 - Import one OpenEngine release in one pull request. Import each release soon after it is published.
 - Build the merged tree and run the focused suites before the merge to `main`. A source review alone is not sufficient for an import.
-- Keep `upstream` read-only. Lucia sends changes to OpenEngine as pull requests on the OpenEngine repository, never by a push from a Lucia checkout.
+- Keep `upstream` read-only. Do not push from a Lucia checkout to OpenEngine.
 
 ## One-time setup
 
@@ -73,7 +73,7 @@ git config rerere.autoupdate true
 |---|---|
 | Both projects built the same feature | Keep the OpenEngine version. Then add the Lucia behavior on top of it, in the same subsystem. The engine keeps one implementation of each feature. |
 | An OpenEngine fix touches a Lucia change | Keep the OpenEngine fix. Apply the Lucia change again on top of it. |
-| A Lucia-only change in an OpenEngine file | Keep the Lucia change. If the change is general, also send it to OpenEngine. |
+| A Lucia-only change in an OpenEngine file | Keep the Lucia change. |
 | Lucia deleted a file that OpenEngine changed | Read the OpenEngine change. Keep the deletion if Lucia does not need the file. |
 | A test or a fixture | Keep both sets of cases when both sides added cases. Make sure that each test still runs. |
 
@@ -85,7 +85,7 @@ The cost of each import increases with the number of OpenEngine lines that Lucia
 
 | Change | Where it goes |
 |---|---|
-| A general fix or a performance improvement | Send it to OpenEngine as a pull request. After OpenEngine merges it, the next import contains it with no conflict. |
+| A general fix or a performance improvement | Make the smallest edit to the OpenEngine file, in a commit of its own. If a later OpenEngine release fixes the same problem, keep the OpenEngine fix at that import and remove the Lucia edit. |
 | A Lucia-only feature | A module that Lucia owns, connected through the engine registries. Do not add the feature to an OpenEngine hub file. |
 | A feature that OpenEngine is building | Use the OpenEngine version, and extend it. Before you start work in a subsystem that OpenEngine owns, look at the open OpenEngine work in that subsystem. |
 | An edit to an OpenEngine file that you cannot avoid | Keep it small. The divergence report shows it at each import. |
