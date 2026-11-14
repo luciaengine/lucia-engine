@@ -1102,7 +1102,7 @@ TEST(ContextMenuManipulatorDeclarativeTests, DeclarativeItemsBuildTheMenuThrough
     EXPECT_EQ(nested, 1);
 }
 
-TEST(ContextMenuManipulatorDeclarativeTests, TheStateHookResolvesCheckedEnabledAndColourAtEveryShow)
+TEST(ContextMenuManipulatorDeclarativeTests, TheStateHookResolvesCheckedEnabledColourAndIconAtEveryShow)
 {
     DispatcherScope ui;
     ScopedMenuFactory factory;
@@ -1111,8 +1111,10 @@ TEST(ContextMenuManipulatorDeclarativeTests, TheStateHookResolvesCheckedEnabledA
     bool checked = false;
     bool enabled = true;
     std::string color = "#111111";
+    std::string icon;
     ASSERT_TRUE(el->AddManipulator(ContextMenuManipulator::Create({
         {.Path = "Live",
+         .IconPath = "baked.png",
          .OnActivate = [] {},
          .State =
              [&]
@@ -1121,6 +1123,7 @@ TEST(ContextMenuManipulatorDeclarativeTests, TheStateHookResolvesCheckedEnabledA
                  st.Checked = checked;
                  st.Enabled = enabled;
                  st.ColorHex = color;
+                 st.IconPath = icon;
                  return st;
              }},
         // A baked disable wins over the hook saying enabled — the backends' rule.
@@ -1139,6 +1142,7 @@ TEST(ContextMenuManipulatorDeclarativeTests, TheStateHookResolvesCheckedEnabledA
         EXPECT_EQ(live->Flags & MenuItemFlag_Checked, 0u);
         EXPECT_EQ(live->Flags & MenuItemFlag_Disabled, 0u);
         EXPECT_EQ(live->Color, "#111111");
+        EXPECT_EQ(live->Icon, "baked.png");
         const BuiltRow* baked = menu.FindLeaf("Baked");
         ASSERT_TRUE(baked);
         EXPECT_NE(baked->Flags & MenuItemFlag_Disabled, 0u) << "a baked disable must win";
@@ -1147,6 +1151,7 @@ TEST(ContextMenuManipulatorDeclarativeTests, TheStateHookResolvesCheckedEnabledA
     checked = true;
     enabled = false;
     color = "#22cc44";
+    icon = "live.png";
     OpenMenu(ui, *el);
 
     // Same owned menu, rebuilt — not a second menu, and not the first resolution cached.
@@ -1158,6 +1163,7 @@ TEST(ContextMenuManipulatorDeclarativeTests, TheStateHookResolvesCheckedEnabledA
     EXPECT_NE(live->Flags & MenuItemFlag_Checked, 0u) << "the hook's state was not re-resolved";
     EXPECT_NE(live->Flags & MenuItemFlag_Disabled, 0u);
     EXPECT_EQ(live->Color, "#22cc44") << "the colour did not come from the hook";
+    EXPECT_EQ(live->Icon, "live.png") << "the icon did not come from the hook";
 }
 
 TEST(ContextMenuManipulatorDeclarativeTests, AnItemsProviderComputesTheSetPerShowAndAnEmptySetShowsNothing)

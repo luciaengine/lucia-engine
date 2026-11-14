@@ -169,7 +169,7 @@ function(_ge_stage_from_get_runtime_deps _mode_or_libs)
 
   if(_mode_or_libs STREQUAL "EXECUTABLE")
     file(GET_RUNTIME_DEPENDENCIES
-        EXECUTABLES "${GE_RUNTIME_DEPS_EXECUTABLE}"
+        EXECUTABLES "${_ge_scan_executable}"
         DIRECTORIES ${_ge_search_dirs}
         RESOLVED_DEPENDENCIES_VAR _resolved
         UNRESOLVED_DEPENDENCIES_VAR _unresolved
@@ -266,6 +266,7 @@ function(_ge_stage_from_get_runtime_deps _mode_or_libs)
     endforeach()
   endif()
 
+  set(_sources "")
   foreach(_dep IN LISTS _resolved)
     if(EXISTS "${_dep}")
       get_filename_component(_dep_name "${_dep}" NAME)
@@ -297,6 +298,7 @@ function(_ge_stage_from_get_runtime_deps _mode_or_libs)
       if(_dep_name MATCHES "\\.[dD][lL][lL]$")
         ge_staged_link_debug_symbols("${_dep_to_copy}" "${GE_RUNTIME_DEPS_DEST_DIR}" "StageRuntimeDependencies")
       endif()
+      list(APPEND _sources "${_dep_to_copy}")
       if(GE_RUNTIME_DEPS_VERBOSE)
         message(STATUS "StageRuntimeDependencies: staged ${_dep_name}")
       endif()
@@ -304,10 +306,58 @@ function(_ge_stage_from_get_runtime_deps _mode_or_libs)
   endforeach()
 
   set(_ge_resolved "${_resolved}" PARENT_SCOPE)
+  set(_ge_sources "${_sources}" PARENT_SCOPE)
   set(_ge_unresolved "${_unresolved}" PARENT_SCOPE)
 endfunction()
 
-# First pass: scan the executable itself.
+# Start outside the shared staged directory. A loader-style scan otherwise
+# reads old staged import tables before search directories are consulted
+# (notably on Windows), and even a later fresh scan cannot undo a copy of a
+# retired import. The scan copy has no neighboring old libraries: resolution
+# starts in the current source directories. It is inspected, never launched.
+get_filename_component(_ge_executable_name "${GE_RUNTIME_DEPS_EXECUTABLE}" NAME)
+string(RANDOM LENGTH 12 _ge_scan_tag)
+set(_ge_scan_dir "${GE_RUNTIME_DEPS_DEST_DIR}/.runtime-scan-${_ge_scan_tag}")
+file(MAKE_DIRECTORY "${_ge_scan_dir}")
+set(_ge_scan_executable "${_ge_scan_dir}/${_ge_executable_name}")
+file(COPY_FILE "${GE_RUNTIME_DEPS_EXECUTABLE}" "${_ge_scan_executable}")
+
+# Follow current source libraries to a fixed point. Bundles can leave @rpath
+# imports unresolved until their fresh sources are located explicitly, so scan
+# those sources too, including through multiple newly introduced import levels.
+# Never refresh every library in the destination: test executables share a
+# directory, and an unrelated target's producer may still be linking its output.
+set(_ge_scan_queue "EXECUTABLE")
+set(_ge_scanned_sources "")
+while(_ge_scan_queue)
+  list(APPEND _ge_scanned_sources ${_ge_scan_queue})
+  _ge_stage_from_get_runtime_deps("${_ge_scan_queue}")
+  set(_ge_next_sources "${_ge_sources}")
+
+  # Bundles may expose only a Contents/Frameworks rpath. Find an unresolved
+  # @rpath import in the source directories, stage it, and scan its current
+  # imports using the same queue as normally resolved libraries.
+  foreach(_u IN LISTS _ge_unresolved)
+    if(NOT _u MATCHES "^@rpath/([^/]+)$")
+      continue()
+    endif()
+    set(_rel "${CMAKE_MATCH_1}")
+    foreach(_dir IN LISTS _ge_search_dirs)
+      if(EXISTS "${_dir}/${_rel}")
+        ge_staged_copy("${_dir}/${_rel}" "${GE_RUNTIME_DEPS_DEST_DIR}" "StageRuntimeDependencies")
+        list(APPEND _ge_next_sources "${_dir}/${_rel}")
+        break()
+      endif()
+    endforeach()
+  endforeach()
+  list(REMOVE_DUPLICATES _ge_next_sources)
+  list(REMOVE_ITEM _ge_next_sources ${_ge_scanned_sources})
+  set(_ge_scan_queue "${_ge_next_sources}")
+endwhile()
+file(REMOVE_RECURSE "${_ge_scan_dir}")
+
+# Verify and report unresolved imports from the actual staged executable.
+set(_ge_scan_executable "${GE_RUNTIME_DEPS_EXECUTABLE}")
 _ge_stage_from_get_runtime_deps("EXECUTABLE")
 
 # Second pass (macOS): some bundles rely on @rpath deps but only expose an rpath to

@@ -19,15 +19,14 @@
 	border-color: var(--ui_color_border);
 }
 
-/* Every Button carries .button, so the tab rules name it to outrank the shared .button
-   and .button.active rules (0,2,0). */
+/* The selected view owns markups-tab-chosen independently of the button interaction state. */
 .button.markups-tab {
 	padding-left: 8px;
 	padding-right: 8px;
 	opacity: 0.7;
 }
 
-.button.markups-tab.active {
+.button.secondary.markups-tab-chosen {
 	background-color: var(--ui_color_accent_blue);
 	border-color: var(--ui_color_accent_blue);
 	color: var(--ui_color_text_bright);
@@ -99,9 +98,9 @@
 	opacity: 0.5;
 }
 
-/* Activity rows: a hairline between rows and every other row on a darker plate, so a row that
-   wraps over several lines keeps its edges. */
+/* Activity rows use the theme's primary and secondary list stripe plates. */
 .markups-activity-row {
+	background-color: var(--ui_color_list_stripe_primary);
 	align-items: flex-start;
 	padding-top: 4px;
 	padding-bottom: 4px;
@@ -109,8 +108,8 @@
 	border-color: var(--ui_color_border_subtle);
 }
 
-.markups-activity-row.markups-activity-row-alt {
-	background-color: var(--ui_color_bg_plate);
+.markups-activity-row-alt {
+	background-color: var(--ui_color_list_stripe_secondary);
 }
 
 .markups-activity-row:hover {

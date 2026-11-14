@@ -1,6 +1,7 @@
 #include "Graph/GraphValue.h"
 
 #include <Types/ParseNumber.h>
+#include "Types/StringUtils.h"
 
 #include <algorithm>
 #include <cctype>
@@ -41,7 +42,7 @@ std::string_view TrimAsciiSpace(std::string_view text)
 
 bool ParseBoolText(std::string_view text, bool& outValue)
 {
-    text = TrimAsciiSpace(text);
+    text = TrimWhitespaceView(text);
     if (EqualsIgnoreCase(text, "true") || EqualsIgnoreCase(text, "yes") ||
         EqualsIgnoreCase(text, "on") || text == "1")
     {
@@ -72,7 +73,7 @@ bool TryNarrowFloatToInt64(double value, std::int64_t& outValue)
 
 bool ParseIntText(std::string_view text, std::int64_t& outValue)
 {
-    std::string_view number = TrimAsciiSpace(text);
+    std::string_view number = TrimWhitespaceView(text);
     if (number.empty())
         return false;
     if (number[0] == '+')

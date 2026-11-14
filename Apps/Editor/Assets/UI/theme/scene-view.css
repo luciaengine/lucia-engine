@@ -134,6 +134,28 @@
     box-shadow: inset 0 0 0 1px rgba(98, 183, 255, 0.55);
 }
 
+/* The active tool's one-line status: what the next click needs. Centred at the
+   bottom edge like the hover pill; the panel places it once its width is known. */
+.scene-view-tool-status {
+    position: absolute;
+    bottom: 14px;
+    padding: 5px 14px;
+    background-color: rgba(0, 0, 0, 0.59);
+    color: #f0f0f0;
+    font-size: 14px;
+    font-family: var(--ui_font_family);
+    font-weight: 500;
+    line-height: normal;
+    border-radius: 999px;
+    text-align: center;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+.scene-view-tool-status.hidden {
+    display: none;
+}
+
 /* ======================================
    Toolbar & it's widgets
    ====================================== */

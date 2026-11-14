@@ -5,6 +5,7 @@
 #include "UI/UIElement.h"
 #include "UI/Controls/Button.h"
 #include "UI/StyleProperties.h"
+#include "UI/ThemeAccent.h"
 
 #include <algorithm>
 #include <cmath>
@@ -229,13 +230,16 @@ void ToolbarDragDrop::Setup(UIElement* ghostRoot, const std::vector<ContainerCon
 
             if (m_InsertionIndicator)
             {
+                constexpr uint32_t kInsertionIndicatorAlpha = 0xCC000000u;
+                const uint32_t accentRgb =
+                    UI::ResolveAccentArgb(targetContainer->GetResolvedStyle()) & 0x00FFFFFFu;
                 m_InsertionIndicator->Style()
                     .Set(Style::Position,      PositionType::Absolute)
                     .Set(Style::PositionLeft,  StyleLength::Px(indicatorX))
                     .Set(Style::PositionTop,   StyleLength::Px(targetContainer->GetLayoutY()))
                     .Set(Style::Width,         StyleLength::Px(3.0f))
                     .Set(Style::Height,        StyleLength::Px(btnH))
-                    .Set(Style::BackgroundColor, (m_AccentColor & 0x00FFFFFFu) | 0xCC000000u)
+                    .Set(Style::BackgroundColor, kInsertionIndicatorAlpha | accentRgb)
                     .Set(Style::ZIndex,        9999)
                     .Set(Style::PointerEvents, false)
                     .Set(Style::Display,       DisplayMode::Block);

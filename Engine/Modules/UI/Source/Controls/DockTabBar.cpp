@@ -1,6 +1,7 @@
 #include "UI/Controls/DockTabBar.h"
 #include "UI/Controls/DockTab.h"
 #include "Input/KeyCodes.h"
+#include "UI/ThemeAccent.h"
 #include "UI/Internal/LayoutAccess.h"
 #include "UI/UIPrimitive.h"
 #include "UI/ResolvedStyle.h"
@@ -470,7 +471,7 @@ bool DockTabBar::TickDragAnimations(float dt) {
 }
 
 void DockTabBar::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx,
-                                      const ResolvedStyle& /*style*/,
+                                      const ResolvedStyle& style,
                                       float x, float y, float w, float h) {
     // Parallel-drain thread contract: custom emission may touch shared
     // text/measure state, so it never runs on a JobSystem worker — escalate
@@ -517,9 +518,10 @@ void DockTabBar::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx,
     const float kBotPad = 4.0f * cs;
     const float insertPhysical = m_InsertX * cs;
     float ix = std::max(x, std::min(x + w, x + insertPhysical));
-    const float ar = ((m_AccentColor >> 16) & 0xFF) / 255.0f;
-    const float ag = ((m_AccentColor >> 8) & 0xFF) / 255.0f;
-    const float ab = (m_AccentColor & 0xFF) / 255.0f;
+    const uint32_t accent = UI::ResolveAccentArgb(style);
+    const float ar = ((accent >> 16) & 0xFF) / 255.0f;
+    const float ag = ((accent >> 8) & 0xFF) / 255.0f;
+    const float ab = (accent & 0xFF) / 255.0f;
     uint32_t color = UI::PackColor(ar, ag, ab, 0.95f);
     ctx.Emit(UI::MakeRect(ix - kLineW * 0.5f, y + kTopPad, kLineW, std::max(0.0f, h - kBotPad), color));
 }

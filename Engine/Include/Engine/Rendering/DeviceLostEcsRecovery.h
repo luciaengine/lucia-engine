@@ -38,8 +38,8 @@ struct DeviceLostEcsRecoveryReport
 //   2. Change-gated extraction won't re-fire for static entities: a rebuild
 //      dirties no ECS column, so RenderExtractionSystem's Changed<> probes skip
 //      every unchanged chunk and keep replaying stale submissions. This pass
-//      force-dirties the render columns (a visiting Write<> query stamps each
-//      chunk with a fresh, strictly-greater global version), so the first
+//      force-dirties the render columns (a Write<> query grants every row, which
+//      stamps each chunk with a fresh, strictly-greater global version), so the first
 //      extraction after rendering resumes takes the full lane for EVERY entity.
 //
 // Runs on the thread that owns the World (the main/update thread) while the

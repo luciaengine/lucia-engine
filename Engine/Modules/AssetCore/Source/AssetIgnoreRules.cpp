@@ -1,6 +1,7 @@
 #include "AssetCore/AssetIgnoreRules.h"
 #include "AssetCore/PathNormalization.h"
 #include "Types/PathUtils.h"
+#include "Types/Fnv1a.h"
 #include "Types/StringUtils.h"
 
 #include <algorithm>
@@ -524,18 +525,12 @@ uint64_t AssetIgnoreRules::Signature() const
     // of every rule. Type prefix prevents a rule that happens to match
     // across categories (e.g. an extension "*.txt" colliding with a prefix
     // "*.txt/") from producing identical signatures.
-    constexpr uint64_t kFnvOffset = 0xcbf29ce484222325ull;
-    constexpr uint64_t kFnvPrime  = 0x00000100000001b3ull;
-
-    auto fold = [](uint64_t h, std::string_view s) noexcept
-    {
-        for (unsigned char c : s)
-        {
-            h ^= static_cast<uint64_t>(c);
-            h *= kFnvPrime;
-        }
-        return h;
-    };
+    // 0-byte sentinel between entries so "ab"+"c" doesn't hash like "a"+"bc".
+    static constexpr uint8_t kEntrySeparator = 0;
+    auto foldTag = [](uint64_t h, char tag) noexcept
+    { return Hashing::Fnv1a64Value(h, static_cast<unsigned char>(tag)); };
+    auto foldEntry = [](uint64_t h, std::string_view entry) noexcept
+    { return Hashing::Fnv1a64Value(Hashing::Fnv1a64(entry, h), kEntrySeparator); };
 
     auto sortedFold = [&](uint64_t h, char prefix, const auto& set) noexcept
     {
@@ -545,17 +540,11 @@ uint64_t AssetIgnoreRules::Signature() const
             sorted.emplace_back(s);
         std::sort(sorted.begin(), sorted.end());
         for (auto sv : sorted)
-        {
-            h ^= static_cast<uint64_t>(static_cast<unsigned char>(prefix));
-            h *= kFnvPrime;
-            h = fold(h, sv);
-            // 0-byte sentinel between entries so "ab"+"c" doesn't hash like "a"+"bc".
-            h *= kFnvPrime;
-        }
+            h = foldEntry(foldTag(h, prefix), sv);
         return h;
     };
 
-    uint64_t h = kFnvOffset;
+    uint64_t h = Hashing::kFnv1a64OffsetBasis;
     h = sortedFold(h, 'D', ignoredDirNamesLower);
     h = sortedFold(h, 'F', ignoredFileNamesLower);
     h = sortedFold(h, 'E', ignoredExtensionsLower);
@@ -565,22 +554,14 @@ uint64_t AssetIgnoreRules::Signature() const
     // ignoredPrefixesLower is already a vector; preserve its existing order
     // so the signature is stable across sessions that read the same .assetignore
     // (rule order matters for prefix shadowing).
-    h ^= static_cast<uint64_t>('P');
-    h *= kFnvPrime;
+    h = foldTag(h, 'P');
     for (const auto& p : ignoredPrefixesLower)
-    {
-        h = fold(h, p);
-        h *= kFnvPrime;
-    }
+        h = foldEntry(h, p);
 
     // Directory-name prefixes, same treatment: a vector whose order is its own.
-    h ^= static_cast<uint64_t>('N');
-    h *= kFnvPrime;
+    h = foldTag(h, 'N');
     for (const auto& p : ignoredDirNamePrefixesLower)
-    {
-        h = fold(h, p);
-        h *= kFnvPrime;
-    }
+        h = foldEntry(h, p);
 
     // Reserve 0 as "no signature recorded".
     return h == 0 ? 1 : h;

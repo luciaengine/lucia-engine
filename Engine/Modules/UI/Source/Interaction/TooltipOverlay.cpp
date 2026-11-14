@@ -6,6 +6,7 @@
 #include "UI/StyleProperties.h"
 #include "UI/UIElement.h"
 #include "UI/Internal/LayoutAccess.h"
+#include "UI/OverlayZIndex.h"
 
 #include "UI/UIPrimitive.h"
 #include "../BubblePaint.h"
@@ -192,7 +193,7 @@ void TooltipOverlay::EnsureElements(UIElement* root)
     m_Wrapper->Style()
         .Set(Style::Position, PositionType::Absolute)
         .Set(Style::PointerEvents, false)
-        .Set(Style::ZIndex, 9600);
+        .Set(Style::ZIndex, OverlayZIndex::kHoverTooltip);
 
     // Cap the bubble width so long tooltip text wraps. Yoga clamps the
     // label's measure constraint against the cap, so the wrapped size lands

@@ -355,12 +355,12 @@ SceneCameraSettingsPopup::SceneCameraSettingsPopup()
                                    SceneViewSettings::kExposureSliderStep,
                                    [](float v, bool commit) { SceneViewSettings::Get().SetPostFxFixedExposureEv(v, commit); },
                                    Components::kDefaultManualExposureEv, kFixedEvTooltip);
-    // Real-world EV100 anchors: tick lines on the track, named by the legend
-    // beneath (per-tick numbers would crowd 12 and 15). The value reads "how
-    // bright a scene the camera is set for" (photographic convention — higher
-    // EV = darker image), so the anchors + legend teach the scale in place.
-    if (m_ExposureEvRow.slider)
-        m_ExposureEvRow.slider->SetTickMarks({3.0f, 8.0f, 12.0f, 15.0f});
+    // Real-world EV100 anchors: tick lines on the track plus matching value
+    // labels beneath. The value reads "how bright a scene the camera is set
+    // for" (photographic convention — higher EV = darker image), so the
+    // anchors + legend teach the scale in place.
+    m_ExposureEvTicks = AddTickStrip(*panel, "SceneCameraFixedEv", m_ExposureEvRow.slider,
+                                     {{3.0f, "3"}, {8.0f, "8"}, {12.0f, "12"}, {15.0f, "15"}});
     m_ExposureEvLegend = AddCaption(*panel, "SceneCameraFixedEvLegend",
                                     "3 night · 8 interior · 12 overcast · 15 sun");
     m_CompensationRow = AddSliderRow(*panel, "SceneCameraExposureComp", "EV Compensation",
@@ -640,6 +640,7 @@ void SceneCameraSettingsPopup::UpdateExposureRowVisibility()
     setVisible(m_AutoMaxEvRow.row, autoOn);
     setVisible(m_ExposureEvRow.row, fixedOn);
     setVisible(m_ExposureEvLegend, fixedOn);
+    setVisible(m_ExposureEvTicks, fixedOn);
     // Compensation (row + ticks) stays visible in every mode: it trims either
     // meter and the fixed EV pin alike.
 }

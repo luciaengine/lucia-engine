@@ -7,7 +7,7 @@
 #include "Components/TransformDirtyFeed.h"
 #include "Components/Hierarchy.h"
 #include "Logger/Logger.h"
-#include "JobSystem/WorkStealingThreadPool.h"
+#include "Platform/Environment.h"
 
 #include <algorithm>
 #include <atomic>
@@ -47,10 +47,7 @@ inline bool WriteRootWorldTransform(const Transform& local, WorldTransform& out)
 // GE_HIER_PROFILE=1 logs a per-phase decomposition of Update() every
 // kProfileLogInterval active frames. The cached path reports entity scanning,
 // direct-index construction, CSR rebuilding, and subtree propagation separately.
-const bool kProfileEnabled = [] {
-    const char* v = std::getenv("GE_HIER_PROFILE");
-    return v && v[0] == '1';
-}();
+const bool kProfileEnabled = Platform::EnvironmentSwitchEnabled("GE_HIER_PROFILE", false);
 constexpr uint32 kProfileLogInterval = 120u;
 
 // Dirty subtrees propagate on the job system from this many up; below it the

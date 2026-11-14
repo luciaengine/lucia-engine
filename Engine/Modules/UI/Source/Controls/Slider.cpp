@@ -60,9 +60,9 @@ void CommitThumbRect(UIElement* thumb, float absX, float absY, float w, float h,
 {
     // Pure moves take the position-only fast path: layout dirt here converts
     // every drag/scroll tick into a full Yoga solve, which is exactly what
-    // drain-only frames exist to avoid. The stale window the fast path used to
-    // leak (its post-solve patch never runs on quiet frames) is closed by the
-    // direct rect commit below, not by forcing solves.
+    // drain-only frames exist to avoid. The fast path's post-solve patch never
+    // runs on quiet frames; the direct rect commit below closes that stale
+    // window without forcing solves.
     const bool sizeChanged =
         thumb->GetLayoutWidth() != w || thumb->GetLayoutHeight() != h;
     UI::Layout::SetAbsolutePosition(*thumb,

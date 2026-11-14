@@ -69,9 +69,18 @@ class WindowDockingController
         // The app's pre-UI safe point; floating-frame tear-off and close land
         // there because both arrive mid-dispatch.
         DeferredActionQueue* PreUiActions = nullptr;
+        // EditorApplication::QueueUndockPanel: tears a docked panel off into a
+        // floating window (an in-canvas frame on a one-window host).
+        std::function<void(std::string panelId)> QueueUndockPanel;
     };
 
     void Initialize(Dependencies deps);
+
+    /// Registers the docking fixed-id commands (UiReplayCommandIds::Undock*,
+    /// Close/ReattachLastFloatingWindow, AssertFloating*Window) with
+    /// EditorMenuRegistry. The registry keeps `this` for the process lifetime:
+    /// call once, on the editor's controller. Defined in WindowDockingCommands.cpp.
+    void RegisterCommands();
 
     /// Torn-off panels presented as frames inside the main window, for hosts
     /// with one OS window. The tear-off gesture, ShowPanel and layout restore
@@ -112,6 +121,12 @@ class WindowDockingController
   private:
     bool ComputeDropCandidateFromCursor(EditorWindowContext* source, DropCandidate& outCandidate);
     void ShowDropOverlays();
+
+    // The fixed-id commands (WindowDockingCommands.cpp).
+    bool UndockPanelCommand(const char* panelId, std::string* outError);
+    bool CloseLastFloatingWindowCommand(std::string* outError);
+    bool ReattachLastFloatingWindowCommand(std::string* outError);
+    bool ExpectFloatingWindowCommand(const char* panelId, std::string* outError) const;
 
     Dependencies m_Deps;
     FloatingFrameHost m_FloatingFrames;

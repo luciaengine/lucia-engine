@@ -36,6 +36,12 @@ class GameViewPanel : public DockPanel
 
     void SetNoCameraOverlayVisible(bool visible);
 
+    // Registers the Game View's UI-replay assert
+    // (UiReplayCommandIds::AssertGameViewNoCameraOverlayVisible) with
+    // EditorMenuRegistry. The registry keeps `this` for the process lifetime:
+    // call once, on the editor's Game View. Defined in GameViewPanelCommands.cpp.
+    void RegisterCommands();
+
     // Forward each viewport input transition immediately, normalized to its rect.
     // The callbacks resolve the current window/controller, rather than retaining
     // a controller across tear-off/redock.

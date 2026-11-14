@@ -8,9 +8,8 @@
 namespace GameEngine::UI
 {
 
-// P5: the shared index-space engine behind the virtualized views (ListView,
-// GridView, TreeView). Owns window math, the ring-slot mapping (previously
-// nine hand-rolled mod lambdas across the three views), pool ensure/shrink
+// The shared index-space engine behind the virtualized views (ListView,
+// GridView, TreeView). Owns window math, the ring-slot mapping, pool ensure/shrink
 // orchestration, changeset application, safety-net validation, and
 // aggregated impact reporting. Deliberately knows nothing about UIElement,
 // Yoga, or provider id types — the owning view maps ids to slots and
@@ -110,7 +109,7 @@ class VirtualWindowCore final
     // band, e.g. a full provider reset that destroys cells).
     void Reset();
 
-    // Shrink hysteresis (ListView's policy, now shared): the pool may keep
+    // Shrink hysteresis (shared by the three views): the pool may keep
     // this many lines beyond Desired before shrinking, and only after this
     // many consecutive stable updates (guard fully equal, no changes).
     static constexpr int kShrinkSlackLines = 8;

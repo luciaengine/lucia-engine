@@ -6,6 +6,7 @@
 #include "UI/UIManager.h"
 #include "UI/UIStyle.h"
 #include "Input/KeyCodes.h"
+#include "Mathematics/Interpolation.h"
 #include "Rendering/Text/FontAtlas.h"
 
 #include <algorithm>
@@ -512,8 +513,10 @@ void ScrollView::EnsureYVisible(float contentY, float viewTop, float viewHeight)
                         if (!el)
                             continue;
 
-                        // Only consider labels; editable fields manage their own scrolling.
-                        if (typeid(*el) == typeid(Label))
+                        // Host-rendered text contributes its intrinsic width, including label
+                        // subclasses. Text controls with their own scrolling keep that responsibility.
+                        const ITextMeasurable* textMeasure = el->GetTextMeasurable();
+                        if (textMeasure && textMeasure->AllowWrapForMeasure() && !textMeasure->HandlesOwnTextRendering())
                         {
                             const ResolvedStyle* st = ui ? ui->TryGetResolvedStyleFor(el) : nullptr;
                             if (st)
@@ -572,5 +575,42 @@ void ScrollView::EnsureYVisible(float contentY, float viewTop, float viewHeight)
         if (m_VBar)
             (void)m_VBar->UpdateThumbLayout();
     }
+
+
+void ScrollView::AutoScrollNearEdge(float mouseX, float mouseY) const
+{
+    if (!m_ClipViewport)
+        return;
+
+    const float vx = m_ClipViewport->GetLayoutX();
+    const float vy = m_ClipViewport->GetLayoutY();
+    const float vw = m_ClipViewport->GetLayoutWidth();
+    const float vh = m_ClipViewport->GetLayoutHeight();
+    if (!(vh > 0.0f) || !(vw > 0.0f))
+        return;
+    if (mouseX < vx || mouseX >= vx + vw || mouseY < vy || mouseY >= vy + vh)
+        return;
+
+    constexpr float kEdgePx = 28.0f;
+    constexpr float kMaxSpeedPxPerFrame = 18.0f;
+
+    const float distTop = mouseY - vy;
+    const float distBot = (vy + vh) - mouseY;
+
+    float dy = 0.0f;
+    if (distTop < kEdgePx)
+    {
+        const float t = Math::Clamp01((kEdgePx - distTop) / kEdgePx);
+        dy = -kMaxSpeedPxPerFrame * t;
+    }
+    else if (distBot < kEdgePx)
+    {
+        const float t = Math::Clamp01((kEdgePx - distBot) / kEdgePx);
+        dy = kMaxSpeedPxPerFrame * t;
+    }
+
+    if (dy != 0.0f)
+        ScrollBy(0.0f, dy);
+}
 
 } // namespace GameEngine
