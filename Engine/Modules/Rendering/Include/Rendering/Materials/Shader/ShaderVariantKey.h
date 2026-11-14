@@ -82,6 +82,7 @@ enum class MaterialKeyword : uint64_t
     SurfaceInputsAtPixelCenter = 1ull << 45, // Per material, set by the engine code that registers it (the CBT terrain): the forward adapter interpolates the surface inputs at the pixel center instead of the centroid (GE_SURFACE_INPUTS_AT_PIXEL_CENTER). Set for a surface whose inputs are continuous across its triangles: a partly covered MSAA pixel then reads its fields at the same place as a covered one
     DepthPixelationBand = 1ull << 46, // Per-band color coverage.
     UV1Crossfade = 1ull << 47, // Vertex-alpha weight blends UV0 and UV1 material samples.
+    VirtualShadowMaps = 1ull << 48, // Pass keyword (set per view only in a frame whose virtual shadow page table and depth atlas are published): the sun, spot and point shadow lookups try a resident virtual page first (Includes/virtual_shadow_lookup.glsl: ge_virtualShadowDepth at set-0 b58, VirtualShadowPageTable b59, VirtualShadowProjections b60, ge_virtualShadowDepthCompare b61) and use the conventional map where no page is resident. Without the keyword none of it is in the SPIR-V
 };
 
 inline constexpr MaterialKeyword operator|(MaterialKeyword a, MaterialKeyword b)
@@ -344,6 +345,8 @@ inline std::vector<std::string> GenerateDefines(const ShaderVariantKey& key,
 
     if (HasKeyword(key.materialKeywords, MaterialKeyword::DepthPixelationBand))
         defs.push_back("GE_DEPTH_PIXELATION_BAND");
+    if (HasKeyword(key.materialKeywords, MaterialKeyword::VirtualShadowMaps))
+        defs.push_back("GE_VIRTUAL_SHADOW_MAPS");
 
     defs.push_back("LIGHTING_MODEL_" + ToUpperSnakeCase(lightingModelName));
 

@@ -320,58 +320,50 @@ AreaShadowFrameInfo BuildAreaShadowFrameInfo(std::span<const ExtractedLight> lig
 
 SpotShadowFrameInfo BuildSpotShadowFrameInfo(std::span<const ExtractedLight> lights)
 {
-    SpotShadowFrameInfo out{};
-
-    const ExtractedLight* shadowLight = nullptr;
     uint32_t clusterableIndex = 0;
     for (const auto& light : lights)
     {
         if (light.type == Components::LightType::Directional ||
             light.type == Components::LightType::Ambient)
-        {
             continue;
-        }
 
-        if (light.type == Components::LightType::Spot &&
-            light.castsLight != 0 &&
-            light.castsShadows != 0)
-        {
-            shadowLight = &light;
-            out.packedLightIndex = clusterableIndex;
-            break;
-        }
-        ++clusterableIndex;
+        const uint32_t index = clusterableIndex++;
+        if (light.type == Components::LightType::Spot && light.castsLight != 0 && light.castsShadows != 0)
+            return BuildSpotShadowFrameInfo(light, index);
     }
+    return {};
+}
 
-    if (!shadowLight)
-        return out;
-
-    const Mathematics::Vector3 pos = shadowLight->positionWS - Mathematics::WorldPosition{};
+SpotShadowFrameInfo BuildSpotShadowFrameInfo(const ExtractedLight& light, uint32_t packedLightIndex)
+{
+    SpotShadowFrameInfo out{};
+    const Mathematics::Vector3 pos = light.positionWS - Mathematics::WorldPosition{};
     Mathematics::Vector3 dir{
-        shadowLight->directionWS[0],
-        shadowLight->directionWS[1],
-        shadowLight->directionWS[2]};
+        light.directionWS[0],
+        light.directionWS[1],
+        light.directionWS[2]};
     if (dir.Length() < 1e-4f)
         dir = Mathematics::Vector3{0.0f, -1.0f, 0.0f};
     else
         dir = dir.Normalize();
 
     Mathematics::Vector3 up{
-        shadowLight->upWS[0],
-        shadowLight->upWS[1],
-        shadowLight->upWS[2]};
+        light.upWS[0],
+        light.upWS[1],
+        light.upWS[2]};
     if (up.Length() < 1e-4f || std::fabs(Mathematics::Vector3::Dot(up.Normalize(), dir)) > 0.98f)
         up = std::fabs(dir.y) < 0.95f ? Mathematics::Vector3{0.0f, 1.0f, 0.0f}
                                        : Mathematics::Vector3{1.0f, 0.0f, 0.0f};
     up = up.Normalize();
 
-    const float range = std::max(shadowLight->range, kSpotShadowNearPlane + 0.1f);
-    const float halfAngle = std::clamp(std::max(shadowLight->outerAngle, 0.01f),
+    const float range = std::max(light.range, kSpotShadowNearPlane + 0.1f);
+    const float halfAngle = std::clamp(std::max(light.outerAngle, 0.01f),
                                        0.01f, 0.49f * kPi);
     const float fovY = std::clamp(2.0f * halfAngle, 0.02f, 0.98f * kPi);
 
     out.valid = true;
-    out.position = shadowLight->positionWS;
+    out.packedLightIndex = packedLightIndex;
+    out.position = light.positionWS;
     out.direction = dir;
     out.nearPlane = std::min(kSpotShadowNearPlane, range * 0.5f);
     out.farPlane = std::max(range, out.nearPlane + 0.1f);

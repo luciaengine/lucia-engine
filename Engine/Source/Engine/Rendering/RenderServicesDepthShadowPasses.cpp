@@ -443,6 +443,12 @@ void RenderServices::PublishSpotShadow(ShadowDeclareSeam, Rendering::RenderGraph
     vfr.SpotShadowData = data;
 }
 
+void RenderServices::PublishVirtualShadowInputs(ShadowDeclareSeam, Rendering::RenderGraph::RGFrame& frame,
+                                                 Rendering::ViewId viewId, const VirtualShadowViewInputs& inputs)
+{
+    ViewFrameRGFor(frame, viewId).VirtualShadows = inputs;
+}
+
 void RenderServices::PublishPointShadow(ShadowDeclareSeam, Rendering::RenderGraph::RGFrame& frame,
                                         Rendering::ViewId viewId,
                                         Rendering::RenderGraph::RGTexture map,

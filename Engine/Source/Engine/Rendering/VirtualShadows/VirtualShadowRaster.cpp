@@ -172,7 +172,9 @@ RenderGraph::RGBuffer VirtualShadowRenderFeature::DeclarePages(RenderGraph::RGFr
     descriptor.memoryUsage = Rendering::BufferMemoryUsage::DeviceLocal;
     const std::string name = "VirtualShadowPageTable.View" + std::to_string(context.View);
     descriptor.debugName = name.c_str();
-    const auto table = frame.CreateBuffer(name.c_str(), descriptor);
+    // A lighting pass binds the table when it is declared, so the table needs a physical buffer then.
+    // The upload pass writes all rows in each frame, so the old content is not read.
+    const auto table = frame.ImportPersistentBuffer(name.c_str(), descriptor);
     if (!table.IsValid())
         return {};
     frame.MarkOutput(table);

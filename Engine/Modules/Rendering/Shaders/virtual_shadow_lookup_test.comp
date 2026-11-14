@@ -11,7 +11,6 @@ vec4 ge_shadowParams = vec4(0.0, 0.0, 2.0, 100.0);
 vec4 ge_shadowPcss = vec4(0.0, 8.0, 0.0, 0.0);
 vec4 ge_shadowPcssCascades[4] = vec4[4](vec4(0.01, 1.0, 0.0, 0.0), vec4(0.1), vec4(0.1), vec4(0.1));
 vec2 GE_PoissonRotation(vec2 screen, vec2 uv, vec2 extent) { return vec2(1.0, 0.0); }
-vec2 GE_VogelDisk(int index, int count, vec2 rotation) { return vec2(0.0); }
 int GE_PcssTapCount() { return 8; }
 #include "Includes/shadow_filter.glsl"
 #include "Includes/virtual_shadow_directional.glsl"

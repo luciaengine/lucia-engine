@@ -30,6 +30,7 @@
 #include "Engine/Rendering/RTShadowMaskService.h"
 #include "Engine/Rendering/ScreenSpaceShadows/ScreenSpaceShadowWorldPass.h"
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
+#include "Engine/Rendering/VirtualShadows/VirtualShadowWorldPass.h"
 #include "Engine/Rendering/DDGIProbeFeature.h"
 #include "Engine/Rendering/ImageBasedLightingFeature.h"
 #include "Engine/Rendering/IEnvironmentSource.h"
@@ -791,6 +792,9 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
                    frame.PhysicalTexture(vfr->ScreenSpaceShadowMask),
                    m_Textures->GetSampler(Rendering::SamplerPreset::PointClamp));
     }
+
+    if (vfr && HasKeyword(passKeywords, MaterialKeyword::VirtualShadowMaps))
+        BindVirtualShadowInputs(frame, vfr->VirtualShadows, resources);
 
     // ge_sceneColor: the post-opaque scene-colour grab the transmissive pass refracts. Bound
     // only on SceneColorGrab-keyword passes (the dedicated transmissive pass, and only when the
@@ -1964,6 +1968,7 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
         scope == WorldPassDrawScope::TransmissiveOnly, vfr.RTShadowMask.IsValid()};
     passKeywords = ContributeScreenSpaceShadows(
         *this, frame, contactView, m_ScreenSpaceShadows, vfr.ScreenSpaceShadowMask, passKeywords);
+    passKeywords = ContributeVirtualShadows(vfr.VirtualShadows, passKeywords);
 
     // MaterialKeyword::LodCrossfade is deliberately NOT set here. It is a
     // per-SEGMENT property (BatchDrawRange::Segments) selected by the entity
@@ -2092,6 +2097,8 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                 p.Read(vfr.RTShadowMask, RenderGraph::RGTextureRead::Sampled);
             if (vfr.ScreenSpaceShadowMask.IsValid())
                 p.Read(vfr.ScreenSpaceShadowMask, RenderGraph::RGTextureRead::Sampled);
+            if (HasKeyword(passKeywords, MaterialKeyword::VirtualShadowMaps))
+                ReadVirtualShadowInputs(p, vfr.VirtualShadows);
             if (vfr.AreaShadowMap.IsValid())
                 p.Read(vfr.AreaShadowMap, RenderGraph::RGTextureRead::Sampled);
             if (vfr.SpotShadowMap.IsValid())
@@ -2349,6 +2356,7 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
         return {};
 
     auto& vfr = ViewFrameRGFor(frame, viewId);
+    passKeywords = ContributeVirtualShadows(vfr.VirtualShadows, passKeywords);
     const bool wantsShadows =
         Rendering::HasKeyword(passKeywords, Rendering::MaterialKeyword::Shadows);
     const RenderGraph::RGTexture shadowArr =
@@ -2446,6 +2454,8 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
                 p.Read(vfr.RTShadowMask, RenderGraph::RGTextureRead::Sampled);
             if (vfr.ScreenSpaceShadowMask.IsValid())
                 p.Read(vfr.ScreenSpaceShadowMask, RenderGraph::RGTextureRead::Sampled);
+            if (HasKeyword(passKeywords, MaterialKeyword::VirtualShadowMaps))
+                ReadVirtualShadowInputs(p, vfr.VirtualShadows);
             if (vfr.AreaShadowMap.IsValid())
                 p.Read(vfr.AreaShadowMap, RenderGraph::RGTextureRead::Sampled);
             if (vfr.SpotShadowMap.IsValid())

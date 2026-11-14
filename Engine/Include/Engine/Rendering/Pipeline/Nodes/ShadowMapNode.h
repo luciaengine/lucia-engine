@@ -2,6 +2,8 @@
 
 #include "Engine/Rendering/Pipeline/Nodes/ShadowReceiverReduce.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
+#include "Engine/Rendering/VirtualShadows/VirtualShadowOptions.h"
+#include "Engine/Rendering/VirtualShadows/VirtualShadowPageRequests.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/Handle.h"
 #include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
@@ -113,6 +115,10 @@ class ShadowMapNode final : public IRenderPipelineNode
 
     // SDSM measurement of the cascades' receivers, declared after the node loop.
     ShadowReceiverReduce m_ReceiverReduce;
+
+    // Authored by "virtualShadows", "virtualDirectionalResolution" and "virtualLocalResolution".
+    Engine::Renderer::VirtualShadowOptions m_VirtualShadows;
+    Engine::Renderer::VirtualShadowPageRequests m_VirtualPageRequests;
 
     // MSM4 fullscreen-quad pipelines: one for the moments-write
     // (samples cascade depth, computes Hamburger-quantized moments) and

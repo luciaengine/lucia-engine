@@ -22,7 +22,7 @@ bool GE_TryVirtualShadowDirectional(vec3 position, vec3 normal, float cosTheta, 
         GE_VirtualShadowProjection projection = ge_virtualShadowProjections[row];
         float worldPerTexel = max(projection.LightPositionRelAndFar.x, 1e-6);
         float normalBias = GE_ShadowNormalBiasWorld(ge_shadowParams.y, worldPerTexel,
-            refWorldPerTexel, quality, ge_shadowPcss.x, cosTheta, 0.0, false);
+            refWorldPerTexel, quality, ge_shadowPcss.x, cosTheta, 0.0, false, 0.0);
         vec4 clip;
         vec2 uv;
         float reference;

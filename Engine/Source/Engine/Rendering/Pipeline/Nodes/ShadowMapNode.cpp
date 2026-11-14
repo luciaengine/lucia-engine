@@ -317,6 +317,19 @@ bool ShadowMapNode::Initialize(std::string nodeId, std::string nodeJson, std::st
             m_NormalBias = j["normalBias"].get<float>();
         if (j.contains("buffer") && j["buffer"].is_string())
             m_BufferRef = j["buffer"].get<std::string>();
+        if (j.contains("virtualShadows") && j["virtualShadows"].is_boolean())
+            m_VirtualShadows.Enabled = j["virtualShadows"].get<bool>();
+        if (j.contains("virtualDirectionalResolution") && j["virtualDirectionalResolution"].is_number_unsigned())
+            m_VirtualShadows.DirectionalResolution = j["virtualDirectionalResolution"].get<uint32_t>();
+        if (j.contains("virtualLocalResolution") && j["virtualLocalResolution"].is_number_unsigned())
+            m_VirtualShadows.LocalResolution = j["virtualLocalResolution"].get<uint32_t>();
+        if (!m_VirtualShadows.IsValid())
+        {
+            if (outError)
+                *outError = "ShadowMapNode: virtualDirectionalResolution and virtualLocalResolution must be "
+                            "powers of two from 128 to 16384.";
+            return false;
+        }
     }
     catch (const std::exception& e)
     {
@@ -339,7 +352,9 @@ void ShadowMapNode::Declare(RenderPipelineInstance& /*instance*/,
         return;
 
     auto& feature = ctx.Services.EnsureFeature<ShadowMapRenderFeature>();
-    ctx.Services.EnsureFeature<VirtualShadowRenderFeature>().Initialize(device);
+    auto& virtualShadows = ctx.Services.EnsureFeature<VirtualShadowRenderFeature>();
+    virtualShadows.Initialize(device);
+    virtualShadows.Configure(m_VirtualShadows);
     CascadedShadowConfig config{};
     config.NumCascades = m_NumCascades;
     // Editor project Rendering Settings can override the pipeline-authored
@@ -424,6 +439,8 @@ void ShadowMapNode::DeclareForView(ViewDeclare& d)
             d.Frame, viewId, m_NumCascades, PunctualResolution(), /*directionalLightDirWS=*/nullptr,
             [&d](const char* suffix) { return d.PassName(suffix); });
         feature->Declare(d.Frame, *rs, fctx);
+        if (auto* virtualShadows = rs->GetFeature<VirtualShadowRenderFeature>())
+            m_VirtualPageRequests.DeclareForView(d, *virtualShadows, fctx, feature->GetShadowSampler(), {});
         return; // zeroed ShadowData already published
     }
     feature->SetWarnedNoLight(false);
@@ -482,6 +499,10 @@ void ShadowMapNode::DeclareForView(ViewDeclare& d)
         d.Frame, viewId, m_NumCascades, PunctualResolution(), shadowLight->directionWS,
         [&d](const char* suffix) { return d.PassName(suffix); });
     feature->Declare(d.Frame, *rs, fctx);
+    if (auto* virtualShadows = rs->GetFeature<VirtualShadowRenderFeature>())
+        m_VirtualPageRequests.DeclareForView(d, *virtualShadows, fctx, feature->GetShadowSampler(),
+            {&cascadeFrame, feature->GetConfig().Resolution, authored.MaxShadowDistance,
+             feature->GetPoissonSoftness()});
 
     // ShadowData content AFTER Declare: the cascade declares just committed
     // this frame's content fits (which layers rendered, which the motion
