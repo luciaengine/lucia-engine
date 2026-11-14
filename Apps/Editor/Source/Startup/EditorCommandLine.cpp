@@ -307,6 +307,12 @@ EditorCommandLineArgs ParseEditorCommandLine(int argc, char** argv)
             continue;
         }
 
+        if (arg == "--no-focus")
+        {
+            out.noFocus = true;
+            continue;
+        }
+
         // --window <W>x<H>[+<X>+<Y>] / --window=<W>x<H>[+<X>+<Y>]
         if (arg == "--window" || arg.starts_with("--window="))
         {
