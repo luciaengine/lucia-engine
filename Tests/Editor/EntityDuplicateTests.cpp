@@ -1235,7 +1235,7 @@ TEST_F(TerrainEntityDuplicateTests, DuplicateDoesNotInheritColliderPhysicsHandle
     EXPECT_EQ(clonedPlanetPage->PageX, 21u);
 
     // The originals are untouched.
-    const auto* sourcePage = world.GetComponent<TerrainPageCollider>(pageEntity);
+    const auto* sourcePage = world.GetComponent<TerrainPageCollider>(tileEntity);
     ASSERT_NE(sourcePage, nullptr);
     EXPECT_EQ(sourcePage->PhysicsHandleIndex, 11u);
     const auto* sourcePlanetPage = world.GetComponent<TerrainPlanetPageCollider>(planetPageEntity);

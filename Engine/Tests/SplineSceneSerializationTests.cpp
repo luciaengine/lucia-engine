@@ -2,6 +2,8 @@
 
 #include "Components/SceneEntityTag.h"
 #include "Components/Spline/SplineComponent.h"
+#include "Components/Spline/SplineNetworkMember.h"
+#include "Components/Spline/SplineNetworkOverrides.h"
 #include "Components/Spline/SplineWall.h"
 #include "Components/Transform.h"
 #include "ECS/ComponentFieldRegistry.h"

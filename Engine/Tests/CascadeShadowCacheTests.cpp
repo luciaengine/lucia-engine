@@ -19,6 +19,7 @@ using GameEngine::Engine::Renderer::CascadeCacheDirtyCause;
 using GameEngine::Engine::Renderer::CascadeRenderInputs;
 using GameEngine::Engine::Renderer::CascadeShadowCache;
 using GameEngine::Engine::Renderer::ShadowCasterChangeSet;
+using GameEngine::Engine::Renderer::ShadowCasterChangeScope;
 using GameEngine::Engine::Renderer::ShadowCasterChangeSphere;
 
 namespace
@@ -131,7 +132,7 @@ TEST(CascadeShadowCache, EachInputChangeMissesWithItsCause)
          CascadeCacheDirtyCause::ConfigChanged},
         {"lodForce", [](CascadeRenderInputs& in) { in.LODForceLevel = 2; },
          CascadeCacheDirtyCause::ConfigChanged},
-        {"renderLayers", [](CascadeRenderInputs& in) { in.RenderLayerMask = 0x80000000u; },
+        {"renderLayers", [](CascadeRenderInputs& in) { in.Layers = GameEngine::Rendering::RenderLayerMask{0x80000000u}; },
          CascadeCacheDirtyCause::ConfigChanged},
         // A selection-mode switch re-derives every mesh row's switch points, so a
         // retained cascade would hold LOD picks the camera pass no longer makes.
@@ -653,14 +654,16 @@ CascadeRenderInputs FootprintInputs(float halfExtent = 10.0f)
 uint64_t Track(CacheDriver& drv, CascadeRenderInputs& in, const ShadowCasterChangeSet& changes,
                 uint32_t slot = kSlot)
 {
-    in.CasterEpoch = drv.Cache.TrackCasterChanges(kView, slot, in.WorldId, changes,
-                                                 in.LightVP, in.Resolution);
+    const auto epochs = drv.Cache.TrackCasterChanges(kView, slot, in.WorldId, changes,
+                                                       in.LightVP, in.Resolution);
+    in.CasterEpoch = epochs.Content;
+    in.DeformationEpoch = epochs.Deformation;
     return in.CasterEpoch;
 }
 
 void SettleSpatialCache(CacheDriver& drv, CascadeRenderInputs& in)
 {
-    Track(drv, in, {10, {}, true});
+    Track(drv, in, {10, {}, ShadowCasterChangeScope::Unbounded});
     drv.Frame(in);
     drv.Frame(in);
     ASSERT_TRUE(drv.Frame(in).Skip);
@@ -674,8 +677,8 @@ TEST(CascadeShadowAttribution, DistantMoverRetainsNearCascadeButRefreshesFarCasc
     SettleSpatialCache(near, nearIn);
     SettleSpatialCache(far, farIn);
     const std::array spheres{ShadowCasterChangeSphere{40.0f, 0.0f, 0.0f, 2.0f}};
-    EXPECT_EQ(Track(near, nearIn, {11, spheres, false}), 10u);
-    EXPECT_EQ(Track(far, farIn, {11, spheres, false}), 11u);
+    EXPECT_EQ(Track(near, nearIn, {11, spheres, ShadowCasterChangeScope::Bounded}), 10u);
+    EXPECT_EQ(Track(far, farIn, {11, spheres, ShadowCasterChangeScope::Bounded}), 11u);
     EXPECT_TRUE(near.Frame(nearIn).Skip);
     EXPECT_EQ(far.Frame(farIn).Cause, CascadeCacheDirtyCause::CasterContentChanged);
 }
@@ -693,7 +696,7 @@ TEST(CascadeShadowAttribution, DepthClampedAndBoundaryCastersAlwaysInvalidate)
         auto in = FootprintInputs();
         SettleSpatialCache(drv, in);
         const std::array spheres{sphere};
-        EXPECT_EQ(Track(drv, in, {11, spheres, false}), 11u);
+        EXPECT_EQ(Track(drv, in, {11, spheres, ShadowCasterChangeScope::Bounded}), 11u);
         EXPECT_EQ(drv.Frame(in).Cause, CascadeCacheDirtyCause::CasterContentChanged);
     }
 }
@@ -709,18 +712,18 @@ TEST(CascadeShadowAttribution, UsesTheLightAxesAndTranslation)
     in.LightVP[12] = -10.0f;
     SettleSpatialCache(drv, in);
     const std::array inside{ShadowCasterChangeSphere{100000, 0, 100, 1}};
-    EXPECT_EQ(Track(drv, in, {11, inside, false}), 11u);
+    EXPECT_EQ(Track(drv, in, {11, inside, ShadowCasterChangeScope::Bounded}), 11u);
     EXPECT_FALSE(drv.Frame(in).Skip);
     const std::array outside{ShadowCasterChangeSphere{0, 0, 140, 1}};
-    EXPECT_EQ(Track(drv, in, {12, outside, false}), 11u);
+    EXPECT_EQ(Track(drv, in, {12, outside, ShadowCasterChangeScope::Bounded}), 11u);
     EXPECT_TRUE(drv.Frame(in).Skip);
 }
 
 TEST(CascadeShadowAttribution, MissedVersionsAndUnattributedChangesRefresh)
 {
-    for (const auto change : {ShadowCasterChangeSet{12, {}, false},
-                              ShadowCasterChangeSet{11, {}, true},
-                              ShadowCasterChangeSet{2, {}, false}})
+    for (const auto change : {ShadowCasterChangeSet{12, {}, ShadowCasterChangeScope::Bounded},
+                              ShadowCasterChangeSet{11, {}, ShadowCasterChangeScope::Unbounded},
+                              ShadowCasterChangeSet{2, {}, ShadowCasterChangeScope::Bounded}})
     {
         CacheDriver drv;
         auto in = FootprintInputs();
@@ -736,10 +739,10 @@ TEST(CascadeShadowAttribution, PlanningAndDeclarationCannotConsumeEachOthersChan
     auto in = FootprintInputs();
     SettleSpatialCache(drv, in);
     const std::array spheres{ShadowCasterChangeSphere{0, 0, 0, 1}};
-    Track(drv, in, {11, spheres, false});
+    Track(drv, in, {11, spheres, ShadowCasterChangeScope::Bounded});
     EXPECT_EQ(drv.Cache.PeekCause(kView, kSlot, in, false),
               CascadeCacheDirtyCause::CasterContentChanged);
-    Track(drv, in, {11, spheres, false});
+    Track(drv, in, {11, spheres, ShadowCasterChangeScope::Bounded});
     EXPECT_EQ(drv.Frame(in).Cause, CascadeCacheDirtyCause::CasterContentChanged);
     EXPECT_TRUE(drv.Frame(in).Skip);
 }
@@ -751,8 +754,8 @@ TEST(CascadeShadowAttribution, IrrelevantLaterChangeCannotClearAnUnrenderedRelev
     SettleSpatialCache(drv, in);
     const std::array inside{ShadowCasterChangeSphere{0, 0, 0, 1}};
     const std::array outside{ShadowCasterChangeSphere{40, 0, 0, 1}};
-    Track(drv, in, {11, inside, false}); // declaration/exec may never run
-    EXPECT_EQ(Track(drv, in, {12, outside, false}), 11u);
+    Track(drv, in, {11, inside, ShadowCasterChangeScope::Bounded}); // declaration/exec may never run
+    EXPECT_EQ(Track(drv, in, {12, outside, ShadowCasterChangeScope::Bounded}), 11u);
     EXPECT_EQ(drv.Frame(in).Cause, CascadeCacheDirtyCause::CasterContentChanged);
 }
 
@@ -762,7 +765,7 @@ TEST(CascadeShadowAttribution, WorldRebindWithEqualEpochRefreshes)
     auto in = FootprintInputs();
     SettleSpatialCache(drv, in);
     ++in.WorldId;
-    Track(drv, in, {10, {}, false});
+    Track(drv, in, {10, {}, ShadowCasterChangeScope::Bounded});
     EXPECT_EQ(drv.Frame(in).Cause, CascadeCacheDirtyCause::CasterContentChanged);
 }
 
@@ -772,11 +775,11 @@ TEST(CascadeShadowAttribution, DepthAndTintSlotsObserveChangesIndependently)
     auto in = FootprintInputs();
     const uint32_t depth = CascadeShadowCache::kDepthSlotBase;
     const uint32_t tint = CascadeShadowCache::kTintSlotBase;
-    Track(drv, in, {10, {}, true}, depth);
-    Track(drv, in, {10, {}, true}, tint);
+    Track(drv, in, {10, {}, ShadowCasterChangeScope::Unbounded}, depth);
+    Track(drv, in, {10, {}, ShadowCasterChangeScope::Unbounded}, tint);
     const std::array spheres{ShadowCasterChangeSphere{0, 0, 0, 1}};
-    EXPECT_EQ(Track(drv, in, {11, spheres, false}, depth), 11u);
-    EXPECT_EQ(Track(drv, in, {11, spheres, false}, tint), 11u);
+    EXPECT_EQ(Track(drv, in, {11, spheres, ShadowCasterChangeScope::Bounded}, depth), 11u);
+    EXPECT_EQ(Track(drv, in, {11, spheres, ShadowCasterChangeScope::Bounded}, tint), 11u);
 }
 
 TEST(CascadeShadowAttribution, InvalidBoundsAndProjectionRefreshConservatively)
@@ -788,14 +791,14 @@ TEST(CascadeShadowAttribution, InvalidBoundsAndProjectionRefreshConservatively)
         auto in = FootprintInputs();
         SettleSpatialCache(drv, in);
         const std::array spheres{ShadowCasterChangeSphere{40, 0, 0, invalid}};
-        EXPECT_EQ(Track(drv, in, {11, spheres, false}), 11u);
+        EXPECT_EQ(Track(drv, in, {11, spheres, ShadowCasterChangeScope::Bounded}), 11u);
     }
     CacheDriver drv;
     auto in = FootprintInputs();
     SettleSpatialCache(drv, in);
     in.LightVP[0] = std::numeric_limits<float>::quiet_NaN();
     const std::array spheres{ShadowCasterChangeSphere{40, 0, 0, 1}};
-    EXPECT_EQ(Track(drv, in, {11, spheres, false}), 11u);
+    EXPECT_EQ(Track(drv, in, {11, spheres, ShadowCasterChangeScope::Bounded}), 11u);
 }
 
 TEST(CascadeShadowAttribution, FitChangesStillRefreshAfterIrrelevantMovement)
@@ -804,9 +807,9 @@ TEST(CascadeShadowAttribution, FitChangesStillRefreshAfterIrrelevantMovement)
     auto in = FootprintInputs();
     SettleSpatialCache(drv, in);
     const std::array spheres{ShadowCasterChangeSphere{40, 0, 0, 1}};
-    EXPECT_EQ(Track(drv, in, {11, spheres, false}), 10u);
+    EXPECT_EQ(Track(drv, in, {11, spheres, ShadowCasterChangeScope::Bounded}), 10u);
     in.LightVP[12] = -4.0f; // move the cascade to include that caster
-    Track(drv, in, {11, spheres, false});
+    Track(drv, in, {11, spheres, ShadowCasterChangeScope::Bounded});
     EXPECT_EQ(drv.Frame(in).Cause, CascadeCacheDirtyCause::CascadeFitChanged);
     EXPECT_EQ(drv.Frame(in).Cause, CascadeCacheDirtyCause::CullNotSettled);
     EXPECT_TRUE(drv.Frame(in).Skip);
@@ -821,7 +824,7 @@ TEST(CascadeShadowAttribution, MoverInRetainedFootprintCannotBecomeAMotionDeferr
     const std::array spheres{ShadowCasterChangeSphere{0, 0, 0, 1}};
     // The mover misses the requested footprint but affects the retained map.
     // CasterContentChanged is mandatory; CascadeFitChanged could be deferred.
-    EXPECT_EQ(Track(drv, in, {11, spheres, false}), 11u);
+    EXPECT_EQ(Track(drv, in, {11, spheres, ShadowCasterChangeScope::Bounded}), 11u);
     EXPECT_EQ(drv.Cache.PeekCause(kView, kSlot, in, false),
               CascadeCacheDirtyCause::CasterContentChanged);
     EXPECT_EQ(drv.Frame(in).Cause, CascadeCacheDirtyCause::CasterContentChanged);

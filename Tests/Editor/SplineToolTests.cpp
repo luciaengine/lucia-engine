@@ -5,6 +5,13 @@
 #include "Core/Application.h"
 #include "Core/Engine.h"
 
+#include "Components/Name.h"
+#include "Components/Rendering/MeshRenderer.h"
+#include "Components/Rendering/LocalBounds.h"
+#include "Components/Spline/SplineNetworkMember.h"
+#include "Engine/Rendering/PrimitiveGenerator.h"
+#include "Memory/AllocationCountScope.h"
+#include "Scene/SceneTlas.h"
 #include "Components/Spline/SplineComponent.h"
 #include "Components/Terrain/Terrain.h"
 #include "Components/Transform.h"
@@ -1006,6 +1013,34 @@ TEST_F(SplineToolTests, TwoDimensionalBrushDrawsInTheTiltedPlaneOfTheSelection)
             }
         });
     EXPECT_EQ(count, 1u);
+}
+
+// The same flat, service-owned terrain the pointer tests above create, with the requested footprint.
+void CreateFlatTerrain(World* world, float worldSize)
+{
+    auto* service = GameEngine::TerrainECS::TerrainService::TryGet();
+    ASSERT_NE(service, nullptr);
+    GameEngine::Terrain::TerrainConfig config{};
+    config.HeightmapWidth = 9;
+    config.HeightmapHeight = 9;
+    config.WorldSizeX = worldSize;
+    config.WorldSizeZ = worldSize;
+    config.HeightScale = 1.0f;
+    config.LODLevels = 1;
+    config.PatchGridSize = 8;
+    const auto handle = service->CreateTerrain(config);
+    ASSERT_NE(handle.Generation, 0u);
+    Entity entity = world->Create();
+    Terrain terrain{};
+    terrain.SizeX = worldSize;
+    terrain.SizeZ = worldSize;
+    terrain.HeightScale = config.HeightScale;
+    terrain.BaseSource = GameEngine::Components::TerrainBaseSource::Flat;
+    terrain.TerrainDataHandle = handle.Index;
+    terrain.TerrainDataGeneration = handle.Generation;
+    entity.Set(terrain);
+    entity.Set(WorldTransform{});
+    world->ProcessCommands();
 }
 
 // The lowest world y of every line and triangle vertex the gizmo draws in one frame.

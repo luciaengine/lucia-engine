@@ -177,7 +177,7 @@ TEST_F(PrefabPlaceTests, ADroppedPrefabIsALiveInstanceWithItsTree)
     const std::filesystem::path crate = WriteAsset("Props/Crate.prefab", kCratePrefab);
     ECS::World world;
 
-    Editor::RegisterPrefabEditor(Notifications(), nullptr, {}, {});
+    Editor::RegisterPrefabEditor(Notifications(), nullptr, {}, {}, {});
     const auto place = Editor::AssetPlacementRegistry::Get().Find(AssetType::Prefab);
     ASSERT_NE(place, nullptr);
     Components::Transform at{};
@@ -254,7 +254,7 @@ TEST(PrefabDropStepNameTests, SeveralRootsNameTheirCount)
 // dropped alone, is not refused.
 TEST(PrefabDropRefusalTests, AFileTheSceneCannotPlaceIsRefusedWithANotice)
 {
-    Editor::RegisterPrefabEditor(Notifications(), nullptr, {}, {});
+    Editor::RegisterPrefabEditor(Notifications(), nullptr, {}, {}, {});
     using Paths = std::vector<std::filesystem::path>;
     EXPECT_EQ(Editor::DescribeRefusedDrop(Paths{"Navigation/Town.navgrid"}),
               "Navigation Grid files cannot be placed in a scene. Add a Navigation Surface component and assign the "

@@ -186,7 +186,7 @@ TEST(TerrainPickingRay, PlanarTerrainWithHeightfieldIsPickable)
     TerrainPickHit hit{};
     ASSERT_TRUE(RaycastTerrain(ray, world, 1000.0f, hit));
     EXPECT_EQ(hit.Entity.id, entity.id);
-    EXPECT_NEAR(hit.WorldPosition.y, 0.0f, 0.1f); // flat zero-filled heightfield
+    EXPECT_NEAR(hit.Point.y, 0.0f, 0.1f); // flat zero-filled heightfield
 }
 
 // The runtime and editor must pick streamed height pages before any full tile is resident.
@@ -215,12 +215,12 @@ TEST(TerrainPickingRay, RuntimeAndEditorPickTheSamePagedTerrain)
     const Ray3D ray = MakeRay(camera, Vector3(0.0f, -1.0f, 0.0f));
     TerrainPickHit editorHit{};
     ASSERT_TRUE(RaycastTerrain(ray, world, kMaxDistanceMeters, editorHit));
-    EXPECT_NEAR(editorHit.WorldPosition.y, expected.Height, kHeightToleranceMeters);
+    EXPECT_NEAR(editorHit.Point.y, expected.Height, kHeightToleranceMeters);
 
     GameEngine::Scene::TerrainPickHit runtimeHit{};
     ASSERT_TRUE(GameEngine::Scene::RaycastTerrain(ray, world, kMaxDistanceMeters, runtimeHit));
     EXPECT_EQ(runtimeHit.Entity.id, entity.id);
-    EXPECT_NEAR(runtimeHit.WorldPosition.y, expected.Height, kHeightToleranceMeters);
+    EXPECT_NEAR(runtimeHit.Point.y, expected.Height, kHeightToleranceMeters);
     EXPECT_NEAR(runtimeHit.Distance, editorHit.Distance, kHeightToleranceMeters);
 }
 
@@ -276,7 +276,7 @@ TEST(TerrainPickingRay, PlanarPickFindsGroundLoweredBelowTheEntityOrigin)
     ASSERT_TRUE(RaycastTerrain(ray, world, 1000.0f, hit))
         << "ground lowered below the entity origin reported a silent miss";
     EXPECT_EQ(hit.Entity.id, entity.id);
-    EXPECT_NEAR(hit.WorldPosition.y, surfaceY, 0.1f);
+    EXPECT_NEAR(hit.Point.y, surfaceY, 0.1f);
 }
 
 // The mirror: a raise past HeightScale (1.5 * 16 = 24 m, lid was 17 m). This one never missed
@@ -296,7 +296,7 @@ TEST(TerrainPickingRay, PlanarPickFindsGroundRaisedAboveTheHeightScaleCeiling)
     TerrainPickHit hit{};
     ASSERT_TRUE(RaycastTerrain(ray, world, 1000.0f, hit));
     EXPECT_EQ(hit.Entity.id, entity.id);
-    EXPECT_NEAR(hit.WorldPosition.y, surfaceY, 0.1f)
+    EXPECT_NEAR(hit.Point.y, surfaceY, 0.1f)
         << "the cast answered with the slab lid, not the ground the renderer draws";
 }
 
@@ -345,7 +345,7 @@ TEST(TerrainPickingRay, PlanarPickFindsGroundUnderAHeightOffsetVolumeAtSceneScal
     ASSERT_TRUE(RaycastTerrain(ray, world, 1000.0f, hit))
         << "the conform ray found no ground under a lowered volume — the reported miss";
     EXPECT_EQ(hit.Entity.id, entity.id);
-    EXPECT_NEAR(hit.WorldPosition.y, surfaceY, 0.1f);
+    EXPECT_NEAR(hit.Point.y, surfaceY, 0.1f);
 }
 
 // The discriminating case: identical state except Domain == Spherical must NOT return a
@@ -395,18 +395,15 @@ TEST(TerrainPickingRay, SphericalTerrainNeverReportsItsResidualFootprintPosition
     const Ray3D ray = MakeRay(Vector3(0.0f, kFootprintY + 100.0f, 0.0f), Vector3(0.0f, -1.0f, 0.0f));
     TerrainPickHit hit{};
     const bool anyHit = RaycastTerrain(ray, world, 100000.0f, hit);
-    EXPECT_FALSE(anyHit && std::abs(hit.WorldPosition.y - kFootprintY) < 1.0f)
+    EXPECT_FALSE(anyHit && std::abs(hit.Point.y - kFootprintY) < 1.0f)
         << "the flat footprint of a spherical terrain is not drawn, so it is not a pick target";
 }
 
 // ---- SolvePlanetSurfaceHit: the pick lands on the DISPLACED surface ----
 //
-// The analytic ray/sphere root sits on the reference sphere, which ignores relief and
-// sculpt. These lock the refinement onto the surface the renderer actually displaces to,
-// using the production evaluator (CBTRenderFeature::SampleSphereSurfaceHeight) rather than a
-// copy of the height math. The feature is constructed device-free: SampleSphereSurfaceHeight
-// reads only the domain config SetActive pushes plus TerrainService's sculpt layer, and an
-// uninitialized feature's teardown is guarded on a null device.
+// These solver controls use closed-form relief at the feature's shipped tuning, independent
+// of page readiness. Production page-backed sampling, missing-page refusal and composed-layer
+// picking are covered by SurfaceHeightSphere in TerrainCpuHeightPagesTests.cpp.
 
 namespace
 {
@@ -425,6 +422,15 @@ void TuneSphericalPlanet(CBTRenderFeature& feature)
                       GameEngine::Components::kNoTerrainSeaLevel, domain, 0u);
 }
 
+// An explicit analytic solver oracle, rather than a substitute for an unavailable page sample.
+float AnalyticPlanetHeight(const CBTRenderFeature& feature, float dx, float dy, float dz)
+{
+    const auto& domain = feature.GetDomainConfig();
+    const Vector3 unit = Vector3(dx, dy, dz).Normalize();
+    return GameEngine::CBTTerrain::PlanetRelief(unit.x, unit.y, unit.z, domain.ReliefAmplitude,
+                                               domain.ReliefFrequency, domain.ReliefOctaves);
+}
+
 // A direction whose relief is far from zero, so "landed on the base sphere" and "landed on
 // the displaced surface" are separated by tens of metres rather than by rounding.
 Vector3 DirectionWithStrongRelief(const CBTRenderFeature& feature, float& outHeight)
@@ -440,7 +446,7 @@ Vector3 DirectionWithStrongRelief(const CBTRenderFeature& feature, float& outHei
             const float phi = 6.2831853f * static_cast<float>(j) / kSteps;
             const Vector3 dir(std::sin(theta) * std::cos(phi), std::cos(theta),
                               std::sin(theta) * std::sin(phi));
-            const float h = feature.SampleSphereSurfaceHeight(dir.x, dir.y, dir.z);
+            const float h = AnalyticPlanetHeight(feature, dir.x, dir.y, dir.z);
             if (std::abs(h) > std::abs(outHeight))
             {
                 outHeight = h;
@@ -457,7 +463,7 @@ Vector3 DirectionWithStrongRelief(const CBTRenderFeature& feature, float& outHei
 // relief, not at radius.
 TEST(TerrainPickingRay, PlanetHitLandsOnDisplacedSurfaceNotTheReferenceSphere)
 {
-    TerrainServiceScope scope; // SampleSphereSurfaceHeight composes the service's sculpt layer
+    TerrainServiceScope scope;
     CBTRenderFeature feature;
     TuneSphericalPlanet(feature);
 
@@ -474,7 +480,7 @@ TEST(TerrainPickingRay, PlanetHitLandsOnDisplacedSurfaceNotTheReferenceSphere)
     Vector3 pos{}, normal{};
     ASSERT_TRUE(SolvePlanetSurfaceHit(ray, kTestPlanetRadius, 100000.0f,
                                       [&feature](float dx, float dy, float dz) {
-                                          return feature.SampleSphereSurfaceHeight(dx, dy, dz);
+                                          return AnalyticPlanetHeight(feature, dx, dy, dz);
                                       },
                                       t, pos, normal));
 
@@ -502,7 +508,7 @@ TEST(TerrainPickingRay, PlanetSolveMissesWhenTheRayClearsTheSphere)
     Vector3 pos{}, normal{};
     EXPECT_FALSE(SolvePlanetSurfaceHit(ray, kTestPlanetRadius, 100000.0f,
                                        [&feature](float dx, float dy, float dz) {
-                                           return feature.SampleSphereSurfaceHeight(dx, dy, dz);
+                                           return AnalyticPlanetHeight(feature, dx, dy, dz);
                                        },
                                        t, pos, normal));
 }
@@ -515,7 +521,7 @@ TEST(TerrainPickingRay, PlanetSolveRespectsTMaxCap)
     CBTRenderFeature feature;
     TuneSphericalPlanet(feature);
     auto heightFn = [&feature](float dx, float dy, float dz) {
-        return feature.SampleSphereSurfaceHeight(dx, dy, dz);
+        return AnalyticPlanetHeight(feature, dx, dy, dz);
     };
 
     const Ray3D ray = MakeRay(Vector3(0.0f, kTestPlanetRadius * 3.0f, 0.0f),
@@ -539,7 +545,7 @@ TEST(TerrainPickingRay, PlanetSolveReportsTInTheRaysOwnUnits)
     CBTRenderFeature feature;
     TuneSphericalPlanet(feature);
     auto heightFn = [&feature](float dx, float dy, float dz) {
-        return feature.SampleSphereSurfaceHeight(dx, dy, dz);
+        return AnalyticPlanetHeight(feature, dx, dy, dz);
     };
 
     Ray3D unitRay;
@@ -570,8 +576,7 @@ TEST(TerrainPickingRay, PlanetSolveReportsTInTheRaysOwnUnits)
 
 namespace
 {
-// The direction of the deepest valley on the tuned planet, sampled through the production
-// height evaluator so the test cannot disagree with the renderer about where the ground is.
+// The direction of the deepest valley in the analytic solver fixture.
 Vector3 DeepestValleyDirection(const CBTRenderFeature& feature, float& outHeight)
 {
     Vector3 best(0.0f, 1.0f, 0.0f);
@@ -585,7 +590,7 @@ Vector3 DeepestValleyDirection(const CBTRenderFeature& feature, float& outHeight
             const float phi = 6.2831853f * static_cast<float>(j) / kSteps;
             const Vector3 dir(std::sin(theta) * std::cos(phi), std::cos(theta),
                               std::sin(theta) * std::sin(phi));
-            const float h = feature.SampleSphereSurfaceHeight(dir.x, dir.y, dir.z);
+            const float h = AnalyticPlanetHeight(feature, dir.x, dir.y, dir.z);
             if (h < outHeight)
             {
                 outHeight = h;
@@ -610,7 +615,7 @@ Vector3 HighestPeakDirection(const CBTRenderFeature& feature, float& outHeight)
             const float phi = 6.2831853f * static_cast<float>(j) / kSteps;
             const Vector3 dir(std::sin(theta) * std::cos(phi), std::cos(theta),
                               std::sin(theta) * std::sin(phi));
-            const float h = feature.SampleSphereSurfaceHeight(dir.x, dir.y, dir.z);
+            const float h = AnalyticPlanetHeight(feature, dir.x, dir.y, dir.z);
             if (h > outHeight)
             {
                 outHeight = h;
@@ -641,7 +646,7 @@ TEST(TerrainPickingRay, PlanetPickFromInsideTheReferenceSphereHitsTheGroundAhead
     CBTRenderFeature feature;
     TuneSphericalPlanet(feature);
     auto heightFn = [&feature](float dx, float dy, float dz) {
-        return feature.SampleSphereSurfaceHeight(dx, dy, dz);
+        return AnalyticPlanetHeight(feature, dx, dy, dz);
     };
 
     float valleyH = 0.0f;
@@ -678,7 +683,7 @@ TEST(TerrainPickingRay, PlanetPickFromInsideTheReferenceSphereLandsAtTheCameraAl
     CBTRenderFeature feature;
     TuneSphericalPlanet(feature);
     auto heightFn = [&feature](float dx, float dy, float dz) {
-        return feature.SampleSphereSurfaceHeight(dx, dy, dz);
+        return AnalyticPlanetHeight(feature, dx, dy, dz);
     };
 
     float valleyH = 0.0f;
@@ -708,7 +713,7 @@ TEST(TerrainPickingRay, PlanetSolveReportsNothingFromUnderTheSurface)
     CBTRenderFeature feature;
     TuneSphericalPlanet(feature);
     auto heightFn = [&feature](float dx, float dy, float dz) {
-        return feature.SampleSphereSurfaceHeight(dx, dy, dz);
+        return AnalyticPlanetHeight(feature, dx, dy, dz);
     };
 
     float valleyH = 0.0f;
@@ -733,7 +738,7 @@ TEST(TerrainPickingRay, PlanetPickFromOverAPeakStillHitsTheGroundAhead)
     CBTRenderFeature feature;
     TuneSphericalPlanet(feature);
     auto heightFn = [&feature](float dx, float dy, float dz) {
-        return feature.SampleSphereSurfaceHeight(dx, dy, dz);
+        return AnalyticPlanetHeight(feature, dx, dy, dz);
     };
 
     float peakH = 0.0f;
@@ -802,7 +807,7 @@ bool OracleFirstGroundHit(const CBTRenderFeature& feature, const Vector3& o, con
 
     auto gap = [&](float t) {
         const Vector3 p(o.x + d.x * t, o.y + d.y * t, o.z + d.z * t);
-        return p.Length() - (radius + feature.SampleSphereSurfaceHeight(p.x, p.y, p.z));
+        return p.Length() - (radius + AnalyticPlanetHeight(feature, p.x, p.y, p.z));
     };
     if (gap(tEnter) <= 0.0f)
         return false; // already at or under the ground: no surface ahead
@@ -844,7 +849,7 @@ TEST(TerrainPickingRay, PlanetPickJustOutsideTheReferenceSphereLandsOnTheReferen
     CBTRenderFeature feature;
     TuneSphericalPlanet(feature);
     auto heightFn = [&feature](float dx, float dy, float dz) {
-        return feature.SampleSphereSurfaceHeight(dx, dy, dz);
+        return AnalyticPlanetHeight(feature, dx, dy, dz);
     };
 
     float valleyH = 0.0f;
@@ -894,7 +899,7 @@ TEST(TerrainPickingRay, PlanetPickNearTheLimbLandsShortOfTheDrawnGround)
     CBTRenderFeature feature;
     TuneSphericalPlanet(feature);
     auto heightFn = [&feature](float dx, float dy, float dz) {
-        return feature.SampleSphereSurfaceHeight(dx, dy, dz);
+        return AnalyticPlanetHeight(feature, dx, dy, dz);
     };
 
     // The whole visible disc from one orbit pose, not one great circle: the limb error is a

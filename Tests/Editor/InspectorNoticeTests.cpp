@@ -59,6 +59,11 @@ Button* ActionOf(UIElement& notice)
     return dynamic_cast<Button*>(FindByClass(&notice, "inspector-notice-action"));
 }
 
+Button* DismissOf(UIElement& notice)
+{
+    return dynamic_cast<Button*>(FindByClass(&notice, "inspector-notice-dismiss"));
+}
+
 void Click(Button& button)
 {
     UIEvent e{};

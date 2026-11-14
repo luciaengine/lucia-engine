@@ -18,6 +18,7 @@
 
 using GameEngine::Engine::Renderer::CascadeCacheDirtyCause;
 using GameEngine::Engine::Renderer::CascadeMotionScheduler;
+using GameEngine::Engine::Renderer::CascadeMotionSource;
 using GameEngine::Engine::Renderer::CascadeUpdateClass;
 using GameEngine::Engine::Renderer::ClassifyCascadeDirtyCause;
 using GameEngine::Engine::Renderer::ClassifyCascadePair;
@@ -60,7 +61,7 @@ struct SchedulerDriver
         for (uint32_t c = 0; c < kN; ++c)
             s[c] = Frame - ContentStamp[c];
         const uint32_t mask =
-            Scheduler.PlanFrame(kView, numCascades, classes, s, cap, maxAge).DeferMask;
+            Scheduler.PlanFrame(kView, numCascades, classes, s, cap, maxAge, CascadeMotionSource::Camera).DeferMask;
         for (uint32_t c = 0; c < numCascades; ++c)
         {
             // Rendered or cache-skipped (Cached == byte-identical content)
@@ -190,7 +191,7 @@ TEST(CascadeMotionScheduler, UnknownContentNeverDefers)
     s.fill(CascadeMotionScheduler::kStalenessUnknown);
     // No committed content (cold start, post-invalidate, hidden-view regrow):
     // everything renders regardless of the cap.
-    const auto plan = sched.PlanFrame(kView, kN, AllMotion(), s, /*cap=*/1, /*maxAge=*/2);
+    const auto plan = sched.PlanFrame(kView, kN, AllMotion(), s, /*cap=*/1, /*maxAge=*/2, CascadeMotionSource::Camera);
     EXPECT_EQ(plan.DeferMask, 0u);
 }
 

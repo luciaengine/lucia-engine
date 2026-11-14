@@ -478,7 +478,7 @@ TEST(PlacementGroundGap, PitchedPieceMeasuresItsOwnUndersideNotTheBoxUnderIt)
     // The bias a world AABB carries, stated as a number rather than left implicit:
     // its floor is the lowest underside CORNER, not the underside under any
     // probe.
-    const Mathematics::AABB worldBox = BoundsOf(kSlabHalf).Box.TransformToAABB(xf.ToMatrix4x4(xf.GetPosition() - Mathematics::WorldPosition{}));
+    const Mathematics::AABB worldBox = BoundsOf(kSlabHalf).Box.TransformToAABB(xf.ToMatrix4x4(xf.GetPosition() - Mathematics::WorldPosition{}).Data());
     EXPECT_NEAR(gap.UndersideCenterY - worldBox.min.y,
                 kSlabHalf.z * std::sin(kPitchDeg * kDegToRad), kHeightTolerance);
 }
@@ -531,7 +531,7 @@ TEST(PlacementGroundGap, YawedPieceProbesOnlyGroundItActuallyCovers)
     // Level, with its underside exactly on the untouched base ground.
     const Components::WorldTransform xf =
         PoseAt(Vector3{0.0f, kBaseGroundY + plankHalf.y, 0.0f}, 0.0f, kYawDeg, kUnitScale);
-    const Mathematics::AABB worldBox = BoundsOf(plankHalf).Box.TransformToAABB(xf.ToMatrix4x4(xf.GetPosition() - Mathematics::WorldPosition{}));
+    const Mathematics::AABB worldBox = BoundsOf(plankHalf).Box.TransformToAABB(xf.ToMatrix4x4(xf.GetPosition() - Mathematics::WorldPosition{}).Data());
 
     // The spike sits under the box's (max.x, min.z) corner — a corner of the
     // inflated box, and nowhere near the plank.

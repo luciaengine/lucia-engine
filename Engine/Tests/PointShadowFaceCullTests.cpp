@@ -24,6 +24,7 @@ using GameEngine::Engine::Renderer::PointShadowLightVisible;
 using GameEngine::Mathematics::Matrix4x4;
 using GameEngine::Mathematics::Vector3;
 using GameEngine::Mathematics::Vector4;
+using GameEngine::Mathematics::WorldPosition;
 
 constexpr uint8_t kAllFaces = 0x3Fu;
 
@@ -329,7 +330,7 @@ uint8_t RequiredFilterFaces(const PointShadowFrameInfo& geometry, const Vector3&
     constexpr float kRadius = 1.5f / 1024.0f;
     constexpr float kTileResolution = 256.0f;
     constexpr uint32_t kTapCount = 12;
-    const uint32_t selected = static_cast<uint32_t>(SampledFace(position, geometry.position));
+    const uint32_t selected = static_cast<uint32_t>(SampledFace(position, (geometry.position - WorldPosition{})));
     const Matrix4x4& selectedVP = geometry.lightVP[selected];
     const Vector4 selectedClip = selectedVP.Transform({position.x, position.y, position.z, 1});
     const float horizontal = 0.5f + 0.5f * selectedClip.x / selectedClip.w;
@@ -356,7 +357,7 @@ uint8_t RequiredFilterFaces(const PointShadowFrameInfo& geometry, const Vector3&
         float tapU = horizontal + offsetU;
         float tapV = vertical + offsetV;
         if (tapU < 0 || tapU > 1 || tapV < 0 || tapV > 1)
-            face = static_cast<uint32_t>(SampledFace(tapPosition, geometry.position));
+            face = static_cast<uint32_t>(SampledFace(tapPosition, (geometry.position - WorldPosition{})));
         const Matrix4x4& faceVP = geometry.lightVP[face];
         const Vector4 clip = faceVP.Transform({tapPosition.x, tapPosition.y, tapPosition.z, 1});
         tapU = 0.5f + 0.5f * clip.x / clip.w;
@@ -386,12 +387,12 @@ uint8_t RequiredFilterFaces(const PointShadowFrameInfo& geometry, const Vector3&
                     const Vector3 corner = UnprojectFilterPoint(inverse, pointU, pointV, clip.z / clip.w);
                     if (outsideU && outsideV)
                     {
-                        const Vector3 direction = corner - geometry.position;
+                        const Vector3 direction = corner - (geometry.position - WorldPosition{});
                         required |= static_cast<uint8_t>((1u << (direction.x >= 0 ? 0 : 1)) |
                             (1u << (direction.y >= 0 ? 2 : 3)) | (1u << (direction.z >= 0 ? 4 : 5)));
                     }
                     else
-                        required |= static_cast<uint8_t>(1u << SampledFace(corner, geometry.position));
+                        required |= static_cast<uint8_t>(1u << SampledFace(corner, (geometry.position - WorldPosition{})));
                 }
             }
     }
@@ -427,7 +428,7 @@ TEST(PointShadowFaceCull, KeepsEveryFilteredFaceAtEdgesAndVerticesWithNormalBias
                     const auto camera = MakeReceiverBox(receiver, range);
                     ASSERT_TRUE(InFrustum(receiver, camera));
                     ASSERT_GT(camera.CameraPosition.Length(), range);
-                    const auto kept = ComputePointShadowFaceMask(geometry.position, range, camera);
+                    const auto kept = ComputePointShadowFaceMask((geometry.position - WorldPosition{}), range, camera);
                     partialMasks += kept != kAllFaces;
                     const Vector3 tangent = Vector3::Cross(direction,
                         std::fabs(direction.y) < 0.9f ? Vector3{0, 1, 0} : Vector3{1, 0, 0}).Normalize();

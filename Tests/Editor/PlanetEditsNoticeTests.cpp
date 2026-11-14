@@ -58,7 +58,7 @@ TEST(PlanetEditsNotice, TheReducedDetailNoticeFollowsTheFitEachFrame)
     const uint32 slots = 512u;
     std::vector<std::function<void()>> frameRefreshCallbacks;
     EditorUI::InspectorNotice* notice = Editor::AddReducedPlanetSurfaceNotice(
-        parent.get(), [&fit, slots]() { return Editor::DescribeReducedPlanetSurface(fit, slots); },
+        parent.get(), [&fit]() { return Editor::DescribeReducedPlanetSurface(fit, slots); },
         &frameRefreshCallbacks);
     ASSERT_NE(notice, nullptr);
     auto* label = dynamic_cast<Label*>(InspectorLayoutTesting::FindByClass(notice, "inspector-notice-text"));

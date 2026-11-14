@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Scene/DefaultSceneEntities.h"
+#include "StagedTestPaths.h"
 
 #include "Assets/AssetRegistry.h"
 #include "Assets/MaterialAsset.h"

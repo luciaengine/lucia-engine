@@ -110,7 +110,7 @@ TEST_F(ScenePickTerrainInclusionTests, RaycastSceneHitsTheTerrain)
     ASSERT_TRUE(result.Hit);
     EXPECT_EQ(result.Best.Kind, PickableKind::Terrain);
     EXPECT_EQ(result.Best.Entity.id, m_Terrain.id);
-    EXPECT_NEAR(result.Best.WorldPosition.y, 0.0f, 0.1f);
+    EXPECT_NEAR(result.Best.Point.y, 0.0f, 0.1f);
 }
 
 // The defect: the selection path's entry point returned no hits at all over a terrain.
@@ -122,7 +122,7 @@ TEST_F(ScenePickTerrainInclusionTests, RaycastSceneAllHitsTheTerrain)
     ASSERT_EQ(hits.size(), 1u);
     EXPECT_EQ(hits[0].Kind, PickableKind::Terrain);
     EXPECT_EQ(hits[0].Entity.id, m_Terrain.id);
-    EXPECT_NEAR(hits[0].WorldPosition.y, 0.0f, 0.1f);
+    EXPECT_NEAR(hits[0].Point.y, 0.0f, 0.1f);
     EXPECT_NEAR(hits[0].Distance, 100.0f, 0.2f);
 }
 

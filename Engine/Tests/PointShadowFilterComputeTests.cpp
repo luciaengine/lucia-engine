@@ -4,7 +4,7 @@
 #include "Mathematics/Vector4.h"
 #include "Platform/Shell.h"
 #include "Rendering/Core/CommandList.h"
-#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Pipeline/PipelineTypes.h"
 #include "TestDeviceHelper.h"
 
 #include <algorithm>

@@ -68,7 +68,7 @@ TEST(SkinnedShadowInvalidation, PaletteChangeIsScopedToItsWorld)
 TEST(SkinnedShadowInvalidation, PaletteChangesPreserveRigidContent)
 {
     RenderServices rs;
-    rs.NotifyShadowCasterContentChanged(kWorld, {}, true);
+    rs.NotifyShadowCasterContentChanged(kWorld, {}, GameEngine::Engine::Renderer::ShadowCasterChangeScope::Unbounded);
     const uint64_t rigidBefore = rs.RigidShadowCasterContentVersion(kWorld);
     const uint64_t allBefore = rs.ShadowCasterContentVersion(kWorld);
     ASSERT_GT(rigidBefore, 0u);
@@ -86,7 +86,7 @@ TEST(SkinnedShadowInvalidation, RigidChangeAdvancesOnlyItsWorld)
     const uint64_t otherBefore = rs.RigidShadowCasterContentVersion(kOtherWorld);
     const uint64_t before = rs.RigidShadowCasterContentVersion(kWorld);
 
-    rs.NotifyShadowCasterContentChanged(kWorld, {}, true);
+    rs.NotifyShadowCasterContentChanged(kWorld, {}, GameEngine::Engine::Renderer::ShadowCasterChangeScope::Unbounded);
 
     EXPECT_GT(rs.RigidShadowCasterContentVersion(kWorld), before);
     EXPECT_EQ(rs.RigidShadowCasterContentVersion(kOtherWorld), otherBefore);

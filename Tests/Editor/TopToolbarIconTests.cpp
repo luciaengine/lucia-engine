@@ -54,7 +54,7 @@ TEST(TopToolbarIcons, OutlineArtworkUses24PixelsWithoutChangingHitAreas)
     // Apply this same fixture-only32pxsize to both arms of the capture pair.
     for (const char* id : outlineIds)
     {
-        auto* button = toolbar->FindById(id);
+        auto* button = toolbar->FindById(GameEngine::StringId::FromString(id));
         ASSERT_NE(button, nullptr);
         button->Style().Set(Style::Width, StyleLength::Px(32));
         button->Style().Set(Style::Height, StyleLength::Px(32));
@@ -62,7 +62,7 @@ TEST(TopToolbarIcons, OutlineArtworkUses24PixelsWithoutChangingHitAreas)
     host.Settle();
     for (const char* id : outlineIds)
     {
-        auto* button = dynamic_cast<Button*>(toolbar->FindById(id));
+        auto* button = dynamic_cast<Button*>(toolbar->FindById(GameEngine::StringId::FromString(id)));
         ASSERT_NE(button, nullptr) << id;
         const auto& image = button->GetResolvedStyle().Visual.BackgroundImage;
         EXPECT_EQ(image.SizeMode, BackgroundSizeMode::Explicit) << id;
@@ -78,7 +78,7 @@ TEST(TopToolbarIcons, OutlineArtworkUses24PixelsWithoutChangingHitAreas)
     }
     for (const char* id : {"TopToolbarCenter2", "TopToolbarCenter3", "TopToolbarCenter4", "TopToolbarRecord", "TopToolbarTilePalette"})
     {
-        auto* excluded = toolbar->FindById(id);
+        auto* excluded = toolbar->FindById(GameEngine::StringId::FromString(id));
         ASSERT_NE(excluded, nullptr);
         EXPECT_FALSE(excluded->HasClass("toolbar-outline-icon")) << id;
     }
@@ -128,7 +128,7 @@ TEST(TopToolbarIcons, PlayingTintSurvivesAClickAndClearsWhenPlayStops)
         "#PlayToolbarUnderTest { width: 1440px; height: 40px; }", *pose));
     host.Ui->AddStylesheet(pose);
     host.Settle();
-    auto* play = dynamic_cast<Button*>(toolbar->FindById("TopToolbarCenter4"_sid));
+    auto* play = dynamic_cast<Button*>(toolbar->FindById(GameEngine::StringId::FromString("TopToolbarCenter4"_sid)));
     ASSERT_NE(play, nullptr);
     ASSERT_TRUE(play->GetResolvedStyle().Visual.BackgroundImage.HasTint);
     const auto restingTint = play->GetResolvedStyle().Visual.BackgroundImage.Tint;

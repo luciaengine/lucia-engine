@@ -56,6 +56,21 @@ TEST(MarkupNotesEditCommand, ACommentAndAStatusChangeUndoAndRedoAsOneStepEach)
     MarkupService::Shutdown();
 }
 
+namespace
+{
+class NoticeRecordCommand final : public Editor::IEditorCommand
+{
+  public:
+    explicit NoticeRecordCommand(int& records) : m_Records(records) {}
+    const char* GetName() const override { return "Record Notice"; }
+    void Do() override { ++m_Records; }
+    void Undo() override { --m_Records; }
+
+  private:
+    int& m_Records;
+};
+}
+
 // The edit announces its Markup commit inside its own step, so a record the commit writes joins that step.
 TEST(MarkupNotesEditCommand, TheCommitIsAnnouncedInsideTheEditStep)
 {
@@ -66,16 +81,25 @@ TEST(MarkupNotesEditCommand, TheCommitIsAnnouncedInsideTheEditStep)
     const ECS::EntityHandle lake = world.CreateEntity();
     world.AddComponentImmediate(lake, Markup{});
     ASSERT_TRUE(MarkupService::Get().BeginMarkup(world, lake, MarkupAuthor::User, 10));
-    bool announcedInStep = false;
-    (void)notifications.SubscribeComponentChanged([&undo, &announcedInStep](const auto&) {
-        announcedInStep = undo.HasOpenCompound();
+    int records = 0;
+    bool recordNotice = true;
+    (void)notifications.SubscribeComponentChanged([&](const auto&) {
+        if (recordNotice)
+            undo.Execute(std::make_unique<NoticeRecordCommand>(records));
     });
 
     ASSERT_TRUE(Editor::CommitMarkupNotesEdit(world, lake, &undo, &notifications, "Add Mark-up Comment", [&]() {
         return MarkupService::Get().AddComment(world, lake, MarkupAuthor::User, 20, "Keep the shore");
     }, {}));
-    EXPECT_TRUE(announcedInStep);
-    EXPECT_EQ(undo.GetUndoCount(), 1u);
+    recordNotice = false;
+    EXPECT_EQ(records, 1) << "the edit announced its commit";
+    EXPECT_EQ(undo.GetUndoCount(), 1u) << "the notification record joined the edit's step";
+    undo.Undo();
+    EXPECT_EQ(records, 0);
+    EXPECT_EQ(MarkupService::Get().FindNotes(world, lake)->Entries.size(), 1u);
+    undo.Redo();
+    EXPECT_EQ(records, 1);
+    EXPECT_EQ(MarkupService::Get().FindNotes(world, lake)->Entries.size(), 2u);
     MarkupService::Shutdown();
 }
 

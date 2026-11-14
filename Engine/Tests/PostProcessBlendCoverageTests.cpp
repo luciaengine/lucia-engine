@@ -1317,6 +1317,7 @@ TEST(PostProcessTonemapControls, ExposesTheThreeLooks)
                            std::istreambuf_iterator<char>());
     };
 
+    const std::string tonemap = readText(shaderRoot / "tonemap.frag");
     const std::string aces2 = readText(shaderRoot / "Includes/tonemap_aces2.glsl");
     const std::string aces2Tables =
         readText(shaderRoot / "Includes/tonemap_aces2_tables.glsl");

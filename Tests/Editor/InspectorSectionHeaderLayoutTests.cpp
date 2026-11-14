@@ -177,7 +177,7 @@ TEST(InspectorSectionHeaderLayout, AHeaderBadgeFollowsTheTitleOnOneLineAtNarrowI
         const float contentRight = title->GetLayoutX() + title->GetLayoutWidth() - title->GetLayoutPadding().Right;
         const float textRight = std::min(title->GetLayoutX() + textWidth, contentRight);
         EXPECT_GE(badge->GetLayoutX(), textRight) << "the badge covers the title's text at " << viewportWidth << " px";
-        EXPECT_LE(title->GetLayoutHeight(), lineHeight + kLayoutTolerance)
+        EXPECT_LE(title->GetLayoutHeight(), lineHeight + 0.5f)
             << "the title wraps onto a second line the header clips at " << viewportWidth << " px";
         EXPECT_LE(badge->GetLayoutX() + badge->GetLayoutWidth(), options->GetLayoutX())
             << "the badge runs into the options affordance at " << viewportWidth << " px";

@@ -545,7 +545,7 @@ TEST(ShadowReceiverReduceSetup, ReconstructsAgainstTheSectorTheCameraDrewWith)
     GameEngine::Engine::Renderer::SetCameraEye(cam.Data, eye);
     ASSERT_EQ(cam.Data.renderOriginSector[0], 123);
     ASSERT_EQ(GameEngine::Engine::Renderer::ComputeRenderOriginSector(
-                  Mathematics::WorldPosition::FromVector3(Vector3{cam.Data.cameraPos.x, 0.0f, 0.0f})).x,
+                  Mathematics::WorldPosition::FromVector3(Vector3{cam.Data.cameraPos.x, 0.0f, 0.0f})).X,
               124)
         << "the fp32 eye must sit in the next sector, or this test proves nothing";
 

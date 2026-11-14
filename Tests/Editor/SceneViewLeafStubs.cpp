@@ -7,6 +7,7 @@
 // exercises them.
 
 #include "SceneView/SceneViewGizmos.h"
+#include "SceneViewNoticeRecorder.h"
 #include "SceneView/SceneViewNoticeOverlay.h"
 #include "SceneView/SceneViewController.h"
 #include "UI/Controls/ScenePostFxMenu.h"

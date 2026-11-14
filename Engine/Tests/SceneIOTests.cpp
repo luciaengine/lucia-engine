@@ -2423,12 +2423,12 @@ TEST(SceneIO, SaveThenLoad_RoundTripAnimatedSprite2D)
     ASSERT_TRUE(entity.IsValid());
     w1.AddComponentImmediate(entity, Components::SceneEntityTag{{'s', 'p', 'r', '\0'}});
     Components::AnimatedSprite2D authored{};
-    authored.spriteFramesGuid.Set(GUID("1a2b3c4d-5e6f-7081-9203-a4b5c6d7e8f9"));
+    authored.SpriteFrames.Set(GUID("1a2b3c4d-5e6f-7081-9203-a4b5c6d7e8f9"));
     authored.SetAnimationName("run");
-    authored.timeSeconds = 0.25f;
-    authored.speedScale = 1.5f;
-    authored.playing = false;
-    authored.loop = false;
+    authored.TimeSeconds = 0.25f;
+    authored.SpeedScale = 1.5f;
+    authored.Playing = false;
+    authored.Visible = false;
     w1.AddComponentImmediate(entity, authored);
 
     ASSERT_TRUE(Scene::WriteSceneFile(w1, scenePath, Scene::SceneWriteOptions{}));
@@ -2437,12 +2437,12 @@ TEST(SceneIO, SaveThenLoad_RoundTripAnimatedSprite2D)
     ASSERT_TRUE(Scene::ReadSceneInto(w2, scenePath, Scene::SceneReadOptions{}));
     const auto* loaded = w2.GetComponent<Components::AnimatedSprite2D>(FindByTag(w2, "spr"));
     ASSERT_NE(loaded, nullptr);
-    EXPECT_EQ(loaded->spriteFramesGuid, authored.spriteFramesGuid);
-    EXPECT_EQ(loaded->AnimationName(), "run");
-    EXPECT_EQ(loaded->timeSeconds, 0.25f);
-    EXPECT_EQ(loaded->speedScale, 1.5f);
-    EXPECT_FALSE(loaded->playing);
-    EXPECT_FALSE(loaded->loop);
+    EXPECT_EQ(loaded->SpriteFrames, authored.SpriteFrames);
+    EXPECT_EQ(loaded->GetAnimationName(), "run");
+    EXPECT_EQ(loaded->TimeSeconds, 0.25f);
+    EXPECT_EQ(loaded->SpeedScale, 1.5f);
+    EXPECT_FALSE(loaded->Playing);
+    EXPECT_FALSE(loaded->Visible);
 }
 
 // HumanoidRetargeterComponent is runtime playback state the animation system adds and rebuilds

@@ -961,7 +961,7 @@ TEST(CascadeReceiverFit, TheWindowCheckSeesTheFieldOfViewAspectOrthographicSizeA
         Rendering::CameraData cam = MakeCamera(pose);
         const Matrix4x4 proj = MakeOrthographicLH_ZO_ReverseZ(-halfHeight * kAspect, halfHeight * kAspect,
                                                               -halfHeight, halfHeight, kNear, kFar);
-        std::memcpy(cam.proj, proj.Data(), sizeof(cam.proj));
+        std::memcpy(cam.proj.Data(), proj.Data(), sizeof(cam.proj));
         ShadowReceiverMeasurement::Context c{};
         Renderer::SetShadowReceiverCamera(cam, true, c);
         return c;

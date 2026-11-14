@@ -68,7 +68,7 @@ TEST(TerrainHeightmapExtraction, KeepsTheAuthoredBaseAndAStableTiledHandle)
             EXPECT_EQ(tiled->Config.Base.Source, Components::TerrainBaseSource::HeightmapAsset);
             EXPECT_EQ(tiled->Config.Base.HeightmapGuid, heightmap);
             EXPECT_NE(tiled->Config.Base.Heightmap, nullptr);
-            EXPECT_FALSE(service.CompareTiledTerrainConfig(tiled->Config, authored).BaseChanged);
+            EXPECT_FALSE(service.CompareTiledTerrainConfig(tiled->Config, authored, std::nullopt).BaseChanged);
         }
 
         extraction.Update(world, kFrameSeconds);

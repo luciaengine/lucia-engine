@@ -199,26 +199,28 @@ TEST_F(MeshPickingPendingBvhTests, TheFirstLookupIsPendingAtOnceAndPublishesTheS
 TEST_F(MeshPickingPendingBvhTests, APickAnswersWithTheBoundsUntilTheBvhIsPublishedThenHitsTheSurface)
 {
     const Ray3D ray = DownAt(3.1f, -2.7f);
-    const auto whilePending = RaycastScene(ray, m_World, RestrictedToGrid());
+    auto preview = RestrictedToGrid();
+    preview.IncludeBoundsFallback = true;
+    const auto whilePending = RaycastScene(ray, m_World, preview);
     ASSERT_TRUE(whilePending.Hit);
     EXPECT_EQ(whilePending.Best.Kind, PickableKind::Bounds);
-    EXPECT_NEAR(whilePending.Best.WorldPosition.y, 0.5f, 1e-4f) << "not on the top of the bounds";
+    EXPECT_NEAR(whilePending.Best.Point.y, 0.5f, 1e-4f) << "not on the top of the bounds";
 
     ASSERT_NE(MeshBvhCache::Instance().GetOrBuild(m_Guid, 0, Grid()), nullptr);
     const auto published = RaycastScene(ray, m_World, RestrictedToGrid());
     ASSERT_TRUE(published.Hit);
     EXPECT_EQ(published.Best.Kind, PickableKind::Mesh);
-    EXPECT_NEAR(published.Best.WorldPosition.y, SurfaceHeight(3.1f, -2.7f), 0.01f);
+    EXPECT_NEAR(published.Best.Point.y, SurfaceHeight(3.1f, -2.7f), 0.01f);
 }
 
-TEST_F(MeshPickingPendingBvhTests, APickThatWaitsForTheBvhHitsTheSurfaceAtOnce)
+TEST_F(MeshPickingPendingBvhTests, APickAfterBvhPreparationHitsTheExactSurface)
 {
     PickOptions options = RestrictedToGrid();
-    options.WaitForMeshBvh = true;
+    ASSERT_NE(MeshBvhCache::Instance().GetOrBuild(m_Guid, 0, Grid()), nullptr);
     const auto pick = RaycastScene(DownAt(-4.3f, 6.2f), m_World, options);
     ASSERT_TRUE(pick.Hit);
     EXPECT_EQ(pick.Best.Kind, PickableKind::Mesh);
-    EXPECT_NEAR(pick.Best.WorldPosition.y, SurfaceHeight(-4.3f, 6.2f), 0.01f);
+    EXPECT_NEAR(pick.Best.Point.y, SurfaceHeight(-4.3f, 6.2f), 0.01f);
 }
 
 TEST_F(MeshPickingPendingBvhTests, ADropPointOnAPendingMeshIsMarkedSoPlacementRefusesIt)
