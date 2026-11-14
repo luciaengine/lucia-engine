@@ -2257,7 +2257,10 @@ endif()
                 "${CMAKE_CURRENT_SOURCE_DIR}/Source"
                 ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
             # Modules/Rendering: the shader source cache's read counter (Source/Materials/Shader/ShaderSourceCache.h).
-            target_include_directories(EngineWorldDrawTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Modules/Rendering")
+            # Modules/Rendering/Source: the Vulkan device that the mesh pool group tests derive from.
+            target_include_directories(EngineWorldDrawTests PRIVATE
+                "${CMAKE_CURRENT_SOURCE_DIR}/Modules/Rendering"
+                "${CMAKE_CURRENT_SOURCE_DIR}/Modules/Rendering/Source")
 
             ge_add_render_services_test(ComputeDescriptorScratchTests
                 Tests/ComputeDescriptorScratchTests.cpp)
