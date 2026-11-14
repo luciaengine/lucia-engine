@@ -793,8 +793,10 @@ public:
      */
     AssetEventDispatcher& GetEventDispatcher() { return m_EventDispatcher; }
 
-    /// Dispatches an event with all GUIDs redirected to its asset.
-    /// Call on the owner thread for AssetReloaded events.
+    /**
+     * @brief Dispatch an asset event with its RedirectSources filled, so an invalidator reaches a
+     * cache that holds the asset under a GUID redirected to it. Safe from any thread.
+     */
     void DispatchWithRedirectSources(AssetEvent event);
 
     /**

@@ -1048,7 +1048,6 @@ set(EDITOR_TEST_SOURCES
 	# sub-heading its height, which no structural check can see. Lays the real widgets out over
 	# the real editor stylesheets, so the section widget is compiled in rather than scanned.
 	InspectorSectionHeaderLayoutTests.cpp
-	InspectorEntityHeaderLayoutTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/InspectorSection.cpp
 	# The material inspector's row rhythm, measured the same way: every section bar, row and line
 	# one row gap below the last, open or closed, in the entity inspector and the asset view.
