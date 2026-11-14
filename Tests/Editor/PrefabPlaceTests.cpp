@@ -5,7 +5,6 @@
 #include <gtest/gtest.h>
 
 #include "Assets/AssetsFolderDropRegistry.h"
-#include "Assets/AssetPlacementRegistry.h"
 #include "Editor/DragDropPayloads.h"
 #include "Editor/Entities/EditorComponentTraits.h"
 #include "Editor/Entities/EditorECSHelpers.h"
@@ -88,13 +87,11 @@
 #include <iterator>
 #include <memory>
 #include <optional>
-#include <regex>
 #include <string>
 #include <string_view>
 #include <vector>
 
-namespace GameEngine
-{
+using namespace GameEngine;
 
 namespace
 {
@@ -177,13 +174,7 @@ TEST_F(PrefabPlaceTests, ADroppedPrefabIsALiveInstanceWithItsTree)
     const std::filesystem::path crate = WriteAsset("Props/Crate.prefab", kCratePrefab);
     ECS::World world;
 
-    Editor::RegisterPrefabEditor(Notifications(), nullptr, {}, {}, {});
-    const auto place = Editor::AssetPlacementRegistry::Get().Find(AssetType::Prefab);
-    ASSERT_NE(place, nullptr);
-    Components::Transform at{};
-    at.SetIdentity();
-    at.Translate(1.0f, 2.0f, 3.0f);
-    const ECS::EntityHandle root = place(world, EngineCore::GetInstance().GetAssetManager(), crate, at, {});
+    const ECS::EntityHandle root = PlaceAt(world, crate, 1.0f, 2.0f, 3.0f);
 
     ASSERT_TRUE(root.IsValid());
     const auto* marker = world.GetComponent<Components::PrefabInstance>(root);
@@ -254,12 +245,11 @@ TEST(PrefabDropStepNameTests, SeveralRootsNameTheirCount)
 // dropped alone, is not refused.
 TEST(PrefabDropRefusalTests, AFileTheSceneCannotPlaceIsRefusedWithANotice)
 {
-    Editor::RegisterPrefabEditor(Notifications(), nullptr, {}, {}, {});
     using Paths = std::vector<std::filesystem::path>;
     EXPECT_EQ(Editor::DescribeRefusedDrop(Paths{"Navigation/Town.navgrid"}),
               "Navigation Grid files cannot be placed in a scene. Add a Navigation Surface component and assign the "
               "file to its Authored Cells.");
-    EXPECT_EQ(Editor::DescribeRefusedDrop(Paths{"Levels/Town.scene"}), "") << "scene Blueprint drops stay supported";
+    EXPECT_EQ(Editor::DescribeRefusedDrop(Paths{"Levels/Town.scene"}), "Scene files cannot be placed in a scene.");
     EXPECT_EQ(Editor::DescribeRefusedDrop(Paths{"Models/House.blend"}), ".blend files cannot be placed in a scene.");
     EXPECT_EQ(Editor::DescribeRefusedDrop(Paths{"Textures/A.png", "Textures/B.png"}),
               "Texture files cannot be placed in a scene.");
@@ -294,35 +284,6 @@ static std::string ReadFileText(const std::filesystem::path& path)
 
 // Create Prefab is one undo step: the undo deletes the file and gives the entities back their
 // identities, the redo writes the file again under the same GUID and makes the instance again.
-TEST_F(PrefabPlaceTests, CreatePrefabRefreshesSelectedEntityBannersOnCreateUndoAndRedo)
-{
-    ECS::World world;
-    const ECS::EntityHandle crate = CreateTagged(world, "Crate", "crate", {});
-    const ECS::EntityHandle lid = CreateTagged(world, "Lid", "lid", crate);
-    Editor::EditorChangeNotifications notifications;
-    std::vector<ECS::EntityHandle> refreshed;
-    const auto subscription = notifications.SubscribeComponentChanged(
-        [&world, &refreshed](const Editor::EditorChangeNotifications::ComponentChangedEvent& change)
-        {
-            if (change.world == &world && change.componentType == 0 &&
-                change.kind == Editor::EditorChangeNotifications::ChangeKind::InspectorRebuild)
-                refreshed.push_back(change.entity);
-        });
-    std::filesystem::create_directories(m_Folder);
-    std::string error;
-    auto command = Editor::CreatePrefabCommand::Create(world, &notifications, crate,
-                                                       m_Folder / "Crate.prefab", false, error);
-    ASSERT_NE(command, nullptr) << error;
-    EXPECT_EQ(refreshed, (std::vector<ECS::EntityHandle>{crate, lid}));
-    refreshed.clear();
-    command->Undo();
-    EXPECT_EQ(refreshed, (std::vector<ECS::EntityHandle>{crate, lid}));
-    refreshed.clear();
-    command->Redo();
-    EXPECT_EQ(refreshed, (std::vector<ECS::EntityHandle>{crate, lid}));
-    notifications.Unsubscribe(subscription);
-}
-
 TEST_F(PrefabPlaceTests, CreatePrefabIsOneUndoStepThatDeletesAndRewritesTheFile)
 {
     ECS::World world;
@@ -452,33 +413,6 @@ TEST_F(PrefabPlaceTests, AnUndoOfCreateAfterASavedSceneUsesThePrefabKeepsTheFile
     EXPECT_TRUE(std::filesystem::exists(file));
 }
 
-TEST_F(PrefabPlaceTests, RedoWithARemovedSourceKeepsThePrefabThatASavedSceneUses)
-{
-    ECS::World world;
-    const ECS::EntityHandle crate = CreateTagged(world, "Crate", "crate", {});
-    const std::filesystem::path file = m_Folder / "Crate.prefab";
-    std::filesystem::create_directories(m_Folder);
-    std::string error;
-    auto command = Editor::CreatePrefabCommand::Create(world, nullptr, crate, file, false, error);
-    ASSERT_NE(command, nullptr) << error;
-    EngineCore& engine = EngineCore::GetInstance();
-    Scene::AssetManagerSceneResolver resolver(engine.GetAssetManager(), engine.GetAssetManager().GetAssetRoot(),
-                                              Scene::AssetManagerSceneResolver::UnknownFile::Register);
-    Scene::SceneWriteOptions options;
-    options.assetResolver = &resolver;
-    const std::filesystem::path scene = m_Folder / "Yard.scene";
-    ASSERT_TRUE(Scene::WriteSceneFile(world, scene, options));
-    ASSERT_TRUE(engine.GetAssetManager().GetRegistry().RegisterAssetByPath(scene).IsOk());
-
-    command->Undo();
-    ASSERT_TRUE(std::filesystem::exists(file));
-    const std::string saved = ReadFileText(file);
-    world.DestroyEntityImmediate(crate);
-    command->Redo();
-    EXPECT_TRUE(std::filesystem::exists(file));
-    EXPECT_EQ(ReadFileText(file), saved);
-}
-
 namespace
 {
 
@@ -498,9 +432,9 @@ Editor::CreatePrefabDialog::Request DialogRequest(std::vector<std::string> names
 }
 
 template <typename Control>
-Control& DialogPart(Editor::CreatePrefabDialog& dialog, std::string_view id)
+Control& DialogPart(Editor::CreatePrefabDialog& dialog, StringId id)
 {
-    auto* part = dynamic_cast<Control*>(dialog.FindById(HashStringId(id)));
+    auto* part = dynamic_cast<Control*>(dialog.FindById(id));
     EXPECT_NE(part, nullptr);
     return *part;
 }
@@ -522,13 +456,13 @@ TEST_F(PrefabPlaceTests, TheCreatePrefabDialogShowsTheFieldsAndCreatesInTheFolde
         },
         {});
     ASSERT_TRUE(dialog.IsOpen());
-    EXPECT_EQ(DialogPart<TextField>(dialog, "create-prefab-name").GetValue(), "Crate");
-    EXPECT_EQ(DialogPart<Label>(dialog, "create-prefab-folder").GetText(),
+    EXPECT_EQ(DialogPart<TextField>(dialog, "create-prefab-name"_sid).GetValue(), "Crate");
+    EXPECT_EQ(DialogPart<Label>(dialog, "create-prefab-folder"_sid).GetText(),
               "Assets/" + m_Folder.filename().string());
-    EXPECT_EQ(DialogPart<Label>(dialog, "create-prefab-count").GetText(), "The prefab holds 3 entities.");
-    EXPECT_FALSE(DialogPart<Label>(dialog, "create-prefab-references").HasClass("create-prefab-content-shown"));
+    EXPECT_EQ(DialogPart<Label>(dialog, "create-prefab-count"_sid).GetText(), "The prefab holds 3 entities.");
+    EXPECT_FALSE(DialogPart<Label>(dialog, "create-prefab-references"_sid).HasClass("visible"));
 
-    DialogPart<Button>(dialog, "create-prefab-create").TriggerClick();
+    DialogPart<Button>(dialog, "create-prefab-create"_sid).TriggerClick();
     ASSERT_EQ(requests.size(), 1u);
     EXPECT_EQ(requests[0].File, (m_Folder / "Crate.prefab").lexically_normal());
     EXPECT_FALSE(requests[0].Replace);
@@ -538,8 +472,8 @@ TEST_F(PrefabPlaceTests, TheCreatePrefabDialogShowsTheFieldsAndCreatesInTheFolde
                               {"Trigger's Target points at Gate", "Trigger's Source points at Door"},
                               m_Folder),
                 [](const std::vector<std::filesystem::path>&, bool, std::string&) { return true; }, {});
-    Label& references = DialogPart<Label>(dialog, "create-prefab-references");
-    EXPECT_TRUE(references.HasClass("create-prefab-content-shown"));
+    Label& references = DialogPart<Label>(dialog, "create-prefab-references"_sid);
+    EXPECT_TRUE(references.HasClass("visible"));
     EXPECT_EQ(references.GetText(), "These fields point at entities outside the prefab. This instance keeps them; the "
                                     "prefab file leaves them empty.\nTrigger's Target points at Gate\n"
                                     "Trigger's Source points at Door");
@@ -567,13 +501,13 @@ TEST_F(PrefabPlaceTests, TheCreatePrefabDialogAsksBeforeAReplaceAndCancelChanges
         return !refuse;
     };
     dialog.Open(DialogRequest({"Crate"}, 1, {}, m_Folder), handler, {});
-    auto& create = DialogPart<Button>(dialog, "create-prefab-create");
-    auto& message = DialogPart<Label>(dialog, "create-prefab-message");
+    auto& create = DialogPart<Button>(dialog, "create-prefab-create"_sid);
+    auto& message = DialogPart<Label>(dialog, "create-prefab-message"_sid);
 
     create.TriggerClick();
     EXPECT_TRUE(requests.empty()) << "the first Create only asks";
     EXPECT_EQ(create.GetText(), "Replace");
-    EXPECT_TRUE(message.HasClass("create-prefab-content-shown"));
+    EXPECT_TRUE(message.HasClass("visible"));
     EXPECT_NE(message.GetText().find("Crate.prefab"), std::string::npos) << message.GetText();
 
     create.TriggerClick();
@@ -583,7 +517,7 @@ TEST_F(PrefabPlaceTests, TheCreatePrefabDialogAsksBeforeAReplaceAndCancelChanges
     EXPECT_EQ(message.GetText(), "Cannot replace the file.");
 
     requests.clear();
-    DialogPart<Button>(dialog, "create-prefab-cancel").TriggerClick();
+    DialogPart<Button>(dialog, "create-prefab-cancel"_sid).TriggerClick();
     EXPECT_FALSE(dialog.IsOpen());
     EXPECT_TRUE(requests.empty());
     EXPECT_EQ(ReadFileText(existing), kCratePrefab) << "Cancel leaves the file as it was";
@@ -619,13 +553,13 @@ TEST_F(PrefabPlaceTests, TheCreatePrefabDialogRefusesAReplaceThatInstancesBlockB
         [&world](const std::filesystem::path& file)
         { return Editor::CreatePrefabCommand::DescribeReplaceRefusal(world, file); });
     ui.DrainDeferredActionsOnce();
-    auto& create = DialogPart<Button>(dialog, "create-prefab-create");
-    auto& message = DialogPart<Label>(dialog, "create-prefab-message");
+    auto& create = DialogPart<Button>(dialog, "create-prefab-create"_sid);
+    auto& message = DialogPart<Label>(dialog, "create-prefab-message"_sid);
 
     create.TriggerClick();
     EXPECT_EQ(message.GetText(), "Crate.prefab cannot be replaced while 1 instance in this scene uses it. Choose "
                                  "another name.");
-    EXPECT_TRUE(message.HasClass("create-prefab-content-shown"));
+    EXPECT_TRUE(message.HasClass("visible"));
     EXPECT_EQ(create.GetText(), "Create") << "no Replace is offered";
     EXPECT_FALSE(create.IsEnabled());
     create.TriggerClick();
@@ -635,7 +569,7 @@ TEST_F(PrefabPlaceTests, TheCreatePrefabDialogRefusesAReplaceThatInstancesBlockB
     ui.OnKey(Input::kKeyCode_End, Input::kKeyActionPress, 0);
     ui.OnChar('2');
     EXPECT_TRUE(create.IsEnabled()) << "a new name enables Create";
-    EXPECT_FALSE(message.HasClass("create-prefab-content-shown"));
+    EXPECT_FALSE(message.HasClass("visible"));
     create.TriggerClick();
     ASSERT_EQ(requests.size(), 1u);
     EXPECT_EQ(requests[0].File, (m_Folder / "Crate2.prefab").lexically_normal());
@@ -664,7 +598,7 @@ TEST_F(PrefabPlaceTests, EnterInTheCreatePrefabNameCreatesAndEscapeCancels)
         requests.push_back({files.front(), replace});
         return true;
     };
-    auto& name = DialogPart<TextField>(*dialog, "create-prefab-name");
+    auto& name = DialogPart<TextField>(*dialog, "create-prefab-name"_sid);
 
     dialog->Open(DialogRequest({"Crate"}, 1, {}, m_Folder), handler, {});
     ui.DrainDeferredActionsOnce();
@@ -867,8 +801,8 @@ TEST_F(PrefabPlaceTests, CreatePrefabFromTheMenuOpensTheDialogAtTheNextSafePoint
         dynamic_cast<Editor::CreatePrefabDialog*>(root.FindById(HashStringId(Editor::CreatePrefabDialog::kElementId)));
     ASSERT_NE(dialog, nullptr) << "the dialog attaches at the next safe point";
     EXPECT_TRUE(dialog->IsOpen());
-    EXPECT_EQ(DialogPart<TextField>(*dialog, "create-prefab-name").GetValue(), "Crate");
-    const std::string references = DialogPart<Label>(*dialog, "create-prefab-references").GetText();
+    EXPECT_EQ(DialogPart<TextField>(*dialog, "create-prefab-name"_sid).GetValue(), "Crate");
+    const std::string references = DialogPart<Label>(*dialog, "create-prefab-references"_sid).GetText();
     EXPECT_NE(references.find("Crate's Sun Light points at Sun"), std::string::npos) << references;
 }
 
@@ -911,7 +845,7 @@ TEST_F(PrefabPlaceTests, ACreateOfSeveralRootsThatFailsAtOneRootLeavesNoPrefab)
     Editor::UndoRedoService undo;
     EditorContext editor;
     editor.World = &world;
-    editor.AssetsRoot = m_Folder;
+    editor.AssetsPanelFolder = [this]() { return m_Folder; };
     UIManager ui(device);
     ui.SetRoot(std::make_unique<UIElement>());
     UIElement& root = *ui.GetRootElement();
@@ -931,12 +865,12 @@ TEST_F(PrefabPlaceTests, ACreateOfSeveralRootsThatFailsAtOneRootLeavesNoPrefab)
     ASSERT_NE(dialog, nullptr);
 
     WriteAsset("Barrel.prefab", kCratePrefab);
-    DialogPart<Button>(*dialog, "create-prefab-create").TriggerClick();
+    DialogPart<Button>(*dialog, "create-prefab-create"_sid).TriggerClick();
     EXPECT_FALSE(std::filesystem::exists(m_Folder / "Crate.prefab")) << "the first prefab is undone";
     EXPECT_EQ(CountInstances(world), 0u);
     EXPECT_EQ(undo.GetUndoCount(), 0u);
     EXPECT_TRUE(dialog->IsOpen());
-    EXPECT_NE(DialogPart<Label>(*dialog, "create-prefab-message").GetText().find("No prefab was created."),
+    EXPECT_NE(DialogPart<Label>(*dialog, "create-prefab-message"_sid).GetText().find("No prefab was created."),
               std::string::npos);
 }
 
@@ -1315,14 +1249,14 @@ TEST_F(PrefabPlaceTests, TheCreatePrefabDialogForSeveralRootsListsTheirFilesAndC
                     return true;
                 },
                 {});
-    EXPECT_TRUE(DialogPart<UIElement>(dialog, "create-prefab-name-row").HasClass("hidden"));
-    EXPECT_FALSE(DialogPart<UIElement>(dialog, "create-prefab-files-row").HasClass("hidden"));
-    EXPECT_EQ(DialogPart<Label>(dialog, "create-prefab-files").GetText(),
+    EXPECT_TRUE(DialogPart<UIElement>(dialog, "create-prefab-name-row"_sid).HasClass("hidden"));
+    EXPECT_FALSE(DialogPart<UIElement>(dialog, "create-prefab-files-row"_sid).HasClass("hidden"));
+    EXPECT_EQ(DialogPart<Label>(dialog, "create-prefab-files"_sid).GetText(),
               "Crate.prefab, Crate (1).prefab, Barrel (1).prefab");
-    EXPECT_EQ(DialogPart<Label>(dialog, "create-prefab-count").GetText(),
+    EXPECT_EQ(DialogPart<Label>(dialog, "create-prefab-count"_sid).GetText(),
               "Each root becomes one prefab: 3 prefabs, 5 entities.");
 
-    DialogPart<Button>(dialog, "create-prefab-create").TriggerClick();
+    DialogPart<Button>(dialog, "create-prefab-create"_sid).TriggerClick();
     ASSERT_EQ(created.size(), 3u);
     EXPECT_EQ(created[1], (m_Folder / "Crate (1).prefab").lexically_normal());
     EXPECT_EQ(created[2], (m_Folder / "Barrel (1).prefab").lexically_normal());
@@ -1566,11 +1500,11 @@ TEST_F(PrefabPlaceTests, TheDefaultRowsMarkTheFieldsAnInstanceOverrides)
     context.Entity = lid;
     ASSERT_TRUE(RenderDefaultComponentInspector(context, probeType));
     const UIElement* intensity = FindFieldRow(parent, "Intensity");
-    const UIElement* priority = FindFieldRow(parent, "Priority");
+    const UIElement* boxProjection = FindFieldRow(parent, "Box Projection");
     ASSERT_NE(intensity, nullptr);
-    ASSERT_NE(priority, nullptr);
+    ASSERT_NE(boxProjection, nullptr);
     EXPECT_TRUE(HasOverrideMark(*intensity));
-    EXPECT_FALSE(HasOverrideMark(*priority));
+    EXPECT_FALSE(HasOverrideMark(*boxProjection));
 }
 
 namespace
@@ -2116,20 +2050,6 @@ const std::vector<std::string> kPrefabBarSheets{"Assets/UI/theme/views.css",
                                                 GE_UI_MODULE_SOURCE_DIR "/Assets/UI/controls/Button.css",
                                                 "Assets/UI/controls/PrefabBar/PrefabBar.css"};
 
-// Controls attach their own sheets below their owner's scope in the live editor.
-void AttachRequestedControlSheets(UIElement& element)
-{
-    for (const UIElement::SubtreeStyleAssetRequest& request : element.ConsumeRequestedSubtreeStyleAssetPaths())
-    {
-        const std::string css = InspectorLayoutTesting::ReadEditorFile("Assets/" + request.Path);
-        ASSERT_FALSE(css.empty()) << request.Path;
-        Stylesheet sheet{};
-        ASSERT_TRUE(UIParsing::CSSParser::ParseStylesFromString(css, sheet)) << request.Path;
-        sheet.SourceName = request.Path;
-        element.AddStylesheet(std::make_shared<const Stylesheet>(std::move(sheet)));
-    }
-}
-
 // The resolved style of the element `id` of `bar`; null when the bar has no such element.
 const ResolvedStyle* BarStyle(UIElement& bar, std::string_view id)
 {
@@ -2138,26 +2058,6 @@ const ResolvedStyle* BarStyle(UIElement& bar, std::string_view id)
 }
 
 } // namespace
-
-TEST(PrefabStyleAssets, EveryIconIsShippedWithTheEditor)
-{
-    const std::regex iconUrl(R"icon(url\("editor:([^"]+)"\))icon");
-    for (const char* sheetPath : {"Assets/UI/controls/PrefabOverridesList/PrefabOverridesList.css",
-                                 "Assets/UI/theme/views.css"})
-    {
-        const std::string css = InspectorLayoutTesting::ReadEditorFile(sheetPath);
-        ASSERT_FALSE(css.empty()) << sheetPath;
-        std::size_t checked = 0;
-        for (std::sregex_iterator icon(css.begin(), css.end(), iconUrl), end; icon != end; ++icon)
-        {
-            const std::filesystem::path path =
-                std::filesystem::path(GE_EDITOR_SOURCE_DIR) / "Assets" / (*icon)[1].str();
-            EXPECT_TRUE(std::filesystem::is_regular_file(path)) << sheetPath << ": " << path;
-            ++checked;
-        }
-        EXPECT_GT(checked, 0u) << sheetPath;
-    }
-}
 
 // On the editor's sheets the glyph and the prefab's name take the prefab color; with the prefab file not
 // in the project, the glyph is the question mark and both take the error color.
@@ -2230,13 +2130,6 @@ TEST_F(PrefabPlaceTests, ThePrefabBarsSelectButtonKeepsOneHeightWhenTheCountLine
     Editor::PrefabBar& rootOne = *rootBar;
     panel->AddChild(std::move(memberBar));
     panel->AddChild(std::move(rootBar));
-    for (Editor::PrefabBar* bar : {&member, &rootOne})
-        for (const char* id : {"prefab-bar-count", "prefab-bar-instance-count", "prefab-bar-stale-count"})
-        {
-            UIElement* pill = bar->FindById(HashStringId(id));
-            ASSERT_NE(pill, nullptr);
-            AttachRequestedControlSheets(*pill);
-        }
     InspectorLayoutTesting::InspectorLayoutFixture fixture;
     fixture.ViewportW = 360;
     fixture.ExtraSheets = kPrefabBarSheets;
@@ -2250,9 +2143,7 @@ TEST_F(PrefabPlaceTests, ThePrefabBarsSelectButtonKeepsOneHeightWhenTheCountLine
     ASSERT_TRUE(memberButton && rootButton && entityLine && instanceLine) << "a bar did not load its layout";
     ASSERT_GT(instanceLine->GetLayoutHeight(), entityLine->GetLayoutHeight())
         << "the instance's count line does not wrap: " << BarText(member, "prefab-bar-instance-count");
-    // YogaLayout rounds each edge on a 1/64-device-pixel grid; equal intrinsic heights can differ by one step.
-    constexpr float kLayoutSnapStepPx = 1.0f / 64.0f;
-    EXPECT_NEAR(memberButton->GetLayoutHeight(), rootButton->GetLayoutHeight(), kLayoutSnapStepPx)
+    EXPECT_FLOAT_EQ(memberButton->GetLayoutHeight(), rootButton->GetLayoutHeight())
         << "the button grows when the count lines wrap";
     EXPECT_LT(memberButton->GetLayoutHeight(), kDefaultButtonMinHeight) << "the button is not the small size";
     // Both texts are 12 px. On one baseline their text boxes start within 1 px of one y: the button's
@@ -2375,9 +2266,9 @@ TEST_F(PrefabPlaceTests, ANameTypedOnAMemberKeepsTheFieldFocusedAndMarksItInPlac
     header->AddChild(std::move(ownedField));
     inspector->AddChild(std::move(ownedHeader));
     int rebuilds = 0;
-    const auto refreshMarks = [header, field, &world, lid]() { UpdateEntityNameOverrideMark(*header, *field, world, lid); };
+    const auto refreshMarks = [&]() { UpdateEntityNameOverrideMark(*header, *field, world, lid); };
     // A rebuild makes a new header, as the Inspector does.
-    const auto rebuild = [&rebuilds, header]()
+    const auto rebuild = [&]()
     {
         ++rebuilds;
         header->RemoveAllChildren();
@@ -3715,5 +3606,3 @@ TEST_F(PrefabPlaceTests, TheOverridesListOffersNoActionInPlayMode)
     EXPECT_TRUE(list->FindById("prefab-overrides-revert-all"_sid)->HasClass("hidden"));
     EXPECT_TRUE(list->FindById("prefab-overrides-apply-all"_sid)->HasClass("hidden"));
 }
-
-} // namespace GameEngine

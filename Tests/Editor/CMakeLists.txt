@@ -661,7 +661,6 @@ set(EDITOR_TEST_SOURCES
 	# A prefab file change held back during Play and reported to the panels (PrefabPropagationTests).
 	PrefabPlaceTests.cpp
 	PrefabPropagationTests.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/AssetPlacementRegistry.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/AssetsFolderDropRegistry.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabService.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/CreatePrefab/CreatePrefabCommand.cpp
