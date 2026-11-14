@@ -550,6 +550,26 @@ class ClusterLODMultipleViewTest : public ClusterLODRuntimeTest,
         views.PerView(id).WorldViewportHeight = 1080;
         return id;
     }
+
+    // A view whose eye is `origin + localEye`. The view matrix comes from the small local vectors,
+    // and the exact eye goes in after it, so a far origin does not round the orientation.
+    ViewId AddSseViewAt(const Mathematics::WorldPosition& origin, const Vector3& localEye, const Vector3& localCenter)
+    {
+        CameraData camera{};
+        camera.proj = Mathematics::MakePerspectiveLH_ZO_ReverseZ(1.0471976f, 1.5f, 0.1f, 2'000'000.0f);
+        camera.view = Mathematics::MakeLookAtLH(localEye, localCenter, Vector3(0, 1, 0));
+        camera.viewProj = camera.proj * camera.view;
+        SetCameraEye(camera, Mathematics::WorldPosition{origin.X + localEye.x, origin.Y + localEye.y,
+                                                         origin.Z + localEye.z});
+        auto& views = m_Services.Views();
+        const auto cameraId = views.AllocateCamera("Cluster SSE far origin");
+        views.SetCameraData(cameraId, camera, CameraRanges{0.1f, 2'000'000.0f});
+        const auto id = views.AllocateView("Cluster SSE far origin", cameraId);
+        views.SetViewWorldId(id, m_World.GetWorldId());
+        views.SetViewRenderLayerMask(id, RenderLayerMask::FromLayer(0));
+        views.PerView(id).WorldViewportHeight = 1080;
+        return id;
+    }
 };
 
 TEST_P(ClusterLODMultipleViewTest, NearDemandSurvivesFarViewAndRecoversAfterViewRemoval)
@@ -586,6 +606,40 @@ TEST_P(ClusterLODMultipleViewTest, NearDemandSurvivesFarViewAndRecoversAfterView
     Prepare();
     Prepare();
     ASSERT_NO_FATAL_FAILURE(ExpectFine());
+}
+
+// The same near and far sequence, with the object and both cameras 100 km from the origin at a
+// position that has a fraction. The selection must not depend on where the scene is.
+TEST_P(ClusterLODMultipleViewTest, NearDemandAtALargeTranslationMatchesTheOrigin)
+{
+    ASSERT_TRUE(m_Services.Views().ReleaseView(m_View));
+    m_Services.SetLODForceLevel(~0u);
+    m_Services.GetMeshGPURegistry().SetLodSelectionMode(LodSelectionMode::Sse);
+    m_Services.SetLODErrorBudgetPx(1.0f);
+    ASSERT_GT(m_Model->GetClusterLODManifest()->Pages[m_Submesh].Error, 0.0f);
+    const Mathematics::WorldPosition origin{100000.03125, -60000.015625, 125000.0078125};
+    m_World.GetComponentForWrite<Components::WorldTransform>(m_Entity)->Position = origin;
+    const auto& mesh = m_Model->GetMesh(m_Submesh);
+    const Vector3 low(mesh.MinBounds[0], mesh.MinBounds[1], mesh.MinBounds[2]);
+    const Vector3 high(mesh.MaxBounds[0], mesh.MaxBounds[1], mesh.MaxBounds[2]);
+    const Vector3 center = (low + high) * 0.5f;
+    const Vector3 nearEye = center + Vector3(0, 2, -2);
+    const Vector3 farEye = center + Vector3(0, 0, -1'000'000);
+    const auto first = AddSseViewAt(origin, GetParam() ? nearEye : farEye, center);
+    const auto second = AddSseViewAt(origin, GetParam() ? farEye : nearEye, center);
+    const auto nearView = GetParam() ? first : second;
+    m_Services.Views().SetViewRenderLayerMask(nearView, RenderLayerMask::None());
+    Prepare();
+    Prepare();
+    ASSERT_EQ(CurrentHandle(), m_Coarse) << "the far view alone must select coarse";
+
+    m_Services.Views().SetViewRenderLayerMask(nearView, RenderLayerMask::FromLayer(0));
+    Prepare();
+    Prepare();
+    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_TRUE(m_Services.Views().ReleaseView(nearView));
+    Prepare();
+    ASSERT_EQ(CurrentHandle(), m_Coarse);
 }
 
 INSTANTIATE_TEST_SUITE_P(ViewRegistrationOrder, ClusterLODMultipleViewTest, ::testing::Bool());
