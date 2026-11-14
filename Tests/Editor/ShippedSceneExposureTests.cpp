@@ -61,9 +61,9 @@ constexpr float kLumaR = 0.2126f;
 constexpr float kLumaG = 0.7152f;
 constexpr float kLumaB = 0.0722f;
 
-float Luma(const float rgb[3])
+float Luma(const GameEngine::ColorLinear& color)
 {
-    return kLumaR * rgb[0] + kLumaG * rgb[1] + kLumaB * rgb[2];
+    return kLumaR * color.r + kLumaG * color.g + kLumaB * color.b;
 }
 
 // How far from middle grey a shipped scene's key surface may sit. Generous on
@@ -90,7 +90,7 @@ GameEngine::Scene::SceneInstantiateResult LoadStagedScene(GameEngine::ECS::World
     GameEngine::Scene::SceneInstantiateOptions instantiateOptions;
     instantiateOptions.ClearWorldFirst = true;
     options.AssetRootOverride = scenePath.parent_path();
-    return static_cast<bool>(GameEngine::Scene::ReadSceneInto(world, scenePath, options, instantiateOptions));
+    return GameEngine::Scene::ReadSceneInto(world, scenePath, options, instantiateOptions);
 }
 
 KeyLight ResolveKeyLight(GameEngine::ECS::World& world)

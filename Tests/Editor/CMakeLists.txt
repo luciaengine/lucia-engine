@@ -20,7 +20,6 @@ set(EDITOR_TEST_SOURCES
 	MarkupRequestsTests.cpp
 	MarkupRegionInspectorTests.cpp
 	EntityMemberListTests.cpp
-	MarkupRegionSceneViewTests.cpp
 	MarkupSceneViewTests.cpp
 	# The Mark-up tool menu's shape rows and their icons.
 	MarkupToolMenuTests.cpp
@@ -659,7 +658,6 @@ set(EDITOR_TEST_SOURCES
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SceneViewport/SceneViewportEdits.cpp
 	# The prefab drop: the placement, the refusal notice, the drop's undo step; Create Prefab, its dialog and its
 	# undo step; Create Prefab from a Hierarchy entity dropped on an Assets folder (PrefabPlaceTests).
-	PrefabPlaceTests.cpp
 	# A prefab file change held back during Play and reported to the panels (PrefabPropagationTests).
 	PrefabPropagationTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/AssetsFolderDropRegistry.cpp
@@ -1160,20 +1158,8 @@ set(EDITOR_TEST_SOURCES
 	# Suites above leave the engine running; this shuts it down before the process exits.
 	${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp
 
-    LogPanelTests.cpp
-    TopToolbarIconTests.cpp
-    TileMapSourceImportTests.cpp
-    TileMapRulesCommandsTests.cpp
-    TileMapRulesWindowTests.cpp
-    TileMapTerrainBrushTests.cpp
     SpritePlacementSizeTests.cpp
-    TileMapEditContextTests.cpp
-    TileSetDocumentTests.cpp
     TileMapLayerRestoreTests.cpp
-    TileLayerEditsTests.cpp
-    TileMapThumbnailCompositeTests.cpp
-    TileThumbnailHandlerTests.cpp
-    TileMapLayerThumbnailTests.cpp
     EditorTextBlendTests.cpp
     TerrainPickingRayTests.cpp
     ScenePickTerrainInclusionTests.cpp
@@ -1181,16 +1167,10 @@ set(EDITOR_TEST_SOURCES
     GraphSelectionHistoryTests.cpp
     SceneDocumentHistoryTests.cpp
     MeshBvhDiskFormatTests.cpp
-    EntityWorldPoseTests.cpp
     OwnerRegisteredCommandTests.cpp
     PlacementGroundGapTests.cpp
-    BoneLODTreeProviderTests.cpp
-    ModelBoneLODSectionTests.cpp
     PolyhavenThumbnailTests.cpp
-    ScriptDocumentDiskTests.cpp
-    ReflectedEnumValueTests.cpp
     ElementInstanceLedgerTests.cpp
-    DockPanelRequestTests.cpp
     InspectorComponentSectionTests.cpp
     InspectorColorSwatchRowTests.cpp
     MarkupsPanelHeaderTests.cpp

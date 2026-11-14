@@ -28,13 +28,13 @@ ThumbnailImage DecodeImage(const std::filesystem::path& path)
     if (path.empty())
         return image;
 
-    Vector<uint8> bytes;
+    ByteBuffer bytes;
     if (!ReadFileBytesShared(path, bytes))
         return image;
-    if (bytes.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
+    if (bytes.Size() > static_cast<size_t>(std::numeric_limits<int>::max()))
         return image;
     int width = 0, height = 0, channels = 0;
-    stbi_uc* pixels = stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()),
+    stbi_uc* pixels = stbi_load_from_memory(bytes.Data(), static_cast<int>(bytes.Size()),
                                           &width, &height, &channels, 4);
     if (!pixels)
         return image;

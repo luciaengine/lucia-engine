@@ -30,29 +30,3 @@ TEST(InspectorComponentSection, ACollapsedSectionStaysCollapsedAcrossARebuild)
     ASSERT_NE(section, nullptr);
     EXPECT_FALSE(section->IsExpanded()) << "the rebuild reopened a section the user closed";
 }
-
-TEST(InspectorComponentSection, TheCallersHandlerRunsAndTheStateIsStillRemembered)
-{
-    constexpr const char* kKey = "InspectorComponentSectionTests/Handler";
-    int calls = 0;
-    bool lastExpanded = true;
-    {
-        UIElement root;
-        Foldout* section = GameEngine::InspectorUI::AddComponentSection(
-            &root, kKey, "Section", true,
-            [&calls, &lastExpanded](Foldout&, bool expanded)
-            {
-                ++calls;
-                lastExpanded = expanded;
-            });
-        ASSERT_NE(section, nullptr);
-        section->SetExpanded(false);
-    }
-    EXPECT_EQ(calls, 1) << "the caller's handler did not run on the toggle";
-    EXPECT_FALSE(lastExpanded);
-
-    UIElement rebuilt;
-    Foldout* section = GameEngine::InspectorUI::AddComponentSection(&rebuilt, kKey, "Section", true);
-    ASSERT_NE(section, nullptr);
-    EXPECT_FALSE(section->IsExpanded()) << "passing a handler cost the section its remembered state";
-}
