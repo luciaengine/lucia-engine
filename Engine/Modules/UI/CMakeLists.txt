@@ -10,6 +10,7 @@ set(UI_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_Update.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_Input.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_Assets.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager_Localization.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIElement.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/ElementIdIndex.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/ModuleOwnedHandlers.cpp
@@ -433,6 +434,7 @@ if(BUILD_TESTING)
         endif()
         target_compile_definitions(${target_name} PRIVATE UI_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}")
         target_include_directories(${target_name} PRIVATE
+            ${CMAKE_SOURCE_DIR}/Tests # TestTempDir.h
             ${CMAKE_CURRENT_SOURCE_DIR}/Source
             ${CMAKE_SOURCE_DIR}/Engine/Source
             ${CMAKE_CURRENT_SOURCE_DIR}/../Rendering/Tests)
@@ -668,6 +670,7 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ButtonTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ContextMenuManipulatorTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ToggleCheckboxTests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/LocalizationTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/DropdownTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/MaskFieldTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/DisabledControlInputTests.cpp
@@ -807,7 +810,8 @@ if(BUILD_TESTING)
     target_link_libraries(UIMouseDispatchAllocationTests PRIVATE Engine SharedHeadlessDeviceTestSupport GTest::gtest GTest::gtest_main)
     target_include_directories(UIMouseDispatchAllocationTests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests
-        ${CMAKE_CURRENT_SOURCE_DIR}/../Rendering/Tests)
+        ${CMAKE_CURRENT_SOURCE_DIR}/../Rendering/Tests
+        ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
     add_dependencies(UIMouseDispatchAllocationTests CompileShaders)
     set_target_properties(UIMouseDispatchAllocationTests PROPERTIES
         CXX_STANDARD 20
