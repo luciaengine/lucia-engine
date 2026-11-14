@@ -2302,8 +2302,9 @@ endif()
                 Tests/VirtualShadows/VirtualShadowRequestReuseTests.cpp
                 Tests/VirtualShadows/VirtualShadowFeedbackTests.cpp
                 Tests/VirtualShadows/VirtualShadowPageMarkTests.cpp
-                Tests/VirtualShadows/VirtualShadowLookupTests.cpp)
-            # Engine/Tests: TestDeviceHelper.h.
+                Tests/VirtualShadows/VirtualShadowLookupTests.cpp
+                Tests/VirtualShadows/VirtualShadowSurfaceComposeTests.cpp)
+            # Engine/Tests: TestDeviceHelper.h and StagedTestPaths.h.
             target_include_directories(EngineVirtualShadowTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Tests")
 
             # Post-processing: exposure, the post-process volume blend, bloom, lens flare,
