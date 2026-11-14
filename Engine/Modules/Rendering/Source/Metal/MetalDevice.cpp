@@ -95,6 +95,8 @@ bool MetalDevice::Initialize(const DeviceDesc& desc)
         Shutdown();
         return false;
     }
+    // Created before any submit, so the commit thread and the token readers never race on it.
+    m_GraphicsTimeline = CreateTimelineSemaphore(0);
     m_GraphicsQueue->setLabel(NS::String::string("GE Graphics Queue", NS::UTF8StringEncoding));
     m_ComputeQueue->setLabel(NS::String::string("GE Compute Queue", NS::UTF8StringEncoding));
     m_TransferQueue->setLabel(NS::String::string("GE Transfer Queue", NS::UTF8StringEncoding));
@@ -399,6 +401,9 @@ void MetalDevice::Shutdown()
         });
         m_Semaphores.Clear();
         m_UploadSemaphore = SemaphoreHandle{};
+        m_GraphicsTimeline = SemaphoreHandle{};
+        m_GraphicsTimelineNext = 0;
+        m_GraphicsTimelineLastSignalled.store(0, std::memory_order_release);
 
         m_DescriptorSets.ForEach([](Handle, MetalDescriptorSet& set) {
             if (set.ownsArgumentBuffer)
@@ -654,6 +659,31 @@ void MetalDevice::RetireTrackedCommandBuffer(const MetalSubmitQueue::Submit::Tra
     {
         m_SlotCbCv.notify_all();
     }
+}
+
+void MetalDevice::EncodeGraphicsTimelineSignal(MTL::CommandBuffer* buffer)
+{
+    if (buffer == nullptr)
+        return;
+    std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
+    MetalSemaphore* sem = m_Semaphores.Get(ToGeneric(m_GraphicsTimeline));
+    if (sem == nullptr || sem->event == nullptr)
+        return;
+    const uint64_t value = ++m_GraphicsTimelineNext;
+    buffer->encodeSignalEvent(sem->event, value);
+    m_GraphicsTimelineLastSignalled.store(value, std::memory_order_release);
+}
+
+IDevice::GpuSyncToken MetalDevice::LastGraphicsSubmissionToken() const
+{
+    // Zero (no graphics commit yet) gives an invalid token, which reads as GpuSyncStatus::Unknown.
+    const uint64_t value = m_GraphicsTimelineLastSignalled.load(std::memory_order_acquire);
+    if (value == 0 || !m_GraphicsTimeline.IsValid())
+        return {};
+    GpuSyncToken token{};
+    token.sem = m_GraphicsTimeline;
+    token.value = value;
+    return token;
 }
 
 bool MetalDevice::IsPreviousFrameGraphicsComplete() const
