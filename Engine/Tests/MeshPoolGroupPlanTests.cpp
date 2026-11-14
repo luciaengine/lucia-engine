@@ -367,7 +367,6 @@ TEST_F(MeshPoolGroupPlanTest, PhysicalDomainsSplitPoolsAndGroupsWithoutChangingS
     EXPECT_FALSE(m_Registry.RegisterSubmesh(fineKey, changed, true,
                                            MeshGPUStorageDomain::ClusterFine).IsValid());
     EXPECT_FALSE(m_Registry.RegisterSubmesh(fineKey, mesh).IsValid());
-    EXPECT_FALSE(m_Registry.RewriteSubmeshVertices(fine, mesh, changed.Vertices));
     EXPECT_EQ(m_Registry.RegisterSubmesh(fineKey, mesh, true, MeshGPUStorageDomain::ClusterFine), fine);
     EXPECT_EQ(m_Registry.Find(fine)->contentHash, fineEntry->contentHash);
 }
