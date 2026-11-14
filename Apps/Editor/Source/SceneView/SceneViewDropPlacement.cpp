@@ -143,7 +143,8 @@ SceneViewDropMesh PickSceneViewDropMesh(const Mathematics::Ray3D& cameraRay,
 bool IsPlacedModelFile(const std::filesystem::path& file)
 {
     const std::string extension = LowerCaseExtension(file);
-    return extension == ".glb" || extension == ".gltf" || extension == ".obj" || extension == ".fbx";
+    return extension == ".glb" || extension == ".gltf" || extension == ".obj" || extension == ".fbx" ||
+           extension == ".gecluster";
 }
 
 std::string DescribeUnplaceableFile(const std::filesystem::path& file)
