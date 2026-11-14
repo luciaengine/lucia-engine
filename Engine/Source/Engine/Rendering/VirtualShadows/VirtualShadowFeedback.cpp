@@ -194,6 +194,24 @@ bool VirtualShadowPageTouchedByCasters(const VirtualShadowFeedbackProjection& pr
     });
 }
 
+namespace
+{
+// A sun window is centered on the camera. The physical pool is smaller than the demand,
+// so the pages nearest to the center get tiles first. Equal distances keep the scan order.
+void OrderByDistanceFromWindowCenter(std::vector<VirtualShadowPage>& pages,
+                                     const VirtualShadowFeedbackProjection& window)
+{
+    const auto doubledDistanceSquared = [&window](const VirtualShadowPage& page)
+    {
+        const int64_t side = static_cast<int64_t>(window.PagesPerAxis >> page.Mip);
+        const int64_t x = 2 * (page.X - window.BasePage.X) + 1 - side;
+        const int64_t y = 2 * (page.Y - window.BasePage.Y) + 1 - side;
+        return x * x + y * y;
+    };
+    std::ranges::stable_sort(pages, {}, doubledDistanceSquared);
+}
+} // namespace
+
 std::vector<VirtualShadowPage> DecodeVirtualShadowFeedback(
     std::span<const uint32_t> words, const VirtualShadowFeedbackLayout& dispatched,
     const VirtualShadowFeedbackLayout& current)
@@ -255,6 +273,8 @@ std::vector<VirtualShadowPage> DecodeVirtualShadowFeedback(
                     detail[i].push_back(page);
             }
         }
+        if (active.DirectionalGrid)
+            OrderByDistanceFromWindowCenter(detail[i], active);
         maxDetailCount = std::max(maxDetailCount, detail[i].size());
     }
 

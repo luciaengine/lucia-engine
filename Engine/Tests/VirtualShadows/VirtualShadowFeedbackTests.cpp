@@ -173,6 +173,32 @@ TEST(VirtualShadowFeedbackTests, DirectionalWindowRetainsOnlyOverlappingDelayedW
     EXPECT_FALSE(SameVirtualShadowProjection(oldRow, changed.Projections[0]));
 }
 
+// The physical pool is smaller than the demand of a view. The pages nearest to the window
+// center are nearest to the camera, so they must get tiles first.
+TEST(VirtualShadowFeedbackTests, DirectionalDemandStartsAtTheWindowCenter)
+{
+    const auto window = BuildVirtualShadowDirectionalWindow(8, 0, 4, 4, 32.0f, Mathematics::Matrix4x4::Identity(),
+                                                             Mathematics::WorldPosition{0.1, -0.1, 1.0}, {});
+    ASSERT_TRUE(window);
+    const VirtualShadowFeedbackProjection row{window->Origin, window->WorldToLight, 0, 4, 0, window->Grid};
+    const VirtualShadowFeedbackLayout layout{19, 3, 1, {row}};
+    constexpr std::array kAllPages{0xFFFFu};
+    const auto demand = DecodeVirtualShadowFeedback(kAllPages, layout, layout);
+    ASSERT_EQ(demand.size(), 16u);
+    const auto ring = [&window](const VirtualShadowPage& page)
+    {
+        const int64_t x = 2 * (page.X - window->Origin.X) - 3;
+        const int64_t y = 2 * (page.Y - window->Origin.Y) - 3;
+        return x * x + y * y;
+    };
+    for (size_t index = 0; index < 4; ++index)
+        EXPECT_EQ(ring(demand[index]), 2) << index;
+    for (size_t index = 4; index < 12; ++index)
+        EXPECT_EQ(ring(demand[index]), 10) << index;
+    for (size_t index = 12; index < 16; ++index)
+        EXPECT_EQ(ring(demand[index]), 18) << index;
+}
+
 TEST(VirtualShadowFeedbackTests, DirectionalPageProjectionStaysPreciseAtAPlanetaryRenderOrigin)
 {
     constexpr int32_t kSectorX = 400000;
