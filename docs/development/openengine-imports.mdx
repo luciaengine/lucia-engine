@@ -106,43 +106,54 @@ A rebase applies the Lucia commits again on top of each OpenEngine release. The 
 
 ## Status
 
-On 2026-11-14, `main` does not record an OpenEngine merge. The state has two causes:
+On 2026-11-14, `main` does not record an OpenEngine merge, and its files differ from OpenEngine `be9186a7` in many places. The state has two causes:
 
 - The first Lucia commit, `8312be22b`, has OpenEngine `bdf5c271` as its parent. But of all 32 commits on the first-parent line of OpenEngine `main`, its tree is closest to `3439b11b` of 2026-10-11. Thus the merge base that git finds is not the true common base.
-- Pull request #83 copied the tree of OpenEngine `be9186a7` over Lucia and added part of the Lucia changes again. No merge ran, and the squash commit has one parent. The Lucia changes that it did not add again are not on `main`.
+- Pull request #83 imported `be9186a7` as one squash commit with one parent. It did not give `main` the `be9186a7` tree. In some files it kept the old content, and in others it replaced Lucia content with OpenEngine content.
+
+The differences that #83 left on `main` are in four groups:
+
+| Group | What is on `main` |
+|---|---|
+| ECS module | The Lucia ECS from `8312be22b`. It does not have the ECS changes of 12 OpenEngine releases. For example, `World::Create` does not add the required components. |
+| Old OpenEngine content | 209 files hold the `3439b11b` content, although `be9186a7` changed them. |
+| Files that both projects changed | 465 files do not have about 10,700 of the lines that OpenEngine added up to `be9186a7`. |
+| Lucia changes from the first commit | 434 files hold OpenEngine content in place of the Lucia changes of `8312be22b`. |
 
 Until the repair is complete, the divergence report uses the wrong base, and its numbers include OpenEngine work.
 
-The repair has four steps:
+The repair has three steps:
 
 :::steps
 
-1. Cherry-pick the Lucia commits of `8312be22b..e18015ee` onto a branch from `main`, one at a time, in topological order. Each commit message states the purpose of its conflicts. Resolve each conflict with the policy in [Resolve conflicts](#resolve-conflicts).
+1. Cherry-pick the Lucia commits of `8312be22b..e18015ee` onto a branch from `main`, one at a time, in topological order. Pull request #87 does this step. Resolve each conflict with the policy in [Resolve conflicts](#resolve-conflicts).
 
    ```bash title="List the Lucia commits in replay order"
    git rev-list --topo-order --reverse 8312be22b..e18015ee
    ```
 
+   - The range does not contain the changes of `8312be22b` itself. Step 3 handles them.
    - Skip a commit that only ported OpenEngine code which `be9186a7` already contains.
    - A file whose `main` version already holds the final Lucia change keeps the `main` version.
    - A merge commit with a hand resolution has no cherry-pick. Apply its resolution as a patch.
    - A file that merges with no conflict is not always correct. Before each commit, read the staged change. A clean merge can add a second copy of a declaration, a test or a build entry that `main` holds at another place.
    - A Lucia feature that `main` holds only in part, and that needs a GPU check in a running editor, is deferred to its own port instead of a part merge.
 
-2. Build the result, run the focused suites, and merge it to `main` with **Create a merge commit**.
+2. Record `be9186a7` as the base. Make a merge commit whose first parent is `be9186a7` and whose second parent is the head of step 1, with the tree of that head. Then fast-forward `main` to it with a direct push. Do not squash, rebase or use the merge button: each one removes the record. After this step, the merge base of `main` and OpenEngine is `be9186a7`, and the history of `main` starts with the OpenEngine history.
 
-3. Review each difference between `be9186a7` and the repaired `main`, area by area. Each difference must be a Lucia change that Lucia keeps. Step 4 makes git treat each remaining difference as a Lucia choice, and a later import does not bring that OpenEngine content back.
+   ```bash title="Record the OpenEngine commit as the base"
+   git checkout --detach be9186a74c33cd6111b9046cc043c16fd74e247e
+   git merge --no-ff -s ours <head of step 1>
+   git read-tree -u --reset <head of step 1>
+   git commit --amend --no-edit
+   ```
+
+3. Resolve each difference between `be9186a7` and `main`, group by group. For each file, restore the OpenEngine content, or keep the Lucia content as a decision. After step 2, git treats each difference as a Lucia change. A later import brings only the OpenEngine changes that come after `be9186a7`, so a difference that nobody resolves stays on `main`. A commit that restores OpenEngine content after the record gives the same result as a restore before it.
 
    ```bash title="List the differences from the OpenEngine release"
    git diff --stat=200 be9186a74c33cd6111b9046cc043c16fd74e247e origin/main
    ```
 
-4. On a branch from the repaired `main`, record `be9186a7` as merged, with no change to the content. Merge that branch with **Create a merge commit**. After this step, the merge base of `main` and OpenEngine is `be9186a7`, and the next import uses the procedure on this page.
-
-   ```bash title="Record the OpenEngine commit as merged"
-   git merge -s ours be9186a74c33cd6111b9046cc043c16fd74e247e
-   ```
-
 :::
 
-Remove this section when the repair is complete.
+Remove this section when step 3 is complete.
