@@ -659,7 +659,9 @@ set(EDITOR_TEST_SOURCES
 	# The prefab drop: the placement, the refusal notice, the drop's undo step; Create Prefab, its dialog and its
 	# undo step; Create Prefab from a Hierarchy entity dropped on an Assets folder (PrefabPlaceTests).
 	# A prefab file change held back during Play and reported to the panels (PrefabPropagationTests).
+	PrefabPlaceTests.cpp
 	PrefabPropagationTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/AssetPlacementRegistry.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/AssetsFolderDropRegistry.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabService.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/CreatePrefab/CreatePrefabCommand.cpp
