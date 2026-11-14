@@ -144,7 +144,7 @@ void ApplyPrefabOverridesAsOneStep(ECS::World& world, std::span<const Scene::Pre
                                    UndoRedoService* undo, EditorChangeNotifications* notifications,
                                    const std::string& undoName)
 {
-    if (targets.empty())
+    if (targets.empty() || (undo && !undo->CommitPendingEdit()))
         return;
     std::string error;
     // An applied field keeps no record; the undo gives back the records the fields held.

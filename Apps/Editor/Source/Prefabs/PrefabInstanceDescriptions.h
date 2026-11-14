@@ -108,6 +108,7 @@ std::string_view InspectorFieldForSceneKey(ECS::ComponentTypeId typeId, std::str
 std::vector<OverrideMenuEntry> QueryPrefabOverrideMenu(const OverrideMenuTarget& target);
 
 /// Writes `targets` into their prefab files as one undo step named `undoName`. A refusal shows a notice.
+/// Commits an open interactive edit first. Writes nothing when that commit fails.
 void ApplyPrefabOverridesAsOneStep(ECS::World& world, std::span<const Scene::PrefabOverrideTarget> targets,
                                    UndoRedoService* undo, EditorChangeNotifications* notifications,
                                    const std::string& undoName);

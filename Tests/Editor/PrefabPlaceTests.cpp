@@ -2783,6 +2783,37 @@ TEST_F(PrefabPlaceTests, AnInteractiveEditThatChangesNoValueGivesNoRecordAndKeep
     EXPECT_FALSE(IsIntensityOverridden(world, lid)) << "the commit that changed nothing gave no record";
 }
 
+// An Apply first commits the open interactive edit. When that commit fails, the Apply writes nothing: a file write
+// with no undo step would leave the history unable to restore the prefab.
+TEST_F(PrefabPlaceTests, AnApplyWritesNothingWhenTheOpenEditCannotCommit)
+{
+    Editor::UndoRedoService undo;
+    Editor::RegisterPrefabEditor(Notifications(), &undo, nullptr, {}, {});
+    const std::filesystem::path file = WriteAsset("Probe.prefab", kProbePrefab);
+    ECS::World world;
+    const ECS::EntityHandle applier = FindChild(world, PlaceAt(world, file, 0.0f, 0.0f, 0.0f));
+    const ECS::EntityHandle other = FindChild(world, PlaceAt(world, file, 5.0f, 0.0f, 0.0f));
+    ASSERT_TRUE(applier.IsValid());
+    ASSERT_TRUE(other.IsValid());
+    CommitIntensity(world, applier, undo, 3.0f);
+    ASSERT_TRUE(undo.CommitPendingEdit());
+    const std::string before = ReadFileText(file);
+    const std::size_t steps = undo.GetUndoCount();
+    auto edit = undo.BeginInteractiveEdit(
+        "Set Intensity", Editor::MultiEntityUndo::MakeComponentSnapshotTarget(
+                             &world, {other}, ECS::GetComponentTypeId<Components::ReflectionProbe>(),
+                             &Notifications(), "Intensity"));
+    ASSERT_TRUE(undo.HasOpenInteractiveEdit());
+    world.DestroyEntityImmediate(other);
+
+    const Scene::PrefabOverrideTarget target{applier, {Scene::PrefabOverrideKind::Field, "ReflectionProbe", "Intensity"}};
+    Editor::ApplyPrefabOverridesAsOneStep(world, std::span(&target, 1), &undo, &Notifications(), "Apply Intensity");
+
+    EXPECT_EQ(ReadFileText(file), before) << "the Apply wrote the prefab with no undo step";
+    EXPECT_EQ(undo.GetUndoCount(), steps);
+    EXPECT_TRUE(IsIntensityOverridden(world, applier)) << "the field keeps its record";
+}
+
 // One Inspector commit of several entities pushes one step and announces each entity: each one gets its record.
 TEST_F(PrefabPlaceTests, AMultiEntityCommitGivesARecordToEachEntity)
 {
