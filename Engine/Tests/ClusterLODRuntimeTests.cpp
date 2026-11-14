@@ -186,7 +186,6 @@ class ClusterLODRuntimeTest : public ::testing::Test
         EXPECT_EQ(entry->cpuMesh, nullptr) << "CPU picking stays on the stable coarse asset";
     }
 
-    Rendering::Tests::ScopedEnvVar m_SingleQueue{"GE_ASYNC_COMPUTE", "0"};
     TestUtils::ScopedTempDir m_Temporary{TestUtils::MakeUniqueTempDirectory("cluster-runtime")};
     // The helper outlives pool shutdown even if its acquisition times out.
     std::shared_ptr<GameEngine::Tests::HeldWorkers> m_HeldWorkers;

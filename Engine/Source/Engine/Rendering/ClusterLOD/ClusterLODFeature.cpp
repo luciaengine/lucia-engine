@@ -23,8 +23,8 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Logger/Logger.h"
 #include "Mathematics/Matrix4x4.h"
-#include "Platform/Environment.h"
 #include "Rendering/Core/GPUScene.h"
+#include "Rendering/Core/RenderGraph/RGWindowFrame.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Types/Types.h"
 
@@ -805,13 +805,15 @@ bool ClusterLODFeature::Initialize(RenderServices& services, AssetManager& asset
     auto* device = services.GetDevice();
     // Fine geometry needs a coherent write into host-visible device memory (TryWriteCoherentBuffer).
     // Scene acceleration structures skip the fine domain, so ray tracing reads the coarse mesh.
+    // Retirement waits for the graphics timeline only, so a bound frame must run on one queue.
     const GraphicsAPI api = device ? device->GetAPI() : GraphicsAPI::Auto;
     if (!device || (api != GraphicsAPI::Vulkan && api != GraphicsAPI::Metal) ||
         !device->GetCapabilities().supportsBufferDeviceAddress ||
-        Platform::EnvironmentSwitchEnabled("GE_ASYNC_COMPUTE", true) || !services.Spine().TryRequireCurrentWorldEpoch())
+        RenderGraph::WindowFramesUseAsyncCompute(*device) || !services.Spine().TryRequireCurrentWorldEpoch())
     {
-        Logger::Log::Warning("Cluster LOD fine pages are off: they need Vulkan or Metal, buffer device addresses and "
-                             "GE_ASYNC_COMPUTE=0, and they start only with the first world.");
+        Logger::Log::Warning("Cluster LOD fine pages are off: they need Vulkan or Metal with buffer device addresses "
+                             "and one queue for each frame (set GE_ASYNC_COMPUTE=0 on a GPU with a separate compute "
+                             "queue), and they start only with the first world.");
         return false;
     }
     state.Services = &services;
