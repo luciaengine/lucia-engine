@@ -600,12 +600,12 @@ void ScrollView::AutoScrollNearEdge(float mouseX, float mouseY) const
     float dy = 0.0f;
     if (distTop < kEdgePx)
     {
-        const float t = Math::Clamp01((kEdgePx - distTop) / kEdgePx);
+        const float t = std::clamp((kEdgePx - distTop) / kEdgePx, 0.0f, 1.0f);
         dy = -kMaxSpeedPxPerFrame * t;
     }
     else if (distBot < kEdgePx)
     {
-        const float t = Math::Clamp01((kEdgePx - distBot) / kEdgePx);
+        const float t = std::clamp((kEdgePx - distBot) / kEdgePx, 0.0f, 1.0f);
         dy = kMaxSpeedPxPerFrame * t;
     }
 
