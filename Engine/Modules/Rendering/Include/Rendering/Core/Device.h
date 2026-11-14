@@ -2162,16 +2162,20 @@ class IDevice
         return WaitTimelineSemaphoreValue(t.sem, t.value, timeoutNs);
     }
 
-    // The graphics timeline value the most recent graphics submit will signal. Waiting it
-    // retires exactly the graphics work already submitted — the scoped alternative to
-    // WaitForIdle for a caller that must not rewrite state (descriptor elements, persistent
-    // buffers) the GPU may still be reading. Unlike a device drain it makes no device-wide
-    // idleness claim, so it never reroutes deferred destruction to the immediate path.
-    // Invalid before the first submit, and on a backend that keeps no graphics timeline —
-    // the same condition under which the rest of this token vocabulary (readback rings,
-    // SubmitTextureUploads, RGFrame::SubmissionToken) is unavailable. Both cases read as
-    // GpuSyncStatus::Unknown, so a caller that must distinguish them owns its own evidence.
-    virtual GpuSyncToken LastGraphicsSubmissionToken() const { return {}; }
+    // The timeline value the most recent submit on `queue` will signal. Waiting it retires
+    // exactly the work already submitted on that queue: the scoped alternative to WaitForIdle
+    // for a caller that must not rewrite state (descriptor elements, persistent buffers) the
+    // GPU may still be reading. It makes no device-wide idleness claim, so it never reroutes
+    // deferred destruction to the immediate path. A queue that aliases another (no dedicated
+    // family) shares that queue's timeline and token.
+    // Invalid before the first submit on that queue, and on a backend that keeps no timeline
+    // for it. Both cases read as GpuSyncStatus::Unknown, so a caller that must distinguish
+    // them owns its own evidence.
+    virtual GpuSyncToken LastSubmissionToken(QueueType queue) const
+    {
+        (void)queue;
+        return {};
+    }
 
     // True when the most recently submitted graphics work has completed on the
     // GPU (a non-blocking timeline/fence poll — never stalls). A consumer that

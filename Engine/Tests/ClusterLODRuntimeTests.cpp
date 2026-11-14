@@ -24,7 +24,6 @@
 #include "Rendering/Core/RenderGraph/RGUploadRing.h"
 #include "../../Tests/Jobs/HeldWorkers.h"
 #include "TestDeviceHelper.h"
-#include "../Modules/Rendering/Tests/ScopedEnvVar.h"
 #include "TestTempDir.h"
 #if defined(RENDERING_HAS_VULKAN)
 #include "Vulkan/VulkanDevice/VulkanDevice.h"
@@ -186,7 +185,6 @@ class ClusterLODRuntimeTest : public ::testing::Test
         EXPECT_EQ(entry->cpuMesh, nullptr) << "CPU picking stays on the stable coarse asset";
     }
 
-    Rendering::Tests::ScopedEnvVar m_SingleQueue{"GE_ASYNC_COMPUTE", "0"};
     TestUtils::ScopedTempDir m_Temporary{TestUtils::MakeUniqueTempDirectory("cluster-runtime")};
     // The helper outlives pool shutdown even if its acquisition times out.
     std::shared_ptr<GameEngine::Tests::HeldWorkers> m_HeldWorkers;
@@ -213,27 +211,32 @@ struct ReaderFramePools
 };
 
 #if defined(RENDERING_HAS_VULKAN)
-class GatedGraphicsDevice final : public VulkanDevice
+// Holds every submit on GatedQueue until Gate reaches 1.
+class GatedQueueDevice final : public VulkanDevice
 {
   public:
     SemaphoreHandle Gate;
+    QueueType GatedQueue = QueueType::Graphics;
     bool QueueSubmit(QueueType queue, const std::vector<CommandList*>& commands,
                      const std::vector<std::pair<SemaphoreHandle, uint64_t>>& waits,
                      const std::vector<std::pair<SemaphoreHandle, uint64_t>>& signals) override
     {
         auto gated = waits;
-        if (queue == QueueType::Graphics && Gate.IsValid())
+        if (queue == GatedQueue && Gate.IsValid())
             gated.emplace_back(Gate, 1);
         return VulkanDevice::QueueSubmit(queue, commands, gated, signals);
     }
 };
 
-class ScopedGraphicsGates
+// Two gate semaphores, signalled by submits on the queue that the device does not gate.
+class ScopedQueueGates
 {
   public:
-    explicit ScopedGraphicsGates(GatedGraphicsDevice& device)
-        : Fine(device.CreateTimelineSemaphore()), Later(device.CreateTimelineSemaphore()), m_Device(device) {}
-    ~ScopedGraphicsGates()
+    explicit ScopedQueueGates(GatedQueueDevice& device)
+        : Fine(device.CreateTimelineSemaphore()), Later(device.CreateTimelineSemaphore()), m_Device(device),
+          m_ReleaseQueue(device.GatedQueue == IDevice::QueueType::Graphics ? IDevice::QueueType::Compute
+                                                                           : IDevice::QueueType::Graphics) {}
+    ~ScopedQueueGates()
     {
         m_Device.Gate = {};
         const bool complete = !m_Ready || ReleaseAll();
@@ -250,7 +253,7 @@ class ScopedGraphicsGates
             return false;
         for (auto& commands : m_Signals)
         {
-            commands = m_Device.CreateCommandList(IDevice::QueueType::Compute);
+            commands = m_Device.CreateCommandList(m_ReleaseQueue);
             if (!commands)
                 return false;
             commands->Begin();
@@ -263,29 +266,34 @@ class ScopedGraphicsGates
     {
         if (m_FineReleased)
             return true;
-        m_FineReleased = Fine.IsValid() && m_Device.QueueSubmit(IDevice::QueueType::Compute, {m_Signals[0].get()}, {}, {{Fine, 1}});
+        m_FineReleased = Fine.IsValid() && m_Device.QueueSubmit(m_ReleaseQueue, {m_Signals[0].get()}, {}, {{Fine, 1}});
         return m_FineReleased;
     }
     bool ReleaseAll()
     {
         const bool fine = ReleaseFine();
         if (!m_LaterReleased)
-            m_LaterReleased = Later.IsValid() && m_Device.QueueSubmit(IDevice::QueueType::Compute, {m_Signals[1].get()}, {}, {{Later, 1}});
+            m_LaterReleased = Later.IsValid() && m_Device.QueueSubmit(m_ReleaseQueue, {m_Signals[1].get()}, {}, {{Later, 1}});
         if (!fine || !m_LaterReleased)
             return false;
-        constexpr uint64 kTimeoutNs = 10'000'000'000ull;
         if (!m_Device.WaitTimelineSemaphoreValue(Fine, 1, kTimeoutNs) ||
             !m_Device.WaitTimelineSemaphoreValue(Later, 1, kTimeoutNs))
             return false;
-        const auto last = m_Device.LastGraphicsSubmissionToken();
-        return !last.IsValid() || m_Device.WaitGpuSyncToken(last, kTimeoutNs);
+        return std::all_of(std::begin(kQueues), std::end(kQueues), [this](IDevice::QueueType queue)
+        {
+            const auto last = m_Device.LastSubmissionToken(queue);
+            return !last.IsValid() || m_Device.WaitGpuSyncToken(last, kTimeoutNs);
+        });
     }
 
     const SemaphoreHandle Fine;
     const SemaphoreHandle Later;
 
   private:
-    GatedGraphicsDevice& m_Device;
+    static constexpr IDevice::QueueType kQueues[] = {IDevice::QueueType::Graphics, IDevice::QueueType::Compute};
+    static constexpr uint64 kTimeoutNs = 10'000'000'000ull;
+    GatedQueueDevice& m_Device;
+    const IDevice::QueueType m_ReleaseQueue;
     std::array<std::unique_ptr<CommandList>, 2> m_Signals;
     bool m_Ready = false;
     bool m_FineReleased = false;
@@ -307,7 +315,7 @@ class ClusterLODGpuReaderTest : public ClusterLODRuntimeTest
     }
     std::unique_ptr<IDevice> CreateDevice() override
     {
-        auto device = std::make_unique<GatedGraphicsDevice>();
+        auto device = std::make_unique<GatedQueueDevice>();
         DeviceDesc descriptor{};
         descriptor.preferredAPI = GraphicsAPI::Vulkan;
         descriptor.enableDynamicRendering = true;
@@ -318,28 +326,40 @@ class ClusterLODGpuReaderTest : public ClusterLODRuntimeTest
         m_Gated = device.get();
         return device;
     }
-    GatedGraphicsDevice* m_Gated = nullptr;
+    GatedQueueDevice* m_Gated = nullptr;
 };
 
 constexpr uint32 kFineReadBytes = 64;
 
+// Copies kFineReadBytes of fine storage into `destination` in one pass on `queue`.
 void SubmitFineCopy(RenderGraph::RGFrame& frame, RenderServices& services, BufferHandle source,
-                    uint64 offset, BufferHandle destination)
+                    uint64 offset, BufferHandle destination, RenderGraph::RGQueue queue = RenderGraph::RGQueue::Graphics)
 {
     frame.BeginFrame(0);
     ASSERT_TRUE(services.Spine().BindWorldGeometry(frame));
     const auto src = frame.ImportExternalBuffer("Fine.Reader.Source", source, offset + kFineReadBytes);
     const auto dst = frame.ImportExternalBuffer("Fine.Reader.Destination", destination, kFineReadBytes);
-    frame.AddPass("Fine.Reader.Copy", 0,
-        [src, dst](RenderGraph::RGPassBuilder& pass)
-        {
-            pass.Read(src, RenderGraph::RGBufferRead::CopySrc);
-            pass.Write(dst, RenderGraph::RGBufferWrite::CopyDst);
-        },
-        [src, dst, offset](RenderGraph::RGContext& context)
-        {
-            context.Cmd->CopyBuffer(context.GetBuffer(src), context.GetBuffer(dst), kFineReadBytes, offset, 0);
-        });
+    const auto setup = [src, dst](RenderGraph::RGPassBuilder& pass)
+    {
+        pass.Read(src, RenderGraph::RGBufferRead::CopySrc);
+        pass.Write(dst, RenderGraph::RGBufferWrite::CopyDst);
+    };
+    const auto copy = [src, dst, offset](RenderGraph::RGContext& context)
+    {
+        context.Cmd->CopyBuffer(context.GetBuffer(src), context.GetBuffer(dst), kFineReadBytes, offset, 0);
+    };
+    if (queue == RenderGraph::RGQueue::Compute)
+    {
+        // A compute run with no independent graphics pass beside it moves to the graphics
+        // queue (RGGraph::PlaceQueues).
+        frame.AddComputePass("Fine.Reader.Copy", 0, setup, copy);
+        frame.AddPass("Fine.Reader.Beside", 0, [](RenderGraph::RGPassBuilder& pass) { pass.PreventCulling(); },
+                      [](RenderGraph::RGContext&) {});
+    }
+    else
+    {
+        frame.AddPass("Fine.Reader.Copy", 0, setup, copy);
+    }
     frame.MarkOutput(dst);
     frame.Execute();
     ASSERT_FALSE(frame.Stats().ExecutionRejected);
@@ -388,14 +408,14 @@ TEST_F(ClusterLODGpuReaderTest, TwoSubmittedReadersKeepFineStorageUntilTheirFixe
     RenderGraph::RGFrame first(m_Device.get(), &poolsA.Persistent, &poolsA.Transient, &poolsA.Ring);
     RenderGraph::RGFrame second(m_Device.get(), &poolsB.Persistent, &poolsB.Transient, &poolsB.Ring);
     RenderGraph::RGFrame later(m_Device.get(), &poolsLater.Persistent, &poolsLater.Transient, &poolsLater.Ring);
-    ScopedGraphicsGates gates(*m_Gated);
+    ScopedQueueGates gates(*m_Gated);
     ASSERT_TRUE(gates.Initialize());
     ASSERT_TRUE(gates.Fine.IsValid());
     ASSERT_TRUE(gates.Later.IsValid());
     m_Gated->Gate = gates.Fine;
     ASSERT_NO_FATAL_FAILURE(SubmitFineCopy(first, m_Services, physical.coreVB, offset, readbacks[0]));
     ASSERT_NO_FATAL_FAILURE(SubmitFineCopy(second, m_Services, physical.coreVB, offset, readbacks[1]));
-    const auto readers = m_Device->LastGraphicsSubmissionToken();
+    const auto readers = m_Device->LastSubmissionToken(IDevice::QueueType::Graphics);
     ASSERT_TRUE(readers.IsValid());
     ASSERT_EQ(m_Device->QueryGpuSyncToken(readers), IDevice::GpuSyncStatus::Pending);
     m_Services.SetLODForceLevel(1);
@@ -412,7 +432,7 @@ TEST_F(ClusterLODGpuReaderTest, TwoSubmittedReadersKeepFineStorageUntilTheirFixe
                   [](RenderGraph::RGContext&) {});
     later.Execute();
     ASSERT_GT(later.Stats().SubmissionsMade, 0u);
-    const auto newest = m_Device->LastGraphicsSubmissionToken();
+    const auto newest = m_Device->LastSubmissionToken(IDevice::QueueType::Graphics);
     ASSERT_EQ(newest.sem, readers.sem);
     ASSERT_GT(newest.value, readers.value);
     ASSERT_TRUE(gates.ReleaseFine());
@@ -435,6 +455,81 @@ TEST_F(ClusterLODGpuReaderTest, TwoSubmittedReadersKeepFineStorageUntilTheirFixe
     ASSERT_TRUE(gates.ReleaseAll());
     for (const auto buffer : readbacks)
         m_Device->DestroyBuffer(buffer);
+    EXPECT_EQ(m_Device->GetValidationStats().ErrorCount, 0u);
+    EXPECT_EQ(m_Device->GetValidationStats().WarningCount, 0u);
+}
+
+// A frame that routes its compute pass to a second queue reads fine storage there. The
+// graphics queue has completed everything, so only the compute token keeps the page.
+TEST_F(ClusterLODGpuReaderTest, ComputeQueueReaderKeepsFineStorageUntilTheComputeTokenCompletes)
+{
+    if (!m_Device->GetValidationStats().Enabled)
+        GTEST_SKIP() << "Vulkan validation layer unavailable for the real queue-lifetime witness";
+    ASSERT_EQ(m_Device->GetValidationStats().ErrorCount, 0u);
+    if (m_Device->GetComputeQueueFamilyIndex() == m_Device->GetGraphicsQueueFamilyIndex())
+        GTEST_SKIP() << "a compute reader on its own queue requires a separate compute queue family";
+    Prepare();
+    Prepare();
+    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    const auto fine = CurrentHandle();
+    const auto* entry = m_Services.GetMeshGPURegistry().Find(fine);
+    ASSERT_NE(entry, nullptr);
+    ASSERT_GE(entry->coreSubAlloc.Size, kFineReadBytes);
+    const uint64 offset = entry->coreSubAlloc.Offset;
+    MeshGPUEntryBindings physical;
+    ASSERT_TRUE(m_Services.GetMeshGPURegistry().TryGetDrawableBindings(*entry, physical));
+    std::array<uint8, kFineReadBytes> expected;
+    const auto* mapped = static_cast<const uint8*>(m_Device->MapBuffer(physical.coreVB));
+    ASSERT_NE(mapped, nullptr);
+    std::memcpy(expected.data(), mapped + offset, expected.size());
+    m_Device->UnmapBuffer(physical.coreVB);
+    BufferDesc descriptor{};
+    descriptor.size = kFineReadBytes;
+    descriptor.usage = static_cast<uint32>(BufferUsage::TransferDst);
+    descriptor.memoryUsage = BufferMemoryUsage::Readback;
+    descriptor.flags = BufferCreateFlags::PersistentlyMapped;
+    descriptor.debugName = "ClusterLOD.ComputeReader.Readback";
+    const BufferHandle readback = m_Device->CreateBuffer(descriptor);
+    ASSERT_TRUE(readback.IsValid());
+    m_Device->WaitForIdle();
+    const auto baselineDrains = m_Device->GetIdleDrainCount();
+    ReaderFramePools pools(m_Device.get());
+    RenderGraph::RGFrame reader(m_Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    reader.SetPhysicalQueueMap(RenderGraph::RGFrame::kIdentityQueueMap);
+    m_Gated->GatedQueue = IDevice::QueueType::Compute;
+    ScopedQueueGates gates(*m_Gated);
+    ASSERT_TRUE(gates.Initialize());
+    m_Gated->Gate = gates.Fine;
+    ASSERT_NO_FATAL_FAILURE(
+        SubmitFineCopy(reader, m_Services, physical.coreVB, offset, readback, RenderGraph::RGQueue::Compute));
+    const auto computeReader = m_Device->LastSubmissionToken(IDevice::QueueType::Compute);
+    ASSERT_TRUE(computeReader.IsValid()) << "the reader pass must run on the compute queue";
+    ASSERT_EQ(m_Device->QueryGpuSyncToken(computeReader), IDevice::GpuSyncStatus::Pending);
+    const auto graphics = m_Device->LastSubmissionToken(IDevice::QueueType::Graphics);
+    ASSERT_TRUE(graphics.IsValid());
+    ASSERT_NE(graphics.sem, computeReader.sem) << "the reader must run on its own queue timeline";
+    ASSERT_TRUE(m_Device->WaitGpuSyncToken(graphics, 10'000'000'000ull));
+    ASSERT_EQ(m_Device->QueryGpuSyncToken(computeReader), IDevice::GpuSyncStatus::Pending);
+    m_Services.SetLODForceLevel(1);
+    for (uint32 frame = 0; frame < 35; ++frame)
+        Prepare();
+    entry = m_Services.GetMeshGPURegistry().Find(fine);
+    ASSERT_NE(entry, nullptr) << "the compute reader still waits on the owned GPU gate";
+    ASSERT_TRUE(entry->DrawClosed);
+    ASSERT_TRUE(gates.ReleaseFine());
+    ASSERT_TRUE(GameEngine::Tests::WaitUntil([this, fine]
+    {
+        Prepare();
+        return m_Services.GetMeshGPURegistry().Find(fine) == nullptr;
+    }, std::chrono::seconds(10)));
+    EXPECT_EQ(m_Device->QueryGpuSyncToken(computeReader), IDevice::GpuSyncStatus::Complete);
+    EXPECT_EQ(m_Device->GetIdleDrainCount(), baselineDrains);
+    const auto* copied = static_cast<const uint8*>(m_Device->MapBuffer(readback));
+    ASSERT_NE(copied, nullptr);
+    EXPECT_EQ(std::memcmp(copied, expected.data(), expected.size()), 0);
+    m_Device->UnmapBuffer(readback);
+    ASSERT_TRUE(gates.ReleaseAll());
+    m_Device->DestroyBuffer(readback);
     EXPECT_EQ(m_Device->GetValidationStats().ErrorCount, 0u);
     EXPECT_EQ(m_Device->GetValidationStats().WarningCount, 0u);
 }
@@ -694,29 +789,6 @@ TEST_F(ClusterLODRuntimeTest, CoarseOnlyDemandDoesNotOccupyTheBoundedFinePageDir
     EXPECT_EQ(tracked, 0.0f);
 #endif
     m_Services.SetLODForceLevel(0);
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
-}
-
-// Async compute stays allowed. A device with one queue family never routes a pass to a
-// second queue, so fine pages start without GE_ASYNC_COMPUTE=0.
-class ClusterLODOneQueueFamilyTest : public ClusterLODRuntimeTest
-{
-  protected:
-    void SetUp() override
-    {
-        const auto probe = CreateDevice();
-        if (!probe || probe->GetComputeQueueFamilyIndex() != probe->GetGraphicsQueueFamilyIndex())
-            GTEST_SKIP() << "the device has a separate compute queue family";
-        ClusterLODRuntimeTest::SetUp();
-    }
-
-    Rendering::Tests::ScopedEnvVar m_AsyncComputeAllowed{"GE_ASYNC_COMPUTE", "1"};
-};
-
-TEST_F(ClusterLODOneQueueFamilyTest, FinePagesStartWithAsyncComputeAllowed)
-{
     Prepare();
     Prepare();
     ASSERT_NO_FATAL_FAILURE(ExpectFine());

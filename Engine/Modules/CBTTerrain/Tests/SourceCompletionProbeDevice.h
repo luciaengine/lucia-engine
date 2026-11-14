@@ -21,15 +21,15 @@ class SourceCompletionProbeDevice : public Rendering::VulkanDevice
         return UseScopedGraphicsFence ? Rendering::GraphicsAPI::Metal : Rendering::VulkanDevice::GetAPI();
     }
 
-    GpuSyncToken LastGraphicsSubmissionToken() const override
+    GpuSyncToken LastSubmissionToken(QueueType queue) const override
     {
-        const auto token = Rendering::VulkanDevice::LastGraphicsSubmissionToken();
+        const auto token = Rendering::VulkanDevice::LastSubmissionToken(queue);
         return HideGraphicsToken || UseScopedGraphicsFence ? GpuSyncToken{} : token;
     }
 
     bool WaitTimelineSemaphoreValue(Rendering::SemaphoreHandle semaphore, uint64_t value, uint64_t timeout) override
     {
-        if (Rendering::VulkanDevice::LastGraphicsSubmissionToken().value > RejectCompletionAfter)
+        if (Rendering::VulkanDevice::LastSubmissionToken(QueueType::Graphics).value > RejectCompletionAfter)
         {
             RejectCompletionAfter = std::numeric_limits<uint64_t>::max();
             return false;
