@@ -186,6 +186,7 @@ class ClusterLODRuntimeTest : public ::testing::Test
         EXPECT_EQ(entry->cpuMesh, nullptr) << "CPU picking stays on the stable coarse asset";
     }
 
+    Rendering::Tests::ScopedEnvVar m_SingleQueue{"GE_ASYNC_COMPUTE", "0"};
     TestUtils::ScopedTempDir m_Temporary{TestUtils::MakeUniqueTempDirectory("cluster-runtime")};
     // The helper outlives pool shutdown even if its acquisition times out.
     std::shared_ptr<GameEngine::Tests::HeldWorkers> m_HeldWorkers;
@@ -693,6 +694,29 @@ TEST_F(ClusterLODRuntimeTest, CoarseOnlyDemandDoesNotOccupyTheBoundedFinePageDir
     EXPECT_EQ(tracked, 0.0f);
 #endif
     m_Services.SetLODForceLevel(0);
+    Prepare();
+    Prepare();
+    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+}
+
+// Async compute stays allowed. A device with one queue family never routes a pass to a
+// second queue, so fine pages start without GE_ASYNC_COMPUTE=0.
+class ClusterLODOneQueueFamilyTest : public ClusterLODRuntimeTest
+{
+  protected:
+    void SetUp() override
+    {
+        const auto probe = CreateDevice();
+        if (!probe || probe->GetComputeQueueFamilyIndex() != probe->GetGraphicsQueueFamilyIndex())
+            GTEST_SKIP() << "the device has a separate compute queue family";
+        ClusterLODRuntimeTest::SetUp();
+    }
+
+    Rendering::Tests::ScopedEnvVar m_AsyncComputeAllowed{"GE_ASYNC_COMPUTE", "1"};
+};
+
+TEST_F(ClusterLODOneQueueFamilyTest, FinePagesStartWithAsyncComputeAllowed)
+{
     Prepare();
     Prepare();
     ASSERT_NO_FATAL_FAILURE(ExpectFine());
