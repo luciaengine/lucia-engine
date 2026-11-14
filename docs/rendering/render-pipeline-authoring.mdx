@@ -159,6 +159,23 @@ Each entry is one pipeline node instantiation:
 
 **Adding new types** = implementing `IRenderPipelineNode` + registering. See [Add a new node type](customizable-render-pipeline.mdx#add-a-new-node-type).
 
+### Virtual shadow pages
+
+The `ShadowMap` node can keep shadow depth in pages of 128 x 128 texels and render only the pages that the view shows. The sun, the spot lights and the point lights of the view then get sharper shadows near the camera. A pixel uses the usual shadow map where no page is ready, so the image stays complete while pages render. The option is off by default.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `virtualShadows` | `false` | Turns the pages on for this pipeline. |
+| `virtualDirectionalResolution` | `8192` | Size in texels of each sun level. A power of two from 128 to 16384. |
+| `virtualLocalResolution` | `4096` | Size in texels of each spot light and of each point light face. A power of two from 128 to 16384. |
+
+```json title="A ShadowMap node with virtual shadow pages"
+{ "id": "ShadowMap", "type": "ShadowMap", "virtualShadows": true, "virtualDirectionalResolution": 8192 }
+```
+
+The sun uses the pages only with the Poisson filter. With another filter the sun keeps the usual cascades, and the spot and point lights still use the pages. A pipeline with a resolution outside the range does not load, and the message names the two fields.
+
+
 ### Resource reference grammar
 
 Inside a pass entry, resource refs are strings:
