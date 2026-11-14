@@ -732,10 +732,10 @@ void EZTreeExtractionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
                 ECS::Optional<ECS::DisabledInHierarchy>,
                 ECS::Optional<ECS::ComponentDisabled<Components::EZTree>>>()
         .IncludeDisabled()
-        .Each([&](ECS::EntityHandle entity, ECS::Writable<Components::EZTree> treeRow, const ECS::Disabled* disabled,
+        .Each([&](ECS::EntityHandle entity, Components::EZTree& treeRow, const ECS::Disabled* disabled,
                   const ECS::DisabledInHierarchy* inactive, const ECS::ComponentDisabled<Components::EZTree>* treeOff)
         {
-            auto& tree = treeRow.Mutable();
+            auto& tree = treeRow;
             if (world.GetComponent<Components::MeshRenderer>(entity))
                 world.RemoveComponentImmediate<Components::MeshRenderer>(entity);
             if (world.GetComponent<Components::MeshGPUData>(entity))

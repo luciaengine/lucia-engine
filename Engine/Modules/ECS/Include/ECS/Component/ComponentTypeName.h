@@ -14,8 +14,6 @@
 // expected literals, so a compiler whose signature format diverges fails the
 // build rather than silently registering a different name.
 
-#include "Types/Fnv1a.h"
-
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -220,13 +218,21 @@ inline const char* ComponentTypeNameCStr()
 
 // ---- 64-bit FNV-1a hash -------------------------------------------------
 
+inline constexpr std::uint64_t kFnv1aOffsetBasis = 0xcbf29ce484222325ULL;
+inline constexpr std::uint64_t kFnv1aPrime       = 0x00000100000001b3ULL;
+
 // constexpr (not consteval) so it works in both contexts:
 //  - inside consteval ComponentTypeHash<T>() the call is folded at compile time
 //  - ComponentRegistry::RegisterBlobComponent calls it with a runtime string_view
 // `h` continues a hash, so a name held in pieces hashes as their concatenation.
-constexpr std::uint64_t Hash64(std::string_view s, std::uint64_t h = Hashing::kFnv1a64OffsetBasis)
+constexpr std::uint64_t Hash64(std::string_view s, std::uint64_t h = kFnv1aOffsetBasis)
 {
-    return Hashing::Fnv1a64(s, h);
+    for (char c : s)
+    {
+        h ^= static_cast<std::uint64_t>(static_cast<unsigned char>(c));
+        h *= kFnv1aPrime;
+    }
+    return h;
 }
 
 // Public: the 64-bit consteval component type identity; GetComponentTypeId<T>()

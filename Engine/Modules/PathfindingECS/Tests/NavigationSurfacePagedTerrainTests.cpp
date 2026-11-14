@@ -8,7 +8,7 @@
 #include "PathfindingECS/Systems/NavigationWorldHooks.h"
 #include "Components/Transform.h"
 #include "Core/Engine.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
 #include "Mathematics/Vector3.h"

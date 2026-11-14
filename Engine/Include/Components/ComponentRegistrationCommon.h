@@ -22,7 +22,7 @@
 
 #include "ECS/ECS.h"                    // GetComponentTypeId<T>
 #include "ECS/Reflection.h"             // GE_REFLECT_BEGIN/_FIELD/_END, FieldFlags, EnumNameValue, GE_PP_CONCAT
-#include "ECS/ComponentFieldRegistry.h" // ComponentFieldRegistry
+#include "ECS/Component/ComponentFieldRegistry.h" // ComponentFieldRegistry
 #include "Components/MathReflectionTraits.h"  // Vector2/3/4 + Quaternion -> Vec/Quat field types
 #include "Components/RenderLayerMaskReflectionTraits.h"  // Rendering::RenderLayerMask -> RenderLayerMask field type
 

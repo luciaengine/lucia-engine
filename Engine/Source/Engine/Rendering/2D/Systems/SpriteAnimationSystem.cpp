@@ -38,14 +38,14 @@ void CopyTint(const ColorLinear& tint, float32* out)
 }
 
 std::size_t AdvancePlayback(const Sprite2D::SpriteFrameAnimation& animation,
-                            ECS::Writable<Components::AnimatedSprite2D> row, float32 deltaTime)
+                            Components::AnimatedSprite2D& row, float32 deltaTime)
 {
-    const auto& sprite = row.Get();
+    const auto& sprite = row;
     const auto step = Sprite2D::AdvanceSpritePlayback(animation, sprite.TimeSeconds, deltaTime, sprite.SpeedScale);
     const bool finished = (step.Events & static_cast<uint32>(Sprite2D::SpritePlaybackEvent::Finished)) != 0;
     if (step.TimeSeconds == sprite.TimeSeconds && step.Events == 0)
         return step.FrameIndex;
-    auto& updated = row.Mutable();
+    auto& updated = row;
     updated.TimeSeconds = step.TimeSeconds;
     updated.PendingPlaybackEvents = step.Events;
     if (step.Events != 0)
@@ -103,12 +103,12 @@ std::optional<SpriteAnimationSystem::TextureSize> SpriteAnimationSystem::Resolve
 }
 
 void SpriteAnimationSystem::AdvanceAndExtractSprite(ECS::World& world, AssetManager& assets,
-    ECS::EntityHandle entity, ECS::Writable<Components::AnimatedSprite2D> spriteRow,
+    ECS::EntityHandle entity, Components::AnimatedSprite2D& spriteRow,
     const Components::WorldTransform& worldTransform, float32 deltaTime, std::optional<bool>& hasSortingGroups, std::size_t sortingScanBudget)
 {
-    const auto& sprite = spriteRow.Get();
+    const auto& sprite = spriteRow;
     if (sprite.PendingPlaybackEvents != 0)
-        spriteRow.Mutable().PendingPlaybackEvents = 0;
+        spriteRow.PendingPlaybackEvents = 0;
     if (sprite.SpriteFrames.IsNull() || sprite.AnimationName[0] == '\0')
         return;
 
@@ -208,7 +208,7 @@ void SpriteAnimationSystem::Update(ECS::World& world, float32 deltaTime)
     world.Query<ECS::Write<Components::AnimatedSprite2D>, ECS::Read<Components::WorldTransform>>()
         .Without<ECS::Disabled>()
         .Each([this, &world, &assets, deltaTime, &hasSortingGroups, sortingScanBudget](ECS::EntityHandle entity,
-            ECS::Writable<Components::AnimatedSprite2D> spriteRow, const Components::WorldTransform& transform)
+            Components::AnimatedSprite2D& spriteRow, const Components::WorldTransform& transform)
         {
             AdvanceAndExtractSprite(world, assets, entity, spriteRow, transform, deltaTime, hasSortingGroups, sortingScanBudget);
         });

@@ -96,7 +96,7 @@ TEST(QuerySignatureTest, SecondWithNamingAnotherPackAssertsInDevBuilds)
     GTEST_FLAG_SET(death_test_style, "threadsafe");
     EXPECT_DEATH(
         {
-            SuppressCrtDialogsInDeathTestChild();
+            GameEngine::TestUtils::SuppressCrtDialogsInDeathTestChild();
             World w(nullptr);
             Query<Read<Position>> query(&w);
             query.With<Health>();
@@ -110,7 +110,7 @@ TEST(QuerySignatureTest, SecondWithoutNamingAnotherPackAssertsInDevBuilds)
     GTEST_FLAG_SET(death_test_style, "threadsafe");
     EXPECT_DEATH(
         {
-            SuppressCrtDialogsInDeathTestChild();
+            GameEngine::TestUtils::SuppressCrtDialogsInDeathTestChild();
             World w(nullptr);
             Query<Read<Position>> query(&w);
             query.Without<Temporary>();

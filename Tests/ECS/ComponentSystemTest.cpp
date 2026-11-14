@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include "ECS/ECS.h"
-#include "ECS/ComponentConcepts.h"
+#include "ECS/Component/ComponentConcepts.h"
 #include "ECS/AutoRegistration.h"
 #include "ECS/Entity.h"
 #include "ECS/World.h"

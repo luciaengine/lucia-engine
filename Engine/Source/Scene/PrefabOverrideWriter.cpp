@@ -5,7 +5,7 @@
 #include "Components/PrefabInstance.h"
 #include "Components/SceneEntityTag.h"
 #include "Core/Engine.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "ECS/UnresolvedComponentStore.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"

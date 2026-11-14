@@ -13,7 +13,7 @@
 // generated code, NOT by your component header. That keeps user headers light. Use the
 // full <GameSDK/GameSDK.h> only when you want the explicit GE_REGISTER_COMPONENT macro.
 
-#include "ECS/ComponentBase.h" // GameEngine::ECS::ComponentBase tag (scanner-detected)
+#include "ECS/Component/ComponentBase.h" // GameEngine::ECS::ComponentBase tag (scanner-detected)
 
 // Short alias so user code can write `ECS::ComponentBase` (and ECS::World, etc.). NOTE:
 // this claims the top-level name `ECS`, so a user TU that includes it must not declare its

@@ -12,7 +12,7 @@
 
 #include "Components/Hierarchy.h"
 #include "Components/Transform.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "ECS/Components.h"
 #include "ECS/DisabledInHierarchySystem.h"
 #include "ECS/ECSTemplates.h"

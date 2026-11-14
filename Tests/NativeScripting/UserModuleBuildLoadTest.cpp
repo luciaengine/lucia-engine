@@ -13,8 +13,8 @@
 // via a generated `c10_config.txt` placed next to this test exe — see CMakeLists.
 
 #include "Core/Application.h" // ApplicationPaths::GetExecutableDirectory
-#include "ECS/ComponentFactory.h"
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFactory.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
 #include "JobSystem/WorkStealingThreadPool.h" // drives the async build path (B9 deferral test)
 #include "NativeScripting/BuildCacheRecord.h" // packaged record + engine_abi marker (C1/C2 ship path)
 #include "NativeScripting/NativeBuildConfig.h"

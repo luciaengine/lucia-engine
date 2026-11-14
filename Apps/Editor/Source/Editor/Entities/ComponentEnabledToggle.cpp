@@ -1,7 +1,7 @@
 #include "Editor/Entities/ComponentEnabledToggle.h"
 
-#include "ECS/ComponentFlags.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentFlags.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "ECS/Entity.h"
 #include "ECS/World.h"
 #include "Editor/Entities/EditorComponentTraits.h"

@@ -13,7 +13,7 @@
 #include "Components/Terrain/Terrain.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
 #include "ECS/World.h"

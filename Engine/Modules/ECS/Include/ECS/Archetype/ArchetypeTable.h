@@ -7,17 +7,11 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
-#include <memory>
+#include <new>
 #include <span>
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
-
-#ifdef _MSC_VER
-#include <malloc.h> // _aligned_malloc / _aligned_free
-#else
-#include <cstdlib> // aligned_alloc / free
-#endif
 
 namespace GameEngine::ECS
 {
@@ -283,6 +277,9 @@ class ArchetypeChunk
         return idx;
     }
 
+    // Append entities as consecutive rows. Returns the index of the first.
+    // Caller must have verified the chunk has room for all of them. Component
+    // data of the new rows is uninitialized; caller must write into it.
     uint32_t AppendRun(std::span<const EntityHandle> entities)
     {
         const uint32_t first = m_Count;
@@ -323,6 +320,9 @@ class ArchetypeChunk
         CopyRows(src, srcIndex, dst, dstIndex, 1);
     }
 
+    // Copy matching columns of `count` consecutive rows from src[srcIndex] into
+    // dst[dstIndex]: one memcpy per column when both strides agree, else one per
+    // row of the shorter stride. Both layouts must have columns sorted by TypeId.
     static void CopyRows(const ArchetypeChunk& src, uint32_t srcIndex,
                          ArchetypeChunk& dst, uint32_t dstIndex, uint32_t count)
     {
@@ -464,8 +464,8 @@ class ArchetypeTable
     // ZERO-INIT = "NEVER CHANGED" (design C7) — under the monotonic compare,
     // stamp 0 is the OLDEST possible value, not the newest. New-chunk
     // visibility depends ENTIRELY on the write-path stamping rules (rows
-    // enter chunks only via Append, whose caller stamps all columns). Do not
-    // treat zero-init as a safety net.
+    // enter chunks only via Append or AppendRun, whose callers stamp all
+    // columns). Do not treat zero-init as a safety net.
     //
     // The array gets a zero row in AppendChunk, loses the last row when a
     // removal empties the last chunk, and travels with move ctor/assign
@@ -550,6 +550,9 @@ class ArchetypeTable
         return {static_cast<uint32_t>(m_Chunks.size() - 1), indexInChunk};
     }
 
+    // Adds entities as one run of consecutive rows in the chunk AddEntity would
+    // pick. The run holds fewer rows than asked when that chunk fills: add the
+    // rest with another call. The component data in the run is not initialized.
     RowRun AddEntities(std::span<const EntityHandle> entities)
     {
         if (m_Chunks.empty() || m_Chunks.back().IsFull())
@@ -616,27 +619,20 @@ class ArchetypeTable
     }
 
   private:
+    // Chunks come from the global aligned operator new, so the allocation counter and the
+    // process heap policy see them like every other engine allocation. Throws
+    // std::bad_alloc on failure.
     std::byte* AllocateChunkMemory() const
     {
-#ifdef _MSC_VER
-        auto* ptr = static_cast<std::byte*>(_aligned_malloc(m_Layout.AllocationBytes, m_Layout.AllocationAlignment));
-#else
-        auto* ptr = static_cast<std::byte*>(std::aligned_alloc(m_Layout.AllocationAlignment, m_Layout.AllocationBytes));
-#endif
-        if (!ptr) [[unlikely]]
-        {
-            throw std::bad_alloc();
-        }
-        return ptr;
+        return static_cast<std::byte*>(
+            ::operator new(m_Layout.AllocationBytes, std::align_val_t{m_Layout.AllocationAlignment}));
     }
 
-    static void FreeChunkMemory(std::byte* ptr)
+    // Every chunk of this table has the layout's size and alignment, so the sized aligned
+    // delete matches the allocation.
+    void FreeChunkMemory(std::byte* ptr) const noexcept
     {
-#ifdef _MSC_VER
-        _aligned_free(ptr);
-#else
-        std::free(ptr);
-#endif
+        ::operator delete(ptr, m_Layout.AllocationBytes, std::align_val_t{m_Layout.AllocationAlignment});
     }
 
     // Append an empty chunk to the chunk list. It uses the first spare, and

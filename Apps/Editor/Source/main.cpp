@@ -13,7 +13,7 @@
 #include "Scripting/ScriptingABI.h"
 #include "Scripting/ECSABI.h"
 #include "ECS/ECS.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "Audio/AudioTypes.h"
 #include "Core/CommandLine.h"
 #include "Startup/EditorCommandLine.h"

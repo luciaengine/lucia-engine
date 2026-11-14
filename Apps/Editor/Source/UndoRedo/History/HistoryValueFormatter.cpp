@@ -6,7 +6,7 @@
 #include "Components/Name.h"
 #include "Components/Transform.h"
 #include "Core/Engine.h"
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/ReflectionJson.h"
 #include "Scene/SceneValue.h"

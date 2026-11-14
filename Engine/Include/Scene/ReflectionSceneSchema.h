@@ -11,7 +11,7 @@
 // and user components share this one code path; hand-written schemas remain only as overrides for
 // components with genuine non-field logic.
 
-#include "ECS/ComponentFieldRegistry.h" // ComponentTypeId
+#include "ECS/Component/ComponentFieldRegistry.h" // ComponentTypeId
 #include "Scene/SceneSchemaRegistry.h"  // ISceneComponentSchema
 
 #include <cstddef>

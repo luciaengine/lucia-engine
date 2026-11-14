@@ -1,7 +1,6 @@
 #include "ECS/Archetype/ArchetypeMatchList.h"
 
 #include "ECS/World.h"
-#include "ECS/Components.h"
 #include "Memory/Arena.h"
 #include "Types/GeometricReserve.h"
 
@@ -52,7 +51,6 @@ bool ArchetypeMatchList::HasFilter(const ArchetypeFilter& filter) const
 
 bool ArchetypeMatchList::Matches(const Archetype* archetype) const
 {
-    // Pending schemas remain hidden until required components have been installed.
     const ComponentSignature& signature = archetype->GetSignature();
     return !signature.Contains(GetComponentTypeId<PendingActivation>()) && m_Filter.Matches(signature);
 }

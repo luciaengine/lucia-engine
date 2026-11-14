@@ -1439,9 +1439,9 @@ void SceneViewController::SyncMeasureFromEndpointEntityTransform(
         return;
 
     world->Query<ECS::Write<Components::MeasureComponent>>()
-        .Each([&](ECS::EntityHandle measureEntity, ECS::Writable<Components::MeasureComponent> measureRow)
+        .Each([&](ECS::EntityHandle measureEntity, Components::MeasureComponent& measureRow)
         {
-            auto& measure = measureRow.Mutable();
+            auto& measure = measureRow;
 
             std::uint8_t endpoint = 0;
             if (measure.StartEntity == endpointEntity)

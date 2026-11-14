@@ -6,10 +6,10 @@
 // (no DLL): re-registering a field table + default bytes between Snapshot and
 // Migrate IS what a reloaded module's registrars do.
 
-#include "ECS/ComponentFactory.h"
-#include "ECS/ComponentFieldRegistry.h"
-#include "ECS/ComponentLayoutReloadMigrator.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentFactory.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentLayoutReloadMigrator.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "ECS/ECS.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"

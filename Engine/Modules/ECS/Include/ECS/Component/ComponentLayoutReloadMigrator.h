@@ -20,7 +20,7 @@
 // such a component is undetectable and reinterprets in place — field
 // reflection is what buys detection + carry.
 
-#include "ECS/ComponentMigration.h"
+#include "ECS/Component/ComponentMigration.h"
 #include "ECS/Reflection.h"
 
 #include <cstddef>

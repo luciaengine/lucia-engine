@@ -2304,14 +2304,14 @@ void RenderExtractionSystem::ReleaseUngatheredInstances(ECS::World& world, GPUSc
              GameEngine::ECS::Optional<
                  GameEngine::ECS::ComponentDisabled<GameEngine::Components::MeshRenderer>>>()
         .IncludeDisabled()
-        .Each([&](ECS::Writable<GameEngine::Components::MeshGPUData> meshGpuRow,
+        .Each([&](GameEngine::Components::MeshGPUData& meshGpuRow,
                   const GameEngine::Components::MeshRenderer* mr,
                   const GameEngine::ECS::Disabled* disabled,
                   const GameEngine::ECS::DisabledInHierarchy* inactive,
                   const GameEngine::ECS::ComponentDisabled<
                       GameEngine::Components::MeshRenderer>* rendererOff)
               {
-                  auto& meshGpu = meshGpuRow.Mutable();
+                  auto& meshGpu = meshGpuRow;
                   if (!mr)
                       ReleaseMeshGpuInstance(scene, meshGpu);
                   else if (disabled || inactive || rendererOff)

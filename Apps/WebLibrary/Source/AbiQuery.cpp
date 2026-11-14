@@ -15,7 +15,7 @@
 #include "PageReflection.h"
 
 #include "ECS/CachedQuery.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "ECS/Entity.h"
 #include "ECS/IComponentHandler.h"
 #include "ECS/World.h"

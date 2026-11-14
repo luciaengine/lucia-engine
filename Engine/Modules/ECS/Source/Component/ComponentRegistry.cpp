@@ -1,6 +1,6 @@
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "ECS/BlobComponent.h"
-#include "ECS/ComponentFactory.h"
+#include "ECS/Component/ComponentFactory.h"
 #include "ECS/ECS.h"
 #include "ECS/Entity.h"  // For World class definition
 #include "ECS/World.h"   // For Archetype class definition

@@ -8,7 +8,7 @@
 
 #include <gtest/gtest.h>
 
-#include "ECS/ComponentDirtyFeed.h"
+#include "ECS/Component/ComponentDirtyFeed.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/SwapGenerationGuard.h"
 #include "ECS/World.h"

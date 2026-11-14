@@ -1,7 +1,7 @@
 #include "Engine/Build/SceneExportStrip.h"
 
 #include "Assets/Parsers/SceneAssetParser.h"
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
 #include "Engine/Build/AssetCollector.h"
 #include "Scene/SceneSchemaRegistry.h"
 

@@ -48,7 +48,7 @@
 #include "Components/Transform.h"
 #include "Core/Engine.h"
 #include "ECS/Components.h"   // Disabled marker component
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "ECS/ECSTemplates.h" // ensure template implementations are visible
 #include "ECS/Entity.h"
 #include "ECS/World.h"

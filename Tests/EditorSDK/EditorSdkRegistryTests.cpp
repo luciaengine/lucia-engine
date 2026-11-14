@@ -9,7 +9,7 @@
 //
 // Links EditorSDK.dll — the same registries Editor.exe and module DLLs share.
 
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "ECS/Components.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"

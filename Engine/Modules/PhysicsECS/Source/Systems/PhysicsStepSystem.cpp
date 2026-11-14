@@ -150,11 +150,11 @@ void PhysicsStepSystem::Update(ECS::World& world, float32 deltaTime)
     // Snapshot previous transforms for interpolation (prev <- current).
     world.Query<ECS::Write<GameEngine::Components::PhysicsBody>>()
         .Each(
-        [&](ECS::EntityHandle /*e*/, ECS::Writable<GameEngine::Components::PhysicsBody> bodyRow)
+        [&](ECS::EntityHandle /*e*/, GameEngine::Components::PhysicsBody& bodyRow)
         {
-            if (!bodyRow->initialized || !w->IsBodyValid(bodyRow->body))
+            if (!bodyRow.initialized || !w->IsBodyValid(bodyRow.body))
                 return;
-            auto& body = bodyRow.Mutable();
+            auto& body = bodyRow;
             body.prevPhysicsTransform = w->GetBodyTransform(body.body);
             body.hasPrevPhysicsTransform = true;
         });
