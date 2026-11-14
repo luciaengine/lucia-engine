@@ -137,6 +137,18 @@ std::string FormatValue(float v, const char* suffix)
 
 void RegisterAnimatorInspector()
 {
+    constexpr int kAnimatorSortKey = 33;
+
+    {
+        Editor::EditorComponentTraits traits;
+        traits.DisplayName = "Animator";
+        traits.InspectorCategory = "Animation";
+        traits.InspectorTooltip = "Controls playback of skeletal animations on a mesh";
+        traits.InspectorIconClass = "inspector-section-icon-animator";
+        Editor::EditorComponentTraitsRegistry::Get().Register(
+            ECS::GetComponentTypeId<Components::Animator>(), std::move(traits));
+    }
+
     InspectorFn fn = [](const InspectorContext& ctx)
     {
         if (!ctx.Parent || !ctx.World || !ctx.Entity.IsValid())

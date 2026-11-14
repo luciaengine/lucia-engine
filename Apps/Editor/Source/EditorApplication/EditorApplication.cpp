@@ -4620,11 +4620,7 @@ bool EditorApplication::Initialize()
                         if (auto* infoBtn = dynamic_cast<Button*>(rootEl->FindById("TopToolbarRight2"_sid)))
                         {
                             infoBtn->SetTooltip("Info");
-                            infoBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&)
-                            {
-                                m_VideoPlayer.Open(m_AssetsDirectory / "Sample" / "logo.mp4",
-                                                   "Open Engine " + Editor::EditorVersionText());
-                            });
+                            infoBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { m_VideoPlayer.OpenIntro(); });
                         }
 
                         m_TopToolbar->ApplyButtonVisibilityFromPrefs(rootEl);
