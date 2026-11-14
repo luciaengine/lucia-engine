@@ -1224,6 +1224,150 @@ TEST(RGWindowFrame, MakeWindowRGFrameBuildsAFrameStreamThatExecutes)
     }
 }
 
+TEST(RGFrame, ExpiredExecutionLifetimeRejectsBeforePreparationAndAllocation)
+{
+    RG_REQUIRE_DEVICE(device);
+    FramePools pools(device.get());
+    RGFrame frame(device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    frame.BeginFrame(0);
+    auto lifetime = std::make_shared<const uint8_t>(0);
+    ASSERT_TRUE(frame.RequireExecutionLifetime(lifetime));
+    uint32_t prepared = 0;
+    uint32_t recorded = 0;
+    const auto output = frame.CreateTexture("ExpiredOwner", ColorDesc());
+    frame.AddPass("BorrowedState", 0,
+                  [output, &prepared](RGPassBuilder& pass)
+                  {
+                      pass.AttachColor(0, output, {.Load = RGLoadOp::Clear});
+                      pass.Prepare([&prepared](RGPrepareContext&) { ++prepared; return true; });
+                  },
+                  [&recorded](RGContext&) { ++recorded; });
+    frame.MarkOutput(output);
+    lifetime.reset();
+    const auto submissions = frame.SubmittedFrameCount();
+    frame.Execute();
+    EXPECT_TRUE(frame.Stats().ExecutionRejected);
+    EXPECT_EQ(prepared, 0u);
+    EXPECT_EQ(recorded, 0u);
+    EXPECT_EQ(pools.Transient.Allocs(), 0u);
+    EXPECT_EQ(frame.SubmittedFrameCount(), submissions);
+
+    // New owner state must not make the old closures executable again.
+    lifetime = std::make_shared<const uint8_t>(0);
+    EXPECT_FALSE(frame.RequireExecutionLifetime(lifetime));
+    frame.Execute();
+    EXPECT_TRUE(frame.Stats().ExecutionRejected);
+    EXPECT_EQ(prepared, 0u);
+    EXPECT_EQ(recorded, 0u);
+    EXPECT_EQ(frame.SubmittedFrameCount(), submissions);
+}
+
+namespace
+{
+void DeclareScopedReplayPass(RGFrame& frame, std::weak_ptr<const void> lifetime, uint32_t& recorded)
+{
+    frame.RequireExecutionLifetime(std::move(lifetime));
+    const auto output = frame.CreateTexture("ScopedReplay", ColorDesc());
+    frame.AddPass("ScopedReplay", 0,
+                  [output](RGPassBuilder& pass)
+                  { pass.AttachColor(0, output, {.Load = RGLoadOp::Clear}); },
+                  [&recorded](RGContext&) { ++recorded; });
+    frame.MarkOutput(output);
+}
+} // namespace
+
+TEST(RGFrame, GraphicsQueueRequirementRejectsALateMapChangeBeforePreparation)
+{
+    RG_REQUIRE_DEVICE(device);
+    FramePools pools(device.get());
+    RGFrame frame(device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    frame.BeginFrame(0);
+    frame.RequireGraphicsQueue();
+    uint32_t prepared = 0;
+    uint32_t recorded = 0;
+    uint32_t attempted = 0;
+    frame.OnSubmissionAttempt([&attempted]() noexcept { ++attempted; });
+    const auto output = frame.CreateTexture("GraphicsQueueOnly", ColorDesc());
+    frame.AddPass("GraphicsQueueOnly", 0,
+                  [output, &prepared](RGPassBuilder& pass)
+                  {
+                      pass.AttachColor(0, output, {.Load = RGLoadOp::Clear});
+                      pass.Prepare([&prepared](RGPrepareContext&) { ++prepared; return true; });
+                  },
+                  [&recorded](RGContext&) { ++recorded; });
+    frame.MarkOutput(output);
+    frame.SetPhysicalQueueMap(RGFrame::kIdentityQueueMap);
+    frame.Execute();
+    EXPECT_TRUE(frame.Stats().ExecutionRejected);
+    EXPECT_EQ(prepared, 0u);
+    EXPECT_EQ(recorded, 0u);
+    EXPECT_EQ(attempted, 0u);
+    EXPECT_EQ(pools.Transient.Allocs(), 0u);
+    frame.SetPhysicalQueueMap(RGFrame::kSingleQueueMap);
+    frame.Execute();
+    EXPECT_FALSE(frame.Stats().ExecutionRejected);
+    EXPECT_EQ(prepared, 1u);
+    EXPECT_EQ(recorded, 1u);
+    EXPECT_EQ(attempted, 1u);
+    frame.Execute();
+    EXPECT_EQ(attempted, 2u) << "same-recording replay creates another possible GPU reader";
+
+    frame.DiscardRecordedPasses();
+    frame.SetPhysicalQueueMap(RGFrame::kIdentityQueueMap);
+    auto lifetime = std::make_shared<const uint8_t>(0);
+    DeclareScopedReplayPass(frame, lifetime, recorded);
+    frame.OnSubmissionAttempt([&attempted]() noexcept { ++attempted; });
+    frame.Execute();
+    EXPECT_FALSE(frame.Stats().ExecutionRejected) << "discard clears the old queue requirement";
+    EXPECT_EQ(recorded, 3u);
+    EXPECT_EQ(attempted, 3u) << "discard also clears the old submission observer";
+}
+
+TEST(RGFrame, ExecutionLifetimeAllowsReplayUntilExpiryAndClearsOnReset)
+{
+    RG_REQUIRE_DEVICE(device);
+    FramePools pools(device.get());
+    RGFrame frame(device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    uint32_t recorded = 0;
+    auto lifetime = std::make_shared<const uint8_t>(0);
+    frame.BeginFrame(0);
+    DeclareScopedReplayPass(frame, lifetime, recorded);
+    frame.Execute();
+    const auto submissionsPerAttempt = frame.Stats().SubmissionsMade;
+    ASSERT_GT(submissionsPerAttempt, 0u);
+    frame.Execute();
+    EXPECT_FALSE(frame.Stats().ExecutionRejected);
+    EXPECT_EQ(frame.Stats().SubmissionsMade, submissionsPerAttempt);
+    EXPECT_EQ(recorded, 2u);
+    const auto submissions = frame.SubmittedFrameCount();
+    const auto completion = frame.SubmissionToken();
+    lifetime.reset();
+    frame.Execute();
+    EXPECT_TRUE(frame.Stats().ExecutionRejected);
+    EXPECT_EQ(frame.Stats().SubmissionsMade, 0u);
+    EXPECT_EQ(frame.Stats().PreparedPasses, 0u);
+    EXPECT_EQ(frame.Stats().CompileMs, 0.0);
+    EXPECT_EQ(recorded, 2u);
+    EXPECT_EQ(frame.SubmittedFrameCount(), submissions);
+    EXPECT_EQ(frame.SubmissionToken().sem, completion.sem);
+    EXPECT_EQ(frame.SubmissionToken().value, completion.value);
+
+    frame.DiscardRecordedPasses();
+    lifetime = std::make_shared<const uint8_t>(0);
+    DeclareScopedReplayPass(frame, lifetime, recorded);
+    frame.Execute();
+    EXPECT_FALSE(frame.Stats().ExecutionRejected);
+    EXPECT_EQ(recorded, 3u);
+
+    lifetime.reset();
+    frame.BeginFrame(1);
+    lifetime = std::make_shared<const uint8_t>(0);
+    DeclareScopedReplayPass(frame, lifetime, recorded);
+    frame.Execute();
+    EXPECT_FALSE(frame.Stats().ExecutionRejected);
+    EXPECT_EQ(recorded, 4u);
+}
+
 TEST(RGFrame, PreparationFinishesForEveryLivePassBeforeRecording)
 {
     GameEngine::TestUtils::ScopedTempDir pipelineCache(
