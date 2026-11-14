@@ -321,7 +321,6 @@ Transform.scale = (100, 100, 100)
 ReflectionProbe.Enabled = true
 ReflectionProbe.BlendDistance = 2
 ReflectionProbe.Priority = 0
-ReflectionProbe.BoxProjection = true
 ReflectionProbe.OriginOffsetX = 0
 ReflectionProbe.OriginOffsetY = 0
 ReflectionProbe.OriginOffsetZ = 0
