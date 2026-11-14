@@ -4343,6 +4343,10 @@ bool EditorApplication::Initialize()
                             if (main && m_PanelManager)
                                 m_PanelManager->ShowOrActivateGraphPanel(main);
                         };
+                        toolbarCb.onTilePaletteClicked = [this, main]() {
+                            if (main && m_PanelManager)
+                                OpenPanel(EditorPanelIds::TilePalette);
+                        };
                         toolbarCb.onBookmarksClicked = [this, main]() {
                             if (main && m_PanelManager) m_PanelManager->ShowOrActivateBookmarksPanel(main);
                         };
