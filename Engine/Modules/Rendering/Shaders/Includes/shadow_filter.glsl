@@ -3,6 +3,7 @@
 
 #include "compat_profile.glsl"
 #include "shadow_receiver_plane.glsl"
+#include "vogel_disk.glsl"
 
 // A separable [1,4,6,4,1] kernel convolved with bilinear reconstruction
 // touches six texels on each axis. Pair their weights (a,b): one hardware
@@ -14,19 +15,6 @@ void GE_ShadowPcfAxis(float phase, out vec3 offsets, out vec3 weights)
     vec3 right = vec3(4.0 - 3.0 * phase, 4.0 + 2.0 * phase, phase);
     weights = left + right;
     offsets = vec3(-2.0, 0.0, 2.0) + right / weights;
-}
-
-// Vogel disk: sample positions on a unit disk, spaced by the golden angle with
-// radius sqrt((i + 0.5) / N), so any tap count covers the disk evenly.
-// `sc` is the per-pixel rotation (cos a, sin a) applied on top of the spiral.
-vec2 GE_VogelDisk(int sampleIndex, int totalSamples, vec2 sc)
-{
-    const float goldenAngle = 2.39996323; // 137.5° in radians
-    float r = sqrt((float(sampleIndex) + 0.5) / float(totalSamples));
-    float theta = float(sampleIndex) * goldenAngle;
-    float ct = cos(theta);
-    float st = sin(theta);
-    return r * vec2(ct * sc.x - st * sc.y, ct * sc.y + st * sc.x);
 }
 
 // Poisson PCF sizes its radius in world units, so in texels it shrinks with the
