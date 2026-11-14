@@ -27,7 +27,7 @@
 #include "../Modules/Rendering/Tests/ScopedEnvVar.h"
 #include "TestTempDir.h"
 #if defined(RENDERING_HAS_VULKAN)
-#include "Vulkan/VulkanDevice.h"
+#include "Vulkan/VulkanDevice/VulkanDevice.h"
 #endif
 
 #include <gtest/gtest.h>
@@ -361,8 +361,8 @@ TEST_F(ClusterLODGpuReaderTest, TwoSubmittedReadersKeepFineStorageUntilTheirFixe
     const auto fine = CurrentHandle();
     const auto* entry = m_Services.GetMeshGPURegistry().Find(fine);
     ASSERT_NE(entry, nullptr);
-    ASSERT_GE(entry->coreSubAlloc.size, kFineReadBytes);
-    const uint64 offset = entry->coreSubAlloc.offset;
+    ASSERT_GE(entry->coreSubAlloc.Size, kFineReadBytes);
+    const uint64 offset = entry->coreSubAlloc.Offset;
     MeshGPUEntryBindings physical;
     ASSERT_TRUE(m_Services.GetMeshGPURegistry().TryGetDrawableBindings(*entry, physical));
     std::array<uint8, kFineReadBytes> expected;
