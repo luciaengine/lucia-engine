@@ -4,7 +4,6 @@
 #include <cctype>
 #include <cstdint>
 #include <string>
-#include <unordered_set>
 
 #include "Logger/Logger.h"
 #include "Rendering/Core/Device.h"
@@ -87,19 +86,20 @@ inline bool BindStorageImageByName(GameEngine::Rendering::IDevice* device,
 // devices without VK_EXT_robustness2/nullDescriptor (this device). Filling the
 // gap with a valid placeholder keeps the draw/dispatch legal.
 //
-// Real binds always win: only indices NOT in `writtenBindings` are touched.
+// Real binds always win: only indices for which `isWritten` returns false are touched.
 // StorageImage write targets are never defaulted (a write target must be real),
 // but a missing one is still reported as a genuine wiring error.
 //
 // Returns true if any binding was defaulted. `loggedOnce` gates a single
 // per-node warning listing the auto-defaulted (and missing storage-image)
 // bindings so the gap stays diagnosable.
+template <class IsWritten>
 inline bool DefaultFillUnwrittenSet0Bindings(
     GameEngine::Rendering::IDevice* device,
     GameEngine::Rendering::DescriptorSetHandle set0,
     const GameEngine::Rendering::DescriptorSetLayoutDesc& layout,
     const GameEngine::Rendering::ShaderMeta& meta,
-    const std::unordered_set<uint32_t>& writtenBindings,
+    IsWritten&& isWritten,
     GameEngine::Rendering::BufferHandle defaultBuffer,
     GameEngine::Rendering::TextureHandle defaultTexture,
     GameEngine::Rendering::SamplerHandle defaultSampler,
@@ -127,7 +127,7 @@ inline bool DefaultFillUnwrittenSet0Bindings(
 
     for (const auto& lb : layout.bindings)
     {
-        if (writtenBindings.find(lb.binding) != writtenBindings.end())
+        if (isWritten(lb.binding))
             continue; // real bind already provided — never override it
 
         switch (lb.type)

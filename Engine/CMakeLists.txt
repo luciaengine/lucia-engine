@@ -448,6 +448,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/Pipeline/PipelineEnumTables.cpp
 	Source/Engine/Rendering/Pipeline/ExpressionEvaluator.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/WorldRenderNode.cpp
+	Source/Engine/Rendering/Pipeline/Nodes/ForwardShaderSpecialization.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/SortedTransparentNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/TransmissivePassNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/DepthPrepassNode.cpp
@@ -2233,6 +2234,14 @@ endif()
             # Modules/Rendering: the shader source cache's read counter (Source/Materials/Shader/ShaderSourceCache.h).
             target_include_directories(EngineWorldDrawTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Modules/Rendering")
 
+            ge_add_render_services_test(ComputeDescriptorScratchTests
+                Tests/ComputeDescriptorScratchTests.cpp)
+            target_compile_definitions(ComputeDescriptorScratchTests PRIVATE
+                GE_DESCRIPTOR_ALLOCATION_COUNTING=$<NOT:$<BOOL:${ENABLE_MIMALLOC}>>)
+            if(NOT ENABLE_MIMALLOC)
+                target_sources(ComputeDescriptorScratchTests PRIVATE ${_allocation_hook_source})
+            endif()
+
             # Opt-in render checks no gate runs: the Slang lane's parity gate, which needs an
             # external slangc (GE_SLANGC), and the extraction fast path's manual
             # microbenchmark. Build EngineRenderOptInTests and run a test by name.
@@ -3197,10 +3206,18 @@ endif()
 	if(GTest_FOUND OR TARGET GTest::gtest)
 	    add_executable(GPUAnimationComputeTests
 	        Tests/GPUAnimationComputeTests.cpp
+	        Tests/EngineTestShaderSetup.cpp
 	        )
 	    target_link_libraries(GPUAnimationComputeTests PRIVATE
 	        Engine GameEngine.Native
 	        GTest::gtest GTest::gtest_main)
+	    if(APPLE)
+	        # Native fault injection derives from MetalDevice, which includes metal-cpp.
+	        target_include_directories(GPUAnimationComputeTests SYSTEM PRIVATE
+	            ${CMAKE_SOURCE_DIR}/ThirdParty/metal-cpp)
+	    endif()
+	    target_compile_definitions(GPUAnimationComputeTests PRIVATE
+	        ENGINE_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}")
 	    set_target_properties(GPUAnimationComputeTests PROPERTIES
 	        CXX_STANDARD 20
 	        CXX_STANDARD_REQUIRED ON

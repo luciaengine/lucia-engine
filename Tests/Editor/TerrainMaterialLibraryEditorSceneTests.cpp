@@ -115,6 +115,7 @@ protected:
     {
         EngineCore& engine = EngineCore::GetInstance();
         ASSERT_TRUE(engine.IsInitialized());
+        m_OriginalHotReloadEnabled = engine.GetAssetManager().IsHotReloadEnabled();
 
         const fs::path staged = GameEngine::TestPaths::StagedRoot() / "Engine" / "Tests" /
                                 "Fixtures" / "TerrainMatlibScene";
@@ -162,6 +163,7 @@ protected:
         EngineCore& engine = EngineCore::GetInstance();
         if (engine.IsInitialized())
         {
+            engine.GetAssetManager().SetHotReloadEnabled(m_OriginalHotReloadEnabled);
             for (const GUID& guid : m_Registered)
                 engine.GetAssetManager().UnregisterLoadedAsset(guid);
             std::error_code ec;
@@ -177,6 +179,7 @@ protected:
     fs::path m_Dir;
     fs::path m_ScenePath;
     std::vector<GUID> m_Registered;
+    bool m_OriginalHotReloadEnabled = false;
 };
 
 // Releases the service-side terrain data the extraction ticks provisioned, so the process-wide
@@ -488,13 +491,9 @@ void RebindIslandLibrary(const fs::path& scenePath, const char* replacement)
     out << text;
 }
 
-// An edit in the library inspector, and its undo, must reach the bytes the surface shades from
-// while the scene stays open, also for a terrain that binds its library through a REDIRECTED
-// GUID. The asset manager resolves the redirect, and its reload event names the library by the
-// GUID it resolved to; a cache filed only under the terrain's GUID never matches that event and
-// serves the first parse for the rest of the session. Driven through the inspector's own write
-// (EditLibraryUndoable), the real reload path (file watcher and timestamp poll, drained by
-// AssetManager::Update) and the real extraction; no event is raised by hand.
+// Inspector edits, undo, and redo must reach the extracted GPU material table, including a
+// library bound through a redirected GUID. Automatic hot reload is disabled so the inspector
+// must notify consumers without a watcher or timestamp poll.
 TEST_F(TerrainMaterialLibraryEditorScene, AnEditAndItsUndoReachATerrainBoundThroughARedirectedGuid)
 {
     EngineCore& engine = EngineCore::GetInstance();
@@ -506,6 +505,7 @@ TEST_F(TerrainMaterialLibraryEditorScene, AnEditAndItsUndoReachATerrainBoundThro
     ASSERT_TRUE(redirect.Added()) << "this process has no project store to hold a redirect";
     ASSERT_EQ(assets.GetRegistry().ResolveGuid(GUID(kRedirectedIslandLibraryGuid)),
               GUID(kIslandLibraryGuid));
+    assets.SetHotReloadEnabled(false);
 
     auto device = CreateVulkanDeviceFast();
     if (!device)
@@ -558,10 +558,19 @@ TEST_F(TerrainMaterialLibraryEditorScene, AnEditAndItsUndoReachATerrainBoundThro
             << "the edit reached the library but never the table the surface shades from";
 
         undo.Undo();
+        const auto* undoneMaterial = library->FindBySlotId(0);
+        ASSERT_NE(undoneMaterial, nullptr);
+        EXPECT_FLOAT_EQ(undoneMaterial->AlbedoR, kAuthoredGrassR);
         const Terrain::TerrainMaterialRecord undone = TickUntilIslandGrassR(frame, kAuthoredGrassR);
         ASSERT_FALSE(HasFatalFailure());
         EXPECT_FLOAT_EQ(undone.AlbedoR, kAuthoredGrassR)
             << "the undo restored the library but never the table the surface shades from";
+
+        undo.Redo();
+        const Terrain::TerrainMaterialRecord redone = TickUntilIslandGrassR(frame, kEditedR);
+        ASSERT_FALSE(HasFatalFailure());
+        EXPECT_FLOAT_EQ(redone.AlbedoR, kEditedR)
+            << "the redo restored the library but never the table the surface shades from";
 
         ReleaseProvisionedTerrains(world, feature, *service);
         rs.Shutdown();

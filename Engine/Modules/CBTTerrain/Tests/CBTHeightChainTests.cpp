@@ -78,6 +78,7 @@ float CBT_ChainLoad(uint word)
 #include "CBTDiamond.h"
 #include "CBTReliefHeightSource.h"
 #include "CBTTestHarness.h"
+#include "SourceCompletionProbeDevice.h"
 #include "Mathematics/Interpolation.h"
 #include "Mathematics/MatrixOps.h"
 #include "Mathematics/Rect.h"
@@ -261,9 +262,21 @@ class CBTHeightChain : public ::testing::Test
   protected:
     void SetUp() override
     {
-        m_Device = MakeHeadlessDevice();
+        SetHeadlessEnv();
+        DeviceDesc description{};
+        description.preferredAPI = GraphicsAPI::Vulkan;
+        description.enableDynamicRendering = true;
+        description.enableDebugLayer = true;
+        m_Device = std::make_unique<SourceCompletionProbeDevice>();
         if (!m_Device)
             GTEST_SKIP() << "no headless Vulkan device";
+        m_Device->ResetValidationStats();
+        if (!m_Device->Initialize(description))
+        {
+            m_Device.reset();
+            GTEST_SKIP() << "no headless Vulkan device";
+        }
+        RecordProperty("validation_enabled", m_Device->GetValidationStats().Enabled ? 1 : 0);
         if (!m_Device->GetCapabilities().supportsShaderInt64)
             GTEST_SKIP() << "device lacks shaderInt64 (the narrow arm builds no chain)";
         if (!m_KernelSet.Initialize(*m_Device, ShaderOutputDir()))
@@ -271,9 +284,20 @@ class CBTHeightChain : public ::testing::Test
     }
     void TearDown() override
     {
-        m_KernelSet.Shutdown();
         if (m_Device)
-            m_Device->Shutdown();
+            m_Device->WaitForIdle();
+        m_KernelSet.Shutdown();
+        if (!m_Device)
+            return;
+        const auto validation = m_Device->GetValidationStats();
+        if (validation.Enabled)
+        {
+            EXPECT_EQ(validation.ErrorCount, 0u);
+            for (const auto& entry : validation.Vuids)
+                EXPECT_FALSE(entry.IsError) << entry.Vuid << ": " << entry.FirstMessage
+                                           << " objects: " << entry.FirstObjects;
+        }
+        m_Device->Shutdown();
     }
 
     TextureHandle MakeTexture(const std::vector<float>& data, uint32_t width, uint32_t height)
@@ -287,7 +311,8 @@ class CBTHeightChain : public ::testing::Test
         if (!inst.Initialize(*m_Device, m_KernelSet) || !inst.InitializeRoots(kDomainPlanar))
             return false;
         for (uint32_t slot = 0; slot < kCBTFrameParamsRing; ++slot)
-            inst.SetHeightSource(slot, tex);
+            if (!inst.SetHeightSource(slot, tex))
+                return false;
         return inst.ProvisionHeightChainWords(CBTHeightChainWords(samplesX, samplesZ)) &&
                inst.ProvisionNormalChain(samplesX, samplesZ);
     }
@@ -429,9 +454,9 @@ class CBTHeightChain : public ::testing::Test
         BufferHandle readback = m_Device->CreateReadbackBuffer(bytes, "CBT.Test.NormalReadback");
         auto cl = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
         cl->Begin();
-        cl->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::ShaderResource, ResourceState::CopySource, mip, 1u));
+        cl->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::UnorderedAccess, ResourceState::CopySource, mip, 1u));
         cl->CopyTextureSubresourceToBuffer(tex, mip, 0, readback, width, height, 0, 0, 0, static_cast<size_t>(width) * 4u);
-        cl->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::CopySource, ResourceState::ShaderResource, mip, 1u));
+        cl->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::CopySource, ResourceState::UnorderedAccess, mip, 1u));
         cl->End();
         std::vector<CommandList*> lists{cl.get()};
         m_Device->ExecuteCommandLists(lists);
@@ -684,8 +709,109 @@ TEST_F(CBTHeightChain, NormalChainMatchesTheChainSurfaceAtThreeMips)
         EXPECT_LE(worst, 2e-3f) << "mip " << mip; // RG16F holds about three decimal digits
     }
     Shader::g_ChainWords = nullptr;
+    // Copies restore GENERAL so the next update's shared storage descriptors stay valid.
+    Run(inst, CameraParams({192.0f, 3.0f, 10.0f}, 0.2f, kX, kHeightScale), 1u, 1u);
     inst.Shutdown();
     m_Device->DestroyTexture(tex);
+}
+
+TEST_F(CBTHeightChain, FailedNormalInitializationKeepsTheOldLatticeAndItsContents)
+{
+    constexpr uint32_t kOldSamples = 769u;
+    constexpr uint32_t kNewSamples = 513u;
+    constexpr float kHeightScale = 40.0f;
+    static_assert(CBTNormalChainMips(kOldSamples, kOldSamples) == CBTNormalChainMips(kNewSamples, kNewSamples));
+    const auto originalSource = MakeTexture(RandomField(kOldSamples, kOldSamples, 31u), kOldSamples, kOldSamples);
+    ASSERT_TRUE(originalSource.IsValid());
+    CBTInstance instance;
+    ASSERT_TRUE(Bring(instance, originalSource, kOldSamples, kOldSamples));
+    Run(instance, CameraParams({192.0f, 3.0f, 10.0f}, 0.2f, kOldSamples, kHeightScale), 1u, 0u);
+    const auto originalTexture = instance.GetResources().GetNormalChainTexture();
+    const uint32_t originalMips = instance.GetResources().GetNormalChainMips();
+    const uint32_t texels = CBTNormalChainTexels(kOldSamples, 0u);
+    const auto originalNormals = ReadNormalMip(instance, 0u, texels, texels);
+    ASSERT_EQ(originalNormals.size(), size_t(texels) * texels);
+    ASSERT_TRUE(std::any_of(originalNormals.begin(), originalNormals.end(),
+        [](const auto& normal) { return normal[0] != 0.0f || normal[1] != 0.0f; }));
+    const std::vector<float> flat(size_t(kNewSamples) * kNewSamples, 0.5f);
+    const auto nextSource = MakeTexture(flat, kNewSamples, kNewSamples);
+    ASSERT_TRUE(nextSource.IsValid());
+    for (uint32_t slot = 0; slot < kCBTFrameParamsRing; ++slot)
+        ASSERT_TRUE(instance.SetHeightSource(slot, nextSource));
+    ASSERT_TRUE(instance.ProvisionHeightChainWords(CBTHeightChainWords(kNewSamples, kNewSamples)));
+    auto& probe = static_cast<SourceCompletionProbeDevice&>(*m_Device);
+    const uint64_t drains = m_Device->GetIdleDrainCount();
+    probe.RejectCompletionAfter = probe.LastGraphicsSubmissionToken().value;
+    const bool provisioned = instance.ProvisionNormalChain(kNewSamples, kNewSamples);
+    EXPECT_EQ(probe.RejectCompletionAfter, std::numeric_limits<uint64_t>::max());
+    probe.RejectCompletionAfter = std::numeric_limits<uint64_t>::max();
+    EXPECT_FALSE(provisioned);
+    EXPECT_EQ(m_Device->GetIdleDrainCount(), drains);
+    ASSERT_EQ(instance.GetResources().GetNormalChainTexture(), originalTexture);
+    ASSERT_EQ(instance.GetResources().GetNormalChainMips(), originalMips);
+    Run(instance, CameraParams({192.0f, 3.0f, 10.0f}, 0.2f, kNewSamples, kHeightScale), 1u, 1u);
+    const auto words = ReadChain(instance);
+    ASSERT_FALSE(words.empty());
+    EXPECT_EQ(words[0], kNewSamples | (kNewSamples << 16u));
+    EXPECT_EQ(ReadNormalMip(instance, 0u, texels, texels), originalNormals)
+        << "a retained normal texture must not receive writes for a different lattice with the same mip count";
+    EXPECT_TRUE(instance.ProvisionNormalChain(kOldSamples, kOldSamples));
+    EXPECT_EQ(instance.GetResources().GetNormalChainTexture(), originalTexture);
+    EXPECT_TRUE(instance.ProvisionNormalChain(kNewSamples, kNewSamples));
+    EXPECT_EQ(instance.GetResources().GetNormalChainMips(), originalMips);
+    instance.Shutdown();
+    m_Device->DestroyTexture(originalSource);
+    m_Device->DestroyTexture(nextSource);
+}
+
+TEST_F(CBTHeightChain, FailedNormalSubmissionPreservesResourcesAndItsCompletionOwner)
+{
+    constexpr uint32_t kOldSamples = 513u;
+    constexpr uint32_t kNewSamples = 769u;
+    const auto source = MakeTexture(RandomField(kOldSamples, kOldSamples, 31u), kOldSamples, kOldSamples);
+    ASSERT_TRUE(source.IsValid());
+    CBTInstance instance;
+    ASSERT_TRUE(Bring(instance, source, kOldSamples, kOldSamples));
+    auto& probe = static_cast<SourceCompletionProbeDevice&>(*m_Device);
+    const auto original = instance.GetResources().GetNormalChainTexture();
+    const uint64_t drains = m_Device->GetIdleDrainCount();
+    EXPECT_FALSE(instance.ProvisionNormalChain(0u, kOldSamples));
+    EXPECT_FALSE(instance.ProvisionNormalChain(0x10000u, kOldSamples));
+    EXPECT_EQ(instance.GetResources().GetNormalChainTexture(), original);
+    probe.RefuseNextGraphicsSubmit = true;
+    EXPECT_FALSE(instance.ProvisionNormalChain(kNewSamples, kNewSamples));
+    EXPECT_FALSE(probe.RefuseNextGraphicsSubmit);
+    EXPECT_EQ(instance.GetResources().GetNormalChainTexture(), original);
+    const auto refused = probe.LastAttemptedSignal;
+    ASSERT_TRUE(refused.IsValid());
+    ASSERT_TRUE(instance.ProvisionNormalChain(kNewSamples, kNewSamples));
+    EXPECT_EQ(probe.LastAttemptedSignal.sem, refused.sem);
+    EXPECT_GT(probe.LastAttemptedSignal.value, refused.value);
+    const auto retained = instance.GetResources().GetNormalChainTexture();
+    probe.ReportFailureAfterGraphicsSubmit = true;
+    EXPECT_FALSE(instance.ProvisionNormalChain(kOldSamples, kOldSamples));
+    EXPECT_FALSE(probe.ReportFailureAfterGraphicsSubmit);
+    EXPECT_EQ(instance.GetResources().GetNormalChainTexture(), retained);
+    const auto submitted = probe.LastAttemptedSignal;
+    ASSERT_TRUE(submitted.IsValid());
+    ASSERT_TRUE(m_Device->WaitGpuSyncToken(submitted));
+    uint64_t completed = 0;
+    EXPECT_TRUE(m_Device->GetTimelineSemaphoreValue(submitted.sem, completed));
+    EXPECT_GE(completed, submitted.value);
+    ASSERT_TRUE(instance.ProvisionNormalChain(kOldSamples, kOldSamples));
+    EXPECT_EQ(probe.LastAttemptedSignal.sem, submitted.sem);
+    EXPECT_GT(probe.LastAttemptedSignal.value, submitted.value);
+    probe.RefuseNextGraphicsSubmit = true;
+    EXPECT_FALSE(instance.ProvisionNormalChain(kNewSamples, kNewSamples));
+    EXPECT_FALSE(probe.RefuseNextGraphicsSubmit);
+    const auto unissued = probe.LastAttemptedSignal;
+    EXPECT_EQ(unissued.sem, submitted.sem);
+    EXPECT_TRUE(m_Device->GetTimelineSemaphoreValue(unissued.sem, completed));
+    EXPECT_LT(completed, unissued.value);
+    instance.Shutdown();
+    EXPECT_FALSE(m_Device->GetTimelineSemaphoreValue(submitted.sem, completed));
+    EXPECT_EQ(m_Device->GetIdleDrainCount(), drains);
+    m_Device->DestroyTexture(source);
 }
 
 TEST_F(CBTHeightChain, EditRectRebuildsOnlyTheSamplesItsTentsReach)

@@ -15,10 +15,10 @@ The default atmosphere is a crisp clear day: a deep blue zenith over a light haz
 
 | Mode | What sets the exposure | Use it for |
 |---|---|---|
-| **Auto** (default) | The camera's **Meter** reads the scene, and the exposure adapts to the reading over time, like an eye. See [The two meters](#the-two-meters). | Most games. |
+| **Auto** | The camera's **Meter** reads the scene, and the exposure adapts to the reading over time, like an eye. See [The two meters](#the-two-meters). | Games that adapt between lighting conditions. |
 | **Manual** | **Manual EV100**, an absolute EV100: 15 is bright sun, 12 overcast, 7 to 9 an interior, 2 to 5 night. | Shots that must not change with what is on screen or with the light. |
 | **Physical** | Aperture, shutter time, and ISO, as on a real camera (f/16, 1/100 s, ISO 100 is about EV 14.6). | Matching photographic reference. |
-| **Fixed** | A plain linear multiplier. | Non-physical content. |
+| **Fixed** (default) | A plain linear multiplier, initialized to the equivalent of EV100 15.4. | Consistent brightness while editing and playing. |
 
 **Exposure Compensation** applies in every mode, in stops: +1 doubles the brightness, -1 halves it.
 
@@ -113,14 +113,14 @@ The Scene View has no Camera component, so it sets its exposure with its own set
 
 | Mode | What sets the exposure |
 |---|---|
-| **Auto** (default) | The Scene View's **Meter**, Lights by default, within its own **Min EV100** and **Max EV100**. Each new reading applies at once: the Lights reading lands in the frame a light or the sky changes. Turn on **Adaptation Delay** to smooth it at the camera's default speeds. With the Picture meter and the delay off, the view re-meters every frame, unsmoothed. |
-| **Fixed** | The EV100 you set with **Fixed EV100**. Switching to Fixed from Auto starts it at the exposure the view was showing, so the picture does not jump. |
+| **Auto** | The Scene View's **Meter**, Lights by default, within its own **Min EV100** and **Max EV100**. Each new reading applies at once: the Lights reading lands in the frame a light or the sky changes. Turn on **Adaptation Delay** to smooth it at the camera's default speeds. With the Picture meter and the delay off, the view re-meters every frame, unsmoothed. |
+| **Fixed** (default) | The EV100 you set with **Fixed EV100**, initially 15.4 to match a new camera. Switching to Fixed from Auto starts it at the exposure the view was showing, so the picture does not jump. |
 
-The Scene View shows a night by the same rule as a game camera: the same **Min EV** floor of -7 and the scene's main camera's **Compensation Curve** (the engine's default when the scene has no camera), so a curve you tune on the camera shows in the Scene View too. It keeps two differences, so the picture stays steady while you fly the view: it meters the Lights by default and applies each reading at once. The two meters read a scene differently, so a night in the Scene View can sit a stop or so away from the Game View's.
+With Auto enabled, the Scene View shows a night by the same rule as an Auto game camera: the same **Min EV** floor of -7 and the scene's main camera's **Compensation Curve** (the engine's default when the scene has no camera), so a curve you tune on the camera shows in the Scene View too. It keeps two differences, so the picture stays steady while you fly the view: its Auto meter starts on Lights and applies each reading at once. The two meters read a scene differently, so a night in the Scene View can sit a stop or so away from the Game View's.
 
 | Setting | Camera | Scene View |
 |---|---|---|
-| Exposure | Auto | Auto |
+| Exposure | Fixed, equivalent to EV100 15.4 | Fixed, EV100 15.4 |
 | Meter | Picture | Lights |
 | Min EV | -7 | -7; the slider goes down to -14, below a moonless night |
 | Compensation Curve | The camera's own | The scene's main camera's; the default when the scene has none |

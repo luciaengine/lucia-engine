@@ -15,6 +15,8 @@
 #ifndef GE_SHADOW_SAMPLING_GLSL
 #define GE_SHADOW_SAMPLING_GLSL
 
+#include "forward_shader_specialization.glsl"
+
 #include "compat_profile.glsl"
 #include "shadow_pcss_decisions.glsl"
 #include "shadow_receiver_plane.glsl"
@@ -197,7 +199,7 @@ float GE_TerrainShadow(vec3 posRel, float maxPenumbraRadius)
 {
     if (ge_terrainShadowSource.z == 0u)
         return 1.0;
-    int quality = int(ge_shadowDebug.w + 0.5);
+    int quality = (GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER);
     float tanHalfAngle = (quality == 3 || quality == 5) ? ge_shadowPcssCascades[0].w : 0.0;
     GE_TerrainShadowGrid g;
     g.CenterX = ge_terrainShadowGrid0.x;
@@ -745,7 +747,7 @@ float GE_SampleCascade(vec3 biasedPos, int cascadeIdx, vec2 screenPos,
     vec2 sc = GE_PoissonRotation(screenPos, shadowUV,
                                  vec2(textureSize(ge_shadowMapArray, 0).xy));
 
-    int quality = int(ge_shadowDebug.w + 0.5);
+    int quality = (GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER);
 
     // MSM4: pre-filtered analytic bound. Falls back to the path below if
     // the moments aren't ready (CPU sets quality=3 in BuildShadowDataGPU
@@ -1085,7 +1087,7 @@ float GE_ScreenSpaceShadow(float shadow, float linearDepth, vec2 screenPos)
         }
     }
 #endif
-    int mode = int(ge_shadowDebug.x + 0.5);
+    int mode = (GE_FORWARD_SHADOW_DEBUG ? int(ge_shadowDebug.x + 0.5) : 0);
     if (mode == 6)
     {
         ge_lastShadowTint = vec3(1.0);
@@ -1116,8 +1118,8 @@ float GE_SampleShadow(vec3 posWS, vec3 normalWS, float linearDepth, vec3 lightDi
     receiverDx = ge_shadowReceiverDx;
     receiverDy = ge_shadowReceiverDy;
     #else
-    if (int(ge_shadowDebug.w + 0.5) <= 1 ||
-        (ge_shadowPcss.w > 0.5 && int(ge_shadowDebug.w + 0.5) == 3))
+    if ((GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER) <= 1 ||
+        (ge_shadowPcss.w > 0.5 && (GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER) == 3))
     {
         receiverDx = GE_DFDX(posWS);
         receiverDy = GE_DFDY(posWS);
@@ -1203,7 +1205,7 @@ float GE_SampleShadow(vec3 posWS, vec3 normalWS, float linearDepth, vec3 lightDi
     }
 
     float normalBias = GE_ShadowNormalBiasWorld(ge_shadowParams.y, texelWorld,
-        ge_shadowPcssCascades[0].x, int(ge_shadowDebug.w + 0.5), ge_shadowPcss.x,
+        ge_shadowPcssCascades[0].x, (GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER), ge_shadowPcss.x,
         dot(normalWS, lightDirWS),
         maxPenumbraWorld,
         ge_shadowPcss.w > 0.5,
@@ -1247,7 +1249,7 @@ float GE_SampleShadow(vec3 posWS, vec3 normalWS, float linearDepth, vec3 lightDi
 bool GE_GetShadowDebugColor(float shadowFactor, out vec3 outColor)
 {
     outColor = vec3(0.0);
-    int mode = int(ge_shadowDebug.x + 0.5);
+    int mode = (GE_FORWARD_SHADOW_DEBUG ? int(ge_shadowDebug.x + 0.5) : 0);
     if (mode == 1)
     {
         // Cascade color tint: blend the cascade color with the shadow factor.

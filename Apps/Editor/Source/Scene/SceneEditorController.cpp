@@ -691,6 +691,8 @@ void SceneEditorController::ShowLoadFailure(LoadFailureKind kind, const Outgoing
 
 void SceneEditorController::Execute(const PendingAction& a)
 {
+    if (m_UndoRedo && !m_UndoRedo->CommitPendingEdit())
+        return;
     if (!m_Doc)
         return;
 

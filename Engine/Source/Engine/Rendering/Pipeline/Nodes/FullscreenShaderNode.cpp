@@ -1752,7 +1752,8 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
                         node.m_RenderServices ? node.m_RenderServices->Textures().GetDefaultBlackTexture()
                                          : Rendering::TextureHandle{};
                     Detail::DefaultFillUnwrittenSet0Bindings(
-                        device, set0, node.m_Set0Layout, *node.m_ShaderMeta, writtenBindings, defaultBuffer,
+                        device, set0, node.m_Set0Layout, *node.m_ShaderMeta,
+                        [&writtenBindings](uint32_t index) { return writtenBindings.contains(index); }, defaultBuffer,
                         defaultTexture, node.m_LinearClampSampler, node.m_Id, node.m_LoggedDefaultedBindings);
 
                     cl->BindDescriptorSet(0, set0, pipe);

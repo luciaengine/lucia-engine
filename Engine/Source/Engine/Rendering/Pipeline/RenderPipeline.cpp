@@ -1004,21 +1004,6 @@ void ValidateBlueprint(RenderPipelineBlueprint& bp, const RenderPipelineNodeRegi
     }
     const std::vector<std::string> validList(validSet.begin(), validSet.end());
 
-    // ── Declaration order (Error): a pass that builds its binding table when it is declared reads the
-    // view parameters only if ViewParamsUpload was declared before it; declared after, it binds the
-    // fallback block (an identity projection, no TAAU mip bias) without a word.
-    {
-        const auto upload = std::find_if(bp.passes.begin(), bp.passes.end(),
-                                         [](const auto& p) { return p.type == "ViewParamsUpload"; });
-        for (auto it = bp.passes.begin(); upload != bp.passes.end() && it != upload; ++it)
-            if (it->type == "DepthPrepass" || it->type == "WorldRender")
-                addIssue(PipelineIssueSeverity::Error,
-                         "pass '" + it->id + "'" + (it->id == it->type ? std::string() : " (" + it->type + ")") +
-                             " is declared before '" + upload->id + "', so it draws without the view's camera; move '" +
-                             upload->id + "' above it",
-                         it->id);
-    }
-
     // ── Resource-ref resolution (Error) ──
     auto checkRef = [&](const std::string& value, const std::string& field, const std::string& nodeId)
     {
@@ -1092,17 +1077,10 @@ void ValidateBlueprint(RenderPipelineBlueprint& bp, const RenderPipelineNodeRegi
         checkRef(o.resourceRef, "outputs." + o.name, std::string());
 
     // ── Resource blob schema (Error): kind/scope/format/usage/memoryUsage/size ──
-    for (const auto& r : bp.resources)
+    for (size_t i = 0; i < bp.resources.size(); ++i)
     {
-        nlohmann::json jr;
-        try
-        {
-            jr = nlohmann::json::parse(r.resourceJson);
-        }
-        catch (...)
-        {
-            continue;
-        }
+        const auto& r = bp.resources[i];
+        const auto& jr = resourceJson[i];
         if (!jr.is_object())
             continue;
 
@@ -1128,6 +1106,18 @@ void ValidateBlueprint(RenderPipelineBlueprint& bp, const RenderPipelineNodeRegi
             addIssue(PipelineIssueSeverity::Error,
                      "resource '" + r.name + "': unknown kind '" + kind +
                          "' (expected Texture or Buffer).");
+
+        if (const auto transient = jr.find("transient"); transient != jr.end())
+        {
+            if (!isTexture || !transient->is_boolean())
+                addIssue(PipelineIssueSeverity::Error,
+                         "resource '" + r.name + "': 'transient' must be a Boolean on a texture");
+            else if (transient->get<bool>() &&
+                     std::any_of(bp.outputs.begin(), bp.outputs.end(),
+                                 [&r](const auto& output) { return output.resourceRef == r.name; }))
+                addIssue(PipelineIssueSeverity::Error,
+                         "resource '" + r.name + "': a transient texture cannot be a pipeline output");
+        }
 
         std::string scope;
         if (JsonTryGetString(jr, "scope", scope) && !scope.empty())

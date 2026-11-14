@@ -43,6 +43,7 @@ private:
         uint32 RuntimeId = 0;
         uint32 SkeletonId = 0;
         uint32 PoseSlot = 0;
+        uint64 RuntimeGeneration = 0;
 
         bool operator==(const PaletteInputs&) const = default;
     };

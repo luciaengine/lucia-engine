@@ -3,6 +3,7 @@
 
 #include "Assets/AssetRegistry.h"
 #include "Components/Name.h"
+#include "Components/Rendering/Camera.h"
 #include "Components/Rendering/MeshRenderer.h"
 #include "Components/Rendering/PostProcessEffects/HeightFogEffect.h"
 #include "Components/Rendering/PostProcessVolume.h"
@@ -11,6 +12,7 @@
 #include "Components/TemplateGroundPlaceholder.h"
 #include "ECS/ECSTemplates.h"
 #include "Engine/Rendering/PrimitiveGenerator.h"
+#include "Engine/Rendering/ExposureScale.h"
 #include "Projects/ProjectCatalog.h"
 #include "Scene/SceneIO.h"
 #include "StagedTestPaths.h"
@@ -167,6 +169,26 @@ TEST_P(ShippedTemplateScene, LoadsTheAuthoredEntitySetWithoutDegradation)
             });
         EXPECT_EQ(grounds, 1);
     }
+}
+
+TEST_P(ShippedTemplateScene, NewCamerasUseFixedExposure)
+{
+    ECS::World world;
+    LoadMainScene(world);
+    if (HasFatalFailure())
+        return;
+
+    int cameras = 0;
+    world.Query<ECS::Read<Components::Camera>>().Each(
+        [&cameras](const Components::Camera& camera)
+        {
+            ++cameras;
+            EXPECT_EQ(camera.ExposureControl, Components::ExposureMode::Fixed);
+            EXPECT_FLOAT_EQ(camera.Exposure,
+                            Rendering::EvToLinearExposure(Components::kDefaultManualExposureEv));
+            EXPECT_FLOAT_EQ(camera.ExposureCompensation, 0.0f);
+        });
+    EXPECT_EQ(cameras, 1);
 }
 
 // Every template opens on the tuned look: the sun at 10:00 at 40 degrees north, and the horizon

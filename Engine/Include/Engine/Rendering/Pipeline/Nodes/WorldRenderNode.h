@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
+#include "Engine/Rendering/Pipeline/Nodes/ForwardShaderSpecialization.h"
 #include "Rendering/Materials/Shader/ShaderVariantKey.h"
 #include "Rendering/Core/RenderGraph/RGBarrier.h"
 
@@ -45,6 +46,7 @@ class WorldRenderNode final : public IRenderPipelineNode
     void RequestPausedViewPipelines(const PausedViewPrewarm& prewarm) override;
 
   private:
+    ForwardShaderSpecialization m_ForwardSpecialization;
     std::string m_Id;
     std::string m_Json;
     Rendering::MaterialKeyword m_PassKeywords = Rendering::MaterialKeyword::None;

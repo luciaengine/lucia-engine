@@ -85,7 +85,7 @@ public:
         GameEngine::Components::LocalBounds bounds{};
         uint32 skeletonId = 0;      // Non-zero when entity has SkinnedMeshRenderer
         uint32 runtimeId = 0;       // Per-entity skeleton runtime for independent animation
-        bool hasActiveAnimation = false; // True when entity has AnimatorRef with a valid clip
+        bool hasClipAnimation = false; // True when AnimatorRef names a clip.
         float lodBias = 0.0f;       // LODGroup.Bias (log2 coverage scale for ge_SelectLOD)
 
         // Cached GPUScene-index component pointer, captured cache-coherently by

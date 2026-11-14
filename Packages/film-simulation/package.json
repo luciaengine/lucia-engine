@@ -2,5 +2,6 @@
   "name": "film-simulation",
   "version": "1.0.0",
   "displayName": "Film Simulation",
+  "icon": "Preview/icon.svg",
   "assets": "Assets/"
 }

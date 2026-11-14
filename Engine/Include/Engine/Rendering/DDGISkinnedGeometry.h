@@ -57,6 +57,7 @@ class DDGISkinnedGeometry
         // the caller's AS pass declares a Read on it so the graph orders the
         // skin-compute write before the BLAS build.
         Rendering::RenderGraph::RGBuffer SkinnedRG{};
+        bool PreferUpdate = false;
     };
 
     // One TLAS row: the instance's index in this tick's GPUInstance list and
@@ -162,6 +163,7 @@ class DDGISkinnedGeometry
         uint64_t BlasAddress = 0;
         Rendering::BlasTriangleGeometry Geometry{};
         uint32_t VertexCount = 0;
+        uint64_t UploadSequence = 0;
         // This tick's imported RG handle of SkinnedPositions (valid only for
         // the frame Tick() ran in — RG resource ids are per-frame).
         Rendering::RenderGraph::RGBuffer PosedRG{};
@@ -178,7 +180,7 @@ class DDGISkinnedGeometry
         Rendering::BufferHandle WeightsVB{};
         Rendering::BufferHandle Joints1VB{};
         Rendering::BufferHandle Weights1VB{};
-        Rendering::BufferHandle IndexBuffer{};
+        uint64_t IndexAddress = 0;
         uint32_t CoreStrideBytes = 0;
         uint32_t VertexOffset = 0;
         uint32_t Uv0OffsetFloats = 0xFFFFFFFFu;
@@ -188,6 +190,7 @@ class DDGISkinnedGeometry
         uint32_t IndexCount = 0;
         uint32_t IndexType = 0;
         bool HasSecondInfluence = false;
+        uint64_t UploadSequence = 0;
     };
 
     bool LoadKernelIfNeeded();

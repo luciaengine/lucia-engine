@@ -568,7 +568,7 @@ float GE_ParallaxFragmentDepth(SurfaceOutput so, float eyeDistance)
 // The depth the prepass wrote at this pixel, never nearer than this fragment's own: the relief's hit,
 // unless something nearer covers the pixel. Multisampled, the farthest covered sample: each covered
 // sample holds this surface's hit or something nearer.
-float GE_ParallaxPrepassDepth()
+float GE_ParallaxPrepassDepth(int coveredSamples)
 {
     ivec2 pixel = ivec2(gl_FragCoord.xy);
   #ifdef GE_PARALLAX_PREPASS_DEPTH_MULTISAMPLE
@@ -576,7 +576,7 @@ float GE_ParallaxPrepassDepth()
     int samples = textureSamples(ge_prepassDepth);
     for (int s = 0; s < samples; ++s)
     {
-        if ((gl_SampleMaskIn[0] & (1 << s)) != 0)
+        if ((coveredSamples & (1 << s)) != 0)
             depth = min(depth, texelFetch(ge_prepassDepth, pixel, s).r);
     }
     return depth;
@@ -805,7 +805,11 @@ void main()
 #endif
 
 #ifdef GE_PARALLAX_READS_DEPTH
-    float parallaxPrepassDepth = GE_ParallaxPrepassDepth();
+  #ifdef GE_PARALLAX_PREPASS_DEPTH_MULTISAMPLE
+    float parallaxPrepassDepth = GE_ParallaxPrepassDepth(gl_SampleMaskIn[0]);
+  #else
+    float parallaxPrepassDepth = GE_ParallaxPrepassDepth(0);
+  #endif
     {
         bool perspective = ge_proj[2][3] != 0.0;
         float eyeDistance = length(eyeRel - vPosRel);
@@ -969,7 +973,7 @@ void main()
     // Secondary directionals: same BRDF, additive, UNSHADOWED (cascades belong to
     // the primary only). Colors arrive premultiplied (color * intensity).
     {
-        int secondaryCount = int(Light.uSecondaryCount.x);
+        int secondaryCount = GE_FORWARD_SECONDARY_LIGHTS ? int(Light.uSecondaryCount.x) : 0;
         for (int i = 0; i < secondaryCount; ++i)
         {
             vec3 secL = normalize(-Light.uSecondaryDirs[i].xyz);

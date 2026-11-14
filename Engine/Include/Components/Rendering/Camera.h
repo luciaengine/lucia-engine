@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Types/Types.h"
+#include "Engine/Rendering/ExposureScale.h"
 #include "Rendering/RenderLayerMask.h"
 #include "Components/Rendering/ExposureCompensationCurve.h"
 #include "Components/Rendering/PostProcessVolume.h" // ExposureMode (exposure is a camera/sensor property)
@@ -123,10 +124,10 @@ struct Camera {
     // Exposure (the camera's sensor/eye) — the single source of truth for exposure. When this camera
     // drives a view, its exposure sets that view's exposure (PostProcessVolumes contribute only grading
     // / tonemap / bloom / fog, not exposure). Views without a Camera (e.g. the editor Scene View) expose
-    // from the world default (Auto). Fields mirror the photographic controls: Fixed linear, Manual EV100,
+    // from the world default (Fixed). Fields mirror the photographic controls: Fixed linear, Manual EV100,
     // Physical camera, or Auto (a meter + eye adaptation). See Engine/Rendering/Exposure.h.
-    ExposureMode ExposureControl {ExposureMode::Auto};
-    float32 Exposure {1.0f};              // Fixed mode: linear scene multiplier (1 = identity)
+    ExposureMode ExposureControl {ExposureMode::Fixed};
+    float32 Exposure {Rendering::EvToLinearExposure(kDefaultManualExposureEv)};
     float32 ManualExposureEV {kDefaultManualExposureEv}; // Manual mode: absolute EV100
     float32 ExposureCompensation {0.0f};  // +/- stops, applied in every mode (+ = brighter)
     float32 Aperture {16.0f};             // Lens f-number; clamped to kApertureMin

@@ -311,6 +311,14 @@ void AnimationGraphSystem::Update(ECS::World& world, float32 deltaTime)
     m_FramePaletteInputs.clear();
     m_FramePoseCount = 0;
 
+    for (const PaletteInputs& previous : m_LastPaletteInputs)
+    {
+        if (skStore.GetRuntimeGeneration(previous.RuntimeId) != previous.RuntimeGeneration)
+            continue;
+        if (auto* runtime = skStore.GetRuntime(previous.RuntimeId))
+            runtime->GraphPoseActive = false;
+    }
+
     world.Query<ECS::Write<Animator>>().Each([&](ECS::EntityHandle rootEntity, ECS::Writable<Animator> animatorRow) {
         auto& animator = animatorRow.Mutable();
         if (!animator.active || animator.source != AnimatorPlaybackSource::Graph)
@@ -405,7 +413,9 @@ void AnimationGraphSystem::Update(ECS::World& world, float32 deltaTime)
                 continue;
 
             Animation::EmitSkinMatricesFromAnimationPose(*skel, m_Pose, runtime->CompactSkinMatrices, m_Workspace);
-            m_FramePaletteInputs.push_back(PaletteInputs{sref->runtimeId, sref->skeletonId, m_FramePoseCount});
+            runtime->GraphPoseActive = true;
+            m_FramePaletteInputs.push_back(PaletteInputs{sref->runtimeId, sref->skeletonId, m_FramePoseCount,
+                                                        skStore.GetRuntimeGeneration(sref->runtimeId)});
         }
         if (m_FramePaletteInputs.size() != recordsBefore)
         {

@@ -320,6 +320,9 @@ void PlayModeManager::EnterPlayMode()
     if (m_EntryGate.Hold([this]() { EnterPlayMode(); }))
         return;
 
+    if (m_UndoRedo && !m_UndoRedo->CommitPendingEdit())
+        return;
+    m_ExitRequested = false;
     SetState(PlayModeState::EnteringPlay);
 
     // Isolate undo history for play mode.
@@ -327,7 +330,7 @@ void PlayModeManager::EnterPlayMode()
     {
         m_UndoStash = std::make_unique<UndoHistoryStash>();
         m_UndoStash->editHistory = m_UndoRedo->DetachHistory();
-        // Start with a clean play-mode history (DetachHistory already cleared stacks).
+        // Start with a clean play-mode history (DetachHistory already cleared the graph).
         m_UndoStash->playHistory = {};
     }
 
@@ -446,6 +449,8 @@ void PlayModeManager::ExitPlayMode()
     if (m_State == PlayModeState::ChangeReview)
         return;
 
+    if (m_UndoRedo && !m_UndoRedo->CommitPendingEdit())
+        m_UndoRedo->DiscardPendingEdit();
     m_ExitRequested = false;
     if (m_State == PlayModeState::Paused)
         ResumeSimulationClock();
@@ -534,7 +539,7 @@ void PlayModeManager::ExitPlayMode()
         m_Notifications->NotifyWorldStructureChanged(e);
     }
 
-    // Capture play-mode undo stack for future change review, then restore edit-mode history.
+    // Capture play-mode history for change review, then restore edit-mode history.
     if (m_UndoRedo && m_UndoStash)
     {
         m_UndoStash->playHistory = m_UndoRedo->DetachHistory();

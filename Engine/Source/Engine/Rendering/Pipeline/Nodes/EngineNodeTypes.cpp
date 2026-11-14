@@ -67,7 +67,8 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<WorldRenderNode>(); },
         /*perView*/ true,
-        RenderPipelineNodeResourceFields{.StaticPublishNames = {Names::View::EffectiveColor},
+        RenderPipelineNodeResourceFields{
+            .StaticPublishNames = {Names::View::EffectiveColor},
             .ReadsViewResources = {RenderPipelineViewResource::ViewParameters,
                                    RenderPipelineViewResource::PrepassDepth,
                                    RenderPipelineViewResource::Shadows}});
@@ -84,7 +85,9 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<DepthPrepassNode>(); },
         /*perView*/ true,
-        RenderPipelineNodeResourceFields{.RefKeys = {{"depth", RenderGraph::RGResourceKind::Texture}}, .PublishKeys = {{"depth", Names::View::Depth}},
+        RenderPipelineNodeResourceFields{
+            .RefKeys = {{"depth", RenderGraph::RGResourceKind::Texture}},
+            .PublishKeys = {{"depth", Names::View::Depth}},
             .ReadsViewResources = {RenderPipelineViewResource::ViewParameters},
             .WritesViewResources = {RenderPipelineViewResource::PrepassDepth}});
 
@@ -93,7 +96,9 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<DepthResolveNode>(); },
         /*perView*/ true,
-        RenderPipelineNodeResourceFields{.RefKeys = {"output"}, .PublishKeys = {{"output", Names::View::DepthResolved}},
+        RenderPipelineNodeResourceFields{
+            .RefKeys = {{"output", RenderGraph::RGResourceKind::Texture}},
+            .PublishKeys = {{"output", Names::View::DepthResolved}},
             .ReadsViewResources = {RenderPipelineViewResource::PrepassDepth}});
 
     (void)registry.Register(
@@ -182,7 +187,9 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<ViewParamsUploadNode>(); },
         /*perView*/ true,
-        RenderPipelineNodeResourceFields{.RefKeys = {{"buffer", RenderGraph::RGResourceKind::Buffer}}, .PublishKeys = {{"buffer", Names::Res::ViewParams}},
+        RenderPipelineNodeResourceFields{
+            .RefKeys = {{"buffer", RenderGraph::RGResourceKind::Buffer}},
+            .PublishKeys = {{"buffer", Names::Res::ViewParams}},
             .WritesViewResources = {RenderPipelineViewResource::ViewParameters}});
 
     (void)registry.Register(
