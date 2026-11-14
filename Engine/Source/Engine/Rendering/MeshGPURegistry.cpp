@@ -34,6 +34,12 @@ constexpr uint64_t kBucketCoreInitialBytes  = 16ull << 20; // 16 MB
 constexpr uint64_t kBucketOtherInitialBytes = 8ull  << 20; // 8 MB
 constexpr uint64_t kBucketIndexInitialBytes = 4ull  << 20; // 4 MB
 
+uint64_t BucketStorageKey(GameEngine::Rendering::MeshGPUBucketKey flags,
+                          GameEngine::Rendering::MeshGPUStorageDomain domain)
+{
+    return static_cast<uint32_t>(flags) | (static_cast<uint64_t>(domain) << 32);
+}
+
 // Per-stream alignment MUST equal that stream's stride. The draw call
 // binds a single vertexOffset (resp. firstIndex) that is applied across
 // every bound VB (resp. the IB). For mesh B's offset to be consistent
@@ -156,6 +162,42 @@ void DestroyPools(GameEngine::Rendering::IDevice* device,
         }
     }
     pools.clear();
+}
+
+constexpr uint64_t kClusterFineInitialPoolBytes = 4ull << 20;
+
+void RollbackUnpublishedPools(GameEngine::Rendering::IDevice* device,
+                              std::vector<GameEngine::Rendering::MeshGPUStreamPool>& pools,
+                              size_t originalCount)
+{
+    while (pools.size() > originalCount)
+    {
+        // Registration holds the table lock. Only this abandoned upload could
+        // have owned ranges in a pool created after its snapshot.
+        assert(pools.back().allocator->IsEmpty());
+        if (!pools.back().allocator->IsEmpty())
+            break;
+        device->DestroyBuffer(pools.back().buffer);
+        pools.pop_back();
+    }
+}
+
+bool WritePoolStream(GameEngine::Rendering::IDevice& device,
+                     GameEngine::Rendering::MeshGPUStreamPool* pool, uint64_t offset,
+                     size_t size, const void* data, bool coherentMapped)
+{
+    if (size == 0)
+        return true;
+    if (!pool || !pool->buffer.IsValid())
+        return false;
+    if (!coherentMapped)
+    {
+        device.UpdateBuffer(pool->buffer, offset, size, data);
+        return true;
+    }
+    if (!data || offset > pool->capacityBytes || size > pool->capacityBytes - offset)
+        return false;
+    return device.TryWriteCoherentBuffer(pool->buffer, offset, size, data);
 }
 
 GameEngine::Rendering::MeshGPUStreamPool* GetPool(
@@ -481,11 +523,12 @@ static uint64_t ContentHashForUploadedEntry(const MeshGPUEntry& entry, uint64_t 
 
 MeshGPUHandle MeshGPURegistry::RegisterSubmesh(const MeshGPUKey& key,
                                                 const Mesh& mesh,
-                                                bool retainCpuMesh)
+                                                bool retainCpuMesh,
+                                                MeshGPUStorageDomain domain)
 {
     TableScope scope(*this);
     ++m_ComputedContentHashCount;
-    return RegisterHashedSubmesh(key, mesh, ComputeMeshContentHash(mesh), retainCpuMesh);
+    return RegisterHashedSubmesh(key, mesh, ComputeMeshContentHash(mesh), retainCpuMesh, domain);
 }
 
 MeshGPUHandle MeshGPURegistry::RegisterModelSubmesh(const MeshGPUKey& key, const ModelAsset& asset)
@@ -500,7 +543,8 @@ MeshGPUHandle MeshGPURegistry::RegisterModelSubmesh(const MeshGPUKey& key, const
 MeshGPUHandle MeshGPURegistry::RegisterHashedSubmesh(const MeshGPUKey& key,
                                                       const Mesh& mesh,
                                                       uint64_t contentHash,
-                                                      bool retainCpuMesh)
+                                                      bool retainCpuMesh,
+                                                      MeshGPUStorageDomain domain)
 {
     TableScope scope(*this);
 
@@ -510,6 +554,11 @@ MeshGPUHandle MeshGPURegistry::RegisterHashedSubmesh(const MeshGPUKey& key,
     {
         Handle raw(static_cast<Detail::HandleType>(it->second));
         MeshGPUEntry* existing = m_Entries.Get(raw);
+        if (existing && existing->DrawClosed)
+            return {};
+        if (existing && (existing->StorageDomain != domain ||
+            (domain == MeshGPUStorageDomain::ClusterFine && existing->FineSourceContentHash != contentHash)))
+            return {}; // Immutable fine keys cannot rewrite geometry or change domains.
         if (existing && existing->contentHash == contentHash)
         {
             // Unchanged content: reuse the cached GPU upload.
@@ -528,7 +577,8 @@ MeshGPUHandle MeshGPURegistry::RegisterHashedSubmesh(const MeshGPUKey& key,
             ReleaseEntryToBucket(*existing);
             const uint32_t oldGpuMeshIndex = existing->gpuMeshIndex;
 
-            MeshGPUEntry updated = UploadMesh(mesh);
+            MeshGPUEntry updated = UploadMesh(mesh, domain);
+            updated.FineSourceContentHash = existing->FineSourceContentHash;
             updated.contentHash = ContentHashForUploadedEntry(updated, contentHash);
             updated.cpuMesh = retainCpuMesh ? std::make_shared<Mesh>(mesh)
                                                       : existing->cpuMesh;
@@ -572,7 +622,9 @@ MeshGPUHandle MeshGPURegistry::RegisterHashedSubmesh(const MeshGPUKey& key,
     }
 
     // Upload to GPU.
-    MeshGPUEntry entry = UploadMesh(mesh);
+    MeshGPUEntry entry = UploadMesh(mesh, domain);
+    if (domain == MeshGPUStorageDomain::ClusterFine)
+        entry.FineSourceContentHash = contentHash;
     entry.contentHash = ContentHashForUploadedEntry(entry, contentHash);
     if (retainCpuMesh)
         entry.cpuMesh = std::make_shared<Mesh>(mesh);
@@ -692,18 +744,18 @@ size_t MeshGPURegistry::SetLodSelectionMode(LodSelectionMode mode)
     return rewritten;
 }
 
-const MeshGPUBucket* MeshGPURegistry::GetBucket(MeshGPUBucketKey key) const
+const MeshGPUBucket* MeshGPURegistry::GetBucket(MeshGPUBucketKey key, MeshGPUStorageDomain domain) const
 {
 #if GE_DEBUG_INSTRUMENTATION
     AssertNotRacingMutation();
 #endif
-    auto it = m_Buckets.find(static_cast<uint32_t>(key));
+    auto it = m_Buckets.find(BucketStorageKey(key, domain));
     return (it == m_Buckets.end()) ? nullptr : &it->second;
 }
 
 uint32_t MeshGPURegistry::GetEntryCoreStrideBytes(const MeshGPUEntry& entry) const
 {
-    const MeshGPUBucket* bucket = GetBucket(entry.bucketKey);
+    const MeshGPUBucket* bucket = GetBucket(entry.bucketKey, entry.StorageDomain);
     return bucket ? bucket->coreStrideBytes : 0u;
 }
 
@@ -720,7 +772,7 @@ size_t MeshGPURegistry::GetBucketIndexPoolCount(MeshGPUBucketKey key, uint32_t i
 
 bool MeshGPURegistry::IsFlushResident(const MeshGPUEntry& entry) const
 {
-    return m_Residency.IsResident(entry.uploadSeq);
+    return !entry.DrawClosed && m_Residency.IsResident(entry.uploadSeq);
 }
 
 MeshGPUResidencyStats MeshGPURegistry::GetResidencyStats() const
@@ -734,6 +786,55 @@ MeshGPUResidencyStats MeshGPURegistry::GetResidencyStats() const
         m_RouteBRefusedBucketMissingTotal.load(std::memory_order_relaxed);
     stats.WindowExhausted = m_Residency.WindowExhaustedCount();
     return stats;
+}
+
+bool MeshGPURegistry::CloseFineDraws(MeshGPUHandle handle)
+{
+    TableScope scope(*this);
+    auto* entry = m_Entries.Get(Handle(handle.id));
+    if (!entry || entry->StorageDomain != MeshGPUStorageDomain::ClusterFine)
+        return false;
+    if (!entry->DrawClosed)
+    {
+        entry->DrawClosed = true;
+        ++m_ContentRevision;
+    }
+    return true;
+}
+
+bool MeshGPURegistry::IsBufferInStorageDomain(BufferHandle handle, MeshGPUStorageDomain domain) const
+{
+    if (!handle.IsValid())
+        return false;
+    TableScope scope(*this);
+    for (const auto& [key, bucket] : m_Buckets)
+    {
+        (void)key;
+        if (bucket.StorageDomain != domain)
+            continue;
+        const std::vector<MeshGPUStreamPool>* streams[] = {
+            &bucket.corePools, &bucket.tangentPools, &bucket.colorPools, &bucket.uv1Pools,
+            &bucket.jointsPools, &bucket.weightsPools, &bucket.joints1Pools, &bucket.weights1Pools,
+            &bucket.ib16Pools, &bucket.ib32Pools};
+        for (const auto* stream : streams)
+            for (const auto& pool : *stream)
+                if (pool.buffer == handle)
+                    return true;
+        for (const auto& stream : bucket.extraUvPools)
+            for (const auto& pool : stream)
+                if (pool.buffer == handle)
+                    return true;
+    }
+    return false;
+}
+
+uint64_t MeshGPURegistry::GetStorageDomainCapacityBytes(MeshGPUStorageDomain domain) const
+{
+    uint64_t bytes = 0;
+    for (const auto& pool : GetPoolStats())
+        if (pool.StorageDomain == domain)
+            bytes += pool.Allocator.CapacityUnits;
+    return bytes;
 }
 
 // Extra UV sets share one pool-stream shape, so PoolIndex alone would not
@@ -760,6 +861,7 @@ std::vector<MeshGPUPoolStats> MeshGPURegistry::GetPoolStats() const
             {
                 MeshGPUPoolStats entry{};
                 entry.BucketKey = bucket.key;
+                entry.StorageDomain = bucket.StorageDomain;
                 entry.Stream    = stream;
                 entry.PoolIndex = static_cast<uint32_t>(i);
                 entry.Allocator = pools[i].allocator->GetStats();
@@ -791,6 +893,8 @@ MeshGPURegistry::Drawability MeshGPURegistry::ClassifyDrawability(const MeshGPUE
     // the bytes escape through this parameter, and [[nodiscard]] does not
     // cover them.
     out = MeshGPUEntryBindings{};
+    if (entry.DrawClosed)
+        return Drawability::Closed;
 
     // Bucket-missing is tested BEFORE residency, and the order is a
     // classification rule, not a safety one — both arms refuse, and both leave
@@ -802,7 +906,7 @@ MeshGPURegistry::Drawability MeshGPURegistry::ClassifyDrawability(const MeshGPUE
     // every time it behaved correctly.
     if (entry.bucketKey == VertexAttributeFlags::None)
         return Drawability::BucketMissing;
-    const MeshGPUBucket* bucket = GetBucket(entry.bucketKey);
+    const MeshGPUBucket* bucket = GetBucket(entry.bucketKey, entry.StorageDomain);
     if (!bucket)
         return Drawability::BucketMissing;
     // An entry that HAS storage but whose bytes are not readable yet is the
@@ -864,6 +968,8 @@ bool MeshGPURegistry::TryGetDrawableBindings(const MeshGPUEntry& entry,
         return false;
     case Drawability::BucketMissing:
         CountRefusedBucketMissing();
+        return false;
+    case Drawability::Closed:
         return false;
     }
     return false;
@@ -1131,10 +1237,19 @@ MeshGPUReprovisionReport MeshGPURegistry::ReprovisionAfterDeviceRebuild(
         const uint32_t oldGpuMeshIndex = entry->gpuMeshIndex;
         std::shared_ptr<const Mesh> keepCpuMesh = entry->cpuMesh;
         const bool sourceIsOriginal = (origin != MeshGPUSourceOrigin::Generated);
-        const uint64_t keepContentHash =
-            sourceIsOriginal ? entry->contentHash : ComputeMeshContentHash(*source);
+        const uint64_t keepContentHash = entry->StorageDomain == MeshGPUStorageDomain::ClusterFine
+            ? entry->FineSourceContentHash
+            : (sourceIsOriginal ? entry->contentHash : ComputeMeshContentHash(*source));
 
-        MeshGPUEntry fresh = UploadMesh(*source);
+        if (entry->StorageDomain == MeshGPUStorageDomain::ClusterFine &&
+            ComputeMeshContentHash(*source) != entry->FineSourceContentHash)
+        {
+            tombstone(*entry);
+            continue;
+        }
+        MeshGPUEntry fresh = UploadMesh(*source, entry->StorageDomain);
+        fresh.FineSourceContentHash = entry->FineSourceContentHash;
+        fresh.DrawClosed = entry->DrawClosed;
         if (fresh.bucketKey == VertexAttributeFlags::None || fresh.indexCount == 0)
         {
             // Upload failed (pool creation OOM) — degrade to a tombstone rather than
@@ -1263,13 +1378,14 @@ void MeshGPURegistry::NotifyUnregister(const GUID& assetGuid)
 
 // ---- Private helpers ----
 
-MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh)
+MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh, MeshGPUStorageDomain domain)
 {
     AssetDbProfiler::StageScope profileScope(AssetDbProfiler::IsOnMainThread()
         ? AssetDbProfiler::Bucket::UploadMeshMain
         : AssetDbProfiler::Bucket::UploadMeshWorker);
 
     MeshGPUEntry entry{};
+    entry.StorageDomain = domain;
 
     if (!m_Device || mesh.Vertices.empty())
         return entry;
@@ -1501,7 +1617,18 @@ MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh)
     }
 
     // --- Allocate bucket ranges (append sibling pools on overflow) ---
-    MeshGPUBucket& bucket = GetOrCreateBucket(flags);
+    MeshGPUBucket& bucket = GetOrCreateBucket(flags, domain);
+    // The pool counts before this upload. A failed fine upload destroys the pools that it added.
+    const std::array<std::vector<MeshGPUStreamPool>*, 14> vertexPools{
+        &bucket.corePools, &bucket.tangentPools, &bucket.colorPools, &bucket.uv1Pools,
+        &bucket.jointsPools, &bucket.weightsPools, &bucket.joints1Pools, &bucket.weights1Pools,
+        &bucket.extraUvPools[0], &bucket.extraUvPools[1], &bucket.extraUvPools[2],
+        &bucket.extraUvPools[3], &bucket.extraUvPools[4], &bucket.extraUvPools[5]};
+    std::array<size_t, 14> originalVertexPoolCounts{};
+    const size_t originalIb16Count = bucket.ib16Pools.size();
+    const size_t originalIb32Count = bucket.ib32Pools.size();
+    for (size_t stream = 0; stream < vertexPools.size(); ++stream)
+        originalVertexPoolCounts[stream] = vertexPools[stream]->size();
 
     auto allocateStream = [&](std::vector<MeshGPUStreamPool>& pools,
                               uint64_t initialCapacity,
@@ -1527,8 +1654,10 @@ MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh)
             }
         }
 
+        if (domain == MeshGPUStorageDomain::ClusterFine)
+            initialCapacity = std::min<uint64_t>(initialCapacity, 1ull << 20);
         const uint64_t capacity = NextPoolCapacity(pools, initialCapacity, srcBytes, stride);
-        if (!CreateBucketStreamPool(pools, capacity, stride, debugName))
+        if (!CreateBucketStreamPool(pools, capacity, stride, debugName, domain))
         {
             Logger::Log::Warning(
                 "MeshGPURegistry: failed to create sibling pool '{}' (capacity={} bytes) for mesh flags={:x}.",
@@ -1715,11 +1844,14 @@ MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh)
                 break;
             }
 
+            // A fine pool needs host-coherent memory, so its first size is small.
+            const uint64_t initialCapacity = domain == MeshGPUStorageDomain::ClusterFine
+                ? std::min<uint64_t>(stream.initialCapacity, kClusterFineInitialPoolBytes) : stream.initialCapacity;
             const uint64_t capacity = NextPoolCapacity(*stream.pools,
-                                                       stream.initialCapacity,
+                                                       initialCapacity,
                                                        stream.bytes,
                                                        stream.stride);
-            if (!CreateBucketStreamPool(*stream.pools, capacity, stream.stride, stream.debugName))
+            if (!CreateBucketStreamPool(*stream.pools, capacity, stream.stride, stream.debugName, domain))
             {
                 Logger::Log::Warning(
                     "MeshGPURegistry: failed to create vertex sibling pool '{}' (capacity={} bytes) for mesh flags={:x}.",
@@ -1773,6 +1905,13 @@ MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh)
         freeStream(bucket.weights1Pools, weights1PoolIndex, weights1Sub);
         for (size_t i = 0; i < extraUvSub.size(); ++i)
             freeStream(bucket.extraUvPools[i], extraUvPoolIndex[i], extraUvSub[i]);
+        if (domain == MeshGPUStorageDomain::ClusterFine)
+        {
+            for (size_t stream = 0; stream < vertexPools.size(); ++stream)
+                RollbackUnpublishedPools(m_Device, *vertexPools[stream], originalVertexPoolCounts[stream]);
+            RollbackUnpublishedPools(m_Device, bucket.ib16Pools, originalIb16Count);
+            RollbackUnpublishedPools(m_Device, bucket.ib32Pools, originalIb32Count);
+        }
     };
 
     if (!allocated)
@@ -1813,18 +1952,15 @@ MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh)
     entry.weights1PoolIndex = weights1PoolIndex;
     entry.extraUvPoolIndex = extraUvPoolIndex;
 
+    bool writesValid = true;
     auto updateStream = [&](std::vector<MeshGPUStreamPool>& pools,
                             uint32_t poolIndex,
                             Memory::RangeAllocator::Allocation alloc,
                             size_t size,
                             const void* data)
     {
-        if (size == 0)
-            return;
-        MeshGPUStreamPool* pool = GetPool(pools, poolIndex);
-        if (!pool || !pool->buffer.IsValid())
-            return;
-        m_Device->UpdateBuffer(pool->buffer, alloc.Offset, size, data);
+        writesValid = WritePoolStream(*m_Device, GetPool(pools, poolIndex), alloc.Offset, size, data,
+            domain == MeshGPUStorageDomain::ClusterFine) && writesValid;
     };
 
     updateStream(bucket.corePools, corePoolIndex, coreSub, coreBytes, coreData);
@@ -1839,6 +1975,15 @@ MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh)
     for (size_t i = 0; i < extraUvBytes.size(); ++i)
         updateStream(bucket.extraUvPools[i], extraUvPoolIndex[i], extraUvSub[i],
                      extraUvBytes[i], i < mesh.ExtraTexCoords.size() ? mesh.ExtraTexCoords[i].data() : nullptr);
+
+    if (domain == MeshGPUStorageDomain::ClusterFine && !writesValid)
+    {
+        m_Residency.CancelRecordsFor(uploadSeq);
+        releaseAllocations();
+        MeshGPUEntry refused{};
+        refused.StorageDomain = domain;
+        return refused;
+    }
 
     entry.coreSubAlloc    = coreSub;
     entry.indexSubAlloc   = indexSub;
@@ -1905,35 +2050,21 @@ MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh)
     const auto& referenceExtent = geometry.ReferenceBounds.halfExtents;
     entry.lodReferenceMaxExtent = 2.0f * std::max({referenceExtent.x, referenceExtent.y, referenceExtent.z});
 
-    // Every write this upload owns has been ISSUED — which is residency for
-    // host-visible pools, where the stream write IS the copy. Closing the
-    // bracket is what makes the stamp read resident, and it is the last
-    // statement on the only path that reaches here from the mint above.
-    //
-    // What the bracket does not promise: a stream whose pool is missing or
-    // whose buffer is invalid is skipped by the writer above rather than
-    // written, and the bracket still closes. For the core and index streams
-    // that is caught downstream — the same missing pool makes their handles
-    // unresolvable and the chokepoint refuses. An optional stream in that state
-    // is a pre-existing pool bug this gate does not claim to cover.
-    //
-    // Deliberately an explicit call and NOT a scope guard: a guard would close
-    // the stamp on an exit path that had written only some of the streams, and
-    // a stamp that reads resident over partly-written storage is the exact
-    // failure this gate exists to prevent. An abandoned path that leaks an open
-    // slot instead keeps the entry undrawable — worse for the ring (a leaked
-    // slot pins the base) but never wrong at the chokepoint.
+    // Fine writes are checked; Shared writes are issued, not completion-certified.
+    // Keep abandoned uploads open/undrawable; never close via a scope guard after partial writes.
+    // Shared missing core/index handles fail draw lookup; optional streams remain unchecked.
     m_Residency.EndUpload(uploadSeq);
     return entry;
 }
 
-MeshGPUBucket& MeshGPURegistry::GetOrCreateBucket(MeshGPUBucketKey key)
+MeshGPUBucket& MeshGPURegistry::GetOrCreateBucket(MeshGPUBucketKey key, MeshGPUStorageDomain domain)
 {
-    const uint32_t kkey = static_cast<uint32_t>(key);
+    const uint64_t kkey = BucketStorageKey(key, domain);
     auto [it, inserted] = m_Buckets.try_emplace(kkey);
     if (inserted)
     {
         it->second.key             = key;
+        it->second.StorageDomain   = domain;
         it->second.coreStrideBytes = CoreVertexStride(key);
     }
     return it->second;
@@ -1942,10 +2073,19 @@ MeshGPUBucket& MeshGPURegistry::GetOrCreateBucket(MeshGPUBucketKey key)
 bool MeshGPURegistry::CreateBucketStreamPool(std::vector<MeshGPUStreamPool>& pools,
                                              uint64_t capacityBytes,
                                              uint64_t alignmentBytes,
-                                             const char* debugName) const
+                                             const char* debugName,
+                                             MeshGPUStorageDomain domain) const
 {
     if (!m_Device || capacityBytes == 0)
         return false;
+
+    if (domain == MeshGPUStorageDomain::ClusterFine)
+    {
+        const uint64_t owned = GetStorageDomainCapacityBytes(domain);
+        if (owned > kMaximumClusterFineCapacityBytes ||
+            capacityBytes > kMaximumClusterFineCapacityBytes - owned)
+            return false;
+    }
 
     BufferDesc desc{};
     desc.size        = capacityBytes;
@@ -1960,7 +2100,7 @@ bool MeshGPURegistry::CreateBucketStreamPool(std::vector<MeshGPUStreamPool>& poo
     // interleaved stream, so triangles read at suballocation offset + full
     // stride — no copies). Gated: the AS usage bit is invalid on devices
     // without VK_KHR_acceleration_structure enabled.
-    if (m_Device->GetCapabilities().supportsRayQuery)
+    if (domain == MeshGPUStorageDomain::Shared && m_Device->GetCapabilities().supportsRayQuery)
     {
         desc.usage |= static_cast<uint32_t>(BufferUsage::ShaderDeviceAddress
                                             | BufferUsage::AccelerationStructureBuildInput);
@@ -1980,6 +2120,16 @@ bool MeshGPURegistry::CreateBucketStreamPool(std::vector<MeshGPUStreamPool>& poo
     BufferHandle h = m_Device->CreateBuffer(desc);
     if (!h.IsValid())
         return false;
+
+    if (domain == MeshGPUStorageDomain::ClusterFine)
+    {
+        const auto residency = m_Device->GetBufferMemoryResidency(h);
+        if (!residency.reported || !residency.deviceLocal || !residency.hostVisible || !residency.hostCoherent)
+        {
+            m_Device->DestroyBuffer(h);
+            return false;
+        }
+    }
 
     LogPoolMemoryResidency(h, debugName);
 
@@ -2043,7 +2193,7 @@ void MeshGPURegistry::ReleaseEntryToBucket(MeshGPUEntry& entry)
     m_Residency.CancelRecordsFor(entry.uploadSeq);
     entry.uploadSeq = 0u;
 
-    auto it = m_Buckets.find(static_cast<uint32_t>(entry.bucketKey));
+    auto it = m_Buckets.find(BucketStorageKey(entry.bucketKey, entry.StorageDomain));
     if (it == m_Buckets.end())
         return;
     MeshGPUBucket& bucket = it->second;

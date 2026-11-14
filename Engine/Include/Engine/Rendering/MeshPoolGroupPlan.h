@@ -128,7 +128,7 @@ class MeshPoolGroupPlan
     // type, topology.
     struct PoolIdentity
     {
-        std::array<uint32_t, 18> Fields{};
+        std::array<uint32_t, 19> Fields{};
         bool operator==(const PoolIdentity&) const = default;
     };
     struct PoolIdentityHash

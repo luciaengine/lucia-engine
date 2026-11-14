@@ -48,6 +48,9 @@ server.RegisterHandler("get_mesh_registry", [](const EditorDebugServer::RequestC
                            {"lodCount", e.lodCount},
                            {"authored", e.lodAuthored},
                            {"indexCount", e.indexCount},
+                           {"vertexOffset", e.vertexOffset},
+                           {"storageDomain", e.StorageDomain == Rendering::MeshGPUStorageDomain::ClusterFine
+                               ? "clusterFine" : "shared"},
                            {"boundingRadius", e.bounds.Radius()},
                            {"maxExtent", 2.0f * std::max({e.bounds.halfExtents.x,
                                                           e.bounds.halfExtents.y,

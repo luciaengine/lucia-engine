@@ -427,6 +427,8 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/VirtualShadows/VirtualShadowRaster.cpp
 	Source/Engine/Rendering/VirtualShadows/VirtualShadowPageRequests.cpp
 	Source/Engine/Rendering/VirtualShadows/VirtualShadowWorldPass.cpp
+	Source/Engine/Rendering/ClusterLOD/ClusterLODPrepareSystem.cpp
+	Source/Engine/Rendering/ClusterLOD/ClusterLODFeature.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeature.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeaturePasses.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeatureViewFit.cpp
@@ -2323,6 +2325,15 @@ endif()
                 Tests/VirtualShadows/VirtualShadowSurfaceComposeTests.cpp)
             # Engine/Tests: TestDeviceHelper.h and StagedTestPaths.h.
             target_include_directories(EngineVirtualShadowTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Tests")
+
+            # Cluster LOD at run time: fine page residency, selection, graph leases and retirement.
+            ge_add_render_services_test(EngineClusterLODTests
+                Tests/ClusterLODRuntimeTests.cpp)
+            # Engine/Tests: test helpers. Tests: TestTempDir.h. Modules/Rendering/Source: the Vulkan test access.
+            target_include_directories(EngineClusterLODTests PRIVATE
+                "${CMAKE_CURRENT_SOURCE_DIR}/Tests"
+                ${CMAKE_SOURCE_DIR}/Tests
+                ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Source)
 
             # Post-processing: exposure, the post-process volume blend, bloom, lens flare,
             # sun glare, temporal anti-aliasing jitter, GTAO and screen-space reflections.

@@ -40,6 +40,7 @@ MeshPoolGroupPlan::PoolIdentity MeshPoolGroupPlan::MakeIdentity(const MeshGPUEnt
     PoolIdentity id{};
     size_t i = 0;
     id.Fields[i++] = static_cast<uint32_t>(entry.bucketKey);
+    id.Fields[i++] = static_cast<uint32_t>(entry.StorageDomain);
     id.Fields[i++] = entry.corePoolIndex;
     id.Fields[i++] = entry.tangentPoolIndex;
     id.Fields[i++] = entry.colorPoolIndex;
@@ -68,8 +69,8 @@ void MeshPoolGroupPlan::Refresh(const MeshGPURegistry& registry, uint32_t meshTa
         {
             if (entry.gpuMeshIndex == ~0u || entry.gpuMeshIndex >= meshTableCount)
                 return;
-            // Failed-allocation entries never draw; leave them absent.
-            if (entry.bucketKey == VertexAttributeFlags::None || entry.indexCount == 0u)
+            // Closed and failed-allocation entries stay absent from new plans.
+            if (entry.DrawClosed || entry.bucketKey == VertexAttributeFlags::None || entry.indexCount == 0u)
                 return;
             // Route A chokepoint. An entry whose uploaded bytes are not
             // readable by the GPU yet stays absent, so no (classKey, group)

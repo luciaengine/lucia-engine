@@ -77,6 +77,15 @@ class GPUScene;
 // set is unchanged.
 using MeshGPUBucketKey = VertexAttributeFlags;
 
+// Physical storage identity is independent of shader-facing vertex flags.
+// Fine cluster geometry is immutable and raster-only; its owner retires the
+// complete registry entry after CPU graph reservations and GPU completion.
+enum class MeshGPUStorageDomain : uint8_t
+{
+    Shared,
+    ClusterFine,
+};
+
 inline constexpr uint32_t kInvalidMeshGPUPoolIndex = UINT32_MAX;
 
 // One GPU buffer + suballocator for a bucket stream. A stream can own
@@ -103,6 +112,7 @@ struct MeshGPUStreamPool
 struct MeshGPUBucket
 {
     MeshGPUBucketKey key = VertexAttributeFlags::None;
+    MeshGPUStorageDomain StorageDomain = MeshGPUStorageDomain::Shared;
 
     // Stream VBs. corePools is always non-empty for a successfully uploaded
     // mesh; optional stream pools are created on first use.
@@ -193,6 +203,8 @@ struct MeshGPUEntry
     // `vertexFlags`. Set to None when allocation failed (mesh fails to
     // draw -- bucket pool exhaustion is the only path to this state).
     MeshGPUBucketKey bucketKey = VertexAttributeFlags::None;
+    MeshGPUStorageDomain StorageDomain = MeshGPUStorageDomain::Shared;
+    bool DrawClosed = false;
 
     // Conservative local culling envelope, including admitted own-vertex LODs.
     Mathematics::BoundingBox bounds;
@@ -248,6 +260,9 @@ struct MeshGPUEntry
     // in-place content changes (e.g. LOD generation) and re-upload, since the
     // dedup key {assetGuid, submeshIndex} alone cannot see content edits.
     uint64_t contentHash = 0;
+    // Fine source identity survives failed uploads and device-rebuild tombstones;
+    // contentHash alone uses zero to request a retry of unavailable storage.
+    uint64_t FineSourceContentHash = 0;
 
     // Identity of the upload that filled this entry's suballocations, minted by
     // MeshGPUResidency. THE residency key: 0 means never uploaded, released or
@@ -417,6 +432,7 @@ struct MeshGPUResidencyStats
 struct MeshGPUPoolStats
 {
     MeshGPUBucketKey BucketKey = VertexAttributeFlags::None;
+    MeshGPUStorageDomain StorageDomain = MeshGPUStorageDomain::Shared;
     // Stream identity, matching the pool debug-name suffix ("Core", "Tangent",
     // "IB16", ...). A string literal with static lifetime.
     const char* Stream = "";
@@ -523,7 +539,8 @@ class MeshGPURegistry
     // ModelAsset. Returns existing handle if already registered.
     MeshGPUHandle RegisterSubmesh(const MeshGPUKey& key,
                                   const Mesh& mesh,
-                                  bool retainCpuMesh = false);
+                                  bool retainCpuMesh = false,
+                                  MeshGPUStorageDomain domain = MeshGPUStorageDomain::Shared);
 
     // Unregister one submesh key and release its bucket allocations.
     // Intended for runtime-generated meshes (morph targets, procedural edits)
@@ -695,8 +712,8 @@ class MeshGPURegistry
     // keys and can bank several refusals per view.
     [[nodiscard]] bool IsEntryDrawable(const MeshGPUEntry& entry) const;
 
-    // Whether this entry's uploaded bytes are readable by the GPU. Fails
-    // closed: an entry whose state cannot be established is not resident.
+    // Whether this entry may enter a new draw plan. Closed draws refuse even
+    // when their physical bytes are resident. Unknown residency also refuses.
     // Route A (the pool-group plan) asks this directly because it publishes an
     // absence rather than a binding.
     [[nodiscard]] bool IsFlushResident(const MeshGPUEntry& entry) const;
@@ -710,6 +727,7 @@ class MeshGPURegistry
     // index width it owns. Grows when a mesh does not fit the existing pools.
     // `indexType` uses MeshGPUEntry::indexType's encoding (Rendering::IndexType
     // cast to uint32_t).
+    // Ordinary Shared-domain diagnostic; fine diagnostics use GetPoolStats.
     size_t GetBucketIndexPoolCount(MeshGPUBucketKey key, uint32_t indexType) const;
 
     // Test / debug accessor for the live bucket map.
@@ -727,6 +745,15 @@ class MeshGPURegistry
     // Walks the bucket table, so call it from diagnostics rather than from a
     // per-frame path.
     std::vector<MeshGPUPoolStats> GetPoolStats() const;
+
+    // Owned buffer capacities, including unused, pending and retiring ranges.
+    // Excludes driver/allocator backing-heap overhead; not a VRAM peak metric.
+    uint64_t GetStorageDomainCapacityBytes(MeshGPUStorageDomain domain) const;
+    /// Closes fine lookup without recycling its row or physical ranges. Irreversible.
+    bool CloseFineDraws(MeshGPUHandle handle);
+    /// Raw contributor geometry must not bypass a managed storage lifetime.
+    bool IsBufferInStorageDomain(BufferHandle handle, MeshGPUStorageDomain domain) const;
+    static constexpr uint64_t kMaximumClusterFineCapacityBytes = 32ull << 20;
 
     // Advance the registry's frame counter and reclaim any deferred-free
     // suballocations whose retire-after frame has passed. Also resets the
@@ -785,7 +812,8 @@ class MeshGPURegistry
     //
     // Private: a bucket carries pool BufferHandles, so exposing it would be a
     // second route to an entry's bytes that bypasses TryGetDrawableBindings.
-    const MeshGPUBucket* GetBucket(MeshGPUBucketKey key) const;
+    const MeshGPUBucket* GetBucket(MeshGPUBucketKey key,
+                                  MeshGPUStorageDomain domain = MeshGPUStorageDomain::Shared) const;
 
     // How the drawability tests came out, carrying the refusal reason the two
     // counters split on.
@@ -793,7 +821,8 @@ class MeshGPURegistry
     {
         Drawable,
         BucketMissing,
-        NonResident
+        NonResident,
+        Closed
     };
 
     // Sole implementation of the drawability tests: it resolves `out` on
@@ -814,17 +843,19 @@ class MeshGPURegistry
 
     // RegisterSubmesh with `contentHash`, the ComputeMeshContentHash of `mesh`, already known.
     MeshGPUHandle RegisterHashedSubmesh(const MeshGPUKey& key, const Mesh& mesh, uint64_t contentHash,
-                                        bool retainCpuMesh);
+                                        bool retainCpuMesh,
+                                        MeshGPUStorageDomain domain = MeshGPUStorageDomain::Shared);
 
     // Upload a CPU-side Mesh to GPU buffers, creating a MeshGPUEntry.
-    MeshGPUEntry UploadMesh(const Mesh& mesh);
+    MeshGPUEntry UploadMesh(const Mesh& mesh, MeshGPUStorageDomain domain);
 
     // Create an empty sibling pool buffer of the given byte size and append it
     // to a bucket stream. Returns false on failure.
     bool CreateBucketStreamPool(std::vector<MeshGPUStreamPool>& pools,
                                 uint64_t capacityBytes,
                                 uint64_t alignmentBytes,
-                                const char* debugName) const;
+                                const char* debugName,
+                                MeshGPUStorageDomain domain) const;
 
     // Log which memory a freshly created pool buffer actually landed in.
     //
@@ -847,7 +878,7 @@ class MeshGPURegistry
     // Find or create the bucket for the given vertex-attribute key.
     // Bucket VB pools are created lazily on first use per stream (see
     // UploadMesh).
-    MeshGPUBucket& GetOrCreateBucket(MeshGPUBucketKey key);
+    MeshGPUBucket& GetOrCreateBucket(MeshGPUBucketKey key, MeshGPUStorageDomain domain);
 
     // Return all of an entry's bucket suballocations to the pools'
     // deferred-free queue, stamped to retire kMaxFramesInFlight after
@@ -925,7 +956,8 @@ class MeshGPURegistry
     // Shutdown. Suballocations come and go as meshes register / unregister.
     // The map provides reference stability for live buckets (unordered_map
     // does not move existing nodes on insertion).
-    std::unordered_map<uint32_t, MeshGPUBucket> m_Buckets;
+    // The key holds the storage domain and the vertex layout.
+    std::unordered_map<uint64_t, MeshGPUBucket> m_Buckets;
 
     // What LogPoolMemoryResidency saw for the first pool of the session; later
     // pools are only logged when they differ from it. Mutable because pool

@@ -4,6 +4,7 @@
 #include "Rendering/Core/Device.h" // IDevice::GpuSyncToken in OnFrameSubmittedRG
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace GameEngine
@@ -84,6 +85,15 @@ class IRenderFeature
     virtual void Declare(::GameEngine::Rendering::RenderGraph::RGFrame& /*frame*/,
                          RenderServices& /*rs*/, const FeatureDeclareContext& /*ctx*/)
     {
+    }
+
+    /// Binds mutable world geometry before declaration. False rejects the graph.
+    /// Register before the first declaration. Declaration-thread only.
+    /// The hook must not mutate geometry or retain the weak owner strongly.
+    virtual bool BindWorldGeometry(::GameEngine::Rendering::RenderGraph::RGFrame& /*frame*/,
+                                   RenderServices& /*services*/, std::weak_ptr<const void> /*owner*/)
+    {
+        return true;
     }
 
     // Called after a frame's command lists are submitted, with the
