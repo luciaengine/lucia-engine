@@ -76,11 +76,6 @@ class WindowDockingController
 
     void Initialize(Dependencies deps);
 
-    /// Registers the docking fixed-id commands (UiReplayCommandIds::Undock*,
-    /// Close/ReattachLastFloatingWindow, AssertFloating*Window) with
-    /// EditorMenuRegistry. The registry keeps `this` for the process lifetime:
-    /// call once, on the editor's controller. Defined in WindowDockingCommands.cpp.
-    void RegisterCommands();
 
     /// Torn-off panels presented as frames inside the main window, for hosts
     /// with one OS window. The tear-off gesture, ShowPanel and layout restore

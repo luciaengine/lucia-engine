@@ -1177,6 +1177,7 @@ set(EDITOR_TEST_SOURCES
     TileMapThumbnailCompositeTests.cpp
     TileThumbnailHandlerTests.cpp
     TileMapLayerThumbnailTests.cpp
+    ThumbnailImageOpsTests.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/TileMap/TileMapEditContext.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/TileMap/TileSetDocument.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/TileMap/TileLayerEdits.cpp
