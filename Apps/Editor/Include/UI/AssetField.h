@@ -54,8 +54,9 @@ public:
     /// Provide access to the asset registry for metadata lookup and search.
     void SetAssetRegistry(AssetRegistry* registry);
 
-    /// Optional thumbnail provider for image previews in the search dropdown.
-    void SetThumbnailProvider(IThumbnailProvider* provider) { m_Thumbnails = provider; }
+    /// Optional thumbnail provider for model previews and the search dropdown's images. A change
+    /// refreshes the field and drops a preview the previous provider still owes.
+    void SetThumbnailProvider(IThumbnailProvider* provider);
 
     /// Set the current value. Updates the display (icon + name), also for the same GUID
     /// when the registry now resolves it differently (renamed, deleted or restored).
