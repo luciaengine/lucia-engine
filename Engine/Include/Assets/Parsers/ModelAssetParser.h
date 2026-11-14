@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Assets/ParserRegistry.h"
+#include "Assets/ClusterLOD/MeshClusterLODAsset.h"
 #include "Assets/ModelAsset.h"
 
 namespace GameEngine
@@ -19,6 +20,7 @@ class ModelAssetParser final : public AssetParser
             ".obj",
             ".gltf",
             ".glb",
+            ".gecluster",
 #if defined(GE_HAVE_UFBX)
             ".fbx",
 #endif
@@ -44,6 +46,14 @@ class ModelAssetParser final : public AssetParser
     std::string GetName() const override { return "ModelAssetParser"; }
 
     int GetPriority() const override { return 100; }
+
+    bool CookForPackage(const AssetPackageCookContext& context, std::string& error) const override;
+
+    uint64 GetMaximumReadBytes(const AssetMetadata& metadata) const override
+    {
+        return ModelAsset::FormatFromPath(metadata.Path) == ModelFormat::ClusterLOD
+            ? MeshClusterLODManifest::kMaximumFileBytes : std::numeric_limits<uint64>::max();
+    }
 
     // Walk a glTF / .glb model and emit MaterialTexture edges for each
     // external image URI in the model's images[] array. Data URIs and

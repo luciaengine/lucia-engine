@@ -43,6 +43,7 @@ static const std::unordered_map<String, AssetType>& GetExtensionMap()
         {".gltf", AssetType::Model},
         {".glb", AssetType::Model},
         {".blend", AssetType::Model},
+        {".gecluster", AssetType::Model},
 
         // Audio formats
         {".wav", AssetType::Audio},

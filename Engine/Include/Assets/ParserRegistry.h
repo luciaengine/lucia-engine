@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <limits>
 #include <unordered_map>
 #include <vector>
 #include <string>
@@ -18,6 +19,19 @@ namespace GameEngine {
     // Forward declarations
     class AssetManager;
     struct AssetMetadata;
+
+    struct AssetReadSource
+    {
+        std::filesystem::path Path;
+        uint64 MaximumBytes = std::numeric_limits<uint64>::max();
+    };
+
+    struct AssetPackageCookContext
+    {
+        std::filesystem::path SourceFile;
+        std::filesystem::path StagedFile;
+        std::filesystem::path AssetRoot;
+    };
 
     /**
      * @brief Result of asset parsing operation
@@ -114,6 +128,12 @@ namespace GameEngine {
             return {};
         }
 
+        /// Limit checked on the opened file before the read buffer is allocated.
+        virtual uint64 GetMaximumReadBytes([[maybe_unused]] const AssetMetadata& metadata) const
+        {
+            return std::numeric_limits<uint64>::max();
+        }
+
         /**
          * @brief Get parser priority (higher = preferred for same extension)
          */
@@ -183,11 +203,11 @@ namespace GameEngine {
          * published; the parser then loads the cooked form in the packaged game. The default
          * ships the file as authored.
          *
-         * @param stagedFile The copy in the staging tree, rewritten in place.
+         * @param context Source, staged copy, and packaged asset root for auxiliary payloads.
          * @param error Receives why the asset cannot ship.
          * @return false when the asset cannot ship; the build then fails.
          */
-        virtual bool CookForPackage([[maybe_unused]] const std::filesystem::path& stagedFile,
+        virtual bool CookForPackage([[maybe_unused]] const AssetPackageCookContext& context,
                                     [[maybe_unused]] std::string& error) const
         {
             return true;
@@ -253,7 +273,7 @@ namespace GameEngine {
         std::shared_ptr<AssetParser> FindParser(const std::filesystem::path& filePath) const;
 
         /// Resolve the parser-owned payload before an asynchronous read.
-        std::filesystem::path ResolveReadPath(const AssetMetadata& metadata, const AssetManager& assetManager) const;
+        AssetReadSource ResolveReadSource(const AssetMetadata& metadata, const AssetManager& assetManager) const;
 
         /// The decode inputs the parser for `metadata` names (AssetParser::ResolveDecodeInputs).
         AssetDecodeInputs ResolveDecodeInputs(const AssetMetadata& metadata, std::span<const uint8> bytes,

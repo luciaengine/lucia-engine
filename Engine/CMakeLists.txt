@@ -52,6 +52,8 @@ set(ENGINE_SOURCES
     Source/Assets/ModelAssetLoadBlend.cpp
     Source/Assets/SparseMorphTarget.cpp
     Source/Assets/MeshLODGenerator.cpp
+    Source/Assets/ClusterLOD/MeshClusterLODGenerator.cpp
+    Source/Assets/ClusterLOD/MeshClusterLODAsset.cpp
     Source/Assets/MeshLODGeometry.cpp
     Source/Assets/MeshLODCache.cpp
     Source/Assets/ImportedMaterialCache.cpp
@@ -1874,6 +1876,21 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     ge_set_output_tests(MeshLODGeneratorTests)
     ge_stage_runtime_dependencies(MeshLODGeneratorTests)
     add_test(NAME MeshLODGeneratorTests COMMAND $<TARGET_FILE:MeshLODGeneratorTests>)
+
+    # Cluster LOD assets: group generation, the coarse asset, the fine page store and the cook.
+    add_executable(MeshClusterLODTests
+        Tests/MeshClusterLODTests.cpp
+        Tests/ClusterLODImportedGltfTests.cpp)
+    target_link_libraries(MeshClusterLODTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+    target_include_directories(MeshClusterLODTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
+    set_target_properties(MeshClusterLODTests PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        FOLDER "Engine/Tests"
+    )
+    ge_set_output_tests(MeshClusterLODTests)
+    ge_stage_runtime_dependencies(MeshClusterLODTests)
+    add_test(NAME MeshClusterLODTests COMMAND $<TARGET_FILE:MeshClusterLODTests>)
 
     # Engine tests: HLOD offline pipeline (clustering, benefit heuristic, .gehlod).
     add_executable(EngineHlodBakeTests

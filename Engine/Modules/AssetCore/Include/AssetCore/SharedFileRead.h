@@ -4,6 +4,7 @@
 #include "Types/Types.h"
 
 #include <filesystem>
+#include <limits>
 
 namespace GameEngine
 {
@@ -66,7 +67,9 @@ private:
 /// Whole-file wrappers over SharedFileReader. A failed open or read returns false and empty
 /// output. Otherwise they return true and the bytes the read got: none for an empty file, and
 /// fewer for a file that shrinks during the read.
-bool ReadFileBytesShared(const std::filesystem::path& path, ByteBuffer& outBytes);
+/// A file larger than `maximumBytes` fails before the buffer is allocated.
+bool ReadFileBytesShared(const std::filesystem::path& path, ByteBuffer& outBytes,
+                         uint64 maximumBytes = std::numeric_limits<uint64>::max());
 bool ReadFileTextShared(const std::filesystem::path& path, String& outText);
 
 } // namespace GameEngine

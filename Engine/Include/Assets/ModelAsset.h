@@ -19,6 +19,7 @@
 namespace GameEngine {
 
 class AssetManager;
+struct MeshClusterLODManifest;
 struct ModelAssetFbxTestAccess;
 namespace Animation { struct SkeletonData; class AnimationClip; }
 struct AssetDecodeInput;
@@ -32,7 +33,8 @@ enum class ModelFormat {
     FBX,
     GLTF,
     GLB,
-    BLEND
+    BLEND,
+    ClusterLOD
 };
 
 enum class MeshPrimitiveTopology : uint32 {
@@ -449,6 +451,7 @@ public:
      * thread (AdoptReloadedPayload below). Same contract as TextureAsset.
      */
     bool SupportsAsyncReload() const override { return true; }
+    uint64 GetMaximumReadBytes() const override;
 
     /**
      * @brief Get model format
@@ -483,6 +486,9 @@ public:
      * @brief Get all meshes
      */
     const Vector<Mesh>& GetMeshes() const { return m_Meshes; }
+
+    /// Immutable fine-page directory; coarse meshes remain ordinary model submeshes.
+    std::shared_ptr<const MeshClusterLODManifest> GetClusterLODManifest() const { return m_ClusterLODManifest; }
 
     /**
      * @brief ComputeMeshContentHash of each mesh, made by the load on its worker so a GPU registration does
@@ -660,6 +666,9 @@ protected:
     bool AdoptReloadedPayload(Asset& staged) override;
 
 private:
+    bool LoadClusterLOD(std::span<const uint8> data);
+    bool ReloadFromData(std::span<const uint8> data) override;
+
     friend struct ModelAssetFbxTestAccess;
 
     /**
@@ -773,6 +782,7 @@ private:
     ModelFormat m_Format;
     Vector<Mesh> m_Meshes;
     Vector<uint64> m_MeshContentHashes; // one per mesh, or empty
+    std::shared_ptr<const MeshClusterLODManifest> m_ClusterLODManifest;
     Vector<ImportedMaterialData> m_Materials;
     Vector<EmbeddedImage> m_EmbeddedImages;
     Vector<ImportedCameraData> m_Cameras;

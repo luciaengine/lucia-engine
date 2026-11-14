@@ -600,6 +600,17 @@ void AssetManager::Shutdown()
     Logger::Log::Info("Asset Manager shutdown complete");
 }
 
+void AssetManager::SubmitRead(AssetIOService::ReadRequest request)
+{
+    if (m_IOService)
+    {
+        m_IOService->SubmitRead(std::move(request));
+        return;
+    }
+    if (request.OnFailure)
+        request.OnFailure("Asset IO is unavailable; initialize the AssetManager before requesting pages");
+}
+
 void AssetManager::Update()
 {
     if (!m_Initialized)
@@ -2509,7 +2520,9 @@ void AssetManager::StartAsyncReload(const GUID& guid, const SharedPtr<Asset>& as
     AssetIOService::ReadRequest request;
     request.AssetGuid = guid;
     request.Metadata = metadata;
-    request.Metadata.Path = m_ParserRegistry.ResolveReadPath(metadata, *this);
+    const AssetReadSource readSource = m_ParserRegistry.ResolveReadSource(metadata, *this);
+    request.Metadata.Path = readSource.Path;
+    request.MaximumBytes = std::min(readSource.MaximumBytes, asset->GetMaximumReadBytes());
     request.Priority = priority;
     request.CancelRequested = cancelFlag;
     request.ProcessData = [this, guid, metadata, cancelFlag, generation,
