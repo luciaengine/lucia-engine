@@ -133,10 +133,10 @@ class ClusterLODImportedGltfTest : public ::testing::Test
         String error;
         ASSERT_TRUE(CookMeshClusterLODAsset(previous, path, {}, error)) << error;
         Vector<uint8> before;
-        ASSERT_TRUE(ReadFileBytesShared(path, before));
+        ASSERT_TRUE(Testing::ReadTestFileBytes(path, before));
         EXPECT_FALSE(CookMeshClusterLODAsset(source, path, {}, error));
         Vector<uint8> after;
-        ASSERT_TRUE(ReadFileBytesShared(path, after));
+        ASSERT_TRUE(Testing::ReadTestFileBytes(path, after));
         EXPECT_EQ(before, after);
     }
 

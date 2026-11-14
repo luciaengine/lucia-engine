@@ -1,9 +1,23 @@
 #pragma once
 
+#include "AssetCore/SharedFileRead.h"
 #include "Assets/ModelAsset.h"
+#include "Types/ByteBuffer.h"
+
+#include <filesystem>
 
 namespace GameEngine::Testing
 {
+/// Read a whole file into a vector, so a test can compare, resize and change the bytes.
+inline bool ReadTestFileBytes(const std::filesystem::path& path, Vector<uint8>& bytes)
+{
+    ByteBuffer buffer;
+    if (!ReadFileBytesShared(path, buffer))
+        return false;
+    bytes.assign(buffer.Data(), buffer.Data() + buffer.Size());
+    return true;
+}
+
 inline constexpr uint32 kClusterLODGridWidth = 49;
 
 inline Mesh MakeClusterLODGrid()

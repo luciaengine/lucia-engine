@@ -552,7 +552,7 @@ TEST_F(MeshClusterLODAssetTest, RejectsTruncatedAndCorruptedAssetsTransactionall
     const auto path = m_Temporary.Path() / "generated.gecluster";
     ASSERT_TRUE(Cook(path)) << m_Error;
     Vector<uint8> bytes;
-    ASSERT_TRUE(ReadFileBytesShared(path, bytes));
+    ASSERT_TRUE(Testing::ReadTestFileBytes(path, bytes));
     MeshClusterLODAssetData output;
     output.Manifest.Incarnation = 77;
     for (size_t length = 0; length < 24; ++length)
@@ -657,11 +657,11 @@ TEST_F(MeshClusterLODAssetTest, RefusesAnimatedModelsAndKeepsThePreviousGenerate
     const auto path = m_Temporary.Path() / "generated.gecluster";
     ASSERT_TRUE(Cook(path)) << m_Error;
     Vector<uint8> before;
-    ASSERT_TRUE(ReadFileBytesShared(path, before));
+    ASSERT_TRUE(Testing::ReadTestFileBytes(path, before));
     m_Source.SetHasAnimationsForTest(true);
     EXPECT_FALSE(Cook(path));
     Vector<uint8> after;
-    ASSERT_TRUE(ReadFileBytesShared(path, after));
+    ASSERT_TRUE(Testing::ReadTestFileBytes(path, after));
     EXPECT_EQ(before, after);
 }
 
@@ -669,7 +669,8 @@ TEST_F(MeshClusterLODAssetTest, PreservesMaterialFieldsAndOwnedImageBytes)
 {
     EmbeddedImage image;
     image.MimeType = "image/x-tga";
-    image.Data = {0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 32, 8, 255, 128, 64, 255};
+    constexpr std::array<uint8, 22> kImageBytes{0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 32, 8, 255, 128, 64, 255};
+    image.Data = ByteBuffer::CopyOf(kImageBytes);
     ImportedMaterialData material{};
     material.Name = "Opaque imported material";
     material.DiffuseTexture = "__embedded:0";
@@ -689,7 +690,10 @@ TEST_F(MeshClusterLODAssetTest, PreservesMaterialFieldsAndOwnedImageBytes)
     material.DiffuseTextureTransform[0] = 2.0f;
     material.DiffuseTextureTransform[2] = 0.5f;
     material.NormalTextureTransform[5] = 3.0f;
-    ModelAssetFbxTestAccess::DemoteMasks(m_Source, m_Source.GetMeshes(), {material}, {image});
+    Vector<EmbeddedImage> images(1);
+    images.front().MimeType = image.MimeType;
+    images.front().Data = ByteBuffer::CopyOf(kImageBytes);
+    ModelAssetFbxTestAccess::DemoteMasks(m_Source, m_Source.GetMeshes(), {material}, std::move(images));
     const auto path = m_Temporary.Path() / "textured.gecluster";
     ASSERT_TRUE(Cook(path)) << m_Error;
     ModelAsset model(GUID::Generate(), path);
@@ -697,7 +701,8 @@ TEST_F(MeshClusterLODAssetTest, PreservesMaterialFieldsAndOwnedImageBytes)
     EXPECT_EQ(SerializeImportedMaterials(model.GetMaterials()), SerializeImportedMaterials(m_Source.GetMaterials()));
     ASSERT_EQ(model.GetEmbeddedImages().size(), 1u);
     EXPECT_EQ(model.GetEmbeddedImages().front().MimeType, image.MimeType);
-    EXPECT_EQ(model.GetEmbeddedImages().front().Data, image.Data);
+    EXPECT_TRUE(std::ranges::equal(std::span<const uint8>(model.GetEmbeddedImages().front().Data),
+                                   std::span<const uint8>(image.Data)));
     EXPECT_EQ(model.GetEmbeddedImages().front().AssetGuid, image.AssetGuid);
     ASSERT_EQ(model.GetClusterLODManifest()->TextureDependencies.size(), 1u);
     EXPECT_EQ(model.GetClusterLODManifest()->TextureDependencies.front(), GUID(material.EmissiveTexture));
@@ -816,7 +821,7 @@ TEST_F(MeshClusterLODAssetTest, RejectsRehashedInvalidDirectoriesBeforePublishin
     const auto path = m_Temporary.Path() / "generated.gecluster";
     ASSERT_TRUE(Cook(path)) << m_Error;
     Vector<uint8> valid;
-    ASSERT_TRUE(ReadFileBytesShared(path, valid));
+    ASSERT_TRUE(Testing::ReadTestFileBytes(path, valid));
     constexpr size_t kMaterialLengthOffset = 36;
     constexpr size_t kMaterialTextOffset = 40;
     uint32 materialBytes = 0;
@@ -863,13 +868,13 @@ TEST_F(MeshClusterLODAssetTest, RefusesAChangedExistingStoreWithoutOverwritingEi
     std::ofstream(store, std::ios::binary | std::ios::app).put('x');
     Vector<uint8> previousModel;
     Vector<uint8> previousStore;
-    ASSERT_TRUE(ReadFileBytesShared(path, previousModel));
-    ASSERT_TRUE(ReadFileBytesShared(store, previousStore));
+    ASSERT_TRUE(Testing::ReadTestFileBytes(path, previousModel));
+    ASSERT_TRUE(Testing::ReadTestFileBytes(store, previousStore));
     EXPECT_FALSE(Cook(path));
     Vector<uint8> modelAfter;
     Vector<uint8> storeAfter;
-    ASSERT_TRUE(ReadFileBytesShared(path, modelAfter));
-    ASSERT_TRUE(ReadFileBytesShared(store, storeAfter));
+    ASSERT_TRUE(Testing::ReadTestFileBytes(path, modelAfter));
+    ASSERT_TRUE(Testing::ReadTestFileBytes(store, storeAfter));
     EXPECT_EQ(modelAfter, previousModel);
     EXPECT_EQ(storeAfter, previousStore);
 }
@@ -910,7 +915,7 @@ TEST_F(MeshClusterLODAssetTest, PackagesFinePagesOnceAndLoadsWithoutTheAuthoring
                            std::filesystem::directory_iterator{}), 1);
     std::filesystem::remove_all(source.parent_path());
     Vector<uint8> bytes;
-    ASSERT_TRUE(ReadFileBytesShared(store, bytes));
+    ASSERT_TRUE(Testing::ReadTestFileBytes(store, bytes));
     EXPECT_EQ(Hashing::Fnv1a64(bytes.data(), bytes.size()), model.GetClusterLODManifest()->StoreHash);
     ModelAsset independent(GUID::Generate(), staged);
     ASSERT_TRUE(independent.Load());
@@ -968,7 +973,8 @@ TEST_F(MeshClusterLODAssetTest, ManagerDrainRejectsChangedGroupsIncludingItsInli
     AssetMetadata metadata;
     ASSERT_TRUE(manager.GetRegistry().TryGetAssetMetadata(guid, metadata));
     const auto readSource = manager.GetParserRegistry().ResolveReadSource(metadata, manager);
-    EXPECT_EQ(readSource.Path, path);
+    // The asset database can store a path in another letter case on a case-insensitive volume.
+    EXPECT_TRUE(std::filesystem::equivalent(readSource.Path, path)) << readSource.Path;
     EXPECT_EQ(readSource.MaximumBytes, MeshClusterLODManifest::kMaximumFileBytes);
     Mesh changed = m_Source.GetMesh(0);
     for (Vertex& vertex : changed.Vertices)
