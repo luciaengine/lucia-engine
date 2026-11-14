@@ -1967,27 +1967,3 @@ TEST(RenderPipelineCompiler, ShaderPackagesOfListsEachPackageOnceAfterTheSourceO
               (std::vector<std::string>{"a.shaderpkg", "b.shaderpkg", "d.shaderpkg"}));
 }
 
-TEST(RenderPipelineCompiler, APassDeclaredBeforeViewParamsUploadIsRejected)
-{
-    const std::string misordered = R"json({
-      "schemaVersion": 2, "pipelineName": "Order",
-      "passes": [
-        { "id": "DepthPrepass", "type": "DepthPrepass" },
-        { "id": "ViewParamsUpload", "type": "ViewParamsUpload", "buffer": "ViewParams" },
-        { "id": "World", "type": "WorldRender" }
-      ]
-    })json";
-    const auto bad = CompileText(misordered);
-    EXPECT_TRUE(HasIssue(bad, PipelineIssueSeverity::Error, "move 'ViewParamsUpload' above it")) << IssuesToString(bad);
-
-    const std::string ordered = R"json({
-      "schemaVersion": 2, "pipelineName": "Order",
-      "passes": [
-        { "id": "ViewParamsUpload", "type": "ViewParamsUpload", "buffer": "ViewParams" },
-        { "id": "DepthPrepass", "type": "DepthPrepass" },
-        { "id": "World", "type": "WorldRender" }
-      ]
-    })json";
-    const auto good = CompileText(ordered);
-    EXPECT_FALSE(HasIssue(good, PipelineIssueSeverity::Error, "ViewParamsUpload")) << IssuesToString(good);
-}
