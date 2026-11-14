@@ -1,6 +1,47 @@
 # Editor application target
 
 set(EDITOR_SOURCES
+    # 2D editing: tile maps, tile sets, the tile palette, sprite traits and sorting layers.
+    Source/TileMap/TileLayerCommands.cpp
+    Source/TileMap/TileLayerEdits.cpp
+    Source/TileMap/TileMapEditCommand.cpp
+    Source/TileMap/TileMapEditContext.cpp
+    Source/TileMap/TileMapEditorIntegration.cpp
+    Source/TileMap/TileMapSourceImport.cpp
+    Source/TileMap/TileMapTerrainBrush.cpp
+    Source/TileMap/TileReplaceEdit.cpp
+    Source/TileMap/TileSetAtlasLookup.cpp
+    Source/TileMap/TileSetDocument.cpp
+    Source/Panels/TilePaletteBrushList.cpp
+    Source/Panels/TilePaletteGrid.cpp
+    Source/Panels/TilePaletteIntGridList.cpp
+    Source/Panels/TilePaletteLayerList.cpp
+    Source/Panels/TilePalettePanel.cpp
+    Source/Panels/TilePaletteTerrainList.cpp
+    Source/Panels/TileRulesEditorPanel.cpp
+    Source/Panels/TileSetCollisionEditor.cpp
+    Source/Panels/TileSetEditorPanel.cpp
+    Source/Panels/TileSetTerrainBitEditor.cpp
+    Source/SceneView/TileMapPaintOverlay.cpp
+    Source/SceneView/TileMapPaintTool.cpp
+    Source/SceneView/TileMapPaintToolStripEntry.cpp
+    Source/Thumbnails/TileMapThumbnailComposite.cpp
+    Source/Thumbnails/TileThumbnailHandler.cpp
+    Source/Thumbnails/ThumbnailImageCache.cpp
+    Source/Thumbnails/ThumbnailImageOps.cpp
+    Source/Thumbnails/SpriteFramesThumbnailHandler.cpp
+    Source/Inspectors/TileMapLayerInspector.cpp
+    Source/Inspectors/Sprite2DComponentTraits.cpp
+    Source/Rendering/Sorting/RenderSortingEditor.cpp
+    Source/Rendering/Sorting/SortingLayerSettings.cpp
+    Source/Rendering/Sorting/SortingLayerSettingsView.cpp
+    Source/Rendering/Sorting/SortingLayerSettingsWriter.cpp
+    Source/Rendering/Sorting/RenderSortingDiagnostic.cpp
+    Source/Rendering/Sorting/RenderSortingEdit.cpp
+    Source/Rendering/Sorting/RenderSortingFields.cpp
+    Source/DebugServer/TileMapDebugHandlers.cpp
+    Source/DebugServer/TileMapRulesCommands.cpp
+    Source/DebugServer/TileMapRulesWindow.cpp
     Source/main.cpp
     Source/Editor/Application/BuildConfigStatus.cpp
     Source/Editor/Application/EditorVersion.cpp

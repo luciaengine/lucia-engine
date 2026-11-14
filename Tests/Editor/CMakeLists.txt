@@ -1161,6 +1161,29 @@ set(EDITOR_TEST_SOURCES
 
     SpritePlacementSizeTests.cpp
     TileMapLayerRestoreTests.cpp
+    # 2D tile editing: the edit context, tile set documents, layer edits, source import,
+    # rules, terrain brush and thumbnails.
+    TileMapSourceImportTests.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/TileMap/TileMapSourceImport.cpp
+    TileMapRulesCommandsTests.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DebugServer/TileMapRulesCommands.cpp
+    TileMapRulesWindowTests.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DebugServer/TileMapRulesWindow.cpp
+    TileMapTerrainBrushTests.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/TileMap/TileMapTerrainBrush.cpp
+    TileMapEditContextTests.cpp
+    TileSetDocumentTests.cpp
+    TileLayerEditsTests.cpp
+    TileMapThumbnailCompositeTests.cpp
+    TileThumbnailHandlerTests.cpp
+    TileMapLayerThumbnailTests.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/TileMap/TileMapEditContext.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/TileMap/TileSetDocument.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/TileMap/TileLayerEdits.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/TileMap/TileReplaceEdit.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/TileMap/TileMapEditCommand.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Thumbnails/TileMapThumbnailComposite.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Thumbnails/TileThumbnailHandler.cpp
     EditorTextBlendTests.cpp
     TerrainPickingRayTests.cpp
     ScenePickTerrainInclusionTests.cpp
@@ -2799,7 +2822,9 @@ if(TARGET Editor)
 	set_tests_properties(EditorProjectOpenTests PROPERTIES LABELS "Editor" TIMEOUT 1900)
 endif()
 
-target_sources(EditorTests PRIVATE ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Thumbnails/ThumbnailImageCache.cpp)
+target_sources(EditorTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Thumbnails/ThumbnailImageCache.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Thumbnails/ThumbnailImageOps.cpp)
 
 add_executable(AtlasRegionThumbnailTests
     AtlasRegionThumbnailTests.cpp
@@ -2820,8 +2845,6 @@ add_executable(RenderSortingEditorTests
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/RenderSortingFields.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/SortingLayerSettingsWriter.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/RenderSortingEdit.cpp
-    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyLayerControls.cpp
-    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyRenderLayerEdit.cpp
 )
 target_include_directories(RenderSortingEditorTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Include

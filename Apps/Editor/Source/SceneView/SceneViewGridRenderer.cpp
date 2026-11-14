@@ -39,10 +39,11 @@ struct Grid2DPC
     float camDistance;
     float viewportH;
     float pad;
+    float cells[4]; // xy = cell origin, zw = cell size; z <= 0 = no authored cells
 };
 
 static_assert(sizeof(GridPC) == 112);
-static_assert(sizeof(Grid2DPC) == 112);
+static_assert(sizeof(Grid2DPC) == 128);
 
 // ---------------------------------------------------------------------------
 // Shader loading (cached, loaded once per process)
@@ -161,7 +162,8 @@ void SceneViewGridRenderer::RecordRG(const Rendering::RenderGraph::RGContext& ct
                                       float camDistance,
                                       float viewportH,
                                       float gridOpacity,
-                                      uint32_t gridColor)
+                                      uint32_t gridColor,
+                                      const float cells2D[4])
 {
     if (!cam)
         return;
@@ -201,6 +203,8 @@ void SceneViewGridRenderer::RecordRG(const Rendering::RenderGraph::RGContext& ct
                          gridOpacity, gridColor);
         pc.camDistance = camDistance;
         pc.viewportH = viewportH;
+        for (int i = 0; i < 4; ++i)
+            pc.cells[i] = cells2D[i];
         cl->SetPushConstants(pc);
     }
 

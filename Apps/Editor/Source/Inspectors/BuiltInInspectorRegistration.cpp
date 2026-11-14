@@ -73,6 +73,9 @@
 #include "Terrain/TerrainColorZoneInspector.h"
 #include "Terrain/TerrainMaterialLibraryInspector.h"
 #include "Terrain/TerrainModifier/TerrainModifierInspectors.h"
+#include "Inspectors/Sprite2DComponentTraits.h"
+#include "Inspectors/TileMapLayerInspector.h"
+#include "Rendering/Sorting/RenderSortingEditor.h"
 
 namespace GameEngine
 {
@@ -104,6 +107,9 @@ void RegisterBuiltInInspectors()
     RegisterSplineExtrudeInspector();
     RegisterSplinePavingInspector();
     RegisterBuiltInComponentTraits();
+    Editor::RegisterRenderSortingEditor();
+    RegisterTileMapLayerInspector();
+    RegisterSprite2DComponentTraits();
     RegisterBloomEffectInspector();
     RegisterChromaticAberrationEffectInspector();
     RegisterDepthPixelationEffectInspector();
