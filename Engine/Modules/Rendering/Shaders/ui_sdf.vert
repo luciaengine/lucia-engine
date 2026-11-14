@@ -61,15 +61,16 @@ const uint UI_DRAW_ORDER_TEX_SLOT_SHIFT = 24u;
 #include "UI/ui_quad.glsl"
 
 // Quad dilation for Slug text AA: glyph quads must extend far enough beyond
-// the ink bounds that every pixel the grown outline's coverage ramp can touch
-// gets rasterized — kTextOutlineReachPx (ui_sdf_common.glsl).
+// the ink bounds that every pixel the widened coverage ramp can touch gets
+// rasterized — the crossing influence radius kTextFilterOuterRadiusPx
+// (ui_sdf_common.glsl: exact-area reach + half the reconstruction filter).
 #ifdef UI_SUBPIXEL_DUAL_SRC
 // The subpixel variant samples coverage up to 1/3 px beyond the pixel centre
 // (the R/B stripe taps), so edge pixels need that much extra dilation or the
 // outermost fringe column would never be rasterized.
-const float kSlugDilatePixels = kTextOutlineReachPx + 1.0 / 3.0;
+const float kSlugDilatePixels = kTextFilterOuterRadiusPx + 1.0 / 3.0;
 #else
-const float kSlugDilatePixels = kTextOutlineReachPx;
+const float kSlugDilatePixels = kTextFilterOuterRadiusPx;
 #endif
 
 // --- CSS transforms ---

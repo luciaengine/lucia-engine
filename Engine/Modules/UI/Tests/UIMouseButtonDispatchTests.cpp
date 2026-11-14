@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "UIRgTestHarness.h"
+#include "TestTempDir.h"
 #include "UI/Controls/Button.h"
 #include "UI/Registration/ElementRegistration.h"
 #include "UI/UIEvents.h"
@@ -65,7 +66,8 @@ struct DispatchFixture
         Ui = std::make_unique<UIManager>(Dev.get());
         Ui->SetRoot(std::move(root));
 
-        const auto css = std::filesystem::temp_directory_path() / "ui_mouse_button_dispatch.css";
+        const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_mouse_button_dispatch"));
+        const auto css = tempDir.Path() / "ui_mouse_button_dispatch.css";
         {
             std::ofstream f(css);
             f << R"(

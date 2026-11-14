@@ -36,6 +36,7 @@
 // mark idiom (EditorTopToolbar.cpp:515 and ~14 peer call sites).
 
 #include "UIRgTestHarness.h"
+#include "TestTempDir.h"
 
 #include "UI/Registration/ElementRegistration.h"
 #include "UI/StyleProperties.h"
@@ -91,7 +92,8 @@ struct OneBoxFixture
         Ui->SetRoot(std::move(root));
         Ui->SetUpdateProfilingEnabled(true);
 
-        const auto css = std::filesystem::temp_directory_path() / cssFileName;
+        const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_zero_rect_dirty_gate"));
+        const auto css = tempDir.Path() / cssFileName;
         {
             std::ofstream f(css);
             f << "#root { display: flex; flex-direction: column; width: 220px; height: 240px; }\n"

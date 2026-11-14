@@ -47,6 +47,8 @@
 #include "AssetCore/AssetEvents.h" // AssetEvent/AssetEventType for the hot-reload drive
 #include "AssetCore/GUID.h"
 
+#include "TestTempDir.h"
+
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
 using namespace GameEngine::UIParsing;
@@ -71,7 +73,8 @@ TEST(GameUIHostTests, SetPointerDrivesInteractiveHoverAndClick)
         R"(<uielement id='root'><uielement id='btn' /></uielement>)", root));
     ui->SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "gameui_host_interactive.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_interactive"));
+    const auto css = tempDir.Path() / "gameui_host_interactive.css";
     {
         std::ofstream f(css);
         f << "#root { position: relative; width: 200px; height: 200px; }\n"
@@ -150,7 +153,8 @@ TEST(GameUIHostTests, CursorLeavingSurfaceWhileArmedDoesNotClick)
         R"(<uielement id='root'><button id='btn' /></uielement>)", root));
     ui->SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "gameui_host_leave_armed.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_leave_armed"));
+    const auto css = tempDir.Path() / "gameui_host_leave_armed.css";
     {
         std::ofstream f(css);
         f << "#root { position: relative; width: 200px; height: 200px; }\n"
@@ -243,7 +247,8 @@ TEST(GameUIHostTests, LeavingMidPressDoesNotStealLaterClicksFromOtherControls)
         R"(<uielement id='root'><button id='a' /><button id='b' /></uielement>)", root));
     ui->SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "gameui_host_leave_steal.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_leave_steal"));
+    const auto css = tempDir.Path() / "gameui_host_leave_steal.css";
     {
         std::ofstream f(css);
         f << "#root { position: relative; width: 200px; height: 200px; }\n"
@@ -307,7 +312,8 @@ TEST(GameUIHostTests, ReturningOverTheButtonAfterLeavingMidPressDoesNotClick)
         R"(<uielement id='root'><button id='btn' /></uielement>)", root));
     ui->SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "gameui_host_leave_return.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_leave_return"));
+    const auto css = tempDir.Path() / "gameui_host_leave_return.css";
     {
         std::ofstream f(css);
         f << "#root { position: relative; width: 200px; height: 200px; }\n"
@@ -375,7 +381,8 @@ TEST(GameUIHostTests, APressAHudControlActsOnAnswersConsumed)
         R"(<uielement id='root'><button id='btn' /></uielement>)", root));
     ui->SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "gameui_host_press_answer.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_press_answer"));
+    const auto css = tempDir.Path() / "gameui_host_press_answer.css";
     {
         std::ofstream f(css);
         f << "#root { position: relative; width: 200px; height: 200px; }\n"
@@ -427,7 +434,8 @@ TEST(GameUIHostTests, EveryButtonReachesTheSurfaceNotOnlyThePrimary)
         R"(<uielement id='root'><uielement id='slot' /></uielement>)", root));
     ui->SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "gameui_host_every_button.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_every_button"));
+    const auto css = tempDir.Path() / "gameui_host_every_button.css";
     {
         std::ofstream f(css);
         f << "#root { position: relative; width: 200px; height: 200px; }\n"
@@ -491,7 +499,8 @@ TEST(GameUIHostTests, AWheelIsAnsweredByTheHudScrollableThatMoved)
     root->AddChild(std::move(scrollOwned));
     ui->SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "gameui_host_wheel.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_wheel"));
+    const auto css = tempDir.Path() / "gameui_host_wheel.css";
     {
         std::ofstream f(css);
         // Content taller than the viewport: an unscrollable list declines the
@@ -530,7 +539,8 @@ TEST(GameUIHostTests, ACancelledGestureSwallowsTheReleaseThatEndsIt)
         R"(<uielement id='root'><button id='btn' /></uielement>)", root));
     ui->SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "gameui_host_cancel_event.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_cancel_event"));
+    const auto css = tempDir.Path() / "gameui_host_cancel_event.css";
     {
         std::ofstream f(css);
         f << "#root { position: relative; width: 200px; height: 200px; }\n"
@@ -713,7 +723,8 @@ TEST(GameUIHostTests, LayoutSizeOverrideDrivesLayoutExtent)
         R"(<uielement id='root'><uielement id='fill' /></uielement>)", root));
     ui->SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "gameui_host_override.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_override"));
+    const auto css = tempDir.Path() / "gameui_host_override.css";
     {
         std::ofstream f(css);
         f << "#root { width: 100%; height: 100%; }\n#fill { width: 100%; height: 100%; }\n";
@@ -770,8 +781,9 @@ TEST(GameUIHostTests, LayoutSwapReplacesSubtree)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_layoutswap"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = std::filesystem::temp_directory_path() / "gameui_host_layoutswap";
+    const auto root = tempDir.Path();
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
     GUID guidA, guidB;
@@ -817,8 +829,9 @@ TEST(GameUIHostTests, MultipleDocumentsCompose)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_multidoc"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = std::filesystem::temp_directory_path() / "gameui_host_multidoc";
+    const auto root = tempDir.Path();
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
     GUID guidA, guidB;
@@ -865,8 +878,9 @@ TEST(GameUIHostTests, FullscreenCoversTargetOnlyOnceItsLayoutIsBound)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_fs_readiness"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = std::filesystem::temp_directory_path() / "gameui_host_fs_readiness";
+    const auto root = tempDir.Path();
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
     GUID guidA, guidB;
@@ -918,8 +932,9 @@ TEST(GameUIHostTests, ReadyFullscreenSuppressesOverlayDocuments)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_overlay_suppress"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = std::filesystem::temp_directory_path() / "gameui_host_overlay_suppress";
+    const auto root = tempDir.Path();
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
     GUID guidA, guidB;
@@ -974,8 +989,9 @@ TEST(GameUIHostTests, CoversTargetOpaqueArms)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_covers_target"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = std::filesystem::temp_directory_path() / "gameui_host_covers_target";
+    const auto root = tempDir.Path();
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
     GUID guidA, guidB;
@@ -1037,8 +1053,9 @@ TEST(GameUIHostTests, NotReadyFullscreenDoesNotSuppressOverlay)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_overlay_notready"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = std::filesystem::temp_directory_path() / "gameui_host_overlay_notready";
+    const auto root = tempDir.Path();
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
     GUID guidA, guidB;
@@ -1241,8 +1258,9 @@ TEST(GameUIHostTests, BindGenerationBumpsOnLayoutBindAndReset)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_bindgen"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = std::filesystem::temp_directory_path() / "gameui_bindgen";
+    const auto root = tempDir.Path();
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
     GUID guidA, guidB;
@@ -1280,8 +1298,9 @@ TEST(GameUIHostTests, DocumentRootScopesLookupToItsDocument)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_findelement"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = std::filesystem::temp_directory_path() / "gameui_findelement";
+    const auto root = tempDir.Path();
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
     GUID guidA, guidB;
@@ -1323,8 +1342,9 @@ TEST(GameUIHostTests, BindGenerationBumpsOnLayoutHotReload)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_bindgen_hotreload"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = std::filesystem::temp_directory_path() / "gameui_bindgen_hotreload";
+    const auto root = tempDir.Path();
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
 
@@ -1379,8 +1399,9 @@ TEST(GameUIHostTests, NotifyGameplayStoppedDiscardsBoundDocumentsAndBumpsSession
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_playstop"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = std::filesystem::temp_directory_path() / "gameui_playstop";
+    const auto root = tempDir.Path();
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
 
@@ -1423,8 +1444,9 @@ TEST(GameUIHostTests, NotifyGameplayStoppedRebuildDropsPlayHandlers)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_playstop_click"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = std::filesystem::temp_directory_path() / "gameui_playstop_click";
+    const auto root = tempDir.Path();
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
 
@@ -1476,8 +1498,9 @@ TEST(GameUIHostTests, FindElementByIdResolvesSharedIdDeterministically)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_findany"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = std::filesystem::temp_directory_path() / "gameui_findany";
+    const auto root = tempDir.Path();
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
 
@@ -1564,8 +1587,9 @@ TEST(GameUIHostTests, SessionEventGoesInertAfterPlayStops)
     UIRegistration::RegisterBuiltInControls();
 
     UiRgHarness rg(dev.get());
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_sessionclick"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = std::filesystem::temp_directory_path() / "gameui_sessionclick";
+    const auto root = tempDir.Path();
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
 
@@ -1650,8 +1674,9 @@ TEST(GameUIHostTests, SessionEventDoesNotFireWhenTheCursorLeavesMidPress)
     UIRegistration::RegisterBuiltInControls();
 
     UiRgHarness rg(dev.get());
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_sessionclick_leave"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto root = std::filesystem::temp_directory_path() / "gameui_sessionclick_leave";
+    const auto root = tempDir.Path();
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(root, &pool));
 
@@ -1732,7 +1757,8 @@ TEST(GameUIHostTests, ReferenceModesKeepLayoutAndPointerAlignedAcrossResize)
     ASSERT_TRUE(XMLParser::ParseLayoutFromString(
         R"(<uielement id='root'><button id='scaled-button' /></uielement>)", root));
     ui->SetRoot(std::move(root));
-    const auto css = std::filesystem::temp_directory_path() / "gameui_reference_height.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_reference_height"));
+    const auto css = tempDir.Path() / "gameui_reference_height.css";
     {
         std::ofstream f(css);
         f << "#root { width: 100%; height: 100%; }\n"
@@ -1798,7 +1824,8 @@ TEST(GameUIHostTests, AWheelUnderAScaledPointerScrollsInLogicalPixels)
     root->AddChild(std::move(scrollOwned));
     ui->SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "gameui_host_scaled_wheel.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_scaled_wheel"));
+    const auto css = tempDir.Path() / "gameui_host_scaled_wheel.css";
     {
         std::ofstream f(css);
         f << "#root { display: flex; width: 200px; height: 100px; }\n"

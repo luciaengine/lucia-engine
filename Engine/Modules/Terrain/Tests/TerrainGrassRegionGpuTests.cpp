@@ -18,6 +18,7 @@
 #include "Rendering/Materials/Shader/ShaderCompileService.h"
 #include "Rendering/Materials/MaterialBuilder.h"
 #include "Source/Vulkan/VulkanDevice/VulkanDevice.h"
+#include "TestTempDir.h"
 
 #include <algorithm>
 #include <array>
@@ -72,7 +73,7 @@ protected:
     PipelineHandle Pipeline{};
     DescriptorSetHandle DescriptorSet{};
     SamplerHandle Sampler{};
-    std::filesystem::path Cache;
+    const TestUtils::ScopedTempDir Cache{TestUtils::MakeUniqueTempDirectory("GrassRegionGpu")};
 
     void SetUp() override
     {
@@ -156,7 +157,7 @@ protected:
         ShaderProgramCompileRequest request{};
         const auto modules = std::filesystem::path(GRASS_REGION_MODULES_DIR);
         request.baseDirectory = modules / "TerrainGrass/Shaders/TerrainGrass";
-        request.cacheRoot = Cache;
+        request.cacheRoot = Cache.Path();
         request.includeDirs = {modules / "TerrainGrass/Shaders", modules / "CBTTerrain/Shaders/CBT",
             modules / "Rendering/Shaders", request.baseDirectory};
         ShaderStageCompileSpec stage{};

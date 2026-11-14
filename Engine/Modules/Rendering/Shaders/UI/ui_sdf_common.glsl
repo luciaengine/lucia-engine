@@ -8,8 +8,8 @@
 layout(push_constant) uniform PC {
     vec2 targetSize;
     float timeSeconds;
-    float textContrast;      // scale on the colour-keyed contrast term (text_mask_gamma.glsl); 0 = off
-    float textBlendGamma;    // target blend space for coverage; 0 = linear (default), 1 = encoded (editor)
+    float textContrast;      // Skia SK_GAMMA_CONTRAST for the colour-keyed coverage boost; 0 = off
+    float textBlendGamma;    // target blend space for coverage; 0 = linear (identity retarget)
     float edgeSoftness;      // user softness knob; brightness-neutral remap around 0.5
     int outputEncoding;      // 0=SDR linear, 1=SDR encoded bytes, 2=HDR10 PQ, 3=HLG, 4=scRGB
     float paperWhiteNits;    // UI white TARGET (nits) in HDR output modes
@@ -38,9 +38,8 @@ layout(push_constant) uniform PC {
 // modeParams.y is a uint (the UITransformSlot index): floatBitsToUint.
 // A corner is an ellipse: radii holds the horizontal semi-axes and radiiY the
 // vertical ones. Modes that overload the radii slot for something else (Line/
-// Bezier thickness, Triangle rounding) leave radiiY
-// zero. Slug overloads radii with its band transform and keeps its text outline
-// width in radiiY.x.
+// Bezier thickness, Triangle rounding) leave radiiY zero. Slug overloads radii
+// with its band transform and keeps its text outline width in radiiY.x.
 struct UIPrimitive {
     vec4 rectXYWH;
     vec4 radii;          // Rect: corners; Textured: border-radius background clip corners
@@ -117,26 +116,21 @@ const uint GRAD_POLAR_HSV   = 4u;
 const uint GRAD_HUE_VERT    = 5u;
 const uint GRAD_POLAR_HSV_GRADING = 6u;
 
-// --- Slug text outline dilation ---
-// Glyph coverage is the exact pixel-area coverage of the glyph outline grown
-// by kTextDilationPerPpem device px per device pixel of em size, capped at
-// kTextMaxDilationPx: each edge moves that far outward along the sampling ray,
-// and the glyph then moves up by the same amount, so the baseline edge stays
-// where the outline puts it and the top edge carries twice the growth.
-// Measured out of Chrome 155 on macOS 15.7 (headless, DPR 1 and 2, system font
-// smoothing default) with straight Roboto stems from 8 to 140 px: the edge
-// response is a 1 px exact-area ramp, not a blur, offset outward by
-// min(0.0058 ppem, 0.30) px in x on both sides and by twice that upward in y,
-// in device pixels at both DPRs. Shared by the fragment stage (the crossing
-// ramp in slug_functions.glsl) and the vertex stage (the glyph quad must cover
-// the grown outline).
-const float kTextDilationPerPpem = 0.0058;
-const float kTextMaxDilationPx = 0.30;
+// --- Slug text reconstruction filter ---
+// Box kernel convolved onto the exact-area glyph coverage, in DEVICE pixels.
+// Matches the filter measured out of Chrome's rasteriser (edge-profile
+// decomposition over Chrome vs engine specimen crops): best-fit extra box
+// width 0.945 px at BOTH dpr 1 and dpr 2 — fixed in device pixels, not
+// CSS pixels. It is mass-preserving (Chrome mask mass / geometric stem width
+// = 0.9962), widens the 10-90 edge from 0.83 px (bare exact-area) to Chrome's
+// 1.20 px, and damps stem-phase contrast. Shared by the fragment stage (the
+// widened coverage ramp in slug_functions.glsl) and the vertex stage (glyph
+// quad dilation must cover the widened skirt).
+const float kTextFilterWidthPx = 0.945;
 
-// Farthest a sample can be from the undilated outline and still be covered:
-// the exact-area ramp's 0.5 px reach plus the top edge's growth (dilation plus
-// the upward move).
-const float kTextOutlineReachPx = 0.5 + 2.0 * kTextMaxDilationPx;
+// A crossing influences samples up to this far away: the exact-area ramp's
+// 0.5 px reach plus half the filter width.
+const float kTextFilterOuterRadiusPx = 0.5 + 0.5 * kTextFilterWidthPx;
 
 // --- Text effect reach ---
 // How far, in device pixels, a Slug primitive's text effects paint past its
