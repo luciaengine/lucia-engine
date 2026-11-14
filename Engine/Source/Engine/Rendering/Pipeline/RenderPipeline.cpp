@@ -455,9 +455,8 @@ void CollectWrites(const RenderPipelineNodeResourceFields& fields, const nlohman
 std::vector<std::string> CollectReads(const RenderPipelineNodeResourceFields& fields, const nlohmann::json& pass)
 {
     std::vector<std::string> reads;
-    for (const auto& ref : fields.RefKeys)
+    for (const auto& key : fields.RefKeys)
     {
-        const auto& key = ref.Key;
         const bool published = std::any_of(fields.PublishKeys.begin(), fields.PublishKeys.end(),
                                            [&key](const auto& publish) { return publish.first == key.Key; });
         std::string value;
