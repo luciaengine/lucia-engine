@@ -479,6 +479,8 @@ struct ClusterLODFeature::State
     {
         const auto fineSources = OwnedFineSources();
         std::vector<Binding> bindings;
+        if (fineSources.empty())
+            return bindings;
         world.Query<ECS::Read<Components::MeshRenderer>>().IncludeDisabled().Each(
             [&fineSources, &bindings](ECS::EntityHandle entity, const Components::MeshRenderer& renderer)
             {
@@ -724,7 +726,8 @@ struct ClusterLODFeature::State
     {
         auto& services = *Services;
         auto& registry = services.GetMeshGPURegistry();
-        auto oldBindings = std::exchange(Bindings, {});
+        auto oldBindings = CollectFineBindings(world);
+        Bindings.clear();
         FastHashMap<ECS::EntityHandle, bool, ECS::EntityHandleHash> selected;
         bool changed = false;
         for (auto& candidate : candidates)
