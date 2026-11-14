@@ -43,6 +43,10 @@ struct EditorCommandLineArgs
     // Unset leaves the port to the env var, then the built-in default.
     std::optional<std::uint16_t> debugPort;
 
+    // --no-focus: no editor window takes the keyboard focus or brings the editor to the
+    // foreground. For automation on a machine where a person works at the same time.
+    bool noFocus = false;
+
     // --window <W>x<H>[+<X>+<Y>]: the main window's client size and position in pixels
     // (points on macOS). Unset: the window opens maximized. X and Y apply only when
     // windowHasPosition is true; otherwise the OS places the window.

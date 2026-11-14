@@ -919,6 +919,42 @@ TEST(MetalResources, RenderGraphPublishesDeclaredWorkBeforeTheUnrelatedTail)
 // The draw stream reduces a GPU->CPU readback mirror only when this poll says the
 // newest graphics submission has completed: it must read false while a copy into
 // the mirror is still pending, and never read true before the copy has landed.
+// A caller that reuses memory the GPU may still read (cluster LOD fine page retirement)
+// needs a token for the newest graphics submit. Without a graphics timeline it never gets one.
+TEST(MetalResources, LastGraphicsSubmissionTokenCompletesAfterTheSubmit)
+{
+    auto device = CreateHeadlessMetalDevice();
+    if (!device)
+    {
+        GTEST_SKIP() << "Metal backend unavailable";
+    }
+
+    EXPECT_FALSE(device->LastGraphicsSubmissionToken().IsValid()) << "no graphics submit yet";
+
+    uint64_t previous = 0;
+    for (int submit = 0; submit < 3; ++submit)
+    {
+        auto commandList = device->CreateCommandList(IDevice::QueueType::Graphics);
+        commandList->Begin();
+        commandList->End();
+        ASSERT_TRUE(device->QueueSubmit(IDevice::QueueType::Graphics, {commandList.get()}, {}, {}));
+        const IDevice::GpuSyncToken token = device->LastGraphicsSubmissionToken();
+        ASSERT_TRUE(token.IsValid()) << "submit " << submit;
+        EXPECT_GT(token.value, previous) << "each graphics submit signals a later value";
+        previous = token.value;
+        ASSERT_TRUE(device->WaitGpuSyncToken(token, 5'000'000'000ull));
+        EXPECT_EQ(device->QueryGpuSyncToken(token), IDevice::GpuSyncStatus::Complete);
+    }
+
+    // A transfer submit is not graphics work and does not move the graphics token.
+    auto transfer = device->CreateCommandList(IDevice::QueueType::Transfer);
+    transfer->Begin();
+    transfer->End();
+    ASSERT_TRUE(device->QueueSubmit(IDevice::QueueType::Transfer, {transfer.get()}, {}, {}));
+    EXPECT_EQ(device->LastGraphicsSubmissionToken().value, previous);
+    device->Shutdown();
+}
+
 TEST(MetalResources, PreviousFrameGraphicsCompleteFollowsTheNewestGraphicsSubmission)
 {
     auto device = CreateHeadlessMetalDevice();
