@@ -18,6 +18,7 @@ Welcome to the Game Engine documentation! This directory contains comprehensive 
 - [`packages/`](packages/): the package data model
 - [`publishing/`](publishing/): game builds, Steam publishing, and the desktop Player's sources
 - [`contributing/`](contributing/): material for engine contributors, from the scripting ABI to editor guidelines
+- [`development/`](development/): maintained engineering guidance, such as how Lucia imports OpenEngine releases
 
 ## Quick Start
 
