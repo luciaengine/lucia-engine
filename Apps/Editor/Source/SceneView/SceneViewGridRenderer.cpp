@@ -91,7 +91,8 @@ static bool LoadGrid2DShaderBytes(std::vector<uint8_t>& outVs, std::vector<uint8
 
 static GraphicsPipelineDesc BuildGridPipelineDesc(const std::vector<uint8_t>& vs,
                                                   const std::vector<uint8_t>& fs,
-                                                  const char* debugName)
+                                                  const char* debugName,
+                                                  uint32_t pushConstantBytes)
 {
     GraphicsPipelineDesc gd{};
     gd.Kind = GraphicsPipelineKind::VertexFragment;
@@ -120,7 +121,7 @@ static GraphicsPipelineDesc BuildGridPipelineDesc(const std::vector<uint8_t>& vs
     blend.dstAlphaBlendFactor = BlendFactor::OneMinusSrcAlpha;
     gd.ColorBlend.attachments = {blend};
 
-    gd.PushConstants.Size      = sizeof(GridPC);
+    gd.PushConstants.Size      = pushConstantBytes;
     gd.PushConstants.StageMask = kShaderStageFragment;
 
     return gd;
@@ -181,7 +182,8 @@ void SceneViewGridRenderer::RecordRG(const Rendering::RenderGraph::RGContext& ct
     if (!loaded)
         return;
     const PipelineHandle pipe = ctx.GetOrCreatePipelineVariant(device->InternGraphicsPipeline(
-        BuildGridPipelineDesc(vs, fs, is2DMode ? "SV_InfiniteGrid2D" : "SV_InfiniteGrid")));
+        BuildGridPipelineDesc(vs, fs, is2DMode ? "SV_InfiniteGrid2D" : "SV_InfiniteGrid",
+                              static_cast<uint32_t>(is2DMode ? sizeof(Grid2DPC) : sizeof(GridPC)))));
     if (!pipe.IsValid())
         return;
 
