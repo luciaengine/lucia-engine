@@ -345,7 +345,11 @@ bool FontAtlas::BuildCaretMapUtf8(std::string_view utf8, float pixelSize,
     if (!m_FtFace.IsValid())
         return false;
     ShapingOutput shaped;
-    const float scale = ShapeGlyphs(utf8, pixelSize, false, shaped, letterSpacingPx);
+    // Shaping starts at the last space at or before firstByte, so a ligature or a mark run
+    // that holds firstByte is shaped whole; the whole string stays the shaping context.
+    const size_t space = firstByte == 0 ? std::string_view::npos : utf8.rfind(' ', std::min(firstByte, utf8.size() - 1));
+    const size_t shapeFrom = space == std::string_view::npos ? 0 : space;
+    const float scale = ShapeGlyphs(utf8, pixelSize, false, shaped, letterSpacingPx, shapeFrom, utf8.size());
     struct CaretCluster { uint32_t Start; uint32_t End; float StartX; float EndX; };
     std::vector<CaretCluster> clusters;
     float pen = 0.0f;
