@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/Device.h" // IDevice::GpuSyncToken in OnFrameSubmittedRG
 
 #include <cstdint>
@@ -65,6 +66,10 @@ class IRenderFeature
     // idle elision re-runs every depth-derived family (depth min/max, clustered
     // light culling, SDSM, HZB). Read once per frame on the render thread.
     virtual bool WritesDynamicDepth() const { return false; }
+
+    /// Retire owned view state without registering features or waiting for GPU work.
+    /// Keep in-flight resources alive until their recorded submissions complete.
+    virtual void OnViewReleased(::GameEngine::Rendering::ViewId /*viewId*/) {}
 
     // RenderGraph declaration hook. A feature that owns render targets declares
     // the passes that write them here — driven per (feature, view) by the

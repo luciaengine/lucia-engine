@@ -5,6 +5,7 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Core/CpuProfiler.h"
 #include "Engine/Rendering/IRenderFeature.h"
+#include "Engine/Rendering/VirtualShadows/VirtualShadowFeedback.h"
 #include "Engine/Rendering/RTShadowMaskService.h"
 #include "Rendering/Core/PassPhase.h"
 
@@ -706,6 +707,14 @@ uint32_t RenderServices::ScheduleWorldBucketerCommon()
             registerViewBatches(view.id, kAreaShadowCullingIndex);
         if (hasVisRangeForCascade(view.id, kSpotShadowCullingIndex))
             registerViewBatches(view.id, kSpotShadowCullingIndex);
+        if (hasVisRangeForCascade(view.id, kVirtualShadowCasterCullingIndex))
+        {
+            static_assert(kVirtualShadowCasterCullingIndex >= kProbeFaceCullingIndexBase + kProbeFaceCount);
+            static_assert(kVirtualShadowCasterCullingIndex < kSpotShadowCullingIndex);
+            Rendering::GPUDrawStreamBuilder::ViewLODParams stableLod{};
+            stableLod.forceLod = 0;
+            registerViewBatches(view.id, kVirtualShadowCasterCullingIndex, &stableLod);
+        }
         // M1: one batch slice per (slot, face) that the cull scheduler produced a
         // visibility range for (same shared atlas assignment; ScheduleCulling ran
         // earlier, so hasVisRangeForCascade reflects the scheduled slices).

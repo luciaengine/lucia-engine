@@ -218,6 +218,7 @@ FeatureDeclareContext RenderServices::MakeFeatureDeclareContext(
     const float* directionalLightDirWS, std::function<std::string(const char*)> passName)
 {
     FeatureDeclareContext ctx;
+    ctx.For.Stamp(frame);
     ctx.View = viewId;
     ctx.CascadeCount = cascadeCount;
     ctx.PunctualResolution = punctualResolution;

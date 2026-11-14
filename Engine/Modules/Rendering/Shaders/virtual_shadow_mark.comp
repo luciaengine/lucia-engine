@@ -1,0 +1,165 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+
+#include "Includes/screen_position.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D DepthTex;
+
+struct VirtualShadowProjection
+{
+    mat4 ViewClipToLightClip;
+    uint FirstPage;
+    uint PagesPerAxis;
+    uint LastMip;
+    float FilterRadiusUV;
+    vec4 NormalBiasClipBounds;
+};
+
+layout(set = 0, binding = 1, std430) readonly buffer ShadowMarkProjections
+{
+    VirtualShadowProjection Projections[];
+};
+
+layout(set = 0, binding = 2, std430) buffer ShadowPageRequests
+{
+    uint RequestWords[];
+};
+
+layout(set = 0, binding = 3, std140) uniform ShadowMarkParams
+{
+    // xy: depth extent; z: projection count; w: request buffer size in words.
+    uvec4 ExtentAndCounts;
+    // xy: top-left viewport pixel within the depth attachment.
+    uvec4 ViewportOffset;
+    vec4 CameraInverseW;
+};
+
+// Match kVirtualShadowPageTexels and kVirtualLocalShadowPagesPerAxis.
+const float kPageTexels = 128.0;
+const uint kMaxPagesPerAxis = 128u;
+// One full 128x128 mip chain plus a possible unaligned first word.
+const uint kMaxProjectionPages = (4u * kMaxPagesPerAxis * kMaxPagesPerAxis - 1u) / 3u;
+const uint kMaxProjectionWords = (kMaxProjectionPages + 62u) / 32u;
+shared uint WorkgroupRequestWords[kMaxProjectionWords];
+
+uint PageMipOffset(uint baseSide, uint mip)
+{
+    uint offset = 0u;
+    for (uint level = 0u; level < mip; ++level)
+    {
+        uint side = baseSide >> level;
+        offset += side * side;
+    }
+    return offset;
+}
+
+void MarkPages(VirtualShadowProjection projection, vec2 uvLow, vec2 uvHigh, uint mip, uint wordCount)
+{
+    uint side = projection.PagesPerAxis >> mip;
+    // Include the texels adjacent to a bilinear tap. Guarding in UV preserves
+    // a world-space point/spot kernel's reach when the virtual mip changes.
+    float guard = projection.FilterRadiusUV + 0.5 / (float(side) * kPageTexels);
+    ivec2 lo = ivec2(floor(clamp(uvLow - guard, vec2(0.0), vec2(1.0)) * float(side)));
+    ivec2 hi = ivec2(floor(clamp(uvHigh + guard, vec2(0.0), vec2(1.0)) * float(side)));
+    lo = min(lo, ivec2(int(side) - 1));
+    hi = min(hi, ivec2(int(side) - 1));
+    uint mipOffset = PageMipOffset(projection.PagesPerAxis, mip) + (projection.FirstPage & 31u);
+    for (int y = lo.y; y <= hi.y; ++y)
+    {
+        uint first = mipOffset + uint(y) * side + uint(lo.x);
+        uint end = min(first + uint(hi.x - lo.x + 1), wordCount * 32u);
+        while (first < end)
+        {
+            uint bit = first & 31u;
+            uint count = min(end - first, 32u - bit);
+            uint mask = bitfieldInsert(0u, ~0u, int(bit), int(count));
+            atomicOr(WorkgroupRequestWords[first >> 5u], mask);
+            first += count;
+        }
+    }
+}
+
+void MarkReceiver(uvec2 pixel, VirtualShadowProjection projection, uint wordCount)
+{
+    if (any(greaterThanEqual(pixel, ExtentAndCounts.xy)))
+        return;
+    float depth = texelFetch(DepthTex, ivec2(ViewportOffset.xy + pixel), 0).r;
+    if (!(depth > 0.0 && depth <= 1.0))
+        return;
+
+    vec2 extent = vec2(ExtentAndCounts.xy);
+    vec2 ndc = GE_ViewportUVToYUpNdc((vec2(pixel) + 0.5) / extent);
+    vec4 receiver = vec4(ndc, depth, 1.0);
+    vec4 clip = projection.ViewClipToLightClip * receiver;
+    vec4 bias = abs(dot(CameraInverseW, receiver)) * projection.NormalBiasClipBounds;
+    if (any(isnan(clip)) || any(isinf(clip)) || any(isnan(bias)) || any(isinf(bias)) ||
+        clip.w + bias.w <= 0.0 || clip.z + bias.z < 0.0 || clip.z - bias.z > clip.w + bias.w)
+        return;
+
+    vec2 uvLow = vec2(0.0);
+    vec2 uvHigh = vec2(1.0);
+    if (clip.w - bias.w > 1e-6)
+    {
+        // Bound the projection of every allowed normal offset. The lower
+        // denominator can expand either sign, so keep all quotient extrema.
+        vec2 a = (clip.xy - bias.xy) / (clip.w - bias.w);
+        vec2 b = (clip.xy - bias.xy) / (clip.w + bias.w);
+        vec2 c = (clip.xy + bias.xy) / (clip.w - bias.w);
+        vec2 d = (clip.xy + bias.xy) / (clip.w + bias.w);
+        vec2 low = min(min(a, b), min(c, d));
+        vec2 high = max(max(a, b), max(c, d));
+        uvLow = vec2(low.x * 0.5 + 0.5, 0.5 - high.y * 0.5);
+        uvHigh = vec2(high.x * 0.5 + 0.5, 0.5 - low.y * 0.5);
+    }
+    float guard = projection.FilterRadiusUV + 0.5 / kPageTexels;
+    if (any(lessThan(uvHigh, vec2(-guard))) || any(greaterThan(uvLow, vec2(1.0 + guard))))
+        return;
+
+    // Fragment derivatives can differ from a constant-depth screen neighbor
+    // on slopes and silhouettes. Request every parent at this receiver so
+    // whichever mip the real footprint selects can become resident.
+    for (uint mip = 0u; mip <= projection.LastMip; ++mip)
+        MarkPages(projection, uvLow, uvHigh, mip, wordCount);
+}
+
+void main()
+{
+    // The dispatch assigns one projection to each workgroup. Validate it
+    // before the barriers so even out-of-viewport threads can participate.
+    if (gl_WorkGroupID.z >= ExtentAndCounts.z)
+        return;
+    VirtualShadowProjection projection = Projections[gl_WorkGroupID.z];
+    uint side = projection.PagesPerAxis;
+    if (side == 0u || side > kMaxPagesPerAxis || (side & (side - 1u)) != 0u)
+        return;
+    if (projection.LastMip > uint(findMSB(side)) ||
+        !(projection.FilterRadiusUV >= 0.0 && projection.FilterRadiusUV <= 0.25))
+        return;
+
+    uint firstWord = projection.FirstPage >> 5u;
+    uint endWord = min(ExtentAndCounts.w, 1u << 27u);
+    if (firstWord >= endWord)
+        return;
+    uint lastSide = side >> projection.LastMip;
+    uint pageCount = PageMipOffset(side, projection.LastMip) + lastSide * lastSide;
+    uint wordCount = min((pageCount + (projection.FirstPage & 31u) + 31u) >> 5u, endWord - firstWord);
+    uint lane = gl_LocalInvocationIndex;
+    uint lanes = gl_WorkGroupSize.x * gl_WorkGroupSize.y;
+    for (uint word = lane; word < wordCount; word += lanes)
+        WorkgroupRequestWords[word] = 0u;
+    barrier();
+
+    MarkReceiver(gl_GlobalInvocationID.xy, projection, wordCount);
+    barrier();
+
+    // Other workgroups and unaligned projections may share the destination
+    // word. Publish only once per nonempty word from this workgroup.
+    for (uint word = lane; word < wordCount; word += lanes)
+    {
+        uint mask = WorkgroupRequestWords[word];
+        if (mask != 0u)
+            atomicOr(RequestWords[firstWord + word], mask);
+    }
+}

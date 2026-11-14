@@ -419,6 +419,9 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/CascadeMotionScheduler.cpp
 	Source/Engine/Rendering/CascadeShadowCache.cpp
 	Source/Engine/Rendering/CascadeCacheLogFormat.cpp
+    Source/Engine/Rendering/VirtualShadows/VirtualShadowPageCache.cpp
+    Source/Engine/Rendering/VirtualShadows/VirtualShadowFeedback.cpp
+    Source/Engine/Rendering/VirtualShadows/VirtualShadowRenderFeature.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeature.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeaturePasses.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeatureViewFit.cpp

@@ -425,6 +425,11 @@ uint32_t RGFrame::RecordSecondariesParallel()
     return forked;
 }
 
+bool RGPrepareContext::IsFor(const RGFrameStamp& frame) const
+{
+    return m_Context.m_Frame && frame.IsFor(*m_Context.m_Frame);
+}
+
 bool RGFrame::PreparePasses()
 {
     const auto prepareBegin = std::chrono::steady_clock::now();

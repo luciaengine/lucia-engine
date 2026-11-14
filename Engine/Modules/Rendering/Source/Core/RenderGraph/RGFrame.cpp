@@ -4,6 +4,7 @@
 #include "Rendering/Core/Pipeline/PipelineCache.h"
 #include "Rendering/Core/Pipeline/PipelineManager.h"
 
+#include <bit>
 #include <cassert>
 #include <chrono>
 #include <cstring>
@@ -349,6 +350,34 @@ PipelineFormatKey RGContext::BuildCurrentFormatKey() const
     m_CachedKey = DeriveFormatKey(inputs, count, sw);
     m_KeyDirty = false;
     return m_CachedKey;
+}
+
+bool RGPrepareContext::UseDepthTarget(RGTexture depth, uint32_t expectedSamples)
+{
+    constexpr uint32_t kMaxSamples = 64;
+    if (!m_Context.m_Frame || !depth.IsValid() || !std::has_single_bit(expectedSamples) ||
+        expectedSamples > kMaxSamples)
+        return false;
+    const auto& graph = m_Context.m_Frame->Graph();
+    if (m_Context.m_Pass >= graph.PassCount() || graph.PassQueue(m_Context.m_Pass) != RGQueue::Graphics ||
+        depth.Id >= graph.ResourceCount())
+        return false;
+    const auto& descriptor = graph.ResourceDesc(depth.Id);
+    if (descriptor.Kind != RGResourceKind::Texture || descriptor.SampleCount != expectedSamples)
+        return false;
+    const auto physical = m_Context.GetTexture(depth);
+    auto* device = m_Context.GetDevice();
+    if (!physical.IsValid() || !device)
+        return false;
+    TextureFormat format = static_cast<TextureFormat>(descriptor.Format);
+    if (format == TextureFormat{})
+        format = device->GetTextureFormat(physical);
+    if (!IsDepthFormat(format))
+        return false;
+    const RGAttachmentKeyInput attachment{0u, true, format, expectedSamples};
+    m_Context.m_CachedKey = DeriveFormatKey(&attachment, 1u, TextureFormat{});
+    m_Context.m_KeyDirty = false;
+    return true;
 }
 
 uint32_t RGContext::GetCurrentSampleCount() const

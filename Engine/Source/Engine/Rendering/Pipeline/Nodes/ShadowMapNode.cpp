@@ -2,6 +2,7 @@
 
 #include "Engine/Rendering/CameraUtils.h"
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
+#include "Engine/Rendering/VirtualShadows/VirtualShadowRenderFeature.h"
 #include "Engine/Rendering/Pipeline/Nodes/PipelineNodeUtils.h"
 #include "Engine/Rendering/Pipeline/PipelineResourceNames.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
@@ -338,6 +339,7 @@ void ShadowMapNode::Declare(RenderPipelineInstance& /*instance*/,
         return;
 
     auto& feature = ctx.Services.EnsureFeature<ShadowMapRenderFeature>();
+    ctx.Services.EnsureFeature<VirtualShadowRenderFeature>().Initialize(device);
     CascadedShadowConfig config{};
     config.NumCascades = m_NumCascades;
     // Editor project Rendering Settings can override the pipeline-authored

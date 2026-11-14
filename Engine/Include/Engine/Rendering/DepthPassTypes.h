@@ -9,9 +9,11 @@
 #include "Engine/Rendering/DrawCommandProducer.h" // DepthPassType
 #include "Engine/Rendering/PassBindingContext.h"  // ResolvedPassResources
 #include "Rendering/Camera/CameraTypes.h"                 // ViewId
+#include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Core/GPUDrawStreamBuilder.h"    // GPUDrawStreamBuilder::SlicePhase
 
 #include <cstdint>
+#include <optional>
 
 namespace GameEngine
 {
@@ -63,6 +65,10 @@ struct DepthOnlyPassParamsRG
     uint32_t RasterizationSamples = 0;
     DepthPassType PassType = DepthPassType::Prepass;
     uint32_t CascadeIndex = 0;
+    // Physical page within a virtual atlas; absent for conventional depth passes.
+    std::optional<uint32_t> VirtualPageTile;
+    Rendering::RenderGraph::RGFrameStamp VirtualFrame;
+    Rendering::RenderGraph::RGBuffer VirtualCasterOrdering;
     CascadeCasters Casters = CascadeCasters::All;
     // Culling generation this pass consumes ranges from. Phase A is the
     // frame's first generation (the only one for frustum-only views); the

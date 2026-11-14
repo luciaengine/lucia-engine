@@ -61,6 +61,7 @@ struct FeatureDeclareContext
 
     // ---- node config that parameterizes the shadow families ----
     Rendering::ViewId View = 0;
+    Rendering::RenderGraph::RGFrameStamp For;
     uint32_t CascadeCount = 0;       // directional cascade count (CSM node's m_NumCascades)
     uint32_t PunctualResolution = 0; // area/spot/point shadow-map resolution
 

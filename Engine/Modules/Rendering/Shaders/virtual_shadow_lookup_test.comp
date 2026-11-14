@@ -1,0 +1,78 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#define GE_VIRTUAL_SHADOW_DEPTH_BINDING 0
+#define GE_VIRTUAL_SHADOW_TABLE_BINDING 1
+#include "Includes/virtual_shadow_lookup.glsl"
+
+// A zero-radius kernel isolates level selection from disk rotation. The
+// production directional helper, projection and page filtering run unchanged.
+vec4 ge_shadowParams = vec4(0.0, 0.0, 2.0, 100.0);
+vec4 ge_shadowPcss = vec4(0.0, 8.0, 0.0, 0.0);
+vec4 ge_shadowPcssCascades[4] = vec4[4](vec4(0.01, 1.0, 0.0, 0.0), vec4(0.1), vec4(0.1), vec4(0.1));
+vec2 GE_PoissonRotation(vec2 screen, vec2 uv, vec2 extent) { return vec2(1.0, 0.0); }
+vec2 GE_VogelDisk(int index, int count, vec2 rotation) { return vec2(0.0); }
+int GE_PcssTapCount() { return 8; }
+#include "Includes/shadow_filter.glsl"
+#include "Includes/virtual_shadow_directional.glsl"
+
+float Directional(vec3 position, int quality)
+{
+    float visibility;
+    return GE_TryVirtualShadowDirectional(position, vec3(0.0, 1.0, 0.0), 1.0,
+                                           vec2(0.0), quality, visibility) ? visibility : -1.0;
+}
+
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 2, std430) writeonly buffer Results
+{
+    float Visibility[];
+};
+
+float Compare(uvec3 projection, uint mip, vec2 uv, float depth)
+{
+    float visible;
+    return GE_VirtualShadowCompareBilinear(projection, mip, uv, depth, visible) ? visible : -1.0;
+}
+
+float CompareKernel(uvec3 projection, uint mip, vec2 uv, float radius, float depth)
+{
+    GE_VirtualShadowKernelPage page;
+    return GE_VirtualShadowResolveKernelPage(projection, mip, uv, radius, depth, page)
+        ? GE_VirtualShadowCompareKernelPage(page, uv, depth) : -1.0;
+}
+
+void main()
+{
+    uvec3 complete = uvec3(2u, 2u, 1u);
+    uvec3 missing = uvec3(7u, 2u, 1u);
+    Visibility[0] = Compare(complete, 0u, vec2(0.5, 0.25), 0.5);
+    Visibility[1] = Compare(complete, 0u, vec2(127.75 / 256.0, 0.25), 0.5);
+    Visibility[2] = Compare(complete, 0u, vec2(0.5), 0.5);
+    Visibility[3] = Compare(missing, 0u, vec2(0.5, 0.25), 0.5);
+    Visibility[4] = Compare(missing, 1u, vec2(0.5, 0.25), 0.5);
+    Visibility[5] = Compare(missing, 0u, vec2(127.5 / 256.0, 0.25), 0.5);
+    Visibility[6] = Compare(complete, 0u, vec2(-0.1, 0.25), 0.5);
+    Visibility[7] = Compare(complete, 0u, vec2(-0.1, 0.25), 0.75);
+    Visibility[8] = Compare(uvec3(12u, 1u, 0u), 0u, vec2(0.1), 0.5);
+    Visibility[9] = Compare(uvec3(13u, 1u, 0u), 0u, vec2(0.1), 0.5);
+    Visibility[10] = float(GE_VirtualShadowMip(1.99, 2u));
+    Visibility[11] = float(GE_VirtualShadowMip(2.0, 2u));
+    Visibility[12] = Compare(complete, 0u, vec2(160.75, 33.25) / 256.0, 0.5);
+    Visibility[13] = Compare(complete, 0u, vec2(161.25, 32.75) / 256.0, 0.5);
+    Visibility[14] = Directional(vec3(-0.5, 0.5, 0.5), 2);
+    Visibility[15] = Directional(vec3(0.5, 0.5, 0.5), 2);
+    Visibility[16] = Directional(vec3(1.5, 0.0, 0.5), 2);
+    Visibility[17] = Directional(vec3(4.5, 0.0, 0.5), 2);
+    for (int quality = 0; quality < 6; ++quality)
+        Visibility[18 + quality] = Directional(vec3(-0.5, 0.5, 0.5), quality);
+
+    Visibility[24] = CompareKernel(complete, 0u, vec2(160.75, 33.25) / 256.0, 0.0, 0.5);
+    Visibility[25] = CompareKernel(complete, 0u, vec2(161.25, 32.75) / 256.0, 0.0, 0.5);
+    Visibility[26] = CompareKernel(complete, 0u, vec2(0.75), 1.5 / 1024.0, 0.5);
+    Visibility[27] = CompareKernel(complete, 0u, vec2(0.5, 0.25), 1.5 / 1024.0, 0.5);
+    Visibility[28] = CompareKernel(complete, 0u, vec2(0.001, 0.25), 1.5 / 1024.0, 0.5);
+    Visibility[29] = CompareKernel(missing, 0u, vec2(0.75, 0.25), 0.0, 0.5);
+    Visibility[30] = CompareKernel(missing, 1u, vec2(0.25), 0.0, 0.5);
+    Visibility[31] = CompareKernel(complete, 0u, vec2(0.25, 0.5), 1.5 / 1024.0, 0.5);
+}
