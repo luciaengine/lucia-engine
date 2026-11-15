@@ -6,7 +6,6 @@
   <Label id="BoneLODStatus" class="bone-lod-status" />
   <Label text="Mandatory bones" class="inspector-section-subheader" />
   <Label text="Check Keep for attachments or gameplay bones that must remain animated. Ancestors are retained automatically." class="bone-lod-help" />
-  <Label text="Search bones" class="bone-lod-help" />
   <UIElement id="BoneLODSearchHost" />
   <TreeView id="BoneLODTree" class="bone-lod-tree" />
   <UIElement class="bone-lod-actions">

@@ -160,8 +160,7 @@ void BuildPoseToSkinMatrices(const SkeletonData& skeleton,
 void EmitSkinMatricesFromAnimationPose(const SkeletonData& skeleton,
                                        const AnimationPose& localPose,
                                        std::vector<float>& outCompactSkinMatrices,
-                                       PoseSampleWorkspace& workspace,
-                                       const BoneEvaluationPlan* plan)
+                                       PoseSampleWorkspace& workspace)
 {
     const uint32_t boneCount = skeleton.BoneCount;
     if (boneCount == 0)
@@ -171,11 +170,8 @@ void EmitSkinMatricesFromAnimationPose(const SkeletonData& skeleton,
     }
 
     workspace.Pose.assign(boneCount, PoseSampleWorkspace::TRS{});
-    const bool reduced = plan && plan->IsForSkeleton(skeleton);
     for (uint32_t nodeIndex = 0; nodeIndex < boneCount && nodeIndex < localPose.BoneCount; ++nodeIndex)
     {
-        if (reduced && plan->EvaluatedAncestors()[nodeIndex] != nodeIndex)
-            continue;
         const auto& position = localPose.Positions[nodeIndex];
         const auto& rotation = localPose.Rotations[nodeIndex].GetGLM();
         const auto& scale = localPose.Scales[nodeIndex];
@@ -187,7 +183,7 @@ void EmitSkinMatricesFromAnimationPose(const SkeletonData& skeleton,
     workspace.ChangedRotation.assign(boneCount, 1u);
     workspace.ChangedScale.assign(boneCount, 1u);
 
-    BuildPoseToSkinMatrices(skeleton, nullptr, &outCompactSkinMatrices, workspace, plan);
+    BuildPoseToSkinMatrices(skeleton, nullptr, &outCompactSkinMatrices, workspace);
 }
 
 } // namespace Animation

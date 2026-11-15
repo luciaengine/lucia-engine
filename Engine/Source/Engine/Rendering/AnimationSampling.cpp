@@ -141,13 +141,11 @@ void SampleAnimationPose(const SkeletonData& skeleton,
         //     look up the channel's targetNameId in the skeleton's pre-built
         //     hashmap and write to that bone.
         //   - If a name id is set but the skeleton can't resolve it, drop
-        //     the channel. The legacy `channel.BoneIndex` is the source-
-        //     skeleton's index and would write to whatever unrelated bone
-        //     happens to live at that slot in the destination skeleton —
-        //     actively corrupting the pose. Skipping leaves the bone at its
-        //     rest transform, which is correct.
-        //   - Otherwise (legacy clips with no name id, or skeletons with no
-        //     name table — e.g. unit tests), trust the stored boneIndex.
+        //     the channel. `channel.BoneIndex` indexes the source skeleton,
+        //     so it would write an unrelated bone of this skeleton. The
+        //     dropped bone keeps its rest transform.
+        //   - Otherwise (a clip with no name id, or a skeleton with no
+        //     name table), use the stored BoneIndex.
         const bool skeletonHasNames = !skeleton.BoneNameLookup.empty();
         uint32 resolvedByName = 0;
         uint32 dropped = 0;

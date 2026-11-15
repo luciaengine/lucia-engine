@@ -61,8 +61,7 @@ void BuildPoseToSkinMatrices(const SkeletonData& skeleton,
 void EmitSkinMatricesFromAnimationPose(const SkeletonData& skeleton,
                                        const AnimationPose& localPose,
                                        std::vector<float>& outCompactSkinMatrices,
-                                       PoseSampleWorkspace& ws,
-                                       const BoneEvaluationPlan* plan = nullptr);
+                                       PoseSampleWorkspace& ws);
 
 } // namespace Animation
 } // namespace GameEngine
