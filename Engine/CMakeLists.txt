@@ -3297,6 +3297,7 @@ endif()
 	    target_link_libraries(RetargetGPUParityTests PRIVATE
 	        Engine GameEngine.Native
 	        GTest::gtest GTest::gtest_main)
+	    target_include_directories(RetargetGPUParityTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 	    target_compile_definitions(RetargetGPUParityTests PRIVATE
 	        GE_BINARY_DIR="${CMAKE_BINARY_DIR}"
 	        RENDERING_SOURCE_DIR="${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering")

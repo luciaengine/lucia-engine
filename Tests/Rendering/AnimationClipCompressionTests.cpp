@@ -197,7 +197,7 @@ TEST(AnimationClipCompression, PackagedSourceLoadsAndCookIsIdempotent)
     ASSERT_TRUE(clip->SaveToPath(path));
     AnimationAssetParser parser;
     String error;
-    ASSERT_TRUE(parser.CookForPackage(path, error)) << error;
+    ASSERT_TRUE(parser.CookForPackage({.SourceFile = path, .StagedFile = path}, error)) << error;
     std::ifstream input(path, std::ios::binary);
     const Vector<uint8> bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
     input.close();
@@ -209,7 +209,7 @@ TEST(AnimationClipCompression, PackagedSourceLoadsAndCookIsIdempotent)
     Mathematics::Vector4 value;
     ASSERT_TRUE(data->Sample(data->Tracks()[0], 0.5f, value));
     EXPECT_NEAR(value.x, 0.5f, 1e-6f);
-    ASSERT_TRUE(parser.CookForPackage(path, error)) << error;
+    ASSERT_TRUE(parser.CookForPackage({.SourceFile = path, .StagedFile = path}, error)) << error;
     std::ifstream second(path, std::ios::binary);
     const Vector<uint8> recooked((std::istreambuf_iterator<char>(second)), std::istreambuf_iterator<char>());
     EXPECT_EQ(bytes, recooked);
@@ -224,7 +224,7 @@ TEST(AnimationClipCompression, OversizedPackageRefusesBeforeChangingTheStagedFil
     std::filesystem::resize_file(path, oversizedBytes);
     AnimationAssetParser parser;
     String error;
-    EXPECT_FALSE(parser.CookForPackage(path, error));
+    EXPECT_FALSE(parser.CookForPackage({.SourceFile = path, .StagedFile = path}, error));
     EXPECT_NE(error.find("256 MiB source limit"), String::npos);
     EXPECT_EQ(std::filesystem::file_size(path), oversizedBytes);
     EXPECT_GT(AnimationClipArchive::MaximumEncodedBytes(), AnimationClipArchive::kMaximumSourceBytes);
