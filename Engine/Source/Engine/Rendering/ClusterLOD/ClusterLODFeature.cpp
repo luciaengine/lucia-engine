@@ -5,9 +5,9 @@
 #include "Assets/ClusterLOD/MeshClusterLODAsset.h"
 #include "Assets/ModelAsset.h"
 #include "Components/Rendering/DDGIVolume.h"
-#include "Components/Rendering/HLODVolume.h"
 #include "Components/Rendering/MeshRenderer.h"
 #include "Components/Rendering/LODGroup.h"
+#include "Components/Rendering/MeshGPUData.h"
 #include "Components/Rendering/MorphTargetWeights.h"
 #include "Components/Rendering/SkinnedMeshRenderer.h"
 #include "Components/Rendering/PlanarReflection.h"
@@ -16,7 +16,6 @@
 #include "Core/DebugMetrics.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
-#include "Engine/Rendering/HlodRuntime.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/ModelRenderSetup.h"
@@ -64,13 +63,11 @@ Mesh PageDescriptor(const Mesh& coarse)
     return descriptor;
 }
 
-bool HasUnsupportedConsumers(ECS::World& world, const RenderServices& services)
+bool HasUnsupportedConsumers(ECS::World& world)
 {
     return world.Query<ECS::Read<Components::DDGIVolume>, ECS::Read<Components::WorldTransform>>().Count() != 0 ||
-        world.Query<ECS::Read<Components::HLODVolume>>().Count() != 0 ||
         world.Query<ECS::Read<Components::ReflectionProbe>>().Count() != 0 ||
-        world.Query<ECS::Read<Components::PlanarReflection>>().Count() != 0 ||
-        services.GetHlodRuntime().HasClusters();
+        world.Query<ECS::Read<Components::PlanarReflection>>().Count() != 0;
 }
 
 bool SupportsFineInstance(RenderServices& services, ECS::World& world, ECS::EntityHandle entity,
@@ -576,7 +573,7 @@ struct ClusterLODFeature::State
             (void)key;
             page->Wanted = false;
         }
-        Logger::Log::Warning("Cluster LOD fine pages disabled: this prototype requires one cluster world without GI, reflection or HLOD consumers");
+        Logger::Log::Warning("Cluster LOD fine pages disabled: this prototype requires one cluster world without GI or reflection consumers");
     }
 
     void RetireUnused(uint64 epoch)
@@ -654,8 +651,12 @@ struct ClusterLODFeature::State
         const bool supported = SupportsFineInstance(services, world, entity, renderer);
         const auto* lod = world.GetComponent<Components::LODGroup>(entity);
         const float bias = services.GetLODGlobalBias() + (lod ? lod->Bias : 0.0f);
-        const bool demand = supported && WantsFine(services, renderer, transform, model->GetMeshes()[submesh],
-            manifest->Pages[submesh], world.GetWorldId(), wasFine, bias);
+        // A member that HLOD replaced with its cluster proxy draws nothing, so it wants the coarse cover.
+        const auto* gpu = world.GetComponent<Components::MeshGPUData>(entity);
+        const bool hlodEvicted = gpu && gpu->hlodEvicted;
+        const bool demand = supported && !hlodEvicted &&
+            WantsFine(services, renderer, transform, model->GetMeshes()[submesh], manifest->Pages[submesh],
+                      world.GetWorldId(), wasFine, bias);
         if (found == Pages.end())
         {
             if (!demand || PolicyBlocked || Pages.size() >= kMaximumPageRecords)
@@ -853,7 +854,7 @@ void ClusterLODFeature::Prepare(ECS::World& world)
         }
     }
     state.RestorePendingWorlds();
-    if (HasUnsupportedConsumers(world, services))
+    if (HasUnsupportedConsumers(world))
         state.Block();
     if (state.WorldId != 0 && state.WorldId != world.GetWorldId())
     {

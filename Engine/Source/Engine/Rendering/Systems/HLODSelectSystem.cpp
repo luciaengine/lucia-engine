@@ -105,7 +105,7 @@ bool HLODSelectSystem::RefreshStaleness(ECS::World& world, Rendering::GPUScene& 
             break;
         }
         if (wt->Version != cluster.MemberTransformVersion[i] ||
-            mr->meshGpuHandleId != cluster.MemberMeshHandleId[i] ||
+            Hlod::MemberMeshSource::Of(*mr) != cluster.MemberMeshSources[i] ||
             mr->materialAssetGuid.ToGuid() != cluster.MemberMaterialGuid[i]) {
             nowStale = true;
             break;
