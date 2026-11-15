@@ -478,10 +478,10 @@ void main()
         for (uint32 attempt = 0; attempt < (abort ? 2u : 1u); ++attempt)
         {
             const auto submitted = graph.SubmittedFrameCount();
-            const auto preparationFailures = graph.Stats().PreparationFailures;
             graph.Execute();
             EXPECT_EQ(graph.SubmittedFrameCount(), submitted + (abort ? 0u : 1u));
-            EXPECT_EQ(graph.Stats().PreparationFailures, preparationFailures + (abort ? 1u : 0u));
+            // Each Execute attempt counts only its own preparation failures.
+            EXPECT_EQ(graph.Stats().PreparationFailures, abort ? 1u : 0u);
             for (auto* packet : *packets)
                 EXPECT_TRUE(packet->IsValid());
             EXPECT_EQ(simulation.GetPendingSubstepCount(), abort ? count : 0u);
@@ -622,10 +622,9 @@ void main()
         allowStaleSubmission = true;
         ASSERT_TRUE(m_Device->BeginFrame());
         const auto staleSubmissions = stale.SubmittedFrameCount();
-        const auto staleFailures = stale.Stats().PreparationFailures;
         stale.Execute();
         EXPECT_EQ(stale.SubmittedFrameCount(), staleSubmissions);
-        EXPECT_GT(stale.Stats().PreparationFailures, staleFailures);
+        EXPECT_GT(stale.Stats().PreparationFailures, 0u);
         EXPECT_EQ(SimulationTexture(recovered), recordedTexture);
         EXPECT_EQ(std::memcmp(&SimulationLayout(recovered), &recordedLayout, sizeof(recordedLayout)), 0);
         EXPECT_EQ(recovered.GetPendingSubstepCount(), 2u);

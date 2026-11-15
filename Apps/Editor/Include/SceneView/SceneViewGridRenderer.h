@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Rendering/Core/Handle.h"
+
 #include <cstdint>
 
 namespace GameEngine {
@@ -8,6 +10,7 @@ namespace Rendering {
 struct CameraData;
 namespace RenderGraph {
 class RGContext;
+class RGPrepareContext;
 }
 } // namespace Rendering
 
@@ -17,17 +20,19 @@ class RGContext;
 class SceneViewGridRenderer
 {
 public:
+    /// Prepares the grid pipeline on the caller thread before overlay recording.
+    Rendering::PipelineHandle PrepareRG(const Rendering::RenderGraph::RGPrepareContext& context,
+                                         bool is2DMode);
+
     // Record grid draw commands into the current gizmo overlay pass.
     // Call exactly once per frame, inside the gizmo overlay execute lambda.
     // gridColor is ARGB packed; only the rgb channels reach the shader (the
     // axis lines keep their hardcoded conventional colors). cells2D is the 2D
     // mode's authored cell grid in world units: origin x, origin y, cell width,
-    // cell height; a width <= 0 keeps the zoom-based decades.
-    //
-    // Pipeline variant resolved through the RenderGraph pass context (format key from
-    // the pass's declared attachments — no sample-count member cache needed;
-    // the device variant cache memoizes).
+    // cell height; a width <= 0 keeps the zoom-based decades. An invalid
+    // pipeline draws nothing.
     void RecordRG(const Rendering::RenderGraph::RGContext& ctx,
+                   Rendering::PipelineHandle pipeline,
                    const Rendering::CameraData* cam,
                    const float camPos[3],
                    bool is2DMode,
