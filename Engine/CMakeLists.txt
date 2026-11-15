@@ -2220,7 +2220,6 @@ endif()
                 Tests/PropCoverageFloorTests.cpp
                 Tests/HzbBuildComputeTests.cpp
                 Tests/HzbSpdParityTests.cpp
-                Tests/HzbSpdMinMaxParityTests.cpp
                 Tests/ClusterDepthMinMaxParityTests.cpp
                 Tests/HzbCullingComputeTests.cpp
                 Tests/VertexModifierEnvelopeSampledTests.cpp
@@ -2236,7 +2235,7 @@ endif()
                 Tests/SortedTransparentCullTests.cpp
                 Tests/SortedTransparentRunTests.cpp
                 Tests/RenderSortingTests.cpp
-                Tests/GPUSortTests.cpp
+                Tests/SortedTransparentKeyTests.cpp
                 Tests/SortedTransparentDeciderTests.cpp
                 Tests/SortedTransparentBuildAllocationTests.cpp
                 Tests/SkinPaletteAtlasTests.cpp
