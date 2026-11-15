@@ -341,8 +341,8 @@ class BoundConnection
 public:
     static constexpr uint32_t kClient = 21;
 
-    explicit BoundConnection(AssistantMode mode)
-        : m_Gate([this] { return m_Now; })
+    explicit BoundConnection(AssistantMode mode, Editor::UndoRedoService::Config undo = {})
+        : Undo(undo), m_Gate([this] { return m_Now; })
     {
         m_Registry.Register(m_Gate.AsDebugRequestGate());
         m_Session = OpenBound(m_Gate, mode, kClient);
@@ -642,8 +642,7 @@ TEST(AssistantGateTests, AUserStepOnTopDisablesUndoThisTurnAndNamesItUntilTheUse
 
 TEST(AssistantGateTests, ATurnWhoseOldestStepWasTrimmedIsTooOldToUndoAsATurn)
 {
-    BoundConnection connection(AssistantMode::Auto);
-    connection.Undo = Editor::UndoRedoService(Editor::UndoRedoService::Config{2});
+    BoundConnection connection(AssistantMode::Auto, Editor::UndoRedoService::Config{2});
     int value = 0;
     ASSERT_EQ(connection.Offer(721, "create_entity", {{"name", "Lantern_01"}}, OneCommand(value)),
               DebugRequestDecision::Run);
