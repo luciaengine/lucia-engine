@@ -237,6 +237,14 @@ struct Mesh {
     }
 };
 
+// Writes the vertices of sourceMesh with the first weightCount morph targets applied into
+// outVertices, which ends at the source vertex count; one outVertices reused across calls keeps
+// its storage. A target that moves normals renormalizes them, and the whole mesh gets new
+// tangents when the source carries tangents. The other streams of the mesh do not change.
+void ApplyMorphTargets(const Mesh& sourceMesh, const float* weights, size_t weightCount,
+                       Vector<Vertex>& outVertices);
+// A copy of sourceMesh with ApplyMorphTargets on its vertices, no morph targets and bounds that
+// enclose the morphed positions.
 Mesh CreateMorphedMesh(const Mesh& sourceMesh, const float* weights, size_t weightCount);
 void GenerateMeshTangents(Mesh& mesh, bool forceRegenerate = false);
 // FNV-1a over every stream a GPU upload of `mesh` reads, its LODs included. MeshGPURegistry compares it to
