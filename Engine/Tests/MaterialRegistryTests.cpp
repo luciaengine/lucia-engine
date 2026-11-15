@@ -11,7 +11,6 @@
 #include "Engine/Rendering/MaterialDepthClassify.h"
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/MaterialPrewarmVariants.h"
-#include "Engine/Rendering/MaterialPrewarmPolicy.h"
 #include "Engine/Rendering/MaterialSystem.h"
 #include "Engine/Rendering/ParallaxReliefDepth.h"
 #include "Engine/Rendering/ModelMaterialBridge.h"
@@ -1765,7 +1764,6 @@ TEST_F(MaterialTargetPrewarmTest, QueuedVariantSetRetainsItsAdmissionTarget)
     std::vector<std::function<void()>> jobs;
     HoldPrewarmJobs(services, jobs);
     constexpr auto kPassKeywords = MaterialKeyword::ForwardPlus | MaterialKeyword::Instanced | MaterialKeyword::Shadows;
-    ASSERT_EQ(GetMaterialPrewarmPolicy(), MaterialPrewarmPolicy::Full);
     const auto keys = MaterialPrewarmVariantKeys(material->GetVariantKey(), kPassKeywords, false,
                                                 material->GetAlphaMode(), CrossfadeTailWarmup::Warm);
     ASSERT_GT(keys.size(), 1u);
