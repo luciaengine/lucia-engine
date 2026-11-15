@@ -145,6 +145,7 @@ set(EDITOR_SOURCES
     Source/Panels/MovieRecorderPanel.cpp
     Source/Panels/HierarchyPanel.cpp
     Source/Editor/Hierarchy/HierarchyEntity/HierarchyEntityIcon.cpp
+    Source/Editor/Hierarchy/SpritePreview/SpritePreview.cpp
     Source/Editor/Hierarchy/HierarchyOrdering.cpp
     Source/Editor/Hierarchy/HierarchyEmptyParent.cpp
     Source/Editor/Hierarchy/HierarchyEntity/HierarchyEntityCommands.cpp
@@ -942,6 +943,7 @@ set(EDITOR_HEADERS
 		Include/Editor/Entities/CopiedEntityRuntimeRefs.h
 		Include/Editor/Entities/EntityDuplicate.h
 		Include/Editor/Hierarchy/HierarchyEntity/HierarchyEntityIcon.h
+		Include/Editor/Hierarchy/SpritePreview/SpritePreview.h
     Include/Panels/LogPanel/LogChannelPopover.h
     Include/Panels/LogPanel.h
     Include/Panels/LogView.h

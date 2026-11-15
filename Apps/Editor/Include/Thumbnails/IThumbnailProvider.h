@@ -3,6 +3,7 @@
 #include "AssetCore/GUID.h"
 #include "Thumbnails/FolderBakeReport.h"
 
+#include <array>
 #include <cstddef>
 #include <filesystem>
 #include <functional>
@@ -60,6 +61,29 @@ public:
             onReady({});
         return {};
     }
+    // A crop of `uv` (u0, v0, u1, v1 in texture space) out of the texture at `texturePath`: the atlas region of
+    // a 2D sprite. Returns the cached path when it exists; otherwise answers once through onReady, possibly on a
+    // background thread, with the path or empty.
+    virtual std::string GetOrRequestAtlasRegion(const std::filesystem::path& /*texturePath*/,
+                                                const std::array<float, 4>& /*uv*/,
+                                                std::function<void(const std::string& path)> onReady)
+    {
+        if (onReady)
+            onReady({});
+        return {};
+    }
+
+    // The first frame of `animationName` in the .spriteframes asset at `spriteFramesPath`, mirrored when
+    // `flipX`. Answers like GetOrRequestAtlasRegion.
+    virtual std::string GetOrRequestSpriteFrame(const std::filesystem::path& /*spriteFramesPath*/,
+                                                const std::string& /*animationName*/, bool /*flipX*/,
+                                                std::function<void(const std::string& path)> onReady)
+    {
+        if (onReady)
+            onReady({});
+        return {};
+    }
+
     // Returns true once the live-rendered thumbnail backing `engineName`
     // (e.g. `engine:editor_material_thumb_<guid>`) has produced a frame and
     // is currently bound for UI sampling in the given window. Default

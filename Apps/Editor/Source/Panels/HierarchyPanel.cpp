@@ -65,6 +65,7 @@
 #include "Inspectors/RenderLayers/RenderLayerField.h"
 #include "Editor/Entities/EditorComponentTraits.h"
 #include "Editor/Hierarchy/HierarchyEntity/HierarchyEntityIcon.h"
+#include "Editor/Hierarchy/SpritePreview/SpritePreview.h"
 #include "Editor/Hierarchy/HierarchyOrdering.h"
 #include "Editor/Hierarchy/HierarchyNavigationBar.h"
 #include "Editor/Settings/FbxImportSettings.h"
@@ -940,7 +941,11 @@ HierarchyPanel::HierarchyPanel()
                 // authoritative list rather than duplicating it here — a stale copy that
                 // omitted 'hierarchy-entity-empty' made every empty row scan its subtree
                 // twice per bind (once in ApplyHierarchyEntityIconClasses, once below).
-                const bool useCssEntityIcon = Editor::EntityIconIsCssOnly(*row);
+                const bool showsSpritePreview =
+                    m_Context && m_Context->Assets && m_Context->Thumbnails && !m_Context->UIReplayActive &&
+                    Editor::ShowHierarchySpriteRowPreview(*m_Tree, id, *previewIconEl, *m_World, handle,
+                                                          *m_Context->Assets, *m_Context->Thumbnails);
+                const bool useCssEntityIcon = showsSpritePreview || Editor::EntityIconIsCssOnly(*row);
 
                 if (!useCssEntityIcon)
                 {
@@ -974,50 +979,6 @@ HierarchyPanel::HierarchyPanel()
                                     size.SizeXIsPercent = false;
                                     size.SizeY = icon;
                                     size.SizeYIsPercent = false;
-                                    BackgroundPositionValue pos = BackgroundPositionValue::Percent(0.0f, 50.0f);
-                                    previewIconEl->AddClass("hierarchy-entity-model-thumb");
-                                    previewIconEl->Style()
-                                        .Set(Style::BackgroundImage, source)
-                                        .Set(Style::BackgroundRepeatProp, BackgroundRepeat::NoRepeat)
-                                        .Set(Style::BackgroundSize, size)
-                                        .Set(Style::BackgroundPosition, pos)
-                                        .Set(Style::BackgroundTint, uint32_t(0xFFFFFFFFu));
-                                    ApplyModelThumbColorOverride(previewIconEl);
-                                    previewIconEl->MarkDirty(UIElement::VisualDirty);
-                                }
-                            }
-                        }
-                    }
-                    else if (row->HasClass("hierarchy-entity-sprite") &&
-                             m_Context && m_Context->Assets)
-                    {
-                        // Sprite: show the bound albedo texture as the icon. Fall back to
-                        // the CSS sprite icon (via class) when the texture can't be resolved.
-                        const std::filesystem::path spritePath =
-                            Editor::TryResolveSpriteAlbedoTexturePath(m_World, handle, m_Context->Assets);
-                        std::error_code ec;
-                        if (!spritePath.empty() && std::filesystem::exists(spritePath, ec))
-                        {
-                            UIManager* mgr = GetOwnerManager();
-                            if (mgr)
-                            {
-                                const std::string pathStr = spritePath.string();
-                                const GUID bgGuid = mgr->BackgroundImages().ResolvePath(pathStr);
-                                if (!bgGuid.IsNull())
-                                {
-                                    // Uploads at once when the texture is loaded, otherwise requests it;
-                                    // never waits (a first open can still be cooking it). The upload's
-                                    // completion repaints the icon.
-                                    mgr->BackgroundImages().EnsureUploaded(bgGuid);
-
-                                    // Fit inside the square icon box while preserving the texture's
-                                    // aspect ratio, left-aligned and vertically centred like other
-                                    // hierarchy row icons: contain sizes from the uploaded image.
-                                    BackgroundImageSource source{};
-                                    source.Kind = BackgroundImageSource::SourceKind::Path;
-                                    source.Value = pathStr;
-                                    BackgroundSizeValue size{};
-                                    size.Mode = BackgroundSizeMode::Contain;
                                     BackgroundPositionValue pos = BackgroundPositionValue::Percent(0.0f, 50.0f);
                                     previewIconEl->AddClass("hierarchy-entity-model-thumb");
                                     previewIconEl->Style()

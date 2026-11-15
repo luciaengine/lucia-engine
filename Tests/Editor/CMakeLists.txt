@@ -74,6 +74,9 @@ set(EDITOR_TEST_SOURCES
 	EntityDuplicateTests.cpp
 	# The editor's teleport of a live physics body, composed with the entity's sector.
 	PhysicsBodyTeleportTests.cpp
+	# The Hierarchy sprite row preview: atlas-region and frame crops for sprite rows.
+	HierarchySpritePreviewTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/SpritePreview/SpritePreview.cpp
 	# The editor's posted refresh: once per burst, skipped after its owner is destroyed.
 	PostedRefreshTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/PostedRefresh.cpp
