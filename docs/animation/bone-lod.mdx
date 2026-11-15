@@ -9,7 +9,7 @@ Bone LOD reduces the bones evaluated for a distant model instance. A model owns 
 
 1. Select a skinned model asset and open its **LOD** tab.
 2. Set **Bone budget**. The default is 32 skin-evaluation bones. Zero keeps full detail.
-3. Under **Mandatory bones**, search the hierarchy and check **Keep** for bones used by attachments or gameplay.
+3. Under **Mandatory bones**, search the hierarchy and check the box at the right of each bone used by attachments or gameplay. The tree shows every bone, the root included; hover a row to see the bone's full path.
 4. Add **Bone LOD** to the model instance in the scene. Imported children inherit the instance owner's settings.
 
 The model inspector shows the requested budget, required count, and evaluated count for the reduced tier. Required bones and their ancestors can exceed the budget. The remaining budget favors bones that affect the model's skinned geometry. This ranking uses every skinned mesh, up to eight influences per vertex, and morph extents. It is a selection heuristic, not a bound on visible animation error. Check representative poses before using a reduced tier in a game.

@@ -37,11 +37,23 @@ const std::vector<AnimChannel>& AnimationClip::GetChannels() const
     return m_Channels;
 }
 
+bool AnimationClip::IsEmpty() const
+{
+    if (m_Duration > 0.0f)
+        return false;
+    const auto runtime = GetRuntimeData();
+    if (!runtime)
+        return true;
+    const auto tracks = runtime->Tracks();
+    return std::none_of(tracks.begin(), tracks.end(),
+        [](const AnimationClipData::Track& track) { return track.KeyCount != 0u; });
+}
+
 size_t AnimationClip::GetMemoryUsage() const
 {
     std::lock_guard lock(m_AuthoringMutex);
     const auto runtime = GetRuntimeData();
-    size_t bytes = sizeof(*this) + m_CachedFileData.capacity() + m_Channels.capacity() * sizeof(AnimChannel);
+    size_t bytes = sizeof(*this) + m_CachedFileData.Size() + m_Channels.capacity() * sizeof(AnimChannel);
     bytes += GetPath().native().capacity() * sizeof(std::filesystem::path::value_type) +
         m_SourcePath.native().capacity() * sizeof(std::filesystem::path::value_type) + GetTypeIdString().capacity();
     bytes += m_Settings.SyncMarkers.capacity() * sizeof(AnimationSyncMarker);
