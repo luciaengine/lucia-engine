@@ -419,6 +419,12 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/CascadeMotionScheduler.cpp
 	Source/Engine/Rendering/CascadeShadowCache.cpp
 	Source/Engine/Rendering/CascadeCacheLogFormat.cpp
+	Source/Engine/Rendering/VirtualShadows/VirtualShadowPageCache.cpp
+	Source/Engine/Rendering/VirtualShadows/VirtualShadowFeedback.cpp
+	Source/Engine/Rendering/VirtualShadows/VirtualShadowRenderFeature.cpp
+	Source/Engine/Rendering/VirtualShadows/VirtualShadowRaster.cpp
+	Source/Engine/Rendering/VirtualShadows/VirtualShadowPageRequests.cpp
+	Source/Engine/Rendering/VirtualShadows/VirtualShadowWorldPass.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeature.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeaturePasses.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeatureViewFit.cpp
@@ -2287,6 +2293,19 @@ endif()
                 VERBATIM)
             add_dependencies(ShadowFilterTestShader CompileShaders)
             add_dependencies(EngineShadowTests ShadowFilterTestShader)
+
+            # Virtual shadow maps: page addresses, the page cache, feedback decoding,
+            # request reuse, the page mark shader and the page lookup shader.
+            ge_add_render_services_test(EngineVirtualShadowTests
+                Tests/VirtualShadows/VirtualShadowOptionsTests.cpp
+                Tests/VirtualShadows/VirtualShadowPageCacheTests.cpp
+                Tests/VirtualShadows/VirtualShadowRequestReuseTests.cpp
+                Tests/VirtualShadows/VirtualShadowFeedbackTests.cpp
+                Tests/VirtualShadows/VirtualShadowPageMarkTests.cpp
+                Tests/VirtualShadows/VirtualShadowLookupTests.cpp
+                Tests/VirtualShadows/VirtualShadowSurfaceComposeTests.cpp)
+            # Engine/Tests: TestDeviceHelper.h and StagedTestPaths.h.
+            target_include_directories(EngineVirtualShadowTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Tests")
 
             # Post-processing: exposure, the post-process volume blend, bloom, lens flare,
             # sun glare, temporal anti-aliasing jitter, GTAO and screen-space reflections.

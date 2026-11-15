@@ -281,6 +281,7 @@ class RGContext
 
   private:
     friend class RGFrame;
+    friend class RGPrepareContext;
     void SetArmedProfilerScope(const char* scope);
 
     RGFrame* m_Frame = nullptr;
@@ -300,6 +301,11 @@ class RGPrepareContext
     TextureHandle GetTexture(RGTexture texture) const { return m_Context.GetTexture(texture); }
     BufferHandle GetBuffer(RGBuffer buffer) const { return m_Context.GetBuffer(buffer); }
     IDevice* GetDevice() const { return m_Context.GetDevice(); }
+    /// Whether this preparation belongs to the stamped graph incarnation.
+    bool IsFor(const RGFrameStamp& frame) const;
+    /// Select a realized depth target's format on this graphics preparation context.
+    /// Call on a copy; this does not declare a graph dependency or record a pass.
+    bool UseDepthTarget(RGTexture depth, uint32_t expectedSamples);
     PipelineFormatKey BuildCurrentFormatKey() const { return m_Context.BuildCurrentFormatKey(); }
     /// Resolve this pass's specialization without building a concrete backend pipeline.
     GraphicsPipelineId ResolveGraphicsPipelineId(GraphicsPipelineId pipeline) const

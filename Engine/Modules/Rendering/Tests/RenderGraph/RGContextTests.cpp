@@ -281,3 +281,117 @@ TEST(RGContext, InvalidPipelineIdsAreGuarded)
     dev->WaitForIdle();
     EXPECT_TRUE(ran);
 }
+
+TEST(RGContext, DepthPreparationTargetKeepsFrameIdentityAndOwnerFormat)
+{
+    RG_REQUIRE_DEVICE(dev);
+    FramePools pools(dev.get());
+    RGFrame frame(dev.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    frame.BeginFrame(7);
+    RGFrameStamp current;
+    current.Stamp(frame);
+    RGFrameStamp stale = current;
+    --stale.FrameIndex;
+    const auto depth = frame.CreateTexture("Depth", Depth());
+    frame.AddPass("InitializeDepth", 0,
+        [depth](RGPassBuilder& builder) { builder.AttachDepth(depth, {.Load = RGLoadOp::Clear}); },
+        [](RGContext&) {});
+    bool prepared = false;
+    frame.AddPass("PrepareDepthPackets", 1,
+        [&](RGPassBuilder& builder)
+        {
+            builder.Read(depth);
+            builder.PreventCulling();
+            builder.Prepare([&](RGPrepareContext& context)
+            {
+                const auto original = context.BuildCurrentFormatKey();
+                auto targeted = context;
+                EXPECT_TRUE(targeted.UseDepthTarget(depth, 1u));
+                EXPECT_FALSE(targeted.UseDepthTarget(depth, 2u));
+                EXPECT_FALSE(targeted.UseDepthTarget({}, 1u));
+                EXPECT_TRUE(targeted.IsFor(current));
+                EXPECT_FALSE(targeted.IsFor(stale));
+                EXPECT_EQ(targeted.BuildCurrentFormatKey().ColorCount, 0u);
+                EXPECT_EQ(targeted.BuildCurrentFormatKey().DepthFormat, TextureFormat::D32_FLOAT);
+                EXPECT_EQ(targeted.GetCurrentSampleCount(), 1u);
+                EXPECT_EQ(context.BuildCurrentFormatKey().DepthFormat, original.DepthFormat);
+                EXPECT_EQ(context.BuildCurrentFormatKey().ColorCount, original.ColorCount);
+                prepared = true;
+                return true;
+            });
+        }, [](RGContext&) {});
+    frame.MarkOutput(depth);
+    frame.Execute();
+    EXPECT_TRUE(prepared);
+}
+
+TEST(RGContext, DepthPreparationTargetRejectsInvalidColorAndSampleMismatch)
+{
+    RG_REQUIRE_DEVICE(dev);
+    FramePools pools(dev.get());
+    RGFrame frame(dev.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    frame.BeginFrame(0);
+    const auto depth = frame.CreateTexture("Depth", Depth());
+    const auto color = frame.CreateTexture("Color", Color());
+    frame.AddPass("InitializeTargets", 0,
+        [depth, color](RGPassBuilder& builder)
+        {
+            builder.AttachDepth(depth, {.Load = RGLoadOp::Clear});
+            builder.AttachColor(0, color, {.Load = RGLoadOp::Clear});
+        }, [](RGContext&) {});
+    bool prepared = false;
+    frame.AddPass("RejectWrongDepthTarget", 1,
+        [&](RGPassBuilder& builder)
+        {
+            builder.Read(depth);
+            builder.Read(color);
+            builder.PreventCulling();
+            builder.Prepare([&](RGPrepareContext& context)
+            {
+                const auto original = context.BuildCurrentFormatKey();
+                EXPECT_FALSE(context.UseDepthTarget({}, 1u));
+                EXPECT_FALSE(context.UseDepthTarget(RGTexture{0xFFFFFFFEu}, 1u));
+                EXPECT_FALSE(context.UseDepthTarget(color, 1u));
+                EXPECT_FALSE(context.UseDepthTarget(depth, 2u));
+                EXPECT_FALSE(context.UseDepthTarget(depth, 0u));
+                EXPECT_FALSE(context.UseDepthTarget(depth, 3u));
+                EXPECT_FALSE(context.UseDepthTarget(depth, 128u));
+                EXPECT_EQ(context.BuildCurrentFormatKey().DepthFormat, original.DepthFormat);
+                EXPECT_EQ(context.BuildCurrentFormatKey().ColorCount, original.ColorCount);
+                prepared = true;
+                return true;
+            });
+        }, [](RGContext&) {});
+    frame.MarkOutput(depth);
+    frame.MarkOutput(color);
+    frame.Execute();
+    EXPECT_TRUE(prepared);
+}
+
+TEST(RGContext, DepthPreparationTargetRejectsComputeOwner)
+{
+    RG_REQUIRE_DEVICE(dev);
+    FramePools pools(dev.get());
+    RGFrame frame(dev.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    frame.BeginFrame(0);
+    const auto depth = frame.CreateTexture("Depth", Depth());
+    frame.AddPass("InitializeDepth", 0,
+        [depth](RGPassBuilder& builder) { builder.AttachDepth(depth, {.Load = RGLoadOp::Clear}); },
+        [](RGContext&) {});
+    bool prepared = false;
+    frame.AddComputePass("ComputeCannotPrepareDepthGraphics", 1,
+        [&](RGPassBuilder& builder)
+        {
+            builder.Read(depth);
+            builder.PreventCulling();
+            builder.Prepare([&](RGPrepareContext& context)
+            {
+                EXPECT_FALSE(context.UseDepthTarget(depth, 1u));
+                prepared = true;
+                return true;
+            });
+        }, [](RGContext&) {});
+    frame.MarkOutput(depth);
+    frame.Execute();
+    EXPECT_TRUE(prepared);
+}

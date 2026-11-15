@@ -218,6 +218,7 @@ FeatureDeclareContext RenderServices::MakeFeatureDeclareContext(
     const float* directionalLightDirWS, std::function<std::string(const char*)> passName)
 {
     FeatureDeclareContext ctx;
+    ctx.For.Stamp(frame);
     ctx.View = viewId;
     ctx.CascadeCount = cascadeCount;
     ctx.PunctualResolution = punctualResolution;
@@ -440,6 +441,12 @@ void RenderServices::PublishSpotShadow(ShadowDeclareSeam, Rendering::RenderGraph
     auto& vfr = ViewFrameRGFor(frame, viewId);
     vfr.SpotShadowMap = map;
     vfr.SpotShadowData = data;
+}
+
+void RenderServices::PublishVirtualShadowInputs(ShadowDeclareSeam, Rendering::RenderGraph::RGFrame& frame,
+                                                 Rendering::ViewId viewId, const VirtualShadowViewInputs& inputs)
+{
+    ViewFrameRGFor(frame, viewId).VirtualShadows = inputs;
 }
 
 void RenderServices::PublishPointShadow(ShadowDeclareSeam, Rendering::RenderGraph::RGFrame& frame,

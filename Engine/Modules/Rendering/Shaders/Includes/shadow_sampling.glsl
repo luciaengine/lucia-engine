@@ -1099,6 +1099,10 @@ float GE_ScreenSpaceShadow(float shadow, float linearDepth, vec2 screenPos)
     return min(shadow, ge_lastContactShadowResult);
 }
 
+#ifdef GE_VIRTUAL_SHADOW_MAPS
+#include "virtual_shadow_directional.glsl"
+#endif
+
 float GE_SampleShadow(vec3 posWS, vec3 normalWS, float linearDepth, vec3 lightDirWS, vec2 screenPos)
 {
     // Reset the tint + presence up front so EVERY early-return path leaves the light
@@ -1211,8 +1215,16 @@ float GE_SampleShadow(vec3 posWS, vec3 normalWS, float linearDepth, vec3 lightDi
         ge_shadowPcss.w > 0.5,
         GE_ShadowFilterFloorWorld(receiverDx, receiverDy, texelWorld));
     vec3 biasedPos = posWS + normalWS * normalBias;
-    float shadow = GE_SampleCascade(biasedPos, cascadeIdx, screenPos, receiverDx, receiverDy);
-    if (inBlendZone)
+    float shadow;
+    bool virtualResolved = false;
+#ifdef GE_VIRTUAL_SHADOW_MAPS
+    // A resident virtual page replaces the cascade and its blend. The cascade stays the fallback.
+    virtualResolved = GE_TryVirtualShadowDirectional(posWS, normalWS, dot(normalWS, lightDirWS), screenPos,
+        (GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER), shadow);
+#endif
+    if (!virtualResolved)
+        shadow = GE_SampleCascade(biasedPos, cascadeIdx, screenPos, receiverDx, receiverDy);
+    if (!virtualResolved && inBlendZone)
     {
         float nextShadow = GE_SampleCascade(biasedPos, cascadeIdx + 1, screenPos, receiverDx, receiverDy);
         shadow = mix(nextShadow, shadow, cascadeWeight);
