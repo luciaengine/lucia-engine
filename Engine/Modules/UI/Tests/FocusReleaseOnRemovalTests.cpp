@@ -38,10 +38,7 @@ std::unique_ptr<UIElement> MakeElement(const char* id)
     return el;
 }
 
-// Declared before the UIManager in every test: the handlers WatchFocus registers
-// hold it by reference, and the manager's teardown dispatches FocusOut to the
-// still-focused element before it destroys that element, so a handler's captures
-// must outlive the manager.
+// Observers outlive the manager: teardown can still dispatch FocusOut.
 struct FocusLog
 {
     std::vector<std::string> Order;

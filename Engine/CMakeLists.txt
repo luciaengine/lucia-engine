@@ -437,7 +437,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/ImageBasedLightingFeature.cpp
 	Source/Engine/Rendering/SkyEnvironmentSource.cpp
 	Source/Engine/Rendering/SceneReflectionProbeEnvironmentSource.cpp
-	Source/Engine/Rendering/SceneProbeRecaptureSchedule.cpp
+	Source/Engine/Rendering/SceneProbeWorldEpochs.cpp
 	Source/Engine/Rendering/MirrorCaptureView.cpp
 	Source/Engine/Rendering/PlanarReflectionMath.cpp
 	Source/Engine/Rendering/PlanarReflectionFeature.cpp
@@ -2364,6 +2364,10 @@ endif()
                 Tests/LensFlareImporterTests.cpp)
             target_include_directories(EnginePostProcessTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 
+            # Reflection probes: selection, capture retention, blend weights and invalidation.
+            ge_add_render_services_test(ReflectionProbeTests
+                Tests/ReflectionProbeSystemTests.cpp)
+
             # The render services themselves and the lighting they carry:
             # the feature registry, device recovery, views and cameras, project settings,
             # frame clocks, lights, reflection probes and IBL, DDGI, sky and sun, ocean.
@@ -2413,8 +2417,6 @@ endif()
                 Tests/OceanSplineRasterTests.cpp
                 Tests/LightPhotometryTests.cpp
                 Tests/AmbientLightSystemTests.cpp
-                Tests/ReflectionProbeSystemTests.cpp
-                Tests/SceneReflectionProbeRecaptureTests.cpp
                 Tests/IblShaderContractTests.cpp
                 Tests/BrdfLutTableTests.cpp
                 Tests/GlassTransmissionShaderContractTests.cpp

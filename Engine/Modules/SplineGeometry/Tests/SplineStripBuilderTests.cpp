@@ -1,4 +1,5 @@
 #include "SplineGeometry/SplineStripBuilder.h"
+#include "Types/Fnv1a.h"
 
 #include <gtest/gtest.h>
 
@@ -863,24 +864,18 @@ TEST(SplineStripBuilder, AZeroHalfWidthCollapsesOnlyItsOwnSide)
 namespace
 {
 
+// Seed the frozen digests below were captured with. It is not the FNV-1a offset
+// basis (one digit short); keep it, or every frozen literal must be re-baselined.
+constexpr uint64 kFrozenDigestSeed = 1469598103934665603ull;
+
 // FNV-1a over the mesh's raw bytes: one ULP anywhere changes it.
 uint64 MeshDigest(const SplineStripMesh& mesh)
 {
-    uint64 value = 1469598103934665603ull;
-    const auto fold = [&value](const void* data, size_t size)
-    {
-        const auto* p = static_cast<const unsigned char*>(data);
-        for (size_t i = 0; i < size; ++i)
-        {
-            value ^= static_cast<uint64>(p[i]);
-            value *= 1099511628211ull;
-        }
-    };
-    fold(mesh.Vertices.data(), mesh.Vertices.size() * sizeof(SplineVertex));
-    fold(mesh.Indices.data(), mesh.Indices.size() * sizeof(uint32));
-    fold(&mesh.MinBounds, sizeof(mesh.MinBounds));
-    fold(&mesh.MaxBounds, sizeof(mesh.MaxBounds));
-    return value;
+    uint64 value = Hashing::Fnv1a64(mesh.Vertices.data(), mesh.Vertices.size() * sizeof(SplineVertex),
+                                    kFrozenDigestSeed);
+    value = Hashing::Fnv1a64(mesh.Indices.data(), mesh.Indices.size() * sizeof(uint32), value);
+    value = Hashing::Fnv1a64Value(value, mesh.MinBounds);
+    return Hashing::Fnv1a64Value(value, mesh.MaxBounds);
 }
 
 // A capped wall and a crowned road over rolling, curving ground, with roll and a

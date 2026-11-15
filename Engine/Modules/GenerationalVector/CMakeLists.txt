@@ -2,7 +2,7 @@
 # A high-performance generational handle system for safe resource management
 
 cmake_minimum_required(VERSION 3.20)
-project(GenerationalVector LANGUAGES CXX)
+project(GenerationalVector VERSION 1.0.0 LANGUAGES CXX)
 
 # Set C++20 standard
 set(CMAKE_CXX_STANDARD 20)
@@ -33,7 +33,7 @@ endif()
 # Export the library for use by other projects
 set_target_properties(GenerationalVector PROPERTIES
     EXPORT_NAME GenerationalVector
-    VERSION ${GE_ENGINE_VERSION_NUMERIC}
+    VERSION ${PROJECT_VERSION}
     SOVERSION 1
 )
 
@@ -61,7 +61,7 @@ install(EXPORT GenerationalVectorTargets
 include(CMakePackageConfigHelpers)
 write_basic_package_version_file(
     GenerationalVectorConfigVersion.cmake
-    VERSION ${GE_ENGINE_VERSION_NUMERIC}
+    VERSION ${PROJECT_VERSION}
     COMPATIBILITY AnyNewerVersion
 )
 

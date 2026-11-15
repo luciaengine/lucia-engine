@@ -121,7 +121,7 @@ public:
 
         ShaderProgramCompileRequest request{};
         request.debugName="Lightmap GPU intersections";
-        request.cacheRoot=ShaderProgramAsset::GetShaderCacheRoot();
+        request.cacheRoot=ShaderProgramAsset::GetShaderCacheRoots().Writable;
         if (request.cacheRoot.empty()) return false;
         ShaderStageCompileSpec stage{};
         stage.stage="cs";

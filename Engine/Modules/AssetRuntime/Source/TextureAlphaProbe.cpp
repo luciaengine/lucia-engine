@@ -1,5 +1,7 @@
 #include "Assets/TextureAlphaProbe.h"
 
+#include "Types/StringUtils.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -178,7 +180,7 @@ TextureAlphaContent ProbeTextureAlphaFromBytes(const uint8* bytes, size_t size,
     if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF)
         return TextureAlphaContent::NoAlphaSource; // JPEG never carries alpha
 
-    if (LowerAscii(extensionHint) == ".tga")
+    if (ToLowerAscii(extensionHint) == ".tga")
         return ProbeTga(bytes, size);
 
     return TextureAlphaContent::MaybeAlpha;

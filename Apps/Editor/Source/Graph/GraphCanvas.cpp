@@ -1,7 +1,9 @@
 #include "Graph/GraphCanvas.h"
+#include "UI/ThemeAccent.h"
 
 #include "Graph/GraphConnectionRouting.h"
 #include "Graph/GraphRouteSolver.h"
+#include "Platform/Environment.h"
 
 #include "Graph/NodeColorSettings.h"
 #include "Graph/GraphNode/GraphNodeOverlap.h"
@@ -498,11 +500,7 @@ bool ClickedTwice(GraphCanvas::PressTracker& tracker, const std::string& nodeId,
 
 bool WireAuditEnabled()
 {
-    static const bool enabled = []
-    {
-        const char* value = std::getenv("GE_GRAPH_WIRE_AUDIT");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_GRAPH_WIRE_AUDIT", false);
     return enabled;
 }
 
@@ -1244,7 +1242,7 @@ void GraphCanvas::ApplyNodeVisualStates()
         if (!slot)
             continue;
         const std::string& id = slot->GetModelNodeId();
-        if (id.empty() || id.rfind("spike-", 0) == 0)
+        if (id.empty())
             continue;
         bool searchMatch = false;
         if (m_Model)
@@ -1344,7 +1342,7 @@ void GraphCanvas::RebindVisibleNodes()
         if (BindLiveNode(node))
             anyChanged = true;
         /* The colours reach the node through custom properties, which only take
-           effect when the cascade re-runs — the same reason ApplyAccentColorToUI
+           effect when the cascade re-runs — the same reason AccentColorSettings
            follows its stylesheet swap with MarkStyleDirtyAll. This is that,
            scoped to the node instead of the whole UI. */
         slot->MarkDirty(UIElement::StyleDirty | UIElement::VisualDirty);
@@ -4426,7 +4424,7 @@ void GraphCanvas::RefreshCompatiblePortHighlights()
 }
 
 void GraphCanvas::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx,
-                                             const ResolvedStyle& /*style*/,
+                                             const ResolvedStyle& style,
                                              float x, float y, float W, float H)
 {
     RefreshCompatiblePortHighlights();
@@ -4584,7 +4582,8 @@ void GraphCanvas::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx,
     // --------------- Connections ---------------
     constexpr float kLineThickness   = 2.2f;
     const float trackOffsetPx = kWireSeparationGraph * m_Zoom; /* this preview is in screen px */
-    const uint32_t hoveredColor = PackFromARGB(0xFF3A8FFFu);
+    const uint32_t accentArgb = UI::ResolveAccentArgb(style);
+    const uint32_t hoveredColor = PackFromARGB(accentArgb);
     const uint32_t selectedColor = PackFromARGB(0xFFE8C547u);
 
     auto emitBezier = [&](float sx0, float sy0, float sx1, float sy1,
@@ -4887,9 +4886,10 @@ void GraphCanvas::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx,
         // Only draw if box has some area
         if (right - left > 2.0f && bottom - top > 2.0f)
         {
-            // Semi-transparent blue fill
-            const uint32_t fillColor = PackFromARGB(0x403A8FFFu); // 25% alpha blue
-            const uint32_t borderColor = PackFromARGB(0xFF3A8FFFu); // solid blue
+            // Accent fill at 25% alpha, solid accent border.
+            constexpr uint32_t kSelectionBoxFillAlpha = 0x40000000u;
+            const uint32_t fillColor = PackFromARGB(kSelectionBoxFillAlpha | (accentArgb & 0x00FFFFFFu));
+            const uint32_t borderColor = PackFromARGB(accentArgb);
             
             // Fill rectangle
             ctx.Emit(MakeRect(left * cs, top * cs, 

@@ -27,6 +27,7 @@
 #include "Logger/Logger.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <optional>
@@ -39,6 +40,18 @@ namespace GameEngine
 {
 namespace Engine::Renderer
 {
+
+namespace { std::atomic_bool g_DeferredDisabledRendererLoading{false}; }
+
+void SetDeferredDisabledRendererLoading(bool deferred)
+{
+    g_DeferredDisabledRendererLoading.store(deferred, std::memory_order_relaxed);
+}
+
+bool GetDeferredDisabledRendererLoading()
+{
+    return g_DeferredDisabledRendererLoading.load(std::memory_order_relaxed);
+}
 
 namespace
 {
@@ -355,15 +368,18 @@ Components::LocalBounds ComputeModelBounds(const ModelAsset& modelAsset)
 std::vector<GUID> CollectStandaloneMaterialGuids(ECS::World& world, RenderServices& rs)
 {
     auto& matReg = rs.Materials().Registry();
+    const bool deferDisabled = GetDeferredDisabledRendererLoading();
 
     // Dedupe: many entities can share the same material; only register each once.
     std::unordered_set<GUID> seen;
     std::vector<GUID> needed;
     // Asset resolution binds handles for the scene as authored: an entity that
     // is switched off still needs its material and mesh when it comes back.
-    world.Query<ECS::Read<Components::MeshRenderer>>()
-        .IncludeDisabled()
-        .Each([&](const Components::MeshRenderer& mr)
+    auto q = world.Query<ECS::Read<Components::MeshRenderer>>();
+    q.IncludeDisabled();
+    if (deferDisabled)
+        q.Without<ECS::ComponentDisabled<Components::MeshRenderer>>();
+    q.Each([&](const Components::MeshRenderer& mr)
         {
             const GUID matGuid = mr.materialAssetGuid.ToGuid();
             if (matGuid.IsNull())
@@ -454,9 +470,12 @@ void ResolveStandaloneMaterials(ECS::World& world, RenderServices& rs)
 std::vector<UnresolvedModelEntity> CollectUnresolvedModelEntities(ECS::World& world)
 {
     std::vector<UnresolvedModelEntity> pending;
-    world.Query<ECS::Read<Components::MeshRenderer>>()
-        .IncludeDisabled()
-        .Each([&](ECS::EntityHandle e, const Components::MeshRenderer& mr)
+    const bool deferDisabled = GetDeferredDisabledRendererLoading();
+    auto q = world.Query<ECS::Read<Components::MeshRenderer>>();
+    q.IncludeDisabled();
+    if (deferDisabled)
+        q.Without<ECS::ComponentDisabled<Components::MeshRenderer>>();
+    q.Each([&](ECS::EntityHandle e, const Components::MeshRenderer& mr)
         {
             if (mr.meshGpuHandleId != 0)
                 return;
@@ -593,6 +612,10 @@ void BindChangedMeshRenderers(ECS::World& world, RenderServices& rs, ECS::Change
     q.IncludeDisabled();
     if (ECS::ChangeFilter::Enabled())
         q.Changed<Components::MeshRenderer>(gate);
+    // A renderer switched off binds nothing while loading is deferred. Switching it on moves the
+    // entity to an untagged chunk, which is stamped past the gate, so the next pass binds it.
+    if (GetDeferredDisabledRendererLoading())
+        q.Without<ECS::ComponentDisabled<Components::MeshRenderer>>();
     q.Each([&](ECS::EntityHandle entity, const Components::MeshRenderer& mr)
     {
         if (NeedsResolve(rs, mr))

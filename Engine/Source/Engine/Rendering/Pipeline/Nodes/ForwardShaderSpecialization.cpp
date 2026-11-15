@@ -3,6 +3,7 @@
 #include "Engine/Rendering/IEnvironmentSource.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/ImageBasedLightingFeature.h"
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
 #include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/SpecializationConstants.h"
@@ -66,8 +67,13 @@ std::shared_ptr<const Rendering::SpecializationConstants> ForwardShaderSpecializ
         else
             localLights = 1;
     }
-    // The engine has no local probe query, so the local probe branch stays on.
-    constexpr int32_t localProbes = 1;
+    // A probe capture view draws without local probes, so a capture never samples a probe cube.
+    int32_t localProbes = 1;
+    if (const auto* ibl = services.GetFeature<ImageBasedLightingFeature>())
+    {
+        const auto world = ibl->IsLocalProbeCaptureView(view.id) ? 0 : view.worldId;
+        localProbes = ibl->GetLocalProbeCount(world) != 0 ? 1 : 0;
+    }
     int32_t shadowFilter = kRuntimeShadowFilter;
     int32_t shadowDebug = 1;
     if (auto* shadows = services.GetFeature<ShadowMapRenderFeature>())

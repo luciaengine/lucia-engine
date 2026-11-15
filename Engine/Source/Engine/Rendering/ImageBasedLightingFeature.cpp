@@ -1,14 +1,20 @@
 #include "Engine/Rendering/ImageBasedLightingFeature.h"
 
+#include "Engine/Rendering/SceneReflectionProbeEnvironmentSource.h"
 #include "Engine/Rendering/IEnvironmentSource.h" // complete type for the owned m_Source unique_ptr
 #include "Mathematics/Interpolation.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
+#include "Rendering/Common/Utils.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PassPhase.h"
+#include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Logger/Logger.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 #include <limits>
 #include <vector>
 
@@ -237,6 +243,21 @@ uint32_t PrefilterMipCountForSize(uint32_t size)
 
 // std140 layout for the EnvData UBO (set 0, binding 21). Kept in lockstep with
 // Shaders/Includes/ibl.glsl.
+struct LocalProbeGpu
+{
+    float positionIntensity[4]{};
+    float centerBlend[4]{};
+    float halfExtentsProjection[4]{};
+    float axisX[4]{};
+    float axisY[4]{};
+    float axisZ[4]{};
+    float params[4]{}; // max mip, lower hemisphere darkness
+    uint32_t control[4]{}; // priority, ready, influence shape, reserved
+    float projectionCenter[4]{};
+    float projectionHalfExtents[4]{};
+};
+static_assert(sizeof(LocalProbeGpu) == 160);
+
 struct EnvDataGpu
 {
     float iblIntensity = 1.0f;
@@ -261,10 +282,176 @@ struct EnvDataGpu
     float ambientFloorEquator[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float ambientFloorGround[4]  = {0.0f, 0.0f, 0.0f, 0.0f};
     float ambientFloorParams[4]  = {0.0f, 0.0f, 0.0f, 0.0f};
+    LocalProbeGpu localProbes[ImageBasedLightingFeature::kMaxLocalProbes]{};
 };
 static_assert(sizeof(EnvDataGpu) == ImageBasedLightingFeature::kEnvDataBytes,
               "EnvData UBO must match ibl.glsl std140 layout (and the pre-init fallback size)");
 } // namespace
+
+struct ImageBasedLightingFeature::LocalProbeWorld
+{
+    std::unique_ptr<ImageBasedLightingFeature> captures[kMaxLocalProbes];
+    BufferHandle envBuffers[kCaptureFrameSlots]{};
+    bool overflowWarned = false;
+    bool registeredSinceCulling = true;
+
+};
+
+void ImageBasedLightingFeature::UpdateLocalProbes(RenderServices& services, uint64_t worldId,
+    std::span<const SceneReflectionProbeEnvironmentDesc> probes)
+{
+    if (probes.empty())
+    {
+        auto found = m_LocalProbeWorlds.find(worldId);
+        if (found != m_LocalProbeWorlds.end())
+        {
+            if (m_Device)
+                for (auto buffer : found->second->envBuffers)
+                    if (buffer.IsValid()) m_Device->DestroyBuffer(buffer);
+            m_LocalProbeWorlds.erase(found);
+        }
+        return;
+    }
+    auto& ptr = m_LocalProbeWorlds[worldId];
+    if (!ptr) ptr = std::make_unique<LocalProbeWorld>();
+    auto& world = *ptr;
+    world.registeredSinceCulling = true;
+    std::vector<SceneReflectionProbeEnvironmentDesc> selected(probes.begin(), probes.end());
+    std::sort(selected.begin(), selected.end(), [](const auto& a, const auto& b) {
+        return a.Priority != b.Priority ? a.Priority > b.Priority : a.SourceKey < b.SourceKey;
+    });
+    if (selected.size() > kMaxLocalProbes && !world.overflowWarned)
+        Logger::Log::Warning("ReflectionProbe world {} has {} enabled probes; the local reflection tier retains {} by priority and entity key",
+                            worldId, selected.size(), kMaxLocalProbes);
+    world.overflowWarned = selected.size() > kMaxLocalProbes;
+    if (selected.size() > kMaxLocalProbes) selected.resize(kMaxLocalProbes);
+
+    // Preserve GPU resources and in-progress bakes by identity when priorities
+    // reorder the slots. Merely moving the camera never replaces a capture.
+    std::unique_ptr<ImageBasedLightingFeature> retained[kMaxLocalProbes];
+    for (uint32_t i = 0; i < selected.size(); ++i)
+    {
+        for (auto& old : world.captures)
+        {
+            if (!old) continue;
+            auto* source = static_cast<SceneReflectionProbeEnvironmentSource*>(old->GetEnvironmentSource());
+            if (source->GetProbe().SourceKey == selected[i].SourceKey)
+            {
+                retained[i] = std::move(old);
+                break;
+            }
+        }
+        if (!retained[i])
+        {
+            retained[i] = std::make_unique<ImageBasedLightingFeature>();
+            retained[i]->SetEnvironmentSource(std::make_unique<SceneReflectionProbeEnvironmentSource>(services));
+        }
+        static_cast<SceneReflectionProbeEnvironmentSource*>(retained[i]->GetEnvironmentSource())->SetProbe(selected[i]);
+    }
+    for (uint32_t i = 0; i < kMaxLocalProbes; ++i)
+        world.captures[i] = std::move(retained[i]);
+}
+
+uint32_t ImageBasedLightingFeature::GetLocalProbeCount(uint64_t worldId) const
+{
+    uint32_t count = 0;
+    if (auto it = m_LocalProbeWorlds.find(worldId); it != m_LocalProbeWorlds.end())
+        for (const auto& capture : it->second->captures) count += capture != nullptr;
+    return count;
+}
+
+const ImageBasedLightingFeature* ImageBasedLightingFeature::GetLocalProbeCapture(uint64_t worldId, uint32_t index) const
+{
+    auto it = m_LocalProbeWorlds.find(worldId);
+    return it != m_LocalProbeWorlds.end() && index < kMaxLocalProbes ? it->second->captures[index].get() : nullptr;
+}
+
+const SceneReflectionProbeEnvironmentDesc* ImageBasedLightingFeature::GetLocalProbeDesc(uint64_t worldId, uint32_t index) const
+{
+    auto* capture = GetLocalProbeCapture(worldId, index);
+    return capture ? &static_cast<SceneReflectionProbeEnvironmentSource*>(capture->GetEnvironmentSource())->GetProbe() : nullptr;
+}
+
+TextureHandle ImageBasedLightingFeature::GetLocalIrradiance(uint64_t worldId, uint32_t index) const
+{
+    const auto* capture = GetLocalProbeCapture(worldId, index);
+    return capture && capture->IsInitialized() ? capture->GetIrradianceCube() : GetIrradianceCube();
+}
+
+TextureHandle ImageBasedLightingFeature::GetLocalPrefilter(uint64_t worldId, uint32_t index) const
+{
+    const auto* capture = GetLocalProbeCapture(worldId, index);
+    return capture && capture->IsInitialized() ? capture->GetPrefilterCube() : GetPrefilterCube();
+}
+
+bool ImageBasedLightingFeature::IsLocalProbeCaptureView(uint32_t viewId) const
+{
+    for (const auto& [worldId, world] : m_LocalProbeWorlds)
+        for (const auto& capture : world->captures)
+            if (capture && static_cast<SceneReflectionProbeEnvironmentSource*>(capture->GetEnvironmentSource())->IsCaptureView(viewId))
+                return true;
+    return false;
+}
+
+void ImageBasedLightingFeature::RequestLocalProbeRebake(uint64_t worldId, uint64_t sourceKey)
+{
+    auto it = m_LocalProbeWorlds.find(worldId);
+    if (it == m_LocalProbeWorlds.end()) return;
+    for (auto& capture : it->second->captures)
+        if (capture)
+        {
+            auto* source = static_cast<SceneReflectionProbeEnvironmentSource*>(capture->GetEnvironmentSource());
+            if (sourceKey == 0 || source->GetProbe().SourceKey == sourceKey) source->RequestRebake();
+        }
+}
+
+void ImageBasedLightingFeature::PublishCaptureFrom(ImageBasedLightingFeature& other)
+{
+    using std::swap;
+    swap(m_Set.diffuseEnvTex, other.m_Set.diffuseEnvTex);
+    swap(m_Set.specularEnvTex, other.m_Set.specularEnvTex);
+    swap(m_Set.diffuseEnvView, other.m_Set.diffuseEnvView);
+    swap(m_Set.specularEnvView, other.m_Set.specularEnvView);
+    swap(m_EnvCaptureTex, other.m_EnvCaptureTex);
+    swap(m_EnvCaptureCubeView, other.m_EnvCaptureCubeView);
+    swap(m_EnvCaptureStoreViews, other.m_EnvCaptureStoreViews);
+    swap(m_EnvCaptureMipSampleViews, other.m_EnvCaptureMipSampleViews);
+    swap(m_IrradianceStoreView, other.m_IrradianceStoreView);
+    swap(m_PrefilterStoreViews, other.m_PrefilterStoreViews);
+    swap(m_EnvCaptureSize, other.m_EnvCaptureSize);
+    swap(m_EnvCaptureMipCount, other.m_EnvCaptureMipCount);
+    swap(m_PrefilterSize, other.m_PrefilterSize);
+    swap(m_PrefilterMipCount, other.m_PrefilterMipCount);
+}
+
+void ImageBasedLightingFeature::ScheduleLocalProbeBakes(const EnvironmentBakeContext& ctx)
+{
+    // The culling hook resets this once per application frame, so additional
+    // scene/game windows cannot multiply the global capture/filter budget.
+    if (m_LocalProbeWorkScheduled) return;
+    m_LocalProbeWorkScheduled = true;
+    const auto timings = ctx.Frame && ctx.Frame->ProfilingEnabled() ? ctx.Frame->LastFrameProfiling().Passes :
+        std::vector<RenderGraph::RGFrame::RGPassTiming>{};
+    ImageBasedLightingFeature* chosen = nullptr;
+    SceneReflectionProbeEnvironmentSource* winner = nullptr;
+    for (auto& [worldId, world] : m_LocalProbeWorlds)
+        for (auto& capture : world->captures)
+        {
+            if (!capture) continue;
+            auto* source = static_cast<SceneReflectionProbeEnvironmentSource*>(capture->GetEnvironmentSource());
+            source->TickPending(ctx.DeltaTimeSeconds);
+            for (const auto& timing : timings) source->ObserveGpuTiming(timing.Name, timing.GpuSpanMs, timing.SpanShared);
+            if (!source->NeedsBake()) continue;
+            if (!winner || (source->IsBaking() != winner->IsBaking() ? source->IsBaking() :
+                source->SchedulingScore() != winner->SchedulingScore() ? source->SchedulingScore() > winner->SchedulingScore() :
+                source->GetProbe().SourceKey < winner->GetProbe().SourceKey))
+            { chosen = capture.get(); winner = source; }
+        }
+    if (!chosen || !chosen->Initialize(ctx.Device)) return;
+    auto localCtx = ctx;
+    localCtx.Feature = chosen;
+    winner->ScheduleBake(localCtx);
+}
 
 ImageBasedLightingFeature::ImageBasedLightingFeature() = default;
 
@@ -272,6 +459,10 @@ ImageBasedLightingFeature::~ImageBasedLightingFeature()
 {
     if (!m_Device)
         return;
+    for (auto& [worldId, world] : m_LocalProbeWorlds)
+        for (auto buffer : world->envBuffers)
+            if (buffer.IsValid()) m_Device->DestroyBuffer(buffer);
+    m_LocalProbeWorlds.clear();
     DestroyCaptureResources();
     if (m_Set.diffuseEnvView != INVALID_TEXTURE_VIEW_HANDLE)
         m_Device->DestroyTextureView(m_Set.diffuseEnvView);
@@ -500,8 +691,10 @@ bool ImageBasedLightingFeature::Initialize(IDevice* device)
     // as a mild ambient probe until a source bakes real sky data into them. Created
     // with UnorderedAccess so the Stage 2 convolve compute can write them in place.
     const float kSeedAmbient[4] = {0.1f, 0.1f, 0.1f, 1.0f};
-    const uint32_t kStorageUsage = static_cast<uint32_t>(TextureUsage::UnorderedAccess);
-    if (!CreateSeededCube(*device, "IBL_Irradiance", 64, 1, kStorageUsage, kSeedAmbient,
+    // Copies require TransferSrc at texture creation, including on WebGPU.
+    const uint32_t kIrradianceUsage =
+        static_cast<uint32_t>(TextureUsage::UnorderedAccess) | static_cast<uint32_t>(TextureUsage::TransferSrc);
+    if (!CreateSeededCube(*device, "IBL_Irradiance", 64, 1, kIrradianceUsage, kSeedAmbient,
                           m_Set.diffuseEnvTex, m_Set.diffuseEnvView))
     {
         Logger::Log::Error("ImageBasedLightingFeature: failed to create irradiance cube");
@@ -602,8 +795,28 @@ bool ImageBasedLightingFeature::Initialize(IDevice* device)
 
 void ImageBasedLightingFeature::OnScheduleCulling(const FeatureCullingContext& ctx)
 {
+    m_LocalProbeWorkScheduled = false;
     if (m_Source)
         m_Source->ScheduleCulling(ctx);
+    // ECS registers live worlds before this once-per-frame hook. Release worlds
+    // that stopped registering (scene closed / play world destroyed), including
+    // their OnDemand capture views, rather than baking abandoned worlds forever.
+    for (auto it = m_LocalProbeWorlds.begin(); it != m_LocalProbeWorlds.end();)
+    {
+        auto& world = *it->second;
+        if (!world.registeredSinceCulling)
+        {
+            if (m_Device)
+                for (auto buffer : world.envBuffers)
+                    if (buffer.IsValid()) m_Device->DestroyBuffer(buffer);
+            it = m_LocalProbeWorlds.erase(it);
+            continue;
+        }
+        world.registeredSinceCulling = false;
+        for (auto& capture : world.captures)
+            if (capture) capture->OnScheduleCulling(ctx);
+        ++it;
+    }
 }
 
 void ImageBasedLightingFeature::OnDeviceRebuilt(IDevice* device)
@@ -619,6 +832,15 @@ void ImageBasedLightingFeature::OnDeviceRebuilt(IDevice* device)
     // the world-pass IBL binding valid on the first resumed frame (the "never black"
     // invariant); the real sky/probe cubes re-convolve afterward via the re-armed
     // bake below.
+    for (auto& [worldId, world] : m_LocalProbeWorlds)
+    {
+        for (auto& buffer : world->envBuffers) buffer = {};
+        for (auto& capture : world->captures)
+            if (capture) capture->OnDeviceRebuilt(device);
+    }
+    if (auto* probe = dynamic_cast<SceneReflectionProbeEnvironmentSource*>(m_Source.get()))
+        probe->ResetDevice(device);
+    m_LocalProbeWorkScheduled = false;
     m_Device = device;
     m_Set = IBLSet{};
     m_CubeSampler = {};
@@ -646,7 +868,7 @@ void ImageBasedLightingFeature::OnDeviceRebuilt(IDevice* device)
     m_FramesSinceBake = 0xFFFFFFFFu;
 }
 
-BufferHandle ImageBasedLightingFeature::UploadEnvData(IDevice* device)
+BufferHandle ImageBasedLightingFeature::UploadEnvData(IDevice* device, uint64_t worldId)
 {
     if (!device)
         return {};
@@ -672,6 +894,24 @@ BufferHandle ImageBasedLightingFeature::UploadEnvData(IDevice* device)
     const uint32_t slot = static_cast<uint32_t>(
         m_EnvDataFrameCounter.Tick(device->GetFrameIndex()) % device->GetFrameRingDepth());
     BufferHandle buf = m_EnvDataBuffer[slot];
+    // Each world's values have their own ring. A second view/world (or a probe
+    // capture using the sky-only ring) must not overwrite another pass's UBO.
+    auto worldIt = m_LocalProbeWorlds.find(worldId);
+    LocalProbeWorld* localWorld = worldId != 0 && worldIt != m_LocalProbeWorlds.end() ? worldIt->second.get() : nullptr;
+    if (localWorld)
+    {
+        auto& localBuffer = localWorld->envBuffers[slot];
+        if (!localBuffer.IsValid())
+        {
+            BufferDesc bd{};
+            bd.size = kEnvDataBytes;
+            bd.usage = static_cast<uint32_t>(BufferUsage::Uniform);
+            bd.memoryUsage = BufferMemoryUsage::Upload;
+            bd.debugName = "IBL_LocalEnvData";
+            localBuffer = device->CreateBuffer(bd);
+        }
+        buf = localBuffer;
+    }
     if (!buf.IsValid())
         return {};
     EnvDataGpu d{};
@@ -716,6 +956,43 @@ BufferHandle ImageBasedLightingFeature::UploadEnvData(IDevice* device)
             std::memcpy(d.localBoxAxisZWS, local.BoxAxisZWS.v, sizeof(local.BoxAxisZWS));
         }
     }
+    if (localWorld)
+        for (uint32_t j = 0; j < kMaxLocalProbes; ++j)
+        {
+            auto& gpu = d.localProbes[j];
+            const auto* capture = localWorld->captures[j].get();
+            if (!capture || !capture->IsInitialized() || capture->GetLastBakedDigest() == 0) continue;
+            const auto* source = static_cast<SceneReflectionProbeEnvironmentSource*>(capture->GetEnvironmentSource());
+            const auto& probe = source->GetProbe();
+            // The same fp32 frame as the single local probe (LocalReflectionData): world minus origin.
+            const Mathematics::Vector3 capturedPosition = source->GetCapturedPosition() - Mathematics::WorldPosition{};
+            const Mathematics::Vector3 boxCenter = probe.BoxCenter - Mathematics::WorldPosition{};
+            const Mathematics::Vector3 projectionCenter = probe.ProjectionCenter - Mathematics::WorldPosition{};
+            for (int i = 0; i < 3; ++i)
+            {
+                gpu.positionIntensity[i] = capturedPosition[i];
+                gpu.centerBlend[i] = boxCenter[i];
+                gpu.halfExtentsProjection[i] = probe.BoxHalfExtents[i];
+                gpu.axisX[i] = probe.BoxAxisX[i];
+                gpu.axisY[i] = probe.BoxAxisY[i];
+                gpu.axisZ[i] = probe.BoxAxisZ[i];
+            }
+            gpu.positionIntensity[3] = probe.Intensity;
+            gpu.centerBlend[3] = probe.BlendDistance;
+            gpu.halfExtentsProjection[3] = probe.BoxProjection ? 1.0f : 0.0f;
+            gpu.params[0] = static_cast<float>(capture->GetPrefilterMaxMip());
+            gpu.params[1] = probe.LowerHemisphereDarkness;
+            gpu.control[0] = probe.Priority;
+            gpu.control[1] = 1;
+            gpu.control[2] = probe.InfluenceShape;
+            for (int i = 0; i < 3; ++i)
+            {
+                const bool explicitProjection = probe.ProjectionHalfExtents[0] > 0.0f &&
+                    probe.ProjectionHalfExtents[1] > 0.0f && probe.ProjectionHalfExtents[2] > 0.0f;
+                gpu.projectionCenter[i] = explicitProjection ? projectionCenter[i] : boxCenter[i];
+                gpu.projectionHalfExtents[i] = explicitProjection ? probe.ProjectionHalfExtents[i] : probe.BoxHalfExtents[i];
+            }
+        }
     device->UpdateBuffer(buf, 0, sizeof(d), &d);
     return buf;
 }

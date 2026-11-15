@@ -2,6 +2,7 @@
 #include "SplineLayout/FenceLayout.h"
 #include "SplineLayout/PieceEntity.h"
 #include "SplineLayout/SpanMiter.h"
+#include "Types/Fnv1a.h"
 
 #include "FenceLayoutCrestGoldens.h"
 #include "GoldenUlps.h"
@@ -1171,7 +1172,7 @@ namespace
 
 // The measured fence kit's panel: the pivot IS the plant line, with 0.5216 m of
 // panel modelled below it and 1.1171 m above. Both figures are read off one
-// SplineFence pool in a large island scene, whose 107 placed pieces carry two
+// SplineFence pool in the Hobbiton scene, whose 107 placed pieces carry two
 // skirts (0.5216 m on 65, 0.5239 m on 42) — which is why the layout reads the
 // skirt per piece and never as a constant.
 FencePieceBounds SkirtedPanelPiece()
@@ -1889,16 +1890,9 @@ namespace
 // about the layouts that came before it.
 struct Fingerprint
 {
-    uint64 Value = 0xCBF29CE484222325ull;
+    uint64 Value = Hashing::kFnv1a64OffsetBasis;
 
-    void MixBits(uint64 v)
-    {
-        for (int shift = 0; shift < 64; shift += 8)
-        {
-            Value ^= (v >> shift) & 0xFFull;
-            Value *= 0x100000001B3ull;
-        }
-    }
+    void MixBits(uint64 v) { Value = Hashing::Fnv1a64Value(Value, v); }
     void MixFloat(float32 v)
     {
         uint32 bits = 0;

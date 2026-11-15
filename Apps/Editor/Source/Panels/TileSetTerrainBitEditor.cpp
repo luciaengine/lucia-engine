@@ -363,7 +363,7 @@ void TileSetTerrainBitEditor::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx
     if (ctx.Manager != nullptr && ctx.Textures != nullptr && !m_AtlasTexture.IsNull())
     {
         const Rendering::TextureHandle texture =
-            ctx.Manager->TryGetBackgroundTextureHandleByGuid(m_AtlasTexture);
+            ctx.Manager->BackgroundImages().TryGetHandle(m_AtlasTexture);
         if (texture.IsValid())
             slot = ctx.Textures->Register(texture, ctx.Manager->GetNearestClampSampler());
     }
@@ -395,7 +395,7 @@ void TileSetTerrainBitEditor::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx
                                          tile->UV.V0, tile->UV.U1, tile->UV.V1);
                 // Pixel art must not blur: nearest sampling in the shader, so the
                 // result does not depend on which sampler the texture cache handed out.
-                quad.PointFilter = 1.0f;
+                quad.ModeAndFlags |= UI::kPrimPointFilterBit;
                 ctx.Emit(quad);
             }
             else

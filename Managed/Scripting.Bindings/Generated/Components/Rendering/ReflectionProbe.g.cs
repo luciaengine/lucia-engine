@@ -17,7 +17,13 @@ namespace GameEngine.Scripting
         Realtime = 1,
     }
 
-    [StructLayout(LayoutKind.Explicit, Size = 64)]
+    public enum ReflectionProbeInfluenceShape : uint
+    {
+        Box = 1,
+        Ellipsoid = 2,
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 88)]
     [BuiltInComponent("GameEngine::Components::ReflectionProbe")]
     public partial struct ReflectionProbe : IComponent
     {
@@ -36,36 +42,61 @@ namespace GameEngine.Scripting
         public uint Priority;
 
         [FieldOffset(8)]
-        public bool BoxProjection;
+        private ReflectionProbeInfluenceShape m_InfluenceShape;
+        public ReflectionProbeInfluenceShape InfluenceShape
+        {
+            readonly get => m_InfluenceShape;
+            set => m_InfluenceShape = value is ReflectionProbeInfluenceShape.Box or ReflectionProbeInfluenceShape.Ellipsoid
+                ? value
+                : throw new ArgumentOutOfRangeException(nameof(value), value, "ReflectionProbe.InfluenceShape is Box or Ellipsoid.");
+        }
 
         [FieldOffset(12)]
-        public float OriginOffsetX;
+        public float ProjectionScaleX;
 
         [FieldOffset(16)]
-        public float OriginOffsetY;
+        public float ProjectionScaleY;
 
         [FieldOffset(20)]
-        public float OriginOffsetZ;
+        public float ProjectionScaleZ;
 
         [FieldOffset(24)]
-        public float Intensity;
+        public float ProjectionOffsetX;
 
         [FieldOffset(28)]
-        public float ExposureEV;
+        public float ProjectionOffsetY;
 
         [FieldOffset(32)]
-        public float RotationDegrees;
+        public float ProjectionOffsetZ;
 
         [FieldOffset(36)]
-        public float IblLowerHemisphereDarkness;
+        public float OriginOffsetX;
 
         [FieldOffset(40)]
-        public bool CaptureEnvironment;
+        public float OriginOffsetY;
 
         [FieldOffset(44)]
-        public uint CaptureResolution;
+        public float OriginOffsetZ;
 
         [FieldOffset(48)]
+        public float Intensity;
+
+        [FieldOffset(52)]
+        public float ExposureEV;
+
+        [FieldOffset(56)]
+        public float RotationDegrees;
+
+        [FieldOffset(60)]
+        public float IblLowerHemisphereDarkness;
+
+        [FieldOffset(64)]
+        public bool CaptureEnvironment;
+
+        [FieldOffset(68)]
+        public uint CaptureResolution;
+
+        [FieldOffset(72)]
         private ReflectionProbeUpdateMode m_UpdateMode;
         public ReflectionProbeUpdateMode UpdateMode
         {
@@ -75,13 +106,13 @@ namespace GameEngine.Scripting
                 : throw new ArgumentOutOfRangeException(nameof(value), value, "ReflectionProbe.UpdateMode is Once or Realtime.");
         }
 
-        [FieldOffset(52)]
+        [FieldOffset(76)]
         public float RealtimeUpdateInterval;
 
-        [FieldOffset(56)]
+        [FieldOffset(80)]
         public float MaxDistance;
 
-        [FieldOffset(60)]
+        [FieldOffset(84)]
         public RenderLayerMask CapturedLayers;
     }
 }

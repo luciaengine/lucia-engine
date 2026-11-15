@@ -226,6 +226,7 @@ void ContextMenuManipulator::BuildAndShow(Platform::Window* window, Mathematics:
 
         uint32_t flags = item.Flags;
         std::string color = item.ColorHex;
+        std::string icon = item.IconPath;
         if (item.State)
         {
             // The rule every backend (and the automation interceptor) applies: a baked
@@ -236,13 +237,15 @@ void ContextMenuManipulator::BuildAndShow(Platform::Window* window, Mathematics:
                     (state.Checked ? MenuItemFlag_Checked : MenuItemFlag_None);
             if (!state.ColorHex.empty())
                 color = state.ColorHex;
+            if (!state.IconPath.empty())
+                icon = state.IconPath;
         }
 
         actions.push_back(item.OnActivate);
         const uint32_t commandId = static_cast<uint32_t>(actions.size());
         m_Menu->AddItem(parentId, std::string(title), commandId, flags);
-        if (!item.IconPath.empty())
-            m_Menu->SetItemIcon(commandId, item.IconPath);
+        if (!icon.empty())
+            m_Menu->SetItemIcon(commandId, icon);
         if (!color.empty())
             m_Menu->SetItemColor(commandId, color);
     }

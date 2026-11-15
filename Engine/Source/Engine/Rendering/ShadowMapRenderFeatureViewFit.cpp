@@ -97,7 +97,8 @@ void ShadowMapRenderFeature::ApplySceneDistanceFit(ViewCascadeFit& record, ViewC
 
 bool ShadowMapRenderFeature::SupportsSdsm(const Rendering::IDevice* device)
 {
-    return device && !device->GetCapabilities().prefersStableShadowFiltering;
+    return device && !device->GetCapabilities().prefersStableShadowFiltering &&
+           device->GetCapabilities().supportsMappableStorageBuffers;
 }
 
 bool ShadowMapRenderFeature::SameFitInputs(const ViewCascadeFitInputs& a,

@@ -4,6 +4,7 @@
 // This header must only be included by Text module .cpp files (not public headers).
 
 #include "Rendering/Text/FontAtlas.h"
+#include "TextShaper.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -33,93 +34,6 @@ namespace GameEngine::Rendering::Text
 #if defined(GE_HAVE_HARFBUZZ)
 namespace Detail
 {
-struct HBDirScript
-{
-    hb_direction_t dir;
-    hb_script_t script;
-    const char* lang;
-};
-
-// Heuristic: detect text direction and script from the first strong character in a UTF-8 string.
-// Shared between measurement, caret mapping, and mesh building so all HarfBuzz calls see identical properties.
-inline HBDirScript DetectDirScriptUtf8(std::string_view s)
-{
-    HBDirScript r{HB_DIRECTION_LTR, HB_SCRIPT_INVALID, nullptr};
-    auto nextCodepoint = [](const char* p, const char* e, uint32_t& out) -> const char*
-    {
-        if (p >= e)
-        {
-            out = 0;
-            return e;
-        }
-        unsigned char c = (unsigned char)*p;
-        if (c < 0x80)
-        {
-            out = c;
-            return p + 1;
-        }
-        if ((c >> 5) == 0x6 && p + 1 < e)
-        {
-            out = ((c & 0x1F) << 6) | ((unsigned char)p[1] & 0x3F);
-            return p + 2;
-        }
-        if ((c >> 4) == 0xE && p + 2 < e)
-        {
-            out = ((c & 0x0F) << 12) |
-                  (((unsigned char)p[1] & 0x3F) << 6) |
-                  ((unsigned char)p[2] & 0x3F);
-            return p + 3;
-        }
-        if ((c >> 3) == 0x1E && p + 3 < e)
-        {
-            out = ((c & 0x07) << 18) |
-                  (((unsigned char)p[1] & 0x3F) << 12) |
-                  (((unsigned char)p[2] & 0x3F) << 6) |
-                  ((unsigned char)p[3] & 0x3F);
-            return p + 4;
-        }
-        out = 0;
-        return e;
-    };
-
-    const char* p = s.data();
-    const char* e = s.data() + s.size();
-    uint32_t cp = 0;
-    while (p < e)
-    {
-        p = nextCodepoint(p, e, cp);
-        if (!cp)
-            break;
-        // Hebrew
-        if (cp >= 0x0590 && cp <= 0x05FF)
-        {
-            r.dir = HB_DIRECTION_RTL;
-            r.script = HB_SCRIPT_HEBREW;
-            r.lang = "he";
-            break;
-        }
-        // Arabic
-        if ((cp >= 0x0600 && cp <= 0x06FF) || (cp >= 0x0750 && cp <= 0x077F) || (cp >= 0x08A0 && cp <= 0x08FF))
-        {
-            r.dir = HB_DIRECTION_RTL;
-            r.script = HB_SCRIPT_ARABIC;
-            r.lang = "ar";
-            break;
-        }
-        // Basic Latin: treat as strong LTR
-        if ((cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z'))
-        {
-            r.dir = HB_DIRECTION_LTR;
-            r.script = HB_SCRIPT_LATIN;
-            r.lang = "en";
-            break;
-        }
-        // Digits: weak; keep scanning
-        if (cp >= '0' && cp <= '9')
-            continue;
-    }
-    return r;
-}
 // Reusable thread-local HarfBuzz buffer — avoids per-call heap churn.
 // Used by MeasureUtf8, BuildCaretMapUtf8, and ShapeText.
 inline hb_buffer_t* GetThreadLocalHBBuffer()
@@ -129,17 +43,6 @@ inline hb_buffer_t* GetThreadLocalHBBuffer()
         s_HbBuf = hb_buffer_create();
     hb_buffer_clear_contents(s_HbBuf);
     return s_HbBuf;
-}
-
-// HarfBuzz's guess over the whole string, for text DetectDirScriptUtf8 cannot
-// classify. A null lang stands for the default language the guess assigns.
-// Uses the thread-local buffer, so call it before filling that buffer.
-inline HBDirScript GuessDirScriptUtf8(std::string_view s)
-{
-    hb_buffer_t* buffer = GetThreadLocalHBBuffer();
-    hb_buffer_add_utf8(buffer, s.data(), (int)s.size(), 0, (int)s.size());
-    hb_buffer_guess_segment_properties(buffer);
-    return {hb_buffer_get_direction(buffer), hb_buffer_get_script(buffer), nullptr};
 }
 
 // Optional ligatures must not survive non-zero letter-spacing (CSS Text 3
@@ -254,23 +157,30 @@ inline unsigned RasterPixelSize(float pixelSize)
 struct ShapingOutput
 {
     std::vector<uint32_t> glyphIds;
+    std::vector<float> baseXAdv; // advances before tracking, for stable measurement
     std::vector<float> xAdv;  // x advance per glyph (atlas-size pixels)
     std::vector<float> xOff;  // x offset per glyph (atlas-size pixels)
     std::vector<float> yOff;  // y offset per glyph (atlas-size pixels)
-    bool isRTL = false;
+    std::vector<uint32_t> clusterStart;
+    std::vector<uint32_t> clusterEnd;
+    std::vector<bool> clusterRTL;
 
     void Clear()
     {
+        clusterStart.clear();
+        clusterEnd.clear();
+        clusterRTL.clear();
         glyphIds.clear();
+        baseXAdv.clear();
         xAdv.clear();
         xOff.clear();
         yOff.clear();
-        isRTL = false;
     }
 
     void Reserve(size_t n)
     {
         glyphIds.reserve(n);
+        baseXAdv.reserve(n);
         xAdv.reserve(n);
         xOff.reserve(n);
         yOff.reserve(n);

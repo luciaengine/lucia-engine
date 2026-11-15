@@ -9,7 +9,7 @@
 
 namespace GameEngine { namespace UILayout {
 
-// MT-4.0 seam guard state. thread_local so the state is per-thread; the assert
+// Cascade seam guard state. thread_local so the state is per-thread; the assert
 // is only present in true Debug builds (see header note).
 #ifdef _DEBUG
 namespace { thread_local bool g_CascadeComputeActive = false; }

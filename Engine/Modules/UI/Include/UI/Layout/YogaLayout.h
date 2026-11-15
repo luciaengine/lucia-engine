@@ -69,7 +69,7 @@ struct YogaAdapter
     static void InsertChildrenSortedByOrder(YGNodeRef parent, std::span<const ChildWithOrder> children);
 };
 
-// MT-4.0 cascade seam guard. UIManager marks the cascade-compute region
+// Cascade seam guard. UIManager marks the cascade-compute region
 // (ResolveCascadeForElement + FinalizeElementStyle) active while it runs;
 // the YogaAdapter mutators assert they are never invoked inside it. The seam
 // keeps the compute stage Yoga-free so it stays a pure, side-effect-free

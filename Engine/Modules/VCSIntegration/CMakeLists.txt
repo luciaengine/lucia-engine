@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(VCSIntegration LANGUAGES CXX)
+project(VCSIntegration VERSION 1.0.0 LANGUAGES CXX)
 
 set(VCSINTEGRATION_SOURCES
     Source/VCSCommandExecutor.cpp

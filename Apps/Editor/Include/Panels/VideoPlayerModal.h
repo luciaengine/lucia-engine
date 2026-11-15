@@ -41,7 +41,8 @@ public:
 
     // Open the modal and start playing the given file immediately.
     // If title is non-empty it overrides the filename-derived header text.
-    void Open(const std::string& videoPath, const std::string& title = {});
+    // Loop repeats the movie; ordinary video previews default to a single play.
+    void Open(const std::string& videoPath, const std::string& title = {}, bool loop = false);
     void Close();
     bool IsOpen() const { return m_Open; }
 

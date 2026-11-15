@@ -30,6 +30,7 @@
 #include "UI/Controls/Label.h"
 #include "UI/Controls/ScrollView.h"
 #include "UI/StyleProperties.h"
+#include "UI/ThemeAccent.h"
 #include "UI/UIElement.h"
 #include "UI/UIEvents.h"
 #include "UI/UIManager.h"
@@ -1419,6 +1420,19 @@ void MonitorsPanel::ShowChartDropIndicator(const ChartDropTarget& target)
         m_ChartDropIndicator = indicator.get();
         root->AddChild(std::move(indicator));
     }
+
+    // Tinted from the live accent on every show, so an accent change made
+    // while the panel is open reaches the indicator.
+    constexpr uint32_t kDropIndicatorFillAlpha = 0x2E000000u;
+    constexpr uint32_t kDropIndicatorBorderAlpha = 0xCC000000u;
+    const uint32_t accentRgb = UI::ResolveAccentArgb(root->GetResolvedStyle()) & 0x00FFFFFFu;
+    const uint32_t borderColor = kDropIndicatorBorderAlpha | accentRgb;
+    m_ChartDropIndicator->Style()
+        .Set(Style::BackgroundColor, kDropIndicatorFillAlpha | accentRgb)
+        .Set(Style::BorderTopColor, borderColor)
+        .Set(Style::BorderRightColor, borderColor)
+        .Set(Style::BorderBottomColor, borderColor)
+        .Set(Style::BorderLeftColor, borderColor);
 
     float left = 0.0f;
     float top = 0.0f;

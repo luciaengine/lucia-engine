@@ -140,7 +140,7 @@ std::string UserProjectGenerator::BuildCMakeListsContent(const NativeBuildConfig
         out << "if(NOT IS_DIRECTORY \"${GAMEENGINE_SDK_DIR}\")\n";
         out << "    message(FATAL_ERROR \"GameEngine SDK not found at '${GAMEENGINE_SDK_DIR}'. "
                "The Editor/SDK moved or was deleted since this file was generated. "
-               "Reopen the project in the Open Engine Editor to refresh it, or configure with "
+               "Reopen the project in the GameEngine Editor to refresh it, or configure with "
                "-DGAMEENGINE_SDK_DIR=<Editor dir>/SDK.\")\n";
         out << "endif()\n";
     }

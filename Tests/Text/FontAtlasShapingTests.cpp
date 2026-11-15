@@ -631,9 +631,12 @@ TEST(FontAtlasShapingTests, MissingGlyphWarningIsEmittedOncePerFamilyAndScript)
     atlas.ShapeText("\xe9\x99\xba", 32.0f, shape);
     EXPECT_TRUE(shape.glyphs.empty());
     Logger::Log::Flush();
-    const auto messages = ring->GetMessages(Logger::LogLevel::Warning, 0, "[Text] Font");
+    std::vector<std::string> messages;
+    for (const auto& entry : ring->GetMessages({Logger::LogLevel::Warning, 0}).Messages)
+        if (entry.Message.find("[Text] Font") != std::string::npos)
+            messages.push_back(entry.Message);
     ASSERT_EQ(messages.size(), 1u);
-    EXPECT_NE(messages[0].Message.find("fallback"), std::string::npos);
+    EXPECT_NE(messages[0].find("fallback"), std::string::npos);
 }
 
 TEST(FontAtlasShapingTests, CoverageProbeRequiresALoadedFaceAndUsesFallbacks)

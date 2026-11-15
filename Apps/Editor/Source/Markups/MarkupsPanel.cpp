@@ -185,9 +185,9 @@ void MarkupsPanel::ShowTab(Tab tab)
 {
     m_Tab = tab;
     if (Button* button = m_MarkupsTabButton.Get())
-        tab == Tab::Markups ? button->AddClass("active") : button->RemoveClass("active");
+        tab == Tab::Markups ? button->AddClass("markups-tab-chosen") : button->RemoveClass("markups-tab-chosen");
     if (Button* button = m_ActivityTabButton.Get())
-        tab == Tab::Activity ? button->AddClass("active") : button->RemoveClass("active");
+        tab == Tab::Activity ? button->AddClass("markups-tab-chosen") : button->RemoveClass("markups-tab-chosen");
     Rebuild();
 }
 
