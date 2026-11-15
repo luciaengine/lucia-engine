@@ -125,8 +125,16 @@ void AssetField::SetIconClass(std::string iconClass)
     m_Icon->RemoveClass("hidden");
 }
 
+void AssetField::SetThumbnailProvider(IThumbnailProvider* provider)
+{
+    m_Thumbnails = provider;
+    UpdateDisplay();
+}
+
 void AssetField::UpdateDisplay()
 {
+    // Each display drops the preview a provider still owes for the previous one.
+    ++m_ModelPreviewRequestGen;
     m_ResolvedPath.clear();
     m_ResolvedName.clear();
     if (m_Value.IsNull())
@@ -149,14 +157,12 @@ void AssetField::UpdateDisplay()
         {
             // A texture is its own thumbnail: the strip draws the file directly, and the
             // UI texture cache shares it with larger previews of the same file.
-            ++m_ModelPreviewRequestGen; // invalidate any in-flight model thumb
             UI::Layout::SetBackgroundPath(*m_Preview, meta.Path.string());
             m_Preview->RemoveClass("hidden");
             SetIconClass({});
         }
         else if (meta.Type == AssetType::Model && m_Thumbnails && m_Preview)
         {
-            ++m_ModelPreviewRequestGen;
             const uint32_t requestGeneration = m_ModelPreviewRequestGen;
             ClearModelPreviewStrip();
 
@@ -165,8 +171,10 @@ void AssetField::UpdateDisplay()
             // acting on the return value as well would apply the thumbnail twice.
             m_Thumbnails->GetOrRequest(
                 meta.Path, kModelThumbnailSize,
-                [this, requestGeneration](const std::string& thumbnailPath) {
-                    ApplyModelThumbnail(requestGeneration, thumbnailPath);
+                [field = MakeWeakRef(this), requestGeneration](const std::string& thumbnailPath) {
+                    // A provider can answer after the field is gone.
+                    if (AssetField* self = field.Get())
+                        self->ApplyModelThumbnail(requestGeneration, thumbnailPath);
                 }, true);
         }
         else
