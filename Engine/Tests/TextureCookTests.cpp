@@ -595,13 +595,12 @@ uint64 HashGoldenChain(bool isFloat, bool srgb)
 
 TEST(TextureCookFilter, MipChainBytesMatchGolden)
 {
-    // Recorded on Windows x64 with stb_image_resize2 2.10; ImageTests pins the
-    // same bytes. A changed hash is a changed cook output for every texture: a
-    // change that means it changes the stbir version key or the recipe hash too,
-    // never only these constants.
+    // stb_image_resize2 2.18 gives these hashes on Windows x64, macOS arm64 and Linux x64;
+    // ImageTests pins the 8-bit ones. A changed hash is a changed cook output for every
+    // texture, so it also changes the stbir version key or the recipe hash.
     EXPECT_EQ(HashGoldenChain(false, true), 0x9763e30eb4d47a5cull) << "8-bit sRGB";
     EXPECT_EQ(HashGoldenChain(false, false), 0xc3ea2747e3b97022ull) << "8-bit linear";
-    EXPECT_EQ(HashGoldenChain(true, false), 0x814873443db92b10ull) << "float linear";
+    EXPECT_EQ(HashGoldenChain(true, false), 0xe8c39e1a2307245aull) << "float linear";
 }
 
 // ── Swizzle baking ───────────────────────────────────────────────────────────
