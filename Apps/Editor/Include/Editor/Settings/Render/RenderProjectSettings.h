@@ -13,7 +13,6 @@ class RenderServices;
 namespace GameEngine::Editor
 {
 
-static constexpr uint32_t kDefaultDirectionalShadowResolution = 2048u;
 // Cascade projection mode (rendering.directionalShadowProjection, "stable" |
 // "close"). Stable fixes the splits and fits a bounding sphere, so
 // worldPerTexel cannot move and the shadow texel lattice stays welded to the
@@ -27,14 +26,10 @@ static constexpr bool kDefaultDirectionalShadowStableProjection = false;
 
 class SettingsStore;
 
-// Reads/writes the directional-shadow member of the already-loaded project
-// SettingsStore. The caller owns Load()/Save(), allowing the settings page and
-// the renderer apply path to share one store transaction with sibling render
-// settings instead of performing a shadow-only filesystem load.
-uint32_t GetDirectionalShadowResolution(const SettingsStore& store);
-void SetDirectionalShadowResolution(SettingsStore& store, uint32_t resolution);
-
-// Same contract, for the cascade projection mode. True selects Stable.
+// Reads/writes the cascade projection mode in the already-loaded project
+// SettingsStore. True selects Stable. The caller owns Load()/Save(). The
+// cascade resolution is not a project setting: the pipeline's ShadowMap node
+// owns it ("resolution").
 bool GetDirectionalShadowStableProjection(const SettingsStore& store);
 void SetDirectionalShadowStableProjection(SettingsStore& store, bool stable);
 
@@ -101,7 +96,7 @@ void ApplyProjectRenderSettings(Engine::Renderer::RenderServices& renderServices
 // RenderServices: MSAA sample count (rendering.msaa), AA mode
 // (rendering.aaMode), TAAU render scale (rendering.taaRenderScale),
 // render-scale mode + dynamic target (rendering.drsMode / drsTargetFps),
-// directional shadow resolution (rendering.directionalShadowResolution), and
+// directional shadow projection (rendering.directionalShadowProjection), and
 // mesh LOD selection + budgets (rendering.lodMode / lodErrorBudgetPx /
 // lodSkinnedBudgetScale).
 //

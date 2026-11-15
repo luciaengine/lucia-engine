@@ -3564,6 +3564,7 @@ struct SceneFitFrame
     float CachedDistance = 0.0f;
     float PublishedDistance = 0.0f;
     float PublishedFade = 0.0f;
+    uint32_t CascadeResolution = 0;
 };
 
 // A one-view ShadowMap pipeline over a scene of one instance, the sphere at
@@ -3663,8 +3664,11 @@ class SceneFitRig
         m_Device.WaitForIdle();
 
         if (const auto* feature = m_Services.GetFeature<ShadowMapRenderFeature>())
+        {
+            result.CascadeResolution = feature->GetConfig().Resolution;
             if (const CascadeFrameData* cached = feature->GetCachedFrameData(m_ViewId))
                 result.CachedDistance = cached->MaxShadowDistance;
+        }
         const auto* resources = m_Instance->FrameResourcesFor(&frame);
         if (resources == nullptr)
             return result;
@@ -3751,6 +3755,44 @@ TEST(RenderPipelineDeclareTests, ShadowMapSceneFitFollowsTheSceneAndTheOptOutKee
         EXPECT_EQ(DeclareSceneFitFrame(*device, kAuthored, 300.0f, 250.0f).PublishedDistance, 200.0f);
     }
     device->Shutdown();
+}
+
+// The ShadowMap node "resolution" is the one owner of the cascade size, with
+// no project setting between the pipeline and the feature.
+TEST(RenderPipelineDeclareTests, ShadowMapResolutionKeySizesTheCascades)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        constexpr const char* kDefault = R"({"id":"CSM","type":"ShadowMap","buffer":"ShadowData"})";
+        constexpr const char* kHigh =
+            R"({"id":"CSM","type":"ShadowMap","buffer":"ShadowData","resolution":4096})";
+        EXPECT_EQ(DeclareSceneFitFrame(*device, kDefault, 5.0f, 1.0f).CascadeResolution, 2048u);
+        EXPECT_EQ(DeclareSceneFitFrame(*device, kHigh, 5.0f, 1.0f).CascadeResolution, 4096u);
+    }
+    device->Shutdown();
+}
+
+// A ShadowMap node refuses a cascade resolution that the feature cannot use,
+// and the message names the field and the supported range.
+TEST(RenderPipelineDeclareTests, ShadowMapNodeRefusesAnUnsupportedCascadeResolution)
+{
+    for (const char* json : {R"({"resolution":4096})", R"({"resolution":256})", R"({"resolution":8192})"})
+    {
+        Nodes::ShadowMapNode node;
+        std::string error;
+        EXPECT_TRUE(node.Initialize("CSM", json, &error)) << json << ": " << error;
+    }
+    for (const char* json : {R"({"resolution":5000})", R"({"resolution":128})", R"({"resolution":16384})",
+                             R"({"resolution":"4096"})", R"({"resolution":4096.5})"})
+    {
+        Nodes::ShadowMapNode node;
+        std::string error;
+        EXPECT_FALSE(node.Initialize("CSM", json, &error)) << json;
+        EXPECT_NE(error.find("resolution must be a power of two from 256 to 8192"), std::string::npos)
+            << json << ": " << error;
+    }
 }
 
 // #3463: a view's scene fit carries from frame to frame. A reach that moves

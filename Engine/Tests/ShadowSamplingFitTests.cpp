@@ -261,18 +261,6 @@ TEST(ShadowSamplingFit, NoSnapshotFallsBackToCurrentFrame)
     }
 }
 
-TEST(ShadowSamplingFit, ProjectResolutionOverrideIsOwnedAndNormalizedByShadowFeature)
-{
-    ShadowMapRenderFeature feature;
-
-    EXPECT_FALSE(feature.GetProjectResolutionOverride().has_value());
-    feature.SetProjectResolutionOverride(5000u);
-
-    ASSERT_TRUE(feature.GetProjectResolutionOverride().has_value());
-    EXPECT_EQ(*feature.GetProjectResolutionOverride(), 4096u);
-    EXPECT_EQ(feature.GetConfig().Resolution, 4096u);
-}
-
 // Penumbra width is driven by the light's angular size, not by a world-space
 // scalar: a directional light sits at infinity, so its penumbra is
 // depthDelta * tan(halfAngle) with no divide by blocker distance. These pin the

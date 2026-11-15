@@ -14,21 +14,7 @@ TEST(DirectionalShadowSettingsPageTests, DescribesRenderingSectionThroughSharedF
     EXPECT_EQ(section.CategoryId, "directionalShadows");
     EXPECT_EQ(section.Title, "Directional Shadows");
     EXPECT_EQ(section.Group, ed::SettingsCategoryGroup::ProjectSettings);
-    ASSERT_EQ(section.Fields.size(), 2u);
-
-    const ed::SettingsFieldDescriptor& resolution = section.Fields[0];
-    EXPECT_EQ(resolution.Label, "Shadow Resolution");
-    ASSERT_TRUE(std::holds_alternative<ed::SettingsFieldDescriptor::DropdownField>(
-        resolution.Control));
-
-    const auto& dropdown =
-        std::get<ed::SettingsFieldDescriptor::DropdownField>(resolution.Control);
-    EXPECT_EQ(dropdown.DefaultValue, "2048 (Default)");
-    EXPECT_EQ(dropdown.Options,
-              (std::vector<std::string>{"1024 (Performance)", "2048 (Default)",
-                                        "4096 (High)", "8192 (Ultra)"}));
-    EXPECT_TRUE(static_cast<bool>(dropdown.Get));
-    EXPECT_TRUE(static_cast<bool>(dropdown.Set));
+    ASSERT_EQ(section.Fields.size(), 1u);
 }
 
 TEST(DirectionalShadowSettingsPageTests, DescribesTheStableProjectionToggleDefaultOff)
@@ -36,8 +22,8 @@ TEST(DirectionalShadowSettingsPageTests, DescribesTheStableProjectionToggleDefau
     const ed::SettingsCategoryDescriptor section =
         ed::CreateDirectionalShadowSettingsSection();
 
-    ASSERT_EQ(section.Fields.size(), 2u);
-    const ed::SettingsFieldDescriptor& projection = section.Fields[1];
+    ASSERT_EQ(section.Fields.size(), 1u);
+    const ed::SettingsFieldDescriptor& projection = section.Fields[0];
     EXPECT_EQ(projection.Label, "Stable Projection");
     ASSERT_TRUE(
         std::holds_alternative<ed::SettingsFieldDescriptor::ToggleField>(projection.Control));

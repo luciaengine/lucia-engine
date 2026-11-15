@@ -159,6 +159,20 @@ Each entry is one pipeline node instantiation:
 
 **Adding new types** = implementing `IRenderPipelineNode` + registering. See [Add a new node type](customizable-render-pipeline.mdx#add-a-new-node-type).
 
+### Cascade resolution
+
+The `resolution` field of the `ShadowMap` node sets the size in texels of each directional cascade. It is the only setting for the cascade size: the editor and the Player both use it, and no project setting changes it. A pipeline for each target platform can set its own value.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `resolution` | `2048` | Size in texels of each directional cascade. A power of two from 256 to 8192. Spot and point light shadows also use it when `punctualResolution` is not set. |
+
+```json title="A ShadowMap node with 4096 cascades"
+{ "id": "ShadowMap", "type": "ShadowMap", "resolution": 4096 }
+```
+
+Memory and render cost increase with the square of the resolution: 4096 uses 4 times and 8192 uses 16 times the memory of 2048. A pipeline with a value that is not a power of two from 256 to 8192 does not load, and the message names the field.
+
 ### Virtual shadow pages
 
 The `ShadowMap` node can keep shadow depth in pages of 128 x 128 texels and render only the pages that the view shows. The sun, the spot lights and the point lights of the view then get sharper shadows near the camera. A pixel uses the usual shadow map where no page is ready, so the image stays complete while pages render. The option is off by default.
