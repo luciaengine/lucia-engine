@@ -284,6 +284,7 @@ add_executable(AgentProviderTests
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ApiKeyStore.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/CliSessionProvider.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ClaudeSessionProvider.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ClaudeUserContent.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/CodexSessionProvider.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ReplyTextBlocks.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/CliSessionFiles.cpp)
@@ -365,6 +366,7 @@ add_executable(AiAssistantPanelTests
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ApiKeyStore.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/CliSessionProvider.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ClaudeSessionProvider.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ClaudeUserContent.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/CodexSessionProvider.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ReplyTextBlocks.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/CliSessionFiles.cpp)
