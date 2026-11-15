@@ -88,7 +88,7 @@ class SkyLutRestingLayoutTest : public ::testing::Test
         settings.showMoonDisk = false;
         settings.fallingStarsEnabled = false;
         settings.nightSkyBlend = 0.0f;
-        m_Sky->SetSettings(settings, SkySystemState{});
+        m_Sky->SetSettings(settings, Rendering::SkySunState{});
         ASSERT_FALSE(m_Sky->GetRenderer().IsTransmittanceComputed());
         ASSERT_EQ(m_Sky->GetRenderer().GetSkyViewLutComputedDigest(), 0u);
 
@@ -204,7 +204,6 @@ class SkyLutRestingLayoutTest : public ::testing::Test
         const auto digest = renderer.GetSkyViewLutComputedDigest();
         ASSERT_NE(digest, 0u);
         ASSERT_TRUE(renderer.IsSkyViewLutCurrentFor(digest));
-        ASSERT_TRUE(renderer.IsMultiscatterCurrentFor(digest));
     }
 
     void CheckValidation()

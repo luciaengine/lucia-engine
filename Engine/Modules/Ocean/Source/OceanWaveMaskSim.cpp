@@ -207,29 +207,30 @@ void OceanWaveMaskSim::FillParams(OceanWaveMaskParamsGPU& out)
     out = m_Params;
 }
 
-void OceanWaveMaskSim::RecordDispatch(IDevice* device, CommandList* cl,
-                                      BufferHandle paramsBuffer, uint64 paramsOffset)
+OceanPreparedDispatch OceanWaveMaskSim::PrepareDispatch(
+    IDevice* device, BufferHandle paramsBuffer, uint64 paramsOffset) const
 {
-    if (!m_Ready || !cl || !device || !paramsBuffer.IsValid())
-        return;
+    if (!m_Ready || !device || !paramsBuffer.IsValid())
+        return {};
 
     const TextureHandle mask = m_Mask.GetTexture();
     const uint32 layers = m_LodCount;
 
-    PipelineHandle pipe = device->GetOrCreateComputePipeline(m_Pipe);
+    PipelineHandle pipe = device->TryGetWarmComputePipeline(m_Pipe);
     if (!pipe)
-        return;
+        return {};
 
     // Sync is graph-derived: the pass declares Write on the mask + both local
     // pages, the first declared reader restores ShaderReadOnly, and MarkOutput
     // covers reader-less frames. No manual barriers in here.
-    cl->SetPipeline(pipe);
 
     DescriptorSetDesc dsDesc{};
     dsDesc.layout = m_Layout;
     dsDesc.transient = true;
     dsDesc.debugName = "OceanWaveMask_DS";
     DescriptorSetHandle ds = device->CreateDescriptorSet(dsDesc);
+    if (!ds.IsValid())
+        return {};
 
     device->UpdateBufferBinding(ds, 0, paramsBuffer, paramsOffset, sizeof(OceanWaveMaskParamsGPU));
     device->UpdateStorageImageBinding(ds, 1, mask);
@@ -244,10 +245,13 @@ void OceanWaveMaskSim::RecordDispatch(IDevice* device, CommandList* cl,
                                                   m_Sampler);
     }
 
-    cl->BindDescriptorSet(0, ds, pipe);
-
     const uint32 g8 = (m_Resolution + 7u) / 8u;
-    cl->Dispatch(g8, g8, layers);
+    return {pipe, ds, g8, g8, layers, mask};
+}
+
+void OceanWaveMaskSim::RecordDispatch(CommandList* cl, const OceanPreparedDispatch& dispatch)
+{
+    RecordOceanPreparedDispatch(cl, dispatch);
 }
 
 RenderGraph::RGTexture OceanWaveMaskSim::ImportMaskRG(RenderGraph::RGFrame& frame) const
