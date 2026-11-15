@@ -167,6 +167,11 @@ class Window
     void SetUserPointer(void* p) { m_UserPtr = p; }
     void* GetUserPointer() const { return m_UserPtr; }
 
+    /// Process-wide: when false, no window takes the keyboard focus or brings the application
+    /// to the foreground, at creation, at Show() or through Focus(). Set it before the first
+    /// window is created. Automation sessions use it so that they never take the user's input.
+    static void SetTakesFocus(bool takesFocus);
+
     // Global event pump
     static bool Initialize();
     static void PollEvents();

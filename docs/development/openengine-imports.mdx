@@ -1,0 +1,128 @@
+---
+title: OpenEngine imports
+description: How Lucia takes each OpenEngine release with a git merge and keeps its own changes small.
+---
+
+Lucia is a downstream fork of OpenEngine. Each OpenEngine release enters Lucia through a real git merge. The history of `main` contains each OpenEngine commit that Lucia imported. Git then knows the correct common base, and the next import contains only the new OpenEngine work.
+
+## Rules
+
+- Import an OpenEngine release with `git merge`. Do not copy the OpenEngine tree over Lucia, and do not apply it as one patch.
+- Merge the import pull request with **Create a merge commit**. Do not squash it and do not rebase it. A squash drops the OpenEngine parent, and git loses the common base.
+- Import one OpenEngine release in one pull request. Import each release soon after it is published.
+- Build the merged tree and run the focused suites before the merge to `main`. A source review alone is not sufficient for an import.
+- Keep `upstream` read-only. Do not push from a Lucia checkout to OpenEngine.
+
+## One-time setup
+
+Each clone that does imports needs the `upstream` remote and `rerere`. With `rerere`, git records each conflict resolution and applies it again when the same conflict occurs in a later import. The records stay in the clone, and all worktrees of that clone share them. Do imports from one clone, so that the records are available at each import.
+
+```bash title="Add the OpenEngine remote with push disabled"
+git remote add upstream https://github.com/Game-Crafters-Guild/OpenEngine.git
+git remote set-url --push upstream disabled://upstream-read-only
+```
+
+```bash title="Record and reuse conflict resolutions"
+git config rerere.enabled true
+git config rerere.autoupdate true
+```
+
+## Import a release
+
+:::steps
+
+1. Fetch OpenEngine and find the release commit.
+
+   ```bash title="Fetch the OpenEngine history"
+   git fetch upstream
+   git log --oneline -5 upstream/main
+   ```
+
+2. Start the import branch from `origin/main` in its own worktree.
+
+   ```bash title="Create the import worktree"
+   git worktree add -b integration/openengine-<short-sha> <worktree-path> origin/main
+   ```
+
+3. Merge the release commit. Use `--no-ff`, so that the merge commit exists even when there is no conflict. The high rename limit lets git find the renamed files in a large release.
+
+   ```bash title="Merge the OpenEngine release"
+   git -c merge.renameLimit=20000 merge --no-ff <openengine-sha>
+   ```
+
+4. Resolve each conflict with the policy in [Resolve conflicts](#resolve-conflicts). Then commit the merge.
+
+5. Configure, build, and run the focused suites on the merged tree. A rendering, GPU, or runtime change also needs a check in a running editor.
+
+6. Open the pull request. The body gives the OpenEngine commit, the conflict count, each conflict resolution that is not obvious, and the divergence report.
+
+7. Merge the pull request with **Create a merge commit**.
+
+8. Make sure that `main` records the import. The command exits with 0 when the OpenEngine commit is an ancestor of `main`.
+
+   ```bash title="Check that main contains the OpenEngine commit"
+   git fetch origin
+   git merge-base --is-ancestor <openengine-sha> origin/main
+   ```
+
+:::
+
+## Resolve conflicts
+
+| Conflict | Resolution |
+|---|---|
+| Both projects built the same feature | Keep the OpenEngine version. Then add the Lucia behavior on top of it, in the same subsystem. The engine keeps one implementation of each feature. |
+| An OpenEngine fix touches a Lucia change | Keep the OpenEngine fix. Apply the Lucia change again on top of it. |
+| A Lucia-only change in an OpenEngine file | Keep the Lucia change. |
+| Lucia deleted a file that OpenEngine changed | Read the OpenEngine change. Keep the deletion if Lucia does not need the file. |
+| A test or a fixture | Keep both sets of cases when both sides added cases. Make sure that each test still runs. |
+
+Do not resolve a conflict by a choice of one side for the whole file without a read of the other side. That choice removes the work of the other side with no record.
+
+## Keep the divergence small
+
+The cost of each import increases with the number of OpenEngine lines that Lucia changes. Put each Lucia change in the correct group:
+
+| Change | Where it goes |
+|---|---|
+| A general fix or a performance improvement | Make the smallest edit to the OpenEngine file, in a commit of its own. If a later OpenEngine release fixes the same problem, keep the OpenEngine fix at that import and remove the Lucia edit. |
+| A Lucia-only feature | A module that Lucia owns, connected through the engine registries. Do not add the feature to an OpenEngine hub file. |
+| A feature that OpenEngine is building | Use the OpenEngine version, and extend it. Before you start work in a subsystem that OpenEngine owns, look at the open OpenEngine work in that subsystem. |
+| An edit to an OpenEngine file that you cannot avoid | Keep it small. The divergence report shows it at each import. |
+
+## Report the divergence
+
+`Tools/Scripts/report-openengine-divergence.sh` compares a Lucia commit with the last OpenEngine commit that it merged. It gives the changed files and lines for each area, in decreasing order of lines. The script exits with 1 when the OpenEngine ref is not merged into the target.
+
+```bash title="Divergence of origin/main from OpenEngine, top 30 areas"
+./Tools/Scripts/report-openengine-divergence.sh upstream/main origin/main 30
+```
+
+Put the report in the body of each import pull request. An area whose number increases from one import to the next is the area where the next import will be difficult.
+
+## Why a merge and not a rebase
+
+A rebase applies the Lucia commits again on top of each OpenEngine release. The history is linear, but each import writes `main` again. That breaks each open branch and each worktree that starts from the old `main`. A merge keeps the history of `main`, so open branches continue to merge normally.
+
+## Status
+
+Pull request #87 recorded OpenEngine `be9186a7` as the base of `main` on 2026-11-14. The merge base of `main` and OpenEngine is now `be9186a7`, and the next import uses the standard procedure in [Import a release](#import-a-release).
+
+Before #87, `main` did not record an OpenEngine merge. The first Lucia commit, `8312be22b`, had a tree close to OpenEngine `3439b11b` but named `bdf5c271` as its parent, and #83 imported `be9186a7` as one squash commit. #87 replayed the Lucia commits `8312be22b..e18015ee` onto `main` and added a merge commit whose first parent is `be9186a7`.
+
+#83 left differences between `main` and `be9186a7` in four groups. Git now treats each one as a Lucia change, so a later import does not repair it:
+
+| Group | What is on `main` |
+|---|---|
+| ECS module | The Lucia ECS from `8312be22b`. It does not have the ECS changes of 12 OpenEngine releases. For example, `World::Create` does not add the required components. |
+| Old OpenEngine content | 209 files hold the `3439b11b` content, although `be9186a7` changed them. |
+| Files that both projects changed | 465 files do not have about 10,700 of the lines that OpenEngine added up to `be9186a7`. |
+| Lucia changes from the first commit | 434 files hold OpenEngine content in place of the Lucia changes of `8312be22b`. |
+
+Resolve each difference in a commit of its own: restore the OpenEngine content, or keep the Lucia content as a decision. Until all groups are resolved, the divergence report includes OpenEngine work in its numbers.
+
+```bash title="List the differences from the OpenEngine release"
+git diff --stat=200 be9186a74c33cd6111b9046cc043c16fd74e247e origin/main
+```
+
+Remove this section when all four groups are resolved.
