@@ -2119,6 +2119,7 @@ endif()
                 Tests/MaterialBridgeIntegrationTests.cpp
                 Tests/MaterialAssetParsingTests.cpp
                 Tests/ShaderCompilationCacheTests.cpp
+                Tests/ShaderCacheKeyTargetTests.cpp
                 Tests/CompileConcurrencyGateTests.cpp
                 # MaterialVariantCookTests exercises the offline web cook itself,
                 # not a re-implementation of it: the same sources the cook tool links.
