@@ -1304,9 +1304,33 @@ static T* FindFirstPanelOfType(const std::vector<std::unique_ptr<UIElement>>& pa
     return nullptr;
 }
 
+void EditorApplication::AttachEditorPluginHost()
+{
+    Editor::EditorHostServices services;
+    services.ChangeNotifications = m_ChangeNotifications.get();
+    services.SelectedEntityIds = [this] {
+        std::vector<uint32_t> ids;
+        if (auto* hierarchy = FindFirstPanelOfType<HierarchyPanel>(m_PanelStorage))
+            for (const auto item : hierarchy->GetSelectionItemIds())
+                ids.push_back(static_cast<uint32_t>(item));
+        return ids;
+    };
+    services.CanWriteScene = [this] { return !m_IsShuttingDown && !IsPlayModeBlockingSceneWrites(); };
+    services.IsModuleAvailable = [this](std::string_view moduleId) {
+        if (!m_Packages)
+            return false;
+        const auto& modules = m_Packages->GetCodeModules();
+        return std::any_of(modules.begin(), modules.end(),
+                           [moduleId](const PackageCodeModule& module) { return module.AssemblyName == moduleId; });
+    };
+    Editor::EditorPluginRegistry::Get().AttachHost(std::move(services));
+}
+
 void EditorApplication::OnPlayModeStateChanged(Editor::PlayModeState state)
 {
     UpdatePlayModeToolbar(state);
+    if (state == Editor::PlayModeState::EnteringPlay || state == Editor::PlayModeState::ExitingPlay)
+        Editor::EditorPluginRegistry::Get().InvalidateScene();
     if (m_PlayModeGameViewFocus)
         m_PlayModeGameViewFocus->OnPlayModeStateChanged(state);
 
@@ -1485,6 +1509,7 @@ EditorApplication::EditorApplication(const ApplicationConfig& config)
     // Core editor services (single-document for now).
     m_UndoRedo = std::make_unique<GameEngine::Editor::UndoRedoService>();
     m_ChangeNotifications = std::make_unique<GameEngine::Editor::EditorChangeNotifications>();
+    AttachEditorPluginHost();
     // The editor's own Scene View tools come first in the tool strip.
     Editor::RegisterBuiltInSceneViewTools();
     m_MarkupBridge = Editor::CreateMarkupEditorBridge(*m_ChangeNotifications,
@@ -1522,6 +1547,7 @@ EditorApplication::EditorApplication(const ApplicationConfig& config)
     // no panel (--scene, MCP open_scene).
     m_SceneEditor->SetSceneScopedGeneratorRelease([this]()
     {
+        Editor::EditorPluginRegistry::Get().InvalidateScene();
         if (auto* world = EngineCore::GetInstance().EnsurePrimaryWorld())
             m_EditorServices.ReleaseSceneScoped(*world);
     });
@@ -6143,6 +6169,8 @@ void EditorApplication::Update(float64 deltaTime)
     // Heartbeat for the hang watchdog: reaching here each frame means the
     // message pump (PollEvents, immediately before Update) is being serviced.
     Editor::MainThreadHangWatchdog::NotifyAlive();
+    if (!m_IsShuttingDown)
+        Editor::EditorPluginRegistry::Get().Update();
 
     EditorWindowContext* mainWindow = m_Windows.empty() ? nullptr : m_Windows[0].get();
     m_FramePhaseRecorder.RecordPreviousFrame({
@@ -7931,6 +7959,7 @@ void EditorApplication::OnShutdown()
         m_DebugServer->Stop();
         Editor::SetEditorDebugPort(0);
     }
+    Editor::EditorPluginRegistry::Get().Shutdown();
 
     // Detach runtime input before tearing down subsystems.
     EngineCore::GetInstance().SetRuntimeInput(nullptr);

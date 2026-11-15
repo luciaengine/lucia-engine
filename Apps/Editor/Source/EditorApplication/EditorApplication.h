@@ -589,6 +589,8 @@ class EditorApplication : public Application
     // PlayModeManager reports every state change here: the toolbar, the hierarchy's selection,
     // and, when play has stopped, play fullscreen and the inspector.
     void OnPlayModeStateChanged(Editor::PlayModeState state);
+    // Gives the editor plugins their host services; they attach on the next Update.
+    void AttachEditorPluginHost();
 
     // Play mode presentation flags (Game View fullscreen play).
     bool m_PlayFullscreenOnEnter = false; // controlled by top toolbar fullscreen toggle
