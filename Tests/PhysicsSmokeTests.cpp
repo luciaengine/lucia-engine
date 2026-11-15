@@ -7617,7 +7617,8 @@ TEST(Physics, TransformDrivenKinematicsPreserveMovingPlatformBackendMotion)
     world.AddComponentImmediate(entity, Components::MovingPlatform{});
     physics.SetLinearVelocity(body, Physics::Vector3(3.0f, 0.0f, 0.0f));
     step.Update(world, 1.0f / 60.0f);
-    PhysicsWorldService::SetRenderInterpolationAlpha(1.0f);
+    // Write the current body pose, not an interpolation from the previous step.
+    world.GetComponentForWrite<Components::PhysicsBody>(entity)->hasPrevPhysicsTransform = false;
     PhysicsWritebackSystem writeback;
     writeback.Update(world, 1.0f / 60.0f);
 

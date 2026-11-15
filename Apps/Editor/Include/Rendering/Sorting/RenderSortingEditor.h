@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ECS/Entity.h"
+#include "UI/Controls/Dropdown.h"
 #include "Types/Types.h"
 #include <functional>
 #include <utility>
@@ -27,6 +28,10 @@ void RegisterRenderSortingComponent(ECS::ComponentTypeId component);
 bool HasSortingRenderer(ECS::World& world, ECS::EntityHandle entity);
 /// Whether the entity can author an ordering layer in the Hierarchy.
 bool SupportsRenderSorting(ECS::World& world, ECS::EntityHandle entity);
+/// The project's sorting layers as dropdown options in draw order: each value is a layer id, each label its name.
+std::vector<Dropdown::Option> SortingLayerOptions();
+/// The option that names a layer id the project does not have, so a picker can still show the stored value.
+Dropdown::Option MissingSortingLayerOption(int32 layer);
 /// Assigns one layer to the selection in a single undo step, preserving component absence.
 void ApplyRenderSortingLayer(ECS::World& world, const std::vector<ECS::EntityHandle>& entities,
     int32 layer, UndoRedoService* undo, EditorChangeNotifications* notifications);

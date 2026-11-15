@@ -89,6 +89,7 @@ set(EDITOR_SOURCES
 	Source/Editor/Hierarchy/HierarchyLightIconTint.cpp
 	Source/Editor/Hierarchy/HierarchyNavigationBar.cpp
 	Source/Editor/Hierarchy/HierarchyRenderLayerEdit.cpp
+	Source/Editor/Hierarchy/HierarchyLayerControls.cpp
 	Source/Editor/Hierarchy/HierarchyDataProvider.cpp
 	Source/Editor/Hierarchy/HierarchyReparentRules.cpp
 	Source/Startup/BuiltinAssetSync.cpp
@@ -145,6 +146,7 @@ set(EDITOR_SOURCES
     Source/Panels/MovieRecorderPanel.cpp
     Source/Panels/HierarchyPanel.cpp
     Source/Editor/Hierarchy/HierarchyEntity/HierarchyEntityIcon.cpp
+    Source/Editor/Hierarchy/SpritePreview/SpritePreview.cpp
     Source/Editor/Hierarchy/HierarchyOrdering.cpp
     Source/Editor/Hierarchy/HierarchyEmptyParent.cpp
     Source/Editor/Hierarchy/HierarchyEntity/HierarchyEntityCommands.cpp
@@ -152,6 +154,7 @@ set(EDITOR_SOURCES
     Source/Editor/Hierarchy/HierarchyEntity/HierarchyEntityRename.cpp
     Source/Editor/Hierarchy/HierarchyReparent.cpp
     Source/Panels/InspectorPanel.cpp
+    Source/UI/PostedRefresh.cpp
     Source/Panels/AssetViewPanel.cpp
     Source/Panels/LogPanel/LogChannelPopover.cpp
     Source/Panels/LogModel.cpp
@@ -941,6 +944,7 @@ set(EDITOR_HEADERS
 		Include/Editor/Entities/CopiedEntityRuntimeRefs.h
 		Include/Editor/Entities/EntityDuplicate.h
 		Include/Editor/Hierarchy/HierarchyEntity/HierarchyEntityIcon.h
+		Include/Editor/Hierarchy/SpritePreview/SpritePreview.h
     Include/Panels/LogPanel/LogChannelPopover.h
     Include/Panels/LogPanel.h
     Include/Panels/LogView.h
@@ -955,6 +959,7 @@ set(EDITOR_HEADERS
     Include/Panels/AddTagModal.h
     Include/Scripting/EditorScriptMenuRegistry.h
 	Include/Panels/InspectorPanel.h
+	Include/UI/PostedRefresh.h
     Include/Panels/PlayModeChangeReviewModal.h
     Include/Panels/VideoPlayerModal.h
     Include/EditorVideoPlayerController.h

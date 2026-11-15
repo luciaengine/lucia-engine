@@ -13,11 +13,13 @@
 #include "Rendering/Core/CommandList.h" // IndexType
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUScene.h"
+#include "Types/Fnv1a.h"
 
 #include <algorithm>
 #include <array>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <iterator>
 #include <limits>
@@ -77,18 +79,49 @@ constexpr std::array<GameEngine::Rendering::VertexAttributeFlags, 6> kExtraUvFla
     GameEngine::Rendering::VertexAttributeFlags::HasUV7,
 };
 
-constexpr std::array<const char*, 6> kExtraUvDebugNames = {
-    "MeshGPU.Bucket.UV2VB",
-    "MeshGPU.Bucket.UV3VB",
-    "MeshGPU.Bucket.UV4VB",
-    "MeshGPU.Bucket.UV5VB",
-    "MeshGPU.Bucket.UV6VB",
-    "MeshGPU.Bucket.UV7VB",
+using GameEngine::Rendering::kMeshGPUVertexStreamCount;
+
+// Indices into the kMeshGPUVertexStreamCount-sized per-stream arrays.
+constexpr uint32_t kCoreStream = 0u;
+constexpr uint32_t kTangentStream = 1u;
+constexpr uint32_t kColorStream = 2u;
+constexpr uint32_t kUv1Stream = 3u;
+constexpr uint32_t kJointsStream = 4u;
+constexpr uint32_t kWeightsStream = 5u;
+constexpr uint32_t kJoints1Stream = 6u;
+constexpr uint32_t kWeights1Stream = 7u;
+constexpr uint32_t kFirstExtraUvStream = 8u;
+static_assert(kFirstExtraUvStream + kExtraUvFlags.size() == kMeshGPUVertexStreamCount);
+
+struct VertexStreamLayout
+{
+    uint64_t initialCapacityBytes = 0;
+    // Bytes per vertex; 0 for the core stream, whose stride follows the flags.
+    uint32_t strideBytes = 0;
+    const char* debugName = nullptr;
 };
 
-// The vertex streams one upload can write: core, tangent, colour, UV1, joints,
-// weights, joints1, weights1 and the extra UVs.
-constexpr size_t kMaxVertexStreams = 8u + kExtraUvFlags.size();
+constexpr std::array<VertexStreamLayout, kMeshGPUVertexStreamCount> kVertexStreamLayouts = {{
+    {kBucketCoreInitialBytes, 0u, "MeshGPU.Bucket.CoreVB"},
+    {kBucketOtherInitialBytes, 16u, "MeshGPU.Bucket.TangentVB"},
+    {kBucketOtherInitialBytes, 16u, "MeshGPU.Bucket.ColorVB"},
+    {kBucketOtherInitialBytes, 8u, "MeshGPU.Bucket.UV1VB"},
+    {kBucketOtherInitialBytes, 8u, "MeshGPU.Bucket.JointsVB"},
+    {kBucketOtherInitialBytes, 16u, "MeshGPU.Bucket.WeightsVB"},
+    {kBucketOtherInitialBytes, 8u, "MeshGPU.Bucket.Joints1VB"},
+    {kBucketOtherInitialBytes, 16u, "MeshGPU.Bucket.Weights1VB"},
+    {kBucketOtherInitialBytes, 8u, "MeshGPU.Bucket.UV2VB"},
+    {kBucketOtherInitialBytes, 8u, "MeshGPU.Bucket.UV3VB"},
+    {kBucketOtherInitialBytes, 8u, "MeshGPU.Bucket.UV4VB"},
+    {kBucketOtherInitialBytes, 8u, "MeshGPU.Bucket.UV5VB"},
+    {kBucketOtherInitialBytes, 8u, "MeshGPU.Bucket.UV6VB"},
+    {kBucketOtherInitialBytes, 8u, "MeshGPU.Bucket.UV7VB"},
+}};
+
+// A rewritten entry keeps at most this many vertex groups beside the one it
+// draws from. With one rewrite per frame the oldest group has always aged a
+// full kRetireDelay window, so a steady animation never runs out.
+constexpr size_t kMaxSpareVertexGroups = kRetireDelay;
 
 // A run of vertices an upload writes in order, with their RGBA colours when the mesh uploads colour.
 struct UploadVertexBlock
@@ -233,6 +266,142 @@ GameEngine::Rendering::BufferHandle GetPoolBuffer(
     return {};
 }
 
+// Return a range that no GPU work read: it was never written, or never drawn
+// from, so it needs no deferred free.
+void FreeImmediately(std::vector<GameEngine::Rendering::MeshGPUStreamPool>& pools,
+                     uint32_t poolIndex,
+                     GameEngine::Memory::RangeAllocator::Allocation alloc)
+{
+    if (!alloc.IsValid())
+        return;
+    if (GameEngine::Rendering::MeshGPUStreamPool* pool = GetPool(pools, poolIndex))
+        pool->allocator->Free(alloc);
+}
+
+uint32_t VertexStreamStride(uint32_t stream, uint32_t coreStride)
+{
+    return stream == kCoreStream ? coreStride : kVertexStreamLayouts[stream].strideBytes;
+}
+
+std::vector<GameEngine::Rendering::MeshGPUStreamPool>& BucketVertexPools(
+    GameEngine::Rendering::MeshGPUBucket& bucket, uint32_t stream)
+{
+    switch (stream)
+    {
+    case kCoreStream:     return bucket.corePools;
+    case kTangentStream:  return bucket.tangentPools;
+    case kColorStream:    return bucket.colorPools;
+    case kUv1Stream:      return bucket.uv1Pools;
+    case kJointsStream:   return bucket.jointsPools;
+    case kWeightsStream:  return bucket.weightsPools;
+    case kJoints1Stream:  return bucket.joints1Pools;
+    case kWeights1Stream: return bucket.weights1Pools;
+    default:              return bucket.extraUvPools[stream - kFirstExtraUvStream];
+    }
+}
+
+GameEngine::Memory::RangeAllocator::Allocation& EntryVertexAlloc(GameEngine::Rendering::MeshGPUEntry& entry,
+                                                                 uint32_t stream)
+{
+    switch (stream)
+    {
+    case kCoreStream:     return entry.coreSubAlloc;
+    case kTangentStream:  return entry.tangentSubAlloc;
+    case kColorStream:    return entry.colorSubAlloc;
+    case kUv1Stream:      return entry.uv1SubAlloc;
+    case kJointsStream:   return entry.jointsSubAlloc;
+    case kWeightsStream:  return entry.weightsSubAlloc;
+    case kJoints1Stream:  return entry.joints1SubAlloc;
+    case kWeights1Stream: return entry.weights1SubAlloc;
+    default:              return entry.extraUvSubAlloc[stream - kFirstExtraUvStream];
+    }
+}
+
+uint32_t& EntryVertexPoolIndex(GameEngine::Rendering::MeshGPUEntry& entry, uint32_t stream)
+{
+    switch (stream)
+    {
+    case kCoreStream:     return entry.corePoolIndex;
+    case kTangentStream:  return entry.tangentPoolIndex;
+    case kColorStream:    return entry.colorPoolIndex;
+    case kUv1Stream:      return entry.uv1PoolIndex;
+    case kJointsStream:   return entry.jointsPoolIndex;
+    case kWeightsStream:  return entry.weightsPoolIndex;
+    case kJoints1Stream:  return entry.joints1PoolIndex;
+    case kWeights1Stream: return entry.weights1PoolIndex;
+    default:              return entry.extraUvPoolIndex[stream - kFirstExtraUvStream];
+    }
+}
+
+template <typename T>
+std::span<const std::byte> BytesOf(const T& values)
+{
+    return std::as_bytes(std::span(values.data(), values.size()));
+}
+
+// The bytes that `mesh` uploads to a stream outside the Vertex struct, or an
+// empty span for the core and tangent streams.
+std::span<const std::byte> MeshStreamBytes(const GameEngine::Mesh& mesh, uint32_t stream)
+{
+    switch (stream)
+    {
+    case kCoreStream:
+    case kTangentStream:  return {};
+    case kColorStream:    return BytesOf(mesh.Color0);
+    case kUv1Stream:      return BytesOf(mesh.TexCoords1);
+    case kJointsStream:   return BytesOf(mesh.Joints0);
+    case kWeightsStream:  return BytesOf(mesh.Weights0);
+    case kJoints1Stream:  return BytesOf(mesh.Joints1);
+    case kWeights1Stream: return BytesOf(mesh.Weights1);
+    default:
+    {
+        const size_t extra = stream - kFirstExtraUvStream;
+        return extra < mesh.ExtraTexCoords.size() ? BytesOf(mesh.ExtraTexCoords[extra]) : std::span<const std::byte>();
+    }
+    }
+}
+
+// The tangent test that sets HasTangent on an upload.
+bool AnyVertexHasTangent(std::span<const GameEngine::Vertex> vertices)
+{
+    return std::any_of(vertices.begin(), vertices.end(), [](const GameEngine::Vertex& v)
+                       { return v.Tangent[0] != 0.0f || v.Tangent[1] != 0.0f || v.Tangent[2] != 0.0f; });
+}
+
+// Write the interleaved core stream (position, normal, UV0) of `vertices` to
+// `coreDst`, and their tangents to `tangentDst` when it is not null.
+void PackCoreVertices(std::span<const GameEngine::Vertex> vertices, std::byte* coreDst, float* tangentDst)
+{
+    for (const GameEngine::Vertex& vertex : vertices)
+    {
+        std::memcpy(coreDst, vertex.Position, sizeof(vertex.Position));
+        coreDst += sizeof(vertex.Position);
+        std::memcpy(coreDst, vertex.Normal, sizeof(vertex.Normal));
+        coreDst += sizeof(vertex.Normal);
+        std::memcpy(coreDst, vertex.TexCoords, sizeof(vertex.TexCoords));
+        coreDst += sizeof(vertex.TexCoords);
+        if (tangentDst)
+        {
+            std::memcpy(tangentDst, vertex.Tangent, sizeof(vertex.Tangent));
+            tangentDst += std::size(vertex.Tangent);
+        }
+    }
+}
+
+// The box around the positions of `vertices`. False when a position is not finite.
+bool VertexBounds(std::span<const GameEngine::Vertex> vertices, GameEngine::Mathematics::BoundingBox& out)
+{
+    GameEngine::Mathematics::AABB box = GameEngine::Mathematics::AABB::Empty();
+    for (const GameEngine::Vertex& v : vertices)
+    {
+        if (!std::isfinite(v.Position[0]) || !std::isfinite(v.Position[1]) || !std::isfinite(v.Position[2]))
+            return false;
+        box.Expand({v.Position[0], v.Position[1], v.Position[2]});
+    }
+    out = GameEngine::Mathematics::BoundingBox::FromMinMax(box.min, box.max);
+    return true;
+}
+
 } // namespace
 
 namespace GameEngine
@@ -313,6 +482,7 @@ void MeshGPURegistry::Shutdown()
         }
     }
     m_Buckets.clear();
+    m_SpareVertexGroups.Clear();
 
     m_CurrentFrameIndex = 0;
     m_Device   = nullptr;
@@ -574,7 +744,7 @@ MeshGPUHandle MeshGPURegistry::RegisterHashedSubmesh(const MeshGPUKey& key,
             // Content changed in place (e.g. LOD generation). Re-upload into the
             // SAME handle slot and update the GPUScene row at its existing index
             // so entity references (handle + GPUInstance.meshIndex) stay valid.
-            ReleaseEntryToBucket(*existing);
+            ReleaseEntryToBucket(it->second, *existing);
             const uint32_t oldGpuMeshIndex = existing->gpuMeshIndex;
 
             MeshGPUEntry updated = UploadMesh(mesh, domain);
@@ -663,7 +833,7 @@ bool MeshGPURegistry::UnregisterSubmesh(const MeshGPUKey& key)
             entry->gpuMeshIndex = ~0u;
             freedGpuRow = true;
         }
-        ReleaseEntryToBucket(*entry);
+        ReleaseEntryToBucket(handle, *entry);
         m_Entries.Destroy(raw);
     }
 
@@ -691,6 +861,126 @@ bool MeshGPURegistry::UnregisterSubmesh(const MeshGPUKey& key)
     if (freedGpuRow)
         NotifyUnregister(key.assetGuid);
 
+    return true;
+}
+
+bool MeshGPURegistry::RewriteSubmeshVertices(MeshGPUHandle handle,
+                                             const Mesh& source,
+                                             std::span<const Vertex> vertices)
+{
+    TableScope scope(*this);
+
+    MeshGPUEntry* entry = m_Entries.Get(Handle(static_cast<Detail::HandleType>(handle)));
+    if (!m_Device || !entry || entry->StorageDomain != MeshGPUStorageDomain::Shared || entry->cpuMesh ||
+        !m_Residency.IsResident(entry->uploadSeq))
+        return false;
+    const auto bucketIt = m_Buckets.find(BucketStorageKey(entry->bucketKey, entry->StorageDomain));
+    if (bucketIt == m_Buckets.end())
+        return false;
+    MeshGPUBucket& bucket = bucketIt->second;
+
+    // Only an entry whose every level indexes the LOD0 vertex block can take
+    // new vertices without a new layout.
+    const uint32_t coreStride = CoreVertexStride(entry->vertexFlags);
+    const uint64_t vertexCount = vertices.size();
+    if (vertexCount == 0 || source.Vertices.size() != vertexCount ||
+        entry->coreSubAlloc.Size != vertexCount * coreStride)
+        return false;
+    for (uint32_t level = 0; level < entry->lodCount; ++level)
+    {
+        if (entry->lodVertexOffset[level] != 0u)
+            return false;
+    }
+    const bool hasTangent = HasFlag(entry->vertexFlags, VertexAttributeFlags::HasTangent);
+    if (AnyVertexHasTangent(vertices) != hasTangent)
+        return false;
+    Mathematics::BoundingBox bounds;
+    if (!VertexBounds(vertices, bounds))
+        return false;
+
+    // Pick the spare that aged longest. It may take new bytes once a full
+    // frames-in-flight window passed since the entry stopped drawing from it,
+    // the same rule that the deferred free follows.
+    std::vector<SpareVertexGroup>* spares = m_SpareVertexGroups.Find(handle);
+    SpareVertexGroup* target = nullptr;
+    for (SpareVertexGroup& group : spares ? std::span(*spares) : std::span<SpareVertexGroup>())
+    {
+        if (group.retiredFrame + kRetireDelay <= m_CurrentFrameIndex &&
+            (!target || group.retiredFrame < target->retiredFrame))
+            target = &group;
+    }
+
+    const bool newGroup = target == nullptr;
+    if (newGroup)
+    {
+        if (spares && spares->size() >= kMaxSpareVertexGroups)
+            return false;
+        SpareVertexGroup group;
+        group.poolIndices.fill(kInvalidMeshGPUPoolIndex);
+        std::array<VertexStreamRequest, kMeshGPUVertexStreamCount> requests{};
+        size_t requestCount = 0;
+        for (uint32_t stream = 0; stream < kMeshGPUVertexStreamCount; ++stream)
+        {
+            if (!EntryVertexAlloc(*entry, stream).IsValid())
+                continue;
+            const uint32_t stride = VertexStreamStride(stream, coreStride);
+            const size_t bytes = static_cast<size_t>(vertexCount) * stride;
+            if (stream != kCoreStream && stream != kTangentStream && MeshStreamBytes(source, stream).size() != bytes)
+                return false;
+            const VertexStreamLayout& layout = kVertexStreamLayouts[stream];
+            requests[requestCount++] = VertexStreamRequest{
+                &BucketVertexPools(bucket, stream), layout.initialCapacityBytes, stride, bytes,
+                layout.debugName, &group.allocs[stream], &group.poolIndices[stream]};
+        }
+        if (!AllocateVertexGroup(std::span(requests.data(), requestCount), entry->vertexFlags,
+                                 entry->StorageDomain))
+            return false;
+        spares = &m_SpareVertexGroups.GetOrInsert(handle);
+        spares->push_back(group);
+        target = &spares->back();
+    }
+
+    m_RewriteCoreBytes.resize(static_cast<size_t>(vertexCount) * coreStride);
+    m_RewriteTangents.resize(hasTangent ? static_cast<size_t>(vertexCount) * 4u : 0u);
+    PackCoreVertices(vertices, reinterpret_cast<std::byte*>(m_RewriteCoreBytes.data()),
+                     hasTangent ? m_RewriteTangents.data() : nullptr);
+    // A new group takes every stream; a reused group already holds the streams
+    // outside the Vertex struct.
+    for (uint32_t stream = 0; stream < kMeshGPUVertexStreamCount; ++stream)
+    {
+        std::span<const std::byte> bytes;
+        if (stream == kCoreStream)
+            bytes = std::as_bytes(std::span(m_RewriteCoreBytes));
+        else if (stream == kTangentStream)
+            bytes = std::as_bytes(std::span(m_RewriteTangents));
+        else if (newGroup)
+            bytes = MeshStreamBytes(source, stream);
+        if (target->allocs[stream].IsValid())
+            WritePoolStream(*m_Device, GetPool(BucketVertexPools(bucket, stream), target->poolIndices[stream]),
+                            target->allocs[stream].Offset, bytes.size(), bytes.data(), /*coherentMapped=*/false);
+    }
+
+    // The group the entry drew from becomes the spare, and the rewritten group
+    // becomes current. The index data, the residency stamp and the GPUScene row stay.
+    for (uint32_t stream = 0; stream < kMeshGPUVertexStreamCount; ++stream)
+    {
+        std::swap(EntryVertexAlloc(*entry, stream), target->allocs[stream]);
+        std::swap(EntryVertexPoolIndex(*entry, stream), target->poolIndices[stream]);
+    }
+    target->retiredFrame = m_CurrentFrameIndex;
+
+    entry->vertexOffset = static_cast<uint32_t>(entry->coreSubAlloc.Offset / coreStride);
+    entry->bounds = bounds;
+    entry->lodReferenceRadius = bounds.Radius();
+    const auto& extent = bounds.halfExtents;
+    entry->lodReferenceMaxExtent = 2.0f * std::max({extent.x, extent.y, extent.z});
+    // Chained from the previous hash, so every rewrite reads as new content: a
+    // later RegisterSubmesh of `source` uploads again instead of a dedup hit on
+    // the rewritten bytes.
+    entry->contentHash = Hashing::Fnv1a64(vertices.data(), vertices.size_bytes(), entry->contentHash);
+    if (m_GPUScene && entry->gpuMeshIndex != ~0u)
+        m_GPUScene->UpdateMesh(entry->gpuMeshIndex, BuildGpuMeshRow(*entry, m_LodSelectionMode));
+    ++m_ContentRevision;
     return true;
 }
 
@@ -1012,7 +1302,7 @@ void MeshGPURegistry::UnregisterModel(const GUID& assetGuid)
                 m_GPUScene->RemoveMesh(entry->gpuMeshIndex);
                 entry->gpuMeshIndex = ~0u;
             }
-            ReleaseEntryToBucket(*entry);
+            ReleaseEntryToBucket(handle, *entry);
             m_Entries.Destroy(raw);
         }
 
@@ -1139,7 +1429,10 @@ MeshGPUReprovisionReport MeshGPURegistry::ReprovisionAfterDeviceRebuild(
     // through dangling mapped pointers into freed VMA memory. The RangeAllocator
     // bookkeeping (offsets) goes with it: every entry is re-uploaded below into a
     // fresh allocation, so no recorded offset is trusted across the rebuild.
+    // Spare vertex groups point into the same freed pools; a re-uploaded entry
+    // starts again from one group.
     m_Buckets.clear();
+    m_SpareVertexGroups.Clear();
 
     // Immediately after the pools are gone and BEFORE anything is re-uploaded.
     // Every outstanding stamp targeted storage that no longer exists, so the
@@ -1410,16 +1703,7 @@ MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh, MeshGPUStorageDomain 
     // Determine vertex attribute flags from the mesh data.
     VertexAttributeFlags flags = VertexAttributeFlags::HasPosition;
 
-    // Check tangents.
-    bool hasTangent = false;
-    for (const auto& v : mesh.Vertices)
-    {
-        if (v.Tangent[0] != 0.0f || v.Tangent[1] != 0.0f || v.Tangent[2] != 0.0f)
-        {
-            hasTangent = true;
-            break;
-        }
-    }
+    const bool hasTangent = AnyVertexHasTangent(mesh.Vertices);
     if (hasTangent)
         flags |= VertexAttributeFlags::HasTangent;
     // A refused own-vertex chain still draws LOD0. Do not publish a non-finite
@@ -1528,24 +1812,14 @@ MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh, MeshGPUStorageDomain 
     const std::span<float> chainColours = hasColour && vertexBlockCount > 1u
         ? scratch.AllocateArrayForOverwrite<float>(static_cast<size_t>(vertCount) * 4u)
         : std::span<float>();
-    std::byte* coreDst = coreData;
     size_t vertexIndex = 0;
     for (const UploadVertexBlock& block : std::span(vertexBlocks.data(), vertexBlockCount))
     {
         if (!chainColours.empty())
             std::copy(block.Colours.begin(), block.Colours.end(), chainColours.data() + vertexIndex * 4u);
-        for (const Vertex& vertex : block.Vertices)
-        {
-            std::memcpy(coreDst, vertex.Position, sizeof(vertex.Position));
-            coreDst += sizeof(vertex.Position);
-            std::memcpy(coreDst, vertex.Normal, sizeof(vertex.Normal));
-            coreDst += sizeof(vertex.Normal);
-            std::memcpy(coreDst, vertex.TexCoords, sizeof(vertex.TexCoords));
-            coreDst += sizeof(vertex.TexCoords);
-            if (hasTangent)
-                std::memcpy(&tangents[vertexIndex * 4u], vertex.Tangent, sizeof(vertex.Tangent));
-            ++vertexIndex;
-        }
+        PackCoreVertices(block.Vertices, coreData + vertexIndex * coreStride,
+                         hasTangent ? tangents.data() + vertexIndex * 4u : nullptr);
+        vertexIndex += block.Vertices.size();
     }
     const float* colours = chainColours.empty() ? mesh.Color0.data() : chainColours.data();
     const size_t tBytes = tangents.size_bytes();
@@ -1619,12 +1893,12 @@ MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh, MeshGPUStorageDomain 
     // --- Allocate bucket ranges (append sibling pools on overflow) ---
     MeshGPUBucket& bucket = GetOrCreateBucket(flags, domain);
     // The pool counts before this upload. A failed fine upload destroys the pools that it added.
-    const std::array<std::vector<MeshGPUStreamPool>*, 14> vertexPools{
+    const std::array<std::vector<MeshGPUStreamPool>*, kMeshGPUVertexStreamCount> vertexPools{
         &bucket.corePools, &bucket.tangentPools, &bucket.colorPools, &bucket.uv1Pools,
         &bucket.jointsPools, &bucket.weightsPools, &bucket.joints1Pools, &bucket.weights1Pools,
         &bucket.extraUvPools[0], &bucket.extraUvPools[1], &bucket.extraUvPools[2],
         &bucket.extraUvPools[3], &bucket.extraUvPools[4], &bucket.extraUvPools[5]};
-    std::array<size_t, 14> originalVertexPoolCounts{};
+    std::array<size_t, kMeshGPUVertexStreamCount> originalVertexPoolCounts{};
     const size_t originalIb16Count = bucket.ib16Pools.size();
     const size_t originalIb32Count = bucket.ib32Pools.size();
     for (size_t stream = 0; stream < vertexPools.size(); ++stream)
@@ -1684,16 +1958,6 @@ MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh, MeshGPUStorageDomain 
         return true;
     };
 
-    auto freeStream = [](std::vector<MeshGPUStreamPool>& pools,
-                         uint32_t poolIndex,
-                         Memory::RangeAllocator::Allocation alloc)
-    {
-        if (!alloc.IsValid())
-            return;
-        if (MeshGPUStreamPool* pool = GetPool(pools, poolIndex))
-            pool->allocator->Free(alloc);
-    };
-
     Memory::RangeAllocator::Allocation coreSub{}, indexSub{}, tangentSub{}, colorSub{}, uv1Sub{}, jointsSub{}, weightsSub{}, joints1Sub{}, weights1Sub{};
     std::array<Memory::RangeAllocator::Allocation, 6> extraUvSub{};
     uint32_t corePoolIndex = kInvalidMeshGPUPoolIndex;
@@ -1713,172 +1977,32 @@ MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh, MeshGPUStorageDomain 
         kInvalidMeshGPUPoolIndex,
         kInvalidMeshGPUPoolIndex};
 
-    struct VertexStreamRequest
-    {
-        std::vector<MeshGPUStreamPool>* pools = nullptr;
-        uint64_t initialCapacity = 0;
-        uint32_t stride = 1;
-        size_t bytes = 0;
-        const char* debugName = nullptr;
-        Memory::RangeAllocator::Allocation* alloc = nullptr;
-        uint32_t* poolIndex = nullptr;
-    };
-
-    std::array<VertexStreamRequest, kMaxVertexStreams> vertexStreamSlots{};
+    std::array<VertexStreamRequest, kMeshGPUVertexStreamCount> vertexStreamSlots{};
     size_t vertexStreamCount = 0;
-    auto addVertexStream = [&](std::vector<MeshGPUStreamPool>& pools,
-                               uint64_t initialCapacity,
-                               uint32_t stride,
-                               size_t bytes,
-                               const char* debugName,
-                               Memory::RangeAllocator::Allocation& alloc,
+    auto addVertexStream = [&vertexStreamSlots, &vertexStreamCount, &bucket, coreStride](uint32_t stream, size_t bytes, Memory::RangeAllocator::Allocation& alloc,
                                uint32_t& poolIndex)
     {
         if (bytes == 0)
             return;
-        assert(vertexStreamCount < kMaxVertexStreams && "kMaxVertexStreams must count every vertex stream an upload can write");
+        const VertexStreamLayout& layout = kVertexStreamLayouts[stream];
         vertexStreamSlots[vertexStreamCount++] = VertexStreamRequest{
-            &pools, initialCapacity, stride, bytes, debugName, &alloc, &poolIndex};
+            &BucketVertexPools(bucket, stream), layout.initialCapacityBytes,
+            VertexStreamStride(stream, coreStride), bytes, layout.debugName, &alloc, &poolIndex};
     };
 
-    addVertexStream(bucket.corePools, kBucketCoreInitialBytes, coreStride,
-                    coreBytes, "MeshGPU.Bucket.CoreVB",
-                    coreSub, corePoolIndex);
-    addVertexStream(bucket.tangentPools, kBucketOtherInitialBytes, 16u,
-                    tBytes, "MeshGPU.Bucket.TangentVB",
-                    tangentSub, tangentPoolIndex);
-    addVertexStream(bucket.colorPools, kBucketOtherInitialBytes, 16u,
-                    cBytes, "MeshGPU.Bucket.ColorVB",
-                    colorSub, colorPoolIndex);
-    addVertexStream(bucket.uv1Pools, kBucketOtherInitialBytes, 8u,
-                    uv1Bytes, "MeshGPU.Bucket.UV1VB",
-                    uv1Sub, uv1PoolIndex);
-    addVertexStream(bucket.jointsPools, kBucketOtherInitialBytes, 8u,
-                    jBytes, "MeshGPU.Bucket.JointsVB",
-                    jointsSub, jointsPoolIndex);
-    addVertexStream(bucket.weightsPools, kBucketOtherInitialBytes, 16u,
-                    wBytes, "MeshGPU.Bucket.WeightsVB",
-                    weightsSub, weightsPoolIndex);
-    addVertexStream(bucket.joints1Pools, kBucketOtherInitialBytes, 8u,
-                    j1Bytes, "MeshGPU.Bucket.Joints1VB",
-                    joints1Sub, joints1PoolIndex);
-    addVertexStream(bucket.weights1Pools, kBucketOtherInitialBytes, 16u,
-                    w1Bytes, "MeshGPU.Bucket.Weights1VB",
-                    weights1Sub, weights1PoolIndex);
-    for (size_t i = 0; i < extraUvBytes.size(); ++i)
-        addVertexStream(bucket.extraUvPools[i], kBucketOtherInitialBytes, 8u,
-                        extraUvBytes[i], kExtraUvDebugNames[i],
-                        extraUvSub[i], extraUvPoolIndex[i]);
-    const std::span<VertexStreamRequest> vertexStreams(vertexStreamSlots.data(), vertexStreamCount);
+    addVertexStream(kCoreStream, coreBytes, coreSub, corePoolIndex);
+    addVertexStream(kTangentStream, tBytes, tangentSub, tangentPoolIndex);
+    addVertexStream(kColorStream, cBytes, colorSub, colorPoolIndex);
+    addVertexStream(kUv1Stream, uv1Bytes, uv1Sub, uv1PoolIndex);
+    addVertexStream(kJointsStream, jBytes, jointsSub, jointsPoolIndex);
+    addVertexStream(kWeightsStream, wBytes, weightsSub, weightsPoolIndex);
+    addVertexStream(kJoints1Stream, j1Bytes, joints1Sub, joints1PoolIndex);
+    addVertexStream(kWeights1Stream, w1Bytes, weights1Sub, weights1PoolIndex);
+    for (uint32_t i = 0; i < static_cast<uint32_t>(extraUvBytes.size()); ++i)
+        addVertexStream(kFirstExtraUvStream + i, extraUvBytes[i], extraUvSub[i], extraUvPoolIndex[i]);
 
-    auto clearVertexAllocations = [&]()
-    {
-        for (auto& stream : vertexStreams)
-        {
-            freeStream(*stream.pools, *stream.poolIndex, *stream.alloc);
-            *stream.alloc = {};
-            *stream.poolIndex = kInvalidMeshGPUPoolIndex;
-        }
-    };
-
-    auto tryAllocateVertexGroup = [&](uint32_t groupIndex) -> bool
-    {
-        uint64_t vertexOffset = std::numeric_limits<uint64_t>::max();
-        for (auto& stream : vertexStreams)
-        {
-            if (!stream.pools || groupIndex >= static_cast<uint32_t>(stream.pools->size()))
-            {
-                clearVertexAllocations();
-                return false;
-            }
-
-            MeshGPUStreamPool& pool = (*stream.pools)[groupIndex];
-            Memory::RangeAllocator::Allocation alloc = AllocateInPool(pool, stream.bytes);
-            if (!alloc.IsValid())
-            {
-                clearVertexAllocations();
-                return false;
-            }
-
-            *stream.alloc = alloc;
-            *stream.poolIndex = groupIndex;
-
-            const uint64_t streamVertexOffset = alloc.Offset / stream.stride;
-            if (vertexOffset == std::numeric_limits<uint64_t>::max())
-                vertexOffset = streamVertexOffset;
-            else if (vertexOffset != streamVertexOffset)
-            {
-                clearVertexAllocations();
-                return false;
-            }
-        }
-        return true;
-    };
-
-    bool vertexAllocated = false;
-    const uint32_t existingVertexGroupCount = static_cast<uint32_t>(bucket.corePools.size());
-    for (uint32_t groupIndex = 0; groupIndex < existingVertexGroupCount; ++groupIndex)
-    {
-        if (tryAllocateVertexGroup(groupIndex))
-        {
-            vertexAllocated = true;
-            break;
-        }
-    }
-
-    if (!vertexAllocated)
-    {
-        const uint32_t newGroupIndex = static_cast<uint32_t>(bucket.corePools.size());
-        bool createdGroup = true;
-        // The streams whose pool this group created: the first createdStreamCount of vertexStreams.
-        size_t createdStreamCount = 0;
-        for (auto& stream : vertexStreams)
-        {
-            if (!stream.pools || stream.pools->size() != newGroupIndex)
-            {
-                Logger::Log::Warning(
-                    "MeshGPURegistry: vertex stream pool group mismatch for '{}' (expected group {}).",
-                    stream.debugName ? stream.debugName : "<unnamed>",
-                    newGroupIndex);
-                createdGroup = false;
-                break;
-            }
-
-            // A fine pool needs host-coherent memory, so its first size is small.
-            const uint64_t initialCapacity = domain == MeshGPUStorageDomain::ClusterFine
-                ? std::min<uint64_t>(stream.initialCapacity, kClusterFineInitialPoolBytes) : stream.initialCapacity;
-            const uint64_t capacity = NextPoolCapacity(*stream.pools,
-                                                       initialCapacity,
-                                                       stream.bytes,
-                                                       stream.stride);
-            if (!CreateBucketStreamPool(*stream.pools, capacity, stream.stride, stream.debugName, domain))
-            {
-                Logger::Log::Warning(
-                    "MeshGPURegistry: failed to create vertex sibling pool '{}' (capacity={} bytes) for mesh flags={:x}.",
-                    stream.debugName ? stream.debugName : "<unnamed>",
-                    static_cast<unsigned long long>(capacity),
-                    static_cast<uint32_t>(flags));
-                createdGroup = false;
-                break;
-            }
-            ++createdStreamCount;
-        }
-
-        if (!createdGroup)
-        {
-            for (VertexStreamRequest& stream : vertexStreams.first(createdStreamCount))
-            {
-                if (!stream.pools || stream.pools->size() <= newGroupIndex)
-                    continue;
-                MeshGPUStreamPool& pool = (*stream.pools)[newGroupIndex];
-                if (pool.buffer.IsValid())
-                    m_Device->DestroyBuffer(pool.buffer);
-                stream.pools->pop_back();
-            }
-        }
-
-        vertexAllocated = createdGroup && tryAllocateVertexGroup(newGroupIndex);
-    }
+    const bool vertexAllocated =
+        AllocateVertexGroup(std::span(vertexStreamSlots.data(), vertexStreamCount), flags, domain);
 
     auto& indexPools = use16Indices ? bucket.ib16Pools : bucket.ib32Pools;
     bool allocated = vertexAllocated;
@@ -1894,17 +2018,17 @@ MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh, MeshGPUStorageDomain 
     // ranges were never written to GPU, so immediate Free is safe.
     auto releaseAllocations = [&]
     {
-        freeStream(bucket.corePools, corePoolIndex, coreSub);
-        freeStream(indexPools, indexPoolIndex, indexSub);
-        freeStream(bucket.tangentPools, tangentPoolIndex, tangentSub);
-        freeStream(bucket.colorPools, colorPoolIndex, colorSub);
-        freeStream(bucket.uv1Pools, uv1PoolIndex, uv1Sub);
-        freeStream(bucket.jointsPools, jointsPoolIndex, jointsSub);
-        freeStream(bucket.weightsPools, weightsPoolIndex, weightsSub);
-        freeStream(bucket.joints1Pools, joints1PoolIndex, joints1Sub);
-        freeStream(bucket.weights1Pools, weights1PoolIndex, weights1Sub);
+        FreeImmediately(bucket.corePools, corePoolIndex, coreSub);
+        FreeImmediately(indexPools, indexPoolIndex, indexSub);
+        FreeImmediately(bucket.tangentPools, tangentPoolIndex, tangentSub);
+        FreeImmediately(bucket.colorPools, colorPoolIndex, colorSub);
+        FreeImmediately(bucket.uv1Pools, uv1PoolIndex, uv1Sub);
+        FreeImmediately(bucket.jointsPools, jointsPoolIndex, jointsSub);
+        FreeImmediately(bucket.weightsPools, weightsPoolIndex, weightsSub);
+        FreeImmediately(bucket.joints1Pools, joints1PoolIndex, joints1Sub);
+        FreeImmediately(bucket.weights1Pools, weights1PoolIndex, weights1Sub);
         for (size_t i = 0; i < extraUvSub.size(); ++i)
-            freeStream(bucket.extraUvPools[i], extraUvPoolIndex[i], extraUvSub[i]);
+            FreeImmediately(bucket.extraUvPools[i], extraUvPoolIndex[i], extraUvSub[i]);
         if (domain == MeshGPUStorageDomain::ClusterFine)
         {
             for (size_t stream = 0; stream < vertexPools.size(); ++stream)
@@ -2057,6 +2181,118 @@ MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh, MeshGPUStorageDomain 
     return entry;
 }
 
+void MeshGPURegistry::ClearVertexGroup(std::span<VertexStreamRequest> streams)
+{
+    for (VertexStreamRequest& stream : streams)
+    {
+        FreeImmediately(*stream.pools, *stream.poolIndex, *stream.alloc);
+        *stream.alloc = {};
+        *stream.poolIndex = kInvalidMeshGPUPoolIndex;
+    }
+}
+
+bool MeshGPURegistry::TryAllocateVertexGroupAt(std::span<VertexStreamRequest> streams, uint32_t groupIndex)
+{
+    uint64_t vertexOffset = std::numeric_limits<uint64_t>::max();
+    for (VertexStreamRequest& stream : streams)
+    {
+        if (!stream.pools || groupIndex >= static_cast<uint32_t>(stream.pools->size()))
+        {
+            ClearVertexGroup(streams);
+            return false;
+        }
+
+        MeshGPUStreamPool& pool = (*stream.pools)[groupIndex];
+        Memory::RangeAllocator::Allocation alloc = AllocateInPool(pool, stream.bytes);
+        if (!alloc.IsValid())
+        {
+            ClearVertexGroup(streams);
+            return false;
+        }
+
+        *stream.alloc = alloc;
+        *stream.poolIndex = groupIndex;
+
+        const uint64_t streamVertexOffset = alloc.Offset / stream.stride;
+        if (vertexOffset == std::numeric_limits<uint64_t>::max())
+            vertexOffset = streamVertexOffset;
+        else if (vertexOffset != streamVertexOffset)
+        {
+            ClearVertexGroup(streams);
+            return false;
+        }
+    }
+    return true;
+}
+
+bool MeshGPURegistry::AllocateVertexGroup(std::span<VertexStreamRequest> streams, VertexAttributeFlags flags,
+                                          MeshGPUStorageDomain domain)
+{
+    if (streams.empty())
+        return true;
+
+    // The core stream comes first, and every stream keeps one pool per group,
+    // so the core pool count is the group count.
+    const uint32_t existingVertexGroupCount = static_cast<uint32_t>(streams.front().pools->size());
+    for (uint32_t groupIndex = 0; groupIndex < existingVertexGroupCount; ++groupIndex)
+    {
+        if (TryAllocateVertexGroupAt(streams, groupIndex))
+            return true;
+    }
+
+    const uint32_t newGroupIndex = existingVertexGroupCount;
+    bool createdGroup = true;
+    // The streams whose pool this group created: the first createdStreamCount of streams.
+    size_t createdStreamCount = 0;
+    for (VertexStreamRequest& stream : streams)
+    {
+        if (!stream.pools || stream.pools->size() != newGroupIndex)
+        {
+            Logger::Log::Warning(
+                "MeshGPURegistry: vertex stream pool group mismatch for '{}' (expected group {}).",
+                stream.debugName ? stream.debugName : "<unnamed>",
+                newGroupIndex);
+            createdGroup = false;
+            break;
+        }
+
+        // A fine pool needs host-coherent memory, so its first size is small.
+        const uint64_t initialCapacity = domain == MeshGPUStorageDomain::ClusterFine
+            ? std::min<uint64_t>(stream.initialCapacity, kClusterFineInitialPoolBytes) : stream.initialCapacity;
+        const uint64_t capacity = NextPoolCapacity(*stream.pools,
+                                                   initialCapacity,
+                                                   stream.bytes,
+                                                   stream.stride);
+        if (!CreateBucketStreamPool(*stream.pools, capacity, stream.stride, stream.debugName, domain))
+        {
+            Logger::Log::Warning(
+                "MeshGPURegistry: failed to create vertex sibling pool '{}' (capacity={} bytes) for mesh flags={:x}.",
+                stream.debugName ? stream.debugName : "<unnamed>",
+                static_cast<unsigned long long>(capacity),
+                static_cast<uint32_t>(flags));
+            createdGroup = false;
+            break;
+        }
+        ++createdStreamCount;
+    }
+
+    if (!createdGroup)
+    {
+        for (VertexStreamRequest& stream : streams.first(createdStreamCount))
+        {
+            if (!stream.pools || stream.pools->size() <= newGroupIndex)
+                continue;
+            MeshGPUStreamPool& pool = (*stream.pools)[newGroupIndex];
+            if (pool.buffer.IsValid())
+                m_Device->DestroyBuffer(pool.buffer);
+            stream.pools->pop_back();
+        }
+        return false;
+    }
+
+    return TryAllocateVertexGroupAt(streams, newGroupIndex);
+}
+
 MeshGPUBucket& MeshGPURegistry::GetOrCreateBucket(MeshGPUBucketKey key, MeshGPUStorageDomain domain)
 {
     const uint64_t kkey = BucketStorageKey(key, domain);
@@ -2178,7 +2414,7 @@ void MeshGPURegistry::LogPoolMemoryResidency(BufferHandle buffer, const char* de
         m_FirstPoolMemoryResidency = residency;
 }
 
-void MeshGPURegistry::ReleaseEntryToBucket(MeshGPUEntry& entry)
+void MeshGPURegistry::ReleaseEntryToBucket(MeshGPUHandle handle, MeshGPUEntry& entry)
 {
     // FIRST statement, above the bucket lookup, because that lookup returns
     // early for every bucketKey == None entry and for anything called after
@@ -2195,7 +2431,10 @@ void MeshGPURegistry::ReleaseEntryToBucket(MeshGPUEntry& entry)
 
     auto it = m_Buckets.find(BucketStorageKey(entry.bucketKey, entry.StorageDomain));
     if (it == m_Buckets.end())
+    {
+        m_SpareVertexGroups.Erase(handle);
         return;
+    }
     MeshGPUBucket& bucket = it->second;
 
     const uint64_t retire = m_CurrentFrameIndex + kRetireDelay;
@@ -2228,6 +2467,17 @@ void MeshGPURegistry::ReleaseEntryToBucket(MeshGPUEntry& entry)
         freeDeferred(use16 ? bucket.ib16Pools : bucket.ib32Pools,
                      entry.indexPoolIndex,
                      entry.indexSubAlloc);
+    }
+    // A spare group may have stopped drawing only this frame, so it takes the
+    // same deferred free as the group the entry draws from.
+    if (std::vector<SpareVertexGroup>* spares = m_SpareVertexGroups.Find(handle))
+    {
+        for (SpareVertexGroup& group : *spares)
+        {
+            for (uint32_t stream = 0; stream < kMeshGPUVertexStreamCount; ++stream)
+                freeDeferred(BucketVertexPools(bucket, stream), group.poolIndices[stream], group.allocs[stream]);
+        }
+        m_SpareVertexGroups.Erase(handle);
     }
 }
 

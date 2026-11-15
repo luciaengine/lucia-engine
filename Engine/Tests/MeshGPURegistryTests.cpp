@@ -757,7 +757,7 @@ TEST_F(MeshGPURegistryTest, ScopedLookupsAreConsistentBesideConcurrentRegistrati
 }
 
 // GetPoolStats is the only witness to pool fragmentation, which converts into
-// GPU memory growth and extra pool groups: a failed best-fit does not fail the
+// GPU memory growth and extra pool groups: a failed allocation does not fail the
 // upload, it appends a sibling pool at double the capacity. The editor reads it
 // over IPC (renderServices.meshPools), so the shape it reports is a contract.
 TEST_F(MeshGPURegistryTest, PoolStatsReportOneEntryPerLivePoolWithItsOccupancy)
@@ -789,11 +789,11 @@ TEST_F(MeshGPURegistryTest, PoolStatsReportOneEntryPerLivePoolWithItsOccupancy)
     ASSERT_NE(core, nullptr) << "every registered mesh occupies a core pool";
     EXPECT_EQ(core->BucketKey, entry->bucketKey);
     EXPECT_EQ(core->PoolIndex, 0u);
-    EXPECT_GT(core->Allocator.capacity, 0u);
-    EXPECT_GT(core->Allocator.used, 0u);
-    EXPECT_LE(core->Allocator.used, core->Allocator.capacity);
-    EXPECT_GE(core->Allocator.peak, core->Allocator.used);
-    EXPECT_LE(core->Allocator.largestFreeRange, core->Allocator.capacity);
+    EXPECT_GT(core->Allocator.CapacityUnits, 0u);
+    EXPECT_GT(core->Allocator.UsedUnits, 0u);
+    EXPECT_LE(core->Allocator.UsedUnits, core->Allocator.CapacityUnits);
+    EXPECT_GE(core->Allocator.PeakUnits, core->Allocator.UsedUnits);
+    EXPECT_LE(core->Allocator.LargestFreeUnits, core->Allocator.CapacityUnits);
 
     ASSERT_NE(findStream("IB16"), nullptr) << "a 3-index triangle uses the 16-bit index pool";
 
@@ -802,7 +802,7 @@ TEST_F(MeshGPURegistryTest, PoolStatsReportOneEntryPerLivePoolWithItsOccupancy)
     for (const MeshGPUPoolStats& s : stats)
     {
         EXPECT_EQ(s.BucketKey, entry->bucketKey);
-        EXPECT_GT(s.Allocator.capacity, 0u) << "stream " << s.Stream;
+        EXPECT_GT(s.Allocator.CapacityUnits, 0u) << "stream " << s.Stream;
     }
 }
 

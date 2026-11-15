@@ -1,5 +1,5 @@
 /* --prompt_text_scale: the conversation's text size over its 14 px default. Each conversation
-   font size is its 1.0 size times this; the input and the status line keep their sizes.
+   font size is its 1.0 size times this, the input's and its placeholder's too; the status line keeps its size.
    PromptPanel::ApplyTextSize sets it on the panel from the size slider's value; without it
    every use falls back to 1. */
 .prompt-panel-root {
@@ -648,8 +648,8 @@
 	gap: 8px;
 }
 
-/* The status's parts (AgentConversationRow::ShowStatus) wrap between each other: a part
-   that fits a line is never broken, a longer one (an error) wraps on its own lines. */
+/* The status line (AgentConversationRow::ShowStatus): one read-only text area across the
+   footer, which wraps a long status (an error) and lets the user select and copy it. */
 .agent-row-status {
 	display: flex;
 	flex-direction: row;
@@ -662,11 +662,20 @@
 }
 
 .agent-row-status-part {
-	flex-shrink: 1;
+	width: 100%;
 	min-width: 0;
+	min-height: 0;
+	flex-shrink: 1;
+	padding: 0;
+	border-width: 0;
+	background-color: transparent;
+	box-shadow: none;
+	outline: none;
+	font-family: var(--ui_font_family);
 	font-size: calc(12px * var(--prompt_text_scale, 1));
 	color: var(--ui_color_text_secondary);
 	white-space: normal;
+	overflow-wrap: break-word;
 }
 
 /* A narrow panel (AgentConversationRow::SetCallsStacked): the footer stacks, the status on
@@ -990,7 +999,7 @@
 	align-items: center;
 	min-width: 0;
 	font-family: var(--ui_font_script);
-	font-size: 14px;
+	font-size: calc(14px * var(--prompt_text_scale, 1));
 	line-height: var(--script_line_height, 1.0);
 	/* Instructions: the dimmest text tier that reads as text (6.8:1 on the plate),
 	   still below the typed text. */
@@ -1009,7 +1018,7 @@
 .prompt-panel-input {
 	text-align: left;
 	font-family: var(--ui_font_script);
-	font-size: 16px;
+	font-size: calc(16px * var(--prompt_text_scale, 1));
 	line-height: var(--script_line_height, 1.0);
 	padding: 10px 12px;
 	min-height: 100%;

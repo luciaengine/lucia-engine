@@ -11,6 +11,7 @@
 #include "Thumbnails/ShaderGraphThumbnailMaterial.h"
 #include "Core/Engine.h"
 #include "JobSystem/WorkStealingThreadPool.h"
+#include "Thumbnails/SpriteFramesThumbnailHandler.h"
 #include "Thumbnails/TextureThumbnailHandler.h"
 
 #include "Logger/Logger.h"
@@ -374,6 +375,41 @@ std::string ThumbnailService::GetOrRequestInlineImage(const std::filesystem::pat
         return {};
     }
     return textures->GetOrRequestInlineImage(image, std::move(onReady));
+}
+
+SpriteFramesThumbnailHandler* ThumbnailService::FindSpriteFramesHandler() const
+{
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    const auto it = m_Handlers.find(AssetType::SpriteFrames);
+    return it != m_Handlers.end() ? dynamic_cast<SpriteFramesThumbnailHandler*>(it->second.get()) : nullptr;
+}
+
+std::string ThumbnailService::GetOrRequestAtlasRegion(const std::filesystem::path& texturePath,
+                                                      const std::array<float, 4>& uv,
+                                                      std::function<void(const std::string& path)> onReady)
+{
+    SpriteFramesThumbnailHandler* sprites = FindSpriteFramesHandler();
+    if (!sprites)
+    {
+        if (onReady)
+            onReady({});
+        return {};
+    }
+    return sprites->GetOrRequestAtlasRegion(texturePath, uv, std::move(onReady));
+}
+
+std::string ThumbnailService::GetOrRequestSpriteFrame(const std::filesystem::path& spriteFramesPath,
+                                                      const std::string& animationName, bool flipX,
+                                                      std::function<void(const std::string& path)> onReady)
+{
+    SpriteFramesThumbnailHandler* sprites = FindSpriteFramesHandler();
+    if (!sprites)
+    {
+        if (onReady)
+            onReady({});
+        return {};
+    }
+    return sprites->GetOrRequestFrame(spriteFramesPath, animationName, flipX, std::move(onReady));
 }
 
 std::string ThumbnailService::GetOrRequestBrowser(const std::filesystem::path& assetPath,
