@@ -18,7 +18,8 @@ MaterialShaderPackageBuilder::MaterialShaderPackageBuilder(
 
 Rendering::MaterialBuildResult MaterialShaderPackageBuilder::Build(
     Rendering::ShaderSourceKind kind, Rendering::MaterialKeyword pipelineKeywords,
-    Rendering::VertexAttributeFlags meshVertexFlags) const
+    Rendering::VertexAttributeFlags meshVertexFlags,
+    const Rendering::ShaderCompileTarget& target) const
 {
     if (!m_Prepared)
     {
@@ -28,6 +29,6 @@ Rendering::MaterialBuildResult MaterialShaderPackageBuilder::Build(
     }
     return Rendering::BuildMaterialToShaderPackage(
         m_Document, m_MaterialPath, m_DebugName, m_Context, kind,
-        pipelineKeywords, meshVertexFlags);
+        pipelineKeywords, meshVertexFlags, target);
 }
 } // namespace GameEngine::Engine::Renderer

@@ -8,6 +8,7 @@ add_library(Ocean OBJECT
     Source/OceanFootprintFrustum.cpp
     Source/OceanSimulationDemand.cpp
     Source/OceanShader/OceanShaderProgram.cpp
+    Source/OceanPreparedDispatch.cpp
     Source/OceanFFT.cpp
     Source/OceanCascadeArray.cpp
     Source/OceanSprayGPU.cpp

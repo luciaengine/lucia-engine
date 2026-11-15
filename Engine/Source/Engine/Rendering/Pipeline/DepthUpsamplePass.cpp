@@ -88,6 +88,7 @@ void DepthUpsamplePass::Declare(RenderGraph::RGFrame& frame,
         passName.c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(variant.PipelineId);
             RenderGraph::RGAttachmentOps depthOps{};
             depthOps.Load = RenderGraph::RGLoadOp::DontCare;
             depthOps.Store = RenderGraph::RGStoreOp::Store;
