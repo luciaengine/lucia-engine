@@ -3,6 +3,7 @@
 #include "Components/Transform.h"
 #include "Mathematics/Vector2.h"
 #include "Mathematics/Vector3.h"
+#include "Mathematics/WorldPosition.h"
 #include <memory>
 
 namespace GameEngine {
@@ -25,7 +26,8 @@ private:
     std::unique_ptr<GameUIHost> m_Overlay;
     Label* m_Statistics = nullptr;
     Components::Transform m_InitialPose;
-    Mathematics::Vector3 m_Target;
+    // The orbit center, in world space.
+    Mathematics::WorldPosition m_Target;
     Mathematics::Vector2 m_PreviousPointer;
     float m_Yaw = 0.0f;
     float m_Pitch = 0.0f;

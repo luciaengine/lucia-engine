@@ -1,5 +1,10 @@
 #include "PlayerApplication.h"
 
+#if defined(GE_PLATFORM_MOBILE)
+#include "PlayerDemoControls.h"
+#include "Platform/Environment.h"
+#endif
+
 #include "Assets/AssetManager.h"
 #include "Assets/MeshLODGenerator.h"
 #include "Assets/Packages/PackageCodeModules.h"
@@ -705,6 +710,12 @@ void PlayerApplication::LogProgramIndexCounts()
 void PlayerApplication::Update(float64 deltaTime)
 {
     m_LastRenderDeltaTime = static_cast<float>(deltaTime);
+#if defined(GE_PLATFORM_MOBILE)
+    if (!m_DemoControls && Platform::EnvironmentSwitchEnabled("GE_PLAYER_DEMO_CONTROLS", false))
+        m_DemoControls = std::make_unique<PlayerDemoControls>();
+    if (m_DemoControls && GetInputSystem() && m_Host->GetWindow())
+        m_DemoControls->Update(*GetInputSystem(), *m_Host->GetWindow(), m_LastRenderDeltaTime);
+#endif
 
     if (auto* world = EngineCore::GetInstance().GetPrimaryWorld())
         FinishStartupResolve(*world, deltaTime);
@@ -770,6 +781,10 @@ void PlayerApplication::Render()
 
 void PlayerApplication::OnFrameComposited(RuntimeFrameReadback& readback)
 {
+#if defined(GE_PLATFORM_MOBILE)
+    if (m_DemoControls)
+        m_DemoControls->Render(readback, m_LastRenderDeltaTime);
+#endif
 #if GE_PLAYER_MOVIE_RECORDER
     DeclareMovieFrame(readback);
 #endif
