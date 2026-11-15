@@ -148,6 +148,7 @@ void AutoExposureNode::DeclareForView(ViewDeclare& d)
         d.PassName("AutoExposureResolve").c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_ResolvePipelineId);
             p.Read(histogram, RenderGraph::RGBufferRead::Storage);
             p.Read(exposure, RenderGraph::RGBufferRead::Storage);
             p.Write(exposure, RenderGraph::RGBufferWrite::Storage);
@@ -291,6 +292,7 @@ bool AutoExposureNode::DeclareHistogramPass(ViewDeclare& d, RenderGraph::RGBuffe
         d.PassName("AutoExposureHistogram").c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_HistogramPipelineId);
             p.Read(hdr, RenderGraph::RGTextureRead::Sampled);
             p.Read(depth, RenderGraph::RGTextureRead::Sampled);
             p.Read(exposure, RenderGraph::RGBufferRead::Storage);
