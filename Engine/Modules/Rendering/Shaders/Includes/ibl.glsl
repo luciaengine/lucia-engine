@@ -538,7 +538,7 @@ vec3 GE_EvaluateIBL(SurfaceOutput so, vec3 V, vec3 positionWS)
     // by the view-space front normal, aspect-corrected and scaled by the IOR bend. View +Y is up but
     // the grab's texture V increases downward (negative viewport for Y-up), so the vertical component
     // is negated — same family as shadowUV.y = 1-y and the IBL (1-uv.y) flips.
-    const float kThinRefractionStrength = 0.3;  // authored single-tap bend
+    float kThinRefractionStrength = clamp(so.transmissionRefractionStrength, 0.0, 0.3);
     const float kScreenEdgeFadeMargin   = 0.04; // screen-border fade back to the env cube
     vec2  ssScreenUV = gl_FragCoord.xy * ge_screenSize.zw;
     vec3  ssNv       = mat3(ge_view) * N;
@@ -550,6 +550,17 @@ vec3 GE_EvaluateIBL(SurfaceOutput so, vec3 V, vec3 positionWS)
     // The grab is stored at the pre-exposure P; this radiance is absolute until the adapter's output.
     vec3  ssBg       = textureLod(ge_sceneColor, clamp(ssUV, 0.0, 1.0), 0.0).rgb / GE_PreExposure() *
                        so.transmissionColor;
+    // Frosted glass: 4 more taps around the center, 5 equal weights. A zero radius keeps one tap.
+    if (so.transmissionBlur > 0.01)
+    {
+        vec2 blur = ge_screenSize.zw * clamp(so.transmissionBlur, 0.0, 8.0);
+        vec3 blurred = textureLod(ge_sceneColor, clamp(ssUV, 0.0, 1.0), 0.0).rgb;
+        blurred += textureLod(ge_sceneColor, clamp(ssUV + vec2(blur.x, 0.0), 0.0, 1.0), 0.0).rgb;
+        blurred += textureLod(ge_sceneColor, clamp(ssUV - vec2(blur.x, 0.0), 0.0, 1.0), 0.0).rgb;
+        blurred += textureLod(ge_sceneColor, clamp(ssUV + vec2(0.0, blur.y), 0.0, 1.0), 0.0).rgb;
+        blurred += textureLod(ge_sceneColor, clamp(ssUV - vec2(0.0, blur.y), 0.0, 1.0), 0.0).rgb;
+        ssBg = blurred * 0.2 / GE_PreExposure() * so.transmissionColor;
+    }
    #ifdef GE_IBL_TRACKS_GRAB
     // The fraction of the grab that reaches the camera through the glass, per channel.
     vec3  ssThrough  = so.transmissionColor;
