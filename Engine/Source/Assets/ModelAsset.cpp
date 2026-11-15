@@ -720,8 +720,6 @@ std::filesystem::path PlayerLodCacheFile(AssetManager* assetManager, const GUID&
 
 uint32 ModelAsset::GenerateLODs(const MeshLODConfig& config, bool generateSkinned) {
     m_MeshContentHashes.clear(); // the meshes change, so a registration hashes them itself
-    if (m_ClusterLODManifest)
-        return 1;
     const auto lodStart = std::chrono::steady_clock::now();
     uint32 maxLods = 1;
     size_t sourceTris = 0;
@@ -753,6 +751,15 @@ uint32 ModelAsset::GenerateLODs(const MeshLODConfig& config, bool generateSkinne
             continue;
         }
         maxLods = std::max(maxLods, GenerateMeshLODsInto(mesh, config, &stats));
+        // A cluster model's LOD0 is already its coarse cover: its levels add the coarse error.
+        if (m_ClusterLODManifest)
+        {
+            const auto meshIndex = static_cast<uint32>(&mesh - m_Meshes.data());
+            const float coarseError = MeshClusterLODRelativeCoarseError(*m_ClusterLODManifest, meshIndex, mesh);
+            for (size_t level = 0; level < mesh.ExtraLODErrors.size(); ++level)
+                if (level >= mesh.ExtraLODSloppy.size() || mesh.ExtraLODSloppy[level] == 0)
+                    mesh.ExtraLODErrors[level] += coarseError;
+        }
     }
     CalculateBoundingBox(); // also covers the Editor's direct regeneration path
     const double lodMs = std::chrono::duration<double, std::milli>(
@@ -768,8 +775,6 @@ uint32 ModelAsset::GenerateLODs(const MeshLODConfig& config, bool generateSkinne
 
 uint64 ModelAsset::CookLODCache(const MeshLODConfig& config, bool generateSkinned,
                                 const std::filesystem::path& outFile) {
-    if (m_ClusterLODManifest)
-        return 0;
     GenerateLODs(config, generateSkinned);
 
     bool anyLods = false;
@@ -864,13 +869,6 @@ void ModelAsset::LoadOrGenerateLODs(AssetManager* assetManager,
 
 void ModelAsset::PostLoad()
 {
-    if (m_ClusterLODManifest)
-    {
-        if (AssetManager* manager = AssetManager::GetThreadCurrent())
-            if (const auto file = ImportedMaterialCacheFile(manager->GetRegistry(), GetPath(), GetGUID()))
-                WriteImportedMaterialCache(*file, m_Materials);
-        return;
-    }
     // Resolve this asset's LOD policy: per-asset kv (assets.lod.*) layered over
     // the process-global default tier. GetThreadCurrent() is worker-safe (this
     // runs on a Background job on both initial load and hot-reload); a null

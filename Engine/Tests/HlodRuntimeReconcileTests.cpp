@@ -346,7 +346,7 @@ TEST(HlodRuntimeReconcile, SelectSystemFlipsResidencyByCoverage) {
     rs.Views().SetCameraData(cam, ::GameEngine::Tests::TestCameraWithEye(CameraAt(0.0f, 0.0f, -2000.0f)), kCameraAtRanges);
     select.Update(*world, kDt);
 
-    ASSERT_TRUE(rs.ConsumeHlodResidencyExtractionPending())
+    ASSERT_TRUE(rs.ConsumeResidencyExtractionPending())
         << "a residency flip must request the full extraction lane";
     EXPECT_TRUE(runtime.GetClusters()[0].ProxyActive);
     for (ECS::EntityHandle member : runtime.GetClusters()[0].Members) {
@@ -364,7 +364,7 @@ TEST(HlodRuntimeReconcile, SelectSystemFlipsResidencyByCoverage) {
     rs.Views().SetCameraData(cam, ::GameEngine::Tests::TestCameraWithEye(CameraAt(9.0f, 0.0f, -12.0f)), kCameraAtRanges);
     select.Update(*world, kDt);
 
-    EXPECT_TRUE(rs.ConsumeHlodResidencyExtractionPending());
+    EXPECT_TRUE(rs.ConsumeResidencyExtractionPending());
     EXPECT_FALSE(runtime.GetClusters()[0].ProxyActive);
     for (ECS::EntityHandle member : runtime.GetClusters()[0].Members) {
         const auto* gpu = world->GetComponent<MeshGPUData>(member);
@@ -447,7 +447,7 @@ TEST(HlodRuntimeReconcile, MovedMemberFallsBackToMembersOnlyAndStaysStale) {
     rs.Views().SetCameraData(cam, ::GameEngine::Tests::TestCameraWithEye(CameraAt(0.0f, 0.0f, -2000.0f)), kCameraAtRanges);
     select.Update(*world, kDt);
     ASSERT_TRUE(runtime.GetClusters()[0].ProxyActive);
-    (void)rs.ConsumeHlodResidencyExtractionPending();
+    (void)rs.ConsumeResidencyExtractionPending();
 
     // Move one member (bump its WorldTransform.Version, as an editor edit would):
     // the cluster's frozen proxy no longer represents it (C3 / §3.4).
@@ -475,7 +475,7 @@ TEST(HlodRuntimeReconcile, MovedMemberFallsBackToMembersOnlyAndStaysStale) {
     }
 
     // Staleness is persistent: even a far camera never re-engages the proxy.
-    (void)rs.ConsumeHlodResidencyExtractionPending();
+    (void)rs.ConsumeResidencyExtractionPending();
     rs.Views().SetCameraData(cam, ::GameEngine::Tests::TestCameraWithEye(CameraAt(0.0f, 0.0f, -3000.0f)), kCameraAtRanges);
     select.Update(*world, kDt);
     EXPECT_TRUE(runtime.GetClusters()[0].Stale);

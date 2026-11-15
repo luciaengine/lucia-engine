@@ -132,7 +132,7 @@ public:
         kEscalationSubsetOverBudget   = 1u << 13, // E10 (always-refresh subset)
         kEscalationCachesUnprimed     = 1u << 14, // E11
         kEscalationValidator          = 1u << 15, // D9 shadow validator (debug builds)
-        kEscalationHlodResidency      = 1u << 16, // HLOD cluster flip: proxy/member residency changed
+        kEscalationResidency          = 1u << 16, // HLOD flip or cluster LOD split: residency changed
         kEscalationSorting            = 1u << 17, // Authored order/group edits require descendant regather
     };
 
