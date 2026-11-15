@@ -143,7 +143,7 @@ class OceanSprayPreparationTest : public ::testing::Test
         ASSERT_TRUE(m_Ocean->IsFoamReady());
         m_Ocean->GetFoamSim().ConfigureCascades(m_Device.get(), 8.0f, 8);
         m_Settings.Spray = true;
-        m_Settings.SprayRenderLayerMask = 1;
+        m_Settings.SprayRenderLayers = Rendering::RenderLayerMask::Default();
         m_Settings.SpraySpawnRate = 1.0f;
         m_Settings.SprayWindThreshold = 0;
         m_Settings.SprayWindVelocityScale = 0;
