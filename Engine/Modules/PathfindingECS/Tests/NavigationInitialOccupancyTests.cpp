@@ -117,8 +117,7 @@ class InitialOccupancy : public ::testing::Test
         world
             ->Query<ECS::Read<Components::NavigationAgent>, ECS::Write<Components::NavigationAgentState>,
                     ECS::Read<Components::WorldTransform>>()
-            .Each([&](ECS::EntityHandle, const Components::NavigationAgent& agent,
-                      ECS::Writable<Components::NavigationAgentState>,
+            .Each([&](ECS::EntityHandle, const Components::NavigationAgent& agent, Components::NavigationAgentState&,
                       const Components::WorldTransform&) { ids.push_back(agent.AgentId); });
         return ids;
     }
