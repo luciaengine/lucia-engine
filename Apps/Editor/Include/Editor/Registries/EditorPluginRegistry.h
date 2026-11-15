@@ -8,6 +8,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <nlohmann/json_fwd.hpp>
 #include <map>
 #include <string>
 #include <string_view>
@@ -72,6 +73,16 @@ struct SelectionMaskPart
     float WindSeed = 0.0f;
 };
 
+// Main-thread host services borrowed until OnEditorShutdown. Packages own their
+// jobs and panels; the host owns scene lifetime and selection semantics.
+struct EditorHostServices
+{
+    EditorChangeNotifications* ChangeNotifications = nullptr;
+    std::function<std::vector<uint32_t>()> SelectedEntityIds;
+    std::function<bool()> CanWriteScene;
+    std::function<bool(std::string_view)> IsModuleAvailable;
+};
+
 class IEditorPlugin
 {
 public:
@@ -80,6 +91,11 @@ public:
     virtual const Plugins::PluginDescriptor& GetDescriptor() const = 0;
 
     virtual void RegisterInspectors() {}
+    virtual void OnEditorAttach(const EditorHostServices&) {}
+    virtual void OnEditorUpdate() {}
+    virtual void OnSceneInvalidated() {}
+    virtual void OnEditorShutdown() {}
+    virtual bool TryInvokeCommand(std::string_view, const nlohmann::json&, nlohmann::json&) { return false; }
     virtual void BuildHierarchyContextMenu(ContextMenuBuilder& /*builder*/,
                                            const HierarchyContextMenuContext& /*context*/) {}
     virtual bool HandleHierarchyCommand(uint32_t /*commandId*/,
@@ -110,6 +126,12 @@ public:
     static EditorPluginRegistry& Get();
 
     void RegisterPlugin(IEditorPlugin& plugin);
+    void AttachHost(EditorHostServices services);
+    void Update();
+    void InvalidateScene();
+    void Shutdown();
+    bool TryInvokeCommand(std::string_view method, const nlohmann::json& parameters,
+                          nlohmann::json& result);
     std::vector<IEditorPlugin*> GetPlugins() const;
     std::vector<IEditorPlugin*> GetEnabledPlugins() const;
 
@@ -149,11 +171,14 @@ private:
     {
         IEditorPlugin* Plugin = nullptr;
         ECS::ModuleRegistrationStamp Module;
+        bool Attached = false;
     };
 
     const std::vector<IEditorPlugin*>& MaskContributors() const;
 
     std::vector<Entry> m_Plugins;
+    EditorHostServices m_HostServices;
+    bool m_HostAttached = false;
     EnabledResolver m_EnabledResolver;
     // Memoized IsEnabled answers keyed by plugin id, plus the derived
     // enabled-and-contributing list the per-entity outline dispatch iterates.

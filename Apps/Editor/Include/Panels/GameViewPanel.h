@@ -36,6 +36,7 @@ class GameViewPanel : public DockPanel
 
     void SetNoCameraOverlayVisible(bool visible);
 
+
     // Forward each viewport input transition immediately, normalized to its rect.
     // The callbacks resolve the current window/controller, rather than retaining
     // a controller across tear-off/redock.

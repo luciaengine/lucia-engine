@@ -49,6 +49,8 @@
 #include "UI/UIManager.h"
 #include "UI/UIPrimitive.h"
 
+#include "TestTempDir.h"
+
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
@@ -97,7 +99,8 @@ struct ParentChildFixture
         Ui = std::make_unique<UIManager>(Dev);
         Ui->SetRoot(std::move(root));
 
-        const auto css = std::filesystem::temp_directory_path() / cssFileName;
+        const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_style_override_subtree"));
+        const auto css = tempDir.Path() / cssFileName;
         {
             std::ofstream f(css);
             f << "#root { display: flex; flex-direction: column; width: 220px; height: 240px; }\n"

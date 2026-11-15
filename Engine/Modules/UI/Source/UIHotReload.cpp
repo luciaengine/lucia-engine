@@ -470,18 +470,7 @@ static UIElement* FindByInstanceId(UIElement* root, uint64 instanceId)
 
     // Mount targets are not part of the child list but must still participate in
     // hot reload target discovery (Dockspace mounts panels via Mount).
-    if (auto* m = dynamic_cast<Mount*>(root))
-    {
-        if (UIElement* tgt = m->GetTarget())
-        {
-            if (auto* found = FindByInstanceId(tgt, instanceId))
-            {
-                return found;
-            }
-        }
-    }
-
-    return nullptr;
+    return FindByInstanceId(root->GetMountTarget(), instanceId);
 }
 
 void DispatchLayoutReconciled(UIElement& target)
@@ -1121,7 +1110,7 @@ void UIHotReload::ApplyStyleReload(const GUID& styleGuid)
     }
 
     // Gather transitive importers and mark all impacted bindings dirty so CSS is recomputed.
-    // With the @import segment model, we no longer need to reload importers on leaf changes.
+    // With the @import segment model, importers are not reloaded on leaf changes.
     std::unordered_set<GUID> visited;
     visited.reserve(16);
 

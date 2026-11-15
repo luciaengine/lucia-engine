@@ -72,7 +72,7 @@ std::vector<std::string> CodexSessionProvider::TurnArguments(const AgentTurnRequ
     if (!WorkingDirectory().empty())
     {
         arguments.push_back("-C");
-        arguments.push_back(WorkingDirectory().string());
+        arguments.push_back(PathUtf8(WorkingDirectory()));
     }
     arguments.insert(arguments.end(), {"-s", "read-only"});
     if (request.Tools)
@@ -93,6 +93,10 @@ std::vector<std::string> CodexSessionProvider::TurnArguments(const AgentTurnRequ
         arguments.push_back("resume");
         arguments.push_back(request.SessionId);
     }
+    // The images go last, so they belong to `exec` or, when resuming, to `resume` (each has its
+    // own --image for the prompt it sends); in the `=` form the prompt's `-` is not read as one.
+    for (const PromptFile& image : request.Images)
+        arguments.push_back("--image=" + PathUtf8(image.Path));
     arguments.push_back("-");
     return arguments;
 }

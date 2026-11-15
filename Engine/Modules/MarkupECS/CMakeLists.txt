@@ -4,9 +4,7 @@ project(MarkupECS LANGUAGES CXX)
 
 # World mark-ups: the notes store, the tag vocabulary and the revision beside the
 # Markup components, and a region's outline rules and area (MarkupRegionOutline,
-# MarkupRegionArea, and the footprints as rings for the area boolean its display draws,
-# MarkupRegionBoolean, over SplineGeometry's CombineAreas and BuildAreaGround).
-# Editor-authored data; a game export strips the components
+# MarkupRegionArea). Editor-authored data; a game export strips the components
 # (Engine/Build/SceneExportStrip.h).
 add_library(MarkupECS OBJECT
     Source/MarkupComponentInstantiations.cpp

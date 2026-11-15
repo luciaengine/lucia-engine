@@ -181,14 +181,14 @@ protected:
         {
             Deferred.Drain();
             Manager->GetDispatcher()->Drain();
-            auto* status = dynamic_cast<GameEngine::Label*>(Panel->FindById("Status"));
+            auto* status = dynamic_cast<GameEngine::Label*>(Panel->FindById(GameEngine::HashStringId("Status")));
             if (status && status->GetText().starts_with("0 keys")) return;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         FAIL() << "the staged localization panel never finished binding";
     }
     void TearDown() override { Manager.reset(); Deferred.Drain(); }
-    template<typename T> T* Find(const char* id) { return dynamic_cast<T*>(Panel->FindById(id)); }
+    template<typename T> T* Find(const char* id) { return dynamic_cast<T*>(Panel->FindById(GameEngine::HashStringId(id))); }
     void Click(const char* id)
     {
         auto* button = Find<GameEngine::Button>(id);

@@ -20,7 +20,9 @@ public:
     // Record grid draw commands into the current gizmo overlay pass.
     // Call exactly once per frame, inside the gizmo overlay execute lambda.
     // gridColor is ARGB packed; only the rgb channels reach the shader (the
-    // axis lines keep their hardcoded conventional colors).
+    // axis lines keep their hardcoded conventional colors). cells2D is the 2D
+    // mode's authored cell grid in world units: origin x, origin y, cell width,
+    // cell height; a width <= 0 keeps the zoom-based decades.
     //
     // Pipeline variant resolved through the RenderGraph pass context (format key from
     // the pass's declared attachments — no sample-count member cache needed;
@@ -32,7 +34,8 @@ public:
                    float camDistance,
                    float viewportH,
                    float gridOpacity,
-                   uint32_t gridColor);
+                   uint32_t gridColor,
+                   const float cells2D[4]);
 };
 
 } // namespace GameEngine

@@ -19,6 +19,8 @@
 #include "Assets/AssetManager.h"
 #include "AssetCore/AssetEvents.h"
 
+#include "TestTempDir.h"
+
 #include <gtest/gtest.h>
 #include <chrono>
 #include <filesystem>
@@ -32,11 +34,17 @@ using namespace GameEngine::Rendering;
 namespace
 {
 
+// One directory per process for the loose .css/.uxml files; it lives until exit because asset
+// managers and hot reload read the files after the helpers return.
+static const std::filesystem::path& HotReloadTestDirectory()
+{
+    static const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("ui_hot_reload_tests")};
+    return directory.Path();
+}
+
 static std::filesystem::path MakeTempCss(const char* name, const char* contents)
 {
-    auto dir = std::filesystem::temp_directory_path() / "ui_hot_reload_tests";
-    std::filesystem::create_directories(dir);
-    auto path = dir / name;
+    auto path = HotReloadTestDirectory() / name;
     std::ofstream f(path);
     f << contents;
     return path;
@@ -44,9 +52,7 @@ static std::filesystem::path MakeTempCss(const char* name, const char* contents)
 
 static std::filesystem::path MakeTempUxml(const char* name, const char* contents)
 {
-    auto dir = std::filesystem::temp_directory_path() / "ui_hot_reload_tests";
-    std::filesystem::create_directories(dir);
-    auto path = dir / name;
+    auto path = HotReloadTestDirectory() / name;
     std::ofstream f(path);
     f << contents;
     return path;
@@ -98,8 +104,8 @@ TEST(UIHotReloadTests, ImportGraphTraversal_NoCrash)
 	ui.SetRoot(std::move(root));
 
 	// Set up a small AssetManager rooted at a temp dir so UIStyleAsset can resolve imports.
-	auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets";
-	std::filesystem::create_directories(assetRoot);
+	const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets"));
+	auto assetRoot = assetDirectory.Path();
 
 	JobSystem::WorkStealingThreadPool pool(2);
 	AssetManager assets;
@@ -161,8 +167,8 @@ TEST(UIHotReloadTests, AssetSaveReloadsStyleAndAppliesOnNextUpdate)
     UIRegistration::RegisterBuiltInControls();
 
     // Set up a small AssetManager rooted at a temp dir so UIStyleAsset can resolve.
-    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_modified";
-    std::filesystem::create_directories(assetRoot);
+    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_modified"));
+    auto assetRoot = assetDirectory.Path();
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -538,8 +544,8 @@ TEST(UIHotReloadTests, AssetReloadedEventAppliesStyleOnNextUpdate)
     UIRegistration::RegisterBuiltInControls();
 
     // Set up a small AssetManager rooted at a temp dir so UIStyleAsset can resolve.
-    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_reloaded";
-    std::filesystem::create_directories(assetRoot);
+    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_reloaded"));
+    auto assetRoot = assetDirectory.Path();
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -596,8 +602,8 @@ TEST(UIHotReloadTests, ImportedLeaf_ModifiedUpdatesMountedSubtreeNextUpdate)
     UIRegistration::RegisterBuiltInControls();
 
     // Set up a small AssetManager rooted at a temp dir so UIStyleAsset can resolve imports.
-    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_import_leaf";
-    std::filesystem::create_directories(assetRoot);
+    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_import_leaf"));
+    auto assetRoot = assetDirectory.Path();
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -678,7 +684,7 @@ TEST(UIHotReloadTests, ImportedLeaf_ModifiedStillPropagatesAfterProjectRebind)
     UIRegistration::RegisterBuiltInControls();
 
     namespace fs = std::filesystem;
-    const fs::path root = fs::temp_directory_path() / "ui_hot_reload_assets_import_rebind";
+    const fs::path root = TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_import_rebind");
     std::error_code ec;
     fs::remove_all(root, ec);
     fs::create_directories(root / "ProjectA" / "Assets" / "UI" / "theme", ec);
@@ -802,8 +808,8 @@ TEST(UIHotReloadTests, AssetModifiedEventReloadsLayoutAndReconcilesOnNextUpdate)
     UIRegistration::RegisterBuiltInControls();
 
     // Set up a small AssetManager rooted at a temp dir so UILayoutAsset can resolve.
-    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_layout_modified";
-    std::filesystem::create_directories(assetRoot);
+    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_layout_modified"));
+    auto assetRoot = assetDirectory.Path();
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -904,8 +910,8 @@ TEST(UIHotReloadTests, TextureAssetReloadedEvictsBackgroundCache)
 
     UIRegistration::RegisterBuiltInControls();
 
-    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_texture";
-    std::filesystem::create_directories(assetRoot);
+    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_texture"));
+    auto assetRoot = assetDirectory.Path();
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -957,8 +963,8 @@ TEST(UIHotReloadTests, TextureAssetModifiedEvictsBackgroundCache)
 
     UIRegistration::RegisterBuiltInControls();
 
-    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_texture_modified";
-    std::filesystem::create_directories(assetRoot);
+    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_texture_modified"));
+    auto assetRoot = assetDirectory.Path();
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -1006,8 +1012,8 @@ TEST(UIHotReloadTests, FontAssetReloadedEvictsFontAtlasMapping)
 
     UIRegistration::RegisterBuiltInControls();
 
-    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_font";
-    std::filesystem::create_directories(assetRoot);
+    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_font"));
+    auto assetRoot = assetDirectory.Path();
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -1056,7 +1062,8 @@ TEST(UIHotReloadTests, LateLoadingImportRebuildsImporterCascade)
 
     UIRegistration::RegisterBuiltInControls();
 
-    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_late_import";
+    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_late_import"));
+    auto assetRoot = assetDirectory.Path();
     std::error_code ec;
     std::filesystem::remove_all(assetRoot, ec);
     std::filesystem::create_directories(assetRoot);
@@ -1146,8 +1153,8 @@ TEST(UIHotReloadTests, FoldoutExpandedSurvivesLayoutReload)
 
     UIRegistration::RegisterBuiltInControls();
 
-    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_foldout";
-    std::filesystem::create_directories(assetRoot);
+    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_foldout"));
+    auto assetRoot = assetDirectory.Path();
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -1210,8 +1217,8 @@ TEST(UIHotReloadTests, AccordionItemExpandedSurvivesLayoutReload)
 
     UIRegistration::RegisterBuiltInControls();
 
-    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_accord";
-    std::filesystem::create_directories(assetRoot);
+    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_accord"));
+    auto assetRoot = assetDirectory.Path();
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -1271,8 +1278,8 @@ TEST(UIHotReloadTests, TextFieldValueSurvivesLayoutReload)
 
     UIRegistration::RegisterBuiltInControls();
 
-    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_textfield";
-    std::filesystem::create_directories(assetRoot);
+    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_textfield"));
+    auto assetRoot = assetDirectory.Path();
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
@@ -1353,13 +1360,13 @@ void EnsureReconcileProxyTags()
     (void)kTags;
 }
 
-// A temp root private to these arms, so a parallel run of another suite writing the shared
-// ui_hot_reload_tests directory cannot race the file rewrite these tests depend on.
+// A per-process temp directory private to these arms, so no other writer of loose test files
+// can race the file rewrite these tests depend on. It lives until exit because the asset
+// managers read the files after this helper returns.
 std::filesystem::path MakeTagIdentityUxml(const char* name, const char* contents)
 {
-    auto dir = std::filesystem::temp_directory_path() / "ui_tag_identity_tests";
-    std::filesystem::create_directories(dir);
-    auto path = dir / name;
+    static const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("ui_tag_identity_tests")};
+    auto path = directory.Path() / name;
     std::ofstream f(path);
     f << contents;
     return path;
@@ -1377,8 +1384,8 @@ TEST(UIHotReloadTests, ReconcileReplacesWhenOnlyTheTagDiffers)
     UIRegistration::RegisterBuiltInControls();
     EnsureReconcileProxyTags();
 
-    auto assetRoot = std::filesystem::temp_directory_path() / "ui_tag_identity_replace_assets";
-    std::filesystem::create_directories(assetRoot);
+    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_tag_identity_replace_assets"));
+    auto assetRoot = assetDirectory.Path();
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(assetRoot, &pool));
@@ -1441,8 +1448,8 @@ TEST(UIHotReloadTests, ReconcilePreservesAnElementWhoseTagIsUnchanged)
     UIRegistration::RegisterBuiltInControls();
     EnsureReconcileProxyTags();
 
-    auto assetRoot = std::filesystem::temp_directory_path() / "ui_tag_identity_preserve_assets";
-    std::filesystem::create_directories(assetRoot);
+    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_tag_identity_preserve_assets"));
+    auto assetRoot = assetDirectory.Path();
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(assetRoot, &pool));
@@ -1712,8 +1719,8 @@ TEST(UIHotReloadTests, MidWriteSaveNeverCostsTheSubtreeItsStyle)
     UiRgHarness rg(dev.get());
     UIRegistration::RegisterBuiltInControls();
 
-    auto assetRoot = std::filesystem::temp_directory_path() / "ui_hot_reload_assets_midwrite";
-    std::filesystem::create_directories(assetRoot);
+    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_assets_midwrite"));
+    auto assetRoot = assetDirectory.Path();
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;

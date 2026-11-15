@@ -24,6 +24,7 @@
 #include "PhysicsECS/Components/CharacterController.h"
 #include "PhysicsECS/Components/PhysicsBody.h"
 #include "PhysicsECS/PhysicsWorldService.h"
+#include "PhysicsECS/Systems/PhysicsWorldHooks.h"
 
 namespace GameEngine::Editor
 {
@@ -359,9 +360,9 @@ class DeleteEntitiesCommand final : public IEditorCommand
     // then scrubs the snapshot so Undo revives an entity that owns nothing and
     // PhysicsInitSystem provisions it fresh — the state a scene load produces.
     //
-    // Both halves are gated on the physics world agreeing the handle is live, so
-    // this is a no-op outside Play (no world), for an entity whose body was
-    // already freed by its owning system, and for one that never had a body.
+    // ReleasePhysicsBody frees nothing outside Play (no world), and the backend's
+    // generation check makes it a no-op for a body already freed by its owning
+    // system or for one that never had a body.
     void ReleaseSnapshotPhysicsBodies()
     {
         auto* physicsWorld = PhysicsECS::PhysicsWorldService::TryGet();
@@ -373,18 +374,8 @@ class DeleteEntitiesCommand final : public IEditorCommand
 
             if (auto* live = m_World->GetComponentForWrite<Components::PhysicsBody>(snap.entity))
             {
-                if (physicsWorld && live->initialized)
-                {
-                    if (physicsWorld->IsBodyValid(live->body))
-                        physicsWorld->DestroyBody(live->body);
-                    if (physicsWorld->IsShapeValid(live->shape))
-                        physicsWorld->DestroyShape(live->shape);
-                    for (std::uint16_t i = 0; i < live->childShapeCount; ++i)
-                    {
-                        if (physicsWorld->IsShapeValid(live->childShapes[i]))
-                            physicsWorld->DestroyShape(live->childShapes[i]);
-                    }
-                }
+                if (live->initialized)
+                    PhysicsECS::ReleasePhysicsBody(*live);
 
                 // The entity outlives this call by the rest of the destroy loop,
                 // so it must not be left naming freed handles.

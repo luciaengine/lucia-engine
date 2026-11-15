@@ -2,20 +2,16 @@
 
 #include "Ocean/OceanFrameStamp.h"
 
+#include "Engine/Rendering/MirrorCaptureView.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
-#include "Engine/Rendering/RenderOrigin.h"
+#include "Engine/Rendering/PlanarReflectionMath.h"
 #include "Engine/Rendering/RenderServices.h"
 
-#include "Mathematics/Matrix4x4.h"
-#include "Mathematics/MatrixOps.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Core/ReverseZ.h"
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
-#include <glm/gtc/matrix_access.hpp>
 
 namespace GameEngine::Ocean
 {
@@ -25,8 +21,6 @@ namespace RG = ::GameEngine::Rendering::RenderGraph;
 
 namespace
 {
-using GameEngine::Mathematics::Matrix4x4;
-using GameEngine::Mathematics::Vector4;
 
 // Scaled reflection colour: HDR so reflected highlights survive the Fresnel
 // blend, with alpha as coverage (0 where nothing drew -> sky-dome fallback).
@@ -34,58 +28,6 @@ constexpr TextureFormat kReflectionColorFormat = TextureFormat::R16G16B16A16_FLO
 
 constexpr float kReflectionClipBiasMeters = 0.02f;
 
-float SignNonZero(float value)
-{
-    return (value >= 0.0f) ? 1.0f : -1.0f;
-}
-
-Matrix4x4 MakeReverseZObliqueProjection(const Matrix4x4& projection,
-                                        const Matrix4x4& view,
-                                        float seaLevel)
-{
-    using GameEngine::Mathematics::Inverse;
-    using GameEngine::Mathematics::Transpose;
-
-    // Keep only geometry that was above the original water plane. The reflection
-    // view contains a mirror in its view matrix, so transforming this world plane
-    // into that view space gives a down-facing plane; points that were above the
-    // sea still evaluate positive after the mirrored view transform.
-    const float clipY = seaLevel + kReflectionClipBiasMeters;
-    const Vector4 worldClipPlane(0.0f, 1.0f, 0.0f, -clipY);
-    Vector4 viewClipPlane = Transpose(Inverse(view)).Transform(worldClipPlane);
-
-    const float planeLenSq =
-        viewClipPlane.x * viewClipPlane.x + viewClipPlane.y * viewClipPlane.y +
-        viewClipPlane.z * viewClipPlane.z;
-    if (planeLenSq <= 1e-8f)
-        return projection;
-
-    Matrix4x4 oblique = projection;
-    const glm::mat4& p = projection.GetGLM();
-    const glm::vec4 row3 = glm::row(p, 3);
-
-    // Reverse-Z, depth [0,1]: near is (row3 - row2), far is row2. Replace the
-    // near plane with the sea clip plane while keeping the opposite far corner on
-    // the far plane. This is the D3D/Vulkan reverse-Z variant of oblique near-
-    // plane clipping; the usual OpenGL row replacement is not correct here.
-    const glm::vec4 qClip(SignNonZero(viewClipPlane.x), SignNonZero(viewClipPlane.y),
-                          0.0f, 1.0f);
-    const glm::vec4 qView = Inverse(projection).GetGLM() * qClip;
-    const glm::vec4 plane(viewClipPlane.x, viewClipPlane.y, viewClipPlane.z,
-                          viewClipPlane.w);
-    const float denom = glm::dot(plane, qView);
-    if (std::fabs(denom) <= 1e-6f)
-        return projection;
-
-    const glm::vec4 scaledPlane = plane * (glm::dot(row3, qView) / denom);
-    const glm::vec4 newRow2 = row3 - scaledPlane;
-    oblique[0][2] = newRow2.x;
-    oblique[1][2] = newRow2.y;
-    oblique[2][2] = newRow2.z;
-    oblique[3][2] = newRow2.w;
-
-    return oblique;
-}
 } // namespace
 
 OceanPlanarReflection::~OceanPlanarReflection()
@@ -108,12 +50,7 @@ void OceanPlanarReflection::ReleaseMirror(Mirror& mirror)
     mirror.ColorTexture = {};
     if (!m_RenderServices)
         return;
-    if (mirror.ViewId != 0)
-        m_RenderServices->Views().ReleaseView(mirror.ViewId);
-    if (mirror.CameraId != 0)
-        m_RenderServices->Views().ReleaseCamera(mirror.CameraId);
-    mirror.ViewId = 0;
-    mirror.CameraId = 0;
+    Engine::Renderer::ReleaseMirrorCaptureView(*m_RenderServices, mirror.Capture);
 }
 
 void OceanPlanarReflection::ReleaseIdleMirrors(std::chrono::steady_clock::time_point declarerPrevious)
@@ -137,58 +74,9 @@ bool OceanPlanarReflection::IsReflectionView(ViewId viewId) const
     if (viewId == 0)
         return false;
     for (const auto& [mainViewId, mirror] : m_MirrorsByView)
-        if (mirror->ViewId == viewId)
+        if (mirror->Capture.View == viewId)
             return true;
     return false;
-}
-
-CameraData OceanPlanarReflection::MakeMirroredCamera(const CameraData& main, float seaLevel)
-{
-    using GameEngine::Mathematics::Matrix4x4;
-
-    // Rebuild the main view matrix (column-major, matches Matrix4x4/glm storage).
-    Matrix4x4 viewM = main.view;
-    Matrix4x4 projM = main.proj;
-
-    // Householder reflection across the plane y = seaLevel: (x, y, z) -> (x,
-    // 2*sea - y, z). Column-major, column-vector convention (M * p): column 1's
-    // y component negates, column 3 carries the +2*sea translation.
-    Matrix4x4 mirror; // identity
-    mirror[1][1] = -1.0f;
-    mirror[3][1] = 2.0f * seaLevel;
-
-    // Reflect the world, THEN view it with the main camera: view' = view * mirror.
-    const Matrix4x4 reflView = viewM * mirror;
-    const Matrix4x4 reflProj = MakeReverseZObliqueProjection(projM, reflView, seaLevel);
-    const Matrix4x4 reflViewProj = reflProj * reflView;
-
-    CameraData out{};
-    out.view = reflView;
-    out.proj = reflProj;
-    out.viewProj = reflViewProj;
-    out.cameraPos.w = main.cameraPos.w;
-    const Mathematics::WorldPosition mainEye = Engine::Renderer::CameraEye(main);
-    Engine::Renderer::SetCameraEye(
-        out, Mathematics::WorldPosition{mainEye.X, 2.0 * static_cast<float64>(seaLevel) - mainEye.Y, mainEye.Z});
-    return out;
-}
-
-void OceanPlanarReflection::EnsureView(Engine::Renderer::RenderServices& rs, Mirror& mirror,
-                                       RenderLayerMask renderLayerMask, uint64_t worldId)
-{
-    if (mirror.ViewId != 0)
-        return;
-    mirror.CameraId = rs.Views().AllocateCamera(mirror.Name.c_str());
-    mirror.ViewId = rs.Views().AllocateView(mirror.Name.c_str(), mirror.CameraId, ViewPurpose::UtilityCapture,
-                                            ViewParticipation::OnDemand);
-    // Skip the active pipeline (we drive the world pass ourselves), but keep the
-    // main view's mask + world so extraction still feeds the scene to this view.
-    rs.Views().SetViewActiveRenderPipeline(mirror.ViewId, false);
-    rs.Views().SetViewRenderLayerMask(mirror.ViewId, renderLayerMask);
-    rs.Views().SetViewWorldId(mirror.ViewId, worldId);
-    // Mirror matrix flips winding -> flip the world-pass viewport Y to keep the
-    // baked front face correct (the surface flips V on sample to compensate).
-    rs.Views().SetViewWorldPassFlipY(mirror.ViewId, true);
 }
 
 bool OceanPlanarReflection::EnsureColorTexture(IDevice& device, Mirror& mirror, uint32_t width,
@@ -255,14 +143,12 @@ bool OceanPlanarReflection::DeclareForView(Engine::Renderer::Pipeline::ViewDecla
 
     // Copies, not references: d.View may be an element of the view registry's
     // view vector and FindCameraData points into its camera vector. The sweep's
-    // releases erase from both and the first frame's EnsureView pushes to both,
-    // so nothing read after the sweep may come from a reference taken before it.
-    const CameraId mainCameraId = d.View.cameraId;
-    const RenderLayerMask renderLayerMask = d.View.renderLayerMask;
-    const uint64_t worldId = d.View.worldId;
+    // releases erase from both, so nothing read after the sweep may come from a
+    // reference taken before it.
+    const ViewDesc mainView = d.View;
     ReleaseIdleMirrors(previousDeclare);
 
-    const CameraData* mainCamData = rs.Views().FindCameraData(mainCameraId);
+    const CameraData* mainCamData = rs.Views().FindCameraData(mainView.cameraId);
     if (!mainCamData)
         return false;
     const CameraData mainCam = *mainCamData;
@@ -271,16 +157,15 @@ bool OceanPlanarReflection::DeclareForView(Engine::Renderer::Pipeline::ViewDecla
     if (mainCam.proj[0][0] == 0.0f && mainCam.proj[1][1] == 0.0f)
         return false;
 
-    EnsureView(rs, mirror, renderLayerMask, worldId);
-    if (mirror.ViewId == 0)
+    // Two-sided: an underwater camera keeps the above-water clip.
+    CameraData reflected{};
+    if (!Engine::Renderer::MakeMirrorCaptureCamera(mainCam, glm::vec4(0.0f, 1.0f, 0.0f, -seaLevel),
+                                                   kReflectionClipBiasMeters, false, reflected))
         return false;
-
-    // OnDemand view: request extraction for as long as the mirror is active;
-    // when reflections turn off (or the ocean goes away) the request lapses
-    // and the view stops costing extraction/culling entirely. The first frame
-    // after an idle stretch has no submissions yet — the bucketer declines and
-    // the surface falls back to the sky dome, same as the first-ever frame.
-    rs.Views().RequestViewFrame(mirror.ViewId);
+    // The shared capture view requests extraction while the mirror is active; when
+    // reflections turn off the request lapses and the view stops costing extraction.
+    // A refused bucketer or a stale extraction declines: the surface uses the sky dome.
+    Engine::Renderer::UpdateMirrorCaptureView(rs, mainView, reflected, 0xFFFFFFFFu, mirror.Capture);
 
     const float scale = std::clamp(std::isfinite(resolutionScale) ? resolutionScale : 0.5f,
                                    0.125f, 1.0f);
@@ -291,34 +176,9 @@ bool OceanPlanarReflection::DeclareForView(Engine::Renderer::Pipeline::ViewDecla
     if (!EnsureColorTexture(*device, mirror, w, h))
         return false;
 
-    // Mirror the main camera across the sea plane. Set BEFORE building the draw
-    // stream so frustum culling + the world pass camera UBO use the mirror.
-    rs.Views().SetCameraData(mirror.CameraId, MakeMirroredCamera(mainCam, seaLevel),
-                             rs.Views().FindCameraRanges(mainCameraId));
-
-    // Track the main view's mask/world each frame (cheap; covers a main-view
-    // reconfigure). These persist on the view for next frame's extraction.
-    rs.Views().SetViewRenderLayerMask(mirror.ViewId, renderLayerMask);
-    rs.Views().SetViewWorldId(mirror.ViewId, worldId);
-
-    // Build the secondary view's draw stream, then schedule its bucketer twin —
-    // the same ordering the editor thumbnail path uses (lights -> batch keys ->
-    // bucketer, all before AddWorldPassForView). A bucketer refusal means the
-    // GPU-driven spine isn't stamped on this frame incarnation: decline cleanly
-    // (sky-dome fallback) rather than render a stale/blank reflection.
-    rs.WriteViewLightBuffer(mirror.ViewId);
-    rs.BuildWorldBatchKeysForView(mirror.ViewId);
-    if (!rs.ScheduleBucketerDispatchesForView(d.Frame, mirror.ViewId))
+    // The texture exists before the prepare step, so a declined first frame still leaves it bound.
+    if (!Engine::Renderer::PrepareMirrorCaptureView(d, mirror.Capture))
         return false;
-
-    // Clear config on the ViewDesc — AddWorldPassForView reads it at declaration.
-    // Transparent background (alpha 0 = no reflected geometry), reverse-Z far.
-    Rendering::ViewClearConfig clear{};
-    clear.clearColor = true;
-    clear.clearColorValue = ColorLinear(0.0f, 0.0f, 0.0f, 0.0f);
-    clear.clearDepth = true;
-    clear.clearDepthValue = Rendering::ReverseZ::kClearFar;
-    rs.Views().SetViewClearConfig(mirror.ViewId, clear);
 
     // Targets: the feature-owned colour (imported external, so the contributor can
     // bind it descriptor-direct on the surface draw) + a pooled depth (graph-
@@ -342,29 +202,7 @@ bool OceanPlanarReflection::DeclareForView(Engine::Renderer::Pipeline::ViewDecla
     if (!color.IsValid() || !depth.IsValid())
         return false;
 
-    // Emit forward-contributor producers (terrain, ocean surface, …) for this view so
-    // they draw into the reflection world pass. Regular meshes already reflect via the
-    // GPU-driven bucketer stream set up above; terrain is a FORWARD CONTRIBUTOR whose
-    // per-view emit is otherwise only triggered by its own pipeline node — which is
-    // skipped here (the reflection view runs no active pipeline). Without this, terrain
-    // is absent from the mirror. The ocean surface self-skips the reflection view, so
-    // it isn't double-drawn. (Terrain CDLOD patch selection for this view still happens
-    // in the terrain node; if distant terrain LOD looks off in the mirror, the terrain
-    // node needs a per-view select for the reflection camera too.)
-    rs.EmitProducerForwardCommandsForView(mirror.ViewId);
-
-    Engine::Renderer::RenderServices::WorldPassTargetsRG targets{};
-    targets.Color = color;
-    targets.Depth = depth;
-    // Instanced only (no Shadows): the reflection view is inactive, so no cascade
-    // pass ran for it — a Shadows keyword would just bind the dummy array. Matches
-    // the thumbnail path. Reflections are sun/sky/ambient lit without self-shadow.
-    // The reflection view runs no render graph, so it binds the fallback ExposureHistory (pre-exposure
-    // reads as 1): the reflection stores absolute radiance, and the water surface that samples it
-    // applies the main view's P to its output.
-    const auto world =
-        rs.AddWorldPassForView(d.Frame, mirror.ViewId, targets, Rendering::MaterialKeyword::Instanced);
-    if (!world.Pass.IsValid())
+    if (!Engine::Renderer::DeclareMirrorCaptureWorld(d, mirror.Capture, color, depth))
         return false;
 
     // The same-frame consumer (OceanSurface) declares its Sampled read via

@@ -1,5 +1,6 @@
 #include "Scripting/CoreCLRHost.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include <algorithm>
 #include <chrono>
 #include <mutex>
@@ -1015,7 +1016,7 @@ int32 CoreCLRHost::InvokeInDomain(uint64 domain, const char* methodNameUtf8, uin
     using invoke_fn = int32 (CORECLR_DELEGATE_CALLTYPE*)(uint64, void*, uint32, int32*);
 
     // Optional diagnostics: dump HRM state only if GE_DUMP_HRM=1
-    if (std::getenv("GE_DUMP_HRM") && std::strcmp(std::getenv("GE_DUMP_HRM"), "0") != 0)
+    if (Platform::EnvironmentSwitchEnabled("GE_DUMP_HRM", false))
     {
         using dump_fn = int32 (CORECLR_DELEGATE_CALLTYPE*)();
         if (void* tmpDump = GetCoreBridgeExport(GE_HOST_STR("DebugDumpHotReloadState")))

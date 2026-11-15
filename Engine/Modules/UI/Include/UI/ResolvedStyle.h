@@ -200,7 +200,7 @@ struct VisualStyle
     // accent on :root.
     uint32_t SelectionColor = 0xFF3A8FFFu;
 
-    // Effects (for future SDF renderer — Phase 6 enables via CSS)
+    // Effects (CSS `box-shadow` and `glow`)
     float GlowRadius = 0.0f;
     uint32_t GlowColor = 0x00000000u;
     float ShadowOffsetX = 0.0f;

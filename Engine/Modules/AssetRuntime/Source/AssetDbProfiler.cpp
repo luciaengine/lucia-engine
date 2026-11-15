@@ -1,6 +1,7 @@
 #include "Assets/AssetDbProfiler.h"
 
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 
 #include <array>
 #include <cstdlib>
@@ -70,8 +71,7 @@ bool IsEnabled()
     int8_t state = g_EnabledState.load(std::memory_order_relaxed);
     if (state < 0)
     {
-        const char* v = std::getenv("GE_ASSET_DB_PROFILE");
-        bool on = v && v[0] != '\0' && !(v[0] == '0' && v[1] == '\0');
+        const bool on = Platform::EnvironmentSwitchEnabled("GE_ASSET_DB_PROFILE", false);
         g_EnabledState.store(on ? 1 : 0, std::memory_order_relaxed);
         state = on ? 1 : 0;
     }

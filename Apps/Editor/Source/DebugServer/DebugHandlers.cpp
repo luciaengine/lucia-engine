@@ -56,6 +56,7 @@
 #include "DebugServer/LogQueryReport.h"
 #include "DebugServer/NavigationDebugHandlers.h"
 #include "DebugServer/MarkupDebugHandlers.h"
+#include "DebugServer/TileMapDebugHandlers.h"
 #include "DebugServer/MemoryDebugHandlers.h"
 #include "DebugServer/PerformDropRequest.h"
 #include "DebugServer/ScrollSequence.h"
@@ -3283,6 +3284,7 @@ void RegisterDebugHandlers(EditorDebugServer& server,
 
     // 4e3b. world mark-ups: the agent's side of the visual conversation
     RegisterMarkupDebugHandlers(server, app);
+    RegisterTileMapDebugHandlers(server, app);
 
     // 4e4. folder thumbnail bakes (the Assets panel's Generate Thumbnails)
     RegisterThumbnailDebugHandlers(server, app.m_ThumbnailProvider);

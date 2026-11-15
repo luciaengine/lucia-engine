@@ -5,10 +5,11 @@
 
 // Shared by forward IBL and the screen-space reflection replacement estimate.
 // Explicit samplers keep the two-probe tier independent of descriptor indexing.
-layout(set = 0, binding = 51) uniform samplerCube ge_localIrradiance0;
-layout(set = 0, binding = 52) uniform samplerCube ge_localPrefilter0;
-layout(set = 0, binding = 53) uniform samplerCube ge_localIrradiance1;
-layout(set = 0, binding = 54) uniform samplerCube ge_localPrefilter1;
+// Slots 62 to 65: the shadow map, the fogs and the virtual shadows use set 0 up to 61.
+layout(set = 0, binding = 62) uniform samplerCube ge_localIrradiance0;
+layout(set = 0, binding = 63) uniform samplerCube ge_localPrefilter0;
+layout(set = 0, binding = 64) uniform samplerCube ge_localIrradiance1;
+layout(set = 0, binding = 65) uniform samplerCube ge_localPrefilter1;
 
 vec3 GE_ProbeLocalPosition(GE_LocalProbeData probe, vec3 positionWS)
 {

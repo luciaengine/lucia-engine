@@ -196,6 +196,7 @@ add_executable(RetargetNodeTests
 )
 target_compile_features(RetargetNodeTests PUBLIC cxx_std_20)
 target_link_libraries(RetargetNodeTests PRIVATE GTest::gtest GTest::gtest_main Animation AssetCore Logger GenerationalVector)
+target_include_directories(RetargetNodeTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 ge_set_output_tests(RetargetNodeTests)
 ge_stage_runtime_dependencies(RetargetNodeTests)
 gtest_discover_tests(RetargetNodeTests)

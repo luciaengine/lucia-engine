@@ -40,6 +40,8 @@
 #include "Components/UI/UIDocument.h"
 #include "UI/Registration/ElementRegistration.h"
 
+#include "TestTempDir.h"
+
 using namespace GameEngine;
 
 namespace
@@ -109,7 +111,8 @@ Button* MountHoveredButton(UIManager& ui, const char* cssName)
     root->AddChild(std::move(btnOwned));
     ui.SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / cssName;
+    static const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("gameui_host_keyboard")};
+    const auto css = directory.Path() / cssName;
     {
         std::ofstream out(css);
         out << R"(
@@ -340,9 +343,9 @@ TEST(GameUIHostKeyboardTests, FocusDoesNotSurviveTheDocumentThatHeldIt)
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_focus_lifetime"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto dir = std::filesystem::temp_directory_path() / "gameui_host_focus_lifetime";
-    std::filesystem::create_directories(dir);
+    const auto dir = tempDir.Path();
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(dir, &pool));
     const GUID layout = RegisterHudLayout(assets, dir);
@@ -385,9 +388,9 @@ TEST(GameUIHostKeyboardTests, FocusDoesNotSurviveTheEntityThatCarriedTheDocument
         GTEST_SKIP() << "Device init failed";
     UIRegistration::RegisterBuiltInControls();
 
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("gameui_host_focus_entity_destroyed"));
     JobSystem::WorkStealingThreadPool pool(2);
-    const auto dir = std::filesystem::temp_directory_path() / "gameui_host_focus_entity_destroyed";
-    std::filesystem::create_directories(dir);
+    const auto dir = tempDir.Path();
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(dir, &pool));
     const GUID layout = RegisterHudLayout(assets, dir);

@@ -41,7 +41,7 @@ std::string JoinNames(const std::vector<std::string>& names)
 
 std::filesystem::path AssistantAttachment::StagedServerScript()
 {
-    return ApplicationPaths::GetExecutableDirectory() / "mcp" / "dist" / "index.js";
+    return ApplicationPaths::InstallContentRootFor(ApplicationPaths::GetExecutableDirectory()) / "mcp" / "dist" / "index.js";
 }
 
 std::string AssistantAttachment::Unavailable()
@@ -51,7 +51,7 @@ std::string AssistantAttachment::Unavailable()
                "editor, or start it with a free --debug-port.";
     std::error_code error;
     if (!std::filesystem::exists(StagedServerScript(), error))
-        return "The editor's MCP server is not staged beside the editor: build the McpServer target.";
+        return "The editor's MCP server is not staged: build the McpServer target.";
     return {};
 }
 

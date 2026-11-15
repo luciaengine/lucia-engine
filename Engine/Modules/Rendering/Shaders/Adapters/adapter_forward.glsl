@@ -921,6 +921,9 @@ void main()
 #ifdef GE_RECEIVE_SHADOWS_DECLARED
     ge_ReceiveShadows = ((vInstanceFlags & 2u) != 0u) ? 1.0 : 0.0;
 #endif
+#ifdef GE_USER_CUSTOM_LIGHTING
+    ge_SurfaceReceivesShadows = (vInstanceFlags & 2u) != 0u;
+#endif
 
     // --- Evaluate lighting ---
 
@@ -957,6 +960,7 @@ void main()
     // The surface's own relief shadows the primary light as its cascade shadow does.
     shadowFactor *= so.primaryLightOcclusion;
     #endif
+    shadowFactor = GE_SurfaceDirectionalVisibility(shadowFactor, (Cam.uVRel * vec4(vPosRel, 1.0)).z, L);
     // Subsurface transmission added outside shadowFactor/shadowTint so back-lit thin objects glow through.
     finalColor = GE_EvaluateSurfaceLight(so, V, L)
                  * Light.uLightColorWorld.rgb * Light.uLightDirWorld.w * shadowFactor * shadowTint
@@ -1073,7 +1077,8 @@ void main()
       #endif
     #endif
   #else
-    finalColor += so.baseColor * so.ao * Light.uAmbient.xyz * Light.uAmbient.w * ambientMultiplier;
+    finalColor += so.baseColor * so.ao * ambientMultiplier *
+        GE_SurfaceDiffuseIrradiance(vec3(0.0), Light.uAmbient.xyz * Light.uAmbient.w);
   #endif
 #endif
 

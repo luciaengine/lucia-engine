@@ -16,6 +16,7 @@ layout(push_constant) uniform PC {
     float uCamDistance;   // ortho visible height in world units
     float uViewportH;    // viewport height in pixels
     float _pad0;
+    vec4 uCells;         // xy = cell origin, zw = cell size in world units; z <= 0 = no authored cells
 } pc;
 
 layout(location = 0) out vec4 oColor;
@@ -23,6 +24,16 @@ layout(location = 0) out vec4 oColor;
 float GridLine(vec2 coord, float cellSize)
 {
     vec2 grid = coord / cellSize;
+    vec2 d = abs(fract(grid - 0.5) - 0.5);
+    vec2 ddx = fwidth(grid);
+    vec2 line = 1.0 - smoothstep(vec2(0.0), ddx * 1.5, d);
+    return max(line.x, line.y);
+}
+
+// Lines of an authored cell grid: one line per cell edge from `origin`.
+float CellLine(vec2 coord, vec2 origin, vec2 cell)
+{
+    vec2 grid = (coord - origin) / cell;
     vec2 d = abs(fract(grid - 0.5) - 0.5);
     vec2 ddx = fwidth(grid);
     vec2 line = 1.0 - smoothstep(vec2(0.0), ddx * 1.5, d);
@@ -81,6 +92,16 @@ void main()
     float fineFade = 1.0 - smoothstep(0.3, 0.9, abs(logRatio));
     float grid = coarseGrid + fineGrid * fineFade;
     grid = clamp(grid, 0.0, 1.0);
+
+    // Authored cells replace the zoom decades while a cell is at least 8 px tall
+    // and wide; below 4 px the decades come back, so the lines never turn to noise.
+    if (pc.uCells.z > 0.0 && pc.uCells.w > 0.0)
+    {
+        float pixelsPerUnit = pc.uViewportH / max(pc.uCamDistance, 1e-6);
+        float cellPx = min(pc.uCells.z, pc.uCells.w) * pixelsPerUnit;
+        float cellGrid = CellLine(coord, pc.uCells.xy, pc.uCells.zw);
+        grid = mix(grid, cellGrid, smoothstep(4.0, 8.0, cellPx));
+    }
 
     // Axis coloring: X-axis red, Y-axis green (2D convention).
     vec2 axisDdx = fwidth(coord);

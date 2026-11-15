@@ -66,7 +66,7 @@ static ThorvgCanvasPtr MakeThorvgCanvas()
 }
 #endif
 
-static bool EnsureThorvgInitialized()
+bool EnsureSvgBackendInitializedImpl()
 {
     std::call_once(s_ThorvgInitFlag, []()
     {
@@ -92,6 +92,15 @@ static bool EnsureThorvgInitialized()
 }
 #endif
 } // namespace
+
+bool EnsureSvgBackendInitialized()
+{
+#if defined(GE_HAVE_THORVG)
+    return EnsureSvgBackendInitializedImpl();
+#else
+    return false;
+#endif
+}
 
 void SetSvgTextureRasterizerDefaultSize(float32 targetPixels)
 {
@@ -131,7 +140,7 @@ bool GetSvgSourceSize(const std::string& svgUtf8,
     (void)outHeight;
     return false;
 #else
-    if (svgUtf8.empty() || !EnsureThorvgInitialized())
+    if (svgUtf8.empty() || !EnsureSvgBackendInitialized())
         return false;
 
     ThorvgPicturePtr picture = MakeThorvgPicture();
@@ -197,7 +206,7 @@ ThorvgPicturePtr LoadSvgPicture(const std::string& svgUtf8, const char* caller, 
         Logger::Log::Error("{}: empty SVG string", caller);
         return nullptr;
     }
-    if (!EnsureThorvgInitialized())
+    if (!EnsureSvgBackendInitialized())
         return nullptr;
     ThorvgPicturePtr picture = MakeThorvgPicture();
     if (!picture)

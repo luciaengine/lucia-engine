@@ -193,7 +193,7 @@ bool WriteSteamDeckIconAndDesktop(const std::filesystem::path& packageDir,
             << "Type=Application\n"
             << "Version=1.0\n"
             << "Name=" << displayName << "\n"
-            << "Comment=Open Engine Player\n"
+            << "Comment=GameEngine Player\n"
             << "Exec=\"__INSTALL_DIR__/" << displayName << "\"\n"
             << "Path=__INSTALL_DIR__\n"
             << "Icon=__INSTALL_DIR__/icon.png\n"

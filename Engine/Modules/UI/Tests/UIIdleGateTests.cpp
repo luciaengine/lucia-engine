@@ -17,6 +17,7 @@
 #include "UI/Registration/ElementRegistration.h"
 #include "UI/UIManager.h"
 #include "UIRgTestHarness.h"
+#include "TestTempDir.h"
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -27,10 +28,10 @@ namespace
 
 std::filesystem::path MakeTempCssPath(const char* prefix)
 {
-    const auto tmpDir = std::filesystem::temp_directory_path();
+    static const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_idle_gate"));
     const uint64_t t = (uint64_t)std::chrono::high_resolution_clock::now().time_since_epoch().count();
     const uint64_t tid = (uint64_t)std::hash<std::thread::id>{}(std::this_thread::get_id());
-    return tmpDir / (std::string(prefix) + "_" + std::to_string(t) + "_" + std::to_string(tid) + ".css");
+    return tempDir.Path() / (std::string(prefix) + "_" + std::to_string(t) + "_" + std::to_string(tid) + ".css");
 }
 
 bool LastFrameWasIdle(const UIManager& ui)

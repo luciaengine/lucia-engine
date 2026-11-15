@@ -154,6 +154,8 @@ struct SurfaceOutput
     // out of the diffuse budget into a refracted environment sample; transmissionColor tints it.
     float transmissionWeight;
     vec3 transmissionColor;
+    float transmissionRefractionStrength; // thin-path screen bend scale, 0 to 0.3
+    float transmissionBlur; // thin-path blur radius in pixels, 0 to 8; 0 takes one tap
     float refractionDistance; // world units; path length for the thick (two-surface) refraction lens
 
     // Thick-glass volume absorption (Beer–Lambert). Separate from the surface transmissionColor tint:
@@ -269,6 +271,8 @@ SurfaceOutput DefaultSurfaceOutput()
     o.diffuseRoughness = 0.0;
     o.transmissionWeight = 0.0;
     o.transmissionColor = vec3(1.0);
+    o.transmissionRefractionStrength = 0.3;
+    o.transmissionBlur = 0.0;
     o.refractionDistance = 1.0;
     o.attenuationColor = vec3(1.0);  // white -> log(1)=0 -> no absorption
     o.attenuationDistance = 0.0;     // 0 -> the Beer–Lambert guard skips it
@@ -306,6 +310,23 @@ SurfaceOutput DefaultSurfaceOutput()
 #endif
     return o;
 }
+
+// Material lighting hooks. A material with the CUSTOM_LIGHTING keyword defines them (the
+// lightmap package does); every other material takes these identity forms.
+#ifdef GE_USER_CUSTOM_LIGHTING
+bool ge_SurfaceReceivesShadows = true;
+float GE_SurfaceDirectionalVisibility(float visibility, float depth, vec3 directionToLight);
+vec3 GE_SurfaceDiffuseIrradiance(vec3 environment, vec3 ambientFloor);
+#else
+float GE_SurfaceDirectionalVisibility(float visibility, float depth, vec3 directionToLight)
+{
+    return visibility;
+}
+vec3 GE_SurfaceDiffuseIrradiance(vec3 environment, vec3 ambientFloor)
+{
+    return environment + ambientFloor;
+}
+#endif
 
 SurfaceInput DefaultSurfaceInput()
 {

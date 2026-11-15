@@ -1,5 +1,6 @@
 #include "Assets/NavGridAsset.h"
 #include "AssetCore/GUID.h"
+#include "TestTempDir.h"
 
 #include <gtest/gtest.h>
 
@@ -20,7 +21,7 @@ class AssetSerializationTest : public ::testing::Test
 protected:
     void SetUp() override
     {
-        m_TempDir = std::filesystem::temp_directory_path() / "ge_nav_test";
+        m_TempDir = TestUtils::MakeUniqueTempDirectory("ge_nav_test");
         std::filesystem::create_directories(m_TempDir);
     }
 
