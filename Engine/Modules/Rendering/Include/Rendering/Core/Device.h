@@ -2162,15 +2162,9 @@ class IDevice
         return WaitTimelineSemaphoreValue(t.sem, t.value, timeoutNs);
     }
 
-    // The timeline value the most recent submit on `queue` will signal. Waiting it retires
-    // exactly the work already submitted on that queue: the scoped alternative to WaitForIdle
-    // for a caller that must not rewrite state (descriptor elements, persistent buffers) the
-    // GPU may still be reading. It makes no device-wide idleness claim, so it never reroutes
-    // deferred destruction to the immediate path. A queue that aliases another (no dedicated
-    // family) shares that queue's timeline and token.
-    // Invalid before the first submit on that queue, and on a backend that keeps no timeline
-    // for it. Both cases read as GpuSyncStatus::Unknown, so a caller that must distinguish
-    // them owns its own evidence.
+    /// The timeline value of the newest submit on `queue`; waiting it retires all work submitted there.
+    /// A queue with no dedicated family shares the token of the queue it aliases. Invalid (reads as
+    /// GpuSyncStatus::Unknown) before the first submit on that queue or without a timeline for it.
     virtual GpuSyncToken LastSubmissionToken(QueueType queue) const
     {
         (void)queue;

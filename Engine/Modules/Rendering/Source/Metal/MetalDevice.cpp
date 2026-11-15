@@ -676,10 +676,9 @@ void MetalDevice::EncodeGraphicsTimelineSignal(MTL::CommandBuffer* buffer)
 
 IDevice::GpuSyncToken MetalDevice::LastSubmissionToken(QueueType queue) const
 {
-    // Every queue family index is 0, so a frame never routes a pass off the graphics queue and
-    // every queue reports the graphics timeline. Command buffers committed directly on the
-    // compute or transfer MTL::CommandQueue do not signal it.
-    // Zero (no graphics commit yet) gives an invalid token, which reads as GpuSyncStatus::Unknown.
+    // Every family index is 0, so frames keep every pass on the graphics queue and every queue
+    // reports the graphics timeline. A direct commit on the compute or transfer queue does not
+    // signal it. Zero (no graphics commit yet) gives an invalid token.
     (void)queue;
     const uint64_t value = m_GraphicsTimelineLastSignalled.load(std::memory_order_acquire);
     if (value == 0 || !m_GraphicsTimeline.IsValid())
