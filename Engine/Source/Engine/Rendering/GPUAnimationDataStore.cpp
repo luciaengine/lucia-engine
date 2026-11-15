@@ -239,17 +239,10 @@ uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId)
 
     const uint32 nodes = skel->BoneCount;
     const uint32 bones = static_cast<uint32>(skel->JointClosure.size());
-    // FBX-imported skeletons commonly leave SkinJointCount==0 and JointNodes
-    // empty; mirror the CPU BuildPoseToSkinMatrices fallback (joint j == bone j
-    // identity, BoneCount palette entries) so the GPU shader writes a full
-    // atlas instead of zero matrices. Same behavior as the
-    // RetargetGPUDataStore fallback in commit 5a03eac6. The predicate matches
-    // PoseToSkinMatrices.cpp:84 — fall back when the populated joint table
-    // doesn't match its declared count, not just when both are zero.
-    const bool jointTableValid = (skel->SkinJointCount > 0)
-                              && (skel->JointNodes.size() == skel->SkinJointCount);
-    const bool synthesizeJoints = !jointTableValid;
-    const uint32 joints = synthesizeJoints ? nodes : skel->SkinJointCount;
+    // Without a joint table (FBX imports often have none), joint j is bone j and the
+    // palette has one matrix per bone, as on the CPU path (SkeletonData::PaletteJointCount).
+    const bool synthesizeJoints = !skel->HasJointTable();
+    const uint32 joints = skel->PaletteJointCount();
 
     // The closure bone of each skeleton node; nodes outside the closure have none.
     std::vector<uint32> boneOfNode(nodes, kNoBone);
