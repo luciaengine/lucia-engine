@@ -153,6 +153,7 @@ set(EDITOR_SOURCES
     Source/Editor/Hierarchy/HierarchyEntity/HierarchyEntityRename.cpp
     Source/Editor/Hierarchy/HierarchyReparent.cpp
     Source/Panels/InspectorPanel.cpp
+    Source/UI/PostedRefresh.cpp
     Source/Panels/AssetViewPanel.cpp
     Source/Panels/LogPanel/LogChannelPopover.cpp
     Source/Panels/LogModel.cpp
@@ -957,6 +958,7 @@ set(EDITOR_HEADERS
     Include/Panels/AddTagModal.h
     Include/Scripting/EditorScriptMenuRegistry.h
 	Include/Panels/InspectorPanel.h
+	Include/UI/PostedRefresh.h
     Include/Panels/PlayModeChangeReviewModal.h
     Include/Panels/VideoPlayerModal.h
     Include/EditorVideoPlayerController.h

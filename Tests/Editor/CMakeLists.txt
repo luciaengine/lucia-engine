@@ -77,6 +77,9 @@ set(EDITOR_TEST_SOURCES
 	# The Hierarchy sprite row preview: atlas-region and frame crops for sprite rows.
 	HierarchySpritePreviewTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/SpritePreview/SpritePreview.cpp
+	# The editor's posted refresh: once per burst, skipped after its owner is destroyed.
+	PostedRefreshTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/PostedRefresh.cpp
 	# The Physics Collider inspector's Physics Material row and its precedence over the inline rows.
 	PhysicsColliderInspectorTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/Physics/PhysicsColliderInspector.cpp
