@@ -13,6 +13,7 @@
 #include "Components/Rendering/Particles.h"
 #include "Components/Rendering/PostProcessVolume.h"
 #include "Components/Rendering/ReflectionProbe.h"
+#include "Components/Rendering/Sprite2D.h"
 #include "Components/Rendering/SkyEnvironment.h"
 #include "Components/Rendering/Skybox.h"
 #include "Components/Rendering/WindVolume.h"
@@ -208,11 +209,20 @@ std::filesystem::path TryResolveSpriteAlbedoTexturePath(ECS::World* world,
     if (!world || !assets || !handle.IsValid() || !world->IsValid(handle))
         return {};
 
+    // A Sprite2D samples its own texture, else its material's albedo.
+    const auto* sprite = world->GetComponent<Components::Sprite2D>(handle);
+    if (sprite && !sprite->Texture.IsNull())
+    {
+        AssetMetadata meta;
+        if (!assets->GetRegistry().TryGetAssetMetadata(sprite->Texture.ToGuid(), meta))
+            return {};
+        return assets->ResolveAssetPath(meta.Path);
+    }
     const auto* mr = world->GetComponent<MeshRenderer>(handle);
-    if (!mr || !IsSpriteMeshRenderer(*mr))
+    if (!sprite && (!mr || !IsSpriteMeshRenderer(*mr)))
         return {};
 
-    const GUID matGuid = MaterialGuidFromMeshRenderer(*mr);
+    const GUID matGuid = sprite ? sprite->Material.ToGuid() : MaterialGuidFromMeshRenderer(*mr);
     if (matGuid.IsNull())
         return {};
 
@@ -656,6 +666,28 @@ void ApplyTitleModelThumbnail(UIElement& titleEl, const std::string& relOrEngine
         .Set(Style::BackgroundTint, kBackgroundTintNoDim);
     ApplyModelThumbSaturationOverride(titleEl);
     titleEl.MarkDirty(UIElement::VisualDirty);
+}
+
+void ApplySpriteThumbnail(UIElement& iconEl, const std::string& thumbnailPath)
+{
+    if (thumbnailPath.empty())
+        return;
+    constexpr uint32_t kBackgroundTintNoDim = 0xFFFFFFFFu;
+    BackgroundImageSource source{};
+    source.Kind = BackgroundImageSource::SourceKind::Path;
+    source.Value = thumbnailPath;
+    BackgroundSizeValue size{};
+    size.Mode = BackgroundSizeMode::Contain;
+
+    iconEl.AddClass("hierarchy-entity-model-thumb");
+    iconEl.Style()
+        .Set(Style::BackgroundImage, source)
+        .Set(Style::BackgroundRepeatProp, BackgroundRepeat::NoRepeat)
+        .Set(Style::BackgroundSize, size)
+        .Set(Style::BackgroundPosition, BackgroundPositionValue::Percent(0.0f, 50.0f))
+        .Set(Style::BackgroundTint, kBackgroundTintNoDim);
+    ApplyModelThumbSaturationOverride(iconEl);
+    iconEl.MarkDirty(UIElement::VisualDirty);
 }
 
 void ApplyInspectorEntityIcon(ECS::World* world,

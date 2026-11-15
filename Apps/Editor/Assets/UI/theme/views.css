@@ -560,6 +560,11 @@
 	background-image: url("editor:Icons/2d.svg");
 }
 
+/* Scene hierarchy: animated 2D sprite, until the crop of its current frame resolves */
+.entity-icon.hierarchy-entity-animated-sprite {
+	background-image: url("editor:Icons/sprite.svg");
+}
+
 /* Scene hierarchy: imported model fallback while async thumbnails resolve */
 .entity-icon.hierarchy-entity-model {
 	background-image: url("editor:Icons/3d.svg");

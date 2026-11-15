@@ -64,8 +64,8 @@ void ApplyHeldHierarchyRowDecorations(ECS::World& world, ECS::EntityHandle entit
 GUID FindModelGuidForEntityOrChildren(ECS::World* world, ECS::EntityHandle handle,
                                       std::optional<EntityChildrenOf> childrenOf = std::nullopt);
 
-/// If \p handle is a sprite (plane primitive + file-backed MaterialAsset),
-/// returns the absolute filesystem path of its albedoMap texture. Returns an
+/// If \p handle is a sprite (a Sprite2D, or a plane primitive with a file-backed MaterialAsset),
+/// returns the absolute filesystem path of its texture: the Sprite2D texture, else the albedoMap. Returns an
 /// empty path when the entity isn't a sprite or the texture can't be resolved.
 std::filesystem::path TryResolveSpriteAlbedoTexturePath(ECS::World* world,
                                                         ECS::EntityHandle handle,
@@ -81,6 +81,10 @@ std::filesystem::path TryResolveInspectorIconAssetPath(ECS::World* world,
                                                        AssetManager* assets);
 
 void ApplyTitleModelThumbnail(UIElement& titleEl, const std::string& relOrEngine, float iconSizePx);
+
+/// Draws a sprite crop (`thumbnailPath`) in an icon box, contained at its own aspect ratio and left-aligned like
+/// the glyph icons: a sprite frame is rarely square, so it is never stretched to the box.
+void ApplySpriteThumbnail(UIElement& iconEl, const std::string& thumbnailPath);
 
 /// Matches Hierarchy panel visuals: CSS entity classes and/or model / Polyhaven thumbnails on \p iconEl.
 void ApplyInspectorEntityIcon(ECS::World* world,
