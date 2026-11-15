@@ -71,6 +71,9 @@ set(EDITOR_TEST_SOURCES
 	EntityDuplicateTests.cpp
 	# The editor's teleport of a live physics body, composed with the entity's sector.
 	PhysicsBodyTeleportTests.cpp
+	# The editor's posted refresh: once per burst, skipped after its owner is destroyed.
+	PostedRefreshTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/PostedRefresh.cpp
 	SplineNetworkUndoTests.cpp
 	DefaultSceneEntitiesTests.cpp
 	NewSceneSeedTests.cpp
