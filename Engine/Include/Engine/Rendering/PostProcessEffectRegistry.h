@@ -23,7 +23,7 @@
 //     CopySettingsGroup fold over the tables; the Neutralize/Extract hooks
 //     fold each effect component into the extracted volume settings.
 
-#include "ECS/ComponentFieldRegistry.h" // ECS::ComponentTypeId
+#include "ECS/Component/ComponentFieldRegistry.h" // ECS::ComponentTypeId
 
 #include <cstdint>
 #include <functional>

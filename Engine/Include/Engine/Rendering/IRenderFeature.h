@@ -1,8 +1,10 @@
 #pragma once
 
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/Device.h" // IDevice::GpuSyncToken in OnFrameSubmittedRG
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace GameEngine
@@ -66,6 +68,10 @@ class IRenderFeature
     // light culling, SDSM, HZB). Read once per frame on the render thread.
     virtual bool WritesDynamicDepth() const { return false; }
 
+    /// Retire owned view state without registering features or waiting for GPU work.
+    /// Keep in-flight resources alive until their recorded submissions complete.
+    virtual void OnViewReleased(::GameEngine::Rendering::ViewId /*viewId*/) {}
+
     // RenderGraph declaration hook. A feature that owns render targets declares
     // the passes that write them here — driven per (feature, view) by the
     // pipeline node that orchestrates the feature. Default no-op: features that
@@ -79,6 +85,15 @@ class IRenderFeature
     virtual void Declare(::GameEngine::Rendering::RenderGraph::RGFrame& /*frame*/,
                          RenderServices& /*rs*/, const FeatureDeclareContext& /*ctx*/)
     {
+    }
+
+    /// Binds mutable world geometry before declaration. False rejects the graph.
+    /// Register before the first declaration. Declaration-thread only.
+    /// The hook must not mutate geometry or retain the weak owner strongly.
+    virtual bool BindWorldGeometry(::GameEngine::Rendering::RenderGraph::RGFrame& /*frame*/,
+                                   RenderServices& /*services*/, std::weak_ptr<const void> /*owner*/)
+    {
+        return true;
     }
 
     // Called after a frame's command lists are submitted, with the

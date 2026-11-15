@@ -16,7 +16,7 @@
 #include "Components/Rendering/MeshRenderer.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "Engine/Rendering/PrimitiveGenerator.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Jobs/HeldWorkers.h"

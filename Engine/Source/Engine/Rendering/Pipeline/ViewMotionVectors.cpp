@@ -115,6 +115,9 @@ ViewMotionVectors::MoverMotionPath ViewMotionVectors::ClassifyMoverMotionPath(
 
 RenderGraph::RGTexture ViewMotionVectors::Declare(ViewDeclare& d)
 {
+    if (!d.Services.Spine().BindWorldGeometry(d.Frame))
+        return {};
+
     if (const auto existing = d.ResolveTexture(Names::View::MotionVectors); existing.IsValid())
         return existing;
     const uint32_t w = d.RenderWidth;

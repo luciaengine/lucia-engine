@@ -16,7 +16,7 @@
 #include "Components/Rendering/MeshGPUData.h"
 #include "Components/Rendering/MeshRenderer.h"
 #include "Components/Transform.h"
-#include "ECS/ComponentFactory.h"
+#include "ECS/Component/ComponentFactory.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
 #include "Scripting/ECSABI.h"

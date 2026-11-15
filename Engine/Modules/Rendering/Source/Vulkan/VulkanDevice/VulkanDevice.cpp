@@ -91,6 +91,7 @@
 #include <vulkan/vulkan_win32.h>
 #endif
 #include <cctype>
+#include <cstddef>
 #include <cstring>
 
 // VMA (Vulkan Memory Allocator)
@@ -624,6 +625,10 @@ bool VulkanDevice::Initialize(const DeviceDesc& desc)
     m_FaultAcquireForcedSuboptimal = false;
     m_AcquireReportedSuboptimal = false;
     m_InitDesc = desc; // stashed for RebuildDevice (Q6 slice 2)
+    // Initialization policy survives device recovery; environment edits cannot
+    // change the enabled feature set halfway through a session.
+    m_DisableRayQueryRequested =
+        GameEngine::Platform::EnvironmentSwitchEnabled("GE_VK_DISABLE_RAY_QUERY", false);
     if (m_FaultInjection.Active())
     {
         Logger::Log::Warning("VulkanDevice: [fault-injection] active — GE_VK_FORCE_DEVICE_LOST / GE_VK_FORCE_BEGINFRAME_TIMEOUT / GE_VK_FORCE_GPU_HANG / GE_VK_FORCE_ACQUIRE_SUBOPTIMAL set");
@@ -2458,6 +2463,7 @@ bool VulkanDevice::SelectPhysicalDevice()
 
 bool VulkanDevice::CreateLogicalDevice()
 {
+    m_RayQueryEnabledAtInit = false;
     m_ShaderInterpolationFunctionsEnabledAtInit = false;
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
     std::set<uint32_t> uniqueQueueFamilies = {m_GraphicsQueueFamily, m_PresentQueueFamily};
@@ -2807,7 +2813,7 @@ bool VulkanDevice::CreateLogicalDevice()
         CheckExtensionSupport(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
         CheckExtensionSupport(VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
         CheckExtensionSupport(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
-    if (rayQueryExtsAvailable && supported12.bufferDeviceAddress == VK_TRUE &&
+    if (!m_DisableRayQueryRequested && rayQueryExtsAvailable && supported12.bufferDeviceAddress == VK_TRUE &&
         !captureCompatDevice)
     {
         VkPhysicalDeviceAccelerationStructureFeaturesKHR supportedAccel{};
@@ -2831,6 +2837,8 @@ bool VulkanDevice::CreateLogicalDevice()
             m_RayQueryEnabledAtInit = true;
         }
     }
+    if (m_DisableRayQueryRequested)
+        Logger::Log::Info("VulkanDevice: ray-query and acceleration-structure features disabled by request");
     // VK_EXT_device_fault: post-mortem fault records after VK_ERROR_DEVICE_LOST.
     // Default-on in the developer configs and opt-in in Release (GE_VK_DEVICE_FAULT)
     // — retrieval costs nothing until a loss happens, and a loss is exactly when it
@@ -6527,6 +6535,34 @@ void VulkanDevice::UpdateBufferRanges(BufferHandle handle, std::span<const Buffe
 #endif
     // Preserve the existing staging and non-VMA paths for other allocations.
     IDevice::UpdateBufferRanges(handle, ranges);
+}
+
+bool VulkanDevice::TryWriteCoherentBuffer(BufferHandle handle, size_t offset, size_t size, const void* data)
+{
+    DeviceRebuildSharedGuard rebuildGuard(*this, DeviceRebuildSharedGuard::Kind::Create);
+    // A requested deletion is already unavailable to a new publisher even
+    // while its native allocation remains in the deferred-destruction queue.
+    {
+        std::lock_guard<std::mutex> deferredLock(m_DeferredDestroyMutex);
+        if (m_PendingBufferDestroyIds.contains(handle.id))
+            return false;
+    }
+    VulkanBuffer* buffer = GetVulkanBuffer(handle);
+    constexpr VkMemoryPropertyFlags required =
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    if (!buffer || buffer->buffer == VK_NULL_HANDLE || !buffer->persistentMappedData ||
+        (buffer->resolvedMemoryProperties & required) != required ||
+        size > buffer->size || offset > buffer->size - size || (size != 0 && !data))
+        return false;
+    DiagnoseFrameSlottedHostWrite(*buffer);
+    // Diagnostics can dispatch a synchronous log sink. Recheck deletion only
+    // after that callback window, without holding this mutex through logging.
+    std::lock_guard<std::mutex> deferredLock(m_DeferredDestroyMutex);
+    if (m_PendingBufferDestroyIds.contains(handle.id))
+        return false;
+    if (size != 0)
+        std::memcpy(static_cast<std::byte*>(buffer->persistentMappedData) + offset, data, size);
+    return true;
 }
 
 void VulkanDevice::UpdateBuffer(BufferHandle handle, size_t offset, size_t size, const void* data)

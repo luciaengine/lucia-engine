@@ -287,7 +287,7 @@
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
 #include "ECS/World.h"
-#include "ECS/ComponentLayoutReloadMigrator.h" // hot-reload component migration
+#include "ECS/Component/ComponentLayoutReloadMigrator.h" // hot-reload component migration
 #include "ECS/UnresolvedComponentStore.h"
 #include "InspectorRegistry.h"
 #include "Inspectors/BuiltInInspectorRegistration.h"

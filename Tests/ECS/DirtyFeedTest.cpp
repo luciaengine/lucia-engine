@@ -11,8 +11,8 @@
 #include "ECS/World.h"
 #include "ECS/Entity.h"
 #include "ECS/CachedQuery.h"
-#include "ECS/ComponentDirtyFeed.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentDirtyFeed.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "TestComponents.h"
 

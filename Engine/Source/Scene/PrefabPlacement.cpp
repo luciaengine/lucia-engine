@@ -3,7 +3,7 @@
 #include "Components/Hierarchy.h"
 #include "Components/PrefabInstance.h"
 #include "Components/SceneEntityTag.h"
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Query.h"
 #include "ECS/World.h"

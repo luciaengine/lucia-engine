@@ -52,6 +52,8 @@ set(ENGINE_SOURCES
     Source/Assets/ModelAssetLoadBlend.cpp
     Source/Assets/SparseMorphTarget.cpp
     Source/Assets/MeshLODGenerator.cpp
+    Source/Assets/ClusterLOD/MeshClusterLODGenerator.cpp
+    Source/Assets/ClusterLOD/MeshClusterLODAsset.cpp
     Source/Assets/MeshLODGeometry.cpp
     Source/Assets/MeshLODCache.cpp
     Source/Assets/ImportedMaterialCache.cpp
@@ -419,6 +421,14 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/CascadeMotionScheduler.cpp
 	Source/Engine/Rendering/CascadeShadowCache.cpp
 	Source/Engine/Rendering/CascadeCacheLogFormat.cpp
+	Source/Engine/Rendering/VirtualShadows/VirtualShadowPageCache.cpp
+	Source/Engine/Rendering/VirtualShadows/VirtualShadowFeedback.cpp
+	Source/Engine/Rendering/VirtualShadows/VirtualShadowRenderFeature.cpp
+	Source/Engine/Rendering/VirtualShadows/VirtualShadowRaster.cpp
+	Source/Engine/Rendering/VirtualShadows/VirtualShadowPageRequests.cpp
+	Source/Engine/Rendering/VirtualShadows/VirtualShadowWorldPass.cpp
+	Source/Engine/Rendering/ClusterLOD/ClusterLODPrepareSystem.cpp
+	Source/Engine/Rendering/ClusterLOD/ClusterLODFeature.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeature.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeaturePasses.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeatureViewFit.cpp
@@ -1869,6 +1879,21 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     ge_stage_runtime_dependencies(MeshLODGeneratorTests)
     add_test(NAME MeshLODGeneratorTests COMMAND $<TARGET_FILE:MeshLODGeneratorTests>)
 
+    # Cluster LOD assets: group generation, the coarse asset, the fine page store and the cook.
+    add_executable(MeshClusterLODTests
+        Tests/MeshClusterLODTests.cpp
+        Tests/ClusterLODImportedGltfTests.cpp)
+    target_link_libraries(MeshClusterLODTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+    target_include_directories(MeshClusterLODTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
+    set_target_properties(MeshClusterLODTests PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        FOLDER "Engine/Tests"
+    )
+    ge_set_output_tests(MeshClusterLODTests)
+    ge_stage_runtime_dependencies(MeshClusterLODTests)
+    add_test(NAME MeshClusterLODTests COMMAND $<TARGET_FILE:MeshClusterLODTests>)
+
     # Engine tests: HLOD offline pipeline (clustering, benefit heuristic, .gehlod).
     add_executable(EngineHlodBakeTests
         Tests/HlodClusteringTests.cpp
@@ -2287,6 +2312,28 @@ endif()
                 VERBATIM)
             add_dependencies(ShadowFilterTestShader CompileShaders)
             add_dependencies(EngineShadowTests ShadowFilterTestShader)
+
+            # Virtual shadow maps: page addresses, the page cache, feedback decoding,
+            # request reuse, the page mark shader and the page lookup shader.
+            ge_add_render_services_test(EngineVirtualShadowTests
+                Tests/VirtualShadows/VirtualShadowOptionsTests.cpp
+                Tests/VirtualShadows/VirtualShadowPageCacheTests.cpp
+                Tests/VirtualShadows/VirtualShadowRequestReuseTests.cpp
+                Tests/VirtualShadows/VirtualShadowFeedbackTests.cpp
+                Tests/VirtualShadows/VirtualShadowPageMarkTests.cpp
+                Tests/VirtualShadows/VirtualShadowLookupTests.cpp
+                Tests/VirtualShadows/VirtualShadowSurfaceComposeTests.cpp)
+            # Engine/Tests: TestDeviceHelper.h and StagedTestPaths.h.
+            target_include_directories(EngineVirtualShadowTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Tests")
+
+            # Cluster LOD at run time: fine page residency, selection, graph leases and retirement.
+            ge_add_render_services_test(EngineClusterLODTests
+                Tests/ClusterLODRuntimeTests.cpp)
+            # Engine/Tests: test helpers. Tests: TestTempDir.h. Modules/Rendering/Source: the Vulkan test access.
+            target_include_directories(EngineClusterLODTests PRIVATE
+                "${CMAKE_CURRENT_SOURCE_DIR}/Tests"
+                ${CMAKE_SOURCE_DIR}/Tests
+                ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Source)
 
             # Post-processing: exposure, the post-process volume blend, bloom, lens flare,
             # sun glare, temporal anti-aliasing jitter, GTAO and screen-space reflections.

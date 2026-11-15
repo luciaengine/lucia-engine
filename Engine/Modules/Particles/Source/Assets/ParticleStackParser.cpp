@@ -18,9 +18,9 @@ bool ParticleStackParser::ExtractDependencies(const GUID&, const AssetMetadata&,
     return true;
 }
 
-bool ParticleStackParser::CookForPackage(const std::filesystem::path& stagedFile, std::string& error) const
+bool ParticleStackParser::CookForPackage(const AssetPackageCookContext& context, std::string& error) const
 {
-    return ParticleStackAsset::CookFile(stagedFile, error);
+    return ParticleStackAsset::CookFile(context.StagedFile, error);
 }
 
 } // namespace GameEngine::Particles

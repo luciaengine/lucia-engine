@@ -1,8 +1,8 @@
 #pragma once
 
-#include "ComponentConcepts.h"
-#include "ComponentRegistry.h"
-#include "ComponentTypeName.h"
+#include "Component/ComponentConcepts.h"
+#include "Component/ComponentRegistry.h"
+#include "Component/ComponentTypeName.h"
 #include <string>
 #include <string_view>
 

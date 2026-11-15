@@ -130,7 +130,8 @@ void SceneAccelerationStructureService::SweepRegistryForNewBlas()
     m_MeshRegistry->ForEachEntry(
         [&](const Rendering::MeshGPUEntry& entry)
         {
-            if (entry.gpuMeshIndex == ~0u)
+            if (entry.gpuMeshIndex == ~0u ||
+                entry.StorageDomain == Rendering::MeshGPUStorageDomain::ClusterFine)
                 return;
             const BlasSourceKey source = MakeSourceKey(entry);
             const auto existing        = m_BlasByMeshIndex.find(entry.gpuMeshIndex);

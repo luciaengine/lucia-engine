@@ -80,12 +80,11 @@ void ValueCurveSystem::Update(ECS::World& world, float32 deltaTime)
                          ECS::Optional<Components::Light>,
                          ECS::Optional<Components::PostProcessVolume>>();
     q.Each([deltaTime](ECS::EntityHandle /*entity*/,
-                       ECS::Writable<Components::ValueCurve> curveRow,
+                       Components::ValueCurve& curve,
                        Components::Transform* transform,
                        Components::Light* light,
                        Components::PostProcessVolume* postProcess)
     {
-        auto& curve = curveRow.Mutable();
         if (curve.Enabled && curve.Playing)
         {
             curve.ElapsedSeconds += deltaTime;

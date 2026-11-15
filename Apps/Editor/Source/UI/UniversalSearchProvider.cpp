@@ -6,7 +6,7 @@
 #include "Assets/AssetRegistry.h"
 #include "Components/Name.h"
 #include "ECS/ECS.h"
-#include "ECS/ComponentConcepts.h"
+#include "ECS/Component/ComponentConcepts.h"
 #include "ECS/Entity.h"
 #include "ECS/Query.h"
 #include "JobSystem/WorkStealingThreadPool.h"

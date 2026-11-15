@@ -1,6 +1,6 @@
 #include "Picking/EditorPickProviders.h"
 
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 
 namespace GameEngine::Editor::Picking
 {

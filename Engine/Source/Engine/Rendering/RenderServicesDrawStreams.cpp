@@ -371,6 +371,9 @@ void RenderServices::EmitSortedTransparentCommand(Rendering::ViewId viewId,
 
 void RenderServices::EmitFrameForwardCommandsForView(RenderGraph::RGFrame& frame, ViewId viewId)
 {
+    if (!Spine().BindWorldGeometry(frame))
+        return;
+
     auto& pv = m_ViewRegistry.PerView(viewId);
     if (pv.FrameForwardEmittedFor.IsFor(frame))
         return;

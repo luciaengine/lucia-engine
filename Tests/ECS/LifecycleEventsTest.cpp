@@ -9,7 +9,7 @@
 
 #include "ECS/World.h"
 #include "ECS/Entity.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "TestComponents.h"
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
 #include "Editor/Entities/EditorECSHelpers.h"
 #include "InspectorRegistry.h"  // InspectorContext, used by GetAdditionalEntities below
 #include "Inspectors/DefaultComponentInspector.h"

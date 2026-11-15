@@ -2,8 +2,8 @@
 
 #include "Components/Measure/MeasureComponent.h"
 #include "Components/Spline/SplineComponent.h"
-#include "ECS/ComponentFactory.h"
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFactory.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "Scene/SceneSchemaRegistry.h"
 

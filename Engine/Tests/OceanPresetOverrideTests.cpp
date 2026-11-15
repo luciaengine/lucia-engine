@@ -150,9 +150,9 @@ TEST(OceanPresetOverrideValidatorTests, UnknownOverrideIsReportedOnceWhenItsBind
     // A granted write re-reads the binding: the new identity is reported, the one
     // already reported is not.
     world.Query<ECS::Write<Components::OceanPresetBinding>>().Each(
-        [unstamped](ECS::Writable<Components::OceanPresetBinding> written)
+        [unstamped](Components::OceanPresetBinding& written)
         {
-            written.Mutable().Overrides[8].FieldIdentifier = unstamped;
+            written.Overrides[8].FieldIdentifier = unstamped;
         });
     validator.Validate(world);
     Logger::Log::Flush();

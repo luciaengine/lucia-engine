@@ -132,6 +132,9 @@ void FrameOrchestrator::Initialize(RenderServices& rs)
 
 void FrameOrchestrator::Shutdown()
 {
+    m_WorldExecutionLifetime.reset();
+    m_RequiresCurrentWorldEpoch = false;
+    m_WorldGeometryDeclared = false;
     // Tear down the data-driven pipeline before releasing the device so any
     // node-owned GPU objects (pipelines/samplers) can be destroyed safely.
     while (!m_RGStreams.empty())
@@ -159,11 +162,53 @@ void FrameOrchestrator::BeginAppFrame()
     // and every stream slot's DeclaredEpoch stamp goes stale (per-stream
     // repeat guards re-open without touching the slots).
     ++m_WorldFrameEpoch;
+    if (m_RequiresCurrentWorldEpoch)
+        m_WorldExecutionLifetime = std::make_shared<const uint8_t>(0);
     // Blackboard frame-pointer ABA hardening: a recycled RGFrame at the same
     // address must not look like "already declared" to FrameResourcesFor.
     for (auto& [framePtr, slot] : m_RGStreams)
         if (slot.Instance)
             slot.Instance->ResetFrameBlackboard();
+}
+
+void FrameOrchestrator::RequireCurrentWorldEpoch()
+{
+    if (m_RequiresCurrentWorldEpoch)
+        return;
+    m_RequiresCurrentWorldEpoch = true;
+    m_WorldExecutionLifetime = std::make_shared<const uint8_t>(0);
+    for (auto& stream : m_RGStreams)
+    {
+        // Pre-feature recordings have no geometry reservation, even when their
+        // epoch matches. They must be redeclared before using the sealed state.
+        if (stream.first->Graph().PassCount() != 0)
+            stream.first->RequireExecutionLifetime({});
+    }
+}
+
+bool FrameOrchestrator::TryRequireCurrentWorldEpoch()
+{
+    if (m_WorldGeometryDeclared)
+        return false;
+    RequireCurrentWorldEpoch();
+    return true;
+}
+
+bool FrameOrchestrator::BindWorldGeometry(Rendering::RenderGraph::RGFrame& frame)
+{
+    m_WorldGeometryDeclared = true;
+    if (!m_RequiresCurrentWorldEpoch)
+        return true;
+    if (!frame.RequireExecutionLifetime(m_WorldExecutionLifetime))
+        return false;
+    bool admitted = true;
+    m_Services->ForEachFeature([this, &admitted, &frame](IRenderFeature& feature)
+    {
+        admitted &= feature.BindWorldGeometry(frame, *m_Services, m_WorldExecutionLifetime);
+    });
+    if (!admitted)
+        frame.RequireExecutionLifetime({});
+    return admitted;
 }
 
 void FrameOrchestrator::SetActiveRenderPipelinePath(const std::filesystem::path& relOrAbsPath)
@@ -1220,6 +1265,9 @@ bool FrameOrchestrator::BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame,
                                        const FrameGraphBuildParamsRG& params)
 {
     GE_CPU_PROFILE_SCOPE("RenderServices.BuildFrameGraphRG");
+
+    if (!BindWorldGeometry(frame))
+        return false;
 
     const bool consumesSelectedProducer = m_SelectedSceneProducerEpoch == m_WorldFrameEpoch &&
         !m_SelectedSceneProducer.IsFor(frame);

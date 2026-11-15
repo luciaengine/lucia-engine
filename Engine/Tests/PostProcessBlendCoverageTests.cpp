@@ -22,7 +22,7 @@
 #include "Rendering/Core/NamedPushConstantWriter.h"
 #include "Rendering/Passes/TonemapPass.h"
 #include "Rendering/Materials/Shader/ShaderMeta.h"
-#include "ECS/ComponentFactory.h"
+#include "ECS/Component/ComponentFactory.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
 #include "Types/Fnv1a.h"

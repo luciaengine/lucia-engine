@@ -108,8 +108,8 @@ int main()
         Fail("entity count mismatch after Create");
 
     world.Query<ECS::Read<Velocity>, ECS::Write<Position>>()
-        .Each([](const Velocity& vel, ECS::Writable<Position> row) {
-            Position& pos = row.Mutable();
+        .Each([](const Velocity& vel, Position& row) {
+            Position& pos = row;
             pos.X += vel.X * kDeltaTime;
             pos.Y += vel.Y * kDeltaTime;
         });

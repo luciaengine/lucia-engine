@@ -10,7 +10,7 @@
 #include "Components/Transform.h"
 #include "Core/Engine.h"
 #include "ECS/ClonePlan.h"
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/EntityRemap.h"
 #include "ECS/Query.h"

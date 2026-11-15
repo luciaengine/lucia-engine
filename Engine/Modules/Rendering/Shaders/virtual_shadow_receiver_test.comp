@@ -1,0 +1,29 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#define GE_VIRTUAL_SHADOW_DEPTH_BINDING 0
+#define GE_VIRTUAL_SHADOW_TABLE_BINDING 1
+#include "Includes/virtual_shadow_projections.glsl"
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 2, std430) writeonly buffer Results { float Visibility[]; };
+void main()
+{
+    GE_VirtualShadowProjection projection = ge_virtualShadowProjections[0];
+    // Analytic helper-lane gradients describe a sloped primitive whose
+    // isolated depth sample has sky neighbors. This tests GPU projection/mip
+    // arithmetic against the actual mark bits, not a raster dFdx readback.
+    vec3 receiver = vec3(-1.0 / 512.0, 0.0, 0.5);
+    vec3 biased = receiver + vec3(0.0, 0.0, 0.02);
+    vec3 dx = vec3(2.0 / 512.0, 0.0, 2.0 / 512.0);
+    vec3 dy = vec3(0.0, -2.0 / 513.0, 0.0);
+    vec4 clip;
+    vec2 uv;
+    float reference;
+    bool projected = GE_VirtualShadowProject(projection.RelativeToLightClip, biased, 0.0005, clip, uv, reference);
+    uint mip = GE_VirtualShadowReceiverMip(projection, clip, dx, dy);
+    Visibility[0] = float(mip);
+    float visibility;
+    Visibility[1] = projected && GE_VirtualShadowCompareBilinear(projection.Address.xyz, mip, uv, reference, visibility)
+        ? visibility : -1.0;
+    Visibility[2] = projected && GE_VirtualShadowCompareBilinear(projection.Address.xyz, 0u, uv, reference, visibility)
+        ? visibility : -1.0;
+}

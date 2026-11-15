@@ -16,8 +16,8 @@
 // half that decides whether such a round-trip is expressible at all.
 
 #include "Components/Terrain/TerrainGrass.h"
-#include "ECS/ComponentFieldRegistry.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "ECS/Reflection.h"
 #include "ECS/ReflectionJson.h"
 

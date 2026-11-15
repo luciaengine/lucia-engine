@@ -803,10 +803,10 @@ void TerrainExtractionSystem::Update(ECS::World& world, float32 deltaTime)
 
     world.Query<ECS::Write<Components::Terrain>, ECS::Read<Components::WorldTransform>>()
         .Each([&](ECS::EntityHandle entity,
-                  ECS::Writable<Components::Terrain> terrainRow,
+                  Components::Terrain& terrainRow,
                   const Components::WorldTransform& worldXf)
         {
-            auto& terrain = terrainRow.Mutable();
+            auto& terrain = terrainRow;
             StampDrawOrder(terrain, atlasFrame);
             if (terrain.Domain == Components::TerrainDomain::Spherical)
             {

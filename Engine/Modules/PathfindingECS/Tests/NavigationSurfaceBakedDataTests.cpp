@@ -11,7 +11,7 @@
 #include "Assets/AssetManager.h"
 #include "Assets/AssetRegistry.h"
 #include "Core/Engine.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "Pathfinding/DetourNavMap.h"
 #include "Pathfinding/NavSurfaceFile.h"
 #include "PhysicsECS/Components/BoxColliderShape.h"

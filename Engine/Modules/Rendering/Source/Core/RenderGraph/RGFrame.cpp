@@ -4,6 +4,7 @@
 #include "Rendering/Core/Pipeline/PipelineCache.h"
 #include "Rendering/Core/Pipeline/PipelineManager.h"
 
+#include <bit>
 #include <cassert>
 #include <chrono>
 #include <cstring>
@@ -351,6 +352,34 @@ PipelineFormatKey RGContext::BuildCurrentFormatKey() const
     return m_CachedKey;
 }
 
+bool RGPrepareContext::UseDepthTarget(RGTexture depth, uint32_t expectedSamples)
+{
+    constexpr uint32_t kMaxSamples = 64;
+    if (!m_Context.m_Frame || !depth.IsValid() || !std::has_single_bit(expectedSamples) ||
+        expectedSamples > kMaxSamples)
+        return false;
+    const auto& graph = m_Context.m_Frame->Graph();
+    if (m_Context.m_Pass >= graph.PassCount() || graph.PassQueue(m_Context.m_Pass) != RGQueue::Graphics ||
+        depth.Id >= graph.ResourceCount())
+        return false;
+    const auto& descriptor = graph.ResourceDesc(depth.Id);
+    if (descriptor.Kind != RGResourceKind::Texture || descriptor.SampleCount != expectedSamples)
+        return false;
+    const auto physical = m_Context.GetTexture(depth);
+    auto* device = m_Context.GetDevice();
+    if (!physical.IsValid() || !device)
+        return false;
+    TextureFormat format = static_cast<TextureFormat>(descriptor.Format);
+    if (format == TextureFormat{})
+        format = device->GetTextureFormat(physical);
+    if (!IsDepthFormat(format))
+        return false;
+    const RGAttachmentKeyInput attachment{0u, true, format, expectedSamples};
+    m_Context.m_CachedKey = DeriveFormatKey(&attachment, 1u, TextureFormat{});
+    m_Context.m_KeyDirty = false;
+    return true;
+}
+
 uint32_t RGContext::GetCurrentSampleCount() const
 {
     return BuildCurrentFormatKey().RasterizationSamples;
@@ -552,9 +581,24 @@ void RGFrame::DiscardRecordedPasses()
     // A subsequent BeginFrame may have cleared declarations while the previous
     // submission still uses node-owned resources. Retirement must join it too.
     WaitForPendingWork();
-    if (m_Graph.PassCount() == 0 && m_Graph.Arena().GetMarker().DestructorCount == 0)
+    if (m_Graph.PassCount() == 0 && m_Graph.Arena().GetMarker().DestructorCount == 0 &&
+        m_ExecutionLifetimes.empty() && !m_RequiresGraphicsQueue && m_SubmissionAttempts.empty())
         return;
     ResetRecording();
+}
+
+bool RGFrame::RequireExecutionLifetime(std::weak_ptr<const void> lifetime)
+{
+    bool duplicate = false;
+    bool admitted = !lifetime.expired();
+    for (const auto& existing : m_ExecutionLifetimes)
+    {
+        admitted &= !existing.expired();
+        duplicate |= !existing.owner_before(lifetime) && !lifetime.owner_before(existing);
+    }
+    if (!duplicate)
+        m_ExecutionLifetimes.push_back(std::move(lifetime));
+    return admitted;
 }
 
 void RGFrame::SetGraphicsPipelineSpecialization(
@@ -570,6 +614,9 @@ void RGFrame::SetGraphicsPipelineSpecialization(
 void RGFrame::ResetRecording()
 {
     m_Graph.BeginFrame(); // resets the arena → runs last frame's exec-lambda dtors
+    m_ExecutionLifetimes.clear();
+    m_RequiresGraphicsQueue = false;
+    m_SubmissionAttempts.clear();
     m_Exec.clear();
     m_Prepare.clear();
     m_OnSubmitted.clear();
@@ -877,8 +924,22 @@ void RGFrame::ReadCompletedTimelineValues(uint64_t (&outValues)[kQueueCount]) co
 
 void RGFrame::Execute()
 {
-    m_Stats.PrepareMs = 0.0;
-    m_Stats.RecordAndSubmitMs = 0.0;
+    // Each attempt has its own counters, including a replay or rejected owner.
+    // Submission history and completion tokens remain monotonic/device-owned.
+    m_Stats = FrameStats{};
+    if (m_RequiresGraphicsQueue &&
+        std::any_of(std::begin(m_PhysicalQueueOf), std::end(m_PhysicalQueueOf),
+                    [](uint8_t queue) { return queue != 0; }))
+    {
+        m_Stats.ExecutionRejected = true;
+        return;
+    }
+    for (const auto& lifetime : m_ExecutionLifetimes)
+        if (lifetime.expired())
+        {
+            m_Stats.ExecutionRejected = true;
+            return;
+        }
     const size_t passCount = m_Graph.PassCount();
     if (passCount == 0)
         return;
@@ -892,7 +953,7 @@ void RGFrame::Execute()
 
     // A2 STEP-0: pre-record serial-floor brackets. Always-on, a handful of
     // steady_clock pairs per frame, zero allocations. m_Stats was reset in
-    // BeginFrame, so these accumulate coherently through to the next frame.
+    // Execute, so all brackets describe this attempt, including replays.
     using RGClock = std::chrono::steady_clock;
     auto elapsedMs = [](RGClock::time_point begin) {
         return std::chrono::duration<double, std::milli>(RGClock::now() - begin).count();
@@ -961,6 +1022,14 @@ void RGFrame::Execute()
         m_Graph.SetCompletedTimelineValues(completedValues);
         m_Graph.BuildSubmissionPlan(m_PhysicalQueueOf);
         m_Stats.BuildSubmissionPlanMs = elapsedMs(planBegin);
+
+        if (m_RequiresGraphicsQueue &&
+            std::any_of(m_Graph.Submissions().begin(), m_Graph.Submissions().end(),
+                        [](const auto& submission) { return submission.PhysicalQueue != 0; }))
+        {
+            m_Stats.ExecutionRejected = true;
+            return;
+        }
 
         // Record real command buffers per submission (barriers → render passes →
         // pass lambdas with ctx.Cmd) and submit with timeline-semaphore sync.

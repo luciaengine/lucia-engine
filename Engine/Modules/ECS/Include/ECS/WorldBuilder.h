@@ -3,7 +3,7 @@
 #include "ECS/World.h"
 #include "ECS/Entity.h"            // WorldConfig
 #include "ECS/AutoRegistration.h"  // AutoComponentRegistrar
-#include "ECS/ComponentConcepts.h"
+#include "ECS/Component/ComponentConcepts.h"
 #include "ECS/QueryPolicy.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include <vector>
@@ -39,6 +39,12 @@ public:
 
     WorldBuilder& SetConfig(const WorldConfig& cfg) {
         config = cfg;
+        return *this;
+    }
+
+    // Optional convenience toggles
+    WorldBuilder& EnableBulkOperations(bool enable = true) {
+        config.EnableBulkOperations = enable;
         return *this;
     }
 

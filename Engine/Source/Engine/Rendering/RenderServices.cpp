@@ -223,6 +223,7 @@ bool RenderServices::Initialize(Rendering::IDevice* device)
             m_ViewTemporalHistory.ReleaseView(id);
             if (m_DrawStreamBuilder)
                 m_DrawStreamBuilder->ReleaseView(static_cast<uint32_t>(id));
+            ForEachFeature([id](IRenderFeature& feature) { feature.OnViewReleased(id); });
         });
     Rendering::IDevice* const dev = m_Device;
 

@@ -112,7 +112,7 @@
 #include "Components/Transform.h"
 #include "Core/Engine.h"
 #include "Engine/Rendering/RenderServices.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "ECS/Components.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
@@ -181,8 +181,8 @@
 #include "TerrainECS/TerrainModifierComponents.h"
 #include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
 #include "Inspectors/DefaultComponentInspector.h"
-#include "ECS/ComponentFactory.h"
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFactory.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
 
 #include <unordered_set>
 

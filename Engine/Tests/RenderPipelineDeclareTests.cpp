@@ -65,7 +65,7 @@
 #include "TestDeviceHelper.h"
 #include "TestTempDir.h"
 #include "Components/Terrain/TerrainGrass.h"
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
 #include "TerrainECS/TerrainGrass/TerrainGrassAlpha.h"
 #include "Rendering/Materials/MaterialBuildContext.h"
 #include "Terrain/Heightfield.h"

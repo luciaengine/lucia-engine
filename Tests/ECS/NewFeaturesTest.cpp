@@ -3,7 +3,7 @@
 #include "ECS/Entity.h"
 #include "ECS/Query.h"
 #include "ECS/ECSTemplates.h" // typed World operation definitions
-#include "ECS/ArchetypeTable.h"
+#include "ECS/Archetype/ArchetypeTable.h"
 #include "TestComponents.h"
 
 using namespace GameEngine::ECS;

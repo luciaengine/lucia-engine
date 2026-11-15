@@ -11,7 +11,7 @@
 #include "AssetCore/GUID.h"
 #include "Components/Spline/SplineFence.h"
 #include "Core/Engine.h"
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "Types/ParseNumber.h"
 

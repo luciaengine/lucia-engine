@@ -53,11 +53,11 @@ void MovingPlatformSystem::Update(ECS::World& world, float32 deltaTime)
     q.IncludeDisabled<GameEngine::Components::MovingPlatform>();
 
     q.Each([&](ECS::EntityHandle /*e*/,
-               ECS::Writable<GameEngine::Components::MovingPlatform> platformRow,
+               GameEngine::Components::MovingPlatform& platformRow,
                const GameEngine::Components::PhysicsBody& body,
                const ECS::ComponentDisabled<GameEngine::Components::MovingPlatform>* disabled)
     {
-                auto& platform = platformRow.Mutable();
+                auto& platform = platformRow;
         if (body.motionType != Physics::MotionType::Kinematic ||
             !body.initialized || !pw->IsBodyValid(body.body))
             return;

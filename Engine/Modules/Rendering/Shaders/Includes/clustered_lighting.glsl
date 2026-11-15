@@ -477,6 +477,10 @@ uvec3 GE_GetClusterIndex(vec2 screenPos, float linearDepth)
     return uvec3(cx, cy, slice);
 }
 
+#if defined(HAS_SHADOWS) && defined(GE_VIRTUAL_SHADOW_MAPS)
+#include "virtual_shadow_local.glsl"
+#endif
+
 // Accumulate clustered lighting contribution for the given surface.
 // Returns the total lit color (diffuse + specular) from all lights in the cluster
 // plus the out-of-band directional lights (from LightUBO): the shadowed primary
@@ -495,6 +499,11 @@ vec3 GE_AccumulateClusteredLighting(
     float linearDepth)
 {
     vec3 totalLight = vec3(0.0);
+#if defined(HAS_SHADOWS) && defined(GE_VIRTUAL_SHADOW_MAPS)
+    // Screen derivatives are not defined inside the light loop.
+    vec3 virtualReceiverDx = GE_DFDX(posRel);
+    vec3 virtualReceiverDy = GE_DFDY(posRel);
+#endif
 
     // Hoist the per-pixel base multiscatter compensation out of the per-light loop (it depends
     // only on F0/NdotV/roughness). GE_EvaluateStandardPBR reads g_BaseMultiscatter for every light.
@@ -644,9 +653,16 @@ vec3 GE_AccumulateClusteredLighting(
 
         float localShadow = 1.0;
 #ifdef HAS_SHADOWS
-        if (lightType == 1u)
+        bool virtualResolved = false;
+#ifdef GE_VIRTUAL_SHADOW_MAPS
+        // A light with resident virtual pages does not read the conventional atlas.
+        virtualResolved = lp.meta.y != 0u && (lightType == 1u || lightType == 2u) &&
+            GE_TryVirtualShadowLocal(lightType == 1u, lightIdx, posRel, so.normalWS,
+                                     virtualReceiverDx, virtualReceiverDy, localShadow);
+#endif
+        if (!virtualResolved && lightType == 1u)
             localShadow = GE_SamplePointShadow(lp, lightIdx, posRel, so.normalWS);
-        else if (lightType == 2u)
+        else if (!virtualResolved && lightType == 2u)
             localShadow = GE_SampleSpotShadow(lp, lightIdx, posRel, so.normalWS);
 #endif
 

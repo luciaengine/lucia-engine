@@ -1294,14 +1294,20 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     function(_ge_add_shaderpkg_graphics pkg_name vs_base fs_base)
         set(_OUT "${CMAKE_BINARY_DIR}/Shaders/${pkg_name}.shaderpkg")
         set(_VS  "${CMAKE_BINARY_DIR}/Shaders/${vs_base}.spv")
-        set(_FS  "${CMAKE_BINARY_DIR}/Shaders/${fs_base}.spv")
-        set(_PKG_DEPENDS "${_VS}" "${_FS}")
+        set(_PKG_ARGS --vs "${_VS}")
+        set(_PKG_DEPENDS "${_VS}")
+        # A depth-only package has no fragment stage: pass "" for fs_base.
+        if(fs_base)
+            set(_FS "${CMAKE_BINARY_DIR}/Shaders/${fs_base}.spv")
+            list(APPEND _PKG_ARGS --fs "${_FS}")
+            list(APPEND _PKG_DEPENDS "${_FS}")
+        endif()
         if(_GE_SHADERREFLECT_TOOL_DEP)
             list(APPEND _PKG_DEPENDS ${_GE_SHADERREFLECT_TOOL_DEP})
         endif()
         add_custom_command(
             OUTPUT  "${_OUT}"
-            COMMAND "${_GE_SHADERREFLECT_CMD}" --vs "${_VS}" --fs "${_FS}" --out "${_OUT}"
+            COMMAND "${_GE_SHADERREFLECT_CMD}" ${_PKG_ARGS} --out "${_OUT}"
             DEPENDS ${_PKG_DEPENDS}
             COMMENT "Packaging graphics shaderpkg: ${pkg_name}"
             VERBATIM
@@ -1538,6 +1544,12 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_compute(draw_command_scatter_stats draw_command_scatter_stats.comp)
     _ge_add_shaderpkg_compute(draw_command_scatter_compact_stats draw_command_scatter_compact_stats.comp)
     _ge_add_shaderpkg_compute(depth_reduce depth_reduce.comp)
+    _ge_add_shaderpkg_compute(virtual_shadow_mark virtual_shadow_mark.comp)
+    if(BUILD_TESTING)
+        _ge_add_shaderpkg_compute(virtual_shadow_lookup_test virtual_shadow_lookup_test.comp)
+        _ge_add_shaderpkg_compute(virtual_shadow_receiver_test virtual_shadow_receiver_test.comp)
+        _ge_add_shaderpkg_graphics(virtual_shadow_test_depth virtual_shadow_test_depth.vert "")
+    endif()
     _ge_add_shaderpkg_compute(depth_reduce_ms depth_reduce_ms.comp)
     _ge_add_shaderpkg_compute(depth_resolve depth_resolve.comp)
     _ge_add_shaderpkg_compute(depth_copy depth_copy.comp)

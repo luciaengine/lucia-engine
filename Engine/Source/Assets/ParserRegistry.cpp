@@ -363,10 +363,11 @@ std::shared_ptr<AssetParser> ParserRegistry::FindParser(const std::filesystem::p
     return nullptr;
 }
 
-std::filesystem::path ParserRegistry::ResolveReadPath(const AssetMetadata& metadata, const AssetManager& assetManager) const
+AssetReadSource ParserRegistry::ResolveReadSource(const AssetMetadata& metadata, const AssetManager& assetManager) const
 {
     const auto parser = FindParser(metadata.Path);
-    return parser ? parser->ResolveReadPath(metadata, assetManager) : metadata.Path;
+    return parser ? AssetReadSource{parser->ResolveReadPath(metadata, assetManager), parser->GetMaximumReadBytes(metadata)}
+                  : AssetReadSource{metadata.Path};
 }
 
 AssetDecodeInputs ParserRegistry::ResolveDecodeInputs(const AssetMetadata& metadata, std::span<const uint8> bytes,

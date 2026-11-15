@@ -50,7 +50,7 @@ public:
 
 private:
     void AdvanceAndExtractSprite(ECS::World& world, AssetManager& assets, ECS::EntityHandle entity,
-                                 ECS::Writable<Components::AnimatedSprite2D> spriteRow,
+                                 Components::AnimatedSprite2D& spriteRow,
                                  const Components::WorldTransform& worldTransform, float32 deltaTime, std::optional<bool>& hasSortingGroups, std::size_t sortingScanBudget);
     /** Frame pixel extent of a sprite sheet, needed to size a quad from PixelsPerUnit. */
     struct TextureSize

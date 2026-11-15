@@ -28,8 +28,8 @@
 //   5. The TESTs assert the host now sees what the DLL registered, by id.
 
 #include "Core/Application.h" // ApplicationPaths::GetExecutableDirectory
-#include "ECS/ComponentFieldRegistry.h"
-#include "ECS/ComponentFactory.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFactory.h"
 
 #include <gtest/gtest.h>
 

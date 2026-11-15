@@ -7,6 +7,7 @@
 #include <atomic>
 #include <filesystem>
 #include <span>
+#include <limits>
 #include <utility>
 
 namespace GameEngine {
@@ -156,6 +157,9 @@ public:
      * returning true must implement AdoptReloadedPayload().
      */
     virtual bool SupportsAsyncReload() const { return false; }
+
+    /// Source buffer limit for inline reads and reloads of this live asset.
+    virtual uint64 GetMaximumReadBytes() const { return std::numeric_limits<uint64>::max(); }
 
     /**
      * @brief Adopt the payload of a freshly decoded instance of this asset

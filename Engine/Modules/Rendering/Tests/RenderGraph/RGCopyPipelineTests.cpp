@@ -180,15 +180,15 @@ TEST_P(PreparedCopyTest, ColdPipelineIsReadyBeforeRecordingAndCopiesTheFirstFram
     EXPECT_EQ(frame.Stats().InlinePassesRecorded, secondary ? 2u : 3u);
     if (!secondary)
         EXPECT_DOUBLE_EQ(frame.Stats().WorkerRecordMs, 0.0);
-    EXPECT_EQ(frame.Stats().PreparedPasses, 4u);
-    EXPECT_EQ(frame.Stats().PreparationFailures, 1u);
+    EXPECT_EQ(frame.Stats().PreparedPasses, 2u);
+    EXPECT_EQ(frame.Stats().PreparationFailures, 0u);
     EXPECT_EQ(frame.SubmittedFrameCount(), 1u);
 
     allowRecording = false;
     const double rejectedRetryMs = MeasureExecuteMilliseconds(frame);
     EXPECT_DOUBLE_EQ(frame.Stats().RecordAndSubmitMs, 0.0);
     EXPECT_LE(frame.Stats().PrepareMs, rejectedRetryMs);
-    EXPECT_EQ(frame.Stats().PreparationFailures, 2u);
+    EXPECT_EQ(frame.Stats().PreparationFailures, 1u);
     EXPECT_EQ(frame.SubmittedFrameCount(), 1u);
     EXPECT_EQ(recordCount, 1u);
     const auto* pixels = static_cast<const uint8_t*>(device->MapBuffer(readback));

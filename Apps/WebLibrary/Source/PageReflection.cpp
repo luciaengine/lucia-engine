@@ -1,9 +1,9 @@
 #include "PageReflection.h"
 
 #include "Core/EngineVersion.h"
-#include "ECS/ComponentFactory.h"
-#include "ECS/ComponentFieldRegistry.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentFactory.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "Types/FlatMap.h"
 #include "Types/StringUtils.h"
 

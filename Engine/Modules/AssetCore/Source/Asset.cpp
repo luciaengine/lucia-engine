@@ -59,7 +59,7 @@ ReloadOutcome Asset::Reload() {
     // half-written save or a sharing violation strip a perfectly good loaded
     // asset; the bytes have to be in hand before the live payload is touched.
     ByteBuffer data;
-    if (!ReadFileBytesShared(m_Path, data)) {
+    if (!ReadFileBytesShared(m_Path, data, GetMaximumReadBytes())) {
         return ReloadOutcome::Failed;
     }
 

@@ -17,7 +17,7 @@ class ParticleStackParser final : public AssetParser
     int GetPriority() const override { return 100; }
     /// A stack references no assets: its spawn rules name the emitter's sub-emitter slots.
     bool ExtractDependencies(const GUID& referrer, const AssetMetadata& metadata, DepEdgeSink& sink) const override;
-    bool CookForPackage(const std::filesystem::path& stagedFile, std::string& error) const override;
+    bool CookForPackage(const AssetPackageCookContext& context, std::string& error) const override;
 };
 
 } // namespace GameEngine::Particles

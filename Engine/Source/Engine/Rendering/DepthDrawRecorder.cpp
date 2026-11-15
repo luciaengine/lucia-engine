@@ -1,5 +1,6 @@
 // Prepares depth/shadow draws before recording and replays frame-owned packets.
 #include "Engine/Rendering/DepthDrawRecorder.h"
+#include "Engine/Rendering/VirtualShadows/VirtualShadowFeedback.h"
 #include "Rendering/Core/DrawProducerRegistry.h"
 #include "Engine/Rendering/ParallaxReliefDepth.h"
 
@@ -213,6 +214,25 @@ class DepthPassPreparation
     {
         m_Data.Draws.clear();
         m_Data.PushConstants.clear();
+        m_Data.AllProducer = {};
+        m_Data.RigidProducer = {};
+        const bool virtualPage = m_Data.Params.VirtualPageTile.has_value();
+        if (virtualPage)
+        {
+            if (*m_Data.Params.VirtualPageTile >= kVirtualShadowPhysicalTiles ||
+                m_Data.Params.Casters != CascadeCasters::All ||
+                m_Data.Params.Phase != Rendering::GPUDrawStreamBuilder::SlicePhase::A ||
+                (m_Data.Params.PassType != DepthPassType::ShadowCascade &&
+                 m_Data.Params.PassType != DepthPassType::SpotShadow &&
+                 m_Data.Params.PassType != DepthPassType::PointShadow) ||
+                !m_Context.IsFor(m_Data.Params.VirtualFrame) ||
+                !m_Data.Params.VirtualCasterOrdering.IsValid() || !m_Services.Streams)
+                return false;
+            const auto ordering = m_Context.GetBuffer(m_Data.Params.VirtualCasterOrdering);
+            const auto expected = m_Services.Streams->GetSentinelBuffer();
+            if (!ordering.IsValid() || !expected.IsValid() || ordering != expected)
+                return false;
+        }
         m_Data.Materials = &m_Services.Materials;
         m_Data.UnderDraw = m_Services.UnderDraw;
         m_Data.UnderDrew = false;
@@ -250,13 +270,17 @@ class DepthPassPreparation
 
         // bits so the prepass doesn't collide with cascade 0 in MaterialBinder's
         // per-pass descriptor cache (the terrain-flickers-black bug class).
-        const uint32_t passInstanceIndex =
+        const uint32_t conventionalPassInstanceIndex =
             (static_cast<uint32_t>(m_Data.Params.PassType) << 16) |
             ((m_Data.Params.PassType == DepthPassType::ShadowCascade ||
               m_Data.Params.PassType == DepthPassType::PointShadow ||
               m_Data.Params.PassType == DepthPassType::TransmittanceCascade)
                  ? m_Data.Params.CascadeIndex
                  : 0u);
+        constexpr uint32_t kVirtualPagePassTag =
+            (static_cast<uint32_t>(DepthPassType::Count) + 1u) << 16;
+        const uint32_t passInstanceIndex = virtualPage
+            ? kVirtualPagePassTag | *m_Data.Params.VirtualPageTile : conventionalPassInstanceIndex;
         // Contributor draws (CBT terrain in the camera prepass, terrain grass in the non-occluding
         // prepass, registered depth producers in the light-space passes) carry their own pinned
         // depth pipelines.
@@ -271,8 +295,29 @@ class DepthPassPreparation
              !passView->NonOccludingPrepassDeclared)
                 ? NonOccludingPrepassHeads(m_Services.Views, m_Data.Params.ViewId)
                 : std::span<const DrawCommand>{};
+        m_CascadeIndex = Rendering::GPUDrawStreamBuilder::kCascadeIndexNone;
+        if (virtualPage)
+            m_CascadeIndex = kVirtualShadowCasterCullingIndex;
+        else if (m_Data.Params.PassType == DepthPassType::ShadowCascade ||
+            m_Data.Params.PassType == DepthPassType::TransmittanceCascade)
+            m_CascadeIndex = static_cast<uint8_t>(m_Data.Params.CascadeIndex);
+        else if (m_Data.Params.PassType == DepthPassType::AreaShadow)
+            m_CascadeIndex = kAreaShadowCullingIndex;
+        else if (m_Data.Params.PassType == DepthPassType::SpotShadow)
+            m_CascadeIndex = kSpotShadowCullingIndex;
+        else if (m_Data.Params.PassType == DepthPassType::PointShadow)
+            m_CascadeIndex = PointShadowCullingIndex(m_Data.Params.CascadeIndex);
+
+        const bool virtualRoutePublished = virtualPage && m_Services.Streams &&
+            m_CascadeIndex == kVirtualShadowCasterCullingIndex &&
+            m_Services.Streams->HasPublishedRangesForPhase(static_cast<uint32_t>(m_Data.Params.ViewId),
+                kVirtualShadowCasterCullingIndex, Rendering::GPUDrawStreamBuilder::SlicePhase::A);
+        const bool virtualPunctualProducer = virtualRoutePublished &&
+            (m_Data.Params.PassType == DepthPassType::SpotShadow ||
+             m_Data.Params.PassType == DepthPassType::PointShadow);
         if (!depthCommands.empty() || !fallbackHeads.empty() || m_Services.CpuDrawStream ||
-            m_Data.Params.PassType != DepthPassType::ShadowCascade)
+            (virtualPage && !virtualRoutePublished) ||
+            (m_Data.Params.PassType != DepthPassType::ShadowCascade && !virtualPunctualProducer))
         {
             m_Data.AllProducer.Complete = false;
             m_Data.RigidProducer.Complete = false;
@@ -293,19 +338,8 @@ class DepthPassPreparation
             return true;
         }
 
-        m_CascadeIndex = Rendering::GPUDrawStreamBuilder::kCascadeIndexNone;
-        if (m_Data.Params.PassType == DepthPassType::ShadowCascade ||
-            m_Data.Params.PassType == DepthPassType::TransmittanceCascade)
-            m_CascadeIndex = static_cast<uint8_t>(m_Data.Params.CascadeIndex);
-        else if (m_Data.Params.PassType == DepthPassType::AreaShadow)
-            m_CascadeIndex = kAreaShadowCullingIndex;
-        else if (m_Data.Params.PassType == DepthPassType::SpotShadow)
-            m_CascadeIndex = kSpotShadowCullingIndex;
-        else if (m_Data.Params.PassType == DepthPassType::PointShadow)
-            m_CascadeIndex = PointShadowCullingIndex(m_Data.Params.CascadeIndex);
-
         m_TrackUnderDraw =
-            m_Services.UnderDraw != nullptr &&
+            m_Services.UnderDraw != nullptr && !virtualPage &&
             (m_Data.Params.PassType == DepthPassType::ShadowCascade ||
              m_Data.Params.PassType == DepthPassType::TransmittanceCascade);
 
@@ -317,7 +351,7 @@ class DepthPassPreparation
             m_Data.Params.PassType == DepthPassType::PointShadow;
         // The survivor stat is produced by the GPU scatter; the compat profile never
         // runs it, so an unguarded early-out would skip every shadow slice forever.
-        if (kShadowWalkEarlyOut && !m_Services.CpuDrawStream && isOpaqueShadowSlice && depthCommands.empty() && m_Services.Streams)
+        if (kShadowWalkEarlyOut && !virtualPage && !m_Services.CpuDrawStream && isOpaqueShadowSlice && depthCommands.empty() && m_Services.Streams)
         {
             const uint32_t survivors = m_Services.Streams->PreviousFrameShadowSurvivors(
                 static_cast<uint32_t>(m_Data.Params.ViewId), m_CascadeIndex, m_Data.Params.Phase);
@@ -440,6 +474,11 @@ class DepthPassPreparation
         const auto& params = m_Data.Params;
         uint64_t content = HashUtils::HashValue(submissions.MaterialContentKey, params.PassType);
         content = HashUtils::HashValue(content, params.CascadeIndex);
+        if (params.VirtualPageTile)
+        {
+            content = HashUtils::HashValue(content, true);
+            content = HashUtils::HashValue(content, *params.VirtualPageTile);
+        }
         content = HashUtils::HashValue(content, params.DepthBiasEnable);
         content = HashUtils::HashValue(content, params.DepthClampEnable);
         content = HashUtils::HashValue(content, params.RasterizationSamples);
@@ -803,6 +842,9 @@ class DepthPassPreparation
 
     void PrepareContributor(const DrawCommand& command)
     {
+        if (m_Services.Meshes.IsBufferInStorageDomain(command.Geometry.AltGeom.VB, Rendering::MeshGPUStorageDomain::ClusterFine) ||
+            m_Services.Meshes.IsBufferInStorageDomain(command.Geometry.AltGeom.IB, Rendering::MeshGPUStorageDomain::ClusterFine))
+            return;
         Rendering::PipelineHandle pipeline{};
         if (command.InternedPipeline.IsValid())
             pipeline = m_Context.PreparePipeline(command.InternedPipeline);

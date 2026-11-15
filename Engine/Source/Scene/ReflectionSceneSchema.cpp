@@ -2,7 +2,7 @@
 
 #include "AssetCore/AssetTypes.h"
 #include "AssetCore/GUID.h"
-#include "ECS/ComponentFactory.h"
+#include "ECS/Component/ComponentFactory.h"
 #include "ECS/FieldAccess.h"
 #include "Engine/Rendering/PostProcessEffectRegistry.h"
 #include "Scene/FieldSerializerRegistry.h"

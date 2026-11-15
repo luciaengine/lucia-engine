@@ -293,6 +293,9 @@ void RenderServices::AddSortedTransparentDrainForView(Rendering::RenderGraph::RG
                                                       const WorldPassTargetsRG& targets,
                                                       Rendering::MaterialKeyword passKeywords)
 {
+    if (!Spine().BindWorldGeometry(frame))
+        return;
+
     namespace RenderGraph = Rendering::RenderGraph;
 
     float bandStart = 0.0f, bandEnd = 0.0f;

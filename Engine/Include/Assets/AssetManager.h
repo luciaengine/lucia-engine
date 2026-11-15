@@ -13,6 +13,7 @@
 #include "FileWatcher/FileWatcher.h"
 #include "Assets/FileWatchingService.h"
 #include "Assets/ParserRegistry.h"
+#include "Assets/AssetIOService.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "JobSystem/TaskHandle.h"
 #include <future>
@@ -355,6 +356,11 @@ public:
      * rebind.
      */
     std::filesystem::path GetAssetRoot() const;
+
+    /// Submits an auxiliary page read through the existing asset IO/decode gate.
+    /// Owner-thread only; initialize/shutdown must not run concurrently.
+    void SubmitRead(AssetIOService::ReadRequest request);
+
 
     /**
      * @brief Register an asset source. "project" is a valid alias.

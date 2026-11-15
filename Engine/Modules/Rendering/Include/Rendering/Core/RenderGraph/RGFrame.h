@@ -281,6 +281,7 @@ class RGContext
 
   private:
     friend class RGFrame;
+    friend class RGPrepareContext;
     void SetArmedProfilerScope(const char* scope);
 
     RGFrame* m_Frame = nullptr;
@@ -300,6 +301,11 @@ class RGPrepareContext
     TextureHandle GetTexture(RGTexture texture) const { return m_Context.GetTexture(texture); }
     BufferHandle GetBuffer(RGBuffer buffer) const { return m_Context.GetBuffer(buffer); }
     IDevice* GetDevice() const { return m_Context.GetDevice(); }
+    /// Whether this preparation belongs to the stamped graph incarnation.
+    bool IsFor(const RGFrameStamp& frame) const;
+    /// Select a realized depth target's format on this graphics preparation context.
+    /// Call on a copy; this does not declare a graph dependency or record a pass.
+    bool UseDepthTarget(RGTexture depth, uint32_t expectedSamples);
     PipelineFormatKey BuildCurrentFormatKey() const { return m_Context.BuildCurrentFormatKey(); }
     /// Resolve this pass's specialization without building a concrete backend pipeline.
     GraphicsPipelineId ResolveGraphicsPipelineId(GraphicsPipelineId pipeline) const
@@ -396,11 +402,32 @@ class RGFrame
 
     void BeginFrame(uint64_t frameIndex);
 
-    // Retire recorded CPU callbacks before their code or captured owners disappear.
-    // Caller-thread only, outside Execute/recording. Waits this frame's submitted
-    // work, then discards its declaration; subsequent Execute is inert until new
-    // passes are declared. Does not advance the frame or reset GPU pools/upload ring.
+    // Caller-thread only, outside Execute/recording: waits submitted work and retires callbacks.
+    // Execute stays inert until new passes are declared. Retire before code/owners disappear.
+    // Does not advance the frame or reset GPU pools/upload ring.
     void DiscardRecordedPasses();
+
+    // Caller-thread admission before Execute touches resources/preparation; owners invalidate
+    // on this thread outside Execute. Requirements accumulate until recording is discarded.
+    // False means an expired requirement; adding a new one cannot revive the recording.
+    bool RequireExecutionLifetime(std::weak_ptr<const void> lifetime);
+
+    // This recording may only execute with all logical queues routed to
+    // graphics. Checked again at execution, so a later map change cannot
+    // silently widen a graphics-only resource lifetime contract.
+    void RequireGraphicsQueue() { m_RequiresGraphicsQueue = true; }
+
+    // Conservative reader evidence: runs BEFORE every native submission attempt,
+    // including attempts whose backend returns failure after work was enqueued.
+    // No callback means no attempt, not successful submission/completion.
+    template <class Callback>
+    void OnSubmissionAttempt(Callback&& callback)
+    {
+        using Function = std::decay_t<Callback>;
+        static_assert(std::is_nothrow_invocable_v<Function&>);
+        Function* function = m_Graph.Arena().New<Function>(std::forward<Callback>(callback));
+        m_SubmissionAttempts.push_back({[](void* value) noexcept { (*static_cast<Function*>(value))(); }, function});
+    }
 
     // Transient (this frame only; realized from the transient pool AFTER cull —
     // a culled pass's resources are never allocated).
@@ -631,7 +658,7 @@ class RGFrame
         uint32_t RenderPassesBegun = 0;
 
         // A2 STEP-0 render-thread CPU brackets, wall-ms for the last Execute()
-        // (reset with the rest of FrameStats in BeginFrame). The RG phases are
+        // (reset with the rest of FrameStats in Execute). The RG phases are
         // the pre-record serial floor; QueueSubmit + BarrierEmit are the record
         // floor A2.4 cannot remove (neither lands in RGPassTiming::CpuMs, which
         // times only the per-pass exec interior). get_render_stats stitches
@@ -649,6 +676,7 @@ class RGFrame
         // These two wall times describe the latest Execute attempt, including retries.
         double PrepareMs = 0.0;
         double RecordAndSubmitMs = 0.0; // includes fork/join and submission; zero when not recorded
+        bool ExecutionRejected = false; // recording lifetime or queue admission failed before preparation
         uint32_t PreparedPasses = 0;
         uint32_t PreparationFailures = 0;
         double QueueSubmitMs = 0.0;        // Σ IDevice::QueueSubmit across submissions
@@ -846,6 +874,7 @@ class RGFrame
 
   private:
     void ResetRecording();
+    std::vector<std::weak_ptr<const void>> m_ExecutionLifetimes;
     void MaintainPools();
     friend class RGPassBuilder;
     friend class RGContext;
@@ -1013,6 +1042,7 @@ class RGFrame
     RGGraph m_Graph;
     std::vector<PrepareThunk> m_Prepare;
     std::vector<SubmitThunk> m_OnSubmitted;
+    std::vector<SubmitThunk> m_SubmissionAttempts;
     std::vector<PipelineRequirement> m_RequiredPipelines;
     std::vector<ExecThunk> m_Exec; // indexed by pass id
     std::vector<PendingTex> m_PendingTex;
@@ -1048,6 +1078,7 @@ class RGFrame
     bool m_TimelineCreated[kQueueCount] = {false, false, false};
     uint64_t m_LastSignaled[kQueueCount] = {0, 0, 0}; // per physical queue (WaitForPendingWork)
     uint8_t m_PhysicalQueueOf[3] = {0, 0, 0}; // kSingleQueueMap (the design default)
+    bool m_RequiresGraphicsQueue = false;
     FrameStats m_Stats;
     // Profiling state. m_ProfilingCurrent is record-thread-only; pending slots
     // are keyed by the DEVICE frame index (the query pool's latency ring);

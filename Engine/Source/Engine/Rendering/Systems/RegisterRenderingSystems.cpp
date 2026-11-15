@@ -22,6 +22,10 @@
 #include "ECSModules/Rendering/Systems/SkyEnvironmentSystem.h"
 #include "ECSModules/Rendering/Systems/AmbientLightSystem.h"
 #include "ECSModules/Rendering/Systems/DDGIVolumeSystem.h"
+#include "Engine/Rendering/ClusterLOD/ClusterLODFeature.h"
+#include "Engine/Rendering/ClusterLOD/ClusterLODPrepareSystem.h"
+#include "Engine/Rendering/RenderServices.h"
+#include "Platform/Environment.h"
 #include "ECSModules/Rendering/Systems/ReflectionProbeSystem.h"
 #include "ECSModules/Rendering/Systems/PlanarReflectionSystem.h"
 
@@ -53,6 +57,7 @@ void AddRenderingSystemsToSchedule(ECS::SystemScheduleBuilder& schedule, RenderS
     constexpr const char* kHierarchy = "TransformHierarchy";
     constexpr const char* kHlodSelect = "HLODSelect";
     constexpr const char* kExtract = "RenderExtraction";
+    constexpr const char* kClusterPrepare = "ClusterLODPrepare";
     constexpr const char* kNativePostSimulation = "NativePostSimulation";
     constexpr const char* kCamera = "Camera";
     constexpr const char* kSkyEnv = "SkyEnvironment";
@@ -123,6 +128,15 @@ void AddRenderingSystemsToSchedule(ECS::SystemScheduleBuilder& schedule, RenderS
     schedule.Add<NativePostSimulationSystem>(kNativePostSimulation, SystemPhase::Extraction, 6,
         afterMovementWriters({kHierarchy, kMorph, kHlodSelect}), renderServices);
 
+    if (renderServices && Platform::EnvironmentSwitchEnabled("GE_CLUSTER_LOD", false))
+    {
+        auto* assets = EngineCore::GetInstance().TryGetAssetManager();
+        auto& feature = renderServices->EnsureFeature<ClusterLODFeature>();
+        if (assets && feature.Initialize(*renderServices, *assets))
+            schedule.Add<ClusterLODPrepareSystem>(kClusterPrepare, SystemPhase::Extraction, 6,
+                std::vector<SystemDependency>{kHierarchy, kMorph, kHlodSelect, kNativePostSimulation, kCamera}, &feature);
+    }
+
     // Extraction reads this frame's WorldTransforms, so it runs after the
     // movement writers and after the native hook that derives presentation
     // from them. Sector ownership for picking is handled inside the Scene
@@ -138,7 +152,7 @@ void AddRenderingSystemsToSchedule(ECS::SystemScheduleBuilder& schedule, RenderS
         afterMovementWriters({kHierarchy, kNativePostSimulation}), particles);
     schedule.Add<RenderExtractionSystem>(kExtract, SystemPhase::Extraction, 6,
         afterMovementWriters({kHierarchy, kMorph, kHlodSelect, kNativePostSimulation,
-                              "ParticleSimulation", kSkyEnv}), renderServices, particles);
+                              "ParticleSimulation", kSkyEnv, OptionalDependency(kClusterPrepare)}), renderServices, particles);
 
     // The scene TLAS has no per-frame system: its consumers bring it current
     // on demand (Scene/SceneTlas.h, RequestCurrent).
@@ -150,7 +164,7 @@ void AddRenderingSystemsToSchedule(ECS::SystemScheduleBuilder& schedule, RenderS
     schedule.Add<SkyEnvironmentSystem>(kSkyEnv, SystemPhase::Camera, 1, {kCamera, kCurve, kTimelinePlayback},
                                        renderServices);
     schedule.Add<ReflectionProbeSystem>(
-        kReflectionProbe, SystemPhase::Camera, 3, {kCamera, kSkyEnv}, renderServices);
+        kReflectionProbe, SystemPhase::Camera, 3, {kCamera, kSkyEnv, OptionalDependency(kClusterPrepare)}, renderServices);
     // Opt-in ambient floor, chained AFTER the probe system. SkyEnvironment,
     // ReflectionProbe and this system all call RenderServices::EnsureFeature on
     // first touch; EnsureFeature is internally synchronized, so sharing a wave

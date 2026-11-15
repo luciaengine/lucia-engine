@@ -286,6 +286,15 @@ class FrameOrchestrator
     // independently). Dynamic resolution keys its once-per-frame tick on it.
     uint64_t WorldFrameEpoch() const { return m_WorldFrameEpoch; }
 
+    // Caller-thread opt-in for sealed geometry; invalidates tracked spine recordings.
+    // Recovery needs a new BeginAppFrame/extraction and fresh recording, not a same-epoch reset.
+    // Enable before that cycle and again after Shutdown/Initialize.
+    void RequireCurrentWorldEpoch();
+    /// Enables geometry leases only before the first world declaration.
+    bool TryRequireCurrentWorldEpoch();
+    /// Caller-thread admission for spine and direct world-geometry declarations.
+    bool BindWorldGeometry(Rendering::RenderGraph::RGFrame& frame);
+
     // Borrows the frame until RemovePipelineInstanceForFrame. The caller must
     // remove the stream while frame/device are alive, before destroying either.
     // Includes short-lived capture/test frames as well as window-owned streams.
@@ -496,6 +505,9 @@ class FrameOrchestrator
     // CONTRACT: BuildFrameGraph requires one BeginAppFrame per app frame —
     // without the tick, stage G runs once and never re-arms.
     uint64_t m_WorldFrameEpoch = 1;
+    std::shared_ptr<const void> m_WorldExecutionLifetime;
+    bool m_RequiresCurrentWorldEpoch = false;
+    bool m_WorldGeometryDeclared = false;
     uint64_t m_GlobalStagesEpoch = 0;
     Rendering::RenderGraph::RGFrame* m_GlobalStagesFrame = nullptr;
     uint64_t m_SelectedSceneProducerEpoch = 0;

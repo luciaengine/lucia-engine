@@ -4,7 +4,7 @@
 #include "AssetDatabase/AssetStore_TextJsonl.h"
 #include "Assets/TextureCook.h"
 #include "Core/Application.h" // ApplicationPaths::GetExecutableDirectory
-#include "ECS/ComponentFactory.h"
+#include "ECS/Component/ComponentFactory.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/SystemScheduling.h"
 #include "ECS/Systems.h"

@@ -71,8 +71,12 @@ export const tools: ToolDef[] = [
     description: "Get rendering performance statistics. renderServices.renderThreadCpu.ecsSystems[].maxMs is each ECS system's slowest update since tracking began; pass resetSystemMaxima:true to clear it after this read, so the next read reports the worst single frame in between (read, act, read).",
     schema: {
       resetSystemMaxima: z.coerce.boolean().optional().describe("Clear every ECS system's maxMs after this read (default false)"),
+      includeGeometryDomains: z.coerce.boolean().optional().describe("Count all current per-view CPU batch keys by geometry storage domain. Diagnostic scan only; these counts do not prove executed GPU draws (default false)."),
     },
-    params: ({ resetSystemMaxima }) => ({ resetSystemMaxima: resetSystemMaxima ?? false }),
+    params: ({ resetSystemMaxima, includeGeometryDomains }) => ({
+      resetSystemMaxima: resetSystemMaxima ?? false,
+      includeGeometryDomains: includeGeometryDomains ?? false,
+    }),
   }),
 
   proxyTool({

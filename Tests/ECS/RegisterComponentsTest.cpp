@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "ECS/World.h"
 #include "ECS/Entity.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "ECS/AutoRegistration.h"
 #include "TestComponents.h"
 

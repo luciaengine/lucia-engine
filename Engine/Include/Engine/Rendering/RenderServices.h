@@ -29,6 +29,7 @@
 #include "Engine/Rendering/LodProjectSettings.h"   // kDefaultCrossfadeDuration
 #include "Engine/Rendering/ViewRegistry.h"
 #include "Engine/Rendering/ViewTemporalHistory.h"
+#include "Engine/Rendering/VirtualShadows/VirtualShadowViewInputs.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/DeviceFrameCounter.h"
 #include "Rendering/Core/RendererProfile.h"
@@ -1146,6 +1147,9 @@ class RenderServices
     bool ShareDirectionalShadowsRG(Rendering::RenderGraph::RGFrame& frame,
         Rendering::ViewId sourceView, Rendering::ViewId receiverView);
 
+    // The virtual shadow page table, depth atlas and projection rows of this view and frame.
+    void PublishVirtualShadowInputs(ShadowDeclareSeam, Rendering::RenderGraph::RGFrame& frame,
+                                    Rendering::ViewId viewId, const VirtualShadowViewInputs& inputs);
     void PublishPcssPyramid(ShadowDeclareSeam, Rendering::RenderGraph::RGFrame& frame,
                             Rendering::ViewId viewId, Rendering::RenderGraph::RGTexture pyramid);
 
@@ -2279,6 +2283,7 @@ class RenderServices
         // RTShadowMask-keyword passes; phase B (recover) reuses it.
         Rendering::RenderGraph::RGTexture RTShadowMask{};
         Rendering::RenderGraph::RGTexture ScreenSpaceShadowMask{};
+        VirtualShadowViewInputs VirtualShadows{};
         // The SAME upload alloc the world pass's resolved table reads —
         // written at the area arm's declaration, bound by name "AreaShadowData".
         Rendering::RenderGraph::RGFrame::TypedUpload<AreaShadowDataGPU> AreaShadowData{};

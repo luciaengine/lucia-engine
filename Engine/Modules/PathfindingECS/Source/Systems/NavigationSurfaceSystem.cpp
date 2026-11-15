@@ -247,8 +247,7 @@ void ReplanAgentsCrossing(ECS::World& world, Pathfinding::NavMapHandle map, cons
     }
     const Pathfinding::PathBuffer& paths = NavigationService::Get().GetPathBuffer();
     world.Query<ECS::Write<Components::NavigationAgentState>>().Each(
-        [&](ECS::Writable<Components::NavigationAgentState> stateRow) {
-            auto& state = stateRow.Mutable();
+        [&](Components::NavigationAgentState& state) {
             if (!state.HasDestination || state.ReplanRequested ||
                 Pathfinding::NavMapHandle{state.NavMapIndex, state.NavMapGeneration} != map)
                 return;
@@ -269,8 +268,7 @@ void ReplanAgentsCrossing(ECS::World& world, Pathfinding::NavMapHandle map, cons
 void ReplanAgentsOn(ECS::World& world, Pathfinding::NavMapHandle map)
 {
     world.Query<ECS::Write<Components::NavigationAgentState>>().Each(
-        [&](ECS::Writable<Components::NavigationAgentState> stateRow) {
-            auto& state = stateRow.Mutable();
+        [&](Components::NavigationAgentState& state) {
             if (state.HasDestination && !state.PathDirty &&
                 Pathfinding::NavMapHandle{state.NavMapIndex, state.NavMapGeneration} == map &&
                 (state.Status == Pathfinding::PathStatus::Complete || state.Status == Pathfinding::PathStatus::Partial))
@@ -545,9 +543,8 @@ void NavigationSurfaceSystem::Update(ECS::World& world, float32 /*deltaTime*/)
 
     world.Query<ECS::Write<NavigationSurface>, ECS::Optional<Components::Transform>,
                 ECS::Optional<Components::WorldTransform>>()
-        .Each([&](ECS::EntityHandle entity, ECS::Writable<NavigationSurface> surfaceRow, const Components::Transform* local,
+        .Each([&](ECS::EntityHandle entity, NavigationSurface& surface, const Components::Transform* local,
                   const Components::WorldTransform* transform) {
-                      auto& surface = surfaceRow.Mutable();
             if (authoredCellsChanged && surface.Mode == NavigationSurfaceMode::Grid && !surface.AuthoredCells.IsNull())
                 surface.BakeRequested = true;
             // A placed surface whose WorldTransform TransformHierarchy has not resolved yet (Version 0)

@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -192,6 +193,92 @@ std::string LossFrameSchedule()
 }
 
 } // namespace
+
+TEST(DeviceLifecycle, RayQueryDisablePolicyIsRealAndSurvivesRecovery)
+{
+    ScopedEnvVar policy("GE_VK_DISABLE_RAY_QUERY", "0");
+    GameEngine::Rendering::Tests::UnsetEnvVar("GE_VK_DISABLE_RAY_QUERY");
+    auto baseline = MakeProbeDevice();
+    if (!baseline)
+        GTEST_SKIP() << "no Vulkan device";
+    const bool defaultRayQuery = baseline->GetCapabilities().supportsRayQuery;
+    const bool defaultBda = baseline->GetCapabilities().supportsBufferDeviceAddress;
+    RecordProperty("baselineRayQueryEnabled", defaultRayQuery ? 1 : 0);
+    RecordProperty("baselineBufferDeviceAddressEnabled", defaultBda ? 1 : 0);
+    baseline->Shutdown();
+    baseline.reset();
+
+    GameEngine::Rendering::Tests::SetEnvVar("GE_VK_DISABLE_RAY_QUERY", "1");
+    ScopedEnvVar forcedLoss("GE_VK_FORCE_DEVICE_LOST", "1");
+    auto device = MakeProbeDevice();
+    ASSERT_NE(device, nullptr);
+    EXPECT_FALSE(device->GetCapabilities().supportsRayQuery);
+    EXPECT_EQ(device->GetAccelerationStructureBackend(), nullptr);
+    EXPECT_EQ(device->GetCapabilities().supportsBufferDeviceAddress, defaultBda);
+    if (defaultBda)
+    {
+        BufferDesc desc{};
+        desc.size = 4096;
+        desc.usage = static_cast<uint32_t>(BufferUsage::Storage | BufferUsage::ShaderDeviceAddress);
+        desc.memoryUsage = BufferMemoryUsage::Upload;
+        const auto buffer = device->CreateBuffer(desc);
+        ASSERT_TRUE(buffer.IsValid());
+        EXPECT_NE(device->GetBufferDeviceAddress(buffer), 0u);
+        device->DestroyBuffer(buffer);
+    }
+
+    // Changing the environment cannot change a rebuilt session's device policy.
+    GameEngine::Rendering::Tests::UnsetEnvVar("GE_VK_DISABLE_RAY_QUERY");
+    for (int frame = 0; frame < kMaxFramesPerRebuild && device->GetDeviceRebuildGeneration() == 0; ++frame)
+        RunFrame(*device);
+    ASSERT_EQ(device->GetDeviceRebuildGeneration(), 1u);
+    EXPECT_FALSE(device->GetCapabilities().supportsRayQuery);
+    EXPECT_EQ(device->GetAccelerationStructureBackend(), nullptr);
+    EXPECT_EQ(device->GetCapabilities().supportsBufferDeviceAddress, defaultBda);
+    device->Shutdown();
+    device.reset();
+
+    auto restored = MakeProbeDevice();
+    ASSERT_NE(restored, nullptr);
+    EXPECT_EQ(restored->GetCapabilities().supportsRayQuery, defaultRayQuery);
+    EXPECT_EQ(restored->GetCapabilities().supportsBufferDeviceAddress, defaultBda);
+    restored->Shutdown();
+}
+
+TEST(DeviceLifecycle, CheckedCoherentWritesRefuseInvalidRangesWithoutChangingBytes)
+{
+    auto device = MakeProbeDevice();
+    if (!device)
+        GTEST_SKIP() << "no Vulkan device";
+    BufferDesc desc{};
+    desc.size = 32;
+    desc.usage = static_cast<uint32_t>(BufferUsage::Storage);
+    desc.memoryUsage = BufferMemoryUsage::Upload;
+    desc.flags = BufferCreateFlags::PersistentlyMapped;
+    const auto buffer = device->CreateBuffer(desc);
+    ASSERT_TRUE(buffer.IsValid());
+    const auto memory = device->GetBufferMemoryResidency(buffer);
+    if (!memory.reported || !memory.hostVisible || !memory.hostCoherent)
+    {
+        device->DestroyBuffer(buffer);
+        GTEST_SKIP() << "requires a reported coherent host-visible upload allocation";
+    }
+    std::array<uint8_t, 32> original;
+    original.fill(0x5a);
+    ASSERT_TRUE(device->TryWriteCoherentBuffer(buffer, 0, original.size(), original.data()));
+    const std::array<uint8_t, 2> replacement{1, 2};
+    EXPECT_FALSE(device->TryWriteCoherentBuffer(buffer, 31, replacement.size(), replacement.data()));
+    EXPECT_FALSE(device->TryWriteCoherentBuffer(buffer, SIZE_MAX, 1, replacement.data()));
+    EXPECT_FALSE(device->TryWriteCoherentBuffer(buffer, 0, 1, nullptr));
+    EXPECT_FALSE(device->TryWriteCoherentBuffer({}, 0, 1, replacement.data()));
+    const auto* mapped = static_cast<const uint8_t*>(device->MapBuffer(buffer));
+    ASSERT_NE(mapped, nullptr);
+    EXPECT_TRUE(std::equal(original.begin(), original.end(), mapped));
+    device->UnmapBuffer(buffer);
+    device->DestroyBuffer(buffer);
+    EXPECT_FALSE(device->TryWriteCoherentBuffer(buffer, 0, 1, replacement.data()));
+    device->Shutdown();
+}
 
 TEST(DeviceLifecycle, RepeatedCreateDestroyDoesNotGrowProcess)
 {

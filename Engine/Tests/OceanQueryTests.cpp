@@ -22,7 +22,7 @@
 #include "Ocean/Systems/OceanExtractionSystem.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Components/Rendering/Ocean.h"
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
 #include "ECS/ECS.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Systems.h"

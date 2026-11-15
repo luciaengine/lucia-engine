@@ -48,7 +48,7 @@
 #include "Components/Transform.h"
 #include "Core/Engine.h"
 #include "ECS/Components.h"   // Disabled marker component
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "ECS/ECSTemplates.h" // ensure template implementations are visible
 #include "ECS/Entity.h"
 #include "ECS/World.h"
@@ -2033,7 +2033,7 @@ void HierarchyPanel::HandleTreeDrop(const UI::Interaction::DropRequest& req)
             if (!mainFilePath.empty() && m_Context->Assets && m_Context->RenderServices)
             {
                 const std::string ext = mainFilePath.extension().string();
-                const bool isModel = (ext == ".glb" || ext == ".gltf" || ext == ".obj" || ext == ".fbx");
+                const bool isModel = Editor::IsPlacedModelFile(mainFilePath);
 
                 if (isModel)
                 {
@@ -4634,7 +4634,7 @@ void HierarchyPanel::FinishFileDrop(const std::filesystem::path& assetPath, cons
     auto& am = *m_Context->Assets;
     const std::string ext = assetPath.extension().string();
     const bool isTexture = (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".hdr" || ext == ".exr");
-    const bool isModel = (ext == ".glb" || ext == ".gltf" || ext == ".obj" || ext == ".fbx");
+    const bool isModel = Editor::IsPlacedModelFile(assetPath);
     const bool isLensFlare = GetAssetTypeFromExtension(ext) == AssetType::LensFlareDefinition;
     SharedPtr<Asset> asset = am.GetAsset(assetGuid);
 
@@ -4734,7 +4734,7 @@ void HierarchyPanel::PerformDrop(const UI::Interaction::DropRequest& request)
         const std::filesystem::path& assetPath = pathsPl->paths[0];
         const std::string ext = assetPath.extension().string();
         const bool isTexture = (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".hdr" || ext == ".exr");
-        const bool isModel = (ext == ".glb" || ext == ".gltf" || ext == ".obj" || ext == ".fbx");
+        const bool isModel = Editor::IsPlacedModelFile(assetPath);
         const bool isLensFlare = GetAssetTypeFromExtension(ext) == AssetType::LensFlareDefinition;
 
         if (GetAssetTypeFromExtension(ext) == AssetType::Prefab && m_Context->Assets)
@@ -4868,7 +4868,7 @@ void HierarchyPanel::PerformDrop(const UI::Interaction::DropRequest& request)
             if (!mainFilePath.empty() && m_Context->Assets && m_Context->RenderServices)
             {
                 const std::string ext = mainFilePath.extension().string();
-                const bool isModel = (ext == ".glb" || ext == ".gltf" || ext == ".obj" || ext == ".fbx");
+                const bool isModel = Editor::IsPlacedModelFile(mainFilePath);
                 const bool isTexture = (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".hdr" || ext == ".exr");
 
                 if (isModel)

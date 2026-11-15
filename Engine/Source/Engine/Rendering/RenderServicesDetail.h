@@ -187,6 +187,8 @@ inline constexpr uint8_t PointShadowCullingIndex(uint32_t slotFaceIndex)
 // in the world light list (defined in RenderServicesDetail.cpp).
 AreaShadowFrameInfo BuildAreaShadowFrameInfo(std::span<const ExtractedLight> lights);
 SpotShadowFrameInfo BuildSpotShadowFrameInfo(std::span<const ExtractedLight> lights);
+// The shadow frustum of one spot light. `packedLightIndex` is its index among the clustered lights.
+SpotShadowFrameInfo BuildSpotShadowFrameInfo(const ExtractedLight& light, uint32_t packedLightIndex);
 
 // Populate one point light's cube-face geometry (6 view/VP matrices, near/far,
 // 90° proj) plus its S1 face-visibility mask and light-level reject. out.valid is

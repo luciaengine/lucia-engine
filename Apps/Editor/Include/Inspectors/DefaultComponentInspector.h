@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ECS/ComponentFieldRegistry.h"  // ECS::ComponentTypeId
+#include "ECS/Component/ComponentFieldRegistry.h"  // ECS::ComponentTypeId
 
 #include <span>
 #include <string>

@@ -20,8 +20,8 @@
 #include "UI/StyleProperties.h"               // Style::* for the Color swatch drawer
 #include "UI/UIManager.h"                      // GetFocusedElementId for the live-refresh focus skip
 
-#include "ECS/ComponentFactory.h"            // GetDefaultBytes (the None value of a float row)
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFactory.h"            // GetDefaultBytes (the None value of a float row)
+#include "ECS/Component/ComponentFieldRegistry.h"
 #include "ECS/FieldAccess.h"             // ReadFieldInteger / WriteFieldInteger
 #include "ECS/Reflection.h"               // FieldInfo, FieldTypeId, FieldElementSize
 
