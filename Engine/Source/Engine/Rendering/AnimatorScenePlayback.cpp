@@ -436,8 +436,7 @@ void StartAnimatorFromSource(ECS::World& world, AssetManager& assetManager, Anim
 void BootstrapSceneAnimators(ECS::World& world, AssetManager& assetManager)
 {
     std::vector<ECS::EntityHandle> clipRoots;
-    world.Query<ECS::Write<Animator>>().Each([&](ECS::EntityHandle rootEntity, ECS::Writable<Animator> animatorRow) {
-        auto& animator = animatorRow.Mutable();
+    world.Query<ECS::Write<Animator>>().Each([&](ECS::EntityHandle rootEntity, Animator& animator) {
         if (!animator.active || !animator.autoPlayOnEnterPlayMode ||
             animator.pendingCommand != AnimatorPlaybackCommand::None)
             return;
@@ -463,8 +462,7 @@ void ProcessClipAnimatorCommands(ECS::World& world)
 void ProcessClipAnimatorCommands(ECS::World& world, AssetManager& assetManager)
 {
     std::vector<ECS::EntityHandle> playedRoots;
-    world.Query<ECS::Write<Animator>>().Each([&](ECS::EntityHandle rootEntity, ECS::Writable<Animator> animatorRow) {
-        auto& animator = animatorRow.Mutable();
+    world.Query<ECS::Write<Animator>>().Each([&](ECS::EntityHandle rootEntity, Animator& animator) {
         if (!animator.active || animator.pendingCommand == AnimatorPlaybackCommand::None)
             return;
 

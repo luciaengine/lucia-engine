@@ -4,8 +4,8 @@
 
 #include "PageReflection.h"
 
-#include "ECS/ComponentFieldRegistry.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 
 #include <nlohmann/json.hpp>
 

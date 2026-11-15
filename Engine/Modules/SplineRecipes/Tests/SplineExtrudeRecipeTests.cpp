@@ -1,5 +1,5 @@
 #include "Components/Spline/SplineExtrude.h"
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/UnresolvedComponentStore.h"
 #include "SplineRecipes/SplineExtrudeSanitize.h"

@@ -1,4 +1,4 @@
-#include "ECS/ComponentFactory.h"
+#include "ECS/Component/ComponentFactory.h"
 
 #include "ECS/ECSTemplates.h"  // complete World — RegisterDefaultBytes's creator calls World::SetComponentBytesImmediate
 

@@ -1,6 +1,6 @@
 #include "Components/Spline/SplineFence.h"
 #include "Components/Spline/SplinePoolSelection.h"
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "Placement/FenceLayout.h"
 

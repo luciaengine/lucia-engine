@@ -87,9 +87,8 @@ void TimelinePlaybackSystem::Update(ECS::World& world, float32 deltaTime)
     if (!audio)
         audio = EngineCore::GetInstance().GetAudioSystem();
 
-    world.Query<ECS::Write<Animator>>().Each([&](ECS::EntityHandle rootEntity, ECS::Writable<Animator> animatorRow)
+    world.Query<ECS::Write<Animator>>().Each([&](ECS::EntityHandle rootEntity, Animator& animator)
     {
-        auto& animator = animatorRow.Mutable();
         if (!animator.active || animator.source != AnimatorPlaybackSource::Timeline || animator.timelineGuid.IsNull())
             return;
 

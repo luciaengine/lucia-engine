@@ -155,9 +155,8 @@ void NavigationPathfindingSystem::Update(ECS::World& world, float32 deltaTime)
     world.Query<ECS::Read<Components::NavigationAgent>,
                 ECS::Write<Components::NavigationAgentState>>().Each(
         [&](ECS::EntityHandle e, const Components::NavigationAgent& agent,
-            ECS::Writable<Components::NavigationAgentState> stateRow)
+            Components::NavigationAgentState& state)
         {
-            auto& state = stateRow.Mutable();
             if (!state.HasDestination)
                 return;
 
@@ -230,9 +229,8 @@ bool NavigationPathfindingSystem::CollectRequests(ECS::World& world)
                 ECS::Write<Components::NavigationAgentState>,
                 ECS::Read<Components::WorldTransform>>().Each(
         [&](ECS::EntityHandle e, const Components::NavigationAgent& agent,
-            ECS::Writable<Components::NavigationAgentState> stateRow, const Components::WorldTransform& wt)
+            Components::NavigationAgentState& state, const Components::WorldTransform& wt)
         {
-            auto& state = stateRow.Mutable();
             if (!state.HasDestination || (!state.PathDirty && !state.ReplanRequested))
             {
                 // A request withdrawn while queued (arrival, a game clearing
@@ -294,9 +292,8 @@ void NavigationPathfindingSystem::PrepareBodies(ECS::World& world)
                 ECS::Write<Components::NavigationAgentState>,
                 ECS::Read<Components::WorldTransform>>().Each(
         [&](ECS::EntityHandle, const Components::NavigationAgent& agent,
-            ECS::Writable<Components::NavigationAgentState> stateRow, const Components::WorldTransform& wt)
+            Components::NavigationAgentState& state, const Components::WorldTransform& wt)
         {
-            auto& state = stateRow.Mutable();
             if (agent.AgentId == 0)
                 return;
             auto* grid = navWorld.GetGridMap({state.NavMapIndex, state.NavMapGeneration});

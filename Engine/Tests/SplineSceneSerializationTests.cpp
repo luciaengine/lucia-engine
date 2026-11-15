@@ -6,7 +6,7 @@
 #include "Components/Spline/SplineNetworkOverrides.h"
 #include "Components/Spline/SplineWall.h"
 #include "Components/Transform.h"
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Reflection.h"
 #include "EngineLogCapture.h"

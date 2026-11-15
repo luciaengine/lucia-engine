@@ -27,9 +27,9 @@
 
 #include "Components/ComponentRegistrationCommon.h"  // metadata helpers + strategy-free macros
 #include "ECS/ECS.h"                    // GetComponentTypeId<T>, Component concept, ComponentTypeId
-#include "ECS/ComponentTypeName.h"      // ComponentTypeName<T>
-#include "ECS/ComponentFactory.h"       // ComponentFactory::RegisterDefaultBytes
-#include "ECS/ComponentRegistry.h"      // RegisterBlobComponent / GetComponentInfo
+#include "ECS/Component/ComponentTypeName.h"      // ComponentTypeName<T>
+#include "ECS/Component/ComponentFactory.h"       // ComponentFactory::RegisterDefaultBytes
+#include "ECS/Component/ComponentRegistry.h"      // RegisterBlobComponent / GetComponentInfo
 
 #include <string>
 #include <type_traits>

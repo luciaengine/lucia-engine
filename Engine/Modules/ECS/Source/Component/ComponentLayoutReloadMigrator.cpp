@@ -1,8 +1,8 @@
-#include "ECS/ComponentLayoutReloadMigrator.h"
+#include "ECS/Component/ComponentLayoutReloadMigrator.h"
 
-#include "ECS/ComponentFactory.h"
-#include "ECS/ComponentFieldRegistry.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentFactory.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "ECS/Entity.h" // World definition
 #include "Logger/Logger.h"
 

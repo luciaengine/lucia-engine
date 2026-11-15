@@ -1,4 +1,4 @@
-#include "ECS/ComponentHandler.h"
+#include "ECS/Component/ComponentHandler.h"
 
 #include "ECS/Entity.h"
 #include "ECS/ReflectionJson.h"

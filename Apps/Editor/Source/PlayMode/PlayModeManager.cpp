@@ -70,9 +70,9 @@ static void ResetTransientRenderState(ECS::World& world)
     // including the ones belonging to entities that are switched off.
     world.Query<ECS::Write<Components::MeshGPUData>>()
         .IncludeDisabled()
-        .Each([](ECS::Writable<Components::MeshGPUData> meshGpuRow)
+        .Each([](Components::MeshGPUData& meshGpuRow)
               {
-                  auto& meshGpu = meshGpuRow.Mutable();
+                  auto& meshGpu = meshGpuRow;
                   meshGpu = Components::MeshGPUData{};
               });
 }

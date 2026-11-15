@@ -9,7 +9,7 @@
 
 #include "Components/Spline/SplineComponent.h"
 #include "Components/Spline/SplineWall.h"
-#include "ECS/ComponentFactory.h"
+#include "ECS/Component/ComponentFactory.h"
 #include "ECS/ECSTemplates.h"
 #include "Spline/SplineData.h"
 #include "SplineECS/SplineService.h"

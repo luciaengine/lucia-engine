@@ -14,7 +14,7 @@
 #include "Components/SceneEntityTag.h"
 #include "Components/Transform.h"
 #include "ECS/Components.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "ECS/ECSTemplates.h" // typed World operation definitions
 #include "ECS/Entity.h"
 #include "ECS/World.h"

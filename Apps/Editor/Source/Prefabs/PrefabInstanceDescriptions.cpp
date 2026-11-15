@@ -4,7 +4,7 @@
 #include "Prefabs/PrefabOverrideRecordsCommand.h"
 #include "UndoRedo/UndoRedoService.h"
 
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
 #include "ECS/Entity.h"
 #include "Scene/SceneSchemaRegistry.h"
 #include "Types/StringUtils.h"

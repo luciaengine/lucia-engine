@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
 #include "Types/Types.h"
 #include "Types/StringId.h"
 

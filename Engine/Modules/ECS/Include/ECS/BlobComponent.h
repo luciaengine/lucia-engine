@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include <cstdint>
 #include <string>
 #include <vector>

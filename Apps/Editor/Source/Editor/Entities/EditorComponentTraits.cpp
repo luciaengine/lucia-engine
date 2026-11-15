@@ -1,6 +1,6 @@
 #include "Editor/Entities/EditorComponentTraits.h"
 
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "Logger/Logger.h"
 
 #include <string>

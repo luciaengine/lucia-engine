@@ -1,8 +1,8 @@
 #include "Components/ComponentRegistrationLite.h"
 #include "ECS/Entity.h"
 #include "ECS/ModuleRegistration.h"
-#include "ECS/ComponentBase.h"
-#include "ECS/ComponentLayoutReloadMigrator.h"
+#include "ECS/Component/ComponentBase.h"
+#include "ECS/Component/ComponentLayoutReloadMigrator.h"
 #include <algorithm>
 #include <cstdint>
 #include <cstring>

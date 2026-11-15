@@ -19,14 +19,9 @@
 //
 // Deduced-parameter detection: probe slot I with ProbeAlienTag (a type
 // nothing converts to). Only a deduced parameter can bind it.
-//
-// Reference shapes pass a Write<T> slot as ECS::Writable<T> (Writable.h),
-// which grants the write when the callback mutates the row rather than when
-// the query visits it. Pointer shapes pass every write slot as T*.
 
-#include "ECS/ComponentConcepts.h"
+#include "ECS/Component/ComponentConcepts.h"
 #include "ECS/ECS.h"
-#include "ECS/Writable.h"
 
 #include <cstdint>
 #include <type_traits>
@@ -60,13 +55,8 @@ using NthTypeOf = typename NthTypeHelper<I, Ts...>::type;
 //   Plain — the permissive form every legal concrete parameter binds.
 //   Const — the probe/invocation form for reads.
 //   Alien — the deduced-parameter detector.
-//   Raw   — the row itself for every slot; only diagnoses a callback that
-//           takes a Write<T> slot as T& instead of Writable<T>.
 template <typename Q>
-using RawRefArg = std::conditional_t<IsOptional<Q>::value, Underlying<Q>*, Underlying<Q>&>;
-template <typename Q>
-using PlainRefArg =
-    std::conditional_t<IsWrite<Q>::value, Writable<Underlying<Q>>, RawRefArg<Q>>;
+using PlainRefArg = std::conditional_t<IsOptional<Q>::value, Underlying<Q>*, Underlying<Q>&>;
 template <typename Q>
 using ConstRefArg =
     std::conditional_t<IsOptional<Q>::value, const Underlying<Q>*, const Underlying<Q>&>;
@@ -153,22 +143,6 @@ struct AccessProbe
     static constexpr bool kConstBindable =
         SlotProbe<Func, Shape, ConstA, PlainA, I, Qs...>::value;
 
-    // Whether the callback takes the permissive form at all. When it does
-    // not, the iteration mode's own shape assertion names the error, and the
-    // per-slot read assertion below stays quiet instead of repeating it.
-    static constexpr bool InvocableWithPlainArgs()
-    {
-        if constexpr (Shape == CallShape::EntityRef)
-            return std::is_invocable_v<Func, EntityHandle, PlainA<Qs>...>;
-        else if constexpr (Shape == CallShape::PtrCount)
-            return std::is_invocable_v<Func, PlainA<Qs>..., std::size_t>;
-        else if constexpr (Shape == CallShape::EntityPtrCount)
-            return std::is_invocable_v<Func, const EntityHandle*, PlainA<Qs>..., std::size_t>;
-        else
-            return std::is_invocable_v<Func, PlainA<Qs>...>;
-    }
-    static constexpr bool kInvocable = InvocableWithPlainArgs();
-
     // Per-slot classification. The static_asserts are the enforcement lattice
     // (M4a): they instantiate while computing kReadMask, i.e. before any
     // invocation shape is selected, so no fallback path can bypass them.
@@ -178,7 +152,7 @@ struct AccessProbe
         using Q = NthTypeOf<I, Qs...>;
         if constexpr (IsRead<Q>::value)
         {
-            static_assert(kConstBindable<I> || !kInvocable,
+            static_assert(kConstBindable<I>,
                           "ECS Query: Read<T>-declared component is taken mutably by the "
                           "callback. A declared read must bind const (const T& / const T*) -- "
                           "fix the parameter or declare Write<T>.");

@@ -283,11 +283,11 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
                          ECS::Optional<Components::MeshRenderer>,
                          ECS::Optional<Components::MorphTargetWeights>>();
     q.Each([&](ECS::EntityHandle entity,
-               ECS::Writable<AnimatorRef> animRow,
+               AnimatorRef& animRow,
                const SkeletonRef& sref,
                const Components::MeshRenderer* meshRenderer,
                Components::MorphTargetWeights* morph) {
-        const auto& current = animRow.Get();
+        const auto& current = animRow;
         if (current.ClipIndex == 0 || sref.skeletonId == 0 || sref.runtimeId == 0) return;
 
         // Skip entities already routed through HumanoidRetargetSystem so we
@@ -302,7 +302,7 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
         auto* skel = skStore.Get(sref.skeletonId);
         if (!skel || skel->BoneCount == 0) return;
 
-        auto& anim = animRow.Mutable();
+        auto& anim = animRow;
         TickAnimatorRef(anim, clipStore, deltaTime, ClaimClipPlaybackEvents(world, entity));
 
         // Morph weights hard-cut to the incoming clip. Dual-sample lerp is

@@ -7,8 +7,8 @@
 #include "AbiQuery.h"
 #include "PageReflection.h"
 
-#include "ECS/ComponentFactory.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentFactory.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "ECS/Entity.h"
 
 #include <emscripten/emscripten.h>

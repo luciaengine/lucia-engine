@@ -7,10 +7,10 @@
 // survive (by name+type+size, moved to their new offsets) and appended fields take their
 // default — and that neighbours sharing the chunk are not corrupted.
 
-#include "ECS/ComponentFactory.h"
-#include "ECS/ComponentFieldRegistry.h"
-#include "ECS/ComponentMigration.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentFactory.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentMigration.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "ECS/ECS.h"
 #include "ECS/Entity.h"
 #include "ECS/Reflection.h"

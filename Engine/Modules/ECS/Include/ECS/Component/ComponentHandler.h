@@ -1,12 +1,12 @@
 #pragma once
 
 #include "ECS/IComponentHandler.h"
-#include "ECS/Reflection.h"
 
 #include <optional>
 
 namespace GameEngine::ECS
 {
+struct FieldInfo;
 
 /// Handler for a registered C++ component. Operations live in ECS; registration
 /// supplies its layout and optional reflection table. The table belongs to the

@@ -45,7 +45,7 @@
 #include "Components/Terrain/TerrainModifierVolume.h"
 #include "Components/Terrain/TerrainModifiers.h"
 #include "Components/Transform.h"
-#include "ECS/ComponentFactory.h"
+#include "ECS/Component/ComponentFactory.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
 #include "Scene/SceneIOContext.h"

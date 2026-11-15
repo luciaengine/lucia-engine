@@ -1,4 +1,4 @@
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
 
 #include "ECS/ModuleRegistration.h"
 

@@ -4,8 +4,8 @@
 // marker that goes missing or changes a value fails here with the line that moved.
 // Regenerate only for an intended metadata change (GE_REFLECTED_METADATA_GOLDEN_REGEN=1).
 
-#include "ECS/ComponentFactory.h"
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFactory.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
 #include "Types/FormatNumber.h"
 
 #include <algorithm>

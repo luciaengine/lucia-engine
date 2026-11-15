@@ -7,8 +7,8 @@
 
 #include <gtest/gtest.h>
 
-#include "ECS/ComponentFactory.h"
-#include "ECS/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentFactory.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
 #include "ECS/Reflection.h"

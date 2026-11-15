@@ -31,7 +31,7 @@
 #include "Engine/Rendering/ColorGradeParamsUBO.h"
 #include "Engine/Rendering/PostProcessEffectRegistry.h"
 
-#include "ECS/ComponentFactory.h"
+#include "ECS/Component/ComponentFactory.h"
 #include "ECS/ECS.h" // GetComponentTypeId
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"

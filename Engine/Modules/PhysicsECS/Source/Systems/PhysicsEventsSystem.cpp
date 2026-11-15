@@ -43,14 +43,14 @@ void PhysicsEventsSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     world.Query<ECS::Write<GameEngine::Components::PhysicsContactEventsBuffer>,
                 ECS::Write<GameEngine::Components::PhysicsTriggerEventsBuffer>>()
         .Each([&](ECS::EntityHandle e,
-                  ECS::Writable<GameEngine::Components::PhysicsContactEventsBuffer> c,
-                  ECS::Writable<GameEngine::Components::PhysicsTriggerEventsBuffer> t)
+                  GameEngine::Components::PhysicsContactEventsBuffer& c,
+                  GameEngine::Components::PhysicsTriggerEventsBuffer& t)
               {
                   if (!buffersEntity.IsValid())
                   {
                       buffersEntity = e;
-                      contact = &c.Mutable();
-                      trigger = &t.Mutable();
+                      contact = &c;
+                      trigger = &t;
                   }
               });
 

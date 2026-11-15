@@ -133,10 +133,10 @@ void AddCollider(CollidersByBody& byBody, ECS::EntityHandle colliderEntity,
 bool GatherMeshCollider(const Physics::PhysicsWorld& pw, ECS::EntityHandle entity,
                         const GameEngine::Components::Transform& local,
                         const GameEngine::Components::PhysicsCollider& collider,
-                        ECS::Writable<GameEngine::Components::MeshColliderShape> shapeRow,
+                        GameEngine::Components::MeshColliderShape& shapeRow,
                         const GameEngine::Components::PhysicsBody& body, std::vector<BuiltCollider>& meshColliders)
 {
-    const auto& shape = shapeRow.Get();
+    const auto& shape = shapeRow;
     const bool changed = shape.Mesh != shape.BuiltMesh;
     if (!changed && IsBodyBuilt(pw, body))
         return false;
@@ -144,14 +144,14 @@ bool GatherMeshCollider(const Physics::PhysicsWorld& pw, ECS::EntityHandle entit
     {
         if (changed)
             Logger::Log::Warning("[PhysicsECS] Mesh collider entity {} needs a Static physics body", entity.id);
-        shapeRow.Mutable().BuiltMesh = shape.Mesh;
+        shapeRow.BuiltMesh = shape.Mesh;
         return false;
     }
     const std::shared_ptr<const Physics::MeshShapeDef> mesh = ProceduralMeshColliders::Read(shape.Mesh);
     if (!mesh)
         return false;
     meshColliders.push_back(MakeBuiltCollider(entity, nullptr, local, collider, *mesh));
-    shapeRow.Mutable().BuiltMesh = shape.Mesh;
+    shapeRow.BuiltMesh = shape.Mesh;
     return changed;
 }
 
@@ -243,11 +243,11 @@ void PhysicsInitSystem::ReleaseDisabledBodies(ECS::World& world)
                              ECS::Optional<ECS::DisabledInHierarchy>,
                              ECS::Optional<ECS::ComponentDisabled<GameEngine::Components::PhysicsBody>>>();
         q.IncludeDisabled();
-        q.Each([](ECS::Writable<GameEngine::Components::PhysicsBody> bodyRow, const ECS::Disabled* disabled,
+        q.Each([](GameEngine::Components::PhysicsBody& bodyRow, const ECS::Disabled* disabled,
                   const ECS::DisabledInHierarchy* inactive,
                   const ECS::ComponentDisabled<GameEngine::Components::PhysicsBody>* bodyOff) {
-            if (HoldsBackendObjects(bodyRow.Get()) && (disabled || inactive || bodyOff))
-                ReleasePhysicsBody(bodyRow.Mutable());
+            if (HoldsBackendObjects(bodyRow) && (disabled || inactive || bodyOff))
+                ReleasePhysicsBody(bodyRow);
         });
         return;
     }
@@ -369,19 +369,19 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
                        const GameEngine::Components::Transform& local,
                        const GameEngine::Components::WorldTransform& wt,
                        const GameEngine::Components::PhysicsCollider& collider,
-                       ECS::Writable<GameEngine::Components::HeightFieldColliderShape> shapeRow,
+                       GameEngine::Components::HeightFieldColliderShape& shapeRow,
                        const GameEngine::Components::PhysicsBody& body,
                        const GameEngine::Components::PhysicsColliderOwner* owner) {
-                HeightFieldData hfData = provider(shapeRow->dataHandle, shapeRow->dataGeneration, shapeRow->lastBuiltVersion);
+                HeightFieldData hfData = provider(shapeRow.dataHandle, shapeRow.dataGeneration, shapeRow.lastBuiltVersion);
                 if (!hfData.samples || hfData.sampleCount < 4)
                     return;
 
                 // Skip if body is valid and data hasn't changed since last build.
                 const bool bodyBuilt = IsBodyBuilt(*pw, body);
-                if (bodyBuilt && shapeRow->lastBuiltVersion == hfData.version)
+                if (bodyBuilt && shapeRow.lastBuiltVersion == hfData.version)
                     return;
 
-                auto& shape = shapeRow.Mutable();
+                auto& shape = shapeRow;
                 const uint32 N = hfData.sampleCount;
 
                 if (bodyBuilt)
@@ -553,7 +553,7 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
                 ECS::Write<GameEngine::Components::MeshColliderShape>, ECS::Read<GameEngine::Components::PhysicsBody>>()
         .Each([pw, &meshColliders, &rebuildBodies](ECS::EntityHandle e, const GameEngine::Components::Transform& local,
                                                    const GameEngine::Components::PhysicsCollider& collider,
-                                                   ECS::Writable<GameEngine::Components::MeshColliderShape> shape,
+                                                   GameEngine::Components::MeshColliderShape& shape,
                                                    const GameEngine::Components::PhysicsBody& body) {
             if (GatherMeshCollider(*pw, e, local, collider, shape, body, meshColliders))
                 rebuildBodies.insert(e);
@@ -568,8 +568,8 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
         const bool skipWithoutCollider = m_Scratch->CollidersUnchangedForBodiesWithoutCollider(structuralVersion);
         m_Scratch->Bodies.Each([&anyBodyToBuild, pw, skipWithoutCollider, &bodiesWithoutCollider](
                                    ECS::EntityHandle e, const GameEngine::Components::WorldTransform&,
-                                   ECS::Writable<GameEngine::Components::PhysicsBody> bodyRow) {
-            const auto& body = bodyRow.Get();
+                                   GameEngine::Components::PhysicsBody& bodyRow) {
+            const auto& body = bodyRow;
             anyBodyToBuild = anyBodyToBuild ||
                 (!IsBodyBuilt(*pw, body) &&
                  !(skipWithoutCollider &&
@@ -672,8 +672,8 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
         std::vector<BuiltBody> builtBodies;
         m_Scratch->Bodies.Each([&](ECS::EntityHandle e,
                    const GameEngine::Components::WorldTransform& wt,
-                   ECS::Writable<GameEngine::Components::PhysicsBody> bodyRow) {
-            const auto& initialBody = bodyRow.Get();
+                   GameEngine::Components::PhysicsBody& bodyRow) {
+            const auto& initialBody = bodyRow;
             auto it = byBody.find(e);
             if (it == byBody.end() || it->second.empty())
                 return;
@@ -693,7 +693,7 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
             if (haveValidBody && haveValidShape && !forceRebuild)
                 return;
 
-            auto& body = bodyRow.Mutable();
+            auto& body = bodyRow;
             // Destroy old body + shape(s)
             if (body.body.IsValid())
             {
@@ -894,8 +894,8 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
     bodiesWithoutCollider.clear();
     m_Scratch->Bodies.Each([pw, &byBody, &bodiesWithoutCollider](ECS::EntityHandle e,
                                                              const GameEngine::Components::WorldTransform&,
-                                                             ECS::Writable<GameEngine::Components::PhysicsBody> bodyRow) {
-        const auto& body = bodyRow.Get();
+                                                             GameEngine::Components::PhysicsBody& bodyRow) {
+        const auto& body = bodyRow;
         if (!IsBodyBuilt(*pw, body) && byBody.find(e) == byBody.end())
             bodiesWithoutCollider.push_back(e);
     });

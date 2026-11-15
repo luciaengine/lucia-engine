@@ -26,8 +26,8 @@ namespace ECS {
 struct Disabled {};
 
 // Transient construction barrier, not authored enable state. Native and
-// type-erased queries exclude these rows even when including disabled objects.
-// Direct handle access remains available to the owner-thread scene builder.
+// type-erased queries exclude these rows even when they include disabled objects.
+// Direct handle access stays available to the owner-thread scene builder.
 // Never serialize this tag or remove it before scene publication is requested.
 struct PendingActivation {};
 

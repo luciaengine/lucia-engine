@@ -1,7 +1,7 @@
 #include "Scene/SceneSchemaRegistry.h"
 
-#include "ECS/ComponentFieldRegistry.h"
-#include "ECS/ComponentRegistry.h"
+#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/Component/ComponentRegistry.h"
 #include "ECS/ModuleRegistration.h"
 #include "Logger/Logger.h"
 #include "Scene/ReflectionSceneSchema.h"
