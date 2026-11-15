@@ -2313,7 +2313,7 @@ if(ENABLE_SCRIPTING)
 	# only runs once every dotnet build has completed.
 	set(_ge_editor_managed_deps
 		HotReloadAssembly CoreBridgeAssembly ScriptingAbiAssembly ScriptingBindingsAssembly
-		EcsAbiAssembly PlatformAbiAssembly ScriptingRuntimeAssembly
+		EcsAbiAssembly PlatformAbiAssembly TileMapAbiAssembly ScriptingRuntimeAssembly
 		EntitySystemGeneratorAssembly EditorManagedAssembly CompileServerHost)
 	add_dependencies(Editor ${_ge_editor_managed_deps})
 
