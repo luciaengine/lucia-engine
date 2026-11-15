@@ -8,6 +8,8 @@ set(EDITOR_TEST_SOURCES
 	# The per-window dock Mount hold behind MountedViewPanels (header only).
 	MountedViewPanelsTests.cpp
 	CssInspectorIdleTests.cpp
+	# The Ctrl+I card: its two text colors and its color chips from CssInspector.css.
+	CssInspectorCardTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Modules/CssInspector/CssInspector.cpp
 	SceneViewTransformToolTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/MeasureSceneGizmo.cpp
