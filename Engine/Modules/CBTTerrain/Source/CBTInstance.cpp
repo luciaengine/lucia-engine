@@ -251,7 +251,8 @@ bool CBTInstance::InitializeRoots(uint32_t domainMode)
     {
         for (const TextureHandle texture : {m_Resources.GetDefaultHeightTexture(),
                  m_Resources.GetDefaultAtlasHeightTexture(),
-                 m_Resources.GetDefaultAtlasCoarseTexture()})
+                 m_Resources.GetDefaultAtlasCoarseTexture(),
+                 m_Resources.GetDefaultPageCacheTexture()})
         {
             if (!texture.IsValid())
                 continue;
