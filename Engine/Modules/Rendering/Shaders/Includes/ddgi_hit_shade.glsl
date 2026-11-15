@@ -126,13 +126,8 @@ vec4 GE_DDGIMatEmission(GE_DDGIMaterialData m) { return m.uParams[19]; }   // rg
 
 #endif // !GE_DDGI_SOFTWARE_TRACE
 
-// The field list of GE_LightPacked (light_packed_fields.glsl) over DDGI's own light buffer of world positions
-// (DDGIProbeFeature.cpp), not the forward LightBuffer. Declared here: clustered_lighting.glsl also declares
-// cluster and shadow bindings this ray-hit context does not use.
-struct GE_DDGILightPacked
-{
-#include "light_packed_fields.glsl"
-};
+#include "ddgi_lights.glsl"
+
 layout(std430, set = 0, binding = 2) readonly buffer DDGILightBuffer
 {
     uvec4 ge_ddgiLightHeader;  // x = light count
@@ -452,20 +447,15 @@ vec3 GE_DDGIEvaluateDirectNEE(accelerationStructureEXT tlas, vec3 hitPosWS, vec3
                 continue;
         }
 
-        // A type-3 emitter proxy's CENTER sits inside its own geometry, so a
-        // shadow ray aimed at it is occluded by the emitter itself and every
-        // sample is rejected — the surface goes black instead of lighting the
-        // room. Stop the ray at the proxy's surface (areaParams.z is the source
-        // radius) rather than its centre. Point and spot lights have no such
-        // body and keep the centre-distance cutoff.
         float shadowT = (type == 0u) ? GE_DDGI_T_MAX : (dist - traceBiasWS * 2.0);
-        if (type == 3u)
-            shadowT = max(dist - lp.areaParams.z - traceBiasWS * 2.0, GE_DDGI_RAY_EPS);
+        uint shadowFlags = gl_RayFlagsOpaqueEXT;
+        if (!GE_DDGIShadowRayNeedsNearestHit(lp))
+            shadowFlags |= gl_RayFlagsTerminateOnFirstHitEXT;
         rayQueryEXT shadowRq;
-        rayQueryInitializeEXT(shadowRq, tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
-                              0xFFu, origin, GE_DDGI_RAY_EPS, toLight, shadowT);
+        rayQueryInitializeEXT(shadowRq, tlas, shadowFlags, 0xFFu, origin, GE_DDGI_RAY_EPS, toLight, shadowT);
         while (rayQueryProceedEXT(shadowRq)) { }
-        if (rayQueryGetIntersectionTypeEXT(shadowRq, true) != gl_RayQueryCommittedIntersectionNoneEXT)
+        if (rayQueryGetIntersectionTypeEXT(shadowRq, true) != gl_RayQueryCommittedIntersectionNoneEXT &&
+            GE_DDGIShadowHitHidesLight(lp, rayQueryGetIntersectionInstanceCustomIndexEXT(shadowRq, true)))
             continue;  // occluded
 
         float atten = (type == 0u)

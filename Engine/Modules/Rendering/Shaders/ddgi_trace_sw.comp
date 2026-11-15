@@ -191,6 +191,7 @@ struct GE_DDGISwHit
     uint MaterialSlot;    // index into the packed uber-material table
     bool GIEmitter;       // instance record slot 16: emissive already published
                           // as a sphere-proxy light, exclude it at hit
+    int Instance;         // instance record slot 17: the GPUInstance index
 };
 
 // Closest-hit (or any-hit, when `anyHit`) traversal of the pooled TLAS/BLAS.
@@ -221,6 +222,7 @@ GE_DDGISwHit GE_DDGISwTrace(vec3 originWS, vec3 dirWS, float tMin, float tMax, b
     best.UV = vec2(0.0);
     best.MaterialSlot = 0u;
     best.GIEmitter = false;
+    best.Instance = -1;
 
     uint tlasNodeCount = DDGIParams.uSwScene.x;
     if (tlasNodeCount == 0u)
@@ -381,6 +383,7 @@ GE_DDGISwHit GE_DDGISwTrace(vec3 originWS, vec3 dirWS, float tMin, float tMax, b
                     // Instance record slot 16 (TlasPacker.h): this instance's
                     // emissive is already published as a sphere-proxy light.
                     best.GIEmitter = ge_ddgiSwPacked[record + 16u] > 0.5;
+                    best.Instance = int(ge_ddgiSwPacked[record + 17u]);
                     if (anyHit)
                         return best;
                 }
@@ -396,7 +399,7 @@ GE_DDGISwHit GE_DDGISwTrace(vec3 originWS, vec3 dirWS, float tMin, float tMax, b
 // GE_DDGIEvaluateDirectNEE (Includes/ddgi_hit_shade.glsl). The light loop,
 // the per-type geometry, the spot cutoff, the attenuation call and the
 // Lambertian accumulation are intentionally identical; only the occlusion
-// test differs (software any-hit traversal instead of a ray query), and that
+// test differs (software traversal instead of a ray query), and that
 // is exactly the part GLSL cannot factor out — the shadow test needs direct
 // access to this kernel's BVH storage blocks, which cannot cross a function
 // boundary. Keep the two bodies in sync; ddgi_hit_shade.glsl's copy is the
@@ -411,7 +414,7 @@ vec3 GE_DDGISwEvaluateDirectNEE(vec3 hitPosWS, vec3 hitNormalWS, vec3 albedo, ui
         GE_DDGILightPacked lp = ge_ddgiLights[i];
         if (lp.meta.w == 0u)  // castsLight
             continue;
-        uint type = lp.meta.x;  // 0=dir,1=point,2=spot,4=area
+        uint type = lp.meta.x;  // 0=dir,1=point,2=spot,3=emitter proxy,4=area
         vec3 toLight;
         float dist = GE_DDGI_T_MAX;
         if (type == 0u)
@@ -436,13 +439,10 @@ vec3 GE_DDGISwEvaluateDirectNEE(vec3 hitPosWS, vec3 hitNormalWS, vec3 albedo, ui
                 continue;
         }
 
-        // Same emitter-proxy rule the hardware lane applies: a type-3 proxy's
-        // centre is inside its own geometry, so aim the occlusion ray at the
-        // proxy SURFACE or the emitter shadows itself into blackness.
         float shadowTMax = type == 0u ? GE_DDGI_T_MAX : (dist - traceBiasWS * 2.0);
-        if (type == 3u)
-            shadowTMax = max(dist - lp.areaParams.z - traceBiasWS * 2.0, GE_DDGI_RAY_EPS);
-        if (GE_DDGISwTrace(origin, toLight, GE_DDGI_RAY_EPS, shadowTMax, true).Hit)
+        GE_DDGISwHit shadowHit =
+            GE_DDGISwTrace(origin, toLight, GE_DDGI_RAY_EPS, shadowTMax, !GE_DDGIShadowRayNeedsNearestHit(lp));
+        if (shadowHit.Hit && GE_DDGIShadowHitHidesLight(lp, shadowHit.Instance))
             continue;  // occluded
 
         float atten = (type == 0u)

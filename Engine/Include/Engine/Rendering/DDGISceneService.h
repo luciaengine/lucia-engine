@@ -224,10 +224,13 @@ class DDGISceneService
         // as a DDGI sphere-proxy light, so the software lane must exclude it
         // from per-hit emissive exactly as the hardware lane does.
         bool GIEmitter = false;
+        // Index into GPUScene::GetInstances: the id a software hit reports, equal to the
+        // custom index of the hardware lane's TLAS.
+        uint32_t GpuInstanceIndex = 0;
     };
 
     // Structure covers geometry, table layout, bindings and slot assignments.
-    // Transforms tracks instance matrices; Full also includes material values.
+    // Transforms tracks instance matrices and instance ids; Full also includes material values.
     // Equal structure and transforms permit a material-only patch.
     struct PlanHashes
     {

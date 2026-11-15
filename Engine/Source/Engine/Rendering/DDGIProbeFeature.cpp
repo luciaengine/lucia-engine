@@ -85,7 +85,7 @@ uint64_t GlossyHistoryBytes(int32_t probeTotal)
 
 // std430-friendly packed light record, laid out to match
 // Includes/light_packed_fields.glsl EXACTLY — the same field list
-// Includes/ddgi_hit_shade.glsl's GE_DDGILightPacked struct is generated
+// Includes/ddgi_lights.glsl's GE_DDGILightPacked struct is generated
 // from, and the same layout Pipeline::Nodes::LightUploadNode's
 // (file-local, non-exported) GPULightPacked already uses for the forward
 // pass's own LightBuffer. DDGI cannot bind THAT buffer directly — it is
@@ -120,7 +120,8 @@ struct DDGIPackedLight
     float areaUpWS[3] = {0.0f, 1.0f, 0.0f};
     float falloffMode = 0.0f;
     int32_t shadowSlot = -1;  // unshadowed for DDGI NEE purposes (probes ignore point-shadow atlas slots)
-    int32_t shadowSlotReserved[3] = {-1, -1, -1};
+    int32_t emitterInstance = -1;  // emitter proxy: the GPUInstance index of the emissive instance
+    int32_t shadowSlotReserved[2] = {-1, -1};
 };
 static_assert(sizeof(DDGIPackedLight) == 144, "must match light_packed_fields.glsl's stride");
 
@@ -3272,6 +3273,7 @@ void DDGIProbeFeature::DeclareProbePasses(Rendering::RenderGraph::RGFrame& frame
         Mathematics::Vector3 CenterWS;
         float Radius = 0.0f;
         ColorLinear Radiance;  // rgb; alpha is unused
+        uint32_t InstanceIndex = 0;  // index into GPUScene::GetInstances
     };
     std::vector<EmitterProxy> emitters;
     if (lightCount < kDDGIMaxLights)
@@ -3298,10 +3300,11 @@ void DDGIProbeFeature::DeclareProbePasses(Rendering::RenderGraph::RGFrame& frame
             proxy.CenterWS = Rendering::SectorLocalPointRelativeTo(inst.boundingCenter, inst.sectorPacked[0],
                                                                    inst.sectorPacked[1], Mathematics::Vector3Int{});
             proxy.Radius = inst.boundingRadius;
+            proxy.InstanceIndex = static_cast<uint32_t>(instanceIndex);
             // Weight the proxy by the mesh's mean projected area (A/4, or A/2
             // when both faces emit), not the bounding sphere's area: thin
             // panels and strips can have a large sphere while emitting very
-            // little power. Keep the sphere for visibility and for GPU-only
+            // little power. Keep the sphere for the light range and for GPU-only
             // meshes without CPU geometry.
             const std::optional<float> surfaceArea = m_EmitterAreas.GetSurfaceArea(instanceIndex);
             const float projectedArea = surfaceArea
@@ -3385,7 +3388,7 @@ void DDGIProbeFeature::DeclareProbePasses(Rendering::RenderGraph::RGFrame& frame
     {
         const EmitterProxy& e = emitters[ei];
         DDGIPackedLight p{};
-        p.type = 3u;  // sphere proxy — see ddgi_hit_shade.glsl's NEE loop
+        p.type = 3u;  // sphere proxy: GE_DDGI_LIGHT_TYPE_EMITTER_PROXY in Includes/ddgi_lights.glsl
         p.castsShadows = 1u;
         p.castsLight = 1u;
         p.positionWS[0] = e.CenterWS[0];
@@ -3399,8 +3402,10 @@ void DDGIProbeFeature::DeclareProbePasses(Rendering::RenderGraph::RGFrame& frame
         p.color[0] = e.Radiance.r;
         p.color[1] = e.Radiance.g;
         p.color[2] = e.Radiance.b;
-        p.areaRadius = e.Radius;  // source radius: the solid-angle term
         p.decay = 2.0f;
+        // The shadow ray goes to the center. A hit on this instance does not hide the proxy
+        // (GE_DDGIShadowHitHidesLight in Includes/ddgi_lights.glsl).
+        p.emitterInstance = static_cast<int32_t>(e.InstanceIndex);
         outLights[lightCount + ei] = p;
     }
 
