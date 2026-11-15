@@ -557,8 +557,8 @@ void DrawTheCardOverTheFloor(IDevice* device, const MaterialDocument& cardDocume
     const uint32_t cardInstance = AddInstance(rs, *cardEntry, *card, cardMesh, shadowScenario);
     const uint32_t floorInstance = AddInstance(rs, *floorEntry, *floor, floorMesh, shadowScenario);
     std::array<WorldSubmissionRecord, 2> submissions{};
-    submissions[0] = {viewId, cardHandle, card, cardInstance, 0xFFFFFFFFu, 0u};
-    submissions[1] = {viewId, floorHandle, floor, floorInstance, 0xFFFFFFFFu, 0u};
+    submissions[0] = {viewId, cardHandle, card, cardInstance, RenderLayerMask::All(), {}};
+    submissions[1] = {viewId, floorHandle, floor, floorInstance, RenderLayerMask::All(), {}};
     const auto lastGood = card->GetGraphicsPipelineId();
     const uint64_t rigidEpoch = rs.RigidShadowCasterContentVersion(kWorldId);
     if (shadowScenario)
