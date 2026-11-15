@@ -135,6 +135,13 @@ void UnregisterRuntimeMesh(Rendering::MeshGPURegistry& meshRegistry,
 
 } // namespace
 
+MorphTargetSystem::MorphTargetSystem(RenderServices* renderServices)
+    : m_RenderServices(renderServices)
+{
+}
+
+MorphTargetSystem::~MorphTargetSystem() = default;
+
 void MorphTargetSystem::Update(ECS::World& world, float32 /*deltaTime*/)
 {
     if (!m_RenderServices)
@@ -254,6 +261,21 @@ void MorphTargetSystem::Update(ECS::World& world, float32 /*deltaTime*/)
         {
             AssignMeshGpuHandle(world, entity, meshRenderer, static_cast<uint64>(runtimeHandle));
             return;
+        }
+
+        // A weight change on a live runtime mesh rewrites its vertices in place:
+        // the handle, the GPUScene row and the index data stay. The registry
+        // refuses a mesh that it cannot rewrite, and that mesh uploads again below.
+        if (!runtimeMissing && !runtimeGuidChanged)
+        {
+            ApplyMorphTargets(sourceMesh, morph.weights, targetCount, m_MorphedVertices);
+            if (meshRegistry.RewriteSubmeshVertices(runtimeHandle, sourceMesh, m_MorphedVertices))
+            {
+                AssignMeshGpuHandle(world, entity, meshRenderer, static_cast<uint64>(runtimeHandle));
+                MarkWeightsApplied(morph, targetCount);
+                WriteBounds(world, entity, localBounds, meshRegistry.Find(runtimeHandle));
+                return;
+            }
         }
 
         if (!previousRuntimeGuid.IsNull())

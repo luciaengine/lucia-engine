@@ -83,9 +83,10 @@ public:
     bool IsPointerInside() const { return m_PointerInside; }
     /// The last pointer position inside the pane, in pixels from the pane's top-left corner.
     const Mathematics::Vector2& GetPointerLocalPosition() const { return m_PointerLocal; }
-    /// Shows the hover pill beside the pointer while the pointer is inside this pane: the active tool's text,
-    /// else the name of the bound controller's hovered pick, clear of the pane's label and the host's label over
-    /// the pane. Hides it otherwise, during a camera drag that shows no tool text, and while the measure tool is on.
+    /// Shows the hover pill while the pointer is inside this pane: beside the pointer, the active tool's text or
+    /// the text of the overlay under the pointer; else at the bottom center, the active tool's status; else the
+    /// name of the bound controller's hovered pick. The pill stays clear of the pane's label and the host's label
+    /// over the pane. Hides it otherwise, during a camera drag that shows no tool text, and while the measure tool is on.
     /// The host calls it once per frame.
     void UpdateHoverPill();
 

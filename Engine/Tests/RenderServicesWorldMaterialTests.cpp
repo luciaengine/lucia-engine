@@ -5,7 +5,6 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/ForwardDrainOrder.h"
-#include "Engine/Rendering/MaterialPrewarmPolicy.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "ECSModules/Rendering/Systems/RenderExtractionSystem.h"
 #include "ECSModules/Rendering/Systems/TransformHierarchySystem.h"
@@ -50,38 +49,6 @@ using namespace GameEngine::Rendering;
 using namespace GameEngine::Engine::Renderer;
 using namespace GameEngine::ECS;
 
-TEST(MaterialPrewarmPolicyTest, FullKeepsExistingVariants)
-{
-    size_t calls = 0;
-    const auto count = ForEachMaterialPrewarmVariant(MaterialPrewarmPolicy::Full,
-        MaterialKeyword::None, MaterialKeyword::None,
-        [&](auto, auto) { ++calls; });
-    EXPECT_EQ(count, 8u);
-    EXPECT_EQ(calls, count);
-}
-
-TEST(MaterialPrewarmPolicyTest, StaticColorOmitsSkinningAndDepth)
-{
-    size_t calls = 0;
-    const auto count = ForEachMaterialPrewarmVariant(MaterialPrewarmPolicy::StaticColor,
-        MaterialKeyword::None, MaterialKeyword::None,
-        [&](auto flags, auto keywords) {
-            ++calls;
-            EXPECT_EQ(static_cast<uint32_t>(flags & VertexAttributeFlags::Skinned), 0u);
-            EXPECT_EQ(keywords, MaterialKeyword::None);
-        });
-    EXPECT_EQ(count, 2u);
-    EXPECT_EQ(calls, count);
-}
-
-TEST(MaterialPrewarmPolicyTest, StaticColorStillWarmsTransmission)
-{
-    size_t grabs = 0;
-    EXPECT_EQ(ForEachMaterialPrewarmVariant(MaterialPrewarmPolicy::StaticColor,
-        MaterialKeyword::Transmission, MaterialKeyword::None,
-        [&](auto, auto keywords) { if (HasKeyword(keywords, MaterialKeyword::SceneColorGrab)) ++grabs; }), 4u);
-    EXPECT_EQ(grabs, 2u);
-}
 using namespace GameEngine::Components;
 
 #include "TestDeviceHelper.h"

@@ -33,6 +33,7 @@ enum class AssetType; // defined in AssetCore/AssetTypes.h
 class AssetManager;
 class AssetThumbnailHandler;
 class ModelThumbnailHandler;
+class SpriteFramesThumbnailHandler;
 class UIManager;
 
 class ThumbnailService : public IThumbnailProvider
@@ -59,6 +60,13 @@ class ThumbnailService : public IThumbnailProvider
                                     std::function<void(const std::string&)> onReady) override;
 
     std::string GetOrRequestInlineImage(const std::filesystem::path& image,
+                                        std::function<void(const std::string& path)> onReady) override;
+
+    std::string GetOrRequestAtlasRegion(const std::filesystem::path& texturePath, const std::array<float, 4>& uv,
+                                        std::function<void(const std::string& path)> onReady) override;
+
+    std::string GetOrRequestSpriteFrame(const std::filesystem::path& spriteFramesPath,
+                                        const std::string& animationName, bool flipX,
                                         std::function<void(const std::string& path)> onReady) override;
 
     // --- Editor integration helpers (not part of IThumbnailProvider) ---
@@ -139,6 +147,8 @@ class ThumbnailService : public IThumbnailProvider
                                 bool staticModelListThumbnail,
                                 uint64_t generation) const;
     bool TryGetCachedResult(uint64_t key, std::string& outResult) const;
+    // The registered handler of .spriteframes, which also crops atlas regions; null before registration.
+    SpriteFramesThumbnailHandler* FindSpriteFramesHandler() const;
     void StoreCachedResult(uint64_t key, const std::string& result);
     void ClearResultCache();
 

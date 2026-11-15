@@ -859,6 +859,16 @@ public:
     /// load or that a size or spacing value is not finite.
     FontWarmupStatus PrewarmFontText(const FontWarmupRequest& request);
 
+    struct FontLoadProgress
+    {
+        size_t Pending = 0;
+        size_t Failed = 0;
+        bool Ready() const { return Pending == 0 && Failed == 0; }
+    };
+    /// The requested font families that still load and that failed. Families not yet requested,
+    /// GPU atlas uploads and other scene work are not in it; check those apart.
+    FontLoadProgress GetFontLoadProgress() const;
+
     // No-op under RenderGraph (the old RGTextureRef render-target override is gone);
     // retained because the editor host still calls it on HDR/surface changes.
     void ClearRenderTargetOverride() {}
