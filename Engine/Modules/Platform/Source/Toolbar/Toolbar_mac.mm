@@ -112,7 +112,13 @@ public:
     void InsertAppMenuPlaceholder() {
         if (!m_MenuBar) return;
 
-        NSString* appName = [[NSProcessInfo processInfo] processName];
+        // The bundle's display name, as the Dock shows it; a bare executable falls back to its process name.
+        NSBundle* bundle = [NSBundle mainBundle];
+        NSString* appName = [bundle objectForInfoDictionaryKey:@"CFBundleDisplayName"];
+        if (appName.length == 0)
+            appName = [bundle objectForInfoDictionaryKey:@"CFBundleName"];
+        if (appName.length == 0)
+            appName = [[NSProcessInfo processInfo] processName];
 
         NSMenuItem* appItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
         NSMenu* appMenu = [[NSMenu alloc] initWithTitle:@""];
