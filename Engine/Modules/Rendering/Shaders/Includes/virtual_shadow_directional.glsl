@@ -34,6 +34,17 @@ bool GE_TryVirtualShadowDirectional(vec3 position, vec3 normal, float cosTheta, 
         vec2 rotation = GE_PoissonRotation(screenPos, uv, vec2(resolution));
         float radius = (1.5 / resolution) * max(ge_shadowPcss.x, 0.0) * (refWorldPerTexel / worldPerTexel);
         int taps = GE_PcssTapCount();
+#ifndef GE_VIRTUAL_SHADOW_DISABLE_KERNEL_PAGE_REUSE
+        GE_VirtualShadowKernelPage page;
+        if (GE_VirtualShadowResolveKernelPage(projection.Address.xyz, 0u, uv, radius, reference, page))
+        {
+            float sum = 0.0;
+            for (int i = 0; i < taps; ++i)
+                sum += GE_VirtualShadowCompareKernelPage(page, uv + GE_VogelDisk(i, taps, rotation) * radius, reference);
+            visibility = sum / float(taps);
+            return true;
+        }
+#endif
         GE_VirtualShadowKernelQuad quad;
         if (GE_VirtualShadowResolveKernelQuad(projection.Address.xyz, 0u, uv, radius, quad))
         {
