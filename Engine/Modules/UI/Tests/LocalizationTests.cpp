@@ -7,6 +7,43 @@
 
 using namespace GameEngine;
 
+TEST(LabelLocalizationTests, HiddenMenuWarmupResolvesNestedFontsWithoutShowingTheMenu)
+{
+    UITesting::IsolatedUIFixture fixture;
+    const bool built = fixture.Build(1.0f,
+        R"(<uielement id="root"><uielement id="menu"><uielement id="group"><label id="title">冒険</label></uielement></uielement></uielement>)",
+        R"(#root { width: 400px; height: 300px; }
+            #menu { display: none; font-family: Roboto; font-size: 18px; }
+            #group { font-size: 24px; }
+            .large { font-size: 32px; })");
+    if (!fixture.DeviceAvailable()) GTEST_SKIP() << fixture.Diagnostic();
+    ASSERT_TRUE(built) << fixture.Diagnostic();
+    auto* root = fixture.Element("root");
+    auto* title = fixture.Element("title");
+    ASSERT_NE(root, nullptr);
+    ASSERT_NE(title, nullptr);
+    // Callers can preload a nested screen directly while its parent stays hidden.
+    ASSERT_NE(fixture.Element("group"), nullptr);
+    EXPECT_EQ(fixture.Manager().PrepareTextSubtree(fixture.Element("group")),
+              UIManager::TextWarmupStatus::Ready);
+    EXPECT_EQ(fixture.Manager().PrepareTextSubtree(root), UIManager::TextWarmupStatus::Ready);
+    EXPECT_FLOAT_EQ(title->GetResolvedStyle().Visual.FontSize, 24.0f);
+    EXPECT_EQ(fixture.Element("menu")->GetResolvedStyle().Layout.DisplayMode, DisplayMode::None);
+
+    title->AddClass("large");
+    EXPECT_EQ(fixture.Manager().PrepareTextSubtree(root), UIManager::TextWarmupStatus::Ready);
+    EXPECT_FLOAT_EQ(title->GetResolvedStyle().Visual.FontSize, 32.0f);
+    EXPECT_EQ(fixture.Element("menu")->GetResolvedStyle().Layout.DisplayMode, DisplayMode::None);
+}
+
+TEST(LabelLocalizationTests, WarmupRejectsUnownedTrees)
+{
+    UIManager manager(nullptr);
+    UIElement detached;
+    EXPECT_EQ(manager.PrepareTextSubtree(nullptr), UIManager::TextWarmupStatus::Failed);
+    EXPECT_EQ(manager.PrepareTextSubtree(&detached), UIManager::TextWarmupStatus::Failed);
+}
+
 TEST(LabelLocalizationTests, SharedCatalogRefreshesLabelsAndPluralArguments)
 {
     auto catalog = std::make_shared<Localization::LocalizationCatalog>();

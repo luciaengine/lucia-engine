@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 
 using namespace GameEngine;
@@ -545,4 +546,24 @@ bool UIManager::SetTextLanguage(const std::string& language)
     MarkStyleDirtyAll();
     RequestRelayout();
     return true;
+}
+
+UIManager::FontWarmupStatus UIManager::PrewarmFontText(const FontWarmupRequest& request)
+{
+    if (!std::isfinite(request.PixelSize) || request.PixelSize <= 0.0f || !std::isfinite(request.LetterSpacing))
+        return FontWarmupStatus::Failed;
+
+    FontAtlas* atlas = request.Family.empty()
+        ? m_FontAtlas.get()
+        : GetOrRequestFontFamilyInternal(request.Family, request.Weight, request.Style, request.Variant);
+    if (!atlas)
+    {
+        const std::string key =
+            BuildFontKey(NormalizeFontFamilyKey(request.Family), request.Weight, request.Style, request.Variant);
+        return m_FontFamilyInFlight.contains(key) ? FontWarmupStatus::Pending : FontWarmupStatus::Failed;
+    }
+
+    FontAtlas::ShapeResult shaped;
+    atlas->ShapeText(request.Text, request.PixelSize, shaped, 0xFFFFFFFFu, request.LetterSpacing);
+    return FontWarmupStatus::Ready;
 }

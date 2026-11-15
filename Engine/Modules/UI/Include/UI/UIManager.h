@@ -406,6 +406,12 @@ class UIManager
 
     Rendering::Text::FontAtlas* GetDefaultFontAtlas() const { return m_FontAtlas.get(); }
     Rendering::Text::FontAtlas* ResolveFontForStyle(const ResolvedStyle& style);
+    enum class TextWarmupStatus : uint8_t { Pending, Ready, Failed };
+    /// Prepares the text of a subtree before a screen shows it: styles, fonts,
+    /// fallback glyphs and GPU atlas resources, also for hidden labels.
+    /// Call it on the owner thread after style resolution. Pending means that a font
+    /// request or the first style pass is not complete; call it again on a later frame.
+    TextWarmupStatus PrepareTextSubtree(UIElement* root);
     /// The lines `text` takes in `element`'s text face (the font, size, line height and line
     /// breaking of its last layout) wrapped at `widthLogical`: the count the element's own
     /// measure reports for that text. For a control that fits text to a line budget within one
@@ -834,6 +840,24 @@ public:
     // Optional prefetch hook: request that a family be loaded for future frames.
     // This is safe to call before the first Update() to avoid initial layout shifts.
     void RequestFontFamily(const std::string& family);
+
+    enum class FontWarmupStatus : uint8_t { Pending, Ready, Failed };
+    struct FontWarmupRequest
+    {
+        /// Empty selects the installed default face, never a fallback face.
+        std::string Family;
+        std::string Text;
+        float PixelSize = 20.0f;
+        int Weight = 400;
+        FontStyle Style = FontStyle::Normal;
+        FontVariant Variant = FontVariant::Normal;
+        float LetterSpacing = 0.0f;
+    };
+    /// Resolves the requested face and shapes the UTF-8 text into CPU glyph data
+    /// before the text shows, for example on a loading screen. Call it on the UI thread.
+    /// Pending means that the face is still loading. Failed means that the face cannot
+    /// load or that a size or spacing value is not finite.
+    FontWarmupStatus PrewarmFontText(const FontWarmupRequest& request);
 
     // No-op under RenderGraph (the old RGTextureRef render-target override is gone);
     // retained because the editor host still calls it on HDR/surface changes.

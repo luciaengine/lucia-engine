@@ -124,6 +124,7 @@ set(UI_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_Layout.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_CascadeProbe.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_Fonts.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_TextWarmup.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_Debug.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/SlotAllocator.cpp
 )
