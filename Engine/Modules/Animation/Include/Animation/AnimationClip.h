@@ -6,6 +6,7 @@
 #include "Types/Types.h"
 #include "Types/StringId.h"
 #include <algorithm>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -15,6 +16,8 @@ namespace GameEngine
 {
 namespace Animation
 {
+
+class AnimationClipData;
 
 enum class AnimPath
 {
@@ -139,21 +142,16 @@ class AnimationClip : public ::GameEngine::Asset
     {
         return m_Duration;
     }
-    void SetDuration(float32 duration)
-    {
-        m_Duration = std::max(0.0f, duration);
-    }
-    const std::vector<AnimChannel>& GetChannels() const
-    {
-        return m_Channels;
-    }
+    void SetDuration(float32 duration);
+    /// Authoring view, materialized from the lossless archive. Edits, loads and
+    /// borrowed authoring views must be externally serialized. First reads are synchronized.
+    const std::vector<AnimChannel>& GetChannels() const;
+    /// Immutable playback snapshot. Retain it through sampling or GPU upload.
+    SharedPtr<const AnimationClipData> GetRuntimeData() const;
+    size_t GetMemoryUsage() const override;
     /// True when the clip has no length and no key: it has nothing to play.
     /// A clip of length 0 with keys is a pose: it holds its keys at every time.
-    bool IsEmpty() const
-    {
-        return m_Duration <= 0.0f && std::none_of(m_Channels.begin(), m_Channels.end(),
-                                                  [](const AnimChannel& channel) { return !channel.keys.empty(); });
-    }
+    bool IsEmpty() const;
     uint32 GetSelectedAnimationIndex() const
     {
         return m_SelectedAnimation;
@@ -220,6 +218,9 @@ class AnimationClip : public ::GameEngine::Asset
     bool LoadEditableData(std::span<const uint8> data);
     // Logs that the .anim file is not loaded and why, and clears the channels; returns false.
     bool RefuseEditableData(std::string_view reason);
+    bool LoadSourceData(std::span<const uint8> input);
+    bool RebuildRuntimeData();
+    void AdoptLoadedData(AnimationClip& loaded, SharedPtr<const AnimationClipData> runtime);
     void RecomputeDuration();
 
     uint32 m_SelectedAnimation = 0u;
@@ -227,7 +228,10 @@ class AnimationClip : public ::GameEngine::Asset
     uint32 m_SourceAnimationIndex = 0u;
 
     float32 m_Duration = 0.0f;
-    std::vector<AnimChannel> m_Channels;
+    mutable std::vector<AnimChannel> m_Channels;
+    mutable std::mutex m_AuthoringMutex;
+    SharedPtr<const AnimationClipData> m_RuntimeData;
+    float32 m_PublishedDuration = 0.0f;
     AnimationClipSettings m_Settings;
     AnimationEventTrack m_EventTrack;
 

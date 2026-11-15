@@ -2,6 +2,7 @@
 
 #include "Rendering/Core/Handle.h"
 #include "Rendering/Core/FrameBufferAllocator.h"
+#include "Types/FlatMap.h"
 #include "Types/Types.h"
 
 #include <cstdint>
@@ -10,18 +11,18 @@
 #include <vector>
 
 namespace GameEngine { namespace Rendering { class IDevice; } }
-namespace GameEngine { namespace Animation { struct SkeletonData; } }
+namespace GameEngine { namespace Animation { struct SkeletonData; class BoneEvaluationPlan; class AnimationClipData; } }
 
 namespace GameEngine { namespace Engine { namespace Renderer {
 
 // GPU-side skeleton header. Packed std430 — 128 bytes per entry.
-// The bones are the skeleton's joint closure (SkeletonData::JointClosure) in
-// its level order, so a parent precedes its children and level L holds bones
+// Evaluated bones are the joint closure or an ancestor-closed LOD selection in
+// level order, so a parent precedes its children and level L holds bones
 // [levelOffsets[L], levelOffsets[L + 1]).
 // Offsets are element-index offsets into the flat skeleton data SSBO
 // (uint32 elements; floats reinterpret via uintBitsToFloat in GLSL).
 struct GPUSkeletonHeader {
-    uint32 boneCount;               // joint closure bones, at most GPUAnimationDataStore::kMaxBones
+    uint32 boneCount;               // evaluated bones, at most GPUAnimationDataStore::kMaxBones
     uint32 skinJointCount;
     uint32 levelCount;
     uint32 parentsOffset;           // index into data SSBO (int32 per bone: parent bone, -1 for a root)
@@ -54,7 +55,8 @@ static_assert(sizeof(GPUClipHeader) == 64, "GPUClipHeader must be 64 bytes");
 // GPU-side channel descriptor. 16 bytes.
 struct GPUChannelDesc {
     uint32 boneIndex;
-    uint32 pathAndInterp;           // low 2 bits = path (0=T,1=R,2=S), bits 2-3 = interp (0=step,1=linear,2=cubic)
+    uint32 pathAndInterp;           // path bits 0-1; interpolation bits 2-3 (linear=0, step=1, cubic=2);
+                                   // cubic payload bit 4; words per key in bits 8-31
     uint32 keyframeOffset;          // relative to clip's keyframeDataOffset
     uint32 keyframeCount;
 };
@@ -89,7 +91,8 @@ public:
 
     // True when the skeleton's joint closure fits kMaxBones and
     // kMaxHierarchyLevels; a skeleton over either animates on the CPU path.
-    static bool FitsKernelLimits(const GameEngine::Animation::SkeletonData& skeleton);
+    static bool FitsKernelLimits(const GameEngine::Animation::SkeletonData& skeleton,
+        const Animation::BoneEvaluationPlan* plan = nullptr);
 
     bool Initialize(GameEngine::Rendering::IDevice* device);
     void Shutdown();
@@ -107,19 +110,11 @@ public:
     // frameIndex is a device-frame change token, not a ring-slot selector.
     void BeginFrame(uint32_t frameIndex);
 
-    // Ensure skeleton/clip data is uploaded. Returns GPU header index (0-based).
-    // EnsureSkeletonUploaded returns kNotUploaded for a missing skeleton, one
-    // without a computed joint closure, or one over the kernel's limits.
-    // Contract: never called concurrently. Callers are AnimationSystem::Update
-    // in the animation wave (on a JobSystem worker when the wave runs its
-    // systems in parallel) and the model thumbnail's AnimationSystem on the
-    // main thread inside Render(); the wave is joined before Render() starts,
-    // so the two run one after the other. The CPU-side storage (m_SkelHeaders
-    // / m_ClipHeaders / their data vectors) is not guarded by a mutex — do not
-    // invoke from View().Parallel(...) or any other concurrent path, or you
-    // will race with the used-bytes accessors that AnimationComputePass reads
-    // during render-graph execute.
-    uint32 EnsureSkeletonUploaded(uint32 skeletonId);
+    /// Returns a GPU header index, or kNotUploaded for missing topology or kernel overflow.
+    /// Uploads are serialized across animation waves and main-thread previews.
+    /// Plans stay immutable and owned until skeleton invalidation or Shutdown.
+    uint32 EnsureSkeletonUploaded(uint32 skeletonId,
+        const SharedPtr<const Animation::BoneEvaluationPlan>& plan = {});
     uint32 EnsureClipUploaded(uint32 clipIndex);
 
     // Drop the id→header map so the next Ensure* re-packs current CPU
@@ -160,6 +155,20 @@ public:
     size_t GetClipDataUsedBytes()       const { return m_ClipData.size() * sizeof(uint32); }
 
 private:
+    struct UploadedClip
+    {
+        uint32 GPUIndex;
+        SharedPtr<const Animation::AnimationClipData> Data;
+        float Duration;
+    };
+    bool PackClip(const UploadedClip& clip, std::vector<GPUClipHeader>& headers, std::vector<uint32>& words) const;
+    bool UploadClipBuffers(const std::vector<GPUClipHeader>& headers, const std::vector<uint32>& words);
+    struct SkeletonVariant
+    {
+        uint32 GPUIndex;
+        SharedPtr<const Animation::BoneEvaluationPlan> Plan;
+    };
+
     GameEngine::Rendering::IDevice* m_Device = nullptr;
 
     // Skeleton GPU buffers (persistent, grow-on-demand).
@@ -168,6 +177,7 @@ private:
     std::vector<GPUSkeletonHeader> m_SkelHeaders;
     std::vector<uint32> m_SkelData;                    // flat packed: ints and floats as uint32
     std::unordered_map<uint32, uint32> m_SkelIdToGPU;  // skeletonId → GPU header index
+    FlatMap<std::pair<uint32, uintptr_t>, SkeletonVariant> m_SkelPlanToGPU;
     size_t m_SkelHeaderCapacity = 0;
     size_t m_SkelDataCapacity = 0;
     bool m_SkelDirty = false;
@@ -177,7 +187,7 @@ private:
     GameEngine::Rendering::BufferHandle m_ClipDataBuf;
     std::vector<GPUClipHeader> m_ClipHeaders;
     std::vector<uint32> m_ClipData;                    // flat packed channels + keyframes
-    std::unordered_map<uint32, uint32> m_ClipIdToGPU;  // clipIndex → GPU header index
+    FlatMap<uint32, UploadedClip> m_ClipIdToGPU;
     size_t m_ClipHeaderCapacity = 0;
     size_t m_ClipDataCapacity = 0;
     bool m_ClipDirty = false;

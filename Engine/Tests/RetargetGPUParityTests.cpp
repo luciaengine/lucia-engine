@@ -549,6 +549,9 @@ protected:
             EXPECT_FALSE(m_DataStore.IsDispatchScheduledThisFrame());
             EXPECT_EQ(frame.Graph().PassCount(), 2u);
             bool abortPreparation = retryAfterClearing;
+            // The frame reports the statistics of its last Execute; the test sums them.
+            uint32_t preparedPasses = 0u;
+            uint32_t preparationFailures = 0u;
             if (retryAfterClearing)
             {
                 constexpr float kSentinel = -37.0f;
@@ -574,6 +577,8 @@ protected:
                 EXPECT_EQ(frame.SubmittedFrameCount(), submissions);
                 EXPECT_EQ(frame.Stats().PreparedPasses, 2u);
                 EXPECT_EQ(frame.Stats().PreparationFailures, 1u);
+                preparedPasses += frame.Stats().PreparedPasses;
+                preparationFailures += frame.Stats().PreparationFailures;
                 EXPECT_FALSE(observedReadyPipeline);
                 EXPECT_FALSE(m_DataStore.IsDispatchScheduledThisFrame());
 
@@ -582,6 +587,8 @@ protected:
                 abortPreparation = false;
                 frame.Execute();
                 m_Device->WaitForIdle();
+                preparedPasses += frame.Stats().PreparedPasses;
+                preparationFailures += frame.Stats().PreparationFailures;
                 EXPECT_EQ(frame.SubmittedFrameCount(), submissions + 1u);
                 EXPECT_FALSE(m_DataStore.IsDispatchScheduledThisFrame());
                 const void* unchanged = m_Device->MapBuffer(atlasBuf);
@@ -597,8 +604,11 @@ protected:
             frame.Execute();
             m_Device->WaitForIdle();
             EXPECT_TRUE(observedReadyPipeline);
-            EXPECT_EQ(frame.Stats().PreparedPasses, retryAfterClearing ? 6u : 1u);
-            EXPECT_EQ(frame.Stats().PreparationFailures, retryAfterClearing ? 1u : 0u);
+            EXPECT_EQ(frame.Stats().PreparationFailures, 0u);
+            preparedPasses += frame.Stats().PreparedPasses;
+            preparationFailures += frame.Stats().PreparationFailures;
+            EXPECT_EQ(preparedPasses, retryAfterClearing ? 6u : 1u);
+            EXPECT_EQ(preparationFailures, retryAfterClearing ? 1u : 0u);
             EXPECT_TRUE(m_DataStore.IsDispatchScheduledThisFrame());
         }
 
