@@ -372,4 +372,89 @@ TEST_F(SceneViewHoverPillBoundPaneTest, ThePaneMovesItsPillAboveTheHostLabelOver
     EXPECT_FLOAT_EQ(StyleValue(*pill, Style::PositionTop), hostLabelInPane.Y - kClearancePx - kPillHeight);
 }
 
+/// A tool that only says what its next click needs.
+class StatusTool final : public GameEngine::Editor::SceneTools::ISceneTool
+{
+public:
+    const char* GetName() const override { return "Status"; }
+    void OnPointerEvent(const GameEngine::Editor::SceneTools::ScenePointerEvent&) override {}
+    void OnKeyEvent(const GameEngine::Editor::SceneTools::SceneKeyEvent&) override {}
+    void GatherGizmos(GameEngine::Editor::SceneTools::GizmoCollector&) override {}
+    std::string_view StatusText() const override { return Status; }
+
+    std::string Status;
+};
+
+/// A pane of 400 x 200 px with the pointer inside it, bound to the zeroed controller with `tool` active.
+class SceneViewToolStatusPaneTest : public ::testing::Test
+{
+protected:
+    void SetUp() override
+    {
+        Pane.SetSlot("front");
+        UILayoutAccess::SetLastLayoutRect(Pane, 0.0f, 0.0f, kPaneWidth, kPaneHeight);
+        Pill = dynamic_cast<SceneViewHoverPill*>(Pane.FindById(GameEngine::HashStringId("SceneViewHoverPillFront")));
+        ASSERT_NE(Pill, nullptr);
+        UILayoutAccess::SetLastLayoutRect(*Pill, 0.0f, 0.0f, kPillWidth, kPillHeight);
+        // The move goes in before the bind: a bound pane passes a move to its controller.
+        GameEngine::UIEvent move;
+        move.Id = GameEngine::kEventMouseMove;
+        move.X = 50.0f;
+        move.Y = 30.0f;
+        Pane.DispatchEvent(move);
+        ASSERT_TRUE(Pane.IsPointerInside());
+        Pane.Bind(BindingTo(ZeroedController()));
+        ZeroedController()->GetToolContext().SetActiveTool(&Tool);
+    }
+
+    // The zeroed controller is shared by every test in the process.
+    void TearDown() override
+    {
+        ZeroedController()->GetToolContext().SetActiveTool(nullptr);
+        GameEngine::Editor::TestStubs::OverlayHoverText().clear();
+    }
+
+    StatusTool Tool;
+    SceneViewport Pane;
+    SceneViewHoverPill* Pill = nullptr;
+};
+
+TEST_F(SceneViewToolStatusPaneTest, ThePillShowsTheActiveToolStatusAtTheBottomCenter)
+{
+    Tool.Status = "Pick a tile in the Tile Palette to paint";
+
+    Pane.UpdateHoverPill();
+
+    EXPECT_FLOAT_EQ(Opacity(*Pill), 1.0f);
+    EXPECT_EQ(Pill->GetText(), Tool.Status);
+    EXPECT_FLOAT_EQ(StyleValue(*Pill, Style::PositionLeft), std::round((kPaneWidth - kPillWidth) * 0.5f));
+    EXPECT_FLOAT_EQ(StyleValue(*Pill, Style::PositionTop), kPaneHeight - kBottomInsetPx - kPillHeight);
+}
+
+TEST_F(SceneViewToolStatusPaneTest, TheTextOfTheOverlayUnderThePointerTakesPrecedenceOverTheStatus)
+{
+    Tool.Status = "Pick a tile in the Tile Palette to paint";
+    GameEngine::Editor::TestStubs::OverlayHoverText() = "Junction";
+
+    Pane.UpdateHoverPill();
+
+    EXPECT_FLOAT_EQ(Opacity(*Pill), 1.0f);
+    EXPECT_EQ(Pill->GetText(), "Junction");
+}
+
+TEST_F(SceneViewToolStatusPaneTest, WhenThePointerLeavesThePaneThePillHidesTheStatus)
+{
+    Tool.Status = "Pick a tile in the Tile Palette to paint";
+    Pane.UpdateHoverPill();
+    ASSERT_FLOAT_EQ(Opacity(*Pill), 1.0f);
+
+    GameEngine::UIEvent leave;
+    leave.Id = GameEngine::kEventMouseLeave;
+    Pane.DispatchEvent(leave);
+    ASSERT_FALSE(Pane.IsPointerInside());
+    Pane.UpdateHoverPill();
+
+    EXPECT_FLOAT_EQ(Opacity(*Pill), 0.0f);
+}
+
 } // namespace
