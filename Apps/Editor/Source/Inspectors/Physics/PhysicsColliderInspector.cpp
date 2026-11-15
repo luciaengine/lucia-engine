@@ -22,6 +22,11 @@
 
 #include "Inspectors/InspectorUIHelpers.h"
 #include "Inspectors/Physics/PhysicsInspectorShared.h"
+#include "UI/Controls/InspectorNotice.h"
+
+#include "Assets/AssetManager.h"
+#include "Assets/AssetRegistry.h"
+#include "Core/Engine.h"
 
 #include <optional>
 
@@ -64,6 +69,7 @@ struct PhysicsColliderSnapshot
     uint32 belongsToMask{};
     uint32 collidesWithMask{};
     bool isTrigger{};
+    Components::AssetRef<AssetType::PhysicsMaterial> materialAsset{};
     bool overrideMaterial{};
     Physics::PhysicsMaterial material{};
 };
@@ -76,6 +82,7 @@ static PhysicsColliderSnapshot CaptureCollider(const Components::PhysicsCollider
     s.belongsToMask = c.belongsToMask;
     s.collidesWithMask = c.collidesWithMask;
     s.isTrigger = c.isTrigger;
+    s.materialAsset = c.materialAsset;
     s.overrideMaterial = c.overrideMaterial;
     s.material = c.material;
     return s;
@@ -88,6 +95,7 @@ static void ApplyCollider(Components::PhysicsCollider& c, const PhysicsColliderS
     c.belongsToMask = s.belongsToMask;
     c.collidesWithMask = s.collidesWithMask;
     c.isTrigger = s.isTrigger;
+    c.materialAsset = s.materialAsset;
     c.overrideMaterial = s.overrideMaterial;
     c.material = s.material;
 }
@@ -127,23 +135,39 @@ class PhysicsColliderInspectorSection final : public UIElement
             m_IsTrigger->SetOnValueChanged([this](bool v) { OnIsTriggerChanged(v); });
         }
 
+        InspectorUI::AddAssetFieldRow(
+            this, "Physics Material", col->materialAsset.Guid, {AssetType::PhysicsMaterial},
+            &EngineCore::GetInstance().GetAssetManager().GetRegistry(),
+            [this](const GUID& guid) { OnMaterialAssetChanged(guid); }, ctx.Thumbnails,
+            "Authored contact surface (.physmat). While one is assigned, it supplies friction and "
+            "restitution, and the inline values below do not apply.");
+
+        auto materialNotice = std::make_unique<EditorUI::InspectorNotice>(
+            "Friction and restitution come from the assigned Physics Material. Clear the material "
+            "to set them here.",
+            EditorUI::InspectorNotice::Kind::Information);
+        m_InlineMaterialNotice = materialNotice.get();
+        AddChild(std::move(materialNotice));
+
         {
-            UIElement* row = InspectorPhysicsUI::AddRow(this);
-            InspectorPhysicsUI::AddLabel(row, "Override Material", "Use per-collider friction and restitution instead of the body's material");
-            UIElement* field = InspectorPhysicsUI::AddFieldContainer(row);
+            m_OverrideMaterialRow = InspectorPhysicsUI::AddRow(this);
+            InspectorPhysicsUI::AddLabel(m_OverrideMaterialRow, "Override Material", "Use per-collider friction and restitution instead of the body's material");
+            UIElement* field = InspectorPhysicsUI::AddFieldContainer(m_OverrideMaterialRow);
             m_OverrideMaterial = InspectorPhysicsUI::AddToggle(field, col->overrideMaterial);
             m_OverrideMaterial->SetOnValueChanged([this](bool v) { OnOverrideMaterialChanged(v); });
         }
 
-        AddFloatRow("Friction", col->material.friction, m_Friction,
+        m_FrictionRow = AddFloatRow("Friction", col->material.friction, m_Friction,
                     [this](float v) { OnFrictionChanging(v); },
                     [this](float v) { OnFrictionChanged(v); },
                     "Surface friction coefficient (0 = frictionless, 1 = high friction)");
 
-        AddFloatRow("Restitution", col->material.restitution, m_Restitution,
+        m_RestitutionRow = AddFloatRow("Restitution", col->material.restitution, m_Restitution,
                     [this](float v) { OnRestitutionChanging(v); },
                     [this](float v) { OnRestitutionChanged(v); },
                     "Bounciness coefficient (0 = no bounce, 1 = fully elastic)");
+
+        ShowMaterialPrecedence(!col->materialAsset.IsNull());
     }
 
     ~PhysicsColliderInspectorSection() override
@@ -156,7 +180,7 @@ class PhysicsColliderInspectorSection final : public UIElement
 
   private:
     template <typename ChangingFn, typename ChangedFn>
-    void AddFloatRow(const std::string& label, float initial, FloatField*& outField, ChangingFn&& onChanging, ChangedFn&& onChanged, const char* tooltip = nullptr)
+    UIElement* AddFloatRow(const std::string& label, float initial, FloatField*& outField, ChangingFn&& onChanging, ChangedFn&& onChanged, const char* tooltip = nullptr)
     {
         UIElement* row = InspectorPhysicsUI::AddRow(this);
         InspectorPhysicsUI::AddLabel(row, label, tooltip);
@@ -164,6 +188,28 @@ class PhysicsColliderInspectorSection final : public UIElement
         outField = InspectorPhysicsUI::AddFloat(field, initial);
         outField->SetOnValueChanging(std::forward<ChangingFn>(onChanging));
         outField->SetOnValueChanged(std::forward<ChangedFn>(onChanged));
+        return row;
+    }
+
+    // An assigned .physmat supplies the contact surface, so the simulation does not read the inline rows:
+    // the rows are disabled and the notice says why.
+    void ShowMaterialPrecedence(bool materialAssetAssigned)
+    {
+        if (m_InlineMaterialNotice)
+        {
+            if (materialAssetAssigned)
+                m_InlineMaterialNotice->RemoveClass("hidden");
+            else
+                m_InlineMaterialNotice->AddClass("hidden");
+        }
+        const bool inlineUsable = !materialAssetAssigned;
+        for (UIElement* row : {m_OverrideMaterialRow, m_FrictionRow, m_RestitutionRow})
+            if (row)
+                row->SetEnabled(inlineUsable);
+        for (UIElement* field : {static_cast<UIElement*>(m_OverrideMaterial), static_cast<UIElement*>(m_Friction),
+                                 static_cast<UIElement*>(m_Restitution)})
+            if (field)
+                field->SetEnabled(inlineUsable);
     }
 
     UndoRedoService::SnapshotTarget MakeSnapshotTarget()
@@ -309,6 +355,15 @@ class PhysicsColliderInspectorSection final : public UIElement
         }
     }); }
 
+    void OnMaterialAssetChanged(const GUID& guid)
+    {
+        CommitEdit("Physics Collider Material", [this, guid]() {
+            if (auto* c = m_World->GetComponentForWrite<Components::PhysicsCollider>(m_Entity))
+                c->materialAsset.Set(guid);
+        });
+        ShowMaterialPrecedence(!guid.IsNull());
+    }
+
     void OnIsTriggerChanged(bool v) { CommitEdit("Physics Collider Trigger", [this, v]() { if (auto* c = m_World->GetComponentForWrite<Components::PhysicsCollider>(m_Entity)) c->isTrigger = v; }); }
     void OnOverrideMaterialChanged(bool v) { CommitEdit("Physics Collider Override Material", [this, v]() { if (auto* c = m_World->GetComponentForWrite<Components::PhysicsCollider>(m_Entity)) c->overrideMaterial = v; }); }
 
@@ -344,6 +399,10 @@ class PhysicsColliderInspectorSection final : public UIElement
 
     IntField* m_Layer = nullptr;
     Toggle* m_IsTrigger = nullptr;
+    UIElement* m_InlineMaterialNotice = nullptr;
+    UIElement* m_OverrideMaterialRow = nullptr;
+    UIElement* m_FrictionRow = nullptr;
+    UIElement* m_RestitutionRow = nullptr;
     Toggle* m_OverrideMaterial = nullptr;
     FloatField* m_Friction = nullptr;
     FloatField* m_Restitution = nullptr;
