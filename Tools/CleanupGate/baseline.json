@@ -5329,7 +5329,6 @@
    "Engine/Include/Engine/Rendering/SkinPaletteAtlas.h": 4,
    "Engine/Include/Engine/Rendering/SkyEnvironmentSource.h": 2,
    "Engine/Include/Engine/Rendering/SortedTransparentCull.h": 1,
-   "Engine/Include/Engine/Rendering/SortedTransparentKey.h": 2,
    "Engine/Include/Engine/Rendering/SortedTransparentRuns.h": 4,
    "Engine/Include/Engine/Rendering/SunGlareRenderFeature.h": 3,
    "Engine/Include/Engine/Rendering/SunScreenProjection.h": 2,
