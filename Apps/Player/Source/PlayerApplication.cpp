@@ -633,7 +633,7 @@ void PlayerApplication::FinishStartupResolve(ECS::World& world, float64 deltaTim
 
 void PlayerApplication::LoadStartupScene()
 {
-    m_StartupScene.Begin();
+    m_StartupScene.Begin(m_GameConfig.waitForSplineRecipes);
     SceneLoadOperation load = EngineCore::GetInstance().GetSceneLoader().Load(MakeStartupSceneLoadRequest(
         m_GameConfig.startupScene,
         [this](SceneLoadInstantiated& instantiated) { OnStartupSceneInstantiated(instantiated); }));
