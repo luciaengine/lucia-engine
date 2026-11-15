@@ -29,9 +29,17 @@
     height: 26px;
     flex-shrink: 0;
 }
-.bone-lod-pin {
-    margin-left: auto;
-    flex-shrink: 0;
+/* The Keep box rides the row's right edge, the same way the tree theme anchors the
+   lock and the layer dropdown, so the name keeps the space between indent and box. */
+.tree .tree-item .bone-lod-pin {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    margin-top: -11px;
+}
+/* Reserve the box's strip: 4 inset + 22 box + 4 clear. */
+.tree .tree-item.bone-lod-row .tree-title {
+    margin-right: 30px;
 }
 .bone-lod-actions {
     display: flex;

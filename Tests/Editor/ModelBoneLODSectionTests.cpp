@@ -6,12 +6,19 @@
 #include "Core/Engine.h"
 #include "Scripting/ScriptsConfig.h"
 #include "TestTempDir.h"
+#include "ECSModules/Rendering/SkeletonStore.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/IntField.h"
+#include "UI/Parsers/CSSParser.h"
 #include "UI/Registration/ElementRegistration.h"
+#include "UI/StyleProperties.h"
+#include "UI/UIManager.h"
+#include "UIRgTestHarness.h"
 #include "UndoRedo/UndoRedoService.h"
 
 #include <fstream>
+#include <sstream>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -29,6 +36,71 @@ IntField* FindBudget(UIElement& parent)
             return field;
     }
     return nullptr;
+}
+
+// The inspector's default width and the narrowest bone name area that still reads as a name.
+constexpr uint32 kInspectorWidthPx = 189u;
+constexpr uint32 kInspectorHeightPx = 1200u;
+constexpr float kMinimumNameWidthPx = 40.0f;
+constexpr float kLayoutTolerancePx = 0.5f;
+constexpr uint32 kChainBoneCount = 8u;
+constexpr int kSettleFrames = 3;
+constexpr float kFrameSeconds = 1.0f / 60.0f;
+
+// The theme sheets in theme.css import order, then the section's own sheet.
+constexpr const char* kSheets[] = {
+    "Assets/UI/theme/tokens.css",
+    "Assets/UI/theme/core.css",
+    "Assets/UI/theme/views.css",
+    "Assets/UI/theme/widgets.css",
+    "Assets/UI/inspectors/BoneLOD/ModelBoneLODSection.css",
+};
+
+std::string ReadEditorFile(const std::string& relativePath)
+{
+    std::ifstream in(std::filesystem::path(GE_EDITOR_SOURCE_DIR) / relativePath, std::ios::binary);
+    std::ostringstream text;
+    text << in.rdbuf();
+    return text.str();
+}
+
+// One bone per level, so the deepest row carries the largest indent.
+Animation::SkeletonData MakeChainSkeleton()
+{
+    Animation::SkeletonData skeleton;
+    skeleton.BoneCount = kChainBoneCount;
+    skeleton.RestLocalMatrix.assign(kChainBoneCount * 16u, 0.0f);
+    skeleton.InverseBind.assign(kChainBoneCount * 16u, 0.0f);
+    for (uint32 node = 0u; node < kChainBoneCount; ++node)
+    {
+        skeleton.Parent.push_back(static_cast<int32>(node) - 1);
+        skeleton.BoneNames.push_back("SpineSegment" + std::to_string(node));
+        for (uint32 diagonal = 0u; diagonal < 4u; ++diagonal)
+        {
+            skeleton.RestLocalMatrix[node * 16u + diagonal * 5u] = 1.0f;
+            skeleton.InverseBind[node * 16u + diagonal * 5u] = 1.0f;
+        }
+    }
+    skeleton.ComputeTopologicalSort();
+    return skeleton;
+}
+
+UIElement* ChildWithClass(UIElement& parent, const char* className)
+{
+    for (const auto& child : parent.GetChildren())
+    {
+        if (child->HasClass(className))
+            return child.get();
+    }
+    return nullptr;
+}
+
+void CollectBoneRows(UIElement& element, std::vector<UIElement*>& rows)
+{
+    if (element.HasClass("tree-item") && ChildWithClass(element, "bone-lod-pin"))
+        rows.push_back(&element);
+    for (const auto& child : element.GetChildren())
+        CollectBoneRows(*child, rows);
 }
 
 class ModelBoneLODSectionTest : public testing::Test
@@ -154,4 +226,51 @@ TEST_F(ModelBoneLODSectionTest, ReadOnlySourceDisablesEditsAndCreatesNoUndoStep)
     EXPECT_EQ(undo.GetUndoCount(), 0u);
     const auto& registry = EngineCore::GetInstance().GetAssetManager().GetRegistry();
     EXPECT_EQ(BoneLODAssetSettings::Load(registry, model->GetPath()).BoneBudget, 32u);
+}
+
+TEST_F(ModelBoneLODSectionTest, EveryBoneNameStaysReadableBeforeItsKeepBoxAtTheDefaultInspectorWidth)
+{
+    auto device = MakeHeadlessDevice();
+    if (!device)
+        GTEST_SKIP() << "no headless graphics device";
+    auto& skeletons = Engine::Renderer::SkeletonStore::Instance();
+    const uint32 skeletonId = skeletons.CreateSkeleton(kChainBoneCount);
+    ASSERT_NE(skeletonId, 0u);
+    *skeletons.Get(skeletonId) = MakeChainSkeleton();
+    auto model = MakeModel();
+    model->SetSkeletonIdForTest(skeletonId);
+
+    auto panel = MakeUnique<UIElement>();
+    panel->Style().Set(Style::Width, StyleLength::Px(static_cast<float>(kInspectorWidthPx)));
+    auto ownedSection = MakeUnique<Editor::ModelBoneLODSection>(*model, nullptr, std::function<void()>{});
+    UIElement* section = ownedSection.get();
+    panel->AddChild(std::move(ownedSection));
+    UIManager ui(device.get());
+    ui.SetLayoutSizeOverride(kInspectorWidthPx, kInspectorHeightPx);
+    for (const char* sheetPath : kSheets)
+    {
+        Stylesheet sheet{};
+        ASSERT_TRUE(UIParsing::CSSParser::ParseStylesFromString(ReadEditorFile(sheetPath), sheet)) << sheetPath;
+        sheet.SourceName = sheetPath;
+        ui.AddStylesheet(MakeShared<const Stylesheet>(std::move(sheet)));
+    }
+    ui.SetRoot(std::move(panel));
+    for (int frame = 0; frame < kSettleFrames; ++frame)
+        ui.Update(kFrameSeconds, true);
+
+    std::vector<UIElement*> rows;
+    CollectBoneRows(*section, rows);
+    ASSERT_EQ(rows.size(), kChainBoneCount) << "every bone, the root included, needs a row with a Keep box";
+    for (UIElement* row : rows)
+    {
+        UIElement* title = ChildWithClass(*row, "tree-title");
+        UIElement* pin = ChildWithClass(*row, "bone-lod-pin");
+        ASSERT_NE(title, nullptr);
+        const std::string name = title->GetTextContent();
+        EXPECT_GE(pin->GetLayoutX() + kLayoutTolerancePx, title->GetLayoutX() + title->GetLayoutWidth())
+            << name << ": the Keep box is not after the bone name";
+        EXPECT_LE(pin->GetLayoutX() + pin->GetLayoutWidth(), row->GetLayoutX() + row->GetLayoutWidth() + kLayoutTolerancePx)
+            << name << ": the Keep box runs past the row";
+        EXPECT_GE(title->GetLayoutWidth(), kMinimumNameWidthPx) << name << ": the bone name has no room";
+    }
 }

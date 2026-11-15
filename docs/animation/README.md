@@ -13,6 +13,8 @@ straight into `SkinPaletteAtlas`. Setting the environment variable
 
 ## Reading order
 
+[Bone LOD](bone-lod.mdx) reduces the bones evaluated for distant skinned model instances.
+
 [Animation clip compression](clip-compression.mdx) describes packed playback, editable keys, and packaged source files.
 
 1. [`HumanoidRetargeting.html`](HumanoidRetargeting.html) — What the system
