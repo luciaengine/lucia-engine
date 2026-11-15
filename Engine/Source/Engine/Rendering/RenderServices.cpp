@@ -1523,14 +1523,16 @@ void RenderServices::Shutdown()
     m_FrameOrchestrator.Shutdown();
     m_FrameRG = {};
 
-    // The only shrink of the registry. Feature destructors run under the
-    // exclusive lock: by shutdown the wave-parallel producers are stopped, so
-    // nothing can reach EnsureFeature and re-insert behind the clear.
+    // The only shrink of the registry. By shutdown the wave-parallel producers are
+    // stopped, so nothing re-inserts. The destructors run after the lock: one that
+    // releases a view reaches ForEachFeature, which takes m_FeaturesMutex again.
+    decltype(m_Features) retiredFeatures;
     {
         std::unique_lock lock(m_FeaturesMutex);
         m_FeatureSnapshot.reset();
-        m_Features.clear();
+        retiredFeatures.swap(m_Features);
     }
+    retiredFeatures.clear();
 
     // Destroy GPU animation data store before device shutdown.
     m_GPUAnimDataStore.Shutdown();
