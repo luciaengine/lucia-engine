@@ -387,22 +387,15 @@ std::byte* PackVertexStreams(std::span<const Vertex> vertices, std::byte* core, 
 // and MaxBounds. False when a position is not finite.
 bool VertexBounds(std::span<const Vertex> vertices, Mathematics::BoundingBox& out)
 {
-    float minimum[3] = {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
-                        std::numeric_limits<float>::max()};
-    float maximum[3] = {std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
-                        std::numeric_limits<float>::lowest()};
+    Mathematics::AABB box = Mathematics::AABB::Empty();
     for (const Vertex& v : vertices)
     {
-        for (int axis = 0; axis < 3; ++axis)
-        {
-            if (!std::isfinite(v.Position[axis]))
-                return false;
-            minimum[axis] = std::min(minimum[axis], v.Position[axis]);
-            maximum[axis] = std::max(maximum[axis], v.Position[axis]);
-        }
+        const Mathematics::Vector3 position{v.Position[0], v.Position[1], v.Position[2]};
+        if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z))
+            return false;
+        box.Expand(position);
     }
-    out = Mathematics::BoundingBox::FromMinMax({minimum[0], minimum[1], minimum[2]},
-                                               {maximum[0], maximum[1], maximum[2]});
+    out = Mathematics::BoundingBox::FromMinMax(box.min, box.max);
     return true;
 }
 
@@ -908,6 +901,8 @@ bool MeshGPURegistry::RewriteSubmeshVertices(MeshGPUHandle handle,
     if (!VertexBounds(vertices, bounds))
         return false;
 
+    static_assert(kMaxSpareVertexGroups == kRetireDelay,
+                  "one rewrite per frame must find a spare that aged a full retire window");
     // Pick the spare that has aged longest. It may be written once a full
     // frames-in-flight window has passed since the entry stopped drawing it,
     // the same rule the deferred free follows.
@@ -1714,6 +1709,53 @@ void MeshGPURegistry::NotifyUnregister(const GUID& assetGuid)
 
 // ---- Private helpers ----
 
+void MeshGPURegistry::FreeVertexGroup(std::span<VertexStreamRequest> streams)
+{
+    for (VertexStreamRequest& stream : streams)
+    {
+        if (stream.alloc->IsValid())
+        {
+            if (MeshGPUStreamPool* pool = GetPool(*stream.pools, *stream.poolIndex))
+                pool->allocator->Free(*stream.alloc);
+        }
+        *stream.alloc = {};
+        *stream.poolIndex = kInvalidMeshGPUPoolIndex;
+    }
+}
+
+bool MeshGPURegistry::AllocateVertexGroupInPools(std::span<VertexStreamRequest> streams, uint32_t groupIndex)
+{
+    uint64_t vertexOffset = std::numeric_limits<uint64_t>::max();
+    for (VertexStreamRequest& stream : streams)
+    {
+        if (!stream.pools || groupIndex >= static_cast<uint32_t>(stream.pools->size()))
+        {
+            FreeVertexGroup(streams);
+            return false;
+        }
+
+        const Memory::RangeAllocator::Allocation alloc = AllocateInPool((*stream.pools)[groupIndex], stream.bytes);
+        if (!alloc.IsValid())
+        {
+            FreeVertexGroup(streams);
+            return false;
+        }
+
+        *stream.alloc = alloc;
+        *stream.poolIndex = groupIndex;
+
+        const uint64_t streamVertexOffset = alloc.Offset / stream.stride;
+        if (vertexOffset == std::numeric_limits<uint64_t>::max())
+            vertexOffset = streamVertexOffset;
+        else if (vertexOffset != streamVertexOffset)
+        {
+            FreeVertexGroup(streams);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool MeshGPURegistry::AllocateVertexGroup(std::span<VertexStreamRequest> streams,
                                           VertexAttributeFlags flags,
                                           MeshGPUStorageDomain domain)
@@ -1721,58 +1763,11 @@ bool MeshGPURegistry::AllocateVertexGroup(std::span<VertexStreamRequest> streams
     if (streams.empty())
         return false;
 
-    const auto clearVertexAllocations = [&]()
-    {
-        for (VertexStreamRequest& stream : streams)
-        {
-            if (stream.alloc->IsValid())
-            {
-                if (MeshGPUStreamPool* pool = GetPool(*stream.pools, *stream.poolIndex))
-                    pool->allocator->Free(*stream.alloc);
-            }
-            *stream.alloc = {};
-            *stream.poolIndex = kInvalidMeshGPUPoolIndex;
-        }
-    };
-
-    const auto tryAllocateInGroup = [&](uint32_t groupIndex) -> bool
-    {
-        uint64_t vertexOffset = std::numeric_limits<uint64_t>::max();
-        for (VertexStreamRequest& stream : streams)
-        {
-            if (!stream.pools || groupIndex >= static_cast<uint32_t>(stream.pools->size()))
-            {
-                clearVertexAllocations();
-                return false;
-            }
-
-            Memory::RangeAllocator::Allocation alloc = AllocateInPool((*stream.pools)[groupIndex], stream.bytes);
-            if (!alloc.IsValid())
-            {
-                clearVertexAllocations();
-                return false;
-            }
-
-            *stream.alloc = alloc;
-            *stream.poolIndex = groupIndex;
-
-            const uint64_t streamVertexOffset = alloc.Offset / stream.stride;
-            if (vertexOffset == std::numeric_limits<uint64_t>::max())
-                vertexOffset = streamVertexOffset;
-            else if (vertexOffset != streamVertexOffset)
-            {
-                clearVertexAllocations();
-                return false;
-            }
-        }
-        return true;
-    };
-
     // Every stream keeps one pool per group, so the core pool count is the group count.
     const uint32_t existingGroupCount = static_cast<uint32_t>(streams.front().pools->size());
     for (uint32_t groupIndex = 0; groupIndex < existingGroupCount; ++groupIndex)
     {
-        if (tryAllocateInGroup(groupIndex))
+        if (AllocateVertexGroupInPools(streams, groupIndex))
             return true;
     }
 
@@ -1823,7 +1818,7 @@ bool MeshGPURegistry::AllocateVertexGroup(std::span<VertexStreamRequest> streams
         return false;
     }
 
-    return tryAllocateInGroup(newGroupIndex);
+    return AllocateVertexGroupInPools(streams, newGroupIndex);
 }
 
 MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh, MeshGPUStorageDomain domain)

@@ -924,6 +924,14 @@ class MeshGPURegistry
     bool AllocateVertexGroup(std::span<VertexStreamRequest> streams, VertexAttributeFlags flags,
                              MeshGPUStorageDomain domain);
 
+    // Allocate every stream in pool group `groupIndex`, all at one vertex
+    // offset. On failure nothing stays allocated.
+    static bool AllocateVertexGroupInPools(std::span<VertexStreamRequest> streams, uint32_t groupIndex);
+
+    // Give back at once every range in `streams` and clear the requests.
+    // Only for ranges the GPU never read.
+    static void FreeVertexGroup(std::span<VertexStreamRequest> streams);
+
     // A vertex group a rewritten entry does not draw from: a range in each
     // per-vertex stream pool the entry owns (indexed like the entry's streams,
     // invalid where it owns none), all at one vertex offset.
