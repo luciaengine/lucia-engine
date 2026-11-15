@@ -22,6 +22,7 @@ namespace GameEngine {
 
 namespace ECS { class World; }
 namespace Rendering::RenderGraph { struct RGResourceDesc; }
+class PlayerDemoControls;
 class RuntimeFrameReadback;
 class RuntimeHost;
 struct RuntimeHostDesc;
@@ -177,6 +178,10 @@ private:
 #endif
     // The window, the render device, the pipeline, the scene and the frame.
     std::unique_ptr<RuntimeHost> m_Host;
+#if defined(GE_PLATFORM_MOBILE)
+    // GE_PLAYER_DEMO_CONTROLS=1: touch orbit and the frame statistics overlay. Null otherwise.
+    std::unique_ptr<PlayerDemoControls> m_DemoControls;
+#endif
     float m_LastRenderDeltaTime = 1.0f / 60.0f;
 };
 

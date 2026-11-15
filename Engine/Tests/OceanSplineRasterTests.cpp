@@ -277,15 +277,13 @@ class OceanSplineRasterTest : public ::testing::Test
         OceanRibbonStyle style{};
         style.Width = kRibbonHalfWidth;
         style.Flags = 8u;
-        style.Color[0] = 0.2f;
-        style.Color[1] = 0.4f;
-        style.Color[2] = 0.8f;
-        style.Color[3] = 0.6f;
+        style.Color = ColorLinear{0.2f, 0.4f, 0.8f, 0.6f};
         const auto values = RasterizeRibbon(*m_Device, 3u, TextureFormat::RGBA8_UNORM, 0.0f, style);
         ASSERT_EQ(values.size(), size_t(kResolution) * kResolution * 4u);
         const size_t inside = (31u * kResolution + 32u) * 4u;
+        const float expected[] = {style.Color.r, style.Color.g, style.Color.b, style.Color.a};
         for (size_t channel = 0; channel < 4u; ++channel)
-            EXPECT_NEAR(values[inside + channel], style.Color[channel], 1.0f / 255.0f);
+            EXPECT_NEAR(values[inside + channel], expected[channel], 1.0f / 255.0f);
         EXPECT_FLOAT_EQ(values[(3u * kResolution + 32u) * 4u + 3u], 0.0f);
     }
     std::unique_ptr<IDevice> m_Device;

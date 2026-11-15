@@ -3,6 +3,7 @@ set(ENGINE_SOURCES
     Source/Engine/Rendering/2D/Systems/SpriteAnimationSystem.cpp
     Source/Engine/Rendering/2D/SpriteRenderFeature.cpp
     Source/Engine/Rendering/SortedTransparentComposition.cpp
+    Source/Engine/Rendering/BoneLOD/BoneLODPolicy.cpp
 	Source/Core/Application.cpp
     Source/Core/Time.cpp
     Source/Core/CpuProfiler.cpp
@@ -61,6 +62,9 @@ set(ENGINE_SOURCES
     Source/Assets/LodAssetSettings.cpp
     Source/Assets/ProjectLodReimport.cpp
     Source/Assets/ModelAssetSettings.cpp
+    Source/Assets/BoneLOD/BoneLODAssetSettings.cpp
+    Source/Assets/BoneLOD/ModelBoneLOD.cpp
+    Source/Assets/BoneLOD/ModelAssetBoneLOD.cpp
     Source/Assets/AuthoredLodImport.cpp
     Source/Assets/HlodClustering.cpp
     Source/Assets/HlodBenefit.cpp
@@ -2120,6 +2124,7 @@ endif()
                 Tests/MaterialBridgeIntegrationTests.cpp
                 Tests/MaterialAssetParsingTests.cpp
                 Tests/ShaderCompilationCacheTests.cpp
+                Tests/ShaderCacheKeyTargetTests.cpp
                 Tests/CompileConcurrencyGateTests.cpp
                 # MaterialVariantCookTests exercises the offline web cook itself,
                 # not a re-implementation of it: the same sources the cook tool links.
@@ -2237,7 +2242,6 @@ endif()
                 Tests/SortedTransparentCullTests.cpp
                 Tests/SortedTransparentRunTests.cpp
                 Tests/RenderSortingTests.cpp
-                Tests/GPUSortTests.cpp
                 Tests/SortedTransparentDeciderTests.cpp
                 Tests/SortedTransparentBuildAllocationTests.cpp
                 Tests/SkinPaletteAtlasTests.cpp
@@ -2286,6 +2290,7 @@ endif()
                 Tests/CascadeMotionSchedulerTests.cpp
                 Tests/CascadeShadowCacheTests.cpp
                 Tests/SkinnedShadowInvalidationTests.cpp
+                Tests/RigidCascadeRestoreTests.cpp
                 Tests/VertexModifierContentInvalidationTests.cpp
                 Tests/ShadowSamplingFitTests.cpp
                 Tests/ShadowSamplingShaderContractTests.cpp
@@ -2406,6 +2411,7 @@ endif()
                 Tests/DDGIResolveBlurComputeTests.cpp
                 Tests/OceanCascadeLayoutTests.cpp
                 Tests/OceanPreparedDispatchTests.cpp
+                Tests/OceanReadbackPreparationTests.cpp
                 Tests/OceanSprayPreparationTests.cpp
                 Tests/OceanRasterCapturePreparationTests.cpp
                 Tests/OceanSeabedDepthShaderTests.cpp
@@ -3300,6 +3306,7 @@ endif()
 	    target_link_libraries(RetargetGPUParityTests PRIVATE
 	        Engine GameEngine.Native
 	        GTest::gtest GTest::gtest_main)
+	    target_include_directories(RetargetGPUParityTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 	    target_compile_definitions(RetargetGPUParityTests PRIVATE
 	        GE_BINARY_DIR="${CMAKE_BINARY_DIR}"
 	        RENDERING_SOURCE_DIR="${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering")

@@ -304,6 +304,8 @@ TEST(UIFontLoadingTests, PrewarmIsPendingUntilTheRequestedFaceLoadsThenReady)
     EXPECT_EQ(ui.PrewarmFontText(request), Status::Pending);
     EXPECT_EQ(ui.PrewarmFontText(request), Status::Pending);
     EXPECT_EQ(calls, 1);
+    EXPECT_EQ(ui.GetFontLoadProgress().Pending, 1u);
+    EXPECT_FALSE(ui.GetFontLoadProgress().Ready());
 
     UIManager::FontResolveResult result;
     result.Bytes = bytes;
@@ -311,6 +313,42 @@ TEST(UIFontLoadingTests, PrewarmIsPendingUntilTheRequestedFaceLoadsThenReady)
     ui.DrainDeferredActionsOnce();
     EXPECT_EQ(ui.PrewarmFontText(request), Status::Ready);
     EXPECT_EQ(calls, 1);
+    EXPECT_TRUE(ui.GetFontLoadProgress().Ready());
+}
+
+TEST(UIFontLoadingTests, AReplacedResolverCannotClearTheNewRequest)
+{
+    auto* dev = SharedHeadlessDevice();
+    if (!dev)
+        GTEST_SKIP() << "Device init failed";
+
+    UIManager ui(dev);
+    UIManager::FontResolveCallback oldComplete;
+    UIManager::FontResolveCallback newComplete;
+    ui.SetFontResolver([&](const std::string&, int, FontStyle, FontVariant,
+                           UIManager::FontResolveCallback onReady) { oldComplete = std::move(onReady); });
+    ui.RequestFontFamily("Same Family");
+    int newCalls = 0;
+    ui.SetFontResolver([&](const std::string&, int, FontStyle, FontVariant,
+                           UIManager::FontResolveCallback onReady)
+                       {
+                           ++newCalls;
+                           newComplete = std::move(onReady);
+                       });
+    ui.RequestFontFamily("Same Family");
+    oldComplete(UIManager::FontResolveResult{});
+    ui.DrainDeferredActionsOnce();
+    ui.RequestFontFamily("Same Family");
+    EXPECT_EQ(newCalls, 1);
+    EXPECT_EQ(ui.GetFontLoadProgress().Pending, 1u);
+    EXPECT_EQ(ui.GetFontLoadProgress().Failed, 0u);
+
+    UIManager::FontResolveResult result;
+    result.Bytes = LoadRobotoBytes();
+    ASSERT_FALSE(result.Bytes.empty()) << "staged Roboto-Regular.ttf not found";
+    newComplete(std::move(result));
+    ui.DrainDeferredActionsOnce();
+    EXPECT_TRUE(ui.GetFontLoadProgress().Ready());
 }
 
 TEST(UIFontLoadingTests, PrewarmReportsAMissingFaceAndInvalidSizesAsFailed)
@@ -333,6 +371,8 @@ TEST(UIFontLoadingTests, PrewarmReportsAMissingFaceAndInvalidSizesAsFailed)
     ui.PrewarmFontText(missing);
     ui.DrainDeferredActionsOnce();
     EXPECT_EQ(ui.PrewarmFontText(missing), Status::Failed);
+    EXPECT_EQ(ui.GetFontLoadProgress().Failed, 1u);
+    EXPECT_FALSE(ui.GetFontLoadProgress().Ready());
 
     UIManager::FontWarmupRequest defaultFace;
     defaultFace.Text = "Loading";

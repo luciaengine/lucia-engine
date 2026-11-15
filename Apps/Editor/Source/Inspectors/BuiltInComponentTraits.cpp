@@ -1,5 +1,6 @@
 #include "Inspectors/BuiltInInspectorRegistration.h"
 
+#include "Components/Animation/AnimatedSprite2D.h"
 #include "Components/Navigation/NavigationSource.h"
 #include "Components/Rendering/DDGIVolume.h"
 #include "Components/SpatialGridMover.h"
@@ -41,6 +42,11 @@ constexpr std::array kDataOnlyComponentTraits = {
         .InspectorCategory = "Navigation",
         .InspectorTooltip = "Whether the navigation bake reads the meshes of this entity and of its children that "
                             "set no policy of their own. Colliders keep their own rule.",
+    },
+    // The row shows the sprite glyph until its frame crop arrives (Editor/Hierarchy/SpritePreview).
+    DataOnlyComponentTraits{
+        .TypeId = ECS::GetComponentTypeId<Components::AnimatedSprite2D>(),
+        .HierarchyRowClass = "hierarchy-entity-animated-sprite",
     },
     // Both classes resolve to the same icon in views.css, so the inspector section and the hierarchy row agree.
     DataOnlyComponentTraits{

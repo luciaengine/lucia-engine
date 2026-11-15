@@ -15,9 +15,9 @@ namespace GameEngine {
 
 using namespace Rendering;
 
-// Push constant structs — 112 bytes each (mat4 64 + 2 vec4 32 + 4 floats 16).
-// Both are the same size so the shared CreateGridPipeline can use a single
-// push constant range descriptor.
+// Push constant structs. GridPC is 112 bytes (mat4 64 + 2 vec4 32 + 4 floats 16);
+// Grid2DPC adds the 2D cell grid vec4 (128 bytes). Each mode's pipeline declares
+// the range of its own struct (SceneViewGridRenderer::PipelineDesc).
 
 struct GridPC
 {
@@ -89,16 +89,14 @@ static bool LoadGrid2DShaderBytes(std::vector<uint8_t>& outVs, std::vector<uint8
 // Pipeline creation (shared by both modes)
 // ---------------------------------------------------------------------------
 
-static GraphicsPipelineDesc BuildGridPipelineDesc(const std::vector<uint8_t>& vs,
-                                                  const std::vector<uint8_t>& fs,
-                                                  const char* debugName,
-                                                  uint32_t pushConstantBytes)
+GraphicsPipelineDesc SceneViewGridRenderer::PipelineDesc(bool is2DMode, const std::vector<uint8_t>& vs,
+                                                         const std::vector<uint8_t>& fs)
 {
     GraphicsPipelineDesc gd{};
     gd.Kind = GraphicsPipelineKind::VertexFragment;
     gd.VertexShader = std::make_shared<const std::vector<uint8_t>>(vs);
     gd.PixelShader  = std::make_shared<const std::vector<uint8_t>>(fs);
-    gd.DebugName = debugName;
+    gd.DebugName = is2DMode ? "SV_InfiniteGrid2D" : "SV_InfiniteGrid";
     gd.Topology  = PrimitiveTopology::TriangleList;
 
     DynamicStateInfo dyn{};
@@ -121,7 +119,7 @@ static GraphicsPipelineDesc BuildGridPipelineDesc(const std::vector<uint8_t>& vs
     blend.dstAlphaBlendFactor = BlendFactor::OneMinusSrcAlpha;
     gd.ColorBlend.attachments = {blend};
 
-    gd.PushConstants.Size      = pushConstantBytes;
+    gd.PushConstants.Size      = static_cast<uint32_t>(is2DMode ? sizeof(Grid2DPC) : sizeof(GridPC));
     gd.PushConstants.StageMask = kShaderStageFragment;
 
     return gd;
@@ -156,7 +154,25 @@ static void FillGridPCCommon(float invVPOut[16], float cameraPosOut[4], float gr
 // Record
 // ---------------------------------------------------------------------------
 
+PipelineHandle SceneViewGridRenderer::PrepareRG(const RenderGraph::RGPrepareContext& context,
+                                                  bool is2DMode)
+{
+    IDevice* device = context.GetDevice();
+    if (device == nullptr)
+        return {};
+    std::vector<uint8_t> vertexShader;
+    std::vector<uint8_t> fragmentShader;
+    const bool loaded = is2DMode ? LoadGrid2DShaderBytes(vertexShader, fragmentShader)
+                                 : LoadGridShaderBytes(vertexShader, fragmentShader);
+    if (!loaded)
+        return {};
+    const GraphicsPipelineId pipeline =
+        device->InternGraphicsPipeline(PipelineDesc(is2DMode, vertexShader, fragmentShader));
+    return context.PreparePipeline(pipeline);
+}
+
 void SceneViewGridRenderer::RecordRG(const Rendering::RenderGraph::RGContext& ctx,
+                                      Rendering::PipelineHandle pipeline,
                                       const Rendering::CameraData* cam,
                                       const float camPos[3],
                                       bool is2DMode,
@@ -169,25 +185,11 @@ void SceneViewGridRenderer::RecordRG(const Rendering::RenderGraph::RGContext& ct
     if (!cam)
         return;
 
-    auto* cl = ctx.Cmd;
-    auto* device = ctx.GetDevice();
-    if (!cl || !device)
+    CommandList* cl = ctx.Cmd;
+    if (!cl || !pipeline.IsValid())
         return;
 
-    // The format key (incl. sample count) comes from the RenderGraph pass's declared
-    // attachments, so no member sample-keyed cache is needed: intern the desc
-    // (device-deduped) and resolve through the device's variant cache.
-    std::vector<uint8_t> vs, fs;
-    const bool loaded = is2DMode ? LoadGrid2DShaderBytes(vs, fs) : LoadGridShaderBytes(vs, fs);
-    if (!loaded)
-        return;
-    const PipelineHandle pipe = ctx.GetOrCreatePipelineVariant(device->InternGraphicsPipeline(
-        BuildGridPipelineDesc(vs, fs, is2DMode ? "SV_InfiniteGrid2D" : "SV_InfiniteGrid",
-                              static_cast<uint32_t>(is2DMode ? sizeof(Grid2DPC) : sizeof(GridPC)))));
-    if (!pipe.IsValid())
-        return;
-
-    cl->SetPipeline(pipe);
+    cl->SetPipeline(pipeline);
 
     if (!is2DMode)
     {

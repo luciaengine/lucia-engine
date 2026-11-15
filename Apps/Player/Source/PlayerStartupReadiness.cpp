@@ -13,9 +13,10 @@ SceneLoadRequest MakeStartupSceneLoadRequest(std::filesystem::path scene,
     return {.Scene = std::move(scene), .OnInstantiated = std::move(onInstantiated), .PauseWorldDrawing = true};
 }
 
-void PlayerStartupReadiness::Begin()
+void PlayerStartupReadiness::Begin(bool waitForSplineRecipes)
 {
     m_Pending = true;
+    m_WaitForSplineRecipes = waitForSplineRecipes;
     m_Frames = 0;
     m_Seconds = 0.0;
 }
@@ -26,7 +27,7 @@ bool PlayerStartupReadiness::Update(bool revealed, bool recipesSettled, float64 
         return false;
     ++m_Frames;
     m_Seconds += deltaSeconds;
-    if (!revealed || !recipesSettled)
+    if (!revealed || (m_WaitForSplineRecipes && !recipesSettled))
         return false;
     m_Pending = false;
     return true;
