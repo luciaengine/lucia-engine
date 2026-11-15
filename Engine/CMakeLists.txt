@@ -3,6 +3,7 @@ set(ENGINE_SOURCES
     Source/Engine/Rendering/2D/Systems/SpriteAnimationSystem.cpp
     Source/Engine/Rendering/2D/SpriteRenderFeature.cpp
     Source/Engine/Rendering/SortedTransparentComposition.cpp
+    Source/Engine/Rendering/BoneLOD/BoneLODPolicy.cpp
 	Source/Core/Application.cpp
     Source/Core/Time.cpp
     Source/Core/CpuProfiler.cpp
@@ -61,6 +62,9 @@ set(ENGINE_SOURCES
     Source/Assets/LodAssetSettings.cpp
     Source/Assets/ProjectLodReimport.cpp
     Source/Assets/ModelAssetSettings.cpp
+    Source/Assets/BoneLOD/BoneLODAssetSettings.cpp
+    Source/Assets/BoneLOD/ModelBoneLOD.cpp
+    Source/Assets/BoneLOD/ModelAssetBoneLOD.cpp
     Source/Assets/AuthoredLodImport.cpp
     Source/Assets/HlodClustering.cpp
     Source/Assets/HlodBenefit.cpp
