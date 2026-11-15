@@ -150,12 +150,13 @@ TEST(VirtualShadowPageCacheTests, InvalidPointFaceAndLocalMipCoordinatesDoNotCon
     EXPECT_EQ(work[0].Tile, 0u);
 }
 
-std::vector<VirtualShadowPage> SunRow(int64_t first, uint32_t count)
+std::vector<VirtualShadowPage> SunRow(int64_t first, uint32_t count, uint8_t level = 0)
 {
     std::vector<VirtualShadowPage> pages;
     for (uint32_t index = 0; index < count; ++index)
     {
         auto page = kSun;
+        page.Projection = level;
         page.X = first + index;
         pages.push_back(page);
     }
@@ -174,25 +175,51 @@ std::vector<int64_t> RenderAll(VirtualShadowPageCache& cache, std::span<const Vi
     return rendered;
 }
 
-TEST(VirtualShadowPageCacheTests, DeformedPagesStayPublishedAndRefreshOldestFirstWithinTheBudget)
+TEST(VirtualShadowPageCacheTests, DeformedPagesStayPublishedAndTheFinestLevelRefreshesEveryFrame)
 {
-    constexpr uint32_t kResident = 12;
     VirtualShadowPageCache cache(64);
-    const auto pages = SunRow(0, kResident);
-    ASSERT_EQ(RenderAll(cache, cache.Plan(pages, 1, 0)).size(), kResident);
+    auto pages = SunRow(0, 4, 0);
+    const auto coarse = SunRow(100, 40, 3);
+    pages.insert(pages.end(), coarse.begin(), coarse.end());
+    ASSERT_EQ(RenderAll(cache, cache.Plan(pages, 1, 0)).size(), pages.size());
 
-    cache.MarkDeformed();
-    const auto first = RenderAll(cache, cache.Plan(pages, 2, 1));
-    EXPECT_EQ(first, (std::vector<int64_t>{0, 1, 2, 3, 4, 5, 6, 7}));
+    std::set<int64_t> coarseRefreshed;
+    for (uint64_t frame = 2; frame <= 3; ++frame)
+    {
+        cache.MarkDeformed();
+        const auto rows = cache.Plan(pages, frame, frame - 1);
+        EXPECT_EQ(std::ranges::count_if(rows, [](const VirtualShadowPageWork& row) { return !row.NeedsRender; }),
+                  static_cast<std::ptrdiff_t>(pages.size() - kVirtualShadowDeformedRefreshBudget));
+        const auto rendered = RenderAll(cache, rows);
+        ASSERT_EQ(rendered.size(), kVirtualShadowDeformedRefreshBudget);
+        EXPECT_EQ(std::vector<int64_t>(rendered.begin(), rendered.begin() + 4), (std::vector<int64_t>{0, 1, 2, 3}));
+        coarseRefreshed.insert(rendered.begin() + 4, rendered.end());
+    }
+    EXPECT_EQ(coarseRefreshed.size(), 2 * (kVirtualShadowDeformedRefreshBudget - 4));
 
-    cache.MarkDeformed();
-    const auto second = RenderAll(cache, cache.Plan(pages, 3, 2));
-    EXPECT_EQ(second, (std::vector<int64_t>{0, 1, 2, 3, 8, 9, 10, 11}));
+    uint64_t frame = 4;
+    while (!RenderAll(cache, cache.Plan(pages, frame, frame - 1)).empty() && frame < 8)
+        ++frame;
+    EXPECT_LT(frame, 8u);
+}
 
-    const auto last = RenderAll(cache, cache.Plan(pages, 4, 3));
-    EXPECT_EQ(last, (std::vector<int64_t>{4, 5, 6, 7}));
-    const auto settled = cache.Plan(pages, 5, 4);
-    EXPECT_TRUE(std::ranges::none_of(settled, &VirtualShadowPageWork::NeedsRender));
+TEST(VirtualShadowPageCacheTests, ADeformedPageOverItsAgeLimitRefreshesBeforeFinerPages)
+{
+    VirtualShadowPageCache cache(64);
+    auto pages = SunRow(0, kVirtualShadowDeformedRefreshBudget + 4, 0);
+    pages.push_back(SunRow(500, 1, 1).front());
+    ASSERT_EQ(RenderAll(cache, cache.Plan(pages, 1, 0)).size(), pages.size());
+
+    constexpr uint64_t kLevelOneLimit = kVirtualShadowDeformedMaxAgeFrames << 1;
+    uint64_t refreshedAt = 0;
+    for (uint64_t frame = 2; frame <= 1 + kLevelOneLimit && refreshedAt == 0; ++frame)
+    {
+        cache.MarkDeformed();
+        const auto rendered = RenderAll(cache, cache.Plan(pages, frame, frame - 1));
+        if (std::ranges::find(rendered, 500) != rendered.end())
+            refreshedAt = frame;
+    }
+    EXPECT_EQ(refreshedAt, 1 + kLevelOneLimit);
 }
 
 TEST(VirtualShadowPageCacheTests, MissingPagesTakeTheRenderBudgetBeforeDeformedPages)

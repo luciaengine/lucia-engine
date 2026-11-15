@@ -122,31 +122,48 @@ std::vector<VirtualShadowPageWork> VirtualShadowPageCache::Plan(
         tile.LastUse = frame;
         row.Revision = tile.Revision;
         row.NeedsRender = !tile.Rendered;
+        if (row.NeedsRender)
+            tile.RenderFrame = frame;
     }
-    RefreshDeformed(std::span(work).first(residentCount));
+    RefreshDeformed(std::span(work).first(residentCount), frame);
     return work;
 }
 
-void VirtualShadowPageCache::RefreshDeformed(std::span<VirtualShadowPageWork> rows)
+void VirtualShadowPageCache::RefreshDeformed(std::span<VirtualShadowPageWork> rows, uint64_t frame)
 {
     const auto missing = static_cast<uint32_t>(std::ranges::count_if(rows, &VirtualShadowPageWork::NeedsRender));
     if (missing >= kVirtualShadowPageRenderBudget)
         return;
-    std::vector<VirtualShadowPageWork*> deformed;
+    struct Candidate
+    {
+        VirtualShadowPageWork* Row;
+        bool Overdue;
+        uint32_t Level;
+        uint64_t Age;
+    };
+    std::vector<Candidate> deformed;
     for (auto& row : rows)
-        if (row.Tile != kUnmappedShadowPage && !row.NeedsRender && m_Tiles[row.Tile].Deformed)
-            deformed.push_back(&row);
+    {
+        if (row.Tile == kUnmappedShadowPage || row.NeedsRender || !m_Tiles[row.Tile].Deformed)
+            continue;
+        // The clip level of a sun page and the mip of a local page both grow with the texel size.
+        const uint32_t level = row.Page.Family == VirtualShadowLight::Directional ? row.Page.Projection : row.Page.Mip;
+        const uint64_t age = frame - std::min(frame, m_Tiles[row.Tile].RenderFrame);
+        const uint64_t limit = kVirtualShadowDeformedMaxAgeFrames << std::min(level, 16u);
+        deformed.push_back({&row, age >= limit, level, age});
+    }
     const auto count = std::min<std::size_t>(
         deformed.size(), std::min(kVirtualShadowDeformedRefreshBudget, kVirtualShadowPageRenderBudget - missing));
-    // A lower revision was rendered earlier, so its content is the oldest.
     std::ranges::partial_sort(deformed, deformed.begin() + static_cast<std::ptrdiff_t>(count), {},
-                              [](const VirtualShadowPageWork* row) { return row->Revision; });
-    for (auto* row : std::span(deformed).first(count))
+                              [](const Candidate& candidate)
+                              { return std::tuple{!candidate.Overdue, candidate.Level, ~candidate.Age}; });
+    for (const auto& candidate : std::span(deformed).first(count))
     {
-        auto& tile = m_Tiles[row->Tile];
+        auto& tile = m_Tiles[candidate.Row->Tile];
         Invalidate(tile);
-        row->Revision = tile.Revision;
-        row->NeedsRender = true;
+        tile.RenderFrame = frame;
+        candidate.Row->Revision = tile.Revision;
+        candidate.Row->NeedsRender = true;
     }
 }
 

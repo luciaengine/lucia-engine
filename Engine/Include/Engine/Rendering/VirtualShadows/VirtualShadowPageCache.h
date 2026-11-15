@@ -54,7 +54,9 @@ struct VirtualShadowPageWork
 /// Most page depth passes that one view records in one frame.
 inline constexpr uint32_t kVirtualShadowPageRenderBudget = 24;
 /// Most deformed pages that one view refreshes in one frame, after the missing pages.
-inline constexpr uint32_t kVirtualShadowDeformedRefreshBudget = 8;
+inline constexpr uint32_t kVirtualShadowDeformedRefreshBudget = 16;
+/// Frames a deformed page of the finest level may wait. Each coarser level doubles it.
+inline constexpr uint64_t kVirtualShadowDeformedMaxAgeFrames = 2;
 
 // CPU reference for a per-view page table backed by a bounded depth atlas.
 class VirtualShadowPageCache
@@ -66,7 +68,8 @@ public:
     // fallback pages it will publish. Distinct, valid requests each get a row.
     // The first tileCount rows are eligible for residency. An in-flight lower
     // priority tile may delay a new mapping until completedFrame advances.
-    // Deformed pages refresh oldest first, in the render budget that missing pages leave.
+    // Deformed pages refresh in the render budget that missing pages leave: pages over
+    // their age limit first, then finer levels, then older pages.
     std::vector<VirtualShadowPageWork> Plan(
         std::span<const VirtualShadowPage> requests, uint64_t frame, uint64_t completedFrame);
 
@@ -102,12 +105,13 @@ private:
         std::optional<VirtualShadowPage> Page;
         uint64_t LastUse = 0;
         uint64_t Revision = 0;
+        uint64_t RenderFrame = 0;
         bool Rendered = false;
         bool Deformed = false;
     };
 
     void Invalidate(Tile& tile);
-    void RefreshDeformed(std::span<VirtualShadowPageWork> rows);
+    void RefreshDeformed(std::span<VirtualShadowPageWork> rows, uint64_t frame);
 
     std::vector<Tile> m_Tiles;
     FlatMap<VirtualShadowPage, uint32_t> m_Mappings;
