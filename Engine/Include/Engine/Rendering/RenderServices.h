@@ -544,7 +544,7 @@ class RenderServices
         m_SkinPaletteContentChanged = true;
         NotifyShadowCasterContentChanged(
             worldId, std::span<const ShadowCasterChangeSphere>{},
-            ShadowCasterChangeScope::Unbounded);
+            ShadowCasterChangeScope::Unbounded, /*affectsRigidCasters=*/false);
     }
     // Per-world light-list version: FinalizeWorldLights bumps it whenever the
     // finalized (sorted) list's bytes differ from the previous frame's. Exact
