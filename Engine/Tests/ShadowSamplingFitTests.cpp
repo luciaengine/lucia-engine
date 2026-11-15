@@ -20,6 +20,7 @@
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
 
 #include "Components/Rendering/Light.h"
+#include "Engine/Rendering/Pipeline/Nodes/ShadowMapNode.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/MatrixOps.h"
@@ -31,6 +32,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <string>
 
 using namespace GameEngine;
 using namespace GameEngine::Mathematics;
@@ -258,6 +260,28 @@ TEST(ShadowSamplingFit, NoSnapshotFallsBackToCurrentFrame)
             EXPECT_EQ(worldPerTexel, (2.0f * frame.OrthoHalfExtent[c]) / resolution);
             EXPECT_EQ(depthSpan, frame.DepthSpan[c]);
         }
+    }
+}
+
+// The ShadowMap node "resolution" is the one owner of the cascade size. The
+// node refuses a value the cascades cannot use, and the message names the
+// field and the supported range.
+TEST(ShadowSamplingFit, ShadowMapNodeRefusesAnUnsupportedCascadeResolution)
+{
+    for (const char* json : {R"({"resolution":4096})", R"({"resolution":256})", R"({"resolution":8192})"})
+    {
+        Renderer::Pipeline::Nodes::ShadowMapNode node;
+        std::string error;
+        EXPECT_TRUE(node.Initialize("CSM", json, &error)) << json << ": " << error;
+    }
+    for (const char* json : {R"({"resolution":5000})", R"({"resolution":128})", R"({"resolution":16384})",
+                             R"({"resolution":"4096"})", R"({"resolution":4096.5})"})
+    {
+        Renderer::Pipeline::Nodes::ShadowMapNode node;
+        std::string error;
+        EXPECT_FALSE(node.Initialize("CSM", json, &error)) << json;
+        EXPECT_NE(error.find("resolution must be a power of two from 256 to 8192"), std::string::npos)
+            << json << ": " << error;
     }
 }
 
