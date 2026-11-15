@@ -247,6 +247,7 @@ constexpr uint32_t kCmdSortAscending = 0x4173;
 constexpr uint32_t kCmdSortDescending = 0x4174;
 constexpr uint32_t kCmdShowRenderLayer = 0x4175;
 constexpr uint32_t kCmdShowVcsSceneDiffDots = 0x4176;
+constexpr uint32_t kCmdShowSceneViewEye = 0x4178;
 constexpr uint32_t kCmdShowMeshLocation = 0x4180;
 constexpr uint32_t kCmdAddToBookmarks = 0x4190;
 constexpr uint32_t kCmdLoadRecentSceneBase = 0x41A0;
@@ -758,6 +759,8 @@ HierarchyPanel::HierarchyPanel()
             if (m_World && m_Tree)
                 m_RowActivity.Present(*m_World, entity, m_Tree->BoundIdOf(&row), row);
         }});
+    if (!m_RowEye->IsShown())
+        m_Tree->AddClass("hierarchy-eye-off");
     // Per-row styling: add/remove a class when the underlying entity is disabled.
     m_Tree->SetOnRowBound([this](TreeId id, UIElement* row)
                           {
@@ -1471,6 +1474,11 @@ HierarchyPanel::HierarchyPanel()
             builder.AddItem("Hierarchy Options/Show Render Layer",
                             kCmdShowRenderLayer,
                             checkedIf(m_ShowRenderLayer),
+                            70,
+                            EditorIcons::kEye);
+            builder.AddItem("Hierarchy Options/Show Scene View Eye",
+                            kCmdShowSceneViewEye,
+                            checkedIf(m_RowEye && m_RowEye->IsShown()),
                             70,
                             EditorIcons::kEye);
             // One preference behind both panels, so the label says so rather
@@ -3172,6 +3180,11 @@ bool HierarchyPanel::HandleCommand(std::uint32_t cmd)
         m_ShowRenderLayer = !m_ShowRenderLayer;
         ApplyRenderLayerVisibility();
         return true;
+    case kCmdShowSceneViewEye:
+        if (m_RowEye)
+            m_RowEye->ToggleShown();
+        ApplySceneViewEyeVisibility();
+        return true;
     case kCmdShowMeshLocation:
     {
         if (!m_ContextTargetEntity.IsValid() || !m_World->IsValid(m_ContextTargetEntity))
@@ -4183,6 +4196,18 @@ void HierarchyPanel::ApplyRenderLayerVisibility()
 {
     if (!m_Tree)
         return;
+    m_Tree->RefreshFromProvider();
+}
+
+// The class gives the title the eye's strip back while rows show no eye.
+void HierarchyPanel::ApplySceneViewEyeVisibility()
+{
+    if (!m_Tree)
+        return;
+    if (m_RowEye && !m_RowEye->IsShown())
+        m_Tree->AddClass("hierarchy-eye-off");
+    else
+        m_Tree->RemoveClass("hierarchy-eye-off");
     m_Tree->RefreshFromProvider();
 }
 

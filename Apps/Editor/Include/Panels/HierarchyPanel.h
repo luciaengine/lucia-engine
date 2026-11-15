@@ -388,6 +388,7 @@ private:
 
     void ApplySortSettings();
     void ApplyRenderLayerVisibility();
+    void ApplySceneViewEyeVisibility();
     void SetHorizontalBarPresent(bool present);
 
     std::function<void(TreeId, float, float)> m_ShowContextMenu;

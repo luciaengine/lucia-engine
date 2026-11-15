@@ -1259,6 +1259,7 @@ add_test(NAME AnimationEditingTests COMMAND $<TARGET_FILE:AnimationEditingTests>
 # anonymous namespaces contain duplicate helper names.
 add_executable(HierarchyEnableStateTests
 	HierarchyEnableStateTests.cpp
+	HierarchyRowEyeTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyEnableState.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyRowActivity.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyRowEye.cpp
