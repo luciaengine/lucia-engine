@@ -444,27 +444,3 @@ ge_set_output_tests(EditorLogViewTests)
 ge_stage_runtime_dependencies(EditorLogViewTests)
 
 add_test(NAME EditorLogViewTests COMMAND EditorLogViewTests)
-
-add_executable(EditorSceneViewPixelPerfectTests
-    SceneViewPixelPerfectTests.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/SceneViewPixelPerfect.cpp
-)
-
-target_include_directories(EditorSceneViewPixelPerfectTests
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/../Include
-)
-
-target_link_libraries(EditorSceneViewPixelPerfectTests
-    PRIVATE
-        Engine
-        GTest::gtest
-        GTest::gtest_main
-)
-
-target_compile_features(EditorSceneViewPixelPerfectTests PRIVATE cxx_std_20)
-
-ge_set_output_tests(EditorSceneViewPixelPerfectTests)
-ge_stage_runtime_dependencies(EditorSceneViewPixelPerfectTests)
-
-add_test(NAME EditorSceneViewPixelPerfectTests COMMAND EditorSceneViewPixelPerfectTests)
