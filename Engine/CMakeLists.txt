@@ -2123,6 +2123,7 @@ endif()
                 Tests/MaterialBridgeIntegrationTests.cpp
                 Tests/MaterialAssetParsingTests.cpp
                 Tests/ShaderCompilationCacheTests.cpp
+                Tests/ShaderCacheKeyTargetTests.cpp
                 Tests/CompileConcurrencyGateTests.cpp
                 # MaterialVariantCookTests exercises the offline web cook itself,
                 # not a re-implementation of it: the same sources the cook tool links.
@@ -2240,7 +2241,6 @@ endif()
                 Tests/SortedTransparentCullTests.cpp
                 Tests/SortedTransparentRunTests.cpp
                 Tests/RenderSortingTests.cpp
-                Tests/GPUSortTests.cpp
                 Tests/SortedTransparentDeciderTests.cpp
                 Tests/SortedTransparentBuildAllocationTests.cpp
                 Tests/SkinPaletteAtlasTests.cpp
@@ -2289,6 +2289,7 @@ endif()
                 Tests/CascadeMotionSchedulerTests.cpp
                 Tests/CascadeShadowCacheTests.cpp
                 Tests/SkinnedShadowInvalidationTests.cpp
+                Tests/RigidCascadeRestoreTests.cpp
                 Tests/VertexModifierContentInvalidationTests.cpp
                 Tests/ShadowSamplingFitTests.cpp
                 Tests/ShadowSamplingShaderContractTests.cpp
@@ -2409,6 +2410,7 @@ endif()
                 Tests/DDGIResolveBlurComputeTests.cpp
                 Tests/OceanCascadeLayoutTests.cpp
                 Tests/OceanPreparedDispatchTests.cpp
+                Tests/OceanReadbackPreparationTests.cpp
                 Tests/OceanSprayPreparationTests.cpp
                 Tests/OceanRasterCapturePreparationTests.cpp
                 Tests/OceanSeabedDepthShaderTests.cpp

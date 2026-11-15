@@ -247,6 +247,7 @@ void HZBBuildNode::DeclareChainBuild(ViewDeclare& d, RenderGraph::RGTexture dept
         d.PassName((m_PassStem + ".Mip0").c_str()).c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_PipelineId);
             p.Read(depth, RenderGraph::RGTextureRead::Storage);
             p.Write(hzb, RenderGraph::RGTextureWrite::Storage,
                     RenderGraph::RGRange{.BaseMip = 0u, .MipCount = 1u});
@@ -297,6 +298,7 @@ void HZBBuildNode::DeclareChainBuild(ViewDeclare& d, RenderGraph::RGTexture dept
             Rendering::PassPhase::kDefault,
             [&, m](RenderGraph::RGPassBuilder& p)
             {
+                p.UsePipeline(m_PipelineId);
                 p.Read(hzb, RenderGraph::RGTextureRead::Storage,
                        RenderGraph::RGRange{.BaseMip = m - 1u, .MipCount = 1u});
                 p.Write(hzb, RenderGraph::RGTextureWrite::Storage,
@@ -346,6 +348,7 @@ void HZBBuildNode::DeclareSpdBuild(ViewDeclare& d, RenderGraph::RGTexture depth,
         d.PassName((m_PassStem + ".SPD").c_str()).c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_SpdPipelineId);
             p.Read(depth, RenderGraph::RGTextureRead::Storage);
             p.Write(hzb, RenderGraph::RGTextureWrite::Storage,
                     RenderGraph::RGRange{.BaseMip = 0u, .MipCount = tileMips});
@@ -411,6 +414,7 @@ void HZBBuildNode::DeclareSpdBuild(ViewDeclare& d, RenderGraph::RGTexture depth,
         d.PassName((m_PassStem + ".SPDFinalize").c_str()).c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_SpdFinalizePipelineId);
             // Reads mips 1..6 interior (tile-pass output), writes mips 2..
             // edges + mips 7.. whole. Declared as one identical-range
             // Read+Write pair so the graph merges them into a single storage

@@ -321,7 +321,7 @@ void CheckForeignSampling(RasterCaptureProbe& probe, RenderGraph::RGFrame& forei
     foreign.BeginFrame(probe.Frame.FrameIndex());
     auto view = *probe.Services.Views().FindViewDesc(probe.MainView);
     view.worldId = 99u;
-    view.renderLayerMask = 2u;
+    view.renderLayerMask = Rendering::RenderLayerMask{2u};
     Engine::Renderer::Pipeline::ViewDeclare d(foreign, view, probe.Services, "RasterForeignWindow");
     OceanRasterDepthCaptureSettings settings{};
     settings.Enabled = true;
@@ -331,7 +331,7 @@ void CheckForeignSampling(RasterCaptureProbe& probe, RenderGraph::RGFrame& forei
     EXPECT_EQ(foreign.Graph().PassCount(), 0u) << "one world epoch has one capture owner";
     const auto* hidden = probe.Services.Views().FindViewDesc(probe.Capture.GetCaptureViewId());
     EXPECT_EQ(hidden->worldId, 1u);
-    EXPECT_EQ(hidden->renderLayerMask, 1u);
+    EXPECT_EQ(hidden->renderLayerMask, Rendering::RenderLayerMask::Default());
     OceanRasterDepthSampling owner{}, other{};
     EXPECT_TRUE(probe.Capture.GetSampling(probe.Frame, owner));
     EXPECT_TRUE(probe.Capture.GetSampling(foreign, other));
