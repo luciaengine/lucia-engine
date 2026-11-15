@@ -726,6 +726,9 @@ Rendering::RenderGraph::RGPass RenderServices::AddWorldNonOccludingDepthPrepassF
     Rendering::RenderGraph::RGFrame& frame, ViewId viewId,
     Rendering::RenderGraph::RGTexture depth)
 {
+    if (!Spine().BindWorldGeometry(frame))
+        return {};
+
     const auto* pv = m_ViewRegistry.FindPerView(viewId);
     if (!pv || pv->NonOccludingPrepassHeads.empty() || pv->NonOccludingPrepassDeclared)
         return {};
@@ -761,6 +764,9 @@ Rendering::RenderGraph::RGPass RenderServices::AddDeformationMotionPassForView(
     const DeformationMotionEndpoint& endpoint, bool clearTarget,
     Rendering::GPUDrawStreamBuilder::SlicePhase phase)
 {
+    if (!Spine().BindWorldGeometry(frame))
+        return {};
+
     namespace RenderGraph = Rendering::RenderGraph;
 
     if (!motionTarget.IsValid() || !depth.IsValid())
@@ -867,6 +873,9 @@ Rendering::RenderGraph::RGPass RenderServices::AddWorldDepthPrepassImpl(
     Rendering::RenderGraph::RGTexture depth, float clearDepthValue,
     Rendering::GPUDrawStreamBuilder::SlicePhase phase, PrepassHeads heads)
 {
+    if (!Spine().BindWorldGeometry(frame))
+        return {};
+
     namespace RenderGraph = Rendering::RenderGraph;
 
     const bool isRecover = phase == Rendering::GPUDrawStreamBuilder::SlicePhase::B;

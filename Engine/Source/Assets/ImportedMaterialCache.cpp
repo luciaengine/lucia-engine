@@ -22,7 +22,10 @@ namespace {
 // any other version and the next model load rewrites the record. Version 3
 // preserves the imported material's vertex-color policy for project warm-up.
 constexpr int kImportedMaterialCacheVersion = 3;
+constexpr int kImportedMaterialEncodingVersion = 1;
 constexpr const char* kImportedMaterialCacheDirectory = "ModelMaterials";
+
+std::optional<Vector<ImportedMaterialData>> ParseImportedMaterials(std::string_view text, int version);
 
 // JSON has no NaN or infinity (a writer emits null), so a non-finite value is
 // stored by name; otherwise its record could never be read back and the model's
@@ -133,19 +136,24 @@ ImportedMaterialData MaterialFromJson(const nlohmann::json& value)
     return material;
 }
 
-String SerializeMaterials(const Vector<ImportedMaterialData>& materials)
+String SerializeMaterials(const Vector<ImportedMaterialData>& materials, int version)
 {
     nlohmann::json list = nlohmann::json::array();
     for (const ImportedMaterialData& material : materials)
         list.push_back(MaterialToJson(material));
     const nlohmann::json record = {
-        {"version", kImportedMaterialCacheVersion},
+        {"version", version},
         {"materials", std::move(list)},
     };
     return record.dump();
 }
 
 } // namespace
+
+String SerializeImportedMaterials(const Vector<ImportedMaterialData>& materials)
+{
+    return SerializeMaterials(materials, kImportedMaterialEncodingVersion);
+}
 
 std::optional<std::filesystem::path> ImportedMaterialCacheFile(const AssetRegistry& registry,
                                                                const std::filesystem::path& modelPath,
@@ -162,7 +170,7 @@ std::optional<std::filesystem::path> ImportedMaterialCacheFile(const AssetRegist
 ImportedMaterialCacheWrite WriteImportedMaterialCache(const std::filesystem::path& file,
                                                       const Vector<ImportedMaterialData>& materials)
 {
-    const String contents = SerializeMaterials(materials);
+    const String contents = SerializeMaterials(materials, kImportedMaterialCacheVersion);
     String existing;
     if (ReadFileTextShared(file, existing) && existing == contents)
         return ImportedMaterialCacheWrite::Unchanged;
@@ -197,10 +205,18 @@ std::optional<Vector<ImportedMaterialData>> ReadImportedMaterialCache(const std:
     String text;
     if (!ReadFileTextShared(file, text) || text.empty())
         return std::nullopt;
+    return ParseImportedMaterials(text, kImportedMaterialCacheVersion);
+}
+
+namespace
+{
+
+std::optional<Vector<ImportedMaterialData>> ParseImportedMaterials(std::string_view text, int version)
+{
     try
     {
         const nlohmann::json record = nlohmann::json::parse(text);
-        if (record.at("version").get<int>() != kImportedMaterialCacheVersion)
+        if (record.at("version").get<int>() != version)
             return std::nullopt;
         Vector<ImportedMaterialData> materials;
         for (const nlohmann::json& value : record.at("materials"))
@@ -211,6 +227,13 @@ std::optional<Vector<ImportedMaterialData>> ReadImportedMaterialCache(const std:
     {
         return std::nullopt;
     }
+}
+
+} // namespace
+
+std::optional<Vector<ImportedMaterialData>> DeserializeImportedMaterials(std::string_view text)
+{
+    return ParseImportedMaterials(text, kImportedMaterialEncodingVersion);
 }
 
 } // namespace GameEngine

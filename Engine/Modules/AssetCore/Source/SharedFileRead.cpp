@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 
 namespace GameEngine
 {
@@ -260,7 +261,7 @@ int64 SharedFileReader::Read(void* dst, uint64 bytes)
 // Size is a snapshot; the read is authoritative. A file replaced while we
 // hold the handle keeps serving the displaced bytes (see header contract),
 // but an in-place writer can still shrink or grow it under us.
-bool ReadFileBytesShared(const std::filesystem::path& path, ByteBuffer& outBytes)
+bool ReadFileBytesShared(const std::filesystem::path& path, ByteBuffer& outBytes, uint64 maximumBytes)
 {
     outBytes = ByteBuffer();
 
@@ -269,6 +270,10 @@ bool ReadFileBytesShared(const std::filesystem::path& path, ByteBuffer& outBytes
     if (size <= 0)
     {
         return size == 0;
+    }
+    if (static_cast<uint64>(size) > maximumBytes || static_cast<uint64>(size) > std::numeric_limits<size_t>::max())
+    {
+        return false;
     }
 
     ByteBuffer bytes(static_cast<size_t>(size));

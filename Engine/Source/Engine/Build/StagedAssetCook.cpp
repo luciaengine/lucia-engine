@@ -35,7 +35,8 @@ bool CookStagedAssets(const std::filesystem::path& contentRoot, const AssetManif
         if (!parser)
             continue;
         std::string reason;
-        if (!parser->CookForPackage(contentRoot / entry.outputPath, reason))
+        const AssetPackageCookContext context{entry.sourcePath, contentRoot / entry.outputPath, contentRoot / "Assets"};
+        if (!parser->CookForPackage(context, reason))
         {
             error = entry.outputPath.generic_string() + ": " + reason;
             return false;

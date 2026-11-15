@@ -4,13 +4,20 @@
 
 #include "AssetCore/DepEdge.h"
 #include "AssetCore/GUID.h"
+#include "AssetCore/SharedFileRead.h"
+#include "Assets/ClusterLOD/MeshClusterLODAsset.h"
+#include "FileSystem/FileSystem.h"
 #include "Logger/Logger.h"
 #include "Types/PathUtils.h"
+#include "Types/ByteBuffer.h"
+#include "Types/Fnv1a.h"
 
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
 #include <cstring>
+#include <format>
+#include <fstream>
 #include <string>
 #include <utility>
 
@@ -102,11 +109,97 @@ void EmitImageEdgesFromGltfJson(DepEdgeSink& sink,
 
 } // namespace
 
+bool ModelAssetParser::CookForPackage(const AssetPackageCookContext& context, std::string& error) const
+{
+    if (ModelAsset::FormatFromPath(context.StagedFile) != ModelFormat::ClusterLOD)
+        return true;
+    error = "Cannot package the cluster model or its immutable fine store";
+    if (context.SourceFile.empty() || context.AssetRoot.empty())
+        return false;
+    ByteBuffer modelBytes;
+    MeshClusterLODAssetData decoded;
+    if (!ReadFileBytesShared(context.StagedFile, modelBytes, MeshClusterLODManifest::kMaximumFileBytes) ||
+        !DecodeMeshClusterLODAsset(modelBytes, decoded, error))
+        return false;
+    const auto source = ResolveMeshClusterLODStore(context.SourceFile, {}, decoded.Manifest);
+    const auto destination = context.AssetRoot / ".cluster" / source.filename();
+    error = "Cannot inspect the packaged cluster store destination";
+    std::error_code filesystemError;
+    const bool exists = std::filesystem::exists(destination, filesystemError);
+    if (filesystemError)
+        return false;
+    ByteBuffer fineBytes;
+    if (!ReadFileBytesShared(exists ? destination : source, fineBytes, decoded.Manifest.StoreBytes) ||
+        fineBytes.Size() != decoded.Manifest.StoreBytes ||
+        Hashing::Fnv1a64(fineBytes.Data(), fineBytes.Size()) != decoded.Manifest.StoreHash)
+    {
+        error = "Cluster fine store is missing, truncated, or has the wrong checksum";
+        return false;
+    }
+    for (size_t group = 0; group < decoded.Manifest.Pages.size(); ++group)
+    {
+        const auto& page = decoded.Manifest.Pages[group];
+        Mesh fine;
+        if (!DecodeMeshClusterLODFinePage(std::span<const uint8>(fineBytes).subspan(static_cast<size_t>(page.Offset),
+            static_cast<size_t>(page.Bytes)), page, decoded.CoarseMeshes[group], fine, error))
+            return false;
+    }
+    if (exists)
+    {
+        error.clear();
+        return true;
+    }
+    error = "Cannot publish the packaged cluster fine store";
+    std::filesystem::create_directories(destination.parent_path(), filesystemError);
+    if (filesystemError)
+        return false;
+    const auto temporary = FileSystem::MakeTemporarySiblingPath(destination);
+    {
+        std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+        stream.write(reinterpret_cast<const char*>(fineBytes.Data()), static_cast<std::streamsize>(fineBytes.Size()));
+        stream.close();
+        if (!stream)
+        {
+            std::filesystem::remove(temporary, filesystemError);
+            return false;
+        }
+    }
+    if (!FileSystem::PublishFile(temporary, destination))
+    {
+        std::filesystem::remove(temporary, filesystemError);
+        return false;
+    }
+    error.clear();
+    return true;
+}
+
 bool ModelAssetParser::ExtractDependencies(const GUID& referrer,
                                            const AssetMetadata& metadata,
                                            DepEdgeSink& sink) const
 {
     const std::string ext = LowerCaseExtension(metadata.Path);
+
+    if (ext == ".gecluster")
+    {
+        ByteBuffer bytes;
+        MeshClusterLODAssetData decoded;
+        String error;
+        if (!ReadFileBytesShared(metadata.Path, bytes, MeshClusterLODManifest::kMaximumFileBytes) ||
+            !DecodeMeshClusterLODAsset(bytes, decoded, error))
+            return false;
+        uint32 ordinal = 0;
+        for (const GUID& texture : decoded.Manifest.TextureDependencies)
+        {
+            DepEdge edge;
+            edge.Referrer = referrer;
+            edge.Target = texture;
+            edge.Kind = DepEdgeKind::MaterialTexture;
+            edge.Ordinal = ordinal++;
+            edge.FieldLocator = std::format("textures[{}]", edge.Ordinal);
+            sink.Emit(std::move(edge));
+        }
+        return true;
+    }
 
     if (ext == ".gltf")
     {

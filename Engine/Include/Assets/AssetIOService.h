@@ -11,6 +11,7 @@
 #include <condition_variable>
 #include <deque>
 #include <memory>
+#include <limits>
 #include <mutex>
 #include <span>
 #include <thread>
@@ -67,6 +68,7 @@ class AssetIOService
         // fails the request. RangeBytes 0 reads the whole file.
         uint64 RangeOffset = 0;
         uint64 RangeBytes = 0;
+        uint64 MaximumBytes = std::numeric_limits<uint64>::max();
 
         // Shared cancel flag (the in-flight load's CancelRequested). Checked
         // when a reader claims the request, after the read and before each of
@@ -213,7 +215,8 @@ class AssetIOService
     // running editor), not an exceptional one, so it is reported through the
     // return value and resolved via OnFailure. Throwing here would put an
     // exception on the reader thread, whose only handler is std::terminate.
-    static bool ReadFileWithRetry(const AssetMetadata& metadata, ByteBuffer& outData, String& outError);
+    static bool ReadFileWithRetry(const AssetMetadata& metadata, uint64 maximumBytes, ByteBuffer& outData,
+                                  String& outError);
 
     // One seek + read of a request's byte range; non-throwing, as ReadFileWithRetry. No retry: a
     // range is read from a cooked store, which only its writer replaces, by rename.

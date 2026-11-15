@@ -293,6 +293,9 @@ std::optional<PreparedForwardDraw> PrepareForwardDrawCommand(
     }
     else
     {
+        if (meshRegistry.IsBufferInStorageDomain(command.Geometry.AltGeom.VB, Rendering::MeshGPUStorageDomain::ClusterFine) ||
+            meshRegistry.IsBufferInStorageDomain(command.Geometry.AltGeom.IB, Rendering::MeshGPUStorageDomain::ClusterFine))
+            return std::nullopt;
         meshBindings.coreVB = command.Geometry.AltGeom.VB;
         meshBindings.indexBuffer = command.Geometry.AltGeom.IB;
         meshBindings.indexType = static_cast<uint32_t>(command.Geometry.AltGeom.IndexType);
@@ -1710,6 +1713,9 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
     const WorldPassTargetsRG& targets, MaterialKeyword passKeywords, WorldPassDrawScope scope,
     Rendering::GPUDrawStreamBuilder::SlicePhase phase, uint8_t sliceCascadeIndex)
 {
+    if (!Spine().BindWorldGeometry(frame))
+        return {};
+
     namespace RenderGraph = Rendering::RenderGraph;
 
     // Phase B is the additive HZB "recover" pass: it LOADS the phase-A colour +
@@ -2338,6 +2344,9 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
     std::span<const ForwardBufferReadRG> sampledBuffers,
     Rendering::RenderGraph::RGDepthAccess depthAccess)
 {
+    if (!Spine().BindWorldGeometry(frame))
+        return {};
+
     namespace RenderGraph = Rendering::RenderGraph;
 
     if (commands.empty())

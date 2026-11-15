@@ -240,6 +240,9 @@ void RenderServices::BuildWorldBatchKeys()
 
 void RenderServices::ScheduleWorldBucketerDispatches(Rendering::RenderGraph::RGFrame& frame)
 {
+    if (!Spine().BindWorldGeometry(frame))
+        return;
+
     // Compat profile: the scatter's output is only reachable through a device
     // address, so its records would be produced and never read. The recorders
     // draw from the CPU instance lists instead.
@@ -483,6 +486,9 @@ SceneAccelerationStructureService* RenderServices::EnsureSceneAccelerationStruct
 
 void RenderServices::ScheduleRTShadowMask(Rendering::RenderGraph::RGFrame& frame)
 {
+    if (!Spine().BindWorldGeometry(frame))
+        return;
+
     // Live setting: extraction republishes each world's resolved
     // ShadowSettingsEffect every frame, so this reads the CURRENT frame's
     // authored mode. Any world asking for RayTraced schedules the (global)
@@ -767,6 +773,9 @@ bool RenderServices::ScheduleBucketerDispatchesForViewSlices(
     Rendering::RenderGraph::RGFrame& frame, Rendering::ViewId viewId,
     std::span<const uint8_t> cascadeIndices)
 {
+    if (!Spine().BindWorldGeometry(frame))
+        return false;
+
     namespace RenderGraph = Rendering::RenderGraph;
     if (cascadeIndices.empty())
         return false;
@@ -898,6 +907,9 @@ bool RenderServices::ScheduleBucketerDispatchesForViewSlices(
 bool RenderServices::ScheduleWorldOcclusionRecoverScatterForView(
     Rendering::RenderGraph::RGFrame& frame, Rendering::ViewId viewId)
 {
+    if (!Spine().BindWorldGeometry(frame))
+        return false;
+
     namespace RenderGraph = Rendering::RenderGraph;
 
     // Compat profile: no GPU occlusion recovery — the phase-B scatter feeds a
@@ -1063,6 +1075,9 @@ static void AddPaletteGrowthCopyPass(Rendering::RenderGraph::RGFrame& frame, Ren
 
 void RenderServices::ScheduleGpuSkinningAndRetarget(Rendering::RenderGraph::RGFrame& frame)
 {
+    if (!Spine().BindWorldGeometry(frame))
+        return;
+
     if (m_FrameRG.For.Frame && !m_FrameRG.For.IsFor(frame))
     {
         m_FrameRG = {}; // a different frame stream/incarnation took over — stale values die
@@ -1138,6 +1153,9 @@ void RenderServices::ScheduleGpuSkinningAndRetarget(Rendering::RenderGraph::RGFr
 
 void RenderServices::ScheduleViewCullingDispatches(Rendering::RenderGraph::RGFrame& frame, float deltaTime)
 {
+    if (!Spine().BindWorldGeometry(frame))
+        return;
+
     // Same idempotence + view loop as the old arm above (duplicated so the
     // old path stays untouched until the step-5 delete).
     if (m_CullingScheduledThisFrame)

@@ -244,6 +244,9 @@ Rendering::RenderGraph::RGPass DeclareCascadeDepth(
 void ShadowMapRenderFeature::Declare(Rendering::RenderGraph::RGFrame& frame, RenderServices& rs,
                                           const FeatureDeclareContext& ctx)
 {
+    if (!rs.Spine().BindWorldGeometry(frame))
+        return;
+
     m_MotionPlanByView[ctx.View] = {};
     m_MotionPlanByView[ctx.View].For.Stamp(frame);
 
@@ -544,6 +547,9 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
     Rendering::RenderGraph::RGFrame& frame, RenderServices& rs, const FeatureDeclareContext& ctx,
     uint32_t cascadeIndex, const char* passName)
 {
+    if (!rs.Spine().BindWorldGeometry(frame))
+        return {};
+
     namespace RenderGraph = Rendering::RenderGraph;
     const ViewId viewId = ctx.View;
 
@@ -789,6 +795,9 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareTransmittancePass(
     Rendering::RenderGraph::RGFrame& frame, RenderServices& rs, const FeatureDeclareContext& ctx,
     uint32_t cascadeIndex, const float lightDirWS[3], const char* passName)
 {
+    if (!rs.Spine().BindWorldGeometry(frame))
+        return {};
+
     namespace RenderGraph = Rendering::RenderGraph;
     const ViewId viewId = ctx.View;
 
@@ -986,6 +995,9 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareTransmittancePass(
 Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareAreaPass(
     Rendering::RenderGraph::RGFrame& frame, RenderServices& rs, const FeatureDeclareContext& ctx)
 {
+    if (!rs.Spine().BindWorldGeometry(frame))
+        return {};
+
     namespace RenderGraph = Rendering::RenderGraph;
     const ViewId viewId = ctx.View;
 
@@ -1123,6 +1135,9 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareAreaPass(
 Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareSpotPass(
     Rendering::RenderGraph::RGFrame& frame, RenderServices& rs, const FeatureDeclareContext& ctx)
 {
+    if (!rs.Spine().BindWorldGeometry(frame))
+        return {};
+
     namespace RenderGraph = Rendering::RenderGraph;
     const ViewId viewId = ctx.View;
 
@@ -1249,6 +1264,9 @@ void ShadowMapRenderFeature::DeclarePointPasses(Rendering::RenderGraph::RGFrame&
                                                      RenderServices& rs,
                                                      const FeatureDeclareContext& ctx)
 {
+    if (!rs.Spine().BindWorldGeometry(frame))
+        return;
+
     namespace RenderGraph = Rendering::RenderGraph;
     const ViewId viewId = ctx.View;
 

@@ -12,11 +12,18 @@
 
 #include <filesystem>
 #include <optional>
+#include <string_view>
 
 namespace GameEngine {
 
 class AssetRegistry;
 struct ImportedMaterialData;
+
+/// Durable imported material encoding, independent of the disposable cache version.
+String SerializeImportedMaterials(const Vector<ImportedMaterialData>& materials);
+
+/// Decodes the versioned fields; consumers validate their own admission policy.
+std::optional<Vector<ImportedMaterialData>> DeserializeImportedMaterials(std::string_view text);
 
 // The record's location for the model at `modelPath`. nullopt when the owning
 // source takes no derived records (AssetRegistry::AcceptsDerivedRecords: a

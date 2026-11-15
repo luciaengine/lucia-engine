@@ -842,6 +842,9 @@ class DepthPassPreparation
 
     void PrepareContributor(const DrawCommand& command)
     {
+        if (m_Services.Meshes.IsBufferInStorageDomain(command.Geometry.AltGeom.VB, Rendering::MeshGPUStorageDomain::ClusterFine) ||
+            m_Services.Meshes.IsBufferInStorageDomain(command.Geometry.AltGeom.IB, Rendering::MeshGPUStorageDomain::ClusterFine))
+            return;
         Rendering::PipelineHandle pipeline{};
         if (command.InternedPipeline.IsValid())
             pipeline = m_Context.PreparePipeline(command.InternedPipeline);

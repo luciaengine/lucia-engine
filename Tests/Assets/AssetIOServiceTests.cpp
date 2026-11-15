@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "AssetCore/SharedFileRead.h"
 #include "Assets/AssetDecodeGate.h"
 #include "Assets/AssetIOService.h"
 #include "Assets/TextureCookWorkers.h"
@@ -147,6 +148,54 @@ TEST_F(AssetIOServiceTest, ReadsOnlyTheRequestedByteRange)
     ASSERT_EQ(capture.Bytes.wait_for(kResultTimeout), std::future_status::ready);
     const Vector<uint8> data = capture.Bytes.get();
     EXPECT_EQ(std::string(data.begin(), data.end()), "PAGE-BYTES");
+}
+
+TEST_F(AssetIOServiceTest, RejectsAnOversizedOpenedFileDespiteStaleSmallMetadata)
+{
+    const std::string content = "larger than the permitted read buffer";
+    const auto path = testDir / "bounded.bin";
+    WriteFile(path, content);
+    CapturedRead capture;
+    auto request = MakeCapturedRequest(MakeMetadata(path, 1), capture);
+    request.MaximumBytes = content.size() - 1;
+    service->SubmitRead(std::move(request));
+    ASSERT_EQ(capture.Failure.wait_for(kResultTimeout), std::future_status::ready);
+    EXPECT_FALSE(capture.Failure.get().empty());
+    EXPECT_EQ(capture.Bytes.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout);
+
+    CapturedRead exact;
+    auto exactRequest = MakeCapturedRequest(MakeMetadata(path, 1), exact);
+    exactRequest.MaximumBytes = content.size();
+    service->SubmitRead(std::move(exactRequest));
+    ASSERT_EQ(exact.Bytes.wait_for(kResultTimeout), std::future_status::ready);
+    EXPECT_EQ(exact.Bytes.get().size(), content.size());
+}
+
+TEST_F(AssetIOServiceTest, EnforcesTheRangeBufferLimitBeforeDecoding)
+{
+    const auto path = testDir / "bounded.pages";
+    WriteFile(path, "headerPAGE-BYTEStrailer");
+    CapturedRead capture;
+    auto request = MakeCapturedRequest(MakeMetadata(path, 22), capture);
+    request.RangeOffset = 6;
+    request.RangeBytes = 10;
+    request.MaximumBytes = 9;
+    service->SubmitRead(std::move(request));
+    ASSERT_EQ(capture.Failure.wait_for(kResultTimeout), std::future_status::ready);
+    EXPECT_NE(capture.Failure.get().find("limit"), String::npos);
+    EXPECT_EQ(capture.Bytes.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout);
+}
+
+TEST_F(AssetIOServiceTest, BoundedSharedReadClearsTheOutputOnRefusal)
+{
+    const std::string content = "bounded";
+    const auto path = testDir / "shared.bin";
+    WriteFile(path, content);
+    Vector<uint8> bytes{99};
+    EXPECT_FALSE(ReadFileBytesShared(path, bytes, content.size() - 1));
+    EXPECT_TRUE(bytes.empty());
+    ASSERT_TRUE(ReadFileBytesShared(path, bytes, content.size()));
+    EXPECT_EQ(std::string(bytes.begin(), bytes.end()), content);
 }
 
 TEST_F(AssetIOServiceTest, RangePastTheEndOfTheFileFails)

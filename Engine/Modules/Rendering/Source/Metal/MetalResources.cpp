@@ -267,6 +267,22 @@ void MetalDevice::UpdateBufferRanges(BufferHandle handle, std::span<const Buffer
     }
 }
 
+// Shared storage is CPU-visible and coherent, so a copy into its contents is complete when
+// memcpy returns. DestroyBuffer takes the same lock, so a found buffer stays alive here.
+bool MetalDevice::TryWriteCoherentBuffer(BufferHandle handle, size_t offset, size_t size, const void* data)
+{
+    std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
+    MetalBuffer* metalBuffer = m_Buffers.Get(ToGeneric(handle));
+    if (metalBuffer == nullptr || metalBuffer->buffer == nullptr || metalBuffer->buffer->storageMode() != MTL::StorageModeShared ||
+        size > metalBuffer->size || offset > metalBuffer->size - size || (size != 0 && data == nullptr))
+    {
+        return false;
+    }
+    if (size != 0)
+        std::memcpy(static_cast<uint8_t*>(metalBuffer->buffer->contents()) + offset, data, size);
+    return true;
+}
+
 IDevice::BufferMemoryResidency MetalDevice::GetBufferMemoryResidency(BufferHandle handle) const
 {
     std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);

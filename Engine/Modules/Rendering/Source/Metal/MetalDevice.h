@@ -318,6 +318,7 @@ class MetalDevice : public IDevice
     void UpdateBufferRanges(BufferHandle handle, std::span<const BufferUpdateRange> ranges) override;
     uint64_t GetBufferDeviceAddress(BufferHandle handle) override;
     BufferMemoryResidency GetBufferMemoryResidency(BufferHandle handle) const override;
+    bool TryWriteCoherentBuffer(BufferHandle handle, size_t offset, size_t size, const void* data) override;
 
     // Synchronization (timeline semaphores backed by MTLSharedEvent)
     SemaphoreHandle CreateTimelineSemaphore(uint64_t initialValue = 0) override;

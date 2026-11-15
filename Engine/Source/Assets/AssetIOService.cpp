@@ -379,7 +379,7 @@ void AssetIOService::ExecuteRead(ReadRequest& request, bool holdsDecodeSlot)
         inputs = {};
         AssetDbProfiler::StageScope profileScope(AssetDbProfiler::Bucket::StageFileIO);
         read = request.RangeBytes > 0 ? ReadFileRange(request, data, readError)
-                                      : ReadFileWithRetry(request.Metadata, data, readError);
+                                      : ReadFileWithRetry(request.Metadata, request.MaximumBytes, data, readError);
     }
     if (!read)
     {
@@ -540,6 +540,11 @@ bool AssetIOService::ReadFileRange(const ReadRequest& request, ByteBuffer& outDa
                    std::to_string(request.RangeOffset) + " lie past the end of " + request.Metadata.Path.string();
         return false;
     }
+    if (request.RangeBytes > request.MaximumBytes || request.RangeBytes > std::numeric_limits<size_t>::max())
+    {
+        outError = "Asset range exceeds the read byte limit";
+        return false;
+    }
     outData = ByteBuffer(static_cast<size_t>(request.RangeBytes));
     if (!reader.SeekTo(request.RangeOffset) ||
         reader.Read(outData.Data(), request.RangeBytes) != static_cast<int64>(request.RangeBytes))
@@ -552,7 +557,8 @@ bool AssetIOService::ReadFileRange(const ReadRequest& request, ByteBuffer& outDa
     return true;
 }
 
-bool AssetIOService::ReadFileWithRetry(const AssetMetadata& metadata, ByteBuffer& outData, String& outError)
+bool AssetIOService::ReadFileWithRetry(const AssetMetadata& metadata, uint64 maximumBytes, ByteBuffer& outData,
+                                       String& outError)
 {
     // Reads open with full sharing (see AssetCore/SharedFileRead.h), so an
     // external safe-save rename never fails against this handle. The retry
@@ -568,7 +574,7 @@ bool AssetIOService::ReadFileWithRetry(const AssetMetadata& metadata, ByteBuffer
     bool opened = false;
     for (int attempt = 0; attempt < kMaxRetries; ++attempt)
     {
-        if (ReadFileBytesShared(metadata.Path, outData))
+        if (ReadFileBytesShared(metadata.Path, outData, maximumBytes))
         {
             opened = true;
             break;
@@ -588,7 +594,7 @@ bool AssetIOService::ReadFileWithRetry(const AssetMetadata& metadata, ByteBuffer
         // so give the writer one retry tick (same window constants) before
         // treating emptiness as a hard failure.
         std::this_thread::sleep_for(std::chrono::milliseconds(kRetrySleepMs));
-        (void)ReadFileBytesShared(metadata.Path, outData);
+        (void)ReadFileBytesShared(metadata.Path, outData, maximumBytes);
         if (outData.Size() == 0)
         {
             outError = "Asset data is empty: " + metadata.Path.string();

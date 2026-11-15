@@ -1,4 +1,6 @@
 #include "Assets/ModelAsset.h"
+
+#include "Assets/ClusterLOD/MeshClusterLODAsset.h"
 #include "Assets/ImportedMaterialCache.h"
 #include "Assets/MeshLODGeometry.h"
 #include "AssetCore/SharedFileRead.h"
@@ -384,7 +386,7 @@ bool ModelAsset::Load() {
 
     // Read file data
     ByteBuffer fileData;
-    if (!ReadFileBytesShared(GetPath(), fileData)) {
+    if (!ReadFileBytesShared(GetPath(), fileData, GetMaximumReadBytes())) {
         Logger::Log::Error("Failed to read model file: {}", GetPath().string());
         SetState(AssetState::Failed);
         return false;
@@ -418,6 +420,7 @@ bool ModelAsset::LoadFromData(std::span<const uint8> data) {
     // Reset before parse; FBX / glTF / Blend loaders set it from the resolved
     // parse options. Formats without geometry-affecting options leave it 0.
     m_ParseOptionsHash = 0;
+    m_ClusterLODManifest.reset();
 
     // Exact per load: the format loaders only ever append these, and only
     // when the parsed content has animations, so the reset belongs here —
@@ -458,6 +461,9 @@ bool ModelAsset::LoadFromData(std::span<const uint8> data) {
 
     bool success = false;
     switch (m_Format) {
+        case ModelFormat::ClusterLOD:
+            success = LoadClusterLOD(data);
+            break;
         case ModelFormat::OBJ:
             success = LoadOBJ(data);
             break;
@@ -484,9 +490,12 @@ bool ModelAsset::LoadFromData(std::span<const uint8> data) {
         // Fold `_LOD<N>` submesh families into authored LOD chains before bounds /
         // counts so both reflect the consumed submesh array (format-agnostic — it
         // operates on the assembled submesh names every loader produced).
-        ConsumeLodSuffixFamilies(m_Meshes);
+        if (!m_ClusterLODManifest)
+            ConsumeLodSuffixFamilies(m_Meshes);
         for (EmbeddedImage& image : m_EmbeddedImages)
             image.ContentHash = Hashing::Fnv1a64(image.Data.Data(), image.Data.Size());
+        if (!m_ClusterLODManifest)
+            ConsumeLodSuffixFamilies(m_Meshes);
         CalculateBoundingBox();
         CalculateCounts();
         SetState(AssetState::Loaded);
@@ -711,6 +720,8 @@ std::filesystem::path PlayerLodCacheFile(AssetManager* assetManager, const GUID&
 
 uint32 ModelAsset::GenerateLODs(const MeshLODConfig& config, bool generateSkinned) {
     m_MeshContentHashes.clear(); // the meshes change, so a registration hashes them itself
+    if (m_ClusterLODManifest)
+        return 1;
     const auto lodStart = std::chrono::steady_clock::now();
     uint32 maxLods = 1;
     size_t sourceTris = 0;
@@ -757,6 +768,8 @@ uint32 ModelAsset::GenerateLODs(const MeshLODConfig& config, bool generateSkinne
 
 uint64 ModelAsset::CookLODCache(const MeshLODConfig& config, bool generateSkinned,
                                 const std::filesystem::path& outFile) {
+    if (m_ClusterLODManifest)
+        return 0;
     GenerateLODs(config, generateSkinned);
 
     bool anyLods = false;
@@ -849,7 +862,15 @@ void ModelAsset::LoadOrGenerateLODs(AssetManager* assetManager,
     GenerateLODs(config, generateSkinned);
 }
 
-void ModelAsset::PostLoad() {
+void ModelAsset::PostLoad()
+{
+    if (m_ClusterLODManifest)
+    {
+        if (AssetManager* manager = AssetManager::GetThreadCurrent())
+            if (const auto file = ImportedMaterialCacheFile(manager->GetRegistry(), GetPath(), GetGUID()))
+                WriteImportedMaterialCache(*file, m_Materials);
+        return;
+    }
     // Resolve this asset's LOD policy: per-asset kv (assets.lod.*) layered over
     // the process-global default tier. GetThreadCurrent() is worker-safe (this
     // runs on a Background job on both initial load and hot-reload); a null
@@ -997,6 +1018,13 @@ bool ModelAsset::AdoptReloadedPayload(Asset& staged) {
     if (!other || !other->IsLoaded()) {
         return false;
     }
+    if ((m_ClusterLODManifest || other->m_ClusterLODManifest) &&
+        (!m_ClusterLODManifest || !other->m_ClusterLODManifest ||
+         m_ClusterLODManifest->Incarnation != other->m_ClusterLODManifest->Incarnation))
+    {
+        Logger::Log::Error("Cluster model '{}' changed its partition or payload; reload the scene to use the recooked asset", GetPath().string());
+        return false;
+    }
 
     // Swap exactly the members Unload() resets plus the loader/PostLoad
     // outputs (format, counts, hashes, bounds). The staged instance already
@@ -1009,6 +1037,7 @@ bool ModelAsset::AdoptReloadedPayload(Asset& staged) {
     std::swap(m_Format, other->m_Format);
     std::swap(m_Meshes, other->m_Meshes);
     std::swap(m_MeshContentHashes, other->m_MeshContentHashes);
+    std::swap(m_ClusterLODManifest, other->m_ClusterLODManifest);
     std::swap(m_Materials, other->m_Materials);
     std::swap(m_EmbeddedImages, other->m_EmbeddedImages);
     std::swap(m_Cameras, other->m_Cameras);
@@ -1059,6 +1088,7 @@ void ModelAsset::SetExtras(std::shared_ptr<const ModelExtras> extras) {
 void ModelAsset::Unload() {
     m_Meshes.clear();
     m_MeshContentHashes.clear();
+    m_ClusterLODManifest.reset();
     m_Materials.clear();
     m_EmbeddedImages.clear();
     m_Cameras.clear();
@@ -1206,6 +1236,7 @@ bool ModelAsset::LoadOBJ(std::span<const uint8> data) {
 }
 
 ModelFormat ModelAsset::DetermineFormat(const String& extension) {
+    if (extension == ".gecluster") return ModelFormat::ClusterLOD;
     if (extension == ".obj") return ModelFormat::OBJ;
     if (extension == ".fbx") return ModelFormat::FBX;
     if (extension == ".gltf") return ModelFormat::GLTF;

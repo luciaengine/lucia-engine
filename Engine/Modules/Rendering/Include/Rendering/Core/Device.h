@@ -1994,6 +1994,10 @@ class IDevice
     virtual bool IsBufferMapBusy(BufferHandle) const { return false; }
     virtual void UnmapBuffer(BufferHandle handle) = 0;
     virtual void UpdateBuffer(BufferHandle handle, size_t offset, size_t size, const void* data) = 0;
+    // Synchronous coherent mapped copy, serialized with rebuild; no staging/submission.
+    // True certifies the complete copy; false (including unsupported backends) changes no bytes.
+    // Caller keeps the buffer alive and excludes concurrent destruction/writes.
+    virtual bool TryWriteCoherentBuffer(BufferHandle, size_t, size_t, const void*) { return false; }
     // The default writes range by range through UpdateBuffer and cannot check a
     // batch before it writes, so it does not keep the all-or-nothing rule. An
     // override checks that every non-empty range has data and lies inside the

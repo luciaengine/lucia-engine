@@ -5752,6 +5752,8 @@ void RegisterDebugHandlers(EditorDebugServer& server,
                 {
                     meshPools.push_back({
                         {"bucketKey", static_cast<uint32_t>(pool.BucketKey)},
+                        {"storageDomain", pool.StorageDomain == Rendering::MeshGPUStorageDomain::ClusterFine
+                            ? "clusterFine" : "shared"},
                         {"stream", pool.Stream},
                         {"poolIndex", pool.PoolIndex},
                         {"capacity", pool.Allocator.CapacityUnits},
@@ -6246,6 +6248,9 @@ void RegisterDebugHandlers(EditorDebugServer& server,
                         {"drawStreamMeshKey", lookup.meshKey},
                         {"hasMaterial", key.material != nullptr},
                         {"meshHandle", static_cast<uint64_t>(key.mesh)},
+                        {"storageDomain", meshEntry
+                            ? (meshEntry->StorageDomain == Rendering::MeshGPUStorageDomain::ClusterFine
+                                ? "clusterFine" : "shared") : "unresolved"},
                         {"skipReason", skipReason},
                         {"meshEntryValid", meshEntry != nullptr},
                         {"meshDrawable", meshDrawable},
@@ -6272,6 +6277,27 @@ void RegisterDebugHandlers(EditorDebugServer& server,
                     {"cameraPrepassCommandCount", static_cast<uint64_t>(depthCommands.size())},
                     {"keyPreview", std::move(keyPreview)}
                 });
+                if (ctx.params.value("includeGeometryDomains", false))
+                {
+                    uint64_t sharedKeyCount = 0;
+                    uint64_t clusterFineKeyCount = 0;
+                    uint64_t unresolvedKeyCount = 0;
+                    for (const auto& key : entityKeys)
+                    {
+                        const auto* entry = meshRegistry.Find(key.mesh);
+                        if (!entry)
+                            ++unresolvedKeyCount;
+                        else if (entry->StorageDomain == Rendering::MeshGPUStorageDomain::ClusterFine)
+                            ++clusterFineKeyCount;
+                        else
+                            ++sharedKeyCount;
+                    }
+                    views.back()["cpuKeyStorageDomains"] = {
+                        {"shared", sharedKeyCount},
+                        {"clusterFine", clusterFineKeyCount},
+                        {"unresolved", unresolvedKeyCount}
+                    };
+                }
             }
             renderServices["views"] = std::move(views);
 
@@ -9015,6 +9041,9 @@ void RegisterDebugHandlers(EditorDebugServer& server,
                            {"lodCount", e.lodCount},
                            {"authored", e.lodAuthored},
                            {"indexCount", e.indexCount},
+                           {"vertexOffset", e.vertexOffset},
+                           {"storageDomain", e.StorageDomain == Rendering::MeshGPUStorageDomain::ClusterFine
+                               ? "clusterFine" : "shared"},
                            {"boundingRadius", e.bounds.Radius()},
                            {"maxExtent", 2.0f * std::max({e.bounds.halfExtents.x,
                                                           e.bounds.halfExtents.y,

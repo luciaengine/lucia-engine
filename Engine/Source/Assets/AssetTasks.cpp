@@ -528,7 +528,9 @@ void AssetBatchCoordinator::LoadAsset(const AssetMetadata& metadata, AssetLoadPr
     AssetIOService::ReadRequest request;
     request.AssetGuid = assetGuid;
     request.Metadata = metadata;
-    request.Metadata.Path = m_AssetManager.GetParserRegistry().ResolveReadPath(metadata, m_AssetManager);
+    const AssetReadSource readSource = m_AssetManager.GetParserRegistry().ResolveReadSource(metadata, m_AssetManager);
+    request.Metadata.Path = readSource.Path;
+    request.MaximumBytes = readSource.MaximumBytes;
     request.Priority = priority;
     request.CancelRequested = cancelRequested;
     request.ProcessData = [manager = &m_AssetManager, assetGuid, metadata,

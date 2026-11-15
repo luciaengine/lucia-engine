@@ -37,6 +37,20 @@ class WaitObservingDevice final : public VulkanDevice
 {
   public:
     unsigned Waits = 0;
+    std::shared_ptr<const uint32_t> SubmissionAttemptCount;
+    uint32_t ObservedQueueEntries = 0;
+    bool SawAttemptBeforeEverySubmit = true;
+    bool QueueSubmit(QueueType queue, const std::vector<CommandList*>& lists,
+                     const std::vector<std::pair<SemaphoreHandle, uint64_t>>& waits,
+                     const std::vector<std::pair<SemaphoreHandle, uint64_t>>& signals) override
+    {
+        if (SubmissionAttemptCount)
+        {
+            ++ObservedQueueEntries;
+            SawAttemptBeforeEverySubmit &= *SubmissionAttemptCount == ObservedQueueEntries;
+        }
+        return VulkanDevice::QueueSubmit(queue, lists, waits, signals);
+    }
     bool WaitTimelineSemaphoreValue(SemaphoreHandle semaphore, uint64_t value,
                                     uint64_t timeout = ~0ull) override
     {
@@ -313,6 +327,27 @@ TEST(RGFrameDeviceRebuild, EmptyRecordingRetirementStillWaitsForPreviousSubmissi
 }
 #endif
 
+namespace
+{
+void DeclareSubmissionCallbackFrame(RGFrame& frame, uint32_t& recorded, uint32_t& published,
+                                    uint32_t& culledPublished, const std::shared_ptr<uint32_t>& attempts)
+{
+    frame.OnSubmissionAttempt([attempts]() noexcept { ++*attempts; });
+    frame.AddPass("SubmissionCallback.Live", 0,
+        [&published](RGPassBuilder& pass)
+        {
+            pass.PreventCulling();
+            pass.OnSubmitted([&published] { ++published; });
+        },
+        [&recorded](RGContext&) { ++recorded; });
+    frame.AddPass("SubmissionCallback.Culled", 0,
+        [&culledPublished](RGPassBuilder& pass)
+        {
+            pass.OnSubmitted([&culledPublished] { ++culledPublished; });
+        }, [](RGContext&) {});
+}
+} // namespace
+
 TEST(RGFrameDeviceRebuild, PassSubmissionCallbackRequiresSuccessfulQueueSubmit)
 {
     ScopedEnvVar forcedLoss("GE_VK_FORCE_DEVICE_LOST", "2");
@@ -326,27 +361,23 @@ TEST(RGFrameDeviceRebuild, PassSubmissionCallbackRequiresSuccessfulQueueSubmit)
         uint32_t recorded = 0;
         uint32_t published = 0;
         uint32_t culledPublished = 0;
-        auto declare = [&frame, &recorded, &published, &culledPublished]
-        {
-            frame.AddPass("SubmissionCallback.Live", 0,
-                [&published](RGPassBuilder& pass)
-                {
-                    pass.PreventCulling();
-                    pass.OnSubmitted([&published] { ++published; });
-                },
-                [&recorded](RGContext&) { ++recorded; });
-            frame.AddPass("SubmissionCallback.Culled", 0,
-                [&culledPublished](RGPassBuilder& pass)
-                {
-                    pass.OnSubmitted([&culledPublished] { ++culledPublished; });
-                }, [](RGContext&) {});
-        };
+        auto attempts = std::make_shared<uint32_t>(0);
+#if defined(RENDERING_HAS_VULKAN)
+        auto& observingDevice = static_cast<WaitObservingDevice&>(*device);
+        observingDevice.SubmissionAttemptCount = attempts;
+#endif
+
 
         ASSERT_TRUE(device->BeginFrame());
         frame.BeginFrame(0);
-        declare();
+        DeclareSubmissionCallbackFrame(frame, recorded, published, culledPublished, attempts);
         frame.Execute();
         EXPECT_EQ(recorded, 1u);
+        EXPECT_EQ(*attempts, 1u);
+#if defined(RENDERING_HAS_VULKAN)
+        EXPECT_TRUE(observingDevice.SawAttemptBeforeEverySubmit);
+        EXPECT_EQ(observingDevice.ObservedQueueEntries, 1u);
+#endif
         EXPECT_EQ(published, 1u);
         EXPECT_EQ(culledPublished, 0u);
         device->Present();
@@ -354,9 +385,15 @@ TEST(RGFrameDeviceRebuild, PassSubmissionCallbackRequiresSuccessfulQueueSubmit)
 
         ASSERT_TRUE(device->BeginFrame());
         frame.BeginFrame(1);
-        declare();
+        DeclareSubmissionCallbackFrame(frame, recorded, published, culledPublished, attempts);
         frame.Execute();
         EXPECT_EQ(recorded, 2u);
+        EXPECT_EQ(*attempts, 2u) << "a reported failure can follow a real native submission";
+#if defined(RENDERING_HAS_VULKAN)
+        EXPECT_TRUE(observingDevice.SawAttemptBeforeEverySubmit)
+            << "the conservative reader marker must precede QueueSubmit entry, not its return";
+        EXPECT_EQ(observingDevice.ObservedQueueEntries, 2u);
+#endif
         EXPECT_NE(device->GetDeviceHealth(), DeviceHealth::Healthy);
         EXPECT_EQ(published, 1u) << "recording succeeded, but the queue submit failed";
         EXPECT_EQ(culledPublished, 0u);
