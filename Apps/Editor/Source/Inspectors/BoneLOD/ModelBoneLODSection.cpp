@@ -30,6 +30,8 @@ namespace
 {
 constexpr const char* kLayout = "UI/inspectors/BoneLOD/ModelBoneLODSection.uxml";
 constexpr const char* kStyle = "UI/inspectors/BoneLOD/ModelBoneLODSection.css";
+// Indent per tree level, smaller than the tree default so deep bones keep room for their names.
+constexpr float kBoneTreeIndentPx = 10.0f;
 
 void WriteSettings(const std::filesystem::path& path, const std::string& metadata)
 {
@@ -105,6 +107,8 @@ ModelBoneLODSection::ModelBoneLODSection(const ModelAsset& model, UndoRedoServic
     search->AddClass("bone-lod-search");
     search->SetFieldId("BoneLODSearch");
     search->SetPlaceholder("Filter bone names");
+    m_Tree->SetShowRoot(true);
+    m_Tree->SetChildIndent(kBoneTreeIndentPx);
     m_Tree->SetDataProvider(m_Provider.get());
     m_Tree->SetVisibilityFilter([this](TreeId id) { return m_Provider->IsVisible(id); });
     m_Tree->SetOnRowBound([this](TreeId id, UIElement* row) { BindRow(id, row); });
@@ -127,9 +131,9 @@ void ModelBoneLODSection::BindRow(uint64 id, UIElement* row)
     {
         auto owned = MakeUnique<Checkbox>();
         owned->AddClass("bone-lod-pin");
-        owned->SetText("Keep");
         owned->SetTooltip("Keep animation for this bone and its ancestors in the reduced tier.");
         checkbox = owned.get();
+        row->AddClass("bone-lod-row");
         row->AddChild(std::move(owned));
     }
     const auto path = m_Provider->Path(id);
