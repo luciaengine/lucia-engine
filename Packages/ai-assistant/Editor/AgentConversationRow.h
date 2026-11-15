@@ -102,6 +102,8 @@ private:
     /// One label per part of the status ("5 undo steps", "1 failed"), so the footer wraps
     /// between parts and never inside one.
     UIElement* m_Status = nullptr;
+    // The status line, read-only but selectable, so the user can copy an error's fix.
+    TextArea* m_StatusText = nullptr;
     UIElement* m_Actions = nullptr;
     bool m_ReplyActionsBuilt = false;
     /// The names of the files attached to a user message; hidden without any.
