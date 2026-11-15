@@ -2401,6 +2401,7 @@ endif()
                 Tests/DDGIResolveBlurComputeTests.cpp
                 Tests/OceanCascadeLayoutTests.cpp
                 Tests/OceanPreparedDispatchTests.cpp
+                Tests/OceanReadbackPreparationTests.cpp
                 Tests/OceanSprayPreparationTests.cpp
                 Tests/OceanRasterCapturePreparationTests.cpp
                 Tests/OceanSeabedDepthShaderTests.cpp
