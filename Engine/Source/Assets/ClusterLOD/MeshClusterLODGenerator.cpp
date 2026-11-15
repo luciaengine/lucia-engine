@@ -18,7 +18,6 @@ namespace GameEngine
 namespace
 {
 
-constexpr uint32 kUnusedVertex = std::numeric_limits<uint32>::max();
 constexpr uint64 kMaximumGeometryBytes = 256ull * 1024ull * 1024ull;
 constexpr uint64 kMaximumMetadataBytes = 16ull * 1024ull * 1024ull;
 constexpr uint64 kMaximumScratchBytes = 1024ull * 1024ull * 1024ull;
@@ -164,11 +163,11 @@ bool FindPositionLocks(const Mesh& mesh, const MeshClusterLODConfig& config,
     meshopt_generatePositionRemap(positions.data(), &normalized.front().x,
                                  normalized.size(), sizeof(Mathematics::Vector3));
     locked.assign(mesh.Vertices.size(), 0);
-    Vector<uint32> firstVertex(mesh.Vertices.size(), kUnusedVertex);
+    Vector<uint32> firstVertex(mesh.Vertices.size(), kMeshClusterLODUnusedVertex);
     for (uint32 index = 0; index < mesh.Vertices.size(); ++index)
     {
         const uint32 position = positions[index];
-        if (firstVertex[position] != kUnusedVertex)
+        if (firstVertex[position] != kMeshClusterLODUnusedVertex)
             locked[position] = meshopt_SimplifyVertex_Lock;
         firstVertex[position] = index;
     }
@@ -231,12 +230,12 @@ bool FindPositionLocks(const Mesh& mesh, const MeshClusterLODConfig& config,
         }
         begin = end;
     }
-    std::fill(firstVertex.begin(), firstVertex.end(), kUnusedVertex);
+    std::fill(firstVertex.begin(), firstVertex.end(), kMeshClusterLODUnusedVertex);
     for (uint32 corner = 0; corner < mesh.Indices.size(); ++corner)
     {
         const uint32 position = positions[mesh.Indices[corner]];
         const uint32 root = FindCornerRoot(parents, corner);
-        if (firstVertex[position] != kUnusedVertex && firstVertex[position] != root)
+        if (firstVertex[position] != kMeshClusterLODUnusedVertex && firstVertex[position] != root)
         {
             error = "Cluster source has a non-manifold vertex";
             return false;
@@ -327,55 +326,6 @@ bool PartitionTriangles(const Mesh& mesh, const MeshClusterLODConfig& config,
     return true;
 }
 
-void CopyPlacement(const Mesh& source, Mesh& destination)
-{
-    destination.Name = source.Name;
-    destination.MaterialIndex = source.MaterialIndex;
-    destination.SourceNodeIndex = source.SourceNodeIndex;
-    destination.SourceNodeParentIndex = source.SourceNodeParentIndex;
-    std::copy(std::begin(source.SourceNodeTransform), std::end(source.SourceNodeTransform),
-              std::begin(destination.SourceNodeTransform));
-    std::copy(std::begin(source.SourceNodeLocalTransform), std::end(source.SourceNodeLocalTransform),
-              std::begin(destination.SourceNodeLocalTransform));
-    destination.ExtraPlacements = source.ExtraPlacements;
-}
-
-Mesh CompactMesh(const Mesh& source, std::span<const uint32> indices,
-                 std::span<uint32> remap, Vector<uint32>& sourceVertices)
-{
-    Mesh result;
-    CopyPlacement(source, result);
-    result.Indices.reserve(indices.size());
-    sourceVertices.clear();
-    sourceVertices.reserve(std::min(indices.size(), source.Vertices.size()));
-    for (const uint32 index : indices)
-    {
-        if (remap[index] == kUnusedVertex)
-        {
-            remap[index] = static_cast<uint32>(sourceVertices.size());
-            sourceVertices.push_back(index);
-        }
-    }
-    result.Vertices.reserve(sourceVertices.size());
-    Mathematics::AABB bounds = Mathematics::AABB::Empty();
-    for (const uint32 index : sourceVertices)
-    {
-        result.Vertices.push_back(source.Vertices[index]);
-        const auto& position = source.Vertices[index].Position;
-        bounds.Expand({position[0], position[1], position[2]});
-    }
-    for (const uint32 index : indices)
-        result.Indices.push_back(remap[index]);
-    for (const uint32 index : sourceVertices)
-        remap[index] = kUnusedVertex;
-    for (size_t axis = 0; axis < 3; ++axis)
-    {
-        result.MinBounds[axis] = bounds.min[axis];
-        result.MaxBounds[axis] = bounds.max[axis];
-    }
-    return result;
-}
-
 bool AdmitSimplification(const Mesh& source, const Vector<Vector<uint32>>& indices,
                          const MeshClusterLODConfig& config, String& error)
 {
@@ -401,7 +351,7 @@ MeshClusterLODGroup SimplifyGroup(const Mesh& source, std::span<const uint32> in
 {
     MeshClusterLODGroup result;
     Vector<uint32> sourceVertices;
-    result.Fine = CompactMesh(source, indices, remap, sourceVertices);
+    result.Fine = CompactMeshClusterLODTriangles(source, indices, remap, sourceVertices);
     Vector<uint8> locks;
     Vector<float> attributes;
     locks.reserve(sourceVertices.size());
@@ -453,8 +403,8 @@ MeshClusterLODGroup SimplifyGroup(const Mesh& source, std::span<const uint32> in
             return result;
         }
     }
-    Vector<uint32> coarseRemap(result.Fine.Vertices.size(), kUnusedVertex);
-    result.Coarse = CompactMesh(result.Fine, coarseIndices, coarseRemap, sourceVertices);
+    Vector<uint32> coarseRemap(result.Fine.Vertices.size(), kMeshClusterLODUnusedVertex);
+    result.Coarse = CompactMeshClusterLODTriangles(result.Fine, coarseIndices, coarseRemap, sourceVertices);
     // Both representations use the complete fine envelope for culling and selection.
     std::copy(std::begin(result.Fine.MinBounds), std::end(result.Fine.MinBounds),
               std::begin(result.Coarse.MinBounds));
@@ -466,6 +416,55 @@ MeshClusterLODGroup SimplifyGroup(const Mesh& source, std::span<const uint32> in
 #endif
 
 } // namespace
+
+void CopyMeshClusterLODPlacement(const Mesh& source, Mesh& destination)
+{
+    destination.Name = source.Name;
+    destination.MaterialIndex = source.MaterialIndex;
+    destination.SourceNodeIndex = source.SourceNodeIndex;
+    destination.SourceNodeParentIndex = source.SourceNodeParentIndex;
+    std::copy(std::begin(source.SourceNodeTransform), std::end(source.SourceNodeTransform),
+              std::begin(destination.SourceNodeTransform));
+    std::copy(std::begin(source.SourceNodeLocalTransform), std::end(source.SourceNodeLocalTransform),
+              std::begin(destination.SourceNodeLocalTransform));
+    destination.ExtraPlacements = source.ExtraPlacements;
+}
+
+Mesh CompactMeshClusterLODTriangles(const Mesh& source, std::span<const uint32> indices,
+                                   std::span<uint32> remap, Vector<uint32>& sourceVertices)
+{
+    Mesh result;
+    CopyMeshClusterLODPlacement(source, result);
+    result.Indices.reserve(indices.size());
+    sourceVertices.clear();
+    sourceVertices.reserve(std::min(indices.size(), source.Vertices.size()));
+    for (const uint32 index : indices)
+    {
+        if (remap[index] == kMeshClusterLODUnusedVertex)
+        {
+            remap[index] = static_cast<uint32>(sourceVertices.size());
+            sourceVertices.push_back(index);
+        }
+    }
+    result.Vertices.reserve(sourceVertices.size());
+    Mathematics::AABB bounds = Mathematics::AABB::Empty();
+    for (const uint32 index : sourceVertices)
+    {
+        result.Vertices.push_back(source.Vertices[index]);
+        const auto& position = source.Vertices[index].Position;
+        bounds.Expand({position[0], position[1], position[2]});
+    }
+    for (const uint32 index : indices)
+        result.Indices.push_back(remap[index]);
+    for (const uint32 index : sourceVertices)
+        remap[index] = kMeshClusterLODUnusedVertex;
+    for (size_t axis = 0; axis < 3; ++axis)
+    {
+        result.MinBounds[axis] = bounds.min[axis];
+        result.MaxBounds[axis] = bounds.max[axis];
+    }
+    return result;
+}
 
 bool GenerateMeshClusterLODs(const Mesh& mesh, const MeshClusterLODConfig& config,
                             Vector<MeshClusterLODGroup>& groups, String& error)
@@ -499,20 +498,20 @@ bool GenerateMeshClusterLODs(const Mesh& mesh, const MeshClusterLODConfig& confi
     }
     if (!AdmitSimplification(mesh, indices, config, error))
         return false;
-    Vector<uint32> firstGroup(mesh.Vertices.size(), kUnusedVertex);
+    Vector<uint32> firstGroup(mesh.Vertices.size(), kMeshClusterLODUnusedVertex);
     for (uint32 group = 0; group < indices.size(); ++group)
     {
         for (const uint32 index : indices[group])
         {
             const uint32 position = positions[index];
-            if (firstGroup[position] != kUnusedVertex && firstGroup[position] != group)
+            if (firstGroup[position] != kMeshClusterLODUnusedVertex && firstGroup[position] != group)
                 locked[position] = meshopt_SimplifyVertex_Lock;
             firstGroup[position] = group;
         }
     }
     Vector<MeshClusterLODGroup> generated;
     generated.reserve(indices.size());
-    Vector<uint32> remap(mesh.Vertices.size(), kUnusedVertex);
+    Vector<uint32> remap(mesh.Vertices.size(), kMeshClusterLODUnusedVertex);
     uint64 bytes = 0;
     for (const Vector<uint32>& group : indices)
     {
@@ -524,14 +523,14 @@ bool GenerateMeshClusterLODs(const Mesh& mesh, const MeshClusterLODConfig& confi
         uint64 uniqueVertices = 0;
         for (const uint32 index : group)
         {
-            if (remap[index] == kUnusedVertex)
+            if (remap[index] == kMeshClusterLODUnusedVertex)
             {
                 remap[index] = 0;
                 ++uniqueVertices;
             }
         }
         for (const uint32 index : group)
-            remap[index] = kUnusedVertex;
+            remap[index] = kMeshClusterLODUnusedVertex;
         const uint64 maximumGroupBytes = 2 * (uniqueVertices * sizeof(Vertex) + group.size() * sizeof(uint32));
         if (uniqueVertices > kMaximumGroupVertices ||
             maximumGroupBytes > config.MaximumGeometryBytes - bytes)

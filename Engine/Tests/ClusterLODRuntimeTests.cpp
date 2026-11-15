@@ -51,11 +51,6 @@ namespace
 {
 using namespace GameEngine::Rendering;
 
-bool SamePoint(const Mathematics::Vector3& first, const Mathematics::Vector3& second)
-{
-    return first.x == second.x && first.y == second.y && first.z == second.z;
-}
-
 class ObserveMeshHandleSystem : public ECS::ISystem
 {
   public:
@@ -173,10 +168,10 @@ class ClusterLODRuntimeTest : public ::testing::Test
         const auto bounds = Mathematics::BoundingBox::FromMinMax(page.MinBounds, page.MaxBounds);
         ECS::EntityHandle found;
         world.Query<ECS::Read<Components::Parent>, ECS::Read<Components::LocalBounds>>().Each(
-            [&](ECS::EntityHandle entity, const Components::Parent& parent, const Components::LocalBounds& local)
+            [owner, &bounds, &found](ECS::EntityHandle entity, const Components::Parent& parent,
+                                     const Components::LocalBounds& local)
             {
-                if (parent.Entity == owner && SamePoint(local.Box.center, bounds.center) &&
-                    SamePoint(local.Box.halfExtents, bounds.halfExtents))
+                if (parent.Entity == owner && local.Box.ToAABB() == bounds.ToAABB())
                     found = entity;
             });
         return found;
@@ -738,7 +733,7 @@ TEST_F(ClusterLODRuntimeTest, ANearInstanceSplitsIntoOnePartPerGroupAndEvictsIts
     {
         uint32 count = 0;
         m_World.Query<ECS::Read<Components::Parent>>().Each(
-            [&](const Components::Parent& parent) { count += parent.Entity == m_Entity ? 1u : 0u; });
+            [this, &count](const Components::Parent& parent) { count += parent.Entity == m_Entity ? 1u : 0u; });
         return count;
     };
     m_Services.SetLODForceLevel(1);
@@ -901,7 +896,8 @@ TEST_F(ClusterLODRuntimeTest, AnAbandonedArenaReleasesDecodedOwnershipAndCannotR
     // Every fine page of the instance frees and reloads, so the old row can go to another part.
     bool reused = false;
     m_World.Query<ECS::Read<Components::Parent>, ECS::Read<Components::MeshRenderer>>().Each(
-        [&](ECS::EntityHandle, const Components::Parent& parent, const Components::MeshRenderer& renderer)
+        [this, oldRow, &reused](ECS::EntityHandle, const Components::Parent& parent,
+                                const Components::MeshRenderer& renderer)
         {
             const auto* entry = m_Services.GetMeshGPURegistry().Find(MeshGPUHandle(renderer.meshGpuHandleId));
             reused |= parent.Entity == m_Entity && entry && entry->StorageDomain == MeshGPUStorageDomain::ClusterFine &&

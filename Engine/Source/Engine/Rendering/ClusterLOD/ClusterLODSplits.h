@@ -46,7 +46,7 @@ class ClusterLODSplits
     bool TryActivate(ECS::World& world, Rendering::GPUScene& scene, Instance& instance) const;
     /// Restores the owner and destroys its parts.
     void End(ECS::World& world, Rendering::GPUScene* scene, ECS::EntityHandle owner);
-    /// Forgets every instance without touching entities, for a world that no longer holds them.
+    /// Forgets every instance and does not touch entities. Call it when the world changes generation.
     void Clear() { m_Instances.clear(); }
 
     Instance* Find(ECS::EntityHandle owner);

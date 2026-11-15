@@ -8,7 +8,6 @@
 #include "FileSystem/ScopedFileLock.h"
 #include "Logger/Logger.h"
 #include "Mathematics/Vector3.h"
-#include "Types/FlatMap.h"
 #include "Types/FlatSet.h"
 #include "Types/Fnv1a.h"
 
@@ -308,18 +307,22 @@ bool ReadPage(Reader& reader, uint64 storeBytes, uint64 expectedOffset, uint32 e
         std::isfinite(page.Error) && page.Error >= 0.0f;
 }
 
+// The mesh-local bounds of a page cover its coarse and its fine vertices.
+void SetPageBounds(const MeshClusterLODManifest::Page& page, Mesh& mesh)
+{
+    for (size_t axis = 0; axis < 3; ++axis)
+    {
+        mesh.MinBounds[axis] = page.MinBounds[axis];
+        mesh.MaxBounds[axis] = page.MaxBounds[axis];
+    }
+}
+
 // Concatenates the coarse groups in order, so each group is one contiguous index range, then
 // welds equal vertices. Group borders are locked, so the welded mesh has no seams between groups.
 Mesh BuildCoarseMesh(const Mesh& source, const Vector<MeshClusterLODGroup>& groups)
 {
     Mesh coarse;
-    coarse.Name = source.Name;
-    coarse.MaterialIndex = source.MaterialIndex;
-    coarse.SourceNodeIndex = source.SourceNodeIndex;
-    coarse.SourceNodeParentIndex = source.SourceNodeParentIndex;
-    std::copy_n(source.SourceNodeTransform, 16, coarse.SourceNodeTransform);
-    std::copy_n(source.SourceNodeLocalTransform, 16, coarse.SourceNodeLocalTransform);
-    coarse.ExtraPlacements = source.ExtraPlacements;
+    CopyMeshClusterLODPlacement(source, coarse);
     std::fill_n(coarse.MinBounds, 3, std::numeric_limits<float>::max());
     std::fill_n(coarse.MaxBounds, 3, std::numeric_limits<float>::lowest());
     Vector<Vertex> vertices;
@@ -801,19 +804,8 @@ bool DecodeMeshClusterLODFinePage(std::span<const uint8> bytes, const MeshCluste
         return false;
     }
     Mesh decoded;
-    decoded.Name = coarse.Name;
-    decoded.MaterialIndex = coarse.MaterialIndex;
-    decoded.SourceNodeIndex = coarse.SourceNodeIndex;
-    decoded.SourceNodeParentIndex = coarse.SourceNodeParentIndex;
-    std::copy(std::begin(coarse.SourceNodeTransform), std::end(coarse.SourceNodeTransform), std::begin(decoded.SourceNodeTransform));
-    std::copy(std::begin(coarse.SourceNodeLocalTransform), std::end(coarse.SourceNodeLocalTransform), std::begin(decoded.SourceNodeLocalTransform));
-    decoded.ExtraPlacements = coarse.ExtraPlacements;
-    decoded.MinBounds[0] = page.MinBounds.x;
-    decoded.MinBounds[1] = page.MinBounds.y;
-    decoded.MinBounds[2] = page.MinBounds.z;
-    decoded.MaxBounds[0] = page.MaxBounds.x;
-    decoded.MaxBounds[1] = page.MaxBounds.y;
-    decoded.MaxBounds[2] = page.MaxBounds.z;
+    CopyMeshClusterLODPlacement(coarse, decoded);
+    SetPageBounds(page, decoded);
     Reader reader(bytes);
     if (!ReadGeometry(reader, page.VertexCount, page.IndexCount, kMaximumPageVertices, decoded) || reader.Remaining() != 0 || IsAssetDecodeCancelled())
     {
@@ -826,34 +818,12 @@ bool DecodeMeshClusterLODFinePage(std::span<const uint8> bytes, const MeshCluste
 
 Mesh ExtractMeshClusterLODCoarseGroup(const Mesh& coarse, const MeshClusterLODManifest::Page& page)
 {
-    Mesh group;
-    group.Name = coarse.Name;
-    group.MaterialIndex = coarse.MaterialIndex;
-    group.SourceNodeIndex = coarse.SourceNodeIndex;
-    group.SourceNodeParentIndex = coarse.SourceNodeParentIndex;
-    std::copy_n(coarse.SourceNodeTransform, 16, group.SourceNodeTransform);
-    std::copy_n(coarse.SourceNodeLocalTransform, 16, group.SourceNodeLocalTransform);
-    group.ExtraPlacements = coarse.ExtraPlacements;
-    group.MinBounds[0] = page.MinBounds.x;
-    group.MinBounds[1] = page.MinBounds.y;
-    group.MinBounds[2] = page.MinBounds.z;
-    group.MaxBounds[0] = page.MaxBounds.x;
-    group.MaxBounds[1] = page.MaxBounds.y;
-    group.MaxBounds[2] = page.MaxBounds.z;
-    const std::span<const uint32> source(coarse.Indices.data() + page.CoarseFirstIndex, page.CoarseIndexCount);
-    FlatMap<uint32, uint32> compact;
-    compact.Reserve(source.size());
-    group.Indices.reserve(source.size());
-    for (const uint32 index : source)
-    {
-        if (const uint32* found = compact.Find(index))
-        {
-            group.Indices.push_back(*found);
-            continue;
-        }
-        group.Indices.push_back(compact.InsertOrAssign(index, static_cast<uint32>(group.Vertices.size())));
-        group.Vertices.push_back(coarse.Vertices[index]);
-    }
+    Vector<uint32> remap(coarse.Vertices.size(), kMeshClusterLODUnusedVertex);
+    Vector<uint32> sourceVertices;
+    Mesh group = CompactMeshClusterLODTriangles(
+        coarse, std::span<const uint32>(coarse.Indices.data() + page.CoarseFirstIndex, page.CoarseIndexCount), remap,
+        sourceVertices);
+    SetPageBounds(page, group);
     return group;
 }
 
