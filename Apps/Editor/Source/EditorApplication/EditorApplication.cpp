@@ -1763,6 +1763,7 @@ void EditorApplication::ConfigureFromCommandLine(const GameEngine::Editor::Start
     m_ExitFrameCounter = 0;
     m_BenchRgCsvPath = args.benchRgCsv;
     m_DebugPortOverride = args.debugPort;
+    Platform::Window::SetTakesFocus(!args.noFocus);
     m_WindowRectOverride = args.windowRect;
     m_WindowHasPosition = args.windowHasPosition;
 

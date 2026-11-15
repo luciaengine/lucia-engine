@@ -330,6 +330,7 @@ class MetalDevice : public IDevice
                      const std::vector<std::pair<SemaphoreHandle, uint64_t>>& signalSemaphores) override;
     GpuSyncToken SubmitTextureUploads(const TextureUploadRequest* requests, uint32_t count) override;
     bool IsPreviousFrameGraphicsComplete() const override;
+    GpuSyncToken LastGraphicsSubmissionToken() const override;
 
     // Command lists & submission
     std::unique_ptr<CommandList> CreateCommandList(QueueType queue) override;
@@ -490,6 +491,9 @@ class MetalDevice : public IDevice
     std::shared_ptr<MetalSubmitQueue::Submit::TrackedBuffer> TrackFrameCommandBuffer(
         MTL::CommandBuffer* buffer, dispatch_semaphore_t frameSemaphore = nullptr);
     void RecordSubmissionFailure();
+    // Encode the next graphics timeline value into `buffer`. The submit queue calls it for each
+    // graphics command buffer just before commit, so the values grow in GPU submission order.
+    void EncodeGraphicsTimelineSignal(MTL::CommandBuffer* buffer);
     // Retires a claimed completion or cancellation.
     void RetireTrackedCommandBuffer(const MetalSubmitQueue::Submit::TrackedBuffer& tracked,
                                    MTL::CommandBuffer* completed);
@@ -598,6 +602,11 @@ class MetalDevice : public IDevice
     // per SubmitTextureUploads batch.
     SemaphoreHandle m_UploadSemaphore{};
     uint64_t m_UploadCounter = 0;
+    // The graphics timeline: each committed graphics command buffer signals the next value.
+    // Written only by the in-order commit in MetalSubmitQueue; read from any thread.
+    SemaphoreHandle m_GraphicsTimeline{};
+    uint64_t m_GraphicsTimelineNext = 0;
+    std::atomic<uint64_t> m_GraphicsTimelineLastSignalled{0};
 
     MTL::ComputePipelineState* m_FillBufferPipeline = nullptr; // owned (+1)
     MTL::Library* m_MipBlitLibrary = nullptr;                  // owned (+1)

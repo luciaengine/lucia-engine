@@ -117,6 +117,8 @@ void MetalSubmitQueue::Execute(Submit& submit)
     }
     for (auto& tracked : submit.Buffers)
     {
+        if (tracked->OnGraphicsQueue)
+            m_Device->EncodeGraphicsTimelineSignal(tracked->Buffer);
         tracked->Buffer->commit();
         tracked->Buffer->release();
     }
