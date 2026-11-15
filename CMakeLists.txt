@@ -321,6 +321,13 @@ add_compile_definitions($<$<OR:$<CONFIG:Debug>,$<CONFIG:DebugFast>,$<CONFIG:RelW
 set(GE_DEBUG_INSTRUMENTATION_VALUE "$<IF:$<OR:$<CONFIG:Debug>,$<CONFIG:DebugFast>>,1,0>")
 add_compile_definitions(GE_DEBUG_INSTRUMENTATION=${GE_DEBUG_INSTRUMENTATION_VALUE})
 
+# Force MSVC to use UTF-8 encoding for both source and execution character sets 
+# to prevent character encoding warnings (C4819) on multilingual systems.
+# Under strict compilation configurations, this warning is promoted to an error and breaks the build.
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 # UISystem removed during redesign; keep permanently disabled
 
 # WebAssembly target: one static binary (no Engine DLL, no dynamic native
