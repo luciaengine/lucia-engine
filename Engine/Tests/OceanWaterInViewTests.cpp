@@ -253,7 +253,7 @@ void DeclareTwoViewFrame(RenderServices& rs, RenderPipelineInstance& instance, R
 // The camera a mirror renders from; a default camera when it has none.
 CameraData MirrorCamera(RenderServices& rs, const OceanPlanarReflection::Mirror& mirror)
 {
-    const CameraData* camera = rs.Views().FindCameraData(mirror.CameraId);
+    const CameraData* camera = rs.Views().FindCameraData(mirror.Capture.Camera);
     return camera ? *camera : CameraData{};
 }
 
@@ -598,9 +598,9 @@ TEST(OceanWaterInViewTest, EachViewThatSeesWaterHasItsOwnPlanarReflection)
         const OceanPlanarReflection::Mirror* mirrorB = reflection.Find(viewB);
         ASSERT_NE(mirrorA, nullptr) << "view A sees water and has no planar reflection";
         ASSERT_NE(mirrorB, nullptr) << "view B sees water and has no planar reflection";
-        EXPECT_NE(mirrorA->ViewId, mirrorB->ViewId);
-        EXPECT_NE(mirrorA->CameraId, mirrorB->CameraId);
-        EXPECT_TRUE(reflection.IsReflectionView(mirrorA->ViewId));
+        EXPECT_NE(mirrorA->Capture.View, mirrorB->Capture.View);
+        EXPECT_NE(mirrorA->Capture.Camera, mirrorB->Capture.Camera);
+        EXPECT_TRUE(reflection.IsReflectionView(mirrorA->Capture.View));
         EXPECT_FALSE(reflection.IsReflectionView(viewA));
         ASSERT_TRUE(mirrorA->ColorTexture.IsValid());
         ASSERT_TRUE(mirrorB->ColorTexture.IsValid());
@@ -739,8 +739,8 @@ TEST(OceanWaterInViewTest, AMirrorIdlePastTheTimeoutIsReleased)
         OceanPlanarReflection& reflection = feature.GetPlanarReflection();
         ASSERT_NE(reflection.Find(viewA), nullptr);
         ASSERT_NE(reflection.Find(viewB), nullptr);
-        const ViewId mirrorBViewId = reflection.Find(viewB)->ViewId;
-        const CameraId mirrorBCameraId = reflection.Find(viewB)->CameraId;
+        const ViewId mirrorBViewId = reflection.Find(viewB)->Capture.View;
+        const CameraId mirrorBCameraId = reflection.Find(viewB)->Capture.Camera;
         const size_t viewCountBefore = rs.Views().GetViews().size();
 
         // Only view A declares: two frames view B misses inside the timeout, then two
@@ -808,7 +808,7 @@ TEST(OceanWaterInViewTest, TheIdleSweepKeepsTheDeclaringViewsCamera)
         DeclareMirrorFromLiveView(rs, feature, frame, 1, viewB, start); // registry: A, mirror A, B, mirror B
         const OceanPlanarReflection::Mirror* mirrorB = feature.GetPlanarReflection().Find(viewB);
         ASSERT_NE(mirrorB, nullptr);
-        const CameraId mirrorBCamera = mirrorB->CameraId;
+        const CameraId mirrorBCamera = mirrorB->Capture.Camera;
         const float mirroredY = MirrorCamera(rs, *mirrorB).cameraPos.y;
         EXPECT_LT(mirroredY, 0.0f);
 
@@ -871,7 +871,7 @@ TEST(OceanWaterInViewTest, AFrameLongerThanTheIdleTimeoutKeepsEveryMirror)
         DeclareMirrorFromLiveView(rs, feature, frame, 0, viewB, start + std::chrono::milliseconds(1));
         const OceanPlanarReflection& reflection = feature.GetPlanarReflection();
         ASSERT_NE(reflection.Find(viewB), nullptr);
-        const ViewId mirrorBViewId = reflection.Find(viewB)->ViewId;
+        const ViewId mirrorBViewId = reflection.Find(viewB)->Capture.View;
 
         // The next frame starts past the timeout; view A declares first.
         const auto late = start + kOceanViewHistoryIdleTimeout + std::chrono::seconds(1);
@@ -879,7 +879,7 @@ TEST(OceanWaterInViewTest, AFrameLongerThanTheIdleTimeoutKeepsEveryMirror)
         ASSERT_NE(reflection.Find(viewB), nullptr) << "one long frame released view B's mirror";
         DeclareMirrorFromLiveView(rs, feature, frame, 1, viewB, late + std::chrono::milliseconds(1));
         ASSERT_NE(reflection.Find(viewB), nullptr);
-        EXPECT_EQ(reflection.Find(viewB)->ViewId, mirrorBViewId) << "view B's mirror was re-created";
+        EXPECT_EQ(reflection.Find(viewB)->Capture.View, mirrorBViewId) << "view B's mirror was re-created";
         EXPECT_TRUE(reflection.IsReflectionView(mirrorBViewId));
         device->WaitForIdle();
         rs.Shutdown();
@@ -954,7 +954,7 @@ protected:
     ViewId MirrorOf(int index) const
     {
         const OceanPlanarReflection::Mirror* mirror = m_Feature->GetPlanarReflection().Find(m_Views[index]);
-        return mirror ? mirror->ViewId : 0;
+        return mirror ? mirror->Capture.View : 0;
     }
 
 private:
