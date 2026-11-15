@@ -9,9 +9,8 @@
 // hand-editing a .scene.
 //
 // Registration covers the field table, the canonical display name and the
-// factory's default bytes. The hand-written MovingPlatformSchema still owns
-// scene serialization: SceneSchemaRegistry prefers a registered schema over the
-// synthesized reflection one, so the two do not both write the component.
+// factory's default bytes. Scenes save the component through the synthesized
+// reflection schema: pathMode by name, path as an entity reference.
 //
 // No GE_INSTANTIATE_ENGINE_COMPONENT here: PhysicsComponentInstantiations.cpp
 // already instantiates this component's cross-DLL surface.
