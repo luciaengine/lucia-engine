@@ -57,7 +57,8 @@ void SkinningUploadSystem::Update(ECS::World& world, float32 /*deltaTime*/) {
         const SkeletonData* sk = store.Get(skelId);
         if (!sk) continue;
 
-        const size_t jointCount = (sk->SkinJointCount > 0) ? (size_t)sk->SkinJointCount : (size_t)sk->BoneCount;
+        const uint32 jointCount = sk->SkinJointCount > 0 && sk->JointNodes.size() == sk->SkinJointCount
+            ? sk->SkinJointCount : sk->BoneCount;
         if (jointCount == 0 || runtime->CompactSkinMatrices.empty()) continue;
 
         // Upload into the shared palette atlas SSBO.

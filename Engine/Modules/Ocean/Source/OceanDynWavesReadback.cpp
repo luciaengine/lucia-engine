@@ -143,49 +143,53 @@ void OceanDynWavesReadback::FillParams(OceanDynWavesQueryParamsGPU& out)
         out.Cascade.LodCount = out.DynLodCount;
 }
 
-void OceanDynWavesReadback::RecordDispatch(IDevice* device, CommandList* cl,
-                                           const RenderGraph::RGFrame& frame,
-                                           BufferHandle paramsBuffer, uint64 paramsOffset)
+bool OceanDynWavesReadback::PrepareDispatch(IDevice* device, RenderGraph::RGFrame& frame,
+    BufferHandle paramsBuffer, uint64 paramsOffset, const OceanDynWavesQueryParamsGPU& params,
+    OceanPreparedReadbackDispatch& prepared)
 {
-    if (!m_Ready || !cl || !device || !m_Ring.IsInitialized() || !paramsBuffer.IsValid())
+    prepared.Commands = {};
+    prepared.Owner = {};
+    if (!m_Ready || !device || !m_Ring.IsInitialized() || !paramsBuffer.IsValid() ||
+        !m_DynWaves.IsValid() || !m_DynSampler.IsValid() || params.DynLodCount == 0u)
+        return true;
+    const PipelineHandle pipeline = device->TryGetWarmComputePipeline(m_Pipe);
+    if (!pipeline.IsValid())
+        return false;
+    DescriptorSetDesc desc{};
+    desc.layout = m_Layout;
+    desc.transient = true;
+    desc.debugName = "OceanDynWavesReadback_DS";
+    const auto set = device->CreateDescriptorSet(desc);
+    if (!set.IsValid())
+        return false;
+    if (prepared.Output.IsValid() &&
+        !m_Ring.HasPendingWrite(frame, prepared.Output, prepared.Reservation))
+        prepared.Output = {};
+    if (!prepared.Output.IsValid())
+        prepared.Output = m_Ring.ReserveWrite(frame, {params.OriginX, params.OriginZ},
+                                          prepared.Reservation);
+    if (!prepared.Output.IsValid())
+        return true;
+    device->UpdateBufferBinding(set, 0, paramsBuffer, paramsOffset, sizeof(OceanDynWavesQueryParamsGPU));
+    device->UpdateCombinedImageSamplerBinding(set, 1, m_DynWaves, m_DynSampler);
+    device->UpdateStorageBufferBinding(set, 2, prepared.Output, 0, sizeof(float) * size_t(kResolution) * size_t(kResolution));
+    const uint32 groups = (kResolution + 7u) / 8u;
+    prepared.Owner.Stamp(frame);
+    prepared.Commands = {pipeline, set, groups, groups, 1u, {}};
+    return true;
+}
+
+void OceanDynWavesReadback::RecordDispatch(IDevice* device, CommandList* cl,
+                           const OceanPreparedReadbackDispatch& prepared)
+{
+    if (!prepared.Owner.Frame || !prepared.Owner.IsFor(*prepared.Owner.Frame) ||
+        !m_Ring.HasPendingWrite(*prepared.Owner.Frame, prepared.Output, prepared.Reservation))
         return;
-    if (!m_DynWaves.IsValid() || !m_DynSampler.IsValid() || m_CascadeLayout.LodCount == 0)
+    if (!RecordOceanPreparedDispatch(cl, prepared.Commands))
         return;
-
-    PipelineHandle pipe = device->GetOrCreateComputePipeline(m_Pipe);
-    if (!pipe)
+    m_Ring.RecordResolve(cl, prepared.Output);
+    if (!m_Ring.MarkRecorded(prepared.Output, prepared.Reservation))
         return;
-
-    // BeginWrite registers a completion pending, so it must not run on frames
-    // where the pipeline is unavailable and nothing dispatches.
-    ReadbackMeta meta{};
-    meta.OriginX = m_OriginX;
-    meta.OriginZ = m_OriginZ;
-    const BufferHandle outBuf = m_Ring.BeginWrite(frame, meta);
-    if (!outBuf.IsValid())
-        return;
-
-    cl->SetPipeline(pipe);
-
-    DescriptorSetDesc dsDesc{};
-    dsDesc.layout = m_Layout;
-    dsDesc.transient = true;
-    dsDesc.debugName = "OceanDynWavesQuery_DS";
-    DescriptorSetHandle ds = device->CreateDescriptorSet(dsDesc);
-
-    device->UpdateBufferBinding(ds, 0, paramsBuffer, paramsOffset, sizeof(OceanDynWavesQueryParamsGPU));
-    device->UpdateCombinedImageSamplerBinding(ds, 1, m_DynWaves, m_DynSampler);
-    device->UpdateStorageBufferBinding(ds, 2, outBuf, 0,
-                                       sizeof(float) * size_t(kResolution) * size_t(kResolution));
-
-    cl->BindDescriptorSet(0, ds, pipe);
-
-    const uint32 g8 = (kResolution + 7u) / 8u;
-    cl->Dispatch(g8, g8, 1);
-
-    // No-op unless the backend keeps the mappable slot in a second allocation
-    // (RGReadbackRing::RecordResolve).
-    m_Ring.RecordResolve(cl, outBuf);
 
     ReadbackMeta ready{};
     if (const void* mapped = m_Ring.MapNewestReady(device, &ready))

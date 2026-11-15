@@ -6,6 +6,7 @@
 #include "ECS/ECS.h"
 #include "Types/Types.h"
 #include "Mathematics/WorldPosition.h"
+#include "Rendering/RenderLayerMask.h"
 
 namespace GameEngine
 {
@@ -70,7 +71,7 @@ private:
     {
         Hlod::ViewLod View;
         Mathematics::WorldPosition Eye;
-        uint32 LayerMask = 0u;
+        Rendering::RenderLayerMask Layers = Rendering::RenderLayerMask::None();
         bool Orthographic = false;
         bool Valid = false;
     };
