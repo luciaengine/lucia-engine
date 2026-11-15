@@ -1,0 +1,8 @@
+    "1243 ERROR [NativeScripting]   /Volumes/4TB/LuciaBuildScratch/rg-prepare-20261115-build/bin/DebugFast/Apps/Editor/Editor.app/Contents/MacOS/Packages/localization/Editor/LocalizationPanel.cpp:227:38: error: no matching member function for call to 'FindById'",
+    "1244 ERROR [NativeScripting]   /Volumes/4TB/LuciaBuildScratch/rg-prepare-20261115-build/bin/DebugFast/Apps/Editor/Editor.app/Contents/MacOS/Packages/localization/Editor/LocalizationPanel.cpp:228:37: error: no matching member function for call to 'FindById'",
+    "1245 ERROR [NativeScripting]   /Volumes/4TB/LuciaBuildScratch/rg-prepare-20261115-build/bin/DebugFast/Apps/Editor/Editor.app/Contents/MacOS/Packages/localization/Editor/LocalizationPanel.cpp:229:38: error: no matching member function for call to 'FindById'",
+    "1246 ERROR [NativeScripting]   /Volumes/4TB/LuciaBuildScratch/rg-prepare-20261115-build/bin/DebugFast/Apps/Editor/Editor.app/Contents/MacOS/Packages/localization/Editor/LocalizationPanel.cpp:230:43: error: no matching member function for call to 'FindById'",
+    "1248 ERROR [NativeScripting]   /Volumes/4TB/LuciaBuildScratch/rg-prepare-20261115-build/bin/DebugFast/Apps/Editor/Editor.app/Contents/MacOS/Packages/localization/Editor/LocalizationPanel.cpp:231:44: error: no matching member function for call to 'FindById'",
+    "1249 ERROR [NativeScripting]   fatal error: too many errors emitted, stopping now [-ferror-limit=]",
+    "1250 ERROR [NativeScripting] cmake --build failed (exit 1)"
+    "1214 ERROR [NativeScripting]   /Volumes/4TB/LuciaBuildScratch/rg-prepare-20261115-build/bin/DebugFast/Apps/Editor/Editor.app/Contents/MacOS/Packages/localization/Editor/LocalizationPanel.cpp:210:46: error: no matching member function for call to 'FindById'"

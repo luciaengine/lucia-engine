@@ -1,0 +1,18 @@
+    "1435 WARN MaterialBinder: set=2 binding=18 ('uOceanLocalDisplacement1') texture not resolvable — bound the slot default",
+    "1436 WARN MaterialBinder: set=2 binding=19 ('uOceanLocalDisplacement2') texture not resolvable — bound the slot default",
+    "1437 WARN MaterialBinder: set=2 binding=20 ('uOceanLocalDisplacement3') texture not resolvable — bound the slot default",
+    "1438 WARN MaterialBinder: set=2 binding=21 ('uOceanLocalDisplacement4') texture not resolvable — bound the slot default",
+    "1439 WARN MaterialBinder: set=2 binding=22 ('uOceanLocalDisplacement5') texture not resolvable — bound the slot default",
+    "1440 WARN MaterialBinder: set=2 binding=23 ('uOceanLocalDisplacement6') texture not resolvable — bound the slot default",
+    "1441 WARN MaterialBinder: set=2 binding=24 ('uOceanLocalDisplacement7') texture not resolvable — bound the slot default",
+    "1442 WARN MaterialBinder: set=2 binding=25 ('uOceanLocalFFTMask0') texture not resolvable — bound the slot default",
+    "1443 WARN MaterialBinder: set=2 binding=26 ('uOceanLocalFFTMask1') texture not resolvable — bound the slot default",
+    "1444 WARN MaterialBinder: set=2 binding=27 ('uOceanDetailNormal') texture not resolvable — bound the slot default",
+    "1445 WARN MaterialBinder: set=2 binding=28 ('uOceanShadows') texture not resolvable — bound the slot default",
+    "1452 WARN [HangWatchdog] main thread recovered after 5.2s (phase at stall: unknown)"
+    "1378 WARN [RenderGraph] ImportExternalTexture('Sky_View_LUT'): handle already imported as 'Sky_Backdrop_Source' with a different declared format — first import wins",
+    "1424 WARN [HangWatchdog] main thread unresponsive for 2.1s (phase: unknown)\n  job system threads:\n    Job Worker #0: Awaited\n    Job Worker #1: idle\n    Job Worker #2: idle\n    Job Worker #3: idle\n    Job Worker #4: idle\n    Job Worker #5: idle\n    Job Worker #6: idle\n    Job Worker #7: idle\n    Job Worker #8: idle\n    Job Worker #9: idle\n    Job Blocking #0: idle\n    Job Blocking #1: idle\n    Job Blocking #2: idle",
+    "1426 WARN MaterialBinder: set=2 binding=6 ('uOceanSeabedDepth') texture not resolvable — bound the slot default"
+    "1192 WARN VulkanCommandList: drawIndirectCount unsupported; falling back to vkCmdDrawIndexedIndirect over the full record range (relies on unused records having indexCount=0).",
+    "1193 WARN RenderPipeline node 'Tonemap': auto-bound safe defaults for unwired set0 bindings [uCompensation] — wire these in the rendergraph to silence this.",
+    "1208 WARN [HangWatchdog] main thread recovered after 6.7s (phase at stall: unknown)",

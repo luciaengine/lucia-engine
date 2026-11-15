@@ -1,0 +1,4 @@
+01-ocean-window.png: Screenshot (window) 1280x720; sha256 527485e91c9c93ec0449d1bca97e1835a0d19e61b991f48206007d4bf79df56e; scene view pose (0.00, 3.00, -10.00) yaw 0.0 pitch 0.0
+03-ocean-close-window.png: Screenshot (window) 1280x720 /var/folders/cq/v5w105395fggp3_xh2kyjn600000gn/T/gameengine_mcp/pid-77020/screenshot_window_3.png; 625562 bytes; sha256 9193f6d3a53c96f55e8e1cf2efbd415e672a749001d4dcb31016da113e8550ae; scene view pose (2.00, 9.00, -10.00) yaw -25.0 pitch -35.0; validation not reported
+04-gizmo-window.png: Screenshot (window) 1280x720 /var/folders/cq/v5w105395fggp3_xh2kyjn600000gn/T/gameengine_mcp/pid-77020/screenshot_window_4.png; 675248 bytes; sha256 74c454be6f6837c9b95613fd2fc65d1c4de8c69a69a852db68e185dc0f6c16d6; scene view pose (-14.33, 4.87, -3.33) yaw 45.0 pitch -19.5; validation not reported
+build: ce871d98 (DebugFast, macos-arm64-ninja-sccache, Vulkan via MoltenVK); scene OceanSurfaceLookdev.scene
