@@ -9,6 +9,7 @@
 #include <string>
 #include <utility>
 
+#include "Core/DebugMetrics.h"
 #include "Engine/Rendering/DDGIGlossyAtlasLayout.h"
 #include "Engine/Rendering/DDGIEmissive.h"
 #include "Engine/Rendering/DDGIMaterialMapAtlas.h"
@@ -3443,6 +3444,10 @@ void DDGIProbeFeature::DeclareProbePasses(Rendering::RenderGraph::RGFrame& frame
     // advances — it also drives the retired-buffer margin.
     shared.RayEpoch = m_Volume.JitterMode == Components::DDGIJitterMode::MonteCarlo ? m_FrameClock : 0;
     shared.RaysPerTickBudget = m_SolveBudget.RaysPerTick();
+#if GE_ENABLE_METRICS
+    // The ray budget of this solve tick. A timing of the DDGI passes is comparable only at an equal budget.
+    Debug::DebugMetrics::Get().PushSample("DDGI/RaysPerTick", static_cast<float>(shared.RaysPerTickBudget));
+#endif
     shared.SwNodesRG = m_TickSwNodesRG;
     shared.SwPackedSceneRG = swPackedSceneRG;
     shared.SwVertexDataRG = m_TickSwVertexDataRG;
