@@ -524,6 +524,12 @@ void SkyRenderNode::Declare(RenderPipelineInstance& instance, const PipelineDecl
                        : Rendering::ResourceState::Common,
         Rendering::SkyRenderer::SkyViewLutFormat(renderer.GetDevice()->PreferredShaderSource()));
 
+    // Later frames import computed LUTs as shader resources. Keep that resting
+    // layout even when this frame has no sampled consumer.
+    ctx.Frame.MarkOutput(trans, RenderGraph::RGImageLayout::ShaderReadOnly);
+    ctx.Frame.MarkOutput(multiscatter, RenderGraph::RGImageLayout::ShaderReadOnly);
+    ctx.Frame.MarkOutput(skyView, RenderGraph::RGImageLayout::ShaderReadOnly);
+
     // Dirty gates AT DECLARATION (the activation predicates' immediate-mode
     // form). Settings digests, plus the sky-view LUT's eye (its band; on a
     // spherical planet also its ground point); never raw depth inputs.
@@ -533,7 +539,15 @@ void SkyRenderNode::Declare(RenderPipelineInstance& instance, const PipelineDecl
     {
         ctx.Frame.AddComputePass(
             m_TransmittancePassName.c_str(), Rendering::PassPhase::kEarlySetup,
-            [&](RenderGraph::RGPassBuilder& p) { p.Write(trans, RenderGraph::RGTextureWrite::Storage); },
+            [&](RenderGraph::RGPassBuilder& p)
+            {
+                p.Prepare([rendererPtr](RenderGraph::RGPrepareContext& context)
+                          {
+                              Rendering::IDevice* device = context.GetDevice();
+                              return device && context.PreparePipeline(rendererPtr->EnsureTransmittanceId(*device)).IsValid();
+                          });
+                p.Write(trans, RenderGraph::RGTextureWrite::Storage);
+            },
             [this, rendererPtr, planet](RenderGraph::RGContext& c)
             {
                 auto* cl = c.Cmd;
@@ -575,6 +589,11 @@ void SkyRenderNode::Declare(RenderPipelineInstance& instance, const PipelineDecl
             m_MultiscatterPassName.c_str(), Rendering::PassPhase::kEarlySetup,
             [&](RenderGraph::RGPassBuilder& p)
             {
+                p.Prepare([rendererPtr](RenderGraph::RGPrepareContext& context)
+                          {
+                              Rendering::IDevice* device = context.GetDevice();
+                              return device && context.PreparePipeline(rendererPtr->EnsureMultiscatterId(*device)).IsValid();
+                          });
                 // Read the transmittance LUT (Sampled) and write the multiscatter
                 // LUT (Storage). These access edges make RG order this pass after
                 // transmittance and before sky-view (which reads multiscatter).
@@ -626,6 +645,11 @@ void SkyRenderNode::Declare(RenderPipelineInstance& instance, const PipelineDecl
             m_SkyViewLutPassName.c_str(), Rendering::PassPhase::kEarlySetup,
             [&](RenderGraph::RGPassBuilder& p)
             {
+                p.Prepare([rendererPtr](RenderGraph::RGPrepareContext& context)
+                          {
+                              Rendering::IDevice* device = context.GetDevice();
+                              return device && context.PreparePipeline(rendererPtr->EnsureSkyViewLutId(*device)).IsValid();
+                          });
                 p.Read(trans, RenderGraph::RGTextureRead::Sampled);
                 p.Read(multiscatter, RenderGraph::RGTextureRead::Sampled);
                 p.Write(skyView, RenderGraph::RGTextureWrite::Storage);
@@ -704,6 +728,21 @@ SkyRenderNode::SkyHeightFog SkyRenderNode::ResolveSkyHeightFog(ViewDeclare& d, c
     fog.BackdropSampler = d.Services.Textures().GetSampler(Rendering::SamplerPreset::LinearRepeat);
     fog.Active = true;
     return fog;
+}
+
+static bool PrepareSkyPipeline(RenderGraph::RGPrepareContext& context, Rendering::SkyRenderer& renderer,
+                               bool heightFog)
+{
+    Rendering::IDevice* device = context.GetDevice();
+    return device && context.PreparePipeline(renderer.EnsureSkyRenderId(*device, heightFog)).IsValid() &&
+           renderer.EnsureMoonFullTexture().IsValid();
+}
+
+static bool PrepareStarPipeline(RenderGraph::RGPrepareContext& context, Rendering::SkyRenderer& renderer,
+                                bool heightFog)
+{
+    Rendering::IDevice* device = context.GetDevice();
+    return device && context.PreparePipeline(renderer.EnsureStarBillboardId(*device, heightFog)).IsValid();
 }
 
 void SkyRenderNode::DeclareForView(ViewDeclare& d)
@@ -792,6 +831,8 @@ void SkyRenderNode::DeclareForView(ViewDeclare& d)
         d.PassName().c_str(), Rendering::PassPhase::kSkyRender,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.Prepare([rendererPtr, heightFog = fog.Active](RenderGraph::RGPrepareContext& context)
+                      { return PrepareSkyPipeline(context, *rendererPtr, heightFog); });
             RenderGraph::RGAttachmentOps ops{};
             ops.Load = RenderGraph::RGLoadOp::Clear;
             ops.Store = RenderGraph::RGStoreOp::Store;
@@ -924,6 +965,8 @@ void SkyRenderNode::DeclareForView(ViewDeclare& d)
         starsPassName.c_str(), Rendering::PassPhase::kSkyRender,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.Prepare([rendererPtr, heightFog = fog.Active](RenderGraph::RGPrepareContext& context)
+                      { return PrepareStarPipeline(context, *rendererPtr, heightFog); });
             RenderGraph::RGAttachmentOps colorOps{};
             colorOps.Load = RenderGraph::RGLoadOp::Load;
             colorOps.Store = RenderGraph::RGStoreOp::Store;

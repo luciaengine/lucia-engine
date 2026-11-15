@@ -7,19 +7,7 @@
 
 namespace GameEngine::Engine::Renderer::Pipeline::Nodes
 {
-// Per-view node that drains the sorted transparent (order-dependent Blend) draw
-// set, relocated out of WorldRenderNode so it renders AFTER HZBBuild /
-// OcclusionCullP2 / ScatterB (transparency-scale design S1). Culling transparents
-// against the current-frame opaque HZB requires the pass to run after the HZB is
-// built; keeping the drain inside WorldRenderNode drew it before HZBBuild, which
-// could not observe the HZB. WorldRenderNode still BUILDS the sorted set (so the
-// opaque batch peel sees the active flag); this node declares the drain.
-//
-// S2: the drain is GPU-driven — a fused gather+key+sort+scatter dispatch
-// (sorted_transparent_drain.comp) followed by one DrawIndexedIndirectCount per
-// (surface×blend) run, drawing through the GE_INSTANCED buffer-reference path
-// into the same HDR SceneColor + depth the world pass wrote. See
-// RenderServices::AddSortedTransparentDrainForView.
+// Draws the sorted artwork collected by WorldRenderNode into the same targets.
 //
 // JSON shape (place AFTER the ScatterB / Transmissive entries):
 // {
