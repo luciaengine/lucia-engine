@@ -423,14 +423,16 @@
 
 /* Trailing affordances are all anchored to the row's right edge and must not
    land on each other. The column, outermost first: lock 8..24, VCS diff dot
-   25..41, layer dropdown 45..149. Move one and the next one's offset - and the
+   25..41, layer dropdown 45..149, and with both layer columns on the sorting
+   layer dropdown 157..261. Move one and the next one's offset - and the
    title margin that reserves the whole strip - has to move with it. */
 
-/* Optional per-entity render layer control, anchored to the row's right edge the
-   same way the lock is. Flowing it with `margin-left: auto` only right-aligns it
+/* Optional per-entity render layer and sorting layer controls, anchored to the
+   row's right edge the same way the lock is. Flowing it with `margin-left: auto` only right-aligns it
    when the row has spare main-axis space, which a long title eats; an absolute
    right anchor puts it in the same place regardless. */
-.tree .tree-item .hierarchy-render-layer-dropdown {
+.tree .tree-item .hierarchy-render-layer-dropdown,
+.tree .tree-item .hierarchy-sorting-layer-dropdown {
 	position: absolute;
 	right: 45px;
 	top: 50%;
@@ -444,31 +446,58 @@
 /* Reserve the anchored dropdown's strip, plus breathing room, so a long name
    ends clearly before the control rather than right up against it. 45 + 104
    width + 14 clear. */
-.tree .tree-item.has-render-layer .tree-title {
+.tree .tree-item.has-render-layer .tree-title,
+.tree .tree-item.has-sorting-layer .tree-title {
 	margin-right: 163px;
+}
+
+/* Both columns: the sorting layer dropdown sits left of the render layer one,
+   8 px apart, and the title reserves both strips. 157 + 104 width + 14 clear. */
+.tree .tree-item.has-render-layer .hierarchy-sorting-layer-dropdown {
+	right: 157px;
+}
+
+.tree .tree-item.has-render-layer.has-sorting-layer .tree-title {
+	margin-right: 275px;
 }
 
 /* Floor for how far the anchored control may travel inward. The dropdown rides
    the row's right edge, so a shrinking panel keeps pushing it into the name.
    Below this row width it stops moving: the row holds its width and the panel
    clips it, rather than the control eating what is left of the title. */
-.tree .tree-item.has-render-layer {
+.tree .tree-item.has-render-layer,
+.tree .tree-item.has-sorting-layer {
 	min-width: 391px;
+}
+
+.tree .tree-item.has-render-layer.has-sorting-layer {
+	min-width: 503px;
 }
 
 /* Narrow panel: shrink the control instead of hiding it, so the layer stays
    readable and the name keeps usable room. */
-.tree .tree-item.render-layer-narrow .hierarchy-render-layer-dropdown {
+.tree .tree-item.render-layer-narrow .hierarchy-render-layer-dropdown,
+.tree .tree-item.render-layer-narrow .hierarchy-sorting-layer-dropdown {
 	width: 78px;
 	min-width: 78px;
 	max-width: 78px;
 }
 
-.tree .tree-item.has-render-layer.render-layer-narrow .tree-title {
+.tree .tree-item.has-render-layer.render-layer-narrow .tree-title,
+.tree .tree-item.has-sorting-layer.render-layer-narrow .tree-title {
 	margin-right: 133px;
 }
 
-.tree .tree-item .hierarchy-render-layer-dropdown > .dropdown-header {
+.tree .tree-item.has-render-layer.render-layer-narrow .hierarchy-sorting-layer-dropdown {
+	right: 131px;
+}
+
+.tree .tree-item.has-render-layer.has-sorting-layer.render-layer-narrow .tree-title {
+	margin-right: 219px;
+}
+
+.tree .tree-item .hierarchy-render-layer-dropdown > .dropdown-header,
+.tree .tree-item .hierarchy-sorting-layer-dropdown > .dropdown-header {
 	padding: 1px 5px 1px 7px;
 	min-height: 20px;
 	font-size: 12px;
@@ -480,7 +509,10 @@
 
 .tree .tree-item:hover .hierarchy-render-layer-dropdown > .dropdown-header,
 .tree .tree-item.selected .hierarchy-render-layer-dropdown > .dropdown-header,
-.tree .tree-item .hierarchy-render-layer-dropdown.open > .dropdown-header {
+.tree .tree-item .hierarchy-render-layer-dropdown.open > .dropdown-header,
+.tree .tree-item:hover .hierarchy-sorting-layer-dropdown > .dropdown-header,
+.tree .tree-item.selected .hierarchy-sorting-layer-dropdown > .dropdown-header,
+.tree .tree-item .hierarchy-sorting-layer-dropdown.open > .dropdown-header {
 	color: #E5E5E5;
 }
 
