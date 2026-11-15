@@ -29,6 +29,7 @@ set(EDITOR_TEST_SOURCES
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DebugServer/AssistantSessionHandlers.cpp
 	PickRootResolverTests.cpp
 	SceneViewToolStripTests.cpp
+	SceneViewGridPipelineTests.cpp
 	# The tool strip's badge count, laid out over the real editor stylesheets: inside its strip at
 	# every count it can show, in both floating orientations and in the toolbar.
 	SceneViewToolStripBadgeLayoutTests.cpp
@@ -714,6 +715,7 @@ set(EDITOR_TEST_SOURCES
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Markups/MarkupsPanelRows.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/AssetBoundDockPanel.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SceneViewToolStrip.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SceneViewGridRenderer.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SceneViewToolStripRegistry.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SplineTool/SplineToolMenu.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SplineTool/SplineToolStripEntry.cpp

@@ -15,9 +15,9 @@ namespace GameEngine {
 
 using namespace Rendering;
 
-// Push constant structs — 112 bytes each (mat4 64 + 2 vec4 32 + 4 floats 16).
-// Both are the same size so the shared CreateGridPipeline can use a single
-// push constant range descriptor.
+// Push constant structs. GridPC is 112 bytes (mat4 64 + 2 vec4 32 + 4 floats 16);
+// Grid2DPC adds the 2D cell grid vec4 (128 bytes). Each mode's pipeline declares
+// the range of its own struct (SceneViewGridRenderer::PipelineDesc).
 
 struct GridPC
 {
@@ -89,16 +89,14 @@ static bool LoadGrid2DShaderBytes(std::vector<uint8_t>& outVs, std::vector<uint8
 // Pipeline creation (shared by both modes)
 // ---------------------------------------------------------------------------
 
-static GraphicsPipelineDesc BuildGridPipelineDesc(const std::vector<uint8_t>& vs,
-                                                  const std::vector<uint8_t>& fs,
-                                                  const char* debugName,
-                                                  uint32_t pushConstantBytes)
+GraphicsPipelineDesc SceneViewGridRenderer::PipelineDesc(bool is2DMode, const std::vector<uint8_t>& vs,
+                                                         const std::vector<uint8_t>& fs)
 {
     GraphicsPipelineDesc gd{};
     gd.Kind = GraphicsPipelineKind::VertexFragment;
     gd.VertexShader = std::make_shared<const std::vector<uint8_t>>(vs);
     gd.PixelShader  = std::make_shared<const std::vector<uint8_t>>(fs);
-    gd.DebugName = debugName;
+    gd.DebugName = is2DMode ? "SV_InfiniteGrid2D" : "SV_InfiniteGrid";
     gd.Topology  = PrimitiveTopology::TriangleList;
 
     DynamicStateInfo dyn{};
@@ -121,7 +119,7 @@ static GraphicsPipelineDesc BuildGridPipelineDesc(const std::vector<uint8_t>& vs
     blend.dstAlphaBlendFactor = BlendFactor::OneMinusSrcAlpha;
     gd.ColorBlend.attachments = {blend};
 
-    gd.PushConstants.Size      = pushConstantBytes;
+    gd.PushConstants.Size      = static_cast<uint32_t>(is2DMode ? sizeof(Grid2DPC) : sizeof(GridPC));
     gd.PushConstants.StageMask = kShaderStageFragment;
 
     return gd;
@@ -168,10 +166,8 @@ PipelineHandle SceneViewGridRenderer::PrepareRG(const RenderGraph::RGPrepareCont
                                  : LoadGridShaderBytes(vertexShader, fragmentShader);
     if (!loaded)
         return {};
-    const GraphicsPipelineId pipeline = device->InternGraphicsPipeline(
-        BuildGridPipelineDesc(vertexShader, fragmentShader,
-                              is2DMode ? "SV_InfiniteGrid2D" : "SV_InfiniteGrid",
-                              static_cast<uint32_t>(is2DMode ? sizeof(Grid2DPC) : sizeof(GridPC))));
+    const GraphicsPipelineId pipeline =
+        device->InternGraphicsPipeline(PipelineDesc(is2DMode, vertexShader, fragmentShader));
     return context.PreparePipeline(pipeline);
 }
 
