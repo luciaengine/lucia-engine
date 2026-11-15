@@ -765,12 +765,15 @@ TEST(RGRecord, ConsumerSubmissionWaitsOnTheProducerTimeline)
                          const std::vector<std::pair<SemaphoreHandle, uint64_t>>& waits,
                          const std::vector<std::pair<SemaphoreHandle, uint64_t>>& signals) override
         {
-            Queue = queue;
-            Waits = waits;
+            if (queue == QueueType::Compute)
+            {
+                ComputeSubmits++;
+                Waits = waits;
+            }
             return VulkanDevice::QueueSubmit(queue, lists, waits, signals);
         }
 
-        QueueType Queue = QueueType::Graphics;
+        int ComputeSubmits = 0;
         std::vector<std::pair<SemaphoreHandle, uint64_t>> Waits;
     };
 
@@ -798,8 +801,11 @@ TEST(RGRecord, ConsumerSubmissionWaitsOnTheProducerTimeline)
     consumer.AddSubmissionWait(token);
     consumer.AddComputePass("ExternalWait.Consumer", 0,
                             [](RGPassBuilder& pass) { pass.PreventCulling(); }, [](RGContext&) {});
+    // Without an independent graphics pass beside it, a lone compute run moves to the graphics queue.
+    consumer.AddPass("ExternalWait.Beside", 0,
+                     [](RGPassBuilder& pass) { pass.PreventCulling(); }, [](RGContext&) {});
     consumer.Execute();
-    EXPECT_EQ(device.Queue, IDevice::QueueType::Compute);
+    ASSERT_EQ(device.ComputeSubmits, 1);
     ASSERT_EQ(device.Waits.size(), 1u);
     EXPECT_EQ(device.Waits.front().first, token.sem);
     EXPECT_EQ(device.Waits.front().second, token.value);
