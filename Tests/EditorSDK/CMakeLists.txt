@@ -105,7 +105,9 @@ target_include_directories(EditorSdkRegistryTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Include
     # LodSettingsPage.h is a Source-local header (only the Editor target and this
     # test include it), unlike LodProjectSettings.h which is public in Include/.
-    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source)
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source
+    # TestTempDir.h, the shared per-test temporary directory.
+    ${CMAKE_SOURCE_DIR}/Tests)
 target_link_libraries(EditorSdkRegistryTests PRIVATE
     Engine EditorSDK GTest::gtest GTest::gtest_main)
 
