@@ -309,6 +309,12 @@ Window::~Window()
     Destroy();
 }
 
+namespace
+{
+// Read and written on the main thread only, like every other GLFW window call.
+bool s_TakesFocus = true;
+} // namespace
+
 bool Window::Initialize()
 {
 #if defined(__APPLE__)
@@ -354,6 +360,9 @@ bool Window::Create(const WindowDesc& desc)
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_MAXIMIZED, desc.StartMaximized ? GLFW_TRUE : GLFW_FALSE);
+    // GLFW activates the application when it focuses a window: at creation and at show.
+    glfwWindowHint(GLFW_FOCUSED, s_TakesFocus ? GLFW_TRUE : GLFW_FALSE);
+    glfwWindowHint(GLFW_FOCUS_ON_SHOW, s_TakesFocus ? GLFW_TRUE : GLFW_FALSE);
 
     // Create window hidden when StartHidden is requested (so the caller can
     // render a frame before showing) or on Windows for ToolWindow style fixup.
@@ -869,9 +878,14 @@ void Window::GetFrameSize(int& left, int& top, int& right, int& bottom) const
 #endif
 }
 
+void Window::SetTakesFocus(bool takesFocus)
+{
+    s_TakesFocus = takesFocus;
+}
+
 void Window::Focus()
 {
-    if (!m_Handle)
+    if (!m_Handle || !s_TakesFocus)
         return;
 
     glfwFocusWindow(m_Handle);
