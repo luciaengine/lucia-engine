@@ -695,7 +695,7 @@ void ReflectionSceneSchema::Serialize(const ECS::World& world, ECS::EntityHandle
 
         const IFieldSerializer* ser = FieldSerializerRegistry::Resolve(f);
         if (!ser)
-            continue; // no parser for this field type yet (Mat4/EntityHandle/Bytes) — skipped
+            continue; // no serializer for this field type (Mat4, Bytes)
 
         const std::byte* fieldBytes = reinterpret_cast<const std::byte*>(bytes.data() + f.Offset);
         const std::string value = ser->Write(fieldBytes, f, ctx);

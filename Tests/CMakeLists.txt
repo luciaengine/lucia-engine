@@ -1037,6 +1037,7 @@ target_link_libraries(PhysicsSmokeTests PRIVATE Engine GTest::gtest GTest::gtest
 target_include_directories(PhysicsSmokeTests PRIVATE
   ${CMAKE_SOURCE_DIR}/Engine/Modules/PhysicsECS/Source
   ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_SOURCE_DIR}/Engine/Tests
   ${CMAKE_SOURCE_DIR}/Engine/Include
   ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainECS/Include
   ${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Include

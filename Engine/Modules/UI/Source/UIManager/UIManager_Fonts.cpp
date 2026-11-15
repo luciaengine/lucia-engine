@@ -146,12 +146,12 @@ std::string UIManager::NormalizeFontFamilyKey(const std::string& family)
 
 void UIManager::OnFontResolved(const std::string& fontKey, FontResolveResult&& result, uint64_t resolverGeneration)
 {
-    m_FontFamilyInFlight.erase(fontKey);
-
     if (resolverGeneration != m_FontResolverGeneration)
     {
         return;
     }
+    // After the generation check: a replaced resolver's late result must not clear the new request.
+    m_FontFamilyInFlight.erase(fontKey);
 
     const auto now = std::chrono::steady_clock::now();
 
@@ -566,4 +566,9 @@ UIManager::FontWarmupStatus UIManager::PrewarmFontText(const FontWarmupRequest& 
     FontAtlas::ShapeResult shaped;
     atlas->ShapeText(request.Text, request.PixelSize, shaped, 0xFFFFFFFFu, request.LetterSpacing);
     return FontWarmupStatus::Ready;
+}
+
+UIManager::FontLoadProgress UIManager::GetFontLoadProgress() const
+{
+    return {m_FontFamilyInFlight.size(), m_FontFamilyFailCount.size()};
 }
