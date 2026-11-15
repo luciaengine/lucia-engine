@@ -930,6 +930,11 @@ class MeshGPURegistry
     // bucket. The core stream is first. On failure nothing stays allocated.
     bool AllocateVertexGroup(std::span<VertexStreamRequest> streams, VertexAttributeFlags flags,
                              MeshGPUStorageDomain domain);
+    // Allocate every stream in pool group `groupIndex` at one shared vertex
+    // offset. On failure nothing stays allocated.
+    static bool TryAllocateVertexGroupAt(std::span<VertexStreamRequest> streams, uint32_t groupIndex);
+    // Free the ranges of `streams` at once and reset them.
+    static void ClearVertexGroup(std::span<VertexStreamRequest> streams);
 
     // A vertex group that a rewritten entry does not draw from: a range in each
     // per-vertex stream pool the entry owns (indexed like the streams of the

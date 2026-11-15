@@ -2190,62 +2190,62 @@ MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh, MeshGPUStorageDomain 
     return entry;
 }
 
+void MeshGPURegistry::ClearVertexGroup(std::span<VertexStreamRequest> streams)
+{
+    for (VertexStreamRequest& stream : streams)
+    {
+        FreeImmediately(*stream.pools, *stream.poolIndex, *stream.alloc);
+        *stream.alloc = {};
+        *stream.poolIndex = kInvalidMeshGPUPoolIndex;
+    }
+}
+
+bool MeshGPURegistry::TryAllocateVertexGroupAt(std::span<VertexStreamRequest> streams, uint32_t groupIndex)
+{
+    uint64_t vertexOffset = std::numeric_limits<uint64_t>::max();
+    for (VertexStreamRequest& stream : streams)
+    {
+        if (!stream.pools || groupIndex >= static_cast<uint32_t>(stream.pools->size()))
+        {
+            ClearVertexGroup(streams);
+            return false;
+        }
+
+        MeshGPUStreamPool& pool = (*stream.pools)[groupIndex];
+        Memory::RangeAllocator::Allocation alloc = AllocateInPool(pool, stream.bytes);
+        if (!alloc.IsValid())
+        {
+            ClearVertexGroup(streams);
+            return false;
+        }
+
+        *stream.alloc = alloc;
+        *stream.poolIndex = groupIndex;
+
+        const uint64_t streamVertexOffset = alloc.Offset / stream.stride;
+        if (vertexOffset == std::numeric_limits<uint64_t>::max())
+            vertexOffset = streamVertexOffset;
+        else if (vertexOffset != streamVertexOffset)
+        {
+            ClearVertexGroup(streams);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool MeshGPURegistry::AllocateVertexGroup(std::span<VertexStreamRequest> streams, VertexAttributeFlags flags,
                                           MeshGPUStorageDomain domain)
 {
     if (streams.empty())
         return true;
 
-    const auto clearVertexAllocations = [&]
-    {
-        for (VertexStreamRequest& stream : streams)
-        {
-            FreeImmediately(*stream.pools, *stream.poolIndex, *stream.alloc);
-            *stream.alloc = {};
-            *stream.poolIndex = kInvalidMeshGPUPoolIndex;
-        }
-    };
-
-    const auto tryAllocateGroup = [&](uint32_t groupIndex) -> bool
-    {
-        uint64_t vertexOffset = std::numeric_limits<uint64_t>::max();
-        for (VertexStreamRequest& stream : streams)
-        {
-            if (!stream.pools || groupIndex >= static_cast<uint32_t>(stream.pools->size()))
-            {
-                clearVertexAllocations();
-                return false;
-            }
-
-            MeshGPUStreamPool& pool = (*stream.pools)[groupIndex];
-            Memory::RangeAllocator::Allocation alloc = AllocateInPool(pool, stream.bytes);
-            if (!alloc.IsValid())
-            {
-                clearVertexAllocations();
-                return false;
-            }
-
-            *stream.alloc = alloc;
-            *stream.poolIndex = groupIndex;
-
-            const uint64_t streamVertexOffset = alloc.Offset / stream.stride;
-            if (vertexOffset == std::numeric_limits<uint64_t>::max())
-                vertexOffset = streamVertexOffset;
-            else if (vertexOffset != streamVertexOffset)
-            {
-                clearVertexAllocations();
-                return false;
-            }
-        }
-        return true;
-    };
-
     // The core stream comes first, and every stream keeps one pool per group,
     // so the core pool count is the group count.
     const uint32_t existingVertexGroupCount = static_cast<uint32_t>(streams.front().pools->size());
     for (uint32_t groupIndex = 0; groupIndex < existingVertexGroupCount; ++groupIndex)
     {
-        if (tryAllocateGroup(groupIndex))
+        if (TryAllocateVertexGroupAt(streams, groupIndex))
             return true;
     }
 
@@ -2299,7 +2299,7 @@ bool MeshGPURegistry::AllocateVertexGroup(std::span<VertexStreamRequest> streams
         return false;
     }
 
-    return tryAllocateGroup(newGroupIndex);
+    return TryAllocateVertexGroupAt(streams, newGroupIndex);
 }
 
 MeshGPUBucket& MeshGPURegistry::GetOrCreateBucket(MeshGPUBucketKey key, MeshGPUStorageDomain domain)

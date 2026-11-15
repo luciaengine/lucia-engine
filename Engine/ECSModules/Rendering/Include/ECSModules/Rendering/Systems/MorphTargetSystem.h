@@ -48,7 +48,7 @@ private:
     std::vector<ECS::EntityId> m_SeenEntities;
     std::function<ModelAsset*(const GUID&)> m_ModelResolverForTest;
     // The morphed vertices of the entity in update, reused across entities and
-    // frames, so a weight change allocates nothing in steady state.
+    // frames to keep their storage.
     std::vector<Vertex> m_MorphedVertices;
 };
 
