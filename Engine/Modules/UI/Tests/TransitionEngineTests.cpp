@@ -13,6 +13,7 @@
 #include "UI/UIEvents.h"
 #include "UI/UIManager.h"
 #include "UIRgTestHarness.h"
+#include "TestTempDir.h"
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -38,8 +39,7 @@ protected:
         m_Ui = std::make_unique<UIManager>(m_Dev);
         m_Ui->SetRoot(std::move(root));
 
-        m_CssDir = std::filesystem::temp_directory_path();
-        m_CssPath = m_CssDir / "transition_engine_test.css";
+        m_CssPath = m_CssDir.Path() / "transition_engine_test.css";
         {
             std::ofstream f(m_CssPath);
             f << css;
@@ -69,8 +69,7 @@ protected:
         return m_Ui->GetRootElement()->FindById(id);
     }
 
-    // First member: destroyed last, after this fixture's UIManager released its buffers.
-    SharedDeviceReleaseRetirement m_ReleaseRetirement;
+    const TestUtils::ScopedTempDir m_CssDir{TestUtils::MakeUniqueTempDirectory("transition_engine_test")};
     IDevice* m_Dev = nullptr;
     std::unique_ptr<UIManager> m_Ui;
     std::filesystem::path m_CssDir;
@@ -733,8 +732,7 @@ TEST_F(TransitionEngineTest, ProjectCardHoverAnimatesWithInlineFrameOverrides)
 
     m_Ui = std::make_unique<UIManager>(m_Dev);
     m_Ui->SetRoot(std::move(root));
-    m_CssDir = std::filesystem::temp_directory_path();
-    m_CssPath = m_CssDir / "transition_engine_card_inline_test.css";
+    m_CssPath = m_CssDir.Path() / "transition_engine_card_inline_test.css";
     {
         std::ofstream f(m_CssPath);
         f << css;

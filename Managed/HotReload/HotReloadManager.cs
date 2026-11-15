@@ -2959,6 +2959,7 @@ namespace GameEngine.HotReload
             "GameEngine.Scripting.Bindings",
             "GameEngine.ECS.ABI",
             "GameEngine.Platform.ABI",
+            "GameEngine.TileMap.ABI",
             "GameEngine.Editor.Scripting.ABI",
             "GameEngine.Scripting.Runtime",
             "GameEngine.CoreBridge",

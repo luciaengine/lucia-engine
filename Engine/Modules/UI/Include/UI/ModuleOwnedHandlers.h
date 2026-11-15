@@ -37,11 +37,9 @@ namespace UI
 // a predicate a later change could loosen. Built-in elements registering
 // handlers is expressly fine.
 //
-// Main thread only, like every other module-registration protocol in the engine
-// — and note that this RAISES the cost of breaking that rule. UIElement was
-// already main-thread-only, but an off-thread registration used to touch one
-// element's own table; it now also touches the process-wide image list and
-// element index below. A registration racing a module load would race
+// Main thread only, like every other module-registration protocol in the engine.
+// A registration touches not only one element's own table but also the
+// process-wide image list and element index below. A registration racing a module load would race
 // `CloseImageAttribution`'s append to the image list, and racing a revocation
 // would race the index the pass is copying. The failure is container corruption,
 // not a wrong attribution — but the blast radius is the whole UI, not one

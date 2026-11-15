@@ -21,9 +21,9 @@ using namespace GameEngine;
 using namespace GameEngine::Rendering;
 using namespace GameEngine::Rendering::Text;
 
-void ConfigureUiFontAtlas(FontAtlas& /*atlas*/)
+void ConfigureUiFontAtlas(FontAtlas& atlas, const std::string& language)
 {
-    // No configuration needed — Slug works at any size with no precomputation parameters.
+    atlas.SetTextLanguage(language);
 }
 
 namespace
@@ -183,7 +183,7 @@ void UIManager::OnFontResolved(const std::string& fontKey, FontResolveResult&& r
     }
 
     auto fa = std::make_unique<FontAtlas>();
-    ConfigureUiFontAtlas(*fa);
+    ConfigureUiFontAtlas(*fa, m_TextLanguage);
     if (!fa->LoadFontBytes(result.Bytes.data(), result.Bytes.size(), kUiFontAtlasPx))
     {
         const uint32_t fails = ++m_FontFamilyFailCount[fontKey];
@@ -363,7 +363,7 @@ bool UIManager::SetDefaultFontBytes(const std::vector<std::uint8_t>& bytes, GUID
         return false;
 
     auto fa = std::make_shared<FontAtlas>();
-    ConfigureUiFontAtlas(*fa);
+    ConfigureUiFontAtlas(*fa, m_TextLanguage);
     if (!fa->LoadFontBytes(bytes.data(), bytes.size(), kUiFontAtlasPx))
         return false;
 
@@ -459,7 +459,7 @@ FontAtlas* UIManager::GetOrRequestFontFamilyInternal(const std::string& family,
         }
 
         auto fa = std::make_unique<FontAtlas>();
-        ConfigureUiFontAtlas(*fa);
+        ConfigureUiFontAtlas(*fa, m_TextLanguage);
         if (!fa->LoadFontBytes(fontBytes.data(), fontBytes.size(), kUiFontAtlasPx))
         {
             const uint32_t fails = ++m_FontFamilyFailCount[key];
@@ -527,4 +527,22 @@ FontAtlas* UIManager::GetOrRequestFontFamilyInternal(const std::string& family,
     }
 
     return nullptr;
+}
+
+bool UIManager::SetTextLanguage(const std::string& language)
+{
+    FontAtlas validation;
+    if (!validation.SetTextLanguage(language))
+        return false;
+    if (m_TextLanguage == language)
+        return true;
+    m_TextLanguage = language;
+    if (m_FontAtlas)
+        m_FontAtlas->SetTextLanguage(language);
+    for (auto& [key, font] : m_FontAtlases)
+        font->SetTextLanguage(language);
+    m_FontResolvedDirty = true;
+    MarkStyleDirtyAll();
+    RequestRelayout();
+    return true;
 }

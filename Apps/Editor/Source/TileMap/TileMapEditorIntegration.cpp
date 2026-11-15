@@ -90,7 +90,7 @@ void TileMapEditorIntegration::Attach(const Services& services)
             panel->SetContext(services.Context);
         if (services.Panels)
             services.Panels->RegisterUpdateCallback(
-                panel, [panel](const Editor::PanelUpdateContext&) { panel->Update(); });
+                panel, [panel](const EditorPanelManager::PanelUpdateContext&) { panel->Update(); });
     }
 
     if (TilePalettePanel* panel = services.Palette)
@@ -114,7 +114,7 @@ void TileMapEditorIntegration::Attach(const Services& services)
             // gate, applied here by the same layout-extent test it uses.
             services.Panels->RegisterUpdateCallback(
                 panel,
-                [this, panel](const Editor::PanelUpdateContext&)
+                [this, panel](const EditorPanelManager::PanelUpdateContext&)
                 {
                     const bool visible = panel->GetLayoutWidth() > 0.0f && panel->GetLayoutHeight() > 0.0f;
                     SyncTargetToSelection(visible);
@@ -141,7 +141,7 @@ ConfirmActionModal* TileMapEditorIntegration::EnsureModal(const char* id)
     if (!root)
         return nullptr;
     // Resolve through the current root so a layout replacement cannot leave a stale pointer.
-    if (UIElement* existing = root->FindById(id))
+    if (UIElement* existing = root->FindById(HashStringId(id)))
         return dynamic_cast<ConfirmActionModal*>(existing);
     auto created = std::make_unique<ConfirmActionModal>();
     auto* modal = created.get();

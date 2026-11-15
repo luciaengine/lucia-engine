@@ -152,6 +152,11 @@
 #include "GameView/GameViewRenderCoordinator.h"
 #include "MovieRecorderController.h"
 #include "MovieRecorderToolbarMenu.h"
+#include "Panels/TilePalettePanel.h"
+#include "Panels/TileSetEditorPanel.h"
+#include "Thumbnails/SpriteFramesThumbnailHandler.h"
+#include "Thumbnails/TileThumbnailHandler.h"
+#include "TileMap/TileMapEditorIntegration.h"
 #include "Panels/AssetsPanel.h"
 #include "Panels/TodoPanel.h"
 #include "Panels/BookmarksPanel.h"
@@ -2722,6 +2727,12 @@ bool EditorApplication::Initialize()
             auto textureHandler =
                 std::make_unique<TextureThumbnailHandler>(EngineCore::GetInstance().GetJobSystem());
             thumbnailServiceRaw->RegisterHandler(AssetType::Texture, std::move(textureHandler));
+            thumbnailServiceRaw->RegisterHandler(AssetType::SpriteFrames,
+                std::make_unique<SpriteFramesThumbnailHandler>(EngineCore::GetInstance().GetJobSystem(), assetManager));
+            thumbnailServiceRaw->RegisterHandler(
+                AssetType::TileSet, std::make_unique<TileThumbnailHandler>(EngineCore::GetInstance().GetJobSystem(), assetManager));
+            thumbnailServiceRaw->RegisterHandler(
+                AssetType::TileMap, std::make_unique<TileThumbnailHandler>(EngineCore::GetInstance().GetJobSystem(), assetManager));
 
             // Thumbnails should browse project assets, not editor assets.
             m_ThumbnailProvider->SetAssetsRoot(EngineCore::GetInstance().GetAssetManager().GetAssetRoot());
@@ -4333,6 +4344,10 @@ bool EditorApplication::Initialize()
                             if (main && m_PanelManager)
                                 m_PanelManager->ShowOrActivateGraphPanel(main);
                         };
+                        toolbarCb.onTilePaletteClicked = [this, main]() {
+                            if (main && m_PanelManager)
+                                OpenPanel(EditorPanelIds::TilePalette);
+                        };
                         toolbarCb.onBookmarksClicked = [this, main]() {
                             if (main && m_PanelManager) m_PanelManager->ShowOrActivateBookmarksPanel(main);
                         };
@@ -4621,11 +4636,7 @@ bool EditorApplication::Initialize()
                         if (auto* infoBtn = dynamic_cast<Button*>(rootEl->FindById("TopToolbarRight2"_sid)))
                         {
                             infoBtn->SetTooltip("Info");
-                            infoBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&)
-                            {
-                                m_VideoPlayer.Open(m_AssetsDirectory / "Sample" / "logo.mp4",
-                                                   "Open Engine " + Editor::EditorVersionText());
-                            });
+                            infoBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { m_VideoPlayer.OpenIntro(); });
                         }
 
                         m_TopToolbar->ApplyButtonVisibilityFromPrefs(rootEl);
@@ -4824,6 +4835,18 @@ bool EditorApplication::Initialize()
             searchDeps.ResetLayout = [this]() { ResetLayoutToDefault(); };
             m_UniversalSearch = std::make_unique<Editor::UniversalSearchController>();
             m_UniversalSearch->Initialize(searchDeps);
+        }
+        {
+            Editor::TileMapEditorIntegration::Services tileMap{};
+            tileMap.Panels = m_PanelManager.get();
+            tileMap.UndoRedo = m_UndoRedo.get();
+            tileMap.Context = editorCtx;
+            tileMap.Scene = main ? main->scene.get() : nullptr;
+            tileMap.Palette = FindFirstPanelOfType<TilePalettePanel>(m_PanelStorage);
+            tileMap.TileSetEditor = FindFirstPanelOfType<TileSetEditorPanel>(m_PanelStorage);
+            tileMap.UI = main ? main->ui.get() : nullptr;
+            m_TileMapEditor = std::make_unique<Editor::TileMapEditorIntegration>();
+            m_TileMapEditor->Attach(tileMap);
         }
         if (m_EditorToolbar)
             m_EditorToolbar->Refresh();

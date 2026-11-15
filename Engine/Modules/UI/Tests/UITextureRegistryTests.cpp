@@ -1,4 +1,5 @@
 #include "UI/UITextureRegistry.h"
+#include "UIRgTestHarness.h"
 #include "Core/ApplicationPaths.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Text/FontAtlas.h"
@@ -34,13 +35,8 @@ struct UITextureRegistryFixture : public ::testing::Test
 
     void SetUp() override
     {
-        SetEnv("GE_HEADLESS_TEST", "1");
-
-        DeviceDesc dd{};
-        dd.preferredAPI = GraphicsAPI::Vulkan;
-        dd.enableDynamicRendering = true;
-        device = DeviceFactory::CreateDevice(dd);
-        if (!device || !device->Initialize(dd))
+        device = MakeHeadlessDevice();
+        if (!device)
         {
             GTEST_SKIP() << "Vulkan device init failed (no Vulkan runtime / CI machine)";
         }

@@ -46,6 +46,7 @@
 #include "UI/UITextureSpace.h"
 #include "UI/UiDispatcher.h"
 #include "UI/VirtualizationCoordinator.h"
+#include "Events/Event.h"
 
 namespace JobSystem
 {
@@ -105,6 +106,11 @@ struct UIClipRect;                           // forward
 class UIOpaqueInteriors;                     // forward
 struct UIOpaqueInterior;                     // forward
 class UITextureRegistry;                     // forward
+}
+
+namespace Localization
+{
+class LocalizationCatalog;
 }
 
 namespace UI::Interaction
@@ -812,6 +818,13 @@ public:
 
     // Install/replace the font resolver. Passing an empty function disables host font loading.
     void SetFontResolver(FontResolverFn&& resolver);
+    /// Sets the catalog that localized labels read. A catalog change refreshes every label; null
+    /// shows each label's fallback text.
+    void SetLocalizationCatalog(std::shared_ptr<Localization::LocalizationCatalog> catalog);
+    /// Sets the BCP 47 language that text shaping uses ("und" for none). The localization
+    /// catalog sets it from its locale. Returns false and changes nothing for a malformed tag.
+    bool SetTextLanguage(const std::string& language);
+    const std::shared_ptr<Localization::LocalizationCatalog>& GetLocalizationCatalog() const { return m_LocalizationCatalog; }
 
     // Install a synchronous default face used while host-resolved family fonts
     // are still loading. Hosts should provide their primary UI face here to keep
@@ -1706,7 +1719,11 @@ public:
     // NOTE: We use shared_ptr so family-specific lookups can alias the default atlas when they
     // resolve to the same font bytes. This prevents multiple FontAtlas instances with the same
     // atlasId from diverging in content and thrashing the renderer cache.
+    void RefreshLocalizedText();
+    std::shared_ptr<Localization::LocalizationCatalog> m_LocalizationCatalog;
+    EventSubscription m_LocalizationSubscription;
     std::shared_ptr<Rendering::Text::FontAtlas> m_FontAtlas;
+    std::string m_TextLanguage = "und";
     // Set once Update has tried to load the default atlas from the staged engine fonts (the
     // path taken when no host font resolver is installed); the attempt is never repeated.
     bool m_DefaultFontAtlasAttempted = false;

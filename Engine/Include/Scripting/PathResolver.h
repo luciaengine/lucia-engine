@@ -35,9 +35,9 @@ inline constexpr std::string_view kScriptBindingsAssemblyFileName = "GameEngine.
 /// included. A list, not a pattern: a file the build no longer stages, left in an existing
 /// output folder, is never referenced or shipped. Compile-server requests carry it
 /// (ScriptSurfaceRequestField), so the server holds no copy.
-inline constexpr std::array<std::string_view, 5> kScriptSurfaceAssemblyFileNames = {
+inline constexpr std::array<std::string_view, 6> kScriptSurfaceAssemblyFileNames = {
     kScriptBindingsAssemblyFileName, "GameEngine.Scripting.ABI.dll", "GameEngine.ECS.ABI.dll",
-    "GameEngine.Platform.ABI.dll", "GameEngine.Editor.Scripting.ABI.dll"};
+    "GameEngine.Platform.ABI.dll", "GameEngine.TileMap.ABI.dll", "GameEngine.Editor.Scripting.ABI.dll"};
 
 /// True for an assembly of kScriptSurfaceAssemblyFileNames.
 inline bool IsScriptSurfaceAssembly(std::string_view fileName)

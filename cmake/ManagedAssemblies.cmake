@@ -93,7 +93,7 @@ file(MAKE_DIRECTORY "${_GE_MANAGED_STAMP_DIR}")
 
 function(ge_add_managed_assembly target_name)
   set(options ALL)
-  set(oneValueArgs CSPROJ COMMENT)
+  set(oneValueArgs CSPROJ COMMENT SOURCE_DIRECTORY)
   set(multiValueArgs DEPENDS_ON INPUTS)
   cmake_parse_arguments(GE_AMA "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
@@ -102,6 +102,9 @@ function(ge_add_managed_assembly target_name)
   endif()
 
   get_filename_component(_proj_dir "${GE_AMA_CSPROJ}" DIRECTORY)
+  if(GE_AMA_SOURCE_DIRECTORY)
+    set(_proj_dir "${GE_AMA_SOURCE_DIRECTORY}")
+  endif()
 
   # Every source the dotnet build could read from this project's tree. The
   # globs are re-checked before each build, so an added file re-runs CMake
@@ -112,12 +115,10 @@ function(ge_add_managed_assembly target_name)
   # root, ABOVE each project dir, so the per-project glob above never sees them.
   # An edit to Directory.Build.props must still rebuild every managed assembly —
   # e.g. its RollForward is baked into each generated *.runtimeconfig.json, which
-  # the standalone CompileServerHost launches with, and it reads the root VERSION file into
-  # every assembly's version. Depend on those files explicitly.
+  # the standalone CompileServerHost launches with. Depend on the root files explicitly.
   foreach(_shared
       "${CMAKE_SOURCE_DIR}/Managed/Directory.Build.props"
-      "${CMAKE_SOURCE_DIR}/Managed/Directory.Build.targets"
-      "${CMAKE_SOURCE_DIR}/VERSION")
+      "${CMAKE_SOURCE_DIR}/Managed/Directory.Build.targets")
     if(EXISTS "${_shared}")
       list(APPEND _sources "${_shared}")
     endif()
@@ -188,6 +189,14 @@ endif()
 ge_add_managed_assembly(EcsAbiAssembly ALL
   CSPROJ  ${CMAKE_SOURCE_DIR}/Managed/ECS.ABI/GameEngine.ECS.ABI.csproj
   COMMENT "Building ECS ABI assembly (GameEngine.ECS.ABI.dll)")
+
+configure_file(
+  "${CMAKE_SOURCE_DIR}/Managed/TileMap.ABI/GameEngine.TileMap.ABI.csproj.in"
+  "${CMAKE_BINARY_DIR}/Managed/TileMap.ABI/GameEngine.TileMap.ABI.csproj" @ONLY)
+ge_add_managed_assembly(TileMapAbiAssembly ALL
+  CSPROJ "${CMAKE_BINARY_DIR}/Managed/TileMap.ABI/GameEngine.TileMap.ABI.csproj"
+  SOURCE_DIRECTORY "${CMAKE_SOURCE_DIR}/Managed/TileMap.ABI"
+  COMMENT "Building TileMap ABI assembly (GameEngine.TileMap.ABI.dll)")
 
 ge_add_managed_assembly(PlatformAbiAssembly ALL
   CSPROJ  ${CMAKE_SOURCE_DIR}/Managed/Platform.ABI/GameEngine.Platform.ABI.csproj

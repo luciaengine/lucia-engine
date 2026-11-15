@@ -50,6 +50,7 @@ class EditorTopToolbar final : public UIElement
         std::function<void()> onUniversalSearchClicked;
         std::function<void()> onSettingsClicked;
         std::function<void()> onNodeGraphClicked;
+        std::function<void()> onTilePaletteClicked;
         std::function<void()> onBookmarksClicked;
         std::function<void()> onWebClicked;
         std::function<void()> onScriptEditorClicked;

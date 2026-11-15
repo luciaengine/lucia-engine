@@ -1,6 +1,7 @@
 #include "Assets/RenderPipelineAsset.h"
 
 #include "AssetCore/SharedFileRead.h"
+#include "Types/Fnv1a.h"
 
 #include <cstring>
 
@@ -89,7 +90,7 @@ bool RenderPipelineAsset::ParseFromText(const std::string& text, const std::file
     m_Doc.jsonText = text;
     m_Doc.passes.clear();
     m_Doc.resources.clear();
-    m_SourceHash = Fnv1a64(text);
+    m_SourceHash = Hashing::Fnv1a64(text);
 
     try
     {

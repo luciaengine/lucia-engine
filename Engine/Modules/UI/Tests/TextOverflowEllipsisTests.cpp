@@ -11,6 +11,7 @@
 // than replay the stale run.
 
 #include "UIRgTestHarness.h"
+#include "TestTempDir.h"
 
 #include "Rendering/Core/Device.h"
 #include "Rendering/Text/FontAtlas.h"
@@ -61,8 +62,7 @@ struct EllipsisLabelFixture
         bool        Wrapper    = false;
     };
 
-    // First member: destroyed last, after this fixture's UIManager released its buffers.
-    SharedDeviceReleaseRetirement ReleaseRetirement;
+    const TestUtils::ScopedTempDir CssDir{TestUtils::MakeUniqueTempDirectory("ui_text_overflow")};
     IDevice* Dev = nullptr;
     std::unique_ptr<UIManager> Ui;
     std::unique_ptr<UiRgHarness> Rg;
@@ -100,7 +100,7 @@ struct EllipsisLabelFixture
         Ui = std::make_unique<UIManager>(Dev);
         Ui->SetRoot(std::move(root));
 
-        CssPath = std::filesystem::temp_directory_path() /
+        CssPath = CssDir.Path() /
                   ("ui_text_overflow_" + std::to_string(reinterpret_cast<uintptr_t>(this)) + ".css");
         {
             std::ofstream f(CssPath);

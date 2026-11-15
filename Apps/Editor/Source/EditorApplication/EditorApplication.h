@@ -85,6 +85,7 @@ struct EditorCommandLineArgs;
 class UndoRedoService;
 class EditorChangeNotifications;
 class MarkupEditorBridge;
+class TileMapEditorIntegration;
 struct EditorPanelDescriptor;        // fwd (EditorSDK panel registry)
 struct EditorStyleSheetContribution; // fwd (EditorSDK panel registry)
 struct EditorOverlayDescriptor;      // fwd (EditorSDK panel registry)
@@ -132,6 +133,7 @@ class EditorApplication : public Application
     friend void RegisterGpuToolingHandlers(EditorDebugServer& server, EditorApplication& app);
     friend bool ApplyMainSceneViewPose(EditorApplication& app, const SceneViewCameraPose& pose);
     friend void RegisterMarkupDebugHandlers(EditorDebugServer& server, EditorApplication& app);
+    friend void RegisterTileMapDebugHandlers(EditorDebugServer& server, EditorApplication& app);
     friend std::function<bool(nlohmann::json&)> BeginScreenshotCapture(EditorApplication& app,
                                                                        EditorDebugServer& server,
                                                                        const std::string& requestId,
@@ -363,6 +365,7 @@ class EditorApplication : public Application
     std::unique_ptr<Editor::UndoRedoService> m_UndoRedo;
     std::unique_ptr<Editor::EditorChangeNotifications> m_ChangeNotifications;
     std::unique_ptr<Editor::MarkupEditorBridge> m_MarkupBridge;
+    std::unique_ptr<Editor::TileMapEditorIntegration> m_TileMapEditor;
     std::unique_ptr<Editor::SceneEditorController> m_SceneEditor;
     std::unique_ptr<Editor::SceneThumbnailCapture> m_SceneThumbnailCapture;
     std::unique_ptr<Editor::PlayModeManager> m_PlayMode;

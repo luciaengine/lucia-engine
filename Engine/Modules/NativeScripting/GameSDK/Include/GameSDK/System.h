@@ -6,15 +6,16 @@
 //     struct SpinnerSystem : ECS::SystemBase {
 //         void OnUpdate(ECS::World& w, float dt) {
 //             w.Query<ECS::Read<Demo::Spinner>, ECS::Write<GameEngine::Components::Transform>>().Each(
-//                 [dt](const Demo::Spinner& s, GameEngine::Components::Transform& xf){
-//                     xf.RotationEuler.Y += s.Speed * dt;   // (component fields illustrative)
+//                 [dt](const Demo::Spinner& s, ECS::Writable<GameEngine::Components::Transform> xf){
+//                     xf.Mutable().RotationEuler.Y += s.Speed * dt;   // (component fields illustrative)
 //                 });
 //         }
 //     };
 //
 // Access is declared explicitly (D-SDK): Read<T>/Write<T> query qualifiers plus concrete
-// const-correct parameter types. Generic auto& parameters on unqualified component types are
-// a compile error — the change filters need honest read/write intent.
+// const-correct parameter types; a Write<T> component arrives as ECS::Writable<T>, whose
+// Mutable() or Set() records the write. Generic auto& parameters on unqualified component types
+// are a compile error — the change filters need honest read/write intent.
 //
 // The build-time scanner detects `: ECS::SystemBase` and generates the registration (no macro).
 //

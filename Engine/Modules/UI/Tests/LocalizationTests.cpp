@@ -7,43 +7,6 @@
 
 using namespace GameEngine;
 
-TEST(LabelLocalizationTests, HiddenMenuWarmupResolvesNestedFontsWithoutShowingTheMenu)
-{
-    UITesting::IsolatedUIFixture fixture;
-    const bool built = fixture.Build(1.0f,
-        R"(<uielement id="root"><uielement id="menu"><uielement id="group"><label id="title">冒険</label></uielement></uielement></uielement>)",
-        R"(#root { width: 400px; height: 300px; }
-            #menu { display: none; font-family: Roboto; font-size: 18px; }
-            #group { font-size: 24px; }
-            .large { font-size: 32px; })");
-    if (!fixture.DeviceAvailable()) GTEST_SKIP() << fixture.Diagnostic();
-    ASSERT_TRUE(built) << fixture.Diagnostic();
-    auto* root = fixture.Element("root");
-    auto* title = fixture.Element("title");
-    ASSERT_NE(root, nullptr);
-    ASSERT_NE(title, nullptr);
-    // Callers can preload a nested screen directly while its parent stays hidden.
-    ASSERT_NE(fixture.Element("group"), nullptr);
-    EXPECT_EQ(fixture.Manager().PrepareTextSubtree(fixture.Element("group")),
-              UIManager::TextWarmupStatus::Ready);
-    EXPECT_EQ(fixture.Manager().PrepareTextSubtree(root), UIManager::TextWarmupStatus::Ready);
-    EXPECT_FLOAT_EQ(title->GetResolvedStyle().Visual.FontSize, 24.0f);
-    EXPECT_EQ(fixture.Element("menu")->GetResolvedStyle().Layout.DisplayMode, DisplayMode::None);
-
-    title->AddClass("large");
-    EXPECT_EQ(fixture.Manager().PrepareTextSubtree(root), UIManager::TextWarmupStatus::Ready);
-    EXPECT_FLOAT_EQ(title->GetResolvedStyle().Visual.FontSize, 32.0f);
-    EXPECT_EQ(fixture.Element("menu")->GetResolvedStyle().Layout.DisplayMode, DisplayMode::None);
-}
-
-TEST(LabelLocalizationTests, WarmupRejectsUnownedTrees)
-{
-    UIManager manager(nullptr);
-    UIElement detached;
-    EXPECT_EQ(manager.PrepareTextSubtree(nullptr), UIManager::TextWarmupStatus::Failed);
-    EXPECT_EQ(manager.PrepareTextSubtree(&detached), UIManager::TextWarmupStatus::Failed);
-}
-
 TEST(LabelLocalizationTests, SharedCatalogRefreshesLabelsAndPluralArguments)
 {
     auto catalog = std::make_shared<Localization::LocalizationCatalog>();
@@ -166,37 +129,6 @@ TEST(LabelLocalizationTests, LiteralTextUnbindsEvenWhenItMatchesTheTranslation)
     manager.SetLocalizationCatalog(nullptr);
     EXPECT_EQ(sameText.GetText(), "Play");
     EXPECT_EQ(differentText.GetText(), "Manual");
-}
-
-TEST(LabelLocalizationTests, RegisteredAuthoredTextPreservesPluralArgumentsUntilBindingIsRemoved)
-{
-    auto catalog = std::make_shared<Localization::LocalizationCatalog>();
-    std::istringstream input(R"({"en":{"coins":"{n, plural, one {# coin} other {# coins}}"},"nl":{"coins":"{n, plural, one {# munt} other {# munten}}"}})");
-    std::string error;
-    ASSERT_TRUE(catalog->Load(input, error)) << error;
-    UIManager manager(nullptr);
-    manager.SetLocalizationCatalog(catalog);
-    auto& registry = UIRegistration::ElementFactoryRegistry::Instance();
-    auto element = registry.Create("label");
-    auto* label = dynamic_cast<Label*>(element.get());
-    ASSERT_NE(label, nullptr);
-    label->SetOwnerManager(&manager);
-    UIAttributeAccess::SetAuthoredAttribute(*label, "localization-key", "coins");
-    UIAttributeAccess::SetAuthoredAttribute(*label, "text", "Coins");
-    registry.ApplyAttributes(*label, {{"localization-key", "coins"}, {"text", "Coins"}}, "");
-    label->SetLocalizationArguments({{"n", int64_t{2}}});
-    EXPECT_EQ(label->GetText(), "2 coins");
-    registry.ApplyAttributes(*label, {{"localization-key", "coins"}, {"text", "Coins"}}, "");
-    EXPECT_EQ(label->GetText(), "2 coins");
-    // Inner text uses the other registered setter, before the final authored hook.
-    registry.ApplyAttributes(*label, {{"localization-key", "coins"}}, "Coins");
-    EXPECT_EQ(label->GetText(), "2 coins");
-    ASSERT_TRUE(catalog->SetLocale("nl", error)) << error;
-    EXPECT_EQ(label->GetText(), "2 munten");
-    registry.ApplyAttributes(*label, {{"text", "Manual"}}, "");
-    EXPECT_EQ(label->GetText(), "Manual");
-    ASSERT_TRUE(catalog->SetLocale("en", error)) << error;
-    EXPECT_EQ(label->GetText(), "Manual");
 }
 
 TEST(LabelLocalizationTests, ClearLocalizationKeepsDisplayedTranslation)

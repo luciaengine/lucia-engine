@@ -209,13 +209,15 @@ Rendering::ShaderVariantKey DeriveBaseVariantKey(const MaterialDocument& doc)
 
 MaterialAlphaMode DeriveRenderedAlphaMode(const MaterialDocument& doc)
 {
-    // Transmission is a screen-space refraction lobe drawn in the opaque-depth pass:
-    // it must stay Opaque so it writes/tests depth. A Blend transmissive material
-    // would be skipped by the depth prepass, breaking the refraction foreground guard.
-    if (Rendering::HasKeyword(DeriveBaseVariantKey(doc).materialKeywords,
+    // Refraction replaces the background rather than alpha-blending it again.
+    // Masked transmission still needs its authored discard (rain cards, cutout
+    // glass); only blended transmission must be rendered as opaque.
+    const auto mode = GetEffectiveMaterialAlphaMode(doc);
+    if (mode == MaterialAlphaMode::Blend &&
+        Rendering::HasKeyword(DeriveBaseVariantKey(doc).materialKeywords,
                               Rendering::MaterialKeyword::Transmission))
         return MaterialAlphaMode::Opaque;
-    return GetEffectiveMaterialAlphaMode(doc);
+    return mode;
 }
 
 namespace
@@ -248,7 +250,7 @@ void MaterialRegistry::ApplyDocumentToMaterial(Material& mat, const MaterialDocu
     if (effectiveAlphaMode != GetEffectiveMaterialAlphaMode(doc))
     {
         Logger::Log::Warning(
-            "Material '{}': Transmission requires Opaque alpha mode; coercing to Opaque.",
+            "Material '{}': Blended transmission is rendered as Opaque; use Mask for cutout silhouettes.",
             doc.materialName);
     }
 

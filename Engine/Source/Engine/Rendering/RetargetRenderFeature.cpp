@@ -3,6 +3,7 @@
 #include "Core/ApplicationPaths.h"
 #include "Engine/Rendering/RetargetFullPass.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/Device.h"
 
@@ -47,29 +48,8 @@ bool RetargetRenderFeature::ReadEnvFlag()
     if (state != 0)
         return state == 2;
 
-    bool cpuOnly = false;
-#if defined(_WIN32)
-    char* val = nullptr;
-    size_t len = 0;
-    if (_dupenv_s(&val, &len, "GE_RETARGET_CPU") == 0 && val)
-    {
-        cpuOnly = (len > 1 && val[0] == '1');
-        free(val);
-    }
-    if (!cpuOnly && _dupenv_s(&val, &len, "r.RetargetCPU") == 0 && val)
-    {
-        cpuOnly = (len > 1 && val[0] == '1');
-        free(val);
-    }
-#else
-    if (const char* v = std::getenv("GE_RETARGET_CPU"))
-        cpuOnly = (v[0] == '1');
-    if (!cpuOnly)
-    {
-        if (const char* v = std::getenv("r.RetargetCPU"))
-            cpuOnly = (v[0] == '1');
-    }
-#endif
+    const bool cpuOnly = Platform::EnvironmentSwitchEnabled("GE_RETARGET_CPU", false) ||
+                         Platform::EnvironmentSwitchEnabled("r.RetargetCPU", false);
     const bool enabled = !cpuOnly;
     g_GpuEnabledState.store(enabled ? 2u : 1u, std::memory_order_relaxed);
     return enabled;

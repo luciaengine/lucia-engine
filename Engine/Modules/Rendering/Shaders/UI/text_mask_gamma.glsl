@@ -1,47 +1,50 @@
-// Colour-keyed text coverage correction, after Skia's SkMaskGamma.
+// Colour-keyed text coverage correction: the blend Chrome draws text with on
+// macOS, carried into whatever space the attachment blends in.
 //
-// Glyph coverage out of the Slug rasteriser is area-exact (measured: GPU ink vs
-// a 16x-supersampled FreeType reference is 1.0056 at 12 px Regular, 0.9925 at
-// 14 px Bold). What is not exact is the *blend*. Skia splits the correction for
-// that into two independent terms and so does this file.
+// Glyph coverage out of the Slug rasteriser is the exact area of the dilated
+// outline (slug_functions.glsl). What remains is how that coverage becomes a
+// blend weight, split into two independent terms.
 //
-// 1. Blend-space retarget, bidirectional. An attachment interpolates either
+// 1. Contrast, keyed on the paint colour. Chrome 155 on macOS 15.7 (headless,
+//    DPR 1 and 2, measured on straight Roboto stems from 8 to 45 px) blends
+//    text as an sRGB-ENCODED source-over whose weight is
+//        a = c + k c (1 - c)
+//    (Skia's apply_contrast shape), with k set by the paint's encoded
+//    luminance in four levels: the measured fit is
+//    kTextContrastByLuminance below, from slightly thinning near-black text
+//    to a strong bulge for near-white text. Light text on a dark ground is
+//    the heavy polarity there, the reverse of Skia's own
+//    contrast * linDst keying, and the four levels are Chrome's: the
+//    background never enters (white on #404040 measured identical to white on
+//    black). These levels apply to a desired encoded blend target. A desired
+//    linear target uses Skia's boost keyed on the guessed linear backdrop.
+//    `contrast` scales that target's k; 0 is plain coverage.
+//
+// 2. Blend-space retarget, bidirectional. An attachment interpolates either
 //    LINEAR values (a linear intermediate; the terminal encode owns the OETF)
 //    or raw sRGB-ENCODED bytes (the browser blend model: source-over on UNORM
 //    bytes holding encoded values). The retarget solves, per fragment, for the
 //    coverage whose blend in the attachment's ACTUAL space (blendSpaceEncoded)
 //    lands where a blend in the TARGET space (blendGamma) would have put it:
 //
-//      linear  attachment, linear  target  ->  identity (the shipped default)
-//      linear  attachment, encoded target  ->  the "gamma-space blending" look
-//                                              out of a linear compositor
-//      encoded attachment, linear  target  ->  Skia's own direction: the
-//                                              pre-distortion that makes an
-//                                              encoded source-over land
+//      linear  attachment, linear  target  ->  identity
+//      linear  attachment, encoded target  ->  the encoded-blend look out of
+//                                              a linear compositor
+//      encoded attachment, linear  target  ->  the pre-distortion that makes
+//                                              an encoded source-over land
 //                                              area-exact
 //      encoded attachment, encoded target  ->  identity, by the same maths
 //
-//    Skia's LUT is the third case built with SK_GAMMA_SRGB — what Chrome ships
-//    on Windows and macOS: physically area-exact ink out of an encoded blit.
-//    The retarget is never a thinning exponent, and a faithful port must not
-//    smuggle one in; blendGamma names the TARGET space only (0 = linear,
-//    1.0 = display-encoded), while the actual space is a fact of the
-//    attachment, resolved by UIManager::ResolveTextCoverageConstants.
+//    The term 1 weight is an encoded-blend weight. The editor targets the
+//    encoded space (blendGamma 1.0) on its EncodedSrgb attachment, where the
+//    retarget is the identity and the result is Chrome's. A UIManager's
+//    default is the linear target, the identity on a linear attachment. The
+//    retarget guesses the destination as the paint's perceptual inverse
+//    (dst = 1 - src), which is what lets it run without a framebuffer read.
 //
-// 2. Contrast boost, keyed on the paint colour. Skia, verbatim in shape:
-//        adjustedContrast = contrast * linDst;
-//        srca += (1 - srca) * adjustedContrast * srca;
-//    with the destination *guessed* as the paint's perceptual inverse
-//    (dst = 1 - src). That guess is what lets the correction run without a
-//    framebuffer read, and it is the approximation this file inherits — both
-//    terms share it. The boost tapers to nothing as text approaches white and
-//    reaches full strength for near-black text — the polarity asymmetry that
-//    the size-keyed exponent this replaced could not express, because a power
-//    curve thins BOTH polarities.
-//
-// Both terms are keyed on the glyph's luminance and never on ppem: identical
+// Both terms are keyed on the glyph's colour and never on ppem: identical
 // glyph shapes must not gain or lose ink for having been asked for at a
-// different size.
+// different size (the size-keyed part of Chrome's look is the dilation).
 
 #ifndef UI_TEXT_MASK_GAMMA_GLSL
 #define UI_TEXT_MASK_GAMMA_GLSL
@@ -49,8 +52,8 @@
 const vec3 kRec709Luma = vec3(0.2126, 0.7152, 0.0722);
 
 // blendGamma sentinel: the target blend space is sRGB-linear. For a linear
-// attachment the retarget is then identity and the contrast boost is the whole
-// correction; for an encoded attachment it selects the FULL Skia-direction
+// attachment the retarget is then identity and the contrast term is the whole
+// correction; for an encoded attachment it selects the Skia-direction
 // correction (area-exact ink out of an encoded blend).
 const float kTextBlendGammaLinearTarget = 0.0;
 
@@ -77,11 +80,43 @@ float srgbDecodeScalar(float encoded)
     return (c <= 0.04045) ? (c / 12.92) : pow((c + 0.055) / 1.055, 2.4);
 }
 
-// Skia's apply_contrast(). Fixes both endpoints and bulges the middle, so it
-// adds weight to partially covered pixels without leaking outside the glyph.
+// Skia's apply_contrast(). Fixes both endpoints and bulges the middle (or
+// sags it, for a negative contrast), so it moves weight on partially covered
+// pixels without leaking outside the glyph. Stays in [0, 1] for contrast in
+// [-1, 1].
 float applyTextContrast(float srca, float adjustedContrast)
 {
     return srca + (1.0 - srca) * adjustedContrast * srca;
+}
+
+// Chrome's macOS contrast k per paint luminance level. Chrome keys it on the
+// top two bits of the 8-bit encoded luminance: measured with greys in steps of
+// one, 63 | 64, 127 | 128 and 191 | 192 change level and no other neighbours
+// do. Fitted jointly with the dilation in ui_sdf_common.glsl (rms 0.003 to
+// 0.009 of full ink per level).
+const vec4 kTextContrastByLuminance = vec4(-0.14, 0.20, 0.53, 0.85);
+
+// The level edges, halfway between the two 8-bit levels either side.
+const vec3 kTextContrastLevelEdges = vec3(63.5, 127.5, 191.5) / 255.0;
+
+// Half-width of the ramp that joins two levels at an edge: half an 8-bit
+// level, so k is continuous in luminance while every 8-bit grey, including
+// the two either side of an edge, keeps Chrome's exact level. The editor's
+// most used label greys (#bdbdbd to #bfbfbf) sit one to two levels below the
+// 191 | 192 edge, so a wider ramp would move them off Chrome.
+const float kTextContrastEdgeHalfWidth = 0.5 / 255.0;
+
+// The contrast for an encoded paint luminance in [0, 1].
+float textChromeContrast(float srcEncoded)
+{
+    float k = kTextContrastByLuminance[0];
+    for (int edge = 0; edge < 3; ++edge)
+    {
+        float t = smoothstep(kTextContrastLevelEdges[edge] - kTextContrastEdgeHalfWidth,
+                             kTextContrastLevelEdges[edge] + kTextContrastEdgeHalfWidth, srcEncoded);
+        k = mix(k, kTextContrastByLuminance[edge + 1], t);
+    }
+    return k;
 }
 
 // The correction is keyed on the glyph paint's LINEAR luminance in every
@@ -116,8 +151,8 @@ float textTargetBlendLinear(float a, float src, float dst, float srcLin, float d
 // coverage           area-exact glyph coverage.
 // glyphPaint         the glyph's rgb in the variant's BLEND space (see
 //                    textGlyphLinearLuma).
-// contrast           Skia's SK_GAMMA_CONTRAST. Chrome ships 1.0 on Windows;
-//                    0 disables.
+// contrast           scale on term 1: Chrome's measured levels for an encoded
+//                    target, Skia's backdrop boost for a linear target; 0 disables.
 // blendGamma         kTextBlendGammaLinearTarget, or the exponent of the
 //                    TARGET space the coverage should blend linearly in
 //                    (1.0 = display-encoded).
@@ -127,14 +162,17 @@ float correctTextCoverage(float coverage, vec3 glyphPaint, float contrast, float
                           int blendSpaceEncoded)
 {
     // srcLin is the linear level the correction models; src is its
-    // display-encoded level, which is what Skia keys on because that is where
-    // the guess below lives.
+    // display-encoded level, which is what the contrast level and the
+    // destination guess below are keyed on.
     float srcLin = textGlyphLinearLuma(glyphPaint);
     float src = srgbEncodeScalar(srcLin);
     float dst = 1.0 - src;
     float dstLin = srgbDecodeScalar(dst);
 
-    float a = applyTextContrast(coverage, contrast * dstLin);
+    // The measured Chrome levels apply to an encoded blend target. A desired
+    // linear blend keeps Skia's backdrop-keyed boost, preserving HUD weight.
+    float k = (blendGamma <= kTextBlendGammaLinearTarget) ? dstLin : textChromeContrast(src);
+    float a = applyTextContrast(coverage, contrast * k);
 
     if (blendSpaceEncoded == 0)
     {

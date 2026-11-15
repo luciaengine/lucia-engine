@@ -130,6 +130,7 @@ class SunGlareRenderFeature : public IRenderFeature
     ::GameEngine::Rendering::SamplerHandle GetShadowSampler() const { return m_ShadowSampler; }
 
     uint32_t GetTransmittanceBinding() const { return m_TransmittanceBinding; }
+    ::GameEngine::Rendering::SamplerHandle GetDepthSampler() const { return m_DepthSampler; }
     uint32_t GetDepthBinding() const { return m_DepthBinding; }
     uint32_t GetViewParamsBinding() const { return m_ViewParamsBinding; }
     uint32_t GetCastersBinding() const { return m_CastersBinding; }
@@ -169,6 +170,7 @@ class SunGlareRenderFeature : public IRenderFeature
     ::GameEngine::Rendering::DescriptorSetLayoutDesc m_LayoutMS{};
     ::GameEngine::Rendering::SamplerHandle m_Sampler{};
     ::GameEngine::Rendering::SamplerHandle m_ShadowSampler{};
+    ::GameEngine::Rendering::SamplerHandle m_DepthSampler{};
     uint32_t m_TransmittanceBinding = 0;
     uint32_t m_DepthBinding = 1;
     uint32_t m_ViewParamsBinding = 2;

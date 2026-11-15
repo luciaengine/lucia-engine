@@ -30,6 +30,8 @@
 #include "Assets/AssetManager.h"
 #include "Rendering/Core/Device.h"
 
+#include "TestTempDir.h"
+
 #include <array>
 #include <filesystem>
 #include <functional>
@@ -156,11 +158,12 @@ struct LaterElementRemover
     }
 };
 
+// One directory per process; it lives until exit because the asset managers read the files
+// after this helper returns.
 std::filesystem::path MakeAttachTestUxml(const char* name, const char* contents)
 {
-    auto dir = std::filesystem::temp_directory_path() / "ui_attach_detach_tests";
-    std::filesystem::create_directories(dir);
-    auto path = dir / name;
+    static const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("ui_attach_detach_tests")};
+    auto path = directory.Path() / name;
     std::ofstream f(path);
     f << contents;
     return path;
@@ -709,8 +712,8 @@ TEST(AttachDetachEventTests, ReconcilePreservedElementsGetNoPairAndNewOnesAttach
     UiRgHarness rg(dev);
     UIRegistration::RegisterBuiltInControls();
 
-    auto assetRoot = std::filesystem::temp_directory_path() / "ui_attach_detach_assets";
-    std::filesystem::create_directories(assetRoot);
+    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_attach_detach_assets"));
+    auto assetRoot = assetDirectory.Path();
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(assetRoot, &pool));
@@ -786,8 +789,8 @@ TEST(AttachDetachEventTests, ReconcileAnnouncesTheElementItReplaces)
     UiRgHarness rg(dev);
     UIRegistration::RegisterBuiltInControls();
 
-    auto assetRoot = std::filesystem::temp_directory_path() / "ui_attach_detach_replace_assets";
-    std::filesystem::create_directories(assetRoot);
+    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_attach_detach_replace_assets"));
+    auto assetRoot = assetDirectory.Path();
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(assetRoot, &pool));
@@ -1404,8 +1407,8 @@ TEST(AttachDetachEventTests, LoadingASecondLayoutAnnouncesTheTreeItDestroys)
     UiRgHarness rg(dev);
     UIRegistration::RegisterBuiltInControls();
 
-    auto assetRoot = std::filesystem::temp_directory_path() / "ui_r4_loadlayout_assets";
-    std::filesystem::create_directories(assetRoot);
+    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_r4_loadlayout_assets"));
+    auto assetRoot = assetDirectory.Path();
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(assetRoot, &pool));
@@ -1469,8 +1472,8 @@ TEST(AttachDetachEventTests, ReconcileTypeChangeAnnouncesTheElementItReplaces)
     UiRgHarness rg(dev);
     UIRegistration::RegisterBuiltInControls();
 
-    auto assetRoot = std::filesystem::temp_directory_path() / "ui_r4_typechange_assets";
-    std::filesystem::create_directories(assetRoot);
+    const TestUtils::ScopedTempDir assetDirectory(TestUtils::MakeUniqueTempDirectory("ui_r4_typechange_assets"));
+    auto assetRoot = assetDirectory.Path();
     JobSystem::WorkStealingThreadPool pool(2);
     AssetManager assets;
     ASSERT_TRUE(assets.Initialize(assetRoot, &pool));

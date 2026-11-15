@@ -1096,7 +1096,9 @@ BuildSettings BuildPanel::GatherBuildSettings()
 #endif
 
     // Engine version for SDK compatibility check.
-    settings.engineVersion = kEngineVersion;
+#ifdef GE_ENGINE_VERSION
+    settings.engineVersion = GE_ENGINE_VERSION;
+#endif
 
     // Vcpkg toolchain — look for it relative to the Editor's SDK or project root.
     // The Engine build tree has dependencies/vcpkg/ at repo root.

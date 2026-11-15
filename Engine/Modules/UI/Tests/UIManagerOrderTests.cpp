@@ -10,6 +10,7 @@
 #include "IsolatedUIFixture.h"
 #include "SharedHeadlessDevice.h"
 #include "UIRgTestHarness.h"
+#include "TestTempDir.h"
 #include "UI/Assets/UILayoutAsset.h"
 #include "UI/Parsers/XMLParser.h"
 #include "UI/Parsers/CSSParser.h"
@@ -230,7 +231,8 @@ TEST(UIManagerFocusTests, AHoveredPanelWithoutFocusDoesNotClaimTheSaveChord)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "ui_hovered_panel_save.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_hovered_panel_save"));
+    const auto css = tempDir.Path() / "ui_hovered_panel_save.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -350,7 +352,8 @@ TEST(UIManagerFocusTests, AHoveredFieldWithoutFocusLeavesTheKeyToWhateverIsBehin
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "ui_hovered_field_keys.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_hovered_field_keys"));
+    const auto css = tempDir.Path() / "ui_hovered_field_keys.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -694,9 +697,9 @@ TEST(UIManagerOrderTests, OrderPropertyReordersAndUnsettingRestoresOriginal)
     ui.SetRoot(std::move(root));
 
     // Create temp dir + CSS files
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css1 = tmpDir / "ui_order_1.css";
-    const auto css2 = tmpDir / "ui_order_2.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_order"));
+    const auto css1 = tempDir.Path() / "ui_order_1.css";
+    const auto css2 = tempDir.Path() / "ui_order_2.css";
 
     // CSS 1: container 300px wide; each child 100px; order: b first (-1), c second (1), a last (2)
     {
@@ -795,9 +798,9 @@ TEST(UIManagerOrderTests, OrderRespectedUnderRTLWithMirroredPositions)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css1 = tmpDir / "ui_order_rtl_1.css";
-    const auto css2 = tmpDir / "ui_order_rtl_2.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_order_rtl"));
+    const auto css1 = tempDir.Path() / "ui_order_rtl_1.css";
+    const auto css2 = tempDir.Path() / "ui_order_rtl_2.css";
 
     // CSS #1: direction: rtl; same order assignments -> visual order b, c, a, but mirrored positions: b(200), c(100), a(0)
     {
@@ -893,8 +896,8 @@ TEST(UIManagerOrderTests, OrderWithWrapReordersAcrossLines)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_order_wrap.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_order_wrap"));
+    const auto css = tempDir.Path() / "ui_order_wrap.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -953,8 +956,8 @@ TEST(UIManagerOrderTests, ColumnDirectionOrderAffectsVerticalPositions)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_order_column.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_order_column"));
+    const auto css = tempDir.Path() / "ui_order_column.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1009,8 +1012,8 @@ TEST(UIManagerOrderTests, NestedContainersOrderAppliedIndependently)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_order_nested.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_order_nested"));
+    const auto css = tempDir.Path() / "ui_order_nested.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1085,8 +1088,8 @@ TEST(UIManagerOrderTests, TextFieldPointerEndToEndUsesResolvedStyle)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_textfield_pointer_e2e.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_textfield_pointer_e2e"));
+    const auto css = tempDir.Path() / "ui_textfield_pointer_e2e.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1180,8 +1183,8 @@ TEST(UIManagerMountTests, MountedElementStyledAndRendered)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_mount_basic.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_mount_basic"));
+    const auto css = tempDir.Path() / "ui_mount_basic.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1230,8 +1233,8 @@ TEST(UIManagerMountTests, EventsBubbleToMountedTarget)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_mount_events.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_mount_events"));
+    const auto css = tempDir.Path() / "ui_mount_events.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1294,8 +1297,8 @@ TEST(UIManagerMountTests, KeyboardFocusTraversesAcrossMountPortal)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_mount_focus.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_mount_focus"));
+    const auto css = tempDir.Path() / "ui_mount_focus.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1371,8 +1374,8 @@ TEST(UIManagerMountTests, KeyboardActivationOnMountedButton)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_mount_btn_keys.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_mount_btn_keys"));
+    const auto css = tempDir.Path() / "ui_mount_btn_keys.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1437,8 +1440,8 @@ TEST(UIManagerScrollTests, ScrollEventRoutesToScrollViewAndTextField)
 	    UIManager ui(dev);
 	    ui.SetRoot(std::move(root));
 
-	    const auto tmpDir = std::filesystem::temp_directory_path();
-	    const auto css = tmpDir / "ui_scroll_textfield.css";
+	    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_scroll_textfield"));
+	    const auto css = tempDir.Path() / "ui_scroll_textfield.css";
 	    {
 	        std::ofstream f(css);
 	        f << R"(
@@ -1513,7 +1516,8 @@ TEST(UIManagerScrollTests, AScrollViewConsumesAWheelExactlyWhenItMoved)
     int ancestorTicks = 0;
     ancestor->RegisterEventHandler(kEventScroll, [&ancestorTicks](UIEvent&) { ++ancestorTicks; });
 
-    const auto css = std::filesystem::temp_directory_path() / "ui_scroll_chaining.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_scroll_chaining"));
+    const auto css = tempDir.Path() / "ui_scroll_chaining.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1573,8 +1577,8 @@ TEST(UIManagerScrollTests, AScrollViewConsumesAWheelExactlyWhenItMoved)
 		    UIManager ui(dev);
 		    ui.SetRoot(std::move(root));
 		
-		    const auto tmpDir = std::filesystem::temp_directory_path();
-		    const auto css = tmpDir / "ui_background_tint_alias.css";
+		    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_background_tint_alias"));
+		    const auto css = tempDir.Path() / "ui_background_tint_alias.css";
 		    {
 		        std::ofstream f(css);
 		        f << R"(
@@ -1623,8 +1627,8 @@ TEST(UIManagerScrollTests, AScrollViewConsumesAWheelExactlyWhenItMoved)
 		    UIManager ui(dev);
 		    ui.SetRoot(std::move(root));
 		
-		    const auto tmpDir = std::filesystem::temp_directory_path();
-		    const auto css = tmpDir / "ui_background_notint.css";
+		    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_background_notint"));
+		    const auto css = tempDir.Path() / "ui_background_notint.css";
 		    {
 		        std::ofstream f(css);
 		        f << R"(
@@ -1678,8 +1682,8 @@ TEST(UIManagerScrollTests, AScrollViewConsumesAWheelExactlyWhenItMoved)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_mount_hover.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_mount_hover"));
+    const auto css = tempDir.Path() / "ui_mount_hover.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1876,8 +1880,8 @@ TEST(UIManagerFocusTests, TabIndexOrdersAndFocusableFlag)
     ui.SetRoot(std::move(root));
 
     // Minimal CSS for layout sizes (not strictly required for focus order)
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_focus_tabindex.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_focus_tabindex"));
+    const auto css = tempDir.Path() / "ui_focus_tabindex.css";
     {
         std::ofstream f(css);
         f << R"(#root { display: flex; width: 400px; height: 80px; } #tf1,#tf2,#tf3,#box { width: 80px; height: 20px; })";
@@ -1937,8 +1941,8 @@ TEST(UIManagerFocusTests, DisabledAndHiddenSkippedInTabOrder)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_focus_hidden.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_focus_hidden"));
+    const auto css = tempDir.Path() / "ui_focus_hidden.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1987,8 +1991,8 @@ TEST(UIManagerFocusTests, TabIndexAndFocusableFromXml)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_focus_xml.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_focus_xml"));
+    const auto css = tempDir.Path() / "ui_focus_xml.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -2038,8 +2042,8 @@ TEST(UIManagerFocusTests, EnabledFromXmlAffectsFocusOrder)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_enabled_xml.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_enabled_xml"));
+    const auto css = tempDir.Path() / "ui_enabled_xml.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -2082,8 +2086,8 @@ TEST(UIManagerFocusTests, EnabledFromXmlAffectsFocusOrder)
 	    UIManager ui(dev);
 	    ui.SetRoot(std::move(root));
 
-	    const auto tmpDir = std::filesystem::temp_directory_path();
-	    const auto css = tmpDir / "ui_focus_textinput_proxy.css";
+	    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_focus_textinput_proxy"));
+	    const auto css = tempDir.Path() / "ui_focus_textinput_proxy.css";
 	    {
 	        std::ofstream f(css);
 	        f << R"(
@@ -2146,8 +2150,8 @@ TEST(UIManagerFocusTests, DragSelectingOutsideTextFieldRetainsFocus)
 	UIManager ui(dev);
 	ui.SetRoot(std::move(root));
 
-	const auto tmpDir = std::filesystem::temp_directory_path();
-	const auto css = tmpDir / "ui_focus_textinput_drag.css";
+	const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_focus_textinput_drag"));
+	const auto css = tempDir.Path() / "ui_focus_textinput_drag.css";
 	{
 	    std::ofstream f(css);
 	    f << R"(
@@ -2328,8 +2332,8 @@ TEST(UIManagerStylesheetTests, HotReloadRemovingPropertyRevertsToDefault)
 	// The UI module's default stylesheet is already in place.
 	const size_t initialSheets = ui.GetStylesheets().size();
 
-	const auto tmpDir = std::filesystem::temp_directory_path();
-	const auto css = tmpDir / "ui_hot_reload_remove_property.css";
+	const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_hot_reload_remove_property"));
+	const auto css = tempDir.Path() / "ui_hot_reload_remove_property.css";
 
 	// Initial stylesheet sets a property.
 	{
@@ -2387,8 +2391,8 @@ TEST(UIManagerStylesheetTests, RootPaddingFromClassAndPseudoAffectsChildLayout)
 	UIManager ui(dev);
 	ui.SetRoot(std::move(root));
 
-	const auto tmpDir = std::filesystem::temp_directory_path();
-	const auto css = tmpDir / "ui_root_padding_class_pseudo.css";
+	const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_root_padding_class_pseudo"));
+	const auto css = tempDir.Path() / "ui_root_padding_class_pseudo.css";
 	{
 	    std::ofstream f(css);
 	    f << R"(
@@ -2444,8 +2448,8 @@ TEST(UIManagerStylesheetTests, CheckedPseudoClassTracksCheckedState)
 	UIManager ui(dev);
 	ui.SetRoot(std::move(root));
 
-	const auto tmpDir = std::filesystem::temp_directory_path();
-	const auto css = tmpDir / "ui_checked_pseudo.css";
+	const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_checked_pseudo"));
+	const auto css = tempDir.Path() / "ui_checked_pseudo.css";
 	{
 	    std::ofstream f(css);
 	    f << R"(
@@ -2506,9 +2510,9 @@ TEST(UIManagerStylesheetTests, CheckedPseudoClassTracksCheckedState)
 		UIManager ui(dev);
 		ui.SetRoot(std::move(root));
 
-		const auto tmpDir = std::filesystem::temp_directory_path();
-		const auto css1 = tmpDir / "ui_zindex_overlap_1.css";
-		const auto css2 = tmpDir / "ui_zindex_overlap_2.css";
+		const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_zindex_overlap"));
+		const auto css1 = tempDir.Path() / "ui_zindex_overlap_1.css";
+		const auto css2 = tempDir.Path() / "ui_zindex_overlap_2.css";
 
 		// CSS 1: both children share the same absolute rect, no z-index.
 		{
@@ -3550,7 +3554,8 @@ TEST(UIManagerOrderTests, CSSCursorPropertySurvivesInheritance)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "ui_cursor_inherit.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_cursor_inherit"));
+    const auto css = tempDir.Path() / "ui_cursor_inherit.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -3606,7 +3611,8 @@ TEST(UIManagerOrderTests, SplitterHitTestBoundsAreExpandedBeyondLayout)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "ui_splitter_hit.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_splitter_hit"));
+    const auto css = tempDir.Path() / "ui_splitter_hit.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -3670,7 +3676,8 @@ TEST(UIManagerOrderTests, SplitterHoverSetsCursorViaCallback)
     CursorStyle lastCursor = CursorStyle::Auto;
     ui.SetCursorCallback([&](CursorStyle c) { lastCursor = c; });
 
-    const auto css = std::filesystem::temp_directory_path() / "ui_splitter_cursor.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_splitter_cursor"));
+    const auto css = tempDir.Path() / "ui_splitter_cursor.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -3755,8 +3762,8 @@ TEST(UIManagerMountTests, SameElementFanoutDoesNotLeakIntoBubbling)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_bubble_boundary_fanout.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_bubble_boundary_fanout"));
+    const auto css = tempDir.Path() / "ui_bubble_boundary_fanout.css";
     {
         std::ofstream f(css);
         f << R"(

@@ -1210,7 +1210,7 @@
 	align-self: stretch;
 }
 
-/* Material preview sphere — top-right overlay. */
+/* Material preview sphere — top-right overlay (Godot-style). */
 .node-graph-preview {
 	display: none;
 	flex-direction: column;
@@ -1444,8 +1444,8 @@
 }
 
 .graph-node.drop-target {
-	border-color: #3A8FFF;
-	box-shadow: 0 0 8px rgba(58, 143, 255, 0.5);
+	border-color: var(--ui_color_accent);
+	box-shadow: 0 0 8px var(--ui_color_accent_glow);
 }
 
 /* The node the last compile blamed: red border plus glow. */
@@ -1454,12 +1454,11 @@
 	box-shadow: 0 0 8px rgba(240, 74, 74, 0.5);
 }
 
-/* Both states at once: selection (and search) keeps the blue border, the red
+/* Both states at once: selection (and search) keeps the accent border, the red
    glow keeps saying "error". Without this, has-error wins the border at equal
    specificity and selecting a broken node looks like nothing happened. */
-.graph-node.has-error.selected,
-.graph-node.has-error.search-match {
-	border-color: #3A8FFF;
+.graph-node.has-error.ring-accent {
+	border-color: var(--ui_color_accent);
 }
 
 .graph-node-body {
@@ -2039,7 +2038,7 @@
 	background-color: #ffffff;
 	outline-width: 2px;
 	outline-style: solid;
-	outline-color: #3A8FFF;
+	outline-color: var(--ui_color_accent);
 	box-shadow: 0 0 6px rgba(58, 143, 255, 0.65);
 }
 

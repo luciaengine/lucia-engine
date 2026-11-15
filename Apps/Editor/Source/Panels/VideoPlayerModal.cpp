@@ -157,6 +157,7 @@ void VideoPlayerModal::BuildUI()
     // ── Video area ───────────────────────────────────────────────
     {
         m_VideoArea = backdrop->FindById("vpm-video-area"_sid);
+        m_VideoArea->SetId("VideoPlayerVideoArea");
         // Background-image bound at runtime via UIManager external texture.
         m_VideoArea->Style()
             .Set(Style::BackgroundImage, BackgroundImageSource::Resource(kVideoPlayerFrameTextureName))
@@ -252,7 +253,7 @@ void VideoPlayerModal::BuildUI()
     AddChild(std::move(backdrop));
 }
 
-void VideoPlayerModal::Open(const std::string& videoPath, const std::string& title)
+void VideoPlayerModal::Open(const std::string& videoPath, const std::string& title, bool loop)
 {
     const bool wasOpen = m_Open;
     if (!wasOpen)
@@ -262,6 +263,7 @@ void VideoPlayerModal::Open(const std::string& videoPath, const std::string& tit
     m_Player.Unload();
     m_Player.SetLoop(false);
     m_Player.Load(videoPath);
+    m_Player.SetLoop(loop);
     m_Player.Play();
     m_Open = true;
     if (!wasOpen)
@@ -471,7 +473,7 @@ void VideoPlayerModal::TogglePlayback()
         const float dur = m_Player.GetDuration();
         if (dur > 0.0f && m_Player.GetCurrentTime() >= dur - 0.05f)
         {
-            Open(m_VideoPath, m_Title);
+            Open(m_VideoPath, m_Title, m_Player.IsLooping());
             return;
         }
         else
