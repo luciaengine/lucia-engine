@@ -51,6 +51,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <unordered_map>
 #include <vector>
 
@@ -58,6 +59,7 @@ namespace GameEngine
 {
 class ModelAsset;
 struct Mesh;
+struct Vertex;
 
 namespace Engine::Renderer
 {
@@ -87,6 +89,10 @@ enum class MeshGPUStorageDomain : uint8_t
 };
 
 inline constexpr uint32_t kInvalidMeshGPUPoolIndex = UINT32_MAX;
+
+// The per-vertex streams of a bucket: core, tangent, color, UV1, joints,
+// weights, joints1, weights1 and the 6 extra UV channels.
+inline constexpr size_t kMeshGPUVertexStreamCount = 14;
 
 // One GPU buffer + suballocator for a bucket stream. A stream can own
 // multiple sibling pools so large meshes and later overflow do not invalidate
@@ -547,6 +553,26 @@ class MeshGPURegistry
     // that need to be replaced without unregistering the source model.
     bool UnregisterSubmesh(const MeshGPUKey& key);
 
+    // Replace the vertices of a registered Shared-domain entry and keep its
+    // handle, its index data and its GPUScene row. The bounds follow the new
+    // vertices.
+    //
+    // Frames in flight still read the current vertex range of the entry. Thus
+    // the bytes go to a sibling range of every vertex stream that no frame drew
+    // from for a full frames-in-flight window. The entry keeps a few such
+    // ranges and rotates through them: a new range takes every stream once
+    // (`vertices` and the other streams of `source`), a reused range takes
+    // only the core and tangent streams.
+    //
+    // `source` is the mesh the entry was registered from. Returns false and
+    // changes nothing when `vertices` does not fit the entry (vertex count,
+    // tangent presence, own-vertex LOD levels, a retained CPU mesh), when every
+    // range is still in use, or when a new range cannot be allocated. The
+    // caller then registers the mesh again.
+    bool RewriteSubmeshVertices(MeshGPUHandle handle,
+                                const Mesh& source,
+                                std::span<const Vertex> vertices);
+
     // Look up a previously registered entry by handle.
     const MeshGPUEntry* Find(MeshGPUHandle handle) const;
 
@@ -883,8 +909,43 @@ class MeshGPURegistry
     // Return all of an entry's bucket suballocations to the pools'
     // deferred-free queue, stamped to retire kMaxFramesInFlight after
     // the current frame, and retire the upload stamp those suballocations
-    // belonged to.
-    void ReleaseEntryToBucket(MeshGPUEntry& entry);
+    // belonged to. The spare vertex groups of `handle` take the same
+    // deferred free.
+    void ReleaseEntryToBucket(MeshGPUHandle handle, MeshGPUEntry& entry);
+
+    // One range request for each per-vertex stream of a group; see AllocateVertexGroup.
+    struct VertexStreamRequest
+    {
+        std::vector<MeshGPUStreamPool>* pools = nullptr;
+        uint64_t initialCapacity = 0;
+        uint32_t stride = 1;
+        size_t bytes = 0;
+        const char* debugName = nullptr;
+        Memory::RangeAllocator::Allocation* alloc = nullptr;
+        uint32_t* poolIndex = nullptr;
+    };
+
+    // Allocate every requested stream at one shared vertex offset, in the first
+    // pool group that fits all of them, else in a pool group appended to the
+    // bucket. The core stream is first. On failure nothing stays allocated.
+    bool AllocateVertexGroup(std::span<VertexStreamRequest> streams, VertexAttributeFlags flags,
+                             MeshGPUStorageDomain domain);
+    // Allocate every stream in pool group `groupIndex` at one shared vertex
+    // offset. On failure nothing stays allocated.
+    static bool TryAllocateVertexGroupAt(std::span<VertexStreamRequest> streams, uint32_t groupIndex);
+    // Free the ranges of `streams` at once and reset them.
+    static void ClearVertexGroup(std::span<VertexStreamRequest> streams);
+
+    // A vertex group that a rewritten entry does not draw from: a range in each
+    // per-vertex stream pool the entry owns (indexed like the streams of the
+    // entry, invalid where it owns none), all at one vertex offset.
+    struct SpareVertexGroup
+    {
+        std::array<Memory::RangeAllocator::Allocation, kMeshGPUVertexStreamCount> allocs{};
+        std::array<uint32_t, kMeshGPUVertexStreamCount> poolIndices{};
+        // m_CurrentFrameIndex when the entry stopped drawing from this group.
+        uint64_t retiredFrame = 0;
+    };
 
     // THE mutual-exclusion point for m_Entries, m_KeyToHandle, m_ModelHandles,
     // m_ModelMaterials, m_Buckets, the GPUScene mesh rows and m_Residency's
@@ -940,6 +1001,12 @@ class MeshGPURegistry
     GenerationalVector<MeshGPUEntry> m_Entries;
     uint64_t m_ContentRevision = 1;
     uint64_t m_ComputedContentHashCount = 0;
+
+    // The entries that RewriteSubmeshVertices rotated; released with the entry.
+    FlatMap<MeshGPUHandle, std::vector<SpareVertexGroup>> m_SpareVertexGroups;
+    // Packed core and tangent bytes of one rewrite, kept to reuse the storage.
+    std::vector<uint8_t> m_RewriteCoreBytes;
+    std::vector<float> m_RewriteTangents;
 
     // Dedup map: composite key -> handle.
     std::unordered_map<MeshGPUKey, MeshGPUHandle> m_KeyToHandle;
