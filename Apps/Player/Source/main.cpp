@@ -1,3 +1,8 @@
+// SDL owns the entry point on Android and iOS: SDL_main.h renames main for its host.
+#if defined(GE_PLATFORM_MOBILE)
+#include <SDL3/SDL_main.h>
+#endif
+
 #include "PlayerApplication.h"
 #include "PlayerHdrOptions.h"
 #include "PlayerLog.h"

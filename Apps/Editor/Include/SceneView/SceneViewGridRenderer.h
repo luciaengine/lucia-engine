@@ -3,11 +3,13 @@
 #include "Rendering/Core/Handle.h"
 
 #include <cstdint>
+#include <vector>
 
 namespace GameEngine {
 
 namespace Rendering {
 struct CameraData;
+struct GraphicsPipelineDesc;
 namespace RenderGraph {
 class RGContext;
 class RGPrepareContext;
@@ -20,6 +22,11 @@ class RGPrepareContext;
 class SceneViewGridRenderer
 {
 public:
+    /// The grid pipeline of a mode: the given shaders, depth-tested blending, and a
+    /// push constant range sized to the mode's constants (128 bytes in 2D, 112 in 3D).
+    static Rendering::GraphicsPipelineDesc PipelineDesc(bool is2DMode, const std::vector<uint8_t>& vertexShader,
+                                                        const std::vector<uint8_t>& fragmentShader);
+
     /// Prepares the grid pipeline on the caller thread before overlay recording.
     Rendering::PipelineHandle PrepareRG(const Rendering::RenderGraph::RGPrepareContext& context,
                                          bool is2DMode);
