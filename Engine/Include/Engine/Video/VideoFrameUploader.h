@@ -40,10 +40,10 @@ namespace GameEngine::Video
 //     which IDevice::QueryGpuSyncToken reports as Unknown — it cannot separate
 //     "never armed" from "already retired". VulkanDevice and MetalDevice override
 //     LastSubmissionToken(); D3D12Device inherits IDevice's `return {}`. On Unknown
-//     the slot falls back to what ring rotation alone guarantees: the allocator advances one slot per device frame over
-//     framesInFlight+1 slots, so a slot last written in an EARLIER device frame has
-//     been retired by the device's own frame pacing, and one written in THIS device
-//     frame has not.
+//     the slot falls back to what ring rotation alone guarantees: the allocator
+//     advances one slot per device frame over framesInFlight+1 slots, so a slot
+//     last written in an EARLIER device frame has been retired by the device's own
+//     frame pacing, and one written in THIS device frame has not.
 //
 // MEMORY. The ring is permanently resident and persistently mapped for the life of
 // the scene: framesInFlight+1 slots, each grown to the largest single frame it has
