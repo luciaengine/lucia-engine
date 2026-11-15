@@ -421,4 +421,15 @@ add_custom_command(TARGET AiAssistantPanelTests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AgentModelPopover.uxml
         $<TARGET_FILE_DIR:AiAssistantPanelTests>/AiAssistantPanelFixtures/ai-assistant/Editor/UI/controls/AgentModelPopover.uxml)
+# The copies above run when the test links, so an edit of a staged file relinks it.
+set_property(TARGET AiAssistantPanelTests APPEND PROPERTY LINK_DEPENDS
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/Fixtures/claude-dead-session.stdout
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/.assetmanifest
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AiAssistantSetup/AiAssistantSetupPage.uxml
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AiAssistantSetup/AiAssistantSetupPage.css
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AiAssistantSetup/AiAssistantApiKeyRow.uxml
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AiAssistantSetup/AiAssistantApiKeyRow.css
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/panels/PromptPanel.css
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AgentConversationRow.uxml
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AgentModelPopover.uxml)
 add_test(NAME AiAssistantPanelTests COMMAND AiAssistantPanelTests)
