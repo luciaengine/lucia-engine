@@ -1873,6 +1873,8 @@ add_executable(SceneViewportTests
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SceneViewport/SceneViewportRegistry.cpp
 )
 target_include_directories(SceneViewportTests PRIVATE
+	# TestTempDir.h, which UIRgTestHarness.h includes.
+	${CMAKE_SOURCE_DIR}/Tests
 	${CMAKE_SOURCE_DIR}/Engine/Source
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Include
