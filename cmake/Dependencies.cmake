@@ -111,30 +111,35 @@ endif()
 # Explicitly point vcpkg to the manifest location (repo root)
 set(VCPKG_MANIFEST_DIR "${CMAKE_SOURCE_DIR}" CACHE PATH "" FORCE)
 
-# Overlay ports for macOS triplets only. vcpkg-configuration.json hands
-# cmake/ports to every triplet, and an overlay re-keys its port's ABI on every
-# triplet it reaches, so a port changed for macOS alone lives in
-# cmake/macos-ports. It reaches vcpkg through the VCPKG_OVERLAY_PORTS
-# environment variable, which every vcpkg install this configure runs inherits:
-# the toolchain's manifest install at project(), install_required_packages()
-# and verify_dependencies(). It is not wired through a preset the way the
-# steamdeck presets pass cmake/steamdeck-ports, because a macOS configure needs
-# it with or without a preset: vcpkg.json requests directxtex on osx, and a
-# configure without the overlay fails ("directxtex is only supported on ...").
-# Nor is it the toolchain's VCPKG_OVERLAY_PORTS variable, which the toolchain
-# stores in CMakeCache.txt: a build directory that then configures a checkout
-# without the directory fails with "Overlay path ... must be an existing
-# directory". Windows and Linux keep the registry ports and their installed
-# ABIs. The freshness guard (cmake/OverlayPortGuard.cmake) and the configure
-# dependencies cover the directory on macOS. See cmake/ports/README.md.
-set(GE_VCPKG_MACOS_OVERLAY_PORTS "")
+# Overlay ports for one platform's triplets: cmake/macos-ports for *-osx and
+# cmake/linux-ports for *-linux. vcpkg-configuration.json hands cmake/ports to
+# every triplet, and an overlay re-keys its port's ABI on every triplet it
+# reaches, so a port changed for one platform alone lives in that platform's
+# directory. It reaches vcpkg through the VCPKG_OVERLAY_PORTS environment
+# variable, which every vcpkg install this configure runs inherits: the
+# toolchain's manifest install at project(), install_required_packages() and
+# verify_dependencies(). It is not wired through a preset the way the steamdeck
+# presets pass cmake/steamdeck-ports, because a configure needs it with or
+# without a preset: vcpkg.json requests directxtex on osx, and a macOS configure
+# without the overlay fails ("directxtex is only supported on ..."). Nor is it
+# the toolchain's VCPKG_OVERLAY_PORTS variable, which the toolchain stores in
+# CMakeCache.txt: a build directory that then configures a checkout without the
+# directory fails with "Overlay path ... must be an existing directory". Other
+# triplets keep the registry ports and their installed ABIs. The freshness
+# guard (cmake/OverlayPortGuard.cmake) and the configure dependencies cover the
+# directory. See cmake/ports/README.md.
+set(GE_VCPKG_PLATFORM_OVERLAY_PORTS "")
 if(VCPKG_ARCH MATCHES "-osx")
-    set(GE_VCPKG_MACOS_OVERLAY_PORTS "${CMAKE_SOURCE_DIR}/cmake/macos-ports")
-    # vcpkg splits the variable on the host's path-list separator, ':' on macOS.
+    set(GE_VCPKG_PLATFORM_OVERLAY_PORTS "${CMAKE_SOURCE_DIR}/cmake/macos-ports")
+elseif(VCPKG_ARCH MATCHES "-linux")
+    set(GE_VCPKG_PLATFORM_OVERLAY_PORTS "${CMAKE_SOURCE_DIR}/cmake/linux-ports")
+endif()
+if(GE_VCPKG_PLATFORM_OVERLAY_PORTS)
+    # vcpkg splits the variable on the host's path-list separator, ':' on macOS and Linux.
     if("$ENV{VCPKG_OVERLAY_PORTS}" STREQUAL "")
-        set(ENV{VCPKG_OVERLAY_PORTS} "${GE_VCPKG_MACOS_OVERLAY_PORTS}")
+        set(ENV{VCPKG_OVERLAY_PORTS} "${GE_VCPKG_PLATFORM_OVERLAY_PORTS}")
     else()
-        set(ENV{VCPKG_OVERLAY_PORTS} "${GE_VCPKG_MACOS_OVERLAY_PORTS}:$ENV{VCPKG_OVERLAY_PORTS}")
+        set(ENV{VCPKG_OVERLAY_PORTS} "${GE_VCPKG_PLATFORM_OVERLAY_PORTS}:$ENV{VCPKG_OVERLAY_PORTS}")
     endif()
 endif()
 
